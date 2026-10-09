@@ -37,10 +37,23 @@ class Autopilot
     public rate_gain  : f64 [ 3.0 ]
     # integral action: a steady torque leaves no steady error
     public hold_gain  : f64 [ 0.3 ]
+    # on jets alone an axis rests inside these (rad, rad/s)
+    public dead_angle : f64 [ 0.0035 ]
+    public dead_rate  : f64 [ 0.0005 ]
+    # the shortest a jet fires (s): its valve's least pulse
+    public min_pulse  : f64 [ 0.04 ]
+    # and the least rest between two of its pulses (s)
+    public min_rest   : f64 [ 0.25 ]
     public max_rate   : f64 [ 0.2 ]
     public use_gimbal : bool [ true ]
     public use_fins   : bool
+    # the small legs, opened part way in the air to steer
+    public use_flaps  : bool
     public use_jets   : bool
+    # jets fired as couples, force and torque solved together:
+    # a turn pushes nothing, and push (body, N) moves it whole
+    public couples    : bool
+    public push       : Dvec
     # the wanted body x (the thrust axis) and body y, inertial;
     # a zero side holds the roll rate at zero instead
     public axis : Dvec
@@ -52,10 +65,24 @@ class Autopilot
     intern carry  : f64
     intern pulse  : f64
     intern duty   : vec f64
+    # couples: the firing time each jet still owes (s)
+    intern owed   : vec f64
+    # what is left of each jet's pulse now firing (s)
+    intern burn   : vec f64
+    # the time since each jet's pulse ended (s)
+    intern rest   : vec f64
+    intern sol    : vec f64
     intern summed : Dvec
+    # jets alone: each axis firing until back in its band
+    intern active : vec bool
 
     func init []
         duty = vec f64 []
+        owed = vec f64 []
+        burn = vec f64 []
+        rest = vec f64 []
+        sol = vec f64 []
+        active = vec bool [] [ false, false, false ]
 
     # the attitude error as a body rotation vector
     func attitude_error [ c: Craft, b: Belief ] -> Dvec
@@ -110,6 +137,7 @@ class Autopilot
         aero : air_estimate[ c, b ]
         qbar = aero.x
         fin_ok : bool [ use_fins && qbar > 100.0 && c.fins.count > 0 ]
+        flap_ok : bool [ use_flaps && qbar > 100.0 && c.flaps.count > 0 ]
         jet_ok : bool [ use_jets && c.jets.count > 0 ]
         reach : f64 [ 0.0 ]
         if [ gim_ok ]
@@ -151,6 +179,24 @@ class Autopilot
                    + hold_gain * summed.y ]
         az : f64 [ rate_gain * (wanted[ 2 ] - w.z)
                    + hold_gain * summed.z ]
+        # jets alone: an axis fires once out of its band and
+        # stops back in half of it, else it rests
+        if [ !gim_ok && !fin_ok && !flap_ok ]
+            summed = Dvec [ 0.0, 0.0, 0.0 ]
+            rates : vec f64 [] [ w.x, w.y, w.z ]
+            asks : vec f64 [ 3 ]
+            for [ k: i32 0, k < 3, k += 1 ]
+                e : f64 [ abs[ comps[ k ] ] ]
+                slip : f64 [ abs[ wanted[ k ] - rates[ k ] ] ]
+                if [ e > dead_angle || slip > dead_rate ]
+                    active[ k ] = true
+                el [ e < dead_angle * 0.5 && slip < dead_rate * 0.5 ]
+                    active[ k ] = false
+                ask : f64 [ rate_gain * (wanted[ k ] - rates[ k ]) ]
+                asks[ k ] = (active[ k ]) ? ask : 0.0
+            ax = asks[ 0 ]
+            ay = asks[ 1 ]
+            az = asks[ 2 ]
         # torque, with the gyroscopic term
         tau : Dvec [ ix * ax - (iy - iz) * w.y * w.z,
                      iy * ay - (iz - ix) * w.z * w.x,
@@ -168,9 +214,16 @@ class Autopilot
         el
             for [ f: Fin ] in c.fins
                 f.deflect_cmd = 0.0
+        if [ flap_ok ]
+            left = flaps[ c, b, left, aero ]
+        el
+            for [ g: Leg ] in c.flaps
+                g.open_cmd = 0.0
         # the jets take what is left: everything off the gimbal,
         # or roll when one engine burns alone
-        if [ jet_ok ]
+        if [ jet_ok && couples ]
+            couple_jets[ c, left ]
+        el [ jet_ok ]
             jets[ c, left ]
         el
             for [ i: i32 0, i < duty.count, i += 1 ] duty[ i ] = 0.0
@@ -255,8 +308,52 @@ class Autopilot
         return Dvec [ tau.x - got[ 0 ], tau.y - got[ 1 ],
                       tau.z - got[ 2 ] ]
 
+    # the small legs: all held 20 deg open, each opened or shut
+    # from there; what a little more of each does to the torque,
+    # from the craft's own sum through the air we believe in,
+    # then the six openings that give it (each shut to full)
+    func flaps [ c: Craft, b: Belief, tau: Dvec, aero: Dvec ] -> Dvec
+        n : i32 [ c.flaps.count ]
+        rel : dv_sub[ b.v, dv_cross[ Dvec [ 0.0, 0.0, EARTH_SPIN ],
+                                     b.r ] ]
+        vb : q_unrotate[ b.q, rel ]
+        base : f64 [ 0.35 ]
+        step : f64 [ 0.05 ]
+        cols : vec f64 [ n * 3 ]
+        made : Dvec [ 0.0, 0.0, 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            g : c.flaps[ i ]
+            at : c.flap_push[ g, base, vb, aero.x, aero.y ]
+            up : c.flap_push[ g, base + step, vb, aero.x, aero.y ]
+            dn : c.flap_push[ g, base - step, vb, aero.x, aero.y ]
+            made = dv_add[ made, at[ 1 ] ]
+            cols[ i * 3 ] = (up[ 1 ].x - dn[ 1 ].x) / (2.0 * step)
+            cols[ i * 3 + 1 ] = (up[ 1 ].y - dn[ 1 ].y) / (2.0 * step)
+            cols[ i * 3 + 2 ] = (up[ 1 ].z - dn[ 1 ].z) / (2.0 * step)
+        res : vec f64 [] [ tau.x - made.x, tau.y - made.y, tau.z - made.z ]
+        moves : vec f64 [ n ]
+        for [ sweep: i32 0, sweep < 40, sweep += 1 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                dot : f64 [ 0.0 ]
+                len : f64 [ 0.0 ]
+                for [ r: i32 0, r < 3, r += 1 ]
+                    cv : f64 [ cols[ i * 3 + r ] ]
+                    dot += cv * res[ r ]
+                    len += cv * cv
+                if [ len <= 0.0 ] continue
+                old : f64 [ moves[ i ] ]
+                top : f64 [ c.flaps[ i ].open_max - base ]
+                d : f64 [ min[ max[ old + dot / len, 0.0 - base ], top ] ]
+                moves[ i ] = d
+                for [ r: i32 0, r < 3, r += 1 ]
+                    res[ r ] = res[ r ] - cols[ i * 3 + r ] * (d - old)
+        for [ i: i32 0, i < n, i += 1 ]
+            c.flaps[ i ].open_cmd = base + moves[ i ]
+        return Dvec [ res[ 0 ], res[ 1 ], res[ 2 ] ]
+
     # the jets: each a share of the period, by the torque it makes
     func jets [ c: Craft, tau: Dvec ]
+        got : Dvec [ 0.0, 0.0, 0.0 ]
         for [ i: i32 0, i < c.jets.count, i += 1 ]
             j : c.jets[ i ]
             arm : dv_sub[ j.at, Dvec [ c.cg, 0.0, 0.0 ] ]
@@ -264,10 +361,61 @@ class Autopilot
             # how much of the asked torque this jet alone serves
             tl : f64 [ dv_dot[ t, t ] ]
             share : f64 [ dv_dot[ t, tau ] / tl ]
-            # two jets serve each axis and sense
-            d : f64 [ clamp_d[ share * 0.5, 0.0, 1.0 ] ]
-            if [ d < 0.03 ] d = 0.0
+            d : f64 [ max[ share, 0.0 ] ]
             duty[ i ] = d
+            got = dv_add[ got, dv_scale[ t, d ] ]
+        # all the jets serving a sense share it: scaled to the
+        # torque they make together
+        gl : f64 [ dv_dot[ got, got ] ]
+        k : f64 [ (gl > 0.0) ? dv_dot[ got, tau ] / gl : 0.0 ]
+        for [ i: i32 0, i < c.jets.count, i += 1 ]
+            d : f64 [ clamp_d[ duty[ i ] * k, 0.0, 1.0 ] ]
+            duty[ i ] = d
+
+    # each jet's share of the period so that together they make
+    # push and the torque: least squares over the shares, each
+    # 0 to 1, by sweeps (Gauss-Seidel); torque rows over 20 m
+    func couple_jets [ c: Craft, tau: Dvec ]
+        n : i32 [ c.jets.count ]
+        cols : vec f64 [ n * 6 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            j : c.jets[ i ]
+            f : dv_scale[ j.dir, j.thrust ]
+            t : dv_cross[ dv_sub[ j.at, Dvec [ c.cg, 0.0, 0.0 ] ], f ]
+            cols[ i * 6 ] = f.x
+            cols[ i * 6 + 1 ] = f.y
+            cols[ i * 6 + 2 ] = f.z
+            cols[ i * 6 + 3 ] = t.x / 20.0
+            cols[ i * 6 + 4 ] = t.y / 20.0
+            cols[ i * 6 + 5 ] = t.z / 20.0
+        res : vec f64 [] [ push.x, push.y, push.z, tau.x / 20.0,
+                           tau.y / 20.0, tau.z / 20.0 ]
+        # from the last solve (not what fired: that holds the
+        # owed shares)
+        while [ sol.count < n ]
+            sol.push[ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            d : f64 [ sol[ i ] ]
+            for [ r: i32 0, r < 6, r += 1 ]
+                res[ r ] = res[ r ] - cols[ i * 6 + r ] * d
+        for [ sweep: i32 0, sweep < 100, sweep += 1 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                dot : f64 [ 0.0 ]
+                len : f64 [ 0.0 ]
+                for [ r: i32 0, r < 6, r += 1 ]
+                    cv : f64 [ cols[ i * 6 + r ] ]
+                    dot += cv * res[ r ]
+                    len += cv * cv
+                if [ len <= 0.0 ] continue
+                old : f64 [ sol[ i ] ]
+                # a 1% cost on each share: jets never fight
+                d : f64 [ clamp_d[ (dot + len * old) / (len * 1.01),
+                                   0.0, 1.0 ] ]
+                sol[ i ] = d
+                for [ r: i32 0, r < 6, r += 1 ]
+                    res[ r ] = res[ r ] - cols[ i * 6 + r ] * (d - old)
+        for [ i: i32 0, i < n, i += 1 ]
+            duty[ i ] = sol[ i ]
 
     # every physics step: the update at the control rate, and
     # each jet on for its share of the period
@@ -279,10 +427,33 @@ class Autopilot
             pulse = 0.0
             update[ c, b ]
         pulse += h
+        # each jet owes its share of every step and fires a whole
+        # pulse once it owes half of one: exact on average
+        while [ owed.count < c.jets.count ]
+            owed.push[ 0.0 ]
+            burn.push[ 0.0 ]
+            rest.push[ 1.0 ]
         for [ i: i32 0, i < c.jets.count, i += 1 ]
             j : c.jets[ i ]
             d : f64 [ (i < duty.count) ? duty[ i ] : 0.0 ]
-            j.on = use_jets && pulse <= d * period
+            # jets off owe nothing; a debt is one period at most
+            if [ !use_jets ]
+                owed[ i ] = 0.0
+                burn[ i ] = 0.0
+                j.on = false
+                continue
+            owed[ i ] = min[ owed[ i ] + d * h, period + min_rest ]
+            # a pulse owed more than one rest's worth fires long
+            if [ burn[ i ] <= 0.0 && rest[ i ] >= min_rest
+                 && owed[ i ] >= 0.5 * min_pulse ]
+                burn[ i ] = max[ min_pulse, owed[ i ] ]
+            j.on = use_jets && burn[ i ] > 0.0
+            if [ j.on ]
+                burn[ i ] = burn[ i ] - h
+                owed[ i ] = owed[ i ] - h
+                rest[ i ] = 0.0
+            el
+                rest[ i ] = rest[ i ] + h
 
 # ---------------------------------------------------------------
 # checks, each against the truth so the actuator stands alone

@@ -2386,5 +2386,6 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive,
         material: material, samplers: use_samplers,
         straight_alpha: sa, depth_no_write: transparent,
         cull_none: m.cull_none,
-        cull_front: m.cull_front, depth_no_test: m.depth_no_test ]
+        cull_front: m.cull_front, depth_no_test: m.depth_no_test,
+        blend: m.blend ]
     m.pipelines.push[ pipe ]

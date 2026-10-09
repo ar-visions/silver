@@ -1262,6 +1262,9 @@ class Scvx
     public track_cost : f64 [ 0.01 ]
     # the push it makes now, N, local; zero is free
     public thrust_now : Dvec
+    # the push across it gets follows the one asked this many
+    # seconds behind (its tilt settles that slowly); 0 is at once
+    public lag     : f64
     public feasible : bool
     # per step thrust / thrust_max (3), its bound; then the time
     public z       : vec f64
@@ -1317,7 +1320,7 @@ class Scvx
         nst : i32 [ steps ]
         cells : i32 [ (nst + 1) * 7 ]
         out : vec f64 [ cells ]
-        first : i32 [ (base) ? from : 0 ]
+        first : i32 [ (base && lag <= 0.0) ? from : 0 ]
         if [ base ]
             for [ i: i32 0, i < first * 7 + 7, i += 1 ]
                 bv : f64 [ base[ i ] ]
@@ -1334,6 +1337,11 @@ class Scvx
         alpha : f64 [ 1.0 / (isp * GRAVITY_STD) ]
         sub : i32 [ 4 ]
         h : f64 [ dt / f64[ sub ] ]
+        # the push across it gets, lagging the one asked: from the
+        # one it has now, so a lagged flight starts at the first node
+        got_x : f64 [ thrust_now.x ]
+        got_y : f64 [ thrust_now.y ]
+        follow : f64 [ (lag > 0.0) ? 1.0 - exp[ 0.0 - h / lag ] : 1.0 ]
         for [ k: i32 first, k < nst, k += 1 ]
             at : i32 [ k * 7 ]
             r : Dvec [ out[ at ], out[ at + 1 ], out[ at + 2 ] ]
@@ -1343,8 +1351,13 @@ class Scvx
                         zz[ k * 4 + 1 ] * thrust_max,
                         zz[ k * 4 + 2 ] * thrust_max ]
             flow : f64 [ alpha * zz[ k * 4 + 3 ] * thrust_max ]
+            ask_x : f64 [ th.x ]
+            ask_y : f64 [ th.y ]
             # four RK4 steps; the mass falls linearly within one
             for [ i: i32 0, i < sub, i += 1 ]
+                got_x = got_x + (ask_x - got_x) * follow
+                got_y = got_y + (ask_y - got_y) * follow
+                th = Dvec [ got_x, got_y, th.z ]
                 mh : f64 [ m - flow * h * 0.5 ]
                 me : f64 [ m - flow * h ]
                 a1 : accel[ r, v, m, th ]
@@ -1390,7 +1403,8 @@ class Scvx
             keep : f64 [ moved[ j ] ]
             moved[ j ] = keep + dz
             # a step's thrust leaves the nodes before it alone
-            from : i32 [ (j == nst * 4) ? 0 : j / 4 ]
+            # (lagged, the push carries on: all of it again)
+            from : i32 [ (j == nst * 4 || lag > 0.0) ? 0 : j / 4 ]
             got : fly[ moved, from, nd ]
             if [ j == nst * 4 ] got = fly[ moved, 0, null ]
             moved[ j ] = keep
@@ -1932,6 +1946,43 @@ expect func t_landing_lag [] -> bool
     side : f64 [ sqrt[ vel.x * vel.x + vel.y * vel.y ] ]
     log 'landing lag: {ld.flight} s, plan ends {end_p} m off at {end_v} m/s; flown through the lag: {off} m off at {side} m/s across'
     return end_p < 1e-3 && end_v < 1e-3 && off < 5.0 && side < 1.0
+
+# SCvx planning with the push across 1.25 s behind the one
+# asked, then flown through that lag: it lands on the mark
+expect func t_scvx_lag [] -> bool
+    m0 : f64 [ 30000.0 ]
+    sc : Scvx [ r0: Dvec [ 300.0, 100.0, 1500.0 ],
+                v0: Dvec [ -20.0, 5.0, -150.0 ], mass: m0,
+                thrust_min: 338000.0, thrust_max: 845000.0,
+                isp: 287.5, deck: 0.0, flight: 14.0, lag: 1.25,
+                thrust_now: Dvec [ 2.0 * m0, -1.0 * m0, 20.0 * m0 ] ]
+    if [ !sc.solve[] ]
+        log 'scvx lag: no solution'
+        return false
+    ld : sc.landing[]
+    nst : i32 [ ld.steps ]
+    dt : f64 [ ld.flight / f64[ nst ] ]
+    pos : Dvec [ 300.0, 100.0, 1500.0 ]
+    vel : Dvec [ -20.0, 5.0, -150.0 ]
+    gx : f64 [ 2.0 ]
+    gy : f64 [ -1.0 ]
+    sub : i32 [ 200 ]
+    h : f64 [ dt / f64[ sub ] ]
+    m : f64 [ m0 ]
+    for [ k: i32 0, k < nst, k += 1 ]
+        ux : f64 [ ld.accel[ k * 3 ] ]
+        uy : f64 [ ld.accel[ k * 3 + 1 ] ]
+        uz : f64 [ ld.accel[ k * 3 + 2 ] ]
+        for [ i: i32 0, i < sub, i += 1 ]
+            gx += (ux - gx) * h / 1.25
+            gy += (uy - gy) * h / 1.25
+            acc : Dvec [ gx, gy, uz - ld.gravity ]
+            vel = dv_add[ vel, dv_scale[ acc, h ] ]
+            pos = dv_add[ pos, dv_scale[ vel, h ] ]
+    off : f64 [ sqrt[ pos.x * pos.x + pos.y * pos.y ] ]
+    side : f64 [ sqrt[ vel.x * vel.x + vel.y * vel.y ] ]
+    log 'scvx lag: {ld.flight} s, flown through the lag: {off} m off at {side} m/s across, {pos.z} m up at {vel.z} m/s'
+    return off < 5.0 && side < 1.0
 
 # a landing burn on one Merlin at sea level, then its thrust
 # plan flown through the exact rocket equation

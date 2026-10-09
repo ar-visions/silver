@@ -1,0 +1,402 @@
+export 0.1.0
+
+import trinity
+import img
+import ai
+import <stdio.h>
+import <stdlib.h>
+
+# the docking CNN: our two port cameras' 32 x 32 grey pictures
+# of the tanker's two ports in; out, the ports' midpoint (right,
+# up, out: m), our turn off square (roll, pitch, yaw: deg), and
+# whether it is in range at all. Trained on launch's docking
+# pairs with ai's grad engine on the gpu.
+
+# each label's scale: the domain's half width, so the net
+# works near -1..1
+DOCK_SCALE : vec f64 [] [ 4.0, 4.0, 14.5, 5.0, 3.0, 3.0 ]
+DOCK_MID   : vec f64 [] [ 0.0, 0.0, 15.5, 0.0, 0.0, 0.0 ]
+
+class DockRand
+    public s : u64 [ 88172645463325252 ]
+
+    func next [] -> f64
+        s = s ^ (s << 13)
+        s = s ^ (s >> 7)
+        s = s ^ (s << 17)
+        return f64[ s >> 11 ] / 9007199254740992.0
+
+    # a normal draw (Box-Muller)
+    func normal [] -> f64
+        u : f64 [ max[ next[], 0.000000001 ] ]
+        v : f64 [ next[] ]
+        return sqrt[ -2.0 * log[ u ] ] * cos[ 6.28318530718 * v ]
+
+# one picture's labels, as its .agi says: the tanker port's
+# place in our camera (m) and our turn off square (deg)
+class DockShot
+    public right : f64
+    public up    : f64
+    public out   : f64
+    public roll  : f64
+    public pitch : f64
+    public yaw   : f64
+    public in_range : f64
+
+# a camera's picture as the net reads it: grey, 0..1, row by
+# row (the trainer and the running ship use this one way)
+func dock_grey [ im: Image, into: vec f32 ]
+    px : @u8 [ im.pixels ]
+    ch : i64 [ im.channels ]
+    n : i64 [ i64[ im.width ] * im.height ]
+    for [ i: i64 0, i < n, i += 1 ]
+        r : f32 [ px[ i * ch ] ]
+        g : f32 [ px[ i * ch + 1 ] ]
+        b : f32 [ px[ i * ch + 2 ] ]
+        grey : f32 [ (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 ]
+        into.push[ grey ]
+
+# the pictures and their labels, scaled, all in memory
+class DockData
+    public dir    : string
+    public pics   : vec f32
+    public labels : vec f32
+    # 1 in range, 0 off target
+    public flags  : vec f32
+    public names  : vec string
+    public count  : i64
+
+    # dock_<n>.agi with its pair dock_<n>_a.png (the oxygen
+    # port's camera) and _b.png (the fuel port's), from 0 on;
+    # each picture to grey, 0..1, one channel a camera
+    func load [] -> bool
+        pics = vec f32 []
+        labels = vec f32 []
+        flags = vec f32 []
+        names = vec string []
+        for [ n: i64 0, n < 1000000, n += 1 ]
+            ap : path '{dir}/dock_{n}.agi'
+            if [ !ap.exists[] ] break
+            txt : string [ ap.load[ typeid[ string ], null ] ]
+            shot : DockShot []
+            Au.parse_agi[ null, txt.chars, shot ]
+            ia : Image [ uri: path '{dir}/dock_{n}_a.png' ]
+            ib : Image [ uri: path '{dir}/dock_{n}_b.png' ]
+            if [ !ia || !ib || !ia.pixels || !ib.pixels
+                 || ia.width != 32 || ib.width != 32 ] continue
+            dock_grey[ ia, pics ]
+            dock_grey[ ib, pics ]
+            vals : vec f64 [] [ shot.right, shot.up, shot.out, shot.roll,
+                                shot.pitch, shot.yaw ]
+            on : bool [ shot.in_range > 0.5 ]
+            for [ k: i64 0, k < 6, k += 1 ]
+                sc : f32 [ (vals[ k ] - DOCK_MID[ k ]) / DOCK_SCALE[ k ] ]
+                # off target nothing is asked of the offsets
+                if [ !on ] sc = 0.0
+                labels.push[ sc ]
+            flag : f32 [ (on) ? 1.0 : 0.0 ]
+            flags.push[ flag ]
+            names.push[ 'dock_{n}' ]
+        count = names.count
+        if [ count == 0 ]
+            log 'dock: no pictures at {dir}: build launch first'
+            return false
+        inside : i64 [ 0 ]
+        for [ v: f32 ] in flags
+            if [ v > 0.5 ] inside += 1
+        log 'dock: {count} pairs from {dir}, {inside} in range'
+        return true
+
+# three 3 x 3 convolutions, each halving the pictures (32 to
+# 4), a dense layer, then two heads: the six numbers and the
+# in-range flag (a logit)
+class DockNet
+    context vk : vk_context
+    public gd    : Grad
+    public ps    : vec GTensor
+    public names : vec string
+    public pmap  : map GTensor [ string ]
+
+    func init []
+        gd = Grad [ vk: vk, keep_mb: 256, work_mb: 1024,
+                    scratch_mb: 256 ]
+        ps = vec GTensor []
+        names = vec string []
+        pmap = map GTensor [ string ] []
+        chans : vec i64 [] [ 2, 16, 32, 64 ]
+        for [ i: i64 0, i < 3, i += 1 ]
+            add[ 'c{i}.w', vec i64 [] [ chans[ i + 1 ], chans[ i ], 3, 3 ] ]
+            add[ 'c{i}.b', vec i64 [] [ chans[ i + 1 ] ] ]
+        add[ 'f0.w', vec i64 [] [ 128, 1024 ] ]
+        add[ 'f0.b', vec i64 [] [ 128 ] ]
+        add[ 'f1.w', vec i64 [] [ 6, 128 ] ]
+        add[ 'f1.b', vec i64 [] [ 6 ] ]
+        add[ 'g.w', vec i64 [] [ 1, 128 ] ]
+        add[ 'g.b', vec i64 [] [ 1 ] ]
+
+    func add [ nm: string, dims: vec i64 ]
+        t : GTensor gd.param[ dims ]
+        t.need = true
+        ps.push[ t ]
+        names.push[ nm ]
+        pmap[ nm ] = t
+
+    # He's start: normal over the fan in, biases zero
+    func start [ rnd: DockRand ]
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            t : GTensor ps[ i ]
+            v : vec f32 [ t.count ]
+            if [ t.dims.count > 1 ]
+                fan : i64 [ t.count / t.dims[ 0 ] ]
+                sd : f64 [ sqrt[ 2.0 / f64[ fan ] ] ]
+                for [ k: i64 0, k < t.count, k += 1 ]
+                    v[ k ] = f32[ rnd.normal[] * sd ]
+            gd.upload[ t, v ]
+
+    # [ the six numbers, the in-range logit ]
+    func forward [ x: GTensor, nb: i64 ] -> vec GTensor
+        h : GTensor [ x ]
+        for [ i: i64 0, i < 3, i += 1 ]
+            h = gd.conv2d[ h, pmap[ 'c{i}.w' ], pmap[ 'c{i}.b' ], 1, 1 ]
+            h = gd.leaky[ h, 0.1 ]
+            h = gd.avg_pool2[ h ]
+        h = gd.reshape[ h, vec i64 [] [ nb, 1024 ] ]
+        h = gd.leaky[ gd.linear[ h, pmap[ 'f0.w' ], pmap[ 'f0.b' ] ], 0.1 ]
+        nums : GTensor gd.linear[ h, pmap[ 'f1.w' ], pmap[ 'f1.b' ] ]
+        logit : GTensor gd.linear[ h, pmap[ 'g.w' ], pmap[ 'g.b' ] ]
+        return vec GTensor [] [ nums, logit ]
+
+    # the weights back from what save wrote, in the same order
+    func load [ from: string ] -> bool
+        fp : @FILE [ fopen[ from.chars, 'rb' ] ]
+        if [ !fp ]
+            log 'dock: no weights at {from}: run silver dock'
+            return false
+        for [ t: GTensor ] in ps
+            v : vec f32 [ t.count ]
+            got : u64 [ fread[ @v[ 0 ], 4, t.count, fp ] ]
+            if [ got != u64[ t.count ] ]
+                fclose[ fp ]
+                log 'dock: {from} is short'
+                return false
+            gd.upload[ t, v ]
+        fclose[ fp ]
+        return true
+
+    # one pair (two grey 32 x 32 pictures, the oxygen port's
+    # camera first): the six numbers unscaled, then the chance
+    # it is in range
+    func guess [ grey: vec f32 ] -> vec f64
+        gd.reset_work[]
+        x : GTensor gd.temp[ vec i64 [] [ 1, 2, 32, 32 ] ]
+        gd.upload[ x, grey ]
+        outs : forward[ x, 1 ]
+        nums : vec f32 gd.download[ outs[ 0 ] ]
+        call : vec f32 gd.download[ outs[ 1 ] ]
+        out : vec f64 []
+        for [ k: i64 0, k < 6, k += 1 ]
+            v : f64 [ f64[ nums[ k ] ] * DOCK_SCALE[ k ] + DOCK_MID[ k ] ]
+            out.push[ v ]
+        chance : f64 [ 1.0 / (1.0 + exp[ 0.0 - f64[ call[ 0 ] ] ]) ]
+        out.push[ chance ]
+        return out
+
+    # every weight in order, as raw f32, with their names and
+    # sizes beside them
+    func save [ to: string ]
+        fp : @FILE [ fopen[ to.chars, 'wb' ] ]
+        if [ !fp ] return
+        list : string [ '' ]
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            v : vec f32 gd.download[ ps[ i ] ]
+            fwrite[ @v[ 0 ], 4, v.count, fp ]
+            list = '{list}{names[ i ]} {v.count}\n'
+        fclose[ fp ]
+        lp : path '{to}.txt'
+        lp.save[ list, null ]
+
+# AdamW (betas 0.9 0.999, eps 1e-8, decay 1e-4) on each weight
+class DockOpt
+    public gd   : Grad
+    public ps   : vec GTensor
+    public ms   : vec GTensor
+    public vs   : vec GTensor
+    public step : i64
+
+    func init []
+        ms = vec GTensor []
+        vs = vec GTensor []
+        for [ t: GTensor ] in ps
+            m : GTensor gd.param[ t.dims ]
+            v : GTensor gd.param[ t.dims ]
+            gd.fill[ m, 0.0 ]
+            gd.fill[ v, 0.0 ]
+            ms.push[ m ]
+            vs.push[ v ]
+
+    func clear []
+        for [ t: GTensor ] in ps
+            t.gr = null
+
+    func update [ lr: f32 ]
+        step += 1
+        gd.rn.nofence = true
+        for [ i: i64 0, i < ps.count, i += 1 ]
+            gd.adamw[ ps[ i ], ms[ i ], vs[ i ], lr, 0.9, 0.999,
+                      0.00000001, 0.0001, step ]
+        gd.rn.nofence = false
+        gd.rn.fence_mem[]
+
+element dock : trinity
+    default command : string [ 'train' ]
+    public  steps   : i64 [ 4000 ]
+    public  batch   : i64 [ 32 ]
+    public  lr      : f32 [ 0.001 ]
+    # every fifth pair is held out to measure it
+    intern  disp    : Display
+
+    func init []
+        # a build mid-run must not swap out a training run
+        au_live_set_reload[ 0 ]
+        ok : bool [ false ]
+        if [ command == 'train' ]
+            ok = train[]
+        el
+            log 'dock: train'
+        exit[ (ok) ? 0 : 1 ]
+
+    func gpu [] -> vk_context
+        dev : vk_context []
+        Au.hold[ dev ]
+        disp = Display [ vk: dev, backbuffer: true,
+                         width: 32, height: 32 ]
+        Au.hold[ disp ]
+        return dev
+
+    # one batch's pictures, labels, the offsets' mask (0 off
+    # target) and the flags onto the gpu
+    func batch_of [ net: DockNet, dt: DockData, picks: vec i64 ]
+        -> vec GTensor
+        nb : i64 [ picks.count ]
+        xv : vec f32 [ nb * 2048 ]
+        yv : vec f32 [ nb * 6 ]
+        mv : vec f32 [ nb * 6 ]
+        fv : vec f32 [ nb ]
+        for [ b: i64 0, b < nb, b += 1 ]
+            at : i64 [ picks[ b ] ]
+            memcpy[ @xv[ b * 2048 ], @dt.pics[ at * 2048 ], 2048 * 4 ]
+            memcpy[ @yv[ b * 6 ], @dt.labels[ at * 6 ], 6 * 4 ]
+            on : f32 [ dt.flags[ at ] ]
+            for [ k: i64 0, k < 6, k += 1 ]
+                mv[ b * 6 + k ] = on
+            fv[ b ] = on
+        x : GTensor net.gd.temp[ vec i64 [] [ nb, 2, 32, 32 ] ]
+        y : GTensor net.gd.temp[ vec i64 [] [ nb, 6 ] ]
+        # grad's elementwise ops run on batch x channels x time
+        m : GTensor net.gd.temp[ vec i64 [] [ nb, 6, 1 ] ]
+        f : GTensor net.gd.temp[ vec i64 [] [ nb, 1 ] ]
+        net.gd.upload[ x, xv ]
+        net.gd.upload[ y, yv ]
+        net.gd.upload[ m, mv ]
+        net.gd.upload[ f, fv ]
+        return vec GTensor [] [ x, y, m, f ]
+
+    # the held-out pairs: each number's mean miss over those in
+    # range (unscaled), then the share whose in-range call is right
+    func measure [ net: DockNet, dt: DockData, picks: vec i64 ]
+        -> vec f64
+        miss : vec f64 [ 7 ]
+        n : i64 [ 0 ]
+        right : i64 [ 0 ]
+        at : i64 [ 0 ]
+        while [ at < picks.count ]
+            part : vec i64 []
+            while [ part.count < batch && at < picks.count ]
+                part.push[ picks[ at ] ]
+                at += 1
+            net.gd.reset_work[]
+            xy : batch_of[ net, dt, part ]
+            outs : net.forward[ xy[ 0 ], part.count ]
+            got : vec f32 net.gd.download[ outs[ 0 ] ]
+            call : vec f32 net.gd.download[ outs[ 1 ] ]
+            for [ b: i64 0, b < part.count, b += 1 ]
+                on : bool [ dt.flags[ part[ b ] ] > 0.5 ]
+                if [ (call[ b ] > 0.0) == on ] right += 1
+                if [ !on ] continue
+                for [ k: i64 0, k < 6, k += 1 ]
+                    d : f64 [ f64[ got[ b * 6 + k ] ]
+                              - f64[ dt.labels[ part[ b ] * 6 + k ] ] ]
+                    miss[ k ] = miss[ k ] + abs[ d ] * DOCK_SCALE[ k ]
+                n += 1
+        for [ k: i64 0, k < 6, k += 1 ]
+            miss[ k ] = miss[ k ] / f64[ max[ n, 1 ] ]
+        miss[ 6 ] = f64[ right ] / f64[ max[ picks.count, 1 ] ]
+        return miss
+
+    func train [] -> bool
+        dt : DockData [ dir: '../launch/dock2' ]
+        if [ !dt.load[] ] return false
+        held : vec i64 []
+        fit : vec i64 []
+        for [ i: i64 0, i < dt.count, i += 1 ]
+            if [ i % 5 == 4 ]
+                held.push[ i ]
+            el
+                fit.push[ i ]
+        if [ fit.count <= batch ]
+            log 'dock: too few pairs ({dt.count})'
+            return false
+        net : DockNet [ vk: gpu[] ]
+        rnd : DockRand []
+        net.start[ rnd ]
+        opt : DockOpt [ gd: net.gd, ps: net.ps ]
+        sum : f64 [ 0.0 ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        for [ s: i64 0, s < steps, s += 1 ]
+            mark : i32 [ Au.auto_mark[] ]
+            picks : vec i64 []
+            for [ b: i64 0, b < batch, b += 1 ]
+                at : i64 [ i64[ rnd.next[] * f64[ fit.count ] ]
+                           % fit.count ]
+                pick : i64 [ fit[ at ] ]
+                picks.push[ pick ]
+            net.gd.reset_work[]
+            opt.clear[]
+            net.gd.tape_cut[ 0 ]
+            net.gd.record = true
+            xy : batch_of[ net, dt, picks ]
+            outs : net.forward[ xy[ 0 ], batch ]
+            # the offsets count only in range
+            nums : GTensor net.gd.reshape[ outs[ 0 ],
+                                           vec i64 [] [ batch, 6, 1 ] ]
+            aimed : GTensor net.gd.mul[ nums, xy[ 2 ] ]
+            want : GTensor net.gd.reshape[ xy[ 1 ],
+                                           vec i64 [] [ batch, 6, 1 ] ]
+            place : GTensor net.gd.l1[ aimed, want ]
+            seen : GTensor net.gd.bce[ outs[ 1 ], xy[ 3 ] ]
+            net.gd.backward_all[ vec GTensor [] [ place, seen ],
+                                 vec f32 [] [ 1.0, 1.0 ] ]
+            # cosine down to a tenth over the run
+            fr : f64 [ f64[ s ] / f64[ steps ] ]
+            rate : f32 [ lr * f32[ 0.1 + 0.9 * 0.5
+                                   * (1.0 + cos[ 3.14159265 * fr ]) ] ]
+            opt.update[ rate ]
+            net.gd.record = false
+            net.gd.tape_cut[ 0 ]
+            lv : vec f32 net.gd.download[ place ]
+            gv : vec f32 net.gd.download[ seen ]
+            sum += f64[ lv[ 0 ] ] + f64[ gv[ 0 ] ]
+            Au.auto_free_to[ mark ]
+            if [ (s + 1) % 200 == 0 ]
+                ms : i64 [ Au.epoch_millis[] - t0 ]
+                log 'dock: step {s + 1}: loss {sum / 200.0}, {ms} ms for 200 steps'
+                sum = 0.0
+                t0 = Au.epoch_millis[]
+        seen : measure[ net, dt, fit ]
+        log 'dock: on its own pairs ({fit.count}): in range misses right {seen[ 0 ]} m, up {seen[ 1 ]} m, out {seen[ 2 ]} m, roll {seen[ 3 ]} deg, pitch {seen[ 4 ]} deg, yaw {seen[ 5 ]} deg; in-range call right {seen[ 6 ] * 100.0}%'
+        miss : measure[ net, dt, held ]
+        log 'dock: held out ({held.count}): in range misses right {miss[ 0 ]} m, up {miss[ 1 ]} m, out {miss[ 2 ]} m, roll {miss[ 3 ]} deg, pitch {miss[ 4 ]} deg, yaw {miss[ 5 ]} deg; in-range call right {miss[ 6 ] * 100.0}%'
+        to : string '{path.path_cache[ 'dock' ]}/docknet.f32'
+        net.save[ to ]
+        log 'dock: saved {to}'
+        return true

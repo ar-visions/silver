@@ -181,6 +181,83 @@ func gravity [ r: Dvec ] -> Dvec
                   0.0 - k * r.z * (1.0 + j * (3.0 - 5.0 * zr)) ]
 
 # ---------------------------------------------------------------
+# the Moon: where it is, and its pull
+# ---------------------------------------------------------------
+MOON_GM : f64 [ 4.9028e12 ]
+MOON_R  : f64 [ 1737400.0 ]
+# the simulation's clock starts 2026-10-09 00:00 UTC (Julian
+# date), its inertial x then through Greenwich
+EPOCH_JD : f64 [ 2461322.5 ]
+
+# the Moon's ecliptic longitude, latitude (rad) and distance
+# (m) at a Julian date: the low-precision series of Montenbruck
+# and Gill, Satellite Orbits 3.3.2 (a few arcminutes)
+func moon_ecliptic [ jd: f64 ] -> Dvec
+    tc : f64 [ (jd - 2451545.0) / 36525.0 ]
+    rad : f64 [ 3.14159265358979 / 180.0 ]
+    l0 : f64 [ (218.31617 + 481267.88088 * tc - 1.3972 * tc) * rad ]
+    l : f64 [ (134.96292 + 477198.86753 * tc) * rad ]
+    lp : f64 [ (357.52543 + 35999.04944 * tc) * rad ]
+    f : f64 [ (93.27283 + 483202.01873 * tc) * rad ]
+    d : f64 [ (297.85027 + 445267.11135 * tc) * rad ]
+    sec : f64 [ rad / 3600.0 ]
+    lon : f64 [ l0 + sec * (22640.0 * sin[ l ] + 769.0 * sin[ 2.0 * l ]
+        - 4586.0 * sin[ l - 2.0 * d ] + 2370.0 * sin[ 2.0 * d ]
+        - 668.0 * sin[ lp ] - 412.0 * sin[ 2.0 * f ]
+        - 212.0 * sin[ 2.0 * l - 2.0 * d ]
+        - 206.0 * sin[ l + lp - 2.0 * d ]
+        + 192.0 * sin[ l + 2.0 * d ] - 165.0 * sin[ lp - 2.0 * d ]
+        + 148.0 * sin[ l - lp ] - 125.0 * sin[ d ]
+        - 110.0 * sin[ l + lp ] - 55.0 * sin[ 2.0 * f - 2.0 * d ]) ]
+    arg : f64 [ f + lon - l0 + sec * (412.0 * sin[ 2.0 * f ]
+                                      + 541.0 * sin[ lp ]) ]
+    lat : f64 [ sec * (18520.0 * sin[ arg ] - 526.0 * sin[ f - 2.0 * d ]
+        + 44.0 * sin[ l + f - 2.0 * d ]
+        - 31.0 * sin[ 0.0 - l + f - 2.0 * d ]
+        - 25.0 * sin[ -2.0 * l + f ]
+        - 23.0 * sin[ lp + f - 2.0 * d ]
+        + 21.0 * sin[ 0.0 - l + f ]
+        + 11.0 * sin[ 0.0 - lp + f - 2.0 * d ]) ]
+    km : f64 [ 385000.0 - 20905.0 * cos[ l ] - 3699.0 * cos[ 2.0 * d - l ]
+        - 2956.0 * cos[ 2.0 * d ] - 570.0 * cos[ 2.0 * l ]
+        + 246.0 * cos[ 2.0 * l - 2.0 * d ] - 205.0 * cos[ lp - 2.0 * d ]
+        - 171.0 * cos[ l + 2.0 * d ]
+        - 152.0 * cos[ l + lp - 2.0 * d ] ]
+    return Dvec [ lon, lat, km * 1000.0 ]
+
+# the Moon's centre in the simulation's inertial frame at its
+# time t (s): ecliptic to equator by the obliquity, then turned
+# from the equinox to Greenwich at the epoch (its sidereal time)
+func moon_at [ t: f64 ] -> Dvec
+    jd : f64 [ EPOCH_JD + t / 86400.0 ]
+    e : moon_ecliptic[ jd ]
+    cl : f64 [ cos[ e.y ] ]
+    x : f64 [ e.z * cl * cos[ e.x ] ]
+    y : f64 [ e.z * cl * sin[ e.x ] ]
+    z : f64 [ e.z * sin[ e.y ] ]
+    eps : f64 [ 23.43929111 * 3.14159265358979 / 180.0 ]
+    ye : f64 [ y * cos[ eps ] - z * sin[ eps ] ]
+    ze : f64 [ y * sin[ eps ] + z * cos[ eps ] ]
+    days : f64 [ EPOCH_JD - 2451545.0 ]
+    gmst : f64 [ (280.46061837 + 360.98564736629 * days)
+                 * 3.14159265358979 / 180.0 ]
+    c : f64 [ cos[ gmst ] ]
+    sn : f64 [ sin[ gmst ] ]
+    return Dvec [ c * x + sn * ye, c * ye - sn * x, ze ]
+
+# what pulls on a body at r at time t: the Earth (with J2) and
+# the Moon, less the Moon's pull on the Earth (our frame rides
+# with the Earth's centre)
+func pull [ r: Dvec, t: f64 ] -> Dvec
+    m : moon_at[ t ]
+    d : dv_sub[ m, r ]
+    dd : f64 [ dv_len[ d ] ]
+    mm : f64 [ dv_len[ m ] ]
+    direct : dv_scale[ d, MOON_GM / (dd * dd * dd) ]
+    held : dv_scale[ m, MOON_GM / (mm * mm * mm) ]
+    return dv_add[ gravity[ r ], dv_sub[ direct, held ] ]
+
+# ---------------------------------------------------------------
 # the air: US Standard Atmosphere 1976
 # ---------------------------------------------------------------
 class Air
@@ -494,6 +571,8 @@ class Part
     public low     : f64
     public high     : f64
     public radius : f64
+    # its axis's place across the craft's (y, z; x unused)
+    public off    : Dvec
     # part of the outer skin the air meets, or inside it
     public outer  : bool [ true ]
     # a shaped skin: (x, radius) pairs up the axis; else a tube
@@ -521,6 +600,8 @@ class Tank
     public low       : f64      # bottom of the tank
     public length   : f64
     public radius   : f64
+    # its axis's place across the craft's (y, z)
+    public off      : Dvec
     public density  : f64
     public capacity : f64
     public mass     : f64
@@ -556,6 +637,8 @@ class Fin
     public x      : f64
     public roll   : f64
     public arm    : f64
+    # its booster's axis across the craft's (y, z)
+    public off    : Dvec
     public area   : f64
     public lift   : f64        # normal force slope, per radian
     public limit  : f64
@@ -611,6 +694,20 @@ class Leg
     # the hinge it turns on (body), and its foot as first out
     public hinge   : Dvec
     public foot_out : Dvec
+    # its booster's axis across the craft's (y, z): it turns out
+    # from that axis
+    public axis    : Dvec
+    # a small leg that steers too: its panel's length and width
+    # (m), how far it stands open from the hull (rad), what is
+    # asked, the most it opens in flight, its rate (rad/s)
+    public length   : f64
+    public width    : f64
+    public open     : f64
+    public open_cmd : f64
+    public open_max : f64 [ 1.22 ]
+    public open_rate : f64 [ 0.5 ]
+    # kept flat on its face for good: it never swings out
+    public folded   : bool
 
 # the state RK4 steps: centre of mass place and speed (inertial),
 # attitude body to inertial, body rates, propellant by tank
@@ -690,6 +787,9 @@ class Craft
     public fins    : vec Fin
     public jets    : vec Jet
     public legs    : vec Leg
+    # the small legs that open in the air to steer (and stand
+    # beside the legs at touchdown)
+    public flaps  : vec Leg
     public state   : State
     public length  : f64
     public radius  : f64
@@ -726,6 +826,10 @@ class Craft
     intern shape_x : vec f64
     intern shape_r : vec f64
     intern shape_parts : i32 [ -1 ]
+    # one outline per body side by side: where each starts in
+    # the stations (and the end), and its axis across ours
+    intern body_start : vec i32
+    intern body_off : vec Dvec
     # the hull's contact points, made when first near a deck
     intern hull_points : vec Dvec
     # the last step's air, Mach, dynamic pressure, angle of attack
@@ -735,9 +839,19 @@ class Craft
     public alpha   : f64
     public accel   : Dvec      # specific force, body, m/s2
     public spin_rate : Dvec    # body angular acceleration
+    # the air's push against the motion through it (N)
+    public drag    : f64
+    # its two docking ports on a flat face, oxygen fore and fuel
+    # aft: the point midway between them, the way they face, in
+    # the body, and the distance between their centres (m)
+    public port_at  : Dvec
+    public port_dir : Dvec
+    public port_span : f64
     public landed  : bool
     # the hull's first strike on the deck: when, closing m/s
     public hull_t  : f64 [ -1.0 ]
+    # the engine skirt's foot, the lowest hull point (m)
+    public skirt   : f64 [ -1.4 ]
     public hull_v  : f64
     # the legs' collar: one slider ring all six struts ride, so
     # every foot rises with any foot. no spring: rigid (its
@@ -758,6 +872,7 @@ class Craft
         fins = vec Fin []
         jets = vec Jet []
         legs = vec Leg []
+        flaps = vec Leg []
         inertia = vec f64 [ 9 ]
         slosh_mass = vec f64 []
         slosh_x = vec f64 []
@@ -820,21 +935,30 @@ class Craft
         c : f64 [ mx / m ]
         roll : f64 [ 0.0 ]
         side : f64 [ 0.0 ]
+        # off the axis: the y and z turns take the other's square
+        side_y : f64 [ 0.0 ]
+        side_z : f64 [ 0.0 ]
         for [ p: Part ] in parts
             len : f64 [ p.high - p.low ]
             d : f64 [ (p.low + p.high) * 0.5 - c ]
-            roll += p.mass * p.radius * p.radius
+            roll += p.mass * (p.radius * p.radius + p.off.y * p.off.y
+                              + p.off.z * p.off.z)
             side += p.mass * (p.radius * p.radius * 0.5
                     + len * len / 12.0 + d * d)
+            side_y += p.mass * p.off.z * p.off.z
+            side_z += p.mass * p.off.y * p.off.y
         for [ i: i32 0, i < tanks.count, i += 1 ]
             t : tanks[ i ]
             lm : f64 [ prop[ i ] - slosh_mass[ i ] ]
             level : f64 [ prop[ i ] / (t.density * 3.14159265358979
                           * t.radius * t.radius) ]
             d : f64 [ t.low + level * 0.5 - c ]
-            roll += lm * t.radius * t.radius * 0.5
+            roll += lm * (t.radius * t.radius * 0.5 + t.off.y * t.off.y
+                          + t.off.z * t.off.z)
             side += lm * (t.radius * t.radius * 0.25
                     + level * level / 12.0 + d * d)
+            side_y += lm * t.off.z * t.off.z
+            side_z += lm * t.off.y * t.off.y
         rigid = m
         mass = m + 0.0
         for [ i: i32 0, i < tanks.count, i += 1 ]
@@ -842,8 +966,8 @@ class Craft
         cg = c
         for [ i: i32 0, i < 9, i += 1 ] inertia[ i ] = 0.0
         inertia[ 0 ] = roll
-        inertia[ 4 ] = side
-        inertia[ 8 ] = side
+        inertia[ 4 ] = side + side_y
+        inertia[ 8 ] = side + side_z
 
     # Earth's angle now, and the craft's ECEF and geodetic place
     public func ecef [ r: Dvec, t: f64 ] -> Dvec
@@ -859,22 +983,37 @@ class Craft
         shape_parts = parts.count
         shape_x = vec f64 []
         shape_r = vec f64 []
-        lo : f64 [ 1e30 ]
-        hi : f64 [ -1e30 ]
+        body_start = vec i32 []
+        body_off = vec Dvec []
         for [ p: Part ] in parts
             if [ !p.outer ] continue
-            if [ p.low < lo ] lo = p.low
-            if [ p.high > hi ] hi = p.high
-        if [ hi <= lo ] return
-        n : i32 [ i32[ (hi - lo) / 0.25 ] + 1 ]
-        for [ i: i32 0, i <= n, i += 1 ]
-            x : f64 [ lo + (hi - lo) * f64[ i ] / f64[ n ] ]
-            r : f64 [ 0.0 ]
+            known : bool [ false ]
+            for [ k: i32 0, k < body_off.count, k += 1 ]
+                if [ dv_len[ dv_sub[ body_off[ k ], p.off ] ] < 0.01 ]
+                    known = true
+            if [ !known ] body_off.push[ p.off ]
+        for [ k: i32 0, k < body_off.count, k += 1 ]
+            o : body_off[ k ]
+            body_start.push[ shape_x.count ]
+            lo : f64 [ 1e30 ]
+            hi : f64 [ -1e30 ]
             for [ p: Part ] in parts
-                sk : f64 [ p.skin[ x ] ]
-                if [ sk > r ] r = sk
-            shape_x.push[ x ]
-            shape_r.push[ r ]
+                if [ !p.outer || dv_len[ dv_sub[ o, p.off ] ] >= 0.01 ]
+                    continue
+                if [ p.low < lo ] lo = p.low
+                if [ p.high > hi ] hi = p.high
+            if [ hi <= lo ] continue
+            n : i32 [ i32[ (hi - lo) / 0.25 ] + 1 ]
+            for [ i: i32 0, i <= n, i += 1 ]
+                x : f64 [ lo + (hi - lo) * f64[ i ] / f64[ n ] ]
+                r : f64 [ 0.0 ]
+                for [ p: Part ] in parts
+                    if [ dv_len[ dv_sub[ o, p.off ] ] >= 0.01 ] continue
+                    sk : f64 [ p.skin[ x ] ]
+                    if [ sk > r ] r = sk
+                shape_x.push[ x ]
+                shape_r.push[ r ]
+        body_start.push[ shape_x.count ]
 
     # the stagnation pressure coefficient: isentropic below
     # Mach 1, behind a normal shock above (Rayleigh pitot)
@@ -943,10 +1082,12 @@ class Craft
     # the air's load on the shape: force in the body and its
     # moment about the centre of mass; vb is the body's motion
     # through the air, in the body
-    public func body_aero [ vb: Dvec, ar: Air, burning: bool ] -> Aero
+    # one body's air: its outline's stations a until b, and an
+    # axial load from the fins and legs
+    func body_part [ vb: Dvec, ar: Air, burning: bool,
+                     start: i32, stop: i32, extra: f64 ] -> Aero
         out : Aero [ force: dv_zero[], torque: dv_zero[] ]
-        shape[]
-        n : i32 [ shape_x.count ]
+        n : i32 [ stop - start ]
         speed : f64 [ dv_len[ vb ] ]
         if [ n < 2 || speed < 0.5 ] return out
         q : f64 [ 0.5 * ar.density * speed * speed ]
@@ -965,10 +1106,10 @@ class Craft
         dirn : Dvec [ 0.0, 0.0, 0.0 ]
         if [ cs > 1e-9 ]
             dirn = Dvec [ 0.0, 0.0 - vb.y / cs, 0.0 - vb.z / cs ]
-        span : f64 [ shape_x[ n - 1 ] - shape_x[ 0 ] ]
+        span : f64 [ shape_x[ start + n - 1 ] - shape_x[ start + 0 ] ]
         rmax : f64 [ 0.0 ]
-        for [ r: f64 ] in shape_r
-            if [ r > rmax ] rmax = r
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ shape_r[ start + i ] > rmax ] rmax = shape_r[ start + i ]
         fine : f64 [ span / (2.0 * rmax) ]
         eta : f64 [ (m * sa > 1.0) ? 1.0 : cross_factor[ fine ] ]
         cdc : f64 [ cross_drag[ m * sa ] ]
@@ -982,17 +1123,18 @@ class Craft
         ka : f64 [ section_area[] ]
         kr : f64 [ section_rim[] ]
         for [ i: i32 0, i < n - 1, i += 1 ]
-            xa : f64 [ shape_x[ i ] ]
-            xb : f64 [ shape_x[ i + 1 ] ]
-            ra : f64 [ shape_r[ i ] ]
-            rb : f64 [ shape_r[ i + 1 ] ]
+            xa : f64 [ shape_x[ start + i ] ]
+            xb : f64 [ shape_x[ start + i + 1 ] ]
+            ra : f64 [ shape_r[ start + i ] ]
+            rb : f64 [ shape_r[ start + i + 1 ] ]
             dx : f64 [ xb - xa ]
             mid : f64 [ (xa + xb) * 0.5 ]
             # slender body: the area that grows away from the lead
             grow : f64 [ ((nose_first) ? pi * (ra * ra - rb * rb)
                          : pi * (rb * rb - ra * ra)) * ka ]
-            # behind a narrowing the flow separates (half: estimate)
-            if [ grow < 0.0 ] grow = grow * 0.5
+            # behind a narrowing the flow separates (half: estimate);
+            # trailing a fall engines first, deep in the wake: none
+            if [ grow < 0.0 ] grow = grow * ((nose_first) ? 0.5 : 0.0)
             dn : f64 [ q * pot * grow
                        + q * eta * cdc * sa * sa * (ra + rb) * kr * dx ]
             normal += dn
@@ -1006,8 +1148,8 @@ class Craft
                 ring : f64 [ pi * abs[ ra * ra - rb * rb ] * ka ]
                 axial += face_cp[ m, delta ] * q * ring
         # the leading end's own face, and the base behind it all
-        lead_r : f64 [ (nose_first) ? shape_r[ n - 1 ] : shape_r[ 0 ] ]
-        tail_r : f64 [ (nose_first) ? shape_r[ 0 ] : shape_r[ n - 1 ] ]
+        lead_r : f64 [ (nose_first) ? shape_r[ start + n - 1 ] : shape_r[ start + 0 ] ]
+        tail_r : f64 [ (nose_first) ? shape_r[ start + 0 ] : shape_r[ start + n - 1 ] ]
         face : f64 [ pi * lead_r * lead_r * ka ]
         # a burn out of the leading end shields its face (estimate)
         if [ !(burning && !nose_first) ]
@@ -1017,14 +1159,7 @@ class Craft
             axial -= base_cp[ m ] * q * pi * tail_r * tail_r * ka
         axial += friction[ ar.density, speed, ar.temperature, span, m ]
                  * q * wet
-        # open grid fins and deployed legs drag too (estimates)
-        for [ f: Fin ] in fins
-            if [ !f.open ] continue
-            cf : f64 [ (m < 0.8) ? 0.6 : ((m < 1.2) ? 0.6 + (m - 0.8)
-                       / 0.4 * 0.8 : 1.4 * 1.2 / m) ]
-            axial += cf * q * f.area
-        for [ g: Leg ] in legs
-            if [ g.out ] axial += 1.2 * q * 0.8
+        axial += extra
         # the axial load works against the motion along the axis
         ca2 : f64 [ abs[ cosa ] ]
         fx : f64 [ ((nose_first) ? -1.0 : 1.0) * axial * ca2 ]
@@ -1048,12 +1183,12 @@ class Craft
         side : f64 [ 0.0 ]
         arm : f64 [ 0.0 ]
         for [ i: i32 0, i < n - 1, i += 1 ]
-            dx : f64 [ shape_x[ i + 1 ] - shape_x[ i ] ]
-            wide : f64 [ (shape_r[ i ] + shape_r[ i + 1 ]) * kr * dx ]
+            dx : f64 [ shape_x[ start + i + 1 ] - shape_x[ start + i ] ]
+            wide : f64 [ (shape_r[ start + i ] + shape_r[ start + i + 1 ]) * kr * dx ]
             side += wide
-            arm += wide * ((shape_x[ i ] + shape_x[ i + 1 ]) * 0.5 - cg)
+            arm += wide * ((shape_x[ start + i ] + shape_x[ start + i + 1 ]) * 0.5 - cg)
         end_a : f64 [ pi * rmax * rmax * ka ]
-        lead_x : f64 [ (nose_first) ? shape_x[ n - 1 ] : shape_x[ 0 ] ]
+        lead_x : f64 [ (nose_first) ? shape_x[ start + n - 1 ] : shape_x[ start + 0 ] ]
         pull : f64 [ FREE_CD * q * (ca2 * end_a + sa * side) ]
         back : dv_scale[ vb, -1.0 / speed ]
         turn : f64 [ FREE_CD * q * (sa * arm
@@ -1065,6 +1200,38 @@ class Craft
                              dv_scale[ thin_t, turn * thin ] ]
         out.axial = axial * (1.0 - thin) + pull * ca2 * thin
         out.normal = normal * (1.0 - thin) + pull * sa * thin
+        return out
+
+    public func body_aero [ vb: Dvec, ar: Air, burning: bool ] -> Aero
+        out : Aero [ force: dv_zero[], torque: dv_zero[] ]
+        shape[]
+        speed : f64 [ dv_len[ vb ] ]
+        if [ body_off.count == 0 || speed < 0.5 ] return out
+        q : f64 [ 0.5 * ar.density * speed * speed ]
+        m : f64 [ (ar.sound > 1.0) ? speed / ar.sound : 0.0 ]
+        # open grid fins and deployed legs drag too (estimates)
+        extra : f64 [ 0.0 ]
+        for [ f: Fin ] in fins
+            if [ !f.open ] continue
+            cf : f64 [ (m < 0.8) ? 0.6 : ((m < 1.2) ? 0.6 + (m - 0.8)
+                       / 0.4 * 0.8 : 1.4 * 1.2 / m) ]
+            extra += cf * q * f.area
+        for [ g: Leg ] in legs
+            if [ g.out && !g.folded ] extra += 1.2 * q * 0.8
+        # each body alone, side by side (no interference: estimate)
+        for [ k: i32 0, k < body_off.count, k += 1 ]
+            o : body_off[ k ]
+            add : f64 [ (k == 0) ? extra : 0.0 ]
+            ld : body_part[ vb, ar, burning, body_start[ k ],
+                            body_start[ k + 1 ], add ]
+            out.force = dv_add[ out.force, ld.force ]
+            arm : Dvec [ 0.0, o.y, o.z ]
+            out.torque = dv_add[ out.torque,
+                                 dv_add[ ld.torque,
+                                         dv_cross[ arm, ld.force ] ] ]
+            out.axial = out.axial + ld.axial
+            out.normal = out.normal + ld.normal
+            if [ k == 0 ] out.alpha = ld.alpha
         return out
 
     # the axial force coefficient flying straight, on the end's
@@ -1080,6 +1247,51 @@ class Craft
         return ld.axial / (q * 3.14159265358979 * radius * radius)
 
     # every force and moment now: the derivative of the state
+    # what a small leg open by ang (rad) puts on the craft, with
+    # the body moving at vb (body frame, m/s) through air of
+    # dynamic pressure q and Mach m: its force (body) and torque
+    # about the centre of mass. Hinged at its foot end, its top
+    # swings out; the air presses the face it meets: a flat
+    # plate's normal force (1.2 sin) below Mach 0.8, modified
+    # Newtonian (1.84 sin^2) over 1.2, between them blended
+    # (estimates)
+    # the skin's widest radius (m): its end-on face is that
+    public func widest [] -> f64
+        rmax : f64 [ 0.0 ]
+        for [ r: f64 ] in shape_r
+            if [ r > rmax ] rmax = r
+        return rmax
+
+    public func flap_push [ g: Leg, ang: f64, vb: Dvec, q: f64,
+                            m: f64 ] -> vec Dvec
+        zero : Dvec [ 0.0, 0.0, 0.0 ]
+        rl : f64 [ sqrt[ g.hinge.y * g.hinge.y + g.hinge.z * g.hinge.z ] ]
+        if [ rl < 1e-6 ] return vec Dvec [] [ zero, zero ]
+        ry : f64 [ g.hinge.y / rl ]
+        rz : f64 [ g.hinge.z / rl ]
+        c : f64 [ cos[ ang ] ]
+        sn : f64 [ sin[ ang ] ]
+        # along the panel from the hinge, and its outer face's way
+        d : Dvec [ c, ry * sn, rz * sn ]
+        n : Dvec [ 0.0 - sn, ry * c, rz * c ]
+        sp : f64 [ dv_len[ vb ] ]
+        if [ sp < 0.5 ] return vec Dvec [] [ zero, zero ]
+        # the air meets the outer face (falling engines first) or
+        # the inner one (nose first); it presses on that face
+        hit : f64 [ dv_dot[ vb, n ] / sp ]
+        side : f64 [ (hit > 0.0) ? 1.0 : -1.0 ]
+        hit = abs[ hit ]
+        if [ hit < 1e-6 ] return vec Dvec [] [ zero, zero ]
+        low : f64 [ 1.2 * hit ]
+        high : f64 [ 1.84 * hit * hit ]
+        blend_w : f64 [ min[ max[ (m - 0.8) / 0.4, 0.0 ], 1.0 ] ]
+        cn : f64 [ low + (high - low) * blend_w ]
+        press : f64 [ cn * q * g.length * g.width ]
+        f : dv_scale[ n, 0.0 - press * side ]
+        mid : dv_add[ g.hinge, dv_scale[ d, g.length * 0.5 ] ]
+        arm : Dvec [ mid.x - cg, mid.y, mid.z ]
+        return vec Dvec [] [ f, dv_cross[ arm, f ] ]
+
     func derive [ s: State, t: f64, dt: f64, dr: State,
                   first: bool ]
         mass_properties[ s.prop ]
@@ -1111,6 +1323,7 @@ class Craft
         cgv : Dvec [ cg, 0.0, 0.0 ]
         area : f64 [ 3.14159265358979 * radius * radius ]
         aoa : f64 [ 0.0 ]
+        against : f64 [ 0.0 ]
         burning : bool [ false ]
         for [ e: Engine ] in engines
             if [ e.lit ] burning = true
@@ -1118,6 +1331,7 @@ class Craft
             # the air on the shape, section by section
             ld : body_aero[ vb, ar, burning ]
             aoa = ld.alpha
+            against = 0.0 - dv_dot[ ld.force, vb ] / speed
             force = dv_add[ force, ld.force ]
             torque = dv_add[ torque, ld.torque ]
             # grid fins: a lifting plate each, normal to its span
@@ -1131,10 +1345,16 @@ class Craft
                               : f.lift * 0.8 / m_no + 0.4 ]
                 nfin : f64 [ 0.0 - slope * incid * q_dyn * f.area ]
                 ff : dv_scale[ nrm, nfin ]
-                fat : Dvec [ f.x - cg, f.arm * cos[ f.roll ],
-                             f.arm * sin[ f.roll ] ]
+                fat : Dvec [ f.x - cg, f.off.y + f.arm * cos[ f.roll ],
+                             f.off.z + f.arm * sin[ f.roll ] ]
                 force = dv_add[ force, ff ]
                 torque = dv_add[ torque, dv_cross[ fat, ff ] ]
+            # the small legs: each open one a plate in the air
+            for [ g: Leg ] in flaps
+                if [ g.open < 0.002 ] continue
+                fl : flap_push[ g, g.open, vb, q_dyn, m_no ]
+                force = dv_add[ force, fl[ 0 ] ]
+                torque = dv_add[ torque, fl[ 1 ] ]
         # the engines: thrust falls with the outside pressure
         flow : vec f64 [ tanks.count ]
         for [ e: Engine ] in engines
@@ -1234,7 +1454,8 @@ class Craft
             sz : f64 [ s.slosh[ i * 4 + 1 ] ]
             uy : f64 [ s.slosh[ i * 4 + 2 ] ]
             uz : f64 [ s.slosh[ i * 4 + 3 ] ]
-            at : Dvec [ slosh_x[ i ] - cg, sy, sz ]
+            to : tanks[ i ].off
+            at : Dvec [ slosh_x[ i ] - cg, sy + to.y, sz + to.z ]
             # what the mass puts on the tank: its axial load and
             # the spring's pull, at where the mass is now
             on_tank : Dvec [ 0.0 - m1 * f_axial, k * sy + c * uy,
@@ -1244,7 +1465,7 @@ class Craft
         # into the inertial frame, with gravity
         fworld : q_rotate[ s.q, force ]
         lin : dv_add[ dv_scale[ fworld, 1.0 / rigid ],
-                     gravity[ s.r ] ]
+                     pull[ s.r, t ] ]
         # Euler's equations, the inertia diagonal in the body
         ix : f64 [ inertia[ 0 ] ]
         iy : f64 [ inertia[ 4 ] ]
@@ -1277,7 +1498,8 @@ class Craft
                 dr.slosh[ i * 4 + 2 ] = 0.0
                 dr.slosh[ i * 4 + 3 ] = 0.0
                 continue
-            at : Dvec [ slosh_x[ i ] - cg, sy, sz ]
+            tw : tanks[ i ].off
+            at : Dvec [ slosh_x[ i ] - cg, sy + tw.y, sz + tw.z ]
             wall : dv_add[ f_body, dv_add[ dv_cross[ wd, at ],
                            dv_cross[ s.w, dv_cross[ s.w, at ] ] ] ]
             zeta : f64 [ 2.0 * slosh_damp * om ]
@@ -1292,6 +1514,7 @@ class Craft
             alpha = aoa
             accel = dv_scale[ force, 1.0 / rigid ]
             spin_rate = wd
+            drag = against
             landed = on_deck
 
     # a body point (from the centre of mass) against the deck
@@ -1376,7 +1599,7 @@ class Craft
 
     # a leg that can stand on the deck
     func leg_ready [ g: Leg ] -> bool
-        return g.out && g.frac >= 1.0 && !g.broken
+        return g.out && g.frac >= 1.0 && !g.broken && !g.folded
 
     # how far the collar rises: where the feet's pushes and its
     # hold balance (the struts massless)
@@ -1405,16 +1628,17 @@ class Craft
     # a leg's foot turned flatter by turn (rad) about its
     # hinge, in the plane through the axis
     func foot_turned [ g: Leg, turn: f64 ] -> Dvec
-        f : g.foot_out
-        h : g.hinge
+        ax : g.axis
+        f : Dvec [ g.foot_out.x, g.foot_out.y - ax.y, g.foot_out.z - ax.z ]
+        h : Dvec [ g.hinge.x, g.hinge.y - ax.y, g.hinge.z - ax.z ]
         r : f64 [ sqrt[ f.y * f.y + f.z * f.z ] ]
         rh : f64 [ sqrt[ h.y * h.y + h.z * h.z ] ]
-        if [ r < 1e-6 ] return f
+        if [ r < 1e-6 ] return g.foot_out
         dr : f64 [ r - rh ]
         dx : f64 [ f.x - h.x ]
         nr : f64 [ rh + dr * cos[ turn ] - dx * sin[ turn ] ]
         nx : f64 [ h.x + dr * sin[ turn ] + dx * cos[ turn ] ]
-        return Dvec [ nx, f.y * nr / r, f.z * nr / r ]
+        return Dvec [ nx, ax.y + f.y * nr / r, ax.z + f.z * nr / r ]
 
     # the collar's rise as its legs' turn, and the feet moved
     func collar_place []
@@ -1483,7 +1707,7 @@ class Craft
     func hull_points_of [] -> vec Dvec
         out : vec Dvec []
         pi : f64 [ 3.14159265358979 ]
-        for [ x: f64 -1.4, x < length, x += 8.0 ]
+        for [ x: f64 skirt, x < length, x += 8.0 ]
             r : f64 [ (x < 0.0) ? radius * 0.9 : radius ]
             if [ sides < 3 ]
                 for [ k: i32 0, k < 8, k += 1 ]
@@ -1610,7 +1834,7 @@ class Craft
         if [ hull_t >= 0.0 ] return
         # the legs swing out or in over a second (an estimate)
         for [ g: Leg ] in legs
-            goal : f64 [ (g.out) ? 1.0 : 0.0 ]
+            goal : f64 [ (g.out && !g.folded) ? 1.0 : 0.0 ]
             if [ g.frac < goal ] g.frac = min[ goal, g.frac + h ]
             if [ g.frac > goal ] g.frac = max[ goal, g.frac - h ]
         # the grid fins swing out in a second (an estimate)
@@ -1688,6 +1912,9 @@ class Craft
             e.yaw = slew_to[ e.yaw, e.yaw_cmd, e.slew * h ]
         for [ f: Fin ] in fins
             f.deflect = slew_to[ f.deflect, f.deflect_cmd, f.slew * h ]
+        for [ g: Leg ] in flaps
+            want : f64 [ min[ max[ g.open_cmd, 0.0 ], g.open_max ] ]
+            g.open = slew_to[ g.open, want, g.open_rate * h ]
         mass_properties[ state.prop ]
         settle_contacts[]
 
@@ -1708,6 +1935,53 @@ class Craft
     public func body_point [ p: Dvec ] -> Dvec
         return dv_add[ state.r, q_rotate[ state.q,
                        dv_sub[ p, Dvec [ cg, 0.0, 0.0 ] ] ] ]
+
+    # everything nearer an axis across the craft (y, z) than
+    # its own takes group grp: a booster beside it, to detach.
+    # The joints stay with the middle one
+    public func mark_side [ at: Dvec, grp: string ]
+        for [ p: Part ] in parts
+            if [ p.name != 'joint' && nearer[ p.off.y, p.off.z, at ] ]
+                p.group = grp
+        for [ t: Tank ] in tanks
+            if [ nearer[ t.off.y, t.off.z, at ] ] t.group = grp
+        for [ e: Engine ] in engines
+            if [ nearer[ e.at.y, e.at.z, at ] ] e.group = grp
+        for [ f: Fin ] in fins
+            if [ nearer[ f.off.y, f.off.z, at ] ] f.group = grp
+        for [ j: Jet ] in jets
+            if [ nearer[ j.at.y, j.at.z, at ] ] j.group = grp
+        for [ g: Leg ] in legs
+            if [ nearer[ g.axis.y, g.axis.z, at ] ] g.group = grp
+
+    func nearer [ y: f64, z: f64, at: Dvec ] -> bool
+        dy : f64 [ y - at.y ]
+        dz : f64 [ z - at.z ]
+        return dy * dy + dz * dz < y * y + z * z
+
+    # a craft whose axis sits at `at` across its frame: moved so
+    # its own axis is the frame's, the same place in space
+    public func recentre [ at: Dvec ]
+        for [ p: Part ] in parts
+            p.off = Dvec [ 0.0, p.off.y - at.y, p.off.z - at.z ]
+        for [ t: Tank ] in tanks
+            t.off = Dvec [ 0.0, t.off.y - at.y, t.off.z - at.z ]
+        for [ e: Engine ] in engines
+            e.at = Dvec [ e.at.x, e.at.y - at.y, e.at.z - at.z ]
+        for [ f: Fin ] in fins
+            f.off = Dvec [ 0.0, f.off.y - at.y, f.off.z - at.z ]
+        for [ j: Jet ] in jets
+            j.at = Dvec [ j.at.x, j.at.y - at.y, j.at.z - at.z ]
+        for [ g: Leg ] in legs
+            g.hinge = Dvec [ g.hinge.x, g.hinge.y - at.y, g.hinge.z - at.z ]
+            g.foot = Dvec [ g.foot.x, g.foot.y - at.y, g.foot.z - at.z ]
+            g.foot_out = Dvec [ g.foot_out.x, g.foot_out.y - at.y,
+                                g.foot_out.z - at.z ]
+            g.axis = Dvec [ 0.0, g.axis.y - at.y, g.axis.z - at.z ]
+        shape_parts = -1
+        state.r = dv_add[ state.r, q_rotate[ state.q,
+                          Dvec [ 0.0, at.y, at.z ] ] ]
+        mass_properties[ state.prop ]
 
     # parts of a group leave as their own craft, same motion
     public func separate [ group: string ] -> Craft
@@ -1781,12 +2055,22 @@ class Craft
             el
                 kl.push[ g ]
         legs = kl
+        kg : vec Leg []
+        for [ g: Leg ] in flaps
+            if [ in_groups[ groups, g.group ] ]
+                out.flaps.push[ g ]
+            el
+                kg.push[ g ]
+        flaps = kg
         # each keeps the moving point where its own centre is
         old_cg : f64 [ cg ]
         rr : state.r
         out.state = State [ r: rr, v: state.v, q: state.q, w: state.w,
                             prop: op, slosh: os ]
         out.accel = accel
+        out.port_at = port_at
+        out.port_dir = port_dir
+        out.port_span = port_span
         state.prop = kp
         state.slosh = ks
         mass_properties[ state.prop ]
@@ -1805,34 +2089,88 @@ class Craft
         return out
 
 # ---------------------------------------------------------------
-# Falcon 9 Block 5 from public figures (SpaceX, Wikipedia)
+# Falcon 9 Block 5 from public figures (SpaceX, Wikipedia),
+# then made 100 m tall and 6 m wide
 # ---------------------------------------------------------------
 # Lugh, our own engine: 9/7 of a Merlin 1D (845 kN at sea
 # level, 914 kN in vacuum, Isp 311 s in vacuum: SpaceX), so
 # seven give the nine's thrust: 1,086 kN at sea level, 1,175 kN
 # in vacuum, the same Isp, 9/7 the exit (0.88 m2, 1.06 m
-# across). The vacuum Lugh keeps the MVac's 981 kN and Isp
-# 348 s. Throttle to 40 percent.
+# across). The vacuum Lugh keeps the MVac's 981 kN. Our Lugh
+# runs at Raptor's pressure and better: Isp 380 s in vacuum
+# (352 at sea level), the vacuum Lugh 380 s too (Raptor's
+# vacuum figure). Throttle to 40 percent.
 func lugh [ name: string, group: string, at: Dvec,
             vac: bool ] -> Engine
     thrust : f64 [ (vac) ? 981000.0 : 914000.0 * 9.0 / 7.0 ]
-    isp : f64 [ (vac) ? 348.0 : 311.0 ]
+    isp : f64 [ 380.0 ]
     flow : f64 [ thrust / (isp * GRAVITY_STD) ]
     area : f64 [ (vac) ? 0.0 : (914000.0 - 845000.0) * 9.0 / 7.0
                  / 101325.0 ]
-    ox : string [ (vac) ? 'lox two' : 'lox one' ]
-    fu : string [ (vac) ? 'rp1 two' : 'rp1 one' ]
+    # each draws its own stage's tanks
+    ox : 'lox {group}'
+    fu : 'rp1 {group}'
     # gimbal range: an estimate, none is published
     return Engine [ name: name, group: group, at: at,
                     thrust_vac: thrust, flow: flow, exit_area: area,
                     throttle_min: 0.4, gimbal_max: 0.087,
                     oxidiser: ox, fuel: fu, mixture: 2.36 ]
 
+# our ship: Falcon 9 made 100 m tall and 6 m across its faces
+SHIP_LONG : f64 [ 100.0 / 70.1 ]
+SHIP_WIDE : f64 [ 3.0 / 1.83 ]
 # the feet on the axis, m: 2 m under the engines (photos)
-LEG_FOOT_X : f64 [ -3.4 ]
+LEG_FOOT_X : f64 [ -3.4 * SHIP_LONG ]
 # a leg's hinge: up the axis and out from it (m)
-LEG_PIVOT_X : f64 [ 0.2 ]
-LEG_PIVOT_R : f64 [ 1.91 ]
+LEG_PIVOT_X : f64 [ 0.2 * SHIP_LONG ]
+LEG_PIVOT_R : f64 [ 1.91 * SHIP_WIDE ]
+
+# one of a craft's two docking ports, in the body: 0 the fore
+# (oxygen), 1 the aft (fuel)
+func port_of [ c: Craft, which: i32 ] -> Dvec
+    half : f64 [ (which == 0) ? c.port_span * 0.5 : c.port_span * -0.5 ]
+    return Dvec [ c.port_at.x + half, c.port_at.y, c.port_at.z ]
+
+# a ship built at Falcon 9's size stretched kl along its axis
+# and kr across: its volume, masses, propellant and thrust by
+# kl kr2 (seven larger engines, the same thrust to weight),
+# nozzles by kr2, jets by what they turn (pitch: mass times
+# length; roll: mass times radius)
+func scale_ship [ c: Craft, kl: f64, kr: f64 ]
+    kv : f64 [ kl * kr * kr ]
+    c.radius = c.radius * kr
+    c.skirt = c.skirt * kl
+    for [ p: Part ] in c.parts
+        p.mass = p.mass * kv
+        p.low = p.low * kl
+        p.high = p.high * kl
+        p.radius = p.radius * kr
+        if [ p.profile ]
+            for [ i: i32 0, i < p.profile.count, i += 1 ]
+                at : f64 [ ((i & 1) == 0) ? kl : kr ]
+                p.profile[ i ] = p.profile[ i ] * at
+    for [ t: Tank ] in c.tanks
+        t.low = t.low * kl
+        t.length = t.length * kl
+        t.radius = t.radius * kr
+        t.capacity = t.capacity * kv
+        t.mass = t.mass * kv
+    for [ e: Engine ] in c.engines
+        e.at = Dvec [ e.at.x * kl, e.at.y * kr, e.at.z * kr ]
+        e.thrust_vac = e.thrust_vac * kv
+        e.flow = e.flow * kv
+        e.exit_area = e.exit_area * kr * kr
+    for [ f: Fin ] in c.fins
+        f.x = f.x * kl
+        f.arm = f.arm * kr
+        f.area = f.area * kl * kr
+    for [ j: Jet ] in c.jets
+        j.at = Dvec [ j.at.x * kl, j.at.y * kr, j.at.z * kr ]
+        j.thrust = j.thrust * kv * ((j.name == 'roll') ? kr : kl)
+    # the collar: stiffness by load over travel
+    c.collar_stiff = c.collar_stiff * kv / kl
+    c.collar_relief = c.collar_relief * kv
+    c.collar_travel = c.collar_travel * kl
 
 # kerosene and LOX exhaust's heat ratio: an estimate
 PLUME_GAMMA : f64 [ 1.22 ]
@@ -1936,15 +2274,17 @@ func falcon_nine [ payload: f64 ] -> Craft
     c.parts.push[ Part [ name: 'engines', group: 'one',
                          mass: 4230.0, low: -1.2, high: 2.0,
                          radius: 1.2, outer: false ] ]
+    # stage one ends at 38.6 m: the band over it is the upper
+    # ship's skirt
     c.parts.push[ Part [ name: 'stage one', group: 'one',
-                         mass: 25600.0 - 4230.0, low: 0.0, high: 41.2,
+                         mass: 25600.0 - 4230.0, low: 0.0, high: 38.6,
                          radius: tube ] ]
-    c.tanks.push[ Tank [ name: 'rp1 one', group: 'one', low: 3.0,
+    c.tanks.push[ Tank [ name: 'rp1 one', group: 'one', low: 2.0,
                          length: rp_len, radius: inner,
                          density: 830.0, capacity: rp_one,
                          mass: rp_one ] ]
     c.tanks.push[ Tank [ name: 'lox one', group: 'one',
-                         low: 3.5 + rp_len, length: lox_len,
+                         low: 2.4 + rp_len, length: lox_len,
                          radius: inner, density: 1240.0,
                          capacity: lox_one, mass: lox_one ] ]
     # six round a ring of 1.25 m every 60 deg, one in the middle
@@ -1958,7 +2298,7 @@ func falcon_nine [ payload: f64 ] -> Craft
     # four fins' area shared among them (size estimates)
     for [ i: i32 0, i < 6, i += 1 ]
         roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
-        c.fins.push[ Fin [ name: 'fin', group: 'one', x: 39.5,
+        c.fins.push[ Fin [ name: 'fin', group: 'one', x: 37.0,
                            roll: roll, arm: 2.6, area: 1.2,
                            lift: 2.0, limit: 0.35 ] ]
     # nitrogen cold gas at the top (thrust an estimate): four
@@ -1967,18 +2307,38 @@ func falcon_nine [ payload: f64 ] -> Craft
     for [ i: i32 0, i < 4, i += 1 ]
         roll : f64 [ f64[ i ] * 1.5707963267949 ]
         dir : Dvec [ 0.0, cos[ roll ], sin[ roll ] ]
-        at : Dvec [ 40.5, dir.y * 1.83, dir.z * 1.83 ]
+        at : Dvec [ 37.8, dir.y * 1.83, dir.z * 1.83 ]
         c.jets.push[ Jet [ name: 'side', group: 'one', at: at,
                            dir: dir, thrust: 2000.0 ] ]
     for [ i: i32 0, i < 4, i += 1 ]
         roll : f64 [ f64[ i ] * 1.5707963267949
                      + 0.785398163397448 ]
         sense : f64 [ ((i & 1) == 0) ? 1.0 : -1.0 ]
-        at : Dvec [ 40.5, 1.83 * cos[ roll ], 1.83 * sin[ roll ] ]
+        at : Dvec [ 37.8, 1.83 * cos[ roll ], 1.83 * sin[ roll ] ]
         dir : Dvec [ 0.0, 0.0 - sense * sin[ roll ],
                      sense * cos[ roll ] ]
         c.jets.push[ Jet [ name: 'roll', group: 'one', at: at,
                            dir: dir, thrust: 2000.0 ] ]
+    # four more at the engine bay, so a turn can be a couple
+    # with the top ring and push nothing
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949 ]
+        dir : Dvec [ 0.0, cos[ roll ], sin[ roll ] ]
+        at : Dvec [ 2.0, dir.y * 1.83, dir.z * 1.83 ]
+        c.jets.push[ Jet [ name: 'side', group: 'one', at: at,
+                           dir: dir, thrust: 2000.0 ] ]
+    # stage two's along the hull, fore and aft, four each way:
+    # for closing on the tanker (thrust an estimate)
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949
+                     + 0.785398163397448 ]
+        at : Dvec [ 56.0, 1.83 * cos[ roll ], 1.83 * sin[ roll ] ]
+        c.jets.push[ Jet [ name: 'fore', group: 'two', at: at,
+                           dir: Dvec [ 1.0, 0.0, 0.0 ],
+                           thrust: 2000.0 ] ]
+        c.jets.push[ Jet [ name: 'aft', group: 'two', at: at,
+                           dir: Dvec [ -1.0, 0.0, 0.0 ],
+                           thrust: 2000.0 ] ]
     # stage two's own, as the booster's, near its top
     for [ i: i32 0, i < 4, i += 1 ]
         roll : f64 [ f64[ i ] * 1.5707963267949 ]
@@ -1995,28 +2355,20 @@ func falcon_nine [ payload: f64 ] -> Craft
                      sense * cos[ roll ] ]
         c.jets.push[ Jet [ name: 'roll', group: 'two', at: at,
                            dir: dir, thrust: 2000.0 ] ]
-    # six legs, one on each face, 18 m across when out, each
-    # on its hinge at the hull's foot (stiffness an estimate)
-    for [ i: i32 0, i < 6, i += 1 ]
-        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
-        foot : Dvec [ LEG_FOOT_X, 9.0 * cos[ roll ],
-                      9.0 * sin[ roll ] ]
-        pivot : Dvec [ LEG_PIVOT_X, LEG_PIVOT_R * cos[ roll ],
-                       LEG_PIVOT_R * sin[ roll ] ]
-        c.legs.push[ Leg [ name: 'leg', group: 'one', foot: foot,
-                           foot_out: foot, hinge: pivot,
-                           stiff: 6.0e6, damp: 0.3 ] ]
     # interstage over the vacuum engine, then stage two:
     # 4,000 kg dry, 92,670 kg of propellant
-    c.parts.push[ Part [ name: 'interstage', group: 'one',
-                         mass: 0.0, low: 41.2, high: 47.7,
+    # the upper ship's skirt round its vacuum bell, from where
+    # stage one ends; its small legs fold against it
+    c.parts.push[ Part [ name: 'skirt', group: 'two',
+                         mass: 0.0, low: 38.6, high: 47.7,
                          radius: tube ] ]
     lox_two : f64 [ 92670.0 * 2.36 / 3.36 ]
     rp_two : f64 [ 92670.0 / 3.36 ]
     rp_len_two : f64 [ rp_two / (830.0 * disc) ]
     lox_len_two : f64 [ lox_two / (1240.0 * disc) ]
+    # its dry mass less the vacuum engine it had (470 kg)
     c.parts.push[ Part [ name: 'stage two', group: 'two',
-                         mass: 4000.0, low: 44.5, high: 57.0,
+                         mass: 4000.0 - 470.0, low: 44.5, high: 57.0,
                          radius: tube ] ]
     c.tanks.push[ Tank [ name: 'rp1 two', group: 'two', low: 47.9,
                          length: rp_len_two, radius: inner,
@@ -2026,19 +2378,78 @@ func falcon_nine [ payload: f64 ] -> Craft
                          low: 48.2 + rp_len_two, length: lox_len_two,
                          radius: inner, density: 1240.0,
                          capacity: lox_two, mass: lox_two ] ]
-    c.engines.push[ lugh[ 'vacuum', 'two', Dvec [ 44.5, 0.0, 0.0 ],
-                            true ] ]
-    # fairing 1,900 kg, 5.2 m across, 13.1 m tall
-    # its skin: a short flare to 5.2 m, then an ogive to the tip
-    ogive : vec f64 [] [ 57.0, 1.83, 58.2, 2.6, 63.0, 2.6, 65.0, 2.45,
-                         67.4, 1.95, 69.2, 1.2, 69.9, 0.35, 70.1, 0.0 ]
+    # the upper ship's five Lugh in its skirt, sea level bells
+    # (it burns low in the air coming home): one in the middle,
+    # four on a 1.25 m ring, gimbals 1.4 m over the skirt's foot
+    c.parts.push[ Part [ name: 'engines two', group: 'two',
+                         mass: 5.0 * 605.0, low: 38.6, high: 41.8,
+                         radius: 1.2, outer: false ] ]
+    c.engines.push[ lugh[ 'centre two', 'two', Dvec [ 40.0, 0.0, 0.0 ],
+                          false ] ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        ang : f64 [ f64[ i ] * 1.5707963267949 + 0.785398163397448 ]
+        at : Dvec [ 40.0, 1.25 * cos[ ang ], 1.25 * sin[ ang ] ]
+        c.engines.push[ lugh[ 'ring two', 'two', at, false ] ]
+    # the nose, 1,900 kg, 13.1 m tall: a flare to 2.3 m out
+    # over the crew stage's fins under it, then an ogive from
+    # 6 m up to the tip
+    ogive : vec f64 [] [ 57.0, 1.83, 58.0, 2.3, 63.0, 2.3, 65.0, 2.15,
+                         67.4, 1.7, 69.2, 1.05, 69.9, 0.3, 70.1, 0.0 ]
     c.parts.push[ Part [ name: 'fairing', group: 'fairing',
                          mass: 1900.0, low: 57.0, high: 70.1,
-                         radius: 2.6, profile: ogive ] ]
+                         radius: 2.3, profile: ogive ] ]
+    # the crew stage's own grid fins, just under the nose's flare
+    # (it steers itself home): as the booster's
+    for [ i: i32 0, i < 6, i += 1 ]
+        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
+        c.fins.push[ Fin [ name: 'fin', group: 'two', x: 55.5,
+                           roll: roll, arm: 2.6, area: 1.2,
+                           lift: 2.0, limit: 0.35 ] ]
     c.parts.push[ Part [ name: 'payload', group: 'two',
                          mass: payload, low: 57.5, high: 64.0,
                          radius: 1.5, outer: false ] ]
     c.length = 70.1
+    kl : f64 [ SHIP_LONG ]
+    kr : f64 [ SHIP_WIDE ]
+    kv : f64 [ kl * kr * kr ]
+    scale_ship[ c, kl, kr ]
+    c.length = 70.1 * kl
+    # the docking ports: on stage two's face that looks along
+    # body z, beside the oxygen tank and the fuel tank
+    c.port_at = Dvec [ 50.75 * kl, 0.0, 1.83 * kr ]
+    c.port_dir = Dvec [ 0.0, 0.0, 1.0 ]
+    c.port_span = 9.0
+    # six legs, one on each face, 18 m across when out at
+    # Falcon's size, each on its hinge at the hull's foot;
+    # stiffness, damping and strength scaled (estimates)
+    for [ i: i32 0, i < 6, i += 1 ]
+        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
+        foot : Dvec [ LEG_FOOT_X, 9.0 * kr * cos[ roll ],
+                      9.0 * kr * sin[ roll ] ]
+        pivot : Dvec [ LEG_PIVOT_X, LEG_PIVOT_R * cos[ roll ],
+                       LEG_PIVOT_R * sin[ roll ] ]
+        c.legs.push[ Leg [ name: 'leg', group: 'one', foot: foot,
+                           foot_out: foot, hinge: pivot,
+                           stiff: 6.0e6 * kv / kl, damp: 0.3,
+                           viscous: 8.0e4 * kv / sqrt[ kl ],
+                           breaks: 1.5e6 * kv ] ]
+    # the crew stage's six small legs, one on each face of its
+    # skirt as the legs below, hinged at the skirt's foot, its
+    # length (6.7 m) and 0.8 m wide at Falcon's size (estimates):
+    # landing legs
+    for [ i: i32 0, i < 6, i += 1 ]
+        roll : f64 [ i * 1.0471975511966 + 0.523598775598299 ]
+        hx : f64 [ 38.8 * kl ]
+        pivot : Dvec [ hx, LEG_PIVOT_R * cos[ roll ],
+                       LEG_PIVOT_R * sin[ roll ] ]
+        len : f64 [ 6.7 * kl ]
+        stowed : Dvec [ hx + len, pivot.y, pivot.z ]
+        c.flaps.push[ Leg [ name: 'flap', group: 'two', foot: stowed,
+                            foot_out: stowed, hinge: pivot,
+                            length: len, width: 0.8 * kr, frac: 0.0,
+                            stiff: 3.0e6 * kv / kl, damp: 0.3,
+                            viscous: 4.0e4 * kv / sqrt[ kl ],
+                            breaks: 0.8e6 * kv ] ]
     c.state = State [ r: dv_zero[], v: dv_zero[],
                       q: Quat [ 1.0, 0.0, 0.0, 0.0 ], w: dv_zero[],
                       prop: vec f64 [] ]
@@ -2058,6 +2469,26 @@ func near [ got: f64, want: f64, rel: f64 ] -> bool
     return d <= rel * w
 
 # the 1976 table: pressure Pa and density kg/m3 at layer edges
+# the Moon against Meeus's worked example (Astronomical
+# Algorithms 47.a, 1992 April 12 0h TD): 133.162655 deg,
+# -3.229126 deg, 368,409.7 km; the series is good to a few
+# arcminutes and a few hundred km
+expect func t_moon_place [] -> bool
+    e : moon_ecliptic[ 2448724.5 ]
+    deg : f64 [ 180.0 / 3.14159265358979 ]
+    # the series is of J2000; Meeus's of the date: precession
+    tc : f64 [ (2448724.5 - 2451545.0) / 36525.0 ]
+    lon : f64 [ e.x * deg + 1.3972 * tc ]
+    while [ lon >= 360.0 ]
+        lon -= 360.0
+    while [ lon < 0.0 ]
+        lon += 360.0
+    lat : f64 [ e.y * deg ]
+    km : f64 [ e.z / 1000.0 ]
+    log 'moon: {lon} deg, {lat} deg, {km} km (Meeus 133.162655, -3.229126, 368409.7)'
+    return abs[ lon - 133.162655 ] < 0.1 && abs[ lat + 3.229126 ] < 0.1
+           && abs[ km - 368409.7 ] < 500.0
+
 expect func t_standard_air [] -> bool
     hs : vec f64 [] [ 0.0, 11000.0, 20000.0, 32000.0, 47000.0,
                       71000.0 ]
@@ -2149,7 +2580,8 @@ expect func t_rocket_equation [] -> bool
     # take gravity's share out (it barely changes up there)
     gl : dv_scale[ grav, burn ]
     dvt : f64 [ dv_len[ dv_sub[ dv, gl ] ] ]
-    want : f64 [ 348.0 * GRAVITY_STD * log[ mass_start / mass_end ] ]
+    e : two.engines[ 0 ]
+    want : f64 [ e.thrust_vac / e.flow * log[ mass_start / mass_end ] ]
     log 'rocket: {dvt} m/s, Tsiolkovsky {want} m/s, m {mass_start} -> {mass_end}'
     return near[ dvt, want, 0.003 ]
 
@@ -2160,6 +2592,166 @@ func empty_booster [] -> Craft
     c.separate[ 'fairing' ]
     for [ i: i32 0, i < c.state.prop.count, i += 1 ]
         c.state.prop[ i ] = 0.0
+    c.mass_properties[ c.state.prop ]
+    return c
+
+# the upper ship alone, its tanks empty: stage two, its skirt
+# and small legs, the nose with its 10 t aboard
+func empty_upper [] -> Craft
+    c : falcon_nine[ 10000.0 ]
+    groups : vec string [] [ 'two', 'fairing' ]
+    up : c.detach[ groups ]
+    for [ i: i32 0, i < up.state.prop.count, i += 1 ]
+        up.state.prop[ i ] = 0.0
+    up.mass_properties[ up.state.prop ]
+    return up
+
+# a booster moved across by off (y, z) and up by rise (m), its
+# tanks named for its place: everything it has keeps its group
+func shift_booster [ c: Craft, off: Dvec, rise: f64, place: string ]
+    for [ pt: Part ] in c.parts
+        pt.low = pt.low + rise
+        pt.high = pt.high + rise
+        pt.off = off
+    for [ t: Tank ] in c.tanks
+        t.low = t.low + rise
+        t.off = off
+        t.name = (t.density > 1000.0) ? 'lox {place}' : 'rp1 {place}'
+    for [ e: Engine ] in c.engines
+        e.at = Dvec [ e.at.x + rise, e.at.y + off.y, e.at.z + off.z ]
+        e.oxidiser = 'lox {place}'
+        e.fuel = 'rp1 {place}'
+    for [ f: Fin ] in c.fins
+        f.x = f.x + rise
+        f.off = off
+    for [ j: Jet ] in c.jets
+        j.at = Dvec [ j.at.x + rise, j.at.y + off.y, j.at.z + off.z ]
+    for [ g: Leg ] in c.legs
+        g.hinge = Dvec [ g.hinge.x + rise, g.hinge.y + off.y,
+                         g.hinge.z + off.z ]
+        g.foot = Dvec [ g.foot.x + rise, g.foot.y + off.y,
+                        g.foot.z + off.z ]
+        g.foot_out = Dvec [ g.foot_out.x + rise, g.foot_out.y + off.y,
+                            g.foot_out.z + off.z ]
+        g.axis = off
+
+# one booster's whole kit into the craft, its group set
+func join_booster [ c: Craft, b: Craft, grp: string ]
+    for [ pt: Part ] in b.parts
+        pt.group = grp
+        c.parts.push[ pt ]
+    for [ t: Tank ] in b.tanks
+        t.group = grp
+        c.tanks.push[ t ]
+        c.state.prop.push[ t.capacity ]
+    for [ e: Engine ] in b.engines
+        e.group = grp
+        c.engines.push[ e ]
+    for [ f: Fin ] in b.fins
+        f.group = grp
+        c.fins.push[ f ]
+    for [ j: Jet ] in b.jets
+        j.group = grp
+        c.jets.push[ j ]
+    for [ g: Leg ] in b.legs
+        g.group = grp
+        c.legs.push[ g ]
+
+# a face turned to another booster's axis (within 18 deg)
+func faces_one [ dy: f64, dz: f64, at: Dvec, axes: vec Dvec ] -> bool
+    dl : f64 [ sqrt[ dy * dy + dz * dz ] ]
+    if [ dl < 1e-6 ] return false
+    for [ k: i32 0, k < axes.count, k += 1 ]
+        o : axes[ k ]
+        ty : f64 [ o.y - at.y ]
+        tz : f64 [ o.z - at.z ]
+        tl : f64 [ sqrt[ ty * ty + tz * tz ] ]
+        if [ tl < 1e-6 ] continue
+        if [ (dy * ty + dz * tz) / (dl * tl) > 0.95 ] return true
+    return false
+
+# the tanker: three of our boosters side by side, face to face
+# on strong joints, the bottom stage; a fourth on the middle one
+# under a silver nose, the top stage, its ports on its side.
+# Seven Lugh each. The three leave and land together
+func tanker_ship [] -> Craft
+    kl : f64 [ SHIP_LONG ]
+    kr : f64 [ SHIP_WIDE ]
+    up_groups : vec string [] [ 'two', 'fairing' ]
+    c : falcon_nine[ 0.0 ]
+    c.detach[ up_groups ]
+    # centres a face's width and the docking standoff (1.5 m)
+    # apart, along body z: joined at the mounts across the gap
+    gap : f64 [ 3.66 * kr + 1.5 ]
+    axes : vec Dvec [] [ Dvec [ 0.0, 0.0, 0.0 ], Dvec [ 0.0, 0.0, gap ],
+                         Dvec [ 0.0, 0.0, 0.0 - gap ] ]
+    places : vec string [] [ 'left', 'right' ]
+    for [ k: i32 0, k < 2, k += 1 ]
+        side : falcon_nine[ 0.0 ]
+        side.detach[ up_groups ]
+        shift_booster[ side, axes[ k + 1 ], 0.0, places[ k ] ]
+        join_booster[ c, side, 'one' ]
+        # its own silver nose, as the tip's, on its top
+        sn : vec f64 [] [ 38.6, 1.83, 44.6, 1.83, 46.6, 1.72,
+                          49.0, 1.37, 50.8, 0.85, 51.5, 0.25, 51.7, 0.0 ]
+        for [ i: i32 0, i < sn.count, i += 1 ]
+            sn[ i ] = sn[ i ] * (((i & 1) == 0) ? kl : kr)
+        c.parts.push[ Part [ name: 'nose', group: 'one',
+                             mass: 1900.0 * kl * kr * kr, low: 38.6 * kl,
+                             high: 51.7 * kl, radius: 1.83 * kr,
+                             profile: sn, off: axes[ k + 1 ] ] ]
+    # the middle one's legs out off the joined faces; a side
+    # one's only where they point away from the row: none cross.
+    # The rest stay folded on their faces
+    for [ g: Leg ] in c.legs
+        dy : f64 [ g.foot_out.y - g.axis.y ]
+        dz : f64 [ g.foot_out.z - g.axis.z ]
+        al : f64 [ sqrt[ g.axis.y * g.axis.y + g.axis.z * g.axis.z ] ]
+        keep : bool [ !faces_one[ dy, dz, g.axis, axes ] ]
+        if [ al > 1e-6 ]
+            keep = (dy * g.axis.y + dz * g.axis.z)
+                   / (al * sqrt[ dy * dy + dz * dz ]) > 0.3
+        if [ !keep ]
+            g.folded = true
+            g.frac = 0.0
+    # every fin kept: those in the gaps lie folded until the
+    # boosters part, then open with the rest
+    # each joint: two connectors in the mounts, high and low
+    # (2 t each at Falcon's size: an estimate)
+    sides : vec f64 [] [ 1.0, -1.0 ]
+    heights : vec f64 [] [ 30.0, 12.0 ]
+    for [ k: i32 0, k < 2, k += 1 ]
+        for [ h: f64 ] in heights
+            mid : f64 [ sides[ k ] * (1.83 * kr + 0.75) ]
+            c.parts.push[ Part [ name: 'joint', group: 'one',
+                                 mass: 2000.0 * kl * kr * kr,
+                                 low: (h - 0.6) * kl, high: (h + 0.6) * kl,
+                                 radius: 0.6, outer: false,
+                                 off: Dvec [ 0.0, 0.0, mid ] ] ]
+    # the top one on the middle one's top, its legs stowed
+    top : falcon_nine[ 0.0 ]
+    top.detach[ up_groups ]
+    dx : f64 [ 38.6 * kl ]
+    shift_booster[ top, Dvec [ 0.0, 0.0, 0.0 ], dx, 'two' ]
+    for [ g: Leg ] in top.legs
+        g.out = false
+        g.frac = 0.0
+    join_booster[ c, top, 'two' ]
+    # its silver nose: an ogive the hull's width, 13.1 m
+    ogive : vec f64 [] [ 77.2, 1.83, 83.2, 1.83, 85.2, 1.72,
+                         87.6, 1.37, 89.4, 0.85, 90.1, 0.25, 90.3, 0.0 ]
+    for [ i: i32 0, i < ogive.count, i += 1 ]
+        ogive[ i ] = ogive[ i ] * (((i & 1) == 0) ? kl : kr)
+    c.parts.push[ Part [ name: 'nose', group: 'two',
+                         mass: 1900.0 * kl * kr * kr, low: 77.2 * kl,
+                         high: 90.3 * kl, radius: 1.83 * kr,
+                         profile: ogive ] ]
+    c.length = 90.3 * kl
+    # its ports on the top one's side
+    c.port_at = Dvec [ 63.6 * kl, 0.0, 1.83 * kr ]
+    c.state.slosh = vec f64 []
+    for [ i: i32 0, i < c.tanks.count * 4, i += 1 ]
+        c.state.slosh.push[ 0.0 ]
     c.mass_properties[ c.state.prop ]
     return c
 
@@ -2304,6 +2896,41 @@ expect func t_aero_limits [] -> bool
     # at half a degree the crossflow adds about 0.1
     return good && slope > 1.95 && slope < 2.2
 
+# the ship at 200 km over the equator, nose along its path:
+# the energy it loses in 600 s is the drag's work, once the
+# Moon's work on it is put back
+expect func t_drag_orbit [] -> bool
+    c : falcon_nine[ 0.0 ]
+    rr : f64 [ EARTH_A + 200000.0 ]
+    c.state.r = Dvec [ rr, 0.0, 0.0 ]
+    vc : f64 [ sqrt[ EARTH_GM / rr * (1.0 + 1.5 * EARTH_J) ] ]
+    c.state.v = Dvec [ 0.0, vc, 0.0 ]
+    c.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ],
+                           Dvec [ 0.0, 1.0, 0.0 ] ]
+    c.state.w = Dvec [ 0.0, 0.0, vc / rr ]
+    # in the equator's plane the flattening's potential
+    j2 : f64 [ EARTH_GM * EARTH_J * EARTH_A * EARTH_A * 0.5 ]
+    e0 : f64 [ 0.5 * vc * vc - EARTH_GM / rr - j2 / (rr * rr * rr) ]
+    moon_w : f64 [ 0.0 ]
+    for [ i: i32 0, i < 12000, i += 1 ]
+        tide : dv_sub[ pull[ c.state.r, c.time ], gravity[ c.state.r ] ]
+        before : f64 [ dv_dot[ tide, c.state.v ] ]
+        c.step[ 0.05 ]
+        tide = dv_sub[ pull[ c.state.r, c.time ], gravity[ c.state.r ] ]
+        moon_w += 0.5 * (before + dv_dot[ tide, c.state.v ]) * 0.05
+    v : f64 [ dv_len[ c.state.v ] ]
+    r : f64 [ dv_len[ c.state.r ] ]
+    e1 : f64 [ 0.5 * v * v - EARTH_GM / r - j2 / (r * r * r) ]
+    ar : standard_air[ 200000.0 ]
+    vrel : f64 [ vc - EARTH_SPIN * rr ]
+    wide : f64 [ c.widest[] ]
+    end_a : f64 [ 3.14159265358979 * wide * wide * c.section_area[] ]
+    drag : f64 [ FREE_CD * 0.5 * ar.density * vrel * vrel * end_a ]
+    want : f64 [ drag * vc * 600.0 / c.mass ]
+    got : f64 [ e0 - e1 + moon_w ]
+    log 'drag in orbit: lost {got} J/kg in 600 s (the Moon gave {moon_w}), drag {drag} N says {want}'
+    return near[ got, want, 0.2 ]
+
 # thin air at 200 km: molecules one by one, the drag 2.2 of
 # the area seen; at 50 km the air is still a fluid
 expect func t_aero_thin [] -> bool
@@ -2311,12 +2938,13 @@ expect func t_aero_thin [] -> bool
     ar : standard_air[ 200000.0 ]
     v : f64 [ 7784.0 ]
     q : f64 [ 0.5 * ar.density * v * v ]
-    kn : f64 [ knudsen[ ar, 5.2 ] ]
     ld : c.body_aero[ Dvec [ v, 0.0, 0.0 ], ar, false ]
     side : c.body_aero[ Dvec [ 0.0, v, 0.0 ], ar, false ]
-    end_a : f64 [ 3.14159265358979 * 2.6 * 2.6 * c.section_area[] ]
+    wide : f64 [ c.widest[] ]
+    end_a : f64 [ 3.14159265358979 * wide * wide * c.section_area[] ]
+    kn : f64 [ knudsen[ ar, 2.0 * wide ] ]
     cd : f64 [ ld.axial / (q * end_a) ]
-    low : f64 [ knudsen[ standard_air[ 50000.0 ], 5.2 ] ]
+    low : f64 [ knudsen[ standard_air[ 50000.0 ], 2.0 * wide ] ]
     log 'aero thin: Knudsen {kn} at 200 km ({low} at 50 km), nose first {0.0 - ld.force.x} N (Cd {cd} on the end), side on {0.0 - side.force.y} N'
     return kn > 10.0 && low < 0.001 && near[ cd, FREE_CD, 0.01 ]
            && side.force.y < ld.force.x * 10.0
@@ -2335,8 +2963,10 @@ expect func t_aero_table [] -> bool
         q : f64 [ 0.5 * ar.density * v * v ]
         up : c.body_aero[ Dvec [ v, 0.0, 0.0 ], ar, true ]
         down : bo.body_aero[ Dvec [ 0.0 - v, 0.0, 0.0 ], ar, false ]
-        a_up : f64 [ up.axial / (q * 3.14159265358979 * 2.6 * 2.6) ]
-        a_dn : f64 [ down.axial / (q * 3.14159265358979 * 1.83 * 1.83) ]
+        fr : f64 [ 1.83 * SHIP_WIDE ]
+        br : f64 [ 1.83 * SHIP_WIDE ]
+        a_up : f64 [ up.axial / (q * 3.14159265358979 * fr * fr) ]
+        a_dn : f64 [ down.axial / (q * 3.14159265358979 * br * br) ]
         # the stack's centre of pressure at 4 degrees
         tilt : c.body_aero[ Dvec [ v * cos[ 0.07 ], v * sin[ 0.07 ],
                                    0.0 ], ar, true ]
@@ -2492,3 +3122,23 @@ expect func t_drop_topple [] -> bool
     c : drop_on_deck[ 2.0, 8.0, 0.2618, -1.0, 8.0 ]
     tilt : drop_report[ c, 'topple' ]
     return tilt > 15.0 && c.hull_t >= 0.0
+
+# the tanker: three boosters and a fourth on top, seven Lugh
+# each; no legs or fins where the boosters meet
+expect func t_tanker_build [] -> bool
+    c : tanker_ship[]
+    push : f64 [ 0.0 ]
+    low_engines : i32 [ 0 ]
+    for [ e: Engine ] in c.engines
+        if [ e.group == 'one' ]
+            push += e.thrust_vac - 101325.0 * e.exit_area
+            low_engines += 1
+    weight : f64 [ c.mass * 9.80665 ]
+    log 'tanker: {c.mass / 1000.0} t, {low_engines} of {c.engines.count} engines below, liftoff {push / weight} g, {c.legs.count} legs, {c.fins.count} fins, inertia {c.inertia[ 0 ]} {c.inertia[ 4 ]} {c.inertia[ 8 ]}'
+    out_n : i32 [ 0 ]
+    for [ g: Leg ] in c.legs
+        if [ g.group == 'one' && !g.folded ] out_n += 1
+    log 'tanker: {out_n} legs out below'
+    return low_engines == 21 && c.engines.count == 28 && c.legs.count == 24
+           && out_n == 10 && c.fins.count == 24 && push > weight * 1.2
+           && c.inertia[ 4 ] > c.inertia[ 8 ]

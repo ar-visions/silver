@@ -9,12 +9,14 @@ import scenes
 import physics
 import guidance
 import mission
+import dock
 import spectra
 
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <pthread.h>
+import <vulkan/vulkan.h>
 
 # launch: a rocket off a hex platform at sea, up through the
 # cloud deck of an earth-sized planet and into orbit. the sky is
@@ -1153,6 +1155,17 @@ ModelViewProject VehicleLit
     # a leg's link: its lug from the hinge (out, up), its length,
     # and the rail's radius its slider runs on
     mutable slide    : vec4f
+    # which cold gas jets fire: bits of jets 0-23 in x, 24-47 in y
+    mutable jets_on  : vec4f
+    # our docking floodlight: where (from the camera; w: on) and
+    # the way it shines (w: the cosine of its cone's edge)
+    mutable spot_pos : vec4f
+    mutable spot_dir : vec4f
+    # the ports' gear in the mesh's units: x each door's slide
+    # along the hull, y the probes' run out of the face
+    mutable dock     : vec4f
+    # x over 0.5: its legs silver (the crew stage's small ones)
+    mutable look     : vec4f
 
     attrib logo  : LayoutBinding [ type:typeid[ VehicleSurface ],
                                    id: VehicleSurface.logo, count:1,
@@ -1178,9 +1191,23 @@ ModelViewProject VehicleLit
     func vertex [] -> GLSL none {
         vec3 lp = a_pos;
         vec3 ln = a_normal;
+        if (a_uv.y > 59.5) {
+            // a port's gear, past every jet's number (10 to 57):
+            // the doors slide apart along the hull (60 fore, 61
+            // aft), the probes run out (62)
+            if (a_uv.y < 60.5) lp.y += ubo.dock.x;
+            else if (a_uv.y < 61.5) lp.y -= ubo.dock.x;
+            else lp.z += ubo.dock.y;
+        } else if (a_uv.y > 9.5) {
+            // a jet's puff: there only while its jet fires
+            int ji = int(a_uv.y - 10.0 + 0.5);
+            int word = int((ji < 24) ? ubo.jets_on.x : ubo.jets_on.y);
+            int bit = (ji < 24) ? ji : ji - 24;
+            if (((word >> bit) & 1) == 0) lp = vec3(0.0);
+        }
         bool moved = ubo.fold.x != 0.0 || ubo.twist != vec4(0.0)
                   || ubo.twist_b != vec4(0.0);
-        if (a_uv.y > 1.5 && moved) {
+        if (a_uv.y > 1.5 && a_uv.y < 9.5 && moved) {
             // a slider: up its rail as far as its link's lug rose
             float c  = cos(ubo.fold.x);
             float sn = sin(ubo.fold.x);
@@ -1194,7 +1221,7 @@ ModelViewProject VehicleLit
             float at = ubo.fold.z + lug.y
                      + sqrt(max(ln - dz * dz, 0.0));
             lp.y += up - at;
-        } else if (a_uv.y > 0.5 && moved) {
+        } else if (a_uv.y > 0.5 && a_uv.y < 9.5 && moved) {
             // its sixth: centred fold.w short of 30 degrees
             float a  = atan(lp.z, lp.x) + ubo.fold.w;
             float qf = floor(a / 1.0471976);
@@ -1251,30 +1278,62 @@ ModelViewProject VehicleLit
 
     func fragment [] -> GLSL none {
         int   kind = int(v_mat.x + 0.5);
+        if (kind == 14) {{
+            // cold nitrogen: half seen at the nozzle, gone at the end
+            float along = clamp((v_mat.x - 14.0) / 0.4, 0.0, 1.0);
+            fragColor = vec4(1.0, 1.0, 1.0, 0.5 * (1.0 - along));
+            return;
+        }}
+        // the floodlight's reach to this point: 0 outside its cone
+        vec3  sl   = ubo.spot_pos.xyz - v_world;
+        float sd   = length(sl);
+        float cone = (ubo.spot_pos.w > 0.0) ? smoothstep(ubo.spot_dir.w,
+                     ubo.spot_dir.w + 0.04, dot(-sl / max(sd, 0.001),
+                     ubo.spot_dir.xyz)) : 0.0;
+        if (kind == 24) {{
+            // where a booster is heading: lit by itself, red
+            fragColor = vec4(1.0, 0.15, 0.1, 1.0);
+            return;
+        }}
+        if (kind == 16) {{
+            // a docking light: lit by itself, warm white
+            fragColor = vec4(1.0, 0.94, 0.82, 1.0);
+            return;
+        }}
+        if (kind == 17) {{
+            // a retroreflector: back toward the light that hits it
+            float back = cone * 60.0 / (sd * sd * 0.02 + 1.0);
+            fragColor = vec4(vec3(0.08 + min(back, 1.0)), 1.0);
+            return;
+        }}
         // colour, metalness and roughness of each material, from
         // photos of Block 5 boosters (estimates)
         vec3  alb   = vec3(0.8);
         float metal = 0.0;
         float rough = 0.5;
         if (kind == 0) {{
-            // the deck, painted steel, the orbiter mark in its middle
-            alb = vec3(0.30, 0.31, 0.32);
+            // the deck: polished blue steel, the orbiter mark in
+            // its middle
+            alb = vec3(0.16, 0.24, 0.42);
+            metal = 0.85;
             vec2 lu = v_local.xz / 30.0 + 0.5;
             if (lu.x > 0.0 && lu.x < 1.0 && lu.y > 0.0 && lu.y < 1.0) {{
+                // the orbiter's outline, a pale paint line
                 vec4 lg = texture(logo, vec2(lu.x, 1.0 - lu.y));
-                alb = mix(alb, lg.rgb, lg.a);
+                alb = mix(alb, vec3(0.85, 0.86, 0.88), lg.a);
+                metal = mix(metal, 0.0, lg.a);
             }}
-            rough = 0.8;
+            rough = 0.28;
         }} else if (kind == 1) {{
-            // the deck's sides: hazard stripes
-            alb = vec3(0.07, 0.075, 0.08);
-            if (v_local.y > 3.6 && v_local.y < 4.6) {{
-                float s = fract((v_local.x + v_local.z + v_local.y)
-                        * 0.25);
-                alb = (s < 0.5) ? vec3(0.8, 0.6, 0.05)
-                    : vec3(0.02);
-            }}
-            rough = 0.7;
+            // the deck's sides: a deeper blue metal
+            alb = vec3(0.10, 0.16, 0.30);
+            metal = 0.85;
+            rough = 0.3;
+        }} else if (kind == 23) {{
+            // the deck's rim: a brighter blue, polished
+            alb = vec3(0.30, 0.45, 0.75);
+            metal = 1.0;
+            rough = 0.12;
         }} else if (kind == 2) {{
             // the body: polished aluminium tinted purple pink, a
             // soft reflection; faint brushing, its rings every 1.8 m
@@ -1343,20 +1402,47 @@ ModelViewProject VehicleLit
             metal = 1.0;
             rough = 0.18;
         }} else if (kind == 13) {{
-            // the tanker's nose, a propellant tank: bright silver
+            // the tanker's nose: bright silver
             alb = vec3(0.93, 0.94, 0.96);
             metal = 1.0;
-            rough = 0.16;
+            rough = 0.18;
         }} else if (kind == 12) {{
-            // the legs: shiny aluminium
-            alb = vec3(0.91, 0.92, 0.92);
+            // the legs: gold foil over them, as a lander's; the
+            // crew stage's small legs silver
+            alb = (ubo.look.x > 0.5) ? vec3(0.93, 0.94, 0.96)
+                                     : vec3(1.0, 0.766, 0.336);
             metal = 1.0;
-            rough = 0.20;
+            rough = (ubo.look.x > 0.5) ? 0.16 : 0.30;
         }} else if (kind == 11) {{
-            // the stripe at the top of stage one: shiny silver
-            alb = vec3(0.95, 0.93, 0.88);
+            // the band at the top of stage one, by the fins:
+            // chrome, a mirror of what is round it
+            alb = vec3(0.97, 0.97, 0.98);
             metal = 1.0;
-            rough = 0.12;
+            rough = 0.03;
+        }} else if (kind == 18) {{
+            // a port door: brushed steel
+            alb = vec3(0.62, 0.63, 0.65);
+            metal = 1.0;
+            rough = 0.32;
+        }} else if (kind == 19) {{
+            // the connectors, probe and cone: gold
+            alb = vec3(1.0, 0.766, 0.336);
+            metal = 1.0;
+            rough = 0.22;
+        }} else if (kind == 22) {{
+            // a window: dark glass, a smooth mirror only at angles
+            alb = vec3(0.004, 0.006, 0.012);
+            metal = 0.0;
+            rough = 0.02;
+        }} else if (kind == 21) {{
+            // the rim round a port's hatch: a dark, dark blue
+            alb = vec3(0.008, 0.012, 0.045);
+            metal = 0.3;
+            rough = 0.35;
+        }} else if (kind == 20) {{
+            // the inside of a port's well: black
+            alb = vec3(0.03, 0.03, 0.035);
+            rough = 0.85;
         }} else {{
             alb = vec3(0.12, 0.12, 0.13);
             rough = 0.6;
@@ -1408,6 +1494,14 @@ ModelViewProject VehicleLit
                   * pow(1.0 - ndv, 5.0);
         c += kd * alb * mix(sea, sky, 0.5 + 0.5 * N.y);
         c += env * Fr * (1.0 - 0.5 * rough);
+        if (cone > 0.0) {{
+            // our floodlight on what it reaches
+            float sn = max(dot(N, sl / sd), 0.0);
+            // half sunlight's strength at 20 m, falling with the
+            // distance squared past 10 m
+            c += (kd * alb + F0 * 0.5) * cone * sn * 5500.0
+               / (sd * sd + 100.0);
+        }}
         if (ubo.glow_pos.w > 0.0) {{
             vec3  gl = ubo.glow_pos.xyz - v_world;
             float gd = length(gl);
@@ -1468,6 +1562,8 @@ ModelViewProject PlumeGlow
     }
 
     func fragment [] -> GLSL none {
+        // no engine lit: no flame, and nothing marched
+        if (ubo.cone.w <= 0.0) discard;
         if (ubo.ground.w + dot(v_world, ubo.ground.xyz) < 0.3) discard;
         vec3  X   = ubo.axis_d.xyz;
         float len = ubo.axis_d.w;
@@ -1498,9 +1594,10 @@ ModelViewProject PlumeGlow
         t0 = max(t0, min(sa, sb));
         t1 = min(t1, max(sa, sb));
         if (t1 <= max(t0, 0.0)) discard;
-        // one fragment a ray: the hull's entry, or its exit inside
+        // one fragment a ray: the far side, never cut by the near
+        // plane; the scene in front still ends the march below
         float dist = length(v_world);
-        if (t0 > 0.0 && dist > (t0 + t1) * 0.5) discard;
+        if (dist < (t0 + t1) * 0.5) discard;
         t0 = max(t0, 0.0);
         // the scene in front of it ends the march
         vec4  f   = texture(fresh, gl_FragCoord.xy / ubo.screen.xy);
@@ -1702,6 +1799,41 @@ class MeshBuild
                         sup = (h.x * h.z + h.y * h.w) / apothem
                     vert[ h.x, ht, h.y, h.z * dy, 0.0 - dr * sup,
                           h.w * dy, mat ]
+        for [ r: i32 0, r < rings - 1, r += 1 ]
+            for [ c: i32 0, c < cols, c += 1 ]
+                at : u32 [ first + u32[ r * cols ] ]
+                here : u32 [ at + u32[ c ] ]
+                next : u32 [ at + u32[ (c + 1) % cols ] ]
+                quad[ here, next, next + u32[ cols ],
+                      here + u32[ cols ] ]
+
+    # a hexagon rounded off, by ring: each ring's corner radius
+    # from the hull's (round 0) to the whole apothem (round 1, a
+    # circle)
+    public func round_lathe [ prof: vec f32, soften: vec f32, mat: f32,
+                              arc: i32 ]
+        rings : i32 [ prof.count / 2 ]
+        first : u32 [ pos.count / 3 ]
+        cols : i32 [ 6 * (arc + 1) ]
+        for [ r: i32 0, r < rings, r += 1 ]
+            lo : i32 [ (r > 0) ? r - 1 : r ]
+            hi : i32 [ (r < rings - 1) ? r + 1 : r ]
+            dr : f32 [ prof[ hi * 2 ] - prof[ lo * 2 ] ]
+            dy : f32 [ prof[ hi * 2 + 1 ] - prof[ lo * 2 + 1 ] ]
+            apothem : f32 [ prof[ r * 2 ] ]
+            ht : f32 [ prof[ r * 2 + 1 ] ]
+            rf : f32 [ HULL_ROUND + (1.0 - HULL_ROUND) * soften[ r ] ]
+            rc : f32 [ apothem * rf ]
+            cd : f32 [ (apothem - rc) / 0.8660254 ]
+            for [ j: i32 0, j < 6, j += 1 ]
+                for [ i: i32 0, i <= arc, i += 1 ]
+                    ca : f32 [ j * 1.0471976 ]
+                    th : f32 [ ca - 0.5235988 + 1.0471976 * i / f32[ arc ] ]
+                    nx : f32 [ cos[ th ] ]
+                    nz : f32 [ sin[ th ] ]
+                    px : f32 [ cd * cos[ ca ] + rc * nx ]
+                    pz : f32 [ cd * sin[ ca ] + rc * nz ]
+                    vert[ px, ht, pz, nx * dy, 0.0 - dr, nz * dy, mat ]
         for [ r: i32 0, r < rings - 1, r += 1 ]
             for [ c: i32 0, c < cols, c += 1 ]
                 at : u32 [ first + u32[ r * cols ] ]
@@ -1993,9 +2125,16 @@ func smooth_profile [ prof: vec f32 ] -> vec f32
     out.push[ prof[ (n - 1) * 2 + 1 ] ]
     return out
 
+# a deck: a rounded hexagon (the hull's corner rounding at its
+# size), corners 48 m out, flats 41.57 m (they still meet flat
+# to flat), its blue sides to 5 m, a raised rim round the top
 func build_platform [] -> GltfModel
     b : MeshBuild [ ]
-    b.hex[ 48.0, 0.0, 5.0, 0.0, 1.0 ]
+    side : vec f32 [] [ 41.57, 0.0, 41.57, 5.0 ]
+    b.hex_lathe[ side, 1.0 ]
+    rim : vec f32 [] [ 41.57, 5.0, 41.57, 5.6, 40.9, 5.6, 40.9, 5.05 ]
+    b.hex_lathe[ rim, 23.0 ]
+    b.hex_cap[ 40.9, 5.05, 1.0, 0.0 ]
     return b.gltf[ 'platform' ]
 
 # stage one: engine exit at y 0, interstage up to y 47
@@ -2010,19 +2149,29 @@ func build_stage_one [] -> GltfModel
     for [ k: i32 0, k < 6, k += 1 ]
         ea : f32 [ k * 1.0471976 ]
         b.lathe_at[ bell, 64, 4.0, 1.25 * cos[ ea ], 1.25 * sin[ ea ] ]
-    # the hull: a rounded hexagon, faces 1.83 m out
+    # the hull: a rounded hexagon, faces 1.83 m out, to where
+    # the upper ship's skirt sits on it
     body : vec f32 [] [ 1.83, 1.4, 1.83, 40.0 ]
     b.hex_lathe[ body, 2.0 ]
     b.hex_cap[ 1.83, 1.4, -1.0, 8.0 ]
-    band : vec f32 [] [ 1.84, 40.0, 1.84, 47.0 ]
-    b.hex_lathe[ band, 11.0 ]
+    b.hex_cap[ 1.83, 40.0, 1.0, 8.0 ]
     return b.gltf[ 'stage_one' ]
 
 # the upper stage and fairing, in stage one's frame (y 44.5 up)
 func build_upper [] -> GltfModel
     b : MeshBuild [ ]
-    bell : vec f32 [] [ 1.2, 44.5, 0.75, 46.0, 0.45, 47.0 ]
-    b.lathe[ bell, 96, 4.0 ]
+    # its chrome skirt from stage one's top, its five Lugh inside
+    # (one in the middle, four on a 1.25 m ring), their exits at
+    # the skirt's foot as the physics has them
+    skirt : vec f32 [] [ 1.84, 40.0, 1.84, 47.0 ]
+    b.hex_lathe[ skirt, 11.0 ]
+    bell : vec f32 [] [ 0.528, 40.0, 0.454, 40.35, 0.352, 40.75,
+                        0.238, 41.10, 0.181, 41.40 ]
+    b.lathe_at[ bell, 64, 4.0, 0.0, 0.0 ]
+    for [ k: i32 0, k < 4, k += 1 ]
+        ea : f32 [ f32[ k ] * 1.5707963 + 0.7853982 ]
+        b.lathe_at[ bell, 64, 4.0, 1.25 * cos[ ea ], -1.25 * sin[ ea ] ]
+    b.hex_cap[ 1.83, 41.6, -1.0, 3.0 ]
     body : vec f32 [] [ 1.83, 47.0, 1.83, 58.4 ]
     b.hex_lathe[ body, 2.0 ]
     b.hex_cap[ 1.83, 47.0, -1.0, 3.0 ]
@@ -2031,19 +2180,192 @@ func build_upper [] -> GltfModel
 
 # the nose: a flare to 5.2 m and an ogive, its own piece, in
 # its material: rose gold ours, silver the tanker's
-func build_fairing [ mat: f32 ] -> GltfModel
+func build_fairing [ mat: f32, windows: bool, flared: bool ] -> GltfModel
     b : MeshBuild [ ]
-    skin : vec f32 [] [ 1.83, 58.4, 2.6, 59.6, 2.6, 64.4, 2.45, 66.4,
-                        1.95, 68.8, 1.2, 70.6, 0.35, 71.3, 0.0, 71.5 ]
+    # it flares to 2.3 m out over the crew stage's fins, as the
+    # physics has it, then tapers to the tip
+    skin : vec f32 [] [ 1.83, 58.4, 2.3, 59.4, 2.3, 64.4, 2.15, 66.4,
+                        1.7, 68.8, 1.05, 70.6, 0.3, 71.3, 0.0, 71.5 ]
+    # unflared, it starts at its full width (the tanker's body)
+    if [ !flared ] skin[ 0 ] = 2.3
     # the nose grows out of the hull's hexagon, to its tip
     b.hex_lathe[ smooth_profile[ skin ], mat ]
     b.hex_cap[ 1.83, 58.4, -1.0, 2.0 ]
+    # ours carries people: a window on every face, a band all
+    # the way round on the straight part under the taper (the
+    # tanker's nose is a tank: none)
+    if [ windows ]
+        angles : vec f32 [] [ 0.5235988, 1.5707963, 2.6179939,
+                              3.6651914, 4.712389, 5.7595865 ]
+        for [ ang: f32 ] in angles
+            nx : f32 [ cos[ ang ] ]
+            nz : f32 [ sin[ ang ] ]
+            # a chrome frame, then the glass inside it
+            fq : vec f32 [] [ 0.60, 61.2, 63.5, 11.0, 0.004,
+                              0.55, 61.35, 63.35, 22.0, 0.008 ]
+            for [ f: i32 0, f < 2, f += 1 ]
+                hw : f32 [ fq[ f * 5 ] ]
+                lo : f32 [ fq[ f * 5 + 1 ] ]
+                hi : f32 [ fq[ f * 5 + 2 ] ]
+                m : f32 [ fq[ f * 5 + 3 ] ]
+                out : f32 [ 2.3 + fq[ f * 5 + 4 ] ]
+                cx : f32 [ nx * out ]
+                cz : f32 [ nz * out ]
+                # across the face: square to its outward way
+                tx : f32 [ 0.0 - nz * hw ]
+                tz : f32 [ nx * hw ]
+                p0 : u32 [ b.vert[ cx - tx, lo, cz - tz, nx, 0.0, nz, m ] ]
+                p1 : u32 [ b.vert[ cx + tx, lo, cz + tz, nx, 0.0, nz, m ] ]
+                p2 : u32 [ b.vert[ cx + tx, hi, cz + tz, nx, 0.0, nz, m ] ]
+                p3 : u32 [ b.vert[ cx - tx, hi, cz - tz, nx, 0.0, nz, m ] ]
+                b.quad[ p0, p1, p2, p3 ]
     return b.gltf[ 'fairing' ]
+
+# the tanker above stage one: one stage, so no skirt and no
+# engines there, only its hull up to the nose
+func build_tanker_body [] -> GltfModel
+    b : MeshBuild [ ]
+    body : vec f32 [] [ 1.83, 40.0, 1.83, 58.4 ]
+    b.hex_lathe[ body, 2.0 ]
+    return b.gltf[ 'tanker body' ]
+
+# the tanker's nose: silver, an ogive the hull's width (as the
+# physics has it), in the nose meshes' frame
+# a mount's hexagon on a face (z = fz, its normal nz): the
+# orbiter's thin chrome edge and the dark blue rim inside it
+func mount_hex [ b: MeshBuild, cy: f32, fz: f32, nz: f32 ]
+    sx : f32 [ 1.0 / SHIP_WIDE ]
+    sy : f32 [ 1.0 / SHIP_LONG ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        a0 : f32 [ f32[ k ] * 1.0471976 ]
+        a1 : f32 [ f32[ k + 1 ] * 1.0471976 ]
+        x0 : f32 [ cos[ a0 ] * sx ]
+        y0 : f32 [ sin[ a0 ] * sy ]
+        x1 : f32 [ cos[ a1 ] * sx ]
+        y1 : f32 [ sin[ a1 ] * sy ]
+        ez : f32 [ fz + nz * 0.006 ]
+        i0 : u32 [ b.vert[ x0 * 1.26, cy + y0 * 1.26, ez, 0.0, 0.0, nz,
+                           11.0 ] ]
+        o0 : u32 [ b.vert[ x0 * 1.30, cy + y0 * 1.30, ez, 0.0, 0.0, nz,
+                           11.0 ] ]
+        i1 : u32 [ b.vert[ x1 * 1.26, cy + y1 * 1.26, ez, 0.0, 0.0, nz,
+                           11.0 ] ]
+        o1 : u32 [ b.vert[ x1 * 1.30, cy + y1 * 1.30, ez, 0.0, 0.0, nz,
+                           11.0 ] ]
+        b.quad[ i0, o0, o1, i1 ]
+        rz : f32 [ fz + nz * 0.003 ]
+        h0 : u32 [ b.vert[ x0 * 0.92, cy + y0 * 0.92, rz, 0.0, 0.0, nz,
+                           21.0 ] ]
+        h1 : u32 [ b.vert[ x0 * 1.26, cy + y0 * 1.26, rz, 0.0, 0.0, nz,
+                           21.0 ] ]
+        h2 : u32 [ b.vert[ x1 * 1.26, cy + y1 * 1.26, rz, 0.0, 0.0, nz,
+                           21.0 ] ]
+        h3 : u32 [ b.vert[ x1 * 0.92, cy + y1 * 0.92, rz, 0.0, 0.0, nz,
+                           21.0 ] ]
+        b.quad[ h0, h1, h2, h3 ]
+
+# a connector: a rounded hexagon in section (0.85 m to its
+# corners, rounded 0.2 m, flat top and bottom as the mounts),
+# chrome, along the meshes' z from z0 to z1 at height cy
+func hex_bar [ b: MeshBuild, cy: f32, z0: f32, z1: f32 ]
+    corner : f32 [ 0.85 ]
+    bend : f32 [ 0.2 ]
+    # the inner hexagon whose corners the arcs turn round
+    inner : f32 [ (corner * 0.8660254 - bend) / 0.8660254 ]
+    px : vec f32 []
+    py : vec f32 []
+    for [ k: i32 0, k < 6, k += 1 ]
+        ak : f32 [ f32[ k ] * 1.0471976 ]
+        for [ j: i32 0, j <= 4, j += 1 ]
+            th : f32 [ ak - 0.5235988 + f32[ j ] * 0.2617994 ]
+            qx : f32 [ inner * cos[ ak ] + bend * cos[ th ] ]
+            qy : f32 [ inner * sin[ ak ] + bend * sin[ th ] ]
+            px.push[ qx ]
+            py.push[ qy ]
+    n : i32 [ px.count ]
+    for [ i: i32 0, i < n, i += 1 ]
+        j : i32 [ (i + 1) % n ]
+        # metres into the meshes' uneven scale; normals the other way
+        ax : f32 [ px[ i ] / SHIP_WIDE ]
+        ay : f32 [ py[ i ] / SHIP_LONG ]
+        bx : f32 [ px[ j ] / SHIP_WIDE ]
+        by : f32 [ py[ j ] / SHIP_LONG ]
+        na : vec3f [ px[ i ] * SHIP_WIDE, py[ i ] * SHIP_LONG, 0.0 ]
+        nb : vec3f [ px[ j ] * SHIP_WIDE, py[ j ] * SHIP_LONG, 0.0 ]
+        la : f32 [ sqrt[ na.x * na.x + na.y * na.y ] ]
+        lb : f32 [ sqrt[ nb.x * nb.x + nb.y * nb.y ] ]
+        v0 : u32 [ b.vert[ ax, cy + ay, z0, na.x / la, na.y / la, 0.0,
+                           11.0 ] ]
+        v1 : u32 [ b.vert[ bx, cy + by, z0, nb.x / lb, nb.y / lb, 0.0,
+                           11.0 ] ]
+        v2 : u32 [ b.vert[ bx, cy + by, z1, nb.x / lb, nb.y / lb, 0.0,
+                           11.0 ] ]
+        v3 : u32 [ b.vert[ ax, cy + ay, z1, na.x / la, na.y / la, 0.0,
+                           11.0 ] ]
+        b.quad[ v0, v1, v2, v3 ]
+
+# a side booster's nitrogen as it lets go: out of its two mounts
+# across the gap toward the middle one (the meshes' z way sg),
+# pushing it away, in its own frame
+func build_mount_puffs [ sg: f32 ] -> GltfModel
+    b : MeshBuild [ ]
+    n : i32 [ 0 ]
+    for [ hi: i32 0, hi < 2, hi += 1 ]
+        cy : f32 [ ((hi == 0) ? 30.0 : 12.0) + 1.4 ]
+        at : vec3f [ 0.0, cy, sg * 1.83 ]
+        puff_at[ b, n, at, vec3f [ 0.0, 0.0, sg ] ]
+        n += 1
+    return b.gltf[ 'mount puffs' ]
+
+# where a booster is heading, at deck height: a ring 3 to 4 m
+# round and a post 30 m tall, in metres
+func build_marker [] -> GltfModel
+    b : MeshBuild [ ]
+    for [ k: i32 0, k < 24, k += 1 ]
+        a0 : f32 [ f32[ k ] * 0.2617994 ]
+        a1 : f32 [ f32[ k + 1 ] * 0.2617994 ]
+        i0 : u32 [ b.vert[ cos[ a0 ] * 3.0, 0.3, sin[ a0 ] * 3.0,
+                           0.0, 1.0, 0.0, 24.0 ] ]
+        o0 : u32 [ b.vert[ cos[ a0 ] * 4.0, 0.3, sin[ a0 ] * 4.0,
+                           0.0, 1.0, 0.0, 24.0 ] ]
+        i1 : u32 [ b.vert[ cos[ a1 ] * 3.0, 0.3, sin[ a1 ] * 3.0,
+                           0.0, 1.0, 0.0, 24.0 ] ]
+        o1 : u32 [ b.vert[ cos[ a1 ] * 4.0, 0.3, sin[ a1 ] * 4.0,
+                           0.0, 1.0, 0.0, 24.0 ] ]
+        b.quad[ i0, o0, o1, i1 ]
+    b.strut[ vec3f [ 0.0, 0.0, 0.0 ], vec3f [ 0.0, 30.0, 0.0 ], 0.3,
+             24.0 ]
+    return b.gltf[ 'marker' ]
+
+# the tanker's joints in the middle booster's frame: to each
+# side, two chrome connectors across the 1.5 m gap in mounts
+# at 30 m and 12 m up (Falcon's size), as the physics has them
+func build_joints [] -> GltfModel
+    b : MeshBuild [ ]
+    gm : f32 [ 1.5 / SHIP_WIDE ]
+    for [ si: i32 0, si < 2, si += 1 ]
+        sg : f32 [ (si == 0) ? 1.0 : -1.0 ]
+        near : f32 [ sg * 1.83 ]
+        far : f32 [ sg * (1.83 + gm) ]
+        for [ hi: i32 0, hi < 2, hi += 1 ]
+            cy : f32 [ ((hi == 0) ? 30.0 : 12.0) + 1.4 ]
+            hex_bar[ b, cy, near - sg * 0.05, far + sg * 0.05 ]
+            mount_hex[ b, cy, near, sg ]
+            mount_hex[ b, cy, far, 0.0 - sg ]
+    return b.gltf[ 'joints' ]
+
+func build_tanker_nose [] -> GltfModel
+    b : MeshBuild [ ]
+    skin : vec f32 [] [ 1.83, 58.4, 1.83, 64.4, 1.72, 66.4, 1.37, 68.8,
+                        0.85, 70.6, 0.25, 71.3, 0.0, 71.5 ]
+    b.hex_lathe[ smooth_profile[ skin ], 13.0 ]
+    b.hex_cap[ 1.83, 58.4, -1.0, 2.0 ]
+    return b.gltf[ 'tanker nose' ]
 
 # a grid fin's root off the axis, its height, and its size:
 # out from the hull, across, along the airflow (estimates)
 FIN_ROOT  : f32 [ 1.86 ]
-FIN_Y     : f32 [ 45.4 ]
+FIN_Y     : f32 [ 38.4 ]
 FIN_SPAN  : f32 [ 1.5 ]
 FIN_WIDE  : f32 [ 1.2 ]
 FIN_DEEP  : f32 [ 0.3 ]
@@ -2053,10 +2375,297 @@ func fin_at [ ca: f32, sa: f32, s: f32, t: f32 ] -> vec3f
     r : f32 [ FIN_ROOT + s ]
     return vec3f [ ca * r - sa * t, FIN_Y, sa * r + ca * t ]
 
+# a puff of gas from each cold gas jet of the whole ship, in
+# the meshes' frame (up the axis is y, before the ship's
+# scale): a short cone out of the nozzle against its push,
+# riding as 10 + the jet's place in the ship's list
+# one jet's puff, number i (its bit), from p along e (meshes'
+# units): a cone 2.2 long, 0.5 round at its end
+func puff_at [ b: MeshBuild, i: i32, p: vec3f, e: vec3f ]
+    b.ride = 10.0 + f32[ i ]
+    px : f32 [ p.x ]
+    py : f32 [ p.y ]
+    pz : f32 [ p.z ]
+    ex : f32 [ e.x ]
+    ey : f32 [ e.y ]
+    ez : f32 [ e.z ]
+    # two sides square to the puff's way
+    ax : f32 [ (abs[ ey ] < 0.9) ? 0.0 : 1.0 ]
+    ay : f32 [ (abs[ ey ] < 0.9) ? 1.0 : 0.0 ]
+    ux : f32 [ ay * ez ]
+    uy : f32 [ 0.0 - ax * ez ]
+    uz : f32 [ ax * ey - ay * ex ]
+    ul : f32 [ sqrt[ ux * ux + uy * uy + uz * uz ] ]
+    ux = ux / ul
+    uy = uy / ul
+    uz = uz / ul
+    vx : f32 [ ey * uz - ez * uy ]
+    vy : f32 [ ez * ux - ex * uz ]
+    vz : f32 [ ex * uy - ey * ux ]
+    # the material's fraction is the way along the spray
+    tip : u32 [ b.vert[ px, py, pz, ex, ey, ez, 14.0 ] ]
+    ring : vec u32 []
+    for [ k: i32 0, k < 8, k += 1 ]
+        a : f32 [ f32[ k ] * 0.785398 ]
+        ca : f32 [ cos[ a ] * 0.5 ]
+        sa : f32 [ sin[ a ] * 0.5 ]
+        ring.push[ b.vert[ px + ex * 2.2 + ux * ca + vx * sa,
+                           py + ey * 2.2 + uy * ca + vy * sa,
+                           pz + ez * 2.2 + uz * ca + vz * sa,
+                           ux * ca + vx * sa, uy * ca + vy * sa,
+                           uz * ca + vz * sa, 14.4 ] ]
+    for [ k: i32 0, k < 8, k += 1 ]
+        b.tri[ tip, ring[ k ], ring[ (k + 1) % 8 ] ]
+    b.ride = 0.0
+
+func build_puffs [] -> GltfModel
+    b : MeshBuild [ ]
+    c : falcon_nine[ 0.0 ]
+    kl : f32 [ SHIP_LONG ]
+    kr : f32 [ SHIP_WIDE ]
+    for [ i: i32 0, i < c.jets.count, i += 1 ]
+        j : c.jets[ i ]
+        px : f32 [ f32[ j.at.y ] / kr ]
+        py : f32 [ f32[ j.at.x ] / kl + 1.4 ]
+        pz : f32 [ f32[ 0.0 - j.at.z ] / kr ]
+        ex : f32 [ f32[ 0.0 - j.dir.y ] ]
+        ey : f32 [ f32[ 0.0 - j.dir.x ] ]
+        ez : f32 [ f32[ j.dir.z ] ]
+        puff_at[ b, i, vec3f [ px, py, pz ], vec3f [ ex, ey, ez ] ]
+    b.ride = 0.0
+    return b.gltf[ 'puffs' ]
+
+# the docking ports on the ship's +z face (the meshes' -z) where
+# physics puts them: each a capture ring, lights round it;
+# the tanker's has three retroreflectors (not evenly spaced,
+# so they tell its roll), ours two floodlights beside it
+# one port's gear behind the ring: a well 0.6 m deep, its two
+# doors (each half the hole, sliding apart along the hull), and
+# in the well our gold probe (0.15 m round, it runs out) or the
+# tanker's gold cone (0.6 m at the mouth, 0.18 at the throat)
+func port_gear [ b: MeshBuild, tanker: bool, cy: f32, fz: f32,
+                 sx: f32, sy: f32 ]
+    deep : f32 [ 0.6 * sx ]
+    n : i32 [ 24 ]
+    # the hatch is the orbiter's hexagon: corners 0.92 m out,
+    # flat at the top, as the icon (and the edge round it)
+    for [ k: i32 0, k < 6, k += 1 ]
+        a0 : f32 [ f32[ k ] * 1.0471976 ]
+        a1 : f32 [ f32[ k + 1 ] * 1.0471976 ]
+        c0 : f32 [ cos[ a0 ] ]
+        s0 : f32 [ sin[ a0 ] ]
+        c1 : f32 [ cos[ a1 ] ]
+        s1 : f32 [ sin[ a1 ] ]
+        # the wall's face looks in, toward the well's middle
+        am : f32 [ (a0 + a1) * 0.5 ]
+        nx : f32 [ 0.0 - cos[ am ] ]
+        ny : f32 [ 0.0 - sin[ am ] ]
+        w0 : u32 [ b.vert[ c0 * 0.92 * sx, cy + s0 * 0.92 * sy, fz,
+                           nx, ny, 0.0, 20.0 ] ]
+        w1 : u32 [ b.vert[ c1 * 0.92 * sx, cy + s1 * 0.92 * sy, fz,
+                           nx, ny, 0.0, 20.0 ] ]
+        w2 : u32 [ b.vert[ c1 * 0.92 * sx, cy + s1 * 0.92 * sy,
+                           fz + deep, nx, ny, 0.0, 20.0 ] ]
+        w3 : u32 [ b.vert[ c0 * 0.92 * sx, cy + s0 * 0.92 * sy,
+                           fz + deep, nx, ny, 0.0, 20.0 ] ]
+        b.quad[ w0, w1, w2, w3 ]
+        mid : u32 [ b.vert[ 0.0, cy, fz + deep, 0.0, 0.0, -1.0, 20.0 ] ]
+        b.tri[ mid, w3, w2 ]
+    # the circle in its middle the connector comes through: a
+    # gold ring on the well's floor, 0.22 to 0.30 m
+    rz : f32 [ fz + deep - 0.004 ]
+    for [ k: i32 0, k < n, k += 1 ]
+        a0 : f32 [ f32[ k ] * 6.2831853 / f32[ n ] ]
+        a1 : f32 [ f32[ k + 1 ] * 6.2831853 / f32[ n ] ]
+        r0 : u32 [ b.vert[ cos[ a0 ] * 0.22 * sx, cy + sin[ a0 ] * 0.22 * sy,
+                           rz, 0.0, 0.0, -1.0, 19.0 ] ]
+        r1 : u32 [ b.vert[ cos[ a0 ] * 0.30 * sx, cy + sin[ a0 ] * 0.30 * sy,
+                           rz, 0.0, 0.0, -1.0, 19.0 ] ]
+        r2 : u32 [ b.vert[ cos[ a1 ] * 0.30 * sx, cy + sin[ a1 ] * 0.30 * sy,
+                           rz, 0.0, 0.0, -1.0, 19.0 ] ]
+        r3 : u32 [ b.vert[ cos[ a1 ] * 0.22 * sx, cy + sin[ a1 ] * 0.22 * sy,
+                           rz, 0.0, 0.0, -1.0, 19.0 ] ]
+        b.quad[ r0, r1, r2, r3 ]
+    # the doors: the hexagon in two halves, split across the hull
+    # corner to corner, just proud of the face; the fore half
+    # slides fore, the aft half aft
+    dz : f32 [ fz - 0.012 ]
+    for [ half: i32 0, half < 2, half += 1 ]
+        b.ride = (half == 0) ? 60.0 : 61.0
+        side : f32 [ (half == 0) ? 1.0 : -1.0 ]
+        hub : u32 [ b.vert[ 0.0, cy, dz, 0.0, 0.0, -1.0, 18.0 ] ]
+        # round the half: its four corners, the flat on top
+        us : vec f32 [] [ 0.92, 0.46, -0.46, -0.92 ]
+        vs : vec f32 [] [ 0.0, 0.92 * 0.8660254, 0.92 * 0.8660254, 0.0 ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            e0 : u32 [ b.vert[ us[ k ] * sx, cy + side * vs[ k ] * sy, dz,
+                               0.0, 0.0, -1.0, 18.0 ] ]
+            e1 : u32 [ b.vert[ us[ k + 1 ] * sx,
+                               cy + side * vs[ k + 1 ] * sy, dz,
+                               0.0, 0.0, -1.0, 18.0 ] ]
+            b.tri[ hub, e0, e1 ]
+    b.ride = 0.0
+    if [ tanker ]
+        # the cone: the mouth at the face to the throat, then a
+        # socket the probe's tip seats in
+        rings : vec f32 [] [ 0.0, 0.6, 0.45, 0.18, 0.6, 0.18 ]
+        for [ r: i32 0, r < 2, r += 1 ]
+            za : f32 [ fz + rings[ r * 2 ] * sx + 0.004 ]
+            ra : f32 [ rings[ r * 2 + 1 ] ]
+            zb : f32 [ fz + rings[ r * 2 + 2 ] * sx ]
+            rb : f32 [ rings[ r * 2 + 3 ] ]
+            for [ k: i32 0, k < n, k += 1 ]
+                a0 : f32 [ f32[ k ] * 6.2831853 / f32[ n ] ]
+                a1 : f32 [ f32[ k + 1 ] * 6.2831853 / f32[ n ] ]
+                c0 : f32 [ cos[ a0 ] ]
+                s0 : f32 [ sin[ a0 ] ]
+                c1 : f32 [ cos[ a1 ] ]
+                s1 : f32 [ sin[ a1 ] ]
+                # its inside faces out of the well
+                q0 : u32 [ b.vert[ c0 * ra * sx, cy + s0 * ra * sy, za,
+                                   0.0 - c0, 0.0 - s0, -0.6, 19.0 ] ]
+                q1 : u32 [ b.vert[ c1 * ra * sx, cy + s1 * ra * sy, za,
+                                   0.0 - c1, 0.0 - s1, -0.6, 19.0 ] ]
+                q2 : u32 [ b.vert[ c1 * rb * sx, cy + s1 * rb * sy, zb,
+                                   0.0 - c1, 0.0 - s1, -0.6, 19.0 ] ]
+                q3 : u32 [ b.vert[ c0 * rb * sx, cy + s0 * rb * sy, zb,
+                                   0.0 - c0, 0.0 - s0, -0.6, 19.0 ] ]
+                b.quad[ q0, q1, q2, q3 ]
+        return
+    # the probe: a boom 3 m back into the hull (it runs 2.5 m
+    # out and never leaves its sleeve), then a rounded tip; it
+    # moves with the gear (ride 62)
+    b.ride = 62.0
+    back : f32 [ fz + 3.0 * sx ]
+    face : f32 [ fz + 0.12 * sx ]
+    tip : f32 [ fz + 0.02 * sx ]
+    for [ k: i32 0, k < n, k += 1 ]
+        a0 : f32 [ f32[ k ] * 6.2831853 / f32[ n ] ]
+        a1 : f32 [ f32[ k + 1 ] * 6.2831853 / f32[ n ] ]
+        c0 : f32 [ cos[ a0 ] ]
+        s0 : f32 [ sin[ a0 ] ]
+        c1 : f32 [ cos[ a1 ] ]
+        s1 : f32 [ sin[ a1 ] ]
+        p0 : u32 [ b.vert[ c0 * 0.15 * sx, cy + s0 * 0.15 * sy, back,
+                           c0, s0, 0.0, 19.0 ] ]
+        p1 : u32 [ b.vert[ c1 * 0.15 * sx, cy + s1 * 0.15 * sy, back,
+                           c1, s1, 0.0, 19.0 ] ]
+        p2 : u32 [ b.vert[ c1 * 0.15 * sx, cy + s1 * 0.15 * sy, face,
+                           c1, s1, -0.3, 19.0 ] ]
+        p3 : u32 [ b.vert[ c0 * 0.15 * sx, cy + s0 * 0.15 * sy, face,
+                           c0, s0, -0.3, 19.0 ] ]
+        b.quad[ p0, p1, p2, p3 ]
+        top : u32 [ b.vert[ 0.0, cy, tip, 0.0, 0.0, -1.0, 19.0 ] ]
+        b.tri[ top, p3, p2 ]
+    b.ride = 0.0
+
+func build_port [ tanker: bool ] -> GltfModel
+    b : MeshBuild [ ]
+    kl : f32 [ SHIP_LONG ]
+    kr : f32 [ SHIP_WIDE ]
+    # two ports, 9 m apart along the hull: oxygen fore, fuel aft
+    for [ pn: i32 0, pn < 2, pn += 1 ]
+        cy : f32 [ 50.75 + 1.4 + ((pn == 0) ? 4.5 : -4.5) / kl ]
+        fz : f32 [ -1.83 - 0.02 ]
+        # metres on the face, through the meshes' uneven scale
+        sx : f32 [ 1.0 / kr ]
+        sy : f32 [ 1.0 / kl ]
+        # the orbiter's hexagon round the hatch: a thin chrome edge
+        # 4 cm wide, its corners 1.3 m out, flat at the top
+        for [ k: i32 0, k < 6, k += 1 ]
+            a0 : f32 [ f32[ k ] * 1.0471976 ]
+            a1 : f32 [ f32[ k + 1 ] * 1.0471976 ]
+            x0 : f32 [ cos[ a0 ] * sx ]
+            y0 : f32 [ sin[ a0 ] * sy ]
+            x1 : f32 [ cos[ a1 ] * sx ]
+            y1 : f32 [ sin[ a1 ] * sy ]
+            hz : f32 [ fz - 0.006 ]
+            i0 : u32 [ b.vert[ x0 * 1.26, cy + y0 * 1.26, hz,
+                               0.0, 0.0, -1.0, 11.0 ] ]
+            o0 : u32 [ b.vert[ x0 * 1.30, cy + y0 * 1.30, hz,
+                               0.0, 0.0, -1.0, 11.0 ] ]
+            i1 : u32 [ b.vert[ x1 * 1.26, cy + y1 * 1.26, hz,
+                               0.0, 0.0, -1.0, 11.0 ] ]
+            o1 : u32 [ b.vert[ x1 * 1.30, cy + y1 * 1.30, hz,
+                               0.0, 0.0, -1.0, 11.0 ] ]
+            b.quad[ i0, o0, o1, i1 ]
+            # inside the edge, out to the hatch: the dark blue rim
+            rz : f32 [ fz - 0.003 ]
+            h0 : u32 [ b.vert[ x0 * 0.92, cy + y0 * 0.92, rz,
+                               0.0, 0.0, -1.0, 21.0 ] ]
+            h1 : u32 [ b.vert[ x0 * 1.26, cy + y0 * 1.26, rz,
+                               0.0, 0.0, -1.0, 21.0 ] ]
+            h2 : u32 [ b.vert[ x1 * 1.26, cy + y1 * 1.26, rz,
+                               0.0, 0.0, -1.0, 21.0 ] ]
+            h3 : u32 [ b.vert[ x1 * 0.92, cy + y1 * 0.92, rz,
+                               0.0, 0.0, -1.0, 21.0 ] ]
+            b.quad[ h0, h1, h2, h3 ]
+        port_gear[ b, tanker, cy, fz, sx, sy ]
+        # a square of side 2h at (u, v) metres on the face
+        lights : vec f32 []
+        for [ k: i32 0, k < 8, k += 1 ]
+            a : f32 [ f32[ k ] * 0.785398 ]
+            lights.push[ cos[ a ] * 1.45 ]
+            lights.push[ sin[ a ] * 1.45 ]
+            lights.push[ 0.06 ]
+            lights.push[ 16.0 ]
+        if [ tanker ]
+            retro : vec f32 [] [ 0.0, 1.9, 1.6, -1.2, -1.7, -0.9 ]
+            for [ k: i32 0, k < 3, k += 1 ]
+                lights.push[ retro[ k * 2 ] ]
+                lights.push[ retro[ k * 2 + 1 ] ]
+                lights.push[ 0.12 ]
+                lights.push[ 17.0 ]
+        el
+            for [ k: i32 0, k < 2, k += 1 ]
+                lights.push[ (k == 0) ? -2.1 : 2.1 ]
+                lights.push[ 0.0 ]
+                lights.push[ 0.18 ]
+                lights.push[ 16.0 ]
+        for [ k: i32 0, k < lights.count / 4, k += 1 ]
+            u : f32 [ lights[ k * 4 ] ]
+            v : f32 [ lights[ k * 4 + 1 ] ]
+            h : f32 [ lights[ k * 4 + 2 ] ]
+            m : f32 [ lights[ k * 4 + 3 ] ]
+            lz : f32 [ fz - 0.01 ]
+            lo : f32 [ cy + (v - h) * sy ]
+            hi : f32 [ cy + (v + h) * sy ]
+            left : f32 [ (u - h) * sx ]
+            far : f32 [ (u + h) * sx ]
+            p0 : u32 [ b.vert[ left, lo, lz, 0.0, 0.0, -1.0, m ] ]
+            p1 : u32 [ b.vert[ far, lo, lz, 0.0, 0.0, -1.0, m ] ]
+            p2 : u32 [ b.vert[ far, hi, lz, 0.0, 0.0, -1.0, m ] ]
+            p3 : u32 [ b.vert[ left, hi, lz, 0.0, 0.0, -1.0, m ] ]
+            b.quad[ p0, p1, p2, p3 ]
+    return b.gltf[ (tanker) ? 'tanker port' : 'our port' ]
+
+# which of a craft's jets fire, as bits of the whole ship's
+# list (a stage keeps its own jets, in order, after it parts)
+func jet_bits [ c: Craft, all: Craft ] -> vec4f
+    lo : i32 [ 0 ]
+    hi : i32 [ 0 ]
+    if [ !c ] return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+    for [ j: Jet ] in c.jets
+        if [ !j.on ] continue
+        for [ i: i32 0, i < all.jets.count, i += 1 ]
+            k : all.jets[ i ]
+            if [ dv_len[ dv_sub[ k.at, j.at ] ] > 0.01
+                 || dv_dot[ k.dir, j.dir ] < 0.99 ] continue
+            if [ i < 24 ]
+                lo = lo | (1 << i)
+            el
+                hi = hi | (1 << (i - 24))
+            break
+    return vec4f [ f32[ lo ], f32[ hi ], 0.0, 0.0 ]
+
 # the six titanium grid fins, one on each face of the hull,
 # out: a frame of plates and a lattice crossing at 45 degrees;
 # each folds up its sixth
 func build_fins [] -> GltfModel
+    return build_fins_skip[ 0 ]
+
+# the fins, but none on the faces whose bit (1 << k) is set
+func build_fins_skip [ skip: i32 ] -> GltfModel
     b : MeshBuild [ ]
     b.ride = 1.0
     up : vec3f [ 0.0, 1.0, 0.0 ]
@@ -2065,6 +2674,7 @@ func build_fins [] -> GltfModel
     ht : f32 [ FIN_WIDE * 0.5 ]
     pitch : f32 [ 0.16 ]
     for [ k: i32 0, k < 6, k += 1 ]
+        if [ (skip & (1 << k)) != 0 ] continue
         ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
@@ -2094,6 +2704,7 @@ func build_fins [] -> GltfModel
     # the hinge fittings stay on the hull
     b.ride = 0.0
     for [ k: i32 0, k < 6, k += 1 ]
+        if [ (skip & (1 << k)) != 0 ] continue
         ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
@@ -2118,7 +2729,7 @@ LEG_HINGE_R : f32 [ 1.83 + LEG_HALF_D + 0.01 ]
 LEG_HINGE_Y : f32 [ 1.6 ]
 LEG_FOOT_R  : f32 [ 9.0 ]
 # meshes start 1.4 m under the gimbal plane
-LEG_FOOT_Y  : f32 [ LEG_FOOT_X + 1.4 ]
+LEG_FOOT_Y  : f32 [ LEG_FOOT_X / SHIP_LONG + 1.4 ]
 
 # a leg's link: its lug down the leg (share of it), its
 # length, and the radius its slider runs at in the channel
@@ -2148,11 +2759,16 @@ func leg_swing [] -> f32
 # about its hinge to stow flat on its face, held by a link to
 # a slider in a channel down the face: stowed, all under it
 func build_legs [] -> GltfModel
+    return build_legs_skip[ 0 ]
+
+# the legs, but none on the faces whose bit (1 << k) is set
+func build_legs_skip [ skip: i32 ] -> GltfModel
     b : MeshBuild [ ]
     hd : f32 [ LEG_HALF_D ]
     # sides chamfered at 30 degrees, half the hull's corner turn
     ch : f32 [ hd * 2.0 * 1.7320508 ]
     for [ k: i32 0, k < 6, k += 1 ]
+        if [ (skip & (1 << k)) != 0 ] continue
         ang : f32 [ k * 1.0471976 + 0.5235988 ]
         ca : f32 [ cos[ ang ] ]
         sa : f32 [ sin[ ang ] ]
@@ -2603,6 +3219,8 @@ class Pose
     public az  : vec3f
     public alt : f32
     public air : f32
+    # drawn at all: a hidden mesh shrinks to a point
+    public shown : bool [ true ]
 
 element PlanetView
     style : CSS {
@@ -2626,8 +3244,16 @@ element PlanetView
     # how much faster than life the physics kept up, last frame
     public pace      : f32
     mutable engine_sound : EngineSound
+    # our port cameras through the docking net, while closing
+    mutable dock_eye : DockEye
     # as fast as it can until the landing burn, then life's pace
     public quick     : bool
+    # a saved flight to start from, once
+    public load_from : string
+    # the staging flight with both coming home
+    public hop       : bool
+    # our ship flies, not the tanker
+    public ship      : bool
     # a new random wind each flight; its jet between (km/h)
     public rwind     : bool
     public wind_min  : f64 [ 36.0 ]
@@ -2642,6 +3268,9 @@ element PlanetView
     mutable model_b  : Model
     mutable craft    : Render
     mutable lit_pad  : VehicleLit
+    # the second platform, the crew stage's
+    mutable lit_pad2 : VehicleLit
+    mutable lit_pad3 : VehicleLit
     mutable lit_one  : VehicleLit
     mutable lit_up   : VehicleLit
     mutable lit_fair : VehicleLit
@@ -2649,24 +3278,64 @@ element PlanetView
     mutable lit_tank_one : VehicleLit
     mutable lit_tank_legs : VehicleLit
     mutable lit_tank_fins : VehicleLit
+    # the tanker's top booster: its legs and fins, 38.6 m up
+    mutable lit_tank_legs2 : VehicleLit
+    mutable lit_tank_fins2 : VehicleLit
     mutable lit_tank : VehicleLit
+    # the jets' puffs: ours (lower and upper) and the tanker's
+    mutable lit_puff_one : VehicleLit
+    mutable lit_puff_up  : VehicleLit
+    mutable lit_puff_tank : VehicleLit
+    mutable m_puff_one : Model
+    mutable m_puff_up  : Model
+    mutable m_puff_tank : Model
+    # the docking ports: ours and the tanker's
+    mutable lit_port_up : VehicleLit
+    mutable lit_port_tank : VehicleLit
+    mutable m_port_up : Model
+    mutable m_port_tank : Model
+    # the whole ship's jets, for the puffs' bits
+    mutable all_jets : Craft
     mutable lit_tank_nose : VehicleLit
     mutable lit_legs : VehicleLit
+    # the crew stage's small legs: the legs' mesh, 0.85 as long
+    # (the skirt's length), hinged at its foot
+    mutable lit_legs_up : VehicleLit
     mutable lit_fins : VehicleLit
-    mutable glow     : PlumeGlow
+    # the crew stage's fins under its nose: the same mesh, set
+    # 18.5 m (Falcon scale) higher
+    mutable lit_fins_up : VehicleLit
+    # a flame for each of stage one's engines
+    mutable glows    : vec PlumeGlow
     mutable glow_up  : PlumeGlow
     mutable m_pad    : Model
+    mutable m_pad2   : Model
+    mutable m_pad3   : Model
+    # decks D, E, F
+    mutable m_decks  : vec Model
+    # where each booster is heading: the middle one, left, right
+    mutable mark_lits : vec VehicleLit
+    mutable mark_models : vec Model
+    mutable lit_decks : vec VehicleLit
     mutable m_one    : Model
     mutable m_up     : Model
-    mutable m_plume  : Model
+    mutable m_plumes : vec Model
     mutable m_fair   : Model
     mutable m_tank_one : Model
     mutable m_tank_legs : Model
     mutable m_tank_fins : Model
+    # the tanker's side boosters, left then right: bodies, legs,
+    # fins (lits and models in that order)
+    mutable side_lits : vec VehicleLit
+    mutable side_models : vec Model
+    mutable m_tank_legs2 : Model
+    mutable m_tank_fins2 : Model
     mutable m_tank   : Model
     mutable m_tank_nose : Model
     mutable m_legs   : Model
+    mutable m_legs_up : Model
     mutable m_fins   : Model
+    mutable m_fins_up : Model
     mutable m_plume_up : Model
     # the pad's place and its east, north, up (ECEF)
     mutable pad      : Dvec
@@ -2695,6 +3364,12 @@ element PlanetView
     mutable cz       : f64 [ 360.0 ]
     # tan of half the vertical field of view
     mutable cam_th   : f32 [ 0.466 ]
+    # the port cameras' field (the tangent of half of it), and
+    # which port's camera: 0 the oxygen port's, 1 the fuel's
+    public port_th   : f32 [ 0.45 ]
+    public port_pick : i32
+    # no engine sound (pictures made offscreen)
+    public silent    : bool
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
@@ -2724,6 +3399,7 @@ element PlanetView
         if [ c_dist > 9.0e6 ] c_dist = 9.0e6
 
     public func on_unload [ ]
+        if [ engine_sound ] engine_sound.stop[]
         if [ ux && ux.element_targets ]
             ux.element_targets.rm[ 'sky_{id}' ]
             ux.element_targets.rm[ 'skya_{id}' ]
@@ -2732,25 +3408,54 @@ element PlanetView
 
     # the vehicles' passes, drawn after the sky in each frame
     func build_craft [ vkc: vk_context, w: Window ]
-        logo_png : path '../silver-orbiter/images/icon.png'
-        expect logo_png.exists[], 'launch: no orbiter icon at {logo_png}'
-        lim : Image [ uri: logo_png ]
+        # the decks' mark: the orbiter's outline, drawn once from
+        # its svg onto a clear canvas; the deck paints its cover
+        mark_svg : path 'images/orbiter-outline.svg'
+        expect mark_svg.exists[], 'launch: no orbiter outline at {mark_svg}'
+        outline : SVGModel [ mark_svg ]
+        outline.hold[]
+        mark_cv : Canvas [ w: w, vk: vkc, format: Pixel.rgba8,
+                           width: 1024, height: 1024 ]
+        mark_cv.hold[]
+        mark_cv.clear[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+        mark_cv.draw_svg[ outline, 0.0, 0.0, 1024.0, 1024.0 ]
+        mark_cv.sync_all[]
+        lim : Image [ mark_cv.color ]
         lim.hold[]
         logo : Texture [ vk: vkc, w: w, sampler: lim, mip_levels: 1 ]
         logo.hold[]
         lit_pad = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_pad2 = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_pad2.hold[]
+        lit_pad3 = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_pad3.hold[]
         lit_one = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_up  = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_fair = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_tank_one = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_tank_legs = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_tank_fins = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_legs2 = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_legs2.hold[]
+        lit_tank_fins2 = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_tank_fins2.hold[]
         lit_tank = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_tank_nose = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_legs = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_legs_up = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_legs_up.hold[]
         lit_fins = VehicleLit [ vk: vkc, name: 'craft' ]
-        glow    = PlumeGlow [ vk: vkc, name: 'plume' ]
-        glow_up = PlumeGlow [ vk: vkc, name: 'plume' ]
+        lit_fins_up = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_fins_up.hold[]
+        # the flames are seen through and add their light: no
+        # depth written, so one flame never hides another; one an
+        # engine (the tanker has 28)
+        glows = vec PlumeGlow []
+        for [ k: i32 0, k < 32, k += 1 ]
+            gk : PlumeGlow [ vk: vkc, name: 'plume', transparent: true ]
+            glows.push[ gk ]
+        glows.hold[]
+        glow_up = PlumeGlow [ vk: vkc, name: 'plume', transparent: true ]
         lit_pad.hold[]
         lit_one.hold[]
         lit_up.hold[]
@@ -2759,16 +3464,61 @@ element PlanetView
         lit_tank_legs.hold[]
         lit_tank_fins.hold[]
         lit_tank.hold[]
+        # the gas is seen through: straight alpha, no depth write
+        lit_puff_one = VehicleLit [ vk: vkc, name: 'craft',
+                                    transparent: true ]
+        lit_puff_up = VehicleLit [ vk: vkc, name: 'craft',
+                                   transparent: true ]
+        lit_puff_tank = VehicleLit [ vk: vkc, name: 'craft',
+                                     transparent: true ]
+        lit_puff_one.hold[]
+        lit_puff_up.hold[]
+        lit_puff_tank.hold[]
+        all_jets = falcon_nine[ 0.0 ]
+        all_jets.hold[]
+        lit_port_up = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_port_tank = VehicleLit [ vk: vkc, name: 'craft' ]
+        lit_port_up.hold[]
+        lit_port_tank.hold[]
         lit_tank_nose.hold[]
         lit_legs.hold[]
         lit_fins.hold[]
-        glow.hold[]
         glow_up.hold[]
         sv : map Au[string] [ 'logo': logo, 'fresh': vrender.color ]
         sp : map Au[string] [ 'fresh': vrender.color ]
         m_pad = Model [ vk: vkc, w: w, s: lit_pad, samplers: sv,
                         cull_none: true ]
         m_pad.id = build_platform[]
+        m_pad2 = Model [ vk: vkc, w: w, s: lit_pad2, samplers: sv,
+                         cull_none: true ]
+        m_pad2.id = build_platform[]
+        m_pad2.hold[]
+        m_pad3 = Model [ vk: vkc, w: w, s: lit_pad3, samplers: sv,
+                         cull_none: true ]
+        m_pad3.id = build_platform[]
+        m_pad3.hold[]
+        m_decks = vec Model []
+        lit_decks = vec VehicleLit []
+        for [ i: i32 0, i < 3, i += 1 ]
+            dl : VehicleLit [ vk: vkc, name: 'craft' ]
+            lit_decks.push[ dl ]
+            dm : Model [ vk: vkc, w: w, s: dl, samplers: sv,
+                         cull_none: true ]
+            dm.id = build_platform[]
+            m_decks.push[ dm ]
+        m_decks.hold[]
+        lit_decks.hold[]
+        mark_lits = vec VehicleLit []
+        mark_models = vec Model []
+        for [ i: i32 0, i < 3, i += 1 ]
+            ml : VehicleLit [ vk: vkc, name: 'craft' ]
+            mark_lits.push[ ml ]
+            mm : Model [ vk: vkc, w: w, s: ml, samplers: sv,
+                         cull_none: true ]
+            mm.id = build_marker[]
+            mark_models.push[ mm ]
+        mark_lits.hold[]
+        mark_models.hold[]
         m_one = Model [ vk: vkc, w: w, s: lit_one, samplers: sv,
                         cull_none: true ]
         m_one.id = build_stage_one[]
@@ -2777,33 +3527,125 @@ element PlanetView
         m_up.id = build_upper[]
         m_fair = Model [ vk: vkc, w: w, s: lit_fair, samplers: sv,
                          cull_none: true ]
-        m_fair.id = build_fairing[ 10.0 ]
+        m_fair.id = build_fairing[ 10.0, true, true ]
         m_tank_one = Model [ vk: vkc, w: w, s: lit_tank_one,
                              samplers: sv, cull_none: true ]
         m_tank_one.id = build_stage_one[]
         m_tank_legs = Model [ vk: vkc, w: w, s: lit_tank_legs,
                               samplers: sv, cull_none: true ]
-        m_tank_legs.id = build_legs[]
+        m_tank_legs.id = build_legs_skip[ 18 ]
         m_tank_fins = Model [ vk: vkc, w: w, s: lit_tank_fins,
                               samplers: sv, cull_none: true ]
         m_tank_fins.id = build_fins[]
+        # each side booster: its body, its legs only where they
+        # point away from the row (left mesh faces 3-5, right
+        # 0-2), no fin on the face against the middle one
+        side_lits = vec VehicleLit []
+        side_models = vec Model []
+        fold_lits : vec VehicleLit []
+        fold_models : vec Model []
+        skips : vec i32 [] [ 2, 16 ]
+        leg_skips : vec i32 [] [ 7, 56 ]
+        for [ part: i32 0, part < 3, part += 1 ]
+            for [ k: i32 0, k < 2, k += 1 ]
+                sl : VehicleLit [ vk: vkc, name: 'craft' ]
+                side_lits.push[ sl ]
+                sm : Model [ vk: vkc, w: w, s: sl, samplers: sv,
+                             cull_none: true ]
+                if [ part == 0 ]
+                    sm.id = build_stage_one[]
+                el [ part == 1 ]
+                    sm.id = build_legs_skip[ leg_skips[ k ] ]
+                el
+                    sm.id = build_fins[]
+                side_models.push[ sm ]
+        # every booster's folded legs, always stowed: the middle
+        # one's (9), the left's, the right's (10, 11)
+        folds : vec i32 [] [ 45, 56, 7 ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            fl : VehicleLit [ vk: vkc, name: 'craft' ]
+            fm : Model [ vk: vkc, w: w, s: fl, samplers: sv,
+                         cull_none: true ]
+            fm.id = build_legs_skip[ folds[ k ] ]
+            fold_lits.push[ fl ]
+            fold_models.push[ fm ]
+        # their silver noses (6, 7), and the joints in the middle
+        # one's frame (8)
+        for [ k: i32 0, k < 3, k += 1 ]
+            sl : VehicleLit [ vk: vkc, name: 'craft' ]
+            side_lits.push[ sl ]
+            sm : Model [ vk: vkc, w: w, s: sl, samplers: sv,
+                         cull_none: true ]
+            sm.id = (k < 2) ? build_tanker_nose[] : build_joints[]
+            side_models.push[ sm ]
+        # the side boosters' nitrogen (12 left, 13 right): seen
+        # through, as the jets' puffs; the left's middle one is at
+        # the meshes' +z, the right's at -z
+        vents : vec VehicleLit []
+        vent_models : vec Model []
+        for [ k: i32 0, k < 2, k += 1 ]
+            ml : VehicleLit [ vk: vkc, name: 'craft', transparent: true ]
+            mm : Model [ vk: vkc, w: w, s: ml, samplers: sv,
+                         cull_none: true ]
+            mm.id = build_mount_puffs[ (k == 0) ? 1.0 : -1.0 ]
+            vents.push[ ml ]
+            vent_models.push[ mm ]
+        side_lits.hold[]
+        side_models.hold[]
+        for [ fl: VehicleLit ] in fold_lits
+            side_lits.push[ fl ]
+        for [ fm: Model ] in fold_models
+            side_models.push[ fm ]
+        for [ ml: VehicleLit ] in vents
+            side_lits.push[ ml ]
+        for [ mm: Model ] in vent_models
+            side_models.push[ mm ]
         m_tank = Model [ vk: vkc, w: w, s: lit_tank, samplers: sv,
                          cull_none: true ]
-        m_tank.id = build_upper[]
+        # the top booster: our stage one, set on the bottom's top
+        m_tank.id = build_stage_one[]
+        m_tank_legs2 = Model [ vk: vkc, w: w, s: lit_tank_legs2,
+                               samplers: sv, cull_none: true ]
+        m_tank_legs2.id = build_legs[]
+        m_tank_legs2.hold[]
+        m_tank_fins2 = Model [ vk: vkc, w: w, s: lit_tank_fins2,
+                               samplers: sv, cull_none: true ]
+        m_tank_fins2.id = build_fins[]
+        m_tank_fins2.hold[]
         m_tank_nose = Model [ vk: vkc, w: w, s: lit_tank_nose,
                               samplers: sv, cull_none: true ]
-        m_tank_nose.id = build_fairing[ 13.0 ]
+        # the crew ship's nose in purple, a payload bay: no windows
+        m_tank_nose.id = build_tanker_nose[]
         m_legs = Model [ vk: vkc, w: w, s: lit_legs, samplers: sv,
                          cull_none: true ]
         m_legs.id = build_legs[]
+        m_legs_up = Model [ vk: vkc, w: w, s: lit_legs_up, samplers: sv,
+                            cull_none: true ]
+        m_legs_up.id = build_legs[]
+        m_legs_up.hold[]
         m_fins = Model [ vk: vkc, w: w, s: lit_fins, samplers: sv,
                          cull_none: true ]
         m_fins.id = build_fins[]
-        m_plume = Model [ vk: vkc, w: w, s: glow, samplers: sp,
-                          cull_none: true ]
-        m_plume.id = build_plume[]
+        m_fins_up = Model [ vk: vkc, w: w, s: lit_fins_up, samplers: sv,
+                            cull_none: true ]
+        m_fins_up.id = build_fins[]
+        m_fins_up.hold[]
+        adds : BlendState [ src: VK_BLEND_FACTOR_ONE,
+                            dst: VK_BLEND_FACTOR_ONE,
+                            src_a: VK_BLEND_FACTOR_ZERO,
+                            dst_a: VK_BLEND_FACTOR_ONE ]
+        adds.hold[]
+        m_plumes = vec Model []
+        for [ gk: PlumeGlow ] in glows
+            # no depth test: the march itself stops at the scene
+            mk : Model [ vk: vkc, w: w, s: gk, samplers: sp,
+                         cull_none: true, blend: adds,
+                         depth_no_test: true ]
+            mk.id = build_plume[]
+            m_plumes.push[ mk ]
+        m_plumes.hold[]
         m_plume_up = Model [ vk: vkc, w: w, s: glow_up, samplers: sp,
-                             cull_none: true ]
+                             cull_none: true, blend: adds ]
         m_plume_up.id = build_plume[]
         m_pad.hold[]
         m_one.hold[]
@@ -2813,20 +3655,58 @@ element PlanetView
         m_tank_legs.hold[]
         m_tank_fins.hold[]
         m_tank.hold[]
+        m_puff_one = Model [ vk: vkc, w: w, s: lit_puff_one,
+                             samplers: sv, cull_none: true ]
+        m_puff_one.id = build_puffs[]
+        m_puff_up = Model [ vk: vkc, w: w, s: lit_puff_up,
+                            samplers: sv, cull_none: true ]
+        m_puff_up.id = build_puffs[]
+        m_puff_tank = Model [ vk: vkc, w: w, s: lit_puff_tank,
+                              samplers: sv, cull_none: true ]
+        m_puff_tank.id = build_puffs[]
+        m_puff_one.hold[]
+        m_port_up = Model [ vk: vkc, w: w, s: lit_port_up,
+                            samplers: sv, cull_none: true ]
+        m_port_up.id = build_port[ false ]
+        m_port_tank = Model [ vk: vkc, w: w, s: lit_port_tank,
+                              samplers: sv, cull_none: true ]
+        m_port_tank.id = build_port[ true ]
+        m_port_up.hold[]
+        m_port_tank.hold[]
+        m_puff_up.hold[]
+        m_puff_tank.hold[]
         m_tank_nose.hold[]
         m_legs.hold[]
         m_fins.hold[]
-        m_plume.hold[]
         m_plume_up.hold[]
         # drawn at twice the size each way and down again: a 2x2
         # resample for its edges
+        drawn : vec Model [] [ m_pad, m_pad2, m_pad3, m_one, m_up,
+                               m_fair,
+                               m_tank_one,
+                               m_tank_legs, m_tank_fins, m_tank_legs2,
+                               m_tank_fins2, m_tank,
+                               m_tank_nose, m_legs, m_legs_up, m_fins,
+                               m_fins_up,
+                               m_port_up,
+                               m_port_tank ]
+        for [ dm: Model ] in m_decks
+            drawn.push[ dm ]
+        for [ mm: Model ] in mark_models
+            drawn.push[ mm ]
+        for [ sm: Model ] in side_models
+            drawn.push[ sm ]
+        for [ mk: Model ] in m_plumes
+            drawn.push[ mk ]
+        drawn.push[ m_plume_up ]
+        drawn.push[ m_puff_one ]
+        drawn.push[ m_puff_up ]
+        drawn.push[ m_puff_tank ]
         craft = Render [ vk: vkc, w: w, wscale: wscale * 2.0,
                          tag: 'craft',
                          use_depth: true,
             clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
-            models: [ m_pad, m_one, m_up, m_fair, m_tank_one,
-                      m_tank_legs, m_tank_fins, m_tank, m_tank_nose,
-                      m_legs, m_fins, m_plume, m_plume_up ] ]
+            models: drawn ]
         craft.hold[]
         craft.owner = a
         w.element_targets[ 'craft_{id}' ] = craft
@@ -2878,10 +3758,19 @@ element PlanetView
     # the vehicle each camera follows, and the point it watches
     func followed [] -> Craft
         f : flight
-        if [ camera == 3 ] return f.tanker
+        # what no camera has yet: the stack, or the middle booster
+        base : Craft [ (f.lower == 0) ? f.stack : f.booster ]
+        if [ camera == 3 && f.tanker ] return f.tanker
+        # the tanker's own flight: 3 the left booster, 5 the right
+        if [ camera == 3 || camera == 5 ]
+            k : i32 [ (camera == 3) ? 0 : 1 ]
+            if [ f.sides && f.sides.count > k ] return f.sides[ k ].booster
+            return base
+        if [ camera == 4 ]
+            return (f.lower == 0) ? f.stack : f.orbiter
         if [ f.lower == 0 ] return f.stack
         if [ camera == 1 ] return f.orbiter
-        return f.booster
+        return base
 
     func watch_point [ c: Craft ] -> Dvec
         mid : f64 [ (c.length > 1.0) ? c.length * 0.5 : 20.0 ]
@@ -2894,6 +3783,16 @@ element PlanetView
     # where the camera stands and what it looks at, this frame
     func aim [] -> vec3f
         c : followed[]
+        if [ camera == 4 ]
+            # a port's camera: 0.2 m out of it, up its line
+            eye : dv_add[ port_of[ c, port_pick ],
+                          dv_scale[ c.port_dir, 0.2 ] ]
+            pe : local_of[ c.body_point[ eye ], c.time ]
+            cx = pe.x
+            cy = pe.y
+            cz = pe.z
+            cam_th = port_th
+            return dir_of[ q_rotate[ c.state.q, c.port_dir ], c.time ]
         m : watch_point[ c ]
         if [ camera == 0 ]
             # the platform camera: still, zooming as it climbs
@@ -2947,8 +3846,34 @@ element PlanetView
         lit : f32 [ sat[ (elev + 0.03) / 0.06 ] ]
         return vec4f [ r * lit, g * lit, b * lit, 0.0 ]
 
+    # fly a flight made elsewhere (the docking pictures)
+    public func use_flight [ m: Mission ]
+        flight = m
+        pad = geodetic_to_ecef[ m.pad_lat, m.pad_lon, 0.0 ]
+        pad_e = enu_east[ m.pad_lat, m.pad_lon ]
+        pad_n = enu_north[ m.pad_lat, m.pad_lon ]
+        pad_u = enu_up[ m.pad_lat, m.pad_lon ]
+
+    # the frame's targets drawn now, in the order they feed each
+    # other (a running window does this itself)
+    public func draw_targets []
+        vrender.draw[]
+        vrender.sync_fence[]
+        hist : ((frame & 1) == 0) ? hist_a : hist_b
+        hist.draw[]
+        hist.sync_fence[]
+        craft.draw[]
+        craft.sync_fence[]
+
+    public func set_size [ wd: f32, ht: f32 ]
+        bounds = rect [ x: 0.0, y: 0.0, w: wd, h: ht ]
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
+        frame_draw[ w ]
+
+    # one frame into the window's screen
+    public func frame_draw [ w: Window ]
         ux.will_animate = true
         cv : Canvas [ w.screen ]
         now : i64 [ epoch_micros[] ]
@@ -2958,8 +3883,15 @@ element PlanetView
         last_us = now
         seconds += dt
         if [ !flight ]
-            flight = Mission [ landing: landing ]
+            flight = Mission [ landing: landing, crew_home: hop,
+                               tanker_flight: !ship && !hop ]
             flight.hold[]
+            if [ load_from && load_from.count > 0 ]
+                from : path [ load_from ]
+                if [ flight.load_state[ from ] ] flying = true
+                el
+                    log 'launch: no saved flight at {load_from}'
+                load_from = null
             if [ rwind ]
                 said : flight.stack.weather.random_wind[
                     u64[ epoch_micros[] ], wind_min / 3.6,
@@ -2990,6 +3922,13 @@ element PlanetView
                 if [ racing && flight.lower >= 6 ] break
                 if [ epoch_micros[] - began > budget ] break
             pace = f32[ done ] * 0.0025 / dt
+        # twice a second the port cameras and the net, closing in
+        if [ flying && flight.approaching && !silent ]
+            if [ !dock_eye ] dock_eye = DockEye [ vk: vk ]
+            de : dock_eye
+            if [ de.ready && flight.met >= de.next ]
+                de.next = flight.met + 0.5
+                de.look[ flight, sun_el, sun_az ]
         if [ !world ]
             world = PlanetWorld [ cur: cur, wseed: 987654321 ]
         world.cur = cur
@@ -3051,6 +3990,15 @@ element PlanetView
             rl = 1.0
         right = vec3f [ right.x / rl, right.y / rl, right.z / rl ]
         cu : cross3[ right, fwd ]
+        # the port camera's picture keeps our nose at its top
+        if [ camera == 4 ]
+            pc : followed[]
+            nose : dir_of[ q_rotate[ pc.state.q, Dvec [ 1.0, 0.0, 0.0 ] ],
+                           pc.time ]
+            rn : cross3[ fwd, nose ]
+            nl : f32 [ sqrt[ rn.x * rn.x + rn.y * rn.y + rn.z * rn.z ] ]
+            right = vec3f [ rn.x / nl, rn.y / nl, rn.z / nl ]
+            cu = cross3[ right, fwd ]
         aspect : f32 [ bounds.w / bounds.h ]
         cam_alt : f32 [ f32[ f64[ cl ] - PLANET_R ] ]
         sky : world.sky
@@ -3191,12 +4139,120 @@ element PlanetView
         return Pose [ at: vec3f [ 0.0, -1.0e7, 0.0 ],
                       ax: vec3f [ 1.0, 0.0, 0.0 ],
                       ay: vec3f [ 0.0, 1.0, 0.0 ],
-                      az: vec3f [ 0.0, 0.0, 1.0 ], alt: 0.0, air: 1.0 ]
+                      az: vec3f [ 0.0, 0.0, 1.0 ], alt: 0.0, air: 1.0,
+                      shown: false ]
+
+    # a fin set drawn from its craft's fins of one group: their
+    # opening and each one's deflection (fin i is the mesh's
+    # sixth 5 - i); stowed with no craft
+    func fin_bind [ s: VehicleLit, c: Craft, grp: string, oz: f64 ]
+        out : f64 [ 0.0 ]
+        # each mesh sixth's deflection: the fin at roll 30 + 60 i
+        # is the mesh's sixth 5 - i (its z is the body's -z)
+        turn : vec f64 [] [ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 ]
+        if [ c ]
+            for [ fk: Fin ] in c.fins
+                if [ fk.group != grp || abs[ fk.off.z - oz ] > 0.5 ]
+                    continue
+                out = fk.frac
+                idx : i32 [ i32[ round[ (fk.roll - 0.5235988)
+                                        / 1.0471976 ] ] ]
+                slot : i32 [ 5 - ((idx % 6 + 6) % 6) ]
+                turn[ slot ] = fk.deflect
+        s.fold = vec4f [ f32[ 1.0 - out ] * 1.5707963,
+                         FIN_ROOT + FIN_DEEP * 0.5, FIN_Y, 0.0 ]
+        s.twist = vec4f [ f32[ turn[ 0 ] ], f32[ turn[ 1 ] ],
+                          f32[ turn[ 2 ] ], f32[ turn[ 3 ] ] ]
+        s.twist_b = vec4f [ f32[ turn[ 4 ] ], f32[ turn[ 5 ] ], 0.0, 0.0 ]
+
+    # a pose moved across along the body's z (m): the meshes' z
+    # is the body's -z
+    func across [ p: Pose, by: f32 ] -> Pose
+        return Pose [ at: vec3f [ p.at.x - p.az.x * by, p.at.y - p.az.y * by,
+                                  p.at.z - p.az.z * by ],
+                      ax: p.ax, ay: p.ay, az: p.az, alt: p.alt,
+                      air: p.air, shown: p.shown ]
+
+    # where a craft comes down to deck height (deck_h m) if it
+    # keeps its speed and its whole push now (engines, air,
+    # gravity): from the camera, w 1; w 0 when it does not
+    func heading_of [ c: Craft, deck_h: f64 ] -> vec4f
+        none : vec4f [ 0.0, -1.0e7, 0.0, 0.0 ]
+        if [ !c ] return none
+        r : c.state.r
+        v : c.state.v
+        a : dv_add[ q_rotate[ c.state.q, c.accel ], gravity[ r ] ]
+        up : dv_norm[ r ]
+        h0 : f64 [ c.geodetic[].z - deck_h ]
+        vz : f64 [ dv_dot[ v, up ] ]
+        az : f64 [ dv_dot[ a, up ] ]
+        t : f64 [ -1.0 ]
+        if [ abs[ az ] < 1e-6 ]
+            if [ vz < 0.0 ] t = 0.0 - h0 / vz
+        el
+            disc : f64 [ vz * vz - 2.0 * az * h0 ]
+            if [ disc >= 0.0 ]
+                sq : f64 [ sqrt[ disc ] ]
+                ta : f64 [ (0.0 - vz - sq) / az ]
+                tb : f64 [ (0.0 - vz + sq) / az ]
+                lo : f64 [ min[ ta, tb ] ]
+                hi : f64 [ max[ ta, tb ] ]
+                t = (lo > 0.0) ? lo : hi
+        if [ t <= 0.0 || t > 600.0 ] return none
+        p : dv_add[ dv_add[ r, dv_scale[ v, t ] ], dv_scale[ a, 0.5 * t * t ] ]
+        lp : local_of[ p, c.time + t ]
+        return vec4f [ f32[ lp.x - cx ], f32[ lp.y - cy ], f32[ lp.z - cz ],
+                       1.0 ]
+
+    # a pose moved up its own axis (m)
+    func raised [ p: Pose, by: f32 ] -> Pose
+        return Pose [ at: vec3f [ p.at.x + p.ay.x * by, p.at.y + p.ay.y * by,
+                                  p.at.z + p.ay.z * by ],
+                      ax: p.ax, ay: p.ay, az: p.az, alt: p.alt,
+                      air: p.air, shown: p.shown ]
 
     func put [ s: VehicleLit, p: Pose ]
-        s.model = placed[ p.ax, p.ay, p.az, p.at, 1.0, 1.0, 1.0 ]
+        kl : f32 [ SHIP_LONG ]
+        kr : f32 [ SHIP_WIDE ]
+        # a point far off would still raster as slivers in f32
+        sh : f32 [ (p.shown) ? 1.0 : 0.0 ]
+        s.model = placed[ p.ax, p.ay, p.az, p.at, kr * sh, kl * sh,
+                          kr * sh ]
 
     # a flame from a craft's engines of a group, at body x
+    # one engine's flame: at its own bell, along its thrust as
+    # gimballed (physics' direction), lit only while it burns
+    func flame_of [ g: PlumeGlow, c: Craft, e: Engine, exit: f64,
+                    vacuum: bool, cam_alt: f32, cam_up: vec3f,
+                    vw: mat4f, prj: mat4f ] -> vec4f
+        burning : bool [ c && e && e.lit && e.force > 0.0 ]
+        p : (burning) ? pose[ c, exit ] : hidden[]
+        if [ burning ]
+            o : local_of[ c.body_point[ Dvec [ exit, e.at.y, e.at.z ] ],
+                          c.time ]
+            p.at = vec3f [ f32[ o.x - cx ], f32[ o.y - cy ],
+                           f32[ o.z - cz ] ]
+            lim : f64 [ e.gimbal_max ]
+            gp : f64 [ max[ 0.0 - lim, min[ e.pitch, lim ] ] ]
+            gy : f64 [ max[ 0.0 - lim, min[ e.yaw, lim ] ] ]
+            dirb : Dvec [ cos[ gp ] * cos[ gy ], sin[ gp ],
+                          0.0 - cos[ gp ] * sin[ gy ] ]
+            ay : dir_of[ q_rotate[ c.state.q, dirb ], c.time ]
+            side : dir_of[ q_rotate[ c.state.q, Dvec [ 0.0, 0.0, 1.0 ] ],
+                           c.time ]
+            ax : vec3f [ ay.y * side.z - ay.z * side.y,
+                         ay.z * side.x - ay.x * side.z,
+                         ay.x * side.y - ay.y * side.x ]
+            al : f32 [ sqrt[ ax.x * ax.x + ax.y * ax.y + ax.z * ax.z ] ]
+            ax = vec3f [ ax.x / al, ax.y / al, ax.z / al ]
+            p.ay = ay
+            p.ax = ax
+            p.az = vec3f [ ax.y * ay.z - ax.z * ay.y,
+                           ax.z * ay.x - ax.x * ay.z,
+                           ax.x * ay.y - ax.y * ay.x ]
+        return plume_draw[ g, c, e, p, (burning) ? 1 : 0, vacuum,
+                           cam_up, cam_alt, vw, prj ]
+
     func flame [ g: PlumeGlow, c: Craft, group: string, exit: f64,
                  vacuum: bool, cam_alt: f32, cam_up: vec3f, vw: mat4f,
                  prj: mat4f ] -> vec4f
@@ -3208,6 +4264,14 @@ element PlanetView
                     lit += 1
                     if [ !lead ] lead = e
         p : (c) ? pose[ c, exit ] : hidden[]
+        return plume_draw[ g, c, lead, p, lit, vacuum, cam_up, cam_alt,
+                           vw, prj ]
+
+    # a flame's shape and light from its lead engine and how many
+    # burn together, drawn at a pose
+    func plume_draw [ g: PlumeGlow, c: Craft, lead: Engine, p: Pose,
+                      lit: i32, vacuum: bool, cam_up: vec3f,
+                      cam_alt: f32, vw: mat4f, prj: mat4f ] -> vec4f
         n : f32 [ f32[ lit ] ]
         many : f32 [ sqrt[ n / 9.0 ] ]
         # its shape from the exit pressure against the air's
@@ -3242,7 +4306,9 @@ element PlanetView
                       : (0.6 + 1.0 * many)) * (0.4 + 0.6 * thr) ]
         g.view = vw
         g.proj = prj
-        g.model = placed[ p.ax, p.ay, p.az, p.at, bound, reach, bound ]
+        sh : f32 [ (p.shown && power > 0.0) ? 1.0 : 0.0 ]
+        g.model = placed[ p.ax, p.ay, p.az, p.at, bound * sh,
+                          reach * sh, bound * sh ]
         g.axis_o = vec4f [ p.at.x, p.at.y, p.at.z, 0.0 ]
         g.axis_d = vec4f [ 0.0 - p.ay.x, 0.0 - p.ay.y, 0.0 - p.ay.z,
                            reach ]
@@ -3265,18 +4331,31 @@ element PlanetView
         eye : vec3f [ 0.0, 0.0, 0.0 ]
         vw : mat4f [ mat4f.look_at[ eye, fwd, cu ] ]
         # the meshes start 1.4 m under the engines' gimbal plane
-        drop : f64 [ -1.4 ]
+        drop : f64 [ -1.4 * SHIP_LONG ]
         one : hidden[]
         up : hidden[]
         fair : hidden[]
         legs : hidden[]
         tank : (f.tanker) ? pose[ f.tanker, drop ] : hidden[]
+        # its top booster's pose: the tanker's own, or after its
+        # staging the upper stage's (body frames kept)
+        tank_top_p : tank
         # how far out the legs are: 1 out, 0 stowed
         swing : f64 [ 1.0 ]
         # the collar's relief: the legs turned flatter for good
         relief : f64 [ 0.0 ]
         low_c : (f.lower == 0) ? f.stack : f.booster
-        if [ f.lower == 0 ]
+        if [ f.tanker_flight ]
+            # the tanker flies; ours stands on deck one
+            tank = (f.lower == 0) ? pose[ f.stack, drop ]
+                                  : pose[ f.booster, drop ]
+            tank_top_p = (f.lower == 0) ? tank : pose[ f.orbiter, drop ]
+        if [ f.tanker_flight ]
+            one = pose[ f.parked_ship, drop ]
+            up = one
+            fair = one
+            legs = one
+        el [ f.lower == 0 ]
             one = pose[ f.stack, drop ]
             up = one
             fair = one
@@ -3292,14 +4371,16 @@ element PlanetView
                 legs = one
                 swing = f.booster.legs[ 0 ].frac
                 relief = f.booster.collar_turn
-        hi_c : (f.lower == 0) ? null : f.orbiter
+        hi_c : Craft [ null ]
+        if [ f.lower != 0 ] hi_c = f.orbiter
         # the lower stage heard from the camera
         rx : vec3f [ fwd.y * cu.z - fwd.z * cu.y,
                      fwd.z * cu.x - fwd.x * cu.z,
                      fwd.x * cu.y - fwd.y * cu.x ]
-        if [ !engine_sound ] engine_sound = EngineSound [ ]
-        engine_sound.feed[ low_c, one, rx, standard_air[ cam_alt ],
-                           pace, cx, cy, cz, camera ]
+        if [ !engine_sound && !silent ] engine_sound = EngineSound [ ]
+        if [ engine_sound ]
+            engine_sound.feed[ low_c, one, rx, standard_air[ cam_alt ],
+                               pace, cx, cy, cz, camera ]
         # the depth range fitted to what is drawn: near at nine
         # tenths of the nearest, far past the farthest with room
         # for a plume (20 km)
@@ -3310,15 +4391,49 @@ element PlanetView
         # the deck, 60 m round its middle
         nearest : f32 [ pd - 60.0 ]
         farthest : f32 [ pd ]
+        # the second deck too, where the frame puts its centre at
+        # sea level
+        ang2 : f64 [ earth_turn[ low_c.time, low_c.turn_start ] ]
+        c2 : geodetic_to_ecef[ f.pad2_lat, f.pad2_lon, 0.0 ]
+        p2 : local_of[ ecef_to_eci[ c2, ang2 ], low_c.time ]
+        pad2_c : vec3f [ f32[ p2.x - cx ], f32[ p2.y - cy ], f32[ p2.z - cz ] ]
+        pd2 : f32 [ sqrt[ pad2_c.x * pad2_c.x + pad2_c.y * pad2_c.y
+                          + pad2_c.z * pad2_c.z ] ]
+        if [ pd2 - 60.0 < nearest ] nearest = pd2 - 60.0
+        if [ pd2 > farthest ] farthest = pd2
+        c3 : geodetic_to_ecef[ f.pad3_lat, f.pad3_lon, 0.0 ]
+        p3 : local_of[ ecef_to_eci[ c3, ang2 ], low_c.time ]
+        pad3_c : vec3f [ f32[ p3.x - cx ], f32[ p3.y - cy ], f32[ p3.z - cz ] ]
+        pd3 : f32 [ sqrt[ pad3_c.x * pad3_c.x + pad3_c.y * pad3_c.y
+                          + pad3_c.z * pad3_c.z ] ]
+        if [ pd3 - 60.0 < nearest ] nearest = pd3 - 60.0
+        if [ pd3 > farthest ] farthest = pd3
+        deck_at : vec vec3f []
+        for [ i: i32 0, i < f.deck_lats.count, i += 1 ]
+            ce : geodetic_to_ecef[ f.deck_lats[ i ], f.deck_lons[ i ], 0.0 ]
+            pe : local_of[ ecef_to_eci[ ce, ang2 ], low_c.time ]
+            dc : vec3f [ f32[ pe.x - cx ], f32[ pe.y - cy ], f32[ pe.z - cz ] ]
+            dd : f32 [ sqrt[ dc.x * dc.x + dc.y * dc.y + dc.z * dc.z ] ]
+            if [ dd - 60.0 < nearest ] nearest = dd - 60.0
+            if [ dd > farthest ] farthest = dd
+            deck_at.push[ dc ]
         # each stage's mesh runs up its axis from its feet to the
         # fairing's tip, 10 m round it (the legs out)
+        k : f32 [ SHIP_LONG ]
         seen : vec Pose [] [ one, up, fair, tank ]
+        # the tanker's top booster, from its own pose after staging
+        seen.push[ raised[ tank_top_p, 38.6 * SHIP_LONG ] ]
+        # the side boosters too, once they fly alone
+        if [ f.sides ]
+            for [ sm: Mission ] in f.sides
+                if [ sm.booster ] seen.push[ pose[ sm.booster, drop ] ]
         for [ p: Pose ] in seen
-            d_seg : f32 [ axis_distance[ p, -4.0, 72.0 ] - 10.0 ]
+            d_seg : f32 [ axis_distance[ p, -4.0 * k, 72.0 * k ]
+                          - 10.0 * SHIP_WIDE ]
             if [ d_seg < nearest ] nearest = d_seg
             dp : f32 [ sqrt[ p.at.x * p.at.x + p.at.y * p.at.y
                              + p.at.z * p.at.z ] ]
-            if [ dp + 72.0 > farthest ] farthest = dp + 72.0
+            if [ dp + 72.0 * k > farthest ] farthest = dp + 72.0 * k
         # the projection keeps depth from -1 and vulkan clips
         # below 0: the plane cuts at twice z_near
         z_near : f32 [ max[ nearest * 0.45, 0.25 ] ]
@@ -3326,10 +4441,31 @@ element PlanetView
         prj : mat4f [ mat4f.perspective[ 2.0 * atan[ th ], aspect,
                                          z_near, z_far ] ]
         prj.m[ 5 ] = 0.0 - prj.m[ 5 ]
-        lg : flame[ glow, low_c, 'one', -1.4, false, cam_alt, cam_up,
-                    vw, prj ]
-        hg : flame[ glow_up, hi_c, 'two', 43.1, true, cam_alt, cam_up,
-                    vw, prj ]
+        # every engine its own flame, both stages; the first lit
+        # one lights the hulls
+        lg : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        slot : i32 [ 0 ]
+        burners : vec Craft [] [ low_c, hi_c ]
+        if [ f.sides ]
+            for [ sm: Mission ] in f.sides
+                burners.push[ sm.booster ]
+        for [ fc: Craft ] in burners
+            if [ !fc ] continue
+            for [ e: Engine ] in fc.engines
+                if [ slot >= glows.count ] continue
+                # the exit plane 1.4 m under its gimbal
+                ex : f64 [ e.at.x - 1.4 * k ]
+                lk : flame_of[ glows[ slot ], fc, e, ex, false,
+                               cam_alt, cam_up, vw, prj ]
+                if [ lg.w <= 0.0 && lk.w > 0.0 ] lg = lk
+                slot += 1
+        while [ slot < glows.count ]
+            flame_of[ glows[ slot ], null, null, 0.0, false,
+                      cam_alt, cam_up, vw, prj ]
+            slot += 1
+        # the old single upper flame stays dark
+        hg : flame[ glow_up, null, 'two', 0.0, false, cam_alt,
+                    cam_up, vw, prj ]
         light : (lg.w > 0.0) ? lg : hg
         alt : f32 [ one.alt ]
         sc : vec4f [ sun_colour[ alt, sun.y ] ]
@@ -3340,10 +4476,34 @@ element PlanetView
                      0.5 * air + 0.2, 0.0 ]
         mid : f32 [ (alt + cam_alt) * 0.5 ]
         haze : f32 [ 1.0e-5 * exp[ 0.0 - mid / 8000.0 ] ]
-        lits : vec VehicleLit [] [ lit_pad, lit_one, lit_up, lit_fair,
+        lits : vec VehicleLit [] [ lit_pad, lit_pad2, lit_pad3, lit_one,
+                                   lit_up,
+                                   lit_fair,
                                    lit_tank_one, lit_tank_legs,
-                                   lit_tank_fins, lit_tank,
-                                   lit_tank_nose, lit_legs, lit_fins ]
+                                   lit_tank_fins, lit_tank_legs2,
+                                   lit_tank_fins2, lit_tank,
+                                   lit_tank_nose, lit_legs, lit_legs_up,
+                                   lit_fins, lit_fins_up,
+                                   lit_puff_one, lit_puff_up,
+                                   lit_puff_tank, lit_port_up,
+                                   lit_port_tank ]
+        for [ dl: VehicleLit ] in lit_decks
+            lits.push[ dl ]
+        for [ ml: VehicleLit ] in mark_lits
+            lits.push[ ml ]
+        for [ sl: VehicleLit ] in side_lits
+            lits.push[ sl ]
+        # our floodlight, on while we close on the tanker
+        ours : (f.lower == 0) ? f.stack : f.orbiter
+        spot_p : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        spot_d : vec4f [ 0.0, 1.0, 0.0, 0.94 ]
+        if [ ours && f.approaching ]
+            sp : local_of[ ours.body_point[ ours.port_at ], ours.time ]
+            spot_p = vec4f [ f32[ sp.x - cx ], f32[ sp.y - cy ],
+                             f32[ sp.z - cz ], 1.0 ]
+            sdv : dir_of[ q_rotate[ ours.state.q, ours.port_dir ],
+                          ours.time ]
+            spot_d = vec4f [ sdv.x, sdv.y, sdv.z, 0.94 ]
         for [ s: VehicleLit ] in lits
             s.view = vw
             s.proj = prj
@@ -3355,34 +4515,191 @@ element PlanetView
             s.glow_col = gc
             s.screen = vec4f [ f32[ craft.width ], f32[ craft.height ],
                                haze, 0.0 ]
+            s.spot_pos = spot_p
+            s.spot_dir = spot_d
         pad_at : vec3f [ f32[ 0.0 - cx ], f32[ 0.0 - cy ],
                          f32[ 0.0 - cz ] ]
+        # past 100 km the deck is under a pixel, and its f32
+        # place from orbit breaks up in the projection
+        near_pad : f32 [ (cx * cx + cy * cy + cz * cz < 1.0e10) ? 1.0
+                         : 0.0 ]
         lit_pad.model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
                                 vec3f [ 0.0, 1.0, 0.0 ],
                                 vec3f [ 0.0, 0.0, 1.0 ], pad_at,
-                                1.0, 1.0, 1.0 ]
+                                near_pad, near_pad, near_pad ]
+        # the second, at its place worked out with the depth range
+        lit_pad2.model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
+                                 vec3f [ 0.0, 1.0, 0.0 ],
+                                 vec3f [ 0.0, 0.0, 1.0 ], pad2_c,
+                                 near_pad, near_pad, near_pad ]
+        lit_pad3.model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
+                                 vec3f [ 0.0, 1.0, 0.0 ],
+                                 vec3f [ 0.0, 0.0, 1.0 ], pad3_c,
+                                 near_pad, near_pad, near_pad ]
+        # where each booster is heading, by its push now
+        heads : vec Craft []
+        if [ f.lower >= 1 && f.lower < 7 ] heads.push[ f.booster ]
+        el heads.push[ null ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            side_c : Craft [ null ]
+            if [ f.sides && f.sides.count > k && f.sides[ k ].lower < 7 ]
+                side_c = f.sides[ k ].booster
+            heads.push[ side_c ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            hp : heading_of[ heads[ i ], f.deck_h ]
+            on : f32 [ (hp.w > 0.0) ? 1.0 : 0.0 ]
+            mark_lits[ i ].model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
+                                           vec3f [ 0.0, 1.0, 0.0 ],
+                                           vec3f [ 0.0, 0.0, 1.0 ],
+                                           vec3f [ hp.x, hp.y, hp.z ],
+                                           on, on, on ]
+        for [ i: i32 0, i < deck_at.count, i += 1 ]
+            lit_decks[ i ].model = placed[ vec3f [ 1.0, 0.0, 0.0 ],
+                                           vec3f [ 0.0, 1.0, 0.0 ],
+                                           vec3f [ 0.0, 0.0, 1.0 ],
+                                           deck_at[ i ], near_pad,
+                                           near_pad, near_pad ]
         put[ lit_one, one ]
         put[ lit_up, up ]
         put[ lit_fair, fair ]
         put[ lit_tank_one, tank ]
         put[ lit_tank_legs, tank ]
+        # its fins under its nose: up the axis as the crew ship's
+        # the bottom booster's fins where ours are; the top one's
+        # set 38.6 m up with it, its nose 20.2 m up the meshes
         put[ lit_tank_fins, tank ]
-        put[ lit_tank, tank ]
-        put[ lit_tank_nose, tank ]
+        top_rise : f32 [ 38.6 * SHIP_LONG ]
+        tank_top : raised[ tank_top_p, top_rise ]
+        put[ lit_tank, tank_top ]
+        put[ lit_tank_legs2, tank_top ]
+        put[ lit_tank_fins2, tank_top ]
+        put[ lit_tank_nose, raised[ tank_top_p, 20.2 * SHIP_LONG ] ]
+        lit_tank_legs2.slide = leg_link[]
+        lit_tank_legs2.fold = vec4f [ leg_swing[], LEG_HINGE_R,
+                                      LEG_HINGE_Y, 0.0 ]
         # the tanker's legs and fins stay stowed
         lit_tank_legs.slide = leg_link[]
-        lit_tank_legs.fold = vec4f [ leg_swing[], LEG_HINGE_R,
-                                     LEG_HINGE_Y, 0.0 ]
-        lit_tank_fins.fold = vec4f [ 1.5707963,
-                                     FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
-                                     0.0 ]
+        tank_out : f64 [ 0.0 ]
+        if [ f.tanker && f.tanker.legs.count > 0 ]
+            tank_out = f.tanker.legs[ 0 ].frac
+        if [ f.tanker_flight && low_c && low_c.legs.count > 0 ]
+            tank_out = low_c.legs[ 0 ].frac
+        lit_tank_legs.fold = vec4f [ f32[ 1.0 - tank_out ] * leg_swing[],
+                                     LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+        # its two fin sets from the physics: the bottom booster's
+        # (the stack's, then the returning booster's), the top's
+        # (the stack's, then the climbing stage's)
+        tank_low : Craft [ f.tanker ]
+        tank_high : Craft [ f.tanker ]
+        if [ f.tanker_flight ]
+            tank_low = low_c
+            tank_high = (f.lower == 0) ? f.stack : f.orbiter
+        fin_bind[ lit_tank_fins, tank_low, 'one', 0.0 ]
+        fin_bind[ lit_tank_fins2, tank_high, 'two', 0.0 ]
+        # the side boosters a face's width across, body +z left
+        gap : f32 [ 3.66 * SHIP_WIDE + 1.5 ]
+        ways : vec f32 [] [ gap, 0.0 - gap ]
+        side_names : vec string [] [ 'left', 'right' ]
+        side_pose : vec Pose []
+        for [ k: i32 0, k < 2, k += 1 ]
+            sp : across[ tank, ways[ k ] ]
+            side_fold : vec4f [ lit_tank_legs.fold ]
+            # let go of the middle one: its own craft, its own legs
+            flown : Craft [ null ]
+            if [ f.sides && f.sides.count > k ] flown = f.sides[ k ].booster
+            if [ flown ]
+                sp = pose[ flown, drop ]
+                out_k : f64 [ 0.0 ]
+                for [ g: Leg ] in flown.legs
+                    if [ !g.folded ] out_k = g.frac
+                side_fold = vec4f [ f32[ 1.0 - out_k ] * leg_swing[],
+                                    LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+                fin_bind[ side_lits[ 4 + k ], flown, side_names[ k ], 0.0 ]
+            el
+                fin_bind[ side_lits[ 4 + k ], tank_low, 'one', ways[ k ] ]
+            put[ side_lits[ k ], sp ]
+            put[ side_lits[ 2 + k ], sp ]
+            put[ side_lits[ 4 + k ], sp ]
+            side_lits[ 2 + k ].slide = leg_link[]
+            side_lits[ 2 + k ].fold = side_fold
+            put[ side_lits[ 6 + k ], raised[ sp, -18.4 * SHIP_LONG ] ]
+            put[ side_lits[ 10 + k ], sp ]
+            side_pose.push[ sp ]
+        put[ side_lits[ 8 ], tank ]
+        put[ side_lits[ 9 ], tank ]
+        # the folded legs stay stowed while joined; once each booster
+        # flies alone they swing out with its others
+        apart : bool [ f.sides && f.sides.count > 0 ]
+        for [ k: i32 9, k < 12, k += 1 ]
+            side_lits[ k ].slide = leg_link[]
+            side_lits[ k ].fold = vec4f [ leg_swing[], LEG_HINGE_R,
+                                          LEG_HINGE_Y, 0.0 ]
+        # each side booster's nitrogen for 1.5 s from the parting
+        venting : bool [ apart && f.met - f.sep_t < 1.5 ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            put[ side_lits[ 12 + k ], side_pose[ k ] ]
+            side_lits[ 12 + k ].jets_on = vec4f [ (venting) ? 3.0 : 0.0,
+                                                  0.0, 0.0, 0.0 ]
+        if [ apart ]
+            side_lits[ 9 ].fold = lit_tank_legs.fold
+            side_lits[ 10 ].fold = side_lits[ 2 ].fold
+            side_lits[ 11 ].fold = side_lits[ 3 ].fold
+        put[ lit_port_up, up ]
+        # its ports 12.85 m higher than ours (its top booster's side)
+        put[ lit_port_tank, raised[ tank_top_p, 12.85 * SHIP_LONG ] ]
+        # the gear in the meshes' units: doors along the hull's
+        # length, the probes out of the face
+        slide : f32 [ f32[ f.doors ] * 0.95 / SHIP_LONG ]
+        run : f32 [ f32[ 0.0 - f.probe ] / SHIP_WIDE ]
+        lit_port_up.dock = vec4f [ slide, run, 0.0, 0.0 ]
+        lit_port_tank.dock = vec4f [ slide, 0.0, 0.0, 0.0 ]
+        put[ lit_puff_one, one ]
+        put[ lit_puff_up, up ]
+        put[ lit_puff_tank, tank ]
+        lit_puff_one.jets_on = jet_bits[ low_c, all_jets ]
+        lit_puff_up.jets_on = jet_bits[ hi_c, all_jets ]
+        lit_puff_tank.jets_on = jet_bits[ f.tanker, all_jets ]
         put[ lit_legs, legs ]
+        # the small legs: the skirt's length (0.85 of a leg), their
+        # hinge lifted to its foot (mesh 40.2), stowed for now
+        short : f32 [ 0.85 ]
+        lift : f32 [ (40.2 - short * LEG_HINGE_Y) * SHIP_LONG ]
+        lit_legs_up.model = placed[ up.ax, up.ay, up.az,
+            vec3f [ up.at.x + up.ay.x * lift, up.at.y + up.ay.y * lift,
+                    up.at.z + up.ay.z * lift ],
+            SHIP_WIDE * ((up.shown) ? 1.0 : 0.0),
+            SHIP_LONG * short * ((up.shown) ? 1.0 : 0.0),
+            SHIP_WIDE * ((up.shown) ? 1.0 : 0.0) ]
+        lit_legs_up.slide = leg_link[]
+        # stowed, until the crew ship swings them down to land
+        out_up : f64 [ 0.0 ]
+        if [ hi_c && hi_c.legs.count > 0 ] out_up = hi_c.legs[ 0 ].frac
+        lit_legs_up.fold = vec4f [ f32[ 1.0 - out_up ] * leg_swing[],
+                                   LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+        lit_legs_up.look = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
         lit_legs.slide = leg_link[]
         lit_legs.fold = vec4f [ f32[ 1.0 - swing ] * leg_swing[]
                                 + f32[ relief ],
                                 LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
         # stowed, a fin lies flat up the hull; it swings down
         put[ lit_fins, one ]
+        # the crew stage's fins: up the axis from the booster's
+        rise : f32 [ 18.5 * SHIP_LONG ]
+        hp : Pose [ at: vec3f [ up.at.x + up.ay.x * rise,
+                                up.at.y + up.ay.y * rise,
+                                up.at.z + up.ay.z * rise ],
+                    ax: up.ax, ay: up.ay, az: up.az, alt: up.alt,
+                    air: up.air, shown: up.shown ]
+        put[ lit_fins_up, hp ]
+        hi_fins : Craft [ low_c ]
+        if [ hi_c ] hi_fins = hi_c
+        up_out : f64 [ 0.0 ]
+        if [ hi_fins ]
+            for [ fk: Fin ] in hi_fins.fins
+                if [ fk.group == 'two' ] up_out = fk.frac
+        lit_fins_up.fold = vec4f [ f32[ 1.0 - up_out ] * 1.5707963,
+                                   FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
+                                   0.0 ]
         out : f64 [ (low_c.fins.count > 0) ? low_c.fins[ 0 ].frac
                     : 0.0 ]
         lit_fins.fold = vec4f [ f32[ 1.0 - out ] * 1.5707963,
@@ -3422,6 +4739,14 @@ element launch : trinity
     public rwind     : bool
     public wind_min  : f64    [ 36.0 ]
     public wind_max  : f64    [ 216.0 ]
+    # --load <file>: start from a saved flight (P saves, L loads
+    # the last one saved)
+    public load      : string
+    # --hop: the crew ship turns back after staging and lands on
+    # deck two (else it flies on to the tanker)
+    public hop       : bool
+    # --ship: our ship flies (else the tanker goes first)
+    public ship      : bool
     mutable view_mode : i32
     mutable warp     : f32    [ 1.0 ]
     mutable camera   : i32
@@ -3435,7 +4760,7 @@ element launch : trinity
         states = sky_states[]
         if [ preset < 0 || preset >= states.count ] preset = 1
         cur = states[ preset ]
-        log 'launch: space launch  r restart  c camera  , . warp  1-5 weather  t/g sun  e/d exposure  q quality  v view  drag, wheel, pgup/pgdn: camera distance'
+        log 'launch: space launch  r restart  p save  l load  c camera  , . warp  1-5 weather  t/g sun  e/d exposure  q quality  v view  drag, wheel, pgup/pgdn: camera distance'
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
@@ -3450,7 +4775,25 @@ element launch : trinity
         if [ k >= 49 && k <= 53 ]
             preset = k - 49
             cur = states[ preset ]
-        if [ k == 67 ] camera = (camera + 1) % 4
+        if [ k == 67 ] camera = (camera + 1) % 6
+        # P: the flight to a file; L: the last one saved, back
+        saves : path.path_cache[ 'launch' ]
+        dir : path '{saves}/saves'
+        latest : path '{dir}/last.save'
+        if [ k == 80 && v && v.flight ]
+            dir.make_dir[]
+            mins : i32 [ v.flight.met / 60.0 ]
+            secs : i32 [ i32[ v.flight.met ] % 60 ]
+            stamp : path '{dir}/T{mins}m{secs}s.save'
+            v.flight.save_state[ stamp ]
+            v.flight.save_state[ latest ]
+        if [ k == 76 && v ]
+            if [ latest.exists[] ]
+                if [ v.flight ] v.flight.drop[]
+                v.flight = null
+                load = '{latest}'
+            el
+                log 'launch: nothing saved yet (P saves)'
         if [ k == 46 && warp < 100.0 ] warp = warp * 2.0
         if [ k == 44 && warp > 1.0 ] warp = warp / 2.0
         if [ k == 84 ] sun_el += 0.04
@@ -3499,7 +4842,12 @@ element launch : trinity
         highs : vec string [] [ 'on the stack', 'coasting to ignition',
                                 'burning to orbit', 'parking orbit',
                                 'transfer burn', 'coasting up',
-                                'circularising', 'with the tanker' ]
+                                'circularising', 'with the tanker',
+                                'ports turning', 'to 200 m under it',
+                                'to 20 m under it', 'holding at 20 m',
+                                'closing to contact', 'soft capture',
+                                'docked', 'refuelled', 'undocking',
+                                'clear of the tanker' ]
         lo_s : lows[ f.lower ]
         hi_s : highs[ f.upper ]
         if [ !v.flying ] lo_s = 'space to launch'
@@ -3510,8 +4858,9 @@ element launch : trinity
                                            c.state.r ] ]
         spd : i32 [ dv_len[ rel ] ]
         prop : i32 [ c.propellant[] / 1000.0 ]
-        cams : vec string [] [ 'platform', 'orbiter', 'booster',
-                               'tanker' ]
+        third : string [ (f.tanker) ? 'tanker' : 'left booster' ]
+        cams : vec string [] [ 'platform', 'orbiter', 'booster', third,
+                               'our port', 'right booster' ]
         cam : cams[ camera ]
         wp : '{i32[ warp ]}x'
         if [ quick ]
@@ -3523,6 +4872,19 @@ element launch : trinity
             '{lead}{mins}:{pad}{secs}  booster: {lo_s}  orbiter: {hi_s}',
             '{cam}: altitude {alt} km  speed {spd} m/s  propellant {prop} t',
             'warp {wp}, physics keeping {kept}x  {fps} fps  {news}' ]
+        for [ dl: string ] in f.dock_report[]
+            lines.push[ dl ]
+        de : v.dock_eye
+        if [ f.approaching && de && !de.ready ]
+            lines.push[ 'net: no weights at ~/.cache/dock/docknet.f32 (run silver dock)' ]
+        if [ f.approaching && de && de.ready && !de.guess ]
+            lines.push[ 'net: waiting for the first pair from the port cameras' ]
+        if [ de && de.guess && de.guess.count == 7 ]
+            gs : de.guess
+            tr : de.truth
+            seen : i32 [ gs[ 6 ] * 100.0 ]
+            lines.push[ 'net: right {gs[ 0 ]} up {gs[ 1 ]} out {gs[ 2 ]} m, roll {gs[ 3 ]} pitch {gs[ 4 ]} yaw {gs[ 5 ]} deg, in range {seen}%' ]
+            lines.push[ 'true: right {tr[ 0 ]} up {tr[ 1 ]} out {tr[ 2 ]} m, roll {tr[ 3 ]} pitch {tr[ 4 ]} yaw {tr[ 5 ]} deg' ]
         y : f32 [ 10.0 ]
         for [ s: string ] in lines
             cv.fill_color[ '#0008' ]
@@ -3546,7 +4908,9 @@ element launch : trinity
             view_mode: view_mode, sun_el: sun_el, sun_az: sun_az,
             warp: warp, cur: cur, camera: camera, landing: landing,
             quick: quick, rwind: rwind, wind_min: wind_min,
-            wind_max: wind_max, animated: true ]
+            wind_max: wind_max, load_from: load, hop: hop, ship: ship,
+            animated: true ]
+        load = null
         return e
 
 # ---------------------------------------------------------------
@@ -3566,6 +4930,7 @@ SOUND_FULL_DB : f64 [ 150.0 ]
 class EngineSound
     public out    : AudioOut
     public on     : bool
+    intern runner : u64
     # samples written to the card: the sound's clock
     public played : i64
     # what the engines sent, per frame: when, where, how loud
@@ -3653,8 +5018,9 @@ class EngineSound
         right = new f32 [ SOUND_ENGINES ]
         for [ i: i32 0, i < SOUND_ENGINES, i += 1 ]
             seed[ i ] = 2463534242 + i * 7919
-            # each bell roars a little apart: they beat, not sum
-            centre[ i ] = 68.0 + i * 7.3
+            # each bell roars a little apart: they beat, not sum;
+            # a bigger nozzle's note is lower (Strouhal: 1 / size)
+            centre[ i ] = (68.0 + i * 7.3) / SHIP_WIDE
             left[ i ] = 0.7071
             right[ i ] = 0.7071
         cut = 0.1
@@ -3664,8 +5030,15 @@ class EngineSound
             on = true
             tid : local u64 [ 1 ]
             pthread_create[ tid, null, @run, a ]
+            runner = tid[ 0 ]
         el
             log 'launch: no sound device; the engines are silent'
+
+    # the run loop ends before its code can be unloaded
+    public func stop []
+        if [ !on ] return
+        on = false
+        pthread_join[ runner, null ]
 
     # what the engines send this frame, and where the ear is; the
     # run loop hears whatever reaches the ear now, so a camera
@@ -3872,8 +5245,8 @@ class EngineSound
             gain[ i ] += (goal - gain[ i ]) * 0.0015
             if [ gain[ i ] < 0.00001 && goal == 0.0 ] continue
             w : f32 [ noise[ i ] * 2.0 - 1.0 ]
-            # the rumble: noise under about 40 Hz
-            rumble[ i ] += (w - rumble[ i ]) * 0.006
+            # the rumble: noise under about 40 Hz over the scale
+            rumble[ i ] += (w - rumble[ i ]) * 0.006 / SHIP_WIDE
             # the roar: a band round the bell's own note
             fc : f32 [ centre[ i ] * (0.8 + 0.2 * mine) ]
             k : f32 [ 2.0 * sin[ 3.14159 * fc / SOUND_RATE ] ]
@@ -3886,7 +5259,8 @@ class EngineSound
             if [ roll < 0.007 * mine ]
                 amp : f32 [ noise[ i ] ]
                 crack[ i ] = 0.2 + 1.6 * amp * amp * amp
-            crack[ i ] *= 0.9
+            # each shock rings longer from a bigger plume
+            crack[ i ] *= pow[ 0.9, 1.0 / SHIP_WIDE ]
             v : f32 [ (rumble[ i ] * 9.0
                        + roar_bd[ i ] * 0.6 * blk_roar
                        + (w * 0.07 + crack[ i ]) * blk_high)
@@ -3902,3 +5276,299 @@ class EngineSound
         if [ y > 3.0 ] y = 3.0
         if [ y < -3.0 ] y = -3.0
         return y * (27.0 + y * y) / (27.0 + 9.0 * y * y)
+
+# the tanker's ports square to ours: our nose by its nose,
+# our ports' face turned to its
+func dock_square [ tk: Craft ] -> Quat
+    tq : tk.state.q
+    tx : q_rotate[ tq, Dvec [ 1.0, 0.0, 0.0 ] ]
+    tn : q_rotate[ tq, tk.port_dir ]
+    q1 : q_between[ Dvec [ 1.0, 0.0, 0.0 ], tx ]
+    z1 : q_rotate[ q1, Dvec [ 0.0, 0.0, 1.0 ] ]
+    face : dv_scale[ tn, -1.0 ]
+    ang : f64 [ atan2[ dv_dot[ dv_cross[ z1, face ], tx ],
+                       dv_dot[ z1, face ] ] ]
+    return q_mul[ q_axis[ tx, ang ], q1 ]
+
+# what the net is taught and judged by: the tanker's ports'
+# midpoint in our cameras' frame (right, up, out: m) and our
+# turn off square as roll, pitch, yaw (deg; about x, then y,
+# then z)
+func dock_truth [ ob: Craft, tk: Craft ] -> vec f64
+    q : ob.state.q
+    eye : ob.body_point[ dv_add[ ob.port_at,
+                                 dv_scale[ ob.port_dir, 0.2 ] ] ]
+    look : q_rotate[ q, ob.port_dir ]
+    nose : q_rotate[ q, Dvec [ 1.0, 0.0, 0.0 ] ]
+    right : dv_cross[ look, nose ]
+    to : dv_sub[ tk.body_point[ tk.port_at ], eye ]
+    off : q_mul[ q_conj[ dock_square[ tk ] ], q ]
+    cx : q_rotate[ off, Dvec [ 1.0, 0.0, 0.0 ] ]
+    cy : q_rotate[ off, Dvec [ 0.0, 1.0, 0.0 ] ]
+    cz : q_rotate[ off, Dvec [ 0.0, 0.0, 1.0 ] ]
+    deg : f64 [ 57.2957795 ]
+    pitch : f64 [ asin[ max[ -1.0, min[ cz.x, 1.0 ] ] ] * deg ]
+    roll : f64 [ atan2[ 0.0 - cz.y, cz.z ] * deg ]
+    yaw : f64 [ atan2[ 0.0 - cy.x, cx.x ] * deg ]
+    return vec f64 [] [ dv_dot[ to, right ], dv_dot[ to, nose ],
+                        dv_dot[ to, look ], roll, pitch, yaw ]
+
+# both port cameras, each settled over six frames, the oxygen
+# port's first: the pictures exactly as the net was taught on
+func dock_pair [ v: PlanetView, w: Window ] -> vec Image
+    out : vec Image []
+    for [ cam: i32 0, cam < 2, cam += 1 ]
+        v.port_pick = cam
+        for [ f: i32 0, f < 6, f += 1 ]
+            v.frame_draw[ w ]
+            v.draw_targets[]
+            w.screen.sync_all[]
+        im : Image [ w.screen.color ]
+        out.push[ im ]
+    return out
+
+# a 32 x 32 offscreen window and its port-camera view, mounted
+# as the window mounts an element
+func dock_window [ vk: vk_context ] -> Window
+    return view_window[ vk, 32 ]
+
+# an offscreen square window side pixels wide
+func view_window [ vk: vk_context, side: i32 ] -> Window
+    w : Window [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: side, height: side ]
+    if [ !w.element_targets ]
+        w.element_targets = map Render [string] []
+    # the screen canvas a running window makes in its update
+    w.screen = Canvas [ w: w, vk: vk, format: Pixel.rgba8,
+                        load_existing: true, width: side,
+                        height: side ]
+    w.screen.resize[ side, side ]
+    w.screen.update[]
+    return w
+
+func dock_view [ w: Window, m: Mission ] -> PlanetView
+    return flight_view[ w, m, 4, 32.0 ]
+
+# a view of a flight from one of its cameras, mounted offscreen
+func flight_view [ w: Window, m: Mission, cam: i32, side: f32 ]
+                 -> PlanetView
+    states : sky_states[]
+    v : PlanetView [ cur: states[ 1 ], camera: cam, silent: true,
+                     animated: true ]
+    v.id = 'dock'
+    v.ux = w
+    v.vk = w.vk
+    v.initialize[]
+    bind_members[ v ]
+    v.hold_members[]
+    v.use_flight[ m ]
+    v.set_size[ side, side ]
+    return v
+
+# the ship's own port cameras while it closes on the tanker:
+# a pair as the pictures were made, through the trained net,
+# its guess kept beside the truth
+class DockEye
+    public vk    : vk_context
+    public w     : Window
+    public v     : PlanetView
+    public net   : DockNet
+    public guess : vec f64
+    public truth : vec f64
+    public next  : f64
+    public ready : bool
+
+    # the running app's device: a bare one has no command pool
+    func init []
+        net = DockNet [ vk: vk ]
+        ready = net.load[ '{path.path_cache[ 'dock' ]}/docknet.f32' ]
+
+    func look [ m: Mission, elev: f32, azim: f32 ]
+        if [ !w ]
+            w = dock_window[ vk ]
+            v = dock_view[ w, m ]
+        v.use_flight[ m ]
+        v.sun_el = elev
+        v.sun_az = azim
+        pair : dock_pair[ v, w ]
+        grey : vec f32 []
+        dock_grey[ pair[ 0 ], grey ]
+        dock_grey[ pair[ 1 ], grey ]
+        guess = net.guess[ grey ]
+        m.net_fix[ guess ]
+        ours : (m.lower == 0) ? m.stack : m.orbiter
+        truth = dock_truth[ ours, m.tanker ]
+
+# the CNN's pictures, from both port cameras at once, of the
+# tanker's two ports. In range: inside the approach cone (1 to
+# 30 m out, aside up to 0.3 m and a quarter of the distance,
+# 5 deg of roll, 3 of pitch and yaw); off target: the tanker's
+# ports in neither camera's view. 32 x 32, in sun and in night
+# under our floodlight. Beside each pair (dock_<n>_a.png, the
+# oxygen port's, _b the fuel port's) its .agi: the tanker's
+# ports' midpoint in our cameras' frame (right, up, out: m),
+# our turn off square (roll, pitch, yaw: deg) and in_range
+export func docking_images []
+    dir : path '../launch/dock2'
+    near : i32 [ 500 ]
+    # 500 wanted; 27 made before the machine froze (Oct 8)
+    far : i32 [ 27 ]
+    count : i32 [ near + far ]
+    # each pair's labels beside it, same stem: a stopped run
+    # keeps what it made and starts again where it stopped
+    last : path '../launch/dock2/dock_{count - 1}.agi'
+    force : bool [ getenv[ 'SILVER_EXPORT_FORCE' ] != null ]
+    if [ !force && last.exists[] ]
+        log 'launch: docking pictures current'
+        return
+    dir.make_dir[]
+    vk : vk_context []
+    vk.hold[]
+    w : dock_window[ vk ]
+    w.hold[]
+    ms : Mission [ ]
+    ms.hold[]
+    ob : falcon_nine[ ms.payload ]
+    for [ i: i32 0, i < ob.tanks.count, i += 1 ]
+        ob.state.prop[ i ] = 0.0
+    ob.mass_properties[ ob.state.prop ]
+    for [ g: Leg ] in ob.legs
+        g.out = false
+        g.frac = 0.0
+    ms.stack = ob
+    ms.orbiter = ob
+    ms.upper = 9
+    ms.approaching = true
+    v : dock_view[ w, ms ]
+    v.hold[]
+    tk : ms.tanker
+    rnd : u64 [ 88172645463325252 ]
+    made : i32 [ 0 ]
+    deg : f64 [ 0.0174532925 ]
+    for [ n: i32 0, n < count, n += 1 ]
+        inside : bool [ n < near ]
+        name : string 'dock_{n}'
+        mark : path '{dir}/{name}.agi'
+        # the tanker: square to its ports, nose by nose
+        tq : tk.state.q
+        tx : q_rotate[ tq, Dvec [ 1.0, 0.0, 0.0 ] ]
+        tn : q_rotate[ tq, tk.port_dir ]
+        tp : tk.body_point[ tk.port_at ]
+        tf : tk.body_point[ port_of[ tk, 0 ] ]
+        ta : tk.body_point[ port_of[ tk, 1 ] ]
+        square : dock_square[ tk ]
+        side_dir : dv_cross[ tn, tx ]
+        # draw until the shot is what it should be: in range, or
+        # off target with neither of its ports in either view
+        out : f64 [ 0.0 ]
+        su : f64 [ 0.0 ]
+        sv : f64 [ 0.0 ]
+        roll : f64 [ 0.0 ]
+        pitch : f64 [ 0.0 ]
+        yaw : f64 [ 0.0 ]
+        q : Quat [ 1.0, 0.0, 0.0, 0.0 ]
+        mine : Dvec [ 0.0, 0.0, 0.0 ]
+        for [ tries: i32 0, tries < 50, tries += 1 ]
+            draws : vec f64 []
+            for [ k: i32 0, k < 8, k += 1 ]
+                rnd = rnd ^ (rnd << 13)
+                rnd = rnd ^ (rnd >> 7)
+                rnd = rnd ^ (rnd << 17)
+                u : f64 [ f64[ rnd >> 11 ] / 9007199254740992.0 ]
+                even : f64 [ u * 2.0 - 1.0 ]
+                draws.push[ even ]
+            out = 15.5 + 14.5 * draws[ 0 ]
+            wide : f64 [ (inside) ? 0.3 + 0.25 * out : 6.0 + 1.5 * out ]
+            su = draws[ 1 ] * wide
+            sv = draws[ 2 ] * wide
+            turn : f64 [ (inside) ? 1.0 : 6.0 ]
+            roll = draws[ 3 ] * 5.0 * turn
+            pitch = draws[ 4 ] * 3.0 * turn
+            yaw = draws[ 5 ] * 3.0 * turn
+            v.sun_el = f32[ draws[ 6 ] * 0.9 + 0.3 ]
+            v.sun_az = f32[ draws[ 7 ] * 3.14159265 ]
+            off : q_mul[ q_axis[ Dvec [ 1.0, 0.0, 0.0 ], roll * deg ],
+                         q_mul[ q_axis[ Dvec [ 0.0, 1.0, 0.0 ],
+                                        pitch * deg ],
+                                q_axis[ Dvec [ 0.0, 0.0, 1.0 ],
+                                        yaw * deg ] ] ]
+            q = q_mul[ square, off ]
+            mine = dv_add[ dv_add[ tp, dv_scale[ tn, out ] ],
+                           dv_add[ dv_scale[ tx, su ],
+                                   dv_scale[ side_dir, sv ] ] ]
+            if [ inside ] break
+            # off target: either tanker port inside either view?
+            look : q_rotate[ q, ob.port_dir ]
+            nose : q_rotate[ q, Dvec [ 1.0, 0.0, 0.0 ] ]
+            right : dv_cross[ look, nose ]
+            seen : bool [ false ]
+            for [ cam: i32 0, cam < 2, cam += 1 ]
+                at : dv_sub[ port_of[ ob, cam ], ob.port_at ]
+                eye : dv_add[ dv_add[ mine, q_rotate[ q, at ] ],
+                              dv_scale[ look, 0.2 ] ]
+                for [ pt: i32 0, pt < 2, pt += 1 ]
+                    there : tf
+                    if [ pt == 1 ] there = ta
+                    to : dv_sub[ there, eye ]
+                    z : f64 [ dv_dot[ to, look ] ]
+                    if [ z <= 0.0 ] continue
+                    # the port's ring reaches 1.25 m round it
+                    edge : f64 [ (f64[ v.port_th ] + 1.25 / z) * z ]
+                    if [ abs[ dv_dot[ to, right ] ] < edge
+                         && abs[ dv_dot[ to, nose ] ] < edge ]
+                        seen = true
+            if [ !seen ] break
+        if [ !force && mark.exists[] ] continue
+        ob.state.q = q
+        ob.state.r = dv_sub[ mine, q_rotate[ q, dv_sub[ ob.port_at,
+                                     Dvec [ ob.cg, 0.0, 0.0 ] ] ] ]
+        ob.state.v = tk.state.v
+        ob.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+        ob.time = tk.time
+        pair : dock_pair[ v, w ]
+        pair[ 0 ].png[ path '{dir}/{name}_a.png' ]
+        pair[ 1 ].png[ path '{dir}/{name}_b.png' ]
+        tr : dock_truth[ ob, tk ]
+        flag : i32 [ (inside) ? 1 : 0 ]
+        tag : string 'right: {tr[ 0 ]}\nup: {tr[ 1 ]}\nout: {tr[ 2 ]}\nroll: {tr[ 3 ]}\npitch: {tr[ 4 ]}\nyaw: {tr[ 5 ]}\nin_range: {flag}\n'
+        mark.save[ tag, null ]
+        made += 1
+    log 'launch: {made} docking pairs made, {count} in {dir}'
+
+# the flames are seen: the rocket at T+20 from its chase camera,
+# the picture's light with its engines burning against cut
+expect func t_plume_seen [] -> bool
+    vk : vk_context []
+    vk.hold[]
+    w : view_window[ vk, 256 ]
+    w.hold[]
+    m : Mission [ ]
+    m.hold[]
+    for [ i: i32 0, i < 12000, i += 1 ]
+        m.step[ 0.0025 ]
+        if [ i % 7 == 0 ] Au.auto_free[]
+    v : flight_view[ w, m, 2, 256.0 ]
+    v.hold[]
+    lights : vec f64 []
+    for [ pass: i32 0, pass < 2, pass += 1 ]
+        if [ pass == 1 ]
+            for [ e: Engine ] in m.stack.engines
+                e.lit = false
+                e.force = 0.0
+        for [ f: i32 0, f < 8, f += 1 ]
+            v.frame_draw[ w ]
+            v.draw_targets[]
+            w.screen.sync_all[]
+        im : Image [ w.screen.color ]
+        px : @u8 [ im.pixels ]
+        ch : i64 [ im.channels ]
+        sum : f64 [ 0.0 ]
+        for [ k: i64 0, k < 256 * 256, k += 1 ]
+            sum += f64[ px[ k * ch ] ] + f64[ px[ k * ch + 1 ] ]
+                   + f64[ px[ k * ch + 2 ] ]
+        lights.push[ sum ]
+        shot : path '../launch/plume_{pass}.png'
+        im.png[ shot ]
+    log 'plume seen: burning {lights[ 0 ]}, cut {lights[ 1 ]}'
+    return lights[ 0 ] > lights[ 1 ] * 1.02
+

@@ -202,6 +202,13 @@ class Receiver
     # taken off this receiver's (differential GPS)
     public base    : Receiver
     public base_at : Dvec
+    # a moving base (another ship): where it truly is and its
+    # speed (ECEF), for its own ranges; base_at is where it
+    # believes it is. Zero: a surveyed base, base_at is true
+    public base_true : Dvec
+    public base_vel  : Dvec
+    # when the last epoch was measured (craft clock)
+    public epoch_t   : f64 [ -1.0 ]
 
     func init []
         pending = vec Fix []
@@ -376,6 +383,7 @@ class Receiver
         ve : eci_to_ecef[ dv_sub[ c.state.v, dv_cross[
                           Dvec [ 0.0, 0.0, EARTH_SPIN ], ant ] ], ang ]
         last = measure[ c.time, pe, ve ]
+        epoch_t = c.time
         if [ base ] last = differential[ c.time, last ]
         guess : Dvec [ pe.x * 1.001, pe.y * 0.999, pe.z ]
         if [ pending.count > 0 ] guess = pending[ pending.count - 1 ].pos
@@ -384,7 +392,9 @@ class Receiver
     # each range less the base's error on the same satellite;
     # satellites the base does not see are left out
     func differential [ t: f64, rs: vec Range ] -> vec Range
-        seen : base.measure[ t, base_at, Dvec [ 0.0, 0.0, 0.0 ] ]
+        moving : bool [ dv_len[ base_true ] > 0.0 ]
+        where : (moving) ? base_true : base_at
+        seen : base.measure[ t, where, base_vel ]
         out : vec Range []
         for [ r: Range ] in rs
             for [ b: Range ] in seen
@@ -411,6 +421,59 @@ class Receiver
         for [ f: Fix ] in keep
             pending.push[ f ]
         return out
+
+# the gap between two receivers from the same satellites at
+# the same moment (single differences): the clocks' and every
+# shared error cancel. a's antenna less b's, place and speed
+# (ECEF), b's place for the sight lines; [ gap, speed, used ]
+func relative_fix [ a: vec Range, b: vec Range, near: Dvec ] -> vec Dvec
+    pa : vec Range []
+    pb : vec Range []
+    for [ ra: Range ] in a
+        for [ rb: Range ] in b
+            if [ rb.prn == ra.prn ]
+                pa.push[ ra ]
+                pb.push[ rb ]
+                break
+    n : i32 [ pa.count ]
+    zero : Dvec [ 0.0, 0.0, 0.0 ]
+    if [ n < 4 ] return vec Dvec [] [ zero, zero, zero ]
+    d : Dvec [ 0.0, 0.0, 0.0 ]
+    cb : f64 [ 0.0 ]
+    for [ it: i32 0, it < 5, it += 1 ]
+        ata : vec f64 [ 16 ]
+        atb : vec f64 [ 4 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            ra : pa[ i ]
+            rb : pb[ i ]
+            here : dv_add[ near, d ]
+            to : dv_sub[ ra.sat, here ]
+            dist : f64 [ dv_len[ to ] ]
+            back : f64 [ dv_len[ dv_sub[ rb.sat, near ] ] ]
+            row : vec f64 [] [ 0.0 - to.x / dist, 0.0 - to.y / dist,
+                               0.0 - to.z / dist, 1.0 ]
+            res : f64 [ (ra.range - rb.range) - (dist - back + cb) ]
+            for [ r: i32 0, r < 4, r += 1 ]
+                atb[ r ] = atb[ r ] + row[ r ] * res
+                for [ k: i32 0, k < 4, k += 1 ]
+                    ata[ r * 4 + k ] = ata[ r * 4 + k ] + row[ r ] * row[ k ]
+        dx : solve_four[ ata, atb ]
+        d = Dvec [ d.x + dx[ 0 ], d.y + dx[ 1 ], d.z + dx[ 2 ] ]
+        cb = cb + dx[ 3 ]
+    # the speed: the rates' differences on the same geometry
+    ata : vec f64 [ 16 ]
+    atb : vec f64 [ 4 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        u : dv_norm[ dv_sub[ pa[ i ].sat, dv_add[ near, d ] ] ]
+        row : vec f64 [] [ 0.0 - u.x, 0.0 - u.y, 0.0 - u.z, 1.0 ]
+        res : f64 [ pa[ i ].rate - pb[ i ].rate ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            atb[ r ] = atb[ r ] + row[ r ] * res
+            for [ k: i32 0, k < 4, k += 1 ]
+                ata[ r * 4 + k ] = ata[ r * 4 + k ] + row[ r ] * row[ k ]
+    dv : solve_four[ ata, atb ]
+    return vec Dvec [] [ d, Dvec [ dv[ 0 ], dv[ 1 ], dv[ 2 ] ],
+                         Dvec [ n, 0.0, 0.0 ] ]
 
 # a 4 x 4 system by Gaussian elimination with pivoting
 func solve_four [ m_in: vec f64, b_in: vec f64 ] -> vec f64

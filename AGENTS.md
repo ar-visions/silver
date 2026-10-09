@@ -5518,6 +5518,190 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       lowers it, and it burns to stay up, paying in propellant.
       Station keeping: a reboost when its low point sags, fuel
       taken from its own tanks, the total logged.
+      BUILT: Autopilot holds its nose along its path (jets),
+      the orbit's size by its whole energy (J2 swings the
+      height 2.7 km a lap), centre engine at least throttle at
+      the high point under keep_band. physics gained free
+      molecular drag (FREE_CD 2.2, Knudsen bridge): t_aero_thin.
+   i. BUILT (Kalen, Oct 8): booster and upper stage 50% larger,
+      every ratio kept (SHIP_SCALE 1.5, scale_ship): lengths
+      x1.5, masses and thrust x3.375 (chamber pressure 146 bar,
+      "if raptor can"), jets x5.06. Physics 22/22 at the size.
+      launch draws it at SHIP_SCALE. Landings to rerun.
+      Then (Kalen): 100 m tall, 6 m across the faces (SHIP_LONG,
+      SHIP_WIDE), seven larger engines, the nose the hull's
+      width. Isp 380 s (352 at sea level): "fantasize".
+   j. DONE (Kalen: we REFUEL at 200 km) the main mission flies
+      the whole ship: nothing separates (Mission.whole). The
+      seven burn the booster's tanks, then stage two's
+      (crossfeed); under 4 g (WHOLE_G, 7 -> 3 -> 1 engines);
+      the pitch plan to T+80, then linear tangent steering
+      (fly_ahead, steer_solve: Newton on the burn flown ahead)
+      to 200 km level. t_whole_ascent: SECO T302 at 200.1 km,
+      7785 m/s, 10.3 t left, 8 m/s to the air. t_to_tanker:
+      in its orbit 9.5 km from it. The orbit flight (whole:
+      false) keeps its staging and the booster landing.
+      OPEN: the orbit flight's scvx landing at the new size
+      (gfold lands 19.3 m off; scvx 44 m, a leg breaks).
+      OPEN: tanker station keeping: its jets sit above its
+      centre of mass and push it up 233 m in 3 days, more than
+      the drag takes; needs jets at both ends fired in pairs.
+   k. IN PROGRESS item c, the close approach (Kalen: the
+      tanker rolls its port to face us; signal-wise, its radio
+      sends its attitude and its port; intercept at T+8 min).
+      Relative GPS by single differences (gnss relative_fix),
+      jets as couples (control couple_jets, a per-step firing
+      tally), Clohessy-Wiltshire drift taken out, holds at 200
+      and 20 m. Held at 200 m at T+1684 (intercept too slow:
+      942 m and 9 m/s apart at cutoff). OPEN: cut off beside
+      the 200 m mark at the tanker's speed for T+8 min.
+   l. DONE launch draws jet puffs, docking ports (capture
+      ring, lights, three retroreflectors on the tanker's),
+      our floodlight; camera 4 is our port camera.
+   m. IN PROGRESS the docking CNN (Kalen): launch's export
+      docking_images renders 2000 64 x 64 port-camera pictures,
+      offsets uniform over 1-30 m out, 3 m aside, 5 deg roll,
+      3 deg pitch and yaw, sun and night, into share/launch/
+      docking with labels.txt. dock/dock.ag trains it on ai's
+      grad (4 convs, 2 dense, L1, AdamW): `silver dock`.
+      LATER (Kalen): Earth backgrounds at other angles.
+      Then (Kalen): two ports, one a propellant (oxygen fore,
+      fuel aft, 9 m apart: physics port_span, port_of), a camera
+      at each; pairs of 32 x 32 pictures, grey for training, in
+      range inside the approach cone (aside 0.3 m + a quarter of
+      the distance) and off target (neither port in either
+      view) with an in_range flag; dock_<n>.agi beside
+      dock_<n>_a/_b.png in share/launch/dock2. dock: two grey
+      channels, three convs, heads for the six numbers (scored
+      in range only) and the flag (bce); every fifth pair held.
+      First train on 527 pairs (500 in range; the render froze
+      the machine again, the kernel watch stopped it): held out
+      right 0.82 m, up 2.22 m, out 3.61 m, roll 1.69, pitch
+      1.62, yaw 1.05 deg, in-range call 96%; up and pitch no
+      better than guessing (overfit, 422 to train on).
+      Net in the approach (Oct 9): its detections weigh into the
+      gap by its held-out misses (gps 0.4 m against 0.82, 2.22,
+      3.61 m), logged every 5 s against gps and truth ('dock
+      net:'); it steers little. Its pictures predate the open
+      doors, long probes and brighter floodlight: re-render.
+   n. DONE (Oct 9) dock, refuel, undock in the whole flight:
+      the tanker turns its ports to our side (under or over it,
+      Mission.beneath); closing as burns and coasts, braking
+      within the jets' reach at our mass (jets_reach); doors
+      slide open, gold probes run out 2.5 m, soft capture with
+      a tip 0.3 m in its cone (0.5 m aside, 0.15 m/s, 3 deg),
+      15 s draw-in to a 1.5 m standoff (only the connectors
+      meet), hard dock; propellant tank to tank (each tank at
+      its share of 2 t/s: really ~2.5-4 t/s, OPEN: label or
+      pumps); springs part them, probes in, doors shut, back
+      off past 50 m: 'clear of the tanker'. Full flight: hard
+      dock T+12:54, refuelled T+25:33 (1862 t), clear.
+      Fixed on the way: the capture judged mid-step (tanker a
+      step ahead: 19.5 m); the latch held centres of mass (the
+      hulls slid as propellant moved); the latch copied the
+      tanker's body rates into ours (turned 180 deg: nav 104
+      deg off after); jets owed time while switched off.
+      OPEN: backing off at full mass overshoots 50 m (it is
+      only cleared, not held); the tanker now near empty.
+      OPEN (real transfer, offered): settling thrust, pressure
+      fed flow, venting, chill-down, residuals.
+   o. DONE (Oct 9) save state: P saves (~/.cache/launch/saves/
+      T<m>m<s>s.save and last.save), L loads last, --load
+      <file>. Text, numbers as their doubles' bits; ships,
+      phases, docking, pilots, each nav filter's whole belief.
+      t_save_state: exact on load, 15.7 m after 20 s through
+      max-Q (gusts and sensor noise are fresh draws).
+   p. IN PROGRESS the Moon (Kalen, Oct 9): the Moon's orbit and
+      gravity in physics, a coast step (big steps, gravity only)
+      and higher warp, the burn to the Moon aimed by flying it
+      ahead, capture into lunar orbit, the Moon drawn in launch;
+      then landing, take-off, home. A full ship has ~10.2 km/s:
+      enough there and back to Earth, not an Earth landing
+      without a heat shield (Kalen's call pending).
+   q. DONE (Oct 9, Kalen) the stack split moved down: stage one
+      ends at 38.6 m (Falcon scale; mesh 40), the chrome band is
+      the upper ship's skirt with five Lugh (sea level, drawing
+      stage two's tanks: lugh picks tanks by group now) and six
+      small legs on its corners (Craft.flaps, Leg.length/width/
+      open/open_cmd; Craft.flap_push, the air on a plate either
+      face; Autopilot.use_flaps allocates them). Booster fins and
+      top jets down to 37.0/37.8, its tanks 1 m lower.
+      Fall test findings (upper ship alone, 30 km, turbulence 2,
+      asked 4 deg off the flow; the test is removed until a
+      design is chosen): engines first it tumbles by 2.5 kPa;
+      nose first holds 0.5 deg to 1.4 kPa, tumbles at 3.6 kPa;
+      twice the panel area tumbles at 4.3 kPa; with 10 t aboard
+      holds to 4.2 kPa, then 10-30 deg off; jets up to 20x do
+      not hold (aero moment ~2.8 MN m at 19 kPa, 10 deg); one
+      Lugh at least throttle out-pushes the ship (it hovers).
+      Then (Kalen): the small legs are landing legs only; the
+      crew stage steers with its own six grid fins at 55.5 m
+      under a nose flared to 2.3 m (Falcon scale; drag in orbit
+      +58%). Fall test: engines first it flips end over end;
+      nose first 12 deg off at 1.5 kPa, then lies broadside (85
+      deg): it falls belly first by itself.
+      Recommended (Kalen's call pending): belly first with nose
+      flaps and a belly heat shield, flip, landing burn.
+      SSTO: as built 6.7 km/s of 9.3 needed; stretched to ~850 t
+      of propellant it would fly alone (Kalen: fine as is).
+      OPEN ai grad: bin (add, mul ...) reads x.dims[ 2 ]: a 2-D
+      tensor gives garbage and no gradient, silently; give it
+      [ nb, c, 1 ] or make bin refuse other shapes.
+      OPEN the machine: soft lockups on CPU 31 with clock reads
+      of 3-40 s, twice, each under our GPU renders (export and
+      mission test); cause below our code, not found.
+      OPEN silver: a ternary between two Dvec structs passed
+      straight into a call (`dv_sub[ (c) ? a : b, e ]`) emits
+      the struct by value where the call takes a pointer (LLVM
+      verify fails); a local set by if/else works.
+   r. IN PROGRESS (Oct 9) the tanker's own flight, first off deck
+      B (launch's default; --ship flies ours). Kalen: only 7- or
+      5-Lugh stages. The tanker: three standard 7-Lugh boosters
+      side by side (body z, 1.5 m apart, the docking standoff),
+      joined by four rounded hexagon connectors in orbiter-hex
+      mounts (2 t each at Falcon scale: estimate; they stay on
+      the middle one), a fourth on the middle one's top under a
+      silver nose; each side booster has the same nose. 6,513 t,
+      21 Lugh below, liftoff 1.40 g. Physics: Part/Tank/Fin.off
+      and Leg.axis (a place across the craft), Leg.folded (last
+      in Leg), one outline per body in body_aero, inertia by the
+      offsets, mark_side/recentre (a side booster detached on its
+      own axis); t_tanker_build. All 24 legs and fins kept; those
+      that would cross or sit in a gap stay folded while joined,
+      all free at separation. Launch: the three drawn, decks D E
+      F (more_decks), 32 flames, cameras 3 and 5 the side
+      boosters, the side boosters' nitrogen puffs across the gap
+      (drawn only: Kalen had the push removed, it put the right
+      booster on its deck's edge), flames marched from their far face
+      (no depth test; the march stops at the scene's depth).
+      Mission: all three separate at staging; the side boosters
+      fly as recovery Missions (recovery, adopt, label) to decks
+      F and C; reserve from the measured return (1.8 x speed
+      across + 950 + 750 m/s at 352 s: estimate); boostback and
+      entry on each booster's centre engines (centre_three by
+      place; booster_centres); the landing burn starts on three
+      when falling over 250 m/s, braking against its motion at
+      85%, down to one when one can stop it (burn_n, the forecast
+      flies the same); SCvx's plan followed between its steps,
+      SCvx plans with the tilt's lag (Scvx.lag = 1 / point_gain:
+      the push across follows the one asked; t_scvx_lag flown
+      through it 2.3 m off), a plan two solves old gives way to the
+      braking law, its turn from the gimbal's spin of the booster
+      (turn_r, ~1.6 m/s3), max_rate 0.35 once lit. Physics: a
+      narrowing trailing a fall engines first pushes no sideways
+      (the noses on the trailing end twisted the side boosters).
+      Test run (no push, SCvx with the lag): all three stand:
+      middle on B (7.7 m/s, 2.3 deg, cores untouched), left on F
+      (5.1 m/s, 0.23 deg, cores used), right on C (6.2 m/s, 2.2
+      deg, cores used; lit 62 m off). The top booster parks round
+      at 700 km (asked 300), 135 t.
+      OPEN: touchdowns over the legs' 2 m/s (cores used); the
+      right one's 62 m at ignition; a glide model in the forecast
+      (Kalen: the nose's shape as it glides); the top booster's
+      cutoff;
+      saves lack the side flights; new lines past 72 columns;
+      fin_look/fin_miss kept (still used); our ship's flights to
+      rerun on the shared landing changes.
 
 ## Active work: quake2 port (Oct 5 2026)
 

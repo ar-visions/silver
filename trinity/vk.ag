@@ -4185,6 +4185,8 @@ class Model
     # (split normals per face) must still join into one surface.
     # off for models with coincident opposite-normal skins (lips)
     public weld_pos_only    : bool
+    # its pipelines' blend if set (a glow adds); kept last
+    public blend            : BlendState
 
     public func rebind_model [ ]
         if [ pipelines ]
