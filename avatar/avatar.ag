@@ -375,17 +375,21 @@ Orbiter PBR
         vec2  rl_c  = vec2(0.44, -0.15);
         // it starts a reach under the core's edge and ends past the
         // rim at 95% of the reach out, so it rises in and leaves
-        vec2  rl_s  = rl_a - normalize(rl_b - rl_a) * 0.035;
-        vec2  rl_d  = rl_c + normalize(rl_c - rl_b) * 0.08;
+        vec2  rl_s  = rl_a - normalize(rl_b - rl_a) * 0.0525;
+        vec2  rl_d  = rl_c + normalize(rl_c - rl_b) * 0.12;
         rl_d.x      = rl_d.x * 0.95;
         vec2  rl_p  = (rl_t < 0.1) ? mix(rl_s, rl_a, rl_t * 10.0)
                     : (rl_t < 0.5) ? mix(rl_a, rl_b, (rl_t - 0.1) * 2.5)
                     : (rl_t < 0.85) ? mix(rl_b, rl_c, (rl_t - 0.5) / 0.35)
                     : mix(rl_c, rl_d, (rl_t - 0.85) / 0.15);
         vec2  rl_q  = vec2(length(v_local_pos.xz), v_local_pos.y);
-        float rl_w  = mix(0.035, 0.08, smoothstep(0.1, 0.85, rl_t));
+        // half again as wide as it was (0.035 to 0.08)
+        float rl_w  = mix(0.0525, 0.12, smoothstep(0.1, 0.85, rl_t));
         float rl_f  = max(0.0, 1.0 - distance(rl_q, rl_p) / rl_w);
-        float rl_e  = 1.0;
+        // dark at the jump back to the core: in over the first 5%,
+        // out over the last 10%
+        float rl_e  = smoothstep(0.0, 0.05, rl_t)
+                    * (1.0 - smoothstep(0.9, 1.0, rl_t));
         // the base: the solid blue only (over half), at half light
         float bs_m  = step(0.5, v_color.b) * (1.0 - step(0.5, v_color.r));
         bs_m        = bs_m * ubo.groove;
@@ -555,7 +559,9 @@ Orbiter Aura
 		// cyl_R bounds the march; the beam's shaft is cyl_R0, its base flares
 		// to 75% wider, and its blue glow reaches 2.7x the shaft: the bound
 		// holds that
-		float cyl_R0  = 0.22 * ubo.flame_w * mix(1.0, 0.6, cyl_sty);
+		// the beam's shaft: two thirds of its old width, so the twirl
+		// inside shows through
+		float cyl_R0  = 0.22 * ubo.flame_w * mix(1.0, 0.4, cyl_sty);
 		float cyl_R   = cyl_R0 * mix(1.0, 2.7, cyl_sty);
 		// the beam starts at the core's surface (0.46 down the bowl, the flame
 		// starts at the rim), that much longer, and 30% taller above it
@@ -977,7 +983,8 @@ Orbiter Aura
 		// as an internal volume (not a flat disc). hot orange at center → deep orange
 		// at the rim; the PBR walls pick up the matching tone via the throat light.
 		vec3  cor_o  = (ubo.model * vec4(0.0, -0.07, 0.0, 1.0)).xyz;
-		float cor_R  = 0.44;
+		// a third smaller than it was (0.44): less of it over the fins
+		float cor_R  = 0.295;
 		vec3  cor_oc = ro - cor_o;
 		float cor_qb = dot(rd, cor_oc);
 		float cor_qc = dot(cor_oc, cor_oc) - cor_R * cor_R;
@@ -1046,6 +1053,22 @@ Orbiter Core
         gl_Position = ubo.proj * ubo.view * wpos;
     }
 
+    func nhash [ p: vec3f ] -> GLSL float {
+        p = fract(p * 0.3183099 + vec3(0.1));
+        p *= 17.0;
+        return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+
+    func vnoise [ p: vec3f ] -> GLSL float {
+        vec3 i = floor(p);
+        vec3 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(mix(nhash(i),              nhash(i+vec3(1,0,0)), f.x),
+                       mix(nhash(i+vec3(0,1,0)),  nhash(i+vec3(1,1,0)), f.x), f.y),
+                   mix(mix(nhash(i+vec3(0,0,1)),  nhash(i+vec3(1,0,1)), f.x),
+                       mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
+    }
+
     func fragment [] -> GLSL none {
         vec3  V      = normalize(v_eye_pos - v_world_pos);
         vec3  N      = normalize(v_normal);
@@ -1054,7 +1077,13 @@ Orbiter Core
         float pulse  = 1.0;
         float ln     = length(v_local_pos.xz);
         float inner  = clamp(ln / 0.2, 0.0, 1.0) * (0.7 + (max(0.0, pulse - 0.2) * 1.0 + 0.2) * 0.3);
-        vec4  tex    = textureLod(color, v_uv, pulse * 2.0 + 2.0 * inner);
+        // glass over the pool: perlin lumps bend where its texture
+        // is read and light it unevenly, drifting with the pulse
+        vec3  gq     = vec3(v_local_pos.xz * 28.0, ubo.core_phase * 0.15);
+        float gn     = 0.6 * vnoise(gq) + 0.4 * vnoise(gq * 2.3 + 7.1);
+        float gm     = vnoise(gq * 0.6 + vec3(3.3, 1.7, 0.0));
+        vec2  guv    = v_uv + (vec2(gn, gm) - 0.5) * 0.06;
+        vec4  tex    = textureLod(color, guv, pulse * 2.0 + 2.0 * inner);
         vec3  col;
         float alpha;
 
@@ -1066,7 +1095,7 @@ Orbiter Core
             float center   = pow(1.0 - inner, 1.6);
             vec3  hot      = mix(pool_rim, pool_hot, center);
             float detail   = 0.85 + 0.15 * dot(tex.rgb, vec3(0.33));
-            col            = detail * hot;
+            col            = detail * hot * (0.8 + 0.4 * gn);
             alpha          = tex.a;
         } else {
             float r      = max(abs(v_local_pos.x) - 0.52, 0.0);
@@ -1243,9 +1272,11 @@ ModelViewProject Heat
         vec4  b4  = pvm * vec4(0.0, -0.05, 0.0, 1.0);
         vec4  t4  = pvm * vec4(0.0, -0.05 - 1.4 * ubo.pulse_height, 0.0, 1.0);
         vec4  r4  = pvm * vec4(0.22, -0.05, 0.0, 1.0);
-        vec2  bu  = b4.xy / b4.w * 0.5 + 0.5;
-        vec2  tu  = t4.xy / t4.w * 0.5 + 0.5;
-        vec2  ru  = r4.xy / r4.w * 0.5 + 0.5;
+        // the image's rows run opposite to clip space's y here
+        vec2  fl  = vec2(0.5, -0.5);
+        vec2  bu  = b4.xy / b4.w * fl + 0.5;
+        vec2  tu  = t4.xy / t4.w * fl + 0.5;
+        vec2  ru  = r4.xy / r4.w * fl + 0.5;
         vec2  tsz = vec2(textureSize(color, 0));
         vec2  asp = vec2(tsz.x / tsz.y, 1.0);
         float rad = max(length((ru - bu) * asp), 0.01);
@@ -1257,6 +1288,17 @@ ModelViewProject Heat
         float d   = length((v_uv - cp) * asp) / (rad * 1.8);
         // widest at the source, thinning up the jet
         float wgt = exp(-d * d) * pow(1.0 - h, 0.6);
+        // only inside the core's pool (radius 0.17; at height -0.32
+        // its centre lands on the pool's on screen),
+        // softening out at its side into the core's own material
+        vec4  p4  = pvm * vec4(0.0, -0.32, 0.0, 1.0);
+        vec4  e4  = pvm * vec4(0.17, -0.32, 0.0, 1.0);
+        vec2  pu  = p4.xy / p4.w * fl + 0.5;
+        vec2  eu  = e4.xy / e4.w * fl + 0.5;
+        float prd = max(length((eu - pu) * asp), 0.001);
+        float pd  = length((v_uv - pu) * asp) / prd;
+        float pin = 1.0 - smoothstep(0.6, 1.0, pd);
+        wgt      *= pin;
         if (wgt < 0.002) {
             fragColor = texture(color, v_uv);
             fragColor.rgb += gl3;
@@ -1272,22 +1314,26 @@ ModelViewProject Heat
         vec3  np  = vec3(qc * 3.2, qa * 2.4 - tt * 2.2, tt * 0.35);
         float nx  = vnoise(np) - 0.5;
         float ny  = vnoise(np * 1.7 + vec3(5.2, -tt * 1.4, 1.3)) - 0.5;
-        vec2  off = (acr * nx + up * ny * 0.6) * rad * 0.045 * ubo.heat * wgt;
+        // the pool bends at its own strength: 3x full heat, always
+        float hs  = mix(ubo.heat, 3.0, pin);
+        vec2  off = (acr * nx + up * ny * 0.6) * rad * 0.045 * hs * wgt;
         vec2  c0  = v_uv + off / asp;
         // the blur only in pockets of hotter air rising up the jet: about
         // half the haze is sharp shimmer, one read
         // broad pockets with finer structure riding them (0.6 + 0.4: spread 0.134)
         vec3  hq  = vec3(qc * 1.3, qa * 1.1 - tt * 5.4, tt * 1.2);
         float hn  = 0.6 * vnoise(hq) + 0.4 * vnoise(hq * 2.7 + vec3(5.2, 1.3, 9.1));
-        float hp  = smoothstep(0.5, 0.6, hn);
-        if (true || hp < 0.01) {
+        // in the pool the perlin picks the blur's radius pocket by
+        // pocket: 0.5 px to 6.5 px, blended across
+        float hp  = hn * pin;
+        if (hp < 0.01) {
             fragColor = texture(color, c0);
             fragColor.rgb += gl3;
             return;
         }
         // a cheap gaussian over the bent read: 3x3 taps weighted 1-2-1,
         // spread with the heat, so the haze softens as well as shimmers
-        vec2  sp  = (1.0 / tsz) * (0.5 + 7.0 * ubo.heat * wgt * hp);
+        vec2  sp  = (1.0 / tsz) * (0.5 + 6.0 * hp);
         vec4  acc = vec4(0.0);
         // two grids, full and half spread: wide without ghosting
         for (int y = -1; y <= 1; y++) {

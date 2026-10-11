@@ -946,6 +946,8 @@ element InstallWizard
     mutable first_page : i32
     # page 0 goes on once the tree it is writing is done
     mutable advance    : bool
+    # test: the A button lights the core's beam, tilted away
+    mutable beam_test  : bool
     mutable cards   : vec Card
     # the hardware check: graphics and network, as orbiter-os sees
     mutable hw      : vec Hw
@@ -1692,6 +1694,8 @@ element InstallWizard
         el [ key == 'install' && problems.count == 0 ]
             page = 6
             start[]
+        el [ key == 'beam_test' ]
+            beam_test = !beam_test
         el [ key == 'restart' ]
             sync[]
             reboot[ RB_AUTOBOOT ]
@@ -1982,9 +1986,12 @@ element InstallWizard
             # a kernel build's flame; a stick write, the long halo.
             # never settled: done or cancelled, it faces the user
             'avatar': SetupAvatar [ settled: false,
-                work_on: bs && bs.building,
+                work_on: (bs && bs.building) || beam_test,
                 edits_in: bs && bs.building && bs.job == 'usb',
-                swap_on: bs && bs.building && bs.job != 'usb' ],
+                swap_on: (bs && bs.building && bs.job != 'usb')
+                         || beam_test ],
+            'beam_test': WizGo [ label: 'A',
+                area: Region { l1 t1 w2 h1.05 } ],
             'panel': WizPanel [ elements: page_els[ panel ],
                 area: Region { l50%-8 t50%-10.5 w32 h21 } ] ]
 
