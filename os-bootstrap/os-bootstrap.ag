@@ -932,6 +932,11 @@ element Bootstrap
         mb : i64 [ tb / 1048576 * 115 / 100 + 256 ]
         total : i64 [ 1 + 512 + mb + 1 ]
         off : i64 [ 1050624 * 512 ]
+        # the work folders of runs that are gone (3 GB or more each)
+        old : 'for d in {install}/tmp/installer-*; do '
+        old = '{old}p=$(echo "$d" | sed "s/.*-//"); '
+        old = '{old}[ -d /proc/$p ] || rm -rf "$d"; done'
+        system[ old.chars ]
         if [ !sh[ 'rm -rf {work} && mkdir -p {work}/stage' ] ] return ''
         image_bytes = total * 1048576
         free : i64 [ disk_free[ work ] / 1048576 ]

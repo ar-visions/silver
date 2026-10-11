@@ -367,10 +367,11 @@ Orbiter PBR
         vec2  rl_a  = vec2(0.20, -0.44);
         vec2  rl_b  = vec2(0.28, -0.24);
         vec2  rl_c  = vec2(0.44, -0.15);
-        // it starts a reach under the core's edge and ends a reach
-        // past the rim, so it rises in and leaves wholly, no cut
+        // it starts a reach under the core's edge and ends past the
+        // rim at 95% of the reach out, so it rises in and leaves
         vec2  rl_s  = rl_a - normalize(rl_b - rl_a) * 0.035;
         vec2  rl_d  = rl_c + normalize(rl_c - rl_b) * 0.08;
+        rl_d.x      = rl_d.x * 0.95;
         vec2  rl_p  = (rl_t < 0.1) ? mix(rl_s, rl_a, rl_t * 10.0)
                     : (rl_t < 0.5) ? mix(rl_a, rl_b, (rl_t - 0.1) * 2.5)
                     : (rl_t < 0.85) ? mix(rl_b, rl_c, (rl_t - 0.5) / 0.35)
@@ -385,8 +386,18 @@ Orbiter PBR
         // the pulse: every bit of blue, feathered sides too
         float pu_m  = clamp(1.5 * gv_m * rl_f * rl_f * rl_e
                             * ubo.groove, 0.0, 1.0);
+        // always: the pulse as it crosses the outer circle (halfway
+        // from the lip to its end), at half: the circle's soft edge
+        vec2  st_c  = mix(rl_c, rl_d, 0.5);
+        float st_f  = max(0.0, 1.0 - distance(rl_q, st_c) / 0.08);
+        float st_m  = 0.5 * 1.5 * gv_m * st_f * st_f;
+        pu_m        = max(pu_m, clamp(st_m, 0.0, 1.0));
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + pl_lit;
+        // the outer circle by the halo (radius 0.44 to 0.47) a
+        // touch brighter: it hides the halo's stair steps there
+        float oc_f   = max(0.0, 1.0 - abs(rl_q.x - 0.455) / 0.01);
+        result      *= 1.0 + 1.2 * oc_f;
         // painted on, not added: it shows on the bright faces too
         vec3  rl_col = vec3(1.2, 0.5, 2.6);
         result = mix(result, rl_col * 0.5, bs_m);
