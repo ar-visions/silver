@@ -317,6 +317,10 @@ Orbiter PBR
         // 1.1 to 0.9 once per two turns of the halo
         float core_osc   = 1.0 + 0.1 * sin(0.5 * ubo.spin);
         vec3  blue_light = metallic * eng_att * lateral * hot * core_osc;
+        // not past the flower: a bevel on the outer rim faced it
+        float eng_in     = 1.0 - smoothstep(0.48, 0.52,
+                                   length(v_local_pos.xz));
+        blue_light      *= eng_in;
         // a blue ring light round the core, level with the fins' tops
         vec3  rg_c   = eng_pos + beam_up * 0.15;
         vec3  rg_rel = worldPos - rg_c;
@@ -337,6 +341,8 @@ Orbiter PBR
         // 1.1 to 0.9 once per four turns of the halo
         float core_pulse = ubo.core_base * (1.0 + 0.1 * sin(ubo.core_phase));
         vec3  core_glow  = vec3(2.0, 0.7, 0.08) * is_bottom * core_pulse * 4.0;
+        // not past the flower: a down-facing bevel out there lit up
+        core_glow       *= eng_in;
         specular        *= (1.0 - is_bottom * 0.95);
 
         vec3 core_st      = mix(vec3(0.04, 0.10, 0.30) * ubo.work, vec3(0.24, 0.07, 0.38), ubo.done);
@@ -398,6 +404,17 @@ Orbiter PBR
         // touch brighter: it hides the halo's stair steps there
         float oc_f   = max(0.0, 1.0 - abs(rl_q.x - 0.455) / 0.01);
         result      *= 1.0 + 1.2 * oc_f;
+        // the separator (under the flower, height -0.493 to -0.443),
+        // a round ring whose section centres at (0.215, -0.468): the
+        // engine's glow on its side toward the core, rising from
+        // under it, gone halfway up to its top
+        float sp_in  = 1.0 - step(-0.442, rl_q.y);
+        vec2  sp_d   = normalize(rl_q - vec2(0.215, -0.468));
+        float sp_lo  = (1.0 - smoothstep(0.0, 0.707, sp_d.y))
+                     * (1.0 - smoothstep(-0.2, 0.3, sp_d.x));
+        // the core pool's own rim colour and pulse, painted on
+        result       = mix(result, vec3(2.2, 0.75, 0.12) * core_pulse,
+                           0.5 * sp_in * sp_lo);
         // painted on, not added: it shows on the bright faces too
         vec3  rl_col = vec3(1.2, 0.5, 2.6);
         result = mix(result, rl_col * 0.5, bs_m);
@@ -1954,8 +1971,9 @@ Avatar OrbiterAvatar
     busy_pulse  : f32   [ 0.6 ]
     rest_ph     : f32   [ 1.2 ]
     busy_ph     : f32   [ 2.4 ]
-    rest_halo   : f32   [ 0.8 ]   # the beam's height: twice what it was
-    busy_halo   : f32   [ 1.6 ]
+    # the halo's height: two thirds of what it was, under the mask
+    rest_halo   : f32   [ 0.533 ]
+    busy_halo   : f32   [ 1.067 ]
     # the halo stage's filter: state * 0.95 + goal * 0.05 a frame, about
     # a second; once done the second halo settles back to the first at
     # 0.99 + 0.01
