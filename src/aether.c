@@ -5476,7 +5476,10 @@ AU_EXPORT void aether_apply_overrides(aether a, enode alloc) {
     bool ov_any = false;
     Au_t cur = alloc_type;
     while (cur && cur != typeid(Au)) {
-        if (cur->context && cur->context != typeid(Au)) {
+        // an imported class stores its overrides in its own init, after
+        // the base init: marked here, the base default went unset
+        bool here = !cur->module || (Au_t)cur->module == a->autype;
+        if (here && cur->context && cur->context != typeid(Au)) {
             for (int i = 0; i < cur->members.count; i++) {
                 Au_t mb = (Au_t)cur->members.origin[i];
                 if (mb->member_type != AU_MEMBER_VAR || !mb->is_override) continue;
@@ -6033,9 +6036,10 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
     // Raw scalar arithmetic still needs wrapping.
     if (input && canonical(input) == canonical(mdl)) {
         // an element read (`v[ i ]`) is its address until loaded: a
-        // same-type primitive hands back the value, or a condition
-        // branches on the pointer
-        if (!a->no_build && !input->loaded && is_prim((Au)mdl) &&
+        // same-type primitive or enum hands back the value, or a
+        // condition branches on the pointer
+        if (!a->no_build && !input->loaded &&
+            (is_prim((Au)mdl) || is_enum((Au)mdl)) &&
             !is_struct((Au)mdl) && _llvalue((enode)input) &&
             LLVMIsAGetElementPtrInst(_llvalue((enode)input)))
             return enode_value(input, true);

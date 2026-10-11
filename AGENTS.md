@@ -246,6 +246,18 @@ agent: the cause may be ours. Each such error becomes a rule here.
 
 ---
 
+## Rule #12 — Modifier keys reveal hidden actions
+
+Kalen (Oct 10 2026). An action kept out of sight (Remove on a list
+row, and the like) shows while a modifier is held:
+- shift: over the hovered element only.
+- ctrl, or cmd on a mac: on every element at once (globally).
+Release the key and it hides again. The Window tracks both
+(`ux.shift`, `ux.cmd`); each change re-renders the tree. A
+shift+click that forces a blocked step (Continue) is separate.
+
+---
+
 ## orbiter-os — live list (Sep 3 2026)
 
 Goal: orbiter-os (Linux + orbiter as init) running inside the `qemu`
@@ -360,6 +372,456 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    json and the gbm platform json. Checked: vulkaninfo run by
    the tree's ld.so with only the tree's libraries finds the
    RTX 3060, driver 610.57.04. grub-debug.sh is still on.
+
+## orbiter-os installer — live list (Oct 10 2026)
+
+Kalen: the install is orbiter itself, started with an argument,
+as macOS setup runs on its own window server. The installer app
+is `wizard`; it uses whatever supported card is in the machine.
+1. DONE `wizard/wizard.ag`: element InstallWizard. Pages: the
+   cards (pci display devices + each Vulkan device: name, kernel
+   driver, Vulkan driver and version, the one trinity uses), the
+   disk (/sys/block), whole disk or a folder beside (partitions
+   by number, fs from the mount table or the superblock, the
+   EFI partition = the disk's first FAT one), the account (user,
+   password drawn as dots, computer, keyboard, time zone), the
+   review (every step, and problems that block Install), the
+   install on its own thread (step and copy progress, log).
+   Steps: sfdisk, mkfs.vfat, mkfs.ext4 (whole disk); mount;
+   copy the running tree (kernel trees made empty, links kept,
+   times and run bits kept); install.agi (password as sha-512
+   crypt) and /etc/hostname; kernel + initramfs to
+   EFI/orbiter; efivarfs; efibootmgr with this system's own boot
+   line and the new uuid and root. `silver --test wizard`:
+   t_install_steps runs the worker on a scratch tree, passes.
+2. DONE orbiter `--install true` (only the wizard over the
+   scene; no session saved) and `--dry_run true` (plan listed
+   and logged, never run). Checked hidden on europa: every page
+   walked, both plans correct, session file untouched.
+3. DONE init.c: `orbiter.args=--install,true` (words by comma:
+   the kernel's words have no spaces) becomes init's argv.
+   Checked in qemu (the real bzImage, an ext4 image, a static
+   program printing argv): 5 args through, none without it.
+4. DONE os-bootstrap add_tools (drive tree): /bin/sh (popen),
+   sfdisk, mkfs.vfat, mkfs.ext4, efibootmgr, their ldd libraries,
+   /etc/mke2fs.conf. Checked: the tree written (4,709 entries);
+   each program runs on the tree's ld.so and libraries alone;
+   libsilver-wizard.so finds libcrypt in the tree.
+   Kernel rebuilt with EFIVAR_FS=y (Oct 10; the old one is
+   share/silver-os-bootstrap/bzImage.prev). `silver --clean
+   --build os-bootstrap` runs the kernel lines: without --clean
+   the module is "up to date" and they never run. Checked: the
+   nvidia modules' vermagic matches (6.18.0 SMP preempt
+   mod_unload; MODVERSIONS is off) and all 703 kernel symbols
+   they use are still exported; booted in qemu, the new kernel
+   lists efivarfs (the old did not); orbiter-os/root/boot/vmlinuz
+   is the new kernel. Not booted on europa yet.
+   qemu is out of os-bootstrap (Kalen, Oct 10: too slow): no
+   qemu element, no whole-guest initramfs.cpio.
+   On the way: qemu's two imports could not find system .pc files
+   (install/bin/pkg-config is pkgconf, install dirs only): their
+   PKG_CONFIG_PATH names /usr/lib/x86_64-linux-gnu/pkgconfig and
+   /usr/share/pkgconfig after install's. virgl and qemu built.
+4b. OPEN a GPT USB image.
+4c. DONE (Oct 10) `silver orbiter --install --dry_run` failed
+   "expected value after install": Au kept parsing silver's own
+   flags past the module (the knes `rom --vscale` rule), and
+   aether's `install` path took it. silver's main now calls
+   au_argv_launcher(true): its positional ends its flags, the
+   rest are the app's (apps keep the knes rule). Checked: the
+   bare bools reach orbiter and the wizard opens.
+5. OPEN first boot: make the user from install.agi.
+6. BUILT (Oct 10, Kalen: an RX 580; "and one for intel too")
+   AMD and Intel. Kernel side was already in every build (amdgpu,
+   radeon, i915, xe as modules; their firmware in the tree; init's
+   modprobe by modalias). No choice row: unlike NVIDIA they are
+   part of Linux. Vulkan: our Mesa 26.2.2 builds virtio, amd
+   (radv) and intel (anv); os-bootstrap puts libvulkan_radeon,
+   libvulkan_intel and their icd json in the tree. Built for it:
+   libdrm 2.4.134 (radv/anv need 2.4.133; the system has 2.4.125,
+   with which radv fails to read the GPU); SPIRV-LLVM-Translator
+   8e82970 (matched to our LLVM bd7db75, rpath install/lib) and
+   libclc from our LLVM source (>> lines, build/libclc,
+   spirv64-mesa3d- only) for anv's built-in programs; Mesa with
+   LLVM on at build time, amd-use-llvm=false (no Vulkan driver
+   links LLVM at run time); LDFLAGS rpath install/lib (our
+   libdrm). os-bootstrap/mesa.diff (the import's name; the old
+   mesa-26.2.2.diff never applied to a clone): the venus hunk, a
+   meson.build line (LLVM's amdgpu target only when radv uses
+   LLVM: ours has no AMDGPU target) and clc_helpers.cpp taking
+   LLVM 21's clang API on an early 22 snapshot (CLC_LLVM_API).
+   Checked: radv on the 7950X's Radeon (RAPHAEL_MENDOCINO, Mesa
+   26.2.2) with no environment; anv loads (no Intel GPU here).
+   NOT in the drive tree yet: its next write. NOT seen on an RX
+   580 or an Intel machine.
+   Then (Kalen: "shouldnt the selection be there to build them or
+   not?"): AMD (amdgpu / none) and Intel (i915, xe / none) choice
+   rows under NVIDIA, and AMD and Intel columns in the kernel list.
+   none turns the kernel's drivers off (DRM_AMDGPU, DRM_RADEON;
+   DRM_I915, DRM_XE), names the build -noamd / -nointel, writes
+   amd / intel in build.agi (older builds read as in), and the tree
+   then leaves out that Vulkan driver and its firmware folders.
+   AMD offered for every line but Apple, Intel for x64 and Surface.
+   Seen hidden: the rows, the columns, a pick. No none build run.
+   The wizard's avatar tilts away (work_on) while a kernel builds,
+   as orbiter's does at work; seen hidden mid-build.
+7. NOT RUN: a real install (needs root and a target disk).
+8. DONE (Oct 10) the boot entry keeps the default: folder
+   beside uses `efibootmgr --create-only`, finds the new entry
+   (Boot#### before vs after) and sets it second in BootOrder;
+   whole disk puts it first. Partitions are one table chip
+   (header, rows scrolled inside). t_boot_order passes.
+9. DONE (Oct 10) boot manager detection (folder beside): the
+   firmware's default entry (BootOrder's first, its File path),
+   then the EFI and Linux partitions (mounted, else mounted
+   read-only under /run/wizard/look-*). GRUB with /etc/grub.d:
+   writes /etc/grub.d/41_orbiter-os (runs), the review says run
+   `sudo update-grub`; GRUB with loader/entries (Fedora): writes
+   orbiter-os.conf there; systemd-boot: ESP loader/entries;
+   rEFInd: EFI/orbiter/refind_linux.conf; Windows or unknown:
+   the firmware entry only, said on the review page. Always the
+   firmware entry too. t_boot_detect (9 cases) passes; europa's
+   dry run finds GRUB (Debian, Ubuntu).
+   Found on the way, fixed in aether.c (e_create's same-type
+   shortcut): a vec enum element passed to a function went as
+   its address (LLVM verify). features t_vec_enum_arg; features
+   245/246 (t_codegen_resource as before).
+10. DONE (Oct 10) the wizard's buttons and pick rows take the
+   near light: near_border, near_inset 2 (4 hovered), an inset
+   box_shadow (the inner glow needs one). Fixed in trinity:
+   near_filter stepped the light only when its element drew,
+   and a no_cache child (every Button) draws only when its
+   cached parent repaints; its pristine marks were cleared by
+   that same pass, so the light crept (0.17 of 0.5 in 2 s).
+   It sets needs_frame on the parents while easing now: full in
+   under a second. trinity tests exit 0. Checked by pixels: the
+   Continue border 101 -> 141 with the pointer 10 px away.
+11. DONE (Oct 10) partition columns: Partition, Size, Free,
+   Type, What's on it. Free by statvfs (`st : struct statvfs`:
+   the struct and the function share the name) where mounted,
+   else mounted read-only for a moment (root). What's on it:
+   os-release's PRETTY_NAME, "running now" for /, "has
+   orbiter-os"; EFI: its EFI/ folders; swap from /proc/swaps;
+   NTFS by its boot sector. Panel 32 units wide. t_free_space:
+   equal to df to the byte.
+12. DONE (Oct 10) the avatar is its own module, `avatar/`
+   (Avatar, the OrbiterAvatar look; its model, core texture and
+   environments moved from orbiter/ into avatar/models, textures,
+   images). OrbiterAvatar reads fields (work_on, edits_in,
+   work_done, swap_on, mic_on), not orbiter: orbiter's AppAvatar
+   fills them each frame and keeps the click (CornerAvatar and
+   AgentAvatar build on it); the icon export stays in orbiter.
+   The wizard imports avatar: SetupAvatar (top-down, 14 units)
+   left of the dialog, the dialog 8 units right of center.
+   Fixed in aether (aether_apply_overrides): a class from another
+   module's override (OrbiterAvatar's body) was marked set at the
+   construction site, so the base init skipped its own default and
+   used it null (SIGSEGV in Avatar_init); the imported class stores
+   its overrides in its own init. features 245/246 as before.
+13. DONE (Oct 10) partitions too small for the copy are
+   disabled rows (dim text, "too small" first, no click).
+   os-bootstrap writes the written tree's size to
+   root/boot/tree-bytes (tree_size, 1,904,090,944 today, equal to
+   find); the wizard needs that and a tenth more. Without the
+   file (not started from orbiter-os) nothing is ruled out.
+   t_copy_need passes; seen with the drive tree as the source:
+   nvme0n1p3 (978 MB free) dimmed. The wizard's avatar does not
+   turn; its inner ring spins at rest_spin 1.0 (orbiter's 0.25).
+14. DONE (Oct 10) page one is the hardware check: graphics
+   (pci class 03) and network (02; 0280 is Wi-Fi; usb adapters
+   by /sys/class/net), each matched (fnmatch on its modalias)
+   against the drive's own drivers: os-bootstrap writes
+   root/lib/modules/orbiter/aliases (modules.builtin.modinfo's
+   aliases and the nvidia modules', 3,638) and adds pci.ids for
+   the names. Graphics also needs its Vulkan driver in the tree.
+   Continue needs supported graphics and a supported network
+   adapter; else it is grey and Shift (or Cmd) + click goes on.
+   Without the alias file (not started from orbiter-os) every
+   row reads "not checked". europa with the drive tree: RTX 3060
+   yes (nvidia), RTL8125 yes (r8169), AMD graphics and the
+   RTL8852CE Wi-Fi no. t_hardware_match passes.
+15. BUILT, not booted (Oct 10, Kalen: the kernel we build has the
+   hardware compatibility) the kernel on Ubuntu's 6.17 config
+   (os-bootstrap/linux.config; signing, debug info and nouveau
+   off; NVMe, USB storage, ext4, vfat, efivarfs built in, firmware
+   loading takes .zst), every driver a module, installed into
+   share/silver-os-bootstrap/kmods, nvidia's in extra/ (depmod).
+   init.c: after the switch, modprobe -q -b -a every device's
+   modalias in /sys/bus/*/devices, then orbiter.modules through
+   modprobe (nvidia-drm:modeset=1). The tree gets lib/modules/
+   <release>, all of /lib/firmware (752 MB), modprobe and modinfo.
+   The wizard checks against that tree (the running one, else
+   orbiter-os/root): modules.alias + modules.builtin.alias, and a
+   module's firmware (one of those modinfo lists present). The
+   old lib/modules/orbiter and the aliases file are gone.
+   The defconfig kernel and its nvidia modules are kept as
+   share/silver-os-bootstrap/bzImage.efivars and nvidia.efivars.
+   Fixed (Kalen: the RTX 3060 "not supported"): from Ubuntu the
+   check fell back to Ubuntu's /lib/modules and took its first
+   kernel (6.14, no nvidia). It only ever checks orbiter-os's
+   tree now (running orbiter-os: its own, the running release;
+   elsewhere: orbiter-os/root).
+16. DONE (Oct 10) the wizard's
+   page 0 "Build orbiter-os": os-bootstrap is a component,
+   element Bootstrap (summary: kernel, modules, drive tree, boot
+   files, each built or not; Build runs `silver --clean --build
+   os-bootstrap` when the kernel or modules are missing, then
+   assemble on a thread, its lines shown). Shown only where
+   orbiter-os can be built (bootstrap_here: not booted into
+   orbiter-os, silver's source present); booted into orbiter-os
+   the wizard starts at the hardware check. Continue needs it all
+   built (shift+click goes on). The os-bootstrap app is element
+   main over Bootstrap: write the tree, then quit.
+   Built and checked on europa (hidden): kernel 6.18.0 (Ubuntu
+   config), 6,712 drivers + 3 nvidia, tree 2,954 MB, vmlinuz =
+   the built kernel; Build rewrote the tree in place with its
+   lines shown. Hardware check against the new tree: RTX 3060
+   (nvidia), RTL8125 (r8169), RTL8852CE Wi-Fi (rtw89_8852ce) all
+   supported; AMD built-in graphics: amdgpu but no Vulkan driver
+   (radv is not in the tree: Mesa's amd/intel drivers OPEN).
+   Fixed on the way:
+   - nvidia-uvm does not build on 6.18 with Ubuntu's HMM config:
+     NV_KERNEL_MODULES='nvidia nvidia-modeset nvidia-drm' (we ship
+     no CUDA).
+   - the app's Bootstrap got no member defaults (constructed, not
+     mounted): app was '', and its binary's path was install/build,
+     which copied the whole build folder (17.7 GB, the disk at 5 GB
+     free). initialize[] now; assemble refuses an empty app; the
+     copy in the tree removed.
+   - nvidiafb's alias takes every NVIDIA display card: the tree
+     carries /etc/modprobe.d (Ubuntu's blocklists and options) for
+     init's modprobe -b, and the wizard reads the same blocklist.
+   NOT booted yet with this kernel (modules by modprobe from
+   init): the next real boot is the test.
+17. IN PROGRESS (Oct 10, Kalen: built kernels as a list to pick
+   from, new ones from choices) page 0 is the kernel list
+   (ListBox, as the partitions: Kernel, Config, Modules, NVIDIA,
+   Built; the lit row is the one the drive takes, saved in
+   kernels/selected) and choices: Kernel 6.18 / 6.12, Config
+   Ubuntu / Minimal (defconfig), NVIDIA <host's> / none; Build
+   kernel beside them, Write the tree beside the tree's state.
+   Each build is share/silver-os-bootstrap/kernels/<ver>-<cfg>
+   [-nvidia<v>]/ (bzImage, kmods with nvidia in extra/,
+   build.agi). The kernel and nvidia import lines are gone: the
+   element builds (fetch into install/imports, build/linux-<ver>,
+   build/nvidia-<name>, config, make, modules_install, nvidia,
+   depmod), every line shown. The os-bootstrap app builds the
+   default when no kernel exists, then writes the tree. The list
+   pieces (ListBox, ListHead, ListRows, ListRow, ListCell,
+   list_cells, Choice) moved into os-bootstrap; the wizard's
+   partitions use them. The first build was moved in as kernels/
+   6.18-ubuntu-nvidia610.57.04 (build/linux -> linux-6.18, which
+   makes its next make a full rebuild: absolute paths).
+   Checked: the list, the choices, Write the tree (Done, date
+   moved). Build kernel running end to end now (hidden).
+   Note: `silver --build orbiter` does not rebuild os-bootstrap
+   (reached through the wizard); build it by name after an edit.
+   Then (Kalen, Oct 10): no config choice and no Ubuntu naming
+   (orbiter-os is built by everyone): one config, our
+   os-bootstrap/linux.config; builds are <ver>[-nvidia<v>] (the
+   first renamed 6.18-nvidia610.57.04). The Drive tree / Boot
+   files lines, Write the tree and the page-0 warning line are
+   gone; the build output takes the room. Continue on page 0:
+   disabled and dim while building (no override); when the tree
+   lacks the chosen kernel it writes it, then goes on. NVIDIA's
+   copy names its three modules (a stale uvm and peermem had
+   been copied; removed). Build kernel checked end to end (full
+   rebuild after the folder move, then nvidia, depmod, "Built").
+   NOT checked: Continue while building (the run was stopped).
+   Kalen's own 6.12 Minimal build is kernels/6.12-defconfig-...
+   (8 modules), left as he made it.
+   Cancel Build (lower left, only while building): each command
+   runs `setsid sh -c` with its pid in install/tmp/os-bootstrap-
+   build.pid; Cancel sends SIGTERM to that group (make and its
+   compilers gone within seconds; checked), the tree writer stops
+   between files. Builds install into <name>.part and replace the
+   kernel only at the end (a cancel or failure keeps the old one;
+   the list skips .part). Checked hidden: Continue during a build
+   stays on page 0; the 6.18 kernel untouched by a cancel.
+   The wizard's avatar takes its build state (swap_on: the core
+   flame, grooves, faster spin) while Bootstrap builds; seen.
+   Then (Kalen, Oct 10): every button 25% shorter (choices and
+   Bootstrap buttons h1.1 -> 0.825, rows 1.3 -> 1.05 apart; the
+   wizard's Back/Continue/Cancel h1.4 -> 1.05, its rows and fields
+   1.25 -> 0.94), Continue 25% narrower (6 -> 4.5 units), Build
+   kernel and Write installer its width (BootButton text 13 px to
+   fit), Bootstrap 13 -> 14 units tall: the build output shows 5
+   lines (was 2). Remove (Rule #12): ctrl/cmd held, every row's
+   Built cell is a Remove button; shift, the hovered row's only (rm -rf its folder; the drive tree keeps its own
+   copy). Seen hidden; Remove checked on a dummy kernel only.
+   A disabled Continue: label at half alpha, no near light.
+   Colours from the avatar's ring: the pointer's glow on every
+   button pink #ff84ff, selected rows and choices blue #806bff
+   border, fill #4d3dbc at 2/3 alpha (darker: the pink glow
+   shows on it), the go button #4d3dbc. Seen hidden.
+   Bootstrap 14.15 units tall: the build output shows 6 lines,
+   in one element with mask_glow (32 px fade at its top); its
+   lines are no_cache (a cached child draws outside the mask).
+   Fixed in trinity for it (Canvas.ag): Gradient.init set kind
+   none after the caller's props, so every linear_gradient was
+   flat; and paint took the plain-rect shortcut before the fill
+   gradient's ramp was set. Every fade_band (scroll_fade, the
+   editor's mask_glow) painted nothing until now. trinity
+   t_fade_band, t_fade_masked.
+18. BUILT, not written to a stick yet (Kalen: (a) + pkexec,
+   then our own stub) the USB installer: Write installer… beside Build
+   kernel, for the chosen kernel, shows the drive row (sideways
+   Choice buttons: usb or removable drives from /sys/block,
+   rescanned every 2 s; the running disk and any smaller than
+   the tree + 512 MB EFI dimmed, not picked), Back, and Write
+   installer (lit once a drive is picked). The stick: GPT, 512 MB
+   FAT (EFI/BOOT/BOOTX64.EFI = os-bootstrap/efistub.c, our ~100
+   line UEFI program: reads EFI/orbiter/cmdline.txt, loads
+   EFI/orbiter/vmlinuz.efi from memory, gives it this volume's
+   device so the kernel's own stub loads initrd=\EFI\orbiter\
+   initramfs), then ext4 (label orbiter-usb, a fresh uuid the
+   boot line names, orbiter.root=/, orbiter.args=--install,true).
+   make_image builds it as the user in install/tmp/installer:
+   clang + lld-link for the stub, cpio -pdl hard-link staging
+   (skips root/.cache; files keep uid 1000: e2fsprogs 1.47.0 has
+   no tarball -d), sfdisk on the file, mformat/mmd/mcopy at
+   @@1M (mtools 4.0.48 imported), mke2fs -E offset -d. Then one
+   `pkexec sh -c` unmounts the stick's partitions and dd's it.
+   t_installer_image (os-bootstrap) passes: 4,199 MB image in
+   ~10 s, every file and the boot line read back. NOT done: a
+   real stick (pkexec would prompt on Kalen's desktop) and a UEFI
+   boot test (no OVMF here).
+   FIXED (mine, Oct 10): make_image first wrote the drive tree
+   when it lacked the chosen kernel; with Kalen's 6.12 build
+   chosen, my test put 6.12 into /orbiter-os (the GRUB entry's
+   kernel). Restored (6.18 chosen, tree rewritten, vmlinuz equal
+   to 6.18's bzImage, lib/modules/6.12.0 removed). make_image now
+   never touches the drive tree: the stage is a hard-link copy
+   without lib/modules and boot/vmlinuz, the chosen kernel's put
+   in their place. Checked: tree mtimes equal before and after.
+   The image is built on this computer's disk first (Kalen's 58 GB
+   stick failed "No space left" in mke2fs: / had 43 MB free).
+   make_image now checks the free space for the whole image
+   first and says so, and a failed step deletes its work folder.
+   A progress bar (WizBar, the wizard's own draw) centred in the
+   dialog's bottom row while it writes: the image's steps fill the
+   first fifth, then dd (oflag=direct, status=progress; sh_copy
+   splits its \r counts itself: tr buffered them to the end) the
+   rest; the fill eases by filter_n. Coral track and fill, radius
+   6 px; every 4 s a light sweeps across in 1 s (near_light at
+   the sweep, reach 234 px, 1.4x on the fill, inner glows). No
+   Cancel Build then; the avatar takes the long halo (work_on +
+   edits_in), no flame. Its console is the same masked log_view.
+   Checked hidden with a stand-in pkexec on PATH (dd-style counts,
+   nothing written): bar eases, sweep crosses fill and track.
+   While it writes, Back is Cancel and Write installer is dim (a
+   double click hits nothing). dd runs as root, out of Cancel's
+   kill: the root shell watches install/tmp/installer-cancel-<pid>
+   and stops dd when Cancel makes it ("only partly written").
+   Cleanup uses wipe (system rm): sh refuses once cancelled.
+   A write first wipes any old cancel file (one was left once).
+   Bar light reach 234 px (fill 1.4x). Checked hidden with a
+   stand-in pkexec and dd on PATH: Cancel stops dd in 0.5 s.
+   Any disabled element (trinity's layer draw, generic): label at
+   half its alpha, no near light (border or inner glow). The
+   wizard's and BootButton's own :disable blocks are gone.
+   Written, the bar stays, all green and unlit, until Back. Each write
+   builds in its own install/tmp/installer-<pid> (Kalen's write
+   and my hidden test shared one folder and broke each other).
+   Back in the drive row is Write installer's width (4.5 units).
+   t_copy_progress passes; the real stick write is not run here
+   (pkexec would ask on Kalen's desktop).
+   Kernel choices (Kalen: add 7.x) are kernel.org's releases.json
+   read on open: stable, then the two newest longterm (7.2.9,
+   6.18.55, 6.12.112 today); offline: 7.2, 6.18, 6.12. The
+   download path is v<major>.x. t_kernel_releases passes.
+   The bootstrap page shows only for a PC user running the
+   installer (bootstrap_here: no orbiter.init= on the boot line,
+   silver's source present); OPEN: a release without the source
+   should still list prebuilt kernels and write installers.
+19a. DECIDED (Kalen, Oct 10) hardware lines: x64, ARM64, Apple,
+   Surface. DONE on the page (Oct 10): the Hardware column first
+   in the kernel list and a Hardware choice row; Kernel offers per
+   hardware (x64/ARM64: kernel.org's; Surface: those linux-surface
+   has patches/<series> for, read from its GitHub listing; Apple:
+   asahi); NVIDIA only for x64 and Surface; Build kernel dim for
+   the lines without a build path yet (all but x64). Apple's
+   Kernel choice is the asahi branch's version alone (7.1.9, read
+   from its Makefile; Asahi's repo tags are kernel.org's mirrored,
+   the branch is its release line), with the note "from the
+   Asahi Linux project" beside it.
+   BUILT (Oct 10) 7.2.9 + NVIDIA 610.57.04 (kernels/7.2.9-nvidia
+   610.57.04: nvidia, nvidia-modeset, nvidia-drm). 7.x turns on
+   OBJTOOL_WERROR, which failed nvidia's 'naked' returns (6.x
+   only warned): our config turns it off. Not booted yet; the
+   drive tree still holds 6.18. The kernel list gets a Hardware column first, and a
+   Hardware choice: it decides the kernel source, the versions
+   offered, the architecture, whether NVIDIA is offered, and the
+   installer's boot method. build.agi gains `hardware`; older
+   builds read as x64.
+   - x64: kernel.org (stable + two longterm), x86_64, UEFI stick
+     (BOOTX64.EFI). Done.
+   - ARM64: kernel.org, arm64 (clang LLVM=1 ARCH=arm64), for arm64
+     UEFI machines; the stick's stub built for aarch64 as
+     BOOTAA64.EFI; no NVIDIA; the orbiter-os programs for arm64
+     (shared with Apple).
+   - Surface: kernel.org source + linux-surface's patches/<series>
+     and configs/surface-<series>.config (github.com/linux-surface/
+     linux-surface; series up to 6.19 on Oct 10, so 6.18 longterm),
+     merged into our config; x86_64; NVIDIA offered (Surface Book);
+     the same UEFI stick.
+     BUILT (Oct 10): kernels/6.18.26-surface-nvidia610.57.04 (6,715
+     drivers: surface_aggregator, surface_hid/kbd, ithc, ipts,
+     mwifiex, nvidia x3). linux-surface stopped in May: its patches
+     fit the release in its v<series>-surface tree (6.18.26,
+     6.12.90), not today's stables. On 6.18.55 they need fuzz and
+     two land wrong (btusb's BIT(29) and hid-multitouch's 0x0117
+     each taken twice). So Surface offers that release per series
+     (offered: surface_releases, the tree's Makefile). Patches in
+     order, one already in passed by (reverse dry run), any other
+     with no fuzz; surface-<series>.config by merge_config.sh; Intel
+     pinctrl built in (their arch.config). linux-surface pinned by
+     master's commit (install/imports/linux-surface-<sha>.tar.gz).
+     Not booted on a Surface.
+   - ARM64 BUILT (Oct 10): kernels/7.2.9-arm64 (8,176 modules,
+     arm64 Image, 4K pages). kernel.org source, Ubuntu's arm64
+     config of the same kernel as ours (os-bootstrap/linux-arm64.config,
+     6.17.0-40 generic from ports.ubuntu.com), our LLVM (ARCH=arm64
+     LLVM=install/bin/), Image + modules; no NVIDIA or Intel rows.
+     The drive tree stays x86: an ARM kernel is never the drive's.
+     Clicking its row lights it for the stick only (Bootstrap.stick;
+     Kalen: "we should still be able to write an installer"):
+     BOOTAA64.EFI (efistub.c for aarch64), Image as vmlinuz.efi, an
+     arm64 /init (init.c on the kernel's tools/include/nolibc, built
+     with the kernel: `init` beside Image; shims under #ifdef
+     NOLIBC). t_installer_image_arm. BOOTED (Oct 10) the stick in
+     qemu-system-aarch64 (scratch build, pc-bios edk2-aarch64 UEFI,
+     usb-storage): UEFI -> stub -> kernel -> init mounts the stick
+     by uuid, switches root; it stops at "cannot run orbiter" (x86
+     userland), as expected until orbiter-os is built for arm64.
+     Apple's stick is the same; it needs Asahi's m1n1 + U-Boot.
+     A one-letter literal is a character: (apple) ? '-' : amd wrote
+     'a' for amdgpu; not-offered columns say 'n/a'.
+   - Apple BUILT (Oct 10): kernels/7.1.9-asahi (8,204 modules, 16K
+     pages; asahi.ko the Rust GPU driver, appledrm (DCP display),
+     apple-dart, nvme-apple, brcmfmac, macsmc; 110 dtbs, 23 of them
+     M1/M2 t8103/t8112/t600x/t602x). MODVERSIONS off for it: Rust
+     needs that or GENDWARFKSYMS, which needs debug info.
+     Not booted: no m1n1 / U-Boot path or arm64 userland yet.
+     AsahiLinux/linux branch asahi
+     pinned by commit, Ubuntu arm64 config + the tree's
+     arch/arm64/configs/asahi.config (16K pages, Rust, DRM_ASAHI),
+     rust-src added to the user's rustup, bindgen-cli built into
+     install (LIBCLANG_PATH install/lib), stops if CONFIG_RUST is
+     off; Image, modules, the apple dtbs.
+   A Bootstrap member added: build the wizard with --clean (it read
+   usb_view at the old offset: the build page titled itself as the
+   installer).
+   - Apple: Asahi's tree (branch asahi, 7.1 on Oct 10), arm64
+     (clang LLVM=1 ARCH=arm64), Rust for its GPU driver, its boot
+     chain (m1n1, U-Boot; the Asahi way installs from macOS), and
+     the whole orbiter-os userland for arm64 (orbiter, trinity,
+     Mesa's asahi driver). A project in stages: kernel first.
+19. OPEN (Kalen, Oct 10) orbiter-os on Macs. Apple Silicon:
+   Asahi's kernel tree (github.com/AsahiLinux/linux, branch asahi,
+   7.1.9 on Oct 10) as a kernel source choice, and an installer
+   for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
+   stick as PCs do. (7.x is in the kernel choices now: item 18.)
 
 ## orbiter-os shell design — live list (Oct 1 2026)
 
@@ -5702,6 +6164,35 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       saves lack the side flights; new lines past 72 columns;
       fin_look/fin_miss kept (still used); our ship's flights to
       rerun on the shared landing changes.
+      Oct 9 later (Kalen): the top booster's climb is the upper
+      stage's insertion law under 4 g (the linear tangent solve
+      wandered: 700 km): SECO 300.0 km level, rounded 298-301,
+      75 t left. The crew ship flies too (Mission.crew, its own
+      flight, tanker_shared, 60 s after: crew_after); the top
+      booster is handed to it once round (take_tanker, handed).
+      The crew flight stages on its reserve (no 50 km cut: it
+      came down with 198 t, too heavy to stop); its upper stage
+      climbs by high_point_up (the climb that coasts to the
+      high point) under 4 g. Landing burn looked for from 30 km
+      (was 8: a fast heavy booster lit too late); legs out under
+      400 m on three engines too (they never came out there).
+      Launch: the crew flight drawn, its fins from its own
+      crafts (they opened at the tanker's staging), cameras 6
+      crew ship, 7 crew booster. Run: crew MECO 64.5 km 1829
+      m/s, SECO 229 km, orbit 148-408 km; its booster stands on
+      A at 5.5 m/s. OPEN: the crew's high point overshoots 270
+      (408 km, over the tanker); the middle booster's touchdown
+      is marginal (tilt 14-21 deg at first touch, scvx 0.56 s a
+      solve); the crew flight not in saves; rendezvous and
+      docking with the handed tanker not run.
+      Oct 10: the payload was scaled with the ship (10 t became
+      38.3 t: scale_ship leaves 'payload' as asked now). The
+      crew ship climbs by the linear tangent steering to the
+      tanker's height (park_height for tanker_shared), 4 g:
+      SECO 300.1 km, 22.45 t left, rounded 302-305 km. The
+      rounding burn stops when the flown-ahead low point reaches
+      its height (it ran on to 1,375 km before). Top booster
+      rounded 298-301 km, 75.3 t. t_tanker_flight passes.
 
 ## Active work: quake2 port (Oct 5 2026)
 

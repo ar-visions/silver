@@ -1,5 +1,14 @@
-extend orbiter
+# avatar: the orbiter hex, rendered; orbiter and setup use it
+export 0.1.0
 
+import vec
+import img
+import gltf
+import trinity
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
 
 ModelViewProject Orbiter 
     mutable pulse_width  : f32
@@ -26,6 +35,8 @@ Orbiter PBR
     # red verts: 0 idle, 1 working light / done purple
     mutable work         : f32
     mutable done         : f32
+    # the grooves' ring light: 0 off, 1 full
+    mutable groove       : f32
 
     attrib color        : LayoutBinding [ type:typeid[ Surface ],
                                           id:Surface.color,
@@ -345,7 +356,41 @@ Orbiter PBR
         float rg_pulse = max(pl_pulse, mix(0.35, 1.0, pow(0.5 - 0.5 * cos(pl_ang - ubo.spin), 2.4)));
         blue_light    += rg_lit * rg_pulse;
 
+        // the grooves (blue verts) catch a ring light climbing from
+        // the core up the flower, widening where the flower flares
+        // the blue as painted (stored linear, so lifted to sRGB as
+        // blender shows it), feathered sides too; not the core's red
+        float gv_m  = pow(v_color.b, 1.0 / 2.2) * (1.0 - step(0.5, v_color.r));
+        // one climb per turn of the halo
+        float rl_t  = fract(ubo.spin / 6.2831853);
+        // the flower's profile, radius and height: wall, then flare
+        vec2  rl_a  = vec2(0.20, -0.44);
+        vec2  rl_b  = vec2(0.28, -0.24);
+        vec2  rl_c  = vec2(0.44, -0.15);
+        // it starts a reach under the core's edge and ends a reach
+        // past the rim, so it rises in and leaves wholly, no cut
+        vec2  rl_s  = rl_a - normalize(rl_b - rl_a) * 0.035;
+        vec2  rl_d  = rl_c + normalize(rl_c - rl_b) * 0.08;
+        vec2  rl_p  = (rl_t < 0.1) ? mix(rl_s, rl_a, rl_t * 10.0)
+                    : (rl_t < 0.5) ? mix(rl_a, rl_b, (rl_t - 0.1) * 2.5)
+                    : (rl_t < 0.85) ? mix(rl_b, rl_c, (rl_t - 0.5) / 0.35)
+                    : mix(rl_c, rl_d, (rl_t - 0.85) / 0.15);
+        vec2  rl_q  = vec2(length(v_local_pos.xz), v_local_pos.y);
+        float rl_w  = mix(0.035, 0.08, smoothstep(0.1, 0.85, rl_t));
+        float rl_f  = max(0.0, 1.0 - distance(rl_q, rl_p) / rl_w);
+        float rl_e  = 1.0;
+        // the base: the solid blue only (over half), at half light
+        float bs_m  = step(0.5, v_color.b) * (1.0 - step(0.5, v_color.r));
+        bs_m        = bs_m * ubo.groove;
+        // the pulse: every bit of blue, feathered sides too
+        float pu_m  = clamp(1.5 * gv_m * rl_f * rl_f * rl_e
+                            * ubo.groove, 0.0, 1.0);
+
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + pl_lit;
+        // painted on, not added: it shows on the bright faces too
+        vec3  rl_col = vec3(1.2, 0.5, 2.6);
+        result = mix(result, rl_col * 0.5, bs_m);
+        result = mix(result, rl_col * 2.0, pu_m);
 
 
         // gamma 0 (unset uniform) would blow the image to white — floor it
@@ -1150,26 +1195,11 @@ ModelViewProject Heat
                        mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
     }
 
-    # the grooves' glow: the mask, blurred over two rings of taps, over
-    # its own sharp line
+    # the grooves' glow: the mask as it is, no blur
     func groove_glow [ at: vec2f ] -> GLSL vec3f {
         if (ubo.groove <= 0.001) return vec3(0.0);
-        vec2  mt  = 1.0 / vec2(textureSize(emission, 0));
         float m0  = texture(emission, at).r;
-        float acc = m0 * 2.0;
-        float wsum = 2.0;
-        // three rings, each turned half a step from the last: no tap lines
-        // up with its neighbors, so the edges come out soft
-        for (int i = 0; i < 8; i++) {
-            float a  = float(i) * 0.78539816;
-            vec2  d1 = vec2(cos(a), sin(a));
-            vec2  d2 = vec2(cos(a + 0.3927), sin(a + 0.3927));
-            acc  += texture(emission, at + d1 * mt * 1.5).r * 1.5;
-            acc  += texture(emission, at + d2 * mt * 3.5).r * 1.2;
-            acc  += texture(emission, at + d1 * mt * 7.0).r;
-            wsum += 3.7;
-        }
-        float bl  = acc / wsum;
+        float bl  = m0;
         return vec3(0.45, 0.2, 1.0) * (0.2 * m0 + 1.5 * bl) * ubo.groove;
     }
 
@@ -1559,8 +1589,9 @@ element Avatar
             w_ref.element_targets[ '{id}-vol' ] = vol_target
             vol_target.wscale = 0.0
 
-        # the groove mask: the body's geometry at the device pixels,
-        # depth tested so the fins hide the grooves behind them
+        # the groove mask: the body's geometry at the pbr pass's size,
+        # reduced 4:1 as it is, depth tested so the fins hide the
+        # grooves behind them
         if [ target && mcache[ 'orbiter32' ] ]
             if [ !mask_s ]
                 mask_s = GrooveMask [ vk: vk, model_id: 'orbiter32' ]
@@ -1573,9 +1604,10 @@ element Avatar
                 tag:         'avmask',
                 vk:          vk,
                 w:           w_ref,
-                width:       i32[ bounds.w * dscale ],
-                height:      i32[ bounds.h * dscale ],
+                width:       i32[ bounds.w * rs * dscale ],
+                height:      i32[ bounds.h * rs * dscale ],
                 use_depth:   true,
+                reduce:      true,
                 clear_color: clear_color,
                 models:      [ mm ] ]
             mask_target.owner = a
@@ -1590,7 +1622,7 @@ element Avatar
             hm : Model [ w: w_ref, s: heat_s,
                          samplers: map Texture[string] [
                              'color': heat_src,
-                             'emission': mask_target.color ] ]
+                             'emission': mask_tex[] ] ]
             heat_target = Render [
                 tag:         'avheat',
                 vk:          vk,
@@ -1723,8 +1755,8 @@ element Avatar
             target.width  = i32[ bounds.w * rs8 * ds ]
             target.height = i32[ bounds.h * rs8 * ds ]
             if [ mask_target ]
-                mask_target.width  = i32[ bounds.w * ds ]
-                mask_target.height = i32[ bounds.h * ds ]
+                mask_target.width  = i32[ bounds.w * rs8 * ds ]
+                mask_target.height = i32[ bounds.h * rs8 * ds ]
             if [ vol_target ]
                 vs8 : f32 [ (vol_scale > 0.0) ? vol_scale : 0.25 ]
                 vw8 : f32 [ bounds.w * rs8 * vs8 ]
@@ -1791,9 +1823,8 @@ element Avatar
                 hk : i64 [
                     i64[ geo_tex.width ] * 65536
                     + i64[ geo_tex.height ] ]
-                mk : i64 [
-                    i64[ mask_target.color.width ] * 65536
-                    + i64[ mask_target.color.height ] ]
+                mt : mask_tex[]
+                mk : i64 [ i64[ mt.width ] * 65536 + i64[ mt.height ] ]
                 if [
                     heat_src != geo_tex || heat_bound != hk
                     || mask_bound != mk ]
@@ -1805,7 +1836,7 @@ element Avatar
                     heat_target.height = geo_tex.height
                     for [ hm: Model ] in heat_target.models
                         hm.samplers[ 'color' ]    = geo_tex
-                        hm.samplers[ 'emission' ] = mask_target.color
+                        hm.samplers[ 'emission' ] = mt
                         hm.rebind_model[]
                 mask_s.model = model_mat
                 mask_s.proj  = _proj
@@ -1818,7 +1849,8 @@ element Avatar
                 heat_s.time         = clock_s
                 heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
                 heat_s.heat         = heat
-                heat_s.groove       = groove
+                # the grooves light in the body's ring light now
+                heat_s.groove       = 0.0
                 heat_target.state_mask = msk
                 heat_target.update[]
                 # its image is empty until it has drawn (at start, and
@@ -1830,6 +1862,12 @@ element Avatar
         if [ vol_target ]
             w.screen.draw_image[ vol_target.color, b ]
         needs_frame = true
+
+    # the groove mask as the heat pass reads it: reduced 4:1
+    func mask_tex [] -> Texture
+        if [ mask_target.reduce && mask_target.reduction ]
+            return mask_target.reduction
+        return mask_target.color
 
     # the avatar alone on a clear canvas: the app's icon
     func icon_image [ w: Window, size: i32 ] -> Image
@@ -1854,50 +1892,307 @@ element Avatar
         return Image [ w.screen.color ]
 
 
-# the app's icon: the avatar at 512, made once (delete it to remake)
-export func orbiter_icon []
-    inst : path.path_install[]
-    if [ !inst ] return
-    # the module folder: the first source the install lists for it
-    srcs : path '{inst}/build/silver-orbiter.source'
-    if [ !srcs.exists[] ] return
-    txt  : string [ srcs.load[ typeid[string], null ] ]
-    if [ !txt ] return
-    lines : txt.split[ '\n' ]
-    first : path [ lines[ 0 ] ]
-    out   : path '{first.parent_dir[]}/images/icon.png'
-    force : getenv[ 'SILVER_EXPORT_FORCE' ]
-    if [ force || !out.exists[] ]
-        vk9 : vk_context []
-        vk9.hold[]
-        w9 : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
-            width: 512, height: 512 ]
-        w9.hold[]
-        if [ !w9.element_targets ]
-            w9.element_targets = map Render [string] []
-        # the screen canvas a running window makes in its update
-        w9.screen = Canvas [ w: w9, vk: vk9, format: Pixel.rgba8,
-                             load_existing: true,
-            width: 512, height: 512 ]
-        w9.screen.resize[ 512, 512 ]
-        w9.screen.update[]
-        # mounted as the window mounts an element: context first, then
-        # initialize (the member defaults), then bind and hold members
-        av : OrbiterAvatar [ id: 'icon' ]
-        av.hold[]
-        av.ux = w9
-        av.vk = w9.vk
-        av.initialize[]
-        bind_members[ av ]
-        av.hold_members[]
-        av.bounds = rect [ x: 0.0, y: 0.0, w: 512.0, h: 512.0 ]
-        # the app's resting yaw (on_state sets it there): flat top and
-        # bottom
-        av.rotate = vec Rotation []
-        av.rotate.push[ Rotation [ '0 1 0 30deg' ] ]
-        av.rotate.push[ Rotation [ '1 0 0 0deg' ] ]
-        im : av.icon_image[ w9, 512 ]
-        im.png[ out ]
-        log 'orbiter: icon written {out}'
-    el
-        log 'orbiter: icon current'
+# the shaders and the motion; no style of its own, so a subclass's
+# placement is never contested by a base block (the style resolver takes
+# the base's area over the subclass's)
+Avatar OrbiterAvatar
+    # the look as it is at a swap, and the same look on the next
+    # instance
+    public func carry [ xs: ExchangeState ]
+        xs.av_halo    = halo_cur
+        xs.av_flame   = flame_cur
+        xs.av_tilt    = tilt_cur
+        xs.av_listen  = listen_cur
+        xs.av_spin    = spin_phase
+        xs.av_settled = settled
+        xs.av_shown   = shown
+        xs.av_done    = was_done
+
+    public func restore [ xs: ExchangeState ]
+        halo_cur   = xs.av_halo
+        flame_cur  = xs.av_flame
+        tilt_cur   = xs.av_tilt
+        listen_cur = xs.av_listen
+        spin_phase = xs.av_spin
+        settled    = xs.av_settled
+        shown      = xs.av_shown
+        was_done   = xs.av_done
+        pristine   = false
+        paint_once = true
+    render_scale : f32 [ 4.0 ]
+
+
+    public src_file : path
+    eye_pos     : vec3f [ 0.0, 4.2, 0.0 ]
+    target_pos  : vec3f [ 0.0, -0.3, 0.0 ]
+    up_vec      : vec3f [ 0.0, 0.0, -1.0 ]
+    fov         : f32   [ 24.0 ]
+    env_yaw     : f32   [ 0 ]
+    env_pitch   : f32   [ 0 ]
+    blend_rings : f32   [ 0.2 ]
+    blend_haze  : f32   [ 1.0 ]
+    blend_bands : f32   [ 0.2 ]
+    rest_tilt   : f32   [ 0.0 ]
+    # the tilt takes the :settled area move's time
+    tilt_ms     : i64   [ 900 ]
+    # tilt away while the agent is working
+    busy_tilt   : f32   [ 34.0 ]
+    # the halo glow hover used to show — it answers to busy now
+    rest_pulse  : f32   [ 0.4 ]
+    # the beam while working: close to rest, never the old glare
+    busy_pulse  : f32   [ 0.6 ]
+    rest_ph     : f32   [ 1.2 ]
+    busy_ph     : f32   [ 2.4 ]
+    rest_halo   : f32   [ 0.8 ]   # the beam's height: twice what it was
+    busy_halo   : f32   [ 1.6 ]
+    # the halo stage's filter: state * 0.95 + goal * 0.05 a frame, about
+    # a second; once done the second halo settles back to the first at
+    # 0.99 + 0.01
+    stage_amount : f32  [ 0.05 ]
+    settle_amount : f32 [ 0.01 ]
+    mutable halo_cur   : f32
+    mutable flame_cur  : f32
+    mutable work_cur   : f32
+    # the heat haze off the core: slight from the start, full once the
+    # jet burns; the spin speeds up with it (1 + heat_spin * heat)
+    heat_base   : f32   [ 0.25 ]
+    # the jet igniting: the flame's width swings +-25% about its own,
+    # starting wide, and settles within ignite_s seconds
+    ignite_amp  : f32   [ 0.25 ]
+    # the core flame's look: 0 the orange flame, 1 the violet-white beam
+    flame_style : f32   [ 1.0 ]
+    ignite_hz   : f32   [ 4.0 ]
+    ignite_s    : f32   [ 1.5 ]
+    intern ignite_us   : i64
+    intern was_done    : bool
+    heat_spin   : f32   [ 1.0 ]
+    rest_spin   : f32   [ 0.25 ]
+    busy_spin   : f32   [ 2.66 ]
+    # how fast the RATE itself approaches; low = a long spin-up
+    spin_amount : f32   [ 0.04 ]
+    mutable spin_rate  : f32 [ 0.25 ]
+    mutable spin_phase : f32
+    mutable core_phase : f32    # core pulse, quarter of the spin
+    mutable spin_us   : i64    # the last spin step, microseconds
+    # the wheel's in-plane clocking, held in every state
+    clock_deg   : f32   [ 30.0 ]
+    mutable tilt_cur : f32
+    intern  tilt_from : f32
+    intern  tilt_to   : f32
+    intern  tilt_us   : i64    # when the tilt toward tilt_to began
+    intern  st_logged : bool
+    # how fast the rim crosses between dark and blue
+    listen_amount : f32 [ 0.20 ]
+    mutable listen_cur : f32
+    # the exchange avatar: face on at first, then settled (tilted up)
+    public settled : bool
+    # its reveal: an alpha fade, flipped on the first frame it runs
+    public shown   : bool
+    # summon slide: 0 = below the corner, 1 = at rest
+    summon_amount : f32 [ 0.14 ]
+    mutable summon_t : f32
+    # the undo: the wheel turns a sixth (cubic in_out) while the spin
+    # slows, turns the other way, and slows back to its own way
+    undo_deg    : f32   [ 60.0 ]
+    undo_s      : f32   [ 1.6 ]
+    mutable undo_us   : i64
+    mutable undo_turn : f32
+
+    public func undo []
+        undo_us  = epoch_micros[]
+        pristine = false
+
+    # what the owner reports, each frame: an agent working, its
+    # edits in, done, a reload under way, the mic listening
+    public work_on   : bool
+    public edits_in  : bool
+    public work_done : bool
+    public swap_on   : bool
+    public mic_on    : bool
+
+    # called each frame with the live State bitmask
+    func on_state [ m: i32 ]
+        if [ !st_logged ]
+            st_logged = true
+            log 'ONSTATE reached m={m} busy={work_on}'
+        want : f32 [ rest_tilt ]
+        # the exchange avatar shows only while an exchange is up (the
+        # opacity fades either way) and takes no clicks while hidden
+        if [ animate_always ]
+            # pre-load, once laid out: the targets, models and shaders
+            # are built on the first frame with the real bounds
+            # (on_state runs while invisible; draw does not), so the
+            # exchange opens without the build stall. before layout the
+            # bounds are a stub (8x14)
+            if [ !target && !vol_target && bounds && bounds.w >= 300.0 ]
+                create_target[]
+            vis : bool [ ux->shot_ask && !ux->agent_min ]
+            if [ vis != shown ]
+                shown       = vis
+                user_events = vis
+                if [ ux ] ux.restyle = true
+        # the exchange avatar takes the app's busy state only once a
+        # line was sent through orbiter: until then it is face on, at
+        # rest, whatever the session is doing elsewhere
+        wb : bool [ work_on && (!animate_always || ux->agent_view) ]
+        # the exchange avatar: face on until the first send, then
+        # settled: tilted up
+        if [ !settled && (wb || ux->agent_view) ]
+            settled = true
+            if [ ux ] ux.restyle = true
+        # face on, the exchange avatar's core holds its color: the
+        # shaders' clock runs only once it is tilted (the corner avatar
+        # always runs)
+        clock_run = !animate_always || settled
+        if [ wb || settled ]
+            want = busy_tilt
+        # 900 ms cubic in_out, as the area moves
+        if [ want != tilt_to ]
+            tilt_from = tilt_cur
+            tilt_to   = want
+            tilt_us   = epoch_micros[]
+        tt : f32 [
+            clamp[
+                f32[ epoch_micros[] - tilt_us ] / f32[ tilt_ms * 1000 ],
+                0.0, 1.0 ] ]
+        te : f32 [
+            (tt < 0.5) ? 4.0 * tt * tt * tt
+            : 1.0 - pow[ 2.0 - 2.0 * tt, 3.0 ] / 2.0 ]
+        tilt_cur = tilt_from + (tilt_to - tilt_from) * te
+        lw : f32 [ (mic_on) ? 1.0 : 0.0 ]
+        listen_cur = filter_n[ listen_cur, lw, listen_amount,
+                               ux->frame_factor ]
+        if [ body ] body.listen = listen_cur
+        # the halo's stages: the first at rest and while working, the
+        # second once edits come in; once done (and through the reload)
+        # the core flame burns and the second halo settles slowly back
+        # to the first. the stages are filtered, the uniforms follow
+        # them
+        if [ aura ]
+            rl : bool [ swap_on ]
+            dn : bool [ rl || work_done ]
+            hg : f32 [ (!dn && wb && edits_in) ? 1.0 : 0.0 ]
+            halo_cur  = filter_n[ halo_cur,  hg,
+                                  (dn) ? settle_amount : stage_amount,
+                                  ux->frame_factor ]
+            # the flame burns toward a reload only; a done with none
+            # staged would leave it lit for good the flame fades out on
+            # the filter; its fade in is the ignition's
+            if [ !rl ]
+                flame_cur = filter_n[ flame_cur, 0.0, stage_amount,
+                                      ux->frame_factor ]
+            aura.pulse_width  = rest_pulse + (busy_pulse - rest_pulse) * halo_cur
+            aura.pulse_height = rest_ph    + (busy_ph    - rest_ph)    * halo_cur
+            aura.halo_height  = rest_halo  + (busy_halo  - rest_halo)  * halo_cur
+            aura.flame        = flame_cur
+            # ignition: from the moment the flame is asked for, its
+            # width oscillates from +25% through -25% and decays to none
+            # in 1.5 s, and the flame fades in over the same 1.5 s (a
+            # smoothstep)
+            if [ rl && !was_done ] ignite_us = epoch_micros[]
+            was_done = rl
+            fw : f32 [ 1.0 ]
+            if [ rl && ignite_us > 0 ]
+                it9 : f32 [
+                    f32[ epoch_micros[] - ignite_us ] / 1000000.0 ]
+                ip : f32 [ min[ it9 / ignite_s, 1.0 ] ]
+                flame_cur = max[ flame_cur, ip * ip * (3.0 - 2.0 * ip) ]
+                aura.flame = flame_cur
+                if [ it9 < ignite_s ]
+                    dk : f32 [ 1.0 - ip ]
+                    fw = 1.0 + ignite_amp * cos[
+                        6.2831853 * ignite_hz * it9 ] * dk * dk
+            aura.flame_w      = fw
+            aura.flame_style  = flame_style
+            heat              = heat_base + (1.0 - heat_base) * flame_cur
+            # the flower's grooves light with the second halo and stay
+            # fully on while the jet burns
+            groove = max[ halo_cur, flame_cur ]
+            if [ body ] body.groove = groove
+            # the exchange avatar turns at the working rate face on too:
+            # its rotating light reads as rotation from the first frame
+            gs : f32 [
+                (rl) ? busy_spin * 1.8 : (wb || animate_always)
+                ? busy_spin : rest_spin ]
+            gs = gs * (1.0 + heat_spin * heat)
+            spin_rate  = filter_n[ spin_rate, gs, spin_amount,
+                                   ux->frame_factor ]
+            # the phase runs on real time (microseconds), not the frame
+            # factor: that is whole-millisecond deltas snapped to one
+            # frame on a slow frame, and the turn sped up and slowed
+            # down with it
+            nowu : i64 [ epoch_micros[] ]
+            dt   : f32 [
+                (spin_us > 0) ? f32[ nowu - spin_us ] / 1000000.0
+                : 0.0 ]
+            if [ dt > 0.25 ] dt = 0.25
+            spin_us    = nowu
+            # the undo's spin: 1 to 0, the other way, back to 1
+            ut : f32 [
+                (undo_us > 0)
+                ? f32[ nowu - undo_us ] / 1000000.0 / undo_s : 2.0 ]
+            if [ undo_us > 0 && ut >= 1.0 ]
+                undo_turn = undo_turn + undo_deg
+                undo_us   = 0
+            way9 : f32 [ (ut < 1.0) ? cos[ 6.2831853 * ut ] : 1.0 ]
+            spin_phase = spin_phase + spin_rate * dt * way9
+            if [ spin_phase > 6.2831853 ]
+                spin_phase = spin_phase - 6.2831853
+            if [ spin_phase < 0.0 ] spin_phase = spin_phase + 6.2831853
+            core_phase = core_phase + spin_rate * dt * 0.25
+            if [ core_phase > 6.2831853 ]
+                core_phase = core_phase - 6.2831853
+            aura.spin  = spin_phase
+            if [ body ]
+                body.spin       = spin_phase
+                body.core_phase = core_phase
+                work_cur  = filter_n[ work_cur, (wb && !dn) ? 1.0 : 0.0,
+                                      stage_amount, ux->frame_factor ]
+                body.work = work_cur
+                body.done = flame_cur
+            # core light: 0.8 idle, 1.0 working or building
+            cb : f32 [ 0.8 + 0.2 * max[ work_cur, flame_cur ] ]
+            if [ body ] body.core_base = cb
+            if [ plasma ] plasma.spin = spin_phase
+            if [ core ]
+                core.core_phase = core_phase
+                core.core_base  = cb
+        if [ !rotate ]
+            rotate = vec Rotation []
+            rotate.push[ Rotation [ '0 1 0 30deg' ] ]
+            rotate.push[ Rotation [ '1 0 0 0deg' ] ]
+        # the undo's turn: cubic in_out, slow to start and to end
+        tn : f32 [
+            (undo_us > 0)
+            ? f32[ epoch_micros[] - undo_us ] / 1000000.0 / undo_s
+            : 1.0 ]
+        if [ tn > 1.0 ] tn = 1.0
+        ep : f32 [
+            (tn < 0.5) ? 4.0 * tn * tn * tn
+            : 1.0 - pow[ -2.0 * tn + 2.0, 3.0 ] / 2.0 ]
+        yaw9 : f32 [
+            clock_deg + undo_turn
+            + ((undo_us > 0) ? undo_deg * ep : 0.0) ]
+        rotate[0] = Rotation [ '0 1 0 {yaw9}deg' ]
+        rotate[1] = Rotation [ '1 0 0 {tilt_cur}deg' ]
+        pristine = false
+
+    body : PBR [
+        model_id: 'orbiter32',
+        groups: ['outside','flower','separator'],
+        env_id: 'forest', pulse_width: 4.0, gamma: 1.88 ]
+
+    core : Core [
+        model_id: 'orbiter32',
+        groups: ['core'],
+        texture: 'textures/core.png', mip_levels: 8, pulse_width: 4.0 ]
+
+    plasma : Plasma  [
+        model_id: 'orbiter32',
+        groups: ['top_ring','flower'],
+        pulse_width: 1.0 ]
+
+    aura : Aura [
+        model_id: 'uv-quad2',
+        pulse_width: 0.4, pulse_height: 1.2, halo_height: 0.4,
+        beam_fade: 2.2, beam_cone: 0.35, flame: 0.0 ]

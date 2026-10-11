@@ -1,0 +1,2160 @@
+# wizard: orbiter-os install settings, then the install itself
+export 0.1.0
+
+import vec
+import img
+import trinity
+import avatar
+import os-bootstrap
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <errno.h>
+import <utime.h>
+import <sys/stat.h>
+import <sys/statvfs.h>
+import <fnmatch.h>
+import <pthread.h>
+import <sys/mount.h>
+import <sys/reboot.h>
+import <crypt.h>
+    -lcrypt
+ifdef [ linux ]
+    import <vulkan/vulkan.h>
+        -lvulkan
+
+# the first line of a small file, trimmed; '' when unreadable
+func read_line [ f: string ] -> string
+    fh : handle fopen[ f.chars, 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    out : string ''
+    if [ fgets[ @b[0], 4096, fh ] ]
+        s : string [ @b[0] ]
+        out = s.trim[]
+    fclose[ fh ]
+    return out
+
+# where a link points; '' when it is not one
+func link_text [ f: string ] -> string
+    b : local i8 [ 4096 ]
+    n : i64 [ readlink[ f.chars, @b[0], 4095 ] ]
+    if [ n <= 0 ] return ''
+    b[ n ] = 0
+    return string [ @b[0] ]
+
+# the last name in a path
+func last_name [ s: string ] -> string
+    at : i32 [ s.rindex_of[ '/' ] ]
+    if [ at < 0 ] return s
+    return s.mid[ at + 1, s.count - at - 1 ]
+
+# n bytes of a file at an offset; empty when unreadable
+func read_at [ f: string, at: i64, n: i32 ] -> vec u8
+    out : vec u8 []
+    fh : handle fopen[ f.chars, 'rb' ]
+    if [ !fh ] return out
+    b : local u8 [ 64 ]
+    if [ fseek[ fh, at, SEEK_SET ] == 0 ]
+        got : i32 [ fread[ @b[0], 1, n, fh ] ]
+        for [ i: i32 0, i < got, i += 1 ]
+            v : u8 [ b[ i ] ]
+            out.push[ v ]
+    fclose[ fh ]
+    return out
+
+# 1024-based, as the rest of silver writes sizes
+func size_text [ n: i64 ] -> string
+    gb : f64 [ f64[ n ] / 1073741824.0 ]
+    if [ gb >= 1024.0 ]
+        tb : f64 [ gb / 1024.0 ]
+        return '{tb.1f} TB'
+    if [ gb >= 1.0 ] return '{gb.1f} GB'
+    mb : f64 [ f64[ n ] / 1048576.0 ]
+    return '{mb.0f} MB'
+
+# a hex word from sysfs (0x10de)
+func hex_value [ s: string ] -> u32
+    return u32[ strtol[ s.chars, null, 16 ] ]
+
+# the ext4 uuid from the superblock (offset 1024)
+func ext4_uuid [ dev: string ] -> string
+    magic : read_at[ dev, 1080, 2 ]
+    if [ magic.count < 2 || magic[0] != 0x53 || magic[1] != 0xEF ]
+        return ''
+    u : read_at[ dev, 1128, 16 ]
+    if [ u.count < 16 ] return ''
+    digits : '0123456789abcdef'
+    s : string ''
+    for [ i: i32 0, i < 16, i += 1 ]
+        if [ i == 4 || i == 6 || i == 8 || i == 10 ] s = '{s}-'
+        hi : i32 [ u[ i ] >> 4 ]
+        lo : i32 [ u[ i ] & 15 ]
+        s = '{s}{digits.mid[ hi, 1 ]}{digits.mid[ lo, 1 ]}'
+    return s
+
+# a file system's name in its first sectors
+func has_sig [ dev: string, at: i64, sig: string ] -> bool
+    n : i32 [ sig.count ]
+    v : read_at[ dev, at, n ]
+    if [ v.count < n ] return false
+    for [ i: i32 0, i < n, i += 1 ]
+        if [ v[ i ] != sig.chars[ i ] ] return false
+    return true
+
+# swap in use, from the kernel's list
+func swap_on [ dev: string ] -> bool
+    fh : handle fopen[ '/proc/swaps', 'r' ]
+    if [ !fh ] return false
+    b : local i8 [ 1024 ]
+    on : bool [ false ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln : string [ @b[0] ]
+        if [ ln.starts_with[ '{dev} ' ] ] on = true
+    fclose[ fh ]
+    return on
+
+# bytes free on a mounted file system
+func free_at [ dir: string ] -> i64
+    st : struct statvfs
+    if [ statvfs[ dir.chars, @st ] != 0 ] return -1
+    return i64[ st.f_bavail ] * i64[ st.f_frsize ]
+
+# what is on a mounted partition: a system, boot folders
+func contents [ dir: string, fs: string ] -> string
+    if [ fs == 'vfat' ]
+        ed : path '{dir}/EFI'
+        if [ !ed.is_dir[] ] return ''
+        out : string ''
+        names : ed.ls[ null, false ]
+        if [ names ]
+            for [ e: path ] in names
+                nm : e.filename[]
+                if [ !e.is_dir[] || nm.lcase[] == 'boot' ] continue
+                out = (out.count > 0) ? '{out}, {nm}' : nm
+        return (out.count > 0) ? 'EFI: {out}' : 'EFI'
+    out : string ''
+    rel : read_os[ '{dir}/etc/os-release' ]
+    if [ rel.count > 0 ] out = rel
+    if [ dir == '/' ]
+        out = (out.count > 0) ? '{out}, running now' : 'running now'
+    oo : path '{dir}/orbiter-os'
+    if [ oo.exists[] || oo.is_symlink[] ]
+        out = (out.count > 0) ? '{out}, has orbiter-os' : 'orbiter-os'
+    return out
+
+# a system's name: PRETTY_NAME from os-release
+func read_os [ f: string ] -> string
+    fh : handle fopen[ f.chars, 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 1024 ]
+    out : string ''
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string [ @b[0] ]
+        ln : ln0.trim[]
+        if [ !ln.starts_with[ 'PRETTY_NAME=' ] ] continue
+        v : ln.mid[ 12, ln.count - 12 ]
+        if [ v.count >= 2 && v.chars[ 0 ] == 34 ]
+            v = v.mid[ 1, v.count - 2 ]
+        out = v
+    fclose[ fh ]
+    return out
+
+# a mounted partition's type, from this process's mount table
+func mounted_type [ dev: string ] -> string
+    fh : handle fopen[ '/proc/self/mountinfo', 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    out : string ''
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln : string [ @b[0] ]
+        dash : i32 [ ln.index_of[ ' - ' ] ]
+        if [ dash < 0 ] continue
+        tail : ln.mid[ dash + 3, ln.count - dash - 3 ]
+        words : tail.split[ ' ' ]
+        if [ words.count >= 2 && '{words[1]}' == dev ]
+            out = '{words[0]}'
+            break
+    fclose[ fh ]
+    return out
+
+# where a partition is mounted here; '' when it is not
+func mounted_at [ dev: string ] -> string
+    fh : handle fopen[ '/proc/self/mountinfo', 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    out : string ''
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln : string [ @b[0] ]
+        dash : i32 [ ln.index_of[ ' - ' ] ]
+        if [ dash < 0 ] continue
+        tail : ln.mid[ dash + 3, ln.count - dash - 3 ]
+        words : tail.split[ ' ' ]
+        head : ln.split[ ' ' ]
+        if [ words.count >= 2 && '{words[1]}' == dev && head.count > 4 ]
+            out = '{head[4]}'
+            break
+    fclose[ fh ]
+    return out
+
+# the partition's file system: ext4, vfat, or '' (unread)
+func fs_type [ dev: string ] -> string
+    mt : mounted_type[ dev ]
+    if [ mt.count > 0 ] return mt
+    if [ ext4_uuid[ dev ].count > 0 ] return 'ext4'
+    if [ has_sig[ dev, 82, 'FAT' ] || has_sig[ dev, 54, 'FAT' ] ]
+        return 'vfat'
+    if [ has_sig[ dev, 3, 'NTFS' ] ] return 'ntfs'
+    if [ swap_on[ dev ] || has_sig[ dev, 4086, 'SWAPSPACE2' ] ]
+        return 'swap'
+    return ''
+
+# the uuid: the superblock as root, else udev's by-uuid links
+func part_uuid [ dev: string ] -> string
+    u : ext4_uuid[ dev ]
+    if [ u.count > 0 ] return u
+    d : path '/dev/disk/by-uuid'
+    if [ !d.exists[] ] return ''
+    entries : d.ls[ null, false ]
+    if [ !entries ] return ''
+    for [ e: path ] in entries
+        if [ last_name[ link_text[ '{e}' ] ] == last_name[ dev ] ]
+            return e.filename[]
+    return ''
+
+# partition n of a disk: nvme0n1 -> nvme0n1p1, sda -> sda1
+func part_dev [ disk: string, n: i32 ] -> string
+    lc : i32 [ disk.chars[ disk.count - 1 ] ]
+    if [ lc >= 48 && lc <= 57 ] return '/dev/{disk}p{n}'
+    return '/dev/{disk}{n}'
+
+# the disk the running system is on, by the mount of /
+func root_disk [] -> string
+    fh : handle fopen[ '/proc/self/mountinfo', 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    num : string ''
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln : string [ @b[0] ]
+        words : ln.split[ ' ' ]
+        if [ words.count > 4 && '{words[4]}' == '/' ]
+            num = '{words[2]}'
+    fclose[ fh ]
+    if [ num.count == 0 ] return ''
+    lk : link_text[ '/sys/dev/block/{num}' ]
+    if [ lk.count == 0 ] return ''
+    pt : path '/sys/dev/block/{num}/partition'
+    if [ !pt.exists[] ] return last_name[ lk ]
+    up : lk.mid[ 0, lk.rindex_of[ '/' ] ]
+    return last_name[ up ]
+
+# a program on PATH; '' when it is not there
+func find_tool [ nm: string ] -> string
+    env : cstr [ getenv[ 'PATH' ] ]
+    dirs : string [ (env) ? string [ env ]
+        : '/usr/sbin:/usr/bin:/sbin:/bin' ]
+    for [ d: string ] in dirs.split[ ':' ]
+        f : '{d}/{nm}'
+        if [ access[ f.chars, X_OK ] == 0 ] return f
+    return ''
+
+# the firmware's entries: Boot0003* GRUB gives 0003
+func boot_ids [ lines: vec string ] -> vec string
+    out : vec string []
+    for [ ln: string ] in lines
+        if [ ln.count < 9 || !ln.starts_with[ 'Boot' ] ] continue
+        # active (*) or not (space): BootOrder: has neither
+        mark : i32 [ ln.chars[ 8 ] ]
+        if [ mark != 42 && mark != 32 ] continue
+        out.push[ ln.mid[ 4, 4 ] ]
+    return out
+
+# the firmware's order, from its BootOrder: line
+func boot_order [ lines: vec string ] -> vec string
+    out : vec string []
+    for [ ln: string ] in lines
+        if [ !ln.starts_with[ 'BootOrder:' ] ] continue
+        rest : ln.mid[ 10, ln.count - 10 ].trim[]
+        for [ w: string ] in rest.split[ ',' ]
+            id : '{w}'
+            if [ id.count > 0 ] out.push[ id ]
+    return out
+
+# the order with the new entry second: the default stays first
+func order_second [ order: vec string, id: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < order.count, i += 1 ]
+        cur : order[ i ]
+        if [ cur == id ] continue
+        out = (out.count > 0) ? '{out},{cur}' : cur
+        if [ i == 0 ] out = '{out},{id}'
+    return (out.count > 0) ? out : id
+
+# a 16-bit id as pci.ids writes it: 4 small hex digits
+func hex4 [ v: u32 ] -> string
+    digits : '0123456789abcdef'
+    out : string ''
+    for [ i: i32 3, i >= 0, i -= 1 ]
+        k : i32 [ (v >> (i * 4)) & 15 ]
+        out = '{out}{digits.mid[ k, 1 ]}'
+    return out
+
+# the name in brackets, else the words before the first comma
+func short_name [ s: string ] -> string
+    a1 : i32 [ s.index_of[ '[' ] ]
+    a2 : i32 [ s.rindex_of[ ']' ] ]
+    if [ a1 >= 0 && a2 > a1 ] return s.mid[ a1 + 1, a2 - a1 - 1 ]
+    sp : i32 [ s.index_of[ ' ' ] ]
+    if [ sp > 0 ] return s.mid[ 0, sp ]
+    return s
+
+# a pci device's name from pci.ids: vendor, then device
+func pci_name [ ids: string, v: u32, d: u32 ] -> string
+    vs : hex4[ v ]
+    ds : hex4[ d ]
+    fh : handle fopen[ ids.chars, 'r' ]
+    if [ !fh ] return 'device {vs}:{ds}'
+    b : local i8 [ 1024 ]
+    vendor : string ''
+    dev : string ''
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string [ @b[0] ]
+        ln : ln0.trim[]
+        lead : i32 [ ln0.chars[ 0 ] ]
+        # 9 is a tab: device lines sit under their vendor's
+        if [ lead != 9 && lead != 35 ]
+            if [ vendor.count > 0 ] break
+            if [ ln.starts_with[ '{vs}  ' ] ]
+                vendor = short_name[ ln.mid[ 6, ln.count - 6 ] ]
+        el [ vendor.count > 0 && lead == 9 && ln0.chars[ 1 ] != 9
+             && ln.starts_with[ '{ds}  ' ] ]
+            dev = ln.mid[ 6, ln.count - 6 ]
+            break
+    fclose[ fh ]
+    if [ vendor.count == 0 ] return 'device {vs}:{ds}'
+    if [ dev.count == 0 ] return '{vendor} device {ds}'
+    a1 : i32 [ dev.index_of[ '[' ] ]
+    if [ a1 >= 0 ] dev = short_name[ dev ]
+    return '{vendor} {dev}'
+
+# a module tree's drivers: name, then the hardware id it takes
+# (depmod's lines: alias <id pattern> <module>)
+func load_aliases [ f: string, out: vec string ]
+    fh : handle fopen[ f.chars, 'r' ]
+    if [ !fh ] return
+    b : local i8 [ 1024 ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string [ @b[0] ]
+        ln : ln0.trim[]
+        if [ !ln.starts_with[ 'alias ' ] ] continue
+        rest : ln.mid[ 6, ln.count - 6 ]
+        sp : i32 [ rest.rindex_of[ ' ' ] ]
+        if [ sp <= 0 ] continue
+        out.push[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+        out.push[ rest.mid[ 0, sp ] ]
+    fclose[ fh ]
+
+# the kernel release a tree has modules for: the running one's
+# if the tree has it, else its own; '' when none
+func kernel_release [ tree: string ] -> string
+    run : read_line[ '/proc/sys/kernel/osrelease' ]
+    mine : path '{tree}/lib/modules/{run}/modules.alias'
+    if [ mine.exists[] ] return run
+    md : path '{tree}/lib/modules'
+    rels : md.ls[ null, false ]
+    if [ !rels ] return ''
+    out : string ''
+    for [ r: path ] in rels
+        ma : path '{r}/modules.alias'
+        if [ ma.exists[] ] out = r.filename[]
+    return out
+
+# a module's firmware the tree lacks: '' when one it lists is
+# there (a driver lists every chip's; one is this device's)
+func firmware_gap [ tree: string, rel: string,
+                    mod: string ] -> string
+    root : string [ (tree.count > 0) ? tree : '/' ]
+    cmd : 'modinfo -b {root} -k {rel} -F firmware {mod} 2>/dev/null'
+    fh : handle popen[ cmd.chars, 'r' ]
+    if [ !fh ] return ''
+    b : local i8 [ 1024 ]
+    first : string ''
+    found : bool [ false ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string [ @b[0] ]
+        f : ln0.trim[]
+        if [ f.count == 0 ] continue
+        if [ first.count == 0 ] first = f
+        for [ x: string ] in vec string [] [ '', '.zst', '.xz' ]
+            fp : path '{tree}/lib/firmware/{f}{x}'
+            if [ fp.exists[] ] found = true
+    pclose[ fh ]
+    return (found) ? '' : first
+
+# every driver for a device id, as modprobe -b loads them: the
+# blocklisted ones left out
+func drivers_for [ al: vec string, id: string,
+                   black: vec string ] -> vec string
+    out : vec string []
+    if [ id.count == 0 ] return out
+    for [ i: i32 0, i + 1 < al.count, i += 2 ]
+        pat : al[ i + 1 ]
+        if [ fnmatch[ pat.chars, id.chars, 0 ] != 0 ] continue
+        mod : al[ i ]
+        if [ !black.contains[ mod ] && !out.contains[ mod ] ]
+            out.push[ mod ]
+    return out
+
+# the first driver for a device id; '' when it has none
+func driver_for [ al: vec string, id: string ] -> string
+    found : drivers_for[ al, id, vec string [] ]
+    return (found.count > 0) ? found[ 0 ] : ''
+
+# modprobe's blocklist: the names in blacklist lines
+func load_blacklist [ dir: string ] -> vec string
+    out : vec string []
+    d : path [ dir ]
+    confs : d.ls[ null, false ]
+    if [ !confs ] return out
+    for [ f: path ] in confs
+        if [ !f.filename[].ends_with[ '.conf' ] ] continue
+        fs : '{f}'
+        fh : handle fopen[ fs.chars, 'r' ]
+        if [ !fh ] continue
+        b : local i8 [ 1024 ]
+        while [ fgets[ @b[0], 1024, fh ] ]
+            ln0 : string [ @b[0] ]
+            ln : ln0.trim[]
+            if [ !ln.starts_with[ 'blacklist ' ] ] continue
+            out.push[ ln.mid[ 10, ln.count - 10 ].trim[] ]
+        fclose[ fh ]
+    return out
+
+# a graphics driver's Vulkan driver file, by its name
+func icd_for [ drv: string ] -> string
+    if [ drv == 'nvidia' ] return 'nvidia_icd'
+    if [ drv == 'amdgpu' ] return 'radeon_icd'
+    if [ drv == 'i915' || drv == 'xe' ] return 'intel_icd'
+    if [ drv == 'virtio_gpu' ] return 'virtio_icd'
+    return ''
+
+# one device the hardware check looks at
+class Hw
+    public kind   : string [ '' ]
+    public name   : string [ '' ]
+    public driver : string [ '' ]
+    public graphics : bool
+    public ok     : bool
+    public note   : string [ '' ]
+
+# the program the firmware starts first, and its menu
+enum BootKind
+    none:         0
+    grub_debian:  1
+    grub_bls:     2
+    systemd_boot: 3
+    refind:       4
+    windows:      5
+    unknown:      6
+
+func boot_name [ k: BootKind ] -> string
+    if [ k == BootKind.grub_debian ] return 'GRUB (Debian, Ubuntu)'
+    if [ k == BootKind.grub_bls ]
+        return 'GRUB with boot entries (Fedora)'
+    if [ k == BootKind.systemd_boot ] return 'systemd-boot'
+    if [ k == BootKind.refind ] return 'rEFInd'
+    if [ k == BootKind.windows ] return 'Windows Boot Manager'
+    if [ k == BootKind.unknown ] return 'not known'
+    return 'none'
+
+# the default entry's file: BootOrder's first, its File(...)
+func default_loader [ lines: vec string ] -> string
+    order : boot_order[ lines ]
+    if [ order.count == 0 ] return ''
+    key : 'Boot{order[0]}'
+    for [ ln: string ] in lines
+        if [ !ln.starts_with[ key ] ] continue
+        at : i32 [ ln.index_of[ 'File(' ] ]
+        if [ at < 0 ] return ''
+        rest : ln.mid[ at + 5, ln.count - at - 5 ]
+        end : i32 [ rest.index_of[ ')' ] ]
+        if [ end < 0 ] return ''
+        return rest.mid[ 0, end ].lcase[]
+    return ''
+
+# which menu: the default loader first, then what is on disk
+func detect_boot [ loader: string, esp: string,
+                   root: string ] -> BootKind
+    ld : loader.lcase[]
+    sd : path '{esp}/EFI/systemd'
+    le : path '{esp}/loader/entries'
+    rf : path '{esp}/EFI/refind'
+    if [ ld.index_of[ 'refind' ] >= 0 ] return BootKind.refind
+    if [ ld.index_of[ 'systemd' ] >= 0 ] return BootKind.systemd_boot
+    if [ ld.index_of[ 'microsoft' ] >= 0 ] return BootKind.windows
+    grub : bool [ ld.index_of[ 'grub' ] >= 0
+        || ld.index_of[ 'shim' ] >= 0 ]
+    if [ grub || ld.count == 0 || ld.index_of[ '\\boot\\' ] >= 0 ]
+        bls_own : path '{root}/loader/entries'
+        bls_sub : path '{root}/boot/loader/entries'
+        if [ bls_own.is_dir[] || bls_sub.is_dir[] ]
+            return BootKind.grub_bls
+        gd : path '{root}/etc/grub.d'
+        if [ gd.is_dir[] ] return BootKind.grub_debian
+    if [ ld.count == 0 || !grub ]
+        if [ sd.is_dir[] || le.is_dir[] ] return BootKind.systemd_boot
+        if [ rf.is_dir[] ] return BootKind.refind
+    return BootKind.unknown
+
+class Part
+    public name   : string [ '' ]
+    public number : i32
+    public bytes  : i64
+    public fs     : string [ '' ]
+    # -1: not known (not mounted, not root)
+    public free   : i64 [ -1 ]
+    public what   : string [ '' ]
+
+class Disk
+    public name      : string [ '' ]
+    public model     : string [ '' ]
+    public bytes     : i64
+    public removable : bool
+    # the running system is on it
+    public running   : bool
+    public parts     : vec Part
+
+    func text [] -> string
+        kind : string [ (removable) ? ', removable' : '' ]
+        here : string [ (running) ? ', running now' : '' ]
+        md : string [ (model.count > 0) ? model : 'disk' ]
+        return '{name}   {md}   {size_text[ bytes ]}{kind}{here}'
+
+# a graphics card: pci ids, kernel and Vulkan drivers
+class Card
+    public slot    : string [ '' ]
+    public vendor  : u32
+    public device  : u32
+    public kernel  : string [ '' ]
+    public name    : string [ '' ]
+    public vulkan  : string [ '' ]
+    public api     : string [ '' ]
+    public discrete : bool
+    public in_use  : bool
+
+    func vendor_name [] -> string
+        if [ vendor == 0x10de ] return 'NVIDIA'
+        if [ vendor == 0x1002 ] return 'AMD'
+        if [ vendor == 0x8086 ] return 'Intel'
+        if [ vendor == 0x1af4 ] return 'virtio'
+        return 'vendor {vendor}'
+
+    func title [] -> string
+        nm : string [ (name.count > 0) ? name
+            : '{vendor_name[]} card {device}' ]
+        return (in_use) ? '{nm}  (in use)' : nm
+
+    func detail [] -> string
+        kind : string [ (discrete) ? 'graphics card' : 'built in' ]
+        return '{kind}, {vulkan}, Vulkan {api}'
+
+# a C char array as a string
+func c_text [ src: @i8 ] -> string
+    b : local i8 [ 260 ]
+    strncpy[ @b[0], src, 255 ]
+    b[ 255 ] = 0
+    return string [ @b[0] ]
+
+# every display device on the pci bus, with its vulkan driver
+func scan_cards [] -> vec Card
+    out : vec Card []
+    d : path '/sys/bus/pci/devices'
+    entries : d.ls[ null, false ]
+    if [ entries ]
+        for [ e: path ] in entries
+            cl : read_line[ '{e}/class' ]
+            if [ !cl.starts_with[ '0x03' ] ] continue
+            out.push[ Card [ slot: e.filename[],
+                vendor: hex_value[ read_line[ '{e}/vendor' ] ],
+                device: hex_value[ read_line[ '{e}/device' ] ],
+                kernel: last_name[ link_text[ '{e}/driver' ] ] ] ]
+    app : VkApplicationInfo [
+        sType:      VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        apiVersion: VK_API_VERSION_1_2 ]
+    inst : VkInstance
+    res : vkCreateInstance[ VkInstanceCreateInfo [
+        sType:            VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        pApplicationInfo: @app ], null, @inst ]
+    if [ res != VK_SUCCESS ] return out
+    count : u32 [ 8 ]
+    devs : local VkPhysicalDevice [ 8 ]
+    vkEnumeratePhysicalDevices[ inst, @count, @devs[0] ]
+    for [ i: u32 0, i < count, i += 1 ]
+        drv : VkPhysicalDeviceDriverProperties [
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES ]
+        props : VkPhysicalDeviceProperties2 [
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            pNext: @drv ]
+        vkGetPhysicalDeviceProperties2[ devs[ i ], @props ]
+        # a software renderer draws on the processor: no card
+        if [ props.properties.deviceType
+             == VK_PHYSICAL_DEVICE_TYPE_CPU ] continue
+        major : u32 [ props.properties.apiVersion >> 22 ]
+        minor : u32 [ (props.properties.apiVersion >> 12) & 0x3ff ]
+        found : Card null
+        for [ c: Card ] in out
+            if [ c.vendor == props.properties.vendorID
+                 && c.device == props.properties.deviceID
+                 && c.vulkan.count == 0 ]
+                found = c
+                break
+        if [ !found ]
+            found = Card [ vendor: props.properties.vendorID,
+                           device: props.properties.deviceID ]
+            out.push[ found ]
+        found.name     = c_text[ @props.properties.deviceName[0] ]
+        dn : c_text[ @drv.driverName[0] ]
+        di : c_text[ @drv.driverInfo[0] ]
+        found.vulkan   = '{dn} {di}'
+        found.api      = '{major}.{minor}'
+        found.discrete = props.properties.deviceType
+            == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+    vkDestroyInstance[ inst, null ]
+    # only cards orbiter-os can draw with: a Vulkan driver
+    usable : vec Card []
+    for [ c: Card ] in out
+        if [ c.vulkan.count > 0 ] usable.push[ c ]
+    # trinity's pick: the first discrete card, else the first
+    pick : Card null
+    for [ c: Card ] in usable
+        if [ c.discrete ]
+            pick = c
+            break
+    if [ !pick && usable.count > 0 ] pick = usable[ 0 ]
+    if [ pick ] pick.in_use = true
+    return usable
+
+# a partition's free space and contents: where it is mounted,
+# else mounted read-only here for a moment (as root)
+func inspect [ p: Part ]
+    dev : '/dev/{p.name}'
+    if [ p.fs == 'swap' ]
+        p.what = (swap_on[ dev ]) ? 'swap, in use' : 'swap'
+        return
+    if [ p.fs == 'ntfs' ]
+        p.what = 'Windows or data (NTFS)'
+        return
+    if [ p.fs != 'ext4' && p.fs != 'vfat' ] return
+    dir : mounted_at[ dev ]
+    look : '/run/wizard/look-part'
+    if [ dir.count == 0 ]
+        lp : path [ look ]
+        lp.make_dir[]
+        if [ mount[ dev.chars, look.chars, p.fs.chars, MS_RDONLY,
+                    null ] == 0 ]
+            dir = look
+    if [ dir.count == 0 ] return
+    p.free = free_at[ dir ]
+    p.what = contents[ dir, p.fs ]
+    if [ dir == look ] umount2[ look.chars, 0 ]
+
+# every disk the kernel lists, with its partitions
+func scan_disks [] -> vec Disk
+    out : vec Disk []
+    here : root_disk[]
+    d : path '/sys/block'
+    entries : d.ls[ null, false ]
+    if [ !entries ] return out
+    skip : vec string [] [ 'loop', 'ram', 'zram', 'sr', 'fd' ]
+    for [ e: path ] in entries
+        nm : e.filename[]
+        virt : bool [ false ]
+        for [ s: string ] in skip
+            if [ nm.starts_with[ s ] ] virt = true
+        if [ virt ] continue
+        # sysfs sizes count 512-byte sectors
+        sectors : i64 [ read_line[ '{e}/size' ].integer_value[] ]
+        if [ sectors == 0 ] continue
+        dk : Disk [ name: nm, model: read_line[ '{e}/device/model' ],
+            bytes: sectors * 512,
+            removable: read_line[ '{e}/removable' ] == '1',
+            running: nm == here, parts: vec Part [] ]
+        kids : e.ls[ null, false ]
+        if [ kids ]
+            for [ k: path ] in kids
+                kn : k.filename[]
+                if [ !kn.starts_with[ nm ] ] continue
+                pn : read_line[ '{k}/partition' ]
+                if [ pn.count == 0 ] continue
+                ps : i64 [ read_line[ '{k}/size' ].integer_value[] ]
+                pt : Part [ name: kn, number: pn.integer_value[],
+                    bytes: ps * 512, fs: fs_type[ '/dev/{kn}' ] ]
+                inspect[ pt ]
+                # sysfs lists them in no order: keep them by number
+                at : i32 [ 0 ]
+                while [ at < dk.parts.count
+                        && dk.parts[ at ].number < pt.number ]
+                    at += 1
+                dk.parts.insert[ pt, at ]
+        out.push[ dk ]
+    return out
+
+enum StepKind
+    run:     0
+    wait:    1
+    mount:   2
+    unmount: 3
+    copy:    4
+    file:    5
+    write:   6
+    boot:    7
+    menu:    8
+
+# one step of the install; the review lists each title
+class Step
+    public kind  : StepKind
+    public title : string [ '' ]
+    public cmd   : string [ '' ]
+    public src   : string [ '' ]
+    public dst   : string [ '' ]
+    public fs    : string [ '' ]
+    public text  : string [ '' ]
+    # a boot entry that goes after the current default
+    public second : bool
+    # a menu file for this boot manager, made at install time
+    public menu   : BootKind
+    # the written file runs: rwxr-xr-x
+    public exec   : bool
+
+# the avatar, seen from above, left of the dialog
+OrbiterAvatar SetupAvatar
+    style : CSS {
+        area: l50%-24 t50%-7 w14 h14
+    }
+    # the inner ring at rest: four times orbiter's 0.25
+    rest_spin : f32 [ 1.0 ]
+
+element WizPanel
+    body : Layer [ fill_color: rgba [ '#0e1116ee' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#ffffff1f' ], radius: Radius [ '14' ] ]
+
+element WizTitle
+    face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 26,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizNote
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 15,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 15,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizSmall
+    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizGood
+    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizBad
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizWarn
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WizTrack
+    body : Layer [ fill_color: rgba [ '#ffffff14' ],
+        radius: Radius [ '4' ] ]
+
+element WizFill
+    body : Layer [ fill_color: rgba [ '#6cb6ff' ],
+        radius: Radius [ '4' ] ]
+
+# a row to pick: a disk, a partition, a way to install
+Button WizPick
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 15
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                stroke_color: #ffffff40
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+
+Button WizButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #f2f2f6
+            label_size: 16
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff26
+                stroke_color: #ffffff66
+                near_inset: 4.0
+    }
+
+# the button that goes on: lit blue
+Button WizGo
+    style : CSS {
+        layers.body:
+            fill_color: #4d3dbc
+            radius: 8
+            stroke_width: 1
+            stroke_color: #a898ff
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #ffffff
+            label_size: 16
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #5a48d0
+                stroke_color: #c4b8ff
+                near_inset: 4.0
+    }
+
+# an installer being written: coral, eased toward the share
+# written, a light sweeping across it on a beat
+element WizBar
+    animated : true
+    public frac   : f32
+    # written: the whole bar turns green
+    public done   : bool
+    intern shown  : f32
+    # the sweep starts every period seconds, crosses in sweep
+    intern period : f32 [ 4.0 ]
+    intern sweep  : f32 [ 1.0 ]
+    intern radius : f32 [ 6.0 ]
+    intern reach  : f32 [ 234.0 ]
+    # the fill's light reaches further than the track's
+    intern fill_reach : f32 [ 1.4 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        shown = filter_n[ shown, frac, 0.08, w.frame_factor ]
+        cv : Canvas [ w.screen ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        r  : f32 [ min[ radius, bh * 0.5 ] ]
+        secs : f64 [ f64[ epoch_micros[] ] / 1000000.0 ]
+        t  : f32 [ f32[ secs - floor[ secs / period ] * period ] ]
+        # it enters and leaves a whole reach beyond each end, at the
+        # speed that crosses the bar in sweep seconds
+        out  : f32 [ reach * fill_reach ]
+        span : f32 [ bw + 2.0 * out ]
+        dur  : f32 [ sweep * span / max[ bw, 1.0 ] ]
+        # written: the light rests
+        lit : bool [ t < dur && !done ]
+        sc : f32 [ cv.transform_scale[] ]
+        at : f32 [ span * t / dur - out ]
+        lx : f32 [ cv.transform_tx[] + at * sc ]
+        ly : f32 [ cv.transform_ty[] + bh * 0.5 * sc ]
+        glow : f32 [ (lit) ? 1.0 : 0.0 ]
+        cv.save[]
+        cv.near_light[ lx, ly, reach * sc, glow ]
+        cv.box_shadow[ rgba[ '#ffb4a01a' ], 0.0, 0.0, 6.0, 0.0, true ]
+        cv.near_style[ 1.0, 4.0, rgba[ '#ffd2c4cc' ], w.near_y_fade ]
+        hue : string [ (done) ? '#4fd27a' : '#ff7a5c' ]
+        cv.fill_color[ rgba[ '{hue}2e' ] ]
+        cv.rounded_rect[ 0.0, 0.0, bw, bh, r, r, r, r ]
+        cv.paint[]
+        if [ shown > 0.001 ]
+            cv.near_light[ lx, ly, reach * fill_reach * sc, glow ]
+            cv.box_shadow[ rgba[ '#fff0e826' ], 0.0, 0.0, 6.0, 0.0,
+                           true ]
+            cv.near_style[ 1.0, 6.0, rgba[ '#fff4eeff' ],
+                           w.near_y_fade ]
+            cv.fill_color[ rgba[ hue ] ]
+            cv.rounded_rect[ 0.0, 0.0, bw * shown, bh, r, r, r, r ]
+            cv.paint[]
+        cv.restore[]
+
+# a password: the text is drawn as dots
+TextInput WizSecret
+    style : CSS {
+        layers.face:
+            label_color: #0000
+        :focused
+            layers.face:
+                label_color: #0000
+        :has_value
+            layers.face:
+                label_color: #0000
+    }
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !edit || edit.count == 0 ] return
+        dots : string ''
+        for [ i: i32 0, i < edit.count, i += 1 ] dots = '{dots}•'
+        cv : Canvas [ w.screen ]
+        cv.font_size[ 18 ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ dots, rect [ x: 14.0, y: 0.0,
+            w: bounds.w - 28.0, h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.paint[]
+
+# orbiter-os setup: the install's settings, then the install
+element InstallWizard
+    area : Region { l0 t0 r0 b0 }
+    # every step listed and logged; nothing written
+    public dry_run : bool
+    # the tree that is copied: the running system
+    public source  : string [ '/' ]
+    mutable page    : i32
+    # 0, the build, only where orbiter-os can be built
+    mutable first_page : i32
+    # page 0 goes on once the tree it is writing is done
+    mutable advance    : bool
+    mutable cards   : vec Card
+    # the hardware check: graphics and network, as orbiter-os sees
+    mutable hw      : vec Hw
+    mutable disks   : vec Disk
+    mutable disk_at : i32 [ -1 ]
+    mutable beside  : bool
+    mutable part_at : i32 [ -1 ]
+    mutable user    : string
+    mutable pass    : string
+    mutable again   : string
+    mutable host    : string
+    mutable keys    : string
+    mutable zone    : string
+    mutable plan     : vec Step
+    # bytes the copy needs; -1 when the tree does not say
+    mutable need     : i64 [ -1 ]
+    mutable problems : vec string
+    # what the review says that does not stop the install
+    mutable notes    : vec string
+    mutable boot     : BootKind
+    # the install's thread and what it reports, under lock
+    mutable lock     : mutex
+    mutable lines    : vec string
+    mutable running  : bool
+    mutable finished : bool
+    mutable failed   : bool
+    mutable step_at  : i32
+    mutable copied   : i64
+    mutable total    : i64
+    intern  tid      : pthread_t
+
+    func init []
+        cards = scan_cards[]
+        disks = scan_disks[]
+        lines = vec string []
+        lock  = mutex []
+        user  = ''
+        pass  = ''
+        again = ''
+        host  = read_line[ '/etc/hostname' ]
+        if [ host.count == 0 ] host = 'orbiter'
+        keys  = 'us'
+        zone  = read_line[ '/etc/timezone' ]
+        if [ zone.count == 0 ] zone = 'UTC'
+        need = copy_need[]
+        scan_hw[]
+        first_page = (bootstrap_here[]) ? 0 : 1
+        page = first_page
+        for [ c: Card ] in cards
+            log 'wizard: card {c.title[]}: {c.detail[]}'
+        for [ dk: Disk ] in disks
+            log 'wizard: disk {dk.text[]}'
+
+    # the tree's size as os-bootstrap wrote it, and a tenth more
+    # for what the system writes as it runs
+    func copy_need [] -> i64
+        base : string [ (source == '/') ? '' : source ]
+        tb : '{base}/boot/tree-bytes'
+        n : i64 [ read_line[ tb ].integer_value[] ]
+        if [ n <= 0 ] return -1
+        return n + n / 10
+
+    # where orbiter-os is: this system, else the tree os-bootstrap
+    # built (a check from another system checks that one)
+    func hw_tree [] -> string
+        base : string [ (source == '/') ? '' : source ]
+        # booted into orbiter-os: its own tree; never another
+        # system's kernels
+        cmd : read_line[ '/proc/cmdline' ]
+        if [ source != '/' || cmd.index_of[ 'orbiter.init=' ] >= 0 ]
+            return base
+        return '{path.path_startup[]}/orbiter-os/root'
+
+    # graphics and network on the pci bus, network on usb: each
+    # matched against orbiter-os's own modules and firmware
+    func scan_hw []
+        hw = vec Hw []
+        tree : hw_tree[]
+        rel : kernel_release[ tree ]
+        al : vec string []
+        md : '{tree}/lib/modules/{rel}'
+        load_aliases[ '{md}/modules.alias', al ]
+        load_aliases[ '{md}/modules.builtin.alias', al ]
+        log 'wizard: checking against {tree}/lib/modules/{rel}'
+        black : load_blacklist[ '{tree}/etc/modprobe.d' ]
+        ids : '{tree}/usr/share/misc/pci.ids'
+        idp : path [ ids ]
+        if [ !idp.exists[] ] ids = '/usr/share/misc/pci.ids'
+        inst : path.path_install[]
+        icd_dirs : vec string [] [ '{tree}/usr/share/vulkan/icd.d',
+                                   '{tree}{inst}/share/vulkan/icd.d' ]
+        d : path '/sys/bus/pci/devices'
+        entries : d.ls[ null, false ]
+        if [ entries ]
+            for [ e: path ] in entries
+                cl : read_line[ '{e}/class' ]
+                gfx : bool [ cl.starts_with[ '0x03' ] ]
+                if [ !gfx && !cl.starts_with[ '0x02' ] ] continue
+                v : hex_value[ read_line[ '{e}/vendor' ] ]
+                dv : hex_value[ read_line[ '{e}/device' ] ]
+                h : Hw [ graphics: gfx, name: pci_name[ ids, v, dv ],
+                    kind: (gfx) ? 'Graphics'
+                    : ((cl.starts_with[ '0x0280' ]) ? 'Wi-Fi'
+                    : 'Wired network') ]
+                # the vulkan name reads better than pci.ids'
+                for [ c: Card ] in cards
+                    if [ gfx && c.vendor == v && c.device == dv ]
+                        h.name = c.name
+                mods : drivers_for[ al, read_line[ '{e}/modalias' ],
+                                    black ]
+                h.driver = (mods.count > 0) ? mods[ 0 ] : ''
+                if [ gfx && h.driver.count > 0 ]
+                    # of its drivers, the one with a Vulkan driver
+                    found : bool [ false ]
+                    for [ m: string ] in mods
+                        icd : icd_for[ m ]
+                        for [ dir: string ] in icd_dirs
+                            dp : path [ dir ]
+                            files : dp.ls[ null, false ]
+                            if [ !files || icd.count == 0 ] continue
+                            for [ f: path ] in files
+                                if [ !found && f.filename[].starts_with[
+                                        icd ] ]
+                                    found    = true
+                                    h.driver = m
+                    h.ok   = found
+                    nv : 'not supported: no Vulkan driver'
+                    h.note = (found) ? 'supported: {h.driver} driver'
+                        : '{nv} for {h.driver}'
+                el [ h.driver.count > 0 ]
+                    h.ok   = true
+                    h.note = 'supported: {h.driver} driver'
+                el
+                    h.note = 'not supported: orbiter-os has no driver'
+                if [ h.ok ]
+                    gap : firmware_gap[ tree, rel, h.driver ]
+                    if [ gap.count > 0 ]
+                        h.ok   = false
+                        h.note = 'not supported: no firmware {gap}'
+                hw.push[ h ]
+        # usb network adapters, by their interfaces
+        nd : path '/sys/class/net'
+        nets : nd.ls[ null, false ]
+        if [ nets ]
+            for [ n: path ] in nets
+                sub : last_name[ link_text[ '{n}/device/subsystem' ] ]
+                if [ sub != 'usb' ] continue
+                wl : path '{n}/wireless'
+                h : Hw [ name: 'USB adapter {n.filename[]}',
+                    kind: (wl.exists[]) ? 'Wi-Fi' : 'Wired network' ]
+                ma : read_line[ '{n}/device/modalias' ]
+                um : drivers_for[ al, ma, black ]
+                h.driver = (um.count > 0) ? um[ 0 ] : ''
+                h.ok   = h.driver.count > 0
+                h.note = (h.ok) ? 'supported: {h.driver} driver'
+                    : 'not supported: orbiter-os has no driver'
+                if [ h.ok ]
+                    gap : firmware_gap[ tree, rel, h.driver ]
+                    if [ gap.count > 0 ]
+                        h.ok   = false
+                        h.note = 'not supported: no firmware {gap}'
+                hw.push[ h ]
+        # graphics first, then network
+        by : vec Hw []
+        for [ h: Hw ] in hw
+            if [ h.graphics ] by.push[ h ]
+        for [ h: Hw ] in hw
+            if [ !h.graphics ] by.push[ h ]
+        hw = by
+        if [ al.count == 0 ]
+            for [ h: Hw ] in hw
+                h.ok   = false
+                h.note = 'not checked: no orbiter-os module tree'
+        for [ h: Hw ] in hw
+            log 'wizard: {h.kind}: {h.name}: {h.note}'
+
+    # the build page's element, while page 0 shows it
+    func boot_el [] -> Bootstrap
+        panel : element (elements) ? elements[ 'panel' ] : null
+        if [ !panel || !panel.elements ] return null
+        e : element panel.elements[ 'bootstrap' ]
+        if [ !e || !(e inherits Bootstrap) ] return null
+        return Bootstrap e
+
+    # page 0 holds still while it builds; without a kernel only
+    # shift+click goes on
+    func boot_blocked [] -> bool
+        bs : boot_el[]
+        if [ page != 0 || !bs ] return false
+        return bs.building || bs.kernels.count == 0
+
+    # graphics to draw with and a way onto a network
+    func hw_ok [] -> bool
+        g : bool [ false ]
+        n : bool [ false ]
+        for [ h: Hw ] in hw
+            if [ h.ok && h.graphics ] g = true
+            if [ h.ok && !h.graphics ] n = true
+        return g && n
+
+    # a partition the folder will not fit on
+    func too_small [ p: Part ] -> bool
+        return need > 0 && p.free >= 0 && p.free < need
+
+    func disk [] -> Disk
+        if [ disk_at < 0 || disk_at >= disks.count ] return null
+        return disks[ disk_at ]
+
+    func part [] -> Part
+        dk : disk[]
+        if [ !dk || part_at < 0 || part_at >= dk.parts.count ]
+            return null
+        return dk.parts[ part_at ]
+
+    # the disk's EFI system partition: its first FAT one
+    func esp [] -> Part
+        dk : disk[]
+        if [ !dk ] return null
+        for [ p: Part ] in dk.parts
+            if [ p.fs == 'vfat' ] return p
+        return null
+
+    # why this page cannot go on; '' when it can
+    func why [] -> string
+        if [ page == 1 && !hw_ok[] ]
+            un : 'orbiter-os does not support all of this yet.'
+            return '{un} Shift+click Continue to go on anyway.'
+        if [ page == 2 && !disk[] ] return 'Choose a disk.'
+        if [ page == 3 ]
+            dk : disk[]
+            if [ !beside && dk.running && !dry_run ]
+                return 'The system runs from this disk: erase another.'
+            if [ beside ]
+                pt : part[]
+                if [ !pt ] return 'Choose the partition for the folder.'
+                if [ pt.fs != 'ext4' && !dry_run ]
+                    return 'The folder needs an ext4 partition.'
+                if [ !esp[] ] return 'This disk has no EFI partition.'
+        if [ page == 4 ]
+            if [ user.count == 0 ] return 'Give a user name.'
+            for [ i: i32 0, i < user.count, i += 1 ]
+                ch : i32 [ user.chars[ i ] ]
+                ok : bool [ (ch >= 97 && ch <= 122)
+                    || (ch >= 48 && ch <= 57 && i > 0) ]
+                if [ !ok ]
+                    return 'A user name is small letters and digits.'
+            if [ pass.count == 0 ] return 'Give a password.'
+            if [ pass != again ] return 'The two passwords differ.'
+            if [ host.count == 0 ] return 'Give the computer a name.'
+        return ''
+
+    # the shell's crypt with a sha-512 salt from the kernel
+    func pass_hash [] -> string
+        low : 'abcdefghijklmnopqrstuvwxyz'
+        abc : '{low}{low.ucase[]}0123456789./'
+        rnd : read_at[ '/dev/urandom', 0, 16 ]
+        salt : string '$6$'
+        for [ i: i32 0, i < rnd.count, i += 1 ]
+            k : i32 [ rnd[ i ] % 64 ]
+            salt = '{salt}{abc.mid[ k, 1 ]}'
+        salt = '{salt}$'
+        h : cstr [ crypt[ pass.chars, salt.chars ] ]
+        return (h) ? string [ h ] : ''
+
+    # the boot line: this system's own, for the new place
+    # the kernel's options; efi: the stub loads the initramfs
+    func boot_line [ uuid: string, root: string,
+                     efi: bool ] -> string
+        line : read_line[ '/proc/cmdline' ]
+        drop : vec string [] [ 'BOOT_IMAGE=', 'root=', 'initrd=',
+            'orbiter.uuid=', 'orbiter.root=', 'orbiter.args=',
+            'vt.handoff=' ]
+        out : 'orbiter.uuid={uuid} orbiter.root={root}'
+        if [ efi ] out = 'initrd=\\EFI\\orbiter\\initramfs {out}'
+        for [ w: string ] in line.split[ ' ' ]
+            word : '{w}'
+            if [ word.count == 0 || word == 'ro' || word == 'rw'
+                 || word == 'quiet' || word == 'splash' ] continue
+            gone : bool [ false ]
+            for [ d: string ] in drop
+                if [ word.starts_with[ d ] ] gone = true
+            if [ !gone ] out = '{out} {word}'
+        return out
+
+    func step [ kind: StepKind, title: string ] -> Step
+        s : Step [ kind: kind, title: title ]
+        plan.push[ s ]
+        return s
+
+    # orbiter.root: the folder on the partition, or all of it
+    func root_dir [] -> string
+        return (beside) ? '/orbiter-os' : '/'
+
+    # the tree's place on its partition, for a menu's paths
+    func tree_rel [] -> string
+        return (beside) ? '/orbiter-os' : ''
+
+    # the menu file a boot manager reads; tree: the folder
+    func menu_text [ k: BootKind, uuid: string, root: string,
+                     tree: string ] -> string
+        opts : boot_line[ uuid, root, false ]
+        kern : '{tree}/boot/vmlinuz'
+        rd   : '{tree}/boot/initramfs'
+        if [ k == BootKind.systemd_boot || k == BootKind.grub_bls ]
+            if [ k == BootKind.systemd_boot ]
+                kern = '/EFI/orbiter/vmlinuz.efi'
+                rd   = '/EFI/orbiter/initramfs'
+            t : 'title   orbiter-os\nlinux   {kern}\n'
+            return '{t}initrd  {rd}\noptions {opts}\n'
+        if [ k == BootKind.refind ]
+            efi : boot_line[ uuid, root, true ]
+            return '"orbiter-os" "{efi}"\n'
+        if [ k == BootKind.grub_debian ]
+            t : '#!/bin/sh\nexec tail -n +3 $0\n'
+            t = '{t}menuentry \'orbiter-os\' {{\n'
+            sr : 'search --no-floppy --fs-uuid --set=root'
+            t = '{t}    {sr} {uuid}\n'
+            t = '{t}    linux  {kern} {opts}\n'
+            return '{t}    initrd {rd}\n}}\n'
+        return ''
+
+    # a partition's files: where it is mounted, else mounted
+    # read-only at a place of ours; '' when neither works
+    func look_at [ dev: string, fs: string, at: string ] -> string
+        m : mounted_at[ dev ]
+        if [ m.count > 0 ] return m
+        mp : path [ at ]
+        mp.make_dir[]
+        if [ mount[ dev.chars, at.chars, fs.chars, MS_RDONLY,
+                    null ] == 0 ]
+            return at
+        return ''
+
+    # the boot manager this disk starts, as the review shows it
+    func find_boot [ espd: string, rootd: string ] -> BootKind
+        efv : path '/sys/firmware/efi/efivars'
+        if [ efv.is_empty[] ]
+            mount[ 'efivarfs', efv.chars, 'efivarfs', 0, null ]
+        ld : default_loader[ capture[ 'efibootmgr' ] ]
+        es : look_at[ espd, 'vfat', '/run/wizard/look-efi' ]
+        rs : look_at[ rootd, 'ext4', '/run/wizard/look-root' ]
+        k : detect_boot[ ld, es, rs ]
+        log 'wizard: default loader {ld}, efi {es}, root {rs}'
+        for [ d: string ] in vec string [] [ '/run/wizard/look-efi',
+                '/run/wizard/look-root' ]
+            if [ es == d || rs == d ] umount2[ d.chars, 0 ]
+        return k
+
+    # the whole install as steps; problems that stop it
+    func make_plan []
+        plan     = vec Step []
+        problems = vec string []
+        notes    = vec string []
+        boot     = BootKind.none
+        dk : disk[]
+        if [ !dk ] return
+        for [ t: string ] in vec string [] [ 'sfdisk', 'mkfs.vfat',
+                'mkfs.ext4', 'efibootmgr' ]
+            if [ find_tool[ t ].count == 0 ]
+                problems.push[ 'Missing program: {t}' ]
+        efi_dir : path '/sys/firmware/efi'
+        if [ !efi_dir.exists[] ]
+            problems.push[ 'This machine did not start with UEFI.' ]
+        cmd : read_line[ '/proc/cmdline' ]
+        if [ cmd.index_of[ 'orbiter.init=' ] < 0 ]
+            ni : 'Not started from orbiter-os: no orbiter.init.'
+            problems.push[ ni ]
+        base : string [ (source == '/') ? '' : source ]
+        kern : '{base}/boot/vmlinuz'
+        rd   : '{base}/boot/initramfs'
+        for [ f: string ] in vec string [] [ kern, rd ]
+            fp : path [ f ]
+            if [ !fp.exists[] ] problems.push[ 'Missing {f}' ]
+        mnt  : '/run/wizard/root'
+        efi  : '/run/wizard/efi'
+        dev  : '/dev/{dk.name}'
+        espn : i32 [ 1 ]
+        rdev : string ''
+        tree : string ''
+        root : string ''
+        if [ beside ]
+            pt : part[]
+            es : esp[]
+            espn = es.number
+            rdev = '/dev/{pt.name}'
+            boot = find_boot[ '/dev/{es.name}', rdev ]
+            notes.push[ 'Boot manager: {boot_name[ boot ]}' ]
+            tree = '{mnt}/orbiter-os'
+            root = '/orbiter-os'
+            s : step[ StepKind.mount, 'Mount {rdev}' ]
+            s.src = rdev
+            s.dst = mnt
+            s.fs  = 'ext4'
+        el
+            rdev = part_dev[ dk.name, 2 ]
+            tree = mnt
+            root = '/'
+            esd : part_dev[ dk.name, 1 ]
+            s : step[ StepKind.write, 'Write the partition table' ]
+            s.dst  = '/run/wizard/layout.sfdisk'
+            lay : 'label: gpt\n'
+            lay = '{lay}size=512MiB, type=U, name=orbiter-efi\n'
+            s.text = '{lay}type=L, name=orbiter\n'
+            et : 'Erase {dev}: EFI 512 MB, the rest for orbiter-os'
+            s = step[ StepKind.run, et ]
+            s.cmd = 'sfdisk --wipe always --wipe-partitions always'
+            s.cmd = '{s.cmd} {dev} < /run/wizard/layout.sfdisk'
+            s = step[ StepKind.wait, 'Wait for {esd} and {rdev}' ]
+            s.src = esd
+            s.dst = rdev
+            s = step[ StepKind.run, 'Format {esd} as FAT32' ]
+            s.cmd = 'mkfs.vfat -F 32 -n ORBITER {esd}'
+            s = step[ StepKind.run, 'Format {rdev} as ext4' ]
+            s.cmd = 'mkfs.ext4 -F -L orbiter-os {rdev}'
+            s = step[ StepKind.mount, 'Mount {rdev}' ]
+            s.src = rdev
+            s.dst = mnt
+            s.fs  = 'ext4'
+        s : step[ StepKind.copy, 'Copy orbiter-os to {rdev}' ]
+        s.src = source
+        s.dst = tree
+        s = step[ StepKind.write, 'Write the settings' ]
+        s.dst  = '{tree}/var/lib/orbiter/install.agi'
+        s.text = 'user: {user}\npassword: \'{pass_hash[]}\'\n'
+        s.text = '{s.text}host: {host}\nkeyboard: {keys}\n'
+        s.text = '{s.text}zone: {zone}\n'
+        s = step[ StepKind.write, 'Name the computer {host}' ]
+        s.dst  = '{tree}/etc/hostname'
+        s.text = '{host}\n'
+        if [ boot == BootKind.grub_debian || boot == BootKind.grub_bls ]
+            mt : string [ (boot == BootKind.grub_debian)
+                ? '{mnt}/etc/grub.d/41_orbiter-os'
+                : '{mnt}/loader/entries/orbiter-os.conf' ]
+            if [ boot == BootKind.grub_bls ]
+                sub : path '{mnt}/boot/loader/entries'
+                own : path '{mnt}/loader/entries'
+                if [ !own.is_dir[] && sub.is_dir[] ]
+                    mt = '{mnt}/boot/loader/entries/orbiter-os.conf'
+            s = step[ StepKind.menu, 'Add orbiter-os to GRUB\'s menu' ]
+            s.src  = rdev
+            s.dst  = mt
+            s.menu = boot
+            s.exec = boot == BootKind.grub_debian
+        esd : part_dev[ dk.name, espn ]
+        s = step[ StepKind.mount, 'Mount {esd}' ]
+        s.src = esd
+        s.dst = efi
+        s.fs  = 'vfat'
+        s = step[ StepKind.file, 'Copy the kernel to EFI' ]
+        s.src = kern
+        s.dst = '{efi}/EFI/orbiter/vmlinuz.efi'
+        s = step[ StepKind.file, 'Copy the initramfs to EFI' ]
+        s.src = rd
+        s.dst = '{efi}/EFI/orbiter/initramfs'
+        if [ boot == BootKind.systemd_boot || boot == BootKind.refind ]
+            mt : string [ (boot == BootKind.refind)
+                ? '{efi}/EFI/orbiter/refind_linux.conf'
+                : '{efi}/loader/entries/orbiter-os.conf' ]
+            s = step[ StepKind.menu,
+                      'Add orbiter-os to {boot_name[ boot ]}\'s menu' ]
+            s.src  = rdev
+            s.dst  = mt
+            s.menu = boot
+        s = step[ StepKind.unmount, 'Unmount {esd}' ]
+        s.dst = efi
+        s = step[ StepKind.mount, 'Mount the EFI variables' ]
+        s.src = 'efivarfs'
+        s.dst = '/sys/firmware/efi/efivars'
+        s.fs  = 'efivarfs'
+        bt : string [ 'Add orbiter-os to the boot menu, first' ]
+        if [ beside ]
+            bt = 'Add orbiter-os to the boot menu; the default stays'
+        s = step[ StepKind.boot, bt ]
+        s.src    = rdev
+        s.dst    = root
+        s.second = beside
+        mk : string [ (beside) ? '--create-only' : '--create' ]
+        s.cmd = 'efibootmgr {mk} --disk {dev} --part {espn}'
+        s.cmd = '{s.cmd} --label orbiter-os'
+        s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\vmlinuz.efi\''
+        s = step[ StepKind.unmount, 'Unmount {rdev}' ]
+        s.dst = mnt
+        if [ boot == BootKind.grub_debian ]
+            notes.push[ 'GRUB lists it after: sudo update-grub' ]
+        el [ boot == BootKind.windows || boot == BootKind.unknown ]
+            fw : 'orbiter-os is in the firmware boot menu only.'
+            notes.push[ fw ]
+        for [ st: Step ] in plan
+            log 'wizard: plan: {st.title}'
+            if [ st.kind == StepKind.menu ]
+                mx : menu_text[ st.menu, '<uuid>', root, tree_rel[] ]
+                log 'wizard:   {st.dst}:\n{mx}'
+            if [ st.cmd.count > 0 ] log 'wizard:   {st.cmd}'
+            if [ st.kind == StepKind.boot ]
+                bl : boot_line[ '<uuid of {rdev}>', root, true ]
+                log 'wizard:   --unicode \'{bl}\''
+        for [ p: string ] in problems
+            log 'wizard: problem: {p}'
+        for [ n: string ] in notes
+            log 'wizard: note: {n}'
+
+    # the worker's word: logged, and the last lines shown
+    func say [ s: string ]
+        log 'wizard: {s}'
+        lock.lock[]
+        lines.push[ s ]
+        lock.unlock[]
+
+    # a command's output lines, not logged
+    func capture [ cmd: string ] -> vec string
+        out : vec string []
+        full : '{cmd} 2>/dev/null'
+        fh : handle popen[ full.chars, 'r' ]
+        if [ !fh ] return out
+        b : local i8 [ 4096 ]
+        while [ fgets[ @b[0], 4096, fh ] ]
+            ln : string [ @b[0] ]
+            out.push[ ln.trim[] ]
+        pclose[ fh ]
+        return out
+
+    # a shell line; its output goes to the log
+    func shell [ cmd: string ] -> bool
+        say[ '$ {cmd}' ]
+        full : '{cmd} 2>&1'
+        fh : handle popen[ full.chars, 'r' ]
+        if [ !fh ] return false
+        b : local i8 [ 1024 ]
+        while [ fgets[ @b[0], 1024, fh ] ]
+            ln : string [ @b[0] ]
+            say[ ln.trim[] ]
+        return pclose[ fh ] == 0
+
+    func file_size [ f: string ] -> i64
+        fh : handle fopen[ f.chars, 'rb' ]
+        if [ !fh ] return 0
+        fseek[ fh, 0, SEEK_END ]
+        n : i64 [ ftell[ fh ] ]
+        fclose[ fh ]
+        return n
+
+    # the kernel's own trees: made empty, never copied
+    func outside [ s: string ] -> bool
+        for [ d: string ] in vec string [] [ 'proc', 'sys', 'dev',
+                'run', 'tmp', 'lost+found' ]
+            if [ s == '{source}/{d}' || s == '/{d}' ] return true
+        return false
+
+    func tree_bytes [ src: string ] -> i64
+        d : path [ src ]
+        entries : d.ls[ null, false ]
+        n : i64 [ 0 ]
+        if [ !entries ] return 0
+        for [ e: path ] in entries
+            s : '{e}'
+            if [ outside[ s ] || e.is_symlink[] ] continue
+            if [ e.is_dir[] ] n += tree_bytes[ s ]
+            el n += file_size[ s ]
+        return n
+
+    # one file, its time and run bit kept
+    func copy_file [ src: string, dst: string ] -> bool
+        sp : path [ src ]
+        fi : handle fopen[ src.chars, 'rb' ]
+        if [ !fi ] return false
+        fo : handle fopen[ dst.chars, 'wb' ]
+        if [ !fo ]
+            fclose[ fi ]
+            return false
+        buf : @u8 [ malloc[ 1 << 20 ] ]
+        ok : bool [ true ]
+        while [ true ]
+            n : i64 [ fread[ buf, 1, 1 << 20, fi ] ]
+            if [ n <= 0 ] break
+            if [ fwrite[ buf, 1, n, fo ] != n ]
+                ok = false
+                break
+            copied += n
+        free[ buf ]
+        fclose[ fi ]
+        if [ fclose[ fo ] != 0 ] ok = false
+        # rwxr-xr-x, else rw-r--r--
+        exec_mode : u32 [ 0x1ED ]
+        file_mode : u32 [ 0x1A4 ]
+        runs : bool [ access[ src.chars, X_OK ] == 0 ]
+        chmod[ dst.chars, (runs) ? exec_mode : file_mode ]
+        st : i64 [ sp.modified_time[] / 1000 ]
+        ub : utimbuf [ actime: st, modtime: st ]
+        utime[ dst.chars, @ub ]
+        return ok
+
+    func copy_tree [ src: string, dst: string ] -> bool
+        d : path [ src ]
+        dp : path [ dst ]
+        dp.make_dir[]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return true
+        for [ e: path ] in entries
+            mark : i32 [ Au.auto_mark[] ]
+            s : '{e}'
+            t : '{dst}/{e.filename[]}'
+            ok : bool [ true ]
+            if [ outside[ s ] ]
+                tp : path [ t ]
+                tp.make_dir[]
+            el [ e.is_symlink[] ]
+                unlink[ t.chars ]
+                ok = symlink[ link_text[ s ].chars, t.chars ] == 0
+            el [ e.is_dir[] ]
+                ok = copy_tree[ s, t ]
+            el
+                ok = copy_file[ s, t ]
+            if [ !ok ] say[ 'Could not copy {s}' ]
+            Au.auto_free_to[ mark ]
+            if [ !ok ] return false
+        return true
+
+    func run_step [ s: Step ] -> bool
+        if [ s.kind == StepKind.run ] return shell[ s.cmd ]
+        if [ s.kind == StepKind.wait ]
+            a1 : path [ s.src ]
+            a2 : path [ s.dst ]
+            for [ i: i32 0, i < 100, i += 1 ]
+                if [ a1.exists[] && a2.exists[] ] return true
+                usleep[ 100000 ]
+            say[ 'The partitions did not appear.' ]
+            return false
+        if [ s.kind == StepKind.mount ]
+            mp : path [ s.dst ]
+            mp.make_dir[]
+            if [ mount[ s.src.chars, s.dst.chars, s.fs.chars, 0,
+                        null ] == 0 ]
+                return true
+            # efivarfs is often there already
+            if [ errno == EBUSY ] return true
+            er : i32 [ errno ]
+            say[ 'mount {s.src} failed: {strerror[ er ]}' ]
+            return false
+        if [ s.kind == StepKind.unmount ]
+            sync[]
+            return umount2[ s.dst.chars, 0 ] == 0
+        if [ s.kind == StepKind.copy ]
+            dp : path [ s.dst ]
+            if [ dp.exists[] && s.dst.ends_with[ '/orbiter-os' ] ]
+                say[ '{s.dst} is there already: not replaced.' ]
+                return false
+            total  = tree_bytes[ s.src ]
+            copied = 0
+            say[ 'Copying {size_text[ total ]}' ]
+            return copy_tree[ s.src, s.dst ]
+        if [ s.kind == StepKind.file ]
+            fp : path [ s.dst ]
+            pd : fp.parent_dir[]
+            pd.make_dir[]
+            return copy_file[ s.src, s.dst ]
+        if [ s.kind == StepKind.write ]
+            fp : path [ s.dst ]
+            pd : fp.parent_dir[]
+            pd.make_dir[]
+            fh : handle fopen[ s.dst.chars, 'w' ]
+            if [ !fh ] return false
+            fputs[ s.text.chars, fh ]
+            if [ fclose[ fh ] != 0 ] return false
+            # rwxr-xr-x: GRUB runs its scripts
+            exec_mode : u32 [ 0x1ED ]
+            if [ s.exec ] chmod[ s.dst.chars, exec_mode ]
+            return true
+        if [ s.kind == StepKind.menu ]
+            uuid : part_uuid[ s.src ]
+            if [ uuid.count == 0 ]
+                say[ 'No uuid on {s.src}' ]
+                return false
+            w : Step [ kind: StepKind.write, dst: s.dst, exec: s.exec,
+                text: menu_text[ s.menu, uuid, root_dir[],
+                                 tree_rel[] ] ]
+            return run_step[ w ]
+        if [ s.kind == StepKind.boot ]
+            uuid : part_uuid[ s.src ]
+            if [ uuid.count == 0 ]
+                say[ 'No uuid on {s.src}' ]
+                return false
+            bl : boot_line[ uuid, s.dst, true ]
+            before : boot_ids[ capture[ 'efibootmgr' ] ]
+            if [ !shell[ '{s.cmd} --unicode \'{bl}\'' ] ] return false
+            if [ !s.second ] return true
+            after : capture[ 'efibootmgr' ]
+            made : string ''
+            for [ id: string ] in boot_ids[ after ]
+                if [ !before.contains[ id ] ] made = id
+            if [ made.count == 0 ]
+                say[ 'The new boot entry was not found.' ]
+                return false
+            od : order_second[ boot_order[ after ], made ]
+            return shell[ 'efibootmgr --bootorder {od}' ]
+        return false
+
+    # the install, on its own thread
+    func work [] -> none
+        for [ i: i32 0, i < plan.count, i += 1 ]
+            step_at = i
+            st : Step plan[ i ]
+            say[ st.title ]
+            if [ !run_step[ st ] ]
+                failed = true
+                say[ 'Stopped at: {st.title}' ]
+                break
+        step_at  = plan.count
+        finished = true
+        running  = false
+        Au.auto_free[]
+
+    func start []
+        if [ running || finished || dry_run ] return
+        running = true
+        pthread_create[ @tid, null, @work, a ]
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        # a cell's click is its row's
+        while [ e && e inherits ListCell ] e = e.parent
+        if [ !e || !e.id ] return
+        key : e.id
+        if [ key == 'back' && page > first_page && !running ]
+            page -= 1
+        el [ key == 'cancel_build' ]
+            bs : boot_el[]
+            if [ bs ] bs.cancel[]
+        el [ key == 'next' && page == 0 ]
+            bs : boot_el[]
+            over : bool [ ev.key.shift || ev.key.meta ]
+            if [ bs && bs.building ] return
+            if [ bs && bs.kernels.count == 0 && !over ] return
+            # the tree takes the chosen kernel first, then on
+            if [ bs && bs.kernels.count > 0 && !bs.ready[]
+                 && bs.can_build[] ]
+                bs.start[ 'tree' ]
+                advance = true
+            el
+                page += 1
+        el [ key == 'next' && (why[].count == 0 || (page == 1
+             && (ev.key.shift || ev.key.meta))) ]
+            page += 1
+            if [ page == 5 ] make_plan[]
+        el [ key == 'install' && problems.count == 0 ]
+            page = 6
+            start[]
+        el [ key == 'restart' ]
+            sync[]
+            reboot[ RB_AUTOBOOT ]
+        el [ key == 'whole' ]
+            beside  = false
+        el [ key == 'beside' ]
+            beside  = true
+        el [ key.starts_with[ 'disk_' ] ]
+            at : i32 [ key.mid[ 5, key.count - 5 ].integer_value[] ]
+            if [ at != disk_at ] part_at = -1
+            disk_at = at
+        el [ key.starts_with[ 'part_' ] ]
+            part_at = key.mid[ 5, key.count - 5 ].integer_value[]
+        el
+            return
+        ev.stop[]
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+    # a typed field's text, from its mounted control
+    func field [ panel: element, id: string, cur: string ] -> string
+        if [ !panel || !panel.elements ] return cur
+        if [ !panel.elements.contains[ id ] ] return cur
+        e : element panel.elements[ id ]
+        return (e && e.edit) ? e.edit : ''
+
+    func row [ y: f32 ] -> Region
+        return Region [ 'l1.4 t{y} r1.4 h0.94' ]
+
+    # a label and its field on one row
+    func entry [ t: Elements, panel: element, id: string,
+                 name: string, cur: string, y: f32, secret: bool ]
+        t[ '{id}_name' ] = WizText [ label: name,
+            area: Region [ 'l1.4 t{y} w7 h0.94' ] ]
+        mounted : bool [ panel && panel.elements
+            && panel.elements.contains[ id ] ]
+        ar : Region [ 'l8.6 t{y} r1.4 h0.94' ]
+        if [ secret ]
+            t[ id ] = (mounted) ? WizSecret [ area: ar ]
+                : WizSecret [ area: ar, edit: cur, sel_col: cur.count,
+                              anchor_col: cur.count ]
+        el
+            t[ id ] = (mounted) ? TextInput [ area: ar ]
+                : TextInput [ area: ar, edit: cur, sel_col: cur.count,
+                              anchor_col: cur.count ]
+
+    # the table's header and its scrolled rows
+    func part_els [ panel: element ] -> Elements
+        dk : disk[]
+        # partition, size, free, type, what's on it (units)
+        lefts : vec string [] [ 'l0.7 t0 w4.3 b0', 'l5.2 t0 w3.3 b0',
+            'l8.7 t0 w3.3 b0', 'l12.2 t0 w2.6 b0', 'l15 t0 r0.7 b0' ]
+        rows : Elements []
+        for [ i: i32 0, i < dk.parts.count, i += 1 ]
+            p : Part dk.parts[ i ]
+            dv : '/dev/{p.name}'
+            seen : bool [ access[ dv.chars, R_OK ] == 0
+                || p.free >= 0 || p.fs == 'swap' ]
+            fs : string [ (p.fs.count > 0) ? p.fs
+                : ((seen) ? 'other' : '?') ]
+            what : string [ (p.what.count > 0 || seen) ? p.what
+                : 'not readable here' ]
+            free : string [ (p.free >= 0) ? size_text[ p.free ] : '' ]
+            small : bool [ too_small[ p ] ]
+            if [ small ]
+                what = (what.count > 0) ? 'too small; {what}'
+                    : 'too small'
+            row : vec string [] [ p.name, size_text[ p.bytes ], free,
+                                  fs, what ]
+            # too small: shown, never picked
+            rows[ 'part_{i}' ] = ListRow [ selected: i == part_at,
+                disable: small, area: Region { l0 t0+ r0 h1.2 },
+                elements: list_cells[ row, lefts, false, small ] ]
+        # the list's height in pixels: rows times the unit
+        tb : element (panel && panel.elements)
+            ? panel.elements[ 'parts' ] : null
+        unit : f32 [ (tb && tb.fc > 0.0) ? tb.fc : 22.0 ]
+        head : vec string [] [ 'Partition', 'Size', 'Free', 'Type',
+                               'What\'s on it' ]
+        out : Elements []
+        out[ 'head' ] = ListHead [ area: Region { l0 t0 r0 h1.1 },
+            elements: list_cells[ head, lefts, true, false ] ]
+        out[ 'rows' ] = ListRows [ area: Region { l0 t1.1 r0 b0 },
+            content_h: f32[ dk.parts.count ] * 1.2 * unit,
+            elements: rows ]
+        return out
+
+    func page_els [ panel: element ] -> Elements
+        t : Elements []
+        top : f32 [ 4.4 ]
+        gap : f32 [ 1.55 ]
+        title : string ''
+        note  : string ''
+        if [ page == 0 ]
+            title = 'Build orbiter-os'
+            note  = 'The kernel the drive takes; build a new one.'
+            # Write installer…: the stick's own heading
+            ub : boot_el[]
+            if [ ub && ub.usb_view ]
+                title = 'Make orbiter-os installer'
+                note  = 'Choose the USB drive; ' +
+                    'everything on it is erased.'
+            t[ 'bootstrap' ] = Bootstrap [
+                area: Region [ 'l1.4 t{top} r1.4 h14.15' ] ]
+        el [ page == 1 ]
+            title = 'Hardware check'
+            note  = 'What orbiter-os supports on this machine.'
+            y : f32 [ top ]
+            for [ i: i32 0, i < hw.count, i += 1 ]
+                h : Hw hw[ i ]
+                t[ 'hw_{i}' ] = WizText [ label: '{h.kind}:  {h.name}',
+                    area: row[ y ] ]
+                ar : Region [ 'l1.4 t{y + 1.0} r1.4 h0.8' ]
+                k : 'hw_note_{i}'
+                if [ h.ok ] t[ k ] = WizGood [ label: h.note, area: ar ]
+                el t[ k ] = WizBad [ label: h.note, area: ar ]
+                y += 2.1
+            if [ hw.count == 0 ]
+                none : 'No graphics or network hardware was found.'
+                t[ 'hw_none' ] = WizText [ label: none, area: row[ y ] ]
+        el [ page == 2 ]
+            title = 'Choose a disk'
+            note  = 'orbiter-os is installed on it.'
+            y : f32 [ top ]
+            for [ i: i32 0, i < disks.count, i += 1 ]
+                dk : Disk disks[ i ]
+                t[ 'disk_{i}' ] = WizPick [ label: dk.text[],
+                    selected: i == disk_at, area: row[ y ] ]
+                y += gap
+        el [ page == 3 ]
+            dk : disk[]
+            title = 'Where on {dk.name}'
+            note  = 'Erase the disk, or keep what is on it.'
+            t[ 'whole' ] = WizPick [ selected: !beside,
+                label: 'Erase the whole disk for orbiter-os',
+                area: row[ top ] ]
+            t[ 'beside' ] = WizPick [ selected: beside,
+                label: 'Keep what is there: a folder on a partition',
+                area: row[ top + gap ] ]
+            if [ beside ]
+                y : f32 [ top + gap * 2.0 + 0.4 ]
+                t[ 'parts' ] = ListBox [ elements: part_els[ panel ],
+                    area: Region [ 'l1.4 t{y} r1.4 h7.4' ] ]
+        el [ page == 4 ]
+            user  = field[ panel, 'user', user ]
+            pass  = field[ panel, 'pass', pass ]
+            again = field[ panel, 'again', again ]
+            host  = field[ panel, 'host', host ]
+            keys  = field[ panel, 'keys', keys ]
+            zone  = field[ panel, 'zone', zone ]
+            title = 'Your account'
+            note  = 'The first user, and this computer.'
+            entry[ t, panel, 'user', 'User name', user, top, false ]
+            entry[ t, panel, 'pass', 'Password', pass,
+                   top + gap, true ]
+            entry[ t, panel, 'again', 'Again', again,
+                   top + gap * 2.0, true ]
+            entry[ t, panel, 'host', 'Computer', host,
+                   top + gap * 3.0, false ]
+            entry[ t, panel, 'keys', 'Keyboard', keys,
+                   top + gap * 4.0, false ]
+            entry[ t, panel, 'zone', 'Time zone', zone,
+                   top + gap * 5.0, false ]
+        el [ page == 5 ]
+            title = 'Ready to install'
+            note  = 'Install runs these steps.'
+            if [ dry_run ]
+                note = 'Dry run: these steps would run. Nothing is '
+                note = '{note}written.'
+            y : f32 [ top ]
+            for [ i: i32 0, i < plan.count, i += 1 ]
+                st : Step plan[ i ]
+                t[ 'plan_{i}' ] = WizSmall [
+                    label: '{i + 1}.  {st.title}',
+                    area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
+                y += 0.78
+            for [ i: i32 0, i < notes.count, i += 1 ]
+                t[ 'notice_{i}' ] = WizNote [ label: notes[ i ],
+                    area: Region [ 'l1.4 t{y} r1.4 h0.8' ] ]
+                y += 0.8
+            for [ i: i32 0, i < problems.count, i += 1 ]
+                t[ 'problem_{i}' ] = WizWarn [ label: problems[ i ],
+                    area: Region [ 'l1.4 t{y} r1.4 h0.8' ] ]
+                y += 0.8
+        el
+            done : i32 [ step_at ]
+            title = (failed) ? 'The install stopped'
+                : ((finished) ? 'orbiter-os is installed'
+                : 'Installing')
+            note = (finished && !failed)
+                ? 'Restart to start orbiter-os.' : ''
+            cur : string ''
+            if [ done < plan.count ]
+                st : Step plan[ done ]
+                cur = st.title
+            t[ 'now' ] = WizText [ area: row[ top ],
+                label: (cur.count > 0)
+                    ? 'Step {done + 1} of {plan.count}: {cur}' : '' ]
+            frac : f32 [ f32[ done ] / f32[ (plan.count > 0)
+                ? plan.count : 1 ] ]
+            t[ 'track' ] = WizTrack [
+                area: Region [ 'l1.4 t{top + 1.4} r1.4 h0.3' ] ]
+            fw : f32 [ 29.2 * frac ]
+            t[ 'fill' ] = WizFill [
+                area: Region [ 'l1.4 t{top + 1.4} w{fw} h0.3' ] ]
+            if [ total > 0 ]
+                cp : f32 [ f32[ copied ] / f32[ total ] ]
+                if [ cp > 1.0 ] cp = 1.0
+                cl : 'Copied {size_text[ copied ]}'
+                cl = '{cl} of {size_text[ total ]}'
+                t[ 'copy' ] = WizSmall [ area: row[ top + 2.0 ],
+                                         label: cl ]
+                t[ 'ctrack' ] = WizTrack [
+                    area: Region [ 'l1.4 t{top + 3.3} r1.4 h0.3' ] ]
+                cw : f32 [ 29.2 * cp ]
+                t[ 'cfill' ] = WizFill [
+                    area: Region [ 'l1.4 t{top + 3.3} w{cw} h0.3' ] ]
+            shown : vec string []
+            lock.lock[]
+            oldest : i32 [ lines.count - 7 ]
+            if [ oldest < 0 ] oldest = 0
+            for [ i: i32 oldest, i < lines.count, i += 1 ]
+                shown.push[ '{lines[ i ]}' ]
+            lock.unlock[]
+            y : f32 [ top + 4.2 ]
+            for [ i: i32 0, i < shown.count, i += 1 ]
+                t[ 'line_{i}' ] = WizSmall [ label: shown[ i ],
+                    area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
+                y += 0.78
+        t[ 'title' ] = WizTitle [ label: title,
+            area: Region { l1.4 t1.1 r1.4 h1.6 } ]
+        t[ 'note' ] = WizNote [ label: note,
+            area: Region { l1.4 t2.7 r1.4 h1 } ]
+        why_text : string [ (page < 5) ? why[] : '' ]
+        if [ why_text.count > 0 ]
+            t[ 'why' ] = WizWarn [ label: why_text,
+                area: Region { l1.4 b3.7 r1.4 h1 } ]
+        if [ page > first_page && page < 6 ]
+            t[ 'back' ] = WizButton [ label: 'Back',
+                area: Region { l1.4 b2.05 w6 h1.05 } ]
+        # while page 0 builds: the build can be stopped
+        bs : boot_el[]
+        if [ page == 0 && bs && bs.building && bs.job != 'usb' ]
+            t[ 'cancel_build' ] = WizButton [ label: 'Cancel Build',
+                area: Region { l1.4 b2.05 w6 h1.05 } ]
+        # writing an installer: its bar between the two buttons;
+        # written, it stays, green, until the drive row is left
+        wrote : bool [ bs && !bs.building && !bs.failed
+            && bs.usb_view && bs.progress >= 1.0 ]
+        if [ page == 0 && bs && bs.job == 'usb'
+             && (bs.building || wrote) ]
+            # centred in the dialog, clear of Continue
+            side : f32 [ 7.45 ]
+            t[ 'usb_bar' ] = WizBar [ frac: bs.progress, done: wrote,
+                area: Region [ 'l{side} b1.675 r{side} h0.3' ] ]
+        # making an installer: no Continue, Back is the way out
+        if [ page == 0 && bs && bs.usb_view ] return t
+        # building: no going on at all
+        if [ boot_blocked[] || advance ]
+            t[ 'next' ] = WizButton [ label: 'Continue', disable: true,
+                opacity: 0.4, area: Region { r5.9 b2.05 r1.4 h1.05 } ]
+        # blocked: a plain button, which shift+click still takes
+        el [ page < 5 && why_text.count > 0 ]
+            t[ 'next' ] = WizButton [ label: 'Continue',
+                area: Region { r5.9 b2.05 r1.4 h1.05 } ]
+        el [ page < 5 ]
+            t[ 'next' ] = WizGo [ label: 'Continue',
+                area: Region { r5.9 b2.05 r1.4 h1.05 } ]
+        el [ page == 5 && !dry_run && problems.count == 0 ]
+            t[ 'install' ] = WizGo [ label: 'Install',
+                area: Region { r5.9 b2.05 r1.4 h1.05 } ]
+        el [ page == 6 && finished && !failed ]
+            t[ 'restart' ] = WizGo [ label: 'Restart',
+                area: Region { r5.9 b2.05 r1.4 h1.05 } ]
+        return t
+
+    public func render [] -> Elements
+        # the tree Continue asked for is written: on to page 1
+        bs : boot_el[]
+        if [ advance && bs && !bs.building ]
+            advance = false
+            if [ bs.ready[] ] page = 1
+        # the progress page follows the worker each frame
+        if [ page == 6 || page == 0 ] pristine = false
+        panel : element (elements) ? elements[ 'panel' ] : null
+        return Elements [
+            # building linux: tilted away as orbiter's at work, and
+            # a kernel build's flame; a stick write, the long halo.
+            # never settled: done or cancelled, it faces the user
+            'avatar': SetupAvatar [ settled: false,
+                work_on: bs && bs.building,
+                edits_in: bs && bs.building && bs.job == 'usb',
+                swap_on: bs && bs.building && bs.job != 'usb' ],
+            'panel': WizPanel [ elements: page_els[ panel ],
+                area: Region { l50%-8 t50%-10.5 w32 h21 } ] ]
+
+# the worker on a scratch tree: copy, write, one file
+expect func t_install_steps [] -> bool
+    root : '/tmp/wizard-test-{getpid[]}'
+    src  : '{root}/src'
+    w : InstallWizard [ source: src ]
+    if [ !w.lock ] w.lock = mutex []
+    if [ !w.lines ] w.lines = vec string []
+    w.plan = vec Step []
+    made : vec Step [] [
+        Step [ kind: StepKind.write, dst: '{src}/boot/vmlinuz',
+               text: 'kernel\n' ],
+        Step [ kind: StepKind.write, dst: '{src}/bin/tool',
+               text: 'tool\n' ],
+        Step [ kind: StepKind.write, dst: '{src}/proc/1/status',
+               text: 'kernel tree\n' ] ]
+    for [ m: Step ] in made
+        if [ !w.run_step[ m ] ] return false
+    tool : '{src}/bin/tool'
+    # rwxr-xr-x
+    exec_mode : u32 [ 0x1ED ]
+    chmod[ tool.chars, exec_mode ]
+    lk : '{src}/lib'
+    symlink[ 'boot', lk.chars ]
+    s : w.step[ StepKind.copy, 'Copy the tree' ]
+    s.src = src
+    s.dst = '{root}/dst'
+    s = w.step[ StepKind.write, 'Write the settings' ]
+    s.dst  = '{root}/dst/var/lib/orbiter/install.agi'
+    s.text = 'user: test\n'
+    s = w.step[ StepKind.file, 'Copy the kernel' ]
+    s.src = '{src}/boot/vmlinuz'
+    s.dst = '{root}/efi/EFI/orbiter/vmlinuz.efi'
+    # the worker's thread, as the install runs it
+    w.start[]
+    while [ !w.finished ] usleep[ 10000 ]
+    dst : '{root}/dst'
+    tool_copy : '{dst}/bin/tool'
+    proc_dir  : path '{dst}/proc'
+    proc_kid  : path '{dst}/proc/1'
+    ok : bool [ w.finished && !w.failed
+        && read_line[ '{dst}/boot/vmlinuz' ] == 'kernel'
+        && link_text[ '{dst}/lib' ] == 'boot'
+        && access[ tool_copy.chars, X_OK ] == 0
+        && proc_dir.exists[] && !proc_kid.exists[]
+        && read_line[ '{root}/efi/EFI/orbiter/vmlinuz.efi' ] == 'kernel'
+        && read_line[ '{dst}/var/lib/orbiter/install.agi' ]
+            == 'user: test'
+        && w.copied == w.total + 7 ]
+    log 'wizard test: copied {w.copied} of {w.total}, ok {ok}'
+    rm : 'rm -rf {root}'
+    system[ rm.chars ]
+    return ok
+
+# europa's own list: orbiter-os goes second, the default stays
+expect func t_boot_order [] -> bool
+    before : vec string [] [ 'BootCurrent: 0000', 'Timeout: 1 seconds',
+        'BootOrder: 0000,0003,0001,0002', 'Boot0000* Ubuntu\tHD(3)',
+        'Boot0001* opensuse-secureboot\tHD(3)',
+        'Boot0002* Windows Boot Manager\tHD(3)',
+        'Boot0003* GRUB\tHD(3)' ]
+    after : vec string [] [ 'BootOrder: 0000,0003,0001,0002',
+        'Boot0000* Ubuntu\tHD(3)', 'Boot0003* GRUB\tHD(3)',
+        'Boot0004* orbiter-os\tHD(3)' ]
+    ids : boot_ids[ before ]
+    made : string ''
+    for [ id: string ] in boot_ids[ after ]
+        if [ !ids.contains[ id ] ] made = id
+    od : order_second[ boot_order[ after ], made ]
+    lone : order_second[ vec string [], '0004' ]
+    log 'wizard test: ids {ids.count}, new {made}, order {od}'
+    return ids.count == 4 && made == '0004'
+        && od == '0000,0004,0003,0001,0002' && lone == '0004'
+
+# each boot manager from a made-up EFI and Linux partition
+expect func t_boot_detect [] -> bool
+    root : '/tmp/wizard-boot-{getpid[]}'
+    dirs : vec string [] [ 'deb/etc/grub.d', 'bls/loader/entries',
+        'fed/boot/loader/entries', 'esp/EFI/systemd',
+        'esp/loader/entries', 'plain', 'rf/EFI/refind' ]
+    for [ d: string ] in dirs
+        dp : path '{root}/{d}'
+        dp.make_dir[]
+    lines : vec string [] [ 'BootOrder: 0000,0003',
+        'Boot0000* Ubuntu\tHD(3)/File(\\EFI\\ubuntu\\shimx64.efi)',
+        'Boot0003* GRUB\tHD(3)/File(\\EFI\\GRUB\\grubx64.efi)' ]
+    ld : default_loader[ lines ]
+    shim : '\\efi\\ubuntu\\shimx64.efi'
+    win  : '\\efi\\microsoft\\boot\\bootmgfw.efi'
+    sdb  : '\\efi\\systemd\\systemd-bootx64.efi'
+    refi : '\\efi\\refind\\refind_x64.efi'
+    fall : '\\efi\\boot\\bootx64.efi'
+    e : '{root}/esp'
+    p : '{root}/plain'
+    got : vec BootKind [] [
+        detect_boot[ shim, p, '{root}/deb' ],
+        detect_boot[ shim, p, '{root}/bls' ],
+        detect_boot[ shim, p, '{root}/fed' ],
+        detect_boot[ sdb, e, p ],
+        detect_boot[ fall, e, p ],
+        detect_boot[ refi, p, p ],
+        detect_boot[ '', '{root}/rf', p ],
+        detect_boot[ win, e, '{root}/deb' ],
+        detect_boot[ shim, p, p ] ]
+    want : vec BootKind [] [ BootKind.grub_debian, BootKind.grub_bls,
+        BootKind.grub_bls, BootKind.systemd_boot,
+        BootKind.systemd_boot, BootKind.refind, BootKind.refind,
+        BootKind.windows, BootKind.unknown ]
+    ok : bool [ ld == shim ]
+    for [ i: i32 0, i < want.count, i += 1 ]
+        if [ got[ i ] != want[ i ] ]
+            log 'wizard test: case {i} gave {boot_name[ got[ i ] ]}'
+            ok = false
+    log 'wizard test: loader {ld}, boot cases ok {ok}'
+    rm : 'rm -rf {root}'
+    system[ rm.chars ]
+    return ok
+
+# free space read as df reads it; contents of the running root
+expect func t_free_space [] -> bool
+    mine : free_at[ '/' ]
+    fh : handle popen[ 'df -B1 --output=avail /', 'r' ]
+    b : local i8 [ 256 ]
+    df : i64 [ -1 ]
+    while [ fh && fgets[ @b[0], 256, fh ] ]
+        ln0 : string [ @b[0] ]
+        ln : ln0.trim[]
+        if [ ln.is_numeric[] ] df = ln.integer_value[]
+    if [ fh ] pclose[ fh ]
+    gap : i64 [ (mine > df) ? mine - df : df - mine ]
+    root : contents[ '/', 'ext4' ]
+    log 'wizard test: free {mine} df {df}, root: {root}'
+    # a write between the two reads moves it a little
+    return df > 0 && gap < 64 * 1048576
+        && root.index_of[ 'running' ] >= 0
+
+# the copy's measure from the tree, and the rows it rules out
+expect func t_copy_need [] -> bool
+    root : '/tmp/wizard-need-{getpid[]}'
+    bd : path '{root}/boot'
+    bd.make_dir[]
+    tb : '{root}/boot/tree-bytes'
+    fh : handle fopen[ tb.chars, 'w' ]
+    fputs[ '1000000\n', fh ]
+    fclose[ fh ]
+    w : InstallWizard [ source: root ]
+    w.need = w.copy_need[]
+    fits  : Part [ name: 'a', free: 2000000 ]
+    tight : Part [ name: 'b', free: 1050000 ]
+    blind : Part [ name: 'c' ]
+    ok : bool [ w.need == 1100000 && !w.too_small[ fits ]
+        && w.too_small[ tight ] && !w.too_small[ blind ] ]
+    log 'wizard test: need {w.need}, ok {ok}'
+    rm : 'rm -rf {root}'
+    system[ rm.chars ]
+    return ok
+
+# a device id against the drive's drivers, and its pci.ids name
+expect func t_hardware_match [] -> bool
+    al : vec string [] [ 'e1000e',
+        'pci:v00008086d000015B8sv*sd*bc*sc*i*', 'r8169',
+        'pci:v000010ECd00008125sv*sd*bc*sc*i*' ]
+    lan : 'pci:v000010ECd00008125sv00001458sd0000E000bc02sc00i00'
+    wifi : 'pci:v000010ECd0000C852sv000010ECsd0000C852bc02sc80i00'
+    nm : pci_name[ '/usr/share/misc/pci.ids', 0x10ec, 0x8125 ]
+    gpu : pci_name[ '/usr/share/misc/pci.ids', 0x10de, 0x2504 ]
+    log 'wizard test: {nm}, {gpu}'
+    return driver_for[ al, lan ] == 'r8169'
+        && driver_for[ al, wifi ] == ''
+        && nm == 'Realtek RTL8125 2.5GbE Controller'
+        && gpu.starts_with[ 'NVIDIA GeForce RTX 3060' ]

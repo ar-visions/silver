@@ -1,50 +1,68 @@
-# os-bootstrap — assembles orbiter-os (linux + orbiter as init) and boots it in a qemu element
+# os-bootstrap — assembles orbiter-os (linux + orbiter as init) for the drive
 export 1.0.0
 
-import https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz
-    > test -f {install}/share/silver-os-bootstrap/bzImage || mkdir -p {install}/build/linux
-    > test -f {install}/share/silver-os-bootstrap/bzImage || tar xf {import_file} -C {install}/build/linux --strip-components=1
-    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 defconfig
-    > test -f {install}/share/silver-os-bootstrap/bzImage || {install}/build/linux/scripts/config --file {install}/build/linux/.config -e VIRTIO_PCI -e VIRTIO_BLK -e VIRTIO_INPUT -e VIRTIO_CONSOLE -e HW_RANDOM_VIRTIO -e DRM -e DRM_VIRTIO_GPU -e DRM_FBDEV_EMULATION -e INPUT_EVDEV -e DEVTMPFS -e DEVTMPFS_MOUNT -e BLK_DEV_INITRD -e BLK_DEV_NVME -e SYSFB_SIMPLEFB -e DRM_SIMPLEDRM -e TMPFS -e KVM_GUEST -e PARAVIRT -e VIRTIO_NET -e NET_9P -e NET_9P_VIRTIO -e 9P_FS
-    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 olddefconfig
-    > test -f {install}/share/silver-os-bootstrap/bzImage || make -C {install}/build/linux -j16 bzImage
-    > mkdir -p {install}/share/silver-os-bootstrap
-    > cp -n {install}/build/linux/arch/x86/boot/bzImage {install}/share/silver-os-bootstrap/bzImage
+# FAT without root: the installer stick's EFI partition image
+import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
+    --disable-floppyd
 
-# the drive's gpu modules: the release of the host's driver
-import https://github.com/NVIDIA/open-gpu-kernel-modules/archive/refs/tags/610.57.04.tar.gz
-    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || make -C {install}/build/linux -j16 modules
-    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || mkdir -p {install}/build/nvidia-open
-    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || tar xf {import_file} -C {install}/build/nvidia-open --strip-components=1
-    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || make -C {install}/build/nvidia-open -j16 modules SYSSRC={install}/build/linux SYSOUT={install}/build/linux
-    > mkdir -p {install}/share/silver-os-bootstrap/nvidia
-    > test -f {install}/share/silver-os-bootstrap/nvidia/nvidia-drm.ko || cp {install}/build/nvidia-open/kernel-open/nvidia.ko {install}/build/nvidia-open/kernel-open/nvidia-modeset.ko {install}/build/nvidia-open/kernel-open/nvidia-drm.ko {install}/share/silver-os-bootstrap/nvidia/
-
-# the guest's venus vulkan driver, built newer than the host's system
-# mesa: the system libvulkan_virtio.so crashes on dma-buf export
-import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
-    PKG_CONFIG_PATH=/usr/lib/x86_64-linux-gnu/pkgconfig:{install}/lib/pkgconfig
+# radv and anv need a newer libdrm than the system's
+import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
     PYTHONPATH={install}/pylib
     PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+    -Damdgpu=enabled
+    -Dintel=enabled
+    -Dradeon=disabled
+    -Dnouveau=disabled
+    -Dvmwgfx=disabled
+    -Dcairo-tests=disabled
+    -Dvalgrind=disabled
+    -Dman-pages=disabled
+    -Dtests=false
+
+# anv's built-in GPU programs: SPIR-V from OpenCL C (the
+# translator, then libclc from our LLVM's own source)
+import KhronosGroup:SPIRV-LLVM-Translator/8e829705b660a4c3a1fcd97885c35b8d78941276
+    -DLLVM_DIR={install}/lib/cmake/llvm
+    -DLLVM_SPIRV_INCLUDE_TESTS=OFF
+    -DCMAKE_INSTALL_RPATH={install}/lib
+    -DCMAKE_BUILD_TYPE=Release
+    >> test -f {install}/share/pkgconfig/libclc.pc || cmake -S {root_path}/checkout/LLVM/llvm-project/libclc -B {install}/build/libclc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install} -DLLVM_DIR={install}/lib/cmake/llvm -DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR={install}/bin -DLIBCLC_TARGETS_TO_BUILD=spirv64-mesa3d-
+    >> test -f {install}/share/pkgconfig/libclc.pc || cmake --build {install}/build/libclc
+    >> test -f {install}/share/pkgconfig/libclc.pc || cmake --install {install}/build/libclc
+
+# Vulkan drivers: venus (qemu guests), radv (amd), anv (intel)
+import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+    PYTHONPATH={install}/pylib
+    PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+    LDFLAGS=-Wl,-rpath,{install}/lib
     > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
-    -Dvulkan-drivers=virtio
+    -Dvulkan-drivers=virtio,amd,intel
+    -Dintel-rt=disabled
+    -Damd-use-llvm=false
     -Dgallium-drivers=
     -Dplatforms=
     -Dglx=disabled
     -Degl=disabled
     -Dgbm=disabled
-    -Dllvm=disabled
+    -Dllvm=enabled
+    -Dshared-llvm=enabled
     -Dvideo-codecs=
 
+import vec
+import img
 import trinity
-import qemu
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
 import <unistd.h>
 import <time.h>
 import <sys/stat.h>
+import <sys/statvfs.h>
 import <utime.h>
+import <pthread.h>
+import <signal.h>
 
 # one entry of the guest file system
 class OsFile
@@ -54,36 +72,1375 @@ class OsFile
     public dir  : bool
     public dev  : bool         # the console character device
 
-element main : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
-    public  title      : string [ 'orbiter-os' ]
-    public  background : string [ 'Background' ]
-    public  memory     : i32    [ 4096 ]
+# building is for a linux system with silver's source; booted
+# into orbiter-os there is nothing to bootstrap from
+func bootstrap_here [] -> bool
+    fh : handle fopen[ '/proc/cmdline', 'r' ]
+    b : local i8 [ 4096 ]
+    cmd : string ''
+    if [ fh && fgets[ @b[0], 4096, fh ] ] cmd = string [ @b[0] ]
+    if [ fh ] fclose[ fh ]
+    if [ cmd.index_of[ 'orbiter.init=' ] >= 0 ] return false
+    root : path.path_startup[]
+    src : path '{root}/os-bootstrap/os-bootstrap.ag'
+    return src.exists[]
+
+# one line of the summary: what, its state, and a word on it
+class Built
+    public what : string [ '' ]
+    public ok   : bool
+    public note : string [ '' ]
+
+element BootText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 15,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element BootGood
+    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element BootBad
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element BootLog
+    no_cache : true
+    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 12,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+Button BootButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #f2f2f6
+            label_size: 13
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff26
+                stroke_color: #ffffff66
+                near_inset: 4.0
+    }
+
+# a list in a framed box: the header, then rows that scroll
+element ListBox
+    frame : Layer [ fill_color: rgba [ '#ffffff08' ], stroke_width: 1.0,
+        stroke_color: rgba [ '#ffffff1f' ], radius: Radius [ '8' ] ]
+
+# the column names, above the rows; never scrolls
+element ListHead
+    rule : Layer [ fill_color: rgba [ '#ffffff1f' ],
+                   area: Region { l0 b0 r0 h0.04 } ]
+
+# the rows, scrolled within the box
+element ListRows
+    focusable : true
+    scrollbar : ScrollLayer [ overlay: true,
+        area: Region { l0 t0 r0 b0 }, thumb_color: '#fff3',
+        thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
+
+# a column's text; the row underneath takes the click
+element ListCell
+    ghost : true
+    face  : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# a cell of a row that cannot be picked
+ListCell ListDimCell
+    face  : Layer [ label_color: rgba [ '#ffffff48' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+ListCell ListHeadCell
+    face  : Layer [ label_color: rgba [ '#ffffff80' ], label_size: 12,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# one row: the whole row picks it
+Button ListRow
+    rule : Layer [ fill_color: rgba [ '#ffffff10' ],
+                   area: Region { l0 b0 r0 h0.04 } ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff12
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+    }
+
+# a list's cells: names at their left edges (units), as given
+func list_cells [ names: vec string, lefts: vec string, head: bool,
+                  dim: bool ] -> Elements
+    out : Elements []
+    for [ i: i32 0, i < names.count, i += 1 ]
+        ar : Region [ lefts[ i ] ]
+        nm : names[ i ]
+        if [ head ] out[ 'c{i}' ] = ListHeadCell [ label: nm, area: ar ]
+        el [ dim ] out[ 'c{i}' ] = ListDimCell [ label: nm, area: ar ]
+        el out[ 'c{i}' ] = ListCell [ label: nm, area: ar ]
+    return out
+
+# one of a few choices: lit when picked
+Button Choice
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 14
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+
+# a drive an installer can go on: a usb stick or a removable one
+class UsbDrive
+    public name  : string [ '' ]
+    public model : string [ '' ]
+    public bytes : i64
+    public ok    : bool
+
+# one kernel built for the drive: what it is, where it is
+class KernelBuild
+    public name    : string [ '' ]
+    public dir     : string [ '' ]
+    public version : string [ '' ]
+    public nvidia  : string [ '' ]
+    # x64, ARM64, Apple or Surface: the hardware it is built for
+    public hardware : string [ 'x64' ]
+    # AMD's and Intel's kernel drivers, or none
+    public amd     : string [ 'amdgpu' ]
+    public intel   : string [ 'i915, xe' ]
+    public release : string [ '' ]
+    public drivers : i32
+    public built   : string [ '' ]
+
+# the drive's builder: the kernels built, the one the drive
+# takes, a new one from the choices, and the drive tree
+element Bootstrap
     public  app        : string [ 'orbiter' ]          # the guest's init
     public  share_max  : i64    [ 32 * 1024 * 1024 ]   # skip share dirs larger than this
-    # the host's nvidia driver; the modules import must match it
-    public  nvidia_version : string [ '610.57.04' ]
     mutable install    : path
     mutable root       : path
     mutable out_dir    : path
+    # the selected kernel: its folder and its bzImage
+    mutable kdir       : string
     mutable kernel     : path
-    mutable initrd     : path
-    mutable serial     : path
-    mutable log        : path
     mutable files      : vec OsFile
     mutable seen       : map bool [ string ]
+    mutable kernels    : vec KernelBuild
+    mutable chosen     : string
+    # the installer stick's kernel: the chosen one, or an ARM one
+    mutable stick      : string
+    # the choices for a new kernel
+    mutable want_hardware : string
+    mutable want_version : string
+    # linux-surface's patch series (6.18 ...), read once
+    mutable surface_series : vec string
+    # the kernel.org release each series' patches fit, read once
+    mutable surface_versions : vec string
+    # the asahi branch's version (its Makefile), read once
+    mutable asahi_version  : string
+    # the versions offered: kernel.org's list, read once
+    mutable releases     : vec string
+    mutable want_nvidia  : string
+    mutable want_amd     : string
+    mutable want_intel   : string
+    # the build's thread and what it says, under lock
+    mutable lock       : mutex
+    mutable lines      : vec string
+    mutable building   : bool
+    mutable failed     : bool
+    # writing an installer: 0..1 through the image, then the copy
+    mutable progress   : f32
+    mutable image_bytes : i64
+    # the image's part of that bar; the copy takes the rest
+    intern image_share : f32 [ 0.2 ]
+    mutable parts      : vec Built
+    # the installer's drive picker, shown by Write installer
+    # Cancel Build: the running command's group is stopped
+    mutable cancelled  : bool
+    mutable usb_view   : bool
+    mutable drives     : vec UsbDrive
+    mutable want_drive : string
+    mutable drives_at  : i64
+    intern  tid        : pthread_t
 
     func init []
+        setup[]
+
+    public func setup []
         install = path.path_install[].normalize[]
         root    = path.path_startup[]
         out_dir = path '{root}/orbiter-os'
-        out_dir.make_dir[]
-        kernel  = path '{install}/share/silver-os-bootstrap/bzImage'
-        initrd  = path '{out_dir}/initramfs.cpio'
-        serial  = path '{out_dir}/serial.log'
-        log     = path '{out_dir}/qemu.log'
-        assemble[]
+        if [ !lock ] lock = mutex []
+        if [ !lines ] lines = vec string []
+        if [ !want_hardware ] want_hardware = 'x64'
+        if [ !want_version ] want_version = offered[][ 0 ]
+        if [ !want_nvidia ] want_nvidia = nvidias[][ 0 ]
+        if [ !want_amd ] want_amd = amds[][ 0 ]
+        if [ !want_intel ] want_intel = intels[][ 0 ]
+        scan[]
+
+    public func can_build [] -> bool
+        return bootstrap_here[]
+
+    func share [] -> string
+        return '{install}/share/silver-os-bootstrap'
+
+    # the hardware a kernel is built for
+    public func hardwares [] -> vec string
+        return vec string [] [ 'x64', 'ARM64', 'Apple', 'Surface' ]
+
+    # the kernels the chosen hardware takes: kernel.org's for x64
+    # and ARM64, the series linux-surface patches, Asahi's branch
+    public func offered [] -> vec string
+        if [ want_hardware == 'Apple' ]
+            if [ !asahi_version ] asahi_version = asahi_release[]
+            return vec string [] [ asahi_version ]
+        if [ want_hardware != 'Surface' ] return versions[]
+        if [ !surface_versions ] surface_versions = surface_releases[]
+        return surface_versions
+
+    # Surface: for each series kernel.org offers that linux-surface
+    # patches, the release its patches are made for (the version
+    # in linux-surface's v<series>-surface tree): newer stables
+    # moved code the patches touch (btusb's BIT(29) taken twice)
+    func surface_releases [] -> vec string
+        if [ !surface_series ] surface_series = patch_series[]
+        tree : 'https://raw.githubusercontent.com/linux-surface/kernel'
+        out : vec string []
+        for [ v: string ] in versions[]
+            for [ ser: string ] in surface_series
+                if [ !v.starts_with[ '{ser}.' ] && v != ser ] continue
+                mk : '{tree}/v{ser}-surface/Makefile'
+                sv : makefile_version[ mk ]
+                if [ sv.count > 0 && out.index_of[ sv ] < 0 ]
+                    out.push[ sv ]
+        return out
+
+    # Asahi's release line is its asahi branch: its version from
+    # the Makefile there; 'asahi' when it cannot be read
+    func asahi_release [] -> string
+        raw : 'https://raw.githubusercontent.com/AsahiLinux/linux'
+        v : makefile_version[ '{raw}/asahi/Makefile' ]
+        return (v.count > 0) ? v : 'asahi'
+
+    # a kernel Makefile's version, x.y.z, read from a url; ''
+    func makefile_version [ url: string ] -> string
+        cmd : 'curl -s --max-time 4 {url}'
+        fh : handle popen[ cmd.chars, 'r' ]
+        b : local i8 [ 256 ]
+        parts3 : vec string [] [ '', '', '' ]
+        keys : vec string [] [ 'VERSION = ', 'PATCHLEVEL = ',
+                               'SUBLEVEL = ' ]
+        n : i32 [ 0 ]
+        while [ fh && fgets[ @b[0], 256, fh ] && n < 12 ]
+            ln0 : string [ @b[0] ]
+            ln : ln0.trim[]
+            for [ k: i32 0, k < 3, k += 1 ]
+                if [ ln.starts_with[ keys[ k ] ] ]
+                    kc : i32 [ keys[ k ].count ]
+                    parts3[ k ] = ln.mid[ kc, ln.count - kc ]
+            n += 1
+        if [ fh ] pclose[ fh ]
+        if [ parts3[ 0 ].count == 0 || parts3[ 1 ].count == 0 ]
+            return ''
+        v : '{parts3[ 0 ]}.{parts3[ 1 ]}'
+        return (parts3[ 2 ].count > 0) ? '{v}.{parts3[ 2 ]}' : v
+
+    # linux-surface's patches/<series> folders
+    func patch_series [] -> vec string
+        out : vec string []
+        api : 'https://api.github.com/repos/linux-surface/linux-surface'
+        cmd : 'curl -s --max-time 4 {api}/contents/patches'
+        fh : handle popen[ cmd.chars, 'r' ]
+        b : local i8 [ 1024 ]
+        while [ fh && fgets[ @b[0], 1024, fh ] ]
+            ln0 : string [ @b[0] ]
+            ln : ln0.trim[]
+            if [ !ln.starts_with[ '"name": "' ] ] continue
+            nm : ln.mid[ 9, ln.count - 9 ]
+            q : i32 [ nm.index_of[ '"' ] ]
+            if [ q > 0 ] nm = nm.mid[ 0, q ]
+            if [ nm.index_of[ '.' ] > 0 && !nm.ends_with[ '.md' ] ]
+                out.push[ nm ]
+        if [ fh ] pclose[ fh ]
+        return out
+
+    # nvidia's modules go with x64 and Surface only
+    func nvidia_offered [] -> bool
+        return want_hardware == 'x64' || want_hardware == 'Surface'
+
+    # amd's cards go in PCs and arm64 boards; Intel's in PCs
+    func amd_offered [] -> bool
+        return want_hardware != 'Apple'
+
+    func intel_offered [] -> bool
+        return want_hardware == 'x64' || want_hardware == 'Surface'
+
+    # AMD's and Intel's drivers are part of Linux: in, or none
+    public func amds [] -> vec string
+        return vec string [] [ 'amdgpu', 'none' ]
+
+    public func intels [] -> vec string
+        return vec string [] [ 'i915, xe', 'none' ]
+
+    # an x64 or Surface kernel: what the drive tree runs today
+    func on_pc [ kb: KernelBuild ] -> bool
+        return kb.hardware == 'x64' || kb.hardware == 'Surface'
+
+    # the hardware lines this build page builds so far
+    func builds_hardware [] -> bool
+        return true
+
+    # the choices: kernel.org's 6.x series, nvidia's
+    public func versions [] -> vec string
+        if [ !releases ] releases = kernel_releases[]
+        return releases
+
+    # kernel.org's current list: its stable release, then the two
+    # newest longterm; without the network, the series we know
+    func kernel_releases [] -> vec string
+        out : vec string []
+        url : 'https://www.kernel.org/releases.json'
+        cmd : 'curl -s --max-time 4 {url}'
+        fh : handle popen[ cmd.chars, 'r' ]
+        text : string ''
+        b : local i8 [ 4096 ]
+        while [ fh && fgets[ @b[0], 4096, fh ] ]
+            ln : string [ @b[0] ]
+            text = '{text}{ln}'
+        if [ fh ] pclose[ fh ]
+        longterm : i32 [ 0 ]
+        for [ want: string ] in vec string [] [ 'stable', 'longterm' ]
+            at : i32 [ 0 ]
+            while [ true ]
+                rest : text.mid[ at, text.count - at ]
+                m : i32 [ rest.index_of[ '"moniker": "{want}"' ] ]
+                if [ m < 0 ] break
+                # each entry: its moniker, then its version
+                after : rest.mid[ m, rest.count - m ]
+                v : i32 [ after.index_of[ '"version": "' ] ]
+                at = at + m + 1
+                if [ v < 0 ] continue
+                vs : after.mid[ v + 12, after.count - v - 12 ]
+                q : i32 [ vs.index_of[ '"' ] ]
+                if [ q <= 0 ] continue
+                out.push[ vs.mid[ 0, q ] ]
+                if [ want == 'stable' ] break
+                longterm += 1
+                if [ longterm == 2 ] break
+        if [ out.count == 0 ]
+            return vec string [] [ '7.2', '6.18', '6.12' ]
+        return out
+
+    # the host's nvidia release: its libraries ride in the tree
+    public func nvidias [] -> vec string
+        host : read_text[ '/sys/module/nvidia/version' ].trim[]
+        if [ host.count == 0 ] return vec string [] [ 'none' ]
+        return vec string [] [ host, 'none' ]
+
+    # the kernels in kernels/, and the one the drive takes
+    public func scan []
+        kernels = vec KernelBuild []
+        kd : path '{share[]}/kernels'
+        entries : kd.ls[ null, false ]
+        if [ entries ]
+            for [ e: path ] in entries
+                # bzImage on x86, Image on arm64
+                bz : path '{e}/bzImage'
+                if [ !bz.exists[] ] bz = path '{e}/Image'
+                if [ !e.is_dir[] || !bz.exists[] ] continue
+                # a build under way: not a kernel yet
+                if [ e.filename[].ends_with[ '.part' ] ] continue
+                kb : KernelBuild [ name: e.filename[], dir: '{e}' ]
+                info : read_lines[ '{e}/build.agi' ]
+                for [ ln: string ] in info
+                    sp : i32 [ ln.index_of[ ' ' ] ]
+                    if [ sp <= 0 ] continue
+                    k : ln.mid[ 0, sp ]
+                    v : ln.mid[ sp + 1, ln.count - sp - 1 ]
+                    if [ k == 'version' ] kb.version = v
+                    el [ k == 'hardware' ] kb.hardware = v
+                    el [ k == 'nvidia' ] kb.nvidia = v
+                    el [ k == 'amd' ] kb.amd = v
+                    el [ k == 'intel' ] kb.intel = v
+                kb.release = module_release[ '{e}/kmods' ]
+                md : '{e}/kmods/lib/modules/{kb.release}/kernel'
+                kb.drivers = count_files[ md, '.ko' ]
+                kb.built   = when[ bz ]
+                kernels.push[ kb ]
+        pick : read_text[ '{share[]}/kernels/selected' ].trim[]
+        found : bool [ false ]
+        for [ kb: KernelBuild ] in kernels
+            if [ kb.name == pick ] found = true
+        if [ !found && kernels.count > 0 ]
+            pick = kernels[ kernels.count - 1 ].name
+        select[ pick ]
+
+    # the kernel the drive tree takes
+    public func select [ nm: string ]
+        chosen = nm
+        stick  = nm
+        kdir   = '{share[]}/kernels/{nm}'
+        kernel = path '{kdir}/bzImage'
+        if [ !kernel.exists[] ] kernel = path '{kdir}/Image'
+        if [ nm.count > 0 ]
+            sf : '{share[]}/kernels/selected'
+            fh : handle fopen[ sf.chars, 'w' ]
+            if [ fh ]
+                fputs[ nm.chars, fh ]
+                fclose[ fh ]
+        parts = summary[]
+
+    func selected [] -> KernelBuild
+        for [ kb: KernelBuild ] in kernels
+            if [ kb.name == chosen ] return kb
+        return null
+
+    func stick_kernel [] -> KernelBuild
+        for [ kb: KernelBuild ] in kernels
+            if [ kb.name == stick ] return kb
+        return null
+
+    # the drive tree and its boot files, against the chosen kernel
+    public func summary [] -> vec Built
+        out : vec Built []
+        kb : selected[]
+        rel : string [ (kb) ? kb.release : '' ]
+        tb : Built [ what: 'Drive tree' ]
+        tree : '{out_dir}/root'
+        bytes : read_text[ '{tree}/boot/tree-bytes' ].trim[]
+        tr : module_release[ tree ]
+        tb.ok = bytes.count > 0 && tr.count > 0 && tr == rel
+        sz : i64 [ bytes.integer_value[] / (1024 * 1024) ]
+        tbp : path '{tree}/boot/tree-bytes'
+        tw : when[ tbp ]
+        tb.note = (bytes.count == 0) ? 'not written'
+            : ((tr.count == 0) ? 'written without a module tree'
+            : ((tr != rel) ? 'has kernel {tr}, not the chosen one'
+            : '{sz} MB, written {tw}'))
+        out.push[ tb ]
+        bt : Built [ what: 'Boot files' ]
+        vm : path '{tree}/boot/vmlinuz'
+        rd : path '{tree}/boot/initramfs'
+        same : bool [ vm.exists[] && kernel.exists[]
+            && file_size[ '{vm}' ] == file_size[ '{kernel}' ] ]
+        bt.ok = same && rd.exists[]
+        bt.note = (bt.ok) ? 'vmlinuz is the chosen kernel, initramfs'
+            : ((vm.exists[]) ? 'vmlinuz is not the chosen kernel'
+            : 'not written')
+        out.push[ bt ]
+        return out
+
+    # a chosen kernel, written into the drive tree
+    public func ready [] -> bool
+        if [ !selected[] ] return false
+        for [ b: Built ] in parts
+            if [ !b.ok ] return false
+        return true
+
+    # the build's word: logged, and the last lines shown
+    func say [ s: string ]
+        log 'os-bootstrap: {s}'
+        lock.lock[]
+        lines.push[ s ]
+        lock.unlock[]
+
+    # a shell line, its output said; true when it worked
+    # a shell's quoting of a line: inside '', each ' as '\''
+    func quoted [ cmd: string ] -> string
+        out : string ''
+        for [ i: i32 0, i < cmd.count, i += 1 ]
+            ch : cmd.mid[ i, 1 ]
+            out = (ch == '\'') ? '{out}\'\\\'\'' : '{out}{ch}'
+        return '\'{out}\''
+
+    # where the running command's process id is kept
+    func pid_file [] -> string
+        return '{install}/tmp/os-bootstrap-build.pid'
+
+    func sh [ cmd: string ] -> bool
+        if [ cancelled ] return false
+        # its own group, its id kept: Cancel Build stops all of it
+        pf : pid_file[]
+        q : quoted[ 'echo $$ > {pf}; {cmd}' ]
+        full : 'setsid sh -c {q} 2>&1'
+        fh : handle popen[ full.chars, 'r' ]
+        if [ !fh ] return false
+        b : local i8 [ 1024 ]
+        while [ fgets[ @b[0], 1024, fh ] ]
+            ln : string [ @b[0] ]
+            say[ ln.trim[] ]
+        return pclose[ fh ] == 0
+
+    # sh for dd: its byte counts move progress, past the image's
+    # share; its other lines are said. dd ends a count with \r
+    func sh_copy [ cmd: string ] -> bool
+        if [ cancelled ] return false
+        pf : pid_file[]
+        run : '({cmd}; echo "status $?") 2>&1'
+        q : quoted[ 'echo $$ > {pf}; {run}' ]
+        full : 'setsid sh -c {q}'
+        fh : handle popen[ full.chars, 'r' ]
+        if [ !fh ] return false
+        code : i32 [ 1 ]
+        b : local i8 [ 1024 ]
+        n : i32 [ 0 ]
+        ch : i32 [ fgetc[ fh ] ]
+        while [ ch >= 0 ]
+            if [ ch == 10 || ch == 13 || n == 1023 ]
+                b[ n ] = 0
+                n = 0
+                raw : string [ @b[0] ]
+                code = copy_line[ raw.trim[], code ]
+            el
+                b[ n ] = i8[ ch ]
+                n += 1
+            ch = fgetc[ fh ]
+        pclose[ fh ]
+        return code == 0
+
+    # one line of sh_copy's: the exit status, a count, or words
+    func copy_line [ ln: string, code: i32 ] -> i32
+        sp : i32 [ i32[ ln.index_of[ ' ' ] ] ]
+        if [ ln.starts_with[ 'status ' ] ]
+            return ln.mid[ 7, ln.count - 7 ].integer_value[]
+        if [ sp > 0 && ln.index_of[ ' bytes' ] == sp ]
+            if [ image_bytes > 0 ]
+                f : f32 [ f32[ ln.mid[ 0, sp ].integer_value[] ]
+                          / f32[ image_bytes ] ]
+                progress = image_share + (1.0 - image_share)
+                    * minf[ f, 1.0 ]
+        el [ ln.count > 0 ] say[ ln ]
+        return code
+
+    # a repo's branch at its newest commit, as a tarball kept in
+    # install/imports by that commit; offline, one kept before
+    func github_tarball [ repo: string, branch: string,
+                          pre: string ] -> string
+        api : 'https://api.github.com/repos/{repo}/commits/{branch}'
+        sha : string ''
+        cmd : 'curl -s --max-time 6 {api}'
+        fh : handle popen[ cmd.chars, 'r' ]
+        b : local i8 [ 1024 ]
+        while [ fh && fgets[ @b[0], 1024, fh ] && sha.count == 0 ]
+            raw : string [ @b[0] ]
+            ln : raw.trim[]
+            if [ ln.starts_with[ '"sha": "' ] ] sha = ln.mid[ 8, 40 ]
+        if [ fh ] pclose[ fh ]
+        if [ sha.count == 0 ]
+            d : path [ '{install}/imports' ]
+            have : d.ls[ null, false ]
+            if [ have ]
+                for [ f: path ] in have
+                    if [ f.filename[].starts_with[ pre ] ] return '{f}'
+            say[ '{repo} could not be reached' ]
+            return ''
+        cl : 'https://codeload.github.com/{repo}/tar.gz/{sha}'
+        return fetch[ '{pre}{sha}.tar.gz', cl ]
+
+    # a kept tarball's folder in install/build, unpacked once
+    func unpacked [ tar: string, pre: string ] -> string
+        if [ tar.count == 0 ] return ''
+        t : path [ tar ]
+        nm : t.filename[]
+        sha : nm.mid[ pre.count, nm.count - pre.count - 7 ]
+        dir : '{install}/build/{pre}{sha}'
+        un : 'tar xzf {tar} -C {dir} --strip-components=1'
+        un = 'mkdir -p {dir} && {un}'
+        mark : '{dir}/.unpacked'
+        if [ !sh[ 'test -f {mark} || ({un} && touch {mark})' ] ]
+            return ''
+        return dir
+
+    # linux-surface's patches and configs
+    func surface_source [] -> string
+        pre : 'linux-surface-'
+        repo : 'linux-surface/linux-surface'
+        tar : github_tarball[ repo, 'master', pre ]
+        return unpacked[ tar, pre ]
+
+    # a download kept in install/imports, fetched when missing
+    func fetch [ stem: string, url: string ] -> string
+        imp : '{install}/imports'
+        d : path [ imp ]
+        d.make_dir[]
+        have : d.ls[ null, false ]
+        if [ have ]
+            for [ f: path ] in have
+                if [ f.filename[].ends_with[ stem ] ] return '{f}'
+        dest : '{imp}/{stem}'
+        say[ 'Downloading {url}' ]
+        get : 'curl -fL -o {dest}.part {url}'
+        if [ !sh[ '{get} && mv {dest}.part {dest}' ] ] return ''
+        return dest
+
+    # the config: the base, then what the drive needs built in
+    func config_words [ amd: string, intel: string,
+                        surface: bool, apple: bool ] -> string
+        on : vec string [] [ 'VIRTIO_PCI', 'VIRTIO_BLK',
+            'VIRTIO_INPUT', 'VIRTIO_CONSOLE', 'HW_RANDOM_VIRTIO', 'DRM',
+            'DRM_VIRTIO_GPU',
+            'DRM_FBDEV_EMULATION', 'INPUT_EVDEV', 'DEVTMPFS',
+            'DEVTMPFS_MOUNT', 'BLK_DEV_INITRD', 'BLK_DEV_NVME',
+            'SYSFB_SIMPLEFB', 'DRM_SIMPLEDRM', 'TMPFS', 'EFIVAR_FS',
+            'KVM_GUEST', 'PARAVIRT', 'VIRTIO_NET', 'NET_9P',
+            'NET_9P_VIRTIO', '9P_FS', 'USB_STORAGE', 'USB_UAS',
+            'NLS_ISO8859_1', 'FW_LOADER_COMPRESS',
+            'FW_LOADER_COMPRESS_ZSTD', 'FW_LOADER_COMPRESS_XZ',
+            'DEBUG_INFO_NONE' ]
+        # OBJTOOL_WERROR: 7.x fails nvidia's naked returns, 6.x warned
+        off : vec string [] [ 'DRM_NOUVEAU', 'OBJTOOL_WERROR',
+            'MODULE_SIG',
+            'MODULE_SIG_ALL', 'DEBUG_INFO_BTF',
+            'DEBUG_INFO_BTF_MODULES',
+            'DEBUG_INFO_DWARF5', 'DEBUG_INFO' ]
+        if [ amd == 'none' ]
+            off.push[ 'DRM_AMDGPU' ]
+            off.push[ 'DRM_RADEON' ]
+        if [ intel == 'none' ]
+            off.push[ 'DRM_I915' ]
+            off.push[ 'DRM_XE' ]
+        # Rust (Asahi's GPU driver) needs MODVERSIONS off, or
+        # GENDWARFKSYMS, which needs the debug info we leave out
+        if [ apple ] off.push[ 'MODVERSIONS' ]
+        # linux-surface builds these in: soc-button-array and the
+        # like race them as modules
+        if [ surface ]
+            for [ w: string ] in vec string [] [ 'PINCTRL_INTEL',
+                    'PINCTRL_ALDERLAKE', 'PINCTRL_CANNONLAKE',
+                    'PINCTRL_ICELAKE', 'PINCTRL_METEORLAKE',
+                    'PINCTRL_SUNRISEPOINT', 'PINCTRL_TIGERLAKE' ]
+                on.push[ w ]
+        keys : vec string [] [ 'MODULE_SIG_KEY', 'SYSTEM_TRUSTED_KEYS',
+            'SYSTEM_REVOCATION_KEYS' ]
+        out : string ''
+        for [ w: string ] in on
+            out = '{out} -e {w}'
+        for [ w: string ] in off
+            out = '{out} -d {w}'
+        for [ w: string ] in keys
+            out = '{out} --set-str {w} \'\''
+        return out
+
+    # one kernel: download, configure, make, its modules, then
+    # nvidia's beside them; kernels/<name> when it worked
+    public func build_kernel [ hw: string, ver: string, nv: string,
+                               amd: string, intel: string ] -> bool
+        if [ ver.count == 0 ] return false
+        surface : bool [ hw == 'Surface' ]
+        apple : bool [ hw == 'Apple' ]
+        arm : bool [ hw == 'ARM64' || apple ]
+        # nvidia's modules and Intel's graphics: PCs only; AMD's
+        # cards: not in a Mac
+        pc : bool [ hw == 'x64' || surface ]
+        gpu : string [ (pc) ? nv : 'none' ]
+        # a one-letter literal is a character: 'n/a', not '-'
+        igpu : string [ (pc) ? intel : 'n/a' ]
+        dgpu : string [ (apple) ? 'n/a' : amd ]
+        tag : string [ (surface) ? '-surface' : (apple) ? '-asahi'
+                       : (arm) ? '-arm64' : '' ]
+        base : '{ver}{tag}'
+        nm : string [ (gpu == 'none') ? base : '{base}-nvidia{gpu}' ]
+        if [ dgpu == 'none' ] nm = '{nm}-noamd'
+        if [ igpu == 'none' ] nm = '{nm}-nointel'
+        # arm64 is built by our own LLVM; x86 by the system's gcc.
+        # Asahi's GPU driver is Rust: rustc from the user's rustup,
+        # bindgen on our libclang
+        mk : string [ (arm) ? 'ARCH=arm64 LLVM={install}/bin/' : '' ]
+        cargo : 'PATH=$HOME/.cargo/bin:$PATH'
+        pre : string [ (apple)
+            ? 'env {cargo} LIBCLANG_PATH={install}/lib ' : '' ]
+        cfg : string [ (arm) ? 'linux-arm64.config' : 'linux.config' ]
+        kimg : string [ (arm) ? 'Image' : 'bzImage' ]
+        kpath : string [ (arm) ? 'arch/arm64/boot/Image'
+                               : 'arch/x86/boot/bzImage' ]
+        out : '{share[]}/kernels/{nm}'
+        bd : '{install}/build/linux-{base}'
+        steps : vec string []
+        if [ apple ]
+            # Asahi's tree, its asahi branch at its newest commit
+            bd = unpacked[ github_tarball[ 'AsahiLinux/linux', 'asahi',
+                'asahi-linux-' ], 'asahi-linux-' ]
+            if [ bd.count == 0 ] return false
+            steps.push[ '{cargo} rustup component add rust-src' ]
+            bg : 'cargo install --locked --root {install} bindgen-cli'
+            bgx : '{install}/bin/bindgen'
+            steps.push[ 'test -x {bgx} || ({cargo} {bg})' ]
+        el
+            major : ver.mid[ 0, ver.index_of[ '.' ] ]
+            kurl : 'https://cdn.kernel.org/pub/linux/kernel/v{major}.x'
+            stem : 'linux-{ver}.tar.xz'
+            tarball : fetch[ stem, '{kurl}/{stem}' ]
+            if [ tarball.count == 0 ] return false
+            unpack : 'tar xf {tarball} -C {bd} --strip-components=1'
+            made : 'mkdir -p {bd} && {unpack}'
+            steps.push[ 'test -f {bd}/Makefile || ({made})' ]
+        # its series, x.y
+        d1 : i32 [ i32[ ver.index_of[ '.' ] ] ]
+        tail : ver.mid[ d1 + 1, ver.count - d1 - 1 ]
+        d2 : i32 [ i32[ tail.index_of[ '.' ] ] ]
+        ser : string [ (d2 < 0) ? ver : ver.mid[ 0, d1 + 1 + d2 ] ]
+        ls : string [ (surface) ? surface_source[] : '' ]
+        if [ surface && ls.count == 0 ] return false
+        if [ surface ]
+            # linux-surface's patches in order, as they ship them; one
+            # already in this release is passed by, any other must
+            # fit exactly (no fuzz)
+            pd : '{ls}/patches/{ser}'
+            have : 'patch -p1 -R -s -f --dry-run -F0 < $p > /dev/null'
+            put : 'patch -p1 -N -s -F0 < $p || exit 1'
+            one : 'if {have} 2>&1; then echo "already in: $p"; '
+            one = '{one}else {put}; fi'
+            loop : 'cd {bd} && for p in {pd}/*.patch; do {one}; done'
+            done : '{loop} && touch .surface-patched'
+            steps.push[ 'test -f {bd}/.surface-patched || ({done})' ]
+        # orbiter-os's config: drivers for the hardware out there
+        steps.push[ 'cp {root}/os-bootstrap/{cfg} {bd}/.config' ]
+        # a hardware line's own fragment over it
+        frag : string [ (surface) ? '{ls}/configs/surface-{ser}.config'
+            : (apple) ? 'arch/arm64/configs/asahi.config' : '' ]
+        if [ frag.count > 0 ]
+            mc : 'scripts/kconfig/merge_config.sh -m .config {frag}'
+            steps.push[ 'cd {bd} && {mc}' ]
+        words : config_words[ dgpu, igpu, surface, apple ]
+        steps.push[ '{bd}/scripts/config --file {bd}/.config{words}' ]
+        steps.push[ '{pre}make -C {bd} {mk} -j16 olddefconfig' ]
+        if [ apple ]
+            # without Rust there is no GPU driver: stop, saying why
+            rv : 'grep -q "^CONFIG_RUST=y" {bd}/.config'
+            ra : '{pre}make -C {bd} {mk} rustavailable'
+            steps.push[ '{rv} || ({ra}; exit 1)' ]
+        tg : '{kimg} modules'
+        if [ apple ] tg = '{tg} dtbs'
+        steps.push[ '{pre}make -C {bd} {mk} -j16 {tg}' ]
+        # into .part: the kernel it replaces stays until the end
+        part : '{out}.part'
+        steps.push[ 'rm -rf {part} && mkdir -p {part}' ]
+        mi : 'INSTALL_MOD_PATH={part}/kmods INSTALL_MOD_STRIP=1'
+        steps.push[ '{pre}make -C {bd} {mk} modules_install {mi}' ]
+        steps.push[ 'cp {bd}/{kpath} {part}/{kimg}' ]
+        # the stick's /init for arm64, on the kernel's own nolibc
+        if [ arm ]
+            hi : '{bd}/usr-arm64'
+            hm : '{pre}make -C {bd} {mk} headers_install'
+            steps.push[ '{hm} INSTALL_HDR_PATH={hi}' ]
+            nl : '{bd}/tools/include/nolibc'
+            ic : '{install}/bin/clang -target aarch64-linux-gnu -static'
+            ic = '{ic} -nostdlib -nostdinc -ffreestanding -Os'
+            ic = '{ic} -fno-stack-protector -fuse-ld=lld -I{nl}'
+            ic = '{ic} -I{hi}/include -include {nl}/nolibc.h'
+            steps.push[ '{ic} -o {part}/init {root}/os-bootstrap/init.c' ]
+        # m1n1 hands the kernel its Mac's device tree
+        if [ apple ]
+            dt : '{bd}/arch/arm64/boot/dts/apple'
+            dc : 'cp {dt}/*.dtb {part}/dtbs/'
+            steps.push[ 'mkdir -p {part}/dtbs && {dc}' ]
+        for [ st: string ] in steps
+            say[ '$ {st}' ]
+            if [ !sh[ st ] ] return false
+        if [ gpu != 'none' ]
+            gh : 'https://github.com/NVIDIA/open-gpu-kernel-modules'
+            rels : '{gh}/archive/refs/tags'
+            ntar : fetch[ '{nv}.tar.gz', '{rels}/{nv}.tar.gz' ]
+            if [ ntar.count == 0 ] return false
+            nb : '{install}/build/nvidia-{nm}'
+            mods : 'nvidia nvidia-modeset nvidia-drm'
+            nsteps : vec string []
+            nu : 'tar xf {ntar} -C {nb} --strip-components=1'
+            nmade : 'mkdir -p {nb} && {nu}'
+            nsteps.push[ 'test -d {nb}/kernel-open || ({nmade})' ]
+            nm2 : 'NV_KERNEL_MODULES=\'{mods}\''
+            src2 : 'SYSSRC={bd} SYSOUT={bd}'
+            nsteps.push[ 'make -C {nb} -j16 modules {src2} {nm2}' ]
+            rel : 'K=$(make -s -C {bd} kernelrelease)'
+            ex : 'E={part}/kmods/lib/modules/$K/extra'
+            ko : '{nb}/kernel-open'
+            kos : '{ko}/nvidia.ko {ko}/nvidia-modeset.ko'
+            kos = '{kos} {ko}/nvidia-drm.ko'
+            cp : 'mkdir -p $E && cp {kos} $E/'
+            dm : 'depmod -b {part}/kmods $K'
+            nsteps.push[ '{rel} && {ex} && {cp} && {dm}' ]
+            for [ st: string ] in nsteps
+                say[ '$ {st}' ]
+                if [ !sh[ st ] ] return false
+        info : 'hardware {hw}\nversion {ver}\nnvidia {gpu}\n'
+        info = '{info}amd {dgpu}\nintel {igpu}\n'
+        ip : '{part}/build.agi'
+        fh : handle fopen[ ip.chars, 'w' ]
+        if [ fh ]
+            fputs[ info.chars, fh ]
+            fclose[ fh ]
+        if [ !sh[ 'rm -rf {out} && mv {part} {out}' ] ] return false
+        say[ 'Built {nm}' ]
+        scan[]
+        # the drive tree is x86 until orbiter-os is built for arm64
+        if [ pc ] select[ nm ]
+        return true
+
+    # the installer stick as an image, built as the user: the
+    # stub, the chosen kernel and its boot line on FAT, the tree on
+    # ext4 (made with its uuid, for the line); '' when it failed
+    public func make_image [] -> string
+        kb : stick_kernel[]
+        if [ !kb ] return ''
+        # an ARM stick: its own stub, Image and /init
+        arm : bool [ !on_pc[ kb ] ]
+        kimg : string [ (arm) ? 'Image' : 'bzImage' ]
+        efi : string [ (arm) ? 'BOOTAA64.EFI' : 'BOOTX64.EFI' ]
+        ai : '{kb.dir}/init'
+        ap : path [ ai ]
+        if [ arm && !ap.exists[] ]
+            say[ '{kb.name} has no arm64 /init: build it again' ]
+            return ''
+        work : image_work[]
+        tree : '{out_dir}/root'
+        bin  : '{install}/bin'
+        img  : '{work}/disk.img'
+        uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
+        # 512 MB of EFI at 1 MB; the tree after it, room to spare
+        tb : i64 [ read_text[ '{tree}/boot/tree-bytes' ].trim[]
+            .integer_value[] ]
+        mb : i64 [ tb / 1048576 * 115 / 100 + 256 ]
+        total : i64 [ 1 + 512 + mb + 1 ]
+        off : i64 [ 1050624 * 512 ]
+        if [ !sh[ 'rm -rf {work} && mkdir -p {work}/stage' ] ] return ''
+        image_bytes = total * 1048576
+        free : i64 [ disk_free[ work ] / 1048576 ]
+        if [ free < total ]
+            say[ 'Not enough room on this computer\'s disk: the ' +
+                 'image needs {total} MB, {free} MB is free' ]
+            wipe[ work ]
+            return ''
+        # the boot line: this stick's tree, in install mode
+        line : 'initrd=\\EFI\\orbiter\\initramfs console=tty0'
+        line = '{line} orbiter.uuid={uuid} orbiter.root=/'
+        line = '{line} orbiter.init={root}/install/build/orbiter'
+        line = '{line} orbiter.args=--install,true'
+        if [ kb.nvidia != 'none' ]
+            line = '{line} orbiter.modules=nvidia-drm:modeset=1'
+        lib : '{root}/install/lib:{root}/install/build'
+        line = '{line} HOME=/root LD_LIBRARY_PATH={lib}'
+        gnu : string [ (arm) ? 'aarch64' : 'x86_64' ]
+        line = '{line}:/usr/lib/{gnu}-linux-gnu'
+        lay : 'label: gpt\nstart=2048, size=1048576, type=U, '
+        lay = '{lay}name=orbiter-efi\nstart=1050624, type=L, '
+        lay = '{lay}name=orbiter\n'
+        if [ !write_file[ '{work}/cmdline.txt', '{line}\n' ]
+             || !write_file[ '{work}/layout', lay ] ] return ''
+        # the stick's initramfs: the drive's /init, or arm64's
+        init : string [ (arm) ? ai : '{out_dir}/init' ]
+        rd : path '{work}/initramfs'
+        write_cpio[ boot_files[ init ], rd ]
+        tgt : string [ (arm) ? 'aarch64' : 'x86_64' ]
+        cc : '{bin}/clang -target {tgt}-unknown-windows -ffreestanding'
+        cc = '{cc} -fno-stack-protector -O2'
+        if [ !arm ] cc = '{cc} -mno-red-zone'
+        ld : '{bin}/lld-link -subsystem:efi_application -entry:efi_main'
+        mt : 'MTOOLS_SKIP_CHECK=1'
+        at : '-i {img}@@1M'
+        fat : '-F -v ORBITER -T 1048576 -h 64 -s 32'
+        to : '::EFI/orbiter/'
+        # the drive tree, linked, its kernel parts left out: the
+        # chosen kernel's go in their place (the tree is not touched)
+        skip : '-path ./root/.cache -o -path ./lib/modules'
+        skip = '{skip} -o -path ./boot/vmlinuz'
+        stage : 'find . \\( {skip} -o -path ./boot/initramfs \\) -prune'
+        stage = '{stage} -o -print'
+        km : '{kb.dir}/kmods/lib/modules/{kb.release}'
+        steps : vec string [] [
+            '{cc} -c {root}/os-bootstrap/efistub.c -o {work}/stub.o',
+            '{ld} -nodefaultlib -out:{work}/{efi} {work}/stub.o',
+            '(cd {tree} && {stage} | cpio -pdlm --quiet {work}/stage)',
+            'mkdir -p {work}/stage/lib/modules',
+            'cp -al {km} {work}/stage/lib/modules/',
+            'ln {kb.dir}/{kimg} {work}/stage/boot/vmlinuz',
+            'ln {work}/initramfs {work}/stage/boot/initramfs',
+            'truncate -s {total}M {img}',
+            'sfdisk -q {img} < {work}/layout',
+            '{mt} {bin}/mformat {at} {fat} ::',
+            '{mt} {bin}/mmd {at} ::EFI ::EFI/BOOT ::EFI/orbiter',
+            '{mt} {bin}/mcopy {at} {work}/{efi} ::EFI/BOOT/',
+            '{mt} {bin}/mcopy {at} {kb.dir}/{kimg} {to}vmlinuz.efi',
+            '{mt} {bin}/mcopy {at} {work}/initramfs {to}',
+            '{mt} {bin}/mcopy {at} {work}/cmdline.txt {to}',
+            'mke2fs -q -t ext4 -F -U {uuid} -L orbiter-usb ' +
+                '-E offset={off} -d {work}/stage {img} {mb}M',
+            'rm -rf {work}/stage' ]
+        for [ i: i32 0, i < steps.count, i += 1 ]
+            st : steps[ i ]
+            say[ '$ {st}' ]
+            if [ !sh[ st ] ]
+                wipe[ work ]
+                return ''
+            progress = image_share * f32[ i + 1 ] / f32[ steps.count ]
+        say[ 'Image ready: {total} MB, boot line in EFI/orbiter' ]
+        return img
+
+    # this process's own image folder: two writes never share one
+    public func image_work [] -> string
+        return '{install}/tmp/installer-{getpid[]}'
+
+    # gone, cancelled or not (sh stops once cancelled)
+    func wipe [ f: string ]
+        rm : 'rm -rf {quoted[ f ]}'
+        system[ rm.chars ]
+
+    # made by Cancel: the root shell writing a stick watches it
+    func cancel_file [] -> string
+        return '{install}/tmp/installer-cancel-{getpid[]}'
+
+    # bytes free on the file system holding dir
+    func disk_free [ dir: string ] -> i64
+        st : struct statvfs
+        if [ statvfs[ dir.chars, @st ] != 0 ] return -1
+        return i64[ st.f_bavail ] * i64[ st.f_frsize ]
+
+    func write_file [ f: string, text: string ] -> bool
+        fh : handle fopen[ f.chars, 'w' ]
+        if [ !fh ] return false
+        fputs[ text.chars, fh ]
+        return fclose[ fh ] == 0
+
+    # the image onto the chosen stick: root through pkexec, once
+    public func write_installer [] -> bool
+        dv : string [ want_drive ]
+        if [ !dv || dv.count == 0 ] return false
+        # one writer a stick: a second one crawls both
+        busy : 'pgrep -f "dd if=.* of=/dev/{dv}[ ]" >/dev/null'
+        if [ system[ busy.chars ] == 0 ]
+            say[ 'A write to /dev/{dv} is still running' ]
+            return false
+        progress = 0.0
+        # a cancel file left behind would stop this write at once
+        wipe[ cancel_file[] ]
+        img : make_image[]
+        if [ img.count == 0 ] return false
+        say[ 'Writing to /dev/{dv}: the system asks for your password' ]
+        un : 'for p in /dev/{dv}?*; do umount $p 2>/dev/null; done'
+        # straight to the stick, so the count is what it holds
+        dd : 'dd if={img} of=/dev/{dv} bs=4M oflag=direct'
+        dd = '{dd} conv=fsync status=progress'
+        # dd runs as root, out of Cancel's reach: the root shell
+        # stops it when the cancel file appears, or this app is gone
+        cf : cancel_file[]
+        me : '/proc/{getpid[]}'
+        wt : 'while kill -0 $p 2>/dev/null; do '
+        wt = '{wt}( [ -e {cf} ] || [ ! -d {me} ] ) && '
+        wt = '{wt}kill $p; sleep 0.5; done; wait $p'
+        as_root : '{un}; {dd} & p=$!; {wt} && sync'
+        ok : sh_copy[ 'pkexec sh -c {quoted[ as_root ]}' ]
+        if [ ok ] progress = 1.0
+        wipe[ image_work[] ]
+        wipe[ cf ]
+        if [ ok ] say[ 'The installer is on /dev/{dv}.' ]
+        if [ cancelled ] say[ 'The stick is only partly written.' ]
+        return ok
+
+    # the build, on its own thread: a new kernel, or the tree
+    mutable job : string
+    # Cancel Build: the command running now, and every one after
+    public func cancel []
+        if [ !building ] return
+        cancelled = true
+        say[ 'Cancelling' ]
+        if [ job == 'usb' ] write_file[ cancel_file[], '' ]
+        pid : i32 [ read_text[ pid_file[] ].trim[].integer_value[] ]
+        if [ pid > 1 ] kill[ -pid, SIGTERM ]
+
+    func build_work [] -> none
+        if [ job == 'kernel' ]
+            failed = !build_kernel[ want_hardware, want_version,
+                want_nvidia, want_amd, want_intel ]
+        el [ job == 'usb' ]
+            failed = !write_installer[]
+        el
+            say[ 'Writing the drive tree with {chosen}' ]
+            out_dir.make_dir[]
+            assemble[]
+        parts    = summary[]
+        building = false
+        if [ cancelled ] failed = true
+        say[ (cancelled) ? 'Cancelled.'
+            : ((failed) ? 'The build stopped.' : 'Done.') ]
+        cancelled = false
+        Au.auto_free[]
+
+    # a build: 'kernel' from the choices, or 'tree'
+    public func start [ what: string ]
+        if [ building || !can_build[] ] return
+        job       = what
+        building  = true
+        failed    = false
+        cancelled = false
+        pthread_create[ @tid, null, @build_work, a ]
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        while [ e && e inherits ListCell ] e = e.parent
+        # the one click a write takes: its Cancel
+        if [ e && e.id == 'usb_cancel' ]
+            cancel[]
+            return
+        if [ !e || !e.id || building ] return
+        key : e.id
+        if [ key == 'boot_build' ]
+            if [ builds_hardware[] ] start[ 'kernel' ]
+        el [ key == 'boot_usb' ]
+            usb_view  = true
+            drives_at = 0
+        el [ key == 'usb_back' ]
+            usb_view = false
+            progress = 0.0
+        el [ key == 'usb_write' ] start[ 'usb' ]
+        el [ key.starts_with[ 'drv_' ] ]
+            nm : key.mid[ 4, key.count - 4 ]
+            for [ d: UsbDrive ] in drives
+                if [ d.name == nm && d.ok ] want_drive = nm
+        el [ key.starts_with[ 'del_' ] ]
+            at : i32 [ key.mid[ 4, key.count - 4 ].integer_value[] ]
+            if [ at >= 0 && at < kernels.count ]
+                remove[ kernels[ at ].name ]
+        el [ key.starts_with[ 'kern_' ] ]
+            at : i32 [ key.mid[ 5, key.count - 5 ].integer_value[] ]
+            if [ at >= 0 && at < kernels.count ]
+                pk : KernelBuild kernels[ at ]
+                # an ARM kernel lights for the stick only: the
+                # drive tree stays x86
+                if [ on_pc[ pk ] ] select[ pk.name ]
+                el
+                    stick = pk.name
+                    say[ 'The drive keeps {chosen}; Write installer ' +
+                         'makes an ARM stick with {stick}' ]
+        el [ key.starts_with[ 'hw_' ] ]
+            want_hardware = key.mid[ 3, key.count - 3 ]
+            vs : offered[]
+            want_version  = (vs.count > 0) ? vs[ 0 ] : ''
+        el [ key.starts_with[ 'ver_' ] ]
+            want_version = key.mid[ 4, key.count - 4 ]
+        el [ key.starts_with[ 'nv_' ] ]
+            want_nvidia = key.mid[ 3, key.count - 3 ]
+        el [ key.starts_with[ 'amd_' ] ]
+            want_amd = key.mid[ 4, key.count - 4 ]
+        el [ key.starts_with[ 'in_' ] ]
+            want_intel = key.mid[ 3, key.count - 3 ]
+        el
+            return
+        ev.stop[]
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+    # a built kernel's folder, gone; the tree keeps its own copy
+    func remove [ nm: string ]
+        if [ nm.count == 0 ] return
+        sh[ 'rm -rf {quoted[ '{share[]}/kernels/{nm}' ]}' ]
+        say[ 'Removed {nm}' ]
+        scan[]
+
+    # the kernel row under the pointer: shift's Remove goes there
+    mutable hover_row : i32 [ -1 ]
+
+    public func on_hover [ ev: Event ]
+        hover_at[]
+
+    public func on_leave [ ev: Event ]
+        hover_at[]
+
+    func hover_at []
+        at : i32 [ -1 ]
+        for [ h: element* ux.hovered, h, h = h.parent ]
+            if [ h.id && h.id.starts_with[ 'kern_' ] ]
+                at = h.id.mid[ 5, h.id.count - 5 ].integer_value[]
+                break
+        if [ at == hover_row ] return
+        hover_row = at
+        if [ ux.shift ] ux.dirty_tree[ a ]
+
+    # the kernels list: one row a build, the chosen one lit. Remove:
+    # on every row with ctrl/cmd held, on the hovered row with shift
+    func kernel_els [] -> Elements
+        lefts : vec string [] [ 'l0.7 t0 w3.6 b0', 'l4.4 t0 w3.6 b0',
+            'l8.1 t0 w4.4 b0', 'l12.6 t0 w4.2 b0', 'l16.9 t0 w3.4 b0',
+            'l20.4 t0 w3.4 b0', 'l23.9 t0 r0.7 b0' ]
+        rows : Elements []
+        for [ i: i32 0, i < kernels.count, i += 1 ]
+            kb : KernelBuild kernels[ i ]
+            # Remove in the Built column's place
+            del : bool [ ux && !building
+                && (ux.cmd || (ux.shift && i == hover_row)) ]
+            row : vec string [] [ kb.hardware, kb.release,
+                '{kb.drivers} drivers', kb.nvidia, kb.amd, kb.intel,
+                (del) ? '' : kb.built ]
+            cells : list_cells[ row, lefts, false, false ]
+            if [ del ]
+                cells[ 'del_{i}' ] = BootButton [ label: 'Remove',
+                    area: Region { l23.4 t0.15 r0.5 h0.9 } ]
+            rows[ 'kern_{i}' ] = ListRow [ selected: kb.name == stick,
+                area: Region { l0 t0+ r0 h1.2 }, elements: cells ]
+        head : vec string [] [ 'Hardware', 'Kernel', 'Modules',
+                               'NVIDIA', 'AMD', 'Intel', 'Built' ]
+        unit : f32 [ (fc > 0.0) ? fc : 22.0 ]
+        out : Elements []
+        out[ 'head' ] = ListHead [ area: Region { l0 t0 r0 h1.1 },
+            elements: list_cells[ head, lefts, true, false ] ]
+        out[ 'rows' ] = ListRows [ area: Region { l0 t1.1 r0 b0 },
+            content_h: f32[ kernels.count ] * 1.2 * unit,
+            elements: rows ]
+        return out
+
+    # usb and removable drives: the running one and any too small
+    # for the tree and its EFI partition are shown, not picked
+    func scan_drives []
+        drives = vec UsbDrive []
+        here : root_disk[]
+        tree : read_text[ '{out_dir}/root/boot/tree-bytes' ].trim[]
+        efi : i64 [ 512 * 1024 * 1024 ]
+        need : i64 [ tree.integer_value[] + efi ]
+        d : path '/sys/block'
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            nm : e.filename[]
+            lk : link_of[ '/sys/block/{nm}' ]
+            usb : bool [ lk.index_of[ '/usb' ] >= 0 ]
+            rem : bool [ read_text[ '{e}/removable' ].trim[] == '1' ]
+            if [ !usb && !rem ] continue
+            n : i64 [ read_text[ '{e}/size' ].trim[].integer_value[] ]
+            # an empty card reader reports no size
+            if [ n == 0 ] continue
+            dv : UsbDrive [ name: nm, bytes: n * 512,
+                model: read_text[ '{e}/device/model' ].trim[] ]
+            dv.ok = nm != here && dv.bytes >= need
+            drives.push[ dv ]
+        if [ want_drive ]
+            kept : bool [ false ]
+            for [ dv: UsbDrive ] in drives
+                if [ dv.name == want_drive && dv.ok ] kept = true
+            if [ !kept ] want_drive = ''
+
+    func link_of [ f: string ] -> string
+        b : local i8 [ 4096 ]
+        n : i64 [ readlink[ f.chars, @b[0], 4095 ] ]
+        if [ n <= 0 ] return ''
+        b[ n ] = 0
+        return string [ @b[0] ]
+
+    # the disk / is on, by the mount table
+    func root_disk [] -> string
+        fh : handle fopen[ '/proc/self/mountinfo', 'r' ]
+        if [ !fh ] return ''
+        b : local i8 [ 4096 ]
+        num : string ''
+        while [ fgets[ @b[0], 4096, fh ] ]
+            ln : string [ @b[0] ]
+            words : ln.split[ ' ' ]
+            if [ words.count > 4 && '{words[4]}' == '/' ]
+                num = '{words[2]}'
+        fclose[ fh ]
+        if [ num.count == 0 ] return ''
+        lk : link_of[ '/sys/dev/block/{num}' ]
+        pt : path '/sys/dev/block/{num}/partition'
+        if [ pt.exists[] ] lk = lk.mid[ 0, lk.rindex_of[ '/' ] ]
+        at : i32 [ lk.rindex_of[ '/' ] ]
+        return (at >= 0) ? lk.mid[ at + 1, lk.count - at - 1 ] : lk
+
+    func gb [ n: i64 ] -> string
+        g : f64 [ f64[ n ] / 1073741824.0 ]
+        return '{g.1f} GB'
+
+    # a row of choices: its name, then one button each
+    func choices [ t: Elements, y: f32, name: string, pre: string,
+                   vals: vec string, cur: string ]
+        t[ '{pre}name' ] = BootText [ label: name,
+            area: Region [ 'l0 t{y} w4 h0.825' ] ]
+        x : f32 [ 4.4 ]
+        for [ v: string ] in vals
+            t[ '{pre}{v}' ] = Choice [ label: v, selected: v == cur,
+                area: Region [ 'l{x} t{y} w3.7 h0.825' ] ]
+            x += 3.95
+
+    public func render [] -> Elements
+        if [ building ] pristine = false
+        t : Elements []
+        t[ 'kernels' ] = ListBox [ elements: kernel_els[],
+            area: Region { l0 t0 r0 h3.8 } ]
+        y : f32 [ 4.3 ]
+        if [ usb_view ]
+            # sticks come and go: look again every two seconds
+            now : i64 [ epoch_millis[] ]
+            if [ now - drives_at > 2000 ]
+                scan_drives[]
+                drives_at = now
+            pristine = false
+            t[ 'drv_name' ] = BootText [ label: 'Drive',
+                area: Region [ 'l0 t{y} w4 h0.825' ] ]
+            x : f32 [ 4.4 ]
+            for [ dv: UsbDrive ] in drives
+                md : string [ (dv.model.count > 0)
+                    ? '  {dv.model}' : '' ]
+                word : '{dv.name}{md}  {gb[ dv.bytes ]}'
+                t[ 'drv_{dv.name}' ] = Choice [ label: word,
+                    selected: dv.name == want_drive, disable: !dv.ok,
+                    opacity: (dv.ok) ? 1.0 : 0.4,
+                    area: Region [ 'l{x} t{y} w8.6 h0.825' ] ]
+                x += 8.9
+            if [ drives.count == 0 ]
+                plug : 'Plug in a USB drive.'
+                t[ 'drv_none' ] = BootLog [ label: plug,
+                    area: Region [ 'l4.4 t{y} r0 h0.825' ] ]
+            y += 1.25
+            # while it writes: Back is its Cancel, Write waits
+            br : Region [ 'l0 t{y} w4.5 h0.825' ]
+            if [ building && job == 'usb' ]
+                t[ 'usb_cancel' ] = BootButton [ label: 'Cancel',
+                    disable: cancelled,
+                    opacity: (cancelled) ? 0.4 : 1.0, area: br ]
+            el
+                t[ 'usb_back' ] = BootButton [ label: 'Back',
+                    area: br ]
+            # a drive picked: the installer goes on it
+            go : bool [ want_drive && want_drive.count > 0
+                && !building ]
+            t[ 'usb_write' ] = BootButton [ label: 'Write installer',
+                disable: !go, opacity: (go) ? 1.0 : 0.4,
+                area: Region [ 'r4.5 t{y} r0 h0.825' ] ]
+            y += 1.25
+            log_view[ t, y ]
+            return t
+        if [ can_build[] ]
+            choices[ t, y, 'Hardware', 'hw_', hardwares[],
+                     want_hardware ]
+            y += 1.05
+            choices[ t, y, 'Kernel', 'ver_', offered[], want_version ]
+            # where Apple's kernel comes from
+            if [ want_hardware == 'Apple' ]
+                note : 'from the Asahi Linux project'
+                t[ 'asahi_note' ] = BootLog [ label: note,
+                    area: Region [ 'l8.6 t{y} w9 h0.825' ] ]
+            if [ nvidia_offered[] ]
+                y += 1.05
+                choices[ t, y, 'NVIDIA', 'nv_', nvidias[], want_nvidia ]
+            if [ amd_offered[] ]
+                y += 1.05
+                choices[ t, y, 'AMD', 'amd_', amds[], want_amd ]
+            if [ intel_offered[] ]
+                y += 1.05
+                choices[ t, y, 'Intel', 'in_', intels[], want_intel ]
+            # a new kernel from the choices, beside them; the
+            # hardware lines without a build path yet: dim
+            if [ !building ]
+                ok : bool [ builds_hardware[] ]
+                t[ 'boot_build' ] = BootButton [ label: 'Build kernel',
+                    disable: !ok, opacity: (ok) ? 1.0 : 0.4,
+                    area: Region [ 'r4.5 t{y} r0 h0.825' ] ]
+                # an installer stick for the lit kernel
+                if [ stick_kernel[] ]
+                    yu : f32 [ y - 1.05 ]
+                    t[ 'boot_usb' ] = BootButton [
+                        label: 'Write installer…',
+                        area: Region [ 'r4.5 t{yu} r0 h0.825' ] ]
+            y += 1.25
+        log_view[ t, y ]
+        return t
+
+    # the build's output from y down, as much as fits
+    func log_view [ t: Elements, y: f32 ]
+        room : i32 [ i32[ (14.15 - y) / 0.72 ] ]
+        shown : vec string []
+        lock.lock[]
+        oldest : i32 [ lines.count - room ]
+        if [ oldest < 0 ] oldest = 0
+        for [ i: i32 oldest, i < lines.count, i += 1 ]
+            shown.push[ '{lines[ i ]}' ]
+        lock.unlock[]
+        log_els : Elements []
+        ly : f32 [ 0.0 ]
+        for [ i: i32 0, i < shown.count, i += 1 ]
+            log_els[ 'l_{i}' ] = BootLog [ label: shown[ i ],
+                area: Region [ 'l0 t{ly} r0 h0.7' ] ]
+            ly += 0.72
+        # the oldest line fades out over the top 32 px
+        t[ 'console' ] = element [ elements: log_els,
+            mask_glow: vec4f [ 32.0, 0.0, 0.0, 0.0 ],
+            area: Region [ 'l0 t{y} r0 h{ly}' ] ]
+
+    # helpers for the summary
+    func read_text [ f: string ] -> string
+        fh : handle fopen[ f.chars, 'r' ]
+        if [ !fh ] return ''
+        b : local i8 [ 4096 ]
+        out : string ''
+        if [ fgets[ @b[0], 4096, fh ] ] out = string [ @b[0] ]
+        fclose[ fh ]
+        return out
+
+    func read_lines [ f: string ] -> vec string
+        out : vec string []
+        fh : handle fopen[ f.chars, 'r' ]
+        if [ !fh ] return out
+        b : local i8 [ 1024 ]
+        while [ fgets[ @b[0], 1024, fh ] ]
+            ln : string [ @b[0] ]
+            out.push[ ln.trim[] ]
+        fclose[ fh ]
+        return out
+
+    # the release a tree has modules for (lib/modules/<release>)
+    func module_release [ tree: string ] -> string
+        md : path '{tree}/lib/modules'
+        rels : md.ls[ null, false ]
+        out : string ''
+        if [ !rels ] return out
+        for [ r: path ] in rels
+            ma : path '{r}/modules.alias'
+            if [ ma.exists[] ] out = r.filename[]
+        return out
+
+    func count_files [ dir: string, ext: string ] -> i32
+        cmd : 'find {dir} -name \'*{ext}*\' 2>/dev/null | wc -l'
+        fh : handle popen[ cmd.chars, 'r' ]
+        if [ !fh ] return 0
+        b : local i8 [ 64 ]
+        n : i32 [ 0 ]
+        if [ fgets[ @b[0], 64, fh ] ]
+            s0 : string [ @b[0] ]
+            n = s0.trim[].integer_value[]
+        pclose[ fh ]
+        return n
+
+    func when [ p: path ] -> string
+        t : i64 [ p.modified_time[] / 1000 ]
+        b : local i8 [ 64 ]
+        strftime[ @b[0], 64, '%b %d %H:%M', localtime[ @t ] ]
+        return string [ @b[0] ]
 
     # guest path of a host path: same absolute path, no leading slash
     func guest [ p: string ] -> string
@@ -133,6 +1490,19 @@ element main : trinity
         el
             files.push[ OsFile [ src: src, dst: dst ] ]
 
+    # a host folder into the tree at another place; its links to
+    # the build tree (build, source) stay behind
+    func add_tree_at [ src: string, dst: string ]
+        add_dir[ dst ]
+        d : path [ src ]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            t : '{dst}/{e.filename[]}'
+            if [ e.is_symlink[] ] continue
+            if [ e.is_dir[] ] add_tree_at[ '{e}', t ]
+            el files.push[ OsFile [ src: '{e}', dst: t ] ]
+
     func add_tree [ src: string ]
         d : path [ src ]
         entries : d.ls[ null, false ]
@@ -168,6 +1538,10 @@ element main : trinity
         return total
 
     func assemble []
+        # no app: its path would be the build folder, all of it
+        if [ !app || app.count == 0 ]
+            log 'os-bootstrap: no app to assemble'
+            return
         files = vec OsFile []
         seen  = map bool [ string ] []
         add_dir[ 'dev' ]
@@ -202,29 +1576,29 @@ element main : trinity
                 add_file[ sh ]
         add_file[ '{install}/share/orbiter' ]
         log 'os-bootstrap: products done, {files.count} entries'
-        # guest vulkan: our freshly-built mesa venus (not the host system
-        # one, whose dma-buf export crashes)
-        venus : '{install}/lib/libvulkan_virtio.so'
-        add_file[ venus ]
-        add_deps[ venus ]
+        # our mesa's vulkan drivers: venus, radv (amd), anv (intel)
+        # radv and anv only with the kernel's own drivers
+        kb : selected[]
+        drvs : vec string [] [ 'virtio' ]
+        if [ !kb || kb.amd != 'none' ] drvs.push[ 'radeon' ]
+        if [ !kb || kb.intel != 'none' ] drvs.push[ 'intel' ]
         icds : path '{install}/share/vulkan/icd.d'
-        for [ j: path ] in icds.ls[ null, false ]
-            if [ j.filename[].starts_with[ 'virtio_icd' ] ] add_file[ '{j}' ]
+        for [ drv: string ] in drvs
+            so : '{install}/lib/libvulkan_{drv}.so'
+            add_file[ so ]
+            add_deps[ so ]
+            for [ j: path ] in icds.ls[ null, false ]
+                if [ j.filename[].starts_with[ '{drv}_icd' ] ]
+                    add_file[ '{j}' ]
         add_file[ '{install}/lib/libvulkan.so.1' ]
         add_deps[ '{install}/lib/libvulkan.so.1' ]
-        write_cpio[ files, initrd ]
         add_nvidia[]
+        add_tools[]
         write_tree[]
         write_boot[]
 
     # the drive's gpu: modules, firmware, the host's vulkan driver
     func add_nvidia []
-        md : '{install}/share/silver-os-bootstrap/nvidia'
-        add_dir[ 'lib/modules/orbiter' ]
-        mods : vec string [] [ 'nvidia', 'nvidia-modeset', 'nvidia-drm' ]
-        for [ m: string ] in mods
-            files.push[ OsFile [ src: '{md}/{m}.ko', dst: 'lib/modules/orbiter/{m}.ko' ] ]
-        add_file[ '/lib/firmware/nvidia/{nvidia_version}/gsp_ga10x.bin' ]
         lib : '/usr/lib/x86_64-linux-gnu'
         add_file[ '/usr/share/vulkan/icd.d/nvidia_icd.json' ]
         # vkCreateInstance opens glvnd's EGL and nvidia's vendor
@@ -232,7 +1606,7 @@ element main : trinity
         add_file[ '/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json' ]
         add_file[ '{lib}/gbm/nvidia-drm_gbm.so' ]
         # the icd and the libraries it opens at run time
-        v : nvidia_version
+        v : nvidias[][ 0 ]
         libs : vec string [] [ 'libGLX_nvidia.so.0', 'libnvidia-glcore.so.{v}',
             'libnvidia-glvkspirv.so.{v}', 'libnvidia-gpucomp.so.{v}', 'libnvidia-tls.so.{v}',
             'libnvidia-glsi.so.{v}', 'libnvidia-rtcore.so.{v}', 'libnvidia-allocator.so.1',
@@ -242,6 +1616,37 @@ element main : trinity
             add_file[ '{lib}/{l}' ]
             add_deps[ '{lib}/{l}' ]
 
+    # the install wizard's programs, and the shell popen runs
+    func add_tools []
+        tools : vec string [] [ '/bin/sh', '/usr/sbin/sfdisk',
+            '/usr/sbin/mkfs.vfat', '/usr/sbin/mkfs.ext4',
+            '/usr/bin/efibootmgr' ]
+        for [ t: string ] in tools
+            add_file[ t ]
+            add_deps[ t ]
+        # mke2fs reads its defaults from here
+        add_file[ '/etc/mke2fs.conf' ]
+        # the wizard names the hardware from here
+        add_file[ '/usr/share/misc/pci.ids' ]
+        # init loads drivers by the hardware: modprobe, modinfo
+        for [ t: string ] in vec string [] [ '/usr/sbin/modprobe',
+                                             '/usr/sbin/modinfo' ]
+            add_file[ t ]
+            add_deps[ t ]
+        # the kernel's modules (nvidia's in extra/) and firmware
+        add_tree_at[ '{kdir}/kmods/lib/modules', 'lib/modules' ]
+        # firmware of drivers the kernel left out stays behind
+        kb : selected[]
+        if [ kb && kb.amd == 'none' ]
+            seen[ 'lib/firmware/amdgpu' ] = true
+            seen[ 'lib/firmware/radeon' ] = true
+        if [ kb && kb.intel == 'none' ]
+            seen[ 'lib/firmware/i915' ] = true
+            seen[ 'lib/firmware/xe' ] = true
+        add_file[ '/lib/firmware' ]
+        # modprobe's blocklist and options: nvidiafb never loads
+        add_file[ '/etc/modprobe.d' ]
+
     # the drive's initramfs: only /init, which enters /orbiter-os
     func write_boot []
         bin : '{out_dir}/init'
@@ -249,13 +1654,18 @@ element main : trinity
         if [ system[ cmd.chars ] != 0 ]
             log 'os-bootstrap: init.c did not build'
             return
+        rd : path '{out_dir}/root/boot/initramfs'
+        write_cpio[ boot_files[ bin ], rd ]
+
+    # an initramfs's few entries: the device folders and /init
+    func boot_files [ bin: string ] -> vec OsFile
         boot : vec OsFile []
         boot.push[ OsFile [ dst: 'dev', dir: true ] ]
         boot.push[ OsFile [ dst: 'dev/console', dev: true ] ]
         boot.push[ OsFile [ dst: 'proc', dir: true ] ]
         boot.push[ OsFile [ dst: 'sys', dir: true ] ]
         boot.push[ OsFile [ src: bin, dst: 'init' ] ]
-        write_cpio[ boot, path '{out_dir}/root/boot/initramfs' ]
+        return boot
 
     # a host file into the tree: mode 0755, source time kept
     func copy_file [ src: string, dst: string ]
@@ -286,6 +1696,7 @@ element main : trinity
     func write_tree []
         base : '{out_dir}/root'
         for [ e: OsFile ] in files
+            if [ cancelled ] return
             # devtmpfs makes /dev/console on the drive
             if [ e.dev ] continue
             t : '{base}/{e.dst}'
@@ -300,7 +1711,14 @@ element main : trinity
         bd : path '{base}/boot'
         bd.make_dir[]
         copy_file[ '{kernel}', '{base}/boot/vmlinuz' ]
-        log 'os-bootstrap: {files.count} entries -> {base}'
+        # the install wizard's measure of the copy: all of the tree
+        bytes : i64 [ tree_size[ base ] ]
+        tb : '{base}/boot/tree-bytes'
+        f : handle fopen[ tb.chars, 'w' ]
+        if [ f ]
+            fprintf[ f, "%lld\n", bytes ]
+            fclose[ f ]
+        log 'os-bootstrap: {files.count} entries, {bytes} bytes -> {base}'
 
     func cpio_pad [ f: @FILE, n: i64 ]
         k : i64 [ n ]
@@ -359,14 +1777,118 @@ element main : trinity
         fclose[ f ]
         log 'os-bootstrap: {items.count} entries -> {out}'
 
-    public func render [] -> Elements
-        # unknown name=value words reach init as its environment; the
-        # loader reads LD_LIBRARY_PATH once, at exec, so it rides here
-        # the last console is init's stdio: serial, since orbiter's own
-        # display takes the screen over; read orbiter-os/serial.log
-        # no fbdev: the kernel framebuffer never owns the display, only the app does
-        cmdline : 'console=ttyS0 drm_kms_helper.fbdev_emulation=0 nokaslr rdinit={install}/build/{app} LD_LIBRARY_PATH={install}/lib:{install}/build VK_DRIVER_FILES={install}/share/vulkan/icd.d/virtio_icd.x86_64.json VK_LOADER_DEBUG=error VN_DEBUG=result'
-        return Elements [
-            "vm": qemu [ kernel: kernel, initrd: initrd, append: cmdline,
-                         memory: memory, gpu: true, serial: serial, log: log ]
-        ]
+# the app: write the drive tree, then quit
+element main : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'orbiter-os' ]
+    public  background : string [ 'Background' ]
+
+    func init []
+        # outside a window: initialize gives it its defaults
+        b : Bootstrap []
+        b.initialize[]
+        if [ b.kernels.count == 0 ]
+            if [ !b.build_kernel[ b.want_hardware, b.want_version,
+                    b.want_nvidia, b.want_amd, b.want_intel ] ]
+                log 'os-bootstrap: the kernel did not build'
+                Au.quit_request[]
+                return
+        b.out_dir.make_dir[]
+        b.assemble[]
+        Au.quit_request[]
+
+# the installer image from the chosen kernel, read back as a user
+expect func t_installer_image [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    img : b.make_image[]
+    if [ img.count == 0 ] return false
+    mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mdir -i {img}@@1M -b'
+    efi : vec string [] [ '::EFI/BOOT', '::EFI/orbiter' ]
+    found : string ''
+    for [ d: string ] in efi
+        cmd : '{mt} {d}'
+        fh : handle popen[ cmd.chars, 'r' ]
+        bf : local i8 [ 512 ]
+        while [ fh && fgets[ @bf[0], 512, fh ] ]
+            s0 : string [ @bf[0] ]
+            found = '{found} {s0.trim[]}'
+        if [ fh ] pclose[ fh ]
+    off : i64 [ 1050624 * 512 ]
+    dbg : 'debugfs -R "stat /src/silver/install" "{img}?offset={off}"'
+    q2 : '{dbg} 2>/dev/null | head -1'
+    fh2 : handle popen[ q2.chars, 'r' ]
+    bf2 : local i8 [ 512 ]
+    tree : string ''
+    if [ fh2 && fgets[ @bf2[0], 512, fh2 ] ] tree = string [ @bf2[0] ]
+    if [ fh2 ] pclose[ fh2 ]
+    ty : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mtype -i {img}@@1M'
+    q3 : '{ty} ::EFI/orbiter/cmdline.txt'
+    fh3 : handle popen[ q3.chars, 'r' ]
+    bf3 : local i8 [ 1024 ]
+    if [ fh3 && fgets[ @bf3[0], 1024, fh3 ] ]
+        ln3 : string [ @bf3[0] ]
+        log 'installer test: line {ln3.trim[]}'
+    if [ fh3 ] pclose[ fh3 ]
+    log 'installer test: {found}'
+    log 'installer test: tree {tree.trim[]}'
+    ok : bool [ found.index_of[ 'BOOTX64.EFI' ] >= 0
+        && found.index_of[ 'vmlinuz.efi' ] >= 0
+        && found.index_of[ 'initramfs' ] >= 0
+        && found.index_of[ 'cmdline.txt' ] >= 0
+        && tree.index_of[ 'Inode' ] >= 0 ]
+    rm : 'rm -rf {b.image_work[]}'
+    system[ rm.chars ]
+    return ok
+
+# an ARM stick: arm64 stub, Image and /init, the drive untouched
+expect func t_installer_image_arm [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    keep : string [ b.chosen ]
+    b.stick = '7.2.9-arm64'
+    img : b.make_image[]
+    if [ img.count == 0 ] return false
+    mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mcopy -i {img}@@1M'
+    wk : b.image_work[]
+    got : 'mkdir -p {wk}/back && {mt} ::EFI/BOOT/BOOTAA64.EFI'
+    got = '{got} ::EFI/orbiter/vmlinuz.efi ::EFI/orbiter/initramfs'
+    got = '{got} {wk}/back/'
+    fmt : 'file {wk}/back/* && cd {wk}/back && cpio -i --quiet'
+    fmt = '{fmt} init < initramfs && file init'
+    q : '{got} && {fmt}'
+    fh : handle popen[ q.chars, 'r' ]
+    bf : local i8 [ 512 ]
+    said : string ''
+    while [ fh && fgets[ @bf[0], 512, fh ] ]
+        ln : string [ @bf[0] ]
+        log 'arm stick: {ln.trim[]}'
+        said = '{said} {ln.trim[]}'
+    if [ fh ] pclose[ fh ]
+    ok : bool [ said.index_of[ 'Aarch64' ] >= 0
+        && said.index_of[ 'ARM aarch64' ] >= 0
+        && said.index_of[ 'ARM64 boot executable' ] >= 0
+        && b.chosen == keep ]
+    rm : 'rm -rf {wk}'
+    system[ rm.chars ]
+    return ok
+
+# kernel.org's list: a stable release first, then longterm ones
+expect func t_kernel_releases [] -> bool
+    b : Bootstrap []
+    vs : b.kernel_releases[]
+    for [ v: string ] in vs
+        log 'kernel release {v}'
+    return vs.count >= 2 && vs[ 0 ].index_of[ '.' ] > 0
+
+# dd's byte counts move the bar past the image's share
+expect func t_copy_progress [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    b.image_bytes = 104857600
+    dd : 'dd if=/dev/zero of=/dev/null bs=1M count=50 status=progress'
+    ok : b.sh_copy[ dd ]
+    log 'copy progress: {b.progress}, ok {ok}'
+    bad : b.sh_copy[ 'false' ]
+    return ok && !bad && b.progress > 0.55 && b.progress < 0.65

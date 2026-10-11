@@ -31,7 +31,10 @@ Keep it in step with the imports.
 | libyaml | 0.2.5 | aura (Ruby's build) | https://github.com/yaml/libyaml | MIT | Kirill Simonov, Ingy döt Net and contributors |
 | QEMU | e47e2d0 | qemu | https://github.com/qemu/qemu | GPL-2.0-only (mixed, see its LICENSE) | Fabrice Bellard and the QEMU project |
 | virglrenderer | main | qemu | https://gitlab.freedesktop.org/virgl/virglrenderer | MIT | Dave Airlie, Collabora and contributors |
-| Mesa | 26.2.2 | os-bootstrap | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
+| Mesa | 26.2.2 | os-bootstrap (Vulkan: venus, radv for AMD, anv for Intel; patched: os-bootstrap/mesa.diff) | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
+| libdrm | 2.4.134 | os-bootstrap (radv and anv need 2.4.133+) | https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz | MIT | The DRI project |
+| SPIRV-LLVM-Translator | 8e82970 | os-bootstrap (build tool: anv's built-in GPU programs) | https://github.com/KhronosGroup/SPIRV-LLVM-Translator | Apache-2.0 WITH LLVM-exception | The Khronos Group |
+| libclc (from LLVM bd7db75) | bd7db75 | os-bootstrap (build tool: anv's built-in GPU programs) | https://github.com/llvm/llvm-project/tree/main/libclc | Apache-2.0 WITH LLVM-exception | The LLVM project |
 | libuev | v2.4.1 | features | https://github.com/troglobit/libuev | MIT | Flemming Madsen, Joachim Wiberg |
 | PCSX-Redux (OpenBIOS) | 20b63161065d9198bbb6a2543cd4163548e8da6d | psx (the BIOS, built from source) | https://github.com/grumpycoders/pcsx-redux | MIT | Nicolas "Pixel" Noble and the PCSX-Redux authors |
 
@@ -58,7 +61,11 @@ Keep it in step with the imports.
 
 | file | used by | source | license | authors |
 |---|---|---|---|---|
-| Linux kernel 6.18 source | os-bootstrap | https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.tar.xz | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
+| Linux kernel source (6.18, 6.12: the build page's choices) | os-bootstrap (fetched by its build page) | https://cdn.kernel.org/pub/linux/kernel/v6.x/ | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
+| Kernel configuration (os-bootstrap/linux.config, begun from Ubuntu's 6.17 config) | os-bootstrap | /boot/config-6.17.0-40-generic (Ubuntu 24.04) | GPL-2.0-only (part of the kernel build) | Canonical and the Ubuntu kernel team |
+| NVIDIA open GPU kernel modules 610.57.04 | os-bootstrap (fetched by its build page) | https://github.com/NVIDIA/open-gpu-kernel-modules | MIT OR GPL-2.0-only | NVIDIA Corporation |
+| Linux firmware (the build host's /lib/firmware, copied into the drive tree) | os-bootstrap | https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git | per file (see its WHENCE) | the hardware vendors, gathered by the linux-firmware project |
+| mtools 4.0.48 (build tool) | os-bootstrap (the installer stick's EFI partition) | https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz | GPL-3.0-or-later | Alain Knaff, David Niemi and contributors |
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | HuBERT base content encoder (hubert_base/pytorch_model.bin + config.json) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | Meta AI (fairseq), as shipped by RVC-Project |

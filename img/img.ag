@@ -1296,7 +1296,7 @@ expect func test_exr [] -> bool
 
 expect func test_exr_file [] -> bool
     root : path.path_startup[]
-    p : path '{root}/orbiter/images/forest.exr'
+    p : path '{root}/avatar/images/forest.exr'
     if [ !p.exists[] ] return false
     im : exr_decode[ p ]
     if [ !im ] return false

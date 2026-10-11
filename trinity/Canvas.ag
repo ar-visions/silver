@@ -1800,7 +1800,6 @@ class Gradient
 
     func init []
         stops = vec GradientStop []
-        kind  = GradientType.none
 
     func add_stop [ pos: f32, color: u32 ]
         s : GradientStop [ pos: pos, color: color ]
@@ -4058,7 +4057,7 @@ Render Canvas
                             && st.blur_rad <= 0.0
                             && st.fill_offset == 0.0
                             && !has_shadows[] && st.color_filter.w < 0.5
-                            && !ramp_tex ]
+                            && !ramp_tex && !st.fill_gradient ]
                 if [ square_corners ] mode = DrawMode.rect
             ui_shader.params = vec4f [ st.stroke_width, st.opacity,
                                        st.blur_rad, mode ]

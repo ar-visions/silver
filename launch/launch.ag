@@ -3222,6 +3222,27 @@ class Pose
     # drawn at all: a hidden mesh shrinks to a point
     public shown : bool [ true ]
 
+# a three-booster stack's models, lits and models alike: the
+# middle booster's body, legs and fins, the top one's body,
+# legs and fins, its nose, its ports, the jets' puffs (middle,
+# top), then the side boosters' (from LOOK_SIDE: bodies, legs,
+# fins left then right, noses, the joints, folded legs, vents)
+class StackLook
+    public lits   : vec VehicleLit
+    public models : vec Model
+
+LOOK_ONE      : i32 [ 0 ]
+LOOK_LEGS     : i32 [ 1 ]
+LOOK_FINS     : i32 [ 2 ]
+LOOK_TOP      : i32 [ 3 ]
+LOOK_TOP_LEGS : i32 [ 4 ]
+LOOK_TOP_FINS : i32 [ 5 ]
+LOOK_NOSE     : i32 [ 6 ]
+LOOK_PORT     : i32 [ 7 ]
+LOOK_PUFF     : i32 [ 8 ]
+LOOK_PUFF_TOP : i32 [ 9 ]
+LOOK_SIDE     : i32 [ 10 ]
+
 element PlanetView
     style : CSS {
         area: l0 t0 r0 b0
@@ -3274,29 +3295,21 @@ element PlanetView
     mutable lit_one  : VehicleLit
     mutable lit_up   : VehicleLit
     mutable lit_fair : VehicleLit
-    # the tanker in its orbit: our whole ship, every stage
-    mutable lit_tank_one : VehicleLit
-    mutable lit_tank_legs : VehicleLit
-    mutable lit_tank_fins : VehicleLit
-    # the tanker's top booster: its legs and fins, 38.6 m up
-    mutable lit_tank_legs2 : VehicleLit
-    mutable lit_tank_fins2 : VehicleLit
-    mutable lit_tank : VehicleLit
-    # the jets' puffs: ours (lower and upper) and the tanker's
+    # the three-booster stacks: the tanker's, the crew's
+    mutable tank_look : StackLook
+    mutable crew_look : StackLook
+    # a top booster's jets where its mesh has them (38.6 m up)
+    mutable top_jets : Craft
+    # the jets' puffs: ours (lower and upper)
     mutable lit_puff_one : VehicleLit
     mutable lit_puff_up  : VehicleLit
-    mutable lit_puff_tank : VehicleLit
     mutable m_puff_one : Model
     mutable m_puff_up  : Model
-    mutable m_puff_tank : Model
-    # the docking ports: ours and the tanker's
+    # the docking ports: ours
     mutable lit_port_up : VehicleLit
-    mutable lit_port_tank : VehicleLit
     mutable m_port_up : Model
-    mutable m_port_tank : Model
     # the whole ship's jets, for the puffs' bits
     mutable all_jets : Craft
-    mutable lit_tank_nose : VehicleLit
     mutable lit_legs : VehicleLit
     # the crew stage's small legs: the legs' mesh, 0.85 as long
     # (the skirt's length), hinged at its foot
@@ -3321,17 +3334,6 @@ element PlanetView
     mutable m_up     : Model
     mutable m_plumes : vec Model
     mutable m_fair   : Model
-    mutable m_tank_one : Model
-    mutable m_tank_legs : Model
-    mutable m_tank_fins : Model
-    # the tanker's side boosters, left then right: bodies, legs,
-    # fins (lits and models in that order)
-    mutable side_lits : vec VehicleLit
-    mutable side_models : vec Model
-    mutable m_tank_legs2 : Model
-    mutable m_tank_fins2 : Model
-    mutable m_tank   : Model
-    mutable m_tank_nose : Model
     mutable m_legs   : Model
     mutable m_legs_up : Model
     mutable m_fins   : Model
@@ -3432,15 +3434,6 @@ element PlanetView
         lit_one = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_up  = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_fair = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_one = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_legs = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_fins = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_legs2 = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_legs2.hold[]
-        lit_tank_fins2 = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_fins2.hold[]
-        lit_tank = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_tank_nose = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_legs = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_legs_up = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_legs_up.hold[]
@@ -3449,9 +3442,9 @@ element PlanetView
         lit_fins_up.hold[]
         # the flames are seen through and add their light: no
         # depth written, so one flame never hides another; one an
-        # engine (the tanker has 28)
+        # engine (the tanker has 28, the crew stack 28 more)
         glows = vec PlumeGlow []
-        for [ k: i32 0, k < 32, k += 1 ]
+        for [ k: i32 0, k < 56, k += 1 ]
             gk : PlumeGlow [ vk: vkc, name: 'plume', transparent: true ]
             glows.push[ gk ]
         glows.hold[]
@@ -3460,27 +3453,17 @@ element PlanetView
         lit_one.hold[]
         lit_up.hold[]
         lit_fair.hold[]
-        lit_tank_one.hold[]
-        lit_tank_legs.hold[]
-        lit_tank_fins.hold[]
-        lit_tank.hold[]
         # the gas is seen through: straight alpha, no depth write
         lit_puff_one = VehicleLit [ vk: vkc, name: 'craft',
                                     transparent: true ]
         lit_puff_up = VehicleLit [ vk: vkc, name: 'craft',
                                    transparent: true ]
-        lit_puff_tank = VehicleLit [ vk: vkc, name: 'craft',
-                                     transparent: true ]
         lit_puff_one.hold[]
         lit_puff_up.hold[]
-        lit_puff_tank.hold[]
         all_jets = falcon_nine[ 0.0 ]
         all_jets.hold[]
         lit_port_up = VehicleLit [ vk: vkc, name: 'craft' ]
-        lit_port_tank = VehicleLit [ vk: vkc, name: 'craft' ]
         lit_port_up.hold[]
-        lit_port_tank.hold[]
-        lit_tank_nose.hold[]
         lit_legs.hold[]
         lit_fins.hold[]
         glow_up.hold[]
@@ -3528,94 +3511,16 @@ element PlanetView
         m_fair = Model [ vk: vkc, w: w, s: lit_fair, samplers: sv,
                          cull_none: true ]
         m_fair.id = build_fairing[ 10.0, true, true ]
-        m_tank_one = Model [ vk: vkc, w: w, s: lit_tank_one,
-                             samplers: sv, cull_none: true ]
-        m_tank_one.id = build_stage_one[]
-        m_tank_legs = Model [ vk: vkc, w: w, s: lit_tank_legs,
-                              samplers: sv, cull_none: true ]
-        m_tank_legs.id = build_legs_skip[ 18 ]
-        m_tank_fins = Model [ vk: vkc, w: w, s: lit_tank_fins,
-                              samplers: sv, cull_none: true ]
-        m_tank_fins.id = build_fins[]
-        # each side booster: its body, its legs only where they
-        # point away from the row (left mesh faces 3-5, right
-        # 0-2), no fin on the face against the middle one
-        side_lits = vec VehicleLit []
-        side_models = vec Model []
-        fold_lits : vec VehicleLit []
-        fold_models : vec Model []
-        skips : vec i32 [] [ 2, 16 ]
-        leg_skips : vec i32 [] [ 7, 56 ]
-        for [ part: i32 0, part < 3, part += 1 ]
-            for [ k: i32 0, k < 2, k += 1 ]
-                sl : VehicleLit [ vk: vkc, name: 'craft' ]
-                side_lits.push[ sl ]
-                sm : Model [ vk: vkc, w: w, s: sl, samplers: sv,
-                             cull_none: true ]
-                if [ part == 0 ]
-                    sm.id = build_stage_one[]
-                el [ part == 1 ]
-                    sm.id = build_legs_skip[ leg_skips[ k ] ]
-                el
-                    sm.id = build_fins[]
-                side_models.push[ sm ]
-        # every booster's folded legs, always stowed: the middle
-        # one's (9), the left's, the right's (10, 11)
-        folds : vec i32 [] [ 45, 56, 7 ]
-        for [ k: i32 0, k < 3, k += 1 ]
-            fl : VehicleLit [ vk: vkc, name: 'craft' ]
-            fm : Model [ vk: vkc, w: w, s: fl, samplers: sv,
-                         cull_none: true ]
-            fm.id = build_legs_skip[ folds[ k ] ]
-            fold_lits.push[ fl ]
-            fold_models.push[ fm ]
-        # their silver noses (6, 7), and the joints in the middle
-        # one's frame (8)
-        for [ k: i32 0, k < 3, k += 1 ]
-            sl : VehicleLit [ vk: vkc, name: 'craft' ]
-            side_lits.push[ sl ]
-            sm : Model [ vk: vkc, w: w, s: sl, samplers: sv,
-                         cull_none: true ]
-            sm.id = (k < 2) ? build_tanker_nose[] : build_joints[]
-            side_models.push[ sm ]
-        # the side boosters' nitrogen (12 left, 13 right): seen
-        # through, as the jets' puffs; the left's middle one is at
-        # the meshes' +z, the right's at -z
-        vents : vec VehicleLit []
-        vent_models : vec Model []
-        for [ k: i32 0, k < 2, k += 1 ]
-            ml : VehicleLit [ vk: vkc, name: 'craft', transparent: true ]
-            mm : Model [ vk: vkc, w: w, s: ml, samplers: sv,
-                         cull_none: true ]
-            mm.id = build_mount_puffs[ (k == 0) ? 1.0 : -1.0 ]
-            vents.push[ ml ]
-            vent_models.push[ mm ]
-        side_lits.hold[]
-        side_models.hold[]
-        for [ fl: VehicleLit ] in fold_lits
-            side_lits.push[ fl ]
-        for [ fm: Model ] in fold_models
-            side_models.push[ fm ]
-        for [ ml: VehicleLit ] in vents
-            side_lits.push[ ml ]
-        for [ mm: Model ] in vent_models
-            side_models.push[ mm ]
-        m_tank = Model [ vk: vkc, w: w, s: lit_tank, samplers: sv,
-                         cull_none: true ]
-        # the top booster: our stage one, set on the bottom's top
-        m_tank.id = build_stage_one[]
-        m_tank_legs2 = Model [ vk: vkc, w: w, s: lit_tank_legs2,
-                               samplers: sv, cull_none: true ]
-        m_tank_legs2.id = build_legs[]
-        m_tank_legs2.hold[]
-        m_tank_fins2 = Model [ vk: vkc, w: w, s: lit_tank_fins2,
-                               samplers: sv, cull_none: true ]
-        m_tank_fins2.id = build_fins[]
-        m_tank_fins2.hold[]
-        m_tank_nose = Model [ vk: vkc, w: w, s: lit_tank_nose,
-                              samplers: sv, cull_none: true ]
-        # the crew ship's nose in purple, a payload bay: no windows
-        m_tank_nose.id = build_tanker_nose[]
+        tank_look = build_look[ vkc, w, sv, false ]
+        crew_look = build_look[ vkc, w, sv, true ]
+        tank_look.hold[]
+        crew_look.hold[]
+        top_jets = falcon_nine[ 0.0 ]
+        up_groups : vec string [] [ 'two', 'fairing' ]
+        top_jets.detach[ up_groups ]
+        shift_booster[ top_jets, Dvec [ 0.0, 0.0, 0.0 ], 38.6 * SHIP_LONG,
+                       'two' ]
+        top_jets.hold[]
         m_legs = Model [ vk: vkc, w: w, s: lit_legs, samplers: sv,
                          cull_none: true ]
         m_legs.id = build_legs[]
@@ -3651,57 +3556,39 @@ element PlanetView
         m_one.hold[]
         m_up.hold[]
         m_fair.hold[]
-        m_tank_one.hold[]
-        m_tank_legs.hold[]
-        m_tank_fins.hold[]
-        m_tank.hold[]
         m_puff_one = Model [ vk: vkc, w: w, s: lit_puff_one,
                              samplers: sv, cull_none: true ]
         m_puff_one.id = build_puffs[]
         m_puff_up = Model [ vk: vkc, w: w, s: lit_puff_up,
                             samplers: sv, cull_none: true ]
         m_puff_up.id = build_puffs[]
-        m_puff_tank = Model [ vk: vkc, w: w, s: lit_puff_tank,
-                              samplers: sv, cull_none: true ]
-        m_puff_tank.id = build_puffs[]
         m_puff_one.hold[]
         m_port_up = Model [ vk: vkc, w: w, s: lit_port_up,
                             samplers: sv, cull_none: true ]
         m_port_up.id = build_port[ false ]
-        m_port_tank = Model [ vk: vkc, w: w, s: lit_port_tank,
-                              samplers: sv, cull_none: true ]
-        m_port_tank.id = build_port[ true ]
         m_port_up.hold[]
-        m_port_tank.hold[]
         m_puff_up.hold[]
-        m_puff_tank.hold[]
-        m_tank_nose.hold[]
         m_legs.hold[]
         m_fins.hold[]
         m_plume_up.hold[]
         # drawn at twice the size each way and down again: a 2x2
         # resample for its edges
         drawn : vec Model [] [ m_pad, m_pad2, m_pad3, m_one, m_up,
-                               m_fair,
-                               m_tank_one,
-                               m_tank_legs, m_tank_fins, m_tank_legs2,
-                               m_tank_fins2, m_tank,
-                               m_tank_nose, m_legs, m_legs_up, m_fins,
+                               m_fair, m_legs, m_legs_up, m_fins,
                                m_fins_up,
-                               m_port_up,
-                               m_port_tank ]
+                               m_port_up ]
+        for [ look: StackLook ] in vec StackLook [] [ tank_look, crew_look ]
+            for [ lm: Model ] in look.models
+                drawn.push[ lm ]
         for [ dm: Model ] in m_decks
             drawn.push[ dm ]
         for [ mm: Model ] in mark_models
             drawn.push[ mm ]
-        for [ sm: Model ] in side_models
-            drawn.push[ sm ]
         for [ mk: Model ] in m_plumes
             drawn.push[ mk ]
         drawn.push[ m_plume_up ]
         drawn.push[ m_puff_one ]
         drawn.push[ m_puff_up ]
-        drawn.push[ m_puff_tank ]
         craft = Render [ vk: vkc, w: w, wscale: wscale * 2.0,
                          tag: 'craft',
                          use_depth: true,
@@ -3710,6 +3597,137 @@ element PlanetView
         craft.hold[]
         craft.owner = a
         w.element_targets[ 'craft_{id}' ] = craft
+
+    # one three-booster stack's models: the crew's under its own
+    # nose with our ports, the tanker's silver with reflectors
+    func build_look [ vkc: vk_context, w: Window, sv: map Au[string],
+                      crew: bool ] -> StackLook
+        look : StackLook [ lits: vec VehicleLit [], models: vec Model [] ]
+        ids : vec GltfModel [] [
+            build_stage_one[], build_legs_skip[ 18 ], build_fins[],
+            build_stage_one[], build_legs[], build_fins[],
+            (crew) ? build_fairing[ 10.0, true, true ]
+                   : build_tanker_nose[],
+            build_port[ !crew ], build_puffs[], build_puffs[] ]
+        # each side booster: its body, its legs only where they
+        # point away from the row (left mesh faces 3-5, right
+        # 0-2), its fins; then their noses and the joints; the
+        # folded legs (middle, left, right); the nitrogen vents
+        leg_skips : vec i32 [] [ 7, 56 ]
+        for [ part: i32 0, part < 3, part += 1 ]
+            for [ k: i32 0, k < 2, k += 1 ]
+                if [ part == 0 ]
+                    ids.push[ build_stage_one[] ]
+                el [ part == 1 ]
+                    ids.push[ build_legs_skip[ leg_skips[ k ] ] ]
+                el
+                    ids.push[ build_fins[] ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            ids.push[ (k < 2) ? build_tanker_nose[] : build_joints[] ]
+        folds : vec i32 [] [ 45, 56, 7 ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            ids.push[ build_legs_skip[ folds[ k ] ] ]
+        ids.push[ build_mount_puffs[ 1.0 ] ]
+        ids.push[ build_mount_puffs[ -1.0 ] ]
+        for [ i: i32 0, i < ids.count, i += 1 ]
+            # the gas is seen through: straight alpha, no depth
+            gas : bool [ i == LOOK_PUFF || i == LOOK_PUFF_TOP
+                         || i >= LOOK_SIDE + 12 ]
+            lt : VehicleLit [ vk: vkc, name: 'craft', transparent: gas ]
+            md : Model [ vk: vkc, w: w, s: lt, samplers: sv,
+                         cull_none: true ]
+            md.id = ids[ i ]
+            look.lits.push[ lt ]
+            look.models.push[ md ]
+        return look
+
+    # a three-booster stack placed from its flight: low the stack
+    # or its middle booster, top the stack or its top stage (body
+    # frames kept), the side boosters from the flight once they
+    # fly alone; dock the ports' doors and probes; no low: hidden
+    func place_look [ look: StackLook, low: Craft, top: Craft,
+                      m: Mission, dock: vec4f ]
+        ls : look.lits
+        drop : f64 [ -1.4 * SHIP_LONG ]
+        tank : (low) ? pose[ low, drop ] : hidden[]
+        top_p : (top) ? pose[ top, drop ] : tank
+        top_hull : raised[ top_p, 38.6 * SHIP_LONG ]
+        put[ ls[ LOOK_ONE ], tank ]
+        put[ ls[ LOOK_LEGS ], tank ]
+        put[ ls[ LOOK_FINS ], tank ]
+        put[ ls[ LOOK_TOP ], top_hull ]
+        put[ ls[ LOOK_TOP_LEGS ], top_hull ]
+        put[ ls[ LOOK_TOP_FINS ], top_hull ]
+        # its nose 20.2 m up the meshes, its ports 12.85 m
+        put[ ls[ LOOK_NOSE ], raised[ top_p, 20.2 * SHIP_LONG ] ]
+        put[ ls[ LOOK_PORT ], raised[ top_p, 12.85 * SHIP_LONG ] ]
+        ls[ LOOK_PORT ].dock = dock
+        put[ ls[ LOOK_PUFF ], tank ]
+        put[ ls[ LOOK_PUFF_TOP ], top_hull ]
+        ls[ LOOK_PUFF ].jets_on = jet_bits[ low, all_jets ]
+        ls[ LOOK_PUFF_TOP ].jets_on = jet_bits[ (top) ? top : low,
+                                                top_jets ]
+        # the top one's legs stay stowed; the middle one's swing
+        ls[ LOOK_TOP_LEGS ].slide = leg_link[]
+        ls[ LOOK_TOP_LEGS ].fold = vec4f [ leg_swing[], LEG_HINGE_R,
+                                           LEG_HINGE_Y, 0.0 ]
+        ls[ LOOK_LEGS ].slide = leg_link[]
+        out : f64 [ 0.0 ]
+        if [ low && low.legs.count > 0 ] out = low.legs[ 0 ].frac
+        ls[ LOOK_LEGS ].fold = vec4f [ f32[ 1.0 - out ] * leg_swing[],
+                                       LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+        # its two fin sets from the physics
+        fin_bind[ ls[ LOOK_FINS ], low, 'one', 0.0 ]
+        fin_bind[ ls[ LOOK_TOP_FINS ], (top) ? top : low, 'two', 0.0 ]
+        # the side boosters a face's width across, body +z left
+        gap : f32 [ 3.66 * SHIP_WIDE + 1.5 ]
+        ways : vec f32 [] [ gap, 0.0 - gap ]
+        side_names : vec string [] [ 'left', 'right' ]
+        side_pose : vec Pose []
+        apart : bool [ m && m.sides && m.sides.count > 0 ]
+        sd : i32 [ LOOK_SIDE ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            sp : across[ tank, ways[ k ] ]
+            side_fold : vec4f [ ls[ LOOK_LEGS ].fold ]
+            # let go of the middle one: its own craft, its own legs
+            flown : Craft [ null ]
+            if [ apart && m.sides.count > k ] flown = m.sides[ k ].booster
+            if [ flown ]
+                sp = pose[ flown, drop ]
+                out_k : f64 [ 0.0 ]
+                for [ g: Leg ] in flown.legs
+                    if [ !g.folded ] out_k = g.frac
+                side_fold = vec4f [ f32[ 1.0 - out_k ] * leg_swing[],
+                                    LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
+                fin_bind[ ls[ sd + 4 + k ], flown, side_names[ k ], 0.0 ]
+            el
+                fin_bind[ ls[ sd + 4 + k ], low, 'one', ways[ k ] ]
+            put[ ls[ sd + k ], sp ]
+            put[ ls[ sd + 2 + k ], sp ]
+            put[ ls[ sd + 4 + k ], sp ]
+            ls[ sd + 2 + k ].slide = leg_link[]
+            ls[ sd + 2 + k ].fold = side_fold
+            put[ ls[ sd + 6 + k ], raised[ sp, -18.4 * SHIP_LONG ] ]
+            put[ ls[ sd + 10 + k ], sp ]
+            side_pose.push[ sp ]
+        put[ ls[ sd + 8 ], tank ]
+        put[ ls[ sd + 9 ], tank ]
+        # the folded legs stay stowed while joined; once each booster
+        # flies alone they swing out with its others
+        for [ k: i32 9, k < 12, k += 1 ]
+            ls[ sd + k ].slide = leg_link[]
+            ls[ sd + k ].fold = vec4f [ leg_swing[], LEG_HINGE_R,
+                                        LEG_HINGE_Y, 0.0 ]
+        # each side booster's nitrogen for 1.5 s from the parting
+        venting : bool [ apart && m.met - m.sep_t < 1.5 ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            put[ ls[ sd + 12 + k ], side_pose[ k ] ]
+            ls[ sd + 12 + k ].jets_on = vec4f [ (venting) ? 3.0 : 0.0,
+                                                0.0, 0.0, 0.0 ]
+        if [ apart ]
+            ls[ sd + 9 ].fold = ls[ LOOK_LEGS ].fold
+            ls[ sd + 10 ].fold = ls[ sd + 2 ].fold
+            ls[ sd + 11 ].fold = ls[ sd + 3 ].fold
 
     # a model matrix from axes, a place from the camera and scale
     func placed [ ax: vec3f, ay: vec3f, az: vec3f, at: vec3f,
@@ -3766,8 +3784,12 @@ element PlanetView
             k : i32 [ (camera == 3) ? 0 : 1 ]
             if [ f.sides && f.sides.count > k ] return f.sides[ k ].booster
             return base
-        if [ camera == 4 ]
-            return (f.lower == 0) ? f.stack : f.orbiter
+        # our ship's own flight: 4 its port, 6 it, 7 its booster
+        cm : Mission [ (f.crew) ? f.crew : f ]
+        if [ camera == 4 || camera == 6 ]
+            return (cm.lower == 0) ? cm.stack : cm.orbiter
+        if [ camera == 7 ]
+            return (cm.lower == 0) ? cm.stack : cm.booster
         if [ f.lower == 0 ] return f.stack
         if [ camera == 1 ] return f.orbiter
         return base
@@ -4350,29 +4372,35 @@ element PlanetView
             tank = (f.lower == 0) ? pose[ f.stack, drop ]
                                   : pose[ f.booster, drop ]
             tank_top_p = (f.lower == 0) ? tank : pose[ f.orbiter, drop ]
-        if [ f.tanker_flight ]
-            one = pose[ f.parked_ship, drop ]
+        # our ship: its own flight beside the tanker's, else this
+        cm : Mission [ (f.crew) ? f.crew : f ]
+        # the crew flies the tanker's stack: drawn as its look
+        if [ f.crew ]
+            one = hidden[]
+        el [ cm.lower == 0 ]
+            one = pose[ cm.stack, drop ]
             up = one
             fair = one
-            legs = one
-        el [ f.lower == 0 ]
-            one = pose[ f.stack, drop ]
-            up = one
-            fair = one
-            if [ f.stack.legs.count > 0 ]
+            if [ cm.stack.legs.count > 0 ]
                 legs = one
-                swing = f.stack.legs[ 0 ].frac
-                relief = f.stack.collar_turn
+                swing = cm.stack.legs[ 0 ].frac
+                relief = cm.stack.collar_turn
         el
-            one = pose[ f.booster, drop ]
-            up = pose[ f.orbiter, drop ]
-            fair = (f.fairing) ? pose[ f.fairing, drop ] : up
-            if [ f.booster.legs.count > 0 ]
+            one = pose[ cm.booster, drop ]
+            up = pose[ cm.orbiter, drop ]
+            fair = (cm.fairing) ? pose[ cm.fairing, drop ] : up
+            if [ cm.booster.legs.count > 0 ]
                 legs = one
-                swing = f.booster.legs[ 0 ].frac
-                relief = f.booster.collar_turn
+                swing = cm.booster.legs[ 0 ].frac
+                relief = cm.booster.collar_turn
         hi_c : Craft [ null ]
         if [ f.lower != 0 ] hi_c = f.orbiter
+        # the crew flight's two, when it flies beside the tanker's
+        crew_lo : Craft [ null ]
+        crew_hi : Craft [ null ]
+        if [ f.crew ]
+            crew_lo = (cm.lower == 0) ? cm.stack : cm.booster
+            if [ cm.lower != 0 ] crew_hi = cm.orbiter
         # the lower stage heard from the camera
         rx : vec3f [ fwd.y * cu.z - fwd.z * cu.y,
                      fwd.z * cu.x - fwd.x * cu.z,
@@ -4427,6 +4455,14 @@ element PlanetView
         if [ f.sides ]
             for [ sm: Mission ] in f.sides
                 if [ sm.booster ] seen.push[ pose[ sm.booster, drop ] ]
+        # the crew's stack, its top and its side boosters
+        if [ f.crew ]
+            if [ crew_lo ] seen.push[ pose[ crew_lo, drop ] ]
+            if [ crew_hi ]
+                seen.push[ raised[ pose[ crew_hi, drop ], 38.6 * SHIP_LONG ] ]
+            if [ cm.sides ]
+                for [ sm: Mission ] in cm.sides
+                    if [ sm.booster ] seen.push[ pose[ sm.booster, drop ] ]
         for [ p: Pose ] in seen
             d_seg : f32 [ axis_distance[ p, -4.0 * k, 72.0 * k ]
                           - 10.0 * SHIP_WIDE ]
@@ -4445,9 +4481,12 @@ element PlanetView
         # one lights the hulls
         lg : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         slot : i32 [ 0 ]
-        burners : vec Craft [] [ low_c, hi_c ]
+        burners : vec Craft [] [ low_c, hi_c, crew_lo, crew_hi ]
         if [ f.sides ]
             for [ sm: Mission ] in f.sides
+                burners.push[ sm.booster ]
+        if [ f.crew && cm.sides ]
+            for [ sm: Mission ] in cm.sides
                 burners.push[ sm.booster ]
         for [ fc: Craft ] in burners
             if [ !fc ] continue
@@ -4478,26 +4517,23 @@ element PlanetView
         haze : f32 [ 1.0e-5 * exp[ 0.0 - mid / 8000.0 ] ]
         lits : vec VehicleLit [] [ lit_pad, lit_pad2, lit_pad3, lit_one,
                                    lit_up,
-                                   lit_fair,
-                                   lit_tank_one, lit_tank_legs,
-                                   lit_tank_fins, lit_tank_legs2,
-                                   lit_tank_fins2, lit_tank,
-                                   lit_tank_nose, lit_legs, lit_legs_up,
+                                   lit_fair, lit_legs, lit_legs_up,
                                    lit_fins, lit_fins_up,
                                    lit_puff_one, lit_puff_up,
-                                   lit_puff_tank, lit_port_up,
-                                   lit_port_tank ]
+                                   lit_port_up ]
         for [ dl: VehicleLit ] in lit_decks
             lits.push[ dl ]
         for [ ml: VehicleLit ] in mark_lits
             lits.push[ ml ]
-        for [ sl: VehicleLit ] in side_lits
+        for [ sl: VehicleLit ] in tank_look.lits
+            lits.push[ sl ]
+        for [ sl: VehicleLit ] in crew_look.lits
             lits.push[ sl ]
         # our floodlight, on while we close on the tanker
-        ours : (f.lower == 0) ? f.stack : f.orbiter
+        ours : (cm.lower == 0) ? cm.stack : cm.orbiter
         spot_p : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         spot_d : vec4f [ 0.0, 1.0, 0.0, 0.94 ]
-        if [ ours && f.approaching ]
+        if [ ours && cm.approaching ]
             sp : local_of[ ours.body_point[ ours.port_at ], ours.time ]
             spot_p = vec4f [ f32[ sp.x - cx ], f32[ sp.y - cy ],
                              f32[ sp.z - cz ], 1.0 ]
@@ -4562,103 +4598,27 @@ element PlanetView
         put[ lit_one, one ]
         put[ lit_up, up ]
         put[ lit_fair, fair ]
-        put[ lit_tank_one, tank ]
-        put[ lit_tank_legs, tank ]
-        # its fins under its nose: up the axis as the crew ship's
-        # the bottom booster's fins where ours are; the top one's
-        # set 38.6 m up with it, its nose 20.2 m up the meshes
-        put[ lit_tank_fins, tank ]
-        top_rise : f32 [ 38.6 * SHIP_LONG ]
-        tank_top : raised[ tank_top_p, top_rise ]
-        put[ lit_tank, tank_top ]
-        put[ lit_tank_legs2, tank_top ]
-        put[ lit_tank_fins2, tank_top ]
-        put[ lit_tank_nose, raised[ tank_top_p, 20.2 * SHIP_LONG ] ]
-        lit_tank_legs2.slide = leg_link[]
-        lit_tank_legs2.fold = vec4f [ leg_swing[], LEG_HINGE_R,
-                                      LEG_HINGE_Y, 0.0 ]
-        # the tanker's legs and fins stay stowed
-        lit_tank_legs.slide = leg_link[]
-        tank_out : f64 [ 0.0 ]
-        if [ f.tanker && f.tanker.legs.count > 0 ]
-            tank_out = f.tanker.legs[ 0 ].frac
-        if [ f.tanker_flight && low_c && low_c.legs.count > 0 ]
-            tank_out = low_c.legs[ 0 ].frac
-        lit_tank_legs.fold = vec4f [ f32[ 1.0 - tank_out ] * leg_swing[],
-                                     LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
-        # its two fin sets from the physics: the bottom booster's
-        # (the stack's, then the returning booster's), the top's
-        # (the stack's, then the climbing stage's)
+        # the three-booster stacks: the tanker's (its own flight,
+        # else placed in orbit whole), then the crew's
         tank_low : Craft [ f.tanker ]
         tank_high : Craft [ f.tanker ]
         if [ f.tanker_flight ]
             tank_low = low_c
             tank_high = (f.lower == 0) ? f.stack : f.orbiter
-        fin_bind[ lit_tank_fins, tank_low, 'one', 0.0 ]
-        fin_bind[ lit_tank_fins2, tank_high, 'two', 0.0 ]
-        # the side boosters a face's width across, body +z left
-        gap : f32 [ 3.66 * SHIP_WIDE + 1.5 ]
-        ways : vec f32 [] [ gap, 0.0 - gap ]
-        side_names : vec string [] [ 'left', 'right' ]
-        side_pose : vec Pose []
-        for [ k: i32 0, k < 2, k += 1 ]
-            sp : across[ tank, ways[ k ] ]
-            side_fold : vec4f [ lit_tank_legs.fold ]
-            # let go of the middle one: its own craft, its own legs
-            flown : Craft [ null ]
-            if [ f.sides && f.sides.count > k ] flown = f.sides[ k ].booster
-            if [ flown ]
-                sp = pose[ flown, drop ]
-                out_k : f64 [ 0.0 ]
-                for [ g: Leg ] in flown.legs
-                    if [ !g.folded ] out_k = g.frac
-                side_fold = vec4f [ f32[ 1.0 - out_k ] * leg_swing[],
-                                    LEG_HINGE_R, LEG_HINGE_Y, 0.0 ]
-                fin_bind[ side_lits[ 4 + k ], flown, side_names[ k ], 0.0 ]
-            el
-                fin_bind[ side_lits[ 4 + k ], tank_low, 'one', ways[ k ] ]
-            put[ side_lits[ k ], sp ]
-            put[ side_lits[ 2 + k ], sp ]
-            put[ side_lits[ 4 + k ], sp ]
-            side_lits[ 2 + k ].slide = leg_link[]
-            side_lits[ 2 + k ].fold = side_fold
-            put[ side_lits[ 6 + k ], raised[ sp, -18.4 * SHIP_LONG ] ]
-            put[ side_lits[ 10 + k ], sp ]
-            side_pose.push[ sp ]
-        put[ side_lits[ 8 ], tank ]
-        put[ side_lits[ 9 ], tank ]
-        # the folded legs stay stowed while joined; once each booster
-        # flies alone they swing out with its others
-        apart : bool [ f.sides && f.sides.count > 0 ]
-        for [ k: i32 9, k < 12, k += 1 ]
-            side_lits[ k ].slide = leg_link[]
-            side_lits[ k ].fold = vec4f [ leg_swing[], LEG_HINGE_R,
-                                          LEG_HINGE_Y, 0.0 ]
-        # each side booster's nitrogen for 1.5 s from the parting
-        venting : bool [ apart && f.met - f.sep_t < 1.5 ]
-        for [ k: i32 0, k < 2, k += 1 ]
-            put[ side_lits[ 12 + k ], side_pose[ k ] ]
-            side_lits[ 12 + k ].jets_on = vec4f [ (venting) ? 3.0 : 0.0,
-                                                  0.0, 0.0, 0.0 ]
-        if [ apart ]
-            side_lits[ 9 ].fold = lit_tank_legs.fold
-            side_lits[ 10 ].fold = side_lits[ 2 ].fold
-            side_lits[ 11 ].fold = side_lits[ 3 ].fold
+        slide : f32 [ f32[ cm.doors ] * 0.95 / SHIP_LONG ]
+        run : f32 [ f32[ 0.0 - cm.probe ] / SHIP_WIDE ]
+        place_look[ tank_look, tank_low, tank_high, f,
+                    vec4f [ slide, 0.0, 0.0, 0.0 ] ]
+        crew_top : Craft [ null ]
+        if [ f.crew ] crew_top = (cm.lower == 0) ? cm.stack : cm.orbiter
+        place_look[ crew_look, crew_lo, crew_top, f.crew,
+                    vec4f [ slide, run, 0.0, 0.0 ] ]
         put[ lit_port_up, up ]
-        # its ports 12.85 m higher than ours (its top booster's side)
-        put[ lit_port_tank, raised[ tank_top_p, 12.85 * SHIP_LONG ] ]
-        # the gear in the meshes' units: doors along the hull's
-        # length, the probes out of the face
-        slide : f32 [ f32[ f.doors ] * 0.95 / SHIP_LONG ]
-        run : f32 [ f32[ 0.0 - f.probe ] / SHIP_WIDE ]
         lit_port_up.dock = vec4f [ slide, run, 0.0, 0.0 ]
-        lit_port_tank.dock = vec4f [ slide, 0.0, 0.0, 0.0 ]
         put[ lit_puff_one, one ]
         put[ lit_puff_up, up ]
-        put[ lit_puff_tank, tank ]
         lit_puff_one.jets_on = jet_bits[ low_c, all_jets ]
         lit_puff_up.jets_on = jet_bits[ hi_c, all_jets ]
-        lit_puff_tank.jets_on = jet_bits[ f.tanker, all_jets ]
         put[ lit_legs, legs ]
         # the small legs: the skirt's length (0.85 of a leg), their
         # hinge lifted to its foot (mesh 40.2), stowed for now
@@ -4691,8 +4651,11 @@ element PlanetView
                     ax: up.ax, ay: up.ay, az: up.az, alt: up.alt,
                     air: up.air, shown: up.shown ]
         put[ lit_fins_up, hp ]
-        hi_fins : Craft [ low_c ]
-        if [ hi_c ] hi_fins = hi_c
+        # our ship's fins from our ship's flight, not the tanker's
+        fin_lo : Craft [ (f.crew) ? crew_lo : low_c ]
+        hi_fins : Craft [ fin_lo ]
+        if [ f.crew && crew_hi ] hi_fins = crew_hi
+        el [ !f.crew && hi_c ] hi_fins = hi_c
         up_out : f64 [ 0.0 ]
         if [ hi_fins ]
             for [ fk: Fin ] in hi_fins.fins
@@ -4700,7 +4663,7 @@ element PlanetView
         lit_fins_up.fold = vec4f [ f32[ 1.0 - up_out ] * 1.5707963,
                                    FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
                                    0.0 ]
-        out : f64 [ (low_c.fins.count > 0) ? low_c.fins[ 0 ].frac
+        out : f64 [ (fin_lo.fins.count > 0) ? fin_lo.fins[ 0 ].frac
                     : 0.0 ]
         lit_fins.fold = vec4f [ f32[ 1.0 - out ] * 1.5707963,
                                 FIN_ROOT + FIN_DEEP * 0.5, FIN_Y,
@@ -4709,8 +4672,8 @@ element PlanetView
         # sixth 5 - i: its z is the body's -z
         tw : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         tb : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-        if [ low_c.fins.count == 6 ]
-            fs : low_c.fins
+        if [ fin_lo.fins.count == 6 ]
+            fs : fin_lo.fins
             tw = vec4f [ f32[ fs[ 5 ].deflect ], f32[ fs[ 4 ].deflect ],
                          f32[ fs[ 3 ].deflect ], f32[ fs[ 2 ].deflect ] ]
             tb = vec4f [ f32[ fs[ 1 ].deflect ], f32[ fs[ 0 ].deflect ],
@@ -4775,7 +4738,7 @@ element launch : trinity
         if [ k >= 49 && k <= 53 ]
             preset = k - 49
             cur = states[ preset ]
-        if [ k == 67 ] camera = (camera + 1) % 6
+        if [ k == 67 ] camera = (camera + 1) % 8
         # P: the flight to a file; L: the last one saved, back
         saves : path.path_cache[ 'launch' ]
         dir : path '{saves}/saves'
@@ -4860,7 +4823,8 @@ element launch : trinity
         prop : i32 [ c.propellant[] / 1000.0 ]
         third : string [ (f.tanker) ? 'tanker' : 'left booster' ]
         cams : vec string [] [ 'platform', 'orbiter', 'booster', third,
-                               'our port', 'right booster' ]
+                               'our port', 'right booster', 'crew ship',
+                               'crew booster' ]
         cam : cams[ camera ]
         wp : '{i32[ warp ]}x'
         if [ quick ]

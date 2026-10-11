@@ -14936,6 +14936,8 @@ int main(int argc, cstrs argv) {
     }
 #endif
     engage(argv);
+    // silver [flags] module [app-args]: the app's flags are its own
+    au_argv_launcher(true);
     silver a = silver(argv);
     // a successful live build execvp's the host and never returns here; if we DID
     // return, a->error tells us the build failed → exit non-zero so a caller (the

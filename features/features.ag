@@ -2585,6 +2585,15 @@ expect func t_vec_bool_ternary [] -> bool
     second : i32 [ (v[ 1 ]) ? 5 : 7 ]
     return first == 7 && second == 5
 
+# a vec of enums: an element passed to a function is its value
+func mode_word [ m: Mode ] -> i32
+    return i32[ m ]
+
+expect func t_vec_enum_arg [] -> bool
+    v : vec Mode [] [ Mode.off, Mode.on ]
+    return mode_word[ v[ 0 ] ] == i32[ Mode.off ]
+        && mode_word[ v[ 1 ] ] == i32[ Mode.on ]
+
 # and on either side of && and ||
 expect func t_vec_bool_logic [] -> bool
     v : vec bool [ 2 ]

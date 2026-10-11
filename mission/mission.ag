@@ -250,9 +250,16 @@ class Mission
     # is placed in its orbit)
     public tanker_on_pad : bool [ true ]
     # the tanker's own flight: it is the stack, off deck two; our
-    # ship stands on deck one meanwhile (parked_ship, drawn only)
+    # ship flies off deck one crew_after seconds later (crew), and
+    # takes the top booster as its tanker once that is round
     public tanker_flight : bool
-    public parked_ship : Craft
+    public crew       : Mission
+    public crew_after : f64 [ 60.0 ]
+    # the crew's flight: its tanker is the tanker flight's top
+    # booster, handed over in orbit (not placed here)
+    public tanker_shared : bool
+    # the top booster handed to the crew's flight: flown there
+    public handed     : bool
     # a recovery flight: one booster home, nothing else (the
     # tanker's side boosters each fly one); its notes' name
     public recovery : bool
@@ -318,6 +325,8 @@ class Mission
     intern link_r    : Dvec
     intern link_v    : Dvec
     intern link_q    : Quat
+    # its turn rate as its own gyros give it (rad/s, body)
+    intern link_w    : Dvec
     public stand     : f64 [ 20.0 ]
     # which side of the tanker we come from: 1 under it, -1
     # over it; its ports turn to that side, ours to it
@@ -326,6 +335,16 @@ class Mission
     # both ships' stowed grid fins, only the connectors touch
     public standoff  : f64 [ 1.5 ]
     intern held_t    : f64
+    # far out, the coast that meets the mark: when it arrives
+    intern far_at    : f64 [ -1.0 ]
+    intern far_done  : bool
+    # drifting under it: the rise's cost last step, its least
+    intern drift_need : f64 [ 1e30 ]
+    intern drift_t    : f64 [ -1.0 ]
+    # the closing mark's last move
+    intern slide_t    : f64 [ -1.0 ]
+    # where the hold began, to judge its drift over the hold
+    intern held_rel  : Dvec
     # the approach's jets: a push starts past one level of
     # error and runs until under a fifth of it
     intern pushing   : bool
@@ -477,6 +496,10 @@ class Mission
             park_alt = tanker_alt
             tanker_on_pad = false
         stack = (tanker_flight) ? tanker_ship[] : falcon_nine[ payload ]
+        # the crew vessel: the tanker's stack, the crew on its top
+        if [ tanker_shared ]
+            stack = tanker_ship[]
+            crew_top[ stack, payload ]
         stack.turn_start = 0.0
         deck : Deck [ centre: geodetic_to_ecef[ site_lat, site_lon, deck_h ],
                       up: enu_up[ site_lat, site_lon ], radius: 48.0 ]
@@ -531,18 +554,11 @@ class Mission
             g.out = true
         clamp_down[]
         if [ tanker_flight ]
-            # ours stands on deck one, quiet
-            parked_ship = falcon_nine[ payload ]
-            parked_ship.turn_start = 0.0
-            parked_ship.deck = Deck [ centre: geodetic_to_ecef[ pad_lat, pad_lon,
-                                                         deck_h ],
-                               up: enu_up[ pad_lat, pad_lon ],
-                               radius: 48.0 ]
-            for [ g: Leg ] in parked_ship.legs
-                g.out = true
-                g.frac = 1.0
-            parked_ship.stand[ pad_lat, pad_lon, deck_h - LEG_FOOT_X ]
-        el
+            # ours off deck one, a minute behind
+            crew = Mission [ landing: landing, tanker_shared: true,
+                             label: 'crew ship' ]
+            crew.met = met - crew_after
+        el [ !tanker_shared ]
             place_tanker[]
 
     # the tanker at liftoff: circular, its plane through the pad
@@ -590,19 +606,7 @@ class Mission
         for [ g: Leg ] in tk.legs
             g.out = false
             g.frac = 0.0
-        # slow: a heavy ship, small jets
-        tanker_pilot = Autopilot [ rate: 2.0, use_jets: true,
-                                   max_rate: 0.02, couples: true ]
-        tank_rx = Receiver [ almanac: almanac, seed: 41,
-                             antenna: Dvec [ 56.0 * SHIP_LONG,
-                                             1.83 * SHIP_WIDE, 0.0 ] ]
-        link_q = tk.state.q
-        # its body origin (state.r is its centre of mass)
-        link_r = tk.body_point[ Dvec [ 0.0, 0.0, 0.0 ] ]
-        link_v = tk.state.v
-        link_t = tk.time
-        tanker = tk
-        keep_a = energy_radius[ tk.state.r, tk.state.v ]
+        take_tanker[ tk ]
         if [ tanker_on_pad ]
             # on deck two, on its legs, quiet
             tk.deck = deck_two
@@ -613,6 +617,25 @@ class Mission
             link_q = tk.state.q
             link_r = tk.body_point[ Dvec [ 0.0, 0.0, 0.0 ] ]
             link_v = tk.state.v
+
+    # the tanker from now: its pilot, its radio, the orbit it
+    # keeps (placed here, or handed over by its own flight)
+    public func take_tanker [ tk: Craft ]
+        # slow turns (a heavy ship, small jets), at 20 Hz: at 2 Hz
+        # the rate gain overshot every step and it swung for good
+        tanker_pilot = Autopilot [ rate: 20.0, use_jets: true,
+                                   max_rate: 0.02, couples: true ]
+        tank_rx = Receiver [ almanac: almanac, seed: 41,
+                             antenna: Dvec [ 56.0 * SHIP_LONG,
+                                             1.83 * SHIP_WIDE, 0.0 ] ]
+        link_q = tk.state.q
+        # its body origin (state.r is its centre of mass)
+        link_r = tk.body_point[ Dvec [ 0.0, 0.0, 0.0 ] ]
+        link_v = tk.state.v
+        link_t = tk.time
+        tanker = tk
+        tanker_on_pad = false
+        keep_a = energy_radius[ tk.state.r, tk.state.v ]
 
     # the orbit's size from its whole energy, the flattening's
     # share in it: only the air and burns change it (m)
@@ -650,6 +673,7 @@ class Mission
             # its own filter: each fix nudges what it believed
             # (an alpha-beta smoothing, about 2 s to settle)
             link_q = tk.state.q
+            link_w = tk.state.w
             got : dv_sub[ ra, q_rotate[ link_q, tank_rx.antenna ] ]
             was : tanker_at[ f.time ]
             link_r = dv_add[ was[ 0 ], dv_scale[ dv_sub[ got, was[ 0 ] ],
@@ -1072,6 +1096,13 @@ class Mission
         if [ sides ]
             for [ sm: Mission ] in sides
                 sm.step[ h ]
+        if [ crew ]
+            crew.step[ h ]
+            # round at its height: the top booster is the crew's
+            if [ !handed && upper == 3 && parked ]
+                crew.take_tanker[ orbiter ]
+                handed = true
+                note[ 'the top booster is the crew ship\'s tanker now' ]
         if [ met < 0.0 ]
             if [ met >= -3.0 && !stack.engines[ 0 ].lit ]
                 # every engine of the bottom stage
@@ -1105,7 +1136,7 @@ class Mission
             if [ whole && decide ] feed_check[]
         el [ booster ]
             booster_phase[ decide ]
-        if [ upper >= 1 ] orbiter_phase[ decide ]
+        if [ upper >= 1 && !handed ] orbiter_phase[ decide ]
         # the physics, then each computer on its own vehicle
         if [ lower == 0 ]
             stack.step[ h ]
@@ -1129,8 +1160,10 @@ class Mission
                 low.tick[ booster, h ]
                 splashed[]
                 if [ lower >= 6 ] watch_touchdown[]
-            orbiter.step[ h ]
-            high.tick[ orbiter, h ]
+            # handed over, the crew's flight steps it
+            if [ !handed ]
+                orbiter.step[ h ]
+                high.tick[ orbiter, h ]
             if [ fairing ]
                 fairing.step[ h ]
         # both ships at one moment now: the touch, the latch, the
@@ -1195,8 +1228,9 @@ class Mission
         for [ i: i32 0, i < stack.tanks.count, i += 1 ]
             if [ stack.tanks[ i ].group == 'one' ]
                 left += stack.state.prop[ i ]
-        # the tanker's three stage on their reserve alone
-        high_enough : bool [ !tanker_flight
+        # the tanker's three and the crew's flight beside it stage
+        # on their reserve alone
+        high_enough : bool [ !tanker_flight && !tanker_shared
                              && height[ nv.r, nv.time ] >= sep_alt ]
         if [ left <= reserve[ vh ] || high_enough ]
             for [ e: Engine ] in stack.engines
@@ -1249,6 +1283,9 @@ class Mission
     # the orbit the climb ends in (m up): the whole ship arcs
     # straight to the tanker's; the upper stage parks under it
     func park_height [] -> f64
+        # the crew ship 10 km under the tanker: it gains on it
+        # there, then rises to it in one arc
+        if [ tanker_shared ] return tanker_alt - 10000.0
         return (whole) ? tanker_alt : park_alt
 
     # the pitch plan's axis now, along the pad's east
@@ -1446,10 +1483,10 @@ class Mission
                 orbiter.legs.push[ g ]
         booster = stack
         stack = null
-        # the tanker's side boosters let go of the middle one (the
-        # joints stay on it) and fly home on their own: the left
-        # to deck F, the right to deck C, both against deck B
-        if [ tanker_flight ]
+        # the side boosters let go of the middle one (the joints
+        # stay on it) and fly home on their own: the tanker's to
+        # decks F and C beside B, the crew's to D and E beside A
+        if [ tanker_flight || tanker_shared ]
             sides = vec Mission []
             gap : f64 [ 3.66 * SHIP_WIDE + 1.5 ]
             ways : vec f64 [] [ gap, 0.0 - gap ]
@@ -1460,11 +1497,17 @@ class Mission
                 grp : vec string [] [ names[ k ] ]
                 side : booster.detach[ grp ]
                 side.recentre[ at ]
+                who : string [ (tanker_shared) ? 'crew {names[ k ]}'
+                               : names[ k ] ]
                 sm : Mission [ recovery: true, landing: landing,
-                               label: '{names[ k ]} booster' ]
+                               label: '{who} booster' ]
                 lat : f64 [ (k == 0) ? deck_lats[ 2 ] : pad3_lat ]
                 lon : f64 [ (k == 0) ? deck_lons[ 2 ] : pad3_lon ]
                 dk : (k == 0) ? more_decks[ 2 ] : deck_three
+                if [ tanker_shared ]
+                    lat = deck_lats[ k ]
+                    lon = deck_lons[ k ]
+                    dk = more_decks[ k ]
                 sm.adopt[ side, lat, lon, dk, met ]
                 sides.push[ sm ]
             boosters = 1.0
@@ -1617,7 +1660,7 @@ class Mission
                     e.lit = true
                     e.throttle = 1.0
                 upper = 2
-                if [ tanker_flight ]
+                if [ tanker_flight || tanker_shared ]
                     # the line starts on its path's own slope
                     gam : f64 [ max[ vr / max[ vh, 1.0 ], 0.05 ] ]
                     lt_a = gam
@@ -1631,7 +1674,7 @@ class Mission
         if [ upper == 2 ]
             k : f64 [ 0.0 ]
             want : Dvec [ 0.0, 0.0, 0.0 ]
-            steered : bool [ whole || tanker_flight ]
+            steered : bool [ whole ]
             if [ steered ]
                 ru : dv_norm[ nv.r ]
                 cr : f64 [ dv_dot[ nv.v, ru ] ]
@@ -1646,7 +1689,8 @@ class Mission
                 want = dv_add[ dv_scale[ up, k ],
                                dv_scale[ in_plane[ nv.r, nv.v ],
                                          sqrt[ 1.0 - k * k ] ] ]
-            if [ steered ] hold_g[ orbiter ]
+            if [ whole || tanker_flight || tanker_shared ]
+                hold_g[ orbiter ]
             # the whole ship eases off its plan over 20 s: one arc
             if [ whole && met < hand_t + 20.0 ]
                 b : f64 [ (met - hand_t) / 20.0 ]
@@ -1673,7 +1717,8 @@ class Mission
                     e.lit = false
                 upper = 3
                 alt : f64 [ (rr - EARTH_A) / 1000.0 ]
-                note[ 'SECO at {alt} km, {vh} m/s, climbing {vr} m/s' ]
+                kept : f64 [ orbiter.propellant[] / 1000.0 ]
+                note[ 'SECO at {alt} km, {vh} m/s, climbing {vr} m/s, {kept} t left' ]
                 got : orbit_range[ nv.r, nv.v, period_at[ rr ] ]
                 lo_km : f64 [ (got.y - EARTH_A) / 1000.0 ]
                 hi_km : f64 [ (got.x - EARTH_A) / 1000.0 ]
@@ -1775,7 +1820,7 @@ class Mission
         # the whole ship cuts off beside the tanker, in its
         # orbit: straight on to the approach
         if [ whole && upper == 3 ] upper = 7
-        if [ whole && upper >= 7 ]
+        if [ (whole || tanker_shared) && upper >= 7 ]
             approach[]
             return
         eng : orbiter.engines[ 0 ]
@@ -1799,7 +1844,10 @@ class Mission
                 note[ 'parking burn' ]
                 return
             got : orbit_range[ r, v, period_at[ rr ] ]
-            if [ got.y >= got.x - 3000.0 || vr > 10.0 ]
+            # round once its low point is up at this height (the
+            # range flown ahead is too coarse to see them cross)
+            if [ got.y >= got.x - 3000.0 || vr > 10.0
+                 || got.y >= rr - 3000.0 ]
                 eng.lit = false
                 trimming = false
                 parked = true
@@ -1815,6 +1863,14 @@ class Mission
             upper = 7
             gap : f64 [ dv_len[ dv_sub[ tanker.state.r, r ] ] ]
             note[ 'in the tanker\'s orbit, {gap / 1000.0} km from it' ]
+            return
+        # the crew's tanker still on its way up
+        if [ upper == 3 && !tanker ] return
+        # round at its height: on to the close approach
+        if [ upper == 3 && tanker_shared ]
+            upper = 7
+            gap : f64 [ dv_len[ dv_sub[ tanker.state.r, r ] ] ]
+            note[ 'round under the tanker, {gap / 1000.0} km from it' ]
             return
         if [ upper == 3 ]
             ph : f64 [ tanker_phase[ r, v ] ]
@@ -2026,6 +2082,31 @@ class Mission
             if [ along > 0.0 ] sum += along * j.thrust
         return sum / orbiter.mass
 
+    # the speed (m/s, the tanker's frame) that coasts the gap rel
+    # onto the mark in t seconds, by Clohessy and Wiltshire
+    # (1960): the end place from rest, then the speed's share of
+    # it inverted
+    func cw_rise [ rel: Dvec, n: f64, t: f64, up: Dvec, along: Dvec,
+                   hn: Dvec ] -> Dvec
+        th : f64 [ n * t ]
+        sn : f64 [ sin[ th ] ]
+        cs : f64 [ cos[ th ] ]
+        x0 : f64 [ dv_dot[ rel, up ] ]
+        y0 : f64 [ dv_dot[ rel, along ] ]
+        z0 : f64 [ dv_dot[ rel, hn ] ]
+        ex : f64 [ (4.0 - 3.0 * cs) * x0 ]
+        ey : f64 [ 6.0 * (sn - th) * x0 + y0 ]
+        m11 : f64 [ sn / n ]
+        m12 : f64 [ 2.0 * (1.0 - cs) / n ]
+        m21 : f64 [ 2.0 * (cs - 1.0) / n ]
+        m22 : f64 [ (4.0 * sn - 3.0 * th) / n ]
+        det : f64 [ m11 * m22 - m12 * m21 ]
+        vx : f64 [ 0.0 - (m22 * ex - m12 * ey) / det ]
+        vy : f64 [ 0.0 - (m11 * ey - m21 * ex) / det ]
+        vz : f64 [ 0.0 - cs * z0 * n / sn ]
+        return dv_add[ dv_add[ dv_scale[ up, vx ], dv_scale[ along, vy ] ],
+                       dv_scale[ hn, vz ] ]
+
     # the close approach, in the tanker's own frame (up, along
     # its path, across): our port flown to points on the line
     # straight down from its port, 200 m then 20 m, on the
@@ -2049,6 +2130,12 @@ class Mission
             way : string [ (beneath > 0.0) ? 'down to us, under it'
                            : 'up to us, over it' ]
             note[ 'the tanker rolls its ports {way}' ]
+            # the gap in its own frame: along its path, up, across
+            gu : dv_norm[ spot[ 0 ] ]
+            gn : dv_norm[ dv_cross[ spot[ 0 ], spot[ 1 ] ] ]
+            ga : dv_cross[ gn, gu ]
+            d : dv_sub[ spot[ 0 ], nv.r ]
+            note[ 'the tanker from us: {dv_dot[ d, ga ] / 1000.0} km ahead, {dv_dot[ d, gu ] / 1000.0} km up, {dv_dot[ d, gn ] / 1000.0} km across' ]
         if [ upper >= 13 && upper <= 15 ] return
         if [ upper >= 17 ] return
         rel_update[]
@@ -2086,20 +2173,76 @@ class Mission
                  && dv_dot[ mz, toward ] < -0.9998 ]
                 upper = 10
                 note[ 'ports face each other: to 20 m from it, {dist / 1000.0} km to go' ]
+        # far out: one coast onto the mark in 0.4 of an orbit, by
+        # Clohessy and Wiltshire (1960); the jets hold to it, and
+        # the law below takes the last 3 km
+        far : bool [ false ]
+        cw_want : Dvec [ 0.0, 0.0, 0.0 ]
+        # drifting under it: no push, but the speed across its
+        # plane taken out as we cross the plane (where it is least)
+        drifting : bool [ false ]
+        rise_t : f64 [ 0.45 * 6.283185307 / n ]
+        if [ !far_done && upper >= 8 && upper <= 10 ]
+            if [ far_at < 0.0 ]
+                if [ dist > 3000.0 ]
+                    drifting = true
+                    need : f64 [ dv_len[ dv_sub[ cw_rise[ rel, n, rise_t,
+                                                         up, along, hn ],
+                                                 relv ] ] ]
+                    # every 20 s: once the rise's cost bottoms out
+                    # (and is not a whole new orbit's worth), go
+                    if [ drift_t < 0.0 || met - drift_t >= 20.0 ]
+                        if [ need > drift_need && need < 40.0 ]
+                            far_at = met + rise_t
+                            note[ 'rising to the tanker: {dist / 1000.0} km, {rise_t / 60.0} min, {need} m/s' ]
+                            drifting = false
+                        el [ drift_t < 0.0 ]
+                            note[ 'drifting up under the tanker: {dist / 1000.0} km, the rise {need} m/s now' ]
+                        drift_need = need
+                        drift_t = met
+                el
+                    far_done = true
+            el [ dist < 3000.0 || far_at - met < 120.0
+                 || dv_dot[ relv, relv ] / 0.12 >= dist - 500.0 ]
+                far_done = true
+                note[ 'closing in: {dist} m to go' ]
+            far = !far_done && far_at >= 0.0
+        if [ far ]
+            cw_want = cw_rise[ rel, n, far_at - met, up, along, hn ]
         # as fast as it can still stop by the mark: braking at
         # 0.08 m/s2 far, 0.03 within 300 m, at most 15 m/s, and
         # never past two fifths of what the jets give back toward
         # the mark at our mass
+        # after a coast it comes in fast: braked from far out at
+        # what the jets give while they hold the turn too
+        hard : bool [ far_at >= 0.0 && dist > 300.0 ]
         brake : f64 [ (dist > 300.0) ? 0.08 : 0.03 ]
+        if [ hard ] brake = 0.06
         brake = min[ brake, 0.4 * jets_reach[ rel ] ]
-        speed : f64 [ min[ 15.0, sqrt[ 2.0 * brake * dist ] ] ]
-        # the last metres to the port: slowing to contact
+        top_speed : f64 [ (hard) ? 60.0 : 15.0 ]
+        speed : f64 [ min[ top_speed, sqrt[ 2.0 * brake * dist ] ] ]
+        # the last metres: the mark slides in along the port's
+        # line at 0.03 m/s (0.02 the last 3 m) while we hold within
+        # 1 m of it and both ships turn steadily
         if [ upper == 12 ]
-            speed = min[ 0.3, 0.03 + dist / 30.0 ]
+            still : bool [ dv_len[ nv.rate ] < 0.003
+                           && dv_len[ link_w ] < 0.003 ]
+            pace : f64 [ (stand < 3.0) ? 0.02 : 0.03 ]
+            if [ slide_t >= 0.0 && dist < 1.0 && still ]
+                stand = max[ 0.0, stand - pace * (met - slide_t) ]
+            slide_t = met
+            if [ i32[ met * 400.0 ] % 12000 == 0 ]
+                log 'TRACE slide {met} stand {stand} dist {dist} relv {dv_len[ relv ]} ours {dv_len[ nv.rate ]} its {dv_len[ link_w ]}'
         # at the mark: onto it over about 10 s
-        if [ dist < 5.0 && upper != 12 ]
+        if [ dist < 5.0 ]
             speed = dist * 0.1
         want : dv_scale[ rel, 0.0 - speed / max[ dist, 0.000001 ] ]
+        if [ far ] want = cw_want
+        if [ drifting ]
+            want = relv
+            cross : f64 [ dv_dot[ rel, hn ] ]
+            if [ abs[ cross ] < 500.0 ]
+                want = dv_sub[ relv, dv_scale[ hn, dv_dot[ relv, hn ] ] ]
         veer : dv_sub[ want, relv ]
         # burns, as a crew flies it: coast while the speed is
         # within its band of the curve (a tenth of it, at least
@@ -2115,10 +2258,13 @@ class Mission
             pushing = false
         # the jets' whole push far out, gentle near, softest last
         most : f64 [ (dist > 50.0) ? 0.15 : 0.05 ]
-        if [ upper == 12 ] most = 0.02
+        if [ hard ] most = 0.4
         most = min[ most, 0.8 * jets_reach[ veer ] ]
         acc : Dvec [ 0.0, 0.0, 0.0 ]
-        if [ pushing ]
+        if [ pushing && (far || drifting) ]
+            firm : f64 [ min[ most, off / 2.0 ] ]
+            acc = dv_scale[ veer, firm / off ]
+        el [ pushing ]
             # never past the miss in one step of the guidance
             firm : f64 [ min[ most, off / 2.0 ] ]
             acc = dv_scale[ veer, firm / off ]
@@ -2149,13 +2295,20 @@ class Mission
         # a hold at 20 m: inside its limits for 10 s
         near : f64 [ 2.0 ]
         slow : f64 [ 0.05 ]
-        if [ dist > near || dv_len[ relv ] > slow ]
+        if [ dist > near ]
             held_t = -1.0
             return
-        if [ held_t < 0.0 ] held_t = t
+        if [ held_t < 0.0 ]
+            held_t = t
+            held_rel = rel
         if [ t - held_t < 10.0 ] return
+        # the drift over the hold: the fixes' speed noise averages
+        drift : f64 [ dv_len[ dv_sub[ rel, held_rel ] ] / (t - held_t) ]
+        if [ drift > slow ]
+            held_t = -1.0
+            return
         upper = 12
-        stand = 0.0
+        slide_t = -1.0
         held_t = -1.0
         note[ 'held at 20 m: closing to contact' ]
 
@@ -2224,6 +2377,9 @@ class Mission
             latched = 'caught at T+{lm}:{lp}{ls}, {aside} m aside, {closing} m/s, {turned} deg off'
             note[ 'soft capture: {aside} m aside, {closing} m/s, {turned} deg off' ]
             return
+        nb : q_unrotate[ tk.state.q, gap ]
+        bb : q_unrotate[ tk.state.q, rel_p ]
+        log 'TRACE strike truth {nb.x} {nb.y} {nb.z} believed {bb.x} {bb.y} {bb.z} tk port {tk.port_at.x} {tk.port_at.y} {tk.port_at.z} dir {tk.port_dir.x} {tk.port_dir.y} {tk.port_dir.z} ob port {ob.port_at.x} {ob.port_at.z} cg {tk.cg} {ob.cg} tk w {dv_len[ tk.state.w ]} ob w {dv_len[ ob.state.w ]} cm closing {0.0 - dv_dot[ dv_sub[ ob.state.v, tk.state.v ], toward ]} noses {noses} face {face}'
         upper = 11
         stand = 20.0
         held_t = -1.0
@@ -2556,7 +2712,8 @@ class Mission
             stop : f64 [ -1e30 ]
             # falling fast, the burn starts on three (Falcon's way)
             three_burn = vdown > 250.0
-            if [ above < 8000.0 ]
+            # a heavy one falls fast: looked for from 30 km
+            if [ above < 8000.0 || (decide && above < 30000.0) ]
                 stop = stop_loss[ c, table[], c.mass, vdown,
                                  above + deck_h ]
                        + 40.0 + vdown * 0.3
@@ -2657,6 +2814,10 @@ class Mission
         one_acc : f64 [ 0.8 * (one_e.thrust_vac - c.air.pressure
                                * one_e.exit_area) / c.mass ]
         need : f64 [ v0.z * v0.z / (2.0 * max[ r0.z, 1.0 ]) + 9.81 ]
+        # the legs out low, however many engines burn
+        if [ r0.z < 400.0 ]
+            for [ g: Leg ] in c.legs
+                g.out = true
         if [ three_burn && need < one_acc ]
             three_burn = false
             set_engines[ c, landing_engines[ c ], 0.7 ]
@@ -2667,9 +2828,6 @@ class Mission
                 c.engines[ k ].throttle = 0.85
             low.pilot.axis = dv_scale[ dv_norm[ vrel ], -1.0 ]
             return
-        if [ r0.z < 400.0 ]
-            for [ g: Leg ] in c.legs
-                g.out = true
         if [ c.landed ]
             sp : f64 [ dv_len[ v0 ] ]
             for [ e: Engine ] in c.engines
@@ -3147,7 +3305,7 @@ class Mission
                     stage = 5
             el [ stage == 4 ]
                 if [ sp < 900.0 || prop < 6500.0 ] stage = 5
-            el [ stage == 5 && above < 8000.0 ]
+            el [ stage == 5 && above < 30000.0 ]
                 if [ clock >= look ]
                     look = clock + 0.5
                     stop = stop_loss[ c, tb, mass, down, above + deck_h ]
@@ -3233,6 +3391,25 @@ class Mission
         return vec f64 [] [ dv_len[ flat ], sp, tilt * 57.2957795,
                             booster.propellant[] ]
 
+# the tanker's stack with the crew on its top: what it keeps
+# round at 300 km (no crew flight beside it)
+expect func t_crew_top [] -> bool
+    ms : Mission [ tanker_flight: true ]
+    ms.hold[]
+    ms.crew = null
+    crew_top[ ms.stack, ms.payload ]
+    for [ i: i32 0, i < 1600000, i += 1 ]
+        ms.step[ 0.0025 ]
+        if [ i % 7 == 0 ] Au.auto_free[]
+        if [ ms.upper >= 3 && ms.parked ] break
+    up : ms.orbiter
+    if [ !up ] return false
+    left : f64 [ up.propellant[] ]
+    dry : f64 [ up.mass - left ]
+    dv : f64 [ 3727.0 * log[ up.mass / dry ] ]
+    log 'crew top: round at T{ms.met}, {left / 1000.0} t left of {up.mass / 1000.0} t, {dv} m/s to spend'
+    return ms.parked
+
 # the tanker at liftoff: its plane through the pad, 200 km up;
 # an orbit later still circular
 # the tanker's own flight off deck two: its bottom booster
@@ -3240,16 +3417,72 @@ class Mission
 expect func t_tanker_flight [] -> bool
     ms : Mission [ tanker_flight: true ]
     ms.hold[]
-    for [ i: i32 0, i < 1600000, i += 1 ]
+    for [ i: i32 0, i < 3200000, i += 1 ]
         ms.step[ 0.0025 ]
         if [ i % 7 == 0 ] Au.auto_free[]
-        if [ ms.upper >= 3 && ms.parked && (ms.lower >= 7 || ms.lower == 0) ]
+        cw : ms.crew
+        crew_up : bool [ ms.handed && cw.upper >= 17
+                         && cw.lower >= 7 ]
+        if [ ms.upper >= 3 && ms.parked && ms.lower >= 7 && crew_up ]
             break
-        if [ ms.met > 3600.0 ] break
+        if [ ms.met > 7200.0 ] break
     up : ms.orbiter
     if [ !up ] return false
     log 'tanker flight: upper {ms.upper} at T{ms.met}, booster phase {ms.lower}, {up.propellant[] / 1000.0} t aboard the top stage'
-    return ms.upper >= 3 && ms.parked
+    cm : ms.crew
+    log 'tanker flight: crew ship upper {cm.upper}, its booster phase {cm.lower}, handed {ms.handed}, {cm.orbiter.propellant[] / 1000.0} t aboard, docked at T{cm.docked_at}'
+    return ms.upper >= 3 && ms.parked && ms.handed && cm.upper >= 17
+           && cm.docked_at >= 0.0
+
+# the crew ship as the tanker flight hands it over: 80 km
+# behind the tanker, 10 km under it, 25.7 km across its plane
+expect func t_far_approach [] -> bool
+    ms : Mission [ tanker_on_pad: false, whole: true ]
+    ms.hold[]
+    ob : falcon_nine[ ms.payload ]
+    for [ i: i32 0, i < ob.tanks.count, i += 1 ]
+        t : ob.tanks[ i ]
+        ob.state.prop[ i ] = (t.group == 'one') ? 0.0 : t.mass / 16.0
+    ob.mass_properties[ ob.state.prop ]
+    ms.crossfeed[ ob ]
+    tk : ms.tanker
+    ob.time = tk.time
+    n : ms.tanker_normal[]
+    b : dv_norm[ tk.state.r ]
+    ahead : dv_cross[ n, b ]
+    rr : f64 [ dv_len[ tk.state.r ] ]
+    behind : f64 [ 80000.0 / rr ]
+    dir : dv_sub[ dv_scale[ b, cos[ behind ] ],
+                  dv_scale[ ahead, sin[ behind ] ] ]
+    at : dv_add[ dv_scale[ dir, rr - 10000.0 ], dv_scale[ n, 25700.0 ] ]
+    ob.state.r = at
+    up : dv_norm[ at ]
+    side : dv_norm[ dv_sub[ n, dv_scale[ up, dv_dot[ n, up ] ] ] ]
+    fwd : dv_cross[ side, up ]
+    ob.state.v = dv_scale[ fwd, sqrt[ EARTH_GM / dv_len[ at ] ] ]
+    ob.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ], fwd ]
+    ob.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+    for [ g: Leg ] in ob.legs
+        g.out = false
+        g.frac = 0.0
+    ms.stack = ob
+    ms.orbiter = ob
+    ms.met = 600.0
+    ms.upper = 7
+    # no booster flies: only the approach runs
+    ms.lower = 9
+    ms.low.align[ ob ]
+    ms.high.align[ ob ]
+    ms.low.steers = false
+    ms.high.steers = true
+    log 'far approach: tanker at {(rr - EARTH_A) / 1000.0} km, {ob.propellant[] / 1000.0} t aboard'
+    for [ i: i32 0, i < 3200000, i += 1 ]
+        ms.step[ 0.0025 ]
+        if [ i % 7 == 0 ] Au.auto_free[]
+        if [ ms.upper >= 13 ] break
+        if [ ms.upper == 11 && ms.met > 3600.0 ] break
+    log 'far approach: phase {ms.upper} at T{ms.met}, {ob.propellant[] / 1000.0} t aboard'
+    return ms.upper >= 12
 
 # the staging flight with both home: the booster to deck one,
 # the crew ship back on its engines to deck two

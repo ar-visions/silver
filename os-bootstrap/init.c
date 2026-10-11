@@ -10,6 +10,50 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
+
+#ifdef NOLIBC
+// the kernel's nolibc (arm64 sticks) lacks these few
+static void pause(void) { for (;;) sleep(3600); }
+
+static struct dirent* readdir(DIR* d) {
+    static struct dirent e;
+    struct dirent* r;
+    return readdir_r(d, &e, &r) || !r ? NULL : r;
+}
+
+static ssize_t pread(int fd, void* b, size_t n, off_t at) {
+    return lseek(fd, at, SEEK_SET) < 0 ? -1 : read(fd, b, n);
+}
+
+static int execv(const char* f, char* const argv[]) {
+    return execve(f, argv, environ);
+}
+
+static char* strtok(char* s, const char* sep) {
+    static char* at;
+    if (s) at = s;
+    while (at && *at && strchr(sep, *at)) at++;
+    if (!at || !*at) return NULL;
+    char* w = at;
+    while (*at && !strchr(sep, *at)) at++;
+    if (*at) *at++ = 0;
+    return w;
+}
+
+// the folder's real path, through /proc
+static char* realpath(const char* p, char* out) {
+    int fd = open(p, O_PATH);
+    if (fd < 0) return NULL;
+    char link[64];
+    snprintf(link, sizeof link, "/proc/self/fd/%d", fd);
+    long n = __nolibc_syscall4(__NR_readlinkat, AT_FDCWD, link, out, 4095);
+    close(fd);
+    if (n <= 0) return NULL;
+    out[n] = 0;
+    return out;
+}
+#endif
 
 extern char** environ;
 static char cmdline[4096];
@@ -99,19 +143,58 @@ static void save_logs(void) {
     }
 }
 
-// orbiter.modules=a,b:k=v loads /lib/modules/orbiter/a.ko ...
+#define MODPROBE "/usr/sbin/modprobe"
+
+// a program, waited for
+static void run(char* const argv[]) {
+    pid_t p = fork();
+    if (p == 0) { execv(argv[0], argv); _exit(127); }
+    if (p > 0) waitpid(p, NULL, 0);
+}
+
+// every device's driver: modprobe takes each id in /sys
+static void load_hardware(void) {
+    static char ids[512][256];
+    char* argv[520] = { MODPROBE, "-q", "-b", "-a" };
+    int n = 0;
+    DIR* buses = opendir("/sys/bus");
+    struct dirent* b;
+    while (buses && (b = readdir(buses))) {
+        if (b->d_name[0] == '.') continue;
+        char dp[300];
+        snprintf(dp, sizeof dp, "/sys/bus/%s/devices", b->d_name);
+        DIR* devs = opendir(dp);
+        struct dirent* d;
+        while (devs && (d = readdir(devs)) && n < 512) {
+            if (d->d_name[0] == '.') continue;
+            char mp[600];
+            snprintf(mp, sizeof mp, "%s/%s/modalias", dp, d->d_name);
+            int fd = open(mp, O_RDONLY);
+            if (fd < 0) continue;
+            ssize_t k = read(fd, ids[n], sizeof ids[n] - 1);
+            close(fd);
+            if (k <= 1) continue;
+            ids[n][k - 1] = 0;
+            argv[4 + n] = ids[n];
+            n++;
+        }
+        if (devs) closedir(devs);
+    }
+    if (buses) closedir(buses);
+    argv[4 + n] = NULL;
+    fprintf(stderr, "orbiter-os init: %d device ids to modprobe\n", n);
+    if (n) run(argv);
+}
+
+// orbiter.modules=a,b:k=v: modprobe a, then b with k=v
 static void load_modules(void) {
     char list[1024];
     if (!arg("orbiter.modules", list, sizeof list)) return;
     for (char* name = strtok(list, ","); name; name = strtok(NULL, ",")) {
         char* params = strchr(name, ':');
         if (params) *params++ = 0;
-        char ko[512];
-        snprintf(ko, sizeof ko, "/lib/modules/orbiter/%s.ko", name);
-        int fd = open(ko, O_RDONLY | O_CLOEXEC);
-        if (fd < 0 || syscall(SYS_finit_module, fd, params ? params : "", 0))
-            fprintf(stderr, "orbiter-os init: module %s not loaded\n", name);
-        if (fd >= 0) close(fd);
+        char* argv[] = { MODPROBE, name, params, NULL };
+        run(argv);
     }
     // nvidia has no udev here: its nodes, major 195
     if (access("/proc/driver/nvidia", F_OK) == 0) {
@@ -189,9 +272,17 @@ int main(void) {
     if (chroot(".") || chdir("/")) die("cannot chroot", real);
     save_logs();
     // after the switch: firmware loads from the folder
+    load_hardware();
     load_modules();
 
-    char* argv[] = { init, NULL };
+    // orbiter.args=--install,true: init's arguments, by comma
+    char args[1024];
+    char* argv[34] = { init };
+    int argc = 1;
+    if (arg("orbiter.args", args, sizeof args))
+        for (char* w = strtok(args, ","); w && argc < 33; w = strtok(NULL, ","))
+            argv[argc++] = w;
+    argv[argc] = NULL;
     execve(init, argv, environ);
     die("cannot run", init);
     return 1;

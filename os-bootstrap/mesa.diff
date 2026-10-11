@@ -1,0 +1,199 @@
+diff --git a/meson.build b/meson.build
+index d6e3a8bea26..73b169a6403 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1961,7 +1961,7 @@ endif
+ 
+ llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit', 'core', 'executionengine', 'scalaropts', 'transformutils', 'instcombine']
+ llvm_optional_modules = ['coroutines']
+-if with_amd_vk or with_gallium_radeonsi
++if (with_amd_vk and get_option('amd-use-llvm')) or with_gallium_radeonsi
+   llvm_modules += ['amdgpu', 'bitreader', 'ipo']
+ endif
+ if with_clc
+diff --git a/src/compiler/clc/clc_helpers.cpp b/src/compiler/clc/clc_helpers.cpp
+index e5c3d158b29..3f4d02f232f 100644
+--- a/src/compiler/clc/clc_helpers.cpp
++++ b/src/compiler/clc/clc_helpers.cpp
+@@ -65,8 +65,14 @@
+ #include <llvm/Support/VirtualFileSystem.h>
+ #endif
+ 
+-#if LLVM_VERSION_MAJOR >= 22
++/* early LLVM 22 snapshots still have LLVM 21's clang API */
++#if __has_include(<clang/Options/OptionUtils.h>)
+ #include <clang/Options/OptionUtils.h>
++#define CLC_LLVM_API LLVM_VERSION_MAJOR
++#elif LLVM_VERSION_MAJOR >= 22
++#define CLC_LLVM_API 21
++#else
++#define CLC_LLVM_API LLVM_VERSION_MAJOR
+ #endif
+ 
+ /* We have to include our own headers after LLVM/clang as they seem to use
+@@ -109,7 +115,7 @@ static void
+ clc_dump_llvm(const llvm::Module *mod, FILE *f);
+ 
+ static void
+-#if LLVM_VERSION_MAJOR >= 19
++#if CLC_LLVM_API >= 19
+ llvm_log_handler(const ::llvm::DiagnosticInfo *di, void *data) {
+ #else
+ llvm_log_handler(const ::llvm::DiagnosticInfo &di, void *data) {
+@@ -119,7 +125,7 @@ llvm_log_handler(const ::llvm::DiagnosticInfo &di, void *data) {
+    std::string log;
+    raw_string_ostream os { log };
+    ::llvm::DiagnosticPrinterRawOStream printer { os };
+-#if LLVM_VERSION_MAJOR >= 19
++#if CLC_LLVM_API >= 19
+    di->print(printer);
+ #else
+    di.print(printer);
+@@ -810,7 +816,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+       c->addDependencyCollector(dep);
+    }
+ 
+-#if LLVM_VERSION_MAJOR >= 21
++#if CLC_LLVM_API >= 21
+    auto diag_opts = c->getDiagnosticOpts();
+ #else
+    auto diag_opts = &c->getDiagnosticOpts();
+@@ -823,7 +829,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+                                        diag_opts)
+    };
+ 
+-#if LLVM_VERSION_MAJOR >= 17
++#if CLC_LLVM_API >= 17
+    const char *triple = args->address_bits == 32 ? "spir-unknown-unknown" : "spirv64-unknown-unknown";
+ #else
+    const char *triple = args->address_bits == 32 ? "spir-unknown-unknown" : "spir64-unknown-unknown";
+@@ -835,7 +841,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+       // By default, clang prefers to use modules to pull in the default headers,
+       // which doesn't work with our technique of embedding the headers in our binary
+       "-fdeclare-opencl-builtins",
+-#if LLVM_VERSION_MAJOR < 17
++#if CLC_LLVM_API < 17
+       "-no-opaque-pointers",
+ #endif
+       // Add a default CL compiler version. Clang will pick the last one specified
+@@ -872,7 +878,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+    c->getDiagnosticOpts().ShowCarets = false;
+ 
+    c->createDiagnostics(
+-#if LLVM_VERSION_MAJOR >= 20 && LLVM_VERSION_MAJOR < 22
++#if CLC_LLVM_API >= 20 && CLC_LLVM_API < 22
+                    *llvm::vfs::getRealFileSystem(),
+ #endif
+                    new clang::TextDiagnosticPrinter(
+@@ -880,7 +886,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+                            diag_opts));
+ 
+    c->setTarget(clang::TargetInfo::CreateTargetInfo(
+-#if LLVM_VERSION_MAJOR >= 21
++#if CLC_LLVM_API >= 21
+                    c->getDiagnostics(), c->getInvocation().getTargetOpts()));
+ #else
+                    c->getDiagnostics(), c->getInvocation().TargetOpts));
+@@ -920,9 +926,9 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
+    // GetResourcePath is a way to retrieve the actual libclang resource dir based on a given binary
+    // or library.
+    auto tmp_res_path =
+-#if LLVM_VERSION_MAJOR >= 22
++#if CLC_LLVM_API >= 22
+       clang::GetResourcesPath(std::string(clang_path));
+-#elif LLVM_VERSION_MAJOR >= 20
++#elif CLC_LLVM_API >= 20
+       Driver::GetResourcesPath(std::string(clang_path));
+ #else
+       Driver::GetResourcesPath(std::string(clang_path), CLANG_RESOURCE_DIR);
+@@ -1182,11 +1188,11 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
+    /* This was the default in 12.0 and older, but currently we'll fail to parse without this */
+    spirv_opts.setPreserveOCLKernelArgTypeMetadataThroughString(true);
+ 
+-#if LLVM_VERSION_MAJOR >= 17
++#if CLC_LLVM_API >= 17
+    if (args->use_llvm_spirv_target) {
+       const char *triple = args->address_bits == 32 ? "spirv-unknown-unknown" : "spirv64-unknown-unknown";
+       std::string error_msg("");
+-#if LLVM_VERSION_MAJOR >= 21
++#if CLC_LLVM_API >= 21
+       auto temp_triple = llvm::Triple(triple);
+ #else
+       auto temp_triple = triple;
+@@ -1194,7 +1200,7 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
+       auto target = TargetRegistry::lookupTarget(temp_triple, error_msg);
+       if (target) {
+          auto TM = target->createTargetMachine(temp_triple, "", "", {}, std::nullopt, std::nullopt,
+-#if LLVM_VERSION_MAJOR >= 18
++#if CLC_LLVM_API >= 18
+             ::llvm::CodeGenOptLevel::None
+ #else
+             ::llvm::CodeGenOpt::None
+@@ -1206,7 +1212,7 @@ llvm_mod_to_spirv(std::unique_ptr<::llvm::Module> mod,
+          auto OS = ::llvm::raw_svector_ostream(buf);
+          TM->addPassesToEmitFile(
+             PM, OS, nullptr,
+-#if LLVM_VERSION_MAJOR >= 18
++#if CLC_LLVM_API >= 18
+             ::llvm::CodeGenFileType::ObjectFile
+ #else
+             ::llvm::CGFT_ObjectFile
+@@ -1356,14 +1362,14 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
+    spvtools::LinkerOptions options;
+    options.SetAllowPartialLinkage(args->create_library);
+    options.SetUseHighestVersion(true);
+-   #if defined(HAS_SPIRV_LINK_LLVM_WORKAROUND) && LLVM_VERSION_MAJOR >= 17
++   #if defined(HAS_SPIRV_LINK_LLVM_WORKAROUND) && CLC_LLVM_API >= 17
+       options.SetAllowPtrTypeMismatch(true);
+    #endif
+    options.SetCreateLibrary(args->create_library);
+    std::vector<uint32_t> linkingResult;
+    spv_result_t status = spvtools::Link(context, binaries, &linkingResult, options);
+    if (status != SPV_SUCCESS) {
+-      #if !defined(HAS_SPIRV_LINK_LLVM_WORKAROUND) && LLVM_VERSION_MAJOR >= 17
++      #if !defined(HAS_SPIRV_LINK_LLVM_WORKAROUND) && CLC_LLVM_API >= 17
+         clc_warning(logger, "SPIRV-Tools doesn't contain https://github.com/KhronosGroup/SPIRV-Tools/pull/5534\n");
+         clc_warning(logger, "Please update in order to prevent spurious linking failures\n");
+       #endif
+diff --git a/src/virtio/vulkan/vn_wsi.c b/src/virtio/vulkan/vn_wsi.c
+index e73ab48c2fe..4a3b45fe604 100644
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -10,6 +10,11 @@
+ 
+ #include "vn_wsi.h"
+ 
++/* orbiter-os: venus normally has no KMS display; open the virtio primary
++ * node so VK_KHR_display can drive a bare guest console. */
++#include <fcntl.h>
++#include <unistd.h>
++
+ #include "vk_enum_to_str.h"
+ #include "wsi_common_entrypoints.h"
+ 
+@@ -176,9 +181,15 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+ 
+    const VkAllocationCallbacks *alloc =
+       &physical_dev->instance->base.vk.alloc;
++
++   /* orbiter-os: a display fd lets wsi_display enumerate the virtio-gpu
++    * connector, so a bare guest (no compositor) can present via
++    * VK_KHR_display. -1 (upstream) leaves the display WSI inert. */
++   int display_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
++
+    VkResult result = wsi_device_init(
+       &physical_dev->wsi_device, vn_physical_device_to_handle(physical_dev),
+-      vn_wsi_proc_addr, alloc, -1, &physical_dev->instance->drirc.options,
++      vn_wsi_proc_addr, alloc, display_fd, &physical_dev->instance->drirc.options,
+       &(struct wsi_device_options){
+          .sw_device = use_sw_device,
+          .extra_xwayland_image = true,
+@@ -186,7 +197,7 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
+    if (result != VK_SUCCESS)
+       return result;
+ 
+-   physical_dev->wsi_device.supports_scanout = false;
++   physical_dev->wsi_device.supports_scanout = true;
+    physical_dev->wsi_device.supports_modifiers =
+       physical_dev->base.vk.supported_extensions.EXT_image_drm_format_modifier;
+    physical_dev->base.vk.wsi_device = &physical_dev->wsi_device;

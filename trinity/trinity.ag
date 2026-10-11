@@ -4045,6 +4045,7 @@ Display Window
         if [ e.near_in ] goal = near_in_weight
         el [ e.near_lit ] goal = near_out_weight
         d : f32 [ goal - e.near_glow ]
+        easing : bool [ false ]
         if [ d < 0.002 && d > -0.002 ]
             if [ e.near_glow == goal ] return
             e.near_glow = goal
@@ -4052,7 +4053,11 @@ Display Window
             e.near_glow = filter_n[ e.near_glow, goal, 0.1,
                                     frame_factor ]
             will_animate = true
-        for [ p: element* e, p, p = p.parent ] p.pristine = false
+            easing       = true
+        # set in a draw: needs_frame keeps a cached parent dirty
+        for [ p: element* e, p, p = p.parent ]
+            p.pristine = false
+            if [ easing ] p.needs_frame = true
 
     # the pointer's light on e's borders, in cv's space; ox oy
     # is e's top-left in the coordinates being drawn
@@ -4285,6 +4290,7 @@ Display Window
             cmd_down = (ev.key.state) ? true : false
         if [ cmd != cmd_down ]
             cmd = cmd_down
+            if [ root ] dirty_tree[ root ]
             will_animate = true
         # esc releases a mouse lock; the key still travels so a hosted
         # app releases its side too
@@ -6285,9 +6291,11 @@ Display Window
                 draw_cv.no_shadows[]
                 if [ layer.box_shadow ]
                     layer.box_shadow.apply[ draw_cv, 0 ]
-                nb : bool [ layer.near_border && sw_max > 0.0 ]
+                # disabled: no light
+                nb : bool [ layer.near_border && sw_max > 0.0
+                    && !e.disable ]
                 ni : bool [ layer.near_inset > 0.0
-                             && layer.box_shadow ]
+                             && layer.box_shadow && !e.disable ]
                 if [ nb || ni ]
                     near_light_reach[ draw_cv, e, 0.0, 0.0,
                         (layer.near_reach > 0.0) ? layer.near_reach
@@ -6347,7 +6355,12 @@ Display Window
                     && vk.font_unit > 0) ? f32[ vk.font_unit ] / 22.0 : 1.0 ]
                 offset : vec2f  [ x: layer.label_offset.x * lfu,
                                   y: layer.label_offset.y * lfu ]
-                draw_cv.fill_color   [ layer.label_color ]
+                # disabled: the label at half its alpha
+                lc : layer.label_color
+                if [ e.disable ]
+                    lc = rgba [ r: lc.r, g: lc.g, b: lc.b,
+                                a: lc.a * 0.5 ]
+                draw_cv.fill_color   [ lc ]
                 draw_cv.font_size    [ layer.label_size ]
                 draw_cv.line_height  [ layer.label_height ]
                 cp_x : f32 [ layer.label_color_pos.x * e.bounds.w ]
@@ -9490,3 +9503,60 @@ func fade_band [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, px: f32,
     cv.set_fill_gradient[ g ]
     cv.paint[]
     cv.clear_fill_gradient[]
+
+# a top fade band: the mask runs from clear to kept over its width
+expect func t_fade_band [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 200, height: 100 ]
+    c: Canvas [ vk: vk, w: w, width: 200, height: 100 ]
+    c.update[]
+    c.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+    c.save[]
+    c.fill_color[ rgba['#fff'] ]
+    c.rect_to[ 0.0, 0.0, 200.0, 100.0 ]
+    c.paint[]
+    fade_band[ c, 0.0, 0.0, 200.0, 100.0, 32.0, 0 ]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    top_r : i32 [ data[ (1 * img.width + 100) * 4 ] ]
+    mid_r : i32 [ data[ (16 * img.width + 100) * 4 ] ]
+    low_r : i32 [ data[ (60 * img.width + 100) * 4 ] ]
+    log 'fade band red: top {top_r}, mid {mid_r}, below {low_r}'
+    return top_r < 40 && mid_r > 80 && mid_r < 180 && low_r > 240
+
+# content drawn through a fade mask keeps the fade
+expect func t_fade_masked [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 200, height: 200 ]
+    m: Canvas [ vk: vk, w: w, width: 200, height: 100,
+                load_existing: true, quantize: true ]
+    m.update[]
+    m.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+    m.save[]
+    m.fill_color[ rgba['#fff'] ]
+    m.rect_to[ 0.0, 0.0, 200.0, 100.0 ]
+    m.paint[]
+    fade_band[ m, 0.0, 0.0, 200.0, 100.0, 32.0, 0 ]
+    m.restore[]
+    src: Canvas [ vk: vk, w: w, width: 200, height: 100,
+                  load_existing: true, quantize: true, nearest: true ]
+    src.update[]
+    src.save[]
+    src.fill_color[ rgba['#fff'] ]
+    src.rect_to[ 0.0, 0.0, 200.0, 100.0 ]
+    src.paint[]
+    src.restore[]
+    out: Canvas [ vk: vk, w: w, width: 200, height: 200 ]
+    out.update[]
+    out.draw_canvas_masked[ src, m, 0.0, 0.0, 200.0, 100.0 ]
+    out.draw_canvas[ src, 0.0, 100.0, 200.0, 100.0 ]
+    out.sync_fence[]
+    img: Image[ out.color ]
+    data: @u8 img.vdata[]
+    top_a : i32 [ data[ (1 * img.width + 100) * 4 + 3 ] ]
+    mid_a : i32 [ data[ (16 * img.width + 100) * 4 + 3 ] ]
+    low_a : i32 [ data[ (60 * img.width + 100) * 4 + 3 ] ]
+    log 'fade masked alpha: top {top_a}, mid {mid_a}, below {low_a}'
+    return top_a < 40 && mid_a > 80 && mid_a < 180 && low_a > 240

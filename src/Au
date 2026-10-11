@@ -2639,6 +2639,7 @@ AU_EXPORT int   au_stdout_orig(void);    // dup of the real stdout saved by au_c
 AU_EXPORT void  au_main_args(int argc, cstrs argv); // silver-host stashes process argv for the app
 AU_EXPORT void  au_apply_args(Au a);                // parse the stashed argv into app instance `a`
 AU_EXPORT int   au_argv_stop(void);                 // argv index after the default (positional) value
+AU_EXPORT void  au_argv_launcher(bool on);          // the positional ends our flags
 AU_EXPORT cstrs au_argv(void);                      // the stashed process argv
 AU_EXPORT int   au_leaks(void);                     // --leaks top-N (0 = leak tracking off)
 AU_EXPORT none  au_leak_report(void);               // print the leak summary once (no-op when off)

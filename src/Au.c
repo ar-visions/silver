@@ -2245,6 +2245,9 @@ AU_EXPORT int au_stdout_orig(void) { return g_stdout_orig; }
 // instance, so an app receives its own command-line flags through its schema.
 static cstrs g_main_argv = NULL;
 static int   g_argv_stop = 0;
+// a launcher's positional is its last arg: the rest are the app's
+static bool  g_argv_launcher = false;
+AU_EXPORT void au_argv_launcher(bool on) { g_argv_launcher = on; }
 AU_EXPORT void au_main_args(int argc, cstrs argv) { (void)argc; g_main_argv = argv; }
 AU_EXPORT void au_apply_args(Au a) { if (a && g_main_argv) Au_with_cstrs((Au)a, g_main_argv); }
 AU_EXPORT int   au_argv_stop(void) { return g_argv_stop; }
@@ -4885,6 +4888,7 @@ AU_EXPORT Au Au_with_cstrs(Au a, cstrs argv) {
             // ours (see au_argv_stop): `app rom --flag` reaches app
             g_argv_stop = argc + 1;
             if (def && def->src == typeid(string)) break;
+            if (g_argv_launcher) break;
             positional_done = true;
         }
         argc++;

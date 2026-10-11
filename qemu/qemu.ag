@@ -3,14 +3,14 @@ export 1.0.0
 export extensions ['.img', '.qcow2', '.iso']
 
 import virglrenderer/main from https://gitlab.freedesktop.org/virgl/virglrenderer
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
     PYTHONPATH={install}/pylib
     PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
     -Dvenus=true
     -Dtests=false
 
 import qemu:qemu/e47e2d0
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
     --target-list=x86_64-softmmu
     --enable-virglrenderer
     --enable-opengl
