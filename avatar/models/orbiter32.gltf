@@ -11,8 +11,7 @@
 				0,
 				1,
 				2,
-				3,
-				4
+				3
 			]
 		}
 	],
@@ -32,10 +31,6 @@
 		{
 			"mesh":3,
 			"name":"core"
-		},
-		{
-			"mesh":4,
-			"name":"top_ring"
 		}
 	],
 	"materials":[
@@ -86,13 +81,13 @@
 			"name":"bottom",
 			"pbrMetallicRoughness":{
 				"baseColorFactor":[
-					0.32255005836486816,
-					0.16600753366947174,
-					0.6652543544769287,
+					0.024071354418992996,
+					0.01414013933390379,
+					0.044314175844192505,
 					1
 				],
 				"metallicFactor":0.009999999776482582,
-				"roughnessFactor":0.4440000057220459
+				"roughnessFactor":0.887850284576416
 			}
 		},
 		{
@@ -234,21 +229,6 @@
 					"material":5
 				}
 			]
-		},
-		{
-			"name":"Torus.004",
-			"primitives":[
-				{
-					"attributes":{
-						"COLOR_0":45,
-						"POSITION":46,
-						"NORMAL":47,
-						"TEXCOORD_0":48
-					},
-					"indices":49,
-					"material":5
-				}
-			]
 		}
 	],
 	"accessors":[
@@ -303,12 +283,12 @@
 			"componentType":5126,
 			"count":2496,
 			"max":[
-				0.47084569931030273,
+				0.4708457887172699,
 				-0.1489401012659073,
 				0.47084563970565796
 			],
 			"min":[
-				-0.47084569931030273,
+				-0.4708457887172699,
 				-0.1981370747089386,
 				-0.47084563970565796
 			],
@@ -611,47 +591,6 @@
 			"componentType":5123,
 			"count":3456,
 			"type":"SCALAR"
-		},
-		{
-			"bufferView":45,
-			"componentType":5123,
-			"count":1548,
-			"normalized":true,
-			"type":"VEC4"
-		},
-		{
-			"bufferView":46,
-			"componentType":5126,
-			"count":1548,
-			"max":[
-				0.5719372630119324,
-				-0.13461875915527344,
-				0.5719372630119324
-			],
-			"min":[
-				-0.5719372630119324,
-				-0.16218231618404388,
-				-0.5719372630119324
-			],
-			"type":"VEC3"
-		},
-		{
-			"bufferView":47,
-			"componentType":5126,
-			"count":1548,
-			"type":"VEC3"
-		},
-		{
-			"bufferView":48,
-			"componentType":5126,
-			"count":1548,
-			"type":"VEC2"
-		},
-		{
-			"bufferView":49,
-			"componentType":5123,
-			"count":8448,
-			"type":"SCALAR"
 		}
 	],
 	"bufferViews":[
@@ -924,41 +863,11 @@
 			"byteLength":6912,
 			"byteOffset":8345856,
 			"target":34963
-		},
-		{
-			"buffer":0,
-			"byteLength":12384,
-			"byteOffset":8352768,
-			"target":34962
-		},
-		{
-			"buffer":0,
-			"byteLength":18576,
-			"byteOffset":8365152,
-			"target":34962
-		},
-		{
-			"buffer":0,
-			"byteLength":18576,
-			"byteOffset":8383728,
-			"target":34962
-		},
-		{
-			"buffer":0,
-			"byteLength":12384,
-			"byteOffset":8402304,
-			"target":34962
-		},
-		{
-			"buffer":0,
-			"byteLength":16896,
-			"byteOffset":8414688,
-			"target":34963
 		}
 	],
 	"buffers":[
 		{
-			"byteLength":8431584,
+			"byteLength":8352768,
 			"uri":"orbiter32.bin"
 		}
 	]

@@ -367,7 +367,8 @@ Orbiter PBR
         vec3  pl_rel   = worldPos - (ubo.model * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
         float pl_ang   = atan(dot(pl_rel, pl_bn), -dot(pl_rel, pl_tg));
         float pl_pulse = mix(0.35, 1.0, pow(0.5 + 0.5 * cos(pl_ang - ubo.spin), 2.4));
-        vec3  pl_col   = mix(vec3(0.0, 0.35, 1.0), vec3(1.0, 0.5, 1.0), pl_pulse);
+        // the blue side at half what it was (0.35, 1.0): darker walls
+        vec3  pl_col   = mix(vec3(0.0, 0.175, 0.5), vec3(1.0, 0.5, 1.0), pl_pulse);
         vec3  pl_lit   = pl_col * pl_pulse * v_color.g * 0.5;
         // the ring light's lobes: the halo's and 180 degrees round
         float rg_pulse = max(pl_pulse, mix(0.35, 1.0, pow(0.5 - 0.5 * cos(pl_ang - ubo.spin), 2.4)));
@@ -583,9 +584,8 @@ Orbiter Aura
 		// cyl_R bounds the march; the beam's shaft is cyl_R0, its base flares
 		// to 75% wider, and its blue glow reaches 2.7x the shaft: the bound
 		// holds that
-		// the beam's shaft: two thirds of its old width, so the twirl
-		// inside shows through
-		float cyl_R0  = 0.22 * ubo.flame_w * mix(1.0, 0.4, cyl_sty);
+		// the beam's shaft: 0.55 of the flame's width (wider again)
+		float cyl_R0  = 0.22 * ubo.flame_w * mix(1.0, 0.55, cyl_sty);
 		float cyl_R   = cyl_R0 * mix(1.0, 2.7, cyl_sty);
 		// the beam starts at the core's surface (0.46 down the bowl, the flame
 		// starts at the rim), that much longer, and 30% taller above it
@@ -709,7 +709,8 @@ Orbiter Aura
 						float bm_core = 0.5 * exp(-cyl_t * cyl_t * 14.0) * (1.0 - 0.85 * bm_bk) * (0.6 + 0.8 * bm_sw);
 						// the glow is diffuse, a little steeper at the base so it
 						// stays off the walls; the twist runs up the whole beam, strong
-						float bm_glow = 0.4 * exp(-cyl_t * cyl_t * mix(1.2, 2.0, bm_bk));
+						// a longer tail out from the axis (0.6 of the old falloff)
+						float bm_glow = 0.4 * exp(-cyl_t * cyl_t * 0.6 * mix(1.2, 2.0, bm_bk));
 						bm_glow      *= 0.1 + 1.6 * bm_sw;
 						// the outer blue is more see through
 						bm_glow      *= mix(1.0, 0.4, smoothstep(0.5, 1.6, cyl_t));
@@ -726,7 +727,9 @@ Orbiter Aura
 						bm_tc         = mix(vec3(0.95, 1.05, 1.5), bm_tc, max(smoothstep(0.0, 0.35, cyl_t), bm_bk));
 						bm_tc         = mix(vec3(1.7, 1.05, 0.7), bm_tc, smoothstep(0.0, 0.035, bm_h));
 						cyl_col       = mix(cyl_col, bm_tc, cyl_sty);
-						float bm_rad  = bm_core + bm_glow;
+						// the very centre of the axis a touch more opaque
+						float bm_pin  = 0.6 * exp(-cyl_t * cyl_t * 90.0);
+						float bm_rad  = bm_core + bm_glow + bm_pin;
 						cyl_rad       = mix(cyl_rad, bm_rad, cyl_sty);
 						// the beam is more see through
 						float cyl_den = 11.0 * mix(1.0, 0.6, cyl_sty) * ubo.flame * cyl_src * (0.3 + cyl_fs) * cyl_rad * cyl_fad * cyl_dt;
@@ -1026,14 +1029,16 @@ Orbiter Aura
 					if (alpha > 0.97) break;
 					vec3  cp   = ro + rd * (cor_te + (float(k) + 0.5) * cor_dt);
 					float crn  = length(cp - cor_o) / cor_R;
-					vec3  hz_np = cp * vec3(6.0, 2.6, 6.0) - vec3(0.0, ta * 1.0, 0.0);
+					// rolls up through the glow, quickly, in wide lumps
+					vec3  hz_np = cp * vec3(3.5, 2.6, 3.5) - vec3(0.0, ta * 3.0, 0.0);
 					float haze = mix(pfog(hz_np), pfog(hz_np * 1.9 - vec3(0.0, ta * 1.7, 0.0)), 0.35);
 					// white and even in the middle; outward the perlin only
 					// eats into the orange (the edge pulled in, never out)
-					float fz   = smoothstep(0.3, 1.0, crn);
-					float crf  = crn + haze * 0.35 * fz;
+					// some of it reaches the middle too (40% there)
+					float fz   = mix(0.4, 1.0, smoothstep(0.0, 0.7, crn));
+					float crf  = crn + haze * 0.5 * fz;
 					float dens = exp(-crf * crf * 3.2)
-					           * mix(1.0, 0.55 + 0.45 * haze, fz);
+					           * mix(1.0, 0.2 + 0.8 * haze, fz);
 					// the white as bright as the orange it replaces, no more
 					vec3  cc   = mix(vec3(1.6, 1.55, 1.5), vec3(3.4, 1.15, 0.20),
 					                 smoothstep(0.0, 0.45, crf));
