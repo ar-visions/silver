@@ -367,39 +367,43 @@ Orbiter PBR
         // the blue as painted (stored linear, so lifted to sRGB as
         // blender shows it), feathered sides too; not the core's red
         float gv_m  = pow(v_color.b, 1.0 / 2.2) * (1.0 - step(0.5, v_color.r));
-        // one climb per turn of the halo
-        float rl_t  = fract(ubo.spin / 6.2831853);
+        // one climb per turn of the halo, fast from the core and
+        // slowing toward the rim (an ease out)
+        float rl_r  = fract(ubo.spin / 6.2831853);
+        float rl_t  = 1.0 - (1.0 - rl_r) * (1.0 - rl_r);
         // the flower's profile, radius and height: wall, then flare
         vec2  rl_a  = vec2(0.20, -0.44);
         vec2  rl_b  = vec2(0.28, -0.24);
         vec2  rl_c  = vec2(0.44, -0.15);
         // it starts a reach under the core's edge and ends past the
-        // rim at 95% of the reach out, so it rises in and leaves
+        // rim, far out (radius about 0.74), so it rises in and leaves
         vec2  rl_s  = rl_a - normalize(rl_b - rl_a) * 0.0525;
         vec2  rl_d  = rl_c + normalize(rl_c - rl_b) * 0.12;
-        rl_d.x      = rl_d.x * 0.95;
+        rl_d.x      = rl_d.x * 1.368;
         vec2  rl_p  = (rl_t < 0.1) ? mix(rl_s, rl_a, rl_t * 10.0)
                     : (rl_t < 0.5) ? mix(rl_a, rl_b, (rl_t - 0.1) * 2.5)
                     : (rl_t < 0.85) ? mix(rl_b, rl_c, (rl_t - 0.5) / 0.35)
                     : mix(rl_c, rl_d, (rl_t - 0.85) / 0.15);
         vec2  rl_q  = vec2(length(v_local_pos.xz), v_local_pos.y);
-        // half again as wide as it was (0.035 to 0.08)
-        float rl_w  = mix(0.0525, 0.12, smoothstep(0.1, 0.85, rl_t));
+        // wider as it grows: in step with its radius, 0.0525 at the
+        // core's edge (radius 0.20)
+        float rl_w  = 0.0525 * rl_p.x / rl_a.x;
         float rl_f  = max(0.0, 1.0 - distance(rl_q, rl_p) / rl_w);
         // dark at the jump back to the core: in over the first 5%,
-        // out over the last 10%
+        // out from 80% to 90% of the climb, none past it
         float rl_e  = smoothstep(0.0, 0.05, rl_t)
-                    * (1.0 - smoothstep(0.9, 1.0, rl_t));
+                    * (1.0 - smoothstep(0.8, 0.9, rl_t));
         // the base: the solid blue only (over half), at half light
         float bs_m  = step(0.5, v_color.b) * (1.0 - step(0.5, v_color.r));
         bs_m        = bs_m * ubo.groove;
         // the pulse: every bit of blue, feathered sides too
         float pu_m  = clamp(1.5 * gv_m * rl_f * rl_f * rl_e
                             * ubo.groove, 0.0, 1.0);
-        // always: the pulse as it crosses the outer circle (halfway
-        // from the lip to its end), at half: the circle's soft edge
-        vec2  st_c  = mix(rl_c, rl_d, 0.5);
-        float st_f  = max(0.0, 1.0 - distance(rl_q, st_c) / 0.08);
+        // always: the pulse as it is at 80% of its climb (its place
+        // and width there), at half: the circle's soft edge
+        vec2  st_c  = mix(rl_b, rl_c, (0.8 - 0.5) / 0.35);
+        float st_w  = 0.0525 * st_c.x / rl_a.x;
+        float st_f  = max(0.0, 1.0 - distance(rl_q, st_c) / st_w);
         float st_m  = 0.5 * 1.5 * gv_m * st_f * st_f;
         pu_m        = max(pu_m, clamp(st_m, 0.0, 1.0));
 
@@ -2017,9 +2021,9 @@ Avatar OrbiterAvatar
     busy_pulse  : f32   [ 0.6 ]
     rest_ph     : f32   [ 1.2 ]
     busy_ph     : f32   [ 2.4 ]
-    # the halo's height: two thirds of what it was, under the mask
-    rest_halo   : f32   [ 0.533 ]
-    busy_halo   : f32   [ 1.067 ]
+    # the halo's height: half of what it was, under the mask
+    rest_halo   : f32   [ 0.4 ]
+    busy_halo   : f32   [ 0.8 ]
     # the halo stage's filter: state * 0.95 + goal * 0.05 a frame, about
     # a second; once done the second halo settles back to the first at
     # 0.99 + 0.01
