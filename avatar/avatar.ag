@@ -407,15 +407,24 @@ Orbiter PBR
         // the base: the solid blue only (over half), at half light
         float bs_m  = step(0.5, v_color.b) * (1.0 - step(0.5, v_color.r));
         bs_m        = bs_m * ubo.groove;
+        // building: every bit of blue holds 0.8 of the light as its
+        // base, and the pulse only brightens it from there
+        // (the flower only, to its lip at 0.44: not the outer walls)
+        float fl_in = 1.0 - smoothstep(0.43, 0.445, rl_q.x);
+        bs_m        = max(bs_m, clamp(gv_m, 0.0, 1.0) * ubo.done * fl_in);
         // the pulse: every bit of blue, feathered sides too
         float pu_m  = clamp(1.5 * gv_m * rl_f * rl_f * rl_e
                             * ubo.groove, 0.0, 1.0);
-        // always: the pulse as it is at 80% of its climb (its place
-        // and width there), at half: the circle's soft edge
-        vec2  st_c  = mix(rl_b, rl_c, (0.8 - 0.5) / 0.35);
-        float st_w  = 0.0525 * st_c.x / rl_a.x;
+        // always: the pulse as it is at the end of its lit travel (at
+        // the lip, its width there), the same blue lift, held for good
+        // its light travels 0.02 from the ring, then is gone
+        float st_w  = 0.02;
+        // on the flower's gold edge ring (the shell's flower metal,
+        // radius 0.452 to 0.471, height -0.149 to -0.162)
+        vec2  st_c  = vec2(0.4615, -0.1555);
         float st_f  = max(0.0, 1.0 - distance(rl_q, st_c) / st_w);
-        float st_m  = 0.5 * 1.5 * gv_m * st_f * st_f;
+        // light only, by place, not paint: it softens the edge
+        float st_m  = 0.5 * st_f * st_f;
         pu_m        = max(pu_m, clamp(st_m, 0.0, 1.0));
 
         vec3  result     = (diffuse + specular) * mat_ao + core_contrib + eng_light + blue_light + core_glow + pl_lit;
@@ -436,7 +445,7 @@ Orbiter PBR
                            0.5 * sp_in * sp_lo);
         // painted on, not added: it shows on the bright faces too
         vec3  rl_col = vec3(1.2, 0.5, 2.6);
-        result = mix(result, rl_col * 0.5, bs_m);
+        result = mix(result, rl_col * mix(0.5, 0.8, ubo.done), bs_m);
         result = mix(result, rl_col * 2.0, pu_m);
 
 
@@ -1000,8 +1009,8 @@ Orbiter Aura
 		// as an internal volume (not a flat disc). hot orange at center → deep orange
 		// at the rim; the PBR walls pick up the matching tone via the throat light.
 		vec3  cor_o  = (ubo.model * vec4(0.0, -0.07, 0.0, 1.0)).xyz;
-		// a third smaller than it was (0.44): less of it over the fins
-		float cor_R  = 0.295;
+		// its full size again: the fuzzed edge carries it now
+		float cor_R  = 0.44;
 		vec3  cor_oc = ro - cor_o;
 		float cor_qb = dot(rd, cor_oc);
 		float cor_qc = dot(cor_oc, cor_oc) - cor_R * cor_R;
@@ -1019,9 +1028,19 @@ Orbiter Aura
 					float crn  = length(cp - cor_o) / cor_R;
 					vec3  hz_np = cp * vec3(6.0, 2.6, 6.0) - vec3(0.0, ta * 1.0, 0.0);
 					float haze = mix(pfog(hz_np), pfog(hz_np * 1.9 - vec3(0.0, ta * 1.7, 0.0)), 0.35);
-					float dens = exp(-crn * crn * 3.2) * (0.55 + 0.45 * haze);
-					vec3  cc   = mix(vec3(3.4, 1.15, 0.20), vec3(1.5, 0.40, 0.05), smoothstep(0.0, 1.0, crn));
-					float ce   = dens * cor_dt * 6.5 * ubo.flame * cor_pl;
+					// white and even in the middle; outward the perlin only
+					// eats into the orange (the edge pulled in, never out)
+					float fz   = smoothstep(0.3, 1.0, crn);
+					float crf  = crn + haze * 0.35 * fz;
+					float dens = exp(-crf * crf * 3.2)
+					           * mix(1.0, 0.55 + 0.45 * haze, fz);
+					// the white as bright as the orange it replaces, no more
+					vec3  cc   = mix(vec3(1.6, 1.55, 1.5), vec3(3.4, 1.15, 0.20),
+					                 smoothstep(0.0, 0.45, crf));
+					cc         = mix(cc, vec3(1.5, 0.40, 0.05),
+					                 smoothstep(0.45, 1.0, crf));
+					// half as bright as it was (6.5)
+					float ce   = dens * cor_dt * 3.25 * ubo.flame * cor_pl;
 					col   += cc * ce * (1.0 - alpha);
 					alpha += ce * (1.0 - alpha);
 				}
@@ -2215,10 +2234,12 @@ Avatar OrbiterAvatar
             if [ body ] body.groove = groove
             # the exchange avatar turns at the working rate face on too:
             # its rotating light reads as rotation from the first frame
+            # a build turns 40% faster than thinking, no more: the
+            # build's heat no longer speeds it on top
             gs : f32 [
-                (rl) ? busy_spin * 1.8 : (wb || animate_always)
+                (rl) ? busy_spin * 1.4 : (wb || animate_always)
                 ? busy_spin : rest_spin ]
-            gs = gs * (1.0 + heat_spin * heat)
+            gs = gs * (1.0 + heat_spin * heat_base)
             spin_rate  = filter_n[ spin_rate, gs, spin_amount,
                                    ux->frame_factor ]
             # the phase runs on real time (microseconds), not the frame
