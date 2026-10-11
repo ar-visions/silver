@@ -347,6 +347,17 @@ Orbiter PBR
 
         vec3 core_st      = mix(vec3(0.04, 0.10, 0.30) * ubo.work, vec3(0.24, 0.07, 0.38), ubo.done);
         vec3 core_contrib = (emit + core_st) * step(0.5, v_color.r) * 0.5 * core_osc;
+        // the hexagon strip (past radius 0.6): black metal, the state's
+        // colour glowing faintly from within, soft as its red is painted
+        float hx_m = smoothstep(0.58, 0.62, length(v_local_pos.xz));
+        // its colour by state: idle none (black), thinking dark
+        // blue, building purple, recording (the mic) white over all
+        vec3  hx_s = vec3(0.0);
+        hx_s       = mix(hx_s, vec3(0.22, 0.16, 0.9), ubo.work);
+        hx_s       = mix(hx_s, vec3(0.75, 0.2, 1.2), ubo.done);
+        hx_s       = mix(hx_s, vec3(1.2, 1.2, 1.2), ubo.listen);
+        vec3  hx_c = hx_s * v_color.r * 0.25 * core_osc;
+        core_contrib = mix(core_contrib, hx_c, hx_m);
 
         // green verts catch the ring plasma's turning light
         vec3  pl_d     = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
@@ -904,6 +915,8 @@ Orbiter Aura
 						float rng_beam   = rng_rise * 0.2 * rng_u;    // 10% of the peak, the full height
 						// brighter overall (x2), each ray normalised to its crossing
 						float d          = 36.0 * ubo.pulse_width * rng_center * rng_pulse * (rng_vol + rng_beam) * rng_dt * rng_norm;
+						// 20% more opaque while a build's flame burns
+						d               *= 1.0 + 0.2 * clamp(ubo.flame, 0.0, 1.0);
 						col   += rng_col * d * (1.0 - alpha);
 						alpha += d * (1.0 - alpha);
 					}
@@ -1086,7 +1099,10 @@ Orbiter Core
         vec3  gq     = vec3(v_local_pos.xz * 28.0, ubo.core_phase * 0.15);
         float gn     = 0.6 * vnoise(gq) + 0.4 * vnoise(gq * 2.3 + 7.1);
         float gm     = vnoise(gq * 0.6 + vec3(3.3, 1.7, 0.0));
-        vec2  guv    = v_uv + (vec2(gn, gm) - 0.5) * 0.06;
+        // idle (core_base 0.8): almost none of it (5%); active (1.0)
+        float gk     = mix(0.05, 1.0, clamp((ubo.core_base - 0.8)
+                                            / 0.2, 0.0, 1.0));
+        vec2  guv    = v_uv + (vec2(gn, gm) - 0.5) * 0.06 * gk;
         vec4  tex    = textureLod(color, guv, pulse * 2.0 + 2.0 * inner);
         vec3  col;
         float alpha;
@@ -1099,7 +1115,7 @@ Orbiter Core
             float center   = pow(1.0 - inner, 1.6);
             vec3  hot      = mix(pool_rim, pool_hot, center);
             float detail   = 0.85 + 0.15 * dot(tex.rgb, vec3(0.33));
-            col            = detail * hot * (0.8 + 0.4 * gn);
+            col            = detail * hot * (1.0 + 0.4 * (gn - 0.5) * gk);
             alpha          = tex.a;
         } else {
             float r      = max(abs(v_local_pos.x) - 0.52, 0.0);
@@ -1214,6 +1230,8 @@ ModelViewProject GrooveMask
 ModelViewProject Heat
     mutable pulse_height : f32
     mutable heat         : f32
+    # thinking or building: 0 idle, 1 full (the pool's lumps follow)
+    mutable busy         : f32
     # the grooves' glow: 0 dark, 1 full
     mutable groove       : f32
     attrib color     : LayoutBinding [ type:typeid[ Surface ],
@@ -1319,7 +1337,9 @@ ModelViewProject Heat
         float nx  = vnoise(np) - 0.5;
         float ny  = vnoise(np * 1.7 + vec3(5.2, -tt * 1.4, 1.3)) - 0.5;
         // the pool bends at its own strength: 3x full heat, always
-        float hs  = mix(ubo.heat, 3.0, pin);
+        // idle: almost none of it (5%)
+        float ak  = mix(0.05, 1.0, clamp(ubo.busy, 0.0, 1.0));
+        float hs  = mix(ubo.heat, 3.0, pin) * ak;
         vec2  off = (acr * nx + up * ny * 0.6) * rad * 0.045 * hs * wgt;
         vec2  c0  = v_uv + off / asp;
         // the blur only in pockets of hotter air rising up the jet: about
@@ -1329,7 +1349,7 @@ ModelViewProject Heat
         float hn  = 0.6 * vnoise(hq) + 0.4 * vnoise(hq * 2.7 + vec3(5.2, 1.3, 9.1));
         // in the pool the perlin picks the blur's radius pocket by
         // pocket: 0.5 px to 6.5 px, blended across
-        float hp  = hn * pin;
+        float hp  = hn * pin * ak;
         if (hp < 0.01) {
             fragColor = texture(color, c0);
             fragColor.rgb += gl3;
@@ -1376,6 +1396,8 @@ element Avatar
     public mask_s            : GrooveMask
     # the grooves' glow: 0 dark, 1 full (set by the owner)
     public groove            : f32
+    # thinking or building: 0 idle, 1 full (set by the owner)
+    public active            : f32
     public heat_s            : Heat
     public heat              : f32
     intern models            : map Model   [string]
@@ -1927,6 +1949,7 @@ element Avatar
                 heat_s.time         = clock_s
                 heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
                 heat_s.heat         = heat
+                heat_s.busy         = active
                 # the grooves light in the body's ring light now
                 heat_s.groove       = 0.0
                 heat_target.state_mask = msk
@@ -2150,7 +2173,8 @@ Avatar OrbiterAvatar
         if [ aura ]
             rl : bool [ swap_on ]
             dn : bool [ rl || work_done ]
-            hg : f32 [ (!dn && wb && edits_in) ? 1.0 : 0.0 ]
+            # a build (rl) stands the halo as tall as thinking does
+            hg : f32 [ (rl || (!dn && wb && edits_in)) ? 1.0 : 0.0 ]
             halo_cur  = filter_n[ halo_cur,  hg,
                                   (dn) ? settle_amount : stage_amount,
                                   ux->frame_factor ]
@@ -2187,6 +2211,7 @@ Avatar OrbiterAvatar
             # the flower's grooves light with the second halo and stay
             # fully on while the jet burns
             groove = max[ halo_cur, flame_cur ]
+            active = max[ work_cur, flame_cur ]
             if [ body ] body.groove = groove
             # the exchange avatar turns at the working rate face on too:
             # its rotating light reads as rotation from the first frame
