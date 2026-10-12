@@ -1,0 +1,1212 @@
+# aeon: the 3D design app. a project is a folder (a module
+# folder): <name>.agi holds the design, nodes wired by name
+export 0.1.0
+
+import vec
+import img
+import gltf
+import trinity
+
+# blender 4.5.14: its python 3.11 (with numpy) runs blend.py
+import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+    > mkdir -p {install}/blender
+    > test -x {install}/blender/blender || tar -xJf {import_file} --strip-components 1 -C {install}/blender
+    > ln -sf ../blender/4.5/python/bin/python3.11 {install}/bin/blender-python
+
+# bpy 4.5.14: the same blender as a python module; blend.py
+# imports it, so no blender program is started
+import https://files.pythonhosted.org/packages/5e/e2/89cf67b8dcb0644e3bc97f46981d4e095d808179c4f93a348b57ac00af37/bpy-4.5.14-cp311-cp311-manylinux_2_28_x86_64.whl
+    > test -d {install}/pylib-blender/bpy || {install}/bin/blender-python -m zipfile -e {import_file} {install}/pylib-blender
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
+
+import Poly
+import Design
+import View
+import Stage
+import Panels
+
+# the cell a point falls in, moved by o, as a hash key
+func cell_key [ x: f32, y: f32, z: f32, cell: f32, ox: i32,
+                oy: i32, oz: i32 ] -> i64
+    ix : i64 [ i64[ floor[ x / cell ] ] + ox ]
+    iy : i64 [ i64[ floor[ y / cell ] ] + oy ]
+    iz : i64 [ i64[ floor[ z / cell ] ] + oz ]
+    return (ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)
+
+# the gap from each point of a to the nearest of b, at most
+func nearest_gap [ a: vec f32, b: vec f32, cell: f32 ] -> f32
+    nb : i32 [ b.count / 3 ]
+    size : i64 [ 16 ]
+    while [ size < i64[ nb ] * 2 ] size = size * 2
+    mask : i64 [ size - 1 ]
+    heads : vec i32 [ size ]
+    next : vec i32 [ nb ]
+    for [ i: i32 0, i < nb, i += 1 ]
+        h : i64 [ cell_key[ b[ i * 3 ], b[ i * 3 + 1 ], b[ i * 3 + 2 ],
+                            cell, 0, 0, 0 ] & mask ]
+        next[ i ] = heads[ h ]
+        heads[ h ] = i + 1
+    worst : f32 [ 0.0 ]
+    na : i32 [ a.count / 3 ]
+    for [ i: i32 0, i < na, i += 1 ]
+        x : f32 [ a[ i * 3 ] ]
+        y : f32 [ a[ i * 3 + 1 ] ]
+        z : f32 [ a[ i * 3 + 2 ] ]
+        best : f32 [ cell * cell ]
+        for [ k: i32 0, k < 27, k += 1 ]
+            h : i64 [ cell_key[ x, y, z, cell, k % 3 - 1,
+                                (k / 3) % 3 - 1, k / 9 - 1 ] & mask ]
+            j : i32 [ heads[ h ] ]
+            while [ j > 0 ]
+                dx : f32 [ b[ (j - 1) * 3 ] - x ]
+                dy : f32 [ b[ (j - 1) * 3 + 1 ] - y ]
+                dz : f32 [ b[ (j - 1) * 3 + 2 ] - z ]
+                d : f32 [ dx * dx + dy * dy + dz * dz ]
+                if [ d < best ] best = d
+                j = next[ j - 1 ]
+        if [ best > worst ] worst = best
+    return sqrt[ worst ]
+
+# blender's own result for an object: counts, then points
+func read_ref [ p: path, counts: vec i32 ] -> vec f32
+    f : handle [ fopen[ p, "rb" ] ]
+    if [ !f ] return null
+    head : local u32 [ 2 ]
+    fread[ head, 4, 2, f ]
+    counts.push[ i32[ head[ 0 ] ] ]
+    counts.push[ i32[ head[ 1 ] ] ]
+    v : vec f32 [ i32[ head[ 0 ] ] * 3 ]
+    fread[ @v[ 0 ], 4, head[ 0 ] * 3, f ]
+    fclose[ f ]
+    return v
+
+# a design's every object against what blender makes of it
+func matches_blender [ dir: path, refs: path, objects: i32 ] -> bool
+    d : Design [ dir: dir ]
+    if [ d.objects.count != objects ]
+        log 'aeon: {d.objects.count} objects, not {objects}'
+        return false
+    good : bool [ true ]
+    for [ o: Object ] in d.objects
+        m : o.evaluate[ d.dir ]
+        counts : vec i32 []
+        rp : path '{refs}/{o.name}.ref'
+        made : read_ref[ rp, counts ]
+        if [ !m || !made ]
+            log 'aeon: {o.name}: nothing to compare'
+            good = false
+            continue
+        gap : f32 [ 0.0 ]
+        back : f32 [ 0.0 ]
+        if [ m.verts[] == counts[ 0 ] ]
+            gap = nearest_gap[ m.pos, made, 0.01 ]
+            back = nearest_gap[ made, m.pos, 0.01 ]
+        nv : i32 [ m.verts[] ]
+        nf : i32 [ m.faces[] ]
+        log 'aeon: {o.name}: {nv} of {counts[ 0 ]} points, {nf} of {counts[ 1 ]} faces, gap {gap} back {back}'
+        if [ nv != counts[ 0 ] || nf != counts[ 1 ] ] good = false
+        # opensubdiv's limit patches differ by up to 0.00033
+        if [ gap > 0.0005 || back > 0.0005 ] good = false
+    return good
+
+expect func t_flower_matches_blender [] -> bool
+    root : path.path_startup[]
+    # its own copy: aeon/flower888 is the one edited in aeon
+    dir : path '{root}/aeon/tests/flower888'
+    refs : path '{root}/aeon/tests/flower888'
+    return matches_blender[ dir, refs, 5 ]
+
+# a .blend made into a project folder beside it, by blend.py
+# with the bpy this module imports; '' when it fails
+func import_blend [ file: string ] -> string
+    start : path.path_startup[]
+    src : path [ file ]
+    if [ !file.starts_with[ '/' ] ] src = path '{start}/{file}'
+    if [ !src.exists[] ]
+        log 'aeon: no file at {src}'
+        return ''
+    inst : path.path_install[]
+    # blend.py sits in the module folder, beside aeon.ag
+    listed : path '{inst}/build/silver-aeon.source'
+    txt : string [ listed.load[ typeid[ string ], null ] ]
+    lines : txt.split[ '\n' ]
+    first : path [ lines[ 0 ] ]
+    script : path '{first.parent_dir[]}/blend.py'
+    # the name up to its first dot: flower888.16.32 -> flower888
+    nm : string src.stem[]
+    dot : i32 [ nm.index_of[ '.' ] ]
+    if [ dot > 0 ] nm = nm.mid[ 0, dot ]
+    out : path '{src.parent_dir[]}/{nm}'
+    made : path '{out}/{nm}.agi'
+    if [ made.exists[] && made.modified_time[] >= src.modified_time[] ]
+        return '{out}'
+    log 'aeon: importing {src} into {out}'
+    # au runs it with install/bin first: our blender-python
+    run : command { PYTHONPATH={inst}/pylib-blender blender-python
+        {script.shell_escape[]} {src.shell_escape[]}
+        {out.shell_escape[]} }
+    said : string run.run[ false ]
+    for [ ln: string ] in said.split[ '\n' ]
+        if [ ln.starts_with[ 'aeon:' ] || ln.starts_with[ 'Error' ] ]
+            log '{ln}'
+    if [ !made.exists[] || made.modified_time[] < src.modified_time[] ]
+        log 'aeon: blender did not write {made}'
+        return ''
+    return '{out}'
+
+# a point's place on screen: x, y in pixels and its depth
+class Spot
+    public x : f32
+    public y : f32
+    public z : f32
+
+# an edit to undo: an object's cage points before it
+class CageEdit
+    public name : string
+    public pos  : vec f32
+    # an object's place before it moved (pos then is null)
+    public at   : vec f32
+    public turn : vec f32
+    public size : vec f32
+
+# the design's stage: drag a cage point to move it, elsewhere to
+# turn the view; x, y or z held keeps a move on that axis
+element DesignView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public design  : Design
+    # the chosen object: moved whole, or its cage edited (tab)
+    public chosen  : string
+    # what the panels and the view share as chosen
+    public sel     : Selection
+    # changes held in memory until ctrl/cmd + s
+    public edits   : Edits
+    # a node or pass changed in memory: the stages are made again
+    public rebuild_due : bool
+    # tab: the chosen object's inner cage, not the object
+    mutable inner  : bool
+    public yaw     : f32 [ 0.6 ]
+    public pitch   : f32 [ 0.35 ]
+    public dist    : f32 [ 4.0 ]
+    mutable stage  : Stage
+    # the chosen object alone, over the others greyed (no choice:
+    # unused); and whose focus the stages show now
+    mutable focus    : Stage
+    mutable focus_of : string
+    # the project folder watched: an outside .agi edit redraws
+    mutable watcher  : watch
+    mutable agi_seen : bool
+    # each .agi's time as last read or written here
+    mutable known_files : vec string
+    mutable known_times : vec i64
+    # where a drag has sent the view; it eases there each frame
+    mutable yaw_goal   : f32
+    mutable pitch_goal : f32
+    mutable goal_set   : bool
+    mutable dist_goal  : f32
+    mutable center_goal : vec3f
+    # g, r, s: 1 move, 2 turn, 3 size, 0 none
+    mutable op          : i32
+    # the selection as it was when the op began
+    mutable from_at     : vec f32
+    mutable from_turn   : vec f32
+    mutable from_size   : vec f32
+    mutable from_pos    : vec f32
+    mutable pivot       : vec3f
+    # axes named for the pointer, and for the number being typed
+    mutable lock_mask   : i32
+    mutable typing_mask : i32
+    mutable typing_text : string
+    # values set by typing, axis by axis
+    mutable typed_v     : vec f32
+    mutable typed_on    : vec i32
+    # the pointer's value, its size step, and the eased one shown
+    mutable grow        : f32
+    mutable mouse_v     : vec3f
+    mutable shown_v     : vec3f
+    # the point the view turns around; ctrl/cmd + drag moves it
+    mutable center : vec3f
+    # the view's matrix (z up): picking and the cage use it
+    mutable view_m : mat4f
+    # 1 turning the view, 2 moving points, 3 the camera, 4 the
+    # object
+    mutable mode   : i32
+    # g pressed: the selection follows the pointer, no button held
+    mutable grabbing : bool
+    mutable picked : vec i32
+    mutable undo   : vec CageEdit
+    mutable dirty  : bool
+
+    # the watch's thread only raises the flag; draw does the rest
+    func on_files [ changed: Au :: v: DesignView ] -> none
+        v.agi_seen = true
+
+    # the .agi files of the project and their times now
+    func agi_files [] -> vec string
+        out : vec string []
+        nm : string design.dir.filename[]
+        out.push[ '{design.dir}/{nm}.agi' ]
+        out.push[ '{design.dir}/{nm}.render.agi' ]
+        mats : path '{design.dir}/materials'
+        if [ mats.exists[] ]
+            for [ e: path ] in mats.ls[ null, false ]
+                es : string '{e}'
+                if [ es.ends_with[ '.agi' ] ] out.push[ es ]
+        return out
+
+    func time_of [ f: string ] -> i64
+        p : path [ f ]
+        if [ !p.exists[] ] return 0
+        return p.modified_time[]
+
+    # remember every .agi's time (after a read or our own write)
+    func note_files []
+        known_files = agi_files[]
+        known_times = vec i64 []
+        for [ f: string ] in known_files
+            known_times.push[ time_of[ f ] ]
+
+    # what changed since: 0 nothing, 1 the render graph, 2 more
+    func changed_files [] -> i32
+        now : agi_files[]
+        if [ !known_files || now.count != known_files.count ] return 2
+        what : i32 [ 0 ]
+        nm : string design.dir.filename[]
+        graph_file : string '{design.dir}/{nm}.render.agi'
+        for [ i: i32 0, i < now.count, i += 1 ]
+            if [ now[ i ].compare[ known_files[ i ] ] != 0 ] return 2
+            if [ time_of[ now[ i ] ] == known_times[ i ] ] continue
+            if [ now[ i ].compare[ graph_file ] == 0 ]
+                if [ what == 0 ] what = 1
+            el
+                what = 2
+        return what
+
+    # an outside edit: settings retuned in place, else rebuilt
+    func follow_files [ cv: Canvas, w: Window, pw: i32, ph: i32 ]
+        what : changed_files[]
+        if [ what == 0 ] return
+        if [ what == 1 && stage.retune[] && focus.retune[] ]
+            log 'aeon: settings retuned'
+        el
+            design.load[]
+            focus_of = ''
+            stage = Stage [ design: design ]
+            stage.build[ cv.vk, w, pw, ph ]
+            focus = Stage [ design: design, transparent: true ]
+            focus.build[ cv.vk, w, pw, ph ]
+            if [ picked ] picked.clear[]
+            log 'aeon: design reloaded'
+        note_files[]
+
+    func editing [] -> Object
+        if [ !design || !chosen ] return null
+        for [ o: Object ] in design.objects
+            if [ o.name.compare[ chosen ] == 0 ] return o
+        return null
+
+    # the view's matrices for this frame
+    func camera_eye [] -> vec3f
+        cp : f32 [ cos[ pitch ] ]
+        return vec3f [ center.x + dist * cp * cos[ yaw ],
+                       center.y + dist * cp * sin[ yaw ],
+                       center.z + dist * sin[ pitch ] ]
+
+    # the pointer's move as a move in the world, in the plane
+    # facing the view, at the depth of its centre
+    func drag_world [ ev: Event ] -> vec3f
+        cp : f32 [ cos[ pitch ] ]
+        fx : f32 [ 0.0 - cp * cos[ yaw ] ]
+        fy : f32 [ 0.0 - cp * sin[ yaw ] ]
+        fz : f32 [ 0.0 - sin[ pitch ] ]
+        # the view's x is mirrored (its flipped y): right is z x f
+        rx : f32 [ 0.0 - fy ]
+        ry : f32 [ fx ]
+        rl : f32 [ sqrt[ rx * rx + ry * ry ] ]
+        if [ rl < 0.0001 ] rl = 0.0001
+        rx = rx / rl
+        ry = ry / rl
+        upx : f32 [ ry * fz ]
+        upy : f32 [ 0.0 - rx * fz ]
+        upz : f32 [ rx * fy - ry * fx ]
+        scale : f32 [ 2.0 * dist * tan[ radians[ 20.0 ] ] / bounds.h ]
+        dx : f32 [ ev.mouse.delta.x * scale ]
+        dy : f32 [ ev.mouse.delta.y * scale ]
+        return vec3f [ rx * dx + upx * dy, ry * dx + upy * dy,
+                       upz * dy ]
+
+    # a point in the object's space, placed, then on screen
+    func spot [ o: Object, x: f32, y: f32, z: f32 ] -> Spot
+        where : Placement [ at: o.at, turn: o.turn, size: o.size ]
+        m : where.matrix[]
+        wx : f32 [ m[ 0 ] * x + m[ 1 ] * y + m[ 2 ] * z + m[ 3 ] ]
+        wy : f32 [ m[ 4 ] * x + m[ 5 ] * y + m[ 6 ] * z + m[ 7 ] ]
+        wz : f32 [ m[ 8 ] * x + m[ 9 ] * y + m[ 10 ] * z + m[ 11 ] ]
+        vm : mat4f [ view_m ]
+        pm : mat4f [ stage.proj ]
+        ex : f32 [ vm.m[ 0 ] * wx + vm.m[ 4 ] * wy + vm.m[ 8 ] * wz
+                   + vm.m[ 12 ] ]
+        ey : f32 [ vm.m[ 1 ] * wx + vm.m[ 5 ] * wy + vm.m[ 9 ] * wz
+                   + vm.m[ 13 ] ]
+        ez : f32 [ vm.m[ 2 ] * wx + vm.m[ 6 ] * wy + vm.m[ 10 ] * wz
+                   + vm.m[ 14 ] ]
+        ew : f32 [ vm.m[ 3 ] * wx + vm.m[ 7 ] * wy + vm.m[ 11 ] * wz
+                   + vm.m[ 15 ] ]
+        cx : f32 [ pm.m[ 0 ] * ex + pm.m[ 4 ] * ey + pm.m[ 8 ] * ez
+                   + pm.m[ 12 ] * ew ]
+        cy : f32 [ pm.m[ 1 ] * ex + pm.m[ 5 ] * ey + pm.m[ 9 ] * ez
+                   + pm.m[ 13 ] * ew ]
+        cw : f32 [ pm.m[ 3 ] * ex + pm.m[ 7 ] * ey + pm.m[ 11 ] * ez
+                   + pm.m[ 15 ] * ew ]
+        if [ cw <= 0.0001 ] return Spot [ x: -1.0, y: -1.0, z: -1.0 ]
+        return Spot [ x: (cx / cw * 0.5 + 0.5) * bounds.w,
+                      y: (cy / cw * 0.5 + 0.5) * bounds.h, z: cw ]
+
+    # the cage point nearest the pointer, within 12 px; -1 none
+    func nearest [ px: f32, py: f32 ] -> i32
+        o : editing[]
+        if [ !o || !stage ] return -1
+        c : o.cage[]
+        if [ !c || !c.poly ] return -1
+        best : f32 [ 144.0 ]
+        at : i32 [ -1 ]
+        for [ i: i32 0, i < c.poly.verts[], i += 1 ]
+            s : spot[ o, c.poly.pos[ i * 3 ], c.poly.pos[ i * 3 + 1 ],
+                      c.poly.pos[ i * 3 + 2 ] ]
+            dx : f32 [ s.x - px ]
+            dy : f32 [ s.y - py ]
+            d : f32 [ dx * dx + dy * dy ]
+            if [ s.z > 0.0 && d < best ]
+                best = d
+                at = i
+        return at
+
+    # the shown object with a cage point nearest the pointer,
+    # within 16 px
+    func nearest_object [ px: f32, py: f32 ] -> Object
+        if [ !design || !stage ] return null
+        best : f32 [ 256.0 ]
+        found : Object [ null ]
+        for [ o: Object ] in design.objects
+            if [ !o.shown ] continue
+            c : o.cage[]
+            if [ !c || !c.poly ] continue
+            for [ i: i32 0, i < c.poly.verts[], i += 1 ]
+                s : spot[ o, c.poly.pos[ i * 3 ],
+                          c.poly.pos[ i * 3 + 1 ],
+                          c.poly.pos[ i * 3 + 2 ] ]
+                dx : f32 [ s.x - px ]
+                dy : f32 [ s.y - py ]
+                d : f32 [ dx * dx + dy * dy ]
+                if [ s.z > 0.0 && d < best ]
+                    best = d
+                    found = o
+        return found
+
+    # object mode: a click chooses an object, a drag moves it
+    # object mode: a click chooses an object
+    func press_object [ ev: Event ]
+        o : nearest_object[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        if [ !o ] return
+        chosen = o.name
+        if [ sel ]
+            sel.object = o.name
+            sel.pass   = ''
+            sel.node   = ''
+
+    # g, r or s: the selection moves, turns or grows from where
+    # it was, by the pointer or by typed values, until a click or
+    # enter keeps it or a right click or escape puts it back
+    func start_op [ kind: i32 ]
+        o : editing[]
+        if [ !o || op != 0 ] return
+        if [ inner && (!picked || picked.count == 0) ] return
+        if [ !undo ] undo = vec CageEdit []
+        if [ !o.at ] o.at = vec f32 [ 3 ]
+        if [ !o.turn ] o.turn = vec f32 [ 3 ]
+        if [ !o.size ] o.size = vec f32 [] [ 1.0, 1.0, 1.0 ]
+        from_at   = copy_of[ o.at ]
+        from_turn = copy_of[ o.turn ]
+        from_size = copy_of[ o.size ]
+        if [ inner ]
+            c : o.cage[]
+            from_pos = copy_of[ c.poly.pos ]
+            undo.push[ CageEdit [ name: o.name,
+                                  pos: copy_of[ c.poly.pos ] ] ]
+            # the picked points' middle: turns and sizes go round it
+            mx : f32 [ 0.0 ]
+            my : f32 [ 0.0 ]
+            mz : f32 [ 0.0 ]
+            for [ i: i32 ] in picked
+                mx += from_pos[ i * 3 ]
+                my += from_pos[ i * 3 + 1 ]
+                mz += from_pos[ i * 3 + 2 ]
+            nn : f32 [ picked.count ]
+            pivot = vec3f [ mx / nn, my / nn, mz / nn ]
+        el
+            undo.push[ CageEdit [ name: o.name, at: copy_of[ o.at ],
+                turn: copy_of[ o.turn ], size: copy_of[ o.size ] ] ]
+        op = kind
+        grabbing = true
+        lock_mask = 0
+        typing_mask = 0
+        typing_text = ''
+        typed_v = vec f32 [ 3 ]
+        typed_on = vec i32 [ 3 ]
+        grow = 0.0
+        mouse_v = rest_value[]
+        shown_v = rest_value[]
+
+    func copy_of [ v: vec f32 ] -> vec f32
+        out : vec f32 []
+        for [ x: f32 ] in v
+            out.push[ x ]
+        return out
+
+    # the value that changes nothing: no move, no turn, size 1
+    func rest_value [] -> vec3f
+        if [ op == 3 ] return vec3f [ 1.0, 1.0, 1.0 ]
+        return vec3f [ 0.0, 0.0, 0.0 ]
+
+    # the number typed so far, or none
+    func typing_number [] -> f32
+        if [ typing_text.count == 0 || typing_text == '-'
+             || typing_text == '.' ] return 0.0
+        return f32[ typing_text ]
+
+    # the axes a number with none named goes to
+    func default_mask [] -> i32
+        if [ lock_mask != 0 ] return lock_mask
+        if [ op == 3 ] return 7
+        if [ op == 2 ] return 4
+        return 1
+
+    # the typed number given to every axis of the group
+    func commit_typing []
+        if [ typing_text.count == 0 ] return
+        m : i32 [ (typing_mask != 0) ? typing_mask : default_mask[] ]
+        v : typing_number[]
+        for [ a: i32 0, a < 3, a += 1 ]
+            if [ (m & (1 << a)) != 0 ]
+                typed_v[ a ] = v
+                typed_on[ a ] = 1
+        typing_text = ''
+        typing_mask = 0
+
+    # the value asked for: typed values win; else the pointer's
+    func goal_value [] -> vec3f
+        typed : bool [ typing_text.count > 0 || typed_on[ 0 ] != 0
+                     || typed_on[ 1 ] != 0 || typed_on[ 2 ] != 0 ]
+        if [ !typed ] return mouse_v
+        r : rest_value[]
+        g : vec f32 [] [ r.x, r.y, r.z ]
+        for [ a: i32 0, a < 3, a += 1 ]
+            if [ typed_on[ a ] != 0 ] g[ a ] = typed_v[ a ]
+        if [ typing_text.count > 0 ]
+            m : i32 [ (typing_mask != 0) ? typing_mask
+                      : default_mask[] ]
+            v : typing_number[]
+            for [ a: i32 0, a < 3, a += 1 ]
+                if [ (m & (1 << a)) != 0 ] g[ a ] = v
+        return vec3f [ g[ 0 ], g[ 1 ], g[ 2 ] ]
+
+    # the selection set from where it was, by v
+    func apply_op [ v: vec3f ]
+        o : editing[]
+        if [ !o ] return
+        if [ !inner ]
+            if [ op == 1 ]
+                o.at = vec f32 [] [ from_at[ 0 ] + v.x,
+                    from_at[ 1 ] + v.y, from_at[ 2 ] + v.z ]
+            el [ op == 2 ]
+                o.turn = vec f32 [] [ from_turn[ 0 ] + v.x,
+                    from_turn[ 1 ] + v.y, from_turn[ 2 ] + v.z ]
+            el
+                o.size = vec f32 [] [ from_size[ 0 ] * v.x,
+                    from_size[ 1 ] * v.y, from_size[ 2 ] * v.z ]
+            dirty = true
+            return
+        c : o.cage[]
+        turn : Placement [ turn: vec f32 [] [ v.x, v.y, v.z ] ]
+        m : turn.matrix[]
+        for [ i: i32 ] in picked
+            x : f32 [ from_pos[ i * 3 ] ]
+            y : f32 [ from_pos[ i * 3 + 1 ] ]
+            z : f32 [ from_pos[ i * 3 + 2 ] ]
+            if [ op == 1 ]
+                x = x + v.x
+                y = y + v.y
+                z = z + v.z
+            el
+                rx : f32 [ x - pivot.x ]
+                ry : f32 [ y - pivot.y ]
+                rz : f32 [ z - pivot.z ]
+                if [ op == 2 ]
+                    tx : f32 [ m[ 0 ] * rx + m[ 1 ] * ry + m[ 2 ] * rz ]
+                    ty : f32 [ m[ 4 ] * rx + m[ 5 ] * ry + m[ 6 ] * rz ]
+                    tz : f32 [ m[ 8 ] * rx + m[ 9 ] * ry
+                               + m[ 10 ] * rz ]
+                    rx = tx
+                    ry = ty
+                    rz = tz
+                el
+                    rx = rx * v.x
+                    ry = ry * v.y
+                    rz = rz * v.z
+                x = pivot.x + rx
+                y = pivot.y + ry
+                z = pivot.z + rz
+            c.poly.pos[ i * 3 ] = x
+            c.poly.pos[ i * 3 + 1 ] = y
+            c.poly.pos[ i * 3 + 2 ] = z
+        dirty = true
+
+    # kept: the exact value applied, an unsaved edit
+    func end_op []
+        commit_typing[]
+        apply_op[ goal_value[] ]
+        o : editing[]
+        if [ o && edits ]
+            if [ inner ]
+                edits.mark[ edits.cages, o.name ]
+            el
+                edits.mark[ edits.places, o.name ]
+        op = 0
+        grabbing = false
+        mode = 0
+
+    # put back as it was; its undo entry taken
+    func cancel_op []
+        apply_op[ rest_value[] ]
+        if [ undo && undo.count > 0 ] undo.pop[]
+        op = 0
+        grabbing = false
+        mode = 0
+
+    # the pointer drives the value while nothing is typed
+    func op_move [ ev: Event ]
+        if [ op == 1 ]
+            move : drag_world[ ev ]
+            mx : f32 [ move.x * 0.5 ]
+            my : f32 [ move.y * 0.5 ]
+            mz : f32 [ move.z * 0.5 ]
+            # a group of axes keeps the pointer to them
+            if [ lock_mask != 0 ]
+                if [ (lock_mask & 1) == 0 ] mx = 0.0
+                if [ (lock_mask & 2) == 0 ] my = 0.0
+                if [ (lock_mask & 4) == 0 ] mz = 0.0
+            mouse_v = vec3f [ mouse_v.x + mx, mouse_v.y + my,
+                              mouse_v.z + mz ]
+        el [ op == 2 ]
+            deg : f32 [ ev.mouse.delta.x * 0.5 ]
+            m : i32 [ (lock_mask != 0) ? lock_mask : 4 ]
+            ax : f32 [ ((m & 1) != 0) ? deg : 0.0 ]
+            ay : f32 [ ((m & 2) != 0) ? deg : 0.0 ]
+            az : f32 [ ((m & 4) != 0) ? deg : 0.0 ]
+            mouse_v = vec3f [ mouse_v.x + ax, mouse_v.y + ay,
+                              mouse_v.z + az ]
+        el [ op == 3 ]
+            grow = grow + ev.mouse.delta.x * 0.004
+            f : f32 [ 1.0 + grow ]
+            if [ f < 0.01 ] f = 0.01
+            m : i32 [ (lock_mask != 0) ? lock_mask : 7 ]
+            mouse_v = vec3f [ ((m & 1) != 0) ? f : 1.0,
+                              ((m & 2) != 0) ? f : 1.0,
+                              ((m & 4) != 0) ? f : 1.0 ]
+
+    # the shown value eases to the goal, half the way a frame
+    func ease_op []
+        if [ op == 0 ] return
+        g : goal_value[]
+        ff : f32 [ ux.frame_factor ]
+        n : vec3f [ filter_n[ shown_v.x, g.x, 0.5, ff ],
+                    filter_n[ shown_v.y, g.y, 0.5, ff ],
+                    filter_n[ shown_v.z, g.z, 0.5, ff ] ]
+        moved : f32 [ abs[ n.x - shown_v.x ] + abs[ n.y - shown_v.y ]
+                      + abs[ n.z - shown_v.z ] ]
+        shown_v = n
+        if [ moved > 0.0000001 ] apply_op[ shown_v ]
+
+    # a key while g, r or s runs: enter keeps, escape puts back;
+    # axes name a group (x y 2: both 2), digits make its number
+    func op_key [ k: i32 ]
+        if [ k == 257 || k == 335 ]
+            end_op[]
+            return
+        if [ k == 256 ]
+            cancel_op[]
+            return
+        if [ k >= 88 && k <= 90 ]
+            bit : i32 [ 1 << (k - 88) ]
+            # an axis after a number starts the next group
+            if [ typing_text.count > 0 ] commit_typing[]
+            typing_mask = typing_mask | bit
+            lock_mask = typing_mask
+            return
+        if [ k == 259 ]
+            if [ typing_text.count > 0 ]
+                typing_text = typing_text.mid[ 0, typing_text.count - 1 ]
+            return
+        ch : ''
+        if [ k >= 48 && k <= 57 ] ch = '{k - 48}'
+        if [ k >= 320 && k <= 329 ] ch = '{k - 320}'
+        if [ k == 46 || k == 330 ] ch = '.'
+        if [ (k == 45 || k == 333) && typing_text.count == 0 ] ch = '-'
+        if [ ch.count > 0 ] typing_text = '{typing_text}{ch}'
+
+    # what is typed, shown at the view's foot
+    func op_words [] -> string
+        if [ op == 0 ] return ''
+        out : string [ (op == 1) ? 'move' : (op == 2) ? 'turn'
+                       : 'size' ]
+        names : vec string [] [ 'x', 'y', 'z' ]
+        for [ a: i32 0, a < 3, a += 1 ]
+            if [ typed_on[ a ] != 0 ]
+                out = '{out}  {names[ a ]} {typed_v[ a ]}'
+        axes : ''
+        for [ a: i32 0, a < 3, a += 1 ]
+            if [ (typing_mask & (1 << a)) != 0 ]
+                axes = '{axes}{names[ a ]}'
+        if [ axes.count > 0 || typing_text.count > 0 ]
+            out = '{out}  {axes} {typing_text}_'
+        return out
+
+    public func on_press [ ev: Event ]
+        # g, r or s ends on a click: right puts it back
+        if [ op != 0 ]
+            if [ ev.mouse.button == 1 ]
+                cancel_op[]
+            el
+                end_op[]
+            return
+        # ctrl/cmd held: the drag moves the camera
+        if [ ux && ux.cmd ]
+            mode = 3
+            return
+        # shift + middle moves the camera too, as blender's
+        if [ ev.mouse.button == 2 && ux && ux.shift ]
+            mode = 3
+            return
+        # the right and middle buttons turn the view
+        if [ ev.mouse.button == 1 || ev.mouse.button == 2 ]
+            mode = 1
+            return
+        # the left button chooses, and only chooses
+        mode = 0
+        if [ !inner ]
+            press_object[ ev ]
+            return
+        # cage mode: a click picks a point (shift adds)
+        i : nearest[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        if [ i < 0 ] return
+        if [ !picked ] picked = vec i32 []
+        if [ !ux || !ux.shift ] picked.clear[]
+        have : bool [ false ]
+        for [ k: i32 ] in picked
+            if [ k == i ] have = true
+        if [ !have ] picked.push[ i ]
+
+    public func on_release [ ev: Event ]
+        if [ !grabbing ] mode = 0
+
+    public func on_move [ ev: Event ]
+        if [ op != 0 && mode != 1 && mode != 3 ]
+            op_move[ ev ]
+            return
+        if [ mode == 1 ]
+            # a drag adds to the goal; the view follows it, eased
+            yaw_goal   = yaw_goal + ev.mouse.delta.x * 0.004
+            pitch_goal = pitch_goal + ev.mouse.delta.y * 0.004
+            if [ pitch_goal > 1.5 ] pitch_goal = 1.5
+            if [ pitch_goal < -1.5 ] pitch_goal = -1.5
+            return
+        if [ mode == 3 ]
+            # the model follows the pointer: the camera goes back
+            pan : drag_world[ ev ]
+            center_goal = vec3f [ center_goal.x - pan.x * 0.5,
+                                  center_goal.y - pan.y * 0.5,
+                                  center_goal.z - pan.z * 0.5 ]
+            return
+
+    # every change held in memory written: cages, places, values
+    func save_all []
+        if [ !edits || !design ] return
+        for [ o: Object ] in design.objects
+            for [ nm: string ] in edits.cages
+                if [ nm.compare[ o.name ] != 0 ] continue
+                c : o.cage[]
+                if [ !c || !c.save[ design.dir ] ]
+                    log 'aeon: {o.name} cage not saved'
+            for [ nm: string ] in edits.places
+                if [ nm.compare[ o.name ] != 0 ] continue
+                if [ !design.save_place[ o ] ]
+                    log 'aeon: {o.name} place not saved'
+        for [ wr: Write ] in edits.writes
+            if [ !agi_set[ wr.file, wr.blocks, wr.key, wr.value ] ]
+                log 'aeon: {wr.key} not written'
+        edits.clear[]
+        # our own writes are no outside edit
+        note_files[]
+        log 'aeon: saved'
+
+    public func on_wheel [ ev: Event ]
+        # half a step a notch, eased in as every move is
+        step : f32 [ pow[ 1.05, 0.0 - ev.mouse.wheel_delta.y ] ]
+        dist_goal = dist_goal * step
+        if [ dist_goal < 0.2 ] dist_goal = 0.2
+
+    # keys, as the app hands them on: the view takes no focus
+    public func key_event [ ev: Event ]
+        k : i32 [ ev.key.unicode ]
+        down : bool [ ev.key.state != 0 ]
+        # ctrl (cmd) + z: the last edit undone
+        if [ k == 90 && down && (ev.key.ctrl || ev.key.meta) ]
+            if [ !undo || undo.count == 0 ] return
+            back : undo[ undo.count - 1 ]
+            undo.pop[]
+            if [ !design ] return
+            for [ o: Object ] in design.objects
+                if [ o.name.compare[ back.name ] != 0 ] continue
+                if [ back.at ]
+                    o.at = back.at
+                    if [ back.turn ] o.turn = back.turn
+                    if [ back.size ] o.size = back.size
+                    if [ edits ] edits.mark[ edits.places, o.name ]
+                el
+                    c : o.cage[]
+                    for [ i: i32 0, i < back.pos.count, i += 1 ]
+                        c.poly.pos[ i ] = back.pos[ i ]
+                    if [ edits ] edits.mark[ edits.cages, o.name ]
+                if [ stage ] stage.refresh[ o ]
+                if [ focus ] focus.refresh[ o ]
+            return
+        # ctrl (cmd) + s: every held change written (shift: the
+        # exchange's capture, not a save)
+        if [ k == 83 && down && (ev.key.ctrl || ev.key.meta)
+             && !ev.key.shift ]
+            save_all[]
+            return
+        # g, r, s: move, turn, size the selection, as blender's
+        if [ op == 0 && down && !ev.key.ctrl && !ev.key.meta ]
+            if [ k == 71 ] start_op[ 1 ]
+            if [ k == 82 ] start_op[ 2 ]
+            if [ k == 83 ] start_op[ 3 ]
+            if [ op != 0 ] return
+        if [ op != 0 && down ]
+            op_key[ k ]
+            return
+        # tab: the chosen object, or its inner cage
+        if [ k == 258 && down && !grabbing ]
+            if [ chosen && chosen.count > 0 ] inner = !inner
+            if [ picked ] picked.clear[]
+            return
+
+
+    # the chosen object's contour: its coverage made white and
+    # blurred by rings of offsets, a 1 px ring sharp, wider ones
+    # fading; the object drawn over it shows only the outside
+    func glow [ cv: Canvas, shown: vec Texture ]
+        cv.save[]
+        # no colour, brightness past any value: white by coverage
+        cv.color_filter[ 0.0, 0.0, 1000.0 ]
+        radii : vec f32 [] [ 1.0, 2.0, 3.0, 4.5, 6.5 ]
+        strength : vec f32 [] [ 0.9, 0.3, 0.2, 0.12, 0.06 ]
+        for [ k: i32 0, k < radii.count, k += 1 ]
+            cv.set_opacity[ strength[ k ] ]
+            for [ step: i32 0, step < 8, step += 1 ]
+                turn : f32 [ f32[ step ] * 0.7853982 ]
+                dx : f32 [ cos[ turn ] * radii[ k ] ]
+                dy : f32 [ sin[ turn ] * radii[ k ] ]
+                for [ tx: Texture ] in shown
+                    cv.draw_image[ tx, rect [ x: dx, y: dy,
+                        w: bounds.w, h: bounds.h ] ]
+        cv.restore[]
+
+    # the chosen cage: its edges, its points, the picked lit
+    func draw_cage [ cv: Canvas ]
+        if [ !inner ] return
+        o : editing[]
+        if [ !o ] return
+        c : o.cage[]
+        if [ !c || !c.poly ] return
+        m : c.poly
+        nv : i32 [ m.verts[] ]
+        spots : vec Spot []
+        for [ i: i32 0, i < nv, i += 1 ]
+            spots.push[ spot[ o, m.pos[ i * 3 ], m.pos[ i * 3 + 1 ],
+                              m.pos[ i * 3 + 2 ] ] ]
+        cv.save[]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#7fd4ffaa' ]
+        cv.stroke_width[ 1.0 ]
+        for [ f: i32 0, f < m.faces[], f += 1 ]
+            st : i32 [ m.fstart[ f ] ]
+            k : i32 [ m.fsize[ f ] ]
+            for [ j: i32 0, j <= k, j += 1 ]
+                s : spots[ m.corner[ st + j % k ] ]
+                if [ j == 0 ]
+                    cv.move_to[ s.x, s.y ]
+                el
+                    cv.line_to[ s.x, s.y ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+        for [ i: i32 0, i < nv, i += 1 ]
+            s : spots[ i ]
+            if [ s.z <= 0.0 ] continue
+            lit : bool [ false ]
+            if [ picked ]
+                for [ k: i32 ] in picked
+                    if [ k == i ] lit = true
+            cv.fill_color[ (lit) ? '#ffcf4a' : '#7fd4ff' ]
+            sz : f32 [ (lit) ? 7.0 : 5.0 ]
+            cv.rect_to[ s.x - sz * 0.5, s.y - sz * 0.5, sz, sz ]
+            cv.paint[]
+        cv.restore[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        pw : i32 [ bounds.w ]
+        ph : i32 [ bounds.h ]
+        # the panels choose too: the view follows the selection
+        if [ sel ]
+            pick : string [ (sel.object) ? sel.object : '' ]
+            if [ pick.compare[ (chosen) ? chosen : '' ] != 0 ]
+                chosen = pick
+                inner  = false
+        if [ !stage ]
+            stage = Stage [ design: design ]
+            stage.build[ cv.vk, w, pw, ph ]
+            focus = Stage [ design: design, transparent: true ]
+            focus.build[ cv.vk, w, pw, ph ]
+            note_files[]
+            watcher = watch [ res: design.dir,
+                              callback: lambda on_files[ a ] ]
+            watcher.start[]
+        if [ agi_seen ]
+            agi_seen = false
+            follow_files[ cv, w, pw, ph ]
+        # a node or pass changed in memory: made again from memory
+        if [ rebuild_due ]
+            rebuild_due = false
+            stage = Stage [ design: design, graph: stage.graph ]
+            stage.build[ cv.vk, w, pw, ph ]
+            focus = Stage [ design: design, graph: focus.graph,
+                            transparent: true ]
+            focus.build[ cv.vk, w, pw, ph ]
+            focus_of = ''
+        if [ !goal_set ]
+            yaw_goal    = yaw
+            pitch_goal  = pitch
+            dist_goal   = dist
+            center_goal = center
+            goal_set    = true
+        # every move eases: half the way to its goal each frame
+        ff : f32 [ ux.frame_factor ]
+        yaw   = filter_n[ yaw, yaw_goal, 0.5, ff ]
+        pitch = filter_n[ pitch, pitch_goal, 0.5, ff ]
+        dist  = filter_n[ dist, dist_goal, 0.5, ff ]
+        center = vec3f [ filter_n[ center.x, center_goal.x, 0.5, ff ],
+                         filter_n[ center.y, center_goal.y, 0.5, ff ],
+                         filter_n[ center.z, center_goal.z, 0.5, ff ] ]
+        ease_op[]
+        spot_eye : camera_eye[]
+        mid : vec3f [ center ]
+        # z up; the view's y is flipped, as every trinity view
+        up : vec3f [ 0.0, 0.0, -1.0 ]
+        asp : f32 [ bounds.w / bounds.h ]
+        view_m       = mat4f.look_at[ spot_eye, mid, up ]
+        stage.eye    = spot_eye
+        stage.middle = mid
+        stage.proj   = mat4f.perspective[ radians[ 40.0 ], asp, 0.05,
+                                          100.0 ]
+        if [ dirty ]
+            dirty = false
+            o : editing[]
+            if [ o ]
+                stage.refresh[ o ]
+                focus.refresh[ o ]
+        # a choice: the others greyed and see-through, it over them
+        want : string [ (chosen) ? chosen : '' ]
+        if [ want.compare[ (focus_of) ? focus_of : '' ] != 0 ]
+            focus_of = want
+            names : vec string [] [ want ]
+            if [ want.count > 0 ]
+                stage.show_only[ names, true ]
+                focus.show_only[ names, false ]
+            el
+                stage.show_only[ vec string [], true ]
+        focus.eye    = stage.eye
+        focus.middle = stage.middle
+        focus.proj   = stage.proj
+        # the ground, then the stage's outputs, each over the last
+        cv.fill_color[ '#14141a' ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        whole : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        if [ want.count > 0 ]
+            cv.save[]
+            cv.color_filter[ 0.0, 0.0, 1.0 ]
+            cv.set_opacity[ 0.55 ]
+            for [ tx: Texture ] in stage.frame[ pw, ph ]
+                cv.draw_image[ tx, whole ]
+            cv.restore[]
+            shown : focus.frame[ pw, ph ]
+            glow[ cv, shown ]
+            for [ tx: Texture ] in shown
+                cv.draw_image[ tx, whole ]
+        el
+            for [ tx: Texture ] in stage.frame[ pw, ph ]
+                cv.draw_image[ tx, whole ]
+        draw_cage[ cv ]
+        # g, r or s running: what it does and what is typed
+        words : op_words[]
+        if [ words.count > 0 ]
+            cv.fill_color[ '#ffcf4a' ]
+            cv.draw_text[ words,
+                rect [ x: 16.0, y: bounds.h - 40.0,
+                       w: bounds.w - 32.0, h: 28.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+
+# an object's top-level values as its .agi writes them, by key
+func agi_values [ obj: Au ] -> map Au [ string ]
+    out : map Au [ string ] []
+    txt : Au.string_agi[ obj ]
+    for [ ln: string ] in txt.split[ '\n' ]
+        if [ ln.count == 0 || ln.starts_with[ '\t' ] ] continue
+        at : i32 [ ln.index_of[ ':' ] ]
+        if [ at <= 0 ] continue
+        rest : ln.mid[ at + 1, ln.count - at - 1 ]
+        out[ ln.mid[ 0, at ] ] = rest.trim[]
+    return out
+
+# the value of key in values, or '' when it has none
+func agi_text [ values: map Au [ string ], key: string ] -> string
+    v : values[ key ]
+    if [ !v ] return ''
+    return string [ v ]
+
+# one property row: its name, its value, where it is written
+class PropRow
+    public name   : string
+    public value  : string
+    public file   : path
+    public blocks : vec string
+    # pass settings are written quoted
+    public quoted : bool
+    # 0 an object's place, 1 a node, 2 a pass, 3 a draw's setting
+    public kind   : i32
+    # the object, node or pass it is a member of
+    public owner  : Au
+    public pass   : string
+    public draw   : string
+
+# three numbers from '[ a, b, c ]' (or 'a b c')
+func numbers_of [ text: string ] -> vec f32
+    out : vec f32 []
+    clean : ''
+    for [ i: i32 0, i < text.count, i += 1 ]
+        c : i32 [ text.chars[ i ] ]
+        # [ ] and commas read as spaces
+        ok : bool [ c != 91 && c != 93 && c != 44 ]
+        part : string [ (ok) ? text.mid[ i, 1 ] : ' ' ]
+        clean = '{clean}{part}'
+    for [ w: string ] in clean.split[ ' ' ]
+        if [ w.count > 0 ] out.push[ f32[ w ] ]
+    return out
+
+element aeon : trinity
+    public width  : i32    [ 1280 ]
+    public height : i32    [ 800 ]
+    public title  : string [ 'aeon' ]
+    # the project folder; flower888 when none is given
+    default [ Launch ] project : string
+    mutable design : Design
+    mutable sel    : Selection
+    # each choice in order, and where back and forward stand
+    mutable history : vec Selection
+    mutable place   : i32 [ -1 ]
+    # changes held in memory until ctrl/cmd + s
+    mutable edits  : Edits
+    # each field's text as last seen: a change applies once
+    mutable typed  : map Au [ string ]
+
+    func init []
+        if [ !project || project.count == 0 ]
+            root : path.path_startup[]
+            project = '{root}/aeon/flower888'
+        if [ project.ends_with[ '.blend' ] ]
+            project = import_blend[ project ]
+        dir : path [ project ]
+        design = Design [ dir: dir ]
+        sel = Selection [ object: '', node: '', pass: '' ]
+        history = vec Selection []
+        edits = Edits []
+        typed = map Au [ string ] []
+
+    # ctrl/cmd + left and right, and orbiter's arrows: the choices
+    # made before and after this one
+    public func navigate [ dir: i32 ] -> bool
+        to : i32 [ place + dir ]
+        if [ to < 0 || to >= history.count ] return false
+        place = to
+        was : history[ to ]
+        sel.object = was.object
+        sel.node   = was.node
+        sel.pass   = was.pass
+        nav_state[ place > 0, place < history.count - 1 ]
+        return true
+
+    # a new choice is remembered; one after a step back drops
+    # the steps ahead of it
+    func remember []
+        if [ place >= 0 && place < history.count ]
+            at : history[ place ]
+            if [ at.object.compare[ sel.object ] == 0
+                 && at.node.compare[ sel.node ] == 0
+                 && at.pass.compare[ sel.pass ] == 0 ] return
+        while [ history.count > place + 1 ]
+            history.pop[]
+        history.push[ Selection [ object: sel.object, node: sel.node,
+                                  pass: sel.pass ] ]
+        place = history.count - 1
+        nav_state[ place > 0, false ]
+
+    public func on_key [ ev: Event ]
+        if [ elements && elements[ 'view' ] ]
+            v : cast DesignView [ elements[ 'view' ] ]
+            v.key_event[ ev ]
+
+    func view [] -> DesignView
+        if [ !elements || !elements[ 'view' ] ] return null
+        return cast DesignView [ elements[ 'view' ] ]
+
+    # the chosen thing's properties, as rows
+    func rows [] -> vec PropRow
+        out : vec PropRow []
+        nm : string design.dir.filename[]
+        dfile : path '{design.dir}/{nm}.agi'
+        gfile : path '{design.dir}/{nm}.render.agi'
+        if [ sel.object.count > 0 ]
+            for [ o: Object ] in design.objects
+                if [ o.name.compare[ sel.object ] != 0 ] continue
+                if [ sel.node.count == 0 ]
+                    have : agi_values[ o ]
+                    for [ k: string ] in vec string [] [ 'at', 'turn',
+                                                         'size' ]
+                        out.push[ PropRow [ name: k,
+                            value: agi_text[ have, k ],
+                            file: dfile, kind: 0, owner: o,
+                            blocks: vec string [] [ o.name ] ] ]
+                    return out
+                for [ n: MeshNode ] in o.nodes
+                    if [ n.name.compare[ sel.node ] != 0 ] continue
+                    have : agi_values[ n ]
+                    for [ k: string ] in n.props*[]
+                        out.push[ PropRow [ name: k,
+                            value: agi_text[ have, k ],
+                            file: dfile, kind: 1, owner: n,
+                            blocks: vec string [] [
+                                o.name, 'nodes', n.name ] ] ]
+            return out
+        v : view[]
+        if [ sel.pass.count == 0 || !v || !v.stage ] return out
+        for [ p: Pass ] in v.stage.graph.passes
+            if [ p.name.compare[ sel.pass ] != 0 ] continue
+            if [ sel.node.count == 0 ]
+                have : agi_values[ p ]
+                for [ k: string ] in vec string [] [ 'scale', 'most' ]
+                    out.push[ PropRow [ name: k,
+                        value: agi_text[ have, k ],
+                        file: gfile, kind: 2, owner: p,
+                        blocks: vec string [] [ 'passes', p.name ] ] ]
+                return out
+            if [ !p.draws ] return out
+            for [ d: Draw ] in p.draws
+                if [ d.name.compare[ sel.node ] != 0 ] continue
+                if [ !d.settings ] return out
+                for [ sv: Au, k: string ] in d.settings
+                    out.push[ PropRow [ name: k,
+                        value: string [ sv ], file: gfile, quoted: true,
+                        kind: 3, pass: p.name, draw: d.name,
+                        blocks: vec string [] [ 'passes', p.name,
+                            'draws', d.name, 'settings' ] ] ]
+        return out
+
+    # a field's new text: the design takes it in memory, and the
+    # write waits for a save
+    func apply_row [ r: PropRow, now: string ]
+        val : string [ (r.quoted) ? '\'{now}\'' : now ]
+        edits.queue[ Write [ file: r.file, blocks: r.blocks,
+                             key: r.name, value: val ] ]
+        v : view[]
+        if [ r.kind == 3 ]
+            if [ v && v.stage ]
+                v.stage.set_setting[ r.pass, r.draw, r.name, now ]
+                v.focus.set_setting[ r.pass, r.draw, r.name, now ]
+            return
+        if [ r.kind == 0 ]
+            o : cast Object [ r.owner ]
+            nums : numbers_of[ now ]
+            if [ nums.count != 3 ] return
+            if [ r.name.compare[ 'at' ] == 0 ] o.at = nums
+            if [ r.name.compare[ 'turn' ] == 0 ] o.turn = nums
+            if [ r.name.compare[ 'size' ] == 0 ] o.size = nums
+            if [ v && v.stage ]
+                v.stage.refresh[ o ]
+                v.focus.refresh[ o ]
+            return
+        # a node's or a pass's member: set, then made again
+        member : find_member[ typeid[ r.owner ], r.name.chars,
+                              AU_MEMBER_VAR, 0, true ]
+        if [ !member ] return
+        got : Au.convert[ member.src, now ]
+        if [ !got ] return
+        r.owner.set_property[ r.name, got ]
+        if [ v ] v.rebuild_due = true
+
+    public func render [] -> Elements
+        remember[]
+        e : Elements [ ]
+        v : view[]
+        e[ 'graph' ] = SceneGraph [ design: design, sel: sel,
+            edits: edits,
+            stage: (v) ? v.stage : null, animated: true,
+            area: Region [ 'l0 t0 r0 h150px' ] ]
+        e[ 'view' ] = DesignView [ design: design, sel: sel,
+            edits: edits,
+            animated: true, area: Region [ 'l0 t150px r340px b0' ] ]
+        e[ 'nodes' ] = NodeList [ design: design, sel: sel,
+            stage: (v) ? v.stage : null, animated: true,
+            area: Region [ 'r340px t150px r0 h210px' ] ]
+        # the properties: a name and its field a row; a field the
+        # user changed is written into its .agi, the watch redraws
+        list : rows[]
+        for [ i: i32 0, i < list.count, i += 1 ]
+            r : list[ i ]
+            y : f32 [ 372.0 + f32[ i ] * 34.0 ]
+            key : 'field_{sel.object}{sel.pass}_{sel.node}_{r.name}'
+            e[ 'name_{i}' ] = Words [ text: r.name,
+                area: Region [ 'r330px t{y}px r162px h28px' ] ]
+            ar : Region [ 'r158px t{y}px r12px h28px' ]
+            mounted : bool [ elements && elements.contains[ key ] ]
+            if [ mounted ]
+                fld : cast TextInput [ elements[ key ] ]
+                now : string [ (fld.edit) ? fld.edit : '' ]
+                was : string [ typed[ key ] ]
+                if [ was && now.compare[ was ] != 0 && now.count > 0 ]
+                    typed[ key ] = now
+                    apply_row[ r, now ]
+                e[ key ] = TextInput [ area: ar ]
+            el
+                typed[ key ] = r.value
+                e[ key ] = TextInput [ area: ar, edit: r.value,
+                    sel_col: r.value.count, anchor_col: r.value.count ]
+        return e

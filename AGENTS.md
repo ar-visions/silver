@@ -851,6 +851,348 @@ bar 50% taller.
    claims (.ag .c .h ...), as aura's .agi claims .html, and a
    dock flag so it is in the dock from the start.
 
+## Aeon, the 3D design app — live list (Oct 12 2026)
+
+Kalen: a 3D design app the user's agent helps design with; in
+time a level editor. Named Aeon (Heraclitus: "Aion is a child
+at play"). Decided:
+- A project is a folder: what it uses is copied in or
+  symlinked; nothing points outside it.
+- The design is .agi (inherently customizable; .blend is not).
+  Aeon loads silver modules: their classes are the node types.
+- Everything is nodes, wired by name (`in: cage`), in three
+  layers: geometry (mesh, mirror, array, subdivision ...),
+  material, and render. Modifiers stay settings, never applied.
+- The render graph is trinity's real pipeline (Render, Model,
+  Pipeline, passes): shown live (picture, size, gpu time per
+  node) and built there too; a wire or number edit rebuilds the
+  touched Renders, no compile. Shaders and pass types stay
+  silver classes; the .agi is the wiring.
+- Raw shape lives in binary .mesh files (the cage only).
+- Input: point and speak, draw over the view, drag handles,
+  reference pictures, pick among the agent's variations. No
+  popups, no tree views.
+1. DONE (Oct 12) the .blend converter, aeon/blend.py, run by
+   Blender (`install/blender/blender --background <file.blend>
+   --python aeon/blend.py -- <folder> [refs]`). flower888.16.32.blend ->
+   aeon/flower888/ (5 meshes, 3,398 cage vertices, 400 KB; was
+   an 8 MB gltf): flower888.agi (objects, transforms, materials
+   per slot, modifiers as nodes; array empties folded into the
+   array's `step`), materials/<name>.agi (every unwired
+   Principled input), meshes/<name>.mesh: 'AEMS', u32 version 1,
+   vertices, edges, faces, corners; f32 positions, u32 edge
+   pairs, u32 face sizes, u32 corner vertices; u32 attribute
+   count, each: u32 name length, name, u32 domain (point edge
+   face corner), kind (f32 i32 u8), width, data.
+   Checked: the folder alone rebuilt in Blender (a reader in the
+   session scratchpad) evaluates to the original's vertex and
+   face counts for all five objects (flower 91,800 vertices),
+   every point within 5.3e-7 of one of the original's.
+   flower888's header says Blender 4.0 saved it (v400). aeon.ag
+   imports Blender 4.5.14 LTS by url (378 MB, unpacked once into
+   install/blender, 1.2 GB; THIRD_PARTY.md); run blend.py with
+   install/blender/blender. On 4.5 the meshes and refs are byte
+   for byte as on the system's 4.0.2; materials gain 4.5's new
+   Principled inputs; blend reads surface_render_method (4.2 on).
+   Kept as Blender python (Kalen, Oct 12: "use the pythons"): a
+   .blend is Blender's memory on disk; Blender reads its own
+   versions exactly. Import only: Aeon reads .agi and .mesh.
+1b. DONE (Oct 12) `silver aeon <file.blend>` imports it into
+   <folder of the file>/<name up to its first dot>, then the
+   folder opens; skipped while that .agi is newer than the .blend.
+   No blender program runs (Kalen: bpy in our python, our own
+   blender): aeon imports bpy 4.5.14 (the manylinux wheel, 355
+   MB, by url) unpacked once into install/pylib-blender (786 MB)
+   by the python 3.11.15 that the imported blender 4.5.14 ships
+   (install/bin/blender-python links it; it has bpy's numpy,
+   cython, requests, zstandard). blend.py opens the .blend itself
+   under bpy (still runs inside blender too, args after --).
+   Checked: bpy reports 4.5.14 LTS on python 3.11.15; project and
+   refs byte for byte as blender's own; aeon under PATH=/usr/bin:
+   /bin starts only sh and our blender-python, and bpy itself
+   runs `xdg-user-dir DOCUMENTS` (blender's documents lookup).
+   install/bin/python3 is a link to the system's 3.12 (not ours).
+   Linux only: the wheel and the blender tarball are x64 linux.
+   Au (Kalen: shell work uses our environment first, generically):
+   command run / exec put install/bin (beside the lib/ libAu.so
+   loads from) first on the child's PATH; not on Windows (cmd.exe).
+   features t_command_install_path; 246/247 (t_codegen_resource as
+   before). Au command gained `stream` (popen's stream, run the
+   same way; the caller pcloses): all 22 raw popen calls moved to
+   it (orbiter Git.ag 3, orbiter.ag 3, wizard 4, os-bootstrap 12),
+   as `x : command [ cmd ]` then `x.stream[]` (silver reads no
+   method on `command [ .. ]` directly). os-bootstrap, wizard,
+   orbiter build; `silver --test wizard` exit 0 (its run makes an
+   installer image through os-bootstrap). orbiter's git calls not
+   driven. The 10 system[] calls moved to command exec[ false ]
+   (it prints as system did and returns the exit status):
+   os-bootstrap 6, wizard 3, tls 1 (macOS keychain, not run
+   here); `silver --test wizard` exit 0, its work folders gone.
+   `{ }` blocks interpolate (Kalen: commands as { tokens }): a
+   block given to a string type (string, command, path) becomes
+   an interpolated string, glued chunks stay glued, {{ / }} are
+   braces; a command block's lines join with spaces (silver.c
+   read_keywords; CSS, Region and other string-built types stay
+   literal). features t_keyword_interpolate; 247/248. Moved to it:
+   aeon's blender call, tls's keychain line, the rm -rf of wizard
+   (3) and os-bootstrap (3). LANGUAGE.md Strings.
+   OPEN: os-bootstrap.ag:942's cleanup
+   glob with no installer-* folder runs `[ -d /proc/* ]` (prints
+   "[: /proc/1: unexpected operator", harmless).
+Rule (Kalen, Oct 12): Aeon alone changes the .mesh files. The
+agent edits .agi text; a shape change it wants goes through
+Aeon's own commands (select points, move by an amount, scale),
+eased, saved and undoable as a mouse edit.
+Demo (Kalen: promote a demonstration), in order:
+D1. DONE (Oct 12) the .agi files watched (design, materials,
+    render graph): an au watch on the project folder raises a
+    flag; the next frame compares each .agi's time with the time
+    last read or written here (Aeon's own writes are noted, so no
+    reload). Only the render graph changed, same passes, draws
+    and shaders: Stage.retune applies the new settings to the
+    running shaders, no rebuild; else Design.load (in place) and
+    a new Stage. Seen hidden: beam_cone 0.35 -> 1.2 and
+    halo_height 0.4 -> 1.6 written from outside: "settings
+    retuned", 10,159 pixels changed. Not driven: a design or
+    material change (the rebuild path).
+D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
+    SceneGraph across the top (150 px): the scene level, objects
+    on the left, passes in columns by what feeds them, then out,
+    wired (objects into the passes that draw them, passes into
+    the passes that read them, shown passes into out); a click
+    chooses an object or a pass. On the right, NodeList: the
+    chosen object's nodes in order (cage, mirror, subdivision,
+    array) or the chosen pass's draws; below it the properties:
+    a name (Words) and a TextInput a row (an object: at, turn,
+    size; a node: its props*[] (MeshNode.props); a pass: scale,
+    most; a draw: its settings). A field the user changes is
+    written into its .agi block (agi_set: nested blocks by key,
+    the key's line replaced or added; settings quoted) and the
+    watch does the rest. Values read through Au.string_agi
+    (get_property hands back raw numbers). Selection is one
+    shared object (app, view, panels). The object tabs are gone.
+    Seen hidden: flower chosen in the graph, its chain listed,
+    subdivision's levels 3 -> 1 typed: levels: 1 written, the
+    design reloaded; volume's aura halo_height 0.4 -> 1.6 typed:
+    written quoted, settings retuned live (12,272 pixels).
+    The chosen object (Kalen): the others greyed and see-through,
+    it at full colour over them, with a glow round its contour
+    (the bounding box was built, then removed: the glow does it).
+    Two stages: `stage` draws all but the chosen, `focus`
+    (transparent clear) only the chosen, picked per frame by
+    Stage.show_only (Model runs list the pipelines kept; a draw
+    holding none is skipped by its shader's states). The others
+    drawn with color_filter saturation 0 at opacity 0.55; the
+    glow is the focus image's coverage made white (color_filter
+    brightness 1000) drawn in rings of 8 offsets (1 px at 0.9,
+    then 2, 3, 4.5, 6.5 px fading), the object over it.
+    Fixed in trinity (Canvas.ag): the image mode skipped
+    apply_color_filter (css filters apply to images too);
+    trinity tests exit 0. Seen hidden: body colour 1,301 -> 145
+    coloured pixels (the rest the box lines then), flower's white
+    contour and glow.
+    No auto save (Kalen): every edit stays in memory until
+    ctrl/cmd + s (shift stays the exchange's capture). Edits
+    (Panels.ag) holds the objects whose cage or place moved and
+    the property values queued as Writes (a later one for the
+    same place replaces it); save_all writes the cages (.mesh),
+    places (save_place) and values (agi_set), then notes the files
+    so the watch does not reload. A field applies in memory: an
+    object's at/turn/size refills it, a draw's setting goes onto
+    both stages' shaders (Stage.set_setting), a node's or pass's
+    member is set and both stages are made again from memory
+    (rebuild_due; the graph object kept). Undo marks, no write.
+    The scene graph shows "unsaved: ctrl/cmd + s to save" while
+    any is held. Seen hidden: a cage move and levels 3 -> 1 left
+    the files as they were (the shape rebuilt), ctrl+s wrote both.
+    Reverted at Kalen's word: aeon/flower888's design file, core
+    and flower meshes back to the import (his edits there undone;
+    the render graph, textures and images kept).
+    Selection history (Kalen): every distinct choice (object,
+    node, pass) is remembered in order by the app's render; a
+    choice after a step back drops the steps ahead. The app's
+    element.navigate (ctrl/cmd + left / right, which trinity
+    routes there, and orbiter's back / forward arrows on a hosted
+    view through HM.nav) walks it; nav_state lights orbiter's
+    arrows. Seen hidden: flower, outside; ctrl+left lit flower,
+    ctrl+right outside again. Orbiter's arrows not driven.
+    Moving is blender's grab (Kalen: a click and drag moves
+    nothing; G does, for the object and for points): the left
+    button only chooses (an object, or a point in the cage; shift
+    adds), the right or middle button's drag turns the view
+    (Kalen: orbit on mouse 2 / 3), ctrl/cmd + any drag or shift +
+    middle drag (blender's) moves the camera (seen: 100 px moved
+    the model 47.6 px, eased). Seen hidden: a left drag changed no pixel, a right
+    and a middle drag each turned the view (~49,800 pixels). G
+    grabs the selection (the chosen object's place, or the picked
+    points): it follows the pointer with no button held, eased; x
+    / y / z toggles that axis alone; a left click or enter keeps
+    it (an unsaved edit once it settles), a right click or escape
+    puts it back (its undo entry taken). Seen hidden: a click and
+    drag left flower and its cage unchanged; G, 60 px and a click
+    moved flower (0.0759, -0.1109, 0 saved by ctrl+s); G, a move
+    and a right click, or escape, left it there; in the cage, G,
+    a move and a click changed the mesh on save.
+Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI.
+The graph is all the nodes (each object's geometry chain and
+the render passes, wired) and sits across the very top, in place
+of the tabs: picking a node there chooses it. The chosen node's
+properties sit on the right side below it; the view fills the
+rest.
+D2. OPEN the colour match and the avatar's camera in the graph.
+D3. OPEN Aeon's edit commands for the agent; the exchange in Aeon.
+D4. OPEN clouds converted: its passes in an .agi, drivers for
+    the sun and the weather.
+D5. OPEN the graph view.
+The script: a .blend opened (no Blender shown), a cage point
+dragged (24 petals follow), the avatar's chain from its graph
+with a number changed live, the agent asked for a change, clouds
+retuned live, all recorded (--record) and cut by composer.
+Direction (Kalen, Oct 12): every scene converts to this form,
+edited in Aeon: the module holds the element's code (shaders,
+special passes, behaviour over time), the scene's folder .agi
+holds everything it uses (passes, sizes, wiring, settings,
+resources copied in). Values that change each frame come from
+the element as named drivers the graph reads (e.g. 'driver:sun').
+orbiter's backdrops load the scene's .agi into a Stage.
+2. DONE (Oct 12) Aeon loads a project and draws it: the aeon
+   module (aeon.ag the app, `silver aeon <folder>`, flower888 by
+   default; Design.ag MeshNode Cage / Mirror / Subdivision /
+   Array, Object, Design (parse_agi of <dir>/<name>.agi);
+   Poly.ag the mesh, read_mesh, mirror_axis, array_copies,
+   subdivide_once (opensubdiv's rules: boundaries crease, smooth
+   corners, sharpness = 10 x crease squared, falling one a level,
+   fractional blends), limit_of; View.ag materials/<name>.agi as
+   gltf materials, one gltf mesh an object (a part a material),
+   AeonLit (ggx, two lights, a sky metals reflect), DesignView
+   (drag turns, wheel zooms, z up)). The node key is `input:`
+   (`in` is silver's), the mesh node `Cage` (gltf has Mesh).
+   `silver --test aeon` t_flower_matches_blender: every object
+   has blender's point and face counts (flower 91,800 / 87,552);
+   points within 0.00033 (outside: its crease ring and the
+   array's seams; flower 0.00006); with blender's limit surface
+   off, flower is exact (1.6e-7): the rest is opensubdiv's limit
+   patches. The test allows 0.0005. Refs: blend.py's second
+   folder, aeon/tests/flower888/. Seen hidden: the orbiter drawn,
+   a drag turns it to the top view (hexagon, 24 petals, core).
+   Silver bugs met (worked round, OPEN): a free func named as an
+   Au C function (array_of) crashes the compiler (signal 11, no
+   message) instead of a clash error; `v.push[ a + b ]` and a
+   ternary in push read as a generic Au (a local first works).
+   Not done: Mirror bisect/clip, Array size offsets, simple
+   subdivision, uv subdivided linearly (blender: preserve
+   boundaries), vertex colour unused by AeonLit.
+3. IN PROGRESS the render graph. Kalen: Aeon's own scenes
+   component, so we control where it goes: aeon/Stage.ag, `Stage`
+   (gltf has Scene). A stage owns its passes and their Renders
+   (never the Window's element_targets), draws them in order each
+   frame (update, draw, sync_fence: a gpu wait a pass) and hands
+   back its out textures; the host draws them where it likes
+   (DesignView, now in aeon.ag, fills its bounds). The graph is
+   <dir>/<name>.render.agi: `passes:` (Pass: scale of the host's
+   size, depth, reduce, clear, objects (none named: all), quad
+   (a screen pass), shader by class name from any loaded module,
+   inputs: sampler -> 'pass.color|depth|reduction' of an earlier
+   pass), `out: [ ... ]`. No file: one AeonLit pass of all.
+   design_model takes the objects a pass names.
+   Checked hidden against the shot from before: no file, 0 of
+   1,024,000 pixels differ; a two pass file (lit, then UVQuad
+   copying lit.color) also 0; wired to lit.depth every pixel
+   differs (the copy really draws).
+   Fixed: the orbit's x was reversed (Kalen).
+   The avatar's chain (Oct 12), aeon/flower888/flower888.render.agi:
+   `modules: [ avatar ]` (the stage dlopens install/build/
+   libsilver-avatar.so: its types register), passes av (scale 4,
+   depth, reduce, y_up; draws body PBR on outside/flower/separator,
+   core Core, plasma Plasma), volume (Aura quad, height av.depth,
+   rim colour, most 1024), mask (GrooveMask), heat (Heat quad,
+   av.reduction + mask.reduction); out heat, volume. Stage v2:
+   a Pass holds Draws (shader by class name, `settings` set by
+   member name through Au.convert, a project file as its full
+   path; `inputs` 'pass.color|depth|reduction', 'image:', 'env:'
+   (trinity environment), 'color:r g b a' (a 1x1 image); a shader
+   with env_id loads images/<env_id>.exr from the project;
+   both_sides, else back faces cull); y_up passes take glTF axes
+   (x, z, -y) for positions, normals and the view (up 0,-1,0);
+   mvp model/view/proj/time and a vec4f `pos` set each frame;
+   gltf nodes named by object (a shader's groups). The avatar's
+   core.png and night.exr copied into the project.
+   Seen hidden from above: the avatar's look (core glow, blue and
+   pink plasma ring, aura volume, petals lit blue). NOT matched
+   yet: petals and body read warmer/darker than the icon (silver,
+   grey); the avatar's own camera (OrbiterAvatar: eye 0,4.2,0,
+   fov 24, up 0,0,-1) is not in the graph, so no pixel check.
+   orbiter32.gltf has no top_ring: the avatar's plasma never draws
+   it; the graph's plasma draws flower only.
+   NEXT: the avatar's camera in the graph, a side by side against
+   the avatar, the colour difference; then the graph view.
+4. DONE (Oct 12) editing the cage, points first (Kalen: the edit
+   goes to the cage, so every copy follows). A row of object
+   names on top (TButtons; the view below it, t66px: an animated
+   view over the row hid it) picks the object whose cage shows
+   (lines and points over the view, not depth tested). A press
+   within 12 px of a point picks it (shift adds), a drag moves the
+   picked in the plane facing the view (x, y or z held: that axis
+   alone), elsewhere a drag turns the view. The Cage node keeps
+   its mesh in memory (read once); a move re-runs the object's
+   nodes and writes positions and normals into its pipelines'
+   vertex buffers in place (Stage.refresh, View.ag refill: aeonlit
+   layout, 48 bytes a vertex); blend.py is not involved. Release
+   writes the points into the .mesh (offset 24, the rest kept);
+   ctrl/cmd+z undoes (the app hands keys to the view). The view's
+   screen x and y are both mirrored against the camera vectors
+   (its flipped y): right is z x forward. ev.mouse.pos is already
+   the element's own space.
+   Seen hidden on a scratch copy: a point dragged 40 px right and
+   up ends 3 px from the pointer, all 24 petals change, the .mesh
+   is written; ctrl+z gives back the original file byte for byte.
+   Not driven: the axis keys, shift-add, the wheel.
+   Tab (Kalen): object mode / inner cage, as Blender's. Object
+   mode (the start): no cage; a press within 16 px of an object's
+   cage point chooses it (the row lights it: DesignView.want, read
+   by the app's render) and a drag moves the whole object (its
+   `at`), saved on release into its block of <name>.agi
+   (Design.save_place rewrites its `at:` line); ctrl/cmd+z undoes
+   either kind. Tab on a chosen object shows its cage and edits
+   points; tab again goes back. Seen hidden: a click lit outside,
+   a 60 px drag moved it (at 0.134, -0.196, 0 written), tab showed
+   the moved cage, ctrl+z wrote at 0, 0, 0 back.
+   The orbit eases (Kalen: an accumulating influence, filtered up
+   to about 50%): a drag adds 0.004 rad a pixel (was 0.008, applied
+   at once) to yaw_goal / pitch_goal, and each frame the view
+   moves half the way there (filter_n 0.5, frame-rate free). Seen
+   hidden: still moving at release, settled a second later.
+   Then (Kalen: every movement so: rotation, translation, place)
+   the same for all: point moves, object moves and the camera pan
+   take half the pointer's move into a `pending` / center_goal,
+   the wheel's step is 1.05 a notch into dist_goal, and each frame
+   moves half the way (filter_n 0.5). An edit is saved once its
+   move has settled (save_due), not at release. Seen hidden: a
+   100 px pan moved the model 51.5 px; a 40, -40 px point drag
+   moved it 18.5, -18 px, the .mesh unwritten at release and
+   written once settled. Rotate and scale tools, when made, take
+   the same.
+   Ctrl/cmd held at the press moves the camera (Kalen): the view
+   turns around its own `center` (was the origin) and a ctrl drag
+   moves it in the plane facing the view, so the model follows
+   the pointer (drag_world, shared with point moves). Seen hidden:
+   a 100, 50 px drag moved the model 101.7, 50.4 px.
+   Speed (Kalen: ultra slow on an object that arrays then
+   subdivides): a move re-ran every node with uv, colour and
+   material and rebuilt every vertex by push: flower ~500 ms,
+   outside ~200 ms. Now an edit runs the shape alone (the Cage's
+   `bare` poly shares the cage's points, no attrs), the first
+   build records each GPU vertex's mesh point (ModelParts verts,
+   firsts, sizes) and refill writes position and normal from it;
+   array and subdivision write presized vecs by index, the edge
+   table is counted then made, corners know their face (cface).
+   Measured in the app per move, evaluate to upload: outside 5
+   ms, flower 7 ms (20 of 20 moves each). Test still 1/1.
+   The test has its own copy (Kalen edited aeon/flower888's core):
+   aeon/tests/flower888/ is the project and blender's refs
+   together, made by blend.py from the .blend; aeon/flower888 is
+   the one edited in aeon. 1/1 passes.
+
 ---
 
 silver is a native build language with an LLVM backend. It compiles `.ag` source files into native binaries via LLVM IR. The compiler itself is written in C, built on the **Au** object system.

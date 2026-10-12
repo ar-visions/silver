@@ -1,0 +1,229 @@
+# the design: mesh nodes, objects, and the project folder
+extend aeon
+
+# a mesh node makes one mesh from the one it names as input
+class MeshNode
+    public name  : string
+    public input : string
+
+    func make [ src: Poly, dir: path ] -> Poly
+        return src
+
+    # the members its properties panel shows and edits
+    func props [] -> vec string
+        return vec string []
+
+# the cage: a .mesh file in the project, read once and edited
+MeshNode Cage
+    public file       : string
+    # the shape alone (no uv, colour or material): an edit's pass
+    public shape_only : bool
+    intern poly       : Poly
+    intern bare       : Poly
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ !poly ]
+            p : path '{dir}/{file}'
+            poly = read_mesh[ p ]
+            if [ !poly ] log 'aeon: no mesh at {p}'
+        if [ !poly || !shape_only ] return poly
+        # its points are the cage's own: an edit shows in both
+        if [ !bare ]
+            bare = Poly [ pos: poly.pos, fsize: poly.fsize,
+                          fstart: poly.fstart, corner: poly.corner,
+                          sa: poly.sa, sb: poly.sb, sharp: poly.sharp,
+                          attrs: vec Attr [] ]
+        return bare
+
+    # the edited points written into the .mesh, the rest kept
+    func save [ dir: path ] -> bool
+        if [ !poly ] return false
+        p : path '{dir}/{file}'
+        f : handle [ fopen[ p, "r+b" ] ]
+        if [ !f ] return false
+        fseek[ f, 24, SEEK_SET ]
+        n : i64 [ poly.pos.count ]
+        fwrite[ @poly.pos[ 0 ], 4, n, f ]
+        fclose[ f ]
+        return true
+
+# the mesh and its reflection, axis by axis
+MeshNode Mirror
+    public axes   : vec string
+    public merge  : f32
+    public clip   : bool
+    public bisect : vec string
+
+    func props [] -> vec string
+        return vec string [] [ 'axes', 'merge' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ bisect && bisect.count > 0 ]
+            log 'aeon: mirror bisect is not done'
+        m : src
+        names : vec string [] [ 'x', 'y', 'z' ]
+        for [ axis: i32 0, axis < 3, axis += 1 ]
+            on : bool [ false ]
+            if [ axes ]
+                for [ word: string ] in axes
+                    if [ word.compare[ names[ axis ] ] == 0 ] on = true
+            if [ on ] m = mirror_axis[ m, axis, merge ]
+        return m
+
+# catmull-clark, as blender's subdivision surface
+MeshNode Subdivision
+    public levels        : i32 [ 1 ]
+    public render_levels : i32 [ 2 ]
+    public creases       : bool [ true ]
+    public boundary      : string
+    public uv            : string
+    public limit         : bool [ true ]
+    public quality       : i32 [ 3 ]
+    public simple        : bool
+
+    func props [] -> vec string
+        return vec string [] [ 'levels', 'creases', 'limit' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ simple ] log 'aeon: simple subdivision is not done'
+        m : src
+        if [ !creases ]
+            m = Poly [ pos: m.pos, fsize: m.fsize, fstart: m.fstart,
+                       corner: m.corner, attrs: m.attrs ]
+        for [ i: i32 0, i < levels, i += 1 ]
+            m = subdivide_once[ m ]
+        if [ limit && levels > 0 ] m = limit_of[ m ]
+        return m
+
+# copies, each moved by the step once more than the last
+MeshNode Array
+    public count      : i32 [ 2 ]
+    public step       : Placement
+    public merge      : f32
+    public merge_ends : bool
+    public relative   : vec f32
+    public constant   : vec f32
+
+    func props [] -> vec string
+        return vec string [] [ 'count', 'merge', 'merge_ends' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ relative || constant ]
+            log 'aeon: array offsets by size are not done'
+        mat : vec f32 mat_identity[]
+        if [ step ] mat = step.matrix[]
+        return array_copies[ src, count, mat, merge, merge_ends ]
+
+# a thing in the design: its place, materials and nodes
+class Object
+    public name        : string
+    public at          : vec f32
+    public turn        : vec f32
+    public size        : vec f32
+    public parent      : string
+    public shown       : bool [ true ]
+    public collections : vec string
+    public materials   : vec string
+    public nodes       : vec MeshNode
+    public out         : string
+
+    # the first cage node: the points an edit moves
+    func cage [] -> Cage
+        for [ n: MeshNode ] in nodes
+            if [ n inherits Cage ] return cast Cage [ n ]
+        return null
+
+    # the out node's points alone, for an edit: same topology
+    func evaluate_shape [ dir: path ] -> Poly
+        c : cage[]
+        if [ c ] c.shape_only = true
+        m : evaluate[ dir ]
+        if [ c ] c.shape_only = false
+        return m
+
+    # the out node's mesh, every node made in order
+    func evaluate [ dir: path ] -> Poly
+        made : map Poly [ string ] []
+        last : Poly [ null ]
+        for [ n: MeshNode ] in nodes
+            src : Poly [ null ]
+            if [ n.input ] src = made[ n.input ]
+            m : n.make*[ src, dir ]
+            if [ !m ] return null
+            made[ n.name ] = m
+            last = m
+        if [ out ] return made[ out ]
+        return last
+
+# a project folder: <dir>/<name>.agi and what it names
+class Design
+    public dir     : path
+    public objects : vec Object
+
+    # an object's at, turn and size written into its block of
+    # <name>.agi: each line replaced, or added after its head
+    func save_place [ o: Object ] -> bool
+        nm : string dir.filename[]
+        p : path '{dir}/{nm}.agi'
+        if [ !p.exists[] || !o.at ] return false
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        lines : txt.split[ '\n' ]
+        head : '{o.name}: Object'
+        keys : vec string [] [ 'at', 'turn', 'size' ]
+        found : bool [ true ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            v : o.at
+            if [ k == 1 ] v = o.turn
+            if [ k == 2 ] v = o.size
+            if [ !v ] continue
+            key : keys[ k ]
+            line : '\t{key}: [ {v[ 0 ]}, {v[ 1 ]}, {v[ 2 ]} ]'
+            inside : bool [ false ]
+            done : bool [ false ]
+            at_head : i32 [ -1 ]
+            for [ i: i32 0, i < lines.count, i += 1 ]
+                ln : lines[ i ]
+                top : bool [ ln.count > 0 && !ln.starts_with[ '\t' ] ]
+                if [ top ]
+                    inside = ln.compare[ head ] == 0
+                    if [ inside ] at_head = i
+                if [ inside && !done
+                     && ln.starts_with[ '\t{key}:' ] ]
+                    lines[ i ] = line
+                    done = true
+            if [ at_head < 0 ] found = false
+            if [ at_head >= 0 && !done ]
+                lines.insert[ line, at_head + 1 ]
+        if [ !found ] return false
+        out : ''
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            ln : lines[ i ]
+            if [ i == lines.count - 1 && ln.count == 0 ] continue
+            out = '{out}{ln}\n'
+        f : handle [ fopen[ p, "w" ] ]
+        if [ !f ] return false
+        fputs[ out.chars, f ]
+        fclose[ f ]
+        return true
+
+    func init []
+        load[]
+
+    # the objects from <dir>/<name>.agi, read again in place
+    func load []
+        objects = vec Object []
+        if [ !dir ] return
+        nm : string dir.filename[]
+        p : path '{dir}/{nm}.agi'
+        if [ !p.exists[] ]
+            log 'aeon: no design at {p}'
+            return
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        top : map Au[string] Au.parse_agi[ typeid[ map ], txt.chars,
+                                           null ]
+        # map gives value then key
+        for [ v: Au, k: string ] in top
+            if [ !v || !(v inherits Object) ] continue
+            o : cast Object [ v ]
+            o.name = k
+            objects.push[ o ]

@@ -2986,6 +2986,40 @@ AU_EXPORT command command_with_cstr(command cmd, cstr buf) {
     return cmd;
 }
 
+// install/bin, beside the lib/ this library loads from
+static char au_bin[4096];
+static pthread_once_t au_bin_once = PTHREAD_ONCE_INIT;
+
+static void au_bin_find() {
+#ifndef _WIN32
+    Dl_info di;
+    char    real[4096];
+    if (!dladdr((void*)command_with_cstr, &di) || !di.dli_fname) return;
+    if (!realpath(di.dli_fname, real)) return;
+    char* s = strrchr(real, '/');
+    if (!s) return;
+    *s = 0;
+    s = strrchr(real, '/');
+    if (!s) return;
+    *s = 0;
+    snprintf(au_bin, sizeof(au_bin), "%s/bin", real);
+#endif
+}
+
+// install/bin leads PATH: our tools, whatever the user's
+static string au_in_env(cstr cmd) {
+    pthread_once(&au_bin_once, au_bin_find);
+    if (!au_bin[0] || strchr(au_bin, '\'')) return string(cmd);
+    return form(string, "PATH='%s':\"$PATH\"; export PATH; %s",
+        au_bin, cmd);
+}
+
+// its output as it comes, as popen's; the caller pcloses it
+AU_EXPORT handle command_stream(command cmd) {
+    string run = au_in_env(cstring(cmd));
+    return (handle)popen(cstring(run), "r");
+}
+
 AU_EXPORT string command_run(command cmd, bool verbose) {
     // one implementation everywhere: popen is posix and windows alike, so
     // there is no fork/exec path to keep in step. stderr is merged into the
@@ -2993,7 +3027,8 @@ AU_EXPORT string command_run(command cmd, bool verbose) {
     // no "2>&1": there is no shell to interpret it, and popen already
     // points the child's stderr at the same pipe as its stdout
     string  result = string(alloc, 1024);
-    FILE*   p      = popen(cstring(cmd), "r");
+    string  run    = au_in_env(cstring(cmd));
+    FILE*   p      = popen(cstring(run), "r");
     if (!p) return result;
 
     // fread only returns once it has filled the buffer, so a slow child's
@@ -3084,7 +3119,8 @@ AU_EXPORT int command_exec_hook(command cmd, bool verbose, bool merge_err,
     // would print unattributed. merge it into the pipe we prefix
     string merged = (exec_prefix[0] || merge_err) ?
         form(string, "%o 2>&1", cmd) : null;
-    FILE* p = popen(merged ? cstring(merged) : cstring(cmd), "r");
+    string run = au_in_env(merged ? cstring(merged) : cstring(cmd));
+    FILE* p = popen(cstring(run), "r");
     if (!p) return -1;
 
     // same here: read returns as soon as bytes are ready, and each chunk is

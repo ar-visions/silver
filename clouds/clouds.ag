@@ -2116,6 +2116,15 @@ element clouds : trinity
             speed: fly_speed, animated: true ]
         return e
 
+# the backdrop's hours: evening runs sunset to night and back;
+# morning, noon and night hold still; day runs the whole clock
+enum TimeOfDay
+    evening : 0
+    morning : 1
+    noon    : 2
+    night   : 3
+    day     : 4
+
 # the cloudscape as an orbiter backdrop: the Nubis sky above the sea.
 # vantage picks the altitude (ground, under the base, above the
 # tops), angle swings the gaze; the weather wanders on its own
@@ -2124,6 +2133,7 @@ Backdrop Clouds
     public func bg_color [ ] -> rgba
         return rgba [ r: 0.0, g: 0.0, b: 0.0, a: 1.0 ]
     frost_sharp : true
+    public [ Live ] hours : TimeOfDay [ TimeOfDay.evening ]
     mutable world      : CloudWorld
     mutable lowres     : Render
     mutable comp       : TemporalCompose
@@ -2146,6 +2156,7 @@ Backdrop Clouds
     mutable cam_z      : f32
     # ONE continuous clock: the sun and moon come from it alone
     mutable tod        : f32 [ 18.15 ]
+    mutable tod_dir    : f32 [ 1.0 ]
     mutable wtime      : f32
     mutable last_rw    : i32
     mutable last_rh    : i32
@@ -2283,8 +2294,26 @@ Backdrop Clouds
         cam_z += cos[ yaw ] * spd * dt
         # the day runs once, slowly, in wall-clock time: the speed
         # steps move us through the world, never through the day
-        tod += dt * (24.0 / 2400.0)
-        if [ tod >= 24.0 ] tod -= 24.0
+        step : f32 [ dt * (24.0 / 2400.0) ]
+        switch [ hours ]
+            case morning
+                tod = 7.5
+            case noon
+                tod = 12.5
+            case night
+                tod = 0.0
+            case day
+                tod += step
+                if [ tod >= 24.0 ] tod -= 24.0
+            default
+                # sunset into the night, then back to the sunset
+                tod += step * tod_dir
+                if [ tod >= 22.5 ]
+                    tod     = 22.5
+                    tod_dir = -1.0
+                if [ tod <= 17.6 ]
+                    tod     = 17.6
+                    tod_dir = 1.0
         if [ seconds > next_change ] schedule[]
         if [ blend_t < 1.0 ]
             blend_t += dt / 12.0

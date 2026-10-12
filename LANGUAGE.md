@@ -315,6 +315,19 @@ Single quotes interpolate, double quotes are literals:
 log 'hello {name}, value is {x}'
 ```
 
+A `{ }` block given to a string type (`string`, `command`, `path`)
+interpolates the same way; `{{` and `}}` are a literal brace. A
+`command` block may span lines and reaches the shell as one line:
+
+```
+run : command { rm -rf {root}
+    2>&1 }
+env : string { ${{HOME}}/bin }    # ${HOME}/bin
+```
+
+Other types built from a block (`CSS`, `Region`) keep its text
+as written.
+
 ---
 
 ## Collections

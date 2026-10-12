@@ -1,0 +1,804 @@
+# the geometry: a polygon mesh, read from a .mesh, and the nodes
+# that make one mesh from another (mirror, array, subdivision)
+extend aeon
+
+# one named value per point, edge, face or corner
+class Attr
+    public name   : string
+    public domain : i32
+    public width  : i32
+    public data   : vec f32
+
+# edges keyed by their two vertices, lower first
+class EdgeHash
+    public keys  : vec i64
+    public vals  : vec i32
+    public mask  : i64
+    public verts : i64
+    public used  : i32
+    public added : bool
+
+    func setup [ nv: i32, cap: i32 ]
+        size : i64 [ 16 ]
+        while [ size < i64[ cap ] * 2 ] size = size * 2
+        keys  = vec i64 [ size ]
+        vals  = vec i32 [ size ]
+        mask  = size - 1
+        verts = nv
+        used  = 0
+
+    func slot [ one: i32, other: i32 ] -> i64
+        lo : i64 [ (one < other) ? one : other ]
+        hi : i64 [ (one < other) ? other : one ]
+        key : i64 [ lo * verts + hi + 1 ]
+        h : i64 [ (key * 2654435761) & mask ]
+        while [ keys[ h ] != 0 && keys[ h ] != key ]
+            h = (h + 1) & mask
+        keys[ h ] = key
+        return h
+
+    # the edge's number; added says it is new
+    func edge_of [ one: i32, other: i32 ] -> i32
+        h : i64 [ slot[ one, other ] ]
+        added = vals[ h ] == 0
+        if [ added ]
+            used += 1
+            vals[ h ] = used
+        return vals[ h ] - 1
+
+    # the edge's number, or -1 when there is none
+    func lookup [ one: i32, other: i32 ] -> i32
+        lo : i64 [ (one < other) ? one : other ]
+        hi : i64 [ (one < other) ? other : one ]
+        key : i64 [ lo * verts + hi + 1 ]
+        h : i64 [ (key * 2654435761) & mask ]
+        while [ keys[ h ] != 0 ]
+            if [ keys[ h ] == key ] return vals[ h ] - 1
+            h = (h + 1) & mask
+        return -1
+
+# a mesh's edges, the faces beside them, and what meets a vertex
+class Topo
+    public hash   : EdgeHash
+    public ea     : vec i32
+    public eb     : vec i32
+    public ef     : vec i32
+    public eg     : vec i32
+    public enf    : vec i32
+    public sharp  : vec f32
+    # the edge from each corner to the next
+    public cedge  : vec i32
+    public vstart : vec i32
+    public vedges : vec i32
+    public fvat   : vec i32
+    public fverts : vec i32
+    # the face each corner belongs to
+    public cface  : vec i32
+
+# sharp past any level: a boundary or a non-manifold edge
+func endless [] -> f32
+    return 1.0e30
+
+# the cage, and every node's result
+class Poly
+    public pos    : vec f32
+    public fsize  : vec i32
+    public fstart : vec i32
+    public corner : vec i32
+    # sharp edges: their ends and opensubdiv's sharpness
+    public sa     : vec i32
+    public sb     : vec i32
+    public sharp  : vec f32
+    public attrs  : vec Attr
+
+    func init []
+        if [ !pos ] pos = vec f32 []
+        if [ !fsize ] fsize = vec i32 []
+        if [ !fstart ] fstart = vec i32 []
+        if [ !corner ] corner = vec i32 []
+        if [ !sa ] sa = vec i32 []
+        if [ !sb ] sb = vec i32 []
+        if [ !sharp ] sharp = vec f32 []
+        if [ !attrs ] attrs = vec Attr []
+
+    func verts [] -> i32
+        return pos.count / 3
+
+    func faces [] -> i32
+        return fsize.count
+
+    func add_face [ size: i32 ]
+        fstart.push[ corner.count ]
+        fsize.push[ size ]
+
+    func attr [ name: string ] -> Attr
+        for [ at: Attr ] in attrs
+            if [ at.name.compare[ name ] == 0 ] return at
+        return null
+
+    func topo [] -> Topo
+        nv : i32 [ verts[] ]
+        nf : i32 [ faces[] ]
+        nc : i32 [ corner.count ]
+        t : Topo [ hash: EdgeHash [], cedge: vec i32 [ nc ],
+                   cface: vec i32 [ nc ] ]
+        t.hash.setup[ nv, nc ]
+        # the edges numbered first, then made at their count
+        for [ f: i32 0, f < nf, f += 1 ]
+            st : i32 [ fstart[ f ] ]
+            k : i32 [ fsize[ f ] ]
+            for [ j: i32 0, j < k, j += 1 ]
+                first : i32 [ corner[ st + j ] ]
+                second : i32 [ corner[ st + (j + 1) % k ] ]
+                t.cedge[ st + j ] = t.hash.edge_of[ first, second ]
+                t.cface[ st + j ] = f
+        ne : i32 [ t.hash.used ]
+        t.ea  = vec i32 [ ne ]
+        t.eb  = vec i32 [ ne ]
+        t.ef  = vec i32 [ ne ]
+        t.eg  = vec i32 [ ne ]
+        t.enf = vec i32 [ ne ]
+        for [ c: i32 0, c < nc, c += 1 ]
+            e : i32 [ t.cedge[ c ] ]
+            f : i32 [ t.cface[ c ] ]
+            if [ t.enf[ e ] == 0 ]
+                st : i32 [ fstart[ f ] ]
+                k : i32 [ fsize[ f ] ]
+                first : i32 [ corner[ c ] ]
+                second : i32 [ corner[ st + (c - st + 1) % k ] ]
+                t.ea[ e ] = (first < second) ? first : second
+                t.eb[ e ] = (first < second) ? second : first
+                t.ef[ e ] = f
+                t.eg[ e ] = -1
+            t.enf[ e ] = t.enf[ e ] + 1
+            if [ t.enf[ e ] == 2 ] t.eg[ e ] = f
+        t.sharp = vec f32 [ ne ]
+        for [ e: i32 0, e < ne, e += 1 ]
+            if [ t.enf[ e ] != 2 ] t.sharp[ e ] = endless[]
+        for [ i: i32 0, i < sharp.count, i += 1 ]
+            e : i32 [ t.hash.lookup[ sa[ i ], sb[ i ] ] ]
+            if [ e >= 0 && t.enf[ e ] == 2 ] t.sharp[ e ] = sharp[ i ]
+        # the edges at each vertex, packed
+        t.vstart = vec i32 [ nv + 1 ]
+        for [ e: i32 0, e < ne, e += 1 ]
+            t.vstart[ t.ea[ e ] + 1 ] = t.vstart[ t.ea[ e ] + 1 ] + 1
+            t.vstart[ t.eb[ e ] + 1 ] = t.vstart[ t.eb[ e ] + 1 ] + 1
+        for [ v: i32 0, v < nv, v += 1 ]
+            t.vstart[ v + 1 ] = t.vstart[ v + 1 ] + t.vstart[ v ]
+        t.vedges = vec i32 [ ne * 2 ]
+        fill : vec i32 [ nv ]
+        for [ e: i32 0, e < ne, e += 1 ]
+            first : i32 [ t.ea[ e ] ]
+            second : i32 [ t.eb[ e ] ]
+            t.vedges[ t.vstart[ first ] + fill[ first ] ] = e
+            fill[ first ] = fill[ first ] + 1
+            t.vedges[ t.vstart[ second ] + fill[ second ] ] = e
+            fill[ second ] = fill[ second ] + 1
+        # the corners at each vertex, packed
+        t.fvat = vec i32 [ nv + 1 ]
+        for [ c: i32 0, c < nc, c += 1 ]
+            t.fvat[ corner[ c ] + 1 ] = t.fvat[ corner[ c ] + 1 ] + 1
+        for [ v: i32 0, v < nv, v += 1 ]
+            t.fvat[ v + 1 ] = t.fvat[ v + 1 ] + t.fvat[ v ]
+        t.fverts = vec i32 [ nc ]
+        used : vec i32 [ nv ]
+        for [ c: i32 0, c < nc, c += 1 ]
+            v : i32 [ corner[ c ] ]
+            t.fverts[ t.fvat[ v ] + used[ v ] ] = c
+            used[ v ] = used[ v ] + 1
+        return t
+
+    # the face a corner belongs to, by its start
+    func face_of [ c: i32 ] -> i32
+        lo : i32 [ 0 ]
+        hi : i32 [ fstart.count - 1 ]
+        while [ lo < hi ]
+            mid : i32 [ (lo + hi + 1) / 2 ]
+            if [ fstart[ mid ] <= c ]
+                lo = mid
+            el
+                hi = mid - 1
+        return lo
+
+# blender's edge crease (0..1) as opensubdiv's sharpness
+func crease_sharpness [ c: f32 ] -> f32
+    return c * c * 10.0
+
+# a .mesh file: the cage blend.py wrote
+func read_mesh [ p: path ] -> Poly
+    f : handle [ fopen[ p, "rb" ] ]
+    if [ !f ] return null
+    fseek[ f, 0, SEEK_END ]
+    n : i64 [ ftell[ f ] ]
+    fseek[ f, 0, SEEK_SET ]
+    bytes : new u8 [ n ]
+    fread[ bytes, 1, n, f ]
+    fclose[ f ]
+    if [ n < 24 || bytes[ 0 ] != 65 || bytes[ 3 ] != 83 ]
+        log 'aeon: {p} is not a .mesh'
+        return null
+    head : local u32 [ 5 ]
+    memcpy[ head, @bytes[ 4 ], 20 ]
+    nv : i32 [ head[ 1 ] ]
+    ne : i32 [ head[ 2 ] ]
+    nf : i32 [ head[ 3 ] ]
+    nc : i32 [ head[ 4 ] ]
+    at : i64 [ 24 ]
+    m : Poly [ pos: vec f32 [ nv * 3 ] ]
+    memcpy[ @m.pos[ 0 ], @bytes[ at ], nv * 12 ]
+    at += nv * 12
+    ev : vec i32 [ ne * 2 ]
+    if [ ne > 0 ] memcpy[ @ev[ 0 ], @bytes[ at ], ne * 8 ]
+    at += ne * 8
+    sizes : vec i32 [ nf ]
+    memcpy[ @sizes[ 0 ], @bytes[ at ], nf * 4 ]
+    at += nf * 4
+    m.corner = vec i32 [ nc ]
+    memcpy[ @m.corner[ 0 ], @bytes[ at ], nc * 4 ]
+    at += nc * 4
+    st : i32 [ 0 ]
+    for [ f: i32 0, f < nf, f += 1 ]
+        m.fstart.push[ st ]
+        m.fsize.push[ sizes[ f ] ]
+        st += sizes[ f ]
+    na : u32 [ 0 ]
+    memcpy[ @na, @bytes[ at ], 4 ]
+    at += 4
+    for [ k: u32 0, k < na, k += 1 ]
+        ln : u32 [ 0 ]
+        memcpy[ @ln, @bytes[ at ], 4 ]
+        at += 4
+        nb : local i8 [ 256 ]
+        memcpy[ nb, @bytes[ at ], ln ]
+        nb[ ln ] = 0
+        at += ln
+        desc : local u32 [ 3 ]
+        memcpy[ desc, @bytes[ at ], 12 ]
+        at += 12
+        dom : i32 [ desc[ 0 ] ]
+        kind : i32 [ desc[ 1 ] ]
+        width : i32 [ desc[ 2 ] ]
+        many : i32 [ (dom == 0) ? nv : (dom == 1) ? ne
+                     : (dom == 2) ? nf : nc ]
+        total : i32 [ many * width ]
+        a : Attr [ name: string [ cast cstr [ nb ] ], domain: dom,
+                   width: width, data: vec f32 [ total ] ]
+        for [ i: i32 0, i < total, i += 1 ]
+            if [ kind == 0 ]
+                fv : f32 [ 0.0 ]
+                memcpy[ @fv, @bytes[ at + i * 4 ], 4 ]
+                a.data[ i ] = fv
+            el [ kind == 1 ]
+                iv : i32 [ 0 ]
+                memcpy[ @iv, @bytes[ at + i * 4 ], 4 ]
+                a.data[ i ] = f32[ iv ]
+            el
+                a.data[ i ] = f32[ bytes[ at + i ] ]
+        at += (kind == 2) ? total : total * 4
+        # creases become sharp edges; the rest ride along
+        if [ dom == 1 && a.name.compare[ 'crease_edge' ] == 0 ]
+            for [ e: i32 0, e < ne, e += 1 ]
+                if [ a.data[ e ] > 0.0 ]
+                    m.sa.push[ ev[ e * 2 ] ]
+                    m.sb.push[ ev[ e * 2 + 1 ] ]
+                    m.sharp.push[ crease_sharpness[ a.data[ e ] ] ]
+        el [ dom != 1 ]
+            m.attrs.push[ a ]
+    if [ at != n ]
+        log 'aeon: {p} read {at} of {n} bytes'
+        return null
+    return m
+
+# a rotation (degrees, x then y then z), size and place
+class Placement
+    public at   : vec f32
+    public turn : vec f32
+    public size : vec f32
+
+    # the 3 x 4 matrix, rows first
+    func matrix [] -> vec f32
+        tx : f32 [ (turn) ? turn[ 0 ] * 0.017453292519943295 : 0.0 ]
+        ty : f32 [ (turn) ? turn[ 1 ] * 0.017453292519943295 : 0.0 ]
+        tz : f32 [ (turn) ? turn[ 2 ] * 0.017453292519943295 : 0.0 ]
+        sx : f32 [ (size) ? size[ 0 ] : 1.0 ]
+        sy : f32 [ (size) ? size[ 1 ] : 1.0 ]
+        sz : f32 [ (size) ? size[ 2 ] : 1.0 ]
+        cx : f32 [ cos[ tx ] ]
+        snx : f32 [ sin[ tx ] ]
+        cy : f32 [ cos[ ty ] ]
+        sny : f32 [ sin[ ty ] ]
+        cz : f32 [ cos[ tz ] ]
+        snz : f32 [ sin[ tz ] ]
+        # rz * ry * rx, then each column by its size
+        m : vec f32 [ 12 ]
+        m[ 0 ]  = cz * cy * sx
+        m[ 1 ]  = (cz * sny * snx - snz * cx) * sy
+        m[ 2 ]  = (cz * sny * cx + snz * snx) * sz
+        m[ 4 ]  = snz * cy * sx
+        m[ 5 ]  = (snz * sny * snx + cz * cx) * sy
+        m[ 6 ]  = (snz * sny * cx - cz * snx) * sz
+        m[ 8 ]  = 0.0 - sny * sx
+        m[ 9 ]  = cy * snx * sy
+        m[ 10 ] = cy * cx * sz
+        m[ 3 ]  = (at) ? at[ 0 ] : 0.0
+        m[ 7 ]  = (at) ? at[ 1 ] : 0.0
+        m[ 11 ] = (at) ? at[ 2 ] : 0.0
+        return m
+
+# the 3 x 4 matrix that moves nothing
+func mat_identity [] -> vec f32
+    m : vec f32 [ 12 ]
+    m[ 0 ] = 1.0
+    m[ 5 ] = 1.0
+    m[ 10 ] = 1.0
+    return m
+
+# a times b, both 3 x 4
+func mat_mul [ a: vec f32, b: vec f32 ] -> vec f32
+    m : vec f32 [ 12 ]
+    for [ r: i32 0, r < 3, r += 1 ]
+        for [ c: i32 0, c < 4, c += 1 ]
+            s : f32 [ a[ r * 4 ] * b[ c ] + a[ r * 4 + 1 ] * b[ 4 + c ]
+                      + a[ r * 4 + 2 ] * b[ 8 + c ] ]
+            if [ c == 3 ] s += a[ r * 4 + 3 ]
+            m[ r * 4 + c ] = s
+    return m
+
+# a copy with every value of each domain carried over
+func copy_attrs [ m: Poly ] -> vec Attr
+    out : vec Attr []
+    for [ a: Attr ] in m.attrs
+        out.push[ Attr [ name: a.name, domain: a.domain,
+                         width: a.width, data: vec f32 [] ] ]
+    return out
+
+# value i of attribute a appended to b
+func attr_take [ a: Attr, b: Attr, i: i32 ]
+    for [ k: i32 0, k < a.width, k += 1 ]
+        b.data.push[ a.data[ i * a.width + k ] ]
+
+# the mean of values ids of attribute a appended to b
+func attr_mean [ a: Attr, b: Attr, ids: vec i32 ]
+    for [ k: i32 0, k < a.width, k += 1 ]
+        s : f32 [ 0.0 ]
+        for [ i: i32 ] in ids
+            s += a.data[ i * a.width + k ]
+        mean : f32 [ s / f32[ ids.count ] ]
+        b.data.push[ mean ]
+
+# the mesh and its reflection across one axis; points within
+# merge of their reflection meet on the plane
+func mirror_axis [ m: Poly, axis: i32, merge: f32 ] -> Poly
+    nv : i32 [ m.verts[] ]
+    nf : i32 [ m.faces[] ]
+    out : Poly [ pos: vec f32 [] ]
+    out.attrs = copy_attrs[ m ]
+    target : vec i32 [ nv ]
+    count : i32 [ nv ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        d : f32 [ m.pos[ v * 3 + axis ] * 2.0 ]
+        if [ merge > 0.0 && d * d < merge * merge ]
+            target[ v ] = v
+        el
+            target[ v ] = count
+            count += 1
+    for [ side: i32 0, side < 2, side += 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            if [ side == 1 && target[ v ] == v ] continue
+            for [ k: i32 0, k < 3, k += 1 ]
+                x : f32 [ m.pos[ v * 3 + k ] ]
+                if [ k == axis && target[ v ] == v ] x = 0.0
+                if [ k == axis && side == 1 ] x = 0.0 - x
+                out.pos.push[ x ]
+    for [ i: i32 0, i < m.attrs.count, i += 1 ]
+        a : m.attrs[ i ]
+        b : out.attrs[ i ]
+        if [ a.domain == 0 ]
+            for [ side: i32 0, side < 2, side += 1 ]
+                for [ v: i32 0, v < nv, v += 1 ]
+                    if [ side == 0 || target[ v ] != v ]
+                        attr_take[ a, b, v ]
+        el [ a.domain == 2 ]
+            for [ side: i32 0, side < 2, side += 1 ]
+                for [ f: i32 0, f < nf, f += 1 ]
+                    attr_take[ a, b, f ]
+    # the reflected faces run the other way round
+    for [ side: i32 0, side < 2, side += 1 ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            st : i32 [ m.fstart[ f ] ]
+            k : i32 [ m.fsize[ f ] ]
+            out.add_face[ k ]
+            for [ j: i32 0, j < k, j += 1 ]
+                c : i32 [ (side == 0) ? st + j : st + (k - j) % k ]
+                v : i32 [ m.corner[ c ] ]
+                at : i32 [ (side == 0) ? v : target[ v ] ]
+                out.corner.push[ at ]
+                for [ i: i32 0, i < m.attrs.count, i += 1 ]
+                    a : m.attrs[ i ]
+                    if [ a.domain == 3 ]
+                        attr_take[ a, out.attrs[ i ], c ]
+    for [ side: i32 0, side < 2, side += 1 ]
+        for [ i: i32 0, i < m.sa.count, i += 1 ]
+            a : i32 [ m.sa[ i ] ]
+            b : i32 [ m.sb[ i ] ]
+            na : i32 [ (side == 0) ? a : target[ a ] ]
+            nb : i32 [ (side == 0) ? b : target[ b ] ]
+            out.sa.push[ na ]
+            out.sb.push[ nb ]
+            out.sharp.push[ m.sharp[ i ] ]
+    return out
+
+# copies, each moved by the step once more than the last; a
+# copy's points within merge of the copy before meet it
+func array_copies [ m: Poly, copies: i32, step: vec f32,
+                    merge: f32, ends: bool ] -> Poly
+    nv : i32 [ m.verts[] ]
+    nf : i32 [ m.faces[] ]
+    out : Poly [ pos: vec f32 [] ]
+    out.attrs = copy_attrs[ m ]
+    # each copy's points, placed
+    many : i32 [ nv * 3 * copies ]
+    placed : vec f32 [ many ]
+    mat : vec f32 mat_identity[]
+    for [ k: i32 0, k < copies, k += 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            x : f32 [ m.pos[ v * 3 ] ]
+            y : f32 [ m.pos[ v * 3 + 1 ] ]
+            z : f32 [ m.pos[ v * 3 + 2 ] ]
+            o : i32 [ (k * nv + v) * 3 ]
+            for [ r: i32 0, r < 3, r += 1 ]
+                w : f32 [ mat[ r * 4 ] * x + mat[ r * 4 + 1 ] * y
+                          + mat[ r * 4 + 2 ] * z + mat[ r * 4 + 3 ] ]
+                placed[ o + r ] = w
+        mat = mat_mul[ step, mat ]
+    # where copy one's points meet copy zero's, and the last's
+    # meet the first's
+    near : vec i32 [ nv ]
+    last : vec i32 [ nv ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        near[ v ] = -1
+        last[ v ] = -1
+    if [ merge > 0.0 && copies > 1 ]
+        tail : i32 [ copies - 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            best : f32 [ merge * merge ]
+            bend : f32 [ merge * merge ]
+            for [ u: i32 0, u < nv, u += 1 ]
+                d : f32 [ 0.0 ]
+                g : f32 [ 0.0 ]
+                for [ r: i32 0, r < 3, r += 1 ]
+                    p : f32 [ placed[ (nv + v) * 3 + r ]
+                              - placed[ u * 3 + r ] ]
+                    q : f32 [ placed[ (tail * nv + v) * 3 + r ]
+                              - placed[ u * 3 + r ] ]
+                    d += p * p
+                    g += q * q
+                if [ d < best ]
+                    best = d
+                    near[ v ] = u
+                if [ ends && g < bend ]
+                    bend = g
+                    last[ v ] = u
+    # every placed point's final number
+    total : i32 [ nv * copies ]
+    final : vec i32 [ total ]
+    count : i32 [ 0 ]
+    for [ k: i32 0, k < copies, k += 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            i : i32 [ k * nv + v ]
+            if [ k > 0 && near[ v ] >= 0 ]
+                final[ i ] = final[ (k - 1) * nv + near[ v ] ]
+            el [ k > 0 && k == copies - 1 && last[ v ] >= 0 ]
+                final[ i ] = final[ last[ v ] ]
+            el
+                final[ i ] = count
+                count += 1
+                for [ n: i32 0, n < m.attrs.count, n += 1 ]
+                    a : m.attrs[ n ]
+                    if [ a.domain == 0 ]
+                        attr_take[ a, out.attrs[ n ], v ]
+    # the points kept, written once in place
+    kept : i32 [ count * 3 ]
+    out.pos = vec f32 [ kept ]
+    for [ i: i32 0, i < total, i += 1 ]
+        to : i32 [ final[ i ] * 3 ]
+        for [ r: i32 0, r < 3, r += 1 ]
+            out.pos[ to + r ] = placed[ i * 3 + r ]
+    nc : i32 [ m.corner.count ]
+    corners : i32 [ nc * copies ]
+    faces : i32 [ nf * copies ]
+    out.corner = vec i32 [ corners ]
+    out.fsize  = vec i32 [ faces ]
+    out.fstart = vec i32 [ faces ]
+    for [ k: i32 0, k < copies, k += 1 ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            st : i32 [ m.fstart[ f ] ]
+            sz : i32 [ m.fsize[ f ] ]
+            out.fstart[ k * nf + f ] = k * nc + st
+            out.fsize[ k * nf + f ] = sz
+            for [ j: i32 0, j < sz, j += 1 ]
+                to : i32 [ final[ k * nv + m.corner[ st + j ] ] ]
+                out.corner[ k * nc + st + j ] = to
+                for [ n: i32 0, n < m.attrs.count, n += 1 ]
+                    a : m.attrs[ n ]
+                    if [ a.domain == 3 ]
+                        attr_take[ a, out.attrs[ n ], st + j ]
+            for [ n: i32 0, n < m.attrs.count, n += 1 ]
+                a : m.attrs[ n ]
+                if [ a.domain == 2 ] attr_take[ a, out.attrs[ n ], f ]
+        for [ i: i32 0, i < m.sa.count, i += 1 ]
+            out.sa.push[ final[ k * nv + m.sa[ i ] ] ]
+            out.sb.push[ final[ k * nv + m.sb[ i ] ] ]
+            out.sharp.push[ m.sharp[ i ] ]
+    return out
+
+# a point's three values
+func put_point [ v: vec f32, i: i32, x: f32, y: f32, z: f32 ]
+    v[ i * 3 ] = x
+    v[ i * 3 + 1 ] = y
+    v[ i * 3 + 2 ] = z
+
+# one catmull-clark step, opensubdiv's rules: boundaries are
+# creases, corners smooth; a sharpness falls by one a level
+func subdivide_once [ m: Poly ] -> Poly
+    t : Topo m.topo[]
+    nv : i32 [ m.verts[] ]
+    ne : i32 [ t.ea.count ]
+    nf : i32 [ m.faces[] ]
+    out : Poly [ pos: vec f32 [ (nv + ne + nf) * 3 ] ]
+    out.attrs = copy_attrs[ m ]
+    p : m.pos
+    q : out.pos
+    for [ f: i32 0, f < nf, f += 1 ]
+        st : i32 [ m.fstart[ f ] ]
+        k : i32 [ m.fsize[ f ] ]
+        sx : f32 [ 0.0 ]
+        sy : f32 [ 0.0 ]
+        sz : f32 [ 0.0 ]
+        for [ j: i32 0, j < k, j += 1 ]
+            v : i32 [ m.corner[ st + j ] ]
+            sx += p[ v * 3 ]
+            sy += p[ v * 3 + 1 ]
+            sz += p[ v * 3 + 2 ]
+        put_point[ q, nv + ne + f, sx / f32[ k ], sy / f32[ k ],
+              sz / f32[ k ] ]
+    fp : i32 [ nv + ne ]
+    for [ e: i32 0, e < ne, e += 1 ]
+        a : i32 [ t.ea[ e ] ]
+        b : i32 [ t.eb[ e ] ]
+        s : f32 [ t.sharp[ e ] ]
+        mx : f32 [ (p[ a * 3 ] + p[ b * 3 ]) * 0.5 ]
+        my : f32 [ (p[ a * 3 + 1 ] + p[ b * 3 + 1 ]) * 0.5 ]
+        mz : f32 [ (p[ a * 3 + 2 ] + p[ b * 3 + 2 ]) * 0.5 ]
+        if [ s < 1.0 ]
+            f : i32 [ fp + t.ef[ e ] ]
+            g : i32 [ fp + t.eg[ e ] ]
+            ox : f32 [ (mx * 2.0 + q[ f * 3 ] + q[ g * 3 ]) * 0.25 ]
+            oy : f32 [ (my * 2.0 + q[ f * 3 + 1 ] + q[ g * 3 + 1 ])
+                       * 0.25 ]
+            oz : f32 [ (mz * 2.0 + q[ f * 3 + 2 ] + q[ g * 3 + 2 ])
+                       * 0.25 ]
+            mx = mx * s + ox * (1.0 - s)
+            my = my * s + oy * (1.0 - s)
+            mz = mz * s + oz * (1.0 - s)
+        put_point[ q, nv + e, mx, my, mz ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        es : i32 [ t.vstart[ v ] ]
+        n : i32 [ t.vstart[ v + 1 ] - es ]
+        vx : f32 [ p[ v * 3 ] ]
+        vy : f32 [ p[ v * 3 + 1 ] ]
+        vz : f32 [ p[ v * 3 + 2 ] ]
+        if [ n == 0 ]
+            put_point[ q, v, vx, vy, vz ]
+            continue
+        # the smooth rule: faces, edge middles and the point
+        fx : f32 [ 0.0 ]
+        fy : f32 [ 0.0 ]
+        fz : f32 [ 0.0 ]
+        cs : i32 [ t.fvat[ v ] ]
+        nfc : i32 [ t.fvat[ v + 1 ] - cs ]
+        for [ j: i32 0, j < nfc, j += 1 ]
+            f : i32 [ fp + t.cface[ t.fverts[ cs + j ] ] ]
+            fx += q[ f * 3 ]
+            fy += q[ f * 3 + 1 ]
+            fz += q[ f * 3 + 2 ]
+        rx : f32 [ 0.0 ]
+        ry : f32 [ 0.0 ]
+        rz : f32 [ 0.0 ]
+        # the sharp edges: how many, their far ends, how sharp
+        hard : i32 [ 0 ]
+        whole : i32 [ 0 ]
+        weight : f32 [ 0.0 ]
+        hx : f32 [ 0.0 ]
+        hy : f32 [ 0.0 ]
+        hz : f32 [ 0.0 ]
+        wx : f32 [ 0.0 ]
+        wy : f32 [ 0.0 ]
+        wz : f32 [ 0.0 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            e : i32 [ t.vedges[ es + j ] ]
+            o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+            rx += (vx + p[ o * 3 ]) * 0.5
+            ry += (vy + p[ o * 3 + 1 ]) * 0.5
+            rz += (vz + p[ o * 3 + 2 ]) * 0.5
+            s : f32 [ t.sharp[ e ] ]
+            if [ s > 0.0 ]
+                hard += 1
+                weight += (s > 1.0) ? 1.0 : s
+                hx += p[ o * 3 ]
+                hy += p[ o * 3 + 1 ]
+                hz += p[ o * 3 + 2 ]
+            if [ s >= 1.0 ]
+                whole += 1
+                wx += p[ o * 3 ]
+                wy += p[ o * 3 + 1 ]
+                wz += p[ o * 3 + 2 ]
+        valence : f32 [ n ]
+        smx : f32 [ (fx / f32[ nfc ] + rx / valence * 2.0
+                    + vx * (valence - 3.0)) / valence ]
+        smy : f32 [ (fy / f32[ nfc ] + ry / valence * 2.0
+                    + vy * (valence - 3.0)) / valence ]
+        smz : f32 [ (fz / f32[ nfc ] + rz / valence * 2.0
+                    + vz * (valence - 3.0)) / valence ]
+        # the rule by the sharp edges: smooth, crease or corner
+        ux : f32 [ smx ]
+        uy : f32 [ smy ]
+        uz : f32 [ smz ]
+        if [ hard == 2 ]
+            ux = (hx + vx * 6.0) * 0.125
+            uy = (hy + vy * 6.0) * 0.125
+            uz = (hz + vz * 6.0) * 0.125
+        el [ hard > 2 ]
+            ux = vx
+            uy = vy
+            uz = vz
+        # past a fractional crease, mixed with the rule below it
+        if [ hard >= 2 && whole < hard ]
+            lx : f32 [ smx ]
+            ly : f32 [ smy ]
+            lz : f32 [ smz ]
+            if [ whole == 2 ]
+                lx = (wx + vx * 6.0) * 0.125
+                ly = (wy + vy * 6.0) * 0.125
+                lz = (wz + vz * 6.0) * 0.125
+            el [ whole > 2 ]
+                lx = vx
+                ly = vy
+                lz = vz
+            w : f32 [ weight / f32[ hard ] ]
+            ux = ux * w + lx * (1.0 - w)
+            uy = uy * w + ly * (1.0 - w)
+            uz = uz * w + lz * (1.0 - w)
+        put_point[ q, v, ux, uy, uz ]
+    # each face becomes one quad a corner, written in place
+    ids : vec i32 []
+    nc : i32 [ m.corner.count ]
+    quads : i32 [ nc * 4 ]
+    out.corner = vec i32 [ quads ]
+    out.fsize  = vec i32 [ nc ]
+    out.fstart = vec i32 [ nc ]
+    for [ f: i32 0, f < nf, f += 1 ]
+        st : i32 [ m.fstart[ f ] ]
+        k : i32 [ m.fsize[ f ] ]
+        for [ j: i32 0, j < k, j += 1 ]
+            c : i32 [ st + j ]
+            back : i32 [ st + (j + k - 1) % k ]
+            out.fstart[ c ] = c * 4
+            out.fsize[ c ] = 4
+            out.corner[ c * 4 ] = m.corner[ c ]
+            out.corner[ c * 4 + 1 ] = nv + t.cedge[ c ]
+            out.corner[ c * 4 + 2 ] = fp + f
+            out.corner[ c * 4 + 3 ] = nv + t.cedge[ back ]
+            for [ i: i32 0, i < m.attrs.count, i += 1 ]
+                a : m.attrs[ i ]
+                b : out.attrs[ i ]
+                if [ a.domain == 2 ]
+                    attr_take[ a, b, f ]
+                el [ a.domain == 3 ]
+                    attr_take[ a, b, c ]
+                    ids.clear[]
+                    ids.push[ c ]
+                    after : i32 [ st + (j + 1) % k ]
+                    ids.push[ after ]
+                    attr_mean[ a, b, ids ]
+                    ids.clear[]
+                    for [ g: i32 0, g < k, g += 1 ]
+                        cg : i32 [ st + g ]
+                        ids.push[ cg ]
+                    attr_mean[ a, b, ids ]
+                    ids.clear[]
+                    ids.push[ back ]
+                    ids.push[ c ]
+                    attr_mean[ a, b, ids ]
+    # point values: kept, edge middles, face middles
+    for [ i: i32 0, i < m.attrs.count, i += 1 ]
+        a : m.attrs[ i ]
+        b : out.attrs[ i ]
+        if [ a.domain != 0 ] continue
+        for [ v: i32 0, v < nv, v += 1 ]
+            attr_take[ a, b, v ]
+        for [ e: i32 0, e < ne, e += 1 ]
+            ids.clear[]
+            ids.push[ t.ea[ e ] ]
+            ids.push[ t.eb[ e ] ]
+            attr_mean[ a, b, ids ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            ids.clear[]
+            st : i32 [ m.fstart[ f ] ]
+            for [ g: i32 0, g < m.fsize[ f ], g += 1 ]
+                ids.push[ m.corner[ st + g ] ]
+            attr_mean[ a, b, ids ]
+    # a sharp edge's halves are one level less sharp
+    for [ e: i32 0, e < ne, e += 1 ]
+        s : f32 [ t.sharp[ e ] ]
+        if [ t.enf[ e ] != 2 || s <= 1.0 ] continue
+        mid : i32 [ nv + e ]
+        less : f32 [ s - 1.0 ]
+        out.sa.push[ t.ea[ e ] ]
+        out.sb.push[ mid ]
+        out.sharp.push[ less ]
+        out.sa.push[ mid ]
+        out.sb.push[ t.eb[ e ] ]
+        out.sharp.push[ less ]
+    return out
+
+# every point moved to where endless steps would take it
+func limit_of [ m: Poly ] -> Poly
+    t : Topo m.topo[]
+    nv : i32 [ m.verts[] ]
+    p : m.pos
+    q : vec f32 [ nv * 3 ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        es : i32 [ t.vstart[ v ] ]
+        n : i32 [ t.vstart[ v + 1 ] - es ]
+        vx : f32 [ p[ v * 3 ] ]
+        vy : f32 [ p[ v * 3 + 1 ] ]
+        vz : f32 [ p[ v * 3 + 2 ] ]
+        hard : i32 [ 0 ]
+        hx : f32 [ 0.0 ]
+        hy : f32 [ 0.0 ]
+        hz : f32 [ 0.0 ]
+        ex : f32 [ 0.0 ]
+        ey : f32 [ 0.0 ]
+        ez : f32 [ 0.0 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            e : i32 [ t.vedges[ es + j ] ]
+            o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+            ex += p[ o * 3 ]
+            ey += p[ o * 3 + 1 ]
+            ez += p[ o * 3 + 2 ]
+            if [ t.sharp[ e ] > 0.0 ]
+                hard += 1
+                hx += p[ o * 3 ]
+                hy += p[ o * 3 + 1 ]
+                hz += p[ o * 3 + 2 ]
+        if [ n == 0 || hard > 2 ]
+            put_point[ q, v, vx, vy, vz ]
+        el [ hard == 2 ]
+            put_point[ q, v, (hx + vx * 4.0) / 6.0,
+                       (hy + vy * 4.0) / 6.0, (hz + vz * 4.0) / 6.0 ]
+        el
+            # the far corner of each quad around the point
+            dx : f32 [ 0.0 ]
+            dy : f32 [ 0.0 ]
+            dz : f32 [ 0.0 ]
+            cs : i32 [ t.fvat[ v ] ]
+            nfc : i32 [ t.fvat[ v + 1 ] - cs ]
+            for [ j: i32 0, j < nfc, j += 1 ]
+                c : i32 [ t.fverts[ cs + j ] ]
+                f : i32 [ t.cface[ c ] ]
+                st : i32 [ m.fstart[ f ] ]
+                k : i32 [ m.fsize[ f ] ]
+                o : i32 [ m.corner[ st + (c - st + 2) % k ] ]
+                dx += p[ o * 3 ]
+                dy += p[ o * 3 + 1 ]
+                dz += p[ o * 3 + 2 ]
+            nn : f32 [ n ]
+            w : f32 [ nn * (nn + 5.0) ]
+            put_point[ q, v, (vx * nn * nn + ex * 4.0 + dx) / w,
+                  (vy * nn * nn + ey * 4.0 + dy) / w,
+                  (vz * nn * nn + ez * 4.0 + dz) / w ]
+    out : Poly [ pos: q, fsize: m.fsize, fstart: m.fstart,
+                 corner: m.corner, sa: m.sa, sb: m.sb,
+                 sharp: m.sharp, attrs: m.attrs ]
+    return out

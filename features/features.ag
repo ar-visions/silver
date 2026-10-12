@@ -1295,6 +1295,15 @@ expect func t_keyword_multiline [] -> bool
     t : tokens { a { b } c }
     return t.count == 5 && s.ends_with[ 'margin 2' ] && s.starts_with[ '\n' ]
 
+# a string-typed block interpolates {expr}; {{ is a brace
+expect func t_keyword_interpolate [] -> bool
+    root : string [ '/tmp/x' ]
+    c : command { rm -rf {root}
+        2>&1 }
+    s : string { a{root}b ${{HOME}} }
+    log 'keyword: [{c}] [{s}]'
+    return c == 'rm -rf /tmp/x 2>&1' && s == 'a/tmp/xb ${{HOME}}'
+
 ## a block comment
 # with a lone hash line inside
 ##
@@ -2232,6 +2241,16 @@ expect func t_vec_convert [] -> bool
     b = a
     return b.count == 3 && b[ 0 ] == 3 && b[ 1 ] == -5 && b[ 2 ] == 70000
 
+# a vec in the brackets is a value to copy, not a size
+expect func t_vec_from_vec [] -> bool
+    a : vec f32 [] [ 1.5, 2.5, 3.5 ]
+    b : vec f32 [ a ]
+    b[ 0 ] = 9.0
+    # another element type converts each element
+    c : vec i32 [ a ]
+    return b.count == 3 && b[ 1 ] == 2.5 && a[ 0 ] == 1.5
+        && c.count == 3 && c[ 2 ] == 3
+
 class Kelvin
     public k : f64
     # made from another class: a vec of Fahren converts through here
@@ -3032,6 +3051,18 @@ expect func t_export_forms [] -> bool
     s: string p.load[ typeid[string], null ]
     return s.index_of[ 'landscape: [\'true\']' ] >= 0 &&
            s.index_of[ '\'.fa\': ascii' ] >= 0
+
+# a command runs with silver's install/bin first on PATH, so a
+# trimmed or hostile PATH cannot swap in another program
+expect func t_command_install_path [] -> bool
+    kept : string [ getenv[ 'PATH' ] ]
+    trimmed : string [ '/usr/bin:/bin' ]
+    setenv[ 'PATH', trimmed.chars, 1 ]
+    found : command [ 'command -v silver' ]
+    at : string found.run[ false ]
+    setenv[ 'PATH', kept.chars, 1 ]
+    log 'command -v silver: {at}'
+    return at.ends_with[ '/bin/silver' ] && !at.starts_with[ '/usr' ]
 
 # ==== Tests: expect func runs inside the module.
 # silver --test runs every expect; a failing expect fails the

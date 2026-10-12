@@ -1,0 +1,398 @@
+# the stage: a design's render graph, its own passes and
+# targets; the host draws what it hands back, where it likes
+extend aeon
+
+import <dlfcn.h>
+
+# one draw in a pass: a shader over objects, or over a quad
+class Draw
+    public name     : string
+    # the design's objects it draws; none named: all of them
+    public objects  : vec string
+    # a quad over the pass in place of objects (a screen pass)
+    public quad     : bool
+    # back faces drawn too (else culled)
+    public both_sides : bool
+    # the shader's class, found in any loaded module
+    public shader   : string
+    # the shader's own members, by name (a project file: its path)
+    public settings : map Au [ string ]
+    # a sampler, by name: 'pass.color' (.depth, .reduction),
+    # 'image:<file>', 'env:<file>' or 'color:r g b a'
+    public inputs   : map Au [ string ]
+
+# one render pass: its size and its draws, in order
+class Pass
+    public name    : string
+    # of the host's size; most caps the larger side (0: none)
+    public scale   : f32 [ 1.0 ]
+    public most    : i32
+    public depth   : bool
+    public reduce  : bool
+    public clear   : vec f32
+    # glTF's axes (y up) for shaders written that way
+    public y_up    : bool
+    public draws   : vec Draw
+    # one draw, written on the pass itself
+    public objects : vec string
+    public quad    : bool
+    public both_sides : bool
+    public shader  : string
+    public inputs  : map Au [ string ]
+
+# <name>.render.agi: the modules its shaders come from, the
+# passes in order, then what is shown
+class StageGraph
+    public modules : vec string
+    public passes  : vec Pass
+    public out     : vec string
+
+# a draw as it runs: its shader, model and what the model holds
+class DrawRun
+    public draw  : Draw
+    public shade : shader
+    public model : Model
+    public parts : ModelParts
+    # the pipelines a filter keeps: (index, first, count) a run
+    public keep  : vec i32
+
+# a pass as it runs: its draws and its target
+class Running
+    public pass   : Pass
+    public draws  : vec DrawRun
+    public target : Render
+
+# the graph without a file: one lit pass of every object
+func default_graph [] -> StageGraph
+    lit : Pass [ name: 'lit', scale: 2.0, depth: true,
+                 shader: 'AeonLit', both_sides: true,
+                 clear: vec f32 [] [ 0.08, 0.08, 0.1, 1.0 ] ]
+    return StageGraph [ passes: vec Pass [] [ lit ],
+                        out: vec string [] [ 'lit' ] ]
+
+class Stage
+    public design : Design
+    public graph  : StageGraph
+    # the camera in the design's axes (z up)
+    public eye    : vec3f
+    public middle : vec3f
+    public proj   : mat4f
+    # clears to nothing: drawn over another stage's picture
+    public transparent : bool
+    intern runs   : vec Running
+    intern born   : i64
+
+    # the graph from <dir>/<name>.render.agi, else the default
+    func init []
+        runs = vec Running []
+        if [ graph || !design || !design.dir ] return
+        nm : string design.dir.filename[]
+        p : path '{design.dir}/{nm}.render.agi'
+        if [ !p.exists[] ]
+            graph = default_graph[]
+            return
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        graph = StageGraph [ modules: vec string [],
+                             passes: vec Pass [], out: vec string [] ]
+        Au.parse_agi[ null, txt.chars, graph ]
+
+    # the graph read again: the same passes, draws, shaders and
+    # wiring take the new settings in place; else false
+    func retune [] -> bool
+        nm : string design.dir.filename[]
+        p : path '{design.dir}/{nm}.render.agi'
+        if [ !p.exists[] ] return false
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        fresh : StageGraph [ modules: vec string [],
+                             passes: vec Pass [], out: vec string [] ]
+        Au.parse_agi[ null, txt.chars, fresh ]
+        if [ fresh.passes.count != runs.count ] return false
+        for [ i: i32 0, i < runs.count, i += 1 ]
+            r : runs[ i ]
+            np : fresh.passes[ i ]
+            if [ np.name.compare[ r.pass.name ] != 0 ] return false
+            # only the draws written out take settings
+            if [ !np.draws || np.draws.count != r.draws.count ]
+                return np.draws == null && r.draws.count == 1
+                    && same_wiring[ np, r.pass ]
+            for [ k: i32 0, k < r.draws.count, k += 1 ]
+                d : np.draws[ k ]
+                old : r.draws[ k ].draw
+                if [ d.shader.compare[ old.shader ] != 0 ] return false
+        # the structure holds: settings onto the running shaders
+        for [ i: i32 0, i < runs.count, i += 1 ]
+            r : runs[ i ]
+            np : fresh.passes[ i ]
+            if [ !np.draws ] continue
+            for [ k: i32 0, k < r.draws.count, k += 1 ]
+                apply[ r.draws[ k ].shade, np.draws[ k ] ]
+                r.draws[ k ].draw.settings = np.draws[ k ].settings
+        graph = fresh
+        return true
+
+    # a one-draw pass whose shader and objects are unchanged
+    func same_wiring [ np: Pass, op: Pass ] -> bool
+        if [ !np.shader || !op.shader ] return false
+        return np.shader.compare[ op.shader ] == 0
+
+    func running [ name: string ] -> Running
+        for [ r: Running ] in runs
+            if [ r.pass.name.compare[ name ] == 0 ] return r
+        return null
+
+    # 'pass.color' (or .depth, .reduction) of a built pass
+    func output [ wire: string ] -> Texture
+        dot : i32 [ wire.index_of[ '.' ] ]
+        nm : string (dot > 0) ? wire.mid[ 0, dot ] : wire
+        part : string (dot > 0)
+            ? wire.mid[ dot + 1, wire.count - dot - 1 ] : 'color'
+        r : running[ nm ]
+        if [ !r || !r.target ] return null
+        if [ part.compare[ 'depth' ] == 0 ] return r.target.depth
+        if [ part.compare[ 'reduction' ] == 0 ]
+            return r.target.reduction
+        return r.target.color
+
+    # a project file's full path, or null when there is none
+    func project_file [ name: string ] -> path
+        p : path '{design.dir}/{name}'
+        if [ p.exists[] ] return p
+        return null
+
+    # one sampler's source, as its input names it
+    func source [ vk: vk_context, w: Window, wire: string ] -> Au
+        if [ wire.starts_with[ 'image:' ] ]
+            f : project_file[ wire.mid[ 6, wire.count - 6 ] ]
+            if [ !f ] return null
+            return Texture [ w: w, vk: vk, sampler: Image [ uri: f ] ]
+        if [ wire.starts_with[ 'env:' ] ]
+            f : project_file[ wire.mid[ 4, wire.count - 4 ] ]
+            if [ !f ] return null
+            img : Image [ uri: f, surface: Surface.environment ]
+            return environment[ vk, img, vec3f [ 0.0, 1.0, 0.0 ], 0.0 ]
+        if [ wire.starts_with[ 'color:' ] ]
+            parts : wire.mid[ 6, wire.count - 6 ].split[ ' ' ]
+            im : Image [ width: 1, height: 1, format: Pixel.rgba8,
+                         channels: 4 ]
+            px : @u8 im.vdata[]
+            for [ k: i32 0, k < 4, k += 1 ]
+                c : f32 [ 1.0 ]
+                if [ k < parts.count ] c = f32[ parts[ k ] ]
+                px[ k ] = u8[ c * 255.0 + 0.5 ]
+            return im
+        return output[ wire ]
+
+    # the shader by class name, its settings applied
+    func make_shader [ vk: vk_context, d: Draw, pname: string ]
+                     -> shader
+        f : Au.find_type[ d.shader.chars, null ]
+        if [ !f ]
+            log 'aeon: stage {pname}: no shader class {d.shader}'
+            return null
+        made : Au.new_object[ f, null, null, false, __FILE__,
+                              __LINE__, __SEQUENCE__ ]
+        s : cast shader [ made ]
+        s.vk   = vk
+        s.name = 'aeon-{pname}-{d.name}'
+        apply[ s, d ]
+        s.initialize[]
+        # its init sets defaults: the file's values win
+        apply[ s, d ]
+        return s
+
+    # each setting onto the shader's member of that name
+    func apply [ s: shader, d: Draw ]
+        if [ !d.settings ] return
+        for [ v: Au, k: string ] in d.settings
+            member : find_member[ typeid[ s ], k.chars,
+                                  AU_MEMBER_VAR, 0, true ]
+            if [ !member ]
+                log 'aeon: {d.shader} has no {k}'
+                continue
+            text : string [ v ]
+            f : project_file[ text ]
+            val : Au.convert[ member.src, (f) ? '{f}' : text ]
+            if [ val ] s.set_property[ k, val ]
+
+    # every pass's target and draws, in the file's order
+    func build [ vk: vk_context, w: Window, pw: i32, ph: i32 ]
+        born = Au.epoch_millis[]
+        lib : path.path_install[]
+        if [ graph.modules ]
+            for [ m: string ] in graph.modules
+                ln : string 'silver-{m}'
+                so : path '{lib}/build/{path.path_library[ ln.chars ]}'
+                if [ !dlopen[ so.chars, 258 ] ]
+                    log 'aeon: stage could not load {so}'
+        for [ p: Pass ] in graph.passes
+            list : p.draws
+            if [ !list || list.count == 0 ]
+                list = vec Draw [] [ Draw [ name: p.name,
+                    objects: p.objects, quad: p.quad,
+                    both_sides: p.both_sides, shader: p.shader,
+                    inputs: p.inputs ] ]
+            r : Running [ pass: p, draws: vec DrawRun [] ]
+            models : vec Model []
+            for [ d: Draw ] in list
+                s : make_shader[ vk, d, p.name ]
+                if [ !s ] continue
+                smp : map Au [ string ] []
+                if [ d.inputs ]
+                    for [ v: Au, k: string ] in d.inputs
+                        wire : string [ v ]
+                        got : source[ vk, w, wire ]
+                        if [ got ]
+                            smp[ k ] = got
+                        el
+                            log 'aeon: stage {p.name}: no {wire}'
+                # a shader with an environment named loads its own
+                if [ s.env_id && !smp[ 'environment' ] ]
+                    ew : string 'env:images/{s.env_id}.exr'
+                    env : source[ vk, w, ew ]
+                    if [ env ] smp[ 'environment' ] = env
+                run : DrawRun [ draw: d, shade: s ]
+                if [ !d.quad ]
+                    run.parts = ModelParts [ names: vec string [],
+                        counts: vec i32 [], y_up: p.y_up ]
+                    gm : design_model[ design, d.objects, run.parts ]
+                    run.model = Model [ vk: vk, w: w, s: s, rigid_s: s,
+                        cull_none: d.both_sides, samplers: smp ]
+                    run.model.id = gm
+                el
+                    run.model = Model [ w: w, s: s, samplers: smp ]
+                models.push[ run.model ]
+                r.draws.push[ run ]
+            cc : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            if [ p.clear && p.clear.count >= 4 && !transparent ]
+                cc = vec4f [ p.clear[ 0 ], p.clear[ 1 ], p.clear[ 2 ],
+                             p.clear[ 3 ] ]
+            sz : size_of[ p, pw, ph ]
+            r.target = Render [ vk: vk, w: w, tag: 'aeon-{p.name}',
+                width: i32[ sz.x ], height: i32[ sz.y ],
+                use_depth: p.depth,
+                reduce: p.reduce, clear_color: cc, models: models ]
+            r.target.wscale = 0.0
+            runs.push[ r ]
+
+    # a pass's pixel size at the host's size
+    func size_of [ p: Pass, pw: i32, ph: i32 ] -> vec2f
+        fw : f32 [ f32[ pw ] * p.scale ]
+        fh : f32 [ f32[ ph ] * p.scale ]
+        top : f32 [ (fw > fh) ? fw : fh ]
+        if [ p.most > 0 && top > f32[ p.most ] ]
+            fw = fw * f32[ p.most ] / top
+            fh = fh * f32[ p.most ] / top
+        return vec2f [ x: floor[ fw ], y: floor[ fh ] ]
+
+    # the view for a pass: the design's axes, or glTF's (y up)
+    func view_of [ p: Pass ] -> mat4f
+        if [ !p.y_up ]
+            up : vec3f [ 0.0, 0.0, -1.0 ]
+            return mat4f.look_at[ eye, middle, up ]
+        e : vec3f [ eye.x, eye.z, 0.0 - eye.y ]
+        m : vec3f [ middle.x, middle.z, 0.0 - middle.y ]
+        up : vec3f [ 0.0, -1.0, 0.0 ]
+        return mat4f.look_at[ e, m, up ]
+
+    # each pass drawn in order at the size given; the outputs
+    func frame [ pw: i32, ph: i32 ] -> vec Texture
+        shown : vec Texture []
+        secs : f32 [ f32[ Au.epoch_millis[] - born ] / 1000.0 ]
+        for [ r: Running ] in runs
+            sz : size_of[ r.pass, pw, ph ]
+            want_w : i32 [ sz.x ]
+            want_h : i32 [ sz.y ]
+            if [ r.target.width != want_w || r.target.height != want_h ]
+                r.target.width  = want_w
+                r.target.height = want_h
+            vw : view_of[ r.pass ]
+            ep : vec3f [ eye ]
+            if [ r.pass.y_up ] ep = vec3f [ eye.x, eye.z, 0.0 - eye.y ]
+            for [ d: DrawRun ] in r.draws
+                mvp : d.shade inherits ModelViewProject
+                if [ mvp ]
+                    mvp.model = mat4f.identity[]
+                    mvp.view  = vw
+                    mvp.proj  = proj
+                    mvp.time  = secs
+                lit : d.shade inherits AeonLit
+                if [ lit ] lit.eye = vec4f [ ep.x, ep.y, ep.z, 1.0 ]
+                # a shader with an eye position takes it
+                pm : find_member[ typeid[ d.shade ], 'pos',
+                                  AU_MEMBER_VAR, 0, true ]
+                if [ pm && pm.src == typeid[ vec4f ] ]
+                    at : vec4f [ ep.x, ep.y, ep.z, 1.0 ]
+                    d.shade.set_property[ 'pos', at ]
+            r.target.update[]
+            r.target.draw[]
+            r.target.sync_fence[]
+        for [ o: string ] in graph.out
+            tx : output[ o ]
+            if [ tx ] shown.push[ tx ]
+        return shown
+
+    # one draw's setting changed in memory: its shader takes it
+    func set_setting [ pname: string, dname: string, key: string,
+                       text: string ]
+        r : running[ pname ]
+        if [ !r ] return
+        for [ d: DrawRun ] in r.draws
+            if [ d.draw.name.compare[ dname ] != 0 ] continue
+            if [ !d.draw.settings ]
+                d.draw.settings = map Au [ string ] []
+            d.draw.settings[ key ] = text
+            apply[ d.shade, d.draw ]
+
+    # only the named objects drawn (invert: all but them); a draw
+    # holding none of them is skipped by its shader's state
+    func show_only [ names: vec string, invert: bool ]
+        for [ r: Running ] in runs
+            for [ d: DrawRun ] in r.draws
+                if [ !d.parts ]
+                    # a quad draws for every object or none
+                    d.shade.states = State.none
+                    continue
+                d.keep = vec i32 []
+                first : i32 [ 0 ]
+                all : bool [ true ]
+                for [ i: i32 0, i < d.parts.names.count, i += 1 ]
+                    named : bool [ false ]
+                    for [ nm: string ] in names
+                        if [ nm.compare[ d.parts.names[ i ] ] == 0 ]
+                            named = true
+                    want : bool [ named != invert ]
+                    if [ !want ] all = false
+                    for [ k: i32 0, k < d.parts.counts[ i ], k += 1 ]
+                        if [ want ]
+                            at : i32 [ first + k ]
+                            d.keep.push[ at ]
+                            d.keep.push[ 0 ]
+                            d.keep.push[ 0 ]
+                    first += d.parts.counts[ i ]
+                if [ all ]
+                    d.model.run_n = 0
+                    d.shade.states = State.none
+                el [ d.keep.count == 0 ]
+                    d.model.run_n = 0
+                    # no state the target ever has: never drawn
+                    d.shade.states = State.disable
+                el
+                    d.model.runs = @d.keep[ 0 ]
+                    d.model.run_n = d.keep.count / 3
+                    d.shade.states = State.none
+
+    # an edited object redrawn in every draw that holds it
+    func refresh [ o: Object ]
+        for [ r: Running ] in runs
+            for [ d: DrawRun ] in r.draws
+                if [ !d.parts ] continue
+                first : i32 [ 0 ]
+                for [ i: i32 0, i < d.parts.names.count, i += 1 ]
+                    if [ d.parts.names[ i ].compare[ o.name ] == 0 ]
+                        done : refill[ d.model, first,
+                            d.parts.counts[ i ], d.parts, o,
+                            design.dir ]
+                        if [ !done ]
+                            log 'aeon: {o.name} could not be refilled'
+                        break
+                    first += d.parts.counts[ i ]

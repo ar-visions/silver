@@ -1,0 +1,29 @@
+surface: Principled
+	distribution: multi_ggx
+	scattering: random_walk
+	base_color: [ 0.275445, 0.2851, 1, 1 ]
+	metallic: 0.149733
+	roughness: 0.083664
+	ior: 1.5
+	alpha: 1
+	diffuse_roughness: 0
+	subsurface_weight: 0
+	subsurface_scale: 0.05
+	subsurface_anisotropy: 0
+	specular_ior_level: 0.5
+	specular_tint: [ 1, 1, 1, 1 ]
+	anisotropic: 0
+	anisotropic_rotation: 0
+	transmission_weight: 0
+	coat_weight: 0
+	coat_roughness: 0.03
+	coat_ior: 1.5
+	coat_tint: [ 1, 1, 1, 1 ]
+	sheen_weight: 0
+	sheen_roughness: 0.510695
+	sheen_tint: [ 1, 1, 1, 1 ]
+	emission_color: [ 1, 1, 1, 1 ]
+	emission_strength: 0
+	thin_film_thickness: 0
+	thin_film_ior: 1.33
+blend: opaque

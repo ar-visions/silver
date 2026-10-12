@@ -3146,6 +3146,8 @@ element orbiter : trinity # implements compiler
     public delete_hold_ms  : i64 [ 2000 ]   # the hold that fills it
     # the selected user: narrows the projects; browsing keeps it
     intern side_user     : string
+    # the project last unselected: its row stays unlit
+    intern side_off      : string
     public search_dirs   : vec path
     public file_index    : list string
     public max_search    : i32 [ 400000 ]
@@ -7217,7 +7219,8 @@ element orbiter : trinity # implements compiler
             if [ !one_cache.contains[ key ] ]
                 host : RepoHost repo_host_of[]
                 cmd : string host.repo_cmd[ one_want ]
-                one_fh = popen[ cmd.chars, "r" ]
+                one_fh_cmd : command [ cmd ]
+                one_fh = one_fh_cmd.stream[]
                 if [ one_fh ]
                     one_fd  = fileno[ one_fh ]
                     fcntl[ one_fd, F_SETFL, O_NONBLOCK ]
@@ -7274,7 +7277,8 @@ element orbiter : trinity # implements compiler
                 save_session[]
         cmd : string host.list_cmd[ user, page ]
         repo_fetch_page = page
-        repo_fetch_fh = popen[ cmd.chars, "r" ]
+        repo_fetch_fh_cmd : command [ cmd ]
+        repo_fetch_fh = repo_fetch_fh_cmd.stream[]
         if [ !repo_fetch_fh ]
             repo_note = 'no curl'
             return
@@ -7481,6 +7485,17 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.set_focus[ te ]
         run_search[]
 
+    # a project row is lit while the navigator is in its checkout (or
+    # below it) with its files showing, unless it was unselected
+    func side_lit [ key: string ] -> bool
+        if [ find_text && find_text.count > 0 ] return false
+        if [ side_off && side_off.compare[ key ] == 0 ] return false
+        nrs : string (nav_root) ? '{nav_root}' : ''
+        dir : path repo_dir[ key ]
+        rds : string '{dir}'
+        rdp : string '{dir}/'
+        return nrs.compare[ rds ] == 0 || nrs.starts_with[ rdp ]
+
     # the finder stays up (the title keeps focus) so the column is still
     # there a project shows its files; the selected one again unselects
     # it, and with a user still selected that means the user's
@@ -7489,17 +7504,12 @@ element orbiter : trinity # implements compiler
     # project
     func side_pick_project [ key: string ]
         rd9 : path repo_dir[ key ]
-        nrs : string (nav_root) ? '{nav_root}' : ''
-        rds : string '{rd9}'
-        # "again" only when its files are what is showing: the navigator
-        # can still sit in it while the user's repositories are up
-        again : bool [
-            nrs.compare[ rds ] == 0
-            && (!find_text || find_text.count == 0) ]
-        if [ again ]
+        if [ side_lit[ key ] ]
+            side_off  = key
             nav_root  = project_root[]
             find_text = (side_user && side_user.count > 0) ? '{side_user}:' : ''
         el
+            side_off  = ''
             nav_root  = rd9
             find_text = ''
         finder_off = false
@@ -7589,7 +7599,8 @@ element orbiter : trinity # implements compiler
         cmd : string 'bash -c "git clone --progress {url} {dir} 2>&1 && cd {dir} && silver --build {name} 2>&1"'
         rc  : RepoClone [ full: full, name: key, dir: '{dir}',
                           phase: 'cloning', tail: '' ]
-        rc.fh = popen[ cmd.chars, "r" ]
+        fh_cmd : command [ cmd ]
+        rc.fh = fh_cmd.stream[]
         if [ !rc.fh ]
             rc.phase = 'failed'
         el

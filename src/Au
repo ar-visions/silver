@@ -2100,6 +2100,7 @@ declare_class_2(const_string, string)
     M(AA,BB, i, method,  public, i32,    exec, bool) \
     M(AA,BB, i, method,  public, string, run, bool) \
     M(AA,BB, s, method,  public, i64,    last_pid) \
+    M(AA,BB, i, method,  public, handle, stream) \
     M(AA,BB, i, override, ctr,    cstr)
 declare_class_2(command, string)
 

@@ -6,7 +6,8 @@ func git_capture [ root: path, args: string,
                    keep_ws: bool ] -> vec string
     out : vec string []
     cmd : string 'git -C {root} {args} 2>/dev/null'
-    fh  : handle popen[ cmd.chars, "r" ]
+    run : command [ cmd ]
+    fh  : handle run.stream[]
     if [ !fh ] return out
     b : local i8 [ 1024 ]
     while [ fgets[ @b[0], 1024, fh ] ]
@@ -39,7 +40,8 @@ func json_line_value [ ln: string ] -> string
 # the login the host greets our key with; '' when it does not know us
 func repo_whoami [ host: RepoHost ] -> string
     cmd : string host.whoami_cmd[]
-    fh  : handle popen[ cmd.chars, "r" ]
+    run : command [ cmd ]
+    fh  : handle run.stream[]
     if [ !fh ] return ''
     b : local i8 [ 1024 ]
     who : string ''
@@ -56,7 +58,8 @@ func repo_whoami [ host: RepoHost ] -> string
 func repo_token_login [ host: RepoHost ] -> string
     if [ !host.token || host.token.count == 0 ] return ''
     cmd : string host.user_cmd[]
-    fh  : handle popen[ cmd.chars, "r" ]
+    run : command [ cmd ]
+    fh  : handle run.stream[]
     if [ !fh ] return ''
     b : local i8 [ 4096 ]
     who : string ''
@@ -540,14 +543,7 @@ Layer CommitLayer
                         on9 = orb.side_user && orb.side_user.compare[
                             nm9 ] == 0
                     el
-                        # lit when the navigator is in this checkout (or
-                        # below it): by path, so user/name keys match
-                        # like plain names
-                        nrs : string (orb.nav_root) ? '{orb.nav_root}' : ''
-                        rd9 : path orb.repo_dir[ nm9 ]
-                        rds : string '{rd9}'
-                        rdp : string '{rd9}/'
-                        on9 = (!orb.find_text || orb.find_text.count == 0) && (nrs.compare[ rds ] == 0 || nrs.starts_with[ rdp ])
+                        on9 = orb.side_lit[ nm9 ]
                     hov9 : bool [ cb.hov_side == cb.side_keys.count ]
                     if [ on9 || hov9 ]
                         cv.save[ ]

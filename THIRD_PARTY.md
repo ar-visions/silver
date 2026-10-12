@@ -68,6 +68,7 @@ Keep it in step with the imports.
 | mtools 4.0.48 (build tool) | os-bootstrap (the installer stick's EFI partition) | https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz | GPL-3.0-or-later | Alain Knaff, David Niemi and contributors |
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
+| Blender 4.5.14 LTS (Linux x64 release; run as a program, not linked) | aeon (blend.py reads .blend files into a project folder) | https://download.blender.org/release/Blender4.5/ | GPL-3.0-or-later | the Blender Foundation and the Blender community |
 | HuBERT base content encoder (hubert_base/pytorch_model.bin + config.json) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | Meta AI (fairseq), as shipped by RVC-Project |
 | Kokoro English TTS model (kokoro-en-v0_19) | speech | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2 | Apache-2.0 | hexgrad (Kokoro-82M), packaged by k2-fsa |
 | silver LICENSE | features (an import test) | https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE | this repository's own | ar-visions |
@@ -105,7 +106,8 @@ Keep it in step with the imports.
 FAAD2 is GPL. spectra and speech link it, so a distributed build of those modules
 is subject to the GPL unless a commercial FAAD2 license is obtained or the decoder
 is swapped. QEMU and the Linux kernel run as separate programs in orbiter-os, which
-does not put silver under their license. Mbed TLS and Vulkan-Headers are dual
+does not put silver under their license. Blender runs the same way for aeon's
+.blend import: a separate program, never linked. Mbed TLS and Vulkan-Headers are dual
 licensed and are used under Apache-2.0.
 
 WebKit, GLib, libsoup, glib-networking and the gcrypt libraries are LGPL and

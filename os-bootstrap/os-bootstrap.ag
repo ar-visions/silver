@@ -355,7 +355,8 @@ element Bootstrap
     # a kernel Makefile's version, x.y.z, read from a url; ''
     func makefile_version [ url: string ] -> string
         cmd : 'curl -s --max-time 4 {url}'
-        fh : handle popen[ cmd.chars, 'r' ]
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
         b : local i8 [ 256 ]
         parts3 : vec string [] [ '', '', '' ]
         keys : vec string [] [ 'VERSION = ', 'PATCHLEVEL = ',
@@ -380,7 +381,8 @@ element Bootstrap
         out : vec string []
         api : 'https://api.github.com/repos/linux-surface/linux-surface'
         cmd : 'curl -s --max-time 4 {api}/contents/patches'
-        fh : handle popen[ cmd.chars, 'r' ]
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
         b : local i8 [ 1024 ]
         while [ fh && fgets[ @b[0], 1024, fh ] ]
             ln0 : string [ @b[0] ]
@@ -431,7 +433,8 @@ element Bootstrap
         out : vec string []
         url : 'https://www.kernel.org/releases.json'
         cmd : 'curl -s --max-time 4 {url}'
-        fh : handle popen[ cmd.chars, 'r' ]
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
         text : string ''
         b : local i8 [ 4096 ]
         while [ fh && fgets[ @b[0], 4096, fh ] ]
@@ -593,7 +596,8 @@ element Bootstrap
         pf : pid_file[]
         q : quoted[ 'echo $$ > {pf}; {cmd}' ]
         full : 'setsid sh -c {q} 2>&1'
-        fh : handle popen[ full.chars, 'r' ]
+        fh_cmd : command [ full ]
+        fh : handle fh_cmd.stream[]
         if [ !fh ] return false
         b : local i8 [ 1024 ]
         while [ fgets[ @b[0], 1024, fh ] ]
@@ -609,7 +613,8 @@ element Bootstrap
         run : '({cmd}; echo "status $?") 2>&1'
         q : quoted[ 'echo $$ > {pf}; {run}' ]
         full : 'setsid sh -c {q}'
-        fh : handle popen[ full.chars, 'r' ]
+        fh_cmd : command [ full ]
+        fh : handle fh_cmd.stream[]
         if [ !fh ] return false
         code : i32 [ 1 ]
         b : local i8 [ 1024 ]
@@ -649,7 +654,8 @@ element Bootstrap
         api : 'https://api.github.com/repos/{repo}/commits/{branch}'
         sha : string ''
         cmd : 'curl -s --max-time 6 {api}'
-        fh : handle popen[ cmd.chars, 'r' ]
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
         b : local i8 [ 1024 ]
         while [ fh && fgets[ @b[0], 1024, fh ] && sha.count == 0 ]
             raw : string [ @b[0] ]
@@ -936,7 +942,8 @@ element Bootstrap
         old : 'for d in {install}/tmp/installer-*; do '
         old = '{old}p=$(echo "$d" | sed "s/.*-//"); '
         old = '{old}[ -d /proc/$p ] || rm -rf "$d"; done'
-        system[ old.chars ]
+        old_cmd : command [ old ]
+        old_cmd.exec[ false ]
         if [ !sh[ 'rm -rf {work} && mkdir -p {work}/stage' ] ] return ''
         image_bytes = total * 1048576
         free : i64 [ disk_free[ work ] / 1048576 ]
@@ -1016,8 +1023,8 @@ element Bootstrap
 
     # gone, cancelled or not (sh stops once cancelled)
     func wipe [ f: string ]
-        rm : 'rm -rf {quoted[ f ]}'
-        system[ rm.chars ]
+        rm_cmd : command { rm -rf {quoted[ f ]} }
+        rm_cmd.exec[ false ]
 
     # made by Cancel: the root shell writing a stick watches it
     func cancel_file [] -> string
@@ -1041,7 +1048,8 @@ element Bootstrap
         if [ !dv || dv.count == 0 ] return false
         # one writer a stick: a second one crawls both
         busy : 'pgrep -f "dd if=.* of=/dev/{dv}[ ]" >/dev/null'
-        if [ system[ busy.chars ] == 0 ]
+        busy_cmd : command [ busy ]
+        if [ busy_cmd.exec[ false ] == 0 ]
             say[ 'A write to /dev/{dv} is still running' ]
             return false
         progress = 0.0
@@ -1431,7 +1439,8 @@ element Bootstrap
 
     func count_files [ dir: string, ext: string ] -> i32
         cmd : 'find {dir} -name \'*{ext}*\' 2>/dev/null | wc -l'
-        fh : handle popen[ cmd.chars, 'r' ]
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
         if [ !fh ] return 0
         b : local i8 [ 64 ]
         n : i32 [ 0 ]
@@ -1518,7 +1527,8 @@ element Bootstrap
     # every shared library the loader will pull for this binary
     func add_deps [ bin: string ]
         cmd : 'ldd "{bin}"'
-        fp : handle popen[ cmd.chars, 'r' ]
+        fp_cmd : command [ cmd ]
+        fp : handle fp_cmd.stream[]
         if [ !fp ] return
         line : local i8 [ 4096 ]
         while [ fgets[ @line[0], 4096, fp ] ]
@@ -1656,7 +1666,8 @@ element Bootstrap
     func write_boot []
         bin : '{out_dir}/init'
         cmd : '{install}/bin/clang -static -Os -o "{bin}" "{root}/os-bootstrap/init.c"'
-        if [ system[ cmd.chars ] != 0 ]
+        init_build : command [ cmd ]
+        if [ init_build.exec[ false ] != 0 ]
             log 'os-bootstrap: init.c did not build'
             return
         rd : path '{out_dir}/root/boot/initramfs'
@@ -1814,7 +1825,8 @@ expect func t_installer_image [] -> bool
     found : string ''
     for [ d: string ] in efi
         cmd : '{mt} {d}'
-        fh : handle popen[ cmd.chars, 'r' ]
+        run : command [ cmd ]
+        fh : handle run.stream[]
         bf : local i8 [ 512 ]
         while [ fh && fgets[ @bf[0], 512, fh ] ]
             s0 : string [ @bf[0] ]
@@ -1823,14 +1835,16 @@ expect func t_installer_image [] -> bool
     off : i64 [ 1050624 * 512 ]
     dbg : 'debugfs -R "stat /src/silver/install" "{img}?offset={off}"'
     q2 : '{dbg} 2>/dev/null | head -1'
-    fh2 : handle popen[ q2.chars, 'r' ]
+    tree_cmd : command [ q2 ]
+    fh2 : handle tree_cmd.stream[]
     bf2 : local i8 [ 512 ]
     tree : string ''
     if [ fh2 && fgets[ @bf2[0], 512, fh2 ] ] tree = string [ @bf2[0] ]
     if [ fh2 ] pclose[ fh2 ]
     ty : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mtype -i {img}@@1M'
     q3 : '{ty} ::EFI/orbiter/cmdline.txt'
-    fh3 : handle popen[ q3.chars, 'r' ]
+    line_cmd : command [ q3 ]
+    fh3 : handle line_cmd.stream[]
     bf3 : local i8 [ 1024 ]
     if [ fh3 && fgets[ @bf3[0], 1024, fh3 ] ]
         ln3 : string [ @bf3[0] ]
@@ -1843,8 +1857,8 @@ expect func t_installer_image [] -> bool
         && found.index_of[ 'initramfs' ] >= 0
         && found.index_of[ 'cmdline.txt' ] >= 0
         && tree.index_of[ 'Inode' ] >= 0 ]
-    rm : 'rm -rf {b.image_work[]}'
-    system[ rm.chars ]
+    rm_cmd : command { rm -rf {b.image_work[]} }
+    rm_cmd.exec[ false ]
     return ok
 
 # an ARM stick: arm64 stub, Image and /init, the drive untouched
@@ -1863,7 +1877,8 @@ expect func t_installer_image_arm [] -> bool
     fmt : 'file {wk}/back/* && cd {wk}/back && cpio -i --quiet'
     fmt = '{fmt} init < initramfs && file init'
     q : '{got} && {fmt}'
-    fh : handle popen[ q.chars, 'r' ]
+    run : command [ q ]
+    fh : handle run.stream[]
     bf : local i8 [ 512 ]
     said : string ''
     while [ fh && fgets[ @bf[0], 512, fh ] ]
@@ -1875,8 +1890,8 @@ expect func t_installer_image_arm [] -> bool
         && said.index_of[ 'ARM aarch64' ] >= 0
         && said.index_of[ 'ARM64 boot executable' ] >= 0
         && b.chosen == keep ]
-    rm : 'rm -rf {wk}'
-    system[ rm.chars ]
+    rm_cmd : command { rm -rf {wk} }
+    rm_cmd.exec[ false ]
     return ok
 
 # kernel.org's list: a stable release first, then longterm ones

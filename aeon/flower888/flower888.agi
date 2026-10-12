@@ -1,0 +1,101 @@
+core: Object
+	at: [ 0, 0, 0 ]
+	turn: [ 0, 0, 0 ]
+	size: [ 1, 1, 1 ]
+	collections: [ 'Collection', 'Collection.001' ]
+	materials: [ strip, engine, top ]
+	nodes:
+		cage: Cage
+			file: 'meshes/core.mesh'
+	out: cage
+flower: Object
+	at: [ 0, 0, 0 ]
+	turn: [ 0, 0, 0 ]
+	size: [ 1, 1, 1 ]
+	collections: [ 'Collection' ]
+	materials: [ flower, top ]
+	nodes:
+		cage: Cage
+			file: 'meshes/flower.mesh'
+		mirror: Mirror
+			input: cage
+			axes: [ y ]
+			merge: 0.001
+		subdivision: Subdivision
+			input: mirror
+			levels: 3
+			render_levels: 2
+			creases: true
+			boundary: all
+			uv: preserve_boundaries
+			limit: true
+			quality: 3
+		array: Array
+			input: subdivision
+			count: 24
+			step:
+				at: [ 0, 0, 0 ]
+				turn: [ 0, 0, 15 ]
+				size: [ 1, 1, 1 ]
+	out: array
+outside: Object
+	at: [ 0, 0, 0 ]
+	turn: [ 0, 0, 0 ]
+	size: [ 1, 1, 1 ]
+	collections: [ 'Collection' ]
+	materials: [ top, flower, top, strip, ring, bottom, bottom, top2 ]
+	nodes:
+		cage: Cage
+			file: 'meshes/outside.mesh'
+		mirror: Mirror
+			input: cage
+			axes: [ y ]
+			merge: 0.1
+		array: Array
+			input: mirror
+			count: 6
+			step:
+				at: [ 0, 0, 0 ]
+				turn: [ 0, 0, 60 ]
+				size: [ 1, 1, 1 ]
+			merge: 0.01
+			merge_ends: true
+		subdivision: Subdivision
+			input: array
+			levels: 2
+			render_levels: 2
+			creases: true
+			boundary: all
+			uv: preserve_boundaries
+			limit: true
+			quality: 3
+	out: subdivision
+separator: Object
+	at: [ 0, 0, 0 ]
+	turn: [ 0, 0, 0 ]
+	size: [ 1, 1, 1 ]
+	collections: [ 'Collection' ]
+	materials: [ flower ]
+	nodes:
+		cage: Cage
+			file: 'meshes/separator.mesh'
+		subdivision: Subdivision
+			input: cage
+			levels: 1
+			render_levels: 2
+			creases: true
+			boundary: all
+			uv: preserve_boundaries
+			limit: true
+			quality: 3
+	out: subdivision
+top_ring: Object
+	at: [ 0, 0, 0 ]
+	turn: [ 0, 0, 0 ]
+	size: [ 1, 1, 1 ]
+	collections: [ 'Collection' ]
+	materials: [ plasma, top ]
+	nodes:
+		cage: Cage
+			file: 'meshes/top_ring.mesh'
+	out: cage

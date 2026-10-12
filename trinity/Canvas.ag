@@ -708,7 +708,8 @@ shader CanvasUI
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5,
                                                  dist);
-            o_color    = texel * aa * opacity;
+            // a filter applies to an image as to a fill (css)
+            o_color    = apply_color_filter(texel * aa * opacity);
             {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
         }}
 

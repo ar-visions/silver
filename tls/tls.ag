@@ -48,7 +48,10 @@ class TLSClient
                 dir : path.path_storage[ 'silver' ]
                 ca3 : path '{dir}/trust.crt'
                 if [ !ca3.exists[] ]
-                    system[ 'security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > "{ca3}"' ]
+                    keychain : command { security find-certificate -a -p
+                        /System/Library/Keychains/SystemRootCertificates.keychain
+                        > "{ca3}" }
+                    keychain.exec[ false ]
                 if [ ca3.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca3.chars ]
         if [ ca_ok != 0 ]
             log 'net: no CA bundle (ssl/trust.crt or system certs)'

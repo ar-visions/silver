@@ -4204,6 +4204,7 @@ static enode read_keywords(silver a, etype mdl_expect) {
         consume(a, Syntax__usertoken);
         while (next_is_neighbor(a) && !next_is(a, "}")) {
             token nb = peek(a);
+            if (eq(nb, "{")) depth++;
             concat(compacted, (string)nb);
             consume(a, Syntax__usertoken);
         }
@@ -4212,6 +4213,26 @@ static enode read_keywords(silver a, etype mdl_expect) {
     }
     Au_t target = (mdl_expect && mdl_expect->autype) ?
         au_arg_type((Au)mdl_expect->autype) : null;
+    // a string type interpolates its {expr}, as '...' does
+    if (target && target != typeid(tokens) && inherits(target, typeid(string))) {
+        string joined = string(alloc, 64);
+        num prev_line = open ? open->line : 0;
+        // a command's lines are one line to the shell
+        bool one_line = inherits(target, typeid(command));
+        for (int i = 0; i < len(toks); i++) {
+            token ft = (token)chunks->origin[i];
+            if (ft->line != prev_line && !one_line) {
+                push(joined, '\n');
+                for (num k = 0; k < ft->indent; k++)
+                    push(joined, ' ');
+            } else if (i && (!ft->neighbor || ft->line != prev_line))
+                push(joined, ' ');
+            prev_line = ft->line;
+            concat(joined, (string)toks->origin[i]);
+        }
+        return (enode)e_create((aether)a, (etype)mdl_expect,
+            (Au)e_operand((aether)a, (Au)joined, etypeid(string)), false);
+    }
     if (target && target != typeid(tokens)) {
         if (constructs_with(target, typeid(string)) ||
             constructs_with(target, typeid(cstr))   ||
@@ -6336,6 +6357,18 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
                 sh = instanceof(esize->literal, shape);
                 validate(read_if(a, "]"), "expected closing-bracket after vec Type [");
                 shaped = true;
+                // a vector given is a value: copied, or converted per element
+                Au_t vt = esize->autype ? au_arg_type((Au)esize->autype) : null;
+                if (!sh && vt && au_is_vector(vt)) {
+                    Au_t  elem = (mdl_c ? mdl_c : mdl)->autype;
+                    efunc f_cv = (efunc)u(efunc, find_member(typeid(vector),
+                        "vector_convert", AU_MEMBER_FUNC, 0, false));
+                    enode r = e_fn_call(a, f_cv,
+                        a(esize, e_typeid(a, etype_prep(a, elem))), false, false);
+                    r = e_create(a, vector_etype(a, elem), (Au)r, false);
+                    r->meta_a = (Au)elem;
+                    return r;
+                }
             }
             // vec T [] [ v1, v2 ] — seed values into the made growable
             if (made && read_if(a, "[")) {

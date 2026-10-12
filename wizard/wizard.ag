@@ -377,7 +377,8 @@ func firmware_gap [ tree: string, rel: string,
                     mod: string ] -> string
     root : string [ (tree.count > 0) ? tree : '/' ]
     cmd : 'modinfo -b {root} -k {rel} -F firmware {mod} 2>/dev/null'
-    fh : handle popen[ cmd.chars, 'r' ]
+    fh_cmd : command [ cmd ]
+    fh : handle fh_cmd.stream[]
     if [ !fh ] return ''
     b : local i8 [ 1024 ]
     first : string ''
@@ -1460,7 +1461,8 @@ element InstallWizard
     func capture [ cmd: string ] -> vec string
         out : vec string []
         full : '{cmd} 2>/dev/null'
-        fh : handle popen[ full.chars, 'r' ]
+        fh_cmd : command [ full ]
+        fh : handle fh_cmd.stream[]
         if [ !fh ] return out
         b : local i8 [ 4096 ]
         while [ fgets[ @b[0], 4096, fh ] ]
@@ -1473,7 +1475,8 @@ element InstallWizard
     func shell [ cmd: string ] -> bool
         say[ '$ {cmd}' ]
         full : '{cmd} 2>&1'
-        fh : handle popen[ full.chars, 'r' ]
+        fh_cmd : command [ full ]
+        fh : handle fh_cmd.stream[]
         if [ !fh ] return false
         b : local i8 [ 1024 ]
         while [ fgets[ @b[0], 1024, fh ] ]
@@ -2044,8 +2047,8 @@ expect func t_install_steps [] -> bool
             == 'user: test'
         && w.copied == w.total + 7 ]
     log 'wizard test: copied {w.copied} of {w.total}, ok {ok}'
-    rm : 'rm -rf {root}'
-    system[ rm.chars ]
+    rm_cmd : command { rm -rf {root} }
+    rm_cmd.exec[ false ]
     return ok
 
 # europa's own list: orbiter-os goes second, the default stays
@@ -2108,14 +2111,15 @@ expect func t_boot_detect [] -> bool
             log 'wizard test: case {i} gave {boot_name[ got[ i ] ]}'
             ok = false
     log 'wizard test: loader {ld}, boot cases ok {ok}'
-    rm : 'rm -rf {root}'
-    system[ rm.chars ]
+    rm_cmd : command { rm -rf {root} }
+    rm_cmd.exec[ false ]
     return ok
 
 # free space read as df reads it; contents of the running root
 expect func t_free_space [] -> bool
     mine : free_at[ '/' ]
-    fh : handle popen[ 'df -B1 --output=avail /', 'r' ]
+    fh_cmd : command [ 'df -B1 --output=avail /' ]
+    fh : handle fh_cmd.stream[]
     b : local i8 [ 256 ]
     df : i64 [ -1 ]
     while [ fh && fgets[ @b[0], 256, fh ] ]
@@ -2147,8 +2151,8 @@ expect func t_copy_need [] -> bool
     ok : bool [ w.need == 1100000 && !w.too_small[ fits ]
         && w.too_small[ tight ] && !w.too_small[ blind ] ]
     log 'wizard test: need {w.need}, ok {ok}'
-    rm : 'rm -rf {root}'
-    system[ rm.chars ]
+    rm_cmd : command { rm -rf {root} }
+    rm_cmd.exec[ false ]
     return ok
 
 # a device id against the drive's drivers, and its pci.ids name
