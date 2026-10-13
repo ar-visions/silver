@@ -1033,6 +1033,105 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     moved flower (0.0759, -0.1109, 0 saved by ctrl+s); G, a move
     and a right click, or escape, left it there; in the cage, G,
     a move and a click changed the mesh on save.
+    G, R and S (Kalen: as blender's, x y z with numbers, esc
+    cancels): move, turn (degrees) and size, of the chosen
+    object (at, turn, size) or the picked points about their
+    middle. Each frame sets the result from the state at the
+    start (from_at / from_turn / from_size / from_pos), eased.
+    Axis keys before a number make a group the number goes to
+    (Kalen: `s x y 2` is both); an axis after a number starts the
+    next group; a number with no axis: all three for S, x for G,
+    z for R; the axes also bound the pointer. Enter or a left
+    click keeps it, escape or a right click puts it back. The
+    view's foot shows the op and what is typed. save_place
+    writes at, turn and size (each line replaced, or added).
+    Seen hidden from a fresh copy, each saved by ctrl+s:
+    `s x y 2` -> size 2 2 1; `g z 0.5`, `r z 45` -> at z 0.5,
+    turn z 45; `g x 9` + escape changed nothing; `s 2 x 1` ->
+    2 4 2; `r x y 90` -> turn 90 90 45; in the cage, `g x 0.1`
+    moved point 25 by exactly 0.1 in x, nothing else.
+    OPEN: the property fields keep their old text while an op
+    or a save changes the value.
+    silver (Kalen: a known member that is not a shape): `vec T
+    [ v ]` with v a vector is v's values, copied, or converted
+    element by element when T differs (silver.c, through
+    vector_convert). features t_vec_from_vec; 248/249
+    (t_codegen_resource as before).
+    The render graph lives inside the design (Kalen, Oct 12:
+    "embed the render inside"): <name>.agi ends with a
+    `render: StageGraph` block (modules, passes, out); the
+    .render.agi file is gone (aeon/flower888's moved in). Design
+    keeps it as `render` (read_render reads it again); Stage takes
+    design.render, else the default lit pass. The watch tells a
+    change inside the block from one outside it by the file's
+    text without the block (Design.body_text): inside only, the
+    shaders are retuned; else the design reloads. Pass and draw
+    values write into render > passes > ... Seen hidden: the
+    chain draws (av, mask, volume, heat in the graph); an outside
+    halo_height edit retuned (8,250 pixels), an outside `at` edit
+    reloaded; `most` 1024 -> 512 typed and saved into the block,
+    no reload. Fixed on the way: a pass sized under a pixel
+    (most typed one digit at a time: 1) made an empty Render and
+    aborted; Stage.size_of keeps a pixel a side.
+    Scene graph (Kalen, Oct 12): each object box has a
+    visibility circle at its left end (radius 3.5 px): filled
+    while shown, an outline when hidden; a click there flips
+    Object.shown and chooses nothing. A hidden object's box
+    outline and name dim, and it is in neither stage (the view's
+    show_only key holds the chosen and the hidden names) and is
+    never picked. In memory only, not saved. A click on the box
+    already chosen lets it go (objects and passes). Node names 14
+    px. Seen hidden: outside hidden (44,247 pixels, the flower
+    underneath reachable), flower chosen then let go.
+    Quad draws are nodes of their own (Kalen: "aura would have
+    to be its own node"; separator alone still lit the halo, as
+    the aura only read av.depth): every quad draw (aura, heat)
+    is a box under the objects (pink, kind 3) with its own
+    circle, wired into its pass; it draws only while its circle
+    is filled (Selection.off holds 'pass/draw' keys; Stage
+    show_only takes them). A click on the box chooses its pass
+    and draw (settings on the right). The band grows with its
+    rows (16 + 27 a row, at least 150 px); the panels follow.
+    The flower -> mask wire is real: mask draws outside, flower
+    and separator (GrooveMask) for the heat haze.
+    av reaches the screen only through heat (out: heat, volume):
+    heat off leaves the objects unseen too.
+    Fixed on the way: a view of a new size faulted the GPU (lost
+    device): a resized pass made new textures while the quads
+    reading it held the old ones. Stage keeps built_w/built_h and
+    the view makes both stages again on a new size.
+    Seen hidden: separator alone with aura and heat on (the halo
+    and separator), both off (nothing), aura chosen (its 7
+    settings listed).
+    Heat (Kalen: no heat blur; the beam a layer under it): the
+    Heat draw had no settings (heat 0: the image unbent). Now
+    heat 1, busy 1, pulse_height 1.2; a `layers` pass (AeonOver,
+    View.ag: volume.color over av.reduction, premultiplied)
+    feeds heat, so the beam bends too; out: heat. BUILT, the
+    blur not yet measured (the check run was stopped).
+    Properties (Kalen: orbiter's properties view, shared): the
+    `properties` module (properties/properties.ag) holds
+    orbiter's LaunchPanel and its controls (NavButton,
+    LabelButton, LaunchPath/Clear/Action/Check/Field/Color/
+    Slider/Label, KeyField, PadField, StepField, ArgsField,
+    key_name, pad_name), moved as written; orbiter and aeon
+    import it. push_live's sending stays in orbiter
+    (orbiter.push_live over LaunchPanel.live_prop). aeon gives
+    it a LaunchProps of its rows (type string) and reads each
+    value_of back; inst moves with the chosen thing. Built:
+    properties, orbiter, aeon. Seen hidden in aeon: the grid,
+    a typed size applied (unsaved shown). Not driven in
+    orbiter. Build properties by name after an edit.
+    A list value shows bare (0, 0, 0): rows[] strips the outer
+    brackets (PropRow.bare), apply_row puts them back for the
+    member and the file. Seen hidden: 1, 1, 2 typed, saved as
+    size: [ 1, 1, 2 ].
+    A member named `list` (PropRow) once built a library that
+    failed to load ("undefined symbol: Array_init"); not
+    reproduced in 8 builds (2 clean), Array_init defined each
+    time: the name was not the cause (maybe two builds of aeon
+    at once). The member is `list` again; features
+    t_member_named_type guards it (249/250).
 Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI.
 The graph is all the nodes (each object's geometry chain and
 the render passes, wired) and sits across the very top, in place
@@ -1162,6 +1261,10 @@ orbiter's backdrops load the scene's .agi into a Stage.
    at once) to yaw_goal / pitch_goal, and each frame the view
    moves half the way there (filter_n 0.5, frame-rate free). Seen
    hidden: still moving at release, settled a second later.
+   Then (Kalen, Oct 12: orbit accumulates, filtered slower) the
+   orbit's view takes 0.2 of what is left a frame (pan, zoom and
+   ops keep 0.5); seen hidden: still turning 0.3 s after release,
+   settled by 1.8 s.
    Then (Kalen: every movement so: rotation, translation, place)
    the same for all: point moves, object moves and the camera pan
    take half the pointer's move into a `pending` / center_goal,

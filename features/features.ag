@@ -1083,6 +1083,17 @@ expect func t_override_alias_return [] -> bool
     m : Maker [ m2 ]
     return m.make*[] == 2 && m.make[] == 1
 
+# a member may take the name of a type (list is Au's)
+class Listed
+    public name : string
+    public list : bool
+
+expect func t_member_named_type [] -> bool
+    r : Listed [ name: 'a' ]
+    r.list = true
+    list : vec Listed [] [ r ]
+    return list[ 0 ].list && list.count == 1
+
 # ==== Expressions: Operators, literals and casts.
 # Precedence, ranges, comparisons and numeric forms, each checked
 # against the value it must produce.

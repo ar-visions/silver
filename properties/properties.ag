@@ -1,0 +1,912 @@
+# the properties view: a grid of named controls, one a row,
+# shared by every app that edits properties (orbiter, aeon)
+export 0.1.0
+
+import vec
+import trinity
+
+Option NavButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0c
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: none
+        :hovered
+            layers.body:
+                fill_color: #ffffff1c
+                stroke_color: #ffffff55
+                box_shadow: inset 0 0 10px #fcc6
+        :pressed
+            layers.body:
+                fill_color: #ffffff2e
+                stroke_color: #ffffff66
+        :selected
+            layers.body:
+                fill_color: #c8641e
+                stroke_color: #ffae5e88
+    }
+
+# geometry-only tweaks stay code members; base css inherits through
+NavButton LabelButton
+    area   : Region { r0+ t0 w2.2 h0.9 }
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# a launch path: name and value on a button; a press brings the nav list
+# to pick the file
+NavButton LaunchPath
+    # picked from the module's own extensions across the search path
+    public is_resource : bool
+    # a folder: double-click one in the nav list to take it
+    public is_dir      : bool
+    # the full path; the label shows only its name
+    public path_value  : string
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ],
+        label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    # inside the grid: no border, no rounding, a flat fill that lifts on
+    # hover
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
+                   stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+    }
+
+# a field's clear: flush right in its cell, the cell's height
+LabelButton LaunchClear
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
+                   stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+    }
+
+# a GLFW keycode as the user would name it
+func key_name [ code: i32 ] -> string
+    if [ code <= 0 ] return 'none'
+    if [ code >= 65 && code <= 90 ]
+        letters : 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        return letters.mid[ code - 65, 1 ]
+    if [ code >= 48 && code <= 57 ]
+        digits : '0123456789'
+        return digits.mid[ code - 48, 1 ]
+    if [ code >= 290 && code <= 301 ] return 'f{code - 289}'
+    if [ code == 32 ]  return 'space'
+    if [ code == 256 ] return 'esc'
+    if [ code == 257 ] return 'enter'
+    if [ code == 258 ] return 'tab'
+    if [ code == 259 ] return 'backspace'
+    if [ code == 261 ] return 'delete'
+    if [ code == 262 ] return 'right'
+    if [ code == 263 ] return 'left'
+    if [ code == 264 ] return 'down'
+    if [ code == 265 ] return 'up'
+    if [ code == 340 ] return 'left shift'
+    if [ code == 341 ] return 'left ctrl'
+    if [ code == 342 ] return 'left alt'
+    if [ code == 344 ] return 'right shift'
+    if [ code == 345 ] return 'right ctrl'
+    if [ code == 346 ] return 'right alt'
+    return 'key {code}'
+
+# a key binding: the label names the key; a press arms it and reads
+# 'press key' until the next key lands, which becomes the value
+NavButton KeyField
+    public  code    : i32
+    mutable armed   : bool
+    public  changed : bool
+    focusable : true
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ],
+        label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
+                   stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+    func on_press [ ev: Event ]
+        armed = true
+        label = 'press key'
+        if [ ux ] ux.set_focus[ a ]
+        pristine = false
+        ev.no_default     = true
+        ev.no_propagation = true
+    func on_key [ ev: Event ]
+        if [ !armed || !ev.key.state ] return
+        # escape backs out: the binding stays what it was
+        if [ ev.key.unicode == 256 ]
+            armed    = false
+            label    = key_name[ code ]
+            pristine = false
+            ev.no_default = true
+            return
+        code    = i32[ ev.key.unicode ]
+        label   = key_name[ code ]
+        armed   = false
+        changed = true
+        pristine = false
+        ev.no_default = true
+
+# a gamepad button as the user would name it
+func pad_name [ code: i32 ] -> string
+    if [ code < 0 ] return 'none'
+    names : 'A B X Y LB RB back start guide L3 R3 up right down left'
+    parts : names.split[ ' ' ]
+    if [ code < parts.count ] return parts[ code ]
+    return 'pad {code}'
+
+# a gamepad binding: a press arms it and reads 'press button' until the
+# next pad button lands, which becomes the value
+NavButton PadField
+    public  code    : i32
+    mutable armed   : bool
+    public  changed : bool
+    focusable : true
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ],
+        label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
+                   stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+    func on_press [ ev: Event ]
+        armed = true
+        label = 'press button'
+        if [ ux ] ux.set_focus[ a ]
+        pristine = false
+        ev.no_default     = true
+        ev.no_propagation = true
+    func on_pad [ ev: Event ]
+        if [ !armed || !ev.pad.state ] return
+        code    = ev.pad.button
+        label   = pad_name[ code ]
+        armed   = false
+        changed = true
+        pristine = false
+        ev.no_default = true
+
+# a number stepped in place: - at the left, + at the right, the value
+# between
+element StepField
+    public  value   : f32
+    public  min     : f32
+    public  max     : f32 [ 100.0 ]
+    public  step    : f32 [ 1.0 ]
+    public  whole   : bool          # an integer member: no decimals
+    public  changed : bool
+    body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
+                   stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+    }
+    func text [] -> string
+        return (whole) ? '{value.0f}' : '{value.2f}'
+    func on_press [ ev: Event ]
+        bw : f32 [ 24.0 ]
+        if      [ ev.mouse.pos.x < bw ]            value -= step
+        el [ ev.mouse.pos.x > bounds.w - bw ] value += step
+        el return
+        if [ value < min ] value = min
+        if [ value > max ] value = max
+        changed  = true
+        pristine = false
+        ev.no_default     = true
+        ev.no_propagation = true
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || bounds.w <= 0.0 ]
+            return
+        cv : Canvas [ w.screen ]
+        bw : f32 [ 24.0 ]
+        cv.font_size[ 14 ]
+        cv.fill_color[ '#fff6' ]
+        cv.draw_text[ '-', rect [ x: 0.0, y: 0.0, w: bw, h: bounds.h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.draw_text[ '+',
+                      rect [ x: bounds.w - bw, y: 0.0, w: bw,
+                             h: bounds.h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.fill_color[ '#e8e8ec' ]
+        cv.draw_text[ text[],
+                      rect [ x: bw, y: 0.0, w: bounds.w - bw * 2.0,
+                             h: bounds.h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.paint[]
+
+# an Action of the app: a press calls it on the running instance
+NavButton LaunchAction
+    tlabel : Layer [ label_color: rgba [ '#cfe' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ],
+        label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
+    body : Layer [ fill_color: rgba [ '#2f6b4a40' ],
+                   radius: Radius [ '0' ], stroke_width: 0.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #2f6b4a40
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #2f6b4a80
+    }
+
+# run arguments for the pane's app; sits in the run band header
+element ArgsField
+    style : CSS {
+        area: l0+ t0 w8 h0.9
+        layers.body:
+            fill_color: #0000
+            radius: 8
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.face:
+            label_color: #fff6
+            label_size: 15
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 10.0 0.0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+            layers.face:
+                label_color: #ffff
+    }
+
+# launch panel: the app's `[ Launch ]` members as controls, over the
+# console
+Check LaunchCheck
+    body : Layer [ fill_color: rgba [ '#ffffff0c' ],
+                   radius: Radius [ '0' ],
+        stroke_width: 0.0, stroke_color: rgba [ '#ffffff33' ] ]
+    face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 13,
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0c
+            stroke_color: #ffffff33
+        :selected
+            layers.body:
+                fill_color: #6cb6ff66
+                stroke_color: #8fd0ff
+    }
+    # the panel's press toggles it; a click toggling it again would undo
+    # that
+    func on_click [ ev: Event ]
+        return
+    # the mark: a filled check inside the box while selected
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !selected || !bounds ]
+            return
+        cv : Canvas [ w.screen ]
+        s  : f32 [ (bounds.w < bounds.h) ? bounds.w : bounds.h ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#e8f4ff' ] ]
+        cv.move_to[ s * 0.20, s * 0.52 ]
+        cv.line_to[ s * 0.42, s * 0.74 ]
+        cv.line_to[ s * 0.82, s * 0.30 ]
+        cv.line_to[ s * 0.72, s * 0.20 ]
+        cv.line_to[ s * 0.42, s * 0.54 ]
+        cv.line_to[ s * 0.30, s * 0.42 ]
+        cv.close_path[]
+        cv.paint[]
+
+# one element per parameter: the name sits inside, the value edits to
+# its right the name takes its word plus two spaces; the value begins
+# right after
+func launch_name_w [ name: string ] -> f32
+    # glyph advance at label_size 13 is ~0.25 units; ~2 spaces after, no
+    # clip
+    return 0.25 * f32[ (name) ? i32[ name.count ] : 0 ] + 0.45
+
+ArgsField LaunchField
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+                   editable: true,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    # inside the grid: the rules are the borders
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+    func init []
+        nw : f32 [ launch_name_w[ label ] ]
+        vx : f32 [ 0.4 + nw ]
+        name.area = Region [ 'l0.4 t0 w{nw} b0' ]
+        face.area = Region [ 'l{vx} t0 r0.3 b0' ]
+
+# a '#rrggbb' hex edits as text; the color itself sits as a swatch at
+# the right
+ArgsField LaunchColor
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+                   editable: true,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+    func init []
+        name.area = Region [ 'l0.4 t0 w0 b0' ]
+        face.area = Region [ 'l0.4 t0 r30px b0' ]
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || bounds.w <= 0.0 ]
+            return
+        hx : string edit
+        if [ !hx || !hx.starts_with[ '#' ] || !(hx.count == 7 || hx.count == 9) ]
+            return
+        cv : Canvas [ w.screen ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ hx ] ]
+        cv.rect_to[ bounds.w - 26.0, 4.0, 20.0, bounds.h - 8.0 ]
+        cv.paint[]
+
+VolumeSlider LaunchSlider
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+    func init []
+        nw : f32 [ launch_name_w[ label ] ]
+        name.area = Region [ 'l0.4 t0 w{nw} b0' ]
+    # the panel's changing property is this one while it is held; the id
+    # is 'lp_<name>'
+    func prop_name [] -> string
+        return (id && id.count > 3) ? id.mid[ 3, id.count - 3 ] : ''
+    public func on_press [ ev: Event ]
+        if [ parent && parent inherits LaunchPanel ]
+            lp : LaunchPanel parent
+            lp.changing = prop_name[]
+        super.on_press[ ev ]
+    public func on_release [ ev: Event ]
+        if [ parent && parent inherits LaunchPanel ]
+            lp : LaunchPanel parent
+            if [ lp.changing && lp.changing == prop_name[] ]
+                lp.changing = ''
+        super.on_release[ ev ]
+
+element LaunchLabel
+    face : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element LaunchPanel
+    # the ground under the rows only, never the space below (render
+    # sizes it)
+    body : Layer [ fill_color: rgba [ '#0f122088' ] ]
+    # the standard scrollbar: the rows scroll when the section is
+    # shorter than they are
+    scrollbar : ScrollLayer [ overlay: true,
+                              area: Region { l0 t0 r0 b0 },
+        thumb_color: '#fff3', thumb_w: 6.0, thumb_min_h: 32.0,
+        thumb_radius: 4.0 ]
+    # the instance's props, agi (trinity Props)
+    public spec : string
+    public args : string        # the file's current run args
+    # the property the user is engaged with (one at a time): a value
+    # received for it is not applied while it is set
+    public changing : string 
+    # content_h is the element's own: a redeclaration here would be a
+    # SECOND member, and trinity's scroll, crop and scrollbar read the
+    # base one
+    mutable rows_h    : f32
+    mutable col_x     : f32
+    # the bottom of every row: rows are not all one height
+    mutable rule_ys   : vec f32
+    # the instance shown; a change re-seeds every control
+    public  inst      : i32
+    # the spec's defaults are the running instance's own values
+    public  live_vals : bool
+    # the instance's own switch above its properties: a debug build on
+    # its next start
+    public  dbg_row   : bool
+    public  dbg_on    : bool
+    public  cov_on    : bool        # a coverage build on its next start
+    # the running process, shown read-only; 0 = none
+    public  pid_val   : i32
+    # the scene's props: a change goes to the live scene, no instance
+    public  scene     : bool
+    mutable last_spec : string
+    mutable last_inst : i32
+
+    # --name's value in args, else the default
+    func arg_value [ name: string, deflt: string ] -> string
+        if [ !args ] return deflt
+        parts : args.split[ ' ' ]
+        for [ i: i32 0, i + 1 < parts.count, i += 1 ]
+            if [ parts[ i ] == '--{name}' ] return parts[ i + 1 ]
+        return deflt
+
+    # the positional arg (a resource): the token that is neither a
+    # --flag nor a flag's value. compose writes it bare, so arg_value
+    # can't see it
+    func arg_positional [] -> string
+        if [ !args ] return ''
+        parts : args.split[ ' ' ]
+        i : i32 [ 0 ]
+        while [ i < parts.count ]
+            p : string parts[ i ]
+            if [ p.starts_with[ '--' ] ]
+                i += 2
+            el
+                return p
+        return ''
+
+    public  fields     : LaunchProps
+    mutable fields_src : string
+
+    # the spec parsed once per change: every row reads a Prop
+    func parse_fields []
+        if [ fields && fields_src && spec && fields_src.compare[ spec ] == 0 ]
+            return
+        fields_src = spec
+        fields     = LaunchProps []
+        if [ spec && spec.count > 0 ]
+            Au.parse_agi[ null, spec.chars, fields ]
+        if [ !fields.props ] fields.props = vec Prop []
+        # the display is the instance panel's own bar, never a row
+        kept : vec Prop []
+        for [ p: Prop ] in fields.props
+            if [ p.ident != 'display' ] kept.push[ p ]
+        fields.props = kept
+
+    # another module's prop (trinity's display) is flagged with its
+    # module: --trinity.display never clashes with the app's own name
+    func flag_name [ p: Prop ] -> string
+        if [ p.module && fields.module && p.module != fields.module ]
+            return '{p.module}.{p.ident}'
+        return p.ident
+
+    func prop_of [ nm: string ] -> Prop
+        parse_fields[]
+        for [ p: Prop ] in fields.props
+            if [ p.ident == nm ] return p
+        return null
+
+    func has_meta [ p: Prop, m: string ] -> bool
+        if [ !p.meta ] return false
+        for [ q: string ] in p.meta
+            if [ q == m ] return true
+        return false
+
+    # the control's trinity base by name; a control with no members
+    # arrives as its bare type name
+    func ctl [ p: Prop ] -> string
+        if [ !p.control ] return ''
+        if [ p.control inherits string ]    return '{p.control}'
+        if [ p.control inherits Range ]     return 'Range'
+        if [ p.control inherits Stepper ]   return 'Stepper'
+        if [ p.control inherits KeyBind ]   return 'KeyBind'
+        if [ p.control inherits Color ]     return 'Color'
+        if [ p.control inherits PadBind ]   return 'PadBind'
+        if [ p.control inherits Directory ] return 'Directory'
+        if [ p.control inherits Multiline ] return 'Multiline'
+        return ''
+
+    func prop_live [ p: Prop ] -> bool
+        return p.type == 'func' || has_meta[ p, 'Live' ] || has_meta[ p,
+                                                                      'Action' ]
+
+    func has_stops [ p: Prop ] -> bool
+        return (p.stops && p.stops.count > 0) ? true : false
+
+    # a resource or a default member is the bare positional argument
+    func prop_pos [ p: Prop ] -> bool
+        return p.type == 'resource' || p.access == 'default'
+
+    func range_of [ p: Prop ] -> vec2f
+        if [ p.control && p.control inherits Range ]
+            rg : Range p.control
+            if [ rg.max > rg.min ] return vec2f [ rg.min, rg.max ]
+        return vec2f [ 0.0, 1.0 ]
+
+    func stepper_of [ p: Prop ] -> vec f32
+        out : vec f32 [] [ 0.0, 100.0, 1.0 ]
+        if [ p.control && p.control inherits Stepper ]
+            sp : Stepper p.control
+            out[ 0 ] = sp.min
+            out[ 1 ] = sp.max
+            out[ 2 ] = (sp.step > 0.0) ? sp.step : 1.0
+        return out
+
+    # the stop named cur, else the value's, else the first
+    func enum_index [ p: Prop, cur: string ] -> i32
+        if [ !p.stops ] return 0
+        for [ i: i32 0, i < p.stops.count, i += 1 ]
+            if [ p.stops[ i ] == cur ] return i
+        for [ i: i32 0, i < p.stops.count, i += 1 ]
+            if [ p.value && p.stops[ i ] == p.value ] return i
+        return 0
+
+    # a field view: one property per row, the name at the left, the
+    # value filling the rest
+    func render [] -> Elements
+        t : Elements []
+        # a grid like the callstack's: 20px rows, a name column, 1px
+        # rules between
+        pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
+        lw : f32 [ round[ pw * 0.266 ] ]
+        rh : f32 [ 24.0 ]
+        # px rows do not follow the element's scroll on their own: the
+        # offset goes into their areas, and the same offset serves the
+        # hit test
+        vh9 : f32 [ (bounds) ? bounds.h : 0.0 ]
+        if [ vh9 > 0.0 && scroll.y > content_h - vh9 ]
+            scroll.y = (content_h > vh9) ? content_h - vh9 : 0.0
+        if [ scroll.y < 0.0 ] scroll.y = 0.0
+        y  : f32 [ 0.0 - scroll.y ]
+        # another instance, or a new spec: every control takes its value
+        # again
+        reseed : bool [
+            inst != last_inst || !last_spec
+            || last_spec.compare[ spec ] != 0 ]
+        last_inst = inst
+        last_spec = spec
+        rule_ys   = vec f32 []
+        # no export: not compiling, so none of our rows either
+        parse_fields[]
+        runs : bool [ dbg_row && fields.props.count > 0 ]
+        # the build switch is the instance's, not the module's: orbiter
+        # owns its state, so its value is given every frame
+        if [ runs ]
+            t['lp_debug_lbl'] = LaunchLabel [ label: 'debug',
+                                              area: Region [
+                                                  'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_debug'] = LaunchCheck [ label: '', selected: dbg_on,
+                area: Region [
+                    'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
+        # coverage: its build switch, and clear for the one map
+        if [ runs ]
+            t['lp_coverage_lbl'] = LaunchLabel [ label: 'coverage',
+                                                 area: Region [
+                                                     'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_coverage'] = LaunchCheck [ label: '',
+                                             selected: cov_on,
+                area: Region [
+                    'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
+            t['lp_coverage_clear'] = LaunchClear [ label: 'clear',
+                                                   manual_mode: true,
+                area: Region [ 'r0 t{y}px w48px h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
+        # the instance's pid: orbiter's row, read-only, given every
+        # frame
+        if [ runs ]
+            t['lp_pid_lbl'] = LaunchLabel [ label: 'pid',
+                                            area: Region [
+                                                'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
+            t['lp_pid_val'] = LaunchLabel [
+                label: (pid_val > 0) ? '{pid_val}' : '-',
+                area: Region [ 'l{lw + 7.0}px t{y}px r0 h{rh}px' ] ]
+            y += rh
+            rule_ys.push[ y ]
+        if [ fields.props.count == 0 ]
+            # no export: the module has not compiled; rule stops here
+            rows_h = y + scroll.y
+            t['lp_none'] = LaunchLabel [
+                label: 'no properties available',
+                area: Region [ 'l6px t{y}px r0 h{rh}px' ] ]
+            y += rh
+            content_h = y + scroll.y
+            col_x     = lw
+            body.area = Region [ 'l0 t0 r0 h{i32[ y ]}px' ]
+            return t
+        for [ p: Prop ] in fields.props
+            nm : string p.ident
+            ty : string p.type
+            df : string (p.value) ? p.value : ''
+            # a shown instance reports its own values as the defaults:
+            # those are what it holds now. with no instance the file's
+            # args are the config
+            cur : string (live_vals) ? df : ((prop_pos[ p ]) ? arg_positional[] : arg_value[ flag_name[ p ], df ])
+            ck : string ctl[ p ]
+            sl : bool [ ck == 'Range' ]
+            en : bool [ has_stops[ p ] ]
+            isp : bool [
+                ty == 'path' || ty == 'resource' || ck == 'Directory' ]
+            # a Text field is two rows tall; every other control is one
+            rhx : f32 [ (ck == 'Multiline') ? rh * 2.0 : rh ]
+            cx : f32 [ lw + 1.0 ]
+            t['lp_{nm}_lbl'] = LaunchLabel [ label: nm,
+                                             area: Region [
+                                                 'l6px t{y}px w{lw - 6.0}px h{rhx}px' ] ]
+            # the panel rebuilds every frame. a control's value is given
+            # ONCE, when it first mounts; after that the mounted control
+            # owns it — a pick, a keystroke or a drag must never be
+            # stamped over by the stored args a reseed (the instance
+            # reported its values, so the spec changed) never touches
+            # the one property the user is changing: its echo arriving
+            # mid-drag would set the slider under them
+            ex : element (elements && (!reseed || (changing && changing == nm))) ? elements['lp_{nm}'] : null
+            ar9 : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
+            if [ ty == 'func' ]
+                t['lp_{nm}'] = LaunchAction [ label: nm,
+                                              manual_mode: true,
+                                              area: ar9 ]
+            el [ ty == 'bool' ]
+                ck9 : Region [ 'l{cx}px t{y}px w{rh}px h{rh}px' ]
+                if [ ex ]
+                    t['lp_{nm}'] = LaunchCheck [ label: '', area: ck9 ]
+                el
+                    t['lp_{nm}'] = LaunchCheck [ label: '',
+                                                 selected: cur == 'true',
+                                                 area: ck9 ]
+            el [ isp ]
+                # a path is picked from the nav list: a button, not an
+                # editable field
+                pv : string cur
+                if [ ex && ex inherits LaunchPath ]
+                    lpx : LaunchPath ex
+                    # mounted, it owns its value: a clear stays empty
+                    pv = (lpx.path_value) ? lpx.path_value : ''
+                dsp : string pv
+                if [ pv.count > 0 ]
+                    pp : path pv
+                    dsp = pp.filename[]
+                ap : Region [ 'l{cx}px t{y}px r48px h{rhx}px' ]
+                t['lp_{nm}'] = LaunchPath [ label: dsp, edit: pv,
+                                            path_value: pv,
+                                            manual_mode: true,
+                    is_resource: ty == 'resource',
+                    is_dir: ck == 'Directory', area: ap ]
+                t['lp_{nm}_clear'] = LaunchClear [ label: 'clear',
+                                                   manual_mode: true,
+                    area: Region [ 'r0 t{y}px w48px h{rhx}px' ] ]
+            el [ ck == 'KeyBind' ]
+                # the mounted field sets its own label; the rebuild
+                # echoes it back unchanged, since a changed or missing
+                # label drops the focus
+                if [ ex && ex inherits KeyField ]
+                    kfx : KeyField ex
+                    t['lp_{nm}'] = KeyField [ label: kfx.label,
+                                              code: kfx.code,
+                                              manual_mode: true,
+                                              area: ar9 ]
+                el
+                    kc : i32 [ cur.integer_value[] ]
+                    t['lp_{nm}'] = KeyField [ label: key_name[ kc ],
+                                              code: kc,
+                                              manual_mode: true,
+                                              area: ar9 ]
+            el [ ck == 'PadBind' ]
+                if [ ex && ex inherits PadField ]
+                    pfx : PadField ex
+                    t['lp_{nm}'] = PadField [ label: pfx.label,
+                                              code: pfx.code,
+                                              manual_mode: true,
+                                              area: ar9 ]
+                el
+                    pc9 : i32 [ cur.integer_value[] ]
+                    t['lp_{nm}'] = PadField [ label: pad_name[ pc9 ],
+                                              code: pc9,
+                                              manual_mode: true,
+                                              area: ar9 ]
+            el [ ck == 'Stepper' ]
+                if [ ex ]
+                    t['lp_{nm}'] = StepField [ area: ar9 ]
+                el
+                    sr : vec f32 stepper_of[ p ]
+                    t['lp_{nm}'] = StepField [ value: cur.real_value[],
+                                               min: sr[ 0 ],
+                                               max: sr[ 1 ],
+                                               step: sr[ 2 ],
+                        whole: !(ty == 'f32' || ty == 'f64'),
+                        area: ar9 ]
+            el [ ck == 'Color' ]
+                if [ ex ]
+                    t['lp_{nm}'] = LaunchColor [ label: '',
+                                                 focusable: true,
+                                                 area: ar9 ]
+                el
+                    t['lp_{nm}'] = LaunchColor [ label: '', edit: cur,
+                                                 sel_col: cur.count,
+                                                 anchor_col: cur.count,
+                        focusable: true, area: ar9 ]
+            el [ en ]
+                names : p.stops
+                if [ ex ]
+                    t['lp_{nm}'] = TButtons [ buttons: names,
+                                              icons: false,
+                                              manual: false,
+                                              seg_radius: 0.0,
+                        label_px: rh * 0.5 - 2.0, area: ar9 ]
+                el
+                    idx9 : i32 [ enum_index[ p, cur ] ]
+                    t['lp_{nm}'] = TButtons [ buttons: names,
+                                              icons: false,
+                                              manual: false,
+                                              seg_radius: 0.0,
+                        selected: idx9, label_px: rh * 0.5 - 2.0,
+                        area: ar9 ]
+            el [ sl ]
+                if [ ex ]
+                    t['lp_{nm}'] = LaunchSlider [ label: '', area: ar9 ]
+                el
+                    rg : vec2f [ range_of[ p ] ]
+                    cv : f32 [ cur.real_value[] ]
+                    fr : f32 [
+                        (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x)
+                        : 0.0 ]
+                    t['lp_{nm}'] = LaunchSlider [ label: '', value: fr,
+                                                  area: ar9 ]
+            el
+                # a mounted field keeps its text, unless it is empty and
+                # the value has arrived since (the export lists no
+                # defaults)
+                fe : element (ex) ? elements[ 'lp_{nm}' ] : null
+                if [
+                    ex
+                    && !(cur.count > 0 && (!fe.edit || fe.edit.count == 0)) ]
+                    t['lp_{nm}'] = LaunchField [ label: '',
+                                                 focusable: true,
+                                                 area: ar9 ]
+                el
+                    t['lp_{nm}'] = LaunchField [ label: '', edit: cur,
+                                                 sel_col: cur.count,
+                                                 anchor_col: cur.count,
+                        focusable: true, area: ar9 ]
+            y += rhx
+            rule_ys.push[ y ]
+        content_h = y + scroll.y
+        rows_h    = content_h
+        col_x     = lw
+        body.area = Region [ 'l0 t0 r0 h{i32[ y ]}px' ]
+        return t
+
+    # the 1px rules: one under every row, one between the name and value
+    # columns
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || rows_h <= 0.0 ]
+            return
+        cv : Canvas w.screen
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#ffffff1a' ] ]
+        if [ rule_ys ]
+            for [ y9: f32 ] in rule_ys
+                cv.rect_to[ 0.0, y9 - 1.0, bounds.w, 1.0 ]
+                cv.paint[]
+        cv.rect_to[ col_x, 0.0 - scroll.y, 1.0, rows_h ]
+        cv.paint[]
+
+    # the control's current value as the app takes it; null when the
+    # control is not up
+    func value_of [ p: Prop ] -> string
+        if [ !elements || !p.ident ] return null
+        key : string 'lp_{p.ident}'
+        if [ !elements.contains[ key ] ] return null
+        c : element elements[ key ]
+        # an action has no value: it is called, never composed or set
+        if [ p.type == 'func' ] return null
+        if [ p.type == 'bool' ] return (c.selected) ? 'true' : 'false'
+        if [ c inherits StepField ]
+            sf : StepField c
+            return sf.text[]
+        if [ c inherits PadField ]
+            pf : PadField c
+            return '{pf.code}'
+        if [ has_stops[ p ] ]
+            if [ !(c inherits TButtons) ] return null
+            tb : TButtons c
+            if [ tb.selected < 0 || tb.selected >= p.stops.count ]
+                return null
+            return p.stops[ tb.selected ]
+        if [ ctl[ p ] == 'Range' ]
+            if [ !(c inherits VolumeSlider) ] return null
+            vs : VolumeSlider c
+            rg : vec2f [ range_of[ p ] ]
+            val : f32 [ rg.x + vs.value * (rg.y - rg.x) ]
+            return (p.type == 'f32' || p.type == 'f64') ? '{val.2f}' : '{val.0f}'
+        if [ c inherits LaunchPath ]
+            lp : LaunchPath c
+            if [ lp.path_value && lp.path_value.count > 0 ]
+                return lp.path_value
+        if [ c inherits KeyField ]
+            kf : KeyField c
+            return '{kf.code}'
+        return c.edit
+
+    # the live property whose control is the one that changed:
+    # only it is sent (a set the app did not need is a change)
+    func live_prop [ only: element ] -> Prop
+        if [ !only ] return null
+        parse_fields[]
+        for [ p: Prop ] in fields.props
+            if [ !prop_live[ p ] ] continue
+            key : string 'lp_{p.ident}'
+            if [ !elements || !elements.contains[ key ] ] continue
+            if [ elements[ key ] == only ] return p
+        return null
+
+    # the args line the controls describe: only values off their
+    # defaults
+    func compose [] -> string
+        out : string ''
+        pos : string ''
+        if [ !elements ] return out
+        parse_fields[]
+        for [ p: Prop ] in fields.props
+            nm : string p.ident
+            df : string (p.value) ? p.value : ''
+            v : string value_of[ p ]
+            # an empty field writes no flag: `--mouse_sens ` took the
+            # rom as its value
+            if [ !v || v.count == 0 ] continue
+            ck : string ctl[ p ]
+            # a binding at 0 was never set here: the app keeps its own
+            if [ (ck == 'KeyBind' || ck == 'PadBind') && v == '0' ]
+                continue
+            if [ has_stops[ p ] ]
+                # the module converts an enum arg by its value NAME
+                if [ v == df ] continue
+            el [ ck == 'Range' || ck == 'Stepper' ]
+                val : f32 [ v.real_value[] ]
+                dv  : f32 [ df.real_value[] ]
+                if [ val - dv < 0.001 && dv - val < 0.001 ] continue
+            # a path is never "the default": a running instance reports
+            # its own path as the default, and dropping it here emptied
+            # the box
+            el [ !(p.type == 'path' || p.type == 'resource') && v == df ]
+                continue
+            # a resource or a default member is the app's positional
+            # argument
+            # (bare); every other field is a --name flag. flags first,
+            # positional last
+            if [ prop_pos[ p ] ]
+                pos = (pos.count > 0) ? '{pos} {v}' : v
+            el
+                fl : string flag_name[ p ]
+                out = (out.count > 0) ? '{out} --{fl} {v}' : '--{fl} {v}'
+        if [ pos.count > 0 ] out = (out.count > 0) ? '{out} {pos}' : pos
+        return out

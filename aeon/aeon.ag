@@ -6,6 +6,7 @@ import vec
 import img
 import gltf
 import trinity
+import properties
 
 # blender 4.5.14: its python 3.11 (with numpy) runs blend.py
 import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
@@ -204,6 +205,8 @@ element DesignView
     # each .agi's time as last read or written here
     mutable known_files : vec string
     mutable known_times : vec i64
+    # the design file's text outside its render: block, as read
+    mutable known_body  : string
     # where a drag has sent the view; it eases there each frame
     mutable yaw_goal   : f32
     mutable pitch_goal : f32
@@ -251,7 +254,6 @@ element DesignView
         out : vec string []
         nm : string design.dir.filename[]
         out.push[ '{design.dir}/{nm}.agi' ]
-        out.push[ '{design.dir}/{nm}.render.agi' ]
         mats : path '{design.dir}/materials'
         if [ mats.exists[] ]
             for [ e: path ] in mats.ls[ null, false ]
@@ -270,6 +272,7 @@ element DesignView
         known_times = vec i64 []
         for [ f: string ] in known_files
             known_times.push[ time_of[ f ] ]
+        known_body = design.body_text[]
 
     # what changed since: 0 nothing, 1 the render graph, 2 more
     func changed_files [] -> i32
@@ -277,21 +280,24 @@ element DesignView
         if [ !known_files || now.count != known_files.count ] return 2
         what : i32 [ 0 ]
         nm : string design.dir.filename[]
-        graph_file : string '{design.dir}/{nm}.render.agi'
+        design_file : string '{design.dir}/{nm}.agi'
         for [ i: i32 0, i < now.count, i += 1 ]
             if [ now[ i ].compare[ known_files[ i ] ] != 0 ] return 2
             if [ time_of[ now[ i ] ] == known_times[ i ] ] continue
-            if [ now[ i ].compare[ graph_file ] == 0 ]
-                if [ what == 0 ] what = 1
-            el
-                what = 2
+            # the design file: only its render: block, or more
+            same : bool [ now[ i ].compare[ design_file ] == 0
+                && design.body_text[].compare[ known_body ] == 0 ]
+            if [ same && what == 0 ] what = 1
+            if [ !same ] what = 2
         return what
 
     # an outside edit: settings retuned in place, else rebuilt
     func follow_files [ cv: Canvas, w: Window, pw: i32, ph: i32 ]
         what : changed_files[]
         if [ what == 0 ] return
-        if [ what == 1 && stage.retune[] && focus.retune[] ]
+        fresh : StageGraph [ (what == 1) ? design.read_render[] : null ]
+        if [ fresh && stage.retune[ fresh ] && focus.retune[ fresh ] ]
+            design.render = fresh
             log 'aeon: settings retuned'
         el
             design.load[]
@@ -891,6 +897,9 @@ element DesignView
         if [ agi_seen ]
             agi_seen = false
             follow_files[ cv, w, pw, ph ]
+        # a new size: inputs read the old textures, so made again
+        if [ stage && (stage.built_w != pw || stage.built_h != ph) ]
+            rebuild_due = true
         # a node or pass changed in memory: made again from memory
         if [ rebuild_due ]
             rebuild_due = false
@@ -908,8 +917,9 @@ element DesignView
             goal_set    = true
         # every move eases: half the way to its goal each frame
         ff : f32 [ ux.frame_factor ]
-        yaw   = filter_n[ yaw, yaw_goal, 0.5, ff ]
-        pitch = filter_n[ pitch, pitch_goal, 0.5, ff ]
+        # the orbit commits a fifth of what is left a frame
+        yaw   = filter_n[ yaw, yaw_goal, 0.2, ff ]
+        pitch = filter_n[ pitch, pitch_goal, 0.2, ff ]
         dist  = filter_n[ dist, dist_goal, 0.5, ff ]
         center = vec3f [ filter_n[ center.x, center_goal.x, 0.5, ff ],
                          filter_n[ center.y, center_goal.y, 0.5, ff ],
@@ -932,15 +942,29 @@ element DesignView
                 stage.refresh[ o ]
                 focus.refresh[ o ]
         # a choice: the others greyed and see-through, it over them
+        # unseen objects are in neither stage
         want : string [ (chosen) ? chosen : '' ]
-        if [ want.compare[ (focus_of) ? focus_of : '' ] != 0 ]
-            focus_of = want
+        unseen : vec string []
+        key : '{want}'
+        for [ o: Object ] in design.objects
+            if [ !o.shown ]
+                unseen.push[ o.name ]
+                key = '{key}|{o.name}'
+        quiet : vec string [ (sel && sel.off) ? sel.off : null ]
+        if [ quiet ]
+            for [ q: string ] in quiet
+                key = '{key}|{q}'
+        if [ key.compare[ (focus_of) ? focus_of : '' ] != 0 ]
+            focus_of = key
             names : vec string [] [ want ]
-            if [ want.count > 0 ]
-                stage.show_only[ names, true ]
-                focus.show_only[ names, false ]
-            el
-                stage.show_only[ vec string [], true ]
+            for [ nm: string ] in unseen
+                names.push[ nm ]
+            stage.show_only[ names, true, quiet ]
+            # the chosen one, unless unseen too
+            front : vec string []
+            if [ want.count > 0 && unseen.index_of[ want ] < 0 ]
+                front.push[ want ]
+            focus.show_only[ front, false, quiet ]
         focus.eye    = stage.eye
         focus.middle = stage.middle
         focus.proj   = stage.proj
@@ -1001,6 +1025,8 @@ class PropRow
     public blocks : vec string
     # pass settings are written quoted
     public quoted : bool
+    # a list: shown without its brackets
+    public list   : bool
     # 0 an object's place, 1 a node, 2 a pass, 3 a draw's setting
     public kind   : i32
     # the object, node or pass it is a member of
@@ -1037,6 +1063,11 @@ element aeon : trinity
     mutable edits  : Edits
     # each field's text as last seen: a change applies once
     mutable typed  : map Au [ string ]
+    # what the properties show, and a count that moves with it
+    mutable prop_owner : string
+    mutable prop_gen   : i32
+    # each property's value as last given to its field
+    mutable given      : map Au [ string ]
 
     func init []
         if [ !project || project.count == 0 ]
@@ -1050,6 +1081,8 @@ element aeon : trinity
         history = vec Selection []
         edits = Edits []
         typed = map Au [ string ] []
+        given = map Au [ string ] []
+        prop_owner = ''
 
     # ctrl/cmd + left and right, and orbiter's arrows: the choices
     # made before and after this one
@@ -1089,11 +1122,20 @@ element aeon : trinity
         return cast DesignView [ elements[ 'view' ] ]
 
     # the chosen thing's properties, as rows
+    # the rows as shown: a list's values bare, no brackets
     func rows [] -> vec PropRow
+        out : rows_of[]
+        for [ r: PropRow ] in out
+            t : r.value.trim[]
+            if [ t.starts_with[ '[' ] && t.ends_with[ ']' ] ]
+                r.list  = true
+                r.value = t.mid[ 1, t.count - 2 ].trim[]
+        return out
+
+    func rows_of [] -> vec PropRow
         out : vec PropRow []
         nm : string design.dir.filename[]
         dfile : path '{design.dir}/{nm}.agi'
-        gfile : path '{design.dir}/{nm}.render.agi'
         if [ sel.object.count > 0 ]
             for [ o: Object ] in design.objects
                 if [ o.name.compare[ sel.object ] != 0 ] continue
@@ -1125,8 +1167,9 @@ element aeon : trinity
                 for [ k: string ] in vec string [] [ 'scale', 'most' ]
                     out.push[ PropRow [ name: k,
                         value: agi_text[ have, k ],
-                        file: gfile, kind: 2, owner: p,
-                        blocks: vec string [] [ 'passes', p.name ] ] ]
+                        file: dfile, kind: 2, owner: p,
+                        blocks: vec string [] [ 'render', 'passes',
+                            p.name ] ] ]
                 return out
             if [ !p.draws ] return out
             for [ d: Draw ] in p.draws
@@ -1134,15 +1177,17 @@ element aeon : trinity
                 if [ !d.settings ] return out
                 for [ sv: Au, k: string ] in d.settings
                     out.push[ PropRow [ name: k,
-                        value: string [ sv ], file: gfile, quoted: true,
+                        value: string [ sv ], file: dfile, quoted: true,
                         kind: 3, pass: p.name, draw: d.name,
-                        blocks: vec string [] [ 'passes', p.name,
-                            'draws', d.name, 'settings' ] ] ]
+                        blocks: vec string [] [ 'render', 'passes',
+                            p.name, 'draws', d.name, 'settings' ] ] ]
         return out
 
     # a field's new text: the design takes it in memory, and the
     # write waits for a save
-    func apply_row [ r: PropRow, now: string ]
+    func apply_row [ r: PropRow, text: string ]
+        # a list is shown bare; the file and the member take [ ]
+        now : string [ (r.list) ? '[ {text} ]' : text ]
         val : string [ (r.quoted) ? '\'{now}\'' : now ]
         edits.queue[ Write [ file: r.file, blocks: r.blocks,
                              key: r.name, value: val ] ]
@@ -1176,37 +1221,64 @@ element aeon : trinity
         remember[]
         e : Elements [ ]
         v : view[]
+        # the graph band holds every left node: objects, then quads
+        rows_n : i32 [ (design) ? design.objects.count : 0 ]
+        if [ v && v.stage && v.stage.graph ]
+            for [ p: Pass ] in v.stage.graph.passes
+                for [ d: Draw ] in draws_of[ p ]
+                    if [ d.quad ] rows_n += 1
+        band : f32 [ 16.0 + f32[ rows_n ] * 27.0 ]
+        if [ band < 150.0 ] band = 150.0
         e[ 'graph' ] = SceneGraph [ design: design, sel: sel,
             edits: edits,
             stage: (v) ? v.stage : null, animated: true,
-            area: Region [ 'l0 t0 r0 h150px' ] ]
+            area: Region [ 'l0 t0 r0 h{band}px' ] ]
         e[ 'view' ] = DesignView [ design: design, sel: sel,
             edits: edits,
-            animated: true, area: Region [ 'l0 t150px r340px b0' ] ]
+            animated: true, area: Region [ 'l0 t{band}px r340px b0' ] ]
         e[ 'nodes' ] = NodeList [ design: design, sel: sel,
             stage: (v) ? v.stage : null, animated: true,
-            area: Region [ 'r340px t150px r0 h210px' ] ]
-        # the properties: a name and its field a row; a field the
-        # user changed is written into its .agi, the watch redraws
+            area: Region [ 'r340px t{band}px r0 h210px' ] ]
+        # the properties: orbiter's view; a value the user changed
+        # applies in memory until ctrl/cmd + s
+        owner : '{sel.object}{sel.pass}_{sel.node}'
+        if [ owner.compare[ prop_owner ] != 0 ]
+            prop_owner = owner
+            prop_gen += 1
+        mounted : LaunchPanel [ null ]
+        if [ elements && elements.contains[ 'props' ] ]
+            mounted = cast LaunchPanel [ elements[ 'props' ] ]
         list : rows[]
-        for [ i: i32 0, i < list.count, i += 1 ]
-            r : list[ i ]
-            y : f32 [ 372.0 + f32[ i ] * 34.0 ]
-            key : 'field_{sel.object}{sel.pass}_{sel.node}_{r.name}'
-            e[ 'name_{i}' ] = Words [ text: r.name,
-                area: Region [ 'r330px t{y}px r162px h28px' ] ]
-            ar : Region [ 'r158px t{y}px r12px h28px' ]
-            mounted : bool [ elements && elements.contains[ key ] ]
-            if [ mounted ]
-                fld : cast TextInput [ elements[ key ] ]
-                now : string [ (fld.edit) ? fld.edit : '' ]
+        busy : ''
+        live : bool [ mounted && mounted.inst == prop_gen
+                      && mounted.fields ]
+        if [ live ]
+            for [ r: PropRow ] in list
+                p : mounted.prop_of[ r.name ]
+                if [ !p ] continue
+                now : mounted.value_of[ p ]
+                key : '{owner}_{r.name}'
                 was : string [ typed[ key ] ]
-                if [ was && now.compare[ was ] != 0 && now.count > 0 ]
+                if [ now && was && now.count > 0
+                     && now.compare[ was ] != 0 ]
                     typed[ key ] = now
                     apply_row[ r, now ]
-                e[ key ] = TextInput [ area: ar ]
-            el
+                    busy = r.name
+            list = rows[]
+        props : LaunchProps [ props: vec Prop [] ]
+        for [ r: PropRow ] in list
+            props.props.push[ Prop [ ident: r.name, type: 'string',
+                                     value: r.value ] ]
+            # a value given anew is what its field shows next
+            key : '{owner}_{r.name}'
+            had : string [ given[ key ] ]
+            fresh : bool [ !live || !had || had.compare[ r.value ] != 0 ]
+            if [ fresh && busy.compare[ r.name ] != 0 ]
                 typed[ key ] = r.value
-                e[ key ] = TextInput [ area: ar, edit: r.value,
-                    sel_col: r.value.count, anchor_col: r.value.count ]
+            given[ key ] = r.value
+        gh : f32 [ f32[ list.count ] * 24.0 ]
+        e[ 'props' ] = LaunchPanel [ spec: Au.string_agi[ props ],
+            args: '', inst: prop_gen, live_vals: true,
+            changing: busy,
+            area: Region [ 'r340px t{band + 222.0}px r0 h{gh}px' ] ]
         return e

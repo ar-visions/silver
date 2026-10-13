@@ -159,6 +159,41 @@ class Object
 class Design
     public dir     : path
     public objects : vec Object
+    # the passes, from the file's render: block (none: default)
+    public render  : StageGraph
+
+    # the top-level values of <dir>/<name>.agi, or null
+    func read_top [] -> map Au [ string ]
+        if [ !dir ] return null
+        nm : string dir.filename[]
+        p : path '{dir}/{nm}.agi'
+        if [ !p.exists[] ] return null
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        return Au.parse_agi[ typeid[ map ], txt.chars, null ]
+
+    # the render: block read again from the file
+    func read_render [] -> StageGraph
+        top : read_top[]
+        if [ !top ] return null
+        for [ v: Au, k: string ] in top
+            if [ v && v inherits StageGraph ] return cast StageGraph [ v ]
+        return null
+
+    # the file's text without its render: block: what a change
+    # outside the passes is told by
+    func body_text [] -> string
+        nm : string dir.filename[]
+        p : path '{dir}/{nm}.agi'
+        if [ !p.exists[] ] return ''
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        out : ''
+        inside : bool [ false ]
+        for [ ln: string ] in txt.split[ '\n' ]
+            top : bool [ ln.count > 0 && !ln.starts_with[ '\t' ]
+                         && !ln.starts_with[ '#' ] ]
+            if [ top ] inside = ln.starts_with[ 'render:' ]
+            if [ !inside ] out = '{out}{ln}\n'
+        return out
 
     # an object's at, turn and size written into its block of
     # <name>.agi: each line replaced, or added after its head
@@ -212,17 +247,17 @@ class Design
     # the objects from <dir>/<name>.agi, read again in place
     func load []
         objects = vec Object []
+        render = null
         if [ !dir ] return
-        nm : string dir.filename[]
-        p : path '{dir}/{nm}.agi'
-        if [ !p.exists[] ]
-            log 'aeon: no design at {p}'
+        top : read_top[]
+        if [ !top ]
+            log 'aeon: no design at {dir}'
             return
-        txt : string [ p.load[ typeid[ string ], null ] ]
-        top : map Au[string] Au.parse_agi[ typeid[ map ], txt.chars,
-                                           null ]
         # map gives value then key
         for [ v: Au, k: string ] in top
+            if [ v && v inherits StageGraph ]
+                render = cast StageGraph [ v ]
+                continue
             if [ !v || !(v inherits Object) ] continue
             o : cast Object [ v ]
             o.name = k

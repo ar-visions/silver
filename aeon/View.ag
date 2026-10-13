@@ -453,3 +453,34 @@ func refill [ m: Model, first: i32, parts: i32, rec: ModelParts,
                 out[ slot + 3 + to ] = wn * sign
         gp.upload_verts[]
     return true
+
+# one image over another, both premultiplied: a layer of a pass
+# (the names are Surface's: color under, emission over)
+ModelViewProject AeonOver
+    attrib color     : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.color, count:1,
+                                       format: typeid[ rgba8 ] ]
+    attrib emission  : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.emission, count:1,
+                                       format: typeid[ rgba8 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func fragment [] -> GLSL none {
+        vec4 under = texture(color, v_uv);
+        vec4 over  = texture(emission, v_uv);
+        fragColor  = over + under * (1.0 - over.a);
+    }

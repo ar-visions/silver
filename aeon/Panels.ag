@@ -7,6 +7,23 @@ class Selection
     public object : string
     public node   : string
     public pass   : string
+    # quad draws switched off, as 'pass/draw'
+    public off    : vec string
+
+    func is_off [ key: string ] -> bool
+        if [ !off ] return false
+        for [ k: string ] in off
+            if [ k.compare[ key ] == 0 ] return true
+        return false
+
+    # a quad draw switched on or off
+    func flip [ key: string ]
+        if [ !off ] off = vec string []
+        for [ i: i32 0, i < off.count, i += 1 ]
+            if [ off[ i ].compare[ key ] == 0 ]
+                off.remove[ i ]
+                return
+        off.push[ key ]
 
 # one value waiting for a save, for a nested block of an .agi
 class Write
@@ -109,8 +126,10 @@ func tabs_of [ n: i32 ] -> string
 # a box in the scene graph: an object, a pass or the output
 class Box
     public name : string
-    # 0 object, 1 pass, 2 out
+    # 0 object, 1 pass, 2 out, 3 a quad draw (its own node)
     public kind : i32
+    # a quad draw's pass
+    public pass : string
     public x    : f32
     public y    : f32
     public w    : f32
@@ -118,6 +137,12 @@ class Box
 
 # the scene level across the top: the objects, the passes that
 # draw them in columns by what feeds them, then out, wired
+# a pass's draws: its list, or the pass itself as one draw
+func draws_of [ p: Pass ] -> vec Draw
+    if [ p.draws && p.draws.count > 0 ] return p.draws
+    return vec Draw [] [ Draw [ name: p.name, objects: p.objects,
+        quad: p.quad, shader: p.shader, inputs: p.inputs ] ]
+
 element SceneGraph
     public design : Design
     public stage  : Stage
@@ -150,9 +175,13 @@ element SceneGraph
         return most
 
     func pass_draws [ p: Pass ] -> vec Draw
-        if [ p.draws && p.draws.count > 0 ] return p.draws
-        return vec Draw [] [ Draw [ name: p.name, objects: p.objects,
-            quad: p.quad, shader: p.shader, inputs: p.inputs ] ]
+        return draws_of[ p ]
+
+    func quad_box [ pass: string, name: string ] -> Box
+        for [ b: Box ] in boxes
+            if [ b.kind == 3 && b.pass.compare[ pass ] == 0
+                 && b.name.compare[ name ] == 0 ] return b
+        return null
 
     # the boxes placed and the wires between them, as x1 y1 x2 y2
     func lay_out []
@@ -167,6 +196,13 @@ element SceneGraph
             boxes.push[ Box [ name: o.name, kind: 0, x: 12.0, y: y,
                               w: bw, h: bh ] ]
             y += bh + 5.0
+        # quad draws are nodes of their own, under the objects
+        for [ p: Pass ] in stage.graph.passes
+            for [ d: Draw ] in pass_draws[ p ]
+                if [ !d.quad ] continue
+                boxes.push[ Box [ name: d.name, kind: 3, pass: p.name,
+                                  x: 12.0, y: y, w: bw, h: bh ] ]
+                y += bh + 5.0
         cols : vec i32 []
         final : i32 [ 1 ]
         for [ p: Pass ] in stage.graph.passes
@@ -199,6 +235,8 @@ element SceneGraph
                                 if [ nm.compare[ o.name ] == 0 ]
                                     named = true
                         if [ named ] wire[ box[ o.name, 0 ], to ]
+                el
+                    wire[ quad_box[ p.name, d.name ], to ]
                 if [ d.inputs ]
                     for [ v: Au, k: string ] in d.inputs
                         ws : string [ v ]
@@ -219,6 +257,12 @@ element SceneGraph
         wires.push[ to.x ]
         wires.push[ to_y ]
 
+    # the object named, or null
+    func object_of [ name: string ] -> Object
+        for [ o: Object ] in design.objects
+            if [ o.name.compare[ name ] == 0 ] return o
+        return null
+
     public func on_press [ ev: Event ]
         if [ !sel ] return
         for [ b: Box ] in boxes
@@ -226,20 +270,47 @@ element SceneGraph
             py : f32 [ ev.mouse.pos.y ]
             if [ px < b.x || px > b.x + b.w ] continue
             if [ py < b.y || py > b.y + b.h ] continue
-            if [ b.kind == 0 ]
-                sel.object = b.name
-                sel.pass   = ''
-                sel.node   = ''
-            el [ b.kind == 1 ]
-                sel.pass   = b.name
-                sel.object = ''
-                sel.node   = ''
+            # a node's circle shows or hides it; it chooses nothing
+            if [ b.kind == 0 && px < b.x + 18.0 ]
+                o : object_of[ b.name ]
+                if [ o ] o.shown = !o.shown
+                return
+            if [ b.kind == 3 && px < b.x + 18.0 ]
+                sel.flip[ '{b.pass}/{b.name}' ]
+                return
+            # a click on the chosen box lets it go
+            again : bool [ lit_box[ b ] ]
+            sel.object = ''
+            sel.pass   = ''
+            sel.node   = ''
+            if [ again ] return
+            if [ b.kind == 0 ] sel.object = b.name
+            if [ b.kind == 1 ] sel.pass = b.name
+            # a quad: its pass, and the draw when the pass has several
+            if [ b.kind == 3 ]
+                sel.pass = b.pass
+                if [ b.name.compare[ b.pass ] != 0 ] sel.node = b.name
+            return
+
+    # the box the selection names
+    func lit_box [ b: Box ] -> bool
+        if [ !sel ] return false
+        if [ b.kind == 0 ] return b.name.compare[ sel.object ] == 0
+        if [ b.kind == 1 ]
+            return b.name.compare[ sel.pass ] == 0
+                && sel.node.count == 0
+        if [ b.kind != 3 || b.pass.compare[ sel.pass ] != 0 ]
+            return false
+        if [ b.name.compare[ b.pass ] == 0 ] return true
+        return b.name.compare[ sel.node ] == 0
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         cv : Canvas [ w.screen ]
         lay_out[]
         cv.save[]
+        # the node names smaller than the panels' text
+        cv.font_size[ 14 ]
         cv.fill_color[ '#101016' ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
@@ -251,18 +322,35 @@ element SceneGraph
             cv.line_to[ wires[ i + 2 ], wires[ i + 3 ] ]
         cv.paint[]
         for [ b: Box ] in boxes
-            lit : bool [ sel && ((b.kind == 0
-                && b.name.compare[ sel.object ] == 0)
-                || (b.kind == 1 && b.name.compare[ sel.pass ] == 0)) ]
+            lit : lit_box[ b ]
+            o : (b.kind == 0) ? object_of[ b.name ] : null
+            # a hidden node: its outline and name dimmed
+            hid : bool [ (o && !o.shown) || (b.kind == 3
+                && sel && sel.is_off[ '{b.pass}/{b.name}' ]) ]
             cv.fill_color[ (lit) ? '#4d3dbc' : '#1d1d28' ]
-            cv.stroke_color[ (b.kind == 0) ? '#7fd4ff'
+            cv.stroke_color[ (hid) ? '#3a4656'
+                : (b.kind == 0) ? '#7fd4ff'
+                : (b.kind == 3) ? '#ff8fd0'
                 : (b.kind == 1) ? '#c48cff' : '#ffcf4a' ]
             cv.stroke_width[ 1.0 ]
             cv.rounded_rect[ b.x, b.y, b.w, b.h, 5.0, 5.0, 5.0, 5.0 ]
             cv.paint[]
-            cv.fill_color[ '#e8e8f0' ]
+            # the visibility circle: filled shown, an outline hidden
+            if [ b.kind == 0 || b.kind == 3 ]
+                ring : string [ (b.kind == 0) ? '#7fd4ff' : '#ff8fd0' ]
+                cx : f32 [ b.x + 10.0 ]
+                cy : f32 [ b.y + b.h * 0.5 ]
+                cv.fill_color[ (hid) ? '#0000' : ring ]
+                cv.stroke_color[ ring ]
+                cv.stroke_width[ 1.0 ]
+                cv.arc[ cx, cy, 3.5, 0.0, 6.2832 ]
+                cv.paint[]
+            cv.fill_color[ (hid) ? '#6a6a78' : '#e8e8f0' ]
+            # an object's name starts after its circle
+            tx : f32 [ (b.kind == 0 || b.kind == 3) ? 20.0 : 8.0 ]
             cv.draw_text[ b.name,
-                rect [ x: b.x + 8.0, y: b.y, w: b.w - 10.0, h: b.h ],
+                rect [ x: b.x + tx, y: b.y, w: b.w - tx - 2.0,
+                       h: b.h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.visible, null ]
             cv.paint[]
