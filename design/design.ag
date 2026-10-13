@@ -1,0 +1,21 @@
+# design: a project folder's objects, their mesh nodes and its
+# render graph; aeon edits it, the avatar draws it
+export 0.1.0
+
+import vec
+import img
+import gltf
+import trinity
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
+import <vulkan/vulkan.h>
+
+import Poly
+import Design
+import View
+import Stage
+import Stencil
+import Compute

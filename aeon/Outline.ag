@@ -1,0 +1,846 @@
+# the outliner (left), the chosen thing's properties (right)
+extend aeon
+
+# a section of the properties: a block of rows, with its own
+# switch when it is a modifier or a draw
+class Block
+    public key   : string
+    public label : string
+    public y     : f32
+    public h     : f32
+    public rows  : vec PropRow
+    public busy  : string
+    # its switch: 'node:<object>/<node>' or 'draw:<pass>/<draw>'
+    public flip  : string
+    public on    : bool
+    # a modifier: shown in the object's modifiers area
+    public modifier : bool
+    public object   : string
+    public node     : string
+
+# the edit's state shared by the outliner and the properties:
+# the rows of what is chosen, and the fields as last seen
+class SceneEdit
+    public design : Design
+    public sel    : Selection
+    public edits  : Edits
+    public view   : DesignView
+    # the material chosen (on the left), whose values show
+    public slot   : string
+    # the modifiers area shows the kinds to add (its + is an ×)
+    public choosing : bool
+    public typed  : map Au [ string ]
+    public given  : map Au [ string ]
+    public busy   : map Au [ string ]
+
+    func init []
+        typed = map Au [ string ] []
+        given = map Au [ string ] []
+        busy  = map Au [ string ] []
+        slot  = ''
+
+    func object_named [ name: string ] -> Object
+        for [ o: Object ] in design.objects
+            if [ o.name.compare[ name ] == 0 ] return o
+        return null
+
+    func pass_named [ name: string ] -> Pass
+        if [ !view || !view.stage ] return null
+        for [ p: Pass ] in view.stage.graph.passes
+            if [ p.name.compare[ name ] == 0 ] return p
+        return null
+
+    func block [ key: string, label: string, rows: vec PropRow ]
+            -> Block
+        bh : f32 [ 0.0 ]
+        for [ r: PropRow ] in rows
+            bh += (r.type.compare[ 'rgba' ] == 0) ? 72.0 : 24.0
+        bz : string [ busy[ key ] ]
+        return Block [ key: key, label: label, h: bh, rows: rows,
+                       busy: (bz) ? bz : '', flip: '', on: true,
+                       object: '', node: '' ]
+
+    # the chosen thing's sections, in order
+    func blocks [] -> vec Block
+        out : vec Block []
+        if [ !design || !sel ] return out
+        o : object_named[ sel.object ]
+        if [ o ]
+            out.push[ block[ 'obj:{o.name}', 'place',
+                             object_rows[ o ] ] ]
+            # the stack, in order; the cage is the shape, not one
+            for [ n: MeshNode ] in o.nodes
+                if [ !n.input || n.input.count == 0 ] continue
+                b : block[ 'node:{o.name}/{n.name}', n.name,
+                           node_rows[ o, n ] ]
+                b.flip     = 'node:{o.name}/{n.name}'
+                b.on       = !n.muted
+                b.modifier = true
+                b.object   = o.name
+                b.node     = n.name
+                out.push[ b ]
+            return out
+        # a material chosen: its values
+        if [ slot.count > 0 ]
+            out.push[ block[ 'mat:{slot}', 'surface',
+                             material_rows[ slot ] ] ]
+            return out
+        p : pass_named[ sel.pass ]
+        if [ !p ] return out
+        out.push[ block[ 'pass:{p.name}', 'pass', pass_rows[ p ] ] ]
+        if [ p.draws ]
+            for [ d: Draw ] in p.draws
+                b : block[ 'draw:{p.name}/{d.name}',
+                           '{d.name} · {d.shader}', draw_rows[ p, d ] ]
+                b.flip = 'draw:{p.name}/{d.name}'
+                b.on   = !sel.is_off[ '{p.name}/{d.name}' ]
+                out.push[ b ]
+        return out
+
+    # an object removed: held until a save, undone by ctrl/cmd + z
+    func remove_object [ name: string ]
+        for [ i: i32 0, i < design.objects.count, i += 1 ]
+            o : design.objects[ i ]
+            if [ o.name.compare[ name ] != 0 ] continue
+            # the undo holds it first: the list's drop frees it
+            back : CageEdit [ name: name, gone_obj: o, gone_at: i ]
+            design.objects.remove[ i ]
+            edits.drops.push[ Write [ file: design.objects_file[],
+                blocks: vec string [] [ name ], key: '' ] ]
+            if [ view ]
+                view.push_undo[ back ]
+                view.remake[ name ]
+            if [ sel.object.compare[ name ] == 0 ]
+                sel.object = ''
+                sel.node   = ''
+            return
+
+    # a step removed: what took its mesh takes its input instead
+    func remove_node [ oname: string, nname: string ]
+        o : object_named[ oname ]
+        if [ !o ] return
+        file : design.objects_file[]
+        for [ i: i32 0, i < o.nodes.count, i += 1 ]
+            n : o.nodes[ i ]
+            if [ n.name.compare[ nname ] != 0 ] continue
+            fixed : vec string []
+            for [ m: MeshNode ] in o.nodes
+                if [ !m.input || m.input.compare[ nname ] != 0 ]
+                    continue
+                m.input = n.input
+                fixed.push[ m.name ]
+                edits.queue[ Write [ file: file, blocks: vec string
+                    [] [ oname, 'nodes', m.name ], key: 'input',
+                    value: n.input ] ]
+            was : ''
+            if [ o.out && o.out.compare[ nname ] == 0 ]
+                was = o.out
+                o.out = n.input
+                edits.queue[ Write [ file: file,
+                    blocks: vec string [] [ oname ], key: 'out',
+                    value: n.input ] ]
+            # the undo holds it first: the list's drop frees it
+            back : CageEdit [ name: oname, gone_node: n, gone_at: i,
+                              fixed: fixed, was_out: was ]
+            o.nodes.remove[ i ]
+            edits.drops.push[ Write [ file: file, blocks: vec string
+                [] [ oname, 'nodes', nname ], key: '' ] ]
+            design.forget[ oname ]
+            if [ view ]
+                view.push_undo[ back ]
+                view.remake[ oname ]
+            if [ sel.node.compare[ nname ] == 0 ] sel.node = ''
+            return
+
+    # a name no step of o has: the name, else with _b, _c ...
+    func free_name [ o: Object, base: string ] -> string
+        letters : vec string [] [ 'b', 'c', 'd', 'e', 'f', 'g', 'h',
+                                  'i', 'j', 'k' ]
+        for [ k: i32 -1, k < letters.count, k += 1 ]
+            nm : string [ (k < 0) ? base : '{base}_{letters[ k ]}' ]
+            taken : bool [ false ]
+            for [ n: MeshNode ] in o.nodes
+                if [ n.name.compare[ nm ] == 0 ] taken = true
+            if [ !taken ] return nm
+        return ''
+
+    # the kinds a modifier can be, as the + lists them
+    func kinds [] -> vec string
+        return vec string [] [ 'Mirror', 'Subdivision', 'Array' ]
+
+    # a new modifier of a kind at the end of the stack: it takes
+    # the last step's mesh and is the object's out
+    func add_node [ oname: string, kind: string ]
+        o : object_named[ oname ]
+        if [ !o || !o.nodes || o.nodes.count == 0 ] return
+        t : Au.find_type[ kind.chars, null ]
+        if [ !t ] return
+        file : design.objects_file[]
+        last : o.nodes[ o.nodes.count - 1 ]
+        nm : free_name[ o, kind.lcase[] ]
+        if [ nm.count == 0 ] return
+        made : Au.new_object[ t, null, null, false, __FILE__,
+                              __LINE__, __SEQUENCE__ ]
+        c : cast MeshNode [ made ]
+        # its members' defaults (an array's count 2) first
+        c.initialize[]
+        c.name  = nm
+        c.input = last.name
+        # a mirror starts across x: none would change nothing
+        if [ c inherits Mirror ]
+            mc : cast Mirror [ c ]
+            mc.axes = vec string [] [ 'x' ]
+        was : ''
+        if [ o.out && o.out.count > 0 ]
+            was = o.out
+            o.out = nm
+            edits.queue[ Write [ file: file,
+                blocks: vec string [] [ oname ], key: 'out',
+                value: nm ] ]
+        o.nodes.push[ c ]
+        edits.adds.push[ Write [ file: file, blocks: vec string
+            [] [ oname, 'nodes', last.name ], key: '{oname}/{nm}',
+            value: block_text[ c, t ] ] ]
+        design.forget[ oname ]
+        if [ view ]
+            view.push_undo[ CageEdit [ name: oname, added: c,
+                fixed: vec string [], was_out: was ] ]
+            view.remake[ oname ]
+
+    # a step's block as the file holds it: its key and type, then
+    # its values a level deeper
+    func block_text [ n: MeshNode, t: Au_t ] -> string
+        out : '\t\t{n.name}: {string [ t.ident ]}\n'
+        for [ ln: string ] in Au.string_agi[ n ].split[ '\n' ]
+            if [ ln.count == 0 || ln.starts_with[ 'name:' ]
+                 || ln.starts_with[ 'muted:' ] ] continue
+            out = '{out}\t\t\t{ln}\n'
+        return out
+
+    # a switch: a modifier bypassed, a draw or pass off
+    func flip [ key: string ]
+        sel.solo = ''
+        if [ key.starts_with[ 'draw:' ] ]
+            sel.flip[ key.mid[ 5, key.count - 5 ] ]
+            return
+        if [ key.starts_with[ 'pass:' ] ]
+            sel.flip[ key.mid[ 5, key.count - 5 ] ]
+            return
+        if [ !key.starts_with[ 'node:' ] ] return
+        rest : key.mid[ 5, key.count - 5 ]
+        cut : i32 [ rest.index_of[ '/' ] ]
+        o : object_named[ rest.mid[ 0, cut ] ]
+        if [ !o ] return
+        nn : rest.mid[ cut + 1, rest.count - cut - 1 ]
+        for [ n: MeshNode ] in o.nodes
+            if [ n.name.compare[ nn ] == 0 ] n.muted = !n.muted
+        design.forget_from[ o.name, nn ]
+        if [ view ] view.remake[ o.name ]
+
+    # ---- values ----
+
+    func object_rows [ o: Object ] -> vec PropRow
+        out : vec PropRow []
+        have : agi_values[ o ]
+        for [ k: string ] in vec string [] [ 'at', 'turn', 'size' ]
+            out.push[ PropRow [ name: k, value: agi_text[ have, k ],
+                file: design.objects_file[], kind: 0, owner: o,
+                blocks: vec string [] [ o.name ] ] ]
+        return shaped[ out ]
+
+    func node_rows [ o: Object, n: MeshNode ] -> vec PropRow
+        out : vec PropRow []
+        have : agi_values[ n ]
+        for [ k: string ] in n.props*[]
+            out.push[ PropRow [ name: k, value: agi_text[ have, k ],
+                file: design.objects_file[], kind: 1, owner: n,
+                blocks: vec string [] [ o.name, 'nodes', n.name ] ] ]
+        return shaped[ out ]
+
+    func material_rows [ m: string ] -> vec PropRow
+        out : vec PropRow []
+        f : design.finish_of[ m ]
+        if [ !f || !f.surface ] return out
+        have : agi_values[ f.surface ]
+        mfile : path '{design.base[]}/materials/{m}.agi'
+        for [ k: string ] in vec string [] [ 'base_color', 'metallic',
+                'roughness', 'alpha', 'emission_color',
+                'emission_strength' ]
+            out.push[ PropRow [ name: k, value: agi_text[ have, k ],
+                file: mfile, kind: 4, owner: f.surface, pass: m,
+                blocks: vec string [] [ 'surface' ] ] ]
+        return shaped[ out ]
+
+    func design_file [] -> path
+        nm : string design.dir.filename[]
+        return path '{design.dir}/{nm}.agi'
+
+    func pass_rows [ p: Pass ] -> vec PropRow
+        out : vec PropRow []
+        have : agi_values[ p ]
+        for [ k: string ] in vec string [] [ 'scale', 'most' ]
+            out.push[ PropRow [ name: k, value: agi_text[ have, k ],
+                file: design_file[], kind: 2, owner: p,
+                blocks: vec string [] [ 'render', 'passes',
+                                        p.name ] ] ]
+        return shaped[ out ]
+
+    func draw_rows [ p: Pass, d: Draw ] -> vec PropRow
+        out : vec PropRow []
+        if [ !d.settings ] return out
+        for [ sv: Au, k: string ] in d.settings
+            out.push[ PropRow [ name: k, value: string [ sv ],
+                file: design_file[], quoted: true, kind: 3,
+                pass: p.name, draw: d.name,
+                blocks: vec string [] [ 'render', 'passes', p.name,
+                    'draws', d.name, 'settings' ] ] ]
+        return shaped[ out ]
+
+    # rows as shown: a list bare, its numbers a row each, a
+    # colour one row
+    func shaped [ list: vec PropRow ] -> vec PropRow
+        out : vec PropRow []
+        for [ r: PropRow ] in list
+            t : r.value.trim[]
+            if [ t.starts_with[ '[' ] && t.ends_with[ ']' ] ]
+                r.list  = true
+                r.value = t.mid[ 1, t.count - 2 ].trim[]
+            r.full  = r.value
+            r.label = r.name
+            r.type  = type_of[ r ]
+            nums : numbers_of[ r.value ]
+            if [ r.list && r.name.ends_with[ 'color' ]
+                 && all_numbers[ r.value, nums.count ]
+                 && nums.count >= 3 ]
+                r.type = 'rgba'
+                out.push[ r ]
+                continue
+            if [ !r.list || nums.count < 2 || nums.count > 4
+                 || !all_numbers[ r.value, nums.count ] ]
+                out.push[ r ]
+                continue
+            # one cell of 2-4 dragged numbers
+            shown : string ''
+            for [ n: f32 ] in nums
+                nt : num_text[ n, false ]
+                shown = (shown.count == 0) ? nt : '{shown}, {nt}'
+            r.value = shown
+            r.type  = 'vec{nums.count}f'
+            out.push[ r ]
+        return out
+
+    # f32 for a number, i32 for a whole member, bool, else string
+    func type_of [ r: PropRow ] -> string
+        if [ !r.list && (r.value.compare[ 'true' ] == 0
+                         || r.value.compare[ 'false' ] == 0) ]
+            return 'bool'
+        if [ r.list || !all_numbers[ r.value, 1 ] ] return 'string'
+        if [ r.owner ]
+            m : find_member[ typeid[ r.owner ], r.name.chars,
+                             AU_MEMBER_VAR, 0, true ]
+            if [ m && (m.src == typeid[ i32 ] || m.src == typeid[ i64 ]) ]
+                return 'i32'
+        return 'f32'
+
+    # a field's new text: the old value goes on the undo list,
+    # then it is set
+    func apply_row [ r: PropRow, text: string ]
+        if [ view ] view.note_prop[ r, r.full ]
+        set_row[ r, text ]
+
+    # the whole value set in memory; the write waits for a save
+    func set_row [ r: PropRow, text: string ]
+        now : string [ (r.list) ? '[ {text} ]' : text ]
+        val : string [ (r.quoted) ? '\'{now}\'' : now ]
+        edits.queue[ Write [ file: r.file, blocks: r.blocks,
+                             key: r.name, value: val ] ]
+        if [ r.kind == 3 ]
+            if [ view && view.stage ]
+                view.stage.set_setting[ r.pass, r.draw, r.name, now ]
+                view.focus.set_setting[ r.pass, r.draw, r.name, now ]
+            return
+        if [ r.kind == 0 ]
+            o : cast Object [ r.owner ]
+            nums : numbers_of[ now ]
+            if [ nums.count != 3 ] return
+            if [ r.name.compare[ 'at' ] == 0 ] o.at = nums
+            if [ r.name.compare[ 'turn' ] == 0 ] o.turn = nums
+            if [ r.name.compare[ 'size' ] == 0 ] o.size = nums
+            if [ view && view.stage ]
+                view.stage.refresh[ o ]
+                view.focus.refresh[ o ]
+            return
+        member : find_member[ typeid[ r.owner ], r.name.chars,
+                              AU_MEMBER_VAR, 0, true ]
+        if [ !member ] return
+        # a material: every object it is on made again
+        if [ r.kind == 4 ]
+            if [ member.src == typeid[ f32 ] ]
+                r.owner.set_property[ r.name,
+                    Au.convert[ member.src, now ] ]
+            el
+                r.owner.set_property[ r.name, numbers_of[ now ] ]
+            for [ o: Object ] in design.objects
+                if [ !o.materials ] continue
+                for [ m: string ] in o.materials
+                    if [ m.compare[ r.pass ] == 0 && view ]
+                        view.remake[ o.name ]
+            return
+        got : Au.convert[ member.src, now ]
+        if [ !got ] return
+        r.owner.set_property[ r.name, got ]
+        # a step's value: from that step on, only its object's
+        # models made again
+        if [ r.kind == 1 && view ]
+            design.forget_from[ r.blocks[ 0 ], r.blocks[ 2 ] ]
+            view.remake[ r.blocks[ 0 ] ]
+            return
+        if [ view ] view.rebuild_due = true
+
+    # a block's rows as the panel's spec; a value given anew is
+    # what its field shows next
+    func spec_of [ b: Block ] -> string
+        props : LaunchProps [ props: vec Prop [] ]
+        for [ r: PropRow ] in b.rows
+            props.props.push[ Prop [ ident: r.label, type: r.type,
+                                     value: r.value ] ]
+            key : '{b.key}_{r.label}'
+            had : string [ given[ key ] ]
+            fresh : bool [ !had || had.compare[ r.value ] != 0 ]
+            if [ fresh && b.busy.compare[ r.label ] != 0 ]
+                typed[ key ] = r.value
+            given[ key ] = r.value
+        return Au.string_agi[ props ]
+
+
+# one row of the outliner
+class Line
+    public text   : string
+    public depth  : i32
+    # 1 object, 3 material, 0 a heading
+    public kind   : i32
+    public object : string
+    public node   : string
+    public pass   : string
+    public on     : bool
+    public can_off : bool
+    public swatch : vec f32
+
+# the left side: the objects, then the design's materials; an
+# eye switches an object, a click chooses either
+element Outliner
+    public scene : SceneEdit
+    mutable lines  : vec Line
+    mutable scroll_y : f32
+    # the row under the pointer
+    mutable hover_i : i32 [ -1 ]
+
+    # − shows: on every object with ctrl/cmd held, on the hovered
+    # one with shift
+    func minus_on [ ln: Line, i: i32 ] -> bool
+        if [ !ux || ln.kind != 1 ] return false
+        return ux.cmd || (ux.shift && i == hover_i)
+
+    public func on_move [ ev: Event ]
+        hover_i = i32[ (ev.mouse.pos.y + scroll_y - 8.0) / 24.0 ]
+
+    func line_of [ text: string, depth: i32, kind: i32 ] -> Line
+        return Line [ text: text, depth: depth, kind: kind,
+            object: '', node: '', pass: '', on: true,
+            can_off: false ]
+
+    # the design's materials: its materials folder, by name
+    func materials [] -> vec string
+        out : vec string []
+        dir : path '{scene.design.base[]}/materials'
+        if [ !dir.exists[] ] return out
+        for [ e: path ] in dir.ls[ null, false ]
+            es : string '{e}'
+            if [ !es.ends_with[ '.agi' ] ] continue
+            nm : string e.filename[]
+            mn : nm.mid[ 0, nm.count - 4 ]
+            # by name: each goes before the first that sorts after
+            at : i32 [ out.count ]
+            for [ i: i32 out.count - 1, i >= 0, i -= 1 ]
+                if [ out[ i ].compare[ mn ] > 0 ] at = i
+            out.insert[ mn, at ]
+        return out
+
+    func list [] -> vec Line
+        out : vec Line []
+        if [ !scene || !scene.design ] return out
+        out.push[ line_of[ 'objects', 0, 0 ] ]
+        for [ o: Object ] in scene.design.objects
+            ol : line_of[ o.name, 0, 1 ]
+            ol.object  = o.name
+            ol.on      = o.shown
+            ol.can_off = true
+            out.push[ ol ]
+        out.push[ line_of[ 'materials', 0, 0 ] ]
+        for [ m: string ] in materials[]
+            ml : line_of[ m, 0, 3 ]
+            ml.node = m
+            f : scene.design.finish_of[ m ]
+            if [ f && f.surface ] ml.swatch = f.surface.base_color
+            out.push[ ml ]
+        return out
+
+    # the row is what is chosen
+    func lit [ ln: Line ] -> bool
+        s : scene.sel
+        if [ ln.kind == 1 ]
+            return ln.object.compare[ s.object ] == 0
+                && s.node.count == 0
+        if [ ln.kind == 3 ]
+            return s.object.count == 0
+                && ln.node.compare[ scene.slot ] == 0
+        return false
+
+    public func on_press [ ev: Event ]
+        if [ !scene || !lines ] return
+        i : i32 [ (ev.mouse.pos.y + scroll_y - 8.0) / 24.0 ]
+        if [ i < 0 || i >= lines.count ] return
+        ln : lines[ i ]
+        if [ ln.kind == 0 ] return
+        s : scene.sel
+        if [ minus_on[ ln, i ] && ev.mouse.pos.x > bounds.w - 30.0 ]
+            scene.remove_object[ ln.object ]
+            return
+        # a double-click on an object: it alone, for now; on the
+        # one alone, everything back
+        if [ ln.kind == 1 && ev.mouse.double_click ]
+            s.object = ln.object
+            s.node   = ''
+            s.pass   = ''
+            s.solo   = (s.solo && s.solo.compare[ ln.object ] == 0)
+                ? '' : ln.object
+            return
+        eye : f32 [ 12.0 + f32[ ln.depth ] * 16.0 ]
+        if [ ln.can_off && ev.mouse.pos.x < eye + 14.0 ]
+            s.solo = ''
+            if [ ln.kind == 1 ]
+                o : scene.object_named[ ln.object ]
+                if [ o ] o.shown = !o.shown
+            return
+        again : bool [ lit[ ln ] ]
+        # the one shown alone stays chosen: a double-click's first
+        # click must not end it
+        if [ again && ln.kind == 1 && s.solo
+             && s.solo.compare[ ln.object ] == 0 ] return
+        s.object = ''
+        s.node   = ''
+        s.pass   = ''
+        scene.slot = ''
+        if [ again ] return
+        if [ ln.kind == 1 ] s.object = ln.object
+        if [ ln.kind == 3 ] scene.slot = ln.node
+
+    public func on_wheel [ ev: Event ]
+        scroll_y -= ev.mouse.wheel_delta.y * 40.0
+        most : f32 [ f32[ (lines) ? lines.count : 0 ] * 24.0 + 16.0
+                     - bounds.h ]
+        if [ scroll_y > most ] scroll_y = most
+        if [ scroll_y < 0.0 ] scroll_y = 0.0
+
+    # an eye: filled on, an outline off
+    func eye_mark [ cv: Canvas, x: f32, y: f32, on: bool ]
+        cv.fill_color[ rgba [ (on) ? '#d8d8e0' : '#0000' ] ]
+        cv.stroke_color[ rgba [ '#d8d8e0' ] ]
+        cv.stroke_width[ 1.2 ]
+        cv.arc[ x, y, 4.0, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        lines = list[]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#14141a' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.font_size[ 14 ]
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            ln : lines[ i ]
+            y : f32 [ 8.0 + f32[ i ] * 24.0 - scroll_y ]
+            if [ y < -24.0 || y > bounds.h ] continue
+            x : f32 [ 12.0 + f32[ ln.depth ] * 16.0 ]
+            if [ ln.kind == 0 ]
+                cv.fill_color[ rgba [ '#7a7a90' ] ]
+                cv.draw_text[ ln.text, rect [ x: x, y: y,
+                    w: bounds.w - x, h: 24.0 ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                cv.paint[]
+                continue
+            if [ lit[ ln ] ]
+                cv.fill_color[ rgba [ '#4d3dbc' ] ]
+                cv.rect_to[ 0.0, y, bounds.w, 24.0 ]
+                cv.paint[]
+            tx : f32 [ x ]
+            if [ ln.can_off ]
+                eye_mark[ cv, x + 5.0, y + 12.0, ln.on ]
+                tx = x + 16.0
+            if [ ln.swatch && ln.swatch.count >= 3 ]
+                cv.fill_color[ rgba [ r: pow[ ln.swatch[ 0 ], 1.0 / 2.2 ],
+                    g: pow[ ln.swatch[ 1 ], 1.0 / 2.2 ],
+                    b: pow[ ln.swatch[ 2 ], 1.0 / 2.2 ], a: 1.0 ] ]
+                cv.rounded_rect[ x, y + 6.0, 12.0, 12.0, 3.0, 3.0,
+                                 3.0, 3.0 ]
+                cv.paint[]
+                tx = x + 18.0
+            cv.fill_color[ rgba [ (ln.on) ? '#e8e8f0' : '#7a7a86' ] ]
+            cv.draw_text[ ln.text, rect [ x: tx, y: y,
+                w: bounds.w - tx - 8.0, h: 24.0 ], vec2f [ 0.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+            # −: a square rounded 4 px, a minus inside
+            if [ minus_on[ ln, i ] ]
+                mx : f32 [ bounds.w - 24.0 ]
+                cv.fill_color[ rgba [ '#0000' ] ]
+                cv.stroke_color[ rgba [ '#d8d8e0' ] ]
+                cv.stroke_width[ 1.2 ]
+                cv.rounded_rect[ mx, y + 5.0, 14.0, 14.0, 4.0, 4.0,
+                                 4.0, 4.0 ]
+                cv.paint[]
+                cv.stroke_width[ 0.0 ]
+                cv.fill_color[ rgba [ '#d8d8e0' ] ]
+                cv.rect_to[ mx + 4.0, y + 11.4, 6.0, 1.2 ]
+                cv.paint[]
+        if [ scene.edits && scene.edits.pending[] ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#ffcf4a' ] ]
+            cv.draw_text[ 'unsaved: ctrl/cmd + s',
+                rect [ x: 12.0, y: bounds.h - 30.0,
+                       w: bounds.w - 24.0, h: 24.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+        cv.restore[]
+
+# the chosen thing's properties: a section a block (a heading
+# row and its grid), a modifier's or draw's with its switch
+element PropsSide
+    public scene : SceneEdit
+    mutable shown : vec Block
+    # how far the sections are scrolled up, and their full height
+    mutable lift  : f32
+    mutable tall  : f32
+    # the modifiers area's heading
+    mutable mods_y  : f32
+
+    # the fields the user changed since the last frame, applied
+    func take [] -> bool
+        changed : bool [ false ]
+        scene.busy = map Au [ string ] []
+        if [ !elements || !shown ] return false
+        for [ b: Block ] in shown
+            if [ !elements.contains[ b.key ] ] continue
+            lp : cast LaunchPanel [ elements[ b.key ] ]
+            if [ !lp.fields ] continue
+            for [ r: PropRow ] in b.rows
+                p : lp.prop_of[ r.label ]
+                if [ !p ] continue
+                now : lp.value_of[ p ]
+                key : '{b.key}_{r.label}'
+                was : string [ scene.typed[ key ] ]
+                if [ now && was && now.count > 0
+                     && now.compare[ was ] != 0 ]
+                    scene.typed[ key ] = now
+                    scene.apply_row[ r, now ]
+                    scene.busy[ b.key ] = r.label
+                    changed = true
+        return changed
+
+    func title [] -> string
+        s : scene.sel
+        if [ s.object.count > 0 ] return s.object
+        if [ scene.slot.count > 0 ] return scene.slot
+        if [ s.pass.count > 0 ] return s.pass
+        return ''
+
+    public func render [] -> Elements
+        out : Elements []
+        if [ !scene ] return out
+        v : scene.view
+        # ctrl/cmd + z on a property: its value before, set again
+        if [ v && v.undo_row ]
+            scene.set_row[ v.undo_row, v.undo_was ]
+            v.undo_row = null
+        take[]
+        shown = scene.blocks[]
+        y : f32 [ 40.0 - lift ]
+        mods_y = -1.0
+        for [ b: Block ] in shown
+            # the object's modifiers: their own area, each framed
+            if [ b.modifier && mods_y < 0.0 ]
+                y += 12.0
+                mods_y = y
+                y += 28.0
+            y += 26.0
+            b.y = y
+            # the kinds show instead of the modifiers: no fields
+            if [ b.modifier && scene.choosing ]
+                y += b.h + 6.0
+                continue
+            if [ b.rows.count == 0 ]
+                y += 6.0
+                continue
+            out[ b.key ] = LaunchPanel [ spec: scene.spec_of[ b ],
+                args: '', inst: 1, live_vals: true,
+                changing: b.busy, name_frac: 0.42,
+                area: Region [ 'l0 t{y}px r0 h{b.h}px' ] ]
+            y += b.h + 6.0
+        # an object without modifiers still has the area, for +
+        if [ mods_y < 0.0 && scene.sel.object.count > 0 ]
+            y += 12.0
+            mods_y = y
+            y += 28.0
+        tall = y + lift
+        return out
+
+    public func on_wheel [ ev: Event ]
+        lift -= ev.mouse.wheel_delta.y * 40.0
+        most : f32 [ tall - bounds.h + 20.0 ]
+        if [ lift > most ] lift = most
+        if [ lift < 0.0 ] lift = 0.0
+
+    # a modifier's −: always shown
+    func minus_on [ b: Block ] -> bool
+        return b.modifier
+
+    public func on_press [ ev: Event ]
+        if [ !shown ] return
+        # the heading's +: the kinds to add; as an ×, back
+        if [ mods_y >= 0.0 && ev.mouse.pos.y >= mods_y
+             && ev.mouse.pos.y < mods_y + 24.0
+             && ev.mouse.pos.x > bounds.w - 30.0 ]
+            scene.choosing = !scene.choosing
+            return
+        # a kind chosen: added at the end
+        if [ scene.choosing && mods_y >= 0.0 ]
+            i : i32 [ (ev.mouse.pos.y - mods_y - 34.0) / 30.0 ]
+            list : scene.kinds[]
+            if [ ev.mouse.pos.y >= mods_y + 34.0 && i >= 0
+                 && i < list.count ]
+                scene.add_node[ scene.sel.object, list[ i ] ]
+                scene.choosing = false
+            return
+        for [ b: Block ] in shown
+            if [ ev.mouse.pos.y < b.y - 26.0 || ev.mouse.pos.y >= b.y ]
+                continue
+            if [ minus_on[ b ] && ev.mouse.pos.x > bounds.w - 30.0 ]
+                scene.remove_node[ b.object, b.node ]
+                return
+            if [ b.flip.count > 0 && ev.mouse.pos.x < 36.0 ]
+                scene.flip[ b.flip ]
+            return
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#14141a' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        nm : title[]
+        cv.font_size[ 15 ]
+        cv.fill_color[ rgba [ (nm.count > 0) ? '#f4f4f8' : '#6a6a78' ] ]
+        cv.draw_text[ (nm.count > 0) ? nm : 'nothing chosen',
+            rect [ x: 14.0, y: 6.0, w: bounds.w - 28.0, h: 28.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.paint[]
+        if [ mods_y >= 0.0 ]
+            cv.font_size[ 14 ]
+            cv.fill_color[ rgba [ '#9a9ab0' ] ]
+            cv.draw_text[ 'modifiers', rect [ x: 10.0, y: mods_y,
+                w: bounds.w - 20.0, h: 24.0 ], vec2f [ 0.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#ffffff1a' ] ]
+            cv.rect_to[ 10.0, mods_y + 26.0, bounds.w - 20.0, 1.0 ]
+            cv.paint[]
+            # +: a square rounded 4 px, a plus inside; while the
+            # kinds show, an × in it
+            px : f32 [ bounds.w - 24.0 ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#d8d8e0' ] ]
+            cv.stroke_width[ 1.2 ]
+            cv.rounded_rect[ px, mods_y + 5.0, 14.0, 14.0, 4.0, 4.0,
+                             4.0, 4.0 ]
+            cv.paint[]
+            if [ scene.choosing ]
+                cv.move_to[ px + 4.0, mods_y + 9.0 ]
+                cv.line_to[ px + 10.0, mods_y + 15.0 ]
+                cv.move_to[ px + 10.0, mods_y + 9.0 ]
+                cv.line_to[ px + 4.0, mods_y + 15.0 ]
+                cv.paint[]
+                cv.stroke_width[ 0.0 ]
+            el
+                cv.stroke_width[ 0.0 ]
+                cv.fill_color[ rgba [ '#d8d8e0' ] ]
+                cv.rect_to[ px + 4.0, mods_y + 11.4, 6.0, 1.2 ]
+                cv.paint[]
+                cv.rect_to[ px + 6.4, mods_y + 9.0, 1.2, 6.0 ]
+                cv.paint[]
+            # the kinds, over the whole modifiers area
+            if [ scene.choosing ]
+                cv.fill_color[ rgba [ '#14141a' ] ]
+                cv.rect_to[ 0.0, mods_y + 28.0, bounds.w,
+                            bounds.h - mods_y - 28.0 ]
+                cv.paint[]
+                list : scene.kinds[]
+                cv.font_size[ 14 ]
+                for [ i: i32 0, i < list.count, i += 1 ]
+                    ky : f32 [ mods_y + 34.0 + f32[ i ] * 30.0 ]
+                    cv.fill_color[ rgba [ '#22222c' ] ]
+                    cv.rect_to[ 0.0, ky, bounds.w, 28.0 ]
+                    cv.paint[]
+                    cv.fill_color[ rgba [ '#e8e8f0' ] ]
+                    cv.draw_text[ list[ i ].lcase[], rect [ x: 14.0,
+                        y: ky, w: bounds.w - 28.0, h: 28.0 ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.visible, null ]
+                    cv.paint[]
+        if [ shown ]
+            cv.font_size[ 13 ]
+            for [ b: Block ] in shown
+                # the kinds show instead of the modifiers
+                if [ b.modifier && scene.choosing ] continue
+                hy : f32 [ b.y - 26.0 ]
+                hx : f32 [ 0.0 ]
+                cv.fill_color[ rgba [ '#22222c' ] ]
+                cv.rect_to[ hx, hy, bounds.w - hx * 2.0, 24.0 ]
+                cv.paint[]
+                tx : f32 [ hx + 10.0 ]
+                if [ b.flip.count > 0 ]
+                    cv.fill_color[ rgba [ (b.on) ? '#d8d8e0' : '#0000' ] ]
+                    cv.stroke_color[ rgba [ '#d8d8e0' ] ]
+                    cv.stroke_width[ 1.2 ]
+                    cv.arc[ hx + 15.0, hy + 12.0, 4.0, 0.0, 6.2832 ]
+                    cv.paint[]
+                    cv.stroke_width[ 0.0 ]
+                    tx = hx + 28.0
+                # −: a square rounded 4 px, a minus inside
+                if [ minus_on[ b ] ]
+                    mx : f32 [ bounds.w - hx - 24.0 ]
+                    cv.fill_color[ rgba [ '#0000' ] ]
+                    cv.stroke_color[ rgba [ '#d8d8e0' ] ]
+                    cv.stroke_width[ 1.2 ]
+                    cv.rounded_rect[ mx, hy + 5.0, 14.0, 14.0, 4.0, 4.0,
+                                     4.0, 4.0 ]
+                    cv.paint[]
+                    cv.stroke_width[ 0.0 ]
+                    cv.fill_color[ rgba [ '#d8d8e0' ] ]
+                    cv.rect_to[ mx + 4.0, hy + 11.4, 6.0, 1.2 ]
+                    cv.paint[]
+
+                cv.fill_color[ rgba [ (b.on) ? '#c9c4dd' : '#7a7a86' ] ]
+                cv.draw_text[ b.label, rect [ x: tx, y: hy,
+                    w: bounds.w - tx - 8.0, h: 24.0 ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.visible, null ]
+                cv.paint[]
+        cv.restore[]

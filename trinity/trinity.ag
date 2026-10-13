@@ -9504,6 +9504,57 @@ func fade_band [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, px: f32,
     cv.paint[]
     cv.clear_fill_gradient[]
 
+# a shallow 1 px line: a pixel's worth in every column
+expect func t_line_aa [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 200, height: 60 ]
+    c: Canvas [ vk: vk, w: w, width: 200, height: 60 ]
+    c.update[]
+    c.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+    c.save[]
+    c.fill_color[ rgba [ '#0000' ] ]
+    c.stroke_color[ rgba [ '#fff' ] ]
+    c.stroke_width[ 1.0 ]
+    c.move_to[ 10.0, 10.0 ]
+    c.line_to[ 190.0, 40.0 ]
+    c.paint[]
+    c.move_to[ 10.0, 50.5 ]
+    c.line_to[ 190.0, 50.5 ]
+    c.paint[]
+    c.restore[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    ok : bool [ true ]
+    flat : ''
+    for [ y: i32 46, y < 56, y += 1 ]
+        flat = '{flat} {y}:{data[ (y * img.width + 100) * 4 ]}'
+    log 'flat line at 50.5, column 100:{flat}'
+    for [ x: i32 60, x <= 66, x += 1 ]
+        line : ''
+        sum : i32 [ 0 ]
+        lit : i32 [ 0 ]
+        for [ y: i32 12, y < 30, y += 1 ]
+            v : i32 [ data[ (y * img.width + x) * 4 ] ]
+            if [ v > 4 ]
+                line = '{line} {y}:{v}'
+                sum += v
+                lit += 1
+        log 'line column {x}:{line} (sum {sum})'
+        if [ lit < 2 || sum < 230 || sum > 290 ] ok = false
+    # nothing along the box's far edges: unwritten texels read 0
+    edge : i32 [ 0 ]
+    for [ x: i32 0, x < 200, x += 1 ]
+        for [ y: i32 41, y < 48, y += 1 ]
+            v : i32 [ data[ (y * img.width + x) * 4 ] ]
+            if [ v > edge ] edge = v
+    log 'below the slope line, brightest {edge}'
+    # a line on a pixel row fills that row alone
+    on : i32 [ data[ (50 * img.width + 100) * 4 ] ]
+    by : i32 [ data[ (49 * img.width + 100) * 4 ]
+               + data[ (51 * img.width + 100) * 4 ] ]
+    return ok && on > 240 && by < 10 && edge < 10
+
 # a top fade band: the mask runs from clear to kept over its width
 expect func t_fade_band [ vk: vk_context ] -> bool
     w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,

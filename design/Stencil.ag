@@ -1,0 +1,344 @@
+# a step's points as weighted sums of its input's points: the
+# tables the compute passes run (made when the shape changes)
+extend design
+
+# point i = sum over its terms of weight x (matrix x input point)
+class Stencil
+    public n_in   : i32
+    public n_out  : i32
+    # each output point's first term; n_out + 1 of them
+    public start  : vec i32
+    public src    : vec i32
+    public weight : vec f32
+    # each term's matrix: 12 floats a matrix, rows first
+    public mat    : vec i32
+    public mats   : vec f32
+    # the step it was made for
+    public node   : string
+
+    func init []
+        if [ !start ] start = vec i32 [] [ 0 ]
+        if [ !src ] src = vec i32 []
+        if [ !weight ] weight = vec f32 []
+        if [ !mat ] mat = vec i32 []
+        if [ !mats ] mats = mat_identity[]
+
+    # a row of a single term
+    func one [ s: i32, m: i32 ]
+        src.push[ s ]
+        weight.push[ 1.0 ]
+        mat.push[ m ]
+        start.push[ src.count ]
+        n_out += 1
+
+    # a matrix added to the table: its number
+    func add_mat [ m: vec f32 ] -> i32
+        at : i32 [ mats.count / 12 ]
+        for [ k: i32 0, k < 12, k += 1 ]
+            mats.push[ m[ k ] ]
+        return at
+
+# rows of identity terms, summed per input point as they come
+class RowBuild
+    public out   : Stencil
+    public sum   : vec f32
+    public mark  : vec bool
+    public touched : vec i32
+
+    func init []
+        n : i32 [ out.n_in ]
+        sum  = vec f32 [ n ]
+        mark = vec bool [ n ]
+        touched = vec i32 []
+
+    func add [ s: i32, w: f32 ]
+        if [ !mark[ s ] ]
+            mark[ s ] = true
+            touched.push[ s ]
+        sum[ s ] = sum[ s ] + w
+
+    func end []
+        for [ s: i32 ] in touched
+            out.src.push[ s ]
+            out.weight.push[ sum[ s ] ]
+            out.mat.push[ 0 ]
+            sum[ s ]  = 0.0
+            mark[ s ] = false
+        touched.clear[]
+        out.start.push[ out.src.count ]
+        out.n_out += 1
+
+# a face's middle: each corner by an equal share of w
+func face_terms [ rb: RowBuild, m: Poly, f: i32, w: f32 ]
+    st : i32 [ m.fstart[ f ] ]
+    k : i32 [ m.fsize[ f ] ]
+    for [ j: i32 0, j < k, j += 1 ]
+        rb.add[ m.corner[ st + j ], w / f32[ k ] ]
+
+# subdivide_once's vertex rules as terms, by w: smooth (0), a
+# crease along the edges sharp past the floor (1), a corner (2)
+func vertex_rule [ rb: RowBuild, m: Poly, t: Topo, v: i32,
+                   rule: i32, floor: f32, whole: bool, w: f32 ]
+    if [ rule == 2 ]
+        rb.add[ v, w ]
+        return
+    es : i32 [ t.vstart[ v ] ]
+    n : i32 [ t.vstart[ v + 1 ] - es ]
+    if [ rule == 1 ]
+        # the crease: its two far ends and the point six times
+        for [ j: i32 0, j < n, j += 1 ]
+            e : i32 [ t.vedges[ es + j ] ]
+            s : f32 [ t.sharp[ e ] ]
+            on : bool [ (whole) ? s >= 1.0 : s > floor ]
+            if [ !on ] continue
+            o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+            rb.add[ o, w * 0.125 ]
+        rb.add[ v, w * 0.75 ]
+        return
+    # smooth: the faces' middles, the edge middles, the point
+    valence : f32 [ n ]
+    cs : i32 [ t.fvat[ v ] ]
+    nfc : i32 [ t.fvat[ v + 1 ] - cs ]
+    for [ j: i32 0, j < nfc, j += 1 ]
+        f : i32 [ t.cface[ t.fverts[ cs + j ] ] ]
+        face_terms[ rb, m, f, w / (f32[ nfc ] * valence) ]
+    for [ j: i32 0, j < n, j += 1 ]
+        e : i32 [ t.vedges[ es + j ] ]
+        o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+        # (v + o) / 2, times 2 / valence, over valence
+        rb.add[ v, w / (valence * valence) ]
+        rb.add[ o, w / (valence * valence) ]
+    rb.add[ v, w * (valence - 3.0) / valence ]
+
+# one catmull-clark step as terms: as subdivide_once, point for
+# point (its points: kept, edge middles, face middles)
+func subdiv_stencil [ m: Poly ] -> Stencil
+    t : Topo m.topo[]
+    nv : i32 [ m.verts[] ]
+    ne : i32 [ t.ea.count ]
+    nf : i32 [ m.faces[] ]
+    st : Stencil [ n_in: nv ]
+    rb : RowBuild [ out: st ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        es : i32 [ t.vstart[ v ] ]
+        n : i32 [ t.vstart[ v + 1 ] - es ]
+        if [ n == 0 ]
+            rb.add[ v, 1.0 ]
+            rb.end[]
+            continue
+        hard : i32 [ 0 ]
+        whole : i32 [ 0 ]
+        weight : f32 [ 0.0 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            s : f32 [ t.sharp[ t.vedges[ es + j ] ] ]
+            if [ s > 0.0 ]
+                hard += 1
+                weight += (s > 1.0) ? 1.0 : s
+            if [ s >= 1.0 ] whole += 1
+        upper : i32 [ (hard == 2) ? 1 : ((hard > 2) ? 2 : 0) ]
+        if [ hard >= 2 && whole < hard ]
+            lower : i32 [ (whole == 2) ? 1 : ((whole > 2) ? 2 : 0) ]
+            share : f32 [ weight / f32[ hard ] ]
+            vertex_rule[ rb, m, t, v, upper, 0.0, false, share ]
+            vertex_rule[ rb, m, t, v, lower, 0.0, true, 1.0 - share ]
+        el
+            vertex_rule[ rb, m, t, v, upper, 0.0, false, 1.0 ]
+        rb.end[]
+    for [ e: i32 0, e < ne, e += 1 ]
+        a0 : i32 [ t.ea[ e ] ]
+        b0 : i32 [ t.eb[ e ] ]
+        s : f32 [ t.sharp[ e ] ]
+        if [ s < 1.0 ]
+            # s x the middle + (1 - s) x the smooth edge point
+            mid : f32 [ s * 0.5 + (1.0 - s) * 0.25 ]
+            rb.add[ a0, mid ]
+            rb.add[ b0, mid ]
+            face_terms[ rb, m, t.ef[ e ], (1.0 - s) * 0.25 ]
+            face_terms[ rb, m, t.eg[ e ], (1.0 - s) * 0.25 ]
+        el
+            rb.add[ a0, 0.5 ]
+            rb.add[ b0, 0.5 ]
+        rb.end[]
+    for [ f: i32 0, f < nf, f += 1 ]
+        face_terms[ rb, m, f, 1.0 ]
+        rb.end[]
+    return st
+
+# limit_of as terms: each point where endless steps take it
+func limit_stencil [ m: Poly ] -> Stencil
+    t : Topo m.topo[]
+    nv : i32 [ m.verts[] ]
+    st : Stencil [ n_in: nv ]
+    rb : RowBuild [ out: st ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        es : i32 [ t.vstart[ v ] ]
+        n : i32 [ t.vstart[ v + 1 ] - es ]
+        hard : i32 [ 0 ]
+        for [ j: i32 0, j < n, j += 1 ]
+            if [ t.sharp[ t.vedges[ es + j ] ] > 0.0 ] hard += 1
+        if [ n == 0 || hard > 2 ]
+            rb.add[ v, 1.0 ]
+        el [ hard == 2 ]
+            for [ j: i32 0, j < n, j += 1 ]
+                e : i32 [ t.vedges[ es + j ] ]
+                if [ t.sharp[ e ] <= 0.0 ] continue
+                o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+                rb.add[ o, 1.0 / 6.0 ]
+            rb.add[ v, 4.0 / 6.0 ]
+        el
+            nn : f32 [ n ]
+            w : f32 [ nn * (nn + 5.0) ]
+            rb.add[ v, nn * nn / w ]
+            for [ j: i32 0, j < n, j += 1 ]
+                e : i32 [ t.vedges[ es + j ] ]
+                o : i32 [ (t.ea[ e ] == v) ? t.eb[ e ] : t.ea[ e ] ]
+                rb.add[ o, 4.0 / w ]
+            cs : i32 [ t.fvat[ v ] ]
+            nfc : i32 [ t.fvat[ v + 1 ] - cs ]
+            for [ j: i32 0, j < nfc, j += 1 ]
+                c : i32 [ t.fverts[ cs + j ] ]
+                f : i32 [ t.cface[ c ] ]
+                fs : i32 [ m.fstart[ f ] ]
+                k : i32 [ m.fsize[ f ] ]
+                rb.add[ m.corner[ fs + (c - fs + 2) % k ], 1.0 / w ]
+        rb.end[]
+    return st
+
+# mirror_axis as terms: the points, then the reflected ones;
+# those on the plane (merged) put on it
+func mirror_stencil [ m: Poly, axis: i32, merge: f32 ] -> Stencil
+    nv : i32 [ m.verts[] ]
+    st : Stencil [ n_in: nv ]
+    flat : vec f32 mat_identity[]
+    flat[ axis * 4 + axis ] = 0.0
+    flip : vec f32 mat_identity[]
+    flip[ axis * 4 + axis ] = -1.0
+    on_plane : st.add_mat[ flat ]
+    across : st.add_mat[ flip ]
+    merged : vec bool [ nv ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        d : f32 [ m.pos[ v * 3 + axis ] * 2.0 ]
+        merged[ v ] = merge > 0.0 && d * d < merge * merge
+    for [ v: i32 0, v < nv, v += 1 ]
+        st.one[ v, (merged[ v ]) ? on_plane : 0 ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        if [ !merged[ v ] ] st.one[ v, across ]
+    return st
+
+# array_copies as terms: each kept point from the last placed
+# point that lands on it, under its copy's matrix
+func array_stencil [ m: Poly, copies: i32, step: vec f32,
+                     merge: f32, ends: bool ] -> Stencil
+    nv : i32 [ m.verts[] ]
+    st : Stencil [ n_in: nv ]
+    out : array_copies[ m, copies, step, merge, ends ]
+    # where each placed point went: array_copies' own numbering
+    final : array_final[ m, copies, step, merge, ends ]
+    mats : vec i32 []
+    mt : vec f32 mat_identity[]
+    for [ k: i32 0, k < copies, k += 1 ]
+        mats.push[ st.add_mat[ mt ] ]
+        mt = mat_mul[ step, mt ]
+    nout : i32 [ out.verts[] ]
+    from : vec i32 [ nout ]
+    for [ i: i32 0, i < nv * copies, i += 1 ]
+        from[ final[ i ] ] = i
+    for [ o: i32 0, o < nout, o += 1 ]
+        i : i32 [ from[ o ] ]
+        st.one[ i % nv, mats[ i / nv ] ]
+    return st
+
+# array_copies' numbering of every placed point (its merges)
+func array_final [ m: Poly, copies: i32, step: vec f32,
+                   merge: f32, ends: bool ] -> vec i32
+    nv : i32 [ m.verts[] ]
+    many : i32 [ nv * 3 * copies ]
+    placed : vec f32 [ many ]
+    mat : vec f32 mat_identity[]
+    for [ k: i32 0, k < copies, k += 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            x : f32 [ m.pos[ v * 3 ] ]
+            y : f32 [ m.pos[ v * 3 + 1 ] ]
+            z : f32 [ m.pos[ v * 3 + 2 ] ]
+            o : i32 [ (k * nv + v) * 3 ]
+            for [ r: i32 0, r < 3, r += 1 ]
+                w : f32 [ mat[ r * 4 ] * x + mat[ r * 4 + 1 ] * y
+                          + mat[ r * 4 + 2 ] * z + mat[ r * 4 + 3 ] ]
+                placed[ o + r ] = w
+        mat = mat_mul[ step, mat ]
+    near : vec i32 [ nv ]
+    tail_of : vec i32 [ nv ]
+    for [ v: i32 0, v < nv, v += 1 ]
+        near[ v ] = -1
+        tail_of[ v ] = -1
+    if [ merge > 0.0 && copies > 1 ]
+        tail : i32 [ copies - 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            best : f32 [ merge * merge ]
+            bend : f32 [ merge * merge ]
+            for [ u: i32 0, u < nv, u += 1 ]
+                d : f32 [ 0.0 ]
+                g : f32 [ 0.0 ]
+                for [ r: i32 0, r < 3, r += 1 ]
+                    p : f32 [ placed[ (nv + v) * 3 + r ]
+                              - placed[ u * 3 + r ] ]
+                    q : f32 [ placed[ (tail * nv + v) * 3 + r ]
+                              - placed[ u * 3 + r ] ]
+                    d += p * p
+                    g += q * q
+                if [ d < best ]
+                    best = d
+                    near[ v ] = u
+                if [ ends && g < bend ]
+                    bend = g
+                    tail_of[ v ] = u
+    total : i32 [ nv * copies ]
+    final : vec i32 [ total ]
+    count : i32 [ 0 ]
+    for [ k: i32 0, k < copies, k += 1 ]
+        for [ v: i32 0, v < nv, v += 1 ]
+            i : i32 [ k * nv + v ]
+            if [ k > 0 && near[ v ] >= 0 ]
+                final[ i ] = final[ (k - 1) * nv + near[ v ] ]
+            el [ k > 0 && k == copies - 1 && tail_of[ v ] >= 0 ]
+                final[ i ] = final[ tail_of[ v ] ]
+            el
+                final[ i ] = count
+                count += 1
+    return final
+
+# two tables take the same points from the same inputs
+func same_terms [ a: Stencil, b: Stencil ] -> bool
+    if [ a.n_out != b.n_out || a.src.count != b.src.count ]
+        return false
+    for [ i: i32 0, i < a.src.count, i += 1 ]
+        if [ a.src[ i ] != b.src[ i ] || a.mat[ i ] != b.mat[ i ] ]
+            return false
+    return true
+
+# a stencil run on the CPU: what the compute pass will make
+func apply_stencil [ st: Stencil, p: vec f32 ] -> vec f32
+    n : i32 [ st.n_out * 3 ]
+    q : vec f32 [ n ]
+    for [ i: i32 0, i < st.n_out, i += 1 ]
+        x : f32 [ 0.0 ]
+        y : f32 [ 0.0 ]
+        z : f32 [ 0.0 ]
+        for [ k: i32 st.start[ i ], k < st.start[ i + 1 ], k += 1 ]
+            s : i32 [ st.src[ k ] ]
+            w : f32 [ st.weight[ k ] ]
+            mb : i32 [ st.mat[ k ] * 12 ]
+            px : f32 [ p[ s * 3 ] ]
+            py : f32 [ p[ s * 3 + 1 ] ]
+            pz : f32 [ p[ s * 3 + 2 ] ]
+            mm : st.mats
+            x += w * (mm[ mb ] * px + mm[ mb + 1 ] * py
+                      + mm[ mb + 2 ] * pz + mm[ mb + 3 ])
+            y += w * (mm[ mb + 4 ] * px + mm[ mb + 5 ] * py
+                      + mm[ mb + 6 ] * pz + mm[ mb + 7 ])
+            z += w * (mm[ mb + 8 ] * px + mm[ mb + 9 ] * py
+                      + mm[ mb + 10 ] * pz + mm[ mb + 11 ])
+        q[ i * 3 ] = x
+        q[ i * 3 + 1 ] = y
+        q[ i * 3 + 2 ] = z
+    return q

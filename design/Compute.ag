@@ -1,0 +1,514 @@
+# the compute passes: a step's table run on the GPU, and the
+# chain of them from an object's cage to its points
+extend design
+
+enum StencilSurface
+    pin:     0
+    starts:  1
+    srcs:    2
+    weights: 3
+    mats_of: 4
+    table:   5
+    pout:    6
+
+# one step: each point the sum of its terms (weight x matrix x
+# input point); a row of invocations is 1024 points
+shader StencilCompute
+    mutable n_out : i32
+    attrib pin     : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.pin, count:1,
+                                     format: typeid[ f32 ] ]
+    attrib starts  : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.starts,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib srcs    : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.srcs, count:1,
+                                     format: typeid[ i32 ] ]
+    attrib weights : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.weights,
+                                     count:1, format: typeid[ f32 ] ]
+    attrib mats_of : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.mats_of,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib table   : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.table,
+                                     count:1, format: typeid[ f32 ] ]
+    attrib pout    : StorageBuffer [ type:typeid[ StencilSurface ],
+                                     id: StencilSurface.pout, count:1,
+                                     format: typeid[ f32 ],
+                                     writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        int   i   = gid.y * 1024 + gid.x;
+        if (gid.x >= 1024 || i >= ubo.n_out) return;
+        vec3 acc = vec3(0.0);
+        for (int k = starts[i]; k < starts[i + 1]; k++) {{
+            int  s  = srcs[k] * 3;
+            int  mb = mats_of[k] * 12;
+            vec4 p  = vec4(pin[s], pin[s + 1], pin[s + 2], 1.0);
+            vec3 q  = vec3(
+                dot(vec4(table[mb], table[mb + 1], table[mb + 2],
+                         table[mb + 3]), p),
+                dot(vec4(table[mb + 4], table[mb + 5], table[mb + 6],
+                         table[mb + 7]), p),
+                dot(vec4(table[mb + 8], table[mb + 9], table[mb + 10],
+                         table[mb + 11]), p));
+            acc += weights[k] * q;
+        }}
+        pout[i * 3]     = acc.x;
+        pout[i * 3 + 1] = acc.y;
+        pout[i * 3 + 2] = acc.z;
+    }
+
+# a pass's writes seen by the next pass and by the CPU
+func compute_barrier [ rec: handle ]
+    vkCmdPipelineBarrier[ rec,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+        | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
+        | VK_PIPELINE_STAGE_HOST_BIT, 0,
+        1, VkMemoryBarrier [
+            sType: VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            srcAccessMask: VK_ACCESS_SHADER_WRITE_BIT,
+            dstAccessMask: VK_ACCESS_SHADER_READ_BIT
+                           | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
+                           | VK_ACCESS_HOST_READ_BIT ],
+        0, null, 0, null ]
+
+# a storage buffer the CPU can write and read
+func host_buf [ vk: vk_context, bytes: i64 ] -> Buffer
+    sz : i64 [ (bytes > 4) ? bytes : 4 ]
+    return Buffer [ vk: vk, size: sz, u_storage: true,
+                    m_host_visible: true, m_host_coherent: true,
+                    m_host_cached: true ]
+
+# a buffer in GPU memory the CPU cannot see, filled once from
+# bytes through a staging copy
+func device_buf [ vk: vk_context, bytes: i64, from: ARef,
+                  vertex: bool ] -> Buffer
+    sz : i64 [ (bytes > 4) ? bytes : 4 ]
+    buf : Buffer [ vk: vk, size: sz, u_storage: true, u_dst: true,
+                   u_vertex: vertex, m_device_local: true ]
+    if [ !from || bytes <= 0 ] return buf
+    stage : Buffer [ vk: vk, size: bytes, u_src: true,
+                     m_host_visible: true, m_host_coherent: true,
+                     data: from ]
+    cmd : Command [ vk: vk ]
+    cmd.begin
+    rec : cmd.buffer[]
+    region : VkBufferCopy [ srcOffset: 0, dstOffset: 0, size: bytes ]
+    vkCmdCopyBuffer[ rec, stage.buffer_handle[], buf.buffer_handle[], 1,
+                     @region ]
+    cmd.submit
+    cmd.finish[]
+    vk.defer_buffer[ stage ]
+    return buf
+
+# a buffer only the GPU reads and writes; readable for a test
+func gpu_buf [ vk: vk_context, bytes: i64, probe: bool ] -> Buffer
+    if [ probe ] return host_buf[ vk, bytes ]
+    sz : i64 [ (bytes > 4) ? bytes : 4 ]
+    return Buffer [ vk: vk, size: sz, u_storage: true,
+                    m_device_local: true ]
+
+# a table in GPU memory, written once as it is made
+func f32_buf [ vk: vk_context, v: vec f32 ] -> Buffer
+    if [ v.count == 0 ] return gpu_buf[ vk, 4, false ]
+    return device_buf[ vk, i64[ v.count ] * 4, @v[ 0 ], false ]
+
+func i32_buf [ vk: vk_context, v: vec i32 ] -> Buffer
+    if [ v.count == 0 ] return gpu_buf[ vk, 4, false ]
+    return device_buf[ vk, i64[ v.count ] * 4, @v[ 0 ], false ]
+
+# a step on the GPU: its table's buffers, its pass, its points
+class StepRun
+    public table : Stencil
+    public shade : StencilCompute
+    public pipe  : Pipeline
+    public out   : Buffer
+    # the table's buffers, kept with it
+    public bufs  : vec Buffer
+
+# an object's points made from its cage on the GPU: its steps'
+# passes, recorded together, each reading the last one's points
+class ChainRun
+    context vk     : vk_context
+    context w      : Display
+    public  tables : vec Stencil
+    public  n_cage : i32
+    # its points readable by the CPU (tests)
+    public  probe  : bool
+    intern  cage   : Buffer
+    intern  runs   : vec StepRun
+    intern  cmd    : Command
+
+    func init []
+        cage = host_buf[ vk, i64[ n_cage ] * 12 ]
+        runs = vec StepRun []
+        cur : Buffer [ cage ]
+        for [ st: Stencil ] in tables
+            sh : StencilCompute [ vk: vk ]
+            sh.n_out = st.n_out
+            out : gpu_buf[ vk, i64[ st.n_out ] * 12, probe ]
+            bufs : vec Buffer [] [ i32_buf[ vk, st.start ],
+                i32_buf[ vk, st.src ], f32_buf[ vk, st.weight ],
+                i32_buf[ vk, st.mat ], f32_buf[ vk, st.mats ] ]
+            pipe : Pipeline [ vk: vk, w: w, name: 'stencil', s: sh,
+                default_model: mat4f.identity[],
+                samplers: map Au[string] [ 'pin': cur,
+                    'starts': bufs[ 0 ], 'srcs': bufs[ 1 ],
+                    'weights': bufs[ 2 ], 'mats_of': bufs[ 3 ],
+                    'table': bufs[ 4 ], 'pout': out ] ]
+            pipe.dispatch_x = 64
+            pipe.dispatch_y = ((st.n_out + 1023) / 1024 + 15) / 16
+            runs.push[ StepRun [ table: st, shade: sh, pipe: pipe,
+                                 out: out, bufs: bufs ] ]
+            cur = out
+        cmd = Command [ vk: vk ]
+
+    # a buffer frees nothing itself (the GPU may still read it):
+    # every one made here is handed to the device's later release
+    func dealloc []
+        if [ cage ] vk.defer_buffer[ cage ]
+        if [ runs ]
+            for [ sr: StepRun ] in runs
+                vk.defer_buffer[ sr.out ]
+                for [ b: Buffer ] in sr.bufs
+                    vk.defer_buffer[ b ]
+
+    # the cage's points written where the first step reads them
+    func put_cage [ points: vec f32 ]
+        if [ points.count > 0 ]
+            memcpy[ cage.data, @points[ 0 ], i64[ points.count ] * 4 ]
+
+    # the buffer holding the object's points: the last step's, or
+    # the cage's when there is none
+    func points [] -> Buffer
+        if [ runs.count == 0 ] return cage
+        return runs[ runs.count - 1 ].out
+
+    # every step recorded, each after the last one's writes
+    func record [ rec: handle ]
+        for [ sr: StepRun ] in runs
+            sr.pipe.dispatch[ rec ]
+            compute_barrier[ rec ]
+
+    # the cage's points in, every step run, waited for
+    func run [ points: vec f32 ]
+        put_cage[ points ]
+        cmd.begin
+        record[ cmd.buffer[] ]
+        cmd.submit
+        cmd.finish[]
+
+    # the last step's points, read back (tests)
+    func result [] -> vec f32
+        if [ runs.count == 0 ] return vec f32 []
+        last : runs[ runs.count - 1 ]
+        n : i32 [ last.table.n_out * 3 ]
+        q : vec f32 [ n ]
+        memcpy[ @q[ 0 ], last.out.data, i64[ n ] * 4 ]
+        return q
+
+enum NormalSurface
+    npts:    0
+    fstarts: 1
+    fsizes:  2
+    corners: 3
+    fnrm:    4
+
+# each face's normal, as long as its area (newell's sum)
+shader FaceNormals
+    mutable n_faces : i32
+    attrib npts    : StorageBuffer [ type:typeid[ NormalSurface ],
+                                     id: NormalSurface.npts, count:1,
+                                     format: typeid[ f32 ] ]
+    attrib fstarts : StorageBuffer [ type:typeid[ NormalSurface ],
+                                     id: NormalSurface.fstarts,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib fsizes  : StorageBuffer [ type:typeid[ NormalSurface ],
+                                     id: NormalSurface.fsizes,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib corners : StorageBuffer [ type:typeid[ NormalSurface ],
+                                     id: NormalSurface.corners,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib fnrm    : StorageBuffer [ type:typeid[ NormalSurface ],
+                                     id: NormalSurface.fnrm, count:1,
+                                     format: typeid[ f32 ],
+                                     writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        int   f   = gid.y * 1024 + gid.x;
+        if (gid.x >= 1024 || f >= ubo.n_faces) return;
+        int st = fstarts[f];
+        int k  = fsizes[f];
+        vec3 s = vec3(0.0);
+        for (int j = 0; j < k; j++) {{
+            int u = corners[st + j] * 3;
+            int w = corners[st + (j + 1) % k] * 3;
+            s.x += (npts[u + 1] - npts[w + 1]) * (npts[u + 2] + npts[w + 2]);
+            s.y += (npts[u + 2] - npts[w + 2]) * (npts[u] + npts[w]);
+            s.z += (npts[u] - npts[w]) * (npts[u + 1] + npts[w + 1]);
+        }}
+        fnrm[f * 3]     = s.x;
+        fnrm[f * 3 + 1] = s.y;
+        fnrm[f * 3 + 2] = s.z;
+    }
+
+enum PointNormalSurface
+    pfnrm:   0
+    pstarts: 1
+    pfaces:  2
+    pnrm:    3
+
+# each point's normal: its faces' summed, made unit length
+shader PointNormals
+    mutable n_points : i32
+    attrib pfnrm   : StorageBuffer [ type:typeid[ PointNormalSurface ],
+                                     id: PointNormalSurface.pfnrm,
+                                     count:1, format: typeid[ f32 ] ]
+    attrib pstarts : StorageBuffer [ type:typeid[ PointNormalSurface ],
+                                     id: PointNormalSurface.pstarts,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib pfaces  : StorageBuffer [ type:typeid[ PointNormalSurface ],
+                                     id: PointNormalSurface.pfaces,
+                                     count:1, format: typeid[ i32 ] ]
+    attrib pnrm    : StorageBuffer [ type:typeid[ PointNormalSurface ],
+                                     id: PointNormalSurface.pnrm,
+                                     count:1, format: typeid[ f32 ],
+                                     writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        int   v   = gid.y * 1024 + gid.x;
+        if (gid.x >= 1024 || v >= ubo.n_points) return;
+        vec3 s = vec3(0.0);
+        for (int j = pstarts[v]; j < pstarts[v + 1]; j++) {{
+            int f = pfaces[j] * 3;
+            s += vec3(pfnrm[f], pfnrm[f + 1], pfnrm[f + 2]);
+        }}
+        float l = length(s);
+        if (l > 0.0) s /= l;
+        pnrm[v * 3]     = s.x;
+        pnrm[v * 3 + 1] = s.y;
+        pnrm[v * 3 + 2] = s.z;
+    }
+
+enum ScatterSurface
+    spts:  0
+    snrm:  1
+    vmap:  2
+    place: 3
+    vbuf:  4
+
+# a draw's vertices from the points: position and normal through
+# the object's place, axes swapped for a y-up pass (as refill);
+# its vertex is 12 floats (position, normal, uv, colour)
+shader ScatterVerts
+    mutable n_verts : i32
+    mutable y_up    : i32
+    attrib spts  : StorageBuffer [ type:typeid[ ScatterSurface ],
+                                   id: ScatterSurface.spts, count:1,
+                                   format: typeid[ f32 ] ]
+    attrib snrm  : StorageBuffer [ type:typeid[ ScatterSurface ],
+                                   id: ScatterSurface.snrm, count:1,
+                                   format: typeid[ f32 ] ]
+    attrib vmap  : StorageBuffer [ type:typeid[ ScatterSurface ],
+                                   id: ScatterSurface.vmap, count:1,
+                                   format: typeid[ i32 ] ]
+    attrib place : StorageBuffer [ type:typeid[ ScatterSurface ],
+                                   id: ScatterSurface.place, count:1,
+                                   format: typeid[ f32 ] ]
+    attrib vbuf  : StorageBuffer [ type:typeid[ ScatterSurface ],
+                                   id: ScatterSurface.vbuf, count:1,
+                                   format: typeid[ f32 ],
+                                   writable: true ]
+
+    func compute [] -> GLSL none {
+        ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+        int   i   = gid.y * 1024 + gid.x;
+        if (gid.x >= 1024 || i >= ubo.n_verts) return;
+        int  pv = vmap[i] * 3;
+        vec4 p  = vec4(spts[pv], spts[pv + 1], spts[pv + 2], 1.0);
+        vec3 n  = vec3(snrm[pv], snrm[pv + 1], snrm[pv + 2]);
+        vec4 r0 = vec4(place[0], place[1], place[2], place[3]);
+        vec4 r1 = vec4(place[4], place[5], place[6], place[7]);
+        vec4 r2 = vec4(place[8], place[9], place[10], place[11]);
+        vec3 wp = vec3(dot(r0, p), dot(r1, p), dot(r2, p));
+        vec3 wn = vec3(dot(r0.xyz, n), dot(r1.xyz, n), dot(r2.xyz, n));
+        int  o  = i * 12;
+        if (ubo.y_up != 0) {{
+            vbuf[o]     = wp.x;
+            vbuf[o + 2] = -wp.y;
+            vbuf[o + 1] = wp.z;
+            vbuf[o + 3] = wn.x;
+            vbuf[o + 5] = -wn.y;
+            vbuf[o + 4] = wn.z;
+        }} else {{
+            vbuf[o]     = wp.x;
+            vbuf[o + 1] = wp.y;
+            vbuf[o + 2] = wp.z;
+            vbuf[o + 3] = wn.x;
+            vbuf[o + 4] = wn.y;
+            vbuf[o + 5] = wn.z;
+        }}
+    }
+
+# one draw's part of an object: its vertex buffer, written by a
+# scatter pass from the object's points
+class VertTarget
+    public gp     : Gpu
+    public buf    : Buffer
+    public vmap   : Buffer
+    public places : Buffer
+    public shade  : ScatterVerts
+    public pipe   : Pipeline
+    # which vertices: the draws of one part share it
+    public first  : i32
+    public y_up   : bool
+
+# an object's points on the GPU from its cage: its steps, its
+# normals, and every draw's vertices; a cage move runs them all
+class ObjectGpu
+    context vk      : vk_context
+    context w       : Display
+    public  tables  : vec Stencil
+    # the last step's mesh: faces for the normals
+    public  shape   : Poly
+    public  n_cage  : i32
+    # its points and normals readable by the CPU (tests)
+    public  probe   : bool
+    intern  chain   : ChainRun
+    intern  fnrm    : Buffer
+    intern  nrm     : Buffer
+    intern  bufs    : vec Buffer
+    intern  passes  : vec Pipeline
+    intern  targets : vec VertTarget
+    intern  cmd     : Command
+
+    func init []
+        chain = ChainRun [ vk: vk, w: w, tables: tables,
+                           n_cage: n_cage, probe: probe ]
+        bufs    = vec Buffer []
+        passes  = vec Pipeline []
+        targets = vec VertTarget []
+        cmd     = Command [ vk: vk ]
+        pts : chain.points[]
+        nf : i32 [ shape.faces[] ]
+        nv : i32 [ shape.verts[] ]
+        fnrm = gpu_buf[ vk, i64[ nf ] * 12, false ]
+        nrm  = gpu_buf[ vk, i64[ nv ] * 12, probe ]
+        # each point's faces, counted then listed
+        starts : vec i32 [ nv + 1 ]
+        for [ c: i32 0, c < shape.corner.count, c += 1 ]
+            v : i32 [ shape.corner[ c ] ]
+            starts[ v + 1 ] = starts[ v + 1 ] + 1
+        for [ v: i32 0, v < nv, v += 1 ]
+            starts[ v + 1 ] = starts[ v + 1 ] + starts[ v ]
+        fill : vec i32 [ nv ]
+        faces : vec i32 [ shape.corner.count ]
+        for [ f: i32 0, f < nf, f += 1 ]
+            st : i32 [ shape.fstart[ f ] ]
+            for [ j: i32 0, j < shape.fsize[ f ], j += 1 ]
+                v : i32 [ shape.corner[ st + j ] ]
+                faces[ starts[ v ] + fill[ v ] ] = f
+                fill[ v ] = fill[ v ] + 1
+        fs : i32_buf[ vk, shape.fstart ]
+        fz : i32_buf[ vk, shape.fsize ]
+        cn : i32_buf[ vk, shape.corner ]
+        ps : i32_buf[ vk, starts ]
+        pf : i32_buf[ vk, faces ]
+        for [ b: Buffer ] in vec Buffer [] [ fs, fz, cn, ps, pf ]
+            bufs.push[ b ]
+        fsh : FaceNormals [ vk: vk ]
+        fsh.n_faces = nf
+        fp : Pipeline [ vk: vk, w: w, name: 'face-normals', s: fsh,
+            default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'npts': pts, 'fstarts': fs,
+                'fsizes': fz, 'corners': cn, 'fnrm': fnrm ] ]
+        fp.dispatch_x = 64
+        fp.dispatch_y = ((nf + 1023) / 1024 + 15) / 16
+        psh : PointNormals [ vk: vk ]
+        psh.n_points = nv
+        pp : Pipeline [ vk: vk, w: w, name: 'point-normals', s: psh,
+            default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'pfnrm': fnrm, 'pstarts': ps,
+                'pfaces': pf, 'pnrm': nrm ] ]
+        pp.dispatch_x = 64
+        pp.dispatch_y = ((nv + 1023) / 1024 + 15) / 16
+        passes.push[ fp ]
+        passes.push[ pp ]
+
+    # a draw's vertices of this object: its own buffer swapped in,
+    # written from the points through the place each run
+    func add_target [ gp: Gpu, verts: vec i32, first: i32, n: i32,
+                      y_up: bool ]
+        # another draw of this part already has its vertices
+        for [ t: VertTarget ] in targets
+            if [ t.first == first && t.shade.n_verts == n
+                 && t.y_up == y_up
+                 && t.gp.vertex_size == gp.vertex_size ]
+                gp.use_vertex[ t.buf ]
+                return
+        bytes : i64 [ i64[ gp.vertex_size ] * i64[ n ] ]
+        # in GPU memory: the GPU writes it every move
+        buf : device_buf[ vk, bytes, gp.vertex_data, true ]
+        part : vec i32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            part[ i ] = verts[ first + i ]
+        vm : i32_buf[ vk, part ]
+        places : host_buf[ vk, 48 ]
+        sh : ScatterVerts [ vk: vk ]
+        sh.n_verts = n
+        sh.y_up    = (y_up) ? 1 : 0
+        pipe : Pipeline [ vk: vk, w: w, name: 'scatter', s: sh,
+            default_model: mat4f.identity[],
+            samplers: map Au[string] [ 'spts': chain.points[],
+                'snrm': nrm, 'vmap': vm, 'place': places,
+                'vbuf': buf ] ]
+        pipe.dispatch_x = 64
+        pipe.dispatch_y = ((n + 1023) / 1024 + 15) / 16
+        gp.use_vertex[ buf ]
+        targets.push[ VertTarget [ gp: gp, buf: buf, vmap: vm,
+            places: places, shade: sh, pipe: pipe, first: first,
+            y_up: y_up ] ]
+
+    # a cage move: the points, normals and every draw's vertices,
+    # recorded together and waited for
+    func run [ cage: vec f32, place: vec f32 ]
+        # begin waits for the last run: its cage is free to write
+        cmd.begin
+        chain.put_cage[ cage ]
+        for [ t: VertTarget ] in targets
+            memcpy[ t.places.data, @place[ 0 ], 48 ]
+        rec : cmd.buffer[]
+        chain.record[ rec ]
+        for [ p: Pipeline ] in passes
+            p.dispatch[ rec ]
+            compute_barrier[ rec ]
+        for [ t: VertTarget ] in targets
+            t.pipe.dispatch[ rec ]
+        compute_barrier[ rec ]
+        # the draws on this queue read the vertices after it: the
+        # barrier orders them, no wait here
+        cmd.submit
+
+    # the normals, read back (tests)
+    func normals [] -> vec f32
+        cmd.finish[]
+        n : i32 [ shape.verts[] * 3 ]
+        q : vec f32 [ n ]
+        memcpy[ @q[ 0 ], nrm.data, i64[ n ] * 4 ]
+        return q
+
+    func dealloc []
+        for [ b: Buffer ] in bufs
+            vk.defer_buffer[ b ]
+        if [ fnrm ] vk.defer_buffer[ fnrm ]
+        if [ nrm ] vk.defer_buffer[ nrm ]
+        if [ targets ]
+            for [ t: VertTarget ] in targets
+                vk.defer_buffer[ t.vmap ]
+                vk.defer_buffer[ t.places ]

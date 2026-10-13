@@ -859,13 +859,13 @@ at play"). Decided:
 - A project is a folder: what it uses is copied in or
   symlinked; nothing points outside it.
 - The design is .agi (inherently customizable; .blend is not).
-  Aeon loads silver modules: their classes are the node types.
-- Everything is nodes, wired by name (`in: cage`), in three
-  layers: geometry (mesh, mirror, array, subdivision ...),
-  material, and render. Modifiers stay settings, never applied.
+  Aeon loads silver modules: their classes are what it edits.
+- Not a node editor (Kalen, Oct 13): no wired boxes for
+  modifiers, materials or passes. Modifiers stay settings,
+  never applied; materials are an object's slots.
 - The render graph is trinity's real pipeline (Render, Model,
   Pipeline, passes): shown live (picture, size, gpu time per
-  node) and built there too; a wire or number edit rebuilds the
+  pass) and built there too; a number edit rebuilds the
   touched Renders, no compile. Shaders and pass types stay
   silver classes; the .agi is the wiring.
 - Raw shape lives in binary .mesh files (the cage only).
@@ -1016,12 +1016,12 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     view through HM.nav) walks it; nav_state lights orbiter's
     arrows. Seen hidden: flower, outside; ctrl+left lit flower,
     ctrl+right outside again. Orbiter's arrows not driven.
-    Moving is blender's grab (Kalen: a click and drag moves
+    Moving is a grab (Kalen: a click and drag moves
     nothing; G does, for the object and for points): the left
     button only chooses (an object, or a point in the cage; shift
     adds), the right or middle button's drag turns the view
     (Kalen: orbit on mouse 2 / 3), ctrl/cmd + any drag or shift +
-    middle drag (blender's) moves the camera (seen: 100 px moved
+    middle drag moves the camera (seen: 100 px moved
     the model 47.6 px, eased). Seen hidden: a left drag changed no pixel, a right
     and a middle drag each turned the view (~49,800 pixels). G
     grabs the selection (the chosen object's place, or the picked
@@ -1033,7 +1033,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     moved flower (0.0759, -0.1109, 0 saved by ctrl+s); G, a move
     and a right click, or escape, left it there; in the cage, G,
     a move and a click changed the mesh on save.
-    G, R and S (Kalen: as blender's, x y z with numbers, esc
+    G, R and S (Kalen: x y z with numbers, esc
     cancels): move, turn (degrees) and size, of the chosen
     object (at, turn, size) or the picked points about their
     middle. Each frame sets the result from the state at the
@@ -1148,20 +1148,419 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     design's axes), clock and hover, and draws the outs. The
     hand-built av, volume, mask and heat Renders, the gltf and
     the spoke/rim canvases are gone. Seen hidden: the wizard's
-    avatar drawn from the design. Not seen: orbiter's corner and
-    exchange avatars. A running orbiter needs a relaunch.
+    avatar drawn from the design; then (own HOME and state, so
+    no session touched) orbiter's exchange avatar (ctrl+shift+S,
+    turning live) and corner avatar (ctrl+`, listening rim). A
+    running orbiter needs a relaunch.
+    Environment: OrbiterAvatar's body was forest, gamma 1.88 (the
+    base Avatar's night, 2.2 was never orbiter's); the graph had
+    night. Now forest + 1.88, forest.exr copied in (Kalen: try
+    it). This was D2's colour difference. Seen side by side.
+    The Aura (the halo) has no environment input: its env_id
+    'night' only loaded a file nothing read. Removed, with
+    night.exr; flower888 is 2.64 MB. Picture unchanged.
+    top_ring removed (no draw named it; orbiter's gltf had none):
+    its object block, meshes/top_ring.mesh and its only-used
+    material plasma.agi; 2.43 MB.
+    The model is a module of its own (Kalen: a peer, in silver's
+    root): /src/silver/fmodel (fmodel.agi: the objects, nodes,
+    materials named; meshes/, materials/). aeon/flower888's
+    flower888.agi is `model: 'fmodel'` then the render: block;
+    textures/ and images/ stay with it. Design.module_of finds a
+    named module upward from the design's folder (the nearest
+    <name>/<name>.agi); Design.base[] is the folder object files
+    resolve against (cages, materials, cage saves). Aeon opens
+    either folder: `silver aeon fmodel` is the model alone with
+    the default lit pass. Edits go where they live: object places
+    and node values into fmodel.agi, pass and draw values into
+    flower888.agi; both folders watched. blend.py writes one
+    module folder (objects in <name>.agi), as at first. A design
+    with its objects in its own file still loads (aeon/tests).
+    Seen hidden: size saved into fmodel.agi only, fmodel opened
+    alone, the avatar through it. `silver --clean --build avatar`
+    rebuilt its imports too (img gltf tls devices trinity).
+    core.png removed (Kalen: no honeycomb shows): the Core shader
+    read it only in the pool, as 0.85..0.95 brightness over
+    colours above 1 (clipped), at mip 2..4; read sharp, no pool
+    pixel moved over 2/255. The shader has no color input now
+    (the glass's uv bend went with it; its perlin light stays),
+    alpha 1; texture/mip_levels gone from the agi and both Core
+    members; aeon/flower888/textures/ and avatar/textures/core.png
+    deleted. The pool is up to 43/255 brighter where it was not
+    clipped (seen side by side in the exchange avatar).
+    The beam (Kalen: no orange flame, we use the beam): the Aura
+    drew one jet in two looks by flame_style (0 the orange flame,
+    1 the beam; orbiter always 1, aeon got 0). flame_style and the
+    orange look are gone (every mix taken at its beam side; the
+    flame's dead colour and falloff removed). Renamed (Kalen: so
+    we know it changed): flame -> beam (the strength, 0 off),
+    flame_w -> beam_w, flame_cur -> beam_cur, comments; the
+    graph's aura setting is `beam: '0.0'`. trinity's
+    ExchangeState.av_flame kept. In aeon, beam 1 on the aura
+    draw shows it. From the side its base glow shows faintly
+    under the hexagon (the volume has no body depth below).
+    Beam 1 swirls as beam 4 did (Kalen: the plasma twirling in on
+    the metal, without a huge column): the drain's density 6 ->
+    24 x beam, and the beam's glow over its base (bm_bk) x4; the
+    column's core is unchanged. Seen from above, beam 4 (old) vs
+    beam 1 (new): the same pink and blue clouds over the petals.
+    The donut (the Aura's torus on the rim, under the halo):
+    Aura.donut_reach (default 1) stretches the tube outward only,
+    the hole kept (Kalen: wider, not a smaller hole); the graph's
+    aura has donut_reach: '1.0' (2 aliased where it meets the
+    body, Kalen). Seen from above, 1 vs 2.
+    Its cut behind the metal is soft (Kalen: at reach 2 the edge
+    over the body was hard): a sample fades out over 0.06 world
+    units behind the depth, averaged over 9 taps 0.012 apart on
+    screen (the ledge's outline had stepped at the volume's low
+    res). Seen from above at reach 2: no step left.
+    Heat haze held in place (Kalen: it moved as the view turned,
+    small at times, under the model at others): its sizes came
+    from an arm along x projected (gone as x turned to the eye);
+    now from the distance alone. From the side the pool's spot on
+    screen is the front rim's: the heat draw reads av.depth
+    (height: 'av.depth' in the graph) and fades where metal is
+    0.2-0.4 nearer than the pool. Seen side and top (a debug
+    paint, removed): only the visible throat floor.
+    Then (Kalen: shift-move put the blur in the wrong place): the
+    heat flipped y (the old hand-built passes' rows), so a pan
+    mirrored it; the stage's rows follow clip space (fl 0.5,
+    0.5). And -y is up in its frame: its source (-0.05) and pool
+    (-0.32) sat in the air over the rim, right only top-down.
+    Both now on the core's dome top (0.47; core.mesh z -0.474),
+    radii 0.25 / 0.205 (the same size top-down, eye ~4.2 away),
+    faded where the depth is 0.1-0.25 off the pool's either way.
+    Seen with a debug paint (removed): on the dome only, side,
+    top and panned.
+    Silver: `x : Au.parse_agi[ .. ]` is a plain Au; a two-name
+    for over it failed "expected member, found [empty]" at 0:0
+    (no line). Read through a func returning map Au [ string ].
+    No argument (Kalen): aeon reopens the last project opened
+    (`intern [ StatePersist ] last_project`, ~/.local/state/aeon/
+    persist.agi, saved at each open; a folder that is gone is
+    skipped); never opened: aeon/flower888. A relative folder is
+    taken from where aeon was started. Seen hidden (own HOME).
     Made once (Kalen): each object's nodes run and its parts
     fill once per design (made_of, Design.made, its own
     GltfBuffer); every draw and stage shares it. An edit forgets
     the object (Stage.refresh, a node's value). aeon's two
     stages built in 2196 + 2078 ms (flower made 12 times), now
     1118 + 433 ms (once). Pictures differ only by the clock.
-Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI.
-The graph is all the nodes (each object's geometry chain and
-the render passes, wired) and sits across the very top, in place
-of the tabs: picking a node there chooses it. The chosen node's
-properties sit on the right side below it; the view fills the
-rest.
+Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI;
+the chosen thing's properties beside the view. Its own design,
+not another app's (Kalen, Oct 13: "we want to be different").
+D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
+    now") two items, in order:
+    a. Properties that stay true: fields refresh after G/R/S,
+       undo, save and outside edits; sliders for numbers and
+       colour pickers for colours; undo for every property edit.
+    a: BUILT, checked hidden (Oct 13): DragField in properties
+       (press and drag a number, shift a tenth as fast, a click
+       types; enter or escape leaves it); orbiter's f32 / i32
+       props without a control get it too. A list of 2-4 numbers
+       is a row a number ('at x'); true/false a check box (aeon
+       toggles it); colours ('...color') a ColorPick (saturation
+       square, hue bar, swatch, numbers; linear values, picked
+       in sRGB). An object's materials list under its nodes
+       (@name, a swatch): base_color, metallic, roughness, alpha,
+       emission colour and strength, kept once in Design.finish_of
+       (an edit remakes the objects using it, saved into
+       materials/<name>.agi). Every property edit undoes with
+       ctrl/cmd + z (one entry a run on one field). Fixed: a
+       mounted field never took a new value (trinity never copies
+       edit): LaunchPanel.reseed_text sets it unless the user is
+       in it. name_frac is LaunchPanel's last member: orbiter must
+       be rebuilt before its next launch (not built: his session).
+    b. STOPPED (Oct 13): a node graph was built (aeon/Graph.ag,
+       cards wired socket to socket) and dropped (Kalen: "i dont
+       wnat to go with nods in general"; modifiers wired as
+       boxes and materials as inputs are redundant and complex).
+       Kept: the stage's pass and draw switches, MeshNode.muted
+       (a step bypassed), Stage.reads_materials.
+    d. BUILT, seen hidden (Oct 13, Kalen: "the outliner must be
+       full left, view is middle and props is right"):
+       aeon/Outline.ag. Outliner (240 px, full height): objects,
+       each with its modifiers and material slots (a swatch);
+       render, each pass with its draws; a circle switches a row
+       (object shown, modifier bypassed, pass or draw off), a
+       click chooses it (again: lets go); the wheel scrolls.
+       PropsSide (340 px): the chosen object's place, then each
+       modifier as a section in stack order (with its switch),
+       then the chosen material slot's values; a pass's values,
+       then each draw's settings (with its switch). SceneEdit
+       holds the rows, apply, undo and the fields as last seen
+       (the graph's code, moved). Seen: a modifier's switch
+       (mirror off: 6,182 pixels), a slot's values, the wheel.
+       Solo (Kalen, Oct 13): a double-click on an object (its row
+       or in the scene) shows it alone, a temporary state: no eye
+       changes; a double-click on it again, any other choice, or
+       any switch ends it (Selection.solo; the view drops it when
+       the choice is no longer that object). Its row stays chosen
+       on a single click (a double-click's first click). Seen:
+       flower alone, back on the second double-click, ended by
+       choosing outside.
+       Render list out of the outliner (Kalen: render references
+       will change; not exposed as a list yet).
+       − (Kalen, Rule #12): a square rounded 4 px with a minus, at
+       a row's right end; on the hovered row with shift, on every
+       row with ctrl/cmd. Removes an object, or a step (not the
+       cage): the step that took its mesh takes its input (and the
+       object's out), held until ctrl/cmd + s (Edits.drops,
+       agi_drop deletes the block and the lines under it); ctrl/
+       cmd + z puts it back where it was. Seen: shift shows one,
+       cmd all; mirror removed (6,180 pixels), undone (9), saved
+       (its block gone, subdivision's input: cage) and reopened
+       the same. Not for material slots yet (faces would change
+       material). Fixed on the way: the step was freed when the
+       list dropped it, before its undo entry held it (SIGSEGV).
+       + (Kalen): on the objects heading a new object; on an
+       object a sub object, which is an object referencing
+       another .agi (as flower888 names fmodel), its objects
+       nested under it: one list. OPEN, awaiting his yes on the
+       reading (new object empty; the reference picked from the
+       modules beside the project).
+       The chosen object stays behind what is in front of it
+       (Kalen: the core showed in front of the body; to see it,
+       hide the others). Its highlight stage (focus) drew it alone
+       with no depth from the rest. Stage.occlude: each object
+       draw gets a depth-only copy (blend colour x0 + target x1,
+       its own shader: a draw is switched off by its shader's
+       states, and the shared one switched the copy off too) of
+       the shown objects other than the chosen, drawn first;
+       Stage.unseen keeps hidden ones out. design imports
+       <vulkan/vulkan.h> for the blend names. Seen: core inside
+       the well hidden; outside hidden, the core shows with the
+       separator still over its edge; flower behind the front
+       wall.
+       A solo hides the halo too (Kalen: soloing the core showed
+       it): the main stage takes objects_only while a solo is on,
+       so a screen draw with light of its own that reads no
+       pass's picture (the aura) is off. Seen: core alone, no
+       halo; double-clicked again, all back with the halo.
+       The left side is two sets (Kalen, Oct 13): objects, then
+       the design's materials (its materials folder, by name,
+       each with a swatch); no modifiers, cage or slots there
+       ("remove more of the old nodes from left side"; "we wont
+       select modifiers alone"). The right side has no tabs: an
+       object's place, then its modifiers area (a heading, each
+       modifier framed with its switch and its − on shift hover
+       or cmd; the cage is the shape, not listed); a material's
+       values. Seen: outside's mirror, array, subdivision framed
+       under place; ring's surface with its pickers. flower's
+       mesh has no material_index, so its 'top' slot is unused
+       (the import's; Kalen: likely a bad import).
+       Modifiers under each object on the left, a level in
+       (Kalen: "inside the object as a 2nd depth"); a click
+       chooses the object (never a modifier alone; "looking away
+       from the selected object is a huge anti pattern"); their
+       values stay in the object's modifier panel on the right.
+       Shift (hovered) or cmd (all): − removes, + copies the
+       modifier right after itself, no picker (Kalen: less
+       interface): the copy takes its mesh, what took its mesh
+       takes the copy's; a free name (mirror_b); held until a
+       save (Edits.adds, agi_insert_after writes the block after
+       its sibling's, values from Au.string_agi a level deeper);
+       ctrl/cmd + z takes it back. Seen: mirror_b after mirror,
+       the file right (input: mirror; subdivision's input:
+       mirror_b), reopened; undone.
+       Then (Kalen): no modifiers on the left after all (fewer
+       items: objects, then materials); + and − sit on each
+       modifier's heading in the right side's modifiers area,
+       shift over it or cmd for all; + copies it right after
+       Then (Kalen): no + per modifier; one + on the modifiers
+       heading, every button always shown (no shift/cmd here).
+       The heading shows for any chosen object (one without
+       modifiers too). + adds a subdivision at the end (levels 1;
+       the kind is Kalen's call, asked): it takes the last step's
+       mesh and becomes the object's out. Seen on core: + gave a
+       subdivision; saved, its block after the cage, out:
+       subdivision.
+       Then (Kalen): the + shows the kinds (mirror, subdivision,
+       array) instead of the modifiers, over their whole area; a
+       click adds that kind at the end; the + is an × meanwhile,
+       and it or escape goes back. The new one takes its kind's
+       defaults (initialize[]; an array's count 2; a mirror
+       starts across x). Seen on outside: the kinds in place of
+       the stack, then array_b (count 2) added at the end.
+    f. DONE (Oct 13, Kalen: 1-2 s lag on a subdivision level or
+       anything down the chain) measured: running flower's steps
+       11-20 ms; remaking both stages from nothing 738 + 842 ms.
+       Now: Object.kept holds each step's result (intern: never
+       written to the .agi); Design.forget_from[ object, step ]
+       drops that step's and the later ones', so a change runs
+       from the changed step down (flower 3 ms). Stage.remake
+       makes again only the models of the draws holding the
+       object, in the old ones' places (same shader, inputs,
+       blend; Render.models swapped, finish); passes and shaders
+       stay. The caller forgets once (each stage had forgotten it
+       again: made twice). A step's value, its switch, one added
+       or removed, a material's value use it; a full rebuild only
+       for pass values, a new size, an undone object removal.
+       Measured: 115-125 ms a change (the rest: new pipelines,
+       ~50 ms in each pass that draws the object). Seen: mirror
+       off 7,082 pixels, as before.
+    g. IN PROGRESS (Kalen, Oct 13: "the subdiv needs to use the
+       compute engine"; his answers: exact as now, the steps
+       after a subdivision on the GPU too, on every change). Plan:
+       the CPU makes only topology, per shape configuration
+       (levels, switches, steps added/removed): per level the face
+       / edge / vertex point tables (corners, ends, sharpness,
+       boundary rules, the limit's weights) from the rules in
+       design/Poly.ag; the GPU runs the positions: a compute pass
+       a level, the limit, mirror and array copies (matrices,
+       merge maps made with the topology), then normals, written
+       into the draws' vertex buffers (no read back). A cage move
+       runs the passes only. Each kernel checked against the CPU
+       result; t_flower_matches_blender must still pass.
+       Step 1 DONE: design/Stencil.ag compiles each step into a
+       table (point i = sum of weight x matrix x input point j):
+       subdiv_stencil, limit_stencil (subdivide_once / limit_of
+       rule for rule), mirror_stencil, array_stencil (array_
+       copies' merges, the last placed point wins); MeshNode.steps,
+       Object.stencils (cage to out). aeon t_stencils_match: the
+       tables run on each cage give evaluate's points, worst
+       2.4e-7 (flower 6 steps, outside 5, separator 2).
+       Found on the way, fixed in silver.c (call args): a number
+       pushed onto a vec f32 (push[ 1.0 ]) stored 0: the arg was
+       read against push's Au parameter, boxed as a double, and
+       the vector copied 4 of its bytes. A vector receiver's
+       number element type is now the arg's expected type (not
+       for pointer elements: vec cstr). features
+       t_vec_f32_push_literal; 250/251 (t_codegen_resource as
+       before). trinity, design rebuilt with --clean.
+       Step 2 DONE: design/Compute.ag, StencilCompute (one point an
+       invocation: the sum of its terms; 1024 a row) and ChainRun
+       (an object's tables as buffers and passes, recorded in one
+       command with a barrier a step; run uploads the cage). aeon
+       t_gpu_stencils: GPU points = CPU, worst 2.4e-7; a run (cage
+       up, every step, waited): flower 2.1-3.3 ms, outside 0.6,
+       separator 0.07. trinity Command.buffer[] (a handle) for
+       passes recorded by another module.
+       Fixed on the way (trinity, the expect runner): an app test
+       taking a vk_context crashed at its end: the runner dropped
+       the vk_context while the test's objects were still in the
+       pool (aether emit_expect_tests: auto_mark before, auto_free_
+       to after, then the args drop); vk_context.dealloc walked a
+       null fence_pool, destroyed the allocator with buffers still
+       on its deferred list, and freed its own commands after the
+       device (now: defer_flush, commands let go, then the rest).
+       A Buffer frees nothing itself: ChainRun.dealloc hands each
+       of its buffers to vk.defer_buffer. trinity and webgfx tests
+       exit 0; aeon 3/3.
+       Step 3 DONE: FaceNormals (newell's sum a face) and
+       PointNormals (a point's faces summed, unit), ScatterVerts (a
+       draw's vertices: position and normal through the place,
+       axes swapped for a y-up pass, into its 12-float vertex),
+       ObjectGpu (steps, normals and a scatter a draw holding the
+       object, one submission). trinity Gpu.use_vertex[ b ]: a
+       buffer made elsewhere (storage + vertex) takes the draw's
+       place. Stage.gpu_of[ o ] makes it the first time the object
+       moves (none when a draw's vertex is not 48 bytes: the CPU
+       refill stays); refresh uploads the cage and place and runs
+       it; remake drops it. Tables, steps' points and normals in
+       GPU memory (device local), the cage and place host-visible.
+       aeon t_gpu_stencils: normals vs point_normals worst 4.9e-4
+       (float sums on tiny faces). Measured: a cage move 0.53 ms a
+       stage (8.8 ms with host-visible buffers; the CPU refill was
+       7 ms). The GPU keeps the merges it was made with (mirror
+       and array join points by distance): a move that broke a
+       join showed smooth on the GPU, spiked on the CPU (as
+       Blender). The move's end (click, enter), escape and an
+       undone cage edit remake the object once on the CPU
+       (settle_cage), so the settled picture is the file's: 7
+       pixels off the reopened file's.
+       OPEN: stage and focus each run the whole chain (shared
+       points would halve it); a topology change (levels, steps)
+       still makes the models on the CPU (~120 ms).
+    h. DONE (Oct 13, Kalen: flower at 5 levels and 24 copies took
+       ~15 s, "blender 2 or 3"; "optimize the concat to our vector
+       types ... quicker inline code for primitives"). Measured on
+       the test copy (1,417,752 points): subdivision 58 ms, array
+       1,099, GPU tables 3,589, filling the draw's data 6,215. Every
+       one is push loops, and a push on a vec of numbers boxed its
+       value as a new object (an allocation a value). aether
+       e_fn_call: a push onto a vec of numbers is inline now (the
+       value at origin[count] while count < alloc, else
+       vector_push from an entry-block slot to grow); other vector
+       methods taking an element get the slot's address, never a
+       box. Now: subdivision 14 ms, array 167, tables 388, filling
+       572 (about 1.1 s, from 11). features 250/251, trinity,
+       webgfx exit 0, aeon 3/3; trinity, properties, design,
+       avatar, webgfx built --clean (running apps need a restart).
+    i. DONE (Oct 13, Kalen: editing a cage point on flower at 5
+       levels x 24 is ~10x slower than blender's ~5 fps). Measured
+       in a hidden run (5.6 M vertices a draw): one stage's move
+       waited 1.19 s on the GPU, the other 4.4 ms. Each draw kept
+       its own host-visible vertex buffer (270 MB); the first ones
+       fit in CPU-writable GPU memory, the rest fell to system
+       memory, 235 ms a scatter. Now (design/Compute.ag):
+       device_buf (GPU-only memory, filled once by a staging copy:
+       vertex buffers and tables); draws of one part with the same
+       axes share one vertex buffer and one scatter (add_target;
+       6 + 3 buffers -> 1 + 1, ~2.4 GB -> 0.5 GB); run no longer
+       waits (begin waits the last run, the draws on the same
+       queue follow its barrier; normals[] waits for tests). A
+       move: 40 us of CPU, the frame ~21 ms (11.7 ms the 3D view)
+       hidden; drag 28 fps by the stats line (was under 1).
+       aeon 3/3; a finished move vs the reopened file: 13 pixels.
+       OPEN: the first move builds the GPU data (~2.6 s at 5
+       levels), and the release remakes on the CPU (~1.2 s): a
+       pause at each end; stage and focus each run the chain.
+    j. DONE (Oct 13, Kalen: "the xyz should be a 3 part cell";
+       "vec3f would do that") a prop of type vec2f / vec3f /
+       vec4f is one row, its cell split into that many dragged
+       numbers with 1 px dividers (properties: LaunchPanel vec_n,
+       parts lp_<name>_<i>, value_of joins them "x, y, z",
+       DragField.part: no name gap). aeon gives a list of 2-4
+       numbers as vec<n>f (PropRow.part/parts and 'at x' rows
+       gone). Seen hidden: at, turn, size one row each; a drag
+       on at's middle part set y alone (0 -> 0.12).
+    k. DONE (Oct 13, Kalen: slow to START the edit and to START
+       the saving) measured at 5 levels: every move's refresh
+       forgot the object, so the first move re-ran the steps
+       (193 ms) and the tables (218 ms) in each stage; the release
+       re-ran them and refilled every vertex on the CPU (~1.2 s)
+       only so mirror and array re-decide their merges. Now: a
+       move marks the kept points old (Design.moved, Object.moved;
+       the next evaluate drops them) and the tables are kept per
+       shape (Object.chain, shared by both stages); the release
+       asks Object.joins_hold: each step that merges by distance
+       (MeshNode.reads_points: mirror or array with a merge) makes
+       its tables again from the moved points and compares them
+       (same_terms); the same, nothing is remade. Measured: first
+       move 389 + 344 ms (was ~2.6 s), release 0 ms (was ~1.2 s).
+       outside with a point pulled off its mirror plane: false
+       (remade). A saved move vs the reopened file: the shape
+       the same but a few pixels on a cage line. aeon 3/3.
+       OPEN: the rest of the start is each stage's own GPU set up
+       (~340 ms each); one ObjectGpu for both would halve it.
+    e. DONE (Kalen, Oct 13) edit mode shows the creases on the
+       cage's edges: each creased edge (the cage's sa/sb, read
+       from the .mesh's crease_edge) drawn over the cage lines,
+       2.5 px pink, its alpha 0.35 + 0.65 x crease (crease from
+       sharpness = 10 x crease squared). Seen on outside's cage
+       (tab): its creased ring edges pink. flower's cage has no
+       creases (all 72 edges 0).
+    c. DONE (Oct 13) line quality in trinity (Kalen: "very
+       aliased"). Two causes in Canvas.paint and CanvasUI mode 6:
+       a path's distance field was half the canvas stretched over
+       its padded box (a 180 px line: 1.9 px a texel), and a
+       blend of coarse texels across a line's V never reached 0
+       (whole columns empty); and the stroke's coverage was
+       clamped sharp ("a 1px stroke fills its pixel solid"). Now
+       the box snaps to whole pixels and the field is a texel a
+       pixel (it grows to the canvas the first time a path needs
+       it, and stays grown on a resize; small-icon canvases keep
+       half size); a stroke's coverage is the pixel's share of the
+       band (a box filter, half a pixel by the pixel's size, not
+       the field's slope, which flattens at the line). trinity
+       t_line_aa: every column of a shallow 1 px line sums to one
+       pixel (258), split 150/108 where the true area is .59/.42;
+       a line on a pixel row fills that row alone. trinity and
+       webgfx tests exit 0. Seen in aeon's graph: smooth. Every
+       trinity app's path strokes change this way (borders on a
+       pixel row stay solid); a canvas that draws a path wider
+       than half itself holds a field 4x larger.
 D2. OPEN the colour match and the avatar's camera in the graph.
 D3. OPEN Aeon's edit commands for the agent; the exchange in Aeon.
 D4. OPEN clouds converted: its passes in an .agi, drivers for
@@ -1270,7 +1669,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    up ends 3 px from the pointer, all 24 petals change, the .mesh
    is written; ctrl+z gives back the original file byte for byte.
    Not driven: the axis keys, shift-add, the wheel.
-   Tab (Kalen): object mode / inner cage, as Blender's. Object
+   Tab (Kalen): object mode / inner cage. Object
    mode (the start): no cage; a press within 16 px of an object's
    cage point chooses it (the row lights it: DesignView.want, read
    by the app's render) and a drag moves the whole object (its

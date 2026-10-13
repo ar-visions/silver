@@ -3986,6 +3986,21 @@ AU_EXPORT enode aether_lambda_fcall(aether a, efunc mem, array user_args) {
 }
 
 // a method on a typed vector that returns Au returns its element type
+// the number element type of a vector receiver (args[0]), else null
+static Au_t call_vector_number(efunc fn, array args) {
+    if (!fn || !fn->target) return null;
+    enode t = (args && len(args)) ? (enode)instanceof(args->origin[0], enode) : null;
+    if (!t) t = (enode)fn->target;
+    Au_t  tau = t->autype ? au_arg_type((Au)t->autype) : null;
+    if (!tau || !au_is_vector(tau)) return null;
+    Au_t m = t->autype->meta.a ? t->autype->meta.a : (Au_t)t->meta_a;
+    if (!m && t->autype->member_type == AU_MEMBER_VAR && t->autype->src)
+        m = t->autype->src->meta.a;
+    if (!m || m->is_pointer || !(m->is_integral || m->is_realistic))
+        return null;
+    return m;
+}
+
 static Au_t call_elem_type(efunc fn, etype rtype, array args) {
     if (!fn || !fn->target || !rtype) return null;
     aether a   = au_active(fn->mod);
@@ -4030,6 +4045,61 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
     }
     // before the target is re-typed to the method's self parameter
     Au_t elem9 = call_elem_type(fn, u(etype, fn->autype->rtype), args);
+    // a vector of numbers copies an element's bytes from the value
+    // it is handed: a number goes as the address of a stack slot,
+    // never a boxed object made per call (a push a value was an
+    // allocation: millions of them filling a mesh)
+    Au_t vnum9 = call_vector_number(fn, args);
+    // a push onto a vector of numbers, inline: the value at
+    // origin[count] while there is room, else the call (it grows)
+    if (vnum9 && args && len(args) == 2 && !funcptr &&
+            strcmp(fn->autype->ident, "push") == 0) {
+        enode recv9 = (enode)instanceof(args->origin[0], enode);
+        enode val9  = (enode)instanceof(args->origin[1], enode);
+        etype ve9   = val9 ? canonical(val9) : null;
+        if (recv9 && ve9 && au_arg_type((Au)ve9->autype) == vnum9) {
+            enode obj9  = recv9->loaded ? recv9 : enode_value(recv9, true);
+            enode vv9   = enode_value(val9, true);
+            LLVMTypeRef i32t = LLVMInt32TypeInContext(a->module_ctx);
+            LLVMTypeRef pt   = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMTypeRef et9  = lltype(ve9);
+            LLVMValueRef slot9 = entry_alloca(a, et9, "push_value");
+            LLVMBuildStore(B, _llvalue((enode)vv9), slot9);
+            enode cnt_p = etype_access((etype)obj9, string("count"));
+            enode alc_p = etype_access((etype)obj9, string("alloc"));
+            enode org_p = etype_access((etype)obj9, string("origin"));
+            LLVMValueRef cnt = LLVMBuildLoad2(B, i32t, _llvalue((enode)cnt_p), "count");
+            LLVMValueRef alc = LLVMBuildLoad2(B, i32t, _llvalue((enode)alc_p), "alloc");
+            LLVMValueRef room = LLVMBuildICmp(B, LLVMIntSLT, cnt, alc, "room");
+            LLVMValueRef fnv9 = LLVMGetBasicBlockParent(LLVMGetInsertBlock(B));
+            LLVMBasicBlockRef fast = LLVMAppendBasicBlockInContext(a->module_ctx, fnv9, "push.fast");
+            LLVMBasicBlockRef slow = LLVMAppendBasicBlockInContext(a->module_ctx, fnv9, "push.grow");
+            LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(a->module_ctx, fnv9, "push.done");
+            LLVMBuildCondBr(B, room, fast, slow);
+            LLVMPositionBuilderAtEnd(B, fast);
+            LLVMValueRef org = LLVMBuildLoad2(B, pt, _llvalue((enode)org_p), "origin");
+            LLVMValueRef at  = LLVMBuildGEP2(B, et9, org, &cnt, 1, "at");
+            LLVMBuildStore(B, _llvalue((enode)vv9), at);
+            LLVMBuildStore(B, LLVMBuildAdd(B, cnt, LLVMConstInt(i32t, 1, 0), ""),
+                _llvalue((enode)cnt_p));
+            LLVMBuildBr(B, done);
+            LLVMPositionBuilderAtEnd(B, slow);
+            LLVMValueRef vp_fn = LLVMGetNamedFunction(a->module_ref, "vector_push");
+            LLVMTypeRef  vp_ty = LLVMFunctionType(pt, (LLVMTypeRef[]){ pt, pt }, 2, 0);
+            if (!vp_fn) vp_fn = LLVMAddFunction(a->module_ref, "vector_push", vp_ty);
+            LLVMBuildCall2(B, vp_ty, vp_fn,
+                (LLVMValueRef[]){ _llvalue((enode)obj9), slot9 }, 2, "");
+            LLVMBuildBr(B, done);
+            LLVMPositionBuilderAtEnd(B, done);
+            // the pushed value comes back as the element, as the
+            // call's result does
+            etype pe9 = u(etype, vnum9);
+            if (!pe9) pe9 = etype_prep(a, vnum9);
+            enode r9 = value(pe9, LLVMBuildLoad2(B, lltype(pe9), slot9, "elem"));
+            r9->from_call = true;
+            return r9;
+        }
+    }
 
     // set debug location for call site
     debug_emit(a);
@@ -4254,7 +4324,17 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                     // an anonymous C pointer type (void*) may have no etype yet
                     if (!arg_t && !arg_mem->is_explicit_ref && au_arg_type((Au)arg_mem))
                         arg_t = etype_prep(a, au_arg_type((Au)arg_mem));
-                    conv = arg_mem->is_explicit_ref ?
+                    etype cn9 = (vnum9 && n) ? canonical(n) : null;
+                    if (cn9 && !arg_mem->is_explicit_ref &&
+                            au_arg_type((Au)arg_mem) == typeid(Au) &&
+                            au_arg_type((Au)cn9->autype) == vnum9) {
+                        enode nv9 = enode_value(n, true);
+                        LLVMValueRef slot9 = entry_alloca(a,
+                            lltype(cn9), "elem_slot");
+                        LLVMBuildStore(B, _llvalue((enode)nv9), slot9);
+                        conv = value(arg_t, slot9);
+                    } else
+                        conv = arg_mem->is_explicit_ref ?
                         (enode)instanceof(arg_value, enode) :
                         e_create(a, arg_t, arg_value, false);
                     // a vector handed to a @T param passes its origin
@@ -10452,6 +10532,17 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
             enode inst = e_init(a, e_alloc(a, at, false), null, null, null);
             push(vals, (Au)inst);
         }
+        // the test's own objects are freed before its arguments are
+        // dropped: a vk_context dropped first finds its buffers alive
+        LLVMTypeRef  i32m_t   = LLVMInt32TypeInContext(a->module_ctx);
+        LLVMTypeRef  mark_ty  = LLVMFunctionType(i32m_t, null, 0, 0);
+        LLVMValueRef mark_fn  = LLVMGetNamedFunction(a->module_ref, "auto_mark");
+        if (!mark_fn) mark_fn = LLVMAddFunction(a->module_ref, "auto_mark", mark_ty);
+        LLVMTypeRef  freet_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx),
+                                                 &i32m_t, 1, 0);
+        LLVMValueRef freet_fn = LLVMGetNamedFunction(a->module_ref, "auto_free_to");
+        if (!freet_fn) freet_fn = LLVMAddFunction(a->module_ref, "auto_free_to", freet_ty);
+        LLVMValueRef pool_mark = LLVMBuildCall2(B, mark_ty, mark_fn, null, 0, "pool_mark");
         enode r = e_fn_call(a, tf, len(vals) ? vals : null, false, false);
         // a failure is counted; the tests after it still run
         LLVMValueRef ok = _llvalue((enode)e_create(a, etypeid(bool), (Au)r, false));
@@ -10472,6 +10563,7 @@ static void emit_expect_tests(aether a, Au_t module_base, efunc f) {
             snprintf(buf, sizeof(buf), "[%s] expect: %s passed", module_base->ident, tname);
             emit_expect_puts(a, buf);
         }
+        LLVMBuildCall2(B, freet_ty, freet_fn, &pool_mark, 1, "");
         if (fn_drop)
             each(vals, Au, v)
                 e_fn_call(a, fn_drop, a((enode)v), false, false);

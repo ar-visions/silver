@@ -10956,6 +10956,24 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
         offset = 1;
     }
 
+    // a vector's element parameter is a generic Au: a value read
+    // against it would box as its own type (1.0 as a double, of
+    // which a vec f32 copies 4 bytes); it is read as the element
+    Au_t vel = null;
+    if (push_target && push_target->autype) {
+        Au_t tau = au_arg_type((Au)push_target->autype);
+        if (tau && au_is_vector(tau)) {
+            vel = push_target->autype->meta.a ? push_target->autype->meta.a
+                                              : (Au_t)push_target->meta_a;
+            if (!vel && push_target->autype->member_type == AU_MEMBER_VAR
+                    && push_target->autype->src)
+                vel = push_target->autype->src->meta.a;
+        }
+    }
+    // numbers only: a pointer element (vec cstr) boxes as it is
+    if (vel && (vel->is_pointer ||
+                !(vel->is_integral || vel->is_realistic))) vel = null;
+
     bool* matched = calloc(ln, sizeof(bool));
     if (offset > 0) matched[0] = true;
     bool  comma_mode = (ln == 1 + (fmdl->is_imethod || fmdl->is_smethod)) || !read_br;
@@ -10997,6 +11015,8 @@ static enode parse_func_call(silver a, efunc f, bool poly) { sequencer
 
         bool   ref_arg = arg_decl && arg_decl->is_explicit_ref;
         etype  expr_typ = ref_arg ? null : (comma_mode ? typ : null);
+        if (vel && src == typeid(Au) && !ref_arg)
+            expr_typ = etype_prep((aether)a, vel);
         enode  expr = parse_expression(a, expr_typ, !ref_arg, !ref_arg);
         verify(expr, "invalid expression");
 

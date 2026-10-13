@@ -362,6 +362,257 @@ ArgsField LaunchField
         name.area = Region [ 'l0.4 t0 w{nw} b0' ]
         face.area = Region [ 'l{vx} t0 r0.3 b0' ]
 
+# a number as a field shows it: up to 3 decimals, no trailing zeros
+func num_text [ v: f32, whole: bool ] -> string
+    if [ whole ] return '{v.0f}'
+    t : '{v.3f}'
+    while [ t.ends_with[ '0' ] ]
+        t = t.mid[ 0, t.count - 1 ]
+    if [ t.ends_with[ '.' ] ] t = t.mid[ 0, t.count - 1 ]
+    if [ t.compare[ '-0' ] == 0 ] t = '0'
+    return t
+
+# a number: a press and a drag left or right changes it (shift:
+# a tenth as fast); a click with no drag types it as text
+LaunchField DragField
+    public  whole   : bool
+    # one part of a vector's cell: no gap for a name
+    public  part    : bool
+    mutable held    : bool
+    mutable dragged : bool
+    mutable press_x : f32
+    mutable base    : f32
+    mutable rate    : f32
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff0a
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+
+    func init []
+        nw : f32 [ (part) ? 0.0 : launch_name_w[ label ] ]
+        vx : f32 [ (part) ? 0.25 : 0.4 + nw ]
+        name.area = Region [ 'l0.4 t0 w{nw} b0' ]
+        face.area = Region [ 'l{vx} t0 r0.15 b0' ]
+
+    public func on_press [ ev: Event ]
+        # typing: the caret is the text field's own
+        if [ focused || ev.mouse.button != 0 ] return
+        held    = true
+        dragged = false
+        press_x = ev.mouse.pos.x
+        base    = (edit) ? f32[ edit.real_value[] ] : 0.0
+        # a step a pixel by the value's size, never under 0.002
+        rate    = abs[ base ] * 0.004
+        if [ rate < 0.002 ] rate = 0.002
+        if [ whole ] rate = 0.1
+        ux.set_capture[ a ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    public func on_move [ ev: Event ]
+        if [ !held ] return
+        dx : f32 [ ev.mouse.pos.x - press_x ]
+        if [ !dragged && abs[ dx ] < 3.0 ] return
+        dragged = true
+        fine : f32 [ (ux && ux.shift) ? 0.1 : 1.0 ]
+        v : f32 [ base + dx * rate * fine ]
+        if [ whole ] v = round[ v ]
+        edit       = num_text[ v, whole ]
+        sel_col    = edit.count
+        anchor_col = edit.count
+        pristine   = false
+        ev.no_propagation = true
+
+    # enter or escape: done typing (the value already applied)
+    public func on_key [ ev: Event ]
+        k : i32 [ ev.key.unicode ]
+        if [ ev.key.state && (k == 257 || k == 335 || k == 256) ]
+            ux.release_focus[ a ]
+
+    public func on_release [ ev: Event ]
+        if [ !held ] return
+        held = false
+        ux.release_capture[ a ]
+        # no drag: a click, so the text takes the typing
+        if [ !dragged && edit ]
+            ux.set_focus[ a ]
+            sel_col    = edit.count
+            anchor_col = 0
+            pristine   = false
+
+# a colour as 0..1 numbers, linear as materials keep them: a
+# saturation and brightness square, a hue bar, the swatch and
+# the numbers; picked in display (sRGB) space
+element ColorPick
+    mutable hue     : f32
+    mutable sat     : f32
+    mutable val     : f32
+    mutable alpha   : f32 [ 1.0 ]
+    # the text the hue, saturation and value were read from
+    mutable read_of : string
+    # 1 the square held, 2 the hue bar
+    mutable held    : i32
+
+    func box [] -> f32
+        return bounds.h - 8.0
+
+    # the edit's numbers into hue, saturation and value
+    func sync []
+        if [ !edit || (read_of && read_of.compare[ edit ] == 0) ]
+            return
+        read_of = edit
+        nums : vec f32 []
+        for [ w: string ] in edit.split[ ',' ]
+            t : w.trim[]
+            if [ t.count > 0 ] nums.push[ f32[ t.real_value[] ] ]
+        if [ nums.count < 3 ] return
+        r : f32 [ to_srgb[ nums[ 0 ] ] ]
+        g : f32 [ to_srgb[ nums[ 1 ] ] ]
+        b : f32 [ to_srgb[ nums[ 2 ] ] ]
+        alpha = (nums.count > 3) ? nums[ 3 ] : 1.0
+        hi : f32 [ max[ r, max[ g, b ] ] ]
+        lo : f32 [ min[ r, min[ g, b ] ] ]
+        val = hi
+        sat = (hi > 0.0) ? (hi - lo) / hi : 0.0
+        if [ hi - lo <= 0.00001 ] return
+        h : f32 [ 0.0 ]
+        if [ hi == r ] h = (g - b) / (hi - lo)
+        el [ hi == g ] h = 2.0 + (b - r) / (hi - lo)
+        el h = 4.0 + (r - g) / (hi - lo)
+        h = h / 6.0
+        if [ h < 0.0 ] h += 1.0
+        hue = h
+
+    func to_srgb [ c: f32 ] -> f32
+        return pow[ clamp[ c, 0.0, 1.0 ], 1.0 / 2.2 ]
+
+    # hue, saturation and value as display red, green, blue
+    func shown [ h: f32, sv: f32, vv: f32 ] -> rgba
+        k : f32 [ (h - floor[ h ]) * 6.0 ]
+        r : f32 [ clamp[ abs[ k - 3.0 ] - 1.0, 0.0, 1.0 ] ]
+        g : f32 [ clamp[ 2.0 - abs[ k - 2.0 ], 0.0, 1.0 ] ]
+        b : f32 [ clamp[ 2.0 - abs[ k - 4.0 ], 0.0, 1.0 ] ]
+        return rgba [ r: vv * (1.0 - sv + sv * r),
+                      g: vv * (1.0 - sv + sv * g),
+                      b: vv * (1.0 - sv + sv * b), a: 1.0 ]
+
+    # the picked colour written back as linear numbers
+    func put []
+        c : shown[ hue, sat, val ]
+        r : f32 [ pow[ c.r, 2.2 ] ]
+        g : f32 [ pow[ c.g, 2.2 ] ]
+        b : f32 [ pow[ c.b, 2.2 ] ]
+        edit = '{num_text[ r, false ]}, {num_text[ g, false ]}, {num_text[ b, false ]}, {num_text[ alpha, false ]}'
+        read_of  = edit
+        pristine = false
+
+    func pick [ x: f32, y: f32 ]
+        bx : f32 [ box[] ]
+        if [ held == 1 ]
+            sat = clamp[ (x - 4.0) / bx, 0.0, 1.0 ]
+            val = clamp[ 1.0 - (y - 4.0) / bx, 0.0, 1.0 ]
+        if [ held == 2 ]
+            hue = clamp[ (y - 4.0) / bx, 0.0, 0.999 ]
+        put[]
+
+    public func on_press [ ev: Event ]
+        if [ ev.mouse.button != 0 ] return
+        sync[]
+        bx : f32 [ box[] ]
+        x : f32 [ ev.mouse.pos.x ]
+        held = 0
+        if [ x < 4.0 + bx ] held = 1
+        el [ x < 4.0 + bx + 22.0 ] held = 2
+        if [ held == 0 ] return
+        ux.set_capture[ a ]
+        pick[ x, ev.mouse.pos.y ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    public func on_move [ ev: Event ]
+        if [ held == 0 ] return
+        pick[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        ev.no_propagation = true
+
+    public func on_release [ ev: Event ]
+        if [ held == 0 ] return
+        held = 0
+        ux.release_capture[ a ]
+
+    func packed [ c: rgba ] -> u32
+        r : u32 [ u32[ clamp[ c.r, 0.0, 1.0 ] * 255.0 ] ]
+        g : u32 [ u32[ clamp[ c.g, 0.0, 1.0 ] * 255.0 ] ]
+        b : u32 [ u32[ clamp[ c.b, 0.0, 1.0 ] * 255.0 ] ]
+        return 0xff000000 | (r << 16) | (g << 8) | b
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || bounds.w <= 0.0 ]
+            return
+        sync[]
+        cv : Canvas [ w.screen ]
+        bx : f32 [ box[] ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        # the square: the hue, white from the left, black from below
+        cv.fill_color[ shown[ hue, 1.0, 1.0 ] ]
+        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.paint[]
+        wg : linear_gradient[ 4.0, 0.0, 4.0 + bx, 0.0 ]
+        wg.add_stop[ 0.0, 0xffffffff ]
+        wg.add_stop[ 1.0, 0x00ffffff ]
+        cv.set_fill_gradient[ wg ]
+        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.paint[]
+        bg : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        bg.add_stop[ 0.0, 0x00000000 ]
+        bg.add_stop[ 1.0, 0xff000000 ]
+        cv.set_fill_gradient[ bg ]
+        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.paint[]
+        # the hue bar, top to bottom
+        hx : f32 [ 4.0 + bx + 6.0 ]
+        hg : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        for [ i: i32 0, i <= 6, i += 1 ]
+            t : f32 [ f32[ i ] / 6.0 ]
+            hg.add_stop[ t, packed[ shown[ t, 1.0, 1.0 ] ] ]
+        cv.set_fill_gradient[ hg ]
+        cv.rect_to[ hx, 4.0, 12.0, bx ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        # where the colour sits on each
+        cv.stroke_width[ 1.5 ]
+        cv.stroke_color[ rgba [ '#fff' ] ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        mx : f32 [ 4.0 + sat * bx ]
+        my : f32 [ 4.0 + (1.0 - val) * bx ]
+        cv.rounded_rect[ mx - 4.0, my - 4.0, 8.0, 8.0, 4.0, 4.0, 4.0,
+                         4.0 ]
+        cv.paint[]
+        cv.rect_to[ hx - 2.0, 4.0 + hue * bx - 1.5, 16.0, 3.0 ]
+        cv.paint[]
+        # the swatch and the numbers
+        sx : f32 [ hx + 20.0 ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ shown[ hue, sat, val ] ]
+        cv.rounded_rect[ sx, 4.0, 28.0, 20.0, 3.0, 3.0, 3.0, 3.0 ]
+        cv.paint[]
+        cv.font_size[ 13 ]
+        cv.fill_color[ '#fff9' ]
+        cv.draw_text[ (edit) ? edit : '',
+            rect [ x: sx, y: 28.0, w: bounds.w - sx, h: 20.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.paint[]
+        cv.restore[]
+
 # a '#rrggbb' hex edits as text; the color itself sits as a swatch at
 # the right
 ArgsField LaunchColor
@@ -484,6 +735,11 @@ element LaunchPanel
 
     public  fields     : LaunchProps
     mutable fields_src : string
+    # the name column's share of the width (last: orbiter's
+    # build reads the members before it where they were)
+    public  name_frac  : f32 [ 0.266 ]
+    # a vector cell's dividers: x, top and height each
+    mutable cuts       : vec f32
 
     # the spec parsed once per change: every row reads a Prop
     func parse_fields []
@@ -537,6 +793,13 @@ element LaunchPanel
         return p.type == 'func' || has_meta[ p, 'Live' ] || has_meta[ p,
                                                                       'Action' ]
 
+    # a vector's parts: vec2f 2, vec3f 3, vec4f 4, else 0
+    func vec_n [ ty: string ] -> i32
+        if [ ty == 'vec2f' ] return 2
+        if [ ty == 'vec3f' ] return 3
+        if [ ty == 'vec4f' ] return 4
+        return 0
+
     func has_stops [ p: Prop ] -> bool
         return (p.stops && p.stops.count > 0) ? true : false
 
@@ -568,6 +831,25 @@ element LaunchPanel
             if [ p.value && p.stops[ i ] == p.value ] return i
         return 0
 
+    # a mounted text field keeps its own text (trinity never copies
+    # edit): a reseed sets it, unless the user is in it
+    func reseed_text [ nm: string, cur: string ]
+        if [ !elements || !elements.contains[ 'lp_{nm}' ] ] return
+        f : element elements[ 'lp_{nm}' ]
+        if [ f.focused ] return
+        if [ f inherits DragField ]
+            df : DragField f
+            if [ df.held ] return
+        if [ f inherits ColorPick ]
+            cp : ColorPick f
+            if [ cp.held != 0 ] return
+        if [ changing && changing == nm ] return
+        if [ f.edit && f.edit.compare[ cur ] == 0 ] return
+        f.edit       = cur
+        f.sel_col    = cur.count
+        f.anchor_col = cur.count
+        f.pristine   = false
+
     # a field view: one property per row, the name at the left, the
     # value filling the rest
     func render [] -> Elements
@@ -575,7 +857,7 @@ element LaunchPanel
         # a grid like the callstack's: 20px rows, a name column, 1px
         # rules between
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
-        lw : f32 [ round[ pw * 0.266 ] ]
+        lw : f32 [ round[ pw * name_frac ] ]
         rh : f32 [ 24.0 ]
         # px rows do not follow the element's scroll on their own: the
         # offset goes into their areas, and the same offset serves the
@@ -593,6 +875,7 @@ element LaunchPanel
         last_inst = inst
         last_spec = spec
         rule_ys   = vec f32 []
+        cuts      = vec f32 []
         # no export: not compiling, so none of our rows either
         parse_fields[]
         runs : bool [ dbg_row && fields.props.count > 0 ]
@@ -658,6 +941,7 @@ element LaunchPanel
                 ty == 'path' || ty == 'resource' || ck == 'Directory' ]
             # a Text field is two rows tall; every other control is one
             rhx : f32 [ (ck == 'Multiline') ? rh * 2.0 : rh ]
+            if [ ty == 'rgba' ] rhx = rh * 3.0
             cx : f32 [ lw + 1.0 ]
             t['lp_{nm}_lbl'] = LaunchLabel [ label: nm,
                                              area: Region [
@@ -670,8 +954,39 @@ element LaunchPanel
             # the one property the user is changing: its echo arriving
             # mid-drag would set the slider under them
             ex : element (elements && (!reseed || (changing && changing == nm))) ? elements['lp_{nm}'] : null
+            vn : i32 [ vec_n[ ty ] ]
+            vals : cur.split[ ',' ]
+            if [ reseed && vn == 0 ] reseed_text[ nm, cur ]
             ar9 : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
-            if [ ty == 'func' ]
+            if [ vn > 0 ]
+                # one cell, a dragged number a part
+                cw : f32 [ (pw - cx) / vn ]
+                for [ i: i32 0, i < vn, i += 1 ]
+                    pt : string [
+                        (i < vals.count) ? vals[ i ].trim[] : '0' ]
+                    pn : string '{nm}_{i}'
+                    if [ reseed ] reseed_text[ pn, pt ]
+                    mounted : bool [ elements
+                        && elements.contains[ 'lp_{pn}' ]
+                        && (!reseed || changing == nm) ]
+                    pa : Region [
+                        'l{cx + cw * i}px t{y}px w{cw}px h{rhx}px' ]
+                    if [ mounted ]
+                        t['lp_{pn}'] = DragField [ label: '',
+                                                   part: true,
+                                                   focusable: true,
+                                                   area: pa ]
+                    el
+                        t['lp_{pn}'] = DragField [ label: '', edit: pt,
+                                                   part: true,
+                                                   sel_col: pt.count,
+                                                   anchor_col: pt.count,
+                            focusable: true, area: pa ]
+                    if [ i > 0 ]
+                        cuts.push[ cx + cw * i ]
+                        cuts.push[ y ]
+                        cuts.push[ rhx ]
+            el [ ty == 'func' ]
                 t['lp_{nm}'] = LaunchAction [ label: nm,
                                               manual_mode: true,
                                               area: ar9 ]
@@ -781,6 +1096,24 @@ element LaunchPanel
                         : 0.0 ]
                     t['lp_{nm}'] = LaunchSlider [ label: '', value: fr,
                                                   area: ar9 ]
+            el [ ty == 'rgba' ]
+                if [ ex ]
+                    t['lp_{nm}'] = ColorPick [ area: ar9 ]
+                el
+                    t['lp_{nm}'] = ColorPick [ edit: cur, area: ar9 ]
+            el [ ck == '' && (ty == 'f32' || ty == 'f64'
+                               || ty == 'i32' || ty == 'i64') ]
+                wh : bool [ ty == 'i32' || ty == 'i64' ]
+                if [ ex ]
+                    t['lp_{nm}'] = DragField [ label: '', whole: wh,
+                                               focusable: true,
+                                               area: ar9 ]
+                el
+                    t['lp_{nm}'] = DragField [ label: '', edit: cur,
+                                               whole: wh,
+                                               sel_col: cur.count,
+                                               anchor_col: cur.count,
+                        focusable: true, area: ar9 ]
             el
                 # a mounted field keeps its text, unless it is empty and
                 # the value has arrived since (the export lists no
@@ -819,11 +1152,26 @@ element LaunchPanel
                 cv.paint[]
         cv.rect_to[ col_x, 0.0 - scroll.y, 1.0, rows_h ]
         cv.paint[]
+        if [ cuts ]
+            for [ i: i32 0, i + 2 < cuts.count, i += 3 ]
+                cv.rect_to[ cuts[ i ], cuts[ i + 1 ], 1.0,
+                            cuts[ i + 2 ] - 1.0 ]
+                cv.paint[]
 
     # the control's current value as the app takes it; null when the
     # control is not up
     func value_of [ p: Prop ] -> string
         if [ !elements || !p.ident ] return null
+        vn : i32 [ vec_n[ p.type ] ]
+        if [ vn > 0 ]
+            joined : string ''
+            for [ i: i32 0, i < vn, i += 1 ]
+                pk : string 'lp_{p.ident}_{i}'
+                if [ !elements.contains[ pk ] ] return null
+                pe : element elements[ pk ]
+                pv : string [ (pe.edit) ? pe.edit : '0' ]
+                joined = (i == 0) ? pv : '{joined}, {pv}'
+            return joined
         key : string 'lp_{p.ident}'
         if [ !elements.contains[ key ] ] return null
         c : element elements[ key ]
@@ -864,8 +1212,13 @@ element LaunchPanel
         parse_fields[]
         for [ p: Prop ] in fields.props
             if [ !prop_live[ p ] ] continue
+            if [ !elements ] continue
+            for [ i: i32 0, i < vec_n[ p.type ], i += 1 ]
+                pk : string 'lp_{p.ident}_{i}'
+                if [ elements.contains[ pk ] && elements[ pk ] == only ]
+                    return p
             key : string 'lp_{p.ident}'
-            if [ !elements || !elements.contains[ key ] ] continue
+            if [ !elements.contains[ key ] ] continue
             if [ elements[ key ] == only ] return p
         return null
 

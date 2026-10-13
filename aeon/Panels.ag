@@ -1,5 +1,4 @@
-# the panels around the view: the scene's graph across the top,
-# the chosen object's nodes and their properties on the right
+# what is chosen, the edits held for a save, and the .agi writer
 extend aeon
 
 # what is chosen: an object (and one of its nodes), or a pass
@@ -9,6 +8,9 @@ class Selection
     public pass   : string
     # quad draws switched off, as 'pass/draw'
     public off    : vec string
+    # an object shown alone (a double-click) until the choice
+    # changes; no eye changes with it
+    public solo   : string
 
     func is_off [ key: string ] -> bool
         if [ !off ] return false
@@ -38,11 +40,18 @@ class Edits
     public cages  : vec string
     public places : vec string
     public writes : vec Write
+    # blocks to delete, by file and path (a removed object or step)
+    public drops  : vec Write
+    # blocks to add, each after its sibling's block (blocks), its
+    # key and text (an added step)
+    public adds   : vec Write
 
     func init []
         cages  = vec string []
         places = vec string []
         writes = vec Write []
+        drops  = vec Write []
+        adds   = vec Write []
 
     func mark [ list: vec string, name: string ]
         for [ nm: string ] in list
@@ -66,12 +75,36 @@ class Edits
         writes.push[ w ]
 
     func pending [] -> bool
-        return cages.count + places.count + writes.count > 0
+        return cages.count + places.count + writes.count
+            + drops.count + adds.count > 0
 
     func clear []
         cages.clear[]
         places.clear[]
         writes.clear[]
+        drops.clear[]
+        adds.clear[]
+
+    # an addition undone: its block is no longer added
+    func unadd [ key: string ]
+        for [ i: i32 0, i < adds.count, i += 1 ]
+            if [ adds[ i ].key.compare[ key ] == 0 ]
+                adds.remove[ i ]
+                return
+
+    # a removal undone: its block is no longer deleted
+    func undrop [ file: path, blocks: vec string ]
+        for [ i: i32 0, i < drops.count, i += 1 ]
+            d : drops[ i ]
+            if [ '{d.file}' != '{file}'
+                 || d.blocks.count != blocks.count ] continue
+            same : bool [ true ]
+            for [ k: i32 0, k < blocks.count, k += 1 ]
+                if [ d.blocks[ k ].compare[ blocks[ k ] ] != 0 ]
+                    same = false
+            if [ same ]
+                drops.remove[ i ]
+                return
 
 # one value written into a nested block of an .agi file: the
 # blocks by their keys, then the key's line (added if absent)
@@ -117,330 +150,89 @@ func agi_set [ file: path, blocks: vec string, key: string,
     fclose[ f ]
     return true
 
+# a nested block of an .agi deleted: its key's line and every
+# line indented under it
+func agi_drop [ file: path, blocks: vec string ] -> bool
+    if [ !file.exists[] || blocks.count == 0 ] return false
+    txt : string [ file.load[ typeid[ string ], null ] ]
+    lines : txt.split[ '\n' ]
+    out : ''
+    depth : i32 [ 0 ]
+    cut : i32 [ -1 ]
+    done : bool [ false ]
+    for [ i: i32 0, i < lines.count, i += 1 ]
+        ln : lines[ i ]
+        if [ i == lines.count - 1 && ln.count == 0 ] continue
+        tabs : i32 [ 0 ]
+        while [ tabs < ln.count && ln.chars[ tabs ] == 9 ]
+            tabs += 1
+        # inside the block: deeper lines (and blank ones) go
+        if [ cut >= 0 ]
+            if [ ln.count == 0 || tabs > cut ] continue
+            cut  = -1
+            done = true
+        word : ln.mid[ tabs, ln.count - tabs ]
+        if [ !done && tabs < depth && ln.count > 0 ] depth = tabs
+        if [ !done && tabs == depth && depth < blocks.count
+             && word.starts_with[ '{blocks[ depth ]}:' ] ]
+            if [ depth == blocks.count - 1 ]
+                cut = tabs
+                continue
+            depth += 1
+        out = '{out}{ln}\n'
+    if [ cut >= 0 ] done = true
+    if [ !done ] return false
+    f : handle [ fopen[ file, "w" ] ]
+    if [ !f ] return false
+    fputs[ out.chars, f ]
+    fclose[ f ]
+    return true
+
+# a block written into an .agi after a sibling's block (blocks:
+# the sibling's path); text is the block, already indented
+func agi_insert_after [ file: path, blocks: vec string,
+                        text: string ] -> bool
+    if [ !file.exists[] || blocks.count == 0 ] return false
+    txt : string [ file.load[ typeid[ string ], null ] ]
+    lines : txt.split[ '\n' ]
+    out : ''
+    depth : i32 [ 0 ]
+    sib : i32 [ -1 ]
+    done : bool [ false ]
+    for [ i: i32 0, i < lines.count, i += 1 ]
+        ln : lines[ i ]
+        if [ i == lines.count - 1 && ln.count == 0 ] continue
+        tabs : i32 [ 0 ]
+        while [ tabs < ln.count && ln.chars[ tabs ] == 9 ]
+            tabs += 1
+        # the sibling's block ends at a line no deeper than its key
+        if [ sib >= 0 && ln.count > 0 && tabs <= sib ]
+            out  = '{out}{text}'
+            sib  = -1
+            done = true
+        word : ln.mid[ tabs, ln.count - tabs ]
+        if [ !done && sib < 0 && tabs < depth && ln.count > 0 ]
+            depth = tabs
+        if [ !done && sib < 0 && tabs == depth
+             && depth < blocks.count
+             && word.starts_with[ '{blocks[ depth ]}:' ] ]
+            if [ depth == blocks.count - 1 ]
+                sib = tabs
+            el
+                depth += 1
+        out = '{out}{ln}\n'
+    if [ sib >= 0 ]
+        out  = '{out}{text}'
+        done = true
+    if [ !done ] return false
+    f : handle [ fopen[ file, "w" ] ]
+    if [ !f ] return false
+    fputs[ out.chars, f ]
+    fclose[ f ]
+    return true
+
 func tabs_of [ n: i32 ] -> string
     out : ''
     for [ i: i32 0, i < n, i += 1 ]
         out = '{out}\t'
     return out
-
-# a box in the scene graph: an object, a pass or the output
-class Box
-    public name : string
-    # 0 object, 1 pass, 2 out, 3 a quad draw (its own node)
-    public kind : i32
-    # a quad draw's pass
-    public pass : string
-    public x    : f32
-    public y    : f32
-    public w    : f32
-    public h    : f32
-
-# the scene level across the top: the objects, the passes that
-# draw them in columns by what feeds them, then out, wired
-# a pass's draws: its list, or the pass itself as one draw
-func draws_of [ p: Pass ] -> vec Draw
-    if [ p.draws && p.draws.count > 0 ] return p.draws
-    return vec Draw [] [ Draw [ name: p.name, objects: p.objects,
-        quad: p.quad, shader: p.shader, inputs: p.inputs ] ]
-
-element SceneGraph
-    public design : Design
-    public stage  : Stage
-    public sel    : Selection
-    public edits  : Edits
-    mutable boxes : vec Box
-    mutable wires : vec f32
-
-    func box [ name: string, kind: i32 ] -> Box
-        for [ b: Box ] in boxes
-            if [ b.kind == kind && b.name.compare[ name ] == 0 ]
-                return b
-        return null
-
-    # a pass's column: one past the passes it reads
-    func column [ p: Pass, seen: i32 ] -> i32
-        if [ seen > 16 ] return 1
-        most : i32 [ 1 ]
-        for [ d: Draw ] in pass_draws[ p ]
-            if [ !d.inputs ] continue
-            for [ v: Au, k: string ] in d.inputs
-                ws : string [ v ]
-                dot : i32 [ ws.index_of[ '.' ] ]
-                if [ dot <= 0 ] continue
-                src : ws.mid[ 0, dot ]
-                for [ q: Pass ] in stage.graph.passes
-                    if [ q.name.compare[ src ] == 0 ]
-                        c : i32 [ column[ q, seen + 1 ] + 1 ]
-                        if [ c > most ] most = c
-        return most
-
-    func pass_draws [ p: Pass ] -> vec Draw
-        return draws_of[ p ]
-
-    func quad_box [ pass: string, name: string ] -> Box
-        for [ b: Box ] in boxes
-            if [ b.kind == 3 && b.pass.compare[ pass ] == 0
-                 && b.name.compare[ name ] == 0 ] return b
-        return null
-
-    # the boxes placed and the wires between them, as x1 y1 x2 y2
-    func lay_out []
-        boxes = vec Box []
-        wires = vec f32 []
-        if [ !design || !stage || !stage.graph ] return
-        bw : f32 [ 140.0 ]
-        bh : f32 [ 22.0 ]
-        gap : f32 [ 52.0 ]
-        y : f32 [ 10.0 ]
-        for [ o: Object ] in design.objects
-            boxes.push[ Box [ name: o.name, kind: 0, x: 12.0, y: y,
-                              w: bw, h: bh ] ]
-            y += bh + 5.0
-        # quad draws are nodes of their own, under the objects
-        for [ p: Pass ] in stage.graph.passes
-            for [ d: Draw ] in pass_draws[ p ]
-                if [ !d.quad ] continue
-                boxes.push[ Box [ name: d.name, kind: 3, pass: p.name,
-                                  x: 12.0, y: y, w: bw, h: bh ] ]
-                y += bh + 5.0
-        cols : vec i32 []
-        final : i32 [ 1 ]
-        for [ p: Pass ] in stage.graph.passes
-            c : column[ p, 0 ]
-            cols.push[ c ]
-            if [ c > final ] final = c
-        for [ c: i32 1, c <= final, c += 1 ]
-            row : f32 [ 10.0 ]
-            for [ i: i32 0, i < stage.graph.passes.count, i += 1 ]
-                if [ cols[ i ] != c ] continue
-                p : stage.graph.passes[ i ]
-                boxes.push[ Box [ name: p.name, kind: 1,
-                    x: 12.0 + f32[ c ] * (bw + gap), y: row,
-                    w: bw, h: bh ] ]
-                row += bh + 5.0
-        boxes.push[ Box [ name: 'out', kind: 2,
-            x: 12.0 + f32[ final + 1 ] * (bw + gap), y: 10.0,
-            w: 60.0, h: bh ] ]
-        # objects into the passes that draw them, passes into the
-        # passes that read them, and the shown passes into out
-        for [ p: Pass ] in stage.graph.passes
-            to : box[ p.name, 1 ]
-            for [ d: Draw ] in pass_draws[ p ]
-                if [ !d.quad ]
-                    for [ o: Object ] in design.objects
-                        named : bool [ !d.objects
-                            || d.objects.count == 0 ]
-                        if [ d.objects ]
-                            for [ nm: string ] in d.objects
-                                if [ nm.compare[ o.name ] == 0 ]
-                                    named = true
-                        if [ named ] wire[ box[ o.name, 0 ], to ]
-                el
-                    wire[ quad_box[ p.name, d.name ], to ]
-                if [ d.inputs ]
-                    for [ v: Au, k: string ] in d.inputs
-                        ws : string [ v ]
-                        dot : i32 [ ws.index_of[ '.' ] ]
-                        if [ dot > 0 ]
-                            wire[ box[ ws.mid[ 0, dot ], 1 ], to ]
-        out_box : box[ 'out', 2 ]
-        for [ o: string ] in stage.graph.out
-            wire[ box[ o, 1 ], out_box ]
-
-    func wire [ from: Box, to: Box ]
-        if [ !from || !to ] return
-        from_x : f32 [ from.x + from.w ]
-        from_y : f32 [ from.y + from.h * 0.5 ]
-        to_y : f32 [ to.y + to.h * 0.5 ]
-        wires.push[ from_x ]
-        wires.push[ from_y ]
-        wires.push[ to.x ]
-        wires.push[ to_y ]
-
-    # the object named, or null
-    func object_of [ name: string ] -> Object
-        for [ o: Object ] in design.objects
-            if [ o.name.compare[ name ] == 0 ] return o
-        return null
-
-    public func on_press [ ev: Event ]
-        if [ !sel ] return
-        for [ b: Box ] in boxes
-            px : f32 [ ev.mouse.pos.x ]
-            py : f32 [ ev.mouse.pos.y ]
-            if [ px < b.x || px > b.x + b.w ] continue
-            if [ py < b.y || py > b.y + b.h ] continue
-            # a node's circle shows or hides it; it chooses nothing
-            if [ b.kind == 0 && px < b.x + 18.0 ]
-                o : object_of[ b.name ]
-                if [ o ] o.shown = !o.shown
-                return
-            if [ b.kind == 3 && px < b.x + 18.0 ]
-                sel.flip[ '{b.pass}/{b.name}' ]
-                return
-            # a click on the chosen box lets it go
-            again : bool [ lit_box[ b ] ]
-            sel.object = ''
-            sel.pass   = ''
-            sel.node   = ''
-            if [ again ] return
-            if [ b.kind == 0 ] sel.object = b.name
-            if [ b.kind == 1 ] sel.pass = b.name
-            # a quad: its pass, and the draw when the pass has several
-            if [ b.kind == 3 ]
-                sel.pass = b.pass
-                if [ b.name.compare[ b.pass ] != 0 ] sel.node = b.name
-            return
-
-    # the box the selection names
-    func lit_box [ b: Box ] -> bool
-        if [ !sel ] return false
-        if [ b.kind == 0 ] return b.name.compare[ sel.object ] == 0
-        if [ b.kind == 1 ]
-            return b.name.compare[ sel.pass ] == 0
-                && sel.node.count == 0
-        if [ b.kind != 3 || b.pass.compare[ sel.pass ] != 0 ]
-            return false
-        if [ b.name.compare[ b.pass ] == 0 ] return true
-        return b.name.compare[ sel.node ] == 0
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        cv : Canvas [ w.screen ]
-        lay_out[]
-        cv.save[]
-        # the node names smaller than the panels' text
-        cv.font_size[ 14 ]
-        cv.fill_color[ '#101016' ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
-        cv.fill_color[ '#0000' ]
-        cv.stroke_color[ '#6a7aa0' ]
-        cv.stroke_width[ 1.0 ]
-        for [ i: i32 0, i + 3 < wires.count, i += 4 ]
-            cv.move_to[ wires[ i ], wires[ i + 1 ] ]
-            cv.line_to[ wires[ i + 2 ], wires[ i + 3 ] ]
-        cv.paint[]
-        for [ b: Box ] in boxes
-            lit : lit_box[ b ]
-            o : (b.kind == 0) ? object_of[ b.name ] : null
-            # a hidden node: its outline and name dimmed
-            hid : bool [ (o && !o.shown) || (b.kind == 3
-                && sel && sel.is_off[ '{b.pass}/{b.name}' ]) ]
-            cv.fill_color[ (lit) ? '#4d3dbc' : '#1d1d28' ]
-            cv.stroke_color[ (hid) ? '#3a4656'
-                : (b.kind == 0) ? '#7fd4ff'
-                : (b.kind == 3) ? '#ff8fd0'
-                : (b.kind == 1) ? '#c48cff' : '#ffcf4a' ]
-            cv.stroke_width[ 1.0 ]
-            cv.rounded_rect[ b.x, b.y, b.w, b.h, 5.0, 5.0, 5.0, 5.0 ]
-            cv.paint[]
-            # the visibility circle: filled shown, an outline hidden
-            if [ b.kind == 0 || b.kind == 3 ]
-                ring : string [ (b.kind == 0) ? '#7fd4ff' : '#ff8fd0' ]
-                cx : f32 [ b.x + 10.0 ]
-                cy : f32 [ b.y + b.h * 0.5 ]
-                cv.fill_color[ (hid) ? '#0000' : ring ]
-                cv.stroke_color[ ring ]
-                cv.stroke_width[ 1.0 ]
-                cv.arc[ cx, cy, 3.5, 0.0, 6.2832 ]
-                cv.paint[]
-            cv.fill_color[ (hid) ? '#6a6a78' : '#e8e8f0' ]
-            # an object's name starts after its circle
-            tx : f32 [ (b.kind == 0 || b.kind == 3) ? 20.0 : 8.0 ]
-            cv.draw_text[ b.name,
-                rect [ x: b.x + tx, y: b.y, w: b.w - tx - 2.0,
-                       h: b.h ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
-            cv.paint[]
-        # changes held in memory until a save
-        if [ edits && edits.pending[] ]
-            cv.fill_color[ '#ffcf4a' ]
-            cv.draw_text[ 'unsaved: ctrl/cmd + s to save',
-                rect [ x: bounds.w - 360.0, y: 8.0, w: 348.0,
-                       h: 24.0 ], vec2f [ 1.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
-            cv.paint[]
-        cv.restore[]
-
-# the chosen object's nodes in order, or the chosen pass's draws
-element NodeList
-    public design : Design
-    public stage  : Stage
-    public sel    : Selection
-    mutable names : vec string
-
-    func listed [] -> vec string
-        out : vec string []
-        if [ !sel || !design ] return out
-        if [ sel.object && sel.object.count > 0 ]
-            for [ o: Object ] in design.objects
-                if [ o.name.compare[ sel.object ] != 0 ] continue
-                out.push[ o.name ]
-                for [ n: MeshNode ] in o.nodes
-                    out.push[ n.name ]
-        el [ sel.pass && sel.pass.count > 0 && stage ]
-            for [ p: Pass ] in stage.graph.passes
-                if [ p.name.compare[ sel.pass ] != 0 ] continue
-                out.push[ p.name ]
-                if [ p.draws ]
-                    for [ d: Draw ] in p.draws
-                        out.push[ d.name ]
-        return out
-
-    public func on_press [ ev: Event ]
-        if [ !sel ] return
-        i : i32 [ (ev.mouse.pos.y - 34.0) / 26.0 ]
-        if [ !names || i < 0 || i >= names.count ] return
-        # the first row is the object or pass itself
-        sel.node = (i == 0) ? '' : names[ i ]
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        cv : Canvas [ w.screen ]
-        names = listed[]
-        cv.save[]
-        cv.fill_color[ '#101016' ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
-        cv.fill_color[ '#8a8aa0' ]
-        title : string [ (sel && sel.pass && sel.pass.count > 0)
-            ? 'pass' : 'nodes' ]
-        cv.draw_text[ title, rect [ x: 14.0, y: 6.0, w: bounds.w,
-            h: 24.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
-        cv.paint[]
-        for [ i: i32 0, i < names.count, i += 1 ]
-            y : f32 [ 34.0 + f32[ i ] * 26.0 ]
-            nm : names[ i ]
-            lit : bool [ (i == 0 && (!sel.node || sel.node.count == 0))
-                || (i > 0 && sel.node && nm.compare[ sel.node ] == 0) ]
-            cv.fill_color[ (lit) ? '#4d3dbc' : '#1d1d28' ]
-            cv.stroke_width[ 0.0 ]
-            cv.rounded_rect[ 10.0, y, bounds.w - 20.0, 22.0, 5.0, 5.0,
-                             5.0, 5.0 ]
-            cv.paint[]
-            cv.fill_color[ '#e8e8f0' ]
-            # the chain reads top down: each node feeds the next
-            tx : f32 [ (i == 0) ? 20.0 : 36.0 ]
-            cv.draw_text[ nm, rect [ x: tx, y: y, w: bounds.w,
-                h: 22.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
-            cv.paint[]
-        cv.restore[]
-
-# a word drawn plainly: a property's name
-element Words
-    public text : string
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen ] return
-        cv : Canvas [ w.screen ]
-        cv.save[]
-        cv.fill_color[ '#b0b0c4' ]
-        cv.draw_text[ text, rect [ x: 0.0, y: 0.0, w: bounds.w,
-            h: bounds.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
-        cv.paint[]
-        cv.restore[]

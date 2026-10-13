@@ -1,4 +1,4 @@
-
+# the NES had 2 KB of RAM; this comment is over budget
 export 0.8.8
 export extensions ['.nes']
 export icon ['knes']
@@ -19,6 +19,7 @@ class cpu6502_state
 	a              : u8
 	x              : u8
 	y              : u8
+	# The CPU brought snacks: 8-bit chips.
 	sp             : u8
 	p              : u8                # NV-BDIZC
 	pc             : u16

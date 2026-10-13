@@ -924,6 +924,10 @@ shader CanvasUI
                 o_color = vec4(0.0);
                 {{ float cc = clip_coverage(gl_FragCoord.xy); o_color = (ubo.clip_on.z == 7.0) ? vec4(o_color.rgb * cc, 1.0 - cc * (1.0 - o_color.a)) : o_color * cc; return; }}
             }}
+            // reads stay inside the texels this path wrote
+            vec2  hal    = 0.5 / vec2(textureSize(image, 0));
+            uv           = clamp(uv, ubo.grad0.xy + hal,
+                                 ubo.grad0.zw - hal);
             float dist_p = texture(image, uv).r;
 
             // AA half a pixel each side of the edge: exact coverage
@@ -946,7 +950,9 @@ shader CanvasUI
                         vec2  o  = (vec2(float(sx),
                                 float(sy)) - 1.5) * 0.25 * ppx;
                         vec2  su = (lpos + o - ubo.rect.xy) / ubo.rect.zw;
-                        su       = mix(ubo.grad0.xy, ubo.grad0.zw, su);
+                        su       = clamp(mix(ubo.grad0.xy,
+                                ubo.grad0.zw, su), ubo.grad0.xy + hal,
+                                ubo.grad0.zw - hal);
                         float ds = textureLod(image, su,
                                 0.0).r - ubo.fill_offset;
                         fill_cov += clamp(0.5 - ds / cell, 0.0, 1.0);
@@ -977,20 +983,13 @@ shader CanvasUI
                 // moves
                 // it out (positive) or in: -width/2 is an inside border
                 float nd_p   = -dist_p + ubo.stroke_offset;
-                // cap the AA to half the stroke: for a thin (~1px)
-                // stroke the
-                // ~1px AA on each edge would otherwise overlap and the
-                // stroke
-                // never reaches full opacity — the "1px looks like a
-                // blurry
-                // 2px" bug. clamped, a 1px stroke fills its pixel
-                // solid.
-                float aa_p   = min(wp, sw_p * 0.5);
+                // the pixel's share of the band: a box filter
+                float aa_p   = max(0.5 * pw + blur, 0.001);
                 float hw_p   = sw_p * 0.5;
+                float lo_p   = max(nd_p - aa_p, -hw_p);
+                float hi_p   = min(nd_p + aa_p, hw_p);
                 stroke_cov = (sw_p > 0.0 && stroke_width > 0.0)
-                    ? smoothstep(-hw_p - aa_p, -hw_p + aa_p,
-                                 nd_p) * (1.0 - smoothstep(hw_p - aa_p,
-                                         hw_p + aa_p, nd_p))
+                    ? clamp((hi_p - lo_p) / (2.0 * aa_p), 0.0, 1.0)
                     : 0.0;
             }}
 
@@ -2198,12 +2197,16 @@ Render Canvas
         vk.resize_calls += 1
         # no global stall: update[] below fences THIS render's own frame
         # before it tears down attachments, which is all we are racing
+        # a field grown to the canvas stays grown
+        grown : bool [ sdf_tex && sdf_tex.width >= width ]
         width  = qw
         height = qh 
         # Render: color/depth + framebuffers
         update[]
         if [ sdf_tex ]
-            sdf_tex.resize[ max[ width / 2, 1 ], max[ height / 2, 1 ] ]
+            fw : i32 [ (grown) ? width : max[ width / 2, 1 ] ]
+            fh : i32 [ (grown) ? height : max[ height / 2, 1 ] ]
+            sdf_tex.resize[ fw, fh ]
 
         if [ models ]
             for [ m: Model ] in models
@@ -4077,17 +4080,34 @@ Render Canvas
                     image_dirty[ draw_slot ] = true
         el
             compute_skip = false
-            sdf_w  : i32 [ width / 2 ]
-            sdf_h  : i32 [ height / 2 ]
+            tex_w  : i32 [ sdf_tex.width ]
+            tex_h  : i32 [ sdf_tex.height ]
             reach  : f32 [ shadow_reach[] ]
             pad    : f32 [ maxf [ 4.0,
                 st.stroke_width * 0.5 + 4.0 ] + reach ]
             spread : f32 [ maxf [ 8.0,
                 st.stroke_width * 0.5 + 4.0 ] + reach ]
-            pbx : f32 [ box_left - pad ]
-            pby : f32 [ box_top - pad ]
-            pbw : f32 [ bw  + pad * 2.0 ]
-            pbh : f32 [ bh  + pad * 2.0 ]
+            # whole pixels: a field that fits is a texel a pixel
+            k   : f32 [ (w && w.scale > 0) ? f32[ w.scale ] : 1.0 ]
+            pbx : f32 [ floor[ (box_left - pad) * k ] / k ]
+            pby : f32 [ floor[ (box_top - pad) * k ] / k ]
+            pbw : f32 [ ceil[ (box_left + bw + pad) * k ] / k - pbx ]
+            pbh : f32 [ ceil[ (box_top + bh + pad) * k ] / k - pby ]
+            fits : bool [ pbw * k <= f32[ tex_w ]
+                          && pbh * k <= f32[ tex_h ] ]
+            # a path wider than the field: it grows to the canvas
+            if [ !fits && (tex_w < width || tex_h < height) ]
+                sync_fence[]
+                sdf_tex.resize[ width, height ]
+                if [ models ]
+                    for [ m: Model ] in models
+                        m.rebind_model[]
+                if [ text_model ] text_model.rebind_model[]
+                tex_w = width
+                tex_h = height
+                fits = pbw * k <= f32[ tex_w ] && pbh * k <= f32[ tex_h ]
+            sdf_w  : i32 [ (fits) ? i32[ round[ pbw * k ] ] : tex_w ]
+            sdf_h  : i32 [ (fits) ? i32[ round[ pbh * k ] ] : tex_h ]
 
             ne : i32 [ n ]
             # a batch's paths each keep their edges until the GPU runs
@@ -4150,7 +4170,9 @@ Render Canvas
 
             setup_shader [ st, pbx, pby, pbw, pbh ]
             ui_shader.fill_color = st.fill_color
-            ui_shader.grad0  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+            # the part of the field this path wrote
+            ui_shader.grad0  = vec4f [ 0.0, 0.0,
+                f32[ sdf_w ] / f32[ tex_w ], f32[ sdf_h ] / f32[ tex_h ] ]
             ui_shader.grad_c0 = st.fill_color
             ui_shader.grad_c1 = vec4f [ st.fill_grad.x, st.fill_grad.y,
                                         st.fill_grad.z, st.fill_grad.w ]

@@ -1,104 +1,5 @@
-core: Object
-	at: [ 0, 0, 0 ]
-	turn: [ 0, 0, 0 ]
-	size: [ 1, 1, 1 ]
-	collections: [ 'Collection', 'Collection.001' ]
-	materials: [ strip, engine, top ]
-	nodes:
-		cage: Cage
-			file: 'meshes/core.mesh'
-	out: cage
-flower: Object
-	at: [ 0, 0, 0 ]
-	turn: [ 0, 0, 0 ]
-	size: [ 1, 1, 1 ]
-	collections: [ 'Collection' ]
-	materials: [ flower, top ]
-	nodes:
-		cage: Cage
-			file: 'meshes/flower.mesh'
-		mirror: Mirror
-			input: cage
-			axes: [ y ]
-			merge: 0.001
-		subdivision: Subdivision
-			input: mirror
-			levels: 3
-			render_levels: 2
-			creases: true
-			boundary: all
-			uv: preserve_boundaries
-			limit: true
-			quality: 3
-		array: Array
-			input: subdivision
-			count: 24
-			step:
-				at: [ 0, 0, 0 ]
-				turn: [ 0, 0, 15 ]
-				size: [ 1, 1, 1 ]
-	out: array
-outside: Object
-	at: [ 0, 0, 0 ]
-	turn: [ 0, 0, 0 ]
-	size: [ 1, 1, 1 ]
-	collections: [ 'Collection' ]
-	materials: [ top, flower, top, strip, ring, bottom, bottom, top2 ]
-	nodes:
-		cage: Cage
-			file: 'meshes/outside.mesh'
-		mirror: Mirror
-			input: cage
-			axes: [ y ]
-			merge: 0.1
-		array: Array
-			input: mirror
-			count: 6
-			step:
-				at: [ 0, 0, 0 ]
-				turn: [ 0, 0, 60 ]
-				size: [ 1, 1, 1 ]
-			merge: 0.01
-			merge_ends: true
-		subdivision: Subdivision
-			input: array
-			levels: 2
-			render_levels: 2
-			creases: true
-			boundary: all
-			uv: preserve_boundaries
-			limit: true
-			quality: 3
-	out: subdivision
-separator: Object
-	at: [ 0, 0, 0 ]
-	turn: [ 0, 0, 0 ]
-	size: [ 1, 1, 1 ]
-	collections: [ 'Collection' ]
-	materials: [ flower ]
-	nodes:
-		cage: Cage
-			file: 'meshes/separator.mesh'
-		subdivision: Subdivision
-			input: cage
-			levels: 1
-			render_levels: 2
-			creases: true
-			boundary: all
-			uv: preserve_boundaries
-			limit: true
-			quality: 3
-	out: subdivision
-top_ring: Object
-	at: [ 0, 0, 0 ]
-	turn: [ 0, 0, 0 ]
-	size: [ 1, 1, 1 ]
-	collections: [ 'Collection' ]
-	materials: [ plasma, top ]
-	nodes:
-		cage: Cage
-			file: 'meshes/top_ring.mesh'
-	out: cage
+# the avatar: its model, and the passes that draw it
+model: 'fmodel'
 # the avatar's chain: the metal body, the core and the plasma
 # ring at 4x with depth, the aura's volume over its depth, the
 # groove mask, and the heat haze over the reduced body
@@ -115,9 +16,9 @@ render: StageGraph
 					objects: [ outside, flower, separator ]
 					shader: PBR
 					settings:
-						env_id: 'night'
+						env_id: 'forest'
 						pulse_width: '4.0'
-						gamma: '2.2'
+						gamma: '1.88'
 						spoke_r0: '0.10'
 						spoke_r1: '0.55'
 						blend_rings: '0.2'
@@ -129,8 +30,6 @@ render: StageGraph
 					objects: [ core ]
 					shader: Core
 					settings:
-						texture: 'textures/core.png'
-						mip_levels: '8'
 						pulse_width: '4.0'
 				plasma: Draw
 					objects: [ flower ]
@@ -146,13 +45,13 @@ render: StageGraph
 					quad: true
 					shader: Aura
 					settings:
-						env_id: 'night'
 						pulse_width: '0.4'
 						pulse_height: '1.2'
 						halo_height: '0.4'
 						beam_fade: '2.2'
 						beam_cone: '0.35'
-						flame: '0.0'
+						beam: '0.0'
+						donut_reach: '2.0'
 					inputs:
 						height: 'av.depth'
 						rim: 'color:0.6 0.3 1 1'
@@ -184,5 +83,6 @@ render: StageGraph
 						pulse_height: '1.2'
 					inputs:
 						color: 'layers.color'
+						height: 'av.depth'
 						emission: 'mask.reduction'
 	out: [ heat ]

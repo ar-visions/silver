@@ -2262,6 +2262,14 @@ expect func t_vec_from_vec [] -> bool
     return b.count == 3 && b[ 1 ] == 2.5 && a[ 0 ] == 1.5
         && c.count == 3 && c[ 2 ] == 3
 
+# a float constant pushed onto a vec f32 keeps its value
+expect func t_vec_f32_push_literal [] -> bool
+    v : vec f32 []
+    v.push[ 1.0 ]
+    v.push[ 0.25 ]
+    log 'vec f32 push: {v[ 0 ]} {v[ 1 ]}'
+    return v.count == 2 && v[ 0 ] == 1.0 && v[ 1 ] == 0.25
+
 class Kelvin
     public k : f64
     # made from another class: a vec of Fahren converts through here

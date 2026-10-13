@@ -2094,9 +2094,17 @@ class vk_context
 
     func dealloc [ ]
         log 'vk_context dealloc: destroying device'
-        for [ i: i32 0, i < fence_pool.count, i += 1 ]
-            fence_new = cast VkFence [ fence_pool[i] ]
-            vkDestroyFence[ device, fence_new, null ]
+        # what waits for a frame goes first: the allocator refuses
+        # to go while it holds any (a test has no frame loop)
+        if [ defer_pending[] ] defer_flush[ null ]
+        # its commands' pools go while the device is here
+        if [ pending_cmds ] pending_cmds.clear[]
+        xfer_cmd  = null
+        xfer_cmd2 = null
+        if [ fence_pool ]
+            for [ i: i32 0, i < fence_pool.count, i += 1 ]
+                fence_new = cast VkFence [ fence_pool[i] ]
+                vkDestroyFence[ device, fence_new, null ]
         vmaDestroyAllocator [ allocator ]
         vkDeviceWaitIdle    [ device ]
         vkDestroyDevice     [ device, null ]
@@ -3079,6 +3087,13 @@ class Gpu
                     tx.sampler = null
                     img.user   = tx
                     Au.hold[ tx ]
+
+    # a vertex buffer made elsewhere (a compute pass writes it)
+    # takes the place of its own; the old one goes later
+    public func use_vertex [ b: Buffer ]
+        if [ vertex && vertex != b ] vk.defer_buffer[ vertex ]
+        vertex     = b
+        ext_vertex = b
 
     # re-upload vertex_data into the existing vertex Buffer — for
     # dynamic per-frame vertex streams (owned by callers outside
@@ -4582,6 +4597,10 @@ class Command
             fence   = null
             pending = false
         lk.unlock[]
+
+    # the buffer being recorded, for passes another module records
+    public func buffer [ ] -> handle
+        return cmd
 
     # the submit is done: return the fence without waiting for a reuse
     func return_fence [ ]
