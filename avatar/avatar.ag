@@ -5,6 +5,7 @@ import vec
 import img
 import gltf
 import trinity
+import design
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -1402,21 +1403,13 @@ element Avatar
     public summoned          : bool
     # animate without the summon (the exchange avatar has no slide)
     public animate_always    : bool
-    intern target            : Render
-    intern vol_target        : Render
-    # the heat haze: the pbr pass's reduced image, bent (heat 0 leaves
-    # it)
-    intern heat_target       : Render
-    intern heat_src          : Texture
-    # the reduced image's size the heat pass is bound to
-    intern heat_bound        : i64
-    # the groove mask: the body again, gray on the grooves, for the heat
-    # pass's glow
-    intern mask_target       : Render
-    # the mask's size the heat pass is bound to
-    intern mask_bound        : i64
-    # frames the heat pass has drawn since its last (re)bind
-    intern heat_ready        : i32
+    # the design's passes, run with this avatar's shaders
+    intern stage             : Stage
+    # the design folder: its objects and its render: block
+    public project           : string
+    # the host size the passes are drawn at (held while easing)
+    mutable stage_w          : i32
+    mutable stage_h          : i32
     public mask_s            : GrooveMask
     # the grooves' glow: 0 dark, 1 full (set by the owner)
     public groove            : f32
@@ -1434,11 +1427,8 @@ element Avatar
     public render_scale      : f32   [ 4.0 ]
     # the shaders' clock anchor (first frame)
     mutable clock0           : i64
-    # a restore: the target renders before its first paint
+    # a restore (kept for the owner; the stage draws in draw)
     mutable paint_once       : bool
-    # the depth size the volume pass is bound to (a resize remakes the
-    # image)
-    mutable depth_bound      : i64
     mutable clock_last       : i64
     mutable clock_s          : f64   # the shaders' time, in seconds run
     public  clock_run        : bool  [ true ]
@@ -1496,11 +1486,8 @@ element Avatar
     mutable anchor_y         : f32
     public  env_yaw          : f32
     public  env_pitch        : f32
-    intern  spoke_cv         : Canvas
-    intern  rim_cv           : Canvas
-    # loaded once per process: a reload finds them in place
-    persist mcache           : map GltfModel[string]
-    persist envcache         : map Texture[string]
+    # read once per process: a reload finds them in place
+    persist designs          : map Design [ string ]
     mutable env_on           : bool
 
     # dismount: retire our render targets while they are still valid —
@@ -1509,14 +1496,7 @@ element Avatar
         wr9 : Window ux
         if [ wr9 && wr9.element_targets ]
             wr9.element_targets[ id ] = null
-            wr9.element_targets[ '{id}-vol' ] = null
-            wr9.element_targets[ '{id}-heat' ] = null
-            wr9.element_targets[ '{id}-mask' ] = null
-        target      = null
-        vol_target  = null
-        heat_target = null
-        heat_src    = null
-        mask_target = null
+        stage = null
         super.on_unload[ ]
 
     func on_press [ ev: Event ]
@@ -1571,214 +1551,61 @@ element Avatar
         core.groups    = vec string [] [ 'core' ]
         plasma.groups  = vec string [] [ 'top_ring', 'flower' ]
 
+    # the design this avatar draws: aeon's flower888 project
+    func design_dir [] -> string
+        if [ project && project.count > 0 ] return project
+        # beside this module's source: its .source names the file
+        lib : path.path_install[]
+        src : path '{lib}/build/silver-avatar.source'
+        if [ !src.exists[] ] return ''
+        txt : string [ src.load[ typeid[ string ], null ] ]
+        # its first line is <root>/avatar/avatar.ag: two folders up
+        lines : txt.split[ '\n' ]
+        own : lines[ 0 ]
+        file : own.trim[]
+        mod : file.mid[ 0, i32[ file.rindex_of[ '/' ] ] ]
+        root : mod.mid[ 0, i32[ mod.rindex_of[ '/' ] ] ]
+        return '{root}/aeon/flower888'
+
+    # the stage from the design's render: block, its draws made
+    # with this avatar's shaders (the owner drives them)
     func create_target[]
+        if [ stage ] return
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
         w_ref : Window [ ux ]
-        if [ target || vol_target ]
+        dir : design_dir[]
+        if [ !designs ] designs = map Design [ string ] []
+        d : designs[ dir ]
+        if [ !d ]
+            d = Design [ dir: path dir ]
+            designs[ dir ] = d
+        if [ !d.objects || d.objects.count == 0 || !d.render ]
+            log 'avatar: no design with a render: block at {dir}'
             return
-        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ]
-            return
+        if [ !mask_s ] mask_s = GrooveMask [ vk: vk ]
+        if [ !heat_s ] heat_s = Heat [ vk: vk ]
+        mine : map shader [ string ] []
+        mine[ 'body' ]   = body
+        mine[ 'core' ]   = core
+        mine[ 'plasma' ] = plasma
+        mine[ 'aura' ]   = aura
+        mine[ 'mask' ]   = mask_s
+        mine[ 'heat' ]   = heat_s
+        ds : f32 [ (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
+        stage_w = i32[ bounds.w * ds ]
+        stage_h = i32[ bounds.h * ds ]
+        stage = Stage [ design: d, given: mine ]
+        stage.build[ vk, w_ref, stage_w, stage_h ]
 
-        geo_models : vec Model []
-        vol_models : vec Model []
-        if [ !envcache ] envcache = map Texture[string][]
-        if [ !mcache ]   mcache   = map GltfModel[string][]
-
-        for [ sh:shader, k:string ] in shaders
-            m    : Model [ vk: vk, w: w_ref, s:sh ]
-            model_id : (sh.model_id) ? sh.model_id : 'uv-quad2'
-            m.id = mcache[model_id]
-            if [!m.id]
-                gltf     : path  [ 'models/{model_id}.gltf' ]
-                expect gltf.exists[], 'model does not exist: {model_id}'
-                m.id = gltf.load[ typeid[ GltfModel ], null ]
-                mcache[model_id] = GltfModel[m.id]
-            # member set outside init: hold, or mcache death frees it
-            m.id.hold[]
-
-            if [ sh.env_id ]
-                ekey : '{sh.name}:{sh.env_id}'
-                env_tex : envcache[ekey]
-                if [!env_tex]
-                    env_img  : Image [
-                        uri: path['images/{sh.env_id}.exr'],
-                        surface:Surface.environment ]
-                    env_axis : vec3f [ 0.0, 1.0, 0.0 ]
-                    env_tex  = environment[ vk, env_img, env_axis, 0.0 ]
-                    envcache[ekey] = env_tex
-                m.samplers[ 'environment' ] = env_tex
-
-            if [ sh inherits PBR ]
-                if [ !spoke_cv ]
-                    spoke_cv = Canvas [ vk: vk, w: w_ref,
-                                        format: Pixel.rgba8,
-                        width: 128, height: 128 ]
-                    spoke_cv.resize[ 128, 128 ]
-                m.samplers[ 'spokes' ] = spoke_cv.color
-            if [ sh inherits Aura ]
-                if [ !rim_cv ]
-                    rim_cv = Canvas [ vk: vk, w: w_ref,
-                                      format: Pixel.rgba8,
-                        width: 32, height: 256 ]
-                    rim_cv.resize[ 32, 256 ]
-                m.samplers[ 'rim' ] = rim_cv.color
-
-            is_vol : bool [ sh inherits Aura ]
-            if [ is_vol ]
-                vol_models.push[ m ]
-            el
-                geo_models.push[ m ]
-
-        ##
-        if [ shader_type && shader_type.count ]
-            f : Au_t [ Au.find_type [ shader_type.chars, null ] ]
-            if [ f ]
-                s     = Au.new_object[ f, null, null, false, __FILE__,
-                                       __LINE__, __SEQUENCE__ ]
-                s.vk  = vk
-                s.initialize[]
-                if [ model ]
-                    model.s = s
-
-        if [ !aura ]
-            aura = Aura [ vk: vk, env_id: 'night' ]
-            another : shaders['aura']
-            another = another
-
-        aura_model = Model [ vk: vk, w: w_ref ]
-        aura_model.s = aura
-
-        if [ model ]
-            plasma = Plasma [ vk: vk ]
-            model.transparent_s = plasma -- we now store .transparent on shader, so the Model generic may use this when referencing transparent_s
-
-        all_models : vec Model []
-        if [ model ] all_models.push[ model ]
-        all_models.push[ aura_model ]
-        ##
-
-        rs : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
-        vs : f32 [ (vol_scale    > 0.0) ? vol_scale    : 0.25 ]
-        dscale : f32 [
-            (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
-        log 'create_target: bounds={bounds.x},{bounds.y},{bounds.w},{bounds.h} render_scale={render_scale} rs={rs} dscale={dscale}'
-
-        if [ geo_models.count ]
-            # the pbr pass renders at render_scale device pixels (4x
-            # each way) on every display and the reduction pass draws it
-            # down 4:1
-            gwf : f32 [ bounds.w * rs * dscale ]
-            ghf : f32 [ bounds.h * rs * dscale ]
-            log 'GEOTGT bounds={bounds.w}x{bounds.h} rs={rs} -> {gwf}x{ghf}'
-            gw : i32 [ gwf ]
-            gh : i32 [ ghf ]
-            target = Render [
-                tag:         'av',
-                vk:          vk,
-                w:           w_ref,
-                width:       gw,
-                height:      gh,
-                use_depth:   true,
-                reduce:      true,
-                clear_color: clear_color,
-                models:      geo_models ]
-            target.owner = a
-            w_ref.element_targets[ id ] = target
-            target.wscale = 0.0
-            # the volume pass reads this pass's depth (the same camera)
-            if [ target.depth ]
-                for [ vm: Model ] in vol_models
-                    vm.samplers[ 'height' ] = target.depth
-
-        if [ vol_models.count ]
-            vwf : f32 [ bounds.w * rs * vs ]
-            vhf : f32 [ bounds.h * rs * vs ]
-            if [ vhf > 1024.0 ]
-                vwf = vwf * (1024.0 / vhf)
-                vhf = 1024.0
-            if [ vwf > 1024.0 ]
-                vhf = vhf * (1024.0 / vwf)
-                vwf = 1024.0
-            vw : i32 [ vwf ]
-            vh : i32 [ vhf ]
-            vol_target = Render [
-                tag:         'avvol',
-                vk:          vk,
-                w:           w_ref,
-                width:       vw,
-                height:      vh,
-                use_depth:   false,
-                clear_color: clear_color,
-                models:      vol_models ]
-            vol_target.owner = a
-            w_ref.element_targets[ '{id}-vol' ] = vol_target
-            vol_target.wscale = 0.0
-
-        # the groove mask: the body's geometry at the pbr pass's size,
-        # reduced 4:1 as it is, depth tested so the fins hide the
-        # grooves behind them
-        if [ target && mcache[ 'orbiter32' ] ]
-            if [ !mask_s ]
-                mask_s = GrooveMask [ vk: vk, model_id: 'orbiter32' ]
-                mask_s.groups = vec string [] [ 'outside', 'flower',
-                                                'separator' ]
-            mm : Model [ vk: vk, w: w_ref, s: mask_s ]
-            mm.id = mcache[ 'orbiter32' ]
-            mm.id.hold[]
-            mask_target = Render [
-                tag:         'avmask',
-                vk:          vk,
-                w:           w_ref,
-                width:       i32[ bounds.w * rs * dscale ],
-                height:      i32[ bounds.h * rs * dscale ],
-                use_depth:   true,
-                reduce:      true,
-                clear_color: clear_color,
-                models:      [ mm ] ]
-            mask_target.owner = a
-            w_ref.element_targets[ '{id}-mask' ] = mask_target
-            mask_target.wscale = 0.0
-
-        # the heat haze reads the reduced pbr image at its own size, and
-        # glows the groove mask over it
-        if [ target && target.reduction && mask_target ]
-            if [ !heat_s ] heat_s = Heat [ vk: vk ]
-            heat_src = target.reduction
-            hm : Model [ w: w_ref, s: heat_s,
-                         samplers: map Texture[string] [
-                             'color': heat_src,
-                             'emission': mask_tex[] ] ]
-            heat_target = Render [
-                tag:         'avheat',
-                vk:          vk,
-                w:           w_ref,
-                width:       heat_src.width,
-                height:      heat_src.height,
-                use_depth:   false,
-                clear_color: clear_color,
-                models:      [ hm ] ]
-            heat_target.owner = a
-            w_ref.element_targets[ '{id}-heat' ] = heat_target
-            heat_target.wscale = 0.0
+    # a point in glTF's axes (y up) in the design's (z up)
+    func design_axes [ v: vec3f ] -> vec3f
+        return vec3f [ v.x, 0.0 - v.z, v.y ]
 
     func draw [ w: Window ]
         # spin only while summoned (or always, for one with no slide)
         animated = summoned || animate_always
-        fresh9 : bool [ !target && !vol_target ]
         create_target[]
-        if [ !target && !vol_target ] return
-        # the volume pass samples the geometry pass's depth: a resize
-        # gives that texture a new image, and a descriptor left on the
-        # old one is a
-        # GPU page fault. rebind whenever the image changes
-        if [ target && target.depth && vol_target && vol_target.models ]
-            dk : i64 [
-                i64[ target.depth.width ] * 65536
-                + i64[ target.depth.height ] ]
-            if [ dk != depth_bound ]
-                depth_bound = dk
-                for [ vm: Model ] in vol_target.models
-                    vm.samplers[ 'height' ] = target.depth
-                    vm.rebind_model[]
+        if [ !stage ] return
 
         # model transform from World-level rotate property
         model_mat : mat4f.identity[]
@@ -1792,8 +1619,7 @@ element Avatar
         e_pos : vec3f [
             (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0)
             ? eye_pos : vec3f [ 0.0f, 3.5f, -2.0f ] ]
-        t_pos : vec3f [
-            (target_pos.x != 0.0 || target_pos.y != 0.0 || target_pos.z != 0.0) ? target_pos : vec3f [ 0.0f, 0.0f, 0.0f ] ]
+        t_pos : vec3f [ target_pos ]
         u_vec : vec3f [
             (up_vec.x != 0.0 || up_vec.y != 0.0 || up_vec.z != 0.0)
             ? up_vec : vec3f [ 0.0f, -1.0f, 0.0f ] ]
@@ -1802,54 +1628,34 @@ element Avatar
         fy    : f32   [
             (asp > 1.0f) ? radians[ f ]
             : 2.0f * atan[ tan[ radians[ f ] * 0.5f ] / asp ] ]
-        _proj : mat4f [ mat4f.perspective[ fy, asp, 0.1f, 100.0f ] ]
-        _view : mat4f [ mat4f.look_at[ e_pos, t_pos, u_vec ] ]
-        _pos  : vec4f [ e_pos.x, e_pos.y, e_pos.z, 1.0f ]
 
-        for [ sh:shader, k:string ] in shaders
-            mvp : (sh inherits ModelViewProject)
-            if [ mvp ]
-                mvp.model        = model_mat
-                mvp.proj         = _proj
-                mvp.view         = _view
-                # the shaders' clock is wall-clock seconds from the
-                # avatar's first frame: the window's `time` is the
-                # background's, throttled by orbiter's draw-rate setting
-                # (1/64 at rest), and the flame's rising noise (ta) and
-                # the pulses froze on it
-                now9 : i64 [ epoch_millis[] ]
-                if [ clock0 == 0 ]
-                    clock0     = now9
-                    clock_last = now9
-                # the clock only runs while clock_run: the core's
-                # coloring cycles on it, and face on the avatar holds
-                # still
-                if [ clock_run ]
-                    clock_s += f64[ now9 - clock_last ] / 1000.0
-                clock_last       = now9
-                mvp.time         = clock_s
-            pb9 : (sh inherits PBR)
-            if [ pb9 ]
-                pb9.spoke_r0    = 0.10
-                pb9.spoke_r1    = 0.55
-                pb9.blend_rings = blend_rings
-                pb9.blend_haze  = blend_haze
-                pb9.blend_bands = blend_bands
-                pb9.env_yaw     = env_yaw
-                pb9.env_pitch   = env_pitch
-
+        # the shaders' clock is wall-clock seconds from the avatar's
+        # first frame; it runs only while clock_run (face on, the
+        # exchange avatar's core holds still)
+        now9 : i64 [ epoch_millis[] ]
+        if [ clock0 == 0 ]
+            clock0     = now9
+            clock_last = now9
+        if [ clock_run ]
+            clock_s += f64[ now9 - clock_last ] / 1000.0
+        clock_last = now9
+        body.spoke_r0    = 0.10
+        body.spoke_r1    = 0.55
+        body.blend_rings = blend_rings
+        body.blend_haze  = blend_haze
+        body.blend_bands = blend_bands
+        body.env_yaw     = env_yaw
+        body.env_pitch   = env_pitch
+        heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
+        heat_s.heat         = heat
+        heat_s.busy         = active
+        # the grooves light in the body's ring light now
+        heat_s.groove       = 0.0
 
         msk : i32 [ 0 ]
         if [ hovered ] msk = msk | i32[ State.hovered ]
         if [ pressed ] msk = msk | i32[ State.pressed ]
         if [ focused ] msk = msk | i32[ State.focused ]
-        if [ target ]
-            target.state_mask = msk
-            target.update[]
-        if [ vol_target ]
-            vol_target.state_mask = msk
-            vol_target.update[]
-
 
         easing : bool [ false ]
         if [ want_w > 0.0 ]
@@ -1872,147 +1678,36 @@ element Avatar
             settle_n = 0
         el
             settle_n += 1
-
-        if [ target && !easing && settle_n >= 8 ]
-            rs8 : f32 [ (render_scale > 0.0) ? render_scale : 1.0 ]
+        # the passes take a new size once it holds still
+        if [ !easing && settle_n >= 8 ]
             ds : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
-            target.width  = i32[ bounds.w * rs8 * ds ]
-            target.height = i32[ bounds.h * rs8 * ds ]
-            if [ mask_target ]
-                mask_target.width  = i32[ bounds.w * rs8 * ds ]
-                mask_target.height = i32[ bounds.h * rs8 * ds ]
-            if [ vol_target ]
-                vs8 : f32 [ (vol_scale > 0.0) ? vol_scale : 0.25 ]
-                vw8 : f32 [ bounds.w * rs8 * vs8 ]
-                vh8 : f32 [ bounds.h * rs8 * vs8 ]
-                if [ vh8 > 1024.0 ]
-                    vw8 = vw8 * (1024.0 / vh8)
-                    vh8 = 1024.0
-                if [ vw8 > 1024.0 ]
-                    vh8 = vh8 * (1024.0 / vw8)
-                    vw8 = 1024.0
-                vol_target.width  = i32[ vw8 ]
-                vol_target.height = i32[ vh8 ]
-
-        if [ spoke_cv ]
-            spoke_cv.update[]
-            spoke_cv.save[]
-            spoke_cv.rounded_rect[ 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0,
-                                   0.0 ]
-            spoke_cv.fill_color[
-                rgba [ r: 1.0, g: 1.0, b: 1.0, a: 1.0 ] ]
-            spoke_cv.paint[]
-            spoke_cv.restore[]
-            spoke_cv.sync_fence[]
-            # 5 = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-            spoke_cv.color.transition[ 5 ]
-
-        if [ rim_cv ]
-            rim_cv.update[]
-            rim_cv.save[]
-            rim_cv.rounded_rect[ 0.0, 0.0, 32.0, 256.0, 0.0, 0.0, 0.0,
-                                 0.0 ]
-            rim_cv.fill_color[ rgba [ r: 0.6, g: 0.3, b: 1.0, a: 1.0 ] ]
-            rim_cv.paint[]
-            rim_cv.restore[]
-            rim_cv.sync_fence[]
-            rim_cv.color.transition[ 5 ]
+            stage_w = i32[ bounds.w * ds ]
+            stage_h = i32[ bounds.h * ds ]
 
         ev : Event[ target: a ]
         update.invoke[ ev ]
 
-        # a target made this frame (or restored at full) renders once
-        # now: the frame's target pass ran before it existed or while it
-        # was hidden
-        if [ fresh9 || paint_once ]
-            paint_once = false
-            if [ target ]
-                target.update[]
-                target.draw[]
-                target.sync_fence[]
-            if [ vol_target ]
-                vol_target.update[]
-                vol_target.draw[]
-                vol_target.sync_fence[]
+        stage.eye        = design_axes[ e_pos ]
+        stage.middle     = design_axes[ t_pos ]
+        stage.up         = design_axes[ u_vec ]
+        stage.proj       = mat4f.perspective[ fy, asp, 0.1f, 100.0f ]
+        stage.model      = model_mat
+        stage.host_time  = true
+        stage.time       = clock_s
+        stage.state_mask = msk
+        paint_once = false
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
-        if [ target ]
-            geo_tex : Texture [
-                (target.reduce && target.reduction) ? target.reduction
-                : target.color ]
-            if [ heat_target && heat_s && geo_tex == target.reduction ]
-                # a resize remade the reduced image: follow it, at its
-                # size. keyed on the size (as depth_bound is): the
-                # remade Texture can come back at the same address, and
-                # the pass kept sampling the dead image
-                hk : i64 [
-                    i64[ geo_tex.width ] * 65536
-                    + i64[ geo_tex.height ] ]
-                mt : mask_tex[]
-                mk : i64 [ i64[ mt.width ] * 65536 + i64[ mt.height ] ]
-                if [
-                    heat_src != geo_tex || heat_bound != hk
-                    || mask_bound != mk ]
-                    heat_src   = geo_tex
-                    heat_bound = hk
-                    mask_bound = mk
-                    heat_ready = 0
-                    heat_target.width  = geo_tex.width
-                    heat_target.height = geo_tex.height
-                    for [ hm: Model ] in heat_target.models
-                        hm.samplers[ 'color' ]    = geo_tex
-                        hm.samplers[ 'emission' ] = mt
-                        hm.rebind_model[]
-                mask_s.model = model_mat
-                mask_s.proj  = _proj
-                mask_s.view  = _view
-                mask_target.state_mask = msk
-                mask_target.update[]
-                heat_s.model        = model_mat
-                heat_s.proj         = _proj
-                heat_s.view         = _view
-                heat_s.time         = clock_s
-                heat_s.pulse_height = (aura) ? aura.pulse_height : 1.0
-                heat_s.heat         = heat
-                heat_s.busy         = active
-                # the grooves light in the body's ring light now
-                heat_s.groove       = 0.0
-                heat_target.state_mask = msk
-                heat_target.update[]
-                # its image is empty until it has drawn (at start, and
-                # after a resize remakes it): the plain image shows
-                # until then
-                if [ heat_ready >= 3 ] geo_tex = heat_target.color
-                el heat_ready += 1
-            w.screen.draw_image[ geo_tex, b ]
-        if [ vol_target ]
-            w.screen.draw_image[ vol_target.color, b ]
+        for [ tx: Texture ] in stage.frame[ stage_w, stage_h ]
+            w.screen.draw_image[ tx, b ]
         needs_frame = true
-
-    # the groove mask as the heat pass reads it: reduced 4:1
-    func mask_tex [] -> Texture
-        if [ mask_target.reduce && mask_target.reduction ]
-            return mask_target.reduction
-        return mask_target.color
 
     # the avatar alone on a clear canvas: the app's icon
     func icon_image [ w: Window, size: i32 ] -> Image
         for [ f: i32 0, f < 60, f += 1 ]
             # draw composes onto the window's screen: clear it first
             w.screen.clear[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+            # the stage draws its passes inside draw
             draw[ w ]
-            # each pass as the window's target pass runs it: draw, fence
-            if [ target ]
-                target.draw[]
-                target.sync_fence[]
-            if [ mask_target ]
-                mask_target.draw[]
-                mask_target.sync_fence[]
-            if [ heat_target ]
-                heat_target.draw[]
-                heat_target.sync_fence[]
-            if [ vol_target ]
-                vol_target.draw[]
-                vol_target.sync_fence[]
         w.screen.sync_fence[]
         return Image [ w.screen.color ]
 
@@ -2150,7 +1845,7 @@ Avatar OrbiterAvatar
             # (on_state runs while invisible; draw does not), so the
             # exchange opens without the build stall. before layout the
             # bounds are a stub (8x14)
-            if [ !target && !vol_target && bounds && bounds.w >= 300.0 ]
+            if [ !stage && bounds && bounds.w >= 300.0 ]
                 create_target[]
             vis : bool [ ux->shot_ask && !ux->agent_min ]
             if [ vis != shown ]

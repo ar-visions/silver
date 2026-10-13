@@ -1132,6 +1132,30 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     time: the name was not the cause (maybe two builds of aeon
     at once). The member is `list` again; features
     t_member_named_type guards it (249/250).
+    The design module (Kalen, Oct 12: orbiter's avatar loads its
+    passes from the agi; its shape from the design's meshes, no
+    gltf): aeon's Poly, Design, View and Stage moved to
+    design/ (`extend design`); aeon and avatar import it.
+    Stage gained `given` (a host's own shaders by draw name:
+    body core plasma aura mask heat), `model` (the turn),
+    `up`, `host_time`/`time`, `state_mask`, and `rewire`: a
+    resized pass's readers take its new textures in place.
+    Avatar: create_target reads aeon/flower888 (beside the
+    module's source: install/build/silver-avatar.source's first
+    line, two folders up; `project` overrides), one Design per
+    folder for the process (persist designs), a Stage with its
+    shaders; draw sets the camera (glTF vectors turned to the
+    design's axes), clock and hover, and draws the outs. The
+    hand-built av, volume, mask and heat Renders, the gltf and
+    the spoke/rim canvases are gone. Seen hidden: the wizard's
+    avatar drawn from the design. Not seen: orbiter's corner and
+    exchange avatars. A running orbiter needs a relaunch.
+    Made once (Kalen): each object's nodes run and its parts
+    fill once per design (made_of, Design.made, its own
+    GltfBuffer); every draw and stage shares it. An edit forgets
+    the object (Stage.refresh, a node's value). aeon's two
+    stages built in 2196 + 2078 ms (flower made 12 times), now
+    1118 + 433 ms (once). Pictures differ only by the clock.
 Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI.
 The graph is all the nodes (each object's geometry chain and
 the render passes, wired) and sits across the very top, in place

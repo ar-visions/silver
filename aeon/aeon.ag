@@ -7,6 +7,7 @@ import img
 import gltf
 import trinity
 import properties
+import design
 
 # blender 4.5.14: its python 3.11 (with numpy) runs blend.py
 import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
@@ -24,10 +25,6 @@ import <stdlib.h>
 import <string.h>
 import <math.h>
 
-import Poly
-import Design
-import View
-import Stage
 import Panels
 
 # the cell a point falls in, moved by o, as a hash key
@@ -1215,6 +1212,8 @@ element aeon : trinity
         got : Au.convert[ member.src, now ]
         if [ !got ] return
         r.owner.set_property[ r.name, got ]
+        # a node's object is made again
+        if [ r.kind == 1 ] design.forget[ r.blocks[ 0 ] ]
         if [ v ] v.rebuild_due = true
 
     public func render [] -> Elements
