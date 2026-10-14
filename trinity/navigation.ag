@@ -1,0 +1,364 @@
+# the navigation dialog: orbiter's browse list for any trinity
+# app (its orbiter bar's title opens it): a folder's entries with
+# their icons, '..' first; typing in the bar filters; a pick goes
+# to the app (element.nav_open), else a folder is gone into
+extend trinity
+
+class FindHit
+    public is_header : bool
+    public text      : string
+    public dir       : string
+    public is_dir    : bool
+    public is_spacer : bool
+    public session   : string
+    public file      : path
+    public line      : i32
+    # bordered trailing row: enters the title bar's create mode
+    public is_newfile : bool
+    # directory holds <stem>/<stem>.ag: a silver module
+    public is_module  : bool
+    public inst       : i32
+    # a scene card: picking it loads the scene
+    public scene      : string
+    # the scene's exported picture
+    public thumb      : path
+    # owner/name of a remote repository row: picking it checks the repo
+    # out
+    public repo       : string
+    # the repository is already checked out beside this one
+    public checked    : bool
+    # the trailing row of a listing: picking it fetches the next page
+    public more       : bool
+    # one of the user's pins, listed above the folder's own entries
+    public pinned     : bool
+    # directory holds <stem>/<stem>.agi: a resource (a design) the
+    # app opens; a yellow cube where a module's is blue
+    public is_resource : bool
+
+    # a card row: an instance or a scene
+    public func card [] -> bool
+        if [ inst > 0 ] return true
+        return scene && scene.count > 0
+
+    # a message row: a header with text that points at nothing
+    public func note [] -> bool
+        if [ !is_header || is_spacer || is_newfile || more || is_dir ]
+            return false
+        if [ file || inst > 0 ] return false
+        if [ (scene && scene.count > 0) || (repo && repo.count > 0) ]
+            return false
+        return text && text.count > 0
+
+
+# material icon theme: fileNames/fileExtensions → icon name = svg stem
+class FileIcons
+    intern static mi_loaded : bool
+    intern static mi_exts   : map
+    intern static mi_names  : map
+    intern static mi_models : map SVGModel [string]
+
+    func load []
+        if [ mi_loaded ] return
+        mi_loaded = true
+        jp : path 'images/material/material-icons.json'
+        if [ !jp.exists[] ] return
+        mm : map jp.load[ typeid[ map ], null ]
+        if [ !mm ] return
+        fe : map mm[ 'fileExtensions' ]
+        fn9 : map mm[ 'fileNames' ]
+        # own copies: the parsed json is freed later, and a child map
+        # went with it while the nav list was still drawing icons
+        if [ fe ]
+            mi_exts = map string [string] []
+            for [ v9: string, k9: string ] in fe
+                mi_exts[ k9 ] = v9
+        if [ fn9 ]
+            mi_names = map string [string] []
+            for [ v8: string, k8: string ] in fn9
+                mi_names[ k8 ] = v8
+        mi_models = map SVGModel [string] []
+
+    # one model per (icon, size): draw_svg caches a single raster per
+    # model
+    func icon [ fname: string, sz: i32 ] -> SVGModel
+        if [ !mi_loaded ] load[]
+        if [ !mi_exts ] return null
+        nm : string
+        if [ !fname ] return null
+        if [ mi_names && mi_names.contains[ fname ] ]
+            nm = mi_names[ fname ]
+        if [ !nm ]
+            n : i32 [ fname.count ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ fname[i] == 46 && i + 1 < n ]
+                    ex : string fname.mid[ i + 1, n - i - 1 ]
+                    # typed search text carries any dot: an unknown key
+                    # faults
+                    if [ mi_exts.contains[ ex ] ]
+                        nm = mi_exts[ ex ]
+                        break
+        if [ !nm ] nm = string [ 'file' ]
+        return named[ nm, sz ]
+
+    # direct icon by svg stem — tool rows name their icon
+    func named [ nm: string, sz: i32 ] -> SVGModel
+        if [ !mi_loaded ] load[]
+        if [ !mi_models ] mi_models = map SVGModel [string] []
+        key : '{nm}|{sz}'
+        mdl : SVGModel mi_models[ key ]
+        if [ !mdl ]
+            # the editor view wears orbiter's own mark (the path-only
+            # svg). a fresh local: assigning over nm drops the caller's
+            # reference
+            fn : string (nm == 'editor') ? 'orbiter4' : nm
+            ip : path 'images/material/{fn}.svg'
+            if [ !ip.exists[] ] ip = path 'images/{fn}.svg'
+            if [ !ip.exists[] ] return null
+            mdl = SVGModel [ ip ]
+            mi_models[ key ] = mdl
+        return mdl
+
+# a folder's rows as orbiter lists them: '..', folders (silver
+# modules leading them), then files; typed text keeps the names
+# holding it
+func nav_listing [ dir: path, filter: string ] -> vec FindHit
+    out : vec FindHit []
+    if [ !dir ] return out
+    typed : string [ (filter) ? filter.lcase[] : '' ]
+    up : path dir.directory[]
+    if [ up && typed.count == 0 ]
+        out.push[ nav_dir_hit[ up, '..' ] ]
+    entries : dir.ls[ null, false ]
+    if [ !entries ] return out
+    for [ pass: i32 0, pass < 2, pass += 1 ]
+        for [ e: path ] in entries
+            if [ !e.is_dir[] ] continue
+            dn : string e.filename[]
+            if [ dn == '.git' || dn == 'checkout' ] continue
+            if [ typed.count > 0 && dn.lcase[].index_of[ typed ] < 0 ]
+                continue
+            em : path '{e}/{dn}.ag'
+            if [ em.exists[] != (pass == 0) ] continue
+            out.push[ nav_dir_hit[ e, dn ] ]
+    for [ e: path ] in entries
+        if [ e.is_dir[] ] continue
+        fn : string e.filename[]
+        if [ typed.count > 0 && fn.lcase[].index_of[ typed ] < 0 ]
+            continue
+        out.push[ FindHit [ is_header: true, text: fn, dir: '',
+                            file: e ] ]
+    return out
+
+# a folder's row: a silver module's folder wears the module mark,
+# a resource's (<stem>.agi) the resource mark
+func nav_dir_hit [ p: path, label: string ] -> FindHit
+    m : path '{p}/{p.filename[]}.ag'
+    r : path '{p}/{p.filename[]}.agi'
+    src : bool [ m.exists[] ]
+    return FindHit [ is_header: true, is_dir: true, is_module: src,
+                     is_resource: !src && r.exists[], text: label,
+                     dir: '', file: p ]
+
+# a list row's hover: the wash and its edge, the pointer's near
+# light bringing the edge and an inner glow up (orbiter's lists)
+func nav_hover_paint [ cv: Canvas, e: element, x: f32, y: f32,
+                       wd: f32, ht: f32, fill: rgba, edge: rgba,
+                       oy: f32 ]
+    cv.save[]
+    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+    cv.fill_color[ fill ]
+    cv.stroke_width[ 1.0 ]
+    cv.stroke_offset[ -0.5 ]
+    # the edge at half alpha, every theme: the glow reads
+    cv.stroke_color[ rgba [ r: edge.r, g: edge.g, b: edge.b,
+                            a: edge.a * 0.5 ] ]
+    cv.box_shadow[ rgba [ r: edge.r, g: edge.g, b: edge.b,
+                          a: edge.a * 0.25 ], 0.0, 0.0, 6.0, 0.0,
+                   true ]
+    e.ux.near_light_on[ cv, e, 0.0, oy ]
+    cv.near_style[ 1.3, 3.9, rgba [ r: edge.r, g: edge.g, b: edge.b,
+                                    a: 1.0 ], e.ux.near_y_fade ]
+    cv.rect_to[ x, y, wd, ht ]
+    cv.paint[]
+    cv.restore[]
+
+# a list row's icon (21 px, at x + 38) and name after it; the
+# name's left edge back
+func nav_icon_paint [ cv: Canvas, ico: SVGModel, x: f32,
+                      ry: f32 ] -> f32
+    if [ !ico ] return x + 38.0
+    cv.fill_color[ rgba [ '#ffffff' ] ]
+    cv.stroke_color[ rgba [ '#ffffff' ] ]
+    cv.draw_svg[ ico, x + 38.0, round[ ry + 4.5 ], 21.0, 21.0 ]
+    return x + 67.0
+
+# the dialog: under the orbiter bar over the app, a solid ground
+# with its rows over it (NavRows); keys reach it from the Window
+element NavigationView
+    # the row under the pointer or chosen by the arrows
+    public at   : i32
+    # the rows as last listed, and what they were listed from
+    intern rows   : vec FindHit
+    intern listed : string
+
+    # the rows of the folder in view, listed again when it or the
+    # typed text changes
+    func hits [] -> vec FindHit
+        key : '{ux.nav_dir}|{ux.nav_filter}'
+        if [ !rows || !listed || listed.compare[ key ] != 0 ]
+            rows   = nav_listing[ ux.nav_dir, ux.nav_filter ]
+            listed = key
+            at     = 0
+            nr : list_el[]
+            if [ nr ]
+                nr.scroll.y    = 0.0
+                nr.scroll_goal = 0.0
+        return rows
+
+    func list_el [] -> NavRows
+        if [ !elements || !elements.contains[ 'rows' ] ] return null
+        return elements[ 'rows' ] inherits NavRows
+
+    func render [] -> Elements
+        out : Elements []
+        # brought up: it takes the keys (arrows choose, enter goes)
+        if [ ux && ux.focus != a ] ux.set_focus[ a ]
+        hits[]
+        out[ 'rows' ] = NavRows [ scroll_fade: 24.0,
+                                  area: Region { l0 t0 r0 b0 } ]
+        return out
+
+    func pick [ h: FindHit ]
+        if [ h && h.file ] ux.nav_pick[ h.file ]
+
+    # the bar's keys: up and down choose, enter opens; the Window
+    # keeps escape and the typed text
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ ev.key.unicode ]
+        list : hits[]
+        if [ k == 264 && at < list.count - 1 ] at += 1
+        if [ k == 265 && at > 0 ] at -= 1
+        if [ (k == 257 || k == 335) && at >= 0 && at < list.count ]
+            pick[ list[ at ] ]
+            return
+        nr : list_el[]
+        if [ nr ] nr.show_row[ at ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#14141a' ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+
+# the dialog's rows as orbiter's browse list draws them: 30 px,
+# the icon, the name, the hover's wash and edge under the
+# pointer's light; scrolled by trinity, faded where scrolled out
+element NavRows
+    # the icons: a file, a folder, a module's folder, by type
+    intern file_icon   : SVGModel
+    intern folder_icon : SVGModel
+    intern module_icon : SVGModel
+    intern resource_icon : SVGModel
+    intern ficons      : FileIcons
+    public  nav_hover_fill : rgba [ '#d25cc826' ]
+    public  nav_hover_edge : rgba [ '#e07ad899' ]
+
+    func row_h [] -> f32
+        return 30.0
+
+    # the dialog it is in: its rows and the chosen one
+    func dialog [] -> NavigationView
+        if [ !parent ] return null
+        return parent inherits NavigationView
+
+    func render [] -> Elements
+        view : dialog[]
+        if [ view ]
+            content_h = f32[ view.hits[].count ] * row_h[] + 24.0
+        return null
+
+    # the row at y: the pointer comes with the scroll in it
+    func row_of [ y: f32 ] -> i32
+        return i32[ floor[ (y - 8.0) / row_h[] ] ]
+
+    # a row brought into view
+    func show_row [ i: i32 ]
+        rh : row_h[]
+        top : f32 [ 8.0 + f32[ i ] * rh ]
+        if [ top - scroll_goal > bounds.h - rh - 8.0 ]
+            scroll_goal = top - bounds.h + rh + 8.0
+        if [ top < scroll_goal ] scroll_goal = top - 8.0
+        if [ scroll_goal < 0.0 ] scroll_goal = 0.0
+        scroll_anim = true
+        pristine = false
+
+    public func on_move [ ev: Event ]
+        view : dialog[]
+        if [ !view ] return
+        i : i32 [ row_of[ ev.mouse.pos.y ] ]
+        if [ i != view.at ]
+            view.at = i
+            pristine = false
+
+    public func on_press [ ev: Event ]
+        view : dialog[]
+        if [ !view ] return
+        list : view.hits[]
+        i : i32 [ row_of[ ev.mouse.pos.y ] ]
+        if [ i >= 0 && i < list.count ] view.pick[ list[ i ] ]
+        ev.no_propagation = true
+
+    func icon_of [ h: FindHit ] -> SVGModel
+        if [ !file_icon ]
+            fp : path 'images/file.svg'
+            if [ fp.exists[] ] file_icon = SVGModel [ fp ]
+        if [ !module_icon ]
+            mp : path 'images/material/3d.svg'
+            if [ mp.exists[] ] module_icon = SVGModel [ mp ]
+        if [ !folder_icon ]
+            dp : path 'images/material/folder.svg'
+            if [ dp.exists[] ] folder_icon = SVGModel [ dp ]
+        if [ !resource_icon ]
+            rp : path 'images/resource.svg'
+            if [ rp.exists[] ] resource_icon = SVGModel [ rp ]
+        if [ !ficons ] ficons = FileIcons []
+        if [ h.is_dir && h.is_module ] return module_icon
+        if [ h.is_dir && h.is_resource ] return resource_icon
+        if [ h.is_dir ] return folder_icon
+        if [ h.text && h.text.count > 0 ]
+            mim : SVGModel ficons.icon[ h.text, 21 ]
+            if [ mim ] return mim
+        return file_icon
+
+    public func draw [ w: Window ]
+        view : dialog[]
+        if [ w.draw_stage != CanvasType.screen || !view ] return
+        cv : Canvas [ w.screen ]
+        list : view.hits[]
+        cv.save[]
+        cv.translate[ 0.0, 0.0 - scroll.y ]
+        rh : row_h[]
+        x0 : f32 [ 12.0 ]
+        right : f32 [ bounds.w - 24.0 ]
+        for [ i: i32 0, i < list.count, i += 1 ]
+            h : list[ i ]
+            ry : f32 [ 8.0 + f32[ i ] * rh ]
+            if [ ry + rh < scroll.y || ry > scroll.y + bounds.h ]
+                continue
+            if [ i == view.at ]
+                nav_hover_paint[ cv, a, x0 + 32.0, ry + 1.0,
+                    right - x0 - 32.0, rh - 2.0, nav_hover_fill,
+                    nav_hover_edge, 0.0 - scroll.y ]
+            tx : nav_icon_paint[ cv, icon_of[ h ], x0, ry ]
+            cv.font_size[ 16 ]
+            cv.fill_color[ (h.is_dir) ? '#6cb6ff' : '#fff' ]
+            cv.draw_text[ h.text, rect [ x: tx, y: ry,
+                                         w: right - tx, h: rh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null ]
+        cv.restore[]

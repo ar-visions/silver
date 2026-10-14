@@ -43,7 +43,6 @@ ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 
 # import our own sub-modules
-import FileIcons
 import Navigate
 import Editor
 import NodeList
@@ -319,6 +318,20 @@ element EditorView
                 wds.push[ ow ]
                 xs.push[ cx ]
                 cx += ow + 6.0 * fu
+            # the app's views (its orbiter bar's chips): a chip each
+            # after the instances; the lit one is the view it shows
+            vns : vec string []
+            if [ rv.app_views ]
+                for [ vn: string ] in rv.app_views
+                    vns.push[ vn ]
+            vxs : vec f32 []
+            vws : vec f32 []
+            for [ vn: string ] in vns
+                vw9 : f32 [ min[ cv9.measure_text[ vn ].w + 40.6 * fu,
+                                 8.0 * 22.0 * fu ] ]
+                vxs.push[ cx ]
+                vws.push[ vw9 ]
+                cx += vw9 + 6.0 * fu
             # the strip ends before the companions and the search
             lim : f32 [ (te && te.bounds) ? te.bounds.w : 0.0 ]
             if [ te && te.elements ]
@@ -393,6 +406,13 @@ element EditorView
                 st[ ok ] = ArgButton [ label: lbs[ k ], resource: true,
                     second: os, inst: ov,
                     area: Region [ 'l{kx}px t{pad}px w{kw}px h{ch}px' ] ]
+            for [ k: i32 0, k < vns.count, k += 1 ]
+                vx : f32 [ vxs[ k ] - ax9 - shift + pad ]
+                vwd : f32 [ vws[ k ] ]
+                st[ 'view_{k}' ] = ArgButton [ label: vns[ k ],
+                    selected: e.app_view && rv.app_view_on == k,
+                    inst: rv,
+                    area: Region [ 'l{vx}px t{pad}px w{vwd}px h{ch}px' ] ]
             sa : string 'l{ax9 - pad}px t-{pad}px'
             sz : string 'w{sw + pad * 2.0}px h{ch + pad * 2.0}px'
             t['tasks'] = TaskStrip [ span: span, shift: shift,
@@ -6782,15 +6802,12 @@ element orbiter : trinity # implements compiler
         run_search[]
 
     func push_dir_hit [ p: path, label: string ]
-        m9 : path '{p}/{p.filename[]}.ag'
-        ism : bool [ m9.exists[] ]
-        find_hits.push[
-            FindHit [ is_header: true, is_dir: true, is_module: ism,
-                      text: label, dir: '', file: p ] ]
+        dh : nav_dir_hit[ p, label ]
+        find_hits.push[ dh ]
         if [ !browse_single ]
             find_hits.push[
-                FindHit [ is_header: true, is_dir: true, is_module: ism,
-                          text: '', file: p ] ]
+                FindHit [ is_header: true, is_dir: true,
+                          is_module: dh.is_module, text: '', file: p ] ]
 
     # arrowing into the list moves focus off the title; the menu stays.
     # the commit form's focus keeps it open the same way
@@ -7545,6 +7562,17 @@ element orbiter : trinity # implements compiler
         # focus, so no nav list; a press once it is selected opens it
         if [ ev.target.id == 'title' ]
             edt : Editor pane_of[ ev.target ]
+            # a pane showing a running app: the finder on the folder
+            # of the app's resource, the pick goes to the app (its
+            # orbiter bar's dialog, hosted)
+            hv : AppView (edt && edt.app_view) ? edt.run_view : null
+            if [ hv && !hv.ended && edt.pane_index == active_pane ]
+                hm : string band_mod_of[ edt ]
+                cur : string (hv.arg_text) ? hv.arg_text : ''
+                pick_default[ edt, null, hm, cur ]
+                ev.no_default     = true
+                ev.no_propagation = true
+                return
             if [
                 edt && edt.pane_index >= 0
                 && edt.pane_index < editor_slots.count
@@ -7553,6 +7581,22 @@ element orbiter : trinity # implements compiler
                 ev.no_default = true
                 if [ ux ] ux.restyle = true
                 return
+        # one of the app's views: the pane shows the app in that view;
+        # the lit one again, the app's source
+        if [ ev.target.id.starts_with[ 'view_' ]
+             && ev.target inherits ArgButton ]
+            pv : Editor pane_of[ ev.target ]
+            av : AppView (pv) ? pv.run_view : null
+            if [ pv && av && !av.ended && av.slot >= 0 ]
+                vi : i32 [ ev.target.id.mid[ 5,
+                    ev.target.id.count - 5 ] ]
+                lit : bool [ pv.app_view && av.app_view_on == vi ]
+                if [ !pv.app_view ] embed_app[ pv, av ]
+                host_post2[ av.slot, 1, i32[ HM.view ], (lit) ? -1 : vi,
+                            0, 0 ]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
         # another instance's chip: a press shows it in this pane; with
         # shift its file is picked anew too; cmd: another
         if [

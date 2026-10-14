@@ -27,6 +27,9 @@ import <math.h>
 
 import Panels
 import Outline
+import Grid
+import Svg
+import Graph
 
 # the cell a point falls in, moved by o, as a hash key
 func cell_key [ x: f32, y: f32, z: f32, cell: f32, ox: i32,
@@ -292,6 +295,8 @@ element DesignView
     # unused); and whose focus the stages show now
     mutable focus    : Stage
     mutable focus_of : string
+    # the floor's grid (the 3D view)
+    mutable grid     : Grid
     # the project folder watched: an outside .agi edit redraws
     mutable watcher  : watch
     # and the model module it names
@@ -401,9 +406,10 @@ element DesignView
         el
             design.load[]
             focus_of = ''
-            stage = Stage [ design: design ]
+            stage = Stage [ design: design, flip_y: true ]
             stage.build[ cv.vk, w, pw, ph ]
-            focus = Stage [ design: design, transparent: true,
+            focus = Stage [ design: design, flip_y: true,
+                            transparent: true,
                             objects_only: true, occlude: true ]
             focus.build[ cv.vk, w, pw, ph ]
             if [ picked ] picked.clear[]
@@ -430,16 +436,17 @@ element DesignView
         fx : f32 [ 0.0 - cp * cos[ yaw ] ]
         fy : f32 [ 0.0 - cp * sin[ yaw ] ]
         fz : f32 [ 0.0 - sin[ pitch ] ]
-        # the view's x is mirrored (its flipped y): right is z x f
-        rx : f32 [ 0.0 - fy ]
-        ry : f32 [ fx ]
+        # the view's right is f x z
+        rx : f32 [ fy ]
+        ry : f32 [ 0.0 - fx ]
         rl : f32 [ sqrt[ rx * rx + ry * ry ] ]
         if [ rl < 0.0001 ] rl = 0.0001
         rx = rx / rl
         ry = ry / rl
-        upx : f32 [ ry * fz ]
-        upy : f32 [ 0.0 - rx * fz ]
-        upz : f32 [ rx * fy - ry * fx ]
+        # the screen's down (y grows down): f x r
+        upx : f32 [ 0.0 - ry * fz ]
+        upy : f32 [ rx * fz ]
+        upz : f32 [ fx * ry - fy * rx ]
         scale : f32 [ 2.0 * dist * tan[ radians[ 20.0 ] ] / bounds.h ]
         dx : f32 [ ev.mouse.delta.x * scale ]
         dy : f32 [ ev.mouse.delta.y * scale ]
@@ -555,7 +562,16 @@ element DesignView
     # object mode: a click chooses an object
     func press_object [ ev: Event ]
         o : nearest_object[ ev.mouse.pos.x, ev.mouse.pos.y ]
-        if [ !o ] return
+        # a click on nothing lets the chosen one go
+        if [ !o ]
+            chosen = ''
+            if [ picked ] picked.clear[]
+            if [ sel ]
+                sel.object = ''
+                sel.pass   = ''
+                sel.node   = ''
+                sel.solo   = ''
+            return
         chosen = o.name
         if [ sel ]
             sel.object = o.name
@@ -878,7 +894,7 @@ element DesignView
             return
         if [ mode == 1 ]
             # a drag adds to the goal; the view follows it, eased
-            yaw_goal   = yaw_goal + ev.mouse.delta.x * 0.004
+            yaw_goal   = yaw_goal - ev.mouse.delta.x * 0.004
             pitch_goal = pitch_goal + ev.mouse.delta.y * 0.004
             if [ pitch_goal > 1.5 ] pitch_goal = 1.5
             if [ pitch_goal < -1.5 ] pitch_goal = -1.5
@@ -1001,6 +1017,47 @@ element DesignView
         note_files[]
         log 'aeon: saved'
 
+    # blender's numpad: 1 front, 3 right, 7 top (ctrl: the side
+    # opposite), 9 the other side, 8 2 4 6 turn 15 degrees, + -
+    # zoom; false for any other key
+    func numpad [ k: i32, ctrl: bool ] -> bool
+        if [ k < 320 || k > 334 ] return false
+        half : f32 [ 1.5707963 ]
+        # as near straight down as the view's up allows
+        top : f32 [ 1.5705 ]
+        step : f32 [ radians[ 15.0 ] ]
+        aim : f32 [ yaw_goal ]
+        if [ k == 321 ]
+            aim = (ctrl) ? half : 0.0 - half
+            pitch_goal = 0.0
+        el [ k == 323 ]
+            aim = (ctrl) ? 2.0 * half : 0.0
+            pitch_goal = 0.0
+        el [ k == 327 ]
+            aim = 0.0 - half
+            pitch_goal = (ctrl) ? 0.0 - top : top
+        el [ k == 329 ]
+            aim = yaw_goal + 2.0 * half
+            pitch_goal = 0.0 - pitch_goal
+        el [ k == 324 ]
+            aim = yaw_goal - step
+        el [ k == 326 ]
+            aim = yaw_goal + step
+        el [ k == 328 ]
+            pitch_goal = max[ pitch_goal - step, 0.0 - top ]
+        el [ k == 322 ]
+            pitch_goal = min[ pitch_goal + step, top ]
+        el [ k == 334 ]
+            dist_goal = max[ dist_goal / 1.2, 0.2 ]
+        el [ k == 333 ]
+            dist_goal = dist_goal * 1.2
+        el
+            return false
+        # the nearest turn to the goal: never round the long way
+        full : f32 [ 4.0 * half ]
+        yaw_goal = aim + full * round[ (yaw_goal - aim) / full ]
+        return true
+
     public func on_wheel [ ev: Event ]
         # half a step a notch, eased in as every move is
         step : f32 [ pow[ 1.05, 0.0 - ev.mouse.wheel_delta.y ] ]
@@ -1060,6 +1117,8 @@ element DesignView
         if [ op != 0 && down ]
             op_key[ k ]
             return
+        # the numpad's views, as blender's
+        if [ down && numpad[ k, ev.key.ctrl || ev.key.meta ] ] return
         # tab: the chosen object, or its inner cage
         if [ k == 258 && down && !grabbing ]
             if [ chosen && chosen.count > 0 ] inner = !inner
@@ -1154,9 +1213,10 @@ element DesignView
                 chosen = pick
                 inner  = false
         if [ !stage ]
-            stage = Stage [ design: design ]
+            stage = Stage [ design: design, flip_y: true ]
             stage.build[ cv.vk, w, pw, ph ]
-            focus = Stage [ design: design, transparent: true,
+            focus = Stage [ design: design, flip_y: true,
+                            transparent: true,
                             objects_only: true, occlude: true ]
             focus.build[ cv.vk, w, pw, ph ]
             note_files[]
@@ -1171,9 +1231,9 @@ element DesignView
         if [ agi_seen ]
             agi_seen = false
             follow_files[ cv, w, pw, ph ]
-        # a new size: inputs read the old textures, so made again
-        if [ stage && (stage.built_w != pw || stage.built_h != ph) ]
-            rebuild_due = true
+        # a new size: each stage resizes its targets in its frame and
+        # hands their readers the new textures (rewire); nothing is
+        # made again
         # an object's shape changed: its models, nothing else
         if [ remake_due && remake_due.count > 0 && !rebuild_due ]
             for [ nm: string ] in remake_due
@@ -1185,9 +1245,11 @@ element DesignView
         # a node or pass changed in memory: made again from memory
         if [ rebuild_due ]
             rebuild_due = false
-            stage = Stage [ design: design, graph: stage.graph ]
+            stage = Stage [ design: design, graph: stage.graph,
+                            flip_y: true ]
             stage.build[ cv.vk, w, pw, ph ]
             focus = Stage [ design: design, graph: focus.graph,
+                            flip_y: true,
                             transparent: true, objects_only: true,
                             occlude: true ]
             focus.build[ cv.vk, w, pw, ph ]
@@ -1210,14 +1272,17 @@ element DesignView
         ease_op[]
         spot_eye : camera_eye[]
         mid : vec3f [ center ]
-        # z up; the view's y is flipped, as every trinity view
-        up : vec3f [ 0.0, 0.0, -1.0 ]
+        # z up; the projection flips y for vulkan's rows, so the
+        # picture is not mirrored (a 180 degree roll mirrors it)
+        up : vec3f [ 0.0, 0.0, 1.0 ]
         asp : f32 [ bounds.w / bounds.h ]
         view_m       = mat4f.look_at[ spot_eye, mid, up ]
         stage.eye    = spot_eye
         stage.middle = mid
-        stage.proj   = mat4f.perspective[ radians[ 40.0 ], asp, 0.05,
-                                          100.0 ]
+        stage.up     = up
+        lens : mat4f.perspective[ radians[ 40.0 ], asp, 0.05, 100.0 ]
+        lens.m[ 5 ]  = 0.0 - lens.m[ 5 ]
+        stage.proj   = lens
         if [ dirty ]
             dirty = false
             o : editing[]
@@ -1261,6 +1326,7 @@ element DesignView
         focus.eye    = stage.eye
         focus.middle = stage.middle
         focus.proj   = stage.proj
+        focus.up     = up
         # the ground, then the stage's outputs, each over the last
         cv.fill_color[ '#14141a' ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
@@ -1280,6 +1346,13 @@ element DesignView
         el
             for [ tx: Texture ] in stage.frame[ pw, ph ]
                 cv.draw_image[ tx, whole ]
+        # the floor's grid, behind what stands on it
+        if [ !grid ] grid = Grid [ vk: cv.vk, w: w ]
+        dep : stage.object_depth[]
+        if [ want.count > 0 ] dep = focus.object_depth[]
+        ground : grid.frame[ dep, view_m, stage.proj, spot_eye, dist,
+                            pw, ph ]
+        if [ ground ] cv.draw_image[ ground, whole ]
         draw_cage[ cv ]
         # g, r or s running: what it does and what is typed
         words : op_words[]
@@ -1316,7 +1389,7 @@ class PropRow
     public value  : string
     public file   : path
     public blocks : vec string
-    # pass settings are written quoted
+    # pass settings are written quoted (a word; numbers bare)
     public quoted : bool
     # a list: shown without its brackets
     public list   : bool
@@ -1381,6 +1454,15 @@ element aeon : trinity
     mutable edits  : Edits
     # what the outliner and the properties share
     mutable scene  : SceneEdit
+    # an .svg opened: the 2D mode, in place of a design
+    mutable doc    : SvgDoc
+    # the title given to the bar (or the host's) once
+    mutable titled : bool
+    # how many times one was opened here: the view is made anew
+    mutable opened : i32
+    # the project as last opened: a new one set from outside (the
+    # host's pick, `set project`) opens in place
+    mutable opened_as : string
 
     func init []
         root : path.path_startup[]
@@ -1400,12 +1482,70 @@ element aeon : trinity
         if [ project.count > 0 ]
             last_project = project
             save-persistent[ a ]
-        dir : path [ project ]
-        design = Design [ dir: dir ]
+        opened_as = project
         sel = Selection [ object: '', node: '', pass: '', solo: '' ]
         history = vec Selection []
         edits = Edits []
+        if [ project.ends_with[ '.svg' ] ]
+            doc = SvgDoc [ file: path [ project ] ]
+            scene = SceneEdit [ sel: sel, edits: edits, doc: doc ]
+            return
+        dir : path [ project ]
+        design = Design [ dir: dir ]
         scene = SceneEdit [ design: design, sel: sel, edits: edits ]
+
+    # the views the orbiter bar offers over the editor: the scene
+    # as nodes (an svg has none yet)
+    public func views [] -> vec string
+        if [ doc ] return null
+        return vec string [] [ 'nodes' ]
+
+    # the orbiter bar's dialog browses where this was opened from:
+    # the svg's folder, or the folder holding the design
+    public func nav_folder [] -> path
+        if [ !project ] return null
+        p : path [ project ]
+        return p.parent_dir[]
+
+    # a pick in that dialog: an .svg, a .blend, or a folder with its
+    # own design (<name>/<name>.agi) opens here; else not ours
+    public func nav_open [ p: path ] -> bool
+        txt : string '{p}'
+        if [ txt.ends_with[ '.svg' ] || txt.ends_with[ '.blend' ] ]
+            open_project[ txt ]
+            return true
+        if [ p.is_dir[] ]
+            nm : string p.filename[]
+            own : path '{p}/{nm}.agi'
+            if [ own.exists[] ]
+                open_project[ txt ]
+                return true
+        return false
+
+    # another project opened in place: everything chosen, held and
+    # shown starts over; the view is made anew
+    func open_project [ p: string ]
+        project = p
+        if [ project.ends_with[ '.blend' ] ]
+            project = import_blend[ project ]
+        last_project = project
+        save-persistent[ a ]
+        sel = Selection [ object: '', node: '', pass: '', solo: '' ]
+        history = vec Selection []
+        place = -1
+        edits = Edits []
+        doc = null
+        design = null
+        if [ project.ends_with[ '.svg' ] ]
+            doc = SvgDoc [ file: path [ project ] ]
+            scene = SceneEdit [ sel: sel, edits: edits, doc: doc ]
+        el
+            design = Design [ dir: path [ project ] ]
+            scene = SceneEdit [ design: design, sel: sel,
+                                edits: edits ]
+        opened += 1
+        opened_as = project
+        titled = false
 
     # ctrl/cmd + left and right, and orbiter's arrows: the choices
     # made before and after this one
@@ -1449,26 +1589,67 @@ element aeon : trinity
              && ev.key.unicode == 256 ]
             scene.choosing = false
             return
+        if [ doc && middle[] ]
+            sv : middle[] inherits SvgView
+            if [ sv ] sv.key_event[ ev ]
+            return
         v : view[]
         if [ v ]
             v.key_event[ ev ]
 
     func view [] -> DesignView
-        if [ !elements || !elements.contains[ 'view' ] ] return null
-        return cast DesignView [ elements[ 'view' ] ]
+        mid : middle[]
+        if [ !mid ] return null
+        return mid inherits DesignView
+
+    # the view between the outliner and the properties
+    func middle [] -> element
+        if [ !elements || !elements.contains[ 'split' ] ] return null
+        sp : elements[ 'split' ]
+        key : string 'view{opened}'
+        if [ !sp.elements || !sp.elements.contains[ key ] ]
+            return null
+        return sp.elements[ key ]
 
     public func render [] -> Elements
+        # the host picked another resource for it: opened here
+        if [ project && opened_as
+             && project.compare[ opened_as ] != 0 ]
+            open_project[ project ]
         remember[]
+        # the bar's title (or the host pane's): the folder or file
+        if [ !titled && ux ]
+            titled = true
+            named : path [ project ]
+            set_title[ named.filename[] ]
         e : Elements [ ]
         v : view[]
         # the outliner the full left, the scene in the middle, the
-        # chosen thing's properties on the right
+        # chosen thing's properties on the right; the seams drag
         scene.view = v
-        e[ 'outline' ] = Outliner [ scene: scene, animated: true,
-            area: Region [ 'l0 t0 w240px b0' ] ]
-        e[ 'view' ] = DesignView [ design: design, sel: sel,
-            edits: edits, animated: true,
-            area: Region [ 'l240px t0 r340px b0' ] ]
-        e[ 'props' ] = PropsSide [ scene: scene, animated: true,
-            area: Region [ 'r340px t0 r0 b0' ] ]
+        panes : map element [ string ] []
+        panes[ 'outline' ] = Outliner [ scene: scene, animated: true ]
+        key : string 'view{opened}'
+        if [ doc ]
+            panes[ key ] = SvgView [ doc: doc, animated: true ]
+        el
+            panes[ key ] = DesignView [ design: design, sel: sel,
+                edits: edits, animated: true ]
+        panes[ 'props' ] = PropsSide [ scene: scene, animated: true ]
+        # on its own: the orbiter bar over all of it; in orbiter's
+        # pane, the pane's bar is it
+        alone : bool [ !ux || !ux.hosted[] ]
+        top : string [ (alone) ? 't1.3' : 't0' ]
+        if [ alone ]
+            e[ 'bar' ] = OrbiterBar [ area: Region { l0 t0 r0 h1.3 } ]
+        # the nodes view over it: the editor stays (its stages kept),
+        # hidden
+        nodes : bool [ ux && !doc && ux.bar_view
+                       && ux.bar_view.compare[ 'nodes' ] == 0 ]
+        e[ 'split' ] = Splitter [ area: Region [ 'l0 {top} r0 b0' ],
+            inner: panes, flex: 1, min_size: 120.0, hide: nodes,
+            sizes: vec f32 [] [ 240.0, 0.0, 340.0 ] ]
+        if [ nodes ]
+            e[ 'nodes' ] = NodeGraph [ scene: scene,
+                area: Region [ 'l0 {top} r0 b0' ] ]
         return e

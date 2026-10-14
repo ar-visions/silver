@@ -29,6 +29,10 @@ class SVGShape
     public fill_none   : bool
     public stroke_none : bool
     public opacity     : f32
+    # the element it came from, and its space to the document's
+    # (an editor writes a moved shape back through them)
+    public node        : SVGNode
+    public space       : affine
 
 class SVGModel
     public w            : f32
@@ -42,6 +46,8 @@ class SVGModel
     # the cached raster was drawn with the solid override on
     public cache_solid  : bool
     public pixel_scale  : i32 [ 4 ]
+    # the text it was read from: its nodes' spans index it
+    public source       : string
 
     construct [ src: path ]
         expect src.exists, 'svg-path does not exist: {src}'
@@ -59,6 +65,7 @@ class SVGModel
         load[ f ]
 
     public func load [ text: string ]
+        source = text
         parser   : SVGParser []
         root     : SVGNode parser.parse_doc[ text ]
         if [ !root ]
@@ -190,6 +197,13 @@ class SVGNode
     public tag      : string
     public attrs    : map string[string]
     public children : vec SVGNode
+    # where it is in the text: its '<', the end of its open tag,
+    # its closing tag's '<' and the end of it all (no children:
+    # the last three are equal)
+    public at       : i64
+    public head_end : i64
+    public tail_at  : i64
+    public end      : i64
 
     func attr [ name: string ] -> string
         return (attrs) ? attrs[ name ] : null
@@ -271,6 +285,7 @@ class SVGParser
     func parse_element [] -> SVGNode
         if [ at[] != '<' ]
             return null
+        start : i64 [ pos ]
         pos += 1
         c : i32 at[]
         if [ c == '!' ]
@@ -305,20 +320,28 @@ class SVGParser
             return null
         skip_ws[]
         node : SVGNode [ tag: tag, attrs: parse_attrs[],
-                         children: vec SVGNode [] ]
+                         children: vec SVGNode [], at: start ]
         skip_ws[]
         if [ at[] == '/' ]
             pos += 1
             if [ at[] == '>' ] pos += 1
+            node.head_end = pos
+            node.tail_at  = pos
+            node.end      = pos
             return node
         if [ at[] == '>' ] pos += 1
+        node.head_end = pos
+        node.tail_at  = pos
+        node.end      = pos
         while [ pos < src.count ]
             skip_ws[]
             if [ pos >= src.count ] break
             if [ at[] == '<' ]
                 if [ next[1] == '/' ]
+                    node.tail_at = pos
                     while [ pos < src.count && at[] != '>' ] pos += 1
                     if [ pos < src.count ] pos += 1
+                    node.end = pos
                     return node
                 child : SVGNode parse_element[]
                 if [ child ] node.children.push[ child ]
@@ -1007,11 +1030,13 @@ func svg_parse_pts [ xf: affine, pts: string ] -> vec SVGCmd
 
 
 # the shape just pushed takes its element's id and attributes
-func svg_tag [ shapes: vec SVGShape, node: SVGNode ]
+func svg_tag [ shapes: vec SVGShape, node: SVGNode, xf: affine ]
     if [ !shapes || shapes.count == 0 ] return
     sh : SVGShape shapes[ shapes.count - 1 ]
     sh.id    = node.attr[ 'id' ]
     sh.attrs = node.attrs
+    sh.node  = node
+    sh.space = xf
 
 func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                 state: SVGState ]
@@ -1032,7 +1057,7 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
             if [ d && d.count > 0 ]
                 pb   : SVGPathBuilder []
                 shapes.push[ svg_make_shape[ pb.build[ d, lxf ], st ] ]
-                svg_tag[ shapes, node ]
+                svg_tag[ shapes, node, lxf ]
         el [ tag == 'rect' ]
             rx_: f32 node.attr_f[ 'rx', 0.0 ]
             ry_: f32 node.attr_f[ 'ry', 0.0 ]
@@ -1044,19 +1069,19 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                         0.0 ],
                 rx_, ry_ ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
-            svg_tag[ shapes, node ]
+            svg_tag[ shapes, node, lxf ]
         el [ tag == 'circle' ]
             r : f32 node.attr_f[ 'r', 0.0 ]
             cmds : svg_kappa_ellipse[ lxf, node.attr_f[ 'cx', 0.0 ],
                                       node.attr_f[ 'cy', 0.0 ], r, r ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
-            svg_tag[ shapes, node ]
+            svg_tag[ shapes, node, lxf ]
         el [ tag == 'ellipse' ]
             cmds : svg_kappa_ellipse[ lxf,
                 node.attr_f[ 'cx', 0.0 ], node.attr_f[ 'cy', 0.0 ],
                 node.attr_f[ 'rx', 0.0 ], node.attr_f[ 'ry', 0.0 ] ]
             shapes.push[ svg_make_shape[ cmds, st ] ]
-            svg_tag[ shapes, node ]
+            svg_tag[ shapes, node, lxf ]
         el [ tag == 'line' ]
             pb : SVGPathBuilder []
             pb.cmds = vec SVGCmd []
@@ -1071,7 +1096,7 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
             pb.cmd_line[ lxf, node.attr_f[ 'x2', 0.0 ],
                          node.attr_f[ 'y2', 0.0 ] ]
             shapes.push[ svg_make_shape[ pb.cmds, st ] ]
-            svg_tag[ shapes, node ]
+            svg_tag[ shapes, node, lxf ]
         el [ tag == 'polyline' || tag == 'polygon' ]
             pts : string node.attr[ 'points' ]
             if [ pts && pts.count > 0 ]
@@ -1081,4 +1106,4 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                                         x1: 0.0, y1: 0.0, x2: 0.0,
                                         y2: 0.0 ] ]
                 shapes.push[ svg_make_shape[ cmds, st ] ]
-                svg_tag[ shapes, node ]
+                svg_tag[ shapes, node, lxf ]

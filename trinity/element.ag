@@ -298,6 +298,11 @@ ielement element
     # bottom fades while more content remains below. 0 = off
     public scroll_fade   : f32
     intern mask_bg       : vec4f
+    # the masking layer: the picture and its children composed, then
+    # drawn through the mask
+    intern mask_layer    : Canvas
+    intern mask_layer_w  : i32
+    intern mask_layer_h  : i32
     public mask_keep_l   : f32
     public mask_inset    : vec4f
     mutable pristine     : bool [ false ]
@@ -407,6 +412,18 @@ ielement element
     # this app transcribes speech itself (orbiter): the exchange's mic
     # works without a host. a hosted app asks its host instead
     public func dictates [] -> bool
+        return false
+    # the views the app shows in place of its source, by name: the
+    # orbiter bar lists them after its title (none: no chips)
+    public func views [] -> vec string
+        return null
+    # the folder the orbiter bar's dialog browses: the one the
+    # app's resource was opened from; null: no dialog
+    public func nav_folder [] -> path
+        return null
+    # a file or folder picked in that dialog: true once opened (a
+    # folder it does not open is gone into)
+    public func nav_open [ p: path ] -> bool
         return false
 
     func unload_tree [ ]
@@ -841,8 +858,11 @@ class Layer
         shift : f32 [ text_shift ]
         text_left -= shift
         text_x = text_left
-        cv.set_crop[ bounds.x, bounds.y, bounds.x + bounds.w,
-                     bounds.y + bounds.h ]
+        # the crop is on the canvas: the drawing's offset added (a
+        # no_cache element paints into its parent's canvas)
+        crx : f32 [ cv.transform_tx[] + bounds.x ]
+        cry : f32 [ cv.transform_ty[] + bounds.y ]
+        cv.set_crop[ crx, cry, crx + bounds.w, cry + bounds.h ]
 
         if [ has_edit && sc != ec ]
             cv.fill_color[ '#264f78' ]

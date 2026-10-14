@@ -5188,9 +5188,9 @@ enode etype_access(etype target, string name) { sequencer
             base = tnode_v;
         } else {
             // a class instance data pointer steps back to its Au header
-            LLVMValueRef i8ptr  = LLVMBuildBitCast(B, tnode_v, LLVMPointerType(LLVMInt8Type(), 0), "i8ptr");
-            LLVMValueRef offset = LLVMConstInt(LLVMInt64Type(), -(int64_t)sizeof(struct _Au), true);
-            base = LLVMBuildGEP2(B, LLVMInt8Type(), i8ptr, &offset, 1, "au.base");
+            LLVMValueRef i8ptr  = LLVMBuildBitCast(B, tnode_v, LLVMPointerTypeInContext(a->module_ctx, 0), "i8ptr");
+            LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(a->module_ctx), -(int64_t)sizeof(struct _Au), true);
+            base = LLVMBuildGEP2(B, LLVMInt8TypeInContext(a->module_ctx), i8ptr, &offset, 1, "au.base");
         }
         LLVMValueRef au_typed = LLVMBuildBitCast(B, base, LLVMPointerType(_lltype_slot(au), 0), "au.typed");
         return with_value(LLVMBuildStructGEP2(B, _lltype_slot(au), au_typed, m->member_index, id->chars), enode(
@@ -5936,6 +5936,24 @@ enode e_create_from_array(aether a, etype t, array ar) {
 enode e_convert_or_cast(aether a, etype output, enode input) {
     emit_guard;
     if (a->no_build) return e_noop(a, output);
+
+    // a value of any type to string: Au's cast_string (a string
+    // comes back as itself; a boxed number is written as its number).
+    // a pointer cast here read a boxed f64 as text (strlen faulted)
+    {
+        etype ci9 = canonical(input);
+        etype co9 = canonical(output);
+        if (ci9 && co9 && ci9->autype == typeid(Au) &&
+                co9->autype == typeid(string)) {
+            Au_t fn_cast = find_member(typeid(Au), "cast_string",
+                AU_MEMBER_CAST, 0, false);
+            verify(u(efunc, fn_cast), "Au_cast_string not found");
+            enode av9 = input->loaded ? input : enode_value(input, true);
+            enode au9 = with_value(_llvalue((enode)av9),
+                enode(mod, a, loaded, false, autype, typeid(Au)));
+            return e_fn_call(a, u(efunc, fn_cast), a(au9), false, false);
+        }
+    }
 
     // a vector hands a raw pointer its packed elements: origin
     Au_t iau9 = input->autype ? au_arg_type((Au)input->autype) : null;
@@ -7534,7 +7552,7 @@ enode aether_e_for(aether a,
         enode origin     = etype_access((etype)in_expr, string("origin"));
         
         // alloca for index
-        LLVMTypeRef  i32_type  = LLVMInt32Type();
+        LLVMTypeRef  i32_type  = LLVMInt32TypeInContext(a->module_ctx);
         LLVMValueRef idx       = entry_alloca(a, i32_type, "for.idx");
         LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, _llvalue((enode)count_node), "count");
         if (reverse) {
@@ -7560,7 +7578,7 @@ enode aether_e_for(aether a,
         LLVMValueRef idx_body = LLVMBuildLoad2(B, i32_type, idx, "idx.body");
         
         // origin[idx] -> Au pointer
-        LLVMTypeRef ptr = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMTypeRef ptr = LLVMPointerTypeInContext(a->module_ctx, 0);
         LLVMValueRef elem_ptr = LLVMBuildGEP2(B, 
             ptr,
             LLVMBuildLoad2(B, ptr, _llvalue((enode)origin), "count"), &idx_body, 1, "elem.ptr");
@@ -7584,7 +7602,7 @@ enode aether_e_for(aether a,
             validate(key_var->autype->src == typeid(i64) || key_var->autype->src == typeid(u64),
                 "array index-key must be castable to num/i64/u64");
 
-            LLVMValueRef idx_i64 = LLVMBuildSExt(B, idx_body, LLVMInt64Type(), "idx.i64");
+            LLVMValueRef idx_i64 = LLVMBuildSExt(B, idx_body, LLVMInt64TypeInContext(a->module_ctx), "idx.i64");
             enode idx_node = value(etypeid(i64), idx_i64);
             enode idx_cast = e_create(a, canonical(key_var), (Au)idx_node, false);
             LLVMBuildStore(B, _llvalue((enode)idx_cast), _llvalue((enode)key_var));
@@ -7611,7 +7629,7 @@ enode aether_e_for(aether a,
         enode count_node  = etype_access((etype)in_expr, string("count"));
         enode origin_node = etype_access((etype)in_expr, string("origin"));
 
-        LLVMTypeRef  i32_type  = LLVMInt32Type();
+        LLVMTypeRef  i32_type  = LLVMInt32TypeInContext(a->module_ctx);
         LLVMValueRef idx       = entry_alloca(a, i32_type, "micro.idx");
         LLVMValueRef count_val = LLVMBuildLoad2(B, i32_type, _llvalue((enode)count_node), "micro.count");
         if (reverse) {
@@ -7635,7 +7653,7 @@ enode aether_e_for(aether a,
         if (st && a->coverage) aether_emit_block_probe(a, st->probe_id);
 
         LLVMValueRef idx_body   = LLVMBuildLoad2(B, i32_type, idx, "micro.idx.body");
-        LLVMTypeRef  ptr_type   = LLVMPointerType(LLVMInt8Type(), 0);
+        LLVMTypeRef  ptr_type   = LLVMPointerTypeInContext(a->module_ctx, 0);
         LLVMValueRef origin_ptr = LLVMBuildLoad2(B, ptr_type, _llvalue((enode)origin_node), "micro.origin");
         LLVMValueRef elem_ptr   = LLVMBuildGEP2(B, ptr_type, origin_ptr, &idx_body, 1, "micro.elem.ptr");
         LLVMValueRef elem       = LLVMBuildLoad2(B, ptr_type, elem_ptr, "micro.elem");
@@ -7655,7 +7673,7 @@ enode aether_e_for(aether a,
         if (key_var) {
             validate(key_var->autype->src == typeid(i64) || key_var->autype->src == typeid(u64),
                 "micro index-key must be i64/u64");
-            LLVMValueRef idx_i64 = LLVMBuildSExt(B, idx_body, LLVMInt64Type(), "idx.i64");
+            LLVMValueRef idx_i64 = LLVMBuildSExt(B, idx_body, LLVMInt64TypeInContext(a->module_ctx), "idx.i64");
             enode idx_node = value(etypeid(i64), idx_i64);
             enode idx_cast = e_create(a, canonical(key_var), (Au)idx_node, false);
             LLVMBuildStore(B, _llvalue((enode)idx_cast), _llvalue((enode)key_var));
@@ -13209,7 +13227,7 @@ AU_EXPORT enode aether_e_stack_array_dynamic(aether a, etype elem_type, enode co
     LLVMTypeRef  lt        = lltype(elem_type);
     enode        loaded_ct = count_expr->loaded ? count_expr : e_load(a, count_expr, null);
     LLVMValueRef count_val = _llvalue((enode)loaded_ct);
-    count_val = LLVMBuildIntCast2(B, count_val, LLVMInt32Type(), false, "local_sz");
+    count_val = LLVMBuildIntCast2(B, count_val, LLVMInt32TypeInContext(a->module_ctx), false, "local_sz");
     LLVMValueRef alloc     = LLVMBuildArrayAlloca(B, lt, count_val, "stack_arr_dyn");
     Au_t arr_au = def(a->autype, null, AU_MEMBER_TYPE, AU_TRAIT_SHAPED);
     arr_au->src        = elem_type->autype;

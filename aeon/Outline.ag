@@ -32,6 +32,8 @@ class SceneEdit
     public typed  : map Au [ string ]
     public given  : map Au [ string ]
     public busy   : map Au [ string ]
+    # an .svg open (the 2D mode) in place of a design
+    public doc    : SvgDoc
 
     func init []
         typed = map Au [ string ] []
@@ -63,6 +65,12 @@ class SceneEdit
     # the chosen thing's sections, in order
     func blocks [] -> vec Block
         out : vec Block []
+        if [ doc ]
+            if [ doc.chosen < 0 || doc.chosen >= doc.count[] ]
+                return out
+            out.push[ block[ 'svg:{doc.chosen}', 'shape',
+                             shape_rows[ doc.chosen ] ] ]
+            return out
         if [ !design || !sel ] return out
         o : object_named[ sel.object ]
         if [ o ]
@@ -86,8 +94,19 @@ class SceneEdit
                              material_rows[ slot ] ] ]
             return out
         p : pass_named[ sel.pass ]
-        if [ !p ] return out
-        out.push[ block[ 'pass:{p.name}', 'pass', pass_rows[ p ] ] ]
+        if [ p ] return pass_blocks[ p, 'pass' ]
+        # nothing chosen: the scene's, its render's passes in
+        # order, each with its draws
+        if [ sel.pass.count > 0 || !view || !view.stage ] return out
+        for [ q: Pass ] in view.stage.graph.passes
+            for [ b: Block ] in pass_blocks[ q, 'pass · {q.name}' ]
+                out.push[ b ]
+        return out
+
+    # a pass's values, then each of its draws' settings
+    func pass_blocks [ p: Pass, label: string ] -> vec Block
+        out : vec Block []
+        out.push[ block[ 'pass:{p.name}', label, pass_rows[ p ] ] ]
         if [ p.draws ]
             for [ d: Draw ] in p.draws
                 b : block[ 'draw:{p.name}/{d.name}',
@@ -271,6 +290,19 @@ class SceneEdit
                 blocks: vec string [] [ 'surface' ] ] ]
         return shaped[ out ]
 
+    # an svg shape's values: its own, or its style's
+    func shape_rows [ i: i32 ] -> vec PropRow
+        out : vec PropRow []
+        nd : doc.model.shapes[ i ].node
+        if [ !nd ] return out
+        for [ k: string ] in vec string [] [ 'id', 'fill', 'stroke',
+                'stroke-width', 'opacity', 'transform' ]
+            v : svg_value[ nd, k ]
+            out.push[ PropRow [ name: k, value: v, kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
+        return shaped[ out ]
+
     func design_file [] -> path
         nm : string design.dir.filename[]
         return path '{design.dir}/{nm}.agi'
@@ -350,8 +382,18 @@ class SceneEdit
 
     # the whole value set in memory; the write waits for a save
     func set_row [ r: PropRow, text: string ]
+        # an svg shape's value: on its element, and drawn so now
+        if [ r.kind == 5 ]
+            sh : cast SVGShape [ r.owner ]
+            svg_set[ sh, r.name, text ]
+            doc.mark[ i32[ r.pass ] ]
+            return
         now : string [ (r.list) ? '[ {text} ]' : text ]
-        val : string [ (r.quoted) ? '\'{now}\'' : now ]
+        # a word is written quoted; a number or true / false bare
+        bare : bool [ r.list || all_numbers[ now, 1 ]
+                      || now.compare[ 'true' ] == 0
+                      || now.compare[ 'false' ] == 0 ]
+        val : string [ (r.quoted && !bare) ? '\'{now}\'' : now ]
         edits.queue[ Write [ file: r.file, blocks: r.blocks,
                              key: r.name, value: val ] ]
         if [ r.kind == 3 ]
@@ -468,6 +510,14 @@ element Outliner
 
     func list [] -> vec Line
         out : vec Line []
+        # an svg: its shapes, in the file's order
+        if [ scene && scene.doc ]
+            out.push[ line_of[ 'shapes', 0, 0 ] ]
+            for [ i: i32 0, i < scene.doc.count[], i += 1 ]
+                sl : line_of[ scene.doc.name_of[ i ], 0, 5 ]
+                sl.node = '{i}'
+                out.push[ sl ]
+            return out
         if [ !scene || !scene.design ] return out
         out.push[ line_of[ 'objects', 0, 0 ] ]
         for [ o: Object ] in scene.design.objects
@@ -494,6 +544,8 @@ element Outliner
         if [ ln.kind == 3 ]
             return s.object.count == 0
                 && ln.node.compare[ scene.slot ] == 0
+        if [ ln.kind == 5 ]
+            return scene.doc && i32[ ln.node ] == scene.doc.chosen
         return false
 
     public func on_press [ ev: Event ]
@@ -502,6 +554,11 @@ element Outliner
         if [ i < 0 || i >= lines.count ] return
         ln : lines[ i ]
         if [ ln.kind == 0 ] return
+        # a shape: chosen (again: let go)
+        if [ ln.kind == 5 ]
+            at : i32 [ ln.node ]
+            scene.doc.chosen = (at == scene.doc.chosen) ? -1 : at
+            return
         s : scene.sel
         if [ minus_on[ ln, i ] && ev.mouse.pos.x > bounds.w - 30.0 ]
             scene.remove_object[ ln.object ]
@@ -622,9 +679,55 @@ element Outliner
 # row and its grid), a modifier's or draw's with its switch
 element PropsSide
     public scene : SceneEdit
+
+    func title [] -> string
+        s : scene.sel
+        if [ s.object.count > 0 ] return s.object
+        if [ scene.slot.count > 0 ] return scene.slot
+        if [ s.pass.count > 0 ] return s.pass
+        if [ scene.doc ]
+            d : scene.doc
+            if [ d.chosen >= 0 && d.chosen < d.count[] ]
+                return d.name_of[ d.chosen ]
+            fn : string d.file.filename[]
+            return 'svg · {fn}'
+        # nothing chosen: the scene, by its folder's name
+        if [ !scene.design ] return ''
+        nm : string scene.design.dir.filename[]
+        return 'scene · {nm}'
+
+    # the title first; what scrolls is its own child under it
+    public func render [] -> Elements
+        out : Elements []
+        if [ !scene ] return out
+        out[ 'body' ] = PropsBody [ scene: scene, scroll_fade: 24.0,
+            area: Region [ 'l0 t40px r0 b0' ] ]
+        return out
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#14141a' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        nm : title[]
+        cv.font_size[ 15 ]
+        cv.fill_color[ rgba [ (nm.count > 0) ? '#f4f4f8' : '#6a6a78' ] ]
+        cv.draw_text[ (nm.count > 0) ? nm : 'nothing chosen',
+            rect [ x: 14.0, y: 6.0, w: bounds.w - 28.0, h: 28.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.paint[]
+        cv.restore[]
+
+# the sections under the title: scrolled by trinity, faded where
+# rows are scrolled out (its masking layer takes the panels too)
+element PropsBody
+    public scene : SceneEdit
     mutable shown : vec Block
-    # how far the sections are scrolled up, and their full height
-    mutable lift  : f32
+    # the sections' full height
     mutable tall  : f32
     # the modifiers area's heading
     mutable mods_y  : f32
@@ -652,13 +755,6 @@ element PropsSide
                     changed = true
         return changed
 
-    func title [] -> string
-        s : scene.sel
-        if [ s.object.count > 0 ] return s.object
-        if [ scene.slot.count > 0 ] return scene.slot
-        if [ s.pass.count > 0 ] return s.pass
-        return ''
-
     public func render [] -> Elements
         out : Elements []
         if [ !scene ] return out
@@ -669,7 +765,10 @@ element PropsSide
             v.undo_row = null
         take[]
         shown = scene.blocks[]
-        y : f32 [ 40.0 - lift ]
+        # the panels flow (t..px+), so they move with the scroll;
+        # each a gap after the last one's bottom
+        y : f32 [ 0.0 ]
+        last_end : f32 [ 0.0 ]
         mods_y = -1.0
         for [ b: Block ] in shown
             # the object's modifiers: their own area, each framed
@@ -686,24 +785,23 @@ element PropsSide
             if [ b.rows.count == 0 ]
                 y += 6.0
                 continue
+            gap : f32 [ y - last_end ]
             out[ b.key ] = LaunchPanel [ spec: scene.spec_of[ b ],
                 args: '', inst: 1, live_vals: true,
                 changing: b.busy, name_frac: 0.42,
-                area: Region [ 'l0 t{y}px r0 h{b.h}px' ] ]
+                area: Region [ 'l0 t{gap}px+ r0 h{b.h}px' ] ]
+            last_end = y + b.h
             y += b.h + 6.0
         # an object without modifiers still has the area, for +
         if [ mods_y < 0.0 && scene.sel.object.count > 0 ]
             y += 12.0
             mods_y = y
             y += 28.0
-        tall = y + lift
+        # trinity scrolls it (the wheel), fading where rows are
+        # scrolled out (scroll_fade)
+        tall = y + 20.0
+        content_h = tall
         return out
-
-    public func on_wheel [ ev: Event ]
-        lift -= ev.mouse.wheel_delta.y * 40.0
-        most : f32 [ tall - bounds.h + 20.0 ]
-        if [ lift > most ] lift = most
-        if [ lift < 0.0 ] lift = 0.0
 
     # a modifier's −: always shown
     func minus_on [ b: Block ] -> bool
@@ -744,14 +842,8 @@ element PropsSide
         cv.fill_color[ rgba [ '#14141a' ] ]
         cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
         cv.paint[]
-        nm : title[]
-        cv.font_size[ 15 ]
-        cv.fill_color[ rgba [ (nm.count > 0) ? '#f4f4f8' : '#6a6a78' ] ]
-        cv.draw_text[ (nm.count > 0) ? nm : 'nothing chosen',
-            rect [ x: 14.0, y: 6.0, w: bounds.w - 28.0, h: 28.0 ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
-        cv.paint[]
+        # the headings move with the scroll, as the panels do
+        cv.translate[ 0.0, 0.0 - scroll.y ]
         if [ mods_y >= 0.0 ]
             cv.font_size[ 14 ]
             cv.fill_color[ rgba [ '#9a9ab0' ] ]

@@ -164,6 +164,91 @@ MeshNode Array
         return merge > 0.0 && count > 1
 
 # a thing in the design: its place, materials and nodes
+# an .svg of the project on a flat panel, standing up and
+# facing -y (the front view), as wide as the drawing's ratio
+MeshNode SvgPanel
+    public file    : string
+    # the panel's height, in units
+    public height  : f32 [ 1.0 ]
+    # the drawing, read once, and drawn for the GPU (a stage
+    # fills it the first time a model shows it)
+    intern drawing : SVGModel
+    intern picture : Canvas
+
+    func props [] -> vec string
+        return vec string [] [ 'file', 'height' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        p : path '{dir}/{file}'
+        if [ !drawing ]
+            if [ !p.exists[] ]
+                log 'aeon: no svg at {p}'
+                return null
+            drawing = SVGModel [ p ]
+        h : f32 [ (height > 0.0) ? height : 1.0 ]
+        half : f32 [ h * drawing.w / drawing.h * 0.5 ]
+        left : f32 [ 0.0 - half ]
+        pos : vec f32 [] [ left, 0.0, 0.0, half, 0.0, 0.0,
+                           half, 0.0, h, left, 0.0, h ]
+        # the drawing's top row at the panel's top
+        uv : Attr [ name: 'UVMap', domain: 3, width: 2,
+                    data: vec f32 [] [ 0.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+                                       0.0, 0.0 ] ]
+        return Poly [ pos: pos, fsize: vec i32 [] [ 4 ],
+                      fstart: vec i32 [] [ 0 ],
+                      corner: vec i32 [] [ 0, 1, 2, 3 ],
+                      attrs: vec Attr [] [ uv ] ]
+
+    # the drawing on the GPU, 2048 pixels its long side, colours
+    # made linear (a material's are); drawn once
+    func picture_of [ vk: vk_context, w: Window ] -> Texture
+        if [ picture ] return picture.color
+        if [ !drawing || drawing.w <= 0.0 || drawing.h <= 0.0 ]
+            return null
+        side : f32 [ 2048.0 ]
+        wide : bool [ drawing.w >= drawing.h ]
+        pw : i32 [ (wide) ? side : side * drawing.w / drawing.h ]
+        ph : i32 [ (wide) ? side * drawing.h / drawing.w : side ]
+        cv : Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: pw,
+                      height: ph, load_existing: true,
+                      tag: 'svg-panel' ]
+        cv.update[]
+        cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        s : f32 [ f32[ pw ] / drawing.w ]
+        for [ sh: SVGShape ] in drawing.shapes
+            cv.save[]
+            cv.set_opacity[ sh.opacity ]
+            cv.fill_color[ linear_of[ sh.fill, sh.fill_none ] ]
+            cv.stroke_color[ linear_of[ sh.stroke, sh.stroke_none ] ]
+            sw : f32 [ (sh.stroke_none) ? 0.0 : sh.sw * s ]
+            cv.set_stroke_size[ sw ]
+            for [ c: SVGCmd ] in sh.cmds
+                if [ c.op == SVGOp.move ]
+                    cv.move_to[ c.x * s, c.y * s ]
+                el [ c.op == SVGOp.line ]
+                    cv.line_to[ c.x * s, c.y * s ]
+                el [ c.op == SVGOp.cubic ]
+                    cv.cubic_to[ c.x1 * s, c.y1 * s, c.x2 * s,
+                                 c.y2 * s, c.x * s, c.y * s ]
+                el [ c.op == SVGOp.quad ]
+                    cv.quad_to[ c.x1 * s, c.y1 * s, c.x * s, c.y * s ]
+                el [ c.op == SVGOp.close ]
+                    cv.close_path[]
+            cv.paint[]
+            cv.restore[]
+        cv.sync_fence[]
+        cv.flush_submit[]
+        cv.flush_text[]
+        cv.color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        picture = cv
+        return cv.color
+
+    # an svg colour as a material's: linear, none clear
+    func linear_of [ c: rgba, none: bool ] -> rgba
+        if [ none || !c ] return rgba [ '#00000000' ]
+        return rgba [ r: pow[ c.r, 2.2 ], g: pow[ c.g, 2.2 ],
+                      b: pow[ c.b, 2.2 ], a: c.a ]
+
 class Object
     public name        : string
     public at          : vec f32
@@ -269,6 +354,12 @@ class Object
         if [ nodes && nodes.count > 0 ]
             return nodes[ nodes.count - 1 ].name
         return ''
+
+    # the svg panel node, if the object is one
+    func panel [] -> SvgPanel
+        for [ n: MeshNode ] in nodes
+            if [ n inherits SvgPanel ] return cast SvgPanel [ n ]
+        return null
 
     # the first cage node: the points an edit moves
     func cage [] -> Cage

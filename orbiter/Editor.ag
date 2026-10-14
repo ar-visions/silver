@@ -81,47 +81,6 @@ class TokBloom
     public mask : i32       # bits - 1, a power of two
     public w    : vec u64
 
-class FindHit
-    public is_header : bool
-    public text      : string
-    public dir       : string
-    public is_dir    : bool
-    public is_spacer : bool
-    public session   : string
-    public file      : path
-    public line      : i32
-    # bordered trailing row: enters the title bar's create mode
-    public is_newfile : bool
-    # directory holds <stem>/<stem>.ag: a silver module
-    public is_module  : bool
-    public inst       : i32
-    # a scene card: picking it loads the scene
-    public scene      : string
-    # the scene's exported picture
-    public thumb      : path
-    # owner/name of a remote repository row: picking it checks the repo
-    # out
-    public repo       : string
-    # the repository is already checked out beside this one
-    public checked    : bool
-    # the trailing row of a listing: picking it fetches the next page
-    public more       : bool
-    # one of the user's pins, listed above the folder's own entries
-    public pinned     : bool
-
-    # a card row: an instance or a scene
-    public func card [] -> bool
-        if [ inst > 0 ] return true
-        return scene && scene.count > 0
-
-    # a message row: a header with text that points at nothing
-    public func note [] -> bool
-        if [ !is_header || is_spacer || is_newfile || more || is_dir ]
-            return false
-        if [ file || inst > 0 ] return false
-        if [ (scene && scene.count > 0) || (repo && repo.count > 0) ]
-            return false
-        return text && text.count > 0
 
 class VRow
     public src   : i32 [ -1 ]
@@ -541,6 +500,11 @@ ResourceView AppView
     # the app's own title, shown on the pane
     public  app_title   : string
     mutable title_buf   : vec u8     # its bytes as they arrive
+    # the app's views (its orbiter bar's chips), the one it shows
+    # (-1 its source), and their names' bytes as they arrive
+    public  app_views   : vec string
+    public  app_view_on : i32 [ -1 ]
+    mutable views_buf   : vec u8
     # orbiter's tail args, forwarded to the module
     mutable module_args : string
     # orbiter has attached lldb to this app's pid
@@ -698,6 +662,38 @@ ResourceView AppView
                 nav_fwd_on  = host_pb[] != 0
                 wn : cast Window [ cv.w ]
                 if [ wn ] wn.restyle = true
+            # the app's views, '|' between, three bytes a message
+            el [ t == i32[ HM.views ] ]
+                if [ !views_buf ] views_buf = vec u8 []
+                vb9 : local i32 [ 3 ]
+                vb9[0] = host_pa[]
+                vb9[1] = host_pb[]
+                vb9[2] = host_pc[]
+                for [ k9: i32 0, k9 < 3, k9 += 1 ]
+                    if [ vb9[k9] != 0 ]
+                        views_buf.push[ u8 vb9[k9] ]
+                        continue
+                    vt : local i8 [ 1024 ]
+                    vn9 : i32 [
+                        (views_buf.count < 1023)
+                        ? i32[ views_buf.count ] : 1023 ]
+                    for [ j9: i32 0, j9 < vn9, j9 += 1 ]
+                        vt[ j9 ] = i8[ views_buf[ j9 ] ]
+                    vt[ vn9 ] = 0
+                    joined : string [ @vt[0] ]
+                    app_views = vec string []
+                    if [ joined.count > 0 ]
+                        for [ vw: string ] in joined.split[ '|' ]
+                            app_views.push[ vw ]
+                    views_buf = vec u8 []
+                    wv9 : cast Window [ cv.w ]
+                    if [ wv9 ] wv9.restyle = true
+                    break
+            # the view the app shows (-1 its source)
+            el [ t == i32[ HM.view_state ] ]
+                app_view_on = host_pa[]
+                ws9 : cast Window [ cv.w ]
+                if [ ws9 ] ws9.restyle = true
             # the app's title, three bytes a message; a 0 byte ends it
             el [ t == i32[ HM.title ] ]
                 if [ !title_buf ] title_buf = vec u8 []
@@ -3536,6 +3532,8 @@ Control Editor
     mutable pin_icon      : SVGModel
     mutable file_icon     : SVGModel
     mutable module_icon   : SVGModel
+    # a resource's folder (<stem>.agi): the yellow cube
+    mutable resource_icon : SVGModel
     mutable folder_icon   : SVGModel
     mutable ficons        : FileIcons
     mutable was_showing   : bool

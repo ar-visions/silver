@@ -1,0 +1,131 @@
+# the floor's grid in the 3D view: minor lines, a major every
+# tenth, the x and y axes; hidden behind what stands on it
+extend aeon
+
+# a quad: each pixel's ray meets the floor (z 0)
+ModelViewProject AeonGrid
+    # the eye (xyz) and its distance to the view's centre (w)
+    mutable eye : vec4f
+
+    # the scene's depth: the grid is hidden behind it
+    attrib height    : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.height, count:1,
+                                       format: typeid[ f32 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # lines every s units: a pixel wide (dp: units a pixel),
+    # gone once the cells are a few pixels across
+    func lines [ p: vec2f, dp: vec2f, s: float ] -> GLSL float {
+        vec2  g = p / s;
+        vec2  w = max(dp / s, vec2(1e-6));
+        vec2  d = abs(fract(g - 0.5) - 0.5) / w;
+        float c = 1.0 - min(min(d.x, d.y), 1.0);
+        return c * (1.0 - smoothstep(0.12, 0.35, max(w.x, w.y)));
+    }
+
+    func fragment [] -> GLSL none {
+        vec2  ndc = v_uv * 2.0 - 1.0;
+        mat4  vp  = ubo.proj * ubo.view;
+        mat4  ivp = inverse(vp);
+        vec4  na  = ivp * vec4(ndc, 0.0, 1.0);
+        vec4  fa  = ivp * vec4(ndc, 1.0, 1.0);
+        vec3  p0  = na.xyz / na.w;
+        vec3  dir = fa.xyz / fa.w - p0;
+        bool  hit = abs(dir.z) > 1e-7;
+        float t   = hit ? -p0.z / dir.z : -1.0;
+        hit       = hit && t > 0.0;
+        vec3  p   = p0 + dir * max(t, 0.0);
+        vec2  dp  = fwidth(p.xy);
+        // the level by the distance: a minor every s0, a major
+        // every 10 s0; the next level comes in as f nears 1
+        float lv  = log(max(ubo.eye.w, 1e-3) * 0.5) / log(10.0);
+        float s0  = pow(10.0, floor(lv) - 1.0);
+        float f   = fract(lv);
+        float la  = lines(p.xy, dp, s0)         * 0.3 * (1.0 - f);
+        float lb  = lines(p.xy, dp, s0 * 10.0)  * mix(0.6, 0.3, f);
+        float lc  = lines(p.xy, dp, s0 * 100.0) * 0.6 * f;
+        float al  = max(la, max(lb, lc));
+        vec3  col = vec3(0.55, 0.57, 0.62);
+        // the axes: x (y = 0) red, y (x = 0) green, 1.5 px
+        float ax  = clamp(1.5 - abs(p.y) / max(dp.y, 1e-6), 0.0, 1.0);
+        float ay  = clamp(1.5 - abs(p.x) / max(dp.x, 1e-6), 0.0, 1.0);
+        col = mix(col, vec3(0.86, 0.26, 0.32), ax);
+        al  = max(al, ax * 0.85);
+        col = mix(col, vec3(0.45, 0.76, 0.16), ay * (1.0 - ax));
+        al  = max(al, ay * 0.85);
+        // fading out far off, and at a grazing look
+        float r   = length(p - ubo.eye.xyz);
+        al *= 1.0 - smoothstep(ubo.eye.w * 4.0, ubo.eye.w * 12.0, r);
+        al *= smoothstep(0.0, 0.06, abs(normalize(dir).z));
+        // behind the scene's surfaces: hidden (past the far plane
+        // the depth is still clear: nothing there)
+        vec4  cp  = vp * vec4(p, 1.0);
+        float sd  = texture(height, v_uv).r;
+        bool  open = sd >= 1.0 || cp.z / cp.w <= sd + 1e-6;
+        al *= open ? 1.0 : 0.0;
+        al  = hit ? al : 0.0;
+        fragColor = vec4(col * al, al);
+    }
+
+# the grid's own pass, drawn over the view's picture
+class Grid
+    public vk : vk_context
+    public w  : Window
+    intern shade  : AeonGrid
+    intern quad   : Model
+    intern target : Render
+    # the depth bound now, and its size: a new one (a stage made
+    # again) or a resize (the same texture, a new image) rebinds
+    intern bound  : Texture
+    intern bound_w : i32
+    intern bound_h : i32
+
+    # the grid at this frame's camera, over the depth given
+    func frame [ depth: Texture, vm: mat4f, pm: mat4f, eye: vec3f,
+                 dist: f32, pw: i32, ph: i32 ] -> Texture
+        if [ !depth ] return null
+        if [ !target ]
+            shade = AeonGrid [ vk: vk, name: 'aeon-grid' ]
+            smp : map Au [ string ] []
+            smp[ 'height' ] = depth
+            quad = Model [ w: w, s: shade, samplers: smp ]
+            target = Render [ vk: vk, w: w, tag: 'aeon-grid',
+                width: pw, height: ph,
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                models: vec Model [] [ quad ] ]
+            target.wscale = 0.0
+            bound   = depth
+            bound_w = depth.width
+            bound_h = depth.height
+        if [ depth != bound || depth.width != bound_w
+             || depth.height != bound_h ]
+            bound   = depth
+            bound_w = depth.width
+            bound_h = depth.height
+            quad.samplers[ 'height' ] = depth
+            quad.rebind_model[]
+        if [ target.width != pw || target.height != ph ]
+            target.width  = pw
+            target.height = ph
+        shade.model = mat4f.identity[]
+        shade.view  = vm
+        shade.proj  = pm
+        shade.eye   = vec4f [ eye.x, eye.y, eye.z, dist ]
+        target.update[]
+        target.draw[]
+        target.sync_fence[]
+        return target.color

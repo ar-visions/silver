@@ -179,6 +179,7 @@ import FontMatch
 import video
 import mux
 import demux
+import navigation
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -219,6 +220,13 @@ enum HM
     title   : 16
     # app -> ide: a b = its picture's width and height (its shape)
     aspect  : 17
+    # app -> ide: its views' names, '|' between, three bytes a
+    # message as the title's
+    views   : 18
+    # app -> ide: a = the view shown (its index), -1 the source
+    view_state : 19
+    # ide -> app: a = the view to show, -1 the source
+    view    : 20
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -1329,6 +1337,14 @@ abstract live_app media_app
                     frame_req = true
                 el [ t == i32[ HM.nav ] ]
                     wn.navigate[ host_pa[] ]
+                # the host's chip: a view of the app, or its source
+                el [ t == i32[ HM.view ] ]
+                    vae : cast element [ wn.app_object ]
+                    vn : vec string [ (vae) ? vae.views*[] : null ]
+                    vi : i32 [ host_pa[] ]
+                    wn.bar_view = (vn && vi >= 0 && vi < vn.count)
+                        ? vn[ vi ] : ''
+                    wn.restyle  = true
                 el [ t == i32[ HM.key ] ]
                     wn.ev.clear[]
                     wn.ev.key.unicode = host_pa[]
@@ -2294,6 +2310,17 @@ Display Window
     mutable swap_fade           : bool
     # this frame's transitions land at once (a restore)
     mutable snap_transitions    : bool
+    # the orbiter bar's dialog: open, the folder it shows and what
+    # is typed to filter it
+    mutable nav_open            : bool
+    mutable nav_dir             : path
+    mutable nav_filter          : string
+    # the app's view shown in place of its source ('' the source):
+    # the orbiter bar's chips flip it
+    mutable bar_view            : string
+    # hosted: the views and the shown one as last told the host
+    mutable views_sent          : string
+    mutable view_sent           : i32 [ -2 ]
 
     public func agent_state_busy [] -> bool
         return agent_busy
@@ -3569,14 +3596,51 @@ Display Window
         if [ glfw && app_size_w > 0 && app_size_h > 0 ]
             platform_window_set_size[ glfw, app_size_w, app_size_h ]
 
+    # a byte of text, 0 past its end
+    func text_byte [ t: string, i: i32 ] -> i32
+        if [ i >= t.count ] return 0
+        c : i32 [ t.chars[ i ] ]
+        return c & 255
+
+    # hosted: the app's views and the one shown, told to the host
+    # when they change (its pane title shows them as chips)
+    func views_post []
+        ae : cast element [ app_object ]
+        names : vec string [ (ae) ? ae.views*[] : null ]
+        joined : ''
+        lit : i32 [ -1 ]
+        if [ names ]
+            for [ i: i32 0, i < names.count, i += 1 ]
+                joined = (i == 0) ? names[ i ] : '{joined}|{names[ i ]}'
+                if [ bar_view && bar_view.compare[ names[ i ] ] == 0 ]
+                    lit = i
+        if [ !views_sent || views_sent.compare[ joined ] != 0 ]
+            views_sent = joined
+            n : i32 [ joined.count ]
+            for [ i: i32 0, i < n, i += 3 ]
+                b0 : i32 [ text_byte[ joined, i ] ]
+                b1 : i32 [ text_byte[ joined, i + 1 ] ]
+                b2 : i32 [ text_byte[ joined, i + 2 ] ]
+                host_post[ 0, i32[ HM.views ], b0, b1, b2 ]
+            if [ n % 3 == 0 ] host_post[ 0, i32[ HM.views ], 0, 0, 0 ]
+        if [ lit != view_sent ]
+            view_sent = lit
+            host_post[ 0, i32[ HM.view_state ], lit, 0, 0 ]
+
     func app_render [] -> Elements
         e : Elements [ ]
+        if [ host_slot[] > 0 ] views_post[]
         e[ 'app' ] = cast element [ app_object ]
         ae : cast element [ app_object ]
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
         if [ ide_active ]
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
+        # the orbiter bar's dialog: everything under the bar, as
+        # orbiter's takes a pane under its title
+        if [ nav_open && host_slot[] <= 0 ]
+            e[ 'navigation' ] = NavigationView [ topmost: true,
+                focusable: true, area: Region { l0 t1.3 r0 b0 } ]
         if [ shot_ask && !agent_min ]
             e[ 'shot_bg' ] = ShotBackdrop [ topmost: true,
                     fading: swap_fade ]
@@ -3819,6 +3883,57 @@ Display Window
         if [ app_object && app_object != focus ]
             return app_object.navigate*[ dir ]
         return false
+
+    # hosted in another app's pane (orbiter's): its bar is the
+    # host's, so the app makes no orbiter bar of its own
+    public func hosted [] -> bool
+        return host_slot[] > 0
+
+    # the dialog closed: its focus goes with it
+    public func nav_close []
+        if [ focus && focus inherits NavigationView ]
+            release_focus[ focus ]
+        nav_open = false
+        restyle  = true
+
+    # the orbiter bar's title pressed: the dialog on the folder the
+    # app names, or closed
+    public func nav_toggle []
+        if [ nav_open ]
+            nav_close[]
+            return
+        ae : cast element [ app_object ]
+        f : path [ (ae) ? ae.nav_folder*[] : null ]
+        if [ !f || !f.is_dir[] ] return
+        nav_dir    = f
+        nav_filter = ''
+        nav_open   = true
+        restyle    = true
+
+    # a row picked: the app opens it, else a folder is gone into
+    public func nav_pick [ p: path ]
+        if [ !p ] return
+        ae : cast element [ app_object ]
+        if [ ae && ae.nav_open*[ p ] ]
+            nav_close[]
+            return
+        if [ p.is_dir[] ]
+            nav_dir    = p
+            nav_filter = ''
+            restyle    = true
+
+    # a key while the dialog is open: it takes them all; escape
+    # and backspace are the bar's, the rest the dialog's
+    func nav_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        k : i32 [ ev.key.unicode ]
+        if [ k == 256 ]
+            nav_close[]
+        el [ k == 259 && nav_filter.count > 0 ]
+            nav_filter = nav_filter.mid[ 0, nav_filter.count - 1 ]
+        el [ focus && focus inherits NavigationView ]
+            focus.on_key*[ ev ]
+        restyle = true
 
     # an element's word on its history: kept here, and told to the host
     public func nav_state [ back: bool, forward: bool ]
@@ -4131,6 +4246,12 @@ Display Window
         return r
 
     public func text_event [ ev: Event ]
+        # the orbiter bar's dialog filters by what is typed
+        if [ nav_open ]
+            if [ ev.key.text ]
+                nav_filter = '{nav_filter}{ev.key.text}'
+                restyle = true
+            return
         ev.target = focus
         if [ focus && focus.on_char*[ ev ] ] return
         # a focused app element already had its turn
@@ -4262,6 +4383,10 @@ Display Window
         if [ ev.key.state && ev.key.shift &&
              (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
             if [ !shot_ask || agent_min ] screenshot_begin[]
+            return
+        # the orbiter bar's dialog open: its keys, nobody else's
+        if [ nav_open ]
+            nav_key[ ev ]
             return
         # ctrl/cmd with = or -: the font unit, 4 steps of 2px each way
         # of 22
@@ -5934,6 +6059,59 @@ Display Window
                 el [ ee.area.l.x_type == XAlign.left ]
                     last_l = ee
 
+    # a masked element's layer: its cached picture, then each child
+    # that is not topmost, as they would land on the screen; drawn
+    # through the mask whole, so every child fades with it
+    func compose_mask_layer [ e: element*, stage: CanvasType, ew: i32,
+                              eh: i32, crops: bool ]
+        if [ !e.mask_layer || e.mask_layer_w != ew
+             || e.mask_layer_h != eh ]
+            if [ e.mask_layer ]
+                e.mask_layer.resize[ ew, eh ]
+            el
+                e.mask_layer = Canvas [ w: a, vk: vk,
+                    format: Pixel.rgba8, width: ew, height: eh,
+                    load_existing: true, quantize: true,
+                    nearest: true ]
+                e.mask_layer.update[]
+            e.mask_layer_w = ew
+            e.mask_layer_h = eh
+        ml : e.mask_layer
+        ml.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        ml.draw_canvas[ e.cache_canvas, 0.0, 0.0, f32[ ew ], f32[ eh ] ]
+        prev : hold[ a.screen ]
+        a.screen = ml
+        ml.save[]
+        ml.translate[ f32[ e.cache_ox ], f32[ e.cache_oy ] ]
+        # a scrolling element crops its rows to its bounds
+        if [ crops ]
+            ml.save[]
+            ctx : f32 [ ml.transform_tx[] ]
+            cty : f32 [ ml.transform_ty[] ]
+            ml.crop_within[ ctx, cty, ctx + e.bounds.w,
+                            cty + e.bounds.h ]
+        last_ : element
+        for [ ee: element, id: string ] in e.elements
+            if [ ee.topmost || ee.hide ] continue
+            # an uncached child is in the picture already
+            if [ ee.no_cache && !ee.animated ]
+                if [ !ee.pristine ] e.pristine = false
+                continue
+            ml.save[]
+            if [ ee.bounds ]
+                relx : bool [ ee.area && ee.area.l.relative ]
+                rely : bool [ ee.area && ee.area.t.relative ]
+                sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
+                sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                ml.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
+            draw_element[ ee, stage, last_ ]
+            last_ = ee
+            ml.restore[]
+        if [ crops ] ml.restore[]
+        ml.restore[]
+        a.screen = prev
+        drop[ prev ]
+
     public func draw_element [ e: element*, stage: CanvasType,
                                last:element ]
         draw_stage = stage
@@ -6456,6 +6634,8 @@ Display Window
             e.mask_glow.z = (mxs > 0.5 && e.scroll.y < mxs - 0.5) ? e.scroll_fade : 0.0
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0
                          || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
+        # its children went through the mask with it (its layer)
+        layered : bool [ false ]
         if [ e.cache_canvas && !e.animated && !nc
              && stage == CanvasType.screen ]
             # snap the cache blit to the device grid: a cached element
@@ -6517,7 +6697,11 @@ Display Window
                                e.mask_glow.w, 3 ]
                     e.mask_canvas.restore[]
                     e.mask_bg = e.mask_glow
-                cv.draw_canvas_masked[ e.cache_canvas, e.mask_canvas,
+                # the masking layer: this element's picture and its
+                # children (cached or not) composed, then masked whole
+                compose_mask_layer[ e, stage, ew, eh, crops ]
+                layered = true
+                cv.draw_canvas_masked[ e.mask_layer, e.mask_canvas,
                     0.0 - f32 [ e.cache_ox ] + bsx,
                     0.0 - f32 [ e.cache_oy ] + bsy, f32 [ ew ],
                     f32 [ eh ] ]
@@ -6586,6 +6770,8 @@ Display Window
             if [ is_cached && ee.no_cache && !ee.animated ]
                 if [ !ee.pristine ] e.pristine = false
                 continue
+            # drawn into the masking layer already
+            if [ layered ] continue
             cv.save[]
             if [ ee.bounds ]
                 relx : bool [ ee.area && ee.area.l.relative ]
@@ -7585,7 +7771,12 @@ element Splitter
     public snap_close : bool
     # a pane closed shut reopens by its owner, never a drag
     public shut_locked : bool
-    intern drag_ix    : i32
+    # the pane that takes what the others leave (the rest are sized)
+    public flex       : i32
+    # each pane's size until it is dragged, by its place (0: deflt)
+    public sizes      : vec f32
+    # the pane being dragged, -1 none
+    intern drag_ix    : i32 [ -1 ]
     # the dragged pane's width when the drag began
     intern drag_from  : f32
     intern last_n     : i32
@@ -7626,6 +7817,11 @@ element Splitter
             v : f32 [ ch.extent ]
             if [ v > 0.0 ] return (v < min_size) ? min_size : v
             if [ v < 0.0 && snap_close ] return 0.0
+            if [ sizes ]
+                ids : order[]
+                for [ i: i32 0, i < ids.count && i < sizes.count, i += 1 ]
+                    if [ kid[ ids[ i ] ] == ch && sizes[ i ] > 0.0 ]
+                        return sizes[ i ]
         if [ deflt > 0.0 ] return deflt
         if [ share > 0.0 ] return span * share
         return (span - f32[ n - 1 ] * gap) / f32[ n ]
@@ -7653,17 +7849,18 @@ element Splitter
             dbgf  = 20
         span : f32 [
             (bounds) ? ((vertical) ? bounds.h : bounds.w) : 1200.0 ]
-        flex : f32 [ span - f32[ n - 1 ] * gap ]
-        for [ i: i32 1, i < n, i += 1 ]
-            flex -= shown_of[ kid[ ids[ i ] ], span, n ]
-        if [ flex < 60.0 ] flex = 60.0
+        fi : i32 [ flex_at[ n ] ]
+        rest : f32 [ span - f32[ n - 1 ] * gap ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ i != fi ] rest -= shown_of[ kid[ ids[ i ] ], span, n ]
+        if [ rest < 60.0 ] rest = 60.0
         ti   : string [ (inset > 0.0) ? '{inset}' : '0' ]
         out  : Elements [ ]
         dseam = vec f32 []
         pos : f32 [ 0.0 ]
         for [ i: i32 0, i < n, i += 1 ]
             ch : element inner[ ids[ i ] ]
-            w  : f32 [ (i == 0) ? flex : shown_of[ kid[ ids[ i ] ],
+            w  : f32 [ (i == fi) ? rest : shown_of[ kid[ ids[ i ] ],
                     span, n ] ]
             # whole-pixel pane edges. a fractional edge on a translucent
             # background feathers into the gap and reads as a second
@@ -7712,6 +7909,16 @@ element Splitter
                 if [ child ] child.pristine = false
         return out
 
+    # the flexible pane's index, within the panes there are
+    func flex_at [ n: i32 ] -> i32
+        if [ flex < 0 || flex >= n ] return 0
+        return flex
+
+    # the pane a seam resizes: the one on the far side from the
+    # flexible pane
+    func seam_pane [ di: i32, n: i32 ] -> i32
+        return (di + 1 > flex_at[ n ]) ? di + 1 : di
+
     public func tick [ w: Window ]
         if [ !bounds ] return
         ids : order[]
@@ -7719,7 +7926,9 @@ element Splitter
         if [ n == 0 ] return
         span   : f32 [ (vertical) ? bounds.h : bounds.w ]
         moving : bool [ false ]
-        for [ i: i32 1, i < n, i += 1 ]
+        fi : i32 [ flex_at[ n ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ i == fi ] continue
             ch : element kid[ ids[ i ] ]
             if [ !ch ] continue
             t : f32 [ target_of[ ch, span, n ] ]
@@ -7769,7 +7978,7 @@ element Splitter
         if [ !shut_locked ] return false
         ids : order[]
         if [ di + 1 >= ids.count ] return false
-        sk : element kid[ ids[ di + 1 ] ]
+        sk : element kid[ ids[ seam_pane[ di, ids.count ] ] ]
         return sk && sk.extent < 0.0
 
     func on_press [ ev: Event ]
@@ -7781,7 +7990,7 @@ element Splitter
             d : f32 [ dseam[ di ] ]
             if [ at >= d - bar && at <= d + bar ]
                 if [ di + 1 < ids.count ]
-                    drag_ix = di + 1
+                    drag_ix = seam_pane[ di, ids.count ]
                     dk : element kid[ ids[ drag_ix ] ]
                     drag_from = (dk) ? dk.extent_shown : 0.0
                 ux.set_capture[ a ]
@@ -7792,7 +8001,7 @@ element Splitter
     func on_move [ ev: Event ]
         if [ !bounds ] return
         hat  : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
-        seam_near : bool [ drag_ix > 0 ]
+        seam_near : bool [ drag_ix >= 0 ]
         if [ !seam_near && dseam ]
             for [ di: i32 0, di < dseam.count, di += 1 ]
                 if [ seam_locked[ di ] ] continue
@@ -7804,20 +8013,26 @@ element Splitter
         el [ cursor_on ]
             ux.seam_cursor[ 0 ]
             cursor_on = false
-        if [ drag_ix <= 0 ] return
+        if [ drag_ix < 0 ] return
         ids  : order[]
         n    : i32 [ ids.count ]
-        if [ drag_ix >= n ] drag_ix = n - 1
-        if [ drag_ix <= 0 ] return
+        if [ drag_ix >= n || drag_ix == flex_at[ n ] ] return
         span : f32 [ (vertical) ? bounds.h : bounds.w ]
         at   : f32 [ (vertical) ? ev.mouse.pos.y : ev.mouse.pos.x ]
-        after : f32 [ 0.0 ]
-        for [ i: i32 1, i < n, i += 1 ]
-            if [ i > drag_ix ]
+        sz   : f32 [ 0.0 ]
+        if [ drag_ix > flex_at[ n ] ]
+            # right of the flexible pane: from the pointer to its end
+            after : f32 [ 0.0 ]
+            for [ i: i32 drag_ix + 1, i < n, i += 1 ]
                 after += target_of[ kid[ ids[ i ] ], span, n ]
-        gaps  : f32 [ f32[ n - 1 - drag_ix ] * gap ]
-        trail : f32 [ span - after - gaps ]
-        sz    : f32 [ trail - at ]
+            gaps  : f32 [ f32[ n - 1 - drag_ix ] * gap ]
+            sz = span - after - gaps - at
+        el
+            # left of it: from its start to the pointer
+            before : f32 [ 0.0 ]
+            for [ i: i32 0, i < drag_ix, i += 1 ]
+                before += target_of[ kid[ ids[ i ] ], span, n ]
+            sz = at - before - f32[ drag_ix ] * gap
         closed : bool [ false ]
         # it holds at its floor; dragged past half of it, it lets go
         if [ sz < min_size ]
@@ -7833,13 +8048,137 @@ element Splitter
         ev.no_default   = true
 
     func on_release [ ev: Event ]
-        if [ drag_ix > 0 ] ux.release_capture[ a ]
-        drag_ix = 0
+        if [ drag_ix >= 0 ] ux.release_capture[ a ]
+        drag_ix = -1
 
     func on_leave [ ev: Event ]
-        if [ drag_ix <= 0 && cursor_on ]
+        if [ drag_ix < 0 && cursor_on ]
             ux.seam_cursor[ 0 ]
             cursor_on = false
+
+# the orbiter bar: an app's bar across its top when it runs on its
+# own: its history's arrows and its title, as orbiter's pane bar
+# shows them. hosted in a pane, orbiter's bar shows the same (the
+# nav state and title go to it), and the app makes none: hosted[]
+element OrbiterBar
+    style : CSS {
+        layers.tbar:
+            fill_color: #000c
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+        layers.tdiv:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+    }
+    # what it last painted
+    mutable shown : string
+
+    func render [] -> Elements
+        out : Elements []
+        if [ !ux ] return out
+        # what it shows changed (the title, the filter): painted anew
+        shows : string '{ux.nav_title}|{ux.nav_open}|{ux.nav_filter}'
+        now : string '{shows}|{ux.bar_view}'
+        if [ !shown || shown.compare[ now ] != 0 ]
+            shown    = now
+            pristine = false
+        dm : i32 [ 0 ]
+        if [ !ux.nav_back_on ] dm |= 1
+        if [ !ux.nav_fwd_on ] dm |= 2
+        out[ 'arrows' ] = TButtons [
+            buttons: vec string [] [ 'nav_back', 'nav_fwd' ],
+            icon_ids: vec string [] [ 'left', 'right' ], manual: true,
+            rest_hover: true, rest_fill: rgba [ '#ffffff08' ],
+            disable_mask: dm, icon_scale: 0.30,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false, seg_reach: 0.5,
+            area: Region { l0 t0 w3.6 b0 } ]
+        # the app's views: a chip each after the title, the lit one
+        # shown; pressed again, the source
+        ae : cast element [ ux.app_object ]
+        names : vec string [ (ae) ? ae.views*[] : null ]
+        if [ names && names.count > 0 && ux.screen ]
+            cv : Canvas [ ux.screen ]
+            cv.font_size[ 17 ]
+            tw : f32 [ cv.measure_text[ (ux.nav_title)
+                                        ? ux.nav_title : '' ].w ]
+            ar : element (elements) ? elements[ 'arrows' ] : null
+            x : f32 [ ((ar && ar.bounds) ? ar.bounds.x + ar.bounds.w
+                      : 118.0) + 14.0 + tw + 18.0 ]
+            ids : vec string []
+            lit : i32 [ 0 ]
+            for [ i: i32 0, i < names.count, i += 1 ]
+                ids.push[ 'view_{names[ i ]}' ]
+                if [ ux.bar_view
+                     && ux.bar_view.compare[ names[ i ] ] == 0 ]
+                    lit |= 1 << i
+            cv.font_size[ 14 ]
+            wide : f32 [ 0.0 ]
+            for [ nm: string ] in names
+                wide += cv.measure_text[ nm ].w + 34.0
+            out[ 'views' ] = TButtons [ buttons: ids, labels: names,
+                manual: true, sel_mask: lit, label_px: 14.0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                area: Region [ 'l{x}px t5px w{wide}px b5px' ] ]
+        return out
+
+    # an arrow: the app's history, as the host's arrows walk it;
+    # the title: the navigation dialog
+    func on_press [ ev: Event ]
+        o : ev.origin
+        if [ !ux ] return
+        if [ o && o.id && o.id == 'nav_back' ]
+            ux.navigate[ -1 ]
+            return
+        if [ o && o.id && o.id == 'nav_fwd' ]
+            ux.navigate[ 1 ]
+            return
+        # a view chip: that view, or (lit) back to the source
+        if [ o && o.id && o.id.starts_with[ 'view_' ] ]
+            nm : o.id.mid[ 5, o.id.count - 5 ]
+            same : bool [ ux.bar_view && ux.bar_view.compare[ nm ] == 0 ]
+            ux.bar_view = (same) ? '' : nm
+            ux.restyle  = true
+            pristine    = false
+            return
+        if [ o == a ] ux.nav_toggle[]
+
+    # the title, after the arrows; the dialog open, what is typed
+    # to filter it (or a hint), with a caret
+    func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        t : string [ w.nav_title ]
+        hint : bool [ false ]
+        if [ w.nav_open ]
+            t = w.nav_filter
+            if [ t.count == 0 ]
+                t = '{w.nav_dir}'
+                hint = true
+        if [ !t || t.count == 0 ] return
+        ar : element (elements) ? elements[ 'arrows' ] : null
+        x : f32 [ (ar && ar.bounds) ? ar.bounds.x + ar.bounds.w + 14.0
+                  : 14.0 ]
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.font_size[ 17 ]
+        cv.fill_color[ (hint) ? '#ffffff66' : '#fff' ]
+        cv.stroke_width[ 0.0 ]
+        cv.draw_text[ t, rect [ x: x, y: 0.0, w: bounds.w - x,
+                                h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.paint[]
+        if [ w.nav_open ]
+            typed : cv.measure_text[ (hint) ? '' : t ]
+            cv.fill_color[ '#fff' ]
+            cv.rect_to[ x + typed.w + 1.0, bounds.h * 0.25, 2.0,
+                        bounds.h * 0.5 ]
+            cv.paint[]
+        cv.restore[]
 
 element Control
     focusable : true

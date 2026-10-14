@@ -949,36 +949,13 @@ Layer CommitLayer
                     cv.font_size[ 16 ]
                     continue
                 if [ nls - 1 == cb.hov_list && !h.card[] ]
-                    cv.save[ ]
-                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
-                    cv.fill_color[ cb.nav_hover_fill ]
-                    cv.stroke_width[ 1.0 ]
-                    cv.stroke_offset[ -0.5 ]
-                    # mouse over: the wash and its edge; the pointer's
-                    # near light brings the edge and an inner glow up
-                    he : cb.nav_hover_edge
-                    # the edge at half alpha, every theme: the glow
-                    # reads
-                    cv.stroke_color[
-                        rgba [ r: he.r, g: he.g, b: he.b,
-                               a: he.a * 0.5 ] ]
-                    cv.box_shadow[
-                        rgba [ r: he.r, g: he.g, b: he.b,
-                               a: he.a * 0.25 ], 0.0, 0.0, 6.0, 0.0,
-                               true ]
-                    cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
-                    cv.near_style[ 1.3, 3.9,
-                                   rgba [ r: he.r, g: he.g, b: he.b,
-                                          a: 1.0 ], cb.ux.near_y_fade ]
                     # an entry's highlight starts at its icon: the 30px
                     # before it is the delete mark's, never painted
                     hl9 : f32 [ 2.0 ]
                     if [ h.file && h.line <= 0 ] hl9 = 32.0
-                    cv.rect_to[ x0 + hl9, ry + 1.0,
-                                bounds.x + bounds.w - x0 - 20.0 - hl9,
-                                rh - 2.0 ]
-                    cv.paint[ ]
-                    cv.restore[ ]
+                    nav_hover_paint[ cv, cb, x0 + hl9, ry + 1.0,
+                        bounds.x + bounds.w - x0 - 20.0 - hl9, rh - 2.0,
+                        cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
                 # an instance: its live frame as a 96px thumbnail, the
                 # name and status under it, and the module in blue under
                 # that; a scene: its exported picture
@@ -1016,8 +993,15 @@ Layer CommitLayer
                         dfp : path 'images/material/folder.svg'
                         if [ dfp.exists[] ]
                             ed.folder_icon = SVGModel [ dfp ]
+                    if [ !ed.resource_icon ]
+                        rfp : path 'images/resource.svg'
+                        if [ rfp.exists[] ]
+                            ed.resource_icon = SVGModel [ rfp ]
                     if [ !ed.ficons ] ed.ficons = FileIcons []
                     ico = (h.is_dir) ? ((h.is_module) ? ed.module_icon : ed.folder_icon) : ed.file_icon
+                    # a resource's folder (<stem>.agi): the yellow cube
+                    if [ h.is_dir && h.is_resource && ed.resource_icon ]
+                        ico = ed.resource_icon
                     if [ !h.is_dir && nm.count > 0 ]
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
@@ -1079,13 +1063,7 @@ Layer CommitLayer
                         cv.rect_to[ x0 + 17.75, round[ ry + 9.5 ], 1.5,
                                     11.0 ]
                         cv.paint[ ]
-                tx0 : f32 [ x0 + 38.0 ]
-                if [ ico ]
-                    cv.fill_color[ rgba['#ffffff'] ]
-                    cv.stroke_color[ rgba['#ffffff'] ]
-                    cv.draw_svg[ ico, x0 + 38.0, round[ ry + 4.5 ], 21.0,
-                                 21.0 ]
-                    tx0 = x0 + 67.0
+                tx0 : nav_icon_paint[ cv, ico, x0, ry ]
                 nmw : f32 [ bounds.x + bounds.w - tx0 - 24.0 - drs ]
                 cv.font_size[ 16 ]
                 # a repository row: light blue when checked out, faint

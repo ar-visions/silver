@@ -1,0 +1,664 @@
+# the node view (the orbiter bar's 'nodes'): the scene as cards
+# wired socket to socket
+extend aeon
+
+# a socket: an input at a card's left, an output at its right
+class Socket
+    public name  : string
+    # an output's key; an input's sources, by key
+    public key   : string
+    public srcs  : vec string
+    # what an unwired input holds ('color:0.6 0.3 1 1')
+    public note  : string
+    public y     : f32
+    public color : string
+    public out   : bool
+
+# a card's values: property rows, edited in place
+class NodeBlock
+    public key  : string
+    public y    : f32
+    public h    : f32
+    public rows : vec PropRow
+    public busy : string
+
+# a draw inside its pass's card
+class Head
+    public name   : string
+    public shader : string
+    public pass   : string
+    public y      : f32
+    public on     : bool
+
+# a node: 0 a geometry step, 1 an object, 2 a material, 3 a pass
+class Card
+    public id      : string
+    public kind    : i32
+    public title   : string
+    public object  : string
+    public node    : string
+    public pass    : string
+    public x       : f32
+    public y       : f32
+    public w       : f32
+    public h       : f32
+    public can_off : bool
+    public on      : bool
+    public sockets : vec Socket
+    public blocks  : vec NodeBlock
+    public heads   : vec Head
+
+# a draw's objects: those it names, or all when it names none
+func draws_object [ d: Draw, name: string ] -> bool
+    if [ !d.objects || d.objects.count == 0 ] return true
+    for [ nm: string ] in d.objects
+        if [ nm.compare[ name ] == 0 ] return true
+    return false
+
+# a pass's draws: those written out, else the pass itself as one
+func pass_draws [ p: Pass ] -> vec Draw
+    if [ p.draws && p.draws.count > 0 ] return p.draws
+    return vec Draw [] [ Draw [ name: p.name, objects: p.objects,
+        quad: p.quad, both_sides: p.both_sides, shader: p.shader,
+        inputs: p.inputs ] ]
+
+# the colour a socket and its wire take, by what it carries
+func carry_color [ key: string ] -> string
+    if [ key.starts_with[ 'mesh:' ] ]     return '#00d6a3'
+    if [ key.starts_with[ 'object:' ] ]   return '#7fd4ff'
+    if [ key.starts_with[ 'material:' ] ] return '#e06c6c'
+    if [ key.ends_with[ '.depth' ] ]      return '#a1a1a1'
+    if [ key.ends_with[ '.reduction' ] ]  return '#e0a33c'
+    return '#c7c729'
+
+# a title bar's colour, by the card's kind
+func kind_color [ kind: i32 ] -> string
+    if [ kind == 0 ] return '#1e6b58'
+    if [ kind == 1 ] return '#2a5f8a'
+    if [ kind == 2 ] return '#7a3434'
+    return '#4b3c94'
+
+# one card drawn: its title, sockets, draws; its values are the
+# panels inside it
+element NodeCard
+    public card : Card
+    public sel  : Selection
+    public specs : vec string
+
+    public func render [] -> Elements
+        out : Elements []
+        if [ !card ] return out
+        for [ i: i32 0, i < card.blocks.count, i += 1 ]
+            b : card.blocks[ i ]
+            out[ b.key ] = LaunchPanel [ spec: specs[ i ], args: '',
+                inst: 1, live_vals: true, changing: b.busy,
+                name_frac: 0.45,
+                area: Region [ 'l0 t{b.y}px r0 h{b.h}px' ] ]
+        return out
+
+    # the card is the selection
+    func lit [] -> bool
+        if [ !sel ] return false
+        if [ card.kind == 1 ]
+            return card.object.compare[ sel.object ] == 0
+                && sel.node.count == 0
+        if [ card.kind == 0 ]
+            return card.object.compare[ sel.object ] == 0
+                && card.node.compare[ sel.node ] == 0
+        if [ card.kind == 3 ]
+            return card.pass.compare[ sel.pass ] == 0
+                && sel.node.count == 0
+        return false
+
+    # an on/off circle: filled on, an outline off
+    func toggle_mark [ cv: Canvas, x: f32, y: f32, on: bool ]
+        cv.fill_color[ rgba [ (on) ? '#f0f0f5' : '#0000' ] ]
+        cv.stroke_color[ rgba [ '#f0f0f5' ] ]
+        cv.stroke_width[ 1.2 ]
+        cv.arc[ x, y, 4.0, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    func words [ cv: Canvas, text: string, x: f32, y: f32,
+                 wide: f32, right: bool ]
+        cv.draw_text[ text, rect [ x: x, y: y - 11.0, w: wide,
+                                   h: 22.0 ],
+            vec2f [ (right) ? 1.0 : 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
+        cv.paint[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !card ] return
+        cv : Canvas [ w.screen ]
+        cw : f32 [ bounds.w ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#24242c' ] ]
+        cv.rounded_rect[ 0.0, 0.0, cw, bounds.h, 6.0, 6.0, 6.0, 6.0 ]
+        cv.paint[]
+        # the title bar, dimmed while off
+        cv.fill_color[ rgba [ (card.on) ? kind_color[ card.kind ]
+                              : '#3a3a42' ] ]
+        cv.rounded_rect[ 0.0, 0.0, cw, 26.0, 6.0, 6.0, 0.0, 0.0 ]
+        cv.paint[]
+        cv.font_size[ 14 ]
+        tx : f32 [ 10.0 ]
+        if [ card.can_off ]
+            toggle_mark[ cv, 14.0, 13.0, card.on ]
+            tx = 26.0
+        cv.fill_color[ rgba [ (card.on) ? '#f4f4f8' : '#9a9aa6' ] ]
+        words[ cv, card.title, tx, 13.0, cw - tx - 8.0, false ]
+        cv.font_size[ 13 ]
+        for [ s: Socket ] in card.sockets
+            sx : f32 [ (s.out) ? cw - 8.0 : 8.0 ]
+            cv.fill_color[ rgba [ s.color ] ]
+            cv.stroke_color[ rgba [ '#101014' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.arc[ sx, s.y, 4.5, 0.0, 6.2832 ]
+            cv.paint[]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ rgba [ '#d8d8e0' ] ]
+            if [ s.out ]
+                words[ cv, s.name, 18.0, s.y, cw - 36.0, true ]
+            el
+                words[ cv, s.name, 18.0, s.y, cw - 36.0, false ]
+                if [ s.note && s.note.count > 0 ]
+                    cv.fill_color[ rgba [ '#8a8a96' ] ]
+                    words[ cv, s.note, 18.0, s.y, cw - 28.0, true ]
+        # each draw of a pass: its row, its circle, its shader
+        for [ h: Head ] in card.heads
+            hl : bool [ sel && h.pass.compare[ sel.pass ] == 0
+                        && h.name.compare[ sel.node ] == 0 ]
+            cv.fill_color[ rgba [ (hl) ? '#4d3dbc' : '#30303c' ] ]
+            cv.rect_to[ 0.0, h.y, cw, 22.0 ]
+            cv.paint[]
+            toggle_mark[ cv, 14.0, h.y + 11.0, h.on ]
+            cv.fill_color[ rgba [ (h.on) ? '#f0f0f5' : '#8a8a96' ] ]
+            words[ cv, h.name, 26.0, h.y + 11.0, cw - 34.0, false ]
+            cv.fill_color[ rgba [ '#9a9ab0' ] ]
+            words[ cv, h.shader, 26.0, h.y + 11.0, cw - 34.0, true ]
+        if [ lit[] ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#ffffff' ] ]
+            cv.stroke_width[ 1.5 ]
+            cv.rounded_rect[ 0.75, 0.75, cw - 1.5, bounds.h - 1.5,
+                             6.0, 6.0, 6.0, 6.0 ]
+            cv.paint[]
+        cv.restore[]
+
+# the scene as nodes: geometry steps, objects, materials and
+# passes, each a card; drag a card's title to move it, the
+# ground to pan
+element NodeGraph
+    public scene  : SceneEdit
+    mutable cards : vec Card
+    mutable pan_x : f32
+    mutable pan_y : f32
+    # cards moved by hand: their ids and places
+    mutable moved_ids : vec string
+    mutable moved_xy  : vec f32
+    # 1 panning, 2 moving a card
+    mutable hold    : i32
+    mutable hold_id : string
+    mutable hold_x  : f32
+    mutable hold_y  : f32
+    mutable base_x  : f32
+    mutable base_y  : f32
+    mutable dragged : bool
+
+    func init []
+        cards     = vec Card []
+        moved_ids = vec string []
+        moved_xy  = vec f32 []
+        hold_id   = ''
+
+    # what it shows: the scene's design, selection and 3D view
+    func scene_design [] -> Design
+        return (scene) ? scene.design : null
+    func choice [] -> Selection
+        return (scene) ? scene.sel : null
+    func view3d [] -> DesignView
+        return (scene) ? scene.view : null
+
+    func graph [] -> StageGraph
+        v : view3d[]
+        if [ v && v.stage ] return v.stage.graph
+        d : scene_design[]
+        if [ d && d.render ] return d.render
+        return default_graph[]
+
+    # ---- the cards ----
+
+    func new_card [ id: string, kind: i32, title: string ] -> Card
+        return Card [ id: id, kind: kind, title: title, object: '',
+            node: '', pass: '', w: 250.0, h: 26.0, on: true,
+            sockets: vec Socket [], blocks: vec NodeBlock [],
+            heads: vec Head [] ]
+
+    func add_socket [ c: Card, s: Socket ]
+        s.y = c.h + 11.0
+        if [ !s.color ]
+            k : string [ (s.out) ? s.key
+                : ((s.srcs && s.srcs.count > 0) ? s.srcs[ 0 ] : '') ]
+            s.color = carry_color[ k ]
+        c.sockets.push[ s ]
+        c.h += 22.0
+
+    func add_block [ c: Card, key: string, rows: vec PropRow ]
+        if [ !rows || rows.count == 0 ] return
+        bh : f32 [ 0.0 ]
+        for [ r: PropRow ] in rows
+            bh += (r.type.compare[ 'rgba' ] == 0) ? 72.0 : 24.0
+        bz : string [ scene.busy[ key ] ]
+        c.blocks.push[ NodeBlock [ key: key, y: c.h, h: bh, rows: rows,
+                               busy: (bz) ? bz : '' ] ]
+        c.h += bh
+
+    func node_card [ o: Object, n: MeshNode ] -> Card
+        c : new_card[ 'node:{o.name}/{n.name}', 0, n.name ]
+        c.object  = o.name
+        c.node    = n.name
+        # the cage makes the mesh: nothing to pass through
+        c.can_off = n.input && n.input.count > 0
+        c.on      = !n.muted
+        add_socket[ c, Socket [ name: 'mesh', out: true,
+                                key: 'mesh:{o.name}/{n.name}' ] ]
+        if [ c.can_off ]
+            add_socket[ c, Socket [ name: 'mesh',
+                srcs: vec string [] [ 'mesh:{o.name}/{n.input}' ] ] ]
+        add_block[ c, 'node:{o.name}/{n.name}', scene.node_rows[ o, n ] ]
+        c.h += 6.0
+        return c
+
+    func object_card [ o: Object, with_mats: bool ] -> Card
+        c : new_card[ 'obj:{o.name}', 1, o.name ]
+        c.object  = o.name
+        c.can_off = true
+        c.on      = o.shown
+        add_socket[ c, Socket [ name: 'object', out: true,
+                                key: 'object:{o.name}' ] ]
+        made : o.out_name[]
+        if [ made.count > 0 ]
+            add_socket[ c, Socket [ name: 'mesh',
+                srcs: vec string [] [ 'mesh:{o.name}/{made}' ] ] ]
+        # one input for its materials (the schematic, not this
+        # object's slots), when its draw reads them
+        if [ with_mats && o.materials && o.materials.count > 0 ]
+            fed : vec string []
+            for [ m: string ] in o.materials
+                k : string 'material:{m}'
+                if [ fed.index_of[ k ] < 0 ] fed.push[ k ]
+            add_socket[ c, Socket [ name: 'materials', srcs: fed,
+                                    color: carry_color[ fed[ 0 ] ] ] ]
+        add_block[ c, 'obj:{o.name}', scene.object_rows[ o ] ]
+        c.h += 6.0
+        return c
+
+    func material_card [ m: string ] -> Card
+        c : new_card[ 'mat:{m}', 2, m ]
+        add_socket[ c, Socket [ name: 'material', out: true,
+                                key: 'material:{m}' ] ]
+        add_block[ c, 'mat:{m}', scene.material_rows[ m ] ]
+        c.h += 6.0
+        return c
+
+    func pass_card [ p: Pass ] -> Card
+        c : new_card[ 'pass:{p.name}', 3, p.name ]
+        c.pass    = p.name
+        c.can_off = true
+        c.on      = !choice[].is_off[ p.name ]
+        add_socket[ c, Socket [ name: 'color', out: true,
+                                key: '{p.name}.color' ] ]
+        if [ p.depth ]
+            add_socket[ c, Socket [ name: 'depth', out: true,
+                                    key: '{p.name}.depth' ] ]
+        if [ p.reduce ]
+            add_socket[ c, Socket [ name: 'reduction', out: true,
+                                    key: '{p.name}.reduction' ] ]
+        add_block[ c, 'pass:{p.name}', scene.pass_rows[ p ] ]
+        own : bool [ p.draws && p.draws.count > 0 ]
+        for [ d: Draw ] in pass_draws[ p ]
+            dn : string [ (own) ? d.name : '' ]
+            c.heads.push[ Head [ name: (own) ? d.name : 'draw',
+                shader: d.shader, pass: p.name, y: c.h,
+                on: !choice[].is_off[ '{p.name}/{d.name}' ] ] ]
+            c.h += 22.0
+            if [ !d.quad ]
+                drawn : vec string []
+                for [ o: Object ] in scene_design[].objects
+                    if [ draws_object[ d, o.name ] ]
+                        drawn.push[ 'object:{o.name}' ]
+                add_socket[ c, Socket [ name: 'objects', srcs: drawn,
+                                        color: '#7fd4ff' ] ]
+            if [ d.inputs ]
+                for [ v: Au, k: string ] in d.inputs
+                    ws : string [ v ]
+                    colon : i32 [ ws.index_of[ ':' ] ]
+                    if [ colon > 0 ]
+                        add_socket[ c, Socket [ name: k, note: ws,
+                            srcs: vec string [], color: '#8a8a96' ] ]
+                    el
+                        add_socket[ c, Socket [ name: k,
+                            srcs: vec string [] [ ws ] ] ]
+            if [ dn.count > 0 ]
+                add_block[ c, 'draw:{p.name}/{dn}',
+                           scene.draw_rows[ p, d ] ]
+        c.h += 6.0
+        return c
+
+    # a pass's column: one past the passes it reads
+    func column [ p: Pass, seen: i32 ] -> i32
+        if [ seen > 16 ] return 1
+        most : i32 [ 1 ]
+        g : graph[]
+        for [ d: Draw ] in pass_draws[ p ]
+            if [ !d.inputs ] continue
+            for [ v: Au, k: string ] in d.inputs
+                ws : string [ v ]
+                dot : i32 [ ws.index_of[ '.' ] ]
+                if [ dot <= 0 || ws.index_of[ ':' ] > 0 ] continue
+                src : ws.mid[ 0, dot ]
+                for [ q: Pass ] in g.passes
+                    if [ q.name.compare[ src ] == 0 ]
+                        col : i32 [ column[ q, seen + 1 ] + 1 ]
+                        if [ col > most ] most = col
+        return most
+
+    func place [ c: Card, x: f32, y: f32 ]
+        c.x = x
+        c.y = y
+        for [ i: i32 0, i < moved_ids.count, i += 1 ]
+            if [ moved_ids[ i ].compare[ c.id ] == 0 ]
+                c.x = moved_xy[ i * 2 ]
+                c.y = moved_xy[ i * 2 + 1 ]
+        cards.push[ c ]
+
+    # every card, laid out: materials, geometry steps, objects,
+    # then the passes in columns by what they read
+    func build []
+        cards = vec Card []
+        dsg : scene_design[]
+        if [ !dsg ] return
+        g : graph[]
+        step : f32 [ 250.0 + 70.0 ]
+        # objects drawn by a draw whose shader reads materials
+        mat_objs : vec string []
+        mats : vec string []
+        if [ g ]
+            for [ p: Pass ] in g.passes
+                for [ d: Draw ] in pass_draws[ p ]
+                    if [ d.quad ] continue
+                    if [ !draw_reads_materials[ d ] ] continue
+                    for [ o: Object ] in dsg.objects
+                        if [ !draws_object[ d, o.name ]
+                             || mat_objs.index_of[ o.name ] >= 0 ]
+                            continue
+                        mat_objs.push[ o.name ]
+                        if [ !o.materials ] continue
+                        for [ m: string ] in o.materials
+                            if [ mats.index_of[ m ] < 0 ] mats.push[ m ]
+        mcol : i32 [ (mats.count > 0) ? 1 : 0 ]
+        chain : i32 [ 0 ]
+        for [ o: Object ] in dsg.objects
+            if [ o.nodes && o.nodes.count > chain ]
+                chain = o.nodes.count
+        y : f32 [ 20.0 ]
+        for [ m: string ] in mats
+            c : material_card[ m ]
+            place[ c, 20.0, y ]
+            y += c.h + 20.0
+        y = 20.0
+        for [ o: Object ] in dsg.objects
+            band : f32 [ 0.0 ]
+            if [ o.nodes ]
+                for [ i: i32 0, i < o.nodes.count, i += 1 ]
+                    nc : node_card[ o, o.nodes[ i ] ]
+                    place[ nc, 20.0 + f32[ mcol + i ] * step, y ]
+                    if [ nc.h > band ] band = nc.h
+            oc : object_card[ o, mat_objs.index_of[ o.name ] >= 0 ]
+            place[ oc, 20.0 + f32[ mcol + chain ] * step, y ]
+            if [ oc.h > band ] band = oc.h
+            y += band + 24.0
+        if [ !g ] return
+        cols : vec i32 []
+        final : i32 [ 1 ]
+        for [ p: Pass ] in g.passes
+            col : column[ p, 0 ]
+            cols.push[ col ]
+            if [ col > final ] final = col
+        base : i32 [ mcol + chain + 1 ]
+        for [ col: i32 1, col <= final, col += 1 ]
+            py : f32 [ 20.0 ]
+            for [ i: i32 0, i < g.passes.count, i += 1 ]
+                if [ cols[ i ] != col ] continue
+                pc : pass_card[ g.passes[ i ] ]
+                place[ pc, 20.0 + f32[ base + col - 1 ] * step, py ]
+                py += pc.h + 24.0
+
+    # the fields the user changed since the last frame, applied
+    # as the properties side applies them
+    func take_fields [] -> bool
+        changed : bool [ false ]
+        scene.busy = map Au [ string ] []
+        if [ !elements ] return false
+        for [ c: Card ] in cards
+            if [ !elements.contains[ c.id ] ] continue
+            nc : cast NodeCard [ elements[ c.id ] ]
+            if [ !nc.elements ] continue
+            for [ b: NodeBlock ] in c.blocks
+                if [ !nc.elements.contains[ b.key ] ] continue
+                lp : cast LaunchPanel [ nc.elements[ b.key ] ]
+                if [ !lp.fields ] continue
+                for [ r: PropRow ] in b.rows
+                    p : lp.prop_of[ r.label ]
+                    if [ !p ] continue
+                    now : lp.value_of[ p ]
+                    key : '{b.key}_{r.label}'
+                    was : string [ scene.typed[ key ] ]
+                    if [ now && was && now.count > 0
+                         && now.compare[ was ] != 0 ]
+                        scene.typed[ key ] = now
+                        scene.apply_row[ r, now ]
+                        scene.busy[ b.key ] = r.label
+                        changed = true
+        return changed
+
+    # a block's rows as the panel's spec, as the properties side's
+    func spec_of [ b: NodeBlock ] -> string
+        return scene.spec_of[ Block [ key: b.key, label: '', h: b.h,
+            rows: b.rows, busy: b.busy, flip: '', on: true,
+            object: '', node: '' ] ]
+
+    public func render [] -> Elements
+        out : Elements []
+        if [ !scene ] return out
+        # ctrl/cmd + z on a property: its value before, set again
+        v : view3d[]
+        if [ v && v.undo_row ]
+            scene.set_row[ v.undo_row, v.undo_was ]
+            v.undo_row = null
+        build[]
+        if [ take_fields[] ] build[]
+        for [ c: Card ] in cards
+            specs : vec string []
+            for [ b: NodeBlock ] in c.blocks
+                specs.push[ spec_of[ b ] ]
+            out[ c.id ] = NodeCard [ card: c, sel: choice[], specs: specs,
+                area: Region [ 'l{c.x + pan_x}px t{c.y + pan_y}px w{c.w}px h{c.h}px' ] ]
+        return out
+
+    # ---- wires ----
+
+    # a socket's place on the graph, by its output key
+    func out_point [ key: string ] -> vec2f
+        for [ c: Card ] in cards
+            for [ s: Socket ] in c.sockets
+                if [ s.out && s.key.compare[ key ] == 0 ]
+                    return vec2f [ c.x + c.w - 8.0 + pan_x,
+                                   c.y + s.y + pan_y ]
+        return vec2f [ -99999.0, 0.0 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#16161c' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        # each wire a curve: its handles flat, a quarter of the
+        # span from each end
+        cv.font_size[ 11 ]
+        for [ c: Card ] in cards
+            for [ s: Socket ] in c.sockets
+                if [ s.out || !s.srcs ] continue
+                for [ src: string ] in s.srcs
+                    a : out_point[ src ]
+                    if [ a.x < -9999.0 ] continue
+                    bx : f32 [ c.x + 8.0 + pan_x ]
+                    by : f32 [ c.y + s.y + pan_y ]
+                    span : f32 [ bx - a.x ]
+                    if [ span < 80.0 ] span = 80.0
+                    cv.fill_color[ rgba [ '#0000' ] ]
+                    cv.stroke_color[ rgba [ carry_color[ src ] ] ]
+                    cv.stroke_width[ 2.0 ]
+                    cv.move_to[ a.x, a.y ]
+                    cv.cubic_to[ a.x + span * 0.25, a.y,
+                                 bx - span * 0.25, by, bx, by ]
+                    cv.paint[]
+                    cv.stroke_width[ 0.0 ]
+                    # a picture's wire says which one it carries
+                    if [ src.index_of[ '.' ] > 0 ]
+                        mx : f32 [ (a.x + bx) * 0.5 ]
+                        my : f32 [ (a.y + by) * 0.5 ]
+                        cv.fill_color[ rgba [ '#101014e0' ] ]
+                        cv.rounded_rect[ mx - 40.0, my - 9.0, 80.0,
+                                         18.0, 9.0, 9.0, 9.0, 9.0 ]
+                        cv.paint[]
+                        cv.fill_color[ rgba [ carry_color[ src ] ] ]
+                        cv.draw_text[ src, rect [ x: mx - 40.0,
+                                y: my - 9.0, w: 80.0, h: 18.0 ],
+                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                            Overflow.visible, null ]
+                        cv.paint[]
+        if [ scene && scene.edits && scene.edits.pending[] ]
+            cv.font_size[ 14 ]
+            cv.fill_color[ rgba [ '#ffcf4a' ] ]
+            cv.draw_text[ 'unsaved: ctrl/cmd + s to save',
+                rect [ x: bounds.w - 360.0, y: 8.0, w: 348.0,
+                       h: 24.0 ], vec2f [ 1.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            cv.paint[]
+        cv.restore[]
+
+    # ---- the pointer ----
+
+    func card_at [ x: f32, y: f32 ] -> Card
+        hit : Card [ null ]
+        for [ c: Card ] in cards
+            if [ x >= c.x && x <= c.x + c.w && y >= c.y
+                 && y <= c.y + c.h ] hit = c
+        return hit
+
+    # a card's circle: shown, bypassed, or its pass switched off
+    func flip_card [ c: Card ]
+        o : scene.object_named[ c.object ]
+        if [ c.kind == 1 && o ] o.shown = !o.shown
+        if [ c.kind == 3 ] scene.flip[ 'pass:{c.pass}' ]
+        if [ c.kind == 0 ] scene.flip[ 'node:{c.object}/{c.node}' ]
+
+    # a card chosen; chosen again, let go
+    func choose [ c: Card ]
+        sel : choice[]
+        was_o : string [ sel.object ]
+        was_n : string [ sel.node ]
+        was_p : string [ sel.pass ]
+        sel.object = ''
+        sel.node   = ''
+        sel.pass   = ''
+        if [ c.kind == 1 ] sel.object = c.object
+        if [ c.kind == 0 ]
+            sel.object = c.object
+            sel.node   = c.node
+        if [ c.kind == 3 ] sel.pass = c.pass
+        if [ sel.object.compare[ was_o ] == 0
+             && sel.node.compare[ was_n ] == 0
+             && sel.pass.compare[ was_p ] == 0 ]
+            sel.object = ''
+            sel.node   = ''
+            sel.pass   = ''
+
+    public func on_press [ ev: Event ]
+        sel : choice[]
+        if [ !sel ] return
+        gx : f32 [ ev.mouse.pos.x - pan_x ]
+        gy : f32 [ ev.mouse.pos.y - pan_y ]
+        hold_x  = ev.mouse.pos.x
+        hold_y  = ev.mouse.pos.y
+        dragged = false
+        c : card_at[ gx, gy ]
+        if [ !c ]
+            hold   = 1
+            base_x = pan_x
+            base_y = pan_y
+            ux.set_capture[ a ]
+            return
+        lx : f32 [ gx - c.x ]
+        ly : f32 [ gy - c.y ]
+        if [ ly < 26.0 && c.can_off && lx < 26.0 ]
+            flip_card[ c ]
+            return
+        for [ h: Head ] in c.heads
+            if [ ly < h.y || ly >= h.y + 22.0 ] continue
+            if [ lx < 26.0 ]
+                scene.flip[ 'draw:{h.pass}/{h.name}' ]
+            el
+                same : bool [ sel.pass.compare[ h.pass ] == 0
+                              && sel.node.compare[ h.name ] == 0 ]
+                sel.object = ''
+                sel.pass   = (same) ? '' : h.pass
+                sel.node   = (same) ? '' : h.name
+            return
+        # a field: its own control takes the press
+        for [ b: NodeBlock ] in c.blocks
+            if [ ly >= b.y && ly < b.y + b.h ] return
+        hold    = 2
+        hold_id = c.id
+        base_x  = c.x
+        base_y  = c.y
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ hold == 0 ] return
+        dx : f32 [ ev.mouse.pos.x - hold_x ]
+        dy : f32 [ ev.mouse.pos.y - hold_y ]
+        if [ !dragged && abs[ dx ] + abs[ dy ] < 3.0 ] return
+        dragged = true
+        if [ hold == 1 ]
+            pan_x = base_x + dx
+            pan_y = base_y + dy
+            return
+        for [ i: i32 0, i < moved_ids.count, i += 1 ]
+            if [ moved_ids[ i ].compare[ hold_id ] == 0 ]
+                moved_xy[ i * 2 ]     = base_x + dx
+                moved_xy[ i * 2 + 1 ] = base_y + dy
+                return
+        moved_ids.push[ hold_id ]
+        moved_xy.push[ base_x + dx ]
+        moved_xy.push[ base_y + dy ]
+
+    public func on_release [ ev: Event ]
+        if [ hold == 0 ] return
+        if [ hold == 2 && !dragged ]
+            for [ c: Card ] in cards
+                if [ c.id.compare[ hold_id ] == 0 ] choose[ c ]
+        hold = 0
+        ux.release_capture[ a ]
+
+    # the wheel pans: up and down, with shift across
+    public func on_wheel [ ev: Event ]
+        step : f32 [ ev.mouse.wheel_delta.y * 40.0 ]
+        if [ ux && ux.shift ]
+            pan_x += step
+        el
+            pan_y += step

@@ -17,25 +17,25 @@ render: StageGraph
 					shader: PBR
 					settings:
 						env_id: 'forest'
-						pulse_width: '4.0'
-						gamma: '1.88'
-						spoke_r0: '0.10'
-						spoke_r1: '0.55'
-						blend_rings: '0.2'
-						blend_haze: '1.0'
-						blend_bands: '0.2'
+						pulse_width: 4.0
+						gamma: 1.88
+						spoke_r0: 0.10
+						spoke_r1: 0.55
+						blend_rings: 0.2
+						blend_haze: 1.0
+						blend_bands: 0.2
 					inputs:
 						spokes: 'color:1 1 1 1'
 				core: Draw
 					objects: [ core ]
 					shader: Core
 					settings:
-						pulse_width: '4.0'
+						pulse_width: 4.0
 				plasma: Draw
 					objects: [ flower ]
 					shader: Plasma
 					settings:
-						pulse_width: '1.0'
+						pulse_width: 1.0
 		volume: Pass
 			scale: 1
 			most: 1024
@@ -45,13 +45,13 @@ render: StageGraph
 					quad: true
 					shader: Aura
 					settings:
-						pulse_width: '0.4'
-						pulse_height: '1.2'
-						halo_height: '0.4'
-						beam_fade: '2.2'
-						beam_cone: '0.35'
-						beam: '0.0'
-						donut_reach: '2.0'
+						pulse_width: 0.4
+						pulse_height: 1.2
+						halo_height: 0.4
+						beam_fade: 2.2
+						beam_cone: 0.35
+						beam: 0.0
+						donut_reach: 2.0
 					inputs:
 						height: 'av.depth'
 						rim: 'color:0.6 0.3 1 1'
@@ -78,9 +78,9 @@ render: StageGraph
 					quad: true
 					shader: Heat
 					settings:
-						heat: '1.0'
-						busy: '1.0'
-						pulse_height: '1.2'
+						heat: 1.0
+						busy: 1.0
+						pulse_height: 1.2
 					inputs:
 						color: 'layers.color'
 						height: 'av.depth'

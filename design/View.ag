@@ -247,6 +247,9 @@ func design_model [ d: Design, only: vec string,
                     record: ModelParts ] -> GltfModel
     mats : vec Material []
     matnames : vec string []
+    # an svg panel's picture: a texture named by the svg's path
+    texs : vec GltfTexture []
+    imgs : vec GltfImage []
     y_up : bool [ record && record.y_up ]
     bufs : vec GltfBuffer []
     views : vec BufferView []
@@ -313,13 +316,26 @@ func design_model [ d: Design, only: vec string,
             # each part's material, one gltf material a name
             nm : string (names && names.count > 0)
                 ? names[ mk.mats[ i ] ] : 'none'
+            panel : o.panel[]
+            if [ panel ] nm = '{d.base[]}/{panel.file}'
             found : i32 [ -1 ]
             for [ g: i32 0, g < matnames.count, g += 1 ]
                 if [ matnames[ g ].compare[ nm ] == 0 ] found = g
             if [ found < 0 ]
                 found = matnames.count
                 matnames.push[ nm ]
-                mats.push[ finish_material[ d.finish_of[ nm ], nm ] ]
+                # a panel's colour is its picture: no finish file
+                fin : Finish [ null ]
+                if [ !panel ] fin = d.finish_of[ nm ]
+                mat : finish_material[ fin, nm ]
+                if [ panel ]
+                    imgs += GltfImage [ name: panel.file,
+                                        uri: path [ nm ] ]
+                    texs += GltfTexture [ name: panel.file, sampler: -1,
+                                          source: imgs.count - 1 ]
+                    ti : TextureInfo [ index: texs.count - 1 ]
+                    mat.pbrMetallicRoughness.baseColorTexture = ti
+                mats.push[ mat ]
             am : map i64 [ string ] [ ]
             am[ 'POSITION' ]   = va
             am[ 'NORMAL' ]     = va + 1
@@ -348,7 +364,7 @@ func design_model [ d: Design, only: vec string,
     scenes += Scene [ name: 'design', nodes: roots ]
     return GltfModel [ nodes: nodes, meshes: meshes, scenes: scenes,
         scene: 0, buffers: bufs, bufferViews: views, accessors: accs,
-        materials: mats ]
+        materials: mats, textures: texs, images: imgs ]
 
 # metal and roughness under two lights and a plain sky
 ModelViewProject AeonLit
@@ -374,6 +390,7 @@ ModelViewProject AeonLit
 
     attrib v_normal  : VertexOutput   [ type:typeid[ vec3f ] ]
     attrib v_world   : VertexOutput   [ type:typeid[ vec3f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func init [ ]
@@ -384,6 +401,7 @@ ModelViewProject AeonLit
     func vertex [] -> GLSL none {
         vec4 w      = ubo.model * vec4(a_pos, 1.0);
         v_world     = w.xyz;
+        v_uv        = a_uv;
         v_normal    = mat3(ubo.model) * a_normal;
         gl_Position = ubo.proj * ubo.view * w;
     }
@@ -420,7 +438,11 @@ ModelViewProject AeonLit
     }
 
     func fragment [] -> GLSL none {
-        vec3  base  = texture(color, vec2(0.5)).rgb;
+        // a material's colour (1x1), or a picture by the uv
+        vec4  bc    = texture(color, v_uv);
+        // a picture's clear parts are no surface
+        if (bc.a < 0.02) discard;
+        vec3  base  = bc.rgb;
         float r     = clamp(texture(rough, vec2(0.5)).r, 0.04, 1.0);
         float m     = texture(metal, vec2(0.5)).r;
         vec4  e     = texture(emission, vec2(0.5));

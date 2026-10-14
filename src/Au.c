@@ -5337,8 +5337,13 @@ none serialize(Au_t type, string res, Au a) {
         else if (type == typeid(u32)) len = sprintf(buf, "%u",   *(u32*)a);
         else if (type == typeid(u16)) len = sprintf(buf, "%hu",  *(u16*)a);
         else if (type == typeid(u8))  len = sprintf(buf, "%hhu", *(u8*) a);
-        else if (type == typeid(f64)) len = sprintf(buf, "%f",   *(f64*)a);
-        else if (type == typeid(f32)) len = sprintf(buf, "%f",   *(f32*)a);
+        // shortest form that keeps the digits given (4.5, not 4.500000);
+        // a whole value keeps ".0" so it reads back as a float
+        else if (type == typeid(f64) || type == typeid(f32)) {
+            if (type == typeid(f64)) len = sprintf(buf, "%.15g", *(f64*)a);
+            else                     len = sprintf(buf, "%.7g",  *(f32*)a);
+            if (!strpbrk(buf, ".eEn")) len += sprintf(buf + len, ".0");
+        }
         else if (type == typeid(cstr)) len = sprintf(buf, "%s",  *(cstr*)a);
         else if (type == typeid(unichar)) len = sprintf(buf, "%c",  *(unichar*)a);
         else if (type == typeid(symbol)) len = sprintf(buf, "%s",  *(cstr*)a);
@@ -7329,6 +7334,11 @@ AU_EXPORT vector vector_convert(vector src, Au_t elem) {
             Au r = o ? typecast(elem, o) : null;
             if (o && !r) r = convert(elem, o);
             vector_push(v, r);
+            continue;
+        }
+        // the same type (a struct too): its bytes as they are
+        if (st == elem) {
+            vector_push(v, (Au)((u8*)src->origin + i * ss));
             continue;
         }
         u8 buf[16] = { 0 };

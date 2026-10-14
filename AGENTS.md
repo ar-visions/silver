@@ -1534,6 +1534,264 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        the same but a few pixels on a cage line. aeon 3/3.
        OPEN: the rest of the start is each stage's own GPU set up
        (~340 ms each); one ObjectGpu for both would halve it.
+    l. BUILT, seen hidden (Oct 13, Kalen: a grid with major and
+       minor lines in 3D mode; a 2D mode comes later): aeon/Grid.ag,
+       AeonGrid (a quad: each pixel's ray meets the floor, z 0;
+       lines a pixel wide by fwidth, gone once cells are a few
+       pixels; minor every s0, major every 10 s0, s0 a power of
+       ten by the view's distance, the next level fading in; x
+       axis red, y green; faded far off and at a grazing look),
+       hidden behind the scene by Stage.object_depth (the focus
+       stage's while an object is chosen). Drawn over the stage's
+       picture, under the cage. Seen: flower888 near, chosen,
+       zoomed in and out. A running aeon needs a restart (design
+       changed). OPEN: the 2D mode.
+    m. BUILT, seen hidden (Oct 13, Kalen: the numpad as blender's)
+       DesignView.numpad: 1 front, 3 right, 7 top (ctrl: back,
+       left, bottom), 9 the other side, 4 6 turn the view 15
+       degrees (6 as a drag right), 8 2 tilt it (8 as a drag up:
+       toward below), + - zoom; eased, the short way round; keys
+       during g/r/s still type numbers. Not done: 5 (no ortho),
+       ctrl + 2 4 6 8 pan, . frame the choice, 0 camera.
+       Found: the view was MIRRORED (top view: +x on the left).
+       Every trinity view rolls its camera 180 degrees (up -z)
+       for vulkan's rows, which mirrors the picture. aeon now
+       looks with z up and flips the projection's y; Stage
+       flip_y culls front faces instead (the flip reverses the
+       winding); drag_world and the orbit's x follow. Seen: top
+       view +x right, +y up; g right and up gives +x +y; the
+       body solid from above as before. avatar rebuilt (Stage
+       grew a member); a running orbiter needs a restart.
+    n. BUILT, seen hidden (Oct 13, Kalen: 'nothing chosen' is the
+       scene's properties): PropsSide's title is 'scene · <name>'
+       and its sections each render pass (scale, most) with its
+       draws' settings and switches (SceneEdit.pass_blocks).
+    o. BUILT, seen hidden (Oct 13, Kalen: view svgs in aeon; his
+       answers: both, and edit points too).
+       2D: `silver aeon <file>.svg` (aeon/Svg.ag): SvgView draws
+       the page (white) and its shapes, wheel zooms about the
+       pointer, right/middle or ctrl + drag pans, home fits.
+       The outliner lists the shapes (id, else tag and number);
+       a click there or on the drawing chooses one (topmost hit:
+       fill even-odd, or 4 px of its outline): its outline,
+       anchors (squares) and handles (dots, a line to their
+       anchor). A press near a point picks it (shift adds; an
+       anchor on the same spot comes too). G moves the picked
+       (an anchor takes its handles) or, none picked, the whole
+       shape; x / y one axis; enter or a click keeps, escape or
+       a right click puts it back; ctrl + z undoes a move. The
+       right side: id, fill, stroke, stroke-width, opacity,
+       transform (the style's value first); a change shows at
+       once (a transform keeps the points in the element's own
+       space) and drops the style's copy. ctrl + s writes only
+       the changed elements, each as a <path> (its attributes
+       kept but the shape's own: x y r points ...; d in its own
+       space, so group transforms stay; children kept), the rest
+       of the file byte for byte, then reads it again.
+       trinity svg.ag: SVGNode at / head_end / tail_at / end (its
+       span in the text), SVGShape node and space (its element and
+       transform), SVGModel source (all appended last).
+       Seen: wave's middle anchor moved up 60 px saved as 20.645
+       (40 - 19.355) with both handles, inside its translate
+       group; a rect moved whole saved as a rounded path; a fill
+       typed shows at once; an undone move 0 pixels off.
+       3D: an object whose node is `SvgPanel` (file, height) is
+       an upright panel (facing -y, as wide as the drawing's
+       ratio) whose colour is the drawing: SvgPanel.picture_of
+       draws it on the GPU (2048 px long side, colours made
+       linear) and the stage puts it in each model's texture
+       cache under the path its material names (design_model
+       gives the panel a baseColorTexture). AeonLit samples colour
+       at the uv (1x1 materials unchanged) and drops texels under
+       2% alpha. Seen: svgscene, front and three-quarter views.
+       Found on the way, fixed in Au (vector_convert): `vec T [ v
+       ]` copying a vector of structs kept only each element's
+       first field (prim_put); the same type now copies whole.
+       features t_vec_struct_copy (251/252: t_codegen_resource as
+       before). trinity tests exit 0; aeon 3/3; avatar rebuilt.
+       OPEN: a panel does not redraw when its .svg changes (the
+       watch reads .agi only); PBR draws a panel's clear parts
+       (no discard there); no + to add a panel from aeon yet;
+       typed numbers with G; the document's own values (size,
+       viewBox) are not shown; arcs and rects become cubics in a
+       saved element.
+    p. DONE (Oct 13, Kalen: the scrolled properties ran over the
+       title; mask with the soft fade when scrolled; then "i want
+       trinity to do it on its masking layer", no hacks) PropsSide
+       is the background and title; PropsBody (40 px down) holds
+       the sections and their headings, scrolled by trinity
+       (content_h, the base wheel, its scrollbar; the panels flow
+       't{gap}px+' so they move with it, the headings draw at
+       -scroll.y) with scroll_fade 24.
+       trinity (draw_element): an element whose fade is on composes
+       its masking layer (element.mask_layer, compose_mask_layer):
+       its cached picture, then every child that is not topmost
+       (cached or not, scrolled and cropped as on the screen), and
+       draws that through the mask; the children pass skips them.
+       Before, a cached child drew outside the mask. element gained
+       mask_layer / _w / _h: every trinity app needs a rebuild
+       before it runs again (orbiter too).
+    q. BUILT, seen hidden (Oct 13, Kalen: splits under the user's
+       control, as orbiter's; a top bar over the toolbar and view:
+       orbiter's navigation bar, called the orbiter bar; his
+       answers: arrows + title, in trinity) trinity OrbiterBar: the
+       app's history arrows (TButtons nav_back / nav_fwd, the
+       left / right icons, dim by Window.nav_back_on / nav_fwd_on,
+       a press walks Window.navigate) and its title (nav_title,
+       after the arrows), in orbiter's bar look (1.3 units, #000c,
+       the inset glow, near border). Window.hosted[] (host_slot >
+       0): a hosted app makes no bar; its nav_state and title
+       already reach orbiter's pane bar (HM.nav_state, HM.title).
+       left.svg / right.svg copied into trinity/images.
+       trinity Splitter: `flex` (the pane that takes the rest,
+       default 0 as before) and `sizes` (each pane's size until
+       dragged); a seam drags the pane on its far side from the
+       flexible one; drag_ix -1 is none (was 0).
+       aeon: OrbiterBar over all (alone), then a Splitter: outliner
+       240, view (flex), properties 340, min 120; the title is
+       the project's folder or file (set_title once). view[] and
+       the svg keys find the view inside the split (middle[]).
+       Seen: both seams dragged (240 -> 300, 340 -> 420), back and
+       forward walk the choices, svg G still moves. trinity tests
+       exit 0. NOT seen: hosted in orbiter (needs orbiter rebuilt;
+       Splitter and element changed).
+    r. BUILT, seen hidden standalone (Oct 13, Kalen: the title
+       opens the navigation dialog; it lists the folder the
+       resource / svg was opened from; hosted, orbiter's dialog
+       with the app's list). trinity: a press on the bar's title
+       (Window.nav_toggle) opens NavDialog (app_render, topmost,
+       under the bar at the left, 46% wide) on the app's folder
+       (element.nav_folder); '..', folders, files by name; typing
+       filters (shown in the bar with a caret), up / down / enter,
+       a click; a pick goes to element.nav_open (true: opened),
+       else a folder is gone into; escape closes. While open the
+       Window gives it every key and typed text first. The bar
+       repaints when its title or filter changes (it is cached).
+       aeon: nav_folder is the project's parent (an svg's folder,
+       or the folder holding the design); nav_open opens an .svg,
+       a .blend or a folder with <name>.agi in place
+       (open_project: everything chosen and held starts over, the
+       view remounts as 'view<n>'); a project set from outside
+       (`set project`, orbiter's pick) opens too (opened_as).
+       Seen: '..', 'svg' typed + enter, 'test.s' + enter opened
+       test.svg titled so; set project svg <-> design three times,
+       alive.
+       orbiter (WRITTEN, NOT BUILT: Kalen's orbiter is running and
+       element/trinity changed): a press on the active pane's
+       title while it shows a running app starts the argument pick
+       (pick_default, as shift + click on the argument chip): the
+       finder at the folder of the app's resource; a pick sends
+       `set <arg> <path>` to the app, which opens it.
+       Compiler (AGENTS 1b, OPEN, met again): element's two hooks
+       appended at the class's end (after its non-public funcs)
+       dispatched one slot off in aeon (nav_open called aeon's
+       open_project); placed beside dictates they dispatch right.
+       A hidden run once exited with no log kept; not reproduced.
+    s. BUILT, seen hidden (Oct 13, Kalen: "this navigation dialog we want
+       the same as orbiter's.. we can make it a module"; "call it
+       navigation"; then "make it a sub module of trinity ...
+       extension module") orbiter's navigation dialog moved into
+       trinity as an extension file, `trinity/navigation.ag`
+       (extend trinity), used by orbiter
+       and by the orbiter bar (trinity's NavDialog replaced by it).
+       trinity/navigation.ag (imported last in trinity.ag: a free
+       func's types must be known above it; Window, declared in
+       trinity.ag, is reached as e.ux): FindHit (moved from orbiter
+       Editor.ag), FileIcons (moved; orbiter/FileIcons.ag deleted),
+       the material icons and file.svg (orbiter/images -> trinity/
+       images; orbiter's share links them back), nav_listing
+       (orbiter's browse: '..', folders with modules first, files,
+       ls order; typed text filters names), nav_dir_hit (orbiter's
+       push_dir_hit uses it), nav_hover_paint and nav_icon_paint
+       (orbiter's CommitLayer rows use both), NavigationView (the
+       ground over everything under the bar; Window mounts it when
+       the title is pressed; keys: up / down / enter, the Window
+       keeps escape, backspace and typing) with NavRows (the rows,
+       scrolled by trinity, scroll_fade 24 over the solid ground).
+       Seen: aeon's dialog as orbiter's list (icons, blue folders,
+       the pink hover), arrows choose, enter opens; orbiter built
+       (its own process was not running) and its finder drawn
+       hidden through the shared painter. orbiter's list keeps its
+       own extras (cards, repos, delete and pins, the path hint,
+       users / projects, git band) in Git.ag.
+    t. DONE (Oct 13, Kalen: "when resizing the split control or
+       resizing the window itself, there is rather insane lag")
+       measured hidden: 20 seam moves took 19.1 s (2 fps): every
+       new view size made both stages again (all passes, pipelines
+       and models). Now nothing is made again: each stage resizes
+       its targets in its frame and rewires their readers. The
+       old rebuild guarded a GPU fault; found again on removing it:
+       Texture.resize keeps the Texture object and swaps its image
+       (the old one freed a few frames later), and the grid
+       rebound its depth only when the object changed, so it
+       sampled the freed image (device fault at startup). The grid
+       rebinds on a new size too. Now 20 moves in 1.5 s (1.0 s of
+       it the test's waits), 37 fps hidden, no fault; seen with and
+       without a choice. Window resize takes the same path (not
+       driven: no resize over the socket).
+    u. DONE (Oct 13, Kalen: draw settings stored as strings,
+       "pulse_width ... is f32 ... they should parse ok without
+       string") aeon writes a setting bare when it is a number or
+       true / false, quoted only when a word (SceneEdit.set_row);
+       aeon/flower888/flower888.agi's numbers unquoted (env_id and
+       the inputs stay quoted). Unquoted, aeon crashed: parse_agi
+       gives a bare number in a map of Au as a boxed f64, and
+       silver's `string [ v ]` (and '{v}') of an Au was a pointer
+       cast, so the f64 was read as text (strlen fault).
+       Fixed in aether: e_convert_or_cast Au -> string calls
+       Au_cast_string (a string comes back as itself, a primitive
+       as its value; another class gets Au's member text, not its
+       own cast: the virtual call's function type did not verify).
+       That call exposed aether building loop types in LLVM's
+       global context (LLVMInt32Type(), LLVMPointerType(
+       LLVMInt8Type())): 10 places now in a->module_ctx (the
+       array for-loop element was in the wrong context).
+       Au serialize writes floats shortest (%.15g f64, %.7g f32, a
+       whole value keeps .0): 4.5, not 4.500000, which also cut
+       every double to 6 decimals in .agi and json.
+       features t_agi_number_text; 252/253 (t_codegen_resource as
+       before). Seen: the unquoted flower888 loads and draws, its
+       values listed; a dragged value saved as pulse_width: 1.2.
+    v. BUILT, seen hidden (Oct 13, Kalen: the orbiter bar's views,
+       "the same thing as instances of running apps with titles;
+       these are views we toggle in or turn off to show the file
+       source"; "bring back the full nodes view") trinity: element
+       .views[] (beside dictates: AGENTS 1b) names the app's views;
+       the orbiter bar shows a chip each after its title (TButtons,
+       labels, the lit one Window.bar_view); a press shows that
+       view, pressed again the source ('').
+       aeon: views ['nodes'] for a design (none for an svg yet);
+       with nodes on, the editor split stays mounted (hide: its
+       stages and GPU kept) and NodeGraph (aeon/Graph.ag, restored
+       from this session's transcript: the first Write of it; its
+       later shell edits were lost) fills the area under the bar:
+       materials, each object's step chain, objects, passes by what
+       they read, wired; the values, switches and edits through
+       SceneEdit (object/node/material/pass/draw rows, spec_of,
+       apply_row, flip). design: draw_reads_materials[ d ] (by the
+       shader's class, no stage needed; Stage.reads_materials uses
+       it). Seen: chip, nodes on (cards, wires), off (the editor as
+       it was).
+       Hosted (DONE, seen hidden): HM.views (app -> orbiter, the
+       names '|' between, three bytes a message as the title's),
+       HM.view_state (app -> orbiter, the shown view's index, -1
+       the source), HM.view (orbiter -> app, the view to show);
+       Window.views_post sends them when they change (app_render,
+       hosted), the HM.view handler sets bar_view. orbiter:
+       AppView.app_views / app_view_on; the title strip (title_els)
+       lays a chip (ArgButton) a view after the instance chips,
+       lit while shown; a press shows the app in the pane
+       (embed_app) and sends HM.view (the lit one again: -1).
+       Seen: a hidden orbiter hosting aeon on flower888: the nodes
+       chip in the pane title; a press lit it and aeon (its own
+       socket's shot) showed the nodes view, no bar of its own; a
+       second press back to the editor.
+       Fixed in trinity (element.ag Layer.draw): an editable
+       layer's crop left out the canvas's offset, so a no_cache
+       field painted into a parent's canvas lost its text (only
+       a sliver near the top showed). trinity tests exit 0.
+       Seen: scrolled, the title clear and the rows fading under
+       it; a value dragged 1.0 -> 1.2.
     e. DONE (Kalen, Oct 13) edit mode shows the creases on the
        cage's edges: each creased edge (the cage's sa/sb, read
        from the .mesh's crease_edge) drawn over the cage lines,

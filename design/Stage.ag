@@ -75,6 +75,21 @@ func default_graph [] -> StageGraph
     return StageGraph [ passes: vec Pass [] [ lit ],
                         out: vec string [] [ 'lit' ] ]
 
+# a draw's shader (by its class) samples the objects' materials:
+# a colour binding none of the draw's inputs fills
+func draw_reads_materials [ d: Draw ] -> bool
+    if [ !d || d.quad || !d.shader ] return false
+    ty : Au.find_type[ d.shader.chars, null ]
+    while [ ty && ty != typeid[ shader ] ]
+        for [ i: i32 0, i < ty.members.count, i += 1 ]
+            mem : Au_t [ ty.members.origin[ i ] ]
+            if [ mem.src != typeid[ LayoutBinding ] ] continue
+            if [ strcmp[ mem.ident, "color" ] != 0 ] continue
+            fed : bool [ d.inputs && d.inputs.contains[ 'color' ] ]
+            return !fed
+        ty = ty.context
+    return false
+
 class Stage
     public design : Design
     public graph  : StageGraph
@@ -90,6 +105,10 @@ class Stage
     public model  : mat4f
     # the camera's up in the design's axes; none: the default
     public up     : vec3f
+    # the host's projection flips y (a picture not mirrored): the
+    # faces toward the eye wind the other way, so culled draws
+    # cull the other side
+    public flip_y : bool
     # the host gives the shaders' clock (else seconds since built)
     public host_time : bool
     public time   : f32
@@ -327,12 +346,14 @@ class Stage
                     # its own shader: a draw is switched by its shader
                     gs : make_shader[ vk, d, p.name ]
                     gm : Model [ vk: vk, w: w, s: gs, rigid_s: gs,
-                        cull_none: d.both_sides, samplers: smp,
+                        cull_none: d.both_sides, cull_front: flip_y,
+                        samplers: smp,
                         blend: BlendState [ src: VK_BLEND_FACTOR_ZERO,
                             dst: VK_BLEND_FACTOR_ONE,
                             src_a: VK_BLEND_FACTOR_ZERO,
                             dst_a: VK_BLEND_FACTOR_ONE ] ]
                     gm.id = gid
+                    panel_pictures[ gm ]
                     models.push[ gm ]
                     r.draws.push[ DrawRun [ draw: d, shade: gs,
                         model: gm, parts: gp, ghost: true, smp: smp ] ]
@@ -342,8 +363,10 @@ class Stage
                         counts: vec i32 [], y_up: p.y_up ]
                     gm : design_model[ design, d.objects, run.parts ]
                     run.model = Model [ vk: vk, w: w, s: s, rigid_s: s,
-                        cull_none: d.both_sides, samplers: smp ]
+                        cull_none: d.both_sides, cull_front: flip_y,
+                        samplers: smp ]
                     run.model.id = gm
+                    panel_pictures[ run.model ]
                 el
                     run.model = Model [ w: w, s: s, samplers: smp ]
                 models.push[ run.model ]
@@ -359,6 +382,15 @@ class Stage
                 reduce: p.reduce, clear_color: cc, models: models ]
             r.target.wscale = 0.0
             runs.push[ r ]
+
+    # every svg panel's picture into a model's texture cache, by
+    # the path its material names (the file is no image to load)
+    func panel_pictures [ m: Model ]
+        for [ o: Object ] in design.objects
+            pn : o.panel[]
+            if [ !pn ] continue
+            tx : pn.picture_of[ made_vk, made_w ]
+            if [ tx ] m.tex_cache[ '{design.base[]}/{pn.file}' ] = tx
 
     # a pass's pixel size at the host's size
     func size_of [ p: Pass, pw: i32, ph: i32 ] -> vec2f
@@ -425,6 +457,15 @@ class Stage
             tx : output[ o ]
             if [ tx ] shown.push[ tx ]
         return shown
+
+    # the depth of the first pass drawing objects: what a host's
+    # overlay (the floor's grid) hides behind
+    func object_depth [] -> Texture
+        for [ r: Running ] in runs
+            if [ !r.pass.depth || !r.target ] continue
+            for [ d: DrawRun ] in r.draws
+                if [ d.parts ] return r.target.depth
+        return null
 
     # each draw's pass wires read again, after a resize
     func rewire [ r: Running ]
@@ -526,8 +567,10 @@ class Stage
                 gid : design_model[ design, d.draw.objects, parts ]
                 nm : Model [ vk: made_vk, w: made_w, s: d.shade,
                     rigid_s: d.shade, cull_none: d.draw.both_sides,
+                    cull_front: flip_y,
                     samplers: d.smp, blend: d.model.blend ]
                 nm.id = gid
+                panel_pictures[ nm ]
                 for [ i: i32 0, i < r.target.models.count, i += 1 ]
                     if [ r.target.models[ i ] == d.model ]
                         r.target.models[ i ] = nm
@@ -547,18 +590,7 @@ class Stage
             for [ d: DrawRun ] in r.draws
                 if [ d.draw.name.compare[ draw ] != 0 || !d.parts ]
                     continue
-                ty : typeid[ d.shade ]
-                while [ ty && ty != typeid[ shader ] ]
-                    for [ i: i32 0, i < ty.members.count, i += 1 ]
-                        mem : Au_t [ ty.members.origin[ i ] ]
-                        if [ mem.src != typeid[ LayoutBinding ] ]
-                            continue
-                        if [ strcmp[ mem.ident, "color" ] != 0 ]
-                            continue
-                        fed : bool [ d.draw.inputs
-                            && d.draw.inputs.contains[ 'color' ] ]
-                        if [ !fed ] return true
-                    ty = ty.context
+                return draw_reads_materials[ d.draw ]
         return false
 
     # a draw reads another pass's picture (its colour or reduction)

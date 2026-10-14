@@ -2262,6 +2262,35 @@ expect func t_vec_from_vec [] -> bool
     return b.count == 3 && b[ 1 ] == 2.5 && a[ 0 ] == 1.5
         && c.count == 3 && c[ 2 ] == 3
 
+# a bare number in an .agi map of any value is a boxed number,
+# and its text is the number
+class AgiNum
+    public settings : map Au [ string ]
+
+expect func t_agi_number_text [] -> bool
+    src : string 'settings:\n\ta: 4.5\n\tb: \'w\'\n'
+    o : AgiNum Au.parse_agi[ typeid[ AgiNum ], src.chars, null ]
+    if [ !o || !o.settings ] return false
+    one : o.settings[ 'a' ]
+    t : string [ one ]
+    log 'agi number text: {t}'
+    return t.compare[ '4.5' ] == 0
+
+# a vector of structs copied: every element whole
+struct VecPt
+    k : i32
+    x : f32
+    y : f32
+    z : f32
+
+expect func t_vec_struct_copy [] -> bool
+    a : vec VecPt [] [ VecPt [ k: 1, x: 1.0, y: 2.0, z: 3.0 ],
+                       VecPt [ k: 2, x: 4.0, y: 5.0, z: 6.0 ] ]
+    b : vec VecPt [ a ]
+    log 'vec struct copy: {b.count} {b[ 1 ].k} {b[ 1 ].y} {b[ 1 ].z}'
+    return b.count == 2 && b[ 1 ].k == 2 && b[ 1 ].y == 5.0
+        && b[ 1 ].z == 6.0
+
 # a float constant pushed onto a vec f32 keeps its value
 expect func t_vec_f32_push_literal [] -> bool
     v : vec f32 []

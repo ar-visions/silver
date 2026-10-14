@@ -1,0 +1,618 @@
+# an .svg opened in the 2D mode: its shapes listed, drawn flat,
+# their points moved and written back into the file
+extend aeon
+
+# the transform undoing m
+func affine_inverse [ m: affine ] -> affine
+    det : f32 [ m.ma * m.md - m.mb * m.mc ]
+    if [ abs[ det ] < 1.0e-12 ] det = 1.0e-12
+    ia : f32 [ m.md / det ]
+    ib : f32 [ 0.0 - m.mb / det ]
+    ic : f32 [ 0.0 - m.mc / det ]
+    id : f32 [ m.ma / det ]
+    return affine [ ma: ia, mb: ib, mc: ic, md: id,
+                    tx: 0.0 - (ia * m.tx + ib * m.ty),
+                    ty: 0.0 - (ic * m.tx + id * m.ty) ]
+
+# a presentation value of an element: its style's, else its own
+func svg_value [ nd: SVGNode, key: string ] -> string
+    st : nd.attr[ 'style' ]
+    if [ st ]
+        for [ part: string ] in st.split[ ';' ]
+            at : i32 [ part.index_of[ ':' ] ]
+            if [ at <= 0 ] continue
+            if [ part.mid[ 0, at ].trim[].compare[ key ] == 0 ]
+                return part.mid[ at + 1, part.count - at - 1 ].trim[]
+    v : nd.attr[ key ]
+    return (v) ? v : ''
+
+# a value set on a shape's element (its style's copy goes: the
+# style would win) and on the shape as drawn
+func svg_set [ sh: SVGShape, key: string, text: string ]
+    nd : sh.node
+    if [ !nd ] return
+    if [ !nd.attrs ] nd.attrs = map string [ string ] []
+    was : svg_value[ nd, key ]
+    nd.attrs.set[ key, text ]
+    st : nd.attr[ 'style' ]
+    if [ st ]
+        kept : ''
+        for [ part: string ] in st.split[ ';' ]
+            at : i32 [ part.index_of[ ':' ] ]
+            name : part.mid[ 0, (at > 0) ? at : 0 ].trim[]
+            if [ at > 0 && name.compare[ key ] == 0 ] continue
+            if [ part.trim[].count == 0 ] continue
+            kept = (kept.count == 0) ? part : '{kept};{part}'
+        nd.attrs.set[ 'style', kept ]
+    if [ key.compare[ 'fill' ] == 0 ]
+        sh.fill_none = text.compare[ 'none' ] == 0
+        if [ !sh.fill_none ] sh.fill = svg_color[ text ]
+    el [ key.compare[ 'stroke' ] == 0 ]
+        sh.stroke_none = text.compare[ 'none' ] == 0
+        if [ !sh.stroke_none ] sh.stroke = svg_color[ text ]
+    el [ key.compare[ 'stroke-width' ] == 0 ]
+        sh.sw = f32[ text ]
+    el [ key.compare[ 'opacity' ] == 0 ]
+        sh.opacity = f32[ text ]
+    el [ key.compare[ 'id' ] == 0 ]
+        sh.id = text
+    el [ key.compare[ 'transform' ] == 0 ]
+        # the points stay where they are in the element's own
+        # space: the parent's, then the new transform
+        old : svg_parse_transform[ was ]
+        if [ was.count == 0 ] old = affine.identity[]
+        fresh : svg_parse_transform[ text ]
+        if [ text.count == 0 ] fresh = affine.identity[]
+        parent : sh.space.multiply[ affine_inverse[ old ] ]
+        moved : parent.multiply[ fresh ]
+        back : affine_inverse[ sh.space ]
+        for [ k: i32 0, k < sh.cmds.count, k += 1 ]
+            c : sh.cmds[ k ]
+            sh.cmds[ k ] = SVGCmd [ op: c.op,
+                x:  remap_x[ back, moved, c.x, c.y ],
+                y:  remap_y[ back, moved, c.x, c.y ],
+                x1: remap_x[ back, moved, c.x1, c.y1 ],
+                y1: remap_y[ back, moved, c.x1, c.y1 ],
+                x2: remap_x[ back, moved, c.x2, c.y2 ],
+                y2: remap_y[ back, moved, c.x2, c.y2 ] ]
+        sh.space = moved
+
+# a point taken back by one transform and out by another
+func remap_x [ back: affine, out: affine, x: f32, y: f32 ] -> f32
+    return out.apply_x[ back.apply_x[ x, y ], back.apply_y[ x, y ] ]
+
+func remap_y [ back: affine, out: affine, x: f32, y: f32 ] -> f32
+    return out.apply_y[ back.apply_x[ x, y ], back.apply_y[ x, y ] ]
+
+# one point of a shape: its command and which of its three
+# (0 the end, 1 and 2 a curve's handles)
+class SvgPoint
+    public cmd  : i32
+    public slot : i32
+
+# a shape's commands as they were before a move: its undo
+class SvgUndo
+    public shape : i32
+    public cmds  : vec SVGCmd
+
+class SvgDoc
+    public file   : path
+    public model  : SVGModel
+    # the chosen shape (-1 none) and the shapes changed since the
+    # last save
+    public chosen : i32 [ -1 ]
+    public dirty  : vec i32
+
+    func init []
+        model = SVGModel [ file ]
+        dirty = vec i32 []
+
+    func count [] -> i32
+        if [ !model || !model.shapes ] return 0
+        return model.shapes.count
+
+    # a shape's name: its id, else its tag and number
+    func name_of [ i: i32 ] -> string
+        sh : model.shapes[ i ]
+        if [ sh.id && sh.id.count > 0 ] return sh.id
+        tag : string [ (sh.node) ? sh.node.tag : 'shape' ]
+        return '{tag} {i + 1}'
+
+    func mark [ i: i32 ]
+        if [ dirty.index_of[ i ] < 0 ] dirty.push[ i ]
+
+    # one point read: x, y of the command's slot
+    func point [ i: i32, p: SvgPoint ] -> vec2f
+        c : model.shapes[ i ].cmds[ p.cmd ]
+        if [ p.slot == 1 ] return vec2f [ c.x1, c.y1 ]
+        if [ p.slot == 2 ] return vec2f [ c.x2, c.y2 ]
+        return vec2f [ c.x, c.y ]
+
+    # one point set: the command made again with it in its slot
+    func set_point [ i: i32, p: SvgPoint, x: f32, y: f32 ]
+        sh : model.shapes[ i ]
+        c : sh.cmds[ p.cmd ]
+        nx : f32 [ (p.slot == 0) ? x : c.x ]
+        ny : f32 [ (p.slot == 0) ? y : c.y ]
+        ax : f32 [ (p.slot == 1) ? x : c.x1 ]
+        ay : f32 [ (p.slot == 1) ? y : c.y1 ]
+        bx : f32 [ (p.slot == 2) ? x : c.x2 ]
+        by : f32 [ (p.slot == 2) ? y : c.y2 ]
+        sh.cmds[ p.cmd ] = SVGCmd [ op: c.op, x: nx, y: ny, x1: ax,
+                                    y1: ay, x2: bx, y2: by ]
+
+    # every point a shape has: anchors, then a curve's handles
+    func points_of [ i: i32 ] -> vec SvgPoint
+        out : vec SvgPoint []
+        if [ i < 0 || i >= count[] ] return out
+        sh : model.shapes[ i ]
+        for [ k: i32 0, k < sh.cmds.count, k += 1 ]
+            c : sh.cmds[ k ]
+            if [ c.op == SVGOp.close ] continue
+            out.push[ SvgPoint [ cmd: k, slot: 0 ] ]
+            if [ c.op == SVGOp.cubic || c.op == SVGOp.quad ]
+                out.push[ SvgPoint [ cmd: k, slot: 1 ] ]
+            if [ c.op == SVGOp.cubic ]
+                out.push[ SvgPoint [ cmd: k, slot: 2 ] ]
+        return out
+
+    # what moves with the picked: an anchor takes its own handles
+    # (the curve into it, and the curve out of it)
+    func carried [ i: i32, picked: vec SvgPoint ] -> vec SvgPoint
+        out : vec SvgPoint []
+        sh : model.shapes[ i ]
+        for [ p: SvgPoint ] in picked
+            add_point[ out, p ]
+            if [ p.slot != 0 ] continue
+            c : sh.cmds[ p.cmd ]
+            if [ c.op == SVGOp.cubic ]
+                add_point[ out, SvgPoint [ cmd: p.cmd, slot: 2 ] ]
+            if [ p.cmd + 1 < sh.cmds.count ]
+                after : sh.cmds[ p.cmd + 1 ]
+                if [ after.op == SVGOp.cubic ]
+                    add_point[ out, SvgPoint [ cmd: p.cmd + 1,
+                                               slot: 1 ] ]
+        return out
+
+    func add_point [ list: vec SvgPoint, p: SvgPoint ]
+        for [ q: SvgPoint ] in list
+            if [ q.cmd == p.cmd && q.slot == p.slot ] return
+        list.push[ p ]
+
+    # the anchors on the same spot as this one (a subpath's end
+    # back on its start): picked together
+    func same_spot [ i: i32, p: SvgPoint ] -> vec SvgPoint
+        out : vec SvgPoint []
+        out.push[ p ]
+        if [ p.slot != 0 ] return out
+        at : point[ i, p ]
+        for [ q: SvgPoint ] in points_of[ i ]
+            if [ q.slot != 0 || q.cmd == p.cmd ] continue
+            o : point[ i, q ]
+            if [ abs[ o.x - at.x ] < 0.001
+                 && abs[ o.y - at.y ] < 0.001 ]
+                out.push[ q ]
+        return out
+
+    # the shape's outline flattened (document units), a subpath
+    # a run: each point x, y; a run starts after a -1e9 mark
+    func outline [ i: i32 ] -> vec f32
+        out : vec f32 []
+        sh : model.shapes[ i ]
+        px : f32 [ 0.0 ]
+        py : f32 [ 0.0 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.move ]
+                out.push[ -1.0e9 ]
+                out.push[ -1.0e9 ]
+                out.push[ c.x ]
+                out.push[ c.y ]
+            el [ c.op == SVGOp.line ]
+                out.push[ c.x ]
+                out.push[ c.y ]
+            el [ c.op == SVGOp.cubic || c.op == SVGOp.quad ]
+                for [ k: i32 1, k <= 12, k += 1 ]
+                    t : f32 [ f32[ k ] / 12.0 ]
+                    u : f32 [ 1.0 - t ]
+                    if [ c.op == SVGOp.cubic ]
+                        a : f32 [ u * u * u ]
+                        b : f32 [ 3.0 * u * u * t ]
+                        e : f32 [ 3.0 * u * t * t ]
+                        f : f32 [ t * t * t ]
+                        out.push[ a * px + b * c.x1 + e * c.x2 + f * c.x ]
+                        out.push[ a * py + b * c.y1 + e * c.y2 + f * c.y ]
+                    el
+                        out.push[ u * u * px + 2.0 * u * t * c.x1
+                                  + t * t * c.x ]
+                        out.push[ u * u * py + 2.0 * u * t * c.y1
+                                  + t * t * c.y ]
+            if [ c.op != SVGOp.close ]
+                px = c.x
+                py = c.y
+        return out
+
+    # a point is on the shape: inside its fill (even-odd), or
+    # within reach of its outline
+    func hits [ i: i32, x: f32, y: f32, reach: f32 ] -> bool
+        line : outline[ i ]
+        sh : model.shapes[ i ]
+        inside : bool [ false ]
+        first : i32 [ -1 ]
+        for [ k: i32 0, k + 1 < line.count, k += 2 ]
+            if [ line[ k ] < -1.0e8 ]
+                first = -1
+                continue
+            if [ first < 0 ] first = k
+            # the edge to the next point, or back to the run's first
+            nx : i32 [ k + 2 ]
+            if [ nx + 1 >= line.count || line[ nx ] < -1.0e8 ]
+                nx = first
+            ax : f32 [ line[ k ] ]
+            ay : f32 [ line[ k + 1 ] ]
+            bx : f32 [ line[ nx ] ]
+            by : f32 [ line[ nx + 1 ] ]
+            if [ (ay > y) != (by > y) ]
+                cx : f32 [ ax + (y - ay) * (bx - ax) / (by - ay) ]
+                if [ x < cx ] inside = !inside
+            # the outline itself (a closing edge only when filled)
+            if [ nx == first && sh.fill_none ] continue
+            ex : f32 [ bx - ax ]
+            ey : f32 [ by - ay ]
+            len : f32 [ ex * ex + ey * ey ]
+            t : f32 [ 0.0 ]
+            if [ len > 0.0 ]
+                t = clamp[ ((x - ax) * ex + (y - ay) * ey) / len, 0.0,
+                           1.0 ]
+            dx : f32 [ ax + ex * t - x ]
+            dy : f32 [ ay + ey * t - y ]
+            if [ dx * dx + dy * dy <= reach * reach ] return true
+        return inside && !sh.fill_none
+
+    # the topmost shape under a point (-1 none)
+    func shape_at [ x: f32, y: f32, reach: f32 ] -> i32
+        for [ i: i32 count[] - 1, i >= 0, i -= 1 ]
+            if [ hits[ i, x, y, reach ] ] return i
+        return -1
+
+    # ---- saving ----
+
+    # a shape's commands as path data in its element's own space
+    func path_data [ i: i32 ] -> string
+        sh : model.shapes[ i ]
+        back : affine_inverse[ sh.space ]
+        out : ''
+        for [ c: SVGCmd ] in sh.cmds
+            if [ out.count > 0 ] out = '{out} '
+            if [ c.op == SVGOp.close ]
+                out = '{out}Z'
+                continue
+            xy : pair[ back, c.x, c.y ]
+            if [ c.op == SVGOp.move ]
+                out = '{out}M {xy}'
+            el [ c.op == SVGOp.line ]
+                out = '{out}L {xy}'
+            el [ c.op == SVGOp.quad ]
+                q : pair[ back, c.x1, c.y1 ]
+                out = '{out}Q {q} {xy}'
+            el
+                a : pair[ back, c.x1, c.y1 ]
+                b : pair[ back, c.x2, c.y2 ]
+                out = '{out}C {a} {b} {xy}'
+        return out
+
+    func pair [ m: affine, x: f32, y: f32 ] -> string
+        px : num_text[ m.apply_x[ x, y ], false ]
+        py : num_text[ m.apply_y[ x, y ], false ]
+        return '{px},{py}'
+
+    # the element written again as a path: its own attributes but
+    # the shape's (x, y, r, points ...), then d; children kept
+    func element_text [ i: i32 ] -> string
+        sh : model.shapes[ i ]
+        nd : sh.node
+        geometry : vec string [] [ 'd', 'x', 'y', 'width', 'height',
+            'rx', 'ry', 'cx', 'cy', 'r', 'x1', 'y1', 'x2', 'y2',
+            'points' ]
+        out : '<path'
+        if [ nd.attrs ]
+            for [ v: string, k: string ] in nd.attrs
+                if [ geometry.index_of[ k ] >= 0 ] continue
+                out = '{out} {k}="{v}"'
+        d : path_data[ i ]
+        out = '{out} d="{d}"'
+        src : model.source
+        if [ nd.tail_at <= nd.head_end ] return '{out}/>'
+        inner : src.mid[ nd.head_end, nd.tail_at - nd.head_end ]
+        return '{out}>{inner}</path>'
+
+    # the changed shapes written back, the last in the file first
+    # (the earlier spans stay where they are); then read again
+    func save [] -> bool
+        if [ dirty.count == 0 ] return true
+        order : vec i32 [ dirty ]
+        # by place in the file, last first
+        for [ a: i32 0, a < order.count, a += 1 ]
+            for [ b: i32 a + 1, b < order.count, b += 1 ]
+                na : model.shapes[ order[ a ] ].node
+                nb : model.shapes[ order[ b ] ].node
+                if [ nb.at > na.at ]
+                    keep : i32 [ order[ a ] ]
+                    order[ a ] = order[ b ]
+                    order[ b ] = keep
+        txt : string [ model.source ]
+        for [ i: i32 ] in order
+            nd : model.shapes[ i ].node
+            if [ !nd ] continue
+            head : txt.mid[ 0, nd.at ]
+            tail : txt.mid[ nd.end, txt.count - nd.end ]
+            body : element_text[ i ]
+            txt = '{head}{body}{tail}'
+        f : handle [ fopen[ file, "w" ] ]
+        if [ !f ] return false
+        fputs[ txt.chars, f ]
+        fclose[ f ]
+        keep_chosen : i32 [ chosen ]
+        model = SVGModel [ file ]
+        chosen = keep_chosen
+        dirty.clear[]
+        return true
+
+# the 2D view of an .svg: the page and its shapes, pan and zoom;
+# a shape chosen shows its points; G moves the picked
+element SvgView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public doc    : SvgDoc
+    # where the page's corner is on screen, and pixels a unit
+    mutable ox    : f32
+    mutable oy    : f32
+    mutable zoom  : f32
+    mutable fitted : bool
+    # 1 panning (right, middle or ctrl/cmd + drag)
+    mutable mode  : i32
+    mutable picked : vec SvgPoint
+    # g: what moves and where it was; the pointer's move so far
+    mutable moving : bool
+    mutable moved  : vec SvgPoint
+    mutable from   : vec f32
+    mutable shift_x : f32
+    mutable shift_y : f32
+    # 1 x alone, 2 y alone, 0 both
+    mutable lock   : i32
+    mutable undo   : vec SvgUndo
+    mutable before : vec SVGCmd
+
+    func fit []
+        w : f32 [ doc.model.w ]
+        h : f32 [ doc.model.h ]
+        zoom = min[ (bounds.w - 80.0) / w, (bounds.h - 80.0) / h ]
+        if [ zoom <= 0.0 ] zoom = 1.0
+        ox = (bounds.w - w * zoom) * 0.5
+        oy = (bounds.h - h * zoom) * 0.5
+        fitted = true
+
+    func sx [ x: f32 ] -> f32
+        return ox + x * zoom
+    func sy [ y: f32 ] -> f32
+        return oy + y * zoom
+
+    # the chosen shape's point nearest the pointer, within 10 px
+    func nearest [ px: f32, py: f32 ] -> SvgPoint
+        best : f32 [ 100.0 ]
+        out : SvgPoint null
+        for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
+            at : doc.point[ doc.chosen, p ]
+            dx : f32 [ sx[ at.x ] - px ]
+            dy : f32 [ sy[ at.y ] - py ]
+            d : f32 [ dx * dx + dy * dy ]
+            if [ d < best ]
+                best = d
+                out = p
+        return out
+
+    func is_picked [ p: SvgPoint ] -> bool
+        if [ !picked ] return false
+        for [ q: SvgPoint ] in picked
+            if [ q.cmd == p.cmd && q.slot == p.slot ] return true
+        return false
+
+    public func on_press [ ev: Event ]
+        if [ !doc ] return
+        if [ moving ]
+            if [ ev.mouse.button == 1 ]
+                cancel_move[]
+            el
+                end_move[]
+            return
+        if [ ev.mouse.button != 0 || (ux && ux.cmd) ]
+            mode = 1
+            return
+        mode = 0
+        if [ !picked ] picked = vec SvgPoint []
+        adding : bool [ ux && ux.shift ]
+        # a point of the chosen shape first, else a shape
+        p : nearest[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        if [ p ]
+            if [ !adding ] picked.clear[]
+            for [ q: SvgPoint ] in doc.same_spot[ doc.chosen, p ]
+                doc.add_point[ picked, q ]
+            return
+        x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
+        y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
+        doc.chosen = doc.shape_at[ x, y, 4.0 / zoom ]
+        picked.clear[]
+
+    public func on_release [ ev: Event ]
+        mode = 0
+
+    public func on_move [ ev: Event ]
+        if [ mode == 1 ]
+            ox += ev.mouse.delta.x
+            oy += ev.mouse.delta.y
+            return
+        if [ !moving ] return
+        if [ lock != 2 ] shift_x += ev.mouse.delta.x / zoom
+        if [ lock != 1 ] shift_y += ev.mouse.delta.y / zoom
+        place_moved[]
+
+    # the wheel zooms about the pointer
+    public func on_wheel [ ev: Event ]
+        k : f32 [ pow[ 1.1, ev.mouse.wheel_delta.y ] ]
+        px : f32 [ ev.mouse.pos.x ]
+        py : f32 [ ev.mouse.pos.y ]
+        ox = px - (px - ox) * k
+        oy = py - (py - oy) * k
+        zoom = zoom * k
+
+    # g: the picked points, or the whole chosen shape, follow
+    # the pointer
+    func start_move []
+        if [ doc.chosen < 0 ] return
+        sh : doc.model.shapes[ doc.chosen ]
+        list : vec SvgPoint []
+        if [ picked && picked.count > 0 ]
+            list = doc.carried[ doc.chosen, picked ]
+        el
+            list = doc.points_of[ doc.chosen ]
+        if [ list.count == 0 ] return
+        moved = list
+        from = vec f32 []
+        for [ p: SvgPoint ] in moved
+            at : doc.point[ doc.chosen, p ]
+            from.push[ at.x ]
+            from.push[ at.y ]
+        before = vec SVGCmd [ sh.cmds ]
+        shift_x = 0.0
+        shift_y = 0.0
+        lock = 0
+        moving = true
+
+    func place_moved []
+        for [ k: i32 0, k < moved.count, k += 1 ]
+            doc.set_point[ doc.chosen, moved[ k ],
+                           from[ k * 2 ] + shift_x,
+                           from[ k * 2 + 1 ] + shift_y ]
+
+    func end_move []
+        moving = false
+        if [ !undo ] undo = vec SvgUndo []
+        undo.push[ SvgUndo [ shape: doc.chosen, cmds: before ] ]
+        doc.mark[ doc.chosen ]
+
+    func cancel_move []
+        moving = false
+        shift_x = 0.0
+        shift_y = 0.0
+        place_moved[]
+
+    # keys, as the app hands them on
+    public func key_event [ ev: Event ]
+        if [ !doc ] return
+        k : i32 [ ev.key.unicode ]
+        down : bool [ ev.key.state != 0 ]
+        if [ !down ] return
+        ctrl : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ moving ]
+            if [ k == 257 || k == 335 ] end_move[]
+            if [ k == 256 ] cancel_move[]
+            # x or y: that axis alone (again: both)
+            if [ k == 88 ] lock = (lock == 1) ? 0 : 1
+            if [ k == 89 ] lock = (lock == 2) ? 0 : 2
+            if [ k == 88 || k == 89 ]
+                if [ lock == 1 ] shift_y = 0.0
+                if [ lock == 2 ] shift_x = 0.0
+                place_moved[]
+            return
+        if [ k == 83 && ctrl && !ev.key.shift ]
+            if [ doc.save[] ]
+                log 'aeon: saved {doc.file}'
+                picked = vec SvgPoint []
+            return
+        if [ k == 90 && ctrl ]
+            if [ !undo || undo.count == 0 ] return
+            back : undo[ undo.count - 1 ]
+            undo.pop[]
+            doc.model.shapes[ back.shape ].cmds = back.cmds
+            doc.mark[ back.shape ]
+            return
+        if [ k == 71 && !ctrl ] start_move[]
+        # home: the page fitted again
+        if [ k == 268 ] fit[]
+        if [ k == 256 && picked ] picked.clear[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !doc ] return
+        cv : Canvas [ w.screen ]
+        if [ !fitted && bounds.w > 0.0 ] fit[]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#14141a' ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        pw : f32 [ doc.model.w * zoom ]
+        ph : f32 [ doc.model.h * zoom ]
+        # the page: white, a line round it
+        cv.fill_color[ '#ffffff' ]
+        cv.rect_to[ ox, oy, pw, ph ]
+        cv.paint[]
+        cv.restore[]
+        doc.model.render[ cv, ox, oy, pw, ph ]
+        cv.save[]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#ffffff40' ]
+        cv.stroke_width[ 1.0 ]
+        cv.rect_to[ ox, oy, pw, ph ]
+        cv.paint[]
+        if [ doc.chosen >= 0 && doc.chosen < doc.count[] ]
+            draw_chosen[ cv ]
+        cv.restore[]
+
+    # the chosen shape: its outline, handles and anchors
+    func draw_chosen [ cv: Canvas ]
+        sh : doc.model.shapes[ doc.chosen ]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#7fd4ff' ]
+        cv.stroke_width[ 1.5 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.move ]
+                cv.move_to[ sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.line ]
+                cv.line_to[ sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.cubic ]
+                cv.cubic_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x2 ],
+                             sy[ c.y2 ], sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.quad ]
+                cv.quad_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x ],
+                            sy[ c.y ] ]
+            el [ c.op == SVGOp.close ]
+                cv.close_path[]
+        cv.paint[]
+        # each handle's line to its anchor
+        cv.stroke_color[ '#7fd4ff99' ]
+        cv.stroke_width[ 1.0 ]
+        px : f32 [ 0.0 ]
+        py : f32 [ 0.0 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.cubic || c.op == SVGOp.quad ]
+                cv.move_to[ sx[ px ], sy[ py ] ]
+                cv.line_to[ sx[ c.x1 ], sy[ c.y1 ] ]
+                cv.paint[]
+            if [ c.op == SVGOp.cubic ]
+                cv.move_to[ sx[ c.x ], sy[ c.y ] ]
+                cv.line_to[ sx[ c.x2 ], sy[ c.y2 ] ]
+                cv.paint[]
+            if [ c.op != SVGOp.close ]
+                px = c.x
+                py = c.y
+        cv.stroke_width[ 0.0 ]
+        for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
+            at : doc.point[ doc.chosen, p ]
+            lit : is_picked[ p ]
+            cv.fill_color[ (lit) ? '#ffcf4a' : '#7fd4ff' ]
+            if [ p.slot == 0 ]
+                cv.rect_to[ sx[ at.x ] - 3.5, sy[ at.y ] - 3.5, 7.0,
+                            7.0 ]
+            el
+                cv.arc[ sx[ at.x ], sy[ at.y ], 3.0, 0.0, 6.2832 ]
+            cv.paint[]
