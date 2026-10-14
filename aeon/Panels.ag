@@ -36,6 +36,10 @@ class Write
 
 # what is changed in memory and not yet saved (ctrl/cmd + s)
 class Edits
+    # unsaved edits kept from before (copies in the shadow), and
+    # the files this session wrote copies of
+    public kept    : bool
+    public touched : vec string
     # objects whose cage moved, objects whose place moved
     public cages  : vec string
     public places : vec string
@@ -75,6 +79,10 @@ class Edits
         writes.push[ w ]
 
     func pending [] -> bool
+        return kept || queued[]
+
+    # edits not yet put anywhere
+    func queued [] -> bool
         return cages.count + places.count + writes.count
             + drops.count + adds.count > 0
 

@@ -239,6 +239,12 @@ element NavigationView
         list : hits[]
         if [ k == 264 && at < list.count - 1 ] at += 1
         if [ k == 265 && at > 0 ] at -= 1
+        # saving: the typed name (or the row) is where to save
+        if [ (k == 257 || k == 335) && ux.nav_saving ]
+            h : FindHit [ (at >= 0 && at < list.count) ? list[ at ]
+                                                       : null ]
+            ux.nav_save_pick[ (h) ? h.file : null ]
+            return
         if [ (k == 257 || k == 335) && at >= 0 && at < list.count ]
             pick[ list[ at ] ]
             return

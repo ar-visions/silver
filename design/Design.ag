@@ -1,6 +1,21 @@
 # the design: mesh nodes, objects, and the project folder
 extend design
 
+# where unsaved copies of a design's files are kept ('' none: an
+# editor sets it); a copy there, under the original's own path,
+# is read in its place
+persist shadow_root : string
+
+func set_shadow_root [ r: string ]
+    shadow_root = r
+
+# the file to read for p: its kept copy when there is one
+func shadowed [ p: path ] -> path
+    if [ !shadow_root || shadow_root.count == 0 ] return p
+    kept : path '{shadow_root}{p}'
+    if [ kept.exists[] ] return kept
+    return p
+
 # a mesh node makes one mesh from the one it names as input
 class MeshNode
     public name  : string
@@ -35,7 +50,7 @@ MeshNode Cage
     func make [ src: Poly, dir: path ] -> Poly
         if [ !poly ]
             p : path '{dir}/{file}'
-            poly = read_mesh[ p ]
+            poly = read_mesh[ shadowed[ p ] ]
             if [ !poly ] log 'aeon: no mesh at {p}'
         if [ !poly || !shape_only ] return poly
         # its points are the cage's own: an edit shows in both
@@ -471,7 +486,8 @@ class Design
     # an .agi file's top-level values, or null
     func read_agi [ p: path ] -> map Au [ string ]
         if [ !p.exists[] ] return null
-        txt : string [ p.load[ typeid[ string ], null ] ]
+        from : shadowed[ p ]
+        txt : string [ from.load[ typeid[ string ], null ] ]
         return Au.parse_agi[ typeid[ map ], txt.chars, null ]
 
     # the render: block read again from the file
@@ -488,7 +504,8 @@ class Design
         nm : string dir.filename[]
         p : path '{dir}/{nm}.agi'
         if [ !p.exists[] ] return ''
-        txt : string [ p.load[ typeid[ string ], null ] ]
+        from : shadowed[ p ]
+        txt : string [ from.load[ typeid[ string ], null ] ]
         out : ''
         inside : bool [ false ]
         for [ ln: string ] in txt.split[ '\n' ]
@@ -501,7 +518,10 @@ class Design
     # an object's at, turn and size written into its block of
     # <name>.agi: each line replaced, or added after its head
     func save_place [ o: Object ] -> bool
-        p : objects_file[]
+        return save_place_to[ o, objects_file[] ]
+
+    # the same, into another copy of that file
+    func save_place_to [ o: Object, p: path ] -> bool
         if [ !p.exists[] || !o.at ] return false
         txt : string [ p.load[ typeid[ string ], null ] ]
         lines : txt.split[ '\n' ]

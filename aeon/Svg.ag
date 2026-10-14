@@ -54,6 +54,10 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
         sh.sw = f32[ text ]
     el [ key.compare[ 'opacity' ] == 0 ]
         sh.opacity = f32[ text ]
+    el [ key.compare[ 'stroke-linecap' ] == 0 ]
+        sh.cap = svg_cap_of[ text ]
+    el [ key.compare[ 'stroke-linejoin' ] == 0 ]
+        sh.join = svg_join_of[ text ]
     el [ key.compare[ 'id' ] == 0 ]
         sh.id = text
     el [ key.compare[ 'transform' ] == 0 ]
@@ -94,6 +98,21 @@ class SvgPoint
 class SvgUndo
     public shape : i32
     public cmds  : vec SVGCmd
+    # or a property's value before (shape or document)
+    public row   : PropRow
+    public was   : string
+    # or the whole text before (an element added)
+    public text  : string
+
+# a row of the outliner: a shape (kind 5, n its number) or a
+# group (kind 6, its span in the text)
+class SvgRow
+    public text  : string
+    public depth : i32
+    public kind  : i32
+    public n     : i32
+    public at    : i64
+    public end   : i64
 
 class SvgDoc
     public file   : path
@@ -101,11 +120,75 @@ class SvgDoc
     # the chosen shape (-1 none) and the shapes changed since the
     # last save
     public chosen : i32 [ -1 ]
+    # more shapes chosen with it (shift): a boolean's other shapes
+    public also   : vec i32
+    # a new drawing never saved: its file is a working copy, and a
+    # save asks where
+    public untitled : bool
     public dirty  : vec i32
+    # the <svg> element: the document's own values
+    public root   : SVGNode
+    # its head changed in memory; the text differs from the file
+    public root_dirty : bool
+    public changed    : bool
+    # moves and property edits, last on top
+    public undo     : vec SvgUndo
+    # a property to set back, for the app (it owns the rows)
+    public undo_row : PropRow
+    public undo_was : string
+    # text put in at places of the text read, at the next compose
+    public insert_at   : vec i64
+    public insert_text : vec string
 
     func init []
         model = SVGModel [ file ]
         dirty = vec i32 []
+        also  = vec i32 []
+        undo  = vec SvgUndo []
+        root  = root_of[]
+
+    # a property about to change: its value before, once for a
+    # run of changes to the same field
+    func note_prop [ r: PropRow, was: string ]
+        if [ undo.count > 0 ]
+            top : undo[ undo.count - 1 ]
+            if [ top.row && top.row.kind == r.kind
+                 && top.row.name.compare[ r.name ] == 0
+                 && top.row.pass.compare[ r.pass ] == 0 ] return
+        undo.push[ SvgUndo [ shape: -1, row: r, was: was ] ]
+
+    # the <svg> element of the text read
+    func root_of [] -> SVGNode
+        parser : SVGParser []
+        top : parser.parse_doc[ model.source ]
+        if [ !top || top.tag == 'svg' ] return top
+        for [ c: SVGNode ] in top.children
+            if [ c.tag == 'svg' ] return c
+        return null
+
+    # a document value: the text remade in memory, read again
+    func set_root [ key: string, text: string ]
+        if [ !root ] return
+        if [ !root.attrs ] root.attrs = map string [ string ] []
+        root.attrs.set[ key, text ]
+        root_dirty = true
+        txt : compose[]
+        keep_chosen : i32 [ chosen ]
+        model.load[ txt ]
+        chosen = keep_chosen
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        changed = true
+
+    # the <svg> element's open tag from its values
+    func root_text [] -> string
+        out : '<svg'
+        if [ root.attrs ]
+            for [ v: string, k: string ] in root.attrs
+                out = '{out} {k}="{v}"'
+        if [ root.tail_at <= root.head_end ] return '{out}/>'
+        return '{out}>'
 
     func count [] -> i32
         if [ !model || !model.shapes ] return 0
@@ -120,6 +203,803 @@ class SvgDoc
 
     func mark [ i: i32 ]
         if [ dirty.index_of[ i ] < 0 ] dirty.push[ i ]
+        follow[ i, 0 ]
+
+    # a linked offset's source (-1 none): its href, by id
+    func offset_src [ i: i32 ] -> i32
+        nd : model.shapes[ i ].node
+        if [ !nd ] return -1
+        kind : nd.attr[ 'sodipodi:type' ]
+        if [ !kind || kind.compare[ 'inkscape:offset' ] != 0 ]
+            return -1
+        link : nd.attr[ 'xlink:href' ]
+        if [ !link ] link = nd.attr[ 'href' ]
+        if [ !link || !link.starts_with[ '#' ] ] return -1
+        want : link.mid[ 1, link.count - 1 ]
+        for [ k: i32 0, k < count[], k += 1 ]
+            sid : model.shapes[ k ].id
+            if [ k != i && sid && sid.compare[ want ] == 0 ] return k
+        return -1
+
+    # a linked offset's distance (inkscape:radius)
+    func radius_of [ i: i32 ] -> f32
+        nd : model.shapes[ i ].node
+        v : (nd) ? nd.attr[ 'inkscape:radius' ] : null
+        if [ !v ] return 0.0
+        return f32[ v ]
+
+    # the offsets linked to a shape made again from it
+    func follow [ i: i32, depth: i32 ]
+        if [ depth > 8 ] return
+        for [ j: i32 0, j < count[], j += 1 ]
+            if [ j == i || offset_src[ j ] != i ] continue
+            remake_offset[ j, i ]
+            if [ dirty.index_of[ j ] < 0 ] dirty.push[ j ]
+            follow[ j, depth + 1 ]
+
+    func remake_offset [ j: i32, src: i32 ]
+        sh : model.shapes[ j ]
+        from_cmds : model.shapes[ src ].cmds
+        sh.cmds = offset_cmds[ from_cmds, radius_of[ j ] ]
+        sh.node.attrs.set[ 'inkscape:original', path_data[ src ] ]
+
+    # a linked offset's distance set; its outline made again
+    func set_radius [ i: i32, r: f32 ]
+        src : offset_src[ i ]
+        if [ src < 0 ] return
+        model.shapes[ i ].node.attrs.set[ 'inkscape:radius',
+                                          num_text[ r, false ] ]
+        remake_offset[ i, src ]
+        mark[ i ]
+
+    # a free id from a stem: stem, then stem-2, stem-3 ...
+    func free_id [ stem: string ] -> string
+        n : i32 [ 1 ]
+        while [ true ]
+            nm : string [ (n == 1) ? stem : '{stem}-{n}' ]
+            taken : bool [ false ]
+            for [ sh: SVGShape ] in model.shapes
+                if [ sh.id && sh.id.compare[ nm ] == 0 ] taken = true
+            if [ !taken ] return nm
+            n += 1
+        return stem
+
+    # a linked offset of shape i at distance r, put just before
+    # it (Inkscape's form: its type, radius, original and href);
+    # the new shape's number, -1 when none was made
+    func make_offset [ i: i32, r: f32 ] -> i32
+        sh : model.shapes[ i ]
+        nd : sh.node
+        if [ !nd ] return -1
+        undo.push[ SvgUndo [ shape: -1, text: compose[] ] ]
+        insert_at   = vec i64 []
+        insert_text = vec string []
+        # the source needs an id to be linked by
+        sid : string [ sh.id ]
+        if [ !sid || sid.count == 0 ]
+            sid = free_id[ nd.tag ]
+            insert_at.push[ nd.at + 1 + nd.tag.count ]
+            insert_text.push[ ' id="{sid}"' ]
+        # the namespaces the link's names are in
+        names : vec string [] [ 'xmlns:sodipodi', 'xmlns:inkscape',
+                                'xmlns:xlink' ]
+        urls : vec string [] [
+            'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd',
+            'http://www.inkscape.org/namespaces/inkscape',
+            'http://www.w3.org/1999/xlink' ]
+        for [ k: i32 0, k < names.count, k += 1 ]
+            if [ root && !root.attr[ names[ k ] ] ]
+                if [ !root.attrs ] root.attrs = map string [ string ] []
+                root.attrs.set[ names[ k ], urls[ k ] ]
+                root_dirty = true
+        oid : free_id[ '{sid}-offset' ]
+        out : '<path id="{oid}" sodipodi:type="inkscape:offset"'
+        rt : num_text[ r, false ]
+        orig : path_data[ i ]
+        out = '{out} inkscape:radius="{rt}"'
+        out = '{out} inkscape:original="{orig}" xlink:href="#{sid}"'
+        for [ k: string ] in vec string [] [ 'fill', 'stroke',
+                'stroke-width', 'opacity' ]
+            v : svg_value[ nd, k ]
+            if [ v.count > 0 ] out = '{out} {k}="{v}"'
+        tf : nd.attr[ 'transform' ]
+        if [ tf ] out = '{out} transform="{tf}"'
+        d : cmds_data[ offset_cmds[ sh.cmds, r ], sh.space ]
+        out = '{out} d="{d}"/>'
+        # on its own line, indented as the source is: behind it
+        # when outward, in front of it when inward
+        src : model.source
+        b : i64 [ nd.at ]
+        while [ b > 0 && (src.chars[ b - 1 ] == 32
+                          || src.chars[ b - 1 ] == 9) ]
+            b -= 1
+        indent : src.mid[ b, nd.at - b ]
+        front : bool [ r < 0.0 ]
+        insert_at.push[ (front) ? nd.end : nd.at ]
+        insert_text.push[ (front) ? '\n{indent}{out}'
+                                  : '{out}\n{indent}' ]
+        txt : compose[]
+        insert_at.clear[]
+        insert_text.clear[]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        changed = true
+        also.clear[]
+        chosen = (front) ? i + 1 : i
+        return chosen
+
+    # the parent of the element starting at `at` (null: none)
+    func parent_of [ nd: SVGNode, at: i64 ] -> SVGNode
+        if [ !nd || !nd.children ] return null
+        for [ c: SVGNode ] in nd.children
+            if [ c.at == at ] return nd
+            found : parent_of[ c, at ]
+            if [ found ] return found
+        return null
+
+    # an element that draws (not a title, desc, defs ...)
+    func draws [ nd: SVGNode ] -> bool
+        tags : vec string [] [ 'path', 'rect', 'circle', 'ellipse',
+            'line', 'polyline', 'polygon', 'g', 'text', 'use',
+            'image' ]
+        return tags.index_of[ nd.tag ] >= 0
+
+    # shape i one step up (later: drawn over its neighbour) or
+    # down among its parent's elements; the text of the two
+    # swapped, the space between kept; false when at the end
+    func restack [ i: i32, up: bool ] -> bool
+        if [ i < 0 || i >= count[] ] return false
+        txt : compose[]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        nd : model.shapes[ i ].node
+        if [ !nd ] return false
+        top : SVGParser []
+        whole : top.parse_doc[ model.source ]
+        par : parent_of[ whole, nd.at ]
+        if [ !par ] return false
+        at : i32 [ -1 ]
+        for [ k: i32 0, k < par.children.count, k += 1 ]
+            if [ par.children[ k ].at == nd.at ] at = k
+        # the next element that draws, that way
+        step : i32 [ (up) ? 1 : -1 ]
+        k : i32 [ at + step ]
+        while [ k >= 0 && k < par.children.count
+                && !draws[ par.children[ k ] ] ]
+            k += step
+        if [ k < 0 || k >= par.children.count ] return false
+        undo.push[ SvgUndo [ shape: -1, text: txt ] ]
+        a : SVGNode [ (up) ? par.children[ at ] : par.children[ k ] ]
+        b : SVGNode [ (up) ? par.children[ k ] : par.children[ at ] ]
+        src : model.source
+        head : src.mid[ 0, a.at ]
+        first : src.mid[ a.at, a.end - a.at ]
+        gap : src.mid[ a.end, b.at - a.end ]
+        second : src.mid[ b.at, b.end - b.at ]
+        tail : src.mid[ b.end, src.count - b.end ]
+        # where the moved element starts now
+        lands : i64 [ (up) ? a.at + (b.end - b.at) + (b.at - a.end)
+                           : a.at ]
+        model.load[ '{head}{second}{gap}{first}{tail}' ]
+        root = root_of[]
+        changed = true
+        also.clear[]
+        for [ n: i32 0, n < count[], n += 1 ]
+            sn : model.shapes[ n ].node
+            if [ sn && sn.at == lands ]
+                chosen = n
+                return true
+        # a group moved: its first shape
+        for [ n: i32 0, n < count[], n += 1 ]
+            sn : model.shapes[ n ].node
+            if [ sn && sn.at >= lands ]
+                chosen = n
+                return true
+        return true
+
+    # one shape chosen alone (-1: none)
+    func choose_one [ i: i32 ]
+        chosen = i
+        also.clear[]
+
+    # shift + a shape: in the choice, or out of it
+    func toggle [ i: i32 ]
+        if [ i < 0 ] return
+        if [ chosen < 0 ]
+            chosen = i
+            return
+        if [ i == chosen ]
+            chosen = -1
+            if [ also.count > 0 ]
+                chosen = also[ also.count - 1 ]
+                also.pop[]
+            return
+        at : i32 [ also.index_of[ i ] ]
+        if [ at >= 0 ]
+            also.remove[ at ]
+        el
+            also.push[ i ]
+
+    func is_chosen [ i: i32 ] -> bool
+        return i == chosen || also.index_of[ i ] >= 0
+
+    # every chosen shape, in drawing order
+    func selected [] -> vec i32
+        out : vec i32 []
+        for [ i: i32 0, i < count[], i += 1 ]
+            if [ is_chosen[ i ] ] out.push[ i ]
+        return out
+
+    # shape i written again as a path with its own attributes
+    # (not its geometry, nor a link it had) and path data d
+    func path_text [ i: i32, d: string ] -> string
+        nd : model.shapes[ i ].node
+        skip : vec string [] [ 'd', 'x', 'y', 'width', 'height', 'rx',
+            'ry', 'cx', 'cy', 'r', 'x1', 'y1', 'x2', 'y2', 'points',
+            'sodipodi:type', 'inkscape:radius', 'inkscape:original',
+            'xlink:href', 'sodipodi:nodetypes' ]
+        out : '<path'
+        if [ nd.attrs ]
+            for [ v: string, k: string ] in nd.attrs
+                if [ skip.index_of[ k ] >= 0 ] continue
+                # an emptied value: the attribute left out
+                if [ !v || v.count == 0 ] continue
+                out = '{out} {k}="{v}"'
+        out = '{out} d="{d}"'
+        src : model.source
+        if [ nd.tail_at <= nd.head_end ] return '{out}/>'
+        inner : src.mid[ nd.head_end, nd.tail_at - nd.head_end ]
+        return '{out}>{inner}</path>'
+
+    # the chosen shapes made one: 0 union, 1 the bottom one less
+    # the rest, 2 their intersection; it takes the bottom one's
+    # place and attributes, the others go; curves kept
+    func combine [ op: i32 ] -> bool
+        ids : selected[]
+        if [ ids.count < 2 ] return false
+        txt : compose[]
+        undo.push[ SvgUndo [ shape: -1, text: txt ] ]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        base : i32 [ ids[ 0 ] ]
+        result : vec SVGCmd [ model.shapes[ base ].cmds ]
+        for [ k: i32 1, k < ids.count, k += 1 ]
+            other : model.shapes[ ids[ k ] ].cmds
+            result = boolean_cmds[ result, other, op ]
+        nd : model.shapes[ base ].node
+        d : cmds_data[ result, model.shapes[ base ].space ]
+        starts : vec i64 []
+        stops  : vec i64 []
+        texts  : vec string []
+        starts.push[ nd.at ]
+        stops.push[ nd.end ]
+        texts.push[ path_text[ base, d ] ]
+        src : model.source
+        for [ k: i32 1, k < ids.count, k += 1 ]
+            gone : model.shapes[ ids[ k ] ].node
+            # its line goes with it
+            starts.push[ line_start[ gone ] ]
+            stops.push[ gone.end ]
+            texts.push[ '' ]
+        # last first
+        order : vec i32 []
+        for [ k: i32 0, k < starts.count, k += 1 ]
+            order.push[ k ]
+        for [ x: i32 0, x < order.count, x += 1 ]
+            for [ y: i32 x + 1, y < order.count, y += 1 ]
+                if [ starts[ order[ y ] ] > starts[ order[ x ] ] ]
+                    keep : i32 [ order[ x ] ]
+                    order[ x ] = order[ y ]
+                    order[ y ] = keep
+        out : string [ src ]
+        for [ k: i32 ] in order
+            head : out.mid[ 0, starts[ k ] ]
+            tail : out.mid[ stops[ k ], out.count - stops[ k ] ]
+            out = '{head}{texts[ k ]}{tail}'
+        model.load[ out ]
+        root = root_of[]
+        changed = true
+        also.clear[]
+        chosen = -1
+        for [ n: i32 0, n < count[], n += 1 ]
+            sn : model.shapes[ n ].node
+            if [ sn && sn.at == nd.at ] chosen = n
+        return true
+
+    # where an element's text starts with its line (the spaces
+    # before it and the line break before those)
+    func line_start [ nd: SVGNode ] -> i64
+        src : model.source
+        b : i64 [ nd.at ]
+        while [ b > 0 && (src.chars[ b - 1 ] == 32
+                          || src.chars[ b - 1 ] == 9) ]
+            b -= 1
+        if [ b > 0 && src.chars[ b - 1 ] == 10 ] b -= 1
+        return b
+
+    # the chosen shapes' elements taken out of the text, one undo
+    func delete_chosen [] -> bool
+        ids : selected[]
+        if [ ids.count == 0 ] return false
+        txt : compose[]
+        undo.push[ SvgUndo [ shape: -1, text: txt ] ]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        out : string [ model.source ]
+        # last first: the earlier spans stay put
+        for [ k: i32 ids.count - 1, k >= 0, k -= 1 ]
+            nd : model.shapes[ ids[ k ] ].node
+            if [ !nd ] continue
+            b : line_start[ nd ]
+            head : out.mid[ 0, b ]
+            tail : out.mid[ nd.end, out.count - nd.end ]
+            out = '{head}{tail}'
+        model.load[ out ]
+        root = root_of[]
+        changed = true
+        also.clear[]
+        chosen = -1
+        return true
+
+    # the shape whose element starts at `at` (-1 none)
+    func shape_index_at [ at: i64 ] -> i32
+        for [ n: i32 0, n < count[], n += 1 ]
+            nd : model.shapes[ n ].node
+            if [ nd && nd.at == at ] return n
+        return -1
+
+    # the shapes inside a span of the text (a group's)
+    func shapes_in [ at: i64, end: i64 ] -> vec i32
+        out : vec i32 []
+        for [ n: i32 0, n < count[], n += 1 ]
+            nd : model.shapes[ n ].node
+            if [ nd && nd.at >= at && nd.end <= end ] out.push[ n ]
+        return out
+
+    # the outliner's rows: groups and shapes, the last drawn
+    # first at each level, a group's own a level in
+    func rows [] -> vec SvgRow
+        out : vec SvgRow []
+        if [ root ] walk_rows[ root, 0, out ]
+        return out
+
+    func walk_rows [ nd: SVGNode, depth: i32, out: vec SvgRow ]
+        if [ !nd.children ] return
+        for [ k: i32 nd.children.count - 1, k >= 0, k -= 1 ]
+            c : nd.children[ k ]
+            if [ c.tag == 'g' ]
+                gid : c.attr[ 'id' ]
+                out.push[ SvgRow [ text: (gid) ? gid : 'group',
+                    depth: depth, kind: 6, n: -1, at: c.at,
+                    end: c.end ] ]
+                walk_rows[ c, depth + 1, out ]
+                continue
+            i : shape_index_at[ c.at ]
+            if [ i >= 0 ]
+                out.push[ SvgRow [ text: name_of[ i ], depth: depth,
+                    kind: 5, n: i, at: c.at, end: c.end ] ]
+
+    # a shape's parent's space: its own transform taken back out
+    func parent_space [ i: i32 ] -> affine
+        sh : model.shapes[ i ]
+        own : sh.node.attr[ 'transform' ]
+        if [ !own || own.count == 0 ] return sh.space
+        return sh.space.multiply[ affine_inverse[
+            svg_parse_transform[ own ] ] ]
+
+    func matrix_text [ m: affine ] -> string
+        a : num_text[ m.ma, false ]
+        b : num_text[ m.mc, false ]
+        c : num_text[ m.mb, false ]
+        d : num_text[ m.md, false ]
+        e : num_text[ m.tx, false ]
+        f : num_text[ m.ty, false ]
+        return 'matrix({a},{b},{c},{d},{e},{f})'
+
+    func is_identity [ m: affine ] -> bool
+        return abs[ m.ma - 1.0 ] < 1e-6 && abs[ m.mb ] < 1e-6
+            && abs[ m.mc ] < 1e-6 && abs[ m.md - 1.0 ] < 1e-6
+            && abs[ m.tx ] < 1e-6 && abs[ m.ty ] < 1e-6
+
+    # an id no element of the text has: stem-1, stem-2 ...
+    func free_element_id [ stem: string ] -> string
+        n : i32 [ 1 ]
+        while [ true ]
+            nm : '{stem}-{n}'
+            if [ model.source.index_of[ 'id="{nm}"' ] < 0 ] return nm
+            n += 1
+        return stem
+
+    # the text with spans replaced, the last first
+    func with_spans [ src: string, starts: vec i64, stops: vec i64,
+                      texts: vec string ] -> string
+        order : vec i32 []
+        for [ k: i32 0, k < starts.count, k += 1 ]
+            order.push[ k ]
+        for [ x: i32 0, x < order.count, x += 1 ]
+            for [ y: i32 x + 1, y < order.count, y += 1 ]
+                if [ starts[ order[ y ] ] > starts[ order[ x ] ] ]
+                    keep : i32 [ order[ x ] ]
+                    order[ x ] = order[ y ]
+                    order[ y ] = keep
+        out : string [ src ]
+        for [ k: i32 ] in order
+            head : out.mid[ 0, starts[ k ] ]
+            tail : out.mid[ stops[ k ], out.count - stops[ k ] ]
+            out = '{head}{texts[ k ]}{tail}'
+        return out
+
+    # shape i's blur: its own filter's feGaussianBlur
+    # stdDeviation, in the element's units (0 none)
+    func blur_of [ i: i32 ] -> f32
+        if [ i < 0 || i >= count[] ] return 0.0
+        nd : model.shapes[ i ].node
+        if [ !nd ] return 0.0
+        named : svg_filter_ref[ nd ]
+        if [ named.count == 0 ] return 0.0
+        fl : find_id[ root, named ]
+        g : gaussian_in[ fl ]
+        if [ !g ] return 0.0
+        sd : g.attr[ 'stdDeviation' ]
+        if [ !sd ] return 0.0
+        words : sd.trim[].split[ ' ' ]
+        if [ words.count == 0 ] return 0.0
+        return f32[ words[ 0 ].real_value[] ]
+
+    # a filter's feGaussianBlur (null none)
+    func gaussian_in [ fl: SVGNode ] -> SVGNode
+        if [ !fl || !fl.children ] return null
+        for [ c: SVGNode ] in fl.children
+            if [ c.tag == 'feGaussianBlur' ] return c
+        return null
+
+    # an element's open tag with key set to val ('' takes it out,
+    # and out of its style too)
+    func head_with [ nd: SVGNode, key: string, val: string ] -> string
+        src : model.source
+        piece : src.mid[ nd.at, nd.head_end - nd.at ]
+        mark : ' {key}="'
+        pos : i32 [ piece.index_of[ mark ] ]
+        if [ pos >= 0 ]
+            vs : i32 [ pos + mark.count ]
+            rest : piece.mid[ vs, piece.count - vs ]
+            ve : i32 [ vs + rest.index_of[ '"' ] ]
+            head : piece.mid[ 0, pos ]
+            tail : piece.mid[ ve + 1, piece.count - ve - 1 ]
+            piece = (val.count == 0) ? '{head}{tail}'
+                    : '{head} {key}="{val}"{tail}'
+        el [ val.count > 0 ]
+            cut : i32 [ (piece.ends_with[ '/>' ]) ? piece.count - 2
+                        : piece.count - 1 ]
+            head : piece.mid[ 0, cut ]
+            tail : piece.mid[ cut, piece.count - cut ]
+            piece = '{head} {key}="{val}"{tail}'
+        if [ val.count > 0 ] return piece
+        # the style's own declaration of it out
+        sm : ' style="'
+        sp : i32 [ piece.index_of[ sm ] ]
+        if [ sp < 0 ] return piece
+        vs : i32 [ sp + sm.count ]
+        rest : piece.mid[ vs, piece.count - vs ]
+        ve : i32 [ vs + rest.index_of[ '"' ] ]
+        decls : piece.mid[ vs, ve - vs ]
+        kept : ''
+        for [ part: string ] in decls.split[ ';' ]
+            ci : i32 [ part.index_of[ ':' ] ]
+            nm : part.mid[ 0, (ci > 0) ? ci : 0 ].trim[]
+            if [ ci > 0 && nm.compare[ key ] == 0 ] continue
+            if [ part.trim[].count == 0 ] continue
+            kept = (kept.count == 0) ? part : '{kept};{part}'
+        head : piece.mid[ 0, vs ]
+        tail : piece.mid[ ve, piece.count - ve ]
+        return '{head}{kept}{tail}'
+
+    # shape i's blur set (element units; 0 takes its filter off):
+    # its own feGaussianBlur changed, else a new one in <defs>
+    func set_blur [ i: i32, sd: f32 ]
+        if [ i < 0 || i >= count[] || !root ] return
+        txt : compose[]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        nd : model.shapes[ i ].node
+        if [ !nd ] return
+        src : model.source
+        starts : vec i64 []
+        stops  : vec i64 []
+        texts  : vec string []
+        named : svg_filter_ref[ nd ]
+        g : gaussian_in[ (named.count > 0) ? find_id[ root, named ]
+                                           : null ]
+        vt : num_text[ sd, false ]
+        if [ sd <= 0.0 ]
+            if [ named.count == 0 ] return
+            starts.push[ nd.at ]
+            stops.push[ nd.head_end ]
+            texts.push[ head_with[ nd, 'filter', '' ] ]
+        el [ g ]
+            starts.push[ g.at ]
+            stops.push[ g.head_end ]
+            texts.push[ head_with[ g, 'stdDeviation', vt ] ]
+        el
+            fid : free_element_id[ 'blur' ]
+            box : 'x="-50%" y="-50%" width="200%" height="200%"'
+            gauss : '<feGaussianBlur stdDeviation="{vt}"/>'
+            ftext : '<filter id="{fid}" {box}>{gauss}</filter>'
+            defs : SVGNode [ null ]
+            if [ root.children ]
+                for [ c: SVGNode ] in root.children
+                    if [ c.tag == 'defs' && !defs ] defs = c
+            if [ defs ]
+                starts.push[ defs.tail_at ]
+                stops.push[ defs.tail_at ]
+                texts.push[ '  {ftext}\n  ' ]
+            el
+                starts.push[ root.head_end ]
+                stops.push[ root.head_end ]
+                texts.push[ '\n  <defs>{ftext}</defs>' ]
+            starts.push[ nd.at ]
+            stops.push[ nd.head_end ]
+            texts.push[ head_with[ nd, 'filter', 'url(#{fid})' ] ]
+        model.load[ with_spans[ src, starts, stops, texts ] ]
+        root = root_of[]
+        changed = true
+
+    # the composed text read again before a change that rewrites
+    # the text; undone as a whole
+    func fresh_text []
+        txt : compose[]
+        undo.push[ SvgUndo [ shape: -1, text: txt ] ]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+
+    # the chosen shapes in a new group, where the topmost of them
+    # was, in their drawing order; one from another parent keeps
+    # its place on the page (a matrix group round it)
+    func group_chosen [] -> bool
+        ids : selected[]
+        if [ ids.count == 0 ] return false
+        fresh_text[]
+        top : model.shapes[ ids[ ids.count - 1 ] ].node
+        tps : parent_space[ ids[ ids.count - 1 ] ]
+        back : affine_inverse[ tps ]
+        src : model.source
+        b : i64 [ top.at ]
+        while [ b > 0 && (src.chars[ b - 1 ] == 32
+                          || src.chars[ b - 1 ] == 9) ]
+            b -= 1
+        indent : src.mid[ b, top.at - b ]
+        body : ''
+        for [ i: i32 ] in ids
+            nd : model.shapes[ i ].node
+            piece : src.mid[ nd.at, nd.end - nd.at ]
+            rel : back.multiply[ parent_space[ i ] ]
+            if [ !is_identity[ rel ] ]
+                piece = with_transform[ nd, piece, matrix_text[ rel ] ]
+            body = '{body}\n{indent}  {piece}'
+        gid : free_element_id[ 'group' ]
+        starts : vec i64 []
+        stops  : vec i64 []
+        texts  : vec string []
+        starts.push[ top.at ]
+        stops.push[ top.end ]
+        texts.push[ '<g id="{gid}">{body}\n{indent}</g>' ]
+        for [ k: i32 0, k < ids.count - 1, k += 1 ]
+            nd : model.shapes[ ids[ k ] ].node
+            starts.push[ line_start[ nd ] ]
+            stops.push[ nd.end ]
+            texts.push[ '' ]
+        model.load[ with_spans[ src, starts, stops, texts ] ]
+        root = root_of[]
+        changed = true
+        # the group's shapes chosen
+        g : find_id[ root, gid ]
+        choose_one[ -1 ]
+        if [ g ]
+            for [ i: i32 ] in shapes_in[ g.at, g.end ]
+                toggle[ i ]
+        return true
+
+    # an element's text with a transform put before its own (or
+    # given it, when it has none)
+    func with_transform [ nd: SVGNode, piece: string, t: string ]
+            -> string
+        head : piece.mid[ 0, nd.head_end - nd.at ]
+        pos : i32 [ head.index_of[ 'transform="' ] ]
+        cut : i32 [ (pos >= 0) ? pos + 11 : 1 + nd.tag.count ]
+        before : piece.mid[ 0, cut ]
+        after : piece.mid[ cut, piece.count - cut ]
+        if [ pos >= 0 ] return '{before}{t} {after}'
+        return '{before} transform="{t}"{after}'
+
+    # the element with an id, under nd
+    func find_id [ nd: SVGNode, want: string ] -> SVGNode
+        if [ !nd || !nd.children ] return null
+        for [ c: SVGNode ] in nd.children
+            cid : c.attr[ 'id' ]
+            if [ cid && cid.compare[ want ] == 0 ] return c
+            deeper : find_id[ c, want ]
+            if [ deeper ] return deeper
+        return null
+
+    # the group holding the chosen shape taken apart: its
+    # children where it was, its transform put on each of them
+    func ungroup_chosen [] -> bool
+        if [ chosen < 0 ] return false
+        nd : model.shapes[ chosen ].node
+        par : parent_of[ root, nd.at ]
+        if [ !par || par.tag != 'g' ] return false
+        fresh_text[]
+        nd = model.shapes[ chosen ].node
+        g : parent_of[ root, nd.at ]
+        if [ !g || g.tag != 'g' ] return false
+        src : model.source
+        inner : src.mid[ g.head_end, g.tail_at - g.head_end ]
+        gt : g.attr[ 'transform' ]
+        if [ gt && gt.count > 0 && g.children ]
+            starts : vec i64 []
+            stops  : vec i64 []
+            texts  : vec string []
+            for [ c: SVGNode ] in g.children
+                own : c.attr[ 'transform' ]
+                if [ own ]
+                    # 'transform="own"' in its head: the group's before
+                    head : src.mid[ c.at, c.head_end - c.at ]
+                    pos : i32 [ head.index_of[ 'transform=' ] ]
+                    if [ pos < 0 ] continue
+                    q : i64 [ c.at + pos + 11 ]
+                    starts.push[ q ]
+                    stops.push[ q ]
+                    texts.push[ '{gt} ' ]
+                el
+                    q : i64 [ c.at + 1 + c.tag.count ]
+                    starts.push[ q ]
+                    stops.push[ q ]
+                    texts.push[ ' transform="{gt}"' ]
+            # the spans are of the whole text: cut the group's out
+            whole : with_spans[ src, starts, stops, texts ]
+            grow : i64 [ whole.count - src.count ]
+            span : i64 [ g.tail_at - g.head_end + grow ]
+            inner = whole.mid[ g.head_end, span ]
+        keep : vec i64 [] [ g.at ]
+        out : inner.trim[]
+        model.load[ with_spans[ src, keep, vec i64 [] [ g.end ],
+                                vec string [] [ out ] ] ]
+        root = root_of[]
+        changed = true
+        # the shapes it held chosen
+        choose_one[ -1 ]
+        for [ i: i32 ] in shapes_in[ g.at, g.at + out.count ]
+            toggle[ i ]
+        return true
+
+    # a new path drawn (document units) put last in the drawing,
+    # on top; it is chosen
+    # the group chosen: the outermost <g> whose shapes are the
+    # chosen ones, no more and no fewer (its outliner row lit)
+    func chosen_group [] -> SVGNode
+        sel : selected[]
+        if [ sel.count == 0 ] return null
+        found : vec SVGNode []
+        nd : parent_of[ root, model.shapes[ sel[ 0 ] ].node.at ]
+        while [ nd && nd != root ]
+            if [ nd.tag == 'g' ]
+                inside : shapes_in[ nd.at, nd.end ]
+                if [ inside.count == sel.count ]
+                    all : bool [ true ]
+                    for [ i: i32 ] in inside
+                        if [ !is_chosen[ i ] ] all = false
+                    if [ all ] found.push[ nd ]
+            nd = parent_of[ root, nd.at ]
+        if [ found.count == 0 ] return null
+        return found[ found.count - 1 ]
+
+    # the space a group's content is drawn in: the <svg>'s, then
+    # each group's transform from the outermost down to it
+    func group_space [ g: SVGNode ] -> affine
+        chain : vec SVGNode []
+        nd : g
+        while [ nd && nd != root ]
+            chain.push[ nd ]
+            nd = parent_of[ root, nd.at ]
+        m : model.root_space
+        for [ k: i32 chain.count - 1, k >= 0, k -= 1 ]
+            t : chain[ k ].attr[ 'transform' ]
+            if [ t && t.count > 0 ]
+                m = m.multiply[ svg_parse_transform[ t ] ]
+        return m
+
+    func add_path [ cmds: vec SVGCmd, width: f32 ] -> bool
+        if [ !root || cmds.count < 2 ] return false
+        # a group chosen: the path goes last inside it
+        into : chosen_group[]
+        fresh_text[]
+        space : (into) ? group_space[ into ] : model.root_space
+        d : cmds_data[ cmds, space ]
+        # the stroke as wide in the drawing's units as asked
+        unit : f32 [ sqrt[ abs[ space.ma * space.md
+                                - space.mb * space.mc ] ] ]
+        sw : num_text[ width / maxf[ unit, 1e-9 ], false ]
+        pid : free_element_id[ 'path' ]
+        out : '<path id="{pid}" fill="none" stroke="#ffffff"'
+        out = '{out} stroke-width="{sw}" d="{d}"/>'
+        src : model.source
+        at : i64 [ (into) ? into.tail_at : root.tail_at ]
+        # the closing tag's own indent, put back after the line
+        pad : ''
+        k : i64 [ at - 1 ]
+        while [ k >= 0 ]
+            ch : src.mid[ k, 1 ]
+            if [ ch != ' ' && ch != '\t' ] break
+            pad = '{ch}{pad}'
+            k -= 1
+        line_text : '  {out}\n{pad}'
+        model.load[ with_spans[ src, vec i64 [] [ at ],
+            vec i64 [] [ at ], vec string [] [ line_text ] ] ]
+        root = root_of[]
+        changed = true
+        choose_one[ -1 ]
+        made : find_id[ root, pid ]
+        if [ made ] chosen = shape_index_at[ made.at ]
+        return true
+
+    # what finds shape i again after the text is read anew: its
+    # id, else its element's text
+    func shape_key [ i: i32 ] -> string
+        if [ i < 0 || i >= count[] ] return ''
+        nd : model.shapes[ i ].node
+        if [ !nd ] return ''
+        sid : nd.attr[ 'id' ]
+        if [ sid && sid.count > 0 ] return 'id:{sid}'
+        span : i64 [ nd.end - nd.at ]
+        el_text : model.source.mid[ nd.at, span ]
+        return 'el:{el_text}'
+
+    # the shape a key names now (-1 gone); the same number when
+    # the key finds none and the count is as it was
+    func shape_by_key [ key: string, was: i32, n: i32 ] -> i32
+        if [ key.count > 0 ]
+            for [ i: i32 0, i < count[], i += 1 ]
+                if [ shape_key[ i ].compare[ key ] == 0 ] return i
+        if [ was >= 0 && n == count[] ] return was
+        return -1
+
+    # the text read again as it was (an undo): the shapes chosen
+    # stay chosen where they are still there
+    func restore [ txt: string ]
+        n : i32 [ count[] ]
+        keep : shape_key[ chosen ]
+        was : i32 [ chosen ]
+        more : vec string []
+        more_at : vec i32 []
+        for [ i: i32 ] in also
+            more.push[ shape_key[ i ] ]
+            more_at.push[ i ]
+        also.clear[]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        changed = true
+        chosen = shape_by_key[ keep, was, n ]
+        for [ k: i32 0, k < more.count, k += 1 ]
+            at : i32 [ shape_by_key[ more[ k ], more_at[ k ], n ] ]
+            if [ at >= 0 && at != chosen && also.index_of[ at ] < 0 ]
+                also.push[ at ]
+        if [ chosen < 0 && also.count > 0 ]
+            chosen = also[ 0 ]
+            also.remove[ 0 ]
 
     # one point read: x, y of the command's slot
     func point [ i: i32, p: SvgPoint ] -> vec2f
@@ -140,6 +1020,653 @@ class SvgDoc
         by : f32 [ (p.slot == 2) ? y : c.y2 ]
         sh.cmds[ p.cmd ] = SVGCmd [ op: c.op, x: nx, y: ny, x1: ax,
                                     y1: ay, x2: bx, y2: by ]
+
+    # where a segment starts: the end of the command before it
+    func seg_start [ i: i32, s: i32 ] -> vec2f
+        cmds : model.shapes[ i ].cmds
+        for [ k: i32 s - 1, k >= 0, k -= 1 ]
+            if [ cmds[ k ].op != SVGOp.close ]
+                return vec2f [ cmds[ k ].x, cmds[ k ].y ]
+        return vec2f [ 0.0, 0.0 ]
+
+    # a subpath's move, from any command in it
+    func run_start [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        for [ j: i32 k, j >= 0, j -= 1 ]
+            if [ cmds[ j ].op == SVGOp.move ] return j
+        return 0
+
+    # a subpath's close after k (-1 when it stays open)
+    func run_close [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        for [ j: i32 k + 1, j < cmds.count, j += 1 ]
+            if [ cmds[ j ].op == SVGOp.close ] return j
+            if [ cmds[ j ].op == SVGOp.move ] return -1
+        return -1
+
+    func same_xy [ ax: f32, ay: f32, bx: f32, by: f32 ] -> bool
+        return abs[ ax - bx ] < 0.001 && abs[ ay - by ] < 0.001
+
+    # the segment ending at anchor k (-1 none); a subpath's start
+    # takes its closing one, a closing line made a real one
+    func seg_in [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        c : cmds[ k ]
+        if [ c.op != SVGOp.move ] return k
+        j : run_close[ i, k ]
+        if [ j < 0 || j - 1 == k ] return -1
+        last : cmds[ j - 1 ]
+        if [ same_xy[ last.x, last.y, c.x, c.y ] ] return j - 1
+        cmds.insert[ SVGCmd [ op: SVGOp.line, x: c.x, y: c.y ], j ]
+        types_insert[ i, j ]
+        return j
+
+    # the segment leaving anchor k (-1 none); at a closed
+    # subpath's end, the closing one
+    func seg_out [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        if [ k + 1 >= cmds.count ] return -1
+        nx : cmds[ k + 1 ]
+        if [ nx.op == SVGOp.line || nx.op == SVGOp.quad
+             || nx.op == SVGOp.cubic ] return k + 1
+        if [ nx.op != SVGOp.close ] return -1
+        m : run_start[ i, k ]
+        mv : cmds[ m ]
+        here : cmds[ k ]
+        if [ same_xy[ here.x, here.y, mv.x, mv.y ] ]
+            return (m + 1 < k + 1) ? m + 1 : -1
+        back : SVGCmd [ op: SVGOp.line, x: mv.x, y: mv.y ]
+        cmds.insert[ back, k + 1 ]
+        types_insert[ i, k + 1 ]
+        return k + 1
+
+    # a segment made a cubic, the same curve (a line's handles on
+    # its ends)
+    func as_cubic [ i: i32, s: i32 ]
+        sh : model.shapes[ i ]
+        c : sh.cmds[ s ]
+        if [ c.op == SVGOp.cubic ] return
+        a : seg_start[ i, s ]
+        if [ c.op == SVGOp.quad ]
+            sh.cmds[ s ] = SVGCmd [ op: SVGOp.cubic,
+                x1: a.x + (c.x1 - a.x) * 2.0 / 3.0,
+                y1: a.y + (c.y1 - a.y) * 2.0 / 3.0,
+                x2: c.x + (c.x1 - c.x) * 2.0 / 3.0,
+                y2: c.y + (c.y1 - c.y) * 2.0 / 3.0, x: c.x, y: c.y ]
+            return
+        sh.cmds[ s ] = SVGCmd [ op: SVGOp.cubic, x1: a.x, y1: a.y,
+                                x2: c.x, y2: c.y, x: c.x, y: c.y ]
+
+    # an anchor's handle on the side a drag (dx, dy) goes: the
+    # one there, else its segment made a cubic for one; null
+    # when the anchor has no segment that way
+    func handle_toward [ i: i32, k: i32, dx: f32, dy: f32 ]
+            -> SvgPoint
+        cmds : model.shapes[ i ].cmds
+        at : cmds[ k ]
+        # each side's way out of the anchor
+        before : i32 [ seg_in[ i, k ] ]
+        after : i32 [ seg_out[ i, k ] ]
+        best_in : f32 [ -2.0 ]
+        best_out : f32 [ -2.0 ]
+        if [ before >= 0 ]
+            c : cmds[ before ]
+            w : seg_start[ i, before ]
+            if [ c.op == SVGOp.cubic
+                 && !same_xy[ c.x2, c.y2, at.x, at.y ] ]
+                w = vec2f [ c.x2, c.y2 ]
+            best_in = aim[ w.x - at.x, w.y - at.y, dx, dy ]
+        if [ after >= 0 ]
+            c : cmds[ after ]
+            w : vec2f [ c.x, c.y ]
+            if [ c.op == SVGOp.cubic
+                 && !same_xy[ c.x1, c.y1, at.x, at.y ] ]
+                w = vec2f [ c.x1, c.y1 ]
+            best_out = aim[ w.x - at.x, w.y - at.y, dx, dy ]
+        if [ before < 0 && after < 0 ] return null
+        if [ best_out >= best_in ]
+            as_cubic[ i, after ]
+            return SvgPoint [ cmd: after, slot: 1 ]
+        as_cubic[ i, before ]
+        return SvgPoint [ cmd: before, slot: 2 ]
+
+    # two segments meeting at a node made one, from p (where a
+    # starts) past the node to b's end: lines stay a line, else a
+    # cubic keeping the outer handles
+    # two segments meeting at a node made one, from p (where came
+    # starts) past the node to went's end: two lines a line, else
+    # one cubic fitted to the old curve (its ends and their handle
+    # directions kept; the handle lengths by least squares,
+    # Schneider's fit, the samples' t refined by Newton)
+    func joined [ came: SVGCmd, went: SVGCmd, p: vec2f ] -> SVGCmd
+        if [ came.op == SVGOp.line && went.op == SVGOp.line ]
+            return SVGCmd [ op: SVGOp.line, x: went.x, y: went.y ]
+        mid : vec2f [ came.x, came.y ]
+        ex : f32 [ went.x ]
+        ey : f32 [ went.y ]
+        # the old curve sampled, with its length along it
+        pts : vec f32 []
+        for [ n: i32 0, n <= 24, n += 1 ]
+            q : seg_at[ came, p, f32[ n ] / 24.0 ]
+            pts.push[ q.x ]
+            pts.push[ q.y ]
+        for [ n: i32 1, n <= 24, n += 1 ]
+            q : seg_at[ went, mid, f32[ n ] / 24.0 ]
+            pts.push[ q.x ]
+            pts.push[ q.y ]
+        np : i32 [ pts.count / 2 ]
+        us : vec f32 [ np ]
+        for [ n: i32 1, n < np, n += 1 ]
+            dx : f32 [ pts[ n * 2 ] - pts[ n * 2 - 2 ] ]
+            dy : f32 [ pts[ n * 2 + 1 ] - pts[ n * 2 - 1 ] ]
+            us[ n ] = us[ n - 1 ] + sqrt[ dx * dx + dy * dy ]
+        total : f32 [ us[ np - 1 ] ]
+        if [ total < 1e-9 ]
+            return SVGCmd [ op: SVGOp.line, x: ex, y: ey ]
+        for [ n: i32 0, n < np, n += 1 ]
+            us[ n ] = us[ n ] / total
+        # the ends' handle directions, as they were
+        t0 : out_way[ came, p ]
+        t3 : in_way[ went, mid ]
+        a1 : f32 [ total / 3.0 ]
+        a2 : f32 [ total / 3.0 ]
+        for [ pass: i32 0, pass < 8, pass += 1 ]
+            c11 : f32 [ 0.0 ]
+            c12 : f32 [ 0.0 ]
+            c22 : f32 [ 0.0 ]
+            x1 : f32 [ 0.0 ]
+            x2 : f32 [ 0.0 ]
+            for [ n: i32 0, n < np, n += 1 ]
+                u : f32 [ us[ n ] ]
+                v : f32 [ 1.0 - u ]
+                b0 : f32 [ v * v * v ]
+                b1 : f32 [ 3.0 * u * v * v ]
+                b2 : f32 [ 3.0 * u * u * v ]
+                b3 : f32 [ u * u * u ]
+                ax : f32 [ t0.x * b1 ]
+                ay : f32 [ t0.y * b1 ]
+                bx : f32 [ t3.x * b2 ]
+                by : f32 [ t3.y * b2 ]
+                rx : f32 [ pts[ n * 2 ] - (b0 + b1) * p.x
+                           - (b2 + b3) * ex ]
+                ry : f32 [ pts[ n * 2 + 1 ] - (b0 + b1) * p.y
+                           - (b2 + b3) * ey ]
+                c11 += ax * ax + ay * ay
+                c12 += ax * bx + ay * by
+                c22 += bx * bx + by * by
+                x1 += ax * rx + ay * ry
+                x2 += bx * rx + by * ry
+            det : f32 [ c11 * c22 - c12 * c12 ]
+            a1 = total / 3.0
+            a2 = total / 3.0
+            if [ abs[ det ] > 1e-12 ]
+                f1 : f32 [ (x1 * c22 - x2 * c12) / det ]
+                f2 : f32 [ (c11 * x2 - c12 * x1) / det ]
+                if [ f1 > total * 0.001 && f2 > total * 0.001 ]
+                    a1 = f1
+                    a2 = f2
+            # each sample's t moved to its nearest on the fit
+            k : vec f32 [] [ p.x, p.y, p.x + t0.x * a1,
+                p.y + t0.y * a1, ex + t3.x * a2, ey + t3.y * a2,
+                ex, ey ]
+            for [ n: i32 1, n < np - 1, n += 1 ]
+                us[ n ] = nearer_t[ k, us[ n ], pts[ n * 2 ],
+                                    pts[ n * 2 + 1 ] ]
+        return SVGCmd [ op: SVGOp.cubic, x1: p.x + t0.x * a1,
+                        y1: p.y + t0.y * a1, x2: ex + t3.x * a2,
+                        y2: ey + t3.y * a2, x: ex, y: ey ]
+
+    # the way a segment leaves its start (its first handle, else
+    # toward its end), unit
+    func out_way [ c: SVGCmd, p: vec2f ] -> vec2f
+        wx : f32 [ c.x - p.x ]
+        wy : f32 [ c.y - p.y ]
+        if [ c.op == SVGOp.cubic || c.op == SVGOp.quad ]
+            if [ !same_xy[ c.x1, c.y1, p.x, p.y ] ]
+                wx = c.x1 - p.x
+                wy = c.y1 - p.y
+            el [ c.op == SVGOp.cubic
+                 && !same_xy[ c.x2, c.y2, p.x, p.y ] ]
+                wx = c.x2 - p.x
+                wy = c.y2 - p.y
+        return unit_of[ wx, wy ]
+
+    # the way a segment comes into its end, seen from the end
+    # (its last handle, else toward its start), unit
+    func in_way [ c: SVGCmd, p: vec2f ] -> vec2f
+        wx : f32 [ p.x - c.x ]
+        wy : f32 [ p.y - c.y ]
+        if [ c.op == SVGOp.cubic
+             && !same_xy[ c.x2, c.y2, c.x, c.y ] ]
+            wx = c.x2 - c.x
+            wy = c.y2 - c.y
+        el [ c.op == SVGOp.cubic
+             && !same_xy[ c.x1, c.y1, c.x, c.y ] ]
+            wx = c.x1 - c.x
+            wy = c.y1 - c.y
+        el [ c.op == SVGOp.quad ]
+            wx = c.x1 - c.x
+            wy = c.y1 - c.y
+        return unit_of[ wx, wy ]
+
+    func unit_of [ wx: f32, wy: f32 ] -> vec2f
+        l : f32 [ sqrt[ wx * wx + wy * wy ] ]
+        if [ l < 1e-9 ] return vec2f [ 1.0, 0.0 ]
+        return vec2f [ wx / l, wy / l ]
+
+    # a Newton step toward the t on cubic k nearest (x, y)
+    func nearer_t [ k: vec f32, t: f32, x: f32, y: f32 ] -> f32
+        u : f32 [ 1.0 - t ]
+        q : bz_at[ k, 0, t ]
+        # first and second derivatives
+        d1x : f32 [ 3.0 * (u * u * (k[ 2 ] - k[ 0 ])
+                    + 2.0 * u * t * (k[ 4 ] - k[ 2 ])
+                    + t * t * (k[ 6 ] - k[ 4 ])) ]
+        d1y : f32 [ 3.0 * (u * u * (k[ 3 ] - k[ 1 ])
+                    + 2.0 * u * t * (k[ 5 ] - k[ 3 ])
+                    + t * t * (k[ 7 ] - k[ 5 ])) ]
+        d2x : f32 [ 6.0 * (u * (k[ 4 ] - 2.0 * k[ 2 ] + k[ 0 ])
+                    + t * (k[ 6 ] - 2.0 * k[ 4 ] + k[ 2 ])) ]
+        d2y : f32 [ 6.0 * (u * (k[ 5 ] - 2.0 * k[ 3 ] + k[ 1 ])
+                    + t * (k[ 7 ] - 2.0 * k[ 5 ] + k[ 3 ])) ]
+        num : f32 [ (q.x - x) * d1x + (q.y - y) * d1y ]
+        den : f32 [ d1x * d1x + d1y * d1y + (q.x - x) * d2x
+                    + (q.y - y) * d2y ]
+        if [ abs[ den ] < 1e-12 ] return t
+        return clamp[ t - num / den, 0.0, 1.0 ]
+
+    func is_seg [ c: SVGCmd ] -> bool
+        return c.op == SVGOp.line || c.op == SVGOp.quad
+            || c.op == SVGOp.cubic
+
+    # the node at command k taken out, its neighbours joined
+    func drop_node [ i: i32, k: i32 ]
+        cmds : model.shapes[ i ].cmds
+        c : cmds[ k ]
+        nx : i32 [ k + 1 ]
+        has_out : bool [ nx < cmds.count && is_seg[ cmds[ nx ] ] ]
+        if [ c.op != SVGOp.move ]
+            if [ has_out ]
+                cmds[ nx ] = joined[ c, cmds[ nx ], seg_start[ i, k ] ]
+            types_remove[ i, k ]
+            cmds.remove[ k ]
+            return
+        # a subpath's start: the next node starts it
+        if [ !has_out ]
+            types_remove[ i, k ]
+            cmds.remove[ k ]
+            return
+        out_seg : cmds[ nx ]
+        j : run_close[ i, k ]
+        if [ j > 0 && is_seg[ cmds[ j - 1 ] ] && j - 1 > nx ]
+            last : cmds[ j - 1 ]
+            from : seg_start[ i, j - 1 ]
+            if [ same_xy[ last.x, last.y, c.x, c.y ] ]
+                # the closing segment ran into the start: joined on
+                cmds[ j - 1 ] = joined[ last, out_seg, from ]
+            el
+                # an implied closing line, joined on as a real one
+                shut : SVGCmd [ op: SVGOp.line, x: c.x, y: c.y ]
+                cmds.insert[ joined[ shut, out_seg, vec2f [ last.x,
+                                                            last.y ] ],
+                             j ]
+                types_insert[ i, j ]
+        cmds[ k ] = SVGCmd [ op: SVGOp.move, x: out_seg.x,
+                             y: out_seg.y ]
+        types_remove[ i, nx ]
+        cmds.remove[ nx ]
+
+    # node types, Inkscape's sodipodi:nodetypes: a letter a node
+    # (every command but a close): c cusp, s smooth, z symmetric
+    func types_of [ i: i32 ] -> string
+        nd : model.shapes[ i ].node
+        v : (nd) ? nd.attr[ 'sodipodi:nodetypes' ] : null
+        return (v) ? v : ''
+
+    func put_types [ i: i32, t: string ]
+        nd : model.shapes[ i ].node
+        if [ !nd ] return
+        if [ !nd.attrs ] nd.attrs = map string [ string ] []
+        nd.attrs.set[ 'sodipodi:nodetypes', t ]
+
+    # the node number of the anchor at command k
+    func node_no [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        n : i32 [ 0 ]
+        for [ j: i32 0, j < k && j < cmds.count, j += 1 ]
+            if [ cmds[ j ].op != SVGOp.close ] n += 1
+        return n
+
+    # the node an anchor is: a closed subpath's end on its start
+    # is that start
+    func node_of [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        m : run_start[ i, k ]
+        j : run_close[ i, k ]
+        if [ k != m && j == k + 1
+             && same_xy[ cmds[ k ].x, cmds[ k ].y, cmds[ m ].x,
+                         cmds[ m ].y ] ] return m
+        return k
+
+    # 0 cusp, 1 smooth, 2 symmetric
+    func type_at [ i: i32, k: i32 ] -> i32
+        t : types_of[ i ]
+        n : node_no[ i, node_of[ i, k ] ]
+        if [ n >= t.count ] return 0
+        ch : t.mid[ n, 1 ]
+        if [ ch.compare[ 's' ] == 0 ] return 1
+        if [ ch.compare[ 'z' ] == 0 ] return 2
+        return 0
+
+    func set_type [ i: i32, k: i32, kind: i32 ]
+        t : types_of[ i ]
+        total : node_no[ i, model.shapes[ i ].cmds.count ]
+        while [ t.count < total ]
+            t = '{t}c'
+        n : node_no[ i, node_of[ i, k ] ]
+        head : t.mid[ 0, n ]
+        tail : t.mid[ n + 1, t.count - n - 1 ]
+        if [ kind == 1 ]
+            t = '{head}s{tail}'
+        el [ kind == 2 ]
+            t = '{head}z{tail}'
+        el
+            t = '{head}c{tail}'
+        put_types[ i, t ]
+
+    # a command put in at k: a cusp node for it
+    func types_insert [ i: i32, k: i32 ]
+        t : types_of[ i ]
+        if [ t.count == 0 ] return
+        n : node_no[ i, k ]
+        if [ n > t.count ] return
+        head : t.mid[ 0, n ]
+        tail : t.mid[ n, t.count - n ]
+        put_types[ i, '{head}c{tail}' ]
+
+    # the command at k about to go: its node's letter goes
+    func types_remove [ i: i32, k: i32 ]
+        t : types_of[ i ]
+        if [ t.count == 0 ] return
+        if [ model.shapes[ i ].cmds[ k ].op == SVGOp.close ] return
+        n : node_no[ i, k ]
+        if [ n >= t.count ] return
+        head : t.mid[ 0, n ]
+        tail : t.mid[ n + 1, t.count - n - 1 ]
+        put_types[ i, '{head}{tail}' ]
+
+    # the segments in and out of anchor k as they are (-1 none;
+    # nothing made)
+    func seg_in_at [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        c : cmds[ k ]
+        if [ c.op != SVGOp.move ] return k
+        j : run_close[ i, k ]
+        if [ j < 0 || j - 1 == k ] return -1
+        last : cmds[ j - 1 ]
+        if [ same_xy[ last.x, last.y, c.x, c.y ] ] return j - 1
+        return -1
+
+    func seg_out_at [ i: i32, k: i32 ] -> i32
+        cmds : model.shapes[ i ].cmds
+        if [ k + 1 >= cmds.count ] return -1
+        if [ is_seg[ cmds[ k + 1 ] ] ] return k + 1
+        if [ cmds[ k + 1 ].op != SVGOp.close ] return -1
+        m : run_start[ i, k ]
+        if [ same_xy[ cmds[ k ].x, cmds[ k ].y, cmds[ m ].x,
+                      cmds[ m ].y ] && m + 1 < k + 1 ] return m + 1
+        return -1
+
+    # the node a handle belongs to
+    func handle_node [ p: SvgPoint ] -> i32
+        return (p.slot == 2) ? p.cmd : p.cmd - 1
+
+    # a handle's partner across its node (null: none, or a side
+    # with no handle)
+    func partner [ i: i32, p: SvgPoint ] -> SvgPoint
+        if [ p.slot == 0 ] return null
+        k : handle_node[ p ]
+        if [ k < 0 ] return null
+        o : i32 [ (p.slot == 2) ? seg_out_at[ i, k ]
+                                : seg_in_at[ i, k ] ]
+        if [ o < 0 ] return null
+        if [ model.shapes[ i ].cmds[ o ].op != SVGOp.cubic ]
+            return null
+        return SvgPoint [ cmd: o, slot: (p.slot == 2) ? 1 : 2 ]
+
+    # the way out of a node along a straight side: the line's
+    # direction past the node (none: 0, 0)
+    func line_way [ i: i32, p: SvgPoint ] -> vec2f
+        k : handle_node[ p ]
+        cmds : model.shapes[ i ].cmds
+        o : i32 [ (p.slot == 2) ? seg_out_at[ i, k ]
+                                : seg_in_at[ i, k ] ]
+        if [ o < 0 || cmds[ o ].op != SVGOp.line ]
+            return vec2f [ 0.0, 0.0 ]
+        a : vec2f [ cmds[ k ].x, cmds[ k ].y ]
+        far : vec2f [ cmds[ o ].x, cmds[ o ].y ]
+        if [ p.slot == 1 ] far = seg_start[ i, o ]
+        return unit_of[ a.x - far.x, a.y - far.y ]
+
+    # a handle just moved: its node's type holds (smooth: the
+    # partner opposite, its own length; symmetric: opposite and
+    # the same length; beside a line: on the line's way)
+    func hold_node [ i: i32, p: SvgPoint ]
+        if [ p.slot == 0 ] return
+        k : handle_node[ p ]
+        if [ k < 0 ] return
+        kind : type_at[ i, k ]
+        if [ kind == 0 ] return
+        cmds : model.shapes[ i ].cmds
+        a : vec2f [ cmds[ k ].x, cmds[ k ].y ]
+        h : point[ i, p ]
+        way : line_way[ i, p ]
+        if [ way.x != 0.0 || way.y != 0.0 ]
+            along : f32 [ max[ (h.x - a.x) * way.x
+                               + (h.y - a.y) * way.y, 0.0 ] ]
+            set_point[ i, p, a.x + way.x * along, a.y + way.y * along ]
+            return
+        q : partner[ i, p ]
+        if [ !q ] return
+        dx : f32 [ h.x - a.x ]
+        dy : f32 [ h.y - a.y ]
+        l : f32 [ sqrt[ dx * dx + dy * dy ] ]
+        if [ l < 1e-9 ] return
+        o : point[ i, q ]
+        ol : f32 [ l ]
+        if [ kind == 1 ]
+            ol = sqrt[ (o.x - a.x) * (o.x - a.x)
+                       + (o.y - a.y) * (o.y - a.y) ]
+        set_point[ i, q, a.x - dx / l * ol, a.y - dy / l * ol ]
+
+    # a node made smooth or symmetric: its handles put opposite
+    # (the mean of their ways; symmetric: the mean length too)
+    func align_node [ i: i32, k: i32 ]
+        kind : type_at[ i, k ]
+        if [ kind == 0 ] return
+        cmds : model.shapes[ i ].cmds
+        a : vec2f [ cmds[ k ].x, cmds[ k ].y ]
+        si : seg_in_at[ i, k ]
+        so : seg_out_at[ i, k ]
+        hin : SvgPoint [ null ]
+        hout : SvgPoint [ null ]
+        if [ si >= 0 && cmds[ si ].op == SVGOp.cubic ]
+            hin = SvgPoint [ cmd: si, slot: 2 ]
+        if [ so >= 0 && cmds[ so ].op == SVGOp.cubic ]
+            hout = SvgPoint [ cmd: so, slot: 1 ]
+        if [ hin && hout ]
+            pi : point[ i, hin ]
+            po : point[ i, hout ]
+            ui : unit_of[ pi.x - a.x, pi.y - a.y ]
+            uo : unit_of[ po.x - a.x, po.y - a.y ]
+            d : unit_of[ uo.x - ui.x, uo.y - ui.y ]
+            li : f32 [ sqrt[ (pi.x - a.x) * (pi.x - a.x)
+                             + (pi.y - a.y) * (pi.y - a.y) ] ]
+            lo : f32 [ sqrt[ (po.x - a.x) * (po.x - a.x)
+                             + (po.y - a.y) * (po.y - a.y) ] ]
+            if [ kind == 2 ]
+                li = (li + lo) * 0.5
+                lo = li
+            set_point[ i, hout, a.x + d.x * lo, a.y + d.y * lo ]
+            set_point[ i, hin, a.x - d.x * li, a.y - d.y * li ]
+            return
+        if [ hout ] hold_node[ i, hout ]
+        if [ hin ] hold_node[ i, hin ]
+
+    # a segment's point at t (a closing line: from its last
+    # point back to the start, given as the command x, y)
+    func seg_at [ c: SVGCmd, p: vec2f, t: f32 ] -> vec2f
+        u : f32 [ 1.0 - t ]
+        if [ c.op == SVGOp.cubic ]
+            k : vec f32 [] [ p.x, p.y, c.x1, c.y1, c.x2, c.y2, c.x,
+                             c.y ]
+            return bz_at[ k, 0, t ]
+        if [ c.op == SVGOp.quad ]
+            return vec2f [ u * u * p.x + 2.0 * u * t * c.x1
+                           + t * t * c.x,
+                           u * u * p.y + 2.0 * u * t * c.y1
+                           + t * t * c.y ]
+        return vec2f [ p.x + (c.x - p.x) * t, p.y + (c.y - p.y) * t ]
+
+    # a node put into the segment nearest (x, y), within reach:
+    # a line becomes two lines, a curve two curves of the same
+    # shape (split at that t); the new node, else null
+    func split_at [ i: i32, x: f32, y: f32, reach: f32 ] -> SvgPoint
+        cmds : model.shapes[ i ].cmds
+        best : f32 [ reach * reach ]
+        seg : i32 [ -1 ]
+        at_t : f32 [ 0.0 ]
+        px : f32 [ 0.0 ]
+        py : f32 [ 0.0 ]
+        sx : f32 [ 0.0 ]
+        sy : f32 [ 0.0 ]
+        for [ k: i32 0, k < cmds.count, k += 1 ]
+            c : cmds[ k ]
+            if [ c.op == SVGOp.move ]
+                sx = c.x
+                sy = c.y
+            el
+                # a close is a line back to the start
+                tc : SVGCmd [ c ]
+                if [ c.op == SVGOp.close ]
+                    tc = SVGCmd [ op: SVGOp.line, x: sx, y: sy ]
+                for [ n: i32 1, n < 64, n += 1 ]
+                    t : f32 [ f32[ n ] / 64.0 ]
+                    q : seg_at[ tc, vec2f [ px, py ], t ]
+                    d : f32 [ (q.x - x) * (q.x - x)
+                              + (q.y - y) * (q.y - y) ]
+                    if [ d < best ]
+                        best = d
+                        seg = k
+                        at_t = t
+            if [ c.op == SVGOp.close ]
+                px = sx
+                py = sy
+            el
+                px = c.x
+                py = c.y
+        if [ seg < 0 ] return null
+        c : cmds[ seg ]
+        p : seg_start[ i, seg ]
+        t : f32 [ at_t ]
+        if [ c.op == SVGOp.close ]
+            m : seg_at[ SVGCmd [ op: SVGOp.line, x: sx_of[ i, seg ],
+                                 y: sy_of[ i, seg ] ], p, t ]
+            cmds.insert[ SVGCmd [ op: SVGOp.line, x: m.x, y: m.y ],
+                         seg ]
+            types_insert[ i, seg ]
+            return SvgPoint [ cmd: seg, slot: 0 ]
+        if [ c.op == SVGOp.cubic ]
+            k : vec f32 [] [ p.x, p.y, c.x1, c.y1, c.x2, c.y2, c.x,
+                             c.y ]
+            left : bz_cut[ k, 0, t, true ]
+            right : bz_cut[ k, 0, t, false ]
+            cmds[ seg ] = SVGCmd [ op: SVGOp.cubic, x1: right[ 2 ],
+                y1: right[ 3 ], x2: right[ 4 ], y2: right[ 5 ],
+                x: c.x, y: c.y ]
+            cmds.insert[ SVGCmd [ op: SVGOp.cubic, x1: left[ 2 ],
+                y1: left[ 3 ], x2: left[ 4 ], y2: left[ 5 ],
+                x: left[ 6 ], y: left[ 7 ] ], seg ]
+            types_insert[ i, seg ]
+            return SvgPoint [ cmd: seg, slot: 0 ]
+        if [ c.op == SVGOp.quad ]
+            ax : f32 [ p.x + (c.x1 - p.x) * t ]
+            ay : f32 [ p.y + (c.y1 - p.y) * t ]
+            bx : f32 [ c.x1 + (c.x - c.x1) * t ]
+            by : f32 [ c.y1 + (c.y - c.y1) * t ]
+            mx : f32 [ ax + (bx - ax) * t ]
+            my : f32 [ ay + (by - ay) * t ]
+            cmds[ seg ] = SVGCmd [ op: SVGOp.quad, x1: bx, y1: by,
+                                   x: c.x, y: c.y ]
+            cmds.insert[ SVGCmd [ op: SVGOp.quad, x1: ax, y1: ay,
+                                  x: mx, y: my ], seg ]
+            types_insert[ i, seg ]
+            return SvgPoint [ cmd: seg, slot: 0 ]
+        m : seg_at[ c, p, t ]
+        cmds.insert[ SVGCmd [ op: SVGOp.line, x: m.x, y: m.y ], seg ]
+        types_insert[ i, seg ]
+        return SvgPoint [ cmd: seg, slot: 0 ]
+
+    # the start of the subpath command k is in
+    func sx_of [ i: i32, k: i32 ] -> f32
+        return model.shapes[ i ].cmds[ run_start[ i, k ] ].x
+    func sy_of [ i: i32, k: i32 ] -> f32
+        return model.shapes[ i ].cmds[ run_start[ i, k ] ].y
+
+    # subpaths with no segment left taken out
+    func tidy [ i: i32 ]
+        cmds : model.shapes[ i ].cmds
+        k : i32 [ 0 ]
+        while [ k < cmds.count ]
+            if [ cmds[ k ].op != SVGOp.move ]
+                k += 1
+                continue
+            e : i32 [ k + 1 ]
+            segs : i32 [ 0 ]
+            while [ e < cmds.count && cmds[ e ].op != SVGOp.move ]
+                if [ is_seg[ cmds[ e ] ] ] segs += 1
+                e += 1
+            if [ segs == 0 ]
+                for [ n: i32 k, n < e, n += 1 ]
+                    types_remove[ i, k ]
+                    cmds.remove[ k ]
+                continue
+            k = e
+
+    # the picked nodes taken out; true when any was
+    func drop_nodes [ i: i32, picked: vec SvgPoint ] -> bool
+        cmds : model.shapes[ i ].cmds
+        ks : vec i32 []
+        for [ p: SvgPoint ] in picked
+            if [ p.slot != 0 ] continue
+            k : i32 [ p.cmd ]
+            # a closed subpath's end on its start is that start
+            m : run_start[ i, k ]
+            j : run_close[ i, k ]
+            if [ k != m && j == k + 1
+                 && same_xy[ cmds[ k ].x, cmds[ k ].y, cmds[ m ].x,
+                             cmds[ m ].y ] ]
+                k = m
+            if [ ks.index_of[ k ] < 0 ] ks.push[ k ]
+        if [ ks.count == 0 ] return false
+        # last first: the earlier commands stay where they are
+        for [ a: i32 0, a < ks.count, a += 1 ]
+            for [ b: i32 a + 1, b < ks.count, b += 1 ]
+                if [ ks[ b ] > ks[ a ] ]
+                    keep : i32 [ ks[ a ] ]
+                    ks[ a ] = ks[ b ]
+                    ks[ b ] = keep
+        for [ k: i32 ] in ks
+            drop_node[ i, k ]
+        tidy[ i ]
+        return true
+
+    # how well a way lines up with a drag: -1 to 1
+    func aim [ wx: f32, wy: f32, dx: f32, dy: f32 ] -> f32
+        a : f32 [ sqrt[ wx * wx + wy * wy ]
+                  * sqrt[ dx * dx + dy * dy ] ]
+        if [ a < 1e-9 ] return -1.0
+        return (wx * dx + wy * dy) / a
 
     # every point a shape has: anchors, then a curve's handles
     func points_of [ i: i32 ] -> vec SvgPoint
@@ -279,9 +1806,13 @@ class SvgDoc
     # a shape's commands as path data in its element's own space
     func path_data [ i: i32 ] -> string
         sh : model.shapes[ i ]
-        back : affine_inverse[ sh.space ]
+        return cmds_data[ sh.cmds, sh.space ]
+
+    # commands as path data in a space (the document's to it)
+    func cmds_data [ cmds: vec SVGCmd, space: affine ] -> string
+        back : affine_inverse[ space ]
         out : ''
-        for [ c: SVGCmd ] in sh.cmds
+        for [ c: SVGCmd ] in cmds
             if [ out.count > 0 ] out = '{out} '
             if [ c.op == SVGOp.close ]
                 out = '{out}Z'
@@ -325,28 +1856,42 @@ class SvgDoc
         inner : src.mid[ nd.head_end, nd.tail_at - nd.head_end ]
         return '{out}>{inner}</path>'
 
+    # changes not yet written to the file
+    func unsaved [] -> bool
+        return dirty.count > 0 || changed || root_dirty
+
+    # text kept from before a quit, unsaved, in place of the file's
+    func take_text [ txt: string ]
+        model.load[ txt ]
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        changed = true
+
+    # every change written to another file, which the drawing is
+    # from then on
+    func save_as [ to: path ] -> bool
+        txt : compose[]
+        f : handle [ fopen[ to, "w" ] ]
+        if [ !f ] return false
+        fputs[ txt.chars, f ]
+        fclose[ f ]
+        file = to
+        untitled = false
+        keep_chosen : i32 [ chosen ]
+        model = SVGModel [ file ]
+        chosen = keep_chosen
+        dirty.clear[]
+        root = root_of[]
+        root_dirty = false
+        changed = false
+        return true
+
     # the changed shapes written back, the last in the file first
     # (the earlier spans stay where they are); then read again
     func save [] -> bool
-        if [ dirty.count == 0 ] return true
-        order : vec i32 [ dirty ]
-        # by place in the file, last first
-        for [ a: i32 0, a < order.count, a += 1 ]
-            for [ b: i32 a + 1, b < order.count, b += 1 ]
-                na : model.shapes[ order[ a ] ].node
-                nb : model.shapes[ order[ b ] ].node
-                if [ nb.at > na.at ]
-                    keep : i32 [ order[ a ] ]
-                    order[ a ] = order[ b ]
-                    order[ b ] = keep
-        txt : string [ model.source ]
-        for [ i: i32 ] in order
-            nd : model.shapes[ i ].node
-            if [ !nd ] continue
-            head : txt.mid[ 0, nd.at ]
-            tail : txt.mid[ nd.end, txt.count - nd.end ]
-            body : element_text[ i ]
-            txt = '{head}{body}{tail}'
+        if [ dirty.count == 0 && !changed ] return true
+        txt : compose[]
         f : handle [ fopen[ file, "w" ] ]
         if [ !f ] return false
         fputs[ txt.chars, f ]
@@ -355,7 +1900,50 @@ class SvgDoc
         model = SVGModel [ file ]
         chosen = keep_chosen
         dirty.clear[]
+        root = root_of[]
+        changed = false
         return true
+
+    # the text with every change in it: each change a span of
+    # the text read, put in last first (earlier spans stay put)
+    func compose [] -> string
+        starts : vec i64 []
+        stops  : vec i64 []
+        texts  : vec string []
+        for [ i: i32 ] in dirty
+            nd : model.shapes[ i ].node
+            if [ !nd ] continue
+            starts.push[ nd.at ]
+            stops.push[ nd.end ]
+            texts.push[ element_text[ i ] ]
+        if [ root_dirty && root ]
+            starts.push[ root.at ]
+            stops.push[ root.head_end ]
+            texts.push[ root_text[] ]
+        if [ insert_at ]
+            for [ k: i32 0, k < insert_at.count, k += 1 ]
+                starts.push[ insert_at[ k ] ]
+                stops.push[ insert_at[ k ] ]
+                texts.push[ insert_text[ k ] ]
+        # last first; at one start the longer span first
+        order : vec i32 []
+        for [ k: i32 0, k < starts.count, k += 1 ]
+            order.push[ k ]
+        for [ a: i32 0, a < order.count, a += 1 ]
+            for [ b: i32 a + 1, b < order.count, b += 1 ]
+                x : i32 [ order[ a ] ]
+                y : i32 [ order[ b ] ]
+                if [ starts[ y ] > starts[ x ]
+                     || (starts[ y ] == starts[ x ]
+                         && stops[ y ] > stops[ x ]) ]
+                    order[ a ] = y
+                    order[ b ] = x
+        txt : string [ model.source ]
+        for [ k: i32 ] in order
+            head : txt.mid[ 0, starts[ k ] ]
+            tail : txt.mid[ stops[ k ], txt.count - stops[ k ] ]
+            txt = '{head}{texts[ k ]}{tail}'
+        return txt
 
 # the 2D view of an .svg: the page and its shapes, pan and zoom;
 # a shape chosen shows its points; G moves the picked
@@ -369,6 +1957,19 @@ element SvgView
     mutable oy    : f32
     mutable zoom  : f32
     mutable fitted : bool
+    # where the view is going; each frame it moves part of the way
+    # there (filter_n), as every movement in 3D does
+    mutable ox_goal   : f32
+    mutable oy_goal   : f32
+    mutable zoom_goal : f32
+    public ease       : f32 [ 0.35 ]
+    # pan and zoom settle 1.5 times as slowly as edits
+    public view_ease  : f32 [ 0.25 ]
+    # g / s, o and a handle drag: the value shown, eased to its goal
+    mutable shown_g   : vec2f
+    mutable off_shown : f32
+    mutable h_goal    : vec2f
+    mutable h_shown   : vec2f
     # 1 panning (right, middle or ctrl/cmd + drag)
     mutable mode  : i32
     mutable picked : vec SvgPoint
@@ -378,19 +1979,100 @@ element SvgView
     mutable from   : vec f32
     mutable shift_x : f32
     mutable shift_y : f32
-    # 1 x alone, 2 y alone, 0 both
+    # the axes named: 1 x, 2 y, 0 both
     mutable lock   : i32
-    mutable undo   : vec SvgUndo
+    # shift + drag from an anchor: its handle on that side drawn
+    # out (h_at, where the handle was); h_wait until it moves
+    mutable h_wait  : bool
+    mutable h_from  : SvgPoint
+    mutable h_drag  : SvgPoint
+    mutable h_at    : vec2f
+    mutable press_x : f32
+    mutable press_y : f32
+    # b or c: a box (1) or circle (2) select; 0 none
+    mutable region   : i32
+    mutable region_x : f32
+    mutable region_y : f32
+    mutable pointer_x : f32
+    mutable pointer_y : f32
+    # p: a new path drawn; a node is an anchor and its two
+    # handles (x y, in x y, out x y), a drag drawing its handles
+    mutable pen      : bool
+    mutable pen_nodes : vec f32
+    mutable pen_drag : bool
+    mutable pen_at   : vec2f
+    # o: a linked offset made (or an offset's distance changed)
+    # by the pointer or a typed number; off_shape -1 is a new one
+    mutable offsetting : bool
+    mutable off_shape  : i32
+    mutable off_from   : f32
+    mutable off_r      : f32
+    mutable preview    : vec SVGCmd
+    # a linked offset's one knob: dragged, it sets the distance;
+    # it sits by the source's point knob_q (of shape knob_of)
+    mutable knob_drag  : bool
+    mutable knob_of    : i32 [ -1 ]
+    mutable knob_q     : vec2f
+    # the way from knob_q to the knob, as last dragged
+    mutable knob_d     : vec2f
+    # a number being typed, its axes, and values typed
+    mutable typing_text : string
+    mutable typing_mask : i32
+    mutable typed_v     : vec f32
+    mutable typed_on    : vec i32
+    # s: sized about the points' middle; grow 0 is as was
+    mutable sizing  : bool
+    mutable grow    : f32
+    mutable pivot_x : f32
+    mutable pivot_y : f32
     mutable before : vec SVGCmd
+    # the shape of each moved point (several chosen move together)
+    # and the text before such a move (its undo)
+    mutable moved_of : vec i32
+    mutable multi_text : string
 
     func fit []
         w : f32 [ doc.model.w ]
         h : f32 [ doc.model.h ]
-        zoom = min[ (bounds.w - 80.0) / w, (bounds.h - 80.0) / h ]
-        if [ zoom <= 0.0 ] zoom = 1.0
-        ox = (bounds.w - w * zoom) * 0.5
-        oy = (bounds.h - h * zoom) * 0.5
+        zoom_goal = min[ (bounds.w - 80.0) / w, (bounds.h - 80.0) / h ]
+        if [ zoom_goal <= 0.0 ] zoom_goal = 1.0
+        ox_goal = (bounds.w - w * zoom_goal) * 0.5
+        oy_goal = (bounds.h - h * zoom_goal) * 0.5
+        # the first fit is at once; home eases there
+        if [ !fitted ]
+            zoom = zoom_goal
+            ox = ox_goal
+            oy = oy_goal
         fitted = true
+
+    # every movement part of the way to its goal, this frame
+    func ease_frame []
+        ff : f32 [ (ux) ? ux.frame_factor : 1.0 ]
+        ox   = filter_n[ ox, ox_goal, view_ease, ff ]
+        oy   = filter_n[ oy, oy_goal, view_ease, ff ]
+        zoom = filter_n[ zoom, zoom_goal, view_ease, ff ]
+        if [ moving ]
+            g : goal[]
+            n : vec2f [ filter_n[ shown_g.x, g.x, ease, ff ],
+                        filter_n[ shown_g.y, g.y, ease, ff ] ]
+            if [ abs[ n.x - shown_g.x ] + abs[ n.y - shown_g.y ]
+                 > 1e-7 ]
+                shown_g = n
+                place_moved[]
+        if [ offsetting ]
+            r : f32 [ filter_n[ off_shown, offset_goal[], ease, ff ] ]
+            if [ abs[ r - off_shown ] > 1e-7 ]
+                off_shown = r
+                apply_offset[]
+        if [ h_drag ]
+            hn : vec2f [ filter_n[ h_shown.x, h_goal.x, ease, ff ],
+                         filter_n[ h_shown.y, h_goal.y, ease, ff ] ]
+            if [ abs[ hn.x - h_shown.x ] + abs[ hn.y - h_shown.y ]
+                 > 1e-7 ]
+                h_shown = hn
+                doc.set_point[ doc.chosen, h_drag, hn.x, hn.y ]
+                doc.hold_node[ doc.chosen, h_drag ]
+                doc.follow[ doc.chosen, 0 ]
 
     func sx [ x: f32 ] -> f32
         return ox + x * zoom
@@ -401,6 +2083,9 @@ element SvgView
     func nearest [ px: f32, py: f32 ] -> SvgPoint
         best : f32 [ 100.0 ]
         out : SvgPoint null
+        # an offset's points are made from its source: not picked
+        if [ doc.chosen >= 0 && doc.offset_src[ doc.chosen ] >= 0 ]
+            return null
         for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
             at : doc.point[ doc.chosen, p ]
             dx : f32 [ sx[ at.x ] - px ]
@@ -411,6 +2096,11 @@ element SvgView
                 out = p
         return out
 
+    func moved_has [ p: SvgPoint ] -> bool
+        for [ q: SvgPoint ] in moved
+            if [ q.cmd == p.cmd && q.slot == p.slot ] return true
+        return false
+
     func is_picked [ p: SvgPoint ] -> bool
         if [ !picked ] return false
         for [ q: SvgPoint ] in picked
@@ -419,12 +2109,52 @@ element SvgView
 
     public func on_press [ ev: Event ]
         if [ !doc ] return
+        # a box or circle: a left click picks, any other drops it
+        if [ region != 0 ]
+            pointer_x = ev.mouse.pos.x
+            pointer_y = ev.mouse.pos.y
+            if [ ev.mouse.button == 0 ]
+                end_region[ ux && (ux.shift || ux.cmd) ]
+            el
+                region = 0
+            return
+        if [ pen ]
+            pen_press[ ev ]
+            return
+        # an offset's knob: a drag sets its distance
+        if [ !offsetting && !moving && ev.mouse.button == 0
+             && doc.chosen >= 0 && doc.offset_src[ doc.chosen ] >= 0 ]
+            kb : knob_at[]
+            dx : f32 [ sx[ kb.z ] - ev.mouse.pos.x ]
+            dy : f32 [ sy[ kb.w ] - ev.mouse.pos.y ]
+            if [ dx * dx + dy * dy < 100.0 ]
+                start_offset[]
+                knob_drag = true
+                return
+        if [ offsetting ]
+            if [ ev.mouse.button == 1 ]
+                cancel_offset[]
+            el
+                end_offset[]
+            return
         if [ moving ]
             if [ ev.mouse.button == 1 ]
                 cancel_move[]
             el
                 end_move[]
             return
+        # cmd + click on a node: cusp, smooth, symmetric in turn
+        if [ ev.mouse.button == 0 && ux && ux.cmd ]
+            np : nearest[ ev.mouse.pos.x, ev.mouse.pos.y ]
+            if [ np && np.slot == 0 ]
+                doc.undo.push[ SvgUndo [ shape: -1,
+                                         text: doc.compose[] ] ]
+                was : i32 [ doc.type_at[ doc.chosen, np.cmd ] ]
+                kind : i32 [ (was + 1) % 3 ]
+                doc.set_type[ doc.chosen, np.cmd, kind ]
+                doc.align_node[ doc.chosen, np.cmd ]
+                doc.mark[ doc.chosen ]
+                return
         if [ ev.mouse.button != 0 || (ux && ux.cmd) ]
             mode = 1
             return
@@ -433,6 +2163,26 @@ element SvgView
         adding : bool [ ux && ux.shift ]
         # a point of the chosen shape first, else a shape
         p : nearest[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        # a double click on a segment: a node put in there
+        if [ !p && ev.mouse.double_click && doc.chosen >= 0 ]
+            sh : doc.model.shapes[ doc.chosen ]
+            was : vec SVGCmd [ sh.cmds ]
+            bx : f32 [ (ev.mouse.pos.x - ox) / zoom ]
+            by : f32 [ (ev.mouse.pos.y - oy) / zoom ]
+            np : doc.split_at[ doc.chosen, bx, by, 6.0 / zoom ]
+            if [ np ]
+                doc.undo.push[ SvgUndo [ shape: doc.chosen,
+                                         cmds: was ] ]
+                doc.mark[ doc.chosen ]
+                picked = vec SvgPoint [] [ np ]
+                return
+        # shift: a drag from here draws out a handle
+        if [ p && adding ]
+            h_wait = true
+            h_from = p
+            h_drag = null
+            press_x = ev.mouse.pos.x
+            press_y = ev.mouse.pos.y
         if [ p ]
             if [ !adding ] picked.clear[]
             for [ q: SvgPoint ] in doc.same_spot[ doc.chosen, p ]
@@ -440,70 +2190,502 @@ element SvgView
             return
         x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
         y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
-        doc.chosen = doc.shape_at[ x, y, 4.0 / zoom ]
+        hit : doc.shape_at[ x, y, 4.0 / zoom ]
+        # shift: the shape in or out of the choice
+        if [ adding ]
+            doc.toggle[ hit ]
+        el
+            doc.choose_one[ hit ]
         picked.clear[]
 
     public func on_release [ ev: Event ]
         mode = 0
+        pen_drag = false
+        h_wait = false
+        if [ knob_drag ]
+            knob_drag = false
+            end_offset[]
+            return
+        if [ h_drag ]
+            # kept where the pointer left it, not the eased place
+            doc.set_point[ doc.chosen, h_drag, h_goal.x, h_goal.y ]
+            doc.hold_node[ doc.chosen, h_drag ]
+            doc.mark[ doc.chosen ]
+            picked = vec SvgPoint [] [ h_drag ]
+            h_drag = null
 
     public func on_move [ ev: Event ]
+        pointer_x = ev.mouse.pos.x
+        pointer_y = ev.mouse.pos.y
         if [ mode == 1 ]
-            ox += ev.mouse.delta.x
-            oy += ev.mouse.delta.y
+            ox_goal += ev.mouse.delta.x
+            oy_goal += ev.mouse.delta.y
+            return
+        # shift held: a quarter as fast, for fine placing
+        fine : f32 [ (ux && ux.shift) ? 0.25 : 1.0 ]
+        if [ pen ]
+            pen_at = vec2f [ (ev.mouse.pos.x - ox) / zoom,
+                             (ev.mouse.pos.y - oy) / zoom ]
+            # a drag from the last node draws its handles out,
+            # the one behind it mirrored
+            n : i32 [ pen_nodes.count ]
+            if [ pen_drag && n >= 6 ]
+                ax : f32 [ pen_nodes[ n - 6 ] ]
+                ay : f32 [ pen_nodes[ n - 5 ] ]
+                pen_nodes[ n - 2 ] = pen_at.x
+                pen_nodes[ n - 1 ] = pen_at.y
+                pen_nodes[ n - 4 ] = 2.0 * ax - pen_at.x
+                pen_nodes[ n - 3 ] = 2.0 * ay - pen_at.y
+            return
+        # the knob: the distance is the pointer's from the source
+        if [ knob_drag ]
+            src : doc.offset_src[ doc.chosen ]
+            if [ src < 0 ] return
+            x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
+            y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
+            r : signed_reach[ doc.model.shapes[ src ].cmds, x, y,
+                              0.25 / zoom ]
+            off_r = r.x
+            knob_of = doc.chosen
+            knob_q = vec2f [ r.z, r.w ]
+            dx : f32 [ x - r.z ]
+            dy : f32 [ y - r.w ]
+            dl : f32 [ sqrt[ dx * dx + dy * dy ] ]
+            if [ dl > 1e-6 ] knob_d = vec2f [ dx / dl, dy / dl ]
+            return
+        if [ offsetting ]
+            off_r = off_r + ev.mouse.delta.x * fine / zoom
+            return
+        if [ h_wait ]
+            drag_handle[ ev.mouse.pos.x, ev.mouse.pos.y ]
             return
         if [ !moving ] return
-        if [ lock != 2 ] shift_x += ev.mouse.delta.x / zoom
-        if [ lock != 1 ] shift_y += ev.mouse.delta.y / zoom
-        place_moved[]
+        if [ sizing ]
+            grow = grow + ev.mouse.delta.x * 0.004 * fine
+            return
+        shift_x += ev.mouse.delta.x * fine / zoom
+        shift_y += ev.mouse.delta.y * fine / zoom
 
     # the wheel zooms about the pointer
     public func on_wheel [ ev: Event ]
         k : f32 [ pow[ 1.1, ev.mouse.wheel_delta.y ] ]
         px : f32 [ ev.mouse.pos.x ]
         py : f32 [ ev.mouse.pos.y ]
-        ox = px - (px - ox) * k
-        oy = py - (py - oy) * k
-        zoom = zoom * k
+        ox_goal = px - (px - ox_goal) * k
+        oy_goal = py - (py - oy_goal) * k
+        zoom_goal = zoom_goal * k
 
     # g: the picked points, or the whole chosen shape, follow
     # the pointer
-    func start_move []
+    func start_move [ size: bool ]
         if [ doc.chosen < 0 ] return
         sh : doc.model.shapes[ doc.chosen ]
         list : vec SvgPoint []
+        moved_of = vec i32 []
+        multi_text = null
         if [ picked && picked.count > 0 ]
             list = doc.carried[ doc.chosen, picked ]
+            for [ p: SvgPoint ] in list
+                moved_of.push[ doc.chosen ]
         el
-            list = doc.points_of[ doc.chosen ]
+            # every chosen shape's points, together
+            ids : doc.selected[]
+            if [ ids.count > 1 ] multi_text = doc.compose[]
+            for [ i: i32 ] in ids
+                for [ p: SvgPoint ] in doc.points_of[ i ]
+                    list.push[ p ]
+                    moved_of.push[ i ]
         if [ list.count == 0 ] return
         moved = list
         from = vec f32 []
-        for [ p: SvgPoint ] in moved
-            at : doc.point[ doc.chosen, p ]
+        for [ k: i32 0, k < moved.count, k += 1 ]
+            at : doc.point[ moved_of[ k ], moved[ k ] ]
             from.push[ at.x ]
             from.push[ at.y ]
         before = vec SVGCmd [ sh.cmds ]
         shift_x = 0.0
         shift_y = 0.0
         lock = 0
+        typing_text = ''
+        typing_mask = 0
+        typed_v  = vec f32 [ 2 ]
+        typed_on = vec i32 [ 2 ]
         moving = true
+        sizing = size
+        grow = 0.0
+        # the middle of the points' box
+        lo_x : f32 [ from[ 0 ] ]
+        hi_x : f32 [ from[ 0 ] ]
+        lo_y : f32 [ from[ 1 ] ]
+        hi_y : f32 [ from[ 1 ] ]
+        for [ k: i32 0, k < moved.count, k += 1 ]
+            lo_x = min[ lo_x, from[ k * 2 ] ]
+            hi_x = max[ hi_x, from[ k * 2 ] ]
+            lo_y = min[ lo_y, from[ k * 2 + 1 ] ]
+            hi_y = max[ hi_y, from[ k * 2 + 1 ] ]
+        pivot_x = (lo_x + hi_x) * 0.5
+        pivot_y = (lo_y + hi_y) * 0.5
+        shown_g = goal[]
+
+    # x and y: typed values win, else the pointer's
+    func goal [] -> vec2f
+        rest : f32 [ (sizing) ? 1.0 : 0.0 ]
+        typed : bool [ typing_text.count > 0 || typed_on[ 0 ] != 0
+                       || typed_on[ 1 ] != 0 ]
+        if [ typed ]
+            g : vec f32 [] [ rest, rest ]
+            for [ a: i32 0, a < 2, a += 1 ]
+                if [ typed_on[ a ] != 0 ] g[ a ] = typed_v[ a ]
+            if [ typing_text.count > 0 ]
+                m : i32 [ (typing_mask != 0) ? typing_mask
+                          : default_mask[] ]
+                for [ a: i32 0, a < 2, a += 1 ]
+                    if [ (m & (1 << a)) != 0 ] g[ a ] = typing_number[]
+            return vec2f [ g[ 0 ], g[ 1 ] ]
+        f : f32 [ max[ 1.0 + grow, 0.01 ] ]
+        px : f32 [ (sizing) ? f : shift_x ]
+        py : f32 [ (sizing) ? f : shift_y ]
+        if [ lock == 2 ] px = rest
+        if [ lock == 1 ] py = rest
+        return vec2f [ px, py ]
+
+    # the number typed so far, or none
+    func typing_number [] -> f32
+        if [ typing_text.count == 0 || typing_text == '-'
+             || typing_text == '.' ] return 0.0
+        return f32[ typing_text ]
+
+    # a number with no axis: x for g, both for s
+    func default_mask [] -> i32
+        if [ lock != 0 ] return lock
+        return (sizing) ? 3 : 1
+
+    # the typed number given to every axis of its group
+    func commit_typing []
+        if [ typing_text.count == 0 ] return
+        m : i32 [ (typing_mask != 0) ? typing_mask : default_mask[] ]
+        for [ a: i32 0, a < 2, a += 1 ]
+            if [ (m & (1 << a)) != 0 ]
+                typed_v[ a ] = typing_number[]
+                typed_on[ a ] = 1
+        typing_text = ''
+        typing_mask = 0
+
+    # a shift + drag: past 4 px the handle on the drag's side is
+    # taken (or made), then it follows the pointer
+    func drag_handle [ px: f32, py: f32 ]
+        dx : f32 [ (px - press_x) / zoom ]
+        dy : f32 [ (py - press_y) / zoom ]
+        if [ !h_drag ]
+            mx : f32 [ px - press_x ]
+            my : f32 [ py - press_y ]
+            if [ mx * mx + my * my < 16.0 ] return
+            sh : doc.model.shapes[ doc.chosen ]
+            before = vec SVGCmd [ sh.cmds ]
+            h_drag = (h_from.slot == 0)
+                ? doc.handle_toward[ doc.chosen, h_from.cmd, dx, dy ]
+                : h_from
+            if [ !h_drag ]
+                h_wait = false
+                return
+            doc.undo.push[ SvgUndo [ shape: doc.chosen,
+                                     cmds: before ] ]
+            h_at = doc.point[ doc.chosen, h_drag ]
+            h_shown = h_at
+            picked = vec SvgPoint [] [ h_drag ]
+        h_goal = vec2f [ h_at.x + dx, h_at.y + dy ]
+
+    # a point on screen inside the box or circle being drawn
+    func in_region [ px: f32, py: f32 ] -> bool
+        if [ region == 1 ]
+            return px >= minf[ region_x, pointer_x ]
+                && px <= maxf[ region_x, pointer_x ]
+                && py >= minf[ region_y, pointer_y ]
+                && py <= maxf[ region_y, pointer_y ]
+        dx : f32 [ pointer_x - region_x ]
+        dy : f32 [ pointer_y - region_y ]
+        ex : f32 [ px - region_x ]
+        ey : f32 [ py - region_y ]
+        return ex * ex + ey * ey <= dx * dx + dy * dy
+
+    # the region's pick: the chosen shape's nodes and handles in
+    # it, else the shapes wholly in it; shift or cmd adds
+    func end_region [ adding: bool ]
+        region_kind : i32 [ region ]
+        region = 0
+        if [ doc.chosen >= 0 ]
+            if [ !picked || !adding ] picked = vec SvgPoint []
+            # nodes and handles (the bezier weights) alike
+            for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
+                at : doc.point[ doc.chosen, p ]
+                region = region_kind
+                inside : bool [ in_region[ sx[ at.x ], sy[ at.y ] ] ]
+                region = 0
+                if [ inside ] doc.add_point[ picked, p ]
+            return
+        if [ !adding ] doc.choose_one[ -1 ]
+        for [ i: i32 0, i < doc.count[], i += 1 ]
+            edge : doc.outline[ i ]
+            whole : bool [ edge.count > 0 ]
+            region = region_kind
+            for [ k: i32 0, k + 1 < edge.count, k += 2 ]
+                if [ edge[ k ] < -1.0e8 ] continue
+                ex : f32 [ sx[ edge[ k ] ] ]
+                ey : f32 [ sy[ edge[ k + 1 ] ] ]
+                if [ !in_region[ ex, ey ] ]
+                    whole = false
+                    break
+            region = 0
+            if [ whole && !doc.is_chosen[ i ] ] doc.toggle[ i ]
+
+    # the box or circle from where b or c was pressed
+    func draw_region [ cv: Canvas ]
+        if [ region == 0 ] return
+        cv.fill_color[ '#ffffff14' ]
+        cv.stroke_color[ '#ffffffcc' ]
+        cv.stroke_width[ 1.0 ]
+        if [ region == 1 ]
+            cv.rect_to[ minf[ region_x, pointer_x ],
+                        minf[ region_y, pointer_y ],
+                        abs[ pointer_x - region_x ],
+                        abs[ pointer_y - region_y ] ]
+        el
+            dx : f32 [ pointer_x - region_x ]
+            dy : f32 [ pointer_y - region_y ]
+            cv.arc[ region_x, region_y, sqrt[ dx * dx + dy * dy ],
+                    0.0, 6.2831853 ]
+        cv.paint[]
+
+    # a click while drawing: a node there (a drag gives it
+    # handles); on the first node, the shape is closed
+    func pen_press [ ev: Event ]
+        if [ ev.mouse.button != 0 ]
+            pen_end[ false ]
+            return
+        x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
+        y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
+        n : i32 [ pen_nodes.count ]
+        if [ n >= 12 ]
+            dx : f32 [ (pen_nodes[ 0 ] - x) * zoom ]
+            dy : f32 [ (pen_nodes[ 1 ] - y) * zoom ]
+            if [ dx * dx + dy * dy < 64.0 ]
+                pen_end[ true ]
+                return
+        for [ v: f32 ] in vec f32 [] [ x, y, x, y, x, y ]
+            pen_nodes.push[ v ]
+        pen_drag = true
+        pen_at = vec2f [ x, y ]
+
+    # drawing: enter keeps it open, escape drops it, backspace
+    # takes the last node back
+    func pen_key [ k: i32 ]
+        if [ k == 257 || k == 335 ]
+            pen_end[ false ]
+            return
+        if [ k == 256 ]
+            pen = false
+            pen_nodes = vec f32 []
+            return
+        if [ k != 259 || pen_nodes.count < 6 ] return
+        keep : i32 [ pen_nodes.count - 6 ]
+        rest : vec f32 []
+        for [ q: i32 0, q < keep, q += 1 ]
+            rest.push[ pen_nodes[ q ] ]
+        pen_nodes = rest
+
+    # the drawn path made (closed or not); fewer than two nodes
+    # make nothing
+    func pen_end [ closed: bool ]
+        pen = false
+        pen_drag = false
+        n : i32 [ pen_nodes.count / 6 ]
+        if [ n < 2 ] return
+        cmds : vec SVGCmd []
+        cmds.push[ SVGCmd [ op: SVGOp.move, x: pen_nodes[ 0 ],
+                            y: pen_nodes[ 1 ] ] ]
+        upto : i32 [ (closed) ? n : n - 1 ]
+        for [ i: i32 1, i <= upto, i += 1 ]
+            a : i32 [ (i - 1) * 6 ]
+            b : i32 [ (i % n) * 6 ]
+            # handles on their anchors: a straight line
+            flat : bool [ pen_nodes[ a + 4 ] == pen_nodes[ a ]
+                && pen_nodes[ a + 5 ] == pen_nodes[ a + 1 ]
+                && pen_nodes[ b + 2 ] == pen_nodes[ b ]
+                && pen_nodes[ b + 3 ] == pen_nodes[ b + 1 ] ]
+            if [ flat ]
+                cmds.push[ SVGCmd [ op: SVGOp.line, x: pen_nodes[ b ],
+                                    y: pen_nodes[ b + 1 ] ] ]
+            el
+                cmds.push[ SVGCmd [ op: SVGOp.cubic,
+                    x1: pen_nodes[ a + 4 ], y1: pen_nodes[ a + 5 ],
+                    x2: pen_nodes[ b + 2 ], y2: pen_nodes[ b + 3 ],
+                    x: pen_nodes[ b ], y: pen_nodes[ b + 1 ] ] ]
+        if [ closed ] cmds.push[ SVGCmd [ op: SVGOp.close ] ]
+        if [ doc.add_path[ cmds, 2.0 / zoom ] ]
+            picked = vec SvgPoint []
+
+    # the path being drawn: its segments, the line on to the
+    # pointer, its nodes and the dragged handles
+    func draw_pen [ cv: Canvas ]
+        n : i32 [ pen_nodes.count / 6 ]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#ffcf4a' ]
+        cv.stroke_width[ 1.5 ]
+        if [ n > 0 ]
+            cv.move_to[ sx[ pen_nodes[ 0 ] ], sy[ pen_nodes[ 1 ] ] ]
+            for [ i: i32 1, i < n, i += 1 ]
+                a : i32 [ (i - 1) * 6 ]
+                b : i32 [ i * 6 ]
+                cv.cubic_to[ sx[ pen_nodes[ a + 4 ] ],
+                    sy[ pen_nodes[ a + 5 ] ], sx[ pen_nodes[ b + 2 ] ],
+                    sy[ pen_nodes[ b + 3 ] ], sx[ pen_nodes[ b ] ],
+                    sy[ pen_nodes[ b + 1 ] ] ]
+            if [ !pen_drag ]
+                l : i32 [ (n - 1) * 6 ]
+                cv.cubic_to[ sx[ pen_nodes[ l + 4 ] ],
+                    sy[ pen_nodes[ l + 5 ] ], sx[ pen_at.x ],
+                    sy[ pen_at.y ], sx[ pen_at.x ], sy[ pen_at.y ] ]
+            cv.paint[]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_color[ '#ffcf4a99' ]
+        for [ i: i32 0, i < n, i += 1 ]
+            o : i32 [ i * 6 ]
+            cv.move_to[ sx[ pen_nodes[ o + 2 ] ],
+                        sy[ pen_nodes[ o + 3 ] ] ]
+            cv.line_to[ sx[ pen_nodes[ o + 4 ] ],
+                        sy[ pen_nodes[ o + 5 ] ] ]
+            cv.paint[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#ffcf4a' ]
+        for [ i: i32 0, i < n, i += 1 ]
+            o : i32 [ i * 6 ]
+            cv.rect_to[ sx[ pen_nodes[ o ] ] - 3.5,
+                        sy[ pen_nodes[ o + 1 ] ] - 3.5, 7.0, 7.0 ]
+            cv.paint[]
+
+    # o pressed: an offset of the chosen shape, or the chosen
+    # offset's distance
+    func start_offset []
+        if [ doc.chosen < 0 || moving ] return
+        typing_text = ''
+        if [ doc.offset_src[ doc.chosen ] >= 0 ]
+            off_shape = doc.chosen
+            off_from = doc.radius_of[ doc.chosen ]
+            doc.undo.push[ SvgUndo [ shape: -1, text: doc.compose[] ] ]
+        el
+            off_shape = -1
+            off_from = 0.0
+        off_r = off_from
+        off_shown = off_from
+        offsetting = true
+        apply_offset[]
+
+    # the distance asked for: typed, else the pointer's
+    func offset_goal [] -> f32
+        if [ typing_text.count > 0 ] return typing_number[]
+        return off_r
+
+    func apply_offset []
+        r : f32 [ off_shown ]
+        if [ off_shape >= 0 ]
+            doc.set_radius[ off_shape, r ]
+            return
+        preview = offset_cmds[ doc.model.shapes[ doc.chosen ].cmds, r ]
+
+    func end_offset []
+        r : offset_goal[]
+        offsetting = false
+        preview = null
+        if [ off_shape >= 0 ]
+            doc.set_radius[ off_shape, r ]
+        el [ r != 0.0 ]
+            doc.make_offset[ doc.chosen, r ]
+        typing_text = ''
+        picked = vec SvgPoint []
+
+    func cancel_offset []
+        offsetting = false
+        preview = null
+        typing_text = ''
+        if [ off_shape >= 0 ]
+            doc.set_radius[ off_shape, off_from ]
+            doc.undo.pop[]
+
+    # what is typed, shown at the view's foot
+    func op_words [] -> string
+        if [ pen ]
+            np : i32 [ pen_nodes.count / 6 ]
+            return 'draw  {np} nodes: click, drag a curve, enter'
+        if [ offsetting ]
+            r : offset_goal[]
+            rt : num_text[ r, false ]
+            words : 'offset {rt}'
+            if [ typing_text.count > 0 ]
+                words = '{words}  {typing_text}_'
+            return words
+        if [ !moving ] return ''
+        out : string [ (sizing) ? 'size' : 'move' ]
+        names : vec string [] [ 'x', 'y' ]
+        for [ a: i32 0, a < 2, a += 1 ]
+            if [ typed_on[ a ] != 0 ]
+                out = '{out}  {names[ a ]} {typed_v[ a ]}'
+        axes : ''
+        for [ a: i32 0, a < 2, a += 1 ]
+            if [ (typing_mask & (1 << a)) != 0 ]
+                axes = '{axes}{names[ a ]}'
+        if [ axes.count > 0 || typing_text.count > 0 ]
+            out = '{out}  {axes} {typing_text}_'
+        return out
 
     func place_moved []
+        g : shown_g
+        fx : f32 [ (sizing) ? max[ g.x, 0.01 ] : 1.0 ]
+        fy : f32 [ (sizing) ? max[ g.y, 0.01 ] : 1.0 ]
+        mx : f32 [ (sizing) ? 0.0 : g.x ]
+        my : f32 [ (sizing) ? 0.0 : g.y ]
         for [ k: i32 0, k < moved.count, k += 1 ]
-            doc.set_point[ doc.chosen, moved[ k ],
-                           from[ k * 2 ] + shift_x,
-                           from[ k * 2 + 1 ] + shift_y ]
+            px : f32 [ pivot_x + (from[ k * 2 ] - pivot_x) * fx ]
+            py : f32 [ pivot_y + (from[ k * 2 + 1 ] - pivot_y) * fy ]
+            doc.set_point[ moved_of[ k ], moved[ k ], px + mx,
+                           py + my ]
+        # whole shapes moved: their linked offsets follow
+        if [ multi_text ]
+            for [ i: i32 ] in doc.selected[]
+                doc.follow[ i, 0 ]
+            return
+        # a moved handle's node type holds (its partner follows,
+        # unless it moves too)
+        for [ q: SvgPoint ] in moved
+            if [ q.slot == 0 ] continue
+            mate : doc.partner[ doc.chosen, q ]
+            if [ mate && moved_has[ mate ] ] continue
+            doc.hold_node[ doc.chosen, q ]
+        # its linked offsets follow as it goes
+        doc.follow[ doc.chosen, 0 ]
 
     func end_move []
+        commit_typing[]
+        # kept: the exact value, not the eased one
+        shown_g = goal[]
+        place_moved[]
         moving = false
-        if [ !undo ] undo = vec SvgUndo []
-        undo.push[ SvgUndo [ shape: doc.chosen, cmds: before ] ]
+        if [ multi_text ]
+            doc.undo.push[ SvgUndo [ shape: -1, text: multi_text ] ]
+            for [ i: i32 ] in doc.selected[]
+                doc.mark[ i ]
+            return
+        doc.undo.push[ SvgUndo [ shape: doc.chosen, cmds: before ] ]
         doc.mark[ doc.chosen ]
 
     func cancel_move []
         moving = false
         shift_x = 0.0
         shift_y = 0.0
+        grow = 0.0
+        typing_text = ''
+        typed_on = vec i32 [ 2 ]
+        lock = 0
+        shown_g = goal[]
         place_moved[]
 
     # keys, as the app hands them on
@@ -513,16 +2695,60 @@ element SvgView
         down : bool [ ev.key.state != 0 ]
         if [ !down ] return
         ctrl : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ pen ]
+            pen_key[ k ]
+            return
+        # a box or circle drawn: enter picks, escape drops it
+        if [ region != 0 ]
+            if [ k == 257 || k == 335 ]
+                end_region[ ev.key.shift || ctrl ]
+            if [ k == 256 ] region = 0
+            return
+        if [ offsetting ]
+            if [ k == 257 || k == 335 ]
+                end_offset[]
+                return
+            if [ k == 256 ]
+                cancel_offset[]
+                return
+            if [ k == 259 && typing_text.count > 0 ]
+                n : i32 [ typing_text.count - 1 ]
+                typing_text = typing_text.mid[ 0, n ]
+            ch : ''
+            if [ k >= 48 && k <= 57 ] ch = '{k - 48}'
+            if [ k >= 320 && k <= 329 ] ch = '{k - 320}'
+            if [ k == 46 || k == 330 ] ch = '.'
+            if [ (k == 45 || k == 333) && typing_text.count == 0 ]
+                ch = '-'
+            if [ ch.count > 0 ] typing_text = '{typing_text}{ch}'
+            return
         if [ moving ]
             if [ k == 257 || k == 335 ] end_move[]
             if [ k == 256 ] cancel_move[]
-            # x or y: that axis alone (again: both)
-            if [ k == 88 ] lock = (lock == 1) ? 0 : 1
-            if [ k == 89 ] lock = (lock == 2) ? 0 : 2
+            # x or y: a number's axes; after one, a new group
             if [ k == 88 || k == 89 ]
-                if [ lock == 1 ] shift_y = 0.0
-                if [ lock == 2 ] shift_x = 0.0
-                place_moved[]
+                if [ typing_text.count > 0 ] commit_typing[]
+                typing_mask = typing_mask | (1 << (k - 88))
+                lock = (typing_mask == 3) ? 0 : typing_mask
+            if [ k == 259 && typing_text.count > 0 ]
+                n : i32 [ typing_text.count - 1 ]
+                typing_text = typing_text.mid[ 0, n ]
+            ch : ''
+            if [ k >= 48 && k <= 57 ] ch = '{k - 48}'
+            if [ k >= 320 && k <= 329 ] ch = '{k - 320}'
+            if [ k == 46 || k == 330 ] ch = '.'
+            if [ (k == 45 || k == 333) && typing_text.count == 0 ]
+                ch = '-'
+            if [ ch.count > 0 ] typing_text = '{typing_text}{ch}'
+            return
+        # ctrl + shift + s: save as (the dialog asks where)
+        if [ k == 83 && ctrl && ev.key.shift ]
+            nm : string doc.file.filename[]
+            if [ ux ] ux.nav_save_as[ nm ]
+            return
+        # a drawing never saved: the dialog asks where
+        if [ k == 83 && ctrl && !ev.key.shift && doc.untitled ]
+            if [ ux ] ux.nav_save_as[ 'untitled.svg' ]
             return
         if [ k == 83 && ctrl && !ev.key.shift ]
             if [ doc.save[] ]
@@ -530,21 +2756,93 @@ element SvgView
                 picked = vec SvgPoint []
             return
         if [ k == 90 && ctrl ]
-            if [ !undo || undo.count == 0 ] return
-            back : undo[ undo.count - 1 ]
-            undo.pop[]
+            if [ doc.undo.count == 0 ] return
+            back : doc.undo[ doc.undo.count - 1 ]
+            doc.undo.pop[]
+            if [ back.row ]
+                doc.undo_row = back.row
+                doc.undo_was = back.was
+                return
+            if [ back.text ]
+                doc.restore[ back.text ]
+                picked = vec SvgPoint []
+                return
             doc.model.shapes[ back.shape ].cmds = back.cmds
             doc.mark[ back.shape ]
             return
-        if [ k == 71 && !ctrl ] start_move[]
+        # delete or backspace with no node picked: the chosen
+        # shapes go
+        if [ (k == 261 || k == 259) && (!picked || picked.count == 0) ]
+            if [ doc.delete_chosen[] ] picked = vec SvgPoint []
+            return
+        # delete or backspace: the picked nodes taken out
+        if [ (k == 261 || k == 259) && picked && picked.count > 0
+             && doc.chosen >= 0 ]
+            sh : doc.model.shapes[ doc.chosen ]
+            was : vec SVGCmd [ sh.cmds ]
+            if [ doc.drop_nodes[ doc.chosen, picked ] ]
+                doc.undo.push[ SvgUndo [ shape: doc.chosen,
+                                         cmds: was ] ]
+                doc.mark[ doc.chosen ]
+            picked = vec SvgPoint []
+            return
+        # ctrl + g: the chosen shapes grouped; with shift, the
+        # chosen shape's group taken apart
+        if [ ctrl && k == 71 ]
+            done : bool [ (ev.key.shift) ? doc.ungroup_chosen[]
+                                         : doc.group_chosen[] ]
+            if [ done ] picked = vec SvgPoint []
+            return
+        # ctrl + or -: the chosen shapes' union, or the bottom
+        # one less the rest
+        if [ ctrl && (k == 61 || k == 334 || k == 45 || k == 333) ]
+            if [ doc.combine[ (k == 61 || k == 334) ? 0 : 1 ] ]
+                picked = vec SvgPoint []
+            return
+        # page up / down: the chosen shape one step up or down;
+        # with ctrl, to the top or bottom (one undo)
+        if [ (k == 266 || k == 267) && doc.chosen >= 0 ]
+            marks : i32 [ doc.undo.count ]
+            while [ doc.restack[ doc.chosen, k == 266 ] ]
+                picked = vec SvgPoint []
+                if [ !ctrl ] break
+            while [ doc.undo.count > marks + 1 ]
+                doc.undo.pop[]
+            return
+        # g moves, s sizes (x or y after: that axis alone)
+        if [ k == 71 && !ctrl ] start_move[ false ]
+        if [ k == 83 && !ctrl ] start_move[ true ]
+        # b, c: a box or circle select, from the pointer here
+        if [ (k == 66 || k == 67) && !ctrl && !moving && !offsetting ]
+            region = (k == 66) ? 1 : 2
+            region_x = pointer_x
+            region_y = pointer_y
+            return
+        # p: draw a new path
+        if [ k == 80 && !ctrl && !moving && !offsetting ]
+            pen = true
+            pen_nodes = vec f32 []
+            pen_drag = false
+            return
+        # o: a linked offset (on an offset: its distance)
+        if [ k == 79 && !ctrl ] start_offset[]
         # home: the page fitted again
         if [ k == 268 ] fit[]
         if [ k == 256 && picked ] picked.clear[]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !doc ] return
+        # ctrl + and - are the booleans here, not the font's size;
+        # ctrl + shift + s is save as, not the capture
+        w.font_keys = false
+        w.capture_keys = false
         cv : Canvas [ w.screen ]
         if [ !fitted && bounds.w > 0.0 ] fit[]
+        ease_frame[]
+        # nothing past the view's own bounds
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0,
+                              0.0, 0.0 ]
         cv.save[]
         cv.stroke_width[ 0.0 ]
         cv.fill_color[ '#14141a' ]
@@ -552,10 +2850,7 @@ element SvgView
         cv.paint[]
         pw : f32 [ doc.model.w * zoom ]
         ph : f32 [ doc.model.h * zoom ]
-        # the page: white, a line round it
-        cv.fill_color[ '#ffffff' ]
-        cv.rect_to[ ox, oy, pw, ph ]
-        cv.paint[]
+        draw_grid[ cv ]
         cv.restore[]
         doc.model.render[ cv, ox, oy, pw, ph ]
         cv.save[]
@@ -566,10 +2861,131 @@ element SvgView
         cv.paint[]
         if [ doc.chosen >= 0 && doc.chosen < doc.count[] ]
             draw_chosen[ cv ]
+        # the other chosen shapes: their outlines
+        for [ i: i32 ] in doc.also
+            if [ i >= 0 && i < doc.count[] ]
+                outline_shape[ cv, i ]
+        if [ pen ] draw_pen[ cv ]
+        draw_region[ cv ]
+        # an offset being made: its outline
+        if [ preview ]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#ffcf4a' ]
+            cv.stroke_width[ 1.5 ]
+            for [ c: SVGCmd ] in preview
+                if [ c.op == SVGOp.move ]
+                    cv.move_to[ sx[ c.x ], sy[ c.y ] ]
+                el [ c.op == SVGOp.cubic ]
+                    cv.cubic_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x2 ],
+                                 sy[ c.y2 ], sx[ c.x ], sy[ c.y ] ]
+                el [ c.op == SVGOp.close ]
+                    cv.close_path[]
+            cv.paint[]
+        # g or s running: what it does and what is typed
+        words : op_words[]
+        if [ words.count > 0 ]
+            cv.fill_color[ '#ffcf4a' ]
+            cv.draw_text[ words,
+                rect [ x: 16.0, y: bounds.h - 40.0,
+                       w: bounds.w - 32.0, h: 28.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+        cv.restore[]
         cv.restore[]
 
+    # a line a power of ten of units, 8 px or more; major x10
+    func draw_grid [ cv: Canvas ]
+        step : f32 [ pow[ 10.0,
+                         ceil[ log[ 8.0 / zoom ] / log[ 10.0 ] ] ] ]
+        px : f32 [ step * zoom ]
+        fade : f32 [ clamp[ (px - 8.0) / 24.0, 0.0, 1.0 ] ]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_width[ 1.0 ]
+        for [ major: i32 0, major < 2, major += 1 ]
+            a : f32 [ (major == 1) ? 0.14 : 0.06 * fade ]
+            cv.stroke_color[ rgba [ r: 1.0, g: 1.0, b: 1.0, a: a ] ]
+            lo : i64 [ floor[ (0.0 - ox) / px ] ]
+            hi : i64 [ ceil[ (bounds.w - ox) / px ] ]
+            for [ i: i64 lo, i <= hi, i += 1 ]
+                if [ (i % 10 == 0) != (major == 1) ] continue
+                x : f32 [ round[ ox + f32[ i ] * px ] + 0.5 ]
+                if [ x < 0.0 || x > bounds.w ] continue
+                cv.move_to[ x, 0.0 ]
+                cv.line_to[ x, bounds.h ]
+            lo = i64[ floor[ (0.0 - oy) / px ] ]
+            hi = i64[ ceil[ (bounds.h - oy) / px ] ]
+            for [ i: i64 lo, i <= hi, i += 1 ]
+                if [ (i % 10 == 0) != (major == 1) ] continue
+                y : f32 [ round[ oy + f32[ i ] * px ] + 0.5 ]
+                if [ y < 0.0 || y > bounds.h ] continue
+                cv.move_to[ 0.0, y ]
+                cv.line_to[ bounds.w, y ]
+            cv.paint[]
+
+    # a shape's outline, as a chosen one's
+    func outline_shape [ cv: Canvas, i: i32 ]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#7fd4ff' ]
+        cv.stroke_width[ 1.5 ]
+        for [ c: SVGCmd ] in doc.model.shapes[ i ].cmds
+            if [ c.op == SVGOp.move ]
+                cv.move_to[ sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.line ]
+                cv.line_to[ sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.cubic ]
+                cv.cubic_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x2 ],
+                             sy[ c.y2 ], sx[ c.x ], sy[ c.y ] ]
+            el [ c.op == SVGOp.quad ]
+                cv.quad_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x ],
+                            sy[ c.y ] ]
+            el [ c.op == SVGOp.close ]
+                cv.close_path[]
+        cv.paint[]
+
     # the chosen shape: its outline, handles and anchors
+    # the offset's knob: x, y the source's point it is measured
+    # from, z, w the knob on the offset's outline
+    func knob_at [] -> vec4f
+        src : doc.offset_src[ doc.chosen ]
+        if [ src < 0 ] return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        # dragged: the way it went, at the distance now
+        if [ knob_of == doc.chosen ]
+            far : f32 [ abs[ doc.radius_of[ doc.chosen ] ] ]
+            return vec4f [ knob_q.x, knob_q.y,
+                           knob_q.x + knob_d.x * far,
+                           knob_q.y + knob_d.y * far ]
+        c : doc.model.shapes[ src ].cmds[ 0 ]
+        k : nearest_on[ doc.model.shapes[ doc.chosen ].cmds, c.x, c.y,
+                        0.25 / zoom ]
+        return vec4f [ c.x, c.y, k.x, k.y ]
+
+    # a linked offset chosen: its outline and its one knob (its
+    # points are its source's business)
+    func draw_offset [ cv: Canvas ]
+        outline_shape[ cv, doc.chosen ]
+        kb : knob_at[]
+        cv.stroke_color[ '#ffcf4a99' ]
+        cv.stroke_width[ 1.0 ]
+        cv.move_to[ sx[ kb.x ], sy[ kb.y ] ]
+        cv.line_to[ sx[ kb.z ], sy[ kb.w ] ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#ffcf4a' ]
+        # a diamond
+        kx : f32 [ sx[ kb.z ] ]
+        ky : f32 [ sy[ kb.w ] ]
+        cv.move_to[ kx, ky - 6.0 ]
+        cv.line_to[ kx + 6.0, ky ]
+        cv.line_to[ kx, ky + 6.0 ]
+        cv.line_to[ kx - 6.0, ky ]
+        cv.close_path[]
+        cv.paint[]
+
     func draw_chosen [ cv: Canvas ]
+        if [ doc.offset_src[ doc.chosen ] >= 0 ]
+            draw_offset[ cv ]
+            return
         sh : doc.model.shapes[ doc.chosen ]
         cv.fill_color[ '#0000' ]
         cv.stroke_color[ '#7fd4ff' ]
@@ -608,11 +3024,22 @@ element SvgView
         cv.stroke_width[ 0.0 ]
         for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
             at : doc.point[ doc.chosen, p ]
-            lit : is_picked[ p ]
+            lit : bool [ is_picked[ p ] || (region != 0
+                         && in_region[ sx[ at.x ], sy[ at.y ] ]) ]
             cv.fill_color[ (lit) ? '#ffcf4a' : '#7fd4ff' ]
-            if [ p.slot == 0 ]
+            # a node: cusp a square, smooth a circle, symmetric a
+            # circle with a dot
+            kind : i32 [ (p.slot == 0)
+                         ? doc.type_at[ doc.chosen, p.cmd ] : -1 ]
+            if [ kind == 0 ]
                 cv.rect_to[ sx[ at.x ] - 3.5, sy[ at.y ] - 3.5, 7.0,
                             7.0 ]
+            el [ kind > 0 ]
+                cv.arc[ sx[ at.x ], sy[ at.y ], 4.5, 0.0, 6.2832 ]
             el
                 cv.arc[ sx[ at.x ], sy[ at.y ], 3.0, 0.0, 6.2832 ]
             cv.paint[]
+            if [ kind == 2 ]
+                cv.fill_color[ '#14141a' ]
+                cv.arc[ sx[ at.x ], sy[ at.y ], 1.6, 0.0, 6.2832 ]
+                cv.paint[]

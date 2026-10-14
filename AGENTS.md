@@ -256,6 +256,22 @@ Release the key and it hides again. The Window tracks both
 (`ux.shift`, `ux.cmd`); each change re-renders the tree. A
 shift+click that forces a blocked step (Continue) is separate.
 
+## Rule #13 — No overlaid windows
+
+Kalen (Oct 14 2026): "i just cant stand those overlaid windows..
+we need to get away from it entirely". Never put a dialog, popup,
+modal or box over the app's view. A question goes in the app's
+own status line, highlighted by a stronger border round it, and
+answered by a key (ctrl/cmd + r: "revert? enter: yes"; any other
+key is no). Values, choices
+and pickers live in the panels already on screen.
+Why (Kalen): it does not obscure the work, so the user can
+inspect it while deciding, and decide better.
+Not an overlay: the navigator (trinity/navigation.ag) is a whole
+view under the bar, not a box over the work. File open and file
+save (save as, an untitled drawing's first save) go through it
+(Kalen, Oct 14).
+
 ---
 
 ## orbiter-os — live list (Sep 3 2026)
@@ -1792,6 +1808,552 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        a sliver near the top showed). trinity tests exit 0.
        Seen: scrolled, the title clear and the rows fading under
        it; a value dragged 1.0 -> 1.2.
+    w. BUILT, seen hidden (Oct 13, Kalen: box select with b,
+       circle with c, from where it was pressed; shift or cmd
+       for more) in the cage: b or c starts at the pointer, the
+       box or circle runs to the pointer (points inside lit as
+       a preview); a left click or enter picks them, replacing
+       the pick, or adding with shift or cmd held; escape, a
+       right click or tab drops it (DesignView.region,
+       in_region, end_region, draw_region). Seen: a box picked
+       12 points, a circle replaced them, a shift circle added.
+    x. BUILT, seen hidden (Oct 13, Kalen: an svg with nothing
+       chosen shows its document's values; the page an outline,
+       no fill; a grid, no red / green axes in 2D) the right side
+       is 'document · <file>': width, height, viewBox (four
+       number cells) of the <svg> element (SceneEdit.doc_rows,
+       kind 6). A change rewrites the element's open tag in the
+       text in memory and reads it again (SvgDoc.set_root,
+       compose, root_text); ctrl/cmd + s writes it. SvgView: the
+       page is its outline alone, a grid (minor lines a power of
+       ten of document units, 8 px apart at least, fading in; a
+       major every ten), the view clipped to its bounds (shapes
+       ran over the outliner zoomed in). Seen: height 120 -> 200
+       drawn at once, saved: only that attribute changed.
+       Then (Kalen): the viewBox keeps its proportions: trinity
+       SVGModel.load follows preserveAspectRatio (default
+       xMidYMid meet: the smaller scale, centred; slice the
+       larger; none stretches), and a viewBox origin is scaled
+       too (it was subtracted after the scale). trinity tests
+       exit 0; avatar rebuilt. Seen: height 200 over a 200 x
+       120 viewBox draws round, centred.
+       Undo (Kalen): shape and document values go on SvgDoc's
+       undo with the moves (SvgUndo row / was, a run on one
+       field one entry; SvgDoc.undo_row for the side to set
+       back). A shape value finds its shape by number (a
+       document change reads the shapes anew). Seen: height
+       200 then ctrl+z: 120; fill typed then ctrl+z: blue.
+       A focused text field takes ctrl+z itself and keeps its
+       text until it loses focus (as in 3D).
+       Fill and stroke take the ColorPick (Kalen: as the
+       others): shown as linear numbers (svg_color, ^2.2),
+       written back as #rrggbb (SceneEdit.svg_paint,
+       hex_byte); no fill reads black; url(...) stays text.
+       Never "none" (Kalen, Oct 14): a none fill or stroke (or no
+       stroke) is the picker with a blank value: no marks, an
+       empty swatch outline, no numbers (properties ColorPick
+       blank); a click picks a colour. Seen: none.svg's ring
+       filled red by one click, saved fill="#cb3636".
+       The picker (Kalen, Oct 14): the value is #rrggbbaa, typed
+       (ColorHex: a click chooses all of it, a whole hex code
+       applies as typed, enter or escape leaves; ColorPick
+       hex_sync, hex_of, linear_of); an alpha bar after the hue
+       bar, the colour to clear over a checkerboard, dragged as
+       the hue; the swatch over the checkerboard too. An svg
+       paint is written #rrggbbaa when see-through, else #rrggbb.
+       Found: ColorPick.packed wrote 0xAARRGGBB but the canvas
+       reads a stop as 0xAABBGGRR: the hue bar always had red and
+       blue swapped. Seen: back typed #ff000080, saved so; hue
+       bar red at the top.
+       A click on the hex while typing in it only places the caret
+       (ColorHex.typing; the first click chooses all). trinity
+       Layer.draw: a text selection in a field without focus
+       draws dimmed (#ffffff1c; focused stays #264f78). Seen: the
+       second click moved the caret only; id's dragged selection
+       blue, then grey after a click on the panel.
+       Clear (Kalen): a small 'clear' button (56 px) under the
+       hex on a paint (ColorPick.clearable; the panel's type
+       'paint': aeon's svg fill and stroke; a material's 'rgba'
+       has none): no colour, written as none (SceneEdit.set_row);
+       aeon's take lets a paint's value go empty. Seen: back's
+       fill cleared, saved fill="none".
+       A cleared swatch has a red diagonal across it (bottom left
+       to top right). Seen on back's stroke.
+       Blur (Kalen, Oct 14: a field that sets a filter): a 'blur'
+       row on every svg shape, its own feGaussianBlur's
+       stdDeviation (element units, 0 none). Set: the pending edits
+       written into the text, then its filter's stdDeviation
+       changed in place, else a new <filter id="blur-n" x="-50%"
+       y="-50%" width="200%" height="200%"><feGaussianBlur/>
+       </filter> in <defs> (a <defs> made after <svg> when none)
+       and filter="url(#blur-n)" on the element; 0 takes the
+       element's filter off (attribute and style), the filter is
+       left in <defs> (SvgDoc blur_of, gaussian_in, head_with,
+       set_blur; undo through the row's own). path_text leaves an
+       emptied attribute out.
+       trinity draws it (svg.ag): SVGShape.blur (page units, from
+       the shape's own filter="url(#id)" or style, the filter's
+       feGaussianBlur, scaled by its space; svg_filter_ref,
+       svg_find_id, svg_blur_of); SVGModel.paint_shape (render and
+       draw_svg both): a blurred shape drawn alone into
+       SVGModel.blur_layer (its box out three sigmas), then put
+       down by Canvas.filter_blur (the real gaussian, fill and
+       stroke together). Seen: back at 4: the edge's coverage 16%
+       / 50% / 84% at -11 / 0 / +11 px (sigma 10.8 px at zoom
+       2.69); set 2 changed blur-1 in place; 0 took it off.
+       OPEN: a group's filter (each shape only takes its own), a
+       filter's region, other filter primitives.
+       stroke-linecap (Kalen): a row of three choices (butt, round,
+       square; butt when unwritten) after stroke-width (PropRow
+       stops -> the panel's buttons; svg_set sets SVGShape.cap).
+       trinity svg.ag reads it, inherited as SVG has it
+       (SVGState.cap, svg_cap_of), and paint_shape sets the
+       canvas's cap (cap_of; butt is Cap.none). Seen on an open
+       16-wide line: butt ends at the points, round half circles,
+       square half the width out; saved stroke-linecap="round",
+       then "square".
+       stroke-linejoin (Kalen): a row of three (miter, round,
+       bevel; miter when unwritten, as svg). trinity draws joins
+       in the path's distance field (Canvas.ag): PathPt.inner (last
+       field) marks a flattened curve's own points; sdf_walk_edges
+       / sdf_joins put, at each real corner, 10 + the neighbour
+       edge's direction in the end flag (1 stays a free end, 0
+       smooth); CanvasSDFCompute's join (1 miter, 3 bevel, else
+       round) and miter limit: in the wedge past one edge's end
+       and before the next's start the distance is the miter's
+       (the larger of the two outer side distances) or the
+       bevel's (across the bevel line), a miter past the limit
+       bevelled. CanvasState.miter_limit (4), set_miter_limit;
+       the field's pad and spread cover a miter's reach (half the
+       width x the limit). svg.ag reads stroke-linejoin and
+       stroke-miterlimit (inherited; SVGShape join, miter;
+       svg_join_of). A canvas whose join is unset still draws
+       round; every svg now draws svg's default miter. webgfx
+       rebuilt (PathPt). Seen on a 16-wide zigzag: miter points,
+       bevel cuts, round; saved stroke-linejoin="round"; miter
+       limit 1 bevelled both corners.
+       Opacity as a bar (Kalen): the panel's number type 'unit'
+       (0..1) is a DragField with bar: the cell fills from the
+       left by its value (#806bff40); aeon's opacity rows are
+       units (unwritten shows 1). Seen: 0.5 half the cell; a
+       drag to 0.7 filled to 0.7. Seen: a pick saved as #2c2923,
+       undone. OPEN: gradients (trinity's svg loader reads
+       none; url(#id) paints are not drawn).
+       Shift held while g / r / s follow the pointer: a
+       quarter as fast (3D op_move and the svg view). Seen in
+       the svg: an 80 px move 29.74 units plain, 7.435 with
+       shift.
+       The svg view's s (Kalen: x y as g): the picked points,
+       or the whole shape, sized about the middle of their box
+       by the pointer's sideways move (as 3D's s); x or y
+       after: that axis alone; enter or a click keeps, escape
+       or a right click puts back; one undo entry (SvgView
+       sizing, grow, pivot_x / pivot_y). Seen: 'back' 1.5x
+       both ways, then x alone.
+       Typed numbers for the svg's g and s, as 3D's: axis keys
+       before a number make its group, an axis after a number
+       starts the next, a number with no axis goes to x for g
+       and both for s; typed values win over the pointer (an
+       axis not typed stays); backspace, '-' and '.'; the foot
+       shows the op and what is typed (SvgView goal,
+       commit_typing, op_words). Seen: 'back' (x 10..90, y
+       10..60) by g x 5, s 2, s y 0.5 saved at x -25..135, y
+       10..60 exactly. The x / y keys no longer toggle back to
+       both (3D's rule).
+       Linked offsets (Kalen: o, composite beziers): o on a
+       shape follows the pointer (or a typed distance) with a
+       yellow preview; enter or a click adds the offset; on an
+       offset, o changes its distance live. aeon/Offset.ag:
+       each segment as a cubic, offset by its control legs
+       moved aside and met (Tiller and Hanson), halved until
+       within 0.0005 of the size of the true offset; outside
+       corners round joins (arcs as cubics), inside corners cut
+       where the two cross, a bend tighter than the offset
+       dropped (its neighbours cut); a closed run goes outward
+       by its winding; an open run is outlined both sides with
+       round ends. Written as Inkscape's: <path
+       sodipodi:type="inkscape:offset" inkscape:radius
+       inkscape:original xlink:href="#src">, the namespaces put
+       on <svg>, the source's fill, stroke, width, opacity and
+       transform copied; outward behind the source, inward in
+       front. The source keeps its element (an id put in when
+       it has none). SvgDoc.mark refollows the offsets linked
+       to a shape (follow, remake_offset), and a g / s drag
+       follows live; the right side has an 'offset' row; ctrl+z
+       takes an added one back (the text before, SvgUndo.text).
+       compose writes every change as a span of the text read
+       (shapes, the <svg> head, inserts), last first.
+       Seen: wave +6 round, back -12 square cornered, the wave
+       moved with its offset following, o on the offset to
+       20.87 then escape, an open wire outlined with round ends
+       and joins, a circle inset past its radius gone.
+       Holes (Kalen: an inset's inner ring went out of the
+       shape): each subpath went out by its own winding, so a
+       hole shrank. offset_cmds now finds each closed subpath's
+       depth (how many others hold its first point, even-odd);
+       an odd one is a hole and goes the other way, into the
+       filled part. Seen: a hexagon with a hole, -6: both
+       rings move into the material.
+       Shift + drag on an anchor (Kalen): past 4 px the drag's
+       side is the segment in or out whose way from the anchor
+       (its handle, else its other end) lines up best with the
+       drag; a curve there gives its handle, a line or quad is
+       made a cubic (the same shape; a line's handles on its
+       ends) and its handle drawn out; a subpath's start takes
+       its closing segment, an implied closing line made a real
+       one. The handle follows the pointer, is picked at the
+       release, one undo entry; shift + drag on a handle drags
+       it. SvgDoc seg_in, seg_out, as_cubic, handle_toward;
+       SvgView drag_handle. Seen on wave's start: down-right
+       made the closing line a curve (saved C 90,90 26.022,
+       69.368 0,40); up-right took the first curve's handle,
+       moved by the pointer exactly.
+       Delete or backspace (Kalen): the picked nodes taken out,
+       the segments either side joined into one (two lines a
+       line, else a cubic keeping the outer handles); an open
+       path's end shortens it; a closed subpath's start (or its
+       end on it) moves the start to the next node and joins the
+       closing segment on (an implied closing line made real);
+       a subpath with no segment left goes; last first, one
+       undo entry (SvgDoc joined, drop_node, drop_nodes, tidy).
+       Seen: back's (90,18) -> C 86.418,10 90,52 90,52; its
+       start (18,10) -> starts at 82,10; wave's middle -> C
+       20,0 120,80 90,90.
+       Then (Kalen): a deleted node between curves is fitted:
+       the joined cubic keeps its ends and their handle
+       directions, the handle lengths by least squares to 49
+       samples of the old curve (Schneider's fit), the samples'
+       t refined by Newton, 8 passes (joined, out_way, in_way,
+       nearer_t). Seen: a curve split in two and its new node
+       deleted came back C 20,0.001 60,0.001 80,40 (was C 20,0
+       60,0 80,40).
+       Double click on a segment (Kalen): a node put in there
+       (SvgDoc.split_at: nearest of 64 samples a segment, within
+       6 px): a line two lines, a cubic or quad split at that t
+       (the same curve), an implied closing line a real node;
+       the new node picked, one undo entry. Seen: wave's top
+       split C 10,20 25,10 40,10 C 55,10 70,20 80,40; its
+       closing line at 45,65; back's top at 50,10.
+       Easing in 2D (Kalen: filter_n as 3D): the view's pan
+       and wheel zoom go to goals (ox_goal, oy_goal, zoom_goal;
+       home eases to the fit), and g / s, o and a handle drag
+       show an eased value (shown_g, off_shown, h_shown), each
+       frame part of the way (filter_n, ease 0.35, as 3D);
+       enter, a click or a release keeps the exact goal
+       (SvgView.ease_frame). Seen: 100 px of g: 753 then 796 px
+       half a second on.
+       Then (Kalen: pan with more weight, 50% longer): the
+       view's pan and zoom ease at 0.25 a frame (view_ease; was
+       0.35, the edits keep it): within 5% of the goal in ~10
+       frames, was ~7.
+       Node types (Kalen; cmd + click cycles them): cusp (free
+       handles, a square), smooth (handles opposite, each its
+       own length; a circle), symmetric (opposite and the same
+       length; a circle with a dot). Kept as Inkscape's
+       sodipodi:nodetypes (c s z, a letter a node: every command
+       but a close), kept in step when nodes are put in or taken
+       out (types_insert, types_remove). Made smooth or
+       symmetric, the handles turn to the mean of their ways
+       (align_node); a moved handle (drag, g / s) moves its
+       partner (hold_node, partner), unless both move; beside a
+       straight side the handle keeps to the line's way. A
+       closed subpath's end on its start is that start's node
+       (node_of). Seen: a split node dragged as a cusp (partner
+       still), cmd + click to smooth then symmetric (saved
+       nodetypes czcc, handles -17.108,6.925 / 17.108,-6.925),
+       its right handle dragged down: the left one mirrored.
+       Page up / down (Kalen): the chosen shape one step up
+       (later, drawn over) or down among its parent's elements
+       that draw (title, desc, defs skipped; a group is one
+       step): the two elements' text swapped, the space between
+       kept, elements untouched; it stays chosen; one undo
+       (SvgDoc.restack, parent_of, draws). Seen: wave over the
+       circle in its group; back above the group and back down.
+       Ctrl + page up / down: to the top or bottom of its
+       parent, one undo for the whole move. Seen on four rects
+       a b c d: a to the top (b c d a), back to the bottom, and
+       one ctrl+z after a move to the top gave a b c d.
+       The outliner lists an svg's shapes last drawn first (on
+       top at the top, as layer lists do). Seen: d c b a; the
+       first row chose d.
+       An emptied number in a split cell (viewBox 0 0 24 24
+       with one 0 taken out) dropped from the value, so the row
+       fell back to one text field: properties value_of now
+       counts an empty part as 0, and a DragField left empty by
+       enter or escape shows 0. Seen: still four cells, 0 shown,
+       the file's viewBox unchanged. properties rebuilt (orbiter
+       takes it at its next launch).
+       Several shapes and booleans (Kalen): shift + click (view
+       or outliner) puts a shape in or out of the choice
+       (SvgDoc.also, toggle, choose_one, selected); the others
+       draw their outlines. ctrl + = (or keypad +): union; ctrl
+       + - (or keypad -): the bottom one less the rest
+       (SvgDoc.combine: the result takes the bottom one's place
+       and attributes, a link dropped; the others' elements go
+       with their lines; one undo). aeon/Bool.ag keeps the
+       curves (as Paper.js): every cubic pair's crossings by
+       halving until flat, ends of one lying on the other cut
+       too (shared edges); each piece kept when the result is
+       on one side of it only (two points eps either side,
+       even-odd over the outlines flattened to 1e-6 of the size)
+       and turned so the result is on its left; a shared edge
+       kept once; pieces chained end to start; straight ones
+       written as lines. trinity Window.font_keys (last member):
+       the svg view turns ctrl + / - font sizing off, the 3D
+       view back on.
+       Found: the inside test on 8 points a cubic sat 0.17
+       units inside a circle, past the 0.023 side points, so a
+       circle's arc read outside on both sides and the union
+       came out empty; the outlines are flattened finely now.
+       Seen: box (rounded) + disc: one outline, the circle's
+       arcs and the corners' own control points; bar - cut: a
+       notch of lines; box - disc: a round bite (the circle's
+       arc); ctrl+z back to both.
+       An offset's one knob (Kalen: no bezier handles on an
+       offset, one weight to drag): a chosen linked offset draws
+       its outline and a yellow diamond on it, a line from the
+       source's point it is measured from; its own points are
+       not picked (nearest). A press within 10 px of the knob
+       drags the distance: the pointer's signed distance from
+       the source's outline (outside +, inside -; Bool.ag
+       signed_reach on the outline flattened), eased, applied
+       exactly at the release, one undo (the o op's machinery).
+       The knob keeps the source point and the way it was
+       dragged (knob_q, knob_d), so it stays under the pointer
+       (by a corner every point of the round join is equally
+       near). Seen: 6 -> 22.016 dragged out, 11.472 back in,
+       the knob where it was let go.
+       Delete or backspace with no node picked (Kalen): the
+       chosen shapes' elements go, each with its line, one undo
+       (SvgDoc.delete_chosen, line_start, shared with combine).
+       Seen: d and b deleted (a and c left), ctrl+z gave the
+       file back byte for byte. On the way: the right side's
+       headings stayed as last drawn (shape over the document's
+       rows): PropsBody repaints when its blocks' keys or labels
+       change (heads).
+       Groups (Kalen: ctrl+g on two or more chosen): ctrl+g puts
+       the chosen shapes in a new <g id="group-n"> where the
+       topmost of them was, in drawing order; one from another
+       parent keeps its place by a matrix put before its own
+       transform (with_transform). ctrl+shift+g takes the chosen
+       shape's group apart: its children where it was, its
+       transform put before each child's (SvgDoc group_chosen,
+       ungroup_chosen, fresh_text, with_spans). The outliner
+       lists groups as rows, their shapes a level in (rows,
+       walk_rows); a group's row chooses all its shapes. G / S
+       with several chosen (no node picked) moves them together,
+       one undo (moved_of, multi_text). A click in the view
+       still picks a single shape (its nodes editable).
+       Seen: back (top level) + wave (in translate(100,20))
+       grouped: group-1 inside the translated group, back with
+       matrix(1,0,0,1,-100,-20), nothing moved on screen; g
+       moved both by 14.87,-7.435; ungrouped; the translated
+       group taken apart: its translate on the wave and circle.
+       OPEN: a group's own presentation (fill ...) is not put
+       on its children at an ungroup.
+       Fixed (Kalen: offset less source left the whole offset
+       filled once the knob had changed its distance;
+       trinity/images/resource_test.svg, radius 0.911): the
+       offset outline had stubs a few thousandths long running
+       back against the way (a curve meeting a line nearly
+       parallel: the overlap too slight for trim_cross, so a
+       line back joined them); the side test turned each stub
+       round and the chain of that outline broke and was
+       dropped. Offset.ag join: a gap under a tenth of the
+       distance is snapped, not joined by a line; Bool.ag chain:
+       a piece facing the other way joins by its end. Seen: the
+       file's difference is the border rings only; a fresh 0.912
+       offset has no stub (the four turn-backs left are the
+       top diamond's sharp corners).
+       Fixed in trinity (Kalen: waves along straight edges when
+       zoomed far in, and the frame rate fell; Canvas.ag): a
+       path's distance field covered its whole bounding box,
+       which past the canvas was stretched over a field no
+       larger than the canvas (a texel many pixels: the waves).
+       The field's box is clipped to what shows (seen_box: the
+       canvas and the crop taken back through the transform).
+       Zoomed in, the path also flattened into thousands of
+       edges and every texel walked them all: sdf_cull drops
+       edges above, below or left of the field past its spread
+       (the winding ray runs toward +x), and folds a connected
+       run right of it into one vertical edge out past the
+       spread (the same crossings, no distance changed); the
+       inner-edge test runs on the kept edges. Measured on
+       resource_test.svg zoomed 16 notches: 9 -> 60 frames a
+       second; the edge within half a pixel of a line; holes
+       right. trinity tests exit 0. Every trinity app's path
+       fills take this (a restart picks it up).
+       Then (Kalen: panning the whole of resource_test2.svg was
+       slow): one path of 3,450 edges over the whole view, every
+       texel walking every edge (~800 M tests a frame), and the
+       inner-edge test each edge against all (13 ms of CPU).
+       Tiles: per 16 x 16 texels the edges within the spread
+       (sdf_tiles), and per texel row and tile column the
+       signed crossings right of that column; the shader walks
+       its tile's list and adds the crossings inside its tile
+       to that count. Packed after the edges in the edge buffer
+       (tile_at, list_at, base_at, cols); no new binding.
+       sdf_inner_flags counts each side's winding from the
+       edges in its y band only. Checked: tiles' distances and
+       windings equal brute force at 4,818 texels; the picture
+       equal to the all-edges shader (0 pixels over 8/255).
+       23 -> 60 frames a second still and panning; the upload
+       13 ms -> under 1 ms. trinity tests exit 0.
+       Fixed (mine, seen as a stray one-texel line by the wave
+       in test.svg): which tile a crossing near a tile's edge
+       belonged to was decided by the CPU and the GPU apart, and
+       their arithmetic can round apart, so a crossing counted
+       twice or not at all. The shader now counts every crossing
+       right of the texel by its tile's listed edges, and the
+       count past the tile leaves those edges out (list
+       membership is exact). Line gone; cube2 still equal to the
+       all-edges picture; 60 frames a second panning.
+       New path (Kalen): p draws one in the svg view: a click a
+       corner node, click and drag a smooth node (its handles
+       drawn out, the one behind mirrored), a click on the first
+       node closes it, enter leaves it open, backspace takes the
+       last node back, escape drops it; a preview follows the
+       pointer. It goes last in the drawing (on top) as <path
+       id="path-n" fill="none" stroke="#ffffff"> 2 screen
+       pixels wide, written in the <svg> element's own space
+       (trinity SVGModel.root_space, last member) and chosen.
+       Seen: three nodes, the middle dragged, closed on the
+       first: M .. C .. C .. L .. Z as drawn.
+       A group chosen (Kalen, Oct 14): the path goes last inside
+       it, before its </g>, in the group's own space (every
+       transform from the <svg> down), the closing tag's indent
+       kept (SvgDoc chosen_group: the outermost <g> whose shapes
+       are exactly the chosen ones; group_space). Seen: test.svg's
+       translate(100,20) group took path-1 at -55.762,-5.167, drawn
+       under the clicks; nothing chosen, it goes last in <svg>.
+       Undo keeps the choice (Kalen, Oct 14): an undo that reads
+       the text again (add, delete, group, restack, boolean) finds
+       each chosen shape anew by its id, else its element's text,
+       else its number when the count is unchanged (SvgDoc
+       shape_key, shape_by_key, restore). Seen: back restacked
+       over the group then undone, still chosen; the circle (no
+       id) moved under the wave then undone, still chosen.
+       Fixed in trinity (Kalen: backspace in the path's name
+       field deleted the path; "no character that goes to an edit
+       element should be an event elsewhere"): Window.key_event
+       gave the app every key before the focused edit layer.
+       Now a focused element's edit layer (editing_layer) takes
+       its keys and they go no further; ctrl/cmd with anything
+       but its own a c v x z y still goes on (ctrl+s saves);
+       escape still ends dictation first. text_event the same.
+       A left press outside the focused field (not inside it)
+       releases its focus. Seen: backspace and 'p' typed into
+       the id (no pen started), ctrl+s saved id="bap", a click
+       in the view let the field go and backspace then deleted
+       the shape. trinity tests exit 0. Every trinity app takes
+       it at a restart.
+       Box and circle select in the svg view (Kalen: as 3D): b
+       or c from the pointer, a left click or enter picks (shift
+       or cmd adds), escape or a right click drops it; a chosen
+       shape's nodes inside it (lit while drawn), else the
+       shapes wholly inside it (SvgView region, in_region,
+       end_region, draw_region). Seen: two of wave's nodes
+       boxed; with nothing chosen a circle round the dot chose
+       it alone (the wave only partly in).
+       No save prompt at a quit (Kalen: an anti pattern); the
+       unsaved work is kept instead, with where it saves to.
+       aeon keeps a drawing's unsaved text, a second apart at
+       most, in <cache>/aeon/recover.svg, with recover_on and
+       recover_to (its file; '' a drawing never saved) in its
+       persisted state (keep_recovery); a save lets it go. On the
+       next start (no argument, or the same file) the drawing
+       opens with that text, unsaved (recovered_project,
+       recover_into, SvgDoc.take_text). ctrl/cmd + n: a new
+       drawing (an empty 200 x 200 page; its working copy is
+       <cache>/aeon/untitled.svg, titled untitled, never a last
+       project); ctrl/cmd + s on it opens the save dialog (name
+       typed or a file picked; the last project's folder).
+       The outliner's unsaved note shows for svgs too.
+       Seen: a rename kept through kill -9 (the file untouched),
+       ctrl+s wrote it and the kept text went; a new drawing
+       with a path kept through kill -9, reopened titled
+       untitled, saved as fresh.svg beside the last project.
+       OPEN: one run died once during ctrl+n and the pen, not
+       seen again in three tries.
+       3D designs too (Kalen: only the .agi index, and meshes):
+       held edits go, a second apart at most, into a shadow of
+       the files they change (<cache>/aeon/shadow, under each
+       file's own path; only those .agi and .mesh files), never
+       the files: each touched file starts again from its base
+       (the shadow copy from before the session, snapshotted to
+       shadow-base at open, else the file) and takes every held
+       edit, so an undone one is gone too, and a copy equal to
+       its base goes (flush_shadow, same_bytes). The design
+       module reads a file's shadow copy when there is one
+       (design: persist shadow_root, set_shadow_root, shadowed;
+       Cage.make, read_agi, body_text, read_finish; only aeon
+       sets the root). A design opened with copies kept is
+       unsaved (Edits.kept). ctrl/cmd + s: the shadow's copies of
+       this design's files go over the files, then the shadow
+       lets them go. Seen on a scratch flower888 + fmodel:
+       outside moved 0.5 in x kept through kill -9 (fmodel.agi
+       untouched until the save, the shadow's copy at 0.5),
+       reopened unsaved and moved, ctrl+s wrote at: [ 0.5, 0, 0 ]
+       alone, the shadow emptied; a cage point move kept as the
+       shadow's outside.mesh, undone: the copy gone. design and
+       avatar rebuilt (Design.save_place_to added).
+       ctrl/cmd + r reverts, asked first (Kalen): trinity has a
+       yes or no dialog for any app, Window.confirm[ question,
+       yes word, lambda none [ bool ] ] (ConfirmView in
+       navigation.ag: the window dimmed, a box sized to the
+       question, the yes button and Cancel; enter or the button
+       yes, escape, Cancel or a press outside no; it takes every
+       key while up; Window members confirm_text, confirm_yes,
+       confirm_do last). aeon asks only when something is unsaved
+       ("nothing to revert" else); a yes drops the svg's kept
+       text, or the design's shadow and shadow-base copies, and
+       opens the project again from its files (aeon.revert,
+       revert_answer); a drawing never saved goes back to an
+       empty page. Seen hidden: test.svg's moved wave back, the
+       unsaved note and recover.svg gone, the file untouched;
+       flower888's moved outside back, the shadow empty.
+       Compiler, found on the way (aether.c, two bugs):
+       - a class member typed `lambda none [ bool ]` registered
+         its type by canonical, which follows a lambda signature
+         to its return type (none): every module importing the
+         class sized a void member and hung in LLVM (aeon's build
+         and Kalen's running aeon's reload build spun for
+         minutes). It registers as Au's lambda now.
+       - a store into a lambda member never held its object (the
+         hold was for classes only: is_class_set, enode_retain):
+         a closure kept in a slot was freed with its frame
+         (Window.confirm_end called a freed lambda: SIGSEGV).
+         Lambda slots hold and drop now; a static lambda (lambda
+         f[] on a plain function) is unmanaged, so its hold and
+         drop do nothing. features t_lambda_member_holds (crashed
+         before); 253/254 (t_codegen_resource as before).
+       Every module with lambda slots changes its stores (quake2,
+       trinity's Window): rebuild before running. trinity,
+       properties, design, avatar, aeon rebuilt.
+       Then (Kalen): handles (the bezier weights) are picked by
+       the box and circle too, lit while drawn. Seen: wave's two
+       top handles boxed, no node; g moved them alone: C 20,0
+       60,0 80,40 -> C 34.87,0 74.87,0 80,40.
+       Save as (Kalen: ctrl+shift+s; save stays ctrl+s): trinity
+       Window.capture_keys (the svg view turns the capture's key
+       off, the 3D view back on) and a save mode of the
+       navigation dialog: nav_save_as[ name ] opens it on the
+       app's folder with the name typed, the bar says "save as";
+       enter on a typed name that is a folder goes in, else that
+       name in the folder shown is handed to element.nav_open
+       with Window.nav_saving set (no new element hook); nothing
+       typed: the row (a folder gone into, a file overwritten).
+       aeon: SvgDoc.save_as writes every change there and keeps
+       it as the drawing's file (.svg added when missing); the
+       title and last_project follow. ctrl/cmd + o opens (and
+       closes) the navigator in any trinity app (Window.key_event;
+       hosted, the host's own); o alone stays the svg offset. Seen: copy.svg written
+       equal to the original, titled copy.svg. Window grew
+       capture_keys and nav_saving (last members).
+       OPEN: an offset's own loops (a deep inset of a
+       wiggly shape) are not cut away as Inkscape does;
+       trinity's svg loader ignores fill-rule (evenodd draws
+       as nonzero).
     e. DONE (Kalen, Oct 13) edit mode shows the creases on the
        cage's edges: each creased edge (the cage's sa/sb, read
        from the .mesh's crease_edge) drawn over the cage lines,

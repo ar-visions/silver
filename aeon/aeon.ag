@@ -28,6 +28,8 @@ import <math.h>
 import Panels
 import Outline
 import Grid
+import Offset
+import Bool
 import Svg
 import Graph
 
@@ -342,8 +344,16 @@ element DesignView
     # g pressed: the selection follows the pointer, no button held
     mutable grabbing : bool
     mutable picked : vec i32
+    # b or c: a box (1) or circle (2) select; 0 none
+    mutable region : i32
+    mutable region_x : f32
+    mutable region_y : f32
+    mutable pointer_x : f32
+    mutable pointer_y : f32
     mutable undo   : vec CageEdit
     mutable dirty  : bool
+    # when the held edits were last kept in the shadow
+    mutable kept_at : i64
     # a property's undo, for the app to set (it owns the rows)
     public undo_row : PropRow
     public undo_was : string
@@ -764,11 +774,13 @@ element DesignView
 
     # the pointer drives the value while nothing is typed
     func op_move [ ev: Event ]
+        # shift held: a quarter as fast, for fine placing
+        fine : f32 [ (ux && ux.shift) ? 0.25 : 1.0 ]
         if [ op == 1 ]
             move : drag_world[ ev ]
-            mx : f32 [ move.x * 0.5 ]
-            my : f32 [ move.y * 0.5 ]
-            mz : f32 [ move.z * 0.5 ]
+            mx : f32 [ move.x * 0.5 * fine ]
+            my : f32 [ move.y * 0.5 * fine ]
+            mz : f32 [ move.z * 0.5 * fine ]
             # a group of axes keeps the pointer to them
             if [ lock_mask != 0 ]
                 if [ (lock_mask & 1) == 0 ] mx = 0.0
@@ -777,7 +789,7 @@ element DesignView
             mouse_v = vec3f [ mouse_v.x + mx, mouse_v.y + my,
                               mouse_v.z + mz ]
         el [ op == 2 ]
-            deg : f32 [ ev.mouse.delta.x * 0.5 ]
+            deg : f32 [ ev.mouse.delta.x * 0.5 * fine ]
             m : i32 [ (lock_mask != 0) ? lock_mask : 4 ]
             ax : f32 [ ((m & 1) != 0) ? deg : 0.0 ]
             ay : f32 [ ((m & 2) != 0) ? deg : 0.0 ]
@@ -785,7 +797,7 @@ element DesignView
             mouse_v = vec3f [ mouse_v.x + ax, mouse_v.y + ay,
                               mouse_v.z + az ]
         el [ op == 3 ]
-            grow = grow + ev.mouse.delta.x * 0.004
+            grow = grow + ev.mouse.delta.x * 0.004 * fine
             f : f32 [ 1.0 + grow ]
             if [ f < 0.01 ] f = 0.01
             m : i32 [ (lock_mask != 0) ? lock_mask : 7 ]
@@ -850,7 +862,46 @@ element DesignView
             out = '{out}  {axes} {typing_text}_'
         return out
 
+    # inside the box or circle being drawn
+    func in_region [ s: Spot ] -> bool
+        if [ s.z <= 0.0 ] return false
+        if [ region == 1 ]
+            return s.x >= min[ region_x, pointer_x ]
+                && s.x <= max[ region_x, pointer_x ]
+                && s.y >= min[ region_y, pointer_y ]
+                && s.y <= max[ region_y, pointer_y ]
+        dx : f32 [ pointer_x - region_x ]
+        dy : f32 [ pointer_y - region_y ]
+        ex : f32 [ s.x - region_x ]
+        ey : f32 [ s.y - region_y ]
+        return ex * ex + ey * ey <= dx * dx + dy * dy
+
+    # the region's points picked; shift or cmd adds to the pick
+    func end_region [ adding: bool ]
+        o : editing[]
+        c : (o) ? o.cage[] : null
+        if [ !picked ] picked = vec i32 []
+        if [ !adding ] picked.clear[]
+        if [ c && c.poly ]
+            for [ i: i32 0, i < c.poly.verts[], i += 1 ]
+                s : spot[ o, c.poly.pos[ i * 3 ],
+                          c.poly.pos[ i * 3 + 1 ],
+                          c.poly.pos[ i * 3 + 2 ] ]
+                if [ in_region[ s ] && picked.index_of[ i ] < 0 ]
+                    picked.push[ i ]
+        region = 0
+        mode = 0
+
     public func on_press [ ev: Event ]
+        # a box or circle: a left click picks, any other drops it
+        if [ region != 0 ]
+            pointer_x = ev.mouse.pos.x
+            pointer_y = ev.mouse.pos.y
+            if [ ev.mouse.button == 0 ]
+                end_region[ ux && (ux.shift || ux.cmd) ]
+            el
+                region = 0
+            return
         # g, r or s ends on a click: right puts it back
         if [ op != 0 ]
             if [ ev.mouse.button == 1 ]
@@ -889,6 +940,8 @@ element DesignView
         if [ !grabbing ] mode = 0
 
     public func on_move [ ev: Event ]
+        pointer_x = ev.mouse.pos.x
+        pointer_y = ev.mouse.pos.y
         if [ op != 0 && mode != 1 && mode != 3 ]
             op_move[ ev ]
             return
@@ -989,31 +1042,109 @@ element DesignView
                 if [ same ] return
         undo.push[ CageEdit [ name: '', row: r, was: was ] ]
 
+    # the files the held edits change
+    func edit_files [] -> vec string
+        out : vec string []
+        for [ w: Write ] in edits.adds
+            if [ out.index_of[ '{w.file}' ] < 0 ] out.push[ '{w.file}' ]
+        for [ w: Write ] in edits.writes
+            if [ out.index_of[ '{w.file}' ] < 0 ] out.push[ '{w.file}' ]
+        for [ w: Write ] in edits.drops
+            if [ out.index_of[ '{w.file}' ] < 0 ] out.push[ '{w.file}' ]
+        if [ edits.places.count > 0 ]
+            pf : string '{design.objects_file[]}'
+            if [ out.index_of[ pf ] < 0 ] out.push[ pf ]
+        for [ o: Object ] in design.objects
+            if [ edits.cages.index_of[ o.name ] < 0 ] continue
+            c : o.cage[]
+            if [ !c ] continue
+            mf : string '{design.base[]}/{c.file}'
+            if [ out.index_of[ mf ] < 0 ] out.push[ mf ]
+        return out
+
+    # the held edits put into the shadow, never the files: each
+    # file it touches starts again from its base (the copy kept
+    # from before, else the file) and takes every edit, so an
+    # undone one is gone from it too
+    func flush_shadow []
+        if [ !edits || !design ] return
+        now : edit_files[]
+        all : vec string []
+        for [ f: string ] in edits.touched
+            all.push[ f ]
+        for [ f: string ] in now
+            if [ all.index_of[ f ] < 0 ] all.push[ f ]
+        for [ f: string ] in all
+            sp : path '{shadow_dir[]}{f}'
+            base : path '{shadow_base[]}{f}'
+            if [ !base.exists[] ] base = path [ f ]
+            up : sp.parent_dir[]
+            up.make_dir[]
+            if [ sp.exists[] ] sp.remove[]
+            # no edit left on a file that had none before: no copy
+            from : '{base}'
+            if [ now.index_of[ f ] < 0 && from.compare[ f ] == 0 ]
+                continue
+            base.cp[ sp, false, false ]
+        root : shadow_dir[]
+        for [ ad: Write ] in edits.adds
+            if [ !agi_insert_after[ path '{root}{ad.file}', ad.blocks,
+                                    ad.value ] ]
+                log 'aeon: {ad.key} not added'
+        for [ wr: Write ] in edits.writes
+            if [ !agi_set[ path '{root}{wr.file}', wr.blocks, wr.key,
+                           wr.value ] ]
+                log 'aeon: {wr.key} not written'
+        for [ dr: Write ] in edits.drops
+            if [ !agi_drop[ path '{root}{dr.file}', dr.blocks ] ]
+                log 'aeon: {dr.blocks.count} deep block not removed'
+        for [ o: Object ] in design.objects
+            if [ edits.cages.index_of[ o.name ] >= 0 ]
+                c : o.cage[]
+                if [ !c || !c.save[ path '{root}{design.base[]}' ] ]
+                    log 'aeon: {o.name} cage not kept'
+            if [ edits.places.index_of[ o.name ] >= 0 ]
+                place_file : path '{root}{design.objects_file[]}'
+                if [ !design.save_place_to[ o, place_file ] ]
+                    log 'aeon: {o.name} place not kept'
+        # a copy the edits left as its base was (all undone) goes
+        for [ f: string ] in all
+            sp : path '{shadow_dir[]}{f}'
+            base : path '{shadow_base[]}{f}'
+            if [ !base.exists[] ] base = path [ f ]
+            if [ sp.exists[] && same_bytes[ sp, base ] ] sp.remove[]
+        edits.touched = now
+
+    # the held edits kept, a second apart at most, so a quit (or a
+    # crash) loses none of them
+    func keep_design []
+        if [ !design || !edits ] return
+        if [ !edits.queued[] && edits.touched.count == 0 ] return
+        t : i64 [ epoch_micros[] ]
+        if [ t - kept_at < 1000000 ] return
+        kept_at = t
+        flush_shadow[]
+
     # every change held in memory written: cages, places, values
     func save_all []
         if [ !edits || !design ] return
-        for [ o: Object ] in design.objects
-            for [ nm: string ] in edits.cages
-                if [ nm.compare[ o.name ] != 0 ] continue
-                c : o.cage[]
-                if [ !c || !c.save[ design.base[] ] ]
-                    log 'aeon: {o.name} cage not saved'
-            for [ nm: string ] in edits.places
-                if [ nm.compare[ o.name ] != 0 ] continue
-                if [ !design.save_place[ o ] ]
-                    log 'aeon: {o.name} place not saved'
-        # added blocks first: values written into them come after
-        for [ ad: Write ] in edits.adds
-            if [ !agi_insert_after[ ad.file, ad.blocks, ad.value ] ]
-                log 'aeon: {ad.key} not added'
-        for [ wr: Write ] in edits.writes
-            if [ !agi_set[ wr.file, wr.blocks, wr.key, wr.value ] ]
-                log 'aeon: {wr.key} not written'
-        for [ dr: Write ] in edits.drops
-            if [ !agi_drop[ dr.file, dr.blocks ] ]
-                log 'aeon: {dr.blocks.count} deep block not removed'
+        # through the shadow: its copies of this design's files go
+        # over the files, then the shadow lets them go
+        flush_shadow[]
+        root : shadow_dir[]
+        for [ d: string ] in design_dirs[ design ]
+            held : path '{root}{d}'
+            for [ f: path ] in held.ls[ null, true ]
+                fs : string '{f}'
+                n : i32 [ root.count ]
+                orig : path [ fs.mid[ n, fs.count - n ] ]
+                f.cp[ orig, false, false ]
+                f.remove[]
+            gone : path '{shadow_base[]}{d}'
+            if [ gone.exists[] ] gone.remove_dir[]
         edits.clear[]
-        # our own writes are no outside edit
+        edits.touched = vec string []
+        edits.kept = false
         note_files[]
         log 'aeon: saved'
 
@@ -1108,6 +1239,20 @@ element DesignView
              && !ev.key.shift ]
             save_all[]
             return
+        # a box or circle drawn: enter picks, escape drops it
+        if [ region != 0 && down ]
+            if [ k == 257 || k == 335 ]
+                end_region[ ev.key.shift || ev.key.ctrl
+                            || ev.key.meta ]
+            if [ k == 256 ] region = 0
+            return
+        # b, c: a box or circle select, from the pointer here
+        if [ op == 0 && down && inner && !ev.key.ctrl && !ev.key.meta
+             && (k == 66 || k == 67) ]
+            region = (k == 66) ? 1 : 2
+            region_x = pointer_x
+            region_y = pointer_y
+            return
         # g, r, s: move, turn, size the selection, as blender's
         if [ op == 0 && down && !ev.key.ctrl && !ev.key.meta ]
             if [ k == 71 ] start_op[ 1 ]
@@ -1123,6 +1268,7 @@ element DesignView
         if [ k == 258 && down && !grabbing ]
             if [ chosen && chosen.count > 0 ] inner = !inner
             if [ picked ] picked.clear[]
+            region = 0
             return
 
 
@@ -1195,14 +1341,38 @@ element DesignView
             if [ picked ]
                 for [ k: i32 ] in picked
                     if [ k == i ] lit = true
+            if [ region != 0 && in_region[ s ] ] lit = true
             cv.fill_color[ (lit) ? '#ffcf4a' : '#7fd4ff' ]
             sz : f32 [ (lit) ? 7.0 : 5.0 ]
             cv.rect_to[ s.x - sz * 0.5, s.y - sz * 0.5, sz, sz ]
             cv.paint[]
+        draw_region[ cv ]
         cv.restore[]
+
+    # the box or circle from where b or c was pressed
+    func draw_region [ cv: Canvas ]
+        if [ region == 0 ] return
+        cv.fill_color[ '#ffffff14' ]
+        cv.stroke_color[ '#ffffffcc' ]
+        cv.stroke_width[ 1.0 ]
+        if [ region == 1 ]
+            cv.rect_to[ min[ region_x, pointer_x ],
+                        min[ region_y, pointer_y ],
+                        abs[ pointer_x - region_x ],
+                        abs[ pointer_y - region_y ] ]
+        el
+            dx : f32 [ pointer_x - region_x ]
+            dy : f32 [ pointer_y - region_y ]
+            cv.arc[ region_x, region_y, sqrt[ dx * dx + dy * dy ],
+                    0.0, 6.2831853 ]
+        cv.paint[]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
+        # the svg view takes ctrl + and - and ctrl + shift + s; here
+        # they size the font and start the capture
+        w.font_keys = true
+        w.capture_keys = true
         cv : Canvas [ w.screen ]
         pw : i32 [ bounds.w ]
         ph : i32 [ bounds.h ]
@@ -1406,6 +1576,8 @@ class PropRow
     public full   : string
     # the field's type: f32 and i32 drag, string types
     public type   : string
+    # its choices, shown as buttons (stroke-linecap's words)
+    public stops  : vec string
 
 # three numbers from '[ a, b, c ]' (or 'a b c')
 func numbers_of [ text: string ] -> vec f32
@@ -1445,6 +1617,13 @@ element aeon : trinity
     # the project folder; the last one opened when none is given
     default [ Launch ] project : string
     intern [ StatePersist ] last_project : string
+    # a drawing's unsaved text kept across a quit (or a crash): on,
+    # and where it saves to ('' a drawing never saved)
+    intern [ StatePersist ] recover_on : bool
+    intern [ StatePersist ] recover_to : string
+    # the last text kept, and when
+    mutable recover_was : string
+    mutable recover_at  : i64
     mutable design : Design
     mutable sel    : Selection
     # each choice in order, and where back and forward stand
@@ -1466,8 +1645,13 @@ element aeon : trinity
 
     func init []
         root : path.path_startup[]
+        load-persistent[ a ]
+        # a drawing left unsaved: opened again where it was
+        back : recovered_project[]
+        if [ back.count > 0 && (!project || project.count == 0
+             || project.compare[ back ] == 0) ]
+            project = back
         if [ !project || project.count == 0 ]
-            load-persistent[ a ]
             if [ last_project ]
                 was : path [ last_project ]
                 if [ was.exists[] ] project = last_project
@@ -1479,7 +1663,10 @@ element aeon : trinity
             project = '{root}/{project}'
         if [ project.ends_with[ '.blend' ] ]
             project = import_blend[ project ]
-        if [ project.count > 0 ]
+        # the working copy of a drawing never saved is no project
+        # to come back to
+        work : string '{aeon_cache[]}/untitled.svg'
+        if [ project.count > 0 && project.compare[ work ] != 0 ]
             last_project = project
             save-persistent[ a ]
         opened_as = project
@@ -1488,11 +1675,14 @@ element aeon : trinity
         edits = Edits []
         if [ project.ends_with[ '.svg' ] ]
             doc = SvgDoc [ file: path [ project ] ]
+            recover_into[ doc ]
             scene = SceneEdit [ sel: sel, edits: edits, doc: doc ]
             return
         dir : path [ project ]
+        set_shadow_root[ shadow_dir[] ]
         design = Design [ dir: dir ]
         scene = SceneEdit [ design: design, sel: sel, edits: edits ]
+        open_shadow[ design, edits ]
 
     # the views the orbiter bar offers over the editor: the scene
     # as nodes (an svg has none yet)
@@ -1504,6 +1694,12 @@ element aeon : trinity
     # the svg's folder, or the folder holding the design
     public func nav_folder [] -> path
         if [ !project ] return null
+        # a drawing never saved: the last project's folder (its own
+        # is aeon's cache)
+        if [ doc && doc.untitled ]
+            was : path [ (last_project) ? last_project : '' ]
+            if [ last_project && was.exists[] ] return was.parent_dir[]
+            return path.path_startup[]
         p : path [ project ]
         return p.parent_dir[]
 
@@ -1511,6 +1707,19 @@ element aeon : trinity
     # own design (<name>/<name>.agi) opens here; else not ours
     public func nav_open [ p: path ] -> bool
         txt : string '{p}'
+        # the dialog asked where to save: the drawing saved there
+        if [ ux && ux.nav_saving ]
+            if [ !doc ] return false
+            to : string [ txt ]
+            if [ !to.ends_with[ '.svg' ] ] to = '{to}.svg'
+            if [ !doc.save_as[ path [ to ] ] ] return false
+            project = to
+            last_project = to
+            save-persistent[ a ]
+            opened_as = to
+            titled = false
+            log 'aeon: saved as {to}'
+            return true
         if [ txt.ends_with[ '.svg' ] || txt.ends_with[ '.blend' ] ]
             open_project[ txt ]
             return true
@@ -1521,6 +1730,117 @@ element aeon : trinity
                 open_project[ txt ]
                 return true
         return false
+
+    # the project a kept text belongs to ('' none): its file, or
+    # the working copy of a drawing never saved
+    func recovered_project [] -> string
+        if [ !recover_on ] return ''
+        kept : path '{aeon_cache[]}/recover.svg'
+        if [ !kept.exists[] ] return ''
+        if [ recover_to && recover_to.count > 0 ]
+            to : path [ recover_to ]
+            if [ to.exists[] ] return recover_to
+        return '{aeon_cache[]}/untitled.svg'
+
+    # a drawing just opened takes the text kept for it, unsaved
+    func recover_into [ d: SvgDoc ]
+        if [ !recover_on ] return
+        mine : string [ (recover_to && recover_to.count > 0)
+                        ? recover_to : '{aeon_cache[]}/untitled.svg' ]
+        have : '{d.file}'
+        if [ have.compare[ mine ] != 0 ] return
+        kept : path '{aeon_cache[]}/recover.svg'
+        if [ !kept.exists[] ] return
+        txt : string kept.load[ typeid[ string ], null ]
+        d.take_text[ txt ]
+        if [ !recover_to || recover_to.count == 0 ] d.untitled = true
+        recover_was = txt
+        log 'aeon: unsaved changes kept from before'
+
+    # the drawing's unsaved text kept, a second apart at most, so
+    # a quit (or a crash) loses none of it; a save lets it go
+    func keep_recovery []
+        if [ !doc ] return
+        if [ !doc.unsaved[] && !doc.untitled ]
+            if [ recover_on ]
+                recover_on = false
+                recover_was = null
+                kept : path '{aeon_cache[]}/recover.svg'
+                if [ kept.exists[] ] kept.remove[]
+                save-persistent[ a ]
+            return
+        now : i64 [ epoch_micros[] ]
+        if [ now - recover_at < 1000000 ] return
+        recover_at = now
+        txt : doc.compose[]
+        if [ recover_was && txt.compare[ recover_was ] == 0 ] return
+        keep_file : '{aeon_cache[]}/recover.svg'
+        f : handle [ fopen[ keep_file.chars, "w" ] ]
+        if [ !f ] return
+        fputs[ txt.chars, f ]
+        fclose[ f ]
+        recover_was = txt
+        to : string [ (doc.untitled) ? '' : '{doc.file}' ]
+        if [ !recover_on || !recover_to
+             || recover_to.compare[ to ] != 0 ]
+            recover_on = true
+            recover_to = to
+            save-persistent[ a ]
+
+    # anything not in the files: a drawing's changes, a design's
+    # held or kept edits
+    func unsaved [] -> bool
+        if [ doc ] return doc.unsaved[] || doc.untitled
+        if [ edits ] return edits.pending[]
+        return false
+
+    # ctrl/cmd + r: the status line asks; enter reverts
+    func ask_revert []
+        if [ !unsaved[] ]
+            log 'aeon: nothing to revert'
+            return
+        if [ scene ] scene.reverting = true
+
+    # the kept copies let go and the project read again from its
+    # files; a drawing never saved goes back to an empty page
+    func revert []
+        if [ doc ]
+            recover_on  = false
+            recover_was = null
+            kept : path '{aeon_cache[]}/recover.svg'
+            if [ kept.exists[] ] kept.remove[]
+            save-persistent[ a ]
+            if [ doc.untitled ]
+                new_drawing[]
+                log 'aeon: reverted to an empty page'
+                return
+        el [ design ]
+            root : shadow_dir[]
+            for [ d: string ] in design_dirs[ design ]
+                held : path '{root}{d}'
+                if [ held.exists[] ] held.remove_dir[]
+            sb : path [ shadow_base[] ]
+            if [ sb.exists[] ] sb.remove_dir[]
+        open_project[ project ]
+        log 'aeon: reverted to the files'
+
+    # ctrl/cmd + n: a new drawing, never saved: an empty page as
+    # its working copy; a save asks where
+    func new_drawing []
+        work : string '{aeon_cache[]}/untitled.svg'
+        f : handle [ fopen[ work.chars, "w" ] ]
+        if [ !f ] return
+        head : '<svg xmlns="http://www.w3.org/2000/svg"'
+        page : '{head} width="200" height="200" viewBox="0 0 200 200">'
+        empty : '{page}\n</svg>\n'
+        fputs[ empty.chars, f ]
+        fclose[ f ]
+        before : string [ last_project ]
+        open_project[ work ]
+        # the working copy is no project to come back to
+        last_project = before
+        save-persistent[ a ]
+        doc.untitled = true
 
     # another project opened in place: everything chosen, held and
     # shown starts over; the view is made anew
@@ -1540,9 +1860,11 @@ element aeon : trinity
             doc = SvgDoc [ file: path [ project ] ]
             scene = SceneEdit [ sel: sel, edits: edits, doc: doc ]
         el
+            set_shadow_root[ shadow_dir[] ]
             design = Design [ dir: path [ project ] ]
             scene = SceneEdit [ design: design, sel: sel,
                                 edits: edits ]
+            open_shadow[ design, edits ]
         opened += 1
         opened_as = project
         titled = false
@@ -1584,6 +1906,23 @@ element aeon : trinity
             ev.no_default = true
 
     public func on_key [ ev: Event ]
+        # the revert asked: enter reverts, any other key does not
+        if [ scene && scene.reverting && ev.key.state ]
+            k : i32 [ ev.key.unicode ]
+            if [ k < 340 || k > 347 ]
+                scene.reverting = false
+                if [ k == 257 || k == 335 ] revert[]
+                return
+        # ctrl/cmd + n: a new drawing
+        if [ ev.key.state && ev.key.unicode == 78
+             && (ev.key.ctrl || ev.key.meta) && !ev.key.shift ]
+            new_drawing[]
+            return
+        # ctrl/cmd + r: back to the files, asked first
+        if [ ev.key.state && ev.key.unicode == 82
+             && (ev.key.ctrl || ev.key.meta) && !ev.key.shift ]
+            ask_revert[]
+            return
         # escape closes the modifier kinds first
         if [ scene && scene.choosing && ev.key.state
              && ev.key.unicode == 256 ]
@@ -1617,11 +1956,16 @@ element aeon : trinity
              && project.compare[ opened_as ] != 0 ]
             open_project[ project ]
         remember[]
+        keep_recovery[]
+        # a design's held edits kept in the shadow
+        held_in : view[]
+        if [ held_in ] held_in.keep_design[]
         # the bar's title (or the host pane's): the folder or file
         if [ !titled && ux ]
             titled = true
             named : path [ project ]
-            set_title[ named.filename[] ]
+            set_title[ (doc && doc.untitled) ? 'untitled'
+                                             : named.filename[] ]
         e : Elements [ ]
         v : view[]
         # the outliner the full left, the scene in the middle, the
@@ -1653,3 +1997,75 @@ element aeon : trinity
             e[ 'nodes' ] = NodeGraph [ scene: scene,
                 area: Region [ 'l0 {top} r0 b0' ] ]
         return e
+
+# aeon's cache folder: a new drawing's working copy, the kept
+# text and the shadow live there
+func aeon_cache [] -> string
+    nm : 'aeon'
+    dir : string '{path.path_cache[ nm.chars ]}'
+    made : path [ dir ]
+    if [ !made.exists[] ] made.make_dir[]
+    return dir
+
+# where a design's unsaved files are kept (under their own
+# paths), and the copies it held when the design was opened
+# (what a session's edits start from)
+func shadow_dir [] -> string
+    return '{aeon_cache[]}/shadow'
+
+func shadow_base [] -> string
+    return '{aeon_cache[]}/shadow-base'
+
+# a design's own folders: its project, and its model's
+func design_dirs [ d: Design ] -> vec string
+    out : vec string [] [ '{d.dir}' ]
+    if [ d.model ] out.push[ '{d.model}' ]
+    return out
+
+# a design opened: copies kept from before are its unsaved state,
+# and what this session's edits start from
+func open_shadow [ design: Design, edits: Edits ]
+    set_shadow_root[ shadow_dir[] ]
+    if [ !design || !edits ] return
+    sb : path [ shadow_base[] ]
+    if [ sb.exists[] ] sb.remove_dir[]
+    edits.touched = vec string []
+    edits.kept = false
+    root : shadow_dir[]
+    for [ d: string ] in design_dirs[ design ]
+        held : path '{root}{d}'
+        for [ f: path ] in held.ls[ null, true ]
+            fs : string '{f}'
+            n : i32 [ root.count ]
+            orig : fs.mid[ n, fs.count - n ]
+            to : path '{shadow_base[]}{orig}'
+            up : to.parent_dir[]
+            up.make_dir[]
+            f.cp[ to, false, false ]
+            edits.kept = true
+    if [ edits.kept ] log 'aeon: unsaved edits kept from before'
+
+# two files holding the same bytes
+func same_bytes [ a: path, b: path ] -> bool
+    fa : handle [ fopen[ a, "rb" ] ]
+    if [ !fa ] return false
+    fb : handle [ fopen[ b, "rb" ] ]
+    if [ !fb ]
+        fclose[ fa ]
+        return false
+    fseek[ fa, 0, SEEK_END ]
+    fseek[ fb, 0, SEEK_END ]
+    na : i64 [ ftell[ fa ] ]
+    nb : i64 [ ftell[ fb ] ]
+    same : bool [ na == nb ]
+    if [ same && na > 0 ]
+        fseek[ fa, 0, SEEK_SET ]
+        fseek[ fb, 0, SEEK_SET ]
+        ba : new u8 [ na ]
+        bb : new u8 [ nb ]
+        fread[ ba, 1, na, fa ]
+        fread[ bb, 1, nb, fb ]
+        same = memcmp[ ba, bb, na ] == 0
+    fclose[ fa ]
+    fclose[ fb ]
+    return same

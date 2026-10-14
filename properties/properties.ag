@@ -376,6 +376,8 @@ func num_text [ v: f32, whole: bool ] -> string
 # a tenth as fast); a click with no drag types it as text
 LaunchField DragField
     public  whole   : bool
+    # a 0..1 value: the cell fills from the left by it
+    public  bar     : bool
     # one part of a vector's cell: no gap for a name
     public  part    : bool
     mutable held    : bool
@@ -435,7 +437,27 @@ LaunchField DragField
     public func on_key [ ev: Event ]
         k : i32 [ ev.key.unicode ]
         if [ ev.key.state && (k == 257 || k == 335 || k == 256) ]
+            # a number left empty is 0, shown so
+            if [ !edit || edit.count == 0 ]
+                edit       = '0'
+                sel_col    = 1
+                anchor_col = 1
+                pristine   = false
             ux.release_focus[ a ]
+
+    # the bar: the value's share of the cell, over the text dimly
+    public func draw [ w: Window ]
+        if [ !bar || w.draw_stage != CanvasType.screen ] return
+        v : f32 [ (edit && edit.count > 0)
+                  ? f32[ edit.real_value[] ] : 0.0 ]
+        cv : Canvas [ w.screen ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#806bff40' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w * clamp[ v, 0.0, 1.0 ],
+                    bounds.h ]
+        cv.paint[]
+        cv.restore[]
 
     public func on_release [ ev: Event ]
         if [ !held ] return
@@ -448,9 +470,60 @@ LaunchField DragField
             anchor_col = 0
             pristine   = false
 
+# a colour's #rrggbbaa, typed: a click puts the caret in it,
+# enter or escape leaves (ColorPick reads it as it changes)
+LaunchField ColorHex
+    # being typed in: a click then only moves the caret
+    mutable typing : bool
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 0
+        layers.face:
+            label_size: 13
+            label_offset: 2.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff0a
+        :focused
+            layers.body:
+                fill_color: #2f6b4a40
+    }
+
+    func init []
+        name.area = Region [ 'l0 t0 w0 b0' ]
+        face.area = Region [ 'l0 t0 r0 b0' ]
+
+    public func on_key [ ev: Event ]
+        k : i32 [ ev.key.unicode ]
+        if [ ev.key.state && (k == 257 || k == 335 || k == 256) ]
+            typing = false
+            ux.release_focus[ a ]
+
+    # the first click: the whole value chosen to type over; a
+    # click while typing only places the caret
+    public func on_release [ ev: Event ]
+        if [ ev.mouse.button != 0 || !ux || typing ] return
+        if [ !focused ] ux.set_focus[ a ]
+        typing     = true
+        sel_col    = (edit) ? edit.count : 0
+        anchor_col = 0
+        pristine   = false
+
+    # each repaint (a key typed) hands the text to the picker
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ !focused ] typing = false
+        pk : parent inherits ColorPick
+        if [ !pk ] return
+        pk.hex_sync[]
+        pk.pristine = false
+
 # a colour as 0..1 numbers, linear as materials keep them: a
-# saturation and brightness square, a hue bar, the swatch and
-# the numbers; picked in display (sRGB) space
+# saturation and brightness square, a hue bar, an alpha bar,
+# the swatch and its #rrggbbaa (typed when clicked); picked in
+# display (sRGB) space
 element ColorPick
     mutable hue     : f32
     mutable sat     : f32
@@ -458,11 +531,125 @@ element ColorPick
     mutable alpha   : f32 [ 1.0 ]
     # the text the hue, saturation and value were read from
     mutable read_of : string
-    # 1 the square held, 2 the hue bar
+    # 1 the square held, 2 the hue bar, 3 the alpha bar
     mutable held    : i32
+    # a clear button under the value: no colour at all
+    public clearable : bool
 
     func box [] -> f32
         return bounds.h - 8.0
+
+    # the hue bar's, the alpha bar's and the swatch's left edges
+    func hue_x [] -> f32
+        return 4.0 + box[] + 6.0
+    func alpha_x [] -> f32
+        return hue_x[] + 18.0
+    func swatch_x [] -> f32
+        return alpha_x[] + 20.0
+
+    func render [] -> Elements
+        out : Elements []
+        sx : f32 [ swatch_x[] ]
+        out[ 'hex' ] = ColorHex [ label: '', focusable: true,
+            area: Region [ 'l{sx}px t26px r0 h22px' ] ]
+        if [ clearable ]
+            out[ 'clear' ] = TButtons [
+                buttons: vec string [] [ 'clear' ],
+                labels: vec string [] [ 'clear' ], icons: false,
+                manual: true, label_px: 11.0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 6.0,
+                area: Region [ 'l{sx}px t50px w56px h18px' ] ]
+        return out
+
+    # clear: no colour (the svg writes none)
+    func clear_hit [ ev: Event ] -> bool
+        o : ev.origin
+        if [ !o || !o.id || o.id != 'clear' ] return false
+        edit     = ''
+        read_of  = null
+        pristine = false
+        f : hex_field[]
+        if [ f ]
+            f.edit     = ''
+            f.typing   = false
+            f.pristine = false
+        ev.no_propagation = true
+        return true
+
+    func hex_field [] -> ColorHex
+        if [ !elements || !elements.contains[ 'hex' ] ] return null
+        return elements[ 'hex' ] inherits ColorHex
+
+    # a 0..1 number as a byte's two hex digits
+    func hex2 [ v: f32 ] -> string
+        n : i32 [ round[ clamp[ v, 0.0, 1.0 ] * 255.0 ] ]
+        digits : '0123456789abcdef'
+        hi : digits.mid[ n / 16, 1 ]
+        lo : digits.mid[ n % 16, 1 ]
+        return '{hi}{lo}'
+
+    # the edit's linear numbers as #rrggbbaa ('' none yet)
+    func hex_of [ t: string ] -> string
+        if [ !t ] return ''
+        nums : vec f32 []
+        for [ w: string ] in t.split[ ',' ]
+            s : w.trim[]
+            if [ s.count > 0 ] nums.push[ f32[ s.real_value[] ] ]
+        if [ nums.count < 3 ] return ''
+        al : f32 [ (nums.count > 3) ? nums[ 3 ] : 1.0 ]
+        r : hex2[ to_srgb[ nums[ 0 ] ] ]
+        g : hex2[ to_srgb[ nums[ 1 ] ] ]
+        b : hex2[ to_srgb[ nums[ 2 ] ] ]
+        return '#{r}{g}{b}{hex2[ al ]}'
+
+    # a hex digit's value (-1 not one)
+    func digit [ ch: string ] -> i32
+        low : '0123456789abcdef'
+        up  : '0123456789ABCDEF'
+        i : i32 [ low.index_of[ ch ] ]
+        if [ i < 0 ] i = up.index_of[ ch ]
+        return i
+
+    # #rgb, #rgba, #rrggbb or #rrggbbaa as linear numbers (''
+    # when it is not one yet)
+    func linear_of [ t: string ] -> string
+        if [ !t ] return ''
+        s : t.trim[]
+        if [ s.starts_with[ '#' ] ] s = s.mid[ 1, s.count - 1 ]
+        n : i32 [ s.count ]
+        if [ n != 3 && n != 4 && n != 6 && n != 8 ] return ''
+        wide : i32 [ (n > 4) ? 2 : 1 ]
+        vals : vec f32 []
+        for [ i: i32 0, i < n / wide, i += 1 ]
+            hi : i32 [ digit[ s.mid[ i * wide, 1 ] ] ]
+            lo : i32 [ (wide == 2) ? digit[ s.mid[ i * 2 + 1, 1 ] ]
+                       : hi ]
+            if [ hi < 0 || lo < 0 ] return ''
+            vals.push[ f32[ hi * 16 + lo ] / 255.0 ]
+        if [ vals.count == 3 ] vals.push[ 1.0 ]
+        r : num_text[ pow[ vals[ 0 ], 2.2 ], false ]
+        g : num_text[ pow[ vals[ 1 ], 2.2 ], false ]
+        b : num_text[ pow[ vals[ 2 ], 2.2 ], false ]
+        return '{r}, {g}, {b}, {num_text[ vals[ 3 ], false ]}'
+
+    # the typed hex in: a whole one is the value at once; not
+    # typing, the field shows the value
+    func hex_sync []
+        f : hex_field[]
+        if [ !f ] return
+        if [ f.focused ]
+            got : linear_of[ f.edit ]
+            if [ got.count > 0 && (!edit || edit.compare[ got ] != 0) ]
+                edit     = got
+                read_of  = null
+                pristine = false
+            return
+        want : hex_of[ edit ]
+        if [ !f.edit || f.edit.compare[ want ] != 0 ]
+            f.edit       = want
+            f.sel_col    = want.count
+            f.anchor_col = want.count
+            f.pristine   = false
 
     # the edit's numbers into hue, saturation and value
     func sync []
@@ -521,16 +708,19 @@ element ColorPick
             val = clamp[ 1.0 - (y - 4.0) / bx, 0.0, 1.0 ]
         if [ held == 2 ]
             hue = clamp[ (y - 4.0) / bx, 0.0, 0.999 ]
+        if [ held == 3 ]
+            alpha = clamp[ 1.0 - (y - 4.0) / bx, 0.0, 1.0 ]
         put[]
 
     public func on_press [ ev: Event ]
-        if [ ev.mouse.button != 0 ] return
+        if [ ev.mouse.button != 0 || clear_hit[ ev ] ] return
         sync[]
         bx : f32 [ box[] ]
         x : f32 [ ev.mouse.pos.x ]
         held = 0
         if [ x < 4.0 + bx ] held = 1
-        el [ x < 4.0 + bx + 22.0 ] held = 2
+        el [ x < alpha_x[] - 3.0 ] held = 2
+        el [ x < swatch_x[] - 3.0 ] held = 3
         if [ held == 0 ] return
         ux.set_capture[ a ]
         pick[ x, ev.mouse.pos.y ]
@@ -551,11 +741,32 @@ element ColorPick
         r : u32 [ u32[ clamp[ c.r, 0.0, 1.0 ] * 255.0 ] ]
         g : u32 [ u32[ clamp[ c.g, 0.0, 1.0 ] * 255.0 ] ]
         b : u32 [ u32[ clamp[ c.b, 0.0, 1.0 ] * 255.0 ] ]
-        return 0xff000000 | (r << 16) | (g << 8) | b
+        # the canvas reads a stop as 0xAABBGGRR
+        return 0xff000000 | (b << 16) | (g << 8) | r
+
+    # light and dark squares, 4 px, under what is see-through
+    func checker [ cv: Canvas, x: f32, y: f32, w: f32, h: f32 ]
+        cv.clear_fill_gradient[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#9a9aa2' ] ]
+        cv.rect_to[ x, y, w, h ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#5c5c64' ] ]
+        rows : i32 [ i32[ ceil[ h / 4.0 ] ] ]
+        cols : i32 [ i32[ ceil[ w / 4.0 ] ] ]
+        for [ j: i32 0, j < rows, j += 1 ]
+            for [ i: i32 0, i < cols, i += 1 ]
+                if [ (i + j) % 2 == 0 ] continue
+                cx : f32 [ x + f32[ i ] * 4.0 ]
+                cy : f32 [ y + f32[ j ] * 4.0 ]
+                cv.rect_to[ cx, cy, min[ 4.0, x + w - cx ],
+                            min[ 4.0, y + h - cy ] ]
+                cv.paint[]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || bounds.w <= 0.0 ]
             return
+        hex_sync[]
         sync[]
         cv : Canvas [ w.screen ]
         bx : f32 [ box[] ]
@@ -578,7 +789,7 @@ element ColorPick
         cv.rect_to[ 4.0, 4.0, bx, bx ]
         cv.paint[]
         # the hue bar, top to bottom
-        hx : f32 [ 4.0 + bx + 6.0 ]
+        hx : f32 [ hue_x[] ]
         hg : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
         for [ i: i32 0, i <= 6, i += 1 ]
             t : f32 [ f32[ i ] / 6.0 ]
@@ -586,31 +797,56 @@ element ColorPick
         cv.set_fill_gradient[ hg ]
         cv.rect_to[ hx, 4.0, 12.0, bx ]
         cv.paint[]
+        # the alpha bar: the colour to clear, over squares
+        ax : f32 [ alpha_x[] ]
+        checker[ cv, ax, 4.0, 12.0, bx ]
+        c : shown[ hue, sat, val ]
+        ag : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        ag.add_stop[ 0.0, packed[ c ] ]
+        ag.add_stop[ 1.0, 0x00000000 ]
+        cv.set_fill_gradient[ ag ]
+        cv.rect_to[ ax, 4.0, 12.0, bx ]
+        cv.paint[]
         cv.clear_fill_gradient[]
+        # no colour yet (an svg's none): no marks, an empty swatch
+        blank : bool [ !edit || edit.count == 0 ]
         # where the colour sits on each
         cv.stroke_width[ 1.5 ]
         cv.stroke_color[ rgba [ '#fff' ] ]
         cv.fill_color[ rgba [ '#0000' ] ]
-        mx : f32 [ 4.0 + sat * bx ]
-        my : f32 [ 4.0 + (1.0 - val) * bx ]
-        cv.rounded_rect[ mx - 4.0, my - 4.0, 8.0, 8.0, 4.0, 4.0, 4.0,
-                         4.0 ]
-        cv.paint[]
-        cv.rect_to[ hx - 2.0, 4.0 + hue * bx - 1.5, 16.0, 3.0 ]
-        cv.paint[]
-        # the swatch and the numbers
-        sx : f32 [ hx + 20.0 ]
+        if [ !blank ]
+            mx : f32 [ 4.0 + sat * bx ]
+            my : f32 [ 4.0 + (1.0 - val) * bx ]
+            cv.rounded_rect[ mx - 4.0, my - 4.0, 8.0, 8.0, 4.0, 4.0,
+                             4.0, 4.0 ]
+            cv.paint[]
+            cv.rect_to[ hx - 2.0, 4.0 + hue * bx - 1.5, 16.0, 3.0 ]
+            cv.paint[]
+            cv.rect_to[ ax - 2.0, 4.0 + (1.0 - alpha) * bx - 1.5,
+                        16.0, 3.0 ]
+            cv.paint[]
+        # the swatch (its alpha over squares); the hex is a field
+        sx : f32 [ swatch_x[] ]
+        if [ blank ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ rgba [ '#fff6' ] ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.rounded_rect[ sx, 4.0, 28.0, 20.0, 3.0, 3.0, 3.0, 3.0 ]
+            cv.paint[]
+            # no colour: a diagonal across the box
+            cv.stroke_color[ rgba [ '#ff5a5a' ] ]
+            cv.stroke_width[ 1.5 ]
+            cv.move_to[ sx + 3.0, 21.0 ]
+            cv.line_to[ sx + 25.0, 7.0 ]
+            cv.paint[]
+        el
+            checker[ cv, sx, 4.0, 28.0, 20.0 ]
+            sw : shown[ hue, sat, val ]
+            sw.a = alpha
+            cv.fill_color[ sw ]
+            cv.rect_to[ sx, 4.0, 28.0, 20.0 ]
+            cv.paint[]
         cv.stroke_width[ 0.0 ]
-        cv.fill_color[ shown[ hue, sat, val ] ]
-        cv.rounded_rect[ sx, 4.0, 28.0, 20.0, 3.0, 3.0, 3.0, 3.0 ]
-        cv.paint[]
-        cv.font_size[ 13 ]
-        cv.fill_color[ '#fff9' ]
-        cv.draw_text[ (edit) ? edit : '',
-            rect [ x: sx, y: 28.0, w: bounds.w - sx, h: 20.0 ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
-        cv.paint[]
         cv.restore[]
 
 # a '#rrggbb' hex edits as text; the color itself sits as a swatch at
@@ -941,7 +1177,7 @@ element LaunchPanel
                 ty == 'path' || ty == 'resource' || ck == 'Directory' ]
             # a Text field is two rows tall; every other control is one
             rhx : f32 [ (ck == 'Multiline') ? rh * 2.0 : rh ]
-            if [ ty == 'rgba' ] rhx = rh * 3.0
+            if [ ty == 'rgba' || ty == 'paint' ] rhx = rh * 3.0
             cx : f32 [ lw + 1.0 ]
             t['lp_{nm}_lbl'] = LaunchLabel [ label: nm,
                                              area: Region [
@@ -1096,21 +1332,29 @@ element LaunchPanel
                         : 0.0 ]
                     t['lp_{nm}'] = LaunchSlider [ label: '', value: fr,
                                                   area: ar9 ]
-            el [ ty == 'rgba' ]
+            # a paint (an svg's fill) can be cleared to none
+            el [ ty == 'rgba' || ty == 'paint' ]
+                cl : bool [ ty == 'paint' ]
                 if [ ex ]
-                    t['lp_{nm}'] = ColorPick [ area: ar9 ]
+                    t['lp_{nm}'] = ColorPick [ clearable: cl,
+                                               area: ar9 ]
                 el
-                    t['lp_{nm}'] = ColorPick [ edit: cur, area: ar9 ]
+                    t['lp_{nm}'] = ColorPick [ edit: cur,
+                        clearable: cl, area: ar9 ]
+            # a unit (0..1, an opacity) drags with its bar
             el [ ck == '' && (ty == 'f32' || ty == 'f64'
-                               || ty == 'i32' || ty == 'i64') ]
+                               || ty == 'i32' || ty == 'i64'
+                               || ty == 'unit') ]
                 wh : bool [ ty == 'i32' || ty == 'i64' ]
+                un : bool [ ty == 'unit' ]
                 if [ ex ]
                     t['lp_{nm}'] = DragField [ label: '', whole: wh,
+                                               bar: un,
                                                focusable: true,
                                                area: ar9 ]
                 el
                     t['lp_{nm}'] = DragField [ label: '', edit: cur,
-                                               whole: wh,
+                                               whole: wh, bar: un,
                                                sel_col: cur.count,
                                                anchor_col: cur.count,
                         focusable: true, area: ar9 ]
@@ -1169,7 +1413,9 @@ element LaunchPanel
                 pk : string 'lp_{p.ident}_{i}'
                 if [ !elements.contains[ pk ] ] return null
                 pe : element elements[ pk ]
-                pv : string [ (pe.edit) ? pe.edit : '0' ]
+                # an emptied part is 0: the value keeps its parts
+                pv : string [ (pe.edit && pe.edit.count > 0)
+                              ? pe.edit : '0' ]
                 joined = (i == 0) ? pv : '{joined}, {pv}'
             return joined
         key : string 'lp_{p.ident}'

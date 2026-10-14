@@ -2321,6 +2321,15 @@ Display Window
     # hosted: the views and the shown one as last told the host
     mutable views_sent          : string
     mutable view_sent           : i32 [ -2 ]
+    # ctrl/cmd with = or - sizes the font; an app that takes those
+    # keys itself turns it off
+    public font_keys            : bool [ true ]
+    # ctrl/cmd + shift + s starts the exchange's capture; an app
+    # that takes the key itself (a save-as) turns it off
+    public capture_keys         : bool [ true ]
+    # the navigation dialog asks where to save: a pick is the path
+    # to save to (element.nav_open reads this)
+    public nav_saving           : bool
 
     public func agent_state_busy [] -> bool
         return agent_busy
@@ -3893,8 +3902,42 @@ Display Window
     public func nav_close []
         if [ focus && focus inherits NavigationView ]
             release_focus[ focus ]
-        nav_open = false
-        restyle  = true
+        nav_open   = false
+        nav_saving = false
+        restyle    = true
+
+    # the dialog asking where to save, on the app's folder with the
+    # name typed in; enter saves there (element.nav_open with
+    # nav_saving set)
+    public func nav_save_as [ name: string ]
+        ae : cast element [ app_object ]
+        f : path [ (ae) ? ae.nav_folder*[] : null ]
+        if [ !f || !f.is_dir[] ] return
+        nav_dir    = f
+        nav_filter = (name) ? name : ''
+        nav_open   = true
+        nav_saving = true
+        restyle    = true
+
+    # save mode's enter: a folder named is gone into, else the
+    # typed name in the folder shown is the place to save
+    public func nav_save_pick [ chosen: path ]
+        ae : cast element [ app_object ]
+        if [ nav_filter.count == 0 ]
+            if [ !chosen ] return
+            if [ chosen.is_dir[] ]
+                nav_dir = chosen
+                restyle = true
+                return
+            if [ ae && ae.nav_open*[ chosen ] ] nav_close[]
+            return
+        to : path [ '{nav_dir}/{nav_filter}' ]
+        if [ to.is_dir[] ]
+            nav_dir    = to
+            nav_filter = ''
+            restyle    = true
+            return
+        if [ ae && ae.nav_open*[ to ] ] nav_close[]
 
     # the orbiter bar's title pressed: the dialog on the folder the
     # app names, or closed
@@ -4245,6 +4288,13 @@ Display Window
             ev.mouse.pos.y = y
         return r
 
+    # the focused element's edit layer, while it is being typed in
+    func editing_layer [] -> Layer
+        if [ !focus || !focus.focused || !focus.layers ] return null
+        for [ l: Layer, k: string ] in focus.layers
+            if [ l.editable ] return l
+        return null
+
     public func text_event [ ev: Event ]
         # the orbiter bar's dialog filters by what is typed
         if [ nav_open ]
@@ -4254,6 +4304,11 @@ Display Window
             return
         ev.target = focus
         if [ focus && focus.on_char*[ ev ] ] return
+        # typed into an edit element: nowhere else
+        ted : editing_layer[]
+        if [ ted ]
+            if [ ev.key.text && ev.key.text.count > 0 ] ted.on_char[ ev ]
+            return
         # a focused app element already had its turn
         if [ app_object && cast element [ app_object ] != focus
              && app_object.on_char*[ ev ] ]
@@ -4381,8 +4436,15 @@ Display Window
                     exchange_open[ screenshot_path, 0, false ]
             return
         if [ ev.key.state && ev.key.shift &&
-             (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83 ]
+             (ev.key.ctrl || ev.key.meta) && ev.key.unicode == 83
+             && capture_keys ]
             if [ !shot_ask || agent_min ] screenshot_begin[]
+            return
+        # ctrl/cmd + o: the navigator (hosted, the host's own)
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
+             && !ev.key.shift && ev.key.unicode == 79
+             && host_slot[] <= 0 ]
+            nav_toggle[]
             return
         # the orbiter bar's dialog open: its keys, nobody else's
         if [ nav_open ]
@@ -4390,7 +4452,8 @@ Display Window
             return
         # ctrl/cmd with = or -: the font unit, 4 steps of 2px each way
         # of 22
-        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && vk ]
+        if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && vk
+             && font_keys ]
             fk : i32 [ ev.key.unicode ]
             fd : i32 [ (fk == 61 || fk == 334) ? 2 : ((fk == 45
                        || fk == 333) ? -2 : 0) ]
@@ -4453,6 +4516,17 @@ Display Window
             if [ sh && sh.show_console ]
                 sh.show_console = false
                 restyle = true
+                return
+        # an edit element being typed in: its keys go nowhere else
+        # (ctrl/cmd with anything but its own a c v x z y goes on)
+        ed : editing_layer[]
+        if [ ed ]
+            k : i32 [ ev.key.unicode ]
+            mod : bool [ ev.key.ctrl || ev.key.meta ]
+            own : bool [ k == 65 || k == 67 || k == 86 || k == 88
+                         || k == 90 || k == 89 ]
+            if [ !mod || own ]
+                ed.on_key[ ev ]
                 return
         if [ app_object && cast element [ app_object ] != focus
              && app_object.on_key*[ ev ] ]
@@ -4699,6 +4773,12 @@ Display Window
         if [ ev.mouse.button == 0 && f && (f.focusable || edit_l)
              && !ev.no_default ]
             set_focus[ f ]
+        el [ ev.mouse.button == 0 && focus && focus.focused ]
+            # a press outside the field being typed in lets it go
+            inside : bool [ false ]
+            for [ c: element* f, c, c = c.parent ]
+                if [ c == focus ] inside = true
+            if [ !inside ] release_focus[ focus ]
         # the text field's caret and focus are the default too
         if [ edit_l && ev.mouse.button == 0 && !ev.no_default ]
             ev.mouse.pos = element_pos
@@ -8081,7 +8161,8 @@ element OrbiterBar
         out : Elements []
         if [ !ux ] return out
         # what it shows changed (the title, the filter): painted anew
-        shows : string '{ux.nav_title}|{ux.nav_open}|{ux.nav_filter}'
+        typed : string '{ux.nav_filter}|{ux.nav_saving}'
+        shows : string '{ux.nav_title}|{ux.nav_open}|{typed}'
         now : string '{shows}|{ux.bar_view}'
         if [ !shown || shown.compare[ now ] != 0 ]
             shown    = now
@@ -8158,6 +8239,7 @@ element OrbiterBar
             if [ t.count == 0 ]
                 t = '{w.nav_dir}'
                 hint = true
+            if [ w.nav_saving ] t = 'save as  {t}'
         if [ !t || t.count == 0 ] return
         ar : element (elements) ? elements[ 'arrows' ] : null
         x : f32 [ (ar && ar.bounds) ? ar.bounds.x + ar.bounds.w + 14.0

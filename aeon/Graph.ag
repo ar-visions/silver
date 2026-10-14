@@ -248,7 +248,9 @@ element NodeGraph
         if [ !rows || rows.count == 0 ] return
         bh : f32 [ 0.0 ]
         for [ r: PropRow ] in rows
-            bh += (r.type.compare[ 'rgba' ] == 0) ? 72.0 : 24.0
+            colour : bool [ r.type.compare[ 'rgba' ] == 0
+                            || r.type.compare[ 'paint' ] == 0 ]
+            bh += (colour) ? 72.0 : 24.0
         bz : string [ scene.busy[ key ] ]
         c.blocks.push[ NodeBlock [ key: key, y: c.h, h: bh, rows: rows,
                                busy: (bz) ? bz : '' ] ]
@@ -455,8 +457,10 @@ element NodeGraph
                     now : lp.value_of[ p ]
                     key : '{b.key}_{r.label}'
                     was : string [ scene.typed[ key ] ]
-                    if [ now && was && now.count > 0
-                         && now.compare[ was ] != 0 ]
+                    # a paint may be emptied (cleared: none)
+                    open : bool [ now && (now.count > 0
+                                   || r.type.compare[ 'paint' ] == 0) ]
+                    if [ open && was && now.compare[ was ] != 0 ]
                         scene.typed[ key ] = now
                         scene.apply_row[ r, now ]
                         scene.busy[ b.key ] = r.label

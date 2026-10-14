@@ -45,13 +45,13 @@ render: StageGraph
 					quad: true
 					shader: Aura
 					settings:
-						pulse_width: 0.4
-						pulse_height: 1.2
-						halo_height: 0.4
-						beam_fade: 2.2
-						beam_cone: 0.35
-						beam: 0.0
-						donut_reach: 2.0
+						pulse_width: 	0.4
+						pulse_height: 	1.2
+						halo_height: 	0.4
+						beam_fade: 		2.2
+						beam_cone: 		0.35
+						beam: 			0.0
+						donut_reach: 	2.0
 					inputs:
 						height: 'av.depth'
 						rim: 'color:0.6 0.3 1 1'

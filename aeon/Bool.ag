@@ -1,0 +1,391 @@
+extend aeon
+
+# booleans of shapes that keep their curves: where the two
+# outlines cross every segment is cut, each piece is kept when the
+# result lies on one side of it and not the other, and the kept
+# pieces are chained back into closed outlines
+
+# t values a cubic is cut at
+class Cuts
+    public t : vec f32
+
+# a run of cubics' bounds: lo x, lo y, hi x, hi y
+func span_of [ c: vec f32, o: i32 ] -> vec4f
+    lx : f32 [ c[ o ] ]
+    ly : f32 [ c[ o + 1 ] ]
+    hx : f32 [ c[ o ] ]
+    hy : f32 [ c[ o + 1 ] ]
+    for [ k: i32 1, k < 4, k += 1 ]
+        lx = min[ lx, c[ o + k * 2 ] ]
+        hx = max[ hx, c[ o + k * 2 ] ]
+        ly = min[ ly, c[ o + k * 2 + 1 ] ]
+        hy = max[ hy, c[ o + k * 2 + 1 ] ]
+    return vec4f [ lx, ly, hx, hy ]
+
+# how far a cubic's handles stray from its chord
+func bend_of [ c: vec f32, o: i32 ] -> f32
+    dx : f32 [ c[ o + 6 ] - c[ o ] ]
+    dy : f32 [ c[ o + 7 ] - c[ o + 1 ] ]
+    l : f32 [ sqrt[ dx * dx + dy * dy ] ]
+    if [ l < 1e-12 ]
+        e1 : f32 [ abs[ c[ o + 2 ] - c[ o ] ]
+                   + abs[ c[ o + 3 ] - c[ o + 1 ] ] ]
+        e2 : f32 [ abs[ c[ o + 4 ] - c[ o ] ]
+                   + abs[ c[ o + 5 ] - c[ o + 1 ] ] ]
+        return max[ e1, e2 ]
+    e1 : f32 [ abs[ (c[ o + 2 ] - c[ o ]) * dy
+                    - (c[ o + 3 ] - c[ o + 1 ]) * dx ] / l ]
+    e2 : f32 [ abs[ (c[ o + 4 ] - c[ o ]) * dy
+                    - (c[ o + 5 ] - c[ o + 1 ]) * dx ] / l ]
+    return max[ e1, e2 ]
+
+# the part of a cubic from t0 to t1
+func bz_part [ c: vec f32, o: i32, t0: f32, t1: f32 ] -> vec f32
+    right : bz_cut[ c, o, t0, false ]
+    if [ t0 >= 1.0 - 1e-9 ] return right
+    return bz_cut[ right, 0, (t1 - t0) / (1.0 - t0), true ]
+
+# where cubics a and b cross: pairs of t (a's, b's), found by
+# halving the larger until both are flat, then meeting lines
+func cross_cubics [ a: vec f32, ta0: f32, ta1: f32, b: vec f32,
+                    tb0: f32, tb1: f32, tol: f32, out: vec f32,
+                    depth: i32 ]
+    sa : span_of[ a, 0 ]
+    sb : span_of[ b, 0 ]
+    if [ sa.z + tol < sb.x || sb.z + tol < sa.x
+         || sa.w + tol < sb.y || sb.w + tol < sa.y ] return
+    flat_a : bool [ bend_of[ a, 0 ] < tol ]
+    flat_b : bool [ bend_of[ b, 0 ] < tol ]
+    if [ (flat_a && flat_b) || depth > 40 ]
+        rx : f32 [ a[ 6 ] - a[ 0 ] ]
+        ry : f32 [ a[ 7 ] - a[ 1 ] ]
+        vx : f32 [ b[ 6 ] - b[ 0 ] ]
+        vy : f32 [ b[ 7 ] - b[ 1 ] ]
+        cr : f32 [ rx * vy - ry * vx ]
+        if [ abs[ cr ] < 1e-14 ] return
+        qx : f32 [ b[ 0 ] - a[ 0 ] ]
+        qy : f32 [ b[ 1 ] - a[ 1 ] ]
+        s : f32 [ (qx * vy - qy * vx) / cr ]
+        u : f32 [ (qx * ry - qy * rx) / cr ]
+        if [ s < -1e-6 || s > 1.000001 || u < -1e-6 || u > 1.000001 ]
+            return
+        out.push[ ta0 + clamp[ s, 0.0, 1.0 ] * (ta1 - ta0) ]
+        out.push[ tb0 + clamp[ u, 0.0, 1.0 ] * (tb1 - tb0) ]
+        return
+    # the larger halved
+    if [ !flat_a && (flat_b || (sa.z - sa.x + sa.w - sa.y)
+                     >= (sb.z - sb.x + sb.w - sb.y)) ]
+        tm : f32 [ (ta0 + ta1) * 0.5 ]
+        cross_cubics[ bz_cut[ a, 0, 0.5, true ], ta0, tm, b, tb0, tb1,
+                      tol, out, depth + 1 ]
+        cross_cubics[ bz_cut[ a, 0, 0.5, false ], tm, ta1, b, tb0,
+                      tb1, tol, out, depth + 1 ]
+        return
+    tm : f32 [ (tb0 + tb1) * 0.5 ]
+    cross_cubics[ a, ta0, ta1, bz_cut[ b, 0, 0.5, true ], tb0, tm, tol,
+                  out, depth + 1 ]
+    cross_cubics[ a, ta0, ta1, bz_cut[ b, 0, 0.5, false ], tm, tb1,
+                  tol, out, depth + 1 ]
+
+# a point on cubic c near (x, y): its t, -1 when farther than tol
+func touch_t [ c: vec f32, o: i32, x: f32, y: f32, tol: f32 ] -> f32
+    best : f32 [ tol * tol ]
+    at : f32 [ -1.0 ]
+    for [ n: i32 0, n <= 64, n += 1 ]
+        t : f32 [ f32[ n ] / 64.0 ]
+        q : bz_at[ c, o, t ]
+        d : f32 [ (q.x - x) * (q.x - x) + (q.y - y) * (q.y - y) ]
+        if [ d < best ]
+            best = d
+            at = t
+    if [ at < 0.0 ] return -1.0
+    # refined between the samples about it
+    lo : f32 [ max[ at - 1.0 / 64.0, 0.0 ] ]
+    hi : f32 [ min[ at + 1.0 / 64.0, 1.0 ] ]
+    for [ n: i32 0, n < 30, n += 1 ]
+        m1 : f32 [ lo + (hi - lo) / 3.0 ]
+        m2 : f32 [ hi - (hi - lo) / 3.0 ]
+        p1 : bz_at[ c, o, m1 ]
+        p2 : bz_at[ c, o, m2 ]
+        d1 : f32 [ (p1.x - x) * (p1.x - x) + (p1.y - y) * (p1.y - y) ]
+        d2 : f32 [ (p2.x - x) * (p2.x - x) + (p2.y - y) * (p2.y - y) ]
+        if [ d1 < d2 ]
+            hi = m2
+        el
+            lo = m1
+    return (lo + hi) * 0.5
+
+# a shape's closed outline: every run closed, its cubics in one list
+func outline_of [ cmds: vec SVGCmd ] -> vec f32
+    out : vec f32 []
+    for [ r: Run ] in runs_of[ cmds ]
+        push_cubic[ out, r.segs ]
+        n : i32 [ r.segs.count ]
+        # an open run closed by a line back
+        if [ !r.closed && n >= 8 ]
+            sx : f32 [ r.segs[ 0 ] ]
+            sy : f32 [ r.segs[ 1 ] ]
+            ex : f32 [ r.segs[ n - 2 ] ]
+            ey : f32 [ r.segs[ n - 1 ] ]
+            if [ abs[ sx - ex ] + abs[ sy - ey ] > 1e-9 ]
+                line_piece[ ex, ey, sx, sy, out ]
+    return out
+
+# a point inside a shape's outline (even-odd over its runs)
+func outline_holds [ polys: vec Run, x: f32, y: f32 ] -> bool
+    inside : bool [ false ]
+    for [ r: Run ] in polys
+        if [ poly_holds[ r.segs, x, y ] ] inside = !inside
+    return inside
+
+# a cubic flattened into points (its start left out), halved
+# until it bends less than tol: the inside test is as exact as
+# the curve, not a coarse polygon of it
+func flatten [ c: vec f32, o: i32, tol: f32, out: vec f32,
+               depth: i32 ]
+    if [ bend_of[ c, o ] < tol || depth > 16 ]
+        out.push[ c[ o + 6 ] ]
+        out.push[ c[ o + 7 ] ]
+        return
+    flatten[ bz_cut[ c, o, 0.5, true ], 0, tol, out, depth + 1 ]
+    flatten[ bz_cut[ c, o, 0.5, false ], 0, tol, out, depth + 1 ]
+
+func polys_of [ cmds: vec SVGCmd, tol: f32 ] -> vec Run
+    out : vec Run []
+    for [ r: Run ] in runs_of[ cmds ]
+        pts : vec f32 [] [ r.segs[ 0 ], r.segs[ 1 ] ]
+        for [ o: i32 0, o + 8 <= r.segs.count, o += 8 ]
+            flatten[ r.segs, o, tol, pts, 0 ]
+        out.push[ Run [ segs: pts, closed: true ] ]
+    return out
+
+# the result's region at a point: 0 union, 1 difference (a less b),
+# 2 intersection
+func region_holds [ op: i32, in_a: bool, in_b: bool ] -> bool
+    if [ op == 0 ] return in_a || in_b
+    if [ op == 1 ] return in_a && !in_b
+    return in_a && in_b
+
+# cubics cut at their t values, each piece kept when the result
+# lies on one side of it only, turned so the result is on its left
+func keep_pieces [ src: vec f32, cuts: vec Cuts, op: i32,
+                   pa: vec Run, pb: vec Run, eps: f32, out: vec f32 ]
+    n : i32 [ src.count / 8 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        ts : vec f32 [] [ 0.0 ]
+        for [ t: f32 ] in cuts[ i ].t
+            ts.push[ t ]
+        ts.push[ 1.0 ]
+        # in order, near ones as one
+        for [ a: i32 0, a < ts.count, a += 1 ]
+            for [ b: i32 a + 1, b < ts.count, b += 1 ]
+                if [ ts[ b ] < ts[ a ] ]
+                    keep : f32 [ ts[ a ] ]
+                    ts[ a ] = ts[ b ]
+                    ts[ b ] = keep
+        prev : f32 [ 0.0 ]
+        for [ k: i32 1, k < ts.count, k += 1 ]
+            t1 : f32 [ ts[ k ] ]
+            if [ t1 - prev < 1e-6 && k < ts.count - 1 ] continue
+            if [ t1 - prev < 1e-9 ] continue
+            piece : bz_part[ src, i * 8, prev, t1 ]
+            prev = t1
+            mid : bz_at[ piece, 0, 0.5 ]
+            way : bz_dir[ piece, 0, 0.5 ]
+            lx : f32 [ mid.x + way.y * eps ]
+            ly : f32 [ mid.y - way.x * eps ]
+            rx : f32 [ mid.x - way.y * eps ]
+            ry : f32 [ mid.y + way.x * eps ]
+            left : region_holds[ op, outline_holds[ pa, lx, ly ],
+                                 outline_holds[ pb, lx, ly ] ]
+            right : region_holds[ op, outline_holds[ pa, rx, ry ],
+                                  outline_holds[ pb, rx, ry ] ]
+            if [ left == right ] continue
+            if [ right ]
+                push_cubic[ out, reversed_run[ piece ] ]
+            el
+                push_cubic[ out, piece ]
+
+# the same piece already kept (either way round)
+func has_piece [ list: vec f32, k: vec f32, o: i32, tol: f32 ] -> bool
+    for [ j: i32 0, j + 8 <= list.count, j += 8 ]
+        same : bool [ abs[ list[ j ] - k[ o ] ] < tol
+            && abs[ list[ j + 1 ] - k[ o + 1 ] ] < tol
+            && abs[ list[ j + 6 ] - k[ o + 6 ] ] < tol
+            && abs[ list[ j + 7 ] - k[ o + 7 ] ] < tol ]
+        back : bool [ abs[ list[ j ] - k[ o + 6 ] ] < tol
+            && abs[ list[ j + 1 ] - k[ o + 7 ] ] < tol
+            && abs[ list[ j + 6 ] - k[ o ] ] < tol
+            && abs[ list[ j + 7 ] - k[ o + 1 ] ] < tol ]
+        if [ !same && !back ] continue
+        m1 : bz_at[ list, j, 0.5 ]
+        m2 : bz_at[ k, o, 0.5 ]
+        if [ abs[ m1.x - m2.x ] + abs[ m1.y - m2.y ] < tol * 4.0 ]
+            return true
+    return false
+
+# kept pieces chained end to start into closed outlines
+func chain [ pieces: vec f32, tol: f32 ] -> vec SVGCmd
+    out : vec SVGCmd []
+    n : i32 [ pieces.count / 8 ]
+    used : vec bool [ n ]
+    for [ s: i32 0, s < n, s += 1 ]
+        if [ used[ s ] ] continue
+        used[ s ] = true
+        loop : vec i32 [] [ s ]
+        sx : f32 [ pieces[ s * 8 ] ]
+        sy : f32 [ pieces[ s * 8 + 1 ] ]
+        ex : f32 [ pieces[ s * 8 + 6 ] ]
+        ey : f32 [ pieces[ s * 8 + 7 ] ]
+        while [ abs[ ex - sx ] + abs[ ey - sy ] > tol ]
+            best : f32 [ tol * 4.0 ]
+            next : i32 [ -1 ]
+            flip : bool [ false ]
+            for [ j: i32 0, j < n, j += 1 ]
+                if [ used[ j ] ] continue
+                d : f32 [ abs[ pieces[ j * 8 ] - ex ]
+                          + abs[ pieces[ j * 8 + 1 ] - ey ] ]
+                if [ d < best ]
+                    best = d
+                    next = j
+                    flip = false
+                # a piece facing the other way (a stub its side
+                # test turned round) joins by its end
+                e : f32 [ abs[ pieces[ j * 8 + 6 ] - ex ]
+                          + abs[ pieces[ j * 8 + 7 ] - ey ] ]
+                if [ e < best ]
+                    best = e
+                    next = j
+                    flip = true
+            if [ next < 0 ] break
+            if [ flip ]
+                back : reversed_run[ bz_part[ pieces, next * 8, 0.0,
+                                              1.0 ] ]
+                for [ k: i32 0, k < 8, k += 1 ]
+                    pieces[ next * 8 + k ] = back[ k ]
+            used[ next ] = true
+            loop.push[ next ]
+            ex = pieces[ next * 8 + 6 ]
+            ey = pieces[ next * 8 + 7 ]
+        if [ abs[ ex - sx ] + abs[ ey - sy ] > tol * 4.0 ] continue
+        out.push[ SVGCmd [ op: SVGOp.move, x: sx, y: sy ] ]
+        for [ k: i32 0, k < loop.count, k += 1 ]
+            o : i32 [ loop[ k ] * 8 ]
+            # the last lands exactly on the start
+            last : bool [ k == loop.count - 1 ]
+            x : f32 [ (last) ? sx : pieces[ o + 6 ] ]
+            y : f32 [ (last) ? sy : pieces[ o + 7 ] ]
+            if [ bend_of[ pieces, o ] < tol ]
+                if [ !last ]
+                    out.push[ SVGCmd [ op: SVGOp.line, x: x, y: y ] ]
+            el
+                out.push[ SVGCmd [ op: SVGOp.cubic, x1: pieces[ o + 2 ],
+                    y1: pieces[ o + 3 ], x2: pieces[ o + 4 ],
+                    y2: pieces[ o + 5 ], x: x, y: y ] ]
+        out.push[ SVGCmd [ op: SVGOp.close ] ]
+    return out
+
+# two shapes' commands combined: 0 union, 1 a less b,
+# 2 intersection; their curves kept
+func boolean_cmds [ a: vec SVGCmd, b: vec SVGCmd, op: i32 ]
+        -> vec SVGCmd
+    la : outline_of[ a ]
+    lb : outline_of[ b ]
+    # the scale of both: tolerances follow it
+    all : vec f32 []
+    push_cubic[ all, la ]
+    push_cubic[ all, lb ]
+    if [ all.count < 8 ] return vec SVGCmd []
+    lo_x : f32 [ all[ 0 ] ]
+    hi_x : f32 [ all[ 0 ] ]
+    lo_y : f32 [ all[ 1 ] ]
+    hi_y : f32 [ all[ 1 ] ]
+    for [ k: i32 0, k + 1 < all.count, k += 2 ]
+        lo_x = min[ lo_x, all[ k ] ]
+        hi_x = max[ hi_x, all[ k ] ]
+        lo_y = min[ lo_y, all[ k + 1 ] ]
+        hi_y = max[ hi_y, all[ k + 1 ] ]
+    size : f32 [ max[ hi_x - lo_x, hi_y - lo_y ] ]
+    tol : f32 [ max[ size * 1e-6, 1e-7 ] ]
+    near : f32 [ max[ size * 1e-4, 1e-6 ] ]
+    pa : polys_of[ a, tol ]
+    pb : polys_of[ b, tol ]
+    na : i32 [ la.count / 8 ]
+    nb : i32 [ lb.count / 8 ]
+    ca : vec Cuts []
+    cb : vec Cuts []
+    for [ i: i32 0, i < na, i += 1 ]
+        ca.push[ Cuts [ t: vec f32 [] ] ]
+    for [ j: i32 0, j < nb, j += 1 ]
+        cb.push[ Cuts [ t: vec f32 [] ] ]
+    # crossings
+    for [ i: i32 0, i < na, i += 1 ]
+        ka : vec f32 []
+        for [ k: i32 0, k < 8, k += 1 ]
+            ka.push[ la[ i * 8 + k ] ]
+        for [ j: i32 0, j < nb, j += 1 ]
+            kb : vec f32 []
+            for [ k: i32 0, k < 8, k += 1 ]
+                kb.push[ lb[ j * 8 + k ] ]
+            hits : vec f32 []
+            cross_cubics[ ka, 0.0, 1.0, kb, 0.0, 1.0, tol, hits, 0 ]
+            for [ h: i32 0, h + 1 < hits.count, h += 2 ]
+                ca[ i ].t.push[ hits[ h ] ]
+                cb[ j ].t.push[ hits[ h + 1 ] ]
+    # an end of one lying on the other (shared edges): cut there
+    for [ i: i32 0, i < na, i += 1 ]
+        for [ j: i32 0, j < nb, j += 1 ]
+            t : touch_t[ lb, j * 8, la[ i * 8 ], la[ i * 8 + 1 ], near ]
+            if [ t > 1e-6 && t < 1.0 - 1e-6 ] cb[ j ].t.push[ t ]
+            u : touch_t[ la, i * 8, lb[ j * 8 ], lb[ j * 8 + 1 ], near ]
+            if [ u > 1e-6 && u < 1.0 - 1e-6 ] ca[ i ].t.push[ u ]
+    eps : f32 [ near * 2.0 ]
+    kept : vec f32 []
+    keep_pieces[ la, ca, op, pa, pb, eps, kept ]
+    from_b : vec f32 []
+    keep_pieces[ lb, cb, op, pa, pb, eps, from_b ]
+    # a shared edge kept once
+    for [ o: i32 0, o + 8 <= from_b.count, o += 8 ]
+        if [ has_piece[ kept, from_b, o, near ] ] continue
+        for [ k: i32 0, k < 8, k += 1 ]
+            kept.push[ from_b[ o + k ] ]
+    for [ o: i32 0, o + 8 <= kept.count, o += 8 ]
+    return chain[ kept, near ]
+
+# how far a point is from a shape's outline, signed: outside its
+# fill positive, inside negative (as an offset's distance); z, w
+# the nearest point on the outline
+func signed_reach [ cmds: vec SVGCmd, x: f32, y: f32, tol: f32 ]
+        -> vec4f
+    polys : polys_of[ cmds, tol ]
+    best : f32 [ 1e30 ]
+    qx : f32 [ x ]
+    qy : f32 [ y ]
+    for [ r: Run ] in polys
+        n : i32 [ r.segs.count / 2 ]
+        for [ i: i32 0, i + 1 < n, i += 1 ]
+            ax : f32 [ r.segs[ i * 2 ] ]
+            ay : f32 [ r.segs[ i * 2 + 1 ] ]
+            ex : f32 [ r.segs[ i * 2 + 2 ] - ax ]
+            ey : f32 [ r.segs[ i * 2 + 3 ] - ay ]
+            l : f32 [ ex * ex + ey * ey ]
+            t : f32 [ 0.0 ]
+            if [ l > 0.0 ]
+                t = clamp[ ((x - ax) * ex + (y - ay) * ey) / l, 0.0,
+                           1.0 ]
+            px : f32 [ ax + ex * t ]
+            py : f32 [ ay + ey * t ]
+            d : f32 [ (px - x) * (px - x) + (py - y) * (py - y) ]
+            if [ d < best ]
+                best = d
+                qx = px
+                qy = py
+    reach : f32 [ sqrt[ best ] ]
+    if [ outline_holds[ polys, x, y ] ] reach = 0.0 - reach
+    return vec4f [ reach, 0.0, qx, qy ]
+
+# the point of a shape's outline nearest (x, y)
+func nearest_on [ cmds: vec SVGCmd, x: f32, y: f32, tol: f32 ]
+        -> vec2f
+    r : signed_reach[ cmds, x, y, tol ]
+    return vec2f [ r.z, r.w ]

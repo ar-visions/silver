@@ -864,8 +864,9 @@ class Layer
         cry : f32 [ cv.transform_ty[] + bounds.y ]
         cv.set_crop[ crx, cry, crx + bounds.w, cry + bounds.h ]
 
+        # a selection in a field not focused shows dimmed
         if [ has_edit && sc != ec ]
-            cv.fill_color[ '#264f78' ]
+            cv.fill_color[ (parent.focused) ? '#264f78' : '#ffffff1c' ]
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ text_left + f32[sc] * cw,
                         baseline - metrics.ascent + 2.0,

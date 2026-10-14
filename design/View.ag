@@ -21,7 +21,8 @@ func read_finish [ dir: path, name: string ] -> Finish
     if [ !p.exists[] ]
         log 'aeon: no material at {p}'
         return null
-    txt : string [ p.load[ typeid[ string ], null ] ]
+    from : shadowed[ p ]
+    txt : string [ from.load[ typeid[ string ], null ] ]
     f : Finish [ surface: Principled [] ]
     Au.parse_agi[ null, txt.chars, f ]
     return f

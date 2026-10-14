@@ -17,6 +17,28 @@ struct SVGCmd
     x2 : f32
     y2 : f32
 
+# a gradient paint (linear or radial), read from its element and
+# the elements its href names
+class SVGPaint
+    # 1 linear, 2 radial
+    public kind  : i32
+    # the gradient element's own id
+    public id    : string
+    # its stops: offsets, and r g b a (0..1, svg's colours) each
+    public offs  : vec f32
+    public cols  : vec f32
+    # linear: from a to b; radial: centre a, radius r; in the
+    # gradient's own units
+    public ax    : f32
+    public ay    : f32
+    public bx    : f32
+    public by    : f32
+    public r     : f32
+    # 1: objectBoundingBox units (else userSpaceOnUse)
+    public bbox  : bool
+    # its units to the page
+    public to_page : affine
+
 class SVGShape
     public cmds        : vec SVGCmd
     # the element's id and every attribute it carried: a consumer that
@@ -33,6 +55,18 @@ class SVGShape
     # (an editor writes a moved shape back through them)
     public node        : SVGNode
     public space       : affine
+    # its filter's gaussian (feGaussianBlur), in page units
+    public blur        : f32
+    # stroke-linecap: 0 butt, 1 round, 2 square
+    public cap         : i32
+    # stroke-linejoin: 0 miter, 1 round, 2 bevel; its miter limit
+    public join        : i32
+    public miter       : f32
+    # a paint server (url(#id)) as written, and its gradient
+    public fill_url    : string
+    public stroke_url  : string
+    public fill_paint  : SVGPaint
+    public stroke_paint : SVGPaint
 
 class SVGModel
     public w            : f32
@@ -48,6 +82,11 @@ class SVGModel
     public pixel_scale  : i32 [ 4 ]
     # the text it was read from: its nodes' spans index it
     public source       : string
+    # the <svg> element's own space (its viewBox placed on the
+    # page): what a new top-level element is written in
+    public root_space   : affine
+    # where a blurred shape is drawn before its gaussian
+    public blur_layer   : Canvas
 
     construct [ src: path ]
         expect src.exists, 'svg-path does not exist: {src}'
@@ -110,9 +149,30 @@ class SVGModel
         if [ vb_h == 0.0 ] vb_h = h
         vb_sx : f32 (vb_w > 0.0) ? w / vb_w : 1.0
         vb_sy : f32 (vb_h > 0.0) ? h / vb_h : 1.0
+        # preserveAspectRatio: kept and centred unless 'none'
+        par : string svg_node.attr[ 'preserveAspectRatio' ]
+        if [ !par ] par = 'xMidYMid meet'
+        off_x : f32 0.0
+        off_y : f32 0.0
+        if [ !par.starts_with[ 'none' ] ]
+            fit : f32 [ (par.index_of[ 'slice' ] >= 0)
+                        ? max[ vb_sx, vb_sy ] : min[ vb_sx, vb_sy ] ]
+            ax : f32 0.5
+            ay : f32 0.5
+            if [ par.index_of[ 'xMin' ] >= 0 ] ax = 0.0
+            if [ par.index_of[ 'xMax' ] >= 0 ] ax = 1.0
+            if [ par.index_of[ 'YMin' ] >= 0 ] ay = 0.0
+            if [ par.index_of[ 'YMax' ] >= 0 ] ay = 1.0
+            off_x = (w - vb_w * fit) * ax
+            off_y = (h - vb_h * fit) * ay
+            vb_sx = fit
+            vb_sy = fit
+        # page = offset + scale x (point - the viewBox's origin)
         id : affine.identity[]
-        tr : id.translate[ -vb_x, -vb_y ]
-        xf : affine tr.scale_xy[ vb_sx, vb_sy ]
+        moved : id.translate[ off_x, off_y ]
+        scaled : moved.scale_xy[ vb_sx, vb_sy ]
+        xf : affine scaled.translate[ -vb_x, -vb_y ]
+        root_space = xf
         st : SVGState [
             fill:          vec4f [ 0.0, 0.0, 0.0, 1.0 ],
             stroke:        vec4f [ 0.0, 0.0, 0.0, 0.0 ],
@@ -121,11 +181,22 @@ class SVGModel
             stroke_none:   true,
             fill_opacity:  1.0,
             stroke_opacity:1.0,
-            opacity:       1.0
+            opacity:       1.0,
+            cap:           0,
+            join:          0,
+            miter:         4.0,
+            fill_url:      '',
+            stroke_url:    ''
         ]
         if [ !shapes ] shapes = vec SVGShape []
         el             shapes.clear[]
         svg_walk[ shapes, svg_node.children, xf, st ]
+        # each shape's own filter: its gaussian, in page units
+        for [ sh: SVGShape ] in shapes
+            sh.blur = svg_blur_of[ svg_node, sh ]
+            sh.fill_paint   = svg_paint_of[ svg_node, sh, sh.fill_url ]
+            sh.stroke_paint = svg_paint_of[ svg_node, sh,
+                                            sh.stroke_url ]
 
     public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32,
                          rh_in: f32 ]
@@ -149,32 +220,162 @@ class SVGModel
                 sc.g = shape.stroke.g
                 sc.b = shape.stroke.b
                 sc.a = shape.stroke.a
-            cv.save[]
-            cv.set_opacity[ shape.opacity ]
-            cv.fill_color [ fc ]
-            cv.stroke_color[ sc ]
             sw_ : f32 (shape.stroke_none) ? 0.0 : shape.sw * s
-            cv.set_stroke_size[ sw_ ]
-            for [ cmd: SVGCmd ] in shape.cmds
-                cx_ : f32 off_x + cmd.x * s
-                cy_ : f32 off_y + cmd.y * s
-                if [ cmd.op == SVGOp.move ]
-                    cv.move_to[ cx_, cy_ ]
-                el [ cmd.op == SVGOp.line ]
-                    cv.line_to[ cx_, cy_ ]
-                el [ cmd.op == SVGOp.cubic ]
-                    cv.cubic_to[
-                        off_x + cmd.x1 * s, off_y + cmd.y1 * s,
-                        off_x + cmd.x2 * s, off_y + cmd.y2 * s,
-                        cx_, cy_ ]
-                el [ cmd.op == SVGOp.quad ]
-                    cv.quad_to[
-                        off_x + cmd.x1 * s, off_y + cmd.y1 * s,
-                        cx_, cy_ ]
-                el [ cmd.op == SVGOp.close ]
-                    cv.close_path[]
-            cv.paint[]
-            cv.restore[]
+            paint_shape[ cv, shape, off_x, off_y, s, fc, sc, sw_ ]
+
+    # one paint of the shape: a fill (a gradient, or fc) and a
+    # stroke of width sw_ (its gradient, or the stroke colour)
+    func plain_pass [ cv: Canvas, shape: SVGShape, off_x: f32,
+                      off_y: f32, s: f32, fc: rgba, sc: rgba,
+                      gf: Gradient, gs: Gradient, sw_: f32 ]
+        cv.save[]
+        cv.set_opacity[ shape.opacity ]
+        # a gradient fill is drawn where the fill colour is clear
+        if [ gf ]
+            cv.fill_color[ rgba [ '#ffffffff' ] ]
+            cv.set_fill_gradient[ gf ]
+        el
+            cv.fill_color[ fc ]
+        if [ gs ]
+            cv.stroke_color[ rgba [ '#ffffffff' ] ]
+            cv.set_stroke_gradient[ gs ]
+        el
+            cv.stroke_color[ sc ]
+        cv.set_stroke_size[ sw_ ]
+        cv.set_stroke_cap[ cap_of[ shape ] ]
+        cv.set_stroke_join[ join_of[ shape ] ]
+        cv.set_miter_limit[ shape.miter ]
+        trace[ cv, shape, off_x, off_y, s ]
+        cv.paint[]
+        cv.restore[]
+
+    # a paint's gradient on the canvas (null: none), alpha a times
+    # its stops' own
+    func grad_of [ pt: SVGPaint, shape: SVGShape, off_x: f32,
+                   off_y: f32, s: f32, al: f32 ] -> Gradient
+        if [ !pt || pt.offs.count == 0 ] return null
+        m : pt.to_page
+        ax : f32 [ off_x + m.apply_x[ pt.ax, pt.ay ] * s ]
+        ay : f32 [ off_y + m.apply_y[ pt.ax, pt.ay ] * s ]
+        g : Gradient [ null ]
+        if [ pt.kind == 2 ]
+            k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
+            g = radial_gradient[ ax, ay, 0.0, pt.r * k * s ]
+        el
+            bx : f32 [ off_x + m.apply_x[ pt.bx, pt.by ] * s ]
+            by : f32 [ off_y + m.apply_y[ pt.bx, pt.by ] * s ]
+            g = linear_gradient[ ax, ay, bx, by ]
+        for [ i: i32 0, i < pt.offs.count, i += 1 ]
+            r : u32 [ u32[ clamp[ pt.cols[ i * 4 ], 0.0, 1.0 ] * 255.0 ] ]
+            gr : u32 [ u32[ clamp[ pt.cols[ i * 4 + 1 ], 0.0, 1.0 ]
+                            * 255.0 ] ]
+            b : u32 [ u32[ clamp[ pt.cols[ i * 4 + 2 ], 0.0, 1.0 ]
+                           * 255.0 ] ]
+            av : u32 [ u32[ clamp[ pt.cols[ i * 4 + 3 ] * al, 0.0, 1.0 ]
+                            * 255.0 ] ]
+            # the canvas reads a stop as 0xAABBGGRR
+            g.add_stop[ pt.offs[ i ], (av << 24) | (b << 16)
+                                      | (gr << 8) | r ]
+        return g
+
+    # its stroke-linecap as the canvas's (butt is none)
+    func cap_of [ shape: SVGShape ] -> Cap
+        if [ shape.cap == 1 ] return Cap.round
+        if [ shape.cap == 2 ] return Cap.square
+        return Cap.none
+
+    # its stroke-linejoin as the canvas's
+    func join_of [ shape: SVGShape ] -> Join
+        if [ shape.join == 1 ] return Join.round
+        if [ shape.join == 2 ] return Join.bevel
+        return Join.miter
+
+    # a shape's commands as a path on cv, placed by off and s
+    func trace [ cv: Canvas, shape: SVGShape, off_x: f32, off_y: f32,
+                 s: f32 ]
+        for [ cmd: SVGCmd ] in shape.cmds
+            cx_ : f32 [ off_x + cmd.x * s ]
+            cy_ : f32 [ off_y + cmd.y * s ]
+            if [ cmd.op == SVGOp.move ]
+                cv.move_to[ cx_, cy_ ]
+            el [ cmd.op == SVGOp.line ]
+                cv.line_to[ cx_, cy_ ]
+            el [ cmd.op == SVGOp.cubic ]
+                cv.cubic_to[ off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                             off_x + cmd.x2 * s, off_y + cmd.y2 * s,
+                             cx_, cy_ ]
+            el [ cmd.op == SVGOp.quad ]
+                cv.quad_to[ off_x + cmd.x1 * s, off_y + cmd.y1 * s,
+                            cx_, cy_ ]
+            el [ cmd.op == SVGOp.close ]
+                cv.close_path[]
+
+    # one shape painted; a blurred one drawn alone into the layer,
+    # then put down through its gaussian (fill and stroke together)
+    public func paint_shape [ cv: Canvas, shape: SVGShape, off_x: f32,
+                              off_y: f32, s: f32, fc: rgba, sc: rgba,
+                              sw_: f32 ]
+        sig : f32 [ shape.blur * s ]
+        if [ sig <= 0.05 ]
+            gf : grad_of[ shape.fill_paint, shape, off_x, off_y, s,
+                          fc.a ]
+            gs : grad_of[ shape.stroke_paint, shape, off_x, off_y, s,
+                          sc.a ]
+            # a stroke's gradient takes a pass of its own
+            if [ gs ]
+                plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf,
+                            null, 0.0 ]
+                none : rgba [ '#00000000' ]
+                plain_pass[ cv, shape, off_x, off_y, s, none, sc, null,
+                            gs, sw_ ]
+                return
+            plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf, null,
+                        sw_ ]
+            return
+        # the shape's box on the canvas, out by three sigmas
+        x0 : f32 [ 1e30 ]
+        y0 : f32 [ 1e30 ]
+        x1 : f32 [ -1e30 ]
+        y1 : f32 [ -1e30 ]
+        for [ c: SVGCmd ] in shape.cmds
+            if [ c.op == SVGOp.close ] continue
+            px : vec f32 [] [ c.x, c.x1, c.x2 ]
+            py : vec f32 [] [ c.y, c.y1, c.y2 ]
+            n : i32 [ (c.op == SVGOp.cubic) ? 3
+                      : ((c.op == SVGOp.quad) ? 2 : 1) ]
+            for [ k: i32 0, k < n, k += 1 ]
+                x0 = min[ x0, off_x + px[ k ] * s ]
+                y0 = min[ y0, off_y + py[ k ] * s ]
+                x1 = max[ x1, off_x + px[ k ] * s ]
+                y1 = max[ y1, off_y + py[ k ] * s ]
+        if [ x1 < x0 ] return
+        pad : f32 [ sig * 3.0 + sw_ + 2.0 ]
+        lx : f32 [ floor[ x0 - pad ] ]
+        ly : f32 [ floor[ y0 - pad ] ]
+        lw : i32 [ i32[ ceil[ x1 + pad - lx ] ] ]
+        lh : i32 [ i32[ ceil[ y1 + pad - ly ] ] ]
+        if [ lw < 1 || lh < 1 ] return
+        if [ !blur_layer ]
+            blur_layer = Canvas [ vk: cv.vk, w: cv.w, width: lw,
+                                  height: lh, load_existing: true,
+                                  quantize: true ]
+            blur_layer.update[]
+        lay : blur_layer
+        lay.resize[ lw, lh ]
+        lay.fresh_state[]
+        lay.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        lay.fill_color [ fc ]
+        lay.stroke_color[ sc ]
+        lay.set_stroke_size[ sw_ ]
+        lay.set_stroke_cap[ cap_of[ shape ] ]
+        lay.set_stroke_join[ join_of[ shape ] ]
+        lay.set_miter_limit[ shape.miter ]
+        trace[ lay, shape, off_x - lx, off_y - ly, s ]
+        lay.paint[]
+        cv.save[]
+        cv.set_opacity[ shape.opacity ]
+        cv.filter_blur[ lay, sig, sig, lx, ly, 0.0, 0.0, 0.0, 0.0 ]
+        cv.restore[]
 
 
 # ---- SVG parse-time state ----
@@ -188,6 +389,14 @@ struct SVGState
     fill_opacity  : f32
     stroke_opacity: f32
     opacity       : f32
+    # stroke-linecap: 0 butt, 1 round, 2 square (inherited)
+    cap           : i32
+    # stroke-linejoin: 0 miter, 1 round, 2 bevel; miter limit
+    join          : i32
+    miter         : f32
+    # a paint server named (url(#id)), '' none
+    fill_url      : string
+    stroke_url    : string
 
 
 
@@ -701,6 +910,8 @@ struct PathPt
     cy1 : f32
     cx2 : f32
     cy2 : f32
+    # 1: a point inside a flattened curve (no join is made there)
+    inner : f32
 
 
 # ---- 2d affine transform [ a b tx ; c d ty ; 0 0 1 ] ----
@@ -881,10 +1092,15 @@ func svg_resolve_state [ node: SVGNode, parent: SVGState ] -> SVGState
                 val  : string d.mid[ ci + 1, d.count - (ci + 1) ].trim[]
                 if [ prop == 'fill' ]
                     st.fill_none = val == 'none'
-                    st.fill = svg_color_v[ val ]
+                    st.fill_url = (val.starts_with[ 'url' ]) ? val : ''
+                    if [ st.fill_url.count == 0 ]
+                        st.fill = svg_color_v[ val ]
                 el [ prop == 'stroke' ]
                     st.stroke_none = val == 'none'
-                    st.stroke = svg_color_v[ val ]
+                    st.stroke_url = (val.starts_with[ 'url' ]) ? val
+                                    : ''
+                    if [ st.stroke_url.count == 0 ]
+                        st.stroke = svg_color_v[ val ]
                 el [ prop == 'stroke-width' ]
                     st.sw = f32 val.real_value[]
                 el [ prop == 'opacity' ]
@@ -893,15 +1109,25 @@ func svg_resolve_state [ node: SVGNode, parent: SVGState ] -> SVGState
                     st.fill_opacity = f32 val.real_value[]
                 el [ prop == 'stroke-opacity' ]
                     st.stroke_opacity = f32 val.real_value[]
+                el [ prop == 'stroke-linecap' ]
+                    st.cap = svg_cap_of[ val ]
+                el [ prop == 'stroke-linejoin' ]
+                    st.join = svg_join_of[ val ]
+                el [ prop == 'stroke-miterlimit' ]
+                    st.miter = f32 val.real_value[]
     # direct attributes override style
     fa : string node.attr[ 'fill' ]
     if [ fa ]
         st.fill_none = fa == 'none'
-        if [ !st.fill_none ] st.fill = svg_color_v[ fa ]
+        st.fill_url = (fa.starts_with[ 'url' ]) ? fa : ''
+        if [ !st.fill_none && st.fill_url.count == 0 ]
+            st.fill = svg_color_v[ fa ]
     sa : string node.attr[ 'stroke' ]
     if [ sa ]
         st.stroke_none = sa == 'none'
-        if [ !st.stroke_none ] st.stroke = svg_color_v[ sa ]
+        st.stroke_url = (sa.starts_with[ 'url' ]) ? sa : ''
+        if [ !st.stroke_none && st.stroke_url.count == 0 ]
+            st.stroke = svg_color_v[ sa ]
     swa : string node.attr[ 'stroke-width' ]
     if [ swa ] st.sw = f32 swa.real_value[]
     oa  : string node.attr[ 'opacity' ]
@@ -910,6 +1136,12 @@ func svg_resolve_state [ node: SVGNode, parent: SVGState ] -> SVGState
     if [ foa ] st.fill_opacity = f32 foa.real_value[]
     soa : string node.attr[ 'stroke-opacity' ]
     if [ soa ] st.stroke_opacity = f32 soa.real_value[]
+    lca : string node.attr[ 'stroke-linecap' ]
+    if [ lca ] st.cap = svg_cap_of[ lca ]
+    lja : string node.attr[ 'stroke-linejoin' ]
+    if [ lja ] st.join = svg_join_of[ lja ]
+    mla : string node.attr[ 'stroke-miterlimit' ]
+    if [ mla ] st.miter = f32 mla.real_value[]
     return st
 
 
@@ -933,7 +1165,12 @@ func svg_make_shape [ cmds: vec SVGCmd, st: SVGState ] -> SVGShape
         sw:          st.sw,
         fill_none:   st.fill_none,
         stroke_none: st.stroke_none,
-        opacity:     st.opacity
+        opacity:     st.opacity,
+        cap:         st.cap,
+        join:        st.join,
+        miter:       st.miter,
+        fill_url:    st.fill_url,
+        stroke_url:  st.stroke_url
     ]
 
 # ---- SVG tree walker ----
@@ -1107,3 +1344,185 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                                         y2: 0.0 ] ]
                 shapes.push[ svg_make_shape[ cmds, st ] ]
                 svg_tag[ shapes, node, lxf ]
+
+
+# the element named by id under nd (null none)
+func svg_find_id [ nd: SVGNode, want: string ] -> SVGNode
+    if [ !nd ] return null
+    nid : nd.attr[ 'id' ]
+    if [ nid && nid.compare[ want ] == 0 ] return nd
+    if [ !nd.children ] return null
+    for [ c: SVGNode ] in nd.children
+        found : svg_find_id[ c, want ]
+        if [ found ] return found
+    return null
+
+# the id an element's filter names: filter="url(#id)" or the same
+# in its style ('' none)
+func svg_filter_ref [ nd: SVGNode ] -> string
+    v : nd.attr[ 'filter' ]
+    st : nd.attr[ 'style' ]
+    if [ (!v || v.count == 0) && st ]
+        for [ part: string ] in st.split[ ';' ]
+            ci : i32 [ part.index_of[ ':' ] ]
+            if [ ci <= 0 ] continue
+            nm : part.mid[ 0, ci ].trim[]
+            if [ nm.compare[ 'filter' ] == 0 ]
+                v = part.mid[ ci + 1, part.count - ci - 1 ].trim[]
+    if [ !v ] return ''
+    at : i32 [ v.index_of[ '#' ] ]
+    close : i32 [ v.index_of[ ')' ] ]
+    if [ at < 0 || close <= at ] return ''
+    return v.mid[ at + 1, close - at - 1 ].trim[]
+
+# a shape's gaussian in page units: its filter's feGaussianBlur
+# stdDeviation (the first number), scaled by its space
+func svg_blur_of [ top: SVGNode, sh: SVGShape ] -> f32
+    if [ !sh.node ] return 0.0
+    named : svg_filter_ref[ sh.node ]
+    if [ named.count == 0 ] return 0.0
+    fl : svg_find_id[ top, named ]
+    if [ !fl || !fl.children ] return 0.0
+    for [ c: SVGNode ] in fl.children
+        if [ c.tag != 'feGaussianBlur' ] continue
+        sd : c.attr[ 'stdDeviation' ]
+        if [ !sd ] return 0.0
+        first : sd.trim[].split[ ' ' ]
+        if [ first.count == 0 ] return 0.0
+        m : sh.space
+        k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
+        return f32[ first[ 0 ].real_value[] ] * k
+    return 0.0
+
+# stroke-linecap's word as 0 butt, 1 round, 2 square
+func svg_cap_of [ v: string ] -> i32
+    w : v.trim[]
+    if [ w.compare[ 'round' ] == 0 ] return 1
+    if [ w.compare[ 'square' ] == 0 ] return 2
+    return 0
+
+# stroke-linejoin's word as 0 miter, 1 round, 2 bevel
+func svg_join_of [ v: string ] -> i32
+    w : v.trim[]
+    if [ w.compare[ 'round' ] == 0 ] return 1
+    if [ w.compare[ 'bevel' ] == 0 ] return 2
+    return 0
+
+# the element an href names (xlink:href or href, '#id'), null none
+func svg_href_of [ top: SVGNode, nd: SVGNode ] -> SVGNode
+    h : nd.attr[ 'xlink:href' ]
+    if [ !h ] h = nd.attr[ 'href' ]
+    if [ !h || !h.starts_with[ '#' ] ] return null
+    named : h.mid[ 1, h.count - 1 ]
+    return svg_find_id[ top, named ]
+
+# a gradient's attribute, from it or the gradients it names
+func svg_grad_attr [ top: SVGNode, g: SVGNode, name: string ]
+        -> string
+    nd : g
+    for [ k: i32 0, k < 8 && nd, k += 1 ]
+        v : nd.attr[ name ]
+        if [ v ] return v
+        nd = svg_href_of[ top, nd ]
+    return null
+
+# a length in a gradient: a number, or a percentage as a fraction
+func svg_grad_len [ v: string, dflt: f32 ] -> f32
+    if [ !v ] return dflt
+    t : v.trim[]
+    if [ t.ends_with[ '%' ] ]
+        n : t.mid[ 0, t.count - 1 ]
+        return f32[ n.real_value[] ] / 100.0
+    return f32[ t.real_value[] ]
+
+# a stop's property, from its attribute or its style
+func svg_stop_prop [ st: SVGNode, name: string ] -> string
+    v : st.attr[ name ]
+    if [ v ] return v
+    sty : st.attr[ 'style' ]
+    if [ !sty ] return null
+    for [ part: string ] in sty.split[ ';' ]
+        ci : i32 [ part.index_of[ ':' ] ]
+        if [ ci <= 0 ] continue
+        nm : part.mid[ 0, ci ].trim[]
+        if [ nm.compare[ name ] == 0 ]
+            return part.mid[ ci + 1, part.count - ci - 1 ].trim[]
+    return null
+
+# the paint a url(#id) names, for a shape (null: none or not a
+# gradient this reads)
+func svg_paint_of [ top: SVGNode, sh: SVGShape, url: string ]
+        -> SVGPaint
+    if [ !url || url.count == 0 ] return null
+    at : i32 [ url.index_of[ '#' ] ]
+    close : i32 [ url.index_of[ ')' ] ]
+    if [ at < 0 || close <= at ] return null
+    named : url.mid[ at + 1, close - at - 1 ].trim[]
+    g : svg_find_id[ top, named ]
+    if [ !g ] return null
+    lin : bool [ g.tag == 'linearGradient' ]
+    if [ !lin && g.tag != 'radialGradient' ] return null
+    pt : SVGPaint [ kind: (lin) ? 1 : 2, id: named,
+                    offs: vec f32 [], cols: vec f32 [] ]
+    # the stops: the first in the chain that has any
+    holder : g
+    for [ k: i32 0, k < 8 && holder, k += 1 ]
+        has : bool [ false ]
+        if [ holder.children ]
+            for [ c: SVGNode ] in holder.children
+                if [ c.tag == 'stop' ] has = true
+        if [ has ] break
+        holder = svg_href_of[ top, holder ]
+    if [ holder && holder.children ]
+        for [ c: SVGNode ] in holder.children
+            if [ c.tag != 'stop' ] continue
+            off : f32 [ clamp[ svg_grad_len[ c.attr[ 'offset' ], 0.0 ],
+                               0.0, 1.0 ] ]
+            # offsets never fall back (svg clamps them up)
+            if [ pt.offs.count > 0 ]
+                off = max[ off, pt.offs[ pt.offs.count - 1 ] ]
+            cs : svg_stop_prop[ c, 'stop-color' ]
+            col : svg_color[ (cs) ? cs : '#000000' ]
+            so : svg_stop_prop[ c, 'stop-opacity' ]
+            op : f32 [ (so) ? f32[ so.real_value[] ] : 1.0 ]
+            pt.offs.push[ off ]
+            pt.cols.push[ col.r ]
+            pt.cols.push[ col.g ]
+            pt.cols.push[ col.b ]
+            pt.cols.push[ col.a * op ]
+    if [ pt.offs.count == 0 ] return null
+    units : svg_grad_attr[ top, g, 'gradientUnits' ]
+    pt.bbox = !units || units.compare[ 'userSpaceOnUse' ] != 0
+    if [ lin ]
+        pt.ax = svg_grad_len[ svg_grad_attr[ top, g, 'x1' ], 0.0 ]
+        pt.ay = svg_grad_len[ svg_grad_attr[ top, g, 'y1' ], 0.0 ]
+        pt.bx = svg_grad_len[ svg_grad_attr[ top, g, 'x2' ], 1.0 ]
+        pt.by = svg_grad_len[ svg_grad_attr[ top, g, 'y2' ], 0.0 ]
+    el
+        pt.ax = svg_grad_len[ svg_grad_attr[ top, g, 'cx' ], 0.5 ]
+        pt.ay = svg_grad_len[ svg_grad_attr[ top, g, 'cy' ], 0.5 ]
+        pt.r  = svg_grad_len[ svg_grad_attr[ top, g, 'r' ], 0.5 ]
+        pt.bx = pt.ax + pt.r
+        pt.by = pt.ay
+    gt : svg_grad_attr[ top, g, 'gradientTransform' ]
+    own : (gt) ? svg_parse_transform[ gt ] : affine.identity[]
+    if [ pt.bbox ]
+        # the shape's box on the page
+        x0 : f32 [ 1e30 ]
+        y0 : f32 [ 1e30 ]
+        x1 : f32 [ -1e30 ]
+        y1 : f32 [ -1e30 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.close ] continue
+            x0 = min[ x0, c.x ]
+            y0 = min[ y0, c.y ]
+            x1 = max[ x1, c.x ]
+            y1 = max[ y1, c.y ]
+        if [ x1 < x0 ] return null
+        id : affine.identity[]
+        box : id.translate[ x0, y0 ]
+        unit : box.scale_xy[ max[ x1 - x0, 1e-6 ], max[ y1 - y0, 1e-6 ] ]
+        pt.to_page = unit.multiply[ own ]
+    el
+        pt.to_page = sh.space.multiply[ own ]
+    return pt

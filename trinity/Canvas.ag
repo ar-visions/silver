@@ -81,6 +81,17 @@ shader CanvasSDFCompute
     mutable stroke_only : i32
                                # free ends capped, no inside or outside
     mutable cap    : i32     # 0 butt, 1 round, 2 square
+    # a corner's join: 0 round, 1 miter, 3 bevel; the miter limit
+    mutable join   : i32
+    mutable miter  : f32
+    # the tiles (16 x 16 texels) packed after the edges, as float
+    # indices: per tile its list's start and count, the lists of
+    # edge numbers, per texel row and tile column the crossings
+    # right of that column
+    mutable tile_at : i32
+    mutable list_at : i32
+    mutable base_at : i32
+    mutable cols    : i32
 
     # storage buffer for edges, two vec4 each: x0, y0, x1, y1; then
     # free start, free end, implied (a fill's closing edge), inner
@@ -111,8 +122,21 @@ shader CanvasSDFCompute
         // out of the hot loop — one sqrt at the very end instead of one
         // length() per edge.
         float md2 = 999999.0 * 999999.0;
-        int   wn  = 0;
-        for (int i = ubo.eo; i < ubo.eo + ubo.ne; i++) {{
+        // the ray's crossings past this texel's tile, then its
+        // tile's own edges: near ones for the distance, the
+        // crossings inside the tile for the winding
+        int tx = gid.x / 16;
+        int ty = gid.y / 16;
+        int bi = ubo.base_at + gid.y * ubo.cols + tx;
+        int   wn  = int(edges[bi >> 2][bi & 3]);
+        int ti = ubo.tile_at + (ty * ubo.cols + tx) * 2;
+        int first = int(edges[ti >> 2][ti & 3]);
+        int ti1 = ti + 1;
+        int count = int(edges[ti1 >> 2][ti1 & 3]);
+        float tsx = 16.0 * sx;
+        for (int k = first; k < first + count; k++) {{
+            int li = ubo.list_at + k;
+            int i = ubo.eo + int(edges[li >> 2][li & 3]);
             vec2 a = edges[i * 2].xy;
             vec2 b = edges[i * 2].zw;
             vec4 f = edges[i * 2 + 1];
@@ -127,8 +151,8 @@ shader CanvasSDFCompute
                 // the closing edge a fill implies is not stroked
                 if (f.z > 0.5) d2 = 999999.0 * 999999.0;
                 // past a free end: butt stops, square extends flat
-                bool past = (tr < 0.0 && f.x > 0.5) || (tr > 1.0
-                        && f.y > 0.5);
+                bool past = (tr < 0.0 && f.x > 0.5 && f.x < 1.5)
+                        || (tr > 1.0 && f.y > 0.5 && f.y < 1.5);
                 if (past && ubo.cap == 0) d2 = 999999.0 * 999999.0;
                 if (past && ubo.cap == 2) {{
                     float len   = sqrt(len2);
@@ -138,21 +162,47 @@ shader CanvasSDFCompute
                     d2 = sq * sq;
                 }}
             }}
+            // a corner (10 + the neighbour's direction): a miter or
+            // bevel in place of the round the end point gives
+            bool ca = tr < 0.0 && f.x > 5.0;
+            bool cb = tr > 1.0 && f.y > 5.0;
+            if (ubo.join != 0 && (ca || cb)) {{
+                vec2 e  = ab / sqrt(len2);
+                float na = ((cb) ? f.y : f.x) - 10.0;
+                vec2 o  = vec2(cos(na), sin(na));
+                vec2 u  = (cb) ? e : o;
+                vec2 w  = (cb) ? o : e;
+                vec2 q  = pt - ((cb) ? b : a);
+                float c = clamp(dot(u, w), -1.0, 1.0);
+                d2 = 999999.0 * 999999.0;
+                // the wedge past the end of one and before the other
+                if (dot(q, u) > 0.0 && dot(q, w) < 0.0 && c > -0.9999) {{
+                    float s = ((u.x * w.y - u.y * w.x) > 0.0) ? -1.0 : 1.0;
+                    vec2 n0 = s * vec2(-u.y, u.x);
+                    vec2 n1 = s * vec2(-w.y, w.x);
+                    float cn = clamp(dot(n0, n1), -1.0, 1.0);
+                    float ratio = sqrt(2.0 / max(1.0 + cn, 1e-6));
+                    float dj;
+                    if (ubo.join == 1 && ratio <= ubo.miter) {{
+                        dj = max(dot(q, n0), dot(q, n1));
+                    }} else {{
+                        vec2 bis = normalize(n0 + n1);
+                        dj = dot(q, bis) / max(dot(n0, bis), 1e-6);
+                    }}
+                    dj = max(dj, 0.0);
+                    d2 = dj * dj;
+                }}
+            }}
             // an inner edge (fill both sides) is no boundary
             if (f.w > 0.5) d2 = 999999.0 * 999999.0;
-            // squared — no sqrt here
             md2 = min(md2, d2);
-            // winding (same edge, same iteration)
-            if (a.y <= py) {{
-                if (b.y > py) {{
-                    float c = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
-                    if (c > 0.0) wn++;
-                }}
-            }} else {{
-                if (b.y <= py) {{
-                    float c = (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
-                    if (c < 0.0) wn--;
-                }}
+            // a crossing right of the texel by a listed edge (the
+            // count past the tile leaves the listed edges out)
+            float lo = min(a.y, b.y);
+            float hi = max(a.y, b.y);
+            if (py >= lo && py < hi) {{
+                float xc = a.x + (py - a.y) * (b.x - a.x) / (b.y - a.y);
+                if (xc > px) wn += (b.y > a.y) ? 1 : -1;
             }}
         }}
 
@@ -1024,7 +1074,9 @@ shader CanvasUI
                 }}
                 fill_c = mix(ubo.grad_c0, ubo.grad_c1, gt);
             }}
-            if (ubo.ramp.x > 0.5) fill_c = ramp_color(v_pos);
+            // the ramp colours the fill (1) or the stroke (2)
+            if (ubo.ramp.x > 0.5 && ubo.ramp.x < 1.5)
+                fill_c = ramp_color(v_pos);
             vec4 fill_p   = vec4(fill_c.rgb * fill_c.a * fill_cov,
                                  fill_c.a   * fill_cov);
             vec4 stroke_c6 = ubo.stroke_color;
@@ -1050,6 +1102,7 @@ shader CanvasUI
                 stroke_c6 = mix(ubo.stroke_color, ubo.stroke_grad_c1,
                                 sgt);
             }}
+            if (ubo.ramp.x > 1.5) stroke_c6 = ramp_color(v_pos);
             stroke_c6 = near_border(stroke_c6, v_pos);
             vec4 stroke_p = vec4(stroke_c6.rgb * stroke_c6.a * stroke_cov,
                                  stroke_c6.a   * stroke_cov);
@@ -1113,7 +1166,8 @@ shader CanvasUI
             }}
             fill = mix(ubo.grad_c0, ubo.grad_c1, gt);
         }}
-        if (ubo.ramp.x > 0.5) fill = ramp_color(v_pos);
+        if (ubo.ramp.x > 0.5 && ubo.ramp.x < 1.5)
+            fill = ramp_color(v_pos);
 
         // screen-space AA: the distance's gradient is how much dist
         // changes
@@ -1217,6 +1271,7 @@ shader CanvasUI
             stroke_c_base = mix(ubo.stroke_color, ubo.stroke_grad_c1,
                                 sgt);
         }}
+        if (ubo.ramp.x > 1.5) stroke_c_base = ramp_color(v_pos);
         stroke_c_base = near_border(stroke_c_base, v_pos);
         vec4 stroke_p = vec4(stroke_c_base.rgb * stroke_c_base.a * stroke_cov,
                              stroke_c_base.a   * stroke_cov);
@@ -1944,6 +1999,8 @@ struct CanvasState
     clip_out1     : vec4f
     clip_out2     : vec4f
     clip_out3     : vec4f
+    # a miter longer than this times the stroke width is bevelled
+    miter_limit   : f32
 
 
 func sk_color [ clr: rgba ] -> vec4f
@@ -2327,7 +2384,8 @@ Render Canvas
                 stroke_grad_mirror: false,
                 stroke_grad_radial: false,
                 composite:          Composite.source_over,
-                color_filter:       vec4f [ 0.0, 1.0, 1.0, 0.0 ]
+                color_filter:       vec4f [ 0.0, 1.0, 1.0, 0.0 ],
+                miter_limit:        4.0
             ]
             states.push[ st ]
             clip_masks.push[ null ]
@@ -2632,6 +2690,9 @@ Render Canvas
 
     func set_stroke_join [ j: Join ]
         states[state_depth - 1].stroke_join = j
+
+    func set_miter_limit [ m: f32 ]
+        states[state_depth - 1].miter_limit = m
 
     func set_opacity [ o: f32 ]
         states[state_depth - 1].opacity = o
@@ -2957,6 +3018,41 @@ Render Canvas
             f32 [color_a [ c ]] / 255.0
         ]
 
+    # the canvas (and the crop, when one is set) in the path's own
+    # space, the transform taken back: x0 y0 x1 y1
+    func seen_box [ st: CanvasState ] -> vec4f
+        ucs : f32 [ (w && w.scale > 0) ? f32[ w.scale ] : 1.0 ]
+        vx0 : f32 [ 0.0 ]
+        vy0 : f32 [ 0.0 ]
+        vx1 : f32 [ f32[ width ] / ucs ]
+        vy1 : f32 [ f32[ height ] / ucs ]
+        cr : vec4f [ st.crop ]
+        if [ cr.z > cr.x && cr.w > cr.y ]
+            vx0 = maxf[ vx0, cr.x ]
+            vy0 = maxf[ vy0, cr.y ]
+            vx1 = minf[ vx1, cr.z ]
+            vy1 = minf[ vy1, cr.w ]
+        t : affine [ st.transform ]
+        det : f32 [ t.ma * t.md - t.mb * t.mc ]
+        if [ abs[ det ] < 1e-12 ]
+            return vec4f [ -1e9, -1e9, 1e9, 1e9 ]
+        xs : vec f32 [] [ vx0, vx1, vx1, vx0 ]
+        ys : vec f32 [] [ vy0, vy0, vy1, vy1 ]
+        lx : f32 [ 1e30 ]
+        ly : f32 [ 1e30 ]
+        hx : f32 [ -1e30 ]
+        hy : f32 [ -1e30 ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            dx : f32 [ xs[ i ] - t.tx ]
+            dy : f32 [ ys[ i ] - t.ty ]
+            x : f32 [ (t.md * dx - t.mb * dy) / det ]
+            y : f32 [ (t.ma * dy - t.mc * dx) / det ]
+            lx = minf[ lx, x ]
+            ly = minf[ ly, y ]
+            hx = maxf[ hx, x ]
+            hy = maxf[ hy, y ]
+        return vec4f [ lx, ly, hx, hy ]
+
     func setup_shader [ st: CanvasState, rx: f32, ry: f32, rw: f32,
                         rh: f32 ]
         ucs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
@@ -3185,32 +3281,9 @@ Render Canvas
                         sc.g = shape.stroke.g * ts.y
                         sc.b = shape.stroke.b * ts.z
                         sc.a = shape.stroke.a * ts.w
-                mdl.cache.save[]
-                mdl.cache.set_opacity[ shape.opacity ]
-                mdl.cache.fill_color[ fc ]
-                mdl.cache.stroke_color[ sc ]
                 sw_ : f32 (shape.stroke_none || shape.sw <= 0.0) ? 0.0 : shape.sw * s
-                mdl.cache.set_stroke_size[ sw_ ]
-                for [ cmd: SVGCmd ] in shape.cmds
-                    cx_ : f32 off_x + cmd.x * s
-                    cy_ : f32 off_y + cmd.y * s
-                    if [ cmd.op == SVGOp.move ]
-                        mdl.cache.move_to[ cx_, cy_ ]
-                    el [ cmd.op == SVGOp.line ]
-                        mdl.cache.line_to[ cx_, cy_ ]
-                    el [ cmd.op == SVGOp.cubic ]
-                        mdl.cache.cubic_to[
-                            off_x + cmd.x1 * s, off_y + cmd.y1 * s,
-                            off_x + cmd.x2 * s, off_y + cmd.y2 * s,
-                            cx_, cy_ ]
-                    el [ cmd.op == SVGOp.quad ]
-                        mdl.cache.quad_to[
-                            off_x + cmd.x1 * s, off_y + cmd.y1 * s,
-                            cx_, cy_ ]
-                    el [ cmd.op == SVGOp.close ]
-                        mdl.cache.close_path[]
-                mdl.cache.paint[]
-                mdl.cache.restore[]
+                mdl.paint_shape[ mdl.cache, shape, off_x, off_y, s, fc,
+                                 sc, sw_ ]
                 mdl.cache.sync_fence[]
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
@@ -3513,6 +3586,13 @@ Render Canvas
         if [ !ramp_tex && st.fill_gradient
              && st.fill_gradient.kind != GradientType.none ]
             use_gradient[ st.fill_gradient, st.transform ]
+            ramp_own = true
+        # a stroke's gradient (no fill one): the ramp on the stroke
+        el [ !ramp_tex && st.stroke_gradient
+             && st.stroke_gradient.kind != GradientType.none ]
+            use_gradient[ st.stroke_gradient, st.transform ]
+            rp : vec4f [ ui_shader.ramp ]
+            ui_shader.ramp = vec4f [ 2.0, rp.y, rp.z, rp.w ]
             ramp_own = true
         mask : clip_masks[ clip_masks.count - 1 ]
         on   : vec4f [ vec4f [ (mask) ? 1.0 : 0.0, (st.clip_round) ? 1.0 : 0.0, f32 i32 st.composite, f32 st.clip_outs ] ]
@@ -4083,16 +4163,31 @@ Render Canvas
             tex_w  : i32 [ sdf_tex.width ]
             tex_h  : i32 [ sdf_tex.height ]
             reach  : f32 [ shadow_reach[] ]
-            pad    : f32 [ maxf [ 4.0,
-                st.stroke_width * 0.5 + 4.0 ] + reach ]
-            spread : f32 [ maxf [ 8.0,
-                st.stroke_width * 0.5 + 4.0 ] + reach ]
+            # a miter's tip reaches half the width times its limit
+            mtr : bool [ i32[ st.stroke_join ] == 1 ]
+            band : f32 [ st.stroke_width * 0.5
+                * ((mtr) ? maxf[ st.miter_limit, 1.0 ] : 1.0) ]
+            pad    : f32 [ maxf [ 4.0, band + 4.0 ] + reach ]
+            spread : f32 [ maxf [ 8.0, band + 4.0 ] + reach ]
             # whole pixels: a field that fits is a texel a pixel
             k   : f32 [ (w && w.scale > 0) ? f32[ w.scale ] : 1.0 ]
             pbx : f32 [ floor[ (box_left - pad) * k ] / k ]
             pby : f32 [ floor[ (box_top - pad) * k ] / k ]
             pbw : f32 [ ceil[ (box_left + bw + pad) * k ] / k - pbx ]
             pbh : f32 [ ceil[ (box_top + bh + pad) * k ] / k - pby ]
+            # only the part on the canvas: a path far larger than
+            # the view (zoomed in) keeps a texel a pixel, and no
+            # work goes to what is off the canvas
+            seen : vec4f [ seen_box[ st ] ]
+            cx0 : f32 [ maxf[ pbx, floor[ seen.x * k ] / k ] ]
+            cy0 : f32 [ maxf[ pby, floor[ seen.y * k ] / k ] ]
+            cx1 : f32 [ minf[ pbx + pbw, ceil[ seen.z * k ] / k ] ]
+            cy1 : f32 [ minf[ pby + pbh, ceil[ seen.w * k ] / k ] ]
+            if [ cx1 > cx0 && cy1 > cy0 ]
+                pbx = cx0
+                pby = cy0
+                pbw = cx1 - cx0
+                pbh = cy1 - cy0
             fits : bool [ pbw * k <= f32[ tex_w ]
                           && pbh * k <= f32[ tex_h ] ]
             # a path wider than the field: it grows to the canvas
@@ -4109,14 +4204,30 @@ Render Canvas
             sdf_w  : i32 [ (fits) ? i32[ round[ pbw * k ] ] : tex_w ]
             sdf_h  : i32 [ (fits) ? i32[ round[ pbh * k ] ] : tex_h ]
 
-            ne : i32 [ n ]
+            # only the edges that can reach the field: a path zoomed
+            # far past the view flattens into thousands of edges,
+            # and every texel walks them all
+            vis : sdf_cull[ edges, pbx, pby, pbx + pbw, pby + pbh,
+                            spread ]
+            ne : i32 [ vis.count ]
+            # a tile's edges and the crossings past it, so a texel
+            # walks its tile's few edges, not all of them
+            tiles : vec i32 []
+            tlist : vec i32 []
+            base : vec i32 []
+            tsx : f32 [ pbw / f32[ sdf_w ] ]
+            tsy : f32 [ pbh / f32[ sdf_h ] ]
+            sdf_tiles[ vis, pbx, pby, tsx, tsy, sdf_w, sdf_h, spread,
+                       tiles, tlist, base ]
+            extra : i32 [ tiles.count + tlist.count + base.count ]
+            need : i32 [ ne + (extra + 7) / 8 ]
             # a batch's paths each keep their edges until the GPU runs
             if [ draw_slot == 0 ] edge_used = 0
-            if [ edge_used + ne > edge_buf_capacity && edge_used > 0 ]
+            if [ edge_used + need > edge_buf_capacity && edge_used > 0 ]
                 sync_fence[]
                 edge_used = 0
-            if [ ne > edge_buf_capacity ]
-                while [ ne > edge_buf_capacity ]
+            if [ need > edge_buf_capacity ]
+                while [ need > edge_buf_capacity ]
                     edge_buf_capacity *= 2
                 new_bytes : i32 [ edge_buf_capacity * 32 ]
                 vk.wait_idle[]
@@ -4130,9 +4241,13 @@ Render Canvas
                 path.cached_valid = false
             edge_data : @f32 [ edge_buf.data ]
             has_open : bool [ false ]
+            for [ ae: SDFEdge ] in edges
+                if [ ae.implied > 0.5 ] has_open = true
             fill_only : bool [ st.stroke_width <= 0.0 ]
+            inner : vec bool [ (fill_only) ? sdf_inner_flags[ vis,
+                                   even_odd ] : vec bool [ ne ] ]
             for [ ei: i32 0, ei < ne, ei += 1 ]
-                e  : SDFEdge edges[ei]
+                e  : SDFEdge vis[ei]
                 at : i32 [ (edge_used + ei) * 8 ]
                 edge_data[at + 0] = e.x0
                 edge_data[at + 1] = e.y0
@@ -4141,16 +4256,35 @@ Render Canvas
                 edge_data[at + 4] = e.open0
                 edge_data[at + 5] = e.open1
                 edge_data[at + 6] = e.implied
-                edge_data[at + 7] = (fill_only && sdf_inner_edge[ edges,
-                                                                  e,
-                                                                  even_odd ]) ? 1.0 : 0.0
-                if [ e.implied > 0.5 ] has_open = true
+                edge_data[at + 7] = (inner[ ei ]) ? 1.0 : 0.0
             sdf_compute.eo     = edge_used
             sdf_compute.even_odd = (even_odd) ? 1 : 0
             # an open path with no fill shown is only a line to stroke
             sdf_compute.stroke_only = (has_open && st.fill_color.w <= 0.0 && st.stroke_width > 0.0) ? 1 : 0
             sdf_compute.cap = i32[ st.stroke_cap ]
-            edge_used += ne
+            # joins only matter to a stroke
+            jn : i32 [ i32[ st.stroke_join ] ]
+            sdf_compute.join = (st.stroke_width > 0.0
+                                && (jn == 1 || jn == 3)) ? jn : 0
+            sdf_compute.miter = (st.miter_limit > 0.0)
+                                ? st.miter_limit : 4.0
+            # the tiles after the edges, as floats
+            f0 : i32 [ (edge_used + ne) * 8 ]
+            sdf_compute.tile_at = f0
+            sdf_compute.list_at = f0 + tiles.count
+            sdf_compute.base_at = f0 + tiles.count + tlist.count
+            sdf_compute.cols    = (sdf_w + 15) / 16
+            at : i32 [ f0 ]
+            for [ v: i32 ] in tiles
+                edge_data[ at ] = f32[ v ]
+                at += 1
+            for [ v: i32 ] in tlist
+                edge_data[ at ] = f32[ v ]
+                at += 1
+            for [ v: i32 ] in base
+                edge_data[ at ] = f32[ v ]
+                at += 1
+            edge_used += need
             # compute shader UBO params
             sdf_compute.wx     = pbx
             sdf_compute.wy     = pby
@@ -4670,7 +4804,8 @@ func flatten_quad [ pts: PathPoints, from_x: f32, from_y: f32, cx: f32,
     mx : 0.5 * (from_x + to_x) - cx
     my : 0.5 * (from_y + to_y) - cy
     if [ mx * mx + my * my < tol * tol ]
-        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y ]
+        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y,
+                      inner: 1.0 ]
         pts.append[ pt ]
         return
 
@@ -4698,7 +4833,8 @@ func flatten_cubic [ pts: PathPoints, from_x: f32, from_y: f32,
         c2y - from_y - dy * 0.667 ]
 
     if [ dev_first + dev_second < tol ]
-        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y ]
+        pt : PathPt [ cmd: path_cmd.line, x: to_x, y: to_y,
+                      inner: 1.0 ]
         pts.append[ pt ]
         return
 
@@ -4738,7 +4874,9 @@ func flatten_arc [ cp: CanvasPath, cx: f32, cy: f32, r: f32,
         t  : from_angle + dt * f32 i
         px : cx + r * cos[ t ]
         py : cy + r * sin[ t ]
-        pt : PathPt [ cmd: path_cmd.line, x: px, y: py ]
+        # the arc's own points are no corners (its last is)
+        pt : PathPt [ cmd: path_cmd.line, x: px, y: py,
+                      inner: (i < steps) ? 1.0 : 0.0 ]
         cp.append[ pt ]
 
 
@@ -4758,18 +4896,22 @@ func path_flatten [ src: CanvasPath, tol: f32 ] -> PathPoints
             px = pt.x
             py = pt.y
         case path_cmd.line
-            fpt : PathPt [ cmd: path_cmd.line, x: pt.x, y: pt.y ]
+            fpt : PathPt [ cmd: path_cmd.line, x: pt.x, y: pt.y,
+                           inner: pt.inner ]
             flat.append[ fpt ]
             px = pt.x
             py = pt.y
         case path_cmd.quad
             flatten_quad [ flat, px, py, pt.cx1, pt.cy1, pt.x, pt.y,
                            tol ]
+            # the curve's end is a vertex: a join may be made there
+            flat.pts[ flat.count - 1 ].inner = 0.0
             px = pt.x
             py = pt.y
         case path_cmd.cubic
             flatten_cubic [ flat, px, py, pt.cx1, pt.cy1, pt.cx2,
                             pt.cy2, pt.x, pt.y, tol ]
+            flat.pts[ flat.count - 1 ].inner = 0.0
             px = pt.x
             py = pt.y
         case path_cmd.close
@@ -4871,6 +5013,9 @@ func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
         if [ pt.cmd == path_cmd.line ]
             lined = true
             if [ sdf_put_edge[ edges, cnt, cx, cy, pt.x, pt.y ] ]
+                # inside a curve: no corner at its end
+                if [ edges && pt.inner > 0.5 ]
+                    edges[ cnt ].open1 = 0.25
                 cnt += 1
                 cx = pt.x
                 cy = pt.y
@@ -4889,12 +5034,16 @@ func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
             first = cnt
         lined = false
         opened : bool [ pt.cmd != path_cmd.close && cnt > first ]
+        own : i32 [ cnt ]
         if [ opened && edges ]
             edges[ first ].open0 = 1.0
             edges[ cnt - 1 ].open1 = 1.0
         if [ sdf_put_edge[ edges, cnt, cx, cy, sx, sy ] ]
             if [ opened && edges ] edges[ cnt ].implied = 1.0
             cnt += 1
+        # the corners between the subpath's own edges
+        if [ edges && own > first ]
+            sdf_joins[ edges, first, (opened) ? own : cnt, !opened ]
         first = cnt
         cx = sx
         cy = sy
@@ -4905,6 +5054,31 @@ func sdf_walk_edges [ flat: PathPoints, edges: vec SDFEdge ] -> i32
             cy = sy
     return cnt
 
+
+# each corner between edges from .. to - 1 (and the last to the
+# first, closed): an end's flag is 10 + the neighbour's direction
+# (radians); a curve's own points (0.25) are left smooth (0)
+func sdf_joins [ edges: vec SDFEdge, from: i32, to: i32, closed: bool ]
+    for [ k: i32 from, k < to, k += 1 ]
+        nx : i32 [ k + 1 ]
+        if [ nx == to ]
+            if [ !closed ] break
+            nx = from
+        if [ nx == k ] break
+        if [ edges[ k ].open1 > 0.2 && edges[ k ].open1 < 0.3 ]
+            edges[ k ].open1 = 0.0
+            continue
+        if [ edges[ k ].open1 > 0.5 ] continue
+        ka : f32 [ atan2[ edges[ k ].y1 - edges[ k ].y0,
+                          edges[ k ].x1 - edges[ k ].x0 ] ]
+        kb : f32 [ atan2[ edges[ nx ].y1 - edges[ nx ].y0,
+                          edges[ nx ].x1 - edges[ nx ].x0 ] ]
+        edges[ k ].open1 = 10.0 + kb
+        if [ edges[ nx ].open0 < 0.5 ] edges[ nx ].open0 = 10.0 + ka
+    # a smooth mark left on an open run's end edge
+    for [ k: i32 from, k < to, k += 1 ]
+        if [ edges[ k ].open1 > 0.2 && edges[ k ].open1 < 0.3 ]
+            edges[ k ].open1 = 0.0
 
 # distance from point to line segment
 func sdf_seg_dist [ from_x: f32, from_y: f32, to_x: f32, to_y: f32,
@@ -4946,6 +5120,219 @@ func sdf_winding [ edges: vec SDFEdge, px: f32, py: f32 ] -> i32
                     wn -= 1
     return wn
 
+
+# the edges that matter to a field over x0 y0 x1 y1 (spread past
+# it nothing changes): those above, below or left of it beyond
+# the spread are dropped (the winding ray runs toward +x, so they
+# cross none of its rays); a connected run wholly right of it is
+# one vertical edge from the run's first y to its last (a ray from
+# the left crosses a chain as it crosses the line between its
+# ends), out past the spread so no distance changes
+func sdf_cull [ edges: vec SDFEdge, x0: f32, y0: f32, x1: f32,
+                y1: f32, spread: f32 ] -> vec SDFEdge
+    out : vec SDFEdge []
+    far : f32 [ x1 + spread * 2.0 + 1.0 ]
+    run : bool [ false ]
+    ry0 : f32 [ 0.0 ]
+    rx1 : f32 [ 0.0 ]
+    ry1 : f32 [ 0.0 ]
+    for [ e: SDFEdge ] in edges
+        lo_y : f32 [ minf[ e.y0, e.y1 ] ]
+        hi_y : f32 [ maxf[ e.y0, e.y1 ] ]
+        right : bool [ minf[ e.x0, e.x1 ] > x1 + spread ]
+        # a right run continues while its edges join end to start
+        if [ run && (!right || e.x0 != rx1 || e.y0 != ry1) ]
+            if [ ry0 != ry1 ]
+                out.push[ SDFEdge [ x0: far, y0: ry0, x1: far, y1: ry1,
+                                    open0: 0.0, open1: 0.0,
+                                    implied: 0.0 ] ]
+            run = false
+        if [ right ]
+            if [ !run ]
+                run = true
+                ry0 = e.y0
+            rx1 = e.x1
+            ry1 = e.y1
+            continue
+        if [ hi_y < y0 - spread || lo_y > y1 + spread ] continue
+        if [ maxf[ e.x0, e.x1 ] < x0 - spread ] continue
+        out.push[ e ]
+    if [ run && ry0 != ry1 ]
+        out.push[ SDFEdge [ x0: far, y0: ry0, x1: far, y1: ry1,
+                            open0: 0.0, open1: 0.0, implied: 0.0 ] ]
+    return out
+
+
+# a field's tiles (16 x 16 texels over wx, wy, a texel sx by sy):
+# per tile the edges within the spread of it (tiles: start and
+# count in list); per texel row and tile column the signed
+# crossings of the row's ray right of that column (base), counted
+# where the crossing's column is past the tile, as the shader does
+func sdf_tiles [ vis: vec SDFEdge, wx: f32, wy: f32, sx: f32,
+                 sy: f32, tw: i32, th: i32, spread: f32,
+                 tiles: vec i32, list: vec i32, base: vec i32 ]
+    cols : i32 [ (tw + 15) / 16 ]
+    rows : i32 [ (th + 15) / 16 ]
+    tsx : f32 [ 16.0 * sx ]
+    tsy : f32 [ 16.0 * sy ]
+    nt : i32 [ cols * rows ]
+    counts : vec i32 [ nt ]
+    for [ pass: i32 0, pass < 2, pass += 1 ]
+        if [ pass == 1 ]
+            # starts from the counts; the lists sized
+            total : i32 [ 0 ]
+            for [ t: i32 0, t < nt, t += 1 ]
+                tiles.push[ total ]
+                tiles.push[ counts[ t ] ]
+                total += counts[ t ]
+                counts[ t ] = 0
+            for [ k: i32 0, k < total, k += 1 ]
+                list.push[ 0 ]
+        for [ ei: i32 0, ei < vis.count, ei += 1 ]
+            e : vis[ ei ]
+            c0 : i32 [ max[ i32[ floor[ (minf[ e.x0, e.x1 ] - spread
+                                         - wx) / tsx ] ], 0 ] ]
+            c1 : i32 [ min[ i32[ floor[ (maxf[ e.x0, e.x1 ] + spread
+                                         - wx) / tsx ] ], cols - 1 ] ]
+            r0 : i32 [ max[ i32[ floor[ (minf[ e.y0, e.y1 ] - spread
+                                         - wy) / tsy ] ], 0 ] ]
+            r1 : i32 [ min[ i32[ floor[ (maxf[ e.y0, e.y1 ] + spread
+                                         - wy) / tsy ] ], rows - 1 ] ]
+            for [ r: i32 r0, r <= r1, r += 1 ]
+                for [ c: i32 c0, c <= c1, c += 1 ]
+                    t : i32 [ r * cols + c ]
+                    if [ pass == 1 ]
+                        list[ tiles[ t * 2 ] + counts[ t ] ] = ei
+                    counts[ t ] += 1
+    # each row's crossings by column (past the last: cols)
+    acc : vec i32 [ th * (cols + 1) ]
+    for [ e: SDFEdge ] in vis
+        if [ e.y0 == e.y1 ] continue
+        lo : f32 [ minf[ e.y0, e.y1 ] ]
+        hi : f32 [ maxf[ e.y0, e.y1 ] ]
+        g0 : i32 [ max[ i32[ ceil[ (lo - wy) / sy - 0.5 ] ] - 1, 0 ] ]
+        g1 : i32 [ min[ i32[ ceil[ (hi - wy) / sy - 0.5 ] ] + 1,
+                        th - 1 ] ]
+        sign : i32 [ (e.y1 > e.y0) ? 1 : -1 ]
+        for [ g: i32 g0, g <= g1, g += 1 ]
+            py : f32 [ wy + (f32[ g ] + 0.5) * sy ]
+            if [ py < lo || py >= hi ] continue
+            xc : f32 [ e.x0 + (py - e.y0) * (e.x1 - e.x0)
+                       / (e.y1 - e.y0) ]
+            col : i32 [ i32[ floor[ (xc - wx) / tsx ] ] ]
+            if [ col < 0 ] continue
+            if [ col > cols ] col = cols
+            acc[ g * (cols + 1) + col ] += sign
+    # past a column: the sum of the columns right of it
+    for [ g: i32 0, g < th, g += 1 ]
+        run : i32 [ 0 ]
+        sums : vec i32 [ cols ]
+        for [ c: i32 cols, c >= 1, c -= 1 ]
+            run += acc[ g * (cols + 1) + c ]
+            sums[ c - 1 ] = run
+        for [ v: i32 ] in sums
+            base.push[ v ]
+    # a tile's own listed edges are counted by the shader, every
+    # crossing right of the texel: taken out of its rows' counts
+    # here, so no crossing near a tile's edge counts twice or not
+    # at all (the two sides' arithmetic may round apart)
+    for [ r: i32 0, r < rows, r += 1 ]
+        for [ c: i32 0, c < cols, c += 1 ]
+            t : i32 [ r * cols + c ]
+            for [ k: i32 tiles[ t * 2 ],
+                  k < tiles[ t * 2 ] + tiles[ t * 2 + 1 ], k += 1 ]
+                e : vis[ list[ k ] ]
+                if [ e.y0 == e.y1 ] continue
+                lo : f32 [ minf[ e.y0, e.y1 ] ]
+                hi : f32 [ maxf[ e.y0, e.y1 ] ]
+                sign : i32 [ (e.y1 > e.y0) ? 1 : -1 ]
+                g1 : i32 [ min[ r * 16 + 16, th ] ]
+                for [ g: i32 r * 16, g < g1, g += 1 ]
+                    py : f32 [ wy + (f32[ g ] + 0.5) * sy ]
+                    if [ py < lo || py >= hi ] continue
+                    xc : f32 [ e.x0 + (py - e.y0) * (e.x1 - e.x0)
+                               / (e.y1 - e.y0) ]
+                    col : i32 [ i32[ floor[ (xc - wx) / tsx ] ] ]
+                    if [ col > c ] base[ g * cols + c ] -= sign
+
+
+# every edge's sdf_inner_edge, the winding on each side counted
+# from the edges in its point's band of y only (a ray toward +x
+# crosses no edge outside its own height): not each edge against
+# all of them
+func sdf_inner_flags [ vis: vec SDFEdge, even_odd: bool ]
+        -> vec bool
+    n : i32 [ vis.count ]
+    out : vec bool [ n ]
+    if [ n == 0 ] return out
+    lo : f32 [ 1e30 ]
+    hi : f32 [ -1e30 ]
+    for [ e: SDFEdge ] in vis
+        lo = minf[ lo, minf[ e.y0, e.y1 ] ]
+        hi = maxf[ hi, maxf[ e.y0, e.y1 ] ]
+    nb : i32 [ max[ min[ n / 4, 1024 ], 1 ] ]
+    bh : f32 [ maxf[ (hi - lo) / f32[ nb ], 1e-6 ] ]
+    # each band's edges: counted, then placed
+    counts : vec i32 [ nb ]
+    starts : vec i32 [ nb ]
+    band : vec i32 []
+    for [ pass: i32 0, pass < 2, pass += 1 ]
+        if [ pass == 1 ]
+            total : i32 [ 0 ]
+            for [ b: i32 0, b < nb, b += 1 ]
+                starts[ b ] = total
+                total += counts[ b ]
+                counts[ b ] = 0
+            band = vec i32 [ total ]
+        for [ ei: i32 0, ei < n, ei += 1 ]
+            e : vis[ ei ]
+            b0 : i32 [ clamp[ i32[ (minf[ e.y0, e.y1 ] - lo) / bh ], 0,
+                              nb - 1 ] ]
+            b1 : i32 [ clamp[ i32[ (maxf[ e.y0, e.y1 ] - lo) / bh ], 0,
+                              nb - 1 ] ]
+            for [ b: i32 b0, b <= b1, b += 1 ]
+                if [ pass == 1 ] band[ starts[ b ] + counts[ b ] ] = ei
+                counts[ b ] += 1
+    for [ i: i32 0, i < n, i += 1 ]
+        e : vis[ i ]
+        dx  : f32 [ e.x1 - e.x0 ]
+        dy  : f32 [ e.y1 - e.y0 ]
+        len : f32 [ sqrt[ dx * dx + dy * dy ] ]
+        if [ len < 0.001 ] continue
+        mx  : f32 [ (e.x0 + e.x1) * 0.5 ]
+        my  : f32 [ (e.y0 + e.y1) * 0.5 ]
+        nx  : f32 [ -dy / len * 0.05 ]
+        ny  : f32 [ dx / len * 0.05 ]
+        wa  : i32 [ band_winding[ vis, band, starts, counts, lo, bh, nb,
+                                  mx + nx, my + ny ] ]
+        wb  : i32 [ band_winding[ vis, band, starts, counts, lo, bh, nb,
+                                  mx - nx, my - ny ] ]
+        if [ even_odd ]
+            out[ i ] = (wa & 1) != 0 && (wb & 1) != 0
+        el
+            out[ i ] = wa != 0 && wb != 0
+    return out
+
+# sdf_winding over one band's edges
+func band_winding [ vis: vec SDFEdge, band: vec i32, starts: vec i32,
+                    counts: vec i32, lo: f32, bh: f32, nb: i32,
+                    px: f32, py: f32 ] -> i32
+    b : i32 [ i32[ (py - lo) / bh ] ]
+    if [ b < 0 || b >= nb ] return 0
+    wn : i32 [ 0 ]
+    for [ k: i32 starts[ b ], k < starts[ b ] + counts[ b ], k += 1 ]
+        e : vis[ band[ k ] ]
+        if [ e.y0 <= py ]
+            if [ e.y1 > py ]
+                cross : f32 [ (e.x1 - e.x0) * (py - e.y0)
+                              - (px - e.x0) * (e.y1 - e.y0) ]
+                if [ cross > 0.0 ] wn += 1
+        el
+            if [ e.y1 <= py ]
+                cross : f32 [ (e.x1 - e.x0) * (py - e.y0)
+                              - (px - e.x0) * (e.y1 - e.y0) ]
+                if [ cross < 0.0 ] wn -= 1
+    return wn
 
 # an edge with fill on both sides bounds nothing
 func sdf_inner_edge [ edges: vec SDFEdge, e: SDFEdge,

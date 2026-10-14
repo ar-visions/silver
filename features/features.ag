@@ -1988,6 +1988,31 @@ expect func t_codegen_test [] -> bool using claude
     { check gen_gcd, gen_collatz and gen_digit_root against three
       values each that you work out by hand }
 
+# a lambda kept in a member: the member holds it, so a closure
+# lives past the frame that made it
+class LamSlot
+    public go : lambda none [ i32 ]
+
+    func keep [ f: lambda none [ i32 ] ]
+        go = f
+
+class LamHits
+    public n : i32
+
+func lam_hit [ v: i32 :: hits: LamHits ] -> none
+    hits.n += v
+
+expect func t_lambda_member_holds [] -> bool
+    hits : LamHits []
+    slot : LamSlot []
+    mark : i32 [ Au.auto_mark[] ]
+    slot.keep[ lambda lam_hit[ hits ] ]
+    # the frame's objects freed: the closure is the slot's now
+    Au.auto_free_to[ mark ]
+    slot.go[ 3 ]
+    slot.go[ 4 ]
+    return hits.n == 7
+
 # ==== Collections: vec and map, typed.
 # vec is a typed vector with element-wise math; map is keyed by
 # the type in brackets.

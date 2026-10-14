@@ -878,7 +878,10 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     // are weak by definition. Members whose literal type is `Au` (the generic
     // bag-of-anything base) also opt out — generics require manual hold/drop.
     // C types carry no Au header: holding one reads fake refcounts
-    bool  is_class_set = L->autype && L->autype->src && L->autype->src->is_class &&
+    // a lambda slot holds a lambda object (a static one is unmanaged:
+    // its hold and drop do nothing)
+    bool  is_class_set = L->autype && L->autype->src &&
+        (L->autype->src->is_class || L->autype->src->is_lambda) &&
         !L->autype->src->is_c &&
         !(L->autype->traits & AU_TRAIT_UNMANAGED) &&
         !L->autype->is_context &&
@@ -11098,8 +11101,12 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     }
                 }
 
+                // a lambda signature is no registered type: canonical
+                // reads its return type; importers see a lambda
+                bool sig = mem->src && mem->src->is_lambda;
                 etype prop_type = mem->is_explicit_ref ?
                     pointer(a, (Au)mem->src) :
+                    sig ? etypeid(lambda) :
                     canonical(u(etype, mem->src));
                 // ref members register as plain pointer types — the ref trait
                 // would double-count the indirection on the importer side
@@ -13351,7 +13358,9 @@ AU_EXPORT enode enode_retain(enode mem) {
     aether a = au_active(mem->mod);
     etype mdl = (etype)evar_type((evar)mem);
     a->is_const_op = false;
-    if (mdl->autype->is_class && !a->no_build) {
+    // a lambda slot holds its lambda object, as a class slot does
+    bool held = mdl->autype->is_class || mdl->autype->is_lambda;
+    if (held && !a->no_build) {
         efunc fn_hold = (efunc)u(efunc, find_member(etypeid(Au)->autype, "hold", AU_MEMBER_FUNC, 0, true));
         e_fn_call(a, fn_hold, a(mem), false, false);
     }

@@ -29,6 +29,8 @@ class SceneEdit
     public slot   : string
     # the modifiers area shows the kinds to add (its + is an ×)
     public choosing : bool
+    # ctrl/cmd + r asked: the status line asks to revert
+    public reverting : bool
     public typed  : map Au [ string ]
     public given  : map Au [ string ]
     public busy   : map Au [ string ]
@@ -56,7 +58,9 @@ class SceneEdit
             -> Block
         bh : f32 [ 0.0 ]
         for [ r: PropRow ] in rows
-            bh += (r.type.compare[ 'rgba' ] == 0) ? 72.0 : 24.0
+            colour : bool [ r.type.compare[ 'rgba' ] == 0
+                            || r.type.compare[ 'paint' ] == 0 ]
+            bh += (colour) ? 72.0 : 24.0
         bz : string [ busy[ key ] ]
         return Block [ key: key, label: label, h: bh, rows: rows,
                        busy: (bz) ? bz : '', flip: '', on: true,
@@ -66,7 +70,9 @@ class SceneEdit
     func blocks [] -> vec Block
         out : vec Block []
         if [ doc ]
+            # nothing chosen: the document's own values
             if [ doc.chosen < 0 || doc.chosen >= doc.count[] ]
+                out.push[ block[ 'svg:doc', 'document', doc_rows[] ] ]
                 return out
             out.push[ block[ 'svg:{doc.chosen}', 'shape',
                              shape_rows[ doc.chosen ] ] ]
@@ -296,10 +302,90 @@ class SceneEdit
         nd : doc.model.shapes[ i ].node
         if [ !nd ] return out
         for [ k: string ] in vec string [] [ 'id', 'fill', 'stroke',
-                'stroke-width', 'opacity', 'transform' ]
+                'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+                'opacity', 'transform' ]
             v : svg_value[ nd, k ]
+            # a cap or join is one of three; unwritten, svg's default
+            words : vec string [] [ 'butt', 'round', 'square' ]
+            if [ k.compare[ 'stroke-linejoin' ] == 0 ]
+                words = vec string [] [ 'miter', 'round', 'bevel' ]
+            choice : bool [ k.compare[ 'stroke-linecap' ] == 0
+                            || k.compare[ 'stroke-linejoin' ] == 0 ]
+            if [ choice && (!v || words.index_of[ v ] < 0) ]
+                v = words[ 0 ]
             out.push[ PropRow [ name: k, value: v, kind: 5,
                 owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ,
+                stops: (choice) ? words : null ] ]
+        # its blur: a filter's gaussian, made or changed here
+        bt : num_text[ doc.blur_of[ i ], false ]
+        out.push[ PropRow [ name: 'blur', value: bt, kind: 5,
+            owner: doc.model.shapes[ i ], pass: '{i}',
+            blocks: vec string [] ] ]
+        # a linked offset: its distance
+        if [ doc.offset_src[ i ] >= 0 ]
+            rt : num_text[ doc.radius_of[ i ], false ]
+            out.push[ PropRow [ name: 'offset', value: rt, kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
+        rows : shaped[ out ]
+        # opacity: a unit, its field a bar (unwritten is 1)
+        for [ r: PropRow ] in rows
+            if [ r.name.compare[ 'opacity' ] != 0 ] continue
+            if [ !r.value || r.value.count == 0 ]
+                r.value = '1'
+                r.full  = '1'
+            r.type = 'unit'
+        # a colour takes the picker, as a material's does (linear)
+        for [ r: PropRow ] in rows
+            if [ !svg_paint[ r.name ] ] continue
+            v : r.value
+            # no fill is black; no stroke (or none) a blank picker
+            if [ v.count == 0 && r.name.compare[ 'fill' ] == 0 ]
+                v = '#000000'
+            if [ v.starts_with[ 'url' ] ] continue
+            if [ v.count == 0 || v.compare[ 'none' ] == 0 ]
+                r.value = ''
+                r.full  = ''
+                r.type  = 'paint'
+                continue
+            c : svg_color[ v ]
+            lin : vec f32 [] [ pow[ c.r, 2.2 ], pow[ c.g, 2.2 ],
+                                pow[ c.b, 2.2 ], c.a ]
+            shown : ''
+            for [ n: f32 ] in lin
+                nt : num_text[ n, false ]
+                shown = (shown.count == 0) ? nt : '{shown}, {nt}'
+            r.value = shown
+            r.full  = shown
+            r.type  = 'paint'
+        return rows
+
+    # a byte as two hex digits
+    func hex_byte [ n: i32 ] -> string
+        digits : '0123456789abcdef'
+        hi : digits.mid[ n / 16, 1 ]
+        lo : digits.mid[ n % 16, 1 ]
+        return '{hi}{lo}'
+
+    # fill and stroke: colours
+    func svg_paint [ name: string ] -> bool
+        return name.compare[ 'fill' ] == 0
+            || name.compare[ 'stroke' ] == 0
+
+    # the <svg> element's values; a viewBox as four numbers
+    func doc_rows [] -> vec PropRow
+        out : vec PropRow []
+        nd : doc.root
+        if [ !nd ] return out
+        for [ k: string ] in vec string [] [ 'width', 'height',
+                'viewBox' ]
+            v : svg_value[ nd, k ]
+            nums : numbers_of[ v ]
+            if [ k.compare[ 'viewBox' ] == 0 && nums.count == 4 ]
+                head : '{nums[ 0 ]}, {nums[ 1 ]}'
+                v = '[ {head}, {nums[ 2 ]}, {nums[ 3 ]} ]'
+            out.push[ PropRow [ name: k, value: v, kind: 6,
                 blocks: vec string [] ] ]
         return shaped[ out ]
 
@@ -378,15 +464,56 @@ class SceneEdit
     # then it is set
     func apply_row [ r: PropRow, text: string ]
         if [ view ] view.note_prop[ r, r.full ]
+        if [ doc ] doc.note_prop[ r, r.full ]
         set_row[ r, text ]
 
     # the whole value set in memory; the write waits for a save
     func set_row [ r: PropRow, text: string ]
         # an svg shape's value: on its element, and drawn so now
         if [ r.kind == 5 ]
-            sh : cast SVGShape [ r.owner ]
-            svg_set[ sh, r.name, text ]
+            # by its number: a document change reads shapes anew
+            at : i32 [ i32[ r.pass ] ]
+            if [ at < 0 || at >= doc.count[] ] return
+            # a linked offset's distance: its outline made again
+            if [ r.name.compare[ 'offset' ] == 0 ]
+                doc.set_radius[ at, f32[ text ] ]
+                return
+            if [ r.name.compare[ 'blur' ] == 0 ]
+                doc.set_blur[ at, f32[ text ] ]
+                return
+            sh : doc.model.shapes[ at ]
+            val : string [ text ]
+            # a paint cleared: none
+            if [ svg_paint[ r.name ] && text.trim[].count == 0 ]
+                val = 'none'
+            # the picker's linear numbers written as #rrggbb, and
+            # aa after when it is see-through
+            if [ svg_paint[ r.name ] && text.index_of[ ',' ] >= 0
+                 && !text.starts_with[ 'rgb' ] ]
+                val = '#'
+                nums : numbers_of[ text ]
+                for [ k: i32 0, k < nums.count && k < 3, k += 1 ]
+                    srgb : f32 [ pow[ clamp[ nums[ k ], 0.0, 1.0 ],
+                                      1.0 / 2.2 ] ]
+                    byte : i32 [ round[ srgb * 255.0 ] ]
+                    val = '{val}{hex_byte[ byte ]}'
+                if [ nums.count > 3 ]
+                    ab : i32 [ round[ clamp[ nums[ 3 ], 0.0, 1.0 ]
+                                      * 255.0 ] ]
+                    if [ ab < 255 ] val = '{val}{hex_byte[ ab ]}'
+            svg_set[ sh, r.name, val ]
             doc.mark[ i32[ r.pass ] ]
+            return
+        # a document value: the <svg> element's, read again
+        if [ r.kind == 6 ]
+            val : string [ text ]
+            # a viewBox's numbers are written with spaces
+            if [ r.list ]
+                val = ''
+                for [ n: f32 ] in numbers_of[ text ]
+                    nt : num_text[ n, false ]
+                    val = (val.count == 0) ? nt : '{val} {nt}'
+            doc.set_root[ r.name, val ]
             return
         now : string [ (r.list) ? '[ {text} ]' : text ]
         # a word is written quoted; a number or true / false bare
@@ -445,7 +572,7 @@ class SceneEdit
         props : LaunchProps [ props: vec Prop [] ]
         for [ r: PropRow ] in b.rows
             props.props.push[ Prop [ ident: r.label, type: r.type,
-                                     value: r.value ] ]
+                                     value: r.value, stops: r.stops ] ]
             key : '{b.key}_{r.label}'
             had : string [ given[ key ] ]
             fresh : bool [ !had || had.compare[ r.value ] != 0 ]
@@ -510,12 +637,14 @@ element Outliner
 
     func list [] -> vec Line
         out : vec Line []
-        # an svg: its shapes, in the file's order
+        # an svg: its shapes, the last drawn (on top) first
         if [ scene && scene.doc ]
             out.push[ line_of[ 'shapes', 0, 0 ] ]
-            for [ i: i32 0, i < scene.doc.count[], i += 1 ]
-                sl : line_of[ scene.doc.name_of[ i ], 0, 5 ]
-                sl.node = '{i}'
+            for [ r: SvgRow ] in scene.doc.rows[]
+                sl : line_of[ r.text, r.depth, r.kind ]
+                sl.node = '{r.n}'
+                sl.object = '{r.at}'
+                sl.pass = '{r.end}'
                 out.push[ sl ]
             return out
         if [ !scene || !scene.design ] return out
@@ -545,7 +674,15 @@ element Outliner
             return s.object.count == 0
                 && ln.node.compare[ scene.slot ] == 0
         if [ ln.kind == 5 ]
-            return scene.doc && i32[ ln.node ] == scene.doc.chosen
+            return scene.doc && scene.doc.is_chosen[ i32[ ln.node ] ]
+        # a group: lit when every shape in it is chosen
+        if [ ln.kind == 6 && scene.doc ]
+            inside : scene.doc.shapes_in[ i64[ ln.object ],
+                                          i64[ ln.pass ] ]
+            if [ inside.count == 0 ] return false
+            for [ i: i32 ] in inside
+                if [ !scene.doc.is_chosen[ i ] ] return false
+            return true
         return false
 
     public func on_press [ ev: Event ]
@@ -554,10 +691,23 @@ element Outliner
         if [ i < 0 || i >= lines.count ] return
         ln : lines[ i ]
         if [ ln.kind == 0 ] return
+        # a group: every shape in it chosen (shift: added)
+        if [ ln.kind == 6 ]
+            d : scene.doc
+            inside : d.shapes_in[ i64[ ln.object ], i64[ ln.pass ] ]
+            if [ !ux || !ux.shift ] d.choose_one[ -1 ]
+            for [ i: i32 ] in inside
+                if [ !d.is_chosen[ i ] ] d.toggle[ i ]
+            return
         # a shape: chosen (again: let go)
         if [ ln.kind == 5 ]
             at : i32 [ ln.node ]
-            scene.doc.chosen = (at == scene.doc.chosen) ? -1 : at
+            d : scene.doc
+            if [ ux && ux.shift ]
+                d.toggle[ at ]
+            el
+                d.choose_one[ (at == d.chosen && d.also.count == 0)
+                              ? -1 : at ]
             return
         s : scene.sel
         if [ minus_on[ ln, i ] && ev.mouse.pos.x > bounds.w - 30.0 ]
@@ -664,7 +814,26 @@ element Outliner
                 cv.fill_color[ rgba [ '#d8d8e0' ] ]
                 cv.rect_to[ mx + 4.0, y + 11.4, 6.0, 1.2 ]
                 cv.paint[]
-        if [ scene.edits && scene.edits.pending[] ]
+        # the revert asked: the status line framed, a stronger
+        # border round it
+        if [ scene.reverting ]
+            cv.fill_color[ rgba [ '#ff8a7a14' ] ]
+            cv.stroke_color[ rgba [ '#ff8a7a' ] ]
+            cv.stroke_width[ 1.5 ]
+            cv.rounded_rect[ 6.0, bounds.h - 32.0, bounds.w - 12.0,
+                             28.0, 5.0, 5.0, 5.0, 5.0 ]
+            cv.paint[]
+            cv.stroke_width[ 0.0 ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#ff8a7a' ] ]
+            cv.draw_text[ 'revert? enter: yes',
+                rect [ x: 12.0, y: bounds.h - 30.0,
+                       w: bounds.w - 24.0, h: 24.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+        el [ (scene.edits && scene.edits.pending[])
+             || (scene.doc && scene.doc.unsaved[]) ]
             cv.font_size[ 13 ]
             cv.fill_color[ rgba [ '#ffcf4a' ] ]
             cv.draw_text[ 'unsaved: ctrl/cmd + s',
@@ -690,7 +859,7 @@ element PropsSide
             if [ d.chosen >= 0 && d.chosen < d.count[] ]
                 return d.name_of[ d.chosen ]
             fn : string d.file.filename[]
-            return 'svg · {fn}'
+            return 'document · {fn}'
         # nothing chosen: the scene, by its folder's name
         if [ !scene.design ] return ''
         nm : string scene.design.dir.filename[]
@@ -731,6 +900,8 @@ element PropsBody
     mutable tall  : f32
     # the modifiers area's heading
     mutable mods_y  : f32
+    # the headings last drawn: a change repaints them
+    mutable heads   : string
 
     # the fields the user changed since the last frame, applied
     func take [] -> bool
@@ -747,8 +918,10 @@ element PropsBody
                 now : lp.value_of[ p ]
                 key : '{b.key}_{r.label}'
                 was : string [ scene.typed[ key ] ]
-                if [ now && was && now.count > 0
-                     && now.compare[ was ] != 0 ]
+                # a paint may be emptied (cleared: none)
+                open : bool [ now && (now.count > 0
+                               || r.type.compare[ 'paint' ] == 0) ]
+                if [ open && was && now.compare[ was ] != 0 ]
                     scene.typed[ key ] = now
                     scene.apply_row[ r, now ]
                     scene.busy[ b.key ] = r.label
@@ -763,8 +936,18 @@ element PropsBody
         if [ v && v.undo_row ]
             scene.set_row[ v.undo_row, v.undo_was ]
             v.undo_row = null
+        d : scene.doc
+        if [ d && d.undo_row ]
+            scene.set_row[ d.undo_row, d.undo_was ]
+            d.undo_row = null
         take[]
         shown = scene.blocks[]
+        now : ''
+        for [ b: Block ] in shown
+            now = '{now}|{b.key}:{b.label}'
+        if [ !heads || heads.compare[ now ] != 0 ]
+            heads = now
+            pristine = false
         # the panels flow (t..px+), so they move with the scroll;
         # each a gap after the last one's bottom
         y : f32 [ 0.0 ]
