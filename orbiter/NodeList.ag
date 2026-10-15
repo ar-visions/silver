@@ -638,6 +638,9 @@ element SidePanel
     func render [] -> Elements
         t : Elements []
         orb : cast orbiter [ ux.app_object ]
+        # with the system bar its toggles are in the tray: no foot bar
+        sys : bool [ orb && orb.system_on[] ]
+        body : string [ (sys) ? 'l0 t0 r0 b0' : 'l0 t0 r0 b35px' ]
         if [ orb && orb.side_tab == 'scenes' ]
             # the cards, and under them the scene's own props
             sp : string orb.scene_spec[]
@@ -652,12 +655,16 @@ element SidePanel
                 inst: -1, live_vals: true, scene: true,
                 area: Region [ 'l0 b{ph}px r0 h{ph}px' ] ]
             t['scene_body'] = element [
-                area: Region { l0 t0 r0 b35px }, elements: grid ]
+                area: Region [ body ], elements: grid ]
+        el [ orb && orb.side_tab == 'wifi' ]
+            t['wifi_panel'] = WifiPanel [
+                area: Region [ body ] ]
         el
             t['instance_panel'] = InstancePanel [
-                area: Region { l0 t0 r0 b35px } ]
+                area: Region [ body ] ]
         # the toolbar: one group at its right end, reload then scenes
         # then props; the props toggle sits where the status bar's is
+        if [ sys ] return t
         scn : bool [ orb && orb.side_tab == 'scenes' ]
         ready : bool [ au_live_get_pending[] == 1 ]
         t['side_bar'] = SideBar [ elements: Elements [

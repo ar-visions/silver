@@ -33,6 +33,7 @@ Keep it in step with the imports.
 | virglrenderer | main | qemu | https://gitlab.freedesktop.org/virgl/virglrenderer | MIT | Dave Airlie, Collabora and contributors |
 | Mesa | 26.2.2 | os-bootstrap (Vulkan: venus, radv for AMD, anv for Intel; patched: os-bootstrap/mesa.diff) | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
 | libdrm | 2.4.134 | os-bootstrap (radv and anv need 2.4.133+) | https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz | MIT | The DRI project |
+| iwd (with its ell) | 3.12 | wifi; runs on orbiter-os, started by init | https://mirrors.edge.kernel.org/pub/linux/network/wireless/iwd-3.12.tar.xz | LGPL-2.1-or-later | Intel Corporation and contributors |
 | SPIRV-LLVM-Translator | 8e82970 | os-bootstrap (build tool: anv's built-in GPU programs) | https://github.com/KhronosGroup/SPIRV-LLVM-Translator | Apache-2.0 WITH LLVM-exception | The Khronos Group |
 | libclc (from LLVM bd7db75) | bd7db75 | os-bootstrap (build tool: anv's built-in GPU programs) | https://github.com/llvm/llvm-project/tree/main/libclc | Apache-2.0 WITH LLVM-exception | The LLVM project |
 | libuev | v2.4.1 | features | https://github.com/troglobit/libuev | MIT | Flemming Madsen, Joachim Wiberg |
@@ -56,6 +57,8 @@ Keep it in step with the imports.
 | dependency | used by | source | license | authors |
 |---|---|---|---|---|
 | Fontconfig | trinity (FontMatch, linux) | https://gitlab.freedesktop.org/fontconfig/fontconfig | MIT-style (HPND, see its COPYING) | Keith Packard and the Fontconfig contributors |
+| D-Bus (libdbus-1, dbus-daemon) | wifi (talks to iwd); tray (apps' tray icons, window menus); orbiter-os's system and session buses | https://gitlab.freedesktop.org/dbus/dbus | AFL-2.1 OR GPL-2.0-or-later | Red Hat, Havoc Pennington and the D-Bus contributors |
+| wlroots 0.17 | wayland (the compositor orbiter shows windows from) | https://gitlab.freedesktop.org/wlroots/wlroots | MIT | the wlroots contributors |
 
 ## Files fetched by url
 
@@ -66,6 +69,9 @@ Keep it in step with the imports.
 | NVIDIA open GPU kernel modules 610.57.04 | os-bootstrap (fetched by its build page) | https://github.com/NVIDIA/open-gpu-kernel-modules | MIT OR GPL-2.0-only | NVIDIA Corporation |
 | Linux firmware (the build host's /lib/firmware, copied into the drive tree) | os-bootstrap | https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git | per file (see its WHENCE) | the hardware vendors, gathered by the linux-firmware project |
 | mtools 4.0.48 (build tool) | os-bootstrap (the installer stick's EFI partition) | https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz | GPL-3.0-or-later | Alain Knaff, David Niemi and contributors |
+| gtk-shell.xml (GTK 4.14.5's Wayland protocol; C made from it by wayland-scanner) | wayland (a GTK app's menu bar address) | https://gitlab.gnome.org/GNOME/gtk/-/raw/4.14.5/gdk/wayland/protocol/gtk-shell.xml | LGPL-2.1-or-later | The GTK Team |
+| appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
+| Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | Blender 4.5.14 LTS (Linux x64 release; run as a program, not linked) | aeon (blend.py reads .blend files into a project folder) | https://download.blender.org/release/Blender4.5/ | GPL-3.0-or-later | the Blender Foundation and the Blender community |

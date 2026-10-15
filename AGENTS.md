@@ -267,6 +267,10 @@ key is no). Values, choices
 and pickers live in the panels already on screen.
 Why (Kalen): it does not obscure the work, so the user can
 inspect it while deciding, and decide better.
+The one exception (Kalen, Oct 15): the menus orbiter spawns (a
+window's menu from the system bar, a tray icon's menu) slide out of
+the dock as a drawer over the app, on a blur of what is under it;
+the app keeps its width. Nothing else overlays.
 Not an overlay: the navigator (trinity/navigation.ag) is a whole
 view under the bar, not a box over the work. File open and file
 save (save as, an untitled drawing's first save) go through it
@@ -388,6 +392,72 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    json and the gbm platform json. Checked: vulkaninfo run by
    the tree's ld.so with only the tree's libraries finds the
    RTX 3060, driver 610.57.04. grub-debug.sh is still on.
+7. BUILT, not booted (Oct 15, Kalen: a hardware cursor, its move
+   eased by filter_n at the screen's refresh) DRM owns the screen.
+   NVIDIA's VK_KHR_display planes are full screen only (no cursor
+   plane), so the VK_KHR_display surface is gone: trinity asks the
+   Vulkan device for its card (VK_EXT_physical_device_drm; card2 on
+   europa, never a guess by number), devices opens it as master
+   (platform_kms_open), trinity makes three LINEAR exported images
+   (Texture shareable + host_linear) that become framebuffers
+   (platform_kms_add_fb: AddFB2WithModifiers LINEAR; plain AddFB2
+   is refused: nvidia reads no modifier as tiled), copies each
+   frame into the free one and page-flips it (platform_kms_back,
+   platform_kms_flip; one flip in flight, paced by the vblank
+   event). The pointer is the CRTC's cursor plane (256 x 256 on
+   nvidia; a white arrow with a 1 px black edge drawn by devices,
+   platform_kms_cursor_image for others), moved without a frame.
+   Easing: each poll moves the drawn point a share of the way to
+   the mouse, keep = (1 - 0.3)^(dt x refresh Hz): it keeps 70%
+   of its place and takes 30% of the mouse a refresh at any rate
+   (Kalen; platform_cursor_ease). Then (Kalen, Oct 15, first
+   boot where it moved: "too instant"; "it must decay at the
+   frame factor of our hz rate"): per refresh at the mode's hz,
+   keep = (1 - g_ease)^(dt x hz), g_ease 0.3 (the build tried
+   was my 0.7 by mistake). The app
+   gets the eased point (clicks land where it is drawn).
+   Checked on europa without X (X holds master): card2 found,
+   connector 825, crtc 199, 2560 x 1440 at 165 Hz, the three
+   framebuffers taken, frames copied; SetCrtc refused (not master),
+   as expected. The arrow checked as a picture. NOT seen on a
+   screen: needs the tree written and a boot.
+   Then (Kalen: the cursor an svg drawn by trinity; 24 x 24):
+   Display.kms_pointer draws trinity/images/cursor2.svg (Kalen's,
+   made in aeon) into a 24 x 24 Canvas, reads it back, gives it to
+   the cursor plane. Click point: an element id hot (its middle,
+   not drawn), else the drawing's point nearest the top left (the
+   tip). devices' own arrow stays as the fallback. Checked by a
+   dump of the plane's buffer: the arrow, its white border and
+   shadow, the hotspot 1.6 px in at the tip. An app's share links
+   trinity's images at its build: build the app after a new svg.
+   Fixed (Oct 15, Kalen's boot: the arrow blue inside; "trinity
+   must render svg the same as Aeon"): draw_svg drew its cache
+   with its own copy of SVGModel.render's loop; it calls
+   SVGModel.render_tinted now (render is its untinted form). The
+   blue was trinity's: a canvas with the reduce pass (an svg drawn
+   4x) draws through Render.draw_immediate, which took the ring's
+   next index as draw_slot AFTER the paint had bound its textures
+   into the old one, so a gradient's stops strip missed its draw
+   and the mask slot still held the path field (one channel).
+   draw_immediate now leaves draw_slot on the ring slot its next
+   draw uses (waited free first), and sync_fence rewinds such a
+   render to ring_i, not 0. Any reduce canvas with a gradient or
+   image draw was affected. Seen: cursor2 at 24 px, a grey
+   gradient as in Aeon; trinity tests exit 0.
+   SVGModel gained a method: build every trinity app (orbiter,
+   wizard, aeon, os-bootstrap) before it runs again.
+   Not booted: the evdev rescan (devices kms_poll, every second)
+   and init.c's uevent hotplug (modprobe each `add@` MODALIAS),
+   for the USB keyboard and mouse that came up after init's one
+   modprobe pass (no usbhid, the pointer never moved).
+   Boot (05:00, Kalen: still not moving): usbhid loaded at 13.7 s
+   (the hotplug ran) but no HID input followed: the listener began
+   reading only after the 11 s first pass, whose drivers' device
+   events overflowed its socket, so hid-generic never loaded; and
+   the kernel's own requests went to /sbin/modprobe (none in the
+   tree). init.c now: kernel.modprobe set to /usr/sbin/modprobe,
+   the listener (16 MB buffer) started before the pass, a second
+   pass after it. Tree written 05:05; not booted.
 
 ## orbiter-os installer — live list (Oct 10 2026)
 
@@ -860,11 +930,338 @@ is `wizard`; it uses whatever supported card is in the machine.
    cycling, the folder table under the map. NOT driven: a drag
    (nothing here can shrink as a user: p1 is mounted, NTFS needs
    root), a real install into free space, swap at boot.
+21. DONE (Oct 15, Kalen: "it needs its own platform in its user
+   land") the drive tree builds itself: os-bootstrap add_toolchain
+   adds silver (install/bin/silver, build/silver), clang and lld,
+   git (+ git-core), install/include, clang's own include
+   (install/lib/clang/22/include), /usr/include, gcc's start files
+   (/usr/lib/gcc/x86_64-linux-gnu: clang links crtbeginS, libgcc),
+   glibc's link files in /usr/lib/x86_64-linux-gnu (crt1, Scrt1,
+   crti, crtn, libc.so and libm.so scripts, libc_nonshared.a,
+   libpthread.a, libdl.a; the scripts name /lib's libc.so.6,
+   libm.so.6, libmvec.so.1, added there: the tree's /lib is not a
+   link to /usr/lib), every file git tracks in silver, and .git (a
+   module builds only in its repository). ~560 MB; tree 3.2 GB,
+   44,114 entries. Checked on the tree's loader and libraries
+   alone: a C program compiled with the tree's clang and headers,
+   linked by its lld with its crt and gcc files, ran; the tree's
+   silver and git start. NOT checked: a silver module built inside
+   a booted orbiter-os.
+   On the way (Kalen): the old images deleted: orbiter-os/
+   initramfs.cpio (1.1 GB, qemu era) and the old tree (its 64
+   root-owned files, and the installed /orbiter-os, need sudo).
+22. DONE (Oct 15) the install runs as root through pkexec's prompt
+   (a user) or as it is (root: orbiter-os from the stick): the plan
+   is one sh script (sh_head: boot_second, the new firmware entry
+   put second; step_sh each step, brace-free since silver strings
+   interpolate { }), uuids fixed at plan time (lsblk, or a new one
+   given to mkfs.ext4 -U), the copy by tar (links, modes, times;
+   kernel trees made empty; --no-same-owner), progress from tar's
+   checkpoints. A dry run logs the script (sh -n clean). The source
+   from another system is os-bootstrap's drive_tree, the boot words
+   os_words (shared with the stick). An existing /orbiter-os link
+   is replaced by the copy. t_install_steps, t_boot_order (a fake
+   efibootmgr), t_free_plan; `silver --test wizard` exit 0. Kalen's
+   sudo install ran (02:44) before the pkexec version.
 19. OPEN (Kalen, Oct 10) orbiter-os on Macs. Apple Silicon:
    Asahi's kernel tree (github.com/AsahiLinux/linux, branch asahi,
    7.1.9 on Oct 10) as a kernel source choice, and an installer
    for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
    stick as PCs do. (7.x is in the kernel choices now: item 18.)
+
+## orbiter-os Wi-Fi — live list (Oct 15 2026)
+
+Kalen: a Wi-Fi setup in orbiter. His picks: iwd does the joining
+(scan, WPA, reconnect, its own DHCP); it shows in both places:
+a mark in orbiter's status bar opening the network list in the
+side panel, and a page in the installer wizard. iwd is driven
+over D-Bus, so orbiter-os gains a system bus. In order:
+1. DONE (client) `wifi` module: iwd 3.12 imported (kernel.org
+   tarball, its own ell; client, monitor, wired, tools, systemd
+   off) into install/libexec/iwd, its bus policy into install/
+   share/dbus-1/system.d; remembered networks under install/var/
+   lib/iwd (inside the drive tree). Wifi (silver over libdbus):
+   iwd's objects, networks strongest first with signal and bars,
+   scan, join (our agent at /orbiter/wifi answers iwd's password
+   request), leave, forget, poll each frame (no callbacks).
+   wifi/tests/fake_iwd.py: a stand-in iwd (dbus-python) on a
+   private bus; t_wifi_join passes: 3 networks in order, a wrong
+   password comes back "Could not join Neighbor: the password
+   may be wrong", the right one connects. Icons: Material
+   Symbols wifi bars (Apache 2.0), to go in wifi/images.
+   OPEN: the network list element (with item 4).
+2. OPEN drive tree: iwd, dbus-daemon and their config (bus
+   policy, /etc/iwd/main.conf with iwd's DHCP on, DNS written to
+   /etc/resolv.conf), /var/lib/iwd for remembered networks.
+3. OPEN init.c: start the system bus, then iwd, before orbiter.
+4. DONE (Oct 15) orbiter: the Wi-Fi mark in the system bar
+   (Wifi.mark: off, not joined, or the joined network's bars); a
+   click opens the side panel on Wi-Fi (side_tab 'wifi'), again
+   folds it. wifi's WifiPanel: networks strongest first, a click
+   opens Join (a dotted password when secured and unknown),
+   Disconnect, Forget under the row; Scan; the problem line. One
+   Wifi for the process (wifi_shared); with no bus it retries
+   every 3 s. orbiter's on_frame polls it and redraws the bar on
+   a change or a new minute. Icons: Material Symbols in
+   trinity/images (wifi_0..4, wifi_off, wifi_none, wifi_lock,
+   power, restart; THIRD_PARTY.md, with iwd and D-Bus).
+   Seen hidden on the stand-in: list, Neighbor chosen, password
+   typed as dots, Join: "connected", the mark's bars changed.
+   Found: a TextInput subclass whose style sets only layers.face
+   lost TextInput's body box and `editable` (no box, no typing):
+   WifiSecret spells the whole style out. The wizard's WizSecret
+   is written the same way: OPEN, likely the same (not checked);
+   the owner is trinity's style inheritance.
+5. OPEN wizard: a Wi-Fi page after the hardware check.
+6. OPEN a boot (the client checked on the stand-in iwd only).
+7. DONE (Oct 15) the power button at the bar's right end; ctrl /
+   cmd held makes it Restart (yellow), shift over it the same
+   (Rule #12). On orbiter-os: sync, reboot(RB_POWER_OFF or
+   RB_AUTOBOOT); in a window it only logs (never this computer).
+   Seen hidden: ctrl showed restart, both clicks logged.
+8. DONE (Oct 15) the system bar (orbiter/SystemBar.ag): 30 px,
+   black, the date and time in the middle (Thu 15 Oct  05:51),
+   the tray at the right (Wi-Fi, power). On when /proc/cmdline
+   has orbiter.init= (orbiter-os), or `--force_system true`. The
+   root moves under it: dock and the main split start at its
+   foot. Seen hidden with and without the flag (without: as
+   before). NOT seen on orbiter-os.
+9. BUILT, not booted (Kalen, Oct 15: on orbiter-os, orbiter's
+   navigation and working folder start at silver's folder) init.c
+   work_folder: before it runs orbiter it enters orbiter.init's
+   path up to /install/ (/src/silver on europa's boot line);
+   orbiter's startup_path is the folder it was started in. Checked
+   by a copy of the function: /src/silver/install/build/orbiter
+   gives /src/silver. Needs the tree written again (initramfs).
+   Found (Oct 15): `orbiter --install` copied the 05:05 tree, so
+   the system bar and Wi-Fi were not in it; the tree was written
+   again at 06:2x with them, before this init change.
+10. BUILT (Kalen, Oct 15: "make --install update the tree when
+   it installs") the install's worker (wizard work), when its
+   copy's source is the drive tree (installing from another
+   system), first runs os-bootstrap's assemble: the tree and its
+   initramfs brought up to the last build; copy_file skips files
+   whose time is unchanged, so only newer ones are copied. The
+   line "Updating the drive tree from the build" shows. `silver
+   --test wizard` exit 0 (t_installer_image_arm fails as before).
+   NOT driven: a real install (needs root and pkexec).
+11. IN PROGRESS (Kalen, Oct 15) a console app as its own module:
+   `console` (console/console.ag, `silver console`) over trinity's
+   Console (a shell on a pty). Then orbiter's console tab hosts the
+   module like any hosted app, and orbiter's own console code goes.
+12. DONE (Oct 15, Kalen: `..` in orbiter's list closed the whole
+   list) any click in the list closed it, `..` or a project or a
+   folder. Cause, mine (Oct 14): trinity lets a focused field go on
+   a press outside it, and the list stays open only while the pane
+   title or the list holds focus (run_search's title_focus ||
+   list_focused); CommitView takes no focus, so after the click
+   nothing held it. Now the let-go skips a press the element marked
+   handled (ev.no_default), as set_focus already did; CommitView
+   marks every press. Seen hidden: Quake-2 chosen, into ref_soft,
+   `..` back, the list open throughout. trinity tests exit 0; a
+   running orbiter needs a restart.
+13. BUILT (Kalen, Oct 15: claude's login opens the system browser)
+   os-bootstrap/xdg-open.c (static, /usr/bin/xdg-open in the tree)
+   writes `app open <url>` to orbiter's socket; orbiter's on_agent
+   hosts the url's module (aura) in the active pane. The boot line
+   gains BROWSER=/usr/bin/xdg-open: claude with no X/Wayland display
+   opens nothing unless BROWSER is set. Checked hidden: xdg-open
+   exit 0, aura hosted, its title Example Domain; the page itself
+   not in the shot (empty content area). Not booted; the old GRUB
+   entry lacks BROWSER.
+14. BUILT, tree written (Kalen, Oct 15: claude on orbiter-os, by
+   Anthropic's installer, run by the bootstrap). add_claude runs
+   claude.ai/install.sh once with HOME=install/tmp/claude-home,
+   puts the newest versions/<v> at /usr/local/share/claude/
+   versions/<v>, links /usr/local/bin/claude, adds the CA bundle.
+   Not /root/.local: the tree's /root/.local is root-owned (made by
+   a boot), and write_tree failed there without a word (OPEN: say
+   so). The boot line gains PATH=/usr/local/bin:...: the kernel
+   gives init none, and trinity's shell_tool looks on PATH.
+   Checked: 2.1.301 --version on the tree's loader and libraries
+   alone. The USB stick carries it too (it stages the tree).
+15. DONE (Kalen, Oct 15: ChatGPT's tray icon; its menu in the side
+   panel) `tray` module: orbiter holds org.kde.StatusNotifierWatcher
+   on the session bus (not when another tray has it: a desktop's),
+   reads each item (title, else its tooltip's; IconPixmap, else
+   IconThemePath/IconName.png, as Chromium writes it; dbusmenu
+   GetLayout flattened), draws a TrayMark per item left of Wi-Fi.
+   Left click: Activate; right click (or ItemIsMenu): side_tab
+   'tray', TrayPanel: name, Open, the entries (Event clicked).
+   init.c session_start: dbus-daemon with tray/root/etc/dbus-1/
+   orbiter-session.conf, DBUS_SESSION_BUS_ADDRESS for orbiter.
+   Checked hidden on a private bus, ChatGPT in the wayland module:
+   its icon in the bar, the panel lists New Chat, Open ChatGPT,
+   Quit; Quit ended ChatGPT and its icon left. Not driven: a left
+   click's Activate. Not booted.
+16. BUILT (Kalen, Oct 15) git (already in the tree) and the user's
+   SSH keys. The tree gains ssh, ssh-keygen, ssh-add, ssh-agent,
+   /etc/ssh/ssh_config(.d). os-bootstrap ssh_dir (~/.ssh),
+   ssh_keys (private files beside a .pub), ssh_copy_sh (folder
+   700, files go-rwx). Wizard account page: a row 'SSH keys: copy
+   / leave out' (off by default); the plan's step 'Copy your SSH
+   keys' to /root/.ssh, owned by root. Packager (Write installer):
+   'Carry my keys' / 'Leave them out' (off by default) copies them
+   into the stick's /root/.ssh; booted from the stick the install
+   finds them there (HOME=/root). wizard t_ssh_keys (a stand-in
+   .ssh): 1 key, dir 700, key 600. Checked: the tree's ssh and git
+   run on its own libraries. Not driven: the rows in a hidden run,
+   a stick, an install.
+17. DONE (Oct 15) bash and the everyday commands in the tree
+   (add_shell: bash, coreutils' common ones, grep, sed, find,
+   xargs, diff, tar, gzip, xz, less, ps, kill, pgrep, which, awk,
+   curl, clear, tput, nano, vi; /usr/share/terminfo). ~18 MB.
+   Boot line SHELL=/bin/bash (claude looks for a full shell; the
+   console runs /bin/bash). No ripgrep: claude carries its own.
+   Checked: the tree's bash ran ls, sort, sed, awk, which, grep,
+   find, tput on the tree's libraries alone.
+18. DONE (Kalen, Oct 15) os-mode (system_on): the navigator's
+   search lists the programs on PATH (orbiter program_list, by name,
+   the first on PATH wins; rows say 'program'; a name starting with
+   the query first). is_program[ p ] tells a row's file apart.
+   Found on the way, mine (Oct 14): a focused field kept every key,
+   so typing in a pane's title ran no search (and Enter, Backspace
+   never reached orbiter). EditorTitle.on_char / on_key now hand
+   the key to orbiter first, then the field edits, as before Oct
+   14. Seen hidden: 'nan' lists nano, rnano (program) and two
+   files; Backspace to 'na' relists.
+19. DONE (Oct 15) one window per pane (wayland.c): each toplevel
+   has its own headless output at x = id x 16384 (a base output at 0,
+   never drawn: GTK waits for one before it opens a window); frames,
+   sizes, pointer input by window id (wlc_window_*, wlc_frame_*).
+   The display runs on its own thread (poll on its loop's fd, every
+   wlc_* call under a lock): a tray-only app is answered while the
+   shell is idle. Direct scan-out is off (WLR_SCENE_DISABLE_DIRECT_
+   SCANOUT): a window covering its output was handed over as the
+   app's own shm buffer, which cannot be imported (GTK 3 drew black).
+   WaylandView (one window in a pane; `animated : true` on the class)
+   is split from the wayland app. Seen hidden: calculator and text
+   editor in two panes, typing into the second.
+20. DONE (Oct 15) os-mode: orbiter starts its Wayland display (then
+   unsets WAYLAND_DISPLAY: hosted trinity apps stay off it); a
+   program row opens the console module (`console --wayland <sock>
+   <program>`: its default arg is the program, run as the session's
+   launch); a mapped window goes to the pane whose hosted app is one
+   of its pid's ancestors (/proc stat), else the active pane; a
+   closed window gives the pane back. Programs re-read when a PATH
+   folder changes. The tree gains the console module (add_module).
+   Seen hidden: gnome-calculator from the search in pane 0, 7+5=12
+   by clicks, its X closed it.
+   OPEN: the console instance stays after its program exits.
+   Fixed (Kalen, Oct 15: the desktop's Show in Files opened inside
+   orbiter): the display took wayland-0; on his X11 session that name
+   was free, and a program with no WAYLAND_DISPLAY falls back to it.
+   It is orbiter-N now (wl_display_add_socket): only programs handed
+   the name come. Also: WaylandView clips to its pane (the cut header
+   drew over the pane's title bar); seen hidden with Inkscape's
+   dialog (its cut top stays under the title).
+   Fixed (Kalen: the menu panel sliding out flashed the window black;
+   sometimes a resize was needed to see it again): the pane's size
+   went to the window every frame of the slide (new output buffers
+   each frame), and imports were keyed by buffer address, which a
+   resize reuses for new buffers (a stale import of a freed one).
+   WaylandView sends a size once the pane has held it 150 ms; the
+   compositor counts each window's size changes (wlc_window_epoch)
+   and the view starts its imports over at each, keeping the old
+   ones 8 frames (the GPU may still draw them). Seen hidden: no
+   black pixel in any frame of the panel opening and closing.
+   Fixed (Kalen: typing in the navigator took ~30 s with results):
+   is_program per result row re-checked the 15 PATH folders' times
+   (500 rows a key); it reads the list the search already read.
+   Measured hidden on his PATH: 'i' 8.6 s, 'in' 16.8 s -> 0.2 s.
+22. DONE (Kalen, Oct 15) the system bar is always on (force_system
+   defaults to true; --force_system false turns it off). With it:
+   orbiter's button (DockHome, home_button) is the bar's first, as
+   wide as the dock; the window menu starts after it; the console
+   button takes the dock's foot; the side panel's toggles (reload,
+   scenes, panel) sit in the tray left of the tray icons (a tab opens
+   a folded panel; the lit one folds it); the side panel has no foot
+   bar and the status bar no console or panel toggle. The menu and
+   tray panels scroll: their rows are in PanelRows (tray module),
+   each flowing after the last (t{gap}+: trinity scrolls only flowed
+   children), content_h from the lowest child (panel_fit). Seen
+   hidden: the layout; a 41-entry menu scrolled by the wheel under a
+   fixed heading; a click on a scrolled row picked it.
+   OPEN silver: a { } Region as a call argument fails "expected 2
+   args, got 2"; a quoted Region [ '...' ] works.
+   Then (Kalen): the bar's menu names (MenuTop) and tray icons
+   (TrayMark) take the tray buttons' near light (inset glow, edge and
+   inner light by the pointer); orbiter's bar button is BarHome (the
+   tray buttons' fill and light, no top line: that was the dock's
+   foot). Seen hidden: no line at its top, its edge lit near it.
+23. DONE (Kalen, Oct 15) the menu drawer (Rule #13's exception):
+   MenuDrawer (SystemBar.ag) slides from under the dock (l-281.25px
+   to l78.75px, 260 ms) over the panes, 360 px wide; root order is
+   main, drawer, dock. Its ground (DrawerGround) is the screen as
+   drawn so far, copied and blurred that frame (orbiter.drawer_blur:
+   one snapshot and ReduceBlur for the window, as the exchange keeps
+   its live_blur: building one per drawer crashed in Render_init on
+   the second open), under #140a2a99. A menu name or a tray icon's
+   menu opens it, the same again, Escape, a press outside or a pick
+   shuts it; it stays mounted 400 ms while it slides away. The side
+   panel no longer shows menus. Seen hidden: the drawer over the
+   test app (the app's width unchanged, its white blurred grey),
+   Escape, four open/close rounds, File > New reached the app and
+   shut it.
+   Then (Kalen: the navigator drew over a running app's window): a
+   pane shows its window only while its navigator is shut
+   (EditorView.text_els, !browse_active); the app keeps running.
+   Seen hidden: the window's white 100% of the area, 0% with the
+   navigator open, 100% again after Escape.
+   Then (Kalen: the navigator's card said console, its picture the
+   console's black, not the Inkscape window): place_window notes the
+   window on the instance whose pid started it (AppView.wl_window);
+   the card draws the window (wayland window_texture: the window's
+   current frame imported for any picture of it, per window and
+   size, the last size kept one change longer), names the program
+   (program_of: the console's last arg) and says running; picking it
+   puts the window back in the pane (show_instance). Seen hidden:
+   'menutest4 running' with its window's picture; a click on the card
+   brought the window back.
+   Then (Kalen): the drawer's blur is taken once as it opens (and on
+   a new window size), not every frame; MenuDrawer.background_lens
+   (false by default) makes it live. Measured hidden: two opens of
+   ~10 frames each, two takes.
+   Then (Kalen): typing with a menu drawer open filters it: the box
+   (MenuFilter) shows at the menu's foot as soon as a key is typed,
+   the matching entries (any case; submenu names left out) under the
+   heading; Backspace edits, Enter runs the first match, Esc clears
+   the filter, then shuts the drawer. The drawer takes the focus once
+   mounted (orbiter.drawer_focus), so a pane title keeps no keys.
+   Both menu kinds (MenuPanel, TrayPanel; entry_matches in tray).
+   Seen hidden: '2' in the 41-entry menu left Item 2, 12, 20-29, 32
+   and the box at the foot; Enter ran it and shut the drawer.
+   Then (Kalen): a pane showing a window has its close where a
+   module's run button is (title_nav 'modicon', AltTab win_close; the
+   top right stays a dialog's): it asks the window to close
+   (wlc_window_close), as its own X. The title moves past it and
+   reads the window's title (was 'Open'). Seen hidden: arrows, the
+   close, 'Menu Test'; a click closed the window and the app ended.
+21. DONE (Oct 15, Kalen: menu data; crop the header off the rest)
+   wayland.c serves gtk_shell1 (capabilities 3: GTK hides its own
+   menu bar; set_dbus_properties gives the menubar's bus and path,
+   the app and window action paths) and org_kde_kwin_appmenu (Qt:
+   set_address of a dbusmenu), and KDE's server decoration (GTK 3
+   then draws no title bar); wlc_window_csd: neither decoration was
+   taken (GTK 4 / libadwaita). tray module: dbm_entries/dbm_click
+   shared with the tray; AppMenu reads org.gtk.Menus (Start by
+   group, sections inline, submenus one deeper) and org.gtk.Actions
+   (DescribeAll: enabled, boolean state as a check; Activate with a
+   string target). orbiter: the active pane's window menu as
+   MenuTop names at the system bar's left; a click lists that menu
+   in the side panel (MenuPanel; side_tab 'menu'), a pick runs it
+   and folds the panel; a CSD window's top 46 px is cut off.
+   Protocol files and wlroots in THIRD_PARTY.md.
+   Seen hidden (GTK 4 and GTK 3 test apps): File / View in the bar,
+   no header or menu bar in the window, Dark checked after a pick,
+   New and Quit reached the app. NOT driven: a Qt app (none here).
+Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
+No NetworkManager or other backends for a user session on another
+system: there the mark reads off and the panel says so.
+Kalen: no systemd. iwd is built without its service files and
+init starts dbus-daemon and iwd itself. Ubuntu's dbus-daemon
+links libsystemd as a library (inert); OPEN: our own dbus build
+without it if wanted.
 
 ## orbiter-os shell design — live list (Oct 1 2026)
 

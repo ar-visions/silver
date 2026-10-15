@@ -17,28 +17,87 @@ func wlc_socket         [] -> cstr
 func wlc_pump           []
 func wlc_resize         [ w: i32, h: i32 ]
 func wlc_fullscreen     [ on: i32 ]
-func wlc_frame_id       [] -> u64
-func wlc_frame_gen      [] -> u64
-func wlc_frame_w        [] -> i32
-func wlc_frame_h        [] -> i32
-func wlc_frame_format   [] -> u32
-func wlc_frame_modifier [] -> u64
-func wlc_frame_stride   [] -> u32
-func wlc_frame_offset   [] -> u32
-func wlc_frame_fd       [] -> i32
-func wlc_pointer_motion [ x: f32, y: f32 ]
-func wlc_pointer_button [ x: f32, y: f32, button: i32, state: i32 ]
+func wlc_window_count  [] -> i32
+func wlc_window_at     [ i: i32 ] -> u64
+func wlc_window_newest [] -> u64
+func wlc_window_open   [ id: u64 ] -> i32
+func wlc_window_title  [ id: u64 ] -> cstr
+func wlc_window_app    [ id: u64 ] -> cstr
+func wlc_window_pid    [ id: u64 ] -> i32
+func wlc_window_resize [ id: u64, w: i32, h: i32 ]
+func wlc_window_focus  [ id: u64 ]
+func wlc_window_close  [ id: u64 ]
+# it draws its own header (neither decoration protocol took it)
+func wlc_window_csd    [ id: u64 ] -> i32
+# counts the window's size changes
+func wlc_window_epoch  [ id: u64 ] -> u64
+# its menu: 0 none, 1 dbusmenu, 2 GTK; then where it lives on D-Bus
+func wlc_window_menu_kind [ id: u64 ] -> i32
+func wlc_window_menu_bus  [ id: u64 ] -> cstr
+func wlc_window_menu_path [ id: u64 ] -> cstr
+func wlc_window_menu_app  [ id: u64 ] -> cstr
+func wlc_window_menu_win  [ id: u64 ] -> cstr
+func wlc_frame_id       [ id: u64 ] -> u64
+func wlc_frame_gen      [ id: u64 ] -> u64
+func wlc_frame_w        [ id: u64 ] -> i32
+func wlc_frame_h        [ id: u64 ] -> i32
+func wlc_frame_format   [ id: u64 ] -> u32
+func wlc_frame_modifier [ id: u64 ] -> u64
+func wlc_frame_stride   [ id: u64 ] -> u32
+func wlc_frame_offset   [ id: u64 ] -> u32
+func wlc_frame_fd       [ id: u64 ] -> i32
+func wlc_pointer_motion [ id: u64, x: f32, y: f32 ]
+func wlc_pointer_button [ id: u64, x: f32, y: f32, button: i32,
+                          state: i32 ]
 func wlc_pointer_axis   [ dx: f32, dy: f32 ]
 func wlc_key            [ glfw: i32, state: i32 ]
 func wlc_spawn          [ cmd: cstr ] -> i32
 
-# a Wayland display as one silver app: every client composites into the
-# pane, and the pane's mouse and keys go to the client under them
+# one window's imports for pictures of it: this size's, and the last
+# size's kept one change longer (the GPU may still draw them)
+class WinThumbs
+    public epoch  : u64
+    public frames : map Texture [string]
+    public prev   : map Texture [string]
+
+wl_thumbs : map WinThumbs [string]
+
+# a window's frame as a texture for any picture of it (a card in the
+# navigator), whatever pane shows it, or none
+func window_texture [ cv: Canvas, id: u64 ] -> Texture
+    fid : u64 [ wlc_frame_id[ id ] ]
+    if [ fid == 0 ] return null
+    if [ !wl_thumbs ] wl_thumbs = map WinThumbs [string] []
+    wk : '{id}'
+    if [ !wl_thumbs.contains[ wk ] ]
+        wl_thumbs[ wk ] = WinThumbs [ frames: map Texture [string] [] ]
+    wt : WinThumbs wl_thumbs[ wk ]
+    ep : u64 [ wlc_window_epoch[ id ] ]
+    if [ ep != wt.epoch ]
+        wt.epoch  = ep
+        wt.prev   = wt.frames
+        wt.frames = map Texture [string] []
+    key : '{fid}'
+    if [ wt.frames.contains[ key ] ] return wt.frames[ key ]
+    fw : i32 [ wlc_frame_w[ id ] ]
+    fh : i32 [ wlc_frame_h[ id ] ]
+    fd : i32 [ wlc_frame_fd[ id ] ]
+    if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
+    t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
+        wlc_frame_format[ id ], wlc_frame_modifier[ id ],
+        wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
+    wt.frames[ key ] = t
+    return t
+
+# a Wayland display as one silver app: it shows one window (the
+# newest, or the one chosen); orbiter mounts WaylandView in its panes
 element wayland : trinity
     public  width  : i32 [ 1280 ]
     public  height : i32 [ 800 ]
     # a client to start on the display, e.g. 'firefox' or 'foot'
     public [ Launch ] run : string
+    # the window shown; 0: the newest
+    public [ Live ] window : u64
     # pixels of the window's top kept out of the pane: the output is
     # made that much taller and drawn that much higher, so an app's own
     # header bar falls above the edge. 46 hides a GNOME header bar
@@ -46,6 +105,30 @@ element wayland : trinity
     # the shell passes every app its gain; the element must own the
     # member or the argument parser prints usage and drops the rest
     public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
+
+    func render [] -> Elements
+        return Elements [ 'view' : WaylandView [ run: run,
+            window: window, crop_top: crop_top,
+            area: Region { l0 t0 r0 b0 } ] ]
+
+    # a live change (the socket's set) reaches the view at once
+    public func tick [ w: Window ]
+        if [ !elements || !elements.contains[ 'view' ] ] return
+        v : cast WaylandView [ elements[ 'view' ] ]
+        if [ v ]
+            v.window   = window
+            v.crop_top = crop_top
+
+# one window of the display in a pane: its frames drawn, the pane's
+# mouse and keys sent to it; the first view starts the compositor
+element WaylandView
+    # the compositor pumps from draw: every frame, never cache-skipped
+    animated : true
+    # a client to start on the display, once
+    public run      : string
+    # the window shown; 0: the newest
+    public window   : u64
+    public crop_top : i32
     mutable up       : bool
     mutable spawned  : bool
     # the imports, one per swapchain buffer the output cycles through
@@ -53,10 +136,21 @@ element wayland : trinity
     mutable shown    : u64
     mutable last_w   : i32
     mutable last_h   : i32
-
-    # the compositor pumps from draw: every frame, never cache-skipped
-    func init []
-        animated = true
+    # the window this frame shows
+    mutable win      : u64
+    # the pane's size, and since when (ms): the window takes it once
+    # the pane has held it a moment (a sliding panel resizes no app)
+    mutable want_w   : i32
+    mutable want_h   : i32
+    mutable want_ms  : i64
+    mutable sent_w   : i32
+    mutable sent_h   : i32
+    # the window's size changes seen: its buffers are new after one
+    mutable epoch    : u64
+    # the last size's imports, kept a few frames (the GPU may still
+    # draw them), then let go
+    mutable retired  : vec Texture
+    mutable retire_n : i32
 
     func ensure [ w: i32, h: i32 ]
         if [ up ] return
@@ -82,28 +176,69 @@ element wayland : trinity
             pid9 : i32 [ wlc_spawn[ run.chars ] ]
             log 'wayland: started {run} (pid {pid9})'
         wlc_pump[]
-        fid : u64 [ wlc_frame_id[] ]
+        wn : u64 [ (window > 0) ? window : wlc_window_newest[] ]
+        if [ wn != win ]
+            win     = wn
+            sent_w  = 0
+            sent_h  = 0
+        if [ win == 0 ] return
+        settle[ w9, h9 ]
+        retire[]
+        fid : u64 [ wlc_frame_id[ win ] ]
         if [ fid == 0 ] return
         key : string '{fid}'
         if [ !frames ] frames = map Texture [string] []
         t : Texture (frames.contains[ key ]) ? frames[ key ] : null
         if [ !t ]
-            fw : i32 [ wlc_frame_w[] ]
-            fh : i32 [ wlc_frame_h[] ]
-            fd : i32 [ wlc_frame_fd[] ]
+            fw : i32 [ wlc_frame_w[ win ] ]
+            fh : i32 [ wlc_frame_h[ win ] ]
+            fd : i32 [ wlc_frame_fd[ win ] ]
             if [ fd < 0 || fw <= 0 || fh <= 0 ] return
             t = cv.vk.import_dmabuf_image[ fd, fw, fh,
-                                           wlc_frame_format[],
-                                           wlc_frame_modifier[],
-                wlc_frame_stride[], wlc_frame_offset[], cv.w ]
-            t.hold[]
+                                           wlc_frame_format[ win ],
+                                           wlc_frame_modifier[ win ],
+                wlc_frame_stride[ win ], wlc_frame_offset[ win ],
+                cv.w ]
             frames[ key ] = t
-            log 'wayland: imported frame {key} {fw}x{fh} modifier {wlc_frame_modifier[]}'
+            log 'wayland: imported frame {key} {fw}x{fh}'
         shown = fid
         ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
+        # the cut header and anything past the pane stay off screen
+        cv.save[]
+        cv.clip_rect[ vp.x, vp.y, vp.w, vp.h, 0.0, 0.0 ]
         cv.draw_image[ t,
                        rect [ x: vp.x, y: vp.y - ct, w: f32[ t.width ],
                               h: f32[ t.height ] ] ]
+        cv.restore[]
+
+    # the pane's size reaches the window once it has held 150 ms
+    func settle [ w9: i32, h9: i32 ]
+        now : i64 [ epoch_millis[] ]
+        if [ w9 != want_w || h9 != want_h ]
+            want_w  = w9
+            want_h  = h9
+            want_ms = now
+        if [ (want_w == sent_w && want_h == sent_h)
+             || now - want_ms < 150 ] return
+        sent_w = want_w
+        sent_h = want_h
+        wlc_window_resize[ win, sent_w, sent_h ]
+
+    # a new size, new buffers: the imports start over; the old ones go
+    # some frames later
+    func retire []
+        if [ retire_n > 0 ]
+            retire_n -= 1
+            if [ retire_n == 0 ] retired = vec Texture []
+        ep : u64 [ wlc_window_epoch[ win ] ]
+        if [ ep == epoch ] return
+        epoch = ep
+        if [ !frames ] return
+        if [ !retired ] retired = vec Texture []
+        for [ t: Texture, k: string ] in frames
+            retired.push[ t ]
+        frames   = map Texture [string] []
+        retire_n = 8
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
@@ -116,20 +251,21 @@ element wayland : trinity
         return y + ((crop_top > 0) ? f32[ crop_top ] : 0.0)
 
     public func on_press [ ev: Event ]
-        if [ !up ] return
-        wlc_pointer_motion[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ] ]
-        wlc_pointer_button[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ],
-                            ev.mouse.button, 1 ]
+        if [ !up || win == 0 ] return
+        y : f32 win_y[ ev.mouse.pos.y ]
+        wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
+        wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 1 ]
         if [ ux ] ux.set_focus[ a ]
 
     public func on_release [ ev: Event ]
-        if [ !up ] return
-        wlc_pointer_button[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ],
-                            ev.mouse.button, 0 ]
+        if [ !up || win == 0 ] return
+        y : f32 win_y[ ev.mouse.pos.y ]
+        wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 0 ]
 
     public func on_move [ ev: Event ]
-        if [ !up ] return
-        wlc_pointer_motion[ ev.mouse.pos.x, win_y[ ev.mouse.pos.y ] ]
+        if [ !up || win == 0 ] return
+        y : f32 win_y[ ev.mouse.pos.y ]
+        wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
 
     public func on_wheel [ ev: Event ]
         if [ !up ] return

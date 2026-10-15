@@ -7955,8 +7955,13 @@ enode aether_e_offset(aether a, enode n, Au offset, bool in_ref) { sequencer
     bool is_vec9 = vdeep9 && au_is_vector(vdeep9);
     Au_t velem9  = null;
     if (is_vec9) {
-        velem9 = au->meta.a ? au->meta.a : (n->meta_a ? (Au_t)n->meta_a :
-            (au->member_type == AU_MEMBER_VAR && au->src ? au->src->meta.a : null));
+        velem9 = au->meta.a ? au->meta.a : (Au_t)n->meta_a;
+        // through vars and aliases (alias names : vec string) to
+        // the type that says what its elements are
+        for (Au_t w = au->src; !velem9 && w && w != au; w = w->src) {
+            velem9 = w->meta.a;
+            if (w->src == w) break;
+        }
         if (!velem9) velem9 = typeid(Au);
     }
     if (a->no_build) return e_noop(a, is_vec9 ? etype_prep(a, velem9) : (etype)evar_type((evar)n));

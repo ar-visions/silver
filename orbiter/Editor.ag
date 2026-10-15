@@ -507,6 +507,8 @@ ResourceView AppView
     mutable views_buf   : vec u8
     # orbiter's tail args, forwarded to the module
     mutable module_args : string
+    # the Wayland window this instance's program opened (0: none)
+    mutable wl_window   : u64
     # orbiter has attached lldb to this app's pid
     public  attached   : bool
     # lldb attach is running on a worker
@@ -5331,6 +5333,12 @@ Control Editor
         if [ !mod ] return false
         host_module[ mod, null, url ]
         return true
+
+    # a program in the console module; the display, when given, is
+    # where a window it opens goes
+    public func open_program [ prog: string, display: string ]
+        args : (display.count > 0) ? '--wayland {display} {prog}' : prog
+        host_module[ 'console', null, args ]
 
     # host a module's app in this pane, on a file or with args alone
     func host_module [ mod: string, p: path, args: string ]

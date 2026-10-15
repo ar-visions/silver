@@ -156,6 +156,16 @@ void  platform_window_native            (platform_window* w, platform_native* ou
 void  platform_window_present_dmabuf    (int fd, int width, int height, int stride, uint32_t fourcc);
 int   platform_is_kms                   (void);  /* guest console: no window system */
 int   platform_kms_scanout_buffer      (int* w, int* h, int* stride);
+/* kms: scanout on drm card<minor> (vulkan's), page flips, cursor plane */
+int   platform_kms_open                 (int minor);
+int   platform_kms_add_fb               (int fd, int w, int h, int pitch);
+void  platform_kms_clear_fbs            (void);
+int   platform_kms_back                 (void);
+void  platform_kms_wait                 (void);
+void  platform_kms_flip                 (int slot);
+void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
+/* the pointer's easing: share of the way per display refresh */
+void  platform_cursor_ease              (float amount);
 void  platform_window_set_user          (platform_window* w, void* user);
 void* platform_window_get_user          (platform_window* w);
 

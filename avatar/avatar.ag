@@ -694,8 +694,6 @@ Orbiter Aura
 						bm_glow      *= 0.1 + 1.6 * bm_sw;
 						// the outer blue is more see through
 						bm_glow      *= mix(1.0, 0.4, smoothstep(0.5, 1.6, cyl_t));
-						// over the base the glow swirls on the metal as at beam 4
-						bm_glow      *= mix(1.0, 4.0, bm_bk);
 						// the tornado's color: light blue and pink turning into each
 						// other with the twist, a pale blue-white only at the axis;
 						// warm still right at the source
@@ -793,8 +791,7 @@ Orbiter Aura
 						vec2  gd  = vec2(cos(ta * 0.9), sin(ta * 0.9));
 						float gg  = clamp(0.5 + 0.5 * dot(xy, gd) / rw, 0.0, 1.0);
 						vec3  dc  = mix(vec3(0.55, 0.85, 1.7), vec3(1.5, 0.55, 1.25), gg);
-						// at beam 1 as strong as the beam at 4 (its column stays)
-						float dd  = 24.0 * ubo.beam * gain * sh * nm * dr_dt;
+						float dd  = 6.0 * ubo.beam * gain * sh * nm * dr_dt;
 						col   += dc * dd * (1.0 - alpha);
 						alpha += dd * (1.0 - alpha);
 					}

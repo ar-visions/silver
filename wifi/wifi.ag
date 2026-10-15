@@ -1,0 +1,755 @@
+# wifi: networks joined through iwd, over the system bus
+import vec
+import img
+import trinity
+import <time.h>
+import <dbus/dbus.h>
+    -I/usr/include/dbus-1.0
+    -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+    -ldbus-1
+import <stdio.h>
+import <stdlib.h>
+import <signal.h>
+
+# the daemon that joins networks (scan, WPA, DHCP); orbiter-os
+# runs it, orbiter drives it
+import iwd/3.12 from https://mirrors.edge.kernel.org/pub/linux/network/wireless/iwd-3.12.tar.xz
+    --disable-client
+    --disable-monitor
+    --disable-wired
+    --disable-systemd-service
+    --disable-manual-pages
+    --disable-tools
+    --with-dbus-datadir={install}/share
+    --with-dbus-busdir={install}/share/dbus-1/system-services
+
+
+# one network as iwd lists it
+class WifiNet
+    public path   : string
+    public name   : string
+    # open, psk or 8021x
+    public kind   : string
+    # signal in dBm x 100, as iwd gives it
+    public signal : i32
+    public known  : bool
+    public joined : bool
+
+    # 0 to 4 bars, as the status icons show them
+    func bars [] -> i32
+        if [ signal >= -6000 ] return 4
+        if [ signal >= -6700 ] return 3
+        if [ signal >= -7400 ] return 2
+        if [ signal >= -8100 ] return 1
+        return 0
+
+    func secured [] -> bool
+        return kind != 'open'
+
+# a variant's string or object path
+func var_text [ v: @DBusMessageIter ] -> string
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    t : i32 [ dbus_message_iter_get_arg_type[ @inner ] ]
+    if [ t != DBUS_TYPE_STRING && t != DBUS_TYPE_OBJECT_PATH ]
+        return ''
+    cs : cstr
+    dbus_message_iter_get_basic[ @inner, @cs ]
+    return string[ cs ]
+
+func var_bool [ v: @DBusMessageIter ] -> bool
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_BOOLEAN ]
+        return false
+    b : u32 [ 0 ]
+    dbus_message_iter_get_basic[ @inner, @b ]
+    return b != 0
+
+# the Wi-Fi adapter's state, its networks, and joining them
+class Wifi
+    # iwd's station state: connected, connecting, disconnected
+    public state    : string
+    public nets     : vec WifiNet
+    public scanning : bool
+    # the last failure, in plain words
+    public problem  : string
+    # the network being joined, '' when none
+    public joining  : string
+    # the bus answered and iwd has an adapter
+    public ready    : bool
+    intern conn     : @DBusConnection
+    intern station  : string
+    intern word     : string
+    intern serial   : u32
+    intern dirty    : bool
+    # when open was last tried (us): the bus may come up later
+    intern tried    : i64
+    # iwd's name on the bus
+    intern dest     : string
+
+    func init []
+        state   = 'disconnected'
+        nets    = vec WifiNet []
+        problem = ''
+        joining = ''
+        station = ''
+        word    = ''
+        dest    = 'net.connman.iwd'
+
+    # the system bus, our passphrase agent, the first listing
+    func open [] -> bool
+        tried = epoch_micros[]
+        err : DBusError
+        dbus_error_init[ @err ]
+        conn = dbus_bus_get_private[ DBUS_BUS_SYSTEM, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = 'No system bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        rule : 'type=\'signal\',sender=\'net.connman.iwd\''
+        dbus_bus_add_match[ conn, rule.chars, @err ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        reg : call_path[ '/net/connman/iwd',
+            'net.connman.iwd.AgentManager', 'RegisterAgent',
+            agent_path[] ]
+        if [ reg ] dbus_message_unref[ reg ]
+        refresh[]
+        return ready
+
+    func agent_path [] -> string
+        return '/orbiter/wifi'
+
+    # a method call that waits for its answer (2 s at most)
+    func call [ obj: string, iface: string, method: string ]
+            -> @DBusMessage
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, iface.chars, method.chars ] ]
+        return send_wait[ msg ]
+
+    # the same with one object path argument
+    func call_path [ obj: string, iface: string, method: string,
+                     arg: string ] -> @DBusMessage
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, iface.chars, method.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        cs : cstr [ arg.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH,
+                                        @cs ]
+        return send_wait[ msg ]
+
+    func send_wait [ msg: @DBusMessage ] -> @DBusMessage
+        if [ !conn ] return null
+        err : DBusError
+        dbus_error_init[ @err ]
+        rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+            conn, msg, 2000, @err ] ]
+        dbus_message_unref[ msg ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = string[ err.message ]
+            dbus_error_free[ @err ]
+            return null
+        return rep
+
+    # the adapter, its state and every network, strongest first
+    func refresh []
+        rep : call[ '/', 'org.freedesktop.DBus.ObjectManager',
+                    'GetManagedObjects' ]
+        if [ !rep ]
+            ready = false
+            return
+        found : vec WifiNet []
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        objs : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @objs ]
+        station = ''
+        scanning = false
+        while [ dbus_message_iter_get_arg_type[ @objs ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            ent : DBusMessageIter
+            dbus_message_iter_recurse[ @objs, @ent ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @ent, @pc ]
+            obj : string [ pc ]
+            dbus_message_iter_next[ @ent ]
+            ifs : DBusMessageIter
+            dbus_message_iter_recurse[ @ent, @ifs ]
+            while [ dbus_message_iter_get_arg_type[ @ifs ]
+                    == DBUS_TYPE_DICT_ENTRY ]
+                ie : DBusMessageIter
+                dbus_message_iter_recurse[ @ifs, @ie ]
+                ic : cstr
+                dbus_message_iter_get_basic[ @ie, @ic ]
+                iface : string [ ic ]
+                dbus_message_iter_next[ @ie ]
+                if [ iface == 'net.connman.iwd.Station' ]
+                    station = obj
+                    read_station[ @ie ]
+                el [ iface == 'net.connman.iwd.Network' ]
+                    n : WifiNet [ path: obj, signal: -10000 ]
+                    read_network[ @ie, n ]
+                    found.push[ n ]
+                dbus_message_iter_next[ @ifs ]
+            dbus_message_iter_next[ @objs ]
+        dbus_message_unref[ rep ]
+        ready = station.count > 0
+        if [ ready ] order[ found ]
+        nets = found
+
+    func read_station [ props: @DBusMessageIter ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ props, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string [ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'State' ]    state = var_text[ @kv ]
+            if [ key == 'Scanning' ] scanning = var_bool[ @kv ]
+            dbus_message_iter_next[ @d ]
+
+    func read_network [ props: @DBusMessageIter, n: WifiNet ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ props, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string [ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'Name' ]         n.name   = var_text[ @kv ]
+            if [ key == 'Type' ]         n.kind   = var_text[ @kv ]
+            if [ key == 'Connected' ]    n.joined = var_bool[ @kv ]
+            if [ key == 'KnownNetwork' ] n.known  = true
+            dbus_message_iter_next[ @d ]
+
+    # strongest first, with each one's signal
+    func order [ found: vec WifiNet ]
+        rep : call[ station, 'net.connman.iwd.Station',
+                    'GetOrderedNetworks' ]
+        if [ !rep ] return
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        arr : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @arr ]
+        sorted : vec WifiNet []
+        while [ dbus_message_iter_get_arg_type[ @arr ]
+                == DBUS_TYPE_STRUCT ]
+            st : DBusMessageIter
+            dbus_message_iter_recurse[ @arr, @st ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @st, @pc ]
+            p : string [ pc ]
+            dbus_message_iter_next[ @st ]
+            sig : i16 [ 0 ]
+            dbus_message_iter_get_basic[ @st, @sig ]
+            for [ n: WifiNet ] in found
+                if [ n.path == p ]
+                    n.signal = sig
+                    sorted.push[ n ]
+            dbus_message_iter_next[ @arr ]
+        dbus_message_unref[ rep ]
+        # networks iwd did not order go last
+        for [ n: WifiNet ] in found
+            if [ sorted.index_of[ n ] < 0 ] sorted.push[ n ]
+        found.clear[]
+        for [ n: WifiNet ] in sorted
+            found.push[ n ]
+
+    func scan []
+        rep : call[ station, 'net.connman.iwd.Station', 'Scan' ]
+        if [ rep ] dbus_message_unref[ rep ]
+
+    # join a network; a secured one not yet known takes its
+    # password, which iwd asks our agent for
+    func join [ n: WifiNet, pass: string ]
+        if [ !conn || serial != 0 ] return
+        word = pass
+        problem = ''
+        iface : 'net.connman.iwd.Network'
+        method : 'Connect'
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            n.path.chars, iface.chars, method.chars ] ]
+        s : u32 [ 0 ]
+        dbus_connection_send[ conn, msg, @s ]
+        dbus_message_unref[ msg ]
+        dbus_connection_flush[ conn ]
+        serial = s
+        joining = n.name
+
+    func leave []
+        rep : call[ station, 'net.connman.iwd.Station', 'Disconnect' ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    # forget a remembered network's password
+    func forget [ n: WifiNet ]
+        known : known_path[ n ]
+        if [ known.count == 0 ] return
+        rep : call[ known, 'net.connman.iwd.KnownNetwork', 'Forget' ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    func known_path [ n: WifiNet ] -> string
+        rep : call[ '/', 'org.freedesktop.DBus.ObjectManager',
+                    'GetManagedObjects' ]
+        if [ !rep ] return ''
+        out : string ''
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        objs : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @objs ]
+        while [ dbus_message_iter_get_arg_type[ @objs ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            ent : DBusMessageIter
+            dbus_message_iter_recurse[ @objs, @ent ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @ent, @pc ]
+            obj : string [ pc ]
+            dbus_message_iter_next[ @ent ]
+            if [ obj == n.path ]
+                out = net_known[ @ent ]
+            dbus_message_iter_next[ @objs ]
+        dbus_message_unref[ rep ]
+        return out
+
+    func net_known [ ifaces: @DBusMessageIter ] -> string
+        ifs : DBusMessageIter
+        dbus_message_iter_recurse[ ifaces, @ifs ]
+        out : string ''
+        while [ dbus_message_iter_get_arg_type[ @ifs ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            ie : DBusMessageIter
+            dbus_message_iter_recurse[ @ifs, @ie ]
+            dbus_message_iter_next[ @ie ]
+            d : DBusMessageIter
+            dbus_message_iter_recurse[ @ie, @d ]
+            while [ dbus_message_iter_get_arg_type[ @d ]
+                    == DBUS_TYPE_DICT_ENTRY ]
+                kv : DBusMessageIter
+                dbus_message_iter_recurse[ @d, @kv ]
+                kc : cstr
+                dbus_message_iter_get_basic[ @kv, @kc ]
+                key : string [ kc ]
+                dbus_message_iter_next[ @kv ]
+                if [ key == 'KnownNetwork' ] out = var_text[ @kv ]
+                dbus_message_iter_next[ @d ]
+            dbus_message_iter_next[ @ifs ]
+        return out
+
+    # take what came in: iwd asking for a password, a join's
+    # answer, a change of state; true when anything changed
+    func poll [] -> bool
+        # no bus yet: try again every three seconds
+        if [ !conn ]
+            if [ epoch_micros[] - tried < 3000000 ] return false
+            return open[]
+        dbus_connection_read_write[ conn, 0 ]
+        while [ true ]
+            msg : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !msg ] break
+            t : i32 [ dbus_message_get_type[ msg ] ]
+            mm : cstr [ dbus_message_get_member[ msg ] ]
+            if [ t == DBUS_MESSAGE_TYPE_METHOD_CALL ]
+                answer[ msg ]
+            el [ t == DBUS_MESSAGE_TYPE_SIGNAL ]
+                dirty = true
+            el [ serial != 0
+                 && dbus_message_get_reply_serial[ msg ] == serial ]
+                if [ t == DBUS_MESSAGE_TYPE_ERROR ]
+                    problem = join_failed[ msg ]
+                serial = 0
+                joining = ''
+                word = ''
+                dirty = true
+            dbus_message_unref[ msg ]
+        if [ !dirty ] return false
+        dirty = false
+        refresh[]
+        return true
+
+    # our agent: iwd asks it for the password of the network
+    func answer [ msg: @DBusMessage ]
+        ag : 'net.connman.iwd.Agent'
+        ask : 'RequestPassphrase'
+        asked : bool [ dbus_message_is_method_call[ msg, ag.chars,
+                                                    ask.chars ] != 0 ]
+        rep : @DBusMessage [ null ]
+        if [ asked && word.count > 0 ]
+            rep = dbus_message_new_method_return[ msg ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            cs : cstr [ word.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        el [ asked ]
+            nm : 'net.connman.iwd.Agent.Error.Canceled'
+            why : 'no password given'
+            rep = dbus_message_new_error[ msg, nm.chars, why.chars ]
+        el
+            rep = dbus_message_new_method_return[ msg ]
+        dbus_connection_send[ conn, rep, null ]
+        dbus_message_unref[ rep ]
+        dbus_connection_flush[ conn ]
+
+    func join_failed [ msg: @DBusMessage ] -> string
+        nm : string[ dbus_message_get_error_name[ msg ] ]
+        if [ nm == 'net.connman.iwd.Failed' ]
+            return 'Could not join {joining}: the password may be wrong'
+        if [ nm == 'net.connman.iwd.NotSupported' ]
+            why : 'its security is not supported'
+            return 'Could not join {joining}: {why}'
+        return 'Could not join {joining}'
+
+    # the system bar's icon: off, not joined, or the joined bars
+    func mark [] -> string
+        if [ !ready ] return 'wifi_off'
+        for [ n: WifiNet ] in nets
+            if [ n.joined ] return 'wifi_{n.bars[]}'
+        return 'wifi_none'
+
+    func find [ p: string ] -> WifiNet
+        for [ n: WifiNet ] in nets
+            if [ n.path == p ] return n
+        return null
+
+    func close []
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+        ready = false
+
+# one client for the process: the system bar's mark, the side
+# panel and the wizard all read it
+wifi_now : Wifi
+
+func wifi_shared [] -> Wifi
+    if [ !wifi_now ]
+        wifi_now = Wifi []
+        wifi_now.open[]
+    return wifi_now
+
+element WifiText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WifiNote
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element WifiBad
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+Button WifiButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 14
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+                stroke_color: #ffffff55
+                near_inset: 4.0
+    }
+
+# a network: its name, then what it is (connected, saved), its
+# lock when secured, and its signal bars at the right
+Button WifiRow
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 15
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                stroke_color: #ffffff40
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+    public path    : string
+    public bars    : i32
+    public secured : bool
+    public note    : string
+    intern icons   : map SVGModel [string]
+
+    func icon [ nm: string ] -> SVGModel
+        if [ !icons ] icons = map SVGModel [string] []
+        if [ icons.contains[ nm ] ] return icons[ nm ]
+        m : SVGModel [ 'images/{nm}.svg' ]
+        icons[ nm ] = m
+        return m
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas [ w.screen ]
+        isz : f32 [ round[ bounds.h * 0.6 ] ]
+        iy : f32 [ round[ (bounds.h - isz) * 0.5 ] ]
+        x : f32 [ bounds.w - isz - 12.0 ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_svg[ icon[ 'wifi_{bars}' ], x, iy, isz, isz ]
+        if [ secured ]
+            x -= isz
+            cv.fill_color[ rgba [ '#ffffffaa' ] ]
+            cv.draw_svg[ icon[ 'wifi_lock' ], x + isz * 0.2,
+                         iy + isz * 0.2, isz * 0.6, isz * 0.6 ]
+        if [ note.count > 0 ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ rgba [ '#ffffff99' ] ]
+            cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: x - 10.0,
+                h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.clip, null ]
+            cv.paint[]
+
+# a password: the text is drawn as dots
+TextInput WifiSecret
+    style : CSS {
+        layers.body:
+            fill_color: #101820
+            stroke_width: 1.0
+            stroke_color: #ffffff40
+            radius: 8
+        layers.face:
+            label_color: #0000
+            label_size: 18
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :focused
+            layers.body:
+                fill_color: #162531
+                stroke_color: #72d6c9
+    }
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !edit || edit.count == 0 ] return
+        dots : ''
+        for [ i: i32 0, i < edit.count, i += 1 ] dots = '{dots}•'
+        cv : Canvas [ w.screen ]
+        cv.font_size[ 18 ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ dots, rect [ x: 14.0, y: 0.0,
+            w: bounds.w - 28.0, h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.paint[]
+
+# the networks, strongest first; a click on one opens what can
+# be done with it under it (a password and Join, Disconnect,
+# Forget); orbiter's side panel and the installer show it
+element WifiPanel
+    public wifi    : Wifi
+    intern chosen  : string
+
+    public func tick [ w: Window ]
+        if [ !wifi ] wifi = wifi_shared[]
+        if [ wifi.poll[] ] pristine = false
+
+    public func render [] -> Elements
+        if [ !wifi ] wifi = wifi_shared[]
+        t : Elements []
+        t[ 'title' ] = WifiText [ label: 'Wi-Fi',
+            area: Region { l0.7 t0.4 r6 h1.2 } ]
+        if [ wifi.ready ]
+            t[ 'scan' ] = WifiButton [
+                label: (wifi.scanning) ? 'Scanning' : 'Scan',
+                disable: wifi.scanning,
+                area: Region { r0.7 t0.45 w4.5 h1.05 } ]
+        y : f32 [ 2.0 ]
+        if [ !wifi.ready ]
+            why : (wifi.problem.count > 0) ? wifi.problem
+                : 'No Wi-Fi adapter found'
+            t[ 'none' ] = WifiNote [ label: why,
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+            return t
+        for [ i: i32 0, i < wifi.nets.count, i += 1 ]
+            n : WifiNet wifi.nets[ i ]
+            note : (n.joined) ? 'connected' : ((n.known) ? 'saved' : '')
+            t[ 'net_{i}' ] = WifiRow [ label: n.name, path: n.path,
+                bars: n.bars[], secured: n.secured[], note: note,
+                selected: n.path == chosen,
+                area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
+            y += 1.35
+            if [ n.path == chosen ] y = actions[ t, n, y ]
+        if [ wifi.joining.count > 0 ]
+            t[ 'joining' ] = WifiNote [ label: 'Joining {wifi.joining}',
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+        el [ wifi.problem.count > 0 ]
+            t[ 'problem' ] = WifiBad [ label: wifi.problem,
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+        return t
+
+    # under the chosen network: its buttons, and the password
+    # field when it is secured and not yet known
+    func actions [ t: Elements, n: WifiNet, y: f32 ] -> f32
+        if [ n.joined ]
+            t[ 'leave' ] = WifiButton [ label: 'Disconnect',
+                area: Region [ 'l0.7 t{y} w6 h1.05' ] ]
+            if [ n.known ]
+                t[ 'forget' ] = WifiButton [ label: 'Forget',
+                    area: Region [ 'l7 t{y} w4.5 h1.05' ] ]
+            return y + 1.35
+        if [ n.secured[] && !n.known ]
+            ar : Region [ 'l0.7 t{y} r6 h1.05' ]
+            mounted : bool [ elements && elements.contains[ 'pass' ] ]
+            t[ 'pass' ] = (mounted) ? WifiSecret [ area: ar ]
+                : WifiSecret [ area: ar, edit: '' ]
+            t[ 'join' ] = WifiButton [ label: 'Join',
+                area: Region [ 'r0.7 t{y} w4.5 h1.05' ] ]
+            return y + 1.35
+        t[ 'join' ] = WifiButton [ label: 'Join',
+            area: Region [ 'l0.7 t{y} w4.5 h1.05' ] ]
+        if [ n.known ]
+            t[ 'forget' ] = WifiButton [ label: 'Forget',
+                area: Region [ 'l5.6 t{y} w4.5 h1.05' ] ]
+        return y + 1.35
+
+    # the password as typed in its field
+    func typed [] -> string
+        if [ !elements || !elements.contains[ 'pass' ] ] return ''
+        e : element elements[ 'pass' ]
+        return (e && e.edit) ? e.edit : ''
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id ] return
+        key : e.id
+        n : WifiNet wifi.find[ chosen ]
+        if [ key == 'scan' ]
+            wifi.scan[]
+        el [ e inherits WifiRow ]
+            row : cast WifiRow [ e ]
+            chosen = (chosen == row.path) ? '' : row.path
+        el [ key == 'join' && n ]
+            wifi.join[ n, typed[] ]
+        el [ key == 'leave' ]
+            wifi.leave[]
+        el [ key == 'forget' && n ]
+            wifi.forget[ n ]
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+# a private bus and the stand-in iwd on it, for the tests
+class WifiStandIn
+    public bus  : string
+    intern pids : string
+
+    func start [] -> bool
+        inst : path.path_install[]
+        listed : path '{inst}/build/silver-wifi.source'
+        txt : string [ listed.load[ typeid[ string ], null ] ]
+        lines : txt.split[ '\n' ]
+        first : path [ lines[ 0 ] ]
+        fake : path '{first.parent_dir[]}/tests/fake_iwd.py'
+        dd : '/usr/bin/dbus-daemon --session --fork'
+        dd = '{dd} --print-address=1 --print-pid=1'
+        py : '/usr/bin/python3 {fake}'
+        sh : 'a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
+        sh = '{sh} {py} $1 >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
+        cmd : command [ sh ]
+        fh : handle cmd.stream[]
+        if [ !fh ] return false
+        b : local i8 [ 512 ]
+        ok : bool [ false ]
+        if [ fgets[ @b[0], 512, fh ] ]
+            ln : string [ @b[0] ]
+            words : ln.trim[].split[ ' ' ]
+            if [ words.count >= 3 ]
+                bus  = words[ 0 ]
+                pids = '{words[ 1 ]} {words[ 2 ]}'
+                ok = true
+        pclose[ fh ]
+        if [ !ok ] return false
+        key : 'DBUS_SYSTEM_BUS_ADDRESS'
+        setenv[ key.chars, bus.chars, 1 ]
+        return true
+
+    func stop []
+        if [ !pids ] return
+        kill_line : 'kill {pids} 2>/dev/null'
+        k : command [ kill_line ]
+        k.exec[ false ]
+
+# ten milliseconds
+func wifi_nap []
+    ts : struct timespec
+    ts.tv_sec = 0
+    ts.tv_nsec = 10000000
+    nanosleep[ @ts, null ]
+
+# polls until the join answered, at most two seconds
+func wifi_settle [ w: Wifi ] -> bool
+    for [ i: i32 0, i < 200, i += 1 ]
+        w.poll[]
+        if [ w.joining.count == 0 ] return true
+        wifi_nap[]
+    return false
+
+expect func t_wifi_join [] -> bool
+    fake : WifiStandIn []
+    if [ !fake.start[] ] return false
+    w : Wifi []
+    ok : bool [ w.open[] ]
+    if [ ok ] ok = w.nets.count == 3
+    best : WifiNet [ (ok) ? w.nets[ 0 ] : null ]
+    last : WifiNet [ (ok) ? w.nets[ 2 ] : null ]
+    if [ ok ] ok = best.name == 'Home' && best.known
+    if [ ok ] ok = best.signal == -4500 && best.bars[] == 4
+    if [ ok ] ok = last.name == 'Neighbor' && last.bars[] == 0
+    # a wrong password comes back as a problem
+    if [ ok ]
+        w.join[ w.nets[ 2 ], 'nope' ]
+        ok = wifi_settle[ w ] && w.problem.count > 0
+        log 'wrong password: {w.problem} ({w.state})'
+    if [ ok ] ok = w.state != 'connected'
+    # the right one joins
+    if [ ok ]
+        w.join[ w.nets[ 2 ], 'secret123' ]
+        ok = wifi_settle[ w ] && w.problem.count == 0
+    if [ ok ]
+        for [ i: i32 0, i < 20, i += 1 ]
+            w.poll[]
+            wifi_nap[]
+        joined : string ''
+        for [ n: WifiNet ] in w.nets
+            if [ n.joined ] joined = n.name
+        log 'joined: {joined} state {w.state}'
+        ok = w.state == 'connected' && joined == 'Neighbor'
+    w.close[]
+    fake.stop[]
+    return ok

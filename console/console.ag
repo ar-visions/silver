@@ -1,0 +1,32 @@
+export 0.1.0
+
+import vec
+import img
+import trinity
+import <stdlib.h>
+
+# a shell in a window: trinity's Console on its own
+element console : trinity
+    public  width      : i32    [ 960 ]
+    public  height     : i32    [ 600 ]
+    public  title      : string [ 'console' ]
+    # the folder the shell starts in; empty: where it was launched
+    public  [ Launch ] folder : string
+    # orbiter's Wayland display: a window the program opens goes there
+    public  [ Launch ] wayland : string
+    # the program to run; empty: an interactive shell
+    default [ Launch ] run : string
+    intern  sessions   : map ConsoleSession [string]
+
+    func render [] -> Elements
+        if [ !sessions ]
+            sessions = map ConsoleSession [string] []
+            # the program's own environment: it finds the display here
+            if [ wayland && wayland.count > 0 ]
+                setenv[ 'WAYLAND_DISPLAY', wayland.chars, 1 ]
+        at : (folder && folder.count > 0) ? folder
+            : '{path.path_startup[]}'
+        cmd : (run) ? run : ''
+        return Elements [
+            'shell' : Console [ session_id: 'shell', sessions: sessions,
+                cwd: at, launch: cmd, area: Region { l0 t0 r0 b0 } ] ]

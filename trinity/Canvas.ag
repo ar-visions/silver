@@ -3248,43 +3248,8 @@ Render Canvas
             mdl.cache_fill   = tf
             mdl.cache_stroke = ts
             mdl.cache_solid  = svg_solid_on
-            px_w   : f32 [ f32(cw) ]
-            px_h   : f32 [ f32(ch) ]
-            sx    : f32 (mdl.w > 0.0) ? px_w / mdl.w : 1.0
-            sy    : f32 (mdl.h > 0.0) ? px_h / mdl.h : 1.0
-            s     : f32 min[ sx, sy ]
-            off_x : f32 (px_w - mdl.w * s) * 0.5
-            off_y : f32 (px_h - mdl.h * s) * 0.5
-            for [ shape: SVGShape ] in mdl.shapes
-                fc : rgba rgba[ '#00000000' ]
-                sc : rgba rgba[ '#00000000' ]
-                if [ !shape.fill_none && shape.fill ]
-                    if [ svg_solid_on ]
-                        # override: the one color, authored alpha kept
-                        fc.r = tf.x
-                        fc.g = tf.y
-                        fc.b = tf.z
-                        fc.a = shape.fill.a * tf.w
-                    el
-                        fc.r = shape.fill.r * tf.x
-                        fc.g = shape.fill.g * tf.y
-                        fc.b = shape.fill.b * tf.z
-                        fc.a = shape.fill.a * tf.w
-                if [ !shape.stroke_none && shape.stroke ]
-                    if [ svg_solid_on ]
-                        sc.r = ts.x
-                        sc.g = ts.y
-                        sc.b = ts.z
-                        sc.a = shape.stroke.a * ts.w
-                    el
-                        sc.r = shape.stroke.r * ts.x
-                        sc.g = shape.stroke.g * ts.y
-                        sc.b = shape.stroke.b * ts.z
-                        sc.a = shape.stroke.a * ts.w
-                sw_ : f32 (shape.stroke_none || shape.sw <= 0.0) ? 0.0 : shape.sw * s
-                mdl.paint_shape[ mdl.cache, shape, off_x, off_y, s, fc,
-                                 sc, sw_ ]
-                mdl.cache.sync_fence[]
+            mdl.render_tinted[ mdl.cache, 0.0, 0.0, f32[ cw ],
+                               f32[ ch ], tf, ts, svg_solid_on ]
         draw_canvas[ mdl.cache, ox, oy, rw, rh ]
 
     public func flush_text []

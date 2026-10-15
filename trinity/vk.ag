@@ -773,6 +773,18 @@ class Render
         ring_primed[s] = 1
         ring_last      = s
         ring_i         = (s + 1) % ring_n
+        # the next paint binds into the set its draw will use, so
+        # that set's last submit must be done
+        n : i32 [ ring_i ]
+        if [ ring_primed[n] != 0 ]
+            vkWaitForFences[ vk.device, 1, @vk_fences[n], VK_TRUE,
+                             UINT64_MAX ]
+            vk_fence = vk_fences[n]
+            vk.fence_release[ vk_fence ]
+            handle_slot_set[ @vk_fences[n], null ]
+            ring_primed[n] = 0
+            ring_has[n]    = 0
+        draw_slot = n
 
     # rebuild the colour mip chain from what was just drawn
     public func gen_mips [ ]
@@ -805,8 +817,10 @@ class Render
          expect result == VK_SUCCESS, "fence wait failed"
         # the wait drained every in-flight submit (command buffers run
         # in submit order, so ring_last done ⟹ all prior done): every
-        # slot is free now, rewind the ring to 0.
+        # slot is free now, rewind the ring to 0 (an immediate
+        # render's next draw takes ring_i)
         draw_slot = 0
+        if [ reduce > 0 || bool[ vk_swap_image ] ] draw_slot = ring_i
         for [ ri: i32 0, ri < ring_n, ri += 1 ]
             if [ ring_has[ri] != 0 && ring_primed[ri] != 0 ]
                 vk_fence = vk_fences[ri]
@@ -2867,6 +2881,17 @@ class vk_context
         if [ cb ] vkFreeCommandBuffers[ device, pool[], 1, @cb ]
         fence_release[ fence ]
         return true
+
+    # the drm card this device drives (/dev/dri/card<minor>), -1 none
+    func drm_minor [] -> i32
+        drm : VkPhysicalDeviceDrmPropertiesEXT [
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT ]
+        p2 : VkPhysicalDeviceProperties2 [
+            sType: VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+            pNext: @drm ]
+        vkGetPhysicalDeviceProperties2[ physical_device, @p2 ]
+        if [ !drm.hasPrimary ] return 0 - 1
+        return i32[ drm.primaryMinor ]
 
     func attach [ vk_surface:handle ]
         if [ queue_family_index == -1 ]
@@ -5670,8 +5695,8 @@ Texture Display
     public kms                  : bool
     # SILVER_ISOLATE_SESSION, read once in init
     intern isolate_session      : string
-    # kms: linear exportable frame the display scans out
-    mutable scan_tex            : Texture
+    # kms: three LINEAR dma-buf frames the display page-flips
+    mutable scan                : vec Texture
     # text mode: terminal character-grid output. no glfw window, no vk
     # surface or swapchain, no vk_context — the Display only hosts the
     # element tree + layout while Window.draw_console paints to a
@@ -5796,7 +5821,7 @@ Texture Display
         # currentTransform/minImageCount yields garbage (e.g. 0x5555),
         # failing the validator on preTransform.
         caps: VkSurfaceCapabilitiesKHR
-        if [ !backbuffer ]
+        if [ !backbuffer && !kms ]
             # width/height stay LOGICAL (points); extent is the
             # device-pixel drawable. scale = pixels/points. determine
             # both up front so the r.update[] loop sizes render targets
@@ -5860,7 +5885,8 @@ Texture Display
             rwin.rebind_frost = true
 
         resized = true
-        if [ !backbuffer && !defer_swap ]
+        if [ kms && !defer_swap ] make_scanout[]
+        if [ !backbuffer && !kms && !defer_swap ]
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device,
                     VkSwapchainCreateInfoKHR [
@@ -5886,7 +5912,7 @@ Texture Display
             if [ old_swapchain != null ]
                 vkDestroySwapchainKHR[ vk.device, old_swapchain, null ]
         
-        if [ !backbuffer && !defer_swap ]
+        if [ !backbuffer && !kms && !defer_swap ]
             if [ !swap_model ]
                 top: last_render[]
                 expect top, "last_render must be set"
@@ -5927,6 +5953,85 @@ Texture Display
         return a
 
         
+    # kms: three LINEAR exported images at the mode's size, each a
+    # drm framebuffer; a new size makes them again
+    func make_scanout [ ]
+        platform_kms_clear_fbs[]
+        scan = vec Texture []
+        for [ i: i32 0, i < 3, i += 1 ]
+            t : Texture [ vk: vk, w: a, width: i32[ extent.width ],
+                height: i32[ extent.height ],
+                vk_format: VK_FORMAT_B8G8R8A8_UNORM, shareable: true,
+                host_linear: true, tag: 'scanout' ]
+            expect t.shared_fd >= 0, 'kms: the scanout image is not exportable'
+            slot : i32 [ platform_kms_add_fb[ t.shared_fd,
+                    i32[ extent.width ], i32[ extent.height ],
+                    t.row_stride ] ]
+            expect slot == i, 'kms: the gpu\'s card refused the scanout image'
+            scan += t
+        kms_pointer[]
+
+    # kms: the cursor plane's picture, drawn by trinity at 24 x 24;
+    # its click point an element id hot, else the drawing's point
+    # nearest the top left (the tip)
+    func kms_pointer [ ]
+        p : path 'images/cursor2.svg'
+        if [ !p.exists[] ] return
+        mdl : SVGModel [ p ]
+        if [ !mdl.shapes || mdl.w <= 0.0 || mdl.h <= 0.0 ] return
+        hx : f32 0.0
+        hy : f32 0.0
+        near : f32 1e9
+        hot : bool false
+        for [ i: i64 mdl.shapes.count - 1, i >= 0, i -= 1 ]
+            sh : SVGShape mdl.shapes[ i ]
+            if [ !sh.cmds ] continue
+            is_hot : bool [ sh.id && sh.id == 'hot' ]
+            lx : f32 1e9
+            ly : f32 1e9
+            ux : f32 -1e9
+            uy : f32 -1e9
+            for [ c: SVGCmd ] in sh.cmds
+                if [ c.op == SVGOp.close ] continue
+                lx = min[ lx, c.x ]
+                ly = min[ ly, c.y ]
+                ux = max[ ux, c.x ]
+                uy = max[ uy, c.y ]
+                if [ !hot && !is_hot && c.x + c.y < near ]
+                    near = c.x + c.y
+                    hx = c.x
+                    hy = c.y
+            if [ is_hot ]
+                hot = true
+                hx = (lx + ux) * 0.5
+                hy = (ly + uy) * 0.5
+                mdl.shapes.remove[ i ]
+        nw : i32 24
+        nh : i32 24
+        cv : Canvas [ vk: vk, w: a, format: Pixel.rgba8, width: nw,
+                      height: nh, load_existing: true, tag: 'pointer' ]
+        cv.update[]
+        cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        cv.draw_svg[ mdl, 0.0, 0.0, f32[ nw ], f32[ nh ] ]
+        cv.sync_all[]
+        n : i32 [ nw * nh ]
+        bytes : i32 [ n * 4 ]
+        px : new u8 [ bytes ]
+        cv.color.read_region[ 0, 0, nw, nh, px ]
+        argb : new u32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            argb[ i ] = u32[ px[ i * 4 + 3 ] ] << 24
+                | u32[ px[ i * 4 ] ] << 16
+                | u32[ px[ i * 4 + 1 ] ] << 8 | u32[ px[ i * 4 + 2 ] ]
+        # draw_svg fits the drawing and centres it in the cell
+        sc : f32 [ min[ f32[ nw ] / mdl.w, f32[ nh ] / mdl.h ] ]
+        ox : f32 [ (f32[ nw ] - mdl.w * sc) * 0.5 ]
+        oy : f32 [ (f32[ nh ] - mdl.h * sc) * 0.5 ]
+        platform_kms_cursor_image[ argb, nw, nh,
+                i32[ round[ ox + hx * sc ] ],
+                i32[ round[ oy + hy * sc ] ] ]
+        log 'kms: pointer {p} {nw}x{nh}, hot {hx} {hy}'
+
     func final_target [ ] -> Render
         return list.last[]
 
@@ -5948,7 +6053,8 @@ Texture Display
         # repainted before we present. doing it in the swap section
         # (after on_compose) presents the freshly-cleared canvases for
         # one frame: the black flash on resize.
-        if [ swap_needs_recreate && !backbuffer && !defer_swap ]
+        if [ swap_needs_recreate && !backbuffer && !kms
+             && !defer_swap ]
             swap_needs_recreate = false
             vk.swap_recreates += 1
             resize*[ width, height ]
@@ -6058,12 +6164,6 @@ Texture Display
                 ]
                 swap_render_current.color.transition[
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR ]
-                # kms flips the image at once and the host scans it out
-                # with no fence: the frame must be finished before it is
-                # presented
-                vk.qlock.lock[]
-                if [ kms ] vkQueueWaitIdle[ vk.queue ]
-                vk.qlock.unlock[]
                 vk.qlock.lock[]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 vk.qlock.unlock[]
@@ -6093,6 +6193,14 @@ Texture Display
                         shown = true
                         platform_window_show[ glfw ]
                         if [ prof_log ] log 'SHOWN t={epoch_millis[]}'
+        # kms: the frame into the free scanout image, flipped at vblank
+        if [ kms && scan && !hidden ]
+            slot : i32 [ platform_kms_back[] ]
+            top : last_render[]
+            if [ slot >= 0 && top ]
+                top.sync_fence[]
+                vk.copy_image[ top.color, scan[ slot ] ]
+                platform_kms_flip[ slot ]
         at_swap : i64 [ epoch_micros[] ]
         vk.ph_targets += at_targets - at_start
         vk.ph_compose += at_compose - at_targets
@@ -6117,76 +6225,6 @@ Texture Display
         memcpy[ result.vdata[], d, image_size ]
         b.unmap[ ]
         return result
-
-    ifdef [ linux ]
-        # kms guest: the display is the surface (VK_KHR_display), leased
-        # through the drm master fd devices opened
-        func create_display_surface [ drm_fd: i32, connector: u32,
-                                      surf: @handle ] -> VkResult
-            # venus owns the display directly: enumerate it (nobody else
-            # holds the virtio-gpu drm master), then present through its
-            # own scanout
-            nd : u32 0
-            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device,
-                                                     @nd, null ]
-            log 'display: venus reports {nd} displays'
-            expect nd > 0, "venus enumerates no display"
-            dprops : local VkDisplayPropertiesKHR [ nd ]
-            vkGetPhysicalDeviceDisplayPropertiesKHR[ vk.physical_device,
-                                                     @nd, dprops ]
-            disp : VkDisplayKHR [ dprops[0].display ]
-            m : u32 0
-            vkGetDisplayModePropertiesKHR[ vk.physical_device, disp,
-                    @m, null ]
-            expect m > 0, "no display mode"
-            modes : local VkDisplayModePropertiesKHR [ m ]
-            vkGetDisplayModePropertiesKHR[ vk.physical_device, disp,
-                    @m, modes ]
-            # the connector's own mode (devices read it from kms) is
-            # first; a bigger mode only costs venus fill rate and the
-            # host drops it
-            best : u32 0
-            for [ i: u32 0, i < m, i += 1 ]
-                if [
-                    modes[i].parameters.visibleRegion.width == u32[
-                        width ]
-                        && modes[i].parameters.visibleRegion.height == u32[ height ] ]
-                    best = i
-            ext : VkExtent2D modes[best].parameters.visibleRegion
-            pc : u32 0
-            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[
-                vk.physical_device, @pc, null ]
-            expect pc > 0, "no display plane"
-            planes : local VkDisplayPlanePropertiesKHR [ pc ]
-            vkGetPhysicalDeviceDisplayPlanePropertiesKHR[
-                vk.physical_device, @pc, planes ]
-            plane : u32 0
-            for [ i: u32 0, i < pc, i += 1 ]
-                dc : u32 0
-                vkGetDisplayPlaneSupportedDisplaysKHR[
-                    vk.physical_device, i, @dc, null ]
-                sup : local VkDisplayKHR [ dc + 1 ]
-                vkGetDisplayPlaneSupportedDisplaysKHR[
-                    vk.physical_device, i, @dc, sup ]
-                ok : bool false
-                for [ j: u32 0, j < dc, j += 1 ]
-                    if [ sup[j] == disp ] ok = true
-                if [ ok ]
-                    plane = i
-                    break
-            info : VkDisplaySurfaceCreateInfoKHR [
-                sType:           VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR,
-                displayMode:     modes[best].displayMode,
-                planeIndex:      plane,
-                planeStackIndex: planes[plane].currentStackIndex,
-                transform:       VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
-                globalAlpha:     1.0,
-                alphaMode:       VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR,
-                imageExtent:     ext ]
-            width  = i32[ ext.width ]
-            height = i32[ ext.height ]
-            return vkCreateDisplayPlaneSurfaceKHR[ vk.instance, @info,
-                    null, surf ]
 
     func init [ ]
         sess : getenv[ 'SILVER_ISOLATE_SESSION' ]
@@ -6213,12 +6251,13 @@ Texture Display
             return
 
         surf : handle
-        # guest console (kms): a window for input + size, but NO vulkan
-        # surface. render offscreen and scan out the frame as a dma-buf.
+        # kms (orbiter-os): no window system and no vulkan surface. the
+        # frame is copied into a dma-buf drm page-flips; the pointer is
+        # drm's cursor plane
         if [ platform_is_kms[] && !backbuffer ]
             kms  = true
-            # a window only as the input target; venus owns the display
-            # itself
+            card : i32 [ vk.drm_minor[] ]
+            expect platform_kms_open[ card ] == 0, 'kms: no display on the gpu\'s card {card}'
             glfw = platform_window_create[ width, height, title.chars,
                     false ]
             expect glfw, "Failed to create window"
@@ -6229,11 +6268,6 @@ Texture Display
             platform_set_cursor_callback[ glfw, @handle_cursor ]
             platform_set_scroll_callback[ glfw, @handle_scroll ]
             platform_set_char_callback  [ glfw, @handle_char ]
-            ifdef [ linux ]
-                kr : VkResult [ create_display_surface[ 0 - 1, 0,
-                        @surf ] ]
-                expect kr == VK_SUCCESS, "kms display surface failed"
-                Au.live_surface_set[ surf ]
         el [ !backbuffer ]
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
@@ -6281,17 +6315,12 @@ Texture Display
                     result = vkCreateWin32SurfaceKHR[ vk.instance,
                             @wci, null, @surf ]
                 ifdef [ linux ]
-                    if [ native.kind == PLATFORM_NATIVE_KMS ]
-                        kms    = true
-                        result = create_display_surface[ native.fd,
-                                native.window, @surf ]
-                    el
-                        xci : VkXcbSurfaceCreateInfoKHR
-                        xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
-                        xci.connection = native.a
-                        xci.window     = native.window
-                        result = vkCreateXcbSurfaceKHR[ vk.instance,
-                                @xci, null, @surf ]
+                    xci : VkXcbSurfaceCreateInfoKHR
+                    xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
+                    xci.connection = native.a
+                    xci.window     = native.window
+                    result = vkCreateXcbSurfaceKHR[ vk.instance,
+                            @xci, null, @surf ]
                 ifdef [ android ]
                     aci : VkAndroidSurfaceCreateInfoKHR
                     aci.sType  = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR
@@ -6306,7 +6335,7 @@ Texture Display
         vk.attach[ surf ]
 
         # surface capabilities + formats
-        if [ !backbuffer ]
+        if [ !backbuffer && !kms ]
             surface_caps = vec VkSurfaceCapabilitiesKHR [ 1 ]
             result: vkGetPhysicalDeviceSurfaceCapabilitiesKHR[
                 vk.physical_device, vk_surface, surface_caps ]
@@ -6397,6 +6426,19 @@ Texture Display
             surface_rotation[ caps.currentTransform ]
             fit_aspect[]
             log 'display: {width}x{height} points, {extent.width}x{extent.height} px, scale {scale}'
+        el [ kms ]
+            # DRM_FORMAT_XRGB8888 in memory
+            surface_format.format     = VK_FORMAT_B8G8R8A8_UNORM
+            surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+            kw : i32
+            kh : i32
+            platform_window_get_size[ glfw, @kw, @kh ]
+            width  = kw
+            height = kh
+            scale  = 1.0
+            extent.width  = u32[ kw ]
+            extent.height = u32[ kh ]
+            log 'display: kms {width}x{height}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
@@ -6803,13 +6845,6 @@ func get_required_extensions [ vk: vk_context ]
     result: new symbol [ count + 4 ]
     result[0] = "VK_KHR_surface"
     result[1] = platform_surface_extension[]
-    ifdef [ linux ]
-        # kms guest: the display is leased from our drm master fd
-        if [ strcmp[ result[1], "VK_KHR_display" ] == 0 ]
-            result[count] = "VK_EXT_direct_mode_display"
-            count += 1
-            result[count] = "VK_EXT_acquire_drm_display"
-            count += 1
     ifdef [ apple ]
         # portability enumeration is the loader's; ios talks to MoltenVK
         # direct

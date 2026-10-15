@@ -217,6 +217,14 @@ class SVGModel
 
     public func render [ cv: Canvas, ox: f32, oy: f32, rw_in: f32,
                          rh_in: f32 ]
+        white : vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+        render_tinted[ cv, ox, oy, rw_in, rh_in, white, white, false ]
+
+    # tf / ts multiply the fill and stroke colours; solid: every
+    # colour is tf or ts, its own alpha kept (icons)
+    public func render_tinted [ cv: Canvas, ox: f32, oy: f32,
+                                rw_in: f32, rh_in: f32, tf: vec4f,
+                                ts: vec4f, solid: bool ]
         if [ !shapes || shapes.count == 0 ]
             return
         sx      : f32 (w > 0.0) ? rw_in / w : 1.0
@@ -228,15 +236,15 @@ class SVGModel
             fc : rgba[ '#00000000' ]
             sc : rgba[ '#00000000' ]
             if [ !shape.fill_none && shape.fill ]
-                fc.r = shape.fill.r
-                fc.g = shape.fill.g
-                fc.b = shape.fill.b
-                fc.a = shape.fill.a
+                fc.r = (solid) ? tf.x : shape.fill.r * tf.x
+                fc.g = (solid) ? tf.y : shape.fill.g * tf.y
+                fc.b = (solid) ? tf.z : shape.fill.b * tf.z
+                fc.a = shape.fill.a * tf.w
             if [ !shape.stroke_none && shape.stroke ]
-                sc.r = shape.stroke.r
-                sc.g = shape.stroke.g
-                sc.b = shape.stroke.b
-                sc.a = shape.stroke.a
+                sc.r = (solid) ? ts.x : shape.stroke.r * ts.x
+                sc.g = (solid) ? ts.y : shape.stroke.g * ts.y
+                sc.b = (solid) ? ts.z : shape.stroke.b * ts.z
+                sc.a = shape.stroke.a * ts.w
             sw_ : f32 (shape.stroke_none) ? 0.0 : shape.sw * s
             paint_shape[ cv, shape, off_x, off_y, s, fc, sc, sw_ ]
 

@@ -5462,9 +5462,15 @@ static Au_t vec_elem_of(etype t) {
     while (au && au->member_type == AU_MEMBER_VAR) au = au->src;
     while (au && au->is_alias && au->src && !au_is_vector(au)) au = au->src;
     if (!au || !au_is_vector(au)) return null;
-    Au_t m = t->meta_a ? (Au_t)t->meta_a : t->autype->meta.a;
-    if (!m && t->autype->member_type == AU_MEMBER_VAR && t->autype->src)
-        m = t->autype->src->meta.a;
+    // the slot's declared element type first: a value's carried
+    // meta (all[ 1 ] of a vec of aliases) can be the bare vector's
+    Au_t m = t->autype->meta.a ? t->autype->meta.a : (Au_t)t->meta_a;
+    // through vars and aliases (alias names : vec string) to the
+    // type that says what its elements are
+    for (Au_t w = t->autype->src; !m && w && w != t->autype; w = w->src) {
+        m = w->meta.a;
+        if (w->src == w) break;
+    }
     return m ? m : typeid(Au);
 }
 

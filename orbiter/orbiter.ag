@@ -17,6 +17,9 @@ import code
 import avatar
 import properties
 import wizard
+import wifi
+import tray
+import wayland
 
 
 # import c headers
@@ -30,6 +33,8 @@ import <unistd.h>
 import <fcntl.h>
 import <dlfcn.h>
 import <signal.h>
+import <time.h>
+import <sys/reboot.h>
 import <sys/wait.h>
 import <pthread.h>
 
@@ -47,6 +52,7 @@ import Navigate
 import Editor
 import NodeList
 import Git
+import SystemBar
 
 # the editor under a pane's split. 'text' is the editor/instruments
 # split, and the editor keeps key 'text' inside it
@@ -209,6 +215,10 @@ element EditorView
 
     func title_text [] -> string
         if [ findbar_on[] ] return ''
+        # a program's window: its own title
+        o9 : orb[]
+        wn : u64 [ (o9) ? o9.pane_window[ pane_index ] : u64[ 0 ] ]
+        if [ wn != 0 ] return string[ wlc_window_title[ wn ] ]
         s : psess[]
         if [ s.count > 0 ]
             h : i32 [ s.index_of[ '#' ] ]
@@ -430,6 +440,16 @@ element EditorView
         o : orb[]
         e : Editor text_of[]
         t : Elements [ ]
+        # a window a program opened here fills the pane, unless the
+        # navigator is open in it (the window comes back as it shuts)
+        wid : u64 o.pane_window[ pane_index ]
+        if [ wid != 0 && !browse_active[] ]
+            # a header it draws itself is cut off: its menu, when it
+            # has one, is in the system bar
+            cut : i32 [ (wlc_window_csd[ wid ] != 0) ? 46 : 0 ]
+            t['text'] = WaylandView [ window: wid, crop_top: cut,
+                area: Region { l0 t0 r0 b0 } ]
+            return t
         s : psess[]
         if [ s.count > 0 ]
             t['text'] = Console [ session_id: s, sessions: o.ed_sessions,
@@ -658,9 +678,11 @@ element EditorView
         # every file has its icon at the left: the name moves past it
         to9 : Editor text_of[]
         sw9 : bool [ to9 && to9.src ]
+        # a window shown: its close sits at the left, its title is ours
+        wn9 : bool [ orb[].pane_window[ pane_index ] != 0 ]
         t['title'] = EditorTitle [
             area: Region { l0 t0 r0 h1.3 }
-            switched: sw9
+            switched: sw9 || wn9
             selected: !file[]
             current: pane_index == orb[].active_pane
             focusable: true
@@ -737,6 +759,16 @@ element EditorTitle
     public hint     : string
     # the toggle sits at the left: the name moves past it
     public switched : bool
+
+    # typing here is the navigator's search: orbiter sees each key,
+    # then the field edits (trinity gives a focused field its keys)
+    func on_char [ ev: Event ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_char[ ev ]
+
+    func on_key [ ev: Event ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_key[ ev ]
     style : CSS {
         area: l0 t0 r0 h1.3
         layers.tbar:
@@ -1191,6 +1223,28 @@ DockButton DockHome
             area: l0 t0 r0 h1px
     }
 
+# orbiter's button in the system bar: the tray buttons' fill and near
+# light; no top line (that was the dock's foot) and no dock line
+DockHome BarHome
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.lite:
+            fill_color: #0000
+        layers.foot:
+            fill_color: #0000
+        layers.top:
+            fill_color: #0000
+    }
+
 # the status bar's words, in the middle of it
 element StatusText
     no_cache : true
@@ -1501,6 +1555,35 @@ element DockIcon
                 cv.arc[ gx9 + 4.0 + f32[ d9 * 8 ], gy + 4.0, 2.0, 0.0,
                         6.2832 ]
                 cv.paint[ ]
+
+# a running app the dock has no pin for, at its foot: a program's
+# window as its picture, else its module's icon
+DockIcon DockRun
+    public inst : i32
+    public win  : u64
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ win == 0 ]
+            super.draw[ w ]
+            return
+        cv : Canvas w.screen
+        t : Texture window_texture[ cv, win ]
+        if [ !t || t.width <= 0 || t.height <= 0 ] return
+        # the window, fit in the icon's square
+        side : f32 [ round[ bounds.w * 0.62 ] ]
+        tw : f32 [ side ]
+        th : f32 [ side * f32[ t.height ] / f32[ t.width ] ]
+        if [ th > side ]
+            th = side
+            tw = side * f32[ t.width ] / f32[ t.height ]
+        x : f32 [ round[ (bounds.w - tw) * 0.5 ] ]
+        y : f32 [ round[ (bounds.h - th) * 0.5 ] ]
+        cv.save[]
+        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+        cv.draw_image[ t, rect [ x: x, y: y, w: round[ tw ],
+            h: round[ th ] ] ]
+        cv.restore[]
 
 # the title's icon: a module's app icon, else the file's type icon
 DockIcon TitleIcon
@@ -1945,6 +2028,9 @@ element orbiter : trinity # implements compiler
     public install     : bool
     # with install: the steps are listed, never run
     public dry_run     : bool
+    # the system bar as on orbiter-os, always (Kalen); false turns it
+    # off in a window
+    public force_system : bool  [ true ]
     public live_reload : bool   [ true ]
     public startup_path  : path
     # the agents this app's user runs, each with its models (trinity
@@ -2292,6 +2378,41 @@ element orbiter : trinity # implements compiler
     mutable view_tools     : vec string
     mutable view_tools_bin : vec string
     mutable view_mods      : map string [string]
+    # os-mode: the programs on PATH by name (the first one wins)
+    mutable programs       : map string [string]
+    # the PATH folders' change times when it was read: a change reads
+    # it again (a program installed or removed)
+    mutable programs_at    : i64
+    # os-mode: our Wayland display's socket ('' until it is up), the
+    # newest window placed, and each pane's window (0: none)
+    mutable wl_sock        : string
+    mutable wl_tried       : bool
+    mutable win_seen       : u64
+    mutable pane_win       : vec u64
+    # the active pane's window menu: whose, its entries, the top menu
+    # the side panel shows, and when it was last asked for (ms)
+    mutable menu_win       : u64
+    mutable menu_items     : vec TrayEntry
+    mutable menu_top       : i32
+    mutable menu_ms        : i64
+    # the menu drawer: open, which menu ('menu' the window's, 'tray' a
+    # tray icon's), when it shut (it stays mounted while it slides
+    # away), and the tray panel's picks seen
+    mutable drawer_open      : bool
+    mutable menu_kind      : string
+    mutable menu_shut_ms   : i64
+    mutable tray_picks     : i32
+    # typed into the open drawer: its menu shows what holds it; the
+    # drawer takes the focus once it is mounted
+    mutable menu_filter    : string
+    mutable drawer_focus   : bool
+    # the drawer's ground: one copy of the screen and one blur chain
+    # for the window, kept (a chain built again per drawer crashed)
+    mutable drawer_snap    : Texture
+    mutable drawer_rb      : ReduceBlur
+    # the blur is taken once as the drawer opens (and again on a new
+    # window size), not every frame
+    mutable drawer_fresh   : bool
     public browse_single : bool
     public grid_mode     : bool
     public browse_header_size : i32 [ 18 ]
@@ -2323,6 +2444,11 @@ element orbiter : trinity # implements compiler
     # the nav lists the scene cards
     # the side panel's tab: 'instances' or 'scenes'
     intern side_tab      : string [ 'instances' ]
+    # the system bar's height, and whether this is orbiter-os
+    intern system_h      : f32 [ 30.0 ]
+    intern system_known  : bool
+    intern system_os     : bool
+    intern clock_was     : string
     intern scene_texs    : map Texture [string]
     intern scene_names   : vec string
     # which exported module carries each scene class
@@ -3088,6 +3214,16 @@ element orbiter : trinity # implements compiler
                 ? rest9.mid[ sp9 + 1, rest9.count - sp9 - 1 ].trim[]
                 : '' ]
             couple_app[ mod9, shot ]
+            return
+        # the system's xdg-open: 'open <url>' hosts it in the pane
+        if [ s && s.count > 5 && s.mid[ 0, 5 ] == 'open ' ]
+            url : string s.mid[ 5, s.count - 5 ].trim[]
+            pane : Editor pane_at[ active_pane ]
+            if [ pane && pane.open_url[ url ] ]
+                exit_finder[]
+                if [ ux ] ux.restyle = true
+            el
+                log 'orbiter: no module opens {url}'
             return
         if [ !s || s.count < 7 || s.mid[ 0, 7 ] != 'status ' ] return
         # only an exchange orbiter opened (a capture sent, up or
@@ -4131,11 +4267,29 @@ element orbiter : trinity # implements compiler
     # sequence)
     func instance_name [ av: AppView ] -> string
         m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : 'app')
+        # a program the console runs is named for the program
+        pn : string program_of[ av ]
+        if [ pn.count > 0 ] m = pn
         li9 : vec AppView instances_of[ av.src ]
         for [ k9: i32 0, k9 < li9.count, k9 += 1 ]
             if [ li9[ k9 ] == av ]
                 return (k9 == 0) ? m : '{m} {k9 + 1}'
         return m
+
+    # the program a console instance runs: its args' last word's name
+    func program_of [ av: AppView ] -> string
+        if [ av.app_mod != 'console' || !av.module_args ] return ''
+        words : vec string av.module_args.split[ ' ' ]
+        if [ words.count == 0 ] return ''
+        prog : string words[ words.count - 1 ]
+        at : i32 [ prog.rindex_of[ '/' ] ]
+        return (at >= 0) ? prog.mid[ at + 1, prog.count - at - 1 ] : prog
+
+    # the window an instance's program opened, while it is open
+    func window_of [ av: AppView ] -> u64
+        if [ !av || av.wl_window == 0 ] return u64[ 0 ]
+        if [ wlc_window_open[ av.wl_window ] == 0 ] return u64[ 0 ]
+        return av.wl_window
 
     func instance_label [ av: AppView ] -> string
         sw : string av.status_word[]
@@ -4166,6 +4320,14 @@ element orbiter : trinity # implements compiler
                 pending_show_pane = pi
                 return
         ed.run_view  = av
+        # a program's window comes back into the pane with it; any
+        # other instance takes the pane from a window
+        wv : u64 window_of[ av ]
+        if [ pane_win ]
+            while [ pane_win.count <= pi ]
+                pane_win.push[ u64[ 0 ] ]
+            pane_win[ pi ] = wv
+        if [ wv != 0 ] wlc_window_focus[ wv ]
         session_dirty = true
         # an instance in pip stays in pip when it is selected
         ed.app_view  = av.display == 1
@@ -4379,7 +4541,14 @@ element orbiter : trinity # implements compiler
         # a module: its run button; any other file: its type's icon
         # it stays in navigation: the app can start at any time
         mi : path module_src_of[ edp ]
-        if [ mi ]
+        # a pane showing a program's window: its close, in the run
+        # button's place (the top right is a dialog's)
+        wid : u64 pane_window[ pane_ix ]
+        if [ wid != 0 ]
+            els['modicon'] = alt_tab[ pane_ix, 'modicon', 'win_close',
+                'close', 'win_close', 'close', false, false, false,
+                Region [ 'l-1px+ t0 w1.35 b0' ] ]
+        el [ mi ]
             # a module: play; stop while it runs; shift: another
             rvt : AppView (edp) ? edp.run_view : null
             lvt : bool [ rvt && !rvt.ended && !rvt.held ]
@@ -4854,6 +5023,250 @@ element orbiter : trinity # implements compiler
         ed_sessions  = map ConsoleSession [string] [ ]
         super.on_unload[ ]
 
+    # the programs the search lists: orbiter-os's PATH, read once
+    func program_list [] -> map string [string]
+        if [ !system_on[] ]
+            if [ !programs ] programs = map string [string] []
+            return programs
+        pc : cstr [ getenv[ "PATH" ] ]
+        all : string [ (pc == null) ? '' : string[ pc ] ]
+        at : i64 [ 0 ]
+        for [ dir: string ] in all.split[ ':' ]
+            if [ dir.count == 0 ] continue
+            dp : path [ dir ]
+            if [ dp.exists[] ] at += dp.modified_time[]
+        if [ programs && at == programs_at ] return programs
+        programs_at = at
+        programs = map string [string] []
+        for [ dir: string ] in all.split[ ':' ]
+            if [ dir.count == 0 ] continue
+            d : path [ dir ]
+            entries : d.ls[ null, false ]
+            if [ !entries ] continue
+            for [ e: path ] in entries
+                nm : string e.filename[]
+                if [ programs.contains[ nm ] || e.is_dir[] ] continue
+                full : '{e}'
+                if [ access[ full.chars, X_OK ] == 0 ]
+                    programs[ nm ] = full
+        return programs
+
+    # os-mode: orbiter's Wayland display, started once; each new
+    # window goes to a pane; true when a pane's window changed
+    func wl_tick [] -> bool
+        if [ !wl_tried ]
+            wl_tried = true
+            wl_sock  = ''
+            pane_win = vec u64 []
+            if [ wlc_create[ 1280, 800 ] == 0 ]
+                log 'orbiter: the Wayland display did not start'
+                return false
+            wl_sock = string[ wlc_socket[] ]
+            # trinity apps orbiter hosts stay off it: only the
+            # console's programs are given it
+            unsetenv[ 'WAYLAND_DISPLAY' ]
+            log 'orbiter: Wayland display {wl_sock}'
+        if [ wl_sock.count == 0 ] return false
+        wlc_pump[]
+        changed : false
+        n : i32 wlc_window_count[]
+        for [ i: i32 0, i < n, i += 1 ]
+            wn : u64 wlc_window_at[ i ]
+            if [ wn > win_seen ]
+                win_seen = wn
+                place_window[ wn ]
+                changed = true
+        # a closed window gives its pane back
+        for [ i: i32 0, i < pane_win.count, i += 1 ]
+            pw : u64 pane_win[ i ]
+            if [ pw != 0 && wlc_window_open[ pw ] == 0 ]
+                pane_win[ i ] = 0
+                changed = true
+        if [ menu_sync[] ] changed = true
+        return changed
+
+    # the active pane's window menu, read again when the window changes
+    # (and each second while it has none: GTK names it after mapping)
+    func menu_sync [] -> bool
+        wn : u64 pane_window[ active_pane ]
+        now : i64 [ epoch_millis[] ]
+        empty : bool [ !menu_items || menu_items.count == 0 ]
+        stale : bool [ empty && wn != 0 && now - menu_ms > 1000 ]
+        if [ wn == menu_win && !stale ] return false
+        had : bool [ !empty ]
+        menu_win = wn
+        menu_ms  = now
+        menu_top = -1
+        menu_items = menu_read[ wn ]
+        return had || menu_items.count > 0
+
+    func menu_read [ wn: u64 ] -> vec TrayEntry
+        if [ wn == 0 ] return vec TrayEntry []
+        k : i32 wlc_window_menu_kind[ wn ]
+        if [ k == 0 ] return vec TrayEntry []
+        return app_menu[].read[ k, string[ wlc_window_menu_bus[ wn ] ],
+            string[ wlc_window_menu_path[ wn ] ],
+            string[ wlc_window_menu_app[ wn ] ],
+            string[ wlc_window_menu_win[ wn ] ] ]
+
+    # the drawer opens on a menu; the same one again shuts it
+    func drawer_toggle [ kind: string, same: bool ]
+        if [ drawer_open && menu_kind == kind && same ]
+            drawer_shut[]
+            return
+        drawer_open  = true
+        menu_kind    = kind
+        drawer_fresh = false
+        menu_filter  = ''
+        drawer_focus = true
+        if [ ux ] ux.restyle = true
+
+    func drawer_shut []
+        if [ !drawer_open ] return
+        drawer_open    = false
+        menu_filter  = ''
+        menu_shut_ms = epoch_millis[]
+        if [ ux ] ux.restyle = true
+
+    # the screen as drawn so far, blurred: once as the drawer opens,
+    # again only for a new window size
+    func drawer_blur [ w: Window, live: bool ] -> ReduceBlur
+        sc : Canvas w.screen
+        if [ !sc || !sc.color ] return null
+        tx : Texture sc.color
+        if [ !drawer_snap || drawer_snap.width != tx.width
+             || drawer_snap.height != tx.height ]
+            drawer_snap = Texture [ vk: w.vk, w: w, width: tx.width,
+                height: tx.height, vk_format: tx.vk_format ]
+            drawer_rb = ReduceBlur []
+            drawer_rb.build[ vk_context[ w.vk ], w, drawer_snap, 1.0, 2 ]
+            drawer_fresh = false
+        if [ drawer_fresh && !live ] return drawer_rb
+        drawer_fresh = true
+        sc.flush_text[]
+        sc.draw[]
+        sc.sync_fence[]
+        w.vk.copy_image[ tx, drawer_snap ]
+        drawer_rb.run[]
+        return drawer_rb
+
+    # mounted while open, and while it slides away
+    func drawer_on [] -> bool
+        return drawer_open || epoch_millis[] - menu_shut_ms < 400
+
+    func drawer_els [] -> Elements
+        t : Elements []
+        if [ menu_kind == 'tray' ]
+            t['tray_panel'] = TrayPanel [ filter: menu_filter,
+                area: Region { l0 t0 r0 b0 } ]
+        el
+            t['menu_panel'] = MenuPanel [ items: menu_items,
+                top: menu_top, filter: menu_filter,
+                area: Region { l0 t0 r0 b0 } ]
+        return t
+
+    # Enter in the drawer: the first entry the filter shows runs
+    func drawer_enter []
+        if [ menu_kind == 'tray' ]
+            tr : Tray tray_shared[]
+            it : TrayItem tr.shown_item[]
+            if [ !it ] return
+            for [ e: TrayEntry ] in it.entries
+                if [ e.enabled && !e.rule
+                     && entry_matches[ e, menu_filter ] ]
+                    tr.pick[ it, e ]
+                    drawer_shut[]
+                    return
+            return
+        if [ !menu_items ] return
+        for [ i: i32 menu_top + 1, i < menu_items.count, i += 1 ]
+            e : TrayEntry menu_items[ i ]
+            if [ e.depth <= 0 ] break
+            deeper : bool [ i + 1 < menu_items.count
+                && menu_items[ i + 1 ].depth > e.depth ]
+            if [ !deeper && e.enabled && !e.rule
+                 && entry_matches[ e, menu_filter ] ]
+                menu_pick[ i ]
+                return
+        return t
+
+    # an entry chosen in the drawer: it runs; the drawer shuts
+    func menu_pick [ i: i32 ]
+        if [ !menu_items || i < 0 || i >= menu_items.count ] return
+        wn : u64 menu_win
+        k : i32 wlc_window_menu_kind[ wn ]
+        app_menu[].click[ k, string[ wlc_window_menu_bus[ wn ] ],
+            string[ wlc_window_menu_path[ wn ] ],
+            string[ wlc_window_menu_app[ wn ] ],
+            string[ wlc_window_menu_win[ wn ] ], menu_items[ i ] ]
+        drawer_shut[]
+        # its state may change (a check mark): read it again next time
+        menu_ms = 0
+        menu_win = 0
+        if [ ux ] ux.restyle = true
+
+    # the window's pane: the one whose app started it (its process is
+    # one of the window's ancestors), else the active pane
+    func place_window [ wn: u64 ]
+        p : i32 wlc_window_pid[ wn ]
+        pane : i32 [ -1 ]
+        steps : i32 [ 0 ]
+        while [ p > 1 && pane < 0 && steps < 64 ]
+            for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                ed : Editor pane_at[ i ]
+                rv : AppView (ed) ? ed.run_view : null
+                if [ rv && rv.slot >= 0 && host_app_pid[ rv.slot ] == p ]
+                    pane = i
+                    # the instance knows its window: its card shows it
+                    rv.wl_window = wn
+            p = parent_pid[ p ]
+            steps += 1
+        if [ pane < 0 ] pane = active_pane
+        if [ pane < 0 ] pane = 0
+        while [ pane_win.count <= pane ]
+            pane_win.push[ u64[ 0 ] ]
+        pane_win[ pane ] = wn
+        wlc_window_focus[ wn ]
+        nm : string[ wlc_window_title[ wn ] ]
+        log 'orbiter: window {wn} ({nm}) in pane {pane}'
+
+    # the window a pane shows, 0 when none
+    func pane_window [ i: i32 ] -> u64
+        if [ i < 0 || !pane_win || i >= pane_win.count ] return u64[ 0 ]
+        return pane_win[ i ]
+
+    # a process's parent, from /proc/<pid>/stat: after its ') '
+    func parent_pid [ pid: i32 ] -> i32
+        f : '/proc/{pid}/stat'
+        fh : handle fopen[ f.chars, 'r' ]
+        if [ !fh ] return 0
+        b : local i8 [ 512 ]
+        line : ''
+        if [ fgets[ @b[0], 512, fh ] ] line = string [ @b[0] ]
+        fclose[ fh ]
+        at : i32 [ line.rindex_of[ ') ' ] ]
+        if [ at < 0 ] return 0
+        rest : line.mid[ at + 2, line.count - at - 2 ]
+        words : vec string rest.split[ ' ' ]
+        if [ words.count < 2 ] return 0
+        return i32[ words[ 1 ].integer_value[] ]
+
+    # a program in the console module in that pane; a window it
+    # opens takes the pane
+    func run_program [ p: path, pane: i32 ]
+        ed : Editor pane_at[ pane ]
+        if [ !ed ] return
+        sock : (wl_sock) ? wl_sock : ''
+        ed.open_program[ '{p}', sock ]
+
+    # a program's row in the list: run, never edited
+    func is_program [ p: path ] -> bool
+        # the list as the search read it: no folder checks per row
+        if [ !p || !programs ] return false
+        ps : string '{p}'
+        nm : string p.filename[]
+        return programs.contains[ nm ] && programs[ nm ] == ps
+
     func index_search [ query: string ] -> list string
         out : list string []
         if [ index_dirty && !index_building ]
@@ -4885,6 +5298,16 @@ element orbiter : trinity # implements compiler
                     matches.push[ s ]
                     dists.push[ d ]
             index_lock.unlock[]
+            # os-mode: the programs on PATH, by name
+            for [ full: string, nm: string ] in program_list[]
+                ridx : i32 [ nm.index_of[ query ] ]
+                if [ ridx < 0 ] continue
+                # a name that starts with it first, then the nearest
+                d : i32 [ nm.count - (ridx + ql) + 1 ]
+                if [ ridx == 0 ] d = 0
+                if [ d > tiers ] d = tiers
+                matches.push[ full ]
+                dists.push[ d ]
             # every match is ranked; only the best 500 are listed
             for [ d: i32 0, d <= tiers && out.count < 500, d += 1 ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
@@ -6972,6 +7395,11 @@ element orbiter : trinity # implements compiler
                     if [ ism ]
                         push_dir_hit[ md, md.filename[] ]
                         combined.push[ '{md}' ]
+                    el [ is_program[ p ] ]
+                        find_hits.push[ FindHit [ is_header: true,
+                            text: p.filename[], dir: 'program',
+                            file: p ] ]
+                        combined.push[ '{p}' ]
                     el
                         push_file_hit[ p, true ]
                         combined.push[ '{p}' ]
@@ -7175,6 +7603,9 @@ element orbiter : trinity # implements compiler
 
     func open_in_pane [ p: path, pi: i32 ]
         if [ pick_deliver[ p ] ] return
+        # a file in the pane: its window steps back (the dock has it)
+        if [ pane_win && pi >= 0 && pi < pane_win.count ]
+            pane_win[ pi ] = u64[ 0 ]
         if [
             pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
             cur : Editor pane_at[ pi ]
@@ -7546,6 +7977,10 @@ element orbiter : trinity # implements compiler
             if [ dbl ] open_at_line[ h.file, ed.pane_index, h.line ]
             return true
         if [ h.file && pick_deliver[ h.file ] ] return true
+        if [ h.file && is_program[ h.file ] ]
+            run_program[ h.file, ed.pane_index ]
+            exit_finder[]
+            return true
         if [ h.file ]
             # browse file link / result filename header → open the file
             open_in_pane[ h.file, ed.pane_index ]
@@ -7558,6 +7993,13 @@ element orbiter : trinity # implements compiler
             log 'PRESS target={(ev.target && ev.target.id) ? ev.target.id : "(noid)"} pick={(pick_field) ? pick_field : ""} nav={nav_showing} find={find_showing} finder_off={finder_off}'
         if [ !ev.target ] return
         log 'on_press: target={ev.target.id}'
+        # a press outside the drawer (and its openers) shuts it
+        if [ drawer_open && !(ev.target inherits MenuTop)
+             && !(ev.target inherits TrayMark) ]
+            inside : false
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits MenuDrawer ] inside = true
+            if [ !inside ] drawer_shut[]
         # a press on another pane's title only selects that pane: no
         # focus, so no nav list; a press once it is selected opens it
         if [ ev.target.id == 'title' ]
@@ -7768,6 +8210,18 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        # a window's close: the program is asked, as its own X would
+        if [ ev.target.id == 'win_close' ]
+            pw : i32 [ active_pane ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    ev9 : EditorView e
+                    pw = ev9.pane_index
+                    break
+            wv : u64 pane_window[ pw ]
+            if [ wv != 0 ] wlc_window_close[ wv ]
+            ev.no_default = true
+            return
         # the title's run: shift or cmd adds an instance, else a running
         # one stops
         if [ ev.target.id == 'app_run' ]
@@ -7817,11 +8271,48 @@ element orbiter : trinity # implements compiler
             tb : string [
                 (ev.target.id == 'side_scenes') ? 'scenes'
                 : 'instances' ]
-            # the lit tab folds the panel; another switches to it
-            inst_hidden = side_tab == tb
+            # the lit tab folds the panel; another switches to it; any
+            # opens a folded one
+            inst_hidden = side_tab == tb && !inst_hidden
 
             side_tab    = tb
             if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'sys_wifi' ]
+            # the lit mark folds the panel; else it opens on Wi-Fi
+            inst_hidden = side_tab == 'wifi' && !inst_hidden
+            side_tab    = 'wifi'
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target inherits MenuTop ]
+            mt : cast MenuTop [ ev.target ]
+            same : bool [ menu_top == mt.at ]
+            menu_top = mt.at
+            # fresh, for enabled entries and check marks
+            menu_items = menu_read[ menu_win ]
+            drawer_toggle[ 'menu', same ]
+            ev.no_default = true
+            return
+        if [ ev.target inherits TrayMark ]
+            mk : cast TrayMark [ ev.target ]
+            tr : Tray tray_shared[]
+            ti : TrayItem tr.find[ mk.service ]
+            # left: the app's own action; else its menu in the panel
+            if [ ti && ev.mouse.button == 0 && !ti.menu_only ]
+                tr.activate[ ti ]
+            el [ ti ]
+                same : bool [ tr.chosen == ti.service ]
+                tr.chosen = ti.service
+                ti.dirty  = true
+                drawer_toggle[ 'tray', same ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'sys_power'
+             || ev.target.id == 'sys_restart' ]
+            power[ ev.target.id == 'sys_restart' ]
             ev.no_default = true
             return
         if [ ev.target.id == 'side_toggle' ]
@@ -7847,6 +8338,12 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # a dock pin: a module runs as an app, else the path opens
+        if [ ev.target inherits DockRun ]
+            dr9 : DockRun ev.target
+            show_instance[ dr9.inst, active_pane ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target inherits DockIcon ]
             di : DockIcon ev.target
             edd : Editor pane_at[ active_pane ]
@@ -8305,6 +8802,11 @@ element orbiter : trinity # implements compiler
         open_file[ ev.paths[ 0 ] ]
 
     func on_char [ ev: Event ]
+        # typing with the drawer open filters its menu
+        if [ drawer_open && ev.key.text && ev.key.text.count > 0 ]
+            menu_filter = '{menu_filter}{ev.key.text}'
+            if [ ux ] ux.restyle = true
+            return
         if [ !ev.target ] return
         if [ ev.target.id == 'filter' ]
             if [ ev.key.text && ev.key.text.count > 0 ]
@@ -8346,6 +8848,21 @@ element orbiter : trinity # implements compiler
 
     func on_key [ ev: Event ]
         ks : i32 [ ev.key.unicode ]
+        # the open drawer's keys: Esc clears its filter, else shuts it;
+        # Backspace edits the filter; Enter runs the first match
+        if [ drawer_open && ev.key.state ]
+            if [ ks == 256 ]
+                if [ menu_filter.count > 0 ] menu_filter = ''
+                el drawer_shut[]
+                if [ ux ] ux.restyle = true
+                return
+            if [ ks == 259 && menu_filter.count > 0 ]
+                menu_filter = menu_filter.mid[ 0, menu_filter.count - 1 ]
+                if [ ux ] ux.restyle = true
+                return
+            if [ ks == 257 ]
+                drawer_enter[]
+                return
         # Esc while recording from orbiter's button: the take is dropped
         if [ ks == 256 && ev.key.state && mic_by_press ]
             mic_by_press = false
@@ -9267,28 +9784,68 @@ element orbiter : trinity # implements compiler
                     area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
                 k9 += 1
                 y9 += 78.75
+        # running, not pinned: their own icons, up from the dock's foot
+        run9 : vec AppView []
+        if [ instances ]
+            for [ av: AppView ] in instances
+                if [ av.slot < 0 || av.ended || av.held ] continue
+                prog : bool [ program_of[ av ].count > 0 ]
+                fo : path (av.src) ? av.src.directory[] : null
+                if [ !prog && fo && is_pinned[ fo ] ] continue
+                run9.push[ av ]
+        by9 : f32 [ 0.0 ]
+        for [ k: i32 0, k < run9.count, k += 1 ]
+            av : AppView run9[ k ]
+            fo : path (av.src) ? av.src.directory[] : null
+            wv : u64 window_of[ av ]
+            ag : path (fo) ? path '{path.path_startup[]}/install/export/{install_name_of[ fo.filename[] ]}.agi' : null
+            lit : bool [ edp && edp.run_view == av ]
+            pins9[ 'run_{av.iid}' ] = DockRun [ file: fo, module: true,
+                agi: ag, inst: av.iid, win: wv, selected: lit,
+                first: k == run9.count - 1, last: k == 0,
+                area: Region [ 'l0 b{by9 + 78.75}px w78.75px h78.75px' ] ]
+            by9 += 78.75
         t['pins'] = element [ area: Region { l0 t1.3 r0 b35px },
                               elements: pins9 ]
+        # with the system bar, orbiter is its first button and the
+        # console takes this corner
+        if [ system_on[] ]
+            t['dock_console'] = StatusTab [
+                buttons: vec string [] [ 'console_tab' ],
+                icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                sel_mask: (show_console) ? 1 : 0,
+                area: Region { l0 b35px w78.75px h35px } ]
+        el
+            t['dock_orbiter'] = home_button[
+                Region [ 'l0 b35px w78.75px h35px' ], false ]
+        return t
+
+    # orbiter's own button: the dock's foot, or the system bar's first
+    func home_button [ ar: Region, bar: bool ] -> element
         # cmd anywhere, shift over it, or recording: its core red;
         # the agent thinking: blue
         dh : element find_el[ a, 'dock_orbiter' ]
+        if [ !dh ] dh = find_el[ a, 'sys_orbiter' ]
         rec : bool [ mic_by_press || ux.dict_on || cmd_down
             || (shift_down && dh && dh.hovered) ]
         thinking : bool [ agent_state == 'busy' ]
         # recording (or armed for it): a slight red over the dock's
         # colour, so the state reads at a glance; thinking: blue
-        t['dock_orbiter'] = DockHome [
-            buttons: vec string [] [ 'agent_note' ],
-                icon_ids: vec string [] [ (rec)
-                    ? 'orbiter4_red' : ((thinking)
-                    ? 'orbiter4_blue' : 'orbiter4') ],
-                manual: true,
-                rest_fill: rgba [ (rec) ? '#ff3a3a33'
-                    : ((thinking) ? '#3a8aff40' : '#0000') ],
-                seg_radius: 0.0,
-                use_spacing: false, icon_scale: 0.605,
-                area: Region { l0 b35px w78.75px h35px } ]
-        return t
+        icon : string [ (rec) ? 'orbiter4_red'
+            : ((thinking) ? 'orbiter4_blue' : 'orbiter4') ]
+        tint : rgba [ (rec) ? '#ff3a3a33'
+            : ((thinking) ? '#3a8aff40' : '#0000') ]
+        if [ bar ]
+            return BarHome [ buttons: vec string [] [ 'agent_note' ],
+                icon_ids: vec string [] [ icon ], manual: true,
+                rest_fill: tint, seg_radius: 0.0, use_spacing: false,
+                icon_scale: 0.605, area: ar ]
+        return DockHome [ buttons: vec string [] [ 'agent_note' ],
+            icon_ids: vec string [] [ icon ], manual: true,
+            rest_fill: tint, seg_radius: 0.0, use_spacing: false,
+            icon_scale: 0.605, area: ar ]
 
     # the side panel's fold and the splitter agree: a drag past its
     # floor folds it, the toggle opens it at its last width
@@ -9313,6 +9870,96 @@ element orbiter : trinity # implements compiler
             mn.pristine = false
             if [ ux ] ux.will_animate = true
 
+    # the system bar: as the OS, or asked for in a window
+    func system_on [] -> bool
+        if [ !system_known ]
+            system_known = true
+            system_os = on_the_os[]
+        return system_os || force_system
+
+    # the clock in the middle; the tray at the right: the Wi-Fi
+    # mark, then power (restart with ctrl / cmd held, or shift
+    # over it)
+    func system_els [] -> Elements
+        t : Elements []
+        t['sys_clock'] = SystemClock [ label: clock_text[], ghost: true,
+            area: Region { l0 t0 r0 b0 } ]
+        # orbiter's button first, as wide as the dock
+        t['sys_orbiter'] = home_button[
+            Region [ 'l0 t0 w78.75px b0' ], true ]
+        # the active window's menu bar: its top menus, after it
+        x : f32 [ 86.75 ]
+        if [ menu_items ]
+            for [ i: i32 0, i < menu_items.count, i += 1 ]
+                e : TrayEntry menu_items[ i ]
+                if [ e.depth != 0 || e.rule || e.label.count == 0 ]
+                    continue
+                mw : f32 [ f32[ e.label.count ] * 8.5 + 22.0 ]
+                lit : bool [ drawer_open && menu_kind == 'menu'
+                             && menu_top == i ]
+                t['menu_{i}'] = MenuTop [ label: e.label, at: i,
+                    selected: lit,
+                    area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
+                x += mw
+        net : Wifi wifi_shared[]
+        t['sys_wifi'] = StatusButton [
+            buttons: vec string [] [ 'sys_wifi' ],
+            icon_ids: vec string [] [ net.mark[] ], icon_scale: 0.6,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (side_tab == 'wifi' && !inst_hidden) ? 1 : 0,
+            area: Region { r1.66 t0 w1.66 b0 } ]
+        # apps' tray icons, leftward from the Wi-Fi mark
+        tr : Tray tray_shared[]
+        for [ i: i32 0, i < tr.items.count, i += 1 ]
+            ti : TrayItem tr.items[ i ]
+            at : f32 [ 1.66 * f32[ i + 2 ] ]
+            lit : bool [ drawer_open && menu_kind == 'tray'
+                         && tr.chosen == ti.service ]
+            t['tray_{i}'] = TrayMark [ service: ti.service, item: ti,
+                selected: lit, area: Region [ 'r{at} t0 w1.66 b0' ] ]
+        # the side panel's toggles: reload, scenes, the panel, left
+        # of the tray icons
+        tg : f32 [ 1.66 * f32[ tr.items.count + 2 ] ]
+        open : bool [ !inst_hidden ]
+        scn : bool [ side_tab == 'scenes' ]
+        inst : bool [ side_tab == 'instances' ]
+        ready : bool [ au_live_get_pending[] == 1 ]
+        t['side_tabs'] = StatusSegs [ buttons: vec string [] [
+                'reload_ready', 'side_scenes', 'side_menu' ],
+            icon_ids: vec string [] [ (ready) ? 'recycle' : '',
+                'saturn', 'menu' ],
+            icon_scale: 0.5,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (open && scn) ? 2 : ((open && inst) ? 4 : 0),
+            disable_mask: (ready) ? 0 : 1,
+            area: Region [ 'r{tg} t0 w4.98 b0' ] ]
+        bar : element (elements && elements.contains[ 'system' ])
+            ? elements[ 'system' ] : null
+        cur : element (bar && bar.elements
+            && bar.elements.contains[ 'sys_power' ])
+            ? bar.elements[ 'sys_power' ] : null
+        again : bool [ cmd_down || (shift_down && cur && cur.hovered) ]
+        t['sys_power'] = AltTab [ buttons: vec string [] [
+                (again) ? 'sys_restart' : 'sys_power' ],
+            icon_ids: vec string [] [ (again) ? 'restart' : 'power' ],
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ], second: again, seg_reach: 0.5,
+            area: Region { r0 t0 w1.66 b0 } ]
+        return t
+
+    # power off or restart: only orbiter-os itself, never the
+    # computer a window is trying the bar on
+    func power [ again: bool ]
+        what : (again) ? 'restart' : 'power off'
+        if [ !system_os ]
+            log 'system bar: {what} (only on orbiter-os)'
+            return
+        log 'system bar: {what}'
+        sync[]
+        reboot[ (again) ? RB_AUTOBOOT : RB_POWER_OFF ]
+
     # the status bar: the four debug steps, one button each, at left
     func status_els [] -> Elements
         edv : Editor pane_at[ active_pane ]
@@ -9320,14 +9967,17 @@ element orbiter : trinity # implements compiler
         dg  : dbg (rv) ? rv.debugger : null
         off : bool [ !(dg && dg.active && !dg.running) ]
         t : Elements []
-        # first, at the left: the console, global to the window
-        t['console_tab'] = StatusTab [
-            buttons: vec string [] [ 'console_tab' ],
-            icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (show_console) ? 1 : 0,
-            area: Region { l0 t0 w1.66 b0 } ]
+        sys : bool system_on[]
+        # first, at the left: the console, global to the window (in
+        # the dock's corner with the system bar)
+        if [ !sys ]
+            t['console_tab'] = StatusTab [
+                buttons: vec string [] [ 'console_tab' ],
+                icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                sel_mask: (show_console) ? 1 : 0,
+                area: Region { l0 t0 w1.66 b0 } ]
         # one group: a single border, none doubled between them
         t['debug'] = StatusButton [ buttons: vec string [] [ 'continue',
                 'step_next', 'step_in', 'step_out' ],
@@ -9335,7 +9985,8 @@ element orbiter : trinity # implements compiler
             use_spacing: false, rest_fill: rgba [ '#0000' ],
             disable_mask: (off) ? 15 : 0, unavailable: off,
             # right after the console button, 1.66 units wide
-            area: Region { l1.66 t0 w168px b0 } ]
+            area: Region [ (sys) ? 'l0 t0 w168px b0'
+                : 'l1.66 t0 w168px b0' ] ]
         # the mic first; else the hovered button's name, else what the
         # reload is doing
         tip : string hover_tip[ ux.hovered ]
@@ -9350,7 +10001,7 @@ element orbiter : trinity # implements compiler
             area: Region { l0 t0 r0 b0 } ]
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
-        if [ inst_hidden ]
+        if [ inst_hidden && !sys ]
             t['side_toggle'] = StatusButton [
                 buttons: vec string [] [ 'side_toggle' ],
                 icon_ids: vec string [] [
@@ -9371,6 +10022,28 @@ element orbiter : trinity # implements compiler
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
         side_sync[]
+        # the system bar: a new minute or a Wi-Fi change redraws it
+        if [ system_on[] ]
+            now : clock_text[]
+            if [ wifi_shared[].poll[] || now != clock_was ]
+                clock_was = now
+                w.restyle = true
+            if [ tray_shared[].poll[] ] w.restyle = true
+            # the drawer: gone once slid away; a tray pick shuts it
+            if [ !drawer_open && menu_shut_ms > 0
+                 && epoch_millis[] - menu_shut_ms >= 400 ]
+                menu_shut_ms = 0
+                w.restyle = true
+            if [ drawer_focus ]
+                de : element find_el[ a, 'drawer' ]
+                if [ de ]
+                    drawer_focus = false
+                    w.set_focus[ de ]
+            tp : cast TrayPanel [ find_el[ a, 'tray_panel' ] ]
+            if [ tp && tp.picks != tray_picks ]
+                tray_picks = tp.picks
+                if [ drawer_open && menu_kind == 'tray' ] drawer_shut[]
+            if [ wl_tick[] ] w.restyle = true
         # an exchange with no agent chosen opens on the last one used
         if [ w.shot_ask && (!w.agent_pick || w.agent_pick.count == 0)
              && agent_last && agent_last.count > 0 ]
@@ -9408,14 +10081,23 @@ element orbiter : trinity # implements compiler
         if [ ux && install ]
             return Elements [ 'scene': scene_element[],
                 'wizard': InstallWizard [ dry_run: dry_run ] ]
+        # the system bar takes the top; everything else is under it
+        top : f32 [ (system_on[]) ? system_h : 0.0 ]
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
-            'dock'   : Dock [ elements: dock_els[], hide: hide_ui ],
+            'system' : (top > 0.0) ? SystemBar [ elements: system_els[],
+                area: Region [ 'l0 t0 r0 h{top}px' ] ] : null,
             'main'   : Splitter [ area: (hide_ui)
-                ? Region { l0 t0 r0 b0 } : Region { l78.75px t0 r0 b0 },
+                ? Region [ 'l0 t{top}px r0 b0' ]
+                : Region [ 'l78.75px t{top}px r0 b0' ],
                                   inner: main_els[],
                 deflt: 360.0, min_size: 200.0, near_seam: true,
                 snap_close: true, shut_locked: true, gap: 0.0 ],
+            # the menu drawer, over the panes, out from under the dock
+            'drawer' : (drawer_on[]) ? MenuDrawer [ open: drawer_open,
+                elements: drawer_els[] ] : null,
+            'dock'   : Dock [ elements: dock_els[], hide: hide_ui,
+                area: Region [ 'l0 t{top}px w78.75px b0' ] ],
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])

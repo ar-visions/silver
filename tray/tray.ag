@@ -1,0 +1,1165 @@
+# tray: apps' tray icons (StatusNotifierItem) over the session bus
+import vec
+import img
+import trinity
+import <dbus/dbus.h>
+    -I/usr/include/dbus-1.0
+    -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+    -ldbus-1
+import <stdio.h>
+import <stdlib.h>
+import <time.h>
+
+# one entry of an app's menu; a submenu's entries follow it, deeper
+class TrayEntry
+    public id      : i32
+    public label   : string
+    public enabled : bool
+    # a separator line
+    public rule    : bool
+    # -1 no mark, 0 unchecked, 1 checked
+    public check   : i32
+    public depth   : i32
+    # a GTK entry's action ('app.quit') and its string target
+    public action  : string
+    public target  : string
+
+# one app's icon as it registered
+class TrayItem
+    # its bus name, the object path, and the name it registered as
+    public service   : string
+    public path      : string
+    public reg       : string
+    # the unique name that registered it: its signals come from it
+    public owner     : string
+    public title     : string
+    public tip       : string
+    public status    : string
+    # the dbusmenu object; '' when it has none
+    public menu      : string
+    # a click shows the menu instead of activating
+    public menu_only : bool
+    # the icon, rgba premultiplied; icon_gen counts its changes
+    public pixels    : new u8
+    public px_w      : i32
+    public px_h      : i32
+    public icon_gen  : i32
+    # the icon as a file: its theme folder and name (Chromium's way)
+    public icon_name : string
+    public theme     : string
+    intern icon_file : string
+    intern icon_time : i64
+    public entries   : vec TrayEntry
+    public dirty     : bool
+
+# a variant's string or object path
+func tray_text [ v: @DBusMessageIter ] -> string
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    t : i32 [ dbus_message_iter_get_arg_type[ @inner ] ]
+    if [ t != DBUS_TYPE_STRING && t != DBUS_TYPE_OBJECT_PATH ]
+        return ''
+    cs : cstr
+    dbus_message_iter_get_basic[ @inner, @cs ]
+    return string[ cs ]
+
+func tray_bool [ v: @DBusMessageIter ] -> bool
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_BOOLEAN ]
+        return false
+    b : u32 [ 0 ]
+    dbus_message_iter_get_basic[ @inner, @b ]
+    return b != 0
+
+func tray_int [ v: @DBusMessageIter ] -> i32
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_INT32 ]
+        return 0
+    n : i32 [ 0 ]
+    dbus_message_iter_get_basic[ @inner, @n ]
+    return n
+
+# a message's string argument by its place
+func tray_arg [ m: @DBusMessage, at: i32 ] -> string
+    it : DBusMessageIter
+    if [ dbus_message_iter_init[ m, @it ] == 0 ] return ''
+    for [ i: i32 0, i < at, i += 1 ]
+        dbus_message_iter_next[ @it ]
+    t : i32 [ dbus_message_iter_get_arg_type[ @it ] ]
+    if [ t != DBUS_TYPE_STRING && t != DBUS_TYPE_OBJECT_PATH ]
+        return ''
+    cs : cstr
+    dbus_message_iter_get_basic[ @it, @cs ]
+    return string[ cs ]
+
+# a menu label without its mnemonic marks: _File is File, __ is _
+func tray_label [ s: string ] -> string
+    out : ''
+    i : i32 [ 0 ]
+    while [ i < s.count ]
+        c : s.mid[ i, 1 ]
+        if [ c == '_' && i + 1 < s.count && s.mid[ i + 1, 1 ] == '_' ]
+            out = '{out}_'
+            i += 2
+        el [ c == '_' ]
+            i += 1
+        el
+            out = '{out}{c}'
+            i += 1
+    return out
+
+# ---- menus over D-Bus: a tray's or a window's ----------------------
+
+# a call that waits a second at most for its answer
+func bus_wait [ conn: @DBusConnection, m: @DBusMessage ] -> @DBusMessage
+    if [ !conn ]
+        dbus_message_unref[ m ]
+        return null
+    err : DBusError
+    dbus_error_init[ @err ]
+    rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+        conn, m, 1000, @err ] ]
+    dbus_message_unref[ m ]
+    if [ dbus_error_is_set[ @err ] ]
+        dbus_error_free[ @err ]
+        return null
+    return rep
+
+func bus_send [ conn: @DBusConnection, m: @DBusMessage ]
+    if [ conn ]
+        dbus_connection_send[ conn, m, null ]
+        dbus_connection_flush[ conn ]
+    dbus_message_unref[ m ]
+
+# a dbusmenu (Qt, Chromium's tray), flattened: each entry, then a
+# submenu's entries after it, one deeper
+func dbm_entries [ conn: @DBusConnection, bus: string, path: string ]
+        -> vec TrayEntry
+    out : vec TrayEntry []
+    dm : 'com.canonical.dbusmenu'
+    ats : 'AboutToShow'
+    m : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+        path.chars, dm.chars, ats.chars ] ]
+    it : DBusMessageIter
+    dbus_message_iter_init_append[ m, @it ]
+    root : i32 [ 0 ]
+    dbus_message_iter_append_basic[ @it, DBUS_TYPE_INT32, @root ]
+    shown : bus_wait[ conn, m ]
+    if [ shown ] dbus_message_unref[ shown ]
+    gl : 'GetLayout'
+    lm : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+        path.chars, dm.chars, gl.chars ] ]
+    li : DBusMessageIter
+    dbus_message_iter_init_append[ lm, @li ]
+    all : i32 [ -1 ]
+    dbus_message_iter_append_basic[ @li, DBUS_TYPE_INT32, @root ]
+    dbus_message_iter_append_basic[ @li, DBUS_TYPE_INT32, @all ]
+    names : DBusMessageIter
+    dbus_message_iter_open_container[ @li, DBUS_TYPE_ARRAY, "s",
+                                      @names ]
+    dbus_message_iter_close_container[ @li, @names ]
+    rep : bus_wait[ conn, lm ]
+    if [ !rep ] return out
+    top : DBusMessageIter
+    dbus_message_iter_init[ rep, @top ]
+    dbus_message_iter_next[ @top ]
+    if [ dbus_message_iter_get_arg_type[ @top ] == DBUS_TYPE_STRUCT ]
+        dbm_walk[ out, @top, 0 ]
+    dbus_message_unref[ rep ]
+    return out
+
+# one layout node (id, properties, children) and those under it
+func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
+    f : DBusMessageIter
+    dbus_message_iter_recurse[ node, @f ]
+    e : TrayEntry [ label: '', enabled: true, check: -1,
+        depth: depth - 1, action: '', target: '' ]
+    eid : i32 [ 0 ]
+    dbus_message_iter_get_basic[ @f, @eid ]
+    e.id = eid
+    dbus_message_iter_next[ @f ]
+    shown : true
+    d : DBusMessageIter
+    dbus_message_iter_recurse[ @f, @d ]
+    while [ dbus_message_iter_get_arg_type[ @d ]
+            == DBUS_TYPE_DICT_ENTRY ]
+        kv : DBusMessageIter
+        dbus_message_iter_recurse[ @d, @kv ]
+        kc : cstr
+        dbus_message_iter_get_basic[ @kv, @kc ]
+        key : string[ kc ]
+        dbus_message_iter_next[ @kv ]
+        if [ key == 'label' ]
+            e.label = tray_label[ tray_text[ @kv ] ]
+        el [ key == 'enabled' ] e.enabled = tray_bool[ @kv ]
+        el [ key == 'visible' ] shown = tray_bool[ @kv ]
+        el [ key == 'type' ]
+            e.rule = tray_text[ @kv ] == 'separator'
+        el [ key == 'toggle-state' ] e.check = tray_int[ @kv ]
+        dbus_message_iter_next[ @d ]
+    if [ !shown ] return
+    if [ depth > 0 ] out.push[ e ]
+    dbus_message_iter_next[ @f ]
+    kids : DBusMessageIter
+    dbus_message_iter_recurse[ @f, @kids ]
+    while [ dbus_message_iter_get_arg_type[ @kids ]
+            == DBUS_TYPE_VARIANT ]
+        kid : DBusMessageIter
+        dbus_message_iter_recurse[ @kids, @kid ]
+        if [ dbus_message_iter_get_arg_type[ @kid ]
+             == DBUS_TYPE_STRUCT ]
+            dbm_walk[ out, @kid, depth + 1 ]
+        dbus_message_iter_next[ @kids ]
+
+# a dbusmenu entry chosen
+func dbm_click [ conn: @DBusConnection, bus: string, path: string,
+                 eid: i32 ]
+    dm : 'com.canonical.dbusmenu'
+    ev : 'Event'
+    m : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+        path.chars, dm.chars, ev.chars ] ]
+    it : DBusMessageIter
+    dbus_message_iter_init_append[ m, @it ]
+    which : i32 [ eid ]
+    dbus_message_iter_append_basic[ @it, DBUS_TYPE_INT32, @which ]
+    word : 'clicked'
+    cs : cstr [ word.chars ]
+    dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+    sub : DBusMessageIter
+    dbus_message_iter_open_container[ @it, DBUS_TYPE_VARIANT, "i",
+                                      @sub ]
+    none : i32 [ 0 ]
+    dbus_message_iter_append_basic[ @sub, DBUS_TYPE_INT32, @none ]
+    dbus_message_iter_close_container[ @it, @sub ]
+    stamp : u32 [ u32[ time[ null ] ] ]
+    dbus_message_iter_append_basic[ @it, DBUS_TYPE_UINT32, @stamp ]
+    bus_send[ conn, m ]
+
+# one item of a GTK menu: a label and action, or a link to a section
+# or a submenu by (group, menu)
+class GtkItem
+    public label  : string
+    public action : string
+    # a string target, '' none
+    public target : string
+    public sec_g  : i32
+    public sec_m  : i32
+    public sub_g  : i32
+    public sub_m  : i32
+
+class GtkMenu
+    public items : vec GtkItem
+
+# a GTK app's menu bar (org.gtk.Menus) and its actions' state
+# (org.gtk.Actions), on a session bus connection of its own
+class AppMenu
+    intern conn   : @DBusConnection
+    intern menus  : map GtkMenu [string]
+    intern groups : vec i32
+    # each action's enabled flag and boolean state, by 'app.name'
+    intern able   : map bool [string]
+    intern state  : map i32 [string]
+
+    func open [] -> bool
+        if [ conn ] return true
+        err : DBusError
+        dbus_error_init[ @err ]
+        conn = dbus_bus_get_private[ DBUS_BUS_SESSION, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        return true
+
+    # a window's menu: kind 1 dbusmenu, 2 GTK
+    func read [ kind: i32, bus: string, path: string, app: string,
+                win: string ] -> vec TrayEntry
+        if [ kind == 0 || !open[] ] return vec TrayEntry []
+        if [ kind == 1 ] return dbm_entries[ conn, bus, path ]
+        menus  = map GtkMenu [string] []
+        groups = vec i32 []
+        able   = map bool [string] []
+        state  = map i32 [string] []
+        describe[ bus, app, 'app' ]
+        describe[ bus, win, 'win' ]
+        out : vec TrayEntry []
+        flatten[ bus, path, 0, 0, 0, out ]
+        return out
+
+    # an entry chosen: its action, or its dbusmenu id
+    func click [ kind: i32, bus: string, path: string, app: string,
+                 win: string, e: TrayEntry ]
+        if [ !open[] ] return
+        if [ kind == 1 ]
+            dbm_click[ conn, bus, path, e.id ]
+            return
+        dot : i32 [ e.action.index_of[ '.' ] ]
+        if [ dot <= 0 ] return
+        pre : e.action.mid[ 0, dot ]
+        nm : e.action.mid[ dot + 1, e.action.count - dot - 1 ]
+        at : (pre == 'win') ? win : app
+        if [ at.count == 0 ] return
+        ga : 'org.gtk.Actions'
+        act : 'Activate'
+        m : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+            at.chars, ga.chars, act.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ m, @it ]
+        cs : cstr [ nm.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        ps : DBusMessageIter
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY, "v",
+                                          @ps ]
+        if [ e.target.count > 0 ]
+            v : DBusMessageIter
+            dbus_message_iter_open_container[ @ps, DBUS_TYPE_VARIANT,
+                                              "s", @v ]
+            ts : cstr [ e.target.chars ]
+            dbus_message_iter_append_basic[ @v, DBUS_TYPE_STRING, @ts ]
+            dbus_message_iter_close_container[ @ps, @v ]
+        dbus_message_iter_close_container[ @it, @ps ]
+        pd : DBusMessageIter
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY, "{sv}",
+                                          @pd ]
+        dbus_message_iter_close_container[ @it, @pd ]
+        bus_send[ conn, m ]
+
+    # each action's enabled flag and boolean state under a prefix
+    func describe [ bus: string, path: string, pre: string ]
+        if [ path.count == 0 ] return
+        ga : 'org.gtk.Actions'
+        da : 'DescribeAll'
+        m : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+            path.chars, ga.chars, da.chars ] ]
+        rep : bus_wait[ conn, m ]
+        if [ !rep ] return
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : '{pre}.{string[ kc ]}'
+            dbus_message_iter_next[ @kv ]
+            st : DBusMessageIter
+            dbus_message_iter_recurse[ @kv, @st ]
+            on : u32 [ 0 ]
+            dbus_message_iter_get_basic[ @st, @on ]
+            able[ key ] = on != 0
+            dbus_message_iter_next[ @st ]
+            dbus_message_iter_next[ @st ]
+            # the state, when it is a boolean: a check mark
+            sv : DBusMessageIter
+            dbus_message_iter_recurse[ @st, @sv ]
+            if [ dbus_message_iter_get_arg_type[ @sv ]
+                 == DBUS_TYPE_VARIANT ]
+                b : DBusMessageIter
+                dbus_message_iter_recurse[ @sv, @b ]
+                if [ dbus_message_iter_get_arg_type[ @b ]
+                     == DBUS_TYPE_BOOLEAN ]
+                    bv : u32 [ 0 ]
+                    dbus_message_iter_get_basic[ @b, @bv ]
+                    state[ key ] = (bv != 0) ? 1 : 0
+            dbus_message_iter_next[ @d ]
+        dbus_message_unref[ rep ]
+
+    # one group's menus, asked for by Start
+    func load [ bus: string, path: string, g: i32 ]
+        if [ groups.index_of[ g ] >= 0 ] return
+        groups.push[ g ]
+        gm : 'org.gtk.Menus'
+        st : 'Start'
+        m : @DBusMessage [ dbus_message_new_method_call[ bus.chars,
+            path.chars, gm.chars, st.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ m, @it ]
+        arr : DBusMessageIter
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY, "u",
+                                          @arr ]
+        gu : u32 [ u32[ g ] ]
+        dbus_message_iter_append_basic[ @arr, DBUS_TYPE_UINT32, @gu ]
+        dbus_message_iter_close_container[ @it, @arr ]
+        rep : bus_wait[ conn, m ]
+        if [ !rep ] return
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        ms : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @ms ]
+        while [ dbus_message_iter_get_arg_type[ @ms ]
+                == DBUS_TYPE_STRUCT ]
+            f : DBusMessageIter
+            dbus_message_iter_recurse[ @ms, @f ]
+            mg : u32 [ 0 ]
+            mm : u32 [ 0 ]
+            dbus_message_iter_get_basic[ @f, @mg ]
+            dbus_message_iter_next[ @f ]
+            dbus_message_iter_get_basic[ @f, @mm ]
+            dbus_message_iter_next[ @f ]
+            menu : GtkMenu [ items: vec GtkItem [] ]
+            its : DBusMessageIter
+            dbus_message_iter_recurse[ @f, @its ]
+            while [ dbus_message_iter_get_arg_type[ @its ]
+                    == DBUS_TYPE_ARRAY ]
+                menu.items.push[ item_of[ @its ] ]
+                dbus_message_iter_next[ @its ]
+            menus[ '{mg}:{mm}' ] = menu
+            dbus_message_iter_next[ @ms ]
+        dbus_message_unref[ rep ]
+
+    # one item's a{sv}
+    func item_of [ it: @DBusMessageIter ] -> GtkItem
+        g : GtkItem [ label: '', action: '', target: '', sec_g: -1,
+            sec_m: -1, sub_g: -1, sub_m: -1 ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ it, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string[ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'label' ]
+                g.label = tray_label[ tray_text[ @kv ] ]
+            el [ key == 'action' ] g.action = tray_text[ @kv ]
+            el [ key == 'target' ] g.target = tray_text[ @kv ]
+            el [ key == ':section' || key == ':submenu' ]
+                v : DBusMessageIter
+                dbus_message_iter_recurse[ @kv, @v ]
+                s : DBusMessageIter
+                dbus_message_iter_recurse[ @v, @s ]
+                a : u32 [ 0 ]
+                b : u32 [ 0 ]
+                dbus_message_iter_get_basic[ @s, @a ]
+                dbus_message_iter_next[ @s ]
+                dbus_message_iter_get_basic[ @s, @b ]
+                if [ key == ':section' ]
+                    g.sec_g = i32[ a ]
+                    g.sec_m = i32[ b ]
+                el
+                    g.sub_g = i32[ a ]
+                    g.sub_m = i32[ b ]
+            dbus_message_iter_next[ @d ]
+        return g
+
+    # a menu's items into out: a section inline (a rule before all but
+    # the first), a submenu's items after its entry, one deeper
+    func flatten [ bus: string, path: string, g: i32, mi: i32,
+                   depth: i32, out: vec TrayEntry ]
+        if [ depth > 8 ] return
+        load[ bus, path, g ]
+        key : '{g}:{mi}'
+        if [ !menus.contains[ key ] ] return
+        menu : GtkMenu menus[ key ]
+        for [ i: i32 0, i < menu.items.count, i += 1 ]
+            it : GtkItem menu.items[ i ]
+            if [ it.sec_g >= 0 ]
+                if [ i > 0 ]
+                    out.push[ TrayEntry [ label: '', rule: true,
+                        enabled: true, check: -1, depth: depth,
+                        action: '', target: '' ] ]
+                flatten[ bus, path, it.sec_g, it.sec_m, depth, out ]
+            el [ it.sub_g >= 0 ]
+                out.push[ TrayEntry [ label: it.label, enabled: true,
+                    check: -1, depth: depth, action: '', target: '' ] ]
+                flatten[ bus, path, it.sub_g, it.sub_m, depth + 1, out ]
+            el
+                on : bool [ !able.contains[ it.action ]
+                    || able[ it.action ] ]
+                ck : i32 [ (state.contains[ it.action ])
+                    ? state[ it.action ] : -1 ]
+                out.push[ TrayEntry [ label: it.label, enabled: on,
+                    check: ck, depth: depth, action: it.action,
+                    target: it.target ] ]
+
+# a panel's height for scrolling: its lowest child's foot
+func panel_fit [ e: element ]
+    tall : f32 [ 0.0 ]
+    if [ e.elements ]
+        for [ c: element, k: string ] in e.elements
+            if [ c && c.bounds && c.bounds.y + c.bounds.h > tall ]
+                tall = c.bounds.y + c.bounds.h
+    e.content_h = tall + 12.0
+
+# an entry the filter keeps: its label holds the typed text, any case
+func entry_matches [ e: TrayEntry, f: string ] -> bool
+    if [ !f || f.count == 0 ] return true
+    if [ e.rule ] return false
+    return e.label.lcase[].index_of[ f.lcase[] ] >= 0
+
+# what is typed into an open menu, at its foot: the rows stay put
+Button MenuFilter
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff12
+            radius: 8
+            stroke_width: 1
+            stroke_color: #806bff
+        layers.face:
+            label_color: #ffffff
+            label_size: 15
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+    }
+
+# a side panel's rows under its heading: each flows after the last,
+# so the wheel scrolls them
+element PanelRows
+    scroll_fade : 24.0
+
+    public func tick [ w: Window ]
+        panel_fit[ a ]
+
+# one reader for the process: the shell's menu bar
+app_menu_now : AppMenu
+
+func app_menu [] -> AppMenu
+    if [ !app_menu_now ] app_menu_now = AppMenu []
+    return app_menu_now
+
+# the tray: orbiter holds org.kde.StatusNotifierWatcher on the
+# session bus; apps register their icons with it, and it reads
+# their icons and menus and passes clicks back
+class Tray
+    public items    : vec TrayItem
+    # we hold the watcher's name
+    public ready    : bool
+    public problem  : string
+    # the item whose menu the side panel shows
+    public chosen   : string
+    intern conn     : @DBusConnection
+    intern tried    : i64
+    # another tray (a desktop's) holds the name: never ask again
+    intern elsewhere : bool
+
+    func init []
+        items   = vec TrayItem []
+        problem = ''
+        chosen  = ''
+
+    func watcher [] -> string
+        return 'org.kde.StatusNotifierWatcher'
+
+    func open [] -> bool
+        tried = epoch_micros[]
+        err : DBusError
+        dbus_error_init[ @err ]
+        conn = dbus_bus_get_private[ DBUS_BUS_SESSION, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = 'No session bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        nm : watcher[]
+        got : i32 [ dbus_bus_request_name[ conn, nm.chars,
+            DBUS_NAME_FLAG_DO_NOT_QUEUE, @err ] ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        if [ got != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER ]
+            problem = 'Another tray holds the session bus'
+            elsewhere = true
+            close[]
+            return false
+        sig : 'type=\'signal\''
+        for [ rule: string ] in vec string [] [
+                '{sig},member=\'NameOwnerChanged\'',
+                '{sig},interface=\'org.kde.StatusNotifierItem\'',
+                '{sig},interface=\'com.canonical.dbusmenu\'' ]
+            dbus_bus_add_match[ conn, rule.chars, @err ]
+            if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        announce[ 'StatusNotifierHostRegistered', '' ]
+        ready = true
+        log 'tray: holding {nm}'
+        return true
+
+    # a signal from the watcher, with a string when one is given
+    func announce [ name: string, arg: string ]
+        pt : '/StatusNotifierWatcher'
+        nm : watcher[]
+        m : @DBusMessage [ dbus_message_new_signal[ pt.chars, nm.chars,
+            name.chars ] ]
+        if [ arg.count > 0 ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ m, @it ]
+            cs : cstr [ arg.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        send_only[ m ]
+
+    func send_only [ m: @DBusMessage ]
+        if [ !conn ]
+            dbus_message_unref[ m ]
+            return
+        dbus_connection_send[ conn, m, null ]
+        dbus_message_unref[ m ]
+        dbus_connection_flush[ conn ]
+
+    # a call that waits a second at most for its answer
+    func send_wait [ m: @DBusMessage ] -> @DBusMessage
+        if [ !conn ]
+            dbus_message_unref[ m ]
+            return null
+        err : DBusError
+        dbus_error_init[ @err ]
+        rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+            conn, m, 1000, @err ] ]
+        dbus_message_unref[ m ]
+        if [ dbus_error_is_set[ @err ] ]
+            dbus_error_free[ @err ]
+            return null
+        return rep
+
+    # registrations, property reads, changes; true when the tray
+    # changed
+    func poll [] -> bool
+        if [ !conn ]
+            if [ elsewhere || epoch_micros[] - tried < 3000000 ]
+                return false
+            return open[]
+        dbus_connection_read_write[ conn, 0 ]
+        if [ dbus_connection_get_is_connected[ conn ] == 0 ]
+            close[]
+            items.clear[]
+            return true
+        changed : false
+        while [ true ]
+            m : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !m ] break
+            t : i32 [ dbus_message_get_type[ m ] ]
+            if [ t == DBUS_MESSAGE_TYPE_METHOD_CALL ]
+                if [ answer[ m ] ] changed = true
+            el [ t == DBUS_MESSAGE_TYPE_SIGNAL ]
+                if [ signal_in[ m ] ] changed = true
+            dbus_message_unref[ m ]
+        for [ it: TrayItem ] in items
+            if [ it.dirty ]
+                read_item[ it ]
+                changed = true
+        return changed
+
+    # the watcher's methods and properties
+    func answer [ m: @DBusMessage ] -> bool
+        nm : watcher[]
+        props : 'org.freedesktop.DBus.Properties'
+        intro : 'org.freedesktop.DBus.Introspectable'
+        reg_item : 'RegisterStatusNotifierItem'
+        reg_host : 'RegisterStatusNotifierHost'
+        get : 'Get'
+        all : 'GetAll'
+        look : 'Introspect'
+        rep : @DBusMessage [ null ]
+        added : false
+        if [ dbus_message_is_method_call[ m, nm.chars,
+                                          reg_item.chars ] != 0 ]
+            added = register[ m ]
+            rep = dbus_message_new_method_return[ m ]
+        el [ dbus_message_is_method_call[ m, nm.chars,
+                                            reg_host.chars ] != 0 ]
+            rep = dbus_message_new_method_return[ m ]
+        el [ dbus_message_is_method_call[ m, props.chars,
+                                            get.chars ] != 0 ]
+            rep = dbus_message_new_method_return[ m ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            put_prop[ @it, tray_arg[ m, 1 ] ]
+        el [ dbus_message_is_method_call[ m, props.chars,
+                                            all.chars ] != 0 ]
+            rep = dbus_message_new_method_return[ m ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            d : DBusMessageIter
+            dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                "{sv}", @d ]
+            for [ key: string ] in vec string [] [
+                    'RegisteredStatusNotifierItems',
+                    'IsStatusNotifierHostRegistered',
+                    'ProtocolVersion' ]
+                kv : DBusMessageIter
+                dbus_message_iter_open_container[ @d,
+                    DBUS_TYPE_DICT_ENTRY, null, @kv ]
+                kc : cstr [ key.chars ]
+                dbus_message_iter_append_basic[ @kv, DBUS_TYPE_STRING,
+                                                @kc ]
+                put_prop[ @kv, key ]
+                dbus_message_iter_close_container[ @d, @kv ]
+            dbus_message_iter_close_container[ @it, @d ]
+        el [ dbus_message_is_method_call[ m, intro.chars,
+                                            look.chars ] != 0 ]
+            rep = dbus_message_new_method_return[ m ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            xml : introspection[]
+            cs : cstr [ xml.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        el
+            en : 'org.freedesktop.DBus.Error.UnknownMethod'
+            why : 'the tray has no such method'
+            rep = dbus_message_new_error[ m, en.chars, why.chars ]
+        send_only[ rep ]
+        return added
+
+    # one property's value as a variant
+    func put_prop [ it: @DBusMessageIter, key: string ]
+        sub : DBusMessageIter
+        if [ key == 'RegisteredStatusNotifierItems' ]
+            dbus_message_iter_open_container[ it, DBUS_TYPE_VARIANT,
+                "as", @sub ]
+            arr : DBusMessageIter
+            dbus_message_iter_open_container[ @sub, DBUS_TYPE_ARRAY,
+                "s", @arr ]
+            for [ t: TrayItem ] in items
+                cs : cstr [ t.reg.chars ]
+                dbus_message_iter_append_basic[ @arr, DBUS_TYPE_STRING,
+                                                @cs ]
+            dbus_message_iter_close_container[ @sub, @arr ]
+            dbus_message_iter_close_container[ it, @sub ]
+        el [ key == 'IsStatusNotifierHostRegistered' ]
+            dbus_message_iter_open_container[ it, DBUS_TYPE_VARIANT,
+                "b", @sub ]
+            yes : u32 [ 1 ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_BOOLEAN,
+                                            @yes ]
+            dbus_message_iter_close_container[ it, @sub ]
+        el
+            dbus_message_iter_open_container[ it, DBUS_TYPE_VARIANT,
+                "i", @sub ]
+            v : i32 [ 0 ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_INT32, @v ]
+            dbus_message_iter_close_container[ it, @sub ]
+
+    func introspection [] -> string
+        x : '<node><interface name="org.kde.StatusNotifierWatcher">'
+        x = '{x}<method name="RegisterStatusNotifierItem">'
+        x = '{x}<arg name="service" type="s" direction="in"/></method>'
+        x = '{x}<method name="RegisterStatusNotifierHost">'
+        x = '{x}<arg name="service" type="s" direction="in"/></method>'
+        x = '{x}<property name="RegisteredStatusNotifierItems"'
+        x = '{x} type="as" access="read"/>'
+        x = '{x}<property name="IsStatusNotifierHostRegistered"'
+        x = '{x} type="b" access="read"/>'
+        x = '{x}<property name="ProtocolVersion" type="i"'
+        x = '{x} access="read"/>'
+        x = '{x}<signal name="StatusNotifierItemRegistered">'
+        x = '{x}<arg type="s"/></signal>'
+        x = '{x}<signal name="StatusNotifierItemUnregistered">'
+        x = '{x}<arg type="s"/></signal>'
+        x = '{x}<signal name="StatusNotifierHostRegistered"/>'
+        return '{x}</interface></node>'
+
+    # an app's icon: a bus name (its object at /StatusNotifierItem)
+    # or an object path on the caller's own connection
+    func register [ m: @DBusMessage ] -> bool
+        said : tray_arg[ m, 0 ]
+        sender : string[ dbus_message_get_sender[ m ] ]
+        svc : (said.starts_with[ '/' ]) ? sender : said
+        pt : (said.starts_with[ '/' ]) ? said : '/StatusNotifierItem'
+        if [ svc.count == 0 ] return false
+        for [ t: TrayItem ] in items
+            if [ t.service == svc && t.path == pt ]
+                t.dirty = true
+                return true
+        t : TrayItem [ service: svc, path: pt, owner: sender,
+            reg: (said.starts_with[ '/' ]) ? '{sender}{said}' : said,
+            title: '', tip: '', status: '', menu: '', icon_name: '',
+            theme: '', icon_file: '',
+            entries: vec TrayEntry [] ]
+        items.push[ t ]
+        read_item[ t ]
+        announce[ 'StatusNotifierItemRegistered', t.reg ]
+        log 'tray: {t.title} registered ({svc}{pt})'
+        return true
+
+    func signal_in [ m: @DBusMessage ] -> bool
+        dbn : 'org.freedesktop.DBus'
+        noc : 'NameOwnerChanged'
+        if [ dbus_message_is_signal[ m, dbn.chars, noc.chars ] != 0 ]
+            name : tray_arg[ m, 0 ]
+            if [ tray_arg[ m, 2 ].count > 0 ] return false
+            return drop_owner[ name ]
+        from : string[ dbus_message_get_sender[ m ] ]
+        for [ t: TrayItem ] in items
+            if [ t.owner == from ] t.dirty = true
+        return false
+
+    # an app gone from the bus: its icon goes
+    func drop_owner [ name: string ] -> bool
+        gone : false
+        i : i32 [ items.count - 1 ]
+        while [ i >= 0 ]
+            t : TrayItem items[ i ]
+            if [ t.service == name || t.owner == name ]
+                announce[ 'StatusNotifierItemUnregistered', t.reg ]
+                if [ chosen == t.service ] chosen = ''
+                items.remove[ i ]
+                gone = true
+            i -= 1
+        return gone
+
+    # the item's properties, its icon, then its menu
+    func read_item [ t: TrayItem ]
+        t.dirty = false
+        pi : 'org.freedesktop.DBus.Properties'
+        all : 'GetAll'
+        m : @DBusMessage [ dbus_message_new_method_call[
+            t.service.chars, t.path.chars, pi.chars, all.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ m, @it ]
+        sni : 'org.kde.StatusNotifierItem'
+        cs : cstr [ sni.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        rep : send_wait[ m ]
+        if [ !rep ] return
+        pixmap : false
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        if [ dbus_message_iter_get_arg_type[ @top ] == DBUS_TYPE_ARRAY ]
+            d : DBusMessageIter
+            dbus_message_iter_recurse[ @top, @d ]
+            while [ dbus_message_iter_get_arg_type[ @d ]
+                    == DBUS_TYPE_DICT_ENTRY ]
+                kv : DBusMessageIter
+                dbus_message_iter_recurse[ @d, @kv ]
+                kc : cstr
+                dbus_message_iter_get_basic[ @kv, @kc ]
+                key : string[ kc ]
+                dbus_message_iter_next[ @kv ]
+                if [ key == 'Title' ] t.title = tray_text[ @kv ]
+                el [ key == 'Status' ] t.status = tray_text[ @kv ]
+                el [ key == 'Menu' ] t.menu = tray_text[ @kv ]
+                el [ key == 'ItemIsMenu' ]
+                    t.menu_only = tray_bool[ @kv ]
+                el [ key == 'ToolTip' ] t.tip = tip_of[ @kv ]
+                el [ key == 'IconPixmap' ]
+                    if [ read_pixmap[ t, @kv ] ] pixmap = true
+                el [ key == 'IconName' ] t.icon_name = tray_text[ @kv ]
+                el [ key == 'IconThemePath' ] t.theme = tray_text[ @kv ]
+                dbus_message_iter_next[ @d ]
+        dbus_message_unref[ rep ]
+        if [ !pixmap ] read_named[ t ]
+        # Chromium leaves Title empty: its tooltip names it
+        if [ t.title.count == 0 ] t.title = t.tip
+        if [ t.menu.count > 1 ] read_menu[ t ]
+
+    # the icon as a png in its theme folder, read again when changed
+    func read_named [ t: TrayItem ]
+        if [ !t.icon_name || t.icon_name.count == 0 ] return
+        dir : (t.theme) ? t.theme : ''
+        f : path '{dir}/{t.icon_name}.png'
+        if [ !f.exists[] ] return
+        file : '{f}'
+        mt : i64 [ f.modified_time[] ]
+        if [ file == t.icon_file && mt == t.icon_time ] return
+        im : Image [ file ]
+        if [ im.width <= 0 || im.height <= 0 || !im.pixels ] return
+        cnt : i32 [ im.width * im.height * 4 ]
+        src : @u8 [ im.pixels ]
+        t.pixels = new u8 [ cnt ]
+        for [ i: i32 0, i < cnt, i += 4 ]
+            al : i32 [ src[ i + 3 ] ]
+            t.pixels[ i ]     = u8[ i32[ src[ i ] ] * al / 255 ]
+            t.pixels[ i + 1 ] = u8[ i32[ src[ i + 1 ] ] * al / 255 ]
+            t.pixels[ i + 2 ] = u8[ i32[ src[ i + 2 ] ] * al / 255 ]
+            t.pixels[ i + 3 ] = u8[ al ]
+        t.px_w = im.width
+        t.px_h = im.height
+        t.icon_file = file
+        t.icon_time = mt
+        t.icon_gen += 1
+
+    # the tooltip's title: (icon name, icon pixmaps, title, text)
+    func tip_of [ v: @DBusMessageIter ] -> string
+        st : DBusMessageIter
+        dbus_message_iter_recurse[ v, @st ]
+        if [ dbus_message_iter_get_arg_type[ @st ] != DBUS_TYPE_STRUCT ]
+            return ''
+        f : DBusMessageIter
+        dbus_message_iter_recurse[ @st, @f ]
+        dbus_message_iter_next[ @f ]
+        dbus_message_iter_next[ @f ]
+        if [ dbus_message_iter_get_arg_type[ @f ] != DBUS_TYPE_STRING ]
+            return ''
+        cs : cstr
+        dbus_message_iter_get_basic[ @f, @cs ]
+        return string[ cs ]
+
+    # the pixmap nearest 32 px wide: ARGB32, network byte order,
+    # made rgba premultiplied
+    func read_pixmap [ t: TrayItem, v: @DBusMessageIter ] -> bool
+        arr : DBusMessageIter
+        dbus_message_iter_recurse[ v, @arr ]
+        if [ dbus_message_iter_get_arg_type[ @arr ] != DBUS_TYPE_ARRAY ]
+            return false
+        st : DBusMessageIter
+        dbus_message_iter_recurse[ @arr, @st ]
+        best_w : i32 [ 0 ]
+        best_h : i32 [ 0 ]
+        best : @u8 [ null ]
+        while [ dbus_message_iter_get_arg_type[ @st ]
+                == DBUS_TYPE_STRUCT ]
+            f : DBusMessageIter
+            dbus_message_iter_recurse[ @st, @f ]
+            pw : i32 [ 0 ]
+            ph : i32 [ 0 ]
+            dbus_message_iter_get_basic[ @f, @pw ]
+            dbus_message_iter_next[ @f ]
+            dbus_message_iter_get_basic[ @f, @ph ]
+            dbus_message_iter_next[ @f ]
+            by : DBusMessageIter
+            dbus_message_iter_recurse[ @f, @by ]
+            bp : @u8 [ null ]
+            n : i32 [ 0 ]
+            dbus_message_iter_get_fixed_array[ @by, @bp, @n ]
+            off : i32 [ pw - 32 ]
+            if [ off < 0 ] off = -off
+            was : i32 [ best_w - 32 ]
+            if [ was < 0 ] was = -was
+            if [ n >= pw * ph * 4 && pw > 0 && ph > 0
+                 && (best_w == 0 || off < was) ]
+                best_w = pw
+                best_h = ph
+                best = bp
+            dbus_message_iter_next[ @st ]
+        if [ best_w == 0 ] return false
+        cnt : i32 [ best_w * best_h * 4 ]
+        t.pixels = new u8 [ cnt ]
+        for [ i: i32 0, i < cnt, i += 4 ]
+            al : i32 [ best[ i ] ]
+            t.pixels[ i ]     = u8[ i32[ best[ i + 1 ] ] * al / 255 ]
+            t.pixels[ i + 1 ] = u8[ i32[ best[ i + 2 ] ] * al / 255 ]
+            t.pixels[ i + 2 ] = u8[ i32[ best[ i + 3 ] ] * al / 255 ]
+            t.pixels[ i + 3 ] = u8[ al ]
+        t.px_w = best_w
+        t.px_h = best_h
+        t.icon_gen += 1
+        return true
+
+    # the menu, flattened: each entry, a submenu's entries after it
+    func read_menu [ t: TrayItem ]
+        t.entries = dbm_entries[ conn, t.service, t.menu ]
+
+    # a left click: the app's own action (its window, usually)
+    func activate [ t: TrayItem ]
+        sni : 'org.kde.StatusNotifierItem'
+        act : 'Activate'
+        m : @DBusMessage [ dbus_message_new_method_call[
+            t.service.chars, t.path.chars, sni.chars, act.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ m, @it ]
+        at : i32 [ 0 ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_INT32, @at ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_INT32, @at ]
+        send_only[ m ]
+
+    # a menu entry chosen
+    func pick [ t: TrayItem, e: TrayEntry ]
+        dbm_click[ conn, t.service, t.menu, e.id ]
+        t.dirty = true
+
+    func find [ svc: string ] -> TrayItem
+        for [ t: TrayItem ] in items
+            if [ t.service == svc ] return t
+        return null
+
+    # the side panel's item: the chosen one, else the first
+    func shown_item [] -> TrayItem
+        t : TrayItem find[ chosen ]
+        if [ t ] return t
+        return (items.count > 0) ? items[ 0 ] : null
+
+    func close []
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+        ready = false
+
+# one tray for the process: the bar's marks and the side panel
+tray_now : Tray
+
+func tray_shared [] -> Tray
+    if [ !tray_now ]
+        tray_now = Tray []
+        tray_now.open[]
+    return tray_now
+
+# an app's icon in the system bar
+element TrayMark
+    no_cache : true
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            # the tray's look: the pointer's light on the edge and fill
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        :hovered
+            layers.body:
+                fill_color: #ffffff14
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+    }
+    public service : string
+    public item    : TrayItem
+    intern tex     : Texture
+    intern tex_gen : i32 [ -1 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !item ]
+            return
+        cv : Canvas [ w.screen ]
+        sz : f32 [ round[ bounds.h * 0.6 ] ]
+        x : f32 [ round[ (bounds.w - sz) * 0.5 ] ]
+        y : f32 [ round[ (bounds.h - sz) * 0.5 ] ]
+        if [ item.px_w <= 0 ]
+            # no picture: its name's first letter
+            nm : (item.title.count > 0) ? item.title.mid[ 0, 1 ] : '?'
+            cv.font_size[ 14 ]
+            cv.fill_color[ rgba [ '#e8e8ee' ] ]
+            cv.draw_text[ nm, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                h: bounds.h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.clip, null ]
+            cv.paint[]
+            return
+        if [ !tex || tex_gen != item.icon_gen ]
+            tex = Texture [ vk: cv.vk, w: cv.w, width: item.px_w,
+                height: item.px_h, linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color,
+                tag: 'tray' ]
+            tex.upload_region[ 0, 0, item.px_w, item.px_h, item.pixels,
+                item.px_w * item.px_h * 4 ]
+            tex_gen = item.icon_gen
+        cv.draw_image[ tex, rect [ x: x, y: y, w: sz, h: sz ] ]
+
+element TrayText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element TrayNote
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 14,
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+Button TrayButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 14
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+                stroke_color: #ffffff55
+                near_inset: 4.0
+    }
+
+# one menu entry
+Button TrayRow
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 15
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                stroke_color: #ffffff40
+                near_inset: 4.0
+    }
+    public entry : i32
+
+# the side panel: the app's name, Open, then its menu's entries
+element TrayPanel
+    public tray : Tray
+    # what is typed: only the entries holding it show
+    public filter : string
+    # counts the entries chosen: the host shuts its drawer on one
+    public picks : i32
+
+    public func tick [ w: Window ]
+        if [ !tray ] tray = tray_shared[]
+        if [ tray.poll[] ] pristine = false
+
+    public func render [] -> Elements
+        if [ !tray ] tray = tray_shared[]
+        t : Elements []
+        it : TrayItem tray.shown_item[]
+        name : (it && it.title.count > 0) ? it.title : 'Tray'
+        t[ 'title' ] = TrayText [ label: name,
+            area: Region { l0.7 t0.4 r6 h1.2 } ]
+        if [ !it ]
+            why : (tray.problem.count > 0) ? tray.problem
+                : 'No app has a tray icon'
+            t[ 'none' ] = TrayNote [ label: why,
+                area: Region { l0.7 t2 r0.7 h1 } ]
+            return t
+        t[ 'open' ] = TrayButton [ label: 'Open',
+            area: Region { r0.7 t0.45 w4.5 h1.05 } ]
+        rows : Elements []
+        gap : f32 [ 0.15 ]
+        if [ it.tip.count > 0 && it.tip != it.title ]
+            rows[ 'tip' ] = TrayNote [ label: it.tip,
+                area: Region [ 'l0.7 t{gap}+ r0.7 h1' ] ]
+        fl : bool [ filter && filter.count > 0 ]
+        for [ i: i32 0, i < it.entries.count, i += 1 ]
+            e : TrayEntry it.entries[ i ]
+            if [ !entry_matches[ e, filter ] ] continue
+            if [ e.rule ]
+                gap += 0.5
+                continue
+            mark : (e.check == 1) ? '✓  ' : ''
+            x : f32 [ 0.7 + f32[ e.depth ] * 1.0 ]
+            rows[ 'entry_{i}' ] = TrayRow [ label: '{mark}{e.label}',
+                entry: i, disable: !e.enabled,
+                area: Region [ 'l{x} t{gap}+ r0.7 h1.2' ] ]
+            gap = 0.15
+        t[ 'rows' ] = PanelRows [ elements: rows,
+            area: Region [ (fl) ? 'l0 t1.85 r0 b2.2' : 'l0 t1.85 r0 b0' ] ]
+        if [ fl ]
+            t[ 'filter' ] = MenuFilter [ label: filter,
+                area: Region { l0.7 b1.8 r0.7 h1.2 } ]
+        return t
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id ] return
+        it : TrayItem tray.shown_item[]
+        if [ !it ] return
+        if [ e.id == 'open' ]
+            tray.activate[ it ]
+        el [ e inherits TrayRow ]
+            row : cast TrayRow [ e ]
+            if [ row.entry >= 0 && row.entry < it.entries.count ]
+                tray.pick[ it, it.entries[ row.entry ] ]
+                picks += 1
+        pristine = false
+        if [ ux ] ux.restyle = true

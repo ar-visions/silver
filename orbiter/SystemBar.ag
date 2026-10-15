@@ -1,0 +1,171 @@
+extend orbiter
+
+# the system bar: orbiter as the OS, across the top, black; the
+# clock in its middle, the tray at its right
+Group SystemBar
+    style : CSS {
+        layers.sys:
+            fill_color: #000000
+    }
+
+# the clock's words, in the bar's middle
+element SystemClock
+    no_cache : true
+    style : CSS {
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 14
+            label_align: 0.5 0.5
+    }
+
+# booted into orbiter-os: init put orbiter.init= on the boot line
+func on_the_os [] -> bool
+    fh : handle fopen[ '/proc/cmdline', 'r' ]
+    if [ !fh ] return false
+    b : local i8 [ 4096 ]
+    cmd : ''
+    if [ fgets[ @b[0], 4096, fh ] ] cmd = string [ @b[0] ]
+    fclose[ fh ]
+    return cmd.index_of[ 'orbiter.init=' ] >= 0
+
+# the time as the bar shows it: Thu 15 Oct  10:42
+func clock_text [] -> string
+    now : i64 [ time[ null ] ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    b : local i8 [ 64 ]
+    fmt : '%a %e %b  %H:%M'
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    return string [ @b[0] ]
+
+# a top menu of the active window's menu bar, at the bar's left
+Button MenuTop
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            # the tray's look: the pointer's light on the edge and fill
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 14
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+    }
+    public at : i32
+
+# the side panel's list of one top menu's entries
+element MenuPanel
+    public items  : vec TrayEntry
+    public top    : i32
+    # what is typed: only the entries holding it show
+    public filter : string
+
+
+    public func render [] -> Elements
+        t : Elements []
+        if [ !items || top < 0 || top >= items.count ]
+            t[ 'none' ] = TrayNote [ label: 'No menu',
+                area: Region { l0.7 t0.6 r0.7 h1 } ]
+            return t
+        t[ 'title' ] = TrayText [ label: items[ top ].label,
+            area: Region { l0.7 t0.4 r0.7 h1.2 } ]
+        # the entries flow under the heading and scroll
+        rows : Elements []
+        gap : f32 [ 0.15 ]
+        fl : bool [ filter && filter.count > 0 ]
+        for [ i: i32 top + 1, i < items.count, i += 1 ]
+            e : TrayEntry items[ i ]
+            if [ e.depth <= 0 ] break
+            # a submenu's name: its entries follow, one deeper
+            deeper : bool [ i + 1 < items.count
+                && items[ i + 1 ].depth > e.depth ]
+            # filtering: the matching entries alone, names left out
+            if [ fl && (deeper || !entry_matches[ e, filter ]) ]
+                continue
+            if [ e.rule ]
+                gap += 0.5
+                continue
+            x : f32 [ 0.7 + f32[ e.depth - 1 ] * 1.0 ]
+            if [ fl ] x = 0.7
+            ar : Region [ 'l{x} t{gap}+ r0.7 h1.2' ]
+            if [ deeper ]
+                rows[ 'entry_{i}' ] = TrayNote [ label: e.label,
+                    area: ar ]
+            el
+                mark : (e.check == 1) ? '✓  ' : ''
+                rows[ 'entry_{i}' ] = TrayRow [
+                    label: '{mark}{e.label}', entry: i,
+                    disable: !e.enabled, area: ar ]
+            gap = 0.15
+        t[ 'rows' ] = PanelRows [ elements: rows,
+            area: Region [ (fl) ? 'l0 t1.85 r0 b2.2' : 'l0 t1.85 r0 b0' ] ]
+        if [ fl ]
+            t[ 'filter' ] = MenuFilter [ label: filter,
+                area: Region { l0.7 b1.8 r0.7 h1.2 } ]
+        return t
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !(e inherits TrayRow) ] return
+        row : cast TrayRow [ e ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.menu_pick[ row.entry ]
+
+# the drawer's ground: what is under it, blurred (the screen as drawn
+# so far, copied and blurred once a frame), with the panel's tint
+Layer DrawerGround
+    func draw [ cv: Canvas ]
+        if [ !parent ] return
+        dr : cast MenuDrawer [ parent ]
+        w : Window parent.ux
+        if [ !dr || !w || !w.root || !w.root.bounds ] return
+        orb : cast orbiter [ w.app_object ]
+        b : ReduceBlur (orb) ? orb.drawer_blur[ w,
+            dr.background_lens ] : null
+        # its place in the window: the screen's origin is behind it
+        ox : f32 [ 0.0 ]
+        oy : f32 [ 0.0 ]
+        for [ e: element* parent, e, e = e.parent ]
+            if [ e.bounds ]
+                ox += e.bounds.x
+                oy += e.bounds.y
+        cv.save[]
+        cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
+        if [ b ]
+            cv.draw_image[ b.color[], rect [ x: -ox, y: -oy,
+                w: w.root.bounds.w, h: w.root.bounds.h ] ]
+        cv.fill_color[ '#140a2a99' ]
+        cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+
+# orbiter's one popover: a menu (the window's, a tray icon's) slides
+# out of the dock over the app, which keeps its width
+element MenuDrawer
+    animated : true
+    # it takes the keys while open: typing filters its menu
+    focusable : true
+    public open : bool
+    # the blur under it live, every frame; off (the default): taken
+    # once as it opens, and again on a new window size
+    public background_lens : bool
+    ground : DrawerGround []
+    style : CSS {
+        area: l-281.25px t30px w360px b0, 240ms cubic outward
+        opacity: 0.0, 240ms cubic outward
+    :open
+        area: l78.75px t30px w360px b0, 260ms cubic inward
+        opacity: 1.0, 260ms cubic inward
+    }

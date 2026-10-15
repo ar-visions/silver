@@ -230,6 +230,134 @@ static void load_hardware(void) {
     if (n) run(argv);
 }
 
+#ifndef NOLIBC
+#include <sys/socket.h>
+#include <linux/netlink.h>
+
+// the kernel's device announcements (udev's own feed), opened
+// before the first scan so a device added between is kept
+static int uevents(void) {
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_KOBJECT_UEVENT);
+    struct sockaddr_nl nl = { .nl_family = AF_NETLINK, .nl_groups = 1 };
+    // the first pass loads hundreds of drivers: keep every event
+    int room = 16 << 20;
+    if (fd >= 0) setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &room, sizeof room);
+    if (fd >= 0 && bind(fd, (struct sockaddr*)&nl, sizeof nl)) { close(fd); fd = -1; }
+    return fd;
+}
+
+// a device that comes later (usb keyboards and mice finish after
+// the scan): its driver by its id, for as long as the system runs
+static void hotplug(int fd) {
+    if (fd < 0 || fork() != 0) return;
+    char msg[8192];
+    for (;;) {
+        ssize_t n = recv(fd, msg, sizeof msg - 1, 0);
+        if (n <= 0) continue;
+        msg[n] = 0;
+        if (strncmp(msg, "add@", 4)) continue;
+        for (char* f = msg; f < msg + n; f += strlen(f) + 1)
+            if (!strncmp(f, "MODALIAS=", 9)) {
+                char* argv[] = { MODPROBE, "-q", "-b", f + 9, NULL };
+                run(argv);
+            }
+    }
+}
+#else
+static int  uevents(void) { return -1; }
+static void hotplug(int fd) {}
+#endif
+
+#ifndef NOLIBC
+// a program left running: the system bus, iwd
+static void spawn(char* const argv[], char* const envp[]) {
+    pid_t p = fork();
+    if (p == 0) { setsid(); execve(argv[0], argv, envp); _exit(127); }
+}
+
+// a machine id for the bus, made once
+static void machine_id(void) {
+    if (access("/etc/machine-id", F_OK) == 0) return;
+    unsigned char r[16];
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0 || read(fd, r, sizeof r) != sizeof r) { if (fd >= 0) close(fd); return; }
+    close(fd);
+    char hex[34];
+    for (int i = 0; i < 16; i++) snprintf(hex + i * 2, 3, "%02x", r[i]);
+    hex[32] = '\n';
+    int out = open("/etc/machine-id", O_WRONLY | O_CREAT | O_TRUNC, 0444);
+    if (out >= 0) { write(out, hex, 33); close(out); }
+}
+
+// Wi-Fi: the system bus, then iwd on it (orbiter drives it);
+// install is the folder orbiter.init's binary is under
+static void net_start(const char* init) {
+    const char* b = strstr(init, "/build/");
+    char iwd[600], lib[600], state[640];
+    if (!b) return;
+    snprintf(iwd, sizeof iwd, "%.*s/libexec/iwd", (int)(b - init), init);
+    if (access(iwd, X_OK)) return;
+    // iwd's crypto comes through the kernel's socket interface
+    char* crypto[] = { MODPROBE, "-q", "-a", "algif_hash", "algif_skcipher",
+                       "cmac", "md4", "pkcs8_key_parser", NULL };
+    run(crypto);
+    machine_id();
+    mkdir("/run/dbus", 0755);
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* bus[] = { "/usr/bin/dbus-daemon",
+                    "--config-file=/etc/dbus-1/orbiter.conf",
+                    "--nofork", "--nopidfile", NULL };
+    spawn(bus, env);
+    for (int i = 0; i < 200 && access("/run/dbus/system_bus_socket", F_OK); i++)
+        usleep(10000);
+    // remembered networks: <install>/var/lib/iwd
+    snprintf(lib, sizeof lib, "%.*s/var", (int)(b - init), init);
+    mkdir(lib, 0755);
+    snprintf(state, sizeof state, "%s/lib", lib);
+    mkdir(state, 0755);
+    snprintf(state, sizeof state, "%s/lib/iwd", lib);
+    mkdir(state, 0700);
+    char* w[] = { iwd, NULL };
+    spawn(w, env);
+    fprintf(stderr, "orbiter-os init: started the system bus and iwd\n");
+}
+
+// the session bus: apps' tray icons register with orbiter on it
+static void session_start(void) {
+    static const char sock[] = "/run/dbus/session_bus_socket";
+    if (access("/usr/bin/dbus-daemon", X_OK)) return;
+    machine_id();
+    mkdir("/run/dbus", 0755);
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* bus[] = { "/usr/bin/dbus-daemon",
+                    "--config-file=/etc/dbus-1/orbiter-session.conf",
+                    "--nofork", "--nopidfile", NULL };
+    spawn(bus, env);
+    for (int i = 0; i < 200 && access(sock, F_OK); i++) usleep(10000);
+    setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/dbus/session_bus_socket", 1);
+    fprintf(stderr, "orbiter-os init: started the session bus\n");
+}
+#else
+static void net_start(const char* init) {}
+static void session_start(void) {}
+#endif
+
+// orbiter starts in silver's folder: orbiter.init up to /install/
+static void work_folder(const char* init) {
+    static const char key[] = "/install/";
+    char dir[600];
+    for (int i = 0; init[i] && i < (int)sizeof dir - 1; i++) {
+        int k = 0;
+        while (key[k] && init[i + k] == key[k]) k++;
+        if (key[k]) continue;
+        for (int j = 0; j < i; j++) dir[j] = init[j];
+        dir[i > 0 ? i : 1] = 0;
+        if (i == 0) dir[0] = '/';
+        if (chdir(dir)) fprintf(stderr, "orbiter-os init: cannot enter %s\n", dir);
+        return;
+    }
+}
+
 // orbiter.modules=a,b:k=v: modprobe a, then b with k=v
 static void load_modules(void) {
     char list[1024];
@@ -316,9 +444,17 @@ int main(void) {
     if (chroot(".") || chdir("/")) die("cannot chroot", real);
     save_logs();
     // after the switch: firmware loads from the folder
+    // the kernel's own driver requests: our modprobe's place
+    int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);
+    if (kp >= 0) { write(kp, MODPROBE, strlen(MODPROBE)); close(kp); }
+    hotplug(uevents());
+    load_hardware();
+    // devices made by the first pass's drivers (usb hid devices)
     load_hardware();
     load_modules();
     swap_on();
+    net_start(init);
+    session_start();
 
     // orbiter.args=--install,true: init's arguments, by comma
     char args[1024];
@@ -328,6 +464,7 @@ int main(void) {
         for (char* w = strtok(args, ","); w && argc < 33; w = strtok(NULL, ","))
             argv[argc++] = w;
     argv[argc] = NULL;
+    work_folder(init);
     execve(init, argv, environ);
     die("cannot run", init);
     return 1;

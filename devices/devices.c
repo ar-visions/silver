@@ -50,6 +50,14 @@ static double g_freq, g_t0;
 const char* platform_surface_extension(void) { return "VK_KHR_win32_surface"; }
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+int platform_kms_open(int minor) { return -1; }
+int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
+void platform_kms_clear_fbs(void) {}
+int platform_kms_back(void) { return -1; }
+void platform_kms_wait(void) {}
+void platform_kms_flip(int slot) {}
+void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
+void platform_cursor_ease(float amount) {}
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 double platform_time(void) {
@@ -593,6 +601,14 @@ double platform_time(void) { return now() - g_t0; }
 const char* platform_surface_extension(void) { return "VK_KHR_android_surface"; }
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+int platform_kms_open(int minor) { return -1; }
+int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
+void platform_kms_clear_fbs(void) {}
+int platform_kms_back(void) { return -1; }
+void platform_kms_wait(void) {}
+void platform_kms_flip(int slot) {}
+void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
+void platform_cursor_ease(float amount) {}
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void send_cmd(int c) { u_char b = c; write(g_cmd[1], &b, 1); }
@@ -975,6 +991,8 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <poll.h>
+#include <math.h>
 
 struct platform_window {
     platform_key_fn    on_key;
@@ -1017,9 +1035,12 @@ static platform_window*  g_windows;
 // kms: no x server (orbiter-os guest). the display itself is the vulkan
 // surface (VK_KHR_display); input comes straight from evdev
 static bool   g_kms;
-static int    g_ev[32];
+// by event number: /dev/input/event<i> open while g_ev_on[i]
+static int    g_ev[64];
+static bool   g_ev_on[64];
 static int    g_ev_n;
-static int    g_ev_abs_max[32];
+static int    g_ev_abs_max[64];
+static double g_ev_scan;
 static double g_mx, g_my;
 static bool   g_moved;
 static int    g_drm_fd = -1;    // master: the guest scans out a dma-buf here
@@ -1030,51 +1051,6 @@ static drmModeModeInfo g_drm_mode;
 // a scanned-out dma-buf, cached by fd so re-presents only redraw
 static int      g_scan_fd = -1;
 static uint32_t g_scan_fb;
-
-// the first card with a connected connector; we stay master so the
-// vulkan driver can take the display through VK_EXT_acquire_drm_display
-static void kms_open_drm(void) {
-    char path[32];
-    for (int i = 0; i < 4 && g_drm_fd < 0; i++) {
-        snprintf(path, sizeof(path), "/dev/dri/card%d", i);
-        int fd = open(path, O_RDWR | O_CLOEXEC);
-        if (fd < 0) continue;
-        // the boot framebuffer is not the gpu: never scan out there
-        drmVersion* ver = drmGetVersion(fd);
-        bool fw = ver && ver->name && !strcmp(ver->name, "simpledrm");
-        if (ver) drmFreeVersion(ver);
-        if (fw) { close(fd); continue; }
-        drmModeRes* res = drmModeGetResources(fd);
-        if (!res) { close(fd); continue; }
-        for (int c = 0; c < res->count_connectors && g_drm_fd < 0; c++) {
-            drmModeConnector* conn = drmModeGetConnector(fd, res->connectors[c]);
-            if (!conn) continue;
-            if (conn->connection == DRM_MODE_CONNECTED && conn->count_modes > 0) {
-                g_drm_fd   = fd;
-                g_drm_conn = conn->connector_id;
-                g_drm_mode = conn->modes[0];
-                g_drm_w    = conn->modes[0].hdisplay;
-                g_drm_h    = conn->modes[0].vdisplay;
-                drmModeEncoder* enc = conn->encoder_id ? drmModeGetEncoder(fd, conn->encoder_id) : NULL;
-                g_drm_crtc = enc ? enc->crtc_id : 0;
-                if (enc) drmModeFreeEncoder(enc);
-                if (!g_drm_crtc) {
-                    drmModeRes* r2 = drmModeGetResources(fd);
-                    if (r2 && r2->count_crtcs > 0) g_drm_crtc = r2->crtcs[0];
-                    if (r2) drmModeFreeResources(r2);
-                }
-                fprintf(stderr, "kms: %s connector %u %dx%d\n", path, g_drm_conn, g_drm_w, g_drm_h);
-            }
-            drmModeFreeConnector(conn);
-        }
-        drmModeFreeResources(res);
-        if (g_drm_fd < 0) close(fd);
-    }
-    // release card0 entirely: venus must be able to open it as drm master
-    // and own the display for VK_KHR_display. we only needed the mode size.
-    if (g_drm_fd >= 0) { close(g_drm_fd); g_drm_fd = -1; }
-    if (g_drm_w == 0) fprintf(stderr, "kms: no connected display on /dev/dri/card0..3\n");
-}
 
 // scan out a venus-exported dma-buf: import it as a framebuffer once, then
 // each frame flush it. the guest renders into this same GPU memory, and
@@ -1127,15 +1103,264 @@ void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t f
     drmModeDirtyFB(g_drm_fd, g_scan_fb, &clip, 1);
 }
 
+static double now(void);
+
+// scanout on the card vulkan renders on: trinity names it by its
+// drm minor. we stay master: page flips and the cursor plane are ours
+static uint32_t g_cur_handle;   // the cursor plane's dumb buffer
+static uint32_t*g_cur_px;
+static int      g_cur_w, g_cur_h, g_cur_hx, g_cur_hy;
+static bool     g_crtc_set, g_flip_pending;
+static double   g_cx, g_cy;     // the eased pointer, what is drawn
+static double   g_ease_t;
+static float    g_ease = 0.3f;  // share of the way, per refresh
+static int      g_cur_x = -1, g_cur_y = -1;
+
+static void kms_cursor_default(void);
+
+static void kms_cursor_put(void) {
+    if (g_drm_fd < 0 || !g_drm_crtc || !g_cur_handle) return;
+    int x = (int)lround(g_cx) - g_cur_hx, y = (int)lround(g_cy) - g_cur_hy;
+    if (x == g_cur_x && y == g_cur_y) return;
+    g_cur_x = x; g_cur_y = y;
+    drmModeMoveCursor(g_drm_fd, g_drm_crtc, x, y);
+}
+
+int platform_kms_open(int minor) {
+    char path[32];
+    snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "kms: %s: %s\n", path, strerror(errno));
+        return -1;
+    }
+    if (drmSetMaster(fd)) fprintf(stderr, "kms: not master of %s: %s\n", path, strerror(errno));
+    drmModeRes* res = drmModeGetResources(fd);
+    drmModeConnector* conn = NULL;
+    for (int c = 0; res && c < res->count_connectors && !conn; c++) {
+        conn = drmModeGetConnector(fd, res->connectors[c]);
+        if (conn && (conn->connection != DRM_MODE_CONNECTED || conn->count_modes == 0)) {
+            drmModeFreeConnector(conn); conn = NULL;
+        }
+    }
+    if (!conn) {
+        fprintf(stderr, "kms: %s has no connected display\n", path);
+        if (res) drmModeFreeResources(res);
+        close(fd);
+        return -1;
+    }
+    if (g_drm_fd >= 0) close(g_drm_fd);
+    g_drm_fd   = fd;
+    g_drm_conn = conn->connector_id;
+    // the preferred mode, else the first
+    g_drm_mode = conn->modes[0];
+    for (int m = 0; m < conn->count_modes; m++)
+        if (conn->modes[m].type & DRM_MODE_TYPE_PREFERRED) { g_drm_mode = conn->modes[m]; break; }
+    g_drm_w = g_drm_mode.hdisplay;
+    g_drm_h = g_drm_mode.vdisplay;
+    // the crtc it drives now, else the first its encoders can take
+    g_drm_crtc = 0;
+    drmModeEncoder* enc = conn->encoder_id ? drmModeGetEncoder(fd, conn->encoder_id) : NULL;
+    if (enc) { g_drm_crtc = enc->crtc_id; drmModeFreeEncoder(enc); }
+    for (int e = 0; !g_drm_crtc && e < conn->count_encoders; e++) {
+        drmModeEncoder* en = drmModeGetEncoder(fd, conn->encoders[e]);
+        for (int k = 0; en && k < res->count_crtcs && !g_drm_crtc; k++)
+            if (en->possible_crtcs & (1u << k)) g_drm_crtc = res->crtcs[k];
+        if (en) drmModeFreeEncoder(en);
+    }
+    drmModeFreeConnector(conn);
+    drmModeFreeResources(res);
+    g_crtc_set = false;
+    g_flip_pending = false;
+    for (platform_window* w = g_windows; w; w = w->next) { w->width = g_drm_w; w->height = g_drm_h; }
+    g_mx = g_cx = g_drm_w * 0.5; g_my = g_cy = g_drm_h * 0.5;
+    fprintf(stderr, "kms: %s connector %u crtc %u %dx%d at %u Hz\n", path, g_drm_conn,
+        g_drm_crtc, g_drm_w, g_drm_h, g_drm_mode.vrefresh);
+    kms_cursor_default();
+    return 0;
+}
+
+// the scanout buffers: dma-bufs (vulkan's LINEAR images) as framebuffers
+static uint32_t g_fbs[4];
+static int      g_fb_n, g_back;
+
+// a slot for the next buffer, -1 when it does not take
+int platform_kms_add_fb(int fd, int w, int h, int pitch) {
+    if (g_drm_fd < 0 || g_fb_n >= 4) return -1;
+    uint32_t handle = 0, fb = 0;
+    if (drmPrimeFDToHandle(g_drm_fd, fd, &handle)) {
+        fprintf(stderr, "kms: prime import: %s\n", strerror(errno)); return -1;
+    }
+    uint32_t hs[4] = { handle }, ps[4] = { (uint32_t)pitch }, os[4] = { 0 };
+    // linear, said: nvidia takes a buffer with no modifier as tiled
+    uint64_t mods[4] = { 0 };
+    // DRM_FORMAT_XRGB8888: vulkan's B8G8R8A8 in memory
+    if (drmModeAddFB2WithModifiers(g_drm_fd, w, h, 0x34325258, hs, ps, os, mods,
+                                   &fb, DRM_MODE_FB_MODIFIERS)) {
+        fprintf(stderr, "kms: AddFB2 %dx%d pitch %d fd %d: %s\n", w, h, pitch, fd, strerror(errno));
+        return -1;
+    }
+    g_fbs[g_fb_n] = fb;
+    return g_fb_n++;
+}
+
+// every buffer goes (a new size makes them again)
+void platform_kms_clear_fbs(void) {
+    for (int i = 0; i < g_fb_n; i++) if (g_drm_fd >= 0) drmModeRmFB(g_drm_fd, g_fbs[i]);
+    g_fb_n = 0;
+    g_back = 0;
+    g_crtc_set = false;
+}
+
+// the slot to draw next: never the one on screen or flipping in
+int platform_kms_back(void) { return g_fb_n > 0 ? g_back : -1; }
+
+static void kms_flipped(int fd, unsigned seq, unsigned sec, unsigned usec, void* data) {
+    g_flip_pending = false;
+}
+
+// the last flip has reached the screen: its old buffer is free again
+void platform_kms_wait(void) {
+    drmEventContext ev = { .version = 2, .page_flip_handler = kms_flipped };
+    while (g_flip_pending && g_drm_fd >= 0) {
+        struct pollfd p = { .fd = g_drm_fd, .events = POLLIN };
+        if (poll(&p, 1, 100) <= 0) { g_flip_pending = false; break; }
+        drmHandleEvent(g_drm_fd, &ev);
+    }
+}
+
+// show a slot at the next vblank; the first one sets the mode
+void platform_kms_flip(int slot) {
+    if (g_drm_fd < 0 || !g_drm_crtc || slot < 0 || slot >= g_fb_n) return;
+    uint32_t fb = g_fbs[slot];
+    g_back = (slot + 1) % g_fb_n;
+    if (!g_crtc_set) {
+        static bool told;
+        if (drmModeSetCrtc(g_drm_fd, g_drm_crtc, fb, 0, 0, &g_drm_conn, 1, &g_drm_mode)) {
+            if (!told) fprintf(stderr, "kms: SetCrtc: %s\n", strerror(errno));
+            told = true;
+            return;
+        }
+        g_crtc_set = true;
+        if (g_cur_handle && drmModeSetCursor(g_drm_fd, g_drm_crtc, g_cur_handle, g_cur_w, g_cur_h))
+            fprintf(stderr, "kms: SetCursor: %s\n", strerror(errno));
+        g_cur_x = g_cur_y = -1 << 20;
+        kms_cursor_put();
+        return;
+    }
+    // one flip in flight: with three slots the back one is free
+    platform_kms_wait();
+    if (drmModePageFlip(g_drm_fd, g_drm_crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, NULL) == 0)
+        g_flip_pending = true;
+    else
+        fprintf(stderr, "kms: PageFlip: %s\n", strerror(errno));
+}
+
+// the cursor plane's picture: premultiplied argb, w x h at most the
+// plane's size, the point that clicks at hx, hy
+void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {
+    if (g_drm_fd < 0) return;
+    if (!g_cur_handle) {
+        uint64_t cw = 64, ch = 64;
+        drmGetCap(g_drm_fd, DRM_CAP_CURSOR_WIDTH, &cw);
+        drmGetCap(g_drm_fd, DRM_CAP_CURSOR_HEIGHT, &ch);
+        struct drm_mode_create_dumb c = { .width = (uint32_t)cw, .height = (uint32_t)ch, .bpp = 32 };
+        if (drmIoctl(g_drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &c)) {
+            fprintf(stderr, "kms: cursor buffer: %s\n", strerror(errno)); return;
+        }
+        struct drm_mode_map_dumb m = { .handle = c.handle };
+        if (drmIoctl(g_drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &m)) return;
+        void* px = mmap(0, c.size, PROT_READ | PROT_WRITE, MAP_SHARED, g_drm_fd, m.offset);
+        if (px == MAP_FAILED) return;
+        g_cur_handle = c.handle;
+        g_cur_px = px;
+        g_cur_w = (int)cw; g_cur_h = (int)ch;
+    }
+    memset(g_cur_px, 0, (size_t)g_cur_w * g_cur_h * 4);
+    for (int y = 0; y < h && y < g_cur_h; y++)
+        memcpy(g_cur_px + y * g_cur_w, argb + y * w, (size_t)(w < g_cur_w ? w : g_cur_w) * 4);
+    g_cur_hx = hx; g_cur_hy = hy;
+    if (g_crtc_set) {
+        drmModeSetCursor(g_drm_fd, g_drm_crtc, g_cur_handle, g_cur_w, g_cur_h);
+        g_cur_x = g_cur_y = -1 << 20;
+        kms_cursor_put();
+    }
+}
+
+// distance from p to segment a..b
+static float seg_dist(float px, float py, float ax, float ay, float bx, float by) {
+    float dx = bx - ax, dy = by - ay;
+    float t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    float ex = ax + t * dx - px, ey = ay + t * dy - py;
+    return sqrtf(ex * ex + ey * ey);
+}
+
+// the arrow: white, a 1 px black edge, 16 samples a pixel
+static void kms_cursor_default(void) {
+    static const float pts[][2] = {
+        { 0, 0 }, { 0, 17 }, { 4, 13.3f }, { 6.6f, 20 }, { 9.9f, 18.6f }, { 7.2f, 12.2f },
+        { 12.2f, 12.2f } };
+    const int n = 7, size = 32;
+    const float s = g_drm_h > 1600 ? 1.6f : 1.2f, edge = 1.0f, at = 1.5f;
+    uint32_t px[32 * 32];
+    for (int y = 0; y < size; y++) for (int x = 0; x < size; x++) {
+        float white = 0, black = 0;
+        for (int sy = 0; sy < 4; sy++) for (int sx = 0; sx < 4; sx++) {
+            float qx = (x + (sx + 0.5f) / 4) - at, qy = (y + (sy + 0.5f) / 4) - at;
+            bool in = false;
+            float d = 1e9f;
+            for (int i = 0, j = n - 1; i < n; j = i++) {
+                float ax = pts[j][0] * s, ay = pts[j][1] * s, bx = pts[i][0] * s, by = pts[i][1] * s;
+                if ((ay > qy) != (by > qy) && qx < (bx - ax) * (qy - ay) / (by - ay) + ax) in = !in;
+                float e = seg_dist(qx, qy, ax, ay, bx, by);
+                if (e < d) d = e;
+            }
+            if (in && d > edge) white += 1;
+            else if (in || d < edge * 0.5f) black += 1;
+        }
+        float a = (white + black) / 16.0f, v = white / 16.0f;
+        uint32_t A = (uint32_t)(a * 255 + 0.5f), V = (uint32_t)(v * 255 + 0.5f);
+        px[y * size + x] = A << 24 | V << 16 | V << 8 | V;
+    }
+    platform_kms_cursor_image(px, size, size, (int)at, (int)at);
+}
+
+void platform_cursor_ease(float amount) { g_ease = amount; }
+
+// toward the mouse each poll, per refresh at the mode's rate
+static void kms_ease(platform_window* w) {
+    double t = now();
+    double dt = g_ease_t > 0 ? t - g_ease_t : 0;
+    g_ease_t = t;
+    if (dt > 0.25) dt = 0.25;
+    double ex = g_mx - g_cx, ey = g_my - g_cy;
+    if (ex == 0 && ey == 0) return;
+    double hz = g_drm_mode.vrefresh > 0 ? g_drm_mode.vrefresh : 60;
+    double keep = pow(1.0 - g_ease, dt * hz);
+    g_cx += ex * (1 - keep);
+    g_cy += ey * (1 - keep);
+    if (fabs(g_mx - g_cx) < 0.05 && fabs(g_my - g_cy) < 0.05) { g_cx = g_mx; g_cy = g_my; }
+    kms_cursor_put();
+    if (w->on_cursor) w->on_cursor(w, g_cx, g_cy);
+}
+
+// every event node not yet open; usb ones come after startup
 static void kms_open_inputs(void) {
     char path[32];
-    for (int i = 0; i < 32 && g_ev_n < 32; i++) {
+    for (int i = 0; i < 64; i++) {
+        if (g_ev_on[i]) continue;
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
-        int fd = open(path, O_RDONLY | O_NONBLOCK);
+        int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
         struct input_absinfo ai;
-        g_ev_abs_max[g_ev_n] = ioctl(fd, EVIOCGABS(ABS_X), &ai) == 0 ? ai.maximum : 0;
-        g_ev[g_ev_n++] = fd;
+        g_ev_abs_max[i] = ioctl(fd, EVIOCGABS(ABS_X), &ai) == 0 ? ai.maximum : 0;
+        g_ev[i] = fd;
+        g_ev_on[i] = true;
+        g_ev_n++;
+        char name[128] = "";
+        ioctl(fd, EVIOCGNAME(sizeof name), name);
+        fprintf(stderr, "devices: input event%d %s\n", i, name);
     }
 }
 
@@ -1287,21 +1512,30 @@ static void kms_event(platform_window* w, int dev, struct input_event* e) {
         g_moved = false;
         if (g_mx < 0) g_mx = 0; if (g_mx > w->width - 1)  g_mx = w->width - 1;
         if (g_my < 0) g_my = 0; if (g_my > w->height - 1) g_my = w->height - 1;
-        if (w->on_cursor) w->on_cursor(w, g_mx, g_my);
     }
 }
 
 static void kms_poll(void) {
     platform_window* w = g_windows;
     if (!w) return;
+    double t = now();
+    if (t - g_ev_scan > 1.0) { g_ev_scan = t; kms_open_inputs(); }
     struct input_event ev[64];
-    for (int i = 0; i < g_ev_n; i++) {
+    for (int i = 0; i < 64; i++) {
+        if (!g_ev_on[i]) continue;
         for (;;) {
             ssize_t n = read(g_ev[i], ev, sizeof(ev));
+            if (n < 0 && errno == ENODEV) {
+                close(g_ev[i]);
+                g_ev_on[i] = false;
+                g_ev_n--;
+                break;
+            }
             if (n <= 0) break;
             for (int k = 0; k < (int)(n / sizeof(ev[0])); k++) kms_event(w, i, &ev[k]);
         }
     }
+    kms_ease(w);
 }
 
 static xcb_keysym_t keysym_of(xcb_keycode_t code, int col) {
@@ -1691,7 +1925,6 @@ bool platform_init(void) {
         g_conn = NULL;
         g_kms  = true;
         fprintf(stderr, "devices: no x server, kms mode\n");
-        kms_open_drm();
         kms_open_inputs();
         fprintf(stderr, "devices: %d evdev inputs\n", g_ev_n);
         return true;
@@ -1721,7 +1954,8 @@ bool platform_init(void) {
 }
 
 void platform_terminate(void) {
-    for (int i = 0; i < g_ev_n; i++) close(g_ev[i]);
+    for (int i = 0; i < 64; i++) if (g_ev_on[i]) close(g_ev[i]);
+    memset(g_ev_on, 0, sizeof g_ev_on);
     g_ev_n = 0;
     if (g_drm_fd >= 0) close(g_drm_fd);
     g_drm_fd = -1;

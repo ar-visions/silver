@@ -256,6 +256,22 @@ expect func t_alias_ptr [] -> bool
     p: iptr [ @ n ]
     return p[ 0 ] == 9
 
+alias names : vec string            # an alias of a vec of strings
+
+# a vec of that alias: each element a vec string of its own
+expect func t_alias_vec_of_vec [] -> bool
+    a : names [ 'one', 'two' ]
+    b : names [ 'three' ]
+    all : vec names [] [ a, b ]
+    all.push[ names [ 'four', 'five', 'six' ] ]
+    n : i64 [ 0 ]
+    for [ m: names ] in all
+        n += m.count
+    # an element taken out keeps its alias: its own strings
+    mid : names all[ 1 ]
+    return all.count == 3 && n == 6 && mid[ 0 ] == 'three'
+        && all[ 2 ][ 2 ] == 'six'
+
 expect func t_au_types [] -> bool
     n : sz [ 3 ]
     return n + 4 == 7

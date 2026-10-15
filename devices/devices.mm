@@ -62,6 +62,14 @@ double platform_time(void) { return CACurrentMediaTime() - g_t0; }
 const char* platform_surface_extension(void) { return "VK_EXT_metal_surface"; }
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
+int platform_kms_open(int minor) { return -1; }
+int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
+void platform_kms_clear_fbs(void) {}
+int platform_kms_back(void) { return -1; }
+void platform_kms_wait(void) {}
+void platform_kms_flip(int slot) {}
+void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
+void platform_cursor_ease(float amount) {}
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void key_event(platform_window* w, int key, int scan, int action, int mods) {

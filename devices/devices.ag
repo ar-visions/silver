@@ -20,6 +20,7 @@ ifdef [ linux ]
         -lxcb-randr
         -ldrm
         -lasound
+        -lm
 
 ifdef [ android ]
     import <host.h>

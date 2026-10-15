@@ -460,6 +460,17 @@ func boot_name [ k: BootKind ] -> string
     if [ k == BootKind.unknown ] return 'not known'
     return 'none'
 
+# the firmware's order, from its BootOrder: line
+func boot_order [ lines: vec string ] -> vec string
+    out : vec string []
+    for [ ln: string ] in lines
+        if [ !ln.starts_with[ 'BootOrder:' ] ] continue
+        rest : ln.mid[ 10, ln.count - 10 ].trim[]
+        for [ w: string ] in rest.split[ ',' ]
+            id : '{w}'
+            if [ id.count > 0 ] out.push[ id ]
+    return out
+
 # the default entry's file: BootOrder's first, its File(...)
 func default_loader [ lines: vec string ] -> string
     order : boot_order[ lines ]
@@ -881,14 +892,6 @@ element WizWarn
     face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
-element WizTrack
-    body : Layer [ fill_color: rgba [ '#ffffff14' ],
-        radius: Radius [ '4' ] ]
-
-element WizFill
-    body : Layer [ fill_color: rgba [ '#6cb6ff' ],
-        radius: Radius [ '4' ] ]
-
 # a row to pick: a disk, a partition, a way to install
 Button WizPick
     style : CSS {
@@ -1297,6 +1300,8 @@ element InstallWizard
     # swap: -2 not chosen (the default), -1 a file, else the
     # swap partition's place on the disk
     mutable swap_pick : i32 [ -2 ]
+    # the user's ssh keys go to orbiter-os's /root/.ssh
+    mutable keys_copy : bool
     # the boot line's swap word, made with the plan
     mutable swap_word : string
     # orbiter-os's partition's uuid: read, or given to mkfs
@@ -1544,6 +1549,14 @@ element InstallWizard
         want : i64 [ (swap_want[] * 9) / 10 ]
         if [ best >= 0 && dk.parts[ best ].bytes >= want ] return best
         return -1
+
+    # the account page's keys row: what Install does with them
+    func keys_text [] -> string
+        n : i32 ssh_keys[]
+        if [ n == 0 ] return 'SSH keys: none in {ssh_dir[]}'
+        what : string [ (n == 1) ? 'your key' : 'your {n} keys' ]
+        if [ keys_copy ] return 'SSH keys: copy {what} to orbiter-os'
+        return 'SSH keys: leave {what} out'
 
     func swap_text [] -> string
         at : i32 swap_choice[]
@@ -1907,6 +1920,11 @@ element InstallWizard
         s = step[ StepKind.write, 'Name the computer {host}' ]
         s.dst  = '{tree}/etc/hostname'
         s.text = '{host}\n'
+        if [ keys_copy && ssh_keys[] > 0 ]
+            s = step[ StepKind.run, 'Copy your SSH keys' ]
+            to : sh_word[ '{tree}/root/.ssh' ]
+            s.cmd = ssh_copy_sh[ sh_word[ ssh_dir[] ], to ]
+            s.cmd = '{s.cmd} && chown -R 0:0 {to}'
         if [ boot == BootKind.grub_debian || boot == BootKind.grub_bls ]
             lp : Part linux_part[ dk ]
             if [ fresh && lp ]
@@ -1984,6 +2002,10 @@ element InstallWizard
             if [ st.kind == StepKind.boot ]
                 bl : boot_line[ ruuid, root, true ]
                 log 'wizard:   --unicode \'{bl}\''
+        # a dry run shows the script an install would run
+        if [ dry_run ]
+            for [ ln: string ] in script_text[ plan ].split[ '\n' ]
+                log 'wizard: sh: {ln}'
         for [ p: string ] in problems
             log 'wizard: problem: {p}'
         for [ n: string ] in notes
@@ -2102,9 +2124,11 @@ element InstallWizard
         h = '{h}  before=" $({ids} | tr \'\\n\' \' \') "\n'
         h = '{h}  "$@" || exit 1\n  new=\'\'\n'
         h = '{h}  for id in $({ids}); do\n'
-        h = '{h}    case "$before" in *" $id "*) ;; *) new=$id ;; esac\n'
+        h = '{h}    case "$before" in *" $id "*) ;;'
+        h = '{h} *) new=$id ;; esac\n'
         h = '{h}  done\n  if [ -z "$new" ]; then\n'
-        h = '{h}    echo \'The new boot entry was not found.\'; exit 1\n'
+        h = '{h}    echo \'The new boot entry was not found.\''
+        h = '{h}; exit 1\n'
         h = '{h}  fi\n'
         h = '{h}  o=$(efibootmgr | sed -n \'s/^BootOrder: //p\')\n'
         h = '{h}  if [ -z "$o" ]; then efibootmgr --bootorder "$new"; '
@@ -2121,7 +2145,8 @@ element InstallWizard
     func script_text [ steps: vec Step ] -> string
         t : sh_head[]
         for [ i: i32 0, i < steps.count, i += 1 ]
-            t = '{t}echo @step {i}\nif ! ( {step_sh[ steps[ i ] ]} ); then '
+            one : step_sh[ steps[ i ] ]
+            t = '{t}echo @step {i}\nif ! ( {one} ); then '
             t = '{t}echo @fail {i}; exit 1; fi\n'
         return '{t}echo @done\n'
 
@@ -2136,14 +2161,14 @@ element InstallWizard
             return
         b : local i8 [ 4096 ]
         # tar's records are 20 blocks of 512 bytes
-        record : i64 [ 10240 ]
+        block : i64 [ 10240 ]
         while [ fgets[ @b[0], 4096, fh ] ]
             ln : string [ @b[0] ]
             t : ln.trim[]
             cp : i32 [ t.index_of[ '@copied ' ] ]
             if [ cp >= 0 ]
                 n : t.mid[ cp + 8, t.count - cp - 8 ]
-                copied = n.integer_value[] * record
+                copied = n.integer_value[] * block
                 continue
             if [ t.starts_with[ '@step ' ] ]
                 step_at = t.mid[ 6, t.count - 6 ].integer_value[]
@@ -2152,14 +2177,16 @@ element InstallWizard
             if [ t.starts_with[ '@fail ' ] ]
                 failed = true
                 k : i32 [ t.mid[ 6, t.count - 6 ].integer_value[] ]
-                if [ k < plan.count ] say[ 'Stopped at: {plan[ k ].title}' ]
+                if [ k < plan.count ]
+                    say[ 'Stopped at: {plan[ k ].title}' ]
                 continue
             if [ t == '@done' ] continue
             say[ t ]
         st : i32 [ pclose[ fh ] ]
         if [ st != 0 && !failed ]
             failed = true
-            say[ 'The install did not run: the password was not given.' ]
+            no : 'The install did not run: the password was not given.'
+            say[ no ]
 
     # the plan's script, in the install's own scratch folder
     func write_script [ steps: vec Step ] -> string
@@ -2174,6 +2201,14 @@ element InstallWizard
     # stick) the script runs as it is; as a user, through pkexec,
     # which asks for the password once
     func work [] -> none
+        # from another system the copy is the drive tree: bring it
+        # up to the last build first (only newer files are copied)
+        if [ source == drive_tree[] ]
+            say[ 'Updating the drive tree from the build' ]
+            b : Bootstrap []
+            b.initialize[]
+            b.out_dir.make_dir[]
+            b.assemble[]
         for [ st: Step ] in plan
             if [ st.kind == StepKind.copy ] total = tree_bytes[ st.src ]
         copied = 0
@@ -2231,7 +2266,13 @@ element InstallWizard
             beam_test = !beam_test
         el [ key == 'restart' ]
             sync[]
-            reboot[ RB_AUTOBOOT ]
+            # a user may not call reboot: ask the system's own
+            if [ geteuid[] == 0 ]
+                reboot[ RB_AUTOBOOT ]
+            el
+                sys : command [ 'systemctl reboot' ]
+                if [ sys.exec[ false ] != 0 ]
+                    log 'restart: systemctl reboot refused'
         el [ key == 'whole' ]
             beside = false
             fresh  = false
@@ -2241,6 +2282,8 @@ element InstallWizard
         el [ key == 'fresh' ]
             beside = false
             fresh  = true
+        el [ key == 'ssh_keys' ]
+            keys_copy = !keys_copy
         el [ key == 'swap' ]
             # round the choices: the file, then each partition
             opts : vec i32 [] [ -1 ]
@@ -2466,6 +2509,8 @@ element InstallWizard
                    top + gap * 4.0, false ]
             entry[ t, panel, 'zone', 'Time zone', zone,
                    top + gap * 5.0, false ]
+            t[ 'ssh_keys' ] = WizPick [ label: keys_text[],
+                disable: ssh_keys[] == 0, area: row[ top + gap * 6.0 ] ]
         el [ page == 5 ]
             title = 'Ready to install'
             note  = 'Install runs these steps.'
@@ -2503,11 +2548,9 @@ element InstallWizard
                     ? 'Step {done + 1} of {plan.count}: {cur}' : '' ]
             frac : f32 [ f32[ done ] / f32[ (plan.count > 0)
                 ? plan.count : 1 ] ]
-            t[ 'track' ] = WizTrack [
+            whole : bool [ finished && !failed ]
+            t[ 'bar' ] = WizBar [ frac: frac, done: whole,
                 area: Region [ 'l1.4 t{top + 1.4} r1.4 h0.3' ] ]
-            fw : f32 [ 29.2 * frac ]
-            t[ 'fill' ] = WizFill [
-                area: Region [ 'l1.4 t{top + 1.4} w{fw} h0.3' ] ]
             if [ total > 0 ]
                 cp : f32 [ f32[ copied ] / f32[ total ] ]
                 if [ cp > 1.0 ] cp = 1.0
@@ -2515,11 +2558,8 @@ element InstallWizard
                 cl = '{cl} of {size_text[ total ]}'
                 t[ 'copy' ] = WizSmall [ area: row[ top + 2.0 ],
                                          label: cl ]
-                t[ 'ctrack' ] = WizTrack [
+                t[ 'cbar' ] = WizBar [ frac: cp, done: whole,
                     area: Region [ 'l1.4 t{top + 3.3} r1.4 h0.3' ] ]
-                cw : f32 [ 29.2 * cp ]
-                t[ 'cfill' ] = WizFill [
-                    area: Region [ 'l1.4 t{top + 3.3} w{cw} h0.3' ] ]
             shown : vec string []
             lock.lock[]
             oldest : i32 [ lines.count - 7 ]
@@ -2542,7 +2582,7 @@ element InstallWizard
                 area: Region { l1.4 b3.7 r1.4 h1 } ]
         if [ page > first_page && page < 6 ]
             t[ 'back' ] = WizButton [ label: 'Back',
-                area: Region { l1.4 b2.05 w6 h1.05 } ]
+                area: Region { l1.4 b2.05 w4.5 h1.05 } ]
         # while page 0 builds: the build can be stopped
         bs : boot_el[]
         if [ page == 0 && bs && bs.building && bs.job != 'usb' ]
@@ -2602,78 +2642,89 @@ element InstallWizard
             'panel': WizPanel [ elements: page_els[ panel ],
                 area: Region { l50%-8 t50%-10.5 w32 h21 } ] ]
 
-# the worker on a scratch tree: copy, write, one file
+# the install's script on a scratch tree, run as this user (no
+# mounts): copy, write, one file
 expect func t_install_steps [] -> bool
     root : '/tmp/wizard-test-{getpid[]}'
     src  : '{root}/src'
+    mk : command { mkdir -p {src}/boot {src}/bin {src}/proc/1
+        && echo kernel > {src}/boot/vmlinuz
+        && echo tool > {src}/bin/tool
+        && chmod 755 {src}/bin/tool && echo x > {src}/proc/1/status
+        && ln -s boot {src}/lib }
+    mk.exec[ false ]
     w : InstallWizard [ source: src ]
     if [ !w.lock ] w.lock = mutex []
     if [ !w.lines ] w.lines = vec string []
+    if [ !w.swap_word ] w.swap_word = ''
+    if [ !w.ruuid ] w.ruuid = ''
     w.plan = vec Step []
-    made : vec Step [] [
-        Step [ kind: StepKind.write, dst: '{src}/boot/vmlinuz',
-               text: 'kernel\n' ],
-        Step [ kind: StepKind.write, dst: '{src}/bin/tool',
-               text: 'tool\n' ],
-        Step [ kind: StepKind.write, dst: '{src}/proc/1/status',
-               text: 'kernel tree\n' ] ]
-    for [ m: Step ] in made
-        if [ !w.run_step[ m ] ] return false
-    tool : '{src}/bin/tool'
-    # rwxr-xr-x
-    exec_mode : u32 [ 0x1ED ]
-    chmod[ tool.chars, exec_mode ]
-    lk : '{src}/lib'
-    symlink[ 'boot', lk.chars ]
     s : w.step[ StepKind.copy, 'Copy the tree' ]
     s.src = src
     s.dst = '{root}/dst'
     s = w.step[ StepKind.write, 'Write the settings' ]
     s.dst  = '{root}/dst/var/lib/orbiter/install.agi'
-    s.text = 'user: test\n'
+    s.text = 'user: it\'s a test\n'
     s = w.step[ StepKind.file, 'Copy the kernel' ]
     s.src = '{src}/boot/vmlinuz'
     s.dst = '{root}/efi/EFI/orbiter/vmlinuz.efi'
-    # the worker's thread, as the install runs it
-    w.start[]
-    while [ !w.finished ] usleep[ 10000 ]
+    f : w.write_script[ w.plan ]
+    w.run_script[ f, 'sh' ]
+    unlink[ f.chars ]
     dst : '{root}/dst'
     tool_copy : '{dst}/bin/tool'
     proc_dir  : path '{dst}/proc'
     proc_kid  : path '{dst}/proc/1'
-    ok : bool [ w.finished && !w.failed
+    ok : bool [ !w.failed && w.step_at == 2
         && read_line[ '{dst}/boot/vmlinuz' ] == 'kernel'
         && link_text[ '{dst}/lib' ] == 'boot'
         && access[ tool_copy.chars, X_OK ] == 0
         && proc_dir.exists[] && !proc_kid.exists[]
         && read_line[ '{root}/efi/EFI/orbiter/vmlinuz.efi' ] == 'kernel'
         && read_line[ '{dst}/var/lib/orbiter/install.agi' ]
-            == 'user: test'
-        && w.copied == w.total + 7 ]
-    log 'wizard test: copied {w.copied} of {w.total}, ok {ok}'
+            == 'user: it\'s a test' ]
+    log 'wizard test: script steps ok {ok}, failed {w.failed}'
     rm_cmd : command { rm -rf {root} }
     rm_cmd.exec[ false ]
     return ok
 
-# europa's own list: orbiter-os goes second, the default stays
+# boot_second against a made-up efibootmgr with europa's entries:
+# the new one goes second, Ubuntu stays first
 expect func t_boot_order [] -> bool
-    before : vec string [] [ 'BootCurrent: 0000', 'Timeout: 1 seconds',
-        'BootOrder: 0000,0003,0001,0002', 'Boot0000* Ubuntu\tHD(3)',
-        'Boot0001* opensuse-secureboot\tHD(3)',
-        'Boot0002* Windows Boot Manager\tHD(3)',
-        'Boot0003* GRUB\tHD(3)' ]
-    after : vec string [] [ 'BootOrder: 0000,0003,0001,0002',
-        'Boot0000* Ubuntu\tHD(3)', 'Boot0003* GRUB\tHD(3)',
-        'Boot0004* orbiter-os\tHD(3)' ]
-    ids : boot_ids[ before ]
-    made : string ''
-    for [ id: string ] in boot_ids[ after ]
-        if [ !ids.contains[ id ] ] made = id
-    od : order_second[ boot_order[ after ], made ]
-    lone : order_second[ vec string [], '0004' ]
-    log 'wizard test: ids {ids.count}, new {made}, order {od}'
-    return ids.count == 4 && made == '0004'
-        && od == '0000,0004,0003,0001,0002' && lone == '0004'
+    dir : '/tmp/wizard-boot-order-{getpid[]}'
+    dp : path [ dir ]
+    dp.make_dir[]
+    fake : '#!/bin/sh\nd={dir}\ncase "$*" in\n'
+    fake = '{fake}  *--bootorder*) echo "$2" > $d/order; exit 0 ;;\n'
+    fake = '{fake}  *--create-only*) touch $d/made; exit 0 ;;\nesac\n'
+    fake = '{fake}echo "BootCurrent: 0000"\n'
+    fake = '{fake}echo "BootOrder: 0000,0003,0001,0002"\n'
+    fake = '{fake}echo "Boot0000* Ubuntu HD(3)"\n'
+    fake = '{fake}echo "Boot0001* opensuse-secureboot HD(3)"\n'
+    fake = '{fake}echo "Boot0002* Windows Boot Manager HD(3)"\n'
+    fake = '{fake}echo "Boot0003* GRUB HD(3)"\n'
+    fake = '{fake}[ -e $d/made ] && echo "Boot0004* orbiter-os HD(3)"\n'
+    fake = '{fake}exit 0\n'
+    w : InstallWizard []
+    sc : '{w.sh_head[]}boot_second efibootmgr --create-only --label x\n'
+    em : '{dir}/efibootmgr'
+    sf : '{dir}/s.sh'
+    fe : handle fopen[ em.chars, 'w' ]
+    fputs[ fake.chars, fe ]
+    fclose[ fe ]
+    fs : handle fopen[ sf.chars, 'w' ]
+    fputs[ sc.chars, fs ]
+    fclose[ fs ]
+    # rwxr-xr-x
+    exec_mode : u32 [ 0x1ED ]
+    chmod[ em.chars, exec_mode ]
+    run : command { PATH={dir}:$PATH sh {dir}/s.sh }
+    run.exec[ false ]
+    od : read_line[ '{dir}/order' ]
+    log 'wizard test: boot order {od}'
+    rm_cmd : command { rm -rf {dir} }
+    rm_cmd.exec[ false ]
+    return od == '0000,0004,0003,0001,0002'
 
 # each boot manager from a made-up EFI and Linux partition
 expect func t_boot_detect [] -> bool
@@ -2759,6 +2810,47 @@ expect func t_copy_need [] -> bool
     rm_cmd.exec[ false ]
     return ok
 
+# a stand-in .ssh (never the user's): one key counted, the copy
+# private (folder 700, files 600)
+expect func t_ssh_keys [] -> bool
+    root : '/tmp/wizard-keys-{getpid[]}'
+    home : '{root}/home'
+    sd : path '{home}/.ssh'
+    sd.make_dir[]
+    names : vec string [] [ 'id_test', 'id_test.pub', 'known_hosts' ]
+    for [ nm: string ] in names
+        f : '{home}/.ssh/{nm}'
+        fh : handle fopen[ f.chars, 'w' ]
+        fputs[ 'stand-in\n', fh ]
+        fclose[ fh ]
+        chmod[ f.chars, 0x1A4 ]
+    was : string [ getenv[ "HOME" ] ]
+    setenv[ "HOME", home.chars, 1 ]
+    n : i32 ssh_keys[]
+    to : '{root}/dst/.ssh'
+    cp : command [ ssh_copy_sh[ ssh_dir[], to ] ]
+    rc : i32 [ cp.exec[ false ] ]
+    setenv[ "HOME", was.chars, 1 ]
+    st : struct stat
+    stat[ to.chars, @st ]
+    dir_mode : i32 [ i32[ st.st_mode ] & 0x1FF ]
+    key : '{to}/id_test'
+    stat[ key.chars, @st ]
+    key_mode : i32 [ i32[ st.st_mode ] & 0x1FF ]
+    ok : bool [ n == 1 && rc == 0 && dir_mode == 0x1C0
+                && key_mode == 0x180 ]
+    log 'wizard test: keys {n}, copy {rc}, dir {dir_mode}, key {key_mode}'
+    # each file by name, then the folders
+    for [ nm: string ] in names
+        a : '{home}/.ssh/{nm}'
+        b : '{to}/{nm}'
+        unlink[ a.chars ]
+        unlink[ b.chars ]
+    for [ d: string ] in vec string [] [ '{home}/.ssh', home, to,
+                                         '{root}/dst', root ]
+        rmdir[ d.chars ]
+    return ok
+
 # a device id against the drive's drivers, and its pci.ids name
 expect func t_hardware_match [] -> bool
     al : vec string [] [ 'e1000e',
@@ -2815,7 +2907,7 @@ expect func t_free_plan [] -> bool
     dk : test_disk[]
     dk.shrink_at = 1
     dk.parts[ 1 ].keep = 30 * GIB
-    w : InstallWizard [ dry_run: true ]
+    w : InstallWizard [ dry_run: true, source: '/' ]
     if [ !w.lines ] w.lines = vec string []
     if [ !w.swap_word ] w.swap_word = ''
     # constructed, not mounted: its init never ran
@@ -2842,7 +2934,7 @@ expect func t_free_plan [] -> bool
         'echo \',{kb}KiB\' | sfdisk --no-reread -N 2 /dev/tst',
         'start={s0}, size={n0}, type=L, name=orbiter',
         'sfdisk --no-reread -N 4 /dev/tst',
-        'mkfs.ext4 -F -L orbiter-os /dev/tst4',
+        'mkfs.ext4 -F -L orbiter-os -U ', ' /dev/tst4',
         'mkswap /run/wizard/root/swapfile', '--create-only' ]
     ok : bool [ true ]
     for [ x: string ] in want

@@ -386,6 +386,9 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
         cv.restore[ ]
     av9 : AppView (orb) ? orb.instance_by[ h.inst ] : null
     ft : Texture (av9 && av9.have_frame) ? av9.front[] : null
+    # a program's window: its picture, not its console's
+    wv9 : u64 [ (av9 && orb) ? orb.window_of[ av9 ] : u64[ 0 ] ]
+    if [ wv9 != 0 ] ft = window_texture[ cv, wv9 ]
     sc9 : bool [ h.card[] && h.inst == 0 ]
     if [ sc9 ] ft = orb.scene_tex[ h ]
     tw : f32 [ cdw - 24.0 ]
@@ -417,6 +420,8 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
     # two lines: the instance's name, and its state in blue under it
     st9 : string (av9) ? av9.status_word[] : ''
     if [ av9 && (!st9 || st9.count == 0) ] st9 = 'running'
+    # its program's window is up: that is running
+    if [ wv9 != 0 ] st9 = 'running'
     if [ sc9 ]
         if [ orb.scene_name[].compare[ h.scene ] == 0 ] st9 = 'current'
     cv.font_size[ 16 ]
@@ -1824,6 +1829,11 @@ element CommitView
             # find-result line: jump straight to it
             if [ !h.is_header && h.line > 0 && h.file ]
                 o.open_at_line[ h.file, pane, h.line ]
+                o.exit_finder[]
+                return
+            # a program runs; a window it opens takes the pane
+            if [ h.file && o.is_program[ h.file ] ]
+                o.run_program[ h.file, pane ]
                 o.exit_finder[]
                 return
             if [ h.file ]

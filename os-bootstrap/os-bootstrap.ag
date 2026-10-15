@@ -94,12 +94,41 @@ func drive_tree [] -> string
 
 # orbiter-os's own boot words, after its uuid and root: its
 # init, the drivers it loads, its home and libraries
+# the user's ssh folder: keys, known hosts, config
+func ssh_dir [] -> string
+    hc : cstr [ getenv[ "HOME" ] ]
+    if [ hc == null ] return ''
+    return '{string[ hc ]}/.ssh'
+
+# the keys there: each private file beside its .pub
+func ssh_keys [] -> i32
+    d : path [ ssh_dir[] ]
+    if [ !d.is_dir[] ] return 0
+    n : i32 [ 0 ]
+    for [ f: path ] in d.ls[ null, false ]
+        nm : f.filename[]
+        if [ nm.ends_with[ '.pub' ] ]
+            pk : path '{d}/{nm.mid[ 0, nm.count - 4 ]}'
+            if [ pk.exists[] ] n += 1
+    return n
+
+# sh: an ssh folder copied to another, kept private (quoted paths)
+func ssh_copy_sh [ from: string, to: string ] -> string
+    c : 'mkdir -p {to} && cp -a {from}/. {to}/'
+    return '{c} && chmod 700 {to} && chmod -R go-rwx {to}'
+
 func os_words [ arm: bool, nvidia: bool ] -> string
     root : path.path_startup[]
     line : 'orbiter.init={root}/install/build/orbiter'
     if [ nvidia ] line = '{line} orbiter.modules=nvidia-drm:modeset=1'
     lib : '{root}/install/lib:{root}/install/build'
-    line = '{line} HOME=/root LD_LIBRARY_PATH={lib}'
+    # claude and others open links only with BROWSER set
+    line = '{line} HOME=/root BROWSER=/usr/bin/xdg-open'
+    # the kernel gives init no PATH; claude is in /usr/local/bin
+    line = '{line} PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+    # claude and the console start the user's shell from it
+    line = '{line} SHELL=/bin/bash'
+    line = '{line} LD_LIBRARY_PATH={lib}'
     gnu : string [ (arm) ? 'aarch64' : 'x86_64' ]
     return '{line}:/usr/lib/{gnu}-linux-gnu'
 
@@ -307,6 +336,8 @@ element Bootstrap
     mutable usb_view   : bool
     mutable drives     : vec UsbDrive
     mutable want_drive : string
+    # the stick carries the user's ssh keys (for its install)
+    mutable stick_keys : bool
     mutable drives_at  : i64
     intern  tid        : pthread_t
 
@@ -1004,6 +1035,11 @@ element Bootstrap
         stage : 'find . \\( {skip} -o -path ./boot/initramfs \\) -prune'
         stage = '{stage} -o -print'
         km : '{kb.dir}/kmods/lib/modules/{kb.release}'
+        # the user's ssh keys, when asked: the install offers them
+        carry : 'true'
+        if [ stick_keys && ssh_keys[] > 0 ]
+            carry = ssh_copy_sh[ quoted[ ssh_dir[] ],
+                                 quoted[ '{work}/stage/root/.ssh' ] ]
         steps : vec string [] [
             '{cc} -c {root}/os-bootstrap/efistub.c -o {work}/stub.o',
             '{ld} -nodefaultlib -out:{work}/{efi} {work}/stub.o',
@@ -1012,6 +1048,7 @@ element Bootstrap
             'cp -al {km} {work}/stage/lib/modules/',
             'ln {kb.dir}/{kimg} {work}/stage/boot/vmlinuz',
             'ln {work}/initramfs {work}/stage/boot/initramfs',
+            carry,
             'truncate -s {total}M {img}',
             'sfdisk -q {img} < {work}/layout',
             '{mt} {bin}/mformat {at} {fat} ::',
@@ -1150,6 +1187,8 @@ element Bootstrap
             usb_view = false
             progress = 0.0
         el [ key == 'usb_write' ] start[ 'usb' ]
+        el [ key == 'keys_on' ] stick_keys = true
+        el [ key == 'keys_off' ] stick_keys = false
         el [ key.starts_with[ 'drv_' ] ]
             nm : key.mid[ 4, key.count - 4 ]
             for [ d: UsbDrive ] in drives
@@ -1346,6 +1385,20 @@ element Bootstrap
                 t[ 'drv_none' ] = BootLog [ label: plug,
                     area: Region [ 'l4.4 t{y} r0 h0.825' ] ]
             y += 1.25
+            # the user's keys on the stick, only when asked
+            nk : i32 ssh_keys[]
+            if [ nk > 0 ]
+                t[ 'keys_name' ] = BootText [ label: 'SSH keys',
+                    area: Region [ 'l0 t{y} w4 h0.825' ] ]
+                kw : string [ (nk == 1) ? 'Carry my key'
+                    : 'Carry my {nk} keys' ]
+                t[ 'keys_on' ] = Choice [ label: kw,
+                    selected: stick_keys,
+                    area: Region [ 'l4.4 t{y} w8.6 h0.825' ] ]
+                t[ 'keys_off' ] = Choice [ label: 'Leave them out',
+                    selected: !stick_keys,
+                    area: Region [ 'l13.3 t{y} w8.6 h0.825' ] ]
+                y += 1.25
             # while it writes: Back is its Cancel, Write waits
             br : Region [ 'l0 t{y} w4.5 h0.825' ]
             if [ building && job == 'usb' ]
@@ -1625,8 +1678,59 @@ element Bootstrap
         add_deps[ '{install}/lib/libvulkan.so.1' ]
         add_nvidia[]
         add_tools[]
+        add_shell[]
+        # programs run in the console module, hosted at run time
+        add_module[ 'console' ]
+        add_open[]
+        add_claude[]
+        add_wifi[]
+        add_tray[]
+        add_toolchain[]
         write_tree[]
         write_boot[]
+
+    # orbiter-os builds itself: silver, its clang and lld, every
+    # header they read, the C library's link files and gcc's start
+    # files (clang links with them), silver's sources and its git
+    # history (a module builds only inside its repository)
+    func add_toolchain []
+        for [ t: string ] in vec string [] [ '{install}/bin/silver',
+                '{install}/build/silver', '{install}/bin/clang',
+                '{install}/bin/clang++', '{install}/bin/lld',
+                '{install}/bin/ld.lld', '/usr/bin/git',
+                '/usr/bin/ssh', '/usr/bin/ssh-keygen', '/usr/bin/ssh-add',
+                '/usr/bin/ssh-agent' ]
+            add_file[ t ]
+            add_deps[ t ]
+        add_deps[ '{install}/bin/clang-22' ]
+        add_file[ '{install}/include' ]
+        add_file[ '{install}/lib/clang/22/include' ]
+        add_file[ '/usr/include' ]
+        add_file[ '/usr/lib/gcc/x86_64-linux-gnu' ]
+        add_file[ '/usr/lib/git-core' ]
+        # git over ssh: the client's settings
+        add_file[ '/etc/ssh/ssh_config' ]
+        add_file[ '/etc/ssh/ssh_config.d' ]
+        # link files where the linker and glibc's scripts look;
+        # the libraries the scripts name, with the others in /lib
+        dev : '/usr/lib/x86_64-linux-gnu'
+        for [ f: string ] in vec string [] [ 'crt1.o', 'Scrt1.o',
+                'crti.o', 'crtn.o', 'libc.so', 'libc_nonshared.a',
+                'libm.so', 'libmvec.so', 'libpthread.a', 'libdl.a' ]
+            add_file[ '{dev}/{f}' ]
+        for [ f: string ] in vec string [] [ 'libc.so.6', 'libm.so.6',
+                'libmvec.so.1' ]
+            add_file[ '/lib/x86_64-linux-gnu/{f}' ]
+        cmd : command [ 'git -C {root} ls-files' ]
+        fh : handle cmd.stream[]
+        if [ fh ]
+            b : local i8 [ 4096 ]
+            while [ fgets[ @b[0], 4096, fh ] ]
+                ln : string [ @b[0] ]
+                add_file[ '{root}/{ln.trim[]}' ]
+            pclose[ fh ]
+        add_file[ '{root}/.git' ]
+        log 'os-bootstrap: toolchain done, {files.count} entries'
 
     # the drive's gpu: modules, firmware, the host's vulkan driver
     func add_nvidia []
@@ -1646,6 +1750,111 @@ element Bootstrap
         for [ l: string ] in libs
             add_file[ '{lib}/{l}' ]
             add_deps[ '{lib}/{l}' ]
+
+    # a module orbiter hosts at run time (not in its link closure)
+    func add_module [ mod: string ]
+        for [ f: string ] in vec string [] [ '{install}/build/{mod}',
+                '{install}/build/libsilver-{mod}.so' ]
+            add_file[ f ]
+            add_deps[ f ]
+        add_file[ '{install}/build/silver-{mod}.product' ]
+        add_file[ '{install}/share/silver-{mod}' ]
+        add_file[ '{root}/{mod}/{mod}.ag' ]
+
+    # bash and the everyday commands: the console, claude, git
+    func add_shell []
+        add_file[ '/bin/bash' ]
+        add_deps[ '/bin/bash' ]
+        names : vec string [] [ 'ls', 'cat', 'cp', 'mv', 'rm', 'mkdir',
+            'rmdir', 'ln', 'chmod', 'chown', 'touch', 'head', 'tail',
+            'wc', 'sort', 'uniq', 'cut', 'tr', 'tee', 'date', 'env',
+            'echo', 'printf', 'pwd', 'basename', 'dirname', 'readlink',
+            'realpath', 'stat', 'df', 'du', 'sleep', 'true', 'false',
+            'test', '[', 'yes', 'seq', 'md5sum', 'sha256sum', 'mktemp',
+            'nproc', 'id', 'whoami', 'uname', 'install', 'expr',
+            'base64', 'comm', 'paste', 'od', 'split', 'tac', 'truncate',
+            'sync', 'timeout', 'dd', 'grep', 'egrep', 'fgrep', 'sed',
+            'find', 'xargs', 'diff', 'cmp', 'tar', 'gzip', 'gunzip',
+            'zcat', 'xz', 'less', 'ps', 'kill', 'pgrep', 'pkill',
+            'which', 'awk', 'curl', 'clear', 'tput', 'nano', 'vi' ]
+        for [ nm: string ] in names
+            t : '/usr/bin/{nm}'
+            add_file[ t ]
+            add_deps[ t ]
+        # terminal descriptions: less, clear, nano, bash's line edits
+        add_file[ '/usr/share/terminfo' ]
+
+    # xdg-open: an address goes to orbiter, which hosts aura on it
+    func add_open []
+        bin : '{out_dir}/xdg-open'
+        cmd : '{install}/bin/clang -static -Os -o "{bin}" "{root}/os-bootstrap/xdg-open.c"'
+        open_build : command [ cmd ]
+        if [ open_build.exec[ false ] != 0 ]
+            log 'os-bootstrap: xdg-open.c did not build'
+            return
+        dst : 'usr/bin/xdg-open'
+        if [ seen.contains[ dst ] ] return
+        seen[ dst ] = true
+        add_dir[ 'usr/bin' ]
+        files.push[ OsFile [ src: bin, dst: dst ] ]
+
+    # claude by Anthropic's own installer, run here with a staging
+    # home; its binary goes to /usr/local on orbiter-os
+    func add_claude []
+        home : '{install}/tmp/claude-home'
+        vers : path '{home}/.local/share/claude/versions'
+        if [ !vers.exists[] ]
+            hp : path [ home ]
+            hp.make_dir[]
+            get : command { curl -fsSL https://claude.ai/install.sh
+                -o {home}/install.sh && HOME={home} bash
+                {home}/install.sh }
+            if [ get.exec[ false ] != 0 ]
+                log 'os-bootstrap: the claude installer failed'
+                return
+        newest : path
+        for [ v: path ] in vers.ls[ null, false ]
+            if [ !newest || v.modified_time[] > newest.modified_time[] ]
+                newest = v
+        if [ !newest ]
+            log 'os-bootstrap: no claude in {vers}'
+            return
+        name : newest.filename[]
+        # /root is orbiter-os's own (root-owned once booted)
+        dst : 'usr/local/share/claude/versions/{name}'
+        if [ seen.contains[ dst ] ] return
+        seen[ dst ] = true
+        add_dir[ 'usr/local/share/claude/versions' ]
+        files.push[ OsFile [ src: '{newest}', dst: dst ] ]
+        add_dir[ 'usr/local/bin' ]
+        seen[ 'usr/local/bin/claude' ] = true
+        files.push[ OsFile [ dst: 'usr/local/bin/claude',
+            link: '/{dst}' ] ]
+        add_deps[ '{newest}' ]
+        # https roots for claude's sign in and its requests
+        add_file[ '/etc/ssl/certs/ca-certificates.crt' ]
+        log 'os-bootstrap: claude {name}'
+
+    # the session bus init starts: apps' tray icons reach orbiter
+    func add_tray []
+        add_file[ '/usr/bin/dbus-daemon' ]
+        add_deps[ '/usr/bin/dbus-daemon' ]
+        add_tree_at[ '{root}/tray/root/etc', 'etc' ]
+
+    # Wi-Fi: iwd (the wifi module's import), the system bus it is
+    # driven over, and their config from wifi/root
+    func add_wifi []
+        iwd : '{install}/libexec/iwd'
+        ip : path [ iwd ]
+        if [ !ip.exists[] ]
+            log 'os-bootstrap: no iwd (build the wifi module)'
+            return
+        for [ t: string ] in vec string [] [ iwd, '/usr/bin/dbus-daemon' ]
+            add_file[ t ]
+            add_deps[ t ]
+        add_file[ '{install}/share/dbus-1/system.d' ]
+        add_tree_at[ '{root}/wifi/root/etc', 'etc' ]
+        add_tree_at[ '{root}/wifi/root/usr/sbin', 'usr/sbin' ]
 
     # the install wizard's programs, and the shell popen runs
     func add_tools []
