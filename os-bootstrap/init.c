@@ -126,6 +126,50 @@ static int find_uuid(const unsigned char want[16], char* dev, size_t cap) {
     return found;
 }
 
+// the swap partition whose header has this uuid: page one ends
+// in SWAPSPACE2, the uuid at 1036
+static int find_swap(const unsigned char want[16], char* dev, size_t cap) {
+    DIR* d = opendir("/sys/class/block");
+    if (!d) return 0;
+    struct dirent* e;
+    int found = 0;
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(dev, cap, "/dev/%s", e->d_name);
+        int fd = open(dev, O_RDONLY);
+        if (fd < 0) continue;
+        unsigned char pg[4096];
+        found = pread(fd, pg, sizeof pg, 0) == (ssize_t)sizeof pg &&
+                !memcmp(pg + 4086, "SWAPSPACE2", 10) &&
+                !memcmp(pg + 1036, want, 16);
+        close(fd);
+    }
+    closedir(d);
+    return found;
+}
+
+// orbiter.swap=UUID=<uuid>: a swap partition; else a file in
+// the root, as /swapfile
+static void swap_on(void) {
+    char sw[256], dev[128];
+    if (!arg("orbiter.swap", sw, sizeof sw)) return;
+    const char* at = sw;
+    if (!strncmp(sw, "UUID=", 5)) {
+        unsigned char u[16];
+        if (!parse_uuid(sw + 5, u) || !find_swap(u, dev, sizeof dev)) {
+            printf("init: no swap with %s\n", sw);
+            return;
+        }
+        at = dev;
+    }
+#ifdef NOLIBC
+    long r = __nolibc_syscall2(__NR_swapon, at, 0);
+#else
+    long r = syscall(SYS_swapon, at, 0);
+#endif
+    printf("init: swap %s: %s\n", at, r ? "failed" : "on");
+}
+
 // the kernel log and pid 1's output, on the drive
 static void save_logs(void) {
     int out = open("/boot/boot.log", O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0644);
@@ -274,6 +318,7 @@ int main(void) {
     // after the switch: firmware loads from the folder
     load_hardware();
     load_modules();
+    swap_on();
 
     // orbiter.args=--install,true: init's arguments, by comma
     char args[1024];

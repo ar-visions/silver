@@ -32,7 +32,15 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
     nd : sh.node
     if [ !nd ] return
     if [ !nd.attrs ] nd.attrs = map string [ string ] []
-    was : svg_value[ nd, key ]
+    # a <text>'s words are its content, not an attribute
+    if [ key.compare[ 'text' ] == 0 ]
+        nd.text = '{text}'
+        nd.children = vec SVGNode []
+        svg_retext[ sh ]
+        return
+    # a copy: the set below frees the map's own string
+    got : svg_value[ nd, key ]
+    was : '{got}'
     nd.attrs.set[ key, text ]
     st : nd.attr[ 'style' ]
     if [ st ]
@@ -44,12 +52,17 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
             if [ part.trim[].count == 0 ] continue
             kept = (kept.count == 0) ? part : '{kept};{part}'
         nd.attrs.set[ 'style', kept ]
+    # a plain colour (or none) in place of a gradient
     if [ key.compare[ 'fill' ] == 0 ]
         sh.fill_none = text.compare[ 'none' ] == 0
         if [ !sh.fill_none ] sh.fill = svg_color[ text ]
+        sh.fill_url = ''
+        sh.fill_paint = null
     el [ key.compare[ 'stroke' ] == 0 ]
         sh.stroke_none = text.compare[ 'none' ] == 0
         if [ !sh.stroke_none ] sh.stroke = svg_color[ text ]
+        sh.stroke_url = ''
+        sh.stroke_paint = null
     el [ key.compare[ 'stroke-width' ] == 0 ]
         sh.sw = f32[ text ]
     el [ key.compare[ 'opacity' ] == 0 ]
@@ -60,6 +73,8 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
         sh.join = svg_join_of[ text ]
     el [ key.compare[ 'id' ] == 0 ]
         sh.id = text
+    el [ svg_font_keys[].index_of[ key ] >= 0 ]
+        svg_retext[ sh ]
     el [ key.compare[ 'transform' ] == 0 ]
         # the points stay where they are in the element's own
         # space: the parent's, then the new transform
@@ -67,6 +82,10 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
         if [ was.count == 0 ] old = affine.identity[]
         fresh : svg_parse_transform[ text ]
         if [ text.count == 0 ] fresh = affine.identity[]
+        # one that flattens the shape cannot be taken back: kept
+        if [ abs[ fresh.ma * fresh.md - fresh.mb * fresh.mc ] < 1e-12 ]
+            nd.attrs.set[ key, was ]
+            return
         parent : sh.space.multiply[ affine_inverse[ old ] ]
         moved : parent.multiply[ fresh ]
         back : affine_inverse[ sh.space ]
@@ -79,7 +98,55 @@ func svg_set [ sh: SVGShape, key: string, text: string ]
                 y1: remap_y[ back, moved, c.x1, c.y1 ],
                 x2: remap_x[ back, moved, c.x2, c.y2 ],
                 y2: remap_y[ back, moved, c.x2, c.y2 ] ]
+        # what the shape holds on the page goes with it: its
+        # gradients' placement, its blur and glow by the scale
+        delta : moved.multiply[ back ]
+        if [ sh.fill_paint ]
+            sh.fill_paint.to_page = delta.multiply[
+                sh.fill_paint.to_page ]
+        if [ sh.stroke_paint ]
+            sh.stroke_paint.to_page = delta.multiply[
+                sh.stroke_paint.to_page ]
+        k : f32 [ sqrt[ abs[ delta.ma * delta.md
+                             - delta.mb * delta.mc ] ] ]
+        sh.blur = sh.blur * k
+        sh.glow = sh.glow * k
+        sh.shadow = sh.shadow * k
+        sx : f32 [ sh.shadow_x ]
+        sh.shadow_x = delta.ma * sx + delta.mb * sh.shadow_y
+        sh.shadow_y = delta.mc * sx + delta.md * sh.shadow_y
         sh.space = moved
+
+# a <text>'s own font values, shown and set as rows
+func svg_font_keys [] -> vec string
+    return vec string [] [ 'font-family', 'font-size', 'font-weight',
+                           'font-style', 'text-anchor' ]
+
+# a <text>'s glyphs made again from its element (its own values
+# over svg's defaults)
+func svg_retext [ sh: SVGShape ]
+    nd : sh.node
+    base : SVGState [ fill: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+        stroke: vec4f [ 0.0, 0.0, 0.0, 0.0 ], sw: 1.0,
+        fill_none: false, stroke_none: true, fill_opacity: 1.0,
+        stroke_opacity: 1.0, opacity: 1.0, cap: 0, join: 0,
+        miter: 4.0, font_size: 16.0, weight: 400, slope: 0,
+        anchor: 0 ]
+    st : SVGState svg_resolve_state[ nd, base ]
+    fam : string svg_family_of[ nd, 'sans-serif' ]
+    sh.cmds = svg_text_cmds[ svg_text_of[ nd ], fam, st,
+        nd.attr_f[ 'x', 0.0 ], nd.attr_f[ 'y', 0.0 ], sh.space ]
+
+# text as xml character data
+func svg_escape [ t: string ] -> string
+    out : ''
+    for [ i: i64 0, i < t.count, i += 1 ]
+        ch : t.mid[ i, 1 ]
+        if [ ch == '&' ] ch = '&amp;'
+        el [ ch == '<' ] ch = '&lt;'
+        el [ ch == '>' ] ch = '&gt;'
+        out = '{out}{ch}'
+    return out
 
 # a point taken back by one transform and out by another
 func remap_x [ back: affine, out: affine, x: f32, y: f32 ] -> f32
@@ -114,6 +181,18 @@ class SvgRow
     public at    : i64
     public end   : i64
 
+# a shape's filter as aeon writes it: blur, glow and drop
+# shadow (element units; colours sRGB r g b a, alpha 0 none)
+class SvgFx
+    public blur     : f32
+    public glow     : f32
+    public gain     : f32 [ 1.0 ]
+    public glow_rgb : vec f32
+    public shadow   : f32
+    public shadow_x : f32
+    public shadow_y : f32
+    public shade_rgb : vec f32
+
 class SvgDoc
     public file   : path
     public model  : SVGModel
@@ -139,10 +218,16 @@ class SvgDoc
     # text put in at places of the text read, at the next compose
     public insert_at   : vec i64
     public insert_text : vec string
+    # shapes whose effects are held (not yet in the text), and
+    # the id each one's filter is written under
+    public fx_on    : vec i32
+    public fx_names : vec string
 
     func init []
         model = SVGModel [ file ]
         dirty = vec i32 []
+        fx_on = vec i32 []
+        fx_names = vec string []
         also  = vec i32 []
         undo  = vec SvgUndo []
         root  = root_of[]
@@ -176,7 +261,7 @@ class SvgDoc
         keep_chosen : i32 [ chosen ]
         model.load[ txt ]
         chosen = keep_chosen
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         changed = true
@@ -204,6 +289,12 @@ class SvgDoc
     func mark [ i: i32 ]
         if [ dirty.index_of[ i ] < 0 ] dirty.push[ i ]
         follow[ i, 0 ]
+
+    # a <text> element: its shape is its glyphs
+    func is_text [ i: i32 ] -> bool
+        if [ i < 0 || i >= count[] ] return false
+        nd : model.shapes[ i ].node
+        return nd && nd.tag.compare[ 'text' ] == 0
 
     # a linked offset's source (-1 none): its href, by id
     func offset_src [ i: i32 ] -> i32
@@ -322,7 +413,7 @@ class SvgDoc
         insert_at.clear[]
         insert_text.clear[]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         changed = true
@@ -353,7 +444,7 @@ class SvgDoc
         if [ i < 0 || i >= count[] ] return false
         txt : compose[]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         nd : model.shapes[ i ].node
@@ -464,7 +555,7 @@ class SvgDoc
         txt : compose[]
         undo.push[ SvgUndo [ shape: -1, text: txt ] ]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         base : i32 [ ids[ 0 ] ]
@@ -530,7 +621,7 @@ class SvgDoc
         txt : compose[]
         undo.push[ SvgUndo [ shape: -1, text: txt ] ]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         out : string [ model.source ]
@@ -618,7 +709,7 @@ class SvgDoc
             n += 1
         return stem
 
-    # the text with spans replaced, the last first
+    # spans replaced last first; longer first at one start
     func with_spans [ src: string, starts: vec i64, stops: vec i64,
                       texts: vec string ] -> string
         order : vec i32 []
@@ -626,7 +717,11 @@ class SvgDoc
             order.push[ k ]
         for [ x: i32 0, x < order.count, x += 1 ]
             for [ y: i32 x + 1, y < order.count, y += 1 ]
-                if [ starts[ order[ y ] ] > starts[ order[ x ] ] ]
+                a : i32 [ order[ x ] ]
+                b : i32 [ order[ y ] ]
+                if [ starts[ b ] > starts[ a ]
+                     || (starts[ b ] == starts[ a ]
+                         && stops[ b ] > stops[ a ]) ]
                     keep : i32 [ order[ x ] ]
                     order[ x ] = order[ y ]
                     order[ y ] = keep
@@ -637,35 +732,186 @@ class SvgDoc
             out = '{head}{texts[ k ]}{tail}'
         return out
 
-    # shape i's blur: its own filter's feGaussianBlur
-    # stdDeviation, in the element's units (0 none)
+    # shape i's blur: its gaussian in the element's units (0 none)
     func blur_of [ i: i32 ] -> f32
         if [ i < 0 || i >= count[] ] return 0.0
-        nd : model.shapes[ i ].node
-        if [ !nd ] return 0.0
-        named : svg_filter_ref[ nd ]
-        if [ named.count == 0 ] return 0.0
-        fl : find_id[ root, named ]
-        g : gaussian_in[ fl ]
-        if [ !g ] return 0.0
-        sd : g.attr[ 'stdDeviation' ]
-        if [ !sd ] return 0.0
-        words : sd.trim[].split[ ' ' ]
-        if [ words.count == 0 ] return 0.0
-        return f32[ words[ 0 ].real_value[] ]
+        return fx_of[ i ].blur
 
-    # a filter's feGaussianBlur (null none)
-    func gaussian_in [ fl: SVGNode ] -> SVGNode
-        if [ !fl || !fl.children ] return null
-        for [ c: SVGNode ] in fl.children
-            if [ c.tag == 'feGaussianBlur' ] return c
-        return null
+    # shape i's effects as held on the shape (element units;
+    # colours sRGB r g b a, alpha 0 none)
+    func fx_of [ i: i32 ] -> SvgFx
+        sh : model.shapes[ i ]
+        k : f32 [ max[ unit_scale[ i ], 1e-6 ] ]
+        back : sh.space.inverse[]
+        gc : sh.glow_color
+        sc : sh.shadow_color
+        return SvgFx [ blur: sh.blur / k, glow: sh.glow / k,
+            gain: sh.glow_gain,
+            glow_rgb: vec f32 [] [ gc.x, gc.y, gc.z, gc.w ],
+            shadow: sh.shadow / k,
+            shadow_x: back.ma * sh.shadow_x + back.mb * sh.shadow_y,
+            shadow_y: back.mc * sh.shadow_x + back.md * sh.shadow_y,
+            shade_rgb: vec f32 [] [ sc.x, sc.y, sc.z, sc.w ] ]
+
+    # Inkscape's blur percent p: its radius (page units) is
+    # (p / 100)^2 x the box's width + height / 4, the box the
+    # shape's drawn bounds (stroke in)
+    func blur_base [ i: i32 ] -> f32
+        bx : blur_box[ i ]
+        return bx[ 0 ] + bx[ 1 ]
+
+    # shape i's drawn width and height (page units, stroke in)
+    func blur_box [ i: i32 ] -> vec f32
+        sh : model.shapes[ i ]
+        x0 : f32 [ 1e30 ]
+        y0 : f32 [ 1e30 ]
+        x1 : f32 [ -1e30 ]
+        y1 : f32 [ -1e30 ]
+        px : f32 [ 0.0 ]
+        py : f32 [ 0.0 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.close ] continue
+            # a curve sampled: its handles overreach the box
+            n : i32 [ (c.op == SVGOp.cubic || c.op == SVGOp.quad)
+                      ? 16 : 1 ]
+            for [ k: i32 1, k <= n, k += 1 ]
+                t : f32 [ k / f32[ n ] ]
+                u : f32 [ 1.0 - t ]
+                x : f32 [ c.x ]
+                y : f32 [ c.y ]
+                if [ c.op == SVGOp.cubic ]
+                    x = u * u * u * px + 3.0 * u * u * t * c.x1
+                        + 3.0 * u * t * t * c.x2 + t * t * t * c.x
+                    y = u * u * u * py + 3.0 * u * u * t * c.y1
+                        + 3.0 * u * t * t * c.y2 + t * t * t * c.y
+                el [ c.op == SVGOp.quad ]
+                    x = u * u * px + 2.0 * u * t * c.x1 + t * t * c.x
+                    y = u * u * py + 2.0 * u * t * c.y1 + t * t * c.y
+                x0 = min[ x0, x ]
+                y0 = min[ y0, y ]
+                x1 = max[ x1, x ]
+                y1 = max[ y1, y ]
+            px = c.x
+            py = c.y
+        if [ x1 < x0 ] return vec f32 [] [ 0.0, 0.0 ]
+        sw : f32 [ (sh.stroke_none) ? 0.0 : sh.sw ]
+        return vec f32 [] [ x1 - x0 + sw, y1 - y0 + sw ]
+
+    # the element's units a page unit (its transforms' mean scale)
+    func unit_scale [ i: i32 ] -> f32
+        m : model.shapes[ i ].space
+        return sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ]
+
+    # shape i's blur as Inkscape's percent (0 none)
+    func blur_percent [ i: i32 ] -> f32
+        if [ i < 0 || i >= count[] ] return 0.0
+        return percent_of[ i, blur_of[ i ] ]
+
+    # shape i's blur set by Inkscape's percent
+    func set_blur_percent [ i: i32, p: f32 ]
+        if [ i < 0 || i >= count[] ] return
+        set_blur[ i, sd_of[ i, p ] ]
+
+    # shape i's glow halo (element units, 0 none)
+    func glow_of [ i: i32 ] -> f32
+        if [ i < 0 || i >= count[] ] return 0.0
+        return fx_of[ i ].glow
+
+    # an element-unit gaussian as Inkscape's percent of shape i
+    func percent_of [ i: i32, sd: f32 ] -> f32
+        base : f32 [ blur_base[ i ] ]
+        if [ sd <= 0.0 || base <= 0.0 ] return 0.0
+        r : f32 [ sd * unit_scale[ i ] ]
+        return round[ sqrt[ r * 4.0 / base ] * 1000.0 ] / 10.0
+
+    # a percent of shape i as an element-unit gaussian
+    func sd_of [ i: i32, p: f32 ] -> f32
+        f : f32 [ clamp[ p, 0.0, 100.0 ] / 100.0 ]
+        k : f32 [ max[ unit_scale[ i ], 1e-6 ] ]
+        return f * f * blur_base[ i ] / 4.0 / k
+
+    func glow_percent [ i: i32 ] -> f32
+        if [ i < 0 || i >= count[] ] return 0.0
+        return percent_of[ i, glow_of[ i ] ]
+
+    # shape i's glow by percent: its halo by Inkscape's blur rule,
+    # brightened 1 + 3 x the percent / 100
+    func set_glow_percent [ i: i32, p: f32 ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        fx.glow = sd_of[ i, p ]
+        fx.gain = 1.0 + 3.0 * clamp[ p, 0.0, 100.0 ] / 100.0
+        set_fx[ i, fx ]
+
+    # a colour row's linear text as sRGB r g b a ('' none)
+    func srgb_of [ t: string ] -> vec f32
+        out : vec f32 [] [ 0.0, 0.0, 0.0, 0.0 ]
+        nums : numbers_of[ t ]
+        if [ nums.count < 3 ] return out
+        for [ k: i32 0, k < 3, k += 1 ]
+            out[ k ] = pow[ clamp[ nums[ k ], 0.0, 1.0 ], 1.0 / 2.2 ]
+        out[ 3 ] = (nums.count > 3) ? clamp[ nums[ 3 ], 0.0, 1.0 ]
+                   : 1.0
+        return out
+
+    # sRGB r g b a as a colour row's linear text ('' none)
+    func linear_text [ c: vec f32 ] -> string
+        if [ c[ 3 ] <= 0.0 ] return ''
+        out : ''
+        for [ k: i32 0, k < 4, k += 1 ]
+            n : f32 [ (k < 3) ? pow[ c[ k ], 2.2 ] : c[ k ] ]
+            nt : num_text[ n, false ]
+            out = (out.count == 0) ? nt : '{out}, {nt}'
+        return out
+
+    # the glow's own colour ('' back to the shape's colours)
+    func set_glow_color [ i: i32, t: string ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        fx.glow_rgb = srgb_of[ t ]
+        set_fx[ i, fx ]
+
+    # the drop shadow's softness by Inkscape's blur percent (0
+    # takes it off); turned on, it starts below right, half black
+    func set_shadow_percent [ i: i32, p: f32 ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        if [ fx.shadow <= 0.0 && p > 0.0 ]
+            step : f32 [ 0.04 * blur_base[ i ]
+                         / max[ unit_scale[ i ], 1e-6 ] ]
+            if [ fx.shadow_x == 0.0 && fx.shadow_y == 0.0 ]
+                fx.shadow_x = step
+                fx.shadow_y = step
+            if [ fx.shade_rgb[ 3 ] <= 0.0 ]
+                fx.shade_rgb = vec f32 [] [ 0.0, 0.0, 0.0, 0.5 ]
+        fx.shadow = sd_of[ i, p ]
+        set_fx[ i, fx ]
+
+    # the drop shadow's offset (element units)
+    func set_shadow_offset [ i: i32, x: f32, y: f32 ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        fx.shadow_x = x
+        fx.shadow_y = y
+        set_fx[ i, fx ]
+
+    func set_shadow_color [ i: i32, t: string ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        fx.shade_rgb = srgb_of[ t ]
+        set_fx[ i, fx ]
 
     # an element's open tag with key set to val ('' takes it out,
     # and out of its style too)
     func head_with [ nd: SVGNode, key: string, val: string ] -> string
         src : model.source
-        piece : src.mid[ nd.at, nd.head_end - nd.at ]
+        return piece_with[ src.mid[ nd.at, nd.head_end - nd.at ], key,
+                           val ]
+
+    # the same on an open tag's text
+    func piece_with [ open_tag: string, key: string, val: string ]
+            -> string
+        piece : string [ open_tag ]
         mark : ' {key}="'
         pos : i32 [ piece.index_of[ mark ] ]
         if [ pos >= 0 ]
@@ -682,8 +928,8 @@ class SvgDoc
             head : piece.mid[ 0, cut ]
             tail : piece.mid[ cut, piece.count - cut ]
             piece = '{head} {key}="{val}"{tail}'
-        if [ val.count > 0 ] return piece
-        # the style's own declaration of it out
+        # the style's own declaration of it out (a style beats an
+        # attribute)
         sm : ' style="'
         sp : i32 [ piece.index_of[ sm ] ]
         if [ sp < 0 ] return piece
@@ -702,57 +948,402 @@ class SvgDoc
         tail : piece.mid[ ve, piece.count - ve ]
         return '{head}{kept}{tail}'
 
-    # shape i's blur set (element units; 0 takes its filter off):
-    # its own feGaussianBlur changed, else a new one in <defs>
+    # shape i's blur set (element units; 0 none)
     func set_blur [ i: i32, sd: f32 ]
+        if [ i < 0 || i >= count[] ] return
+        fx : fx_of[ i ]
+        fx.blur = sd
+        set_fx[ i, fx ]
+
+    # shape i's effects set on the shape as drawn; its filter is
+    # written into the text at the next compose (a save)
+    func set_fx [ i: i32, fx: SvgFx ]
+        sh : model.shapes[ i ]
+        if [ !sh.node ] return
+        k : f32 [ unit_scale[ i ] ]
+        m : sh.space
+        sh.blur = fx.blur * k
+        sh.glow = fx.glow * k
+        sh.glow_gain = fx.gain
+        g : fx.glow_rgb
+        sh.glow_color = vec4f [ g[ 0 ], g[ 1 ], g[ 2 ], g[ 3 ] ]
+        sh.shadow = fx.shadow * k
+        sh.shadow_x = m.ma * fx.shadow_x + m.mb * fx.shadow_y
+        sh.shadow_y = m.mc * fx.shadow_x + m.md * fx.shadow_y
+        c : fx.shade_rgb
+        sh.shadow_color = vec4f [ c[ 0 ], c[ 1 ], c[ 2 ], c[ 3 ] ]
+        # its filter: its own when no other shape uses it
+        named : svg_filter_ref[ sh.node ]
+        at : i32 [ fx_on.index_of[ i ] ]
+        fid : string [ (at >= 0) ? fx_names[ at ] : '' ]
+        if [ at < 0 ]
+            fid = (named.count > 0 && uses_of[ named ] == 1) ? named
+                  : fresh_filter_id[ (fx.shadow > 0.0) ? 'shadow'
+                      : ((fx.glow > 0.0) ? 'glow' : 'blur') ]
+            fx_on.push[ i ]
+            fx_names.push[ fid ]
+        held : bool [ fx.blur > 0.0 || fx.glow > 0.0
+                      || fx.shadow > 0.0 ]
+        svg_set[ sh, 'filter', (held) ? 'url(#{fid})' : '' ]
+        mark[ i ]
+        changed = true
+
+    # how many times the text names url(#id)
+    func uses_of [ id: string ] -> i32
+        src : model.source
+        look : 'url(#{id})'
+        uses : i32 [ 0 ]
+        from : i32 [ 0 ]
+        while [ true ]
+            rest : src.mid[ from, src.count - from ]
+            hit : i32 [ rest.index_of[ look ] ]
+            if [ hit < 0 ] break
+            uses += 1
+            from += hit + look.count
+        return uses
+
+    # an id free in the text and among the held filters
+    func fresh_filter_id [ stem: string ] -> string
+        n : i32 [ 1 ]
+        while [ true ]
+            nm : '{stem}-{n}'
+            if [ model.source.index_of[ 'id="{nm}"' ] < 0
+                 && fx_names.index_of[ nm ] < 0 ] return nm
+            n += 1
+        return stem
+
+    # a colour as a feFlood's attributes
+    func flood_text [ c: vec f32, name: string ] -> string
+        code : string [ '#' ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            two : hex_two[ i32[ round[ c[ k ] * 255.0 ] ] ]
+            code = '{code}{two}'
+        at : num_text[ c[ 3 ], false ]
+        fo : '<feFlood flood-color="{code}" flood-opacity="{at}"'
+        return '{fo} result="{name}"/>'
+
+    # shape i's filter as svg: blur, glow (a halo brightened by
+    # its gain, in its own colour or the shape's) and drop shadow
+    func filter_text [ i: i32, fid: string ] -> string
+        fx : fx_of[ i ]
+        sd : f32 [ fx.blur ]
+        gd : f32 [ fx.glow ]
+        ss : f32 [ fx.shadow ]
+        shade : bool [ ss > 0.0 ]
+        # its region out by three of its widest gaussian, and
+        # the shadow's offset
+        bx : blur_box[ i ]
+        k : f32 [ unit_scale[ i ] ]
+        far : f32 [ sqrt[ sd * sd + gd * gd ] * k * 3.0 ]
+        fx_far : f32 [ far ]
+        fy_far : f32 [ far ]
+        if [ shade ]
+            fx_far = max[ far, (ss * 3.0 + abs[ fx.shadow_x ]) * k ]
+            fy_far = max[ far, (ss * 3.0 + abs[ fx.shadow_y ]) * k ]
+        mx : i32 [ max[ 10, i32[ ceil[ 100.0 * fx_far
+                                      / max[ bx[ 0 ], 1e-3 ] ] ] ] ]
+        my : i32 [ max[ 10, i32[ ceil[ 100.0 * fy_far
+                                      / max[ bx[ 1 ], 1e-3 ] ] ] ] ]
+        wd : i32 [ 100 + mx * 2 ]
+        ht : i32 [ 100 + my * 2 ]
+        box : 'x="-{mx}%" y="-{my}%" width="{wd}%" height="{ht}%"'
+        body : ''
+        from_in : 'SourceGraphic'
+        merged : bool [ gd > 0.0 || shade ]
+        if [ sd > 0.0 ]
+            st : num_text[ sd, false ]
+            if [ merged ]
+                body = '<feGaussianBlur stdDeviation="{st}"'
+                body = '{body} result="soft"/>'
+                from_in = 'soft'
+            el
+                body = '<feGaussianBlur stdDeviation="{st}"/>'
+        if [ shade ]
+            sdt : num_text[ ss, false ]
+            dxt : num_text[ fx.shadow_x, false ]
+            dyt : num_text[ fx.shadow_y, false ]
+            body = '{body}<feGaussianBlur in="SourceAlpha"'
+            body = '{body} stdDeviation="{sdt}" result="shade"/>'
+            body = '{body}<feOffset in="shade" dx="{dxt}"'
+            body = '{body} dy="{dyt}" result="shift"/>'
+            sfl : flood_text[ fx.shade_rgb, 'shadecolor' ]
+            body = '{body}{sfl}'
+            body = '{body}<feComposite in="shadecolor" in2="shift"'
+            body = '{body} operator="in" result="shadow"/>'
+        if [ gd > 0.0 ]
+            gt : num_text[ gd, false ]
+            kt : num_text[ fx.gain, false ]
+            body = '{body}<feGaussianBlur in="{from_in}"'
+            body = '{body} stdDeviation="{gt}" result="halo"/>'
+            lit_in : 'halo'
+            if [ fx.glow_rgb[ 3 ] > 0.0 ]
+                gfl : flood_text[ fx.glow_rgb, 'glowcolor' ]
+                body = '{body}{gfl}'
+                body = '{body}<feComposite in="glowcolor"'
+                body = '{body} in2="halo" operator="in"'
+                body = '{body} result="tinted"/>'
+                lit_in = 'tinted'
+            fs : ''
+            for [ ch: string ] in vec string [] [ 'R', 'G', 'B',
+                                                  'A' ]
+                fs = '{fs}<feFunc{ch} type="linear" slope="{kt}"/>'
+            ct : 'feComponentTransfer'
+            body = '{body}<{ct} in="{lit_in}" result="lit">'
+            body = '{body}{fs}</{ct}>'
+        if [ merged ]
+            mn : 'feMergeNode'
+            body = '{body}<feMerge>'
+            if [ shade ] body = '{body}<{mn} in="shadow"/>'
+            if [ gd > 0.0 ] body = '{body}<{mn} in="lit"/>'
+            body = '{body}<{mn} in="{from_in}"/></feMerge>'
+        cif : 'style="color-interpolation-filters:sRGB"'
+        return '<filter id="{fid}" {box} {cif}>{body}</filter>'
+
+    # the held filters as spans of the text: a shape's own one
+    # rewritten in place, new ones into <defs> (made when none)
+    func fx_spans [ starts: vec i64, stops: vec i64,
+                    texts: vec string ]
+        fresh : ''
+        for [ k: i32 0, k < fx_on.count, k += 1 ]
+            i : i32 [ fx_on[ k ] ]
+            fx : fx_of[ i ]
+            if [ fx.blur <= 0.0 && fx.glow <= 0.0 && fx.shadow <= 0.0 ]
+                continue
+            ftext : filter_text[ i, fx_names[ k ] ]
+            fl : find_id[ root, fx_names[ k ] ]
+            if [ fl ]
+                starts.push[ fl.at ]
+                stops.push[ fl.end ]
+                texts.push[ ftext ]
+            el
+                fresh = '{fresh}  {ftext}\n'
+        if [ fresh.count == 0 || !root ] return
+        defs : SVGNode [ null ]
+        if [ root.children ]
+            for [ c: SVGNode ] in root.children
+                if [ c.tag == 'defs' && !defs ] defs = c
+        if [ defs ]
+            starts.push[ defs.tail_at ]
+            stops.push[ defs.tail_at ]
+            texts.push[ '{fresh}  ' ]
+        el
+            starts.push[ root.head_end ]
+            stops.push[ root.head_end ]
+            texts.push[ '\n  <defs>\n{fresh}  </defs>' ]
+
+    # the held changes let go: the text read has them now
+    func clear_held []
+        dirty.clear[]
+        fx_on.clear[]
+        fx_names.clear[]
+
+    # a paint's gradient as svg: stops from 'linear | 0: r, g, b,
+    # a | ...' (linear colours), each '<stop .../>'
+    func stops_text [ t: string ] -> string
+        out : ''
+        parts : t.split[ '|' ]
+        for [ k: i32 1, k < parts.count, k += 1 ]
+            p : parts[ k ]
+            ci : i32 [ p.index_of[ ':' ] ]
+            if [ ci <= 0 ] continue
+            head : p.mid[ 0, ci ].trim[]
+            nums : numbers_of[ p.mid[ ci + 1, p.count - ci - 1 ] ]
+            if [ nums.count < 3 ] continue
+            # one letter alone is a character: a string by its type
+            code : string [ '#' ]
+            for [ j: i32 0, j < 3, j += 1 ]
+                srgb : f32 [ pow[ clamp[ nums[ j ], 0.0, 1.0 ],
+                                  1.0 / 2.2 ] ]
+                two : hex_two[ i32[ round[ srgb * 255.0 ] ] ]
+                code = '{code}{two}'
+            al : f32 [ (nums.count > 3) ? nums[ 3 ] : 1.0 ]
+            stop : '<stop offset="{head}" stop-color="{code}"'
+            if [ al < 1.0 ]
+                at : num_text[ al, false ]
+                stop = '{stop} stop-opacity="{at}"'
+            out = '{out}{stop}/>'
+        return out
+
+    func hex_two [ n: i32 ] -> string
+        digits : '0123456789abcdef'
+        hi : digits.mid[ n / 16, 1 ]
+        lo : digits.mid[ n % 16, 1 ]
+        return '{hi}{lo}'
+
+    # shape i's fill (or stroke) gradient used by it alone
+    func grad_own [ i: i32, key: string ] -> bool
+        if [ i < 0 || i >= count[] ] return false
+        sh : model.shapes[ i ]
+        pt : (key.compare[ 'fill' ] == 0) ? sh.fill_paint
+             : sh.stroke_paint
+        if [ !pt ] return false
+        src : model.source
+        look : 'url(#{pt.id})'
+        uses : i32 [ 0 ]
+        from : i32 [ 0 ]
+        while [ true ]
+            rest : src.mid[ from, src.count - from ]
+            hit : i32 [ rest.index_of[ look ] ]
+            if [ hit < 0 ] break
+            uses += 1
+            from += hit + look.count
+        return uses == 1
+
+    # its gradient's geometry written from the paint as it is in
+    # memory (linear x1 y1 x2 y2; radial cx cy r, its focus on
+    # the centre)
+    func set_grad_geometry [ i: i32, key: string ]
+        if [ i < 0 || i >= count[] || !root ] return
+        sh : model.shapes[ i ]
+        pt : (key.compare[ 'fill' ] == 0) ? sh.fill_paint
+             : sh.stroke_paint
+        if [ !pt ] return
+        ax : num_text[ pt.ax, false ]
+        ay : num_text[ pt.ay, false ]
+        bx : num_text[ pt.bx, false ]
+        by : num_text[ pt.by, false ]
+        rr : num_text[ pt.r, false ]
+        # a copy: the reload below frees the paint and its id
+        named : '{pt.id}'
+        txt : compose[]
+        model.load[ txt ]
+        clear_held[]
+        root = root_of[]
+        root_dirty = false
+        g : find_id[ root, named ]
+        if [ !g ] return
+        src : model.source
+        piece : src.mid[ g.at, g.head_end - g.at ]
+        if [ g.tag == 'radialGradient' ]
+            piece = piece_with[ piece, 'cx', ax ]
+            piece = piece_with[ piece, 'cy', ay ]
+            piece = piece_with[ piece, 'r', rr ]
+            piece = piece_with[ piece, 'fx', '' ]
+            piece = piece_with[ piece, 'fy', '' ]
+        el
+            piece = piece_with[ piece, 'x1', ax ]
+            piece = piece_with[ piece, 'y1', ay ]
+            piece = piece_with[ piece, 'x2', bx ]
+            piece = piece_with[ piece, 'y2', by ]
+        model.load[ with_spans[ src, vec i64 [] [ g.at ],
+            vec i64 [] [ g.head_end ], vec string [] [ piece ] ] ]
+        root = root_of[]
+        changed = true
+
+    # shape i's fill or stroke made a gradient (the picker's
+    # text): its own gradient element rewritten (its geometry
+    # kept, its stops replaced), or, shared or none, a new one in
+    # <defs> in the shape's box units; the shape names it
+    func set_gradient [ i: i32, key: string, t: string ]
         if [ i < 0 || i >= count[] || !root ] return
         txt : compose[]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
-        nd : model.shapes[ i ].node
+        sh : model.shapes[ i ]
+        nd : sh.node
         if [ !nd ] return
         src : model.source
+        lin : bool [ !t.trim[].starts_with[ 'radial' ] ]
+        tag : string [ (lin) ? 'linearGradient' : 'radialGradient' ]
+        stops : stops_text[ t ]
+        pt : (key.compare[ 'fill' ] == 0) ? sh.fill_paint
+             : sh.stroke_paint
+        # its gradient, else the one it kept from before a solid
+        mark : 'aeon:{key}-gradient'
+        kept : string [ (pt) ? pt.id : '' ]
+        back : bool [ false ]
+        if [ !pt ]
+            km : nd.attr[ mark ]
+            if [ km && km.count > 0 ]
+                kept = km
+                back = true
+        g : SVGNode [ (kept.count > 0) ? find_id[ root, kept ] : null ]
+        # one use only (none, coming back): changed in place
+        own : bool [ false ]
+        if [ g ]
+            uses : i32 [ (back) ? 1 : 0 ]
+            look : 'url(#{kept})'
+            from : i32 [ 0 ]
+            while [ true ]
+                rest : src.mid[ from, src.count - from ]
+                hit : i32 [ rest.index_of[ look ] ]
+                if [ hit < 0 ] break
+                uses += 1
+                from += hit + look.count
+            own = uses == 1
+        gid : string [ (g && own) ? kept
+                       : free_element_id[ (lin) ? 'linear' : 'radial' ] ]
+        # its geometry, as it reads now, when the kind stays
+        geo : ''
+        same : bool [ g && g.tag == tag ]
+        if [ same ]
+            names : vec string [] [ 'x1', 'y1', 'x2', 'y2', 'cx', 'cy',
+                'r', 'fx', 'fy', 'gradientUnits', 'gradientTransform',
+                'spreadMethod' ]
+            for [ nm: string ] in names
+                v : svg_grad_attr[ root, g, nm ]
+                if [ v ] geo = '{geo} {nm}="{v}"'
+        el_text : '<{tag} id="{gid}"{geo}>{stops}</{tag}>'
+        # coming back: the kept one as it was (the other kind:
+        # its stops kept, its geometry svg's default)
+        if [ back && g && own ]
+            el_text = src.mid[ g.at, g.end - g.at ]
+            if [ !same ]
+                inner : src.mid[ g.head_end, g.tail_at - g.head_end ]
+                el_text = '<{tag} id="{gid}">{inner}</{tag}>'
         starts : vec i64 []
-        stops  : vec i64 []
+        stops_at : vec i64 []
         texts  : vec string []
-        named : svg_filter_ref[ nd ]
-        g : gaussian_in[ (named.count > 0) ? find_id[ root, named ]
-                                           : null ]
-        vt : num_text[ sd, false ]
-        if [ sd <= 0.0 ]
-            if [ named.count == 0 ] return
-            starts.push[ nd.at ]
-            stops.push[ nd.head_end ]
-            texts.push[ head_with[ nd, 'filter', '' ] ]
-        el [ g ]
+        if [ g && own ]
             starts.push[ g.at ]
-            stops.push[ g.head_end ]
-            texts.push[ head_with[ g, 'stdDeviation', vt ] ]
+            stops_at.push[ g.end ]
+            texts.push[ el_text ]
         el
-            fid : free_element_id[ 'blur' ]
-            box : 'x="-50%" y="-50%" width="200%" height="200%"'
-            gauss : '<feGaussianBlur stdDeviation="{vt}"/>'
-            ftext : '<filter id="{fid}" {box}>{gauss}</filter>'
             defs : SVGNode [ null ]
             if [ root.children ]
                 for [ c: SVGNode ] in root.children
                     if [ c.tag == 'defs' && !defs ] defs = c
             if [ defs ]
                 starts.push[ defs.tail_at ]
-                stops.push[ defs.tail_at ]
-                texts.push[ '  {ftext}\n  ' ]
+                stops_at.push[ defs.tail_at ]
+                texts.push[ '  {el_text}\n  ' ]
             el
                 starts.push[ root.head_end ]
-                stops.push[ root.head_end ]
-                texts.push[ '\n  <defs>{ftext}</defs>' ]
-            starts.push[ nd.at ]
-            stops.push[ nd.head_end ]
-            texts.push[ head_with[ nd, 'filter', 'url(#{fid})' ] ]
-        model.load[ with_spans[ src, starts, stops, texts ] ]
+                stops_at.push[ root.head_end ]
+                texts.push[ '\n  <defs>{el_text}</defs>' ]
+        starts.push[ nd.at ]
+        stops_at.push[ nd.head_end ]
+        texts.push[ piece_with[ head_with[ nd, key, 'url(#{gid})' ],
+                                mark, '' ] ]
+        model.load[ with_spans[ src, starts, stops_at, texts ] ]
         root = root_of[]
         changed = true
+
+    # shape i's gradient (fill or stroke) kept by its id while a
+    # solid colour stands in, so a gradient again takes it back
+    func keep_gradient [ i: i32, key: string ]
+        if [ i < 0 || i >= count[] ] return
+        sh : model.shapes[ i ]
+        nd : sh.node
+        pt : (key.compare[ 'fill' ] == 0) ? sh.fill_paint
+             : sh.stroke_paint
+        if [ !nd || !pt ] return
+        if [ !nd.attrs ] nd.attrs = map string [ string ] []
+        nd.attrs.set[ 'aeon:{key}-gradient', pt.id ]
+        if [ root && !root.attr[ 'xmlns:aeon' ] ]
+            if [ !root.attrs ] root.attrs = map string [ string ] []
+            root.attrs.set[ 'xmlns:aeon',
+                            'https://ar-visions.github.io/aeon' ]
+            root_dirty = true
+
+    # the kept gradient let go (a clear starts again)
+    func forget_gradient [ i: i32, key: string ]
+        if [ i < 0 || i >= count[] ] return
+        nd : model.shapes[ i ].node
+        if [ nd && nd.attr[ 'aeon:{key}-gradient' ] ]
+            nd.attrs.set[ 'aeon:{key}-gradient', '' ]
 
     # the composed text read again before a change that rewrites
     # the text; undone as a whole
@@ -760,7 +1351,7 @@ class SvgDoc
         txt : compose[]
         undo.push[ SvgUndo [ shape: -1, text: txt ] ]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
 
@@ -954,6 +1545,42 @@ class SvgDoc
         if [ made ] chosen = shape_index_at[ made.at ]
         return true
 
+    # a new <text> at page point x, y, its letters size page
+    # units tall; it goes where a new path would, and is chosen
+    func add_text [ x: f32, y: f32, size: f32 ] -> bool
+        if [ !root ] return false
+        into : chosen_group[]
+        fresh_text[]
+        space : (into) ? group_space[ into ] : model.root_space
+        back : affine_inverse[ space ]
+        unit : f32 [ sqrt[ abs[ space.ma * space.md
+                                - space.mb * space.mc ] ] ]
+        tx : num_text[ back.apply_x[ x, y ], false ]
+        ty : num_text[ back.apply_y[ x, y ], false ]
+        fs : num_text[ size / maxf[ unit, 1e-9 ], false ]
+        tid : free_element_id[ 'text' ]
+        out : '<text id="{tid}" x="{tx}" y="{ty}"'
+        out = '{out} font-family="sans-serif" font-size="{fs}"'
+        out = '{out} fill="#ffffff">Text</text>'
+        src : model.source
+        at : i64 [ (into) ? into.tail_at : root.tail_at ]
+        pad : ''
+        k : i64 [ at - 1 ]
+        while [ k >= 0 ]
+            ch : src.mid[ k, 1 ]
+            if [ ch != ' ' && ch != '\t' ] break
+            pad = '{ch}{pad}'
+            k -= 1
+        line_text : '  {out}\n{pad}'
+        model.load[ with_spans[ src, vec i64 [] [ at ],
+            vec i64 [] [ at ], vec string [] [ line_text ] ] ]
+        root = root_of[]
+        changed = true
+        choose_one[ -1 ]
+        made : find_id[ root, tid ]
+        if [ made ] chosen = shape_index_at[ made.at ]
+        return true
+
     # what finds shape i again after the text is read anew: its
     # id, else its element's text
     func shape_key [ i: i32 ] -> string
@@ -988,7 +1615,7 @@ class SvgDoc
             more_at.push[ i ]
         also.clear[]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         changed = true
@@ -1669,7 +2296,14 @@ class SvgDoc
         return (wx * dx + wy * dy) / a
 
     # every point a shape has: anchors, then a curve's handles
+    # the points a press or a box can take: a text's are its
+    # glyphs', edited as words, so none
     func points_of [ i: i32 ] -> vec SvgPoint
+        if [ is_text[ i ] ] return vec SvgPoint []
+        return all_points[ i ]
+
+    # every point, a text's glyphs' too (a whole move's box)
+    func all_points [ i: i32 ] -> vec SvgPoint
         out : vec SvgPoint []
         if [ i < 0 || i >= count[] ] return out
         sh : model.shapes[ i ]
@@ -1761,6 +2395,11 @@ class SvgDoc
     # a point is on the shape: inside its fill (even-odd), or
     # within reach of its outline
     func hits [ i: i32, x: f32, y: f32, reach: f32 ] -> bool
+        # a text: anywhere in its letters' box, gaps too
+        if [ is_text[ i ] ]
+            bx : text_box[ i ]
+            return x >= bx[ 0 ] - reach && x <= bx[ 2 ] + reach
+                && y >= bx[ 1 ] - reach && y <= bx[ 3 ] + reach
         line : outline[ i ]
         sh : model.shapes[ i ]
         inside : bool [ false ]
@@ -1796,6 +2435,18 @@ class SvgDoc
         return inside && !sh.fill_none
 
     # the topmost shape under a point (-1 none)
+    # a text's box on the page: x0 y0 x1 y1 of its glyphs'
+    # points (a curve's handles stay inside a glyph's box)
+    func text_box [ i: i32 ] -> vec f32
+        out : vec f32 [] [ 1e30, 1e30, -1e30, -1e30 ]
+        for [ c: SVGCmd ] in model.shapes[ i ].cmds
+            if [ c.op == SVGOp.close ] continue
+            out[ 0 ] = min[ out[ 0 ], c.x ]
+            out[ 1 ] = min[ out[ 1 ], c.y ]
+            out[ 2 ] = max[ out[ 2 ], c.x ]
+            out[ 3 ] = max[ out[ 3 ], c.y ]
+        return out
+
     func shape_at [ x: f32, y: f32, reach: f32 ] -> i32
         for [ i: i32 count[] - 1, i >= 0, i -= 1 ]
             if [ hits[ i, x, y, reach ] ] return i
@@ -1841,6 +2492,7 @@ class SvgDoc
     func element_text [ i: i32 ] -> string
         sh : model.shapes[ i ]
         nd : sh.node
+        if [ is_text[ i ] ] return text_element[ i ]
         geometry : vec string [] [ 'd', 'x', 'y', 'width', 'height',
             'rx', 'ry', 'cx', 'cy', 'r', 'x1', 'y1', 'x2', 'y2',
             'points' ]
@@ -1848,6 +2500,7 @@ class SvgDoc
         if [ nd.attrs ]
             for [ v: string, k: string ] in nd.attrs
                 if [ geometry.index_of[ k ] >= 0 ] continue
+                if [ !v || v.count == 0 ] continue
                 out = '{out} {k}="{v}"'
         d : path_data[ i ]
         out = '{out} d="{d}"'
@@ -1856,6 +2509,22 @@ class SvgDoc
         inner : src.mid[ nd.head_end, nd.tail_at - nd.head_end ]
         return '{out}>{inner}</path>'
 
+    # a <text> written as text: its attributes, then its words
+    # (its tspans as they were, unless the words were set)
+    func text_element [ i: i32 ] -> string
+        nd : model.shapes[ i ].node
+        out : '<text'
+        if [ nd.attrs ]
+            for [ v: string, k: string ] in nd.attrs
+                if [ !v || v.count == 0 ] continue
+                out = '{out} {k}="{v}"'
+        src : model.source
+        if [ nd.children.count > 0 && nd.tail_at > nd.head_end ]
+            inner : src.mid[ nd.head_end, nd.tail_at - nd.head_end ]
+            return '{out}>{inner}</text>'
+        words : string (nd.text) ? svg_escape[ nd.text ] : ''
+        return '{out}>{words}</text>'
+
     # changes not yet written to the file
     func unsaved [] -> bool
         return dirty.count > 0 || changed || root_dirty
@@ -1863,7 +2532,7 @@ class SvgDoc
     # text kept from before a quit, unsaved, in place of the file's
     func take_text [ txt: string ]
         model.load[ txt ]
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         changed = true
@@ -1881,7 +2550,7 @@ class SvgDoc
         keep_chosen : i32 [ chosen ]
         model = SVGModel [ file ]
         chosen = keep_chosen
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         root_dirty = false
         changed = false
@@ -1899,7 +2568,7 @@ class SvgDoc
         keep_chosen : i32 [ chosen ]
         model = SVGModel [ file ]
         chosen = keep_chosen
-        dirty.clear[]
+        clear_held[]
         root = root_of[]
         changed = false
         return true
@@ -1920,6 +2589,7 @@ class SvgDoc
             starts.push[ root.at ]
             stops.push[ root.head_end ]
             texts.push[ root_text[] ]
+        fx_spans[ starts, stops, texts ]
         if [ insert_at ]
             for [ k: i32 0, k < insert_at.count, k += 1 ]
                 starts.push[ insert_at[ k ] ]
@@ -1962,8 +2632,8 @@ element SvgView
     mutable ox_goal   : f32
     mutable oy_goal   : f32
     mutable zoom_goal : f32
-    public ease       : f32 [ 0.35 ]
-    # pan and zoom settle 1.5 times as slowly as edits
+    public ease       : f32 [ 0.2 ]
+    # pan and zoom (edits are heavier still: ease 0.2)
     public view_ease  : f32 [ 0.25 ]
     # g / s, o and a handle drag: the value shown, eased to its goal
     mutable shown_g   : vec2f
@@ -1989,6 +2659,13 @@ element SvgView
     mutable h_at    : vec2f
     mutable press_x : f32
     mutable press_y : f32
+    # a plain press on a point or inside a shape: past 4 px the
+    # picked points (or the chosen shapes) follow, as g, until
+    # the release; a click alone picks that one (d_point, d_hit)
+    mutable d_wait   : bool
+    mutable d_moving : bool
+    mutable d_point  : SvgPoint
+    mutable d_hit    : i32 [ -1 ]
     # b or c: a box (1) or circle (2) select; 0 none
     mutable region   : i32
     mutable region_x : f32
@@ -1998,6 +2675,11 @@ element SvgView
     # p: a new path drawn; a node is an anchor and its two
     # handles (x y, in x y, out x y), a drag drawing its handles
     mutable pen      : bool
+    # t: a click places a text, then typing goes into it (its
+    # 'Text' replaced by the first letter) until enter or escape
+    mutable texting  : bool
+    mutable typing   : i32 [ -1 ]
+    mutable placeholder : bool
     mutable pen_nodes : vec f32
     mutable pen_drag : bool
     mutable pen_at   : vec2f
@@ -2011,6 +2693,13 @@ element SvgView
     # a linked offset's one knob: dragged, it sets the distance;
     # it sits by the source's point knob_q (of shape knob_of)
     mutable knob_drag  : bool
+    # a gradient's handle dragged: 1 its start (a radial's
+    # centre), 2 its end (a radial's radius); the paint it is
+    mutable g_drag     : i32
+    mutable g_key      : string
+    # the handle picked last (1 start, 2 end) and its shape
+    mutable g_pick     : i32
+    mutable g_shape    : i32
     mutable knob_of    : i32 [ -1 ]
     mutable knob_q     : vec2f
     # the way from knob_q to the knob, as last dragged
@@ -2023,6 +2712,28 @@ element SvgView
     # s: sized about the points' middle; grow 0 is as was
     mutable sizing  : bool
     mutable grow    : f32
+    # r: turned about the pivot; the pointer's angle at the start
+    mutable turning : bool
+    mutable turn_at : f32
+    # the start's angle is taken once the pointer is clear of the
+    # pivot (shift + r starts on it)
+    mutable turn_ref : bool
+    # shift + g: moved only along the way the pointer first
+    # goes (taken once it is 8 px from where it started)
+    mutable along     : bool
+    mutable along_px  : f32
+    mutable along_py  : f32
+    mutable along_ref : bool
+    mutable along_x   : f32
+    mutable along_y   : f32
+    # the edit lines, drawn solid here, then put down once at
+    # line_alpha (crossings do not double)
+    mutable line_layer : Canvas
+    public  line_alpha : f32 [ 0.3 ]
+    # the pointer's light: the layer again through a soft circle
+    mutable near_mask  : Canvas
+    # the picked points' pass (solid, over the layer)
+    mutable solid      : bool
     mutable pivot_x : f32
     mutable pivot_y : f32
     mutable before : vec SVGCmd
@@ -2030,6 +2741,12 @@ element SvgView
     # and the text before such a move (its undo)
     mutable moved_of : vec i32
     mutable multi_text : string
+    # whole shapes moved by their transform: each one's number,
+    # its transform at the start and its parent's space (six
+    # numbers each: ma mb mc md tx ty)
+    mutable whole_ids  : vec i32
+    mutable whole_t0   : vec f32
+    mutable whole_par  : vec f32
 
     func fit []
         w : f32 [ doc.model.w ]
@@ -2073,6 +2790,229 @@ element SvgView
                 doc.set_point[ doc.chosen, h_drag, hn.x, hn.y ]
                 doc.hold_node[ doc.chosen, h_drag ]
                 doc.follow[ doc.chosen, 0 ]
+
+    # the chosen shape's fill or stroke gradient (null none)
+    func paint_of [ key: string ] -> SVGPaint
+        if [ !doc || doc.chosen < 0 || doc.chosen >= doc.count[] ]
+            return null
+        sh : doc.model.shapes[ doc.chosen ]
+        if [ key.compare[ 'fill' ] == 0 ] return sh.fill_paint
+        return sh.stroke_paint
+
+    # the gradient whose handle is held (g_key names it)
+    func grad_paint [] -> SVGPaint
+        if [ !g_key ] return null
+        return paint_of[ g_key ]
+
+    # a paint's handles on the page: start (centre) then end (a
+    # radial's radius point, out along x by the radius as drawn:
+    # its units' mean scale)
+    func grad_ends [ pt: SVGPaint ] -> vec f32
+        m : pt.to_page
+        cx : f32 [ m.apply_x[ pt.ax, pt.ay ] ]
+        cy : f32 [ m.apply_y[ pt.ax, pt.ay ] ]
+        if [ pt.kind == 2 ]
+            k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
+            return vec f32 [] [ cx, cy, cx + pt.r * k, cy ]
+        return vec f32 [] [ cx, cy, m.apply_x[ pt.bx, pt.by ],
+                            m.apply_y[ pt.bx, pt.by ] ]
+
+    # the handle under the pointer (10 px), the fill's or the
+    # stroke's, nearest (g_key set to it): 1 start, 2 end, 0 none.
+    # On one spot the one not held last wins: a press again
+    # takes the other
+    func grad_hit [ px: f32, py: f32 ] -> i32
+        best : f32 [ 100.0 ]
+        out : i32 [ 0 ]
+        which : string [ '' ]
+        held : string [ (g_key) ? g_key : 'stroke' ]
+        for [ key: string ] in vec string [] [ 'fill', 'stroke' ]
+            pt : paint_of[ key ]
+            if [ !pt ] continue
+            e : grad_ends[ pt ]
+            for [ k: i32 0, k < 2, k += 1 ]
+                dx : f32 [ sx[ e[ k * 2 ] ] - px ]
+                dy : f32 [ sy[ e[ k * 2 + 1 ] ] - py ]
+                d : f32 [ dx * dx + dy * dy ]
+                tie : bool [ abs[ d - best ] < 1.0
+                             && key.compare[ held ] != 0 ]
+                if [ d < best - 1.0 || (out > 0 && tie) ]
+                    best = d
+                    out = k + 1
+                    which = key
+        if [ out > 0 ] g_key = which
+        return out
+
+    # the dragged handle to the pointer, in the gradient's units
+    func grad_to [ px: f32, py: f32 ]
+        pt : grad_paint[]
+        if [ !pt ] return
+        inv : affine_inverse[ pt.to_page ]
+        qx : f32 [ (px - ox) / zoom ]
+        qy : f32 [ (py - oy) / zoom ]
+        gx : f32 [ inv.apply_x[ qx, qy ] ]
+        gy : f32 [ inv.apply_y[ qx, qy ] ]
+        if [ g_drag == 1 ]
+            pt.ax = gx
+            pt.ay = gy
+        el [ pt.kind == 2 ]
+            # the radius on the page, back by the mean scale
+            m : pt.to_page
+            k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
+            cx : f32 [ m.apply_x[ pt.ax, pt.ay ] ]
+            cy : f32 [ m.apply_y[ pt.ax, pt.ay ] ]
+            pt.r = sqrt[ (qx - cx) * (qx - cx) + (qy - cy) * (qy - cy) ]
+                   / max[ k, 1e-6 ]
+        el
+            pt.bx = gx
+            pt.by = gy
+        doc.changed = true
+
+    # while s or r runs, its pivot: a clear circle, a 1 px grey
+    # outline on half pixels
+    func draw_pivot [ cv: Canvas ]
+        if [ !moving ] return
+        # shift + g: its line, faint, through the start's middle
+        if [ along && along_ref ]
+            cx : f32 [ sx[ pivot_x ] ]
+            cy : f32 [ sy[ pivot_y ] ]
+            far : f32 [ 4000.0 ]
+            cv.save[]
+            cv.fill_color[ '#0000' ]
+            cv.stroke_color[ '#9a9aa680' ]
+            cv.stroke_width[ 1.0 ]
+            cv.move_to[ cx - along_x * far, cy - along_y * far ]
+            cv.line_to[ cx + along_x * far, cy + along_y * far ]
+            cv.paint[]
+            cv.restore[]
+        if [ !(sizing || turning) ] return
+        px : f32 [ floor[ sx[ pivot_x ] ] + 0.5 ]
+        py : f32 [ floor[ sy[ pivot_y ] ] + 0.5 ]
+        cv.save[]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#9a9aa6' ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ px - 3.0, py - 3.0, 6.0, 6.0, 3.0, 3.0, 3.0,
+                         3.0 ]
+        cv.paint[]
+        cv.restore[]
+
+    # the fill's handles yellow, the stroke's pink
+    # the edit lines' layer, cleared, the view's size
+    func lines_begin [ cv: Canvas ] -> Canvas
+        lw : i32 [ max[ 1, i32[ ceil[ bounds.w ] ] ] ]
+        lh : i32 [ max[ 1, i32[ ceil[ bounds.h ] ] ] ]
+        if [ !line_layer ]
+            line_layer = Canvas [ vk: cv.vk, w: cv.w, width: lw,
+                                  height: lh, load_existing: true,
+                                  quantize: true ]
+            line_layer.update[]
+        ln : line_layer
+        ln.resize[ lw, lh ]
+        ln.fresh_state[]
+        ln.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        return ln
+
+    # the layer put down once at line_alpha, then again through
+    # a circle round the pointer (trinity's near light, (1 - d /
+    # 160)^2) so near it all reaches full
+    func lines_end [ cv: Canvas ]
+        ln : line_layer
+        fw : f32 [ f32[ ln.content_w ] ]
+        fh : f32 [ f32[ ln.content_h ] ]
+        if [ !near_mask ]
+            near_mask = Canvas [ vk: cv.vk, w: cv.w,
+                                 width: ln.content_w,
+                                 height: ln.content_h,
+                                 load_existing: true, quantize: true ]
+            near_mask.update[]
+        nm : near_mask
+        nm.resize[ ln.content_w, ln.content_h ]
+        nm.fresh_state[]
+        nm.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        rg : radial_gradient[ pointer_x, pointer_y, 0.0, 160.0 ]
+        for [ k: i32 0, k <= 8, k += 1 ]
+            t : f32 [ k / 8.0 ]
+            w : f32 [ (1.0 - t) * (1.0 - t) ]
+            av : u32 [ u32[ w * 255.0 ] ]
+            rg.add_stop[ t, (av << 24) | 0xffffff ]
+        nm.stroke_width[ 0.0 ]
+        nm.set_fill_gradient[ rg ]
+        nm.rect_to[ 0.0, 0.0, fw, fh ]
+        nm.paint[]
+        nm.clear_fill_gradient[]
+        ln.seal[]
+        cv.save[]
+        cv.set_opacity[ line_alpha ]
+        cv.draw_canvas[ ln, 0.0, 0.0, fw, fh ]
+        cv.set_opacity[ 1.0 - line_alpha ]
+        cv.draw_canvas_through[ ln, nm, false, 0.0, 0.0, fw, fh ]
+        cv.restore[]
+        # the layers are cleared next frame: their reads done
+        cv.sync_fence[]
+
+    # the gradients' lines (into ln) or their circles (on cv)
+    func draw_grad [ cv: Canvas, ln: Canvas, dots: bool ]
+        draw_grad_of[ cv, ln, dots, paint_of[ 'stroke' ], '#ff6fd0',
+                      'stroke' ]
+        draw_grad_of[ cv, ln, dots, paint_of[ 'fill' ], '#ffcf4a',
+                      'fill' ]
+
+    # the handles drawn: a line start to end, a circle at each,
+    # a white one inside the picked; a radial's circle through
+    # its end
+    func draw_grad_of [ cv: Canvas, ln: Canvas, dots: bool,
+                        pt: SVGPaint, col: string, key: string ]
+        if [ !pt ] return
+        e : grad_ends[ pt ]
+        ax : f32 [ sx[ e[ 0 ] ] ]
+        ay : f32 [ sy[ e[ 1 ] ] ]
+        bx : f32 [ sx[ e[ 2 ] ] ]
+        by : f32 [ sy[ e[ 3 ] ] ]
+        if [ !dots ]
+            ln.fill_color[ '#0000' ]
+            ln.stroke_color[ rgba [ col ] ]
+            ln.stroke_width[ 1.5 ]
+            if [ pt.kind == 2 ]
+                rad : f32 [ sqrt[ (bx - ax) * (bx - ax)
+                                  + (by - ay) * (by - ay) ] ]
+                ln.rounded_rect[ ax - rad, ay - rad, rad * 2.0,
+                                 rad * 2.0, rad, rad, rad, rad ]
+                ln.paint[]
+            ln.move_to[ ax, ay ]
+            ln.line_to[ bx, by ]
+            ln.paint[]
+            ln.stroke_width[ 0.0 ]
+            return
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        mine : bool [ g_shape == doc.chosen && g_key
+                      && g_key.compare[ key ] == 0 ]
+        ends : vec f32 [] [ ax, ay, bx, by ]
+        for [ k: i32 0, k < 2, k += 1 ]
+            hx : f32 [ ends[ k * 2 ] ]
+            hy : f32 [ ends[ k * 2 + 1 ] ]
+            # the picked one solid over the layer, the rest in it
+            if [ (mine && g_pick == k + 1) != solid ] continue
+            # larger near the pointer; under it (10 px) brighter
+            r : f32 [ (solid) ? 5.0
+                      : 5.0 * (0.5 + 0.5 * near_w[ hx, hy ]) ]
+            dx : f32 [ pointer_x - hx ]
+            dy : f32 [ pointer_y - hy ]
+            if [ dx * dx + dy * dy < 100.0 ]
+                cv.fill_color[ brighter[ col ] ]
+            el
+                cv.fill_color[ rgba [ col ] ]
+            cv.rounded_rect[ hx - r, hy - r, r * 2.0, r * 2.0, r, r,
+                             r, r ]
+            cv.paint[]
+            if [ mine && g_pick == k + 1 ]
+                ri : f32 [ r * 0.5 ]
+                cv.fill_color[ '#ffffff' ]
+                cv.rounded_rect[ hx - ri, hy - ri, ri * 2.0, ri * 2.0,
+                                 ri, ri, ri, ri ]
+                cv.paint[]
+        cv.restore[]
 
     func sx [ x: f32 ] -> f32
         return ox + x * zoom
@@ -2121,6 +3061,34 @@ element SvgView
         if [ pen ]
             pen_press[ ev ]
             return
+        if [ typing >= 0 ] typing = -1
+        if [ texting ]
+            texting = false
+            if [ ev.mouse.button != 0 ] return
+            # 24 screen pixels tall at this zoom
+            x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
+            y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
+            if [ doc.add_text[ x, y, 24.0 / zoom ] ]
+                typing = doc.chosen
+                placeholder = true
+                picked = vec SvgPoint []
+            return
+        # a gradient's handle: a drag moves it (one undo; a shared
+        # gradient first copied for this shape alone)
+        if [ !offsetting && !moving && ev.mouse.button == 0 ]
+            hit : i32 [ grad_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+            if [ hit > 0 ]
+                at : i32 [ doc.chosen ]
+                was : doc.compose[]
+                if [ !doc.grad_own[ at, g_key ] ]
+                    pt : grad_paint[]
+                    doc.set_gradient[ at, g_key, svg_paint_text[ pt ] ]
+                doc.undo.push[ SvgUndo [ shape: -1, text: was ] ]
+                g_drag = hit
+                g_pick = hit
+                g_shape = at
+                ux.set_capture[ a ]
+                return
         # an offset's knob: a drag sets its distance
         if [ !offsetting && !moving && ev.mouse.button == 0
              && doc.chosen >= 0 && doc.offset_src[ doc.chosen ] >= 0 ]
@@ -2183,10 +3151,17 @@ element SvgView
             h_drag = null
             press_x = ev.mouse.pos.x
             press_y = ev.mouse.pos.y
+        d_point = null
+        d_hit = -1
         if [ p ]
-            if [ !adding ] picked.clear[]
-            for [ q: SvgPoint ] in doc.same_spot[ doc.chosen, p ]
-                doc.add_point[ picked, q ]
+            # a picked point keeps the others for the drag
+            if [ adding || !is_picked[ p ] ]
+                if [ !adding ] picked.clear[]
+                for [ q: SvgPoint ] in doc.same_spot[ doc.chosen, p ]
+                    doc.add_point[ picked, q ]
+            el
+                d_point = p
+            if [ !adding ] drag_wait[ ev ]
             return
         x : f32 [ (ev.mouse.pos.x - ox) / zoom ]
         y : f32 [ (ev.mouse.pos.y - oy) / zoom ]
@@ -2194,14 +3169,40 @@ element SvgView
         # shift: the shape in or out of the choice
         if [ adding ]
             doc.toggle[ hit ]
+        el [ hit >= 0 && doc.is_chosen[ hit ] ]
+            d_hit = hit
         el
             doc.choose_one[ hit ]
         picked.clear[]
+        if [ !adding && hit >= 0 ] drag_wait[ ev ]
+
+    func drag_wait [ ev: Event ]
+        d_wait = true
+        press_x = ev.mouse.pos.x
+        press_y = ev.mouse.pos.y
 
     public func on_release [ ev: Event ]
         mode = 0
         pen_drag = false
         h_wait = false
+        if [ d_moving ]
+            d_moving = false
+            ux.release_capture[ a ]
+            if [ moving ] end_move[]
+            return
+        if [ d_wait ]
+            d_wait = false
+            if [ d_point ]
+                picked.clear[]
+                for [ q: SvgPoint ] in doc.same_spot[ doc.chosen,
+                                                      d_point ]
+                    doc.add_point[ picked, q ]
+            if [ d_hit >= 0 ] doc.choose_one[ d_hit ]
+        if [ g_drag > 0 ]
+            g_drag = 0
+            ux.release_capture[ a ]
+            doc.set_grad_geometry[ doc.chosen, g_key ]
+            return
         if [ knob_drag ]
             knob_drag = false
             end_offset[]
@@ -2217,6 +3218,9 @@ element SvgView
     public func on_move [ ev: Event ]
         pointer_x = ev.mouse.pos.x
         pointer_y = ev.mouse.pos.y
+        if [ g_drag > 0 ]
+            grad_to[ ev.mouse.pos.x, ev.mouse.pos.y ]
+            return
         if [ mode == 1 ]
             ox_goal += ev.mouse.delta.x
             oy_goal += ev.mouse.delta.y
@@ -2259,7 +3263,20 @@ element SvgView
         if [ h_wait ]
             drag_handle[ ev.mouse.pos.x, ev.mouse.pos.y ]
             return
+        if [ d_wait ]
+            mx : f32 [ ev.mouse.pos.x - press_x ]
+            my : f32 [ ev.mouse.pos.y - press_y ]
+            if [ mx * mx + my * my < 16.0 ] return
+            d_wait = false
+            start_move[ false ]
+            if [ !moving ] return
+            d_moving = true
+            shift_x = mx / zoom
+            shift_y = my / zoom
+            ux.set_capture[ a ]
+            return
         if [ !moving ] return
+        if [ turning ] return
         if [ sizing ]
             grow = grow + ev.mouse.delta.x * 0.004 * fine
             return
@@ -2278,6 +3295,11 @@ element SvgView
     # g: the picked points, or the whole chosen shape, follow
     # the pointer
     func start_move [ size: bool ]
+        start_op[ size, false ]
+
+    # g, s or r (turn) started; with shift held, s and r work
+    # about the point under the pointer, else the box's middle
+    func start_op [ size: bool, turn: bool ]
         if [ doc.chosen < 0 ] return
         sh : doc.model.shapes[ doc.chosen ]
         list : vec SvgPoint []
@@ -2288,11 +3310,23 @@ element SvgView
             for [ p: SvgPoint ] in list
                 moved_of.push[ doc.chosen ]
         el
-            # every chosen shape's points, together
+            # whole shapes: their transforms are set, their points
+            # stay (the points give the box and its middle)
             ids : doc.selected[]
-            if [ ids.count > 1 ] multi_text = doc.compose[]
+            multi_text = doc.compose[]
+            whole_ids = vec i32 []
+            whole_t0  = vec f32 []
+            whole_par = vec f32 []
             for [ i: i32 ] in ids
-                for [ p: SvgPoint ] in doc.points_of[ i ]
+                whole_ids.push[ i ]
+                ws : doc.model.shapes[ i ]
+                tt : svg_value[ ws.node, 'transform' ]
+                t0 : affine.identity[]
+                if [ tt.count > 0 ] t0 = svg_parse_transform[ tt ]
+                par : ws.space.multiply[ affine_inverse[ t0 ] ]
+                push_six[ whole_t0, t0 ]
+                push_six[ whole_par, par ]
+                for [ p: SvgPoint ] in doc.all_points[ i ]
                     list.push[ p ]
                     moved_of.push[ i ]
         if [ list.count == 0 ] return
@@ -2311,7 +3345,8 @@ element SvgView
         typed_v  = vec f32 [ 2 ]
         typed_on = vec i32 [ 2 ]
         moving = true
-        sizing = size
+        sizing = size && !turn
+        turning = turn
         grow = 0.0
         # the middle of the points' box
         lo_x : f32 [ from[ 0 ] ]
@@ -2325,7 +3360,39 @@ element SvgView
             hi_y = max[ hi_y, from[ k * 2 + 1 ] ]
         pivot_x = (lo_x + hi_x) * 0.5
         pivot_y = (lo_y + hi_y) * 0.5
+        if [ (sizing || turning) && ux && ux.shift ]
+            pivot_x = (pointer_x - ox) / zoom
+            pivot_y = (pointer_y - oy) / zoom
+        turn_ref = false
+        along = !sizing && !turning && ux && ux.shift
+        along_ref = false
+        along_px = pointer_x
+        along_py = pointer_y
         shown_g = goal[]
+
+    # shift + g's way: the pointer's first 8 px (false until)
+    func along_way [] -> bool
+        if [ along_ref ] return true
+        dx : f32 [ pointer_x - along_px ]
+        dy : f32 [ pointer_y - along_py ]
+        dl : f32 [ sqrt[ dx * dx + dy * dy ] ]
+        if [ dl < 8.0 ] return false
+        along_x = dx / dl
+        along_y = dy / dl
+        along_ref = true
+        return true
+
+    # the pointer's distance from the pivot, in screen pixels
+    func pointer_off [] -> f32
+        dx : f32 [ pointer_x - sx[ pivot_x ] ]
+        dy : f32 [ pointer_y - sy[ pivot_y ] ]
+        return sqrt[ dx * dx + dy * dy ]
+
+    # the pointer's angle about the pivot, in degrees
+    func pointer_angle [] -> f32
+        dx : f32 [ (pointer_x - ox) / zoom - pivot_x ]
+        dy : f32 [ (pointer_y - oy) / zoom - pivot_y ]
+        return atan2[ dy, dx ] * 180.0 / 3.14159265
 
     # x and y: typed values win, else the pointer's
     func goal [] -> vec2f
@@ -2341,7 +3408,26 @@ element SvgView
                           : default_mask[] ]
                 for [ a: i32 0, a < 2, a += 1 ]
                     if [ (m & (1 << a)) != 0 ] g[ a ] = typing_number[]
+            # along a line: the number is the distance on it
+            if [ along ]
+                if [ !along_way[] ] return vec2f [ 0.0, 0.0 ]
+                return vec2f [ along_x * g[ 0 ], along_y * g[ 0 ] ]
             return vec2f [ g[ 0 ], g[ 1 ] ]
+        if [ along ]
+            if [ !along_way[] ] return vec2f [ 0.0, 0.0 ]
+            d : f32 [ shift_x * along_x + shift_y * along_y ]
+            return vec2f [ along_x * d, along_y * d ]
+        # a turn: the pointer's angle since the start, the short
+        # way round
+        if [ turning ]
+            if [ !turn_ref ]
+                if [ pointer_off[] < 8.0 ] return vec2f [ 0.0, 0.0 ]
+                turn_at = pointer_angle[]
+                turn_ref = true
+            d : f32 [ pointer_angle[] - turn_at ]
+            while [ d > 180.0 ] d -= 360.0
+            while [ d < -180.0 ] d += 360.0
+            return vec2f [ d, 0.0 ]
         f : f32 [ max[ 1.0 + grow, 0.01 ] ]
         px : f32 [ (sizing) ? f : shift_x ]
         py : f32 [ (sizing) ? f : shift_y ]
@@ -2358,6 +3444,7 @@ element SvgView
     # a number with no axis: x for g, both for s
     func default_mask [] -> i32
         if [ lock != 0 ] return lock
+        if [ turning ] return 1
         return (sizing) ? 3 : 1
 
     # the typed number given to every axis of its group
@@ -2546,15 +3633,6 @@ element SvgView
                     sy[ pen_nodes[ l + 5 ] ], sx[ pen_at.x ],
                     sy[ pen_at.y ], sx[ pen_at.x ], sy[ pen_at.y ] ]
             cv.paint[]
-        cv.stroke_width[ 1.0 ]
-        cv.stroke_color[ '#ffcf4a99' ]
-        for [ i: i32 0, i < n, i += 1 ]
-            o : i32 [ i * 6 ]
-            cv.move_to[ sx[ pen_nodes[ o + 2 ] ],
-                        sy[ pen_nodes[ o + 3 ] ] ]
-            cv.line_to[ sx[ pen_nodes[ o + 4 ] ],
-                        sy[ pen_nodes[ o + 5 ] ] ]
-            cv.paint[]
         cv.stroke_width[ 0.0 ]
         cv.fill_color[ '#ffcf4a' ]
         for [ i: i32 0, i < n, i += 1 ]
@@ -2562,6 +3640,19 @@ element SvgView
             cv.rect_to[ sx[ pen_nodes[ o ] ] - 3.5,
                         sy[ pen_nodes[ o + 1 ] ] - 3.5, 7.0, 7.0 ]
             cv.paint[]
+
+    # the pen's handle lines, into the edit lines' layer
+    func pen_handles [ ln: Canvas ]
+        ln.fill_color[ '#0000' ]
+        ln.stroke_color[ '#ffcf4a' ]
+        ln.stroke_width[ 1.0 ]
+        for [ i: i32 0, i < pen_nodes.count / 6, i += 1 ]
+            o : i32 [ i * 6 ]
+            ln.move_to[ sx[ pen_nodes[ o + 2 ] ],
+                        sy[ pen_nodes[ o + 3 ] ] ]
+            ln.line_to[ sx[ pen_nodes[ o + 4 ] ],
+                        sy[ pen_nodes[ o + 5 ] ] ]
+            ln.paint[]
 
     # o pressed: an offset of the chosen shape, or the chosen
     # offset's distance
@@ -2612,7 +3703,136 @@ element SvgView
             doc.undo.pop[]
 
     # what is typed, shown at the view's foot
+    # a chosen text's box: a rounded rect set out from its
+    # letters, in its own space (it turns with it), dark grey
+    # with light grey dashes running round it
+    func draw_text_box [ cv: Canvas ]
+        sh : doc.model.shapes[ doc.chosen ]
+        back : affine_inverse[ sh.space ]
+        x0 : f32 [ 1e30 ]
+        y0 : f32 [ 1e30 ]
+        x1 : f32 [ -1e30 ]
+        y1 : f32 [ -1e30 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.close ] continue
+            lx : f32 [ back.apply_x[ c.x, c.y ] ]
+            ly : f32 [ back.apply_y[ c.x, c.y ] ]
+            x0 = min[ x0, lx ]
+            y0 = min[ y0, ly ]
+            x1 = max[ x1, lx ]
+            y1 = max[ y1, ly ]
+        if [ x0 > x1 ] return
+        # screen pixels a unit of the text's own space
+        k : f32 [ zoom * sqrt[ abs[ sh.space.ma * sh.space.md
+                                    - sh.space.mb * sh.space.mc ] ] ]
+        if [ k <= 0.0 ] return
+        pad : f32 [ 6.0 / k ]
+        rad : f32 [ 5.0 / k ]
+        x0 -= pad
+        y0 -= pad
+        x1 += pad
+        y1 += pad
+        span_w : f32 [ x1 - x0 - 2.0 * rad ]
+        span_h : f32 [ y1 - y0 - 2.0 * rad ]
+        arc : f32 [ 1.5707963 * rad ]
+        total : f32 [ 2.0 * (span_w + span_h) + 4.0 * arc ]
+        # 5 px of each colour, running 20 px a second
+        step : f32 [ 1.5 / k ]
+        dash : f32 [ 5.0 / k ]
+        ms : i64 [ Au.epoch_millis[] % 100000 ]
+        shift : f32 [ f32[ ms ] * 0.02 / k ]
+        cv.save[]
+        cv.fill_color[ '#0000' ]
+        cv.stroke_width[ 1.0 ]
+        for [ pass: i32 0, pass < 2, pass += 1 ]
+            cv.stroke_color[ (pass == 0) ? '#3a3a3a' : '#c8c8c8' ]
+            d : f32 [ 0.0 ]
+            if [ pass == 1 ]
+                d = shift - f32[ i64[ shift / (2.0 * dash) ] ]
+                    * 2.0 * dash - 2.0 * dash
+            while [ d < total ]
+                a : f32 [ max[ d, 0.0 ] ]
+                b : f32 [ (pass == 0) ? total : min[ d + dash,
+                                                      total ] ]
+                if [ b > a ]
+                    from_at : vec2f rr_at[ a, x0, y0, span_w,
+                                           span_h, rad ]
+                    cv.move_to[ ox + sh.space.apply_x[ from_at.x,
+                        from_at.y ] * zoom, oy + sh.space.apply_y[
+                        from_at.x, from_at.y ] * zoom ]
+                    t : f32 [ a + step ]
+                    while [ t < b + step ]
+                        q : vec2f rr_at[ min[ t, b ], x0, y0, span_w,
+                                         span_h, rad ]
+                        cv.line_to[ ox + sh.space.apply_x[ q.x, q.y ]
+                            * zoom, oy + sh.space.apply_y[ q.x, q.y ]
+                            * zoom ]
+                        t += step
+                    cv.paint[]
+                d += (pass == 0) ? total : 2.0 * dash
+        cv.restore[]
+
+    # the point at length s round a rounded rect (top left corner
+    # x0, y0; straight spans w, h; corner radius r), clockwise
+    # from the top edge's start
+    func rr_at [ s: f32, x0: f32, y0: f32, w: f32, h: f32,
+                 r: f32 ] -> vec2f
+        arc : f32 [ 1.5707963 * r ]
+        left : f32 [ s ]
+        # the four sides, each a straight span then its corner
+        spans : vec f32 [] [ w, h, w, h ]
+        for [ side: i32 0, side < 4, side += 1 ]
+            run : f32 [ spans[ side ] ]
+            if [ left <= run ]
+                if [ side == 0 ] return vec2f [ x0 + r + left, y0 ]
+                if [ side == 1 ]
+                    return vec2f [ x0 + 2.0 * r + w, y0 + r + left ]
+                if [ side == 2 ]
+                    return vec2f [ x0 + r + w - left, y0 + 2.0 * r + h ]
+                return vec2f [ x0, y0 + r + h - left ]
+            left -= run
+            if [ left <= arc || side == 3 ]
+                ang : f32 [ (f32[ side ] - 1.0) * 1.5707963
+                            + min[ left, arc ] / maxf[ r, 1e-9 ] ]
+                cxs : vec f32 [] [ x0 + r + w, x0 + r + w, x0 + r,
+                                   x0 + r ]
+                cys : vec f32 [] [ y0 + r, y0 + r + h, y0 + r + h,
+                                   y0 + r ]
+                return vec2f [ cxs[ side ] + r * cos[ ang ],
+                               cys[ side ] + r * sin[ ang ] ]
+            left -= arc
+        return vec2f [ x0 + r, y0 ]
+
+    # typed letters go into the text being typed
+    public func char_event [ ev: Event ]
+        if [ !doc || typing < 0 || typing >= doc.count[] ] return
+        if [ !ev.key.text || ev.key.text.count == 0 ] return
+        nd : doc.model.shapes[ typing ].node
+        was : string (placeholder || !nd.text) ? '' : '{nd.text}'
+        placeholder = false
+        set_words[ '{was}{ev.key.text}' ]
+
+    # backspace: the last letter (a whole utf-8 code point)
+    func erase_letter []
+        if [ typing < 0 || typing >= doc.count[] ] return
+        nd : doc.model.shapes[ typing ].node
+        if [ placeholder || !nd.text || nd.text.count == 0 ]
+            placeholder = false
+            set_words[ '' ]
+            return
+        n : i64 [ nd.text.count - 1 ]
+        while [ n > 0 && (u8[ nd.text.chars[ n ] ] & 192) == 128 ]
+            n -= 1
+        set_words[ nd.text.mid[ 0, n ] ]
+
+    func set_words [ words: string ]
+        svg_set[ doc.model.shapes[ typing ], 'text', words ]
+        doc.mark[ typing ]
+        doc.changed = true
+
     func op_words [] -> string
+        if [ texting ] return 'text: click where it goes'
+        if [ typing >= 0 ] return 'text: type it; enter or escape ends'
         if [ pen ]
             np : i32 [ pen_nodes.count / 6 ]
             return 'draw  {np} nodes: click, drag a curve, enter'
@@ -2624,7 +3844,8 @@ element SvgView
                 words = '{words}  {typing_text}_'
             return words
         if [ !moving ] return ''
-        out : string [ (sizing) ? 'size' : 'move' ]
+        out : string [ (sizing) ? 'size'
+                       : ((turning) ? 'turn' : 'move') ]
         names : vec string [] [ 'x', 'y' ]
         for [ a: i32 0, a < 2, a += 1 ]
             if [ typed_on[ a ] != 0 ]
@@ -2641,11 +3862,40 @@ element SvgView
         g : shown_g
         fx : f32 [ (sizing) ? max[ g.x, 0.01 ] : 1.0 ]
         fy : f32 [ (sizing) ? max[ g.y, 0.01 ] : 1.0 ]
-        mx : f32 [ (sizing) ? 0.0 : g.x ]
-        my : f32 [ (sizing) ? 0.0 : g.y ]
+        mx : f32 [ (sizing || turning) ? 0.0 : g.x ]
+        my : f32 [ (sizing || turning) ? 0.0 : g.y ]
+        # a turn: by g.x degrees about the pivot
+        rc : f32 [ 1.0 ]
+        rs : f32 [ 0.0 ]
+        if [ turning ]
+            rc = cos[ g.x * 3.14159265 / 180.0 ]
+            rs = sin[ g.x * 3.14159265 / 180.0 ]
+        # whole shapes: the move or size on the page put into each
+        # one's transform, from its start (no drift)
+        if [ multi_text && whole_ids ]
+            # the page op: about the pivot, then the move
+            la : f32 [ fx * rc ]
+            lb : f32 [ 0.0 - fy * rs ]
+            lc : f32 [ fx * rs ]
+            ld : f32 [ fy * rc ]
+            op : affine [ ma: la, mb: lb, mc: lc, md: ld,
+                tx: pivot_x - la * pivot_x - lb * pivot_y + mx,
+                ty: pivot_y - lc * pivot_x - ld * pivot_y + my ]
+            for [ k: i32 0, k < whole_ids.count, k += 1 ]
+                t0 : six_of[ whole_t0, k ]
+                par : six_of[ whole_par, k ]
+                tn : affine_inverse[ par ].multiply[ op ].multiply[
+                    par ].multiply[ t0 ]
+                ws : doc.model.shapes[ whole_ids[ k ] ]
+                svg_set[ ws, 'transform',
+                         svg_parts_text[ svg_parts_m[ tn ] ] ]
+                doc.follow[ whole_ids[ k ], 0 ]
+            return
         for [ k: i32 0, k < moved.count, k += 1 ]
-            px : f32 [ pivot_x + (from[ k * 2 ] - pivot_x) * fx ]
-            py : f32 [ pivot_y + (from[ k * 2 + 1 ] - pivot_y) * fy ]
+            ux0 : f32 [ (from[ k * 2 ] - pivot_x) * fx ]
+            uy0 : f32 [ (from[ k * 2 + 1 ] - pivot_y) * fy ]
+            px : f32 [ pivot_x + ux0 * rc - uy0 * rs ]
+            py : f32 [ pivot_y + ux0 * rs + uy0 * rc ]
             doc.set_point[ moved_of[ k ], moved[ k ], px + mx,
                            py + my ]
         # whole shapes moved: their linked offsets follow
@@ -2662,6 +3912,21 @@ element SvgView
             doc.hold_node[ doc.chosen, q ]
         # its linked offsets follow as it goes
         doc.follow[ doc.chosen, 0 ]
+
+    # an affine's six numbers onto v
+    func push_six [ v: vec f32, m: affine ]
+        v.push[ m.ma ]
+        v.push[ m.mb ]
+        v.push[ m.mc ]
+        v.push[ m.md ]
+        v.push[ m.tx ]
+        v.push[ m.ty ]
+
+    # the k-th six numbers as an affine
+    func six_of [ v: vec f32, k: i32 ] -> affine
+        return affine [ ma: v[ k * 6 ], mb: v[ k * 6 + 1 ],
+                        mc: v[ k * 6 + 2 ], md: v[ k * 6 + 3 ],
+                        tx: v[ k * 6 + 4 ], ty: v[ k * 6 + 5 ] ]
 
     func end_move []
         commit_typing[]
@@ -2685,8 +3950,13 @@ element SvgView
         typing_text = ''
         typed_on = vec i32 [ 2 ]
         lock = 0
-        shown_g = goal[]
+        # no change at all: a turn's goal reads the pointer, so
+        # the rest value is set, not asked for
+        rest : f32 [ (sizing) ? 1.0 : 0.0 ]
+        shown_g = vec2f [ rest, rest ]
         place_moved[]
+        turning = false
+        along = false
 
     # keys, as the app hands them on
     public func key_event [ ev: Event ]
@@ -2697,6 +3967,14 @@ element SvgView
         ctrl : bool [ ev.key.ctrl || ev.key.meta ]
         if [ pen ]
             pen_key[ k ]
+            return
+        if [ texting ]
+            if [ k == 256 ] texting = false
+            return
+        # typing a text: letters come as characters (char_event)
+        if [ typing >= 0 && !ctrl ]
+            if [ k == 257 || k == 335 || k == 256 ] typing = -1
+            if [ k == 259 ] erase_letter[]
             return
         # a box or circle drawn: enter picks, escape drops it
         if [ region != 0 ]
@@ -2812,11 +4090,16 @@ element SvgView
         # g moves, s sizes (x or y after: that axis alone)
         if [ k == 71 && !ctrl ] start_move[ false ]
         if [ k == 83 && !ctrl ] start_move[ true ]
+        if [ k == 82 && !ctrl ] start_op[ false, true ]
         # b, c: a box or circle select, from the pointer here
         if [ (k == 66 || k == 67) && !ctrl && !moving && !offsetting ]
             region = (k == 66) ? 1 : 2
             region_x = pointer_x
             region_y = pointer_y
+            return
+        # t: a text, placed by the next click
+        if [ k == 84 && !ctrl && !moving && !offsetting ]
+            texting = true
             return
         # p: draw a new path
         if [ k == 80 && !ctrl && !moving && !offsetting ]
@@ -2859,8 +4142,23 @@ element SvgView
         cv.stroke_width[ 1.0 ]
         cv.rect_to[ ox, oy, pw, ph ]
         cv.paint[]
-        if [ doc.chosen >= 0 && doc.chosen < doc.count[] ]
-            draw_chosen[ cv ]
+        has : bool [ doc.chosen >= 0 && doc.chosen < doc.count[] ]
+        if [ has || pen ]
+            ln : lines_begin[ cv ]
+            if [ has ]
+                draw_chosen[ ln, ln ]
+                draw_grad[ ln, ln, false ]
+                draw_grad[ ln, ln, true ]
+            if [ pen ] pen_handles[ ln ]
+            lines_end[ cv ]
+        if [ has && doc.is_text[ doc.chosen ] ] draw_text_box[ cv ]
+        if [ has ]
+            # picked points over it, solid
+            solid = true
+            if [ doc.offset_src[ doc.chosen ] < 0 ] draw_nodes[ cv ]
+            draw_grad[ cv, cv, true ]
+            solid = false
+            draw_pivot[ cv ]
         # the other chosen shapes: their outlines
         for [ i: i32 ] in doc.also
             if [ i >= 0 && i < doc.count[] ]
@@ -2982,64 +4280,167 @@ element SvgView
         cv.close_path[]
         cv.paint[]
 
-    func draw_chosen [ cv: Canvas ]
+    # its lines into ln, its nodes on cv (the view passes the
+    # line layer for both)
+    func draw_chosen [ cv: Canvas, ln: Canvas ]
         if [ doc.offset_src[ doc.chosen ] >= 0 ]
             draw_offset[ cv ]
             return
+        # a text: its box instead (draw_text_box, solid)
+        if [ doc.is_text[ doc.chosen ] ] return
         sh : doc.model.shapes[ doc.chosen ]
-        cv.fill_color[ '#0000' ]
-        cv.stroke_color[ '#7fd4ff' ]
-        cv.stroke_width[ 1.5 ]
-        for [ c: SVGCmd ] in sh.cmds
-            if [ c.op == SVGOp.move ]
-                cv.move_to[ sx[ c.x ], sy[ c.y ] ]
-            el [ c.op == SVGOp.line ]
-                cv.line_to[ sx[ c.x ], sy[ c.y ] ]
-            el [ c.op == SVGOp.cubic ]
-                cv.cubic_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x2 ],
-                             sy[ c.y2 ], sx[ c.x ], sy[ c.y ] ]
-            el [ c.op == SVGOp.quad ]
-                cv.quad_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x ],
-                            sy[ c.y ] ]
-            el [ c.op == SVGOp.close ]
-                cv.close_path[]
-        cv.paint[]
-        # each handle's line to its anchor
-        cv.stroke_color[ '#7fd4ff99' ]
-        cv.stroke_width[ 1.0 ]
+        ln.fill_color[ '#0000' ]
+        ln.stroke_width[ 1.5 ]
+        # each segment alone, lit by the pointer's nearness
         px : f32 [ 0.0 ]
         py : f32 [ 0.0 ]
+        mx : f32 [ 0.0 ]
+        my : f32 [ 0.0 ]
+        for [ c: SVGCmd ] in sh.cmds
+            if [ c.op == SVGOp.move ]
+                mx = c.x
+                my = c.y
+                px = c.x
+                py = c.y
+                continue
+            ex : f32 [ (c.op == SVGOp.close) ? mx : c.x ]
+            ey : f32 [ (c.op == SVGOp.close) ? my : c.y ]
+            ln.stroke_color[ '#7fd4ff' ]
+            ln.move_to[ sx[ px ], sy[ py ] ]
+            if [ c.op == SVGOp.cubic ]
+                ln.cubic_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ c.x2 ],
+                             sy[ c.y2 ], sx[ ex ], sy[ ey ] ]
+            el [ c.op == SVGOp.quad ]
+                ln.quad_to[ sx[ c.x1 ], sy[ c.y1 ], sx[ ex ], sy[ ey ] ]
+            el
+                ln.line_to[ sx[ ex ], sy[ ey ] ]
+            ln.paint[]
+            px = ex
+            py = ey
+        # each handle's line to its anchor
+        ln.stroke_width[ 1.0 ]
+        px = 0.0
+        py = 0.0
         for [ c: SVGCmd ] in sh.cmds
             if [ c.op == SVGOp.cubic || c.op == SVGOp.quad ]
-                cv.move_to[ sx[ px ], sy[ py ] ]
-                cv.line_to[ sx[ c.x1 ], sy[ c.y1 ] ]
-                cv.paint[]
+                handle_line[ ln, px, py, c.x1, c.y1 ]
             if [ c.op == SVGOp.cubic ]
-                cv.move_to[ sx[ c.x ], sy[ c.y ] ]
-                cv.line_to[ sx[ c.x2 ], sy[ c.y2 ] ]
-                cv.paint[]
+                handle_line[ ln, c.x, c.y, c.x2, c.y2 ]
             if [ c.op != SVGOp.close ]
                 px = c.x
                 py = c.y
         cv.stroke_width[ 0.0 ]
+        draw_nodes[ cv ]
+
+    # its nodes: the unpicked into the layer, the picked solid
+    # (solid set) over it
+    func draw_nodes [ cv: Canvas ]
+        # the one a press would take: brighter
+        hot : nearest[ pointer_x, pointer_y ]
         for [ p: SvgPoint ] in doc.points_of[ doc.chosen ]
             at : doc.point[ doc.chosen, p ]
-            lit : bool [ is_picked[ p ] || (region != 0
-                         && in_region[ sx[ at.x ], sy[ at.y ] ]) ]
-            cv.fill_color[ (lit) ? '#ffcf4a' : '#7fd4ff' ]
+            on : bool [ is_picked[ p ] || (region != 0
+                        && in_region[ sx[ at.x ], sy[ at.y ] ]) ]
+            if [ on != solid ] continue
+            hx : f32 [ sx[ at.x ] ]
+            hy : f32 [ sy[ at.y ] ]
+            # half size far off, its own size at the pointer; a
+            # picked one its own size always
+            z : f32 [ (solid) ? 1.0 : 0.5 + 0.5 * near_w[ hx, hy ] ]
+            col : string [ (on) ? '#ffcf4a' : '#7fd4ff' ]
+            if [ hot && hot.cmd == p.cmd && hot.slot == p.slot ]
+                cv.fill_color[ brighter[ col ] ]
+            el
+                cv.fill_color[ col ]
             # a node: cusp a square, smooth a circle, symmetric a
             # circle with a dot
             kind : i32 [ (p.slot == 0)
                          ? doc.type_at[ doc.chosen, p.cmd ] : -1 ]
             if [ kind == 0 ]
-                cv.rect_to[ sx[ at.x ] - 3.5, sy[ at.y ] - 3.5, 7.0,
-                            7.0 ]
+                cv.rect_to[ hx - 3.5 * z, hy - 3.5 * z, 7.0 * z,
+                            7.0 * z ]
             el [ kind > 0 ]
-                cv.arc[ sx[ at.x ], sy[ at.y ], 4.5, 0.0, 6.2832 ]
+                cv.arc[ hx, hy, 4.5 * z, 0.0, 6.2832 ]
             el
-                cv.arc[ sx[ at.x ], sy[ at.y ], 3.0, 0.0, 6.2832 ]
+                cv.arc[ hx, hy, 3.0 * z, 0.0, 6.2832 ]
             cv.paint[]
             if [ kind == 2 ]
                 cv.fill_color[ '#14141a' ]
-                cv.arc[ sx[ at.x ], sy[ at.y ], 1.6, 0.0, 6.2832 ]
+                cv.arc[ hx, hy, 1.6 * z, 0.0, 6.2832 ]
                 cv.paint[]
+
+    # the pointer's nearness to a screen point, 0..1 (trinity's
+    # near light: (1 - d / 160)^2)
+    func near_w [ x: f32, y: f32 ] -> f32
+        dx : f32 [ pointer_x - x ]
+        dy : f32 [ pointer_y - y ]
+        w : f32 [ clamp[ 1.0 - sqrt[ dx * dx + dy * dy ] / 160.0,
+                         0.0, 1.0 ] ]
+        return w * w
+
+    # a colour most of the way to white
+    func brighter [ hex: string ] -> rgba
+        c : rgba [ hex ]
+        c.r = c.r + (1.0 - c.r) * 0.6
+        c.g = c.g + (1.0 - c.g) * 0.6
+        c.b = c.b + (1.0 - c.b) * 0.6
+        return c
+
+    # a handle's line (page points), lit by its nearness
+    func handle_line [ cv: Canvas, ax: f32, ay: f32, bx: f32,
+                       by: f32 ]
+        cv.stroke_color[ '#7fd4ff' ]
+        cv.move_to[ sx[ ax ], sy[ ay ] ]
+        cv.line_to[ sx[ bx ], sy[ by ] ]
+        cv.paint[]
+
+# a gradient as the picker's text: 'linear | 0: r, g, b, a | ...'
+# (its stops' colours made linear)
+func svg_paint_text [ pt: SVGPaint ] -> string
+    out : string [ (pt.kind == 2) ? 'radial' : 'linear' ]
+    for [ k: i32 0, k < pt.offs.count, k += 1 ]
+        r : num_text[ pow[ pt.cols[ k * 4 ], 2.2 ], false ]
+        g : num_text[ pow[ pt.cols[ k * 4 + 1 ], 2.2 ], false ]
+        b : num_text[ pow[ pt.cols[ k * 4 + 2 ], 2.2 ], false ]
+        al : num_text[ pt.cols[ k * 4 + 3 ], false ]
+        ot : num_text[ pt.offs[ k ], false ]
+        out = '{out} | {ot}: {r}, {g}, {b}, {al}'
+    return out
+
+# a transform's parts: move x y, rotate, scale x y, skew (both
+# in degrees), as translate . rotate . skewX . scale
+func svg_parts [ t: string ] -> vec f32
+    m : affine.identity[]
+    if [ t && t.count > 0 ] m = svg_parse_transform[ t ]
+    return svg_parts_m[ m ]
+
+# the same parts of a matrix
+func svg_parts_m [ m: affine ] -> vec f32
+    sx : f32 [ sqrt[ m.ma * m.ma + m.mc * m.mc ] ]
+    if [ sx < 1e-9 ]
+        return vec f32 [] [ m.tx, m.ty, 0.0, 0.0, 0.0, 0.0 ]
+    rot : f32 [ atan2[ m.mc, m.ma ] ]
+    sy : f32 [ (m.ma * m.md - m.mb * m.mc) / sx ]
+    sk : f32 [ 0.0 ]
+    if [ abs[ sy ] > 1e-9 ]
+        sk = atan[ (m.ma * m.mb + m.mc * m.md) / (sx * sy) ]
+    deg : f32 [ 180.0 / 3.14159265 ]
+    return vec f32 [] [ m.tx, m.ty, rot * deg, sx, sy, sk * deg ]
+
+# the parts written back, each left out at its identity
+func svg_parts_text [ p: vec f32 ] -> string
+    out : ''
+    if [ abs[ p[ 0 ] ] > 1e-6 || abs[ p[ 1 ] ] > 1e-6 ]
+        out = 'translate({num_text[ p[ 0 ], false ]},'
+        out = '{out}{num_text[ p[ 1 ], false ]})'
+    if [ abs[ p[ 2 ] ] > 1e-6 ]
+        rt : num_text[ p[ 2 ], false ]
+        out = (out.count > 0) ? '{out} rotate({rt})' : 'rotate({rt})'
+    if [ abs[ p[ 5 ] ] > 1e-6 ]
+        kt : num_text[ p[ 5 ], false ]
+        out = (out.count > 0) ? '{out} skewX({kt})' : 'skewX({kt})'
+    if [ abs[ p[ 3 ] - 1.0 ] > 1e-6 || abs[ p[ 4 ] - 1.0 ] > 1e-6 ]
+        st : 'scale({num_text[ p[ 3 ], false ]},'
+        st = '{st}{num_text[ p[ 4 ], false ]})'
+        out = (out.count > 0) ? '{out} {st}' : st
+    return out

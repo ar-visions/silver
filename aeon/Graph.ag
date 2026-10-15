@@ -250,7 +250,7 @@ element NodeGraph
         for [ r: PropRow ] in rows
             colour : bool [ r.type.compare[ 'rgba' ] == 0
                             || r.type.compare[ 'paint' ] == 0 ]
-            bh += (colour) ? 72.0 : 24.0
+            bh += (colour) ? 108.0 : 24.0
         bz : string [ scene.busy[ key ] ]
         c.blocks.push[ NodeBlock [ key: key, y: c.h, h: bh, rows: rows,
                                busy: (bz) ? bz : '' ] ]

@@ -59,8 +59,9 @@ class SceneEdit
         bh : f32 [ 0.0 ]
         for [ r: PropRow ] in rows
             colour : bool [ r.type.compare[ 'rgba' ] == 0
-                            || r.type.compare[ 'paint' ] == 0 ]
-            bh += (colour) ? 72.0 : 24.0
+                            || r.type.compare[ 'paint' ] == 0
+                            || r.type.compare[ 'tint' ] == 0 ]
+            bh += (colour) ? 108.0 : 24.0
         bz : string [ busy[ key ] ]
         return Block [ key: key, label: label, h: bh, rows: rows,
                        busy: (bz) ? bz : '', flip: '', on: true,
@@ -301,9 +302,34 @@ class SceneEdit
         out : vec PropRow []
         nd : doc.model.shapes[ i ].node
         if [ !nd ] return out
+        # a text: its words, then its font (a choice of words
+        # where svg has a few; unwritten, svg's default)
+        if [ doc.is_text[ i ] ]
+            words : string (nd.text) ? '{nd.text}' : ''
+            out.push[ PropRow [ name: 'text', value: words, kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
+            for [ k: string ] in svg_font_keys[]
+                v : svg_value[ nd, k ]
+                stops : vec string null
+                if [ k.compare[ 'font-weight' ] == 0 ]
+                    stops = vec string [] [ 'normal', 'bold' ]
+                el [ k.compare[ 'font-style' ] == 0 ]
+                    stops = vec string [] [ 'normal', 'italic' ]
+                el [ k.compare[ 'text-anchor' ] == 0 ]
+                    stops = vec string [] [ 'start', 'middle', 'end' ]
+                if [ stops && (!v || stops.index_of[ v ] < 0) ]
+                    v = stops[ 0 ]
+                if [ k.compare[ 'font-family' ] == 0 && v.count == 0 ]
+                    v = 'sans-serif'
+                if [ k.compare[ 'font-size' ] == 0 && v.count == 0 ]
+                    v = '16'
+                out.push[ PropRow [ name: k, value: v, kind: 5,
+                    owner: doc.model.shapes[ i ], pass: '{i}',
+                    blocks: vec string [], stops: stops ] ]
         for [ k: string ] in vec string [] [ 'id', 'fill', 'stroke',
                 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
-                'opacity', 'transform' ]
+                'opacity' ]
             v : svg_value[ nd, k ]
             # a cap or join is one of three; unwritten, svg's default
             words : vec string [] [ 'butt', 'round', 'square' ]
@@ -317,25 +343,72 @@ class SceneEdit
                 owner: doc.model.shapes[ i ], pass: '{i}',
                 blocks: vec string [] ,
                 stops: (choice) ? words : null ] ]
-        # its blur: a filter's gaussian, made or changed here
-        bt : num_text[ doc.blur_of[ i ], false ]
+        # its blur: a filter's gaussian, as Inkscape's percent
+        bt : num_text[ doc.blur_percent[ i ], false ]
         out.push[ PropRow [ name: 'blur', value: bt, kind: 5,
             owner: doc.model.shapes[ i ], pass: '{i}',
             blocks: vec string [] ] ]
+        # its glow: a brightened halo under it, the same rule;
+        # its colour (blank: the shape's own)
+        fx : doc.fx_of[ i ]
+        gt : num_text[ doc.glow_percent[ i ], false ]
+        out.push[ PropRow [ name: 'glow', value: gt, kind: 5,
+            owner: doc.model.shapes[ i ], pass: '{i}',
+            blocks: vec string [] ] ]
+        if [ fx.glow > 0.0 ]
+            out.push[ PropRow [ name: 'glow-color',
+                value: doc.linear_text[ fx.glow_rgb ], kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
+        # its drop shadow: softness, offset, colour
+        st : num_text[ doc.percent_of[ i, fx.shadow ], false ]
+        out.push[ PropRow [ name: 'shadow', value: st, kind: 5,
+            owner: doc.model.shapes[ i ], pass: '{i}',
+            blocks: vec string [] ] ]
+        if [ fx.shadow > 0.0 ]
+            xt : num_text[ fx.shadow_x, false ]
+            yt : num_text[ fx.shadow_y, false ]
+            out.push[ PropRow [ name: 'shadow-offset',
+                value: '[ {xt}, {yt} ]', kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
+            out.push[ PropRow [ name: 'shadow-color',
+                value: doc.linear_text[ fx.shade_rgb ], kind: 5,
+                owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
         # a linked offset: its distance
         if [ doc.offset_src[ i ] >= 0 ]
             rt : num_text[ doc.radius_of[ i ], false ]
             out.push[ PropRow [ name: 'offset', value: rt, kind: 5,
                 owner: doc.model.shapes[ i ], pass: '{i}',
                 blocks: vec string [] ] ]
+        # its own transform's skew at the bottom
+        tp : svg_parts[ svg_value[ nd, 'transform' ] ]
+        # move, rotate and scale come from the view's g and s;
+        # skew alone is typed
+        parts : vec string [] [ 'skew', num_text[ tp[ 5 ], false ] ]
+        for [ k: i32 0, k < parts.count, k += 2 ]
+            out.push[ PropRow [ name: parts[ k ], value: parts[ k + 1 ],
+                kind: 5, owner: doc.model.shapes[ i ], pass: '{i}',
+                blocks: vec string [] ] ]
         rows : shaped[ out ]
-        # opacity: a unit, its field a bar (unwritten is 1)
+        # opacity and blur: percent bars (opacity unwritten is 100)
         for [ r: PropRow ] in rows
+            if [ r.name.compare[ 'blur' ] == 0
+                 || r.name.compare[ 'glow' ] == 0
+                 || r.name.compare[ 'shadow' ] == 0 ]
+                r.type = 'percent'
+            if [ r.name.compare[ 'glow-color' ] == 0 ]
+                r.type = 'tint'
+            if [ r.name.compare[ 'shadow-color' ] == 0 ]
+                r.type = 'rgba'
             if [ r.name.compare[ 'opacity' ] != 0 ] continue
-            if [ !r.value || r.value.count == 0 ]
-                r.value = '1'
-                r.full  = '1'
-            r.type = 'unit'
+            op : f32 [ 1.0 ]
+            if [ r.value && r.value.count > 0 ]
+                op = clamp[ f32[ r.value.real_value[] ], 0.0, 1.0 ]
+            r.value = num_text[ op * 100.0, false ]
+            r.full  = r.value
+            r.type  = 'percent'
         # a colour takes the picker, as a material's does (linear)
         for [ r: PropRow ] in rows
             if [ !svg_paint[ r.name ] ] continue
@@ -343,7 +416,16 @@ class SceneEdit
             # no fill is black; no stroke (or none) a blank picker
             if [ v.count == 0 && r.name.compare[ 'fill' ] == 0 ]
                 v = '#000000'
-            if [ v.starts_with[ 'url' ] ] continue
+            # a gradient: its kind and stops (linear colours)
+            if [ v.starts_with[ 'url' ] ]
+                sh : doc.model.shapes[ i ]
+                pt : (r.name.compare[ 'fill' ] == 0) ? sh.fill_paint
+                     : sh.stroke_paint
+                if [ !pt ] continue
+                r.value = svg_paint_text[ pt ]
+                r.full  = r.value
+                r.type  = 'paint'
+                continue
             if [ v.count == 0 || v.compare[ 'none' ] == 0 ]
                 r.value = ''
                 r.full  = ''
@@ -479,13 +561,70 @@ class SceneEdit
                 doc.set_radius[ at, f32[ text ] ]
                 return
             if [ r.name.compare[ 'blur' ] == 0 ]
-                doc.set_blur[ at, f32[ text ] ]
+                doc.set_blur_percent[ at, f32[ text ] ]
+                return
+            if [ r.name.compare[ 'glow' ] == 0 ]
+                doc.set_glow_percent[ at, f32[ text ] ]
+                return
+            if [ r.name.compare[ 'glow-color' ] == 0 ]
+                doc.set_glow_color[ at, text ]
+                return
+            if [ r.name.compare[ 'shadow' ] == 0 ]
+                doc.set_shadow_percent[ at, f32[ text ] ]
+                return
+            if [ r.name.compare[ 'shadow-offset' ] == 0 ]
+                nums : numbers_of[ text ]
+                if [ nums.count < 2 ] return
+                doc.set_shadow_offset[ at, nums[ 0 ], nums[ 1 ] ]
+                return
+            if [ r.name.compare[ 'shadow-color' ] == 0 ]
+                doc.set_shadow_color[ at, text ]
+                return
+            # a transform part: the others kept, written whole
+            pnames : vec string [] [ 'move', 'rotate', 'scale',
+                                     'skew' ]
+            part : i32 [ pnames.index_of[ r.name ] ]
+            if [ part >= 0 ]
+                sh : doc.model.shapes[ at ]
+                tp : svg_parts[ svg_value[ sh.node, 'transform' ] ]
+                nums : numbers_of[ text ]
+                if [ nums.count == 0 ] return
+                if [ part == 0 && nums.count > 1 ]
+                    tp[ 0 ] = nums[ 0 ]
+                    tp[ 1 ] = nums[ 1 ]
+                el [ part == 1 ]
+                    tp[ 2 ] = nums[ 0 ]
+                el [ part == 2 && nums.count > 1 ]
+                    tp[ 3 ] = nums[ 0 ]
+                    tp[ 4 ] = nums[ 1 ]
+                el [ part == 3 ]
+                    tp[ 5 ] = nums[ 0 ]
+                # a scale of 0 flattens it past undoing: refused
+                if [ abs[ tp[ 3 ] ] < 1e-6 || abs[ tp[ 4 ] ] < 1e-6 ]
+                    return
+                svg_set[ sh, 'transform', svg_parts_text[ tp ] ]
+                doc.mark[ at ]
+                return
+            # opacity: shown in percent, written 0..1
+            if [ r.name.compare[ 'opacity' ] == 0 ]
+                op : f32 [ clamp[ f32[ text ] / 100.0, 0.0, 1.0 ] ]
+                svg_set[ doc.model.shapes[ at ], 'opacity',
+                         num_text[ op, false ] ]
+                doc.mark[ at ]
+                return
+            # a gradient: written as its element in <defs>
+            if [ svg_paint[ r.name ] && text.index_of[ '|' ] >= 0 ]
+                doc.set_gradient[ at, r.name, text ]
                 return
             sh : doc.model.shapes[ at ]
             val : string [ text ]
-            # a paint cleared: none
+            # a paint cleared: none, its kept gradient let go; a
+            # colour over a gradient keeps it for coming back
             if [ svg_paint[ r.name ] && text.trim[].count == 0 ]
                 val = 'none'
+                doc.forget_gradient[ at, r.name ]
+            el [ svg_paint[ r.name ] ]
+                doc.keep_gradient[ at, r.name ]
             # the picker's linear numbers written as #rrggbb, and
             # aa after when it is see-through
             if [ svg_paint[ r.name ] && text.index_of[ ',' ] >= 0
@@ -920,7 +1059,8 @@ element PropsBody
                 was : string [ scene.typed[ key ] ]
                 # a paint may be emptied (cleared: none)
                 open : bool [ now && (now.count > 0
-                               || r.type.compare[ 'paint' ] == 0) ]
+                               || r.type.compare[ 'paint' ] == 0
+                               || r.type.compare[ 'tint' ] == 0) ]
                 if [ open && was && now.compare[ was ] != 0 ]
                     scene.typed[ key ] = now
                     scene.apply_row[ r, now ]

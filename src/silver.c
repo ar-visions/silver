@@ -2233,6 +2233,7 @@ static void silver_recover_live(silver a) {
 
 static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
                                 cstr env, cstr env_force);
+static string late_entry_name(silver a);
 
 static void silver_live_run(silver a) {
     // a failed build must NOT launch (or relaunch) the app. execvp'ing the host on an
@@ -2397,8 +2398,13 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
                 make_dir(f(path, "%o/tmp", a->install));
                 exec(false, "cp %o %o", bin, load);
             }
+            setenv("SILVER_LATE_DEFER", "1", 1);
             void* h = dlopen(load->chars, RTLD_NOW);
             if (!h) fprintf(stderr, "%s: dlopen %s: %s\n", env, load->chars, dlerror());
+            // its tests and exports, outside the loader lock
+            string entry = late_entry_name(a);
+            void (*late)(void) = h ? (void(*)(void))dlsym(h, entry->chars) : null;
+            if (late) late();
             if (pre) unlink(load->chars);
             _exit(h ? 0 : 1);
         }
@@ -9928,6 +9934,15 @@ static void silver_collect_tree(map tree, array out, map seen) {
     }
 }
 
+// the late entry's name: one per module, so a lookup through a
+// library's dependencies never finds another module's
+static string late_entry_name(silver a) {
+    string n = f(string, "silver_late_entry_%o", a->name);
+    for (char* c = (char*)n->chars; *c; c++)
+        if (!isalnum((unsigned char)*c)) *c = '_';
+    return n;
+}
+
 // a library's module ctor runs before the rest of its .so's
 // ctors; this ctor object, linked last, runs its tests after
 static string late_object(silver a, path install) {
@@ -9935,10 +9950,17 @@ static string late_object(silver a, path install) {
     if (!a->is_library || !sym) return string("");
     path src = f(path, "%o/%o-late.c", a->build_dir, a->name);
     path obj = f(path, "%o/%o-late.o", a->build_dir, a->name);
+    // a runner that dlopens it calls the entry after the load
+    // returns: work in a ctor holds the loader lock, and a
+    // thread that loads a library (getaddrinfo) waits forever
     save(src, (Au)f(string,
+        "#include <stdlib.h>\n"
         "extern void %o(void);\n"
-        "__attribute__((constructor)) static void silver_late(void) { %o(); }\n",
-        sym, sym), null);
+        "void %o(void) { %o(); }\n"
+        "__attribute__((constructor)) static void silver_late(void) {\n"
+        "    if (!getenv(\"SILVER_LATE_DEFER\")) %o();\n"
+        "}\n",
+        sym, late_entry_name(a), sym, sym), null);
 #ifdef __APPLE__
     // without the sdk the object names the running os and ld warns
     cstr sdk = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk";

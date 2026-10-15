@@ -85,6 +85,24 @@ func bootstrap_here [] -> bool
     src : path '{root}/os-bootstrap/os-bootstrap.ag'
     return src.exists[]
 
+# where os-bootstrap writes orbiter-os: the drive tree's folder
+func tree_home [] -> string
+    return '{path.path_startup[]}/orbiter-os'
+
+func drive_tree [] -> string
+    return '{tree_home[]}/root'
+
+# orbiter-os's own boot words, after its uuid and root: its
+# init, the drivers it loads, its home and libraries
+func os_words [ arm: bool, nvidia: bool ] -> string
+    root : path.path_startup[]
+    line : 'orbiter.init={root}/install/build/orbiter'
+    if [ nvidia ] line = '{line} orbiter.modules=nvidia-drm:modeset=1'
+    lib : '{root}/install/lib:{root}/install/build'
+    line = '{line} HOME=/root LD_LIBRARY_PATH={lib}'
+    gnu : string [ (arm) ? 'aarch64' : 'x86_64' ]
+    return '{line}:/usr/lib/{gnu}-linux-gnu'
+
 # one line of the summary: what, its state, and a word on it
 class Built
     public what : string [ '' ]
@@ -298,7 +316,7 @@ element Bootstrap
     public func setup []
         install = path.path_install[].normalize[]
         root    = path.path_startup[]
-        out_dir = path '{root}/orbiter-os'
+        out_dir = path [ tree_home[] ]
         if [ !lock ] lock = mutex []
         if [ !lines ] lines = vec string []
         if [ !want_hardware ] want_hardware = 'x64'
@@ -542,6 +560,9 @@ element Bootstrap
         tree : '{out_dir}/root'
         bytes : read_text[ '{tree}/boot/tree-bytes' ].trim[]
         tr : module_release[ tree ]
+        # the chosen kernel's modules, whatever else is beside them
+        have : path '{tree}/lib/modules/{rel}/modules.alias'
+        if [ rel.count > 0 && have.exists[] ] tr = rel
         tb.ok = bytes.count > 0 && tr.count > 0 && tr == rel
         sz : i64 [ bytes.integer_value[] / (1024 * 1024) ]
         tbp : path '{tree}/boot/tree-bytes'
@@ -955,14 +976,9 @@ element Bootstrap
         # the boot line: this stick's tree, in install mode
         line : 'initrd=\\EFI\\orbiter\\initramfs console=tty0'
         line = '{line} orbiter.uuid={uuid} orbiter.root=/'
-        line = '{line} orbiter.init={root}/install/build/orbiter'
         line = '{line} orbiter.args=--install,true'
-        if [ kb.nvidia != 'none' ]
-            line = '{line} orbiter.modules=nvidia-drm:modeset=1'
-        lib : '{root}/install/lib:{root}/install/build'
-        line = '{line} HOME=/root LD_LIBRARY_PATH={lib}'
-        gnu : string [ (arm) ? 'aarch64' : 'x86_64' ]
-        line = '{line}:/usr/lib/{gnu}-linux-gnu'
+        nv : bool [ kb.nvidia != 'none' ]
+        line = '{line} {os_words[ arm, nv ]}'
         lay : 'label: gpt\nstart=2048, size=1048576, type=U, '
         lay = '{lay}name=orbiter-efi\nstart=1050624, type=L, '
         lay = '{lay}name=orbiter\n'
@@ -1635,7 +1651,10 @@ element Bootstrap
     func add_tools []
         tools : vec string [] [ '/bin/sh', '/usr/sbin/sfdisk',
             '/usr/sbin/mkfs.vfat', '/usr/sbin/mkfs.ext4',
-            '/usr/bin/efibootmgr' ]
+            '/usr/bin/efibootmgr', '/usr/sbin/e2fsck',
+            '/usr/sbin/resize2fs', '/usr/sbin/ntfsresize',
+            '/usr/bin/partx', '/usr/sbin/mkswap',
+            '/usr/bin/fallocate', '/usr/bin/lsblk' ]
         for [ t: string ] in tools
             add_file[ t ]
             add_deps[ t ]

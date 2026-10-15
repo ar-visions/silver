@@ -357,8 +357,10 @@ ArgsField LaunchField
                 fill_color: #2f6b4a40
     }
     func init []
-        nw : f32 [ launch_name_w[ label ] ]
-        vx : f32 [ 0.4 + nw ]
+        # no name (a panel's cell): no gap for one
+        bare : bool [ !label || label.count == 0 ]
+        nw : f32 [ (bare) ? 0.0 : launch_name_w[ label ] ]
+        vx : f32 [ (bare) ? 0.25 : 0.4 + nw ]
         name.area = Region [ 'l0.4 t0 w{nw} b0' ]
         face.area = Region [ 'l{vx} t0 r0.3 b0' ]
 
@@ -385,6 +387,8 @@ LaunchField DragField
     mutable press_x : f32
     mutable base    : f32
     mutable rate    : f32
+    # a bar's full value (1, or 100 for a percent)
+    public  top     : f32 [ 1.0 ]
     style : CSS {
         layers.body:
             fill_color: #0000
@@ -399,8 +403,10 @@ LaunchField DragField
     }
 
     func init []
-        nw : f32 [ (part) ? 0.0 : launch_name_w[ label ] ]
-        vx : f32 [ (part) ? 0.25 : 0.4 + nw ]
+        # no name (a part, or a panel's cell): no gap for one
+        bare : bool [ part || !label || label.count == 0 ]
+        nw : f32 [ (bare) ? 0.0 : launch_name_w[ label ] ]
+        vx : f32 [ (bare) ? 0.25 : 0.4 + nw ]
         name.area = Region [ 'l0.4 t0 w{nw} b0' ]
         face.area = Region [ 'l{vx} t0 r0.15 b0' ]
 
@@ -415,6 +421,8 @@ LaunchField DragField
         rate    = abs[ base ] * 0.004
         if [ rate < 0.002 ] rate = 0.002
         if [ whole ] rate = 0.1
+        # a bar: the cell's width is the whole 0..1
+        if [ bar && bounds && bounds.w > 0.0 ] rate = top / bounds.w
         ux.set_capture[ a ]
         ev.no_default     = true
         ev.no_propagation = true
@@ -427,6 +435,9 @@ LaunchField DragField
         fine : f32 [ (ux && ux.shift) ? 0.1 : 1.0 ]
         v : f32 [ base + dx * rate * fine ]
         if [ whole ] v = round[ v ]
+        if [ bar ] v = clamp[ v, 0.0, top ]
+        # a percent in tenths
+        if [ top == 100.0 ] v = round[ v * 10.0 ] / 10.0
         edit       = num_text[ v, whole ]
         sel_col    = edit.count
         anchor_col = edit.count
@@ -454,9 +465,18 @@ LaunchField DragField
         cv.save[]
         cv.stroke_width[ 0.0 ]
         cv.fill_color[ rgba [ '#806bff40' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w * clamp[ v, 0.0, 1.0 ],
+        cv.rect_to[ 0.0, 0.0, bounds.w * clamp[ v / top, 0.0, 1.0 ],
                     bounds.h ]
         cv.paint[]
+        # a percent says so at the cell's right
+        if [ top == 100.0 ]
+            cv.fill_color[ '#fff6' ]
+            cv.font_size[ 13 ]
+            cv.draw_text[ '%', rect [ x: bounds.w - 22.0, y: 0.0,
+                                      w: 16.0, h: bounds.h ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
         cv.restore[]
 
     public func on_release [ ev: Event ]
@@ -520,10 +540,14 @@ LaunchField ColorHex
         pk.hex_sync[]
         pk.pristine = false
 
-# a colour as 0..1 numbers, linear as materials keep them: a
-# saturation and brightness square, a hue bar, an alpha bar,
-# the swatch and its #rrggbbaa (typed when clicked); picked in
-# display (sRGB) space
+# a colour as 0..1 numbers, linear as materials keep them; a
+# paint may be a gradient (stops: an offset and a colour each):
+# the preview strip across the top (a gradient's stops on it),
+# a saturation and brightness square, a hue bar, an alpha bar;
+# right of them a paint's kinds, the #rrggbbaa (typed when
+# clicked) and clear. Picked in display (sRGB) space.
+# The value: 'r, g, b, a', '' none, or 'linear | 0: r, g, b, a
+# | 1: r, g, b, a' (radial the same)
 element ColorPick
     mutable hue     : f32
     mutable sat     : f32
@@ -531,54 +555,151 @@ element ColorPick
     mutable alpha   : f32 [ 1.0 ]
     # the text the hue, saturation and value were read from
     mutable read_of : string
-    # 1 the square held, 2 the hue bar, 3 the alpha bar
+    # 1 the square held, 2 the hue bar, 3 the alpha bar, 4 a stop
     mutable held    : i32
-    # a clear button under the value: no colour at all
-    public clearable : bool
+    # a paint (an svg's fill): its kinds and a clear button
+    public paint    : bool
+    # 0 solid, 1 linear, 2 radial; the stops' offsets
+    # and linear r g b a each; the stop chosen
+    mutable kind    : i32
+    mutable offs    : vec f32
+    mutable cols    : vec f32
+    mutable sel     : i32
+    # a stop dragged off the strip goes at the release
+    mutable dropping : bool
+    # a paint that is one colour (a glow's): no kinds
+    public solid    : bool
 
+    func strip_h [] -> f32
+        return 22.0
+
+    # the square's and the bars' top
+    func top_y [] -> f32
+        return 4.0 + strip_h[] + 6.0
+
+    # the square: what the row leaves, 56 px at most (the kinds'
+    # words need the room right of the bars)
     func box [] -> f32
-        return bounds.h - 8.0
+        return clamp[ bounds.h - top_y[] - 4.0, 8.0, 56.0 ]
 
-    # the hue bar's, the alpha bar's and the swatch's left edges
+    # the hue bar's, the alpha bar's (10 px each) and the right
+    # column's left
     func hue_x [] -> f32
-        return 4.0 + box[] + 6.0
+        return 4.0 + box[] + 4.0
     func alpha_x [] -> f32
-        return hue_x[] + 18.0
+        return hue_x[] + 14.0
     func swatch_x [] -> f32
-        return alpha_x[] + 20.0
+        return alpha_x[] + 14.0
 
     func render [] -> Elements
         out : Elements []
-        sx : f32 [ swatch_x[] ]
+        rx : f32 [ swatch_x[] ]
+        ty : f32 [ top_y[] ]
+        # a paint: the kinds in one row, the hex and clear under
+        kinds : bool [ paint && !solid ]
+        hy : f32 [ (kinds) ? ty + 20.0 : ty ]
+        hr : string [ (paint) ? 'r64px' : 'r0' ]
         out[ 'hex' ] = ColorHex [ label: '', focusable: true,
-            area: Region [ 'l{sx}px t26px r0 h22px' ] ]
-        if [ clearable ]
+            area: Region [ 'l{rx}px t{hy}px {hr} h20px' ] ]
+        if [ kinds ]
+            out[ 'kinds' ] = TButtons [
+                buttons: vec string [] [ 'k_solid', 'k_linear',
+                                         'k_radial' ],
+                labels: vec string [] [ 'solid', 'linear',
+                                        'radial' ],
+                icons: false, manual: true, label_px: 10.0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 6.0,
+                area: Region [ 'l{rx}px t{ty}px r4px h16px' ] ]
+        if [ paint ]
             out[ 'clear' ] = TButtons [
                 buttons: vec string [] [ 'clear' ],
                 labels: vec string [] [ 'clear' ], icons: false,
                 manual: true, label_px: 11.0,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 6.0,
-                area: Region [ 'l{sx}px t50px w56px h18px' ] ]
+                area: Region [ 'r4px t{hy + 2.0}px w56px h16px' ] ]
         return out
-
-    # clear: no colour (the svg writes none)
-    func clear_hit [ ev: Event ] -> bool
-        o : ev.origin
-        if [ !o || !o.id || o.id != 'clear' ] return false
-        edit     = ''
-        read_of  = null
-        pristine = false
-        f : hex_field[]
-        if [ f ]
-            f.edit     = ''
-            f.typing   = false
-            f.pristine = false
-        ev.no_propagation = true
-        return true
 
     func hex_field [] -> ColorHex
         if [ !elements || !elements.contains[ 'hex' ] ] return null
         return elements[ 'hex' ] inherits ColorHex
+
+    # the numbers of a 'r, g, b, a' text
+    func nums_of [ t: string ] -> vec f32
+        out : vec f32 []
+        if [ !t ] return out
+        for [ w: string ] in t.split[ ',' ]
+            s : w.trim[]
+            if [ s.count > 0 ] out.push[ f32[ s.real_value[] ] ]
+        return out
+
+    # the value read into kind and stops
+    func parse_paint [ t: string ]
+        offs = vec f32 []
+        cols = vec f32 []
+        kind = 0
+        if [ !t || t.count == 0 ] return
+        if [ t.index_of[ '|' ] < 0 ]
+            nums : nums_of[ t ]
+            if [ nums.count < 3 ] return
+            offs.push[ 0.0 ]
+            for [ k: i32 0, k < 3, k += 1 ]
+                cols.push[ nums[ k ] ]
+            cols.push[ (nums.count > 3) ? nums[ 3 ] : 1.0 ]
+            return
+        parts : t.split[ '|' ]
+        word : parts[ 0 ].trim[]
+        kind = 1
+        if [ word.compare[ 'radial' ] == 0 ] kind = 2
+        for [ k: i32 1, k < parts.count, k += 1 ]
+            p : parts[ k ]
+            ci : i32 [ p.index_of[ ':' ] ]
+            if [ ci <= 0 ] continue
+            head : p.mid[ 0, ci ].trim[]
+            nums : nums_of[ p.mid[ ci + 1, p.count - ci - 1 ] ]
+            if [ nums.count < 3 ] continue
+            offs.push[ f32[ head.real_value[] ] ]
+            for [ j: i32 0, j < 3, j += 1 ]
+                cols.push[ nums[ j ] ]
+            cols.push[ (nums.count > 3) ? nums[ 3 ] : 1.0 ]
+
+    # stop i's colour as 'r, g, b, a'
+    func num4 [ i: i32 ] -> string
+        if [ i < 0 || i * 4 + 3 >= cols.count ] return ''
+        r : num_text[ cols[ i * 4 ], false ]
+        g : num_text[ cols[ i * 4 + 1 ], false ]
+        b : num_text[ cols[ i * 4 + 2 ], false ]
+        al : num_text[ cols[ i * 4 + 3 ], false ]
+        return '{r}, {g}, {b}, {al}'
+
+    # kind and stops as the value
+    func paint_text [] -> string
+        if [ !offs || offs.count == 0 ] return ''
+        if [ kind == 0 ] return num4[ 0 ]
+        words : vec string [] [ 'solid', 'linear', 'radial' ]
+        out : words[ kind ]
+        for [ i: i32 0, i < offs.count, i += 1 ]
+            ot : num_text[ offs[ i ], false ]
+            out = '{out} | {ot}: {num4[ i ]}'
+        return out
+
+    # the value set from kind and stops
+    func store []
+        edit     = paint_text[]
+        read_of  = null
+        pristine = false
+
+    # the chosen stop's colour set ('r, g, b, a'); none yet: one
+    func set_current [ t: string ]
+        nums : nums_of[ t ]
+        if [ nums.count < 3 ] return
+        if [ !offs || offs.count == 0 ]
+            offs = vec f32 [] [ 0.0 ]
+            cols = vec f32 [] [ 0.0, 0.0, 0.0, 1.0 ]
+            kind = 0
+            sel  = 0
+        for [ k: i32 0, k < 4, k += 1 ]
+            cols[ sel * 4 + k ] = (k < nums.count) ? nums[ k ] : 1.0
+        store[]
 
     # a 0..1 number as a byte's two hex digits
     func hex2 [ v: f32 ] -> string
@@ -588,13 +709,9 @@ element ColorPick
         lo : digits.mid[ n % 16, 1 ]
         return '{hi}{lo}'
 
-    # the edit's linear numbers as #rrggbbaa ('' none yet)
+    # linear numbers as #rrggbbaa ('' none yet)
     func hex_of [ t: string ] -> string
-        if [ !t ] return ''
-        nums : vec f32 []
-        for [ w: string ] in t.split[ ',' ]
-            s : w.trim[]
-            if [ s.count > 0 ] nums.push[ f32[ s.real_value[] ] ]
+        nums : nums_of[ t ]
         if [ nums.count < 3 ] return ''
         al : f32 [ (nums.count > 3) ? nums[ 3 ] : 1.0 ]
         r : hex2[ to_srgb[ nums[ 0 ] ] ]
@@ -632,39 +749,37 @@ element ColorPick
         b : num_text[ pow[ vals[ 2 ], 2.2 ], false ]
         return '{r}, {g}, {b}, {num_text[ vals[ 3 ], false ]}'
 
-    # the typed hex in: a whole one is the value at once; not
-    # typing, the field shows the value
+    # the typed hex in: a whole one is the chosen colour at once;
+    # not typing, the field shows the chosen colour
     func hex_sync []
         f : hex_field[]
         if [ !f ] return
+        sync[]
         if [ f.focused ]
             got : linear_of[ f.edit ]
-            if [ got.count > 0 && (!edit || edit.compare[ got ] != 0) ]
-                edit     = got
-                read_of  = null
-                pristine = false
+            if [ got.count > 0 && got.compare[ num4[ sel ] ] != 0 ]
+                set_current[ got ]
             return
-        want : hex_of[ edit ]
+        want : hex_of[ num4[ sel ] ]
         if [ !f.edit || f.edit.compare[ want ] != 0 ]
             f.edit       = want
             f.sel_col    = want.count
             f.anchor_col = want.count
             f.pristine   = false
 
-    # the edit's numbers into hue, saturation and value
+    # the value read: kind, stops, and the chosen stop's colour as
+    # hue, saturation and value
     func sync []
-        if [ !edit || (read_of && read_of.compare[ edit ] == 0) ]
-            return
-        read_of = edit
-        nums : vec f32 []
-        for [ w: string ] in edit.split[ ',' ]
-            t : w.trim[]
-            if [ t.count > 0 ] nums.push[ f32[ t.real_value[] ] ]
-        if [ nums.count < 3 ] return
-        r : f32 [ to_srgb[ nums[ 0 ] ] ]
-        g : f32 [ to_srgb[ nums[ 1 ] ] ]
-        b : f32 [ to_srgb[ nums[ 2 ] ] ]
-        alpha = (nums.count > 3) ? nums[ 3 ] : 1.0
+        now : string [ (edit) ? edit : '' ]
+        if [ read_of && read_of.compare[ now ] == 0 ] return
+        read_of = now
+        parse_paint[ now ]
+        if [ sel >= offs.count ] sel = 0
+        if [ offs.count == 0 ] return
+        r : f32 [ to_srgb[ cols[ sel * 4 ] ] ]
+        g : f32 [ to_srgb[ cols[ sel * 4 + 1 ] ] ]
+        b : f32 [ to_srgb[ cols[ sel * 4 + 2 ] ] ]
+        alpha = cols[ sel * 4 + 3 ]
         hi : f32 [ max[ r, max[ g, b ] ] ]
         lo : f32 [ min[ r, min[ g, b ] ] ]
         val = hi
@@ -691,58 +806,196 @@ element ColorPick
                       g: vv * (1.0 - sv + sv * g),
                       b: vv * (1.0 - sv + sv * b), a: 1.0 ]
 
-    # the picked colour written back as linear numbers
+    # the picked colour into the chosen stop (linear numbers)
     func put []
         c : shown[ hue, sat, val ]
-        r : f32 [ pow[ c.r, 2.2 ] ]
-        g : f32 [ pow[ c.g, 2.2 ] ]
-        b : f32 [ pow[ c.b, 2.2 ] ]
-        edit = '{num_text[ r, false ]}, {num_text[ g, false ]}, {num_text[ b, false ]}, {num_text[ alpha, false ]}'
-        read_of  = edit
-        pristine = false
+        r : num_text[ pow[ c.r, 2.2 ], false ]
+        g : num_text[ pow[ c.g, 2.2 ], false ]
+        b : num_text[ pow[ c.b, 2.2 ], false ]
+        set_current[ '{r}, {g}, {b}, {num_text[ alpha, false ]}' ]
+        read_of = edit
+
+    # a kind chosen: solid keeps the chosen stop's colour; a
+    # gradient from a colour fades it to clear
+    func set_kind [ n: i32 ]
+        if [ !offs || offs.count == 0 ]
+            offs = vec f32 [] [ 0.0 ]
+            cols = vec f32 [] [ 0.0, 0.0, 0.0, 1.0 ]
+            sel  = 0
+        if [ n == 0 ]
+            keep : vec f32 []
+            for [ k: i32 0, k < 4, k += 1 ]
+                keep.push[ cols[ sel * 4 + k ] ]
+            offs = vec f32 [] [ 0.0 ]
+            cols = keep
+            sel  = 0
+        el [ kind == 0 ]
+            offs = vec f32 [] [ 0.0, 1.0 ]
+            cols = vec f32 [] [ cols[ 0 ], cols[ 1 ], cols[ 2 ],
+                                cols[ 3 ], cols[ 0 ], cols[ 1 ],
+                                cols[ 2 ], 0.0 ]
+            sel = 0
+        kind = n
+        store[]
+
+    # the press's button (a kind or clear): true when it was one
+    func button_hit [ ev: Event ] -> bool
+        o : ev.origin
+        if [ !o || !o.id ] return false
+        if [ o.id == 'clear' ]
+            edit     = ''
+            read_of  = null
+            pristine = false
+            f : hex_field[]
+            if [ f ]
+                f.edit     = ''
+                f.typing   = false
+                f.pristine = false
+        el [ o.id == 'k_solid' ]
+            set_kind[ 0 ]
+        el [ o.id == 'k_linear' ]
+            set_kind[ 1 ]
+        el [ o.id == 'k_radial' ]
+            set_kind[ 2 ]
+        el
+            return false
+        ev.no_propagation = true
+        return true
+
+    # the strip's colour at f (linear r g b a)
+    func sample [ f: f32 ] -> vec f32
+        n : i32 [ offs.count ]
+        out : vec f32 []
+        lo : i32 [ 0 ]
+        while [ lo + 1 < n && offs[ lo + 1 ] <= f ]
+            lo += 1
+        hi : i32 [ (lo + 1 < n) ? lo + 1 : lo ]
+        span : f32 [ offs[ hi ] - offs[ lo ] ]
+        t : f32 [ (span > 1e-6) ? clamp[ (f - offs[ lo ]) / span,
+                                          0.0, 1.0 ] : 0.0 ]
+        for [ k: i32 0, k < 4, k += 1 ]
+            out.push[ cols[ lo * 4 + k ]
+                      + (cols[ hi * 4 + k ] - cols[ lo * 4 + k ]) * t ]
+        return out
+
+    # stops i and j swapped (offsets and colours)
+    func swap_stops [ i: i32, j: i32 ]
+        o : f32 [ offs[ i ] ]
+        offs[ i ] = offs[ j ]
+        offs[ j ] = o
+        for [ k: i32 0, k < 4, k += 1 ]
+            c : f32 [ cols[ i * 4 + k ] ]
+            cols[ i * 4 + k ] = cols[ j * 4 + k ]
+            cols[ j * 4 + k ] = c
+
+    # the strip's x as a gradient's 0..1
+    func strip_at [ x: f32 ] -> f32
+        return clamp[ (x - 4.0) / max[ bounds.w - 8.0, 1.0 ], 0.0, 1.0 ]
+
+    # a press on the strip: a stop chosen (near one) or put in
+    func strip_press [ x: f32 ]
+        fr : f32 [ strip_at[ x ] ]
+        wd : f32 [ bounds.w - 8.0 ]
+        hit_at : i32 [ -1 ]
+        for [ i: i32 0, i < offs.count, i += 1 ]
+            if [ abs[ offs[ i ] * wd - fr * wd ] < 6.0 ] hit_at = i
+        if [ hit_at < 0 ]
+            c : sample[ fr ]
+            at : i32 [ 0 ]
+            while [ at < offs.count && offs[ at ] <= fr ]
+                at += 1
+            offs.insert[ fr, at ]
+            for [ k: i32 0, k < 4, k += 1 ]
+                cols.insert[ c[ k ], at * 4 + k ]
+            hit_at = at
+        sel = hit_at
+        store[]
+
+    # the chosen stop moved to x (kept in order), or marked to go
+    # when dragged well off the strip
+    func strip_move [ x: f32, y: f32 ]
+        offs[ sel ] = strip_at[ x ]
+        while [ sel > 0 && offs[ sel ] < offs[ sel - 1 ] ]
+            swap_stops[ sel, sel - 1 ]
+            sel -= 1
+        while [ sel + 1 < offs.count && offs[ sel ] > offs[ sel + 1 ] ]
+            swap_stops[ sel, sel + 1 ]
+            sel += 1
+        far : bool [ y > 4.0 + strip_h[] + 28.0 || y < -24.0 ]
+        dropping = far && offs.count > 2
+        store[]
 
     func pick [ x: f32, y: f32 ]
         bx : f32 [ box[] ]
+        ty : f32 [ top_y[] ]
         if [ held == 1 ]
             sat = clamp[ (x - 4.0) / bx, 0.0, 1.0 ]
-            val = clamp[ 1.0 - (y - 4.0) / bx, 0.0, 1.0 ]
+            val = clamp[ 1.0 - (y - ty) / bx, 0.0, 1.0 ]
         if [ held == 2 ]
-            hue = clamp[ (y - 4.0) / bx, 0.0, 0.999 ]
+            hue = clamp[ (y - ty) / bx, 0.0, 0.999 ]
         if [ held == 3 ]
-            alpha = clamp[ 1.0 - (y - 4.0) / bx, 0.0, 1.0 ]
+            alpha = clamp[ 1.0 - (y - ty) / bx, 0.0, 1.0 ]
         put[]
 
     public func on_press [ ev: Event ]
-        if [ ev.mouse.button != 0 || clear_hit[ ev ] ] return
+        if [ ev.mouse.button != 0 || button_hit[ ev ] ] return
         sync[]
         bx : f32 [ box[] ]
         x : f32 [ ev.mouse.pos.x ]
+        y : f32 [ ev.mouse.pos.y ]
         held = 0
-        if [ x < 4.0 + bx ] held = 1
+        # the strip: a gradient's stops
+        if [ y < top_y[] - 2.0 ]
+            if [ kind == 0 || offs.count == 0 ] return
+            strip_press[ x ]
+            held = 4
+        el [ x < 4.0 + bx ] held = 1
         el [ x < alpha_x[] - 3.0 ] held = 2
         el [ x < swatch_x[] - 3.0 ] held = 3
         if [ held == 0 ] return
         ux.set_capture[ a ]
-        pick[ x, ev.mouse.pos.y ]
+        if [ held != 4 ] pick[ x, y ]
         ev.no_default     = true
         ev.no_propagation = true
 
     public func on_move [ ev: Event ]
         if [ held == 0 ] return
-        pick[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        if [ held == 4 ]
+            strip_move[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        el
+            pick[ ev.mouse.pos.x, ev.mouse.pos.y ]
         ev.no_propagation = true
 
     public func on_release [ ev: Event ]
         if [ held == 0 ] return
+        # a stop dragged off goes (two always stay)
+        if [ held == 4 && dropping && offs.count > 2 ]
+            offs.remove[ sel ]
+            for [ k: i32 0, k < 4, k += 1 ]
+                cols.remove[ sel * 4 ]
+            sel = max[ sel - 1, 0 ]
+            store[]
+        dropping = false
         held = 0
         ux.release_capture[ a ]
 
-    func packed [ c: rgba ] -> u32
+    # a display colour and alpha as a stop (0xAABBGGRR)
+    func packed_a [ c: rgba, al: f32 ] -> u32
         r : u32 [ u32[ clamp[ c.r, 0.0, 1.0 ] * 255.0 ] ]
         g : u32 [ u32[ clamp[ c.g, 0.0, 1.0 ] * 255.0 ] ]
         b : u32 [ u32[ clamp[ c.b, 0.0, 1.0 ] * 255.0 ] ]
-        # the canvas reads a stop as 0xAABBGGRR
-        return 0xff000000 | (b << 16) | (g << 8) | r
+        av : u32 [ u32[ clamp[ al, 0.0, 1.0 ] * 255.0 ] ]
+        return (av << 24) | (b << 16) | (g << 8) | r
+
+    func packed [ c: rgba ] -> u32
+        return packed_a[ c, 1.0 ]
+
+    # stop i in display colours
+    func stop_rgba [ i: i32 ] -> rgba
+        return rgba [ r: to_srgb[ cols[ i * 4 ] ],
+                      g: to_srgb[ cols[ i * 4 + 1 ] ],
+                      b: to_srgb[ cols[ i * 4 + 2 ] ],
+                      a: cols[ i * 4 + 3 ] ]
 
     # light and dark squares, 4 px, under what is see-through
     func checker [ cv: Canvas, x: f32, y: f32, w: f32, h: f32 ]
@@ -753,9 +1006,9 @@ element ColorPick
         cv.paint[]
         cv.fill_color[ rgba [ '#5c5c64' ] ]
         rows : i32 [ i32[ ceil[ h / 4.0 ] ] ]
-        cols : i32 [ i32[ ceil[ w / 4.0 ] ] ]
+        cols_n : i32 [ i32[ ceil[ w / 4.0 ] ] ]
         for [ j: i32 0, j < rows, j += 1 ]
-            for [ i: i32 0, i < cols, i += 1 ]
+            for [ i: i32 0, i < cols_n, i += 1 ]
                 if [ (i + j) % 2 == 0 ] continue
                 cx : f32 [ x + f32[ i ] * 4.0 ]
                 cy : f32 [ y + f32[ j ] * 4.0 ]
@@ -763,88 +1016,156 @@ element ColorPick
                             min[ 4.0, y + h - cy ] ]
                 cv.paint[]
 
+    # the preview across the top: the colour, or the gradient
+    # left to right with its stops marked under it
+    # a 1 px white outline round the strip, on half pixels so it
+    # covers one pixel row, not two
+    func strip_outline [ cv: Canvas, x: f32, y: f32, wd: f32,
+                         ht: f32 ]
+        x0 : f32 [ floor[ x ] + 0.5 ]
+        y0 : f32 [ floor[ y ] + 0.5 ]
+        x1 : f32 [ floor[ x + wd ] - 0.5 ]
+        y1 : f32 [ floor[ y + ht ] - 0.5 ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffff' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rect_to[ x0, y0, x1 - x0, y1 - y0 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    func draw_strip [ cv: Canvas ]
+        sx : f32 [ 4.0 ]
+        sy : f32 [ 4.0 ]
+        wd : f32 [ bounds.w - 8.0 ]
+        ht : f32 [ strip_h[] ]
+        if [ offs.count == 0 ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_color[ rgba [ '#fff6' ] ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.rounded_rect[ sx, sy, wd, ht, 3.0, 3.0, 3.0, 3.0 ]
+            cv.paint[]
+            # no colour: a diagonal across the box
+            cv.stroke_color[ rgba [ '#ff5a5a' ] ]
+            cv.stroke_width[ 1.5 ]
+            cv.move_to[ sx + 3.0, sy + ht - 3.0 ]
+            cv.line_to[ sx + wd - 3.0, sy + 3.0 ]
+            cv.paint[]
+            cv.stroke_width[ 0.0 ]
+            return
+        checker[ cv, sx, sy, wd, ht ]
+        if [ kind == 0 ]
+            sw : stop_rgba[ 0 ]
+            cv.fill_color[ sw ]
+            cv.rect_to[ sx, sy, wd, ht ]
+            cv.paint[]
+            strip_outline[ cv, sx, sy, wd, ht ]
+            return
+        gg : linear_gradient[ sx, 0.0, sx + wd, 0.0 ]
+        for [ i: i32 0, i < offs.count, i += 1 ]
+            sc : stop_rgba[ i ]
+            gg.add_stop[ offs[ i ], packed_a[ sc, sc.a ] ]
+        cv.set_fill_gradient[ gg ]
+        cv.rect_to[ sx, sy, wd, ht ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        strip_outline[ cv, sx, sy, wd, ht ]
+        # the stops: a little house each on the strip's foot, its
+        # peak up at its place; on the pixel grid, so a 1 px
+        # outline sits on half pixels and a 2 px one on whole
+        for [ i: i32 0, i < offs.count, i += 1 ]
+            mx : f32 [ sx + offs[ i ] * wd ]
+            lit : bool [ i == sel ]
+            half : f32 [ (lit) ? 0.0 : 0.5 ]
+            cx : f32 [ floor[ mx ] + half ]
+            yb : f32 [ floor[ sy + ht ] - 1.0 + half ]
+            mc : stop_rgba[ i ]
+            mc.a = 1.0
+            cv.fill_color[ mc ]
+            cv.stroke_color[ rgba [ (lit) ? '#ffcf4a' : '#ffffff' ] ]
+            cv.stroke_width[ (lit) ? 2.0 : 1.0 ]
+            if [ lit && dropping ] cv.set_opacity[ 0.35 ]
+            cv.move_to[ cx - 4.0, yb ]
+            cv.line_to[ cx + 4.0, yb ]
+            cv.line_to[ cx + 4.0, yb - 6.0 ]
+            cv.line_to[ cx, yb - 10.0 ]
+            cv.line_to[ cx - 4.0, yb - 6.0 ]
+            cv.close_path[]
+            cv.paint[]
+            cv.set_opacity[ 1.0 ]
+        cv.stroke_width[ 0.0 ]
+
+    # the kind lit on its buttons
+    func light_kinds []
+        if [ !paint || !elements ] return
+        if [ elements.contains[ 'kinds' ] ]
+            k1 : elements[ 'kinds' ] inherits TButtons
+            want : i32 [ 1 << kind ]
+            if [ k1 && k1.sel_mask != want ]
+                k1.sel_mask = want
+                k1.pristine = false
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || bounds.w <= 0.0 ]
             return
         hex_sync[]
         sync[]
+        light_kinds[]
         cv : Canvas [ w.screen ]
         bx : f32 [ box[] ]
+        ty : f32 [ top_y[] ]
         cv.save[]
         cv.stroke_width[ 0.0 ]
+        draw_strip[ cv ]
         # the square: the hue, white from the left, black from below
         cv.fill_color[ shown[ hue, 1.0, 1.0 ] ]
-        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.rect_to[ 4.0, ty, bx, bx ]
         cv.paint[]
         wg : linear_gradient[ 4.0, 0.0, 4.0 + bx, 0.0 ]
         wg.add_stop[ 0.0, 0xffffffff ]
         wg.add_stop[ 1.0, 0x00ffffff ]
         cv.set_fill_gradient[ wg ]
-        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.rect_to[ 4.0, ty, bx, bx ]
         cv.paint[]
-        bg : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        bg : linear_gradient[ 0.0, ty, 0.0, ty + bx ]
         bg.add_stop[ 0.0, 0x00000000 ]
         bg.add_stop[ 1.0, 0xff000000 ]
         cv.set_fill_gradient[ bg ]
-        cv.rect_to[ 4.0, 4.0, bx, bx ]
+        cv.rect_to[ 4.0, ty, bx, bx ]
         cv.paint[]
         # the hue bar, top to bottom
         hx : f32 [ hue_x[] ]
-        hg : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        hg : linear_gradient[ 0.0, ty, 0.0, ty + bx ]
         for [ i: i32 0, i <= 6, i += 1 ]
             t : f32 [ f32[ i ] / 6.0 ]
             hg.add_stop[ t, packed[ shown[ t, 1.0, 1.0 ] ] ]
         cv.set_fill_gradient[ hg ]
-        cv.rect_to[ hx, 4.0, 12.0, bx ]
+        cv.rect_to[ hx, ty, 10.0, bx ]
         cv.paint[]
         # the alpha bar: the colour to clear, over squares
         ax : f32 [ alpha_x[] ]
-        checker[ cv, ax, 4.0, 12.0, bx ]
+        checker[ cv, ax, ty, 10.0, bx ]
         c : shown[ hue, sat, val ]
-        ag : linear_gradient[ 0.0, 4.0, 0.0, 4.0 + bx ]
+        ag : linear_gradient[ 0.0, ty, 0.0, ty + bx ]
         ag.add_stop[ 0.0, packed[ c ] ]
         ag.add_stop[ 1.0, 0x00000000 ]
         cv.set_fill_gradient[ ag ]
-        cv.rect_to[ ax, 4.0, 12.0, bx ]
+        cv.rect_to[ ax, ty, 10.0, bx ]
         cv.paint[]
         cv.clear_fill_gradient[]
-        # no colour yet (an svg's none): no marks, an empty swatch
-        blank : bool [ !edit || edit.count == 0 ]
-        # where the colour sits on each
-        cv.stroke_width[ 1.5 ]
-        cv.stroke_color[ rgba [ '#fff' ] ]
-        cv.fill_color[ rgba [ '#0000' ] ]
-        if [ !blank ]
+        # where the chosen colour sits on each
+        if [ offs.count > 0 ]
+            cv.stroke_width[ 1.5 ]
+            cv.stroke_color[ rgba [ '#fff' ] ]
+            cv.fill_color[ rgba [ '#0000' ] ]
             mx : f32 [ 4.0 + sat * bx ]
-            my : f32 [ 4.0 + (1.0 - val) * bx ]
+            my : f32 [ ty + (1.0 - val) * bx ]
             cv.rounded_rect[ mx - 4.0, my - 4.0, 8.0, 8.0, 4.0, 4.0,
                              4.0, 4.0 ]
             cv.paint[]
-            cv.rect_to[ hx - 2.0, 4.0 + hue * bx - 1.5, 16.0, 3.0 ]
+            cv.rect_to[ hx - 2.0, ty + hue * bx - 1.5, 14.0, 3.0 ]
             cv.paint[]
-            cv.rect_to[ ax - 2.0, 4.0 + (1.0 - alpha) * bx - 1.5,
-                        16.0, 3.0 ]
-            cv.paint[]
-        # the swatch (its alpha over squares); the hex is a field
-        sx : f32 [ swatch_x[] ]
-        if [ blank ]
-            cv.stroke_width[ 1.0 ]
-            cv.stroke_color[ rgba [ '#fff6' ] ]
-            cv.fill_color[ rgba [ '#0000' ] ]
-            cv.rounded_rect[ sx, 4.0, 28.0, 20.0, 3.0, 3.0, 3.0, 3.0 ]
-            cv.paint[]
-            # no colour: a diagonal across the box
-            cv.stroke_color[ rgba [ '#ff5a5a' ] ]
-            cv.stroke_width[ 1.5 ]
-            cv.move_to[ sx + 3.0, 21.0 ]
-            cv.line_to[ sx + 25.0, 7.0 ]
-            cv.paint[]
-        el
-            checker[ cv, sx, 4.0, 28.0, 20.0 ]
-            sw : shown[ hue, sat, val ]
-            sw.a = alpha
-            cv.fill_color[ sw ]
-            cv.rect_to[ sx, 4.0, 28.0, 20.0 ]
+            cv.rect_to[ ax - 2.0, ty + (1.0 - alpha) * bx - 1.5,
+                        14.0, 3.0 ]
             cv.paint[]
         cv.stroke_width[ 0.0 ]
         cv.restore[]
@@ -974,6 +1295,10 @@ element LaunchPanel
     # the name column's share of the width (last: orbiter's
     # build reads the members before it where they were)
     public  name_frac  : f32 [ 0.266 ]
+    # rows that span both cells: top, height each
+    mutable spans      : vec f32
+    # a value held back from the field being changed
+    mutable owed       : string
     # a vector cell's dividers: x, top and height each
     mutable cuts       : vec f32
 
@@ -1079,7 +1404,11 @@ element LaunchPanel
         if [ f inherits ColorPick ]
             cp : ColorPick f
             if [ cp.held != 0 ] return
-        if [ changing && changing == nm ] return
+        # held back while it changes; given once it is let go
+        if [ changing && changing == nm ]
+            owed = nm
+            return
+        if [ owed && owed == nm ] owed = ''
         if [ f.edit && f.edit.compare[ cur ] == 0 ] return
         f.edit       = cur
         f.sel_col    = cur.count
@@ -1112,6 +1441,7 @@ element LaunchPanel
         last_spec = spec
         rule_ys   = vec f32 []
         cuts      = vec f32 []
+        spans     = vec f32 []
         # no export: not compiling, so none of our rows either
         parse_fields[]
         runs : bool [ dbg_row && fields.props.count > 0 ]
@@ -1177,11 +1507,19 @@ element LaunchPanel
                 ty == 'path' || ty == 'resource' || ck == 'Directory' ]
             # a Text field is two rows tall; every other control is one
             rhx : f32 [ (ck == 'Multiline') ? rh * 2.0 : rh ]
-            if [ ty == 'rgba' || ty == 'paint' ] rhx = rh * 3.0
+            colour : bool [ ty == 'rgba' || ty == 'paint'
+                            || ty == 'tint' ]
+            if [ colour ] rhx = rh * 4.5
             cx : f32 [ lw + 1.0 ]
+            # a colour spans both cells, its name in a band on top
+            wide : bool [ colour ]
+            lh : f32 [ (wide) ? 18.0 : rhx ]
             t['lp_{nm}_lbl'] = LaunchLabel [ label: nm,
                                              area: Region [
-                                                 'l6px t{y}px w{lw - 6.0}px h{rhx}px' ] ]
+                                                 'l6px t{y}px w{lw - 6.0}px h{lh}px' ] ]
+            if [ wide ]
+                spans.push[ y ]
+                spans.push[ rhx ]
             # the panel rebuilds every frame. a control's value is given
             # ONCE, when it first mounts; after that the mounted control
             # owns it — a pick, a keystroke or a drag must never be
@@ -1192,7 +1530,8 @@ element LaunchPanel
             ex : element (elements && (!reseed || (changing && changing == nm))) ? elements['lp_{nm}'] : null
             vn : i32 [ vec_n[ ty ] ]
             vals : cur.split[ ',' ]
-            if [ reseed && vn == 0 ] reseed_text[ nm, cur ]
+            if [ (reseed || (owed && owed == nm)) && vn == 0 ]
+                reseed_text[ nm, cur ]
             ar9 : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
             if [ vn > 0 ]
                 # one cell, a dragged number a part
@@ -1333,28 +1672,32 @@ element LaunchPanel
                     t['lp_{nm}'] = LaunchSlider [ label: '', value: fr,
                                                   area: ar9 ]
             # a paint (an svg's fill) can be cleared to none
-            el [ ty == 'rgba' || ty == 'paint' ]
-                cl : bool [ ty == 'paint' ]
+            el [ colour ]
+                cl : bool [ ty == 'paint' || ty == 'tint' ]
+                one : bool [ ty == 'tint' ]
+                ar9 = Region [ 'l0 t{y + 18.0}px r0 h{rhx - 18.0}px' ]
                 if [ ex ]
-                    t['lp_{nm}'] = ColorPick [ clearable: cl,
+                    t['lp_{nm}'] = ColorPick [ paint: cl, solid: one,
                                                area: ar9 ]
                 el
                     t['lp_{nm}'] = ColorPick [ edit: cur,
-                        clearable: cl, area: ar9 ]
+                        paint: cl, solid: one, area: ar9 ]
             # a unit (0..1, an opacity) drags with its bar
             el [ ck == '' && (ty == 'f32' || ty == 'f64'
                                || ty == 'i32' || ty == 'i64'
-                               || ty == 'unit') ]
+                               || ty == 'unit' || ty == 'percent') ]
                 wh : bool [ ty == 'i32' || ty == 'i64' ]
-                un : bool [ ty == 'unit' ]
+                un : bool [ ty == 'unit' || ty == 'percent' ]
+                tp : f32 [ (ty == 'percent') ? 100.0 : 1.0 ]
                 if [ ex ]
                     t['lp_{nm}'] = DragField [ label: '', whole: wh,
-                                               bar: un,
+                                               bar: un, top: tp,
                                                focusable: true,
                                                area: ar9 ]
                 el
                     t['lp_{nm}'] = DragField [ label: '', edit: cur,
                                                whole: wh, bar: un,
+                                               top: tp,
                                                sel_col: cur.count,
                                                anchor_col: cur.count,
                         focusable: true, area: ar9 ]
@@ -1394,8 +1737,17 @@ element LaunchPanel
             for [ y9: f32 ] in rule_ys
                 cv.rect_to[ 0.0, y9 - 1.0, bounds.w, 1.0 ]
                 cv.paint[]
-        cv.rect_to[ col_x, 0.0 - scroll.y, 1.0, rows_h ]
-        cv.paint[]
+        # the column rule, broken where a row spans both cells
+        at : f32 [ 0.0 - scroll.y ]
+        if [ spans ]
+            for [ i: i32 0, i + 1 < spans.count, i += 2 ]
+                if [ spans[ i ] > at ]
+                    cv.rect_to[ col_x, at, 1.0, spans[ i ] - at ]
+                    cv.paint[]
+                at = spans[ i ] + spans[ i + 1 ]
+        if [ rows_h - scroll.y > at ]
+            cv.rect_to[ col_x, at, 1.0, rows_h - scroll.y - at ]
+            cv.paint[]
         if [ cuts ]
             for [ i: i32 0, i + 2 < cuts.count, i += 3 ]
                 cv.rect_to[ cuts[ i ], cuts[ i + 1 ], 1.0,

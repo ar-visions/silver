@@ -1,0 +1,1046 @@
+# lunar: the Moon's height, as accurate as data allows
+export 0.1.0
+
+import tls
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
+import libtiff/v4.7.2 from https://gitlab.com/libtiff/libtiff
+    -Dtiff-tools=OFF
+    -Dtiff-tests=OFF
+    -Dtiff-contrib=OFF
+    -Dtiff-docs=OFF
+    -Dtiff-cxx=OFF
+    -Djpeg=OFF
+    -Dold-jpeg=OFF
+    -Djbig=OFF
+    -Dlzma=OFF
+    -Dzstd=OFF
+    -Dwebp=OFF
+    -Dlerc=OFF
+    -ltiff
+import <tiffio.h>
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <math.h>
+import <unistd.h>
+import <sys/statvfs.h>
+
+# The map, built once at export into the app cache (lunar/):
+# - 60S to 60N: SLDEM2015, LOLA laser heights joined with
+#   Kaguya Terrain Camera stereo, 512 pixels a degree
+#   (Barker et al. 2016, Icarus 273).
+# - each pole: LOLA polar stereographic maps at 60, 30, 20, 10
+#   and 5 m a pixel (Smith et al. 2017, Icarus 283); at the
+#   south pole the 5 m level is Barker et al. 2021's mosaic of
+#   orbit-adjusted tracks (Planetary & Space Science 203).
+# - LOLA's 100 m maps from 45 degrees join the two at 60.
+# Each finer level is moved to its coarser one's broad height
+# at its edge; each coarser level takes the finer one's area
+# average inside it. Heights are steps of 0.5 m above a sphere
+# of 1737.4 km, as 16-bit integers (32-bit floats do not fit).
+
+MOON_R  : f64 [ 1737400.0 ]
+PI      : f64 [ 3.14159265358979323846 ]
+STEP    : f64 [ 0.5 ]
+NO_DATA : i16 [ -32768 ]
+PPD     : i64 [ 512 ]
+TILE_W  : i64 [ 23040 ]
+TILE_H  : i64 [ 15360 ]
+
+func pds_root [] -> string
+    return 'https://pds-geosciences.wustl.edu/lro/lro-l-lola-3-rdr-v1/lrolol_1xxx/data'
+
+func not_a_number [] -> f64
+    return strtod[ 'nan', null ]
+
+func smooth_step [ t: f64 ] -> f64
+    if [ t <= 0.0 ] return 0.0
+    if [ t >= 1.0 ] return 1.0
+    return t * t * (3.0 - 2.0 * t)
+
+# distance from the pole in a polar stereographic plane, m
+func plane_reach [ lat: f64 ] -> f64
+    return 2.0 * MOON_R * tan[ (90.0 - fabs[ lat ]) * PI / 360.0 ]
+
+# a pole's plane: x right, d down the image (DSMAP_POLAR)
+func plane_x [ lat: f64, lon: f64 ] -> f64
+    return plane_reach[ lat ] * sin[ lon * PI / 180.0 ]
+
+func plane_d [ lat: f64, lon: f64 ] -> f64
+    d : f64 [ plane_reach[ lat ] * cos[ lon * PI / 180.0 ] ]
+    if [ lat < 0.0 ] return -d
+    return d
+
+func pad_three [ v: i64 ] -> string
+    if [ v < 10 ] return '00{v}'
+    if [ v < 100 ] return '0{v}'
+    return '{v}'
+
+func free_bytes [ dir: string ] -> i64
+    st : struct statvfs
+    if [ statvfs[ dir.chars, @st ] != 0 ] return -1
+    return i64[ st.f_bavail ] * i64[ st.f_frsize ]
+
+func file_size [ p: path ] -> i64
+    name : string [ p.chars ]
+    f : @FILE [ fopen[ name.chars, 'rb' ] ]
+    if [ !f ] return -1
+    fseeko[ f, 0, SEEK_END ]
+    n : i64 [ ftello[ f ] ]
+    fclose[ f ]
+    return n
+
+func load_bytes [ p: path, bytes: i64 ] -> @u8
+    name : string [ p.chars ]
+    f : @FILE [ fopen[ name.chars, 'rb' ] ]
+    if [ !f ] return null
+    buf : @u8 [ malloc[ bytes ] ]
+    got : i64 [ i64[ fread[ buf, 1, bytes, f ] ] ]
+    fclose[ f ]
+    if [ got != bytes ]
+        log 'lunar: short read of {p}: {got} of {bytes}'
+        free[ buf ]
+        return null
+    return buf
+
+# writes beside, then renames: a stopped build leaves no file
+func save_bytes [ p: path, data: @u8, bytes: i64 ] -> bool
+    part : string '{p}.part'
+    f : @FILE [ fopen[ part.chars, 'wb' ] ]
+    if [ !f ] return false
+    put : i64 [ i64[ fwrite[ data, 1, bytes, f ] ] ]
+    fclose[ f ]
+    if [ put != bytes ]
+        unlink[ part.chars ]
+        return false
+    name : string [ p.chars ]
+    return rename[ part.chars, name.chars ] == 0
+
+func remove_file [ p: path ]
+    name : string [ p.chars ]
+    unlink[ name.chars ]
+
+# bilinear sample; NaN where any corner is missing
+func sample_f32 [ g: @f32, side: i64, scale: f64, x: f64,
+                  d: f64 ] -> f64
+    fi : f64 [ x / scale + f64[ side ] * 0.5 - 0.5 ]
+    fj : f64 [ d / scale + f64[ side ] * 0.5 - 0.5 ]
+    i : i64 [ i64[ floor[ fi ] ] ]
+    j : i64 [ i64[ floor[ fj ] ] ]
+    if [ i < 0 || j < 0 || i >= side - 1 || j >= side - 1 ]
+        return not_a_number[]
+    u : f64 [ fi - f64[ i ] ]
+    v : f64 [ fj - f64[ j ] ]
+    at : i64 [ j * side + i ]
+    top : f64 [ g[ at ] * (1.0 - u) + g[ at + 1 ] * u ]
+    low : f64 [ g[ at + side ] * (1.0 - u) + g[ at + side + 1 ] * u ]
+    return top * (1.0 - v) + low * v
+
+func sample_i16 [ g: @i16, side: i64, scale: f64, x: f64,
+                  d: f64 ] -> f64
+    fi : f64 [ x / scale + f64[ side ] * 0.5 - 0.5 ]
+    fj : f64 [ d / scale + f64[ side ] * 0.5 - 0.5 ]
+    i : i64 [ i64[ floor[ fi ] ] ]
+    j : i64 [ i64[ floor[ fj ] ] ]
+    if [ i < 0 || j < 0 || i >= side - 1 || j >= side - 1 ]
+        return not_a_number[]
+    at : i64 [ j * side + i ]
+    a00 : i16 [ g[ at ] ]
+    a10 : i16 [ g[ at + 1 ] ]
+    a01 : i16 [ g[ at + side ] ]
+    a11 : i16 [ g[ at + side + 1 ] ]
+    if [ a00 == NO_DATA || a10 == NO_DATA || a01 == NO_DATA
+         || a11 == NO_DATA ]
+        return not_a_number[]
+    u : f64 [ fi - f64[ i ] ]
+    v : f64 [ fj - f64[ j ] ]
+    top : f64 [ f64[ a00 ] * (1.0 - u) + f64[ a10 ] * u ]
+    low : f64 [ f64[ a01 ] * (1.0 - u) + f64[ a11 ] * u ]
+    return (top * (1.0 - v) + low * v) * STEP
+
+func to_step [ metres: f64 ] -> i16
+    if [ metres != metres ] return NO_DATA
+    s : f64 [ round[ metres / STEP ] ]
+    if [ s < -32767.0 ] s = -32767.0
+    if [ s > 32767.0 ] s = 32767.0
+    return i16[ s ]
+
+# rows of work for the threads
+class Span
+    public lo : i64
+    public hi : i64
+
+class Kernel
+    public func rows [ lo: i64, hi: i64 ] -> none
+        return
+
+func span_run [ arg: object :: k: Kernel ]
+    s : Span [ arg ]
+    k.rows*[ s.lo, s.hi ]
+
+func spread [ k: Kernel, count: i64 ]
+    parts : i64 [ 32 ]
+    if [ count < parts ] parts = count
+    work : vec Au []
+    for [ i: i64 0, i < parts, i += 1 ]
+        s : Span [ lo: count * i / parts, hi: count * (i + 1) / parts ]
+        work.push[ s ]
+    t : async [ work_fn: lambda span_run[ k ], work: work ]
+    t.sync[ null ]
+
+# one download, into .part first; three tries
+class Fetch
+    public url  : string
+    public dest : path
+    public ok   : bool
+
+Kernel Fetches
+    public list : vec Fetch
+    public func rows [ lo: i64, hi: i64 ] -> none
+        for [ i: i64 lo, i < hi, i += 1 ]
+            f : list[ i ]
+            if [ f.dest.exists[] ]
+                f.ok = true
+                continue
+            part : path '{f.dest}.part'
+            for [ tries: i32 0, tries < 3 && !f.ok, tries += 1 ]
+                n : i64 [ Http.download[ f.url, part ] ]
+                if [ n > 0 ]
+                    from : string [ part.chars ]
+                    to   : string [ f.dest.chars ]
+                    f.ok = rename[ from.chars, to.chars ] == 0
+            if [ !f.ok ] log 'lunar: could not fetch {f.url}'
+
+func fetch_all [ list: vec Fetch ] -> bool
+    if [ list.count == 0 ] return true
+    k : Fetches [ list: list ]
+    spread[ k, list.count ]
+    all : bool [ true ]
+    for [ f: Fetch ] in list
+        if [ !f.ok ] all = false
+    return all
+
+# one polar level: a square grid centred on the pole
+class Level
+    public name  : string
+    public url   : string
+    public scale : f64
+    public tiff  : bool
+    public side  : i64
+    public reach : f64
+    public band  : f64
+    public raw   : path
+    public out   : path
+    public held  : path
+
+    public func centre [ i: i64 ] -> f64
+        return (f64[ i ] + 0.5 - f64[ side ] * 0.5) * scale
+
+    public func read_reach [] -> bool
+        if [ !held.exists[] ] return false
+        s : string [ held.load[ typeid[ string ], null ] ]
+        if [ !s ] return false
+        words : s.split[ ' ' ]
+        if [ words.count < 2 ] return false
+        reach = atof[ words[ 0 ].chars ]
+        side  = atoll[ words[ 1 ].chars ]
+        return true
+
+# Barker 2021's GeoTIFF to the PDS layout: f32 km, rows down
+Kernel TiffRows
+    public src  : string
+    public side : i64
+    public tile : i64
+    public dst  : @f32
+    public bad  : i64
+    public func rows [ lo: i64, hi: i64 ] -> none
+        t : @TIFF [ TIFFOpen[ src.chars, 'r' ] ]
+        if [ !t ]
+            bad += 1
+            return
+        buf : @f32 [ malloc[ tile * tile * 4 ] ]
+        across : i64 [ (side + tile - 1) / tile ]
+        for [ ty: i64 lo, ty < hi, ty += 1 ]
+            for [ tx: i64 0, tx < across, tx += 1 ]
+                got : i64 [ i64[ TIFFReadTile[ t, buf, u32[ tx * tile ],
+                                              u32[ ty * tile ], 0,
+                                              u16[ 0 ] ] ] ]
+                if [ got <= 0 ]
+                    bad += 1
+                    continue
+                for [ r: i64 0, r < tile, r += 1 ]
+                    row : i64 [ ty * tile + r ]
+                    if [ row >= side ] break
+                    w : i64 [ side - tx * tile ]
+                    if [ w > tile ] w = tile
+                    memcpy[ @dst[ row * side + tx * tile ],
+                            @buf[ r * tile ], w * 4 ]
+        free[ buf ]
+        TIFFClose[ t ]
+
+func tiff_to_raw [ src: path, dst: path ] -> bool
+    name : string [ src.chars ]
+    t : @TIFF [ TIFFOpen[ name.chars, 'r' ] ]
+    if [ !t ] return false
+    w : local u32 [ 1 ]
+    h : local u32 [ 1 ]
+    tw : local u32 [ 1 ]
+    w[ 0 ] = 0
+    h[ 0 ] = 0
+    tw[ 0 ] = 0
+    TIFFGetField[ t, TIFFTAG_IMAGEWIDTH, @w[ 0 ] ]
+    TIFFGetField[ t, TIFFTAG_IMAGELENGTH, @h[ 0 ] ]
+    TIFFGetField[ t, TIFFTAG_TILEWIDTH, @tw[ 0 ] ]
+    TIFFClose[ t ]
+    side : i64 [ i64[ w[ 0 ] ] ]
+    if [ side == 0 || i64[ h[ 0 ] ] != side || tw[ 0 ] == 0 ]
+        log 'lunar: {src} is not a square tiled image'
+        return false
+    bytes : i64 [ side * side * 4 ]
+    data : @f32 [ malloc[ bytes ] ]
+    tile : i64 [ i64[ tw[ 0 ] ] ]
+    k : TiffRows [ src: name, side: side, tile: tile, dst: data ]
+    spread[ k, (side + tile - 1) / tile ]
+    ok : bool [ k.bad == 0 ]
+    if [ !ok ] log 'lunar: {k.bad} tiles unread in {src}'
+    if [ ok ] ok = save_bytes[ dst, cast @u8 [ data ], bytes ]
+    free[ data ]
+    return ok
+
+# per row, the nearest missing pixel's squared radius
+Kernel EdgeRows
+    public lv   : Level
+    public data : @f32
+    public near : @f64
+    public func rows [ lo: i64, hi: i64 ] -> none
+        n : i64 [ lv.side ]
+        for [ j: i64 lo, j < hi, j += 1 ]
+            d : f64 [ lv.centre[ j ] ]
+            best : f64 [ 1.0e30 ]
+            for [ i: i64 0, i < n, i += 1 ]
+                v : f32 [ data[ j * n + i ] ]
+                if [ v == v && v > -30.0 && v < 30.0 ] continue
+                x : f64 [ lv.centre[ i ] ]
+                q : f64 [ x * x + d * d ]
+                if [ q < best ] best = q
+            near[ j ] = best
+
+# the radius the level's data is whole to, less two pixels
+func find_reach [ lv: Level, data: @f32 ]
+    near : @f64 [ malloc[ lv.side * 8 ] ]
+    k : EdgeRows [ lv: lv, data: data, near: near ]
+    spread[ k, lv.side ]
+    best : f64 [ 1.0e30 ]
+    for [ j: i64 0, j < lv.side, j += 1 ]
+        if [ near[ j ] < best ] best = near[ j ]
+    free[ near ]
+    half : f64 [ f64[ lv.side ] * 0.5 * lv.scale ]
+    whole : f64 [ sqrt[ best ] ]
+    if [ whole > half ] whole = half
+    lv.reach = whole - 2.0 * lv.scale
+
+# two heights on one coarse grid, averaged in the same cells:
+# their difference is the broad offset of one from the other
+class Broad
+    public cell   : f64
+    public side   : i64
+    public fine   : @f64
+    public fine_n : @f64
+    public coarse : @f64
+    public coarse_n : @f64
+    public diff   : @f32
+    public made   : bool
+
+    public func make [ reach: f64, size: f64 ]
+        cell = size
+        side = 2 * i64[ ceil[ reach / size ] ] + 4
+        cells : i64 [ side * side ]
+        fine     = calloc[ cells, 8 ]
+        fine_n   = calloc[ cells, 8 ]
+        coarse   = calloc[ cells, 8 ]
+        coarse_n = calloc[ cells, 8 ]
+        diff     = calloc[ cells, 4 ]
+        made     = true
+
+    public func cell_of [ x: f64, d: f64 ] -> i64
+        i : i64 [ i64[ floor[ x / cell + f64[ side ] * 0.5 ] ] ]
+        j : i64 [ i64[ floor[ d / cell + f64[ side ] * 0.5 ] ] ]
+        if [ i < 0 || j < 0 || i >= side || j >= side ] return -1
+        return j * side + i
+
+    public func add [ x: f64, d: f64, metres: f64, is_fine: bool ]
+        c : i64 [ cell_of[ x, d ] ]
+        if [ c < 0 ] return
+        if [ is_fine ]
+            fine[ c ] += metres
+            fine_n[ c ] += 1.0
+        el
+            coarse[ c ] += metres
+            coarse_n[ c ] += 1.0
+
+    # 3 x 3 box of each, then coarse less fine; logs the spread
+    public func settle [ what: string ]
+        sum : f64 [ 0.0 ]
+        sq  : f64 [ 0.0 ]
+        n   : f64 [ 0.0 ]
+        for [ j: i64 1, j < side - 1, j += 1 ]
+            for [ i: i64 1, i < side - 1, i += 1 ]
+                fs : f64 [ 0.0 ]
+                fc : f64 [ 0.0 ]
+                cs : f64 [ 0.0 ]
+                cc : f64 [ 0.0 ]
+                for [ v: i64 -1, v <= 1, v += 1 ]
+                    for [ u: i64 -1, u <= 1, u += 1 ]
+                        at : i64 [ (j + v) * side + i + u ]
+                        fs += fine[ at ]
+                        fc += fine_n[ at ]
+                        cs += coarse[ at ]
+                        cc += coarse_n[ at ]
+                if [ fc > 0.0 && cc > 0.0 ]
+                    off : f64 [ cs / cc - fs / fc ]
+                    diff[ j * side + i ] = f32[ off ]
+                    me : i64 [ j * side + i ]
+                    if [ fine_n[ me ] > 0.0 && coarse_n[ me ] > 0.0 ]
+                        sum += off
+                        sq  += off * off
+                        n   += 1.0
+        if [ n > 0.0 ]
+            mean : f64 [ sum / n ]
+            rms  : f64 [ sqrt[ sq / n ] ]
+            log 'lunar: {what}: broad offset mean {mean} m, rms {rms} m over {n} cells'
+
+    # the offset at a point, bilinear over cell centres
+    public func at [ x: f64, d: f64 ] -> f64
+        return sample_f32[ diff, side, cell, x, d ]
+
+    public func release []
+        if [ !made ] return
+        free[ fine ]
+        free[ fine_n ]
+        free[ coarse ]
+        free[ coarse_n ]
+        free[ diff ]
+        made = false
+
+# a level's pixels inside a radius go into a Broad
+func gather [ b: Broad, lv: Level, data: @f32, limit: f64,
+              is_fine: bool ]
+    n : i64 [ lv.side ]
+    lim : f64 [ limit * limit ]
+    for [ j: i64 0, j < n, j += 1 ]
+        d : f64 [ lv.centre[ j ] ]
+        if [ d * d >= lim ] continue
+        for [ i: i64 0, i < n, i += 1 ]
+            x : f64 [ lv.centre[ i ] ]
+            if [ x * x + d * d >= lim ] continue
+            v : f32 [ data[ j * n + i ] ]
+            if [ v != v ] continue
+            b.add[ x, d, f64[ v ] * 1000.0, is_fine ]
+
+# which finer pixels cover each coarser one, and how much
+class Overlap
+    public start  : @i64
+    public count  : @i64
+    public weight : @f64
+
+    public func make [ cside: i64, cscale: f64, fside: i64,
+                       fscale: f64 ]
+        start  = malloc[ cside * 8 ]
+        count  = malloc[ cside * 8 ]
+        weight = malloc[ cside * 4 * 8 ]
+        for [ i: i64 0, i < cside, i += 1 ]
+            x0 : f64 [ (f64[ i ] - f64[ cside ] * 0.5) * cscale ]
+            left  : f64 [ x0 / fscale + f64[ fside ] * 0.5 ]
+            right : f64 [ (x0 + cscale) / fscale + f64[ fside ] * 0.5 ]
+            first : i64 [ i64[ floor[ left ] ] ]
+            last  : i64 [ i64[ ceil[ right ] ] - 1 ]
+            start[ i ] = first
+            count[ i ] = 0
+            if [ first < 0 || last >= fside || last - first > 3 ]
+                continue
+            count[ i ] = last - first + 1
+            for [ j: i64 first, j <= last, j += 1 ]
+                lo : f64 [ left ]
+                hi : f64 [ right ]
+                if [ f64[ j ] > lo ] lo = f64[ j ]
+                if [ f64[ j + 1 ] < hi ] hi = f64[ j + 1 ]
+                weight[ i * 4 + j - first ] = hi - lo
+
+    public func release []
+        free[ start ]
+        free[ count ]
+        free[ weight ]
+
+# a level's result: its own data moved to its coarser level at
+# its edge, and its finer level's average inside that one
+Kernel PyramidRows
+    public lv      : Level
+    public data    : @f32
+    public seam    : Broad
+    public finer   : Level
+    public fdata   : @f32
+    public over    : Overlap
+    public result  : @f32
+    public steps   : @i16
+    public func rows [ lo: i64, hi: i64 ] -> none
+        n : i64 [ lv.side ]
+        fn : i64 [ 0 ]
+        if [ finer ] fn = finer.side
+        for [ j: i64 lo, j < hi, j += 1 ]
+            d : f64 [ lv.centre[ j ] ]
+            for [ i: i64 0, i < n, i += 1 ]
+                x : f64 [ lv.centre[ i ] ]
+                r : f64 [ sqrt[ x * x + d * d ] ]
+                h : f64 [ f64[ data[ j * n + i ] ] * 1000.0 ]
+                if [ seam ]
+                    w : f64 [ smooth_step[ (lv.reach - r) / lv.band ] ]
+                    sx : f64 [ x ]
+                    sd : f64 [ d ]
+                    if [ r > lv.reach ]
+                        sx = x * lv.reach / r
+                        sd = d * lv.reach / r
+                    off : f64 [ seam.at[ sx, sd ] ]
+                    if [ off == off ] h += (1.0 - w) * off
+                if [ finer ]
+                    wf : f64 [ smooth_step[ (finer.reach - r)
+                                           / finer.band ] ]
+                    if [ wf > 0.0 && over.count[ i ] > 0
+                         && over.count[ j ] > 0 ]
+                        sum : f64 [ 0.0 ]
+                        wsum : f64 [ 0.0 ]
+                        for [ v: i64 0, v < over.count[ j ], v += 1 ]
+                            wv : f64 [ over.weight[ j * 4 + v ] ]
+                            row : i64 [ (over.start[ j ] + v) * fn ]
+                            for [ u: i64 0, u < over.count[ i ],
+                                  u += 1 ]
+                                fv : f32 [ fdata[ row + over.start[ i ]
+                                                  + u ] ]
+                                if [ fv != fv ] continue
+                                wu : f64 [ wv
+                                           * over.weight[ i * 4 + u ] ]
+                                sum  += wu * f64[ fv ]
+                                wsum += wu
+                        if [ wsum > 0.0 ]
+                            avg : f64 [ sum / wsum ]
+                            if [ h != h ]
+                                h = avg
+                            el
+                                h = (1.0 - wf) * h + wf * avg
+                result[ j * n + i ] = f32[ h ]
+                steps[ j * n + i ] = to_step[ h ]
+
+# one pole: its levels finest first, and the 100 m bridge
+class Pole
+    public north  : bool
+    public levels : vec Level
+    public bridge : Level
+
+func pole_level [ dir: path, north: bool, name: string, url: string,
+                  scale: f64, tiff: bool ] -> Level
+    side : string [ (north) ? 'north' : 'south' ]
+    s : i64 [ i64[ scale ] ]
+    lv : Level [ name: name, url: url, scale: scale, tiff: tiff,
+                 raw: path '{dir}/source/{name}.img',
+                 out: path '{dir}/{side}_{s}m.i16',
+                 held: path '{dir}/{side}_{s}m.reach' ]
+    return lv
+
+func make_pole [ dir: path, north: bool ] -> Pole
+    p : Pole [ north: north, levels: vec Level [] ]
+    h : string [ (north) ? 'n' : 's' ]
+    gdr : string '{pds_root[]}/lola_gdr/polar/float_img'
+    if [ north ]
+        p.levels.push[ pole_level[ dir, north, 'ldem_875n_5m',
+            '{gdr}/ldem_875n_5m_float.img', 5.0, false ] ]
+    el
+        p.levels.push[ pole_level[ dir, north, 'ldem_87s_5mpp',
+            'https://pgda.gsfc.nasa.gov/data/LOLA_5mpp/87S/ldem_87s_5mpp.tif',
+            5.0, true ] ]
+    p.levels.push[ pole_level[ dir, north, 'ldem_85{h}_10m',
+        '{gdr}/ldem_85{h}_10m_float.img', 10.0, false ] ]
+    p.levels.push[ pole_level[ dir, north, 'ldem_80{h}_20m',
+        '{gdr}/ldem_80{h}_20m_float.img', 20.0, false ] ]
+    p.levels.push[ pole_level[ dir, north, 'ldem_75{h}_30m',
+        '{gdr}/ldem_75{h}_30m_float.img', 30.0, false ] ]
+    p.levels.push[ pole_level[ dir, north, 'ldem_60{h}_60m',
+        '{gdr}/ldem_60{h}_60m_float.img', 60.0, false ] ]
+    p.bridge = pole_level[ dir, north, 'ldem_45{h}_100m',
+        '{gdr}/ldem_45{h}_100m_float.img', 100.0, false ]
+    for [ k: i64 0, k < p.levels.count - 1, k += 1 ]
+        lv : p.levels[ k ]
+        up : p.levels[ k + 1 ]
+        lv.band = 128.0 * up.scale
+    return p
+
+func pole_done [ p: Pole ] -> bool
+    for [ lv: Level ] in p.levels
+        if [ !lv.out.exists[] || !lv.read_reach[] ] return false
+    return true
+
+# a level's source as f32 km: side from its size
+func load_level [ lv: Level ] -> @f32
+    bytes : i64 [ file_size[ lv.raw ] ]
+    if [ bytes <= 0 ] return null
+    lv.side = i64[ round[ sqrt[ f64[ bytes / 4 ] ] ] ]
+    if [ lv.side * lv.side * 4 != bytes ]
+        log 'lunar: {lv.raw} is not square ({bytes} bytes)'
+        return null
+    return cast @f32 [ load_bytes[ lv.raw, bytes ] ]
+
+func pole_sources [ p: Pole ] -> bool
+    list : vec Fetch []
+    for [ lv: Level ] in p.levels
+        if [ lv.raw.exists[] ] continue
+        dest : path [ lv.raw ]
+        if [ lv.tiff ] dest = path '{lv.raw}.tif'
+        list.push[ Fetch [ url: lv.url, dest: dest ] ]
+    if [ !p.bridge.raw.exists[] ]
+        list.push[ Fetch [ url: p.bridge.url, dest: p.bridge.raw ] ]
+    if [ !fetch_all[ list ] ] return false
+    for [ lv: Level ] in p.levels
+        if [ !lv.tiff || lv.raw.exists[] ] continue
+        tif : path '{lv.raw}.tif'
+        log 'lunar: decoding {tif}'
+        if [ !tiff_to_raw[ tif, lv.raw ] ] return false
+        remove_file[ tif ]
+    return true
+
+# every level of one pole, finest first
+func build_pole [ p: Pole ] -> bool
+    name : string [ (p.north) ? 'north' : 'south' ]
+    if [ pole_done[ p ] ]
+        log 'lunar: {name} pole current'
+        return true
+    if [ !pole_sources[ p ] ] return false
+    count : i64 [ p.levels.count ]
+    seams : vec Broad []
+    for [ k: i64 0, k < count - 1, k += 1 ]
+        seams.push[ Broad [] ]
+    # the edges, and each seam's two broad heights
+    for [ k: i64 0, k < count, k += 1 ]
+        lv : p.levels[ k ]
+        data : load_level[ lv ]
+        if [ lv.side == 0 ] return false
+        find_reach[ lv, data ]
+        log 'lunar: {lv.name}: {lv.side} pixels a side, whole to {lv.reach} m'
+        if [ k < count - 1 ]
+            up : p.levels[ k + 1 ]
+            b : seams[ k ]
+            b.make[ lv.reach, 4.0 * up.scale ]
+            gather[ b, lv, data, lv.reach, true ]
+        if [ k > 0 ]
+            down : p.levels[ k - 1 ]
+            gather[ seams[ k - 1 ], lv, data, down.reach, false ]
+        free[ data ]
+    for [ k: i64 0, k < count - 1, k += 1 ]
+        lv : p.levels[ k ]
+        up : p.levels[ k + 1 ]
+        b : seams[ k ]
+        b.settle[ '{lv.name} to {up.name}' ]
+    # the results, finest first, each over the one before
+    prev : @f32 [ null ]
+    for [ k: i64 0, k < count, k += 1 ]
+        lv : p.levels[ k ]
+        data : load_level[ lv ]
+        cells : i64 [ lv.side * lv.side ]
+        result : @f32 [ malloc[ cells * 4 ] ]
+        steps : @i16 [ malloc[ cells * 2 ] ]
+        k_rows : PyramidRows [ lv: lv, data: data, result: result,
+                               steps: steps ]
+        if [ k < count - 1 ] k_rows.seam = seams[ k ]
+        over : Overlap [ ]
+        if [ k > 0 ]
+            fl : p.levels[ k - 1 ]
+            over.make[ lv.side, lv.scale, fl.side, fl.scale ]
+            k_rows.finer = fl
+            k_rows.fdata = prev
+            k_rows.over  = over
+        spread[ k_rows, lv.side ]
+        if [ k > 0 ]
+            over.release[]
+            free[ prev ]
+        free[ data ]
+        prev = result
+        if [ !save_bytes[ lv.out, cast @u8 [ steps ], cells * 2 ] ]
+            log 'lunar: could not write {lv.out}'
+            return false
+        free[ steps ]
+        lv.held.save[ '{lv.reach} {lv.side}', null ]
+        log 'lunar: wrote {lv.out}'
+    free[ prev ]
+    for [ b: Broad ] in seams
+        b.release[]
+    for [ lv: Level ] in p.levels
+        remove_file[ lv.raw ]
+    return true
+
+# a cylindrical tile: 30 by 45 degrees (latitude, longitude)
+class Tile
+    public top  : f64
+    public west : f64
+    public band : string
+    public src  : path
+    public url  : string
+    public out  : path
+
+func band_name [ top: f64 ] -> string
+    if [ top == 90.0 ] return '60n_90n'
+    if [ top == 60.0 ] return '30n_60n'
+    if [ top == 30.0 ] return '00n_30n'
+    if [ top == 0.0 ] return '30s_00s'
+    if [ top == -30.0 ] return '60s_30s'
+    return '90s_60s'
+
+func make_tile [ dir: path, top: f64, west: f64 ] -> Tile
+    band : band_name[ top ]
+    lo : pad_three[ i64[ west ] ]
+    hi : pad_three[ i64[ west ] + 45 ]
+    file : string 'sldem2015_512_{band}_{lo}_{hi}_float.img'
+    t : Tile [ top: top, west: west, band: band,
+               src: path '{dir}/source/{file}',
+               url: '{pds_root[]}/sldem2015/tiles/float_img/{file}',
+               out: path '{dir}/lunar_512_{band}_{lo}_{hi}.i16' ]
+    return t
+
+# SLDEM2015's rows into steps; near 60 moved to the polar maps
+Kernel SldemRows
+    public tile   : Tile
+    public data   : @f32
+    public seam   : Broad
+    public steps  : @i16
+    public func rows [ lo: i64, hi: i64 ] -> none
+        for [ j: i64 lo, j < hi, j += 1 ]
+            lat : f64 [ tile.top - (f64[ j ] + 0.5) / f64[ PPD ] ]
+            w : f64 [ 0.0 ]
+            if [ seam ] w = smooth_step[ (fabs[ lat ] - 59.5) / 0.5 ]
+            for [ i: i64 0, i < TILE_W, i += 1 ]
+                v : f32 [ data[ j * TILE_W + i ] ]
+                h : f64 [ f64[ v ] * 1000.0 ]
+                if [ w > 0.0 ]
+                    lon : f64 [ tile.west
+                                + (f64[ i ] + 0.5) / f64[ PPD ] ]
+                    off : f64 [ seam.at[ plane_x[ lat, lon ],
+                                         plane_d[ lat, lon ] ] ]
+                    if [ off == off ] h += w * off
+                steps[ j * TILE_W + i ] = to_step[ h ]
+
+func load_tile [ t: Tile ] -> @f32
+    bytes : i64 [ TILE_W * TILE_H * 4 ]
+    if [ file_size[ t.src ] != bytes ]
+        log 'lunar: {t.src} has the wrong size'
+        return null
+    return cast @f32 [ load_bytes[ t.src, bytes ] ]
+
+func convert_tile [ t: Tile, seam: Broad ] -> bool
+    data : load_tile[ t ]
+    if [ !data ] return false
+    cells : i64 [ TILE_W * TILE_H ]
+    steps : @i16 [ malloc[ cells * 2 ] ]
+    k : SldemRows [ tile: t, data: data, steps: steps ]
+    if [ seam ] k.seam = seam
+    spread[ k, TILE_H ]
+    free[ data ]
+    ok : bool [ save_bytes[ t.out, cast @u8 [ steps ], cells * 2 ] ]
+    free[ steps ]
+    if [ ok ]
+        remove_file[ t.src ]
+        log 'lunar: wrote {t.out}'
+    return ok
+
+# the eight tiles of one 30 degree band
+func band_tiles [ dir: path, top: f64 ] -> vec Tile
+    list : vec Tile []
+    for [ w: i64 0, w < 360, w += 45 ]
+        list.push[ make_tile[ dir, top, f64[ w ] ] ]
+    return list
+
+func band_done [ list: vec Tile ] -> bool
+    for [ t: Tile ] in list
+        if [ !t.out.exists[] ] return false
+    return true
+
+func band_sources [ list: vec Tile ] -> bool
+    want : vec Fetch []
+    for [ t: Tile ] in list
+        if [ t.out.exists[] ] continue
+        want.push[ Fetch [ url: t.url, dest: t.src ] ]
+    return fetch_all[ want ]
+
+# the band beside a pole: SLDEM2015 within a degree of 60
+# against LOLA's 100 m map at the same points
+func build_seam_band [ p: Pole, dir: path ] -> bool
+    top : f64 [ (p.north) ? 60.0 : -30.0 ]
+    list : band_tiles[ dir, top ]
+    if [ band_done[ list ] ] return true
+    if [ !band_sources[ list ] ] return false
+    if [ !p.bridge.raw.exists[] ]
+        want : vec Fetch []
+        want.push[ Fetch [ url: p.bridge.url, dest: p.bridge.raw ] ]
+        if [ !fetch_all[ want ] ] return false
+    bridge : load_level[ p.bridge ]
+    if [ !bridge ] return false
+    seam : Broad [ ]
+    seam.make[ plane_reach[ 59.0 ], 400.0 ]
+    first : i64 [ 0 ]
+    if [ !p.north ] first = TILE_H - PPD
+    for [ t: Tile ] in list
+        data : load_tile[ t ]
+        if [ !data ] return false
+        for [ j: i64 first, j < first + PPD, j += 1 ]
+            lat : f64 [ t.top - (f64[ j ] + 0.5) / f64[ PPD ] ]
+            for [ i: i64 0, i < TILE_W, i += 1 ]
+                v : f32 [ data[ j * TILE_W + i ] ]
+                if [ v != v ] continue
+                lon : f64 [ t.west + (f64[ i ] + 0.5) / f64[ PPD ] ]
+                x : f64 [ plane_x[ lat, lon ] ]
+                d : f64 [ plane_d[ lat, lon ] ]
+                lola : f64 [ sample_f32[ bridge, p.bridge.side,
+                                         p.bridge.scale, x, d ] ]
+                if [ lola != lola ] continue
+                seam.add[ x, d, f64[ v ] * 1000.0, true ]
+                seam.add[ x, d, lola * 1000.0, false ]
+        free[ data ]
+    free[ bridge ]
+    side : string [ (p.north) ? 'north' : 'south' ]
+    seam.settle[ 'SLDEM2015 to LOLA 100 m near 60 {side}' ]
+    for [ t: Tile ] in list
+        if [ t.out.exists[] ] continue
+        if [ !convert_tile[ t, seam ] ] return false
+    seam.release[]
+    return true
+
+func build_plain_band [ dir: path, top: f64 ] -> bool
+    list : band_tiles[ dir, top ]
+    if [ band_done[ list ] ] return true
+    if [ !band_sources[ list ] ] return false
+    for [ t: Tile ] in list
+        if [ t.out.exists[] ] continue
+        if [ !convert_tile[ t, null ] ] return false
+    return true
+
+# a pole's finished level in memory
+class Grid
+    public lv    : Level
+    public steps : @i16
+
+# a cap tile's rows from the finest polar level holding them
+Kernel CapRows
+    public tile  : Tile
+    public grids : vec Grid
+    public steps : @i16
+    public func rows [ lo: i64, hi: i64 ] -> none
+        degree : f64 [ 1.0 / f64[ PPD ] ]
+        tall : f64 [ MOON_R * PI / 180.0 * degree ]
+        for [ j: i64 lo, j < hi, j += 1 ]
+            lat : f64 [ tile.top - (f64[ j ] + 0.5) * degree ]
+            r : f64 [ plane_reach[ lat ] ]
+            g : grids[ grids.count - 1 ]
+            for [ k: i64 0, k < grids.count, k += 1 ]
+                c : grids[ k ]
+                if [ c.lv.reach - r > tall + 2.0 * c.lv.scale ]
+                    g = c
+                    break
+            subs : i64 [ i64[ ceil[ tall / g.lv.scale ] ] ]
+            if [ subs < 1 ] subs = 1
+            for [ i: i64 0, i < TILE_W, i += 1 ]
+                lon : f64 [ tile.west + (f64[ i ] + 0.5) * degree ]
+                sum : f64 [ 0.0 ]
+                n : f64 [ 0.0 ]
+                for [ q: i64 0, q < subs, q += 1 ]
+                    sl : f64 [ lat + ((f64[ q ] + 0.5) / f64[ subs ]
+                                      - 0.5) * degree ]
+                    h : f64 [ sample_i16[ g.steps, g.lv.side,
+                                          g.lv.scale,
+                                          plane_x[ sl, lon ],
+                                          plane_d[ sl, lon ] ] ]
+                    if [ h != h ] continue
+                    sum += h
+                    n += 1.0
+                if [ n > 0.0 ]
+                    steps[ j * TILE_W + i ] = to_step[ sum / n ]
+                el
+                    steps[ j * TILE_W + i ] = NO_DATA
+
+func build_cap [ p: Pole, dir: path ] -> bool
+    top : f64 [ (p.north) ? 90.0 : -60.0 ]
+    list : band_tiles[ dir, top ]
+    if [ band_done[ list ] ] return true
+    grids : vec Grid []
+    for [ lv: Level ] in p.levels
+        if [ !lv.read_reach[] ] return false
+        bytes : i64 [ lv.side * lv.side * 2 ]
+        data : @i16 [ cast @i16 [ load_bytes[ lv.out, bytes ] ] ]
+        if [ !data ] return false
+        grids.push[ Grid [ lv: lv, steps: data ] ]
+    cells : i64 [ TILE_W * TILE_H ]
+    steps : @i16 [ malloc[ cells * 2 ] ]
+    ok : bool [ true ]
+    for [ t: Tile ] in list
+        if [ t.out.exists[] ] continue
+        k : CapRows [ tile: t, grids: grids, steps: steps ]
+        spread[ k, TILE_H ]
+        ok = save_bytes[ t.out, cast @u8 [ steps ], cells * 2 ]
+        if [ !ok ] break
+        log 'lunar: wrote {t.out}'
+    free[ steps ]
+    for [ g: Grid ] in grids
+        free[ g.steps ]
+    return ok
+
+func write_index [ dir: path, poles: vec Pole ]
+    s : string 'lunar:
+    sphere: 1737400
+    step: 0.5
+    no_data: -32768
+    cylindrical:
+        pixels_per_degree: 512
+        tile: [ 23040, 15360 ]
+        rows: from the tile top down, pixel centres
+        columns: east longitude from the tile west edge
+        files: lunar_512_<band>_<west>_<east>.i16
+        bands: [ 60n_90n, 30n_60n, 00n_30n, 30s_00s, 60s_30s, 90s_60s ]
+    polar:
+        projection: polar stereographic, DSMAP_POLAR (LOLA PDS)
+        pixel: x = (i + 0.5 - side / 2) scale, rows likewise
+        levels:
+'
+    for [ p: Pole ] in poles
+        for [ lv: Level ] in p.levels
+            lv.read_reach[]
+            file : lv.out.filename[]
+            s = s + '            - file: {file}
+              scale: {lv.scale}
+              side: {lv.side}
+              whole_to: {lv.reach}
+'
+    s = s + '    sources:
+        - SLDEM2015 (Barker et al. 2016, Icarus 273, 346-355)
+        - LOLA polar GDR (Smith et al. 2017, Icarus 283, 70-91)
+        - LOLA 5 m south pole mosaic (Barker et al. 2021,
+          Planetary and Space Science 203, 105119)
+'
+    p : path '{dir}/lunar.agi'
+    p.save[ s, null ]
+
+# the whole map into the app cache, once
+export func lunar_map []
+    dir : path.path_cache[ 'lunar' ]
+    index : path '{dir}/lunar.agi'
+    if [ index.exists[] ]
+        log 'lunar: height map current ({dir})'
+        return
+    dir.make_dir[]
+    src : path '{dir}/source'
+    src.make_dir[]
+    room : i64 [ free_bytes[ '{dir}' ] / 1073741824 ]
+    log 'lunar: building the height map in {dir}, {room} GB free'
+    t0 : i64 [ Au.epoch_millis[] ]
+    south : make_pole[ dir, false ]
+    north : make_pole[ dir, true ]
+    if [ !build_pole[ south ] ] return
+    if [ !build_pole[ north ] ] return
+    if [ !build_seam_band[ north, dir ] ] return
+    if [ !build_seam_band[ south, dir ] ] return
+    remove_file[ north.bridge.raw ]
+    remove_file[ south.bridge.raw ]
+    if [ !build_plain_band[ dir, 30.0 ] ] return
+    if [ !build_plain_band[ dir, 0.0 ] ] return
+    if [ !build_cap[ north, dir ] ] return
+    if [ !build_cap[ south, dir ] ] return
+    poles : vec Pole []
+    poles.push[ south ]
+    poles.push[ north ]
+    write_index[ dir, poles ]
+    secs : i64 [ (Au.epoch_millis[] - t0) / 1000 ]
+    log 'lunar: height map built in {secs} s'
+
+expect func t_plane_orientation [] -> bool
+    # south: longitude 0 up, 90 east right (DSMAP_POLAR)
+    expect plane_d[ -88.0, 0.0 ] < 0.0, 'south lon 0 not up'
+    expect plane_x[ -88.0, 90.0 ] > 0.0, 'south lon 90 not right'
+    expect plane_d[ 88.0, 0.0 ] > 0.0, 'north lon 0 not down'
+    expect plane_x[ 88.0, 90.0 ] > 0.0, 'north lon 90 not right'
+    # the label's own number: 60 degrees edge at side 31040, 60 m
+    r : f64 [ plane_reach[ 60.0 ] ]
+    edge : f64 [ 15520.0 * 60.0 ]
+    expect fabs[ r - edge ] < 200.0, 'reach at 60: {r} vs {edge}'
+    return true
+
+expect func t_overlap [] -> bool
+    o : Overlap [ ]
+    o.make[ 4, 30.0, 8, 20.0 ]
+    total : f64 [ 0.0 ]
+    for [ i: i64 0, i < 4, i += 1 ]
+        for [ u: i64 0, u < o.count[ i ], u += 1 ]
+            total += o.weight[ i * 4 + u ]
+    o.release[]
+    # the middle four coarse pixels span six fine ones
+    expect fabs[ total - 6.0 ] < 1.0e-9, 'overlap total {total}'
+    return true
+
+expect func t_broad_offset [] -> bool
+    b : Broad [ ]
+    b.make[ 1000.0, 100.0 ]
+    for [ y: i64 -9, y <= 9, y += 1 ]
+        for [ x: i64 -9, x <= 9, x += 1 ]
+            px : f64 [ f64[ x ] * 50.0 ]
+            py : f64 [ f64[ y ] * 50.0 ]
+            b.add[ px, py, px * 0.01, true ]
+            b.add[ px, py, px * 0.01 + 7.0, false ]
+    b.settle[ 'test' ]
+    off : f64 [ b.at[ 20.0, -30.0 ] ]
+    b.release[]
+    expect fabs[ off - 7.0 ] < 1.0e-6, 'offset {off}'
+    return true
+
+expect func t_tiff_roundtrip [] -> bool
+    p : path '/tmp/lunar_tiff_test.tif'
+    name : string [ p.chars ]
+    side : i64 [ 300 ]
+    t : @TIFF [ TIFFOpen[ name.chars, 'w8' ] ]
+    TIFFSetField[ t, TIFFTAG_IMAGEWIDTH, u32[ side ] ]
+    TIFFSetField[ t, TIFFTAG_IMAGELENGTH, u32[ side ] ]
+    TIFFSetField[ t, TIFFTAG_BITSPERSAMPLE, 32 ]
+    TIFFSetField[ t, TIFFTAG_SAMPLESPERPIXEL, 1 ]
+    TIFFSetField[ t, TIFFTAG_SAMPLEFORMAT, SAMPLEFORMAT_IEEEFP ]
+    TIFFSetField[ t, TIFFTAG_COMPRESSION, COMPRESSION_ADOBE_DEFLATE ]
+    TIFFSetField[ t, TIFFTAG_PREDICTOR, PREDICTOR_FLOATINGPOINT ]
+    TIFFSetField[ t, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG ]
+    TIFFSetField[ t, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_MINISBLACK ]
+    TIFFSetField[ t, TIFFTAG_TILEWIDTH, 256 ]
+    TIFFSetField[ t, TIFFTAG_TILELENGTH, 256 ]
+    buf : @f32 [ malloc[ 256 * 256 * 4 ] ]
+    for [ ty: i64 0, ty < 2, ty += 1 ]
+        for [ tx: i64 0, tx < 2, tx += 1 ]
+            for [ r: i64 0, r < 256, r += 1 ]
+                for [ c: i64 0, c < 256, c += 1 ]
+                    gy : i64 [ ty * 256 + r ]
+                    gx : i64 [ tx * 256 + c ]
+                    buf[ r * 256 + c ] = f32[ gy * 1000 + gx ] * 0.001
+            TIFFWriteTile[ t, buf, u32[ tx * 256 ], u32[ ty * 256 ],
+                           0, u16[ 0 ] ]
+    TIFFClose[ t ]
+    free[ buf ]
+    raw : path '/tmp/lunar_tiff_test.img'
+    expect tiff_to_raw[ p, raw ], 'decode failed'
+    data : @f32 [ cast @f32 [ load_bytes[ raw, side * side * 4 ] ] ]
+    bad : i64 [ 0 ]
+    for [ y: i64 0, y < side, y += 1 ]
+        for [ x: i64 0, x < side, x += 1 ]
+            want : f32 [ f32[ y * 1000 + x ] * 0.001 ]
+            if [ data[ y * side + x ] != want ] bad += 1
+    free[ data ]
+    remove_file[ p ]
+    remove_file[ raw ]
+    expect bad == 0, '{bad} pixels differ'
+    return true
+
+expect func t_make_pole [] -> bool
+    p : make_pole[ path '/tmp/lunar-pole-test', false ]
+    expect p.levels.count == 5, '{p.levels.count} levels'
+    finest : p.levels[ 0 ]
+    expect finest.tiff && finest.scale == 5.0, 'finest {finest.name}'
+    return !pole_done[ p ]

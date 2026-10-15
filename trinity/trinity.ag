@@ -7703,6 +7703,9 @@ element TButtons
             el [ !blank ]
                 cv.font_size[
                     (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
+                # text takes no canvas opacity: a dim segment's
+                # label carries it in its colour
+                if [ off ] icol.a = icol.a * off_alpha
                 cv.fill_color[ icol ]
                 # a close mark takes the right end: the label ends
                 # before it

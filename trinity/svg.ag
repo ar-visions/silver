@@ -67,6 +67,17 @@ class SVGShape
     public stroke_url  : string
     public fill_paint  : SVGPaint
     public stroke_paint : SVGPaint
+    # its filter's glow: the halo's gaussian (page units) and its
+    # brightening (colour and alpha times gain, clamped)
+    public glow        : f32
+    public glow_gain   : f32
+    # the glow's own colour (alpha 0: the shape's colours)
+    public glow_color  : vec4f
+    # a drop shadow: its gaussian and offset (page units), colour
+    public shadow       : f32
+    public shadow_x     : f32
+    public shadow_y     : f32
+    public shadow_color : vec4f
 
 class SVGModel
     public w            : f32
@@ -87,6 +98,8 @@ class SVGModel
     public root_space   : affine
     # where a blurred shape is drawn before its gaussian
     public blur_layer   : Canvas
+    # where a glow's halo is blurred before it is brightened
+    public glow_layer   : Canvas
 
     construct [ src: path ]
         expect src.exists, 'svg-path does not exist: {src}'
@@ -185,15 +198,19 @@ class SVGModel
             cap:           0,
             join:          0,
             miter:         4.0,
-            fill_url:      '',
-            stroke_url:    ''
+            font_size:     16.0,
+            weight:        400,
+            slope:         0,
+            anchor:        0
         ]
         if [ !shapes ] shapes = vec SVGShape []
         el             shapes.clear[]
-        svg_walk[ shapes, svg_node.children, xf, st ]
+        svg_walk[ shapes, svg_node.children, xf, st, '', '',
+                  'sans-serif' ]
         # each shape's own filter: its gaussian, in page units
         for [ sh: SVGShape ] in shapes
             sh.blur = svg_blur_of[ svg_node, sh ]
+            svg_glow_of[ svg_node, sh ]
             sh.fill_paint   = svg_paint_of[ svg_node, sh, sh.fill_url ]
             sh.stroke_paint = svg_paint_of[ svg_node, sh,
                                             sh.stroke_url ]
@@ -227,9 +244,9 @@ class SVGModel
     # stroke of width sw_ (its gradient, or the stroke colour)
     func plain_pass [ cv: Canvas, shape: SVGShape, off_x: f32,
                       off_y: f32, s: f32, fc: rgba, sc: rgba,
-                      gf: Gradient, gs: Gradient, sw_: f32 ]
+                      gf: Gradient, gs: Gradient, sw_: f32, op: f32 ]
         cv.save[]
-        cv.set_opacity[ shape.opacity ]
+        cv.set_opacity[ op ]
         # a gradient fill is drawn where the fill colour is clear
         if [ gf ]
             cv.fill_color[ rgba [ '#ffffffff' ] ]
@@ -248,6 +265,25 @@ class SVGModel
         trace[ cv, shape, off_x, off_y, s ]
         cv.paint[]
         cv.restore[]
+
+    # the shape's fill and stroke at opacity op, each a gradient
+    # or a colour (a stroke's gradient takes a pass of its own)
+    func passes [ cv: Canvas, shape: SVGShape, off_x: f32,
+                  off_y: f32, s: f32, fc: rgba, sc: rgba, sw_: f32,
+                  op: f32 ]
+        gf : grad_of[ shape.fill_paint, shape, off_x, off_y, s,
+                      fc.a ]
+        gs : grad_of[ shape.stroke_paint, shape, off_x, off_y, s,
+                      sc.a ]
+        if [ gs ]
+            plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf, null,
+                        0.0, op ]
+            none : rgba [ '#00000000' ]
+            plain_pass[ cv, shape, off_x, off_y, s, none, sc, null,
+                        gs, sw_, op ]
+            return
+        plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf, null,
+                    sw_, op ]
 
     # a paint's gradient on the canvas (null: none), alpha a times
     # its stops' own
@@ -316,21 +352,12 @@ class SVGModel
                               off_y: f32, s: f32, fc: rgba, sc: rgba,
                               sw_: f32 ]
         sig : f32 [ shape.blur * s ]
-        if [ sig <= 0.05 ]
-            gf : grad_of[ shape.fill_paint, shape, off_x, off_y, s,
-                          fc.a ]
-            gs : grad_of[ shape.stroke_paint, shape, off_x, off_y, s,
-                          sc.a ]
-            # a stroke's gradient takes a pass of its own
-            if [ gs ]
-                plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf,
-                            null, 0.0 ]
-                none : rgba [ '#00000000' ]
-                plain_pass[ cv, shape, off_x, off_y, s, none, sc, null,
-                            gs, sw_ ]
-                return
-            plain_pass[ cv, shape, off_x, off_y, s, fc, sc, gf, null,
-                        sw_ ]
+        gsig : f32 [ shape.glow * s ]
+        ssig : f32 [ shape.shadow * s ]
+        shade : bool [ ssig > 0.05 && shape.shadow_color.w > 0.0 ]
+        if [ sig <= 0.05 && gsig <= 0.05 && !shade ]
+            passes[ cv, shape, off_x, off_y, s, fc, sc, sw_,
+                    shape.opacity ]
             return
         # the shape's box on the canvas, out by three sigmas
         x0 : f32 [ 1e30 ]
@@ -349,7 +376,9 @@ class SVGModel
                 x1 = max[ x1, off_x + px[ k ] * s ]
                 y1 = max[ y1, off_y + py[ k ] * s ]
         if [ x1 < x0 ] return
-        pad : f32 [ sig * 3.0 + sw_ + 2.0 ]
+        # the halo is the blurred shape blurred again: one gaussian
+        tot : f32 [ sqrt[ sig * sig + gsig * gsig ] ]
+        pad : f32 [ max[ max[ sig, tot ], ssig ] * 3.0 + sw_ + 2.0 ]
         lx : f32 [ floor[ x0 - pad ] ]
         ly : f32 [ floor[ y0 - pad ] ]
         lw : i32 [ i32[ ceil[ x1 + pad - lx ] ] ]
@@ -364,14 +393,62 @@ class SVGModel
         lay.resize[ lw, lh ]
         lay.fresh_state[]
         lay.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-        lay.fill_color [ fc ]
-        lay.stroke_color[ sc ]
-        lay.set_stroke_size[ sw_ ]
-        lay.set_stroke_cap[ cap_of[ shape ] ]
-        lay.set_stroke_join[ join_of[ shape ] ]
-        lay.set_miter_limit[ shape.miter ]
-        trace[ lay, shape, off_x - lx, off_y - ly, s ]
-        lay.paint[]
+        passes[ lay, shape, off_x - lx, off_y - ly, s, fc, sc, sw_,
+                1.0 ]
+        if [ (gsig > 0.05 || shade) && !glow_layer ]
+            glow_layer = Canvas [ vk: cv.vk, w: cv.w, width: lw,
+                                  height: lh, load_existing: true,
+                                  quantize: true ]
+            glow_layer.update[]
+        gl : glow_layer
+        # the shadow: the sharp shape's coverage blurred, in its
+        # colour, put down at its offset
+        if [ shade ]
+            gl.resize[ lw, lh ]
+            gl.fresh_state[]
+            gl.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+            gl.filter_blur[ lay, ssig, ssig, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            0.0 ]
+            col : shape.shadow_color
+            sm : new f32 [ 20 ]
+            sm[ 4 ]  = col.x
+            sm[ 9 ]  = col.y
+            sm[ 14 ] = col.z
+            sm[ 18 ] = col.w
+            cv.save[]
+            cv.set_opacity[ shape.opacity ]
+            cv.filter_matrix[ gl, sm, lx + shape.shadow_x * s,
+                              ly + shape.shadow_y * s ]
+            cv.restore[]
+            cv.sync_fence[]
+        if [ gsig > 0.05 ]
+            gl.resize[ lw, lh ]
+            gl.fresh_state[]
+            gl.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+            gl.filter_blur[ lay, tot, tot, 0.0, 0.0, 0.0, 0.0, 0.0,
+                            0.0 ]
+            # brighter: colour and alpha times the gain, clamped;
+            # a glow colour takes the colour's place
+            gm : new f32 [ 20 ]
+            tint : shape.glow_color
+            if [ tint.w > 0.0 ]
+                gm[ 4 ]  = min[ tint.x * shape.glow_gain, 1.0 ]
+                gm[ 9 ]  = min[ tint.y * shape.glow_gain, 1.0 ]
+                gm[ 14 ] = min[ tint.z * shape.glow_gain, 1.0 ]
+                gm[ 18 ] = tint.w * shape.glow_gain
+            el
+                for [ r: i32 0, r < 4, r += 1 ]
+                    gm[ r * 5 + r ] = shape.glow_gain
+            cv.save[]
+            cv.set_opacity[ shape.opacity ]
+            cv.filter_matrix[ gl, gm, lx, ly ]
+            cv.restore[]
+            cv.sync_fence[]
+        # the shape over its halo: sharp, or through its own blur
+        if [ sig <= 0.05 ]
+            passes[ cv, shape, off_x, off_y, s, fc, sc, sw_,
+                    shape.opacity ]
+            return
         cv.save[]
         cv.set_opacity[ shape.opacity ]
         cv.filter_blur[ lay, sig, sig, lx, ly, 0.0, 0.0, 0.0, 0.0 ]
@@ -394,9 +471,13 @@ struct SVGState
     # stroke-linejoin: 0 miter, 1 round, 2 bevel; miter limit
     join          : i32
     miter         : f32
-    # a paint server named (url(#id)), '' none
-    fill_url      : string
-    stroke_url    : string
+    # font-size (user units), font-weight (100..900), font-style
+    # (0 normal, 1 italic, 2 oblique), text-anchor (0 start,
+    # 1 middle, 2 end): inherited, as svg's
+    font_size     : f32
+    weight        : i32
+    slope         : i32
+    anchor        : i32
 
 
 
@@ -413,6 +494,8 @@ class SVGNode
     public head_end : i64
     public tail_at  : i64
     public end      : i64
+    # its character data, entities read (a <text>'s words)
+    public text     : string
 
     func attr [ name: string ] -> string
         return (attrs) ? attrs[ name ] : null
@@ -555,7 +638,10 @@ class SVGParser
                 child : SVGNode parse_element[]
                 if [ child ] node.children.push[ child ]
             el
+                from : i64 [ pos ]
                 while [ pos < src.count && at[] != '<' ] pos += 1
+                run : string svg_entities[ src.mid[ from, pos - from ] ]
+                node.text = (node.text) ? '{node.text} {run}' : run
         return node
 
     func parse_doc [ text: string ] -> SVGNode
@@ -930,6 +1016,18 @@ struct affine
     func apply_y [ px: f32, py: f32 ] -> f32
         return mc * px + md * py + ty
 
+    # the transform back (a flat one's determinant kept tiny)
+    func inverse [] -> affine
+        det : f32 [ ma * md - mb * mc ]
+        if [ abs[ det ] < 1.0e-12 ] det = 1.0e-12
+        ia : f32 [ md / det ]
+        ib : f32 [ 0.0 - mb / det ]
+        ic : f32 [ 0.0 - mc / det ]
+        id : f32 [ ma / det ]
+        return affine [ ma: ia, mb: ib, mc: ic, md: id,
+                        tx: 0.0 - (ia * tx + ib * ty),
+                        ty: 0.0 - (ic * tx + id * ty) ]
+
 
     static func identity [] -> affine
         return affine [ ma: 1.0, mb: 0.0, mc: 0.0, md: 1.0, tx: 0.0,
@@ -1092,57 +1190,82 @@ func svg_resolve_state [ node: SVGNode, parent: SVGState ] -> SVGState
                 val  : string d.mid[ ci + 1, d.count - (ci + 1) ].trim[]
                 if [ prop == 'fill' ]
                     st.fill_none = val == 'none'
-                    st.fill_url = (val.starts_with[ 'url' ]) ? val : ''
-                    if [ st.fill_url.count == 0 ]
-                        st.fill = svg_color_v[ val ]
+                    # a paint server is opaque: its opacities scale it
+                    opaque : vec4f [ 0.0, 0.0, 0.0, 1.0 ]
+                    st.fill = (!val.starts_with[ 'url' ])
+                        ? svg_color_v[ val ] : opaque
                 el [ prop == 'stroke' ]
                     st.stroke_none = val == 'none'
-                    st.stroke_url = (val.starts_with[ 'url' ]) ? val
-                                    : ''
-                    if [ st.stroke_url.count == 0 ]
-                        st.stroke = svg_color_v[ val ]
+                    opaque : vec4f [ 0.0, 0.0, 0.0, 1.0 ]
+                    st.stroke = (!val.starts_with[ 'url' ])
+                        ? svg_color_v[ val ] : opaque
                 el [ prop == 'stroke-width' ]
                     st.sw = f32 val.real_value[]
                 el [ prop == 'opacity' ]
-                    st.opacity = f32 val.real_value[]
+                    st.opacity = svg_unit[ val ]
                 el [ prop == 'fill-opacity' ]
-                    st.fill_opacity = f32 val.real_value[]
+                    st.fill_opacity = svg_unit[ val ]
                 el [ prop == 'stroke-opacity' ]
-                    st.stroke_opacity = f32 val.real_value[]
+                    st.stroke_opacity = svg_unit[ val ]
                 el [ prop == 'stroke-linecap' ]
                     st.cap = svg_cap_of[ val ]
                 el [ prop == 'stroke-linejoin' ]
                     st.join = svg_join_of[ val ]
                 el [ prop == 'stroke-miterlimit' ]
                     st.miter = f32 val.real_value[]
+                el
+                    svg_font_prop[ st, prop, val ]
     # direct attributes override style
     fa : string node.attr[ 'fill' ]
     if [ fa ]
         st.fill_none = fa == 'none'
-        st.fill_url = (fa.starts_with[ 'url' ]) ? fa : ''
-        if [ !st.fill_none && st.fill_url.count == 0 ]
+        if [ fa.starts_with[ 'url' ] ]
+            st.fill = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
+        el [ !st.fill_none ]
             st.fill = svg_color_v[ fa ]
     sa : string node.attr[ 'stroke' ]
     if [ sa ]
         st.stroke_none = sa == 'none'
-        st.stroke_url = (sa.starts_with[ 'url' ]) ? sa : ''
-        if [ !st.stroke_none && st.stroke_url.count == 0 ]
+        if [ sa.starts_with[ 'url' ] ]
+            st.stroke = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
+        el [ !st.stroke_none ]
             st.stroke = svg_color_v[ sa ]
     swa : string node.attr[ 'stroke-width' ]
     if [ swa ] st.sw = f32 swa.real_value[]
     oa  : string node.attr[ 'opacity' ]
-    if [ oa ] st.opacity = f32 oa.real_value[]
+    if [ oa ] st.opacity = svg_unit[ oa ]
     foa : string node.attr[ 'fill-opacity' ]
-    if [ foa ] st.fill_opacity = f32 foa.real_value[]
+    if [ foa ] st.fill_opacity = svg_unit[ foa ]
     soa : string node.attr[ 'stroke-opacity' ]
-    if [ soa ] st.stroke_opacity = f32 soa.real_value[]
+    if [ soa ] st.stroke_opacity = svg_unit[ soa ]
     lca : string node.attr[ 'stroke-linecap' ]
     if [ lca ] st.cap = svg_cap_of[ lca ]
     lja : string node.attr[ 'stroke-linejoin' ]
     if [ lja ] st.join = svg_join_of[ lja ]
     mla : string node.attr[ 'stroke-miterlimit' ]
     if [ mla ] st.miter = f32 mla.real_value[]
+    names : vec string [] [ 'font-size', 'font-weight', 'font-style',
+                            'text-anchor' ]
+    for [ nm: string ] in names
+        v : string node.attr[ nm ]
+        if [ v ] svg_font_prop[ st, nm, v ]
     return st
+
+# a font property onto the state; others are not these
+func svg_font_prop [ st: SVGState, prop: string, val: string ]
+    if [ prop == 'font-size' ]
+        sz : f32 [ f32 val.real_value[] ]
+        if [ sz > 0.0 ] st.font_size = sz
+    el [ prop == 'font-weight' ]
+        if [ val == 'bold' || val == 'bolder' ] st.weight = 700
+        el [ val == 'normal' || val == 'lighter' ] st.weight = 400
+        el
+            w : i32 [ i32 val.real_value[] ]
+            if [ w >= 100 ] st.weight = w
+    el [ prop == 'font-style' ]
+        st.slope = (val == 'italic') ? 1 : (val == 'oblique') ? 2 : 0
+    el [ prop == 'text-anchor' ]
+        st.anchor = (val == 'middle') ? 1 : (val == 'end') ? 2 : 0
 
 
 func svg_make_shape [ cmds: vec SVGCmd, st: SVGState ] -> SVGShape
@@ -1168,9 +1291,7 @@ func svg_make_shape [ cmds: vec SVGCmd, st: SVGState ] -> SVGShape
         opacity:     st.opacity,
         cap:         st.cap,
         join:        st.join,
-        miter:       st.miter,
-        fill_url:    st.fill_url,
-        stroke_url:  st.stroke_url
+        miter:       st.miter
     ]
 
 # ---- SVG tree walker ----
@@ -1275,20 +1396,27 @@ func svg_tag [ shapes: vec SVGShape, node: SVGNode, xf: affine ]
     sh.node  = node
     sh.space = xf
 
+# the urls of the fill's and stroke's paint servers go down as
+# arguments ('' none): a struct copy does not hold its strings
 func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
-                state: SVGState ]
+                state: SVGState, fill_url: string, stroke_url: string,
+                family: string ]
     for [ node: SVGNode ] in nodes
         disp : string node.attr[ 'display' ]
         if [ disp && disp == 'none' ]
             continue
         st  : SVGState svg_resolve_state[ node, state ]
+        fu  : svg_own_url[ node, 'fill', fill_url ]
+        su  : svg_own_url[ node, 'stroke', stroke_url ]
+        fam : string svg_family_of[ node, family ]
+        made : i32 [ shapes.count ]
         tfa : string node.attr[ 'transform' ]
         lxf : affine (tfa) ? xf.multiply[
             svg_parse_transform[ tfa ] ] : xf
         tag : string node.tag
 
         if [ tag == 'g' || tag == 'svg' ]
-            svg_walk[ shapes, node.children, lxf, st ]
+            svg_walk[ shapes, node.children, lxf, st, fu, su, fam ]
         el [ tag == 'path' ]
             d : string node.attr[ 'd' ]
             if [ d && d.count > 0 ]
@@ -1334,6 +1462,14 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                          node.attr_f[ 'y2', 0.0 ] ]
             shapes.push[ svg_make_shape[ pb.cmds, st ] ]
             svg_tag[ shapes, node, lxf ]
+        el [ tag == 'text' ]
+            words : string svg_text_of[ node ]
+            if [ words.count > 0 ]
+                cmds : svg_text_cmds[ words, fam, st,
+                    node.attr_f[ 'x', 0.0 ], node.attr_f[ 'y', 0.0 ],
+                    lxf ]
+                shapes.push[ svg_make_shape[ cmds, st ] ]
+                svg_tag[ shapes, node, lxf ]
         el [ tag == 'polyline' || tag == 'polygon' ]
             pts : string node.attr[ 'points' ]
             if [ pts && pts.count > 0 ]
@@ -1344,6 +1480,29 @@ func svg_walk [ shapes: vec SVGShape, nodes: vec SVGNode, xf: affine,
                                         y2: 0.0 ] ]
                 shapes.push[ svg_make_shape[ cmds, st ] ]
                 svg_tag[ shapes, node, lxf ]
+        # the shape made here takes the paint servers in force
+        if [ shapes.count > made ]
+            sh : shapes[ shapes.count - 1 ]
+            sh.fill_url   = fu
+            sh.stroke_url = su
+
+# an element's fill or stroke paint server: its own url, '' when
+# it sets a colour or none, else the one in force above it
+func svg_own_url [ nd: SVGNode, key: string, above: string ]
+        -> string
+    v : string [ null ]
+    sty : nd.attr[ 'style' ]
+    if [ sty ]
+        for [ part: string ] in sty.split[ ';' ]
+            ci : i32 [ part.index_of[ ':' ] ]
+            if [ ci <= 0 ] continue
+            nm : part.mid[ 0, ci ].trim[]
+            if [ nm.compare[ key ] == 0 ]
+                v = part.mid[ ci + 1, part.count - ci - 1 ].trim[]
+    at : nd.attr[ key ]
+    if [ at ] v = at
+    if [ !v ] return above
+    return (v.starts_with[ 'url' ]) ? v : ''
 
 
 # the element named by id under nd (null none)
@@ -1385,6 +1544,8 @@ func svg_blur_of [ top: SVGNode, sh: SVGShape ] -> f32
     if [ !fl || !fl.children ] return 0.0
     for [ c: SVGNode ] in fl.children
         if [ c.tag != 'feGaussianBlur' ] continue
+        # a glow's halo or a shadow is not the shape's own blur
+        if [ svg_is_halo[ c ] || svg_is_shade[ c ] ] continue
         sd : c.attr[ 'stdDeviation' ]
         if [ !sd ] return 0.0
         first : sd.trim[].split[ ' ' ]
@@ -1393,6 +1554,74 @@ func svg_blur_of [ top: SVGNode, sh: SVGShape ] -> f32
         k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
         return f32[ first[ 0 ].real_value[] ] * k
     return 0.0
+
+# a glow's halo gaussian (its result named 'halo')
+func svg_is_halo [ c: SVGNode ] -> bool
+    rs : c.attr[ 'result' ]
+    return rs && rs.compare[ 'halo' ] == 0
+
+# a glow (aeon's form: a gaussian with result 'halo', made
+# brighter by a feComponentTransfer's alpha slope, merged under
+# the shape) and a drop shadow put on the shape, page units
+func svg_glow_of [ top: SVGNode, sh: SVGShape ]
+    sh.glow = 0.0
+    sh.glow_gain = 1.0
+    sh.glow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+    sh.shadow = 0.0
+    sh.shadow_x = 0.0
+    sh.shadow_y = 0.0
+    sh.shadow_color = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+    if [ !sh.node ] return
+    named : svg_filter_ref[ sh.node ]
+    if [ named.count == 0 ] return
+    fl : svg_find_id[ top, named ]
+    if [ !fl || !fl.children ] return
+    m : sh.space
+    k : f32 [ sqrt[ abs[ m.ma * m.md - m.mb * m.mc ] ] ]
+    for [ c: SVGNode ] in fl.children
+        if [ c.tag == 'feGaussianBlur' && svg_is_halo[ c ] ]
+            sd : c.attr[ 'stdDeviation' ]
+            if [ sd ]
+                words : sd.trim[].split[ ' ' ]
+                if [ words.count > 0 ]
+                    sh.glow = f32[ words[ 0 ].real_value[] ] * k
+        if [ c.tag == 'feComponentTransfer' && c.children ]
+            for [ f: SVGNode ] in c.children
+                if [ f.tag != 'feFuncA' ] continue
+                sl : f.attr[ 'slope' ]
+                if [ sl ] sh.glow_gain = f32[ sl.real_value[] ]
+        if [ c.tag == 'feFlood' ]
+            rs : c.attr[ 'result' ]
+            if [ rs && rs.compare[ 'glowcolor' ] == 0 ]
+                sh.glow_color = svg_flood_of[ c ]
+            el [ rs && rs.compare[ 'shadecolor' ] == 0 ]
+                sh.shadow_color = svg_flood_of[ c ]
+        if [ c.tag == 'feGaussianBlur' && svg_is_shade[ c ] ]
+            ssd : c.attr[ 'stdDeviation' ]
+            if [ ssd ]
+                parts : ssd.trim[].split[ ' ' ]
+                if [ parts.count > 0 ]
+                    sh.shadow = f32[ parts[ 0 ].real_value[] ] * k
+        if [ c.tag == 'feOffset' ]
+            ox : c.attr[ 'dx' ]
+            oy : c.attr[ 'dy' ]
+            dx : f32 [ (ox) ? f32[ ox.real_value[] ] : 0.0 ]
+            dy : f32 [ (oy) ? f32[ oy.real_value[] ] : 0.0 ]
+            sh.shadow_x = m.ma * dx + m.mb * dy
+            sh.shadow_y = m.mc * dx + m.md * dy
+
+# a feFlood's colour, its flood-opacity in the alpha
+func svg_flood_of [ c: SVGNode ] -> vec4f
+    fc : c.attr[ 'flood-color' ]
+    col : rgba svg_color[ (fc) ? fc : '#000000' ]
+    fo : c.attr[ 'flood-opacity' ]
+    a : f32 [ (fo) ? clamp[ f32[ fo.real_value[] ], 0.0, 1.0 ] : 1.0 ]
+    return vec4f [ col.r, col.g, col.b, col.a * a ]
+
+# a drop shadow's gaussian (its result named 'shade')
+func svg_is_shade [ c: SVGNode ] -> bool
+    rs : c.attr[ 'result' ]
+    return rs && rs.compare[ 'shade' ] == 0
 
 # stroke-linecap's word as 0 butt, 1 round, 2 square
 func svg_cap_of [ v: string ] -> i32
@@ -1507,22 +1736,208 @@ func svg_paint_of [ top: SVGNode, sh: SVGShape, url: string ]
     gt : svg_grad_attr[ top, g, 'gradientTransform' ]
     own : (gt) ? svg_parse_transform[ gt ] : affine.identity[]
     if [ pt.bbox ]
-        # the shape's box on the page
+        # the shape's box in its own space (svg's: its transform
+        # then turns and sizes the gradient with it), curves
+        # sampled
+        back : sh.space.inverse[]
         x0 : f32 [ 1e30 ]
         y0 : f32 [ 1e30 ]
         x1 : f32 [ -1e30 ]
         y1 : f32 [ -1e30 ]
+        px : f32 [ 0.0 ]
+        py : f32 [ 0.0 ]
         for [ c: SVGCmd ] in sh.cmds
             if [ c.op == SVGOp.close ] continue
-            x0 = min[ x0, c.x ]
-            y0 = min[ y0, c.y ]
-            x1 = max[ x1, c.x ]
-            y1 = max[ y1, c.y ]
+            n : i32 [ (c.op == SVGOp.cubic || c.op == SVGOp.quad)
+                      ? 16 : 1 ]
+            for [ k: i32 1, k <= n, k += 1 ]
+                t : f32 [ k / f32[ n ] ]
+                u : f32 [ 1.0 - t ]
+                x : f32 [ c.x ]
+                y : f32 [ c.y ]
+                if [ c.op == SVGOp.cubic ]
+                    x = u * u * u * px + 3.0 * u * u * t * c.x1
+                        + 3.0 * u * t * t * c.x2 + t * t * t * c.x
+                    y = u * u * u * py + 3.0 * u * u * t * c.y1
+                        + 3.0 * u * t * t * c.y2 + t * t * t * c.y
+                el [ c.op == SVGOp.quad ]
+                    x = u * u * px + 2.0 * u * t * c.x1 + t * t * c.x
+                    y = u * u * py + 2.0 * u * t * c.y1 + t * t * c.y
+                lx : f32 [ back.apply_x[ x, y ] ]
+                ly : f32 [ back.apply_y[ x, y ] ]
+                x0 = min[ x0, lx ]
+                y0 = min[ y0, ly ]
+                x1 = max[ x1, lx ]
+                y1 = max[ y1, ly ]
+            px = c.x
+            py = c.y
         if [ x1 < x0 ] return null
         id : affine.identity[]
         box : id.translate[ x0, y0 ]
-        unit : box.scale_xy[ max[ x1 - x0, 1e-6 ], max[ y1 - y0, 1e-6 ] ]
-        pt.to_page = unit.multiply[ own ]
+        unit : box.scale_xy[ max[ x1 - x0, 1e-6 ],
+                             max[ y1 - y0, 1e-6 ] ]
+        pt.to_page = sh.space.multiply[ unit.multiply[ own ] ]
     el
         pt.to_page = sh.space.multiply[ own ]
     return pt
+
+# an opacity: svg clamps it to 0..1
+func svg_unit [ v: string ] -> f32
+    return clamp[ f32[ v.real_value[] ], 0.0, 1.0 ]
+
+# &lt; &gt; &amp; &quot; &apos; and &#n; &#xh; read as text
+func svg_entities [ raw: string ] -> string
+    if [ raw.index_of[ '&' ] < 0 ] return raw
+    out : vec u8 []
+    i : i64 [ 0 ]
+    while [ i < raw.count ]
+        c : u8 [ u8[ raw.chars[ i ] ] ]
+        semi : i64 [ -1 ]
+        if [ c == 38 ]
+            for [ j: i64 i + 1, j < raw.count && j < i + 12, j += 1 ]
+                if [ raw.chars[ j ] == ';' ]
+                    semi = j
+                    break
+        if [ semi < 0 ]
+            out.push[ c ]
+            i += 1
+            continue
+        nm : string raw.mid[ i + 1, semi - i - 1 ]
+        cp : u32 [ 0 ]
+        if [ nm == 'lt' ] cp = 60
+        el [ nm == 'gt' ] cp = 62
+        el [ nm == 'amp' ] cp = 38
+        el [ nm == 'quot' ] cp = 34
+        el [ nm == 'apos' ] cp = 39
+        el [ nm.count > 1 && nm.chars[ 0 ] == '#' ]
+            hex : bool [ nm.chars[ 1 ] == 'x' || nm.chars[ 1 ] == 'X' ]
+            for [ k: i64 (hex) ? 2 : 1, k < nm.count, k += 1 ]
+                d : u32 [ u32[ u8[ nm.chars[ k ] ] ] ]
+                v : u32 [ (d >= 97) ? d - 87 : (d >= 65) ? d - 55
+                          : d - 48 ]
+                cp = cp * ((hex) ? 16 : 10) + v
+        if [ cp == 0 ]
+            out.push[ c ]
+            i += 1
+            continue
+        svg_put_utf8[ out, cp ]
+        i = semi + 1
+    out.push[ 0 ]
+    return string [ cast cstr [ @out[ 0 ] ] ]
+
+func svg_put_utf8 [ out: vec u8, cp: u32 ]
+    if [ cp < 128 ]
+        out.push[ u8[ cp ] ]
+    el [ cp < 2048 ]
+        out.push[ u8[ 192 | (cp >> 6) ] ]
+        out.push[ u8[ 128 | (cp & 63) ] ]
+    el [ cp < 65536 ]
+        out.push[ u8[ 224 | (cp >> 12) ] ]
+        out.push[ u8[ 128 | ((cp >> 6) & 63) ] ]
+        out.push[ u8[ 128 | (cp & 63) ] ]
+    el
+        out.push[ u8[ 240 | (cp >> 18) ] ]
+        out.push[ u8[ 128 | ((cp >> 12) & 63) ] ]
+        out.push[ u8[ 128 | ((cp >> 6) & 63) ] ]
+        out.push[ u8[ 128 | (cp & 63) ] ]
+
+# the family in force: the node's own (its first name), else above
+func svg_family_of [ nd: SVGNode, above: string ] -> string
+    v : string nd.attr[ 'font-family' ]
+    sa : string nd.attr[ 'style' ]
+    if [ !v && sa ]
+        for [ d: string ] in sa.split[ ';' ]
+            ci : num d.index_of[ ':' ]
+            if [ ci > 0 && d.mid[ 0, ci ].trim[] == 'font-family' ]
+                v = d.mid[ ci + 1, d.count - ci - 1 ]
+    if [ !v ] return above
+    comma : num v.index_of[ ',' ]
+    first : string (comma > 0) ? v.mid[ 0, comma ] : v
+    first = first.trim[]
+    if [ first.count > 1 && (first.chars[ 0 ] == 39
+                             || first.chars[ 0 ] == 34) ]
+        first = first.mid[ 1, first.count - 2 ]
+    return first
+
+# a text's words: its own and its tspans', white space as one
+func svg_text_of [ nd: SVGNode ] -> string
+    all : string (nd.text) ? '{nd.text}' : ''
+    for [ c: SVGNode ] in nd.children
+        if [ c.tag == 'tspan' && c.text ]
+            all = '{all} {c.text}'
+    out : vec u8 []
+    # a space waits for the next word: none at either end
+    owed : bool [ false ]
+    for [ i: i64 0, i < all.count, i += 1 ]
+        c : u8 [ u8[ all.chars[ i ] ] ]
+        if [ c == 32 || c == 9 || c == 10 || c == 13 ]
+            owed = out.count > 0
+        el
+            if [ owed ] out.push[ 32 ]
+            out.push[ c ]
+            owed = false
+    out.push[ 0 ]
+    return string [ cast cstr [ @out[ 0 ] ] ]
+
+# the next code point of utf-8 text at i; i moves past it
+func svg_next_cp [ t: string, i: vec i64 ] -> u32
+    c : u32 [ u32[ u8[ t.chars[ i[ 0 ] ] ] ] ]
+    n : i64 [ (c < 128) ? 1 : (c < 224) ? 2 : (c < 240) ? 3 : 4 ]
+    cp : u32 [ (n == 1) ? c : (n == 2) ? c & 31 : (n == 3) ? c & 15
+               : c & 7 ]
+    for [ k: i64 1, k < n && i[ 0 ] + k < t.count, k += 1 ]
+        cp = (cp << 6) | (u32[ u8[ t.chars[ i[ 0 ] + k ] ] ] & 63)
+    i[ 0 ] = i[ 0 ] + n
+    return cp
+
+# a text's glyph outlines as path commands, the pen at x, y on
+# the baseline; the font from fontconfig, its curves kept
+func svg_text_cmds [ words: string, family: string, st: SVGState,
+                     x: f32, y: f32, xf: affine ] -> vec SVGCmd
+    out : vec SVGCmd []
+    fm : FontMatch font_match[ family, st.weight, 5, st.slope, 0,
+                               false ]
+    if [ !fm.found ]
+        fm = font_match[ null, st.weight, 5, st.slope, 0, false ]
+    if [ !fm.found ] return out
+    cf : CanvasFont [ ft_lib: ft_init[], uri: fm.file,
+                      face_index: fm.index, size_px: 64 ]
+    if [ !cf.loaded[] || cf.units_per_em == 0 ] return out
+    unit : f32 [ st.font_size / f32 cf.units_per_em ]
+    wide : f32 [ 0.0 ]
+    at : vec i64 [] [ 0 ]
+    while [ at[ 0 ] < words.count ]
+        cp : u32 svg_next_cp[ words, at ]
+        wide += f32 cf.advance_units[ cf.glyph_index[ cp ] ] * unit
+    pen : f32 [ x - wide * f32 st.anchor * 0.5 ]
+    pth : CanvasPath []
+    at[ 0 ] = 0
+    while [ at[ 0 ] < words.count ]
+        cp : u32 svg_next_cp[ words, at ]
+        gi : u32 cf.glyph_index[ cp ]
+        cf.outline[ gi, pth, pen, y, st.font_size ]
+        pen += f32 cf.advance_units[ gi ] * unit
+    for [ i: i32 0, i < pth.pcount, i += 1 ]
+        pt : PathPt pth.points[ i ]
+        ax : f32 xf.apply_x[ pt.x, pt.y ]
+        ay : f32 xf.apply_y[ pt.x, pt.y ]
+        if [ pt.cmd == path_cmd.move ]
+            out.push[ SVGCmd [ op: SVGOp.move, x: ax, y: ay, x1: 0.0,
+                               y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        el [ pt.cmd == path_cmd.line ]
+            out.push[ SVGCmd [ op: SVGOp.line, x: ax, y: ay, x1: 0.0,
+                               y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+        el [ pt.cmd == path_cmd.quad ]
+            out.push[ SVGCmd [ op: SVGOp.quad, x: ax, y: ay,
+                x1: xf.apply_x[ pt.cx1, pt.cy1 ],
+                y1: xf.apply_y[ pt.cx1, pt.cy1 ], x2: 0.0, y2: 0.0 ] ]
+        el [ pt.cmd == path_cmd.cubic ]
+            out.push[ SVGCmd [ op: SVGOp.cubic, x: ax, y: ay,
+                x1: xf.apply_x[ pt.cx1, pt.cy1 ],
+                y1: xf.apply_y[ pt.cx1, pt.cy1 ],
+                x2: xf.apply_x[ pt.cx2, pt.cy2 ],
+                y2: xf.apply_y[ pt.cx2, pt.cy2 ] ] ]
+        el [ pt.cmd == path_cmd.close ]
+            out.push[ SVGCmd [ op: SVGOp.close, x: 0.0, y: 0.0,
+                               x1: 0.0, y1: 0.0, x2: 0.0, y2: 0.0 ] ]
+    return out

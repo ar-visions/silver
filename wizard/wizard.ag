@@ -84,7 +84,11 @@ func ext4_uuid [ dev: string ] -> string
     magic : read_at[ dev, 1080, 2 ]
     if [ magic.count < 2 || magic[0] != 0x53 || magic[1] != 0xEF ]
         return ''
-    u : read_at[ dev, 1128, 16 ]
+    return uuid_at[ dev, 1128 ]
+
+# 16 bytes at at, as a uuid
+func uuid_at [ dev: string, at: i64 ] -> string
+    u : read_at[ dev, at, 16 ]
     if [ u.count < 16 ] return ''
     digits : '0123456789abcdef'
     s : string ''
@@ -211,18 +215,18 @@ func fs_type [ dev: string ] -> string
         return 'swap'
     return ''
 
-# the uuid: the superblock as root, else udev's by-uuid links
+# a partition's uuid as udev keeps it (readable by anyone)
 func part_uuid [ dev: string ] -> string
-    u : ext4_uuid[ dev ]
-    if [ u.count > 0 ] return u
-    d : path '/dev/disk/by-uuid'
-    if [ !d.exists[] ] return ''
-    entries : d.ls[ null, false ]
-    if [ !entries ] return ''
-    for [ e: path ] in entries
-        if [ last_name[ link_text[ '{e}' ] ] == last_name[ dev ] ]
-            return e.filename[]
-    return ''
+    cmd : command [ 'lsblk -dno UUID {dev} 2>/dev/null' ]
+    fh : handle cmd.stream[]
+    if [ !fh ] return ''
+    b : local i8 [ 128 ]
+    out : string ''
+    if [ fgets[ @b[0], 128, fh ] ]
+        ln : string [ @b[0] ]
+        out = ln.trim[]
+    pclose[ fh ]
+    return out
 
 # partition n of a disk: nvme0n1 -> nvme0n1p1, sda -> sda1
 func part_dev [ disk: string, n: i32 ] -> string
@@ -259,38 +263,6 @@ func find_tool [ nm: string ] -> string
         f : '{d}/{nm}'
         if [ access[ f.chars, X_OK ] == 0 ] return f
     return ''
-
-# the firmware's entries: Boot0003* GRUB gives 0003
-func boot_ids [ lines: vec string ] -> vec string
-    out : vec string []
-    for [ ln: string ] in lines
-        if [ ln.count < 9 || !ln.starts_with[ 'Boot' ] ] continue
-        # active (*) or not (space): BootOrder: has neither
-        mark : i32 [ ln.chars[ 8 ] ]
-        if [ mark != 42 && mark != 32 ] continue
-        out.push[ ln.mid[ 4, 4 ] ]
-    return out
-
-# the firmware's order, from its BootOrder: line
-func boot_order [ lines: vec string ] -> vec string
-    out : vec string []
-    for [ ln: string ] in lines
-        if [ !ln.starts_with[ 'BootOrder:' ] ] continue
-        rest : ln.mid[ 10, ln.count - 10 ].trim[]
-        for [ w: string ] in rest.split[ ',' ]
-            id : '{w}'
-            if [ id.count > 0 ] out.push[ id ]
-    return out
-
-# the order with the new entry second: the default stays first
-func order_second [ order: vec string, id: string ] -> string
-    out : string ''
-    for [ i: i32 0, i < order.count, i += 1 ]
-        cur : order[ i ]
-        if [ cur == id ] continue
-        out = (out.count > 0) ? '{out},{cur}' : cur
-        if [ i == 0 ] out = '{out},{id}'
-    return (out.count > 0) ? out : id
 
 # a 16-bit id as pci.ids writes it: 4 small hex digits
 func hex4 [ v: u32 ] -> string
@@ -362,6 +334,9 @@ func kernel_release [ tree: string ] -> string
     run : read_line[ '/proc/sys/kernel/osrelease' ]
     mine : path '{tree}/lib/modules/{run}/modules.alias'
     if [ mine.exists[] ] return run
+    own : image_release[ '{tree}/boot/vmlinuz' ]
+    theirs : path '{tree}/lib/modules/{own}/modules.alias'
+    if [ own.count > 0 && theirs.exists[] ] return own
     md : path '{tree}/lib/modules'
     rels : md.ls[ null, false ]
     if [ !rels ] return ''
@@ -370,6 +345,21 @@ func kernel_release [ tree: string ] -> string
         ma : path '{r}/modules.alias'
         if [ ma.exists[] ] out = r.filename[]
     return out
+
+# an x86 kernel image's release: its header holds where its
+# version text is (at 0x20E, from 0x200), the release first
+func image_release [ f: string ] -> string
+    at : read_at[ f, 0x20E, 2 ]
+    if [ at.count < 2 ] return ''
+    off : i64 [ i64[ at[ 0 ] ] + i64[ at[ 1 ] ] * 256 + 0x200 ]
+    v : read_at[ f, off, 64 ]
+    b : local i8 [ 65 ]
+    n : i32 [ 0 ]
+    while [ n < v.count && v[ n ] != 32 && v[ n ] != 0 ]
+        b[ n ] = i8[ v[ n ] ]
+        n += 1
+    b[ n ] = 0
+    return string [ @b[0] ]
 
 # a module's firmware the tree lacks: '' when one it lists is
 # there (a driver lists every chip's; one is this device's)
@@ -512,11 +502,27 @@ func detect_boot [ loader: string, esp: string,
 class Part
     public name   : string [ '' ]
     public number : i32
+    # where it starts on the disk, and its size
+    public start  : i64
     public bytes  : i64
     public fs     : string [ '' ]
     # -1: not known (not mounted, not root)
     public free   : i64 [ -1 ]
     public what   : string [ '' ]
+    # in use: never shrunk
+    public mounted : bool
+    # the least it can shrink to, -1 when it cannot
+    public low    : i64 [ -1 ]
+    # the size it is to shrink to, -1: kept as it is
+    public keep   : i64 [ -1 ]
+
+    func shown [] -> i64
+        return (keep >= 0) ? keep : bytes
+
+# unallocated space on a disk
+class Gap
+    public start : i64
+    public bytes : i64
 
 class Disk
     public name      : string [ '' ]
@@ -526,6 +532,10 @@ class Disk
     # the running system is on it
     public running   : bool
     public parts     : vec Part
+    # installing into free space: the gap chosen, or the
+    # partition shrunk to make room (-1 each: none)
+    public gap_at    : i32 [ -1 ]
+    public shrink_at : i32 [ -1 ]
 
     func text [] -> string
         kind : string [ (removable) ? ', removable' : '' ]
@@ -661,6 +671,103 @@ func inspect [ p: Part ]
     p.what = contents[ dir, p.fs ]
     if [ dir == look ] umount2[ look.chars, 0 ]
 
+MIB : i64 [ 1048576 ]
+GIB : i64 [ 1073741824 ]
+
+func mib_up [ n: i64 ] -> i64
+    return ((n + MIB - 1) / MIB) * MIB
+
+# the least a partition can shrink to: what it holds, a tenth
+# more and at least a GB; -1 when in use or not ext4 / NTFS
+func shrink_floor [ p: Part ] -> i64
+    if [ p.mounted ] return -1
+    used : i64 [ -1 ]
+    if [ p.fs == 'ext4' && p.free >= 0 ] used = p.bytes - p.free
+    if [ p.fs == 'ntfs' ] used = ntfs_least[ '/dev/{p.name}' ]
+    if [ used < 0 ] return -1
+    room : i64 [ used / 10 ]
+    if [ room < GIB ] room = GIB
+    low : i64 [ mib_up[ used + room ] ]
+    return (low < p.bytes) ? low : -1
+
+# ntfsresize's own least size (as root), -1 when it says none
+func ntfs_least [ dev: string ] -> i64
+    full : 'ntfsresize --info --force --no-action {dev} 2>/dev/null'
+    fh_cmd : command [ full ]
+    fh : handle fh_cmd.stream[]
+    if [ !fh ] return -1
+    b : local i8 [ 512 ]
+    out : i64 [ -1 ]
+    key : 'You might resize at '
+    while [ fgets[ @b[0], 512, fh ] ]
+        ln : string [ @b[0] ]
+        at : i32 [ ln.index_of[ key ] ]
+        if [ at >= 0 ]
+            rest : ln.mid[ at + key.count, ln.count - at - key.count ]
+            out = rest.integer_value[]
+    pclose[ fh ]
+    return out
+
+# unallocated runs of 16 MB or more, a MB aligned, after the
+# table's first MB and before its backup at the end
+func disk_gaps [ dk: Disk ] -> vec Gap
+    out : vec Gap []
+    order : vec Part []
+    for [ p: Part ] in dk.parts
+        at : i32 [ 0 ]
+        while [ at < order.count && order[ at ].start < p.start ]
+            at += 1
+        order.insert[ p, at ]
+    from : i64 [ MIB ]
+    last : i64 [ ((dk.bytes - MIB) / MIB) * MIB ]
+    for [ i: i32 0, i <= order.count, i += 1 ]
+        upto : i64 [ last ]
+        if [ i < order.count ] upto = order[ i ].start
+        s : i64 [ mib_up[ from ] ]
+        n : i64 [ ((upto - s) / MIB) * MIB ]
+        if [ n >= 16 * MIB ] out.push[ Gap [ start: s, bytes: n ] ]
+        if [ i < order.count ]
+            e : i64 [ order[ i ].start + order[ i ].bytes ]
+            if [ e > from ] from = e
+    return out
+
+# where the new partition goes: the gap chosen, or what a shrink
+# frees with any gap right after it; bytes 0: nowhere yet
+func free_place [ dk: Disk ] -> Gap
+    if [ dk.shrink_at >= 0 && dk.shrink_at < dk.parts.count ]
+        p : Part dk.parts[ dk.shrink_at ]
+        s : i64 [ mib_up[ p.start + p.shown[] ] ]
+        e : i64 [ s ]
+        for [ g: Gap ] in disk_gaps[ dk ]
+            if [ g.start >= p.start + p.bytes
+                 && g.start <= mib_up[ p.start + p.bytes ] ]
+                e = g.start + g.bytes
+        if [ e == s ] e = ((p.start + p.bytes) / MIB) * MIB
+        return Gap [ start: s, bytes: (e > s) ? e - s : 0 ]
+    gaps : disk_gaps[ dk ]
+    if [ dk.gap_at >= 0 && dk.gap_at < gaps.count ]
+        return gaps[ dk.gap_at ]
+    return Gap []
+
+# this machine's memory
+func ram_bytes [] -> i64
+    fh : handle fopen[ '/proc/meminfo', 'r' ]
+    if [ !fh ] return 0
+    b : local i8 [ 256 ]
+    out : i64 [ 0 ]
+    while [ fgets[ @b[0], 256, fh ] ]
+        ln : string [ @b[0] ]
+        if [ ln.starts_with[ 'MemTotal:' ] ]
+            kb : ln.mid[ 9, ln.count - 9 ].trim[]
+            out = kb.integer_value[] * 1024
+    fclose[ fh ]
+    return out
+
+# the swap this machine wants: its memory, at most 8 GB
+func swap_want [] -> i64
+    r : i64 [ mib_up[ ram_bytes[] ] ]
+    return (r > 8 * GIB || r <= 0) ? 8 * GIB : r
+
 # every disk the kernel lists, with its partitions
 func scan_disks [] -> vec Disk
     out : vec Disk []
@@ -690,9 +797,14 @@ func scan_disks [] -> vec Disk
                 pn : read_line[ '{k}/partition' ]
                 if [ pn.count == 0 ] continue
                 ps : i64 [ read_line[ '{k}/size' ].integer_value[] ]
+                st : i64 [ read_line[ '{k}/start' ].integer_value[] ]
                 pt : Part [ name: kn, number: pn.integer_value[],
-                    bytes: ps * 512, fs: fs_type[ '/dev/{kn}' ] ]
+                    start: st * 512, bytes: ps * 512,
+                    fs: fs_type[ '/dev/{kn}' ] ]
+                pt.mounted = mounted_at[ '/dev/{kn}' ].count > 0
+                    || (pt.fs == 'swap' && swap_on[ '/dev/{kn}' ])
                 inspect[ pt ]
+                pt.low = shrink_floor[ pt ]
                 # sysfs lists them in no order: keep them by number
                 at : i32 [ 0 ]
                 while [ at < dk.parts.count
@@ -852,6 +964,230 @@ Button WizGo
                 near_inset: 4.0
     }
 
+# the disk map's pieces: a partition (linux, other), free space,
+# the part of a partition in use, what a shrink frees, its edge
+Button WizSeg
+    style : CSS {
+        layers.body:
+            fill_color: #2f6db540
+            radius: 4
+            stroke_width: 1
+            stroke_color: #6cb6ff55
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 12
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                stroke_color: #6cb6ffaa
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+
+Button WizSegOther
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff12
+            radius: 4
+            stroke_width: 1
+            stroke_color: #ffffff2a
+        layers.face:
+            label_color: #c8c8d0
+            label_size: 12
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                stroke_color: #ffffff66
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+
+Button WizFree
+    style : CSS {
+        layers.body:
+            fill_color: #8fe0a80a
+            radius: 4
+            stroke_width: 1
+            stroke_color: #8fe0a855
+        layers.face:
+            label_color: #8fe0a8
+            label_size: 12
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                stroke_color: #8fe0a8aa
+        :selected
+            layers.body:
+                fill_color: #8fe0a830
+                stroke_color: #8fe0a8
+    }
+
+element WizUsed
+    body : Layer [ fill_color: rgba [ '#ffffff14' ],
+        radius: Radius [ '4' ] ]
+
+element WizFreed
+    body : Layer [ fill_color: rgba [ '#8fe0a830' ],
+        radius: Radius [ '4' ] ]
+
+element WizEdge
+    body : Layer [ fill_color: rgba [ '#ff84ff' ],
+        radius: Radius [ '2' ] ]
+
+# a partition's or a gap's place on the map, 0..1 across it
+class MapSeg
+    public gap   : bool
+    public index : i32
+    public x0    : f32
+    public x1    : f32
+
+# the disk as a bar: its partitions and free space to scale (a
+# small one keeps 3% so it can be seen and picked), the used
+# part of each shaded. Free space mode: the partition chosen to
+# shrink has an edge to drag left, and what it frees shows green
+element DiskMap
+    public dk      : Disk
+    # 0 the whole disk, 1 a folder beside, 2 into free space
+    public mode    : i32
+    public part_at : i32 [ -1 ]
+    intern dragging : bool
+
+    func layout [] -> vec MapSeg
+        out : vec MapSeg []
+        if [ !dk || dk.bytes <= 0 ] return out
+        gaps : disk_gaps[ dk ]
+        starts : vec i64 []
+        for [ i: i32 0, i < dk.parts.count, i += 1 ]
+            ps : i64 [ dk.parts[ i ].start ]
+            at : i32 [ 0 ]
+            while [ at < out.count && starts[ at ] < ps ] at += 1
+            out.insert[ MapSeg [ index: i ], at ]
+            starts.insert[ ps, at ]
+        for [ i: i32 0, i < gaps.count, i += 1 ]
+            g : Gap gaps[ i ]
+            at : i32 [ 0 ]
+            while [ at < out.count && starts[ at ] < g.start ] at += 1
+            out.insert[ MapSeg [ gap: true, index: i ], at ]
+            starts.insert[ g.start, at ]
+        sizes : vec f32 []
+        total : f32 [ 0.0 ]
+        for [ m: MapSeg ] in out
+            n : i64 [ 0 ]
+            if [ m.gap ] n = gaps[ m.index ].bytes
+            el n = dk.parts[ m.index ].bytes
+            v : f32 [ f32[ f64[ n ] / f64[ dk.bytes ] ] ]
+            if [ v < 0.03 ] v = 0.03
+            sizes.push[ v ]
+            total += v
+        x : f32 [ 0.0 ]
+        for [ i: i32 0, i < out.count, i += 1 ]
+            out[ i ].x0 = x
+            x += sizes[ i ] / total
+            out[ i ].x1 = x
+        return out
+
+    # the area across the map from lo to hi (0..1)
+    func span [ lo: f32, hi: f32 ] -> Region
+        l : f32 [ lo * 100.0 ]
+        r : f32 [ (1.0 - hi) * 100.0 ]
+        return Region [ 'l{l.3f}% t0 r{r.3f}% b0' ]
+
+    func render [] -> Elements
+        t : Elements []
+        if [ !dk ] return t
+        gaps : disk_gaps[ dk ]
+        for [ m: MapSeg ] in layout[]
+            w : f32 [ m.x1 - m.x0 ]
+            if [ m.gap ]
+                g : Gap gaps[ m.index ]
+                lb : string [ (w > 0.1) ? 'free  {size_text[ g.bytes ]}'
+                    : '' ]
+                t[ 'gap_{m.index}' ] = WizFree [ label: lb,
+                    area: span[ m.x0, m.x1 ],
+                    selected: mode == 2 && dk.shrink_at < 0
+                        && dk.gap_at == m.index ]
+                continue
+            p : Part dk.parts[ m.index ]
+            if [ p.free >= 0 && p.bytes > 0 ]
+                used : f32 [ 1.0 - f32[ f64[ p.free ]
+                    / f64[ p.bytes ] ] ]
+                t[ 'used_{m.index}' ] = WizUsed [
+                    area: span[ m.x0, m.x0 + w * used ] ]
+            lb : string [ (w > 0.12)
+                ? '{p.name}  {size_text[ p.shown[] ]}'
+                : ((w > 0.05) ? '{p.number}' : '') ]
+            on : bool [ (mode == 1 && m.index == part_at)
+                || (mode == 2 && m.index == dk.shrink_at) ]
+            ar : Region span[ m.x0, m.x1 ]
+            k : 'part_{m.index}'
+            if [ p.fs == 'ext4' ]
+                t[ k ] = WizSeg [ label: lb, selected: on, area: ar ]
+            el
+                t[ k ] = WizSegOther [ label: lb, selected: on,
+                                       area: ar ]
+            if [ mode == 2 && m.index == dk.shrink_at && p.low >= 0 ]
+                cut : f32 [ m.x0 + w * f32[ f64[ p.shown[] ]
+                    / f64[ p.bytes ] ] ]
+                if [ p.keep >= 0 ]
+                    t[ 'freed' ] = WizFreed [ area: span[ cut, m.x1 ] ]
+                at : f32 [ cut * 100.0 ]
+                t[ 'edge' ] = WizEdge [
+                    area: Region [ 'l{at.3f}%-2px t0 w4px b0' ] ]
+        return t
+
+    # the shrinking partition and its place on the map
+    func shrinking [] -> MapSeg
+        if [ mode != 2 || !dk || dk.shrink_at < 0 ] return null
+        if [ dk.parts[ dk.shrink_at ].low < 0 ] return null
+        for [ m: MapSeg ] in layout[]
+            if [ !m.gap && m.index == dk.shrink_at ] return m
+        return null
+
+    func on_press [ ev: Event ]
+        m : MapSeg shrinking[]
+        if [ !m || !bounds ] return
+        p : Part dk.parts[ m.index ]
+        f : f32 [ f32[ f64[ p.shown[] ] / f64[ p.bytes ] ] ]
+        x : f32 [ (m.x0 + (m.x1 - m.x0) * f) * bounds.w ]
+        dx : f32 [ ev.mouse.pos.x - x ]
+        if [ dx > 8.0 || dx < -8.0 ] return
+        dragging = true
+        ux.set_capture[ a ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    # the edge follows the pointer, a MB at a time, no lower
+    # than what the partition holds
+    func on_move [ ev: Event ]
+        if [ !dragging ] return
+        m : MapSeg shrinking[]
+        if [ !m || !bounds ] return
+        p : Part dk.parts[ m.index ]
+        f : f32 [ (ev.mouse.pos.x / bounds.w - m.x0) / (m.x1 - m.x0) ]
+        if [ f < 0.0 ] f = 0.0
+        if [ f > 1.0 ] f = 1.0
+        n : i64 [ (i64[ f64[ f ] * f64[ p.bytes ] ] / MIB) * MIB ]
+        if [ n < p.low ] n = p.low
+        p.keep = (n >= ((p.bytes / MIB) * MIB)) ? -1 : n
+        pristine = false
+        up : element parent
+        while [ up && !(up inherits InstallWizard) ] up = up.parent
+        if [ up ] up.pristine = false
+        ux.will_animate = true
+        ev.no_default   = true
+
+    func on_release [ ev: Event ]
+        if [ dragging ] ux.release_capture[ a ]
+        dragging = false
+
 # an installer being written: coral, eased toward the share
 # written, a light sweeping across it on a beat
 element WizBar
@@ -954,8 +1290,17 @@ element InstallWizard
     mutable hw      : vec Hw
     mutable disks   : vec Disk
     mutable disk_at : i32 [ -1 ]
-    mutable beside  : bool
+    mutable beside  : bool [ true ]
     mutable part_at : i32 [ -1 ]
+    # into free space: a new partition there
+    mutable fresh   : bool
+    # swap: -2 not chosen (the default), -1 a file, else the
+    # swap partition's place on the disk
+    mutable swap_pick : i32 [ -2 ]
+    # the boot line's swap word, made with the plan
+    mutable swap_word : string
+    # orbiter-os's partition's uuid: read, or given to mkfs
+    mutable ruuid     : string
     mutable user    : string
     mutable pass    : string
     mutable again   : string
@@ -985,6 +1330,8 @@ element InstallWizard
         disks = scan_disks[]
         lines = vec string []
         lock  = mutex []
+        swap_word = ''
+        ruuid = ''
         user  = ''
         pass  = ''
         again = ''
@@ -993,6 +1340,9 @@ element InstallWizard
         keys  = 'us'
         zone  = read_line[ '/etc/timezone' ]
         if [ zone.count == 0 ] zone = 'UTC'
+        # orbiter-os copies itself; from another system, the tree
+        # os-bootstrap writes
+        if [ source == '/' && !booted_os[] ] source = drive_tree[]
         need = copy_need[]
         scan_hw[]
         first_page = (bootstrap_here[]) ? 0 : 1
@@ -1011,16 +1361,14 @@ element InstallWizard
         if [ n <= 0 ] return -1
         return n + n / 10
 
-    # where orbiter-os is: this system, else the tree os-bootstrap
-    # built (a check from another system checks that one)
+    # where orbiter-os is: the tree being installed
     func hw_tree [] -> string
-        base : string [ (source == '/') ? '' : source ]
-        # booted into orbiter-os: its own tree; never another
-        # system's kernels
+        return (source == '/') ? '' : source
+
+    # running orbiter-os itself
+    func booted_os [] -> bool
         cmd : read_line[ '/proc/cmdline' ]
-        if [ source != '/' || cmd.index_of[ 'orbiter.init=' ] >= 0 ]
-            return base
-        return '{path.path_startup[]}/orbiter-os/root'
+        return cmd.index_of[ 'orbiter.init=' ] >= 0
 
     # graphics and network on the pci bus, network on usb: each
     # matched against orbiter-os's own modules and firmware
@@ -1171,6 +1519,49 @@ element InstallWizard
             if [ p.fs == 'vfat' ] return p
         return null
 
+    # swap partitions orbiter-os can use: the disk's own (none
+    # when the whole disk is erased)
+    func swap_parts [] -> vec i32
+        out : vec i32 []
+        dk : disk[]
+        if [ !dk || (!beside && !fresh) ] return out
+        for [ i: i32 0, i < dk.parts.count, i += 1 ]
+            if [ dk.parts[ i ].fs == 'swap' ] out.push[ i ]
+        return out
+
+    # the swap orbiter-os uses: the one picked, else the largest
+    # swap partition when it holds what this machine wants, else
+    # a file (-1)
+    func swap_choice [] -> i32
+        parts : swap_parts[]
+        if [ swap_pick == -1 || parts.contains[ swap_pick ] ]
+            return swap_pick
+        dk : disk[]
+        best : i32 [ -1 ]
+        for [ i: i32 ] in parts
+            n : i64 [ dk.parts[ i ].bytes ]
+            if [ best < 0 || n > dk.parts[ best ].bytes ] best = i
+        want : i64 [ (swap_want[] * 9) / 10 ]
+        if [ best >= 0 && dk.parts[ best ].bytes >= want ] return best
+        return -1
+
+    func swap_text [] -> string
+        at : i32 swap_choice[]
+        if [ at < 0 ]
+            n : size_text[ swap_want[] ]
+            return 'Swap: a {n} file in orbiter-os'
+        p : Part disk[].parts[ at ]
+        small : string [ (p.bytes < (swap_want[] * 9) / 10)
+            ? ', small for {size_text[ ram_bytes[] ]} of memory' : '' ]
+        n : size_text[ p.bytes ]
+        return 'Swap: the {p.name} partition, {n}{small}'
+
+    # what the new partition must hold: the tree, and a swap file
+    func space_need [] -> i64
+        n : i64 [ (need > 0) ? need : 4 * GIB ]
+        if [ swap_choice[] < 0 ] n += swap_want[]
+        return n
+
     # why this page cannot go on; '' when it can
     func why [] -> string
         if [ page == 1 && !hw_ok[] ]
@@ -1187,6 +1578,23 @@ element InstallWizard
                 if [ pt.fs != 'ext4' && !dry_run ]
                     return 'The folder needs an ext4 partition.'
                 if [ !esp[] ] return 'This disk has no EFI partition.'
+            if [ fresh ]
+                if [ !esp[] ] return 'This disk has no EFI partition.'
+                if [ dk.shrink_at >= 0 ]
+                    sp : Part dk.parts[ dk.shrink_at ]
+                    if [ sp.low < 0 ]
+                        nc : 'It cannot shrink: it is in use, or not'
+                        return '{nc} ext4 or NTFS.'
+                el [ dk.gap_at < 0 ]
+                    pk : 'Choose free space on the map, or a partition'
+                    return '{pk} to shrink.'
+                room : free_place[ dk ]
+                want : i64 space_need[]
+                if [ room.bytes < want ]
+                    if [ dk.shrink_at >= 0 ]
+                        dg : 'Drag its edge left to free'
+                        return '{dg} {size_text[ want ]}.'
+                    return 'It needs {size_text[ want ]} of free space.'
         if [ page == 4 ]
             if [ user.count == 0 ] return 'Give a user name.'
             for [ i: i32 0, i < user.count, i += 1 ]
@@ -1220,9 +1628,15 @@ element InstallWizard
         line : read_line[ '/proc/cmdline' ]
         drop : vec string [] [ 'BOOT_IMAGE=', 'root=', 'initrd=',
             'orbiter.uuid=', 'orbiter.root=', 'orbiter.args=',
-            'vt.handoff=' ]
+            'orbiter.swap=', 'vt.handoff=', 'resume=' ]
         out : 'orbiter.uuid={uuid} orbiter.root={root}'
         if [ efi ] out = 'initrd=\\EFI\\orbiter\\initramfs {out}'
+        if [ swap_word.count > 0 ] out = '{out} {swap_word}'
+        # from another system: orbiter-os's own words, not its
+        if [ !booted_os[] ]
+            rel : kernel_release[ source ]
+            nv : path '{source}/lib/modules/{rel}/extra/nvidia-drm.ko'
+            return '{out} console=tty0 {os_words[ false, nv.exists[] ]}'
         for [ w: string ] in line.split[ ' ' ]
             word : '{w}'
             if [ word.count == 0 || word == 'ro' || word == 'rw'
@@ -1297,6 +1711,47 @@ element InstallWizard
             if [ es == d || rs == d ] umount2[ d.chars, 0 ]
         return k
 
+    # a partition made smaller to free its end: its file system
+    # first (checked, then shrunk), then its entry in the table
+    func shrink [ dk: Disk, p: Part ]
+        d : '/dev/{p.name}'
+        dev : '/dev/{dk.name}'
+        kb : i64 [ p.keep / 1024 ]
+        if [ p.fs == 'ext4' ]
+            s : step[ StepKind.run, 'Check {d}' ]
+            s.cmd = 'e2fsck -f -y {d}; test $? -le 1'
+            s = step[ StepKind.run,
+                      'Shrink {d}\'s files to {size_text[ p.keep ]}' ]
+            s.cmd = 'resize2fs {d} {kb}K'
+        el
+            s : step[ StepKind.run,
+                      'Shrink {d}\'s files to {size_text[ p.keep ]}' ]
+            s.cmd = 'echo y | ntfsresize --force --size {p.keep} {d}'
+        s : step[ StepKind.run,
+                  'Shrink {d} to {size_text[ p.keep ]} in the table' ]
+        sf : 'sfdisk --no-reread -N {p.number} {dev}'
+        s.cmd = 'echo \',{kb}KiB\' | {sf}'
+
+    # the number sfdisk gives a partition it appends: the least
+    # one not in use
+    func free_number [ dk: Disk ] -> i32
+        n : i32 [ 1 ]
+        taken : bool [ true ]
+        while [ taken ]
+            taken = false
+            for [ p: Part ] in dk.parts
+                if [ p.number == n ] taken = true
+            if [ taken ] n += 1
+        return n
+
+    # a Linux already on the disk: the first ext4 that says what
+    # it holds (its boot menu takes orbiter-os)
+    func linux_part [ dk: Disk ] -> Part
+        for [ p: Part ] in dk.parts
+            if [ p.fs == 'ext4' && p.what.count > 0
+                 && p.what != 'has orbiter-os' ] return p
+        return null
+
     # the whole install as steps; problems that stop it
     func make_plan []
         plan     = vec Step []
@@ -1305,17 +1760,22 @@ element InstallWizard
         boot     = BootKind.none
         dk : disk[]
         if [ !dk ] return
-        for [ t: string ] in vec string [] [ 'sfdisk', 'mkfs.vfat',
-                'mkfs.ext4', 'efibootmgr' ]
+        tools : vec string [] [ 'sfdisk', 'mkfs.vfat', 'mkfs.ext4',
+            'efibootmgr', 'fallocate', 'mkswap', 'partx', 'tar' ]
+        # as a user, the steps run as root through pkexec's prompt
+        if [ geteuid[] != 0 ] tools.push[ 'pkexec' ]
+        if [ fresh && dk.shrink_at >= 0 ]
+            if [ dk.parts[ dk.shrink_at ].fs == 'ext4' ]
+                tools.push[ 'resize2fs' ]
+                tools.push[ 'e2fsck' ]
+            el
+                tools.push[ 'ntfsresize' ]
+        for [ t: string ] in tools
             if [ find_tool[ t ].count == 0 ]
                 problems.push[ 'Missing program: {t}' ]
         efi_dir : path '/sys/firmware/efi'
         if [ !efi_dir.exists[] ]
             problems.push[ 'This machine did not start with UEFI.' ]
-        cmd : read_line[ '/proc/cmdline' ]
-        if [ cmd.index_of[ 'orbiter.init=' ] < 0 ]
-            ni : 'Not started from orbiter-os: no orbiter.init.'
-            problems.push[ ni ]
         base : string [ (source == '/') ? '' : source ]
         kern : '{base}/boot/vmlinuz'
         rd   : '{base}/boot/initramfs'
@@ -1329,15 +1789,69 @@ element InstallWizard
         rdev : string ''
         tree : string ''
         root : string ''
-        if [ beside ]
+        # where an existing Linux keeps its boot menu, mounted
+        lmnt : string [ mnt ]
+        if [ fresh ]
+            es : esp[]
+            espn = es.number
+            place : free_place[ dk ]
+            num : free_number[ dk ]
+            rdev = part_dev[ dk.name, num ]
+            lp : linux_part[ dk ]
+            ld : string ''
+            if [ lp ] ld = '/dev/{lp.name}'
+            boot = find_boot[ '/dev/{es.name}', ld ]
+            notes.push[ 'Boot manager: {boot_name[ boot ]}' ]
+            tree = mnt
+            root = '/'
+            sp : Part null
+            if [ dk.shrink_at >= 0 ] sp = dk.parts[ dk.shrink_at ]
+            if [ sp && sp.keep >= 0 ]
+                shrink[ dk, sp ]
+                sw : 'Shrinking moves {sp.name}\'s data inside it:'
+                notes.push[ '{sw} back it up first.' ]
+            sec : i64 [ 512 ]
+            pn : size_text[ place.bytes ]
+            s : step[ StepKind.run, 'Make {rdev}: {pn} of free space' ]
+            ln : 'start={place.start / sec}, size={place.bytes / sec},'
+            ln = '{ln} type=L, name=orbiter'
+            sf : 'sfdisk --no-reread -N {num} {dev}'
+            s.cmd = 'echo \'{ln}\' | {sf}'
+            s = step[ StepKind.run, 'Read {dev}\'s new table' ]
+            s.cmd = 'partx -u {dev}; partx -a {dev}; true'
+            s = step[ StepKind.wait, 'Wait for {rdev}' ]
+            s.src = rdev
+            s.dst = rdev
+            ruuid = read_line[ '/proc/sys/kernel/random/uuid' ]
+            s = step[ StepKind.run, 'Format {rdev} as ext4' ]
+            s.cmd = 'mkfs.ext4 -F -L orbiter-os -U {ruuid} {rdev}'
+            s = step[ StepKind.mount, 'Mount {rdev}' ]
+            s.src = rdev
+            s.dst = mnt
+            s.fs  = 'ext4'
+            if [ lp ] lmnt = '/run/wizard/linux'
+        el [ beside ]
             pt : part[]
             es : esp[]
             espn = es.number
             rdev = '/dev/{pt.name}'
+            ruuid = part_uuid[ rdev ]
             boot = find_boot[ '/dev/{es.name}', rdev ]
             notes.push[ 'Boot manager: {boot_name[ boot ]}' ]
             tree = '{mnt}/orbiter-os'
             root = '/orbiter-os'
+            # one there already is replaced; never the source
+            here : mounted_at[ rdev ]
+            old : path '{here}/orbiter-os'
+            if [ here.count > 0 && (old.exists[] || old.is_symlink[]) ]
+                rp : path [ source ]
+                lk : '/orbiter-os, a link, is replaced by the copy.'
+                same : '/orbiter-os is the tree being copied.'
+                over : '/orbiter-os is there: it is copied over.'
+                if [ old.is_symlink[] ] notes.push[ lk ]
+                el [ '{old.normalize[]}' == '{rp.normalize[]}' ]
+                    problems.push[ same ]
+                el notes.push[ over ]
             s : step[ StepKind.mount, 'Mount {rdev}' ]
             s.src = rdev
             s.dst = mnt
@@ -1361,8 +1875,9 @@ element InstallWizard
             s.dst = rdev
             s = step[ StepKind.run, 'Format {esd} as FAT32' ]
             s.cmd = 'mkfs.vfat -F 32 -n ORBITER {esd}'
+            ruuid = read_line[ '/proc/sys/kernel/random/uuid' ]
             s = step[ StepKind.run, 'Format {rdev} as ext4' ]
-            s.cmd = 'mkfs.ext4 -F -L orbiter-os {rdev}'
+            s.cmd = 'mkfs.ext4 -F -L orbiter-os -U {ruuid} {rdev}'
             s = step[ StepKind.mount, 'Mount {rdev}' ]
             s.src = rdev
             s.dst = mnt
@@ -1370,6 +1885,20 @@ element InstallWizard
         s : step[ StepKind.copy, 'Copy orbiter-os to {rdev}' ]
         s.src = source
         s.dst = tree
+        sw : i32 swap_choice[]
+        su : string ''
+        if [ sw >= 0 ] su = part_uuid[ '/dev/{dk.parts[ sw ].name}' ]
+        if [ su.count > 0 ]
+            swap_word = 'orbiter.swap=UUID={su}'
+            notes.push[ 'Swap: the {dk.parts[ sw ].name} partition' ]
+        el
+            n : i64 [ swap_want[] ]
+            swap_word = 'orbiter.swap=/swapfile'
+            st : 'Make the swap file: {size_text[ n ]}'
+            s = step[ StepKind.run, st ]
+            f : '{tree}/swapfile'
+            s.cmd = 'fallocate -l {n} {f} && chmod 600 {f}'
+            s.cmd = '{s.cmd} && mkswap {f}'
         s = step[ StepKind.write, 'Write the settings' ]
         s.dst  = '{tree}/var/lib/orbiter/install.agi'
         s.text = 'user: {user}\npassword: \'{pass_hash[]}\'\n'
@@ -1379,19 +1908,28 @@ element InstallWizard
         s.dst  = '{tree}/etc/hostname'
         s.text = '{host}\n'
         if [ boot == BootKind.grub_debian || boot == BootKind.grub_bls ]
+            lp : Part linux_part[ dk ]
+            if [ fresh && lp ]
+                s = step[ StepKind.mount, 'Mount /dev/{lp.name}' ]
+                s.src = '/dev/{lp.name}'
+                s.dst = lmnt
+                s.fs  = 'ext4'
             mt : string [ (boot == BootKind.grub_debian)
-                ? '{mnt}/etc/grub.d/41_orbiter-os'
-                : '{mnt}/loader/entries/orbiter-os.conf' ]
+                ? '{lmnt}/etc/grub.d/41_orbiter-os'
+                : '{lmnt}/loader/entries/orbiter-os.conf' ]
             if [ boot == BootKind.grub_bls ]
-                sub : path '{mnt}/boot/loader/entries'
-                own : path '{mnt}/loader/entries'
+                sub : path '{lmnt}/boot/loader/entries'
+                own : path '{lmnt}/loader/entries'
                 if [ !own.is_dir[] && sub.is_dir[] ]
-                    mt = '{mnt}/boot/loader/entries/orbiter-os.conf'
+                    mt = '{lmnt}/boot/loader/entries/orbiter-os.conf'
             s = step[ StepKind.menu, 'Add orbiter-os to GRUB\'s menu' ]
             s.src  = rdev
             s.dst  = mt
             s.menu = boot
             s.exec = boot == BootKind.grub_debian
+            if [ fresh && lp ]
+                s = step[ StepKind.unmount, 'Unmount /dev/{lp.name}' ]
+                s.dst = lmnt
         esd : part_dev[ dk.name, espn ]
         s = step[ StepKind.mount, 'Mount {esd}' ]
         s.src = esd
@@ -1418,14 +1956,15 @@ element InstallWizard
         s.src = 'efivarfs'
         s.dst = '/sys/firmware/efi/efivars'
         s.fs  = 'efivarfs'
+        keep_boot : bool [ beside || fresh ]
         bt : string [ 'Add orbiter-os to the boot menu, first' ]
-        if [ beside ]
+        if [ keep_boot ]
             bt = 'Add orbiter-os to the boot menu; the default stays'
         s = step[ StepKind.boot, bt ]
         s.src    = rdev
         s.dst    = root
-        s.second = beside
-        mk : string [ (beside) ? '--create-only' : '--create' ]
+        s.second = keep_boot
+        mk : string [ (keep_boot) ? '--create-only' : '--create' ]
         s.cmd = 'efibootmgr {mk} --disk {dev} --part {espn}'
         s.cmd = '{s.cmd} --label orbiter-os'
         s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\vmlinuz.efi\''
@@ -1439,11 +1978,11 @@ element InstallWizard
         for [ st: Step ] in plan
             log 'wizard: plan: {st.title}'
             if [ st.kind == StepKind.menu ]
-                mx : menu_text[ st.menu, '<uuid>', root, tree_rel[] ]
+                mx : menu_text[ st.menu, ruuid, root, tree_rel[] ]
                 log 'wizard:   {st.dst}:\n{mx}'
             if [ st.cmd.count > 0 ] log 'wizard:   {st.cmd}'
             if [ st.kind == StepKind.boot ]
-                bl : boot_line[ '<uuid of {rdev}>', root, true ]
+                bl : boot_line[ ruuid, root, true ]
                 log 'wizard:   --unicode \'{bl}\''
         for [ p: string ] in problems
             log 'wizard: problem: {p}'
@@ -1470,19 +2009,6 @@ element InstallWizard
             out.push[ ln.trim[] ]
         pclose[ fh ]
         return out
-
-    # a shell line; its output goes to the log
-    func shell [ cmd: string ] -> bool
-        say[ '$ {cmd}' ]
-        full : '{cmd} 2>&1'
-        fh_cmd : command [ full ]
-        fh : handle fh_cmd.stream[]
-        if [ !fh ] return false
-        b : local i8 [ 1024 ]
-        while [ fgets[ @b[0], 1024, fh ] ]
-            ln : string [ @b[0] ]
-            say[ ln.trim[] ]
-        return pclose[ fh ] == 0
 
     func file_size [ f: string ] -> i64
         fh : handle fopen[ f.chars, 'rb' ]
@@ -1511,153 +2037,156 @@ element InstallWizard
             el n += file_size[ s ]
         return n
 
-    # one file, its time and run bit kept
-    func copy_file [ src: string, dst: string ] -> bool
-        sp : path [ src ]
-        fi : handle fopen[ src.chars, 'rb' ]
-        if [ !fi ] return false
-        fo : handle fopen[ dst.chars, 'wb' ]
-        if [ !fo ]
-            fclose[ fi ]
-            return false
-        buf : @u8 [ malloc[ 1 << 20 ] ]
-        ok : bool [ true ]
-        while [ true ]
-            n : i64 [ fread[ buf, 1, 1 << 20, fi ] ]
-            if [ n <= 0 ] break
-            if [ fwrite[ buf, 1, n, fo ] != n ]
-                ok = false
-                break
-            copied += n
-        free[ buf ]
-        fclose[ fi ]
-        if [ fclose[ fo ] != 0 ] ok = false
-        # rwxr-xr-x, else rw-r--r--
-        exec_mode : u32 [ 0x1ED ]
-        file_mode : u32 [ 0x1A4 ]
-        runs : bool [ access[ src.chars, X_OK ] == 0 ]
-        chmod[ dst.chars, (runs) ? exec_mode : file_mode ]
-        st : i64 [ sp.modified_time[] / 1000 ]
-        ub : utimbuf [ actime: st, modtime: st ]
-        utime[ dst.chars, @ub ]
-        return ok
+    # a word for sh: in '', each ' as '\''
+    func sh_word [ t: string ] -> string
+        out : string ''
+        for [ i: i32 0, i < t.count, i += 1 ]
+            ch : t.mid[ i, 1 ]
+            out = (ch == '\'') ? '{out}\'\\\'\'' : '{out}{ch}'
+        return '\'{out}\''
 
-    func copy_tree [ src: string, dst: string ] -> bool
-        d : path [ src ]
-        dp : path [ dst ]
-        dp.make_dir[]
-        entries : d.ls[ null, false ]
-        if [ !entries ] return true
-        for [ e: path ] in entries
-            mark : i32 [ Au.auto_mark[] ]
-            s : '{e}'
-            t : '{dst}/{e.filename[]}'
-            ok : bool [ true ]
-            if [ outside[ s ] ]
-                tp : path [ t ]
-                tp.make_dir[]
-            el [ e.is_symlink[] ]
-                unlink[ t.chars ]
-                ok = symlink[ link_text[ s ].chars, t.chars ] == 0
-            el [ e.is_dir[] ]
-                ok = copy_tree[ s, t ]
-            el
-                ok = copy_file[ s, t ]
-            if [ !ok ] say[ 'Could not copy {s}' ]
-            Au.auto_free_to[ mark ]
-            if [ !ok ] return false
-        return true
-
-    func run_step [ s: Step ] -> bool
-        if [ s.kind == StepKind.run ] return shell[ s.cmd ]
+    # one step as sh lines (no braces: they would interpolate)
+    func step_sh [ s: Step ] -> string
+        if [ s.kind == StepKind.run ] return s.cmd
+        src : sh_word[ s.src ]
+        dst : sh_word[ s.dst ]
         if [ s.kind == StepKind.wait ]
-            a1 : path [ s.src ]
-            a2 : path [ s.dst ]
-            for [ i: i32 0, i < 100, i += 1 ]
-                if [ a1.exists[] && a2.exists[] ] return true
-                usleep[ 100000 ]
-            say[ 'The partitions did not appear.' ]
-            return false
+            ok : '[ -e {src} ] && [ -e {dst} ]'
+            w : 'i=0; while [ $i -lt 100 ]; do'
+            w = '{w} {ok} && break; sleep 0.1; i=$((i+1)); done'
+            return '{w}; {ok}'
         if [ s.kind == StepKind.mount ]
-            mp : path [ s.dst ]
-            mp.make_dir[]
-            if [ mount[ s.src.chars, s.dst.chars, s.fs.chars, 0,
-                        null ] == 0 ]
-                return true
             # efivarfs is often there already
-            if [ errno == EBUSY ] return true
-            er : i32 [ errno ]
-            say[ 'mount {s.src} failed: {strerror[ er ]}' ]
-            return false
-        if [ s.kind == StepKind.unmount ]
-            sync[]
-            return umount2[ s.dst.chars, 0 ] == 0
+            m : 'mount -t {s.fs} {src} {dst} || mountpoint -q {dst}'
+            return 'mkdir -p {dst} && ( {m} )'
+        if [ s.kind == StepKind.unmount ] return 'sync && umount {dst}'
         if [ s.kind == StepKind.copy ]
-            dp : path [ s.dst ]
-            if [ dp.exists[] && s.dst.ends_with[ '/orbiter-os' ] ]
-                say[ '{s.dst} is there already: not replaced.' ]
-                return false
-            total  = tree_bytes[ s.src ]
-            copied = 0
-            say[ 'Copying {size_text[ total ]}' ]
-            return copy_tree[ s.src, s.dst ]
+            # a link there goes: the copy takes its place, never
+            # the tree it points at; the kernel's trees go empty
+            ex : string ''
+            for [ d: string ] in vec string [] [ 'proc', 'sys', 'dev',
+                    'run', 'tmp', 'lost+found' ]
+                ex = '{ex} {sh_word[ '--exclude=./{d}/*' ]}'
+            bad : '/run/wizard/copy.bad'
+            pr : sh_word[ '--checkpoint-action=echo=@copied %u' ]
+            c : '( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} )'
+            c = '{c} && rm -f {bad} && ( tar -C {src}{ex}'
+            c = '{c} --checkpoint=100 {pr} -cf - . || touch {bad} )'
+            c = '{c} | tar -C {dst} --no-same-owner -xpf -'
+            return '{c} && [ ! -e {bad} ]'
+        made : 'mkdir -p "$(dirname {dst})"'
         if [ s.kind == StepKind.file ]
-            fp : path [ s.dst ]
-            pd : fp.parent_dir[]
-            pd.make_dir[]
-            return copy_file[ s.src, s.dst ]
-        if [ s.kind == StepKind.write ]
-            fp : path [ s.dst ]
-            pd : fp.parent_dir[]
-            pd.make_dir[]
-            fh : handle fopen[ s.dst.chars, 'w' ]
-            if [ !fh ] return false
-            fputs[ s.text.chars, fh ]
-            if [ fclose[ fh ] != 0 ] return false
-            # rwxr-xr-x: GRUB runs its scripts
-            exec_mode : u32 [ 0x1ED ]
-            if [ s.exec ] chmod[ s.dst.chars, exec_mode ]
-            return true
+            return '{made} && cp --preserve=mode,timestamps {src} {dst}'
+        text : string [ s.text ]
+        runs : bool [ s.exec ]
         if [ s.kind == StepKind.menu ]
-            uuid : part_uuid[ s.src ]
-            if [ uuid.count == 0 ]
-                say[ 'No uuid on {s.src}' ]
-                return false
-            w : Step [ kind: StepKind.write, dst: s.dst, exec: s.exec,
-                text: menu_text[ s.menu, uuid, root_dir[],
-                                 tree_rel[] ] ]
-            return run_step[ w ]
+            text = menu_text[ s.menu, ruuid, root_dir[], tree_rel[] ]
+        if [ s.kind == StepKind.write || s.kind == StepKind.menu ]
+            w : '{made} && printf %s {sh_word[ text ]} > {dst}'
+            # rwxr-xr-x: GRUB runs its scripts
+            return (runs) ? '{w} && chmod 755 {dst}' : w
         if [ s.kind == StepKind.boot ]
-            uuid : part_uuid[ s.src ]
-            if [ uuid.count == 0 ]
-                say[ 'No uuid on {s.src}' ]
-                return false
-            bl : boot_line[ uuid, s.dst, true ]
-            before : boot_ids[ capture[ 'efibootmgr' ] ]
-            if [ !shell[ '{s.cmd} --unicode \'{bl}\'' ] ] return false
-            if [ !s.second ] return true
-            after : capture[ 'efibootmgr' ]
-            made : string ''
-            for [ id: string ] in boot_ids[ after ]
-                if [ !before.contains[ id ] ] made = id
-            if [ made.count == 0 ]
-                say[ 'The new boot entry was not found.' ]
-                return false
-            od : order_second[ boot_order[ after ], made ]
-            return shell[ 'efibootmgr --bootorder {od}' ]
-        return false
+            bl : boot_line[ ruuid, s.dst, true ]
+            c : '{s.cmd} --unicode {sh_word[ bl ]}'
+            return (s.second) ? 'boot_second {c}' : c
+        return 'false'
 
-    # the install, on its own thread
-    func work [] -> none
-        for [ i: i32 0, i < plan.count, i += 1 ]
-            step_at = i
-            st : Step plan[ i ]
-            say[ st.title ]
-            if [ !run_step[ st ] ]
+    # the script's start: its folder, and boot_second, which runs
+    # the entry's command and puts the new entry second (the
+    # firmware's default stays first)
+    func sh_head [] -> string
+        hx : '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'
+        ids : 'efibootmgr | sed -n \'s/^Boot\\({hx}\\)[* ].*/\\1/p\''
+        h : 'set -u\nmkdir -p /run/wizard\n'
+        h = '{h}boot_second() (\n'
+        h = '{h}  before=" $({ids} | tr \'\\n\' \' \') "\n'
+        h = '{h}  "$@" || exit 1\n  new=\'\'\n'
+        h = '{h}  for id in $({ids}); do\n'
+        h = '{h}    case "$before" in *" $id "*) ;; *) new=$id ;; esac\n'
+        h = '{h}  done\n  if [ -z "$new" ]; then\n'
+        h = '{h}    echo \'The new boot entry was not found.\'; exit 1\n'
+        h = '{h}  fi\n'
+        h = '{h}  o=$(efibootmgr | sed -n \'s/^BootOrder: //p\')\n'
+        h = '{h}  if [ -z "$o" ]; then efibootmgr --bootorder "$new"; '
+        h = '{h}exit; fi\n'
+        h = '{h}  first=$(echo "$o" | cut -d, -f1)\n'
+        h = '{h}  rest=$(echo "$o" | tr \',\' \'\\n\' | sed 1d '
+        h = '{h}| grep -vx "$new" | paste -sd, -)\n'
+        h = '{h}  if [ -n "$rest" ]; then rest=",$rest"; fi\n'
+        h = '{h}  efibootmgr --bootorder "$first,$new$rest"\n)\n'
+        return h
+
+    # the plan as one script: each step says it starts, and where
+    # it stopped when it fails
+    func script_text [ steps: vec Step ] -> string
+        t : sh_head[]
+        for [ i: i32 0, i < steps.count, i += 1 ]
+            t = '{t}echo @step {i}\nif ! ( {step_sh[ steps[ i ] ]} ); then '
+            t = '{t}echo @fail {i}; exit 1; fi\n'
+        return '{t}echo @done\n'
+
+    # runs a script (how: sh, or pkexec sh), following its word:
+    # the step it is on, bytes copied, the step it stopped at
+    func run_script [ f: string, how: string ]
+        fh_cmd : command [ '{how} {f} 2>&1' ]
+        fh : handle fh_cmd.stream[]
+        if [ !fh ]
+            failed = true
+            say[ 'The install could not start.' ]
+            return
+        b : local i8 [ 4096 ]
+        # tar's records are 20 blocks of 512 bytes
+        record : i64 [ 10240 ]
+        while [ fgets[ @b[0], 4096, fh ] ]
+            ln : string [ @b[0] ]
+            t : ln.trim[]
+            cp : i32 [ t.index_of[ '@copied ' ] ]
+            if [ cp >= 0 ]
+                n : t.mid[ cp + 8, t.count - cp - 8 ]
+                copied = n.integer_value[] * record
+                continue
+            if [ t.starts_with[ '@step ' ] ]
+                step_at = t.mid[ 6, t.count - 6 ].integer_value[]
+                if [ step_at < plan.count ] say[ plan[ step_at ].title ]
+                continue
+            if [ t.starts_with[ '@fail ' ] ]
                 failed = true
-                say[ 'Stopped at: {st.title}' ]
-                break
-        step_at  = plan.count
+                k : i32 [ t.mid[ 6, t.count - 6 ].integer_value[] ]
+                if [ k < plan.count ] say[ 'Stopped at: {plan[ k ].title}' ]
+                continue
+            if [ t == '@done' ] continue
+            say[ t ]
+        st : i32 [ pclose[ fh ] ]
+        if [ st != 0 && !failed ]
+            failed = true
+            say[ 'The install did not run: the password was not given.' ]
+
+    # the plan's script, in the install's own scratch folder
+    func write_script [ steps: vec Step ] -> string
+        f : '{path.path_install[]}/tmp/install-{getpid[]}.sh'
+        fh : handle fopen[ f.chars, 'w' ]
+        if [ !fh ] return ''
+        fputs[ script_text[ steps ].chars, fh ]
+        fclose[ fh ]
+        return f
+
+    # the install, on its own thread: as root (orbiter-os from the
+    # stick) the script runs as it is; as a user, through pkexec,
+    # which asks for the password once
+    func work [] -> none
+        for [ st: Step ] in plan
+            if [ st.kind == StepKind.copy ] total = tree_bytes[ st.src ]
+        copied = 0
+        f : write_script[ plan ]
+        if [ f.count == 0 ]
+            failed = true
+            say[ 'The install script could not be written.' ]
+        el
+            how : string [ (geteuid[] == 0) ? 'sh' : 'pkexec sh' ]
+            run_script[ f, how ]
+            unlink[ f.chars ]
+        # stopped: the bar stays at the step that failed
+        if [ !failed ] step_at = plan.count
         finished = true
         running  = false
         Au.auto_free[]
@@ -1683,9 +2212,10 @@ element InstallWizard
             over : bool [ ev.key.shift || ev.key.meta ]
             if [ bs && bs.building ] return
             if [ bs && bs.kernels.count == 0 && !over ] return
-            # the tree takes the chosen kernel first, then on
+            # the tree takes the chosen kernel first, then on; a
+            # dry run writes nothing
             if [ bs && bs.kernels.count > 0 && !bs.ready[]
-                 && bs.can_build[] ]
+                 && bs.can_build[] && !dry_run ]
                 bs.start[ 'tree' ]
                 advance = true
             el
@@ -1703,15 +2233,43 @@ element InstallWizard
             sync[]
             reboot[ RB_AUTOBOOT ]
         el [ key == 'whole' ]
-            beside  = false
+            beside = false
+            fresh  = false
         el [ key == 'beside' ]
-            beside  = true
+            beside = true
+            fresh  = false
+        el [ key == 'fresh' ]
+            beside = false
+            fresh  = true
+        el [ key == 'swap' ]
+            # round the choices: the file, then each partition
+            opts : vec i32 [] [ -1 ]
+            for [ i: i32 ] in swap_parts[]
+                opts.push[ i ]
+            now : i32 [ opts.index_of[ swap_choice[] ] ]
+            swap_pick = opts[ (now + 1) % opts.count ]
         el [ key.starts_with[ 'disk_' ] ]
             at : i32 [ key.mid[ 5, key.count - 5 ].integer_value[] ]
-            if [ at != disk_at ] part_at = -1
+            if [ at != disk_at ]
+                part_at = -1
+                swap_pick = -2
             disk_at = at
+        el [ key.starts_with[ 'part_' ] && fresh ]
+            # a partition to shrink; again: let go of it
+            dk : disk[]
+            at : i32 [ key.mid[ 5, key.count - 5 ].integer_value[] ]
+            for [ p: Part ] in dk.parts
+                p.keep = -1
+            dk.shrink_at = (dk.shrink_at == at) ? -1 : at
+            dk.gap_at = -1
         el [ key.starts_with[ 'part_' ] ]
             part_at = key.mid[ 5, key.count - 5 ].integer_value[]
+        el [ key.starts_with[ 'gap_' ] && fresh ]
+            dk : disk[]
+            for [ p: Part ] in dk.parts
+                p.keep = -1
+            dk.shrink_at = -1
+            dk.gap_at = key.mid[ 4, key.count - 4 ].integer_value[]
         el
             return
         ev.stop[]
@@ -1786,6 +2344,34 @@ element InstallWizard
             elements: rows ]
         return out
 
+    # free space mode: where the new partition goes
+    func place_text [] -> string
+        dk : disk[]
+        room : free_place[ dk ]
+        if [ dk.shrink_at >= 0 ]
+            p : Part dk.parts[ dk.shrink_at ]
+            if [ p.keep >= 0 ]
+                sk : 'Shrink {p.name} from {size_text[ p.bytes ]} to'
+                return '{sk} {size_text[ p.keep ]}: the new partition '
+                    + 'gets {size_text[ room.bytes ]}'
+            if [ p.low < 0 ] return '{p.name}: {size_text[ p.bytes ]}.'
+            return '{p.name}: drag its edge left to make room.'
+        if [ room.bytes > 0 ]
+            n : size_text[ room.bytes ]
+            return 'The new partition takes the {n} of free space.'
+        return 'Choose free space on the map, or a partition to shrink.'
+
+    func how_text [] -> string
+        dk : disk[]
+        if [ dk.shrink_at >= 0 ]
+            p : Part dk.parts[ dk.shrink_at ]
+            if [ p.low < 0 ]
+                return 'It cannot shrink: in use, or not ext4 or NTFS.'
+            return 'It can shrink to {size_text[ p.low ]}: '
+                + 'what it holds, and room to grow.'
+        n : size_text[ space_need[] ]
+        return 'Needs {n}: orbiter-os, and its swap.'
+
     func page_els [ panel: element ] -> Elements
         t : Elements []
         top : f32 [ 4.4 ]
@@ -1832,16 +2418,34 @@ element InstallWizard
             dk : disk[]
             title = 'Where on {dk.name}'
             note  = 'Erase the disk, or keep what is on it.'
-            t[ 'whole' ] = WizPick [ selected: !beside,
-                label: 'Erase the whole disk for orbiter-os',
-                area: row[ top ] ]
             t[ 'beside' ] = WizPick [ selected: beside,
                 label: 'Keep what is there: a folder on a partition',
+                area: row[ top ] ]
+            t[ 'fresh' ] = WizPick [ selected: fresh,
+                label: 'Keep what is there: a partition in free space',
                 area: row[ top + gap ] ]
+            t[ 'whole' ] = WizPick [ selected: !beside && !fresh,
+                label: 'Erase the whole disk for orbiter-os',
+                area: row[ top + gap * 2.0 ] ]
+            mode : i32 [ (fresh) ? 2 : ((beside) ? 1 : 0) ]
+            y : f32 [ top + gap * 3.0 + 0.1 ]
+            t[ 'map' ] = DiskMap [ dk: dk, mode: mode, part_at: part_at,
+                area: Region [ 'l1.4 t{y} r1.4 h1.5' ] ]
+            y += 1.9
             if [ beside ]
-                y : f32 [ top + gap * 2.0 + 0.4 ]
                 t[ 'parts' ] = ListBox [ elements: part_els[ panel ],
-                    area: Region [ 'l1.4 t{y} r1.4 h7.4' ] ]
+                    area: Region [ 'l1.4 t{y} r1.4 h3.6' ] ]
+            el [ fresh ]
+                t[ 'place' ] = WizSmall [ label: place_text[],
+                    area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
+                t[ 'how' ] = WizSmall [ label: how_text[],
+                    area: Region [ 'l1.4 t{y + 0.8} r1.4 h0.75' ] ]
+            el
+                t[ 'erase' ] = WizSmall [
+                    label: 'Everything on {dk.name} is erased.',
+                    area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
+            t[ 'swap' ] = WizPick [ label: swap_text[],
+                area: row[ top + 10.45 ] ]
         el [ page == 4 ]
             user  = field[ panel, 'user', user ]
             pass  = field[ panel, 'pass', pass ]
@@ -2169,3 +2773,80 @@ expect func t_hardware_match [] -> bool
         && driver_for[ al, wifi ] == ''
         && nm == 'Realtek RTL8125 2.5GbE Controller'
         && gpu.starts_with[ 'NVIDIA GeForce RTX 3060' ]
+
+# a made-up disk: EFI, ext4, NTFS, and room between and after
+func test_disk [] -> Disk
+    dk : Disk [ name: 'tst', bytes: 100 * GIB, parts: vec Part [] ]
+    dk.parts.push[ Part [ name: 'tst1', number: 1, start: MIB,
+        bytes: 512 * MIB, fs: 'vfat' ] ]
+    dk.parts.push[ Part [ name: 'tst2', number: 2, start: 513 * MIB,
+        bytes: 40 * GIB, fs: 'ext4', what: 'Ubuntu 26.04',
+        low: 10 * GIB ] ]
+    dk.parts.push[ Part [ name: 'tst3', number: 3, start: 60 * GIB,
+        bytes: 30 * GIB, fs: 'ntfs' ] ]
+    return dk
+
+# the gaps, a chosen gap's place, and a shrink's
+expect func t_disk_gaps [] -> bool
+    dk : test_disk[]
+    gaps : disk_gaps[ dk ]
+    ok : bool [ gaps.count == 2 ]
+    if [ ok ]
+        mid : i64 [ 60 * GIB - (513 * MIB + 40 * GIB) ]
+        ok = gaps[ 0 ].start == 513 * MIB + 40 * GIB
+            && gaps[ 0 ].bytes == mid
+            && gaps[ 1 ].start == 90 * GIB
+            && gaps[ 1 ].bytes == 10 * GIB - MIB
+    dk.gap_at = 1
+    g : free_place[ dk ]
+    at_end : bool [ g.start == 90 * GIB && g.bytes == 10 * GIB - MIB ]
+    dk.gap_at = -1
+    dk.shrink_at = 1
+    dk.parts[ 1 ].keep = 30 * GIB
+    f : free_place[ dk ]
+    freed : bool [ f.start == 513 * MIB + 30 * GIB
+        && f.bytes == 60 * GIB - (513 * MIB + 30 * GIB) ]
+    log 'wizard gaps: {gaps.count} gaps, {ok}; chosen {at_end}; '
+        + 'shrink frees {size_text[ f.bytes ]} {freed}'
+    return ok && at_end && freed
+
+# into free space after shrinking the ext4: the plan's commands
+expect func t_free_plan [] -> bool
+    dk : test_disk[]
+    dk.shrink_at = 1
+    dk.parts[ 1 ].keep = 30 * GIB
+    w : InstallWizard [ dry_run: true ]
+    if [ !w.lines ] w.lines = vec string []
+    if [ !w.swap_word ] w.swap_word = ''
+    # constructed, not mounted: its init never ran
+    w.user = 'test'
+    w.pass = 'test'
+    w.host = 'test'
+    w.keys = 'us'
+    w.zone = 'UTC'
+    w.disks = vec Disk [] [ dk ]
+    w.disk_at = 0
+    w.beside = false
+    w.fresh = true
+    w.make_plan[]
+    cmds : string ''
+    for [ st: Step ] in w.plan
+        cmds = '{cmds}{st.title} | {st.cmd}\n'
+    log 'wizard free plan:\n{cmds}'
+    kb : i64 [ 30 * GIB / 1024 ]
+    sec : i64 [ 512 ]
+    s0 : i64 [ (513 * MIB + 30 * GIB) / sec ]
+    n0 : i64 [ (60 * GIB - (513 * MIB + 30 * GIB)) / sec ]
+    want : vec string [] [ 'e2fsck -f -y /dev/tst2',
+        'resize2fs /dev/tst2 {kb}K',
+        'echo \',{kb}KiB\' | sfdisk --no-reread -N 2 /dev/tst',
+        'start={s0}, size={n0}, type=L, name=orbiter',
+        'sfdisk --no-reread -N 4 /dev/tst',
+        'mkfs.ext4 -F -L orbiter-os /dev/tst4',
+        'mkswap /run/wizard/root/swapfile', '--create-only' ]
+    ok : bool [ true ]
+    for [ x: string ] in want
+        if [ cmds.index_of[ x ] < 0 ]
+            log 'wizard free plan: missing {x}'
+            ok = false
+    return ok && w.swap_word == 'orbiter.swap=/swapfile'

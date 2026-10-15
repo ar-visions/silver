@@ -1936,6 +1936,12 @@ element aeon : trinity
         if [ v ]
             v.key_event[ ev ]
 
+    # typed characters: the svg view's text being typed
+    public func on_char [ ev: Event ]
+        if [ doc && middle[] ]
+            sv : middle[] inherits SvgView
+            if [ sv ] sv.char_event[ ev ]
+
     func view [] -> DesignView
         mid : middle[]
         if [ !mid ] return null

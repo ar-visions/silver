@@ -833,6 +833,33 @@ is `wizard`; it uses whatever supported card is in the machine.
      chain (m1n1, U-Boot; the Asahi way installs from macOS), and
      the whole orbiter-os userland for arm64 (orbiter, trinity,
      Mesa's asahi driver). A project in stages: kernel first.
+20. BUILT (Oct 15, Kalen: a partitioning view; all three; swap
+   adapting to the machine, a partition or a file) the disk page:
+   a map (DiskMap: each partition and free run to scale, at least
+   3% so a small one can be picked; ext4 blue, others grey, free
+   green; the used part shaded) above the three ways: the whole
+   disk, a folder beside, or a new partition in free space. Free
+   space: a gap on the map, or a partition to shrink by dragging
+   its edge (ext4 or NTFS, not in use: Part.low is what it holds,
+   a tenth more and at least a GB; NTFS's from ntfsresize --info,
+   as root). The plan: e2fsck + resize2fs (or ntfsresize), the
+   entry shrunk (sfdisk -N n), the new one at the exact sectors
+   (sfdisk -N <first free number>), partx, mkfs.ext4; boot entry
+   after the default, GRUB's menu written into the Linux found on
+   the disk (mounted for it). Swap: the disk's swap partition when
+   it holds this machine's memory (at most 8 GB), else a swap file
+   in orbiter-os (fallocate, mkswap); the row cycles the choices;
+   the boot line says orbiter.swap=UUID=<swap uuid> or
+   orbiter.swap=/swapfile, and init.c turns it on after the switch
+   (find_swap: SWAPSPACE2 at 4086, uuid at 1036; nolibc too).
+   os-bootstrap's tree gains e2fsck, resize2fs, ntfsresize, partx,
+   mkswap, fallocate (next tree write). t_disk_gaps, t_free_plan;
+   `silver --test wizard` exit 0. Seen hidden on europa: the map
+   (Ubuntu 372.5 GB, its 41 GB swap, 536.9 GB free where SUSE was,
+   p5 910 GB), the free space chosen (Continue lit), the swap row
+   cycling, the folder table under the map. NOT driven: a drag
+   (nothing here can shrink as a user: p1 is mounted, NTFS needs
+   root), a real install into free space, swap at boot.
 19. OPEN (Kalen, Oct 10) orbiter-os on Macs. Apple Silicon:
    Asahi's kernel tree (github.com/AsahiLinux/linux, branch asahi,
    7.1.9 on Oct 10) as a kernel source choice, and an installer
@@ -1903,6 +1930,22 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        2.69); set 2 changed blur-1 in place; 0 took it off.
        OPEN: a group's filter (each shape only takes its own), a
        filter's region, other filter primitives.
+       Glow colour and drop shadow (Kalen, Oct 14): rows
+       glow-color (a 'tint': picker with clear, no kinds; blank
+       the shape's own colours), shadow (percent, Inkscape's
+       rule), shadow-offset (x y, element units), shadow-color
+       (starts half black, 4% of the box out). Kalen: effects
+       are render state, written only at a save: the setters
+       change the shape's own values (set_fx; fx_of reads them
+       back), the shape is marked, and compose writes its
+       filter (fx_spans: its own rewritten, new ones into
+       <defs>); no reparse per change. Written as standard
+       filters (feFlood + feComposite in; SourceAlpha blurred,
+       feOffset, merged under). trinity draws both (SVGShape
+       glow_color, shadow, shadow_x/y, shadow_color, last).
+       Seen hidden: green glow, the circle's shadow, the rows.
+       Fixed first: a blur on a file with no <defs> did
+       nothing (with_spans' tie order cut the new <defs>).
        stroke-linecap (Kalen): a row of three choices (butt, round,
        square; butt when unwritten) after stroke-width (PropRow
        stops -> the panel's buttons; svg_set sets SVGShape.cap).
@@ -1936,7 +1979,305 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        (0..1) is a DragField with bar: the cell fills from the
        left by its value (#806bff40); aeon's opacity rows are
        units (unwritten shows 1). Seen: 0.5 half the cell; a
-       drag to 0.7 filled to 0.7. Seen: a pick saved as #2c2923,
+       drag to 0.7 filled to 0.7.
+       The picker's paint kinds and gradients (Kalen: the preview
+       a full strip on top; solid / linear / radial / conic where
+       the swatch was; full gradients now):
+       - properties ColorPick: a 22 px preview strip across the
+         top (a gradient left to right, its stops as small boxes
+         on its foot, the chosen one yellow); the square (56 px at
+         most), hue and alpha bars (10 px) under it; right of
+         them, for a paint (ColorPick.paint, was clearable), kind
+         buttons solid linear / radial conic, the hex, clear. The
+         value is 'r, g, b, a', '' none, or 'linear | 0: r, g, b,
+         a | 1: ...' (radial, conic alike). A click on the strip
+         chooses a stop (6 px) or puts one in (its colour
+         sampled); a drag moves it (kept in order), well off the
+         strip drops it at the release (two stay); the square,
+         bars and hex edit the chosen stop. Solid keeps the chosen
+         stop's colour; a gradient from a colour fades it to clear.
+         The row
+         is 4.5 rows tall (aeon's colour rows 108 px).
+       - trinity svg.ag reads linearGradient / radialGradient
+         (stops with stop-color and stop-opacity, as attributes or
+         style; xlink:href chains for stops and attributes;
+         gradientUnits, gradientTransform; % lengths) into
+         SVGShape.fill_paint / stroke_paint (SVGPaint: kind, stops,
+         geometry in its own units, to_page); the urls go down
+         svg_walk as arguments (svg_own_url): a SVGState string
+         was dropped by a struct copy (DOUBLE-DROP). A url paint is
+         opaque, scaled by fill/stroke-opacity. paint_shape draws
+         them through the canvas gradient; a stroke gradient takes
+         its own pass. Canvas.ag: the ramp colours the stroke when
+         ramp.x is 2 (a stroke_gradient with no fill one).
+       - aeon: a gradient fill or stroke reads into the picker
+         (svg_paint_text, colours made linear); a gradient written
+         (SvgDoc.set_gradient): its own element rewritten (its
+         geometry kept), or, shared or none, a new one in <defs>
+         (box units, svg's defaults); head_with / piece_with also
+         take a style's declaration out. A chosen shape's gradient
+         has handles in the view: start square, end diamond, a
+         radial's circle; a drag moves them live (one undo, a
+         shared gradient copied first: grad_own), written at the
+         release (set_grad_geometry: x1 y1 x2 y2, or cx cy r, the
+         focus dropped). A plain colour drops the shape's paint.
+       - trinity TButtons: a disabled segment's label dims (text
+         takes no canvas opacity).
+       - (Kalen) a colour row spans both cells: its name in an
+         18 px band on top, the picker the panel's full width
+         under it (LaunchPanel.spans breaks the column rule
+         there); the four kinds one row, the hex and clear under
+         them. Seen: fill and stroke full width; linear chosen
+         and saved. Conic removed (Kalen: svg has no conic
+         gradient, so no entry): solid, linear, radial.
+       - Fixed (Kalen's sentry.svg: gradients not drawn as they
+         are): a blurred shape's layer drew plain colours (its
+         url paint's black); it takes the same gradient passes now
+         (SVGModel.passes, opacity applied once, at the put
+         down). opacity, fill-opacity and stroke-opacity clamp to
+         0..1 as svg says (svg_unit): opacity="5.269" washed the
+         colours white. The bar's drag spans 0..1 over its cell
+         and clamps (how 5.269 got written). Seen: sentry blurred
+         and sharp in its gradients; a 450 px drag saved 1.
+       - (Kalen) opacity and blur are percent bars (properties
+         type 'percent': DragField top 100, a % at the cell's
+         right, tenths). Opacity shows x100, writes 0..1. Blur
+         is Inkscape 1.x's: radius = (p / 100)^2 x (box width +
+         height) / 4, the box the shape's drawn bounds (curves
+         sampled, stroke in), in page units, over the element's
+         mean scale into stdDeviation (SvgDoc blur_base,
+         unit_scale, blur_percent, set_blur_percent). Seen on
+         back (80 x 50): 52% saved opacity 0.52, 30.612% saved
+         stdDeviation 3.046 (= 0.30612^2 x 130 / 4).
+       - (Kalen) a gradient comes back after a solid: a colour
+         over a gradient keeps its id on the element as
+         aeon:fill-gradient / aeon:stroke-gradient (xmlns:aeon
+         on <svg>; SvgDoc keep_gradient); a gradient again takes
+         it back whole (stops, geometry, id; the other kind keeps
+         its stops), the mark taken off (set_gradient); clear
+         lets it go (forget_gradient). properties LaunchPanel
+         owed: a value held back from the field being changed is
+         given once it is let go (the restored stops reached the
+         picker only so). Seen: linear, a stop at 0.5, solid,
+         linear: three stops back in the file and the picker.
+       - (Kalen) the strip's stops are little houses (peak up),
+         on the pixel grid: a 1 px outline on half pixels, the
+         chosen one's 2 px on whole. Seen zoomed: walls one
+         solid pixel.
+       - (Kalen) a glow row (percent, Inkscape's blur rule for
+         its halo, brightened 1 + 3 x percent / 100). Written as
+         a standard filter (other viewers show it): [blur
+         result soft] gaussian result halo, feComponentTransfer
+         (R G B A linear slope gain) result lit, feMerge lit
+         under the source (or soft); sRGB, region out by three
+         of the widest gaussian (SvgDoc set_effects writes blur
+         and glow together, its own filter rewritten whole;
+         glow_of, halo_in, glow_percent, set_glow_percent;
+         gaussian_in skips the halo). trinity svg.ag: SVGShape
+         glow, glow_gain (last members), svg_glow_of,
+         svg_is_halo; paint_shape blurs the layer by the halo
+         (sqrt of both gaussians) into glow_layer, puts it down
+         through filter_matrix (gain on unpremultiplied colour
+         and alpha, clamped, as svg's), then the shape sharp or
+         blurred over it. Seen on back: 39.8% glow, then 22.4%
+         blur under it; against Inkscape's own render of the
+         file the edge's pixels agree within 3 levels.
+       - (Kalen: fill and stroke gradients are not coupled) the
+         view shows both gradients' handles, the fill's yellow,
+         the stroke's pink (SvgView paint_of, draw_grad_of); a
+         press takes the nearest (grad_hit sets g_key); on one
+         spot the one not held last wins, so a second press
+         takes the other. Seen: fill's end to 1, 0.989, then
+         the stroke's from the same spot to 0.428, 0.32.
+         Then (Kalen) both ends are circles (10 px), the picked
+         one with a white circle inside (SvgView g_pick,
+         g_shape). Seen: the dragged fill end lit white.
+       - (Kalen) the strip has a 1 px white outline on half
+         pixels (ColorPick.strip_outline): one pixel row.
+       - (Kalen) transform is at the bottom in parts: move (x
+         y), rotate, scale (x y), skew (degrees), read as
+         translate . rotate . skewX . scale (svg_parts) and
+         written back so, each part left out at its identity
+         (svg_parts_text). A scale of 0 is refused, and svg_set
+         keeps the old transform when a new one flattens the
+         shape: a cell emptied while typing read 0 and the save
+         wrote every point 0,0. Seen: rotate 30, scale x 1.5:
+         transform="rotate(30) scale(1.5,1)", points intact.
+         Rotation turns about the element's origin, as svg.
+         Fixed (Kalen: a new value stacked on the last): svg_set
+         took the old value as the map's own string, freed by
+         the set that replaced it, so the old transform was
+         never taken out (the file was right, the view stacked).
+         It copies it first. Seen: rotate 30 then 45 draws as a
+         fresh open of rotate(45).
+       - (Kalen: storing in the transform is lossless) g and s on
+         whole shapes set each one's transform, never its points:
+         each frame from the start, parent^-1 . page op . parent
+         . start (whole_ids, whole_t0, whole_par; svg_parts_m),
+         written as parts; one undo (the text); escape gives the
+         start back. Picked nodes still move their points. The
+         panel keeps only skew of the transform's parts (move,
+         rotate, scale come from the view).
+         r turns (new in 2D): about the box's middle, or with
+         shift (s too) about the point under the pointer: no
+         pivots to keep. The pointer's angle is measured once it
+         is 8 px clear of the pivot; typed degrees win. While s
+         or r runs the pivot shows as a 3 px clear circle, 1 px
+         grey outline on half pixels (draw_pivot).
+         Seen: g 100 px: translate(37.175,0), d untouched; shift
+         + r on back's corner, a quarter turn: translate(20.037,
+         -0.037) rotate(90); r 45: translate(39.393,-25.104)
+         rotate(45) (exact about 50, 35).
+         Test note: the view takes typed numbers as key presses;
+         the socket's `text` does not reach it.
+         shift + g (Kalen): moved only along the way the pointer
+         first goes (its first 8 px set the line; along,
+         along_way); a typed number is the distance on it; a
+         faint 1 px grey line through the middle shows it. Seen:
+         a 45 degree start, then a pull sideways: translate(
+         26.766,26.766), on the line exactly.
+         Escape (or a right click) cancels any of g, s, r and
+         their shift forms: cancel_move sets the rest value
+         itself (a turn's goal read the pointer, so an escaped
+         turn stayed turned). Seen: r, shift+s, shift+g, g each
+         escaped: 0 pixels off the start, the file untouched.
+         (Kalen: more weight) g, s, r, o and handle drags ease at
+         0.2 a frame (was 0.35; the view's pan 0.25): about 14
+         frames to within 5%. Seen: a g step 150 ms on still
+         2,104 pixels short (was settled).
+       - (Kalen: gradients move, turn and size with the shape)
+         a transform change carries what the shape holds on the
+         page: its gradients' to_page, its blur and glow by the
+         scale (svg_set). Fixed in trinity (svg_paint_of): a box
+         units gradient used the shape's box on the page; svg
+         uses its box in its own space, then its transform (a
+         turned shape's gradient turns); curves sampled.
+         affine.inverse[] added (trinity). Seen: back linear, r
+         90: live and reopened 0 pixels apart, both top to
+         bottom (the reopened one had run left to right).
+       - (Kalen) the view's edit lines and points take the
+         pointer's nearness: alpha 0.5 away, 1 at it, by
+         trinity's curve (1 - d / 160)^2 (SvgView near_a,
+         near_of, near_line, toned): each outline segment by its
+         nearest of 8 points, handle lines, nodes, the gradient
+         line and circles. Seen: pointer at back's corner lit
+         its circle, nodes and edge; far off all at half.
+         Then (Kalen: alpha looked wrong over other shapes): away
+         they are darker, solid (rgb times 0.5..1, alpha kept).
+         Then (Kalen: light blue lines at 0.3, no doubling where
+         they cross): the lines (outline segments, handle lines,
+         a gradient's line and radial circle) draw solid into
+         SvgView.line_layer and go down once at line_alpha 0.3
+         (lines_begin, lines_end; group opacity, as css): a
+         crossing is one line. Near the pointer a line goes
+         toward white (lit). Nodes and the gradient circles draw
+         solid over it, darker away (toned). Seen: no bright spot
+         where the gradient line meets the outline.
+         Then (Kalen: the lines read lighter than the points; the
+         same at a distance): nodes and gradient circles go into
+         the layer too; the layer goes down at line_alpha 0.3,
+         then again at 0.7 through near_mask, a radial circle
+         round the pointer ((1 - d / 160)^2 as stops): full near
+         it, 0.3 away, one look for lines and points, crossings
+         single. Per-element toning (near_a, toned, lit) gone.
+         Then (Kalen): points grow by nearness, to 1.5x at the
+         pointer (near_w, the same curve); the node a press would
+         take (nearest, 10 px) and a gradient circle within 10 px
+         are drawn brighter (60% to white). Seen: the corner's
+         nodes larger, the one under the pointer lighter.
+         Then (Kalen): picked points are never faded: the picked
+         (or region-lit) nodes and the picked gradient circle
+         draw solid on the view after the layer (SvgView.solid,
+         draw_nodes). Seen: a picked node exactly #ffcf4a with
+         the pointer far off, the rest at 0.3.
+         Then (Kalen): every unpicked point is half its size far
+         off, its own size at the pointer (0.5 + 0.5 x
+         nearness; 1.5x was a third too big); picked ones
+         keep their own size always. Seen: the picked node 42
+         yellow pixels both far and near.
+         Then (Kalen: handle lines take the near light, in the
+         same layer): the pen's handle lines were drawn on the
+         view; they go into the layer now (pen_handles; the
+         layer opens for the pen too). A shape's handle lines
+         were already in it. Seen: the pen's handle full yellow
+         at the pointer, 85/255 (0.3) far off.
+         A plain drag moves (Kalen): a press on a point and a
+         drag past 4 px moves the picked points (a picked one
+         keeps the others); a press inside a shape (fill, or
+         4 px of its outline) moves the chosen shapes; the
+         release keeps it, one undo (as g; d_wait, d_moving).
+         A click alone on a picked point or chosen shape makes
+         it the only one. Seen: back dragged 100, 50 px saved
+         translate(37.175,18.587); its corner node dragged 40,
+         40 px moved 14.87, 14.87 with its handle.
+       - Text (Kalen, Oct 14: t adds text; the properties set its
+         font). trinity svg.ag reads <text>: SVGNode.text (its
+         character data, entities read; last member), SVGState
+         font_size, weight, slope, anchor (inherited; style or
+         attribute: svg_font_prop), the family down svg_walk as an
+         argument (svg_family_of: the first name, quotes off).
+         svg_text_cmds: fontconfig's match (font_match; an unknown
+         family falls back to the default), CanvasFont from its
+         file, each code point's glyph outline (curves kept) at
+         the pen, text-anchor by the advances; the shape is those
+         outlines, so fill, stroke, gradients, blur, hit tests and
+         moves work as for any path. tspans' words joined, white
+         space as one (svg_text_of). No kerning or shaping.
+         aeon: t, then a click: <text id="text-n" x y
+         font-family="sans-serif" font-size (24 screen px)
+         fill="#ffffff">Text</text> where a new path would go,
+         chosen; typed characters replace 'Text' then go on
+         (aeon.on_char -> SvgView.char_event), backspace takes a
+         code point, enter or escape ends (SvgDoc.add_text,
+         SvgView texting / typing / placeholder). A text shows no
+         points or handles (is_text; points_of empty). Rows: text,
+         font-family, font-size, font-weight (normal bold),
+         font-style (normal italic), text-anchor (start middle
+         end), then the usual; a change remakes the glyphs
+         (svg_retext). Saved as <text> with its words escaped
+         (text_element; tspans kept unless the words were set).
+         Seen hidden: three texts as written (DejaVu Sans, bold
+         middle-anchored, serif italic end-anchored, &amp;); t,
+         a click, "Hi there" typed, saved as <text>; bold and
+         middle set live and saved; DejaVu Serif typed into the
+         family, drawn and saved. Fixed on the way: picked is
+         null until a pick (picked = vec, not clear[]).
+         Moved, turned, sized (Kalen): a press anywhere in a
+         text's box takes it (hits: text_box, gaps too); g, s, r
+         and a drag set its transform as for any whole shape
+         (all_points gives a whole move its box; points_of stays
+         empty for a text). Seen: a drag, r 45, s 2 saved as
+         transform="translate(82.637,-149.16) rotate(45)
+         scale(2,2)", the glyphs following live.
+         Its selection (Kalen): a rounded rect 6 px out from the
+         letters, 5 px corners, in the text's own space (turns
+         with it), dark grey (#3a3a3a) with light grey (#c8c8c8)
+         5 px dashes running round it at 20 px a second, drawn
+         solid over the edit layer (draw_text_box, rr_at: canvas
+         has no dashes, so short runs along the outline). Seen
+         level and turned 30 degrees; 830 pixels of the edge
+         changed in a quarter second.
+       - (Kalen) a panel cell with no name (ArgsField /
+         LaunchField / DragField with label '') keeps no gap for
+         one: its text starts 0.25 units in, as a split cell's.
+         Seen: id, opacity, blur, rotate, skew line up with move
+         and scale. orbiter's panel fields (also unnamed) move
+         left the same at its next build.
+       Seen hidden: lg/rg/stroke gradients drawn (an href chain,
+       userSpaceOnUse); back made linear (#3a7bd5 to clear), a
+       stop put in at 0.5 and made red, the end dragged to x2 1
+       y2 0.989, undone; made radial, its radius dragged to 0.908;
+       conic dim (102 vs 237).
+       Found: a one-letter literal is a character, also as a
+       local's start (code : '#' was a unichar: stops wrote '#');
+       a local does not hold (a paint's id read after a reload
+       was freed). OPEN: a radial in box units on a box that is
+       not square draws as a circle (svg: an ellipse); a focus
+       (fx, fy) is dropped; spreadMethod is not read; conic for
+       other paints (materials) not offered.
+       OPEN (separate): a live reload of an aeon whose svg view
+       had run hit a DOUBLE-DROP in the old instance's destroy
+       (my hidden runs left alive across builds). Seen: a pick saved as #2c2923,
        undone. OPEN: gradients (trinity's svg loader reads
        none; url(#id) paints are not drawn).
        Shift held while g / r / s follow the pointer: a
@@ -5096,6 +5437,13 @@ clang.cfg beside install/bin/clang), then the SDKROOT lines
 in checkout() go; checkouts from archive URLs land under the
 URL's parent folder name (checkout/3.3/ruby).
 
+Oct 14 2026 (Kalen): checkout/lb (the Ladybird tree and build,
+6.3 GB) and checkout/wk (the hand-run WPE WebKit build, 4.7 GB)
+deleted for disk space. The Ladybird patch stays in aura/ladybird
+(overlay); WebKit is built by `silver aura` into platform/native/
+build/releases/wpewebkit. install/ladybird is a link to the gone
+build (unused).
+
 ## MEMORY: trinity replaced Skia under a real browser (Sep 25 2026)
 
 What was profound: a full web engine (Ladybird: HTML, CSS,
@@ -7234,67 +7582,6 @@ CD audio). In order:
    colour table, clamped to the polygon's own UV box; clear,
    opaque and semi texels counted apart (cutouts, two-pass
    blends). Sprites and 2D stay sharp. Gpu.filter turns it off.
-
-## Active work: agi, a model that credits its groups (Oct 7 2026)
-
-Kalen: AGI as Aggregated Group Intelligence. A language model
-trained from scratch whose every training text carries its
-group (author, site, project); a second output, trained at the
-same time as the next-token output, scores every group, so an
-answer comes with its top 100 groups and a running ledger.
-Choices (Kalen): from scratch, built on ai/grad.ag, open data
-with natural groups (Project Gutenberg authors to start).
-Identity (Kalen): a 64-bit number spread across 64 outputs,
-not a column per group: the group head is 64 sigmoid bits,
-the identity the fnv-1a hash of the group's name; a group's
-share of a text is its bits' likelihood, normalised over the
-known identities. Top-N comes from that head alone, one pass
-(Kalen: a pass per contributor is too much).
-Identities (Kalen): every contributor as the catalog defines
-them, each author alone unless they join a group:
-~/.cache/agi/members.txt lines are group, a tab, author.
-identities.txt is the registry (hex number, a tab, the name),
-read back as the record; a book's bit targets are the
-average of everyone it credits; ledger.txt keys the shares by
-identity number.
-1. DONE grad.ag: causal attention (no relative tables), softmax
-   cross entropy with ignored rows, sigmoid cross entropy
-   (bce), reshape_view (no copy; the gradient is a view too),
-   a workgroup-a-row layer norm when t is 1, profiling turned
-   on mid-buffer no longer crashes. ai t_grad_lm vs pytorch
-   (GRAD_GOLD), worst 7e-7; every other grad test still passes.
-2. DONE the data (agi prepare): Gutenberg's catalog, English
-   texts by one named person (Last, First), authors with at
-   least --books books, most books first, --authors of them;
-   each author's last book held out. Books from the pglaf
-   mirror (0.25 s apart) into ~/.cache/agi/books; corpus.u8,
-   docs.i64 (offset, length, group, held, id), groups.txt.
-   Checked with 20 authors: 98 books, 38 MB, headers and the
-   licence cut.
-3. DONE agi/agi.ag: byte-level transformer (384 wide, 6
-   layers, 6 heads, 256 bytes of context), byte head and
-   identity head, both losses in one step (the bits weighted
-   0.5), AdamW 0.9/0.95, warmup then cosine. agi t_agi_net
-   (AGI_GOLD): the whole net against pytorch, losses within
-   5e-7, every gradient within 8e-8.
-4. DONE the check: held-out books, bits a byte and the right
-   author's rank. 300 steps on the 20-author corpus: 3.29 bits
-   a byte, top 1 16% (chance 5%), top 10 63%.
-5. DONE agi ask <text> (sampling at --heat, the answer's top
-   groups, added to ledger.f64) and agi ledger. Checked on the
-   300-step model: text still noise, the credit list printed.
-6. OPEN speed: 26,000 bytes a second at batch 32 (310 ms a
-   step, 4.3 GB of work); matrix multiplies are 63% of the gpu
-   time at ~1.5 TFLOPS in f32. Tensor cores (cooperative matrix,
-   f16 in, f32 sums) are the way up.
-8. DONE identities per contributor (catalog roles in brackets
-   dropped; Anonymous, Various, Unknown are no one), members.txt
-   groups, the registry file, the ledger by number. agi
-   t_agi_registry: alone, grouped, written and read back; fnv-1a
-   of 'a' is af63dc4c8601ec8c as published.
-7. OPEN the full corpus: agi prepare (1000 authors, 5 books
-   each: ~5,000 books, ~2 GB, ~2 hours of downloads), then the
-   long training run (Kalen's to start).
 
 ## Active work: launch and landing (Oct 7 2026)
 
