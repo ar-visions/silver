@@ -1447,7 +1447,9 @@ element LaunchPanel
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
         lw : f32 [ round[ pw * name_frac ] ]
         # 15% taller than the callstack's 24 px
-        rh : f32 [ 27.6 ]
+        rh : f32 [ 27.6 * ux_unit[ ux ] ]
+        # the value column's button, 48 px at rest
+        vw : f32 [ 48.0 * ux_unit[ ux ] ]
         # px rows do not follow the element's scroll on their own: the
         # offset goes into their areas, and the same offset serves the
         # hit test
@@ -1491,7 +1493,7 @@ element LaunchPanel
                     'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
             t['lp_coverage_clear'] = LaunchClear [ label: 'clear',
                                                    manual_mode: true,
-                area: Region [ 'r0 t{y}px w48px h{rh}px' ] ]
+                area: Region [ 'r0 t{y}px w{vw}px h{rh}px' ] ]
             y += rh
             rule_ys.push[ y ]
         # the instance's pid: orbiter's row, read-only, given every
@@ -1537,7 +1539,7 @@ element LaunchPanel
             cx : f32 [ lw + 1.0 ]
             # a colour spans both cells, its name in a band on top
             wide : bool [ colour ]
-            lh : f32 [ (wide) ? 18.0 : rhx ]
+            lh : f32 [ (wide) ? 18.0 * ux_unit[ ux ] : rhx ]
             t['lp_{nm}_lbl'] = LaunchLabel [ label: nm,
                                              area: Region [
                                                  'l6px t{y}px w{lw - 6.0}px h{lh}px' ] ]
@@ -1609,7 +1611,7 @@ element LaunchPanel
                 if [ pv.count > 0 ]
                     pp : path pv
                     dsp = pp.filename[]
-                ap : Region [ 'l{cx}px t{y}px r48px h{rhx}px' ]
+                ap : Region [ 'l{cx}px t{y}px r{vw}px h{rhx}px' ]
                 t['lp_{nm}'] = LaunchPath [ label: dsp, edit: pv,
                                             path_value: pv,
                                             manual_mode: true,
@@ -1617,7 +1619,7 @@ element LaunchPanel
                     is_dir: ck == 'Directory', area: ap ]
                 t['lp_{nm}_clear'] = LaunchClear [ label: 'clear',
                                                    manual_mode: true,
-                    area: Region [ 'r0 t{y}px w48px h{rhx}px' ] ]
+                    area: Region [ 'r0 t{y}px w{vw}px h{rhx}px' ] ]
             el [ ck == 'KeyBind' ]
                 # the mounted field sets its own label; the rebuild
                 # echoes it back unchanged, since a changed or missing

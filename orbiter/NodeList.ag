@@ -100,6 +100,11 @@ Option NodeList
     func render [] -> Elements
         return null
 
+# the font scale (ctrl +/-): 1 at rest
+func nav_unit [ cv: Canvas ] -> f32
+    return (cv && cv.vk && cv.vk.font_unit > 0)
+        ? f32[ cv.vk.font_unit ] / 22.0 : 1.0
+
 Layer NodeLayer
     public label_size  : f32
     public row_spacing : f32
@@ -112,7 +117,7 @@ Layer NodeLayer
     func draw [ cv: Canvas ]
         nl : NodeList[ parent ]
         if [ !nl ] return
-        cv.font_size[ i32[label_size] ]
+        cv.font_size[ i32[ round[ label_size * nav_unit[ cv ] ] ] ]
         lh : f32 [
             cv.get_line_height[]
             * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
@@ -344,16 +349,16 @@ element TypeMembers
     func render [] -> Elements
         t : Elements []
         t['type_head'] = TypeHead [ label: title,
-                                    area: Region { l0 t0 r0 h30px } ]
+                                    area: Region { l0 t0 r0 h0.91 } ]
         t['rows'] = TypeRows [ file: file, names: names, types: types,
-            lines: lines, area: Region { l0 t30px r0 b35px } ]
+            lines: lines, area: Region { l0 t0.91 r0 b1.06 } ]
         # focused, the field holds its own text: no edit overwrites it
         fe : element filter_field[]
         ff9 : FilterField [ label: 'filter', focusable: true,
             area: Region { l4px t4px r4px b4px } ]
         if [ !(fe && ux && ux.focus == fe) ]
             ff9.edit = (filter_text) ? filter_text : ''
-        t['footer'] = element [ area: Region { l0 b35px r0 h35px },
+        t['footer'] = element [ area: Region { l0 b1.06 r0 h1.06 },
             elements: Elements [ 'list_filter': ff9 ] ]
         return t
 
@@ -645,14 +650,15 @@ element SidePanel
         orb : cast orbiter [ ux.app_object ]
         # with the system bar its toggles are in the tray: no foot bar
         sys : bool [ orb && orb.system_on[] ]
-        body : string [ (sys) ? 'l0 t0 r0 b0' : 'l0 t0 r0 b35px' ]
+        body : string [ (sys) ? 'l0 t0 r0 b0' : 'l0 t0 r0 b1.06' ]
         if [ orb && orb.side_tab == 'scenes' ]
             # the cards, and under them the scene's own props
             sp : string orb.scene_spec[]
             ps : LaunchProps []
             if [ sp.count > 0 ] Au.parse_agi[ null, sp.chars, ps ]
             n : i32 [ (ps.props) ? ps.props.count : 0 ]
-            ph : f32 [ f32[ (n > 0) ? n : 1 ] * 24.0 ]
+            # the props' rows, as LaunchPanel makes them
+            ph : f32 [ f32[ (n > 0) ? n : 1 ] * 27.6 * ux_unit[ ux ] ]
             grid : Elements []
             grid['scene_grid'] = SceneGrid [
                 area: Region [ 'l0 t0 r0 b{ph}px' ] ]
@@ -698,11 +704,13 @@ Control SceneGrid
     mutable sy     : f32
     mutable cards  : vec FindHit
 
+    # a card, as the navigator's: 152 x 148 at rest, with the font
+    # scale
     func cell_w [] -> f32
-        return 152.0
+        return 152.0 * ux_unit[ ux ]
 
     func cell_h [] -> f32
-        return 148.0
+        return 148.0 * ux_unit[ ux ]
 
     func per_row [] -> i32
         n : i32 [ bounds.w / cell_w[] ]
@@ -1603,7 +1611,7 @@ Layer PropsLayer
     func draw [ cv: Canvas ]
         pl : Props[ parent ]
         if [ !pl ] return
-        cv.font_size[ i32[label_size] ]
+        cv.font_size[ i32[ round[ label_size * nav_unit[ cv ] ] ] ]
         lh : f32 [
             cv.get_line_height[]
             * ((row_spacing > 0.0) ? row_spacing : 1.0) ]
@@ -1672,7 +1680,7 @@ Layer FieldsLayer
     func draw [ cv: Canvas ]
         fl : Fields[ parent ]
         if [ !fl ] return
-        cv.font_size[ i32[label_size] ]
+        cv.font_size[ i32[ round[ label_size * nav_unit[ cv ] ] ] ]
         lh : f32 [
             cv.get_line_height[]
             * ((row_spacing > 0.0) ? row_spacing : 1.0) ]

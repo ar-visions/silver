@@ -48,7 +48,10 @@ element psx : trinity
     public  width    : i32    [ 960 ]
     public  height   : i32    [ 720 ]
     public  title    : string [ 'psx' ]
-    expect default [ Launch ] disc : resource
+    expect default [ Live ] disc : resource
+        # a new disc while it runs: the same instance boots it next
+        # frame; the old machine's sound stops first
+        if [ booted ] unboot[]
     mutable bus      : Bus
     mutable cpu      : Cpu
     mutable booted   : bool
@@ -57,9 +60,22 @@ element psx : trinity
     # the sound card, fed by its own thread from the SPU's ring
     mutable sound    : AudioOut
     mutable sound_on : bool
+    # the sound thread, joined when the machine goes
+    mutable sound_tid : u64
     # frames owed by the clock, and the clock's last reading
     mutable owed     : f64
     mutable last_us  : i64
+
+    # the machine goes; the next frame boots one on the disc
+    func unboot []
+        if [ sound_on ]
+            sound_on = false
+            # the sound thread ends after its last block (about 12 ms)
+            pthread_join[ sound_tid, null ]
+            sound.close[]
+        booted = false
+        failed = false
+        frames = 0
 
     # OpenBIOS, as the import built it into our share folder
     func load_bios [] -> bool
@@ -97,9 +113,8 @@ element psx : trinity
         sound = AudioOut [ sample_rate: 44100, channels: 2,
                            buffer_size: SOUND_BLOCK ]
         if [ sound.open[] ]
-            sound_on = true
-            tid : local u64 [ 1 ]
-            pthread_create[ tid, null, @sound_entry, a ]
+            sound_on   = true
+            pthread_create[ @sound_tid, null, @sound_entry, a ]
         el
             log 'psx: no sound device; running silent'
 

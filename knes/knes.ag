@@ -252,7 +252,7 @@ element knes : trinity
 	mutable line_sy      : new u8 [ 240 ]
 	# exists between s0 hit and vblank)
 	mutable line_nt      : new u8 [ 240 ]
-	public  smooth       : bool [ true ]
+	public [ Live ] smooth : bool [ true ]
 	# previous camera x (nt<<8 | sx, 9-bit)
 	mutable cam_prev     : i32
 	# previous camera y (0..479)
@@ -307,6 +307,13 @@ element knes : trinity
 		if [ volume == 0.0 ] volume = 0.04
 		# [ true ] initializer doesn't apply on element publics
 		smooth = true
+
+	# the host's menu: kept beside the rom, taken on the next frame
+	public [ Action ] func save_state []
+		save_req = true
+
+	public [ Action ] func load_state []
+		load_req = true
 
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
@@ -1591,7 +1598,7 @@ element knes : trinity
 			audio.write[ c ]
 			n -= c
 
-	func save_state [] -> none
+	func state_write [] -> none
 		spx : rom.change_ext[ 'state' ]
 		f : @FILE [ fopen[ spx, 'wb' ] ]
 		if [ ! f ] return
@@ -1620,7 +1627,7 @@ element knes : trinity
 		fclose[ f ]
 		log 'knes: state saved at frame {frames}'
 
-	func load_state [] -> none
+	func state_read [] -> none
 		spx : rom.change_ext[ 'state' ]
 		f : @FILE [ fopen[ spx, 'rb' ] ]
 		if [ ! f ]
@@ -1673,10 +1680,10 @@ element knes : trinity
 	func emu_tick [] -> none
 		if [ save_at > 0 && frames == u32[ save_at ] ] save_req = true
 		if [ save_req ]
-			save_state[]
+			state_write[]
 			save_req = false
 		if [ load_req ]
-			load_state[]
+			state_read[]
 			load_req = false
 		ticks += 1
 		if [ autowalk > 0 ]
@@ -1932,7 +1939,7 @@ element knes : trinity
 			load_cart[]
 			if [ prg ]
 				cpu_reset[]
-				if [ resume ] load_state[]
+				if [ resume ] state_read[]
 		booted = true
 
 	public func draw [ w: Window ]

@@ -267,7 +267,17 @@ element n64 : trinity
 	public  lock_aspect  : bool   [ true ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
-	expect default [ Launch ] rom : resource    # positional: the ROM
+	expect default [ Live ] rom : resource    # positional: the ROM
+		# a new rom while it runs: the same instance boots it
+		if [ emu_started ]
+			emu_stop = true
+			while [ emu_running ] usleep[ 2000 ]
+			emu_stop    = false
+			emu_started = false
+			# a --state given at launch was the old rom's
+			state = null
+		# the next paint starts the thread, which loads and boots
+		booted = false
 	public  state        : path           # --state <file>: our n64.state or a gopher64 .stateN zip
 	mutable gs_buf       : @u8            # postcard cursor for gopher64 state parsing
 	mutable gs_pos       : i64
@@ -4700,7 +4710,7 @@ element n64 : trinity
 		c_sysbase  = cpu.c_count
 		return 0
 
-	func load_state [ fn: cstr ] -> i32              # gopher64 zip (PK) or our n64.state
+	func state_read [ fn: cstr ] -> i32              # gopher64 zip (PK) or our n64.state
 		f : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ ! f ] return 1
 		fseek[ f, 0, SEEK_END ]
@@ -5891,7 +5901,7 @@ element n64 : trinity
 				return
 			boot[]
 			if [ state ]
-				rst : i32 [ load_state[ state.chars ] ]
+				rst : i32 [ state_read[ state.chars ] ]
 				printf[ "n64: state load <- %s (%d) pc=%08X\n", state.chars, rst, cpu.pc ]
 				fflush[ null ]
 			if [ loadstate_requested[] ]
@@ -5942,6 +5952,13 @@ element n64 : trinity
 		s = s + 'VR4300: PC=${hx8[ cpu.pc ]} COUNT=${hx8[ cpu.c_count ]} STATUS=${hx8[ cpu.c_status ]} CAUSE=${hx8[ cpu.c_cause ]}\n'
 		s = s + 'MI intr=${hx8[ mi_intr ]} mask=${hx8[ mi_mask ]}  VI origin=${hx8[ vi_origin ]} ctrl=${hx8[ vi_ctrl ]}\n'
 		return s
+
+	# the host's menu: saved and loaded on the emulator's next frame
+	public [ Action ] func save_state []
+		save_req = true
+
+	public [ Action ] func load_state []
+		load_req = true
 
 	public func on_key [ ev: Event ]
 		root : path.path_startup[]

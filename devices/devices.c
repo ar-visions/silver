@@ -2709,6 +2709,19 @@ HOST_API int host_audio_play_take(int slot, int16_t* out, int max_frames) {
 // orbiter plays a slot's ring on plain alsa, on its own thread:
 // a frozen app holds no stream, and its gap plays as silence
 #define PLAYER_CHUNK 512
+// the last SCOPE_N samples each slot played (mono, -1..1): the host's
+// level and spectrum read them; written by the player, read anywhere
+#define SCOPE_N 1024
+static float g_scope[HOST_APPS][SCOPE_N];
+static int   g_scope_at[HOST_APPS];
+static void scope_put(int slot, const int16_t* b, int n) {
+    int at = g_scope_at[slot];
+    for (int i = 0; i < n; i++) {
+        g_scope[slot][at] = (b[i * 2] + b[i * 2 + 1]) * (0.5f / 32768.0f);
+        at = (at + 1) % SCOPE_N;
+    }
+    g_scope_at[slot] = at;
+}
 typedef struct { int slot; volatile int stop; pthread_t tid; } SlotPlayer;
 static SlotPlayer* g_players[HOST_APPS];
 
@@ -2742,6 +2755,7 @@ static void* slot_player_run(void* arg) {
             waited++;
         }
         memset(buf + got * 2, 0, (size_t)(PLAYER_CHUNK - got) * 4);
+        scope_put(sp->slot, buf, PLAYER_CHUNK);
         snd_pcm_sframes_t wr = snd_pcm_writei(pcm, buf, PLAYER_CHUNK);
         if (wr < 0) snd_pcm_recover(pcm, (int)wr, 1);
     }
@@ -2771,10 +2785,76 @@ HOST_API void host_audio_player_stop(int slot) {
     pthread_join(sp->tid, 0);
     free(sp);
 }
+
+// the last n (at most SCOPE_N) samples slot played, oldest first;
+// the count copied
+HOST_API int host_audio_scope(int slot, float* out, int n) {
+    if (slot <= 0 || slot >= HOST_APPS || !g_players[slot]) return 0;
+    if (n > SCOPE_N) n = SCOPE_N;
+    int at = g_scope_at[slot];
+    for (int i = 0; i < n; i++)
+        out[i] = g_scope[slot][(at - n + i + SCOPE_N) % SCOPE_N];
+    return n;
+}
+
+// the machine's own volume: the default card's Master (else PCM)
+// mixer control; through pulse or pipewire this is the output's level
+static snd_mixer_elem_t* master_elem(snd_mixer_t** mx) {
+    *mx = 0;
+    if (snd_mixer_open(mx, 0) < 0) return 0;
+    if (snd_mixer_attach(*mx, "default") < 0 ||
+        snd_mixer_selem_register(*mx, 0, 0) < 0 ||
+        snd_mixer_load(*mx) < 0) {
+        snd_mixer_close(*mx); *mx = 0; return 0;
+    }
+    const char* names[2] = { "Master", "PCM" };
+    for (int i = 0; i < 2; i++) {
+        snd_mixer_selem_id_t* id;
+        snd_mixer_selem_id_alloca(&id);
+        snd_mixer_selem_id_set_index(id, 0);
+        snd_mixer_selem_id_set_name(id, names[i]);
+        snd_mixer_elem_t* e = snd_mixer_find_selem(*mx, id);
+        if (e && snd_mixer_selem_has_playback_volume(e)) return e;
+    }
+    snd_mixer_close(*mx); *mx = 0;
+    return 0;
+}
+
+// the machine's volume 0..1 and its mute; 0 when there is no mixer
+HOST_API int host_master_get(float* vol, int* muted) {
+    snd_mixer_t* mx; snd_mixer_elem_t* e = master_elem(&mx);
+    if (!e) return 0;
+    long lo = 0, hi = 0, v = 0; int sw = 1;
+    snd_mixer_selem_get_playback_volume_range(e, &lo, &hi);
+    snd_mixer_selem_get_playback_volume(e, SND_MIXER_SCHN_FRONT_LEFT, &v);
+    if (snd_mixer_selem_has_playback_switch(e))
+        snd_mixer_selem_get_playback_switch(e, SND_MIXER_SCHN_FRONT_LEFT, &sw);
+    *vol   = (hi > lo) ? (float)(v - lo) / (float)(hi - lo) : 0.0f;
+    *muted = !sw;
+    snd_mixer_close(mx);
+    return 1;
+}
+
+HOST_API int host_master_set(float vol, int muted) {
+    snd_mixer_t* mx; snd_mixer_elem_t* e = master_elem(&mx);
+    if (!e) return 0;
+    long lo = 0, hi = 0;
+    snd_mixer_selem_get_playback_volume_range(e, &lo, &hi);
+    if (vol < 0) vol = 0;
+    if (vol > 1) vol = 1;
+    snd_mixer_selem_set_playback_volume_all(e, lo + (long)(vol * (hi - lo) + 0.5f));
+    if (snd_mixer_selem_has_playback_switch(e))
+        snd_mixer_selem_set_playback_switch_all(e, !muted);
+    snd_mixer_close(mx);
+    return 1;
+}
 #else
 // other platforms: the app keeps its own output
+HOST_API int  host_master_get(float* vol, int* muted) { return 0; }
+HOST_API int  host_master_set(float vol, int muted) { return 0; }
 HOST_API void host_audio_player_start(int slot) { }
 HOST_API void host_audio_player_stop(int slot)  { }
+HOST_API int  host_audio_scope(int slot, float* out, int n) { return 0; }
 #endif
 
 // own-slot conveniences (the common case for an app or a summoned orbiter)

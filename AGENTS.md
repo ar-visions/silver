@@ -1447,6 +1447,25 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    ctrl+shift+v (cmd+v) and the middle button paste a clipboard
    picture as a png in <cache>/paste and type its path (for claude),
    else the text. trinity changed: restart orbiter, rebuild apps.
+26. DONE (Kalen, Oct 16: "thats better") orbiter's ux follows the
+   font scale (ctrl +/-). A trinity area unit is the default font's
+   line height: 33 px at rest on Kalen's screen, not 22 (a px size
+   converts as px / 33). Dock 2.39 units, system bar 0.91, task bar
+   1.06, task button 4.36; drawn code reads unit_px[] (the layout's
+   em) or nav_unit / ux_unit (font_unit / 22, 1 at rest) for sizes
+   kept in px (navigator, list text, properties grid).
+27. BUILT, not seen or heard (Kalen, Oct 16) the bottom bar's sound,
+   left of the clock: App / Global (StatusSegs), mute, a volume slider
+   (BarVolume: 1 px outline, a 20-band spectrum behind the track).
+   Global is the machine's own level: devices host_master_get/set (the
+   default card's Master, else PCM, through ALSA's mixer: pulse or
+   pipewire on Ubuntu, the card on orbiter-os), the final stage for
+   every app; App sets the active pane's app's own volume (`volume n`
+   on its socket). The spectrum: devices keeps each slot's last 1024
+   played samples (host_audio_scope); orbiter vol_spectrum mixes the
+   active app's, or all, a windowed DFT at 20 log-spaced bins.
+   OPEN silver: a local named `mix` cannot be indexed (`mix[ i ]`:
+   "expected member"), `any` is taken, `log10` is unknown.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.

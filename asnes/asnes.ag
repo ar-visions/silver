@@ -341,7 +341,7 @@ element asnes : trinity
 	mutable se_shader      	: SuperEagle
 	mutable se_model       	: Model
 	mutable se_render      	: Render
-	public  vscale         	: bool [ true ]    # VectorScale: continuous edges, any zoom
+	public [ Live ] vscale 	: bool [ true ]    # VectorScale: continuous edges, any zoom
 	public  se_2d          	: bool             # Super Eagle 2x basis + sharp lift (pass --vscale false)
 	public  blocky         	: bool             # sharp-bilinear hard squares
 	public  vec_m7         	: bool             # VectorScale the Mode-7 plane too (on top of its aniso sampling)
@@ -3813,6 +3813,13 @@ element asnes : trinity
 			if [ ev.pad.state ] pad1 = pad1 | m
 			el pad1 = pad1 & (~m)
 
+	# the host's menu: saved and loaded on the emulator's next frame
+	public [ Action ] func save_state []
+		save_req = true
+
+	public [ Action ] func load_state []
+		load_req = true
+
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -4870,7 +4877,7 @@ element asnes : trinity
 		shot.png[ path fn ]
 		log 'asnes atlas {cbase} -> {fn}'
 
-	func save_state [ fn: symbol ]
+	func state_write [ fn: symbol ]
 		if [ !cpu || !spc ] return
 		wf : @FILE [ fopen[ fn, 'wb' ] ]
 		if [ !wf ] return
@@ -5022,7 +5029,7 @@ element asnes : trinity
 		fclose[ wf ]
 		log 'asnes state saved'
 
-	func load_state [ fn: symbol ]
+	func state_read [ fn: symbol ]
 		if [ !cpu || !spc ] return
 		rf : @FILE [ fopen[ fn, 'rb' ] ]
 		if [ !rf ] return
@@ -5345,14 +5352,14 @@ element asnes : trinity
 			exit[ 0 ]
 		if [ state && !state_loaded ]
 			state_loaded = true
-			load_state[ state.chars ]
+			state_read[ state.chars ]
 			write_snapshot[ '/tmp/asnes_snap.bin' ]      # also drop a diagnostic snapshot for analysis
 		el [ !state && !state_loaded && getenv[ 'SILVER_RELOAD_LOAD' ] ]
 			state_loaded = true
 			ff : @FILE [ fopen[ '/tmp/asnes_flash.state', 'rb' ] ]
 			if [ ff ]
 				fclose[ ff ]
-				load_state[ '/tmp/asnes_flash.state' ]
+				state_read[ '/tmp/asnes_flash.state' ]
 				log 'asnes flash: state restored after reload'
 		if [ state_loaded && state ]
 			post_load += 1
@@ -5418,12 +5425,12 @@ element asnes : trinity
 		if [ save_req ]
 			save_req = false
 			sp : state_path[]
-			save_state[ sp.chars ]
+			state_write[ sp.chars ]
 			log 'asnes: state saved to {sp}'
 			write_snapshot[ '/tmp/asnes_snap.bin' ]
 		if [ load_req ]
 			load_req = false
-			load_state[ state_path[].chars ]
+			state_read[ state_path[].chars ]
 		t_emu : i64 [ wall_ms[] ]
 		if [ dbg_frames < 28 ]
 			run_rom_frame_boot[]
@@ -5669,7 +5676,7 @@ element asnes : trinity
 			while [ emu_running ]
 				usleep[ 2000 ]
 			if [ getenv[ 'SILVER_RELOAD_SAVE' ] && cpu ]
-				save_state[ '/tmp/asnes_flash.state' ]
+				state_write[ '/tmp/asnes_flash.state' ]
 				log 'asnes flash: state saved for reload'
 
 	func dealloc []

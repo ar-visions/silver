@@ -161,9 +161,9 @@ element MenuDrawer
     public background_lens : bool
     ground : DrawerGround []
     style : CSS {
-        area: l-12.78 t1.36 w16.36 b0, 240ms cubic outward
+        area: l-8.52 t0.91 w10.91 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l3.58 t1.36 w16.36 b0, 260ms cubic inward
+        area: l2.39 t0.91 w10.91 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }

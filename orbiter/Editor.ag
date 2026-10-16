@@ -599,6 +599,11 @@ ResourceView AppView
     # the gain the app started at; -1 until it answers, then adopted
     # once
     mutable app_vol    : f32 [ -1.0 ]
+    # its own volume (the bar's App mode), its mute, and what it was
+    # last sent (master x own)
+    mutable vol        : f32 [ -1.0 ]
+    mutable vol_mute   : bool
+    mutable vol_sent   : f32 [ -1.0 ]
     # what the running instance says it can show, asked once
     mutable instr_names : vec string
     mutable instr_ask   : bool
@@ -1451,11 +1456,8 @@ ResourceView AppView
         # it and the frozen app loops its sound. it ends it only if
         # still there
         dbg : bool [ debugger && debugger.active ]
-        tq0 : i64 [ epoch_millis[] ]
         if [ dbg && !debugger.running ] debugger.cont[]
-        tq1 : i64 [ epoch_millis[] ]
         if [ slot > 0 ] host_audio_player_stop[ slot ]
-        tq2 : i64 [ epoch_millis[] ]
         if [ slot >= 0 ]
             if [ paused ] host_app_resume[ slot ]
             if [ slot > 0 ]
@@ -1468,8 +1470,6 @@ ResourceView AppView
                     usleep[ 10000 ]
             el
                 host_app_stop[ slot ]
-        tq3 : i64 [ epoch_millis[] ]
-        log 'TEMP quit {app_mod}: cont {tq1 - tq0} ms, sound {tq2 - tq1} ms, close {tq3 - tq2} ms (debugger {dbg})'
             slot = 0 - 1
         if [ dbg ] debugger.stop[]
         if [ tex0 ]
@@ -3460,7 +3460,7 @@ Control Editor
             hl_text: #ffe6d2
         layers.scrollbar: ScrollLayer
             overlay: true
-            area: 8px
+            area: 0.24
             thumb_color: #fff4
             thumb_w: 6.0
             thumb_min_h: 32.0

@@ -74,6 +74,7 @@ Keep it in step with the imports.
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps (white fill added) | orbiter/images/apps_grid.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: volume_up, volume_off (white fill added) | trinity/images/volume_up.svg, volume_off.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Blender app icon | software/images/blender.svg | https://projects.blender.org/blender/blender/raw/branch/main/release/freedesktop/icons/scalable/apps/blender.svg | GPL-2.0-or-later (repo); Blender logo is a trademark of the Blender Foundation | Blender Foundation |
 | Inkscape app icon | software/images/inkscape.svg | https://gitlab.com/inkscape/inkscape/-/raw/master/share/icons/application/scalable/org.inkscape.Inkscape.svg | GPL-2.0-or-later (repo) | Inkscape project |
 | GIMP logo (Wilber) | software/images/gimp.svg | https://gitlab.gnome.org/GNOME/gimp-data/-/raw/main/images/logo/gimp-logo.svg | CC-BY-SA-4.0 | The GIMP team |

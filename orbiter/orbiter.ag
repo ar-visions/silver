@@ -229,6 +229,11 @@ element EditorView
         o : orb[]
         if [ e && o && e.view_name && o.console_of[ e.view_name ] ]
             return e.view_name
+        # its app running in view: the app's own title, as its task
+        # button reads
+        rv : AppView (e && e.app_view) ? e.run_view : null
+        if [ o && rv && !rv.ended && !rv.held ]
+            return o.task_title[ rv ]
         # a module: its name; its argument is a button beside it
         m : path (e && o) ? o.module_src_of[ e ] : null
         if [ m ] return m.stem[]
@@ -370,7 +375,7 @@ element EditorView
                     area: Region { l0 t0 r0 b0 } ]
             edels['rail'] = ToolRail [ no_scroll: true,
                                        area: Region [
-                                           'l0 t1px w64px b0' ] ]
+                                           'l0 t1px w1.94 b0' ] ]
             dbgr : dbg o.active_debugger[]
             edx : Editor [
                 src: file[]
@@ -434,7 +439,7 @@ element EditorView
         t : Elements []
         cf : Elements []
         cf['console_filter'] = element [
-            area: Region { r8px t4px w6 h32px },
+            area: Region { r0.24 t0.12 w6 h0.97 },
             label: band_mod[], focusable: true, no_scroll: true ]
         inner : Elements [ ]
         # the selected instance's own log; with none selected, every
@@ -584,7 +589,8 @@ element EditorView
         t : Elements [ ]
         # every file has its icon at the left: the name moves past it
         to9 : Editor text_of[]
-        sw9 : bool [ to9 && to9.src ]
+        # a module's run button is at the right: its name stays left
+        sw9 : bool [ to9 && to9.src && !orb[].module_src_of[ to9 ] ]
         # a window shown: its close sits at the left, its title is ours
         wn9 : bool [ orb[].pane_window[ pane_index ] != 0 ]
         t['title'] = EditorTitle [
@@ -731,12 +737,16 @@ element EditorTitle
             editable: true
             label_align: 0.0 0.5
             label_offset: 22.0 0.0
+        # its own colour (a third of the selection's alpha), so a
+        # theme can map it apart
         :current
             layers.tbar:
-                fill_color: #625a
+                fill_color: #66225539
+        # past the run button (1.35 units, 44.6 px at rest) by 8 px;
+        # the bar's first menu name starts at the same x
         :switched
             layers.tface:
-                label_offset: 62.7 0.0
+                label_offset: 52.6 0.0
         :conflict
             layers.tface:
                 label_color: #e05e5e
@@ -891,7 +901,7 @@ Option ReloadButton
     # the label after the body: a hover fill never covers it; the
     # hover is mostly an orange glow
     style : CSS {
-        area: l50%-48px t4px w96px h22px
+        area: l50%-1.45 t0.12 w2.91 h0.67
         layers.body:
             fill_color: #0000
             radius: 4
@@ -984,7 +994,7 @@ element AgentNote
         layers.shine: ShineLayer
             shine_color: #cfe6ff
             shine_size: 14
-            area: l8px t0 r8px b0
+            area: l0.24 t0 r0.24 b0
     :agent
         layers.body:
             fill_color: #1e5a6ecc, 400ms cubic inward
@@ -1056,7 +1066,7 @@ Option AppError
 # control carrying its own l8px/r0 offset
 Group StatusBar
     style : CSS {
-        area: l0 b1.6 r0 h1.6
+        area: l0 b1.06 r0 h1.06
         spacing_x: 1px
         spacing_y: 2px
         # 80% black; a faint border always, the pointer's light on it
@@ -1073,7 +1083,7 @@ Group StatusBar
 # the bottom bar: its task buttons flush on it, the bar's height
 StatusBar TasksBar
     style : CSS {
-        area: l0 b1.6 r0 h1.6
+        area: l0 b1.06 r0 h1.06
         spacing_x: 0px
         spacing_y: 0px
         layers.sbar:
@@ -1101,7 +1111,7 @@ StatusBar SideBar
 # the dock: left side, 2.25x the status bar's height
 Group Dock
     style : CSS {
-        area: l0 t0 w3.58 b0
+        area: l0 t0 w2.39 b0
         layers.dock:
             # the title bar's purple; the old base marks the selected
             fill_color: #1d0f3f, 400ms cubic outward
@@ -1276,6 +1286,37 @@ StatusTab StatusButton
         layers.edge:
             stroke_color: #ffffff08
     }
+
+# the bottom bar's volume: the slider inside a 1 px outline (room
+# for a spectrum behind the track later)
+VolumeSlider BarVolume
+    animated : true
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        cv.save[ ]
+        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff1c' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[ ]
+        cv.restore[ ]
+        # the spectrum behind the track: a bar a band, from the foot
+        orb9 : cast orbiter [ w.app_object ]
+        bs : vec f32 (orb9) ? orb9.vol_bands : null
+        if [ bs && bs.count > 0 ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ rgba [ '#8a7aff55' ] ]
+            bw : f32 [ (bounds.w - 4.0) / f32[ bs.count ] ]
+            for [ i: i32 0, i < bs.count, i += 1 ]
+                bh : f32 [ (bounds.h - 4.0) * bs[ i ] ]
+                if [ bh < 0.5 ] continue
+                cv.rect_to[ 2.0 + f32[ i ] * bw + 0.5,
+                            bounds.h - 2.0 - bh, bw - 1.0, bh ]
+                cv.paint[ ]
+        super.draw[ w ]
 
 # a group whose buttons each take the light, a disabled one none
 StatusButton StatusSegs
@@ -1987,7 +2028,7 @@ Console RunConsole
         layers.cbase: Layer
             fill_color: #220022aa
         layers.content: TermLayer
-            area: 8px
+            area: 0.24
             label_height: 1.0
             label_size: 16
     }
@@ -2359,6 +2400,15 @@ element orbiter : trinity # implements compiler
     public app_volume : f32 [ 0.5 ]
     # mute holds the slider where it is and sends the app a zero
     public app_muted     : bool
+    # the bottom bar's sound: the selected task's app, or with none
+    # selected the machine's level, and its mute
+    public master_vol    : f32 [ 1.0 ]
+    public master_mute   : bool
+    intern master_read_ms : i64
+    # the sound playing now, as levels per band (0..1), low to high:
+    # the active app's, or every app's (the bar's mode)
+    intern vol_bands     : vec f32
+    intern vol_scope     : vec f32
     intern app_vol_sent  : f32 [ -1.0 ]
     public find_hits     : vec FindHit
     # the finder's repository listing: user: lists a host user's repos
@@ -3781,34 +3831,101 @@ element orbiter : trinity # implements compiler
     # by the paint thread, so the finished debugger lands here instead
     # the app bar's slider is the truth; push it only when it moves
     func sync_volume []
-        vs9 : find_volume[]
-        if [ !vs9 ] return
-        # the app answered its own gain: the slider takes it, once
-        for [ pa9: i32 0, pa9 < editor_slots.count, pa9 += 1 ]
-            ea : Editor pane_at[ pa9 ]
-            if [ !ea || !ea.run_view ] continue
-            if [ ea.run_view.app_vol < 0.0 ] continue
-            vs9.value    = ea.run_view.app_vol
-            app_volume   = vs9.value
-            app_vol_sent = app_volume
-            vs9.pristine = false
-            ea.run_view.app_vol = -1.0
-            return
-        app_volume = vs9.value
-        out9 : f32 [ (app_muted) ? 0.0 : app_volume ]
-        if [ out9 == app_vol_sent ] return
-        app_vol_sent = out9
-        for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
-            ed : Editor pane_at[ pi ]
-            if [ !ed || !ed.run_view ] continue
-            if [ !ed.run_view.app_mod ] continue
-            agent_sock_send[ ed.run_view.sock_name[].chars,
-                             'volume {out9}\n' ]
+        vol_spectrum[]
+        vs9 : VolumeSlider find_volume[]
+        av9 : AppView active_app[]
+        # the machine's level: read now and then (others change it)
+        now9 : i64 [ epoch_millis[] ]
+        if [ now9 - master_read_ms > 1000 ]
+            master_read_ms = now9
+            mvf : f32 [ 0.0 ]
+            mmu : i32 [ 0 ]
+            if [ host_master_get[ @mvf, @mmu ] != 0 ]
+                if [ mvf != master_vol || (mmu != 0) != master_mute ]
+                    master_vol  = mvf
+                    master_mute = mmu != 0
+                    if [ !av9 && ux ] ux.restyle = true
+        if [ vs9 && vs9.changed ]
+            vs9.changed = false
+            if [ av9 ] av9.vol = vs9.value
+            el
+                master_vol = vs9.value
+                host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+        if [ !instances ] return
+        # each app at its own level; the machine's is the final stage
+        for [ v: AppView ] in instances
+            if [ v.slot < 0 || v.ended || v.held || !v.app_mod ] continue
+            # its own volume starts as the app answered it
+            if [ v.vol < 0.0 && v.app_vol >= 0.0 ] v.vol = v.app_vol
+            # never ours to change until something here is set
+            if [ v.vol < 0.0 && !v.vol_mute ] continue
+            out9 : f32 [ (v.vol_mute) ? 0.0
+                : ((v.vol >= 0.0) ? v.vol : 1.0) ]
+            if [ out9 == v.vol_sent ] continue
+            v.vol_sent = out9
+            agent_sock_send[ v.sock_name[].chars, 'volume {out9}\n' ]
+
+    # 20 bands of what plays now, from the players' last 1024 samples:
+    # a windowed DFT at log-spaced bins (2..400: ~86 Hz to 17 kHz at
+    # 44.1 kHz), in dB over 60 dB; up at once, down slowly
+    func vol_spectrum []
+        n : i32 [ 1024 ]
+        nb : i32 [ 20 ]
+        if [ !vol_scope ]
+            vol_scope = vec f32 [ n ]
+            for [ i: i32 0, i < n, i += 1 ]
+                vol_scope.push[ 0.0 ]
+        if [ !vol_bands ]
+            vol_bands = vec f32 [ nb ]
+            for [ i: i32 0, i < nb, i += 1 ]
+                vol_bands.push[ 0.0 ]
+        wave : vec f32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            wave.push[ 0.0 ]
+        heard : bool [ false ]
+        av0 : AppView active_app[]
+        if [ instances ]
+            for [ v: AppView ] in instances
+                if [ v.slot <= 0 || v.ended || v.held ] continue
+                if [ av0 && v != av0 ] continue
+                got : i32 [ host_audio_scope[ v.slot, @vol_scope[ 0 ],
+                                             n ] ]
+                if [ got < n ] continue
+                heard = true
+                for [ i: i32 0, i < n, i += 1 ]
+                    sv : f32 [ vol_scope[ i ] ]
+                    wave[ i ] += sv
+        for [ b: i32 0, b < nb, b += 1 ]
+            lv : f32 [ 0.0 ]
+            if [ heard ]
+                k : f32 [ 2.0 * pow[ 200.0, f32[ b ] / f32[ nb - 1 ] ] ]
+                re : f32 [ 0.0 ]
+                im : f32 [ 0.0 ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    hw : f32 [ 0.5 - 0.5 * cos[ 6.2832 * f32[ i ]
+                        / f32[ n ] ] ]
+                    ph : f32 [ 6.2832 * k * f32[ i ] / f32[ n ] ]
+                    smp : f32 [ wave[ i ] ]
+                    x : f32 [ smp * hw ]
+                    re += x * cos[ ph ]
+                    im -= x * sin[ ph ]
+                mg : f32 [ sqrt[ re * re + im * im ] * 4.0 / f32[ n ] ]
+                # dB: 20 log10 = 8.6859 ln
+                db : f32 [ 8.6859 * log[ mg + 0.000001 ] ]
+                lv = clamp[ (db + 60.0) / 60.0, 0.0, 1.0 ]
+            was : f32 [ vol_bands[ b ] ]
+            vol_bands[ b ] = (lv > was) ? lv : was * 0.88
+
+    # the selected task: the active pane's running app, in view
+    func active_app [] -> AppView
+        ed : Editor pane_at[ active_pane ]
+        rv : AppView (ed && ed.app_view) ? ed.run_view : null
+        return (rv && !rv.ended && !rv.held) ? rv : null
 
     # the slider sits under EditorView > split > band > tools, not on
     # Editor
     func find_volume [] -> VolumeSlider
-        ve9 : element find_el[ a, 'volume' ]
+        ve9 : element find_el[ a, 'sys_vol' ]
         if [ !ve9 ] return null
         return VolumeSlider [ ve9 ]
 
@@ -4322,6 +4439,19 @@ element orbiter : trinity # implements compiler
                 return p
         return null
 
+    # a running instance's bare argument, from its own props, when
+    # it may be set while it runs
+    func live_arg_of [ av: AppView ] -> Prop
+        if [ !av.props || av.props.count == 0 ]
+            return (av.app_mod) ? live_default[ av.app_mod ] : null
+        lp : LaunchProps []
+        Au.parse_agi[ null, av.props.chars, lp ]
+        if [ !lp.props ] return null
+        for [ q: Prop ] in lp.props
+            if [ q.type == 'resource' || q.access == 'default' ]
+                return (prop_live[ q ]) ? q : null
+        return null
+
     func live_default [ mod: string ] -> Prop
         p : Prop default_prop[ mod ]
         if [ !p || !p.meta ] return null
@@ -4597,6 +4727,11 @@ element orbiter : trinity # implements compiler
             av.paused   = false
             av.held     = true
             av.note     = ''
+            # a pane on the content it was playing (a rom, a disc)
+            # goes to the module's source: the app, not the file
+            if [ ed && av.src && ed.src
+                 && '{ed.src.absolute[]}' != '{av.src.absolute[]}' ]
+                open_in_pane[ av.src, ed.pane_index ]
             return
         if [ act.compare[ 'pause' ] == 0 ]
             if [ av.held || av.ended ] return
@@ -4752,16 +4887,8 @@ element orbiter : trinity # implements compiler
             els['modicon'] = alt_tab[ pane_ix, 'modicon', 'win_close',
                 'close', 'win_close', 'close', false, false, false,
                 Region [ 'l-1px+ t0 w1.35 b0' ] ]
-        el [ mi ]
-            # a module: play; stop while it runs; shift: another
-            rvt : AppView (edp) ? edp.run_view : null
-            lvt : bool [ rvt && !rvt.ended && !rvt.held ]
-            els['modicon'] = alt_tab[ pane_ix, 'modicon', 'app_run',
-                (lvt) ? 'stop' : 'play', 'app_run', 'add_instance',
-                true, false, false,
-                # over the arrows' edge: one border, not two
-                Region [ 'l-1px+ t0 w1.35 b0' ] ]
-        el [ edp && edp.src ]
+        # a module's run button sits at the right, by find
+        el [ !mi && edp && edp.src ]
             # a module's folder wears its module's icon
             tm9 : path '{edp.src}/{edp.src.filename[]}.ag'
             tmod : bool [ edp.src.is_dir[] && tm9.exists[] ]
@@ -4793,6 +4920,15 @@ element orbiter : trinity # implements compiler
             els['tabnav'] = alt_tab[ pane_ix, 'tabnav', 'magnify',
                 'magnify', 'pane_close', 'close', true, !closable,
                 fb_on, Region [ 'r-1px+ t0 w{bwd}px b0' ] ]
+        # a module: play; stop while it runs; shift: another. right
+        # aligned, left of find
+        if [ mi && wid == 0 ]
+            rvt : AppView (edp) ? edp.run_view : null
+            lvt : bool [ rvt && !rvt.ended && !rvt.held ]
+            els['modicon'] = alt_tab[ pane_ix, 'modicon', 'app_run',
+                (lvt) ? 'stop' : 'play', 'app_run', 'add_instance',
+                true, false, false,
+                Region [ 'r-1px+ t0 w{bwd}px b0' ] ]
         # left of find: pause while the app runs; stopped, its steps,
         # one group with one border, as find's
         rvd : AppView (edp && mi) ? edp.run_view : null
@@ -5383,12 +5519,51 @@ element orbiter : trinity # implements compiler
     func own_menu [ av: AppView, shown: bool ] -> vec TrayEntry
         m : vec TrayEntry []
         m.push[ own_entry[ instance_name[ av ], '', 0 ] ]
+        # an app that takes a resource or default argument: open one
+        if [ default_prop[ av.module_name[] ] ]
+            m.push[ own_entry[ 'Load content…', 'orb.load', 1 ] ]
         m.push[ own_entry[ (shown) ? 'Show code' : 'Show app',
             'orb.view', 1 ] ]
         m.push[ own_entry[ 'Copy screenshot', 'orb.shot', 1 ] ]
+        # the app's own: its Actions to call, its Live switches
+        lp : LaunchProps []
+        if [ av.props && av.props.count > 0 ]
+            Au.parse_agi[ null, av.props.chars, lp ]
+        mine : vec TrayEntry []
+        if [ lp.props ]
+            for [ q: Prop ] in lp.props
+                if [ q.type == 'func' ]
+                    mine.push[ own_entry[ menu_words[ q.ident ],
+                        'orb.call:{q.ident}', 1 ] ]
+                el [ q.type == 'bool' && prop_live[ q ] ]
+                    sw : TrayEntry own_entry[ menu_words[ q.ident ],
+                        'orb.set:{q.ident}', 1 ]
+                    sw.check = (q.value == 'true') ? 1 : 0
+                    mine.push[ sw ]
+        if [ mine.count > 0 ]
+            m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+            for [ e: TrayEntry ] in mine
+                m.push[ e ]
         m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
         m.push[ own_entry[ 'Quit', 'orb.quit', 1 ] ]
         return m
+
+    # a member's name as a menu says it: save_state -> Save state
+    func menu_words [ id: string ] -> string
+        out : string ''
+        for [ i: i32 0, i < id.count, i += 1 ]
+            c : i32 [ id.chars[ i ] ]
+            if [ c == 95 ] out = out + ' '
+            el [ i == 0 && c >= 97 && c <= 122 ]
+                out = out + id.mid[ 0, 1 ].ucase[]
+            el out = out + id.mid[ i, 1 ]
+        return out
+
+    func prop_live [ q: Prop ] -> bool
+        if [ !q.meta ] return false
+        for [ mm: string ] in q.meta
+            if [ mm == 'Live' ] return true
+        return false
 
     # one of our own entries chosen
     func own_pick [ e: TrayEntry ]
@@ -5399,23 +5574,37 @@ element orbiter : trinity # implements compiler
             if [ ed.app_view ] ed.app_view = false
             el embed_app[ ed, av ]
         el [ e.action == 'orb.shot' ]
-            copy_shot[ ed, instance_name[ av ] ]
+            copy_shot[ av ]
+        el [ e.action == 'orb.load' ]
+            # the finder on the resource's folder; the pick goes to the
+            # running app, as a press on its title
+            cur : string (av.arg_text) ? av.arg_text : ''
+            pick_default[ ed, null, band_mod_of[ ed ], cur ]
         el [ e.action == 'orb.quit' ]
             close_task[ av ]
+        el [ e.action.starts_with[ 'orb.call:' ] ]
+            nm : string e.action.mid[ 9, e.action.count - 9 ]
+            agent_sock_send[ av.sock_name[].chars, 'call {nm}\n' ]
+        el [ e.action.starts_with[ 'orb.set:' ] ]
+            nm : string e.action.mid[ 8, e.action.count - 8 ]
+            to : string [ (e.check == 1) ? 'false' : 'true' ]
+            agent_sock_send[ av.sock_name[].chars, 'set {nm} {to}\n' ]
+            # the next props answer shows it; until then, ours
+            av.props_ak = 0
 
-    # the pane as drawn, to a png beside our cache and the clipboard
-    func copy_shot [ ed: Editor, name: string ]
-        if [ !ux || !ed || !ed.bounds ] return
-        rd : Render ux.last_render[]
-        if [ !rd || !rd.color ] return
-        sc : f32 [ (ux.scale > 0.0) ? ux.scale : 1.0 ]
-        im : Image [ rd.color ]
-        im = im.crop[ i32[ ed.win_pos.x * sc ], i32[ ed.win_pos.y * sc ],
-            i32[ ed.bounds.w * sc ], i32[ ed.bounds.h * sc ] ]
+    # the app's own frame (its texture, not orbiter's screen), to a
+    # png beside our cache and onto the clipboard
+    func copy_shot [ av: AppView ]
+        if [ !ux || !av ] return
+        tx : Texture av.front[]
+        if [ !tx ]
+            log 'screenshot: {instance_name[ av ]} has no frame yet'
+            return
+        im : Image [ tx ]
         if [ !im ] return
         dir : path '{path.path_cache[ 'orbiter' ]}/shots'
         dir.make_dir[]
-        p : path '{dir}/{name}-{epoch_millis[]}.png'
+        p : path '{dir}/{instance_name[ av ]}-{epoch_millis[]}.png'
         im.png[ p ]
         ok : bool ux.copy_picture[ p ]
         log 'screenshot: {p} on the clipboard {ok}'
@@ -6935,7 +7124,8 @@ element orbiter : trinity # implements compiler
 
     # fixed 144px tabs on a 150px stride, 12px insets
     func commit_cap [ w: f32 ] -> i32
-        c : i32 [ (w - 24.0) / 150.0 ]
+        su : f32 ux_unit[ ux ]
+        c : i32 [ (w - 24.0 * su) / (150.0 * su) ]
         return (c < 1) ? 1 : c
 
     # reveal belongs to the asking view: never app state
@@ -7961,13 +8151,30 @@ element orbiter : trinity # implements compiler
             pick_launch     = null
             session_dirty   = true
         el [ pick_field == 'arg_edit' ]
+            # the running instance takes it live: its own props name
+            # the default member (set on it, never a restart)
             ra : AppView (pick_editor) ? pick_editor.run_view : null
-            pa9 : Prop (ra && ra.app_mod) ? live_default[
-                ra.app_mod ] : null
-            if [ pa9 && !ra.ended ]
+            pa9 : Prop (ra) ? live_arg_of[ ra ] : null
+            if [ ra && pa9 && !ra.ended ]
                 ra.arg_text = '{p}'
                 agent_sock_send[ ra.sock_name[].chars,
                                  'set {pa9.ident} {ra.arg_text}\n' ]
+            el [ ra && !ra.ended && !ra.held ]
+                log 'load: {ra.app_mod} has no live argument to set'
+            el [ pick_editor ]
+                # not running: the module's app starts on the file, its
+                # flags kept
+                ms9 : path module_src_of[ pick_editor ]
+                if [ ms9 ]
+                    show_app[ pick_editor, ms9, false ]
+                    sa9 : AppView pick_editor.run_view
+                    if [ sa9 ]
+                        fl9 : string flags_of[ sa9.module_args ]
+                        sa9.module_args = (fl9.count > 0) ? '{fl9} {p}'
+                            : '{p}'
+                        sa9.arg_text = '{p}'
+                        if [ sa9.ended ] sa9.restart[ false ]
+                        session_dirty = true
         if [ fe ]
             fe.edit    = '{p}'
             if [ fe inherits LaunchPath ]
@@ -8578,6 +8785,16 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id == 'mute' ]
             app_muted = !app_muted
             if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # the bottom bar's sound: mute the mode's own, or pick the mode
+        if [ ev.target.id == 'vol_mute' ]
+            mav : AppView active_app[]
+            if [ mav ] mav.vol_mute = !mav.vol_mute
+            el
+                master_mute = !master_mute
+                host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+            if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id == 'reload_ready' ]
@@ -10128,7 +10345,7 @@ element orbiter : trinity # implements compiler
         if [ show_console && pv && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
-        left['stack'] = Splitter [ area: Region { l0 t0 r0 b1.6 },
+        left['stack'] = Splitter [ area: Region { l0 t0 r0 b1.06 },
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         left['status'] = TasksBar [ elements: status_els[] ]
@@ -10404,9 +10621,9 @@ element orbiter : trinity # implements compiler
     func unit_px [] -> f32
         return (fc > 0.0) ? fc : 22.0 * ux_unit[ ux ]
 
-    # the dock's width, px: 3.58 units, as its area says
+    # the dock's width, px: 2.39 units, as its area says
     func dock_w [] -> f32
-        return 3.58 * unit_px[]
+        return 2.39 * unit_px[]
 
     func dock_els [] -> Elements
         dw : f32 dock_w[]
@@ -10527,7 +10744,7 @@ element orbiter : trinity # implements compiler
                 area: Region [ 'l0 t{drag_at}px w{dw}px h{dw}px' ] ]
         sb9 : bool system_on[]
         t['pins'] = element [ area: Region [
-            (sb9) ? 'l0 t1.3 r0 b3.2' : 'l0 t1.3 r0 b1.6' ],
+            (sb9) ? 'l0 t1.3 r0 b2.12' : 'l0 t1.3 r0 b1.06' ],
                               elements: pins9 ]
         # with the system bar, orbiter is its first button and the
         # console takes this corner
@@ -10538,17 +10755,17 @@ element orbiter : trinity # implements compiler
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],
                 sel_mask: (show_console) ? 1 : 0,
-                area: Region { l0 b1.6 w3.58 h1.6 } ]
+                area: Region { l0 b1.06 w2.39 h1.06 } ]
             # the apps: software to fetch, above the gear
             t['dock_apps'] = StatusTab [
                 buttons: vec string [] [ 'apps_view' ],
                 icon_ids: vec string [] [ 'apps_grid' ], icon_scale: 0.5,
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],
-                area: Region { l0 b3.2 w3.58 h1.6 } ]
+                area: Region { l0 b2.12 w2.39 h1.06 } ]
         el
             t['dock_orbiter'] = home_button[
-                Region [ 'l0 b1.6 w3.58 h1.6' ], false ]
+                Region [ 'l0 b1.06 w2.39 h1.06' ], false ]
         return t
 
     # orbiter's own button: the dock's foot, or the system bar's first
@@ -10611,13 +10828,12 @@ element orbiter : trinity # implements compiler
     # over it)
     func system_els [] -> Elements
         t : Elements []
-        t['sys_clock'] = SystemClock [ label: clock_text[], ghost: true,
-            area: Region { l0 t0 r0 b0 } ]
         # orbiter's button first, as wide as the dock
         t['sys_orbiter'] = home_button[
-            Region [ 'l0 t0 w3.58 b0' ], true ]
+            Region [ 'l0 t0 w2.39 b0' ], true ]
         # the active window's menu bar: its top menus, after it
-        x : f32 [ dock_w[] + 8.0 * ux_unit[ ux ] ]
+        # after the dock by the task bar's group gap (0.24 units)
+        x : f32 [ dock_w[] + 0.24 * unit_px[] ]
         if [ menu_items ]
             for [ i: i32 0, i < menu_items.count, i += 1 ]
                 e : TrayEntry menu_items[ i ]
@@ -10738,15 +10954,16 @@ element orbiter : trinity # implements compiler
         # a small gap between groups
         # sizes in units (22 px at rest), so ctrl +/- scales them
         un : f32 unit_px[]
-        gap : f32 [ 0.36 * un ]
+        gap : f32 [ 0.24 * un ]
         gaps : f32 [ gap * f32[ max[ i32[ kinds.count ] - 1, 0 ] ] ]
+        # the clock and the sound (mute, volume) at the right:
+        # 4 + 1.06 + 4 units
+        room = room - 9.06 * un - gap
         cw : f32 [ (runs.count > 0)
-            ? min[ 6.55 * un, (room - gaps) / f32[ runs.count ] ]
+            ? min[ 4.36 * un, (room - gaps) / f32[ runs.count ] ]
             : 0.0 ]
-        # centred in the bar
-        bw : f32 [ (sb && sb.bounds) ? sb.bounds.w : room + x0 ]
-        x : f32 [ max[ x0, (bw - cw * f32[ runs.count ] - gaps)
-            * 0.5 ] ]
+        # from the bar's left, after a gap
+        x : f32 [ x0 + gap ]
         was : string [ null ]
         for [ av: AppView ] in runs
             fo : path (av.src) ? av.src.directory[] : null
@@ -10771,6 +10988,27 @@ element orbiter : trinity # implements compiler
                 label: task_title[ av ], light: lt, selected: lit,
                 area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
             x += cw
+        # the clock at the bar's right end
+        cr : f32 [ (inst_hidden && !sys) ? 1.66 : 0.0 ]
+        t['sys_clock'] = SystemClock [ label: clock_text[], ghost: true,
+            area: Region [ 'r{cr} t0 w4 b0' ] ]
+        # left of it, the sound: the volume, then mute; the selected
+        # task's app, else the machine
+        av8 : AppView active_app[]
+        lv8 : f32 [ (av8) ? ((av8.vol >= 0.0) ? av8.vol
+            : 1.0) : master_vol ]
+        mt8 : bool [ (av8) ? av8.vol_mute : master_mute ]
+        # the slider in an outlined box, a gap round it
+        t['sys_vol'] = BarVolume [ value: lv8, pad_l: 4.0, pad_r: 4.0,
+            area: Region [ 'r{cr + 4.24} t0.18 w3.52 b0.18' ] ]
+        t['vol_mute'] = StatusButton [
+            buttons: vec string [] [ 'vol_mute' ],
+            icon_ids: vec string [] [
+                (mt8) ? 'volume_off' : 'volume_up' ],
+            icon_scale: 0.55, manual: true, seg_radius: 0.0,
+            use_spacing: false, rest_fill: rgba [ '#0000' ],
+            sel_mask: (mt8) ? 1 : 0,
+            area: Region [ 'r{cr + 8.0} t0 w1.06 b0' ] ]
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
         if [ inst_hidden && !sys ]
@@ -10795,12 +11033,14 @@ element orbiter : trinity # implements compiler
     public func on_frame [ w: Window ]
         side_sync[]
         dock_drag_frame[]
-        # the system bar: a new minute or a Wi-Fi change redraws it
+        # the clock (bottom bar): a new minute redraws it
+        now : clock_text[]
+        if [ now != clock_was ]
+            clock_was = now
+            w.restyle = true
+        # the system bar: a Wi-Fi change redraws it
         if [ system_on[] ]
-            now : clock_text[]
-            if [ wifi_shared[].poll[] || now != clock_was ]
-                clock_was = now
-                w.restyle = true
+            if [ wifi_shared[].poll[] ] w.restyle = true
             if [ tray_shared[].poll[] ] w.restyle = true
             # the drawer: gone once slid away; a tray pick shuts it
             if [ !drawer_open && menu_shut_ms > 0
@@ -10866,14 +11106,14 @@ element orbiter : trinity # implements compiler
             return Elements [ 'scene': scene_element[],
                 'wizard': InstallWizard [ dry_run: dry_run ] ]
         # the system bar takes the top; everything else is under it
-        top : f32 [ (system_on[]) ? 1.36 * unit_px[] : 0.0 ]
+        top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
             'system' : (top > 0.0) ? SystemBar [ elements: system_els[],
                 area: Region [ 'l0 t0 r0 h{top}px' ] ] : null,
             'main'   : Splitter [ area: (hide_ui)
                 ? Region [ 'l0 t{top}px r0 b0' ]
-                : Region [ 'l3.58 t{top}px r0 b0' ],
+                : Region [ 'l2.39 t{top}px r0 b0' ],
                                   inner: main_els[],
                 deflt: 360.0, min_size: 200.0, near_seam: true,
                 snap_close: true, shut_locked: true, gap: 0.0 ],
@@ -10881,7 +11121,7 @@ element orbiter : trinity # implements compiler
             'drawer' : (drawer_on[]) ? MenuDrawer [ open: drawer_open,
                 elements: drawer_els[] ] : null,
             'dock'   : Dock [ elements: dock_els[], hide: hide_ui,
-                area: Region [ 'l0 t{top}px w3.58 b0' ] ],
+                area: Region [ 'l0 t{top}px w2.39 b0' ] ],
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
