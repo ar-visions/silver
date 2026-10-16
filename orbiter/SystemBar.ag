@@ -167,3 +167,16 @@ element MenuDrawer
         area: l2.39 t0.91 w10.91 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
+
+# the exchange's ground: the menus' slideout, the window's width
+# less the dock; the
+# exchange (trinity's) sits over it in the same place
+MenuDrawer ExchangeDrawer
+    # edges, never a w: a percent width is a flow share
+    style : CSS {
+        area: l-100%+4.78 t0.91 r100%-2.39 b0, 240ms cubic outward
+        opacity: 0.0, 240ms cubic outward
+    :open
+        area: l0%+2.39 t0.91 r0%+0 b0, 260ms cubic inward
+        opacity: 1.0, 260ms cubic inward
+    }

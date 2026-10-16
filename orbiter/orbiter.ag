@@ -1,3 +1,4 @@
+# orbiter never crashes; it just changes its orbit
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -789,7 +790,8 @@ OrbiterAvatar AppAvatar
             work_on   = orb.busy
             edits_in  = orb.agent_changed
             work_done = orb.agent_done
-            swap_on   = orb.swap_live
+            # done: no beam while a reload waits; it faces the user
+            swap_on   = orb.swap_live && !orb.agent_done
             mic_on    = orb.listening[]
         super.on_state[ m ]
 
@@ -3482,6 +3484,7 @@ element orbiter : trinity # implements compiler
             agent_av = AgentAvatar [ topmost: true,
                                      animate_always: true ]
         if [ ux && !ux.agent_view ] agent_av.settled = false
+        # in the slideout: small, at its top
         return agent_av
 
     # orbiter transcribes: its own exchange's mic needs no host
@@ -5618,8 +5621,19 @@ element orbiter : trinity # implements compiler
             string[ wlc_window_menu_app[ wn ] ],
             string[ wlc_window_menu_win[ wn ] ] ]
 
+    # the exchange's slideout: from the dock's edge under the system
+    # bar, to the window's right edge
+    func exchange_box [] -> string
+        tp : string [ (system_on[]) ? 't0.91' : 't0' ]
+        return 'l2.39 {tp} r0 b0'
+
     # the drawer opens on a menu; the same one again shuts it
     func drawer_toggle [ kind: string, same: bool ]
+        # another menu: the exchange's slideout is put away (kept)
+        if [ ux && ux.shot_ask && !ux.agent_min
+             && ux.exchange_region && ux.exchange_region.count > 0 ]
+            ux.agent_min = true
+            ux.restyle   = true
         if [ drawer_open && menu_kind == kind && same ]
             drawer_shut[]
             return
@@ -8618,7 +8632,20 @@ element orbiter : trinity # implements compiler
         if [ !ev.target ] return
         log 'on_press: target={ev.target.id}'
         # a press outside the drawer (and its openers) shuts it
-        if [ drawer_open && !(ev.target inherits MenuTop)
+        # a press away from the exchange's slideout puts it away (its
+        # button toggles it itself)
+        if [ ux && ux.shot_ask && !ux.agent_min && ux.exchange_region
+             && ux.exchange_region.count > 0
+             && ev.target.id != 'agent_note' ]
+            inx : bool [ false ]
+            for [ e: element* ev.target, e, e = e.parent ]
+                if [ e.id == 'exchange' || e inherits ExchangeDrawer ]
+                    inx = true
+            if [ !inx ]
+                ux.agent_min = true
+                ux.restyle   = true
+        if [ drawer_open && menu_kind != 'exchange'
+             && !(ev.target inherits MenuTop)
              && !(ev.target inherits TrayMark) ]
             inside : false
             for [ e: element* ev.target, e, e = e.parent ]
@@ -9038,8 +9065,25 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
                 ev.no_default = true
                 return
+            # the exchange slides out beside the dock, twice a menu's
+            # width; up already, the button puts it away
+            if [ ux ]
+                ux.exchange_region = exchange_box[]
+                if [ ux.shot_ask && !ux.agent_min ]
+                    ux.agent_min = true
+                    ux.restyle   = true
+                    drawer_shut[]
+                    ev.no_default = true
+                    return
+                # its ground: the menus' slideout, all but the dock
+                drawer_open  = true
+                menu_kind    = 'exchange'
+                drawer_fresh = false
             if [ agent_note && agent_note.count > 0 ]
                 ux.agent_show[]
+            el [ ux && ux.shot_ask && ux.agent_min ]
+                ux.agent_min = false
+                ux.restyle   = true
             el
                 # the exchange about the selected file at the caret's
                 # line
@@ -10781,8 +10825,12 @@ element orbiter : trinity # implements compiler
         # colour, so the state reads at a glance; thinking: blue
         icon : string [ (rec) ? 'orbiter4_red'
             : ((thinking) ? 'orbiter4_blue' : 'orbiter4') ]
+        # its slideout (the exchange) out: the menus' lit fill, as a
+        # menu name's
+        xup : bool [ ux && ux.shot_ask && !ux.agent_min ]
         tint : rgba [ (rec) ? '#ff3a3a33'
-            : ((thinking) ? '#3a8aff40' : '#0000') ]
+            : ((thinking) ? '#3a8aff40'
+            : ((xup) ? '#4d3dbcaa' : '#0000')) ]
         if [ bar ]
             return BarHome [ buttons: vec string [] [ 'agent_note' ],
                 icon_ids: vec string [] [ icon ], manual: true,
@@ -11042,6 +11090,20 @@ element orbiter : trinity # implements compiler
         if [ system_on[] ]
             if [ wifi_shared[].poll[] ] w.restyle = true
             if [ tray_shared[].poll[] ] w.restyle = true
+            # the exchange is always the slideout's, however it opened
+            # (the button, an agent's word, a capture)
+            if [ w.exchange_region != exchange_box[] ]
+                w.exchange_region = exchange_box[]
+                w.restyle = true
+            up9 : bool [ w.shot_ask && !w.agent_min ]
+            if [ up9 && !(drawer_open && menu_kind == 'exchange') ]
+                drawer_open  = true
+                menu_kind    = 'exchange'
+                drawer_fresh = false
+                w.restyle    = true
+            # the exchange closed or put away: its slideout goes too
+            el [ !up9 && drawer_open && menu_kind == 'exchange' ]
+                drawer_shut[]
             # the drawer: gone once slid away; a tray pick shuts it
             if [ !drawer_open && menu_shut_ms > 0
                  && epoch_millis[] - menu_shut_ms >= 400 ]
@@ -11118,8 +11180,14 @@ element orbiter : trinity # implements compiler
                 deflt: 360.0, min_size: 200.0, near_seam: true,
                 snap_close: true, shut_locked: true, gap: 0.0 ],
             # the menu drawer, over the panes, out from under the dock
-            'drawer' : (drawer_on[]) ? MenuDrawer [ open: drawer_open,
-                elements: drawer_els[] ] : null,
+            # a key each: a mounted drawer keeps its class, so the menus'
+            # and the exchange's (the menus' ground, all but the dock) are
+            # never the same element
+            'drawer' : (drawer_on[] && menu_kind != 'exchange')
+                ? MenuDrawer [ open: drawer_open,
+                               elements: drawer_els[] ] : null,
+            'xdrawer' : (drawer_on[] && menu_kind == 'exchange')
+                ? ExchangeDrawer [ open: drawer_open ] : null,
             'dock'   : Dock [ elements: dock_els[], hide: hide_ui,
                 area: Region [ 'l0 t{top}px w2.39 b0' ] ],
             'avatar' : CornerAvatar [ topmost: true,

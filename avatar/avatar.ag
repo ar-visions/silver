@@ -1859,8 +1859,10 @@ Avatar OrbiterAvatar
         # face on, the exchange avatar's core holds its color: the
         # shaders' clock runs only once it is tilted (the corner avatar
         # always runs)
-        clock_run = !animate_always || settled
-        if [ wb || settled ]
+        # done, nothing running: it faces the user and holds still
+        still : bool [ work_done && !work_on && !swap_on ]
+        clock_run = (!animate_always || settled) && !still
+        if [ (wb || settled) && !still ]
             want = busy_tilt
         # 900 ms cubic in_out, as the area moves
         if [ want != tilt_to ]
@@ -1934,6 +1936,7 @@ Avatar OrbiterAvatar
                 (rl) ? busy_spin * 1.4 : (wb || animate_always)
                 ? busy_spin : rest_spin ]
             gs = gs * (1.0 + heat_spin * heat_base)
+            if [ still ] gs = 0.0
             spin_rate  = filter_n[ spin_rate, gs, spin_amount,
                                    ux->frame_factor ]
             # the phase runs on real time (microseconds), not the frame

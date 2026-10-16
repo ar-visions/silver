@@ -2330,6 +2330,19 @@ Display Window
     # the navigation dialog asks where to save: a pick is the path
     # to save to (element.nav_open reads this)
     public nav_saving           : bool
+    # where the exchange sits: '' the whole window, else a Region
+    # (a host's slideout); its elements go in one box there
+    public exchange_region      : string
+
+    # an exchange element, at the root or in its box
+    func exch_el [ name: string ] -> element
+        if [ !root || !root.elements ] return null
+        if [ root.elements.contains[ name ] ] return root.elements[ name ]
+        bx : element (root.elements.contains[ 'exchange' ])
+            ? root.elements[ 'exchange' ] : null
+        if [ bx && bx.elements && bx.elements.contains[ name ] ]
+            return bx.elements[ name ]
+        return null
 
     public func agent_state_busy [] -> bool
         return agent_busy
@@ -2410,7 +2423,7 @@ Display Window
 
     func notes_dirty []
         if [ root && root.elements ]
-            ue : element root.elements[ 'unotes' ]
+            ue : element exch_el[ 'unotes' ]
             if [ ue ] ue.pristine = false
         will_animate = true
 
@@ -3266,7 +3279,7 @@ Display Window
         frame_seq += 1
         # the exchange faded out (a swap landed): it closes at 0
         if [ swap_fade && root && root.elements ]
-            bg : element root.elements[ 'shot_bg' ]
+            bg : element exch_el[ 'shot_bg' ]
             if [ bg && bg.opacity <= 0.001 ]
                 swap_fade = false
                 shot_close[]
@@ -3651,8 +3664,10 @@ Display Window
             e[ 'navigation' ] = NavigationView [ topmost: true,
                 focusable: true, area: Region { l0 t1.3 r0 b0 } ]
         if [ shot_ask && !agent_min ]
-            e[ 'shot_bg' ] = ShotBackdrop [ topmost: true,
-                    fading: swap_fade ]
+            # in a host's slideout the host's own ground is behind it
+            if [ !exchange_region || exchange_region.count == 0 ]
+                e[ 'shot_bg' ] = ShotBackdrop [ topmost: true,
+                        fading: swap_fade ]
             # the agent to send to, chosen at the prompt; it fades out
             # with the move to the conversation
             nm : vec string agent_names[ app_object ]
@@ -3662,7 +3677,7 @@ Display Window
             # a mounted picker owns its selection: re-mounting with the
             # stored index would stamp the user's press back every frame
             if [ root && root.elements ]
-                pk : element root.elements[ 'agent_pick' ]
+                pk : element exch_el[ 'agent_pick' ]
                 if [ pk && pk inherits TButtons ]
                     tb : TButtons pk
                     if [ tb.selected >= 0 && tb.selected < nm.count ]
@@ -3676,6 +3691,7 @@ Display Window
             if [ root && root.bounds ] gc = root.bounds.h * 0.22
             fc : i32 [ round[ gc - 31.0 * ux_scale ] ]
             pick_center : i32 [ round[ gc + 37.0 * ux_scale ] ]
+            boxed : bool [ exchange_region && exchange_region.count > 0 ]
             if [ agent_view ]
                 e[ 'unotes' ] = ShotUser   [ topmost: true,
                                              fading: swap_fade,
@@ -3720,12 +3736,13 @@ Display Window
                                             icon: 'mic', icon_fit: 0.55,
                                             manual_mode: true,
                     selected: dict_on, area: mr ]
-            e[ 'shot_close' ] = ShotClose [ topmost: true,
-                                            fading: swap_fade,
-                                            icon: 'close',
-                                            icon_fit: 0.6,
-                                            manual_mode: true,
-                area: ux_area[ 'r16px t16px w36px h36px', ux_scale ] ]
+            # a slideout has no close: a press away, or the host's
+            # button, puts it away
+            if [ !boxed ]
+                e[ 'shot_close' ] = ShotClose [ topmost: true,
+                    fading: swap_fade, icon: 'close', icon_fit: 0.6,
+                    manual_mode: true,
+                    area: ux_area[ 'r16px t16px w36px h36px', ux_scale ] ]
             # the picker last: over the blur and the boxes
             ag : string [ (ix < nm.count) ? nm[ ix ] : 'claude' ]
             md : vec string agent_models[ app_object, ag ]
@@ -3742,9 +3759,10 @@ Display Window
                                             selected: ix,
                                             faded: agent_view,
                                             fading: swap_fade,
-                icons: false, manual: false, seg_radius: 6.0 * ux_scale,
-                label_px: 13.0, rest_glow: rgba [ '#ccf2' ],
-                rest_px: 16.0,
+                icons: false, manual: false, seg_radius: 4.0 * ux_scale,
+                label_px: 13.0, rest_glow: rgba [ '#0000' ],
+                rest_fill: rgba [ '#0000' ],
+                lit_fill: rgba [ '#4d3dbcaa' ], rest_px: 0.0,
                 area: Region [
                 'l50%-{pk9w / 2}px b{model_center + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
             # the lit agent's models, the row under it; the first is lit
@@ -3757,7 +3775,7 @@ Display Window
                 # the mounted row owns its selection while its agent
                 # stays
                 if [ root && root.elements ]
-                    mp : element root.elements[ 'model_pick' ]
+                    mp : element exch_el[ 'model_pick' ]
                     if [ mp && mp inherits AgentPick ]
                         ap : AgentPick mp
                         if [ ap.agent == ag && ap.selected >= 0
@@ -3769,8 +3787,10 @@ Display Window
                                                 faded: agent_view,
                                                 fading: swap_fade,
                     icons: false, manual: false,
-                    seg_radius: 6.0 * ux_scale, label_px: 12.0,
-                    rest_glow: rgba [ '#ccf2' ], rest_px: 16.0,
+                    seg_radius: 4.0 * ux_scale, label_px: 12.0,
+                    rest_glow: rgba [ '#0000' ],
+                    rest_fill: rgba [ '#0000' ],
+                    lit_fill: rgba [ '#4d3dbcaa' ], rest_px: 0.0,
                     area: Region [
                     'l50%-{pk9w / 2}px b{pick_center + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
             # the screenshots attached to the next message, just above
@@ -3825,10 +3845,32 @@ Display Window
         if [ av ]
             av.fading = swap_fade
             e[ 'agent_av' ] = av
+        # a host put the exchange in a region: its elements (and the
+        # avatar) go in one box there, laid out against the box
+        # the box stays while closed too: the avatar keeps its place
+        # (out of it, its area would jump to the window's)
+        if [ exchange_region && exchange_region.count > 0 ]
+            inbox : vec string [] [ 'shot_bg', 'unotes', 'shot',
+                'shot_mic', 'shot_close', 'agent_pick', 'model_pick',
+                'shot_attach', 'shot_error', 'session_tabs', 'agent_av' ]
+            bx : Elements []
+            rest : Elements []
+            for [ ve: element, vk: string ] in e
+                moved : bool [ false ]
+                for [ ky: string ] in inbox
+                    if [ ky == vk ] moved = true
+                if [ moved ] bx[ vk ] = ve
+                el rest[ vk ] = ve
+            # closed, it takes no press: the work under it is reached
+            rest[ 'exchange' ] = element [ topmost: true,
+                ghost: !(shot_ask && !agent_min),
+                area: Region [ exchange_region ], elements: bx ]
+            e = rest
+        if [ av ]
             # the field takes focus once the tree holds it: this
             # render's instance is not the one that gets mounted
             if [ root && root.elements ]
-                tf : element root.elements[ 'shot' ]
+                tf : element exch_el[ 'shot' ]
                 if [ tf && focus != tf ] set_focus[ tf ]
         return e
 
@@ -9596,14 +9638,14 @@ TextInput ShotPrompt
             if [ msg.count == 0 ] return
             # the picker's choice is the agent, from the first send on
             if [ w.root && w.root.elements ]
-                pk : element w.root.elements[ 'agent_pick' ]
+                pk : element w.exch_el[ 'agent_pick' ]
                 if [ pk && pk inherits TButtons ]
                     tb : TButtons pk
                     nm : vec string agent_names[ w.app_object ]
                     if [ tb.selected >= 0 && tb.selected < nm.count ]
                         w.agent_pick = nm[ tb.selected ]
                 # and the model row's, for that agent
-                mp : element w.root.elements[ 'model_pick' ]
+                mp : element w.exch_el[ 'model_pick' ]
                 if [ mp && w.agent_pick && mp inherits AgentPick ]
                     ap : AgentPick mp
                     md : vec string agent_models[ w.app_object,

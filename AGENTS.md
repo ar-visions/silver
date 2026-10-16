@@ -1466,6 +1466,23 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    active app's, or all, a windowed DFT at 20 log-spaced bins.
    OPEN silver: a local named `mix` cannot be indexed (`mix[ i ]`:
    "expected member"), `any` is taken, `log10` is unknown.
+28. BUILT, not seen (Kalen, Oct 16) the exchange in a slideout: trinity
+   Window.exchange_region (last member; '' the whole window) puts the
+   exchange's elements and the avatar in one box there (exch_el finds
+   them in it); boxed, the conversation sits under a small avatar
+   (AgentAvatar :drawer) and the field at the foot; no ShotBackdrop
+   there: its ground is orbiter's ExchangeDrawer (the menu drawer's
+   blurred ground, 21.82 units wide, it slides). The pickers take the menu look
+   (clear rest, #4d3dbcaa lit). orbiter's button opens it beside the
+   dock, 21.82 units wide (twice a menu); the button again, or any
+   menu drawer opening, puts it away (agent_min); a press outside does not.
+29. DONE (Oct 16, Kalen: the exchange's slideout went menu-narrow
+   once a menu had opened) trinity Style.applicable took every block
+   whose type the element is (its own class's and its bases'), in
+   the order the classes' styles were first met, so a base's area
+   could win (MenuDrawer's w10.91 over ExchangeDrawer's). It takes
+   only the nearest class that styles that member now (block_depth).
+   `silver --test trinity` exit 0. Every trinity app at a restart.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.

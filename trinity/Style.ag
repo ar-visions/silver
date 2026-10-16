@@ -317,36 +317,58 @@ class Style
                 # we want to enforce just 1 depth from root
                 cache_block [ s, depth + 1 ]
 
+    # how far up from n's class bt is: 0 its own; a block for an
+    # app's class (matched through the app object) or none is far
+    func type_depth [ n: element, bt: Au_t ] -> i32
+        t : Au_t typeid[ n ]
+        k : i32 [ 0 ]
+        while [ t && t != typeid[ Au ] ]
+            if [ t == bt ] return k
+            t = t.context
+            k += 1
+        return 1000
+
+    func block_depth [ n: element, block: StyleBlock ] -> i32
+        if [ !block.types.count ] return 2000
+        best : i32 [ 3000 ]
+        for [ bt: Au_t ] in block.types
+            if [ n.instance_of[ bt ] ]
+                d : i32 type_depth[ n, bt ]
+                if [ d < best ] best = d
+            el [ n.ux && n.ux.app_object ]
+                check : typeid[ n.ux.app_object ]
+                while [ check && check != typeid[ Au ] ]
+                    if [ check == bt && best > 1000 ] best = 1000
+                    check = check.context
+        return best
+
+    # the blocks for a member: only those of the nearest class that
+    # has one (a subclass's style replaces its base's, whichever
+    # instance appeared first)
     func applicable [ n: element, prop_name: string,
                       result: StyleEntries ] -> bool
         blocks : members[ prop_name ]
-        ty     : typeid[ n ]
         ret    : false
         result.clear[]
+        if [ !blocks ] return false
+        near : i32 [ 3000 ]
+        for [ block: StyleBlock ] in blocks
+            d : i32 block_depth[ n, block ]
+            if [ d < near && block.score[ n, false ] > 0 ] near = d
+        if [ near >= 3000 ] return false
         for [ block: StyleBlock ] reverse in blocks
-            type_ok : bool [ !block.types.count ]
-            for [ bt: Au_t ] in block.types
-                if [ n.instance_of[ bt ] ]
-                    type_ok = true
-                    break
-                if [ !type_ok && n.ux && n.ux.app_object ]
-                    check : typeid[ n.ux.app_object ]
-                    while [ check && check != typeid[ Au ] ]
-                        if [ check == bt ] type_ok = true
-                        check = check.context
-                if [ type_ok ] break
-            if [ type_ok ]
-                if [ block.key && block.property ]
-                    if [ block.score[ n, false ] > 0 ]
-                        for [ f:StyleEntry, name:string ]
-                            in block.entries
-                            result.push[ f ]
-                        ret = true
-                el
-                    f : block.entries[ prop_name ]
-                    if [ f && block.score[ n, false ] > 0 ]
+            if [ block_depth[ n, block ] != near ] continue
+            if [ block.key && block.property ]
+                if [ block.score[ n, false ] > 0 ]
+                    for [ f:StyleEntry, name:string ]
+                        in block.entries
                         result.push[ f ]
-                        ret = true
+                    ret = true
+            el
+                f : block.entries[ prop_name ]
+                if [ f && block.score[ n, false ] > 0 ]
+                    result.push[ f ]
+                    ret = true
 
         return ret
 
