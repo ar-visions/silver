@@ -6184,6 +6184,11 @@ Display Window
                 rely : bool [ ee.area && ee.area.t.relative ]
                 sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
                 sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                # scrolled wholly out of sight: not drawn
+                if [ crops && (ee.bounds.y - sy + ee.bounds.h < 0.0
+                     || ee.bounds.y - sy > e.bounds.h) ]
+                    ml.restore[]
+                    continue
                 ml.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
             draw_element[ ee, stage, last_ ]
             last_ = ee
@@ -6602,10 +6607,8 @@ Display Window
                 prev_fs   : bool [ draw_cv.font_set ]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     if [ !layer.label_font_cache ]
-                        layer.label_font_cache = CanvasFont [
-                            ft_lib: draw_cv.ft_lib,
-                            uri: layer.label_font,
-                            size_px: i32[layer.label_size] ]
+                        layer.label_font_cache = shared_font[ draw_cv,
+                            layer.label_font, i32[ layer.label_size ] ]
                     draw_cv.set_font[ layer.label_font_cache ]
                 align  : vec2f [ x: layer.label_align.x,
                                  y: layer.label_align.y ]
@@ -6780,7 +6783,19 @@ Display Window
                     e.mask_bg = e.mask_glow
                 # the masking layer: this element's picture and its
                 # children (cached or not) composed, then masked whole
-                compose_mask_layer[ e, stage, ew, eh, crops ]
+                # made again only on a change: this element repainted,
+                # its scroll moved, or a child needs painting
+                stale : bool [ redraw || !e.mask_layer
+                    || e.mask_sx != e.scroll.x || e.mask_sy != e.scroll.y ]
+                if [ !stale && e.elements ]
+                    for [ ce: element, ck: string ] in e.elements
+                        if [ ce.animated || !ce.pristine ]
+                            stale = true
+                            break
+                if [ stale ]
+                    compose_mask_layer[ e, stage, ew, eh, crops ]
+                    e.mask_sx = e.scroll.x
+                    e.mask_sy = e.scroll.y
                 layered = true
                 cv.draw_canvas_masked[ e.mask_layer, e.mask_canvas,
                     0.0 - f32 [ e.cache_ox ] + bsx,
@@ -6859,6 +6874,12 @@ Display Window
                 rely : bool [ ee.area && ee.area.t.relative ]
                 sx : f32 [ (ee.no_scroll || !relx) ? 0.0 : e.scroll.x ]
                 sy : f32 [ (ee.no_scroll || !rely) ? 0.0 : e.scroll.y ]
+                # a scrolling list: a row wholly out of sight is not
+                # drawn
+                if [ crops && (ee.bounds.y - sy + ee.bounds.h < 0.0
+                     || ee.bounds.y - sy > e.bounds.h) ]
+                    cv.restore[]
+                    continue
                 cv.translate[ ee.bounds.x - sx, ee.bounds.y - sy ]
             draw_element[ ee, stage, last_ ]
             last_ = ee
@@ -7445,6 +7466,8 @@ element TButtons
     public  seg_near   : rgba
     public  seg_glow   : rgba [ '#c890ffff' ]
     public  seg_reach  : f32 [ 1.0 ]
+    # a text segment's font file ('' the canvas's own)
+    public  label_font : string
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -7702,8 +7725,13 @@ element TButtons
                 cv.fill_color[ icol ]
                 cv.draw_svg[ svg, ix, iy, isz, isz ]
             el [ !blank ]
-                cv.font_size[
-                    (label_px > 0.0) ? label_px : bounds.h * 0.5 ]
+                lpx : f32 [ (label_px > 0.0) ? label_px
+                    : bounds.h * 0.5 ]
+                lf  : bool [ label_font && label_font.count > 0 ]
+                if [ lf ]
+                    cv.set_font[ shared_font[ cv, label_font,
+                        i32[ lpx ] ] ]
+                cv.font_size[ lpx ]
                 # text takes no canvas opacity: a dim segment's
                 # label carries it in its colour
                 if [ off ] icol.a = icol.a * off_alpha
@@ -7719,6 +7747,7 @@ element TButtons
                                      w: sw - 12.0 - cw, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0,
                             0.0 ], Overflow.ellipsis, null ]
+                if [ lf ] cv.set_font[ null ]
             if [ (close_mask & (1 << i)) != 0 && w.shift ]
                 cr : f32 [ close_r[] ]
                 cx : f32 [ close_x[ i ] ]

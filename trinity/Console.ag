@@ -86,6 +86,10 @@ class ConsoleSession
     mutable esc_pv      : vec i32
     mutable esc_pc      : i32 [ 0 ]
     mutable esc_pi      : i32 [ 0 ]
+    # the program's title (OSC 0 or 2), as a terminal's tab shows it
+    public  title       : string
+    # the OSC's text while it arrives
+    mutable osc         : vec u8
 
     func init []
         scrollback  = list string []
@@ -618,6 +622,18 @@ class ConsoleSession
         el [ c == 99 ]
             send_esc[ '[?1;2c' ]
 
+    # an OSC ended: 0 and 2 set the title (1 is the icon's name)
+    func osc_end []
+        n : i32 [ (osc) ? i32[ osc.count ] : 0 ]
+        if [ n < 2 || osc[ 1 ] != 59 ] return
+        k : i32 [ osc[ 0 ] ]
+        if [ k != 48 && k != 50 ] return
+        tb : local i8 [ 1025 ]
+        for [ i: i32 2, i < n, i += 1 ]
+            tb[ i - 2 ] = i8[ osc[ i ] ]
+        tb[ n - 2 ] = 0
+        title = string[ @tb[0] ]
+
     func process_byte [ c: i32 ]
         # UTF-8 continuation bytes assemble the pending codepoint.
         if [ utf_need > 0 ]
@@ -638,6 +654,7 @@ class ConsoleSession
                 esc_pv[0] = 0
             el [ c == 93 ]
                 esc_state = 4
+                osc = vec u8 []
             el [ c == 40 || c == 41 || c == 42 || c == 43 ]
                 esc_state = 6
             el [ c == 99 ]
@@ -692,11 +709,15 @@ class ConsoleSession
         if [ esc_state == 4 ]
             if [ c == 7 ]
                 esc_state = 0
+                osc_end[]
             el [ c == 27 ]
                 esc_state = 5
+            el [ osc.count < 1024 ]
+                osc.push[ u8[ c ] ]
             return
         if [ esc_state == 5 ]
             esc_state = (c == 92) ? 0 : 4
+            if [ c == 92 ] osc_end[]
             return
         if [ esc_state == 6 ]
             esc_state = 0
@@ -1372,6 +1393,9 @@ element Console
     public  cwd        : string
     public  run_line   : string
     mutable last_run   : string
+    # the program's title becomes the app's (a terminal's tab)
+    public  titles     : bool
+    mutable title_was  : string
 
     func session [] -> ConsoleSession
         sid : string (session_id && session_id.count > 0) ? session_id : 'default'
@@ -1401,6 +1425,15 @@ element Console
 
     func init []
         if [ !sessions ] sessions = map ConsoleSession[string] []
+
+    # its own shell's output; orbiter reads its sessions too
+    public func tick [ w: Window ]
+        if [ !sessions ] return
+        s : ConsoleSession session[]
+        if [ s.read_output[] ] pristine = false
+        if [ titles && s.title && '{s.title}' != '{title_was}' ]
+            title_was = '{s.title}'
+            set_title[ title_was ]
 
     func launch_agent [ sid: string, cmd: string ]
         s : ConsoleSession sessions[sid]
@@ -1458,6 +1491,19 @@ element Console
         el
             s.write_input[ text ]
 
+    # the clipboard into the shell: a picture goes to a png file
+    # and its path is pasted (an agent reads it); else the text
+    func paste_clip []
+        if [ !ux ] return
+        dir : path '{path.path_cache[ 'paste' ]}'
+        dir.make_dir[]
+        pic : path '{dir}/paste-{epoch_millis[]}.png'
+        if [ ux.paste_picture[ pic ] ]
+            paste[ '{pic}' ]
+            return
+        clip : string ux.get_clipboard[]
+        if [ clip && clip.count > 0 ] paste[ clip ]
+
     # a dropped file path rides the same paste path
     func on_drop [ ev: Event ]
         if [ !ev.key.text || ev.key.text.count == 0 ] return
@@ -1466,6 +1512,11 @@ element Console
     func on_key [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
+        # ctrl + shift + v (cmd + v): paste, a picture as its file
+        if [ ev.key.state && ((ev.key.ctrl && ev.key.shift)
+             || ev.key.meta) && i32[ev.key.unicode] == 86 ]
+            paste_clip[]
+            return
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
              && i32[ev.key.unicode] == 67 ]
             if [ s.sel_line >= 0 ]
@@ -1551,9 +1602,7 @@ element Console
         if [ !s ] return
         set_focus[]
         if [ ev.mouse.button == 1 ]
-            if [ ux ]
-                clip : string ux.get_clipboard[]
-                if [ clip && clip.count > 0 ] paste[ clip ]
+            paste_clip[]
             return
         ele : Layer (layers) ? layers[ 'content' ] : null
         if [ !ele || !ele.bounds ] return

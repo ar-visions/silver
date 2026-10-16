@@ -14,7 +14,8 @@ element SystemClock
     style : CSS {
         layers.face:
             label_color: #e8e8ee
-            label_size: 14
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
     }
 
@@ -54,7 +55,8 @@ Button MenuTop
             near_inset_color: #c890ffff
         layers.face:
             label_color: #e8e8ee
-            label_size: 14
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
         :hovered
             layers.body:
@@ -79,12 +81,13 @@ element MenuPanel
             t[ 'none' ] = TrayNote [ label: 'No menu',
                 area: Region { l0.7 t0.6 r0.7 h1 } ]
             return t
-        t[ 'title' ] = TrayText [ label: items[ top ].label,
-            area: Region { l0.7 t0.4 r0.7 h1.2 } ]
-        # the entries flow under the heading and scroll
-        rows : Elements []
-        gap : f32 [ 0.15 ]
+        # no heading: the menu's name is lit in the bar
+        # the entries flow under the heading and scroll, a chip
+        # between separators
         fl : bool [ filter && filter.count > 0 ]
+        mb : MenuBuild []
+        mb.view[ (elements && elements.contains[ 'rows' ])
+            ? elements[ 'rows' ] : null ]
         for [ i: i32 top + 1, i < items.count, i += 1 ]
             e : TrayEntry items[ i ]
             if [ e.depth <= 0 ] break
@@ -95,22 +98,17 @@ element MenuPanel
             if [ fl && (deeper || !entry_matches[ e, filter ]) ]
                 continue
             if [ e.rule ]
-                gap += 0.5
+                mb.rule[]
                 continue
-            x : f32 [ 0.7 + f32[ e.depth - 1 ] * 1.0 ]
-            if [ fl ] x = 0.7
-            ar : Region [ 'l{x} t{gap}+ r0.7 h1.2' ]
+            dp : i32 [ (fl) ? 0 : e.depth - 1 ]
             if [ deeper ]
-                rows[ 'entry_{i}' ] = TrayNote [ label: e.label,
-                    area: ar ]
+                mb.note[ 'entry_{i}', e.label, dp ]
             el
-                mark : (e.check == 1) ? '✓  ' : ''
-                rows[ 'entry_{i}' ] = TrayRow [
-                    label: '{mark}{e.label}', entry: i,
-                    disable: !e.enabled, area: ar ]
-            gap = 0.15
+                mb.row[ 'entry_{i}', e, i, dp ]
+        mb.finish[]
+        rows : Elements mb.out
         t[ 'rows' ] = PanelRows [ elements: rows,
-            area: Region [ (fl) ? 'l0 t1.85 r0 b2.2' : 'l0 t1.85 r0 b0' ] ]
+            area: Region [ (fl) ? 'l0 t0.3 r0 b2.2' : 'l0 t0.3 r0 b0' ] ]
         if [ fl ]
             t[ 'filter' ] = MenuFilter [ label: filter,
                 area: Region { l0.7 b1.8 r0.7 h1.2 } ]
@@ -163,9 +161,9 @@ element MenuDrawer
     public background_lens : bool
     ground : DrawerGround []
     style : CSS {
-        area: l-281.25px t30px w360px b0, 240ms cubic outward
+        area: l-12.78 t1.36 w16.36 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l78.75px t30px w360px b0, 260ms cubic inward
+        area: l3.58 t1.36 w16.36 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }

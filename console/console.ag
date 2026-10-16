@@ -14,6 +14,8 @@ element console : trinity
     public  [ Launch ] folder : string
     # orbiter's Wayland display: a window the program opens goes there
     public  [ Launch ] wayland : string
+    # a fontconfig file for its programs (orbiter's lettering)
+    public  [ Launch ] fonts : string
     # the program to run; empty: an interactive shell
     default [ Launch ] run : string
     intern  sessions   : map ConsoleSession [string]
@@ -24,9 +26,12 @@ element console : trinity
             # the program's own environment: it finds the display here
             if [ wayland && wayland.count > 0 ]
                 setenv[ 'WAYLAND_DISPLAY', wayland.chars, 1 ]
+            if [ fonts && fonts.count > 0 ]
+                setenv[ 'FONTCONFIG_FILE', fonts.chars, 1 ]
         at : (folder && folder.count > 0) ? folder
             : '{path.path_startup[]}'
         cmd : (run) ? run : ''
         return Elements [
             'shell' : Console [ session_id: 'shell', sessions: sessions,
+                titles: true,
                 cwd: at, launch: cmd, area: Region { l0 t0 r0 b0 } ] ]

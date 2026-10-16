@@ -23,6 +23,8 @@ class TrayEntry
     # a GTK entry's action ('app.quit') and its string target
     public action  : string
     public target  : string
+    # its icon: a theme icon's name, or a file
+    public icon    : string
 
 # one app's icon as it registered
 class TrayItem
@@ -198,6 +200,7 @@ func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
         el [ key == 'type' ]
             e.rule = tray_text[ @kv ] == 'separator'
         el [ key == 'toggle-state' ] e.check = tray_int[ @kv ]
+        el [ key == 'icon-name' ] e.icon = tray_text[ @kv ]
         dbus_message_iter_next[ @d ]
     if [ !shown ] return
     if [ depth > 0 ] out.push[ e ]
@@ -248,6 +251,8 @@ class GtkItem
     public sec_m  : i32
     public sub_g  : i32
     public sub_m  : i32
+    # a themed icon's name, when the app gave one as a string
+    public icon   : string
 
 class GtkMenu
     public items : vec GtkItem
@@ -431,6 +436,7 @@ class AppMenu
                 g.label = tray_label[ tray_text[ @kv ] ]
             el [ key == 'action' ] g.action = tray_text[ @kv ]
             el [ key == 'target' ] g.target = tray_text[ @kv ]
+            el [ key == 'icon' ] g.icon = tray_text[ @kv ]
             el [ key == ':section' || key == ':submenu' ]
                 v : DBusMessageIter
                 dbus_message_iter_recurse[ @kv, @v ]
@@ -478,7 +484,7 @@ class AppMenu
                     ? state[ it.action ] : -1 ]
                 out.push[ TrayEntry [ label: it.label, enabled: on,
                     check: ck, depth: depth, action: it.action,
-                    target: it.target ] ]
+                    target: it.target, icon: it.icon ] ]
 
 # a panel's height for scrolling: its lowest child's foot
 func panel_fit [ e: element ]
@@ -509,6 +515,189 @@ Button MenuFilter
             label_align: 0.0 0.5
             label_offset: 14.0 0.0
     }
+
+# a menu icon's file: a path as given, else the name in the icon
+# themes (Yaru, Adwaita, hicolor), an svg; '' none. kept per name
+menu_icons : map string [string]
+
+# the themes to look in: the desktop's, then each app's own icon
+# folders (/usr/share/<app>/icons/<theme>: Inkscape's, GIMP's)
+icon_dirs : vec string
+
+func icon_roots [] -> vec string
+    if [ icon_dirs ] return icon_dirs
+    icon_dirs = vec string [] [ '/usr/share/icons/Yaru',
+        '/usr/share/icons/Adwaita', '/usr/share/icons/hicolor' ]
+    sh : path '/usr/share'
+    for [ ad: path ] in sh.ls[ null, false ]
+        ic : path '{ad}/icons'
+        if [ !ic.is_dir[] ] continue
+        for [ th: path ] in ic.ls[ null, false ]
+            if [ th.is_dir[] ] icon_dirs.push[ '{th}' ]
+    return icon_dirs
+
+func menu_icon_file [ nm: string ] -> string
+    if [ !nm || nm.count == 0 ] return ''
+    if [ !menu_icons ] menu_icons = map string [string] []
+    if [ menu_icons.contains[ nm ] ] return menu_icons[ nm ]
+    found : ''
+    if [ nm.starts_with[ '/' ] && (path nm).exists[] ] found = nm
+    subs : vec string [] [ 'symbolic', 'scalable', '16x16/symbolic',
+        'scalable-up-to-32' ]
+    cats : vec string [] [ 'actions', 'apps', 'categories', 'devices',
+        'emblems', 'mimetypes', 'places', 'status', 'legacy' ]
+    names : vec string [] [ nm, '{nm}-symbolic' ]
+    for [ th: string ] in icon_roots[]
+        if [ found.count > 0 ] break
+        for [ sb: string ] in subs
+            if [ found.count > 0 ] break
+            for [ ct: string ] in cats
+                if [ found.count > 0 ] break
+                for [ n9: string ] in names
+                    f9 : path '{th}/{sb}/{ct}/{n9}.svg'
+                    if [ f9.exists[] ]
+                        found = '{f9}'
+                        break
+    menu_icons[ nm ] = found
+    return found
+
+# a run of menu entries between two separators: one chip, a faint
+# strip down its left for the icons, a line between its rows
+element MenuGroup
+    # no canvas of its own: made as it scrolls in, it paints into the
+    # list's one picture (which holds only the visible slice)
+    no_cache : true
+    # its rows' count: the lines go between them
+    public rows : i32
+    # px of the icon strip
+    public strip : f32 [ 30.0 ]
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+    }
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        g : Gradient linear_gradient[ 0.0, 0.0, strip, 0.0 ]
+        g.add_stop[ 0.0, 0x14ffffff ]
+        g.add_stop[ 1.0, 0x00ffffff ]
+        cv.save[]
+        cv.rounded[ 8.0, 0.0, 0.0, 8.0 ]
+        cv.rect_to[ 1.0, 1.0, strip, bounds.h - 2.0 ]
+        cv.set_fill_gradient[ g ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.restore[]
+        # the strip's right edge: the rows' own line, upright
+        cv.fill_color[ rgba [ '#ffffff14' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ strip, 1.0, 1.0, bounds.h - 2.0 ]
+        cv.paint[]
+        if [ rows < 2 ] return
+        rh : f32 [ bounds.h / f32[ rows ] ]
+        for [ i: i32 1, i < rows, i += 1 ]
+            cv.rect_to[ strip, round[ rh * f32[ i ] ], bounds.w - strip
+                - 1.0, 1.0 ]
+            cv.paint[]
+
+# a menu's rows gathered into chips: a separator, a submenu's name
+# or a change of depth ends one
+class MenuBuild
+    public out  : Elements
+    # the visible slice of the scroll area, in units: only what meets
+    # it becomes elements; the rest is only measured
+    public v0   : f32 [ -1000000.0 ]
+    public v1   : f32 [ 1000000.0 ]
+    # the chip being gathered: its entries' keys, entries and places
+    intern keys : vec string
+    intern ents : vec TrayEntry
+    intern ats  : vec i32
+    intern gi   : i32
+    intern dep  : i32
+    intern gap  : f32 [ 0.15 ]
+    # the foot of all measured so far, and of the last element made
+    intern y    : f32
+    intern shown : f32
+
+    func init []
+        out  = Elements []
+        keys = vec string []
+        ents = vec TrayEntry []
+        ats  = vec i32 []
+
+    # the chip so far: placed below what is above it; made only when
+    # it meets the visible slice, and then only its visible rows
+    func close []
+        n : i32 [ i32[ keys.count ] ]
+        if [ n > 0 ]
+            top : f32 [ y + gap ]
+            h   : f32 [ 0.9 * f32[ n ] ]
+            y = top + h
+            if [ top + h >= v0 && top <= v1 ]
+                cur : Elements []
+                for [ i: i32 0, i < n, i += 1 ]
+                    ry : f32 [ top + 0.9 * f32[ i ] ]
+                    if [ ry + 0.9 < v0 || ry > v1 ] continue
+                    e : TrayEntry ents[ i ]
+                    mark : (e.check == 1) ? '✓  ' : ''
+                    cur[ keys[ i ] ] = TrayRow [ label: '{mark}{e.label}',
+                        entry: ats[ i ], disable: !e.enabled,
+                        icon_file: menu_icon_file[ e.icon ],
+                        single: n == 1, area: Region [
+                        'l1px t{0.9 * f32[ i ]} r1px h0.9' ] ]
+                x : f32 [ 0.7 + f32[ dep ] * 1.0 ]
+                out[ 'grp_{gi}' ] = MenuGroup [ rows: n, elements: cur,
+                    area: Region [ 'l{x} t{top - shown}+ r0.7 h{h}' ] ]
+                shown = y
+            gi += 1
+            gap = 0.15
+        keys = vec string []
+        ents = vec TrayEntry []
+        ats  = vec i32 []
+
+    func rule []
+        close[]
+        gap += 0.35
+
+    func note [ key: string, label: string, depth: i32 ]
+        close[]
+        top : f32 [ y + gap ]
+        y = top + 0.9
+        if [ top + 0.9 >= v0 && top <= v1 ]
+            x : f32 [ 0.7 + f32[ depth ] * 1.0 ]
+            out[ key ] = MenuNote [ label: label,
+                area: Region [ 'l{x} t{top - shown}+ r0.7 h0.9' ] ]
+            shown = y
+        gap = 0.1
+
+    func row [ key: string, e: TrayEntry, at: i32, depth: i32 ]
+        if [ keys.count > 0 && depth != dep ] close[]
+        dep = depth
+        keys.push[ key ]
+        ents.push[ e ]
+        ats.push[ at ]
+
+    # the last chip, and the whole height: a mark at the foot keeps
+    # the scroll range the menu's
+    func finish []
+        close[]
+        if [ y > shown ]
+            out[ 'foot' ] = element [ area: Region [
+                'l0 t{y - shown}+ w1px h1px' ] ]
+
+    # the visible slice of a scroll area: from where it is to where its
+    # easing is heading, a screen's height more either side (a fast
+    # flick passes several rows a frame)
+    func view [ rows: element ]
+        if [ !rows || !rows.bounds || rows.fc <= 0.0 ] return
+        u  : f32 [ rows.fc ]
+        lo : f32 [ min[ rows.scroll.y, rows.scroll_goal ] ]
+        hi : f32 [ max[ rows.scroll.y, rows.scroll_goal ] ]
+        v0 = (lo - rows.bounds.h) / u
+        v1 = (hi + rows.bounds.h * 2.0) / u
 
 # a side panel's rows under its heading: each flows after the last,
 # so the wheel scrolls them
@@ -1047,6 +1236,12 @@ element TrayText
     face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
+# a group's heading in a menu (a submenu's name): the bold lettering
+element MenuNote
+    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 18,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
 element TrayNote
     face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
@@ -1072,30 +1267,67 @@ Button TrayButton
                 near_inset: 4.0
     }
 
-# one menu entry
+# one menu entry, inside its group's chip: no box of its own, the
+# pointer's light, its icon in the group's strip
 Button TrayRow
     style : CSS {
         layers.body:
-            fill_color: #ffffff0a
-            radius: 8
+            fill_color: #0000
+            # square inside the chip; the chip's ends round the ends
+            radius: 0
             stroke_width: 1
-            stroke_color: #ffffff1a
-            box_shadow: inset 0 0 12px #ff84ff14
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 12px #ff84ff10
             near_border: true
             near_inset: 2.0
             near_inset_color: #ff84ffaa
         layers.face:
             label_color: #e4e4ea
-            label_size: 15
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.0 0.5
-            label_offset: 14.0 0.0
+            label_offset: 40.0 0.0
         :hovered
             layers.body:
-                fill_color: #ffffff18
-                stroke_color: #ffffff40
+                fill_color: #ffffff12
                 near_inset: 4.0
+        :first
+            layers.body:
+                radius: 7 7 0 0
+        :last
+            layers.body:
+                radius: 0 0 7 7
+        :single
+            layers.body:
+                radius: 7
     }
     public entry : i32
+    # alone in its chip (trinity marks first and last itself)
+    public single : bool
+    # its icon's file ('' none), drawn centred in the strip
+    public icon_file : string
+    mutable icon_svg : SVGModel
+    mutable icon_was : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !icon_file || icon_file.count == 0 ] return
+        if [ !icon_svg || icon_was != icon_file ]
+            icon_svg = SVGModel [ path icon_file ]
+            icon_was = icon_file
+        cv : Canvas w.screen
+        sz : f32 [ 16.0 ]
+        cv.save[]
+        # symbolic icons are drawn dark: here they go light; a colour
+        # icon keeps its colours
+        sym : bool [ icon_file.index_of[ 'symbolic' ] >= 0 ]
+        if [ sym ]
+            cv.svg_override[ rgba [ (disable) ? '#ffffff55' : '#e4e4ea' ] ]
+        cv.draw_svg[ icon_svg, round[ 15.0 - sz * 0.5 ],
+                     round[ (bounds.h - sz) * 0.5 ], sz, sz ]
+        if [ sym ] cv.svg_override_off[]
+        cv.restore[]
 
 # the side panel: the app's name, Open, then its menu's entries
 element TrayPanel
@@ -1125,23 +1357,21 @@ element TrayPanel
         t[ 'open' ] = TrayButton [ label: 'Open',
             area: Region { r0.7 t0.45 w4.5 h1.05 } ]
         rows : Elements []
-        gap : f32 [ 0.15 ]
-        if [ it.tip.count > 0 && it.tip != it.title ]
-            rows[ 'tip' ] = TrayNote [ label: it.tip,
-                area: Region [ 'l0.7 t{gap}+ r0.7 h1' ] ]
         fl : bool [ filter && filter.count > 0 ]
+        mb : MenuBuild []
+        mb.view[ (elements && elements.contains[ 'rows' ])
+            ? elements[ 'rows' ] : null ]
+        if [ it.tip.count > 0 && it.tip != it.title ]
+            mb.note[ 'tip', it.tip, 0 ]
         for [ i: i32 0, i < it.entries.count, i += 1 ]
             e : TrayEntry it.entries[ i ]
             if [ !entry_matches[ e, filter ] ] continue
             if [ e.rule ]
-                gap += 0.5
+                mb.rule[]
                 continue
-            mark : (e.check == 1) ? '✓  ' : ''
-            x : f32 [ 0.7 + f32[ e.depth ] * 1.0 ]
-            rows[ 'entry_{i}' ] = TrayRow [ label: '{mark}{e.label}',
-                entry: i, disable: !e.enabled,
-                area: Region [ 'l{x} t{gap}+ r0.7 h1.2' ] ]
-            gap = 0.15
+            mb.row[ 'entry_{i}', e, i, e.depth ]
+        mb.finish[]
+        rows = mb.out
         t[ 'rows' ] = PanelRows [ elements: rows,
             area: Region [ (fl) ? 'l0 t1.85 r0 b2.2' : 'l0 t1.85 r0 b0' ] ]
         if [ fl ]

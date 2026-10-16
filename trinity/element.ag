@@ -324,6 +324,10 @@ ielement element
     public  frost_sharp  : bool
     # floor under the ui dimming; 0 keeps the ui's own value
     public  frost_lift   : f32
+    # the scroll its faded picture was made at: unchanged, unrepainted,
+    # the picture is drawn again as it was
+    intern mask_sx      : f32 [ -1.0 ]
+    intern mask_sy      : f32 [ -1.0 ]
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -806,8 +810,8 @@ class Layer
         cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
             if [ !label_font_cache ]
-                label_font_cache = CanvasFont [ ft_lib: cv.ft_lib,
-                        uri: label_font, size_px: i32[label_size] ]
+                label_font_cache = shared_font[ cv, label_font,
+                    i32[ label_size ] ]
             cv.set_font[ label_font_cache ]
         el
             cv.ensure_font[]

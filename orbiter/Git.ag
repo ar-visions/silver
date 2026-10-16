@@ -369,6 +369,12 @@ ResourceView GitView
 # a card: an instance's live frame, or a scene's picture, 96px
 # tall, with the name and a blue status line under it; cx is the
 # content's left, the card box starts 4px left of it
+# the navigator's lettering: Barlow Condensed at a size
+func nav_font [ cv: Canvas, px: i32 ]
+    cv.set_font[ shared_font[ cv, 'fonts/BarlowCondensed-Regular.ttf',
+                              px ] ]
+    cv.font_size[ px ]
+
 func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
                  cdw: f32, rh: f32, hov: bool ]
     # the orbiter class is declared after this signature: cast here
@@ -424,7 +430,7 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
     if [ wv9 != 0 ] st9 = 'running'
     if [ sc9 ]
         if [ orb.scene_name[].compare[ h.scene ] == 0 ] st9 = 'current'
-    cv.font_size[ 16 ]
+    nav_font[ cv, 21 ]
     cv.fill_color[ rgba['#fff'] ]
     cv.draw_text[ (av9) ? orb.instance_name[ av9 ] : h.text,
         rect [ x: cx9 - 4.0, y: ry + 104.0, w: cdw - 8.0, h: 20.0 ],
@@ -458,7 +464,7 @@ Layer CommitLayer
                      wty + bounds.y + bounds.h ]
         cb.side_keys = vec string []
         cb.side_ys   = vec f32 []
-        cv.font_size[ 13 ]
+        nav_font[ cv, 16 ]
         # clamp the column's own scroll to what it holds
         smax9 : f32 [ cb.side_h - bounds.h ]
         if [ smax9 < 0.0 ] smax9 = 0.0
@@ -466,7 +472,9 @@ Layer CommitLayer
         if [ cb.side_scroll < 0.0 ] cb.side_scroll = 0.0
         sy9 : f32 [ bounds.y + 10.0 - cb.side_scroll ]
         srh : f32 [ 24.0 ]
-        for [ sec: i32 0, sec < 2, sec += 1 ]
+        # users, projects, then the computer's drives and the pinned
+        # folders
+        for [ sec: i32 0, sec < 4, sec += 1 ]
             names9 : vec string orb.repo_users
             if [ sec == 0 ]
                 # you first, always there and never removable: the login
@@ -480,10 +488,19 @@ Layer CommitLayer
                             continue
                         users9.push[ u9 ]
                 names9 = users9
-            el
+            el [ sec == 1 ]
                 names9 = orb.side_projects_of[]
+            el [ sec == 2 ]
+                names9 = orb.side_drives[]
+            el
+                names9 = orb.side_pinned[]
+            # nothing pinned: no heading either
+            if [ sec == 3 && names9.count == 0 ] continue
+            hd9 : string (sec == 0) ? 'users'
+                : ((sec == 1) ? 'projects'
+                : ((sec == 2) ? 'system' : 'pinned'))
             cv.fill_color[ rgba['#ffffff55'] ]
-            cv.draw_text[ (sec == 0) ? 'users' : 'projects',
+            cv.draw_text[ hd9,
                 rect [ x: sx9 + 4.0, y: sy9, w: sw9 - 12.0, h: srh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
@@ -542,13 +559,17 @@ Layer CommitLayer
                             if [ !own9 ] continue
                         el
                             if [ !nm9.starts_with[ '{su}/' ] ] continue
-                    key9 : string (sec == 0) ? 'u:{nm9}' : 'p:{nm9}'
+                    key9 : string (sec == 0) ? 'u:{nm9}'
+                        : ((sec == 1) ? 'p:{nm9}'
+                        : ((sec == 2) ? 'd:{nm9}' : 'f:{nm9}'))
                     on9 : bool [ false ]
                     if [ sec == 0 ]
                         on9 = orb.side_user && orb.side_user.compare[
                             nm9 ] == 0
-                    el
+                    el [ sec == 1 ]
                         on9 = orb.side_lit[ nm9 ]
+                    el
+                        on9 = orb.nav_root && '{orb.nav_root}' == nm9
                     hov9 : bool [ cb.hov_side == cb.side_keys.count ]
                     if [ on9 || hov9 ]
                         cv.save[ ]
@@ -567,6 +588,11 @@ Layer CommitLayer
                     # ...unless that user is the one selected: then the
                     # list is already theirs and the name alone fits
                     lbl9 : string nm9
+                    # a drive or folder by its last name; / is the
+                    # system
+                    if [ sec >= 2 ]
+                        lbl9 = (nm9 == '/') ? 'system'
+                            : (path nm9).filename[]
                     sl9 : i32 [ nm9.index_of[ '/' ] ]
                     if [ sec == 1 && sl9 > 0 ]
                         own8 : string nm9.mid[ 0, sl9 ]
@@ -590,8 +616,8 @@ Layer CommitLayer
                     # shift held: a - next to every added user (never
                     # you) removes it
                     if [
-                        sec == 0 && orb.shift_down
-                        && cb.side_keys.count > 0 ]
+                        ((sec == 0 && cb.side_keys.count > 0)
+                         || sec == 3) && orb.shift_down ]
                         cv.fill_color[
                             (hov9) ? rgba['#ff8a8a']
                             : rgba['#ffffff55'] ]
@@ -643,8 +669,8 @@ Layer CommitLayer
         open9 : bool [ cb.commit_open && trs > 0 ]
         band9 : i32 [ (trs > 0) ? trs + 1 + ((open9) ? 4 : 0) : 0 ]
         lh  : f32 [ 36.0 ]
-        fs  : i32 [ 14 ]
-        cv.font_size[ fs ]
+        fs  : i32 [ 17 ]
+        nav_font[ cv, fs ]
         mtm : cv.measure_text[ 'x' ]
         cb.cap_st  = cap
         cb.cw_st   = mtm.w
@@ -709,21 +735,21 @@ Layer CommitLayer
             cv.restore[ ]
             if [ dirty ]
                 if [ !cb.bold_font ]
-                    bfp : path 'fonts/SpaceMono-Bold.ttf'
+                    bfp : path 'fonts/BarlowCondensed-Bold.ttf'
                     if [ bfp.exists[] ]
                         # match ensure_font's display scaling
                         bsc : f32 [
                             (cv.w && cv.w.scale > 0.0) ? cv.w.scale
                             : 1.0 ]
                         cb.bold_font = CanvasFont [ ft_lib: cv.ft_lib,
-                                                    uri: 'fonts/SpaceMono-Bold.ttf', size_px: i32[ f32[ fs ] * bsc ] ]
+                                                    uri: 'fonts/BarlowCondensed-Bold.ttf', size_px: i32[ f32[ fs ] * bsc ] ]
                 if [ cb.bold_font ] cv.set_font[ cb.bold_font ]
             cv.fill_color[ (thov) ? rgba['#ffffff'] : rgba['#ffd9e4'] ]
             cv.draw_text[ nm,
                 rect [ x: tx + 4.0, y: ty, w: 136.0, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, null ]
-            if [ dirty ] cv.set_font[ null ]
+            if [ dirty ] nav_font[ cv, fs ]
         # control row: reveal-all pill left, totals + make commit right
         cy : f32 [ yb + f32[ trs ] * lh ]
         if [ trs > 0 ]
@@ -809,6 +835,12 @@ Layer CommitLayer
                         lh * 3.0 - 6.0 ]
             cv.paint[ ]
             cv.restore[ ]
+            # the message keeps the canvas's own lettering (monospace):
+            # its caret and clicks go by that letter width
+            cv.set_font[ null ]
+            cv.font_size[ 15 ]
+            ctm : cv.measure_text[ 'x' ]
+            cb.cw_st = ctm.w
             if [ cb.commit_text ]
                 for [ i: i32 0, i < 3 && i < cb.commit_text.count,
                       i += 1 ]
@@ -821,12 +853,13 @@ Layer CommitLayer
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                         Overflow.clip, null ]
             if [ parent.focused ]
-                ccx : f32 [ x0 + 8.0 + f32[ cb.cc ] * mtm.w ]
+                ccx : f32 [ x0 + 8.0 + f32[ cb.cc ] * ctm.w ]
                 ccy : f32 [ by + f32[ cb.cl ] * lh ]
                 cv.fill_color[ rgba['#ffffff'] ]
                 cv.stroke_width[ 0.0 ]
                 cv.rect_to[ ccx, ccy + 4.0, 2.0, lh - 8.0 ]
                 cv.paint[ ]
+            nav_font[ cv, fs ]
             # the commit button: centered on the same axis as cancel
             gy : f32 [ yb + f32[ trs + 4 ] * lh ]
             gx : f32 [
@@ -850,19 +883,16 @@ Layer CommitLayer
                 null ]
         # the browse list rides the same scroll, below the band; a
         # 4px breath keeps the hover clear of the divider
-        cv.font_size[ 16 ]
+        nav_font[ cv, 21 ]
         ltm : cv.measure_text[ 'x' ]
         ly : f32 [ yb + f32[ band9 ] * lh + ((band9 > 0) ? 8.0 : 0.0) ]
         nls : i32 [ 0 ]
-        # rows are 30px; an instance is a card: a 96px thumbnail with
-        # two lines under it
-        ry9 : f32 [ ly ]
-        # cards flow left to right, as many per line as fit, then wrap
-        cdw  : f32 [ 152.0 ]
-        per9 : i32 [ (bounds.w - 100.0 - sw9) / cdw ]
-        if [ per9 < 1 ] per9 = 1
-        ci9  : i32 [ 0 ]
-        lyc : f32 [ ly ]
+        # each row's place: plain entries in columns of 300px or more,
+        # cards flowing across, the rest full width (list_layout)
+        lh9 : f32 cb.list_layout[ bounds.w ]
+        ry9 : f32 [ ly + lh9 ]
+        # a card's width, as list_layout spaces them
+        cdw : f32 [ 152.0 ]
         # this pass finds the hint under the pointer afresh
         cb.hint_cut = null
         cb.hint_row = -1
@@ -873,21 +903,14 @@ Layer CommitLayer
                 # continuation rows of double-height headers: not ours
                 if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ]
                     continue
-                rh : f32 [ (h.card[]) ? 148.0 : 30.0 ]
-                ry  : f32 [ ry9 ]
-                cx9 : f32 [ x0 + 8.0 ]
-                if [ h.card[] ]
-                    if [ ci9 > 0 && ci9 < per9 ]
-                        ry = lyc
-                    el
-                        ci9  = 0
-                        lyc = ry9
-                        ry9 += rh
-                    cx9 = x0 + 8.0 + f32[ ci9 ] * cdw
-                    ci9 += 1
-                el
-                    ci9 = 0
-                    ry9 += rh
+                if [ nls >= i32[ cb.lay_x.count ] ] break
+                rh  : f32 [ cb.lay_h[ nls ] ]
+                ry  : f32 [ ly + cb.lay_y[ nls ] ]
+                cx9 : f32 [ bounds.x + cb.lay_x[ nls ] ]
+                # the row's own column: its left, and its right as the
+                # full width's was (24px in from it)
+                xr0 : f32 [ (h.card[]) ? x0 : cx9 ]
+                xe  : f32 [ xr0 + cb.lay_w[ nls ] + 24.0 ]
                 nls += 1
                 if [ ry + rh < bounds.y || ry > bounds.y + bounds.h ]
                     continue
@@ -895,21 +918,21 @@ Layer CommitLayer
                     # same pixel break as the band divider
                     cv.fill_color[ rgba['#fff2'] ]
                     cv.stroke_width[ 0.0 ]
-                    cv.rect_to[ x0, round[ ry + 15.0 ],
-                                bounds.x + bounds.w - x0 - 24.0, 1.0 ]
+                    cv.rect_to[ xr0, round[ ry + 15.0 ],
+                                xe - xr0 - 24.0, 1.0 ]
                     cv.paint[ ]
                     continue
                 if [ h.is_newfile ]
                     # two make-commit-style buttons, side by side,
                     # centered, at the band controls' font size
-                    cv.font_size[ fs ]
+                    nav_font[ cv, fs ]
                     nfl9 : string 'new file'
                     ndl : string 'new folder'
                     nfw : f32 [ f32[ nfl9.count ] * mtm.w + 22.0 ]
                     ndw : f32 [ f32[ ndl.count ] * mtm.w + 22.0 ]
                     nbx : f32 [
-                        x0
-                        + (bounds.x + bounds.w - 24.0 - x0 - nfw - 12.0 - ndw) * 0.5 ]
+                        xr0
+                        + (xe - 24.0 - xr0 - nfw - 12.0 - ndw) * 0.5 ]
                     cb.nfx0 = nbx - bounds.x
                     cb.nfx1 = nbx + nfw - bounds.x
                     cb.ndx0 = nbx + nfw + 12.0 - bounds.x
@@ -951,16 +974,40 @@ Layer CommitLayer
                                h: 30.0 ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                         Overflow.clip, null ]
-                    cv.font_size[ 16 ]
+                    nav_font[ cv, 21 ]
                     continue
                 if [ nls - 1 == cb.hov_list && !h.card[] ]
                     # an entry's highlight starts at its icon: the 30px
                     # before it is the delete mark's, never painted
                     hl9 : f32 [ 2.0 ]
                     if [ h.file && h.line <= 0 ] hl9 = 32.0
-                    nav_hover_paint[ cv, cb, x0 + hl9, ry + 1.0,
-                        bounds.x + bounds.w - x0 - 20.0 - hl9, rh - 2.0,
+                    nav_hover_paint[ cv, cb, xr0 + hl9, ry + 1.0,
+                        xe - xr0 - 20.0 - hl9, rh - 2.0,
                         cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
+                el [ !h.card[] && cb.hov_in ]
+                    # an unselected row: its border unseen at rest, the
+                    # near light (the distance field) bringing up the
+                    # part by the pointer, faintly; clear inside
+                    nl9 : f32 [ (h.file && h.line <= 0) ? 32.0 : 2.0 ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0, 8.0, 8.0, 8.0 ]
+                    cv.fill_color[ rgba [ '#0000' ] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba [ '#ffffff01' ] ]
+                    # the near inner glow needs an inset shadow to blend;
+                    # 1/255, unseen at rest (an alpha of 0 is no shadow);
+                    # by the pointer it comes up toward #fff8
+                    cv.box_shadow[ rgba [ '#ffffff01' ], 0.0, 0.0, 13.0,
+                                   0.0, true ]
+                    # a short reach: only the rows right by the pointer
+                    cb.ux.near_light_reach[ cv, cb, 0.0, 0.0, 0.9 ]
+                    cv.near_style[ 0.6, 1.0, rgba [ '#ffffff88' ],
+                                   cb.ux.near_y_fade ]
+                    cv.rect_to[ xr0 + nl9, ry + 1.0, xe - xr0 - 20.0 - nl9,
+                                rh - 2.0 ]
+                    cv.paint[ ]
+                    cv.restore[ ]
                 # an instance: its live frame as a 96px thumbnail, the
                 # name and status under it, and the module in blue under
                 # that; a scene: its exported picture
@@ -972,13 +1019,13 @@ Layer CommitLayer
                 if [ !h.is_header && h.line > 0 ]
                     cv.fill_color[ rgba['#7a8290'] ]
                     cv.draw_text[ '{h.line}',
-                        rect [ x: x0 + 8.0, y: ry, w: 56.0, h: 30.0 ],
+                        rect [ x: xr0 + 8.0, y: ry, w: 56.0, h: 30.0 ],
                         vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                         Overflow.clip, null ]
                     cv.fill_color[ rgba['#d4d4d4'] ]
                     cv.draw_text[ h.text,
-                        rect [ x: x0 + 76.0, y: ry,
-                               w: bounds.x + bounds.w - x0 - 100.0,
+                        rect [ x: xr0 + 76.0, y: ry,
+                               w: xe - xr0 - 100.0,
                                h: 30.0 ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                         Overflow.clip, null ]
@@ -1020,7 +1067,7 @@ Layer CommitLayer
                     cb.ux && cb.ux.shift && cb.deletable[ h ]
                     && (nls - 1 == cb.hov_list || fl > 0.0) ]
                     drs = 72.0
-                    dbx : f32 [ bounds.x + bounds.w - 24.0 - 64.0 ]
+                    dbx : f32 [ xe - 24.0 - 64.0 ]
                     if [ fl > 0.0 ]
                         cv.save[ ]
                         cv.rounded[ 5.0, 5.0, 5.0, 5.0 ]
@@ -1038,7 +1085,7 @@ Layer CommitLayer
                     cv.rect_to[ dbx, ry + 4.0, 64.0, 22.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
-                    cv.font_size[ 13 ]
+                    nav_font[ cv, 16 ]
                     cv.fill_color[
                         (fl >= 1.0) ? rgba['#fff'] : rgba['#ff8a8a'] ]
                     cv.draw_text[ 'delete',
@@ -1055,22 +1102,22 @@ Layer CommitLayer
                     cv.stroke_width[ 1.0 ]
                     cv.stroke_offset[ -0.5 ]
                     cv.stroke_color[ rgba['#8fd0ffaa'] ]
-                    cv.rect_to[ x0 + 9.0, round[ ry + 5.5 ], 19.0,
+                    cv.rect_to[ xr0 + 9.0, round[ ry + 5.5 ], 19.0,
                                 19.0 ]
                     cv.paint[ ]
                     cv.restore[ ]
                     cv.fill_color[ rgba['#8fd0ff'] ]
                     cv.stroke_width[ 0.0 ]
-                    cv.rect_to[ x0 + 13.0, round[ ry + 14.25 ], 11.0,
+                    cv.rect_to[ xr0 + 13.0, round[ ry + 14.25 ], 11.0,
                                 1.5 ]
                     cv.paint[ ]
                     if [ !pn9 ]
-                        cv.rect_to[ x0 + 17.75, round[ ry + 9.5 ], 1.5,
+                        cv.rect_to[ xr0 + 17.75, round[ ry + 9.5 ], 1.5,
                                     11.0 ]
                         cv.paint[ ]
-                tx0 : nav_icon_paint[ cv, ico, x0, ry ]
-                nmw : f32 [ bounds.x + bounds.w - tx0 - 24.0 - drs ]
-                cv.font_size[ 16 ]
+                tx0 : nav_icon_paint[ cv, ico, xr0, ry ]
+                nmw : f32 [ xe - tx0 - 24.0 - drs ]
+                nav_font[ cv, 21 ]
                 # a repository row: light blue when checked out, faint
                 # when not, amber while it clones
                 rcl : RepoClone (h.repo && h.repo.count > 0 && orb.repo_clones) ? orb.repo_clones[ h.repo ] : null
@@ -1091,7 +1138,7 @@ Layer CommitLayer
                     # the clone's bar in the description column: a 2px
                     # white outline and an offset white fill inside it,
                     # then the phase
-                    bx9 : f32 [ bounds.x + bounds.w * 0.5 ]
+                    bx9 : f32 [ (xr0 + (xe - 24.0 - xr0) * 0.5) ]
                     bw : f32 [ 160.0 ]
                     cv.save[ ]
                     cv.fill_color[ rgba['#0000'] ]
@@ -1116,19 +1163,19 @@ Layer CommitLayer
                         ? rgba['#ff6a6a'] : rgba['#ffffffaa'] ]
                     cv.draw_text[ lbl9,
                         rect [ x: bx9 + bw + 12.0, y: ry,
-                               w: bounds.x + bounds.w - 24.0 - bx9 - bw
+                               w: xe - 24.0 - bx9 - bw
                                - 12.0, h: 30.0 ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                         Overflow.clip, null ]
                 el [ h.dir && h.dir.count > 0 ]
                     fnw : f32 [ cv.measure_text[ nm ].w ]
-                    col : f32 [ bounds.x + bounds.w * 0.5 ]
+                    col : f32 [ (xr0 + (xe - 24.0 - xr0) * 0.5) ]
                     end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
                     dx  : f32 [ (end > col) ? end : col ]
                     hc : rgba [
                         (h.repo && h.repo.count > 0 && !h.checked)
                         ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
-                    re : f32 [ bounds.x + bounds.w - 24.0 - drs ]
+                    re : f32 [ xe - 24.0 - drs ]
                     # shift over this row's hint: the path up to the end
                     # of the segment under the pointer is blue, and a
                     # press goes there
@@ -1186,6 +1233,8 @@ Layer CommitLayer
         cb.content_h = f32[
             band9 ] * lh + (ry9 - ly) + 16.0 + ((band9 > 0) ? 8.0 : 0.0)
         cv.clear_crop[ ]
+        # the canvas's own lettering for whatever draws after
+        cv.set_font[ null ]
 
 element CommitView
     mutable hov_row : i32 [ -1 ]
@@ -1207,6 +1256,12 @@ element CommitView
     # metrics stamped by the draw so hits match pixels exactly
     mutable band_st : i32 [ 0 ]
     mutable list_st : i32 [ 0 ]
+    # each list row's place, from the list's top: plain entries flow
+    # into columns of 300px or more; cards and the rest as before
+    mutable lay_x   : vec f32
+    mutable lay_y   : vec f32
+    mutable lay_w   : vec f32
+    mutable lay_h   : vec f32
     mutable cap_st  : i32 [ 1 ]
     mutable cw_st   : f32 [ 8.0 ]
     mutable lx0 : f32 [ 0.0 ]
@@ -1228,6 +1283,10 @@ element CommitView
     public  nav_hover_edge : rgba [ '#e07ad899' ]
     # the pointer's x in the layer, for the path hint
     intern  hov_mx    : f32
+    # the pointer's y and whether it is over the view: the rows near
+    # it show a faint border
+    intern  hov_my    : f32
+    intern  hov_in    : bool
     # shift over a row's path hint: the folder up to the segment under
     # the pointer (drawn blue); a press goes there
     intern  hint_cut  : string
@@ -1284,29 +1343,35 @@ element CommitView
     func delete_hit [ ev: Event ] -> FindHit
         ly : lay[]
         if [ !ly ] return null
-        return shift_hit[ ev, ly.bounds.w - 88.0, ly.bounds.w - 24.0 ]
+        # the row's right end: its column's
+        return shift_hit[ ev, -64.0, 0.0, true ]
 
     # the row whose pin mark (the slot before its icon) is under the
     # pointer
     func pin_hit [ ev: Event ] -> FindHit
-        return shift_hit[ ev, 22.0 + side_w, 52.0 + side_w ]
+        return shift_hit[ ev, 8.0, 38.0, false ]
 
-    # shift held, the pointer between x0 and x1 on an entry row: that
-    # entry
-    func shift_hit [ ev: Event, x0: f32, x1: f32 ] -> FindHit
+    # shift held, the pointer between x0 and x1 of an entry row (from
+    # its column's left, or its right with from_right): that entry
+    func shift_hit [ ev: Event, x0: f32, x1: f32, from_right: bool ]
+                     -> FindHit
         ly : lay[]
         o  : orb9[]
         if [ !ly || !o || !ux || !ux.shift || !o.find_hits ] return null
         rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
         ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
-        if [ rx < x0 || rx >= x1 ] return null
         trs : i32 [
             (o.picking[]) ? 0
             : o.commit_tab_rows[ ly.bounds.w - 14.0 - side_w,
                                  reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         if [ r < band_st ] return null
-        hi : i32 [ list_hit[ r - band_st ] ]
+        dr : i32 [ r - band_st ]
+        if [ !lay_x || dr >= i32[ lay_x.count ] ] return null
+        ox : f32 [ (from_right) ? lay_x[ dr ] + lay_w[ dr ]
+            : lay_x[ dr ] ]
+        if [ rx < ox + x0 || rx >= ox + x1 ] return null
+        hi : i32 [ list_hit[ dr ] ]
         if [ hi < 0 || hi >= o.find_hits.count ] return null
         h : FindHit o.find_hits[ hi ]
         return (deletable[ h ]) ? h : null
@@ -1376,6 +1441,80 @@ element CommitView
 
     # the display row under y (band rows then list rows), -1 outside.
     # event y already includes the element's own scroll offset
+    # a run of plain rows into columns, top to bottom then across
+    func lay_run [ run: vec i32, y: f32, left: f32, colw: f32,
+                   cols: i32 ] -> f32
+        n : i32 [ i32[ run.count ] ]
+        if [ n == 0 ] return y
+        per : i32 [ (n + cols - 1) / cols ]
+        # a column holds 8 rows at least before the next one starts
+        if [ per < 8 ] per = 8
+        # whole column and row numbers: down a column, then the next
+        for [ k: i32 0, k < n, k += 1 ]
+            ri  : i32 [ run[ k ] ]
+            col : i32 [ k / per ]
+            row : i32 [ k - col * per ]
+            lay_x[ ri ] = left + colw * f32[ col ]
+            lay_y[ ri ] = y + 30.0 * f32[ row ]
+            lay_w[ ri ] = colw
+        return y + 30.0 * f32[ per ]
+
+    # every display row's place (x and width in the view, y from the
+    # list's top); the list's height back
+    func list_layout [ ww: f32 ] -> f32
+        lay_x = vec f32 []
+        lay_y = vec f32 []
+        lay_w = vec f32 []
+        lay_h = vec f32 []
+        o : orb9[]
+        if [ !o || !o.find_hits ] return 0.0
+        left  : f32 [ 14.0 + side_w ]
+        right : f32 [ ww - 24.0 ]
+        cdw   : f32 [ 152.0 ]
+        per9  : i32 [ (ww - 100.0 - side_w) / cdw ]
+        if [ per9 < 1 ] per9 = 1
+        cols  : i32 [ i32[ (right - left) / 300.0 ] ]
+        if [ cols < 1 ] cols = 1
+        colw  : f32 [ (right - left) / f32[ cols ] ]
+        y   : f32 [ 0.0 ]
+        lyc : f32 [ 0.0 ]
+        ci  : i32 [ 0 ]
+        run : vec i32 []
+        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
+            h : FindHit o.find_hits[hi]
+            if [ !h ] continue
+            if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ]
+                continue
+            plain : bool [ !h.card[] && !h.is_spacer && !h.is_newfile
+                && !(!h.is_header && h.line > 0) ]
+            if [ !plain ]
+                y = lay_run[ run, y, left, colw, cols ]
+                run = vec i32 []
+            ri : i32 [ i32[ lay_x.count ] ]
+            lay_x.push[ left ]
+            lay_y.push[ y ]
+            lay_w.push[ right - left ]
+            lay_h.push[ 30.0 ]
+            if [ h.card[] ]
+                cy : f32 [ y ]
+                if [ ci > 0 && ci < per9 ]
+                    cy = lyc
+                el
+                    ci  = 0
+                    lyc = y
+                    y += 148.0
+                lay_x[ ri ] = left + 8.0 + f32[ ci ] * cdw
+                lay_y[ ri ] = cy
+                lay_w[ ri ] = cdw
+                lay_h[ ri ] = 148.0
+                ci += 1
+            el
+                ci = 0
+                if [ plain ] run.push[ ri ]
+                el y += 30.0
+        y = lay_run[ run, y, left, colw, cols ]
+        return y
+
     func row_at [ ry: f32, rx: f32, trs: i32 ] -> i32
         band : i32 [ band_st ]
         # move_event already delivers scroll-adjusted local coords
@@ -1387,41 +1526,19 @@ element CommitView
         ly9 : f32 [
             ry9 - f32[ band ] * 36.0 - ((band > 0) ? 8.0 : 0.0) ]
         if [ ly9 < 0.0 ] return -1
-        # rows are 30px; instance cards flow several to a line: walk the
-        # list the way draw lays it out, and pick a card by x within its
-        # line
+        # the rows' places, as the draw laid them out
         o : orb9[]
-        if [ !o || !o.find_hits ] return -1
-        cw  : f32 [ 152.0 ]
-        per9 : i32 [ (bounds.w - 100.0 - side_w) / cw ]
-        if [ per9 < 1 ] per9 = 1
-        y8 : f32 [ 0.0 ]
-        ly8 : f32 [ 0.0 ]
-        ci : i32 [ 0 ]
-        dr : i32 [ 0 ]
-        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
-            h : FindHit o.find_hits[hi]
-            if [ !h ] continue
-            if [ h.is_header && !h.is_spacer && !h.is_newfile && h.text.count == 0 ]
-                continue
-            if [ h.card[] ]
-                if [ !(ci > 0 && ci < per9) ]
-                    ci  = 0
-                    ly8 = y8
-                    y8 += 148.0
-                # cards start where draw puts them: past the column and
-                # the 8px inset
-                cx : f32 [ 22.0 + side_w + f32[ ci ] * cw ]
-                ci += 1
-                if [ ly9 >= ly8 && ly9 < ly8 + 148.0 && rx >= cx - 4.0 && rx < cx + cw - 12.0 ]
-                    return band + dr
-            el
-                ci = 0
-                if [ ly9 < y8 ] return -1
-                if [ ly9 < y8 + 30.0 ]
-                    return (h.note[]) ? -1 : band + dr
-                y8 += 30.0
-            dr += 1
+        if [ !o || !o.find_hits || !lay_x ] return -1
+        for [ dr: i32 0, dr < i32[ lay_x.count ], dr += 1 ]
+            lx : f32 [ lay_x[ dr ] ]
+            ly8 : f32 [ lay_y[ dr ] ]
+            if [ ly9 < ly8 || ly9 >= ly8 + lay_h[ dr ] ] continue
+            if [ rx < lx - 4.0 || rx >= lx + lay_w[ dr ] ] continue
+            hi : i32 [ list_hit[ dr ] ]
+            if [ hi >= 0 ]
+                h : FindHit o.find_hits[ hi ]
+                if [ h && !h.card[] && h.note[] ] return -1
+            return band + dr
         return -1
 
     # lines that actually exist in the box: text, plus the line the
@@ -1460,6 +1577,9 @@ element CommitView
             hov_list = -1
             chip_hov = -1
             pristine = false
+        if [ hov_in ]
+            hov_in   = false
+            pristine = false
 
     func on_move [ ev: Event ]
         ly : lay[]
@@ -1470,7 +1590,11 @@ element CommitView
         # shift held: the path hint follows the pointer along its
         # segments
         if [ ux && ux.shift && rx != hov_mx ] pristine = false
+        # the near borders follow the pointer
+        if [ rx != hov_mx || ry != hov_my || !hov_in ] pristine = false
         hov_mx = rx
+        hov_my = ry
+        hov_in = true
         if [ sb_drag ]
             sbl : ScrollLayer (layers) ? cast ScrollLayer [
                 layers['scrollbar'] ] : null
@@ -1549,7 +1673,12 @@ element CommitView
             tk : string side_keys[ nsid ]
             tv : string tk.mid[ 2, tk.count - 2 ]
             ts9 : i32 [ tv.index_of[ '/' ] ]
-            tip9 = (ts9 > 0) ? tv.mid[ 0, ts9 ] + ':' + tv.mid[ ts9 + 1,
+            # a drive or a pinned folder: its whole path
+            dfk : bool [ tk.starts_with[ 'd:' ] || tk.starts_with[ 'f:' ] ]
+            if [ dfk ]
+                tip9 = tv
+            el
+                tip9 = (ts9 > 0) ? tv.mid[ 0, ts9 ] + ':' + tv.mid[ ts9 + 1,
                                                                 tv.count
                                                                 - ts9
                                                                 - 1 ] : tv
@@ -1673,6 +1802,13 @@ element CommitView
                     && rx >= 6.0 + side_w - 32.0 ]
                     o.repo_forget[ val ]
                 el [ key9.starts_with[ 'u:' ] ] o.side_pick_user[ val ]
+                # a pinned folder's - (shift) unpins it
+                el [
+                    key9.starts_with[ 'f:' ] && o.shift_down
+                    && rx >= 6.0 + side_w - 32.0 ]
+                    o.pin_toggle[ path val ]
+                el [ key9.starts_with[ 'd:' ] || key9.starts_with[ 'f:' ] ]
+                    o.side_pick_folder[ val ]
                 el [ rx >= 6.0 + side_w - 32.0 ]
                     o.repo_dock_toggle[ val ]
                 el

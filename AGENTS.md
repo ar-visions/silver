@@ -1152,7 +1152,19 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    orbiter): the display took wayland-0; on his X11 session that name
    was free, and a program with no WAYLAND_DISPLAY falls back to it.
    It is orbiter-N now (wl_display_add_socket): only programs handed
-   the name come. Also: WaylandView clips to its pane (the cut header
+   the name come.
+   Then (Kalen, Oct 15: Firefox stayed black): Ubuntu's Firefox is a
+   snap, and its AppArmor profile lets it reach only
+   /run/user/*/wayland-[0-9]*; orbiter-0 was denied (kernel audit
+   log). The name is wayland-N-orbiter now: the snap's rule takes
+   it, and no program falls back to it (the default is wayland-0
+   exactly). Seen hidden: gnome-calculator draws over the new name.
+   NOT driven: Firefox itself (Kalen's own Firefox was running: a
+   second `firefox` hands its window to the running one).
+   Also (Kalen: the console app alone showed no shell): only
+   orbiter's frame loop read a console's pty, so the console module
+   alone never showed bash's output. trinity Console.tick reads its
+   own session. Seen hidden: prompt, `echo hi $BASH_VERSION`, 5.2.21. Also: WaylandView clips to its pane (the cut header
    drew over the pane's title bar); seen hidden with Inkscape's
    dialog (its cut top stays under the title).
    Fixed (Kalen: the menu panel sliding out flashed the window black;
@@ -1237,6 +1249,165 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    (wlc_window_close), as its own X. The title moves past it and
    reads the window's title (was 'Open'). Seen hidden: arrows, the
    close, 'Menu Test'; a click closed the window and the app ended.
+   Then (Kalen: another app could not come over a running Wayland
+   app; anything not docked goes at the dock's foot): a pane's
+   window is cleared by a file opened there (open_in_pane) and set to
+   the shown instance's own (show_instance: its window, or none); a
+   press on such a pane's title opens the navigator, not the console
+   instance's argument pick. Every running instance with no pin (a
+   program's console always) gets a DockRun at the dock's foot, up
+   from the console button: a program's window as its picture
+   (window_texture), else its module's icon; a click shows it in the
+   active pane. Seen hidden: the window's tile at the foot; a file
+   opened over the window; the tile brought the window back.
+   Then (Kalen): dock apps are toggles: a click on one in view takes
+   it out of view (still running): its window off the pane, then (the
+   editor mounted again a frame later: toggled_out) the editor lets
+   it go and steps back in its history. And a program's tile is its
+   own icon (program_icon: the .desktop named by the window's app id,
+   else the program's name, its Icon=, hicolor scalable svg, else the
+   largest png, else pixmaps; cached), drawn by AppIcon.icon_file;
+   the window's picture only when none is found. Seen hidden:
+   gnome-calculator's icon in the dock; a click took it out (the pane
+   back to 'Open'), another brought it back.
+   Then (Kalen, Oct 15: running apps in the bottom bar, the dock
+   pins only) the dock has no running apps and no selected fill;
+   its pins keep their running dots. The status bar's centre text
+   (hover tips, reload state, recording) is gone: the bar holds a
+   TaskChip per running instance, centred: its icon, its title
+   (task_title: the window's or the app's own title, else its
+   argument, else its name), a light (amber starting or paused,
+   red failed); lit while shown; a click toggles it as the dock
+   did. A pane's title shows no instance or argument chips, only
+   the app's view chips; only an error shows at its top, centred
+   (title_error: the pane's app failed, or its file does not
+   compile; AppError, a click goes to the line). A chip dragged
+   onto the dock pins it: over the dock its icon eases to the
+   pointer (filter_n 0.3) and the pins below its slot ease down
+   to open a gap; the drop puts it at that slot (pin_insert), the
+   new pin starting where it was let go. A program pins as its
+   path on PATH (pin_key_of); a pinned program's click shows its
+   instance, else runs it; its icon is the .desktop's, by name or
+   by its Exec= line (program_icon_named, misses cached: it ran
+   every render). Also: Enter in the search ran nothing for a
+   program (opened its file as hex): it runs it as a click does.
+   Seen hidden: calculator chip centred, toggled out and back;
+   dragged up, its icon in the gap, pinned as
+   /usr/bin/gnome-calculator with the calculator icon.
+   Found: `(path [ 'gnome-calculator' ]).filename[] != pn` was
+   true for equal names (not chased; a string cut works).
+   Fixed (Kalen: mario, once toggled out, never came back): a
+   file's viewer (knes for a .nes) keeps display 0 (PIP) though
+   shown embedded, and show_instance sets app_view from it. A
+   chip's click back makes a PIP instance Embed first. Built,
+   not driven (a hosted knes needs silver-host).
+   Then (Kalen): an unselected chip lights slightly as the
+   pointer nears, as the power button (its faint inset and
+   near_inset 4); and a navigator card's pick brings the instance
+   into view embedded (pick_instance took the pane's source mode
+   and made it PIP). Seen hidden: the chip faint far, lit near,
+   full when chosen; calculator toggled out, its card brought it
+   back with its chip lit.
+   Then (Kalen: a title's first press selects the pane, the next
+   opens the navigator, so its menus show without it): a window's
+   pane has no editor, so pane_of gave null and the press fell to
+   the navigator; the title press takes the view's pane number
+   (pane_index_of). Seen hidden with two panes.
+   Then (Kalen: an app's build status, the line responsible): the
+   title's error box fits its words (8.4 px a letter, at most 60%
+   of the pane), centred in the title; a compile error reads
+   'line N: msg'; else silver's own (coloured) log line
+   (build_log_line), not 'build failed'; while the host builds,
+   'compiling <name>…' in the info look (not seen: the build was
+   done before the first shot). AppError gained a face layer (its
+   words had drawn only by a default). A module outside silver's
+   folder (quake2) never built in orbiter: the host ran `silver
+   quake2` in silver's folder ('module file not found: /quake2.ag').
+   AppView.start sends its folder's path; silver-host builds that
+   path and names logs and binaries by its last word. Seen hidden
+   with a scratch module: the path reached silver.
+   Then (Kalen): the debugger's controls are in the pane title,
+   left of find (find stays furthest right): pause while the app
+   runs (it attaches the debugger and stops), the four steps as
+   one bordered group once stopped; not over the nav list, the
+   finder or the find bar. The task bar holds tasks alone; the
+   dock's console button is the gear. Seen hidden on buttontest:
+   pause, the steps after it, continue back to pause.
+   Then (Kalen): dock pins reorder by drag. A press on a pin
+   (drag_pin) is a click at the release unless it moved 6 px; then
+   it leaves the column, drawn last at drag_at, which eases to the
+   pointer (filter_n 0.3); the others close up and open a gap at
+   the slot (pin_off, as the task-button drag); the drop moves it
+   in pins (saved) and it eases in from where it was let go
+   (pin_release, pin_insert; the click is dock_icon_click). Seen
+   hidden: two pins swapped both ways, the list saved, a click
+   still runs its program.
+   Then (Kalen): the task buttons sit flush on their bar, its full
+   height: the bottom bar is TasksBar (StatusBar's look, no child
+   spacing; a subclass's style replaces its parent's whole, so it
+   is written out). Seen hidden: the chip from the bar's top edge
+   to the window's bottom.
+   Then (Kalen): a console program's title (OSC 0 or 2, as bash's
+   prompt and Claude Code send it; a terminal's tab shows it) is
+   kept (ConsoleSession.title, osc_end); a Console with titles on
+   (the console app's) passes a change to set_title, so a hosted
+   console's task button reads it. Seen hidden: a script's
+   'Title From The Program' on its task button.
+   Then (Kalen): the system bar's reload button is there only
+   while a reload is ready (au_live_get_pending 1); else the
+   group is scenes and the panel alone, no empty bordered slot.
+   Seen hidden: two buttons idle, three once a source changed.
+   Then (Kalen), BUILT, NOT SEEN (Kalen stopped the hidden runs):
+   - a resumed app (debugger continue, or the host's pause) shows
+     again only if still running 150 ms on, its frame fading in
+     over the source for 300 ms (Editor resume_watch, resuming;
+     ResumeFade); only an app that was in view while it ran. A
+     title continue clears AppView.paused. Seen hidden earlier:
+     source at 0.1 s, the fade at 0.3 s, the app at 0.6 s.
+   - a stopped app's task button shows the pause mark (TaskChip
+     paused).
+   - the navigator's column: 'system' (home, then drives mounted
+     at /, /home, /media, /run/media, /mnt) and 'pinned' (pinned
+     plain folders, shift - unpins); a click browses there
+     (side_pick_folder). The dock shows pins that are not plain
+     folders (dock_pin, plain_folder).
+   - the dock lists running apps no pin holds under the pins
+     (run_<iid>, a click toggles as the task button); an apps grid
+     button (Material 'apps', orbiter/images/apps_grid.svg) above
+     the gear: OPEN, the apps view behind it (Kalen to choose how
+     apps install and the first list).
+   - menus (tray and windows'): entries between separators are one
+     chip (tray MenuGroup: a faint left strip, 1 px lines between
+     rows), each row the near light only, 0.9 units tall at 13 px;
+     icons from dbusmenu icon-name and GTK's icon string, found in
+     Yaru, Adwaita, hicolor (svg only; menu_icon_file); MenuBuild
+     shared by TrayPanel and MenuPanel.
+   Then (Kalen: Filters in Inkscape lagged while scrolling) DONE,
+   felt smooth by Kalen. Measured from his orbiter's socket: the cost
+   was elems (CPU drawing the tree), 0.35-0.7 s a second while
+   scrolling, not GPU paints. Fixed, in order found:
+   - a faded scroll list (scroll_fade) rebuilt its masked picture
+     every draw: now only on its own repaint, a scroll move, or a
+     child needing paint (element mask_sx, mask_sy, last fields);
+     children wholly out of view are skipped there and in the plain
+     children pass (trinity).
+   - menus build elements for the visible slice only (MenuBuild
+     view: from scroll.y to scroll_goal, a screen either side); the
+     rest is measured, a foot mark keeps the scroll range.
+   - entries and chips have no canvas of their own (no_cache): a
+     canvas per element made as it scrolled in was the cost.
+   - a label_font opened its .ttf per layer: trinity shared_font
+     (vk.font_cache by uri@size, a free function: a new Canvas
+     method hits the 1b MODULE OVERWRITE bug).
+   Menus use Barlow Condensed (17 px bar and clock and task buttons,
+   16 px entries, Bold group headings); programs orbiter launches get
+   it through FONTCONFIG_FILE (install/tmp/orbiter-fonts.conf, the
+   console's --fonts).
+   Then (Kalen: a failed app rebuilt when its pane was selected
+   again): an instance that ended on an error (AppView.failed: a
+   note other than 'app exited') waits for play or F5; a click in
+   its pane (view_press) and embed_app no longer restart it. Seen
+   hidden: after the error, pane and chip clicks, one start only.
 21. DONE (Oct 15, Kalen: menu data; crop the header off the rest)
    wayland.c serves gtk_shell1 (capabilities 3: GTK hides its own
    menu bar; set_dbus_properties gives the menubar's bus and path,
@@ -1255,6 +1426,27 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Seen hidden (GTK 4 and GTK 3 test apps): File / View in the bar,
    no header or menu bar in the window, Dark checked after a pick,
    New and Quit reached the app. NOT driven: a Qt app (none here).
+24. IN PROGRESS (Kalen, Oct 16) recommended software, an agi module:
+   software/software.agi (18 entries of type Software: name, group
+   creative / everyday / developer / communication, about, icon,
+   source repo, build system, license, buildable) and
+   software/images (15 icons, each from the app's own repo; in
+   THIRD_PARTY.md). Kalen: an app installs by silver import, built
+   from source. Discord, Slack and Zoom are closed source: no source
+   to build, no icon (buildable: false). OPEN: the Software class
+   and the apps view that reads it (the dock's grid button); one
+   import a buildable app, versions pinned when written.
+25. BUILT, not seen (Kalen, Oct 16) an app with no window menu of
+   its own (a trinity app) gets one in the system bar named for it
+   (orbiter own_menu_sync, own_menu, own_pick): Show code / Show app,
+   Copy screenshot (the pane as drawn, to <cache>/orbiter/shots and
+   the clipboard as a picture), Quit. Uninstall waits for software
+   installs. devices: platform_set/get_clipboard_png (X11 image/png
+   selection, up to one request: no INCR; macOS, iOS, Windows PNG);
+   trinity Display.copy_picture / paste_picture. trinity Console:
+   ctrl+shift+v (cmd+v) and the middle button paste a clipboard
+   picture as a png in <cache>/paste and type its path (for claude),
+   else the text. trinity changed: restart orbiter, rebuild apps.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.

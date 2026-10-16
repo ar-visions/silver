@@ -56,6 +56,7 @@ Keep it in step with the imports.
 
 | dependency | used by | source | license | authors |
 |---|---|---|---|---|
+| Barlow Condensed (Regular, Bold, SemiBold, Thin, MediumItalic) | trinity/fonts (BarlowCondensed-*.ttf) | https://github.com/jpt/barlow | OFL-1.1 | Jeremy Tribby |
 | Fontconfig | trinity (FontMatch, linux) | https://gitlab.freedesktop.org/fontconfig/fontconfig | MIT-style (HPND, see its COPYING) | Keith Packard and the Fontconfig contributors |
 | D-Bus (libdbus-1, dbus-daemon) | wifi (talks to iwd); tray (apps' tray icons, window menus); orbiter-os's system and session buses | https://gitlab.freedesktop.org/dbus/dbus | AFL-2.1 OR GPL-2.0-or-later | Red Hat, Havoc Pennington and the D-Bus contributors |
 | wlroots 0.17 | wayland (the compositor orbiter shows windows from) | https://gitlab.freedesktop.org/wlroots/wlroots | MIT | the wlroots contributors |
@@ -72,6 +73,22 @@ Keep it in step with the imports.
 | gtk-shell.xml (GTK 4.14.5's Wayland protocol; C made from it by wayland-scanner) | wayland (a GTK app's menu bar address) | https://gitlab.gnome.org/GNOME/gtk/-/raw/4.14.5/gdk/wayland/protocol/gtk-shell.xml | LGPL-2.1-or-later | The GTK Team |
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: apps (white fill added) | orbiter/images/apps_grid.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Blender app icon | software/images/blender.svg | https://projects.blender.org/blender/blender/raw/branch/main/release/freedesktop/icons/scalable/apps/blender.svg | GPL-2.0-or-later (repo); Blender logo is a trademark of the Blender Foundation | Blender Foundation |
+| Inkscape app icon | software/images/inkscape.svg | https://gitlab.com/inkscape/inkscape/-/raw/master/share/icons/application/scalable/org.inkscape.Inkscape.svg | GPL-2.0-or-later (repo) | Inkscape project |
+| GIMP logo (Wilber) | software/images/gimp.svg | https://gitlab.gnome.org/GNOME/gimp-data/-/raw/main/images/logo/gimp-logo.svg | CC-BY-SA-4.0 | The GIMP team |
+| Krita app icon | software/images/krita.svg | https://invent.kde.org/graphics/krita/-/raw/master/krita/pics/branding/default/sc-apps-krita.svgz (unzipped) | GPL (repo) | Krita Foundation |
+| Audacity app icon | software/images/audacity.svg | https://raw.githubusercontent.com/audacity/audacity/master/images/audacity.svg | GPL-3.0-or-later (repo); Audacity name and logo are trademarks | Audacity team |
+| Kdenlive app icon | software/images/kdenlive.svg | https://invent.kde.org/multimedia/kdenlive/-/raw/master/data/icons/sc-apps-kdenlive.svg | GPL-3.0-or-later (repo) | Kdenlive team |
+| OBS Studio logo | software/images/obs.svg | https://raw.githubusercontent.com/obsproject/obs-studio/master/frontend/cmake/linux/icons/obs-logo-scalable.svg | GPL-2.0-or-later (repo); OBS name and logo are trademarks | OBS Project |
+| Firefox logo | software/images/firefox.svg | https://raw.githubusercontent.com/mozilla-firefox/firefox/main/browser/branding/official/content/about-logo.svg | MPL-2.0 file; Firefox name and logo are Mozilla trademarks | Mozilla |
+| Thunderbird icon | software/images/thunderbird.png | https://raw.githubusercontent.com/mozilla/releases-comm-central/master/mail/branding/thunderbird/default256.png | MPL-2.0 file; no trademark rights to Mozilla's names or logos | Mozilla / MZLA |
+| LibreOffice icon | software/images/libreoffice.svg | /usr/share/icons/hicolor/scalable/apps/libreoffice-startcenter.svg (as LibreOffice ships it) | MPL-2.0 (repo); LibreOffice name and logo are trademarks of The Document Foundation | The Document Foundation |
+| VLC icon | software/images/vlc.png | https://code.videolan.org/videolan/vlc/-/raw/master/share/icons/256x256/vlc.png | GPL-2.0-or-later (repo); VLC cone is a VideoLAN trademark | VideoLAN |
+| Code - OSS icon | software/images/code.png | https://raw.githubusercontent.com/microsoft/vscode/main/resources/linux/code.png | MIT (repo) | Microsoft |
+| Godot icon | software/images/godot.svg | https://raw.githubusercontent.com/godotengine/godot/master/misc/logo/icon.svg | CC-BY-4.0 | Andrea Calabró |
+| gitg icon | software/images/gitg.svg | https://gitlab.gnome.org/GNOME/gitg/-/raw/master/data/icons/org.gnome.gitg.svg | GPL-2.0 (repo) | GNOME gitg team |
+| Signal logo | software/images/signal.svg | https://raw.githubusercontent.com/signalapp/Signal-Desktop/main/images/signal-logo.svg | AGPL-3.0 (repo); Signal name and logo are trademarks | Signal Messenger |
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | Blender 4.5.14 LTS (Linux x64 release; run as a program, not linked) | aeon (blend.py reads .blend files into a project folder) | https://download.blender.org/release/Blender4.5/ | GPL-3.0-or-later | the Blender Foundation and the Blender community |

@@ -5732,6 +5732,35 @@ Texture Display
         if [ !cs ] return ''
         return string[ cs ]
 
+    # a png file's picture onto the system clipboard
+    public func copy_picture [ p: path ] -> bool
+        if [ !glfw || !p ] return false
+        ps : string '{p}'
+        fp : fopen[ ps.chars, 'rb' ]
+        if [ !fp ] return false
+        fseek[ fp, 0, SEEK_END ]
+        n : i64 [ ftell[ fp ] ]
+        rewind[ fp ]
+        buf : vec u8 [ n ]
+        got : i64 [ fread[ @buf[ 0 ], 1, n, fp ] ]
+        fclose[ fp ]
+        if [ got != n || n <= 0 ] return false
+        platform_set_clipboard_png[ glfw, @buf[ 0 ], i32[ n ] ]
+        return true
+
+    # the clipboard's picture written to p as png; false: none
+    public func paste_picture [ p: path ] -> bool
+        if [ !glfw || !p ] return false
+        n : i32 [ 0 ]
+        bytes : ref u8 [ platform_get_clipboard_png[ glfw, @n ] ]
+        if [ !bytes || n <= 0 ] return false
+        ps : string '{p}'
+        fp : fopen[ ps.chars, 'wb' ]
+        if [ !fp ] return false
+        put : i64 [ fwrite[ bytes, 1, n, fp ] ]
+        fclose[ fp ]
+        return put == n
+
     func update[ ]
         return
 

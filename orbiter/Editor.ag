@@ -217,6 +217,9 @@ class ResourceView
         return null
     func on_key [ ev: Event ]
         return
+    # typed text, as characters (on_key has the keys)
+    func on_text [ ev: Event ]
+        return
     func thumbnail [ cv: Canvas ] -> Texture
         return null
 
@@ -579,6 +582,13 @@ ResourceView AppView
     mutable ascale     : f32 [ 1.0 ]
     mutable have_frame : bool
     mutable fade_us    : i64
+    # stopped last frame; resumed at (ms, the switch waits 150 ms);
+    # its frame fading in over the source since (ms)
+    mutable halt_was   : bool
+    mutable resume_ms  : i64
+    mutable fade_in_ms : i64
+    # it was in view while it ran: only then does a resume bring it
+    mutable in_view    : bool
     mutable seen_us    : i64
     mutable fitx       : f32
     mutable fity       : f32
@@ -745,8 +755,9 @@ ResourceView AppView
                 ob : cast orbiter [ (wv9) ? wv9.app_object : null ]
                 rt : path.path_startup[]
                 if [ ob && app_mod ]
-                    ob.app_build_error[ app_mod,
-                                        '{rt}/install/tmp/{app_mod}.{slot}.log' ]
+                    bl : string ob.app_build_error[ app_mod,
+                        '{rt}/install/tmp/{app_mod}.{slot}.log' ]
+                    if [ bl.count > 0 ] note = bl
             el [ v9 < 0 ]
                 sig : i32 [ 0 - v9 ]
                 note = 'crashed — signal {sig}'
@@ -1173,7 +1184,8 @@ ResourceView AppView
             (st9 == 1) ? 'compiling {app_mod}…'
             : 'starting {app_mod}…' ]
         if [ ended ]
-            msg = '{note} — F5 or click to restart'
+            msg = (failed[]) ? '{note} — F5 or play to run again'
+                : '{note} — F5 or click to restart'
         el [ paused ]
             msg = (note && note.count > 0) ? '{note} — F5 to relaunch' : 'paused — F8 or click to resume'
         el [ attaching ]
@@ -1245,7 +1257,13 @@ ResourceView AppView
             (module_args && module_args.count > 0) ? ' {module_args}'
             : '' ]
         # no size of ours: the app starts at its own, the shape it keeps
-        req : string [ (doc) ? '{mod}{ma9} {doc}' : '{mod}{ma9}' ]
+        # a module outside silver's folder goes by its folder's path
+        rt9 : path.path_startup[]
+        dir9 : path src.directory[]
+        bm9 : string mod
+        if [ '{dir9.filename[]}' == mod && '{dir9}' != '{rt9}/{mod}' ]
+            bm9 = '{dir9}'
+        req : string [ (doc) ? '{bm9}{ma9} {doc}' : '{bm9}{ma9}' ]
         # a fresh process knows nothing of the last one's resize
         req_w  = 0
         req_h  = 0
@@ -1289,6 +1307,14 @@ ResourceView AppView
         host_post2[ slot, 1, i32[ HM.key ], i32[ ev.key.unicode ], act,
                     mods ]
 
+    # the app's text input: each byte of what was typed
+    func on_text [ ev: Event ]
+        if [ ended || paused || slot < 0 || !ev.key.text ] return
+        tx : string ev.key.text
+        for [ i: i32 0, i < i32[ tx.count ], i += 1 ]
+            c : i32 [ (i32 tx.chars[ i ]) & 255 ]
+            host_post2[ slot, 1, i32[ HM.text ], c, 0, 0 ]
+
     # where the app is on screen right now
     func view_rect [] -> rect
         return rect [ x: fitx, y: fity, w: fitw, h: fith ]
@@ -1296,9 +1322,13 @@ ResourceView AppView
     func view_rect_at [ x: f32, y: f32 ] -> rect
         return rect [ x: fitx, y: fity, w: fitw, h: fith ]
 
+    # it ended on an error: only play starts it again
+    func failed [] -> bool
+        return ended && note && note.count > 0 && note != 'app exited'
+
     func view_press [ ev: Event ] -> bool
         if [ ended ]
-            restart[ false ]
+            if [ !failed[] ] restart[ false ]
             return true
         if [ paused ]
             pause_toggle[]
@@ -1421,8 +1451,11 @@ ResourceView AppView
         # it and the frozen app loops its sound. it ends it only if
         # still there
         dbg : bool [ debugger && debugger.active ]
+        tq0 : i64 [ epoch_millis[] ]
         if [ dbg && !debugger.running ] debugger.cont[]
+        tq1 : i64 [ epoch_millis[] ]
         if [ slot > 0 ] host_audio_player_stop[ slot ]
+        tq2 : i64 [ epoch_millis[] ]
         if [ slot >= 0 ]
             if [ paused ] host_app_resume[ slot ]
             if [ slot > 0 ]
@@ -1435,6 +1468,8 @@ ResourceView AppView
                     usleep[ 10000 ]
             el
                 host_app_stop[ slot ]
+        tq3 : i64 [ epoch_millis[] ]
+        log 'TEMP quit {app_mod}: cont {tq1 - tq0} ms, sound {tq2 - tq1} ms, close {tq3 - tq2} ms (debugger {dbg})'
             slot = 0 - 1
         if [ dbg ] debugger.stop[]
         if [ tex0 ]
@@ -1948,8 +1983,8 @@ Layer EditorLayer
             # an ended or held app has no live frame: the source shows
             if [
                 editor.app_view && !editor.show_hits
-                && !editor.stopped[] && !editor.run_view.ended
-                && !editor.run_view.held ]
+                && !editor.stopped[] && !editor.resuming[]
+                && !editor.run_view.ended && !editor.run_view.held ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w,
                             h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
@@ -3321,10 +3356,12 @@ Layer EditorLayer
             cv.font_size[ num_fs ]
             cv.fill_color[
                 (cpy) ? rgba['#8cc8ff99'] : rgba['#ff8a8a99'] ]
-            cv.draw_text[ '{editor.err_band_line[]}',
-                rect [ x: bounds.x, y: ey, w: gut_w - 6.0, h: lh ],
-                vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+            ebn : i32 [ editor.err_band_line[] ]
+            if [ ebn > 0 ]
+                cv.draw_text[ '{ebn}',
+                    rect [ x: bounds.x, y: ey, w: gut_w - 6.0, h: lh ],
+                    vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.visible, null ]
             cv.font_size[ code_fs ]
             cv.fill_color[ (cpy) ? rgba['#b8dcff'] : rgba['#ffb0b0'] ]
             cv.draw_text[ et,
@@ -4633,11 +4670,19 @@ Control Editor
     public func err_band_text [] -> string
         if [ !ux || !src ] return null
         o9 : cast orbiter [ ux.app_object ]
-        return (o9) ? o9.err_text_for[ src ] : null
+        if [ !o9 ] return null
+        et : string o9.err_text_for[ src ]
+        if [ et ] return et
+        # no line: the instance's own failure, as it said it
+        if [ o9.run_failed[ run_view ] ]
+            return '{o9.instance_name[ run_view ]}: {run_view.note}'
+        return null
 
+    # its line, 0 when the error has none
     public func err_band_line [] -> i32
         o9 : cast orbiter [ ux.app_object ]
-        return (o9) ? o9.err_line_no[] : 0
+        if [ !o9 || !src || !o9.err_text_for[ src ] ] return 0
+        return o9.err_line_no[]
 
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
@@ -5336,8 +5381,11 @@ Control Editor
 
     # a program in the console module; the display, when given, is
     # where a window it opens goes
-    public func open_program [ prog: string, display: string ]
-        args : (display.count > 0) ? '--wayland {display} {prog}' : prog
+    public func open_program [ prog: string, display: string,
+                               fonts: string ]
+        fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
+        args : (display.count > 0) ? '--wayland {display} {fl}{prog}'
+            : prog
         host_module[ 'console', null, args ]
 
     # host a module's app in this pane, on a file or with args alone
@@ -5623,6 +5671,7 @@ Control Editor
     # frame only while an app streams frames into it, or a view asks for
     # it
     public func tick [ w: Window ]
+        resume_watch[]
         if [ run_view ]
             run_view.stopped = stopped[]
             # not drawn yet: the launch takes the pane's content area as
@@ -6380,6 +6429,39 @@ Control Editor
         d : dbg active_dbg[]
         return (d && !d.running) ? true : false
 
+    # resumed from a stop with the source showing: still running
+    # 150 ms on, the app's frame fades in over it, then it is the app
+    func resume_watch []
+        rv : AppView run_view
+        if [ !rv || rv.ended || rv.held ] return
+        # with a debugger its running state is the word (a continue
+        # leaves paused set), else the host's pause
+        d9   : dbg rv.debugger
+        halt : bool [ (d9 && d9.active) ? !d9.running : rv.paused ]
+        now  : i64 [ epoch_millis[] ]
+        if [ halt ]
+            rv.resume_ms  = 0
+            rv.fade_in_ms = 0
+        el [ rv.halt_was && (app_view || rv.in_view) ]
+            rv.resume_ms = now
+        el [ !rv.halt_was && rv.resume_ms == 0 && rv.fade_in_ms == 0 ]
+            rv.in_view = app_view
+        rv.halt_was = halt
+        if [ rv.resume_ms > 0 && now - rv.resume_ms >= 150 ]
+            rv.resume_ms  = 0
+            rv.fade_in_ms = now
+            if [ ux ] ux.restyle = true
+        if [ rv.fade_in_ms == 0 ] return
+        if [ now - rv.fade_in_ms >= 300 ]
+            rv.fade_in_ms = 0
+            if [ !app_view ] toggle_app_view[]
+            if [ ux ] ux.restyle = true
+
+    # waiting out the resume or fading in: the source still shows
+    func resuming [] -> bool
+        return run_view && (run_view.resume_ms > 0
+            || run_view.fade_in_ms > 0)
+
     func toggle_app_view []
         if [ !run_view ] return
         app_view = !app_view
@@ -6535,7 +6617,7 @@ Control Editor
                 if [ shift_down ]
                     ux.set_clipboard[
                         '{src}:{err_band_line[]}: {err_band_text[]}' ]
-                el [ o9 ] o9.goto_error[]
+                el [ o9 && err_band_line[] > 0 ] o9.goto_error[]
                 ev.no_default = true
                 return
         # the scrollbar's thumb and the git rails beside it come first:
@@ -7005,6 +7087,7 @@ Control Editor
 
     func on_char [ ev: Event ]
         if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ]
+            run_view.on_text*[ ev ]
             return
         if [ flat_active && !ghost_only[] ] return
         if [ row_ghost[ sel_line ] ] return
@@ -7220,7 +7303,8 @@ Control Editor
         if [ mk == 297 && run_view ]
             orb8 : cast orbiter [ ux.app_object ]
             if [ orb8 ] orb8.app_pause_toggle[ run_view ]
-            if [ app_view == run_view.is_paused*[] ] toggle_app_view[]
+            # a resume comes back by resume_watch's fade
+            if [ app_view && run_view.is_paused*[] ] toggle_app_view[]
             return
         # escape leaves the outline for where it was entered from
         if [ ev.key.unicode == 256 && outline ]

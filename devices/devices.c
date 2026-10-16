@@ -487,6 +487,35 @@ const char* platform_get_clipboard(platform_window* w) {
     return w->clip;
 }
 
+static uint8_t* g_win_png;
+void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {
+    UINT fmt = RegisterClipboardFormatA("PNG");
+    if (!OpenClipboard(w->hwnd)) return;
+    EmptyClipboard();
+    HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, n);
+    memcpy(GlobalLock(h), data, n);
+    GlobalUnlock(h);
+    SetClipboardData(fmt, h);
+    CloseClipboard();
+}
+
+const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
+    *n = 0;
+    free(g_win_png); g_win_png = NULL;
+    UINT fmt = RegisterClipboardFormatA("PNG");
+    if (!OpenClipboard(w->hwnd)) return NULL;
+    HANDLE h = GetClipboardData(fmt);
+    if (h) {
+        SIZE_T len = GlobalSize(h);
+        g_win_png = malloc(len ? len : 1);
+        memcpy(g_win_png, GlobalLock(h), len);
+        GlobalUnlock(h);
+        *n = (int)len;
+    }
+    CloseClipboard();
+    return g_win_png;
+}
+
 void platform_show_keyboard(platform_window* w, bool show) {}
 
 // xinput: 15 buttons in glfw gamepad order, 6 axes, 1 hat
@@ -948,6 +977,8 @@ void platform_mic_close(void) {}
 void platform_warp_cursor(platform_window* w, int x, int y) {}
 void platform_set_clipboard(platform_window* w, const char* text) {}
 const char* platform_get_clipboard(platform_window* w) { return NULL; }
+void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {}
+const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) { *n = 0; return NULL; }
 void platform_show_keyboard(platform_window* w, bool show) {
     if (show) ANativeActivity_showSoftInput(g_activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
     else      ANativeActivity_hideSoftInput(g_activity, 0);
@@ -1571,7 +1602,13 @@ static xcb_generic_event_t* next_event(void) {
     return e ? e : xcb_poll_for_event(g_conn);
 }
 static xcb_atom_t A_WM_PROTOCOLS, A_WM_DELETE, A_NET_WM_STATE, A_NET_WM_STATE_FULLSCREEN,
-                  A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL;
+                  A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL, A_PNG;
+
+// the picture on the clipboard (image/png), ours to serve; and one read
+static uint8_t* g_clip_png;
+static int      g_clip_png_n;
+static uint8_t* g_png_got;
+static int      g_png_got_n;
 
 const char* platform_surface_extension(void) { return g_kms ? "VK_KHR_display" : "VK_KHR_xcb_surface"; }
 int platform_is_kms(void) { return g_kms ? 1 : 0; }
@@ -1694,7 +1731,19 @@ static void handle_selection_request(xcb_selection_request_event_t* e) {
     n.response_type = XCB_SELECTION_NOTIFY;
     n.requestor = e->requestor; n.selection = e->selection;
     n.target = e->target; n.property = XCB_NONE; n.time = e->time;
-    if (w && w->clip_own) {
+    if (w && g_clip_png) {
+        uint32_t most = xcb_get_maximum_request_length(g_conn) * 4 - 64;
+        if (e->target == A_TARGETS) {
+            xcb_atom_t t[2] = { A_TARGETS, A_PNG };
+            xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, e->requestor, e->property, XCB_ATOM_ATOM, 32, 2, t);
+            n.property = e->property;
+        } else if (e->target == A_PNG && (uint32_t)g_clip_png_n <= most) {
+            // a picture past one request would need INCR: refused
+            xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, e->requestor, e->property, A_PNG, 8,
+                g_clip_png_n, g_clip_png);
+            n.property = e->property;
+        }
+    } else if (w && w->clip_own) {
         if (e->target == A_TARGETS) {
             xcb_atom_t t[2] = { A_TARGETS, A_UTF8_STRING };
             xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, e->requestor, e->property, XCB_ATOM_ATOM, 32, 2, t);
@@ -1907,6 +1956,7 @@ static void handle(xcb_generic_event_t* ev) {
         case XCB_SELECTION_CLEAR: {
             platform_window* w = find(((xcb_selection_clear_event_t*)ev)->owner);
             if (w) { free(w->clip_own); w->clip_own = NULL; }
+            free(g_clip_png); g_clip_png = NULL; g_clip_png_n = 0;
             break;
         }
         case XCB_MAPPING_NOTIFY:
@@ -1941,6 +1991,7 @@ bool platform_init(void) {
     A_UTF8_STRING = atom("UTF8_STRING");
     A_TARGETS = atom("TARGETS");
     A_PLATFORM_SEL = atom("PLATFORM_SELECTION");
+    A_PNG = atom("image/png");
     A_XDND_AWARE = atom("XdndAware");
     A_XDND_ENTER = atom("XdndEnter");
     A_XDND_POSITION = atom("XdndPosition");
@@ -2215,6 +2266,7 @@ void platform_mic_close(void) {
 void platform_set_clipboard(platform_window* w, const char* text) {
     free(w->clip_own);
     w->clip_own = strdup(text ? text : "");
+    free(g_clip_png); g_clip_png = NULL; g_clip_png_n = 0;
     if (g_kms) return;
     xcb_set_selection_owner(g_conn, w->win, A_CLIPBOARD, XCB_CURRENT_TIME);
     xcb_flush(g_conn);
@@ -2250,6 +2302,57 @@ const char* platform_get_clipboard(platform_window* w) {
         free(ev);
     }
     return w->clip;
+}
+
+void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {
+    free(g_clip_png);
+    g_clip_png = malloc(n > 0 ? n : 1);
+    memcpy(g_clip_png, data, n);
+    g_clip_png_n = n;
+    free(w->clip_own); w->clip_own = NULL;
+    if (g_kms) return;
+    xcb_set_selection_owner(g_conn, w->win, A_CLIPBOARD, XCB_CURRENT_TIME);
+    xcb_flush(g_conn);
+}
+
+const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
+    *n = 0;
+    free(g_png_got); g_png_got = NULL; g_png_got_n = 0;
+    if (g_clip_png) {
+        g_png_got = malloc(g_clip_png_n);
+        memcpy(g_png_got, g_clip_png, g_clip_png_n);
+        *n = g_png_got_n = g_clip_png_n;
+        return g_png_got;
+    }
+    if (g_kms || w->clip_own) return NULL;
+    xcb_convert_selection(g_conn, w->win, A_CLIPBOARD, A_PNG, A_PLATFORM_SEL, XCB_CURRENT_TIME);
+    xcb_flush(g_conn);
+    double t0 = now();
+    while (now() - t0 < 0.5) {
+        xcb_generic_event_t* ev = next_event();
+        if (!ev) { usleep(1000); continue; }
+        if ((ev->response_type & ~0x80) == XCB_SELECTION_NOTIFY) {
+            xcb_selection_notify_event_t* sn = (void*)ev;
+            if (sn->property != XCB_NONE) {
+                xcb_get_property_reply_t* r = xcb_get_property_reply(g_conn,
+                    xcb_get_property(g_conn, 1, w->win, A_PLATFORM_SEL, XCB_ATOM_ANY, 0, 1 << 24), NULL);
+                // a large picture comes as INCR: not read
+                if (r && r->type == A_PNG) {
+                    int len = xcb_get_property_value_length(r);
+                    g_png_got = malloc(len > 0 ? len : 1);
+                    memcpy(g_png_got, xcb_get_property_value(r), len);
+                    g_png_got_n = len;
+                }
+                free(r);
+            }
+            free(ev);
+            break;
+        }
+        handle(ev);
+        free(ev);
+    }
+    *n = g_png_got_n;
+    return g_png_got;
 }
 
 void platform_show_keyboard(platform_window* w, bool show) {}

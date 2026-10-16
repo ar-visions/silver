@@ -121,6 +121,25 @@ class FileIcons
 # a folder's rows as orbiter lists them: '..', folders (silver
 # modules leading them), then files; typed text keeps the names
 # holding it
+# a folder's entries in the list's order: by name, any case; files
+# by their type (extension) first, then by name
+func nav_sorted [ entries: vec path ] -> vec path
+    out : vec path []
+    if [ !entries ] return out
+    keys : vec string []
+    for [ e: path ] in entries
+        nm : string e.filename[].lcase[]
+        k  : string [ (e.is_dir[]) ? nm : '{e.ext[].lcase[]}\t{nm}' ]
+        # insertion: the first key past it takes the place
+        at : i32 [ i32[ keys.count ] ]
+        for [ i: i32 0, i < i32[ keys.count ], i += 1 ]
+            if [ k.compare[ keys[ i ] ] < 0 ]
+                at = i
+                break
+        keys.insert[ k, at ]
+        out.insert[ e, at ]
+    return out
+
 func nav_listing [ dir: path, filter: string ] -> vec FindHit
     out : vec FindHit []
     if [ !dir ] return out
@@ -128,7 +147,7 @@ func nav_listing [ dir: path, filter: string ] -> vec FindHit
     up : path dir.directory[]
     if [ up && typed.count == 0 ]
         out.push[ nav_dir_hit[ up, '..' ] ]
-    entries : dir.ls[ null, false ]
+    entries : nav_sorted[ dir.ls[ null, false ] ]
     if [ !entries ] return out
     for [ pass: i32 0, pass < 2, pass += 1 ]
         for [ e: path ] in entries

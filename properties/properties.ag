@@ -31,7 +31,8 @@ Option NavButton
 # geometry-only tweaks stay code members; base css inherits through
 NavButton LabelButton
     area   : Region { r0+ t0 w2.2 h0.9 }
-    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 14,
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 # a launch path: name and value on a button; a press brings the nav list
@@ -43,7 +44,8 @@ NavButton LaunchPath
     public is_dir      : bool
     # the full path; the label shows only its name
     public path_value  : string
-    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ],
         label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
     # inside the grid: no border, no rounding, a flat fill that lifts on
@@ -62,7 +64,8 @@ NavButton LaunchPath
 
 # a field's clear: flush right in its cell, the cell's height
 LabelButton LaunchClear
-    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 12,
+    tlabel : Layer [ label_color: rgba [ '#fffa' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
                    stroke_width: 0.0 ]
@@ -111,7 +114,8 @@ NavButton KeyField
     mutable armed   : bool
     public  changed : bool
     focusable : true
-    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ],
         label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
     body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
@@ -166,7 +170,8 @@ NavButton PadField
     mutable armed   : bool
     public  changed : bool
     focusable : true
-    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+    tlabel : Layer [ label_color: rgba [ '#fff6' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ],
         label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
     body : Layer [ fill_color: rgba [ '#0000' ], radius: Radius [ '0' ],
@@ -237,7 +242,9 @@ element StepField
             return
         cv : Canvas [ w.screen ]
         bw : f32 [ 24.0 ]
-        cv.font_size[ 14 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', 17 ] ]
+        cv.font_size[ 17 ]
         cv.fill_color[ '#fff6' ]
         cv.draw_text[ '-', rect [ x: 0.0, y: 0.0, w: bw, h: bounds.h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
@@ -254,10 +261,12 @@ element StepField
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
             null ]
         cv.paint[]
+        cv.set_font[ null ]
 
 # an Action of the app: a press calls it on the running instance
 NavButton LaunchAction
-    tlabel : Layer [ label_color: rgba [ '#cfe' ], label_size: 14,
+    tlabel : Layer [ label_color: rgba [ '#cfe' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ],
         label_offset: vec2f [ x: 8.0, y: 0.0 ] ]
     body : Layer [ fill_color: rgba [ '#2f6b4a40' ],
@@ -283,7 +292,8 @@ element ArgsField
             stroke_color: #fff1
         layers.face:
             label_color: #fff6
-            label_size: 15
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             editable: true
             label_align: 0.0 0.5
             label_offset: 10.0 0.0
@@ -300,7 +310,8 @@ Check LaunchCheck
     body : Layer [ fill_color: rgba [ '#ffffff0c' ],
                    radius: Radius [ '0' ],
         stroke_width: 0.0, stroke_color: rgba [ '#ffffff33' ] ]
-    face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 13,
+    face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     style : CSS {
         layers.body:
@@ -341,9 +352,11 @@ func launch_name_w [ name: string ] -> f32
     return 0.25 * f32[ (name) ? i32[ name.count ] : 0 ] + 0.45
 
 ArgsField LaunchField
-    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
-    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
                    editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
     # inside the grid: the rules are the borders
@@ -471,12 +484,15 @@ LaunchField DragField
         # a percent says so at the cell's right
         if [ top == 100.0 ]
             cv.fill_color[ '#fff6' ]
-            cv.font_size[ 13 ]
+            cv.set_font[ shared_font[ cv,
+                'fonts/BarlowCondensed-Regular.ttf', 16 ] ]
+            cv.font_size[ 16 ]
             cv.draw_text[ '%', rect [ x: bounds.w - 22.0, y: 0.0,
                                       w: 16.0, h: bounds.h ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.visible, null ]
             cv.paint[]
+            cv.set_font[ null ]
         cv.restore[]
 
     public func on_release [ ev: Event ]
@@ -501,7 +517,8 @@ LaunchField ColorHex
             radius: 0
             stroke_width: 0
         layers.face:
-            label_size: 13
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_offset: 2.0 0.0
         :hovered
             layers.body:
@@ -1173,9 +1190,11 @@ element ColorPick
 # a '#rrggbb' hex edits as text; the color itself sits as a swatch at
 # the right
 ArgsField LaunchColor
-    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
-    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#fff6' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
                    editable: true,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
     style : CSS {
@@ -1203,9 +1222,12 @@ ArgsField LaunchColor
         cv.paint[]
 
 VolumeSlider LaunchSlider
-    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 13,
+    name : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
     func init []
+        pad_l = 12.0
+        pad_r = 12.0
         nw : f32 [ launch_name_w[ label ] ]
         name.area = Region [ 'l0.4 t0 w{nw} b0' ]
     # the panel's changing property is this one while it is held; the id
@@ -1225,7 +1247,8 @@ VolumeSlider LaunchSlider
         super.on_release[ ev ]
 
 element LaunchLabel
-    face : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#c9c4dd' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element LaunchPanel
@@ -1423,7 +1446,8 @@ element LaunchPanel
         # rules between
         pw : f32 [ (bounds && bounds.w > 0.0) ? bounds.w : 280.0 ]
         lw : f32 [ round[ pw * name_frac ] ]
-        rh : f32 [ 24.0 ]
+        # 15% taller than the callstack's 24 px
+        rh : f32 [ 27.6 ]
         # px rows do not follow the element's scroll on their own: the
         # offset goes into their areas, and the same offset serves the
         # hit test

@@ -198,6 +198,7 @@ NodeList Callstack
         layers.content: NodeLayer
             area: l4px t2px r4px b2px
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             row_spacing: 1.2
             text_color: #cfe
             col_w: 100
@@ -277,6 +278,7 @@ element TypeHead
         layers.face:
             label_color: #fff
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.0 0.5
             label_offset: 8.0 0.0
     }
@@ -292,6 +294,7 @@ element FilterField
         layers.face:
             label_color: #fff6
             label_size: 14
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             editable: true
             label_align: 0.0 0.5
             label_offset: 8.0 0.0
@@ -361,6 +364,7 @@ NodeList TypeRows
         layers.content: NodeLayer
             area: l4px t2px r4px b2px
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             row_spacing: 1.2
             text_color: #cfe
             col_w: 120
@@ -532,6 +536,7 @@ NodeList Fields
         layers.content: FieldsLayer
             area: l4px t2px r4px b2px
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             row_spacing: 1.2
     }
     public vars : vec Au
@@ -1030,7 +1035,8 @@ Control InstancePanel
                 buttons: vec string [] [
                     'properties', 'instruments', 'callstack' ],
                 sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
-                label_px: row_h[] * 0.5 - 2.0,
+                label_px: (row_h[] * 0.5 - 2.0) * 1.6,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
                 area: Region [ 'l0 t{tab_y[]}px r0 h1.3' ] ]
         if [ orb.props_open ]
             # no instance: the args its next start takes
@@ -1503,6 +1509,7 @@ NodeList Toolbox
         layers.content: NodeLayer
             area: l4px t2px r4px b2px
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             row_spacing: 1.4
             sel_color: #2f6b4a40
             sel_radius: 6.0
@@ -1533,6 +1540,7 @@ NodeList Props
         layers.content: PropsLayer
             area: l4px t2px r4px b2px
             label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             row_spacing: 1.4
             key_color: #d8a8c4
             text_color: #e8cfe0

@@ -5476,3 +5476,15 @@ func ft_init [] -> handle
         err : i32 FT_Init_FreeType [ @ft_library ]
         expect err == 0, 'FreeType init failed'
     return ft_library
+
+# a font file at a size, opened once for the device: every label
+# naming it shares it (a free function: a new Canvas method broke
+# the module's method table, AGENTS 1b)
+func shared_font [ cv: Canvas, uri: string, px: i32 ] -> CanvasFont
+    if [ !cv.vk.font_cache ] cv.vk.font_cache = map Au [ string ] []
+    key : string '{uri}@{px}'
+    cf  : CanvasFont cv.vk.font_cache[ key ]
+    if [ !cf ]
+        cf = CanvasFont [ ft_lib: cv.ft_lib, uri: uri, size_px: px ]
+        cv.vk.font_cache[ key ] = cf
+    return cf

@@ -1,0 +1,162 @@
+blender: Software
+	name: 'Blender'
+	group: creative
+	about: '3D modelling, animation and rendering'
+	icon: 'images/blender'
+	source: 'https://projects.blender.org/blender/blender'
+	build: cmake
+	license: 'GPL-2.0-or-later'
+	buildable: true
+inkscape: Software
+	name: 'Inkscape'
+	group: creative
+	about: 'Vector drawing (svg)'
+	icon: 'images/inkscape'
+	source: 'https://gitlab.com/inkscape/inkscape'
+	build: cmake
+	license: 'GPL-2.0-or-later'
+	buildable: true
+gimp: Software
+	name: 'GIMP'
+	group: creative
+	about: 'Photo and image editing'
+	icon: 'images/gimp'
+	source: 'https://gitlab.gnome.org/GNOME/gimp'
+	build: meson
+	license: 'GPL-3.0-or-later'
+	buildable: true
+krita: Software
+	name: 'Krita'
+	group: creative
+	about: 'Digital painting'
+	icon: 'images/krita'
+	source: 'https://invent.kde.org/graphics/krita'
+	build: cmake
+	license: 'GPL-3.0-or-later'
+	buildable: true
+audacity: Software
+	name: 'Audacity'
+	group: creative
+	about: 'Audio recording and editing'
+	icon: 'images/audacity'
+	source: 'https://github.com/audacity/audacity'
+	build: cmake
+	license: 'GPL-3.0-or-later'
+	buildable: true
+kdenlive: Software
+	name: 'Kdenlive'
+	group: creative
+	about: 'Video editing'
+	icon: 'images/kdenlive'
+	source: 'https://invent.kde.org/multimedia/kdenlive'
+	build: cmake
+	license: 'GPL-3.0-or-later'
+	buildable: true
+obs: Software
+	name: 'OBS Studio'
+	group: creative
+	about: 'Screen recording and live streaming'
+	icon: 'images/obs'
+	source: 'https://github.com/obsproject/obs-studio'
+	build: cmake
+	license: 'GPL-2.0-or-later'
+	buildable: true
+firefox: Software
+	name: 'Firefox'
+	group: everyday
+	about: 'Web browser'
+	icon: 'images/firefox'
+	source: 'https://github.com/mozilla-firefox/firefox'
+	build: mach
+	license: 'MPL-2.0'
+	buildable: true
+thunderbird: Software
+	name: 'Thunderbird'
+	group: everyday
+	about: 'Email and calendar'
+	icon: 'images/thunderbird'
+	source: 'https://hg.mozilla.org/comm-central'
+	build: mach
+	license: 'MPL-2.0'
+	buildable: true
+libreoffice: Software
+	name: 'LibreOffice'
+	group: everyday
+	about: 'Documents, spreadsheets and slides'
+	icon: 'images/libreoffice'
+	source: 'https://git.libreoffice.org/core'
+	build: autotools
+	license: 'MPL-2.0'
+	buildable: true
+vlc: Software
+	name: 'VLC'
+	group: everyday
+	about: 'Plays any video or audio'
+	icon: 'images/vlc'
+	source: 'https://code.videolan.org/videolan/vlc'
+	build: meson
+	license: 'GPL-2.0-or-later'
+	buildable: true
+code: Software
+	name: 'Code - OSS'
+	group: developer
+	about: 'Code editor (VS Code from source)'
+	icon: 'images/code'
+	source: 'https://github.com/microsoft/vscode'
+	build: npm
+	license: 'MIT'
+	buildable: true
+gitg: Software
+	name: 'gitg'
+	group: developer
+	about: 'Git history and commits'
+	icon: 'images/gitg'
+	source: 'https://gitlab.gnome.org/GNOME/gitg'
+	build: meson
+	license: 'GPL-2.0-or-later'
+	buildable: true
+godot: Software
+	name: 'Godot'
+	group: developer
+	about: 'Game engine and editor'
+	icon: 'images/godot'
+	source: 'https://github.com/godotengine/godot'
+	build: scons
+	license: 'MIT'
+	buildable: true
+signal: Software
+	name: 'Signal'
+	group: communication
+	about: 'Private messages and calls'
+	icon: 'images/signal'
+	source: 'https://github.com/signalapp/Signal-Desktop'
+	build: npm
+	license: 'AGPL-3.0-only'
+	buildable: true
+discord: Software
+	name: 'Discord'
+	group: communication
+	about: 'Voice and text chat'
+	icon: 'images/discord'
+	source: ''
+	build: none
+	license: 'proprietary'
+	buildable: false
+slack: Software
+	name: 'Slack'
+	group: communication
+	about: 'Team chat'
+	icon: 'images/slack'
+	source: ''
+	build: none
+	license: 'proprietary'
+	buildable: false
+zoom: Software
+	name: 'Zoom'
+	group: communication
+	about: 'Video meetings'
+	icon: 'images/zoom'
+	source: ''
+	build: none
+	license: 'proprietary'
+	buildable: false

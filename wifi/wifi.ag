@@ -439,15 +439,18 @@ func wifi_shared [] -> Wifi
     return wifi_now
 
 element WifiText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WifiNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WifiBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 Button WifiButton
@@ -463,7 +466,8 @@ Button WifiButton
             near_inset_color: #ff84ffaa
         layers.face:
             label_color: #e4e4ea
-            label_size: 14
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
         :hovered
             layers.body:
                 fill_color: #ffffff22
@@ -486,7 +490,8 @@ Button WifiRow
             near_inset_color: #ff84ffaa
         layers.face:
             label_color: #e4e4ea
-            label_size: 15
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.0 0.5
             label_offset: 14.0 0.0
         :hovered
@@ -528,12 +533,15 @@ Button WifiRow
             cv.draw_svg[ icon[ 'wifi_lock' ], x + isz * 0.2,
                          iy + isz * 0.2, isz * 0.6, isz * 0.6 ]
         if [ note.count > 0 ]
-            cv.font_size[ 13 ]
+            cv.set_font[ shared_font[ cv,
+                'fonts/BarlowCondensed-Regular.ttf', 16 ] ]
+            cv.font_size[ 16 ]
             cv.fill_color[ rgba [ '#ffffff99' ] ]
             cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: x - 10.0,
                 h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.clip, null ]
             cv.paint[]
+            cv.set_font[ null ]
 
 # a password: the text is drawn as dots
 TextInput WifiSecret

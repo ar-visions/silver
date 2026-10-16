@@ -551,6 +551,23 @@ const char* platform_get_clipboard(platform_window* w) {
     return w->clip;
 }
 
+static uint8_t* g_mac_png;
+void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {
+    NSPasteboard* pb = [NSPasteboard generalPasteboard];
+    [pb clearContents];
+    [pb setData:[NSData dataWithBytes:data length:n] forType:NSPasteboardTypePNG];
+}
+
+const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
+    NSData* d = [[NSPasteboard generalPasteboard] dataForType:NSPasteboardTypePNG];
+    free(g_mac_png); g_mac_png = NULL; *n = 0;
+    if (!d) return NULL;
+    g_mac_png = malloc(d.length ? d.length : 1);
+    memcpy(g_mac_png, d.bytes, d.length);
+    *n = (int)d.length;
+    return g_mac_png;
+}
+
 void platform_show_keyboard(platform_window* w, bool show) {}
 
 #else
@@ -969,6 +986,21 @@ const char* platform_get_clipboard(platform_window* w) {
     free(w->clip);
     w->clip = s ? strdup(s.UTF8String) : NULL;
     return w->clip;
+}
+
+static uint8_t* g_ios_png;
+void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {
+    [[UIPasteboard generalPasteboard] setData:[NSData dataWithBytes:data length:n] forPasteboardType:@"public.png"];
+}
+
+const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
+    NSData* d = [[UIPasteboard generalPasteboard] dataForPasteboardType:@"public.png"];
+    free(g_ios_png); g_ios_png = NULL; *n = 0;
+    if (!d) return NULL;
+    g_ios_png = malloc(d.length ? d.length : 1);
+    memcpy(g_ios_png, d.bytes, d.length);
+    *n = (int)d.length;
+    return g_ios_png;
 }
 void platform_show_keyboard(platform_window* w, bool show) {
     if (show) [w->view becomeFirstResponder]; else [w->view resignFirstResponder];

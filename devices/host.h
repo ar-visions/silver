@@ -178,6 +178,9 @@ void  platform_cursor_lock      (platform_window* w, int on);
 void  platform_warp_cursor      (platform_window* w, int x, int y);
 void  platform_set_clipboard    (platform_window* w, const char* text);
 const char* platform_get_clipboard (platform_window* w);
+/* a picture on the clipboard, as png bytes */
+void  platform_set_clipboard_png (platform_window* w, const uint8_t* data, int n);
+const uint8_t* platform_get_clipboard_png (platform_window* w, int* n);
 void  platform_show_keyboard    (platform_window* w, bool show);
 
 /* joystick: polled. buttons/hats 0/1 per index, axes -1..1 */

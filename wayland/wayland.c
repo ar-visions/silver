@@ -528,13 +528,11 @@ WLC_API int wlc_create(int w, int h) {
     wlr_output_layout_add(g_layout, base, 0, 0);
     l_client.notify = on_client_created;
     wl_display_add_client_created_listener(g_display, &l_client);
-    // never wayland-N: a program with no WAYLAND_DISPLAY falls back to
-    // wayland-0, and the desktop's own apps would open here. only the
-    // programs given this name come
+    // snaps take wayland-<digit>*; never bare wayland-0
     static char name[32];
     g_socket = NULL;
     for (int i = 0; i < 32 && !g_socket; i++) {
-        snprintf(name, sizeof name, "orbiter-%d", i);
+        snprintf(name, sizeof name, "wayland-%d-orbiter", i);
         if (wl_display_add_socket(g_display, name) == 0) g_socket = name;
     }
     if (!g_socket) { fprintf(stderr, "wayland: no socket\n"); return 0; }

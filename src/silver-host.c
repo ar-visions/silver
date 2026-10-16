@@ -98,6 +98,8 @@ typedef struct {
 } HostShared;
 
 static int rebuild_blocking(const char* name, int clean);
+// a module outside silver's folder: the path silver builds
+static const char* g_build_path = NULL;
 
 typedef int        (*frame_fn)(void);
 typedef void       (*destroy_fn)(void);
@@ -466,6 +468,9 @@ static void spawn_slot_app(int k, const char* bindir) {
     int   disp  = (ap->flags >> HOST_APP_DISPLAY_SHIFT) & 3;
     static const char* dnames[] = { "PIP", "Embed", "Window", "Screen" };
     char* nm    = name;
+    // a folder path: silver builds it, its last word names the app
+    char* sl    = strrchr(name, '/');
+    if (sl) { g_build_path = name; nm = sl + 1; }
     // the build type rides in the environment: this build, and the app's own
     // rebuilds when its sources change, all read it
     if (dbgb) setenv("SILVER_DEBUG_BUILD", "1", 1);
@@ -491,6 +496,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     g_log_slot = k;
     int built = rebuild_blocking(nm, clean);
     g_log_slot = -1;
+    g_build_path = NULL;
     if (built != 0) {
         fprintf(stderr, "silver-host: %s build failed — slot %d dead\n", name, k);
         ap->verdict = -1000;
@@ -1044,6 +1050,7 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
 // silver builds; the caller reaps with waitpid(WNOHANG) and reloads on success.
 static pid_t rebuild_spawn(const char* name, int clean) {
     char cmd[8192];
+    const char* what = g_build_path ? g_build_path : name;
     // a debug build (-O0 -g) when the launch asked for one: per build, nothing sticky
     const char* dbgb = getenv("SILVER_DEBUG_BUILD") ? " --debug" : "";
     const char* covb = getenv("SILVER_COVERAGE_BUILD") ? " --coverage" : "";
@@ -1062,11 +1069,11 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // handed to the app, so a trailing --build would launch instead of compile
     snprintf(cmd, sizeof(cmd),
         "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
-        root, root, clean ? " --clean" : "", dbgb, covb, name);
+        root, root, clean ? " --clean" : "", dbgb, covb, what);
 #else
     snprintf(cmd, sizeof(cmd),
         "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s%s",
-        name, clean ? " --clean" : "", dbgb, covb);
+        what, clean ? " --clean" : "", dbgb, covb);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,

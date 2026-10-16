@@ -235,6 +235,14 @@ element EditorView
         p : file[]
         return (p) ? p.filename[] : 'Open'
 
+    # the pane's app failed, or its file does not compile
+    func title_error [] -> string
+        o : orb[]
+        e : Editor text_of[]
+        if [ !o || !e ] return ''
+        # every error is the editor's band at the foot, line or not
+        return ''
+
     func title_hint [] -> string
         e : Editor text_of[]
         o : orb[]
@@ -262,12 +270,12 @@ element EditorView
                                           manual_mode: true ]
             t['ctx_shot'] = LabelButton [ label: 'screen',
                                           manual_mode: true ]
-        # the running app's live argument: a field after the name
+        # a running app's views (its orbiter bar's chips) after the
+        # name; its instances are in the bottom bar
         rv : AppView (e) ? e.run_view : null
         run9 : bool [ rv && !rv.ended && rv.app_mod && !tfoc && !newfile ]
-        # a module with no live argument still shows its chips
-        dp9 : Prop (run9) ? o.live_default[ rv.app_mod ] : null
-        if [ run9 && w && w.screen ]
+        if [ run9 && w && w.screen && rv.app_views
+             && rv.app_views.count > 0 ]
             cv9 : Canvas w.screen
             fu : f32 [
                 (w.vk && w.vk.font_unit > 0)
@@ -275,68 +283,14 @@ element EditorView
             cv9.font_size[ 17 ]
             nm : cv9.measure_text[ title_text[] ]
             ax9 : f32 [ 62.7 * fu + nm.w + 12.0 * fu ]
-            av9 : string [ (rv.arg_text) ? rv.arg_text
-                : ((dp9 && dp9.value) ? dp9.value : '') ]
-            # else the launch line's own: the default comes last
-            if [ av9.count == 0 ]
-                av9 = o.default_arg_of[ rv.module_args ]
-            # no live argument: nothing to type, like a file chip
-            rs9 : bool [ !dp9 || dp9.type == 'resource'
-                || dp9.type == 'path' ]
-            ap : path (rs9 && av9.count > 0) ? path av9 : null
-            # the app's own title shows; the argument when it has none
-            at9 : string (rv.app_title && rv.app_title.count > 0) ? rv.app_title : null
-            sh : string (at9) ? at9 : ((ap) ? ap.stem[] : av9)
-            if [ sh.count == 0 ] sh = rv.app_mod
-            cv9.font_size[ 15 ]
-            vw9 : cv9.measure_text[ sh ]
-            # the title, centred, with room round it
-            # 8 units at most; the label ellipsizes past it
-            bw : f32 [ min[ vw9.w + 40.6 * fu, 8.0 * 22.0 * fu ] ]
             te : element (elements) ? elements[ 'title' ] : null
             ts : TaskStrip (te && te.elements) ? te.elements[
                 'tasks' ] : null
-            fa : element (ts && ts.elements) ? ts.elements[
-                'arg_edit' ] : null
-            # shift over it, or cmd anywhere: its second action
-            sec : bool [
-                o.cmd_down || (o.shift_down && fa && fa.hovered) ]
-            # every running instance keeps its place in the list; the
-            # shown one is lit where it stands
-            ord : vec AppView []
-            lbs : vec string []
-            wds : vec f32 []
-            xs  : vec f32 []
-            cx  : f32 [ ax9 ]
-            for [ ov: AppView ] in o.instances_of[ rv.src ]
-                gone : bool [ ov.viewer || ov.ended || !ov.started ]
-                if [ ov != rv && gone ]
-                    continue
-                ot : string sh
-                if [ ov != rv ]
-                    if [ ov.app_title && ov.app_title.count > 0 ]
-                        ot = ov.app_title
-                    el
-                        da : string o.default_arg_of[ ov.module_args ]
-                        dp : path (da.count > 0) ? path da : null
-                        ot = (dp) ? dp.stem[] : ov.app_mod
-                ow : f32 [ (ov == rv) ? bw : min[
-                    cv9.measure_text[ ot ].w + 40.6 * fu,
-                    8.0 * 22.0 * fu ] ]
-                ord.push[ ov ]
-                lbs.push[ ot ]
-                wds.push[ ow ]
-                xs.push[ cx ]
-                cx += ow + 6.0 * fu
-            # the app's views (its orbiter bar's chips): a chip each
-            # after the instances; the lit one is the view it shows
-            vns : vec string []
-            if [ rv.app_views ]
-                for [ vn: string ] in rv.app_views
-                    vns.push[ vn ]
+            cv9.font_size[ 15 ]
             vxs : vec f32 []
             vws : vec f32 []
-            for [ vn: string ] in vns
+            cx  : f32 [ ax9 ]
+            for [ vn: string ] in rv.app_views
                 vw9 : f32 [ min[ cv9.measure_text[ vn ].w + 40.6 * fu,
                                  8.0 * 22.0 * fu ] ]
                 vxs.push[ cx ]
@@ -353,80 +307,28 @@ element EditorView
                         lim = re.bounds.x
             sw : f32 [ max[ lim - ax9 - 6.0 * fu, 0.0 ] ]
             span : f32 [ max[ cx - 6.0 * fu - ax9, 0.0 ] ]
-            # a newly shown instance scrolls into view, once the strip's
-            # width holds from one frame to the next
             pad : f32 [ 3.0 * fu ]
             vis : f32 [ (ts && ts.bounds) ? ts.bounds.w - pad * 2.0
                 : sw ]
             shift : f32 [ (ts) ? clamp[ ts.shift, 0.0,
                 max[ span - vis, 0.0 ] ] : 0.0 ]
-            # a chip that grows (its title arrives) counts as new
-            reveal : bool [ !ts || ts.shown != rv.iid
-                || ts.span != span ]
-            settled : bool [ ts && ts.bounds && ts.room == sw
-                && ts.bounds.w <= sw + pad * 2.0 ]
-            sid : i32 [ (reveal && !settled) ? -1 : rv.iid ]
-            if [ reveal ]
-                for [ k: i32 0, k < ord.count, k += 1 ]
-                    if [ ord[ k ] != rv ] continue
-                    kl : f32 [ xs[ k ] - ax9 ]
-                    if [ kl < shift ] shift = kl
-                    if [ kl + wds[ k ] > shift + vis ]
-                        shift = kl + wds[ k ] - vis
-            if [ ts ]
-                ts.shift = shift
-                ts.shown = sid
+            if [ ts ] ts.shift = shift
             st : Elements []
-            # h0.9 in the title's cells, as the chips had
+            # h0.9 in the title's cells
             ch : f32 [ 0.9 * ((te && te.fc > 0.0) ? te.fc : 22.0 * fu) ]
-            ax0 : f32 [ 0.0 ]
-            for [ k: i32 0, k < ord.count, k += 1 ]
-                if [ ord[ k ] == rv ]
-                    ax0 = xs[ k ] - ax9 - shift + pad
-            ar9 : Region [ 'l{ax0}px t{pad}px w{bw}px h{ch}px' ]
-            if [ rs9 ]
-                st['arg_edit'] = ArgButton [ label: sh, resource: true,
-                                            second: sec,
-                                            selected: e.app_view,
-                                            inst: rv,
-                                            value: av9, area: ar9 ]
-            el [ fa && w.focus == fa ]
-                st['arg_edit'] = ArgButton [ label: '', focusable: true,
-                                            second: sec,
-                                            selected: e.app_view,
-                                            inst: rv,
-                                            area: ar9 ]
-            el
-                # idle: the title; shift-click edits the argument
-                st['arg_edit'] = ArgButton [ label: sh, edit: '',
-                                            second: sec,
-                                            selected: e.app_view,
-                                            inst: rv,
-                                            value: av9, area: ar9 ]
-            for [ k: i32 0, k < ord.count, k += 1 ]
-                ov : AppView ord[ k ]
-                if [ ov == rv ] continue
-                ok : string 'arg_{ov.iid}'
-                fo : element (ts && ts.elements) ? ts.elements[ ok ]
-                    : null
-                os : bool [
-                    o.cmd_down || (o.shift_down && fo && fo.hovered) ]
-                kx : f32 [ xs[ k ] - ax9 - shift + pad ]
-                kw : f32 [ wds[ k ] ]
-                st[ ok ] = ArgButton [ label: lbs[ k ], resource: true,
-                    second: os, inst: ov,
-                    area: Region [ 'l{kx}px t{pad}px w{kw}px h{ch}px' ] ]
-            for [ k: i32 0, k < vns.count, k += 1 ]
+            k : i32 [ 0 ]
+            for [ vn: string ] in rv.app_views
                 vx : f32 [ vxs[ k ] - ax9 - shift + pad ]
                 vwd : f32 [ vws[ k ] ]
-                st[ 'view_{k}' ] = ArgButton [ label: vns[ k ],
+                st[ 'view_{k}' ] = ArgButton [ label: vn,
                     selected: e.app_view && rv.app_view_on == k,
                     inst: rv,
                     area: Region [ 'l{vx}px t{pad}px w{vwd}px h{ch}px' ] ]
+                k += 1
             sa : string 'l{ax9 - pad}px t-{pad}px'
             sz : string 'w{sw + pad * 2.0}px h{ch + pad * 2.0}px'
             t['tasks'] = TaskStrip [ span: span, shift: shift,
-                shown: sid, room: sw, pad: pad,
+                shown: rv.iid, room: sw, pad: pad,
                 area: Region [ '{sa} {sz}' ],
                 elements: st ]
         if [ newfile ]
@@ -461,6 +363,11 @@ element EditorView
             if [ e && e.rview ]
                 vel : element e.rview.view_element*[]
                 if [ vel ] edels['view'] = vel
+            # a resumed app fading in over the source
+            fi9 : AppView (e) ? e.run_view : null
+            if [ fi9 && fi9.fade_in_ms > 0 ]
+                edels['resume_fade'] = ResumeFade [ inst: fi9,
+                    area: Region { l0 t0 r0 b0 } ]
             edels['rail'] = ToolRail [ no_scroll: true,
                                        area: Region [
                                            'l0 t1px w64px b0' ] ]
@@ -696,6 +603,26 @@ element EditorView
             no_scroll: true
             hint: title_hint[]
             elements: title_els[] ]
+        # only an error, centred in the title, as wide as its words
+        er9 : string title_error[]
+        # no error: a build under way, in the info look
+        inf : bool [ false ]
+        rv9 : AppView (text_of[]) ? text_of[].run_view : null
+        if [ er9.count == 0 && rv9 && rv9.started ]
+            sw9 : string rv9.status_word[]
+            if [ sw9 == 'compiling' ]
+                er9 = '{sw9} {orb[].instance_name[ rv9 ]}…'
+                inf = true
+        if [ er9.count > 0 ]
+            k  : f32 [ ((fc > 0.0) ? fc : 22.0) / 22.0 ]
+            eh : f32 [ round[ 22.0 * k ] ]
+            ew : f32 [ round[ (f32[ er9.count ] * 8.4 + 24.0) * k ] ]
+            if [ bounds && ew > bounds.w * 0.6 ]
+                ew = round[ bounds.w * 0.6 ]
+            et : f32 [ round[ (28.6 * k - eh) * 0.5 ] ]
+            t['our_app_error'] = AppError [ label: er9, topmost: true,
+                info: inf, manual_mode: true, area: Region [
+                'l50%-{ew * 0.5}px t{et}px w{ew}px h{eh}px' ] ]
         # the band floor grows by the open launch panel: it is a
         # toolbar, never clipped
         t['split'] = Splitter [ area: Region { l0 t1.3 r0 b0 },
@@ -748,6 +675,24 @@ element EditorView
                         area: Region [
                             'r0 t{1.3 * fu - 1.0}px w{bw}px b-1px' ] ]
         return t
+
+# a resumed app's frame over the source, coming up over 300 ms
+element ResumeFade
+    animated : true
+    public inst : AppView
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        # a picture only: never the starting / paused words
+        if [ inst.fade_in_ms <= 0 || !inst.have_frame ] return
+        t : f32 [ f32[ epoch_millis[] - inst.fade_in_ms ] / 300.0 ]
+        cv : Canvas w.screen
+        cv.save[]
+        cv.set_opacity[ min[ max[ t, 0.0 ], 1.0 ] ]
+        inst.draw_frame[ cv, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                    h: bounds.h ] ]
+        cv.restore[]
+        ux.will_animate = true
 
 element EditorTitle
     public selected : bool
@@ -1080,13 +1025,16 @@ Option AppError
         label_align: vec2f [ x: 0.5, y: 0.5 ],
         label_overflow: Overflow.ellipsis ]
     style : CSS {
-        area: l50%-11 t0 w22 h0.9
         layers.body:
             fill_color: #822
             radius: 6
             stroke_width: 2
             stroke_color: #faa4
             box_shadow: none
+        layers.face:
+            label_color: #fff
+            label_size: 14
+            label_align: 0.5 0.5
         :info
             layers.body:
                 fill_color: #234
@@ -1108,10 +1056,26 @@ Option AppError
 # control carrying its own l8px/r0 offset
 Group StatusBar
     style : CSS {
-        area: l0 b35px r0 h35px
+        area: l0 b1.6 r0 h1.6
         spacing_x: 1px
         spacing_y: 2px
         # 80% black; a faint border always, the pointer's light on it
+        layers.sbar:
+            fill_color: #000c, 400ms cubic outward
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+    }
+
+# the bottom bar: its task buttons flush on it, the bar's height
+StatusBar TasksBar
+    style : CSS {
+        area: l0 b1.6 r0 h1.6
+        spacing_x: 0px
+        spacing_y: 0px
         layers.sbar:
             fill_color: #000c, 400ms cubic outward
             box_shadow: inset 0 0 13px #8af2
@@ -1137,7 +1101,7 @@ StatusBar SideBar
 # the dock: left side, 2.25x the status bar's height
 Group Dock
     style : CSS {
-        area: l0 t0 w78.75px b0
+        area: l0 t0 w3.58 b0
         layers.dock:
             # the title bar's purple; the old base marks the selected
             fill_color: #1d0f3f, 400ms cubic outward
@@ -1148,7 +1112,7 @@ Group Dock
             near_inset: 1.0
             near_inset_color: #c890ffaa
         layers.ddiv:
-            fill_color: #fff2
+            fill_color: #ffffff11
             area: r0 t0 w1px b0
     }
 
@@ -1356,6 +1320,8 @@ element DockLine
 class AppIcon
     public  file   : path
     public  module : bool
+    # a program's own icon file (its .desktop's), drawn instead
+    public  icon_file : path
     # the module's export, where its icon name is
     public  agi    : path
     mutable tex    : Texture
@@ -1430,6 +1396,11 @@ class AppIcon
         if [ !loaded ]
             loaded = true
             png : path '{file}/images/icon.png'
+            if [ icon_file && icon_file.ext[] == 'svg' ]
+                svg = SVGModel [ icon_file ]
+                png = path '/nonexistent'
+            el [ icon_file ]
+                png = icon_file
             if [ png.exists[] ]
                 im : Image [ '{png}' ]
                 # the canvas adds colour unscaled: scale it by alpha
@@ -1457,7 +1428,7 @@ class AppIcon
                     : path 'images/material/folder.svg'
                 if [ sp.exists[] ] svg = SVGModel [ sp ]
             # a file: its type's icon, as the nav list draws it
-            if [ !src && !module && !file.is_dir[] ]
+            if [ !src && !svg && !module && !file.is_dir[] ]
                 fi : FileIcons []
                 svg = fi.icon[ file.filename[], 64 ]
         # drawn one texel a pixel: made at the size it is drawn
@@ -1482,8 +1453,16 @@ element DockIcon
     no_cache : true
     public  file   : path
     public  module : bool
+    # a program's own icon file, instead of its module's
+    public  icon_file : path
     # its running instances: a dot each under the icon
     public  count  : i32
+    # a program on PATH: a click runs it, or shows it
+    public  program : bool
+    # the name under the icon ('' its file's)
+    public  name    : string
+    # the icon alone, centred: no name, no dots (a title's)
+    public  plain   : bool
     # the module's export, where its icon name is
     public  agi    : path
     # remade when a reused pin points at another folder
@@ -1529,64 +1508,163 @@ element DockIcon
         if [ w.draw_stage != CanvasType.screen ] return
         if [ !bounds || !file ] return
         cv : Canvas w.screen
-        if [ !icon || '{icon.file}' != '{file}' ]
-            icon = AppIcon [ file: file, module: module, agi: agi ]
-        isz : f32 [ round[ bounds.w * 0.55 ] ]
+        if [ !icon || '{icon.file}' != '{file}'
+             || '{icon.icon_file}' != '{icon_file}' ]
+            icon = AppIcon [ file: file, module: module, agi: agi,
+                icon_file: icon_file ]
+        if [ plain ]
+            psz : f32 [ round[ min[ bounds.w, bounds.h ] * 0.55 ] ]
+            icon.paint[ cv, round[ (bounds.w - psz) * 0.5 ],
+                        round[ (bounds.h - psz) * 0.5 ], psz ]
+            return
+        # the icon high, its name under it, the dots at its left
+        isz : f32 [ round[ bounds.w * 0.5 ] ]
         ix  : f32 [ round[ (bounds.w - isz) * 0.5 ] ]
-        iy  : f32 [ round[ (bounds.h - isz) * 0.5 ] ]
+        iy  : f32 [ round[ bounds.h * 0.13 ] ]
         icon.paint[ cv, ix, iy, isz ]
+        nm : string (name && name.count > 0) ? name : file.filename[]
+        # 14 px at rest, with the font scale
+        un : f32 ux_unit[ w ]
+        fpx : i32 [ i32[ round[ 14.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fpx ] ]
+        cv.font_size[ fpx ]
+        cv.fill_color[ rgba [ '#ffffffcc' ] ]
+        cv.draw_text[ nm, rect [ x: 4.0, y: iy + isz + 1.0,
+                                 w: bounds.w - 8.0, h: 16.0 * un ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.paint[]
+        cv.set_font[ null ]
         if [ count > 0 ]
-            # the dots' group: 2px round them, a near-lit border
-            gw : f32 [ f32[ count * 8 - 4 ] + 4.0 ]
-            gx9 : f32 [ round[ (bounds.w - gw) * 0.5 ] ]
-            gy : f32 [
-                round[ iy + isz + (bounds.h - iy - isz) * 0.5 ] - 6.0 ]
+            # the dots' group, a column left of the icon: 2px round
+            # them, a near-lit border
+            gh : f32 [ f32[ count * 8 - 4 ] + 4.0 ]
+            gx9 : f32 [ round[ ix * 0.5 ] - 4.0 ]
+            # centred on the whole button's height
+            gy : f32 [ round[ (bounds.h - gh) * 0.5 ] ]
             cv.save[ ]
             w.near_light_on[ cv, a, 0.0, 0.0 ]
             cv.fill_color[ rgba [ '#00000066' ] ]
             cv.stroke_color[ rgba [ '#fff3' ] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ 0.5 ]
-            cv.rounded_rect[ gx9, gy, gw, 8.0, 4.0, 4.0, 4.0, 4.0 ]
+            cv.rounded_rect[ gx9, gy, 8.0, gh, 4.0, 4.0, 4.0, 4.0 ]
             cv.paint[ ]
             cv.restore[ ]
             cv.fill_color[ rgba [ '#ffffffcc' ] ]
             for [ d9: i32 0, d9 < count, d9 += 1 ]
-                cv.arc[ gx9 + 4.0 + f32[ d9 * 8 ], gy + 4.0, 2.0, 0.0,
+                cv.arc[ gx9 + 4.0, gy + 4.0 + f32[ d9 * 8 ], 2.0, 0.0,
                         6.2832 ]
                 cv.paint[ ]
 
-# a running app the dock has no pin for, at its foot: a program's
-# window as its picture, else its module's icon
-DockIcon DockRun
-    public inst : i32
-    public win  : u64
-
+# a running instance in the bottom bar: its icon, its name and a
+# light (amber starting or paused, red failed); lit while shown
+element TaskChip
+    no_cache : true
+    public inst  : i32
+    public file  : path
+    public agi   : path
+    public icon_file : path
+    public label : string
+    # 0 up, 1 busy (starting, compiling, paused), 2 failed
+    public light : i32
+    # stopped (a debugger stop or a pause): its icon is the pause mark
+    public paused : bool
+    # its close shows: ctrl/cmd held (every button), or shift over it
+    public close_all   : bool
+    public close_hover : bool
+    mutable close_svg  : SVGModel
+    mutable icon : AppIcon
+    mutable pause_svg : SVGModel
+    # the bar's lettering, as the menus'
+    mutable font9 : CanvasFont
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            stroke_width: 0 1 0 0
+            stroke_color: #ffffff09
+            # the power button's: a faint glow the pointer brings up
+            box_shadow: inset 0 0 13px #8af2
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        :selected
+            layers.edge:
+                fill_color: #625a
+                box_shadow: inset 0 0 13px #c890ff88
+                near_inset: 3.0
+    }
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        if [ win == 0 ]
-            super.draw[ w ]
-            return
         cv : Canvas w.screen
-        t : Texture window_texture[ cv, win ]
-        if [ !t || t.width <= 0 || t.height <= 0 ] return
-        # the window, fit in the icon's square
-        side : f32 [ round[ bounds.w * 0.62 ] ]
-        tw : f32 [ side ]
-        th : f32 [ side * f32[ t.height ] / f32[ t.width ] ]
-        if [ th > side ]
-            th = side
-            tw = side * f32[ t.width ] / f32[ t.height ]
-        x : f32 [ round[ (bounds.w - tw) * 0.5 ] ]
-        y : f32 [ round[ (bounds.h - th) * 0.5 ] ]
-        cv.save[]
-        cv.rounded[ 4.0, 4.0, 4.0, 4.0 ]
-        cv.draw_image[ t, rect [ x: x, y: y, w: round[ tw ],
-            h: round[ th ] ] ]
-        cv.restore[]
+        if [ !icon || '{icon.file}' != '{file}'
+             || '{icon.icon_file}' != '{icon_file}' ]
+            icon = AppIcon [ file: file, module: true, agi: agi,
+                icon_file: icon_file ]
+        side : f32 [ round[ bounds.h * 0.6 ] ]
+        pad  : f32 [ round[ (bounds.h - side) * 0.5 ] ]
+        if [ paused ]
+            if [ !pause_svg ] pause_svg = SVGModel [ 'images/pause.svg' ]
+            ps : f32 [ round[ side * 0.7 ] ]
+            po : f32 [ round[ pad + (side - ps) * 0.5 ] ]
+            cv.draw_svg[ pause_svg, po, po, ps, ps ]
+        el
+            icon.paint[ cv, pad, pad, side ]
+        tx : f32 [ pad * 2.0 + side ]
+        # 17 px at rest, with the font scale
+        fpx : i32 [ i32[ round[ 17.0 * ux_unit[ w ] ] ] ]
+        if [ !font9 || font9.size_px != fpx ]
+            font9 = CanvasFont [ ft_lib: cv.ft_lib,
+                uri: 'fonts/BarlowCondensed-Regular.ttf', size_px: fpx ]
+        cv.set_font[ font9 ]
+        cv.font_size[ fpx ]
+        cv.fill_color[ rgba [ '#ffffffcc' ] ]
+        cv.draw_text[ label,
+            rect [ x: tx, y: 0.0, w: max[ bounds.w - tx - 14.0, 0.0 ],
+                   h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.set_font[ null ]
+        # its state (starting or paused, failed): a 3px bar at the foot
+        if [ light > 0 ]
+            cv.save[ ]
+            cv.fill_color[ rgba [ (light == 2) ? '#ff5a6aff'
+                : '#ffb84aff' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ 0.0, bounds.h - 3.0, bounds.w, 3.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+        # the close: our ringed x at the right end (close.svg)
+        if [ close_shown[] ]
+            xb : rect close_box[]
+            if [ !close_svg ] close_svg = SVGModel [ 'images/close.svg' ]
+            # white, never the state bar's colour
+            cv.fill_color[ rgba [ '#ffffffcc' ] ]
+            cv.draw_svg[ close_svg, xb.x, xb.y, xb.w, xb.h ]
+
+    func close_shown [] -> bool
+        return close_all || (close_hover && hovered)
+
+    # the close's square at the right end, in the button
+    func close_box [] -> rect
+        sz : f32 [ round[ bounds.h * 0.4 ] ]
+        return rect [ x: bounds.w - sz - 6.0,
+                      y: round[ (bounds.h - sz) * 0.5 ], w: sz, h: sz ]
+
+    # a point in the window over its close
+    func on_close [ wx: f32, wy: f32 ] -> bool
+        if [ !close_shown[] || !bounds ] return false
+        xb : rect close_box[]
+        lx : f32 [ wx - win_pos.x ]
+        ly : f32 [ wy - win_pos.y ]
+        return lx >= xb.x && lx < xb.x + xb.w && ly >= xb.y
+            && ly < xb.y + xb.h
 
 # the title's icon: a module's app icon, else the file's type icon
 DockIcon TitleIcon
+    plain : true
     style : CSS {
         layers.edge:
             fill_color: #0000
@@ -2386,6 +2464,8 @@ element orbiter : trinity # implements compiler
     # os-mode: our Wayland display's socket ('' until it is up), the
     # newest window placed, and each pane's window (0: none)
     mutable wl_sock        : string
+    # the fontconfig file its programs are given: our lettering
+    mutable wl_fonts       : string
     mutable wl_tried       : bool
     mutable win_seen       : u64
     mutable pane_win       : vec u64
@@ -2393,6 +2473,8 @@ element orbiter : trinity # implements compiler
     # the side panel shows, and when it was last asked for (ms)
     mutable menu_win       : u64
     mutable menu_items     : vec TrayEntry
+    # an app with no menu of its own gets ours: its key when built
+    mutable menu_own       : string
     mutable menu_top       : i32
     mutable menu_ms        : i64
     # the menu drawer: open, which menu ('menu' the window's, 'tray' a
@@ -2406,6 +2488,24 @@ element orbiter : trinity # implements compiler
     # drawer takes the focus once it is mounted
     mutable menu_filter    : string
     mutable drawer_focus   : bool
+    # a pane whose app the dock toggled out: its editor lets the app
+    # go and steps back once it is mounted again (-1: none)
+    mutable toggled_out    : i32 [ -1 ]
+    # a bar chip dragged onto the dock to pin it (-1: none)
+    mutable drag_iid       : i32 [ -1 ]
+    # the press, in the window
+    mutable drag_x0        : f32
+    mutable drag_y0        : f32
+    mutable drag_moved     : bool
+    # its icon's top in the pins, eased toward the pointer
+    mutable drag_at        : f32
+    # the pin slot the drop would take (-1: none)
+    mutable drag_slot      : i32 [ -1 ]
+    # each pin's eased shift: a gap opens at the slot
+    mutable pin_off        : vec f32
+    # a dock pin pressed: its key; a move past 6 px drags it to
+    # another place in the pins, else it is a click at the release
+    mutable drag_pin       : string
     # the drawer's ground: one copy of the screen and one blur chain
     # for the window, kept (a chain built again per drawer crashed)
     mutable drawer_snap    : Texture
@@ -4009,6 +4109,25 @@ element orbiter : trinity # implements compiler
         # a folded side panel stays folded: only the user opens it
         session_dirty = true
 
+    # a task closed from its button: the process goes, its panes let
+    # it go, and it leaves the list
+    func close_task [ av: AppView ]
+        if [ !av ] return
+        wv : u64 window_of[ av ]
+        for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
+            ed : Editor pane_at[ pi ]
+            if [ ed && ed.run_view == av ]
+                ed.run_view = null
+                ed.app_view = false
+            if [ wv != 0 && pane_win && pi < pane_win.count
+                 && pane_win[ pi ] == wv ]
+                pane_win[ pi ] = u64[ 0 ]
+        av.release[]
+        av.debugger = null
+        remove_instance[ av ]
+        log 'task closed: {instance_name[ av ]}'
+        if [ ux ] ux.restyle = true
+
     func remove_instance [ av: AppView ]
         keep : vec AppView []
         if [ instances ]
@@ -4283,7 +4402,88 @@ element orbiter : trinity # implements compiler
         if [ words.count == 0 ] return ''
         prog : string words[ words.count - 1 ]
         at : i32 [ prog.rindex_of[ '/' ] ]
-        return (at >= 0) ? prog.mid[ at + 1, prog.count - at - 1 ] : prog
+        if [ at < 0 ] return prog
+        return prog.mid[ at + 1, prog.count - at - 1 ]
+
+    # a program's icon file, as a desktop finds it: its .desktop (by
+    # the window's app id, else the program's name) names it, the icon
+    # theme holds it (scalable svg, else the largest png), else pixmaps
+    mutable prog_icons : map string [string]
+
+    func program_icon [ av: AppView ] -> path
+        pn : string program_of[ av ]
+        if [ pn.count == 0 ] return null
+        wv : u64 window_of[ av ]
+        aid : string [ (wv != 0) ? string[ wlc_window_app[ wv ] ] : '' ]
+        return program_icon_named[ aid, pn ]
+
+    # a .desktop file's first line with this key, its value
+    func desktop_line [ df: path, key: string ] -> string
+        tx : string df.load[ typeid[string], null ]
+        if [ !tx ] return ''
+        for [ ln: string ] in tx.split[ '\n' ]
+            if [ ln.starts_with[ key ] ]
+                return ln.mid[ key.count, ln.count - key.count ].trim[]
+        return ''
+
+    # by a window's app id ('' when none) and the program's name
+    func program_icon_named [ aid: string, pn: string ] -> path
+        key : '{aid}|{pn}'
+        if [ !prog_icons ] prog_icons = map string [string] []
+        if [ prog_icons.contains[ key ] ]
+            got : string prog_icons[ key ]
+            return (got.count > 0) ? path [ got ] : null
+        name : string [ pn ]
+        hc : cstr [ getenv[ "HOME" ] ]
+        home : string [ (hc == null) ? '' : string[ hc ] ]
+        dirs : vec string [] [ '{home}/.local/share/applications',
+                               '/usr/share/applications' ]
+        hit : bool [ false ]
+        for [ n: string ] in vec string [] [ aid, pn ]
+            if [ n.count == 0 || hit ] continue
+            for [ d: string ] in dirs
+                df : path '{d}/{n}.desktop'
+                if [ !df.exists[] ] continue
+                ic : string desktop_line[ df, 'Icon=' ]
+                if [ ic.count > 0 ] name = ic
+                hit = true
+                break
+        # else the .desktop whose Exec= runs this program
+        if [ !hit ]
+            for [ d: string ] in dirs
+                if [ hit ] break
+                dp : path [ d ]
+                if [ !dp.exists[] ] continue
+                for [ df: path ] in dp.ls[ null, false ]
+                    if [ df.ext[] != 'desktop' ] continue
+                    ex : string desktop_line[ df, 'Exec=' ]
+                    cmd : string ex.split[ ' ' ][ 0 ]
+                    sl : i32 [ cmd.rindex_of[ '/' ] ]
+                    if [ sl >= 0 ] cmd = cmd.mid[ sl + 1, cmd.count - sl - 1 ]
+                    if [ cmd != pn ] continue
+                    ic : string desktop_line[ df, 'Icon=' ]
+                    if [ ic.count > 0 ] name = ic
+                    hit = true
+                    break
+        found : string [ '' ]
+        if [ name.starts_with[ '/' ] && (path [ name ]).exists[] ]
+            found = name
+        el
+            ic : '/usr/share/icons/hicolor'
+            px : '/usr/share/pixmaps/{name}'
+            tries : vec string [] [ '{ic}/scalable/apps/{name}.svg' ]
+            for [ sz: string ] in vec string [] [ '512', '256', '128',
+                    '96', '64', '48' ]
+                tries.push[ '{ic}/{sz}x{sz}/apps/{name}.png' ]
+            tries.push[ '{px}.svg' ]
+            tries.push[ '{px}.png' ]
+            for [ t: string ] in tries
+                if [ (path [ t ]).exists[] ]
+                    found = t
+                    break
+        # the app id is in the key: a window's later id looks again
+        prog_icons[ key ] = found
+        return (found.count > 0) ? path [ found ] : null
 
     # the window an instance's program opened, while it is open
     func window_of [ av: AppView ] -> u64
@@ -4295,13 +4495,12 @@ element orbiter : trinity # implements compiler
         sw : string av.status_word[]
         return (sw.count > 0) ? '{instance_name[ av ]}  {sw}' : instance_name[ av ]
 
-    # a picked instance takes the pane's mode: the toggle owns it
+    # a picked instance comes into view, embedded (a chip's click)
     func pick_instance [ iid: i32, pi: i32 ]
         av : AppView instance_by[ iid ]
-        ed : Editor pane_at[ pi ]
-        if [ av && ed && av.display <= 1 ]
-            av.display = (ed.app_view) ? 1 : 0
-            av.pip     = !ed.app_view
+        if [ av && av.display == 0 ]
+            av.display = 1
+            av.pip     = false
             tell_display[ av ]
         show_instance[ iid, pi ]
 
@@ -4402,9 +4601,9 @@ element orbiter : trinity # implements compiler
         if [ act.compare[ 'pause' ] == 0 ]
             if [ av.held || av.ended ] return
             app_pause_toggle[ av ]
-            # paused -> back to the source, running -> the app
-            want : bool [ !av.paused ]
-            if [ ed && ed.app_view != want ] ed.toggle_app_view[]
+            # paused: back to the source; a resume fades the app in
+            # (the editor's resume_watch)
+            if [ av.paused && ed && ed.app_view ] ed.toggle_app_view[]
             return
         d : dbg av.debugger
         if [ !d || !d.active ] return
@@ -4427,6 +4626,11 @@ element orbiter : trinity # implements compiler
             if [ df.line > 0 && sp.ends_with[ '.ag' ] ]
                 apply_break[ sp, i32[ df.line ], 0 ]
                 return
+
+    # its debugger sits at a stop: it can step
+    func stopped_at [ av: AppView ] -> bool
+        dg : dbg (av) ? av.debugger : null
+        return dg && dg.active && !dg.running
 
     # the debugger sitting at a stop, whichever target is active
     func stopped_debugger [] -> dbg
@@ -4498,7 +4702,7 @@ element orbiter : trinity # implements compiler
         av.pip     = false
         av.held    = false
         tell_display[ av ]
-        if [ av.ended ] av.restart[ false ]
+        if [ av.ended && !av.failed[] ] av.restart[ false ]
         ed.wait_app = true
         show_instance[ av.iid, ed.pane_index ]
 
@@ -4558,9 +4762,19 @@ element orbiter : trinity # implements compiler
                 # over the arrows' edge: one border, not two
                 Region [ 'l-1px+ t0 w1.35 b0' ] ]
         el [ edp && edp.src ]
-            els['modicon'] = TitleIcon [ file: edp.src, module: false,
-                area: Region [ 'l0+ t0 w1.35 b0' ] ]
+            # a module's folder wears its module's icon
+            tm9 : path '{edp.src}/{edp.src.filename[]}.ag'
+            tmod : bool [ edp.src.is_dir[] && tm9.exists[] ]
+            els['modicon'] = TitleIcon [ file: edp.src, module: tmod,
+                plain: true, area: Region [ 'l0+ t0 w1.35 b0' ] ]
 
+        # a right button: the top bar's button width (its own units),
+        # plus the 1 px each overlaps its neighbour, so edges line up
+        bu : f32 [ (win && win.vk && win.vk.font_unit > 0)
+            ? f32[ win.vk.font_unit ] : 22.0 ]
+        spw : element find_el[ a, 'sys_power' ]
+        bwd : f32 [ ((spw && spw.bounds) ? spw.bounds.w : 1.66 * bu)
+            + 1.0 ]
         # the title's one button: find, from the editor and from its own
         # bar; not while the nav list is up on a title focus. lit while
         # the bar is open. its second action closes this tab
@@ -4578,7 +4792,22 @@ element orbiter : trinity # implements compiler
              || (!is_resource && (!engaged || fb_on)) ]
             els['tabnav'] = alt_tab[ pane_ix, 'tabnav', 'magnify',
                 'magnify', 'pane_close', 'close', true, !closable,
-                fb_on, Region [ 'r-1px+ t0 w1.66 b0' ] ]
+                fb_on, Region [ 'r-1px+ t0 w{bwd}px b0' ] ]
+        # left of find: pause while the app runs; stopped, its steps,
+        # one group with one border, as find's
+        rvd : AppView (edp && mi) ? edp.run_view : null
+        # not over the nav list, the finder or the find bar
+        if [ rvd && !rvd.ended && !rvd.held && rvd.started && !engaged
+             && !(mine && find_showing) ]
+            stp : bool stopped_at[ rvd ]
+            dbs : vec string (stp) ? vec string [] [ 'continue',
+                'step_next', 'step_in', 'step_out' ]
+                : vec string [] [ 'pause' ]
+            els['debug'] = AltTab [ buttons: dbs, icon_ids: dbs,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ], seg_reach: 0.5,
+                icon_scale: 0.4125, area: Region [
+                    'r-1px+ t0 w{bwd * f32[ dbs.count ]}px b0' ] ]
         # a silver module's companions: <name>.ag and whatever sits
         # beside it under the same name, one strip at the title's right
         # (left of find); ids cmp_<ext>, the open one lit
@@ -4623,7 +4852,7 @@ element orbiter : trinity # implements compiler
                 icon_scale: 0.55, rest_glow: rgba [ '#ccf2' ],
                 rest_px: 8.0,
                 seg_radius: 0.0, use_spacing: false,
-                area: Region [ 'r0+ t0 w1.66 b0' ] ]
+                area: Region [ 'r0+ t0 w{bwd}px b0' ] ]
         if [ fb_on ]
             # right-flow: first inserted lands furthest right
             els['remotes'] = RemoteToggle [ label: 'remotes',
@@ -5051,6 +5280,33 @@ element orbiter : trinity # implements compiler
                     programs[ nm ] = full
         return programs
 
+    # the programs' fontconfig: the system's, our fonts folder, and
+    # Barlow Condensed for the interface families (monospace kept)
+    func write_fonts_conf [] -> string
+        rt : path.path_startup[]
+        out : '{rt}/install/tmp/orbiter-fonts.conf'
+        fd : path 'fonts'
+        fa : string '{fd.absolute[]}'
+        fam : vec string [] [ 'sans-serif', 'sans', 'Ubuntu',
+            'Ubuntu Sans', 'Cantarell', 'DejaVu Sans', 'Noto Sans',
+            'system-ui' ]
+        tx : '<?xml version="1.0"?>\n'
+        tx = '{tx}<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+        tx = '{tx}<fontconfig>\n'
+        tx = '{tx}  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
+        tx = '{tx}  <dir>{fa}</dir>\n'
+        for [ f9: string ] in fam
+            tx = '{tx}  <match target="pattern">\n'
+            tx = '{tx}    <test name="family"><string>{f9}</string></test>\n'
+            tx = '{tx}    <edit name="family" mode="assign" binding="strong"><string>Barlow Condensed</string></edit>\n'
+            tx = '{tx}  </match>\n'
+        tx = '{tx}</fontconfig>\n'
+        fh : handle fopen[ out.chars, 'w' ]
+        if [ !fh ] return ''
+        fputs[ tx.chars, fh ]
+        fclose[ fh ]
+        return out
+
     # os-mode: orbiter's Wayland display, started once; each new
     # window goes to a pane; true when a pane's window changed
     func wl_tick [] -> bool
@@ -5065,6 +5321,7 @@ element orbiter : trinity # implements compiler
             # trinity apps orbiter hosts stay off it: only the
             # console's programs are given it
             unsetenv[ 'WAYLAND_DISPLAY' ]
+            wl_fonts = write_fonts_conf[]
             log 'orbiter: Wayland display {wl_sock}'
         if [ wl_sock.count == 0 ] return false
         wlc_pump[]
@@ -5089,6 +5346,8 @@ element orbiter : trinity # implements compiler
     # (and each second while it has none: GTK names it after mapping)
     func menu_sync [] -> bool
         wn : u64 pane_window[ active_pane ]
+        if [ wn == 0 ] return own_menu_sync[]
+        menu_own = null
         now : i64 [ epoch_millis[] ]
         empty : bool [ !menu_items || menu_items.count == 0 ]
         stale : bool [ empty && wn != 0 && now - menu_ms > 1000 ]
@@ -5099,6 +5358,67 @@ element orbiter : trinity # implements compiler
         menu_top = -1
         menu_items = menu_read[ wn ]
         return had || menu_items.count > 0
+
+    # the pane's app without a window menu (a trinity app): one menu
+    # named for it, of ours; read again when the app or its view moves
+    func own_menu_sync [] -> bool
+        ed : Editor pane_at[ active_pane ]
+        av : AppView (ed) ? ed.run_view : null
+        key : string [ (av) ? '{av.iid}:{ed.app_view}' : '' ]
+        if [ menu_win == 0 && menu_own && menu_own == key ] return false
+        had : bool [ menu_items && menu_items.count > 0 ]
+        menu_win = 0
+        menu_own = key
+        menu_top = -1
+        menu_items = vec TrayEntry []
+        if [ av ]
+            menu_items = own_menu[ av, ed.app_view ]
+        return had || menu_items.count > 0
+
+    func own_entry [ label: string, act: string, depth: i32 ]
+                     -> TrayEntry
+        return TrayEntry [ label: label, action: act, depth: depth,
+            enabled: true, check: -1 ]
+
+    func own_menu [ av: AppView, shown: bool ] -> vec TrayEntry
+        m : vec TrayEntry []
+        m.push[ own_entry[ instance_name[ av ], '', 0 ] ]
+        m.push[ own_entry[ (shown) ? 'Show code' : 'Show app',
+            'orb.view', 1 ] ]
+        m.push[ own_entry[ 'Copy screenshot', 'orb.shot', 1 ] ]
+        m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+        m.push[ own_entry[ 'Quit', 'orb.quit', 1 ] ]
+        return m
+
+    # one of our own entries chosen
+    func own_pick [ e: TrayEntry ]
+        ed : Editor pane_at[ active_pane ]
+        av : AppView (ed) ? ed.run_view : null
+        if [ !av ] return
+        if [ e.action == 'orb.view' ]
+            if [ ed.app_view ] ed.app_view = false
+            el embed_app[ ed, av ]
+        el [ e.action == 'orb.shot' ]
+            copy_shot[ ed, instance_name[ av ] ]
+        el [ e.action == 'orb.quit' ]
+            close_task[ av ]
+
+    # the pane as drawn, to a png beside our cache and the clipboard
+    func copy_shot [ ed: Editor, name: string ]
+        if [ !ux || !ed || !ed.bounds ] return
+        rd : Render ux.last_render[]
+        if [ !rd || !rd.color ] return
+        sc : f32 [ (ux.scale > 0.0) ? ux.scale : 1.0 ]
+        im : Image [ rd.color ]
+        im = im.crop[ i32[ ed.win_pos.x * sc ], i32[ ed.win_pos.y * sc ],
+            i32[ ed.bounds.w * sc ], i32[ ed.bounds.h * sc ] ]
+        if [ !im ] return
+        dir : path '{path.path_cache[ 'orbiter' ]}/shots'
+        dir.make_dir[]
+        p : path '{dir}/{name}-{epoch_millis[]}.png'
+        im.png[ p ]
+        ok : bool ux.copy_picture[ p ]
+        log 'screenshot: {p} on the clipboard {ok}'
 
     func menu_read [ wn: u64 ] -> vec TrayEntry
         if [ wn == 0 ] return vec TrayEntry []
@@ -5193,6 +5513,13 @@ element orbiter : trinity # implements compiler
     # an entry chosen in the drawer: it runs; the drawer shuts
     func menu_pick [ i: i32 ]
         if [ !menu_items || i < 0 || i >= menu_items.count ] return
+        pe : TrayEntry menu_items[ i ]
+        if [ pe.action && pe.action.starts_with[ 'orb.' ] ]
+            own_pick[ pe ]
+            drawer_shut[]
+            menu_own = null
+            if [ ux ] ux.restyle = true
+            return
         wn : u64 menu_win
         k : i32 wlc_window_menu_kind[ wn ]
         app_menu[].click[ k, string[ wlc_window_menu_bus[ wn ] ],
@@ -5257,7 +5584,7 @@ element orbiter : trinity # implements compiler
         ed : Editor pane_at[ pane ]
         if [ !ed ] return
         sock : (wl_sock) ? wl_sock : ''
-        ed.open_program[ '{p}', sock ]
+        ed.open_program[ '{p}', sock, (wl_fonts) ? wl_fonts : '' ]
 
     # a program's row in the list: run, never edited
     func is_program [ p: path ] -> bool
@@ -6453,6 +6780,14 @@ element orbiter : trinity # implements compiler
                 return pane_at[ active_pane ]
         return null
 
+    # the pane an element sits in, or -1
+    func pane_index_of [ e: element ] -> i32
+        for [ e9: element* e, e9, e9 = e9.parent ]
+            if [ e9 inherits EditorView ]
+                ev9 : EditorView e9
+                return ev9.pane_index
+        return -1
+
     func pane_at [ i: i32 ] -> Editor
         pv : element pane_view[ i ]
         if [ !pv || !pv.elements ] return null
@@ -7066,6 +7401,55 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.set_focus[ te ]
         run_search[]
 
+    # a drive or a pinned folder from the column: the list goes there
+    func side_pick_folder [ dir: string ]
+        side_off   = ''
+        nav_root   = path dir
+        find_text  = ''
+        finder_off = false
+        te : element find_el[ a, 'title' ]
+        if [ te ]
+            te.edit = find_text
+            te.pristine = false
+            if [ ux ] ux.set_focus[ te ]
+        run_search[]
+
+    # 'my computer': home, then the drives mounted where a user's are
+    # (/, /home, /media, /run/media, /mnt); never snaps or loops
+    func side_drives [] -> vec string
+        out : vec string []
+        hm : string getenv[ 'HOME' ]
+        if [ hm && hm.count > 0 ] out.push[ hm ]
+        mt : path '/proc/mounts'
+        txt : string mt.load[ typeid[string], null ]
+        if [ !txt ] return out
+        for [ row: string ] in txt.split[ '\n' ]
+            ws : vec string row.split[ ' ' ]
+            if [ ws.count < 2 ] continue
+            dv : string ws[ 0 ]
+            mp : string ws[ 1 ]
+            if [ !dv.starts_with[ '/dev/' ] || dv.starts_with[ '/dev/loop' ] ]
+                continue
+            ok : bool [ mp == '/' || mp == '/home'
+                || mp.starts_with[ '/media/' ]
+                || mp.starts_with[ '/run/media/' ]
+                || mp.starts_with[ '/mnt/' ] ]
+            if [ !ok ] continue
+            seen : bool [ false ]
+            for [ o9: string ] in out
+                if [ o9 == mp ] seen = true
+            if [ !seen ] out.push[ mp ]
+        return out
+
+    # the pinned folders the column lists (the dock has the rest)
+    func side_pinned [] -> vec string
+        out : vec string []
+        if [ pins ]
+            for [ ps: string ] in pins
+                pp : path ps
+                if [ pp.exists[] && plain_folder[ pp ] ] out.push[ ps ]
+        return out
+
     # the source root every checkout lives under: beside the one orbiter
     # was launched in, never a setting shared between launches. ours sit
     # flat there (<src>/<name>); other users' under <src>/<user>/<name>
@@ -7467,7 +7851,9 @@ element orbiter : trinity # implements compiler
                         if [ up ]
                             push_dir_hit[ up, '..' ]
                             combined.push[ '{up}' ]
-                    entries : nav_root.ls[ null, false ]
+                    # modules, folders, then files: each by name, files
+                    # by type then name
+                    entries : nav_sorted[ nav_root.ls[ null, false ] ]
                     if [ entries ]
                         # folders first, silver modules leading them
                         for [ pass9: i32 0, pass9 < 2, pass9 += 1 ]
@@ -7649,9 +8035,40 @@ element orbiter : trinity # implements compiler
         return true
 
     # a hosted app's build failed: its log's first error is the band's
+    # the error goes to its line; returns the log's first message
     public func app_build_error [ mod: string, logpath: string ]
+                                  -> string
         err_mod = mod
         jump_to_error[ logpath ]
+        return build_log_line[ logpath ]
+
+    # a build log's error: silver's own (its coloured line), else
+    # the first line past 'compiling', colour taken out
+    func build_log_line [ logpath: string ] -> string
+        lp : path '{logpath}'
+        if [ !lp.exists[] ] return ''
+        content : string lp.load[ typeid[string], null ]
+        if [ !content ] return ''
+        fallback : ''
+        for [ row: string ] in content.split[ '\n' ]
+            coloured : bool [ row.count > 0 && row.mid[ 0, 1 ] == '\x1b' ]
+            plain : ''
+            i : i32 [ 0 ]
+            while [ i < row.count ]
+                # an ESC [ ... m run: skip to its m
+                if [ row.mid[ i, 1 ] == '\x1b' ]
+                    while [ i < row.count && row.mid[ i, 1 ] != 'm' ]
+                        i += 1
+                    i += 1
+                    continue
+                plain = '{plain}{row.mid[ i, 1 ]}'
+                i += 1
+            tl : string plain.trim[]
+            if [ tl.count == 0 || tl.ends_with[ 'compiling...' ] ]
+                continue
+            if [ coloured ] return tl
+            if [ fallback.count == 0 ] fallback = tl
+        return fallback
 
     func jump_to_error [ logpath: string ]
         lp : path '{logpath}'
@@ -8008,6 +8425,9 @@ element orbiter : trinity # implements compiler
             # of the app's resource, the pick goes to the app (its
             # orbiter bar's dialog, hosted)
             hv : AppView (edt && edt.app_view) ? edt.run_view : null
+            # a program's window: the navigator, never its console's
+            # argument pick
+            if [ hv && window_of[ hv ] != 0 ] hv = null
             if [ hv && !hv.ended && edt.pane_index == active_pane ]
                 hm : string band_mod_of[ edt ]
                 cur : string (hv.arg_text) ? hv.arg_text : ''
@@ -8015,11 +8435,11 @@ element orbiter : trinity # implements compiler
                 ev.no_default     = true
                 ev.no_propagation = true
                 return
-            if [
-                edt && edt.pane_index >= 0
-                && edt.pane_index < editor_slots.count
-                && edt.pane_index != active_pane ]
-                active_pane   = edt.pane_index
+            # a window's pane has no editor: its view has the number
+            tpi : i32 pane_index_of[ ev.target ]
+            if [ tpi >= 0 && tpi < editor_slots.count
+                 && tpi != active_pane ]
+                active_pane   = tpi
                 ev.no_default = true
                 if [ ux ] ux.restyle = true
                 return
@@ -8197,11 +8617,16 @@ element orbiter : trinity # implements compiler
             rvp : AppView (eds) ? eds.run_view : null
             msp : path (eds) ? module_src_of[ eds ] : null
             ds : dbg stopped_debugger[]
+            # a title's steps: its pane's instance's debugger
+            if [ rvp && stopped_at[ rvp ] ] ds = rvp.debugger
             if [ ev.target.id == 'pause' && msp
                     && !(rvp && !rvp.ended && !rvp.held) ]
                 show_app[ eds, msp, false ]
             el [ ev.target.id != 'pause' && ds ]
-                if [ ev.target.id == 'continue' ]       ds.cont[]
+                if [ ev.target.id == 'continue' ]
+                    ds.cont[]
+                    # running again: the next pause pauses
+                    if [ rvp ] rvp.paused = false
                 el [ ev.target.id == 'step_next' ] ds.step_over[]
                 el [ ev.target.id == 'step_in' ]   ds.step_into[]
                 el                                  ds.step_out[]
@@ -8290,8 +8715,14 @@ element orbiter : trinity # implements compiler
             mt : cast MenuTop [ ev.target ]
             same : bool [ menu_top == mt.at ]
             menu_top = mt.at
-            # fresh, for enabled entries and check marks
-            menu_items = menu_read[ menu_win ]
+            # fresh, for enabled entries and check marks; with no
+            # window, our own menu for the app
+            if [ menu_win != 0 ]
+                menu_items = menu_read[ menu_win ]
+            el
+                menu_own = null
+                own_menu_sync[]
+                menu_top = mt.at
             drawer_toggle[ 'menu', same ]
             ev.no_default = true
             return
@@ -8338,24 +8769,36 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # a dock pin: a module runs as an app, else the path opens
-        if [ ev.target inherits DockRun ]
-            dr9 : DockRun ev.target
-            show_instance[ dr9.inst, active_pane ]
-            if [ ux ] ux.restyle = true
+        # a running app: a click at the release, or a drag to pin it
+        if [ ev.target inherits TaskChip ]
+            tc : TaskChip ev.target
+            # its close (shown by shift or ctrl/cmd): the task ends
+            if [ tc.on_close[ f32[ ux.mouse.x ], f32[ ux.mouse.y ] ] ]
+                close_task[ instance_by[ tc.inst ] ]
+                ev.no_default = true
+                return
+            drag_iid   = tc.inst
+            drag_x0    = f32[ ux.mouse.x ]
+            drag_y0    = f32[ ux.mouse.y ]
+            drag_moved = false
+            drag_slot  = -1
             ev.no_default = true
             return
-        if [ ev.target inherits DockIcon ]
-            di : DockIcon ev.target
-            edd : Editor pane_at[ active_pane ]
-            md9 : path (di.module) ? path '{di.file}/{di.file.filename[]}.ag' : di.file
-            # shift: a new instance; a click: the module's source
-            if [ di.module && edd && shift_down ]
-                show_app[ edd, md9, true ]
-            el [ edd && edd.app_view && edd.run_view && edd.run_view.src
-                && '{edd.run_view.src.absolute[]}' == '{md9.absolute[]}' ]
-                set_display[ edd, edd.run_view, 0 ]
-            el
-                open_in_pane[ md9, active_pane ]
+        # a running app in the dock: in and out of view, as its
+        # task button
+        if [ ev.target inherits DockIcon && ev.target.id
+             && ev.target.id.starts_with[ 'run_' ] ]
+            dock_run_click[ i32[ ev.target.id.mid[ 4,
+                ev.target.id.count - 4 ] ] ]
+            ev.no_default = true
+            return
+        if [ ev.target inherits DockIcon && ev.target.id
+             && ev.target.id.starts_with[ 'dock_' ] ]
+            drag_pin   = ev.target.id.mid[ 5, ev.target.id.count - 5 ]
+            drag_x0    = f32[ ux.mouse.x ]
+            drag_y0    = f32[ ux.mouse.y ]
+            drag_moved = false
+            drag_slot  = -1
             ev.no_default = true
             return
         # pip shrinks the app into the editor; its instruments stay open
@@ -9183,7 +9626,12 @@ element orbiter : trinity # implements compiler
                     !handled && find_results && find_results.count > 0 ]
                     first_s    : string find_results.value_by_index[ 0 ]
                     first_path : path [ first_s.chars ]
-                    open_file[ first_path ]
+                    # a program runs, as a click on its row does
+                    if [ is_program[ first_path ] ]
+                        run_program[ first_path, active_pane ]
+                        exit_finder[]
+                    el
+                        open_file[ first_path ]
             # Key.Down — enter the nav list when it shows
             el [ k == 264 ]
                 if [ nav_showing ]
@@ -9680,10 +10128,10 @@ element orbiter : trinity # implements compiler
         if [ show_console && pv && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
-        left['stack'] = Splitter [ area: Region { l0 t0 r0 b35px },
+        left['stack'] = Splitter [ area: Region { l0 t0 r0 b1.6 },
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
-        left['status'] = StatusBar [ elements: status_els[] ]
+        left['status'] = TasksBar [ elements: status_els[] ]
         t['left'] = element [ elements: left ]
         # folded, it stays mounted at no width: it slides back open
         if [ !hide_ui ] t['side'] = SidePanel [ ]
@@ -9720,9 +10168,248 @@ element orbiter : trinity # implements compiler
             return (e.id) ? e.id : ''
         return ''
  
+    # apps are toggles: one in view goes out of it (still running),
+    # the pane back where it was; a window's pane has no editor
+    # mounted until the next frame
+    func dock_run_click [ iid: i32 ]
+        avd : AppView instance_by[ iid ]
+        edd : Editor pane_at[ active_pane ]
+        wvd : u64 window_of[ avd ]
+        shown : bool [ avd && ((wvd != 0
+            && pane_window[ active_pane ] == wvd)
+            || (wvd == 0 && edd && edd.run_view == avd
+                && edd.app_view)) ]
+        if [ shown ]
+            if [ pane_win && active_pane < pane_win.count ]
+                pane_win[ active_pane ] = u64[ 0 ]
+            toggled_out = active_pane
+        el
+            # back in view means embedded (a file's viewer says PIP)
+            if [ avd && avd.display == 0 ]
+                avd.display = 1
+                avd.pip     = false
+                tell_display[ avd ]
+            show_instance[ iid, active_pane ]
+        if [ ux ] ux.restyle = true
+
+    # a pinned program: its running instance, else a new one
+    func dock_program_click [ p: path ]
+        ps : string '{p}'
+        if [ instances ]
+            for [ av: AppView ] in instances
+                if [ av.slot < 0 || av.ended || av.held ] continue
+                if [ pin_key_of[ av ] == ps ]
+                    dock_run_click[ av.iid ]
+                    return
+        run_program[ p, active_pane ]
+
+    # a bar chip's name: the window's or the app's own title, else
+    # its argument, else the instance's name
+    func task_title [ av: AppView ] -> string
+        wv : u64 window_of[ av ]
+        if [ wv != 0 ]
+            wt : string[ wlc_window_title[ wv ] ]
+            if [ wt.count > 0 ] return wt
+        if [ av.app_title && av.app_title.count > 0 ] return av.app_title
+        da : string default_arg_of[ av.module_args ]
+        if [ da.count > 0 && program_of[ av ].count == 0 ]
+            dp : path [ da ]
+            return dp.stem[]
+        return instance_name[ av ]
+
+    # an instance that ended badly: build failed, crashed, an exit
+    # code
+    func run_failed [ av: AppView ] -> bool
+        if [ !av || !av.ended || !av.note ] return false
+        return av.note.count > 0 && av.note != 'app exited'
+
+    # what a running app pins as: a program's path, else its module
+    func pin_key_of [ av: AppView ] -> string
+        pn : string program_of[ av ]
+        if [ pn.count > 0 ]
+            words : vec string av.module_args.split[ ' ' ]
+            word : string words[ words.count - 1 ]
+            if [ word.starts_with[ '/' ] ] return word
+            pl : map string [string] program_list[]
+            return (pl.contains[ pn ]) ? pl[ pn ] : ''
+        fo : path (av.src) ? av.src.directory[] : null
+        return (fo) ? '{fo}' : ''
+
+    # the pins that show (their paths are there)
+    func pins_shown [] -> i32
+        n : i32 [ 0 ]
+        if [ pins ]
+            for [ ps: string ] in pins
+                if [ dock_pin[ ps ] ] n += 1
+        return n
+
+    # a pin the dock shows: there, and not a plain folder (those are
+    # the navigator's pinned)
+    func dock_pin [ ps: string ] -> bool
+        pp : path ps
+        return pp.exists[] && !plain_folder[ pp ]
+
+    # a folder that is not a module: a place, never an app
+    func plain_folder [ p: path ] -> bool
+        if [ !p.is_dir[] ] return false
+        mm : path '{p}/{p.filename[]}.ag'
+        return !mm.exists[]
+
+    # a dock pin's click: a program shows or runs; a module or file
+    # opens its source (shift: a module's new instance)
+    func dock_icon_click [ di: DockIcon ]
+        if [ di.program ]
+            dock_program_click[ di.file ]
+            return
+        edd : Editor pane_at[ active_pane ]
+        md9 : path (di.module) ? path '{di.file}/{di.file.filename[]}.ag' : di.file
+        # shift: a new instance; a click: the module's source
+        if [ di.module && edd && shift_down ]
+            show_app[ edd, md9, true ]
+        el [ edd && edd.app_view && edd.run_view && edd.run_view.src
+            && '{edd.run_view.src.absolute[]}' == '{md9.absolute[]}' ]
+            set_display[ edd, edd.run_view, 0 ]
+        el
+            open_in_pane[ md9, active_pane ]
+
+    # a pin let go: a click where it was, else it takes the slot
+    # among the other shown pins and eases there from the drop
+    func pin_release []
+        # a copy: clearing drag_pin lets go of its text
+        key : '{drag_pin}'
+        drag_pin = null
+        moved : bool drag_moved
+        drag_moved = false
+        if [ !moved ]
+            pe : element find_el[ a, 'pins' ]
+            di : DockIcon (pe && pe.elements)
+                ? cast DockIcon [ pe.elements[ 'dock_{key}' ] ] : null
+            if [ di ] dock_icon_click[ di ]
+            force_update[]
+            return
+        at : i32 [ drag_slot ]
+        drag_slot = -1
+        if [ at >= 0 && pins ]
+            for [ i: i32 0, i < pins.count, i += 1 ]
+                if [ pins[ i ] == key ]
+                    pins.remove[ i ]
+                    break
+            pin_insert[ key, at ]
+        force_update[]
+
+    # a drop takes slot at among the shown pins; the new pin
+    # starts where it was let go and eases into its place
+    func pin_insert [ key: string, at: i32 ]
+        if [ !pins ] pins = vec string []
+        ix : i32 [ pins.count ]
+        n  : i32 [ 0 ]
+        for [ i: i32 0, i < pins.count, i += 1 ]
+            if [ !dock_pin[ pins[ i ] ] ] continue
+            if [ n == at ]
+                ix = i
+                break
+            n += 1
+        pins.insert[ key, ix ]
+        save_session[]
+        np : i32 pins_shown[]
+        pin_off = vec f32 []
+        for [ i: i32 0, i < np, i += 1 ]
+            pin_off.push[ 0.0 ]
+        if [ at < np ]
+            pin_off[ at ] = drag_at - (1.0 + f32[ at ] * dock_w[])
+
+    # the drag's frame: over the dock its icon eases to the
+    # pointer and the pins below its slot ease down to open a gap
+    func dock_drag_frame []
+        if [ !ux ] return
+        ff : f32 [ ux.frame_factor ]
+        live : bool [ false ]
+        np : i32 pins_shown[]
+        pe : element find_el[ a, 'pins' ]
+        was : i32 [ drag_slot ]
+        # a pin dragged within the dock: the others close up round it
+        pd : bool [ drag_pin && drag_pin.count > 0 ]
+        if [ pd ] np -= 1
+        if [ pd && pe ]
+            dx : f32 [ f32[ ux.mouse.x ] - drag_x0 ]
+            dy : f32 [ f32[ ux.mouse.y ] - drag_y0 ]
+            if [ !drag_moved && dx * dx + dy * dy > 36.0 ]
+                drag_moved = true
+                drag_at    = drag_y0 - pe.win_pos.y - dock_w[] * 0.5
+                live       = true
+            if [ drag_moved ]
+                top  : f32 [ f32[ np ] * dock_w[] + 1.0 ]
+                goal : f32 [ min[ max[ f32[ ux.mouse.y ] - pe.win_pos.y
+                    - dock_w[] * 0.5, 1.0 ], top ] ]
+                if [ drag_at - goal > 0.25 || goal - drag_at > 0.25 ]
+                    drag_at = filter_n[ drag_at, goal, 0.3, ff ]
+                    live = true
+                sp : i32 [ i32[ (drag_at + dock_w[] * 0.5 - 1.0) / dock_w[] ] ]
+                drag_slot = min[ max[ sp, 0 ], np ]
+        if [ drag_iid >= 0 && pe ]
+            mx : f32 [ ux.mouse.x ]
+            my : f32 [ ux.mouse.y ]
+            dx : f32 [ mx - drag_x0 ]
+            dy : f32 [ my - drag_y0 ]
+            if [ !drag_moved && dx * dx + dy * dy > 36.0 ]
+                drag_moved = true
+            drag_slot = -1
+            if [ drag_moved && mx < 118.75 ]
+                goal : f32 [ my - pe.win_pos.y - dock_w[] * 0.5 ]
+                # it comes in where the pointer is, then follows
+                if [ was < 0 ] drag_at = goal
+                drag_at = filter_n[ drag_at, goal, 0.3, ff ]
+                mid : f32 [ drag_at + dock_w[] * 0.5 ]
+                sl : i32 [ i32[ (mid - 1.0) / dock_w[] ] ]
+                drag_slot = min[ max[ sl, 0 ], np ]
+                live = true
+        if [ drag_slot != was ] live = true
+        if [ !pin_off || pin_off.count != np ]
+            pin_off = vec f32 []
+            for [ i: i32 0, i < np, i += 1 ]
+                pin_off.push[ 0.0 ]
+        for [ i: i32 0, i < np, i += 1 ]
+            gap : bool [ drag_slot >= 0 && i >= drag_slot ]
+            want : f32 [ (gap) ? dock_w[] : 0.0 ]
+            cur : f32 [ pin_off[ i ] ]
+            if [ cur - want > 0.25 || want - cur > 0.25 ]
+                pin_off[ i ] = filter_n[ cur, want, 0.3, ff ]
+                live = true
+            el
+                pin_off[ i ] = want
+        if [ live ] force_update[]
+
+    public func on_release [ ev: Event ]
+        super.on_release[ ev ]
+        if [ drag_pin && drag_pin.count > 0 ]
+            pin_release[]
+            return
+        if [ drag_iid < 0 ] return
+        iid : i32 [ drag_iid ]
+        drag_iid = -1
+        if [ !drag_moved ]
+            dock_run_click[ iid ]
+            return
+        av : AppView instance_by[ iid ]
+        key : string [ (av) ? pin_key_of[ av ] : '' ]
+        if [ drag_slot >= 0 && key.count > 0 && !is_pinned[ path key ] ]
+            pin_insert[ key, drag_slot ]
+        drag_slot  = -1
+        drag_moved = false
+        force_update[]
+
     # the selected view's history arrows, the pins under them,
     # orbiter's button at the bottom
+    # one unit in px: the layout's own em (the default font's line)
+    func unit_px [] -> f32
+        return (fc > 0.0) ? fc : 22.0 * ux_unit[ ux ]
+
+    # the dock's width, px: 3.58 units, as its area says
+    func dock_w [] -> f32
+        return 3.58 * unit_px[]
+
     func dock_els [] -> Elements
+        dw : f32 dock_w[]
         t : Elements []
         edp : Editor pane_at[ active_pane ]
         fd9 : bool [
@@ -9759,67 +10446,109 @@ element orbiter : trinity # implements compiler
         np : i32 [ 0 ]
         if [ pins ]
             for [ ps0: string ] in pins
-                if [ (path ps0).exists[] ] np += 1
+                if [ dock_pin[ ps0 ] ] np += 1
+        if [ drag_moved && drag_pin ] np -= 1
+        # every running app the pins do not hold, under them
+        runs9 : vec AppView []
+        if [ instances ]
+            for [ rv9: AppView ] in instances
+                if [ rv9.slot < 0 || rv9.held || rv9.ended ] continue
+                rk9 : string pin_key_of[ rv9 ]
+                if [ rk9.count > 0 && is_pinned[ path rk9 ] ] continue
+                runs9.push[ rv9 ]
         k9 : i32 [ 0 ]
+        held9 : DockIcon [ null ]
         if [ pins ]
             for [ ps9: string ] in pins
                 pp : path ps9
-                if [ !pp.exists[] ] continue
+                if [ !dock_pin[ ps9 ] ] continue
                 mm : path '{pp}/{pp.filename[]}.ag'
                 ism : bool [ pp.is_dir[] && mm.exists[] ]
+                prg : bool [ !pp.is_dir[]
+                             && access[ ps9.chars, X_OK ] == 0 ]
                 ag9 : path (ism) ? path '{path.path_startup[]}/install/export/{install_name_of[ pp.filename[] ]}.agi' : null
                 n9 : i32 [ 0 ]
                 if [ ism ]
                     for [ v9: AppView ] in instances_of[ mm ]
                         if [ !v9.viewer && !v9.held && !v9.ended ]
                             n9 += 1
-                lt : bool [ false ]
-                if [ ism ]
-                    ms9 : path module_src_of[ edp ]
-                    if [ ms9 ]
-                        lt = '{ms9.absolute[]}' == '{mm.absolute[]}'
+                ic9 : path null
+                if [ prg && instances ]
+                    for [ v9: AppView ] in instances
+                        if [ v9.slot < 0 || v9.ended || v9.held ]
+                            continue
+                        if [ pin_key_of[ v9 ] == ps9 ] n9 += 1
+                if [ prg ] ic9 = program_icon_named[ '', pp.filename[] ]
+                # the pin being dragged: out of the column, over it
+                if [ drag_moved && drag_pin && drag_pin == ps9 ]
+                    held9 = DockIcon [ file: pp, module: ism, agi: ag9,
+                        count: n9, program: prg, icon_file: ic9,
+                        selected: true, area: Region [
+                        'l0 t{drag_at}px w{dw}px h{dw}px' ] ]
+                    continue
+                sh9 : f32 [ (pin_off && k9 < pin_off.count)
+                    ? pin_off[ k9 ] : 0.0 ]
                 pins9[ 'dock_{ps9}' ] = DockIcon [ file: pp,
-                    module: ism, agi: ag9, selected: lt, count: n9,
-                    first: k9 == 0, last: k9 == np - 1,
-                    area: Region [ 'l0 t{y9}px w78.75px h78.75px' ] ]
+                    module: ism, agi: ag9, count: n9,
+                    program: prg, icon_file: ic9, selected: false,
+                    first: k9 == 0,
+                    last: k9 == np - 1 && runs9.count == 0,
+                    area: Region [
+                        'l0 t{y9 + sh9}px w{dw}px h{dw}px' ] ]
                 k9 += 1
-                y9 += 78.75
-        # running, not pinned: their own icons, up from the dock's foot
-        run9 : vec AppView []
-        if [ instances ]
-            for [ av: AppView ] in instances
-                if [ av.slot < 0 || av.ended || av.held ] continue
-                prog : bool [ program_of[ av ].count > 0 ]
-                fo : path (av.src) ? av.src.directory[] : null
-                if [ !prog && fo && is_pinned[ fo ] ] continue
-                run9.push[ av ]
-        by9 : f32 [ 0.0 ]
-        for [ k: i32 0, k < run9.count, k += 1 ]
-            av : AppView run9[ k ]
-            fo : path (av.src) ? av.src.directory[] : null
-            wv : u64 window_of[ av ]
-            ag : path (fo) ? path '{path.path_startup[]}/install/export/{install_name_of[ fo.filename[] ]}.agi' : null
-            lit : bool [ edp && edp.run_view == av ]
-            pins9[ 'run_{av.iid}' ] = DockRun [ file: fo, module: true,
-                agi: ag, inst: av.iid, win: wv, selected: lit,
-                first: k == run9.count - 1, last: k == 0,
-                area: Region [ 'l0 b{by9 + 78.75}px w78.75px h78.75px' ] ]
-            by9 += 78.75
-        t['pins'] = element [ area: Region { l0 t1.3 r0 b35px },
+                y9 += dock_w[]
+        # a pin's drag opens its gap above the running ones too
+        rsh : f32 [ (pin_off && np > 0 && np - 1 < pin_off.count)
+            ? pin_off[ np - 1 ] : 0.0 ]
+        edp9 : Editor pane_at[ active_pane ]
+        for [ ri: i32 0, ri < i32[ runs9.count ], ri += 1 ]
+            ra : AppView runs9[ ri ]
+            rfo : path (ra.src) ? ra.src.directory[] : null
+            rag : path (rfo) ? path '{path.path_startup[]}/install/export/{install_name_of[ rfo.filename[] ]}.agi' : null
+            rwv : u64 window_of[ ra ]
+            rlit : bool [ (rwv != 0 && pane_window[ active_pane ] == rwv)
+                || (rwv == 0 && edp9 && edp9.run_view == ra
+                    && edp9.app_view) ]
+            rpn : string program_of[ ra ]
+            pins9[ 'run_{ra.iid}' ] = DockIcon [ file: rfo, module: true,
+                name: (rpn.count > 0) ? rpn : '',
+                agi: rag, icon_file: program_icon[ ra ], count: 1,
+                selected: rlit, first: np == 0 && ri == 0,
+                last: ri == i32[ runs9.count ] - 1,
+                area: Region [ 'l0 t{y9 + rsh}px w{dw}px h{dw}px' ] ]
+            y9 += dock_w[]
+        if [ held9 ] pins9[ 'dock_{drag_pin}' ] = held9
+        # a bar chip dragged over the dock: its icon at the slot
+        dav : AppView (drag_slot >= 0) ? instance_by[ drag_iid ] : null
+        if [ dav ]
+            dfo : path (dav.src) ? dav.src.directory[] : null
+            pins9[ 'drag_ghost' ] = DockIcon [ file: dfo, module: true,
+                icon_file: program_icon[ dav ], selected: true,
+                area: Region [ 'l0 t{drag_at}px w{dw}px h{dw}px' ] ]
+        sb9 : bool system_on[]
+        t['pins'] = element [ area: Region [
+            (sb9) ? 'l0 t1.3 r0 b3.2' : 'l0 t1.3 r0 b1.6' ],
                               elements: pins9 ]
         # with the system bar, orbiter is its first button and the
         # console takes this corner
         if [ system_on[] ]
             t['dock_console'] = StatusTab [
                 buttons: vec string [] [ 'console_tab' ],
-                icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+                icon_ids: vec string [] [ 'gear' ], icon_scale: 0.5,
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],
                 sel_mask: (show_console) ? 1 : 0,
-                area: Region { l0 b35px w78.75px h35px } ]
+                area: Region { l0 b1.6 w3.58 h1.6 } ]
+            # the apps: software to fetch, above the gear
+            t['dock_apps'] = StatusTab [
+                buttons: vec string [] [ 'apps_view' ],
+                icon_ids: vec string [] [ 'apps_grid' ], icon_scale: 0.5,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                area: Region { l0 b3.2 w3.58 h1.6 } ]
         el
             t['dock_orbiter'] = home_button[
-                Region [ 'l0 b35px w78.75px h35px' ], false ]
+                Region [ 'l0 b1.6 w3.58 h1.6' ], false ]
         return t
 
     # orbiter's own button: the dock's foot, or the system bar's first
@@ -9886,15 +10615,16 @@ element orbiter : trinity # implements compiler
             area: Region { l0 t0 r0 b0 } ]
         # orbiter's button first, as wide as the dock
         t['sys_orbiter'] = home_button[
-            Region [ 'l0 t0 w78.75px b0' ], true ]
+            Region [ 'l0 t0 w3.58 b0' ], true ]
         # the active window's menu bar: its top menus, after it
-        x : f32 [ 86.75 ]
+        x : f32 [ dock_w[] + 8.0 * ux_unit[ ux ] ]
         if [ menu_items ]
             for [ i: i32 0, i < menu_items.count, i += 1 ]
                 e : TrayEntry menu_items[ i ]
                 if [ e.depth != 0 || e.rule || e.label.count == 0 ]
                     continue
-                mw : f32 [ f32[ e.label.count ] * 8.5 + 22.0 ]
+                mw : f32 [ (f32[ e.label.count ] * 8.5 + 22.0)
+                    * ux_unit[ ux ] ]
                 lit : bool [ drawer_open && menu_kind == 'menu'
                              && menu_top == i ]
                 t['menu_{i}'] = MenuTop [ label: e.label, at: i,
@@ -9924,17 +10654,22 @@ element orbiter : trinity # implements compiler
         open : bool [ !inst_hidden ]
         scn : bool [ side_tab == 'scenes' ]
         inst : bool [ side_tab == 'instances' ]
+        # reload is there only while a reload is ready
         ready : bool [ au_live_get_pending[] == 1 ]
-        t['side_tabs'] = StatusSegs [ buttons: vec string [] [
-                'reload_ready', 'side_scenes', 'side_menu' ],
-            icon_ids: vec string [] [ (ready) ? 'recycle' : '',
-                'saturn', 'menu' ],
+        sb9 : vec string [] [ 'side_scenes', 'side_menu' ]
+        si9 : vec string [] [ 'saturn', 'menu' ]
+        if [ ready ]
+            sb9.insert[ 'reload_ready', 0 ]
+            si9.insert[ 'recycle', 0 ]
+        sh9 : i32 [ (ready) ? 1 : 0 ]
+        t['side_tabs'] = StatusSegs [ buttons: sb9, icon_ids: si9,
             icon_scale: 0.5,
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
-            sel_mask: (open && scn) ? 2 : ((open && inst) ? 4 : 0),
-            disable_mask: (ready) ? 0 : 1,
-            area: Region [ 'r{tg} t0 w4.98 b0' ] ]
+            sel_mask: (open && scn) ? (1 << sh9)
+                : ((open && inst) ? (2 << sh9) : 0),
+            area: Region [
+                'r{tg} t0 w{1.66 * f32[ sb9.count ]} b0' ] ]
         bar : element (elements && elements.contains[ 'system' ])
             ? elements[ 'system' ] : null
         cur : element (bar && bar.elements
@@ -9963,9 +10698,6 @@ element orbiter : trinity # implements compiler
     # the status bar: the four debug steps, one button each, at left
     func status_els [] -> Elements
         edv : Editor pane_at[ active_pane ]
-        rv  : AppView (edv) ? edv.run_view : null
-        dg  : dbg (rv) ? rv.debugger : null
-        off : bool [ !(dg && dg.active && !dg.running) ]
         t : Elements []
         sys : bool system_on[]
         # first, at the left: the console, global to the window (in
@@ -9973,32 +10705,72 @@ element orbiter : trinity # implements compiler
         if [ !sys ]
             t['console_tab'] = StatusTab [
                 buttons: vec string [] [ 'console_tab' ],
-                icon_ids: vec string [] [ 'console' ], icon_scale: 0.5,
+                icon_ids: vec string [] [ 'gear' ], icon_scale: 0.5,
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],
                 sel_mask: (show_console) ? 1 : 0,
                 area: Region { l0 t0 w1.66 b0 } ]
-        # one group: a single border, none doubled between them
-        t['debug'] = StatusButton [ buttons: vec string [] [ 'continue',
-                'step_next', 'step_in', 'step_out' ],
-            icon_scale: 0.4125, manual: true, seg_radius: 0.0,
-            use_spacing: false, rest_fill: rgba [ '#0000' ],
-            disable_mask: (off) ? 15 : 0, unavailable: off,
-            # right after the console button, 1.66 units wide
-            area: Region [ (sys) ? 'l0 t0 w168px b0'
-                : 'l1.66 t0 w168px b0' ] ]
-        # the mic first; else the hovered button's name, else what the
-        # reload is doing
-        tip : string hover_tip[ ux.hovered ]
-        pd  : i32 [ au_live_get_pending[] ]
-        txt : string (tip.count > 0) ? tip
-            : ((pd == 1) ? 'reload ready' : ((pd == 2) ? 'compiling'
-            : ((pd == 3) ? 'reloading' : '')))
-        if [ ux.dict_on || mic_by_press ] txt = 'recording'
-        # the whole bar, so the middle is its middle; no hits, the
-        # buttons under it keep theirs
-        t['status_text'] = StatusText [ label: txt, ghost: true,
-            area: Region { l0 t0 r0 b0 } ]
+        # every running instance (the bar is for tasks alone); a
+        # drag onto the dock pins it
+        x0 : f32 [ (sys) ? 0.0 : 1.66 * 22.0 ]
+        sb : element find_el[ a, 'status' ]
+        room : f32 [ (sb && sb.bounds) ? sb.bounds.w - x0 - 40.0
+            : 800.0 ]
+        run9 : vec AppView []
+        if [ instances ]
+            for [ av: AppView ] in instances
+                if [ av.slot < 0 || av.held ] continue
+                if [ av.ended && !run_failed[ av ] ] continue
+                run9.push[ av ]
+        # grouped by app (its module), groups in first-seen order
+        kinds : vec string []
+        for [ av: AppView ] in run9
+            k : '{(av.src) ? av.src.directory[] : null}'
+            seen : bool [ false ]
+            for [ kn: string ] in kinds
+                if [ kn == k ] seen = true
+            if [ !seen ] kinds.push[ k ]
+        runs : vec AppView []
+        for [ kn: string ] in kinds
+            for [ av: AppView ] in run9
+                k : '{(av.src) ? av.src.directory[] : null}'
+                if [ k == kn ] runs.push[ av ]
+        # a small gap between groups
+        # sizes in units (22 px at rest), so ctrl +/- scales them
+        un : f32 unit_px[]
+        gap : f32 [ 0.36 * un ]
+        gaps : f32 [ gap * f32[ max[ i32[ kinds.count ] - 1, 0 ] ] ]
+        cw : f32 [ (runs.count > 0)
+            ? min[ 6.55 * un, (room - gaps) / f32[ runs.count ] ]
+            : 0.0 ]
+        # centred in the bar
+        bw : f32 [ (sb && sb.bounds) ? sb.bounds.w : room + x0 ]
+        x : f32 [ max[ x0, (bw - cw * f32[ runs.count ] - gaps)
+            * 0.5 ] ]
+        was : string [ null ]
+        for [ av: AppView ] in runs
+            fo : path (av.src) ? av.src.directory[] : null
+            kind : '{fo}'
+            if [ was && kind != was ] x += gap
+            was = kind
+            ag : path (fo) ? path '{path.path_startup[]}/install/export/{install_name_of[ fo.filename[] ]}.agi' : null
+            wv : u64 window_of[ av ]
+            lit : bool [ (wv != 0 && pane_window[ active_pane ] == wv)
+                || (wv == 0 && edv && edv.run_view == av
+                    && edv.app_view) ]
+            # a program whose window is up is not starting
+            waits : bool [ wv == 0 && av.status_word[].count > 0 ]
+            lt : i32 [ (run_failed[ av ]) ? 2 : ((waits) ? 1 : 0) ]
+            # stopped: a debugger's stop, else the host's pause
+            dg9 : dbg av.debugger
+            hal : bool [ !av.ended && ((dg9 && dg9.active)
+                ? !dg9.running : av.paused) ]
+            t[ 'task_{av.iid}' ] = TaskChip [ inst: av.iid, file: fo,
+                close_all: cmd_down, close_hover: shift_down,
+                agi: ag, icon_file: program_icon[ av ], paused: hal,
+                label: task_title[ av ], light: lt, selected: lit,
+                area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
+            x += cw
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
         if [ inst_hidden && !sys ]
@@ -10022,6 +10794,7 @@ element orbiter : trinity # implements compiler
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
         side_sync[]
+        dock_drag_frame[]
         # the system bar: a new minute or a Wi-Fi change redraws it
         if [ system_on[] ]
             now : clock_text[]
@@ -10034,6 +10807,14 @@ element orbiter : trinity # implements compiler
                  && epoch_millis[] - menu_shut_ms >= 400 ]
                 menu_shut_ms = 0
                 w.restyle = true
+            if [ toggled_out >= 0 ]
+                edo : Editor pane_at[ toggled_out ]
+                if [ edo ]
+                    toggled_out  = -1
+                    edo.run_view = null
+                    edo.app_view = false
+                    edo.nav_walk[ -1 ]
+                    w.restyle = true
             if [ drawer_focus ]
                 de : element find_el[ a, 'drawer' ]
                 if [ de ]
@@ -10044,6 +10825,9 @@ element orbiter : trinity # implements compiler
                 tray_picks = tp.picks
                 if [ drawer_open && menu_kind == 'tray' ] drawer_shut[]
             if [ wl_tick[] ] w.restyle = true
+            # no display to pump: our own app menu all the same
+            el [ wl_sock && wl_sock.count == 0 && own_menu_sync[] ]
+                w.restyle = true
         # an exchange with no agent chosen opens on the last one used
         if [ w.shot_ask && (!w.agent_pick || w.agent_pick.count == 0)
              && agent_last && agent_last.count > 0 ]
@@ -10082,14 +10866,14 @@ element orbiter : trinity # implements compiler
             return Elements [ 'scene': scene_element[],
                 'wizard': InstallWizard [ dry_run: dry_run ] ]
         # the system bar takes the top; everything else is under it
-        top : f32 [ (system_on[]) ? system_h : 0.0 ]
+        top : f32 [ (system_on[]) ? 1.36 * unit_px[] : 0.0 ]
         return (!ux) ? null : Elements [
             'scene'  : scene_element[],
             'system' : (top > 0.0) ? SystemBar [ elements: system_els[],
                 area: Region [ 'l0 t0 r0 h{top}px' ] ] : null,
             'main'   : Splitter [ area: (hide_ui)
                 ? Region [ 'l0 t{top}px r0 b0' ]
-                : Region [ 'l78.75px t{top}px r0 b0' ],
+                : Region [ 'l3.58 t{top}px r0 b0' ],
                                   inner: main_els[],
                 deflt: 360.0, min_size: 200.0, near_seam: true,
                 snap_close: true, shut_locked: true, gap: 0.0 ],
@@ -10097,7 +10881,7 @@ element orbiter : trinity # implements compiler
             'drawer' : (drawer_on[]) ? MenuDrawer [ open: drawer_open,
                 elements: drawer_els[] ] : null,
             'dock'   : Dock [ elements: dock_els[], hide: hide_ui,
-                area: Region [ 'l0 t{top}px w78.75px b0' ] ],
+                area: Region [ 'l0 t{top}px w3.58 b0' ] ],
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
