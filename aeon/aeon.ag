@@ -1,6 +1,7 @@
 # aeon: the 3D design app. a project is a folder (a module
 # folder): <name>.agi holds the design, nodes wired by name
 export 0.1.0
+export software ['creative']
 
 import vec
 import img

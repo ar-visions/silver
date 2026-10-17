@@ -90,6 +90,12 @@ class ConsoleSession
     public  title       : string
     # the OSC's text while it arrives
     mutable osc         : vec u8
+    # a log: lines never wrap; the view scrolls sideways
+    public  nowrap      : bool
+    mutable scroll_x    : f32
+    mutable max_x       : f32
+    # a nowrap view's lines, drawn here, then faded at its sides
+    mutable view        : Canvas
 
     func init []
         scrollback  = list string []
@@ -251,8 +257,12 @@ class ConsoleSession
             sb_scratch[c].attr = sb_cells[ off + c ].attr
         return sb_scratch
 
+    # a row's text to its last character, not its blank tail
     func row_to_string [ r: i32 ] -> string
-        return cell_text[ r, 0, cols ]
+        n : i32 [ cols ]
+        while [ n > 0 && screen[ r * cols + n - 1 ].ch == 32 ]
+            n -= 1
+        return cell_text[ r, 0, n ]
 
     func row_drawable [ r: i32 ] -> i32
         base : i32 [ r * cols ]
@@ -402,6 +412,22 @@ class ConsoleSession
         screen[i].bg   = pen_bg
         screen[i].attr = pen_attr
         cx += 1
+
+    # the log emptied: screen, scrollback, scroll; the program runs on
+    func clear_log []
+        erase_display[ 3 ]
+        clear_screen[]
+        cx = 0
+        cy = 0
+        scroll = 0.0
+        scroll_x = 0.0
+        user_scrolled = false
+        if [ sb_lines ]
+            for [ slc: TermLineCache ] in sb_lines
+                slc.li = -1
+        if [ live_lines ]
+            for [ slc: TermLineCache ] in live_lines
+                slc.hash = -1
 
     func erase_display [ m: i32 ]
         if [ m == 0 ]
@@ -896,6 +922,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
         if [ cw > 0.0 && lh > 0.0 ]
             dcols : i32 [ bounds.w / cw ]
             drows : i32 [ bounds.h / lh ]
+            # a log keeps its lines whole: 2048 columns
+            if [ s.nowrap && !s.in_alt ] dcols = 2048
             if [ dcols >= 2 && drows >= 2
                  && (dcols != s.cols || drows != s.rows) ]
                 s.resize[ drows, dcols ]
@@ -933,6 +961,28 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
             cv.paint[]
             return f32[dr] * lh
 
+        # a log draws into its own view canvas at x - scroll_x; the
+        # view goes down faded at the sides it can scroll toward
+        wide : bool [ s.nowrap && !s.in_alt ]
+        tc : Canvas cv
+        vb : rect bounds
+        if [ wide ]
+            vb = rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+            tc = view_of[ cv, s, bounds.w, bounds.h ]
+            if [ label_size > 0.0 ] tc.font_size[ i32[ label_size ] ]
+            wmax : i32 [ 0 ]
+            for [ wi: i32 0, wi < sc_count, wi += 1 ]
+                wmax = maxi[ wmax, s.sb_line_len[ wi ] ]
+            for [ wr: i32 0, wr < s.rows, wr += 1 ]
+                wmax = maxi[ wmax, s.row_drawable[ wr ] ]
+            s.max_x = maxf[ f32[ wmax + 1 ] * cw - bounds.w, 0.0 ]
+            if [ s.scroll_x > s.max_x ] s.scroll_x = s.max_x
+            if [ s.scroll_x < 0.0 ] s.scroll_x = 0.0
+        el
+            s.scroll_x = 0.0
+            s.max_x = 0.0
+        left = vb.x - s.scroll_x
+        top  = vb.y
         base     : i32 [ (s.in_alt) ? 0 : sc_count ]
         live     : i32 [ s.rows ]
         if [ !s.in_alt ]
@@ -942,7 +992,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                     live = scan_row + 1
                     break
         total_h  : f32 [ f32[base + live] * lh ]
-        max_s    : f32 [ maxf[ total_h - bounds.h, 0.0 ] ]
+        max_s    : f32 [ maxf[ total_h - vb.h, 0.0 ] ]
 
         s.max_scroll = max_s
         if [ !s.scroll_dragging && !s.user_scrolled ]
@@ -960,14 +1010,14 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
         s.lh_cache    = lh
         s.cw_cache    = cw
 
-        wtx : f32 [ cv.transform_tx[] ]
-        wty : f32 [ cv.transform_ty[] ]
-        cv.set_crop[ wtx + bounds.x, wty + bounds.y,
-                     wtx + bounds.x + bounds.w,
-                     wty + bounds.y + bounds.h ]
+        wtx : f32 [ tc.transform_tx[] ]
+        wty : f32 [ tc.transform_ty[] ]
+        tc.set_crop[ wtx + vb.x, wty + vb.y,
+                     wtx + vb.x + vb.w,
+                     wty + vb.y + vb.h ]
 
-        cv.draw_selection[ left, top, lh, cw, s.scroll, bounds.y,
-                           bounds.w, bounds.h,
+        tc.draw_selection[ left, top, lh, cw, s.scroll, vb.y,
+                           vb.w, vb.h,
             s.anchor_line, s.anchor_col, s.sel_line, s.sel_col,
             rgba['#264f78'] ]
 
@@ -989,7 +1039,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
             last_li : i32 [ sc_count - 1 ]
             vlo : i32 [ clamp[ i32[ (s.scroll - lh) / lh ], 0,
                                last_li ] ]
-            vhi : i32 [ clamp[ i32[ (s.scroll + bounds.h) / lh ] + 1,
+            vhi : i32 [ clamp[ i32[ (s.scroll + vb.h) / lh ] + 1,
                                0, last_li ] ]
             for [ slc: TermLineCache ] in s.sb_lines
                 if [ slc.li >= 0 && (slc.li < vlo || slc.li > vhi) ]
@@ -1010,48 +1060,93 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 if [ mk == 0 ] mk = pm
                 el pm = mk
                 y : f32 [ top + f32[li] * lh - s.scroll ]
-                if [ y + lh < bounds.y ] continue
-                if [ y > bounds.y + bounds.h ] break
-                slc : sb_slot[ cv, s, li, fs, lh, cw ]
+                if [ y + lh < vb.y ] continue
+                if [ y > vb.y + vb.h ] break
+                if [ wide ]
+                    mark_line[ tc, mk, left, y, vb.w, lh ]
+                    draw_seen[ tc, s, s.sb_line_buf[ li ],
+                               s.sb_line_len[ li ], left, round[ y ],
+                               lh, cw, s.scroll_x, vb.w ]
+                    if [ mk == 2 ] tc.set_opacity[ 1.0 ]
+                    continue
+                slc : sb_slot[ tc, s, li, fs, lh, cw ]
                 if [ slc && slc.canvas ]
-                    mark_line[ cv, mk, left, y, bounds.w, lh ]
-                    cv.draw_canvas[ slc.canvas, left, round[ y ],
+                    mark_line[ tc, mk, left, y, vb.w, lh ]
+                    tc.draw_canvas[ slc.canvas, left, round[ y ],
                                     f32[ slc.canvas.content_w ], lh ]
-                    if [ mk == 2 ] cv.set_opacity[ 1.0 ]
+                    if [ mk == 2 ] tc.set_opacity[ 1.0 ]
 
         for [ r: i32 0, r < s.rows, r += 1 ]
             mk : i32 [ con.line_mark*[ s.row_to_string[ r ] ] ]
             if [ mk == 0 ] mk = pm
             el pm = mk
             y : f32 [ top + f32[base + r] * lh - s.scroll ]
-            if [ y + lh < bounds.y ] continue
-            if [ y > bounds.y + bounds.h ] break
-            lvc : live_slot[ cv, s, r, fs, lh, cw ]
+            if [ y + lh < vb.y ] continue
+            if [ y > vb.y + vb.h ] break
+            if [ wide ]
+                mark_line[ tc, mk, left, y, vb.w, lh ]
+                draw_seen[ tc, s, @s.screen[ r * s.cols ],
+                           s.row_drawable[ r ], left, round[ y ], lh,
+                           cw, s.scroll_x, vb.w ]
+                if [ mk == 2 ] tc.set_opacity[ 1.0 ]
+                continue
+            lvc : live_slot[ tc, s, r, fs, lh, cw ]
             if [ lvc && lvc.canvas ]
-                mark_line[ cv, mk, left, y, bounds.w, lh ]
-                cv.draw_canvas[ lvc.canvas, left, round[ y ],
+                mark_line[ tc, mk, left, y, vb.w, lh ]
+                tc.draw_canvas[ lvc.canvas, left, round[ y ],
                                 f32[ lvc.canvas.content_w ], lh ]
-                if [ mk == 2 ] cv.set_opacity[ 1.0 ]
+                if [ mk == 2 ] tc.set_opacity[ 1.0 ]
 
         if [ s.hover_link_line >= 0 ]
             uy : f32 [ top + f32[ s.hover_link_line ] * lh - s.scroll ]
-            if [ uy + lh > bounds.y && uy < bounds.y + bounds.h ]
+            if [ uy + lh > vb.y && uy < vb.y + vb.h ]
                 ux : f32 [ left + f32[ s.link_c0 ] * cw ]
                 uw  : f32 [ f32[ s.link_c1 - s.link_c0 ] * cw ]
-                cv.fill_color[ '#6cb6ff' ]
-                cv.stroke_width[ 0.0 ]
-                cv.rect_to[ ux, round[ uy + lh - 2.0 ], uw, 1.0 ]
+                tc.fill_color[ '#6cb6ff' ]
+                tc.stroke_width[ 0.0 ]
+                tc.rect_to[ ux, round[ uy + lh - 2.0 ], uw, 1.0 ]
 
-        cv.paint[]
+        tc.paint[]
         if [ s.cursor_visible ]
             cur_px : f32 [ left + f32[s.cx] * cw ]
             cur_py : f32 [ top + f32[base + s.cy] * lh - s.scroll ]
-            cv.fill_color [ '#ffffff99' ]
-            cv.stroke_width[ 0.0 ]
-            cv.rect_to     [ cur_px, cur_py, cw, lh ]
-            cv.paint[]
-        cv.clear_crop[]
+            tc.fill_color [ '#ffffff99' ]
+            tc.stroke_width[ 0.0 ]
+            tc.rect_to     [ cur_px, cur_py, cw, lh ]
+            tc.paint[]
+        tc.clear_crop[]
+        if [ wide ]
+            fl : f32 [ (s.scroll_x > 0.5) ? 48.0 : 0.0 ]
+            fr : f32 [ (s.scroll_x < s.max_x - 0.5) ? 48.0 : 0.0 ]
+            cv.draw_canvas_ramp[ tc, bounds.x, bounds.y, bounds.w,
+                                 bounds.h, 0.0, fr, 0.0, fl, 0.0, 0.0 ]
         return total_h
+
+# a line's columns that show in a view scrolled sx px across vw
+func draw_seen [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
+                 n: i32, left: f32, y: f32, lh: f32, cw: f32,
+                 sx: f32, vw: f32 ]
+    if [ n <= 0 || cw <= 0.0 ] return
+    c0 : i32 [ maxi[ i32[ sx / cw ] - 1, 0 ] ]
+    c1 : i32 [ mini[ i32[ (sx + vw) / cw ] + 2, n ] ]
+    if [ c1 <= c0 ] return
+    draw_cells[ cv, s, cells, c0, c1 - c0, left + f32[ c0 ] * cw, y,
+                lh, cw ]
+
+# a nowrap session's view canvas, sized to the view and cleared
+func view_of [ cv: Canvas, s: ConsoleSession, w: f32, h: f32 ]
+        -> Canvas
+    vw : i32 [ maxi[ i32[ ceil[ w ] ], 1 ] ]
+    vh : i32 [ maxi[ i32[ ceil[ h ] ], 1 ] ]
+    if [ !s.view ]
+        s.view = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8,
+                          width: vw, height: vh, load_existing: true,
+                          tag: 'cons' ]
+        s.view.update[]
+    el [ s.view.content_w != vw || s.view.content_h != vh ]
+        s.view.resize[ vw, vh ]
+    s.view.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+    return s.view
 
 # 2 = another instance's line: faded. the selected one's lines stay
 # plain
@@ -1545,7 +1640,7 @@ element Console
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
-        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x + s.scroll_x ]
         ln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
         cl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0,
                           s.line_get[ ln ].count ] ]
@@ -1654,7 +1749,7 @@ element Console
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
         rel_y : f32 [ ev.mouse.pos.y - ele.bounds.y ]
-        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x ]
+        rel_x : f32 [ ev.mouse.pos.x - ele.bounds.x + s.scroll_x ]
         hln : i32 [ clamp[ rel_y / lh, 0, s.line_count[] - 1 ] ]
         hcl : i32 [ clamp[ i32[ round[ rel_x / cw ] ], 0,
                            s.line_get[ hln ].count ] ]
@@ -1705,6 +1800,17 @@ element Console
         s : ConsoleSession session[]
         if [ !s ] return
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        # sideways: shift + wheel, or the wheel's own x
+        dx : f32 [ ev.mouse.wheel_delta.x ]
+        if [ ev.key.shift || (ux && ux.shift) ]
+            dx = dx + ev.mouse.wheel_delta.y
+        if [ s.nowrap && dx != 0.0 ]
+            cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
+            s.scroll_x = clamp[ s.scroll_x - dx * cw * 3.0, 0.0,
+                                s.max_x ]
+            pristine = false
+            ux.will_animate = true
+            return
         s.wheel_accum = s.wheel_accum - ev.mouse.wheel_delta.y * 3.0
         lines : i32 [ s.wheel_accum ]
         if [ lines != 0 ]

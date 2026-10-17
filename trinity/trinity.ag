@@ -269,6 +269,16 @@ func agent_shell_error [] -> symbol
 func agent_shell_close [ id: i32 ]
 func host_log_dir [] -> symbol
 
+# the apps view's sections, in their order: an app module names its
+# own (export software ['games'])
+enum SoftwareGroup
+    games:         0
+    creative:      1
+    everyday:      2
+    simulation:    3
+    developer:     4
+    communication: 5
+
 # a Launch member as it is declared, by reflection (props_of): what a
 # host shows as a control and sets back by name
 class Prop
@@ -1839,11 +1849,15 @@ abstract live_app media_app
     func destroy [ ]
         if [ destroyed ] return
         destroyed = true
+        # a quit, not a reload (which keeps the window): it leaves the
+        # screen first, and the process takes its memory back at the end
+        ending : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] == null ]
         if [ text_mode && w ]
             cwin : Window [ w ]
             cwin.console_input_close[]
         if [ w ]
             rwin : Window [ w ]
+            if [ ending ] rwin.set_shown[ false ]
             if [ rwin.root ]
                 rwin.root.unload_tree[]
                 rwin.root.release_tree[]
@@ -1851,6 +1865,7 @@ abstract live_app media_app
                 app : cast element [ rwin.app_object ]
                 app.unload_tree[]
                 app.release_tree[]
+                if [ ending ] return
                 app.elements = null
                 rwin.app_object = null
                 # process-owned (managed 0): never freed, so it releases
@@ -8414,6 +8429,9 @@ Control VolumeSlider
     intern dragging : bool
     # track inset = widest knob radius
     intern vol_inset : f32 [ 7.0 ]
+    # where on the knob the press took it: the drag keeps that place,
+    # so a 1 px move is a 1 px move (a press off the knob: 0, it jumps)
+    intern grab      : f32
 
     func set_from_x [ x: f32 ]
         track : f32 [ bounds.w - vol_inset * 2.0 - pad_l - pad_r ]
@@ -8432,13 +8450,20 @@ Control VolumeSlider
     public func on_press [ ev: Event ]
         dragging = true
         ux.set_capture[ a ]
-        set_from_x[ ev.mouse.pos.x ]
+        # the knob's middle now; within half the control's height of
+        # it, the press is on the knob
+        tw : f32 [ bounds.w - vol_inset * 2.0 - pad_l - pad_r ]
+        kx : f32 [ vol_inset + pad_l + tw * clamp[ value, 0.0, 1.0 ] ]
+        kh : f32 [ max[ bounds.h * 0.5, vol_inset ] ]
+        dx : f32 [ ev.mouse.pos.x - kx ]
+        grab = (dx >= -kh && dx <= kh) ? dx : 0.0
+        set_from_x[ ev.mouse.pos.x - grab ]
         ev.no_default     = true
         ev.no_propagation = true
 
     public func on_move [ ev: Event ]
         if [ !dragging ] return
-        set_from_x[ ev.mouse.pos.x ]
+        set_from_x[ ev.mouse.pos.x - grab ]
         ev.no_propagation = true
 
     public func on_release [ ev: Event ]

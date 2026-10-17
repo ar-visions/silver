@@ -61,6 +61,12 @@ class SpuEnv
         if [ out > 0x7FFF ] out = 0x7FFF
         return out
 
+    public func state_io [ s: StateIO ]
+        s.s32[ @counter ]
+        s.s32[ @rate ]
+        s.flag[ @decreasing ]
+        s.flag[ @exponential ]
+
 # a volume register: fixed, or sweeping by its own envelope
 class SpuSweep
     public env     : SpuEnv
@@ -91,6 +97,14 @@ class SpuSweep
         current = env.tick[ current ]
         if [ env.decreasing ] active = current > 0
         el                    active = current < 0x7FFF
+
+    public func state_io [ s: StateIO ]
+        env.state_io[ s ]
+        s.flag[ @active ]
+        s.flag[ @sweep ]
+        s.s32[ @level ]
+        s.s32[ @current ]
+        s.n32[ @raw ]
 
 class SpuVoice
     public spu        : Spu
@@ -312,6 +326,49 @@ class SpuVoice
         phase = ADSR_ATTACK
         adsr_vol = 0
         update_env[]
+
+    public func state_io [ s: StateIO ]
+        s.n32[ @start ]
+        s.n32[ @repeat ]
+        s.n32[ @addr ]
+        s.n32[ @rate ]
+        s.flag[ @has ]
+        s.flag[ @keep_loop ]
+        s.s32[ @last0 ]
+        s.s32[ @last1 ]
+        s.s32s[ @samples[ 0 ], 28 ]
+        s.s32s[ @prev[ 0 ], 3 ]
+        s.s32s[ @nib[ 0 ], 28 ]
+        s.s32[ @shift ]
+        s.s32[ @filter ]
+        s.flag[ @loop_end ]
+        s.flag[ @loop_rep ]
+        s.flag[ @loop_start ]
+        s.s32[ @att_rate ]
+        s.flag[ @att_exp ]
+        s.s32[ @dec_rate ]
+        s.s32[ @sus_level ]
+        s.flag[ @sus_exp ]
+        s.flag[ @sus_dec ]
+        s.s32[ @sus_rate ]
+        s.flag[ @rel_exp ]
+        s.s32[ @rel_rate ]
+        s.n32[ @adsr1 ]
+        s.n32[ @adsr2 ]
+        s.s32[ @phase ]
+        s.s32[ @adsr_vol ]
+        s.s32[ @last_vol ]
+        s.s32[ @target ]
+        env.state_io[ s ]
+        vol_l.state_io[ s ]
+        vol_r.state_io[ s ]
+        s.n32[ @counter ]
+        s.flag[ @pmon ]
+        s.flag[ @non ]
+        s.flag[ @eon ]
+        s.flag[ @kon ]
+        s.flag[ @koff ]
+        s.flag[ @endx ]
 
 class Spu
     public bus       : Bus
@@ -690,6 +747,47 @@ class Spu
             carry -= SPU_CYCLES
             sample[]
 
+    # sound RAM, the voices, the registers; what was waiting to be
+    # heard is dropped on a load
+    public func state_io [ s: StateIO ]
+        s.n16s[ @ram[ 0 ], SPU_RAM_HALVES ]
+        for [ v: SpuVoice ] in voices
+            v.state_io[ s ]
+        vol_l.state_io[ s ]
+        vol_r.state_io[ s ]
+        s.n32[ @cnt ]
+        s.flag[ @enabled ]
+        s.flag[ @unmute ]
+        s.flag[ @cd_on ]
+        s.flag[ @cd_reverb ]
+        s.s32[ @cd_vol_l ]
+        s.s32[ @cd_vol_r ]
+        s.n32[ @ext_vol_l ]
+        s.n32[ @ext_vol_r ]
+        s.n32[ @tr_mode ]
+        s.n32[ @tr_type ]
+        s.n32[ @tr_ctrl ]
+        s.n32[ @tr_addr ]
+        s.n32[ @tr_cur ]
+        s.flag[ @irq_on ]
+        s.flag[ @irq_flag ]
+        s.n32[ @irq_addr ]
+        s.s32[ @noise_step ]
+        s.s32[ @noise_shift ]
+        s.s32[ @noise_level ]
+        s.n32[ @noise_count ]
+        s.n32[ @capture_at ]
+        s.n16s[ @fifo[ 0 ], 32 ]
+        s.s32[ @fifo_n ]
+        s.s32[ @out_l ]
+        s.s32[ @out_r ]
+        rv.state_io[ s ]
+        s.s64[ @carry ]
+        if [ !s.saving ]
+            ring_lock.lock[]
+            ring_r = ring_w
+            ring_lock.unlock[]
+
 # the reverb: a work area in sound RAM, run at 22050 Hz
 class SpuReverb
     public spu       : Spu
@@ -861,3 +959,17 @@ class SpuReverb
         up[ 64 + (h | 32) ] = ur
         cur = (cur + 1) & 0x3FFFF
         if [ cur == 0 ] cur = base
+
+    public func state_io [ s: StateIO ]
+        s.flag[ @enable ]
+        s.s32[ @out_vol_l ]
+        s.s32[ @out_vol_r ]
+        s.n32[ @base_reg ]
+        s.n32s[ @regs[ 0 ], 32 ]
+        s.s32s[ @down[ 0 ], 256 ]
+        s.s32s[ @up[ 0 ], 128 ]
+        s.s32[ @pos ]
+        s.n32[ @base ]
+        s.n32[ @cur ]
+        s.s32[ @out_l ]
+        s.s32[ @out_r ]

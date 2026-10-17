@@ -1,4 +1,5 @@
 export 0.8.8
+export software ['games']
 export extensions ['.z64', '.n64', '.v64']
 export icon ['3d']
 

@@ -651,28 +651,10 @@ element SidePanel
         # with the system bar its toggles are in the tray: no foot bar
         sys : bool [ orb && orb.system_on[] ]
         body : string [ (sys) ? 'l0 t0 r0 b0' : 'l0 t0 r0 b1.06' ]
-        if [ orb && orb.side_tab == 'scenes' ]
-            # the cards, and under them the scene's own props
-            sp : string orb.scene_spec[]
-            ps : LaunchProps []
-            if [ sp.count > 0 ] Au.parse_agi[ null, sp.chars, ps ]
-            n : i32 [ (ps.props) ? ps.props.count : 0 ]
-            # the props' rows, as LaunchPanel makes them
-            ph : f32 [ f32[ (n > 0) ? n : 1 ] * 27.6 * ux_unit[ ux ] ]
-            grid : Elements []
-            grid['scene_grid'] = SceneGrid [
-                area: Region [ 'l0 t0 r0 b{ph}px' ] ]
-            grid['scene_props'] = LaunchPanel [ spec: sp, args: '',
-                inst: -1, live_vals: true, scene: true,
-                area: Region [ 'l0 b{ph}px r0 h{ph}px' ] ]
-            t['scene_body'] = element [
-                area: Region [ body ], elements: grid ]
-        el [ orb && orb.side_tab == 'wifi' ]
-            t['wifi_panel'] = WifiPanel [
-                area: Region [ body ] ]
-        el
-            t['instance_panel'] = InstancePanel [
-                area: Region [ body ] ]
+        if [ orb ]
+            sv : Elements orb.side_view[ orb.side_tab, body ]
+            for [ ve: element, vk: string ] in sv
+                t[ vk ] = ve
         # the toolbar: one group at its right end, reload then scenes
         # then props; the props toggle sits where the status bar's is
         if [ sys ] return t
@@ -701,7 +683,6 @@ Control SceneGrid
         area: l0 t0 r0 b0
     }
     mutable hov    : i32 [ -1 ]
-    mutable sy     : f32
     mutable cards  : vec FindHit
 
     # a card, as the navigator's: 152 x 148 at rest, with the font
@@ -720,19 +701,23 @@ Control SceneGrid
     func left_x [] -> f32
         return round[ (bounds.w - f32[ per_row[] ] * cell_w[]) * 0.5 ]
 
-    # the card under x y (the grid's own space), or -1
+    # the card under x y (the grid's content space: trinity adds the
+    # scroll to the pointer), or -1
     func card_at [ x: f32, y: f32 ] -> i32
         if [ !cards || !bounds ] return -1
         pr : i32 [ per_row[] ]
         x0 : f32 [ left_x[] ]
-        if [ x < x0 || y + sy < 0.0 ] return -1
+        if [ x < x0 || y < 0.0 ] return -1
         col : i32 [ (x - x0) / cell_w[] ]
-        row : i32 [ (y + sy) / cell_h[] ]
+        row : i32 [ y / cell_h[] ]
         if [ col >= pr ] return -1
         i : i32 [ row * pr + col ]
         return (i < cards.count) ? i : -1
 
     func on_move [ ev: Event ]
+        # the scrollbar's drag is trinity's
+        super.on_move[ ev ]
+        if [ sb_drag ] return
         h9 : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
         if [ h9 != hov ]
             hov      = h9
@@ -744,6 +729,10 @@ Control SceneGrid
             pristine = false
 
     func on_press [ ev: Event ]
+        # a press on the scrollbar drags it
+        if [ scroll_grab[ ev ] ]
+            ev.no_default = true
+            return
         orb : cast orbiter [ ux.app_object ]
         i : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
         if [ orb && i >= 0 ]
@@ -751,31 +740,501 @@ Control SceneGrid
             pristine = false
         ev.no_default = true
 
-    func on_wheel [ ev: Event ]
-        if [ !cards || !bounds ] return
-        rows : i32 [ (cards.count + per_row[] - 1) / per_row[] ]
-        smax : f32 [ f32[ rows ] * cell_h[] - bounds.h ]
-        sy += f32[ ev.mouse.wheel_delta.y ] * 26.0 * -1.0
-        if [ sy > smax ] sy = smax
-        if [ sy < 0.0 ] sy = 0.0
-        pristine = false
-
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return
         if [ !cards ] cards = orb.scene_cards[]
+        # trinity scrolls it (the wheel, the bar, scroll_fade's mask)
+        rows : i32 [ (cards.count + per_row[] - 1) / per_row[] ]
+        content_h = f32[ rows ] * cell_h[]
+        mx : f32 [ content_h - bounds.h ]
+        if [ mx < 0.0 ] mx = 0.0
+        if [ scroll.y > mx ]
+            scroll.y    = mx
+            scroll_goal = mx
         cv : Canvas w.screen
         pr : i32 [ per_row[] ]
         x0 : f32 [ left_x[] ]
         for [ i: i32 0, i < cards.count, i += 1 ]
-            ry : f32 [ f32[ i / pr ] * cell_h[] - sy ]
+            ry : f32 [ f32[ i / pr ] * cell_h[] - scroll.y ]
             if [ ry + cell_h[] < 0.0 || ry > bounds.h ] continue
             # draw_card's x is the content's left: the box starts 4px
             # before it
             cx : f32 [ x0 + f32[ i % pr ] * cell_w[] + 4.0 ]
             draw_card[ cv, orb, cards[ i ], cx, ry, cell_w[], cell_h[],
                        i == hov ]
+
+# the empty pane's apps: glass cards over the clear space, our app
+# modules, then the recommended (software/software.agi); trinity
+# scrolls it
+Control AppsGrid
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public pane : i32
+    mutable hov   : i32 [ -1 ]
+    # each card's rect in content space, ours first, as last drawn
+    mutable rx    : vec f32
+    mutable ry    : vec f32
+    mutable cw9   : f32
+    mutable ch9   : f32
+    # the icon tile's side; the name or its button sits under it
+    mutable tile  : f32
+    # the card clicked once: its name shows as Download while the
+    # grid has focus
+    mutable sel   : i32 [ -1 ]
+    # the pointer over that card's button
+    mutable on_btn : bool
+    # the card a press went down on, -1 none
+    mutable press_i : i32 [ -1 ]
+
+    # the cards in their order: each section of SoftwareGroup, ours
+    # first, then the recommended; heads holds each section's name
+    # and its first card
+    mutable shown : vec AppEntry
+    # an icon a card, made once with the list
+    mutable icons : vec AppIcon
+    mutable heads : vec string
+    mutable head_at : vec i32
+
+    func entry [ i: i32 ] -> AppEntry
+        return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
+
+    func gather [ orb: orbiter ]
+        shown   = vec AppEntry []
+        heads   = vec string []
+        head_at = vec i32 []
+        names : vec string []
+        et : Au_t typeid[ SoftwareGroup ]
+        for [ k: i32 0, k < et.members.count, k += 1 ]
+            ev : Au_t et.members.origin[ k ]
+            if [ ev && ev.member_type == AU_MEMBER_ENUMV ]
+                names.push[ string [ ev.ident ] ]
+        # names on the featured list with no module yet: last
+        names.push[ 'recommended' ]
+        names.push[ 'other' ]
+        ours : vec AppEntry orb.app_entries[]
+        for [ gn: string ] in names
+            start : i32 [ shown.count ]
+            for [ ae: AppEntry ] in ours
+                g : string [ (ae.group) ? ae.group : '' ]
+                known : bool [ false ]
+                for [ nn: string ] in names
+                    if [ nn == g ] known = true
+                if [ g == gn || (gn == 'other' && !known) ]
+                    shown.push[ ae ]
+            if [ shown.count > start ]
+                heads.push[ gn ]
+                head_at.push[ start ]
+        icons = vec AppIcon []
+        for [ ae: AppEntry ] in shown
+            icons.push[ AppIcon [ module: true, file: ae.file,
+                                  agi: ae.agi ] ]
+
+    # the card under x y in content space (trinity adds the scroll to
+    # the pointer), or -1
+    func card_at [ x: f32, y: f32 ] -> i32
+        if [ !rx ] return -1
+        for [ i: i32 0, i < rx.count, i += 1 ]
+            if [ x >= rx[ i ] && x < rx[ i ] + cw9 && y >= ry[ i ]
+                 && y < ry[ i ] + ch9 ]
+                return i
+        return -1
+
+    # the point is on card i's name row, under its tile
+    func in_name [ i: i32, x: f32, y: f32 ] -> bool
+        return i >= 0 && rx && i < rx.count && y >= ry[ i ] + tile
+            && x >= rx[ i ] && x < rx[ i ] + cw9
+
+    func on_move [ ev: Event ]
+        super.on_move[ ev ]
+        if [ sb_drag ] return
+        mx : f32 [ ev.mouse.pos.x ]
+        my : f32 [ ev.mouse.pos.y ]
+        over : i32 [ card_at[ mx, my ] ]
+        ob : bool [ over == sel && in_name[ over, mx, my ] ]
+        if [ over != hov || ob != on_btn ]
+            hov      = over
+            on_btn   = ob
+            pristine = false
+
+    func on_leave [ ev: Event ]
+        if [ hov >= 0 || on_btn ]
+            hov      = -1
+            on_btn   = false
+            pristine = false
+
+    # a press runs what is here; on one not installed the first
+    # press shows Download, a press on Download installs it
+    # a press marks the card; the release over the same card acts
+    func on_press [ ev: Event ]
+        if [ scroll_grab[ ev ] ]
+            ev.no_default = true
+            press_i = -1
+            return
+        ev.no_default = true
+        press_i = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+
+    func on_release [ ev: Event ]
+        was : i32 [ press_i ]
+        press_i = -1
+        # a scrollbar drag ends in trinity's own release
+        if [ sb_drag ]
+            super.on_release[ ev ]
+            return
+        orb : cast orbiter [ ux.app_object ]
+        mx : f32 [ ev.mouse.pos.x ]
+        my : f32 [ ev.mouse.pos.y ]
+        i : i32 [ card_at[ mx, my ] ]
+        # let go away from the card it went down on: no click
+        if [ i != was ] return
+        ae : AppEntry entry[ i ]
+        pristine = false
+        if [ !orb || !ae ]
+            sel = -1
+            return
+        here : bool [ ae.module && (!ae.built || ae.built.exists[]) ]
+        iw : string orb.install_word[ ae ]
+        busy : bool [ iw == 'starting' || iw == 'building' ]
+        if [ here ]
+            sel = -1
+            orb.apps_pick[ pane, ae ]
+        el [ busy ]
+            sel = -1
+            # its Cancel showing (shift over it, ctrl / cmd): stop it
+            if [ ux.cmd || ux.shift ] orb.install_cancel[ ae ]
+        el [ i == sel && focused && in_name[ i, mx, my ] ]
+            # only a module can be imported
+            if [ ae.module ]
+                sel = -1
+                orb.apps_pick[ pane, ae ]
+        el
+            sel = i
+            if [ ux ] ux.set_focus[ a ]
+
+    # a heading over a section
+    func heading [ cv: Canvas, w: Window, t: string, x: f32, y: f32 ]
+        un : f32 ux_unit[ w ]
+        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#b4aacb' ] ]
+        cv.draw_text[ t, rect [ x: x, y: y, w: 400.0 * un,
+                                h: 24.0 * un ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.set_font[ null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        if [ !shown ] gather[ orb ]
+        # a focus lost (a press elsewhere) puts the name back
+        if [ !focused && sel >= 0 ]
+            sel    = -1
+            on_btn = false
+        tile = round[ 76.0 * un ]
+        nh : f32 [ round[ 24.0 * un ] ]
+        cw9 = round[ 96.0 * un ]
+        ch9 = tile + round[ 6.0 * un ] + nh
+        gap : f32 [ round[ 14.0 * un ] ]
+        pad : f32 [ round[ 24.0 * un ] ]
+        hh  : f32 [ round[ 30.0 * un ] ]
+        pr : i32 [ i32[ (bounds.w - pad * 2.0 + gap) / (cw9 + gap) ] ]
+        if [ pr < 1 ] pr = 1
+        x0 : f32 [ round[ (bounds.w - f32[ pr ] * (cw9 + gap) + gap)
+                          * 0.5 ] ]
+        rx = vec f32 []
+        ry = vec f32 []
+        hys : vec f32 []
+        y : f32 [ pad ]
+        for [ h: i32 0, h < heads.count, h += 1 ]
+            if [ h > 0 ] y += gap
+            hys.push[ y ]
+            y += hh
+            s0 : i32 [ head_at[ h ] ]
+            s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
+                : shown.count ]
+            for [ i: i32 s0, i < s1, i += 1 ]
+                rx.push[ x0 + f32[ (i - s0) % pr ] * (cw9 + gap) ]
+                ry.push[ y + f32[ (i - s0) / pr ] * (ch9 + gap) ]
+            y += f32[ (s1 - s0 + pr - 1) / pr ] * (ch9 + gap)
+        content_h = y + pad
+        mx : f32 [ content_h - bounds.h ]
+        if [ mx < 0.0 ] mx = 0.0
+        if [ scroll.y > mx ]
+            scroll.y    = mx
+            scroll_goal = mx
+        sy : f32 [ scroll.y ]
+        for [ h: i32 0, h < heads.count, h += 1 ]
+            heading[ cv, w, heads[ h ], x0 + 4.0, hys[ h ] - sy ]
+        n : i32 [ rx.count ]
+        # the tile's corners: an ios icon's share of its side
+        cr : f32 [ round[ tile * 0.225 ] ]
+        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            cy : f32 [ ry[ i ] - sy ]
+            if [ cy + ch9 < 0.0 || cy > bounds.h ] continue
+            ae : AppEntry entry[ i ]
+            if [ !ae ] continue
+            tx : f32 [ rx[ i ] + round[ (cw9 - tile) * 0.5 ] ]
+            # here: runs or opens; else it is imported first
+            here : bool [ ae.module
+                && (!ae.built || ae.built.exists[]) ]
+            iw : string orb.install_word[ ae ]
+            busy : bool [ iw == 'starting' || iw == 'building' ]
+            failed : bool [ iw == 'failed' ]
+            chosen : bool [ i == sel && !here && !busy ]
+            draw_tile[ cv, w, i, tx, cy, cr, here, chosen ]
+            # the icon fills the tile, dim until it is here
+            ic : AppIcon icons[ i ]
+            isz : f32 [ round[ tile * 0.72 ] ]
+            cv.save[]
+            if [ !here ] cv.set_opacity[ (busy) ? 0.4 : 0.55 ]
+            ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
+                      round[ cy + (tile - isz) * 0.5 ], isz ]
+            cv.restore[]
+            # under the tile: the name, its Download button, or the
+            # build's progress in its place
+            ny : f32 [ cy + tile + round[ 6.0 * un ] ]
+            # Rule #12: shift over it, or ctrl / cmd for all, shows
+            # its Cancel in place of the progress
+            cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
+            if [ cxl ]
+                draw_cancel[ cv, fp, rx[ i ], ny, nh ]
+            el [ busy ]
+                draw_progress[ cv, un, rx[ i ], ny, nh,
+                               orb.install_frac[ ae ] ]
+            el [ chosen ]
+                draw_button[ cv, fp, rx[ i ], ny, nh, ae.module,
+                             failed ]
+            el
+                cv.set_font[ shared_font[ cv,
+                    'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+                cv.font_size[ f32[ fp ] ]
+                tc : '#ffffff99'
+                if [ here ] tc = '#ffffffdd'
+                nm : string ae.name
+                if [ failed ]
+                    tc = '#ff7a7add'
+                    nm = '{ae.name} failed'
+                cv.fill_color[ rgba [ tc ] ]
+                cv.draw_text[ nm, rect [ x: rx[ i ] + 2.0, y: ny,
+                    w: cw9 - 4.0, h: nh ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null ]
+                cv.set_font[ null ]
+
+    # the icon's rounded tile: glass when here, an outline when
+    # not; the chosen one takes the selected border
+    func draw_tile [ cv: Canvas, w: Window, i: i32, x: f32, y: f32,
+                     cr: f32, here: bool, chosen: bool ]
+        cv.save[]
+        cv.rounded[ cr, cr, cr, cr ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        if [ here ]
+            # half again the buttons' reach: the cards are larger
+            w.near_light_reach[ cv, a, 0.0, 0.0, 0.75 ]
+            cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ],
+                           w.near_y_fade ]
+            cv.box_shadow[ rgba [ '#8af2' ], 0.0, 0.0, 16.0, 0.0,
+                           true ]
+            cv.fill_color[ rgba [ (i == hov) ? '#ffffff1c'
+                : '#ffffff0c' ] ]
+            cv.stroke_color[ rgba [ '#ffffff1c' ] ]
+        el [ chosen ]
+            cv.fill_color[ rgba [ '#4d3dbc55' ] ]
+            cv.stroke_color[ rgba [ '#806bff' ] ]
+        el
+            cv.fill_color[ rgba [ (i == hov) ? '#ffffff08'
+                : '#0000' ] ]
+            cv.stroke_color[ rgba [ (i == hov) ? '#ffffff30'
+                : '#ffffff16' ] ]
+        cv.rect_to[ x, y, tile, tile ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
+
+    # the name's place as a button: Download (Retry after a
+    # failure); a name with no module yet cannot be imported
+    func draw_button [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32,
+                       can: bool, failed: bool ]
+        bw : f32 [ round[ cw9 * 0.86 ] ]
+        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        r : f32 [ h * 0.5 ]
+        fill : '#ffffff10'
+        if [ can ] fill = (on_btn) ? '#6a58e0' : '#4d3dbc'
+        cv.save[]
+        cv.rounded[ r, r, r, r ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.fill_color[ rgba [ fill ] ]
+        cv.stroke_color[ rgba [ (can) ? '#806bff' : '#ffffff1c' ] ]
+        cv.rect_to[ bx, y, bw, h ]
+        cv.paint[]
+        cv.restore[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ (can) ? '#ffffff' : '#ffffff66' ] ]
+        word : 'No module'
+        if [ can ] word = (failed) ? 'Retry' : 'Download'
+        cv.draw_text[ word, rect [ x: bx, y: y, w: bw, h: h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.set_font[ null ]
+
+    # an install's Cancel where its progress was: red
+    func draw_cancel [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32 ]
+        bw : f32 [ round[ cw9 * 0.86 ] ]
+        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        r : f32 [ h * 0.5 ]
+        cv.save[]
+        cv.rounded[ r, r, r, r ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.fill_color[ rgba [ '#a0303099' ] ]
+        cv.stroke_color[ rgba [ '#ff7a7a99' ] ]
+        cv.rect_to[ bx, y, bw, h ]
+        cv.paint[]
+        cv.restore[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ 'Cancel', rect [ x: bx, y: y, w: bw, h: h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.set_font[ null ]
+
+    # the build's progress where the name was; -1 not known yet
+    func draw_progress [ cv: Canvas, un: f32, x: f32, y: f32,
+                         h: f32, frac: f32 ]
+        bw : f32 [ round[ cw9 * 0.78 ] ]
+        bh : f32 [ round[ 5.0 * un ] ]
+        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        by : f32 [ y + round[ (h - bh) * 0.5 ] ]
+        r : f32 [ bh * 0.5 ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded[ r, r, r, r ]
+        cv.fill_color[ rgba [ '#ffffff1c' ] ]
+        cv.rect_to[ bx, by, bw, bh ]
+        cv.paint[]
+        fw : f32 [ bw * clamp[ frac, 0.0, 1.0 ] ]
+        if [ fw > 0.5 ]
+            cv.fill_color[ rgba [ '#c890ff' ] ]
+            cv.rect_to[ bx, by, max[ fw, bh ], bh ]
+            cv.paint[]
+        cv.restore[]
+
+# a pane's one status, left of find in its title: a word and a
+# fill to its fraction (a build's progress), the app compiling
+# (info), and errors
+element StatusLabel
+    no_cache : true
+    public word : string
+    public frac : f32 [ -1.0 ]
+    # a word to know, not a progress: the info look, filled
+    public info : bool
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        ins : f32 [ round[ bounds.h * 0.12 ] ]
+        bh : f32 [ bounds.h - ins * 2.0 ]
+        br : f32 [ bh * 0.5 ]
+        bw : f32 [ bounds.w - ins * 2.0 ]
+        cv.save[]
+        cv.rounded[ br, br, br, br ]
+        cv.fill_color[ rgba [ '#ffffff0c' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff1c' ] ]
+        cv.rect_to[ ins, ins, bw, bh ]
+        cv.paint[]
+        failed : bool [ word == 'failed' ]
+        if [ info ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ rgba [ '#23446699' ] ]
+            cv.rect_to[ ins, ins, bw, bh ]
+            cv.paint[]
+        el [ frac > 0.0 || failed ]
+            fw : f32 [ (failed) ? bw : max[ bh, bw * min[ frac, 1.0 ] ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.fill_color[ rgba [ (failed) ? '#a0303088'
+                : ((word == 'installed') ? '#3a8a5a99' : '#4d3dbc99') ] ]
+            cv.rect_to[ ins, ins, fw, bh ]
+            cv.paint[]
+        cv.restore[]
+        tx : string word
+        if [ word == 'building' && frac >= 0.0 ]
+            tx = 'building {i32[ frac * 100.0 ]}%'
+        # the bar's own 17 px words, as the system bar's
+        px : i32 [ i32[ round[ 17.0 * ux_unit[ w ] ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', px ] ]
+        cv.font_size[ f32[ px ] ]
+        cv.fill_color[ rgba [ '#e8e8ee' ] ]
+        cv.draw_text[ tx, rect [ x: ins, y: 0.0, w: bw,
+                                 h: bounds.h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.set_font[ null ]
+
+# a scene setting as one pill: its name, a colon, its value in the
+# accent; a press opens its choices in the row under it
+element PropChip
+    public name  : string
+    public value : string
+    public open  : bool
+
+    func on_enter [ ev: Event ]
+        pristine = false
+    func on_leave [ ev: Event ]
+        pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        rr : f32 [ bounds.h * 0.5 ]
+        cv.save[]
+        cv.rounded[ rr, rr, rr, rr ]
+        cv.fill_color[ rgba [ (open) ? '#4d3dbc77'
+            : ((hovered) ? '#ffffff1c' : '#ffffff10') ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ (open) ? '#c890ffaa' : '#ffffff1c' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+        px : i32 [ i32[ bounds.h * 0.5 ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', px ] ]
+        cv.font_size[ f32[ px ] ]
+        nt : '{name}: '
+        nw : f32 [ cv.measure_text[ nt ].w ]
+        vw : f32 [ cv.measure_text[ value ].w ]
+        x : f32 [ round[ (bounds.w - nw - vw) * 0.5 ] ]
+        if [ x < rr * 0.6 ] x = rr * 0.6
+        cv.fill_color[ rgba [ '#b4aacb' ] ]
+        cv.draw_text[ nt, rect [ x: x, y: 0.0, w: nw + 2.0,
+                                 h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+        cv.fill_color[ rgba [ '#e3c4ff' ] ]
+        cv.draw_text[ value, rect [ x: x + nw, y: 0.0,
+                                    w: bounds.w - x - nw - rr * 0.5,
+                                    h: bounds.h ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.set_font[ null ]
 
 Control InstancePanel
     style : CSS {

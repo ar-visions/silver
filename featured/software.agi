@@ -1,0 +1,7 @@
+# the software the apps view features, in its order: each a silver
+# module, featured/<name>/<name>.ag, which holds all else (its section,
+# icon, imports and build settings). a name shows once its module is
+# there
+featured: [ gedit, blender, inkscape, gimp, krita, audacity,
+	kdenlive, obs, firefox, thunderbird, libreoffice, vlc, vscode,
+	gitg, godot, signal ]

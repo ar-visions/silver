@@ -440,6 +440,8 @@ void platform_window_hide(platform_window* w) {
     [w->window orderOut:nil];
 }
 
+void platform_window_presented(platform_window* w, int pw, int ph) {}
+
 int platform_window_refresh_hz(platform_window* w) {
     NSScreen* s = w->window.screen ? w->window.screen : [NSScreen mainScreen];
     if (!s) return 60;
@@ -947,6 +949,7 @@ void platform_window_destroy(platform_window* w) { if (w) { w->window.hidden = Y
 void platform_window_show(platform_window* w) { [w->window makeKeyAndVisible]; }
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
+void platform_window_presented(platform_window* w, int pw, int ph) {}
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}

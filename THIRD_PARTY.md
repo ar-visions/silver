@@ -9,6 +9,32 @@ Keep it in step with the imports.
 
 | dependency | pinned | used by | source | license | authors |
 |---|---|---|---|---|---|
+| Node.js | 24.18.0 | featured/vscode | https://github.com/nodejs/node | MIT (bundled parts under their own licenses) | OpenJS Foundation and contributors |
+| libxkbfile | 1.1.3 | featured/vscode | https://gitlab.freedesktop.org/xorg/lib/libxkbfile | MIT | X.Org Foundation |
+| libsecret | 0.21.7 | featured/vscode | https://gitlab.gnome.org/GNOME/libsecret | LGPL-2.1-or-later | The libsecret authors |
+| MIT Kerberos | 1.21.3 | featured/vscode | https://github.com/krb5/krb5 | MIT (krb5 notice) | Massachusetts Institute of Technology |
+| Code - OSS | 1.142.0 | featured/vscode | https://github.com/microsoft/vscode | MIT | Microsoft Corporation |
+| wxWidgets | 3.2.8 | featured/audacity | https://github.com/wxWidgets/wxWidgets | wxWindows Library Licence 3.1 | Julian Smart, Vadim Zeitlin and contributors |
+| LAME | 3.100 | featured/audacity | https://lame.sourceforge.io | LGPL-2.0-or-later | The LAME project |
+| libogg | 1.3.5 | featured/audacity | https://xiph.org/ogg | BSD-3-Clause | Xiph.Org Foundation |
+| libvorbis | 1.3.7 | featured/audacity | https://xiph.org/vorbis | BSD-3-Clause | Xiph.Org Foundation |
+| FLAC | 1.4.3 | featured/audacity | https://xiph.org/flac | BSD-3-Clause (libFLAC) | Josh Coalson, Xiph.Org Foundation |
+| Opus | 1.5.2 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation, Skype, Octasic and others |
+| opusfile | 0.12 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation |
+| libsndfile | 1.2.2 | featured/audacity | https://github.com/libsndfile/libsndfile | LGPL-2.1-or-later | Erik de Castro Lopo and contributors |
+| libid3tag | 0.16.3 | featured/audacity | https://codeberg.org/tenacityteam/libid3tag | GPL-2.0-or-later | Underbit Technologies, Tenacity team |
+| WavPack | 5.7.0 | featured/audacity | https://www.wavpack.com | BSD-3-Clause | David Bryant |
+| PortMidi | 2.0.4 | featured/audacity | https://github.com/PortMidi/portmidi | MIT | Roger B. Dannenberg and contributors |
+| RapidJSON | 1.1.0 | featured/audacity | https://github.com/Tencent/rapidjson | MIT | THL A29 Limited (Tencent), Milo Yip |
+| Audacity | 3.7.9 | featured/audacity | https://github.com/audacity/audacity | GPL-3.0 (GPL-2.0-or-later parts) | Audacity Team, Muse Group |
+| libgedit-amtk | 5.11.0 | featured/gedit | https://gitlab.gnome.org/World/gedit/libgedit-amtk | LGPL-3.0-or-later | The gedit team |
+| libgedit-gfls | 0.5.0 | featured/gedit | https://gitlab.gnome.org/World/gedit/libgedit-gfls | LGPL-3.0-or-later | The gedit team |
+| libgedit-gtksourceview | 299.8.0 | featured/gedit | https://gitlab.gnome.org/World/gedit/libgedit-gtksourceview | LGPL-2.1-or-later | The gedit team, GtkSourceView authors |
+| libgedit-tepl | 6.15.0 | featured/gedit | https://gitlab.gnome.org/World/gedit/libgedit-tepl | LGPL-3.0-or-later | The gedit team |
+| libhandy | 1.8.3 | featured/gedit | https://gitlab.gnome.org/GNOME/libhandy | LGPL-2.1-or-later | Purism, GNOME |
+| libpeas | libpeas-1.36.0 | featured/gedit | https://gitlab.gnome.org/GNOME/libpeas | LGPL-2.1-or-later | GNOME |
+| gspell | 1.14.5 | featured/gedit | https://gitlab.gnome.org/GNOME/gspell | LGPL-2.1-or-later | GNOME |
+| gedit | 51.0 | featured/gedit | https://gitlab.gnome.org/GNOME/gedit | GPL-2.0-or-later | The gedit team |
 | FreeType | VER-2-13-3 | trinity | https://github.com/freetype/freetype | FreeType License (FTL); GPL-2.0 alternative | David Turner, Robert Wilhelm, Werner Lemberg and the FreeType project |
 | FriBidi | v1.0.16 | features | https://github.com/fribidi/fribidi | LGPL-2.1-or-later | Behdad Esfahbod, Dov Grobgeld, Roozbeh Pournader |
 | FAAC | 3aa4c6d | trinity (recording's AAC track, shared library) | https://github.com/knik0/faac | LGPL-2.1-or-later | M. Bakker, Krzysztof Nikiel and the FAAC contributors |
@@ -74,22 +100,9 @@ Keep it in step with the imports.
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps (white fill added) | orbiter/images/apps_grid.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: volume_up, volume_off (white fill added) | trinity/images/volume_up.svg, volume_off.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
-| Blender app icon | software/images/blender.svg | https://projects.blender.org/blender/blender/raw/branch/main/release/freedesktop/icons/scalable/apps/blender.svg | GPL-2.0-or-later (repo); Blender logo is a trademark of the Blender Foundation | Blender Foundation |
-| Inkscape app icon | software/images/inkscape.svg | https://gitlab.com/inkscape/inkscape/-/raw/master/share/icons/application/scalable/org.inkscape.Inkscape.svg | GPL-2.0-or-later (repo) | Inkscape project |
-| GIMP logo (Wilber) | software/images/gimp.svg | https://gitlab.gnome.org/GNOME/gimp-data/-/raw/main/images/logo/gimp-logo.svg | CC-BY-SA-4.0 | The GIMP team |
-| Krita app icon | software/images/krita.svg | https://invent.kde.org/graphics/krita/-/raw/master/krita/pics/branding/default/sc-apps-krita.svgz (unzipped) | GPL (repo) | Krita Foundation |
-| Audacity app icon | software/images/audacity.svg | https://raw.githubusercontent.com/audacity/audacity/master/images/audacity.svg | GPL-3.0-or-later (repo); Audacity name and logo are trademarks | Audacity team |
-| Kdenlive app icon | software/images/kdenlive.svg | https://invent.kde.org/multimedia/kdenlive/-/raw/master/data/icons/sc-apps-kdenlive.svg | GPL-3.0-or-later (repo) | Kdenlive team |
-| OBS Studio logo | software/images/obs.svg | https://raw.githubusercontent.com/obsproject/obs-studio/master/frontend/cmake/linux/icons/obs-logo-scalable.svg | GPL-2.0-or-later (repo); OBS name and logo are trademarks | OBS Project |
-| Firefox logo | software/images/firefox.svg | https://raw.githubusercontent.com/mozilla-firefox/firefox/main/browser/branding/official/content/about-logo.svg | MPL-2.0 file; Firefox name and logo are Mozilla trademarks | Mozilla |
-| Thunderbird icon | software/images/thunderbird.png | https://raw.githubusercontent.com/mozilla/releases-comm-central/master/mail/branding/thunderbird/default256.png | MPL-2.0 file; no trademark rights to Mozilla's names or logos | Mozilla / MZLA |
-| LibreOffice icon | software/images/libreoffice.svg | /usr/share/icons/hicolor/scalable/apps/libreoffice-startcenter.svg (as LibreOffice ships it) | MPL-2.0 (repo); LibreOffice name and logo are trademarks of The Document Foundation | The Document Foundation |
-| VLC icon | software/images/vlc.png | https://code.videolan.org/videolan/vlc/-/raw/master/share/icons/256x256/vlc.png | GPL-2.0-or-later (repo); VLC cone is a VideoLAN trademark | VideoLAN |
-| Code - OSS icon | software/images/code.png | https://raw.githubusercontent.com/microsoft/vscode/main/resources/linux/code.png | MIT (repo) | Microsoft |
-| Godot icon | software/images/godot.svg | https://raw.githubusercontent.com/godotengine/godot/master/misc/logo/icon.svg | CC-BY-4.0 | Andrea Calabró |
-| gitg icon | software/images/gitg.svg | https://gitlab.gnome.org/GNOME/gitg/-/raw/master/data/icons/org.gnome.gitg.svg | GPL-2.0 (repo) | GNOME gitg team |
-| Signal logo | software/images/signal.svg | https://raw.githubusercontent.com/signalapp/Signal-Desktop/main/images/signal-logo.svg | AGPL-3.0 (repo); Signal name and logo are trademarks | Signal Messenger |
+| gedit app icon | featured/gedit/images/icon.png | https://gitlab.gnome.org/GNOME/gedit/-/raw/51.0/data/icons/org.gnome.gedit-256x256.png | GPL-2.0-or-later (repo) | The gedit team |
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | Blender 4.5.14 LTS (Linux x64 release; run as a program, not linked) | aeon (blend.py reads .blend files into a project folder) | https://download.blender.org/release/Blender4.5/ | GPL-3.0-or-later | the Blender Foundation and the Blender community |
@@ -106,9 +119,12 @@ Keep it in step with the imports.
 | libtasn1 4.19.0 | aura | https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz | LGPL-2.1-or-later | Free Software Foundation |
 | libpsl 0.21.5 | aura | https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz | MIT | Tim Rühsen and contributors |
 | nghttp2 1.64.0 | aura | https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz | MIT | Tatsuhiro Tsujikawa and contributors |
-| GLib 2.84.4 | aura | https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz | LGPL-2.1-or-later | The GLib developers (GNOME) |
+| GLib 2.84.4 | aura, featured/gedit (with its GIRs) | https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz | LGPL-2.1-or-later | The GLib developers (GNOME) |
 | libsoup 3.6.5 | aura | https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz | LGPL-2.0-or-later | The libsoup developers (GNOME) |
 | glib-networking 2.80.1 | aura | https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz | LGPL-2.1-or-later | The glib-networking developers (GNOME) |
+| gobject-introspection 1.84.0 | featured/gedit | https://download.gnome.org/sources/gobject-introspection/1.84/gobject-introspection-1.84.0.tar.xz | LGPL-2.0-or-later (library), GPL-2.0-or-later (tools) | The GObject Introspection developers (GNOME) |
+| gsettings-desktop-schemas 47.1 | featured/gedit | https://download.gnome.org/sources/gsettings-desktop-schemas/47/gsettings-desktop-schemas-47.1.tar.xz | LGPL-2.1-or-later | GNOME |
+| enchant 2.8.2 | featured/gedit | https://github.com/rrthomas/enchant/releases/download/v2.8.2/enchant-2.8.2.tar.gz | LGPL-2.1-or-later | The Enchant developers |
 
 ## Scene assets (fetched at `silver --export scenes`, never committed)
 

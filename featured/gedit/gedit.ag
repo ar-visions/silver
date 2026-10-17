@@ -1,0 +1,110 @@
+# gedit: GNOME's text editor, built from its sources with every
+# library it needs; GTK3, ICU and libxml2 are the system's, glib ours
+export 51.0
+export software ['everyday']
+export icon ['gedit']
+export build none
+
+# glib's introspection tools: gedit writes its plugin API as GIR
+import gobject-introspection/1.84.0 from https://download.gnome.org/sources/gobject-introspection/1.84/gobject-introspection-1.84.0.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    -Dcairo=disabled
+    -Ddoctool=disabled
+
+# glib again, with its GIRs (GLib-2.0.gir and the rest): the system
+# has none, and aura's glib is built without them
+import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -Dtests=false
+    -Dintrospection=enabled
+    -Dman-pages=disabled
+    -Ddocumentation=false
+    -Dnls=disabled
+
+# the gedit libraries, each on the last
+import libgedit-amtk/5.11.0 from https://gitlab.gnome.org/World/gedit/libgedit-amtk
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgtk_doc=false
+    -Dtests=false
+import libgedit-gfls/0.5.0 from https://gitlab.gnome.org/World/gedit/libgedit-gfls
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgtk_doc=false
+    -Dtests=false
+import libgedit-gtksourceview/299.8.0 from https://gitlab.gnome.org/World/gedit/libgedit-gtksourceview
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgtk_doc=false
+    -Dtests=false
+import libhandy/1.8.3 from https://gitlab.gnome.org/GNOME/libhandy
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dvapi=false
+    -Dgtk_doc=false
+    -Dtests=false
+    -Dexamples=false
+    -Dglade_catalog=disabled
+import gsettings-desktop-schemas/47.1 from https://download.gnome.org/sources/gsettings-desktop-schemas/47/gsettings-desktop-schemas-47.1.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+import libgedit-tepl/6.15.0 from https://gitlab.gnome.org/World/gedit/libgedit-tepl
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgtk_doc=false
+    -Dtests=false
+
+# plugins (1.38 needs glib 2.85, unreleased; 1.36 takes ours)
+import libpeas/libpeas-1.36.0 from https://gitlab.gnome.org/GNOME/libpeas
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dlua51=false
+    -Dpython3=false
+    -Dvapi=false
+    -Dglade_catalog=false
+    -Ddemos=false
+    -Dgtk_doc=false
+
+# spelling (enchant's html pages need groff's html device: left out)
+import enchant/2.8.2 from https://github.com/rrthomas/enchant/releases/download/v2.8.2/enchant-2.8.2.tar.gz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    --disable-static
+    > make nodist_doc_DATA=
+    > make install nodist_doc_DATA=
+import gspell/1.14.5 from https://gitlab.gnome.org/GNOME/gspell
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgspell_app=false
+    -Dvapi=false
+    -Dgtk_doc=false
+    -Dtests=false
+
+# gedit itself, into install/bin
+import gedit/51.0 from https://gitlab.gnome.org/GNOME/gedit
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    XDG_DATA_DIRS={install}/share:/usr/share
+    -Dgtk_doc=false
+    -Duser_documentation=false

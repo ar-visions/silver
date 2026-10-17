@@ -454,10 +454,11 @@ static void apply_sizes(void) {
 // the shell takes the lock
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t       g_thread;
+static volatile int    g_stop, g_running;
 
 static void *loop_thread(void *arg) {
     struct pollfd pf = { .fd = wl_event_loop_get_fd(g_loop), .events = POLLIN };
-    for (;;) {
+    while (!g_stop) {
         poll(&pf, 1, 16);
         pthread_mutex_lock(&g_lock);
         apply_sizes();
@@ -540,7 +541,17 @@ WLC_API int wlc_create(int w, int h) {
     if (!wlr_backend_start(g_backend)) { fprintf(stderr, "wayland: backend would not start\n"); return 0; }
     fprintf(stderr, "wayland: display %s, windows open at %dx%d\n", g_socket, w, h);
     pthread_create(&g_thread, NULL, loop_thread, NULL);
+    g_running = 1;
     return 1;
+}
+
+// the library leaving (the shell closing): the thread ends first, or
+// it runs on in unmapped code
+__attribute__((destructor)) static void wlc_unload(void) {
+    if (!g_running) return;
+    g_stop = 1;
+    pthread_join(g_thread, NULL);
+    g_running = 0;
 }
 
 WLC_API const char *wlc_socket(void) { return g_socket ? g_socket : ""; }

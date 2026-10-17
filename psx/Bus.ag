@@ -268,3 +268,14 @@ class Bus
         gte.hit_y = sh_y[ i ]
         gte.hit_z = sh_z[ i ]
         return true
+
+    # RAM, the scratchpad, the interrupt and memory registers; the
+    # exact vertices kept for RAM words start over
+    public func state_io [ s: StateIO ]
+        s.bytes[ @ram[ 0 ], RAM_SIZE ]
+        s.bytes[ @scratch[ 0 ], 1024 ]
+        s.n32s[ @memctl[ 0 ], 16 ]
+        s.n32[ @i_stat ]
+        s.n32[ @i_mask ]
+        s.n32[ @cache_ctl ]
+        if [ !s.saving ] memset[ @sh_z[ 0 ], 0, 524544 * 4 ]

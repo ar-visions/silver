@@ -108,3 +108,15 @@ class Pad
         m : u32 [ u32[ 1 ] << bit ]
         if [ down ] buttons = buttons & ~m
         el          buttons = buttons | m
+
+    public func state_io [ s: StateIO ]
+        s.n32[ @mode ]
+        s.n32[ @ctrl ]
+        s.n32[ @baud ]
+        s.n32[ @buttons ]
+        s.n32[ @rx ]
+        s.flag[ @rx_full ]
+        s.flag[ @irq_bit ]
+        s.s32[ @step ]
+        s.s64[ @ack_at ]
+        s.flag[ @ack_low ]

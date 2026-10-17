@@ -119,3 +119,10 @@ class Dma
             if [ (head & 0x800000) != 0 ] break
             ea = head & 0x1FFFFC
         madr[ ch ] = 0xFFFFFF
+
+    public func state_io [ s: StateIO ]
+        s.n32s[ @madr[ 0 ], 7 ]
+        s.n32s[ @bcr[ 0 ], 7 ]
+        s.n32s[ @chcr[ 0 ], 7 ]
+        s.n32[ @dpcr ]
+        s.n32[ @dicr ]

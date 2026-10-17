@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <import>
 #include <limits.h>
 #include <posix.h>      // on windows this is the whole posix surface
@@ -1149,6 +1150,48 @@ static char progress_sub[640];
 static bool progress_sub_active = false;
 static int  progress_lines = 0;
 
+// a module made of imports alone says so: export build none
+static bool module_build_none(path f) {
+    FILE* fp = f ? fopen(f->chars, "r") : NULL;
+    if (!fp) return false;
+    char ln[512];
+    bool none = false;
+    while (fgets(ln, sizeof(ln), fp)) {
+        char* p = ln;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "export", 6) != 0) continue;
+        p += 6;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "build", 5) != 0) continue;
+        p += 5;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "none", 4) == 0) { none = true; break; }
+    }
+    fclose(fp);
+    return none;
+}
+
+// a build-none module's proof: install/build/<folder>.imported, named
+// by its folder (featured/vscode -> featured-vscode), one import a line
+static void imports_record(silver a) {
+    path   dir  = absolute(a->module_path);
+    cstr   root = SILVER;
+    size_t rl   = strlen(root);
+    cstr   rel  = dir->chars;
+    if (strncmp(rel, root, rl) == 0 && rel[rl] == '/') rel += rl + 1;
+    char key[512];
+    snprintf(key, sizeof(key), "%s", rel);
+    for (char* c = key; *c; c++) if (*c == '/') *c = '-';
+    path rec = f(path, "%o/build/%s.imported", a->install, key);
+    FILE* fp = fopen(rec->chars, "w");
+    if (!fp) return;
+    each(a->imports, import, im)
+        if (im->external_name)
+            fprintf(fp, "%s\n", ((string)im->external_name)->chars);
+    fclose(fp);
+    build_status(a, "[%o] imports built: %o", a->name, rec);
+}
+
 static void progress_bar(char* bar, int width, double frac) {
     static const char* parts[] =
         { "", "▏", "▎", "▍", "▌", "▋", "▊", "▉" };
@@ -1228,8 +1271,31 @@ extern void (*au_print_after)(void);
 #define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); \
     au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); } true; })
 
+// SILVER_EVENTS=<file>: the build as lines another program reads as
+// they land (orbiter's installs): module <name> <percent>, and
+// step <name> <phase> <percent>; terminal or not
+static FILE* progress_events() {
+    static bool  tried = false;
+    static FILE* ef    = NULL;
+    if (tried) return ef;
+    tried = true;
+    const char* p = getenv("SILVER_EVENTS");
+    if (p && p[0]) ef = fopen(p, "a");
+    return ef;
+}
+
+static void progress_event(const char* fmt, ...) {
+    FILE* ef = progress_events();
+    if (!ef) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(ef, fmt, ap);
+    va_end(ap);
+    fputc('\n', ef);
+    fflush(ef);
+}
+
 static void progress_draw(silver a, double frac) {
-    if (a->verbose || !isatty(2)) return;
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
     static silver last_mod   = null;
@@ -1238,6 +1304,9 @@ static void progress_draw(silver a, double frac) {
     if (a == last_mod && mille == last_mille) return;
     last_mod   = a;
     last_mille = mille;
+    progress_event("module %s %d", a->name ? a->name->chars : "",
+        (int)(frac * 100.0));
+    if (a->verbose || !isatty(2)) return;
     const int width = 14;
     char bar[512];
     progress_bar(bar, width, frac);
@@ -1248,6 +1317,8 @@ static void progress_draw(silver a, double frac) {
 
 static void progress_command(symbol module, symbol phase, int percent,
                              symbol detail, bool done) {
+    if (!done && module && phase)
+        progress_event("step %s %s %d", module, phase, percent);
     if (!isatty(2)) return;
     if (done) {
         progress_sub_active = false;
@@ -3704,6 +3775,9 @@ AU_EXPORT void silver_init(silver a) {
 
     // an uninstall walks the imports for their ledgers: that is a parse
     if (a->clean || a->uninstall) update_product = true;
+    // export build none: always walk the imports (each is cached by its
+    // own token); no product of ours decides it
+    if (module_build_none(a->module_file)) update_product = true;
     // instrumented code is not the cached product: a timing run rebuilds
     if (((aether)a)->timing || ((aether)a)->coverage) update_product = true;
     // the syntax map is a product too: cached runs must not leave a map
@@ -3923,16 +3997,21 @@ AU_EXPORT void silver_init(silver a) {
             // special-casing: an unchanged module already cache-hit above (no relink), so the
             // running app isn't needlessly relinked and the watcher isn't disturbed; only an
             // actually-changed module rebuilds (which the host would rebuild anyway).
-            build_product(a);
+            if (a->build_none) {
+                // its imports are built: the record is the proof
+                imports_record(a);
+            } else {
+                build_product(a);
 
-            // the export registry first: an export func may add to it
-            exporter(a);
+                // the export registry first: an export func may add to it
+                exporter(a);
 
-            silver_run_exports(a);
+                silver_run_exports(a);
 
-            silver_run_tests(a);
+                silver_run_tests(a);
 
-            silver_package(a);
+                silver_package(a);
+            }
 
         }
         on_error() {
@@ -3969,7 +4048,7 @@ AU_EXPORT void silver_init(silver a) {
     // a live app build+runs by default when invoked directly; --run passes extra
     // args to it. libraries and imported sub-modules never auto-run.
     // --export is a task: bake and stop, never launch
-    if (!a->export) silver_live_run(a);
+    if (!a->export && !a->build_none) silver_live_run(a);
 }
 
 
@@ -9258,8 +9337,13 @@ static void checkout_progress_line(checkout_progress_t* p) {
     int percent = checkout_line_percent(p->line);
     if (percent >= 0 && percent != p->percent) {
         p->percent = percent;
-        progress_command((symbol)p->label->chars, p->phase,
-            percent, null, false);
+        // verbose: the output is on screen; the events still go out
+        if (p->verbose)
+            progress_event("step %s %s %d", p->label->chars, p->phase,
+                percent);
+        else
+            progress_command((symbol)p->label->chars, p->phase,
+                percent, null, false);
     }
 }
 
@@ -9268,9 +9352,8 @@ static bool checkout_output(void* ctx, cstr buf, ssize_t bytes) {
     if (p->verbose) {
         fwrite(buf, 1, (size_t)bytes, stdout);
         fflush(stdout);
-        return true;
-    }
-    append_count(p->output, buf, (int)bytes);
+    } else
+        append_count(p->output, buf, (int)bytes);
     for (ssize_t i = 0; i < bytes; i++) {
         char c = buf[i];
         if (c == '\r' || c == '\n') {
@@ -9296,6 +9379,8 @@ static int checkout_exec(silver a, string label,
     };
     if (!a->verbose)
         progress_command((symbol)label->chars, phase, -1, null, false);
+    else
+        progress_event("step %s %s -1", label->chars, phase);
     int rc = command_exec_hook(cmd, a->verbose, true, checkout_output, &p);
     checkout_progress_line(&p);
     if (!a->verbose)
@@ -9648,6 +9733,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cd(project_f);
         each(prebuild, string, cmd) {
             string icmd = interpolate(cmd, (Au)a);
+            // the import's env lines reach its > commands too
+            if (cenv && len(cenv))
+                icmd = f(string, "export %o; %o", cenv, icmd);
             checkout_verify(a, label, "prebuild", "prebuild",
                 (command)icmd);
         }
@@ -9683,12 +9771,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
         import_build(a, label, cenv, build_f, false, true);
     } else if (is_gn) {
-        cstr is_debug = "false";
-        checkout_verify(a, label, "configure", "gen",
-            f(command, "gn gen %o --args='is_debug=%s is_official_build=true %o'",
-              build_f, is_debug, config));
-        checkout_verify(a, label, "build", "ninja",
-            f(command, "ninja -C %o -j8", build_f));
+        // > lines are the build; gn only when there are none
+        if (!(prebuild && len(prebuild))) {
+            cstr is_debug = "false";
+            checkout_verify(a, label, "configure", "gen",
+                f(command, "gn gen %o --args='is_debug=%s is_official_build=true %o'",
+                  build_f, is_debug, config));
+            checkout_verify(a, label, "build", "ninja",
+                f(command, "ninja -C %o -j8", build_f));
+        }
     } else if (is_rust) {
         string x_rust = (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) ?
             f(string, "--target %s ", platform_triple(a)) : string("");
@@ -11407,6 +11498,11 @@ enode parse_export(silver a) {
             if (!e2->areas)
                 e2->areas = map(hsize, 8);
             set(e2->areas, (Au)area, (Au)a(interpolate(val, (Au)a)));
+            return e_noop(a, null);
+        }
+        // export build none: the module is its imports, nothing to compile
+        if (eq(area, "build") && read_if(a, "none")) {
+            a->build_none = true;
             return e_noop(a, null);
         }
         validate(read_if(a, "["), "expected [ or : after export %o", area);

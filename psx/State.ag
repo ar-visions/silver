@@ -1,0 +1,55 @@
+# a machine's state, one routine a device for both ways: each field
+# listed once is written on a save and read back on a load
+extend psx
+
+# room for a state: RAM, VRAM, sound RAM and the rest
+STATE_MAX : i64 [ 8388608 ]
+# 'PSXS' and the layout's version
+STATE_TAG : u32 [ 0x53585350 ]
+STATE_VER : u32 [ 1 ]
+
+class StateIO
+    # true: fields go into buf; false: they come out of it
+    public saving : bool
+    public buf    : new u8
+    public pos    : i64
+    # a read past the end, or a write with no room: the state is bad
+    public bad    : bool
+
+    func init []
+        buf = new u8 [ STATE_MAX ]
+
+    # n bytes at p, either way
+    func move [ p: handle, n: i64 ]
+        if [ bad || pos + n > STATE_MAX ]
+            bad = true
+            return
+        if [ saving ] memcpy[ @buf[ pos ], p, n ]
+        el            memcpy[ p, @buf[ pos ], n ]
+        pos += n
+
+    public func n32s [ p: @u32, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 4 ]
+    public func s32s [ p: @i32, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 4 ]
+    public func s64s [ p: @i64, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 8 ]
+    public func reals [ p: @f32, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 4 ]
+    public func n16s [ p: @u16, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 2 ]
+    public func bytes [ p: @u8, n: i32 ]
+        move[ handle[ p ], i64[ n ] ]
+    public func flags [ p: @bool, n: i32 ]
+        move[ handle[ p ], i64[ n ] ]
+
+    public func n32 [ p: @u32 ]
+        move[ handle[ p ], 4 ]
+    public func s32 [ p: @i32 ]
+        move[ handle[ p ], 4 ]
+    public func s64 [ p: @i64 ]
+        move[ handle[ p ], 8 ]
+    public func real [ p: @f32 ]
+        move[ handle[ p ], 4 ]
+    public func flag [ p: @bool ]
+        move[ handle[ p ], 1 ]

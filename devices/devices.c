@@ -311,6 +311,7 @@ void platform_window_destroy(platform_window* w) {
 void platform_window_show(platform_window* w) { ShowWindow(w->hwnd, SW_SHOW); SetForegroundWindow(w->hwnd); }
 void platform_window_hide(platform_window* w) { ShowWindow(w->hwnd, SW_HIDE); }
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
+void platform_window_presented(platform_window* w, int pw, int ph) {}
 
 void platform_window_set_title(platform_window* w, const char* t) {
     WCHAR* wt = to_wide(t); SetWindowTextW(w->hwnd, wt); free(wt);
@@ -944,6 +945,7 @@ void platform_window_destroy(platform_window* w) { if (w) { if (g_win == w) g_wi
 void platform_window_show(platform_window* w) {}
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
+void platform_window_presented(platform_window* w, int pw, int ph) {}
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
@@ -1010,6 +1012,7 @@ int platform_peer_poll(void* out, int max) { return 0; }
 // ================================================================ linux / xcb
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
+#include <xcb/sync.h>
 #include <X11/keysym.h>
 #include <alsa/asoundlib.h>
 #include <fcntl.h>
@@ -1053,6 +1056,11 @@ struct platform_window {
     // xdnd: the source offering a drop, and whether it offers file uris
     xcb_window_t       xdnd_src;
     bool               xdnd_uris;
+    // _NET_WM_SYNC_REQUEST: the wm shows a new size only once a frame
+    // at that size is out; the value it asked for, owed till then
+    xcb_sync_counter_t sync_counter;
+    uint64_t           sync_value;
+    bool               sync_owed;
     platform_window*   next;
 };
 
@@ -1601,6 +1609,7 @@ static xcb_generic_event_t* next_event(void) {
     g_pending = NULL;
     return e ? e : xcb_poll_for_event(g_conn);
 }
+static xcb_atom_t A_NET_WM_SYNC_REQUEST, A_NET_WM_SYNC_REQUEST_COUNTER;
 static xcb_atom_t A_WM_PROTOCOLS, A_WM_DELETE, A_NET_WM_STATE, A_NET_WM_STATE_FULLSCREEN,
                   A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL, A_PNG;
 
@@ -1829,6 +1838,12 @@ static void handle(xcb_generic_event_t* ev) {
             platform_window* w = find(e->window);
             if (!w) break;
             if (e->type == A_WM_PROTOCOLS && e->data.data32[0] == A_WM_DELETE) w->should_close = true;
+            else if (e->type == A_WM_PROTOCOLS
+                     && e->data.data32[0] == A_NET_WM_SYNC_REQUEST) {
+                w->sync_value = (uint64_t)e->data.data32[2]
+                              | ((uint64_t)e->data.data32[3] << 32);
+                w->sync_owed  = true;
+            }
             // xdnd: enter lists the offered types (three inline, more in a
             // property); position asks whether we take it; drop hands it over
             else if (e->type == A_XDND_ENTER) {
@@ -1985,6 +2000,8 @@ bool platform_init(void) {
     fetch_keymap();
     A_WM_PROTOCOLS = atom("WM_PROTOCOLS");
     A_WM_DELETE = atom("WM_DELETE_WINDOW");
+    A_NET_WM_SYNC_REQUEST = atom("_NET_WM_SYNC_REQUEST");
+    A_NET_WM_SYNC_REQUEST_COUNTER = atom("_NET_WM_SYNC_REQUEST_COUNTER");
     A_NET_WM_STATE = atom("_NET_WM_STATE");
     A_NET_WM_STATE_FULLSCREEN = atom("_NET_WM_STATE_FULLSCREEN");
     A_CLIPBOARD = atom("CLIPBOARD");
@@ -2046,7 +2063,15 @@ platform_window* platform_window_create(int width, int height, const char* title
         XCB_EVENT_MASK_LEAVE_WINDOW | XCB_EVENT_MASK_STRUCTURE_NOTIFY | XCB_EVENT_MASK_FOCUS_CHANGE };
     xcb_create_window(g_conn, XCB_COPY_FROM_PARENT, w->win, g_screen->root, 0, 0, width, height, 0,
         XCB_WINDOW_CLASS_INPUT_OUTPUT, g_screen->root_visual, mask, values);
-    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_WM_PROTOCOLS, XCB_ATOM_ATOM, 32, 1, &A_WM_DELETE);
+    xcb_atom_t protos[2] = { A_WM_DELETE, A_NET_WM_SYNC_REQUEST };
+    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_WM_PROTOCOLS, XCB_ATOM_ATOM, 32, 2, protos);
+    // the counter the wm waits on before it shows a resized window
+    xcb_sync_initialize(g_conn, XCB_SYNC_MAJOR_VERSION, XCB_SYNC_MINOR_VERSION);
+    w->sync_counter = xcb_generate_id(g_conn);
+    xcb_sync_int64_t zero = { 0, 0 };
+    xcb_sync_create_counter(g_conn, w->sync_counter, zero);
+    xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_NET_WM_SYNC_REQUEST_COUNTER,
+        XCB_ATOM_CARDINAL, 32, 1, &w->sync_counter);
     // accept file drops (xdnd protocol 5)
     uint32_t xdnd_ver = 5;
     xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_XDND_AWARE, XCB_ATOM_ATOM, 32, 1, &xdnd_ver);
@@ -2062,6 +2087,7 @@ void platform_window_destroy(platform_window* w) {
     for (platform_window** p = &g_windows; *p; p = &(*p)->next) if (*p == w) { *p = w->next; break; }
     if (!g_kms) {
         if (w->cursor) xcb_free_cursor(g_conn, w->cursor);
+        if (w->sync_counter) xcb_sync_destroy_counter(g_conn, w->sync_counter);
         xcb_destroy_window(g_conn, w->win);
         xcb_flush(g_conn);
     }
@@ -2071,6 +2097,18 @@ void platform_window_destroy(platform_window* w) {
 
 void platform_window_show(platform_window* w) { if (g_kms) return; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
 void platform_window_hide(platform_window* w) { if (g_kms) return; xcb_unmap_window(g_conn, w->win); xcb_flush(g_conn); }
+// a frame of pw x ph went out: a resize the wm waits on is answered
+// once the frame is the window's size
+void platform_window_presented(platform_window* w, int pw, int ph) {
+    if (g_kms || !w || !w->sync_owed) return;
+    if (pw != w->width || ph != w->height) return;
+    xcb_sync_int64_t v = { (int32_t)(w->sync_value >> 32),
+                           (uint32_t)(w->sync_value & 0xffffffffu) };
+    xcb_sync_set_counter(g_conn, w->sync_counter, v);
+    xcb_flush(g_conn);
+    w->sync_owed = false;
+}
+
 // the fastest active output's refresh rate (dot clock / total pixels)
 int  platform_window_refresh_hz(platform_window* w) {
     if (g_kms) return g_drm_mode.vrefresh > 0 ? (int)g_drm_mode.vrefresh : 60;

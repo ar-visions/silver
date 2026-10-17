@@ -712,9 +712,30 @@ static int supervise_wait(int argc, char** argv, const char* appname,
     }
 }
 
+#ifdef __linux__
+#include <sys/socket.h>
+#include <sys/un.h>
+// a crashed app is frozen with its streams open: the sound server
+// waits on it and every program's sound stops. its connections to
+// the server go first (getpeername and shutdown are signal-safe)
+static void drop_sound_sockets(void) {
+    for (int fd = 3; fd < 4096; fd++) {
+        struct sockaddr_un sa;
+        socklen_t n = sizeof(sa);
+        if (getpeername(fd, (struct sockaddr*)&sa, &n) != 0) continue;
+        if (sa.sun_family != AF_UNIX) continue;
+        if (strstr(sa.sun_path, "pipewire") || strstr(sa.sun_path, "pulse"))
+            shutdown(fd, SHUT_RDWR);
+    }
+}
+#endif
+
 static void crash_handler(int sig, siginfo_t* si, void* ucv) {
     void* frames[64];
     int   nframes = 0;
+#ifdef __linux__
+    drop_sound_sockets();
+#endif
     // the faulting pc from the context is the one address that is always
     // right, and the unwinder below can itself fault (the guest did): say
     // the pc FIRST, straight to stderr, then unwind

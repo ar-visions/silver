@@ -143,6 +143,8 @@ ifdef [ apple ]
         public sample_rate : i32 [ 48000 ]
         public channels    : i32 [ 2 ]
         public buffer_size : sz  [ 1024 ]
+        # its own level, 0..1; 0 from the moment the app closes
+        public volume      : f32 [ 1.0 ]
         public device      : string
         public active      : bool
         public buffer      : @i16
@@ -187,6 +189,7 @@ ifdef [ apple ]
 
         func write [ frames: i32 ] -> none
             if [ ! active ] return
+            audio_level[ buffer, frames * channels, a ]
             for [ used - freed[0] >= 4 ]
                 usleep[ 500 ]
             b     : AudioQueueBufferRef [ aq_bufs[ next ] ]
@@ -279,6 +282,8 @@ el [ windows ]
         public sample_rate : i32 [ 48000 ]
         public channels    : i32 [ 2 ]
         public buffer_size : sz  [ 1024 ]
+        # its own level, 0..1; 0 from the moment the app closes
+        public volume      : f32 [ 1.0 ]
         public device      : string
         public active      : bool
         public buffer      : @i16
@@ -295,6 +300,7 @@ el [ windows ]
 
         func write [ frames: i32 ] -> none
             if [ ! pcm_handle ] return
+            audio_level[ buffer, frames * channels, a ]
             wr : i32 [ wasapi_out_write[ pcm_handle, buffer, frames ] ]
             host_audio_put[ host_slot[], buffer, frames, sample_rate,
                             channels ]
@@ -359,6 +365,8 @@ el [ android ]
         public sample_rate : i32 [ 48000 ]
         public channels    : i32 [ 2 ]
         public buffer_size : sz  [ 1024 ]
+        # its own level, 0..1; 0 from the moment the app closes
+        public volume      : f32 [ 1.0 ]
         public device      : string
         public active      : bool
         public buffer      : @i16
@@ -395,6 +403,7 @@ el [ android ]
 
         func write [ frames: i32 ] -> none
             if [ !stream ] return
+            audio_level[ buffer, frames * channels, a ]
             AAudioStream_write[ stream, buffer, frames, 1000000000 ]
             host_audio_put[ host_slot[], buffer, frames, sample_rate,
                             channels ]
@@ -514,6 +523,8 @@ el
         public sample_rate : i32 [ 48000 ]
         public channels    : i32 [ 2 ]
         public buffer_size : sz  [ 1024 ]
+        # its own level, 0..1; 0 from the moment the app closes
+        public volume      : f32 [ 1.0 ]
         public device      : string
         public active      : bool
         public buffer      : @i16
@@ -521,6 +532,9 @@ el
         intern xruns       : i64
         intern shorts      : i64
         intern writes      : i64
+        # orbiter has played our ring: when it stops (the pane is
+        # closing) we stay silent, never a stream of our own
+        intern hosted      : bool
 
         func open [] -> bool
             buffer = calloc[ 1, buffer_size * channels * 2 ]
@@ -573,15 +587,23 @@ el
             return ok
 
         func write [ frames: i32 ] -> none
-            # closing: no more sound, and the caller's loop idles
+            # closing: the level goes to 0, the host's ring takes a
+            # block of silence, the stream stops; the caller's loop
+            # idles
             if [ audio_quiet ]
+                if [ active && buffer ]
+                    audio_level[ buffer, frames * channels, a ]
+                    host_audio_put[ host_slot[], buffer, frames,
+                                    sample_rate, channels ]
                 close[]
                 usleep[ 10000 ]
                 return
             if [ ! active ] return
+            audio_level[ buffer, frames * channels, a ]
             host_audio_put[ host_slot[], buffer, frames, sample_rate,
                             channels ]
             if [ host_audio_played[ host_slot[] ] != 0 ]
+                hosted = true
                 # a frozen app's open stream stalls the system's sound
                 if [ pcm_handle ]
                     snd_pcm_drop[ pcm_handle ]
@@ -589,6 +611,11 @@ el
                     pcm_handle = null
                 host_audio_pace[ host_slot[], i32[ buffer_size ] ]
                 writes += 1
+                return
+            if [ hosted ]
+                # a block's time passes, as a write would take it
+                us : i64 [ i64[ frames ] * 1000000 / sample_rate ]
+                usleep[ u32[ us ] ]
                 return
             if [ !pcm_handle && !pcm_open[] ] return
             wr : i64 [ snd_pcm_writei[ pcm_handle, buffer, frames ] ]
@@ -623,6 +650,17 @@ audio_quiet : bool
 # the host calls it before it frees the app
 func spectra_quiet [] -> none
     audio_quiet = true
+
+# an output's block at its level: silent once the app is closing
+func audio_level [ buf: @i16, n: i32, out: AudioOut ]
+    if [ audio_quiet ] out.volume = 0.0
+    v : f32 [ out.volume ]
+    if [ v >= 1.0 ] return
+    if [ v <= 0.0 ]
+        memset[ buf, 0, n * 2 ]
+        return
+    for [ i: i32 0, i < n, i += 1 ]
+        buf[ i ] = i16[ f32[ buf[ i ] ] * v ]
 
 # decoded PCM, interleaved S16
 class AudioClip

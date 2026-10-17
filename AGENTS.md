@@ -1426,16 +1426,37 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Seen hidden (GTK 4 and GTK 3 test apps): File / View in the bar,
    no header or menu bar in the window, Dark checked after a pick,
    New and Quit reached the app. NOT driven: a Qt app (none here).
-24. IN PROGRESS (Kalen, Oct 16) recommended software, an agi module:
-   software/software.agi (18 entries of type Software: name, group
-   creative / everyday / developer / communication, about, icon,
-   source repo, build system, license, buildable) and
-   software/images (15 icons, each from the app's own repo; in
-   THIRD_PARTY.md). Kalen: an app installs by silver import, built
-   from source. Discord, Slack and Zoom are closed source: no source
-   to build, no icon (buildable: false). OPEN: the Software class
-   and the apps view that reads it (the dock's grid button); one
-   import a buildable app, versions pinned when written.
+24. IN PROGRESS (Kalen, Oct 16-17) the apps view and featured software.
+   Everything is built from silver: no system programs (PATH) in the
+   apps view or the navigator's search (they slowed every search).
+   trinity: enum SoftwareGroup, the sections in order (games creative
+   everyday simulation developer communication). A module names its
+   section by `export software ['games']` (psx, n64, asnes, rgen games;
+   aeon creative; aura everyday; launch simulation).
+   featured/ (Kalen, Oct 17): software.agi is names only (`featured:
+   [ gedit, blender, ... ]`, the order shown); each is a silver module
+   featured/<name>/<name>.ag holding all else: its section, icon
+   (images/icon.png), every dependency as an import with its build
+   settings. A name shows once its module is there. Discord, Slack and
+   Zoom are off the list (closed source).
+   orbiter: an empty pane ('Open') shows AppsGrid (NodeList.ag): glass
+   cards over the clear space, a heading a section; ours (exports with
+   software:, at silver's root or featured/), then each featured name
+   by its module's source; dim until built (a program module's
+   install/bin/<name>); a press runs a built program (XDG_DATA_DIRS gets
+   install/share first: its schemas), else opens the module. The
+   title's apps button (moved off the dock) hides / shows the grid.
+   gedit BUILT (Oct 17): featured/gedit, gedit 51.0 on our glib (again,
+   with GIRs) and gobject-introspection 1.84, libgedit-amtk / gfls /
+   gtksourceview / tepl, libhandy, gsettings-desktop-schemas, libpeas
+   1.36 (1.38 needs glib 2.85), enchant (its groff html pages skipped),
+   gspell; GTK3, ICU, libxml2 the system's. install/bin/gedit runs
+   (--version 51.0). Not seen: its window in a pane (hidden run).
+   The README fetch, USER:PROJECT, the README import button and its
+   console were built and removed (Kalen: the module is the center).
+   OPEN silver: an existing checkout keeps its version when an import's
+   version changes (libpeas stayed at 1.38.1: the checkout was deleted).
+   OPEN: modules for the other featured names.
 25. BUILT, not seen (Kalen, Oct 16) an app with no window menu of
    its own (a trinity app) gets one in the system bar named for it
    (orbiter own_menu_sync, own_menu, own_pick): Show code / Show app,
@@ -1483,6 +1504,61 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    could win (MenuDrawer's w10.91 over ExchangeDrawer's). It takes
    only the nearest class that styles that member now (block_depth).
    `silver --test trinity` exit 0. Every trinity app at a restart.
+30. DONE (Oct 16, Kalen: closing orbiter or an app with sound is
+   terribly slow) measured hidden, quit over the socket to exit:
+   - psx with sound 1262 ms and a SIGSEGV: nothing stopped its
+     sound thread at a quit (only a disc change did). on_unload
+     and dealloc call unboot: 350 ms, no crash.
+   - orbiter 2200 ms and a SIGSEGV: wayland's display thread ran
+     on after its library was unloaded. wayland.c's destructor
+     stops and joins it: 1000 ms, no crash.
+   - then 200 ms clearing orbiter's file index and lists, 300 ms
+     trinity freeing every object: a quit (no SILVER_RELOAD_SAVE)
+     skips both (media_app.destroy returns after unload_tree and
+     release_tree; reloads free as before): 580 ms.
+   Left: ~250 ms in NVIDIA's own teardown at exit (its ICD's
+   ioctls). trinity changed: every trinity app at its next build.
+   Then (Kalen: every spectra app halted the system's sound at
+   shutdown, a short buffer repeating; background audio stopped
+   too): a supervised app that crashes is frozen by silver-host's
+   crash handler (SIGSTOP, for lldb) with its PipeWire stream
+   open, and PipeWire waits on it. Both crashes at close are
+   fixed (above); the handler now shuts its sockets to pipewire /
+   pulse first (drop_sound_sockets). Checked with a C stand-in:
+   its node left the graph at the freeze, not at the kill. A
+   clean psx quit (pw-top): quantum 128 -> 2048, no new xruns,
+   Firefox unbroken. spectra: AudioOut.volume (0..1, audio_level
+   on every block), 0 once closing; the last block to the host's
+   ring is silence. A closing window hides first (media_app
+   destroy, quits only).
+31. BUILT, seen hidden (Kalen, Oct 16: the top right only the menu,
+   the date left of it in the power button's look; the views and the
+   rest in a menu, GNOME's quick settings as the model) the system
+   bar's right end is BarClock (the date) and sys_menu; either opens
+   SystemDrawer (SystemBar.ag; Rule #13's drawer, from the bar's right
+   end, 12 units wide, the same blurred ground): a row of round
+   buttons (reload when ready, scenes, the side panel; power at the
+   right, restart with ctrl / cmd or shift over it), the sound (mute,
+   slider; out of the bottom bar, as is the clock), a Wi-Fi tile (its
+   mark and the network; opens the side panel's Wi-Fi), a tile per
+   tray app (its icon and name; a press is its action, or its menu).
+   Seen hidden: the bar, the menu open, scenes lit from it, the Wi-Fi
+   tile opening the panel and shutting the menu, a press outside
+   shutting it. Not seen: tray tiles (no tray app in the run).
+   Then (Kalen): all round (RoundTab: AltTab with a radius 999 edge;
+   the slider a pill). The view buttons (scenes, instances) and the
+   Wi-Fi tile show their view in the menu under the tiles (sys_view;
+   orbiter.side_view builds it for the side panel and the menu), the
+   lit one again puts it away. Seen hidden: scene cards and props,
+   the Wi-Fi list, the instance tabs, each in the menu.
+   The scene list scrolls by trinity (content_h, scroll_goal ease,
+   scroll_fade 24 top and bottom). The scene settings are chips
+   (PropChip, NodeList.ag: 'name: value', the value in the accent, two
+   a row); a press opens its choices under it as RoundTab pills
+   (scene_open), a pick sets it (scene_prop_set). Seen hidden: stage
+   opened, frost picked, chip and pill followed.
+   OPEN silver: `for [ v: element, k: string ] in f[ .. ]` over a
+   call's map result fails LLVM verify (GEP indices); a local first.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.
@@ -8207,6 +8283,48 @@ CD audio). In order:
    colour table, clamped to the polygon's own UV box; clear,
    opaque and semi texels counted apart (cutouts, two-pass
    blends). Sprites and 2D stay sharp. Gpu.filter turns it off.
+15. OPEN (Oct 16, Kalen: breaks in the far road, worse cars) the
+   word table (Gte near_*) was 4096 slots, no probing: GTE words
+   overwrote each other. Now 32768, 32 probes: in the attract
+   demo vertices with no exact value 209k -> 88k (the rest 2D),
+   mixed polygons 108k -> 8.3k. The lines remain: on frame 2300
+   1x has none, high res has thin lines (blue, near black) across
+   the road and the cars; whole-pixel vertices at high res have
+   none; perspective textures are not the cause. Found: the game
+   transforms each road segment apart, so a shared corner is
+   computed several times (163.4 .. 164.0 across one point).
+   Tried and removed: a weld (no change), skipping triangles of
+   no area in whole pixels (removed real road).
+16. BUILT (Oct 16, Kalen) free camera, O: off, live, frozen.
+   Exact vertices go back to camera space (H, OFX, OFY) and are
+   seen from the camera (WASD, shift x4, mouse look locked; a
+   click relocks). Frozen replays the commands of the last whole
+   frame (kept between display flips that move it) with the
+   drawing state it began with, and shows the buffer they draw:
+   the game sets the next frame's area at a list's end. Checked
+   hidden on frame 2300 (mouse lock off for the test): at rest
+   live and frozen equal the plain picture; W moved 2466 units
+   in. 2D (sky, HUD) stays put; culled faces stay missing; the
+   game's back-to-front order is kept (no depth buffer yet).
+   Then (Kalen: the cut took too much): a polygon with a corner
+   behind the camera was dropped whole; now each triangle is cut
+   at the near plane (16 units), colour and uv carried, a cut
+   corner making a quad (cam_tri); a polygon of exact and whole-
+   pixel corners together is not drawn in camera mode (the long
+   streaks). Seen hidden: the road reaches the bottom flying in.
+   OPEN: ground under the road draws over it (the game's order),
+   the cars' back faces (NCLIP).
+17. DONE (Oct 16, Kalen) save states: P saves, L loads, and the
+   app menu's Save state / Load state (Actions), into <disc>.state
+   beside the cue. psx/State.ag StateIO writes or reads; each
+   device's state_io lists its fields once for both ways (Cpu,
+   Bus RAM + scratchpad, Gte, Dma, Timers, Pad, Cdrom, Spu with
+   its voices, sweeps and reverb, PsxGpu registers and VRAM read
+   back at 1x, put back at the scale). The exact-vertex tables and
+   the sound ring start over on a load. A save waits for no VRAM
+   upload in flight. 4.7 MB. Checked hidden: loaded in the same
+   run, the shot 0.4 s on equals the shot 0.4 s after the save (0
+   pixels); loaded into a fresh process, the race goes on.
 
 ## Active work: launch and landing (Oct 7 2026)
 

@@ -19,6 +19,10 @@ DEPTH_COPY : f32 [ 17.0 ]
 # win 4, misc 4
 VERT_FLOATS : i32 [ 28 ]
 VERT_MAX    : i32 [ 196608 ]
+# a frame's commands kept for the frozen camera, in words
+REC_MAX     : i32 [ 1048576 ]
+# the free camera's near plane (world units): triangles are cut there
+CAM_NEAR    : f32 [ 16.0 ]
 
 # every primitive: positions in VRAM pixels, textures from the
 # VRAM copy by raw texel fetch, 5-bit output and the mask bit
@@ -370,6 +374,27 @@ class PsxGpu
     public filter   : bool [ true ]
     # VRAM's byte order is the window's: blue first when BGRA
     public bgra     : bool
+    # the free camera: place and turn in the game's camera space
+    public cam_on    : bool
+    public cam_x     : f32
+    public cam_y     : f32
+    public cam_z     : f32
+    public cam_yaw   : f32
+    public cam_pitch : f32
+    # the commands since the last flip, and those of the shown frame
+    public cur_w     : new u32
+    public cur_at    : new u32
+    public cur_n     : i32
+    public done_w    : new u32
+    public done_at   : new u32
+    public done_n    : i32
+    public replaying : bool
+    # frozen: show the buffer the replay draws, not the game's choice
+    public show_drawn : bool
+    # the drawing state each list began with: the game sets the next
+    # frame's area and offset at a list's end
+    public st_cur    : new i32
+    public st_done   : new i32
 
     func init []
         fifo = new u32 [ 16 ]
@@ -381,6 +406,103 @@ class PsxGpu
         boxes = new i32 [ 128 * 4 ]
         area_x1 = 1023
         area_y1 = 511
+        cur_w = new u32 [ REC_MAX ]
+        cur_at = new u32 [ REC_MAX ]
+        done_w = new u32 [ REC_MAX ]
+        done_at = new u32 [ REC_MAX ]
+        st_cur = new i32 [ 12 ]
+        st_done = new i32 [ 12 ]
+
+    # an exact corner moved into the free camera's space, in place
+    func cam_space [ k: i32, xs: @f32, ys: @f32, zs: @f32 ]
+        h : f32 [ f32[ gte.ctrl[ 26 ] & 0xFFFF ] ]
+        if [ h <= 0.0 ] return
+        ofx : f32 [ f32[ i32[ gte.ctrl[ 24 ] ] ] / 65536.0 ]
+        ofy : f32 [ f32[ i32[ gte.ctrl[ 25 ] ] ] / 65536.0 ]
+        z : f32 [ zs[ k ] ]
+        dx : f32 [ (xs[ k ] - f32[ off_x ] - ofx) * z / h - cam_x ]
+        dy : f32 [ (ys[ k ] - f32[ off_y ] - ofy) * z / h - cam_y ]
+        dz : f32 [ z - cam_z ]
+        cy : f32 [ cos[ cam_yaw ] ]
+        sy : f32 [ sin[ cam_yaw ] ]
+        cp : f32 [ cos[ cam_pitch ] ]
+        sp : f32 [ sin[ cam_pitch ] ]
+        z1 : f32 [ sy * dx + cy * dz ]
+        xs[ k ] = cy * dx - sy * dz
+        ys[ k ] = cp * dy - sp * z1
+        zs[ k ] = sp * dy + cp * z1
+
+    # one channel of two colours, t of the way
+    func mix_ch [ from: u32, to: u32, sh: u32, t: f32 ] -> u32
+        ca : f32 [ f32[ (from >> sh) & 0xFF ] ]
+        cb : f32 [ f32[ (to >> sh) & 0xFF ] ]
+        return u32[ ca + (cb - ca) * t + 0.5 ] << sh
+
+    # a triangle in the camera's space: the part in front of the near
+    # plane, projected and drawn (a cut corner makes it a quad)
+    func cam_tri [ xs: @f32, ys: @f32, zs: @f32, cs: @u32, us: @f32,
+                   vs: @f32, ka: i32, kb: i32, kc: i32, page: u32,
+                   clut: u32, depth: i32, raw: bool, blend: i32,
+                   split: bool, dith: f32 ]
+        ids : local i32 [ 3 ]
+        ids[ 0 ] = ka
+        ids[ 1 ] = kb
+        ids[ 2 ] = kc
+        ox : local f32 [ 4 ]
+        oy : local f32 [ 4 ]
+        oz : local f32 [ 4 ]
+        oc : local u32 [ 4 ]
+        ou : local f32 [ 4 ]
+        ov : local f32 [ 4 ]
+        n : i32 [ 0 ]
+        for [ e: i32 0, e < 3, e += 1 ]
+            i : i32 [ ids[ e ] ]
+            j : i32 [ ids[ (e + 1) % 3 ] ]
+            front_i : bool [ zs[ i ] >= CAM_NEAR ]
+            front_j : bool [ zs[ j ] >= CAM_NEAR ]
+            if [ front_i ]
+                ox[ n ] = xs[ i ]
+                oy[ n ] = ys[ i ]
+                oz[ n ] = zs[ i ]
+                oc[ n ] = cs[ i ]
+                ou[ n ] = us[ i ]
+                ov[ n ] = vs[ i ]
+                n += 1
+            if [ front_i != front_j ]
+                t : f32 [ (CAM_NEAR - zs[ i ]) / (zs[ j ] - zs[ i ]) ]
+                ox[ n ] = xs[ i ] + (xs[ j ] - xs[ i ]) * t
+                oy[ n ] = ys[ i ] + (ys[ j ] - ys[ i ]) * t
+                oz[ n ] = CAM_NEAR
+                oc[ n ] = mix_ch[ cs[ i ], cs[ j ], 0, t ]
+                    | mix_ch[ cs[ i ], cs[ j ], 8, t ]
+                    | mix_ch[ cs[ i ], cs[ j ], 16, t ]
+                ou[ n ] = us[ i ] + (us[ j ] - us[ i ]) * t
+                ov[ n ] = vs[ i ] + (vs[ j ] - vs[ i ]) * t
+                n += 1
+        if [ n < 3 ] return
+        h : f32 [ f32[ gte.ctrl[ 26 ] & 0xFFFF ] ]
+        ofx : f32 [ f32[ i32[ gte.ctrl[ 24 ] ] ] / 65536.0 ]
+        ofy : f32 [ f32[ i32[ gte.ctrl[ 25 ] ] ] / 65536.0 ]
+        for [ m: i32 0, m < n, m += 1 ]
+            ox[ m ] = ofx + ox[ m ] * h / oz[ m ] + f32[ off_x ]
+            oy[ m ] = ofy + oy[ m ] * h / oz[ m ] + f32[ off_y ]
+        tri[ ox, oy, oz, oc, ou, ov, 0, 1, 2, page, clut, depth, raw,
+             blend, split, dith ]
+        if [ n == 4 ]
+            tri[ ox, oy, oz, oc, ou, ov, 0, 2, 3, page, clut, depth,
+                 raw, blend, split, dith ]
+
+    # the shown frame drawn again, from the free camera
+    public func replay []
+        if [ done_n == 0 ] return
+        fifo_n = 0
+        img_left = 0
+        polyline = false
+        replaying = true
+        state_put[ st_done ]
+        for [ i: i32 0, i < done_n, i += 1 ]
+            gp0[ done_w[ i ], done_at[ i ] ]
+        replaying = false
 
     # ---- trinity
 
@@ -760,6 +882,10 @@ class PsxGpu
 
     # w came from RAM at `at` (DMA), else 0xFFFFFFFF
     public func gp0 [ w: u32, at: u32 ]
+        if [ !replaying && cur_n < REC_MAX ]
+            cur_w[ cur_n ] = w
+            cur_at[ cur_n ] = at
+            cur_n += 1
         if [ img_left > 0 ]
             image_word[ w ]
             return
@@ -823,6 +949,8 @@ class PsxGpu
         i : i32 [ 1 ]
         page : u32 [ texpage ]
         clut : u32 [ 0 ]
+        # corners in the free camera's space
+        seen : i32 [ 0 ]
         for [ k: i32 0, k < nv, k += 1 ]
             cs[ k ] = (shade && k > 0) ? fifo[ i ] : fifo[ 0 ]
             if [ shade && k > 0 ] i += 1
@@ -839,6 +967,9 @@ class PsxGpu
                 xs[ k ] = gte.hit_x + f32[ off_x ]
                 ys[ k ] = gte.hit_y + f32[ off_y ]
                 zs[ k ] = gte.hit_z
+                if [ cam_on ]
+                    cam_space[ k, xs, ys, zs ]
+                    seen += 1
             i += 1
             if [ tex ]
                 uvw : u32 [ fifo[ i ] ]
@@ -850,10 +981,19 @@ class PsxGpu
         if [ tex ]
             # a textured polygon sets the texture page it uses
             texpage = (texpage & 0xF600) | (page & 0x9FF)
+        # some corners moved and some not: no shape to draw
+        if [ seen > 0 && seen < nv ] return
         depth : i32 [ (tex) ? depth_of[ page ] : 0 ]
         blend : i32 [ (semi) ? semi_mode[ page ] : BLEND_OPAQUE ]
         dith : f32 [ (dither && (shade || (tex && !raw))) ? 1.0 : 0.0 ]
         if [ tex ] texture_reads[ page, clut, depth ]
+        if [ seen > 0 ]
+            cam_tri[ xs, ys, zs, cs, us, vs, 0, 1, 2, page, clut, depth,
+                     raw, blend, tex && semi, dith ]
+            if [ quad ]
+                cam_tri[ xs, ys, zs, cs, us, vs, 1, 2, 3, page, clut,
+                         depth, raw, blend, tex && semi, dith ]
+            return
         tri[ xs, ys, zs, cs, us, vs, 0, 1, 2, page, clut, depth, raw,
              blend, tex && semi, dith ]
         if [ quad ]
@@ -1208,8 +1348,12 @@ class PsxGpu
         el [ c == 0x03 ]     disp_off = (w & 1) != 0
         el [ c == 0x04 ]     dma_dir = w & 3
         el [ c == 0x05 ]
-            disp_x = w & 0x3FE
-            disp_y = (w >> 10) & 0x1FF
+            nx : u32 [ w & 0x3FE ]
+            ny : u32 [ (w >> 10) & 0x1FF ]
+            moved : bool [ nx != disp_x || ny != disp_y ]
+            disp_x = nx
+            disp_y = ny
+            if [ moved ] flip[]
         el [ c == 0x06 ]     hrange = w & 0xFFFFFF
         el [ c == 0x07 ]     vrange = w & 0xFFFFF
         el [ c == 0x08 ]     dmode = w & 0xFF
@@ -1218,6 +1362,47 @@ class PsxGpu
             rd_i = 0
             rd_n = 1
             rd_buf[ 0 ] = ((w & 7) == 7) ? 2 : 0
+
+    # a new frame shown: its commands are kept, the next start
+    func flip []
+        if [ replaying ] return
+        for [ i: i32 0, i < cur_n, i += 1 ]
+            done_w[ i ] = cur_w[ i ]
+            done_at[ i ] = cur_at[ i ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            st_done[ i ] = st_cur[ i ]
+        done_n = cur_n
+        cur_n = 0
+        state_keep[ st_cur ]
+
+    # the drawing state into s, or back from it
+    func state_keep [ s: @i32 ]
+        s[ 0 ] = i32[ texpage ]
+        s[ 1 ] = (dither) ? 1 : 0
+        s[ 2 ] = (draw_disp) ? 1 : 0
+        s[ 3 ] = i32[ tex_win ]
+        s[ 4 ] = area_x0
+        s[ 5 ] = area_y0
+        s[ 6 ] = area_x1
+        s[ 7 ] = area_y1
+        s[ 8 ] = off_x
+        s[ 9 ] = off_y
+        s[ 10 ] = (mask_set) ? 1 : 0
+        s[ 11 ] = (mask_test) ? 1 : 0
+
+    func state_put [ s: @i32 ]
+        texpage = u32[ s[ 0 ] ]
+        dither = s[ 1 ] != 0
+        draw_disp = s[ 2 ] != 0
+        tex_win = u32[ s[ 3 ] ]
+        area_x0 = s[ 4 ]
+        area_y0 = s[ 5 ]
+        area_x1 = s[ 6 ]
+        area_y1 = s[ 7 ]
+        off_x = s[ 8 ]
+        off_y = s[ 9 ]
+        mask_set = s[ 10 ] != 0
+        mask_test = s[ 11 ] != 0
 
     # the width and height the display shows, from GP1 0x08
     public func shown_w [] -> i32
@@ -1241,10 +1426,65 @@ class PsxGpu
         dw : i32 [ shown_w[] * scale ]
         dh : i32 [ shown_h[] * scale ]
         if [ disp_r.width != dw || disp_r.height != dh ] build_display[]
-        disp_sh.area = vec4f [ f32[ disp_x ], f32[ disp_y ],
+        sx : u32 [ (show_drawn) ? u32[ st_done[ 4 ] ] : disp_x ]
+        sy : u32 [ (show_drawn) ? u32[ st_done[ 5 ] ] : disp_y ]
+        disp_sh.area = vec4f [ f32[ sx ], f32[ sy ],
                                f32[ shown_w[] ], f32[ shown_h[] ] ]
         disp_sh.fmt = vec4f [ ((dmode & 0x10) != 0) ? 1.0 : 0.0,
                               f32[ scale ], 0.0, 0.0 ]
         disp_r.draw[]
         disp_r.sync_fence[]
         return disp_r.color
+
+    # the drawing state and VRAM at its native size; VRAM goes back
+    # at the scale it is drawn at
+    public func state_io [ s: StateIO ]
+        s.n32s[ @fifo[ 0 ], 16 ]
+        s.n32s[ @fifo_at[ 0 ], 16 ]
+        s.s32[ @fifo_n ]
+        s.s32[ @need ]
+        s.s32[ @img_left ]
+        s.s32[ @img_x ]
+        s.s32[ @img_y ]
+        s.s32[ @img_w ]
+        s.s32[ @img_h ]
+        s.s32[ @img_i ]
+        s.s32[ @rd_n ]
+        s.s32[ @rd_i ]
+        s.n32s[ @rd_buf[ 0 ], rd_n ]
+        s.flag[ @polyline ]
+        s.flag[ @poly_shade ]
+        s.flag[ @poly_semi ]
+        s.n32[ @poly_col ]
+        s.n32[ @poly_xy ]
+        s.n32[ @texpage ]
+        s.flag[ @dither ]
+        s.flag[ @draw_disp ]
+        s.flag[ @mask_set ]
+        s.flag[ @mask_test ]
+        s.n32[ @tex_win ]
+        s.s32[ @area_x0 ]
+        s.s32[ @area_y0 ]
+        s.s32[ @area_x1 ]
+        s.s32[ @area_y1 ]
+        s.s32[ @off_x ]
+        s.s32[ @off_y ]
+        s.flag[ @disp_off ]
+        s.n32[ @dma_dir ]
+        s.n32[ @disp_x ]
+        s.n32[ @disp_y ]
+        s.n32[ @hrange ]
+        s.n32[ @vrange ]
+        s.n32[ @dmode ]
+        s.flag[ @irq_on ]
+        s.s32[ @line ]
+        s.flag[ @vblank ]
+        s.flag[ @field ]
+        s.s64[ @packets ]
+        if [ s.saving ] get_native[ 0, 0, 1024, 512 ]
+        s.bytes[ @img_buf[ 0 ], 1024 * 512 * 4 ]
+        if [ !s.saving ]
+            put_native[ 0, 0, 1024, 512 ]
+            mark[ 0, 0, 1023, 511 ]
+            cur_n = 0
+            done_n = 0

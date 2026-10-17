@@ -1,6 +1,7 @@
 # psx: a PlayStation. The CPU, its devices, and the GPU drawing
 # through trinity alone; OpenBIOS (PCSX-Redux, MIT) boots it
 export 0.1.0
+export software ['games']
 export extensions ['.cue']
 export icon ['3d']
 
@@ -32,6 +33,7 @@ import Spu
 import Pad
 import Mdec
 import Gte
+import State
 
 # NTSC: the CPU clock, one scanline, the lines of a frame
 CPU_HZ       : i64 [ 33868800 ]
@@ -62,6 +64,14 @@ element psx : trinity
     mutable sound_on : bool
     # the sound thread, joined when the machine goes
     mutable sound_tid : u64
+    # P / L, or the host's menu: taken at the next frame's edge
+    mutable save_req : bool
+    mutable load_req : bool
+    # the free camera (O): 0 off, 1 live, 2 frozen on the shown frame
+    mutable cam_mode : i32
+    # WASD held, and the last camera step's clock
+    mutable cam_keys : i32
+    mutable cam_us   : i64
     # frames owed by the clock, and the clock's last reading
     mutable owed     : f64
     mutable last_us  : i64
@@ -76,6 +86,74 @@ element psx : trinity
         booted = false
         failed = false
         frames = 0
+
+    # the host's menu: kept beside the disc, taken on the next frame
+    public [ Action ] func save_state []
+        save_req = true
+
+    public [ Action ] func load_state []
+        load_req = true
+
+    func state_file [] -> path
+        return disc.change_ext[ 'state' ]
+
+    # every device, in one order both ways
+    func state_all [ s: StateIO ]
+        tag : u32 [ STATE_TAG ]
+        ver : u32 [ STATE_VER ]
+        s.n32[ @tag ]
+        s.n32[ @ver ]
+        if [ tag != STATE_TAG || ver != STATE_VER ]
+            s.bad = true
+            return
+        s.s64[ @frames ]
+        cpu.state_io[ s ]
+        bus.state_io[ s ]
+        cpu.gte.state_io[ s ]
+        bus.dma.state_io[ s ]
+        bus.timers.state_io[ s ]
+        bus.pad.state_io[ s ]
+        bus.cd.state_io[ s ]
+        bus.spu.state_io[ s ]
+        bus.gpu.state_io[ s ]
+
+    # the whole machine into <disc>.state
+    func state_save [] -> bool
+        s : StateIO [ saving: true ]
+        state_all[ s ]
+        if [ s.bad ] return false
+        sp : path state_file[]
+        f : @FILE [ fopen[ sp.chars, 'wb' ] ]
+        if [ !f ] return false
+        fwrite[ @s.buf[ 0 ], 1, s.pos, f ]
+        fclose[ f ]
+        log 'psx: state saved, {s.pos} bytes, {sp}'
+        return true
+
+    # the machine as saved: it goes on from that frame
+    func state_load [] -> bool
+        sp : path state_file[]
+        f : @FILE [ fopen[ sp.chars, 'rb' ] ]
+        if [ !f ]
+            log 'psx: no state at {sp}'
+            return false
+        s : StateIO [ saving: false ]
+        fread[ @s.buf[ 0 ], 1, STATE_MAX, f ]
+        fclose[ f ]
+        state_all[ s ]
+        if [ s.bad ]
+            log 'psx: {sp} is not a state of this version'
+            return false
+        cpu.gte.frame = frames
+        log 'psx: state loaded, {sp}'
+        return true
+
+    # closing: the sound thread stops before the machine goes
+    public func on_unload []
+        unboot[]
+
+    func dealloc []
+        unboot[]
 
     # OpenBIOS, as the import built it into our share folder
     func load_bios [] -> bool
@@ -178,6 +256,26 @@ element psx : trinity
         if [ !bus ] return
         code : i32 [ ev.key.unicode ]
         down : bool [ ev.key.state ]
+        if [ down && code == 79 ]
+            cam_cycle[]
+            return
+        if [ down && code == 80 ]
+            save_req = true
+            return
+        if [ down && code == 76 ]
+            load_req = true
+            return
+        if [ cam_mode > 0 ]
+            # W A S D, shift faster: the camera's, not the pad's
+            kb : i32 [ 0 ]
+            if   [ code == 87 ]  kb = 1
+            el [ code == 83 ]  kb = 2
+            el [ code == 65 ]  kb = 4
+            el [ code == 68 ]  kb = 8
+            el [ code == 340 ] kb = 16
+            if [ kb != 0 ]
+                cam_keys = (down) ? (cam_keys | kb) : (cam_keys & ~kb)
+                return
         bit : i32 [ -1 ]
         if   [ code == 265 ] bit = 4
         el [ code == 262 ] bit = 5
@@ -195,6 +293,60 @@ element psx : trinity
         el [ code == 51 ]  bit = 9
         if [ bit >= 0 ] bus.pad.press[ bit, down ]
 
+    # O: off, live, frozen, off; the mouse looks while it is on
+    func cam_cycle []
+        cam_mode = (cam_mode + 1) % 3
+        g : PsxGpu bus.gpu
+        if [ cam_mode == 1 ]
+            g.cam_x = 0.0
+            g.cam_y = 0.0
+            g.cam_z = 0.0
+            g.cam_yaw = 0.0
+            g.cam_pitch = 0.0
+            g.cam_on = true
+            cam_keys = 0
+            ux.mouse_lock[ a ]
+        g.show_drawn = cam_mode == 2
+        if [ cam_mode == 0 ]
+            g.cam_on = false
+            ux.mouse_unlock[]
+        cam_us = 0
+        names : vec string [] [ 'off', 'live', 'frozen' ]
+        log 'psx: camera {names[ cam_mode ]}'
+
+    public func on_move [ ev: Event ]
+        if [ cam_mode == 0 || ux.locked != a ] return
+        g : PsxGpu bus.gpu
+        g.cam_yaw += ev.mouse.delta.x * 0.003
+        g.cam_pitch = clamp[ g.cam_pitch + ev.mouse.delta.y * 0.003,
+                             -1.5, 1.5 ]
+
+    public func on_press [ ev: Event ]
+        if [ cam_mode > 0 && !ux.locked ] ux.mouse_lock[ a ]
+
+    # the camera moves along its own look: world units a second
+    func cam_step []
+        now : i64 [ epoch_micros[] ]
+        dt : f32 [ (cam_us == 0) ? 0.0 : f32[ now - cam_us ] / 1e6 ]
+        cam_us = now
+        if [ cam_keys == 0 || dt <= 0.0 ] return
+        g : PsxGpu bus.gpu
+        sp : f32 [ ((cam_keys & 16) != 0) ? 16000.0 : 4000.0 ]
+        f : f32 [ 0.0 ]
+        r : f32 [ 0.0 ]
+        if [ (cam_keys & 1) != 0 ] f += 1.0
+        if [ (cam_keys & 2) != 0 ] f -= 1.0
+        if [ (cam_keys & 8) != 0 ] r += 1.0
+        if [ (cam_keys & 4) != 0 ] r -= 1.0
+        cy : f32 [ cos[ g.cam_yaw ] ]
+        sy : f32 [ sin[ g.cam_yaw ] ]
+        cp : f32 [ cos[ g.cam_pitch ] ]
+        spt : f32 [ sin[ g.cam_pitch ] ]
+        d : f32 [ sp * dt ]
+        g.cam_x += (sy * cp * f + cy * r) * d
+        g.cam_y += spt * f * d
+        g.cam_z += (cy * cp * f - sy * r) * d
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         # a machine running: drawn every frame
@@ -205,7 +357,20 @@ element psx : trinity
         cv : Canvas [ w.screen ]
         if [ !bus.gpu.ready ] w.set_resizable[ true ]
         bus.gpu.start_on[ cv.vk, w ]
-        run_due[]
+        # a save waits for no VRAM upload in flight (its buffer is the
+        # one a save reads VRAM through)
+        if [ save_req && bus.gpu.img_left == 0 ]
+            save_req = false
+            state_save[]
+        if [ load_req ]
+            load_req = false
+            state_load[]
+        if [ cam_mode > 0 ] cam_step[]
+        # frozen: the shown frame again, from the camera
+        if [ cam_mode == 2 ]
+            bus.gpu.replay[]
+        el
+            run_due[]
         # VRAM drawn at the scale that fills the window's pixels
         tall : f32 [ min[ bounds.h, bounds.w * 0.75 ] * w.scale ]
         # by 240 lines, so a switch to 480 keeps the same scale

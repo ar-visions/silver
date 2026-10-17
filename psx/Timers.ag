@@ -75,3 +75,10 @@ class Timers
         if [ hit && ((m & 0x40) != 0 || !fired[ t ]) ]
             fired[ t ] = true
             bus.irq[ IRQ_TIMER0 + t ]
+
+    public func state_io [ s: StateIO ]
+        s.n32s[ @count[ 0 ], 3 ]
+        s.n32s[ @mode[ 0 ], 3 ]
+        s.n32s[ @target[ 0 ], 3 ]
+        s.flags[ @fired[ 0 ], 3 ]
+        s.s64[ @eighth ]

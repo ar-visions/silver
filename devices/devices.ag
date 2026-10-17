@@ -18,6 +18,7 @@ ifdef [ linux ]
         -I/usr/include/libdrm
         -lxcb
         -lxcb-randr
+        -lxcb-sync
         -ldrm
         -lasound
         -lm

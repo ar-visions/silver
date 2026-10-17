@@ -530,6 +530,17 @@ ResourceView AppView
     # the app's shared surface pair, imported
     mutable tex0       : Texture
     mutable tex1       : Texture
+    # the last size's picture, shown until the new size has a whole
+    # frame (its textures start empty: a black flash)
+    mutable was_tex    : Texture
+    mutable was_other  : Texture
+    mutable was_w      : i32
+    mutable was_h      : i32
+    # the texture last shown whole (0 or 1)
+    mutable shown_fr   : i32
+    # flips seen since the pair's import, and the last front seen
+    mutable flips_in   : i32
+    mutable last_fr    : i32
     # generation of the imported surface
     mutable gen        : i32
     # console command (streams the app's log)
@@ -787,9 +798,21 @@ ResourceView AppView
                         gen, g9, fd0, fd1, w9, h9, slot ]
                     fclose[ fq ]
             if [ fd0 >= 0 && fd1 >= 0 ]
-                if [ tex0 ]
+                # a pair that never showed a whole frame is not kept:
+                # the older picture stays
+                if [ tex0 && flips_in >= 3 ]
+                    if [ was_tex ]
+                        was_tex.drop[]
+                        was_other.drop[]
+                    was_tex   = (shown_fr == 1) ? tex1 : tex0
+                    was_other = (shown_fr == 1) ? tex0 : tex1
+                    was_w = aw
+                    was_h = ah
+                el [ tex0 ]
                     tex0.drop[]
                     tex1.drop[]
+                flips_in = 0
+                last_fr  = -1
                 tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
                 tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
                 tex0.hold[]
@@ -943,9 +966,11 @@ ResourceView AppView
                 pend_us = epoch_micros[]
             el [ nw != i32[ awp[] ] || nh != i32[ ahp[] ] ]
                 # 150ms of a held size before the peer is told to resize
-                if [
-                    epoch_micros[] - pend_us > 150000
-                    && (nw != req_w || nh != req_h) ]
+                # a size a pixel off the last asked is the layout
+                # settling: not a new size
+                far : bool [ abs[ nw - req_w ] > 1
+                             || abs[ nh - req_h ] > 1 ]
+                if [ epoch_micros[] - pend_us > 150000 && far ]
                     req_w = nw
                     req_h = nh
                     fs9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
@@ -964,6 +989,19 @@ ResourceView AppView
     func front [] -> Texture
         fr : i32 [ host_tex_front[ slot, 0 ] ]
         if [ fr < 0 || !tex0 ] return null
+        if [ fr != last_fr ]
+            last_fr   = fr
+            flips_in += 1
+        # the import may wipe a frame drawn before it: three flips
+        # since, and both textures hold frames drawn after it
+        if [ flips_in < 3 ] return null
+        shown_fr = fr
+        # the new size has a whole frame: the old picture goes
+        if [ was_tex ]
+            was_tex.drop[]
+            was_other.drop[]
+            was_tex = null
+            was_other = null
         return (fr == 0) ? tex0 : tex1
 
     # 'name:side:log' from the app, straight into our live state. side
@@ -1112,6 +1150,28 @@ ResourceView AppView
 
     func draw_frame [ cv: Canvas, bounds: rect ]
         ft : front[]
+        # the new size not drawn yet: the old picture at its own size
+        if [ !ft && was_tex && have_frame ]
+            ow : f32 [ f32[ was_w ] / ((ascale > 0.0) ? ascale : 1.0) ]
+            oh : f32 [ f32[ was_h ] / ((ascale > 0.0) ? ascale : 1.0) ]
+            if [ locked && was_h > 0 ]
+                ar : f32 [ f32[ was_w ] / f32[ was_h ] ]
+                ow = bounds.w
+                oh = ow / ar
+                if [ oh > bounds.h ]
+                    oh = bounds.h
+                    ow = oh * ar
+                cv.draw_image[ was_tex,
+                    rect [ x: bounds.x + (bounds.w - ow) * 0.5,
+                           y: bounds.y + (bounds.h - oh) * 0.5,
+                           w: ow, h: oh ] ]
+            el
+                cw : f32 [ (bounds.w < ow) ? bounds.w : ow ]
+                ch : f32 [ (bounds.h < oh) ? bounds.h : oh ]
+                cv.draw_image_crop[ was_tex,
+                    rect [ x: bounds.x, y: bounds.y, w: cw, h: ch ],
+                    0.0, 0.0, cw / ow, ch / oh ]
+            return
         if [ ft && have_frame ]
             if [ locked ]
                 ar : f32 [ f32[ aw ] / f32[ ah ] ]
@@ -1477,6 +1537,11 @@ ResourceView AppView
             tex1.drop[]
             tex0 = null
             tex1 = null
+        if [ was_tex ]
+            was_tex.drop[]
+            was_other.drop[]
+            was_tex = null
+            was_other = null
         gen        = 0
         have_frame = false
         fade_us    = 0

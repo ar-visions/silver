@@ -1,6 +1,7 @@
 # sega does what nintendon't; rgen does it in silver (sprite motion smoothing)
 # update: knes and asnes both have sprite motion smoothing
 export 0.8.8
+export software ['games']
 export extensions ['.gen', '.smd']
 
 import trinity

@@ -5969,12 +5969,16 @@ Texture Display
                                      @swap_image_count, vk_swap_images ]
             swap_image_current = 0
             for [ i: 0, i < swap_image_count, i += 1 ]
+                # a model each: a shared one drew every image through
+                # the last image's slots, rewritten while in flight
+                im : Model [ vk: vk, w: a, s: swap_shader,
+                    samplers: map Au[string] [ "color": last_render[] ] ]
                 r : Render [
                     vk:vk,   w:a,
                     width:         extent.width,
                     height:        extent.height,
                     vk_swap_image: vk_swap_images[i],
-                    models:        [ swap_model ]
+                    models:        [ im ]
                 ]
                 swap_renders += r
             semaphore_frame = swap_renders.first[]
@@ -6169,12 +6173,18 @@ Texture Display
                 # shell is up
                 shell_src : Au [ (shell_tex
                     && shell_tex.vk_image) ? Au[ shell_tex ] : Au[ last_render[] ] ]
-                if [ shell_src != shell_bound || rebind_swap ]
+                # each image's model rebinds only once acquired: its
+                # last frame is done, nothing else reads its slots
+                if [ rebind_swap ]
                     rebind_swap = false
-                    swap_model.samplers = map Au[string] [
-                        "color": shell_src ]
-                    swap_model.rebind_model[]
-                    shell_bound = shell_src
+                    for [ sr: Render ] in swap_renders
+                        sr.models[ 0 ].samplers = map Au[string] [ ]
+                cm : swap_render_current.models[ 0 ]
+                if [ cm.samplers.count == 0
+                     || cm.samplers[ "color" ] != shell_src ]
+                    cm.samplers = map Au[string] [ "color": shell_src ]
+                    cm.rebind_model[]
+                shell_bound = shell_src
                 if [ shell_tex && shell_tex.vk_image ]
                     shell_tex.transition[
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
@@ -6196,6 +6206,10 @@ Texture Display
                 vk.qlock.lock[]
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 vk.qlock.unlock[]
+                # the wm shows a resized window once this frame is out
+                if [ result == VK_SUCCESS && glfw ]
+                    platform_window_presented[ glfw, i32[ extent.width ],
+                                               i32[ extent.height ] ]
                 swap_render_current.color.transition[
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
                 # rotate over EVERY swapchain image, not just two. this

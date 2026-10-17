@@ -16,6 +16,9 @@ F_SY2      : u32 [ 0x00002000 ]
 F_IR0      : u32 [ 0x00001000 ]
 # the bits that make FLAG bit 31, the summary
 F_ERRORS   : u32 [ 0x7F87E000 ]
+# the word table: two frames of GTE vertices, probed
+NEAR_SIZE  : i32 [ 32768 ]
+NEAR_PROBE : i32 [ 32 ]
 
 class Gte
     public data : new u32
@@ -51,13 +54,13 @@ class Gte
         data = new u32 [ 32 ]
         ctrl = new u32 [ 32 ]
         unr = new i32 [ 257 ]
-        near_key = new u32 [ 4096 ]
-        near_x = new f32 [ 4096 ]
-        near_y = new f32 [ 4096 ]
-        near_on = new bool [ 4096 ]
-        near_z = new f32 [ 4096 ]
-        near_at = new i64 [ 4096 ]
-        near_bad = new bool [ 4096 ]
+        near_key = new u32 [ NEAR_SIZE ]
+        near_x = new f32 [ NEAR_SIZE ]
+        near_y = new f32 [ NEAR_SIZE ]
+        near_on = new bool [ NEAR_SIZE ]
+        near_z = new f32 [ NEAR_SIZE ]
+        near_at = new i64 [ NEAR_SIZE ]
+        near_bad = new bool [ NEAR_SIZE ]
         ex_x = new f32 [ 3 ]
         ex_y = new f32 [ 3 ]
         ex_z = new f32 [ 3 ]
@@ -162,14 +165,23 @@ class Gte
         return true
 
     func near_slot [ w: u32 ] -> i32
-        return i32[ ((w * 0x9E3779B1) >> 20) & 4095 ]
+        return i32[ ((w * 0x9E3779B1) >> 17) & (NEAR_SIZE - 1) ]
+
+    # word w's entry from this frame or the last, else -1
+    func near_find [ w: u32 ] -> i32
+        s : i32 [ near_slot[ w ] ]
+        for [ n: i32 0, n < NEAR_PROBE, n += 1 ]
+            j : i32 [ (s + n) & (NEAR_SIZE - 1) ]
+            if [ near_on[ j ] && near_key[ j ] == w
+                 && near_at[ j ] >= frame - 1 ]
+                return j
+        return -1
 
     # the precise position of an SXY word, into hit_x / hit_y
     public func near [ w: u32 ] -> bool
-        slot : i32 [ near_slot[ w ] ]
-        if [ !near_on[ slot ] || near_key[ slot ] != w ] return false
-        if [ near_bad[ slot ] || near_at[ slot ] < frame - 1 ]
-            return false
+        slot : i32 [ near_find[ w ] ]
+        if [ slot < 0 ] return false
+        if [ near_bad[ slot ] ] return false
         hit_x = near_x[ slot ]
         hit_y = near_y[ slot ]
         hit_z = near_z[ slot ]
@@ -177,14 +189,20 @@ class Gte
 
     # an entry for word w this frame; a second, different one spoils it
     func near_put [ w: u32, px: f32, py: f32, pz: f32, good: bool ]
-        slot : i32 [ near_slot[ w ] ]
-        same : bool [ near_on[ slot ] && near_key[ slot ] == w &&
-                      near_at[ slot ] == frame ]
-        if [ same ]
+        slot : i32 [ near_find[ w ] ]
+        if [ slot >= 0 && near_at[ slot ] == frame ]
             if [ !good || abs[ near_x[ slot ] - px ] > 0.01 ||
                  abs[ near_y[ slot ] - py ] > 0.01 ]
                 near_bad[ slot ] = true
             return
+        # last frame's entry for w, else a slot no frame still uses
+        if [ slot < 0 ]
+            s : i32 [ near_slot[ w ] ]
+            for [ n: i32 0, n < NEAR_PROBE && slot < 0, n += 1 ]
+                j : i32 [ (s + n) & (NEAR_SIZE - 1) ]
+                if [ !near_on[ j ] || near_at[ j ] < frame - 1 ]
+                    slot = j
+        if [ slot < 0 ] return
         near_key[ slot ] = w
         near_x[ slot ] = px
         near_y[ slot ] = py
@@ -616,3 +634,15 @@ class Gte
             v = check44[ k + 1, v + rows[ k * 3 + 1 ] * y ]
             v = check44[ k + 1, v + rows[ k * 3 + 2 ] * z ]
             mac_ir[ k + 1, v, sh, lm ]
+
+    # the data and control registers; the word table starts over
+    public func state_io [ s: StateIO ]
+        s.n32s[ @data[ 0 ], 32 ]
+        s.n32s[ @ctrl[ 0 ], 32 ]
+        s.s32[ @sh ]
+        s.flag[ @lm ]
+        s.reals[ @ex_x[ 0 ], 3 ]
+        s.reals[ @ex_y[ 0 ], 3 ]
+        s.reals[ @ex_z[ 0 ], 3 ]
+        s.flags[ @ex_ok[ 0 ], 3 ]
+        if [ !s.saving ] memset[ @near_on[ 0 ], 0, NEAR_SIZE ]
