@@ -390,6 +390,9 @@ ielement element
     # the element's own title: the host shows it on the pane
     func set_title [ t: string ]
         if [ ux ] ux.element_title[ t ]
+    # the element's address (a URL): the host shows it in its bar
+    func set_address [ t: string ]
+        if [ ux ] ux.element_address[ t ]
     # the app's avatar for the exchange under a screenshot prompt, or
     # null
     public func agent_avatar [] -> element return null
@@ -507,6 +510,12 @@ ielement element
                 scroll_anim = false
             pristine = false
             ux.will_animate = true
+            # the pointer over it: its hover moves with the rows
+            mx : f32 [ f32[ ux.mouse.x ] - win_pos.x ]
+            my : f32 [ f32[ ux.mouse.y ] - win_pos.y ]
+            if [ bounds && mx >= 0.0 && my >= 0.0 && mx < bounds.w
+                 && my < bounds.h ]
+                ux.scroll_under = a
         if [ transitions ]
             cur_millis : i64 [ epoch_millis[] ]
             for [ ct: StyleTransition, k: string ] in transitions

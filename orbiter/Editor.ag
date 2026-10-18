@@ -503,6 +503,9 @@ ResourceView AppView
     # the app's own title, shown on the pane
     public  app_title   : string
     mutable title_buf   : vec u8     # its bytes as they arrive
+    # the app's address (a URL), as it last said, and its bytes
+    public  app_address : string
+    mutable addr_buf    : vec u8
     # the app's views (its orbiter bar's chips), the one it shows
     # (-1 its source), and their names' bytes as they arrive
     public  app_views   : vec string
@@ -722,6 +725,22 @@ ResourceView AppView
                 app_view_on = host_pa[]
                 ws9 : cast Window [ cv.w ]
                 if [ ws9 ] ws9.restyle = true
+            # the app's address, as its title
+            el [ t == i32[ HM.address ] ]
+                if [ !addr_buf ] addr_buf = vec u8 []
+                ab : local i32 [ 3 ]
+                ab[0] = host_pa[]
+                ab[1] = host_pb[]
+                ab[2] = host_pc[]
+                for [ k9: i32 0, k9 < 3, k9 += 1 ]
+                    if [ ab[k9] != 0 ]
+                        addr_buf.push[ u8 ab[k9] ]
+                        continue
+                    app_address = bytes_text[ addr_buf ]
+                    addr_buf = vec u8 []
+                    wa9 : cast Window [ cv.w ]
+                    if [ wa9 ] wa9.restyle = true
+                    break
             # the app's title, three bytes a message; a 0 byte ends it
             el [ t == i32[ HM.title ] ]
                 if [ !title_buf ] title_buf = vec u8 []
@@ -7604,3 +7623,12 @@ Control Editor
             anchor_col  = sel_col
         ensure_caret_visible[]
         pristine = false
+
+# bytes from the host as text (string[ @v[0] ] is a pointer cast)
+func bytes_text [ b: vec u8 ] -> string
+    tb : local i8 [ 1024 ]
+    tn : i32 [ (b.count < 1023) ? i32[ b.count ] : 1023 ]
+    for [ j: i32 0, j < tn, j += 1 ]
+        tb[ j ] = i8[ b[ j ] ]
+    tb[ tn ] = 0
+    return string[ @tb[0] ]

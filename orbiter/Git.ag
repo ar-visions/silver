@@ -449,17 +449,19 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
         null ]
 
 
-Layer CommitLayer
+# the navigation column (users, projects, the drives, the pinned
+# folders): its own element, so its scroll fades at its ends
+element NavSide
+    content : NavSideLayer []
+
+Layer NavSideLayer
     func draw [ cv: Canvas ]
         u : f32 nav_unit[ cv ]
-        cb : CommitView [ parent ]
+        sd : element parent
+        cb : CommitView [ (sd) ? sd.parent : null ]
         if [ !cb ] return
         orb : cast orbiter [ cb.ux.app_object ]
         if [ !orb ] return
-        ev9 : EditorView cb.view[]
-        ed  : Editor [ (ev9) ? ev9.text_of[] : null ]
-        # no ground of its own: the editor is hidden while we show,
-        # so the pane's background is already ours
         cv.stroke_width[ 0.0 ]
         wtx : f32 [ cv.transform_tx[] ]
         wty : f32 [ cv.transform_ty[] ]
@@ -473,12 +475,12 @@ Layer CommitLayer
         cb.side_keys = vec string []
         cb.side_ys   = vec f32 []
         nav_font[ cv, 16 ]
-        # clamp the column's own scroll to what it holds
+        # the column's own eased scroll, kept within what it holds
         smax9 : f32 [ cb.side_h - bounds.h ]
         if [ smax9 < 0.0 ] smax9 = 0.0
-        if [ cb.side_scroll > smax9 ] cb.side_scroll = smax9
-        if [ cb.side_scroll < 0.0 ] cb.side_scroll = 0.0
-        sy9 : f32 [ bounds.y + 10.0 * u - cb.side_scroll ]
+        if [ sd.scroll.y > smax9 ] sd.scroll.y = smax9
+        if [ sd.scroll_goal > smax9 ] sd.scroll_goal = smax9
+        sy9 : f32 [ bounds.y + 10.0 * u - sd.scroll.y ]
         srh : f32 [ 24.0 * u ]
         # users, projects, then the computer's drives and the pinned
         # folders
@@ -662,16 +664,118 @@ Layer CommitLayer
                     cb.side_ys.push[ oy ]
                     sy9 += srh
             sy9 += 10.0 * u
-        cb.side_h = sy9 + cb.side_scroll - bounds.y
+        cb.side_h = sy9 + sd.scroll.y - bounds.y
+        sd.content_h = cb.side_h
         # a hairline between the column and the content
         cv.fill_color[ rgba['#ffffff14'] ]
         cv.stroke_width[ 0.0 ]
         cv.rect_to[ sx9 + sw9 - 1.0, bounds.y + 8.0 * u, 1.0,
                     bounds.h - 16.0 * u ]
         cv.paint[ ]
+
+# the navigator's right column: the file's views (its git
+# reference, b16 ...) as buttons, icon over name; the one on is
+# outlined; a press shows it
+element ViewRail
+    mutable hov : i32 [ -1 ]
+
+    func pane_ed [] -> Editor
+        cb : CommitView [ parent ]
+        ev9 : EditorView (cb) ? cb.view[] : null
+        return (ev9) ? ev9.text_of[] : null
+
+    func views [] -> vec string
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        return (orb) ? orb.file_views[ pane_ed[] ] : vec string []
+
+    # the button under y, -1 none
+    func at_y [ y: f32 ] -> i32
+        u : f32 ux_unit[ ux ]
+        n : i32 [ i32[ views[].count ] ]
+        i : i32 [ i32[ (y - 8.0 * u) / (70.0 * u) ] ]
+        return (y >= 8.0 * u && i >= 0 && i < n) ? i : -1
+
+    public func on_move [ ev: Event ]
+        h : i32 at_y[ ev.mouse.pos.y ]
+        if [ h != hov ]
+            hov = h
+            pristine = false
+
+    public func on_press [ ev: Event ]
+        i : i32 at_y[ ev.mouse.pos.y ]
+        if [ i < 0 ] return
+        vs : vec string views[]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.pane_view_press[ pane_ed[], vs[ i ] ]
+        ev.no_default = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        ed : Editor pane_ed[]
+        vs : vec string views[]
+        if [ !ed || vs.count == 0 ] return
+        if [ !ed.ficons ] ed.ficons = FileIcons []
+        u : f32 ux_unit[ ux ]
+        cv : Canvas w.screen
+        cur : string ed.resolve_view[]
+        bw : f32 [ 60.0 * u ]
+        bx : f32 [ round[ (bounds.w - bw) * 0.5 ] ]
+        for [ i: i32 0, i < vs.count, i += 1 ]
+            nm : string vs[ i ]
+            by : f32 [ 8.0 * u + 70.0 * u * f32[ i ] ]
+            on : bool [ (nm == 'git') ? ed.git_on : nm == cur ]
+            if [ on ]
+                cv.fill_color  [ rgba['#6cb6ff33'] ]
+                cv.stroke_color[ rgba['#8fd0ff'] ]
+            el [ i == hov ]
+                cv.fill_color  [ rgba['#6cb6ff22'] ]
+                cv.stroke_color[ rgba['#6cb6ffcc'] ]
+            el
+                cv.fill_color  [ rgba['#10142088'] ]
+                cv.stroke_color[ rgba['#fff3'] ]
+            cv.stroke_width[ (on) ? 2.0 : 1.0 ]
+            cv.rounded_rect[ bx, by, bw, 64.0 * u, 8.0, 8.0, 8.0, 8.0 ]
+            cv.paint[ ]
+            cv.stroke_width[ 0.0 ]
+            ic : SVGModel ed.ficons.named[ nm, 36 ]
+            isz : f32 [ round[ 30.0 * u ] ]
+            if [ ic ]
+                cv.svg_override[ (on) ? rgba['#ffe6d2']
+                    : ((i == hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
+                cv.draw_svg[ ic, round[ bx + (bw - isz) * 0.5 ],
+                    round[ by + 7.0 * u ], isz, isz ]
+                cv.svg_override_off[]
+            nav_font[ cv, 13 ]
+            cv.fill_color[ rgba['#c9c4dd'] ]
+            orb : cast orbiter [ ux.app_object ]
+            lb : string [ (nm == 'git') ? 'Git Ref'
+                : ((orb) ? orb.menu_words[ nm ] : nm) ]
+            cv.draw_text[ lb, rect [ x: bx, y: by + 44.0 * u, w: bw,
+                                     h: 16.0 * u ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null ]
+
+Layer CommitLayer
+    func draw [ cv: Canvas ]
+        u : f32 nav_unit[ cv ]
+        cb : CommitView [ parent ]
+        if [ !cb ] return
+        orb : cast orbiter [ cb.ux.app_object ]
+        if [ !orb ] return
+        ev9 : EditorView cb.view[]
+        ed  : Editor [ (ev9) ? ev9.text_of[] : null ]
+        # no ground of its own: the editor is hidden while we show,
+        # so the pane's background is already ours
+        cv.stroke_width[ 0.0 ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        # the navigation column is its own child (NavSide): it fades
+        # by its own scroll
+        cb.side_w = 168.0 * u
+        sw9 : f32 [ cb.side_w ]
         # content right of the column; everything below rides one scroll
         x0  : f32 [ bounds.x + 14.0 * u + sw9 ]
-        cw : f32 [ bounds.w - 14.0 * u - sw9 ]
+        cw : f32 [ bounds.w - 14.0 * u - sw9 - cb.rail_w ]
         cv.set_crop[ wtx + x0, wty + bounds.y,
                      wtx + bounds.x + bounds.w,
                      wty + bounds.y + bounds.h ]
@@ -1153,6 +1257,28 @@ Layer CommitLayer
                                     round[ ry + 9.5 * u ], 1.5,
                                     11.0 * u ]
                         cv.paint[ ]
+                # a module's row under the pointer, no shift: its edit
+                # mark in the pin's slot (opens its source, not its app)
+                if [
+                    drs <= 0.0 && h.is_dir && h.is_module
+                    && nls - 1 == cb.hov_list && cb.ux && !cb.ux.shift ]
+                    if [ !cb.edit_svg ]
+                        cb.edit_svg = SVGModel [ path 'images/edit.svg' ]
+                    cv.save[ ]
+                    cv.rounded[ 4.0 * u, 4.0 * u, 4.0 * u, 4.0 * u ]
+                    cv.fill_color[
+                        (cb.hov_edit) ? rgba['#8fd0ff33'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba['#8fd0ffaa'] ]
+                    cv.rect_to[ xr0 + 9.0 * u, round[ ry + 5.5 * u ],
+                                19.0 * u, 19.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    es : f32 [ round[ 13.0 * u ] ]
+                    cv.draw_svg[ cb.edit_svg,
+                        round[ xr0 + 18.5 * u - es * 0.5 ],
+                        round[ ry + 15.0 * u - es * 0.5 ], es, es ]
                 tx0 : nav_icon_paint[ cv, ico, xr0, ry, u ]
                 nmw : f32 [ xe - tx0 - 24.0 * u - drs ]
                 nav_font[ cv, 21 ]
@@ -1340,13 +1466,17 @@ element CommitView
     # the + on the users header opens an editing row: enter adds, esc
     # drops
     mutable hov_plus  : bool
+    # the edit mark of a module row: its icon, and the pointer on it
+    mutable edit_svg  : SVGModel
+    mutable hov_edit  : bool
     mutable add_user  : bool
     mutable add_text  : string
     mutable plus_y    : f32 [ 0.0 ]
-    # the column scrolls on its own: its offset and its full height as
+    # the column scrolls on its own (NavSide's scroll); its height as
     # drawn
-    mutable side_scroll : f32 [ 0.0 ]
     mutable side_h      : f32 [ 0.0 ]
+    # the views column at the right: its width (none: 0)
+    mutable rail_w      : f32 [ 0.0 ]
     # what the status bar's tip shows for the row under the pointer: a
     # column row's or a repository row's full name
     mutable side_tip    : string
@@ -1397,19 +1527,34 @@ element CommitView
         u : f32 ux_unit[ ux ]
         return shift_hit[ ev, 8.0 * u, 38.0 * u, false ]
 
+    # a module's row, no shift: its edit mark in the pin's slot; the
+    # press opens its source, not its app
+    func edit_hit [ ev: Event ] -> FindHit
+        u : f32 ux_unit[ ux ]
+        if [ !ux || ux.shift ] return null
+        h : FindHit row_hit[ ev, 8.0 * u, 38.0 * u, false ]
+        return (h && h.is_dir && h.is_module) ? h : null
+
     # shift held, the pointer between x0 and x1 of an entry row (from
     # its column's left, or its right with from_right): that entry
     func shift_hit [ ev: Event, x0: f32, x1: f32, from_right: bool ]
                      -> FindHit
+        if [ !ux || !ux.shift ] return null
+        h : FindHit row_hit[ ev, x0, x1, from_right ]
+        return (h && deletable[ h ]) ? h : null
+
+    # the pointer between x0 and x1 of an entry row: that entry
+    func row_hit [ ev: Event, x0: f32, x1: f32, from_right: bool ]
+                   -> FindHit
         u : f32 ux_unit[ ux ]
         ly : lay[]
         o  : orb9[]
-        if [ !ly || !o || !ux || !ux.shift || !o.find_hits ] return null
+        if [ !ly || !o || !ux || !o.find_hits ] return null
         rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
         ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
         trs : i32 [
             (o.picking[]) ? 0
-            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w,
+            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
                                  reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         if [ r < band_st ] return null
@@ -1420,8 +1565,7 @@ element CommitView
         if [ rx < ox + x0 || rx >= ox + x1 ] return null
         hi : i32 [ list_hit[ dr ] ]
         if [ hi < 0 || hi >= o.find_hits.count ] return null
-        h : FindHit o.find_hits[ hi ]
-        return (deletable[ h ]) ? h : null
+        return o.find_hits[ hi ]
 
     func lay [] -> CommitLayer
         return (layers) ? cast CommitLayer [ layers['content'] ] : null
@@ -1431,6 +1575,9 @@ element CommitView
         u : f32 ux_unit[ ux ]
         if [ w.draw_stage != CanvasType.screen ] return
         if [ scroll_speed <= 0.0 ] scroll_speed = 36.0 * u
+        # the column repaints with the view (hover, its scroll, picks)
+        sd9 : element (elements) ? elements['side'] : null
+        if [ sd9 && !pristine ] sd9.pristine = false
         o : orb9[]
         # the form cannot stay open with nothing to commit
         if [ commit_open ]
@@ -1479,9 +1626,21 @@ element CommitView
 
     func render [] -> Elements
         u : f32 ux_unit[ ux ]
+        orb7 : cast orbiter [ (ux) ? ux.app_object : null ]
+        ev7 : EditorView view[]
+        ed7 : Editor (ev7) ? ev7.text_of[] : null
+        rail_w = (orb7 && orb7.file_views[ ed7 ].count > 0)
+            ? 72.0 * u : 0.0
         return Elements [
             'rail' : ToolRail [ top: 3.0 * u, no_scroll: true,
-                                area: Region [ 'l0 t0 w64px b0' ] ] ]
+                                area: Region [ 'l0 t0 w64px b0' ] ],
+            # the file's views down the right, icon over name
+            'views' : ViewRail [ no_scroll: true,
+                area: Region [ 'r0 t0 w{rail_w}px b0' ] ],
+            # the column: presses and the wheel are the view's
+            'side' : NavSide [ no_scroll: true, ghost: true,
+                scroll_fade: 24.0,
+                area: Region [ 'l0 t0 w{6.0 * u + side_w}px b0' ] ] ]
 
     func view [] -> EditorView
         for [ e9: element* a, e9, e9 = e9.parent ]
@@ -1683,6 +1842,11 @@ element CommitView
             hov_plus = nplus
             pristine = false
             ux.will_animate = true
+        nedit : bool [ edit_hit[ ev ] != null ]
+        if [ nedit != hov_edit ]
+            hov_edit = nedit
+            pristine = false
+            ux.will_animate = true
         if [ nsid >= 0 ]
             nsid = nsid
         el [ rx < 68.0 * u ]
@@ -1702,7 +1866,7 @@ element CommitView
             # picking: files only, no git tabs (as draw lays it out)
             trs : i32 [
                 (o.picking[]) ? 0
-                : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w,
+                : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
                                      reveal_all ] ]
             r : i32 [ row_at[ ry, rx, trs ] ]
             cx0 : f32 [ 14.0 * u + side_w ]
@@ -1776,15 +1940,11 @@ element CommitView
         ly : lay[]
         if [ ly ]
             rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
-            if [ rx < 6.0 * u + side_w ]
-                side_scroll += f32[
-                    ev.mouse.wheel_delta.y ] * (26.0 * u) * -1.0
-                smax9 : f32 [ side_h - ly.bounds.h ]
-                if [ smax9 < 0.0 ] smax9 = 0.0
-                if [ side_scroll > smax9 ] side_scroll = smax9
-                if [ side_scroll < 0.0 ] side_scroll = 0.0
-                pristine = false
-                ux.will_animate = true
+            sd : element (elements) ? elements[ 'side' ] : null
+            if [ sd && rx < 6.0 * u + side_w ]
+                # the standard eased wheel scroll, as every list
+                sd.scroll_speed = 26.0 * u
+                sd.on_wheel[ ev ]
                 return
         super.on_wheel[ ev ]
 
@@ -1903,7 +2063,7 @@ element CommitView
         if [ rx < 14.0 * u + side_w ] return
         trs : i32 [
             (o.picking[]) ? 0
-            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w,
+            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
                                  reveal_all ] ]
         r : i32 [ row_at[ ry, rx, trs ] ]
         cx0 : f32 [ 14.0 * u + side_w ]
@@ -1961,6 +2121,13 @@ element CommitView
                 o.pin_toggle[ ph9.file ]
                 pristine = false
                 return
+            eh9 : FindHit edit_hit[ ev ]
+            if [ eh9 ]
+                o.open_in_pane[ path '{eh9.file}/{eh9.file.filename[]}.ag',
+                                pane ]
+                o.exit_finder[]
+                pristine = false
+                return
             dh9 : FindHit delete_hit[ ev ]
             # shift over a path hint: to the folder drawn blue, as a
             # folder row's press goes to its folder
@@ -2012,13 +2179,20 @@ element CommitView
                 o.repo_checkout[ h.repo, pane ]
                 pristine = false
                 return
-            # a module opens its source, as its .ag tab did; shift, in a
-            # new tab
+            # an app's module runs in the pane (its running instance,
+            # else a new one); any other module opens its source; shift,
+            # its source in a new tab (the edit mark: its source here)
             if [
                 h.is_dir && h.file && h.is_module && h.text.count > 0
                 && h.text != '..' ]
                 mp9 : path '{h.file}/{h.text}.ag'
-                if [ !(o.shift_down && o.open_new_tab[ mp9 ]) ]
+                bin9 : path '{path.path_startup[]}/install/build/{h.text}'
+                ed9 : Editor o.pane_at[ pane ]
+                if [ o.shift_down ]
+                    if [ !o.open_new_tab[ mp9 ] ] o.open_in_pane[ mp9, pane ]
+                el [ ed9 && bin9.exists[] ]
+                    o.show_app[ ed9, mp9, false ]
+                el
                     o.open_in_pane[ mp9, pane ]
                 o.exit_finder[]
                 return

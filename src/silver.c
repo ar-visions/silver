@@ -1273,15 +1273,50 @@ extern void (*au_print_after)(void);
 
 // SILVER_EVENTS=<file>: the build as lines another program reads as
 // they land (orbiter's installs): module <name> <percent>, and
-// step <name> <phase> <percent>; terminal or not
+// step <name> <phase> <percent>; terminal or not. without it, every
+// build writes install/tmp/builds/<module>.events: begin <pid>, the
+// lines, end <exit code> (orbiter shows an app updating)
+static char progress_default[1024];
+
 static FILE* progress_events() {
     static bool  tried = false;
     static FILE* ef    = NULL;
     if (tried) return ef;
-    tried = true;
     const char* p = getenv("SILVER_EVENTS");
-    if (p && p[0]) ef = fopen(p, "a");
+    if (p && p[0]) {
+        tried = true;
+        ef = fopen(p, "a");
+    } else if (progress_default[0]) {
+        tried = true;
+        ef = fopen(progress_default, "w");
+        if (ef) {
+            fprintf(ef, "begin %d\n", (int)getpid());
+            fflush(ef);
+        }
+    }
     return ef;
+}
+
+// the root module's name: its build's events file
+static void progress_events_for(cstr module) {
+    if (!module || !module[0] || progress_default[0]) return;
+    char nm[256];
+    size_t n = strlen(module);
+    while (n > 1 && module[n - 1] == '/') n--;
+    cstr b = module + n;
+    while (b > module && b[-1] != '/') b--;
+    size_t bn = (size_t)(module + n - b);
+    if (bn >= sizeof(nm)) return;
+    memcpy(nm, b, bn);
+    nm[bn] = 0;
+    if (bn > 3 && strcmp(nm + bn - 3, ".ag") == 0) nm[bn - 3] = 0;
+    // a folder of their own: install/tmp holds many thousand files
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s/install/tmp/builds", SILVER);
+    mkdir(dir, 0755);
+    snprintf(progress_default, sizeof(progress_default),
+        "%s/%s.events", dir, nm);
+    progress_events();
 }
 
 static void progress_event(const char* fmt, ...) {
@@ -1293,6 +1328,11 @@ static void progress_event(const char* fmt, ...) {
     va_end(ap);
     fputc('\n', ef);
     fflush(ef);
+}
+
+// the build's last event: its exit code
+AU_EXPORT void silver_build_end(int rc) {
+    progress_event("end %d", rc);
 }
 
 static void progress_draw(silver a, double frac) {
@@ -3296,6 +3336,9 @@ AU_EXPORT void silver_init(silver a) {
         silver up = (silver)a->is_child;
         if (up->device && len(up->device)) a->device = hold(up->device);
     }
+    // the root's build is written down for orbiter
+    if (!a->is_child && !a->is_external && a->module)
+        progress_events_for(((path)a->module)->chars);
     // a timing run instruments every module in the tree, not just the root
     if (a->is_child && ((aether)(silver)a->is_child)->timing)
         ((aether)a)->timing = true;
@@ -15086,11 +15129,20 @@ etype silver_read_def(silver a, interface access) {
 // importing 
 #ifndef _WIN32
 #include <signal.h>
+void silver_build_end(int rc);
+
 // a compiler crash names its stack in the build output
 static void silver_crash(int sig) {
+    silver_build_end(128 + sig);
     void* fr[48]; int nf = backtrace(fr, 48);
     fprintf(stderr, "silver: signal %d\n", sig);
     backtrace_symbols_fd(fr, nf, 2);
+    signal(sig, SIG_DFL); raise(sig);
+}
+
+// stopped (ctrl+C, kill): its build's events end too
+static void silver_stopped(int sig) {
+    silver_build_end(128 + sig);
     signal(sig, SIG_DFL); raise(sig);
 }
 #endif
@@ -15100,6 +15152,8 @@ int main(int argc, cstrs argv) {
 #ifndef _WIN32
     signal(SIGSEGV, silver_crash);
     signal(SIGBUS,  silver_crash);
+    signal(SIGINT,  silver_stopped);
+    signal(SIGTERM, silver_stopped);
 #endif
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies
@@ -15116,6 +15170,7 @@ int main(int argc, cstrs argv) {
     // silver [flags] module [app-args]: the app's flags are its own
     au_argv_launcher(true);
     silver a = silver(argv);
+    silver_build_end((a && a->error) ? 1 : 0);
     // a successful live build execvp's the host and never returns here; if we DID
     // return, a->error tells us the build failed → exit non-zero so a caller (the
     // live-host's rebuild_blocking, or a shell) sees the failure instead of looping.

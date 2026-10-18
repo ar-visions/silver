@@ -473,6 +473,9 @@ int main(int argc, char** argv)
     loop = g_main_loop_new(NULL, FALSE);
     pending = g_string_new(NULL);
     WPEDisplay* display = wpe_display_headless_new();
+    // sites are told we prefer dark (prefers-color-scheme: dark)
+    wpe_settings_set_boolean(wpe_display_get_settings(display),
+        WPE_SETTING_DARK_MODE, TRUE, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
     // the aura app's silver cache: site data, cache, cookies
     char* home = appDir ? g_strdup(appDir) : g_build_filename(g_get_user_cache_dir(), "aura", NULL);
     char* dataDir = g_build_filename(home, "data", NULL);

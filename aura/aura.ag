@@ -315,6 +315,7 @@ element aura : trinity
                 a9 : string[ @tt[0] ]
                 if [ a9 && a9 != 'about:blank' ]
                     last_src = a9
+                    set_address[ a9 ]
                     save-persistent[ a ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
                                         @st, @off, @fd, @tt[0], 256 ]

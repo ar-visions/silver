@@ -227,6 +227,8 @@ enum HM
     view_state : 19
     # ide -> app: a = the view to show, -1 the source
     view    : 20
+    # app -> ide: three bytes of its address (a URL); a 0 byte ends it
+    address : 21
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -2348,6 +2350,10 @@ Display Window
     # where the exchange sits: '' the whole window, else a Region
     # (a host's slideout); its elements go in one box there
     public exchange_region      : string
+    # an element easing its scroll under the pointer: the pointer's
+    # move is played again after the frame's animation, so hover and
+    # the near light follow the rows moving under it
+    manual scroll_under         : element
 
     # an exchange element, at the root or in its box
     func exch_el [ name: string ] -> element
@@ -4081,14 +4087,21 @@ Display Window
             if [ glfw ]
                 set_title[ (t) ? t : title ]
             return
+        host_text[ i32[ HM.title ], t ]
+
+    # the element's address: a hosted app's goes to the host's bar
+    public func element_address [ t: string ]
+        if [ host_slot[] > 0 ] host_text[ i32[ HM.address ], t ]
+
+    # text to the host, three bytes a message; a 0 byte ends it
+    func host_text [ kind: i32, t: string ]
         n  : i32 [ (t) ? i32 t.count : 0 ]
         for [ i: i32 0, i < n, i += 3 ]
             lead_byte : i32 [ (i32 t.chars[ i ]) & 255 ]
             mid_byte : i32 [ (i + 1 < n) ? (i32 t.chars[ i + 1 ]) & 255 : 0 ]
             tail_byte : i32 [ (i + 2 < n) ? (i32 t.chars[ i + 2 ]) & 255 : 0 ]
-            host_post[ 0, i32[ HM.title ], lead_byte, mid_byte,
-                       tail_byte ]
-        if [ n % 3 == 0 ] host_post[ 0, i32[ HM.title ], 0, 0, 0 ]
+            host_post[ 0, kind, lead_byte, mid_byte, tail_byte ]
+        if [ n % 3 == 0 ] host_post[ 0, kind, 0, 0, 0 ]
 
     public func set_focus [ e: element ]
         if [ focus != e ]
@@ -5192,6 +5205,12 @@ Display Window
         # a frost element publishes its target mid-frame, not on resize
         bind_backdrop   [ ]
         if [ !ide_active ] animate [ ]
+        if [ scroll_under ]
+            scroll_under = null
+            if [ !capture && !locked ]
+                ev.clear[]
+                ev.mouse.pos = [ f32[ mouse.x ], f32[ mouse.y ] ]
+                move_event[ ev ]
 
     func on_screen []
         if [ !screen ] return

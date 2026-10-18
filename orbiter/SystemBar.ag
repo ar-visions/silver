@@ -3,9 +3,25 @@ extend orbiter
 # the system bar: orbiter as the OS, across the top, black; the
 # clock in its middle, the tray at its right
 Group SystemBar
+    # its menus from orbiter, read as it renders (after the panes)
+    public func render [] -> Elements
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        return (orb) ? orb.system_els[] : null
     style : CSS {
         layers.sys:
-            fill_color: #000000
+            fill_color: #000a
+            # a very slight inner glow by the pointer's nearness
+            # 1/255 alpha: unseen at rest; a zero shadow is skipped
+            box_shadow: inset 0 0 13px #88aaff01
+            stroke_width: 1
+            stroke_color: #0000
+            near_border: true
+            near_inset: 0.6
+            near_inset_color: #c890ffff
+        # a faint line along its foot
+        layers.foot:
+            fill_color: #fff2
+            area: l0 b1px r0 h1px
     }
 
 # the clock's words, in the bar's middle
@@ -82,17 +98,131 @@ Button MenuTop
             near_inset_color: #c890ffff
         layers.face:
             label_color: #e8e8ee
-            label_size: 17
-            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Bold.ttf'
             label_align: 0.5 0.5
         :hovered
             layers.body:
                 fill_color: #ffffff18
+        :close_part
+            layers.face:
+                label_size: 20
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
     }
     public at : i32
+    # a pane not active: its menu name (a press selects the pane)
+    public pane : i32 [ -1 ]
+    # the pane's tab: the selected pane's app name and its close
+    public tab_on : bool
+    # the tab's close part (a press closes its pane)
+    public close_part : bool
+    # its app updating: how far, 0..1 (-1 not yet known); -2 not
+    public progress : f32 [ -2.0 ]
+    build : TabProgress []
+
+# an app updating: a line along its tab's foot, filled so far
+Layer TabProgress
+    func draw [ cv: Canvas ]
+        mt : cast MenuTop [ parent ]
+        if [ !mt || mt.progress <= -2.0 ] return
+        h : f32 [ 2.0 ]
+        y : f32 [ bounds.y + bounds.h - h ]
+        cv.fill_color[ rgba[ '#ffffff22' ] ]
+        cv.rect_to[ bounds.x, y, bounds.w, h ]
+        cv.paint[]
+        if [ mt.progress > 0.0 ]
+            cv.fill_color[ rgba[ '#806bffff' ] ]
+            cv.rect_to[ bounds.x, y, bounds.w * mt.progress, h ]
+            cv.paint[]
+
+# the active pane's title, after the app's name: an action, not a
+# menu. a press changes what the app shows: a URL is typed here, a
+# file opens the navigator
+Button BarTitle
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            # the typed URL starts where the site name does
+            label_offset: 10 0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :typing
+            layers.body:
+                stroke_color: #806bffff
+                fill_color: #4d3dbc55
+    }
+    # a URL being typed: its edge lit, a caret after the text
+    public typing : bool
+    # not typing: the site's name and its domain, drawn over it by
+    # the bar (a button never caches, so it cannot mask); their
+    # widths as drawn (BarMeasure), read by the bar's layout
+    public site   : string
+    public domain : string
+    mutable site_w   : f32
+    mutable domain_w : f32
+    measure : BarMeasure []
+
+# measures the site's and domain's words in their fonts; a change
+# lays the title out again
+Layer BarMeasure
+    func draw [ cv: Canvas ]
+        bt : cast BarTitle [ parent ]
+        if [ !bt ] return
+        uri : 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, uri, 17 ] ]
+        cv.font_size[ 17 ]
+        sw : f32 [ (bt.site) ? cv.measure_text[ bt.site ].w : 0.0 ]
+        cv.set_font[ shared_font[ cv, uri, 16 ] ]
+        cv.font_size[ 16 ]
+        dw : f32 [ (bt.domain) ? cv.measure_text[ bt.domain ].w : 0.0 ]
+        if [ sw != bt.site_w || dw != bt.domain_w ]
+            bt.site_w   = sw
+            bt.domain_w = dw
+            if [ bt.ux ] bt.ux.restyle = true
+
+# the site's name in the bar's title; a press is the title's
+element BarText
+    ghost : true
+    style : CSS {
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            # cut, not ellipsized: the mask fades its end
+            label_overflow: clip
+    }
+
+# the site's domain at the title's right: yellow over https, else
+# grey
+element BarDomain
+    ghost : true
+    public secure : bool
+    style : CSS {
+        layers.face:
+            label_color: #ffffff70
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 1.0 0.5
+    :secure
+        layers.face:
+            label_color: #ffd24aff
+    }
 
 # the side panel's list of one top menu's entries
 element MenuPanel
@@ -143,10 +273,16 @@ element MenuPanel
 
     public func on_click [ ev: Event ]
         e : cast element [ ev.origin ]
-        if [ !e || !(e inherits TrayRow) ] return
-        row : cast TrayRow [ e ]
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
-        if [ orb ] orb.menu_pick[ row.entry ]
+        if [ !e || !orb ] return
+        # an entry's second part: its own action
+        if [ e inherits TraySide ]
+            sd : cast TraySide [ e ]
+            orb.menu_pick_side[ sd.entry ]
+            return
+        if [ !(e inherits TrayRow) ] return
+        row : cast TrayRow [ e ]
+        orb.menu_pick[ row.entry ]
 
 # the drawer's ground: what is under it, blurred (the screen as drawn
 # so far, copied and blurred once a frame), with the panel's tint
@@ -177,7 +313,8 @@ Layer DrawerGround
         cv.restore[]
 
 # orbiter's one popover: a menu (the window's, a tray icon's) slides
-# out of the dock over the app, which keeps its width
+# out of the window's left edge over the app, which keeps its width
+# down to the window's foot
 element MenuDrawer
     animated : true
     # it takes the keys while open: typing filters its menu
@@ -188,10 +325,14 @@ element MenuDrawer
     public background_lens : bool
     ground : DrawerGround []
     style : CSS {
-        area: l-8.52 t0.91 w10.91 b0, 240ms cubic outward
+        area: l-10.91 t0.91 w10.91 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
+        # a faint line down its right side
+        layers.redge:
+            fill_color: #fff2
+            area: r1px t0 r0 b0
     :open
-        area: l2.39 t0.91 w10.91 b0, 260ms cubic inward
+        area: l0 t0.91 w10.91 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
 
@@ -201,10 +342,10 @@ element MenuDrawer
 MenuDrawer ExchangeDrawer
     # edges, never a w: a percent width is a flow share
     style : CSS {
-        area: l-100%+4.78 t0.91 r100%-2.39 b0, 240ms cubic outward
+        area: l-100%+0 t0.91 r100%+0 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0%+2.39 t0.91 r0%+0 b0, 260ms cubic inward
+        area: l0%+0 t0.91 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
 
