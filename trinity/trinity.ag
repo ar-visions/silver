@@ -5253,6 +5253,9 @@ Display Window
 
         layout_start : i64 [ epoch_micros[] ]
         layout_element[ root, null, null, null, screen ]
+        tsys : element (root.elements) ? root.elements[ 'system' ] : null
+        tw : f32 [ (tsys && tsys.bounds) ? tsys.bounds.w : -1.0 ]
+        log 'TRACE frame w {width} root {root.bounds.w} system {tw}'
         elems_start : i64 [ epoch_micros[] ]
 
         if [ ide_active && root.elements ]

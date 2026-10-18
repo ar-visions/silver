@@ -5862,13 +5862,16 @@ Texture Display
             platform_window_get_size[ glfw, @ww_i, @wh_i ]
             width  = ww_i
             height = wh_i
+            scale = platform_window_scale[ glfw ]
             if [ caps.currentExtent.width != UINT32_MAX ]
                 extent.width  = caps.currentExtent.width
                 extent.height = caps.currentExtent.height
+                # the drawable's size: the window's can lag it
+                width  = i32[ f32[ extent.width ] / scale ]
+                height = i32[ f32[ extent.height ] / scale ]
             el
                 extent.width  = u32[ ww_i ]
                 extent.height = u32[ wh_i ]
-            scale = platform_window_scale[ glfw ]
             surface_rotation[ caps.currentTransform ]
             if [ logical_width > 0 && width > 0 ]
                 scale  = f32[ (swap_rot == 90
@@ -6076,10 +6079,7 @@ Texture Display
             now: f64 [ platform_time[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
                 if [ pending_w != width || pending_h != height ]
-                    rzt : i64 [ epoch_micros[] ]
                     resize*[ pending_w, pending_h ]
-                    log 'TRACE display resize {epoch_micros[] - rzt} us canvas {vk.resize_us} us'
-                    vk.resize_us = 0
                 pending_w     = 0
                 pending_h     = 0
                 last_resize_t = 0.0
