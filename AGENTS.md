@@ -1577,6 +1577,16 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    of stillness (resize_debounce_s) and a drag never pauses.
    Debounce 0: a new size each frame. Hidden: 80 sizes, validation
    on, no error or crash; trinity tests exit 0. Not seen by Kalen.
+32c. DONE (Oct 18, Kalen: bars, panes and tint a size behind the
+   background while he drags; fixed and lost about five times in
+   four days) Window.update_all never laid the root out: each
+   child's layout_self (before its render) read the root's bounds
+   from the LAST frame, so the Splitter turned the old width into
+   fixed px pane edges that the later layout pass kept. update_all
+   now lays the root out at the window's size first. KEEP THIS
+   LINE. Seen hidden on his Zelda session: 60 jumping sizes, the
+   clock the same distance from the right edge in all 60 (7 of 40
+   were a size behind before). trinity tests exit 0.
 33. OPEN (Kalen, Oct 18) a running orbiter of his must not stop
    mine (or my builds) from running beside it.
 34. OPEN silver: orbiter read element's intern cache_canvas (no

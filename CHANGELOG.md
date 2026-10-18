@@ -32,6 +32,20 @@ Starting point: `.git` 1.7 GB (393 MB packed + 253 MB abandoned temp packs + 1 G
 Result: `.git` 102 MB, checkout 121 MB, 1,617 files; the 55 MB of tracked source maps is now the largest part. Never in the repo: `checkout/` (git imports, MOLA
 tiles), `n64/reference/`, `ref/` ROMs, `platform/`.
 
+## Layout one size behind during a window resize (trinity.ag, Oct 18 2026)
+Fixed about five times in four days and lost each time; do not remove.
+While the window was dragged, the bars, panes and their tint were drawn
+at the previous size over a background at the new one.
+Cause: `Window.update_all` never laid the root out. Each child is laid
+out from its parent before its `render`, so the children read the
+root's bounds from the last frame. The Splitter turned that old width
+into fixed px pane edges, which the frame's later layout pass kept.
+Fix: `update_all` lays the root out at the window's size first:
+`if [ screen ] layout_self[ root, null, null, null, screen ]`.
+Checked hidden on a Zelda session: 60 frames at jumping sizes, the
+clock the same distance from the right edge in every one (7 of 40 were
+a size behind before). `silver --test trinity` exits 0.
+
 ## LLDB debug info member offsets (lldb.c)
 - `m->offset` is a runtime field, always 0 at compile time — LLDB showed corrupt values
 - fix: use `LLVMOffsetOfElement(target_data, struct_type, m->index)` for actual byte offsets
