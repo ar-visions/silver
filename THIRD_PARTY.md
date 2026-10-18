@@ -102,6 +102,8 @@ Keep it in step with the imports.
 | Material Symbols: apps (white fill added) | orbiter/images/apps_grid.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: edit (white fill added) | orbiter/images/edit.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: eject (white fill added) | orbiter/images/eject.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: person (white fill added) | orbiter/images/person.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: manage_search (white fill added) | orbiter/images/find_in_files.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: volume_up, volume_off (white fill added) | trinity/images/volume_up.svg, volume_off.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | gedit app icon | featured/gedit/images/icon.png | https://gitlab.gnome.org/GNOME/gedit/-/raw/51.0/data/icons/org.gnome.gedit-256x256.png | GPL-2.0-or-later (repo) | The gedit team |

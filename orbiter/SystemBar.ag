@@ -3,6 +3,8 @@ extend orbiter
 # the system bar: orbiter as the OS, across the top, black; the
 # clock in its middle, the tray at its right
 Group SystemBar
+    # painted onto the screen: a resized cache flashed red
+    no_cache : true
     # its menus from orbiter, read as it renders (after the panes)
     public func render [] -> Elements
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
@@ -99,11 +101,15 @@ Button MenuTop
         layers.face:
             label_color: #e8e8ee
             label_size: 18
-            label_font: 'fonts/BarlowCondensed-Bold.ttf'
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
         :hovered
             layers.body:
                 fill_color: #ffffff18
+        # the app's name, the first
+        :tab_on
+            layers.face:
+                label_font: 'fonts/BarlowCondensed-Bold.ttf'
         :close_part
             layers.face:
                 label_size: 20
@@ -194,6 +200,19 @@ Layer BarMeasure
             bt.site_w   = sw
             bt.domain_w = dw
             if [ bt.ux ] bt.ux.restyle = true
+
+# the selected pane's part of the bar: a glow up from its foot
+element PaneGlow
+    ghost : true
+    style : CSS {
+        layers.glow:
+            fill_color: #fff2
+            fill_color_pos: 0.0 1.0
+            fill_gradient: linear
+            fill_gradient_color: #fff0
+            fill_gradient_angle: 270.0
+            stroke_width: 0
+    }
 
 # the site's name in the bar's title; a press is the title's
 element BarText
@@ -320,19 +339,19 @@ element MenuDrawer
     # it takes the keys while open: typing filters its menu
     focusable : true
     public open : bool
-    # the blur under it live, every frame; off (the default): taken
+    # the blur under it live, every frame (the default); off: taken
     # once as it opens, and again on a new window size
-    public background_lens : bool
+    public background_lens : bool [ true ]
     ground : DrawerGround []
     style : CSS {
-        area: l-10.91 t0.91 w10.91 b0, 240ms cubic outward
+        area: l-10.91 t0.91 w10.91 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
         # a faint line down its right side
         layers.redge:
             fill_color: #fff2
             area: r1px t0 r0 b0
     :open
-        area: l0 t0.91 w10.91 b0, 260ms cubic inward
+        area: l0 t0.91 w10.91 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
 
@@ -342,10 +361,10 @@ element MenuDrawer
 MenuDrawer ExchangeDrawer
     # edges, never a w: a percent width is a flow share
     style : CSS {
-        area: l-100%+0 t0.91 r100%+0 b0, 240ms cubic outward
+        area: l-100%+0 t0.91 r100%+0 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0%+0 t0.91 r0%+0 b0, 260ms cubic inward
+        area: l0%+0 t0.91 r0%+0 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
 
@@ -353,9 +372,9 @@ MenuDrawer ExchangeDrawer
 # view buttons and power on top, the sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
     style : CSS {
-        area: r-12 t0.91 w12 b0, 240ms cubic outward
+        area: r-12 t0.91 w12 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: r0 t0.91 w12 b0, 260ms cubic inward
+        area: r0 t0.91 w12 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }

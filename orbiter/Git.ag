@@ -676,85 +676,6 @@ Layer NavSideLayer
 # the navigator's right column: the file's views (its git
 # reference, b16 ...) as buttons, icon over name; the one on is
 # outlined; a press shows it
-element ViewRail
-    mutable hov : i32 [ -1 ]
-
-    func pane_ed [] -> Editor
-        cb : CommitView [ parent ]
-        ev9 : EditorView (cb) ? cb.view[] : null
-        return (ev9) ? ev9.text_of[] : null
-
-    func views [] -> vec string
-        orb : cast orbiter [ (ux) ? ux.app_object : null ]
-        return (orb) ? orb.file_views[ pane_ed[] ] : vec string []
-
-    # the button under y, -1 none
-    func at_y [ y: f32 ] -> i32
-        u : f32 ux_unit[ ux ]
-        n : i32 [ i32[ views[].count ] ]
-        i : i32 [ i32[ (y - 8.0 * u) / (70.0 * u) ] ]
-        return (y >= 8.0 * u && i >= 0 && i < n) ? i : -1
-
-    public func on_move [ ev: Event ]
-        h : i32 at_y[ ev.mouse.pos.y ]
-        if [ h != hov ]
-            hov = h
-            pristine = false
-
-    public func on_press [ ev: Event ]
-        i : i32 at_y[ ev.mouse.pos.y ]
-        if [ i < 0 ] return
-        vs : vec string views[]
-        orb : cast orbiter [ (ux) ? ux.app_object : null ]
-        if [ orb ] orb.pane_view_press[ pane_ed[], vs[ i ] ]
-        ev.no_default = true
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        ed : Editor pane_ed[]
-        vs : vec string views[]
-        if [ !ed || vs.count == 0 ] return
-        if [ !ed.ficons ] ed.ficons = FileIcons []
-        u : f32 ux_unit[ ux ]
-        cv : Canvas w.screen
-        cur : string ed.resolve_view[]
-        bw : f32 [ 60.0 * u ]
-        bx : f32 [ round[ (bounds.w - bw) * 0.5 ] ]
-        for [ i: i32 0, i < vs.count, i += 1 ]
-            nm : string vs[ i ]
-            by : f32 [ 8.0 * u + 70.0 * u * f32[ i ] ]
-            on : bool [ (nm == 'git') ? ed.git_on : nm == cur ]
-            if [ on ]
-                cv.fill_color  [ rgba['#6cb6ff33'] ]
-                cv.stroke_color[ rgba['#8fd0ff'] ]
-            el [ i == hov ]
-                cv.fill_color  [ rgba['#6cb6ff22'] ]
-                cv.stroke_color[ rgba['#6cb6ffcc'] ]
-            el
-                cv.fill_color  [ rgba['#10142088'] ]
-                cv.stroke_color[ rgba['#fff3'] ]
-            cv.stroke_width[ (on) ? 2.0 : 1.0 ]
-            cv.rounded_rect[ bx, by, bw, 64.0 * u, 8.0, 8.0, 8.0, 8.0 ]
-            cv.paint[ ]
-            cv.stroke_width[ 0.0 ]
-            ic : SVGModel ed.ficons.named[ nm, 36 ]
-            isz : f32 [ round[ 30.0 * u ] ]
-            if [ ic ]
-                cv.svg_override[ (on) ? rgba['#ffe6d2']
-                    : ((i == hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
-                cv.draw_svg[ ic, round[ bx + (bw - isz) * 0.5 ],
-                    round[ by + 7.0 * u ], isz, isz ]
-                cv.svg_override_off[]
-            nav_font[ cv, 13 ]
-            cv.fill_color[ rgba['#c9c4dd'] ]
-            orb : cast orbiter [ ux.app_object ]
-            lb : string [ (nm == 'git') ? 'Git Ref'
-                : ((orb) ? orb.menu_words[ nm ] : nm) ]
-            cv.draw_text[ lb, rect [ x: bx, y: by + 44.0 * u, w: bw,
-                                     h: 16.0 * u ],
-                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
-
 Layer CommitLayer
     func draw [ cv: Canvas ]
         u : f32 nav_unit[ cv ]
@@ -1629,14 +1550,11 @@ element CommitView
         orb7 : cast orbiter [ (ux) ? ux.app_object : null ]
         ev7 : EditorView view[]
         ed7 : Editor (ev7) ? ev7.text_of[] : null
-        rail_w = (orb7 && orb7.file_views[ ed7 ].count > 0)
-            ? 72.0 * u : 0.0
+        # the file's views are the system bar's
+        rail_w = 0.0
         return Elements [
             'rail' : ToolRail [ top: 3.0 * u, no_scroll: true,
                                 area: Region [ 'l0 t0 w64px b0' ] ],
-            # the file's views down the right, icon over name
-            'views' : ViewRail [ no_scroll: true,
-                area: Region [ 'r0 t0 w{rail_w}px b0' ] ],
             # the column: presses and the wheel are the view's
             'side' : NavSide [ no_scroll: true, ghost: true,
                 scroll_fade: 24.0,

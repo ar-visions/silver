@@ -1616,7 +1616,7 @@ element aeon : trinity
     public height : i32    [ 800 ]
     public title  : string [ 'aeon' ]
     # the project folder; the last one opened when none is given
-    default [ Launch ] project : string
+    default [ Launch, Live ] project : string
     intern [ StatePersist ] last_project : string
     # a drawing's unsaved text kept across a quit (or a crash): on,
     # and where it saves to ('' a drawing never saved)
@@ -1664,6 +1664,7 @@ element aeon : trinity
             project = '{root}/{project}'
         if [ project.ends_with[ '.blend' ] ]
             project = import_blend[ project ]
+        project = design_folder[ project ]
         # the working copy of a drawing never saved is no project
         # to come back to
         work : string '{aeon_cache[]}/untitled.svg'
@@ -1845,10 +1846,18 @@ element aeon : trinity
 
     # another project opened in place: everything chosen, held and
     # shown starts over; the view is made anew
+    # a design's own .agi (<name>/<name>.agi) names its folder
+    func design_folder [ p: string ] -> string
+        if [ !p.ends_with[ '.agi' ] ] return p
+        f : path [ p ]
+        d : path f.parent_dir[]
+        return (f.stem[] == d.filename[]) ? '{d}' : p
+
     func open_project [ p: string ]
         project = p
         if [ project.ends_with[ '.blend' ] ]
             project = import_blend[ project ]
+        project = design_folder[ project ]
         last_project = project
         save-persistent[ a ]
         sel = Selection [ object: '', node: '', pass: '', solo: '' ]

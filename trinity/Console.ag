@@ -282,24 +282,14 @@ class ConsoleSession
                     return r
         return 0
 
+    # claude code's title while it works: a half circle (U+25D0 to
+    # U+25D3) first; idle it is a star
     func agent_busy [] -> bool
-        for [ r: i32 rows - 1, r >= 0, r -= 1 ]
-            lead_ch : i32 [ screen[ r * cols + 0 ].ch ]
-            # ascii, box rules and the prompt are chrome — keep looking
-            if [ lead_ch < 128 ] continue
-            if [ lead_ch == 9472 || lead_ch == 10095 ] continue
-            if [ lead_ch >= 9600 && lead_ch <= 9631 ] continue
-            lead_fg : i32 [ screen[ r * cols + 0 ].fg ]
-            if [ lead_fg < 0 ] return false
-            rr : i32 [ (lead_fg / 65536) % 256 ]
-            gg : i32 [ (lead_fg / 256)   % 256 ]
-            bb : i32 [  lead_fg          % 256 ]
-            hi : i32 [ (rr > gg) ? rr : gg ]
-            if [ bb > hi ] hi = bb
-            lo : i32 [ (rr < gg) ? rr : gg ]
-            if [ bb < lo ] lo = bb
-            return (hi - lo) > 24
-        return false
+        if [ !title || title.count < 3 ] return false
+        b0 : i32 [ (i32 title.chars[ 0 ]) & 255 ]
+        b1 : i32 [ (i32 title.chars[ 1 ]) & 255 ]
+        b2 : i32 [ (i32 title.chars[ 2 ]) & 255 ]
+        return b0 == 226 && b1 == 151 && b2 >= 144 && b2 <= 147
 
     func line_count [] -> i32
         return scrollback.count + rows
@@ -875,8 +865,12 @@ Layer TermLayer
         if [ !con ] return
         s : ConsoleSession con.session[]
         if [ !s ] return
+        # a line scrolled part way out is cut at the area's edge
+        cv.save[]
+        cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
         ch : f32 [ paint_term[ cv, con, s, bounds, con.filter[],
                                con.feed, label_size, label_height ] ]
+        cv.restore[]
         con.content_h = ch
         con.scroll.y  = s.scroll
 
@@ -993,6 +987,9 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                     break
         total_h  : f32 [ f32[base + live] * lh ]
         max_s    : f32 [ maxf[ total_h - vb.h, 0.0 ] ]
+        # whole lines from the top: the spare part of a line is
+        # left under the last, not cut off the first
+        if [ max_s > 0.0 ] max_s = ceil[ max_s / lh ] * lh
 
         s.max_scroll = max_s
         if [ !s.scroll_dragging && !s.user_scrolled ]
@@ -1475,10 +1472,10 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
 element Console
     focusable  : true
     cbase     : Layer [ fill_color: rgba [ '#202a' ] ]
-    content   : TermLayer [ area: Region { l8px t44px r8px b8px },
+    content   : TermLayer [ area: Region { l8px t8px r8px b8px },
                             label_height: 1.0, label_size: 16 ]
     scrollbar : ScrollLayer [ overlay: true,
-                              area: Region { l8px t44px r8px b8px },
+                              area: Region { l8px t8px r8px b8px },
                               thumb_color: '#fff4',
         thumb_w: 6.0, thumb_min_h: 32.0, thumb_radius: 4.0 ]
     public  session_id : string
@@ -1612,13 +1609,15 @@ element Console
              || ev.key.meta) && i32[ev.key.unicode] == 86 ]
             paste_clip[]
             return
+        # ctrl + c copies a selection; with none (a click leaves an
+        # empty one) it goes on to the program as its interrupt
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta)
-             && i32[ev.key.unicode] == 67 ]
-            if [ s.sel_line >= 0 ]
-                txt : string s.selection_text[]
-                if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
-                s.sel_line = -1
-                pristine = false
+             && i32[ev.key.unicode] == 67 && s.sel_line >= 0 ]
+            txt : string s.selection_text[]
+            s.sel_line = -1
+            pristine = false
+            if [ txt.count > 0 ]
+                if [ ux ] ux.set_clipboard[ txt ]
                 return
         ele : Layer (layers) ? layers[ 'content' ] : null
         vh  : f32 [ (ele && ele.bounds) ? ele.bounds.h : 0.0 ]
@@ -1847,3 +1846,22 @@ element CompileConsole
     public log : list string
     func init []
         log = list string []
+# a title as a terminal program sets it: ESC ] k ; text BEL
+func title_seq [ s: ConsoleSession, k: string, t: string ]
+    s.process_byte[ 27 ]
+    s.print_text[ ']{k};{t}' ]
+    s.process_byte[ 7 ]
+
+# claude code's titles as recorded: working half circles, idle star
+expect func t_agent_busy_title [] -> bool
+    s : ConsoleSession []
+    title_seq[ s, '0', '✳ Claude Code' ]
+    idle : bool [ !s.agent_busy[] ]
+    title_seq[ s, '0', '◐ Slow counting' ]
+    on1 : bool s.agent_busy[]
+    title_seq[ s, '2', '◑ Slow counting' ]
+    on2 : bool s.agent_busy[]
+    title_seq[ s, '0', '✳ Slow counting' ]
+    done : bool [ !s.agent_busy[] ]
+    log 'agent title: idle {idle} on {on1} {on2} done {done}'
+    return idle && on1 && on2 && done

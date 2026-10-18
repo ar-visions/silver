@@ -13,7 +13,8 @@ typedef struct {
 } BrowserRecord;
 
 // 1 = a frame (the fd is the caller's), 2 = history (w = back, h = forward),
-// 3 = a title (text, w bytes), 0 = nothing waiting, -1 = broken
+// 3 = a title (text, w bytes), 4 = an address, 5 = its scroll,
+// 0 = nothing waiting, -1 = broken
 BR_API int aura_recv_frame(int sock, uint64_t* id, int* w, int* h, uint32_t* format,
                               uint64_t* modifier, uint32_t* stride, uint32_t* offset, int* fd,
                               char* text, int cap)
@@ -36,6 +37,8 @@ BR_API int aura_recv_frame(int sock, uint64_t* id, int* w, int* h, uint32_t* for
     *id = rec.id; *w = (int)rec.width; *h = (int)rec.height; *format = rec.format;
     *modifier = rec.modifier; *stride = rec.stride; *offset = rec.offset;
     if (rec.magic == 0x5356414eu) return 2;
+    // 5 = the page's scroll: w = place, h = height, format = view
+    if (rec.magic == 0x4c524353u) return 5;
     if (rec.magic == 0x4c544954u || rec.magic == 0x52444441u) {
         int len = (int)rec.width;
         if (len >= cap) return -1;

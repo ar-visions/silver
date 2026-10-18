@@ -26,6 +26,21 @@
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15"
 #define MAC_PLATFORM_SCRIPT "Object.defineProperty(Navigator.prototype, " \
     "'platform', { get: () => 'MacIntel' });"
+// the page's scroll place, height and view height, CSS px, on each
+// change: the element draws trinity's own bar from them
+#define SCROLL_SCRIPT "(function(){var p=-1,q=-1,r=-1;function s(){" \
+    "var d=document.documentElement;if(!d)return;" \
+    "var y=Math.round(scrollY),h=Math.max(d.scrollHeight," \
+    "document.body?document.body.scrollHeight:0),v=innerHeight;" \
+    "if(y==p&&h==q&&v==r)return;p=y;q=h;r=v;" \
+    "webkit.messageHandlers.trinityScroll.postMessage(y+' '+h+' '+v);}" \
+    "addEventListener('scroll',s,{passive:true});" \
+    "addEventListener('resize',s);" \
+    "addEventListener('DOMContentLoaded',function(){s();" \
+    "new ResizeObserver(s).observe(document.documentElement);});})();"
+// the page's own bar is trinity's now
+#define SCROLL_STYLE "html::-webkit-scrollbar{display:none;width:0;height:0}" \
+    "html{scrollbar-width:none}"
 #define MAX_FRAME_SIDE 4096
 
 // the element reads w, h, stride after seq changes
@@ -168,6 +183,20 @@ static void publishText(uint32_t magic, const char* text)
     FrameRecord rec = { magic, ++frameSeq, (uint32_t)len, 0, 0, 0, 0, 0, 0, 0 };
     if (send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL) == (ssize_t)sizeof rec && len)
         (void)!send(STDIN_FILENO, text, len, MSG_NOSIGNAL);
+}
+
+// the page scrolled, or its height changed: y, height, view height
+static void publishScroll(WebKitUserContentManager* manager, JSCValue* value, gpointer data)
+{
+    if (!frameSocket)
+        return;
+    char* text = jsc_value_to_string(value);
+    unsigned y = 0, h = 0, v = 0;
+    if (text && sscanf(text, "%u %u %u", &y, &h, &v) == 3) {
+        FrameRecord rec = { 0x4c524353u, ++frameSeq, y, h, v, 0, 0, 0, 0, 0 };
+        (void)!send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL);
+    }
+    g_free(text);
 }
 
 // the page's title, else its address: the element's own title
@@ -348,6 +377,13 @@ static void handleLine(char* line)
         webkit_web_view_evaluate_javascript(webView, line + 3, -1, NULL, NULL, NULL, jsDone, NULL);
         return;
     }
+    // scroll <y>: trinity's bar dragged, the page's place in CSS px
+    if (!strcmp(command, "scroll") && strlen(line) > 7) {
+        char script[64];
+        snprintf(script, sizeof script, "scrollTo(scrollX,%d)", atoi(line + 7));
+        webkit_web_view_evaluate_javascript(webView, script, -1, NULL, NULL, NULL, NULL, NULL);
+        return;
+    }
     // nav back|forward: the host's history arrows
     if (!strcmp(command, "nav")) {
         if (!strcmp(line, "nav back"))
@@ -496,8 +532,19 @@ int main(int argc, char** argv)
     // the agent says Mac: navigator.platform must agree
     WebKitUserScript* platform = webkit_user_script_new(MAC_PLATFORM_SCRIPT,
         WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
-    webkit_user_content_manager_add_script(webkit_web_view_get_user_content_manager(webView), platform);
+    WebKitUserContentManager* content = webkit_web_view_get_user_content_manager(webView);
+    webkit_user_content_manager_add_script(content, platform);
     webkit_user_script_unref(platform);
+    WebKitUserScript* scrolls = webkit_user_script_new(SCROLL_SCRIPT,
+        WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+    webkit_user_content_manager_add_script(content, scrolls);
+    webkit_user_script_unref(scrolls);
+    WebKitUserStyleSheet* bar = webkit_user_style_sheet_new(SCROLL_STYLE,
+        WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_STYLE_LEVEL_USER, NULL, NULL);
+    webkit_user_content_manager_add_style_sheet(content, bar);
+    webkit_user_style_sheet_unref(bar);
+    webkit_user_content_manager_register_script_message_handler(content, "trinityScroll", NULL);
+    g_signal_connect(content, "script-message-received::trinityScroll", G_CALLBACK(publishScroll), NULL);
     view = webkit_web_view_get_wpe_view(webView);
     initReadBack(display);
     g_signal_connect(view, "buffer-rendered", G_CALLBACK(publishFrame), NULL);

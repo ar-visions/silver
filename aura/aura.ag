@@ -170,6 +170,17 @@ element aura : trinity
     mutable scale      : f32    [ 1.0 ]      # device px per point
     # buttons down, bit per button
     mutable held       : i32
+    # the wheel's scroll still to go, device px; eased out each frame
+    # as trinity's own scroll (filter_n, 0.14)
+    mutable glide_x    : f32
+    mutable glide_y    : f32
+    mutable glide_at   : vec2f
+    # the page's scroll, CSS px: place, height, view height
+    mutable page_y     : i32
+    mutable page_h     : i32
+    mutable page_vh    : i32
+    # the place last asked of the page while the bar drags
+    mutable bar_sent   : i32 [ -1 ]
     mutable started    : bool
     # the running helper: pid, ctl
     persist engine     : vec i64
@@ -311,6 +322,13 @@ element aura : trinity
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
                                         @st, @off, @fd, @tt[0], 256 ]
                 continue
+            if [ kind == 5 ]
+                page_y  = fw
+                page_h  = fh
+                page_vh = i32[ fmt ]
+                kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
+                                        @st, @off, @fd, @tt[0], 256 ]
+                continue
             if [ kind == 4 ]
                 a9 : string[ @tt[0] ]
                 if [ a9 && a9 != 'about:blank' ]
@@ -423,11 +441,74 @@ element aura : trinity
     public func on_wheel [ ev: Event ]
         x : i32 [ ev.mouse.pos.x * scale ]
         y : i32 [ ev.mouse.pos.y * scale ]
-        # 0.325 of a notch per wheel step
-        dx : f32 [ ev.mouse.wheel_delta.x * 0.325 ]
-        dy : f32 [ ev.mouse.wheel_delta.y * 0.325 ]
-        post[ 'mouse wheel {x} {y} 0 {held} 0 {dx} {dy}' ]
+        # 0.325 of a notch per wheel step, in px of WebKit's notch
+        st : f32 line_step[]
+        glide_x += ev.mouse.wheel_delta.x * 0.325 * st
+        glide_y += ev.mouse.wheel_delta.y * 0.325 * st
+        glide_at = vec2f [ x: f32[ x ], y: f32[ y ] ]
+        if [ ux ] ux.will_animate = true
         ev.stop[]
+
+    # trinity's bar down the right: the page's place and height in
+    # it; dragged, the page follows it
+    public func render [] -> Elements
+        return Elements [ 'bar' : AuraBar [
+            area: Region { r0 t0 w90px b0 } ] ]
+
+    func bar_sync []
+        b : AuraBar (elements) ? elements['bar'] : null
+        if [ !b || page_vh <= 0 ] return
+        k : f32 [ bounds.h / f32[ page_vh ] ]
+        ch : f32 [ f32[ page_h ] * k ]
+        if [ ch != b.content_h ]
+            b.content_h = ch
+            b.pristine  = false
+        if [ b.sb_drag || b.scroll_anim ]
+            # the bar leads: the page goes where it is
+            want : i32 [ round[ b.scroll.y / k ] ]
+            if [ want != bar_sent ]
+                bar_sent = want
+                post[ 'scroll {want}' ]
+            return
+        bar_sent = -1
+        sy : f32 [ f32[ page_y ] * k ]
+        if [ sy != b.scroll.y ]
+            b.scroll.y    = sy
+            b.scroll_goal = sy
+            b.pristine    = false
+
+    # WebKit's notch: the view's height to the 2/3, device px
+    func line_step [] -> f32
+        h : f32 [ (view_h > 0) ? f32[ view_h ] : 800.0 ]
+        return pow[ h, 0.6667 ]
+
+    # a share of the scroll left, in whole px (WebKit rounds the
+    # scrolled place to device px: a smaller step would be lost)
+    func glide_part [ left: f32 ] -> f32
+        want : f32 [ left - filter_n[ left, 0.0, 0.14, ux.frame_factor ] ]
+        px : f32 [ round[ want ] ]
+        if [ px == 0.0 && left >= 1.0 ] px = 1.0
+        if [ px == 0.0 && left <= -1.0 ] px = -1.0
+        return px
+
+    # the eased wheel: this frame's part to WebKit
+    func glide []
+        if [ !ux ] return
+        gx : f32 glide_part[ glide_x ]
+        gy : f32 glide_part[ glide_y ]
+        if [ gx == 0.0 && gy == 0.0 ]
+            glide_x = 0.0
+            glide_y = 0.0
+            return
+        glide_x -= gx
+        glide_y -= gy
+        st : f32 line_step[]
+        dx : f32 [ gx / st ]
+        dy : f32 [ gy / st ]
+        x : i32 [ glide_at.x ]
+        y : i32 [ glide_at.y ]
+        post[ 'mouse wheel {x} {y} 0 {held} 0 {dx} {dy}' ]
+        ux.will_animate = true
 
     # printable keys come as text; the rest as keys
     public func on_key [ ev: Event ]
@@ -454,6 +535,8 @@ element aura : trinity
                 log 'aura: the engine exited'
                 pid = 0
         sync_size[]
+        glide[]
+        bar_sync[]
         cv : Canvas [ w.screen ]
         if [ !cv || !cv.vk ] return
         take_frame[ cv ]
@@ -479,3 +562,48 @@ element aura : trinity
             waitpid[ pid, null, 0 ]
         if [ shm ] munmap[ shm, shm_size ]
         el [ shm_path ] unlink[ shm_path.chars ]
+
+# aura's right edge: trinity's scrollbar over the page (it morphs as
+# the pointer nears); a press off the bar goes to the page
+element AuraBar
+    func page [] -> aura
+        return (parent && parent inherits aura) ? cast aura [ parent ]
+            : null
+
+    # into the page's space: the strip sits at the page's right
+    func pass [ ev: Event ]
+        ev.mouse.pos.x += bounds.x
+
+    public func on_press [ ev: Event ]
+        if [ scroll_grab[ ev ] ]
+            ev.stop[]
+            return
+        pg : aura page[]
+        if [ !pg ] return
+        pass[ ev ]
+        pg.on_press[ ev ]
+
+    public func on_release [ ev: Event ]
+        if [ sb_drag ]
+            super.on_release[ ev ]
+            return
+        pg : aura page[]
+        if [ !pg ] return
+        pass[ ev ]
+        pg.on_release[ ev ]
+
+    public func on_move [ ev: Event ]
+        pristine = false
+        if [ sb_drag ]
+            super.on_move[ ev ]
+            return
+        pg : aura page[]
+        if [ !pg ] return
+        pass[ ev ]
+        pg.on_move[ ev ]
+
+    public func on_wheel [ ev: Event ]
+        pg : aura page[]
+        if [ !pg ] return
+        pass[ ev ]
+        pg.on_wheel[ ev ]

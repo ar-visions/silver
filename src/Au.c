@@ -3095,7 +3095,8 @@ typedef bool (*command_output_hook)(void*, cstr, ssize_t);
 
 AU_EXPORT int command_exec_hook(command cmd, bool verbose, bool merge_err,
                                 command_output_hook hook, void* ctx) {
-    if (starts_with(cmd, "export ")) {
+    // a lone assignment sets ours; with more after it, the shell runs it
+    if (starts_with(cmd, "export ") && !strpbrk(cmd->chars, ";&|\n")) {
         string a = mid(cmd, 7, len(cmd) - 7);
         int i = index_of(a, "=");
         assert(i >= 1, "invalid syntax"); 

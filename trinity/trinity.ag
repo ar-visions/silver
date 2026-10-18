@@ -2049,6 +2049,12 @@ class ReduceBlur
             r : Render renders[ i ]
             prev = r.color
 
+    # a new window size: each pass resizes, then reads the new ones
+    func resize [ source: Texture ]
+        for [ r: Render ] in renders
+            r.update[]
+        rewire[ source ]
+
     # the stages into a draw list, in order
     func append [ to: vec Render ]
         for [ r: Render ] in renders
@@ -2384,13 +2390,16 @@ Display Window
              || !screen.color.vk_image ]
             return false
         tx : Texture screen.color
-        if [ !live_snap || live_snap.width != tx.width
-             || live_snap.height != tx.height ]
+        if [ !live_snap ]
             live_snap = Texture [ vk: vk, w: a, width: tx.width,
                                   height: tx.height,
                                   vk_format: tx.vk_format ]
             live_blur = ReduceBlur []
             live_blur.build[ vk_context[ a.vk ], a, live_snap, 1.0, 2 ]
+        el [ live_snap.width != tx.width
+             || live_snap.height != tx.height ]
+            live_snap.resize[ tx.width, tx.height ]
+            live_blur.resize[ live_snap ]
         screen.flush_text[]
         screen.draw[]
         screen.sync_fence[]

@@ -4,6 +4,7 @@ import vec
 import img
 import trinity
 import <stdlib.h>
+import <sys/wait.h>
 
 # a shell in a window: trinity's Console on its own
 element console : trinity
@@ -35,3 +36,12 @@ element console : trinity
             'shell' : Console [ session_id: 'shell', sessions: sessions,
                 titles: true,
                 cwd: at, launch: cmd, area: Region { l0 t0 r0 b0 } ] ]
+
+    # a program run here ends the console with it (no empty shell)
+    public func on_frame [ w: Window ]
+        if [ !run || run.count == 0 || !sessions ] return
+        s : ConsoleSession sessions.get[ 'shell' ]
+        if [ !s || s.pid <= 0 ] return
+        st : i32 [ 0 ]
+        if [ waitpid[ s.pid, @st, WNOHANG ] == s.pid ]
+            Au.quit_request[]

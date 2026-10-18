@@ -234,7 +234,10 @@ class Render
         # vkDeviceWaitIdle Display.resize used to do — each Render
         # fences only its own work.
         if [ last_width > 0 && last_height > 0 ]
+            # the paint about to draw already bound its slot
+            keep : i32 [ draw_slot ]
             sync_fence[]
+            draw_slot = keep
 
         last_width  = width
         last_height = height
@@ -5670,15 +5673,12 @@ Texture Display
     intern fit_ox               : f32
     intern fit_oy               : f32
     intern resized              : bool
-    # debounced resize: GLFW emits framebuffer_size continuously while
-    # dragging. We don't recreate the swapchain on every callback (would
-    # hitch the frame). Instead the callback stamps pending dimensions +
-    # a timestamp, and Display.draw triggers resize once the user has
-    # been idle for >= debounce.
+    # the callback stamps the new size; the next draw resizes to it
     intern pending_w            : i32
     intern pending_h            : i32
     intern last_resize_t        : f64
-    intern resize_debounce_s    : f64 [ 0.03 ]
+    # each frame of a drag is drawn at its own size
+    intern resize_debounce_s    : f64 [ 0.0 ]
     # set when acquire/present reports SUBOPTIMAL/OUT_OF_DATE. on
     # SUBOPTIMAL the acquire still signals the image-available
     # semaphore; skipping the frame leaves it signaled, and the next
@@ -6076,7 +6076,10 @@ Texture Display
             now: f64 [ platform_time[] ]
             if [ now - last_resize_t >= resize_debounce_s ]
                 if [ pending_w != width || pending_h != height ]
+                    rzt : i64 [ epoch_micros[] ]
                     resize*[ pending_w, pending_h ]
+                    log 'TRACE display resize {epoch_micros[] - rzt} us canvas {vk.resize_us} us'
+                    vk.resize_us = 0
                 pending_w     = 0
                 pending_h     = 0
                 last_resize_t = 0.0
@@ -6857,6 +6860,10 @@ intern func handle_enter [ win: @platform_window, entered: i32 ]
     if [ entered != 0 ] return
     w.ev.clear[]
     w.clear_hover[ w.ev ]
+    # off the window: no border stays lit by the last point
+    w.mouse.x = -100000.0
+    w.mouse.y = -100000.0
+    w.near_walk[ w.root, 0.0, 0.0 ]
 
 
 intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]

@@ -1559,6 +1559,28 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    opened, frost picked, chip and pill followed.
    OPEN silver: `for [ v: element, k: string ] in f[ .. ]` over a
    call's map result fails LLVM verify (GEP indices); a local first.
+32. DONE (Oct 18, Kalen: the top bar red during a window resize)
+   trinity Render.update waited its frame on a new size, and that
+   wait rewound draw_slot to 0 after the paint had bound its image
+   into slot N: the draw bound slot 0, still naming an old freed
+   image (the bar's cache before its resize). The slot is kept.
+   Seen hidden: the menu's mid-frame screen copy had 1,800-8,800
+   red px in its top rows, now none. Also: the drawers' blur is
+   resized in place (ReduceBlur.resize), not rebuilt (it crashed
+   in Render_init on the second size). trinity tests exit 0.
+   Still red on Kalen's screen after that; fixed for him by the
+   SystemBar painting straight onto the screen (no_cache: a
+   resized cache showed through). Root of the cache flash: OPEN.
+32b. BUILT (Oct 18, Kalen: bars and tint a size behind while he
+   drags) orbiter's own picture was right each frame (the clock 31
+   px from the edge at 24 sizes); the swapchain waited for 30 ms
+   of stillness (resize_debounce_s) and a drag never pauses.
+   Debounce 0: a new size each frame. Hidden: 80 sizes, validation
+   on, no error or crash; trinity tests exit 0. Not seen by Kalen.
+33. OPEN (Kalen, Oct 18) a running orbiter of his must not stop
+   mine (or my builds) from running beside it.
+34. OPEN silver: orbiter read element's intern cache_canvas (no
+   error, a wrong place: SIGSEGV); intern cache_w was refused.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.

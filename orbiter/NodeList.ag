@@ -797,6 +797,8 @@ Control AppsGrid
     mutable icons : vec AppIcon
     mutable heads : vec string
     mutable head_at : vec i32
+    # the filter the cards were gathered with
+    mutable gathered : string
 
     func entry [ i: i32 ] -> AppEntry
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
@@ -815,6 +817,13 @@ Control AppsGrid
         names.push[ 'recommended' ]
         names.push[ 'other' ]
         ours : vec AppEntry orb.app_entries[]
+        gathered = orb.apps_filter
+        if [ gathered.count > 0 ]
+            fl : string gathered.lcase[]
+            kept : vec AppEntry []
+            for [ ae: AppEntry ] in ours
+                if [ ae.name.lcase[].index_of[ fl ] >= 0 ] kept.push[ ae ]
+            ours = kept
         for [ gn: string ] in names
             start : i32 [ shown.count ]
             for [ ae: AppEntry ] in ours
@@ -933,7 +942,10 @@ Control AppsGrid
         if [ !orb ] return
         cv : Canvas w.screen
         un : f32 ux_unit[ w ]
-        if [ !shown ] gather[ orb ]
+        if [ !shown || gathered != orb.apps_filter ]
+            gather[ orb ]
+            hov = -1
+            sel = -1
         # a focus lost (a press elsewhere) puts the name back
         if [ !focused && sel >= 0 ]
             sel    = -1
@@ -947,8 +959,8 @@ Control AppsGrid
         hh  : f32 [ round[ 30.0 * un ] ]
         pr : i32 [ i32[ (bounds.w - pad * 2.0 + gap) / (cw9 + gap) ] ]
         if [ pr < 1 ] pr = 1
-        x0 : f32 [ round[ (bounds.w - f32[ pr ] * (cw9 + gap) + gap)
-                          * 0.5 ] ]
+        # held at the left: a width change only moves the row's end
+        x0 : f32 [ pad ]
         rx = vec f32 []
         ry = vec f32 []
         hys : vec f32 []

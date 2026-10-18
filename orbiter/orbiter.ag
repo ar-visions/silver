@@ -46,6 +46,8 @@ ifdef [ apple ]
 ifdef [ linux ]
     import <pty.h>
         -lutil
+    import <crypt.h>
+        -lcrypt
 ifdef [ windows ]
     import <posix.h>    # declares forkpty, which always fails here
 
@@ -55,6 +57,7 @@ import Editor
 import NodeList
 import Git
 import SystemBar
+import Login
 
 # the editor under a pane's split. 'text' is the editor/instruments
 # split, and the editor keeps key 'text' inside it
@@ -662,8 +665,8 @@ element EditorView
                     ? orb[].findbar_text : orb[].find_text))
                 label: (newfile)
                 ? ((newfile_dir) ? 'name new folder' : 'name new file')
-                : ((url9 || (orb[].system_on[] && src9)
-                    || (bot9 && open9)) ? ''
+                # with the system bar the bar is for finding: blank
+                : ((url9 || bot9) ? ''
                     : title_text[])
                 conflict: newfile && newfile_exists[]
                 no_scroll: true
@@ -682,8 +685,22 @@ element EditorView
         runs9 : bool [ ap9 && ap9.run_view && !ap9.run_view.ended ]
         if [ !file[] && !runs9 && !browse_active[] && !wn9
              && (inapp || !orb[].apps_off) ]
+            # typing filters them: the box mounts at the foot, the
+            # cards scroll above it
+            af9 : string [ (pane_index == orb[].active_pane)
+                ? orb[].apps_filter : '' ]
+            up9 : f32 orb[].unit_px[]
+            ga9 : string [ cont9 ]
+            if [ af9.count > 0 ]
+                ga9 = 'l0 t0 r0 b{th9 + 2.2 * up9}px'
+                sd9 : f32 [ 0.7 * up9 ]
+                bt9 : f32 [ th9 + 1.8 * up9 ]
+                bh9 : f32 [ 1.2 * up9 ]
+                t['apps_filter'] = MenuFilter [ label: af9,
+                    area: Region [
+                        'l{sd9}px b{bt9}px r{sd9}px h{bh9}px' ] ]
             t['apps'] = AppsGrid [ pane: pane_index, scroll_fade: 24.0,
-                area: Region [ cont9 ] ]
+                area: Region [ ga9 ] ]
         if [ browse_active[] ]
             fu : f32 [ (fc > 0.0) ? fc : 22.0 ]
             bar : Elements (bot9) ? Elements [] : view_bar[ th9 ]
@@ -875,6 +892,13 @@ AppAvatar CornerAvatar
     :summoned
         area: r-1 b22 w12 h19, 700ms cubic inward
         opacity: 1.0, 700ms cubic inward
+    }
+
+# the login's avatar: large and face on over the user cards
+AppAvatar LoginAvatar
+    render_scale : f32 [ 4.0 ]
+    style : CSS {
+        area: l50%-170px t50%-330px w340px h340px
     }
 
 # the avatar for the exchange under the screenshot prompt
@@ -2353,6 +2377,17 @@ element orbiter : trinity # implements compiler
     public install     : bool
     # with install: the steps are listed, never run
     public dry_run     : bool
+    # the login first: on orbiter-os, or asked for here
+    public login       : bool
+    # the accounts: the install's settings (user and password hash)
+    public accounts    : string [ '/var/lib/orbiter/install.agi' ]
+    mutable signed_in  : bool
+    mutable login_read : bool
+    mutable login_users  : vec string
+    mutable login_hashes : vec string
+    mutable login_sel  : i32 [ -1 ]
+    mutable login_pass : string [ '' ]
+    mutable login_note : string [ '' ]
     # the system bar as on orbiter-os, always (Kalen); false turns it
     # off in a window
     public force_system : bool  [ true ]
@@ -2551,6 +2586,8 @@ element orbiter : trinity # implements compiler
     public find_text     : string
     public findbar_open  : bool
     public findbar_pane  : string
+    # the pane the navigator opened in: a menu's focus keeps it there
+    nav_pane : string
     # restored carets, applied after each editor loads
     intern pending_sel   : vec vec2i
     intern pending_scroll : vec f32
@@ -2745,6 +2782,8 @@ element orbiter : trinity # implements compiler
     # typed into the open drawer: its menu shows what holds it; the
     # drawer takes the focus once it is mounted
     mutable menu_filter    : string
+    # typed on the apps screen: the apps whose names hold it
+    mutable apps_filter    : string [ '' ]
     # the bar's title being typed (a URL), what is typed, and whether
     # the first key replaces it whole
     mutable bar_typing     : bool
@@ -4785,14 +4824,20 @@ element orbiter : trinity # implements compiler
     # the ones added after it count from 2, per module (not the global
     # sequence)
     func instance_name [ av: AppView ] -> string
-        m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : 'app')
-        # a program the console runs is named for the program
-        pn : string program_of[ av ]
-        if [ pn.count > 0 ] m = pn
+        m : string app_name[ av ]
         li9 : vec AppView instances_of[ av.src ]
         for [ k9: i32 0, k9 < li9.count, k9 += 1 ]
             if [ li9[ k9 ] == av ]
                 return (k9 == 0) ? m : '{m} {k9 + 1}'
+        return m
+
+    # the app an instance is of, unnumbered (the menu's name)
+    func app_name [ av: AppView ] -> string
+        m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod
+            : ((av.src) ? av.src.stem[] : 'app')
+        # a program the console runs is named for the program
+        pn : string program_of[ av ]
+        if [ pn.count > 0 ] m = pn
         return m
 
     # the program a console instance runs: its args' last word's name
@@ -5851,7 +5896,7 @@ element orbiter : trinity # implements compiler
 
     func own_menu [ av: AppView, shown: bool ] -> vec TrayEntry
         m : vec TrayEntry []
-        m.push[ own_entry[ instance_name[ av ], '', 0 ] ]
+        m.push[ own_entry[ app_name[ av ], '', 0 ] ]
         # only a resource default takes content
         dp : Prop default_prop[ av.module_name[] ]
         if [ dp && dp.access == 'default' && dp.type == 'resource' ]
@@ -5938,6 +5983,12 @@ element orbiter : trinity # implements compiler
                 ed.pristine = false
             force_update[]
             return
+        # a new instance: held, then played here as Run does
+        if [ e.action == 'orb.inst_new' && ed ]
+            ed.start_instance[ false ]
+            pending_run = ed.pane_index
+            force_update[]
+            return
         if [ e.action.starts_with[ 'orb.inst:' ] ]
             show_instance[ i32[ e.action.mid[ 9,
                 e.action.count - 9 ] ], active_pane ]
@@ -5947,6 +5998,10 @@ element orbiter : trinity # implements compiler
             vn : string e.action.mid[ 10, e.action.count - 10 ]
             set_pane_view[ ed, (vn == ed.resolve_view[]) ? '' : vn ]
             force_update[]
+            return
+        # in the pane, as at startup: an app never run has no instance
+        if [ e.action == 'orb.run' ]
+            if [ ed ] pending_run = ed.pane_index
             return
         av : AppView (ed) ? ed.run_view : null
         if [ !av ] return
@@ -5971,9 +6026,6 @@ element orbiter : trinity # implements compiler
             pick_default[ ed, null, band_mod_of[ ed ], cur ]
         el [ e.action == 'orb.quit' ]
             close_task[ av ]
-        el [ e.action == 'orb.run' ]
-            # in the pane, as at startup
-            pending_run = ed.pane_index
         el [ e.action.starts_with[ 'orb.call:' ] ]
             nm : string e.action.mid[ 9, e.action.count - 9 ]
             agent_sock_send[ av.sock_name[].chars, 'call {nm}\n' ]
@@ -6046,12 +6098,16 @@ element orbiter : trinity # implements compiler
         sc : Canvas w.screen
         if [ !sc || !sc.color ] return null
         tx : Texture sc.color
-        if [ !drawer_snap || drawer_snap.width != tx.width
-             || drawer_snap.height != tx.height ]
+        if [ !drawer_snap ]
             drawer_snap = Texture [ vk: w.vk, w: w, width: tx.width,
                 height: tx.height, vk_format: tx.vk_format ]
             drawer_rb = ReduceBlur []
             drawer_rb.build[ vk_context[ w.vk ], w, drawer_snap, 1.0, 2 ]
+            drawer_fresh = false
+        el [ drawer_snap.width != tx.width
+             || drawer_snap.height != tx.height ]
+            drawer_snap.resize[ tx.width, tx.height ]
+            drawer_rb.resize[ drawer_snap ]
             drawer_fresh = false
         if [ drawer_fresh && !live ] return drawer_rb
         drawer_fresh = true
@@ -6866,14 +6922,21 @@ element orbiter : trinity # implements compiler
 
     func search_pane [] -> string
         win : ux
+        if [ !nav_showing && !find_showing ] nav_pane = null
         if [ win && win.focus && win.focus.id == 'title' ]
             for [ e: element* win.focus, e, e = e.parent ]
-                if [ e inherits EditorView ] return e.id
+                if [ e inherits EditorView ]
+                    nav_pane = e.id
+                    return e.id
         # a focused nav surface owns the search — NEVER pane0 fallback,
         # which flashed the surface onto the other pane for a frame
         if [ win && win.focus && win.focus inherits CommitView ]
             for [ e: element* win.focus, e, e = e.parent ]
-                if [ e inherits EditorView ] return e.id
+                if [ e inherits EditorView ]
+                    nav_pane = e.id
+                    return e.id
+        # a menu took the focus: the navigator stays where it was
+        if [ nav_pane ] return nav_pane
         # an open findbar owns the search — results land in ITS pane
         if [ findbar_open && findbar_pane && findbar_pane.count > 0 ]
             return findbar_pane
@@ -9431,14 +9494,25 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        # another pane's title or load: that pane first
+        if [ ev.target.id.starts_with[ 'bar_name' ]
+             || ev.target.id.starts_with[ 'bar_load' ] ]
+            # 'bar_name' is the active pane's, 'bar_name_1' pane 1's
+            if [ ev.target.id.count > 9 ]
+                pq : i32 [ ev.target.id.mid[ 9,
+                    ev.target.id.count - 9 ].integer_value[] ]
+                if [ pq >= 0 && pq < editor_slots.count ]
+                    active_pane = pq
+            if [ pane_loads[ active_pane ] ] bar_title_press[]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'bar_title' ]
-            # the globe again: the navigator closes
-            if [ nav_showing ]
+            # the globe again: the navigator closes (a pick with it)
+            if [ nav_showing || picking[] ]
                 nav_hist = null
                 exit_finder[]
+                exit_find_mode[]
                 nav_showing  = false
-                find_showing = false
-                force_update[]
             # the navigator, whatever the pane shows (a URL is typed in
             # the bar's title)
             el
@@ -9449,7 +9523,12 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id.starts_with[ 'pclose_' ] ]
             cp : i32 [ ev.target.id.mid[ 7,
                 ev.target.id.count - 7 ].integer_value[] ]
-            if [ cp >= 0 && cp < editor_slots.count ] close_pane[ cp ]
+            # its running instance ends with it, not hidden
+            if [ cp >= 0 && cp < editor_slots.count ]
+                # a window gives its pane back once it has closed
+                owned : bool [ pane_window[ cp ] != 0 ]
+                quit_app_in[ cp ]
+                if [ !owned ] close_pane[ cp ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
@@ -9461,10 +9540,10 @@ element orbiter : trinity # implements compiler
                 ev.target.id.count - u9 - 1 ].integer_value[] ]
             if [ pp >= 0 && pp < editor_slots.count ]
                 active_pane = pp
-            # one press does its job too: the title loads, the name
-            # opens that pane's menu
+            # one press does its job too: the globe opens the
+            # navigator, the name opens that pane's menu
             if [ ev.target.id.starts_with[ 'ptitle_' ] ]
-                bar_title_press[]
+                focus_finder[]
             el
                 menu_sync[]
                 pane_menu[]
@@ -9612,6 +9691,11 @@ element orbiter : trinity # implements compiler
                 edq : Editor pane_at[ active_pane ]
                 if [ edq && edq.src && ux ]
                     ux.exchange_open[ edq.src, edq.sel_line + 1, true ]
+                # no file: the pane's app's source, else our folder
+                el [ ux ]
+                    rvq : AppView (edq) ? edq.run_view : null
+                    aq : path (rvq && rvq.src) ? rvq.src : startup_path
+                    ux.exchange_open[ aq, 0, true ]
             ev.no_default = true
             return
         # the label opens the side panel on the scene cards
@@ -9886,6 +9970,18 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             return
 
+        # a file's view in the bar (pview:<pane>:<view>)
+        if [ ev.target.id && ev.target.id.starts_with[ 'pview:' ] ]
+            pw : string ev.target.id.mid[ 6, ev.target.id.count - 6 ]
+            cw : i32 [ pw.index_of[ ':' ] ]
+            if [ cw > 0 ]
+                pq : i32 [ pw.mid[ 0, cw ].integer_value[] ]
+                if [ pq >= 0 && pq < editor_slots.count ]
+                    active_pane = pq
+                    pane_view_press[ pane_at[ pq ],
+                        pw.mid[ cw + 1, pw.count - cw - 1 ] ]
+            ev.no_default = true
+            return
         # a pane's own arrows (nav_back:<pane>), else the active one's
         nid : string ev.target.id
         if [ nid && (nid.starts_with[ 'nav_back' ]
@@ -10025,6 +10121,13 @@ element orbiter : trinity # implements compiler
         open_file[ ev.paths[ 0 ] ]
 
     func on_char [ ev: Event ]
+        # the login takes every key until it is passed
+        if [ login_wait[] ]
+            if [ login_sel >= 0 && ev.key.text ]
+                login_pass = '{login_pass}{ev.key.text}'
+                login_note = ''
+                if [ ux ] ux.restyle = true
+            return
         # the bar's title being typed: the first key replaces it
         if [ bar_typing && ev.key.text && ev.key.text.count > 0 ]
             bar_text  = (bar_fresh) ? ev.key.text
@@ -10036,6 +10139,11 @@ element orbiter : trinity # implements compiler
         if [ drawer_open && menu_kind != 'system' && ev.key.text
              && ev.key.text.count > 0 ]
             menu_filter = '{menu_filter}{ev.key.text}'
+            if [ ux ] ux.restyle = true
+            return
+        # typing on the apps screen filters the apps
+        if [ apps_typing[] && ev.key.text && ev.key.text.count > 0 ]
+            apps_filter = '{apps_filter}{ev.key.text}'
             if [ ux ] ux.restyle = true
             return
         if [ !ev.target ] return
@@ -10096,6 +10204,16 @@ element orbiter : trinity # implements compiler
 
     func on_key [ ev: Event ]
         ks : i32 [ ev.key.unicode ]
+        if [ login_wait[] ]
+            if [ ev.key.state ] login_key[ ks ]
+            ev.no_default = true
+            return
+        # cmd / ctrl + q: the selected pane's app quits (its window
+        # is asked to close)
+        if [ ks == 81 && ev.key.state && ux && ux.cmd ]
+            if [ quit_pane_app[] ]
+                ev.no_default = true
+                return
         # the bar's title being typed: Enter takes it, Esc leaves it,
         # Backspace edits
         if [ bar_typing && ev.key.state ]
@@ -10126,6 +10244,25 @@ element orbiter : trinity # implements compiler
                 return
             if [ ks == 257 ]
                 drawer_enter[]
+                return
+        # the apps screen's filter: Esc clears it, Backspace edits it,
+        # Enter opens the first match
+        if [ apps_typing[] && ev.key.state && apps_filter.count > 0 ]
+            if [ ks == 256 ]
+                apps_filter = ''
+                if [ ux ] ux.restyle = true
+                return
+            if [ ks == 259 ]
+                apps_filter = apps_filter.mid[ 0, apps_filter.count - 1 ]
+                if [ ux ] ux.restyle = true
+                return
+            if [ ks == 257 ]
+                ag : cast AppsGrid [ find_el[ a, 'apps' ] ]
+                if [ ag && ag.shown && ag.shown.count > 0 ]
+                    top : AppEntry ag.shown[ 0 ]
+                    apps_filter = ''
+                    apps_pick[ active_pane, top ]
+                if [ ux ] ux.restyle = true
                 return
         # Esc while recording from orbiter's button: the take is dropped
         if [ ks == 256 && ev.key.state && mic_by_press ]
@@ -11017,15 +11154,11 @@ element orbiter : trinity # implements compiler
         if [ show_console && pv && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
-        # with the system bar there is no bottom bar: its tasks and
-        # buttons are the system bar's
-        sb9 : bool system_on[]
         left['stack'] = Splitter [
-            area: Region [ (sb9) ? 'l0 t0 r0 b0' : 'l0 t0 r0 b1.06' ],
+            area: Region { l0 t0 r0 b1.06 },
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
-        if [ !sb9 ]
-            left['status'] = TasksBar [ elements: status_els[] ]
+        left['status'] = TasksBar [ elements: status_els[] ]
         # the side panel's shade, cast over the editors' right edge
         if [ !hide_ui && !inst_hidden ]
             left['seam_shade'] = SeamShade [ ghost: true ]
@@ -11076,7 +11209,11 @@ element orbiter : trinity # implements compiler
             && pane_window[ active_pane ] == wvd)
             || (wvd == 0 && edd && edd.run_view == avd
                 && edd.app_view)) ]
-        if [ shown ]
+        # an app in the pane: its Code (the menu's), as that does
+        if [ shown && wvd == 0 ]
+            edd.app_view = false
+            edd.pristine = false
+        el [ shown ]
             if [ pane_win && active_pane < pane_win.count ]
                 pane_win[ active_pane ] = u64[ 0 ]
             toggled_out = active_pane
@@ -11318,16 +11455,11 @@ element orbiter : trinity # implements compiler
 
     # the dock's width, px: 2.39 units, as its area says
     func dock_w [] -> f32
-        # with the system bar: the globe's width, so the dock lines up
-        # under it
-        if [ system_on[] ] return globe_w[ active_pane ]
         return 2.39 * unit_px[]
 
-    # a pane's globe: as wide as its editor gutter
+    # a pane's globe: the dock's width, fixed
     func globe_w [ pi: i32 ] -> f32
-        ed : Editor pane_at[ pi ]
-        return (ed && ed.gutter_w > 0.0) ? ed.gutter_w
-            : 1.66 * unit_px[]
+        return dock_w[]
 
     func dock_els [] -> Elements
         dw : f32 dock_w[]
@@ -11433,19 +11565,17 @@ element orbiter : trinity # implements compiler
         rows9 : Elements []
         rows9['pin_rows'] = element [ no_scroll: true, elements: pins9,
             area: Region [ 'l0 t{0.0 - sc9}px r0 h{rh9}px' ] ]
-        # with the system bar orbiter's button is the foot (fixed), as
-        # tall as the navigator's search bar beside it
-        pv9 : element pane_view[ active_pane ]
-        fh9 : f32 [ (pv9 && pv9 inherits EditorView)
-            ? (cast EditorView [ pv9 ]).title_px[] : 1.3 * unit_px[] ]
-        pb9 : string [ (sys9) ? 'b{fh9}px' : 'b1.06' ]
+        # with the system bar the pins run to the foot (orbiter's
+        # button is the bottom bar's)
+        pb9 : string [ (sys9) ? 'b0' : 'b1.06' ]
         t['pins'] = DockPins [ area: Region [ 'l0 {pt9} r0 {pb9}' ],
                                rows_h: rh9, scroll_fade: 24.0,
                                elements: rows9 ]
-        # orbiter's button at the foot, under the scrolled pins
-        t['dock_orbiter'] = home_button[ (sys9)
-            ? Region [ 'l0 b{fh9}px w{dw}px h{fh9}px' ]
-            : Region [ 'l0 b1.06 w2.39 h1.06' ], false ]
+        # orbiter's button at the foot, under the scrolled pins; with
+        # the system bar it is the bottom bar's
+        if [ !sys9 ]
+            t['dock_orbiter'] = home_button[
+                Region [ 'l0 b1.06 w2.39 h1.06' ], false ]
         return t
 
     # orbiter's own button: the dock's foot, or the system bar's first
@@ -11525,21 +11655,39 @@ element orbiter : trinity # implements compiler
             # on the pane's own left edge, the divider's line
             px : f32 [ (pv) ? pane_left[ pi ] : x0 ]
             if [ px < x ] px = x
+            # the selected pane's glow, under its group
+            if [ pi == active_pane && pv && pv.bounds ]
+                t['pglow'] = PaneGlow [ area: Region [
+                    'l{px}px t0 w{pv.bounds.w}px b0' ] ]
             if [ pi == active_pane ]
                 x = menu_group_els[ t, px, uu ]
             el
                 x = pane_group_els[ t, pi, px, uu ]
-            # the selected pane's back and forward at its right edge
-            # (short of the bar's right end): the menus' look, but
-            # actions
-            if [ pi == active_pane && pv && pv.bounds ]
-                rx : f32 [ pane_left[ pi ] + pv.bounds.w ]
-                if [ bounds && rx > bounds.w - right_w[] ]
-                    rx = bounds.w - right_w[]
+            # in the navigator: the app menu, the file's views at the
+            # pane's right edge
+            # no close here: the globe closes it, never the app
+            if [ pv && pv.bounds && pane_browsing[ pi ] ]
+                pane_views_el[ t, pi, pane_left[ pi ] + pv.bounds.w ]
+            # every pane's back and forward at its right edge (short of
+            # the bar's right end): the menus' look, but actions; the
+            # apps screen has neither
+            el [ pv && pv.bounds && !pane_empty[ pi ] ]
+                re : f32 [ pane_left[ pi ] + pv.bounds.w ]
+                if [ bounds && re > bounds.w - right_w[] ]
+                    re = bounds.w - right_w[]
+                # the close at the right end, the arrows left of it
+                rx : f32 pane_close_el[ t, pi, re ]
                 aw : f32 [ 2.39 * unit_px[] ]
+                vx : f32 [ rx - aw ]
                 # a URL app's address: up to the arrows; a press edits
-                if [ bar_url_on[] ]
-                    bar_title_el[ t, bar_title[], x, rx - aw ]
+                if [ pi == active_pane && bar_url_on[] ]
+                    bar_title_el[ t, bar_title[], x, vx ]
+                el [ pi == active_pane && bar_app_on[] ]
+                    bar_name_el[ t, bar_title[], x, vx, '', pi ]
+                # an unselected pane: its title and load too
+                el [ pi != active_pane && pane_app_on[ pi ] ]
+                    bar_name_el[ t, bar_title_of[ pi ], x, vx,
+                                 '_{pi}', pi ]
                 t['snav_{pi}'] = AltTab [
                     buttons: vec string [] [ 'nav_back:{pi}',
                                              'nav_fwd:{pi}' ],
@@ -11548,32 +11696,41 @@ element orbiter : trinity # implements compiler
                     use_spacing: false, rest_fill: rgba [ '#0000' ],
                     disable_mask: nav_mask[ pi ], seg_reach: 0.5,
                     area: Region [ 'l{rx - aw}px t0 w{aw}px b0' ] ]
-        # the right end: the console, the menu (views, power, sound,
-        # Wi-Fi, the tray), then the date
-        # Rule #12: shift over the console, or ctrl / cmd, shows clear
-        sm : bool [ drawer_open && menu_kind == 'system' ]
-        t['sys_clock'] = BarClock [ label: clock_text[],
-            area: Region { r0 t0 w4.6 b0 } ]
-        t['sys_menu'] = AltTab [
-            buttons: vec string [] [ 'sys_menu' ],
-            icon_ids: vec string [] [ 'menu' ], icon_scale: 0.5,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ], sel_mask: (sm) ? 1 : 0,
-            area: Region { r4.6 t0 w1.33 b0 } ]
-        t['dock_console'] = StatusTab [
-            buttons: vec string [] [ 'console_tab' ],
-            icon_ids: vec string [] [
-                (console_clearing[]) ? 'clear_all' : 'bottom_panel' ],
-            second: console_clearing[], icon_scale: 0.6,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (show_console) ? 1 : 0,
-            area: Region { r5.93 t0 w1.33 b0 } ]
         return t
 
-    # the system bar's right end: console, menu, date
+    # the pane shows the navigator
+    func pane_browsing [ pi: i32 ] -> bool
+        return (nav_showing || find_showing)
+            && search_pane[] == 'pane{pi}'
+
+    # a file's views (git, B16 ...) as buttons ending at xr, lit while
+    # shown; the x where they start (xr when none)
+    func pane_views_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+        ed : Editor pane_at[ pi ]
+        if [ !ed || ed.app_view ] return xr
+        vs : vec string file_views[ ed ]
+        if [ vs.count == 0 ] return xr
+        ids : vec string []
+        ics : vec string []
+        cur : string ed.resolve_view[]
+        lit : i32 [ 0 ]
+        for [ i: i32 0, i < vs.count, i += 1 ]
+            v : string vs[ i ]
+            ids.push[ 'pview:{pi}:{v}' ]
+            ci : string console_icon[ v ]
+            ics.push[ (ci) ? ci : v ]
+            if [ (v == 'git') ? ed.git_on : v == cur ] lit |= (1 << i)
+        bw : f32 [ 1.33 * unit_px[] * f32[ vs.count ] ]
+        t['sview_{pi}'] = AltTab [ buttons: ids, icon_ids: ics,
+            icon_scale: 0.5, manual: true, seg_radius: 0.0,
+            use_spacing: false, rest_fill: rgba [ '#0000' ],
+            sel_mask: lit, seg_reach: 0.5,
+            area: Region [ 'l{xr - bw}px t0 w{bw}px b0' ] ]
+        return xr - bw
+
+    # the system bar's right end: nothing (the bottom bar holds them)
     func right_w [] -> f32
-        return 7.26 * unit_px[]
+        return 0.0
 
     # the active pane's menu at x: its top menus, its title after
     # the first (its app's name); the x where it ends
@@ -11583,7 +11740,8 @@ element orbiter : trinity # implements compiler
         # the Open page (the apps): the globe alone
         if [ pane_empty[ active_pane ] ] return x
         pane_menu[]
-        lead : bool [ true ]
+        # a window's own menus (File ...) are all plain
+        lead : bool [ pane_window[ active_pane ] == 0 ]
         if [ menu_items ]
             for [ i: i32 0, i < menu_items.count, i += 1 ]
                 e : TrayEntry menu_items[ i ]
@@ -11599,33 +11757,31 @@ element orbiter : trinity # implements compiler
                     progress: (lead) ? pane_build[ active_pane ] : -2.0,
                     area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
                 x += mw
-                if [ lead ]
-                    x = tab_close[ t, active_pane, 'menu_{i}', x, uu,
-                                   true ]
                 lead = false
         return x
 
     # a pane on its Open page: no file, no app running in it
     func pane_empty [ pi: i32 ] -> bool
+        # a window's pane has no editor
+        if [ pane_window[ pi ] != 0 ] return false
         ed : Editor pane_at[ pi ]
         if [ !ed ] return true
         rv : AppView ed.run_view
         if [ rv && !rv.ended ] return false
-        return !ed.src && pane_window[ pi ] == 0
+        return !ed.src
 
-    # the pane's close, joined to its tab's name; the x after
-    # Rule #12: shift over the tab (or its close), or ctrl / cmd
-    func tab_close [ t: Elements, pi: i32, tab: string, x: f32,
-                     uu: f32, on: bool ] -> f32
-        te : element find_el[ a, tab ]
-        ce : element find_el[ a, 'pclose_{pi}' ]
-        hot : bool [ (te && te.hovered) || (ce && ce.hovered) ]
-        if [ !cmd_down && !(shift_down && hot) ] return x
-        cw : f32 [ 26.0 * uu ]
-        t['pclose_{pi}'] = MenuTop [ label: '×', at: -1, pane: pi,
-            tab_on: on, close_part: true,
-            area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
-        return x + cw
+    # the pane's close, always, ending at xr (the pane's right end);
+    # the x where it starts
+    func pane_close_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+        # the load button's width
+        cw : f32 [ 1.33 * unit_px[] ]
+        t['pclose_{pi}'] = AltTab [
+            buttons: vec string [] [ 'pclose_{pi}' ],
+            icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+        return xr - cw
 
     # a pane's left edge in the window, from this frame's layout (the
     # split's eased place), not the pointer's last walk
@@ -11656,7 +11812,7 @@ element orbiter : trinity # implements compiler
         return act == 'orb.pane_add' || act == 'orb.pane_close'
             || act == 'orb.shot'
             || act.starts_with[ 'orb.code:' ]
-            || act.starts_with[ 'orb.inst:' ]
+            || act.starts_with[ 'orb.inst:' ] || act == 'orb.inst_new'
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
 
@@ -11703,6 +11859,10 @@ element orbiter : trinity # implements compiler
                 fe8.side = 'Code'
                 fe8.side_action = 'orb.code:{av8.iid}'
                 sw8.push[ fe8 ]
+            # another of the app, running in this pane
+            if [ ed8.src ]
+                sw8.push[ own_entry[ 'New instance', 'orb.inst_new',
+                                     1 ] ]
             sw8.push[ TrayEntry [ rule: true, depth: 1, check: -1,
                 action: 'orb.prule' ] ]
             for [ k8: i32 sw8.count - 1, k8 >= 0, k8 -= 1 ]
@@ -11727,7 +11887,7 @@ element orbiter : trinity # implements compiler
         add.push[ own_entry[ 'Split', 'orb.pane_add', 1 ] ]
         if [ ed && ed.run_view ]
             add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
-        add.push[ own_entry[ 'Close', 'orb.pane_close', 1 ] ]
+        add.push[ own_entry[ 'Hide', 'orb.pane_close', 1 ] ]
         for [ k: i32 add.count - 1, k >= 0, k -= 1 ]
             menu_items.insert[ add[ k ], at ]
 
@@ -11773,7 +11933,6 @@ element orbiter : trinity # implements compiler
                 progress: pane_build[ pi ],
                 area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
             x += mw
-            x = tab_close[ t, pi, 'pmenu_{pi}', x, uu, false ]
         return x
 
     # the module a pane's app runs from ('' none): its group's key
@@ -11856,6 +12015,48 @@ element orbiter : trinity # implements compiler
                 area: Region [
                     'l{xr - dw + pad}px t0 w{dw - 2.0 * pad}px b0' ] ]
 
+    # a running app's own title after its menus, cut with a fade;
+    # a press browses for what it loads
+    func bar_name_el [ t: Elements, tt: string, x: f32, xr: f32,
+                       key: string, pi: i32 ]
+        if [ xr <= x || tt.count == 0 ] return
+        # the load mark at its right: browse for what it loads, for
+        # an app whose argument is a resource it takes live
+        lw : f32 [ 1.33 * unit_px[] ]
+        xe : f32 [ xr ]
+        if [ xr - lw > x && pane_loads[ pi ] ]
+            t['bar_load{key}'] = AltTab [
+                buttons: vec string [] [ 'bar_load{key}' ],
+                icon_ids: vec string [] [ 'eject' ], icon_scale: 0.5,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                area: Region [ 'l{xr - lw}px t0 w{lw}px b0' ] ]
+            xe = xr - lw
+        t['bar_name{key}'] = BarTitle [ label: '', site: tt,
+            area: Region [ 'l{x}px t0 w{xe - x}px b0' ] ]
+        bt : cast BarTitle [ find_el[ a, 'bar_name{key}' ] ]
+        pad : f32 [ 10.0 * ux_unit[ ux ] ]
+        room : f32 [ xe - x - pad ]
+        tw : f32 [ (bt) ? bt.site_w : 0.0 ]
+        t['bar_site{key}'] = BarText [ label: tt,
+            mask_glow: vec4f [ 0.0, (tw > room) ? 24.0 : 0.0, 0.0, 0.0 ],
+            area: Region [ 'l{x + pad}px t0 w{room}px b0' ] ]
+
+    # the active pane shows a running app (not a window's)
+    func bar_app_on [] -> bool
+        return pane_app_on[ active_pane ]
+
+    # the pane's app takes a resource live: it can load another
+    func pane_loads [ pi: i32 ] -> bool
+        ed : Editor pane_at[ pi ]
+        rv : AppView (ed) ? ed.run_view : null
+        return rv && live_arg_of[ rv ] != null && !url_app[ rv ]
+
+    func pane_app_on [ pi: i32 ] -> bool
+        ed : Editor pane_at[ pi ]
+        rv : AppView (ed && ed.app_view) ? ed.run_view : null
+        return rv && !rv.ended && !rv.held && window_of[ rv ] == 0
+
     # a URL's host, without its www.
     func domain_of [ u: string ] -> string
         if [ !u ] return ''
@@ -11872,8 +12073,19 @@ element orbiter : trinity # implements compiler
         ed : Editor pane_at[ active_pane ]
         rv : AppView (ed && ed.app_view) ? ed.run_view : null
         if [ !rv || rv.ended || window_of[ rv ] != 0 ] return false
+        return url_app[ rv ]
+
+    # its argument is an address: its module exports protocols
+    func url_app [ rv: AppView ] -> bool
         dp : Prop live_arg_of[ rv ]
-        return dp && dp.type != 'resource' && dp.type != 'path'
+        if [ !dp || dp.type == 'resource' || dp.type == 'path' ]
+            return false
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed ] return false
+        ed.ensure_export_registry[]
+        for [ m: string, pr: string ] in ed.export_protocol
+            if [ m == rv.app_mod ] return true
+        return false
 
     # what the active pane holds, after the app's name: the app's URL
     # or file, else the file shown, else the pane's own title
@@ -11924,8 +12136,7 @@ element orbiter : trinity # implements compiler
         rv : AppView (ed && ed.app_view) ? ed.run_view : null
         if [ rv && window_of[ rv ] != 0 ] rv = null
         if [ rv && !rv.ended ]
-            dp : Prop live_arg_of[ rv ]
-            if [ dp && dp.type != 'resource' && dp.type != 'path' ]
+            if [ url_app[ rv ] ]
                 bar_text = (rv.arg_text) ? rv.arg_text
                     : default_arg_of[ rv.module_args ]
                 url_entry_on  = true
@@ -12157,6 +12368,82 @@ element orbiter : trinity # implements compiler
 
     # a card pressed in pane pi's apps view: ours opens there; a
     # recommendation runs if it is here (installing it: later)
+    # the login stands before everything: on orbiter-os with an
+    # account written, or asked for (--login); no account: none
+    func login_wait [] -> bool
+        if [ signed_in ] return false
+        if [ !login && !on_the_os[] ] return false
+        if [ !login_read ]
+            login_read = true
+            login_load[]
+        if [ login_users.count == 0 ] signed_in = true
+        return !signed_in
+
+    # the accounts file's user and password lines (the wizard's)
+    func login_load []
+        login_users  = vec string []
+        login_hashes = vec string []
+        f : path [ accounts ]
+        if [ !f.exists[] ] return
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] return
+        nm : string ''
+        for [ ln: string ] in tx.split[ '\n' ]
+            if [ ln.starts_with[ 'user:' ] ]
+                nm = ln.mid[ 5, ln.count - 5 ].trim[]
+            el [ ln.starts_with[ 'password:' ] && nm.count > 0 ]
+                h : string ln.mid[ 9, ln.count - 9 ].trim[]
+                if [ h.starts_with[ "'" ] && h.count >= 2 ]
+                    h = h.mid[ 1, h.count - 2 ]
+                login_users.push[ nm ]
+                login_hashes.push[ h ]
+                nm = ''
+
+    # Enter checks the password against its hash; backspace and
+    # escape edit it
+    func login_key [ ks: i32 ]
+        if [ ks == 259 && login_pass.count > 0 ]
+            login_pass = login_pass.mid[ 0, login_pass.count - 1 ]
+        el [ ks == 256 ]
+            login_pass = ''
+        el [ ks == 257 || ks == 335 ]
+            if [ login_sel < 0 || login_sel >= login_users.count ]
+                return
+            h : string login_hashes[ login_sel ]
+            got : cstr [ crypt[ login_pass.chars, h.chars ] ]
+            if [ got && h.count > 0 && string [ got ] == h ]
+                signed_in = true
+                log 'login: {login_users[ login_sel ]}'
+            el
+                login_note = 'That password is not right'
+            login_pass = ''
+        if [ ux ] ux.restyle = true
+
+    # the selected pane's app quits: true when there was one
+    func quit_pane_app [] -> bool
+        return quit_app_in[ active_pane ]
+
+    # pane pi's app quits (its window asked to close)
+    func quit_app_in [ pi: i32 ] -> bool
+        wv : u64 pane_window[ pi ]
+        if [ wv != 0 ]
+            wlc_window_close[ wv ]
+            return true
+        ed : Editor pane_at[ pi ]
+        av : AppView (ed) ? ed.run_view : null
+        if [ !av || av.ended || av.held || av.slot < 0 ] return false
+        close_task[ av ]
+        if [ ux ] ux.restyle = true
+        return true
+
+    # the selected pane shows the apps and nothing takes the keys
+    func apps_typing [] -> bool
+        if [ drawer_open || nav_showing || find_showing || bar_typing ]
+            return false
+        if [ !pane_empty[ active_pane ] || apps_off ] return false
+        w : Window ux
+        return !w || !w.focus || w.focus inherits AppsGrid
+
     func apps_pick [ pi: i32, ae: AppEntry ]
         if [ !ae ] return
         set_active[ pi ]
@@ -12669,13 +12956,17 @@ element orbiter : trinity # implements compiler
                 Region [ 'l0 t0 w{dock_w[]}px b0' ], true ]
         x0 : f32 [ (sys) ? dock_w[] : 1.66 * 22.0 ]
         sb : element find_el[ a, 'status' ]
-        room : f32 [ (sb && sb.bounds) ? sb.bounds.w - x0 - 40.0
+        # with the system bar its right end is the console, the menu
+        # and the date
+        rw : f32 [ (sys) ? 7.26 * unit_px[] : 40.0 ]
+        room : f32 [ (sb && sb.bounds) ? sb.bounds.w - x0 - rw
             : 800.0 ]
         run9 : vec AppView []
         if [ instances ]
             for [ av: AppView ] in instances
                 if [ av.slot < 0 || av.held ] continue
-                if [ av.ended && !run_failed[ av ] ] continue
+                # only a running instance: a failed one is its code
+                if [ av.ended ] continue
                 run9.push[ av ]
         # grouped by app (its module), groups in first-seen order
         kinds : vec string []
@@ -12693,7 +12984,8 @@ element orbiter : trinity # implements compiler
         # a small gap between groups
         # sizes in units (22 px at rest), so ctrl +/- scales them
         un : f32 unit_px[]
-        gap : f32 [ 0.24 * un ]
+        # with the system bar the buttons sit flush, no gaps
+        gap : f32 [ (sys) ? 0.0 : 0.24 * un ]
         gaps : f32 [ gap * f32[ max[ i32[ kinds.count ] - 1, 0 ] ] ]
         room = room - gap
         cw : f32 [ (runs.count > 0)
@@ -12725,28 +13017,7 @@ element orbiter : trinity # implements compiler
                 label: task_title[ av ], light: lt, selected: lit,
                 area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
             x += cw
-        # with the system bar the right end is the console, the menu
-        # (views, power, sound, Wi-Fi, the tray), then the date
-        # Rule #12: shift over the console, or ctrl / cmd, shows clear
-        if [ sys ]
-            sm : bool [ drawer_open && menu_kind == 'system' ]
-            t['sys_clock'] = BarClock [ label: clock_text[],
-                area: Region { r0 t0 w4.6 b0 } ]
-            t['sys_menu'] = AltTab [
-                buttons: vec string [] [ 'sys_menu' ],
-                icon_ids: vec string [] [ 'menu' ], icon_scale: 0.5,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ], sel_mask: (sm) ? 1 : 0,
-                area: Region { r4.6 t0 w1.33 b0 } ]
-            t['dock_console'] = StatusTab [
-                buttons: vec string [] [ 'console_tab' ],
-                icon_ids: vec string [] [
-                    (console_clearing[]) ? 'clear_all' : 'bottom_panel' ],
-                second: console_clearing[], icon_scale: 0.6,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                sel_mask: (show_console) ? 1 : 0,
-                area: Region { r5.93 t0 w1.33 b0 } ]
+        if [ sys ] return sys_right[ t ]
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
         if [ inst_hidden && !sys ]
@@ -12757,6 +13028,30 @@ element orbiter : trinity # implements compiler
                 icon_scale: 0.5, manual: true, seg_radius: 0.0,
                 use_spacing: false, rest_fill: rgba [ '#0000' ],
                 area: Region { r0 t0 w1.66 b0 } ]
+        return t
+
+    # the bottom bar's right end: the console, the menu (views,
+    # power, sound, Wi-Fi, the tray), then the date
+    # Rule #12: shift over the console, or ctrl / cmd, shows clear
+    func sys_right [ t: Elements ] -> Elements
+        sm : bool [ drawer_open && menu_kind == 'system' ]
+        t['sys_clock'] = BarClock [ label: clock_text[],
+            area: Region { r0 t0 w4.6 b0 } ]
+        t['sys_menu'] = AltTab [
+            buttons: vec string [] [ 'sys_menu' ],
+            icon_ids: vec string [] [ 'menu' ], icon_scale: 0.5,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ], sel_mask: (sm) ? 1 : 0,
+            area: Region { r4.6 t0 w1.33 b0 } ]
+        t['dock_console'] = StatusTab [
+            buttons: vec string [] [ 'console_tab' ],
+            icon_ids: vec string [] [
+                (console_clearing[]) ? 'clear_all' : 'bottom_panel' ],
+            second: console_clearing[], icon_scale: 0.6,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (show_console) ? 1 : 0,
+            area: Region { r5.93 t0 w1.33 b0 } ]
         return t
 
     # scene: built once per scene — a fresh element each frame churns
@@ -12874,6 +13169,9 @@ element orbiter : trinity # implements compiler
         if [ ux && install ]
             return Elements [ 'scene': scene_element[],
                 'wizard': InstallWizard [ dry_run: dry_run ] ]
+        if [ ux && login_wait[] ]
+            return Elements [ 'scene': scene_element[],
+                'login': Login [], 'login_av': LoginAvatar [] ]
         # the system bar takes the top; everything else is under it
         top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
         return (!ux) ? null : Elements [
@@ -12894,16 +13192,23 @@ element orbiter : trinity # implements compiler
             # a key each: a mounted drawer keeps its class, so the menus'
             # and the exchange's (the menus' ground, all but the dock) are
             # never the same element
-            'drawer' : (drawer_on[] && menu_kind != 'exchange'
-                        && menu_kind != 'system')
-                ? MenuDrawer [ open: drawer_open,
-                               elements: drawer_els[] ] : null,
+            # a pane's menu slides out of that pane's left edge
+            'drawer_at' : (drawer_on[] && menu_kind != 'exchange'
+                           && menu_kind != 'system')
+                ? element [ animated: true,
+                    area: Region [ 'l{drawer_x[]}px t0 w10.91 b0' ],
+                    elements: Elements [ 'drawer' : MenuDrawer [
+                        open: drawer_open,
+                        elements: drawer_els[] ] ] ] : null,
             # the system menu, out of the bar's right end
             'sdrawer' : (drawer_on[] && menu_kind == 'system')
                 ? SystemDrawer [ open: drawer_open,
+                                 background_lens: false,
                                  elements: system_menu_els[] ] : null,
             'xdrawer' : (drawer_on[] && menu_kind == 'exchange')
-                ? ExchangeDrawer [ open: drawer_open ] : null,
+                # its ground once, not live: the exchange blurs its own
+                ? ExchangeDrawer [ open: drawer_open,
+                                   background_lens: false ] : null,
             'dock'   : (top > 0.0) ? null
                 : Dock [ elements: dock_els[], hide: hide_ui,
                 area: Region [ 'l0 t{top}px w2.39 b0' ] ],
@@ -12912,6 +13217,12 @@ element orbiter : trinity # implements compiler
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
             ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
                     topmost: true, manual_mode: true ] : null ]
+
+    # where the menu drawer opens: the active pane's left edge for
+    # its menu, the window's for a tray's
+    func drawer_x [] -> f32
+        if [ menu_kind != 'menu' ] return 0.0
+        return pane_left[ active_pane ]
 
     public func on_canvas [ cv: Canvas ]
     	i2 : int [ 1 ]

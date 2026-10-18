@@ -5779,7 +5779,10 @@ Control Editor
         live : bool [
             run_view && app_view && !show_hits && !run_view.held
             && !run_view.ended && !stopped[] ]
-        animated = live || (rview && rview.continuous*[])
+        an : bool [ live || (rview && rview.continuous*[]) ]
+        # leaving the live frame: its cached picture is stale
+        if [ animated && !an ] pristine = false
+        animated = an
 
     # drop the in-pane view; the running app has its own lifetime
     func close_view []

@@ -1,0 +1,159 @@
+extend orbiter
+
+# the login: each account a card, as the apps screen's, centered in
+# the window; the chosen card takes the password under it
+Control Login
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    mutable hov     : i32 [ -1 ]
+    mutable press_i : i32 [ -1 ]
+    # each card's left edge, the row's top, a card's size
+    mutable rx   : vec f32
+    mutable ry   : f32
+    mutable cw   : f32
+    mutable ch   : f32
+    mutable tile : f32
+    mutable icon : AppIcon
+
+    func card_at [ x: f32, y: f32 ] -> i32
+        if [ !rx || y < ry || y >= ry + ch ] return -1
+        for [ i: i32 0, i < rx.count, i += 1 ]
+            if [ x >= rx[ i ] && x < rx[ i ] + cw ] return i
+        return -1
+
+    func on_move [ ev: Event ]
+        over : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ over != hov ]
+            hov      = over
+            pristine = false
+
+    func on_leave [ ev: Event ]
+        if [ hov >= 0 ]
+            hov      = -1
+            pristine = false
+
+    func on_press [ ev: Event ]
+        ev.no_default = true
+        press_i = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+
+    # the release over the card it went down on chooses it
+    func on_release [ ev: Event ]
+        was : i32 [ press_i ]
+        press_i = -1
+        orb : cast orbiter [ ux.app_object ]
+        i : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ !orb || i < 0 || i != was ] return
+        if [ i != orb.login_sel ]
+            orb.login_sel  = i
+            orb.login_pass = ''
+            orb.login_note = ''
+        if [ ux ] ux.set_focus[ a ]
+        pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !orb.login_users ] return
+        n : i32 [ orb.login_users.count ]
+        if [ n == 0 ] return
+        if [ n == 1 ] orb.login_sel = 0
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        tile = round[ 96.0 * un ]
+        nh : f32 [ round[ 26.0 * un ] ]
+        cw = round[ 124.0 * un ]
+        ch = tile + round[ 8.0 * un ] + nh
+        gap : f32 [ round[ 18.0 * un ] ]
+        fh : f32 [ round[ 34.0 * un ] ]
+        fw : f32 [ round[ 260.0 * un ] ]
+        # centered under the avatar (its foot 10px under the middle)
+        row : f32 [ f32[ n ] * cw + f32[ n - 1 ] * gap ]
+        x0 : f32 [ round[ (bounds.w - row) * 0.5 ] ]
+        ry = round[ bounds.h * 0.5 + 24.0 ]
+        rx = vec f32 []
+        for [ i: i32 0, i < n, i += 1 ]
+            rx.push[ x0 + f32[ i ] * (cw + gap) ]
+        if [ !icon ]
+            icon = AppIcon [ icon_file: path 'images/person.svg' ]
+        cr : f32 [ round[ tile * 0.225 ] ]
+        fp : i32 [ i32[ round[ 17.0 * un ] ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            tx : f32 [ rx[ i ] + round[ (cw - tile) * 0.5 ] ]
+            draw_tile[ cv, w, i, tx, cr, i == orb.login_sel ]
+            isz : f32 [ round[ tile * 0.6 ] ]
+            icon.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
+                        round[ ry + (tile - isz) * 0.5 ], isz ]
+            words[ cv, fp, orb.login_users[ i ], '#ffffffdd',
+                   rx[ i ], ry + tile + round[ 8.0 * un ], cw, nh ]
+        if [ orb.login_sel < 0 ] return
+        fx : f32 [ round[ (bounds.w - fw) * 0.5 ] ]
+        fy : f32 [ ry + ch + gap ]
+        draw_field[ cv, orb.login_pass.count, fp, fx, fy, fw, fh, un ]
+        if [ orb.login_note.count > 0 ]
+            words[ cv, fp, orb.login_note, '#ff7a7add', fx, fy + fh,
+                   fw, nh ]
+
+    # a card's rounded tile: glass, lit by the pointer; the chosen one
+    # takes the selected border
+    func draw_tile [ cv: Canvas, w: Window, i: i32, x: f32, cr: f32,
+                     chosen: bool ]
+        cv.save[]
+        cv.rounded[ cr, cr, cr, cr ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        w.near_light_reach[ cv, a, 0.0, 0.0, 0.75 ]
+        cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ], w.near_y_fade ]
+        cv.box_shadow[ rgba [ '#8af2' ], 0.0, 0.0, 16.0, 0.0, true ]
+        if [ chosen ]
+            cv.fill_color[ rgba [ '#4d3dbc55' ] ]
+            cv.stroke_color[ rgba [ '#806bff' ] ]
+        el
+            cv.fill_color[ rgba [ (i == hov) ? '#ffffff1c'
+                : '#ffffff0c' ] ]
+            cv.stroke_color[ rgba [ '#ffffff1c' ] ]
+        cv.rect_to[ x, ry, tile, tile ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
+
+    # the password as dots in a pill; empty: its word, dim
+    func draw_field [ cv: Canvas, dots: i32, fp: i32, x: f32, y: f32,
+                      fw: f32, fh: f32, un: f32 ]
+        r : f32 [ fh * 0.5 ]
+        cv.save[]
+        cv.rounded[ r, r, r, r ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.fill_color[ rgba [ '#00000066' ] ]
+        cv.stroke_color[ rgba [ '#806bff' ] ]
+        cv.rect_to[ x, y, fw, fh ]
+        cv.paint[]
+        cv.restore[]
+        if [ dots == 0 ]
+            words[ cv, fp, 'password', '#ffffff55', x, y, fw, fh ]
+            return
+        d : f32 [ round[ 7.0 * un ] ]
+        sp : f32 [ round[ 13.0 * un ] ]
+        shown : i32 [ min[ dots, 16 ] ]
+        dx : f32 [ x + round[ (fw - f32[ shown ] * sp) * 0.5 ] ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded[ d * 0.5, d * 0.5, d * 0.5, d * 0.5 ]
+        cv.fill_color[ rgba [ '#ffffffdd' ] ]
+        for [ i: i32 0, i < shown, i += 1 ]
+            cv.rect_to[ dx + f32[ i ] * sp + (sp - d) * 0.5,
+                        y + round[ (fh - d) * 0.5 ], d, d ]
+            cv.paint[]
+        cv.restore[]
+
+    func words [ cv: Canvas, fp: i32, t: string, c: string, x: f32,
+                 y: f32, wd: f32, h: f32 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ c ] ]
+        cv.draw_text[ t, rect [ x: x, y: y, w: wd, h: h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.set_font[ null ]
