@@ -1,0 +1,24 @@
+<!DOCTYPE html><html><head><style>
+body { margin: 0; background: #181818; color: #ccc; font: 13px system-ui; }
+.part { position: absolute; left: 48px; top: 35px; width: 1174px; height: 700px; display: flex; flex-direction: column; }
+.content { flex: 1; position: relative; }
+.group { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: flex; flex-direction: column; }
+.wrapper { position: relative; width: 100%; height: 100%; }
+.watermark { display: flex; height: 100%; max-width: 272px; margin: auto; flex-direction: column; align-items: center; justify-content: center; }
+.container { display: flex; width: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 24px; }
+.letterpress { width: 100%; max-height: 100%; aspect-ratio: 1/1; max-width: 256px; background: #222; }
+.shortcuts { width: 100%; }
+.box { display: flex; flex-direction: column; }
+dl { display: flex; justify-content: space-between; margin: 4px 0; }
+dt { text-align: right; letter-spacing: .04em; }
+dd { text-align: left; margin: 0; }
+.keybinding { display: inline-flex; }
+.keybinding .part { position: static; display: inline-block; border: 1px solid #444; padding: 2px 4px; margin: 0 2px; height: auto; width: auto; }
+</style></head><body>
+<div class="part"><div class="content"><div class="group"><div class="wrapper"><div class="watermark"><div class="container">
+<div class="letterpress"></div>
+<div class="shortcuts"><div class="box">
+<dl><dt>Show All Commands</dt><dd><div class="keybinding"><span class="part">Ctrl</span> + <span class="part">Shift</span> + <span class="part">P</span></div></dd></dl>
+<dl><dt>Open Recent</dt><dd><div class="keybinding"><span class="part">Ctrl</span> + <span class="part">R</span></div></dd></dl>
+</div></div></div></div></div></div></div></div>
+</body></html>

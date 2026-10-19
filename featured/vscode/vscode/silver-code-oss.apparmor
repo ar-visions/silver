@@ -1,0 +1,10 @@
+# Code - OSS built by silver: Chromium's sandbox makes user
+# namespaces, which Ubuntu allows only to programs named here
+# (as its own chrome profile). silver-apparmor.sh fills the path.
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile silver-code-oss @CODE@ flags=(unconfined) {
+  userns,
+}

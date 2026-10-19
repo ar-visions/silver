@@ -17,6 +17,8 @@ element console : trinity
     public  [ Launch ] wayland : string
     # a fontconfig file for its programs (orbiter's lettering)
     public  [ Launch ] fonts : string
+    # orbiter's bus: its portal answers the program's file dialogs
+    public  [ Launch ] bus : string
     # the program to run; empty: an interactive shell
     default [ Launch ] run : string
     intern  sessions   : map ConsoleSession [string]
@@ -29,6 +31,19 @@ element console : trinity
                 setenv[ 'WAYLAND_DISPLAY', wayland.chars, 1 ]
             if [ fonts && fonts.count > 0 ]
                 setenv[ 'FONTCONFIG_FILE', fonts.chars, 1 ]
+            # ours after the system's: our schemas hid the user's fonts
+            share : string '{path.path_startup[]}/install/share'
+            was : string '/usr/local/share:/usr/share'
+            if [ getenv[ "XDG_DATA_DIRS" ] != null ]
+                was = string [ getenv[ "XDG_DATA_DIRS" ] ]
+            data : string '{was}:{share}'
+            setenv[ "XDG_DATA_DIRS", data.chars, 1 ]
+            # GTK 3, GTK 4 and Qt then ask the portal for files
+            if [ bus && bus.count > 0 ]
+                setenv[ "DBUS_SESSION_BUS_ADDRESS", bus.chars, 1 ]
+                setenv[ "GTK_USE_PORTAL", "1", 1 ]
+                setenv[ "GDK_DEBUG", "portals", 1 ]
+                setenv[ "QT_QPA_PLATFORMTHEME", "xdgdesktopportal", 1 ]
         at : (folder && folder.count > 0) ? folder
             : '{path.path_startup[]}'
         cmd : (run) ? run : ''

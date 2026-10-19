@@ -3900,7 +3900,13 @@ AU_EXPORT enode aether_e_short_circuit(aether a, OPType optype, enode L) {
     Au_t R_au = R->autype;
     bool ln = L_au->is_integral || L_au->is_realistic || L_au == typeid(bool);
     bool rn = R_au->is_integral || R_au->is_realistic || R_au == typeid(bool);
-    if (ln || rn || !convertible((etype)R, rtype)) {
+    // an object of another class is never converted to keep its
+    // value: a string && an object ran the object's cast, null too
+    Au_t la = au_arg_type((Au)L_au);
+    Au_t ra = au_arg_type((Au)R_au);
+    bool foreign = la && ra && la != ra && ra->is_class &&
+        !inherits(ra, la) && !inherits(la, ra);
+    if (ln || rn || foreign || !convertible((etype)R, rtype)) {
         rtype = m_bool;
         L_conv = L_bool;
     }
@@ -4379,6 +4385,16 @@ enode aether_e_fn_call(aether a, efunc fn, array args, bool is_super, bool is_po
                     LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
                     LLVMValueRef ld = LLVMBuildLoad2(B, ptr_ty, _llvalue((enode)conv), "arg_ptr_load");
                     conv = with_value(ld, enode(mod, a, autype, conv->autype, loaded, true));
+                }
+                // a struct param goes by pointer: a struct VALUE (a ternary's
+                // choice, a call's result) is put in a slot and its address passed
+                if (arg_mem && arg_t && is_struct(arg_t) && !arg_mem->is_inlay &&
+                        _llvalue((enode)conv) &&
+                        LLVMGetTypeKind(LLVMTypeOf(_llvalue((enode)conv))) == LLVMStructTypeKind) {
+                    LLVMValueRef sv   = _llvalue((enode)conv);
+                    LLVMValueRef slot = entry_alloca(a, LLVMTypeOf(sv), "struct_arg");
+                    LLVMBuildStore(B, sv, slot);
+                    conv = with_value(slot, enode(mod, a, autype, conv->autype, loaded, false));
                 }
                 arg_values[index] = _llvalue((enode)conv);
                 // a struct goes by pointer, as the callee's own type says
@@ -5094,6 +5110,8 @@ void aether_listen_gate_create(aether a) { }
 void aether_listen_gate_store(aether a, enode cond) { }
 
 #endif
+
+AU_EXPORT bool is_accessible(aether a, Au_t m);
 
 enode etype_access(etype target, string name) { sequencer
     emit_guard;
@@ -7401,6 +7419,20 @@ enode aether_e_for(aether a,
     push_scope(a, (Au)cat, 8);
     a->coverage = saved_cov;
 
+    // a plain Au walked by value and key is a map (parse_agi's result);
+    // anything else comes back null and the loop is skipped
+    if (in_expr && key_var && au_arg_type((Au)in_expr->autype) == typeid(Au)) {
+        LLVMTypeRef  ptr_ty = LLVMPointerTypeInContext(a->module_ctx, 0);
+        LLVMTypeRef  io_ty  = LLVMFunctionType(ptr_ty,
+            (LLVMTypeRef[]){ ptr_ty, ptr_ty }, 2, false);
+        LLVMValueRef io     = LLVMGetNamedFunction(a->module_ref, "Au_instance_of");
+        if (!io) io = LLVMAddFunction(a->module_ref, "Au_instance_of", io_ty);
+        enode        v      = in_expr->loaded ? in_expr : enode_value(in_expr, false);
+        LLVMValueRef got    = LLVMBuildCall2(B, io_ty, io, (LLVMValueRef[]){
+            _llvalue((enode)v), _llvalue(e_typeid(a, etypeid(map))) }, 2, "as_map");
+        in_expr = value(etypeid(map), got);
+    }
+
     if (in_expr && (inherits(in_expr->autype, typeid(map)) || inherits(in_expr->autype, typeid(list)) || inherits(in_expr->autype, typeid(array)))) {
         debug_emit(a);
         {   // ---- null guard: skip loop if collection is null ----
@@ -8328,6 +8360,8 @@ AU_EXPORT void aether_create_type_members(aether a, Au_t ctx) {
         etype e = u(etype, mem);
         if (mem->ident && is_au_type(mem) && e && !e->type_id && !mem->is_system && !mem->is_schema) {
             if (!e->autype->ident) continue;
+            // a record whose body waits: its table needs the methods
+            if (is_rec(e) && e->body && !e->user_built) continue;
             get_type_t_ptr(e);
             implement_type_id(e);
         }
@@ -9116,31 +9150,14 @@ AU_EXPORT none etype_init(etype t) {
                 Au_t fn_first = def(ft_type, "_none_", AU_MEMBER_VAR, 0);
                 fn_first->src  = typeid(ARef);
 
+                // the slots come at implement: the class bodies are
+                // parsed by then (ft_slots)
                 if (!au->is_c) {
                     bool use_src = source_au->is_class && !source_au->is_c && !source_au->is_funcptr;
-                    etype source_etype = use_src ? u(etype, source_au) : null;
-                    array cl = source_etype ? etype_class_list(source_etype) : etype_class_list(t);
-                    each (cl,  etype, tt) {
-                        for (int ai = 0; ai < tt->autype->members.count; ai++) {
-                            Au_t ai_mem = (Au_t)tt->autype->members.origin[ai];
-                            if (!is_func(ai_mem))
-                                continue;
-
-                            Au_t fn = def(ft_type, ai_mem->ident, AU_MEMBER_VAR, 0);
-                            fn->src = typeid(ARef); // these are effectively opaque in design
-
-                            //set(a->registry, (Au)fn, enode(mod, a, autype, fn));
-
-                            for (int arg = 0; arg < ai_mem->args.count; arg++) {
-                                Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
-                                Au_t arg_t   = arg_type(arg_src);
-                                micro_push(&fn->args, (Au)def_arg(fn, arg_src->ident, arg_t, 0));
-                            }
-                        }
-                    }
+                    etype source_etype = use_src ? u(etype, source_au) : t;
+                    t->schema_of = source_etype;
                 }
 
-                etype ft = etype(mod, a, autype, ft_type);
                 break;
             }
             Au_t new_mem      = def(au, au_mem->ident, au_mem->member_type, au_mem->traits);
@@ -9414,11 +9431,12 @@ AU_EXPORT none etype_init(etype t) {
     }
 }
 
+// an intern member is its module's alone: another module cannot know
+// where it lies (interns are laid out after the public members)
 AU_EXPORT bool is_accessible(aether a, Au_t m) {
-    if (m->access_type == interface_undefined || 
-        m->access_type == interface_public    || a->autype->module == a->au_module)
-        return true;
-    return false;
+    if (m->access_type != interface_intern) return true;
+    Au_t owner = m->context;
+    return !owner || !owner->module || (Au_t)owner->module == a->autype;
 }
 
 AU_EXPORT Au_t read_arg_type(Au_t stored_arg) {
@@ -9520,6 +9538,28 @@ AU_EXPORT etype implement_type_id(etype t) {
     return mt;
 }
 
+// the slots of a schema's ft struct, from the class chain of src
+static none ft_slots(aether a, Au_t ft_type, etype src) {
+    array cl = etype_class_list(src);
+    each (cl, etype, tt) {
+        if (tt->body && !tt->user_built && !tt->autype->is_system && a->prepare_record) {
+            int _sd = emit_suspend();
+            ((void(*)(Au, Au))a->prepare_record)((Au)a, (Au)tt);
+            emit_resume(_sd);
+        }
+        for (int ai = 0; ai < tt->autype->members.count; ai++) {
+            Au_t ai_mem = (Au_t)tt->autype->members.origin[ai];
+            if (!is_func(ai_mem)) continue;
+            Au_t fn = def(ft_type, ai_mem->ident, AU_MEMBER_VAR, 0);
+            fn->src = typeid(ARef); // these are effectively opaque in design
+            for (int arg = 0; arg < ai_mem->args.count; arg++) {
+                Au_t arg_src = (Au_t)ai_mem->args.origin[arg];
+                micro_push(&fn->args, (Au)def_arg(fn, arg_src->ident, arg_type(arg_src), 0));
+            }
+        }
+    }
+}
+
 none etype_implement(etype t, bool w) { sequencer
     // fast path: already built and not an enum re-entry — no lock
     if (t->is_implemented && !is_enum(t)) return;
@@ -9552,6 +9592,11 @@ none etype_implement(etype t, bool w) { sequencer
           emit_resume(_sd); }
 
     t->is_implemented = true;
+
+    // a schema's function table: one slot per method of the class
+    // chain, every body parsed first
+    etype ft_of = au->ident && au->context && au->context->is_schema && strcmp(au->ident, "ft") == 0 ? u(etype, au->context) : null;
+    if (ft_of && ft_of->schema_of) ft_slots(a, au, ft_of->schema_of);
 
     bool is_Au = !a->import_c && is_au_type(resolve(t)) &&
         (!au->is_schema && !au->is_system && !au->is_pointer && au->ident);

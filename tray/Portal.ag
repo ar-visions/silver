@@ -1,0 +1,559 @@
+extend tray
+
+import <unistd.h>
+
+# a program's file request (OpenFile, SaveFile): the navigator
+# answers it on the request's own object
+class PortalAsk
+    public handle    : string
+    public sender    : string
+    public save      : bool
+    public title     : string
+    public folder    : string
+    public name      : string
+    public multiple  : bool
+    public directory : bool
+    # handed to orbiter's navigator
+    public taken     : bool
+
+# one desktop setting a program reads through the portal: its type
+# is a D-Bus letter (s u i d b)
+class PortalSetting
+    public space : string
+    public key   : string
+    public kind  : string
+    public text  : string
+
+# the desktop portal's file chooser, on the bus orbiter's programs
+# are given: their open and save dialogs become the navigator
+class Portal
+    public asks     : vec PortalAsk
+    public problem  : string
+    # the bus address a launched program is handed
+    public address  : string
+    # the desktop settings it serves, the user's own plus the theme
+    public settings : vec PortalSetting
+    # dark or light, for every program on the bus (set_dark)
+    public dark     : bool [ true ]
+    intern conn     : @DBusConnection
+    intern tried    : i64
+    intern counter  : i32
+
+    func init []
+        asks     = vec PortalAsk []
+        problem  = ''
+        address  = ''
+        settings = vec PortalSetting []
+        read_desktop[]
+        theme_values[]
+
+    func name [] -> string
+        return 'org.freedesktop.portal.Desktop'
+
+    # orbiter-os's session bus is orbiter's; elsewhere our own
+    func bus_address [] -> string
+        env : cstr [ getenv[ 'DBUS_SESSION_BUS_ADDRESS' ] ]
+        if [ env ]
+            have : string[ env ]
+            if [ have.index_of[ '/run/dbus/session_bus_socket' ] >= 0 ]
+                return have
+        run : cstr [ getenv[ 'XDG_RUNTIME_DIR' ] ]
+        dir : string (run) ? string[ run ] : '/tmp'
+        return 'unix:path={dir}/orbiter-bus'
+
+    # a private bus for the programs orbiter starts, made once
+    func start_bus [ at: string ]
+        sock : string at.mid[ 10, at.count - 10 ]
+        conf : path '{sock}.conf'
+        x : '<!DOCTYPE busconfig PUBLIC'
+        x = '{x} "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"'
+        x = '{x} "http://www.freedesktop.org/standards/dbus/1.0/'
+        x = '{x}busconfig.dtd">\n<busconfig><type>session</type>'
+        x = '{x}<listen>{at}</listen><auth>EXTERNAL</auth>'
+        x = '{x}<policy context="default"><allow own="*"/>'
+        x = '{x}<allow send_destination="*"/>'
+        x = '{x}<allow receive_sender="*"/></policy></busconfig>\n'
+        conf.save[ x, null ]
+        unlink[ sock.chars ]
+        run : command [ 'dbus-daemon --config-file={conf} --fork' ]
+        run.exec[ false ]
+
+    func open [] -> bool
+        tried = epoch_micros[]
+        at : bus_address[]
+        err : DBusError
+        dbus_error_init[ @err ]
+        conn = dbus_connection_open_private[ at.chars, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            dbus_error_free[ @err ]
+            dbus_error_init[ @err ]
+            start_bus[ at ]
+            conn = dbus_connection_open_private[ at.chars, @err ]
+        if [ dbus_error_is_set[ @err ] || !conn ]
+            problem = 'No portal bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        if [ dbus_bus_register[ conn, @err ] == 0 ]
+            problem = 'Portal bus refused us'
+            dbus_error_free[ @err ]
+            close[]
+            return false
+        nm : name[]
+        got : i32 [ dbus_bus_request_name[ conn, nm.chars,
+            DBUS_NAME_FLAG_DO_NOT_QUEUE, @err ] ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        if [ got != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER ]
+            problem = 'Another portal holds {nm}'
+            close[]
+            return false
+        address = at
+        log 'portal: file dialogs on {at}'
+        return true
+
+    func close []
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+
+    # requests in; true when a new one waits for the navigator
+    func poll [] -> bool
+        if [ !conn ]
+            if [ epoch_micros[] - tried < 3000000 ] return false
+            if [ !open[] ] return false
+        dbus_connection_read_write[ conn, 0 ]
+        if [ dbus_connection_get_is_connected[ conn ] == 0 ]
+            close[]
+            return false
+        fresh : false
+        while [ true ]
+            m : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !m ] break
+            if [ dbus_message_get_type[ m ]
+                 == DBUS_MESSAGE_TYPE_METHOD_CALL ]
+                if [ answer[ m ] ] fresh = true
+            dbus_message_unref[ m ]
+        return fresh
+
+    func reply [ rep: @DBusMessage ]
+        if [ !rep ] return
+        if [ conn ]
+            dbus_connection_send[ conn, rep, null ]
+            dbus_connection_flush[ conn ]
+        dbus_message_unref[ rep ]
+
+    func answer [ m: @DBusMessage ] -> bool
+        fc : 'org.freedesktop.portal.FileChooser'
+        rq : 'org.freedesktop.portal.Request'
+        props : 'org.freedesktop.DBus.Properties'
+        intro : 'org.freedesktop.DBus.Introspectable'
+        of : 'OpenFile'
+        sf : 'SaveFile'
+        cl : 'Close'
+        get : 'Get'
+        all : 'GetAll'
+        look : 'Introspect'
+        st : 'org.freedesktop.portal.Settings'
+        if [ dbus_message_get_interface[ m ] != null ]
+            ifc : string[ dbus_message_get_interface[ m ] ]
+            if [ ifc == st ]
+                setting_call[ m ]
+                return false
+        if [ dbus_message_is_method_call[ m, fc.chars, of.chars ] != 0 ]
+            return ask[ m, false ]
+        if [ dbus_message_is_method_call[ m, fc.chars, sf.chars ] != 0 ]
+            return ask[ m, true ]
+        if [ dbus_message_is_method_call[ m, rq.chars, cl.chars ] != 0 ]
+            gone : string[ dbus_message_get_path[ m ] ]
+            for [ i: i32 asks.count - 1, i >= 0, i -= 1 ]
+                if [ asks[ i ].handle == gone ] asks.remove[ i ]
+            reply[ dbus_message_new_method_return[ m ] ]
+            return false
+        if [ dbus_message_is_method_call[ m, props.chars, get.chars ]
+             != 0 ]
+            rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            put_version[ @it, tray_arg[ m, 0 ] ]
+            reply[ rep ]
+            return false
+        if [ dbus_message_is_method_call[ m, props.chars, all.chars ]
+             != 0 ]
+            rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            d : DBusMessageIter
+            dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                "{sv}", @d ]
+            kv : DBusMessageIter
+            dbus_message_iter_open_container[ @d, DBUS_TYPE_DICT_ENTRY,
+                null, @kv ]
+            key : 'version'
+            kc : cstr [ key.chars ]
+            dbus_message_iter_append_basic[ @kv, DBUS_TYPE_STRING, @kc ]
+            put_version[ @kv, tray_arg[ m, 0 ] ]
+            dbus_message_iter_close_container[ @d, @kv ]
+            dbus_message_iter_close_container[ @it, @d ]
+            reply[ rep ]
+            return false
+        if [ dbus_message_is_method_call[ m, intro.chars, look.chars ]
+             != 0 ]
+            rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ rep, @it ]
+            xml : introspection[]
+            cs : cstr [ xml.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+            reply[ rep ]
+            return false
+        en : 'org.freedesktop.DBus.Error.UnknownMethod'
+        why : 'orbiter answers only the file chooser'
+        reply[ dbus_message_new_error[ m, en.chars, why.chars ] ]
+        return false
+
+    # an interface's version, as a variant (settings 2, files 4)
+    func put_version [ it: @DBusMessageIter, ifc: string ]
+        sub : DBusMessageIter
+        dbus_message_iter_open_container[ it, DBUS_TYPE_VARIANT, "u",
+            @sub ]
+        v : u32 [ (ifc == 'org.freedesktop.portal.Settings') ? 2 : 4 ]
+        dbus_message_iter_append_basic[ @sub, DBUS_TYPE_UINT32, @v ]
+        dbus_message_iter_close_container[ it, @sub ]
+
+    func introspection [] -> string
+        x : '<node><interface name="org.freedesktop.portal.FileChooser">'
+        for [ mn: string ] in vec string [] [ 'OpenFile', 'SaveFile' ]
+            x = '{x}<method name="{mn}">'
+            x = '{x}<arg type="s" name="parent_window" direction="in"/>'
+            x = '{x}<arg type="s" name="title" direction="in"/>'
+            x = '{x}<arg type="a{{sv}}" name="options" direction="in"/>'
+            x = '{x}<arg type="o" name="handle" direction="out"/>'
+            x = '{x}</method>'
+        x = '{x}<property name="version" type="u" access="read"/>'
+        return '{x}</interface></node>'
+
+    # a request: its handle back now, its answer when picked
+    func ask [ m: @DBusMessage, save: bool ] -> bool
+        sender : string[ dbus_message_get_sender[ m ] ]
+        k : PortalAsk [ sender: sender, save: save,
+            title: tray_arg[ m, 1 ], folder: '', name: '' ]
+        token : read_options[ m, k ]
+        if [ token.count == 0 ]
+            counter += 1
+            token = 'orbiter{counter}'
+        # the sender's unique name, ':1.42' as '1_42'
+        who : ''
+        for [ i: i32 1, i < sender.count, i += 1 ]
+            c : string sender.mid[ i, 1 ]
+            who = (c == '.') ? '{who}_' : '{who}{c}'
+        k.handle = '/org/freedesktop/portal/desktop/request/{who}/{token}'
+        rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ rep, @it ]
+        hc : cstr [ k.handle.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH, @hc ]
+        reply[ rep ]
+        # the same program asking again while one is open: that one
+        # answers on the newest handle (the one it listens on)
+        for [ open: PortalAsk ] in asks
+            if [ open.sender == sender && open.save == save ]
+                open.handle = k.handle
+                return false
+        asks.push[ k ]
+        log 'portal: {(save) ? "save" : "open"} for {sender}: {k.title}'
+        return true
+
+    # the options a{sv}: its token and what the navigator needs
+    func read_options [ m: @DBusMessage, k: PortalAsk ] -> string
+        token : ''
+        file : ''
+        it : DBusMessageIter
+        if [ dbus_message_iter_init[ m, @it ] == 0 ] return token
+        dbus_message_iter_next[ @it ]
+        dbus_message_iter_next[ @it ]
+        if [ dbus_message_iter_get_arg_type[ @it ] != DBUS_TYPE_ARRAY ]
+            return token
+        arr : DBusMessageIter
+        dbus_message_iter_recurse[ @it, @arr ]
+        while [ dbus_message_iter_get_arg_type[ @arr ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @arr, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string[ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'handle_token' ] token = tray_text[ @kv ]
+            el [ key == 'current_name' ] k.name = tray_text[ @kv ]
+            el [ key == 'multiple' ] k.multiple = tray_bool[ @kv ]
+            el [ key == 'directory' ] k.directory = tray_bool[ @kv ]
+            el [ key == 'current_folder' ] k.folder = bytes_of[ @kv ]
+            el [ key == 'current_file' ] file = bytes_of[ @kv ]
+            dbus_message_iter_next[ @arr ]
+        # an existing file's own folder wins over current_folder
+        at_file[ k, file ]
+        return token
+
+    # a variant holding a nul-ended byte array (a path)
+    func bytes_of [ v: @DBusMessageIter ] -> string
+        inner : DBusMessageIter
+        dbus_message_iter_recurse[ v, @inner ]
+        if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_ARRAY ]
+            return ''
+        bytes : DBusMessageIter
+        dbus_message_iter_recurse[ @inner, @bytes ]
+        data : @u8 [ null ]
+        n : i32 [ 0 ]
+        dbus_message_iter_get_fixed_array[ @bytes, @data, @n ]
+        if [ !data || n <= 1 ] return ''
+        out : local i8 [ 4096 ]
+        len : i32 [ min[ n, 4095 ] ]
+        memcpy[ @out[ 0 ], data, len ]
+        out[ len ] = 0
+        return string[ @out[ 0 ] ]
+
+    # a save of an existing file: its folder, its name
+    func at_file [ k: PortalAsk, file: string ]
+        if [ file.count == 0 ] return
+        slash : i32 [ file.rindex_of[ '/' ] ]
+        if [ slash < 0 ] return
+        # a file at the root keeps its slash: '/' alone is a char
+        k.folder = file.mid[ 0, max[ slash, 1 ] ]
+        k.name   = file.mid[ slash + 1, file.count - slash - 1 ]
+
+    # the next request the navigator has not taken
+    func waiting [] -> PortalAsk
+        for [ k: PortalAsk ] in asks
+            if [ !k.taken ] return k
+        return null
+
+    # the pick (a file path), or a cancel with none
+    func finish [ k: PortalAsk, picked: string ]
+        if [ !k ] return
+        rq : 'org.freedesktop.portal.Request'
+        rs : 'Response'
+        s : @DBusMessage [ dbus_message_new_signal[ k.handle.chars,
+            rq.chars, rs.chars ] ]
+        dbus_message_set_destination[ s, k.sender.chars ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ s, @it ]
+        code : u32 [ (picked.count > 0) ? 0 : 1 ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_UINT32, @code ]
+        d : DBusMessageIter
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY, "{sv}",
+            @d ]
+        # always a uris list: GTK 3 reads it unchecked, cancel too
+        kv : DBusMessageIter
+        dbus_message_iter_open_container[ @d, DBUS_TYPE_DICT_ENTRY,
+            null, @kv ]
+        key : 'uris'
+        kc : cstr [ key.chars ]
+        dbus_message_iter_append_basic[ @kv, DBUS_TYPE_STRING, @kc ]
+        var : DBusMessageIter
+        dbus_message_iter_open_container[ @kv, DBUS_TYPE_VARIANT, "as",
+            @var ]
+        list : DBusMessageIter
+        dbus_message_iter_open_container[ @var, DBUS_TYPE_ARRAY, "s",
+            @list ]
+        if [ picked.count > 0 ]
+            uri : 'file://{picked}'
+            uc : cstr [ uri.chars ]
+            dbus_message_iter_append_basic[ @list, DBUS_TYPE_STRING, @uc ]
+        dbus_message_iter_close_container[ @var, @list ]
+        dbus_message_iter_close_container[ @kv, @var ]
+        dbus_message_iter_close_container[ @d, @kv ]
+        dbus_message_iter_close_container[ @it, @d ]
+        reply[ s ]
+        log 'portal: answered {k.title}: {(picked.count > 0) ? picked : "cancel"}'
+        for [ i: i32 asks.count - 1, i >= 0, i -= 1 ]
+            if [ asks[ i ] == k ] asks.remove[ i ]
+
+    # ---- desktop settings: the user's fonts and orbiter's theme ----
+
+    # the user's GNOME values, read once: a program reading the
+    # portal reads every setting from it, its fonts too
+    func read_desktop []
+        di : 'org.gnome.desktop.interface'
+        for [ k: string ] in vec string [] [ 'font-name',
+                'document-font-name', 'monospace-font-name',
+                'font-antialiasing', 'font-hinting', 'font-rgba-order',
+                'icon-theme', 'cursor-theme' ]
+            v : string gsetting[ di, k ]
+            if [ v.count > 0 ] put[ di, k, 's', v ]
+        sc : string gsetting[ di, 'text-scaling-factor' ]
+        if [ sc.count > 0 ] put[ di, 'text-scaling-factor', 'd', sc ]
+        cs : string gsetting[ di, 'cursor-size' ]
+        if [ cs.count > 0 ] put[ di, 'cursor-size', 'i', cs ]
+
+    # one value as gsettings prints it, its quotes and type taken off
+    func gsetting [ space: string, key: string ] -> string
+        run : command [ 'gsettings get {space} {key}' ]
+        got : string run.run[ false ]
+        got = got.trim[]
+        sp : i32 [ got.rindex_of[ " " ] ]
+        if [ got.starts_with[ 'int32 ' ] || got.starts_with[ 'uint32 ' ] ]
+            got = got.mid[ sp + 1, got.count - sp - 1 ]
+        if [ got.count >= 2 && got.starts_with[ "'" ] ]
+            got = got.mid[ 1, got.count - 2 ]
+        return got
+
+    func put [ space: string, key: string, kind: string, text: string ]
+        for [ e: PortalSetting ] in settings
+            if [ e.space == space && e.key == key ]
+                e.kind = kind
+                e.text = text
+                return
+        settings.push[ PortalSetting [ space: space, key: key,
+            kind: kind, text: text ] ]
+
+    # dark or light: libadwaita, GTK 4, Qt, Chromium read the scheme,
+    # GTK 3 its theme
+    func theme_values []
+        put[ 'org.freedesktop.appearance', 'color-scheme', 'u',
+             (dark) ? '1' : '2' ]
+        di : 'org.gnome.desktop.interface'
+        put[ di, 'color-scheme', 's',
+             (dark) ? 'prefer-dark' : 'prefer-light' ]
+        put[ di, 'gtk-theme', 's', (dark) ? 'Adwaita-dark' : 'Adwaita' ]
+
+    # every program switches now: each theme value goes out changed
+    public func set_dark [ on: bool ]
+        dark = on
+        theme_values[]
+        for [ e: PortalSetting ] in settings
+            if [ e.key == 'color-scheme' || e.key == 'gtk-theme' ]
+                changed[ e ]
+
+    func changed [ e: PortalSetting ]
+        if [ !conn ] return
+        pt : '/org/freedesktop/portal/desktop'
+        st : 'org.freedesktop.portal.Settings'
+        nm : 'SettingChanged'
+        sg : @DBusMessage [ dbus_message_new_signal[ pt.chars, st.chars,
+            nm.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ sg, @it ]
+        sc : cstr [ e.space.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @sc ]
+        kc : cstr [ e.key.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @kc ]
+        put_value[ @it, e ]
+        reply[ sg ]
+
+    # a setting's value as a variant of its own type
+    func put_value [ it: @DBusMessageIter, e: PortalSetting ]
+        sub : DBusMessageIter
+        sig : cstr [ e.kind.chars ]
+        dbus_message_iter_open_container[ it, DBUS_TYPE_VARIANT, sig,
+            @sub ]
+        if [ e.kind == 's' ]
+            cs : cstr [ e.text.chars ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_STRING, @cs ]
+        el [ e.kind == 'u' ]
+            u : u32 [ e.text.integer_value[] ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_UINT32, @u ]
+        el [ e.kind == 'i' ]
+            n : i32 [ e.text.integer_value[] ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_INT32, @n ]
+        el
+            d : f64 [ e.text.real_value[] ]
+            dbus_message_iter_append_basic[ @sub, DBUS_TYPE_DOUBLE, @d ]
+        dbus_message_iter_close_container[ it, @sub ]
+
+    # a namespace asked for: exact, or a prefix ending in *
+    func space_wanted [ space: string, asked: vec string ] -> bool
+        if [ asked.count == 0 ] return true
+        for [ a: string ] in asked
+            if [ a.ends_with[ '*' ] ]
+                if [ space.starts_with[ a.mid[ 0, a.count - 1 ] ] ]
+                    return true
+            el [ a == space ]
+                return true
+        return false
+
+    func setting_call [ m: @DBusMessage ]
+        mn : string[ dbus_message_get_member[ m ] ]
+        if [ mn == 'ReadAll' ]
+            read_all[ m ]
+            return
+        space : tray_arg[ m, 0 ]
+        key   : tray_arg[ m, 1 ]
+        for [ e: PortalSetting ] in settings
+            if [ e.space == space && e.key == key ]
+                rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+                it : DBusMessageIter
+                dbus_message_iter_init_append[ rep, @it ]
+                # Read (the old form) wraps the value once more
+                if [ mn == 'Read' ]
+                    outer : DBusMessageIter
+                    dbus_message_iter_open_container[ @it,
+                        DBUS_TYPE_VARIANT, "v", @outer ]
+                    put_value[ @outer, e ]
+                    dbus_message_iter_close_container[ @it, @outer ]
+                el
+                    put_value[ @it, e ]
+                reply[ rep ]
+                return
+        en : 'org.freedesktop.portal.Error.NotFound'
+        why : 'no such setting'
+        reply[ dbus_message_new_error[ m, en.chars, why.chars ] ]
+
+    # ReadAll [ namespaces ]: a{sa{sv}}, grouped by namespace
+    func read_all [ m: @DBusMessage ]
+        asked : vec string []
+        it : DBusMessageIter
+        if [ dbus_message_iter_init[ m, @it ] != 0 &&
+             dbus_message_iter_get_arg_type[ @it ] == DBUS_TYPE_ARRAY ]
+            arr : DBusMessageIter
+            dbus_message_iter_recurse[ @it, @arr ]
+            while [ dbus_message_iter_get_arg_type[ @arr ]
+                    == DBUS_TYPE_STRING ]
+                cs : cstr
+                dbus_message_iter_get_basic[ @arr, @cs ]
+                asked.push[ string[ cs ] ]
+                dbus_message_iter_next[ @arr ]
+        spaces : vec string []
+        for [ e: PortalSetting ] in settings
+            if [ space_wanted[ e.space, asked ] && !spaces.contains[ e.space ] ]
+                spaces.push[ e.space ]
+        rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+        out : DBusMessageIter
+        dbus_message_iter_init_append[ rep, @out ]
+        top : DBusMessageIter
+        groups : cstr [ "{sa{sv}}" ]
+        dbus_message_iter_open_container[ @out, DBUS_TYPE_ARRAY, groups,
+            @top ]
+        for [ space: string ] in spaces
+            ent : DBusMessageIter
+            dbus_message_iter_open_container[ @top, DBUS_TYPE_DICT_ENTRY,
+                null, @ent ]
+            sc : cstr [ space.chars ]
+            dbus_message_iter_append_basic[ @ent, DBUS_TYPE_STRING, @sc ]
+            keys : DBusMessageIter
+            dbus_message_iter_open_container[ @ent, DBUS_TYPE_ARRAY,
+                "{sv}", @keys ]
+            for [ e: PortalSetting ] in settings
+                if [ e.space != space ] continue
+                kv : DBusMessageIter
+                dbus_message_iter_open_container[ @keys,
+                    DBUS_TYPE_DICT_ENTRY, null, @kv ]
+                kc : cstr [ e.key.chars ]
+                dbus_message_iter_append_basic[ @kv, DBUS_TYPE_STRING,
+                                                @kc ]
+                put_value[ @kv, e ]
+                dbus_message_iter_close_container[ @keys, @kv ]
+            dbus_message_iter_close_container[ @ent, @keys ]
+            dbus_message_iter_close_container[ @top, @ent ]
+        dbus_message_iter_close_container[ @out, @top ]
+        reply[ rep ]
+
+# one portal for the process
+portal_now : Portal
+
+func portal_shared [] -> Portal
+    if [ !portal_now ]
+        portal_now = Portal []
+        portal_now.open[]
+    return portal_now

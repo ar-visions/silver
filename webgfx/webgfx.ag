@@ -43,6 +43,13 @@ class WebVideo
     func dealloc []
         if [ bytes ] free[ bytes ]
 
+# a canvas's frames for another process: two shareable textures;
+# publish copies the canvas into the back one and flips (quark)
+class WebShare
+    public tex0 : Texture
+    public tex1 : Texture
+    public back : i32
+
 struct GfxState
     fonts    : vec CanvasFont
     paths    : vec CanvasPath
@@ -56,6 +63,7 @@ struct GfxState
     mixer    : AudioMixer
     vk       : vk_context
     disp     : Display
+    shares   : vec WebShare
 
 intern gfx : GfxState
 
@@ -751,6 +759,49 @@ func webgfx_canvas_compose [ id: i32, src: i32, mask: i32, luma: bool,
     sc : canvas_of[ src ]
     if [ !cv || !sc ] return
     cv.compose[ sc, canvas_of[ mask ], luma, alpha, f32 x, f32 y, f32 lw, f32 lh ]
+
+func share_of [ id: i32 ] -> WebShare
+    if [ !gfx.shares || id < 1 || id > i32 gfx.shares.count ] return null
+    return gfx.shares[ id - 1 ]
+
+# two textures the size of the canvas's own; their fds, format, size
+func webgfx_share_new [ canvas: i32, fd0: @i32, fd1: @i32, fmt: @i32,
+                        sw: @i32, sh: @i32 ] -> i32
+    cv : canvas_of[ canvas ]
+    if [ !cv || !cv.color ] return 0
+    d  : gfx_display[]
+    tx : cv.color
+    s  : WebShare []
+    s.tex0 = Texture [ vk: gfx.vk, w: d, width: tx.width,
+                       height: tx.height, vk_format: tx.vk_format,
+        shareable: true ]
+    s.tex1 = Texture [ vk: gfx.vk, w: d, width: tx.width,
+                       height: tx.height, vk_format: tx.vk_format,
+        shareable: true ]
+    # no exportable memory on this driver
+    if [ s.tex0.shared_fd < 0 || s.tex1.shared_fd < 0 ] return 0
+    fd0[0] = s.tex0.shared_fd
+    fd1[0] = s.tex1.shared_fd
+    fmt[0] = i32 tx.vk_format
+    sw[0]  = tx.width
+    sh[0]  = tx.height
+    if [ !gfx.shares ]
+        gfx.shares = vec WebShare []
+        gfx.shares.hold[]
+    gfx.shares.push[ s ]
+    return i32 gfx.shares.count
+
+# the canvas's picture into the back texture; the new front comes back
+func webgfx_share_publish [ share: i32, canvas: i32 ] -> i32
+    s  : share_of[ share ]
+    cv : canvas_of[ canvas ]
+    if [ !s || !cv || !cv.color ] return -1
+    cv.sync_all[]
+    bt : (s.back == 0) ? s.tex0 : s.tex1
+    gfx.vk.copy_image[ cv.color, bt ]
+    front : i32 [ s.back ]
+    s.back = 1 - s.back
+    return front
 
 # finished pixels, rgba8, width * height * 4 bytes
 func webgfx_canvas_read [ id: i32, out: @u8 ]

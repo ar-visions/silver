@@ -70,6 +70,7 @@ forward(enode)
     M(X, Y, i, prop,     public,  array,           dims) \
     M(X, Y, i, prop,     public,  aether,          mod, meta, weak) \
     M(X, Y, i, prop,     public,  etype,           schema) \
+    M(X, Y, i, prop,     public,  etype,           schema_of, meta, weak) \
     M(X, Y, i, prop,     public,  etype,           suffix) \
     M(X, Y, i, prop,     public,  enode,           eshape) \
     M(X, Y, i, prop,     public,  tokens,          body) \

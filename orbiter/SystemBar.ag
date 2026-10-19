@@ -128,6 +128,11 @@ Button MenuTop
     public progress : f32 [ -2.0 ]
     build : TabProgress []
 
+    # a menu open: moving onto this name opens its menu
+    public func on_move [ ev: Event ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.menu_hover[ a ]
+
 # an app updating: a line along its tab's foot, filled so far
 Layer TabProgress
     func draw [ cv: Canvas ]
@@ -344,14 +349,14 @@ element MenuDrawer
     public background_lens : bool [ true ]
     ground : DrawerGround []
     style : CSS {
-        area: l-10.91 t0.91 w10.91 b1.06, 240ms cubic outward
+        area: l-10.91 t0 w10.91 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
         # a faint line down its right side
         layers.redge:
             fill_color: #fff2
             area: r1px t0 r0 b0
     :open
-        area: l0 t0.91 w10.91 b1.06, 260ms cubic inward
+        area: l0 t0 w10.91 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }
 

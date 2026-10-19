@@ -29,6 +29,8 @@ func wlc_window_focus  [ id: u64 ]
 func wlc_window_close  [ id: u64 ]
 # it draws its own header (neither decoration protocol took it)
 func wlc_window_csd    [ id: u64 ] -> i32
+# a dialog's window (its parent), else 0
+func wlc_window_parent [ id: u64 ] -> u64
 # counts the window's size changes
 func wlc_window_epoch  [ id: u64 ] -> u64
 # its menu: 0 none, 1 dbusmenu, 2 GTK; then where it lives on D-Bus
@@ -51,6 +53,7 @@ func wlc_pointer_button [ id: u64, x: f32, y: f32, button: i32,
                           state: i32 ]
 func wlc_pointer_axis   [ dx: f32, dy: f32 ]
 func wlc_key            [ glfw: i32, state: i32 ]
+func wlc_keys_release   []
 func wlc_spawn          [ cmd: cstr ] -> i32
 
 # one window's imports for pictures of it: this size's, and the last
@@ -151,6 +154,17 @@ element WaylandView
     # draw them), then let go
     mutable retired  : vec Texture
     mutable retire_n : i32
+    # a dialog of the window: drawn over it at its own size, eased
+    # down from the top (a sheet); while up it takes the pointer
+    public sheet        : u64
+    mutable sheet_on     : u64
+    mutable sheet_at     : f32
+    mutable sheet_frames : map Texture [string]
+    mutable sheet_epoch  : u64
+    mutable sheet_x      : f32
+    mutable sheet_y      : f32
+    mutable sheet_w      : f32
+    mutable sheet_h      : f32
 
     func ensure [ w: i32, h: i32 ]
         if [ up ] return
@@ -184,24 +198,10 @@ element WaylandView
         if [ win == 0 ] return
         settle[ w9, h9 ]
         retire[]
-        fid : u64 [ wlc_frame_id[ win ] ]
-        if [ fid == 0 ] return
-        key : string '{fid}'
         if [ !frames ] frames = map Texture [string] []
-        t : Texture (frames.contains[ key ]) ? frames[ key ] : null
-        if [ !t ]
-            fw : i32 [ wlc_frame_w[ win ] ]
-            fh : i32 [ wlc_frame_h[ win ] ]
-            fd : i32 [ wlc_frame_fd[ win ] ]
-            if [ fd < 0 || fw <= 0 || fh <= 0 ] return
-            t = cv.vk.import_dmabuf_image[ fd, fw, fh,
-                                           wlc_frame_format[ win ],
-                                           wlc_frame_modifier[ win ],
-                wlc_frame_stride[ win ], wlc_frame_offset[ win ],
-                cv.w ]
-            frames[ key ] = t
-            log 'wayland: imported frame {key} {fw}x{fh}'
-        shown = fid
+        t : Texture frame_of[ cv, win, frames ]
+        if [ !t ] return
+        shown = wlc_frame_id[ win ]
         ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
         # the cut header and anything past the pane stay off screen
         cv.save[]
@@ -210,6 +210,75 @@ element WaylandView
                        rect [ x: vp.x, y: vp.y - ct, w: f32[ t.width ],
                               h: f32[ t.height ] ] ]
         cv.restore[]
+        draw_sheet[ cv, vp ]
+
+    # a window's current frame, imported once per buffer into got
+    func frame_of [ cv: Canvas, id: u64, got: map Texture [string] ]
+                  -> Texture
+        fid : u64 [ wlc_frame_id[ id ] ]
+        if [ fid == 0 ] return null
+        key : string '{fid}'
+        if [ got.contains[ key ] ] return got[ key ]
+        fw : i32 [ wlc_frame_w[ id ] ]
+        fh : i32 [ wlc_frame_h[ id ] ]
+        fd : i32 [ wlc_frame_fd[ id ] ]
+        if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
+        t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
+                                               wlc_frame_format[ id ],
+                                               wlc_frame_modifier[ id ],
+            wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
+        got[ key ] = t
+        log 'wayland: imported frame {key} {fw}x{fh}'
+        return t
+
+    # the dialog over the window, centred, coming down from the top
+    func draw_sheet [ cv: Canvas, vp: rect ]
+        if [ sheet == 0 || wlc_window_open[ sheet ] == 0 ]
+            sheet_on = 0
+            sheet_w  = 0.0
+            return
+        if [ sheet != sheet_on ]
+            sheet_on     = sheet
+            sheet_at     = 0.0
+            sheet_frames = map Texture [string] []
+            sheet_epoch  = wlc_window_epoch[ sheet ]
+        ep : u64 [ wlc_window_epoch[ sheet ] ]
+        if [ ep != sheet_epoch ]
+            sheet_epoch = ep
+            if [ !retired ] retired = vec Texture []
+            for [ old: Texture, k: string ] in sheet_frames
+                retired.push[ old ]
+            sheet_frames = map Texture [string] []
+            retire_n = 8
+        t : Texture frame_of[ cv, sheet, sheet_frames ]
+        if [ !t ] return
+        sheet_at = filter_n[ sheet_at, 1.0, 0.25, ux.frame_factor ]
+        if [ sheet_at > 0.999 ] sheet_at = 1.0
+        sheet_w = f32[ t.width ]
+        sheet_h = f32[ t.height ]
+        sheet_x = round[ vp.x + (vp.w - sheet_w) * 0.5 ]
+        sheet_y = round[ vp.y - sheet_h * (1.0 - sheet_at) ]
+        cv.save[]
+        cv.clip_rect[ vp.x, vp.y, vp.w, vp.h, 0.0, 0.0 ]
+        # the window under it dims a little, as it waits on the dialog
+        cv.fill_color[ rgba [ r: 0.0, g: 0.0, b: 0.0,
+                              a: 0.25 * sheet_at ] ]
+        cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
+        cv.paint[]
+        cv.box_shadow[ rgba [ '#000000aa' ], 0.0, 6.0, 24.0, 0.0,
+                       false ]
+        cv.fill_color[ rgba [ '#000000ff' ] ]
+        cv.rect_to[ sheet_x, sheet_y, sheet_w, sheet_h ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.draw_image[ t, rect [ x: sheet_x, y: sheet_y, w: sheet_w,
+                                 h: sheet_h ] ]
+        cv.restore[]
+
+    # x, y (the pane's) is on the sheet
+    func to_sheet [ x: f32, y: f32 ] -> bool
+        return x >= sheet_x && x < sheet_x + sheet_w
+               && y >= sheet_y && y < sheet_y + sheet_h
 
     # the pane's size reaches the window once it has held 150 ms
     func settle [ w9: i32, h9: i32 ]
@@ -252,6 +321,14 @@ element WaylandView
 
     public func on_press [ ev: Event ]
         if [ !up || win == 0 ] return
+        if [ sheet_w > 0.0 ]
+            if [ !to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ] return
+            sx : f32 [ ev.mouse.pos.x - sheet_x ]
+            sy : f32 [ ev.mouse.pos.y - sheet_y ]
+            wlc_pointer_motion[ sheet, sx, sy ]
+            wlc_pointer_button[ sheet, sx, sy, ev.mouse.button, 1 ]
+            if [ ux ] ux.set_focus[ a ]
+            return
         y : f32 win_y[ ev.mouse.pos.y ]
         wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
         wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 1 ]
@@ -259,16 +336,35 @@ element WaylandView
 
     public func on_release [ ev: Event ]
         if [ !up || win == 0 ] return
+        if [ sheet_w > 0.0 ]
+            wlc_pointer_button[ sheet, ev.mouse.pos.x - sheet_x,
+                ev.mouse.pos.y - sheet_y, ev.mouse.button, 0 ]
+            return
         y : f32 win_y[ ev.mouse.pos.y ]
         wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 0 ]
 
     public func on_move [ ev: Event ]
         if [ !up || win == 0 ] return
+        if [ sheet_w > 0.0 ]
+            if [ to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,
+                                    ev.mouse.pos.y - sheet_y ]
+            return
         y : f32 win_y[ ev.mouse.pos.y ]
         wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
 
     public func on_wheel [ ev: Event ]
-        if [ !up ] return
+        if [ !up || win == 0 ] return
+        if [ sheet_w > 0.0 ]
+            if [ !to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ] return
+            wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,
+                                ev.mouse.pos.y - sheet_y ]
+            wlc_pointer_axis[ ev.mouse.wheel_delta.x,
+                              ev.mouse.wheel_delta.y ]
+            return
+        # the scroll goes to the surface under the pointer
+        wlc_pointer_motion[ win, ev.mouse.pos.x,
+                            win_y[ ev.mouse.pos.y ] ]
         wlc_pointer_axis[ ev.mouse.wheel_delta.x,
                           ev.mouse.wheel_delta.y ]
 

@@ -135,6 +135,11 @@ element EditorView
             orb.nav_root = p9
             orb.run_search[]
             return
+        # a program's save: the name goes back to it, nothing made
+        if [ orb.pick_field == 'portal' ]
+            newfile_exit[]
+            orb.portal_deliver[ p9 ]
+            return
         e9 : string ''
         p9.save[ e9, null ]
         newfile_exit[]
@@ -261,6 +266,9 @@ element EditorView
     func title_hint [] -> string
         e : Editor text_of[]
         o : orb[]
+        # a program's folder pick: how to answer it
+        if [ o && o.pick_field == 'portal' && o.pick_dir ]
+            return 'Enter: open this folder'
         if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
         if [ o && o.console_of[ e.view_name ] ] return ''
         return (e.view_name != 'editor') ? e.view_name : ''
@@ -350,7 +358,8 @@ element EditorView
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
             t['newfile_cancel'] = BarClose [ icon: 'close',
-                                             manual_mode: true ]
+                                             manual_mode: true,
+                area: Region [ 'r0+ t0 w1.66 b0' ] ]
         return t
  
     func text_els [] -> Elements
@@ -365,6 +374,7 @@ element EditorView
             # has one, is in the system bar
             cut : i32 [ (wlc_window_csd[ wid ] != 0) ? 46 : 0 ]
             t['text'] = WaylandView [ window: wid, crop_top: cut,
+                sheet: o.pane_sheet_of[ pane_index ],
                 area: Region { l0 t0 r0 b0 } ]
             return t
         s : psess[]
@@ -380,6 +390,12 @@ element EditorView
                 if [ vel ] edels['view'] = vel
             # a resumed app fading in over the source
             fi9 : AppView (e) ? e.run_view : null
+            # an app still building or starting: the build card
+            bw9 : string [ (fi9) ? fi9.status_word[] : '' ]
+            if [ e && e.app_view && fi9 && fi9.display == 1
+                 && (bw9 == 'compiling' || bw9 == 'starting') ]
+                edels['build_card'] = BuildCard [ inst: fi9,
+                    area: Region { l0 t0 r0 b0 } ]
             if [ fi9 && fi9.fade_in_ms > 0 ]
                 edels['resume_fade'] = ResumeFade [ inst: fi9,
                     area: Region { l0 t0 r0 b0 } ]
@@ -780,6 +796,106 @@ element ResumeFade
                                     h: bounds.h ] ]
         cv.restore[]
         ux.will_animate = true
+
+# the build card's avatar: in its build look while the card is up
+OrbiterAvatar BuildAvatar
+    func on_state [ m: i32 ]
+        swap_on = true
+        work_on = true
+        super.on_state[ m ]
+
+# an app on its way into the pane (compiling, then starting): the
+# avatar building it, the app's icon and name, and how far it is
+element BuildCard
+    animated : true
+    public inst : AppView
+    mutable icon : AppIcon
+
+    func render [] -> Elements
+        t : Elements []
+        if [ !bounds ] return t
+        side : f32 [ round[ min[ bounds.w * 0.5, bounds.h * 0.45 ] ] ]
+        half : f32 [ round[ side * 0.5 ] ]
+        top  : f32 [ round[ bounds.h * 0.08 ] ]
+        t['avatar'] = BuildAvatar [ area: Region [
+            'l50%-{half}px t{top}px w{side}px h{side}px' ] ]
+        return t
+
+    # how far its build is, 0..1; -1 when not compiling or not known
+    func build_part [] -> f32
+        orb : orbiter [ ux.app_object ]
+        if [ inst.status_word[] != 'compiling' || !orb || !inst.src ]
+            return -1.0
+        fr : f32 orb.build_frac[ inst.src.directory[].filename[] ]
+        return (fr < 0.0) ? -1.0 : min[ fr, 1.0 ]
+
+    # 'compiling 45%', 'starting', from the instance and its build
+    func status [] -> string
+        word : string inst.status_word[]
+        fr : f32 build_part[]
+        if [ fr < 0.0 ] return word
+        return '{word} {i32[ fr * 100.0 ]}%'
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        cv : Canvas w.screen
+        side : f32 [ round[ min[ bounds.w * 0.5, bounds.h * 0.45 ] ] ]
+        top  : f32 [ round[ bounds.h * 0.08 ] + side ]
+        dir  : path (inst.src) ? inst.src.directory[] : null
+        if [ dir && (!icon || '{icon.file}' != '{dir}') ]
+            orb : orbiter [ ux.app_object ]
+            nm : string orb.install_name_of[ dir.filename[] ]
+            ag : path '{path.path_startup[]}/install/export/{nm}.agi'
+            icon = AppIcon [ file: dir, module: true, agi: ag ]
+        isz : f32 [ 64.0 ]
+        nm  : string [ (inst.app_mod) ? inst.app_mod : '' ]
+        # save and restore keep no font: it goes back by hand
+        was : CanvasFont cv.font
+        cv.save[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', 34 ] ]
+        nw : f32 [ cv.measure_text[ nm ].w ]
+        x  : f32 [ round[ (bounds.w - isz - 16.0 - nw) * 0.5 ] ]
+        if [ icon ] icon.paint[ cv, x, top, isz ]
+        cv.fill_color[ rgba [ '#f0f0f4' ] ]
+        cv.draw_text[ nm, rect [ x: x + isz + 16.0, y: top, w: nw + 4.0,
+            h: isz ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
+        cv.paint[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', 20 ] ]
+        st : string status[]
+        fr : f32 build_part[]
+        py : f32 [ top + isz + 10.0 ]
+        if [ inst.status_word[] == 'compiling' ]
+            # a pill round the words, filling from the left as it builds
+            pw : f32 [ round[ cv.measure_text[ st ].w + 56.0 ] ]
+            ph : f32 [ 30.0 ]
+            px : f32 [ round[ (bounds.w - pw) * 0.5 ] ]
+            pr : f32 [ ph * 0.5 ]
+            cv.save[]
+            cv.clip_rect[ px, py, round[ pw * max[ fr, 0.0 ] ], ph,
+                          0.0, 0.0 ]
+            cv.fill_color[ rgba [ '#4d3dbcaa' ] ]
+            cv.rounded_rect[ px, py, pw, ph, pr, pr, pr, pr ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#806bff' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.rounded_rect[ px, py, pw, ph, pr, pr, pr, pr ]
+            cv.paint[]
+            cv.stroke_width[ 0.0 ]
+            cv.stroke_offset[ 0.0 ]
+        cv.fill_color[ rgba [ '#e8e0ff' ] ]
+        cv.draw_text[ st, rect [ x: 0.0, y: py, w: bounds.w, h: 30.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null ]
+        cv.paint[]
+        cv.restore[]
+        cv.set_font[ was ]
 
 element EditorTitle
     public selected : bool
@@ -2603,6 +2719,10 @@ element orbiter : trinity # implements compiler
     mutable pick_field   : string
     # that field takes a folder: double-click picks it
     mutable pick_dir     : bool
+    # a program's open or save request the navigator answers
+    mutable portal_ask   : PortalAsk
+    # a hosted window held the keyboard last frame
+    mutable wl_keyed     : bool
     # module -> owner-module, asked of git once
     mutable install_names : map string[string]
     # a resource pick lists only these extensions
@@ -2764,6 +2884,12 @@ element orbiter : trinity # implements compiler
     mutable wl_tried       : bool
     mutable win_seen       : u64
     mutable pane_win       : vec u64
+    # every window placed, in order, and its pane: a closed one
+    # hands its pane back to the last one still open there
+    mutable placed_win     : vec u64
+    mutable placed_pane    : vec i32
+    # each pane's dialog over its window (a sheet), 0 when none
+    mutable pane_sheet     : vec u64
     # the active pane's window menu: whose, its entries, the top menu
     # the side panel shows, and when it was last asked for (ms)
     mutable menu_win       : u64
@@ -2772,6 +2898,8 @@ element orbiter : trinity # implements compiler
     mutable menu_own       : string
     mutable menu_top       : i32
     mutable menu_ms        : i64
+    # the window's own entries in the last read (ours are added after)
+    mutable menu_got       : i32
     # the menu drawer: open, which menu ('menu' the window's, 'tray' a
     # tray icon's), when it shut (it stays mounted while it slides
     # away), and the tray panel's picks seen
@@ -3254,6 +3382,19 @@ element orbiter : trinity # implements compiler
             if [ fw.fd >= 0 ] close[ fw.fd ]
         fmt_watch = map FmtWatch [string] []
 
+    # the module holding f is building now (its instance starting, a
+    # live reload): a second build would race it on the same files
+    func module_building [ f: path ] -> bool
+        if [ !f ] return false
+        dir : string '{f.directory[]}'
+        if [ build_frac[ f.directory[].filename[] ] > -2.0 ] return true
+        if [ !instances ] return false
+        for [ av: AppView ] in instances
+            if [ av.ended || !av.src ] continue
+            if [ '{av.src.directory[]}' != dir ] continue
+            if [ av.status_word[] == 'compiling' ] return true
+        return false
+
     func fmt_spawn [ fw: FmtWatch ]
         if [ !fw ] return
         if [ !startup_path ] startup_path = path.path_startup[]
@@ -3468,7 +3609,8 @@ element orbiter : trinity # implements compiler
             if [ fw.fn ]
                 fmt_poll_fn[ fw ]
                 continue
-            if [ fw.kicked && fw.pid == 0 && fw.file ]
+            if [ fw.kicked && fw.pid == 0 && fw.file
+                 && !module_building[ fw.file ] ]
                 sm : i64 [ fw.file.modified_time[] ]
                 if [ fw.src_mtime > 0 && sm > fw.src_mtime ]
                     fw.src_mtime = sm
@@ -3539,7 +3681,8 @@ element orbiter : trinity # implements compiler
                         if [ win ] win.will_animate = true
                         if [ m > fw.mtime ]
                             fw.mtime = m
-            if [ !fw.kicked && epoch_micros[] - fw.start_us >= 1000000 ]
+            if [ !fw.kicked && epoch_micros[] - fw.start_us >= 1000000
+                 && !module_building[ fw.file ] ]
                 fmt_spawn[ fw ]
                 fw.kicked = true
 
@@ -5230,6 +5373,10 @@ element orbiter : trinity # implements compiler
             tmod : bool [ edp.src.is_dir[] && tm9.exists[] ]
             els['modicon'] = TitleIcon [ file: edp.src, module: tmod,
                 plain: true, area: Region [ 'l0+ t0 w1.35 b0' ] ]
+        # a program's folder pick: the folder shown is the one chosen
+        if [ nv9 && pick_field == 'portal' && pick_dir ]
+            els['portal_open'] = LabelButton [ label: 'Open',
+                manual_mode: true, area: Region [ 'r0+ t0 w4 b0' ] ]
 
         # a right button: the top bar's button width (its own units),
         # plus the 1 px each overlaps its neighbour, so edges line up
@@ -5828,6 +5975,9 @@ element orbiter : trinity # implements compiler
             wl_tried = true
             wl_sock  = ''
             pane_win = vec u64 []
+            placed_win  = vec u64 []
+            placed_pane = vec i32 []
+            pane_sheet  = vec u64 []
             if [ wlc_create[ 1280, 800 ] == 0 ]
                 log 'orbiter: the Wayland display did not start'
                 return false
@@ -5847,11 +5997,19 @@ element orbiter : trinity # implements compiler
                 win_seen = wn
                 place_window[ wn ]
                 changed = true
-        # a closed window gives its pane back
+        # a closed window gives its pane back: to the window it covered
+        # (an about box over its app), else to nothing
         for [ i: i32 0, i < pane_win.count, i += 1 ]
             pw : u64 pane_win[ i ]
             if [ pw != 0 && wlc_window_open[ pw ] == 0 ]
-                pane_win[ i ] = 0
+                pane_win[ i ] = window_under[ i, pw ]
+                changed = true
+        for [ i: i32 0, i < pane_sheet.count, i += 1 ]
+            ps : u64 pane_sheet[ i ]
+            if [ ps != 0 && wlc_window_open[ ps ] == 0 ]
+                pane_sheet[ i ] = 0
+                if [ pane_window[ i ] != 0 ]
+                    wlc_window_focus[ pane_window[ i ] ]
                 changed = true
         if [ menu_sync[] ] changed = true
         return changed
@@ -5864,13 +6022,17 @@ element orbiter : trinity # implements compiler
         menu_own = null
         now : i64 [ epoch_millis[] ]
         empty : bool [ !menu_items || menu_items.count == 0 ]
-        stale : bool [ empty && wn != 0 && now - menu_ms > 1000 ]
+        # the window gave none yet (it builds its menu after mapping):
+        # asked again each second; the pane's own entries do not count
+        stale : bool [ menu_got == 0 && wn != 0
+                       && now - menu_ms > 1000 ]
         if [ wn == menu_win && !stale ] return false
         had : bool [ !empty ]
         menu_win = wn
         menu_ms  = now
         menu_top = -1
         menu_items = menu_read[ wn ]
+        menu_got = i32[ menu_items.count ]
         return had || menu_items.count > 0
 
     # the pane's app without a window menu (a trinity app): one menu
@@ -5955,6 +6117,13 @@ element orbiter : trinity # implements compiler
     # one of our own entries chosen
     func own_pick [ e: TrayEntry ]
         ed : Editor pane_at[ active_pane ]
+        # its module built again (clean: from nothing), in its console
+        if [ e.action == 'orb.build' || e.action == 'orb.clean' ]
+            md : path app_module[]
+            if [ md ]
+                install_start[ AppEntry [ name: md.filename[], file: md,
+                    module: true ], e.action == 'orb.clean' ]
+            return
         # the file's menu: the pane itself
         if [ e.action == 'orb.pane_add' ]
             pane_add[]
@@ -6053,10 +6222,25 @@ element orbiter : trinity # implements compiler
         ok : bool ux.copy_picture[ p ]
         log 'screenshot: {p} on the clipboard {ok}'
 
+    # the active pane's app's module folder: a hosted app's own, a
+    # program's under featured/ or at silver's root; null for none
+    func app_module [] -> path
+        root : string '{path.path_startup[]}'
+        pn : string window_program[]
+        if [ pn.count > 0 ]
+            fm : path '{root}/featured/{pn}/{pn}.ag'
+            if [ fm.exists[] ] return fm.directory[]
+            rm : path '{root}/{pn}/{pn}.ag'
+            if [ rm.exists[] ] return rm.directory[]
+            return null
+        ed : Editor pane_at[ active_pane ]
+        av : AppView (ed) ? ed.run_view : null
+        return (av && av.src) ? av.src.directory[] : null
+
     func menu_read [ wn: u64 ] -> vec TrayEntry
         if [ wn == 0 ] return vec TrayEntry []
         k : i32 wlc_window_menu_kind[ wn ]
-        if [ k == 0 ] return vec TrayEntry []
+        if [ k == 0 ] return sock_menu[ wn ]
         return app_menu[].read[ k, string[ wlc_window_menu_bus[ wn ] ],
             string[ wlc_window_menu_path[ wn ] ],
             string[ wlc_window_menu_app[ wn ] ],
@@ -6069,6 +6253,27 @@ element orbiter : trinity # implements compiler
         return 'l0 {tp} r0 b0'
 
     # the drawer opens on a menu; the same one again shuts it
+    # the bar's menu at: read fresh (enabled entries, check marks; no
+    # window, our own menu for the app) with the pane's controls under
+    # it; the same one again shuts it
+    func menu_open_at [ at: i32, same: bool ]
+        menu_top = at
+        if [ menu_win != 0 ]
+            menu_items = menu_read[ menu_win ]
+            menu_got = i32[ menu_items.count ]
+        el
+            menu_own = null
+            own_menu_sync[]
+            menu_top = at
+        pane_menu[]
+        drawer_toggle[ 'menu', same ]
+
+    # a menu open: the pointer onto another name opens that one
+    func menu_hover [ mt: MenuTop ]
+        if [ !drawer_open || menu_kind != 'menu' ] return
+        if [ mt.pane >= 0 || mt.close_part || mt.at == menu_top ] return
+        menu_open_at[ mt.at, false ]
+
     func drawer_toggle [ kind: string, same: bool ]
         # another menu: the exchange's slideout is put away (kept)
         if [ ux && ux.shot_ask && !ux.agent_min
@@ -6161,6 +6366,33 @@ element orbiter : trinity # implements compiler
 
     # an entry chosen in the drawer: it runs; the drawer shuts
     # an entry's second part (an instance's Code): its own action
+    # a program that serves its menu itself (VS Code, patched): on
+    # trinity-menu-<pid>, a line an item: depth, flags, keys, label
+    func sock_menu [ wn: u64 ] -> vec TrayEntry
+        out : vec TrayEntry []
+        pid : i32 wlc_window_pid[ wn ]
+        if [ pid <= 0 ] return out
+        nm : string 'menu-{pid}'
+        buf : local i8 [ 65536 ]
+        if [ agent_sock_ask_block[ nm.chars, 'menu\n', @buf[0],
+                                   65536 ] <= 0 ] return out
+        tx : string [ @buf[0] ]
+        at : i32 [ 0 ]
+        for [ ln: string ] in tx.split[ '\n' ]
+            ws : vec string ln.split[ '\t' ]
+            if [ ws.count < 4 ] continue
+            fl : string ws[ 1 ]
+            ck : i32 [ (fl.index_of[ 'C' ] >= 0) ? 1
+                : ((fl.index_of[ 'c' ] >= 0) ? 0 : -1) ]
+            rl : bool [ fl.index_of[ 'r' ] >= 0 ]
+            out.push[ TrayEntry [ label: (rl) ? '' : ws[ 3 ],
+                depth: i32[ ws[ 0 ].integer_value[] ], rule: rl,
+                enabled: fl.index_of[ 'd' ] < 0, check: ck,
+                action: 'sock.{pid}.{at}', target: '',
+                keys: (ws[ 2 ] != '-') ? ws[ 2 ] : '' ] ]
+            at += 1
+        return out
+
     func menu_pick_side [ i: i32 ]
         if [ !menu_items || i < 0 || i >= menu_items.count ] return
         pe : TrayEntry menu_items[ i ]
@@ -6173,6 +6405,18 @@ element orbiter : trinity # implements compiler
     func menu_pick [ i: i32 ]
         if [ !menu_items || i < 0 || i >= menu_items.count ] return
         pe : TrayEntry menu_items[ i ]
+        # a menu the program serves itself: the click goes back to it
+        if [ pe.action && pe.action.starts_with[ 'sock.' ] ]
+            ws : vec string pe.action.split[ '.' ]
+            if [ ws.count == 3 ]
+                nm : string 'menu-{ws[ 1 ]}'
+                cl : string 'click {ws[ 2 ]}\n'
+                agent_sock_send[ nm.chars, cl.chars ]
+            drawer_shut[]
+            menu_ms  = 0
+            menu_win = 0
+            if [ ux ] ux.restyle = true
+            return
         if [ pe.action && pe.action.starts_with[ 'orb.' ] ]
             own_pick[ pe ]
             drawer_shut[]
@@ -6194,6 +6438,17 @@ element orbiter : trinity # implements compiler
     # the window's pane: the one whose app started it (its process is
     # one of the window's ancestors), else the active pane
     func place_window [ wn: u64 ]
+        # a dialog is a sheet over its window's pane, not the pane's
+        over : u64 wlc_window_parent[ wn ]
+        if [ over != 0 ]
+            for [ i: i32 0, i < pane_win.count, i += 1 ]
+                if [ pane_win[ i ] != over ] continue
+                while [ pane_sheet.count <= i ]
+                    pane_sheet.push[ u64[ 0 ] ]
+                pane_sheet[ i ] = wn
+                wlc_window_focus[ wn ]
+                log 'orbiter: window {wn} a sheet over {over}'
+                return
         p : i32 wlc_window_pid[ wn ]
         pane : i32 [ -1 ]
         steps : i32 [ 0 ]
@@ -6207,14 +6462,44 @@ element orbiter : trinity # implements compiler
                     rv.wl_window = wn
             p = parent_pid[ p ]
             steps += 1
-        if [ pane < 0 ] pane = active_pane
+        if [ pane < 0 ]
+            pane = active_pane
+            # a program that left its starter (VS Code detaches): the
+            # pane's program still waiting for a window is its own
+            fe : Editor pane_at[ pane ]
+            fv : AppView (fe) ? fe.run_view : null
+            if [ fv && fv.wl_window == 0 && program_of[ fv ].count > 0 ]
+                fv.wl_window = wn
         if [ pane < 0 ] pane = 0
         while [ pane_win.count <= pane ]
             pane_win.push[ u64[ 0 ] ]
         pane_win[ pane ] = wn
+        placed_win.push[ wn ]
+        placed_pane.push[ pane ]
         wlc_window_focus[ wn ]
         nm : string[ wlc_window_title[ wn ] ]
         log 'orbiter: window {wn} ({nm}) in pane {pane}'
+
+    # the last window still open that was placed in pane pi before
+    # gone; its instance shows it again
+    func window_under [ pi: i32, gone: u64 ] -> u64
+        back : u64 [ 0 ]
+        for [ i: i32 i32[ placed_win.count ] - 1, i >= 0, i -= 1 ]
+            if [ placed_pane[ i ] != pi ] continue
+            w : u64 placed_win[ i ]
+            if [ w != gone && wlc_window_open[ w ] != 0 ]
+                back = w
+                break
+        for [ av: AppView ] in instances
+            if [ av.wl_window == gone ] av.wl_window = back
+        if [ back != 0 ] wlc_window_focus[ back ]
+        return back
+
+    # the dialog over a pane's window, 0 when none
+    func pane_sheet_of [ i: i32 ] -> u64
+        if [ i < 0 || !pane_sheet || i >= pane_sheet.count ]
+            return u64[ 0 ]
+        return pane_sheet[ i ]
 
     # the window a pane shows, 0 when none
     func pane_window [ i: i32 ] -> u64
@@ -6243,7 +6528,8 @@ element orbiter : trinity # implements compiler
         ed : Editor pane_at[ pane ]
         if [ !ed ] return
         sock : (wl_sock) ? wl_sock : ''
-        ed.open_program[ '{p}', sock, (wl_fonts) ? wl_fonts : '' ]
+        # its own fonts: orbiter's lettering is never put on a program
+        ed.open_program[ '{p}', sock, '', portal_shared[].address ]
 
     # a program's row in the list: run, never edited
     func is_program [ p: path ] -> bool
@@ -8521,7 +8807,7 @@ element orbiter : trinity # implements compiler
                                 combined.push[ '{e}' ]
                     # bottom of the results: a break, then the create
                     # buttons
-                    if [ !picking ]
+                    if [ !picking || portal_saving[] ]
                         find_hits.push[
                             FindHit [ is_header: true, is_spacer: true,
                                       text: '' ] ]
@@ -8595,6 +8881,7 @@ element orbiter : trinity # implements compiler
     func pick_deliver [ p0: path ] -> bool
         if [ stats ] log 'PICK deliver {p0}'
         if [ !pick_field || pick_field.count == 0 ] return false
+        if [ pick_field == 'portal' ] return portal_deliver[ p0 ]
         # a folder field given a file takes the file's folder
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
         fe : element (pick_field == 'arg_edit') ? null : find_el[ a,
@@ -8652,6 +8939,60 @@ element orbiter : trinity # implements compiler
         exit_find_mode[]
         if [ ux ] ux.restyle = true
         return true
+
+    # the program's file: picked, or named in the new-file box
+    func portal_deliver [ p0: path ] -> bool
+        k : PortalAsk portal_ask
+        # a folder for a file: it is opened, never handed over
+        if [ k && !k.directory && p0 && p0.is_dir[] ]
+            nav_root = p0
+            run_search[]
+            return true
+        # a file for a folder: a module's walks into its folder, as a
+        # folder's click does; any other is not an answer
+        if [ k && k.directory && p0 && !p0.is_dir[] ]
+            dir : path p0.parent_dir[]
+            if [ '{nav_root}' != '{dir}' ]
+                nav_root = dir
+                run_search[]
+            return true
+        portal_ask = null
+        pick_field = null
+        if [ k ]
+            portal_shared[].finish[ k, '{p0}' ]
+        # the navigator shut whole: its request too, or the pane keeps
+        # the window hidden behind a navigator that is gone
+        exit_finder[]
+        exit_find_mode[]
+        if [ ux ] ux.restyle = true
+        return true
+
+    # the navigator opened for a program's waiting request
+    func portal_pick []
+        k : PortalAsk portal_shared[].waiting[]
+        if [ !k ] return
+        k.taken     = true
+        portal_ask  = k
+        pick_field  = 'portal'
+        pick_dir    = k.directory
+        pick_editor = pane_at[ active_pane ]
+        pick_launch = null
+        pick_exts   = vec string []
+        pick_cache  = null
+        if [ k.folder.count > 0 ] nav_root = path k.folder
+        focus_finder[]
+        run_search[]
+        # a save names its file in the new-file box, as suggested
+        pv : element pane_view[ active_pane ]
+        if [ k.save && pv && pv inherits EditorView ]
+            ev : EditorView pv
+            ev.newfile_enter[ null ]
+            ev.newfile_text = k.name
+            pending_finder = active_pane
+
+    # the navigator is up for a program's save
+    func portal_saving [] -> bool
+        return pick_field == 'portal' && portal_ask && portal_ask.save
 
     func open_in_pane [ p: path, pi: i32 ]
         if [ pick_deliver[ p ] ] return
@@ -8879,6 +9220,11 @@ element orbiter : trinity # implements compiler
         return m9
 
     func exit_find_mode []
+        # closed with no pick: the program's dialog is cancelled
+        if [ pick_field == 'portal' && portal_ask ]
+            portal_shared[].finish[ portal_ask, '' ]
+            portal_ask = null
+            nav_req = false
         # closed with no pick: the instance waits, held
         if [ pick_launch ]
             pick_launch.asking = false
@@ -9344,6 +9690,11 @@ element orbiter : trinity # implements compiler
             if [ ev.target ] ev.target.ux.restyle = true
             ev.no_default = true
             return
+        # a program's folder pick answered with the folder shown
+        if [ ev.target.id == 'portal_open' ]
+            if [ nav_root ] portal_deliver[ nav_root ]
+            ev.no_default = true
+            return
         # a window's close: the program is asked, as its own X would
         if [ ev.target.id == 'win_close' ]
             pw : i32 [ active_pane ]
@@ -9352,7 +9703,9 @@ element orbiter : trinity # implements compiler
                     ev9 : EditorView e
                     pw = ev9.pane_index
                     break
-            wv : u64 pane_window[ pw ]
+            # a dialog up over it closes first
+            wv : u64 pane_sheet_of[ pw ]
+            if [ wv == 0 ] wv = pane_window[ pw ]
             if [ wv != 0 ] wlc_window_close[ wv ]
             ev.no_default = true
             return
@@ -9563,19 +9916,7 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
         if [ ev.target inherits MenuTop ]
             mt : cast MenuTop [ ev.target ]
-            same : bool [ menu_top == mt.at ]
-            menu_top = mt.at
-            # fresh, for enabled entries and check marks; with no
-            # window, our own menu for the app
-            if [ menu_win != 0 ]
-                menu_items = menu_read[ menu_win ]
-            el
-                menu_own = null
-                own_menu_sync[]
-                menu_top = mt.at
-            # the pane's own controls under the app's menu again
-            pane_menu[]
-            drawer_toggle[ 'menu', same ]
+            menu_open_at[ mt.at, menu_top == mt.at ]
             ev.no_default = true
             return
         if [ ev.target inherits TrayMark ]
@@ -10206,6 +10547,14 @@ element orbiter : trinity # implements compiler
         ks : i32 [ ev.key.unicode ]
         if [ login_wait[] ]
             if [ ev.key.state ] login_key[ ks ]
+            ev.no_default = true
+            return
+        # a program's folder pick: Enter with nothing typed takes the
+        # folder shown, wherever the focus is
+        if [ ks == 257 && ev.key.state && pick_field == 'portal'
+             && pick_dir && nav_root
+             && (!find_text || find_text.count == 0) ]
+            portal_deliver[ nav_root ]
             ev.no_default = true
             return
         # cmd / ctrl + q: the selected pane's app quits (its window
@@ -11742,23 +12091,37 @@ element orbiter : trinity # implements compiler
         pane_menu[]
         # a window's own menus (File ...) are all plain
         lead : bool [ pane_window[ active_pane ] == 0 ]
+        # a window's first menu reads as its program (gedit, not File)
+        named : string [ (lead) ? '' : window_program[] ]
         if [ menu_items ]
             for [ i: i32 0, i < menu_items.count, i += 1 ]
                 e : TrayEntry menu_items[ i ]
                 if [ e.depth != 0 || e.rule || e.label.count == 0 ]
                     continue
-                mw : f32 [ (f32[ e.label.count ] * 9.5 + 22.0) * uu ]
+                label : string [ (named.count > 0) ? named : e.label ]
+                # the program's name takes the app tab's look, bold
+                if [ named.count > 0 ] lead = true
+                named = ''
+                mw : f32 [ (f32[ label.count ] * 9.5 + 22.0) * uu ]
                 lit : bool [ drawer_open && menu_kind == 'menu'
                              && menu_top == i ]
                 # the app's name is the pane's tab, lit yellow: one
                 # button (its code and instances are in its menu)
-                t['menu_{i}'] = MenuTop [ label: e.label, at: i,
+                t['menu_{i}'] = MenuTop [ label: label, at: i,
                     selected: lit, tab_on: lead,
                     progress: (lead) ? pane_build[ active_pane ] : -2.0,
                     area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
                 x += mw
                 lead = false
         return x
+
+    # the program whose window the active pane shows
+    func window_program [] -> string
+        wid : u64 [ pane_window[ active_pane ] ]
+        if [ wid == 0 ] return ''
+        for [ av: AppView ] in instances
+            if [ av.wl_window == wid ] return program_of[ av ]
+        return ''
 
     # a pane on its Open page: no file, no app running in it
     func pane_empty [ pi: i32 ] -> bool
@@ -11815,6 +12178,7 @@ element orbiter : trinity # implements compiler
             || act.starts_with[ 'orb.inst:' ] || act == 'orb.inst_new'
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
+            || act == 'orb.build' || act == 'orb.clean'
 
     # the pane's controls under the app's own menu (its first): a
     # pane added, this one closed, git, its views
@@ -11845,6 +12209,8 @@ element orbiter : trinity # implements compiler
             # each instance: its window, and its Code (its source and
             # debug session) on the same row
             for [ av8: AppView ] in rs8
+                # a failed build or an exit left no instance to show
+                if [ av8.ended ] continue
                 ie8 : TrayEntry own_entry[ task_title[ av8 ],
                     'orb.inst:{av8.iid}', 1 ]
                 ie8.check = (ed8.app_view && ed8.run_view == av8) ? 1 : 0
@@ -11888,6 +12254,12 @@ element orbiter : trinity # implements compiler
         if [ ed && ed.run_view ]
             add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
         add.push[ own_entry[ 'Hide', 'orb.pane_close', 1 ] ]
+        # every app here is built from its source: again, or clean
+        if [ app_module[] ]
+            add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
+                action: 'orb.prule' ] ]
+            add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
+            add.push[ own_entry[ 'Clean build', 'orb.clean', 1 ] ]
         for [ k: i32 add.count - 1, k >= 0, k -= 1 ]
             menu_items.insert[ add[ k ], at ]
 
@@ -12448,21 +12820,12 @@ element orbiter : trinity # implements compiler
         if [ !ae ] return
         set_active[ pi ]
         if [ ae.module && ae.built && ae.built.exists[] ]
-            # what we build finds its data (schemas, icons, plugins)
-            # in install/share
-            sh : string '{path.path_startup[]}/install/share'
-            was : string '/usr/local/share:/usr/share'
-            if [ getenv[ 'XDG_DATA_DIRS' ] != null ]
-                was = string [ getenv[ 'XDG_DATA_DIRS' ] ]
-            if [ !was.starts_with[ sh ] ]
-                nv : string '{sh}:{was}'
-                setenv[ 'XDG_DATA_DIRS', nv.chars, 1 ]
             run_program[ ae.built, pi ]
         el [ ae.module && ae.built ]
             # not built: install it (its module's imports, built)
             w9 : string install_word[ ae ]
             if [ !w9 || w9 == 'failed' || w9 == 'cancelled' ]
-                install_start[ ae ]
+                install_start[ ae, false ]
         el [ ae.module ]
             di : DockIcon [ file: ae.file, module: true ]
             dock_icon_click[ di ]
@@ -12472,7 +12835,7 @@ element orbiter : trinity # implements compiler
     # checked out, built, installed) in a console of its own,
     # install:<name>; its progress is silver's events (SILVER_EVENTS),
     # ended by the exit code
-    func install_start [ ae: AppEntry ]
+    func install_start [ ae: AppEntry, clean: bool ]
         root : string '{path.path_startup[]}'
         nm : string ae.name
         md : string '{ae.file}'
@@ -12487,7 +12850,8 @@ element orbiter : trinity # implements compiler
         # and keeps a log of it all for the global console
         # verbose: every tool's own output (meson, ninja, make, the
         # compiler) streams as it runs, not only on failure
-        bd : string '\'{sv}\' --verbose --build \'{md}\''
+        cl : string [ (clean) ? ' --clean' : '' ]
+        bd : string '\'{sv}\' --verbose{cl} --build \'{md}\''
         sh9 : string 'cd \'{root}\' && SILVER_EVENTS=\'{ev}\' script -qefc "{bd}" \'{lg}\'; echo end $? >> \'{ev}\''
         sid : string 'install:{nm}'
         if [ !ed_sessions ]
@@ -13091,6 +13455,15 @@ element orbiter : trinity # implements compiler
         if [ system_on[] ]
             if [ wifi_shared[].poll[] ] w.restyle = true
             if [ tray_shared[].poll[] ] w.restyle = true
+            # a window that lost the keyboard lets go of its keys: one
+            # still held would repeat in it (the navigator covers it,
+            # so the window itself is not drawn to notice)
+            wkeys : bool [ w.focus && w.focus inherits WaylandView ]
+            if [ wl_keyed && !wkeys ] wlc_keys_release[]
+            wl_keyed = wkeys
+            # a program's file dialog: the navigator in its place
+            portal_shared[].poll[]
+            if [ !picking[] ] portal_pick[]
             # the exchange is always the slideout's, however it opened
             # (the button, an agent's word, a capture)
             if [ w.exchange_region != exchange_box[] ]
@@ -13128,10 +13501,11 @@ element orbiter : trinity # implements compiler
             if [ tp && tp.picks != tray_picks ]
                 tray_picks = tp.picks
                 if [ drawer_open && menu_kind == 'tray' ] drawer_shut[]
-            if [ wl_tick[] ] w.restyle = true
+            # a window or its menu changed: a frame shows it now
+            if [ wl_tick[] ] force_update[]
             # no display to pump: our own app menu all the same
             el [ wl_sock && wl_sock.count == 0 && own_menu_sync[] ]
-                w.restyle = true
+                force_update[]
         # an exchange with no agent chosen opens on the last one used
         if [ w.shot_ask && (!w.agent_pick || w.agent_pick.count == 0)
              && agent_last && agent_last.count > 0 ]
@@ -13196,7 +13570,9 @@ element orbiter : trinity # implements compiler
             'drawer_at' : (drawer_on[] && menu_kind != 'exchange'
                            && menu_kind != 'system')
                 ? element [ animated: true,
-                    area: Region [ 'l{drawer_x[]}px t0 w10.91 b0' ],
+                    # under the bar: over it, it took the bar's presses
+                    area: Region [
+                        'l{drawer_x[]}px t{top}px w10.91 b0' ],
                     elements: Elements [ 'drawer' : MenuDrawer [
                         open: drawer_open,
                         elements: drawer_els[] ] ] ] : null,

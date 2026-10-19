@@ -1088,12 +1088,13 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // `make install` makes, and that step is unix-only
     // silver's own flags come BEFORE the module name; anything after it is
     // handed to the app, so a trailing --build would launch instead of compile
+    // SILVER_DEBUG would stop the build's export run for good
     snprintf(cmd, sizeof(cmd),
-        "cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
+        "set \"SILVER_DEBUG=\" && cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
         root, root, clean ? " --clean" : "", dbgb, covb, what);
 #else
     snprintf(cmd, sizeof(cmd),
-        "cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s%s",
+        "unset SILVER_DEBUG; cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s%s",
         what, clean ? " --clean" : "", dbgb, covb);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails

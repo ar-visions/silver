@@ -5466,10 +5466,11 @@ Control Editor
     # a program in the console module; the display, when given, is
     # where a window it opens goes
     public func open_program [ prog: string, display: string,
-                               fonts: string ]
+                               fonts: string, bus: string ]
         fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
-        args : (display.count > 0) ? '--wayland {display} {fl}{prog}'
-            : prog
+        bl : (bus.count > 0) ? '--bus {bus} ' : ''
+        args : (display.count > 0)
+            ? '--wayland {display} {fl}{bl}{prog}' : prog
         host_module[ 'console', null, args ]
 
     # host a module's app in this pane, on a file or with args alone
@@ -6360,6 +6361,10 @@ Control Editor
             scroll.x      = 0.0
             scroll.y      = 0.0
             scroll_target = 0.0
+            return
+        # a folder is never text: its time walks its whole tree
+        if [ src.is_dir[] ]
+            lines = list string []
             return
         key   : '{src.absolute[]}'
         mtime : i64    [ src.modified_time[] ]

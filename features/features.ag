@@ -456,6 +456,25 @@ expect func t_structs [] -> bool
     s1: cast span2 [ a1 ]           # same size: a bitcast
     return c1.x == 4.0 && c1.y == 6.0 && d1.x == 2.0 && e1.y == 4.0 && f1.x == 2.0 && dp == 11.0 && s1.lo == 1.0 && s1.width[] == 1.0
 
+# a struct too big for registers goes by pointer; a ternary choosing
+# one goes the same way, straight into the call
+struct d3
+    x : f64
+    y : f64
+    z : f64
+
+func d3_sub [ a: d3, b: d3 ] -> d3
+    return d3 [ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z ]
+
+expect func t_struct_ternary_arg [] -> bool
+    a : d3 [ x: 5.0, y: 6.0, z: 7.0 ]
+    b : d3 [ x: 1.0, y: 2.0, z: 3.0 ]
+    e : d3 [ x: 1.0, y: 1.0, z: 1.0 ]
+    up : bool [ true ]
+    r : d3 d3_sub[ (up) ? a : b, e ]
+    s : d3 d3_sub[ (!up) ? a : b, e ]
+    return r.x == 4.0 && r.z == 6.0 && s.x == 0.0 && s.z == 2.0
+
 # struct literals from every value source: a field carries the VALUE,
 # never the address it was read from
 struct Mat3
@@ -2033,6 +2052,29 @@ expect func t_lambda_member_holds [] -> bool
 # vec is a typed vector with element-wise math; map is keyed by
 # the type in brackets.
 
+# a map made by a call is walked as a local one is
+func scores [] -> map i64 [ string ]
+    m : map i64 [ string ] [ ]
+    m[ 'a' ] = 10
+    m[ 'b' ] = 20
+    return m
+
+expect func t_for_call_map [] -> bool
+    sum : i64 [ 0 ]
+    keys : ''
+    for [ v: i64, k: string ] in scores[]
+        sum += v
+        keys = '{keys}{k}'
+    return sum == 30 && keys.count == 2
+
+# parsed agi with no type is a map: walked by value and key
+expect func t_for_parse_agi [] -> bool
+    txt : 'a: 1\nb: 2\n'
+    n : i32 [ 0 ]
+    for [ v: Au, k: string ] in Au.parse_agi[ null, txt.chars, null ]
+        n += 1
+    return n == 2
+
 expect func t_collections [] -> bool
     items: vec i64 [] [ 3, 5, 8 ]
     b : items[ 0 ]                  # non-holding borrow
@@ -2903,6 +2945,74 @@ expect func t_companion_data [] -> bool
     cs: cc_sum[ @buf[ 0 ], 4 ]      # C++ reads it back
     rs: rs_sum[ @buf[ 0 ], 4 ]      # rust reads the same memory
     return ln == 5 && buf[ 3 ] == 13 && cs == 46 && rs == 46
+
+# a "..." C string never interpolates: its braces are text, and the
+# code after it is still read
+expect func t_cstr_braces [] -> bool
+    sig : cstr [ "{sa{sv}}" ]
+    one : cstr [ "}}" ]
+    return strlen[ sig ] == 8 && strlen[ one ] == 2 && after_braces[] == 7
+
+func after_braces [] -> i32
+    return 7
+
+# an interpolated literal is a string like any other: its chars go
+# straight into a C call
+expect func t_interp_c_arg [] -> bool
+    dir : 'features'
+    n : i32 strlen[ '{dir}/x'.chars ]
+    m : i32 strcmp[ '{dir}'.chars, 'features'.chars ]
+    return n == 10 && m == 0
+
+# a method's argument or local may share a member's name, its own
+# class's or a base's: the nearest name wins, as in any scope
+class Shade
+    public area : i32 [ 7 ]
+
+Shade Shadow
+    public last : i32 [ 9 ]
+
+    func take [ area: i32 ] -> i32
+        last : i32 [ area * 2 ]
+        return last
+
+    func members [] -> i32
+        return area + last
+
+expect func t_local_shadows_member [] -> bool
+    s : Shadow []
+    return s.take[ 3 ] == 6 && s.members[] == 16
+
+# && between a string and an object in a test is each one's truth:
+# the object is never turned into a string to do it
+class Tallied2
+    public count : i32
+
+    cast -> string [ 'tallied {count}' ]
+
+expect func t_and_string_object [] -> bool
+    s : 'name'
+    o : Tallied2 [ count: 3 ]
+    gone : Tallied2 [ null ]
+    n : i32 [ 0 ]
+    if [ s && o ] n += 1
+    if [ s && gone ] n += 2
+    if [ o && s ] n += 4
+    return n == 5
+
+# a C string tests true when it points somewhere, as in C
+expect func t_cstr_truth [] -> bool
+    set : cstr [ getenv[ "HOME" ] ]
+    unset : cstr [ getenv[ "FEATURES_NEVER_SET" ] ]
+    n : i32 [ 0 ]
+    if [ set ] n += 1
+    if [ !unset ] n += 2
+    if [ set && !unset ] n += 4
+    word : string (set) ? 'set' : 'unset'
+    none : string (unset) ? 'set' : 'unset'
+    t : Au_t typeid[ string ]
+    named : bool [ (t.ident) ? true : false ]
+    return n == 7 && word == 'set' && none == 'unset' && named
 
 expect func t_cpp_templates [] -> bool
     pi: pairT<i32> [ a: 3, b: 4 ]   # sampled specialization

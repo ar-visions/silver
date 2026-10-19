@@ -3592,11 +3592,28 @@ Render Canvas
 
     # clip to a rounded rect in user space; an axis-aligned
     # transform keeps it analytic, anything else takes a mask
+    # outer holds inner (device rects: x0 y0 x1 y1)
+    func clip_holds [ outer: vec4f, inner: vec4f ] -> bool
+        return outer.x <= inner.x + 0.01 && outer.y <= inner.y + 0.01 &&
+            outer.z >= inner.z - 0.01 && outer.w >= inner.w - 0.01
+
+    # does inner (within outer) reach into one of outer's corner arcs
+    func clip_in_arcs [ inner: vec4f, outer: vec4f, r: vec4f ] -> bool
+        if [ r.x > 0.0 && inner.x < outer.x + r.x && inner.y < outer.y + r.x ]
+            return true
+        if [ r.y > 0.0 && inner.z > outer.z - r.y && inner.y < outer.y + r.y ]
+            return true
+        if [ r.z > 0.0 && inner.z > outer.z - r.z && inner.w > outer.w - r.z ]
+            return true
+        if [ r.w > 0.0 && inner.x < outer.x + r.w && inner.w > outer.w - r.w ]
+            return true
+        return false
+
     func clip_rounded_rect [ x: f32, y: f32, rw: f32, rh: f32, tl: f32,
                              tr: f32, br: f32, bl: f32 ]
         st : states[state_depth - 1]
         t  : affine [ st.transform ]
-        if [ t.mb != 0.0 || t.mc != 0.0 || st.clip_round ]
+        if [ t.mb != 0.0 || t.mc != 0.0 ]
             path.clear[]
             rounded_rect[ x, y, rw, rh, tl, tr, br, bl ]
             clip_to_path[ false ]
@@ -3608,13 +3625,35 @@ Render Canvas
         far_x : f32 [ (t.ma * (x + rw) + t.tx) * ds ]
         far_y : f32 [ (t.md * (y + rh) + t.ty) * ds ]
         k  : f32 [ ((t.ma < 0.0) ? -t.ma : t.ma) * ds ]
+        rect : vec4f [ minf[ near_x, far_x ], minf[ near_y, far_y ],
+                       maxf[ near_x, far_x ], maxf[ near_y, far_y ] ]
+        radii : vec4f [ tl * k, tr * k, br * k, bl * k ]
+        if [ st.clip_round ]
+            # inside a clip already: the outer's corners matter only
+            # where the inner rect reaches into their arcs
+            outer   : vec4f [ st.clip_rect ]
+            outer_r : vec4f [ st.clip_radii ]
+            plain : bool [ tl == 0.0 && tr == 0.0 && br == 0.0 &&
+                           bl == 0.0 ]
+            if [ plain && clip_holds[ rect, outer ] ]
+                return
+            if [ !clip_holds[ outer, rect ] ]
+                if [ !plain ]
+                    path.clear[]
+                    rounded_rect[ x, y, rw, rh, tl, tr, br, bl ]
+                    clip_to_path[ false ]
+                    return
+                rect = vec4f [ maxf[ rect.x, outer.x ],
+                    maxf[ rect.y, outer.y ], minf[ rect.z, outer.z ],
+                    minf[ rect.w, outer.w ] ]
+            if [ clip_in_arcs[ rect, outer, outer_r ] ]
+                path.clear[]
+                rounded_rect[ x, y, rw, rh, tl, tr, br, bl ]
+                clip_to_path[ false ]
+                return
         states[state_depth - 1].clip_round = true
-        states[state_depth - 1].clip_rect  = vec4f [ minf[ near_x,
-                                                           far_x ],
-                minf[ near_y, far_y ], maxf[ near_x, far_x ],
-                maxf[ near_y, far_y ] ]
-        states[state_depth - 1].clip_radii = vec4f [ tl * k, tr * k,
-                br * k, bl * k ]
+        states[state_depth - 1].clip_rect  = rect
+        states[state_depth - 1].clip_radii = radii
 
     # a mask canvas the size of this one, cleared
     func clip_mask_canvas [ opaque: bool ] -> Canvas

@@ -522,10 +522,12 @@ bool silver_is_cmode(silver a) {
 
 string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
     // run git command
-    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
+    string cmd = f(string, "git -C %s remote get-url origin 2>/dev/null", path->chars);
     string remote = command_run((command)cmd, false);
 
-    verify (remote && remote->count, "silver modules must originate in git repository");
+    // no repository or no origin: the module goes by its own name
+    if (!remote || !remote->count)
+        return null;
 
     cstr url = remote->chars;
 
@@ -1865,7 +1867,7 @@ static void exporter(silver a) {
         string  hash        = command_run((command)hash_cmd, false);
 
         if (compare(hash, rev_parse) != 0)
-            vexec(false, "git-tag", "git -C %o tag -f %o", a->project_path, tag);
+            vexec(false, "git-tag", "git -C %o tag -f %o", exp->project_path, tag);
     }
 }
 
@@ -5196,6 +5198,12 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
                     index += 2; // skip any escape sequence: \\, \', \", \n, etc.
                     continue;
                 }
+                // only '...' interpolates: a "..." C string's braces are
+                // plain text ("{sa{sv}}" left its quote unseen)
+                if (quote_char != '\'' && (c == '{' || c == '}')) {
+                    index += 1;
+                    continue;
+                }
                 if (c == '{') {
                     if (index + 1 < length && idx(input_string, index + 1) == '{') {
                         index += 2; // {{ escape -> literal brace
@@ -5814,26 +5822,10 @@ enode silver_parse_member(silver a, ARef assign_type, Au_t in_decl, etype scope_
                     gather_capture(a, alpha, (enode)mem);
 
                 // first token + : means new declaration — but only at expression level 0
-                if (first && mem && next_is(a, ":") && a->expr_level == 0) {
-                    // disallow declaring a local that shadows a member of
-                    // the enclosing class. silently shadowing a field is
-                    // a footgun: subsequent `name = ...` writes go to the
-                    // local, not the field, and the field stays at its
-                    // default forever (e.g. `proj : mat4f.perspective[...]`
-                    // inside Earth.init while Earth has `mutable proj : mat4f`).
-                    // force the user to either rename the local or use
-                    // `=` to assign the field.
-                    if (f && rec_top && mem->autype &&
-                        mem->autype->member_type == AU_MEMBER_VAR &&
-                        (mem->autype->context == rec_top->autype ||
-                         inherits(rec_top->autype, mem->autype->context))) {
-                        validate(false,
-                            "local '%o' shadows class member '%s.%o': "
-                            "use '=' to assign the field, or rename the local",
-                            alpha, mem->autype->context->ident, alpha);
-                    }
+                // a local may share a member's name: the nearest wins,
+                // as in any scope (a.name still reaches the member)
+                if (first && mem && next_is(a, ":") && a->expr_level == 0)
                     mem = null;
-                }
 
                 if (!mem) {
                     token tm1 = element(a, -2); // sorry for the mess (coin-flip)
@@ -6283,16 +6275,42 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
             mdl_expect->autype == typeid(const_string) || mdl_expect->autype == typeid(cstr) ||
             (mdl_expect->autype->is_pointer && mdl_expect->autype->src == typeid(i8))))
             lit = (Au)unicode_char(*(unichar*)lit);
+        // 'text {x}'.chars: a string literal's members, as any value's;
+        // it stays a string until they are read
+        token dt = element(a, 0);
+        bool  is_text = isa(lit) == typeid(string) ||
+                        isa(lit) == typeid(const_string);
+        bool  members = is_text && dt && dt->neighbor &&
+                        (eq(dt, ".") || eq(dt, "->"));
         a->expr_level++;
-        enode res = e_operand(a, lit, mdl_expect);
+        enode res = e_operand(a, lit, members ? null : mdl_expect);
         a->expr_level--;
 
         enode sc = scalar_suffix(a, res);
         if (sc) return sc;
 
+        if (members) {
+            enode n = res;
+            while (next_is(a, ".") || next_is(a, "->")) {
+                if (!read_if(a, "->")) read_if(a, ".");
+                string field = read_alpha(a);
+                validate(field, "expected member name after .");
+                enode accessed = (enode)access(n, field);
+                validate(accessed, "failed to find member %o on %o", field,
+                    canonical(n));
+                n = accessed;
+                if (next_is(a, "[") || instanceof(n, macro) || is_func((Au)n) ||
+                    inherits(n->autype->src, typeid(lambda)))
+                    n = parse_member_expr(a, n, false);
+            }
+            if (!is_loaded((Au)n) && (!is_struct(n) || is_ptr(n)))
+                n = enode_value(n, false);
+            return n;
+        }
+
         return e_create(a, mdl_expect, (Au)res, false);
     }
-    
+
     // shell script at design and runtime, for a silver 1.0
     if (!cmode && next_is(a, "$", "(")) {
         consume(a, Syntax__none);
@@ -9478,6 +9496,22 @@ static none import_build(silver a, string label, string cenv, path build_f, bool
     }
 }
 
+// an import's > lines, run in its checkout with its env lines
+static none run_prebuild(silver a, string label, array prebuild,
+        path project_f, string cenv) {
+    path cw = path_cwd();
+    cd(project_f);
+    each(prebuild, string, cmd) {
+        string icmd = interpolate(cmd, (Au)a);
+        // the import's env lines reach its > commands too
+        if (cenv && len(cenv))
+            icmd = f(string, "export %o; %o", cenv, icmd);
+        checkout_verify(a, label, "prebuild", "prebuild",
+            (command)icmd);
+    }
+    cd(cw);
+}
+
 static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel, string import_name) {
     // a dependency built for a device belongs to THAT platform: sharing the
     // native prefix would install a windows glfw over the linux one. the
@@ -9733,7 +9767,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         string s = (string)load(token, typeid(string), null);
         if (s && eq(s, cache_key->chars)) {
             if (overlay_fresh) {
-                import_build(a, label, cenv, build_f, is_cmake, is_meson);
+                // > lines are the build of an import that has them
+                if (prebuild && len(prebuild) && !is_cmake && !is_meson)
+                    run_prebuild(a, label, prebuild, project_f, cenv);
+                else
+                    import_build(a, label, cenv, build_f, is_cmake, is_meson);
                 save(token, (Au)cache_key, null);
             }
             run_import_commands(a, label, postbuild,
@@ -9771,19 +9809,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     // this is the only place we 'cd' anywhere, where there are serial shell commands
     // however we go right back to where we were after
-    if (prebuild && len(prebuild)) {
-        path cw = path_cwd();
-        cd(project_f);
-        each(prebuild, string, cmd) {
-            string icmd = interpolate(cmd, (Au)a);
-            // the import's env lines reach its > commands too
-            if (cenv && len(cenv))
-                icmd = f(string, "export %o; %o", cenv, icmd);
-            checkout_verify(a, label, "prebuild", "prebuild",
-                (command)icmd);
-        }
-        cd(cw);
-    }
+    if (prebuild && len(prebuild))
+        run_prebuild(a, label, prebuild, project_f, cenv);
 
     bool child_ok = true;
     if (is_cmake) { // build for cmake

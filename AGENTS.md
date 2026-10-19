@@ -237,9 +237,6 @@ extend <module>
 - Taken names: is, signed, parse, pre, post, ref, line, msg, send,
   hold, drop (a method named hold replaces Au's hold: the object
   is never kept, and the pool frees it at the next drain).
-- An interpolated string as a C argument (`unlink[ '{p}'.chars ]`)
-  fails: make a local string first.
-- Never test a cstr for truth (`if [ x.ident ]`): it crashes.
 
 A body that does not compile goes to the user, never back to the
 agent: the cause may be ours. Each such error becomes a rule here.
@@ -1194,8 +1191,8 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    children), content_h from the lowest child (panel_fit). Seen
    hidden: the layout; a 41-entry menu scrolled by the wheel under a
    fixed heading; a click on a scrolled row picked it.
-   OPEN silver: a { } Region as a call argument fails "expected 2
-   args, got 2"; a quoted Region [ '...' ] works.
+   FIXED silver (seen Oct 18): `Region { .. }` and a bare `{ .. }`
+   as a call argument both work, first or second.
    Then (Kalen): the bar's menu names (MenuTop) and tray icons
    (TrayMark) take the tray buttons' near light (inset glow, edge and
    inner light by the pointer); orbiter's bar button is BarHome (the
@@ -1457,6 +1454,358 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    OPEN silver: an existing checkout keeps its version when an import's
    version changes (libpeas stayed at 1.38.1: the checkout was deleted).
    OPEN: modules for the other featured names.
+   Electron from source (Oct 18) was set up (depot_tools + electron
+   v43.7.7 imports, featured/vscode/electron/silver-build.sh: gclient
+   sync of Chromium 150, release.gn, the dist over code-oss) and
+   checked to the sync, which needs 70 GB free (46 free). Dropped
+   for quark (below); the script stays in the overlay folder.
+
+## quark: Electron's API on trinity, no Chromium (Oct 18 2026)
+
+Kalen: VS Code (and any Electron app without nodeIntegration) runs
+on Node + trinity, no web engine at all: the page's scripts run in
+Node and a DOM written in JavaScript lays out and paints through
+trinity's canvas (webgfx). Module `quark` (silver root): trinity app
+`quark <app dir> [args]`; `install/bin/electron` is the Electron-
+shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
+1. DONE the frame path: Node's renderer (a worker per BrowserWindow)
+   draws through quark/addon/quark_addon.c (N-API over webgfx:
+   fonts, paths, canvas, images, share) into a canvas; webgfx
+   webgfx_share_new/publish copy it into two shareable textures
+   (Texture.shared_fd is public now); the fds ride the socket to the
+   quark window (quark.c keeps SCM_RIGHTS fds from any read) which
+   imports them once (import_shared_tex) and draws the front one.
+   Zero copy. Seen hidden: a test picture, then the hello page.
+2. DONE quark.ag: forks node (quark_start_node: argv from /proc/self/
+   cmdline after the app folder, fd 3 the socket), lines both ways
+   (window/share/front/show/hide/title/close/quit in; size/mouse/
+   wheel/key/text out), QuarkView per window, the shown one drawn.
+   OPEN: `cursor <name>` line (unknown line now), focus lines,
+   several visible windows.
+3. DONE quark/node: register.mjs (import 'electron' -> electron/
+   index.cjs), boot.mjs (Electron's start: package.json main, argv,
+   process.*), electron/index.cjs (app, BrowserWindow, WebContents,
+   ipcMain, MessageChannelMain/MessagePortMain as a hub of port ids,
+   protocol.handle over Request/Response answering the page's
+   fetches, session, Menu (titles to the bar line), dialog (logged),
+   shell, screen, nativeTheme, powerMonitor, systemPreferences,
+   clipboard, safeStorage, nativeImage, net, utilityProcess over
+   child_process.fork with electron/utility.mjs (process.parentPort)),
+   renderer.mjs (the worker: canvas, share, the frame tick at 60).
+4. DONE the DOM engine, quark/node/dom: events.mjs (EventTarget,
+   capture/bubble, the event classes), node.mjs (Node, Element,
+   attributes, classList, dataset, inline style with shorthands,
+   box reads from layout, focus, scroll), elements.mjs (Document,
+   the HTML element classes, CSSStyleSheet with insertRule,
+   TreeWalker), html.mjs (tokenizer + tree builder with implied
+   closes), css.mjs (declarations, every common shorthand, colors
+   incl. color-mix, lengths with calc, @media evaluation, @supports,
+   @font-face, @keyframes kept, selectors incl. :not :is :has :nth-*,
+   specificity), style.mjs (UA sheet, the cascade with !important,
+   inheritance, custom properties with var(), computed values),
+   fonts.mjs (system fonts by family through fontconfig, @font-face
+   from bytes, fallback per code point), text.mjs (glyph runs),
+   layout.mjs (block flow with margin collapse, inline lines with
+   wrapping and white-space modes, inline-block, flex with grow/
+   shrink/wrap/gap/align/justify/order, absolute/fixed/relative,
+   overflow clips and scroll extents, min/max, box-sizing, aspect
+   ratio, replaced sizes, ::before/::after content), paint.mjs
+   (backgrounds with radii and box-shadow, borders per side, images
+   and tiling, text with decoration and shadow, form controls,
+   caret, clips and scroll offsets, stacking by z-index), window.mjs
+   (the globals: observers, Range/Selection, Storage, matchMedia,
+   FontFaceSet, customElements, DOMRect/Matrix, the classes), page.mjs
+   (loading over file/data/http or the app's schemes via main,
+   preload with Electron's renderer surface (ipcRenderer, contextBridge,
+   webFrame, webUtils, sandboxed process), scripts classic and module,
+   stylesheets and links, images (png.mjs), Web Workers
+   (webworker.mjs), input: hover/active/focus pseudo states, mouse/
+   pointer/click/dblclick/wheel/key/keypress/input events, editing in
+   inputs and textareas, tab focus, cursor), canvas2d.mjs, keys.mjs.
+   Tool: `node quark/tests/render.mjs <html> <out.png> [w h]` renders
+   a page without the window (QUARK_DUMP box tree, QUARK_HIT x,y,
+   QUARK_CLICK x,y, QUARK_PRELOAD). Checked: quark/tests/hello (an
+   Electron app: window, preload, ipc handle/send) renders as a
+   browser would and the click's invoke comes back ("main says 5",
+   the title updated), in the tool and in the hidden window.
+   Not yet: gradients (an average colour), svg images, woff fonts,
+   grid (as flex), group opacity layers, transitions/animations,
+   text selection drawing, IME, :hover restyles the whole tree
+   (styleGen), full relayout on any mutation.
+5. IN PROGRESS VS Code on it: `install/build/quark --hidden true
+   install/lib/code-oss/resources/app --user-data-dir /tmp/claude-1000/
+   qk/udd --extensions-dir ...` (the runtime dir must be short: VS
+   Code's main.sock lives in XDG_RUNTIME_DIR). SEEN hidden (Oct 18):
+   the workbench drawn by trinity: menu bar with its overflow, the
+   command center and history arrows, Sign In, layout controls,
+   activity bar codicons, status bar, and the Welcome page (header,
+   Start and Walkthroughs columns on its 1fr 6fr 1fr 6fr 1fr grid with
+   named areas, Recent, the footer checkbox); the extension host, the
+   shared process and the file watcher run. Found and fixed on the
+   way: VS Code packs node_modules in node_modules.asar (quark/tools/
+   asar-extract.mjs unpacks it; all its native modules are N-API and
+   load under Node 24); `original-fs` and `node:original-fs` are fs;
+   VS Code's own module hook maps fs -> node:original-fs for Electron
+   (register.mjs wraps Module.registerHooks and syncs the ESM export,
+   so their answer is mended); utility processes fork the real node
+   (QUARK_NODE), not the launcher; net.fetch reads file: urls; a
+   stylesheet's url()s resolve against the sheet; the page's
+   performance object hides nodeTiming (VS Code picks its node path
+   on seeing it); HTMLCollection/NodeList have item(); window.
+   queryLocalFonts; stylesheet rules expand shorthands; a measuring
+   pass gives a block child its natural width, not the measuring
+   width; a word wider than its line overflows (no per-letter cut);
+   logical properties (margin-inline-start ...); grid-area with one
+   name sets all four lines. Tools: QUARK_TRACE=1 (lines both ways,
+   page console, utility stderr, forks), QUARK_DUMP=<selector> (the
+   box tree under it into /tmp/claude-1000/qk/dump.txt every 5 s,
+   ancestors first), QUARK_TRACE_DIRTY=1 (what dirties the page).
+   Speed (Oct 18, Kalen): profiled with QUARK_PROF=1 (a line a
+   second: ticks, layouts, paints, styles computed, boxes) and
+   NODE_OPTIONS=--cpu-prof. At startup VS Code forces 14-38 layouts
+   a second (offsetWidth, clientWidth after each change) and every
+   mutation threw away every computed style (styleGen++), so each
+   pass re-matched ~300 elements against the rules: 130 ms a pass,
+   5.8 of 7.2 s in selector matching. Now a change marks only what
+   it can reach (page.mjs dirtyStyle / dirtyChildren / dirtyChains):
+   the element, its subtree and later siblings only when the changed
+   class / id / attribute / pseudo appears left of a selector's last
+   compound (style.mjs index anc, reachesBelow), the children one
+   level for a childList, ancestors a :has rule could read
+   (hasSensitive) themselves only; styleOf keeps the old computed
+   object when the declarations and the parent are unchanged, so a
+   subtree stands (sameDecl); the class attribute is a cached Set
+   (Element._classes), attribute names a cached lowering, parsed
+   lengths cached per ComputedStyle. A pass is 13-24 ms, 40-70
+   styles; the workbench is idle at 4 s (was 6); the shot is pixel
+   equal; hover restyles still light (Source Control icon + tip).
+   Then (Kalen: the incremental layout too) layout boundaries
+   (layout.mjs isBoundary: a block / flex / grid box whose width and
+   height never follow its content, absolutely positioned or a clip
+   under a block parent; the inputs of its last pass kept as inCW /
+   inCH, defW / defH): page.mjs keeps layout roots per change
+   (dirtyLayout: tree = the subtree may change, self = its content
+   changed, own = only its own style may have changed, verified at
+   layout time by styleOf: the same object means no root at all; a
+   detached element is no root), finds each root's nearest boundary
+   above it (layoutBoundaries, outermost kept) and Layout.relayout
+   builds and lays out only under those, in place, with the old
+   inputs and place; a boundary whose size or margins moved makes
+   the pass whole. A stylesheet change still restyles and lays out
+   everything. Measured: 32 of 38 passes partial in the busiest
+   startup second, 8 ms each (a whole pass ~25 ms; one after a
+   sheet change ~70 ms with its restyle); the hello page the same.
+   Fixed on the way, the cause of the clipped activity bar icon and
+   the missing Welcome tab strip: an absolute box with no top takes
+   its static place, recorded while its ancestor was laid out at 0;
+   moveBox now moves staticX / staticY with the box. Seen: the tab
+   strip, every activity bar icon, the parts 35 px lower; a full and
+   a partial pass give the same box tree. Tools: QUARK_TRACE_DIRTY=1
+   also prints marks/s (what each change marked), full/s (roots with
+   no boundary), partial/s (the boundaries used and their box
+   counts); QUARK_DUMP lines carry the inline style, a scroll and the
+   raw y.
+   Then (Kalen: sub 1 ms a pass if possible): boundaries gave way to
+   in-place relayout of the nearest block box or flex item above
+   each root (Layout.canRelayout / relayoutOne: built again under
+   it, laid out with the inputs of its last pass (inCW, inCH, inFW,
+   inFH; a flex item also its container's inputs inFlex: base, min,
+   natural cross, checked again by flexInputs), kept when its size,
+   margins and baseline are unchanged, else its parent is tried, six
+   levels, then the whole page). Style: each element's ancestor keys
+   (ids, classes, tags; siblings share the set, StyleEngine.ancKeysOf
+   until the next mutation) reject a selector whose compounds above
+   name a key the ancestors lack (sel.anc) without walking up; the
+   rule index is made once per parsed sheet (sheetIndex) and merged;
+   elements with the same tag, id and classes share one candidate
+   list (candCache); a class toggle marks its subtree by key
+   (dirtyUnder, _styleKeys) and a descendant re-matches only when a
+   rule of its own names that key above it (rulesNameAbove); a sheet
+   added or changed restyles only the elements its rules' rightmost
+   keys name (sheetsDiff; everything past 400 marks or an unkeyed
+   rule); a style element's text change marks the sheets. Layout:
+   intrinsic widths memoized per box for the pass; the min-content
+   pass skipped when max-content fits. Measured: style 145 -> 35 us
+   an element; a partial pass median 0.9 ms in the busiest startup
+   second, 2 ms on the Welcome page, worst 10-32 ms (the whole split
+   view, or a pass that parses a new sheet); a whole pass ~12 ms.
+   prof/s now prints the partial median and max, style ms, rules
+   tested and hit per element, sheet marks. Every shot pixel equal;
+   hover local. NEXT: paint, ~28 ms a frame (withClip per box, the
+   addon calls); empty text boxes in a flex get a running y (0 x 0,
+   nothing drawn); the pseudo index reads junk names (var, 2px: some
+   rule parses wrong; harmless).
+   Then (Kalen, Oct 18: "half of the stuff isnt painting correctly",
+   his own run on the silver folder with aeon.ag open; three crops:
+   a bold wrong line number with a box under it, glyphs drawn over
+   the chat toolbar's labels, the status bar's left items cut off).
+   Reproduced hidden on a copy of his Code - OSS state (--user-data-
+   dir on the copy; install/tmp/quark-vscode-silver.png). Found and
+   fixed, in order:
+   - a custom property's name was lowercased by the declaration
+     parser, so every var VS Code writes with capitals (--vscode-
+     codiconFontSize-compact, fontWeight-semiBold, strokeThickness)
+     was undefined: icons with width 0, plain headings, no borders.
+     A var() with no value and no fallback now drops its declaration
+     (CSS: invalid at computed-value time), not 0px.
+   - DOMPurify (the chat welcome) reads nodeName, parentNode,
+     childNodes off Node.prototype: ours were instance fields, so
+     it read null and threw. They are prototype accessors now.
+   - the editor's sticky scroll widget (the pinned scope header)
+     uses float: left for its line numbers: floats were not laid
+     out, so the widget's lines fell a row down over the code and
+     its shadow read as a current-line box. Floats (left, right,
+     clear) are laid out now: shrink-to-fit at the current y, line
+     boxes beside them shortened, an absolute box's static place
+     after them, a formatting-context root holding them.
+   - an inline-block's baseline was never set (0): every inline-
+     block sat with its top on the baseline (the Start icons too).
+     A block's baseline is its last line's; relayout compares it.
+   - an inline box (span) never had a size or rects: every span's
+     getBoundingClientRect was 0x0, VS Code's font check failed
+     ("monospace assumptions violated"), inline backgrounds never
+     painted. Lines now extend each inline ancestor of a fragment;
+     the rects start empty every pass (a measuring pass left
+     stale ones).
+   - a flex container measured its text runs with the spaces
+     trimmed whatever white-space said: the status bar's
+     white-space: pre labels came out narrow and clipped.
+   - the minimap was black: clearRect filled opaque black with the
+     copy operator; it is the clear operator now.
+   - opacity applied to a box alone: a child of an opacity 0 parent
+     painted (hidden scrollbars, fold markers). The painter carries
+     the product down the tree (no group layer yet).
+   - a rejected in-place relayout left the nodes pointing at boxes
+     that were not in the tree (rebind puts them back).
+   - a percentage width with no base (calc(100% - 16px) while
+     measuring) read as a number: the Welcome toast clipped.
+   - blob: module workers import as data: modules with the hooks
+     (the worker had no hooks); a worker's navigator is defined,
+     not assigned (Node's is a getter).
+   - utility children die with the main (a kill of quark left 47
+     bootstrap-fork processes under systemd).
+   Tools: QUARK_DUMP takes several selectors with | and text:<words>
+   (the box three above that text); QUARK_DUMP_CS=1 prints each
+   element's computed display/size/font and the DOM text beside
+   the box text; QUARK_DUMP_VAR=--name prints that var; render.mjs
+   takes QUARK_EVAL=<js> and dumps through page.dumpBoxes.
+   Seen: his workspace with the sticky widget, aligned gutter, the
+   chat toolbar and welcome, the whole status bar; the Welcome page
+   with bold headings, cards, the icons on their lines, the toast
+   whole (install/tmp/quark-vscode.png updated). No page errors.
+   OPEN from this: a click in the editor moves no cursor
+   (caretPositionFromPoint / caretRangeFromPoint return null);
+   group opacity; floats inside an inline run; the chat input's
+   border not seen (theme value unknown without a real shot).
+   OPEN, seen: svg images (letterpress, code icon), woff fonts (seti
+   file icons), text-overflow ellipsis. Not driven: typing in the
+   editor, menus, the terminal.
+   Then (Kalen, Oct 18: "not enough margin and padding seen on many
+   elements"; the chat welcome and its input toolbar). Found and
+   fixed, in order:
+   - CSS nesting: the rule body splitter took a nested prelude from
+     the last ; before its brace, so after the first nested block
+     every later one read as junk, and a nested rule's own nested
+     rules were dropped. VS Code's workbench sheet nests 1,683
+     rules (the chat welcome's icon size, title weight, paddings
+     and margins among them). A body is scanned now: a prelude
+     starts after the last ; or nested block; nested rules recurse;
+     a nested at-rule's body is its rule's body (css.mjs
+     parseRuleBody, splitNested).
+   - a shorthand holding var() (padding: 0 var(--x)) gave each
+     longhand the whole text, which read as no length. The longhand
+     keeps a pending mark (css.mjs PENDING) and style.mjs
+     pendingLonghand substitutes first, then splits.
+   - a flex or grid item kept its inline display: inline-block
+     labels and inline icons laid out as inline content (width
+     ignored, 0x0). Layout.blockify at build: inline and inline-
+     block become block, inline-flex flex, inline-grid grid.
+   - a column flex item not stretched (align-items center) took the
+     full width: flexItemColumnAuto is set from the resolved
+     align-self (never was before).
+   - an inline box's rect began at its margin edge fragment;
+     extendInline leaves the box's own margins out.
+   Seen hidden on his state: the welcome view as VS Code draws it
+   (40 px icon, bold title, centred message), the picker labels
+   padded with the 6 px gap after their icons, the title bar's
+   Sign In clear of the layout icons; the Welcome page the same as
+   the reference plus the menu bar's own padding (install/tmp/
+   quark-vscode-new.png). Tools: QUARK_DUMP_CS prints m= and p=
+   (margins and paddings); render.mjs dumps per view
+   (dump.<view>.txt).
+   Then (Kalen, Oct 18: "insanely slow ... 15 seconds to drag the
+   splitter"). Measured hidden at 2560x1440 with a 1000-move drag
+   of the sidebar sash sent in 0.9 s (QUARK_PROF): 9 ticks a
+   second, layouts 55/s (580 ms), paints 60-90 ms each with 82
+   clip calls taking 70% of the paint (withClip self time), styles
+   3000/s. Fixed, in order:
+   - a frame takes one pointer move, the newest (renderer.mjs
+     pendingMove): a mouse sends hundreds a second and VS Code lays
+     out on each.
+   - a clip is skipped when the box's content lies inside its clip
+     rect (Painter.bounds: a per-paint union of each subtree's
+     rects, text fragments included; a shadow, outline, transform
+     or filter makes it unknown and keeps the clip): 82 -> 29
+     clips a paint.
+   - trinity Canvas.clip_rounded_rect: a clip inside another took
+     the path mask (a mask canvas and a GPU wait) whenever one was
+     set. Now two plain rects intersect; an inner rect that stays
+     clear of the outer's corner arcs keeps its own radii
+     (clip_in_arcs); only an inner reaching into an arc takes the
+     mask. Rebuild every trinity app.
+   - an inline style change (CSSOM) marked its whole subtree
+     (keys [':checked'], and reachesBelow is true for any key once
+     a rule has a bare * ancestor): 202 elements a change, 43,000
+     a second. No keys now, and an empty key list reaches nothing
+     below; a changed computed object still re-derives the
+     children (styleOf).
+   - the text spec is kept on the computed style; a straight-edged
+     one-colour border is four rects, not an even-odd path.
+   Measured after: the drag at 23-40 ticks a second, paints ~18 ms
+   (idle 9), clips 29 a paint; the picture the same. Left: layouts
+   44-66 a second during a drag (VS Code reads offsetWidth after
+   each write; a partial pass rebuilds ~460 boxes, median 2.3 ms,
+   a full one ~60 ms), paint ~18 ms (text draw, the remaining
+   clips, one GPU wait when the 1024-draw ring wraps). The prof/s
+   line prints clips N ms and the slow ones (over 1 ms);
+   QUARK_SLOWCLIP=1 logs each slow clip's chain.
+   Note: Kalen's saved state now holds three windows; quark shows
+   them as tabs (his), and a hidden run draws the last shown, the
+   empty one, so dumps come from dump.<view>.txt per window.
+   FIXED silver (Oct 18, Kalen: "this should be a fixed silver
+   issue"): the method table overrun (near-border item 1b):
+   see that item.
+   Then (Kalen, Oct 18: the search box's border off, the tab cut).
+   Found and fixed, in order:
+   - a 1 px rounded border is an even-odd ring path, and a 1 px band
+     between two path edges fills nothing in trinity (the pill's
+     top and bottom were gone past the corners; 3 px bands draw).
+     A border of one width, colour and style on its drawn sides is
+     a stroke along its centre line (Painter.strokeRing; a side of
+     width 0 is cut away by a clip), a straight one four rects; the
+     ring stays for mixed widths with radii. OPEN trinity: the 1 px
+     path band.
+   - the border compare took the top side's colour and style as
+     the reference: a left-only border (the tab's shoulder) with
+     border-top-style none drew nothing. The first drawn side is
+     the reference now.
+   - rrectPath scales radii that overlap down together (a 7 px
+     radius on a 7 px box inverted the path).
+   - clip-path: inset(t r b l [round r]) clips a box whole, its own
+     painting and its children (Painter.clipPath); the other shapes
+     are still ignored. VS Code's connected tab is drawn by it: the
+     edge box's right side stops 7 px above the bottom and the
+     tab-fill ::after (a 7 x 7 box with a left border, a bottom-left
+     radius and a spread shadow in the tab colour, clipped to
+     itself) makes the shoulder into the editor area; the first
+     tab has no left edge by VS Code's own rule (.tab:first-child).
+   Seen: the search pill bordered all round; the connected tab
+   pattern on a test page (outline, shoulder, the body's top border
+   meeting it) and on the Welcome page. QUARK_DUMP_CS prints the
+   borders, radius, position, clip-path and the previous sibling.
+6. OPEN install/bin/vscode runs through quark; hosted in orbiter (a
+   pane), the system bar menu, dialogs through the navigator.
+
 25. BUILT, not seen (Kalen, Oct 16) an app with no window menu of
    its own (a trinity app) gets one in the system bar named for it
    (orbiter own_menu_sync, own_menu, own_pick): Show code / Show app,
@@ -1557,8 +1906,8 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    a row); a press opens its choices under it as RoundTab pills
    (scene_open), a pick sets it (scene_prop_set). Seen hidden: stage
    opened, frost picked, chip and pill followed.
-   OPEN silver: `for [ v: element, k: string ] in f[ .. ]` over a
-   call's map result fails LLVM verify (GEP indices); a local first.
+   FIXED silver (Oct 18): `for [ v, k ] in f[ .. ]` over a call's
+   map works (features t_for_call_map).
 32. DONE (Oct 18, Kalen: the top bar red during a window resize)
    trinity Render.update waited its frame on a new size, and that
    wait rewound draw_slot to 0 after the paint had bound its image
@@ -1589,8 +1938,10 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    were a size behind before). trinity tests exit 0.
 33. OPEN (Kalen, Oct 18) a running orbiter of his must not stop
    mine (or my builds) from running beside it.
-34. OPEN silver: orbiter read element's intern cache_canvas (no
-   error, a wrong place: SIGSEGV); intern cache_w was refused.
+34. OPEN silver: orbiter read element's intern cache_canvas and
+   crashed (a trace of mine, Oct 18); intern cache_w was refused.
+   A refusal of every cross-module intern read was tried and taken
+   out: aeon reads design's intern Cage.poly, and that works.
 Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.
@@ -2008,9 +2359,9 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     faded where the depth is 0.1-0.25 off the pool's either way.
     Seen with a debug paint (removed): on the dome only, side,
     top and panned.
-    Silver: `x : Au.parse_agi[ .. ]` is a plain Au; a two-name
-    for over it failed "expected member, found [empty]" at 0:0
-    (no line). Read through a func returning map Au [ string ].
+    FIXED silver (Oct 18): a two-name for over a plain Au
+    (`Au.parse_agi[ .. ]`) walks it as a map (aether e_for,
+    Au_instance_of; not a map: skipped). features t_for_parse_agi.
     No argument (Kalen): aeon reopens the last project opened
     (`intern [ StatePersist ] last_project`, ~/.local/state/aeon/
     persist.agi, saved at each open; a folder that is gone is
@@ -3770,7 +4121,8 @@ class op
 - `class` = heap-allocated, reference-counted
 - `struct` = inlay/value type
 - Members: `public`, `intern` (private), `context` (read-only after init)
-- Inheritance: `class dense [ op ]` — dense inherits from op
+- Inheritance: `op dense` — dense inherits from op. Brackets after
+  a class name (`class dense [ X ]`) are member meta, never a base.
 
 ### Functions
 ```
@@ -4858,10 +5210,10 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    FIXED on the way: scene_module_ensure never had scene_mods
    (filled by ensure_scenes, which only the old label called):
    "scene: no class for MilkyWay" every frame.
-3. OPEN silver bug: `if [ s && o ]` with s a string and o an
-   object keeps the value: it casts o to string (IR: cast_string
-   of orb in CommitLayer_draw), which recursed and crashed.
-   Worked around with bool checks (FindHit.card[]).
+3. FIXED silver (Oct 18): `if [ s && o ]` (a string and an
+   object) cast o to a string; && and || keep a value only between
+   the same kind of thing now (aether e_short_circuit). features
+   t_and_string_object.
 2. DONE thumbnails render at export: scenes' `export func
    scene_thumbs` (last in scenes.ag, after every bake) draws
    each scene into a 320x200 offscreen Window and writes
@@ -6803,17 +7155,23 @@ the largest object. Startup footprint measured headless.
    near_inset_color: an inset shadow blends toward the colour
    by nearness x glow x factor. The y distance counts
    Window.near_y_fade (2.0) times over. t_near_inset, t_near_fade.
-1b. OPEN silver compiler bug: adding a Canvas method
-   (near_fade) made trinity's initializer write Canvas's method
-   pointers past Canvas_i into GlyphMetrics_i ("MODULE OVERWRITE
-   [def]: (null)", export exit 1). The store offset is
-   Au_t size + (member_index - 1) * 8 (aether.c ~10650); member_index
-   comes from next_function_index (silver.c:7604, counts the whole
-   context chain, skips statics and overrides); the table
-   (__Canvas_f ft, 175 slots) comes from etype_class_list
-   (aether.c ~8800). The two counts disagree. Canvas_paint went to
-   byte 1816 of a 1672-byte table. Not fixed; near_fade folded into
-   near_style's y_fade argument instead.
+1b. FIXED (Oct 18) silver compiler bug: adding a Canvas method
+   made trinity's initializer write Canvas's method pointers past
+   Canvas_i into the next type ("MODULE OVERWRITE [def]", export
+   exit 1). Cause: a class's schema (__X_f, with the ft slot table)
+   was built when the first enum after it was read
+   (create_type_members walks every module member, phase 1), with
+   the class's body still unparsed: the table held only the bases'
+   methods (178, Au's) and every own method wrote past it, into
+   whatever global followed; Canvas (195 slots needed) was the
+   first to reach another type's descriptor. Now
+   create_type_members skips a record whose body waits; the ft
+   struct is filled at its implement (aether ft_slots, each class
+   of the chain parsed first) from etype.schema_of, the source
+   class; the unused early etype of the ft struct is gone (it
+   implemented the empty table). Canvas: 336 slots for a highest
+   index of 195. trinity tests exit 0, features 262/263
+   (t_codegen_resource as before). clip_holds is a Canvas method.
 2. OPEN element gained win_pos and near_lit: every module built
    before it (orbiter, scenes, clouds, markdown, aura, ...)
    needs a rebuild before it is hosted again.
@@ -7305,10 +7663,9 @@ the Seed-VC port was. Order:
    epochs (mel 0.503 -> 0.426, memory flat at 6 GB), the three
    Revoice spans converted, video2.final.mp4 written: 1080p60,
    2 min 25 s, h264 + aac 48 kHz.
-12. OPEN silver bug: an interpolated literal with a member as a C
-   call argument, `rename[ '{a}'.chars, '{b}'.chars ]` or
-   `unlink[ '{a}'.chars ]`, fails "expected 1 args, got 1"; a
-   local string first works.
+12. FIXED silver (Oct 18): a string literal's members
+   (`unlink[ '{a}'.chars ]`) are read (silver read_enode).
+   features t_interp_c_arg.
 
 ## Active work: silver vec and indexing bugs (Sep 30 2026)
 
@@ -8862,10 +9219,11 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       OPEN the machine: soft lockups on CPU 31 with clock reads
       of 3-40 s, twice, each under our GPU renders (export and
       mission test); cause below our code, not found.
-      OPEN silver: a ternary between two Dvec structs passed
-      straight into a call (`dv_sub[ (c) ? a : b, e ]`) emits
-      the struct by value where the call takes a pointer (LLVM
-      verify fails); a local set by if/else works.
+      FIXED silver (Oct 18): a ternary between two Dvec structs
+      passed straight into a call (`dv_sub[ (c) ? a : b, e ]`)
+      passed the struct by value where the call takes a pointer:
+      aether e_fn_call puts a struct value in a slot for a
+      by-pointer struct param. features t_struct_ternary_arg.
    r. IN PROGRESS (Oct 9) the tanker's own flight, first off deck
       B (launch's default; --ship flies ours). Kalen: only 7- or
       5-Lugh stages. The tanker: three standard 7-Lugh boosters
@@ -9503,8 +9861,9 @@ as any trinity app (install/build/quake2 --hidden true).
    - a class-typed local declared with its type from a call or an
      element (`ex : Explosion [ alloc[] ]`) is refused as
      redundant; a struct one (`v : vec3f [ f[] ]`) is not.
-   - a method argument or local may not carry the name of ANY
-     member up the class chain (flags, area, last, planes, nodes).
+   - FIXED (Oct 18): a local may share a member's name (the
+     nearest wins; a.name reaches the member). features
+     t_local_shadows_member.
    Seen once, not chased: the first run after BspLit's source
    changed drew no world (shaders compiled in that run); the next
    run was right.

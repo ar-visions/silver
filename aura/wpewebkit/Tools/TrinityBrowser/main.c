@@ -69,6 +69,17 @@ static GString* pending;
 static EGLDisplay eglDisplay;
 static GLuint readTexture;
 static GLuint readFramebuffer;
+// quark: the page's custom scheme requests waiting on the element, by id
+static GHashTable* schemeRequests;
+static uint64_t schemeIds;
+static WebKitUserScript* preloadScript;
+// a line whose bytes follow: what they are for, and how many
+typedef enum { PAYLOAD_NONE, PAYLOAD_PRELOAD, PAYLOAD_MSG, PAYLOAD_REPLY, PAYLOAD_EVAL } PayloadKind;
+static PayloadKind payloadKind;
+static size_t payloadWant;
+static uint64_t payloadId;
+static int payloadStatus;
+static char payloadMime[128];
 
 // a surfaceless GL context on the display's own EGL display
 static gboolean initReadBack(WPEDisplay* display)
@@ -197,6 +208,67 @@ static void publishScroll(WebKitUserContentManager* manager, JSCValue* value, gp
         (void)!send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL);
     }
     g_free(text);
+}
+
+// a record with bytes after it: the page's message, a scheme request's
+// url, a script's result (the record's width is the byte count)
+static void publishBytes(uint32_t magic, uint64_t id, const char* bytes, size_t len)
+{
+    if (!frameSocket)
+        return;
+    FrameRecord rec = { magic, ++frameSeq, (uint32_t)len, 0, 0, 0, 0, 0, id, 0 };
+    if (send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL) != (ssize_t)sizeof rec)
+        return;
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = send(STDIN_FILENO, bytes + sent, len - sent, MSG_NOSIGNAL);
+        if (n <= 0)
+            return;
+        sent += (size_t)n;
+    }
+}
+
+// the page's webkit.messageHandlers.quark.postMessage(text): to the element
+static void publishMessage(WebKitUserContentManager* manager, JSCValue* value, gpointer data)
+{
+    char* text = jsc_value_to_string(value);
+    if (text)
+        publishBytes(0x4753454du, 0, text, strlen(text));
+    g_free(text);
+}
+
+// a request on a scheme the element registered: it answers by id
+static void schemeRequest(WebKitURISchemeRequest* request, gpointer data)
+{
+    uint64_t id = ++schemeIds;
+    g_hash_table_insert(schemeRequests, g_memdup2(&id, sizeof id), g_object_ref(request));
+    const char* uri = webkit_uri_scheme_request_get_uri(request);
+    publishBytes(0x51455253u, id, uri, strlen(uri));
+}
+
+// the element's answer: status 0 is a failed request
+static void schemeReply(uint64_t id, int status, const char* mime, const char* bytes, size_t len)
+{
+    WebKitURISchemeRequest* request = g_hash_table_lookup(schemeRequests, &id);
+    if (!request)
+        return;
+    g_object_ref(request);
+    g_hash_table_remove(schemeRequests, &id);
+    if (status <= 0) {
+        GError* error = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_FAILED, "quark: no answer");
+        webkit_uri_scheme_request_finish_error(request, error);
+        g_error_free(error);
+    } else {
+        GInputStream* stream = g_memory_input_stream_new_from_data(g_memdup2(bytes, len), (gssize)len, g_free);
+        WebKitURISchemeResponse* response = webkit_uri_scheme_response_new(stream, (gint64)len);
+        webkit_uri_scheme_response_set_status(response, (guint)status, NULL);
+        if (mime && *mime)
+            webkit_uri_scheme_response_set_content_type(response, mime);
+        webkit_uri_scheme_request_finish_with_response(request, response);
+        g_object_unref(response);
+        g_object_unref(stream);
+    }
+    g_object_unref(request);
 }
 
 // the page's title, else its address: the element's own title
@@ -361,6 +433,69 @@ static void jsDone(GObject* object, GAsyncResult* result, gpointer data)
     g_object_unref(value);
 }
 
+// eval <id> <n>: the script's result (or its error, after a !) by id
+static void evalDone(GObject* object, GAsyncResult* result, gpointer data)
+{
+    uint64_t id = *(uint64_t*)data;
+    g_free(data);
+    GError* error = NULL;
+    JSCValue* value = webkit_web_view_evaluate_javascript_finish(webView, result, &error);
+    if (!value) {
+        char* text = g_strdup_printf("!%s", error ? error->message : "?");
+        publishBytes(0x4c415645u, id, text, strlen(text));
+        g_free(text);
+        if (error)
+            g_error_free(error);
+        return;
+    }
+    char* text = jsc_value_is_undefined(value) ? g_strdup("") : jsc_value_to_json(value, 0);
+    if (!text)
+        text = g_strdup("");
+    publishBytes(0x4c415645u, id, text, strlen(text));
+    g_free(text);
+    g_object_unref(value);
+}
+
+// the bytes a line said would follow
+static void handlePayload(const char* bytes, size_t len)
+{
+    WebKitUserContentManager* content = webkit_web_view_get_user_content_manager(webView);
+    char* text;
+    switch (payloadKind) {
+    case PAYLOAD_PRELOAD:
+        // one preload at a time: the last given
+        if (preloadScript) {
+            webkit_user_content_manager_remove_script(content, preloadScript);
+            webkit_user_script_unref(preloadScript);
+        }
+        text = g_strndup(bytes, len);
+        preloadScript = webkit_user_script_new(text, WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
+        webkit_user_content_manager_add_script(content, preloadScript);
+        g_free(text);
+        break;
+    case PAYLOAD_MSG:
+        // the bytes are JSON: a JS expression as they stand
+        text = g_strdup_printf("__quark.recv(%.*s)", (int)len, bytes);
+        webkit_web_view_evaluate_javascript(webView, text, -1, NULL, NULL, NULL, NULL, NULL);
+        g_free(text);
+        break;
+    case PAYLOAD_REPLY:
+        schemeReply(payloadId, payloadStatus, payloadMime, bytes, len);
+        break;
+    case PAYLOAD_EVAL:
+        text = g_strndup(bytes, len);
+        webkit_web_view_evaluate_javascript(webView, text, -1, NULL, NULL, NULL, evalDone,
+            g_memdup2(&payloadId, sizeof payloadId));
+        g_free(text);
+        break;
+    default:
+        break;
+    }
+    payloadKind = PAYLOAD_NONE;
+    payloadWant = 0;
+}
+
 static void handleLine(char* line)
 {
     char command[16] = { 0 };
@@ -390,6 +525,80 @@ static void handleLine(char* line)
             webkit_web_view_go_back(webView);
         else if (!strcmp(line, "nav forward"))
             webkit_web_view_go_forward(webView);
+        return;
+    }
+    // quark's lines. preload <n>: a script at document start follows
+    if (!strcmp(command, "preload")) {
+        unsigned long n = 0;
+        if (sscanf(line, "preload %lu", &n) == 1) {
+            payloadKind = PAYLOAD_PRELOAD;
+            payloadWant = n;
+        }
+        return;
+    }
+    // msg <n>: JSON for the page's __quark.recv follows
+    if (!strcmp(command, "msg")) {
+        unsigned long n = 0;
+        if (sscanf(line, "msg %lu", &n) == 1) {
+            payloadKind = PAYLOAD_MSG;
+            payloadWant = n;
+        }
+        return;
+    }
+    // eval <id> <n>: a script follows; its result comes back by id
+    if (!strcmp(command, "eval")) {
+        unsigned long n = 0;
+        unsigned long long id = 0;
+        if (sscanf(line, "eval %llu %lu", &id, &n) == 2) {
+            payloadKind = PAYLOAD_EVAL;
+            payloadWant = n;
+            payloadId = id;
+        }
+        return;
+    }
+    // scheme <name>: the element answers this scheme's requests
+    if (!strcmp(command, "scheme") && strlen(line) > 7) {
+        const char* name = line + 7;
+        WebKitWebContext* context = webkit_web_view_get_context(webView);
+        webkit_web_context_register_uri_scheme(context, name, schemeRequest, NULL, NULL);
+        WebKitSecurityManager* security = webkit_web_context_get_security_manager(context);
+        webkit_security_manager_register_uri_scheme_as_secure(security, name);
+        webkit_security_manager_register_uri_scheme_as_cors_enabled(security, name);
+        return;
+    }
+    // reply <id> <status> <n> <mime>: the answer's body follows
+    if (!strcmp(command, "reply")) {
+        unsigned long n = 0;
+        unsigned long long id = 0;
+        int status = 0;
+        payloadMime[0] = 0;
+        if (sscanf(line, "reply %llu %d %lu %127s", &id, &status, &n, payloadMime) >= 3) {
+            payloadKind = PAYLOAD_REPLY;
+            payloadWant = n;
+            payloadId = id;
+            payloadStatus = status;
+            if (!n)
+                handlePayload("", 0);
+        }
+        return;
+    }
+    if (!strcmp(command, "zoom")) {
+        webkit_web_view_set_zoom_level(webView, atof(line + 4));
+        return;
+    }
+    if (!strcmp(command, "focus")) {
+        wpe_view_focus_in(view);
+        return;
+    }
+    if (!strcmp(command, "blur")) {
+        wpe_view_focus_out(view);
+        return;
+    }
+    // bg r g b a: the page's background, 0..1 each
+    if (!strcmp(command, "bg")) {
+        WebKitColor color = { 0, 0, 0, 1 };
+        if (sscanf(line, "bg %lf %lf %lf %lf", &color.red, &color.green, &color.blue, &color.alpha) == 4)
+            webkit_web_view_set_background_color(webView, &color);
         return;
     }
     // gpuframes 0: the element could not import a buffer; copy frames
@@ -456,8 +665,18 @@ static gboolean readInput(GIOChannel* channel, GIOCondition condition, gpointer 
         return G_SOURCE_REMOVE;
     }
     g_string_append_len(pending, chunk, count);
-    char* newline;
-    while ((newline = memchr(pending->str, '\n', pending->len))) {
+    for (;;) {
+        // a line's payload first, whole
+        if (payloadWant) {
+            if (pending->len < payloadWant)
+                break;
+            handlePayload(pending->str, payloadWant);
+            g_string_erase(pending, 0, (gssize)payloadWant);
+            continue;
+        }
+        char* newline = memchr(pending->str, '\n', pending->len);
+        if (!newline)
+            break;
         *newline = 0;
         handleLine(pending->str);
         g_string_erase(pending, 0, newline - pending->str + 1);
@@ -545,6 +764,10 @@ int main(int argc, char** argv)
     webkit_user_style_sheet_unref(bar);
     webkit_user_content_manager_register_script_message_handler(content, "trinityScroll", NULL);
     g_signal_connect(content, "script-message-received::trinityScroll", G_CALLBACK(publishScroll), NULL);
+    // quark's page talks through this handler
+    webkit_user_content_manager_register_script_message_handler(content, "quark", NULL);
+    g_signal_connect(content, "script-message-received::quark", G_CALLBACK(publishMessage), NULL);
+    schemeRequests = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_object_unref);
     view = webkit_web_view_get_wpe_view(webView);
     initReadBack(display);
     g_signal_connect(view, "buffer-rendered", G_CALLBACK(publishFrame), NULL);

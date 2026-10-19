@@ -6383,7 +6383,9 @@ Display Window
             e.cache_ox = margin_l
             e.cache_oy = margin_t
 
-        #log 'target_cv set'
+        # tick first: what it sets (animated) decides the target
+        if [ stage == CanvasType.screen ] near_filter[ e ]
+        if [ stage == CanvasType.screen ] e.tick*[ a ]
         target_cv : (e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
@@ -6410,8 +6412,6 @@ Display Window
                 cv.scale_xy[ sx, sy ]
             cv.translate[ -pivot_x, -pivot_y ]
 
-        if [ stage == CanvasType.screen ] near_filter[ e ]
-        if [ stage == CanvasType.screen ] e.tick*[ a ]
         # an uncached element paints whenever it is reached: onto a
         # cached parent's canvas as that canvas repaints, else onto the
         # screen
@@ -7413,7 +7413,8 @@ Layer ScrollLayer
         thumb_h : f32 [
             (ratio * vis_h < min_h) ? min_h : ratio * vis_h ]
         travel  : f32 [ vis_h - thumb_h ]
-        max_sc  : f32 [ total_h - vis_h ]
+        # the scroll stops at the element's height, not the track's
+        max_sc  : f32 [ max[ total_h - e.bounds.h, 0.0 ] ]
         thumb_y : f32 [
             top + (max_sc > 0.0) ? (e.scroll.y / max_sc) * travel
             : 0.0 ]

@@ -5,6 +5,7 @@
 #define _POSIX_C_SOURCE 200809L
 #define WLR_USE_UNSTABLE 1
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -96,11 +97,15 @@ struct toplevel {
     bool                     mapped;
     // it took the xdg server-side decoration: no header of its own
     bool                     ssd;
+    // a dialog of another window: its own size, never the pane's
+    bool                     sheet;
+    int                      gx, gy;
     // the last committed frame, locked while the shell samples it
     struct wlr_buffer        *frame_buf;
     struct wlr_dmabuf_attributes frame;
     uint64_t                 gen;
     struct wl_listener       map, unmap, destroy, frame_l, commit_l;
+    struct wl_listener       surf_l;
     struct wl_list           link;
 };
 
@@ -157,10 +162,37 @@ static void on_top_commit(struct wl_listener *l, void *data) {
     g_commits   += 1;
 }
 
+// a dialog picks its own size; its output follows the window's
+// geometry. a dialog names its parent, or (a toolkit's message box on
+// a connection of its own, Electron's) opens at one fixed size
+static void on_surface_commit(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, surf_l);
+    struct wlr_xdg_surface *xs = t->xdg->base;
+    if (xs->initial_commit) {
+        struct wlr_xdg_toplevel_state *st = &t->xdg->current;
+        bool fixed = st->min_width > 0 && st->min_width == st->max_width
+                  && st->min_height > 0 && st->min_height == st->max_height;
+        if (t->xdg->parent || fixed) {
+            t->sheet = true;
+            wlr_xdg_toplevel_set_size(t->xdg, 0, 0);
+        }
+        return;
+    }
+    if (!t->sheet) return;
+    struct wlr_box g;
+    wlr_xdg_surface_get_geometry(xs, &g);
+    if (g.width <= 0 || g.height <= 0) return;
+    if (g.width == t->w && g.height == t->h && g.x == t->gx && g.y == t->gy) return;
+    t->w = g.width; t->h = g.height; t->gx = g.x; t->gy = g.y;
+    t->epoch += 1;
+    // the scene's xdg tree already sets the shadow margin outside
+    output_mode(t->out, t->w, t->h);
+}
+
 static void on_map(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, map);
     t->mapped = true;
-    wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
+    if (!t->sheet) wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
     focus_toplevel(t);
     fprintf(stderr, "wayland: window %llu mapped '%s' (%s)\n", (unsigned long long)t->id,
         t->xdg->title ? t->xdg->title : "", t->xdg->app_id ? t->xdg->app_id : "");
@@ -179,6 +211,7 @@ static void on_destroy(struct wl_listener *l, void *data) {
     wl_list_remove(&t->destroy.link);
     wl_list_remove(&t->frame_l.link);
     wl_list_remove(&t->commit_l.link);
+    wl_list_remove(&t->surf_l.link);
     wl_list_remove(&t->link);
     if (g_focused == t) g_focused = NULL;
     if (t->frame_buf) wlr_buffer_unlock(t->frame_buf);
@@ -220,6 +253,7 @@ static void on_new_xdg_surface(struct wl_listener *l, void *data) {
     t->map.notify     = on_map;     wl_signal_add(&xs->surface->events.map,   &t->map);
     t->unmap.notify   = on_unmap;   wl_signal_add(&xs->surface->events.unmap, &t->unmap);
     t->destroy.notify = on_destroy; wl_signal_add(&xs->events.destroy,        &t->destroy);
+    t->surf_l.notify  = on_surface_commit; wl_signal_add(&xs->surface->events.commit, &t->surf_l);
     wl_list_insert(g_tops.prev, &t->link);
     // sized before its first commit, so it opens the size of its pane
     wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
@@ -357,6 +391,24 @@ static int csd_of(struct toplevel *t) {
 }
 
 static int u_wlc_window_csd(uint64_t id) { return csd_of(top_of(id)); }
+
+static int u_wlc_window_pid(uint64_t id);
+
+// a dialog's window: the one it names as its parent, else a window of
+// its own process that is no dialog; 0 when none
+static uint64_t u_wlc_window_parent(uint64_t id) {
+    struct toplevel *t = top_of(id), *p;
+    if (!t || !t->sheet) return 0;
+    if (t->xdg->parent) {
+        wl_list_for_each(p, &g_tops, link) if (p->xdg == t->xdg->parent) return p->id;
+        return 0;
+    }
+    int pid = u_wlc_window_pid(id);
+    wl_list_for_each(p, &g_tops, link)
+        if (p != t && !p->sheet && p->mapped && u_wlc_window_pid(p->id) == pid)
+            return p->id;
+    return 0;
+}
 static int u_wlc_window_menu_kind(uint64_t id) {
     struct menu_ref *m = menu_of(top_of(id)); return m ? m->kind : 0;
 }
@@ -440,6 +492,7 @@ static void pick_render_node(void) {
 static void apply_sizes(void) {
     struct toplevel *t;
     wl_list_for_each(t, &g_tops, link) {
+        if (t->sheet) continue;
         if (t->want_w > 0 && (t->want_w != t->w || t->want_h != t->h)) {
             t->w = t->want_w; t->h = t->want_h;
             t->epoch += 1;
@@ -690,12 +743,14 @@ static void u_wlc_pointer_button(uint64_t id, float x, float y, int button, int 
     wlr_seat_pointer_notify_frame(g_seat);
 }
 
-// wheel: dy in lines, dx across
+// wheel: dy in notches, dx across; a notch is 120 discrete steps
 static void u_wlc_pointer_axis(float dx, float dy) {
     if (!g_seat) return;
     uint32_t t = now_ms();
-    if (dy != 0.0f) wlr_seat_pointer_notify_axis(g_seat, t, WLR_AXIS_ORIENTATION_VERTICAL,   -dy * 15.0, (int32_t)(-dy), WLR_AXIS_SOURCE_WHEEL);
-    if (dx != 0.0f) wlr_seat_pointer_notify_axis(g_seat, t, WLR_AXIS_ORIENTATION_HORIZONTAL, -dx * 15.0, (int32_t)(-dx), WLR_AXIS_SOURCE_WHEEL);
+    int32_t sy = (int32_t)lroundf(-dy * WLR_POINTER_AXIS_DISCRETE_STEP);
+    int32_t sx = (int32_t)lroundf(-dx * WLR_POINTER_AXIS_DISCRETE_STEP);
+    if (dy != 0.0f) wlr_seat_pointer_notify_axis(g_seat, t, WLR_AXIS_ORIENTATION_VERTICAL,   -dy * 15.0, sy, WLR_AXIS_SOURCE_WHEEL);
+    if (dx != 0.0f) wlr_seat_pointer_notify_axis(g_seat, t, WLR_AXIS_ORIENTATION_HORIZONTAL, -dx * 15.0, sx, WLR_AXIS_SOURCE_WHEEL);
     wlr_seat_pointer_notify_frame(g_seat);
 }
 
@@ -708,6 +763,21 @@ static void u_wlc_key(int glfw, int state) {
         .time_msec = now_ms(), .keycode = (uint32_t)code, .update_state = true,
         .state = state ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED };
     wlr_keyboard_notify_key(&g_kb, &ev);
+}
+
+// every key the window still holds goes up: one held when it lost the
+// keyboard would repeat in it forever (Wayland repeats client side)
+static void u_wlc_keys_release(void) {
+    if (!g_seat) return;
+    uint32_t codes[WLR_KEYBOARD_KEYS_CAP];
+    size_t   n = g_kb.num_keycodes;
+    memcpy(codes, g_kb.keycodes, n * sizeof(uint32_t));
+    for (size_t i = 0; i < n; i++) {
+        struct wlr_keyboard_key_event ev = {
+            .time_msec = now_ms(), .keycode = codes[i], .update_state = true,
+            .state = WL_KEYBOARD_KEY_STATE_RELEASED };
+        wlr_keyboard_notify_key(&g_kb, &ev);
+    }
 }
 
 
@@ -737,8 +807,10 @@ WLC_API void wlc_pointer_motion(uint64_t id, float x, float y) { pthread_mutex_l
 WLC_API void wlc_pointer_button(uint64_t id, float x, float y, int button, int state) { pthread_mutex_lock(&g_lock); u_wlc_pointer_button(id, x, y, button, state); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_pointer_axis(float dx, float dy) { pthread_mutex_lock(&g_lock); u_wlc_pointer_axis(dx, dy); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_key(int glfw, int state) { pthread_mutex_lock(&g_lock); u_wlc_key(glfw, state); pthread_mutex_unlock(&g_lock); }
+WLC_API void wlc_keys_release(void) { pthread_mutex_lock(&g_lock); u_wlc_keys_release(); pthread_mutex_unlock(&g_lock); }
 WLC_API uint64_t wlc_window_epoch(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_epoch(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_csd(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_csd(id); pthread_mutex_unlock(&g_lock); return r; }
+WLC_API uint64_t wlc_window_parent(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_parent(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_menu_kind(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_menu_kind(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API const char *wlc_window_menu_bus(uint64_t id) { static char b[256]; pthread_mutex_lock(&g_lock); snprintf(b, sizeof b, "%s", u_wlc_window_menu_bus(id)); pthread_mutex_unlock(&g_lock); return b; }
 WLC_API const char *wlc_window_menu_path(uint64_t id) { static char b[256]; pthread_mutex_lock(&g_lock); snprintf(b, sizeof b, "%s", u_wlc_window_menu_path(id)); pthread_mutex_unlock(&g_lock); return b; }

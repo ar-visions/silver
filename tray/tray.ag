@@ -30,6 +30,8 @@ class TrayEntry
     public side        : string
     public side_action : string
     public side_check  : bool
+    # its shortcut as a person reads it (Ctrl+S), '' none
+    public keys        : string
 
 # one app's icon as it registered
 class TrayItem
@@ -102,6 +104,63 @@ func tray_arg [ m: @DBusMessage, at: i32 ] -> string
     return string[ cs ]
 
 # a menu label without its mnemonic marks: _File is File, __ is _
+# a key's name as a menu shows it (GTK's and dbusmenu's names)
+func tray_key_name [ k: string ] -> string
+    low : k.lcase[]
+    if [ low == 'primary' || low == 'control' || low == 'ctrl' ]
+        return 'Ctrl'
+    if [ low == 'shift' ] return 'Shift'
+    if [ low == 'alt' || low == 'mod1' ] return 'Alt'
+    if [ low == 'super' || low == 'meta' ] return 'Super'
+    if [ low == 'plus' ] return string[ "+" ]
+    if [ low == 'minus' ] return string[ "-" ]
+    if [ low == 'equal' ] return string[ "=" ]
+    if [ low == 'comma' ] return string[ "," ]
+    if [ low == 'period' ] return string[ "." ]
+    if [ low == 'slash' ] return string[ "/" ]
+    if [ low == 'page_up' ] return 'PgUp'
+    if [ low == 'page_down' ] return 'PgDn'
+    if [ low == 'return' ] return 'Enter'
+    if [ k.count == 1 ] return k.ucase[]
+    return k
+
+# GTK's accel (<Primary><Shift>s) as Ctrl+Shift+S
+func tray_accel [ a: string ] -> string
+    if [ !a || a.count == 0 ] return ''
+    out : ''
+    rest : a
+    while [ rest.starts_with[ '<' ] ]
+        end : i32 [ rest.index_of[ '>' ] ]
+        if [ end < 0 ] break
+        md : tray_key_name[ rest.mid[ 1, end - 1 ] ]
+        out = '{out}{md}+'
+        rest = rest.mid[ end + 1, rest.count - end - 1 ]
+    if [ rest.count == 0 ] return ''
+    kn : tray_key_name[ rest ]
+    return '{out}{kn}'
+
+# dbusmenu's shortcut (aas: key lists) as Ctrl+S, the first one
+func tray_shortcut [ v: @DBusMessageIter ] -> string
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_ARRAY ]
+        return ''
+    combos : DBusMessageIter
+    dbus_message_iter_recurse[ @inner, @combos ]
+    if [ dbus_message_iter_get_arg_type[ @combos ] != DBUS_TYPE_ARRAY ]
+        return ''
+    keys : DBusMessageIter
+    dbus_message_iter_recurse[ @combos, @keys ]
+    out : ''
+    while [ dbus_message_iter_get_arg_type[ @keys ]
+            == DBUS_TYPE_STRING ]
+        cs : cstr
+        dbus_message_iter_get_basic[ @keys, @cs ]
+        kn : tray_key_name[ string[ cs ] ]
+        out = (out.count > 0) ? '{out}+{kn}' : kn
+        dbus_message_iter_next[ @keys ]
+    return out
+
 func tray_label [ s: string ] -> string
     out : ''
     i : i32 [ 0 ]
@@ -206,6 +265,7 @@ func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
             e.rule = tray_text[ @kv ] == 'separator'
         el [ key == 'toggle-state' ] e.check = tray_int[ @kv ]
         el [ key == 'icon-name' ] e.icon = tray_text[ @kv ]
+        el [ key == 'shortcut' ] e.keys = tray_shortcut[ @kv ]
         dbus_message_iter_next[ @d ]
     if [ !shown ] return
     if [ depth > 0 ] out.push[ e ]
@@ -258,6 +318,8 @@ class GtkItem
     public sub_m  : i32
     # a themed icon's name, when the app gave one as a string
     public icon   : string
+    # its shortcut as GTK writes it (<Primary>s)
+    public accel  : string
 
 class GtkMenu
     public items : vec GtkItem
@@ -276,9 +338,19 @@ class AppMenu
         if [ conn ] return true
         err : DBusError
         dbus_error_init[ @err ]
-        conn = dbus_bus_get_private[ DBUS_BUS_SESSION, @err ]
+        # programs orbiter starts publish on the portal's bus
+        at : portal_shared[].address
+        if [ at.count > 0 ]
+            conn = dbus_connection_open_private[ at.chars, @err ]
+            if [ conn && !dbus_error_is_set[ @err ] ]
+                dbus_bus_register[ conn, @err ]
+        el
+            conn = dbus_bus_get_private[ DBUS_BUS_SESSION, @err ]
         if [ dbus_error_is_set[ @err ] ]
             dbus_error_free[ @err ]
+            if [ conn ]
+                dbus_connection_close[ conn ]
+                dbus_connection_unref[ conn ]
             conn = null
             return false
         dbus_connection_set_exit_on_disconnect[ conn, 0 ]
@@ -442,6 +514,7 @@ class AppMenu
             el [ key == 'action' ] g.action = tray_text[ @kv ]
             el [ key == 'target' ] g.target = tray_text[ @kv ]
             el [ key == 'icon' ] g.icon = tray_text[ @kv ]
+            el [ key == 'accel' ] g.accel = tray_text[ @kv ]
             el [ key == ':section' || key == ':submenu' ]
                 v : DBusMessageIter
                 dbus_message_iter_recurse[ @kv, @v ]
@@ -489,7 +562,8 @@ class AppMenu
                     ? state[ it.action ] : -1 ]
                 out.push[ TrayEntry [ label: it.label, enabled: on,
                     check: ck, depth: depth, action: it.action,
-                    target: it.target, icon: it.icon ] ]
+                    target: it.target, icon: it.icon,
+                    keys: tray_accel[ it.accel ] ] ]
 
 # a panel's height for scrolling: its lowest child's foot
 func panel_fit [ e: element ]
@@ -653,6 +727,7 @@ class MenuBuild
                         entry: ats[ i ], disable: !e.enabled,
                         checked: e.check == 1,
                         icon_file: menu_icon_file[ e.icon ],
+                        keys: (sw > 0.0) ? '' : e.keys,
                         single: n == 1, sided: sw > 0.0,
                         sided_single: sw > 0.0 && n == 1, area: Region [
                         (sw > 0.0) ? 'l1px t{0.9 * f32[ i ]} r{sw} h0.9'
@@ -1382,11 +1457,28 @@ Button TrayRow
     public icon_file : string
     # on (a check, a choice): a dot in the strip
     public checked : bool
+    # its shortcut, dim at the row's right end
+    public keys : string
     mutable icon_svg : SVGModel
     mutable icon_was : string
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ keys && keys.count > 0 ]
+            kc : Canvas w.screen
+            # save and restore keep no font: it goes back by hand
+            was : CanvasFont kc.font
+            kc.save[]
+            fnt : 'fonts/BarlowCondensed-Regular.ttf'
+            kc.set_font[ shared_font[ kc, fnt, 15 ] ]
+            kc.fill_color[ rgba [
+                (disable) ? '#ffffff33' : '#ffffff70' ] ]
+            kc.draw_text[ keys, rect [ x: 0.0, y: 0.0,
+                w: bounds.w - 12.0, h: bounds.h ], vec2f [ 1.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            kc.paint[]
+            kc.restore[]
+            kc.set_font[ was ]
         if [ checked ]
             dc : Canvas w.screen
             dc.save[]
@@ -1475,3 +1567,5 @@ element TrayPanel
                 picks += 1
         pristine = false
         if [ ux ] ux.restyle = true
+
+import Portal

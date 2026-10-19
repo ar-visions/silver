@@ -1,0 +1,322 @@
+# quark: Electron's shape on Node and trinity, no Chromium. The app's
+# main process is Node; its pages run in Node too, drawn by trinity
+# through webgfx; this window shows the frames they publish
+export 1.0.0
+export icon ['quark']
+
+import node/24.18.0 from https://nodejs.org/dist/v24.18.0/node-v24.18.0.tar.xz
+    > ./configure --prefix={install}/node
+    > make -j32
+    > make install
+
+import webgfx
+import trinity
+import img
+import vec
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <signal.h>
+import <sys/stat.h>
+import <sys/socket.h>
+import <sys/wait.h>
+
+# quark.c
+func quark_start_node [ node: cstr, reg: cstr, boot: cstr, app: cstr,
+                        pid_out: @i32 ] -> i32
+func quark_read [ sock: i32, buf: @i8, cap: i32 ] -> i32
+func quark_recv_fds [ sock: i32, fds: @i32, want: i32 ] -> i32
+
+# the module's source folder: the node files live beside quark.ag
+func quark_source [] -> string
+    lib : path.path_install[]
+    src : path '{lib}/build/silver-quark.source'
+    if [ !src.exists[] ] return ''
+    txt   : string [ src.load[ typeid[ string ], null ] ]
+    lines : txt.split[ '\n' ]
+    own   : lines[ 0 ]
+    file  : own.trim[]
+    return file.mid[ 0, i32[ file.rindex_of[ '/' ] ] ]
+
+# at the build: the addon over webgfx and install/bin/quark
+export func quark_setup []
+    inst : path.path_install[]
+    src  : quark_source[]
+    if [ !inst || !src ] return
+    lib  : path '{inst}/lib/quark'
+    lib.make_dir[]
+    inc  : string '-I {inst}/node/include/node'
+    out  : string '-o {lib}/quark.node {src}/addon/quark_addon.c'
+    lnk  : string '-L{inst}/build -lsilver-webgfx -Wl,-rpath,{inst}/build'
+    cc : command [ '{inst}/bin/clang -shared -fPIC -O2 {inc} {out} {lnk}' ]
+    if [ cc.exec[ false ] != 0 ]
+        log 'quark: the addon did not build'
+        return
+    launcher : path '{inst}/bin/electron'
+    node  : string '{inst}/node/bin/node'
+    asnd  : string '{src}/node/asnode.mjs'
+    l1 : string '#!/bin/sh\n# quark: Electron\'s shape on Node and trinity\n'
+    l2 : string 'node="{node}"\nif [ -n "$ELECTRON_RUN_AS_NODE" ]; then\n'
+    l3 : string '    exec "$node" --import "{asnd}" "$@"\nfi\n'
+    l4 : string 'exec "{inst}/build/quark" "$@"\n'
+    text : string '{l1}{l2}{l3}{l4}'
+    fp : fopen[ launcher.chars, 'w' ]
+    if [ !fp ] return
+    fputs[ text.chars, fp ]
+    fclose[ fp ]
+    chmod[ launcher.chars, 0x1ED ]
+    log 'quark: addon and launcher written'
+
+# one BrowserWindow: the frames Node's renderer publishes for it
+class QuarkView
+    public id    : i32
+    public tex0  : Texture
+    public tex1  : Texture
+    public front : i32 [ -1 ]
+    public w     : i32
+    public h     : i32
+    public cw    : i32                      # content size, device px
+    public ch    : i32
+    public shown : bool
+    public title : string
+
+element Quark : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'quark' ]
+    public  background : string [ 'Background' ]
+    # the Electron app's folder (its package.json names the main)
+    default [ Launch ] app : string
+    mutable pid        : i32
+    mutable sock       : i32 [ -1 ]
+    mutable pending    : string
+    mutable views      : vec QuarkView
+    mutable started    : bool
+    mutable scale      : f32 [ 1.0 ]
+    mutable held       : i32
+    mutable sent_w     : i32
+    mutable sent_h     : i32
+    mutable drawn      : bool
+
+    func init []
+        animated  = true
+        focusable = true
+        views     = vec QuarkView []
+
+    func post [ words: string ]
+        if [ sock < 0 ] return
+        full : string '{words}\n'
+        send[ sock, full.chars, full.count, MSG_NOSIGNAL ]
+
+    func launch []
+        started = true
+        inst : path.path_install[]
+        src  : quark_source[]
+        node : string '{inst}/node/bin/node'
+        reg  : string '{src}/node/register.mjs'
+        boot : string '{src}/node/boot.mjs'
+        # the app folder is the first word; the rest is the app's own
+        words : app.split[ ' ' ]
+        folder : words[ 0 ]
+        # a relative folder is where quark was started, not the share
+        if [ folder.count > 0 && folder.mid[ 0, 1 ] != '/' ]
+            folder = '{path.path_startup[]}/{folder}'
+        setenv[ 'QUARK_ADDON', '{inst}/lib/quark/quark.node'.chars, 1 ]
+        setenv[ 'QUARK_LAUNCHER', '{inst}/bin/electron'.chars, 1 ]
+        p : i32 [ 0 ]
+        sock = quark_start_node[ node.chars, reg.chars, boot.chars,
+                                 folder.chars, @p ]
+        pid = p
+        if [ sock < 0 ]
+            log 'quark: node did not start'
+            return
+        log 'quark: node {pid} on {folder}'
+
+    func view_of [ id: i32 ] -> QuarkView
+        for [ i: i32 0, i < i32 views.count, i += 1 ]
+            if [ views[i].id == id ] return views[i]
+        return null
+
+    func shown_view [] -> QuarkView
+        for [ i: i32 0, i < i32 views.count, i += 1 ]
+            if [ views[i].shown ] return views[i]
+        return null
+
+    # a line from Node
+    func handle [ line: string, cv: Canvas ]
+        words : line.split[ ' ' ]
+        if [ words.count == 0 ] return
+        op : words[ 0 ]
+        if [ op == 'window' && words.count >= 4 ]
+            v : QuarkView [ ]
+            v.id = i32 words[1]
+            v.cw = i32 words[2]
+            v.ch = i32 words[3]
+            views.push[ v ]
+            return
+        v : view_of[ (words.count > 1) ? i32 words[1] : 0 ]
+        if [ op == 'share' && words.count >= 5 && v ]
+            fds : local i32 [ 2 ]
+            fds[0] = -1
+            fds[1] = -1
+            got : i32 [ quark_recv_fds[ sock, @fds[0], 2 ] ]
+            if [ got != 2 ]
+                log 'quark: share fds missing ({got})'
+                return
+            v.w  = i32 words[2]
+            v.h  = i32 words[3]
+            fmt : i32 [ i32 words[4] ]
+            v.tex0 = cv.vk.import_shared_tex[ fds[0], v.w, v.h, fmt, cv.w ]
+            v.tex1 = cv.vk.import_shared_tex[ fds[1], v.w, v.h, fmt, cv.w ]
+            v.front = -1
+            log 'quark: view {v.id} shares {v.w}x{v.h} format {fmt}'
+            return
+        if [ op == 'front' && words.count >= 5 && v ]
+            if [ v.front < 0 ] log 'quark: view {v.id} first front {words[2]}'
+            v.front = i32 words[2]
+            v.cw    = i32 words[3]
+            v.ch    = i32 words[4]
+            return
+        if [ op == 'show' && v ]
+            log 'quark: view {v.id} shown'
+            v.shown = true
+            return
+        if [ op == 'hide' && v ]
+            v.shown = false
+            return
+        if [ op == 'title' && v ]
+            skip : i32 [ 6 + i32 words[1].count + 1 ]
+            v.title = line.mid[ skip, i32 line.count - skip ]
+            if [ ux ] ux.set_title[ v.title ]
+            return
+        if [ op == 'close' && v ]
+            views.remove[ views.index_of[ v ] ]
+            return
+        if [ op == 'quit' ]
+            Au.quit_request[]
+            return
+        # the pointer's shape, the app's menu and clipboard: taken up next
+        if [ op == 'cursor' || op == 'menu' || op == 'clipboard'
+             || op == 'focus' ] return
+        log 'quark: unknown line: {line}'
+
+    func poll [ cv: Canvas ]
+        if [ sock < 0 ] return
+        buf : local i8 [ 65536 ]
+        n : i32 [ quark_read[ sock, @buf[0], 65535 ] ]
+        while [ n > 0 ]
+            buf[n] = 0
+            chunk : string[ @buf[0] ]
+            pending = (pending) ? '{pending}{chunk}' : chunk
+            n = quark_read[ sock, @buf[0], 65535 ]
+        if [ n < 0 ]
+            log 'quark: node closed the socket'
+            close[ sock ]
+            sock = -1
+        if [ !pending ] return
+        while [ pending ]
+            at : i64 [ pending.index_of[ '\n' ] ]
+            if [ at < 0 ] break
+            line : pending.mid[ 0, i32 at ]
+            pending = pending.mid[ i32 at + 1, i32 pending.count - i32 at - 1 ]
+            if [ line.count > 0 ] handle[ line, cv ]
+
+    func sync_size []
+        v : shown_view[]
+        pw : i32 [ bounds.w * scale ]
+        ph : i32 [ bounds.h * scale ]
+        if [ pw <= 0 || ph <= 0 || !v ] return
+        if [ pw == sent_w && ph == sent_h ] return
+        sent_w = pw
+        sent_h = ph
+        post[ 'size {v.id} {pw} {ph} {scale}' ]
+
+    func mods [ ev: Event ] -> i32
+        m : i32 [ 0 ]
+        if [ ev.key.shift ] m = m | 1
+        if [ ev.key.ctrl ]  m = m | 2
+        if [ ev.key.alt ]   m = m | 4
+        if [ ev.key.meta ]  m = m | 8
+        return m
+
+    func mouse [ kind: string, ev: Event ]
+        v : shown_view[]
+        if [ !v ] return
+        x : i32 [ ev.mouse.pos.x * scale ]
+        y : i32 [ ev.mouse.pos.y * scale ]
+        post[ 'mouse {v.id} {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
+
+    public func on_press [ ev: Event ]
+        set_focus[]
+        held = held | (1 << ev.mouse.button)
+        mouse[ 'down', ev ]
+        ev.stop[]
+
+    public func on_release [ ev: Event ]
+        held = held & (~(1 << ev.mouse.button))
+        mouse[ 'up', ev ]
+
+    public func on_move [ ev: Event ]
+        mouse[ 'move', ev ]
+
+    public func on_wheel [ ev: Event ]
+        v : shown_view[]
+        if [ !v ] return
+        x : i32 [ ev.mouse.pos.x * scale ]
+        y : i32 [ ev.mouse.pos.y * scale ]
+        dx : f32 [ ev.mouse.wheel_delta.x ]
+        dy : f32 [ ev.mouse.wheel_delta.y ]
+        post[ 'wheel {v.id} {x} {y} {dx} {dy} {mods[ ev ]}' ]
+        ev.stop[]
+
+    # every key goes as a key; printable text comes as text too
+    public func on_key [ ev: Event ]
+        v : shown_view[]
+        if [ !v ] return
+        act : string [ (ev.key.state != 0) ? 'down' : 'up' ]
+        post[ 'key {v.id} {act} {ev.key.unicode} {mods[ ev ]}' ]
+        ev.stop[]
+
+    public func on_char [ ev: Event ]
+        v : shown_view[]
+        if [ !v || !ev.key.text || ev.key.text.count == 0 ] return
+        post[ 'text {v.id} {ev.key.text}' ]
+        ev.stop[]
+
+    public func draw [ w: Window ]
+        if [ !w || w.draw_stage != CanvasType.screen ] return
+        if [ bounds.w <= 0.0 || bounds.h <= 0.0 ] return
+        scale = (w.scale > 0.0) ? w.scale : 1.0
+        if [ !started ] launch[]
+        if [ pid > 0 ]
+            st : i32 [ 0 ]
+            if [ waitpid[ pid, @st, WNOHANG ] == pid ]
+                log 'quark: node exited'
+                pid = 0
+                Au.quit_request[]
+        cv : Canvas [ w.screen ]
+        if [ !cv || !cv.vk ] return
+        poll[ cv ]
+        sync_size[]
+        v : shown_view[]
+        if [ !v || v.front < 0 ] return
+        tex : (v.front == 0) ? v.tex0 : v.tex1
+        if [ !tex ] return
+        if [ !drawn ]
+            drawn = true
+            log 'quark: drawing view {v.id} {v.cw}x{v.ch} of {v.w}x{v.h}'
+        # the content's part of the texture, one frame px a device px
+        dst : rect [ x: 0.0, y: 0.0, w: f32[ v.cw ] / scale,
+                     h: f32[ v.ch ] / scale ]
+        cv.draw_image_crop[ tex, dst, 0.0, 0.0,
+                            f32[ v.cw ] / f32[ v.w ],
+                            f32[ v.ch ] / f32[ v.h ] ]
+
+    func dealloc []
+        if [ !started ] return
+        if [ sock >= 0 ] close[ sock ]
+        if [ pid > 0 ]
+            kill[ pid, SIGTERM ]
+            waitpid[ pid, null, 0 ]

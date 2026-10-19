@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>hello quark</title>
+<style>
+  body { margin: 0; background: #1e1e2e; color: #e0e0e0; font-family: sans-serif; font-size: 16px; }
+  .bar { height: 40px; background: #302d41; display: flex; align-items: center; padding: 0 16px; }
+  .bar span { font-weight: bold; color: #ff84ff; }
+  .main { display: flex; }
+  .side { width: 200px; background: #262537; padding: 12px; }
+  .side div { padding: 6px 8px; border-radius: 6px; }
+  .side div.on { background: #4d3dbc; color: white; }
+  .body { flex: 1; padding: 20px; }
+  button { background: #806bff; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 14px; }
+  #out { margin-top: 12px; color: #a6e3a1; }
+</style>
+</head>
+<body>
+  <div class="bar"><span>quark</span>&nbsp;hello</div>
+  <div class="main">
+    <div class="side"><div class="on">Files</div><div>Search</div><div>Git</div></div>
+    <div class="body">
+      <p>A page drawn by trinity. No browser engine under it.</p>
+      <button id="go">add 2 + 3</button>
+      <div id="out"></div>
+    </div>
+  </div>
+  <script>
+    document.getElementById('go').addEventListener('click', async () => {
+      const n = await window.hello.add(2, 3);
+      document.getElementById('out').textContent = 'main says ' + n;
+      window.hello.title('hello quark: ' + n);
+    });
+  </script>
+</body>
+</html>

@@ -4973,7 +4973,7 @@ class Texture
     intern vma_alloc        : VmaAllocation
     # non-VMA backing for shareable/imported textures + its exported fd
     intern vk_memory        : VkDeviceMemory
-    intern shared_fd        : i32 [ -1 ]
+    public shared_fd        : i32 [ -1 ]
     # creation-site tag for live sampler accounting (SAMP print)
     public tag              : string
     # kept for read_region: the staging buffer and its mapping

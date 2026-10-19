@@ -34,6 +34,7 @@ import krb5/1.21.3 from https://kerberos.org/dist/krb5/1.21/krb5-1.21.3.tar.gz
 
 # VS Code itself: its packages, then its linux build, copied into
 # install/lib/code-oss; install/bin/vscode starts it
+# no root-owned chrome-sandbox: AppArmor lets it use userns
 import vscode/1.142.0 from https://github.com/microsoft/vscode
     PATH={install}/node/bin:{install}/bin:$PATH
     PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
@@ -44,4 +45,6 @@ import vscode/1.142.0 from https://github.com/microsoft/vscode
     > npm ci
     > npm run gulp vscode-linux-x64-min
     > rm -rf {install}/lib/code-oss && cp -a ../VSCode-linux-x64 {install}/lib/code-oss
-    > ln -sf ../lib/code-oss/bin/code-oss {install}/bin/vscode
+    > rm -f {install}/lib/code-oss/chrome-sandbox {install}/bin/vscode
+    > install -m 755 silver-vscode.sh {install}/bin/vscode
+    > sh silver-apparmor.sh {install}
