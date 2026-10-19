@@ -84,7 +84,6 @@ export class Page {
     this.say({ op: 'loaded' });
     this.say({ op: 'title', title: this.document.title });
     this.titleWatch = this.document.title;
-    this.needPaint();
   }
   parseInto(doc, s) { const was = this.parsing; this.parsing = true; parseHTML(doc, s); this.parsing = was; return doc; }
   // the preload runs first, with Electron's renderer modules
@@ -284,7 +283,7 @@ export class Page {
   invalidateStyle() { this.styleGen++; this.dirtyLayoutAll(); this.needPaint(); }
   // layout marks: an element whose box tree under it must be made
   // again (self: its own box may stay), or everything
-  dirtyLayout(el, kind) { this.layoutDirty = true; if (el && el.nodeType !== 1) el = el.parentElement; if (!el) { this.layoutAll = true; return; } const r = this.layoutRoots.get(el) || { tree: false, own: false, self: false }; r[kind] = true; this.layoutRoots.set(el, r); }
+  dirtyLayout(el, kind) { this.layoutDirty = true; if (el && el.nodeType !== 1) el = el.parentElement; if (!el) { this.layoutAll = true; return; } const r = this.layoutRoots.get(el) || { tree: false, own: false, self: false, scan: false }; r[kind] = true; this.layoutRoots.set(el, r); }
   dirtyLayoutAll() { this.layoutDirty = true; this.layoutAll = true; }
   styleOf(el) {
     if (el._computed && !el._styleDirty && !el._styleKeys && el._styleGen === this.styleGen) return el._computed;
@@ -345,10 +344,9 @@ export class Page {
     else if (kind === 'attributes') this.dirtyStyle(node, true, attrKeys(node, detail));
     else this.dirtyStyle(node, true, [':checked', ':placeholder-shown']);
     for (const o of this.observers) if (o._consider(node, kind, detail)) this.scheduleObservers();
-    this.needPaint();
     if (this.document && this.titleWatch !== undefined && node.localName === 'title' || (node.parentNode && node.parentNode.localName === 'title')) { const t = this.document.title; if (t !== this.titleWatch) { this.titleWatch = t; this.say({ op: 'title', title: t }); } }
   }
-  styleChanged(el) { this.dirtyStyle(el, false, []); this.needPaint(); }
+  styleChanged(el) { this.dirtyStyle(el, false, []); }
   // el and its subtree restyle; its later siblings too (+ ~ :nth);
   // ancestors a :has rule could read; the rest keep their styles
   dirtyStyle(el, siblings, keys) {
@@ -356,9 +354,11 @@ export class Page {
     if (!el || el.nodeType !== 1) { this.layoutAll = true; return; }
     let n = 1, sib = 0; el._styleDirty = true; el._pseudoStyles = null;
     if (this.engine.reachesBelow(keys)) {
-      this.dirtyLayout(el, 'tree');
+      // known keys: the tree is scanned at layout time and only the
+      // elements whose style really changed become roots
+      this.dirtyLayout(el, keys ? 'scan' : 'tree');
       n = dirtyTree(el, keys);
-      if (siblings) for (let s = el.nextElementSibling; s; s = s.nextElementSibling) { sib += dirtyTree(s, keys); this.dirtyLayout(s, 'tree'); }
+      if (siblings) for (let s = el.nextElementSibling; s; s = s.nextElementSibling) { sib += dirtyTree(s, keys); this.dirtyLayout(s, keys ? 'scan' : 'tree'); }
       n += sib;
     } else this.dirtyLayout(el, 'own');
     let has = 0;
@@ -398,14 +398,18 @@ export class Page {
     for (const n of seen) if (a.includes(n) !== b.includes(n)) { n._styleDirty = true; n._pseudoStyles = null; this.dirtyLayout(n, 'own'); }
     this.dirtyStyle(top, true, keys);
   }
-  scrolled(el) { this.needPaint(); const ev = new E.Event('scroll', { bubbles: false }); setTimeout(() => el.dispatchEvent(ev), 0); }
+  scrolled(el) { this.needPaint(el._box ? el._box.absRect() : null); const ev = new E.Event('scroll', { bubbles: false }); setTimeout(() => el.dispatchEvent(ev), 0); }
   scheduleObservers() { if (this.obsScheduled) return; this.obsScheduled = true; queueMicrotask(() => { this.obsScheduled = false; for (const o of this.observers) o._flush(); }); }
-  needPaint() { this.needsPaint = true; }
+  // a repaint: of a rect (page coordinates), of the whole page when
+  // none is given or it is unknown (null)
+  // the focused field changed (caret, selection, text)
+  paintFocused() { const b = this.focused && this.focused._box; this.needPaint(b ? b.absRect() : null); }
+  needPaint(rect) { this.needsPaint = true; if (rect === undefined || rect === null) this.damageAll = true; else if (!this.damageAll) (this.damage || (this.damage = [])).push(rect); }
   // ---- images
   loadImage(img) {
     const src = img.getAttribute('src'); if (!src) return;
     const url = new URL(src, this.url).href;
-    this.imageFor(url, img, true).then(r => { if (!r) { img.dispatchEvent(new E.Event('error')); return; } img._image = r; img.naturalWidth = r.width; img.naturalHeight = r.height; img.complete = true; this.dirtyLayout(img, 'tree'); this.needPaint(); img.dispatchEvent(new E.Event('load')); });
+    this.imageFor(url, img, true).then(r => { if (!r) { img.dispatchEvent(new E.Event('error')); return; } img._image = r; img.naturalWidth = r.width; img.naturalHeight = r.height; img.complete = true; this.dirtyLayout(img, 'tree'); img.dispatchEvent(new E.Event('load')); });
   }
   imageFor(url, el, wait) {
     let u; try { u = new URL(url, this.url).href; } catch { return wait ? Promise.resolve(null) : null; }
@@ -447,7 +451,7 @@ export class Page {
   tick(canvas) {
     if (!this.document) return false;
     if (this.rafs.length) { const list = this.rafs; this.rafs = []; const t = performance.now(); for (const r of list) { try { r.cb(t); } catch (e) { this.reportError(e); } } }
-    if (this.prof) { this.prof.ticks++; const now = performance.now(); if (now - this.prof.t0 > 1000) { const p = this.prof; const pl = p.partialList.sort((a, b) => a - b); this.log(`prof/s: ticks ${p.ticks} layouts ${p.layouts} (${p.layoutMs.toFixed(0)} ms, ${p.partial} partial ${p.partialMs.toFixed(0)} ms: median ${pl.length ? pl[pl.length >> 1].toFixed(2) : 0} max ${pl.length ? pl[pl.length - 1].toFixed(1) : 0}) paints ${p.paints} (${p.paintMs.toFixed(0)} ms, clips ${p.clips} ${p.clipMs.toFixed(0)} ms, ${p.clipSlow} slow) styles ${p.styles} (${p.styleMs.toFixed(1)} ms, ${p.styles ? (p.cands / p.styles).toFixed(0) : 0} rules each, ${p.styles ? (p.hits / p.styles).toFixed(0) : 0} hit) sheet marks ${p.sheetMarks} boxes ${p.boxes}`); this.prof = { t0: now, ticks: 0, layouts: 0, partial: 0, partialMs: 0, partialList: [], styleMs: 0, cands: 0, sheetMarks: 0, deep: 0, hits: 0, layoutMs: 0, paints: 0, paintMs: 0, styles: 0, boxes: p.boxes, clips: 0, clipMs: 0, clipSlow: 0 }; } }
+    if (this.prof) { this.prof.ticks++; const now = performance.now(); if (now - this.prof.t0 > 1000) { const p = this.prof; const pl = p.partialList.sort((a, b) => a - b); this.log(`prof/s: ticks ${p.ticks} layouts ${p.layouts} (${p.layoutMs.toFixed(0)} ms, ${p.partial} partial ${p.partialMs.toFixed(0)} ms: median ${pl.length ? pl[pl.length >> 1].toFixed(2) : 0} max ${pl.length ? pl[pl.length - 1].toFixed(1) : 0}) paints ${p.paints} (${p.paintMs.toFixed(0)} ms, ${p.damaged || 0} partial ${p.damaged ? (100 * p.damageArea / p.damaged).toFixed(0) : 0}% area, clips ${p.clips} ${p.clipMs.toFixed(0)} ms, ${p.clipSlow} slow) styles ${p.styles} (${p.styleMs.toFixed(1)} ms, ${p.styles ? (p.cands / p.styles).toFixed(0) : 0} rules each, ${p.styles ? (p.hits / p.styles).toFixed(0) : 0} hit) sheet marks ${p.sheetMarks} boxes ${p.boxes}`); this.prof = { t0: now, ticks: 0, layouts: 0, partial: 0, partialMs: 0, partialList: [], styleMs: 0, cands: 0, sheetMarks: 0, deep: 0, hits: 0, layoutMs: 0, paints: 0, paintMs: 0, styles: 0, boxes: p.boxes, clips: 0, clipMs: 0, clipSlow: 0 }; } }
     if (!this.needsPaint && !this.layoutDirty) return false;
     this.ensureLayout();
     this.paint(canvas);
@@ -464,7 +468,7 @@ export class Page {
       const t0 = performance.now();
       const partial = !this.layoutAll && this.relayoutRoots();
       this.layoutAll = false; this.layoutRoots.clear();
-      if (!partial) this.rootBox = this.layout.run(this.document.documentElement, this.cssW, this.cssH);
+      if (!partial) { this.rootBox = this.layout.run(this.document.documentElement, this.cssW, this.cssH); this.needPaint(); }
       const dt = performance.now() - t0;
       if (this.prof && partial) { this.prof.partialMs += dt; this.prof.partialList.push(dt); }
       if (this.prof) { this.prof.layouts++; this.prof.layoutMs += dt; let n = 0; const walk = b => { n++; if (b.children) for (const k of b.children) walk(k); }; walk(this.rootBox); this.prof.boxes = n; }
@@ -486,7 +490,16 @@ export class Page {
       if (!el.isConnected) continue;
       let self = false;
       if (r.tree) self = false;
-      else {
+      else if (r.scan && !r.self) {
+        // restyle the marked tree; a changed element is a root and
+        // its own tree is rebuilt under it
+        const walk = c => {
+          if (c._styleDirty || c._styleKeys) { const before = c._computed; this.styleOf(c); c._styleChanged = false; if (c._computed !== before) { roots.push({ el: c, self: false, depth: depthOf(c) }); return; } }
+          for (let k = c.firstElementChild; k; k = k.nextElementSibling) walk(k);
+        };
+        walk(el);
+        continue;
+      } else {
         // own: a root only when its style really changed
         let changed = false;
         if (r.own) { const before = el._computed; if (el._styleDirty) { this.styleOf(el); changed = el._computed !== before; } else changed = !!el._styleChanged; }
@@ -504,8 +517,9 @@ export class Page {
         const b = a._box;
         if (!b || b.el !== a || !this.boxAttached(b) || !this.layout.canRelayout(b)) continue;
         tries++;
+        const was = this.painter.boundsFresh(b);
         const nb = this.layout.relayoutOne(b);
-        if (nb) { done.push(a); ok = true; this.tracePartial(nb, tries); break; }
+        if (nb) { done.push(a); ok = true; this.needPaint(was); this.needPaint(this.painter.boundsFresh(nb)); this.tracePartial(nb, tries); break; }
       }
       if (!ok) { this.traceFull(el, self); return false; }
     }
@@ -538,7 +552,9 @@ export class Page {
     const hb = html ? this.styleOf(html).colorOf('background-color') : null;
     const bb = body ? this.styleOf(body).colorOf('background-color') : null;
     if (hb && hb[3] > 0) bg = hb; else if (bb && bb[3] > 0) bg = bb;
-    this.painter.prof = this.prof; this.painter.paint(canvas, this.rootBox, this.width, this.height, bg);
+    const damage = this.damageAll || process.env.QUARK_NODAMAGE ? null : (this.damage || []);
+    this.damage = null; this.damageAll = false;
+    this.painter.prof = this.prof; this.painter.paint(canvas, this.rootBox, this.width, this.height, bg, damage);
     const dt = performance.now() - t0;
     if (this.prof) { this.prof.paints++; this.prof.paintMs += dt; }
     if (dt > 100) this.log(`paint ${dt.toFixed(0)} ms`);
@@ -557,6 +573,13 @@ export class Page {
   // the box tree under a selector, for the log
   dumpBoxes(selector) {
     this.ensureLayout();
+    // at:x,y : every box holding the point, in paint order, with its
+    // background and clip
+    if (selector && selector.startsWith('at:')) {
+      const [px, py] = selector.slice(3).split(',').map(Number); const out = [];
+      const walk = (b, d) => { if (b.kind !== 'text') { const r = b.absRect(); if (px >= r.x && py >= r.y && px < r.x + r.w && py < r.y + r.h) out.push(`${'  '.repeat(d)}${b.kind} ${b.el ? b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 3).join('.') : b.pseudo || ''} ${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)} bg=${b.cs.get('background-color')} ov=${b.cs.get('overflow-x')} r4=${['top-left','top-right','bottom-right','bottom-left'].map(k => b.cs.get('border-' + k + '-radius')).join('/')} z=${b.cs.get('z-index')} pos=${b.cs.get('position')}`); } for (const c of b.children) walk(c, d + 1); };
+      walk(this.rootBox, 0); return out.join('\n');
+    }
     let el = selector ? this.document.querySelector(selector) : this.document.documentElement;
     // text:<words> : the box three above the first text holding them
     if (selector && selector.startsWith('text:')) { const want = selector.slice(5); const w = this.document.createTreeWalker(this.document.body, 4); let n; el = null; while ((n = w.nextNode())) if (n.data.includes(want)) { el = n.parentElement; for (let k = 0; k < 3 && el.parentElement; k++) el = el.parentElement; break; } }
@@ -564,8 +587,8 @@ export class Page {
     const out = [];
     // the ancestors first: where the width came from
     const chain = []; for (let n = el.parentElement; n; n = n.parentElement) chain.unshift(n);
-    for (const n of chain) { const b = n._box; if (!b) continue; const r = b.absRect(); out.push(`^ ${b.kind} ${n.localName}${n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').slice(0, 3).join('.') : ''} ${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)} w:${b.cs.get('width')} d:${b.cs.get('display')} p:${b.cs.get('position')}${b.flexItem ? ' flexItem' : ''}`); }
-    const dump = (b, d) => { if (b.kind === 'text' && !b.text.trim()) return; const r = b.absRect(); out.push(`${'  '.repeat(d)}${b.kind} ${b.el ? b.el.localName + (b.el.className && typeof b.el.className === 'string' ? '.' + b.el.className.split(' ').slice(0, 3).join('.') : '') : (b.text !== undefined ? JSON.stringify(String(b.text || '').slice(0, 24)) : b.pseudo || '')} ${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)}${b.kind === 'text' && b.textFrags ? ' frags ' + b.textFrags.length : ''}${b.el && b.el.getAttribute && b.el.getAttribute('style') ? ' s:' + b.el.getAttribute('style').slice(0, 60) : ''}${b.scrollable && b.el && (b.el._scrollX || b.el._scrollY) ? ' sc:' + (b.el._scrollX || 0) + ',' + (b.el._scrollY || 0) : ''} y:${b.y.toFixed(0)}`); if (process.env.QUARK_DUMP_CS && b.el) out.push(`${'  '.repeat(d)}  dom:${JSON.stringify(String(b.el.textContent || '').slice(0, 24))} cs: ` + ['display', 'width', 'height', 'min-width', 'font-size', 'font-family', 'line-height', 'white-space', 'flex', 'align-items', 'justify-content'].map(p => p + '=' + b.cs.get(p)).join(' ') + ` m=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('margin-' + s)).join('/')} p=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('padding-' + s)).join('/')} b=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('border-' + s + '-width') + ' ' + b.cs.get('border-' + s + '-style') + ' ' + b.cs.get('border-' + s + '-color')).join('/')} r=${b.cs.get('border-top-left-radius')} pos=${b.cs.get('position')} top=${b.cs.get('top')} bottom=${b.cs.get('bottom')} clip-path=${b.cs.get('clip-path')} prev=${b.el.previousElementSibling ? b.el.previousElementSibling.localName + '.' + String(b.el.previousElementSibling.className).split(' ').slice(0, 4).join('.') : '-'}` + (process.env.QUARK_DUMP_VAR ? ' ' + process.env.QUARK_DUMP_VAR + '=' + b.cs.vars.get(process.env.QUARK_DUMP_VAR) : '')); if (out.length > 600) return; for (const c of b.children) dump(c, d + 1); };
+    for (const n of chain) { const b = n._box; if (!b) continue; const r = b.absRect(); out.push(`^ ${b.kind} ${n.localName}${n.className && typeof n.className === 'string' ? '.' + n.className.split(' ').slice(0, 3).join('.') : ''} ${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)} w:${b.cs.get('width')} d:${b.cs.get('display')} p:${b.cs.get('position')}${b.flexItem ? ' flexItem' : ''} ov=${b.cs.get('overflow-x')}/${b.cs.get('overflow-y')} cp=${b.cs.get('clip-path')} op=${b.cs.get('opacity')} tf=${b.cs.get('transform')} r4=${['top-left','top-right','bottom-right','bottom-left'].map(k => b.cs.get('border-' + k + '-radius')).join('/')}`); }
+    const dump = (b, d) => { if (b.kind === 'text' && !b.text.trim()) return; const r = b.absRect(); out.push(`${'  '.repeat(d)}${b.kind} ${b.el ? b.el.localName + (b.el.className && typeof b.el.className === 'string' ? '.' + b.el.className.split(' ').slice(0, process.env.QUARK_DUMP_CS ? 12 : 3).join('.') : '') : (b.text !== undefined ? JSON.stringify(String(b.text || '').slice(0, 24)) : b.pseudo || '')} ${r.x.toFixed(0)},${r.y.toFixed(0)} ${r.w.toFixed(0)}x${r.h.toFixed(0)}${b.kind === 'text' && b.textFrags ? ' frags ' + b.textFrags.length : ''}${b.el && b.el.getAttribute && b.el.getAttribute('style') ? ' s:' + b.el.getAttribute('style').slice(0, 60) : ''}${b.scrollable && b.el && (b.el._scrollX || b.el._scrollY) ? ' sc:' + (b.el._scrollX || 0) + ',' + (b.el._scrollY || 0) : ''} y:${b.y.toFixed(0)}`); if (process.env.QUARK_DUMP_CS && (b.el || b.pseudo)) out.push(`${'  '.repeat(d)}  dom:${JSON.stringify(String(b.el ? b.el.textContent || '' : '::' + b.pseudo).slice(0, 24))} cs: ` + ['display', 'width', 'height', 'min-width', 'font-size', 'font-family', 'line-height', 'white-space', 'flex', 'align-items', 'justify-content'].map(p => p + '=' + b.cs.get(p)).join(' ') + ` m=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('margin-' + s)).join('/')} p=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('padding-' + s)).join('/')} b=${['top', 'right', 'bottom', 'left'].map(s => b.cs.get('border-' + s + '-width') + ' ' + b.cs.get('border-' + s + '-style') + ' ' + b.cs.get('border-' + s + '-color')).join('/')} r=${b.cs.get('border-top-left-radius')} pos=${b.cs.get('position')} top=${b.cs.get('top')} bottom=${b.cs.get('bottom')} clip-path=${b.cs.get('clip-path')} prev=${b.el && b.el.previousElementSibling ? b.el.previousElementSibling.localName + '.' + String(b.el.previousElementSibling.className).split(' ').slice(0, 4).join('.') : '-'} ov=${b.cs.get('overflow-x')} bg=${b.cs.get('background-color')} sh=${b.cs.get('box-shadow')} left=${b.cs.get('left')} w=${b.cs.get('width')} h=${b.cs.get('height')} r4=${['top-left','top-right','bottom-right','bottom-left'].map(k => b.cs.get('border-' + k + '-radius')).join('/')}` + (process.env.QUARK_DUMP_VAR ? ' ' + process.env.QUARK_DUMP_VAR + '=' + b.cs.vars.get(process.env.QUARK_DUMP_VAR) : '')); if (out.length > 600) return; for (const c of b.children) dump(c, d + 1); };
     dump(el._box, 0);
     return out.join('\n');
   }
@@ -680,12 +703,12 @@ export class Page {
     this.hoverStyleDirty(oldChain, newChain);
   }
   // hover changes restyle only when a rule could care
-  hoverStyleDirty(a, b) { this.dirtyChains(a, b, [':hover']); this.needPaint(); }
+  hoverStyleDirty(a, b) { this.dirtyChains(a, b, [':hover']); }
   setActive(target, on) {
     const old = chainOf(this.active); this.active = on ? target : null;
     for (const n of old) n._pseudo.delete('active');
     if (on) for (const n of chainOf(target)) n._pseudo.add('active');
-    this.dirtyChains(old, on ? chainOf(target) : [], [':active']); this.needPaint();
+    this.dirtyChains(old, on ? chainOf(target) : [], [':active']);
   }
   updateCursor(target) {
     let c = 'default';
@@ -725,11 +748,11 @@ export class Page {
       const set = (nv, pos) => { f.value = nv; f.setSelectionRange(pos, pos); f.dispatchEvent(new E.InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' })); };
       if (info.key === 'Backspace') { if (s !== e) set(v.slice(0, Math.min(s, e)) + v.slice(Math.max(s, e)), Math.min(s, e)); else if (s > 0) { const n = ctrl ? wordStart(v, s) : s - 1; set(v.slice(0, n) + v.slice(s), n); } return; }
       if (info.key === 'Delete') { if (s !== e) set(v.slice(0, Math.min(s, e)) + v.slice(Math.max(s, e)), Math.min(s, e)); else if (s < v.length) set(v.slice(0, s) + v.slice(s + 1), s); return; }
-      if (info.key === 'ArrowLeft') { const n = ctrl ? wordStart(v, s) : Math.max(0, (shift ? e : Math.min(s, e)) - (s === e ? 1 : 0)); if (shift) f.setSelectionRange(s, Math.max(0, e - 1)); else f.setSelectionRange(s === e ? Math.max(0, s - 1) : Math.min(s, e), s === e ? Math.max(0, s - 1) : Math.min(s, e)); this.needPaint(); return; }
-      if (info.key === 'ArrowRight') { if (shift) f.setSelectionRange(s, Math.min(v.length, e + 1)); else { const p = s === e ? Math.min(v.length, s + 1) : Math.max(s, e); f.setSelectionRange(p, p); } this.needPaint(); return; }
-      if (info.key === 'Home') { f.setSelectionRange(shift ? 0 : 0, shift ? e : 0); this.needPaint(); return; }
-      if (info.key === 'End') { f.setSelectionRange(shift ? s : v.length, v.length); this.needPaint(); return; }
-      if (ctrl && info.key === 'a') { f.setSelectionRange(0, v.length); this.needPaint(); return; }
+      if (info.key === 'ArrowLeft') { const n = ctrl ? wordStart(v, s) : Math.max(0, (shift ? e : Math.min(s, e)) - (s === e ? 1 : 0)); if (shift) f.setSelectionRange(s, Math.max(0, e - 1)); else f.setSelectionRange(s === e ? Math.max(0, s - 1) : Math.min(s, e), s === e ? Math.max(0, s - 1) : Math.min(s, e)); this.paintFocused(); return; }
+      if (info.key === 'ArrowRight') { if (shift) f.setSelectionRange(s, Math.min(v.length, e + 1)); else { const p = s === e ? Math.min(v.length, s + 1) : Math.max(s, e); f.setSelectionRange(p, p); } this.paintFocused(); return; }
+      if (info.key === 'Home') { f.setSelectionRange(shift ? 0 : 0, shift ? e : 0); this.paintFocused(); return; }
+      if (info.key === 'End') { f.setSelectionRange(shift ? s : v.length, v.length); this.paintFocused(); return; }
+      if (ctrl && info.key === 'a') { f.setSelectionRange(0, v.length); this.paintFocused(); return; }
       if (ctrl && (info.key === 'c' || info.key === 'x')) { const sel = v.slice(Math.min(s, e), Math.max(s, e)); if (sel) this.say({ op: 'clipboard', text: sel }); if (info.key === 'x' && sel) set(v.slice(0, Math.min(s, e)) + v.slice(Math.max(s, e)), Math.min(s, e)); return; }
       if (info.key === 'Enter' && f.localName === 'textarea') { this.insertText('\n'); return; }
       if (info.key === 'Enter' && f.localName === 'input') { f.dispatchEvent(new E.Event('change', { bubbles: true })); const form = f.closest('form'); if (form) form.dispatchEvent(new E.Event('submit', { bubbles: true, cancelable: true })); return; }
@@ -764,7 +787,7 @@ export class Page {
     if (f.localName === 'textarea') { const lines = v.split('\n'); const li = Math.max(0, Math.min(lines.length - 1, Math.floor((y - (r.y + b.bt + b.pt)) / cs.lineHeight))); let before = 0; for (let i = 0; i < li; i++) before += lines[i].length + 1; line = lines[li]; for (let i = 0; i <= line.length; i++) { const d = Math.abs(this.text.measure(line.slice(0, i), spec) - lx); if (d < bd) { bd = d; best = before + i; } } }
     else for (let i = 0; i <= v.length; i++) { const d = Math.abs(this.text.measure(v.slice(0, i), spec) - lx); if (d < bd) { bd = d; best = i; } }
     f.setSelectionRange(best, best);
-    this.needPaint();
+    this.paintFocused();
   }
   // ---- focus
   focusElement(el, opts) {
@@ -775,7 +798,7 @@ export class Page {
     if (old) { old._pseudo.delete('focus'); old._pseudo.delete('focus-visible'); for (const n of chainOf(old)) n._pseudo.delete('focus-within'); old.dispatchEvent(new E.FocusEvent('blur', { relatedTarget: el })); old.dispatchEvent(new E.FocusEvent('focusout', { bubbles: true, relatedTarget: el })); }
     this.focused = el; this.document.activeElement = el || this.document.body;
     if (el) { el._pseudo.add('focus'); if (!fromMouse || el.localName === 'input' || el.localName === 'textarea') el._pseudo.add('focus-visible'); for (const n of chainOf(el)) n._pseudo.add('focus-within'); el.dispatchEvent(new E.FocusEvent('focus', { relatedTarget: old })); el.dispatchEvent(new E.FocusEvent('focusin', { bubbles: true, relatedTarget: old })); }
-    this.dirtyChains(chainOf(old), chainOf(el), [':focus', ':focus-visible', ':focus-within']); this.needPaint();
+    this.dirtyChains(chainOf(old), chainOf(el), [':focus', ':focus-visible', ':focus-within']); this.paintFocused();
   }
   focusChanged() { this.focused = null; }
   focusNext(dir) {

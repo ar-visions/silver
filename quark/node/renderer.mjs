@@ -9,11 +9,14 @@ const gfx = require(workerData.addon);
 const say = m => parentPort.postMessage(m);
 const state = { id: workerData.id, w: workerData.w, h: workerData.h, scale: workerData.scale,
   canvas: 0, share: null, page: null, dirty: true, bg: [0.12, 0.12, 0.12, 1] };
-
+// QUARK_PROF: canvases made and freed (page canvases, <canvas>)
+export const cvs = { made: 0, freed: 0, live: 0, sizes: [] };
+globalThis.__quarkCanvasStats = cvs;
+if (process.env.QUARK_PROF) setInterval(() => { if (cvs.made || cvs.freed) { say({ op: 'log', text: `[${workerData.id}] canvases/s: made ${cvs.made} freed ${cvs.freed} live ${cvs.live} ${cvs.sizes.slice(0, 12).join(' ')}` }); cvs.made = 0; cvs.freed = 0; cvs.sizes = []; } }, 1000);
 gfx.gpuInit();
 function makeCanvas() {
-  if (state.canvas) gfx.canvasFree(state.canvas);
-  state.canvas = gfx.canvasNew(state.w, state.h);
+  if (state.canvas) { gfx.canvasFree(state.canvas); cvs.freed++; cvs.live--; }
+  state.canvas = gfx.canvasNew(state.w, state.h); cvs.made++; cvs.live++; cvs.sizes.push('page' + state.w + 'x' + state.h);
   const s = gfx.shareNew(state.canvas);
   if (!s) { say({ op: 'log', text: 'no shareable textures on this GPU' }); return; }
   state.share = s;
@@ -48,7 +51,17 @@ function flushMove() {
   const l = state.pendingMove; if (!l) return;
   state.pendingMove = null; state.page.event(l);
 }
+function applySize() {
+  const m = state.pendingSize; if (!m) return;
+  state.pendingSize = null;
+  if (m.w === state.w && m.h === state.h && m.scale === state.scale) return;
+  state.w = m.w; state.h = m.h; state.scale = m.scale;
+  makeCanvas();
+  if (state.page) state.page.resize(m.w, m.h, m.scale);
+  state.dirty = true;
+}
 function frame() {
+  applySize();
   if (!state.share) return;
   if (state.page) flushMove();
   let painted = false;
@@ -68,12 +81,8 @@ parentPort.on('message', m => {
   switch (m.op) {
   case 'load': load(m); break;
   case 'size':
-    if (m.w !== state.w || m.h !== state.h || m.scale !== state.scale) {
-      state.w = m.w; state.h = m.h; state.scale = m.scale;
-      makeCanvas();
-      if (state.page) state.page.resize(m.w, m.h, m.scale);
-      state.dirty = true;
-    }
+    // a drag sends a size a frame: the newest wins, applied at the frame
+    if (m.w !== state.w || m.h !== state.h || m.scale !== state.scale) state.pendingSize = m;
     break;
   case 'event': if (!state.page) break; if (/^mouse \S+ move /.test(m.line)) state.pendingMove = m.line; else { flushMove(); state.page.event(m.line); } break;
   case 'ipc': if (state.page) state.page.ipc(m.channel, m.args, m.ports || []); break;

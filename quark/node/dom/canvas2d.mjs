@@ -18,20 +18,26 @@ export class Path2D {
 }
 export class CanvasRenderingContext2D {
   constructor(page, el) {
-    this.page = page; this.gfx = page.gfx; this.canvas = el; this.id = 0; this.w = 0; this.h = 0;
+    this.page = page; this.gfx = page.gfx; this.canvas = el; this._id = 0; this.w = 0; this.h = 0;
     this._reset();
+  }
+  get id() {
+    if (!this._id) { const w = Math.max(1, this.canvas.width), h = Math.max(1, this.canvas.height); this._id = this.gfx.canvasNew(w, h); this.w = w; this.h = h; const st = globalThis.__quarkCanvasStats; if (st) { st.made++; st.live++; st.sizes.push('c2d' + w + 'x' + h); } }
+    return this._id;
   }
   _reset() {
     const w = Math.max(1, this.canvas.width), h = Math.max(1, this.canvas.height);
-    if (this.id && (w !== this.w || h !== this.h)) { this.gfx.canvasFree(this.id); this.id = 0; }
-    if (!this.id) { this.id = this.gfx.canvasNew(w, h); this.w = w; this.h = h; }
-    this.gfx.canvasClear(this.id, F([0, 0, 0, 0]));
+    const st = globalThis.__quarkCanvasStats;
+    // a canvas is made at its first draw: a new element's 300x150
+    // default is set to its real size before anything is drawn
+    if (this._id && (w !== this.w || h !== this.h)) { this.gfx.canvasFree(this._id); this._id = 0; if (st) { st.freed++; st.live--; } }
+    else if (this._id) this.gfx.canvasClear(this._id, F([0, 0, 0, 0]));
     this.stack = []; this.path = new Path2D();
     this.fillStyle = '#000000'; this.strokeStyle = '#000000'; this.lineWidth = 1; this.lineCap = 'butt'; this.lineJoin = 'miter'; this.miterLimit = 10;
     this.globalAlpha = 1; this.globalCompositeOperation = 'source-over'; this.font = '10px sans-serif'; this.textAlign = 'start'; this.textBaseline = 'alphabetic'; this.direction = 'ltr';
     this.shadowBlur = 0; this.shadowColor = 'rgba(0,0,0,0)'; this.shadowOffsetX = 0; this.shadowOffsetY = 0; this.imageSmoothingEnabled = true; this.imageSmoothingQuality = 'low'; this.filter = 'none'; this.letterSpacing = '0px'; this.fontKerning = 'auto';
     this.m = [1, 0, 0, 1, 0, 0]; this._dashes = [];
-    this.page.needPaint();
+    this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null);
   }
   _color(style) { if (typeof style !== 'string') return [0, 0, 0, 1]; const c = parseColor(style) || [0, 0, 0, 1]; c[3] *= this.globalAlpha; return c; }
   save() { this.stack.push({ fillStyle: this.fillStyle, strokeStyle: this.strokeStyle, lineWidth: this.lineWidth, globalAlpha: this.globalAlpha, font: this.font, m: this.m.slice(), textAlign: this.textAlign, textBaseline: this.textBaseline, lineCap: this.lineCap }); this.gfx.canvasSave(this.id); }
@@ -67,12 +73,12 @@ export class CanvasRenderingContext2D {
     }
     return pid;
   }
-  fill(a, b) { const p = a instanceof Path2D ? a : this.path; const rule = (a instanceof Path2D ? b : a) === 'evenodd'; const pid = this._build(p); this.gfx.canvasFillPath(this.id, pid, rgba(this._color(this.fillStyle)), rule); this.gfx.pathFree(pid); this.page.needPaint(); }
-  stroke(a) { const p = a instanceof Path2D ? a : this.path; const pid = this._build(p); this.gfx.canvasStrokePath(this.id, pid, rgba(this._color(this.strokeStyle)), this.lineWidth, this.lineCap === 'round' ? 1 : this.lineCap === 'square' ? 2 : 0); this.gfx.pathFree(pid); this.page.needPaint(); }
+  fill(a, b) { const p = a instanceof Path2D ? a : this.path; const rule = (a instanceof Path2D ? b : a) === 'evenodd'; const pid = this._build(p); this.gfx.canvasFillPath(this.id, pid, rgba(this._color(this.fillStyle)), rule); this.gfx.pathFree(pid); this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null); }
+  stroke(a) { const p = a instanceof Path2D ? a : this.path; const pid = this._build(p); this.gfx.canvasStrokePath(this.id, pid, rgba(this._color(this.strokeStyle)), this.lineWidth, this.lineCap === 'round' ? 1 : this.lineCap === 'square' ? 2 : 0); this.gfx.pathFree(pid); this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null); }
   clip(a, b) { const p = a instanceof Path2D ? a : this.path; const rule = (a instanceof Path2D ? b : a) === 'evenodd'; const pid = this._build(p); this.gfx.canvasClipPath(this.id, pid, rule); this.gfx.pathFree(pid); }
-  fillRect(x, y, w, h) { if (w < 0) { x += w; w = -w; } if (h < 0) { y += h; h = -h; } this.gfx.canvasFillRect(this.id, x, y, w, h, rgba(this._color(this.fillStyle)), null); this.page.needPaint(); }
+  fillRect(x, y, w, h) { if (w < 0) { x += w; w = -w; } if (h < 0) { y += h; h = -h; } this.gfx.canvasFillRect(this.id, x, y, w, h, rgba(this._color(this.fillStyle)), null); this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null); }
   strokeRect(x, y, w, h) { const p = new Path2D(); p.rect(x, y, w, h); this.stroke(p); }
-  clearRect(x, y, w, h) { this.gfx.canvasSave(this.id); this.gfx.canvasSetComposite(this.id, 0); this.gfx.canvasFillRect(this.id, x, y, w, h, F([0, 0, 0, 1]), null); this.gfx.canvasRestore(this.id); this.gfx.canvasSetComposite(this.id, 2); this.page.needPaint(); }
+  clearRect(x, y, w, h) { this.gfx.canvasSave(this.id); this.gfx.canvasSetComposite(this.id, 0); this.gfx.canvasFillRect(this.id, x, y, w, h, F([0, 0, 0, 1]), null); this.gfx.canvasRestore(this.id); this.gfx.canvasSetComposite(this.id, 2); this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null); }
   isPointInPath(a, b, c) { const p = a instanceof Path2D ? a : this.path; const x = a instanceof Path2D ? b : a, y = a instanceof Path2D ? c : b; const pid = this._build(p); const r = this.gfx.pathContains(pid, x, y, false); this.gfx.pathFree(pid); return r; }
   isPointInStroke() { return false; }
   setLineDash(d) { this._dashes = d; } getLineDash() { return this._dashes; }
@@ -93,7 +99,7 @@ export class CanvasRenderingContext2D {
     if (this.textAlign === 'center') x -= run.width / 2; else if (this.textAlign === 'right' || this.textAlign === 'end') x -= run.width;
     if (this.textBaseline === 'top' || this.textBaseline === 'hanging') y += m.ascent; else if (this.textBaseline === 'middle') y += (m.ascent - m.descent) / 2; else if (this.textBaseline === 'bottom' || this.textBaseline === 'ideographic') y -= m.descent;
     this.page.text.draw(this.id, run, x, y, this._color(style));
-    this.page.needPaint();
+    this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null);
   }
   drawImage(img, ...a) {
     const src = this.page.imageSource(img);
@@ -103,7 +109,7 @@ export class CanvasRenderingContext2D {
     const uv = F([sx / src.width, sy / src.height, (sx + sw) / src.width, (sy + sh) / src.height]);
     if (src.canvas) this.gfx.canvasDrawCanvas(this.id, src.canvas, F([dx, dy, dw, dh]), uv);
     else if (src.image) this.gfx.canvasDrawImage(this.id, src.image, F([dx, dy, dw, dh]), uv);
-    this.page.needPaint();
+    this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null);
   }
   createImageData(w, h) { if (typeof w === 'object') return new ImageData(w.width, w.height); return new ImageData(w, h); }
   getImageData(x, y, w, h) {
@@ -124,7 +130,7 @@ export class CanvasRenderingContext2D {
     this.gfx.canvasSetComposite(this.id, 2);
     this.gfx.canvasRestore(this.id);
     this.gfx.imageFree(img);
-    this.page.needPaint();
+    this.page.needPaint(this.canvas && this.canvas._box ? this.canvas._box.absRect() : null);
   }
   createLinearGradient() { return { addColorStop() {} }; } createRadialGradient() { return { addColorStop() {} }; } createConicGradient() { return { addColorStop() {} }; } createPattern() { return null; }
   getContextAttributes() { return { alpha: true, desynchronized: false, colorSpace: 'srgb', willReadFrequently: false }; }

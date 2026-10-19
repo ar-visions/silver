@@ -3647,10 +3647,17 @@ Render Canvas
                     maxf[ rect.y, outer.y ], minf[ rect.z, outer.z ],
                     minf[ rect.w, outer.w ] ]
             if [ clip_in_arcs[ rect, outer, outer_r ] ]
+                # the outer's rounded shape goes to the mask, the inner
+                # stays the analytic rect: the shader applies both
+                ox : f32 [ (outer.x / ds - t.tx) / t.ma ]
+                oy : f32 [ (outer.y / ds - t.ty) / t.md ]
+                ow : f32 [ (outer.z - outer.x) / ds / t.ma ]
+                oh : f32 [ (outer.w - outer.y) / ds / t.md ]
                 path.clear[]
-                rounded_rect[ x, y, rw, rh, tl, tr, br, bl ]
+                rounded_rect[ ox, oy, ow, oh, outer_r.x / k,
+                              outer_r.y / k, outer_r.z / k,
+                              outer_r.w / k ]
                 clip_to_path[ false ]
-                return
         states[state_depth - 1].clip_round = true
         states[state_depth - 1].clip_rect  = rect
         states[state_depth - 1].clip_radii = radii

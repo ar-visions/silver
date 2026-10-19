@@ -5,16 +5,42 @@ const rgba = c => F([c[0] / 255, c[1] / 255, c[2] / 255, c[3]]);
 
 export class Painter {
   constructor(page) { this.page = page; this.gfx = page.gfx; this.shaper = page.text; }
-  paint(canvas, root, w, h, bg) {
+  // damage: rects (page coordinates) to paint again, null for all
+  paint(canvas, root, w, h, bg, damage) {
     this.cv = canvas; this.w = w; this.h = h; this.scale = this.page.scale; this.alpha = 1;
     this.stamp = (this.stamp || 0) + 1;
+    this.damage = null;
+    if (damage) {
+      if (!damage.length) return;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of damage) { x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + r.w); y1 = Math.max(y1, r.y + r.h); }
+      x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(w / this.scale, Math.ceil(x1)); y1 = Math.min(h / this.scale, Math.ceil(y1));
+      if (x1 <= x0 || y1 <= y0) return;
+      this.damage = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      if (this.prof) { this.prof.damaged = (this.prof.damaged || 0) + 1; this.prof.damageArea = (this.prof.damageArea || 0) + (x1 - x0) * (y1 - y0) / (w * h / this.scale / this.scale); }
+      this.gfx.canvasTransform(canvas, F([this.scale, 0, 0, this.scale, 0, 0]));
+      this.gfx.canvasSave(canvas);
+      this.gfx.canvasClipRounded(canvas, x0, y0, x1 - x0, y1 - y0, null);
+      this.gfx.canvasFillRect(canvas, x0, y0, x1 - x0, y1 - y0, rgba(bg), null);
+      this.paintStacking(root, 0, 0);
+      this.gfx.canvasRestore(canvas);
+      return;
+    }
     this.gfx.canvasClear(canvas, rgba(bg));
     this.gfx.canvasTransform(canvas, F([this.scale, 0, 0, this.scale, 0, 0]));
-    this.hits = [];
     this.paintStacking(root, 0, 0);
+  }
+  // a fresh union of what a box paints (a layout change's extent)
+  boundsFresh(box) { this.stamp = (this.stamp || 0) + 1; return this.bounds(box); }
+  // does the box reach the damage rect? unknown bounds count as yes
+  touches(box) {
+    const d = this.damage; if (!d) return true;
+    const b = this.bounds(box); if (b === null) return true; if (!b) return false;
+    return b.x < d.x + d.w && b.x + b.w > d.x && b.y < d.y + d.h && b.y + b.h > d.y;
   }
   // a stacking context: negatives, flow, positioned by z
   paintStacking(box, ox, oy) {
+    if (!this.touches(box)) return;
     // opacity: every descendant fades (no group layer yet)
     const prev = this.alpha; this.alpha *= box.cs.num('opacity', 1);
     if (this.alpha <= 0) { this.alpha = prev; return; }
@@ -45,6 +71,7 @@ export class Painter {
     }
   }
   paintFlowBox(box, ox, oy) {
+    if (!this.touches(box)) return;
     if (box.kind === 'text') { this.paintText(box, ox, oy); return; }
     const prev = this.alpha; this.alpha *= box.cs.num('opacity', 1);
     if (this.alpha <= 0) { this.alpha = prev; return; }
@@ -64,7 +91,7 @@ export class Painter {
   // own painting and its children; the other shapes are not drawn
   clipPath(box, ox, oy) {
     const v = box.cs.get('clip-path');
-    if (!v || v === 'none') return false;
+    if (!v || v === 'none' || process.env.QUARK_NOCLIP) return false;
     const m = v.match(/^inset\((.*)\)$/);
     if (!m) return false;
     const [edges, round] = m[1].split(/\s+round\s+/);
@@ -91,12 +118,27 @@ export class Painter {
       box.bounds = b; return b;
     }
     const cs = box.cs;
-    if (cs.get('box-shadow') !== 'none' || cs.get('outline-style') !== 'none' || cs.get('transform') !== 'none' || cs.get('filter') !== 'none') { box.bounds = null; return null; }
+    if (cs.get('transform') !== 'none' || cs.get('filter') !== 'none') { box.bounds = null; return null; }
     const r = box.absRect(); add(r.x, r.y, r.w, r.h);
+    // a shadow or outline reaches past the box by a known amount
+    const reach = this.reachOf(cs);
+    if (reach) add(r.x - reach, r.y - reach, r.w + 2 * reach, r.h + 2 * reach);
     if (box.kind === 'inline' && box.rects) for (const ir of box.rects) add(ir.x, ir.y, ir.w, ir.h);
     if (box.clips && box.kind !== 'inline') { box.bounds = b; return b; }
     for (const k of box.children) { const kb = this.bounds(k); if (kb === null && k.kind !== 'text') { b = undefined; break; } if (kb) add(kb.x, kb.y, kb.w, kb.h); }
     box.bounds = b === undefined ? null : b; return box.bounds;
+  }
+  // how far an outer shadow or an outline paints past the box
+  reachOf(cs) {
+    let reach = 0;
+    const shadow = cs.get('box-shadow');
+    if (shadow && shadow !== 'none') for (const sh of splitTopCommas(shadow)) {
+      if (/\binset\b/.test(sh)) continue;
+      const nums = []; for (const p of splitSpaces(sh)) if (/^-?[\d.]+/.test(p) || p.startsWith('calc')) nums.push(parseLength(p, cs.ctx(), null) || 0);
+      reach = Math.max(reach, Math.max(Math.abs(nums[0] || 0), Math.abs(nums[1] || 0)) + (nums[2] || 0) + (nums[3] || 0));
+    }
+    if (cs.get('outline-style') !== 'none') reach = Math.max(reach, cs.num('outline-width') + Math.max(0, cs.num('outline-offset')));
+    return reach;
   }
   // do the children stay inside the clip rect?
   clipHolds(box, r) {
@@ -106,9 +148,16 @@ export class Painter {
   // overflow clips and scroll offsets apply to the children
   withClip(box, ox, oy, fn) {
     const sx = box.scrollable && box.el ? (box.el._scrollX || 0) : 0, sy = box.scrollable && box.el ? (box.el._scrollY || 0) : 0;
-    let needClip = box.clips && box.kind !== 'inline';
+    let needClip = box.clips && box.kind !== 'inline' && !process.env.QUARK_NOCLIP;
     // nothing to cut: the content lies inside the clip rect
-    if (needClip && !sx && !sy) { const r = this.rect(box, ox, oy); if (this.clipHolds(box, { x: r.x + box.bl, y: r.y + box.bt, w: Math.max(0, box.w - box.bl - box.br), h: Math.max(0, box.h - box.bt - box.bb) })) needClip = false; }
+    if (needClip && !sx && !sy) {
+      const r = this.rect(box, ox, oy);
+      // a rounded box cuts its corners: the children must stay inside
+      // the rect inset by the largest radius
+      const ri = Math.max(...box.cs.radii(box.w, box.h));
+      if (this.clipHolds(box, { x: r.x + box.bl + ri, y: r.y + box.bt + ri, w: Math.max(0, box.w - box.bl - box.br - 2 * ri), h: Math.max(0, box.h - box.bt - box.bb - 2 * ri) })) needClip = false;
+    }
+    if (process.env.QUARK_CLIPLOG) { const [qx, qy] = process.env.QUARK_CLIPLOG.split(',').map(Number); const r = this.rect(box, ox, oy); if (qx >= r.x && qy >= r.y && qx < r.x + r.w && qy < r.y + r.h && box.clips) this.page.log(`cliplog ${box.el ? box.el.localName + '.' + String(box.el.className).split(' ').slice(0, 2).join('.') : box.pseudo} rect ${r.x},${r.y} ${r.w}x${r.h} clips=${box.clips} needClip=${needClip} radii=${box.cs.radii(box.w, box.h).join('/')} scroll=${sx},${sy}`); }
     if (needClip || sx || sy) {
       const t0 = this.prof ? performance.now() : 0;
       this.gfx.canvasSave(this.cv);
@@ -137,6 +186,7 @@ export class Painter {
     if (a <= 0) return;
     const r = this.rect(box, ox, oy);
     if (r.x > this.w / this.scale || r.y > this.h / this.scale || r.x + r.w < 0 || r.y + r.h < 0) { if (!box.children.some(c => c.positioned)) { /* still may paint kids out of bounds */ } }
+    if (process.env.QUARK_CLIPLOG) { const [qx, qy] = process.env.QUARK_CLIPLOG.split(',').map(Number); if (qx >= r.x && qy >= r.y && qx < r.x + r.w && qy < r.y + r.h) { const bg = cs.colorOf('background-color'); if (bg[3] > 0 || box.bt || box.br || box.bb || box.bl) this.page.log(`paintlog ${box.el ? box.el.localName + '.' + String(box.el.className).split(' ').slice(0, 2).join('.') : box.pseudo} rect ${r.x},${r.y} ${r.w}x${r.h} bg=${bg.join(',')} border=${box.bt}/${box.br}/${box.bb}/${box.bl} radii=${cs.radii(r.w, r.h).join('/')}`); } }
     if (box.kind === 'inline' && box.rects) { for (const ir of box.rects) this.paintBackgroundAndBorder(box, ir.x, ir.y, ir.w, ir.h, a); }
     else this.paintBackgroundAndBorder(box, r.x, r.y, r.w, r.h, a);
     if (box.el) this.paintReplaced(box, r, a);
@@ -173,19 +223,21 @@ export class Painter {
       // one width (a side may be 0), one colour and style on the drawn
       // sides: the first drawn side is the reference
       const t = Math.max(bt, br, bb, bl);
+      // a side draws when it has width, a style and a colour
       const sides = [[bt, ct, cs.get('border-top-style')], [br, cr, cs.get('border-right-style')], [bb, cb, cs.get('border-bottom-style')], [bl, cl, cs.get('border-left-style')]];
-      const ref = sides.find(([v, , st]) => v > 0 && st !== 'none');
-      const uniform = !!ref && sides.every(([v, c, st]) => v === 0 || st === 'none' || v === t && eq(c, ref[1]) && st === ref[2]);
+      const drawn = sides.map(([v, c, st]) => v > 0 && st !== 'none' && c[3] > 0);
+      const ref = sides.find((sd, i) => drawn[i]);
+      const uniform = !!ref && sides.every(([v, c, st], i) => !drawn[i] || v === t && eq(c, ref[1]) && st === ref[2]);
       const same = sides.every(([v, c, st]) => v === t && eq(c, ref ? ref[1] : ct) && st === (ref ? ref[2] : 'none'));
       if (!ref) {
       } else if (uniform && !hasR) {
         // straight edges: a rect a side, no path
-        if (ref[1][3] > 0) { const c = rgba(ref[1]); if (bt) this.gfx.canvasFillRect(this.cv, x, y, w, bt, c, null); if (bb) this.gfx.canvasFillRect(this.cv, x, y + h - bb, w, bb, c, null); if (bl) this.gfx.canvasFillRect(this.cv, x, y + bt, bl, Math.max(0, h - bt - bb), c, null); if (br) this.gfx.canvasFillRect(this.cv, x + w - br, y + bt, br, Math.max(0, h - bt - bb), c, null); }
+        const c = rgba(ref[1]); if (drawn[0]) this.gfx.canvasFillRect(this.cv, x, y, w, bt, c, null); if (drawn[2]) this.gfx.canvasFillRect(this.cv, x, y + h - bb, w, bb, c, null); if (drawn[3]) this.gfx.canvasFillRect(this.cv, x, y + bt, bl, Math.max(0, h - bt - bb), c, null); if (drawn[1]) this.gfx.canvasFillRect(this.cv, x + w - br, y + bt, br, Math.max(0, h - bt - bb), c, null);
       } else if (uniform) {
         // rounded: a stroke along the border's centre line; a side
-        // of width 0 is cut away by a clip (a path's 1 px band fills
+        // not drawn is cut away by a clip (a path's 1 px band fills
         // nothing in trinity, a stroke's coverage is exact)
-        if (ref[1][3] > 0) this.strokeRing(x, y, w, h, t, bt, br, bb, bl, ref[1], radii);
+        this.strokeRing(x, y, w, h, t, drawn, ref[1], radii);
       } else if (same || hasR) {
         // one ring: outer rounded rect less the inner one, even-odd
         if (ref[1][3] > 0) this.ringSides(x, y, w, h, bt, br, bb, bl, ref[1], radii, [ct, cr, cb, cl]);
@@ -197,9 +249,10 @@ export class Painter {
       }
     }
   }
-  strokeRing(x, y, w, h, t, bt, br, bb, bl, color, radii) {
-    const cut = !bt || !br || !bb || !bl;
-    if (cut) { this.gfx.canvasSave(this.cv); this.gfx.canvasClipRounded(this.cv, x + (bl ? 0 : t), y + (bt ? 0 : t), Math.max(0, w - (bl ? 0 : t) - (br ? 0 : t)), Math.max(0, h - (bt ? 0 : t) - (bb ? 0 : t)), null); }
+  strokeRing(x, y, w, h, t, drawn, color, radii) {
+    const [dt, dr, db, dl] = drawn;
+    const cut = !(dt && dr && db && dl) && !process.env.QUARK_NOCLIP;
+    if (cut) { this.gfx.canvasSave(this.cv); this.gfx.canvasClipRounded(this.cv, x + (dl ? 0 : t), y + (dt ? 0 : t), Math.max(0, w - (dl ? 0 : t) - (dr ? 0 : t)), Math.max(0, h - (dt ? 0 : t) - (db ? 0 : t)), null); }
     const pid = this.gfx.pathNew();
     rrectPath(this.gfx, pid, x + t / 2, y + t / 2, Math.max(0, w - t), Math.max(0, h - t), radii.map(r => Math.max(0, r - t / 2)));
     this.gfx.canvasStrokePath(this.cv, pid, rgba(color), t, 0);

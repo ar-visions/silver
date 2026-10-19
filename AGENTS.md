@@ -1772,6 +1772,32 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    Note: Kalen's saved state now holds three windows; quark shows
    them as tabs (his), and a hidden run draws the last shown, the
    empty one, so dumps come from dump.<view>.txt per window.
+   Then (Kalen, Oct 19: the explorer card's bottom-right corner had
+   a right edge and a bottom edge and no arc; "that's not possible
+   style wise ... unless it got clipped"). Chased with every clip
+   switched off (QUARK_NOCLIP=1: overflow, the stroke's side cut,
+   clip-path; QUARK_NODAMAGE=1), a plain page with the card at the
+   same size and place (fine), QUARK_DUMP='at:x,y' (every box over
+   a point, with its background, overflow, radii) and
+   QUARK_CLIPLOG=x,y (each clip set or skipped over the point, each
+   fill painted there). The trace said border=1/1/1/1: the card's
+   left side is 1 px of transparent (VS Code's floating-card seam),
+   not 0 px, so the border was not "uniform" and took the mixed-
+   colour path (a quad a side under the even-odd ring, whose 1 px
+   band fills nothing at the arcs). A side draws when it has width,
+   a style and a colour; the uniform test and the stroke's cut use
+   that. Seen: the arc back (pixel rows), the test card with a
+   transparent left side right. Not a clip after all.
+   On the way, trinity Canvas.clip_rounded_rect: a plain clip inside
+   a rounded one that reaches its arcs keeps the outer as the mask
+   and the inner as the analytic rect (the shader applies both);
+   before, the inner's mask replaced the outer's shape.
+   Open: the glyph blobs after a burst of resizes in a real window
+   (reproduced hidden on a real window: many canvases made and
+   retired in a second); the canvas count is on the prof line
+   (canvases/s: made, freed, live, sizes). A resize now remakes one
+   canvas a frame (the newest size) and a <canvas> element makes
+   its canvas at its first draw, not at the 300x150 default.
    FIXED silver (Oct 18, Kalen: "this should be a fixed silver
    issue"): the method table overrun (near-border item 1b):
    see that item.
@@ -1803,6 +1829,42 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    pattern on a test page (outline, shoulder, the body's top border
    meeting it) and on the Welcome page. QUARK_DUMP_CS prints the
    borders, radius, position, clip-path and the previous sibling.
+   Then (Kalen, Oct 18: VS Code in orbiter is 4x faster than this;
+   rendering and layout). Measured hidden at 2560x1440: a pointer
+   sweep over the Welcome page repainted the whole page on every
+   hover change (17 paints a second, 17 ms each) after a 4.4 ms
+   relayout of a 130-box subtree. Fixed, in order:
+   - damage repainting: the page keeps the rects that changed (each
+     relayout root's bounds before and after, a scrolled box, a
+     canvas, the focused field for caret and selection; a full
+     layout, a sheet, a font or the background mean all) and the
+     painter clips to their union, clears only that, and skips every
+     box whose bounds (Painter.bounds, shadows and outlines widen
+     them by their reach) miss it. Every other repaint request that
+     went through a layout root (hover, active, focus, inline
+     style, a DOM mutation, the title) no longer asks for the whole
+     page. QUARK_NODAMAGE=1 paints whole, for a comparison.
+   - a :hover (or any keyed) change made its top element a 'tree'
+     layout root, so the hovered card's whole container was rebuilt
+     and repainted. A keyed mark is a 'scan' root now: at layout
+     time the marked tree is restyled (cheap: a keyed element stands
+     unless a rule of its own names the key above it) and only the
+     elements whose computed style really changed become roots.
+   Measured on the same input sequence (hover sweep, wheel, five
+   activity bar clicks), both runs pixel-identical at the end:
+   paint 1611 -> 661 ms, hover relayouts 4.4 -> 1.5 ms median,
+   hover repaint area 1-2% of the page, a hover frame ~2 ms of
+   work (the profile: 0.75 ms paint, the rest the publish wait).
+   Layout stays 1.3 s in that run: a view switch is a full layout
+   (34-47 ms) after VS Code adds its sheets (60-115 marks), and a
+   sash drag 44-66 partial passes a second. NEXT: box reuse in a
+   partial pass (build is half of it), the full layout after a
+   sheet, text draw and the publish wait per frame.
+   The prof/s line prints "N partial X% area" for damage paints.
+   OPEN, seen in these runs (not before the state refresh): "The
+   local extension host took longer than 60s to send its ready
+   message" in both windows of the hidden runs on the copied state;
+   not chased.
 6. OPEN install/bin/vscode runs through quark; hosted in orbiter (a
    pane), the system bar menu, dialogs through the navigator.
 
@@ -1952,8 +2014,7 @@ without it if wanted.
 
 ## orbiter-os shell design — live list (Oct 1 2026)
 
-Goal: orbiter as an OS shell. No free-floating windows. The
-interface stays as it is: every pane keeps its title bar and
+Goal: orbiter as an OS shell. The interface stays as it is: every pane keeps its title bar and
 nav list. Changes: a dock on the left side, and the bottom
 bar 50% taller.
 1. OPEN the bottom bar (StatusBar, orbiter.ag) 50% taller:
