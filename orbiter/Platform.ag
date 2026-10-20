@@ -1,0 +1,830 @@
+extend orbiter
+
+# the agent view's platform: a floor of hexagonal mirrors in front
+# of the scene, an agent's avatar in a tile of its own; the scene
+# reflects in the mirrors, blurred a little where the circuit is
+# etched
+
+# what the platform's shader reads, by binding
+enum PlatSurface
+    scene : 0
+    frost : 1
+    avc0  : 2
+    avc1  : 3
+    avd   : 4
+    pcol  : 5
+    pdep  : 6
+
+# one hexagonal prism, radius 1 at its corners (one on +x), its top
+# at y 1 with a bevel down to y 0.625 (45 degrees at the mirrors'
+# height of 0.08), its foot at y 0; uv the top's
+# x and z over 0..1, as the circuit's svg is drawn
+func plat_vert [ ps: vec f32, ns: vec f32, ts: vec f32, x: f32,
+                 y: f32, z: f32, nx: f32, ny: f32, nz: f32 ]
+    ps.push[ x ]
+    ps.push[ y ]
+    ps.push[ z ]
+    ns.push[ nx ]
+    ns.push[ ny ]
+    ns.push[ nz ]
+    ts.push[ x * 0.5 + 0.5 ]
+    ts.push[ z * 0.5 + 0.5 ]
+
+func plat_hex [] -> GltfModel
+    ps : vec f32 []
+    ns : vec f32 []
+    ts : vec f32 []
+    ri : f32 [ 0.97 ]
+    hb : f32 [ 0.625 ]
+    for [ k: i32 0, k < 6, k += 1 ]
+        a0 : f32 [ radians[ f32[ k ] * 60.0 ] ]
+        a1 : f32 [ radians[ f32[ k + 1 ] * 60.0 ] ]
+        am : f32 [ radians[ f32[ k ] * 60.0 + 30.0 ] ]
+        c0 : f32 [ cos[ a0 ] ]
+        s0 : f32 [ sin[ a0 ] ]
+        c1 : f32 [ cos[ a1 ] ]
+        s1 : f32 [ sin[ a1 ] ]
+        cm : f32 [ cos[ am ] ]
+        sm : f32 [ sin[ am ] ]
+        # the top
+        plat_vert[ ps, ns, ts, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0 ]
+        plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, 0.0, 1.0, 0.0 ]
+        plat_vert[ ps, ns, ts, ri * c1, 1.0, ri * s1, 0.0, 1.0, 0.0 ]
+        # the bevel, at 45 degrees
+        bx : f32 [ cm * 0.7071 ]
+        bz : f32 [ sm * 0.7071 ]
+        plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, bx, 0.7071, bz ]
+        plat_vert[ ps, ns, ts, c0, hb, s0, bx, 0.7071, bz ]
+        plat_vert[ ps, ns, ts, c1, hb, s1, bx, 0.7071, bz ]
+        plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, bx, 0.7071, bz ]
+        plat_vert[ ps, ns, ts, c1, hb, s1, bx, 0.7071, bz ]
+        plat_vert[ ps, ns, ts, ri * c1, 1.0, ri * s1, bx, 0.7071, bz ]
+        # the side
+        plat_vert[ ps, ns, ts, c0, hb, s0, cm, 0.0, sm ]
+        plat_vert[ ps, ns, ts, c0, 0.0, s0, cm, 0.0, sm ]
+        plat_vert[ ps, ns, ts, c1, 0.0, s1, cm, 0.0, sm ]
+        plat_vert[ ps, ns, ts, c0, hb, s0, cm, 0.0, sm ]
+        plat_vert[ ps, ns, ts, c1, 0.0, s1, cm, 0.0, sm ]
+        plat_vert[ ps, ns, ts, c1, hb, s1, cm, 0.0, sm ]
+        # the foot
+        plat_vert[ ps, ns, ts, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0 ]
+        plat_vert[ ps, ns, ts, c1, 0.0, s1, 0.0, -1.0, 0.0 ]
+        plat_vert[ ps, ns, ts, c0, 0.0, s0, 0.0, -1.0, 0.0 ]
+    return plat_model[ ps, ns, ts ]
+
+# a flat square, x and z over -1..1, uv over 0..1: the avatars'
+# pictures are laid over the scene on it
+func plat_quad [] -> GltfModel
+    ps : vec f32 []
+    ns : vec f32 []
+    ts : vec f32 []
+    plat_vert[ ps, ns, ts, -1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
+    plat_vert[ ps, ns, ts, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
+    plat_vert[ ps, ns, ts, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
+    plat_vert[ ps, ns, ts, -1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
+    plat_vert[ ps, ns, ts, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
+    plat_vert[ ps, ns, ts, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
+    return plat_model[ ps, ns, ts ]
+
+func plat_model [ ps: vec f32, ns: vec f32, ts: vec f32 ]
+        -> GltfModel
+    nv : i32 [ i32[ ps.count ] / 3 ]
+    vb : i32 [ nv * 12 ]
+    tb : i32 [ nv * 8 ]
+    ib : i32 [ nv * 4 ]
+    tsz : i32 [ vb + vb + tb + ib ]
+    data : new u8 [ tsz ]
+    pf : @f32 [ data ]
+    for [ i: i32 0, i < nv * 3, i += 1 ]
+        pf[ i ]          = ps[ i ]
+        pf[ nv * 3 + i ] = ns[ i ]
+    for [ i: i32 0, i < nv * 2, i += 1 ]
+        pf[ nv * 6 + i ] = ts[ i ]
+    iu : @u32 [ @data[ vb + vb + tb ] ]
+    for [ i: i32 0, i < nv, i += 1 ]
+        iu[ i ] = u32[ i ]
+    bufs : vec GltfBuffer []
+    bufs += GltfBuffer [ byteLength: u64[ tsz ], data: data ]
+    views : vec BufferView []
+    views += BufferView [ buffer: 0, byteOffset: 0, byteLength: vb ]
+    views += BufferView [ buffer: 0, byteOffset: vb,
+                          byteLength: vb ]
+    views += BufferView [ buffer: 0, byteOffset: vb + vb,
+                          byteLength: tb ]
+    views += BufferView [ buffer: 0, byteOffset: vb + vb + tb,
+                          byteLength: ib ]
+    accs : vec Accessor []
+    accs += Accessor [ bufferView: 0,
+                       componentType: ComponentType.FLOAT,
+                       type: CompoundType.VEC3, count: nv ]
+    accs += Accessor [ bufferView: 1,
+                       componentType: ComponentType.FLOAT,
+                       type: CompoundType.VEC3, count: nv ]
+    accs += Accessor [ bufferView: 2,
+                       componentType: ComponentType.FLOAT,
+                       type: CompoundType.VEC2, count: nv ]
+    accs += Accessor [ bufferView: 3,
+                       componentType: ComponentType.UNSIGNED_INT,
+                       type: CompoundType.SCALAR, count: nv ]
+    am : map i64 [ string ] [ ]
+    am[ 'POSITION' ]   = i64[ 0 ]
+    am[ 'NORMAL' ]     = i64[ 1 ]
+    am[ 'TEXCOORD_0' ] = i64[ 2 ]
+    prs : vec Primitive []
+    prs += Primitive [ name: 'hex', attributes: am,
+                       indices: u64[ 3 ], material: 0,
+                       mode: Mode.TRIANGLES ]
+    mshs : vec Mesh []
+    mshs += Mesh [ name: 'hex', primitives: prs ]
+    nds : vec Node []
+    nds += Node [ name: 'hex', mesh: 0 ]
+    sn : vec i64 []
+    sn += 0
+    scns : vec Scene []
+    scns += Scene [ name: 'scene', nodes: sn ]
+    return GltfModel [ nodes: nds, meshes: mshs, scenes: scns,
+        scene: 0, buffers: bufs, bufferViews: views, accessors: accs ]
+
+# the mirrors: the scene's picture read along each
+# pixel's reflection (the scene is far: its direction alone, through
+# the camera, gives where), a few taps wider where the circuit's
+# etching runs
+ModelViewProject PlatLit
+    mutable cam_pos : vec4f
+    # x: 1 a mirror, 3 an avatar's picture (4 not drawn yet); y:
+    # alpha; z: the etching (0 none), or for a picture, 1 when it
+    # has a second
+    mutable look    : vec4f
+    # x: 1 when the scene's picture is bound; y, z: one over the
+    # picture's width and height
+    mutable has     : vec4f
+    # where this picture lands in the window, over 0..1: x y its top
+    # left, z w its size
+    mutable win     : vec4f
+    # an avatar's picture: where it lies on the screen (-1..1),
+    # x y its top left, z w its size
+    mutable box     : vec4f
+
+    attrib scene : LayoutBinding [ type:typeid[ PlatSurface ],
+                                   id:PlatSurface.scene, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib frost : LayoutBinding [ type:typeid[ PlatSurface ],
+                                   id:PlatSurface.frost, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib avc0  : LayoutBinding [ type:typeid[ PlatSurface ],
+                                   id:PlatSurface.avc0, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib avc1  : LayoutBinding [ type:typeid[ PlatSurface ],
+                                   id:PlatSurface.avc1, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib avd   : LayoutBinding [ type:typeid[ PlatSurface ],
+                                   id:PlatSurface.avd, count:1,
+                                   format: typeid[ f32 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_wpos : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_nrm  : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv   : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_top  : VertexOutput [ type:typeid[ f32 ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [ 0.0f, 3.0f, 3.0f ]
+        target : vec3f [ 0.0f, 0.0f, 0.0f ]
+        up     : vec3f [ 0.0f, -1.0f, 0.0f ]
+        model  = mat4f.identity   []
+        proj   = mat4f.perspective[ radians[ 30.0f ], 1.0f, 0.1f,
+                                    200.0f ]
+        view   = mat4f.look_at    [ eye, target, up ]
+
+    func vertex[] -> GLSL none {
+        vec4 wp = ubo.model * vec4(a_pos, 1.0);
+        v_wpos  = wp.xyz;
+        v_nrm   = mat3(transpose(inverse(ubo.model))) * a_normal;
+        v_uv    = a_uv;
+        v_top   = a_normal.y;
+        gl_Position = ubo.proj * ubo.view * wp;
+        if (ubo.look.x > 2.5) {
+            // an avatar's picture, at its depth's middle
+            vec4 c = ubo.proj * ubo.view * vec4(ubo.model[3].xyz, 1.0);
+            gl_Position = vec4(ubo.box.xy + a_uv * ubo.box.zw,
+                               c.z / c.w, 1.0);
+        }
+    }
+
+    func fold [ uv: vec2f ] -> GLSL vec2f {
+        return vec2(1.0) - abs(vec2(1.0) - mod(uv, 2.0));
+    }
+
+    func fragment[] -> GLSL none {
+        gl_FragDepth = gl_FragCoord.z;
+        // an avatar not drawn yet: nothing
+        if (ubo.look.x > 3.5) discard;
+        if (ubo.look.x > 2.5) {
+            // the avatar's pictures, the later over the earlier;
+            // where it drew itself, its own depth
+            vec4  c0 = texture(avc0, v_uv);
+            vec4  c1 = texture(avc1, v_uv) * ubo.look.z;
+            vec4  c  = c1 + c0 * (1.0 - c1.a);
+            float d  = texture(avd, v_uv).r;
+            // the halo is light with next to no cover: kept as is
+            if (max(max(c.r, c.g), max(c.b, c.a)) < 0.002) discard;
+            if (d < 1.0) gl_FragDepth = d;
+            fragColor = c;
+            return;
+        }
+        vec3  N = normalize(v_nrm);
+        vec3  V = normalize(ubo.cam_pos.xyz - v_wpos);
+        float nv = dot(N, V);
+        if (nv < 0.0) { N = -N; nv = -nv; }
+        vec3  R = reflect(-V, N);
+        float top = (v_top > 0.99) ? 1.0 : 0.0;
+        // a level mirror shows the scene upside down where it
+        // stands; its bevel and the view's angle bend that
+        vec2  tuv = gl_FragCoord.xy * ubo.has.yz;
+        vec2  wuv = ubo.win.xy + tuv * ubo.win.zw;
+        vec2  uv  = vec2(wuv.x, 1.0 - wuv.y)
+                  + N.xz * 0.10 + R.xz * 0.04;
+        // the etching: on the tops only
+        float fm = 0.0;
+        if (ubo.look.z > 0.0 && v_top > 0.99)
+            fm = texture(frost, v_uv).a;
+        vec3 sharp = texture(scene, fold(uv)).rgb;
+        vec3 soft  = vec3(0.0);
+        for (int i = 0; i < 8; i++) {
+            float an = float(i) * 0.7854;
+            vec2  o  = vec2(cos(an), sin(an)) * 0.006;
+            soft += texture(scene, fold(uv + o)).rgb;
+            soft += texture(scene, fold(uv + o * 2.2)).rgb;
+        }
+        soft = soft / 16.0;
+        // etched: the same mirror, its reflection frosted
+        vec3 refl = mix(sharp, soft, fm) * (1.0 - 0.06 * fm)
+                  * ubo.has.x;
+        float F = 0.06 + 0.94 * pow(1.0 - nv, 5.0);
+        // the bevels catch a cool light from above the scene
+        float bev = (v_top > 0.3 && v_top < 0.99) ? 1.0 : 0.0;
+        // a mirror: its top whole, its bevel and side darker
+        vec3 col = refl * mix(0.35, mix(0.72, 0.97, F), top)
+                 + vec3(0.012, 0.012, 0.02)
+                 + vec3(0.50, 0.42, 1.0) * bev * 0.10;
+        fragColor = vec4(col, ubo.look.y);
+    }
+
+# the platform's picture in focus at one distance: nearer and
+# farther blur by how far they are from it, the far side more
+ModelViewProject PlatFocus
+    # x: the distance in focus; y: the blur's reach in pixels; z:
+    # the most it blurs, in pixels
+    mutable focus : vec4f
+    # x y: one over the picture's size; z w: the projection's
+    # depth terms (m10, m14), to take a depth back to a distance
+    mutable px    : vec4f
+
+    attrib pcol : LayoutBinding [ type:typeid[ PlatSurface ],
+                                  id:PlatSurface.pcol, count:1,
+                                  format: typeid[ rgba8 ] ]
+    attrib pdep : LayoutBinding [ type:typeid[ PlatSurface ],
+                                  id:PlatSurface.pdep, count:1,
+                                  format: typeid[ f32 ] ]
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # how far a pixel blurs, from its depth
+    func spread [ d: f32 ] -> GLSL float {
+        float dist = ubo.px.w / (d + ubo.px.z);
+        float far  = max(1.0 - ubo.focus.x / dist, 0.0);
+        float near = max(ubo.focus.x / dist - 1.0, 0.0);
+        return min((far + near) * ubo.focus.y, ubo.focus.z);
+    }
+
+    func fragment [] -> GLSL none {
+        float r0  = spread(texture(pdep, v_uv).r);
+        vec4  sum = texture(pcol, v_uv);
+        float wt  = 1.0;
+        // a spiral of taps out to the pixel's own spread; a tap
+        // counts where its own spread reaches back here, so what
+        // is in focus does not bleed out over its blurred ground
+        for (int i = 1; i < 40; i++) {
+            float t  = sqrt(float(i) / 40.0);
+            float an = float(i) * 2.39996;
+            vec2  o  = vec2(cos(an), sin(an)) * t * r0;
+            vec2  q  = v_uv + o * ubo.px.xy;
+            float rq = spread(texture(pdep, q).r);
+            float w  = smoothstep(length(o) - 1.0, length(o) + 1.0,
+                                  rq + 1.0);
+            sum += texture(pcol, q) * w;
+            wt  += w;
+        }
+        fragColor = sum / wt;
+    }
+
+# an agent's avatar on its pad: the platform places it each frame,
+# and its look follows that agent (working, waiting)
+OrbiterAvatar PlatAvatar
+    public agent : string
+    animate_always : true
+
+    func on_state [ m: i32 ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ]
+            on : bool [ orb.home_session[ agent ] != null ]
+            dg : string orb.home_doing_of[ agent ]
+            work_on   = on && !orb.home_waiting[ agent ]
+            # thinking turns it; writing lights its spokes' lines
+            edits_in  = work_on && (dg == 'writing'
+                                    || orb.home_writing[ agent ])
+            work_done = false
+            # a build burns its beam
+            swap_on   = work_on && dg == 'build'
+            mic_on    = false
+        super.on_state[ m ]
+
+    func draw [ w: Window ]
+        pv : cast PlatformView [ parent ]
+        if [ !pv ] return
+        pl : vec4f pv.place[ agent ]
+        # still under its tile: nothing to draw
+        if [ pl.w <= 0.0 || pl.z < 2.0 ] return
+        ar : 'l{pl.x}px t{pl.y}px w{pl.z}px h{pl.w}px'
+        if [ !last_area || last_area != ar ]
+            last_area = ar
+            area = Region [ ar ]
+        # drawn with the platform's camera, cut to its own box
+        scene_on    = true
+        scene_eye   = pv.eye
+        scene_mid   = pv.look
+        scene_proj  = pv.proj_in[ pl ]
+        scene_model = pv.model_of[ agent ]
+        super.draw[ w ]
+        pv.take[ agent, scene_out, scene_depth ]
+    intern last_area : string
+
+# the platform: drawn into its own picture behind the agent list,
+# which it leaves room for (frame_w: the free width at the left)
+element PlatformView
+    animated : true
+    public frame_w : f32
+    intern target  : Render
+    # the focus pass: the platform's picture blurred by its depth
+    intern focus_r : Render
+    intern focus_s  : PlatFocus
+    intern focus_m  : Model
+    intern tkey    : string
+    intern models  : vec Model
+    intern shades  : vec PlatLit
+    intern hexm    : GltfModel
+    intern quadm   : GltfModel
+    intern frost_cv : Canvas
+    intern scene_tx : Texture
+    # the agents, a pad each, and how far each is open (0 shut,
+    # 1 its avatar up)
+    intern names   : vec string
+    intern opens   : vec f32
+    # how many pictures an avatar's stage gave, once bound
+    intern ready   : vec f32
+    intern bound   : map string [ string ]
+    intern last_ms : i64
+    # the camera, eased: where it looks, how far, from how high
+    intern cam_x   : f32
+    intern cam_z   : f32
+    intern cam_y   : f32
+    intern cam_d   : f32
+    intern cam_e   : f32
+    public eye     : vec3f
+    public look    : vec3f
+    intern view_m  : mat4f
+    intern proj_m  : mat4f
+    intern base_r  : f32
+
+    # a mirror's middle: the honeycomb's places ring by ring
+    # from the middle, nearest first
+    func pad_at [ i: i32 ] -> vec3f
+        dq : vec i32 [] [ 1, 1, 0, -1, -1, 0 ]
+        dr : vec i32 [] [ 0, -1, -1, 0, 1, 1 ]
+        q : i32 [ 0 ]
+        r : i32 [ 0 ]
+        if [ i > 0 ]
+            k : i32 [ 1 ]
+            n : i32 [ i - 1 ]
+            while [ n >= 6 * k ]
+                n -= 6 * k
+                k += 1
+            q = -k
+            r = k
+            side : i32 [ n / k ]
+            for [ s: i32 0, s < side, s += 1 ]
+                q += dq[ s ] * k
+                r += dr[ s ] * k
+            q += dq[ side ] * (n % k)
+            r += dr[ side ] * (n % k)
+        # edge to edge: the bevels make the seams
+        sp : f32 [ 1.0 ]
+        fq : f32 [ f32[ q ] ]
+        fr : f32 [ f32[ r ] ]
+        return vec3f [ 1.5 * fq * sp, 0.0,
+                       1.7320508 * (fr + fq * 0.5) * sp ]
+
+    # the mirrors of the floor; the agents take the first ones
+    func hexes [] -> i32
+        return 64
+
+    # the floor's middle
+    func mid [] -> vec3f
+        n : i32 hexes[]
+        sx : f32 [ 0.0 ]
+        sz : f32 [ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            p : vec3f pad_at[ i ]
+            sx += p.x
+            sz += p.z
+        return vec3f [ sx / f32[ n ], 0.0, sz / f32[ n ] ]
+
+    func index_of [ nm: string ] -> i32
+        if [ !names ] return -1
+        for [ i: i32 0, i < names.count, i += 1 ]
+            if [ names[ i ] == nm ] return i
+        return -1
+
+    func smooth [ e0: f32, e1: f32, x: f32 ] -> f32
+        t : f32 [ clamp[ (x - e0) / (e1 - e0), 0.0, 1.0 ] ]
+        return t * t * (3.0 - 2.0 * t)
+
+    # where an agent's avatar stands, in the platform's space
+    func avatar_at [ i: i32 ] -> vec3f
+        p : vec3f pad_at[ i ]
+        # it takes its tile's place, its top 15% of its height
+        # (0.66) over the floor, rising from under it
+        rise : f32 [ smooth[ 0.5, 1.0, opens[ i ] ] ]
+        return vec3f [ p.x, 0.18 - 0.8 * (1.0 - rise), p.z ]
+
+    # a point on the screen, in this element's pixels; z its depth
+    func project [ p: vec3f ] -> vec3f
+        vm : mat4f view_m
+        pm : mat4f proj_m
+        vx : f32 [ vm.m[0] * p.x + vm.m[4] * p.y + vm.m[8] * p.z
+                   + vm.m[12] ]
+        vy : f32 [ vm.m[1] * p.x + vm.m[5] * p.y + vm.m[9] * p.z
+                   + vm.m[13] ]
+        vz : f32 [ vm.m[2] * p.x + vm.m[6] * p.y + vm.m[10] * p.z
+                   + vm.m[14] ]
+        cx : f32 [ pm.m[0] * vx + pm.m[8] * vz ]
+        cy : f32 [ pm.m[5] * vy ]
+        cw : f32 [ 0.0 - vz ]
+        if [ cw < 0.001 ] cw = 0.001
+        return vec3f [ (cx / cw * 0.5 + 0.5) * bounds.w,
+                       (cy / cw * 0.5 + 0.5) * bounds.h, cw ]
+
+    # an avatar's pictures and depth, as it drew them: bound to
+    # its picture on the platform
+    public func take [ nm: string, outs: vec Texture, d: Texture ]
+        i : i32 index_of[ nm ]
+        if [ i < 0 || !models || !outs || outs.count == 0 || !d ]
+            return
+        md : Model models[ hexes[] + i ]
+        c0 : Texture outs[ 0 ]
+        c1 : Texture outs[ outs.count - 1 ]
+        # a resized picture keeps its object, not its image
+        k : '{c0.width}x{c0.height} {d.width}x{d.height}'
+        if [ !bound ] bound = map string [ string ] []
+        if [ md.samplers[ 'avc0' ] != c0 || md.samplers[ 'avc1' ] != c1
+             || md.samplers[ 'avd' ] != d || bound[ nm ] != k ]
+            bound[ nm ] = k
+            md.samplers[ 'avc0' ] = c0
+            md.samplers[ 'avc1' ] = c1
+            md.samplers[ 'avd' ]  = d
+            md.rebind_model[]
+        ready[ i ] = f32[ outs.count ]
+
+    # its avatar's box on the screen in this element's pixels:
+    # x y its top left, z w its size (none while under its tile)
+    public func place [ nm: string ] -> vec4f
+        i : i32 index_of[ nm ]
+        if [ i < 0 || !bounds || opens[ i ] < 0.5 ]
+            return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        p : vec3f avatar_at[ i ]
+        # its hexagon, its body under it, its glow and beam over it
+        x0 : f32 [ 1.0e9 ]
+        y0 : f32 [ 1.0e9 ]
+        x1 : f32 [ -1.0e9 ]
+        y1 : f32 [ -1.0e9 ]
+        for [ k: i32 0, k < 8, k += 1 ]
+            cx : f32 [ ((k & 1) != 0) ? 1.3 : -1.3 ]
+            cy : f32 [ ((k & 2) != 0) ? 3.4 : -0.9 ]
+            cz : f32 [ ((k & 4) != 0) ? 1.3 : -1.3 ]
+            q : vec3f project[ vec3f [ p.x + cx, p.y + cy, p.z + cz ] ]
+            x0 = min[ x0, q.x ]
+            y0 = min[ y0, q.y ]
+            x1 = max[ x1, q.x ]
+            y1 = max[ y1, q.y ]
+        x0 = floor[ max[ x0, 0.0 ] ]
+        y0 = floor[ max[ y0, 0.0 ] ]
+        x1 = ceil[ min[ x1, bounds.w ] ]
+        y1 = ceil[ min[ y1, bounds.h ] ]
+        if [ x1 - x0 < 2.0 || y1 - y0 < 2.0 ]
+            return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        return vec4f [ x0, y0, x1 - x0, y1 - y0 ]
+
+    # the platform's projection cut to a box of the screen: the
+    # avatar's picture lines up with the platform's exactly
+    public func proj_in [ b: vec4f ] -> mat4f
+        pm : mat4f proj_m
+        nx : f32 [ (b.x + b.z * 0.5) / bounds.w * 2.0 - 1.0 ]
+        ny : f32 [ (b.y + b.w * 0.5) / bounds.h * 2.0 - 1.0 ]
+        hw : f32 [ b.z / bounds.w ]
+        hh : f32 [ b.w / bounds.h ]
+        for [ c: i32 0, c < 4, c += 1 ]
+            m3 : f32 [ pm.m[ c * 4 + 3 ] ]
+            pm.m[ c * 4 ]     = (pm.m[ c * 4 ] - nx * m3) / hw
+            pm.m[ c * 4 + 1 ] = (pm.m[ c * 4 + 1 ] - ny * m3) / hh
+        return pm
+
+    # the avatar in its tile, its hexagon a little inside it
+    public func model_of [ nm: string ] -> mat4f
+        i : i32 index_of[ nm ]
+        m : mat4f mat4f.identity[]
+        if [ i < 0 ] return m
+        p : vec3f avatar_at[ i ]
+        m = m.translate[ p ]
+        m = m.scale[ vec3f [ 1.15, 1.15, 1.15 ] ]
+        return m
+
+    # the circuit's etching, drawn once from its svg
+    func frost_tex [ w: Window ] -> Texture
+        if [ !frost_cv ]
+            mdl : SVGModel [ path 'images/circuit.svg' ]
+            mdl.pixel_scale = 1
+            frost_cv = Canvas [ vk: vk, w: w, format: Pixel.rgba8,
+                                width: 1024, height: 1024,
+                                load_existing: true, tag: 'plat' ]
+            frost_cv.update[]
+            frost_cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+            frost_cv.draw_svg[ mdl, 0.0, 0.0, 1024.0, 1024.0 ]
+            frost_cv.sync_all[]
+        return frost_cv.color
+
+    # the mirrors and the avatars' pictures: made again when the
+    # agents change
+    func build [ w: Window ]
+        if [ !hexm ] hexm = plat_hex[]
+        if [ !quadm ] quadm = plat_quad[]
+        ft : Texture frost_tex[ w ]
+        st : Texture [ (w.backdrop) ? w.backdrop.color : ft ]
+        scene_tx = st
+        models = vec Model []
+        shades = vec PlatLit []
+        n : i32 [ i32[ names.count ] ]
+        # the floor's mirrors, then a picture an agent's avatar
+        for [ k: i32 0, k < hexes[] + n, k += 1 ]
+            sh : PlatLit [ vk: vk ]
+            sm : map Au [ string ] []
+            sm[ 'scene' ] = st
+            sm[ 'frost' ] = ft
+            sm[ 'avc0' ]  = ft
+            sm[ 'avc1' ]  = ft
+            sm[ 'avd' ]   = ft
+            gm : GltfModel [ (k < hexes[]) ? hexm : quadm ]
+            # the mirrors are straight colour; an avatar's picture is
+            # premultiplied, its halo light added
+            md : Model [ vk: vk, w: w, id: gm, s: sh, samplers: sm,
+                         straight_alpha: k < hexes[], cull_none: true ]
+            models.push[ md ]
+            shades.push[ sh ]
+        if [ target && tkey ] w.element_targets.rm[ tkey ]
+        tkey = '{id}_{n}_{epoch_millis[]}'
+        target = Render [ vk: vk, w: w, wscale: 1.0, use_depth: true,
+                          clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                          models: models ]
+        target.owner = a
+        w.element_targets[ tkey ] = target
+
+    # the platform's picture in focus at the chosen avatar
+    func focus_pass [ w: Window, pick: i32 ] -> Texture
+        if [ !target.depth ] return target.color
+        if [ !focus_r ]
+            focus_s = PlatFocus [ vk: vk ]
+            sm : map Au [ string ] []
+            sm[ 'pcol' ] = target.color
+            sm[ 'pdep' ] = target.depth
+            focus_m = Model [ w: w, s: focus_s, samplers: sm ]
+            focus_r = Render [ vk: vk, w: w, wscale: 1.0,
+                            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                            models: vec Model [] [ focus_m ] ]
+        if [ focus_m.samplers[ 'pcol' ] != target.color
+             || focus_m.samplers[ 'pdep' ] != target.depth
+             || focus_r.width != target.width
+             || focus_r.height != target.height ]
+            focus_r.width  = target.width
+            focus_r.height = target.height
+            focus_m.samplers[ 'pcol' ] = target.color
+            focus_m.samplers[ 'pdep' ] = target.depth
+            focus_m.rebind_model[]
+        # none chosen: the first avatar up, else the floor's middle
+        at : i32 [ pick ]
+        for [ i: i32 0, i < opens.count && at < 0, i += 1 ]
+            if [ opens[ i ] > 0.5 ] at = i
+        fp : vec3f [ (at >= 0) ? avatar_at[ at ]
+                               : vec3f [ cam_x, 0.0, cam_z ] ]
+        dx : f32 [ eye.x - fp.x ]
+        dy : f32 [ eye.y - fp.y ]
+        dz : f32 [ eye.z - fp.z ]
+        fd : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
+        sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+        focus_s.focus = vec4f [ fd, 45.0 * sc, 28.0 * sc, 0.0 ]
+        focus_s.px    = vec4f [ 1.0 / f32[ target.width ],
+                               1.0 / f32[ target.height ],
+                               proj_m.m[ 10 ], proj_m.m[ 14 ] ]
+        focus_r.update[]
+        focus_r.draw[]
+        focus_r.sync_fence[]
+        return focus_r.color
+
+    public func on_unload []
+        if [ ux && ux.element_targets && tkey ]
+            ux.element_targets.rm[ tkey ]
+
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb ] return t
+        for [ nm: string ] in orb.home_names[]
+            t[ 'pav_{nm}' ] = PlatAvatar [ agent: nm, topmost: false ]
+        return t
+
+    func draw [ w: Window ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb || !bounds || bounds.w < 2.0 ] return
+        now : vec string orb.home_names[]
+        # the agents changed: their opens kept by name
+        same : bool [ names && names.count == now.count ]
+        if [ same ]
+            for [ i: i32 0, i < now.count, i += 1 ]
+                if [ names[ i ] != now[ i ] ] same = false
+        if [ !same ]
+            # copies: the members are replaced below
+            was_n : vec string []
+            was_o : vec f32 []
+            if [ names ]
+                was_n = vec string [ names ]
+                was_o = vec f32 [ opens ]
+            names  = now
+            opens  = vec f32 []
+            ready  = vec f32 []
+            for [ nm: string ] in names
+                o : f32 [ 0.0 ]
+                for [ j: i32 0, j < was_n.count, j += 1 ]
+                    if [ was_n[ j ] == nm ] o = was_o[ j ]
+                opens.push[ o ]
+                ready.push[ 0.0 ]
+            build[ w ]
+        if [ !target ] return
+        # the scene's picture moved (a new size): bound again
+        if [ w.backdrop && w.backdrop.color != scene_tx ]
+            scene_tx = w.backdrop.color
+            for [ md: Model ] in models
+                md.samplers[ 'scene' ] = scene_tx
+                md.rebind_model[]
+        ms : i64 [ epoch_millis[] ]
+        dt : f32 [ (last_ms > 0) ? f32[ ms - last_ms ] / 1000.0 : 0.0 ]
+        if [ dt > 0.1 ] dt = 0.1
+        last_ms = ms
+        n : i32 [ i32[ names.count ] ]
+        pick : i32 [ -1 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            on : bool [ orb.home_session[ names[ i ] ] != null ]
+            # 1.8 s to open: the tile sinks, the avatar rises; as
+            # long to close
+            st : f32 [ dt / 1.8 ]
+            opens[ i ] = (on) ? min[ opens[ i ] + st, 1.0 ]
+                              : max[ opens[ i ] - st, 0.0 ]
+            sel : bool [ on && orb.home_open == names[ i ] ]
+            if [ sel ] pick = i
+        # the floor's reach from its middle
+        rb : f32 [ 1.0 ]
+        mp : vec3f mid[]
+        nh : i32 hexes[]
+        for [ i: i32 0, i < nh, i += 1 ]
+            p : vec3f pad_at[ i ]
+            dx : f32 [ p.x - mp.x ]
+            dz : f32 [ p.z - mp.z ]
+            rb = max[ rb, sqrt[ dx * dx + dz * dz ] + 1.0 ]
+        base_r = rb
+        # the camera: the whole platform, or the chosen avatar
+        fw : f32 [ (frame_w > 0.0) ? frame_w : bounds.w ]
+        fov : f32 [ radians[ 30.0 ] ]
+        fl : f32 [ 1.0 / tan[ fov * 0.5 ] ]
+        # framed on the middle; the rest runs off past the edges
+        rv : f32 [ 4.5 ]
+        fit : f32 [ max[ rv * fl * bounds.h / (fw * 0.92),
+                         rv * fl / 0.9 ] ]
+        tx : f32 [ mp.x ]
+        tz : f32 [ mp.z ]
+        td : f32 [ fit * 0.55 ]
+        te : f32 [ 0.60 ]
+        if [ pick >= 0 ]
+            pp : vec3f pad_at[ pick ]
+            tx = pp.x
+            tz = pp.z
+            td = max[ 2.2 * fl * bounds.h / (fw * 0.9), 2.2 * fl ]
+            te = 0.85
+        if [ cam_d <= 0.0 ]
+            cam_x = tx
+            cam_z = tz
+            cam_d = td
+            cam_e = te
+        ease : f32 [ 0.05 ]
+        cam_x = filter_n[ cam_x, tx, ease, w.frame_factor ]
+        cam_z = filter_n[ cam_z, tz, ease, w.frame_factor ]
+        cam_d = filter_n[ cam_d, td, ease, w.frame_factor ]
+        cam_e = filter_n[ cam_e, te, ease, w.frame_factor ]
+        # looking above the floor's middle: the field sits low
+        cam_y = filter_n[ cam_y, (pick >= 0) ? 0.1 : 1.6, ease,
+                          w.frame_factor ]
+        # a slow sway, so the mirrors move
+        az : f32 [ sin[ f32[ ms % 600000 ] / 9000.0 ] * 0.12 ]
+        eye = vec3f [ cam_x + cam_d * cos[ cam_e ] * sin[ az ],
+                      cam_d * sin[ cam_e ],
+                      cam_z + cam_d * cos[ cam_e ] * cos[ az ] ]
+        # looking above the floor's middle: the field sits low
+        tgt : vec3f [ cam_x, cam_y, cam_z ]
+        look = tgt
+        up : vec3f [ 0.0, -1.0, 0.0 ]
+        asp : f32 [ bounds.w / bounds.h ]
+        view_m = mat4f.look_at[ eye, tgt, up ]
+        pm : mat4f mat4f.perspective[ fov, asp, 0.1, 200.0 ]
+        # the platform's middle at the free area's middle
+        pm.m[ 8 ] = 1.0 - fw / bounds.w
+        proj_m = pm
+        cam : vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+        has : vec4f [ (w.backdrop) ? 1.0 : 0.0,
+                      1.0 / f32[ target.width ],
+                      1.0 / f32[ target.height ], 0.0 ]
+        # this element in the window: its bounds summed up the tree
+        ax : f32 [ 0.0 ]
+        ay : f32 [ 0.0 ]
+        up9 : element [ a ]
+        while [ up9 ]
+            if [ up9.bounds ]
+                ax += up9.bounds.x
+                ay += up9.bounds.y
+            up9 = up9.parent
+        sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+        ww : f32 [ f32[ w.width ] / sc ]
+        wh : f32 [ f32[ w.height ] / sc ]
+        win : vec4f [ ax / ww, ay / wh, bounds.w / ww, bounds.h / wh ]
+        # the floor: its mirrors, the agents on the first ones
+        for [ i: i32 0, i < nh, i += 1 ]
+            p : vec3f pad_at[ i ]
+            pd : PlatLit shades[ i ]
+            m1 : mat4f mat4f.identity[]
+            # an agent's tile sinks away under its avatar
+            sink : f32 [ (i < n) ? smooth[ 0.3, 0.6, opens[ i ] ]
+                                 : 0.0 ]
+            m1 = m1.translate[ vec3f [ p.x, 0.0 - sink, p.z ] ]
+            m1 = m1.scale[ vec3f [ 1.0, 0.08, 1.0 ] ]
+            pd.model   = m1
+            pd.view    = view_m
+            pd.proj    = proj_m
+            pd.cam_pos = cam
+            pd.look    = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
+            pd.has     = has
+            pd.win     = win
+        # each avatar's picture, where its box lies, at its tile
+        for [ i: i32 0, i < n, i += 1 ]
+            av : PlatLit shades[ nh + i ]
+            pl : vec4f place[ names[ i ] ]
+            ma : mat4f mat4f.identity[]
+            ma = ma.translate[ avatar_at[ i ] ]
+            av.model   = ma
+            av.view    = view_m
+            av.proj    = proj_m
+            av.cam_pos = cam
+            av.look    = vec4f [ (pl.z > 0.0 && ready[ i ] > 0.0)
+                                 ? 3.0 : 4.0, 1.0,
+                                 (ready[ i ] > 1.5) ? 1.0 : 0.0, 0.0 ]
+            av.box     = vec4f [ pl.x / bounds.w * 2.0 - 1.0,
+                                 pl.y / bounds.h * 2.0 - 1.0,
+                                 pl.z / bounds.w * 2.0,
+                                 pl.w / bounds.h * 2.0 ]
+            av.has     = has
+            av.win     = win
+        b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        w.screen.draw_image[ focus_pass[ w, pick ], b ]
+        needs_frame = true

@@ -35,6 +35,10 @@ class AgentRun
     func waiting [ title: string ] -> bool
         return false
 
+    # at work, it writes (its answer, an edit) rather than thinks
+    func writing [ title: string ] -> bool
+        return false
+
     # the program, by name: silver's install first, then PATH
     func program [] -> string
         return name
@@ -419,6 +423,11 @@ func shell_word [ s: string ] -> string
             out = out + '\\'
         out = out + s.mid[ i, 1 ]
     return '"{out}"'
+
+# the agent a terminal line was made for, by its session
+func agent_term_run [ sid: i32 ] -> AgentRun
+    if [ !agent_runs || !agent_runs.contains[ '{sid}' ] ] return null
+    return agent_runs[ '{sid}' ]
 
 # session sid's agent nm, in a terminal: the shell line that runs its
 # own program in root ('' when there is no such agent)

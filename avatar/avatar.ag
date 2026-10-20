@@ -573,6 +573,14 @@ Orbiter Aura
 
 	func fragment[] -> GLSL none {
 		vec3  ro    = v_eye_pos;
+		// a model sized up: the march runs at its own size, the eye
+		// drawn in toward it; sx takes points back out to the scene
+		float sx    = length(ubo.model[0].xyz);
+		vec3  org   = ubo.model[3].xyz;
+		mat4  M     = mat4(vec4(ubo.model[0].xyz / sx, 0.0),
+		                  vec4(ubo.model[1].xyz / sx, 0.0),
+		                  vec4(ubo.model[2].xyz / sx, 0.0), ubo.model[3]);
+		ro = org + (ro - org) / sx;
 		vec3  rd    = normalize(v_ray);
 		vec3  col   = vec3(0.0);
 		float alpha = 0.0;
@@ -590,8 +598,8 @@ Orbiter Aura
 		// the beam starts at the core's surface (0.46 down the bowl), that
 		// much longer, and 30% taller above it
 		float cyl_h   = 1.4 * ubo.pulse_height * 1.3 + 0.51;
-		vec3  cyl_o   = (ubo.model * vec4(0.0, 0.46, 0.0, 1.0)).xyz;
-		vec3  cyl_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
+		vec3  cyl_o   = (M * vec4(0.0, 0.46, 0.0, 1.0)).xyz;
+		vec3  cyl_d   = normalize(mat3(M) * vec3(0.0, -1.0, 0.0));
 		vec3  cyl_oc  = ro - cyl_o;
 		vec3  cyl_rdp = rd - dot(rd, cyl_d) * cyl_d;
 		vec3  cyl_ocp = cyl_oc - dot(cyl_oc, cyl_d) * cyl_d;
@@ -724,7 +732,7 @@ Orbiter Aura
 		// from the rings' outer edge (0.13, radius 0.43) down to the core
 		// (0.47, 0.13) ──
 		if (ubo.beam > 0.001) {
-			vec3  dr_o   = (ubo.model * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+			vec3  dr_o   = (M * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 			vec3  dr_d   = -cyl_d;                       // model +y: down the bowl
 			float dr_y0  = 0.13;
 			float dr_y1  = 0.47;
@@ -757,7 +765,7 @@ Orbiter Aura
 						if (alpha > 0.97) break;
 						vec3  p   = ro + rd * (dr_te + (float(k) + 0.5) * dr_dt);
 						{
-							vec4  cp  = ubo.proj * ubo.view * vec4(p, 1.0);
+							vec4  cp  = ubo.proj * ubo.view * vec4(org + (p - org) * sx, 1.0);
 							vec2  suv = cp.xy / cp.w * 0.5 + 0.5;
 							if (cp.z / cp.w > texture(height, suv).r + 0.0005) continue;
 						}
@@ -806,8 +814,8 @@ Orbiter Aura
 		float rng_Ro  = 0.56;
 		float rng_Ri  = 0.471847;
 		float rng_bh  = ubo.halo_height;
-		vec3  rng_o   = (ubo.model * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
-		vec3  rng_d   = normalize(mat3(ubo.model) * vec3(0.0, -1.0, 0.0));
+		vec3  rng_o   = (M * vec4(0.0, 0.148, 0.0, 1.0)).xyz;
+		vec3  rng_d   = normalize(mat3(M) * vec3(0.0, -1.0, 0.0));
 		vec3  rng_ref = abs(rng_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
 		vec3  rng_tg  = normalize(cross(rng_d, rng_ref));
 		vec3  rng_bn  = cross(rng_tg, rng_d);
@@ -854,7 +862,7 @@ Orbiter Aura
 						if (alpha > 0.97) break;
 						vec3  rng_p  = ro + rd * (rng_te + (float(j) + 0.5) * rng_dt);
 						{
-							vec4  cp  = ubo.proj * ubo.view * vec4(rng_p, 1.0);
+							vec4  cp  = ubo.proj * ubo.view * vec4(org + (rng_p - org) * sx, 1.0);
 							vec2  suv = cp.xy / cp.w * 0.5 + 0.5;
 							if (cp.z / cp.w > texture(height, suv).r + 0.0005) continue;
 						}
@@ -922,8 +930,8 @@ Orbiter Aura
 		float tor_r   = 0.045;                      // the tube: the ring's width
 		// seated ON the rim (at 0.148): the volume pass has no depth
 		// against the body, so nothing of the donut may sit behind the metal
-		vec3  tor_o   = (ubo.model * vec4(0.0, 0.196, 0.0, 1.0)).xyz;
-		vec3  tor_d   = normalize(mat3(ubo.model) * vec3(0.0, 1.0, 0.0));
+		vec3  tor_o   = (M * vec4(0.0, 0.196, 0.0, 1.0)).xyz;
+		vec3  tor_d   = normalize(mat3(M) * vec3(0.0, 1.0, 0.0));
 		vec3  tor_ref = abs(tor_d.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 0.0, 1.0);
 		vec3  tor_tg  = normalize(cross(tor_d, tor_ref));
 		vec3  tor_bn  = cross(tor_tg, tor_d);
@@ -947,7 +955,7 @@ Orbiter Aura
 					// outline of the metal must not cut it in steps
 					float hide = 0.0;
 					{
-						vec4  vp  = ubo.view * vec4(tp, 1.0);
+						vec4  vp  = ubo.view * vec4(org + (tp - org) * sx, 1.0);
 						vec4  cp  = ubo.proj * vp;
 						vec2  ndc = cp.xy / cp.w;
 						for (int k = 0; k < 9; k++) {
@@ -957,7 +965,7 @@ Orbiter Aura
 							float zd  = texture(height, kn * 0.5 + 0.5).r;
 							vec4  sp  = tor_ip * vec4(kn, zd, 1.0);
 							float bh  = sp.z / sp.w - vp.z;
-							hide     += 1.0 - smoothstep(0.0, 0.06, bh);
+							hide     += 1.0 - smoothstep(0.0, 0.06 * sx, bh);
 						}
 						hide /= 9.0;
 						if (hide <= 0.0) continue;
@@ -1005,7 +1013,7 @@ Orbiter Aura
 		// a gaussian glow sphere at the throat, raymarched with fog noise so it reads
 		// as an internal volume (not a flat disc). hot orange at center → deep orange
 		// at the rim; the PBR walls pick up the matching tone via the throat light.
-		vec3  cor_o  = (ubo.model * vec4(0.0, -0.07, 0.0, 1.0)).xyz;
+		vec3  cor_o  = (M * vec4(0.0, -0.07, 0.0, 1.0)).xyz;
 		// its full size again: the fuzzed edge carries it now
 		float cor_R  = 0.44;
 		vec3  cor_oc = ro - cor_o;
@@ -1486,6 +1494,18 @@ element Avatar
     # read once per process: a reload finds them in place
     persist designs          : map Design [ string ]
     mutable env_on           : bool
+    # a host drawing it in its own 3D scene gives the camera and
+    # the place (glTF axes); the pictures and depth are then kept
+    # for that host, not drawn
+    public scene_on          : bool
+    public scene_eye         : vec3f
+    public scene_mid         : vec3f
+    public scene_proj        : mat4f
+    public scene_model       : mat4f
+    public scene_out         : vec Texture
+    public scene_depth       : Texture
+    # how far the beam's thrust seats it down its own up axis
+    mutable push_cur         : f32
 
     # dismount: retire our render targets while they are still valid —
     # a stale map entry double-frees on the next summon's map set
@@ -1612,6 +1632,10 @@ element Avatar
             q     : quatf [ v ]
             r_mat : mat4f [ mat4f.identity[].rotate[ q ] ]
             model_mat = r_mat.mul[ model_mat ]
+        # the thrust pushes it down its own up axis, into its pad
+        if [ push_cur > 0.0001 ]
+            model_mat = model_mat.translate[
+                vec3f [ 0.0, 0.0 - push_cur, 0.0 ] ]
 
         e_pos : vec3f [
             (eye_pos.x != 0.0 || eye_pos.y != 0.0 || eye_pos.z != 0.0)
@@ -1693,6 +1717,16 @@ element Avatar
         stage.time       = clock_s
         stage.state_mask = msk
         paint_once = false
+        if [ scene_on ]
+            stage.eye    = design_axes[ scene_eye ]
+            stage.middle = design_axes[ scene_mid ]
+            stage.up     = vec3f [ 0.0, 0.0, -1.0 ]
+            stage.proj   = scene_proj
+            stage.model  = scene_model.mul[ model_mat ]
+            scene_out    = stage.frame[ stage_w, stage_h ]
+            scene_depth  = stage.object_depth[]
+            needs_frame  = true
+            return
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         for [ tx: Texture ] in stage.frame[ stage_w, stage_h ]
             w.screen.draw_image[ tx, b ]
@@ -1708,6 +1742,20 @@ element Avatar
         w.screen.sync_fence[]
         return Image [ w.screen.color ]
 
+
+# gradient noise along a line: a slope at each whole step, faded
+# between them; about -1 to 1
+func thrust_slope [ i: f32 ] -> f32
+    s : f32 [ sin[ i * 127.1 + 311.7 ] * 43758.5453 ]
+    return (s - floor[ s ]) * 2.0 - 1.0
+
+func thrust_noise [ t: f32 ] -> f32
+    i  : f32 [ floor[ t ] ]
+    f  : f32 [ t - i ]
+    u  : f32 [ f * f * (3.0 - 2.0 * f) ]
+    na : f32 [ thrust_slope[ i ] * f ]
+    nb : f32 [ thrust_slope[ i + 1.0 ] * (f - 1.0) ]
+    return (na + (nb - na) * u) * 2.0
 
 # the shaders and the motion; no style of its own, so a subclass's
 # placement is never contested by a base block (the style resolver takes
@@ -1771,6 +1819,14 @@ Avatar OrbiterAvatar
     mutable halo_cur   : f32
     mutable beam_cur   : f32
     mutable work_cur   : f32
+    # the thrust's seat at full beam, in the avatar's own units
+    push_depth  : f32   [ 0.045 ]
+    # the bounce: the seat swings this share either way
+    push_bounce : f32   [ 0.5 ]
+    # the bounce's pace, perlin steps a second
+    push_hz     : f32   [ 1.6 ]
+    push_amount : f32   [ 0.15 ]
+    intern  push_s     : f32
     # the heat haze off the core: slight from the start, full once the
     # jet burns; the spin speeds up with it (1 + heat_spin * heat)
     heat_base   : f32   [ 0.25 ]
@@ -1793,6 +1849,7 @@ Avatar OrbiterAvatar
     # the wheel's in-plane clocking, held in every state
     clock_deg   : f32   [ 30.0 ]
     mutable tilt_cur : f32
+    mutable edits_cur : f32
     intern  tilt_from : f32
     intern  tilt_to   : f32
     intern  tilt_us   : i64    # when the tilt toward tilt_to began
@@ -1850,7 +1907,9 @@ Avatar OrbiterAvatar
         # the exchange avatar takes the app's busy state only once a
         # line was sent through orbiter: until then it is face on, at
         # rest, whatever the session is doing elsewhere
-        wb : bool [ work_on && (!animate_always || ux->agent_view) ]
+        # one in a host's scene takes its state as reported
+        wb : bool [ work_on && (!animate_always || ux->agent_view
+                                || scene_on) ]
         # the exchange avatar: face on until the first send, then
         # settled: tilted up
         if [ !settled && (wb || ux->agent_view) ]
@@ -1889,8 +1948,12 @@ Avatar OrbiterAvatar
         if [ aura ]
             rl : bool [ swap_on ]
             dn : bool [ rl || work_done ]
-            # a build (rl) stands the halo as tall as thinking does
-            hg : f32 [ (rl || (!dn && wb && edits_in)) ? 1.0 : 0.0 ]
+            # thinking stands the halo; a build (rl) as tall
+            hg : f32 [ (rl || (!dn && wb)) ? 1.0 : 0.0 ]
+            # writing (edits coming in) lights the spokes' lines
+            eg : f32 [ (!dn && wb && edits_in) ? 1.0 : 0.0 ]
+            edits_cur = filter_n[ edits_cur, eg, stage_amount,
+                                  ux->frame_factor ]
             halo_cur  = filter_n[ halo_cur,  hg,
                                   (dn) ? settle_amount : stage_amount,
                                   ux->frame_factor ]
@@ -1923,9 +1986,9 @@ Avatar OrbiterAvatar
                         6.2831853 * ignite_hz * it9 ] * dk * dk
             aura.beam_w       = fw
             heat              = heat_base + (1.0 - heat_base) * beam_cur
-            # the flower's grooves light with the second halo and stay
+            # the flower's grooves light while it writes and stay
             # fully on while the jet burns
-            groove = max[ halo_cur, beam_cur ]
+            groove = max[ edits_cur, beam_cur ]
             active = max[ work_cur, beam_cur ]
             if [ body ] body.groove = groove
             # the exchange avatar turns at the working rate face on too:
@@ -1964,6 +2027,15 @@ Avatar OrbiterAvatar
             core_phase = core_phase + spin_rate * dt * 0.25
             if [ core_phase > 6.2831853 ]
                 core_phase = core_phase - 6.2831853
+            # the thrust: an indent whose depth bounces by a perlin
+            # over time, the swing itself swelling by a slower one
+            push_s = push_s + dt * push_hz
+            st : f32 [ push_s * 0.23 + 37.0 ]
+            sw : f32 [ 0.5 + 0.5 * thrust_noise[ st ] ]
+            bn : f32 [ thrust_noise[ push_s ] * push_bounce * sw ]
+            pg : f32 [ beam_cur * push_depth * (1.0 + bn) ]
+            push_cur = filter_n[ push_cur, pg, push_amount,
+                                 ux->frame_factor ]
             aura.spin  = spin_phase
             if [ body ]
                 body.spin       = spin_phase
@@ -1996,7 +2068,9 @@ Avatar OrbiterAvatar
             clock_deg + undo_turn
             + ((undo_us > 0) ? undo_deg * ep : 0.0) ]
         rotate[0] = Rotation [ '0 1 0 {yaw9}deg' ]
-        rotate[1] = Rotation [ '1 0 0 {tilt_cur}deg' ]
+        # in a host's scene it lies level in its place
+        tl : f32 [ (scene_on) ? 0.0 : tilt_cur ]
+        rotate[1] = Rotation [ '1 0 0 {tl}deg' ]
         pristine = false
 
     body : PBR [

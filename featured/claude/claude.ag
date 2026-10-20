@@ -9,6 +9,7 @@ export icon ['claude']
 
 import trinity
 import <stdlib.h>
+import <stdio.h>
 
 # the version taken, and its linux-x64 binary's sha256 as its
 # release manifest gives it
@@ -18,6 +19,12 @@ func claude_sum [] -> string
     return 'ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912'
 
 AgentRun ClaudeAgent
+    # its terminal's session: claude keeps its record under it
+    intern sess_id : string
+    # the record read at most every 300 ms
+    intern seen_ms : i64
+    intern seen_w  : bool
+
     func program [] -> string
         return 'claude'
 
@@ -47,10 +54,12 @@ AgentRun ClaudeAgent
             a.push[ allow ]
         return a
 
-    # its own program in the exchange's terminal: edits taken as
-    # they come, the silver install and folder in reach
+    # its own program in its terminal on orbiter's platform: it acts
+    # without asking, the silver install and folder in reach, and is
+    # told its part there
     func terminal [ model: string ] -> vec string
-        a : vec string [] [ '--permission-mode', 'acceptEdits',
+        a : vec string [] [ '--dangerously-skip-permissions',
+                            '--append-system-prompt', role[],
                             '--add-dir', install[] ]
         sv : cstr getenv[ 'SILVER' ]
         if [ sv ]
@@ -59,11 +68,94 @@ AgentRun ClaudeAgent
         if [ model.count > 0 ]
             a.push[ '--model' ]
             a.push[ model ]
+        sess_id = new_session[]
+        a.push[ '--session-id' ]
+        a.push[ sess_id ]
         return a
+
+    # its part in orbiter, and what it tells orbiter as it works
+    func role [] -> string
+        sock : string '$XDG_RUNTIME_DIR/trinity-orbiter.sock'
+        # orbiter names each instance in its terminal's environment
+        say : string 'echo "app home $ORBITER_AGENT <state> <words>"'
+        r : string 'You are {name}, one of the agents on the agent'
+        r = '{r} platform of orbiter (the silver desktop). The user'
+        r = '{r} sees you as an avatar on the platform, your'
+        r = '{r} terminal under your title. Tell orbiter what you'
+        r = '{r} are doing as you go, before each phase of work,'
+        r = '{r} by running: {say} | nc -U -N {sock}'
+        r = '{r} where <state> is one of: research (reading,'
+        r = '{r} searching), writing (editing files), build'
+        r = '{r} (compiling), testing (running tests or the app),'
+        r = '{r} done (the request finished). Keep the words short;'
+        return '{r} always send done when you finish.'
 
     # its title: a spinning dot while it works, ✳ when it waits
     func waiting [ title: string ] -> bool
         return title && title.starts_with[ '✳' ]
+
+    # at work, its record's last entry is its own: it writes (its
+    # answer or an edit); the user's (a message, a tool's result):
+    # it thinks
+    func writing [ title: string ] -> bool
+        if [ !title || waiting[ title ] ] return false
+        now : i64 [ Au.epoch_millis[] ]
+        if [ now - seen_ms < 300 ] return seen_w
+        seen_ms = now
+        t : string record_tail[ 65536 ]
+        wa : i32 [ t.rindex_of[ '"type":"assistant"' ] ]
+        wu : i32 [ t.rindex_of[ '"type":"user"' ] ]
+        seen_w = wa >= 0 && wa > wu
+        return seen_w
+
+    # a session id: a version 4 uuid
+    func new_session [] -> string
+        seed : u64 [ u64[ Au.epoch_micros[] ] ]
+        digits : string '0123456789abcdef'
+        out : string ''
+        for [ i: i32 0, i < 32, i += 1 ]
+            seed = seed * 6364136223846793005 + 1442695040888963407
+            d : i32 [ i32[ seed >> 60 ] ]
+            if [ i == 12 ] d = 4
+            if [ i == 16 ] d = 8 + d % 4
+            if [ i == 8 || i == 12 || i == 16 || i == 20 ]
+                out = '{out}-'
+            out = '{out}{digits.mid[ d, 1 ]}'
+        return out
+
+    # its record's folder: the working folder, every mark that is
+    # not a letter or digit made a dash
+    func project_dir [ r: string ] -> string
+        marks : string '/._ ~'
+        out : string ''
+        for [ i: i32 0, i < r.count, i += 1 ]
+            c : string r.mid[ i, 1 ]
+            if [ marks.index_of[ c ] >= 0 ]
+                out = '{out}-'
+            el
+                out = '{out}{c}'
+        return out
+
+    # the last n bytes of its record, '' none
+    func record_tail [ n: i64 ] -> string
+        home : cstr getenv[ 'HOME' ]
+        if [ !home || !sess_id || !root ] return ''
+        dir : string project_dir[ root ]
+        p : '{string [ home ]}/.claude/projects/{dir}/{sess_id}.jsonl'
+        fp : fopen[ p.chars, "rb" ]
+        if [ !fp ] return ''
+        fseek[ fp, 0, SEEK_END ]
+        size : i64 [ ftell[ fp ] ]
+        at : i64 [ (size > n) ? size - n : 0 ]
+        fseek[ fp, at, SEEK_SET ]
+        buf : malloc[ size - at + 1 ]
+        rd : i64 [ fread[ buf, 1, size - at, fp ] ]
+        fclose[ fp ]
+        bp : @u8 [ buf ]
+        bp[ rd ] = 0
+        s : string [ cast cstr [ buf ] ]
+        free[ buf ]
+        return s
 
     # it keeps file checkpoints for the rewind only when asked
     func env [] -> vec string

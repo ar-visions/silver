@@ -2055,6 +2055,24 @@ init starts dbus-daemon and iwd itself. Ubuntu's dbus-daemon
 links libsystemd as a library (inert); OPEN: our own dbus build
 without it if wanted.
 
+## orbiter agent view — live list (Oct 20 2026)
+
+1. DONE (Oct 20, Kalen: the beam's thrust pushes the avatar into
+   its platform slightly, a perlin-oscillating magnitude, "an
+   indent with bounces inside of it") avatar/avatar.ag: Avatar
+   push_cur moves the model down its own up axis (glTF -y, after
+   the rotations); OrbiterAvatar sets it each frame from the beam:
+   depth = beam_cur x push_depth (0.045 of its own units) x (1 +
+   bounce), bounce = a 1-D gradient noise (thrust_noise, push_hz
+   1.6 steps a second) x push_bounce 0.5 x a slower noise (0..1)
+   that swells the swing; filtered at push_amount 0.15. Every
+   avatar with a beam takes it (the exchange's too). Measured
+   hidden (1920 x 1080, a gemini session on its pad, `app home
+   gemini build`): the body 0 px at rest, 3 to 5 px down through
+   the build, moving frame to frame, 0 px again after. avatar,
+   wizard, orbiter rebuilt; Kalen's running orbiter needs its
+   restart. NOT seen on his screen.
+
 ## orbiter-os shell design — live list (Oct 1 2026)
 
 Goal: orbiter as an OS shell. The interface stays as it is: every pane keeps its title bar and

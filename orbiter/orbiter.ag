@@ -1,5 +1,10 @@
+# the system bar stays up late: it holds all the menus
+# the dock went to therapy: too many apps leaned on it
+# a pane is just a window that failed to float
+# why did the window float free? it needed space
 # why orbit the sun? it was the only thing in our pane
 # orbiter never crashes; it just changes its orbit
+# the side panel never argues; it just folds
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -55,6 +60,7 @@ ifdef [ windows ]
 import Navigate
 import Editor
 import NodeList
+import Platform
 import Git
 import SystemBar
 import Login
@@ -758,7 +764,7 @@ element EditorView
                 t['apps_filter'] = MenuFilter [ label: af9,
                     area: Region [
                         'l{sd9}px b{bt9}px r{sd9}px h{bh9}px' ] ]
-            t['apps'] = AppsGrid [ pane: pane_index, scroll_fade: 24.0,
+            t['home'] = HomeView [ pane: pane_index,
                 area: Region [ ga9 ] ]
         if [ browse_active[] ]
             fu : f32 [ (fc > 0.0) ? fc : 22.0 ]
@@ -1338,6 +1344,202 @@ AppAvatar LoginAvatar
     style : CSS {
         area: l50%-170px t50%-330px w340px h340px
     }
+
+# a line of words on the home, no box
+element HomeLabel
+    ghost : true
+    style : CSS {
+        layers.face:
+            label_color: #ffffffcc
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    }
+
+# an agent's title in the agent view: a press opens its console
+# under it, again folds it
+element AgentHead
+    style : CSS {
+        layers.face:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff14
+    :hovered
+        layers.face:
+            fill_color: #ffffff14
+    :selected
+        layers.face:
+            fill_color: #4d3dbc39
+            stroke_color: #806bff55
+            radius: 8 8 0 0
+    }
+
+# the open agent's console frame, joined to its title above,
+# rounded at the bottom
+element AgentBody
+    style : CSS {
+        layers.face:
+            fill_color: #202a
+            radius: 0 0 8 8
+            stroke_width: 1
+            stroke_color: #806bff55
+    }
+
+# an agent's state on its title: running, or waiting (blue)
+HomeLabel HomeState
+    style : CSS {
+        layers.face:
+            label_color: #ffffff77
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    :selected
+        layers.face:
+            label_color: #9d8cff
+    }
+
+# why an agent did not start, in red
+HomeLabel HomeError
+    style : CSS {
+        layers.face:
+            label_color: #ff7a7a
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    }
+
+# the home: the apps, or the agent view (the bottom bar's button)
+element HomeView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public pane : i32
+
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb ] return t
+        if [ orb.home_tab == 'agent' ]
+            t['agent_home'] = AgentHome [
+                area: Region { l0 t0 r0 b0 } ]
+        el
+            t['apps'] = AppsGrid [ pane: pane, scroll_fade: 24.0,
+                area: Region { l0 t0 r0 b0 } ]
+        return t
+
+# the agent view: the avatar at the left; at the right the agents
+# and their models to pick from, or the one picked, its terminal
+element AgentHome
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb || !bounds ] return t
+        un : f32 ux_unit[ ux ]
+        # the platform behind; the list at the right, beside it
+        lx : f32 [ round[ bounds.w * 0.42 ] ]
+        t['plat'] = PlatformView [ frame_w: lx,
+                                   area: Region { l0 t0 r0 b0 } ]
+        rh : f32 [ round[ 30.0 * un ] ]
+        ed : f32 [ round[ 24.0 * un ] ]
+        top : f32 [ round[ 12.0 * un ] ]
+        y : f32 [ top ]
+        if [ orb.home_why && orb.home_why.count > 0 ]
+            t['ahome_why'] = HomeError [ label: orb.home_why,
+                area: Region [ 'l{lx}px t{y}px r{ed}px h{rh}px' ] ]
+            y += rh + round[ 8.0 * un ]
+        picks : vec string orb.home_choices[]
+        if [ picks.count == 0 ]
+            t['ahome_none'] = HomeLabel [
+                label: 'No agent installed: install one from the apps',
+                area: Region [ 'l{lx}px t{y}px r{ed}px h{rh}px' ] ]
+            return t
+        hh : f32 [ round[ 38.0 * un ] ]
+        gap : f32 [ round[ 6.0 * un ] ]
+        pad : f32 [ round[ 5.0 * un ] ]
+        # the one row to add from: every agent at each of its models
+        ids : vec string []
+        lb  : vec string []
+        for [ k: i32 0, k < picks.count, k += 1 ]
+            an : string orb.home_pick_agent[ picks[ k ] ]
+            md : string orb.home_pick_model[ picks[ k ] ]
+            # a model named after its agent: the agent said once
+            if [ md.starts_with[ '{an}-' ] ]
+                md = md.mid[ an.count + 1, md.count - an.count - 1 ]
+            ids.push[ 'ahome_add_{k}' ]
+            lb.push[ (md.count > 0) ? '{an} {md}' : an ]
+        t['ahome_add'] = AgentHead [
+            area: Region [ 'l{lx}px t{y}px r{ed}px h{hh}px' ] ]
+        t['ahome_add_l'] = HomeLabel [ label: '+  add',
+            area: Region [
+                'l{lx + round[ 14.0 * un ]}px t{y}px w{round[ 80.0 * un ]}px h{hh}px' ] ]
+        t['ahome_adds'] = TButtons [ buttons: ids, labels: lb,
+            icons: false, manual: true, label_px: 15.0,
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            seg_radius: 6.0 * un, selected: -1,
+            area: Region [
+                'l{lx + round[ 64.0 * un ]}px t{y + pad}px r{ed + pad}px h{hh - pad * 2.0}px' ] ]
+        y += hh + gap * 2.0
+        # the instances, a title each, the open one's console under
+        names : vec string orb.home_names[]
+        ch : f32 [ bounds.h - y - ed
+                   - f32[ names.count ] * (hh + gap) - gap ]
+        for [ an: string ] in names
+            cs : ConsoleSession orb.home_session[ an ]
+            open : bool [ orb.home_open == an && cs != null ]
+            t['ahome_h_{an}'] = AgentHead [ selected: open,
+                area: Region [ 'l{lx}px t{y}px r{ed}px h{hh}px' ] ]
+            mark : string [ (open) ? '▾' : '▸' ]
+            md : string orb.home_model_of[ an ]
+            nl : string [ (md.count > 0) ? '{mark}  {an}  {md}'
+                                         : '{mark}  {an}' ]
+            t['ahome_l_{an}'] = HomeLabel [ label: nl,
+                area: Region [
+                    'l{lx + round[ 14.0 * un ]}px t{y}px w{round[ 200.0 * un ]}px h{hh}px' ] ]
+            if [ cs ]
+                # waiting, else what it says it does, else running
+                dg : string orb.home_doing_of[ an ]
+                st : string [ (orb.home_waiting[ an ]) ? 'waiting'
+                              : (dg == 'build') ? 'building'
+                              : (dg == 'research') ? 'researching'
+                              : (dg.count > 0) ? dg : 'running' ]
+                if [ dg.count > 0 && orb.home_words.contains[ an ] ]
+                    hw : string orb.home_words[ an ]
+                    if [ hw.count > 0 ] st = '{st}: {hw}'
+                t['ahome_s_{an}'] = HomeState [ label: st,
+                    selected: orb.home_waiting[ an ],
+                    area: Region [
+                        'l{lx + round[ 220.0 * un ]}px t{y}px w{round[ 330.0 * un ]}px h{hh}px' ] ]
+            ew : f32 [ round[ 60.0 * un ] ]
+            t['ahome_e_{an}'] = TButtons [
+                buttons: vec string [] [ 'ahome_end_{an}' ],
+                labels: vec string [] [ 'end' ],
+                icons: false, manual: true, label_px: 16.0,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                seg_radius: 6.0 * un, selected: -1,
+                area: Region [
+                    'r{ed + pad}px t{y + pad}px w{ew}px h{hh - pad * 2.0}px' ] ]
+            # open, its console joins its title: no gap between
+            y += hh
+            if [ open && ch > rh ]
+                one : map ConsoleSession [ string ] []
+                one[ an ] = cs
+                # its top edge on the title's bottom one: one line
+                t['ahome_b_{an}'] = AgentBody [
+                    area: Region [
+                        'l{lx}px t{y - 1.0}px r{ed}px h{ch + gap + 1.0}px' ] ]
+                t['ahome_t_{an}'] = Console [ focusable: true,
+                    sessions: one, session_id: an, cwd: cs.cwd,
+                    cbase: Layer [ fill_color: rgba [ '#0000' ] ],
+                    area: Region [
+                        'l{lx}px t{y}px r{ed}px h{ch + gap}px' ] ]
+                y += ch + gap
+            y += gap
+        return t
 
 # the avatar for the exchange under the screenshot prompt
 AppAvatar AgentAvatar
@@ -2908,6 +3110,24 @@ element orbiter : trinity # implements compiler
     public force_system : bool  [ true ]
     public live_reload : bool   [ true ]
     public startup_path  : path
+    # the home's view: 'home' (the apps) or 'agent' (orbiter's
+    # button), and why an agent did not start
+    public  home_tab   : string [ 'home' ]
+    # each agent's session, its run (to tell when it waits), the
+    # model it runs; the one open under its title
+    mutable home_sess  : map ConsoleSession [ string ]
+    mutable home_runs  : map AgentRun [ string ]
+    mutable home_ran   : map string [ string ]
+    # the instances, in the order added, and each one's agent
+    mutable home_order : vec string
+    mutable home_agent : map string [ string ]
+    mutable home_made  : i32
+    # what each agent says it is doing (research, writing, build,
+    # testing, done) and its few words
+    mutable home_doing : map string [ string ]
+    mutable home_words : map string [ string ]
+    mutable home_open  : string [ '' ]
+    mutable home_why   : string [ '' ]
     # the agents this app's user runs, each with its models (trinity
     # Agent); the abstract's member is not in this type, so the agi
     # needs it here
@@ -4268,6 +4488,21 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
             el
                 log 'orbiter: no module opens {url}'
+            return
+        # an agent on the platform: 'home <agent> <state> <words>'
+        if [ s && s.count > 5 && s.mid[ 0, 5 ] == 'home ' ]
+            hw : vec string s.mid[ 5, s.count - 5 ].trim[].split[ ' ' ]
+            if [ hw.count >= 2 ]
+                if [ !home_doing ]
+                    home_doing = map string [ string ] []
+                    home_words = map string [ string ] []
+                words : string ''
+                for [ k: i32 2, k < hw.count, k += 1 ]
+                    words = (words.count > 0) ? '{words} {hw[ k ]}'
+                                              : hw[ k ]
+                home_doing[ hw[ 0 ] ] = hw[ 1 ]
+                home_words[ hw[ 0 ] ] = words
+                if [ ux ] ux.restyle = true
             return
         if [ !s || s.count < 7 || s.mid[ 0, 7 ] != 'status ' ] return
         # only an exchange orbiter opened (a capture sent, up or
@@ -10623,6 +10858,35 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # pip shrinks the app into the editor; its instruments stay open
+        # the agent view: a choice adds an instance, a title opens
+        # its console (again folds it), end ends it
+        if [ ev.target.id.starts_with[ 'ahome_end_' ] ]
+            home_end[ ev.target.id.mid[ 10, ev.target.id.count - 10 ] ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # an avatar on the platform: its instance, as its title
+        if [ ev.target.id.starts_with[ 'pav_' ] ]
+            nm : string ev.target.id.mid[ 4, ev.target.id.count - 4 ]
+            if [ home_session[ nm ] ] home_open = nm
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id.starts_with[ 'ahome_h_' ] ]
+            nm : string ev.target.id.mid[ 8, ev.target.id.count - 8 ]
+            home_open = (home_open == nm) ? '' : nm
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id.starts_with[ 'ahome_add_' ] ]
+            picks : vec string home_choices[]
+            for [ k: i32 0, k < picks.count, k += 1 ]
+                if [ ev.target.id == 'ahome_add_{k}' ]
+                    home_start[ home_pick_agent[ picks[ k ] ],
+                                home_pick_model[ picks[ k ] ] ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id == 'agent_note' ]
             # recording: this click stops it, and the take is sent
             if [ mic_by_press ]
@@ -10642,36 +10906,8 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
                 ev.no_default = true
                 return
-            # the exchange slides out beside the dock, twice a menu's
-            # width; up already, the button puts it away
-            if [ ux ]
-                ux.exchange_region = exchange_box[]
-                if [ ux.shot_ask && !ux.agent_min ]
-                    ux.agent_min = true
-                    ux.restyle   = true
-                    drawer_shut[]
-                    ev.no_default = true
-                    return
-                # its ground: the menus' slideout, all but the dock
-                drawer_open  = true
-                menu_kind    = 'exchange'
-                drawer_fresh = false
-            if [ agent_note && agent_note.count > 0 ]
-                ux.agent_show[]
-            el [ ux && ux.shot_ask && ux.agent_min ]
-                ux.agent_min = false
-                ux.restyle   = true
-            el
-                # the exchange about the selected file at the caret's
-                # line
-                edq : Editor pane_at[ active_pane ]
-                if [ edq && edq.src && ux ]
-                    ux.exchange_open[ edq.src, edq.sel_line + 1, true ]
-                # no file: the pane's app's source, else our folder
-                el [ ux ]
-                    rvq : AppView (edq) ? edq.run_view : null
-                    aq : path (rvq && rvq.src) ? rvq.src : startup_path
-                    ux.exchange_open[ aq, 0, true ]
+            # the home, on its agent view
+            home_toggle[]
             ev.no_default = true
             return
         # the label opens the side panel on the scene cards
@@ -12450,7 +12686,7 @@ element orbiter : trinity # implements compiler
             t['pane{i}'] = ev
         # nothing docked: the desktop (the apps) under the free windows
         if [ !any_docked[] ]
-            t['desk'] = AppsGrid [ pane: -1, scroll_fade: 24.0,
+            t['desk'] = HomeView [ pane: -1,
                 area: Region { l0 t0 r0 b0 } ]
         if [ agent_open ]
             t['pane{editor_slots.count}'] = EditorView [
@@ -13941,11 +14177,145 @@ element orbiter : trinity # implements compiler
         if [ ux ] ux.restyle = true
         return true
 
+    # each installed agent with each of its models, 'agent|model'
+    # (one with no models listed: 'agent|')
+    func home_choices [] -> vec string
+        out : vec string []
+        for [ an: string ] in agent_installed[]
+            ms : vec string null
+            if [ agents ]
+                for [ g: Agent ] in agents
+                    if [ g.name == an ] ms = g.models
+            if [ ms && ms.count > 0 ]
+                for [ m: string ] in ms
+                    out.push[ '{an}|{m}' ]
+            el
+                out.push[ '{an}|' ]
+        return out
+
+    # the instances, in the order added: a copy, so a holder sees
+    # the list change
+    func home_names [] -> vec string
+        if [ !home_order ] return vec string []
+        return vec string [ home_order ]
+
+    func home_pick_agent [ p: string ] -> string
+        at : i32 [ p.index_of[ '|' ] ]
+        return (at < 0) ? p : p.mid[ 0, at ]
+
+    func home_pick_model [ p: string ] -> string
+        at : i32 [ p.index_of[ '|' ] ]
+        if [ at < 0 ] return ''
+        return p.mid[ at + 1, p.count - at - 1 ]
+
+    # an agent's session, else null
+    func home_session [ nm: string ] -> ConsoleSession
+        if [ !home_sess || !home_sess.contains[ nm ] ] return null
+        return home_sess[ nm ]
+
+    # the model an agent's session runs, '' none
+    func home_model_of [ nm: string ] -> string
+        if [ !home_ran || !home_ran.contains[ nm ] ] return ''
+        return home_ran[ nm ]
+
+    # the agent waits for the user, by its terminal's title
+    func home_waiting [ nm: string ] -> bool
+        cs : ConsoleSession home_session[ nm ]
+        if [ !cs || !cs.title || !home_runs
+             || !home_runs.contains[ nm ] ]
+            return false
+        run : AgentRun home_runs[ nm ]
+        return run.waiting*[ cs.title ]
+
+    # what the agent says it is doing while it works, '' none
+    func home_doing_of [ nm: string ] -> string
+        if [ home_waiting[ nm ] || !home_doing
+             || !home_doing.contains[ nm ] ]
+            return ''
+        d : string home_doing[ nm ]
+        return (d == 'done') ? '' : d
+
+    # at work, the agent writes (its answer, an edit), by its run
+    func home_writing [ nm: string ] -> bool
+        cs : ConsoleSession home_session[ nm ]
+        if [ !cs || !cs.title || !home_runs
+             || !home_runs.contains[ nm ] ]
+            return false
+        run : AgentRun home_runs[ nm ]
+        return run.writing*[ cs.title ]
+
+    # an instance ends: its terminal, its place in the stack
+    func home_end [ nm: string ]
+        cs : ConsoleSession home_session[ nm ]
+        if [ cs ]
+            cs.end[]
+            home_sess.rm[ nm ]
+        if [ home_order ]
+            k : i32 [ home_order.index_of[ nm ] ]
+            if [ k >= 0 ] home_order.remove[ k ]
+        if [ home_open == nm ] home_open = ''
+
+    # a new instance of an agent at a model: its own terminal, in
+    # our folder, added to the stack and open; named by its agent,
+    # a number after it from the second on
+    func home_start [ an: string, model: string ]
+        if [ !home_sess ] home_sess = map ConsoleSession [ string ] []
+        if [ !home_runs ] home_runs = map AgentRun [ string ] []
+        if [ !home_ran ]  home_ran  = map string [ string ] []
+        if [ !home_order ] home_order = vec string []
+        if [ !home_agent ] home_agent = map string [ string ] []
+        nm : string an
+        n : i32 [ 2 ]
+        while [ home_order.index_of[ nm ] >= 0 ]
+            nm = '{an}-{n}'
+            n += 1
+        root : string '{startup_path}'
+        home_made += 1
+        sid : i32 [ 1000 + home_made ]
+        line : agent_term_line[ sid, an, root, model ]
+        if [ line.count == 0 ]
+            home_why = agent_error[]
+            return
+        home_why = ''
+        cs : ConsoleSession []
+        cs.name       = 'home_{nm}'
+        # its name, for what it tells orbiter
+        cs.launch_cmd = 'env ORBITER_AGENT={nm} {line}'
+        cs.cwd        = root
+        cs.start[]
+        home_sess[ nm ]  = cs
+        home_ran[ nm ]   = model
+        home_agent[ nm ] = an
+        home_order.push[ nm ]
+        # the run its line was made by: it knows its session
+        run : AgentRun agent_term_run[ sid ]
+        if [ run ] home_runs[ nm ] = run
+        home_open = nm
+
+    # the home is on screen: the desktop, or the active pane empty
+    func home_seen [] -> bool
+        return !any_docked[] || pane_empty[ active_pane ]
+
+    # orbiter's button: the home on its agent view (a new docked view
+    # for it when the active pane shows something); again, the apps
+    func home_toggle []
+        if [ home_tab == 'agent' && home_seen[] ]
+            home_tab = 'home'
+        el
+            home_tab = 'agent'
+            if [ !home_seen[] ]
+                editor_slots += -1
+                pane_console += ''
+                active_pane = editor_slots.count - 1
+                force_update[]
+        if [ ux ] ux.restyle = true
+
     # the selected pane shows the apps and nothing takes the keys
     func apps_typing [] -> bool
         if [ drawer_open || nav_showing || find_showing || bar_typing ]
             return false
-        if [ !pane_empty[ active_pane ] ] return false
+        if [ !pane_empty[ active_pane ] || home_tab != 'home' ]
+            return false
         w : Window ux
         return !w || !w.focus || w.focus inherits AppsGrid
 
