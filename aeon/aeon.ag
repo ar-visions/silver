@@ -1686,6 +1686,16 @@ element aeon : trinity
         scene = SceneEdit [ design: design, sel: sel, edits: edits ]
         open_shadow[ design, edits ]
 
+    # the chosen thing's properties: a panel over the view, the
+    # user's to open and close (its toggle beside the window's close)
+    public func has_panel [] -> bool
+        return true
+
+    # the outliner: a panel over the view's left, the user's to open
+    # and close (its toggle left of the title)
+    public func has_outline [] -> bool
+        return true
+
     # the views the orbiter bar offers over the editor: the scene
     # as nodes (an svg has none yet)
     public func views [] -> vec string
@@ -1984,18 +1994,17 @@ element aeon : trinity
                                              : named.filename[] ]
         e : Elements [ ]
         v : view[]
-        # the outliner the full left, the scene in the middle, the
-        # chosen thing's properties on the right; the seams drag
+        # the scene the full width; the outliner a panel over its
+        # left and the chosen thing's properties over its right, each
+        # when opened
         scene.view = v
         panes : map element [ string ] []
-        panes[ 'outline' ] = Outliner [ scene: scene, animated: true ]
         key : string 'view{opened}'
         if [ doc ]
             panes[ key ] = SvgView [ doc: doc, animated: true ]
         el
             panes[ key ] = DesignView [ design: design, sel: sel,
                 edits: edits, animated: true ]
-        panes[ 'props' ] = PropsSide [ scene: scene, animated: true ]
         # on its own: the orbiter bar over all of it; in orbiter's
         # pane, the pane's bar is it
         alone : bool [ !ux || !ux.hosted[] ]
@@ -2007,8 +2016,22 @@ element aeon : trinity
         nodes : bool [ ux && !doc && ux.bar_view
                        && ux.bar_view.compare[ 'nodes' ] == 0 ]
         e[ 'split' ] = Splitter [ area: Region [ 'l0 {top} r0 b0' ],
-            inner: panes, flex: 1, min_size: 120.0, hide: nodes,
-            sizes: vec f32 [] [ 240.0, 0.0, 340.0 ] ]
+            inner: panes, flex: 0, min_size: 120.0, hide: nodes,
+            sizes: vec f32 [] [ 0.0 ] ]
+        # the outliner over the view's left, on its blurred ground
+        if [ ux && ux.outline_open && !nodes ]
+            oa : string 'l0 {top} w240px b0'
+            e[ 'outline' ] = PanelLens [ area: Region [ oa ],
+                elements: Elements [ 'list' : Outliner [
+                    scene: scene, ground: false, animated: true,
+                    area: Region { l0 t0 r0 b0 } ] ] ]
+        # the properties over the view's right, on its blurred ground
+        if [ ux && ux.panel_open && !nodes ]
+            pa : string 'l100%-340px {top} w340px b0'
+            e[ 'panel' ] = PanelLens [ area: Region [ pa ],
+                elements: Elements [ 'props' : PropsSide [
+                    scene: scene, ground: false, animated: true,
+                    area: Region { l0 t0 r0 b0 } ] ] ]
         if [ nodes ]
             e[ 'nodes' ] = NodeGraph [ scene: scene,
                 area: Region [ 'l0 {top} r0 b0' ] ]

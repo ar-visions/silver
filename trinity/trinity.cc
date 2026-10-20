@@ -281,325 +281,72 @@ HOST_API void agent_sock_reply(const char* s) {
 }
 
 
-// ---- the agent from the shell: one clean run, streamed ----
-// claude -p --output-format stream-json, or codex exec --json, in the
-// project folder. each JSON event becomes a status line the app takes
-// as on_agent: busy / note / diff / done / needs
+// ---- an agent's process: one run, its output by lines ----
+// the agent modules (claude, codex, gemini) say what to run and
+// read what comes back; this only starts it, feeds its input and
+// hands its output over a line at a time
 
-struct Json {
-    enum Kind { NUL, BOOL, NUM, STR, ARR, OBJ } kind = NUL;
-    bool b = false;
-    double n = 0;
-    std::string s;
-    std::vector<Json> a;
-    std::vector<std::pair<std::string, Json>> o;
-    const Json& operator[](const char* k) const {
-        static Json none;
-        for (auto& p : o) if (p.first == k) return p.second;
-        return none;
-    }
-    std::string str() const { return kind == STR ? s : ""; }
-};
-
-static void json_ws(const char*& p) { while (*p && isspace((unsigned char)*p)) p++; }
-
-static std::string json_string(const char*& p) {
-    std::string r;
-    p++;
-    while (*p && *p != '"') {
-        if (*p == '\\' && p[1]) {
-            p++;
-            switch (*p) {
-            case 'n': r += '\n'; break;
-            case 't': r += '\t'; break;
-            case 'r': r += '\r'; break;
-            case 'b': r += '\b'; break;
-            case 'f': r += '\f'; break;
-            case 'u': {
-                unsigned v = 0;
-                for (int i = 1; i <= 4 && p[i]; i++)
-                    v = v * 16 + (isdigit((unsigned char)p[i]) ? p[i] - '0' : (tolower(p[i]) - 'a' + 10));
-                p += 4;
-                // utf-8 for the basic plane; surrogate halves pass as-is
-                if (v < 0x80) r += (char)v;
-                else if (v < 0x800) { r += (char)(0xC0 | (v >> 6)); r += (char)(0x80 | (v & 0x3F)); }
-                else { r += (char)(0xE0 | (v >> 12)); r += (char)(0x80 | ((v >> 6) & 0x3F)); r += (char)(0x80 | (v & 0x3F)); }
-                break;
-            }
-            default: r += *p;
-            }
-            p++;
-        } else
-            r += *p++;
-    }
-    if (*p == '"') p++;
-    return r;
-}
-
-static Json json_value(const char*& p) {
-    Json j;
-    json_ws(p);
-    if (*p == '{') {
-        j.kind = Json::OBJ;
-        p++;
-        json_ws(p);
-        while (*p && *p != '}') {
-            json_ws(p);
-            if (*p != '"') break;
-            std::string k = json_string(p);
-            json_ws(p);
-            if (*p == ':') p++;
-            j.o.emplace_back(k, json_value(p));
-            json_ws(p);
-            if (*p == ',') p++;
-            json_ws(p);
-        }
-        if (*p == '}') p++;
-    } else if (*p == '[') {
-        j.kind = Json::ARR;
-        p++;
-        json_ws(p);
-        while (*p && *p != ']') {
-            j.a.push_back(json_value(p));
-            json_ws(p);
-            if (*p == ',') p++;
-            json_ws(p);
-        }
-        if (*p == ']') p++;
-    } else if (*p == '"') {
-        j.kind = Json::STR;
-        j.s = json_string(p);
-    } else if (!strncmp(p, "true", 4))  { j.kind = Json::BOOL; j.b = true;  p += 4; }
-    else if (!strncmp(p, "false", 5))   { j.kind = Json::BOOL; j.b = false; p += 5; }
-    else if (!strncmp(p, "null", 4))    { p += 4; }
-    else if (*p) {
-        char* e;
-        j.kind = Json::NUM;
-        j.n = strtod(p, &e);
-        p = (e > p) ? e : p + 1;
-    }
-    return j;
-}
-
-struct ShellRun {
+struct ProcRun {
     pid_t pid = -1;
     int   out = -1;
-    int   in  = -1;       // claude's input: each message of the exchange
+    int   in  = -1;       // its input, when it takes messages there
     int   log = -1;       // the raw stream and errors, for reading after
-    bool  claude = true;
-    bool  done = false;       // a done or needs line was queued
-    std::string buf, root;
-    std::vector<std::string> lines;
-    std::vector<std::string> users;   // claude's ids for our messages
+    int   exit = -1;      // its exit status once it ended
+    std::string buf, line;
 };
-static ShellRun g_shell;
-// codex's session for the exchange: later messages resume it
-static std::string g_codex_thread;
-// the other sessions of the exchange, each with its own agent still running;
-// g_shell is the one on screen
+static ProcRun g_proc;
+// the other sessions of the exchange, each with its process still
+// running; g_proc is the one on screen
 static int g_session = 0;
-static std::map<int, ShellRun>    g_parked;
-static std::map<int, std::string> g_parked_codex;
+static std::map<int, ProcRun> g_parked;
+// the next start's program and arguments, and its environment's
+// additions
+static std::vector<std::string> g_proc_args, g_proc_env;
+// why the last start or write failed
+static std::string g_proc_err;
 
-// a JSON string literal of s
-static std::string json_quote(const std::string& s) {
-    std::string r = "\"";
-    for (unsigned char c : s) {
-        if      (c == '"')  r += "\\\"";
-        else if (c == '\\') r += "\\\\";
-        else if (c == '\n') r += "\\n";
-        else if (c == '\r') r += "\\r";
-        else if (c == '\t') r += "\\t";
-        else if (c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", c); r += b; }
-        else r += (char)c;
+static void proc_stop(ProcRun& s) {
+    if (s.in >= 0) close(s.in);
+    if (s.pid > 0) {
+        kill(-s.pid, SIGTERM);
+        int st;
+        waitpid(s.pid, &st, 0);
     }
-    return r + "\"";
+    if (s.out >= 0) close(s.out);
+    if (s.log >= 0) close(s.log);
+    s = ProcRun();
 }
 
-// one user message into the open claude process
-static bool shell_write(const std::string& text) {
-    std::string m = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":" +
-        json_quote(text) + "}}\n";
-    size_t at = 0;
-    while (at < m.size()) {
-        ssize_t w = write(g_shell.in, m.data() + at, m.size() - at);
-        if (w <= 0) return false;
-        at += (size_t)w;
-    }
-    g_shell.done = false;
-    return true;
+HOST_API void agent_proc_stop() { proc_stop(g_proc); }
+HOST_API const char* agent_proc_error() { return g_proc_err.c_str(); }
+
+// the next start: its program first, then each argument
+HOST_API void agent_proc_arg(const char* a) { g_proc_args.push_back(a ? a : ""); }
+// NAME=value for the next start, over the inherited one
+HOST_API void agent_proc_env(const char* kv) { g_proc_env.push_back(kv ? kv : ""); }
+
+// the session on screen: the one showing is parked, its process
+// still running, and the chosen one takes its place
+HOST_API void agent_proc_select(int id) {
+    if (id == g_session) return;
+    g_parked[g_session] = std::move(g_proc);
+    g_proc = ProcRun();
+    auto it = g_parked.find(id);
+    if (it != g_parked.end()) { g_proc = std::move(it->second); g_parked.erase(it); }
+    g_session = id;
 }
 
-static std::string shell_base(const std::string& path) {
-    size_t s = path.find_last_of('/');
-    return s == std::string::npos ? path : path.substr(s + 1);
-}
-
-// the agent's words as notes: a ```diff block repeats the edit's
-// own diff entry and is left out; fence lines never show
-static void shell_text(const std::string& text) {
-    bool fence = false, skip = false;
-    size_t at = 0;
-    while (at <= text.size()) {
-        size_t e = text.find('\n', at);
-        std::string ln = text.substr(at, e == std::string::npos ? std::string::npos : e - at);
-        size_t lead = ln.find_first_not_of(" \t");
-        bool mark = lead != std::string::npos && ln.compare(lead, 3, "```") == 0;
-        if (mark) {
-            fence = !fence;
-            skip  = fence && ln.compare(lead + 3, 4, "diff") == 0;
-        } else if (!(fence && skip) && ln.find_first_not_of(" \t\r") != std::string::npos)
-            g_shell.lines.push_back("note " + ln.substr(0, 400));
-        if (e == std::string::npos) break;
-        at = e + 1;
-    }
-}
-
-// the agent's turn ended; a claude process waits for the next message
-static void shell_end() {
-    g_shell.lines.push_back("done done");
-    g_shell.done = true;
-}
-
-// every line of a text as its own status line
-static void shell_lines(const char* state, const std::string& text) {
-    size_t at = 0;
-    while (at <= text.size()) {
-        size_t e = text.find('\n', at);
-        std::string ln = text.substr(at, e == std::string::npos ? std::string::npos : e - at);
-        bool blank = ln.find_first_not_of(" \t\r") == std::string::npos;
-        if (!blank) g_shell.lines.push_back(std::string(state) + " " + ln.substr(0, 400));
-        if (e == std::string::npos) break;
-        at = e + 1;
-    }
-}
-
-// the diff of one edit, from the tool's own old and new text
-static void shell_edit_diff(const Json& in, const std::string& root) {
-    std::string fp = in["file_path"].str();
-    std::string rel = (!root.empty() && fp.compare(0, root.size(), root) == 0 &&
-                       fp.size() > root.size()) ? fp.substr(root.size() + 1) : fp;
-    g_shell.lines.push_back("diff diff --git a/" + rel + " b/" + rel);
-    std::vector<std::pair<std::string, std::string>> hunks;
-    if (in["old_string"].kind == Json::STR || in["new_string"].kind == Json::STR)
-        hunks.emplace_back(in["old_string"].str(), in["new_string"].str());
-    for (auto& e : in["edits"].a)
-        hunks.emplace_back(e["old_string"].str(), e["new_string"].str());
-    auto each = [](const std::string& t, const char* mark) {
-        size_t at = 0;
-        while (at <= t.size()) {
-            size_t e = t.find('\n', at);
-            g_shell.lines.push_back(std::string("diff ") + mark +
-                t.substr(at, e == std::string::npos ? std::string::npos : e - at));
-            if (e == std::string::npos) break;
-            at = e + 1;
-        }
-    };
-    if (hunks.empty() && in["content"].kind == Json::STR) {
-        g_shell.lines.push_back("diff @@ " + shell_base(fp) + ": written @@");
-        each(in["content"].str(), "+");
-        return;
-    }
-    auto split = [](const std::string& t) {
-        std::vector<std::string> v;
-        if (t.empty()) return v;
-        size_t at = 0;
-        while (at <= t.size()) {
-            size_t e = t.find('\n', at);
-            v.push_back(t.substr(at, e == std::string::npos ? std::string::npos : e - at));
-            if (e == std::string::npos) break;
-            at = e + 1;
-        }
-        return v;
-    };
-    for (auto& h : hunks) {
-        g_shell.lines.push_back("diff @@ " + shell_base(fp) + " @@");
-        // lines both sides share at either end are context, not change
-        std::vector<std::string> o = split(h.first), n = split(h.second);
-        size_t pre = 0, suf = 0;
-        while (pre < o.size() && pre < n.size() && o[pre] == n[pre]) pre++;
-        while (suf < o.size() - pre && suf < n.size() - pre &&
-               o[o.size() - 1 - suf] == n[n.size() - 1 - suf]) suf++;
-        for (size_t i = 0; i < pre; i++) g_shell.lines.push_back("diff  " + o[i]);
-        for (size_t i = pre; i < o.size() - suf; i++) g_shell.lines.push_back("diff -" + o[i]);
-        for (size_t i = pre; i < n.size() - suf; i++) g_shell.lines.push_back("diff +" + n[i]);
-        for (size_t i = o.size() - suf; i < o.size(); i++) g_shell.lines.push_back("diff  " + o[i]);
-    }
-}
-
-static void shell_event(const Json& e) {
-    std::string type = e["type"].str();
-    if (g_shell.claude) {
-        if (type == "system" && e["subtype"].str() == "init") {
-            g_shell.lines.push_back("busy working");
-        }
-        // our message played back with its id: a rewind names it
-        else if (type == "user" && !e["uuid"].str().empty())
-            g_shell.users.push_back(e["uuid"].str());
-        else if (type == "control_response") {
-            const Json& r = e["response"];
-            if (r["subtype"].str() == "success")
-                g_shell.lines.push_back("note rewound to before the last message");
-            else
-                g_shell.lines.push_back("needs " + (r["error"].str().empty() ?
-                    std::string("the rewind failed") : r["error"].str()).substr(0, 400));
-        }
-        else if (type == "assistant") {
-            for (auto& c : e["message"]["content"].a) {
-                std::string ct = c["type"].str();
-                if (ct == "text")
-                    shell_text(c["text"].str());
-                else if (ct == "tool_use") {
-                    std::string name = c["name"].str();
-                    const Json& in = c["input"];
-                    if (name == "Edit" || name == "Write" || name == "MultiEdit") {
-                        shell_edit_diff(in, g_shell.root);
-                        g_shell.lines.push_back("busy " + shell_base(in["file_path"].str()));
-                    } else if (name == "Bash") {
-                        std::string d = in["description"].str();
-                        g_shell.lines.push_back("busy " + (d.empty() ? in["command"].str() : d).substr(0, 400));
-                    } else {
-                        std::string t = in["file_path"].str();
-                        if (t.empty()) t = in["pattern"].str();
-                        g_shell.lines.push_back("busy " + name + (t.empty() ? "" : " " + shell_base(t)));
-                    }
-                }
-            }
-        } else if (type == "result") {
-            if (e["is_error"].b) {
-                shell_lines("needs", e["result"].str());
-                g_shell.lines.push_back("needs error");
-                g_shell.done = true;
-            } else
-                shell_end();
-        }
-    } else {
-        const Json& it = e["item"];
-        std::string it_type = it["type"].str();
-        if (type == "thread.started" && !e["thread_id"].str().empty())
-            g_codex_thread = e["thread_id"].str();
-        else if (type == "turn.started")
-            g_shell.lines.push_back("busy working");
-        else if (type == "item.started" && it_type == "command_execution")
-            g_shell.lines.push_back("busy " + it["command"].str().substr(0, 400));
-        else if (type == "item.completed" && it_type == "agent_message")
-            shell_text(it["text"].str());
-        else if (type == "item.completed" && it_type == "file_change")
-            for (auto& c : it["changes"].a)
-                g_shell.lines.push_back("busy " + shell_base(c["path"].str()));
-        else if (type == "turn.completed")
-            shell_end();
-        else if (type == "turn.failed" || type == "error") {
-            std::string m = e["error"]["message"].str();
-            if (m.empty()) m = e["message"].str();
-            shell_lines("needs", m.empty() ? std::string("the agent failed") : m);
-            g_shell.done = true;
-        }
-    }
+// a session closed: its process stops
+HOST_API void agent_proc_close(int id) {
+    if (id == g_session) { agent_proc_stop(); return; }
+    auto it = g_parked.find(id);
+    if (it != g_parked.end()) { proc_stop(it->second); g_parked.erase(it); }
 }
 
 // the program on PATH, else where its installer puts it
-static std::string shell_tool(const char* name) {
+HOST_API const char* agent_tool(const char* name) {
+    static std::string found;
+    found.clear();
     const char* pv = getenv("PATH");
     std::string all = pv ? pv : "";
     size_t at = 0;
@@ -607,7 +354,7 @@ static std::string shell_tool(const char* name) {
         size_t e = all.find(':', at);
         std::string d = all.substr(at, e == std::string::npos ? std::string::npos : e - at);
         std::string p = d + "/" + name;
-        if (!d.empty() && access(p.c_str(), X_OK) == 0) return p;
+        if (!d.empty() && access(p.c_str(), X_OK) == 0) return (found = p).c_str();
         if (e == std::string::npos) break;
         at = e + 1;
     }
@@ -619,158 +366,56 @@ static std::string shell_tool(const char* name) {
                            home + "/Applications/Codex.app/Contents/Resources/" + name,
                            // the chatgpt deb carries codex as the mac app does
                            std::string("/usr/lib/chatgpt/resources/") + name })
-        if (access(p.c_str(), X_OK) == 0) return p;
-    return "";
+        if (access(p.c_str(), X_OK) == 0) return (found = p).c_str();
+    return found.c_str();
 }
 
-// codex's own sandbox, tried once: `codex sandbox -- true`
-static bool codex_sandbox_works(const std::string& exe) {
-    static int known = -1;
-    if (known >= 0) return known == 1;
-    const char* argv[] = { exe.c_str(), "sandbox", "--", "true", nullptr };
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-    posix_spawn_file_actions_addopen(&fa, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
-    posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-    pid_t pid = 0;
-    int st = 1;
-    if (posix_spawn(&pid, exe.c_str(), &fa, nullptr, (char* const*)argv, environ) == 0)
-        waitpid(pid, &st, 0);
-    posix_spawn_file_actions_destroy(&fa);
-    known = (WIFEXITED(st) && WEXITSTATUS(st) == 0) ? 1 : 0;
-    return known == 1;
-}
-
-static void shell_stop(ShellRun& s) {
-    if (s.in >= 0) close(s.in);
-    if (s.pid > 0) {
-        kill(-s.pid, SIGTERM);
-        int st;
-        waitpid(s.pid, &st, 0);
-    }
-    if (s.out >= 0) close(s.out);
-    if (s.log >= 0) close(s.log);
-    s = ShellRun();
-}
-
-HOST_API void agent_shell_stop() { shell_stop(g_shell); }
-
-// a new exchange: the last one's agent and session end
-HOST_API void agent_shell_new() {
-    agent_shell_stop();
-    g_codex_thread.clear();
-}
-
-// the session on screen: the one showing is parked, its agent still
-// running, and the chosen one takes its place
-HOST_API void agent_shell_select(int id) {
-    if (id == g_session) return;
-    g_parked[g_session]       = std::move(g_shell);
-    g_parked_codex[g_session] = std::move(g_codex_thread);
-    g_shell        = ShellRun();
-    g_codex_thread.clear();
-    auto it = g_parked.find(id);
-    if (it != g_parked.end()) { g_shell = std::move(it->second); g_parked.erase(it); }
-    auto ct = g_parked_codex.find(id);
-    if (ct != g_parked_codex.end()) { g_codex_thread = std::move(ct->second); g_parked_codex.erase(ct); }
-    g_session = id;
-}
-
-// a session closed: its agent stops
-HOST_API void agent_shell_close(int id) {
-    if (id == g_session) { agent_shell_new(); return; }
-    auto it = g_parked.find(id);
-    if (it != g_parked.end()) { shell_stop(it->second); g_parked.erase(it); }
-    g_parked_codex.erase(id);
-}
-
-// one message of the exchange. claude: into the open process, started
-// on the first; codex: a run, resuming the exchange's session after
-// the first. 1 = sent
-// why the last start or send failed, for the prompt's error line
-static std::string g_shell_err;
-HOST_API const char* agent_shell_error() { return g_shell_err.c_str(); }
-// tools the next claude run may use without asking (WebSearch ...)
-static std::string g_shell_allow;
-HOST_API void agent_shell_allow(const char* tools) { g_shell_allow = tools ? tools : ""; }
-
-static int shell_fail(const std::string& why) {
-    g_shell_err = why;
-    return 0;
-}
-
-HOST_API int agent_shell_start(const char* agent, const char* root,
-                               const char* model, const char* text) {
-    g_shell_err.clear();
-    if (!agent || !root || !text) return shell_fail("nothing to send");
-    bool claude = strcmp(agent, "codex") != 0;
-    if (claude && g_shell.claude && g_shell.in >= 0 && g_shell.pid > 0)
-        return shell_write(text) ? 1 : shell_fail("claude stopped taking messages");
-    agent_shell_stop();
-    std::string exe = shell_tool(claude ? "claude" : "codex");
-    if (exe.empty()) return shell_fail(std::string(claude ? "claude" : "codex") + " is not installed here");
-    // a screenshot rides along as an image for codex; claude opens the path
-    std::string image;
-    const char* sc = strstr(text, "Screenshot: ");
-    if (sc) { sc += 12; image = std::string(sc, strcspn(sc, "\r\n")); }
-    std::vector<std::string> args = { exe };
-    if (claude) {
-        // messages arrive on its input for as long as the exchange lasts
-        args.insert(args.end(), { "-p", "--input-format", "stream-json",
-            "--output-format", "stream-json", "--verbose", "--replay-user-messages",
-            "--permission-mode", "acceptEdits", "--no-session-persistence",
-            "--strict-mcp-config" });
-        // the silver install: its screenshots and logs
-        std::string ld = host_log_dir();
-        size_t sl = ld.rfind('/');
-        if (sl != std::string::npos && ld.compare(sl, std::string::npos, "/tmp") == 0 && sl > 0)
-            args.insert(args.end(), { "--add-dir", ld.substr(0, sl) });
-        // the silver folder: its sources and the shots in its tmp/
-        const char* sv = getenv("SILVER");
-        if (sv && *sv) args.insert(args.end(), { "--add-dir", sv });
-        if (model && *model) args.insert(args.end(), { "--model", model });
-        if (!g_shell_allow.empty()) args.insert(args.end(), { "--allowedTools", g_shell_allow });
-    } else {
-        // its sandbox (bwrap) fails where user namespaces are denied
-        std::string mode = std::string("sandbox_mode=\"") +
-            (codex_sandbox_works(exe) ? "workspace-write" : "danger-full-access") + "\"";
-        if (g_codex_thread.empty())
-            args.insert(args.end(), { "exec", "--json", "-c", mode, "-C", root });
-        else
-            args.insert(args.end(), { "exec", "resume", g_codex_thread, "--json", "-c", mode });
-        if (model && *model) args.insert(args.end(), { "-m", model });
-        if (!image.empty()) args.insert(args.end(), { "-i", image });
-        // -i takes several files: without -- the prompt is one of them
-        args.insert(args.end(), { "--", text });
-    }
+// the arguments given start in root; keep_in: its input stays open
+// for messages. 1 = started
+HOST_API int agent_proc_start(const char* root, int keep_in) {
+    g_proc_err.clear();
+    std::vector<std::string> args = std::move(g_proc_args);
+    std::vector<std::string> extra = std::move(g_proc_env);
+    g_proc_args.clear();
+    g_proc_env.clear();
+    agent_proc_stop();
+    if (args.empty() || args[0].empty()) { g_proc_err = "nothing to run"; return 0; }
     std::vector<char*> argv;
-    for (auto& s : args) argv.push_back(const_cast<char*>(s.c_str()));
+    for (auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
     argv.push_back(nullptr);
-    // claude keeps file checkpoints for the rewind only when asked
-    std::vector<std::string> env_s = { "CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=1" };
-    for (char** ep = environ; *ep; ep++)
-        if (strncmp(*ep, "CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=", 38) != 0) env_s.push_back(*ep);
+    std::vector<std::string> env_s = extra;
+    for (char** ep = environ; *ep; ep++) {
+        bool over = false;
+        for (auto& x : extra) {
+            size_t eq = x.find('=');
+            if (eq != std::string::npos && strncmp(*ep, x.c_str(), eq + 1) == 0) over = true;
+        }
+        if (!over) env_s.push_back(*ep);
+    }
     std::vector<char*> envp;
-    for (auto& s : env_s) envp.push_back(const_cast<char*>(s.c_str()));
+    for (auto& e : env_s) envp.push_back(const_cast<char*>(e.c_str()));
     envp.push_back(nullptr);
     // <log dir>/agent-shell[.<session>].log: the session's last run as it went
     std::string lp = std::string(host_log_dir()) + "/agent-shell" +
         (g_session > 0 ? "." + std::to_string(g_session) : std::string()) + ".log";
     int lfd = open(lp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
     if (lfd >= 0) {
-        std::string head = "run: " + exe + " in " + root + "\n";
+        std::string head = "run: " + args[0] + " in " + (root ? root : "") + "\n";
         (void)!write(lfd, head.data(), head.size());
     }
     int pipes[2], inp[2] = { -1, -1 };
-    if (pipe(pipes) != 0) return shell_fail("no pipe for the agent");
+    if (pipe(pipes) != 0) { g_proc_err = "no pipe for the agent"; return 0; }
     fcntl(pipes[0], F_SETFD, FD_CLOEXEC);
     fcntl(pipes[0], F_SETFL, O_NONBLOCK);
-    if (claude && pipe(inp) != 0) { close(pipes[0]); close(pipes[1]); return shell_fail("no pipe for the agent"); }
-    if (claude) fcntl(inp[1], F_SETFD, FD_CLOEXEC);
+    if (keep_in && pipe(inp) != 0) {
+        close(pipes[0]); close(pipes[1]);
+        g_proc_err = "no pipe for the agent";
+        return 0;
+    }
+    if (keep_in) fcntl(inp[1], F_SETFD, FD_CLOEXEC);
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
-    if (claude) {
+    if (keep_in) {
         posix_spawn_file_actions_adddup2(&fa, inp[0], STDIN_FILENO);
         posix_spawn_file_actions_addclose(&fa, inp[0]);
     } else
@@ -780,7 +425,7 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     else posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addclose(&fa, pipes[0]);
     posix_spawn_file_actions_addclose(&fa, pipes[1]);
-    posix_spawn_file_actions_addchdir_np(&fa, root);
+    if (root && *root) posix_spawn_file_actions_addchdir_np(&fa, root);
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);
@@ -790,86 +435,81 @@ HOST_API int agent_shell_start(const char* agent, const char* root,
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);
     close(pipes[1]);
-    if (claude) close(inp[0]);
+    if (keep_in) close(inp[0]);
     if (err) {
         close(pipes[0]);
-        if (claude) close(inp[1]);
+        if (keep_in) close(inp[1]);
         if (lfd >= 0) close(lfd);
-        return shell_fail(exe + ": " + strerror(err));
+        g_proc_err = args[0] + ": " + strerror(err);
+        return 0;
     }
-    g_shell.in     = claude ? inp[1] : -1;
-    g_shell.log    = lfd;
-    g_shell.pid    = pid;
-    g_shell.out    = pipes[0];
-    g_shell.claude = claude;
-    g_shell.root   = root;
-    return claude ? (shell_write(text) ? 1 : shell_fail("claude did not take the message")) : 1;
+    g_proc.in  = keep_in ? inp[1] : -1;
+    g_proc.log = lfd;
+    g_proc.pid = pid;
+    g_proc.out = pipes[0];
+    return 1;
 }
 
-// undo: claude puts the files back as they were at our last message;
-// the next undo goes one message further back. 1 = asked
-HOST_API int agent_shell_rewind() {
-    if (!g_shell.claude || g_shell.in < 0 || g_shell.users.empty()) return 0;
-    std::string id = g_shell.users.back();
-    g_shell.users.pop_back();
-    std::string m = "{\"type\":\"control_request\",\"request_id\":\"rewind-" +
-        std::to_string(g_shell.users.size()) + "\",\"request\":{\"subtype\":\"rewind_files\","
-        "\"user_message_id\":" + json_quote(id) + "}}\n";
-    size_t at = 0;
-    while (at < m.size()) {
-        ssize_t w = write(g_shell.in, m.data() + at, m.size() - at);
-        if (w <= 0) return 0;
+// the process runs and takes messages on its input
+HOST_API int agent_proc_alive() { return g_proc.in >= 0 && g_proc.pid > 0; }
+
+// text into its input, as it is. 1 = written
+HOST_API int agent_proc_write(const char* text) {
+    if (g_proc.in < 0 || !text) return 0;
+    size_t n = strlen(text), at = 0;
+    while (at < n) {
+        ssize_t w = write(g_proc.in, text + at, n - at);
+        if (w <= 0) { g_proc_err = "the agent stopped taking messages"; return 0; }
         at += (size_t)w;
     }
     return 1;
 }
 
-// the next status line of the run (busy x, note x, diff x, done x,
-// needs x) into out; 0 when there is none yet
-HOST_API int agent_shell_line(char* out, int cap) {
-    // a parked session's agent keeps working: its output waits in its
-    // buffer, read here so a full pipe never stalls it
+// its next whole line of output, else null; once its output ended,
+// agent_proc_exit gives its status (-1 while it runs)
+HOST_API const char* agent_proc_line() {
+    // a parked session's process keeps working: its output waits in
+    // its buffer, read here so a full pipe never stalls it
     for (auto& kv : g_parked) {
         if (kv.second.out < 0) continue;
         char pb[8192];
         ssize_t pn;
         while ((pn = read(kv.second.out, pb, sizeof(pb))) > 0) kv.second.buf.append(pb, pn);
     }
-    if (g_shell.lines.empty() && g_shell.out >= 0) {
+    if (g_proc.out >= 0) {
         char buf[8192];
         ssize_t n;
-        while ((n = read(g_shell.out, buf, sizeof(buf))) > 0) g_shell.buf.append(buf, n);
-        size_t nl;
-        while ((nl = g_shell.buf.find('\n')) != std::string::npos) {
-            std::string ln = g_shell.buf.substr(0, nl);
-            g_shell.buf.erase(0, nl + 1);
-            if (g_shell.log >= 0) {
-                std::string w = ln + "\n";
-                (void)!write(g_shell.log, w.data(), w.size());
-            }
-            const char* p = ln.c_str();
-            json_ws(p);
-            if (*p == '{') shell_event(json_value(p));
-        }
+        while ((n = read(g_proc.out, buf, sizeof(buf))) > 0) g_proc.buf.append(buf, n);
         if (n == 0) {
             // the stream ended: the run is over
             int st = 0;
-            waitpid(g_shell.pid, &st, 0);
-            close(g_shell.out);
-            g_shell.out = -1;
-            g_shell.pid = -1;
-            if (g_shell.in >= 0) { close(g_shell.in); g_shell.in = -1; }
-            if (g_shell.log >= 0) { close(g_shell.log); g_shell.log = -1; }
-            if (!g_shell.done)
-                g_shell.lines.push_back(WIFEXITED(st) && WEXITSTATUS(st) == 0
-                    ? "done done" : "needs the agent stopped before it finished");
+            waitpid(g_proc.pid, &st, 0);
+            close(g_proc.out);
+            g_proc.out  = -1;
+            g_proc.pid  = -1;
+            g_proc.exit = WIFEXITED(st) ? WEXITSTATUS(st) : 128;
+            if (g_proc.in >= 0) { close(g_proc.in); g_proc.in = -1; }
         }
     }
-    if (g_shell.lines.empty() || cap < 2) return 0;
-    snprintf(out, cap, "%s", g_shell.lines.front().c_str());
-    g_shell.lines.erase(g_shell.lines.begin());
-    return 1;
+    size_t nl = g_proc.buf.find('\n');
+    if (nl == std::string::npos) {
+        // what was left unterminated at the end is a line too
+        if (g_proc.out >= 0 || g_proc.buf.empty()) {
+            if (g_proc.out < 0 && g_proc.log >= 0) { close(g_proc.log); g_proc.log = -1; }
+            return nullptr;
+        }
+        nl = g_proc.buf.size();
+    }
+    g_proc.line = g_proc.buf.substr(0, nl);
+    g_proc.buf.erase(0, nl < g_proc.buf.size() ? nl + 1 : nl);
+    if (g_proc.log >= 0) {
+        std::string w = g_proc.line + "\n";
+        (void)!write(g_proc.log, w.data(), w.size());
+    }
+    return g_proc.line.c_str();
 }
+
+HOST_API int agent_proc_exit() { return g_proc.out >= 0 ? -1 : g_proc.exit; }
 
 #else
 // windows stubs: the symbols must exist so the module links. every call reports "nothing there".
@@ -881,15 +521,18 @@ HOST_API void agent_sock_reply(const char* s)                    { }
 HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API int  agent_sock_ask_block(const char* nm, const char* ln, char* o, int c) { return 0; }
-HOST_API void agent_shell_stop() { }
-HOST_API void agent_shell_new() { }
-HOST_API void agent_shell_select(int id) { }
-HOST_API void agent_shell_close(int id) { }
-HOST_API int  agent_shell_start(const char*, const char*, const char*, const char*) { return 0; }
-HOST_API int  agent_shell_line(char* out, int cap) { return 0; }
-HOST_API int  agent_shell_rewind() { return 0; }
-HOST_API void agent_shell_allow(const char*) { }
-HOST_API const char* agent_shell_error() { return "agents run on linux and mac only"; }
+HOST_API void agent_proc_stop() { }
+HOST_API void agent_proc_select(int id) { }
+HOST_API void agent_proc_close(int id) { }
+HOST_API void agent_proc_arg(const char*) { }
+HOST_API void agent_proc_env(const char*) { }
+HOST_API int  agent_proc_start(const char*, int) { return 0; }
+HOST_API int  agent_proc_alive() { return 0; }
+HOST_API int  agent_proc_write(const char*) { return 0; }
+HOST_API const char* agent_proc_line() { return nullptr; }
+HOST_API int  agent_proc_exit() { return 0; }
+HOST_API const char* agent_tool(const char*) { return ""; }
+HOST_API const char* agent_proc_error() { return "agents run on linux and mac only"; }
 #endif
 
 // ===========================================================================
@@ -916,6 +559,41 @@ static int  g_log_real = -1;
 static int  g_log_file = -1;
 static int  g_log_done = 0;
 static int  g_log_pipe = -1;
+// standard error's own pipe: its lines reach the log light red
+static int  g_err_real = -1;
+static int  g_err_pipe = -1;
+
+// a chunk of standard error into the log: each line in light red (the
+// console draws the colour), so the two streams read apart
+static void host_log_err(const char* buf, ssize_t n) {
+    if (g_log_file < 0) return;
+    static const char on[] = "\033[38;2;255;140;140m", off[] = "\033[0m";
+    ssize_t at = 0;
+    while (at < n) {
+        ssize_t e = at;
+        while (e < n && buf[e] != '\n') e++;
+        ssize_t w;
+        if (e > at) {
+            w = write(g_log_file, on, sizeof(on) - 1);
+            w = write(g_log_file, buf + at, e - at);
+            w = write(g_log_file, off, sizeof(off) - 1);
+        }
+        if (e < n) w = write(g_log_file, "\n", 1);
+        (void)w;
+        at = e + 1;
+    }
+}
+
+static void* host_err_thread(void* a) {
+    int rd = (int)(long)a;
+    char buf[8192];
+    ssize_t n;
+    while ((n = read(rd, buf, sizeof(buf))) > 0) {
+        if (g_err_real >= 0) { ssize_t w = write(g_err_real, buf, n); (void)w; }
+        host_log_err(buf, n);
+    }
+    return 0;
+}
 
 static void* host_log_thread(void* a) {
     int rd = (int)(long)a;
@@ -941,6 +619,13 @@ static void host_log_drain(void) {
     while ((n = read(g_log_pipe, buf, sizeof(buf))) > 0) {
         if (g_log_real >= 0) { ssize_t w = write(g_log_real, buf, n); (void)w; }
         if (g_log_file >= 0) { ssize_t w = write(g_log_file, buf, n); (void)w; }
+    }
+    if (g_err_pipe >= 0) {
+        fcntl(g_err_pipe, F_SETFL, fcntl(g_err_pipe, F_GETFL) | O_NONBLOCK);
+        while ((n = read(g_err_pipe, buf, sizeof(buf))) > 0) {
+            if (g_err_real >= 0) { ssize_t w = write(g_err_real, buf, n); (void)w; }
+            host_log_err(buf, n);
+        }
     }
 #endif
 }
@@ -1022,8 +707,19 @@ HOST_API void host_log_setup(const char* name) {
     if (pipe(pf) != 0) { close(g_log_file); g_log_file = -1; return; }
     g_log_real = dup(STDOUT_FILENO);
     dup2(pf[1], STDOUT_FILENO);
-    dup2(pf[1], STDERR_FILENO);
     close(pf[1]);
+    // standard error apart: its own pipe and tee, light red in the log
+    int ef[2];
+    if (pipe(ef) == 0) {
+        g_err_real = dup(STDERR_FILENO);
+        dup2(ef[1], STDERR_FILENO);
+        close(ef[1]);
+        pthread_t et;
+        pthread_create(&et, 0, host_err_thread, (void*)(long)ef[0]);
+        pthread_detach(et);
+        g_err_pipe = ef[0];
+    } else
+        dup2(STDOUT_FILENO, STDERR_FILENO);
     // unbuffered, NOT line-buffered: the msvc crt rejects a null buffer with a
     // zero size for _IOLBF (posix allows it) and faults the parameter check,
     // and it treats _IOLBF as fully buffered anyway -- which a tee must not be

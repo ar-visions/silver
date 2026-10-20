@@ -1,0 +1,117 @@
+# codex: OpenAI's Codex, an agent shell. Installed from the apps
+# view (its build fetches OpenAI's release package into silver's
+# install); installed, it is an agent the exchange offers, run in
+# its own terminal
+export 1.0.0
+export agent ['CodexAgent']
+export software ['developer']
+export icon ['codex']
+
+import trinity
+
+# the version taken
+func codex_ver [] -> string
+    return '0.163.0'
+
+AgentRun CodexAgent
+    # its sandbox (bwrap) works here: 1, 0, or -1 not tried yet
+    intern boxed : i32 [ -1 ]
+
+    func program [] -> string
+        return 'codex'
+
+    # `codex sandbox -- true`, once: bwrap fails where user
+    # namespaces are denied
+    func sandbox_works [] -> bool
+        if [ boxed < 0 ]
+            exe : string '{install[]}/bin/codex'
+            probe : command { {exe} sandbox -- true > /dev/null 2>&1 }
+            boxed = (probe.exec[ false ] == 0) ? 1 : 0
+        return boxed == 1
+
+    func argv [ model: string, text: string, image: string ]
+            -> vec string
+        box : string [ (sandbox_works[]) ? 'workspace-write'
+                       : 'danger-full-access' ]
+        mode : string 'sandbox_mode="{box}"'
+        a : vec string []
+        if [ !resume || resume.count == 0 ]
+            a = vec string [] [ 'exec', '--json', '-c', mode, '-C',
+                                root ]
+        el
+            a = vec string [] [ 'exec', 'resume', resume, '--json',
+                                '-c', mode ]
+        # a project need not be a git checkout
+        a.push[ '--skip-git-repo-check' ]
+        if [ model.count > 0 ]
+            a.push[ '-m' ]
+            a.push[ model ]
+        # a screenshot rides along as an image
+        if [ image.count > 0 ]
+            a.push[ '-i' ]
+            a.push[ image ]
+        # -i takes several files: without -- the prompt is one
+        a.push[ '--' ]
+        a.push[ text ]
+        return a
+
+    # its own program in the exchange's terminal
+    func terminal [ model: string ] -> vec string
+        box : string [ (sandbox_works[]) ? 'workspace-write'
+                       : 'danger-full-access' ]
+        a : vec string [] [ '-C', root, '-c', 'sandbox_mode="{box}"' ]
+        if [ model.count > 0 ]
+            a.push[ '-m' ]
+            a.push[ model ]
+        return a
+
+    # its title: a spinning braille dot before it while it works
+    # (U+2800..28FF: bytes e2 a0..a3), the folder alone when it waits
+    func waiting [ title: string ] -> bool
+        if [ !title || title.count == 0 ] return false
+        b0 : i32 [ title.chars[ 0 ] & 255 ]
+        b1 : i32 [ (title.count > 1) ? title.chars[ 1 ] & 255 : 0 ]
+        return !(b0 == 226 && b1 >= 160 && b1 <= 163)
+
+    func event [ e: map ]
+        type : str[ e, 'type' ]
+        it : map obj[ e, 'item' ]
+        kind : str[ it, 'type' ]
+        th : str[ e, 'thread_id' ]
+        if [ type == 'thread.started' && th.count > 0 ]
+            resume = th
+        el [ type == 'turn.started' ]
+            status[ 'busy', 'working' ]
+        el [ type == 'item.started' && kind == 'command_execution' ]
+            status[ 'busy', str[ it, 'command' ] ]
+        el [ type == 'item.completed' && kind == 'agent_message' ]
+            notes[ str[ it, 'text' ] ]
+        el [ type == 'item.completed' && kind == 'file_change' ]
+            ch : array list[ it, 'changes' ]
+            if [ ch ]
+                for [ v: Au ] in ch
+                    c : map v
+                    status[ 'busy', base[ str[ c, 'path' ] ] ]
+        el [ type == 'turn.completed' ]
+            end[]
+        el [ type == 'turn.failed' || type == 'error' ]
+            m : str[ obj[ e, 'error' ], 'message' ]
+            if [ m.count == 0 ] m = str[ e, 'message' ]
+            fail[ m ]
+
+# at the build: OpenAI's package for this version, kept in
+# install/lib/codex/<version>, codex linked as install/bin/codex
+export func install_codex []
+    ins : string '{path.path_install[]}'
+    ver : codex_ver[]
+    dir : '{ins}/lib/codex/{ver}'
+    exe : path '{dir}/bin/codex'
+    if [ !exe.exists[] ]
+        url : 'https://github.com/openai/codex/releases/download/rust-v{ver}/codex-package-x86_64-unknown-linux-musl.tar.gz'
+        get : command { mkdir -p {dir} && curl -fsSL {url} | tar xz
+            -C {dir} }
+        if [ get.exec[ false ] != 0 ]
+            log 'codex: {ver} failed'
+            return
+    ln : command { ln -sfn {exe} {ins}/bin/codex }
+    if [ ln.exec[ false ] == 0 ] log 'codex: {ver}'

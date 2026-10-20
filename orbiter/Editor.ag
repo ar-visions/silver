@@ -499,6 +499,12 @@ ResourceView AppView
     mutable arg_text   : string      # its live argument, as last sent
     # the app's history, as it last said
     public  nav_back_on : bool
+    # the app has a panel (its strip's toggle), and it is open
+    public  has_panel   : bool
+    public  panel_on    : bool
+    # the app has an outline (its toggle left of the title), open
+    public  has_outline : bool
+    public  outline_on  : bool
     public  nav_fwd_on  : bool
     # the app's own title, shown on the pane
     public  app_title   : string
@@ -529,6 +535,12 @@ ResourceView AppView
     # 0 pip, 1 full (the pane), 2 its own window, 3 that window
     # full-screen
     public  display    : i32
+    # the module a program run came from (its apps view card): its
+    # Code shows it, not the console the program runs in
+    public  origin     : path
+    # that module's agent shell (claude, codex, gemini): it reads the
+    # app's title for when the agent waits for the user
+    public  agent      : AgentRun
     mutable props      : string
     # the app's shared surface pair, imported
     mutable tex0       : Texture
@@ -688,6 +700,13 @@ ResourceView AppView
                 pic_w = host_pa[]
                 pic_h = host_pb[]
             # the app's history moved: the title's arrows follow
+            el [ t == i32[ HM.panel_state ] ]
+                has_panel   = (host_pa[] & 1) != 0
+                panel_on    = (host_pb[] & 1) != 0
+                has_outline = (host_pa[] & 2) != 0
+                outline_on  = (host_pb[] & 2) != 0
+                wp : cast Window [ cv.w ]
+                if [ wp ] wp.restyle = true
             el [ t == i32[ HM.nav_state ] ]
                 nav_back_on = host_pa[] != 0
                 nav_fwd_on  = host_pb[] != 0
@@ -983,20 +1002,14 @@ ResourceView AppView
                 pend_w  = nw
                 pend_h  = nh
                 pend_us = epoch_micros[]
-            el [ nw != i32[ awp[] ] || nh != i32[ ahp[] ] ]
-                # 150ms of a held size before the peer is told to resize
-                # a size a pixel off the last asked is the layout
-                # settling: not a new size
+            if [ nw != i32[ awp[] ] || nh != i32[ ahp[] ] ]
+                # told at once, no wait; a size a pixel off the last
+                # asked is the layout settling: not a new size
                 far : bool [ abs[ nw - req_w ] > 1
                              || abs[ nh - req_h ] > 1 ]
-                if [ epoch_micros[] - pend_us > 150000 && far ]
+                if [ far ]
                     req_w = nw
                     req_h = nh
-                    fs9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
-                    if [ fs9 ]
-                        fprintf[ fs9, "RESZ send %dx%d slot=%d\n", nw,
-                                 nh, slot ]
-                        fclose[ fs9 ]
                     host_post2[ slot, 1, i32[ HM.resize ], nw, nh, 0 ]
 
     # the app's size in points
@@ -5469,11 +5482,22 @@ Control Editor
                                fonts: string, bus: string ]
         fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
         bl : (bus.count > 0) ? '--bus {bus} ' : ''
+        # orbiter's socket: an address the program opens comes back
+        # here (orbiter's xdg-open), shown in aura
+        so : cstr getenv[ 'ORBITER_SOCKET' ]
+        ol : string [ (so) ? '--opener {string [ so ]} ' : '' ]
         args : (display.count > 0)
-            ? '--wayland {display} {fl}{bl}{prog}' : prog
+            ? '--wayland {display} {fl}{bl}{ol}{prog}' : '{ol}{prog}'
         host_module[ 'console', null, args ]
 
     # host a module's app in this pane, on a file or with args alone
+    # the file is the instance's own: its source, or the module it
+    # came from (a program run from the apps view)
+    func owns_src [ av: AppView, f: path ] -> bool
+        fa : string '{f.absolute[]}'
+        if [ av.src && '{av.src.absolute[]}' == fa ] return true
+        return av.origin && '{av.origin.absolute[]}' == fa
+
     func host_module [ mod: string, p: path, args: string ]
         root : path.path_startup[]
         if [ !root ] return
@@ -5840,9 +5864,10 @@ Control Editor
         mounted = key
         close_view[]
         # a hosted handler (the markdown viewer) gives way to any other
-        # view
+        # view; a program run from the apps view (no document) stays
+        dv : bool [ run_view && run_view.viewer && run_view.doc ]
         if [ want.compare[ 'editor' ] == 0 ]
-            if [ run_view && run_view.viewer ] close_app[]
+            if [ dv ] close_app[]
             app_view = false
             load_text[]
             view_name = 'editor'
@@ -5852,7 +5877,7 @@ Control Editor
         # a console the project declares is a view we compose ourselves
         isc  : bool [ orbc && orbc.console_of[ want ] ]
         if [ t || isc ]
-            if [ run_view && run_view.viewer ] close_app[]
+            if [ dv ] close_app[]
             app_view = false
             if [ isc ]
                 # the folder in view is what the process gets, not a
@@ -6053,15 +6078,17 @@ Control Editor
         if [ ns9.compare[ ls ] != 0 ]
             view_name = ''
             # a debugger stepping into another module moves the pane;
-            # the app stays
-            if [ run_view && run_view.viewer ] close_app[]
+            # the app stays. a document's viewer goes with its document
+            # (a program run from the apps view has none: it stays)
+            if [ run_view && run_view.viewer && run_view.doc ]
+                close_app[]
             # a module picked from the nav list lets go of the old
             # module's instance (it keeps running); an instance stopped
             # in the debugger stays: walking its frames opens other
             # modules
             el [
                 run_view && src && stop_pending == 0 && !stopped[]
-                && (!run_view.src || '{run_view.src.absolute[]}' != '{src.absolute[]}') ]
+                && !owns_src[ run_view, src ] ]
                 run_view = null
             # back on a module: its instance again, the code in view
             orb : cast orbiter [ ux.app_object ]

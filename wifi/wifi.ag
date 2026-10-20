@@ -534,7 +534,8 @@ Button WifiRow
                          iy + isz * 0.2, isz * 0.6, isz * 0.6 ]
         if [ note.count > 0 ]
             cv.set_font[ shared_font[ cv,
-                'fonts/BarlowCondensed-Regular.ttf', 16 ] ]
+                'fonts/BarlowCondensed-Regular.ttf',
+                label_px[ cv, 16.0 ] ] ]
             cv.font_size[ 16 ]
             cv.fill_color[ rgba [ '#ffffff99' ] ]
             cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: x - 10.0,

@@ -31,7 +31,10 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_server_decoration.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
@@ -92,6 +95,14 @@ struct toplevel {
     struct wlr_output       *out;
     struct wlr_scene_output *sout;
     int                      x, w, h, want_w, want_h;
+    // the size it last committed (its geometry), and when the last
+    // size was asked of it
+    int                      cw, ch;
+    double                   asked_at;
+    // a size for its output, sent with its next frame (never alone:
+    // wlroots then commits a blank buffer it forgets it drew)
+    int                      mode_w, mode_h;
+    bool                     framing;
     // counts its size changes: the shell's imports start over at each
     uint64_t                 epoch;
     bool                     mapped;
@@ -133,18 +144,54 @@ static void focus_toplevel(struct toplevel *t) {
     g_focused = t;
 }
 
+// the windows' scale (the text size): a window is told its pane's
+// pixels over it, and draws that many more pixels for each of its own
+static double g_scale = 1.0;
+
+// pixels in a window's own units
+static int lg(int px) { return (int)lround(px / g_scale); }
+
 static void output_mode(struct wlr_output *o, int w, int h) {
     struct wlr_output_state st;
     wlr_output_state_init(&st);
     wlr_output_state_set_enabled(&st, true);
     wlr_output_state_set_custom_mode(&st, w, h, 0);
+    wlr_output_state_set_scale(&st, g_scale);
     wlr_output_commit_state(o, &st);
     wlr_output_state_finish(&st);
 }
 
+static double mono_now(void) {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
 static void on_top_frame(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, frame_l);
-    wlr_scene_output_commit(t->sout, NULL);
+    // asked a new size and not drawn at it yet: no frame of ours (it
+    // would show its old picture in the new size, the rest black);
+    // it may still draw. after 300 ms frames go on (a size it refused)
+    bool behind = !t->sheet && t->w > 0
+        && (t->cw != lg(t->w) || t->ch != lg(t->h))
+        && mono_now() - t->asked_at < 0.3;
+    if (!behind) {
+        struct wlr_output_state st;
+        wlr_output_state_init(&st);
+        if (t->mode_w > 0) {
+            wlr_output_state_set_custom_mode(&st, t->mode_w, t->mode_h, 0);
+            wlr_output_state_set_scale(&st, g_scale);
+        }
+        t->framing = true;
+        // new buffers come at the new size, maybe at old addresses:
+        // the shell's imports start over then, not at the ask
+        if (wlr_scene_output_build_state(t->sout, &st, NULL)
+            && wlr_output_commit_state(t->out, &st) && t->mode_w > 0) {
+            t->mode_w = t->mode_h = 0;
+            t->epoch += 1;
+        }
+        t->framing = false;
+        wlr_output_state_finish(&st);
+    }
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     wlr_scene_output_send_frame_done(t->sout, &now);
 }
@@ -153,6 +200,9 @@ static void on_top_commit(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, commit_l);
     struct wlr_output_event_commit *ev = data;
     if (!(ev->state->committed & WLR_OUTPUT_STATE_BUFFER) || !ev->state->buffer) return;
+    // a size change alone commits a blank buffer: not a frame
+    if ((ev->state->committed & WLR_OUTPUT_STATE_MODE) && !t->framing)
+        return;
     struct wlr_dmabuf_attributes at;
     if (!wlr_buffer_get_dmabuf(ev->state->buffer, &at)) return;
     if (t->frame_buf) wlr_buffer_unlock(t->frame_buf);
@@ -162,6 +212,7 @@ static void on_top_commit(struct wl_listener *l, void *data) {
     g_commits   += 1;
 }
 
+#define SHEET_ROOM 64
 // a dialog picks its own size; its output follows the window's
 // geometry. a dialog names its parent, or (a toolkit's message box on
 // a connection of its own, Electron's) opens at one fixed size
@@ -178,21 +229,30 @@ static void on_surface_commit(struct wl_listener *l, void *data) {
         }
         return;
     }
-    if (!t->sheet) return;
     struct wlr_box g;
     wlr_xdg_surface_get_geometry(xs, &g);
+    // a window's size as drawn: the shell waits for it after a resize
+    if (!t->sheet) { t->cw = g.width; t->ch = g.height; return; }
     if (g.width <= 0 || g.height <= 0) return;
     if (g.width == t->w && g.height == t->h && g.x == t->gx && g.y == t->gy) return;
     t->w = g.width; t->h = g.height; t->gx = g.x; t->gy = g.y;
     t->epoch += 1;
-    // the scene's xdg tree already sets the shadow margin outside
-    output_mode(t->out, t->w, t->h);
+    // the scene's xdg tree already sets the shadow margin outside. its
+    // output is roomier than it: as its monitor, one its size made
+    // GTK fit window and shadow inside it, 20 px less a commit
+    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
+        (int)ceil((t->h + SHEET_ROOM) * g_scale));
 }
 
 static void on_map(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, map);
     t->mapped = true;
-    if (!t->sheet) wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
+    if (!t->sheet) {
+        // tiled, not maximized: Firefox flickers when maximized
+        wlr_xdg_toplevel_set_tiled(t->xdg, WLR_EDGE_TOP | WLR_EDGE_BOTTOM
+            | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
+        wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+    }
     focus_toplevel(t);
     fprintf(stderr, "wayland: window %llu mapped '%s' (%s)\n", (unsigned long long)t->id,
         t->xdg->title ? t->xdg->title : "", t->xdg->app_id ? t->xdg->app_id : "");
@@ -256,7 +316,7 @@ static void on_new_xdg_surface(struct wl_listener *l, void *data) {
     t->surf_l.notify  = on_surface_commit; wl_signal_add(&xs->surface->events.commit, &t->surf_l);
     wl_list_insert(g_tops.prev, &t->link);
     // sized before its first commit, so it opens the size of its pane
-    wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
+    wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
     if (g_fullscreen) wlr_xdg_toplevel_set_fullscreen(t->xdg, true);
     fprintf(stderr, "wayland: window %llu new\n", (unsigned long long)t->id);
 }
@@ -495,9 +555,9 @@ static void apply_sizes(void) {
         if (t->sheet) continue;
         if (t->want_w > 0 && (t->want_w != t->w || t->want_h != t->h)) {
             t->w = t->want_w; t->h = t->want_h;
-            t->epoch += 1;
-            output_mode(t->out, t->w, t->h);
-            wlr_xdg_toplevel_set_size(t->xdg, t->w, t->h);
+            t->asked_at = mono_now();
+            t->mode_w = t->w; t->mode_h = t->h;
+            wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
         }
     }
 }
@@ -523,6 +583,59 @@ static void *loop_thread(void *arg) {
 }
 
 // ---- the api the .ag side calls ----------------------------------------
+
+// the windows' keyboard: its layout (xkb's names) and its repeat,
+// set before or after the display is up
+static bool g_kb_up;
+static char g_kb_layout[32] = "", g_kb_variant[32] = "";
+static int  g_rep_rate = 25, g_rep_delay = 600;
+
+static void kb_keymap(void) {
+    struct xkb_rule_names rn = { 0 };
+    if (g_kb_layout[0])  rn.layout  = g_kb_layout;
+    if (g_kb_variant[0]) rn.variant = g_kb_variant;
+    struct xkb_context *xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    struct xkb_keymap  *kmap = xkb_keymap_new_from_names(xctx, &rn, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    // a name xkb does not know: its default map
+    if (!kmap) kmap = xkb_keymap_new_from_names(xctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    wlr_keyboard_set_keymap(&g_kb, kmap);
+    xkb_keymap_unref(kmap);
+    xkb_context_unref(xctx);
+}
+
+static void u_wlc_key_layout(const char *layout, const char *variant) {
+    snprintf(g_kb_layout, sizeof(g_kb_layout), "%s", layout ? layout : "");
+    snprintf(g_kb_variant, sizeof(g_kb_variant), "%s", variant ? variant : "");
+    if (g_kb_up) kb_keymap();
+}
+
+static void u_wlc_key_repeat(int rate, int delay_ms) {
+    g_rep_rate = rate; g_rep_delay = delay_ms;
+    if (g_kb_up) wlr_keyboard_set_repeat_info(&g_kb, rate, delay_ms);
+}
+
+WLC_API void wlc_key_layout(const char *layout, const char *variant) { pthread_mutex_lock(&g_lock); u_wlc_key_layout(layout, variant); pthread_mutex_unlock(&g_lock); }
+WLC_API void wlc_key_repeat(int rate, int delay_ms) { pthread_mutex_lock(&g_lock); u_wlc_key_repeat(rate, delay_ms); pthread_mutex_unlock(&g_lock); }
+
+// a new scale: every window its size again, its output the new scale
+static void u_wlc_set_scale(double sc) {
+    if (sc < 0.5 || sc > 4.0 || fabs(sc - g_scale) < 0.001) return;
+    g_scale = sc;
+    if (!g_display) return;
+    struct toplevel *t;
+    wl_list_for_each(t, &g_tops, link) {
+        if (t->sheet) {
+            output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
+                (int)ceil((t->h + SHEET_ROOM) * g_scale));
+            continue;
+        }
+        t->asked_at = mono_now();
+        t->mode_w = t->w; t->mode_h = t->h;
+        wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+    }
+}
+
+WLC_API void wlc_set_scale(double sc) { pthread_mutex_lock(&g_lock); u_wlc_set_scale(sc); pthread_mutex_unlock(&g_lock); }
 
 WLC_API int wlc_create(int w, int h) {
     if (g_display) return 1;
@@ -551,6 +664,10 @@ WLC_API int wlc_create(int w, int h) {
     g_scene  = wlr_scene_create();
     g_scene_layout = wlr_scene_attach_output_layout(g_scene, g_layout);
     g_xdg = wlr_xdg_shell_create(g_display, 3);
+    // a scale under 2 reaches apps that take fractions (Firefox, GTK4)
+    wlr_fractional_scale_manager_v1_create(g_display, 1);
+    // it draws its buffer at the fraction and names its size by this
+    wlr_viewporter_create(g_display);
     l_new_xdg.notify = on_new_xdg_surface;
     wl_signal_add(&g_xdg->events.new_surface, &l_new_xdg);
     struct wlr_xdg_decoration_manager_v1 *deco = wlr_xdg_decoration_manager_v1_create(g_display);
@@ -560,12 +677,9 @@ WLC_API int wlc_create(int w, int h) {
     g_seat = wlr_seat_create(g_display, "seat0");
     wlr_seat_set_capabilities(g_seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_keyboard_init(&g_kb, NULL, "silver");
-    struct xkb_context *xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    struct xkb_keymap  *kmap = xkb_keymap_new_from_names(xctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    wlr_keyboard_set_keymap(&g_kb, kmap);
-    xkb_keymap_unref(kmap);
-    xkb_context_unref(xctx);
-    wlr_keyboard_set_repeat_info(&g_kb, 25, 600);
+    g_kb_up = true;
+    kb_keymap();
+    wlr_keyboard_set_repeat_info(&g_kb, g_rep_rate, g_rep_delay);
     l_kb_key.notify  = on_kb_key;  wl_signal_add(&g_kb.events.key,       &l_kb_key);
     l_kb_mods.notify = on_kb_mods; wl_signal_add(&g_kb.events.modifiers, &l_kb_mods);
     wlr_seat_set_keyboard(g_seat, &g_kb);
@@ -692,6 +806,10 @@ static uint64_t u_wlc_frame_id(uint64_t id) {
     return (t && t->frame_buf) ? (uint64_t)(uintptr_t)t->frame_buf : 0;
 }
 static uint64_t u_wlc_window_epoch(uint64_t id) { struct toplevel *t = top_of(id); return t ? t->epoch : 0; }
+// a window's own size (a dialog's frame has room past it)
+// in pixels: a dialog's size is its own units, a window's the pane's
+static int u_wlc_window_w(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->w * g_scale) : t->w; }
+static int u_wlc_window_h(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->h * g_scale) : t->h; }
 static uint64_t u_wlc_frame_gen(uint64_t id) { struct toplevel *t = top_of(id); return t ? t->gen : 0; }
 static int u_wlc_frame_w(uint64_t id) { struct toplevel *t = top_of(id); return (t && t->frame_buf) ? t->frame.width  : 0; }
 static int u_wlc_frame_h(uint64_t id) { struct toplevel *t = top_of(id); return (t && t->frame_buf) ? t->frame.height : 0; }
@@ -709,7 +827,9 @@ static int u_wlc_frame_fd(uint64_t id) {
 
 // a point in a window's pane, as the scene's: past the window's place
 static struct wlr_surface *surface_at(struct toplevel *t, double x, double y, double *sx, double *sy) {
-    struct wlr_scene_node *n = wlr_scene_node_at(&g_scene->tree.node, t->x + x, y, sx, sy);
+    // the pane's pixels in the window's own units
+    struct wlr_scene_node *n = wlr_scene_node_at(&g_scene->tree.node,
+        t->x + x / g_scale, y / g_scale, sx, sy);
     if (!n || n->type != WLR_SCENE_NODE_BUFFER) return NULL;
     struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(n));
     return ss ? ss->surface : NULL;
@@ -809,6 +929,16 @@ WLC_API void wlc_pointer_axis(float dx, float dy) { pthread_mutex_lock(&g_lock);
 WLC_API void wlc_key(int glfw, int state) { pthread_mutex_lock(&g_lock); u_wlc_key(glfw, state); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_keys_release(void) { pthread_mutex_lock(&g_lock); u_wlc_keys_release(); pthread_mutex_unlock(&g_lock); }
 WLC_API uint64_t wlc_window_epoch(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_epoch(id); pthread_mutex_unlock(&g_lock); return r; }
+// it has drawn at the size last asked of it
+WLC_API int wlc_window_drawn(uint64_t id) {
+    pthread_mutex_lock(&g_lock);
+    struct toplevel *t = top_of(id);
+    int r = t && t->cw == lg(t->w) && t->ch == lg(t->h);
+    pthread_mutex_unlock(&g_lock);
+    return r;
+}
+WLC_API int wlc_window_w(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_w(id); pthread_mutex_unlock(&g_lock); return r; }
+WLC_API int wlc_window_h(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_h(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_csd(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_csd(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API uint64_t wlc_window_parent(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_parent(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_menu_kind(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_menu_kind(id); pthread_mutex_unlock(&g_lock); return r; }

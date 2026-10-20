@@ -1,0 +1,120 @@
+# gemini: Google's Gemini CLI, an agent shell. Installed from the
+# apps view (its build fetches its bundle, run by the Node silver
+# builds); installed, it is an agent the exchange offers, run in its
+# own terminal
+export 1.0.0
+export agent ['GeminiAgent']
+export software ['developer']
+export icon ['gemini']
+
+import node/24.18.0 from https://nodejs.org/dist/v24.18.0/node-v24.18.0.tar.xz
+    > ./configure --prefix={install}/node
+    > make -j32
+    > make install
+
+import trinity
+import <sys/stat.h>
+
+# the version taken
+func gemini_ver [] -> string
+    return '0.64.0'
+
+AgentRun GeminiAgent
+    # its words so far: they come in pieces
+    intern said : string
+
+    func program [] -> string
+        return 'gemini'
+
+    func argv [ model: string, text: string, image: string ]
+            -> vec string
+        # edits taken as they come (claude's acceptEdits)
+        a : vec string [] [ '-o', 'stream-json', '--approval-mode',
+                            'auto_edit', '--skip-trust' ]
+        if [ resume && resume.count > 0 ]
+            a.push[ '--resume' ]
+            a.push[ resume ]
+        # the silver install: its screenshots and logs
+        a.push[ '--include-directories' ]
+        a.push[ install[] ]
+        if [ model.count > 0 ]
+            a.push[ '-m' ]
+            a.push[ model ]
+        # a screenshot: its file read in with the message (@path)
+        msg : text
+        if [ image.count > 0 ] msg = '{text}\n@{image}'
+        a.push[ '-p' ]
+        a.push[ msg ]
+        return a
+
+    # its own program in the exchange's terminal
+    func terminal [ model: string ] -> vec string
+        a : vec string [] [ '--approval-mode', 'auto_edit',
+            '--skip-trust', '--include-directories', install[] ]
+        if [ model.count > 0 ]
+            a.push[ '-m' ]
+            a.push[ model ]
+        return a
+
+    # its words so far, shown whole
+    func flush []
+        if [ said && said.count > 0 ] notes[ said ]
+        said = ''
+
+    func event [ e: map ]
+        type : str[ e, 'type' ]
+        if [ type == 'init' ]
+            if [ str[ e, 'session_id' ].count > 0 ]
+                resume = str[ e, 'session_id' ]
+            status[ 'busy', 'working' ]
+        el [ type == 'message' && str[ e, 'role' ] == 'assistant' ]
+            piece : str[ e, 'content' ]
+            said = (said) ? '{said}{piece}' : piece
+        el [ type == 'tool_use' ]
+            flush[]
+            tool[ str[ e, 'tool_name' ], obj[ e, 'parameters' ] ]
+        el [ type == 'error' ]
+            hard : bool [ str[ e, 'severity' ] == 'error' ]
+            say[ (hard) ? 'needs' : 'note', str[ e, 'message' ] ]
+        el [ type == 'result' ]
+            flush[]
+            if [ str[ e, 'status' ] == 'success' ] end[]
+            el fail[ str[ obj[ e, 'error' ], 'message' ] ]
+
+    # a tool it called: an edit as its diff, else what it works on
+    func tool [ name: string, given: map ]
+        if [ name == 'replace' || name == 'write_file' ]
+            edit_diff[ given ]
+            status[ 'busy', base[ str[ given, 'file_path' ] ] ]
+        el [ name == 'run_shell_command' ]
+            d : str[ given, 'description' ]
+            cm : str[ given, 'command' ]
+            status[ 'busy', (d.count > 0) ? d : cm ]
+        el
+            t : str[ given, 'file_path' ]
+            if [ t.count == 0 ] t = str[ given, 'dir_path' ]
+            if [ t.count == 0 ] t = str[ given, 'pattern' ]
+            on : string [ (t.count > 0) ? '{name} {base[ t ]}' : name ]
+            status[ 'busy', on ]
+
+# at the build: the package's bundle for this version in
+# install/lib/gemini-cli/<version>, install/bin/gemini runs it on
+# our node
+export func install_gemini []
+    ins : string '{path.path_install[]}'
+    ver : gemini_ver[]
+    dir : '{ins}/lib/gemini-cli/{ver}'
+    js : path '{dir}/bundle/gemini.js'
+    if [ !js.exists[] ]
+        url : 'https://registry.npmjs.org/@google/gemini-cli/-/gemini-cli-{ver}.tgz'
+        get : command { mkdir -p {dir} && curl -fsSL {url} | tar xz
+            -C {dir} --strip-components=1 }
+        if [ get.exec[ false ] != 0 ]
+            log 'gemini: {ver} failed'
+            return
+    bin : '{ins}/bin/gemini'
+    sh : string '#!/bin/sh\nexec {ins}/node/bin/node {js} "$@"\n'
+    out : path [ bin ]
+    out.save[ sh, null ]
+    chmod[ bin.chars, 0x1ED ]
+    log 'gemini: {ver}'

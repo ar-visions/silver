@@ -70,6 +70,11 @@ void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
+void platform_key_repeat(int delay_ms, int rate) {}
+int  platform_kms_mode_count(void) { return 0; }
+int  platform_kms_mode_info(int i, int* w, int* h, int* hz) { return 0; }
+int  platform_kms_mode_current(void) { return -1; }
+int  platform_kms_set_mode(int i) { return 0; }
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void key_event(platform_window* w, int key, int scan, int action, int mods) {
@@ -521,6 +526,20 @@ void platform_set_cursor(platform_window* w, int kind) {
         case PLATFORM_CURSOR_VRESIZE: w->cursor = [NSCursor resizeUpDownCursor];    break;
         case PLATFORM_CURSOR_IBEAM:   w->cursor = [NSCursor IBeamCursor];           break;
         case PLATFORM_CURSOR_HAND:    w->cursor = [NSCursor pointingHandCursor];    break;
+        case PLATFORM_CURSOR_DRESIZE:
+            if (@available(macOS 15.0, *))
+                w->cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionBottomRight
+                                                       inDirections:NSCursorFrameResizeDirectionsAll];
+            else
+                w->cursor = [NSCursor crosshairCursor];
+            break;
+        case PLATFORM_CURSOR_ARESIZE:
+            if (@available(macOS 15.0, *))
+                w->cursor = [NSCursor frameResizeCursorFromPosition:NSCursorFrameResizePositionBottomLeft
+                                                       inDirections:NSCursorFrameResizeDirectionsAll];
+            else
+                w->cursor = [NSCursor crosshairCursor];
+            break;
         default:                      w->cursor = nil;                              break;
     }
     if (w->cursor) [w->cursor set]; else [[NSCursor arrowCursor] set];

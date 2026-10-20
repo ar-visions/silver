@@ -195,29 +195,17 @@ Layer BarMeasure
         bt : cast BarTitle [ parent ]
         if [ !bt ] return
         uri : 'fonts/BarlowCondensed-Regular.ttf'
-        cv.set_font[ shared_font[ cv, uri, 17 ] ]
+        # the sizes the labels draw at (with the text size)
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 17.0 ] ] ]
         cv.font_size[ 17 ]
         sw : f32 [ (bt.site) ? cv.measure_text[ bt.site ].w : 0.0 ]
-        cv.set_font[ shared_font[ cv, uri, 16 ] ]
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 16.0 ] ] ]
         cv.font_size[ 16 ]
         dw : f32 [ (bt.domain) ? cv.measure_text[ bt.domain ].w : 0.0 ]
         if [ sw != bt.site_w || dw != bt.domain_w ]
             bt.site_w   = sw
             bt.domain_w = dw
             if [ bt.ux ] bt.ux.restyle = true
-
-# the selected pane's part of the bar: a glow up from its foot
-element PaneGlow
-    ghost : true
-    style : CSS {
-        layers.glow:
-            fill_color: #fff2
-            fill_color_pos: 0.0 1.0
-            fill_gradient: linear
-            fill_gradient_color: #fff0
-            fill_gradient_angle: 270.0
-            stroke_width: 0
-    }
 
 # the site's name in the bar's title; a press is the title's
 element BarText
@@ -360,6 +348,31 @@ element MenuDrawer
         opacity: 1.0, 260ms cubic inward
     }
 
+# a free window's menu: its area is the menu's room in the window
+# (orbiter's drawer_area), so it reaches the window's foot
+MenuDrawer WinDrawer
+    style : CSS {
+        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
+        opacity: 0.0, 240ms cubic outward
+        layers.redge:
+            fill_color: #fff2
+            area: r1px t0 r0 b0
+    :open
+        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
+        opacity: 1.0, 260ms cubic inward
+    }
+
+# what a free window's menu slides in: it shows only inside the
+# window, its foot's left corner round as the window's
+element WinMenuArea
+    animated : true
+    style : CSS {
+        layers.mask:
+            fill_color: #0000
+            radius: 0 0 0 8
+            clip: true
+    }
+
 # the exchange's ground: the menus' slideout, the window's width
 # less the dock; the
 # exchange (trinity's) sits over it in the same place
@@ -373,13 +386,14 @@ MenuDrawer ExchangeDrawer
         opacity: 1.0, 260ms cubic inward
     }
 
-# the system menu: out of the bar's right end, over the app; the
-# view buttons and power on top, the sound, Wi-Fi, the tray's apps
+# the system menu, the desktop's (orbiter's): out of the left under
+# the bar, over the app; the view buttons and power on top, the
+# sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
     style : CSS {
-        area: r-12 t0.91 w12 b1.06, 240ms cubic outward
+        area: l-12 t0.91 w12 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: r0 t0.91 w12 b1.06, 260ms cubic inward
+        area: l0 t0.91 w12 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }

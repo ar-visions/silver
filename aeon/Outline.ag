@@ -56,12 +56,13 @@ class SceneEdit
 
     func block [ key: string, label: string, rows: vec PropRow ]
             -> Block
+        # LaunchPanel's rows at rest: 27.6 px, a colour 4.5 rows
         bh : f32 [ 0.0 ]
         for [ r: PropRow ] in rows
             colour : bool [ r.type.compare[ 'rgba' ] == 0
                             || r.type.compare[ 'paint' ] == 0
                             || r.type.compare[ 'tint' ] == 0 ]
-            bh += (colour) ? 108.0 : 24.0
+            bh += (colour) ? 124.2 : 27.6
         bz : string [ busy[ key ] ]
         return Block [ key: key, label: label, h: bh, rows: rows,
                        busy: (bz) ? bz : '', flip: '', on: true,
@@ -738,6 +739,8 @@ class Line
 # eye switches an object, a click chooses either
 element Outliner
     public scene : SceneEdit
+    # its own dark ground; off over the lens of a panel
+    public ground : bool [ true ]
     mutable lines  : vec Line
     mutable scroll_y : f32
     # the row under the pointer
@@ -903,9 +906,10 @@ element Outliner
         lines = list[]
         cv.save[]
         cv.stroke_width[ 0.0 ]
-        cv.fill_color[ rgba [ '#14141a' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
+        if [ ground ]
+            cv.fill_color[ rgba [ '#14141a' ] ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
         cv.font_size[ 14 ]
         for [ i: i32 0, i < lines.count, i += 1 ]
             ln : lines[ i ]
@@ -987,6 +991,8 @@ element Outliner
 # row and its grid), a modifier's or draw's with its switch
 element PropsSide
     public scene : SceneEdit
+    # its own dark ground; off over the lens of a panel
+    public ground : bool [ true ]
 
     func title [] -> string
         s : scene.sel
@@ -1008,8 +1014,8 @@ element PropsSide
     public func render [] -> Elements
         out : Elements []
         if [ !scene ] return out
-        out[ 'body' ] = PropsBody [ scene: scene, scroll_fade: 24.0,
-            area: Region [ 'l0 t40px r0 b0' ] ]
+        out[ 'body' ] = PropsBody [ scene: scene, scroll_fade: 0.0,
+            ground: ground, area: Region [ 'l0 t40px r0 b0' ] ]
         return out
 
     public func draw [ w: Window ]
@@ -1017,9 +1023,10 @@ element PropsSide
         cv : Canvas [ w.screen ]
         cv.save[]
         cv.stroke_width[ 0.0 ]
-        cv.fill_color[ rgba [ '#14141a' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
+        if [ ground ]
+            cv.fill_color[ rgba [ '#14141a' ] ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
         nm : title[]
         cv.font_size[ 15 ]
         cv.fill_color[ rgba [ (nm.count > 0) ? '#f4f4f8' : '#6a6a78' ] ]
@@ -1034,6 +1041,8 @@ element PropsSide
 # rows are scrolled out (its masking layer takes the panels too)
 element PropsBody
     public scene : SceneEdit
+    # its own dark ground; off over the lens of a panel
+    public ground : bool [ true ]
     mutable shown : vec Block
     # the sections' full height
     mutable tall  : f32
@@ -1093,7 +1102,9 @@ element PropsBody
         y : f32 [ 0.0 ]
         last_end : f32 [ 0.0 ]
         mods_y = -1.0
+        unit : f32 [ ux_unit[ ux ] ]
         for [ b: Block ] in shown
+            b.h = b.h * unit
             # the object's modifiers: their own area, each framed
             if [ b.modifier && mods_y < 0.0 ]
                 y += 12.0
@@ -1162,9 +1173,10 @@ element PropsBody
         cv : Canvas [ w.screen ]
         cv.save[]
         cv.stroke_width[ 0.0 ]
-        cv.fill_color[ rgba [ '#14141a' ] ]
-        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
-        cv.paint[]
+        if [ ground ]
+            cv.fill_color[ rgba [ '#14141a' ] ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
         # the headings move with the scroll, as the panels do
         cv.translate[ 0.0, 0.0 - scroll.y ]
         if [ mods_y >= 0.0 ]

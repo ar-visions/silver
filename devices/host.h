@@ -33,6 +33,10 @@ typedef struct platform_window platform_window;
 #define PLATFORM_CURSOR_VRESIZE   2
 #define PLATFORM_CURSOR_IBEAM     3
 #define PLATFORM_CURSOR_HAND      4
+// a corner: top left to bottom right
+#define PLATFORM_CURSOR_DRESIZE   5
+// a corner: bottom left to top right
+#define PLATFORM_CURSOR_ARESIZE   6
 
 #define PLATFORM_TOUCH_BEGIN      0
 #define PLATFORM_TOUCH_MOVE       1
@@ -167,6 +171,11 @@ void  platform_kms_flip                 (int slot);
 void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
 /* the pointer's easing: share of the way per display refresh */
 void  platform_cursor_ease              (float amount);
+void  platform_key_repeat               (int delay_ms, int rate);
+int   platform_kms_mode_count           (void);
+int   platform_kms_mode_info            (int i, int* w, int* h, int* hz);
+int   platform_kms_mode_current         (void);
+int   platform_kms_set_mode             (int i);
 void  platform_window_set_user          (platform_window* w, void* user);
 void* platform_window_get_user          (platform_window* w);
 

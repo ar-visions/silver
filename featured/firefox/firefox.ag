@@ -1,0 +1,32 @@
+# firefox: Mozilla's web browser. Installed from the apps view (its
+# build fetches Mozilla's release for Linux into silver's install);
+# it runs in a pane over orbiter's Wayland display
+export 158.0
+export software ['everyday']
+export icon ['firefox']
+
+# the version taken, and its tarball's sha256 as Mozilla's SHA256SUMS
+# for the release gives it
+func firefox_ver [] -> string
+    return '158.0'
+func firefox_sum [] -> string
+    return '9549b054ec4cf85f50f6a19d8c6fb79580312e71ebc4ec2cb217ec9af09dc12a'
+
+# at the build: Mozilla's release for this version, checked, kept in
+# install/lib/firefox/<version> and linked as install/bin/firefox
+export func install_firefox []
+    ins : string '{path.path_install[]}'
+    ver : firefox_ver[]
+    dir : '{ins}/lib/firefox/{ver}'
+    exe : path '{dir}/firefox/firefox'
+    if [ !exe.exists[] ]
+        url : 'https://archive.mozilla.org/pub/firefox/releases/{ver}/linux-x86_64/en-US/firefox-{ver}.tar.xz'
+        part : '{dir}/firefox.tar.xz.part'
+        get : command { mkdir -p {dir} && curl -fsSL {url} -o {part}
+            && echo "{firefox_sum[]}  {part}" | sha256sum -c --quiet
+            && tar xJf {part} -C {dir} && rm {part} }
+        if [ get.exec[ false ] != 0 ]
+            log 'firefox: {ver} failed'
+            return
+    ln : command { ln -sfn {exe} {ins}/bin/firefox }
+    if [ ln.exec[ false ] == 0 ] log 'firefox: {ver}'

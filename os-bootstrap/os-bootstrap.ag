@@ -1787,7 +1787,7 @@ element Bootstrap
     # xdg-open: an address goes to orbiter, which hosts aura on it
     func add_open []
         bin : '{out_dir}/xdg-open'
-        cmd : '{install}/bin/clang -static -Os -o "{bin}" "{root}/os-bootstrap/xdg-open.c"'
+        cmd : '{install}/bin/clang -static -Os -o "{bin}" "{root}/orbiter/xdg-open.c"'
         open_build : command [ cmd ]
         if [ open_build.exec[ false ] != 0 ]
             log 'os-bootstrap: xdg-open.c did not build'

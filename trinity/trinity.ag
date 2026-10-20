@@ -32,6 +32,7 @@ ifdef [ linux ]
 
 ifndef [ windows ]
 	import <pthread.h>
+	import <signal.h>
 
 ifndef [ windows ]
     import <unistd.h>
@@ -180,6 +181,7 @@ import video
 import mux
 import demux
 import navigation
+import agent
 
 scalar sec : i64
     cast -> ns  [ a * 1000000000 ]
@@ -229,6 +231,10 @@ enum HM
     view    : 20
     # app -> ide: three bytes of its address (a URL); a 0 byte ends it
     address : 21
+    # app -> ide: a = it has a panel (1) and an outline (2), b = open
+    panel_state : 22
+    # ide -> app: a panel opened or closed: a = 0 the panel, 1 outline
+    panel   : 23
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -259,16 +265,6 @@ func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 func agent_sock_ask_block [ nm: cstr, txt: cstr, out: @i8,
                             cap: i32 ] -> i32
-func agent_shell_start [ agent: cstr, root: cstr, model: cstr,
-                         txt: cstr ] -> i32
-func agent_shell_line [ buf: @i8, cap: i32 ] -> i32
-func agent_shell_stop []
-func agent_shell_allow [ tools: cstr ]
-func agent_shell_new []
-func agent_shell_rewind [] -> i32
-func agent_shell_select [ id: i32 ]
-func agent_shell_error [] -> symbol
-func agent_shell_close [ id: i32 ]
 func host_log_dir [] -> symbol
 
 # the apps view's sections, in their order: an app module names its
@@ -861,6 +857,10 @@ abstract live_app media_app
                         tag_line = '{tag_line} {tag_key}={tag_count}'
             stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush} | objects {Au.alloc_count[ null ]} samplers {vk.sampler_count} rcolor {vk.samp_rcolor} rdepth {vk.samp_rdepth} rreduce {vk.samp_rreduce} sdf {vk.samp_sdf} atlas {vk.samp_atlas} other {vk.samp_other} renders {vk.render_allocs}/{vk.ring_frees} | tags{tag_line}'
             if [ pwn.stats ] log '{stat_line}'
+            if [ pwn.show_fps ]
+                fl : string 'fps {frames}'
+                puts[ fl.chars ]
+                fflush[ stdout ]
             if [ pwn.stats ] log 'paint_us:{pwn.paint_top[]}'
             vk.pipe_draws   = 0
             vk.resize_us    = 0
@@ -938,10 +938,12 @@ abstract live_app media_app
                     pane_tmo  = 0
             # a Full pane runs in step with this window: one frame per
             # refresh, so its requests go out at the display's rate, not
-            # the loop's
+            # the loop's. a present that waits for the refresh paces it
+            # already: a second clock beside it skips refreshes (165 Hz
+            # became 55 or 41)
             if [ win.backdrop_bypass ]
                 frame_hz = win.refresh_hz[]
-                pace_frame[]
+                if [ !win.present_paced[] ] pace_frame[]
             # headless presents nothing, so nothing else paces it
             el [ headless && !in_pane ]
                 pace_frame[]
@@ -1349,6 +1351,13 @@ abstract live_app media_app
                     frame_req = true
                 el [ t == i32[ HM.nav ] ]
                     wn.navigate[ host_pa[] ]
+                # the host's toggle: the app's panel opened or closed
+                el [ t == i32[ HM.panel ] ]
+                    if [ host_pa[] == 1 ]
+                        wn.outline_open = !wn.outline_open
+                    el
+                        wn.panel_open = !wn.panel_open
+                    wn.restyle    = true
                 # the host's chip: a view of the app, or its source
                 el [ t == i32[ HM.view ] ]
                     vae : cast element [ wn.app_object ]
@@ -1546,9 +1555,10 @@ abstract live_app media_app
             aa :  cast element [ wn.app_object ]
             # a shell run's events, as the statuses an agent would post
             for [ aa ]
-                sb : local i8 [ 1024 ]
-                if [ agent_shell_line[ @sb[0], 1024 ] <= 0 ] break
-                aa.on_agent*[ 'status {string [ @sb[0] ]}' ]
+                st : string agent_next[]
+                if [ st.count == 0 ] break
+                aa.on_agent*[ 'status {st}' ]
+            wn.term_pump[]
             if [ !agent_on ]
                 name : 'app'
                 if [ aa ]
@@ -2088,6 +2098,13 @@ class ExchangeSession
     public agent_pick  : string
     public model_pick  : string
     public attached    : vec path
+    # its agent's own program in a terminal, which agent and model
+    # it runs, when it started, and the reference still to type in
+    public term        : ConsoleSession
+    public term_agent  : string
+    public term_model  : string
+    public term_ms     : i64
+    public ref_due     : string
 
 # the exchange and its avatar as they were when a reload swapped: the
 # next instance takes it up on its first frame (a persist slot in the
@@ -2400,8 +2417,6 @@ Display Window
              || live_snap.height != tx.height ]
             live_snap.resize[ tx.width, tx.height ]
             live_blur.resize[ live_snap ]
-        screen.flush_text[]
-        screen.draw[]
         screen.sync_fence[]
         vk.copy_image[ tx, live_snap ]
         live_blur.run[]
@@ -2533,7 +2548,7 @@ Display Window
         session_park[]
         s : ExchangeSession sessions[ i ]
         session_cur = i
-        agent_shell_select[ s.id ]
+        agent_select[ s.id ]
         shot_ask     = s.shot_ask
         shot_file    = s.shot_file
         shot_line    = s.shot_line
@@ -2559,7 +2574,7 @@ Display Window
         s : ExchangeSession [ id: session_ids, title: first_line ]
         sessions.push[ s ]
         session_cur = sessions.count - 1
-        agent_shell_select[ s.id ]
+        agent_select[ s.id ]
 
     # the first send failed: no tab after all, the prompt as it was
     public func session_unbegin []
@@ -2567,7 +2582,8 @@ Display Window
              || session_cur >= sessions.count ]
             return
         s : ExchangeSession sessions[ session_cur ]
-        agent_shell_close[ s.id ]
+        if [ s.term ] s.term.end[]
+        agent_close[ s.id ]
         sessions.remove[ session_cur ]
         session_cur = -1
 
@@ -2577,7 +2593,7 @@ Display Window
     public func session_new []
         session_park[]
         session_cur = -1
-        agent_shell_select[ -1 ]
+        agent_select[ -1 ]
         shot_error  = null
         shot_file   = false
         shot_line   = 0
@@ -2593,7 +2609,8 @@ Display Window
     public func session_close [ i: i32 ]
         if [ !sessions || i < 0 || i >= sessions.count ] return
         s : ExchangeSession sessions[ i ]
-        agent_shell_close[ s.id ]
+        if [ s.term ] s.term.end[]
+        agent_close[ s.id ]
         was : bool [ i == session_cur ]
         sessions.remove[ i ]
         if [ session_cur > i ] session_cur -= 1
@@ -2687,8 +2704,8 @@ Display Window
                 session_show[
                     (session_cur >= 0) ? session_cur
                     : sessions.count - 1 ]
-            if [ !attached ] attached = vec path []
-            attached.push[ at ]
+            cs : ExchangeSession term_session[]
+            if [ cs ] term_type[ cs, 'Screenshot: {at} ' ]
             agent_min    = false
             restyle      = true
             will_animate = true
@@ -2702,11 +2719,79 @@ Display Window
         notes       = null
         shot_text   = ''
         attached    = null
-        if [ !is_file ]
-            attached = vec path []
-            attached.push[ at ]
+        # a conversation at once: its terminal comes up with the lit
+        # agent, the reference typed in for the user's words
+        session_begin[ at.filename[] ]
+        ns : ExchangeSession term_session[]
+        if [ ns ]
+            ns.ref_due = (is_file) ? 'File: {at}:{ln} '
+                                   : 'Screenshot: {at} '
         restyle     = true
         will_animate = true
+
+    # the conversations' terminals each frame: the others' output is
+    # read (a full terminal would stall its agent); a reference is
+    # typed in once its program is up; typed into, the avatar steps
+    # aside
+    public func term_pump []
+        if [ !sessions ] return
+        cs : ExchangeSession term_session[]
+        now : i64 epoch_millis[]
+        for [ s: ExchangeSession ] in sessions
+            if [ !s.term ] continue
+            if [ s != cs ] s.term.read_output[]
+            if [ s.ref_due && now - s.term_ms > 1500 ]
+                s.term.write_input[ s.ref_due ]
+                s.ref_due = null
+        if [ !cs ] return
+        if [ cs.term && cs.term.typed && !agent_view ]
+            agent_view   = true
+            restyle      = true
+            will_animate = true
+
+    # the conversation on screen, else null
+    func term_session [] -> ExchangeSession
+        if [ !sessions || session_cur < 0
+             || session_cur >= sessions.count ]
+            return null
+        return sessions[ session_cur ]
+
+    # text into a conversation's terminal (its program is up), else
+    # kept to type once it is
+    func term_type [ s: ExchangeSession, text: string ]
+        if [ s.term && !s.ref_due ]
+            s.term.write_input[ text ]
+        el
+            s.ref_due = (s.ref_due) ? '{s.ref_due}{text}' : text
+        restyle = true
+
+    # the folder the agent works in: the app's start
+    func agent_root [] -> string
+        obj : Au [ app_object ]
+        sp : path [ (obj) ? cast path [ obj.get_property[
+                                 'startup_path' ] ] : null ]
+        return (sp) ? '{sp}' : '{path.path_startup[]}'
+
+    # a conversation's terminal: the agent's own program in the
+    # project folder (again, for another agent or model)
+    func term_start [ s: ExchangeSession, nm: string, model: string ]
+        if [ s.term ] s.term.end[]
+        s.term       = null
+        s.term_agent = nm
+        s.term_model = model
+        root : agent_root[]
+        line : agent_term_line[ s.id, nm, root, model ]
+        if [ line.count == 0 ]
+            shot_error = agent_error[]
+            return
+        shot_error = null
+        cs : ConsoleSession []
+        cs.name       = 'agent{s.id}'
+        cs.launch_cmd = line
+        cs.cwd        = root
+        cs.start[]
+        s.term    = cs
+        s.term_ms = epoch_millis[]
 
     # the dictation request: 3 start (into the exchange's field), 0 stop
     # (the take is typed in), 2 cancel. a hosted app asks its host; an
@@ -2899,7 +2984,14 @@ Display Window
                     if [ stats && !structural ]
                         log 'ARG {(inst.id && inst.id.count > 0) ? inst.id : "(noid)"} {member.ident}'
                     inst.member_set[ member, nv ]
-                    if [ !structural ] changed = true
+                    # a new place is not a new picture: its parents
+                    # place the cached one there; a new size resizes
+                    # the cache, which repaints it
+                    if [ strcmp[ member.ident, "area" ] == 0 ]
+                        for [ p: element* inst.parent, p, p = p.parent ]
+                            p.pristine = false
+                        will_animate = true
+                    el [ !structural ] changed = true
                     if [ strcmp[ member.ident, "icon" ] == 0 ]
                         bb : Button [ inst inherits Button ]
                         if [ bb ] bb.sync_icon[]
@@ -3679,9 +3771,48 @@ Display Window
             view_sent = lit
             host_post[ 0, i32[ HM.view_state ], lit, 0, 0 ]
 
+    # hosted: whether the app has a panel and whether it is open, told
+    # to the host when it changes (its strip's toggle shows it)
+    func panel_post []
+        ae : cast element [ app_object ]
+        has : i32 [ ((ae && ae.has_panel*[]) ? 1 : 0)
+                    | ((ae && ae.has_outline*[]) ? 2 : 0) ]
+        open : i32 [ ((panel_open) ? 1 : 0) | ((outline_open) ? 2 : 0) ]
+        st : i32 [ has * 4 + open ]
+        if [ st == panel_sent ] return
+        panel_sent = st
+        host_post[ 0, i32[ HM.panel_state ], has, open, 0 ]
+
+    # the panel's ground: the screen drawn so far (the app's view under
+    # it), blurred, once a frame
+    public func lens [] -> ReduceBlur
+        if [ !screen || !screen.color || !screen.color.vk_image ]
+            return null
+        if [ lens_ms == last_frame_ms && lens_blur ] return lens_blur
+        lens_ms = last_frame_ms
+        tx : Texture screen.color
+        if [ !lens_snap ]
+            lens_snap = Texture [ vk: vk, w: a, width: tx.width,
+                                  height: tx.height,
+                                  vk_format: tx.vk_format ]
+            lens_blur = ReduceBlur []
+            lens_blur.build[ vk_context[ a.vk ], a, lens_snap, 1.0, 2 ]
+        el [ lens_snap.width != tx.width
+             || lens_snap.height != tx.height ]
+            lens_snap.resize[ tx.width, tx.height ]
+            lens_blur.resize[ lens_snap ]
+        # sync_fence submits the open batch; a draw[] here would
+        # record the last paint again, with its picture gone (black)
+        screen.sync_fence[]
+        vk.copy_image[ tx, lens_snap ]
+        lens_blur.run[]
+        return lens_blur
+
     func app_render [] -> Elements
         e : Elements [ ]
-        if [ host_slot[] > 0 ] views_post[]
+        if [ host_slot[] > 0 ]
+            views_post[]
+            panel_post[]
         e[ 'app' ] = cast element [ app_object ]
         ae : cast element [ app_object ]
         if [ ae && ae.ux_generics ]
@@ -3722,50 +3853,6 @@ Display Window
             fc : i32 [ round[ gc - 31.0 * ux_scale ] ]
             pick_center : i32 [ round[ gc + 37.0 * ux_scale ] ]
             boxed : bool [ exchange_region && exchange_region.count > 0 ]
-            if [ agent_view ]
-                e[ 'unotes' ] = ShotUser   [ topmost: true,
-                                             fading: swap_fade,
-                                             area: ux_area[
-                                             'l460px t15%+24px r64px b-15%+174px', ux_scale ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true,
-                                             fading: swap_fade,
-                                             area: ux_area[
-                                             'l472px b-15%+220px r120px b-15%+180px', ux_scale ], label: 'prompt description' ]
-            el
-                # the box holds the field in its bottom row: the same
-                # center
-                bw : i32 [ round[ 440.0 * ux_scale ] ]
-                bh : i32 [ round[ 420.0 * ux_scale ] ]
-                bt : i32 [ fc + i32[ round[ 394.0 * ux_scale ] ] ]
-                e[ 'unotes' ] = ShotUser   [ topmost: true,
-                        fading: swap_fade,
-                    area: Region [
-                        'l50%-{bw / 2}px b{bt}px w{bw}px h{bh}px' ] ]
-                # centered where it sits at unit 1: a larger unit grows
-                # it in place
-                field_w : i32 [ round[ 388.0 * ux_scale ] ]
-                field_h : i32 [ round[ 40.0 * ux_scale ] ]
-                e[ 'shot' ]   = ShotPrompt [ topmost: true,
-                        fading: swap_fade, label: 'prompt description',
-                    area: Region [
-                    'l50%-{18 + field_w / 2}px b{fc + field_h / 2}px w{field_w}px h{field_h}px' ] ]
-            # the mic, inside the field's right end (as a search box has
-            # it): only where something can transcribe (a host, or the
-            # app itself)
-            if [ host_slot[] > 0 || (ae && ae.dictates*[]) ]
-                # at rest it keeps its place in the field's right end
-                ms : i32 [ round[ 32.0 * ux_scale ] ]
-                mx : i32 [ i32[ round[ 194.0 * ux_scale ] ] - 18 ]
-                my : i32 [ fc + ms / 2 ]
-                mr : Region [
-                    (agent_view)
-                    ? ux_area[ 'l100%-112px b-15%+216px w32px h32px', ux_scale ] :
-                    Region [ 'l50%+{mx}px b{my}px w{ms}px h{ms}px' ] ]
-                e[ 'shot_mic' ] = ShotMic [ topmost: true,
-                                            fading: swap_fade,
-                                            icon: 'mic', icon_fit: 0.55,
-                                            manual_mode: true,
-                    selected: dict_on, area: mr ]
             # a slideout has no close: a press away, or the host's
             # button, puts it away
             if [ !boxed ]
@@ -3774,7 +3861,7 @@ Display Window
                     manual_mode: true,
                     area: ux_area[ 'r16px t16px w36px h36px', ux_scale ] ]
             # the picker last: over the blur and the boxes
-            ag : string [ (ix < nm.count) ? nm[ ix ] : 'claude' ]
+            ag : string [ (ix < nm.count) ? nm[ ix ] : '' ]
             md : vec string agent_models[ app_object, ag ]
             # both rows one width, centered where they sit at unit 1
             pk9w : i32 [ round[ 360.0 * ux_scale ] ]
@@ -3797,8 +3884,8 @@ Display Window
                 'l50%-{pk9w / 2}px b{model_center + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
             # the lit agent's models, the row under it; the first is lit
             # unless the user picked another for this agent
+            mx : i32 [ 0 ]
             if [ md.count > 0 ]
-                mx : i32 [ 0 ]
                 for [ pick: i32 0, pick < md.count, pick += 1 ]
                     if [ model_pick && model_pick == md[ pick ] ]
                         mx = pick
@@ -3823,19 +3910,40 @@ Display Window
                     lit_fill: rgba [ '#4d3dbcaa' ], rest_px: 0.0,
                     area: Region [
                     'l50%-{pk9w / 2}px b{pick_center + pk9h / 2}px w{pk9w}px h{pk9h}px' ] ]
-            # the screenshots attached to the next message, just above
-            # the field
-            if [ attached && attached.count > 0 ]
-                ah : i32 [ round[ 44.0 * ux_scale ] ]
-                agents_w : i32 [ round[ 388.0 * ux_scale ] ]
-                agents_h : i32 [ round[ 40.0 * ux_scale ] ]
-                ar : Region [
+            # the conversation: its agent's own program in a terminal,
+            # under the avatar at first, beside it once typed into
+            mdl : string [ (md.count > 0) ? md[ mx ] : '' ]
+            cs : ExchangeSession term_session[]
+            # no agent shell installed: said where the box would be
+            if [ cs && ag.count == 0 ]
+                shot_error = 'No agent shell installed: install one from the apps view'
+            el [ cs ]
+                # another agent or model before anything was typed:
+                # its terminal starts again with it
+                fresh : bool [ !cs.term || !cs.term.typed ]
+                if [ !cs.term || (fresh && (cs.term_agent != ag
+                                  || cs.term_model != mdl)) ]
+                    term_start[ cs, ag, mdl ]
+            if [ cs && cs.term ]
+                one : map ConsoleSession [ string ] []
+                one[ 'agent' ] = cs.term
+                tb : i32 [ model_center + pk9h / 2
+                           + i32[ round[ 16.0 * ux_scale ] ] ]
+                th : i32 [ round[ 400.0 * ux_scale ] ]
+                tw : i32 [ round[ 760.0 * ux_scale ] ]
+                if [ root && root.bounds ]
+                    tw = min[ tw, i32[ root.bounds.w * 0.92 ] ]
+                hw : i32 [ tw / 2 ]
+                tt : i32 [ tb + th ]
+                rest : string 'l50%-{hw}px b{tt}px w{tw}px h{th}px'
+                ta : Region [
                     (agent_view)
-                    ? ux_area[ 'l472px b-15%+272px r120px b-15%+228px', ux_scale ] :
-                    Region [
-                    'l50%-{18 + agents_w / 2}px b{fc + agents_h / 2 + 8 + ah}px w{agents_w}px h{ah}px' ] ]
-                e[ 'shot_attach' ] = ShotAttach [ topmost: true,
-                        fading: swap_fade, shots: attached, area: ar ]
+                    ? ux_area[ 'l460px t15%+24px r64px b24px',
+                               ux_scale ]
+                    : Region [ rest ] ]
+                e[ 'agent_term' ] = Console [ topmost: true,
+                    fading: swap_fade, focusable: true, sessions: one,
+                    session_id: 'agent', cwd: cs.term.cwd, area: ta ]
             # a failed send, in red just below the prompt's box
             if [ shot_error && shot_error.count > 0 ]
                 ew : i32 [ round[ 440.0 * ux_scale ] ]
@@ -3880,9 +3988,9 @@ Display Window
         # the box stays while closed too: the avatar keeps its place
         # (out of it, its area would jump to the window's)
         if [ exchange_region && exchange_region.count > 0 ]
-            inbox : vec string [] [ 'shot_bg', 'unotes', 'shot',
-                'shot_mic', 'shot_close', 'agent_pick', 'model_pick',
-                'shot_attach', 'shot_error', 'session_tabs', 'agent_av' ]
+            inbox : vec string [] [ 'shot_bg', 'agent_term',
+                'shot_close', 'agent_pick', 'model_pick',
+                'shot_error', 'session_tabs', 'agent_av' ]
             bx : Elements []
             rest : Elements []
             for [ ve: element, vk: string ] in e
@@ -3896,12 +4004,11 @@ Display Window
                 ghost: !(shot_ask && !agent_min),
                 area: Region [ exchange_region ], elements: bx ]
             e = rest
-        if [ av ]
-            # the field takes focus once the tree holds it: this
-            # render's instance is not the one that gets mounted
-            if [ root && root.elements ]
-                tf : element exch_el[ 'shot' ]
-                if [ tf && focus != tf ] set_focus[ tf ]
+        # the terminal takes focus once the tree holds it: this
+        # render's instance is not the one that gets mounted
+        if [ shot_ask && !agent_min && root && root.elements ]
+            tf : element exch_el[ 'agent_term' ]
+            if [ tf && focus != tf ] set_focus[ tf ]
         return e
 
     public func update_all [ render: Elements ]
@@ -4138,7 +4245,7 @@ Display Window
         g : handle [ Au.live_window_get[] ]
         if [ !g ] return
         cursor_kind = kind
-        # 1 = horizontal resize, 2 = vertical resize, else arrow
+        # 1 horizontal resize, 2 vertical, 5 and 6 corners, else arrow
         platform_set_cursor[ g, kind ]
 
     # mouse lock: the cursor hides and sits at the element's centre;
@@ -4238,7 +4345,9 @@ Display Window
     # that is not repainting still has to notice the pointer
     # approaching. ox,oy is the parent's window-space origin with its
     # scroll taken out
-    func near_walk [ e: element, ox: f32, oy: f32 ]
+    # cover: the topmost element the pointer is over (a free window),
+    # else null; nothing outside it takes the light while it covers
+    func near_walk [ e: element, ox: f32, oy: f32, cover: element ]
         if [ !e || !e.elements ] return
         for [ c: element, id: string ] in e.elements
             # a render may leave a null slot (a chip that is not up)
@@ -4249,11 +4358,15 @@ Display Window
                 oy + c.bounds.y - ((c.no_scroll) ? 0.0 : e.scroll.y) ]
             if [ !c.hide && c.opacity > 0.0 && c.bounds.w > 0.0
                  && c.bounds.h > 0.0 ]
+                # covered: neither in the cover nor holding it
+                shut : bool [ cover && !holds[ cover, c ]
+                              && !holds[ c, cover ] ]
                 hw : f32 [ c.bounds.w * 0.5 ]
                 hh : f32 [ c.bounds.h * 0.5 ]
                 mx : f32 [ mouse.x ]
                 my : f32 [ mouse.y ]
-                nr : bool [ mx >= cx - hw && mx < cx + c.bounds.w + hw
+                nr : bool [ !shut && mx >= cx - hw
+                            && mx < cx + c.bounds.w + hw
                             && my >= cy - hh
                             && my < cy + c.bounds.h + hh ]
                 if [ nr != c.near ]
@@ -4263,7 +4376,7 @@ Display Window
                     restyle = true
                 # borders in reach repaint as the light moves
                 c.win_pos = vec2f [ cx, cy ]
-                lit : bool [ mx >= cx - near_reach
+                lit : bool [ !shut && mx >= cx - near_reach
                              && mx < cx + c.bounds.w + near_reach &&
                              my >= cy - near_reach
                              && my < cy + c.bounds.h + near_reach ]
@@ -4272,9 +4385,15 @@ Display Window
                         p.pristine = false
                     will_animate = true
                 c.near_lit = lit
-                c.near_in  = mx >= cx && mx < cx + c.bounds.w &&
-                    my >= cy && my < cy + c.bounds.h
-            near_walk[ c, cx, cy ]
+                c.near_in  = !shut && mx >= cx && mx < cx + c.bounds.w
+                    && my >= cy && my < cy + c.bounds.h
+            near_walk[ c, cx, cy, cover ]
+
+    # outer is inner or one of inner's parents
+    func holds [ outer: element, inner: element ] -> bool
+        for [ p: element* inner, p, p = p.parent ]
+            if [ p == outer ] return true
+        return false
 
     # the border light's weight, filtered: 0.9 kept, 0.1 new
     # (at 60 Hz), so it rises and falls as an animation
@@ -4683,8 +4802,14 @@ Display Window
         orig_pos : vec2f [ ev.mouse.pos ]
         mouse.x = f64[ ev.mouse.pos.x ]
         mouse.y = f64[ ev.mouse.pos.y ]
-        near_walk[ root, 0.0, 0.0 ]
         f : find_target[ root, ev, null ]
+        # the topmost element the pointer is over (or the one a drag
+        # holds it to): what it covers takes no light
+        cov : element [ null ]
+        held : element [ (capture) ? capture : f ]
+        for [ p: element* held, p, p = p.parent ]
+            if [ p.topmost ] cov = p
+        near_walk[ root, 0.0, 0.0, cov ]
         ev.origin = f
         m : element [ f ]
         if [ capture ]
@@ -5183,6 +5308,23 @@ Display Window
     mutable note_press          : bool
     mutable note_press_x        : f32
     mutable note_press_y        : f32
+    # the app's panel (a side menu over its view, toggled by the user
+    # alone): open; the state last told the host (has x 2 + open)
+    public  panel_open          : bool
+    mutable panel_sent          : i32 [ -1 ]
+    # the panel's lens: the app's screen drawn so far, blurred once a
+    # frame
+    mutable lens_snap           : Texture
+    mutable lens_blur           : ReduceBlur
+    mutable lens_ms             : i64 [ -1 ]
+    # the app's outline (a panel over its view's left), as the panel
+    public  outline_open        : bool
+    # the frame rate printed to the console each second
+    public  show_fps            : bool
+    # a wheel step's size in trinity's own scrolling; the steps a
+    # program's window (Wayland) gets for one
+    public  wheel_mul           : f64 [ wheel_scale[] ]
+    public  window_wheel        : f32 [ 1.0 ]
 
     # the selected text, wrapped rows joined by a space
     public func note_selection [] -> string
@@ -5238,8 +5380,17 @@ Display Window
             return
 
         # the backdrop under the ui: the flat colour in the solid stage,
-        # else the blur pass for the stage, else the scene itself
-        if [ frost_eff[] == 3 || !backdrop ]
+        # else the blur pass for the stage, else the scene itself; a
+        # hosted app on the screen's ground starts clear (the host's
+        # ground shows through)
+        ga : cast element [ app_object ]
+        if [ host_slot[] > 0 && ga && ga.screen_ground*[] ]
+            screen.set_composite[ Composite.copy ]
+            screen.fill_color[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+            screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
+            screen.paint[]
+            screen.set_composite[ Composite.source_over ]
+        el [ frost_eff[] == 3 || !backdrop ]
             screen.fill_color[ solid_color ]
             screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
             screen.paint[]
@@ -6314,6 +6465,18 @@ Display Window
         cv.save[]
         if [ e.opacity < 1.0 ]
             cv.set_opacity[ cv.get_opacity[] * e.opacity ]
+        # a layer with clip: all the element paints and holds is masked
+        # to that layer's rounded box
+        for [ ck_au: Au, ck_k: string ] in e.layers
+            ck_lay : cast Layer [ ck_au ]
+            if [ !ck_lay || !ck_lay.clip ] continue
+            ck : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+            if [ ck_lay.radius ]
+                ck = vec4f [ ck_lay.radius.tl, ck_lay.radius.tr,
+                             ck_lay.radius.br, ck_lay.radius.bl ]
+            cv.clip_rounded_rect[ 0.0, 0.0, e.bounds.w, e.bounds.h,
+                                  ck.x, ck.y, ck.z, ck.w ]
+            break
         # no_cache: no canvas of its own, it paints onto its parent's.
         # that reaches down: an element under one paints as it does
         nc : bool [ e.no_cache ]
@@ -6693,9 +6856,12 @@ Display Window
                 prev_font : CanvasFont draw_cv.font
                 prev_fs   : bool [ draw_cv.font_set ]
                 if [ layer.label_font && layer.label_font.count > 0 ]
-                    if [ !layer.label_font_cache ]
+                    # its size rides the text size, as the default's
+                    lpx : i32 label_px[ draw_cv, layer.label_size ]
+                    if [ !layer.label_font_cache
+                         || layer.label_font_cache.size_px != lpx ]
                         layer.label_font_cache = shared_font[ draw_cv,
-                            layer.label_font, i32[ layer.label_size ] ]
+                            layer.label_font, lpx ]
                     draw_cv.set_font[ layer.label_font_cache ]
                 align  : vec2f [ x: layer.label_align.x,
                                  y: layer.label_align.y ]
@@ -6799,10 +6965,17 @@ Display Window
                     e.pristine = true
 
         # scroll_fade drives the mask from scroll state, per frame
+        # each edge's fade grows with what is left to scroll that way,
+        # from half its height on (up to its height): near the end
+        # there is none, never switched on and off as a scroll eases
         if [ e.scroll_fade > 0.0 && e.content_h > 0.0 && e.bounds ]
             mxs : f32 [ e.content_h - e.bounds.h ]
-            e.mask_glow.x = (e.scroll.y > 0.5) ? e.scroll_fade : 0.0
-            e.mask_glow.z = (mxs > 0.5 && e.scroll.y < mxs - 0.5) ? e.scroll_fade : 0.0
+            near : f32 [ e.scroll_fade * 0.5 ]
+            up : f32 [ clamp[ e.scroll.y - near, 0.0, e.scroll_fade ] ]
+            down : f32 [ clamp[ mxs - e.scroll.y - near, 0.0,
+                                e.scroll_fade ] ]
+            e.mask_glow.x = (up > 0.5) ? up : 0.0
+            e.mask_glow.z = (down > 0.5) ? down : 0.0
         mask_on : bool [ e.mask_glow.x > 0.0 || e.mask_glow.y > 0.0
                          || e.mask_glow.z > 0.0 || e.mask_glow.w > 0.0 ]
         # its children went through the mask with it (its layer)
@@ -7318,7 +7491,10 @@ func agent_post [ obj: Au, text: string, priority: string ] -> bool
 # the names the exchange offers: the app's `agents` list, else its
 # `agent`, else claude
 func agent_names [ obj: Au ] -> vec string
-    out : vec string []
+    # the installed agent shells: the app's own list (agents, else
+    # agent) sets their order, the rest follow
+    have : vec string agent_installed[]
+    want : vec string []
     if [ obj ]
         # by name: an app declares `agents` on its own type (the
         # abstract's member is not in its layout), so the property is
@@ -7329,11 +7505,19 @@ func agent_names [ obj: Au ] -> vec string
             for [ i: i32 0, i < vv.count, i += 1 ]
                 ag : Agent [ cast Agent [ vv[ i ] ] ]
                 if [ ag && ag.name && ag.name.count > 0 ]
-                    out.push[ ag.name ]
-        if [ out.count == 0 ]
+                    want.push[ ag.name ]
+        if [ want.count == 0 ]
             one : cast string [ obj.get_property[ 'agent' ] ]
-            if [ one && one.count > 0 ] out.push[ one ]
-    if [ out.count == 0 ] out.push[ 'claude' ]
+            if [ one && one.count > 0 ] want.push[ one ]
+    out : vec string []
+    for [ nm: string ] in want
+        for [ hv: string ] in have
+            if [ hv == nm ] out.push[ nm ]
+    for [ hv: string ] in have
+        seen : bool [ false ]
+        for [ nm: string ] in out
+            if [ nm == hv ] seen = true
+        if [ !seen ] out.push[ hv ]
     return out
 
 # the models an agent offers, in the agi's order (the first is the
@@ -7363,9 +7547,8 @@ func agent_post_as [ obj: Au, pick: string, model: string,
     sp  : path [ cast path [ obj.get_property[ 'startup_path' ] ] ]
     rt  : path [ (sp) ? sp : path.path_startup[] ]
     md  : string [ (model && model.count > 0) ? model : '' ]
-    ok  : bool [ agent_shell_start[ nm.chars, rt.chars, md.chars,
-                                    text.chars ] != 0 ]
-    if [ !ok ] log 'agent: {nm} did not start'
+    ok  : bool agent_start[ nm, '{rt}', md, text ]
+    if [ !ok ] log 'agent: {nm} did not start: {agent_error[]}'
     return ok
 
 # the app names itself: the platform window is reused across a
@@ -7397,7 +7580,8 @@ Layer ScrollLayer
 
     func draw [ cv: Canvas ]
         e : element [ parent ]
-        if [ !e || e.content_h <= 0.0 || e.bounds.h >= e.content_h ]
+        # under a pixel past its box (a height's rounding): no bar
+        if [ !e || e.content_h <= 0.0 || e.bounds.h + 1.0 >= e.content_h ]
             return
         if [ e.no_scroll ] return
         top     : f32 [ bounds.y ]
@@ -7994,13 +8178,23 @@ element Splitter
     intern dbgf       : i32
     # a border on each seam, lit only by the pointer's near light
     public near_seam  : bool
+    # panes out of the split: their own areas, over the rest, last on
+    # top
+    public loose      : vec string
 
     func order [] -> vec string
         ids : vec string []
         if [ inner ]
             for [ ce: element, id: string ] in inner
-                ids.push[ id ]
+                if [ !loose || loose.index_of[ id ] < 0 ] ids.push[ id ]
         return ids
+
+    # the loose panes over the split, in their order
+    func put_loose [ out: Elements ]
+        if [ !loose || !inner ] return
+        for [ id: string ] in loose
+            ch : element inner[ id ]
+            if [ ch ] out[ id ] = ch
 
     # extent lives on the MOUNTED child; inner is rebuilt each frame
     func kid [ id: string ] -> element
@@ -8039,7 +8233,10 @@ element Splitter
         if [ !inner ] return null
         ids : order[]
         n   : i32 [ ids.count ]
-        if [ n == 0 ] return null
+        if [ n == 0 ]
+            lo : Elements [ ]
+            put_loose[ lo ]
+            return lo
         if [ n != last_n ]
             last_n = n
             for [ ri: i32 0, ri < n, ri += 1 ]
@@ -8100,6 +8297,7 @@ element Splitter
                 out[ 'dv{i}' ] = hd
                 pos += gap
         if [ dbgf > 0 ] dbgf -= 1
+        put_loose[ out ]
         sig : f32 [ dseam.count ]
         for [ di: i32 0, di < dseam.count, di += 1 ]
             sig = sig * 7.0 + dseam[ di ]
@@ -8261,6 +8459,29 @@ element Splitter
 # own: its history's arrows and its title, as orbiter's pane bar
 # shows them. hosted in a pane, orbiter's bar shows the same (the
 # nav state and title go to it), and the app makes none: hosted[]
+# an app's panel over its view (Window.panel_open shows it; the user
+# alone opens and closes it): its ground the view under it, blurred
+# (the window's lens), with a tint; its children are the panel
+element PanelLens
+    animated : true
+    public tint : rgba [ '#140a2a99' ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        b : ReduceBlur w.lens[]
+        ox : f32 cv.transform_tx[]
+        oy : f32 cv.transform_ty[]
+        cv.save[]
+        cv.clip_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0 ]
+        if [ b && w.root && w.root.bounds ]
+            cv.draw_image[ b.color[], rect [ x: -ox, y: -oy,
+                w: w.root.bounds.w, h: w.root.bounds.h ] ]
+        cv.fill_color[ tint ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+
 element OrbiterBar
     style : CSS {
         layers.tbar:
@@ -8299,18 +8520,25 @@ element OrbiterBar
             rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
             seg_radius: 0.0, use_spacing: false, seg_reach: 0.5,
             area: Region { l0 t0 w3.6 b0 } ]
+        # the app's outline: its toggle left of the title, lit open
+        ae : cast element [ ux.app_object ]
+        if [ ae && ae.has_outline*[] ]
+            out[ 'outline_toggle' ] = TButtons [
+                buttons: vec string [] [ 'outline_toggle' ],
+                icon_ids: vec string [] [ 'outline' ], icon_scale: 0.575,
+                manual: true, sel_mask: (ux.outline_open) ? 1 : 0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                seg_radius: 0.0, use_spacing: false,
+                area: Region { l3.6 t0 w1.8 b0 } ]
         # the app's views: a chip each after the title, the lit one
         # shown; pressed again, the source
-        ae : cast element [ ux.app_object ]
         names : vec string [ (ae) ? ae.views*[] : null ]
         if [ names && names.count > 0 && ux.screen ]
             cv : Canvas [ ux.screen ]
             cv.font_size[ 17 ]
             tw : f32 [ cv.measure_text[ (ux.nav_title)
                                         ? ux.nav_title : '' ].w ]
-            ar : element (elements) ? elements[ 'arrows' ] : null
-            x : f32 [ ((ar && ar.bounds) ? ar.bounds.x + ar.bounds.w
-                      : 118.0) + 14.0 + tw + 18.0 ]
+            x : f32 [ title_x[] + tw + 18.0 ]
             ids : vec string []
             lit : i32 [ 0 ]
             for [ i: i32 0, i < names.count, i += 1 ]
@@ -8326,6 +8554,15 @@ element OrbiterBar
                 manual: true, sel_mask: lit, label_px: 14.0,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 area: Region [ 'l{x}px t5px w{wide}px b5px' ] ]
+        # the app's panel: its toggle at the bar's right end, lit open
+        if [ ae && ae.has_panel*[] ]
+            out[ 'panel_toggle' ] = TButtons [
+                buttons: vec string [] [ 'panel_toggle' ],
+                icon_ids: vec string [] [ 'panel' ], icon_scale: 0.575,
+                manual: true, sel_mask: (ux.panel_open) ? 1 : 0,
+                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                seg_radius: 0.0, use_spacing: false,
+                area: Region { r0 t0 w1.8 b0 } ]
         return out
 
     # an arrow: the app's history, as the host's arrows walk it;
@@ -8339,6 +8576,17 @@ element OrbiterBar
         if [ o && o.id && o.id == 'nav_fwd' ]
             ux.navigate[ 1 ]
             return
+        # the panel's toggle: open or closed, the user's alone
+        if [ o && o.id && o.id == 'panel_toggle' ]
+            ux.panel_open = !ux.panel_open
+            ux.restyle    = true
+            pristine      = false
+            return
+        if [ o && o.id && o.id == 'outline_toggle' ]
+            ux.outline_open = !ux.outline_open
+            ux.restyle      = true
+            pristine        = false
+            return
         # a view chip: that view, or (lit) back to the source
         if [ o && o.id && o.id.starts_with[ 'view_' ] ]
             nm : o.id.mid[ 5, o.id.count - 5 ]
@@ -8348,6 +8596,17 @@ element OrbiterBar
             pristine    = false
             return
         if [ o == a ] ux.nav_toggle[]
+
+    # where the title starts: after the arrows and the outline's
+    # toggle
+    func title_x [] -> f32
+        x : f32 [ 0.0 ]
+        ks : vec string [] [ 'arrows', 'outline_toggle' ]
+        for [ k: string ] in ks
+            b : element (elements && elements.contains[ k ])
+                ? elements[ k ] : null
+            if [ b && b.bounds ] x = max[ x, b.bounds.x + b.bounds.w ]
+        return x + 14.0
 
     # the title, after the arrows; the dialog open, what is typed
     # to filter it (or a hint), with a caret
@@ -8362,9 +8621,7 @@ element OrbiterBar
                 hint = true
             if [ w.nav_saving ] t = 'save as  {t}'
         if [ !t || t.count == 0 ] return
-        ar : element (elements) ? elements[ 'arrows' ] : null
-        x : f32 [ (ar && ar.bounds) ? ar.bounds.x + ar.bounds.w + 14.0
-                  : 14.0 ]
+        x : f32 title_x[]
         cv : Canvas [ w.screen ]
         cv.save[]
         cv.font_size[ 17 ]
@@ -9533,7 +9790,9 @@ TButtons SessionTabs
         i : i32 [ seg_at[ ev ] ]
         # segment 0 is +; segment k is conversation k - 1
         if [ close_index >= 1 ]  w.session_close[ close_index - 1 ]
-        el [ i == 0 ]  w.session_new[]
+        el [ i == 0 ]
+            w.session_new[]
+            w.session_begin[ 'new' ]
         el [ i >= 1 ]  w.session_show[ i - 1 ]
         pristine = false
         ev.stop[]
@@ -9658,7 +9917,7 @@ TextInput ShotPrompt
             if [ !(ev.key.meta || ev.key.ctrl) || !w.shot_ask
                  || !w.agent_view ]
                 return
-            if [ agent_shell_rewind[] != 0 ]
+            if [ agent_rewind[] ]
                 if [ w.app_object ]
                     w.app_object.on_agent*[ 'status rewind undo' ]
             el
@@ -9715,7 +9974,7 @@ TextInput ShotPrompt
             fn : string w.shot_ask.filename[]
             if [ first_send ]
                 w.session_begin[ (text.count > 0) ? text : fn ]
-                agent_shell_new[]
+                agent_new[]
             if [ !w.app_object
                  || !agent_post_as[ w.app_object, w.agent_pick,
                                     w.model_pick, msg, 'now' ] ]
@@ -9723,7 +9982,7 @@ TextInput ShotPrompt
                 # the failure is a red line under the prompt, not a note
                 # in the conversation; what was typed stays to retry
                 # with Enter
-                why : string [ agent_shell_error[] ]
+                why : string agent_error[]
                 w.shot_error = (why.count > 0) ? 'Send failed: {why}' : 'Send failed'
                 pristine = false
                 w.restyle = true

@@ -58,6 +58,11 @@ void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
+void platform_key_repeat(int delay_ms, int rate) {}
+int  platform_kms_mode_count(void) { return 0; }
+int  platform_kms_mode_info(int i, int* w, int* h, int* hz) { return 0; }
+int  platform_kms_mode_current(void) { return -1; }
+int  platform_kms_set_mode(int i) { return 0; }
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 double platform_time(void) {
@@ -392,6 +397,8 @@ void platform_set_cursor(platform_window* w, int kind) {
         case PLATFORM_CURSOR_VRESIZE: w->cursor = LoadCursorW(NULL, IDC_SIZENS); break;
         case PLATFORM_CURSOR_IBEAM:   w->cursor = LoadCursorW(NULL, IDC_IBEAM);  break;
         case PLATFORM_CURSOR_HAND:    w->cursor = LoadCursorW(NULL, IDC_HAND);   break;
+        case PLATFORM_CURSOR_DRESIZE: w->cursor = LoadCursorW(NULL, IDC_SIZENWSE); break;
+        case PLATFORM_CURSOR_ARESIZE: w->cursor = LoadCursorW(NULL, IDC_SIZENESW); break;
         default:                      w->cursor = NULL; break;
     }
     SetCursor(w->cursor ? w->cursor : LoadCursorW(NULL, IDC_ARROW));
@@ -639,6 +646,11 @@ void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
+void platform_key_repeat(int delay_ms, int rate) {}
+int  platform_kms_mode_count(void) { return 0; }
+int  platform_kms_mode_info(int i, int* w, int* h, int* hz) { return 0; }
+int  platform_kms_mode_current(void) { return -1; }
+int  platform_kms_set_mode(int i) { return 0; }
 void platform_window_present_dmabuf(int fd, int w, int h, int stride, uint32_t fourcc) {}
 
 static void send_cmd(int c) { u_char b = c; write(g_cmd[1], &b, 1); }
@@ -1085,6 +1097,9 @@ static bool   g_moved;
 static int    g_drm_fd = -1;    // master: the guest scans out a dma-buf here
 static uint32_t g_drm_conn;     // the connected connector
 static int    g_drm_w, g_drm_h; // its preferred mode
+// the connector's modes, as drm lists them; the one shown
+static drmModeModeInfo g_modes[64];
+static int    g_mode_n, g_mode_i = -1;
 static uint32_t g_drm_crtc;
 static drmModeModeInfo g_drm_mode;
 // a scanned-out dma-buf, cached by fd so re-presents only redraw
@@ -1193,8 +1208,11 @@ int platform_kms_open(int minor) {
     g_drm_conn = conn->connector_id;
     // the preferred mode, else the first
     g_drm_mode = conn->modes[0];
+    g_mode_i = 0;
     for (int m = 0; m < conn->count_modes; m++)
-        if (conn->modes[m].type & DRM_MODE_TYPE_PREFERRED) { g_drm_mode = conn->modes[m]; break; }
+        if (conn->modes[m].type & DRM_MODE_TYPE_PREFERRED) { g_drm_mode = conn->modes[m]; g_mode_i = m; break; }
+    g_mode_n = conn->count_modes < 64 ? conn->count_modes : 64;
+    for (int m = 0; m < g_mode_n; m++) g_modes[m] = conn->modes[m];
     g_drm_w = g_drm_mode.hdisplay;
     g_drm_h = g_drm_mode.vdisplay;
     // the crtc it drives now, else the first its encoders can take
@@ -1367,6 +1385,53 @@ static void kms_cursor_default(void) {
 
 void platform_cursor_ease(float amount) { g_ease = amount; }
 
+// the screen's modes: how many, one's size and rate, the one shown
+int platform_kms_mode_count(void) { return g_mode_n; }
+
+int platform_kms_mode_info(int i, int* w, int* h, int* hz) {
+    if (i < 0 || i >= g_mode_n) return 0;
+    *w = g_modes[i].hdisplay; *h = g_modes[i].vdisplay; *hz = (int)g_modes[i].vrefresh;
+    return 1;
+}
+
+int platform_kms_mode_current(void) { return g_mode_i; }
+
+// another mode: set with the next frame, which comes at its size (the
+// window is told its new size: trinity makes its scanout again)
+int platform_kms_set_mode(int i) {
+    if (g_drm_fd < 0 || i < 0 || i >= g_mode_n) return 0;
+    g_drm_mode = g_modes[i];
+    g_mode_i   = i;
+    g_drm_w = g_drm_mode.hdisplay;
+    g_drm_h = g_drm_mode.vdisplay;
+    g_crtc_set = false;
+    if (g_cx > g_drm_w - 1) g_cx = g_mx = g_drm_w - 1;
+    if (g_cy > g_drm_h - 1) g_cy = g_my = g_drm_h - 1;
+    for (platform_window* w = g_windows; w; w = w->next) {
+        w->width = g_drm_w; w->height = g_drm_h;
+        if (w->on_size) w->on_size(w, g_drm_w, g_drm_h);
+    }
+    fprintf(stderr, "kms: mode %dx%d at %u Hz\n", g_drm_w, g_drm_h, g_drm_mode.vrefresh);
+    return 1;
+}
+
+// the keyboards' repeat (the kernel's, for the screen we own): the
+// delay before it, presses a second; 0 leaves them as they are
+static int g_rep_delay, g_rep_rate;
+
+static void kms_repeat_on(int fd) {
+    if (g_rep_delay <= 0 || g_rep_rate <= 0) return;
+    unsigned int rep[2] = { (unsigned)g_rep_delay, (unsigned)(1000 / g_rep_rate) };
+    ioctl(fd, EVIOCSREP, rep);
+}
+
+void platform_key_repeat(int delay_ms, int rate) {
+    g_rep_delay = delay_ms;
+    g_rep_rate  = rate;
+    for (int i = 0; i < 64; i++)
+        if (g_ev_on[i]) kms_repeat_on(g_ev[i]);
+}
+
 // toward the mouse each poll, per refresh at the mode's rate
 static void kms_ease(platform_window* w) {
     double t = now();
@@ -1397,6 +1462,7 @@ static void kms_open_inputs(void) {
         g_ev[i] = fd;
         g_ev_on[i] = true;
         g_ev_n++;
+        kms_repeat_on(fd);
         char name[128] = "";
         ioctl(fd, EVIOCGNAME(sizeof name), name);
         fprintf(stderr, "devices: input event%d %s\n", i, name);
@@ -2233,9 +2299,11 @@ void platform_window_native(platform_window* w, platform_native* out) {
 
 void platform_set_cursor(platform_window* w, int kind) {
     if (g_kms) return;
-    // core cursor font glyphs: 108 sb_h_double_arrow, 116 sb_v_double_arrow, 152 xterm, 60 hand2
+    // core cursor font glyphs: 108 sb_h_double_arrow, 116 sb_v_double_arrow, 152 xterm, 60 hand2,
+    // 14 bottom_right_corner, 12 bottom_left_corner
     int glyph = kind == PLATFORM_CURSOR_HRESIZE ? 108 : kind == PLATFORM_CURSOR_VRESIZE ? 116 :
-                kind == PLATFORM_CURSOR_IBEAM ? 152 : kind == PLATFORM_CURSOR_HAND ? 60 : -1;
+                kind == PLATFORM_CURSOR_IBEAM ? 152 : kind == PLATFORM_CURSOR_HAND ? 60 :
+                kind == PLATFORM_CURSOR_DRESIZE ? 14 : kind == PLATFORM_CURSOR_ARESIZE ? 12 : -1;
     if (w->cursor) { xcb_free_cursor(g_conn, w->cursor); w->cursor = 0; }
     if (glyph >= 0) {
         xcb_font_t font = xcb_generate_id(g_conn);
@@ -2886,10 +2954,61 @@ HOST_API int host_master_set(float vol, int muted) {
     snd_mixer_close(mx);
     return 1;
 }
+// the microphone's level 0..1 and its mute, as the master's
+static snd_mixer_elem_t* capture_elem(snd_mixer_t** mx) {
+    *mx = 0;
+    if (snd_mixer_open(mx, 0) < 0) return 0;
+    if (snd_mixer_attach(*mx, "default") < 0 ||
+        snd_mixer_selem_register(*mx, 0, 0) < 0 ||
+        snd_mixer_load(*mx) < 0) {
+        snd_mixer_close(*mx); *mx = 0; return 0;
+    }
+    const char* names[2] = { "Capture", "Mic" };
+    for (int i = 0; i < 2; i++) {
+        snd_mixer_selem_id_t* id;
+        snd_mixer_selem_id_alloca(&id);
+        snd_mixer_selem_id_set_index(id, 0);
+        snd_mixer_selem_id_set_name(id, names[i]);
+        snd_mixer_elem_t* e = snd_mixer_find_selem(*mx, id);
+        if (e && snd_mixer_selem_has_capture_volume(e)) return e;
+    }
+    snd_mixer_close(*mx); *mx = 0;
+    return 0;
+}
+
+HOST_API int host_capture_get(float* vol, int* muted) {
+    snd_mixer_t* mx; snd_mixer_elem_t* e = capture_elem(&mx);
+    if (!e) return 0;
+    long lo = 0, hi = 0, v = 0; int sw = 1;
+    snd_mixer_selem_get_capture_volume_range(e, &lo, &hi);
+    snd_mixer_selem_get_capture_volume(e, SND_MIXER_SCHN_FRONT_LEFT, &v);
+    if (snd_mixer_selem_has_capture_switch(e))
+        snd_mixer_selem_get_capture_switch(e, SND_MIXER_SCHN_FRONT_LEFT, &sw);
+    *vol   = (hi > lo) ? (float)(v - lo) / (float)(hi - lo) : 0.0f;
+    *muted = !sw;
+    snd_mixer_close(mx);
+    return 1;
+}
+
+HOST_API int host_capture_set(float vol, int muted) {
+    snd_mixer_t* mx; snd_mixer_elem_t* e = capture_elem(&mx);
+    if (!e) return 0;
+    long lo = 0, hi = 0;
+    snd_mixer_selem_get_capture_volume_range(e, &lo, &hi);
+    if (vol < 0) vol = 0;
+    if (vol > 1) vol = 1;
+    snd_mixer_selem_set_capture_volume_all(e, lo + (long)(vol * (hi - lo) + 0.5f));
+    if (snd_mixer_selem_has_capture_switch(e))
+        snd_mixer_selem_set_capture_switch_all(e, !muted);
+    snd_mixer_close(mx);
+    return 1;
+}
 #else
 // other platforms: the app keeps its own output
 HOST_API int  host_master_get(float* vol, int* muted) { return 0; }
 HOST_API int  host_master_set(float vol, int muted) { return 0; }
+HOST_API int  host_capture_get(float* vol, int* muted) { return 0; }
+HOST_API int  host_capture_set(float vol, int muted) { return 0; }
 HOST_API void host_audio_player_start(int slot) { }
 HOST_API void host_audio_player_stop(int slot)  { }
 HOST_API int  host_audio_scope(int slot, float* out, int n) { return 0; }

@@ -2428,6 +2428,8 @@ static void silver_live_run(silver a) {
 #endif
         // --test: the app runs its expect tests, reports, and exits
         if (a->test) setenv("SILVER_EXPECT", "1", 1);
+        // the build is over: the app's run is not an update
+        silver_build_end(0);
         execvp(argv[0], argv);
         fprintf(stderr, "execvp failed for %s: %s\n", argv[0], strerror(errno));
         _exit(1);
@@ -3585,6 +3587,7 @@ AU_EXPORT void silver_init(silver a) {
                 print("[silver] running %o", a->url_product);
                 fflush(stdout);
                 char* argv2[2] = { (cstr)a->url_product->chars, NULL };
+                silver_build_end(0);
                 execvp(argv2[0], argv2);
             }
             return;

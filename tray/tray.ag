@@ -780,6 +780,7 @@ class MenuBuild
             out[ 'foot' ] = element [ area: Region [
                 'l0 t{y - shown}+ w1px h1px' ] ]
 
+
     # the visible slice of a scroll area: from where it is to where its
     # easing is heading, a screen's height more either side (a fast
     # flick passes several rows a frame)
@@ -1470,7 +1471,7 @@ Button TrayRow
             was : CanvasFont kc.font
             kc.save[]
             fnt : 'fonts/BarlowCondensed-Regular.ttf'
-            kc.set_font[ shared_font[ kc, fnt, 15 ] ]
+            kc.set_font[ shared_font[ kc, fnt, label_px[ kc, 15.0 ] ] ]
             kc.fill_color[ rgba [
                 (disable) ? '#ffffff33' : '#ffffff70' ] ]
             kc.draw_text[ keys, rect [ x: 0.0, y: 0.0,

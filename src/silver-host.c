@@ -513,6 +513,15 @@ static void spawn_slot_app(int k, const char* bindir) {
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     if (g_isolate_cwd[0]) posix_spawn_file_actions_addchdir_np(&fa, g_isolate_cwd);
+    int in_fd = -1;
+#ifndef _WIN32
+    // its standard input: a pipe beside its log (<name>.<slot>.in) the
+    // ide writes typed lines into; read-write, so it never blocks or ends
+    { char ip[256]; snprintf(ip, sizeof(ip), "%s/%s.%d.in", temp_dir(), nm, k);
+      unlink(ip);
+      if (mkfifo(ip, 0600) == 0) in_fd = open(ip, O_RDWR);
+      if (in_fd >= 0) posix_spawn_file_actions_adddup2(&fa, in_fd, 0); }
+#endif
     static char fdenv[32];
     shm_inherit(&fa, fdenv, sizeof(fdenv));
     static char slotenv[32];
@@ -544,6 +553,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     pid_t pid = 0;
     int rc = posix_spawn(&pid, bin, &fa, NULL, cargv, cenv);
     posix_spawn_file_actions_destroy(&fa);
+    if (in_fd >= 0) close(in_fd);
     free(cenv);
     if (rc != 0) {
         fprintf(stderr, "silver-host: spawn %s failed: %s\n", name, strerror(rc));

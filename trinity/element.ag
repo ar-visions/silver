@@ -432,6 +432,19 @@ ielement element
     # folder it does not open is gone into)
     public func nav_open [ p: path ] -> bool
         return false
+    # the app has a panel (a side menu over its view, Window.panel_open
+    # shows it): its host puts a toggle beside its close
+    public func has_panel [] -> bool
+        return false
+    # the app has an outline (a panel over its view's left): its
+    # host puts a toggle left of its title
+    public func has_outline [] -> bool
+        return false
+    # the app draws over the screen's own ground (a console): hosted,
+    # its window starts each frame clear, so the host's ground (the
+    # scene and its tint) shows through what it leaves see-through
+    public func screen_ground [] -> bool
+        return false
 
     func unload_tree [ ]
         on_unload*[]
@@ -818,9 +831,9 @@ class Layer
         if [ !editable || !cv ] return
         cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
-            if [ !label_font_cache ]
-                label_font_cache = shared_font[ cv, label_font,
-                    i32[ label_size ] ]
+            lpx : i32 label_px[ cv, label_size ]
+            if [ !label_font_cache || label_font_cache.size_px != lpx ]
+                label_font_cache = shared_font[ cv, label_font, lpx ]
             cv.set_font[ label_font_cache ]
         el
             cv.ensure_font[]

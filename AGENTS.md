@@ -120,10 +120,15 @@ on its first message. claude: `claude -p --input-format
 stream-json --output-format stream-json`, one process for the
 whole exchange, each later message written into its input (the
 new line alone). codex: `exec --json` first, then `exec resume
-<thread>` per message. A new exchange ends the last one's agent.
-trinity reads the stream and hands each event to on_agent as a
-status (busy / note / diff / done / needs); `agent_post_as`
-(trinity.ag) starts it, `agent_shell_*` (trinity.cc) runs it.
+<thread>` per message; gemini: `-p ... -o stream-json`, then
+`--resume <session>`. A new exchange ends the last one's agent.
+Each agent is a module of its own (claude/, codex/, gemini/): its
+class extends trinity's AgentRun (trinity/agent.ag), named by its
+export (`export agent ['ClaudeAgent']`); it says what to run and
+reads the stream into statuses (busy / note / diff / done /
+needs), and its build installs its program into install/bin.
+trinity loads the module when its name is picked (`agent_start`),
+`agent_proc_*` (trinity.cc) runs the process, knowing no agent.
 Each run's raw stream: <install/tmp>/agent-shell.log. The
 dictation take goes to orbiter's agent console. Do not add an
 LLM, voice, or chat backend to trinity or orbiter. silver's
@@ -164,7 +169,7 @@ alone. The run's stream becomes these statuses:
   `needs` (waiting on the user), `note` (a line of what the
   agent says), `diff` (one line of a source diff it applied),
   `rewind` (the user's undo: cmd+left, ctrl+left on linux, in
-  the prompt; `agent_shell_rewind` sends claude a `rewind_files`
+  the prompt; `agent_rewind` sends claude a `rewind_files`
   control request for our last replayed message id, files go
   back to that point; the avatar turns 60 degrees, cubic in_out
   over 1.6 s, while its spin slows, reverses and comes back).
@@ -1865,6 +1870,44 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    local extension host took longer than 60s to send its ready
    message" in both windows of the hidden runs on the copied state;
    not chased.
+   MEMORY (Oct 19, Kalen: "its performance we need and accuracy of
+   placement"). The standing goal for VS Code on quark: as fast as
+   the Chromium build running in orbiter (Kalen: that one is 4x
+   faster) and every element placed exactly where Chromium puts it.
+   Landed so far, by area:
+   - style: nested rules (1,683 in the workbench sheet), var()
+     inside shorthands, keyed dirty marks with scan roots, the
+     candidate cache, ancestor keys, sheet diffs; ~35 us an element.
+   - layout: in-place relayout of the nearest block or flex item,
+     flex and grid items blockified, column items sized by
+     align-self, floats, inline rects from the content edge,
+     clip-path inset, radii scaled on small boxes, absolute boxes
+     moved with their static place.
+   - paint: damage rects (hover 1-2% of the page), clips skipped
+     when the content is inside, trinity's nested rounded clips,
+     borders as rects or a centre-line stroke by drawn sides, group
+     opacity carried down.
+   - input: one pointer move and one size a frame.
+   - silver: the ft slot table built at implement (near-border 1b).
+   Measured hidden at 2560x1440: a hover frame ~2 ms, the sweep +
+   wheel + clicks sequence paint 1611 -> 661 ms, a sash drag 23-40
+   fps, canvases 6 at startup (page + minimap), 0 per interaction.
+   Tools: QUARK_PROF=1 (ticks, layouts, partial median/max, paints
+   with damage %, clips and slow clips, canvases/s), QUARK_TRACE_
+   DIRTY=1, QUARK_DUMP='sel|text:words|at:x,y' + QUARK_DUMP_CS=1
+   (m= p= b= r4= pos clip-path prev ov bg sh) into /tmp/claude-1000/
+   qk/dump.<view>.txt, QUARK_DUMP_VAR, QUARK_NODAMAGE=1,
+   QUARK_NOCLIP=1, QUARK_CLIPLOG=x,y, QUARK_SLOWCLIP=1, NODE_OPTIONS=
+   --cpu-prof; /tmp/claude-1000/qk/killq.sh, realrun.sh, seq.py.
+   Kalen runs it as `mkdir -p /tmp/qk && XDG_RUNTIME_DIR=/tmp/qk
+   install/build/quark install/lib/code-oss/resources/app
+   /src/silver`; never kill his runs; his windows are tabs by his
+   design. OPEN, in his order: the remaining layout issues ("tons",
+   not yet listed one by one); speed: the full layout at a view
+   switch (34-47 ms), box rebuild in a partial pass, text draw and
+   the publish wait per frame; the resize glyph and svg blur in a
+   real window (paused by him); the extension host timeout on the
+   copied state; trinity's 1 px even-odd path band.
 6. OPEN install/bin/vscode runs through quark; hosted in orbiter (a
    pane), the system bar menu, dialogs through the navigator.
 
@@ -2038,6 +2081,84 @@ bar 50% taller.
    default. It declares itself by export: the file types it
    claims (.ag .c .h ...), as aura's .agi claims .html, and a
    dock flag so it is in the dock from the start.
+
+## orbiter floating windows — plan (Oct 19 2026)
+
+Kalen: a grid is a pain to manage, and a maximized console
+alone feels lonely: a window seen at the edge is company and
+keeps you placed among your own work.
+1. BUILT every window opens maximized, always (the split).
+2. BUILT a drag on its strip pulls it free (6 px, then the
+   pane leaves the split: trinity Splitter `loose`, drawn on
+   top, the same EditorView so its app stays); it keeps its
+   size, two thirds when it filled the area. Moved by the
+   pointer; right, bottom and corner grips size it (FreeGrip);
+   a press in it raises it and selects it. Let go at the top
+   edge, or a double-click on the strip, it docks again.
+   orbiter pane_free (x y w h px), free_order (bottom to top);
+   not saved in the session (a start is maximized).
+3. BUILT the system bar shows the selected window's menu alone,
+   from the left; its close and arrows at the right end. The
+   other panes' groups and the pane glow are gone.
+4. BUILT WinStrip: a free window's strip across its top (the
+   pane title's look, the window's name centred, lit when
+   selected). Docked (Kalen), the strip is absorbed into the
+   system bar: none on the pane; the bar's free space between
+   the menus and the arrows (BarGrab) pulled down frees the
+   selected window, and moves a free one; a click there is the
+   title's. The desktop (the empty pane, its apps) has none.
+5. BUILT (Kalen) every move and size eases (filter_n 0.3:
+   pane_shown toward pane_free, ease_free each frame); the
+   corner grip's cursor is a diagonal one (devices
+   PLATFORM_CURSOR_DRESIZE 5; X11 bottom_right_corner, Win
+   IDC_SIZENWSE, mac 15 frameResize, else crosshair; mac not
+   built). An app holding its shape (AppView.locked) is
+   letterboxed docked only: free, the window takes its shape
+   (fit_free: height by width, or width by height for the
+   bottom grip), pulled out within two thirds of the height.
+   Seen hidden: asnes (zelda) free with no bars round it.
+6. BUILT (Kalen: the whole bar on the window; menus without a
+   click first) a free window's strip is the system bar it took
+   with it (strip_els): its menus (menu_group_els per pane; a
+   window not selected shows its menu as last read, PaneMenu,
+   again every 2 s), title, arrows, close. A press on another
+   window's menu selects it and opens that menu in one click;
+   the drawer opens from the window's left edge under its strip
+   (drawer_y). The system bar is the title of a docked window
+   alone (bar_pane: the selected one docked, else the first
+   docked; all free: the globe alone); one window's menus at a
+   time, never two side by side. A drag pulling from the bar
+   keeps its grab as the window leaves it (grab_pane). The
+   resize ring is 8 px just outside the window (grips_of; edges
+   and corners, top included), never inside it. The strip's
+   buttons run end to end, no globe; its menu drawer stays
+   inside the window (drawer_area).
+   The navigator is two kinds (Kalen): the full navigator (the
+   explorer, with its dock column) lives in the docked view; a
+   free window's is a dialog, no dock. The bar's globe opens the
+   full one in the docked view, in front of what it shows (that
+   keeps running, back as it shuts); every window free: a new
+   docked view (pane_add) opens on it. Seen hidden: gedit free,
+   the globe gave a docked navigator with its dock under it. NOT
+   seen: the dialog in a free window.
+7. BUILT (Kalen) a free window is a rounded rect (8 px) masked:
+   trinity draw_element, a layer with `clip: true` masks all the
+   element paints and holds to that layer's rounded box
+   (Canvas.clip_rounded_rect; EditorView :free's bg). Under it,
+   WinShade (24 px out each way): a shadow (0 8px 20px #000a)
+   and a 1 px #ffffff26 outline just outside the window.
+   Seen hidden: gedit's own status bar cut round at the corner.
+8. BUILT (Kalen) the desktop (the apps, under free windows when
+   nothing is docked) is an app of its own: orbiter, the welcome
+   app. With it showing, the bar's first name is orbiter, and its
+   menu is the system menu (SystemDrawer, from the left under the
+   bar); the bottom bar's menu button is gone (the console beside
+   the clock). For now the system menu is reached from the
+   desktop alone (Kalen: click the desktop).
+Seen hidden: the apps pane and gedit pulled free, moved,
+docked by the top edge and by a double-click; gedit sized by
+its corner and typed into while free. NOT driven: two panes
+with one free over the other.
 
 ## Aeon, the 3D design app — live list (Oct 12 2026)
 

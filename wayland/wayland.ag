@@ -33,6 +33,10 @@ func wlc_window_csd    [ id: u64 ] -> i32
 func wlc_window_parent [ id: u64 ] -> u64
 # counts the window's size changes
 func wlc_window_epoch  [ id: u64 ] -> u64
+# its own size (a dialog's frame has room past it)
+func wlc_window_w      [ id: u64 ] -> i32
+func wlc_window_drawn  [ id: u64 ] -> i32
+func wlc_window_h      [ id: u64 ] -> i32
 # its menu: 0 none, 1 dbusmenu, 2 GTK; then where it lives on D-Bus
 func wlc_window_menu_kind [ id: u64 ] -> i32
 func wlc_window_menu_bus  [ id: u64 ] -> cstr
@@ -53,6 +57,11 @@ func wlc_pointer_button [ id: u64, x: f32, y: f32, button: i32,
                           state: i32 ]
 func wlc_pointer_axis   [ dx: f32, dy: f32 ]
 func wlc_key            [ glfw: i32, state: i32 ]
+# the windows' keyboard: an xkb layout and variant ('' default)
+func wlc_key_layout     [ layout: cstr, variant: cstr ]
+func wlc_key_repeat     [ rate: i32, delay_ms: i32 ]
+# the windows' scale: the text size, as their own dpi
+func wlc_set_scale      [ sc: f64 ]
 func wlc_keys_release   []
 func wlc_spawn          [ cmd: cstr ] -> i32
 
@@ -145,7 +154,8 @@ element WaylandView
     # the pane has held it a moment (a sliding panel resizes no app)
     mutable want_w   : i32
     mutable want_h   : i32
-    mutable want_ms  : i64
+    # when the last size went to the window
+    mutable sent_ms  : i64
     mutable sent_w   : i32
     mutable sent_h   : i32
     # the window's size changes seen: its buffers are new after one
@@ -154,6 +164,9 @@ element WaylandView
     # draw them), then let go
     mutable retired  : vec Texture
     mutable retire_n : i32
+    # the last frame drawn: shown until the window has one at its
+    # new size (a resize every frame never leaves it time)
+    mutable last_t   : Texture
     # a dialog of the window: drawn over it at its own size, eased
     # down from the top (a sheet); while up it takes the pointer
     public sheet        : u64
@@ -200,6 +213,8 @@ element WaylandView
         retire[]
         if [ !frames ] frames = map Texture [string] []
         t : Texture frame_of[ cv, win, frames ]
+        if [ t ] last_t = t
+        el t = last_t
         if [ !t ] return
         shown = wlc_frame_id[ win ]
         ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
@@ -254,8 +269,14 @@ element WaylandView
         if [ !t ] return
         sheet_at = filter_n[ sheet_at, 1.0, 0.25, ux.frame_factor ]
         if [ sheet_at > 0.999 ] sheet_at = 1.0
-        sheet_w = f32[ t.width ]
-        sheet_h = f32[ t.height ]
+        # its frame has room past it: the dialog is its own size of it
+        tw : f32 [ f32[ t.width ] ]
+        th : f32 [ f32[ t.height ] ]
+        sheet_w = min[ f32[ wlc_window_w[ sheet ] ], tw ]
+        sheet_h = min[ f32[ wlc_window_h[ sheet ] ], th ]
+        if [ sheet_w <= 0.0 || sheet_h <= 0.0 ]
+            sheet_w = tw
+            sheet_h = th
         sheet_x = round[ vp.x + (vp.w - sheet_w) * 0.5 ]
         sheet_y = round[ vp.y - sheet_h * (1.0 - sheet_at) ]
         cv.save[]
@@ -271,8 +292,9 @@ element WaylandView
         cv.rect_to[ sheet_x, sheet_y, sheet_w, sheet_h ]
         cv.paint[]
         cv.no_shadows[]
-        cv.draw_image[ t, rect [ x: sheet_x, y: sheet_y, w: sheet_w,
-                                 h: sheet_h ] ]
+        cv.draw_image_crop[ t, rect [ x: sheet_x, y: sheet_y,
+                                      w: sheet_w, h: sheet_h ],
+            0.0, 0.0, sheet_w / tw, sheet_h / th ]
         cv.restore[]
 
     # x, y (the pane's) is on the sheet
@@ -280,15 +302,17 @@ element WaylandView
         return x >= sheet_x && x < sheet_x + sheet_w
                && y >= sheet_y && y < sheet_y + sheet_h
 
-    # the pane's size reaches the window once it has held 150 ms
+    # the pane's size reaches the window as fast as it draws: the
+    # next goes once it has a frame at the last (or 250 ms passed);
+    # one every frame left it no time to draw (black)
     func settle [ w9: i32, h9: i32 ]
+        want_w = w9
+        want_h = h9
+        if [ want_w == sent_w && want_h == sent_h ] return
         now : i64 [ epoch_millis[] ]
-        if [ w9 != want_w || h9 != want_h ]
-            want_w  = w9
-            want_h  = h9
-            want_ms = now
-        if [ (want_w == sent_w && want_h == sent_h)
-             || now - want_ms < 150 ] return
+        drawn : bool [ wlc_window_drawn[ win ] != 0 ]
+        if [ sent_w != 0 && !drawn && now - sent_ms < 250 ] return
+        sent_ms = now
         sent_w = want_w
         sent_h = want_h
         wlc_window_resize[ win, sent_w, sent_h ]
@@ -359,14 +383,20 @@ element WaylandView
             if [ !to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ] return
             wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,
                                 ev.mouse.pos.y - sheet_y ]
-            wlc_pointer_axis[ ev.mouse.wheel_delta.x,
-                              ev.mouse.wheel_delta.y ]
+            wlc_pointer_axis[ steps[ ev.mouse.wheel_delta.x ],
+                              steps[ ev.mouse.wheel_delta.y ] ]
             return
         # the scroll goes to the surface under the pointer
         wlc_pointer_motion[ win, ev.mouse.pos.x,
                             win_y[ ev.mouse.pos.y ] ]
-        wlc_pointer_axis[ ev.mouse.wheel_delta.x,
-                          ev.mouse.wheel_delta.y ]
+        wlc_pointer_axis[ steps[ ev.mouse.wheel_delta.x ],
+                          steps[ ev.mouse.wheel_delta.y ] ]
+
+    # a window takes the wheel's own steps, not trinity's boost,
+    # times the user's setting for windows
+    func steps [ d: f32 ] -> f32
+        m : f64 [ (ux.wheel_mul > 0.0) ? ux.wheel_mul : wheel_scale[] ]
+        return f32[ d / m ] * ux.window_wheel
 
     public func on_key [ ev: Event ]
         if [ !up ] return

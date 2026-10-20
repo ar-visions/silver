@@ -809,31 +809,28 @@ class Composer
         dir : string folder[]
         nm : string [ (agent && agent.count > 0) ? agent : 'claude' ]
         md : string [ (model) ? model : '' ]
-        agent_shell_allow[ 'WebSearch WebFetch' ]
-        if [
-            agent_shell_start[ nm.chars, dir.chars, md.chars,
-                               req.chars ] == 0 ]
-            problems.push[ 'agent: {string [ agent_shell_error[] ]}' ]
+        agent_allow[ 'WebSearch WebFetch' ]
+        if [ !agent_start[ nm, dir, md, req ] ]
+            problems.push[ 'agent: {agent_error[]}' ]
             return false
         log 'composer: {nm} is composing {take}'
-        buf : local i8 [ 8192 ]
         t0 : i64 [ Au.epoch_millis[] ]
         fin : bool [ false ]
         for [ !fin ]
-            if [ agent_shell_line[ @buf[ 0 ], 8192 ] == 0 ]
+            ln : string agent_next[]
+            if [ ln.count == 0 ]
                 if [ Au.epoch_millis[] - t0 > 900000 ]
                     problems.push[ 'agent: no answer in 15 minutes' ]
                     break
                 usleep[ 50000 ]
                 continue
-            ln : string [ @buf[ 0 ] ]
             if [ !ln.starts_with[ 'diff' ] ] log 'composer: {ln}'
             if [ ln.starts_with[ 'done' ] ] fin = true
             if [ ln.starts_with[ 'needs' ] ]
                 problems.push[ 'agent: {ln}' ]
                 break
-        agent_shell_stop[]
-        agent_shell_allow[ '' ]
+        agent_stop[]
+        agent_allow[ '' ]
         return fin
 
     # a still of the take at each mark (its middle): what was on the

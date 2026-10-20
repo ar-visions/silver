@@ -1,0 +1,34 @@
+# gimp: the GNU Image Manipulation Program. Installed from the apps
+# view (its build fetches GIMP's own AppImage into silver's install,
+# unpacked: no FUSE needed); it runs in a pane over orbiter's display
+export 3.2.6
+export software ['creative']
+export icon ['gimp']
+
+# the version taken, and its AppImage's sha256 as GIMP's SHA256SUMS
+# for the release gives it
+func gimp_ver [] -> string
+    return '3.2.6'
+func gimp_sum [] -> string
+    return '79ea41bc9b06f78fda181849a9ca8e42d83f1124dedb756f4d52352e2465010f'
+
+# at the build: GIMP's AppImage for this version, checked, unpacked
+# in install/lib/gimp/<version> and linked as install/bin/gimp
+export func install_gimp []
+    ins : string '{path.path_install[]}'
+    ver : gimp_ver[]
+    dir : '{ins}/lib/gimp/{ver}'
+    run : path '{dir}/squashfs-root/AppRun'
+    if [ !run.exists[] ]
+        url : 'https://download.gimp.org/gimp/v3.2/linux/GIMP-{ver}-x86_64.AppImage'
+        img : '{dir}/gimp.AppImage'
+        get : command { mkdir -p {dir} && curl -fsSL {url} -o {img}
+            && echo "{gimp_sum[]}  {img}" | sha256sum -c --quiet
+            && chmod 755 {img} && cd {dir}
+            && ./gimp.AppImage --appimage-extract > /dev/null
+            && rm {img} }
+        if [ get.exec[ false ] != 0 ]
+            log 'gimp: {ver} failed'
+            return
+    ln : command { ln -sfn {run} {ins}/bin/gimp }
+    if [ ln.exec[ false ] == 0 ] log 'gimp: {ver}'

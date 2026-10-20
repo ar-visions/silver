@@ -925,7 +925,7 @@ Control AppsGrid
     # a heading over a section
     func heading [ cv: Canvas, w: Window, t: string, x: f32, y: f32 ]
         un : f32 ux_unit[ w ]
-        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        fp : i32 [ i32[ round[ 17.0 * un ] ] ]
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf', fp ] ]
         cv.font_size[ f32[ fp ] ]
@@ -988,7 +988,7 @@ Control AppsGrid
         n : i32 [ rx.count ]
         # the tile's corners: an ios icon's share of its side
         cr : f32 [ round[ tile * 0.225 ] ]
-        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
         for [ i: i32 0, i < n, i += 1 ]
             cy : f32 [ ry[ i ] - sy ]
             if [ cy + ch9 < 0.0 || cy > bounds.h ] continue

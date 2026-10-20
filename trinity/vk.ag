@@ -6314,6 +6314,8 @@ Texture Display
             platform_set_cursor_callback[ glfw, @handle_cursor ]
             platform_set_scroll_callback[ glfw, @handle_scroll ]
             platform_set_char_callback  [ glfw, @handle_char ]
+            # a new mode resizes the screen
+            platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
         el [ !backbuffer ]
             glfw = handle Au.live_window_get[]
             if [ !glfw ]
@@ -6514,6 +6516,13 @@ Texture Display
         defer_swap = false
         swap_needs_recreate = true
         attach_input[]
+
+    # its present waits for the screen's refresh (fifo): that paces
+    # the frames, nothing else should
+    public func present_paced [] -> bool
+        return vk_swapchain
+            && (present_mode == VK_PRESENT_MODE_FIFO_KHR
+                || present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
 
     public func set_title [ t: string ]
         platform_window_set_title[ glfw, t.chars ]
@@ -6766,18 +6775,52 @@ intern func handle_key [ win: @platform_window, key: i32,
     w.key_event[ w.ev ]
 
 
+# macOS reports high-resolution (often inertial) wheel deltas; other
+# platforms emit coarse per-notch steps, so scrolling feels ~4x
+# slower. the raw delta is boosted off Apple so every consumer (editor /
+# console / lists) scrolls at the same speed as on the Mac. the
+# default of Window.wheel_mul, which the user's setting replaces
+func wheel_scale [] -> f64
+    ifdef [ apple ]
+        return 1.0
+    return 4.0
+
+# the pointer's easing and the keys' repeat, where the screen is
+# ours (orbiter-os): a desktop keeps its own
+func pointer_easing [ amount: f32 ]
+    platform_cursor_ease[ amount ]
+
+func key_repeat [ delay_ms: i32, rate: i32 ]
+    platform_key_repeat[ delay_ms, rate ]
+
+# the screen is ours (orbiter-os): its modes can be set
+func screen_owned [] -> bool
+    return platform_is_kms[]
+
+# the screen's modes as 'W x H @ Hz', in drm's order
+func screen_modes [] -> vec string
+    out : vec string []
+    n : i32 platform_kms_mode_count[]
+    for [ i: i32 0, i < n, i += 1 ]
+        mw : i32 [ 0 ]
+        mh : i32 [ 0 ]
+        hz : i32 [ 0 ]
+        platform_kms_mode_info[ i, @mw, @mh, @hz ]
+        out.push[ '{mw} x {mh} @ {hz}' ]
+    return out
+
+func screen_mode [] -> i32
+    return platform_kms_mode_current[]
+
+func screen_set_mode [ i: i32 ] -> bool
+    return platform_kms_set_mode[ i ] != 0
+
 intern func handle_scroll [ win: @platform_window, x: f64, y: f64 ]
     w: cast Window [ platform_window_get_user[ win ] ]
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
-    # macOS reports high-resolution (often inertial) wheel deltas; other
-    # platforms emit coarse per-notch steps, so scrolling feels ~4x
-    # slower. boost the raw delta off Apple so every consumer (editor /
-    # console / lists) scrolls at the same speed as on the Mac.
-    wheel_mul : f64 [ 4.0 ]
-    ifdef [ apple ]
-        wheel_mul = 1.0 # touch-pad in particular might need this
+    wheel_mul : f64 [ (w.wheel_mul > 0.0) ? w.wheel_mul : wheel_scale[] ]
     w.ev.mouse.wheel_delta.x = x * wheel_mul
     w.ev.mouse.wheel_delta.y = y * wheel_mul
     # carry shift so handlers can map shift+wheel to horizontal scroll
@@ -6863,7 +6906,7 @@ intern func handle_enter [ win: @platform_window, entered: i32 ]
     # off the window: no border stays lit by the last point
     w.mouse.x = -100000.0
     w.mouse.y = -100000.0
-    w.near_walk[ w.root, 0.0, 0.0 ]
+    w.near_walk[ w.root, 0.0, 0.0, null ]
 
 
 intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]

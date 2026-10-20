@@ -1,0 +1,154 @@
+# claude: Anthropic's Claude Code, an agent shell. Installed from
+# the apps view (its build fetches the native binary into silver's
+# install); installed, it is an agent the exchange offers, run in
+# its own terminal
+export 1.0.0
+export agent ['ClaudeAgent']
+export software ['developer']
+export icon ['claude']
+
+import trinity
+import <stdlib.h>
+
+# the version taken, and its linux-x64 binary's sha256 as its
+# release manifest gives it
+func claude_ver [] -> string
+    return '2.1.304'
+func claude_sum [] -> string
+    return 'ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912'
+
+AgentRun ClaudeAgent
+    func program [] -> string
+        return 'claude'
+
+    func keeps [] -> bool
+        return true
+
+    func argv [ model: string, text: string, image: string ]
+            -> vec string
+        a : vec string [] [ '-p', '--input-format', 'stream-json',
+            '--output-format', 'stream-json', '--verbose',
+            '--replay-user-messages', '--permission-mode',
+            'acceptEdits', '--no-session-persistence',
+            '--strict-mcp-config' ]
+        # the silver install (its screenshots and logs) and the
+        # silver folder (its sources)
+        a.push[ '--add-dir' ]
+        a.push[ install[] ]
+        sv : cstr getenv[ 'SILVER' ]
+        if [ sv ]
+            a.push[ '--add-dir' ]
+            a.push[ string [ sv ] ]
+        if [ model.count > 0 ]
+            a.push[ '--model' ]
+            a.push[ model ]
+        if [ allow && allow.count > 0 ]
+            a.push[ '--allowedTools' ]
+            a.push[ allow ]
+        return a
+
+    # its own program in the exchange's terminal: edits taken as
+    # they come, the silver install and folder in reach
+    func terminal [ model: string ] -> vec string
+        a : vec string [] [ '--permission-mode', 'acceptEdits',
+                            '--add-dir', install[] ]
+        sv : cstr getenv[ 'SILVER' ]
+        if [ sv ]
+            a.push[ '--add-dir' ]
+            a.push[ string [ sv ] ]
+        if [ model.count > 0 ]
+            a.push[ '--model' ]
+            a.push[ model ]
+        return a
+
+    # its title: a spinning dot while it works, ✳ when it waits
+    func waiting [ title: string ] -> bool
+        return title && title.starts_with[ '✳' ]
+
+    # it keeps file checkpoints for the rewind only when asked
+    func env [] -> vec string
+        kv : string 'CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=1'
+        return vec string [] [ kv ]
+
+    func message [ text: string ] -> string
+        q : string quote[ text ]
+        m : string '{{"role":"user","content":{q}}}'
+        return '{{"type":"user","message":{m}}}\n'
+
+    # files back to before our last message: claude's control
+    # request names that message's id
+    func rewind [] -> string
+        if [ !users || users.count == 0 ] return ''
+        id : string users.pop[]
+        rq : string 'rewind-{users.count}'
+        qi : string quote[ id ]
+        ids : string '"user_message_id":{qi}'
+        body : string '{{"subtype":"rewind_files",{ids}}}'
+        rid : string '"request_id":"{rq}"'
+        return '{{"type":"control_request",{rid},"request":{body}}}\n'
+
+    func event [ e: map ]
+        type : str[ e, 'type' ]
+        if [ type == 'system' && str[ e, 'subtype' ] == 'init' ]
+            status[ 'busy', 'working' ]
+        # our message played back with its id: a rewind names it
+        el [ type == 'user' && str[ e, 'uuid' ].count > 0 ]
+            users.push[ str[ e, 'uuid' ] ]
+        el [ type == 'control_response' ]
+            r : map obj[ e, 'response' ]
+            if [ str[ r, 'subtype' ] == 'success' ]
+                status[ 'note', 'rewound to before the last message' ]
+            el
+                er : str[ r, 'error' ]
+                why : string [ (er.count > 0) ? er
+                               : 'the rewind failed' ]
+                status[ 'needs', why ]
+        el [ type == 'assistant' ]
+            cs : array list[ obj[ e, 'message' ], 'content' ]
+            if [ !cs ] return
+            for [ v: Au ] in cs
+                c : map v
+                ct : str[ c, 'type' ]
+                if [ ct == 'text' ] notes[ str[ c, 'text' ] ]
+                el [ ct == 'tool_use' ]
+                    tool[ str[ c, 'name' ], obj[ c, 'input' ] ]
+        el [ type == 'result' ]
+            if [ flag[ e, 'is_error' ] ]
+                say[ 'needs', str[ e, 'result' ] ]
+                status[ 'needs', 'error' ]
+                done = true
+            el end[]
+
+    # a tool it called: an edit as its diff, else what it works on
+    func tool [ name: string, given: map ]
+        if [ name == 'Edit' || name == 'Write' || name == 'MultiEdit' ]
+            edit_diff[ given ]
+            status[ 'busy', base[ str[ given, 'file_path' ] ] ]
+        el [ name == 'Bash' ]
+            d : str[ given, 'description' ]
+            cm : str[ given, 'command' ]
+            status[ 'busy', (d.count > 0) ? d : cm ]
+        el
+            t : str[ given, 'file_path' ]
+            if [ t.count == 0 ] t = str[ given, 'pattern' ]
+            on : string [ (t.count > 0) ? '{name} {base[ t ]}' : name ]
+            status[ 'busy', on ]
+
+# at the build: Anthropic's binary for this version, checked, kept
+# in install/lib/claude/<version> and linked as install/bin/claude
+export func install_claude []
+    ins : string '{path.path_install[]}'
+    ver : claude_ver[]
+    dir : '{ins}/lib/claude/{ver}'
+    exe : path '{dir}/claude'
+    if [ !exe.exists[] ]
+        url : 'https://downloads.claude.ai/claude-code-releases/{ver}/linux-x64/claude'
+        part : '{dir}/claude.part'
+        get : command { mkdir -p {dir} && curl -fsSL {url} -o {part}
+            && echo "{claude_sum[]}  {part}" | sha256sum -c --quiet
+            && chmod 755 {part} && mv {part} {exe} }
+        if [ get.exec[ false ] != 0 ]
+            log 'claude: {ver} failed'
+            return
+    ln : command { ln -sfn {exe} {ins}/bin/claude }
+    if [ ln.exec[ false ] == 0 ] log 'claude: {ver}'

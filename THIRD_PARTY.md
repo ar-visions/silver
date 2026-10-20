@@ -9,7 +9,12 @@ Keep it in step with the imports.
 
 | dependency | pinned | used by | source | license | authors |
 |---|---|---|---|---|---|
-| Node.js | 24.18.0 | featured/vscode | https://github.com/nodejs/node | MIT (bundled parts under their own licenses) | OpenJS Foundation and contributors |
+| Node.js | 24.18.0 | featured/vscode, quark, gemini (runs its CLI) | https://github.com/nodejs/node | MIT (bundled parts under their own licenses) | OpenJS Foundation and contributors |
+| Gemini CLI (its bundle) | 0.64.0 | gemini (install/bin/gemini, on our Node) | https://github.com/google-gemini/gemini-cli | Apache-2.0 | Google LLC |
+| Codex CLI (release package: codex, rg, bwrap) | 0.163.0 | codex (install/bin/codex) | https://github.com/openai/codex | Apache-2.0 (rg: MIT or Unlicense; bwrap: LGPL-2.0-or-later) | OpenAI |
+| GIMP (its official AppImage, unpacked; not redistributed) | 3.2.6 | featured/gimp (install/bin/gimp) | https://download.gimp.org/gimp/v3.2/linux | GPL-3.0-or-later (its bundled libraries under their own licenses) | The GIMP Team |
+| Firefox (Mozilla's release build, not redistributed) | 158.0 | featured/firefox (install/bin/firefox) | https://archive.mozilla.org/pub/firefox/releases | MPL-2.0 (the Firefox name and logo: Mozilla's trademarks) | Mozilla Foundation and contributors |
+| Claude Code (native binary, not redistributed) | 2.1.304 | claude (install/bin/claude) | https://downloads.claude.ai/claude-code-releases | proprietary, Anthropic's terms | Anthropic PBC |
 | libxkbfile | 1.1.3 | featured/vscode | https://gitlab.freedesktop.org/xorg/lib/libxkbfile | MIT | X.Org Foundation |
 | libsecret | 0.21.7 | featured/vscode | https://gitlab.gnome.org/GNOME/libsecret | LGPL-2.1-or-later | The libsecret authors |
 | MIT Kerberos | 1.21.3 | featured/vscode | https://github.com/krb5/krb5 | MIT (krb5 notice) | Massachusetts Institute of Technology |
@@ -99,8 +104,10 @@ Keep it in step with the imports.
 | gtk-shell.xml (GTK 4.14.5's Wayland protocol; C made from it by wayland-scanner) | wayland (a GTK app's menu bar address) | https://gitlab.gnome.org/GNOME/gtk/-/raw/4.14.5/gdk/wayland/protocol/gtk-shell.xml | LGPL-2.1-or-later | The GTK Team |
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: mouse, keyboard, desktop_windows as display (white fill added) | trinity/images (mouse, keyboard, display) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps (white fill added) | orbiter/images/apps_grid.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: delete_sweep (white fill added) | orbiter/images/delete_sweep.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: edit (white fill added) | orbiter/images/edit.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: eject (white fill added) | orbiter/images/eject.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: person (white fill added) | orbiter/images/person.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |

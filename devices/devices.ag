@@ -69,6 +69,8 @@ func host_audio_scope [ slot: i32, out: ref f32, n: i32 ] -> i32
 # the machine's volume (0..1) and mute: the default card's Master
 func host_master_get [ vol: ref f32, muted: ref i32 ] -> i32
 func host_master_set [ vol: f32, muted: i32 ] -> i32
+func host_capture_get [ vol: ref f32, muted: ref i32 ] -> i32
+func host_capture_set [ vol: f32, muted: i32 ] -> i32
 func host_app_request [ nm: cstr, flags: i32 ] -> i32
 func host_app_flags   [ slot: i32 ] -> i32
 func host_app_state   [ slot: i32 ] -> i32

@@ -96,6 +96,10 @@ class ConsoleSession
     mutable max_x       : f32
     # a nowrap view's lines, drawn here, then faded at its sides
     mutable view        : Canvas
+    # where its scroll is going: the shown scroll eases there
+    mutable scroll_goal : f32
+    # the user typed into it (a key or text, not a paste of ours)
+    public  typed       : bool
 
     func init []
         scrollback  = list string []
@@ -132,6 +136,13 @@ class ConsoleSession
             log 'onsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
+
+    # its program ends: hung up, its terminal closed
+    func end []
+        if [ pid > 0 ] kill[ pid, 1 ]
+        if [ pty_fd >= 0 ] close[ pty_fd ]
+        pty_fd = -1
+        pid    = 0
 
     func restart []
         if [ pty_fd >= 0 ]
@@ -868,11 +879,40 @@ Layer TermLayer
         # a line scrolled part way out is cut at the area's edge
         cv.save[]
         cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
-        ch : f32 [ paint_term[ cv, con, s, bounds, con.filter[],
+        ch : f32 [ paint_term[ cv, con, s, bounds, con.filter*[],
                                con.feed, label_size, label_height ] ]
         cv.restore[]
-        con.content_h = ch
+        # the height whose furthest scroll is its own (the text area's,
+        # whole lines): the thumb ends at its track's foot, and a drag
+        # reaches as far as the wheel
+        con.content_h = (s.max_scroll > 0.0)
+            ? s.max_scroll + con.bounds.h : ch
         con.scroll.y  = s.scroll
+
+# its scroll's end: followed while the user has not scrolled away; the
+# shown scroll eases to its goal (filter_n), a drag moves it at once
+func follow_scroll [ con_el: object, s: ConsoleSession, max_s: f32,
+                     vh: f32 ]
+    con : cast Console [ con_el ]
+    s.max_scroll = max_s
+    if [ !s.scroll_dragging && !s.user_scrolled ]
+        s.scroll_goal = max_s
+        # more than a screen behind (a log first shown): at once
+        if [ max_s - s.scroll > vh ] s.scroll = max_s
+    s.scroll_goal = clamp[ s.scroll_goal, 0.0, max_s ]
+    if [ s.scroll_dragging ] s.scroll = s.scroll_goal
+    d : f32 [ s.scroll_goal - s.scroll ]
+    if [ d > 0.5 || d < -0.5 ]
+        s.scroll = filter_n[ s.scroll, s.scroll_goal, 0.3,
+                             con.ux.frame_factor ]
+        con.needs_frame = true
+        con.ux.will_animate = true
+    el
+        s.scroll = s.scroll_goal
+    s.scroll = clamp[ s.scroll, 0.0, max_s ]
+    # back at the bottom: it follows again
+    if [ s.scroll_goal >= max_s - 1.0 ]
+        s.user_scrolled = false
 
 func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                   bounds: rect, flt: string, feed: list string,
@@ -893,12 +933,13 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
             if [ !feed ] return 0.0
             n      : i32 [ feed.count ]
             max_s  : f32 [ maxf[ f32[n] * lh - bounds.h, 0.0 ] ]
+            follow_scroll[ con, s, max_s, bounds.h ]
             dr     : i32 [ 0 ]
             for [ li: i32 0, li < n, li += 1 ]
                 ln : string feed.value_by_index[ li ]
                 if [ has_flt && ln.index_of[ flt ] < 0 ] continue
                 y : f32 [
-                    top + f32[dr] * lh - ((has_flt) ? 0.0 : max_s) ]
+                    top + f32[dr] * lh - ((has_flt) ? 0.0 : s.scroll) ]
                 dr += 1
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
@@ -985,22 +1026,17 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 if [ s.row_drawable[ scan_row ] > 0 ]
                     live = scan_row + 1
                     break
+            # no cursor (a log): its empty row after the last line is
+            # not a line; the last line sits on the foot
+            if [ !s.cursor_visible ]
+                while [ live > 0 && s.row_drawable[ live - 1 ] <= 0 ]
+                    live -= 1
         total_h  : f32 [ f32[base + live] * lh ]
+        # the last line sits on the foot: a resize moves the top's
+        # part line, never the text under it
         max_s    : f32 [ maxf[ total_h - vb.h, 0.0 ] ]
-        # whole lines from the top: the spare part of a line is
-        # left under the last, not cut off the first
-        if [ max_s > 0.0 ] max_s = ceil[ max_s / lh ] * lh
 
-        s.max_scroll = max_s
-        if [ !s.scroll_dragging && !s.user_scrolled ]
-            s.scroll = max_s
-        if [ s.scroll < 0.0 ]
-            s.scroll = 0.0
-        if [ s.scroll > max_s ]
-            s.scroll = max_s
-        # back at the bottom → resume auto-follow
-        if [ s.scroll >= max_s - 1.0 ]
-            s.user_scrolled = false
+        follow_scroll[ con, s, max_s, vb.h ]
 
         s.first_line  = (lh > 0.0) ? i32[ round[ s.scroll / lh ] ] : 0
 
@@ -1174,6 +1210,9 @@ func block_quads [ ch: i32 ] -> i32
 # rectangles
 func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32,
                   lh: f32, packed: i32 ]
+    if [ ch >= 0x2800 && ch <= 0x28FF ]
+        draw_braille[ cv, ch, x, y, cw, lh, packed ]
+        return
     cv.stroke_width[ 0.0 ]
     cv.fill_color[ col_of[ packed ] ]
     q : i32 [ block_quads[ ch ] ]
@@ -1219,8 +1258,30 @@ func draw_block [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32,
         cv.rect_to[ x, y, cw, lh ]
     cv.paint[]
 
+# drawn as geometry, not by the font: block elements and braille
 func is_block [ ch: i32 ] -> bool
-    return ch >= 0x2580 && ch <= 0x259F
+    return (ch >= 0x2580 && ch <= 0x259F)
+        || (ch >= 0x2800 && ch <= 0x28FF)
+
+# braille: its eight dots, two across and four down the cell, each
+# drawn when its bit is set (1 2 3 7 down the left, 4 5 6 8 the right)
+func draw_braille [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32,
+                    lh: f32, packed: i32 ]
+    bits : i32 [ ch - 0x2800 ]
+    if [ bits == 0 ] return
+    cv.stroke_width[ 0.0 ]
+    cv.fill_color[ col_of[ packed ] ]
+    dx : f32 [ cw / 2.0 ]
+    dy : f32 [ lh / 4.0 ]
+    r : f32 [ min[ dx, dy ] * 0.32 ]
+    cols : vec i32 [] [ 0, 0, 0, 1, 1, 1, 0, 1 ]
+    rows : vec i32 [] [ 0, 1, 2, 0, 1, 2, 3, 3 ]
+    for [ i: i32 0, i < 8, i += 1 ]
+        if [ (bits & (1 << i)) == 0 ] continue
+        cx : f32 [ x + dx * (f32[ cols[ i ] ] + 0.5) ]
+        cy : f32 [ y + dy * (f32[ rows[ i ] ] + 0.5) ]
+        cv.arc[ cx, cy, r, 0.0, 6.2832 ]
+        cv.paint[]
 
 func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
                   off: i32, n: i32, left: f32, y: f32, lh: f32,
@@ -1423,11 +1484,12 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
         lh   : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         page : f32 [ ((vh > 0.0) ? vh : f32[s.rows] * lh) - lh ]
         s.user_scrolled = true
-        s.scroll = s.scroll + ((k == 266) ? 0.0 - page : page)
-        if [ s.scroll < 0.0 ] s.scroll = 0.0
-        if [ s.scroll > s.max_scroll ] s.scroll = s.max_scroll
+        s.scroll_goal = s.scroll_goal + ((k == 266) ? 0.0 - page : page)
+        if [ s.scroll_goal < 0.0 ] s.scroll_goal = 0.0
+        if [ s.scroll_goal > s.max_scroll ] s.scroll_goal = s.max_scroll
         return true
     if [ k == 257 ]                       # Enter
+        s.typed = true
         s.write_input[ '\r' ]
     # Tab / Shift-Tab (back-tab = CSI Z)
     el [ k == 258 ]
@@ -1569,6 +1631,7 @@ element Console
             s.send_esc[ ev.key.text ]
         el
             s.write_input[ ev.key.text ]
+        s.typed = true
         # what a press does after its handlers: mark and restyle
         pristine = false
         if [ ux ] ux.restyle = true
@@ -1695,7 +1758,14 @@ element Console
         s : ConsoleSession session[]
         if [ !s ] return
         set_focus[]
+        # the right button copies the selection; the middle pastes
         if [ ev.mouse.button == 1 ]
+            txt : string s.selection_text[]
+            if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+            s.sel_line = -1
+            pristine   = false
+            return
+        if [ ev.mouse.button == 2 ]
             paste_clip[]
             return
         ele : Layer (layers) ? layers[ 'content' ] : null
@@ -1780,20 +1850,21 @@ element Console
     func set_scroll [ s: ConsoleSession, target: f32 ]
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         ns : f32 [ target ]
-        if [ lh > 0.0 ] ns = round[ ns / lh ] * lh
+        # whole lines counted up from the foot (its last line flush)
+        if [ lh > 0.0 ]
+            ns = s.max_scroll - round[ (s.max_scroll - ns) / lh ] * lh
         if [ ns < 0.0 ] ns = 0.0
         if [ ns > s.max_scroll ] ns = s.max_scroll
-        s.scroll = ns
-        # find_target folds scroll.y — sync NOW, not at next draw
-        scroll.y = ns
+        s.scroll_goal = ns
+        # a drag moves it at once; else it eases there as it draws
+        if [ s.scroll_dragging ] s.scroll = ns
+        scroll.y = s.scroll
         s.user_scrolled = ns < s.max_scroll - 1.0
-        fl : i32 [ (lh > 0.0) ? i32[ round[ ns / lh ] ] : 0 ]
-        if [ fl != s.first_line ]
-            pristine = false
-            ux.will_animate = true
+        pristine = false
+        ux.will_animate = true
 
     func scroll_by [ s: ConsoleSession, dy: f32 ]
-        set_scroll[ s, s.scroll + dy ]
+        set_scroll[ s, s.scroll_goal + dy ]
 
     func on_wheel [ ev: Event ]
         s : ConsoleSession session[]

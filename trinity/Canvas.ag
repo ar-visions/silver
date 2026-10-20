@@ -2278,6 +2278,22 @@ Render Canvas
 
     # ---- text measurement ----
 
+    # a character the font has not: an installed font's that has it
+    # (fontconfig), at the same size; null when none has it
+    func fallback_of [ cp: u32 ] -> CanvasFont
+        if [ cp < 128 || font.glyph_index[ cp ] != 0 ] return null
+        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
+        fk : string 'fallback:{cp}'
+        file : string ''
+        if [ vk.font_cache.contains[ fk ] ]
+            file = string [ vk.font_cache[ fk ] ]
+        el
+            m : FontMatch font_match[ null, 400, 5, 0, cp, false ]
+            if [ m.found ] file = m.file
+            vk.font_cache[ fk ] = file
+        if [ file.count == 0 ] return null
+        return shared_font[ a, file, font.size_px ]
+
     func measure_text [ text: string ] -> TextMetrics
         ensure_font[]
         st  : CanvasState states[state_depth - 1]
@@ -2304,7 +2320,9 @@ Render Canvas
             el
                 cp = u32[ b ]
                 i += 1
-            g  : font.get_glyph [ cp ]
+            fb : CanvasFont fallback_of[ cp ]
+            g  : GlyphEntry [ (fb) ? fb.get_glyph[ cp ]
+                                   : font.get_glyph[ cp ] ]
             if [ g.cached ]
                 tw += f32 g.advance
         scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
@@ -2876,6 +2894,9 @@ Render Canvas
         crop_active : bool [ st.crop.z > st.crop.x ]
         crop_left : f32 [ st.crop.x ]
         crop_right : f32 [ st.crop.z ]
+        # characters the font has not, drawn after from fonts that do
+        miss_cp : vec u32 []
+        miss_x  : vec f32 []
 
         i : i32 [ 0 ]
         while [ i < display.count ]
@@ -2898,6 +2919,13 @@ Render Canvas
             el
                 cp = u32[ b ]
                 i += 1
+            fb : CanvasFont fallback_of[ cp ]
+            if [ fb ]
+                miss_cp.push[ cp ]
+                miss_x.push[ pen_x ]
+                fg : GlyphEntry fb.get_glyph[ cp ]
+                pen_x += f32 fg.advance * inv
+                continue
             slot : glyph_atlas.get[ font, cp ]
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]
@@ -2912,6 +2940,14 @@ Render Canvas
                 vi += 6
             pen_x += f32 slot.advance * inv
         text_end[ font, vi ]
+        for [ k: i32 0, k < miss_cp.count, k += 1 ]
+            mf : CanvasFont fallback_of[ miss_cp[ k ] ]
+            mv : text_begin[ mf ]
+            ms : glyph_atlas.get[ mf, miss_cp[ k ] ]
+            if [ !ms.cached || ms.atlas_w == 0 || ms.atlas_h == 0 ]
+                continue
+            glyph_quad[ mv, 0, ms, miss_x[ k ], pen_y ]
+            text_end[ mf, 6 ]
 
     # shaped text: glyph numbers with baseline pens, canvas px
     func draw_glyphs [ fnt: CanvasFont, ids: @u32, xs: @f32, ys: @f32,
@@ -5526,6 +5562,15 @@ func ft_init [] -> handle
 # a font file at a size, opened once for the device: every label
 # naming it shares it (a free function: a new Canvas method broke
 # the module's method table, AGENTS 1b)
+# a label's size in the canvas's pixels: by its screen's scale and
+# the text size, as ensure_font sizes the default font
+func label_px [ cv: Canvas, size: f32 ] -> i32
+    fu : f32 [ (cv.vk && cv.vk.font_unit > 0)
+        ? f32[ cv.vk.font_unit ] / 22.0 : 1.0 ]
+    ds : f32 [ ((cv.w && cv.w.scale > 0) ? cv.w.scale : 1.0) * fu ]
+    px : i32 [ size * ds ]
+    return (px > 0) ? px : i32[ size ]
+
 func shared_font [ cv: Canvas, uri: string, px: i32 ] -> CanvasFont
     if [ !cv.vk.font_cache ] cv.vk.font_cache = map Au [ string ] []
     key : string '{uri}@{px}'

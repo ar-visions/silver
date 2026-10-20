@@ -81,6 +81,9 @@ class dbg
     func read_statics       [ ] -> vec Au
     func read_globals       [ ] -> vec Au
     func read_registers     [ ] -> vec Au
+    # a line for lldb's own command interpreter (the debugger's
+    # console): what it printed, then what it said went wrong
+    func command            [ line: string ] -> string
     func set_breakpoint     [ source: path, ln: u32, column: u32 ] -> breakpoint
     func remove_breakpoint  [ bp: breakpoint ]
     func enable_breakpoint  [ bp: breakpoint, enable: bool ]

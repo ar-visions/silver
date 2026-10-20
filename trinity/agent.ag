@@ -1,0 +1,445 @@
+# the exchange's agents: each is a module of its own (claude,
+# codex, gemini) whose class extends AgentRun, named by its export
+# (`export agent ['ClaudeAgent']`). trinity loads it when its name
+# is picked, runs the program it names, and hands it each line the
+# program writes; it answers with the exchange's statuses
+extend trinity
+
+import <dlfcn.h>
+
+# an agent program: what to run, and what its output means
+class AgentRun
+    # the module's name, as the picker shows it
+    public name    : string
+    # the folder it works in
+    public root    : string
+    # its session to resume (codex's thread, gemini's session)
+    public resume  : string
+    # tools it may use without asking (WebSearch ...)
+    public allow   : string
+    # the statuses waiting: busy / note / diff / done / needs
+    public lines   : vec string
+    # its ids for our messages (claude's; the rewind names one)
+    public users   : vec string
+    # the turn ended: done or needs queued
+    public done    : bool
+    # its process runs a turn
+    public running : bool
+
+    # its own interactive program in the exchange's terminal: the
+    # arguments after the program
+    func terminal [ model: string ] -> vec string
+        return vec string []
+
+    # its terminal's title says it waits for the user
+    func waiting [ title: string ] -> bool
+        return false
+
+    # the program, by name: silver's install first, then PATH
+    func program [] -> string
+        return name
+
+    # the run's arguments after the program; image: a screenshot's
+    # file named in the text, else ''
+    func argv [ model: string, text: string, image: string ]
+            -> vec string
+        return vec string []
+
+    # one process for the whole exchange, messages on its input
+    func keeps [] -> bool
+        return false
+
+    # a message as its input takes it (a process that keeps)
+    func message [ text: string ] -> string
+        return '{text}\n'
+
+    # NAME=value for its environment
+    func env [] -> vec string
+        return vec string []
+
+    # one json event of its output
+    func event [ e: map ]
+        return
+
+    # a line of its output that is not json
+    func plain [ ln: string ]
+        return
+
+    # undo: the input line that puts its files back, '' none
+    func rewind [] -> string
+        return ''
+
+    # silver's install folder, its .. steps taken out (the app's
+    # share folder it is reached through need not exist)
+    func install [] -> string
+        out : vec string []
+        for [ part: string ] in '{path.path_install[]}'.split[ '/' ]
+            if [ part == '..' && out.count > 0 ] out.pop[]
+            el [ part.count > 0 && part != '.' ] out.push[ part ]
+        dir : string ''
+        for [ part: string ] in out
+            dir = '{dir}/{part}'
+        return dir
+
+    # a status, at most 400 characters
+    func status [ state: string, text: string ]
+        t : text
+        if [ t.count > 400 ] t = t.mid[ 0, 400 ]
+        lines.push[ '{state} {t}' ]
+
+    # every line of a text as its own status
+    func say [ state: string, text: string ]
+        if [ !text ] return
+        for [ ln: string ] in text.split[ '\n' ]
+            if [ ln.trim[].count > 0 ] status[ state, ln ]
+
+    # the agent's words as notes: a ```diff block repeats the
+    # edit's own diff entry and is left out; fences never show
+    func notes [ text: string ]
+        if [ !text ] return
+        fence : bool [ false ]
+        skip  : bool [ false ]
+        for [ ln: string ] in text.split[ '\n' ]
+            t : ln.trim[]
+            if [ t.starts_with[ '```' ] ]
+                fence = !fence
+                skip  = fence && t.starts_with[ '```diff' ]
+            el [ !(fence && skip) && t.count > 0 ]
+                status[ 'note', ln ]
+
+    # the turn ended
+    func end []
+        lines.push[ 'done done' ]
+        done = true
+
+    # the turn failed, with why
+    func fail [ why: string ]
+        said : bool [ why && why.count > 0 ]
+        say[ 'needs', (said) ? why : 'the agent failed' ]
+        done = true
+
+    # a file's last name
+    func base [ p: string ] -> string
+        if [ !p ] return ''
+        sl : i32 [ p.rindex_of[ '/' ] ]
+        return (sl < 0) ? p : p.mid[ sl + 1, p.count - sl - 1 ]
+
+    # a member's text, '' when it is not there
+    func str [ m: map, k: string ] -> string
+        if [ !m || !m.contains[ k ] ] return ''
+        v : Au m[ k ]
+        return (v) ? string [ v ] : ''
+
+    func obj [ m: map, k: string ] -> map
+        if [ !m || !m.contains[ k ] ] return null
+        return m[ k ]
+
+    func list [ m: map, k: string ] -> array
+        if [ !m || !m.contains[ k ] ] return null
+        return m[ k ]
+
+    func flag [ m: map, k: string ] -> bool
+        return str[ m, k ] == 'true'
+
+    # a text's lines; none for an empty text
+    func rows [ t: string ] -> vec string
+        if [ !t || t.count == 0 ] return vec string []
+        return t.split[ '\n' ]
+
+    # a json string literal of s
+    func quote [ s: string ] -> string
+        out : string '"'
+        for [ i: i32 0, i < s.count, i += 1 ]
+            c : i32 [ s.chars[ i ] ]
+            if [ c == 34 ] out = out + '\\"'
+            el [ c == 92 ] out = out + '\\\\'
+            el [ c == 10 ] out = out + '\\n'
+            el [ c == 13 ] out = out + '\\r'
+            el [ c == 9 ] out = out + '\\t'
+            el [ c >= 0 && c < 32 ] out = out + ' '
+            el out = out + s.mid[ i, 1 ]
+        return out + '"'
+
+    # one edit's diff, from the tool's own old and new text
+    # (file_path, old_string, new_string, edits, content)
+    func edit_diff [ given: map ]
+        fp : str[ given, 'file_path' ]
+        rel : fp
+        if [ root && root.count > 0 && fp.starts_with[ root ]
+             && fp.count > root.count ]
+            rel = fp.mid[ root.count + 1, fp.count - root.count - 1 ]
+        lines.push[ 'diff diff --git a/{rel} b/{rel}' ]
+        olds : vec string []
+        news : vec string []
+        if [ given.contains[ 'old_string' ]
+             || given.contains[ 'new_string' ] ]
+            olds.push[ str[ given, 'old_string' ] ]
+            news.push[ str[ given, 'new_string' ] ]
+        ed : array list[ given, 'edits' ]
+        if [ ed ]
+            for [ v: Au ] in ed
+                h : map v
+                olds.push[ str[ h, 'old_string' ] ]
+                news.push[ str[ h, 'new_string' ] ]
+        nm : base[ fp ]
+        if [ olds.count == 0 && given.contains[ 'content' ] ]
+            lines.push[ 'diff @@ {nm}: written @@' ]
+            for [ ln: string ] in str[ given, 'content' ].split[ '\n' ]
+                lines.push[ 'diff +{ln}' ]
+            return
+        for [ i: i32 0, i < olds.count, i += 1 ]
+            lines.push[ 'diff @@ {nm} @@' ]
+            # lines both sides share at either end are context
+            o : vec string rows[ olds[ i ] ]
+            n : vec string rows[ news[ i ] ]
+            pre : i32 [ 0 ]
+            while [ pre < o.count && pre < n.count
+                    && o[ pre ] == n[ pre ] ]
+                pre += 1
+            suf : i32 [ 0 ]
+            while [ suf < o.count - pre && suf < n.count - pre
+                    && o[ o.count - 1 - suf ]
+                       == n[ n.count - 1 - suf ] ]
+                suf += 1
+            for [ k: i32 0, k < pre, k += 1 ]
+                lines.push[ 'diff  {o[ k ]}' ]
+            for [ k: i32 pre, k < o.count - suf, k += 1 ]
+                lines.push[ 'diff -{o[ k ]}' ]
+            for [ k: i32 pre, k < n.count - suf, k += 1 ]
+                lines.push[ 'diff +{n[ k ]}' ]
+            for [ k: i32 o.count - suf, k < o.count, k += 1 ]
+                lines.push[ 'diff  {o[ k ]}' ]
+
+# the process layer (trinity.cc): starts the program, feeds its
+# input, gives its output a line at a time
+func agent_proc_arg    [ a: cstr ]
+func agent_proc_env    [ kv: cstr ]
+func agent_proc_start  [ root: cstr, keep_in: i32 ] -> i32
+func agent_proc_alive  [] -> i32
+func agent_proc_write  [ text: cstr ] -> i32
+func agent_proc_line   [] -> symbol
+func agent_proc_exit   [] -> i32
+func agent_proc_stop   []
+func agent_proc_select [ id: i32 ]
+func agent_proc_close  [ id: i32 ]
+func agent_proc_error  [] -> symbol
+func agent_tool        [ name: cstr ] -> symbol
+
+# the exchange's sessions' agents, by session number
+agent_runs : map AgentRun [ string ]
+# the one on screen, its session, the tools the next run may use,
+# why the last start failed
+agent_cur  : AgentRun
+agent_sid  : i32
+agent_free : string
+agent_why  : string
+
+# the agent named nm: its module loaded, its class made (null: no
+# such module)
+func agent_make [ nm: string ] -> AgentRun
+    lib : path.path_install[]
+    ln : string 'silver-{nm}'
+    so : path '{lib}/build/{path.path_library[ ln.chars ]}'
+    agi : path '{lib}/export/{ln}.agi'
+    if [ !so.exists[] || !agi.exists[] ] return null
+    if [ !dlopen[ so.chars, 258 ] ] return null
+    # its export: agent: ['ClassName']
+    text : string [ agi.load[ typeid[ string ], null ] ]
+    cls : string ''
+    for [ row: string ] in text.split[ '\n' ]
+        if [ !row.starts_with[ 'agent:' ] ] continue
+        # the name's own characters, the brackets and quotes left
+        for [ i: i32 6, i < row.count, i += 1 ]
+            c : i32 [ row.chars[ i ] ]
+            if [ (c >= 48 && c <= 57) || (c >= 65 && c <= 90)
+                 || (c >= 97 && c <= 122) || c == 95 ]
+                cls = cls + row.mid[ i, 1 ]
+    if [ cls.count == 0 ] return null
+    t : Au.find_type[ cls.chars, null ]
+    if [ !t ] return null
+    made : Au.new_object[ t, null, null, false, __FILE__, __LINE__,
+                          __SEQUENCE__ ]
+    r : cast AgentRun [ made ]
+    r.initialize[]
+    r.name  = nm
+    r.lines = vec string []
+    r.users = vec string []
+    return r
+
+# the agent shells installed: each module whose export says agent
+# and whose library is built (the user installs it from the apps
+# view), by module name
+func agent_installed [] -> vec string
+    out : vec string []
+    lib : path.path_install[]
+    ex : path '{lib}/export'
+    if [ !ex.exists[] ] return out
+    for [ f: path ] in ex.ls[ null, false ]
+        if [ f.ext[] != 'agi' ] continue
+        st : f.stem[]
+        if [ !st.starts_with[ 'silver-' ] ] continue
+        nm : st.mid[ 7, st.count - 7 ]
+        tx : string [ f.load[ typeid[ string ], null ] ]
+        if [ !tx || (!tx.starts_with[ 'agent:' ]
+                     && tx.index_of[ '\nagent:' ] < 0) ]
+            continue
+        so : path '{lib}/build/{path.path_library[ st.chars ]}'
+        if [ so.exists[] ] out.push[ nm ]
+    return out
+
+# one message of the exchange to the agent named nm, working in
+# root: into its open process, or a run of its own. true = sent
+func agent_start [ nm: string, root: string, model: string,
+                   text: string ] -> bool
+    agent_why = ''
+    if [ !agent_runs ] agent_runs = map AgentRun [ string ] []
+    cur : agent_cur
+    if [ cur && cur.name == nm && cur.keeps*[]
+         && agent_proc_alive[] != 0 ]
+        cur.done    = false
+        cur.running = true
+        if [ agent_proc_write[ cur.message*[ text ].chars ] != 0 ]
+            return true
+        agent_why = string [ agent_proc_error[] ]
+        return false
+    if [ !cur || cur.name != nm ]
+        cur = agent_make[ nm ]
+        if [ !cur ]
+            agent_why = 'no agent module {nm}: silver --build {nm}'
+            return false
+        agent_cur = cur
+        agent_runs[ '{agent_sid}' ] = cur
+    cur.root    = root
+    cur.allow   = (agent_free) ? agent_free : ''
+    cur.done    = false
+    cur.lines   = vec string []
+    prog : string cur.program*[]
+    own : path '{cur.install[]}/bin/{prog}'
+    exe : string [ (own.exists[]) ? '{own}'
+                   : string [ agent_tool[ prog.chars ] ] ]
+    if [ exe.count == 0 ]
+        agent_why = '{prog} is not installed here'
+        return false
+    # a screenshot rides along: its file, named in the text
+    image : string ''
+    sc : i32 [ text.index_of[ 'Screenshot: ' ] ]
+    if [ sc >= 0 ]
+        rest : text.mid[ sc + 12, text.count - sc - 12 ]
+        nl : i32 [ rest.index_of[ '\n' ] ]
+        image = (nl >= 0) ? rest.mid[ 0, nl ] : rest
+    agent_proc_arg[ exe.chars ]
+    for [ a: string ] in cur.argv*[ model, text, image ]
+        agent_proc_arg[ a.chars ]
+    for [ kv: string ] in cur.env*[]
+        agent_proc_env[ kv.chars ]
+    keep : bool cur.keeps*[]
+    if [ agent_proc_start[ root.chars, (keep) ? 1 : 0 ] == 0 ]
+        agent_why = string [ agent_proc_error[] ]
+        return false
+    cur.running = true
+    if [ keep && agent_proc_write[ cur.message*[ text ].chars ] == 0 ]
+        agent_why = string [ agent_proc_error[] ]
+        return false
+    return true
+
+# the next status of the agent on screen, '' when there is none yet
+func agent_next [] -> string
+    cur : agent_cur
+    if [ !cur ] return ''
+    while [ cur.lines.count == 0 ]
+        raw : symbol agent_proc_line[]
+        if [ !raw ] break
+        ln : string [ raw ]
+        t : ln.trim[]
+        if [ t.starts_with[ '{{' ] ]
+            e : map Au.parse[ typeid[ map ], t.chars, null ]
+            if [ e ]
+                cur.event*[ e ]
+                continue
+        cur.plain*[ ln ]
+    # its output ended: a turn left open ends with how it went
+    if [ cur.lines.count == 0 && cur.running && agent_proc_exit[] >= 0 ]
+        cur.running = false
+        if [ !cur.done ]
+            cur.lines.push[ (agent_proc_exit[] == 0) ? 'done done'
+                : 'needs the agent stopped before it finished' ]
+            cur.done = true
+    if [ cur.lines.count == 0 ] return ''
+    return cur.lines.shift[]
+
+# the session on screen: the one showing is parked, its agent still
+# running, and the chosen one takes its place
+func agent_select [ id: i32 ]
+    if [ id == agent_sid ] return
+    agent_proc_select[ id ]
+    agent_sid = id
+    k : string '{id}'
+    agent_cur = (agent_runs && agent_runs.contains[ k ])
+        ? agent_runs[ k ] : null
+
+# a session closed: its agent stops
+func agent_close [ id: i32 ]
+    agent_proc_close[ id ]
+    k : string '{id}'
+    if [ agent_runs && agent_runs.contains[ k ] ] agent_runs.rm[ k ]
+    if [ id == agent_sid ] agent_cur = null
+
+# a new exchange: the last one's agent and session end
+func agent_new []
+    agent_close[ agent_sid ]
+
+# the agent's process stops (its session is kept)
+func agent_stop []
+    agent_proc_stop[]
+    if [ agent_cur ] agent_cur.running = false
+
+# undo: the agent puts its files back to before our last message
+func agent_rewind [] -> bool
+    cur : agent_cur
+    if [ !cur || agent_proc_alive[] == 0 ] return false
+    m : string cur.rewind*[]
+    if [ m.count == 0 ] return false
+    return agent_proc_write[ m.chars ] != 0
+
+# tools the next run may use without asking ('' none)
+func agent_allow [ tools: string ]
+    agent_free = tools
+
+# why the last start failed
+func agent_error [] -> string
+    return (agent_why) ? agent_why : ''
+
+# s as one word for the shell: in double quotes, with its
+# backslashes, dollars, backquotes and quotes escaped
+func shell_word [ s: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < s.count, i += 1 ]
+        c : i32 [ s.chars[ i ] ]
+        if [ c == 92 || c == 36 || c == 96 || c == 34 ]
+            out = out + '\\'
+        out = out + s.mid[ i, 1 ]
+    return '"{out}"'
+
+# session sid's agent nm, in a terminal: the shell line that runs its
+# own program in root ('' when there is no such agent)
+func agent_term_line [ sid: i32, nm: string, root: string,
+                       model: string ] -> string
+    agent_why = ''
+    if [ !agent_runs ] agent_runs = map AgentRun [ string ] []
+    run : AgentRun agent_make[ nm ]
+    if [ !run ]
+        agent_why = 'no agent module {nm}: silver --build {nm}'
+        return ''
+    run.root = root
+    prog : string run.program*[]
+    own : path '{run.install[]}/bin/{prog}'
+    exe : string [ (own.exists[]) ? '{own}'
+                   : string [ agent_tool[ prog.chars ] ] ]
+    if [ exe.count == 0 ]
+        agent_why = '{prog} is not installed here'
+        return ''
+    agent_runs[ '{sid}' ] = run
+    line : string shell_word[ exe ]
+    for [ w: string ] in run.terminal*[ model ]
+        line = '{line} {shell_word[ w ]}'
+    return line

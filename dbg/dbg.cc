@@ -571,6 +571,15 @@ DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
     return result;
 }
 
+// a line for lldb's own command interpreter: its output, then its error
+DBG_API string dbg_command(dbg debug, string line) {
+    if (!debug->impl || !line || !line->count) return f(string, "");
+    lldb::SBCommandReturnObject r;
+    S(debug)->debugger.GetCommandInterpreter().HandleCommand(line->chars, r);
+    const char *o = r.GetOutput(), *e = r.GetError();
+    return f(string, "%s%s", o ? o : "", e ? e : "");
+}
+
 DBG_API vector dbg_read_children(dbg debug, string path) {
     Au result = (Au)vector_of(typeid(Au));
     if (!dbg_at_stop(debug) || !path || !path->count) return (vector)result;
