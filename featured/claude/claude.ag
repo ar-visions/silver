@@ -68,8 +68,12 @@ AgentRun ClaudeAgent
         if [ model.count > 0 ]
             a.push[ '--model' ]
             a.push[ model ]
-        sess_id = new_session[]
-        a.push[ '--session-id' ]
+        # its session: the one given goes on (resumed once it has a
+        # record), else a new one, kept in resume
+        if [ !resume || resume.count == 0 ] resume = new_session[]
+        sess_id = resume
+        a.push[ (record_tail[ 1 ].count > 0) ? '--resume'
+                                             : '--session-id' ]
         a.push[ sess_id ]
         return a
 

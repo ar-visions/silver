@@ -508,14 +508,20 @@ Backdrop Neptune
         # change: 1.0 / 2.25, not 1.0 / 2.604
         rings.rgeo    = vec4f [ 0.6341, 0.4444, 0.0, 0.0 ]
 
-        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ 45.0 ] ] ]
+        # the band square to the view, diagonal, drifting about y
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ -9.0 ] ] ]
+        skr : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 15.0 ] ] ]
+        sks : quatf [
+            vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 900.0 ] ] ]
         skm : mat4f.identity[]
         skm = skm.rotate[ skq ]
+        skm = skm.rotate[ skr ]
+        skm = skm.rotate[ sks ]
         skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
         sky.model = skm
         sky.view  = _view
         sky.proj  = _proj
-        sky.gain  = 0.45
+        sky.gain  = 0.15
         sky.time  = ux.time * 60000.0
 
 # the pictures for orbiter's scene picker; last, after the bakes

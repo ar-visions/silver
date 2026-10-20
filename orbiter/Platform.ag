@@ -16,8 +16,8 @@ enum PlatSurface
     pdep  : 6
 
 # one hexagonal prism, radius 1 at its corners (one on +x), its top
-# at y 1 with a bevel down to y 0.625 (45 degrees at the mirrors'
-# height of 0.08), its foot at y 0; uv the top's
+# at y 1 with a rounded edge down to y 0.625 (a quarter round at
+# the mirrors' height of 0.08), its foot at y 0; uv the top's
 # x and z over 0..1, as the circuit's svg is drawn
 func plat_vert [ ps: vec f32, ns: vec f32, ts: vec f32, x: f32,
                  y: f32, z: f32, nx: f32, ny: f32, nz: f32 ]
@@ -36,6 +36,10 @@ func plat_hex [] -> GltfModel
     ts : vec f32 []
     ri : f32 [ 0.97 ]
     hb : f32 [ 0.625 ]
+    steps : i32 [ 12 ]
+    # the round's reach across a face and down the side
+    ra : f32 [ (1.0 - ri) * 0.8660254 ]
+    rb : f32 [ 1.0 - hb ]
     for [ k: i32 0, k < 6, k += 1 ]
         a0 : f32 [ radians[ f32[ k ] * 60.0 ] ]
         a1 : f32 [ radians[ f32[ k + 1 ] * 60.0 ] ]
@@ -50,15 +54,38 @@ func plat_hex [] -> GltfModel
         plat_vert[ ps, ns, ts, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0 ]
         plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, 0.0, 1.0, 0.0 ]
         plat_vert[ ps, ns, ts, ri * c1, 1.0, ri * s1, 0.0, 1.0, 0.0 ]
-        # the bevel, at 45 degrees
-        bx : f32 [ cm * 0.7071 ]
-        bz : f32 [ sm * 0.7071 ]
-        plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, bx, 0.7071, bz ]
-        plat_vert[ ps, ns, ts, c0, hb, s0, bx, 0.7071, bz ]
-        plat_vert[ ps, ns, ts, c1, hb, s1, bx, 0.7071, bz ]
-        plat_vert[ ps, ns, ts, ri * c0, 1.0, ri * s0, bx, 0.7071, bz ]
-        plat_vert[ ps, ns, ts, c1, hb, s1, bx, 0.7071, bz ]
-        plat_vert[ ps, ns, ts, ri * c1, 1.0, ri * s1, bx, 0.7071, bz ]
+        # the rounded edge: a quarter round from the top to the
+        # side in steps, each ring's normal turned with it
+        for [ j: i32 0, j < steps, j += 1 ]
+            thi : f32 [ radians[ 90.0 * f32[ j ] / f32[ steps ] ] ]
+            tlo : f32 [ radians[ 90.0 * f32[ j + 1 ]
+                                 / f32[ steps ] ] ]
+            rhi : f32 [ ri + (1.0 - ri) * sin[ thi ] ]
+            rlo : f32 [ ri + (1.0 - ri) * sin[ tlo ] ]
+            yhi : f32 [ hb + (1.0 - hb) * cos[ thi ] ]
+            ylo : f32 [ hb + (1.0 - hb) * cos[ tlo ] ]
+            hhi : f32 [ sin[ thi ] / ra ]
+            vhi : f32 [ cos[ thi ] / rb ]
+            lhi : f32 [ sqrt[ hhi * hhi + vhi * vhi ] ]
+            hlo : f32 [ sin[ tlo ] / ra ]
+            vlo : f32 [ cos[ tlo ] / rb ]
+            llo : f32 [ sqrt[ hlo * hlo + vlo * vlo ] ]
+            hhi = hhi / lhi
+            vhi = vhi / lhi
+            hlo = hlo / llo
+            vlo = vlo / llo
+            plat_vert[ ps, ns, ts, rhi * c0, yhi, rhi * s0,
+                       cm * hhi, vhi, sm * hhi ]
+            plat_vert[ ps, ns, ts, rlo * c0, ylo, rlo * s0,
+                       cm * hlo, vlo, sm * hlo ]
+            plat_vert[ ps, ns, ts, rlo * c1, ylo, rlo * s1,
+                       cm * hlo, vlo, sm * hlo ]
+            plat_vert[ ps, ns, ts, rhi * c0, yhi, rhi * s0,
+                       cm * hhi, vhi, sm * hhi ]
+            plat_vert[ ps, ns, ts, rlo * c1, ylo, rlo * s1,
+                       cm * hlo, vlo, sm * hlo ]
+            plat_vert[ ps, ns, ts, rhi * c1, yhi, rhi * s1,
+                       cm * hhi, vhi, sm * hhi ]
         # the side
         plat_vert[ ps, ns, ts, c0, hb, s0, cm, 0.0, sm ]
         plat_vert[ ps, ns, ts, c0, 0.0, s0, cm, 0.0, sm ]
@@ -206,7 +233,7 @@ ModelViewProject PlatLit
         v_wpos  = wp.xyz;
         v_nrm   = mat3(transpose(inverse(ubo.model))) * a_normal;
         v_uv    = a_uv;
-        v_top   = a_normal.y;
+        v_top   = normalize(v_nrm).y;
         gl_Position = ubo.proj * ubo.view * wp;
         if (ubo.look.x > 2.5) {
             // an avatar's picture, at its depth's middle
@@ -230,7 +257,15 @@ ModelViewProject PlatLit
             vec4  c0 = texture(avc0, v_uv);
             vec4  c1 = texture(avc1, v_uv) * ubo.look.z;
             vec4  c  = c1 + c0 * (1.0 - c1.a);
-            float d  = texture(avd, v_uv).r;
+            // its depth, the nearest of the texels round it: an
+            // edge's soft pixels lie over the tile at its own depth
+            ivec2 ts = textureSize(avd, 0);
+            ivec2 tc = ivec2(v_uv * vec2(ts));
+            float d  = 1.0;
+            for (int y = -1; y <= 1; y++)
+                for (int x = -1; x <= 1; x++)
+                    d = min(d, texelFetch(avd, clamp(tc + ivec2(x, y),
+                                ivec2(0), ts - 1), 0).r);
             // the halo is light with next to no cover: kept as is
             if (max(max(c.r, c.g), max(c.b, c.a)) < 0.002) discard;
             if (d < 1.0) gl_FragDepth = d;
@@ -279,7 +314,7 @@ ModelViewProject PlatLit
 # farther blur by how far they are from it, the far side more
 ModelViewProject PlatFocus
     # x: the distance in focus; y: the blur's reach in pixels; z:
-    # the most it blurs, in pixels
+    # the most it blurs, in pixels; w: the depth kept sharp each way
     mutable focus : vec4f
     # x y: one over the picture's size; z w: the projection's
     # depth terms (m10, m14), to take a depth back to a distance
@@ -310,8 +345,9 @@ ModelViewProject PlatFocus
     # how far a pixel blurs, from its depth
     func spread [ d: f32 ] -> GLSL float {
         float dist = ubo.px.w / (d + ubo.px.z);
-        float far  = max(1.0 - ubo.focus.x / dist, 0.0);
-        float near = max(ubo.focus.x / dist - 1.0, 0.0);
+        float off  = dist - ubo.focus.x;
+        float far  = max(off - ubo.focus.w, 0.0) / ubo.focus.x;
+        float near = max(-off - ubo.focus.w, 0.0) / dist;
         return min((far + near) * ubo.focus.y, ubo.focus.z);
     }
 
@@ -322,8 +358,8 @@ ModelViewProject PlatFocus
         // a spiral of taps out to the pixel's own spread; a tap
         // counts where its own spread reaches back here, so what
         // is in focus does not bleed out over its blurred ground
-        for (int i = 1; i < 40; i++) {
-            float t  = sqrt(float(i) / 40.0);
+        for (int i = 1; i < 72; i++) {
+            float t  = sqrt(float(i) / 72.0);
             float an = float(i) * 2.39996;
             vec2  o  = vec2(cos(an), sin(an)) * t * r0;
             vec2  q  = v_uv + o * ubo.px.xy;
@@ -387,6 +423,9 @@ element PlatformView
     intern focus_r : Render
     intern focus_s  : PlatFocus
     intern focus_m  : Model
+    # the platform picture's size when the focus pass was bound
+    intern focus_tw : i32
+    intern focus_th : i32
     intern tkey    : string
     intern models  : vec Model
     intern shades  : vec PlatLit
@@ -609,7 +648,8 @@ element PlatformView
             shades.push[ sh ]
         if [ target && tkey ] w.element_targets.rm[ tkey ]
         tkey = '{id}_{n}_{epoch_millis[]}'
-        target = Render [ vk: vk, w: w, wscale: 1.0, use_depth: true,
+        # twice the pixels each way: the focus pass averages four
+        target = Render [ vk: vk, w: w, wscale: 2.0, use_depth: true,
                           clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
                           models: models ]
         target.owner = a
@@ -629,10 +669,10 @@ element PlatformView
                             models: vec Model [] [ focus_m ] ]
         if [ focus_m.samplers[ 'pcol' ] != target.color
              || focus_m.samplers[ 'pdep' ] != target.depth
-             || focus_r.width != target.width
-             || focus_r.height != target.height ]
-            focus_r.width  = target.width
-            focus_r.height = target.height
+             || focus_tw != target.width
+             || focus_th != target.height ]
+            focus_tw = target.width
+            focus_th = target.height
             focus_m.samplers[ 'pcol' ] = target.color
             focus_m.samplers[ 'pdep' ] = target.depth
             focus_m.rebind_model[]
@@ -647,9 +687,10 @@ element PlatformView
         dz : f32 [ eye.z - fp.z ]
         fd : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
         sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
-        focus_s.focus = vec4f [ fd, 45.0 * sc, 28.0 * sc, 0.0 ]
-        focus_s.px    = vec4f [ 1.0 / f32[ target.width ],
-                               1.0 / f32[ target.height ],
+        # the avatar's own depth sharp, what lies past it soft fast
+        focus_s.focus = vec4f [ fd, 200.0 * sc, 40.0 * sc, 0.8 ]
+        focus_s.px    = vec4f [ 1.0 / f32[ focus_r.width ],
+                               1.0 / f32[ focus_r.height ],
                                proj_m.m[ 10 ], proj_m.m[ 14 ] ]
         focus_r.update[]
         focus_r.draw[]

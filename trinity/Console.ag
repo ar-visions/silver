@@ -1663,6 +1663,7 @@ element Console
     func on_drop [ ev: Event ]
         if [ !ev.key.text || ev.key.text.count == 0 ] return
         paste[ ev.key.text ]
+        ev.no_default = true
 
     func on_key [ ev: Event ]
         s : ConsoleSession session[]

@@ -2073,6 +2073,40 @@ without it if wanted.
    wizard, orbiter rebuilt; Kalen's running orbiter needs its
    restart. NOT seen on his screen.
 
+2. OPEN (Kalen, Oct 20: a live reload keeps every agent's state;
+   its program is never closed: hosted by silver-host). Plan, not
+   written: each platform agent's terminal becomes a hosted console
+   instance (the console module in a host slot, running the agent's
+   line with ORBITER_AGENT set) instead of orbiter's own pty, which
+   the old instance's teardown hangs up at a reload; the platform
+   draws that instance's frames and forwards its keys and clicks as
+   a pane does (AppView service / draw_frame / view_press); the
+   agent's name rides the slot's request line so adopt_live_slots
+   finds it again; home_runs, home_ran, home_order, home_agent,
+   home_doing, home_words, home_open become persist slots; trinity's
+   app socket gains a `title` query so the reloaded orbiter reads
+   the console's title (waiting / working) without waiting for a
+   change. Limit: the host's slot request line is 1023 bytes; the
+   claude line is ~890 today.
+3. DONE (Oct 20, Kalen: Neptune lacked the Milky Way the other
+   scenes show) neptune.ag had the Gaia sky model, turned 45
+   degrees about x as the others; its camera looks straight along
+   -z, so the band's plane stood 45 degrees off square and lay
+   outside the 55 degree lens (Uranus aims its own). Now -9 about
+   x, 15 about z, a slow turn about y, as Uranus. Seen in the
+   remade thumbnail: the band diagonal behind the disk. Kalen's
+   running orbiter loads the scene library at its next pick or
+   restart.
+
+4. BUILT, not driven (Oct 20, Kalen: files dropped on a console)
+   a drop goes to the element under the pointer and its parents
+   (devices reports the pointer during an X drag), then the focus,
+   then the app; a taker sets ev.no_default. Console pastes the
+   shell-quoted paths (bracketed paste when the shell asked).
+   orbiter: a drop over a running hosted app goes to it as
+   HM.drop (three bytes a message, a 0 byte ends; the app hands
+   it to its own drop_event). Not tried with a real drag.
+
 ## orbiter-os shell design — live list (Oct 1 2026)
 
 Goal: orbiter as an OS shell. The interface stays as it is: every pane keeps its title bar and

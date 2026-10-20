@@ -433,13 +433,20 @@ func agent_term_run [ sid: i32 ] -> AgentRun
 # own program in root ('' when there is no such agent)
 func agent_term_line [ sid: i32, nm: string, root: string,
                        model: string ] -> string
+    return agent_term_line_in[ sid, nm, root, model, '' ]
+
+# the same, going on with its session given ('' a new one; the run
+# keeps the one it took in resume)
+func agent_term_line_in [ sid: i32, nm: string, root: string,
+                          model: string, session: string ] -> string
     agent_why = ''
     if [ !agent_runs ] agent_runs = map AgentRun [ string ] []
     run : AgentRun agent_make[ nm ]
     if [ !run ]
         agent_why = 'no agent module {nm}: silver --build {nm}'
         return ''
-    run.root = root
+    run.root   = root
+    run.resume = session
     prog : string run.program*[]
     own : path '{run.install[]}/bin/{prog}'
     exe : string [ (own.exists[]) ? '{own}'

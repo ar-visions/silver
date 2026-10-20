@@ -1966,7 +1966,8 @@ Avatar OrbiterAvatar
             aura.pulse_width  = rest_pulse + (busy_pulse - rest_pulse) * halo_cur
             aura.pulse_height = rest_ph    + (busy_ph    - rest_ph)    * halo_cur
             aura.halo_height  = rest_halo  + (busy_halo  - rest_halo)  * halo_cur
-            aura.beam         = beam_cur
+            # the beam at three quarters at most
+            aura.beam         = beam_cur * 0.75
             # ignition: from the moment the beam is asked for, its
             # width oscillates from +25% through -25% and decays to none
             # in 1.5 s, and the beam fades in over the same 1.5 s (a
@@ -1979,7 +1980,7 @@ Avatar OrbiterAvatar
                     f32[ epoch_micros[] - ignite_us ] / 1000000.0 ]
                 ip : f32 [ min[ it9 / ignite_s, 1.0 ] ]
                 beam_cur = max[ beam_cur, ip * ip * (3.0 - 2.0 * ip) ]
-                aura.beam = beam_cur
+                aura.beam = beam_cur * 0.75
                 if [ it9 < ignite_s ]
                     dk : f32 [ 1.0 - ip ]
                     fw = 1.0 + ignite_amp * cos[

@@ -235,6 +235,8 @@ enum HM
     panel_state : 22
     # ide -> app: a panel opened or closed: a = 0 the panel, 1 outline
     panel   : 23
+    # ide -> app: three bytes of dropped paths; a 0 byte ends them
+    drop    : 24
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -583,6 +585,26 @@ abstract live_app media_app
     # aspect captured at init — resize requests are clamped to it
     intern  aspect_w    : i32
     intern  aspect_h    : i32
+    # a host's drop as its bytes arrive (HM.drop)
+    intern  drop_bytes  : vec u8
+
+    # a 0 byte ends the drop: its paths go to the window
+    func drop_byte [ b: i32 ]
+        if [ b != 0 ]
+            if [ !drop_bytes ] drop_bytes = vec u8 []
+            drop_bytes.push[ u8 b ]
+            return
+        if [ !drop_bytes || drop_bytes.count == 0 ] return
+        n : i32 [ (drop_bytes.count < 4095) ? i32[ drop_bytes.count ] : 4095 ]
+        tb : local i8 [ 4096 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            tb[ i ] = i8[ drop_bytes[ i ] ]
+        tb[ n ] = 0
+        drop_bytes = vec u8 []
+        wn : Window [ w ]
+        wn.ev.clear[]
+        wn.ev.key.text = string[ @tb[0] ]
+        wn.drop_event[ wn.ev ]
 
     public func parse_app_pid [] -> i32
         pe : getenv[ 'SILVER_ISOLATE_APP_PID' ]
@@ -1383,6 +1405,10 @@ abstract live_app media_app
                     tb[1] = 0
                     wn.ev.key.text = string[ @tb[0] ]
                     wn.text_event[ wn.ev ]
+                el [ t == i32[ HM.drop ] ]
+                    drop_byte[ host_pa[] ]
+                    drop_byte[ host_pb[] ]
+                    drop_byte[ host_pc[] ]
                 el [ t == i32[ HM.press ] ]
                     wn.ev.clear[]
                     wn.mouse.x        = f64[ host_pa[] ]
@@ -1496,6 +1522,10 @@ abstract live_app media_app
                     tb[1] = 0
                     wn.ev.key.text = string[ @tb[0] ]
                     wn.text_event[ wn.ev ]
+                el [ t == i32[ HM.drop ] ]
+                    drop_byte[ host_pa[] ]
+                    drop_byte[ host_pb[] ]
+                    drop_byte[ host_pc[] ]
                 el [ t == i32[ HM.resize ] ]
                     wide : i32 [ host_pa[] ]
                     tall : i32 [ host_pb[] ]
@@ -4737,10 +4767,20 @@ Display Window
                     l.on_key[ ev ]
                     break
 
+    # the element under the pointer and its parents first, then the
+    # focus, then the app; a taker sets no_default
     public func drop_event [ ev: Event ]
+        for [ h: element* hovered, h, h = h.parent ]
+            ev.target = h
+            h.on_drop*[ ev ]
+            if [ ev.no_default ] return
         ev.target = focus
-        if [ focus && focus.on_drop*[ ev ] ] return
-        if [ app_object && app_object.on_drop*[ ev ] ] return
+        if [ focus ]
+            focus.on_drop*[ ev ]
+            if [ ev.no_default ] return
+        if [ app_object ]
+            app_object.on_drop*[ ev ]
+            if [ ev.no_default ] return
         if [ focus && ev.key.text && ev.key.text.count > 0 ]
             for [ l: Layer, k: string ] in focus.layers
                 if [ l.editable ]

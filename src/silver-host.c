@@ -949,6 +949,45 @@ static time_t file_mtime(const char* path) {
     return (stat(path, &s) == 0) ? s.st_mtime : 0;
 }
 
+// the silver libraries this process loaded at launch, and their times:
+// a reload swaps the app's library alone, so one of them rebuilt since
+// (trinity) leaves the new app reading the old one's layout
+#define HOST_LIBS 64
+static char   host_lib_path[HOST_LIBS][512];
+static time_t host_lib_time[HOST_LIBS];
+static int    host_lib_n;
+
+static void host_libs_note(const char* app_lib) {
+#ifdef __linux__
+    FILE* m = fopen("/proc/self/maps", "r");
+    if (!m) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), m) && host_lib_n < HOST_LIBS) {
+        char* p = strchr(line, '/');
+        if (!p) continue;
+        p[strcspn(p, "\n")] = 0;
+        if (!strstr(p, "/libsilver-") || strstr(p, "hotreload_")) continue;
+        if (app_lib && strcmp(p, app_lib) == 0) continue;
+        int seen = 0;
+        for (int i = 0; i < host_lib_n; i++)
+            if (strcmp(host_lib_path[i], p) == 0) seen = 1;
+        if (seen) continue;
+        snprintf(host_lib_path[host_lib_n], 512, "%s", p);
+        host_lib_time[host_lib_n++] = file_mtime(p);
+    }
+    fclose(m);
+#endif
+}
+
+// the first library rebuilt since launch, else null
+static const char* host_libs_changed(void) {
+    for (int i = 0; i < host_lib_n; i++) {
+        time_t t = file_mtime(host_lib_path[i]);
+        if (t && t != host_lib_time[i]) return host_lib_path[i];
+    }
+    return NULL;
+}
+
 // open fds, memory mappings, resident memory: what a failing alloc is short of
 static void host_resources(const char* name, const char* when) {
     int fds = 0, maps = 0;
@@ -1515,6 +1554,12 @@ int main(int argc, char** argv) {
         raise(SIGSTOP);
     }
     if (do_init) do_init();
+    {
+        char app_lib[4096];
+        ssize_t al = readlink(product, app_lib, sizeof(app_lib) - 1);
+        app_lib[(al > 0) ? al : 0] = 0;
+        host_libs_note(app_lib);
+    }
 
     time_t last_mtime = file_mtime(product);
     int host_pending = 0;   // defer mode: a source change is staged, awaiting the app's go
@@ -1703,6 +1748,14 @@ int main(int argc, char** argv) {
         if (force || (!reload_off && !defer && !compile_pid && cur && cur != last_mtime
                       && reload_job.state == 0)) {   // one load at a time
             last_mtime = cur;
+            // a library under it rebuilt since launch: no swap, a restart
+            const char* moved = host_libs_changed();
+            if (moved) {
+                fprintf(stderr, "[%s] reload refused: %s was rebuilt since "
+                        "launch; restart to load it\n", name, moved);
+                if (set_pending) set_pending(1);
+                continue;
+            }
             char cwd_now[4096];
             if (!getcwd(cwd_now, sizeof(cwd_now))) cwd_now[0] = 0;
             fprintf(stderr, "[%s] reloading (cwd %s)\n", name, cwd_now);

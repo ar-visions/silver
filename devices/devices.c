@@ -1927,6 +1927,15 @@ static void handle(xcb_generic_event_t* ev) {
                 } else
                     for (int i = 2; i < 5; i++) if (e->data.data32[i] == A_URI_LIST) w->xdnd_uris = true;
             } else if (e->type == A_XDND_POSITION && w->xdnd_src) {
+                // the pointer during a drag: the drop lands under it
+                int16_t rx = (int16_t)(e->data.data32[2] >> 16);
+                int16_t ry = (int16_t)(e->data.data32[2] & 0xffff);
+                xcb_translate_coordinates_reply_t* tr = xcb_translate_coordinates_reply(g_conn,
+                    xcb_translate_coordinates(g_conn, g_screen->root, w->win, rx, ry), NULL);
+                if (tr) {
+                    if (w->on_cursor) w->on_cursor(w, tr->dst_x, tr->dst_y);
+                    free(tr);
+                }
                 xcb_client_message_event_t st = { 0 };
                 st.response_type = XCB_CLIENT_MESSAGE;
                 st.format = 32;

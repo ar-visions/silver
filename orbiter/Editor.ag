@@ -220,6 +220,9 @@ class ResourceView
     # typed text, as characters (on_key has the keys)
     func on_text [ ev: Event ]
         return
+    # dropped paths, shell quoted; true when the view took them
+    func on_drop_text [ t: string ] -> bool
+        return false
     func thumbnail [ cv: Canvas ] -> Texture
         return null
 
@@ -1411,6 +1414,18 @@ ResourceView AppView
         for [ i: i32 0, i < i32[ tx.count ], i += 1 ]
             c : i32 [ (i32 tx.chars[ i ]) & 255 ]
             host_post2[ slot, 1, i32[ HM.text ], c, 0, 0 ]
+
+    # dropped paths go to the app as one text, a 0 byte last
+    func on_drop_text [ t: string ] -> bool
+        if [ ended || paused || slot < 0 || !t ] return false
+        n : i32 [ i32[ t.count ] ]
+        for [ i: i32 0, i < n, i += 3 ]
+            lead : i32 [ (i32 t.chars[ i ]) & 255 ]
+            mid  : i32 [ (i + 1 < n) ? (i32 t.chars[ i + 1 ]) & 255 : 0 ]
+            tail : i32 [ (i + 2 < n) ? (i32 t.chars[ i + 2 ]) & 255 : 0 ]
+            host_post2[ slot, 1, i32[ HM.drop ], lead, mid, tail ]
+        if [ n % 3 == 0 ] host_post2[ slot, 1, i32[ HM.drop ], 0, 0, 0 ]
+        return true
 
     # where the app is on screen right now
     func view_rect [] -> rect
@@ -7203,6 +7218,13 @@ Control Editor
         scroll_target = scroll.y
         pristine = false
         ux.will_animate = true
+
+    # a drop over the running app is the app's
+    func on_drop [ ev: Event ]
+        if [ !run_view || !app_view || run_view.held
+             || run_view.ended || nav_list || stopped[] ] return
+        if [ run_view.on_drop_text*[ ev.key.text ] ]
+            ev.no_default = true
 
     func on_char [ ev: Event ]
         if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ]

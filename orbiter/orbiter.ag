@@ -1,3 +1,4 @@
+# the aether is never lost: it is simply everywhere at once
 # the system bar stays up late: it holds all the menus
 # the dock went to therapy: too many apps leaned on it
 # a pane is just a window that failed to float
@@ -3113,20 +3114,25 @@ element orbiter : trinity # implements compiler
     # the home's view: 'home' (the apps) or 'agent' (orbiter's
     # button), and why an agent did not start
     public  home_tab   : string [ 'home' ]
-    # each agent's session, its run (to tell when it waits), the
-    # model it runs; the one open under its title
-    mutable home_sess  : map ConsoleSession [ string ]
-    mutable home_runs  : map AgentRun [ string ]
-    mutable home_ran   : map string [ string ]
+    # the agents' instances outlive a reload (persist): their
+    # terminals and runs, as they were. each one's session, its run
+    # (to tell when it waits), the model it runs; the one open
+    persist home_sess  : map ConsoleSession [ string ]
+    persist home_runs  : map AgentRun [ string ]
+    persist home_ran   : map string [ string ]
+    persist home_open  : string
     # the instances, in the order added, and each one's agent
-    mutable home_order : vec string
-    mutable home_agent : map string [ string ]
+    persist home_order : vec string
+    persist home_agent : map string [ string ]
     mutable home_made  : i32
+    # the instances kept between runs until ended, each one
+    # 'name|agent|model|session'; brought back once a run starts
+    intern [ StatePersist ] home_saved : vec string
+    mutable home_back  : bool
     # what each agent says it is doing (research, writing, build,
     # testing, done) and its few words
-    mutable home_doing : map string [ string ]
-    mutable home_words : map string [ string ]
-    mutable home_open  : string [ '' ]
+    persist home_doing : map string [ string ]
+    persist home_words : map string [ string ]
     mutable home_why   : string [ '' ]
     # the agents this app's user runs, each with its models (trinity
     # Agent); the abstract's member is not in this type, so the agi
@@ -14196,6 +14202,17 @@ element orbiter : trinity # implements compiler
     # the instances, in the order added: a copy, so a holder sees
     # the list change
     func home_names [] -> vec string
+        if [ !home_open ] home_open = ''
+        # a new run: the instances kept from the last, their
+        # sessions going on (a reload holds them already)
+        if [ !home_back ]
+            home_back = true
+            if [ !home_order && home_saved ]
+                for [ e: string ] in vec string [ home_saved ]
+                    f : vec string e.split[ '|' ]
+                    if [ f.count >= 4 ]
+                        home_launch[ f[ 0 ], f[ 1 ], f[ 2 ], f[ 3 ] ]
+                home_open = ''
         if [ !home_order ] return vec string []
         return vec string [ home_order ]
 
@@ -14254,25 +14271,35 @@ element orbiter : trinity # implements compiler
             k : i32 [ home_order.index_of[ nm ] ]
             if [ k >= 0 ] home_order.remove[ k ]
         if [ home_open == nm ] home_open = ''
+        home_keep[]
 
     # a new instance of an agent at a model: its own terminal, in
     # our folder, added to the stack and open; named by its agent,
     # a number after it from the second on
     func home_start [ an: string, model: string ]
-        if [ !home_sess ] home_sess = map ConsoleSession [ string ] []
-        if [ !home_runs ] home_runs = map AgentRun [ string ] []
-        if [ !home_ran ]  home_ran  = map string [ string ] []
         if [ !home_order ] home_order = vec string []
-        if [ !home_agent ] home_agent = map string [ string ] []
         nm : string an
         n : i32 [ 2 ]
         while [ home_order.index_of[ nm ] >= 0 ]
             nm = '{an}-{n}'
             n += 1
+        home_launch[ nm, an, model, '' ]
+
+    # an instance's terminal, named nm, its session going on ('' a
+    # new one)
+    func home_launch [ nm: string, an: string, model: string,
+                       session: string ]
+        if [ !home_sess ] home_sess = map ConsoleSession [ string ] []
+        if [ !home_runs ] home_runs = map AgentRun [ string ] []
+        if [ !home_ran ]  home_ran  = map string [ string ] []
+        if [ !home_order ] home_order = vec string []
+        if [ !home_agent ] home_agent = map string [ string ] []
+        if [ home_order.index_of[ nm ] >= 0 ] return
         root : string '{startup_path}'
-        home_made += 1
+        # past the instances held (a reload starts the count again)
+        home_made = max[ home_made, i32[ home_order.count ] ] + 1
         sid : i32 [ 1000 + home_made ]
-        line : agent_term_line[ sid, an, root, model ]
+        line : agent_term_line_in[ sid, an, root, model, session ]
         if [ line.count == 0 ]
             home_why = agent_error[]
             return
@@ -14291,6 +14318,22 @@ element orbiter : trinity # implements compiler
         run : AgentRun agent_term_run[ sid ]
         if [ run ] home_runs[ nm ] = run
         home_open = nm
+        home_keep[]
+
+    # the instances, kept for the next run
+    func home_keep []
+        home_saved = vec string []
+        if [ home_order ]
+            for [ nm: string ] in home_order
+                an : string [ (home_agent.contains[ nm ])
+                              ? home_agent[ nm ] : nm ]
+                md : string home_model_of[ nm ]
+                se : string ''
+                if [ home_runs && home_runs.contains[ nm ] ]
+                    run : AgentRun home_runs[ nm ]
+                    if [ run.resume ] se = run.resume
+                home_saved.push[ '{nm}|{an}|{md}|{se}' ]
+        save_session[]
 
     # the home is on screen: the desktop, or the active pane empty
     func home_seen [] -> bool
