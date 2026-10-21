@@ -27,6 +27,8 @@ class Pass
     # of the host's size; most caps the larger side (0: none)
     public scale   : f32 [ 1.0 ]
     public most    : i32
+    # of a host's size, in its scene (0: scale, as alone)
+    public host_scale : f32
     public depth   : bool
     public reduce  : bool
     public clear   : vec f32
@@ -129,6 +131,20 @@ class Stage
     intern made_w  : Window
     # each object's GPU passes, made the first time it moves
     intern gpus    : map ObjectGpu [ string ]
+    # no supersampling: a reduced pass draws at a quarter of its
+    # scale, and its reduction is its colour (set before build)
+    public plain   : bool
+    # a host's 3D scene: the object passes draw in its render, with
+    # its camera (host_view, proj) and depth; the screen passes run
+    # over its picture at its size (set before build)
+    public host      : Render
+    public host_view : mat4f
+    # the host's picture under this stage: what an object pass's
+    # colour is to the screen passes reading it
+    public under     : Texture
+    intern last_under : Texture
+    intern host_w     : i32
+    intern host_h     : i32
 
     # an object's GPU passes: its steps from the cage, its normals,
     # and a scatter into every draw holding it; null when a draw's
@@ -227,8 +243,10 @@ class Stage
         r : running[ nm ]
         if [ !r || !r.target ] return null
         if [ part.compare[ 'depth' ] == 0 ] return r.target.depth
+        if [ host && r.target == host ] return under
         if [ part.compare[ 'reduction' ] == 0 ]
-            return r.target.reduction
+            return (plain || host) ? r.target.color
+                                   : r.target.reduction
         return r.target.color
 
     # a project file's full path, or null when there is none
@@ -304,6 +322,8 @@ class Stage
         made_w  = w
         built_w = pw
         built_h = ph
+        # until the host gives one: its own picture under
+        if [ host && !under ] under = host.color
         lib : path.path_install[]
         if [ graph.modules ]
             for [ m: string ] in graph.modules
@@ -311,6 +331,8 @@ class Stage
                 so : path '{lib}/build/{path.path_library[ ln.chars ]}'
                 if [ !dlopen[ so.chars, 258 ] ]
                     log 'aeon: stage could not load {so}'
+        # the first pass of objects with depth: drawn in the host
+        hosted_one : bool [ false ]
         for [ p: Pass ] in graph.passes
             list : p.draws
             if [ !list || list.count == 0 ]
@@ -375,13 +397,44 @@ class Stage
             if [ p.clear && p.clear.count >= 4 && !transparent ]
                 cc = vec4f [ p.clear[ 0 ], p.clear[ 1 ], p.clear[ 2 ],
                              p.clear[ 3 ] ]
+            # the objects with depth: drawn in the host's scene
+            if [ host && hosted[ p ] && !hosted_one ]
+                hosted_one = true
+                host.sync_fence[]
+                for [ m: Model ] in models
+                    host.models.push[ m ]
+                    m.finish[ host, 0 ]
+                r.target = host
+                runs.push[ r ]
+                continue
             sz : size_of[ p, pw, ph ]
             r.target = Render [ vk: vk, w: w, tag: 'aeon-{p.name}',
                 width: i32[ sz.x ], height: i32[ sz.y ],
                 use_depth: p.depth,
-                reduce: p.reduce, clear_color: cc, models: models ]
+                reduce: p.reduce && !plain && !host, clear_color: cc,
+                models: models ]
             r.target.wscale = 0.0
             runs.push[ r ]
+
+    # a pass of objects with depth (the first: a host draws it)
+    func hosted [ p: Pass ] -> bool
+        if [ !p.depth ] return false
+        if [ p.quad ] return false
+        if [ p.draws ]
+            for [ d: Draw ] in p.draws
+                if [ d.quad ] return false
+        return true
+
+    # the models this stage put in its host's render taken out
+    public func unhost []
+        if [ !host || !runs ] return
+        for [ r: Running ] in runs
+            if [ r.target != host ] continue
+            for [ d: DrawRun ] in r.draws
+                for [ i: i32 i32[ host.models.count ] - 1, i >= 0,
+                      i -= 1 ]
+                    if [ host.models[ i ] == d.model ]
+                        host.models.remove[ i ]
 
     # every svg panel's picture into a model's texture cache, by
     # the path its material names (the file is no image to load)
@@ -394,10 +447,14 @@ class Stage
 
     # a pass's pixel size at the host's size
     func size_of [ p: Pass, pw: i32, ph: i32 ] -> vec2f
-        fw : f32 [ f32[ pw ] * p.scale ]
-        fh : f32 [ f32[ ph ] * p.scale ]
+        sc : f32 [ ((plain || host) && p.reduce) ? p.scale / 4.0
+                                                 : p.scale ]
+        if [ host && p.host_scale > 0.0 ] sc = p.host_scale
+        fw : f32 [ f32[ pw ] * sc ]
+        fh : f32 [ f32[ ph ] * sc ]
         top : f32 [ (fw > fh) ? fw : fh ]
-        if [ p.most > 0 && top > f32[ p.most ] ]
+        # in a host's scene: at its full size
+        if [ !host && p.most > 0 && top > f32[ p.most ] ]
             fw = fw * f32[ p.most ] / top
             fh = fh * f32[ p.most ] / top
         # a target is never empty: one pixel a side at least
@@ -409,6 +466,7 @@ class Stage
         u : vec3f [ up ]
         if [ u.x == 0.0 && u.y == 0.0 && u.z == 0.0 ]
             u = vec3f [ 0.0, 0.0, -1.0 ]
+        if [ host ] return host_view
         if [ !p.y_up ] return mat4f.look_at[ eye, middle, u ]
         e : vec3f [ eye.x, eye.z, 0.0 - eye.y ]
         m : vec3f [ middle.x, middle.z, 0.0 - middle.y ]
@@ -421,7 +479,20 @@ class Stage
         secs : f32 [ f32[ Au.epoch_millis[] - born ] / 1000.0 ]
         if [ host_time ] secs = time
         resized : bool [ false ]
+        # a new picture under: what reads it reads anew
+        if [ host && under != last_under ]
+            last_under = under
+            resized = true
+        # a resized host: its depth is a new image
+        if [ host && (host.width != host_w || host.height != host_h) ]
+            host_w = host.width
+            host_h = host.height
+            resized = true
         for [ r: Running ] in runs
+            # the host draws these: their shaders set in uniforms
+            if [ host && r.target == host ]
+                uniforms_of[ r, secs ]
+                continue
             sz : size_of[ r.pass, pw, ph ]
             want_w : i32 [ sz.x ]
             want_h : i32 [ sz.y ]
@@ -432,24 +503,7 @@ class Stage
             # a pass made new textures: what reads them reads anew
             if [ resized ] rewire[ r ]
             r.target.state_mask = state_mask
-            vw : view_of[ r.pass ]
-            ep : vec3f [ eye ]
-            if [ r.pass.y_up ] ep = vec3f [ eye.x, eye.z, 0.0 - eye.y ]
-            for [ d: DrawRun ] in r.draws
-                mvp : d.shade inherits ModelViewProject
-                if [ mvp ]
-                    mvp.model = model
-                    mvp.view  = vw
-                    mvp.proj  = proj
-                    mvp.time  = secs
-                lit : d.shade inherits AeonLit
-                if [ lit ] lit.eye = vec4f [ ep.x, ep.y, ep.z, 1.0 ]
-                # a shader with an eye position takes it
-                pm : find_member[ typeid[ d.shade ], 'pos',
-                                  AU_MEMBER_VAR, 0, true ]
-                if [ pm && pm.src == typeid[ vec4f ] ]
-                    at : vec4f [ ep.x, ep.y, ep.z, 1.0 ]
-                    d.shade.set_property[ 'pos', at ]
+            uniforms_of[ r, secs ]
             r.target.update[]
             r.target.draw[]
             r.target.sync_fence[]
@@ -457,6 +511,34 @@ class Stage
             tx : output[ o ]
             if [ tx ] shown.push[ tx ]
         return shown
+
+    # a pass's shaders take the camera, the turn and the clock
+    func uniforms_of [ r: Running, secs: f32 ]
+        vw : view_of[ r.pass ]
+        ep : vec3f [ eye ]
+        if [ r.pass.y_up ] ep = vec3f [ eye.x, eye.z, 0.0 - eye.y ]
+        for [ d: DrawRun ] in r.draws
+            mvp : d.shade inherits ModelViewProject
+            if [ mvp ]
+                mvp.model = model
+                mvp.view  = vw
+                mvp.proj  = proj
+                mvp.time  = secs
+            lit : d.shade inherits AeonLit
+            if [ lit ] lit.eye = vec4f [ ep.x, ep.y, ep.z, 1.0 ]
+            # a shader with an eye position takes it
+            pm : find_member[ typeid[ d.shade ], 'pos',
+                              AU_MEMBER_VAR, 0, true ]
+            if [ pm && pm.src == typeid[ vec4f ] ]
+                at : vec4f [ ep.x, ep.y, ep.z, 1.0 ]
+                d.shade.set_property[ 'pos', at ]
+
+    # the host's object passes take their uniforms, before it draws
+    public func host_uniforms []
+        secs : f32 [ f32[ Au.epoch_millis[] - born ] / 1000.0 ]
+        if [ host_time ] secs = time
+        for [ r: Running ] in runs
+            if [ r.target == host ] uniforms_of[ r, secs ]
 
     # the depth of the first pass drawing objects: what a host's
     # overlay (the floor's grid) hides behind

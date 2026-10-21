@@ -1,3 +1,4 @@
+# the avatar pushed into its platform: thrust has consequences
 # the aether is never lost: it is simply everywhere at once
 # the system bar stays up late: it holds all the menus
 # the dock went to therapy: too many apps leaned on it
@@ -1029,9 +1030,12 @@ element EditorTitle
             cv.paint[]
 
 
-# the console's toolbar: no ground, its foot's line alone
+# the console's toolbar: a dark ground, a line at its foot
 element ConsoleBar
     style : CSS {
+        layers.ground:
+            fill_color: #0008
+            area: l0 t0 r0 b0
         layers.line:
             fill_color: #fff2
             area: l0 b0 r0 h1px
@@ -1432,6 +1436,8 @@ element HomeView
 # the agent view: the avatar at the left; at the right the agents
 # and their models to pick from, or the one picked, its terminal
 element AgentHome
+    # the platform paints every frame: the list must come after it
+    animated : true
     style : CSS {
         area: l0 t0 r0 b0
     }
@@ -6311,6 +6317,14 @@ element orbiter : trinity # implements compiler
             if [ e.compare[ b ] == 0 ] return true
         return false
 
+    # the word index's limit: past it a search reads the file
+    func tok_most [] -> i64
+        return 48 * 1024 * 1024
+
+    # a bloom's own objects and its key, beside its bits
+    func tok_each [] -> i64
+        return 640
+
     # every indexed text file hashed up front: a search — or the remotes
     # toggle — then reads no file at all. binaries and huge files are
     # left out; the worker stops as soon as the index is cancelled
@@ -6327,7 +6341,7 @@ element orbiter : trinity # implements compiler
         hold[ todo ]
         for [ fs: string ] in todo
             Au.auto_free[]
-            if [ index_cancel ] break
+            if [ index_cancel || tok_bytes >= tok_most[] ] break
             fp : path fs
             if [ !fp || !fp.exists[] ] continue
             if [ tok_binary[ fp ] ] continue
@@ -7936,9 +7950,9 @@ element orbiter : trinity # implements compiler
         # 48 MB of index is plenty for a source tree; past that, files
         # are read on every search as before
         tok_lock.lock[]
-        if [ n <= 307200 ]
+        if [ n <= 307200 && tok_bytes < tok_most[] ]
             tok_cache[ key ] = tb
-            tok_bytes += i64[ want / 8 ]
+            tok_bytes += i64[ want / 8 ] + tok_each[]
         tok_lock.unlock[]
         return hit
 
@@ -15179,7 +15193,8 @@ element orbiter : trinity # implements compiler
         sb : element find_el[ a, 'status' ]
         # with the system bar its right end is the console, the menu
         # and the date
-        rw : f32 [ (sys) ? 7.26 * unit_px[] : 40.0 ]
+        rw : f32 [ (sys) ? ((system_os) ? 7.26 : 2.66) * unit_px[]
+            : 40.0 ]
         room : f32 [ (sb && sb.bounds) ? sb.bounds.w - x0 - rw
             : 800.0 ]
         run9 : vec AppView []
@@ -15259,15 +15274,18 @@ element orbiter : trinity # implements compiler
     # system menu is the desktop's, orbiter's, in the top bar)
     # Rule #12: shift over the console, or ctrl / cmd, shows clear
     func sys_right [ t: Elements ] -> Elements
-        t['sys_clock'] = BarClock [ label: clock_text[],
-            area: Region { r0 t0 w4.6 b0 } ]
+        # the clock only as the OS: a window has the desktop's
+        cr : string [ (system_os) ? 'r4.6' : 'r0' ]
+        if [ system_os ]
+            t['sys_clock'] = BarClock [ label: clock_text[],
+                area: Region { r0 t0 w4.6 b0 } ]
         t['dock_console'] = StatusTab [
             buttons: vec string [] [ 'console_tab' ],
             icon_ids: vec string [] [ 'bottom_panel' ], icon_scale: 0.6,
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
             sel_mask: (show_console) ? 1 : 0,
-            area: Region { r4.6 t0 w1.33 b0 } ]
+            area: Region [ '{cr} t0 w1.33 b0' ] ]
         return t
 
     # scene: built once per scene — a fresh element each frame churns

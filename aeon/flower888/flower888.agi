@@ -2,7 +2,7 @@
 model: 'fmodel'
 # the avatar's chain: the metal body, the core and the plasma
 # ring at 4x with depth, the aura's volume over its depth, the
-# groove mask, and the heat haze over the reduced body
+# groove mask, and the heat haze over the reduced body and volume
 render: StageGraph
 	modules: [ avatar ]
 	passes:
@@ -39,6 +39,7 @@ render: StageGraph
 		volume: Pass
 			scale: 1
 			most: 1024
+			host_scale: 0.5
 			y_up: true
 			draws:
 				aura: Draw
@@ -62,14 +63,6 @@ render: StageGraph
 			y_up: true
 			objects: [ outside, flower, separator ]
 			shader: GrooveMask
-		layers: Pass
-			scale: 1
-			y_up: true
-			quad: true
-			shader: AeonOver
-			inputs:
-				color: 'av.reduction'
-				emission: 'volume.color'
 		heat: Pass
 			scale: 1
 			y_up: true
@@ -82,7 +75,8 @@ render: StageGraph
 						busy: 1.0
 						pulse_height: 1.2
 					inputs:
-						color: 'layers.color'
+						color: 'av.reduction'
+						rim: 'volume.color'
 						height: 'av.depth'
 						emission: 'mask.reduction'
 	out: [ heat ]

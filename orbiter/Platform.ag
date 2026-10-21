@@ -9,11 +9,6 @@ extend orbiter
 enum PlatSurface
     scene : 0
     frost : 1
-    avc0  : 2
-    avc1  : 3
-    avd   : 4
-    pcol  : 5
-    pdep  : 6
 
 # one hexagonal prism, radius 1 at its corners (one on +x), its top
 # at y 1 with a rounded edge down to y 0.625 (a quarter round at
@@ -99,20 +94,6 @@ func plat_hex [] -> GltfModel
         plat_vert[ ps, ns, ts, c0, 0.0, s0, 0.0, -1.0, 0.0 ]
     return plat_model[ ps, ns, ts ]
 
-# a flat square, x and z over -1..1, uv over 0..1: the avatars'
-# pictures are laid over the scene on it
-func plat_quad [] -> GltfModel
-    ps : vec f32 []
-    ns : vec f32 []
-    ts : vec f32 []
-    plat_vert[ ps, ns, ts, -1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
-    plat_vert[ ps, ns, ts, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
-    plat_vert[ ps, ns, ts, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
-    plat_vert[ ps, ns, ts, -1.0, 0.0, -1.0, 0.0, 1.0, 0.0 ]
-    plat_vert[ ps, ns, ts, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
-    plat_vert[ ps, ns, ts, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0 ]
-    return plat_model[ ps, ns, ts ]
-
 func plat_model [ ps: vec f32, ns: vec f32, ts: vec f32 ]
         -> GltfModel
     nv : i32 [ i32[ ps.count ] / 3 ]
@@ -178,9 +159,7 @@ func plat_model [ ps: vec f32, ns: vec f32, ts: vec f32 ]
 # etching runs
 ModelViewProject PlatLit
     mutable cam_pos : vec4f
-    # x: 1 a mirror, 3 an avatar's picture (4 not drawn yet); y:
-    # alpha; z: the etching (0 none), or for a picture, 1 when it
-    # has a second
+    # x: 1 a mirror; y: alpha; z: the etching (0 none)
     mutable look    : vec4f
     # x: 1 when the scene's picture is bound; y, z: one over the
     # picture's width and height
@@ -188,9 +167,6 @@ ModelViewProject PlatLit
     # where this picture lands in the window, over 0..1: x y its top
     # left, z w its size
     mutable win     : vec4f
-    # an avatar's picture: where it lies on the screen (-1..1),
-    # x y its top left, z w its size
-    mutable box     : vec4f
 
     attrib scene : LayoutBinding [ type:typeid[ PlatSurface ],
                                    id:PlatSurface.scene, count:1,
@@ -198,16 +174,6 @@ ModelViewProject PlatLit
     attrib frost : LayoutBinding [ type:typeid[ PlatSurface ],
                                    id:PlatSurface.frost, count:1,
                                    format: typeid[ rgba8 ] ]
-    attrib avc0  : LayoutBinding [ type:typeid[ PlatSurface ],
-                                   id:PlatSurface.avc0, count:1,
-                                   format: typeid[ rgba8 ] ]
-    attrib avc1  : LayoutBinding [ type:typeid[ PlatSurface ],
-                                   id:PlatSurface.avc1, count:1,
-                                   format: typeid[ rgba8 ] ]
-    attrib avd   : LayoutBinding [ type:typeid[ PlatSurface ],
-                                   id:PlatSurface.avd, count:1,
-                                   format: typeid[ f32 ] ]
-
     attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
     attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
@@ -235,12 +201,6 @@ ModelViewProject PlatLit
         v_uv    = a_uv;
         v_top   = normalize(v_nrm).y;
         gl_Position = ubo.proj * ubo.view * wp;
-        if (ubo.look.x > 2.5) {
-            // an avatar's picture, at its depth's middle
-            vec4 c = ubo.proj * ubo.view * vec4(ubo.model[3].xyz, 1.0);
-            gl_Position = vec4(ubo.box.xy + a_uv * ubo.box.zw,
-                               c.z / c.w, 1.0);
-        }
     }
 
     func fold [ uv: vec2f ] -> GLSL vec2f {
@@ -248,30 +208,6 @@ ModelViewProject PlatLit
     }
 
     func fragment[] -> GLSL none {
-        gl_FragDepth = gl_FragCoord.z;
-        // an avatar not drawn yet: nothing
-        if (ubo.look.x > 3.5) discard;
-        if (ubo.look.x > 2.5) {
-            // the avatar's pictures, the later over the earlier;
-            // where it drew itself, its own depth
-            vec4  c0 = texture(avc0, v_uv);
-            vec4  c1 = texture(avc1, v_uv) * ubo.look.z;
-            vec4  c  = c1 + c0 * (1.0 - c1.a);
-            // its depth, the nearest of the texels round it: an
-            // edge's soft pixels lie over the tile at its own depth
-            ivec2 ts = textureSize(avd, 0);
-            ivec2 tc = ivec2(v_uv * vec2(ts));
-            float d  = 1.0;
-            for (int y = -1; y <= 1; y++)
-                for (int x = -1; x <= 1; x++)
-                    d = min(d, texelFetch(avd, clamp(tc + ivec2(x, y),
-                                ivec2(0), ts - 1), 0).r);
-            // the halo is light with next to no cover: kept as is
-            if (max(max(c.r, c.g), max(c.b, c.a)) < 0.002) discard;
-            if (d < 1.0) gl_FragDepth = d;
-            fragColor = c;
-            return;
-        }
         vec3  N = normalize(v_nrm);
         vec3  V = normalize(ubo.cam_pos.xyz - v_wpos);
         float nv = dot(N, V);
@@ -310,68 +246,6 @@ ModelViewProject PlatLit
         fragColor = vec4(col, ubo.look.y);
     }
 
-# the platform's picture in focus at one distance: nearer and
-# farther blur by how far they are from it, the far side more
-ModelViewProject PlatFocus
-    # x: the distance in focus; y: the blur's reach in pixels; z:
-    # the most it blurs, in pixels; w: the depth kept sharp each way
-    mutable focus : vec4f
-    # x y: one over the picture's size; z w: the projection's
-    # depth terms (m10, m14), to take a depth back to a distance
-    mutable px    : vec4f
-
-    attrib pcol : LayoutBinding [ type:typeid[ PlatSurface ],
-                                  id:PlatSurface.pcol, count:1,
-                                  format: typeid[ rgba8 ] ]
-    attrib pdep : LayoutBinding [ type:typeid[ PlatSurface ],
-                                  id:PlatSurface.pdep, count:1,
-                                  format: typeid[ f32 ] ]
-
-    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
-    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
-    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
-    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
-
-    func init [ ]
-        model = mat4f.identity[]
-        view  = mat4f.identity[]
-        proj  = mat4f.identity[]
-
-    func vertex [] -> GLSL none {
-        v_uv        = uv;
-        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
-    }
-
-    # how far a pixel blurs, from its depth
-    func spread [ d: f32 ] -> GLSL float {
-        float dist = ubo.px.w / (d + ubo.px.z);
-        float off  = dist - ubo.focus.x;
-        float far  = max(off - ubo.focus.w, 0.0) / ubo.focus.x;
-        float near = max(-off - ubo.focus.w, 0.0) / dist;
-        return min((far + near) * ubo.focus.y, ubo.focus.z);
-    }
-
-    func fragment [] -> GLSL none {
-        float r0  = spread(texture(pdep, v_uv).r);
-        vec4  sum = texture(pcol, v_uv);
-        float wt  = 1.0;
-        // a spiral of taps out to the pixel's own spread; a tap
-        // counts where its own spread reaches back here, so what
-        // is in focus does not bleed out over its blurred ground
-        for (int i = 1; i < 72; i++) {
-            float t  = sqrt(float(i) / 72.0);
-            float an = float(i) * 2.39996;
-            vec2  o  = vec2(cos(an), sin(an)) * t * r0;
-            vec2  q  = v_uv + o * ubo.px.xy;
-            float rq = spread(texture(pdep, q).r);
-            float w  = smoothstep(length(o) - 1.0, length(o) + 1.0,
-                                  rq + 1.0);
-            sum += texture(pcol, q) * w;
-            wt  += w;
-        }
-        fragColor = sum / wt;
-    }
-
 # an agent's avatar on its pad: the platform places it each frame,
 # and its look follows that agent (working, waiting)
 OrbiterAvatar PlatAvatar
@@ -393,24 +267,38 @@ OrbiterAvatar PlatAvatar
             mic_on    = false
         super.on_state[ m ]
 
+    # the platform draws it, in order: never by itself
     func draw [ w: Window ]
-        pv : cast PlatformView [ parent ]
-        if [ !pv ] return
+        return
+
+    # its body set for the platform's picture: its camera, place
+    # and fade (it rises out of the floor); false while unseen
+    public func scene_draw [ w: Window, pv: PlatformView,
+                             hide: f32 ] -> bool
         pl : vec4f pv.place[ agent ]
-        # still under its tile: nothing to draw
-        if [ pl.w <= 0.0 || pl.z < 2.0 ] return
+        # still under its tile: nothing drawn
+        if [ pl.w <= 0.0 || pl.z < 2.0 || hide > 0.999 ]
+            body.hide   = 1.0
+            core.hide   = 1.0
+            plasma.hide = 1.0
+            aura.hide   = 1.0
+            return false
+        # its box: where it takes the pointer
         ar : 'l{pl.x}px t{pl.y}px w{pl.z}px h{pl.w}px'
         if [ !last_area || last_area != ar ]
             last_area = ar
             area = Region [ ar ]
-        # drawn with the platform's camera, cut to its own box
         scene_on    = true
+        scene_host  = pv.host_of[ agent ]
         scene_eye   = pv.eye
         scene_mid   = pv.look
-        scene_proj  = pv.proj_in[ pl ]
+        scene_view  = pv.view_m
+        scene_proj  = pv.proj_of[ agent ]
         scene_model = pv.model_of[ agent ]
+        scene_hide  = hide
+        scene_box   = pv.box_of[ agent, pl ]
         super.draw[ w ]
-        pv.take[ agent, scene_out, scene_depth ]
+        return true
     intern last_area : string
 
 # the platform: drawn into its own picture behind the agent list,
@@ -419,27 +307,29 @@ element PlatformView
     animated : true
     public frame_w : f32
     intern target  : Render
-    # the focus pass: the platform's picture blurred by its depth
-    intern focus_r : Render
-    intern focus_s  : PlatFocus
-    intern focus_m  : Model
-    # the platform picture's size when the focus pass was bound
-    intern focus_tw : i32
-    intern focus_th : i32
-    intern tkey    : string
+    # the chosen avatar's box at 4x, the floor under it drawn
+    # again; its 4 x 4 average at the screen's pixels
+    intern close   : Render
+    intern shrink  : Render
     intern models  : vec Model
     intern shades  : vec PlatLit
+    intern close_models : vec Model
+    intern close_shades : vec PlatLit
+    # the chosen agent; its box in device pixels from the
+    # picture's top left (x y w h), and the camera cut to it
+    intern pick_nm : string
+    intern near    : vec4f
+    intern near_proj : mat4f
+    intern dscale  : f32
+    intern near_w  : i32
+    intern near_h  : i32
     intern hexm    : GltfModel
-    intern quadm   : GltfModel
     intern frost_cv : Canvas
     intern scene_tx : Texture
     # the agents, a pad each, and how far each is open (0 shut,
     # 1 its avatar up)
     intern names   : vec string
     intern opens   : vec f32
-    # how many pictures an avatar's stage gave, once bound
-    intern ready   : vec f32
-    intern bound   : map string [ string ]
     intern last_ms : i64
     # the camera, eased: where it looks, how far, from how high
     intern cam_x   : f32
@@ -531,27 +421,6 @@ element PlatformView
         return vec3f [ (cx / cw * 0.5 + 0.5) * bounds.w,
                        (cy / cw * 0.5 + 0.5) * bounds.h, cw ]
 
-    # an avatar's pictures and depth, as it drew them: bound to
-    # its picture on the platform
-    public func take [ nm: string, outs: vec Texture, d: Texture ]
-        i : i32 index_of[ nm ]
-        if [ i < 0 || !models || !outs || outs.count == 0 || !d ]
-            return
-        md : Model models[ hexes[] + i ]
-        c0 : Texture outs[ 0 ]
-        c1 : Texture outs[ outs.count - 1 ]
-        # a resized picture keeps its object, not its image
-        k : '{c0.width}x{c0.height} {d.width}x{d.height}'
-        if [ !bound ] bound = map string [ string ] []
-        if [ md.samplers[ 'avc0' ] != c0 || md.samplers[ 'avc1' ] != c1
-             || md.samplers[ 'avd' ] != d || bound[ nm ] != k ]
-            bound[ nm ] = k
-            md.samplers[ 'avc0' ] = c0
-            md.samplers[ 'avc1' ] = c1
-            md.samplers[ 'avd' ]  = d
-            md.rebind_model[]
-        ready[ i ] = f32[ outs.count ]
-
     # its avatar's box on the screen in this element's pixels:
     # x y its top left, z w its size (none while under its tile)
     public func place [ nm: string ] -> vec4f
@@ -581,20 +450,6 @@ element PlatformView
             return vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         return vec4f [ x0, y0, x1 - x0, y1 - y0 ]
 
-    # the platform's projection cut to a box of the screen: the
-    # avatar's picture lines up with the platform's exactly
-    public func proj_in [ b: vec4f ] -> mat4f
-        pm : mat4f proj_m
-        nx : f32 [ (b.x + b.z * 0.5) / bounds.w * 2.0 - 1.0 ]
-        ny : f32 [ (b.y + b.w * 0.5) / bounds.h * 2.0 - 1.0 ]
-        hw : f32 [ b.z / bounds.w ]
-        hh : f32 [ b.w / bounds.h ]
-        for [ c: i32 0, c < 4, c += 1 ]
-            m3 : f32 [ pm.m[ c * 4 + 3 ] ]
-            pm.m[ c * 4 ]     = (pm.m[ c * 4 ] - nx * m3) / hw
-            pm.m[ c * 4 + 1 ] = (pm.m[ c * 4 + 1 ] - ny * m3) / hh
-        return pm
-
     # the avatar in its tile, its hexagon a little inside it
     public func model_of [ nm: string ] -> mat4f
         i : i32 index_of[ nm ]
@@ -619,87 +474,95 @@ element PlatformView
             frost_cv.sync_all[]
         return frost_cv.color
 
-    # the mirrors and the avatars' pictures: made again when the
-    # agents change
+    # the mirrors and the picture: made again when the agents
+    # change (the avatars then draw into the new one)
     func build [ w: Window ]
         if [ !hexm ] hexm = plat_hex[]
-        if [ !quadm ] quadm = plat_quad[]
         ft : Texture frost_tex[ w ]
         st : Texture [ (w.backdrop) ? w.backdrop.color : ft ]
         scene_tx = st
         models = vec Model []
         shades = vec PlatLit []
         n : i32 [ i32[ names.count ] ]
-        # the floor's mirrors, then a picture an agent's avatar
-        for [ k: i32 0, k < hexes[] + n, k += 1 ]
+        # the floor's mirrors (straight colour); the avatars add
+        # their bodies after them
+        for [ k: i32 0, k < hexes[], k += 1 ]
             sh : PlatLit [ vk: vk ]
             sm : map Au [ string ] []
             sm[ 'scene' ] = st
             sm[ 'frost' ] = ft
-            sm[ 'avc0' ]  = ft
-            sm[ 'avc1' ]  = ft
-            sm[ 'avd' ]   = ft
-            gm : GltfModel [ (k < hexes[]) ? hexm : quadm ]
-            # the mirrors are straight colour; an avatar's picture is
-            # premultiplied, its halo light added
-            md : Model [ vk: vk, w: w, id: gm, s: sh, samplers: sm,
-                         straight_alpha: k < hexes[], cull_none: true ]
+            md : Model [ vk: vk, w: w, id: hexm, s: sh, samplers: sm,
+                         straight_alpha: true, cull_none: true ]
             models.push[ md ]
             shades.push[ sh ]
-        if [ target && tkey ] w.element_targets.rm[ tkey ]
-        tkey = '{id}_{n}_{epoch_millis[]}'
-        # twice the pixels each way: the focus pass averages four
-        target = Render [ vk: vk, w: w, wscale: 2.0, use_depth: true,
+        sz : vec2f picture_size[ w ]
+        target = Render [ vk: vk, w: w, wscale: 0.0,
+                          width: i32[ sz.x ], height: i32[ sz.y ],
+                          use_depth: true,
                           clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
-                          models: models ]
+                          models: vec Model [ models ] ]
+        target.wscale = 0.0
         target.owner = a
-        w.element_targets[ tkey ] = target
-
-    # the platform's picture in focus at the chosen avatar
-    func focus_pass [ w: Window, pick: i32 ] -> Texture
-        if [ !target.depth ] return target.color
-        if [ !focus_r ]
-            focus_s = PlatFocus [ vk: vk ]
+        cmods : vec Model []
+        close_shades = vec PlatLit []
+        for [ k: i32 0, k < hexes[], k += 1 ]
+            sh : PlatLit [ vk: vk ]
             sm : map Au [ string ] []
-            sm[ 'pcol' ] = target.color
-            sm[ 'pdep' ] = target.depth
-            focus_m = Model [ w: w, s: focus_s, samplers: sm ]
-            focus_r = Render [ vk: vk, w: w, wscale: 1.0,
-                            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
-                            models: vec Model [] [ focus_m ] ]
-        if [ focus_m.samplers[ 'pcol' ] != target.color
-             || focus_m.samplers[ 'pdep' ] != target.depth
-             || focus_tw != target.width
-             || focus_th != target.height ]
-            focus_tw = target.width
-            focus_th = target.height
-            focus_m.samplers[ 'pcol' ] = target.color
-            focus_m.samplers[ 'pdep' ] = target.depth
-            focus_m.rebind_model[]
-        # none chosen: the first avatar up, else the floor's middle
-        at : i32 [ pick ]
-        for [ i: i32 0, i < opens.count && at < 0, i += 1 ]
-            if [ opens[ i ] > 0.5 ] at = i
-        fp : vec3f [ (at >= 0) ? avatar_at[ at ]
-                               : vec3f [ cam_x, 0.0, cam_z ] ]
-        dx : f32 [ eye.x - fp.x ]
-        dy : f32 [ eye.y - fp.y ]
-        dz : f32 [ eye.z - fp.z ]
-        fd : f32 [ sqrt[ dx * dx + dy * dy + dz * dz ] ]
-        sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
-        # the avatar's own depth sharp, what lies past it soft fast
-        focus_s.focus = vec4f [ fd, 200.0 * sc, 40.0 * sc, 0.8 ]
-        focus_s.px    = vec4f [ 1.0 / f32[ focus_r.width ],
-                               1.0 / f32[ focus_r.height ],
-                               proj_m.m[ 10 ], proj_m.m[ 14 ] ]
-        focus_r.update[]
-        focus_r.draw[]
-        focus_r.sync_fence[]
-        return focus_r.color
+            sm[ 'scene' ] = st
+            sm[ 'frost' ] = ft
+            md : Model [ vk: vk, w: w, id: hexm, s: sh, samplers: sm,
+                         straight_alpha: true, cull_none: true ]
+            cmods.push[ md ]
+            close_shades.push[ sh ]
+        close_models = cmods
+        close = Render [ vk: vk, w: w, wscale: 0.0,
+                         width: 256, height: 256, use_depth: true,
+                         clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                         models: vec Model [ cmods ] ]
+        close.wscale = 0.0
+        close.owner = a
+        rs : map Au [ string ] []
+        rs[ 'color' ] = close.color
+        rm : vec Model []
+        rm.push[ Model [ vk: vk, w: w, s: vk.reduce_shader[],
+                         samplers: rs ] ]
+        shrink = Render [ vk: vk, w: w, wscale: 0.0,
+                          width: 64, height: 64,
+                          clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                          models: rm ]
+        shrink.wscale = 0.0
+        shrink.owner = a
 
-    public func on_unload []
-        if [ ux && ux.element_targets && tkey ]
-            ux.element_targets.rm[ tkey ]
+    # twice its own pixels each way: drawn at its size, each pixel
+    # resamples four
+    func picture_size [ w: Window ] -> vec2f
+        ds : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+        return vec2f [ f32[ max[ i32[ bounds.w * ds ], 1 ] * 2 ],
+                       f32[ max[ i32[ bounds.h * ds ], 1 ] * 2 ] ]
+
+    # the picture an avatar draws its body in: the chosen one's
+    # own box at 4x, the rest the platform's at 2x
+    public func host_of [ nm: string ] -> Render
+        if [ pick_nm && pick_nm == nm ] return close
+        return target
+
+    public func proj_of [ nm: string ] -> mat4f
+        if [ pick_nm && pick_nm == nm ] return near_proj
+        return proj_m
+
+    # its box over its picture, in that picture's ndc
+    public func box_of [ nm: string, pl: vec4f ] -> vec4f
+        if [ pick_nm && pick_nm == nm ]
+            return vec4f [ (pl.x * dscale - near.x) / near.z * 2.0
+                           - 1.0,
+                           (pl.y * dscale - near.y) / near.w * 2.0
+                           - 1.0,
+                           pl.z * dscale / near.z * 2.0,
+                           pl.w * dscale / near.w * 2.0 ]
+        return vec4f [ pl.x / bounds.w * 2.0 - 1.0,
+                       pl.y / bounds.h * 2.0 - 1.0,
+                       pl.z / bounds.w * 2.0,
+                       pl.w / bounds.h * 2.0 ]
 
     func render [] -> Elements
         t : Elements []
@@ -727,19 +590,26 @@ element PlatformView
                 was_o = vec f32 [ opens ]
             names  = now
             opens  = vec f32 []
-            ready  = vec f32 []
             for [ nm: string ] in names
                 o : f32 [ 0.0 ]
                 for [ j: i32 0, j < was_n.count, j += 1 ]
                     if [ was_n[ j ] == nm ] o = was_o[ j ]
                 opens.push[ o ]
-                ready.push[ 0.0 ]
             build[ w ]
         if [ !target ] return
+        # a new size: the picture follows it
+        psz : vec2f picture_size[ w ]
+        if [ target.width != i32[ psz.x ]
+             || target.height != i32[ psz.y ] ]
+            target.width  = i32[ psz.x ]
+            target.height = i32[ psz.y ]
         # the scene's picture moved (a new size): bound again
         if [ w.backdrop && w.backdrop.color != scene_tx ]
             scene_tx = w.backdrop.color
             for [ md: Model ] in models
+                md.samplers[ 'scene' ] = scene_tx
+                md.rebind_model[]
+            for [ md: Model ] in close_models
                 md.samplers[ 'scene' ] = scene_tx
                 md.rebind_model[]
         ms : i64 [ epoch_millis[] ]
@@ -835,8 +705,9 @@ element PlatformView
             p : vec3f pad_at[ i ]
             pd : PlatLit shades[ i ]
             m1 : mat4f mat4f.identity[]
-            # an agent's tile sinks away under its avatar
-            sink : f32 [ (i < n) ? smooth[ 0.3, 0.6, opens[ i ] ]
+            # an agent's tile sinks away under its avatar, below its
+            # foot (1.3 under the floor at the rise's start) first
+            sink : f32 [ (i < n) ? 2.5 * smooth[ 0.2, 0.5, opens[ i ] ]
                                  : 0.0 ]
             m1 = m1.translate[ vec3f [ p.x, 0.0 - sink, p.z ] ]
             m1 = m1.scale[ vec3f [ 1.0, 0.08, 1.0 ] ]
@@ -847,25 +718,135 @@ element PlatformView
             pd.look    = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
             pd.has     = has
             pd.win     = win
-        # each avatar's picture, where its box lies, at its tile
+        # the chosen avatar's box, in whole device pixels; its
+        # picture keeps its size while the box moves within it
+        dscale = sc
+        pick_nm = null
+        mw : f32 [ f32[ target.width / 2 ] ]
+        mh : f32 [ f32[ target.height / 2 ] ]
+        if [ pick >= 0 ]
+            pl : vec4f place[ names[ pick ] ]
+            if [ pl.z > 0.0 ]
+                nw : i32 [ i32[ ceil[ pl.z * sc ] ] + 2 ]
+                nh2 : i32 [ i32[ ceil[ pl.w * sc ] ] + 2 ]
+                cw : i32 [ close.width / 4 ]
+                ch : i32 [ close.height / 4 ]
+                if [ cw < nw || cw > nw + 128 ]
+                    cw = ((nw + 63) / 64) * 64
+                if [ ch < nh2 || ch > nh2 + 128 ]
+                    ch = ((nh2 + 63) / 64) * 64
+                cw = min[ cw, i32[ mw ] ]
+                ch = min[ ch, i32[ mh ] ]
+                if [ close.width != cw * 4 || close.height != ch * 4 ]
+                    close.width   = cw * 4
+                    close.height  = ch * 4
+                    shrink.width  = cw
+                    shrink.height = ch
+                fw2 : f32 [ f32[ cw ] ]
+                fh2 : f32 [ f32[ ch ] ]
+                rx : f32 [ floor[ pl.x * sc + (pl.z * sc - fw2) * 0.5 ] ]
+                ry : f32 [ floor[ pl.y * sc + (pl.w * sc - fh2) * 0.5 ] ]
+                rx = max[ 0.0, min[ rx, mw - fw2 ] ]
+                ry = max[ 0.0, min[ ry, mh - fh2 ] ]
+                near = vec4f [ rx, ry, fw2, fh2 ]
+                pick_nm = names[ pick ]
+                # the camera cut to the box: its ndc scaled up
+                sx : f32 [ fw2 / mw ]
+                sy : f32 [ fh2 / mh ]
+                cx : f32 [ (rx + fw2 * 0.5) / mw * 2.0 - 1.0 ]
+                cy : f32 [ (ry + fh2 * 0.5) / mh * 2.0 - 1.0 ]
+                cp : mat4f proj_m
+                for [ c: i32 0, c < 4, c += 1 ]
+                    cp.m[ c * 4 ] = (cp.m[ c * 4 ]
+                                     - cx * cp.m[ c * 4 + 3 ]) / sx
+                    cp.m[ c * 4 + 1 ] = (cp.m[ c * 4 + 1 ]
+                                         - cy * cp.m[ c * 4 + 3 ]) / sy
+                near_proj = cp
+                chas : vec4f [ has.x, 1.0 / f32[ close.width ],
+                               1.0 / f32[ close.height ], 0.0 ]
+                cwin : vec4f [ (ax + rx / sc) / ww, (ay + ry / sc) / wh,
+                               fw2 / sc / ww, fh2 / sc / wh ]
+                for [ i: i32 0, i < nh, i += 1 ]
+                    pd : PlatLit shades[ i ]
+                    cd : PlatLit close_shades[ i ]
+                    cd.model   = pd.model
+                    cd.view    = view_m
+                    cd.proj    = near_proj
+                    cd.cam_pos = cam
+                    # depth only: it hides what is behind, paints
+                    # nothing (the 2x picture has the floor)
+                    cd.look    = vec4f [ pd.look.x, 0.0, pd.look.z,
+                                         0.0 ]
+                    cd.has     = chas
+                    cd.win     = cwin
+        # each avatar's body set for the picture: camera, place and
+        # its fade as it rises
+        seen : vec bool []
         for [ i: i32 0, i < n, i += 1 ]
-            av : PlatLit shades[ nh + i ]
-            pl : vec4f place[ names[ i ] ]
-            ma : mat4f mat4f.identity[]
-            ma = ma.translate[ avatar_at[ i ] ]
-            av.model   = ma
-            av.view    = view_m
-            av.proj    = proj_m
-            av.cam_pos = cam
-            av.look    = vec4f [ (pl.z > 0.0 && ready[ i ] > 0.0)
-                                 ? 3.0 : 4.0, 1.0,
-                                 (ready[ i ] > 1.5) ? 1.0 : 0.0, 0.0 ]
-            av.box     = vec4f [ pl.x / bounds.w * 2.0 - 1.0,
-                                 pl.y / bounds.h * 2.0 - 1.0,
-                                 pl.z / bounds.w * 2.0,
-                                 pl.w / bounds.h * 2.0 ]
-            av.has     = has
-            av.win     = win
-        b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
-        w.screen.draw_image[ focus_pass[ w, pick ], b ]
+            ek : 'pav_{names[ i ]}'
+            pa : cast PlatAvatar [ (elements) ? elements[ ek ] : null ]
+            hd : f32 [ 1.0 - smooth[ 0.5, 1.0, opens[ i ] ] ]
+            seen.push[ pa != null && pa.scene_draw[ w, a, hd ] ]
+        target.update[]
+        target.draw[]
+        target.sync_fence[]
+        if [ pick_nm ]
+            close.update[]
+            close.draw[]
+            close.sync_fence[]
+        # then each one's glow and haze over the picture, the
+        # farthest first
+        pic : Texture [ target.color ]
+        done : vec bool []
+        for [ i: i32 0, i < n, i += 1 ]
+            done.push[ false ]
+        for [ k: i32 0, k < n, k += 1 ]
+            far : i32 [ -1 ]
+            fd : f32 [ -1.0 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ done[ i ] || !seen[ i ] ] continue
+                if [ pick_nm && i == pick ] continue
+                q : vec3f avatar_at[ i ]
+                dx : f32 [ q.x - eye.x ]
+                dy : f32 [ q.y - eye.y ]
+                dz : f32 [ q.z - eye.z ]
+                dd : f32 [ dx * dx + dy * dy + dz * dz ]
+                if [ dd > fd ]
+                    fd = dd
+                    far = i
+            if [ far < 0 ] break
+            done[ far ] = true
+            pa : cast PlatAvatar [ elements[ 'pav_{names[ far ]}' ] ]
+            pic = pa.scene_frame[ pic ]
+        # on whole screen pixels: each one is four of the picture's
+        cv : Canvas w.screen
+        ps : f32 cv.transform_scale[]
+        if [ ps <= 0.0 ] ps = 1.0
+        ox : f32 cv.transform_tx[]
+        oy : f32 cv.transform_ty[]
+        b : rect [ x: (round[ ox ] - ox) / ps,
+                   y: (round[ oy ] - oy) / ps,
+                   w: mw / ps, h: mh / ps ]
+        cv.draw_image[ pic, b ]
+        # the chosen avatar's box over it, sixteen to a pixel
+        if [ pick_nm ]
+            cpic : Texture [ close.color ]
+            if [ seen[ pick ] ]
+                pc : cast PlatAvatar [ elements[ 'pav_{pick_nm}' ] ]
+                cpic = pc.scene_frame[ cpic ]
+            sm : Model shrink.models[ 0 ]
+            # a resized picture is a new image under the same name
+            if [ sm.samplers[ 'color' ] != cpic
+                 || near_w != close.width || near_h != close.height ]
+                near_w = close.width
+                near_h = close.height
+                sm.samplers[ 'color' ] = cpic
+                sm.rebind_model[]
+            shrink.update[]
+            shrink.draw[]
+            shrink.sync_fence[]
+            nb : rect [ x: (round[ ox ] + near.x - ox) / ps,
+                        y: (round[ oy ] + near.y - oy) / ps,
+                        w: near.z / ps, h: near.w / ps ]
+            cv.draw_image[ shrink.color, nb ]
         needs_frame = true

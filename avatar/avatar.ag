@@ -15,6 +15,8 @@ ModelViewProject Orbiter
     mutable pulse_width  : f32
     mutable pulse_height : f32
     mutable beam         : f32
+    # gone by this much (0 shown, 1 not drawn): its rise in a scene
+    mutable hide         : f32
 
 
 Orbiter PBR
@@ -488,7 +490,8 @@ Orbiter PBR
         vec4  sp_s = texture(spokes, vec2(sp_u, sp_v));
               //base = mix(base, vec4(sp_s.rgb, 1.0), step(0.5, v_color.b) * (1.0 - sp_s.a));
 
-        fragColor = base;
+        if (ubo.hide > 0.999) discard;
+        fragColor = base * (1.0 - ubo.hide);
     }
 
     func vertex [] -> GLSL none {
@@ -514,6 +517,9 @@ Orbiter Aura
 	# how far the donut reaches outward, in tubes (1: its own); its
 	# hole stays
 	mutable donut_reach : f32
+	# where it draws on the screen (-1..1): x y a corner, z w the
+	# size; none (0 size): all of it
+	mutable box         : vec4f
 	attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
 	attrib a_uv      : VertexInput    [ type:typeid[ vec2f ] ]
 	attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
@@ -541,10 +547,12 @@ Orbiter Aura
 
 	func vertex[] -> GLSL none {
 		vec2 ndc       = a_pos.xy;
+		if (ubo.box.z > 0.0)
+			ndc = ubo.box.xy + (a_pos.xy * 0.5 + 0.5) * ubo.box.zw;
 		vec4 view_ray  = inverse(ubo.proj) * vec4(ndc, 1.0, 1.0);
 		view_ray.xyz  /= view_ray.w;
 		v_ray          = transpose(mat3(ubo.view)) * view_ray.xyz;
-		v_uv           = a_uv;
+		v_uv           = (ubo.box.z > 0.0) ? ndc * 0.5 + 0.5 : a_uv;
         v_eye_pos      = inverse(ubo.view)[3].xyz;
 		gl_Position    = vec4(ndc, 0.0, 1.0);
 	}
@@ -947,6 +955,9 @@ Orbiter Aura
 			if (tor_tx > tor_te) {
 				float tor_dt = (tor_tx - tor_te) / 48.0;
 				mat4  tor_ip = inverse(ubo.proj);
+				// the taps' spread is across its own box, when it has one
+				vec2  ks     = (ubo.box.z > 0.0) ? ubo.box.zw * 0.5
+				                                 : vec2(1.0);
 				for (int q = 0; q < 48; q++) {
 					if (alpha > 0.97) break;
 					vec3  tp  = ro + rd * (tor_te + (float(q) + 0.5) * tor_dt);
@@ -961,7 +972,7 @@ Orbiter Aura
 						for (int k = 0; k < 9; k++) {
 							float ka  = float(k) * 0.785398;
 							vec2  kn  = ndc + ((k == 8) ? vec2(0.0)
-								: vec2(cos(ka), sin(ka)) * 0.012);
+								: vec2(cos(ka), sin(ka)) * 0.012 * ks);
 							float zd  = texture(height, kn * 0.5 + 0.5).r;
 							vec4  sp  = tor_ip * vec4(kn, zd, 1.0);
 							float bh  = sp.z / sp.w - vp.z;
@@ -1056,8 +1067,10 @@ Orbiter Aura
 
 		// top-edge feather: the volume must never hard-clip at the render
 		// target's border — dissolve anything approaching the frame top
-		float edge_f = smoothstep(0.0, 0.22, v_uv.y);
-		fragColor = vec4(col, clamp(alpha, 0.0, 1.0)) * edge_f;
+		float edge_f = (ubo.box.z > 0.0) ? 1.0
+		             : smoothstep(0.0, 0.22, v_uv.y);
+		fragColor = vec4(col, clamp(alpha, 0.0, 1.0)) * edge_f
+		          * (1.0 - ubo.hide);
 	}
 
 
@@ -1149,7 +1162,8 @@ Orbiter Core
         }
         // 1.1 to 0.9 once per four turns of the halo
         col      *= ubo.core_base * (1.0 + 0.1 * sin(ubo.core_phase));
-        fragColor = vec4(col, alpha);
+        if (ubo.hide > 0.999) discard;
+        fragColor = vec4(col, alpha) * (1.0 - ubo.hide);
     }
 
 
@@ -1199,7 +1213,8 @@ Orbiter Plasma
 		vec3  col   = vec3(1.0) * (fresnel * 0.25);
 		float alpha = clamp(fresnel * 0.55, 0.0, 1.0);
 
-		fragColor = vec4(col, alpha);
+		if (ubo.hide > 0.999) discard;
+		fragColor = vec4(col, alpha) * (1.0 - ubo.hide);
 	}
 
 
@@ -1263,6 +1278,11 @@ ModelViewProject Heat
     attrib height    : LayoutBinding [ type:typeid[ Surface ],
                                        id:Surface.height, count:1,
                                        format: typeid[ f32 ] ]
+    # the halo (rim: the free slot), over the picture before the
+    # haze bends it
+    attrib rim       : LayoutBinding [ type:typeid[ Surface ],
+                                       id:Surface.rim, count:1,
+                                       format: typeid[ rgba8 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1296,6 +1316,12 @@ ModelViewProject Heat
                        mix(nhash(i+vec3(0,1,1)),  nhash(i+vec3(1,1,1)), f.x), f.y), f.z);
     }
 
+    # the picture with the halo over it
+    func pic [ at: vec2f ] -> GLSL vec4f {
+        vec4 o = texture(rim, at);
+        return o + texture(color, at) * (1.0 - o.a);
+    }
+
     # the grooves' glow: the mask as it is, no blur
     func groove_glow [ at: vec2f ] -> GLSL vec3f {
         if (ubo.groove <= 0.001) return vec3(0.0);
@@ -1307,7 +1333,7 @@ ModelViewProject Heat
     func fragment [] -> GLSL none {
         vec3 gl3 = groove_glow(v_uv);
         if (ubo.heat <= 0.001) {
-            fragColor = texture(color, v_uv);
+            fragColor = pic(v_uv);
             fragColor.rgb += gl3;
             return;
         }
@@ -1353,7 +1379,7 @@ ModelViewProject Heat
         }
         wgt      *= pin;
         if (wgt < 0.002) {
-            fragColor = texture(color, v_uv);
+            fragColor = pic(v_uv);
             fragColor.rgb += gl3;
             return;
         }
@@ -1382,7 +1408,7 @@ ModelViewProject Heat
         // pocket: 0.5 px to 6.5 px, blended across
         float hp  = hn * pin * ak;
         if (hp < 0.01) {
-            fragColor = texture(color, c0);
+            fragColor = pic(c0);
             fragColor.rgb += gl3;
             return;
         }
@@ -1395,8 +1421,8 @@ ModelViewProject Heat
             for (int x = -1; x <= 1; x++) {
                 float k = (2.0 - abs(float(x))) * (2.0 - abs(float(y)));
                 vec2  o = vec2(float(x), float(y)) * sp;
-                acc += texture(color, c0 + o) * k;
-                acc += texture(color, c0 + o * 0.5 + sp * 0.25) * k;
+                acc += pic(c0 + o) * k;
+                acc += pic(c0 + o * 0.5 + sp * 0.25) * k;
             }
         }
         fragColor = acc / 32.0;
@@ -1506,6 +1532,16 @@ element Avatar
     public scene_depth       : Texture
     # how far the beam's thrust seats it down its own up axis
     mutable push_cur         : f32
+    # the host's render: the body drawn in it, with its camera
+    # (scene_view, scene_proj) and depth; its glow and haze over
+    # its picture (scene_frame)
+    public scene_host        : Render
+    public scene_view        : mat4f
+    # gone by this much while it rises (0 shown, 1 not drawn)
+    public scene_hide        : f32
+    # its box on the host's screen (-1..1, a corner and the size):
+    # its halo marches there only
+    public scene_box         : vec4f
 
     # dismount: retire our render targets while they are still valid —
     # a stale map entry double-frees on the next summon's map set
@@ -1513,6 +1549,7 @@ element Avatar
         wr9 : Window ux
         if [ wr9 && wr9.element_targets ]
             wr9.element_targets[ id ] = null
+        if [ stage ] stage.unhost[]
         stage = null
         super.on_unload[ ]
 
@@ -1611,7 +1648,10 @@ element Avatar
         ds : f32 [ (w_ref && w_ref.scale > 0.0) ? w_ref.scale : 1.0 ]
         stage_w = i32[ bounds.w * ds ]
         stage_h = i32[ bounds.h * ds ]
-        stage = Stage [ design: d, given: mine ]
+        if [ scene_host ]
+            stage_w = scene_host.width
+            stage_h = scene_host.height
+        stage = Stage [ design: d, given: mine, host: scene_host ]
         stage.build[ vk, w_ref, stage_w, stage_h ]
 
     # a point in glTF's axes (y up) in the design's (z up)
@@ -1621,6 +1661,10 @@ element Avatar
     func draw [ w: Window ]
         # spin only while summoned (or always, for one with no slide)
         animated = summoned || animate_always
+        # a new host render: made again in it
+        if [ stage && stage.host != scene_host ]
+            stage.unhost[]
+            stage = null
         create_target[]
         if [ !stage ] return
 
@@ -1700,7 +1744,13 @@ element Avatar
         el
             settle_n += 1
         # the passes take a new size once it holds still
-        if [ !easing && settle_n >= 8 ]
+        # in a host's scene its box changes as the camera eases:
+        # its pictures only grow, a 256 px step at a time (a resize
+        # makes new images the host's readers must take again)
+        if [ scene_host ]
+            stage_w = scene_host.width
+            stage_h = scene_host.height
+        el [ !easing && settle_n >= 8 ]
             ds : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
             stage_w = i32[ bounds.w * ds ]
             stage_h = i32[ bounds.h * ds ]
@@ -1723,14 +1773,33 @@ element Avatar
             stage.up     = vec3f [ 0.0, 0.0, -1.0 ]
             stage.proj   = scene_proj
             stage.model  = scene_model.mul[ model_mat ]
+            stage.host_view = scene_view
+            body.hide    = scene_hide
+            core.hide    = scene_hide
+            plasma.hide  = scene_hide
+            aura.hide    = scene_hide
+            aura.box     = scene_box
+            needs_frame  = true
+            # the host draws the body: its glow and haze come after
+            if [ scene_host ]
+                stage.host_uniforms[]
+                return
             scene_out    = stage.frame[ stage_w, stage_h ]
             scene_depth  = stage.object_depth[]
-            needs_frame  = true
             return
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
         for [ tx: Texture ] in stage.frame[ stage_w, stage_h ]
             w.screen.draw_image[ tx, b ]
         needs_frame = true
+
+    # its glow and haze over the host's picture, once the host
+    # has drawn: the picture with them on it
+    public func scene_frame [ under: Texture ] -> Texture
+        if [ !stage || !scene_host ] return under
+        stage.under = under
+        outs : stage.frame[ stage_w, stage_h ]
+        if [ !outs || outs.count == 0 ] return under
+        return outs[ outs.count - 1 ]
 
     # the avatar alone on a clear canvas: the app's icon
     func icon_image [ w: Window, size: i32 ] -> Image
