@@ -53,6 +53,7 @@ import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
 import vec
 import img
 import trinity
+import fastboot
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
@@ -314,6 +315,12 @@ element Bootstrap
     mutable surface_versions : vec string
     # the asahi branch's version (its Makefile), read once
     mutable asahi_version  : string
+    mutable fp_version     : string
+    # the phone page: what is on USB, said; a check-only install
+    mutable phone_word     : string
+    mutable phone_ok       : bool
+    mutable phone_at       : i64
+    public phone_dry       : bool
     # the versions offered: kernel.org's list, read once
     mutable releases     : vec string
     mutable want_nvidia  : string
@@ -340,6 +347,12 @@ element Bootstrap
     mutable stick_keys : bool
     mutable drives_at  : i64
     intern  tid        : pthread_t
+    # the page: '' the kernels, 'build' a new one's choices
+    mutable kview      : string [ '' ]
+    # the building view shows its log only when asked
+    mutable show_log   : bool
+    # what the build is doing, in words
+    mutable step       : string [ '' ]
 
     func init []
         setup[]
@@ -365,11 +378,15 @@ element Bootstrap
 
     # the hardware a kernel is built for
     public func hardwares [] -> vec string
-        return vec string [] [ 'x64', 'ARM64', 'Apple', 'Surface' ]
+        return vec string [] [ 'x64', 'ARM64', 'Apple', 'Surface',
+                               'Fairphone 6' ]
 
     # the kernels the chosen hardware takes: kernel.org's for x64
     # and ARM64, the series linux-surface patches, Asahi's branch
     public func offered [] -> vec string
+        if [ want_hardware == 'Fairphone 6' ]
+            if [ !fp_version ] fp_version = fairphone_release[]
+            return vec string [] [ fp_version ]
         if [ want_hardware == 'Apple' ]
             if [ !asahi_version ] asahi_version = asahi_release[]
             return vec string [] [ asahi_version ]
@@ -452,6 +469,7 @@ element Bootstrap
     # amd's cards go in PCs and arm64 boards; Intel's in PCs
     func amd_offered [] -> bool
         return want_hardware != 'Apple'
+            && want_hardware != 'Fairphone 6'
 
     func intel_offered [] -> bool
         return want_hardware == 'x64' || want_hardware == 'Surface'
@@ -529,6 +547,7 @@ element Bootstrap
                 # bzImage on x86, Image on arm64
                 bz : path '{e}/bzImage'
                 if [ !bz.exists[] ] bz = path '{e}/Image'
+                if [ !bz.exists[] ] bz = path '{e}/Image.gz'
                 if [ !e.is_dir[] || !bz.exists[] ] continue
                 # a build under way: not a kernel yet
                 if [ e.filename[].ends_with[ '.part' ] ] continue
@@ -628,6 +647,45 @@ element Bootstrap
         lock.lock[]
         lines.push[ s ]
         lock.unlock[]
+        sw : string step_word[ s ]
+        if [ sw.count > 0 ] step = sw
+        # a kernel build's whole output, kept for reading
+        if [ job == 'kernel' ]
+            fh : handle fopen[ log_file[].chars, 'a' ]
+            if [ fh ]
+                fputs[ '{s}\n'.chars, fh ]
+                fclose[ fh ]
+
+    # the kernel build's log
+    func log_file [] -> string
+        return '{install}/tmp/kernel-build.log'
+
+    # a build's command as the step it is, in words ('' for output)
+    func step_word [ s: string ] -> string
+        if [ s.starts_with[ 'Downloading' ] ] return 'Downloading'
+        if [ !s.starts_with[ '$ ' ] ] return ''
+        if [ s.index_of[ 'modules_install' ] >= 0 ]
+            return 'Installing the modules'
+        if [ s.index_of[ 'headers_install' ] >= 0 ]
+            return 'Kernel headers'
+        if [ s.index_of[ ' dtbs' ] >= 0 ] return 'Device trees'
+        if [ s.index_of[ 'Image modules' ] >= 0 ]
+            return 'Compiling the kernel and its modules'
+        if [ s.index_of[ 'NV_KERNEL_MODULES' ] >= 0 ]
+            return 'NVIDIA\'s modules'
+        if [ s.index_of[ 'depmod' ] >= 0 ] return 'Module index'
+        if [ s.index_of[ 'defconfig' ] >= 0
+             || s.index_of[ 'merge_config' ] >= 0
+             || s.index_of[ 'scripts/config' ] >= 0
+             || s.index_of[ '.config' ] >= 0 ]
+            return 'Configuring'
+        if [ s.index_of[ 'patch -p1' ] >= 0 ] return 'Patching'
+        if [ s.index_of[ 'tar x' ] >= 0 ] return 'Unpacking the source'
+        if [ s.index_of[ 'clang' ] >= 0 ] return 'Building init'
+        if [ s.index_of[ 'rustup' ] >= 0
+             || s.index_of[ 'bindgen' ] >= 0 ]
+            return 'Rust tools'
+        return ''
 
     # a shell line, its output said; true when it worked
     # a shell's quoting of a line: inside '', each ' as '\''
@@ -809,11 +867,489 @@ element Bootstrap
             out = '{out} --set-str {w} \'\''
         return out
 
+    # a file of postmarketOS's packages (pmaports), by url
+    func pmaports_url [ pkg: string, file: string ] -> string
+        api : 'https://gitlab.postmarketos.org/api/v4/projects'
+        pm : '{api}/postmarketOS%2Fpmaports/repository/files'
+        return '{pm}/device%2Ftesting%2F{pkg}%2F{file}/raw?ref=main'
+
+    # a line of a pmaports file: the value after 'key='
+    func pmaports_value [ pkg: string, file: string, key: string ]
+            -> string
+        url : pmaports_url[ pkg, file ]
+        cmd : 'curl -s --max-time 8 \'{url}\''
+        fh_cmd : command [ cmd ]
+        fh : handle fh_cmd.stream[]
+        out : string ''
+        b : local i8 [ 1024 ]
+        while [ fh && fgets[ @b[0], 1024, fh ] ]
+            ln0 : string [ @b[0] ]
+            ln : ln0.trim[]
+            if [ !ln.starts_with[ '{key}=' ] ] continue
+            v : ln.mid[ key.count + 1, ln.count - key.count - 1 ]
+            if [ v.starts_with[ '"' ] ] v = v.mid[ 1, v.count - 2 ]
+            if [ out.count == 0 ] out = v
+        if [ fh ] pclose[ fh ]
+        return out
+
+    # the Fairphone 6's kernel: the release postmarketOS builds
+    # from milos-mainline (Fairphone's mainline work for its chip)
+    func fairphone_release [] -> string
+        v : pmaports_value[ 'linux-postmarketos-qcom-milos',
+                            'APKBUILD', 'pkgver' ]
+        return (v.count > 0) ? v : '7.2.0'
+
+    # the Fairphone 6's kernel as postmarketOS builds it: milos-
+    # mainline's tag, postmarketOS's config (modules plain, the
+    # USB serial gadget built in), Image.gz, modules, the phone's
+    # device tree; then its firmware, from Fairphone's blobs
+    public func build_fairphone [ ver: string ] -> bool
+        nm : '{ver}-fp6'
+        out : '{share[]}/kernels/{nm}'
+        part : '{out}.part'
+        bd : '{install}/build/linux-{ver}-milos'
+        tag : 'v{ver}-milos'
+        gh : 'https://github.com'
+        steps : vec string []
+        tu : '{gh}/milos-mainline/linux/archive/refs/tags/{tag}.tar.gz'
+        tb : fetch[ 'milos-linux-{tag}.tar.gz', tu ]
+        if [ tb.count == 0 ] return false
+        un : 'mkdir -p {bd} && tar xf {tb} -C {bd} --strip-components=1'
+        steps.push[ 'test -f {bd}/Makefile || ({un})' ]
+        kp : 'linux-postmarketos-qcom-milos'
+        cn : 'config-postmarketos-qcom-milos.aarch64'
+        cf : fetch[ 'pmaports-{ver}-{cn}', pmaports_url[ kp, cn ] ]
+        if [ cf.count == 0 ] return false
+        steps.push[ 'cp {cf} {bd}/.config' ]
+        # modules plain (the boot loads them itself), the USB
+        # serial gadget in, no BTF (pahole), no git version
+        sw : '-d MODULE_COMPRESS -d MODULE_COMPRESS_ALL'
+        sw = '{sw} -d MODULE_COMPRESS_ZSTD -e MODULE_COMPRESS_NONE'
+        sw = '{sw} -e USB_CONFIGFS -e USB_CONFIGFS_ACM'
+        sw = '{sw} -d DEBUG_INFO_BTF -d LOCALVERSION_AUTO'
+        steps.push[ '{bd}/scripts/config --file {bd}/.config {sw}' ]
+        mk : 'make -C {bd} ARCH=arm64 LLVM={install}/bin/ -j16'
+        steps.push[ '{mk} olddefconfig' ]
+        dtb : 'qcom/milos-fairphone-fp6.dtb'
+        steps.push[ '{mk} Image.gz modules {dtb}' ]
+        steps.push[ 'rm -rf {part} && mkdir -p {part}' ]
+        mi : 'INSTALL_MOD_PATH={part}/kmods INSTALL_MOD_STRIP=1'
+        steps.push[ '{mk} modules_install {mi}' ]
+        steps.push[ 'cp {bd}/arch/arm64/boot/Image.gz {part}/Image.gz' ]
+        steps.push[ 'cp {bd}/arch/arm64/boot/dts/{dtb} {part}/fp6.dtb' ]
+        # the boot's /init, on this kernel's own nolibc
+        hi : '{bd}/usr-arm64'
+        steps.push[ '{mk} headers_install INSTALL_HDR_PATH={hi}' ]
+        nl : '{bd}/tools/include/nolibc'
+        ic : '{install}/bin/clang -target aarch64-linux-gnu -static'
+        ic = '{ic} -nostdlib -nostdinc -ffreestanding -Os'
+        ic = '{ic} -fno-stack-protector -fuse-ld=lld -I{nl}'
+        ic = '{ic} -I{hi}/include -include {nl}/nolibc.h'
+        ini : '{root}/os-bootstrap/init.c'
+        steps.push[ '{ic} -o {part}/init {ini}' ]
+        # the modules postmarketOS loads first (panel, SPI)
+        dp : 'device-fairphone-fp6'
+        ef : fetch[ 'pmaports-{ver}-fp6-modules-initfs',
+                    pmaports_url[ dp, 'modules-initfs' ] ]
+        if [ ef.count == 0 ] return false
+        steps.push[ 'cp {ef} {part}/early.list' ]
+        # how the phone boots (offsets, page size, command line),
+        # as postmarketOS's device files say: for the installer
+        di : fetch[ 'pmaports-{ver}-fp6-deviceinfo',
+                    pmaports_url[ dp, 'deviceinfo' ] ]
+        kc : fetch[ 'pmaports-{ver}-fp6-kernel-cmdline.conf',
+                    pmaports_url[ dp, 'kernel-cmdline.conf' ] ]
+        if [ di.count == 0 || kc.count == 0 ] return false
+        steps.push[ 'cp {di} {part}/deviceinfo' ]
+        # pid 1 on the phone's root until orbiter runs on arm64:
+        # Alpine's static busybox (GPL-2.0)
+        al : 'https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64'
+        bv : 'busybox-static-1.37.0-r20'
+        ba : fetch[ '{bv}-aarch64.apk', '{al}/{bv}.apk' ]
+        if [ ba.count == 0 ] return false
+        bx : 'tar -xzif {ba} -O bin/busybox.static > {part}/busybox'
+        steps.push[ '{bx} && chmod 755 {part}/busybox' ]
+        steps.push[ 'cp {kc} {part}/kernel-cmdline.conf' ]
+        if [ !run_steps[ steps ] ] return false
+        if [ !fairphone_firmware[ ver, '{part}/firmware' ] ]
+            return false
+        info : 'hardware Fairphone 6\nversion {ver}\nnvidia none\n'
+        info = '{info}amd n/a\nintel n/a\n'
+        write_file[ '{part}/build.agi', info ]
+        if [ !sh[ 'rm -rf {out} && mv {part} {out}' ] ] return false
+        say[ 'Built {nm}' ]
+        scan[]
+        return true
+
+    # its firmware, placed as postmarketOS places it: Fairphone's
+    # blobs (FairBlobs, at postmarketOS's commit) joined into .mbn
+    # by pil-squasher; Wi-Fi's board file from linux-firmware
+    func fairphone_firmware [ ver: string, fw: string ] -> bool
+        gh : 'https://github.com'
+        fp : 'firmware-fairphone-fp6'
+        sha : pmaports_value[ fp, 'APKBUILD', '_commit' ]
+        if [ sha.count == 0 ]
+            say[ 'postmarketOS\'s firmware commit was not found' ]
+            return false
+        bu : '{gh}/FairBlobs/FP6-firmware/archive/{sha}.tar.gz'
+        bt : fetch[ 'FP6-firmware-{sha}.tar.gz', bu ]
+        ps : '3c9f8b8756ba6e4dbf9958570fd4c9aea7a70cf4'
+        pu : '{gh}/linux-msm/pil-squasher/archive/{ps}.tar.gz'
+        pt : fetch[ 'pil-squasher-{ps}.tar.gz', pu ]
+        lf : 'https://git.kernel.org/pub/scm/linux/kernel/git/firmware'
+        wb : '{lf}/linux-firmware.git/plain/ath11k/WCN6750/hw1.0'
+        bb : fetch[ 'linux-firmware-WCN6750-board-2.bin',
+                    '{wb}/board-2.bin' ]
+        if [ bt.count == 0 || pt.count == 0 || bb.count == 0 ]
+            return false
+        steps : vec string []
+        sq : '{install}/build/pil-squasher-{ps}'
+        su : 'mkdir -p {sq} && tar xf {pt} -C {sq} --strip-components=1'
+        steps.push[ 'test -f {sq}/Makefile || ({su})' ]
+        steps.push[ 'make -C {sq} CC={install}/bin/clang' ]
+        bl : '{install}/build/FP6-firmware-{sha}'
+        bx : 'tar xf {bt} -C {bl} --strip-components=1'
+        bu2 : 'mkdir -p {bl} && {bx}'
+        steps.push[ 'test -f {bl}/adsp.mdt || ({bu2})' ]
+        one : '{sq}/pil-squasher "${{m%.mdt}}.mbn" "$m"'
+        each : 'for m in *.mdt; do {one} || exit 1; done'
+        steps.push[ 'cd {bl} && {each}' ]
+        q : '{fw}/qcom/milos/fairphone/fp6'
+        dirs : '{q} {fw}/qca {fw}/postmarketos'
+        steps.push[ 'rm -rf {fw} && mkdir -p {dirs}' ]
+        mine : 'gen80300_zap.mbn adsp*.mbn adsp*.jsn battmgr.jsn'
+        mine = '{mine} cdsp*.mbn cdsp*.jsn ipa_fws.mbn modem.mbn'
+        mine = '{mine} modem*.jsn vpu20_2v.mbn wpss.mbn'
+        steps.push[ 'cd {bl} && cp {mine} {q}/ && cp -r modem_pr {q}/' ]
+        gpu : 'gen80300_gmu.bin gen80300_sqe.fw'
+        steps.push[ 'cd {bl} && cp {gpu} {fw}/postmarketos/' ]
+        steps.push[ 'cd {bl} && cp msbtfw12.mbn msnv12.bin {fw}/qca/' ]
+        ah : '{fw}/ath11k/WCN6750/hw1.0'
+        steps.push[ 'mkdir -p {ah} && cp {bb} {ah}/board-2.bin' ]
+        return run_steps[ steps ]
+
+    # steps in order, each said; false at the first that fails
+    func run_steps [ steps: vec string ] -> bool
+        for [ st: string ] in steps
+            say[ '$ {st}' ]
+            if [ !sh[ st ] ] return false
+        steps.clear[]
+        return true
+
+    # a Fairphone 6, by the product its bootloader names
+    func is_fp6 [ product: string ] -> bool
+        return product.index_of[ 'FP6' ] >= 0
+            || product.index_of[ 'fp6' ] >= 0
+
+    # the lit kernel goes on a phone, not a USB stick
+    public func on_phone [] -> bool
+        sk : stick_kernel[]
+        return sk && sk.hardware == 'Fairphone 6'
+
+    # the phone on USB as its bootloader answers, in words
+    func phone_look []
+        fb : Fastboot []
+        if [ !fb.open[] ]
+            phone_ok = false
+            plug : 'Connect the phone in fastboot mode (from off: '
+            plug = '{plug}Power and Volume Down).'
+            refused : bool [ fb.problem == 'access refused' ]
+            phone_word = (refused)
+                ? 'A phone is there; Install asks once for USB access.'
+                : plug
+            phone_ok = refused
+            return
+        pr : fb.getvar[ 'product' ]
+        un : fb.getvar[ 'unlocked' ]
+        fb.close[]
+        lock : string [ (un == 'yes') ? 'unlocked' : 'locked' ]
+        phone_word = '{pr}, {lock}'
+        if [ !is_fp6[ pr ] ]
+            phone_word = '{phone_word}: not a Fairphone 6'
+        phone_ok = is_fp6[ pr ]
+
+    # USB access to fastboot phones (any maker: by the fastboot
+    # interface) and to orbiter-os's serial port; asked once
+    func phone_udev [] -> bool
+        rules : '/etc/udev/rules.d/51-orbiter-phone.rules'
+        rp : path [ rules ]
+        if [ rp.exists[] ] return true
+        tmp : '{install}/tmp/51-orbiter-phone.rules'
+        t : 'SUBSYSTEM=="usb", ENV{{ID_USB_INTERFACES}}=="*:ff4203:*", '
+        t = '{t}TAG+="uaccess"\n'
+        t = '{t}SUBSYSTEM=="tty", ATTRS{{idVendor}}=="1d6b", '
+        t = '{t}ATTRS{{idProduct}}=="0104", TAG+="uaccess"\n'
+        write_file[ tmp, t ]
+        say[ 'USB access for the phone: the system asks for a password' ]
+        up : 'udevadm control --reload-rules && udevadm trigger'
+        q : quoted[ 'cp {tmp} {rules} && {up}' ]
+        return sh[ 'pkexec sh -c {q}' ]
+
+    # the lit Fairphone kernel's boot image written to the phone's
+    # boot partition (its current slot), then its log over USB
+    public func phone_install [] -> bool
+        kb : stick_kernel[]
+        if [ !kb || kb.hardware != 'Fairphone 6' ]
+            say[ 'Light a Fairphone 6 kernel in the list first' ]
+            return false
+        fb : Fastboot []
+        if [ !fb.open[] && fb.problem == 'access refused' ]
+            if [ !phone_udev[] ] return false
+            sleep[ 1 ]
+        if [ !fb.open[] ]
+            say[ 'No phone: {fb.problem}' ]
+            return false
+        product : fb.getvar[ 'product' ]
+        unlocked : fb.getvar[ 'unlocked' ]
+        room : var_bytes[ fb.getvar[ 'partition-size:boot' ] ]
+        data : var_bytes[ fb.getvar[ 'partition-size:userdata' ] ]
+        most : var_bytes[ fb.getvar[ 'max-download-size' ] ]
+        fb.close[]
+        if [ !is_fp6[ product ] ]
+            say[ '{product} is not a Fairphone 6' ]
+            return false
+        if [ unlocked != 'yes' ]
+            say[ 'The bootloader is locked. Unlocking wipes the phone:' ]
+            say[ 'turn on OEM unlocking in Android\'s Developer options,' ]
+            say[ 'then unlock it (fastboot flashing unlock) and come back.' ]
+            return false
+        say[ 'Phone {product}, kernel {kb.name}' ]
+        # the root's uuid: the boot line finds userdata by it
+        uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
+        img : phone_image[ kb, uuid ]
+        if [ img.count == 0 ] return false
+        fs : phone_rootfs[ kb, uuid ]
+        if [ fs.count == 0 ] return false
+        # each against its partition, when the phone says
+        if [ room > 0 && file_bytes[ img ] > room ]
+            say[ 'boot.img is {file_bytes[ img ]} bytes; boot holds {room}' ]
+            return false
+        if [ data > 0 && file_bytes[ fs ] > data ]
+            say[ 'rootfs.img is {file_bytes[ fs ]} bytes; userdata holds {data}' ]
+            return false
+        # in sparse pieces the phone takes in one download each
+        if [ most <= 0 ] most = 256 * 1024 * 1024
+        work : '{install}/tmp/phone-fp6'
+        pieces : sparse_pieces[ fs, '{work}/rootfs', most ]
+        if [ pieces.count == 0 ]
+            say[ 'rootfs.img could not be split into sparse pieces' ]
+            return false
+        say[ 'rootfs in {pieces.count} sparse pieces of at most {most} bytes' ]
+        if [ phone_dry ]
+            say[ 'would flash boot with {img}' ]
+            say[ 'would flash userdata with {pieces.count} pieces' ]
+            say[ 'Check only: nothing written to the phone' ]
+            return true
+        if [ !fb.open[] ]
+            say[ 'The phone went away: {fb.problem}' ]
+            return false
+        say[ 'Flashing boot' ]
+        if [ !fb.flash[ 'boot', img ] ]
+            say[ 'Flashing boot stopped: {fb.problem}' ]
+            fb.close[]
+            return false
+        say[ 'Flashing userdata (Android\'s data is erased)' ]
+        if [ !fb.flash_pieces[ 'userdata', pieces ] ]
+            say[ 'Flashing userdata stopped: {fb.problem}' ]
+            fb.close[]
+            return false
+        for [ n: string ] in fb.notes
+            say[ '  {n}' ]
+        say[ 'Rebooting the phone' ]
+        fb.reboot[]
+        fb.close[]
+        return phone_serial[ product ]
+
+    # postmarketOS's deviceinfo value for a key ('' when none)
+    func device_value [ di: string, key: string ] -> string
+        k : 'deviceinfo_{key}='
+        for [ ln: string ] in read_lines[ di ]
+            if [ !ln.starts_with[ k ] ] continue
+            v : ln.mid[ k.count, ln.count - k.count ]
+            if [ v.starts_with[ '"' ] ] v = v.mid[ 1, v.count - 2 ]
+            return v
+        return ''
+
+    # the order modules load in: postmarketOS's early ones (with
+    # what they need) first, then every other, each after its
+    # dependencies (modules.dep)
+    func module_order [ md: string, early: string ] -> vec string
+        all : vec string []
+        deps : vec string []
+        for [ ln: string ] in read_lines[ '{md}/modules.dep' ]
+            c : i32 [ ln.index_of[ ':' ] ]
+            if [ c <= 0 ] continue
+            all.push[ ln.mid[ 0, c ] ]
+            deps.push[ ln.mid[ c + 1, ln.count - c - 1 ].trim[] ]
+        out : vec string []
+        for [ nm: string ] in read_lines[ early ]
+            for [ k: string ] in all
+                if [ k.ends_with[ '/{nm}.ko' ] ]
+                    module_visit[ k, all, deps, out ]
+        for [ k: string ] in all
+            module_visit[ k, all, deps, out ]
+        return out
+
+    func module_visit [ k: string, all: vec string, deps: vec string,
+                        out: vec string ]
+        if [ out.index_of[ k ] >= 0 ] return
+        at : i64 [ all.index_of[ k ] ]
+        if [ at >= 0 ]
+            d : string deps[ at ]
+            for [ p: string ] in d.split[ ' ' ]
+                if [ p.count > 0 ] module_visit[ p, all, deps, out ]
+        if [ out.index_of[ k ] < 0 ] out.push[ k ]
+
+    # the Fairphone's boot.img: the kernel, its device tree, and a
+    # ramdisk of our /init, every module (in load order) and the
+    # firmware but the modem's (it waits for the drive tree); as
+    # postmarketOS's deviceinfo says to pack it
+    public func phone_image [ kb: KernelBuild, uuid: string ]
+            -> string
+        kd : kb.dir
+        rel : kb.release
+        work : '{install}/tmp/phone-fp6'
+        di : '{kd}/deviceinfo'
+        md : '{kd}/kmods/lib/modules/{rel}'
+        steps : vec string []
+        steps.push[ 'rm -rf {work} && mkdir -p {work}' ]
+        # Google's boot image packer (Apache-2.0)
+        gs : 'https://android.googlesource.com'
+        mu : '{gs}/platform/system/tools/mkbootimg/+archive/refs/heads'
+        mz : fetch[ 'platform-system-tools-mkbootimg-main.tar.gz',
+                    '{mu}/main.tar.gz' ]
+        if [ mz.count == 0 ] return ''
+        tl : '{install}/build/mkbootimg'
+        steps.push[ 'mkdir -p {tl} && tar xzf {mz} -C {tl}' ]
+        # the ramdisk: /init, its mount points, the modules, firmware
+        rd : '{work}/rd'
+        mp : '{rd}/dev {rd}/proc {rd}/sys {rd}/mnt {rd}/newroot'
+        steps.push[ 'mkdir -p {mp} {rd}/lib/early' ]
+        steps.push[ 'cp {kd}/init {rd}/init && chmod 755 {rd}/init' ]
+        fw : '{rd}/lib/firmware'
+        steps.push[ 'cp -r {kd}/firmware {fw}' ]
+        mf : '{fw}/qcom/milos/fairphone/fp6'
+        steps.push[ 'rm -rf {mf}/modem* ' ]
+        if [ !run_steps[ steps ] ] return ''
+        order : module_order[ md, '{kd}/early.list' ]
+        names : string ''
+        for [ k: string ] in order
+            parts : k.split[ '/' ]
+            base : string parts[ parts.count - 1 ]
+            nm : base.mid[ 0, base.count - 3 ]
+            names = '{names}{nm}\n'
+            steps.push[ 'cp {md}/{k} {rd}/lib/early/{base}' ]
+        if [ !run_steps[ steps ] ] return ''
+        write_file[ '{rd}/lib/early/modules.load', names ]
+        say[ '{order.count} modules in the boot ramdisk' ]
+        newc : 'find . | cpio -o -H newc --quiet'
+        rz : '{work}/ramdisk.gz'
+        steps.push[ '(cd {rd} && {newc}) | gzip -9 > {rz}' ]
+        # the command line: postmarketOS's, then ours: the root
+        # on userdata by its uuid, busybox's init as pid 1
+        line : read_text[ '{kd}/kernel-cmdline.conf' ].trim[]
+        line = '{line} orbiter.phone=fp6 orbiter.uuid={uuid}'
+        line = '{line} orbiter.root=/ orbiter.init=/sbin/init'
+        hv : device_value[ di, 'header_version' ]
+        ps : device_value[ di, 'flash_pagesize' ]
+        mk : '{install}/bin/python3 {tl}/mkbootimg.py'
+        a : '--header_version {hv} --pagesize {ps}'
+        places : vec string [] [ 'base', 'kernel', 'ramdisk', 'second',
+                                 'tags', 'dtb' ]
+        for [ pl: string ] in places
+            fl : string [ (pl == 'base') ? '--base' : '--{pl}_offset' ]
+            ov : device_value[ di, 'flash_offset_{pl}' ]
+            a = '{a} {fl} {ov}'
+        ca : device_value[ di, 'bootimg_custom_args' ]
+        a = '{a} {ca} --kernel {kd}/Image.gz --ramdisk {rz}'
+        a = '{a} --dtb {kd}/fp6.dtb --cmdline \'{line}\''
+        img : '{work}/boot.img'
+        steps.push[ '{mk} {a} --output {img}' ]
+        if [ !run_steps[ steps ] ] return ''
+        say[ 'boot.img: {file_bytes[ img ]} bytes' ]
+        return img
+
+    # the phone's root for userdata: busybox (its init with a
+    # shell on the USB serial port), every module, all the
+    # firmware with the modem's; ext4 with the given uuid
+    public func phone_rootfs [ kb: KernelBuild, uuid: string ]
+            -> string
+        kd : kb.dir
+        work : '{install}/tmp/phone-fp6'
+        st : '{work}/root'
+        img : '{work}/rootfs.img'
+        steps : vec string []
+        dirs : 'bin sbin etc lib dev proc sys tmp run root mnt'
+        steps.push[ 'rm -rf {st} {img} && mkdir -p {st}' ]
+        steps.push[ 'cd {st} && mkdir -p {dirs}' ]
+        steps.push[ 'cp {kd}/busybox {st}/bin/busybox' ]
+        steps.push[ 'ln -s busybox {st}/bin/sh' ]
+        steps.push[ 'ln -s ../bin/busybox {st}/sbin/init' ]
+        steps.push[ 'cp -a {kd}/kmods/lib/modules {st}/lib/modules' ]
+        steps.push[ 'cp -r {kd}/firmware {st}/lib/firmware' ]
+        if [ !run_steps[ steps ] ] return ''
+        tab : '::sysinit:/bin/busybox --install -s\n'
+        tab = '{tab}ttyGS0::respawn:-/bin/sh\n'
+        tab = '{tab}::ctrlaltdel:/bin/reboot\n'
+        tab = '{tab}::shutdown:/bin/umount -a -r\n'
+        write_file[ '{st}/etc/inittab', tab ]
+        # the tree and a fifth more, a quarter GB to grow in
+        mb : 's=$(du -sm {st} | cut -f1)'
+        steps.push[ '{mb}; truncate -s $((s * 6 / 5 + 256))M {img}' ]
+        mk : 'mke2fs -q -t ext4 -b 4096 -U {uuid} -L orbiter-phone'
+        steps.push[ '{mk} -E root_owner=0:0 -d {st} {img}' ]
+        steps.push[ 'rm -rf {st}' ]
+        if [ !run_steps[ steps ] ] return ''
+        say[ 'rootfs.img: {file_bytes[ img ]} bytes' ]
+        return img
+
+    # a size as the bootloader says it: hex with 0x, else decimal
+    func var_bytes [ v: string ] -> i64
+        if [ v.starts_with[ '0x' ] ]
+            return hex_value[ v.mid[ 2, v.count - 2 ] ]
+        return v.integer_value[]
+
+    func file_bytes [ f: string ] -> i64
+        st : struct stat
+        if [ stat[ f.chars, @st ] != 0 ] return 0
+        return st.st_size
+
+    func hex_value [ h: string ] -> i64
+        digits : '0123456789abcdef'
+        v : i64 [ 0 ]
+        for [ i: i32 0, i < h.count, i += 1 ]
+            ch : h.mid[ i, 1 ]
+            d : i32 [ digits.index_of[ ch ] ]
+            if [ d < 0 ] d = '0123456789ABCDEF'.index_of[ ch ]
+            if [ d < 0 ] return 0
+            v = v * 16 + d
+        return v
+
+    # orbiter-os's USB serial port, once the phone has booted: its
+    # log said here and kept in install/tmp/phone-<product>.log
+    func phone_serial [ product: string ] -> bool
+        say[ 'Waiting for the phone\'s log on USB' ]
+        up : '$t/device/..'
+        find : 'for t in /sys/class/tty/ttyACM*; do '
+        find = '{find}v=$(cat {up}/idVendor 2>/dev/null); '
+        find = '{find}p=$(cat {up}/idProduct 2>/dev/null); '
+        find = '{find}test "$v:$p" = "1d6b:0104" '
+        find = '{find}&& echo /dev/$(basename $t); done'
+        lg : '{install}/tmp/phone-{product}.log'
+        wait : 'for i in $(seq 120); do d=$({find} | head -1); '
+        wait = '{wait}test -n "$d" && break; sleep 1; done'
+        cat : 'test -n "$d" && stty -F $d raw -echo'
+        cat = '{cat} && timeout 120 cat $d | tee {lg}'
+        ok : sh[ '{wait}; {cat}; test -n "$d"' ]
+        if [ !ok ] say[ 'No log port came up in two minutes' ]
+        return ok
+
     # one kernel: download, configure, make, its modules, then
     # nvidia's beside them; kernels/<name> when it worked
     public func build_kernel [ hw: string, ver: string, nv: string,
                                amd: string, intel: string ] -> bool
         if [ ver.count == 0 ] return false
+        if [ hw == 'Fairphone 6' ] return build_fairphone[ ver ]
         surface : bool [ hw == 'Surface' ]
         apple : bool [ hw == 'Apple' ]
         arm : bool [ hw == 'ARM64' || apple ]
@@ -916,7 +1452,8 @@ element Bootstrap
             ic = '{ic} -nostdlib -nostdinc -ffreestanding -Os'
             ic = '{ic} -fno-stack-protector -fuse-ld=lld -I{nl}'
             ic = '{ic} -I{hi}/include -include {nl}/nolibc.h'
-            steps.push[ '{ic} -o {part}/init {root}/os-bootstrap/init.c' ]
+            ini : '{root}/os-bootstrap/init.c'
+            steps.push[ '{ic} -o {part}/init {ini}' ]
         # m1n1 hands the kernel its Mac's device tree
         if [ apple ]
             dt : '{bd}/arch/arm64/boot/dts/apple'
@@ -1148,6 +1685,8 @@ element Bootstrap
                 want_nvidia, want_amd, want_intel ]
         el [ job == 'usb' ]
             failed = !write_installer[]
+        el [ job == 'phone' ]
+            failed = !phone_install[]
         el
             say[ 'Writing the drive tree with {chosen}' ]
             out_dir.make_dir[]
@@ -1157,6 +1696,10 @@ element Bootstrap
         if [ cancelled ] failed = true
         say[ (cancelled) ? 'Cancelled.'
             : ((failed) ? 'The build stopped.' : 'Done.') ]
+        # a kernel built: back to the list, the new one in it
+        if [ job == 'kernel' && !failed && !cancelled ]
+            kview    = ''
+            show_log = false
         cancelled = false
         Au.auto_free[]
 
@@ -1164,6 +1707,9 @@ element Bootstrap
     public func start [ what: string ]
         if [ building || !can_build[] ] return
         job       = what
+        step      = ''
+        if [ what == 'kernel' ]
+            sh[ 'mkdir -p {install}/tmp && : > {log_file[]}' ]
         building  = true
         failed    = false
         cancelled = false
@@ -1176,17 +1722,31 @@ element Bootstrap
         if [ e && e.id == 'usb_cancel' ]
             cancel[]
             return
+        # while a kernel builds: its log, shown or not
+        if [ e && e.id == 'log_toggle' ]
+            show_log = !show_log
+            pristine = false
+            return
         if [ !e || !e.id || building ] return
         key : e.id
         if [ key == 'boot_build' ]
             if [ builds_hardware[] ] start[ 'kernel' ]
+        el [ key == 'boot_new' ]
+            kview = 'build'
+        el [ key == 'build_back' ]
+            kview    = ''
+            show_log = false
+        el [ key == 'log_toggle' ]
+            show_log = !show_log
         el [ key == 'boot_usb' ]
             usb_view  = true
             drives_at = 0
+            phone_at  = 0
         el [ key == 'usb_back' ]
             usb_view = false
             progress = 0.0
         el [ key == 'usb_write' ] start[ 'usb' ]
+        el [ key == 'phone_go' ] start[ 'phone' ]
         el [ key == 'keys_on' ] stick_keys = true
         el [ key == 'keys_off' ] stick_keys = false
         el [ key.starts_with[ 'drv_' ] ]
@@ -1206,8 +1766,10 @@ element Bootstrap
                 if [ on_pc[ pk ] ] select[ pk.name ]
                 el
                     stick = pk.name
+                    goes : string [ (pk.hardware == 'Fairphone 6')
+                        ? 'goes on the phone' : 'makes an ARM stick' ]
                     say[ 'The drive keeps {chosen}; Write installer ' +
-                         'makes an ARM stick with {stick}' ]
+                         '{goes} with {stick}' ]
         el [ key.starts_with[ 'hw_' ] ]
             want_hardware = key.mid[ 3, key.count - 3 ]
             vs : offered[]
@@ -1358,9 +1920,22 @@ element Bootstrap
     public func render [] -> Elements
         if [ building ] pristine = false
         t : Elements []
+        # a kernel building: what it does now; its log when asked
+        if [ building && job == 'kernel' ]
+            building_view[ t ]
+            return t
+        # a new kernel: its choices, then Build or Back
+        if [ kview == 'build' && !usb_view ]
+            build_view[ t ]
+            return t
+        # the kernels: the page's most, the two ways on under it
+        if [ usb_view && on_phone[] ]
+            phone_view[ t ]
+            return t
+        lh : f32 [ (usb_view) ? 3.8 : 11.0 ]
         t[ 'kernels' ] = ListBox [ elements: kernel_els[],
-            area: Region { l0 t0 r0 h3.8 } ]
-        y : f32 [ 4.3 ]
+            area: Region [ 'l0 t0 r0 h{lh}' ] ]
+        y : f32 [ lh + 0.5 ]
         if [ usb_view ]
             # sticks come and go: look again every two seconds
             now : i64 [ epoch_millis[] ]
@@ -1417,45 +1992,104 @@ element Bootstrap
             y += 1.25
             log_view[ t, y ]
             return t
-        if [ can_build[] ]
-            choices[ t, y, 'Hardware', 'hw_', hardwares[],
-                     want_hardware ]
-            y += 1.05
-            choices[ t, y, 'Kernel', 'ver_', offered[], want_version ]
-            # where Apple's kernel comes from
-            if [ want_hardware == 'Apple' ]
-                note : 'from the Asahi Linux project'
-                t[ 'asahi_note' ] = BootLog [ label: note,
-                    area: Region [ 'l8.6 t{y} w9 h0.825' ] ]
-            if [ nvidia_offered[] ]
-                y += 1.05
-                choices[ t, y, 'NVIDIA', 'nv_', nvidias[], want_nvidia ]
-            if [ amd_offered[] ]
-                y += 1.05
-                choices[ t, y, 'AMD', 'amd_', amds[], want_amd ]
-            if [ intel_offered[] ]
-                y += 1.05
-                choices[ t, y, 'Intel', 'in_', intels[], want_intel ]
-            # a new kernel from the choices, beside them; the
-            # hardware lines without a build path yet: dim
-            if [ !building ]
-                ok : bool [ builds_hardware[] ]
-                t[ 'boot_build' ] = BootButton [ label: 'Build kernel',
-                    disable: !ok, opacity: (ok) ? 1.0 : 0.4,
-                    area: Region [ 'r4.5 t{y} r0 h0.825' ] ]
-                # an installer stick for the lit kernel
-                if [ stick_kernel[] ]
-                    yu : f32 [ y - 1.05 ]
-                    t[ 'boot_usb' ] = BootButton [
-                        label: 'Write installer…',
-                        area: Region [ 'r4.5 t{yu} r0 h0.825' ] ]
-            y += 1.25
-        log_view[ t, y ]
+        if [ can_build[] && !building ]
+            t[ 'boot_new' ] = BootButton [ label: 'Build kernel…',
+                area: Region [ 'r4.5 t{y} r0 h0.825' ] ]
+            # an installer stick for the lit kernel
+            if [ stick_kernel[] ]
+                t[ 'boot_usb' ] = BootButton [
+                    label: 'Write installer…',
+                    area: Region [ 'r4.75 t{y} w4.5 h0.825' ] ]
         return t
+
+    # the phone page: the phone on USB, Back, and Install
+    func phone_view [ t: Elements ]
+        lh : f32 [ 3.8 ]
+        t[ 'kernels' ] = ListBox [ elements: kernel_els[],
+            area: Region [ 'l0 t0 r0 h{lh}' ] ]
+        y : f32 [ lh + 0.5 ]
+        # phones come and go: look again every two seconds
+        now : i64 [ epoch_millis[] ]
+        if [ !building && now - phone_at > 2000 ]
+            phone_look[]
+            phone_at = now
+        pristine = false
+        t[ 'phone_name' ] = BootText [ label: 'Phone',
+            area: Region [ 'l0 t{y} w4 h0.825' ] ]
+        t[ 'phone_word' ] = BootLog [ label: phone_word,
+            area: Region [ 'l4.4 t{y} r0 h0.825' ] ]
+        y += 1.25
+        t[ 'usb_back' ] = BootButton [ label: 'Back',
+            disable: building, opacity: (building) ? 0.4 : 1.0,
+            area: Region [ 'l0 t{y} w4.5 h0.825' ] ]
+        go : bool [ phone_ok && !building ]
+        t[ 'phone_go' ] = BootButton [ label: 'Install',
+            disable: !go, opacity: (go) ? 1.0 : 0.4,
+            area: Region [ 'r4.5 t{y} r0 h0.825' ] ]
+        y += 1.25
+        log_view[ t, y ]
+
+    # a new kernel's page: its choices, Back and Build
+    func build_view [ t: Elements ]
+        y : f32 [ 0.0 ]
+        choices[ t, y, 'Hardware', 'hw_', hardwares[], want_hardware ]
+        y += 1.05
+        choices[ t, y, 'Kernel', 'ver_', offered[], want_version ]
+        # where a line's kernel comes from
+        nt : string ''
+        if [ want_hardware == 'Apple' ]
+            nt = 'from the Asahi Linux project'
+        if [ want_hardware == 'Fairphone 6' ]
+            nt = 'milos-mainline, as postmarketOS builds it'
+        if [ nt.count > 0 ]
+            t[ 'kern_note' ] = BootLog [ label: nt,
+                area: Region [ 'l8.6 t{y} w9 h0.825' ] ]
+        if [ nvidia_offered[] ]
+            y += 1.05
+            choices[ t, y, 'NVIDIA', 'nv_', nvidias[], want_nvidia ]
+        if [ amd_offered[] ]
+            y += 1.05
+            choices[ t, y, 'AMD', 'amd_', amds[], want_amd ]
+        if [ intel_offered[] ]
+            y += 1.05
+            choices[ t, y, 'Intel', 'in_', intels[], want_intel ]
+        y += 1.6
+        # the last one stopped: its word, and its log
+        if [ failed && lines.count > 0 ]
+            t[ 'build_word' ] = BootLog [ label: lines.last[],
+                area: Region [ 'l0 t{y} r9.25 h0.825' ] ]
+            t[ 'log_toggle' ] = BootButton [
+                label: (show_log) ? 'Hide log' : 'Show log',
+                area: Region [ 'r9.25 t{y} w4.5 h0.825' ] ]
+        t[ 'build_back' ] = BootButton [ label: 'Back',
+            area: Region [ 'l0 t13.3 w4.5 h0.825' ] ]
+        ok : bool [ builds_hardware[] ]
+        t[ 'boot_build' ] = BootButton [ label: 'Build',
+            disable: !ok, opacity: (ok) ? 1.0 : 0.4,
+            area: Region [ 'r4.5 t13.3 r0 h0.825' ] ]
+        if [ failed && show_log ] log_view_to[ t, y + 1.25, 12.9 ]
+
+    # a kernel building: the step it is on, its log if asked
+    func building_view [ t: Elements ]
+        sw : string [ (step.count > 0) ? '{step}…' : 'Starting…' ]
+        if [ cancelled ] sw = 'Cancelling…'
+        t[ 'build_step' ] = BootText [ label: sw,
+            area: Region [ 'l0 t0 r5 h0.825' ] ]
+        t[ 'log_toggle' ] = BootButton [
+            label: (show_log) ? 'Hide log' : 'Show log',
+            area: Region [ 'r4.5 t0 r0 h0.825' ] ]
+        lf : 'The whole log: {log_file[]}'
+        t[ 'log_where' ] = BootLog [ label: lf,
+            area: Region [ 'l0 t0.95 r0 h0.825' ] ]
+        if [ show_log ] log_view[ t, 2.2 ]
 
     # the build's output from y down, as much as fits
     func log_view [ t: Elements, y: f32 ]
-        room : i32 [ i32[ (14.15 - y) / 0.72 ] ]
+        log_view_to[ t, y, 14.15 ]
+
+    # the same, ending at foot (clear of the buttons under it)
+    func log_view_to [ t: Elements, y: f32, foot: f32 ]
+        room : i32 [ i32[ (foot - y) / 0.72 ] ]
         shown : vec string []
         lock.lock[]
         oldest : i32 [ lines.count - room ]

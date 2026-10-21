@@ -5192,7 +5192,7 @@ Display Window
         if [ !element_targets ] return
         found : Render [ null ]
         for [ r: Render, rid: string ] in element_targets
-            if [ r && r.owner && r.owner.frost ]
+            if [ r && !r.skip && r.owner && r.owner.frost ]
                 found = r
                 break
         if [ found && !chain && is_setup ] build_frost_chain[]
@@ -5365,6 +5365,24 @@ Display Window
     # program's window (Wayland) gets for one
     public  wheel_mul           : f64 [ wheel_scale[] ]
     public  window_wheel        : f32 [ 1.0 ]
+    # the backdrop scene from another vantage (a floor's mirror):
+    # asked each frame, its camera turned by mirror_turn, drawn
+    # with mirror_proj at mirror_w x mirror_h; the scene answers
+    public  mirror_ask          : bool
+    public  mirror_turn         : mat4f
+    public  mirror_proj         : mat4f
+    public  mirror_w            : i32
+    public  mirror_h            : i32
+    public  mirror              : Texture
+    # the scene the mirror shows, when not the backdrop: drawn for
+    # the mirror only (skipped otherwise)
+    public  mirror_src          : Render
+    # the mirror's scene's own brightness for it (its Render's)
+    public  mirror_gain         : f32
+    # its sharp copy, and the blur the stage gives it
+    public  mirror_raw          : Texture
+    public  mirror_blur         : ReduceBlur
+    public  mirror_steps        : i32
 
     # the selected text, wrapped rows joined by a space
     public func note_selection [] -> string

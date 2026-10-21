@@ -971,6 +971,94 @@ is `wizard`; it uses whatever supported card is in the machine.
    for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
    stick as PCs do. (7.x is in the kernel choices now: item 18.)
 
+## orbiter-os on phones (Oct 21 2026)
+
+DROPPED (Kalen, Oct 21): the Pixel line. Tensor Pixels use Samsung's
+Exynos modem, whose control (boot program, radio library, IMS for
+VoLTE) is closed: no calls, SMS or mobile data on our own system.
+Built and then removed with its files (~22 GB): Google's kernel for
+all eleven Tensor Pixels, cascaded as Google builds them (one core,
+each phone's modules and drivers in its own folder), and an
+installer flashing boot pieces made from Google's factory images.
+Kept, for any phone:
+- `fastboot` module (fastboot/fastboot.ag + fastboot.c over libusb
+  1.0.27 from source): open, getvar, download, flash (slot names),
+  reboot, vbmeta_disabled; t_fastboot_flash and t_vbmeta_disabled
+  pass (a scripted phone). Not yet run against a real phone.
+- os-bootstrap/init.c, with `orbiter.phone=<product>`: the boot
+  ramdisk's /lib/early modules loaded by finit_module in order
+  (modules.load), a USB serial gadget (configfs ACM, 1d6b:0104) with
+  the kernel log copied to it (the PC's ttyACM), then the phone's
+  folder under /lib/phones (its products file names it) loaded
+  first in order and every later modprobe kept inside it (-d, -C).
+  Checked by a harness, not booted.
+
+### Fairphone 6 — live list (Oct 21 2026, Kalen: "do all steps")
+
+Chip SM7635 "Milos". Kernel: milos-mainline/linux (Luca Weiss's
+mainline fork; postmarketOS builds tag v<pkgver>-milos, 7.2.0
+today). Everything about the phone is read from postmarketOS's
+pmaports (device/testing/linux-postmarketos-qcom-milos,
+device-fairphone-fp6, firmware-fairphone-fp6) by the GitLab API at
+build time: the release, the config, deviceinfo (boot image v2,
+page 4096, offsets, dtb qcom/milos-fairphone-fp6), the early
+module list (panel-novatek-nt37705, spi-geni-qcom), the cmdline.
+1. DONE (Oct 21) hardware line 'Fairphone 6'
+   (build_kernel -> build_fairphone): tarball, pmOS config with
+   modules uncompressed, USB_CONFIGFS(_ACM) built in, BTF off; our
+   LLVM for arm64; Image.gz, modules, the dtb; our nolibc /init;
+   kernels/<ver>-fp6/ (Image.gz, fp6.dtb, kmods, init, early.list,
+   deviceinfo, kernel-cmdline.conf, firmware/, build.agi).
+   Built by a test: kernels/7.2.0-fp6, 386 modules. The list
+   takes a folder with Image.gz too (scan).
+2. DONE firmware (fairphone_firmware): FairBlobs at pmOS's
+   commit, joined by pil-squasher (built from source), placed as
+   pmOS places it (qcom/milos/fairphone/fp6, qca, postmarketos
+   for the GPU's gmu/sqe), ath11k WCN6750 board-2.bin.
+3. DONE phone_image: a ramdisk of /init, every module in load
+   order (early ones first, then modules.dep order) in /lib/early,
+   the firmware but the modem's; Google's mkbootimg (fetched) with
+   deviceinfo's values; cmdline 'console=tty0 orbiter.phone=fp6'.
+   install/tmp/phone-fp6/boot.img, 37.6 MB. Checked by Google's
+   unpack_bootimg: header v2, page 4096, pmOS's offsets; kernel
+   and dtb equal to the build's; ramdisk: aarch64 /init, 387 files
+   in lib/early (panel-novatek-nt37705, spi-geni-qcom first), 31 MB
+   of firmware. No drive tree on the phone yet: init stops at "no
+   orbiter.uuid" and says so on the USB log (the first boot's test).
+4. BUILT, seen hidden (Oct 21): the install page. A lit Fairphone
+   kernel's Write installer… shows 'Install orbiter-os on the
+   phone' (wizard heading; Bootstrap.on_phone), the phone on USB
+   said every 2 s, Back, Install (dim with no phone): fastboot open
+   (a udev rule by pkexec when refused), the product must hold FP6,
+   unlocked; the image against partition-size:boot; flash boot
+   (current slot), reboot, then the log from the 1d6b:0104 ttyACM
+   into install/tmp/phone-<p>.log. phone_dry: check only.
+   NOT run against a phone: none here, and never flashed by me.
+5. BUILT (Oct 21, Kalen: the root fs on userdata) Install also
+   writes the phone's root. A fresh uuid per install; the boot
+   line gains orbiter.uuid=<it> orbiter.root=/ orbiter.init=
+   /sbin/init. phone_rootfs: ext4 (4 KB blocks, label
+   orbiter-phone, the tree plus a fifth plus 256 MB) holding
+   Alpine's static busybox 1.37.0 (fetched by the kernel build into
+   the kernel folder), /sbin/init -> busybox, an inittab
+   (busybox --install, a shell on ttyGS0: the PC's ttyACM),
+   lib/modules and all of lib/firmware with the modem's. fastboot
+   sparse_pieces: Android's sparse format (zero blocks as fill
+   chunks), pieces under the phone's max-download-size, each
+   covering the whole image; flash_pieces sends each to userdata.
+   The image is checked against partition-size:userdata.
+   Checked: rootfs.img 520 MB read back by debugfs (uuid,
+   inittab, aarch64 busybox, modem firmware, modules 7.2.0);
+   split at 50 MB into 5 pieces, decoded by an independent Python
+   reader byte for byte equal to the image. fastboot
+   t_sparse_pieces (decoded back). NOT run on a phone.
+   OPEN: growing the fs over all of userdata (resize2fs on the
+   phone); the image's files are owned by uid 1000.
+`silver --test wizard` exit 0 (t_installer_image_arm as before).
+OPEN: the drive tree on the phone (userdata), the arm64 userland,
+the modem (rmtfs, qrtr, pd-mapper, ModemManager), vbmeta if ABL
+needs it (pmOS flashes none for this phone).
+
 ## orbiter-os Wi-Fi — live list (Oct 15 2026)
 
 Kalen: a Wi-Fi setup in orbiter. His picks: iwd does the joining
@@ -2106,6 +2194,53 @@ without it if wanted.
    orbiter: a drop over a running hosted app goes to it as
    HM.drop (three bytes a message, a 0 byte ends; the app hands
    it to its own drop_event). Not tried with a real drag.
+
+5. RULE (Kalen, Oct 20, after false "done" reports): never report
+   a visual result before looking at its pixels in a shot (crop,
+   zoom, brighten). "Dark sky" and "it's Neptune's blue" were said
+   unchecked and were wrong. Never tell Kalen to restart.
+   Never change what his session saves (scene, panes, settings)
+   as a side effect: a view-only override of scene_loaded[] saved
+   MilkyWay over his Neptune mid-validation (save_session writes
+   scene = scene_loaded[]). Overrides go in their own element.
+6. DONE the avatars are part of the platform scene (orbiter/
+   Platform.ag PlatformView, PlatAvatar.scene_draw; avatar/
+   avatar.ag scene_host/scene_view/scene_box/scene_frame; design/
+   Stage.ag host mode: the first depth pass draws into the host
+   Render, its screen passes run at host size). Focus blur removed
+   entirely. Heat folds the halo in (Heat.rim, pic()).
+7. DONE resolution: the platform picture is 2x the element in
+   device px, drawn on whole pixels (exact 2:1). The chosen avatar
+   (home_open) is drawn again at 4x in its own box Render `close`
+   (floor there depth only: look.y 0), its chain run there, then
+   `shrink` (UVReduce, 4x4) laid over the 2x picture on whole
+   pixels. A box resize rebinds shrink (new image, same name).
+   5 agents: 30 fps hidden; 1 agent ~50.
+8. DONE AgentHome is `animated: true`: the platform (animated)
+   painted over the list's text (cached parent composed first).
+9. DONE the mirrors reflect the scene. trinity Window last members
+   mirror_ask, mirror_turn, mirror_proj, mirror_w/h, mirror,
+   mirror_src; Display.mirror_pass (vk.ag) draws the scene's Render
+   once more with every ModelViewProject shader's proj set to the
+   platform's (view untouched), copies it to win.mirror. PlatLit
+   reads it with rows flipped about the horizon (uv = tuv.x,
+   1 - tuv.y). Failed tries, keep out: a reflection matrix tilted by
+   the camera's 48 deg (reflects high empty sky: black); any det -1
+   view (culls the planet's faces).
+10. DONE the agent view's background is the Milky Way (orbiter
+   galaxy_element, slot 'galaxy', built once, its Render kept off
+   the window), while the CHOSEN scene stays mounted, its Render
+   skipped as backdrop and named win.mirror_src: the floor reflects
+   the chosen scene (Neptune), the galaxy is behind. Seen in a
+   hidden run (zoomed): Neptune's lit side and terminator in the
+   floor. Built scenes are kept between switches (scene_kept,
+   scene_rts). NOT seen on Kalen's screen: his running orbiter has
+   the trinity from before these changes (a reload swaps only the
+   app library), so he saw no reflection.
+   Test harness (session scratchpad rr/): onep.sh (Neptune) /
+   oapps2.sh (MilkyWay) launch hidden; q.py drives; kill_os.sh
+   kills only test processes; agent add = click(40,882) then
+   click(785,61).
 
 ## orbiter-os shell design — live list (Oct 1 2026)
 

@@ -673,9 +673,11 @@ element EditorView
         rv9 : AppView (to9 && to9.app_view) ? to9.run_view : null
         # the empty pane ('Open') too: it is the apps view alone
         rn9 : bool [ to9 && to9.run_view && !to9.run_view.ended ]
-        open9 : bool [ !file[] && !rn9 && !wn9 ]
+        # the empty pane: no file, app, window or terminal in it
+        open9 : bool [ !file[] && !rn9 && !wn9 && psess[].count == 0 ]
         inapp : bool [ orb[].system_on[]
-            && ((rv9 && !rv9.ended && !rv9.held) || wn9 || open9)
+            && ((rv9 && !rv9.ended && !rv9.held) || wn9 || open9
+                || psess[].count > 0)
             && !browse_active[] && orb[].pending_finder != pane_index ]
         # the editor's bar is for finding: up only while ctrl+f finds
         # (or a new file is named)
@@ -751,7 +753,9 @@ element EditorView
         # nothing in it: no file, and no app running in it
         ap9 : Editor text_of[]
         runs9 : bool [ ap9 && ap9.run_view && !ap9.run_view.ended ]
-        if [ !file[] && !runs9 && !browse_active[] && !wn9 ]
+        # nor a terminal (an agent's, a console)
+        if [ !file[] && !runs9 && !browse_active[] && !wn9
+             && psess[].count == 0 ]
             # typing filters them: the box mounts at the foot, the
             # cards scroll above it
             af9 : string [ (pane_index == orb[].active_pane)
@@ -1449,8 +1453,7 @@ element AgentHome
         un : f32 ux_unit[ ux ]
         # the platform behind; the list at the right, beside it
         lx : f32 [ round[ bounds.w * 0.42 ] ]
-        t['plat'] = PlatformView [ frame_w: lx,
-                                   area: Region { l0 t0 r0 b0 } ]
+        t['plat'] = orb.platform_of[ lx ]
         rh : f32 [ round[ 30.0 * un ] ]
         ed : f32 [ round[ 24.0 * un ] ]
         top : f32 [ round[ 12.0 * un ] ]
@@ -3717,7 +3720,34 @@ element orbiter : trinity # implements compiler
     # --show_fps: the frame rate alone, each second on the console
     public show_fps      : bool
     intern scene_el      : element
+    # the platform's avatars held in a state to check: 0 as they
+    # are, 1 the halo (thinking), 2 edits coming in, 3 the beam
+    public avatar_mode   : i32
     intern scene_el_nm   : string
+    # built scenes kept between switches (the agent view's Milky Way
+    # and the chosen one), with their pictures while off the window
+    intern scene_kept    : map element [ string ]
+    intern scene_rts     : map Render [ string ]
+    # the agent view's background, our galaxy, built once and kept
+    # (its picture while off the window); the chosen scene then
+    # shows in the floor's mirrors only
+    intern galaxy_el     : element
+    # the agents whose avatars have risen out of the glass: a
+    # platform made again shows them up, not rising again
+    public home_risen    : vec string
+    # the platform, made once: its avatars, their turns and the
+    # camera go on across visits to the agents view
+    intern plat_kept     : element
+
+    # the agents view's platform, kept; its free width set again
+    public func platform_of [ fw: f32 ] -> element
+        if [ !plat_kept ]
+            plat_kept = PlatformView [ frame_w: fw,
+                                       area: Region { l0 t0 r0 b0 } ]
+        pv : PlatformView plat_kept
+        pv.frame_w = fw
+        return plat_kept
+    intern galaxy_rt     : Render
     # each scene's props as the user set them, by scene name (agi)
     public [ StatePersist ] scene_props   : map string [string]
     intern frost_dbg8    : i32 [ -9 ]
@@ -6744,14 +6774,19 @@ element orbiter : trinity # implements compiler
     func own_menu_sync [] -> bool
         ed : Editor pane_at[ active_pane ]
         av : AppView (ed) ? ed.run_view : null
-        key : string [ (av) ? '{av.iid}:{ed.app_view}' : '' ]
+        pc : string [ (active_pane < pane_console.count)
+                      ? pane_console[ active_pane ] : '' ]
+        key : string [ (av) ? '{av.iid}:{ed.app_view}:{pc}'
+                       : ((pc.count > 0) ? pc : '') ]
         if [ menu_win == 0 && menu_own && menu_own == key ] return false
         had : bool [ menu_items && menu_items.count > 0 ]
         menu_win = 0
         menu_own = key
         menu_top = -1
         menu_items = vec TrayEntry []
-        if [ av ]
+        if [ pc.starts_with[ 'home:' ] ]
+            menu_items = agent_menu[ pc.mid[ 5, pc.count - 5 ] ]
+        el [ av ]
             menu_items = own_menu[ av, ed.app_view ]
         return had || menu_items.count > 0
 
@@ -6763,6 +6798,21 @@ element orbiter : trinity # implements compiler
     func own_menu [ av: AppView, shown: bool ] -> vec TrayEntry
         m : vec TrayEntry []
         m.push[ own_entry[ app_name[ av ], '', 0 ] ]
+        # an agent app: the agents view's instances, each the same
+        # terminal shown here
+        if [ av.agent && home_order && home_order.count > 0 ]
+            ed : Editor pane_at[ active_pane ]
+            pc : string [ (ed && ed.pane_index < pane_console.count)
+                          ? pane_console[ ed.pane_index ] : '' ]
+            for [ nm: string ] in home_order
+                if [ !home_session[ nm ] ] continue
+                md : string home_model_of[ nm ]
+                ie : TrayEntry own_entry[
+                    (md.count > 0) ? '{nm}  {md}' : nm,
+                    'orb.agent:{nm}', 1 ]
+                ie.check = (pc == 'home:{nm}') ? 1 : 0
+                m.push[ ie ]
+            m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
         # only a resource default takes content
         dp : Prop default_prop[ av.module_name[] ]
         if [ dp && dp.access == 'default' && dp.type == 'resource' ]
@@ -6862,6 +6912,17 @@ element orbiter : trinity # implements compiler
             if [ md ]
                 install_start[ AppEntry [ name: md.filename[], file: md,
                     module: true ], e.action == 'orb.clean' ]
+            return
+        # an agents view instance: its terminal in this pane
+        if [ e.action.starts_with[ 'orb.agent:' ] ]
+            home_in_pane[ e.action.mid[ 10, e.action.count - 10 ],
+                          active_pane ]
+            return
+        # a new instance of the agent, shown here
+        if [ e.action.starts_with[ 'orb.agent_new:' ] ]
+            nn : string home_new[ e.action.mid[ 14,
+                                              e.action.count - 14 ] ]
+            if [ nn.count > 0 ] home_in_pane[ nn, active_pane ]
             return
         # the file's menu: the pane itself
         if [ e.action == 'orb.pane_add' ]
@@ -8286,26 +8347,50 @@ element orbiter : trinity # implements compiler
         if [ !nm || nm.count == 0 ] return null
         if [ scene_el && scene_el_nm && scene_el_nm.compare[ nm ] == 0 ]
             return scene_el
-        st : Au.find_type[ nm.chars, null ]
-        if [ !st ]
-            scene_module_ensure[ nm ]
-            st = Au.find_type[ nm.chars, null ]
-        if [ !st ]
-            log 'scene: no class for {nm}'
-            return null
-        # unmount does not call on_unload: unregister the outgoing
-        # target
+        if [ !scene_kept ]
+            scene_kept = map element [ string ] []
+            scene_rts  = map Render [ string ] []
+        # unmount does not call on_unload: the outgoing target comes
+        # off the window, kept with its scene
         if [ scene_el && scene_el.id && ux && ux.element_targets ]
+            if [ ux.element_targets.contains[ scene_el.id ] ]
+                scene_rts[ scene_el_nm ] = ux.element_targets[ scene_el.id ]
             ux.element_targets.rm[ scene_el.id ]
-        e : element [ Au.new_object[ st, null, null, true,
-            __FILE__, __LINE__, __SEQUENCE__ ] ]
-        if [ !e ] return null
-        e.area = Region [ 'l0 t0 r0 b0' ]
-        # the stores own the scene and its name
-        scene_el    = e
-        scene_el_nm = string [ nm ]
-        scene_props_restore[ e, nm ]
-        log 'scene: built {nm}'
+        # only the agent view's Milky Way and the chosen scene stay
+        gone : vec string []
+        for [ ke: element, kn: string ] in scene_kept
+            if [ kn.compare[ 'MilkyWay' ] != 0 && kn.compare[ nm ] != 0
+                 && (!scene_load || kn.compare[ scene_load ] != 0) ]
+                gone.push[ kn ]
+        for [ kn: string ] in gone
+            scene_kept.rm[ kn ]
+            if [ scene_rts.contains[ kn ] ] scene_rts.rm[ kn ]
+        e : element
+        if [ scene_kept.contains[ nm ] ]
+            # kept: its picture back on the window, nothing rebuilt
+            e = scene_kept[ nm ]
+            if [ e.id && ux && scene_rts.contains[ nm ] ]
+                ux.element_targets[ e.id ] = scene_rts[ nm ]
+            scene_el    = e
+            scene_el_nm = string [ nm ]
+        el
+            st : Au.find_type[ nm.chars, null ]
+            if [ !st ]
+                scene_module_ensure[ nm ]
+                st = Au.find_type[ nm.chars, null ]
+            if [ !st ]
+                log 'scene: no class for {nm}'
+                return null
+            e = element [ Au.new_object[ st, null, null, true,
+                __FILE__, __LINE__, __SEQUENCE__ ] ]
+            if [ !e ] return null
+            e.area = Region [ 'l0 t0 r0 b0' ]
+            # the stores own the scene and its name
+            scene_el    = e
+            scene_el_nm = string [ nm ]
+            scene_kept[ nm ] = e
+            scene_props_restore[ e, nm ]
+            log 'scene: built {nm}'
         # the scene retints the ui; null theme restores the authored
         # values
         if [ ux && ux.st ]
@@ -8318,6 +8403,48 @@ element orbiter : trinity # implements compiler
             ux.apply_solid[]
             ux.restyle = true
         return e
+
+    # the agent view's galaxy behind the platform, unless the chosen
+    # scene is it already
+    func galaxy_element [] -> element
+        nm : scene_loaded[]
+        want : bool [ home_tab == 'agent' && home_seen[]
+                      && (!nm || nm.compare[ 'MilkyWay' ] != 0) ]
+        if [ !want ]
+            # off the window: its picture kept for the next visit
+            if [ galaxy_el && galaxy_el.id && ux && ux.element_targets
+                 && ux.element_targets.contains[ galaxy_el.id ] ]
+                galaxy_rt = ux.element_targets[ galaxy_el.id ]
+                ux.element_targets.rm[ galaxy_el.id ]
+            return null
+        if [ !galaxy_el ]
+            st : Au.find_type[ 'MilkyWay', null ]
+            if [ !st ]
+                scene_module_ensure[ 'MilkyWay' ]
+                st = Au.find_type[ 'MilkyWay', null ]
+            if [ !st ] return null
+            galaxy_el = element [ Au.new_object[ st, null, null, true,
+                __FILE__, __LINE__, __SEQUENCE__ ] ]
+            if [ !galaxy_el ] return null
+            galaxy_el.area = Region [ 'l0 t0 r0 b0' ]
+            log 'scene: built MilkyWay for the agent view'
+        if [ galaxy_rt && galaxy_el.id && ux ]
+            ux.element_targets[ galaxy_el.id ] = galaxy_rt
+            galaxy_rt = null
+        return galaxy_el
+
+    # the agent view: the chosen scene drawn for the mirrors alone,
+    # the galaxy the backdrop
+    func mirror_source [ w: Window ]
+        if [ !w.element_targets ] return
+        gal : bool [ galaxy_el && galaxy_el.id
+                     && w.element_targets.contains[ galaxy_el.id ] ]
+        srt : Render [ null ]
+        if [ scene_el && scene_el.id
+             && w.element_targets.contains[ scene_el.id ] ]
+            srt = w.element_targets[ scene_el.id ]
+        if [ srt ] srt.skip = gal
+        w.mirror_src = (gal) ? srt : null
 
     # the mounted scene; the label click sets it from the browsed one
     func scene_loaded [] -> string
@@ -11448,6 +11575,13 @@ element orbiter : trinity # implements compiler
             portal_deliver[ nav_root ]
             ev.no_default = true
             return
+        # cmd / ctrl + 1 2 3: the platform's avatars held in one
+        # state to check it (halo, edits, beam); the same again lets go
+        if [ ev.key.state && ux && ux.cmd && ks >= 49 && ks <= 51 ]
+            want : i32 [ ks - 48 ]
+            avatar_mode = (avatar_mode == want) ? 0 : want
+            ev.no_default = true
+            return
         # cmd / ctrl + q: the selected pane's app quits (its window
         # is asked to close)
         if [ ks == 81 && ev.key.state && ux && ux.cmd ]
@@ -12656,8 +12790,10 @@ element orbiter : trinity # implements compiler
         t : Elements []
         # the full navigator up: the free windows fade out of sight
         # (still running), back as it shuts; it fades in
-        away : bool [ nav_fade >= 1.0 ]
-        seen : f32 [ 1.0 - nav_fade ]
+        # the agents view up: they are put away as well
+        agents : bool [ home_tab == 'agent' && home_seen[] ]
+        away : bool [ nav_fade >= 1.0 || agents ]
+        seen : f32 [ (agents) ? 0.0 : 1.0 - nav_fade ]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             # free said every render: a docked pane said nothing and
             # kept a window's rounded mask
@@ -12679,7 +12815,7 @@ element orbiter : trinity # implements compiler
                 ev.hide    = away
                 ev.opacity = seen
                 # fading or gone: presses pass it by
-                ev.user_events = nav_fade <= 0.0
+                ev.user_events = nav_fade <= 0.0 && !agents
                 ev.area = Region [
                     'l{fx}px t{fy}px w{fw}px h{fh}px' ]
                 # its shadow and outline, under it
@@ -12701,7 +12837,8 @@ element orbiter : trinity # implements compiler
                 t['edge{i}'] = WinEdge [ topmost: true, hide: away,
                     opacity: seen, square: sq,
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
-                if [ nav_fade <= 0.0 ] grips_of[ t, i, fx, fy, fw, fh ]
+                if [ nav_fade <= 0.0 && !agents ]
+                    grips_of[ t, i, fx, fy, fw, fh ]
                 continue
             t['pane{i}'] = ev
         # nothing docked: the desktop (the apps) under the free windows
@@ -13379,6 +13516,9 @@ element orbiter : trinity # implements compiler
     func pane_empty [ pi: i32 ] -> bool
         # a window's pane has no editor
         if [ pane_window[ pi ] != 0 ] return false
+        # a terminal in it (an agent's, a console): not empty
+        if [ pi < pane_console.count && pane_console[ pi ].count > 0 ]
+            return false
         ed : Editor pane_at[ pi ]
         if [ !ed ] return true
         rv : AppView ed.run_view
@@ -13725,6 +13865,13 @@ element orbiter : trinity # implements compiler
         return bar_title_of[ active_pane ]
 
     func bar_title_of [ pi: i32 ] -> string
+        # an agent's terminal: the instance and its model
+        pc : string [ (pi >= 0 && pi < pane_console.count)
+                      ? pane_console[ pi ] : '' ]
+        if [ pc.starts_with[ 'home:' ] ]
+            hn : string pc.mid[ 5, pc.count - 5 ]
+            hm : string home_model_of[ hn ]
+            return (hm.count > 0) ? '{hn}  {hm}' : hn
         ed : Editor pane_at[ pi ]
         rv : AppView (ed) ? ed.run_view : null
         if [ rv && !rv.ended && window_of[ rv ] == 0 ]
@@ -14334,6 +14481,66 @@ element orbiter : trinity # implements compiler
         home_open = nm
         home_keep[]
 
+    # an agent's first instance in the agents view ('' none)
+    func home_first [ an: string ] -> string
+        if [ !home_order ] return ''
+        for [ nm: string ] in home_order
+            ag : string [ (home_agent && home_agent.contains[ nm ])
+                          ? home_agent[ nm ] : nm ]
+            if [ ag == an && home_session[ nm ] ] return nm
+        return ''
+
+    # a new instance of an agent at its first model; its name
+    func home_new [ an: string ] -> string
+        md : string ''
+        for [ c: string ] in home_choices[]
+            if [ home_pick_agent[ c ] == an ]
+                md = home_pick_model[ c ]
+                break
+        had : i32 [ (home_order) ? i32[ home_order.count ] : 0 ]
+        home_start[ an, md ]
+        if [ !home_order || home_order.count == had ] return ''
+        return home_order.last[]
+
+    # an instance's terminal in a pane: the same session the agents
+    # view draws
+    func home_in_pane [ nm: string, pi: i32 ]
+        cs : ConsoleSession home_session[ nm ]
+        if [ !cs || pi < 0 ] return
+        ed : Editor pane_at[ pi ]
+        while [ pane_console.count <= pi ]
+            pane_console += ''
+        sid : string 'home:{nm}'
+        if [ !ed_sessions ]
+            ed_sessions = map ConsoleSession [string] [ ]
+        ed_sessions[ sid ] = cs
+        pane_console[ pi ] = sid
+        if [ ed ]
+            ed.app_view = false
+            ed.pristine = false
+        force_update[]
+        if [ ux ] ux.restyle = true
+
+    # a pane showing an agent's terminal: its menu, every instance
+    # of the agents view and a new one of its agent
+    func agent_menu [ cur: string ] -> vec TrayEntry
+        m : vec TrayEntry []
+        an : string [ (home_agent && home_agent.contains[ cur ])
+                      ? home_agent[ cur ] : cur ]
+        m.push[ own_entry[ an, '', 0 ] ]
+        if [ home_order ]
+            for [ nm: string ] in home_order
+                if [ !home_session[ nm ] ] continue
+                md : string home_model_of[ nm ]
+                ie : TrayEntry own_entry[
+                    (md.count > 0) ? '{nm}  {md}' : nm,
+                    'orb.agent:{nm}', 1 ]
+                ie.check = (nm == cur) ? 1 : 0
+                m.push[ ie ]
+        m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+        m.push[ own_entry[ 'New {an}', 'orb.agent_new:{an}', 1 ] ]
+        return m
+
     # the instances, kept for the next run
     func home_keep []
         home_saved = vec string []
@@ -14390,6 +14597,15 @@ element orbiter : trinity # implements compiler
             return
         active_pane = pi
         set_active[ pi ]
+        # an agent's app: its first instance of the agents view here
+        # (one made when it has none)
+        if [ ae.module && ae.built && ae.built.exists[]
+             && agent_installed[].index_of[ ae.name ] >= 0 ]
+            nm : string home_first[ ae.name ]
+            if [ nm.count == 0 ] nm = home_new[ ae.name ]
+            if [ nm.count > 0 ] home_in_pane[ nm, pi ]
+            if [ ux ] ux.restyle = true
+            return
         if [ ae.module && ae.built && ae.built.exists[] ]
             run_program[ ae.built, pi ]
             edr : Editor pane_at[ pi ]
@@ -15298,6 +15514,7 @@ element orbiter : trinity # implements compiler
     # the state the last instance left: it lands before the window
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
+        mirror_source[ w ]
         if [ !set_applied ]
             set_applied = true
             apply_settings[ w ]
@@ -15427,6 +15644,7 @@ element orbiter : trinity # implements compiler
         # the system bar takes the top; everything else is under it
         top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
         return (!ux) ? null : Elements [
+            'galaxy' : galaxy_element[],
             'scene'  : scene_element[],
             # with the system bar the dock is the navigator's, so
             # the panes take the whole width

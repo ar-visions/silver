@@ -1,0 +1,446 @@
+# fastboot: a phone's bootloader over USB (getvar, download,
+# flash, reboot); the bytes through fastboot.c over libusb
+export 1.0.0
+
+import libusb/1.0.27 from https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2
+    --disable-udev
+import <libusb-1.0/libusb.h>
+    -lusb-1.0
+import <fastboot_usb.h>
+    -I{root_path}/fastboot
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <sys/stat.h>
+import <unistd.h>
+
+# one phone in fastboot mode
+class Fastboot
+    public serial : string
+    # the last refusal or failure, in words
+    public problem : string
+    # a test's replies, taken in order instead of the phone's
+    public script : vec string
+    # what a test was sent: commands, and data as its size
+    public sent : vec string
+    # the phone's INFO lines from the last command
+    public notes : vec string
+    intern opened : bool
+
+    func scripted [] -> bool
+        return script && script.count > 0
+
+    # the first fastboot device on USB; false when none
+    func open [] -> bool
+        problem = ''
+        if [ scripted[] ]
+            if [ !sent ] sent = vec string []
+            opened = true
+            return true
+        b : local i8 [ 256 ]
+        r : i32 [ fb_usb_open[ @b[0], 256 ] ]
+        if [ r == -2 ]
+            problem = 'access refused'
+            return false
+        if [ r < 0 ]
+            problem = 'USB could not be read'
+            return false
+        if [ r == 0 ]
+            problem = 'no phone in fastboot mode'
+            return false
+        serial = string [ @b[0] ]
+        opened = true
+        return true
+
+    func close []
+        if [ opened && !scripted[] ] fb_usb_close[]
+        opened = false
+
+    func put [ s: string ] -> bool
+        if [ scripted[] ]
+            sent.push[ s ]
+            return true
+        return fb_usb_write[ s.chars, i32[ s.count ] ] == s.count
+
+    # one reply packet: OKAY, FAIL, INFO, TEXT or DATA and its words
+    func reply [ wait_ms: i32 ] -> string
+        if [ scripted[] ]
+            # a copy: the list drops its own at the remove
+            r : '{script[ 0 ]}'
+            script.remove[ 0 ]
+            return r
+        b : local i8 [ 260 ]
+        n : i32 [ fb_usb_read[ @b[0], 256, wait_ms ] ]
+        if [ n < 0 ] return ''
+        b[ n ] = 0
+        return string [ @b[0] ]
+
+    # a command and its final reply (OKAY... or FAIL...)
+    func command [ cmd: string ] -> string
+        if [ !put[ cmd ] ]
+            problem = 'could not send {cmd}'
+            return ''
+        return answer[ cmd ]
+
+    # the phone's final reply; INFO and TEXT lines kept in notes;
+    # '' when it stopped answering
+    func answer [ cmd: string ] -> string
+        notes = vec string []
+        while [ true ]
+            r : reply[ 60000 ]
+            if [ r.count < 4 ]
+                problem = 'no answer to {cmd}'
+                return ''
+            kind : r.mid[ 0, 4 ]
+            rest : r.mid[ 4, r.count - 4 ]
+            if [ kind == 'INFO' || kind == 'TEXT' ]
+                notes.push[ rest ]
+                continue
+            if [ kind == 'FAIL' ] problem = '{cmd}: {rest}'
+            return r
+
+    func okay [ r: string ] -> bool
+        return r.starts_with[ 'OKAY' ]
+
+    # a bootloader variable ('' when refused)
+    func getvar [ name: string ] -> string
+        r : command[ 'getvar:{name}' ]
+        if [ !okay[ r ] ] return ''
+        return r.mid[ 4, r.count - 4 ]
+
+    # a file's bytes into the phone's download buffer
+    func download [ file: string ] -> bool
+        st : struct stat
+        if [ stat[ file.chars, @st ] != 0 ]
+            problem = 'no file {file}'
+            return false
+        size : i64 [ st.st_size ]
+        r : command[ 'download:{hex8[ size ]}' ]
+        if [ !r.starts_with[ 'DATA' ] ]
+            if [ problem.count == 0 ] problem = 'download refused'
+            return false
+        if [ scripted[] ]
+            sent.push[ '<{size} bytes>' ]
+        el
+            fh : handle fopen[ file.chars, 'rb' ]
+            if [ !fh ]
+                problem = 'cannot read {file}'
+                return false
+            chunk : i32 [ 1 << 20 ]
+            buf : new u8 [ chunk ]
+            left : i64 [ size ]
+            while [ left > 0 ]
+                want : i32 [ (left > chunk) ? chunk : i32[ left ] ]
+                got : i32 [ i32[ fread[ @buf[0], 1, want, fh ] ] ]
+                if [ got <= 0 || fb_usb_write[ @buf[0], got ] != got ]
+                    fclose[ fh ]
+                    problem = 'download of {file} broke off'
+                    return false
+                left -= got
+            fclose[ fh ]
+        return okay[ answer[ 'download' ] ]
+
+    # a partition: its slot's name when the phone keeps two
+    func slot_name [ part: string ] -> string
+        if [ getvar[ 'has-slot:{part}' ] != 'yes' ] return part
+        slot : getvar[ 'current-slot' ]
+        if [ slot.count == 0 ] return part
+        return '{part}_{slot}'
+
+    # a file written to a partition (its current slot's)
+    func flash [ part: string, file: string ] -> bool
+        if [ !download[ file ] ] return false
+        return okay[ command[ 'flash:{slot_name[ part ]}' ] ]
+
+    func reboot [] -> bool
+        return okay[ command[ 'reboot' ] ]
+
+    # sparse pieces written in turn, as fastboot flashes them
+    func flash_pieces [ part: string, pieces: vec string ] -> bool
+        for [ f: string ] in pieces
+            if [ !flash[ part, f ] ] return false
+        return true
+
+# a size as fastboot writes it: eight lowercase hex digits
+func hex8 [ n: i64 ] -> string
+    digits : '0123456789abcdef'
+    out : string ''
+    v : i64 [ n ]
+    for [ i: i32 0, i < 8, i += 1 ]
+        d : i32 [ i32[ v & 15 ] ]
+        out = '{digits.mid[ d, 1 ]}{out}'
+        v = v >> 4
+    return out
+
+# little-endian, n bytes
+func put_le [ fh: handle, v: i64, n: i32 ]
+    x : i64 [ v ]
+    for [ i: i32 0, i < n, i += 1 ]
+        fputc[ i32[ x & 255 ], fh ]
+        x = x >> 8
+
+func get_le [ fh: handle, n: i32 ] -> i64
+    v : i64 [ 0 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        v = v | (i64[ fgetc[ fh ] & 255 ] << (8 * i))
+    return v
+
+# Android's sparse format: one image as pieces of at most max
+# bytes, each covering the whole partition (its other blocks
+# 'don't care'); zero blocks as fill chunks. '' pieces: failed
+func sparse_pieces [ src: string, out: string, max: i64 ]
+        -> vec string
+    pieces : vec string []
+    blk : i64 [ 4096 ]
+    st : struct stat
+    if [ stat[ src.chars, @st ] != 0 ] return pieces
+    total : i64 [ st.st_size / blk ]
+    if [ total * blk != st.st_size ] return pieces
+    # a piece's own headers: file, two don't-care chunks
+    over : i64 [ 28 + 12 * 2 ]
+    room : i64 [ (max - over - 12) / blk ]
+    if [ room < 1 ] return pieces
+    fh : handle fopen[ src.chars, 'rb' ]
+    if [ !fh ] return pieces
+    buf : new u8 [ 4096 ]
+    used : new u8 [ total ]
+    for [ b: i64 0, b < total, b += 1 ]
+        fread[ @buf[0], 1, 4096, fh ]
+        held : u8 [ 0 ]
+        for [ i: i32 0, i < 4096 && held == 0, i += 1 ]
+            if [ buf[ i ] != 0 ] held = 1
+        used[ b ] = held
+    # runs of one kind; a raw run no longer than a piece holds
+    starts : vec i64 []
+    counts : vec i64 []
+    kinds : vec i64 []
+    at : i64 [ 0 ]
+    while [ at < total ]
+        k : u8 [ used[ at ] ]
+        e : i64 [ at ]
+        while [ e < total && used[ e ] == k
+                && (k == 0 || e - at < room) ]
+            e += 1
+        starts.push[ at ]
+        counts.push[ e - at ]
+        kinds.push[ i64[ k ] ]
+        at = e
+    i : i64 [ 0 ]
+    while [ i < starts.count ]
+        first : i64 [ i ]
+        bytes : i64 [ over ]
+        while [ i < starts.count ]
+            raw : bool [ kinds[ i ] == 1 ]
+            n : i64 [ counts[ i ] ]
+            cost : i64 [ (raw) ? 12 + n * blk : 16 ]
+            if [ bytes + cost > max && i > first ] break
+            bytes += cost
+            i += 1
+        f : '{out}.{pieces.count}.simg'
+        if [ !sparse_piece[ fh, f, total, starts, counts, kinds,
+                            first, i ] ]
+            fclose[ fh ]
+            return vec string []
+        pieces.push[ f ]
+    fclose[ fh ]
+    return pieces
+
+# one piece: runs first..last-1, don't care either side
+func sparse_piece [ src: handle, f: string, total: i64,
+        starts: vec i64, counts: vec i64, kinds: vec i64,
+        first: i64, last: i64 ] -> bool
+    lo : i64 [ starts[ first ] ]
+    hi : i64 [ starts[ last - 1 ] + counts[ last - 1 ] ]
+    chunks : i64 [ last - first ]
+    if [ lo > 0 ] chunks += 1
+    if [ hi < total ] chunks += 1
+    fh : handle fopen[ f.chars, 'wb' ]
+    if [ !fh ] return false
+    magic : i64 [ 0xED26FF3A ]
+    raw_kind : i64 [ 0xCAC1 ]
+    fill_kind : i64 [ 0xCAC2 ]
+    skip_kind : i64 [ 0xCAC3 ]
+    blk : i64 [ 4096 ]
+    put_le[ fh, magic, 4 ]
+    put_le[ fh, 1, 2 ]
+    put_le[ fh, 0, 2 ]
+    put_le[ fh, 28, 2 ]
+    put_le[ fh, 12, 2 ]
+    put_le[ fh, blk, 4 ]
+    put_le[ fh, total, 4 ]
+    put_le[ fh, chunks, 4 ]
+    put_le[ fh, 0, 4 ]
+    if [ lo > 0 ]
+        put_le[ fh, skip_kind, 2 ]
+        put_le[ fh, 0, 2 ]
+        put_le[ fh, lo, 4 ]
+        put_le[ fh, 12, 4 ]
+    buf : new u8 [ 4096 ]
+    for [ r: i64 first, r < last, r += 1 ]
+        n : i64 [ counts[ r ] ]
+        if [ kinds[ r ] == 1 ]
+            put_le[ fh, raw_kind, 2 ]
+            put_le[ fh, 0, 2 ]
+            put_le[ fh, n, 4 ]
+            put_le[ fh, 12 + n * blk, 4 ]
+            fseek[ src, starts[ r ] * blk, 0 ]
+            for [ b: i64 0, b < n, b += 1 ]
+                fread[ @buf[0], 1, 4096, src ]
+                fwrite[ @buf[0], 1, 4096, fh ]
+        el
+            put_le[ fh, fill_kind, 2 ]
+            put_le[ fh, 0, 2 ]
+            put_le[ fh, n, 4 ]
+            put_le[ fh, 16, 4 ]
+            put_le[ fh, 0, 4 ]
+    if [ hi < total ]
+        put_le[ fh, skip_kind, 2 ]
+        put_le[ fh, 0, 2 ]
+        put_le[ fh, total - hi, 4 ]
+        put_le[ fh, 12, 4 ]
+    fclose[ fh ]
+    return true
+
+# a vbmeta image with verity and verification off, as fastboot's
+# --disable-verity --disable-verification: flags (big-endian, at
+# byte 120) gain bits 1 and 2
+func vbmeta_disabled [ src: string, dst: string ] -> bool
+    st : struct stat
+    if [ stat[ src.chars, @st ] != 0 ] return false
+    n : i64 [ st.st_size ]
+    if [ n < 128 ] return false
+    data : new u8 [ n ]
+    fh : handle fopen[ src.chars, 'rb' ]
+    if [ !fh ] return false
+    got : i64 [ i64[ fread[ @data[0], 1, n, fh ] ] ]
+    fclose[ fh ]
+    if [ got != n ] return false
+    # AVB0, its magic
+    if [ data[ 0 ] != 65 || data[ 1 ] != 86 || data[ 2 ] != 66
+         || data[ 3 ] != 48 ]
+        return false
+    data[ 123 ] = data[ 123 ] | 3
+    out : handle fopen[ dst.chars, 'wb' ]
+    if [ !out ] return false
+    put : i64 [ i64[ fwrite[ @data[0], 1, n, out ] ] ]
+    fclose[ out ]
+    return put == n
+
+# a scripted phone: flash sends download, the data, flash with the
+# current slot's name; a FAIL is kept as the problem
+expect func t_fastboot_flash [] -> bool
+    dir : path '{path.path_cache[ 'fastboot' ]}'
+    dir.make_dir[]
+    img : '{dir}/test.img'
+    fh : handle fopen[ img.chars, 'wb' ]
+    fputs[ 'boot image bytes', fh ]
+    fclose[ fh ]
+    fb : Fastboot [ script: vec string [] [ 'DATA00000010', 'OKAY',
+        'OKAYyes', 'OKAYa', 'INFOwriting', 'OKAY' ] ]
+    fb.open[]
+    ok : fb.flash[ 'boot', img ]
+    for [ s: string ] in fb.sent
+        log 'sent {s}'
+    want : vec string [] [ 'download:00000010', '<16 bytes>',
+        'getvar:has-slot:boot', 'getvar:current-slot', 'flash:boot_a' ]
+    same : bool [ fb.sent.count == want.count ]
+    for [ i: i32 0, same && i < want.count, i += 1 ]
+        if [ string fb.sent[ i ] != string want[ i ] ] same = false
+    bad : Fastboot [ script: vec string [] [ 'DATA00000010', 'OKAY',
+        'OKAYno', 'FAILpartition locked' ] ]
+    bad.open[]
+    refused : bool [ !bad.flash[ 'boot', img ] ]
+    log 'refusal: {bad.problem}'
+    unlink[ img.chars ]
+    return ok && same && refused
+        && bad.problem == 'flash:boot: partition locked'
+        && fb.notes.count == 1
+
+# the flags gain verity and verification off; nothing else moves
+expect func t_vbmeta_disabled [] -> bool
+    dir : path '{path.path_cache[ 'fastboot' ]}'
+    dir.make_dir[]
+    src : '{dir}/vbmeta.img'
+    dst : '{dir}/vbmeta-off.img'
+    data : new u8 [ 256 ]
+    for [ i: i32 0, i < 256, i += 1 ]
+        data[ i ] = 7
+    data[ 0 ] = 65
+    data[ 1 ] = 86
+    data[ 2 ] = 66
+    data[ 3 ] = 48
+    data[ 123 ] = 0
+    fh : handle fopen[ src.chars, 'wb' ]
+    fwrite[ @data[0], 1, 256, fh ]
+    fclose[ fh ]
+    ok : vbmeta_disabled[ src, dst ]
+    back : new u8 [ 256 ]
+    rh : handle fopen[ dst.chars, 'rb' ]
+    fread[ @back[0], 1, 256, rh ]
+    fclose[ rh ]
+    unlink[ src.chars ]
+    unlink[ dst.chars ]
+    same : bool [ true ]
+    for [ i: i32 0, i < 256, i += 1 ]
+        if [ i != 123 && back[ i ] != data[ i ] ] same = false
+    return ok && same && back[ 123 ] == 3
+
+# pieces under a small limit read back as the image: raw blocks
+# copied, zero blocks filled, every piece the whole length
+expect func t_sparse_pieces [] -> bool
+    dir : path '{path.path_cache[ 'fastboot' ]}'
+    dir.make_dir[]
+    src : '{dir}/sparse-src.img'
+    total : i32 [ 40 ]
+    size : i32 [ total * 4096 ]
+    data : new u8 [ size ]
+    for [ i: i32 0, i < size, i += 1 ]
+        b : i32 [ i / 4096 ]
+        lit : bool [ b < 3 || (b >= 10 && b < 26) || b == 33 ]
+        data[ i ] = (lit) ? u8[ (i * 7 + b) % 251 + 1 ] : 0
+    fh : handle fopen[ src.chars, 'wb' ]
+    fwrite[ @data[0], 1, size, fh ]
+    fclose[ fh ]
+    # five raw blocks a piece at most
+    max : i64 [ 28 + 24 + 12 + 5 * 4096 ]
+    pieces : sparse_pieces[ src, '{dir}/sparse', max ]
+    back : new u8 [ size ]
+    for [ i: i32 0, i < size, i += 1 ]
+        back[ i ] = 85
+    whole : bool [ pieces.count > 1 ]
+    small : bool [ true ]
+    for [ f: string ] in pieces
+        st : struct stat
+        stat[ f.chars, @st ]
+        if [ st.st_size > max ] small = false
+        ph : handle fopen[ f.chars, 'rb' ]
+        get_le[ ph, 12 ]
+        if [ get_le[ ph, 4 ] != 4096 ] whole = false
+        if [ get_le[ ph, 4 ] != total ] whole = false
+        chunks : i64 [ get_le[ ph, 4 ] ]
+        get_le[ ph, 4 ]
+        at : i64 [ 0 ]
+        for [ c: i64 0, c < chunks, c += 1 ]
+            kind : i64 [ get_le[ ph, 2 ] ]
+            get_le[ ph, 2 ]
+            n : i64 [ get_le[ ph, 4 ] ]
+            get_le[ ph, 4 ]
+            start : i64 [ at * 4096 ]
+            bytes : i64 [ n * 4096 ]
+            if [ kind == 51905 ]
+                fread[ @back[ start ], 1, bytes, ph ]
+            el [ kind == 51906 ]
+                get_le[ ph, 4 ]
+                for [ j: i64 0, j < bytes, j += 1 ]
+                    back[ start + j ] = 0
+            at += n
+        if [ at != total ] whole = false
+        fclose[ ph ]
+        unlink[ f.chars ]
+    unlink[ src.chars ]
+    same : bool [ true ]
+    for [ i: i32 0, i < size, i += 1 ]
+        if [ back[ i ] != data[ i ] ] same = false
+    log 'sparse: {pieces.count} pieces, whole {whole}, same {same}'
+    return whole && small && same
+

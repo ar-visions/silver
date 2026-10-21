@@ -2426,10 +2426,21 @@ element InstallWizard
             note  = 'The kernel the drive takes; build a new one.'
             # Write installer…: the stick's own heading
             ub : boot_el[]
-            if [ ub && ub.usb_view ]
+            if [ ub && ub.usb_view && ub.on_phone[] ]
+                title = 'Install orbiter-os on the phone'
+                note  = 'Its boot and userdata are replaced; ' +
+                    'Android\'s data is erased.'
+            el [ ub && ub.usb_view ]
                 title = 'Make orbiter-os installer'
                 note  = 'Choose the USB drive; ' +
                     'everything on it is erased.'
+            # Build kernel…: its own page, then its build
+            el [ ub && ub.building && ub.job == 'kernel' ]
+                title = 'Building {ub.want_hardware} {ub.want_version}'
+                note  = 'Its steps below; the whole log when asked.'
+            el [ ub && ub.kview == 'build' ]
+                title = 'Build a kernel'
+                note  = 'The hardware it is for and the kernel.'
             t[ 'bootstrap' ] = Bootstrap [
                 area: Region [ 'l1.4 t{top} r1.4 h14.15' ] ]
         el [ page == 1 ]
@@ -2598,8 +2609,11 @@ element InstallWizard
             side : f32 [ 7.45 ]
             t[ 'usb_bar' ] = WizBar [ frac: bs.progress, done: wrote,
                 area: Region [ 'l{side} b1.675 r{side} h0.3' ] ]
-        # making an installer: no Continue, Back is the way out
-        if [ page == 0 && bs && bs.usb_view ] return t
+        # making an installer or a kernel: no Continue, Back (or
+        # Cancel Build) is the way out
+        if [ page == 0 && bs && (bs.usb_view || bs.kview == 'build'
+             || (bs.building && bs.job == 'kernel')) ]
+            return t
         # building: no going on at all
         if [ boot_blocked[] || advance ]
             t[ 'next' ] = WizButton [ label: 'Continue', disable: true,

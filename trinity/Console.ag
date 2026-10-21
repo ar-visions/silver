@@ -100,6 +100,10 @@ class ConsoleSession
     mutable scroll_goal : f32
     # the user typed into it (a key or text, not a paste of ours)
     public  typed       : bool
+    # the view that sets its size (one session in two views): the
+    # one typed into, else the last to claim it while it draws
+    public  sizer       : object
+    public  sizer_us    : i64
 
     func init []
         scrollback  = list string []
@@ -954,7 +958,14 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
         cw       : f32 [ cv.measure_text[ 'x' ].w ]
         sc_count : i32 [ s.scrollback.count ]
 
-        if [ cw > 0.0 && lh > 0.0 ]
+        # one view sets the size: the one typed into, else the last
+        # to claim it (taken once it has not drawn for half a second)
+        now : i64 [ Au.epoch_micros[] ]
+        typing : bool [ con && con.ux && con.ux.focus == con ]
+        if [ typing || !s.sizer || now - s.sizer_us > 500000 ]
+            s.sizer = con_el
+        if [ cw > 0.0 && lh > 0.0 && s.sizer == con_el ]
+            s.sizer_us = now
             dcols : i32 [ bounds.w / cw ]
             drows : i32 [ bounds.h / lh ]
             # a log keeps its lines whole: 2048 columns

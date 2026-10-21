@@ -187,7 +187,9 @@ static void save_logs(void) {
     }
 }
 
+#ifndef MODPROBE
 #define MODPROBE "/usr/sbin/modprobe"
+#endif
 
 // a program, waited for
 static void run(char* const argv[]) {
@@ -196,10 +198,235 @@ static void run(char* const argv[]) {
     if (p > 0) waitpid(p, NULL, 0);
 }
 
+#ifndef PHONE_ROOT
+#define PHONE_ROOT "/lib/phones"
+#endif
+
+// a phone's own drivers, never another phone's: its folder under
+// PHONE_ROOT (own module index and blocklist), found by the
+// product orbiter.phone names in the folder's products file
+static char phone_base[256];
+static char phone_conf[300];
+
+// a whole small file, 0 ended; its length, or -1
+static int read_all(const char* p, char* buf, int cap) {
+    int fd = open(p, O_RDONLY);
+    if (fd < 0) return -1;
+    int n = 0;
+    for (;;) {
+        ssize_t k = read(fd, buf + n, (size_t)(cap - 1 - n));
+        if (k <= 0) break;
+        n += (int)k;
+        if (n >= cap - 1) break;
+    }
+    close(fd);
+    buf[n] = 0;
+    return n;
+}
+
+// is w one of the list's words (spaces or lines between)
+static int has_word(const char* list, const char* w) {
+    size_t n = strlen(w);
+    const char* p = list;
+    while (*p) {
+        while (*p == ' ' || *p == '\n') p++;
+        const char* e = p;
+        while (*e && *e != ' ' && *e != '\n') e++;
+        if ((size_t)(e - p) == n && !strncmp(p, w, n)) return 1;
+        p = e;
+    }
+    return 0;
+}
+
+static void phone_find(void) {
+    char want[64], prods[256];
+    if (!arg("orbiter.phone", want, sizeof want)) return;
+    DIR* d = opendir(PHONE_ROOT);
+    struct dirent* e;
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char pp[300];
+        snprintf(pp, sizeof pp, "%s/%s/products", PHONE_ROOT, e->d_name);
+        if (read_all(pp, prods, sizeof prods) <= 0) continue;
+        if (!has_word(prods, want)) continue;
+        snprintf(phone_base, sizeof phone_base, "%s/%s", PHONE_ROOT, e->d_name);
+        snprintf(phone_conf, sizeof phone_conf, "%s/modprobe.d", phone_base);
+        break;
+    }
+    if (d) closedir(d);
+    if (phone_base[0])
+        fprintf(stderr, "orbiter-os init: %s drivers from %s\n", want, phone_base);
+    else
+        fprintf(stderr, "orbiter-os init: no phone folder for %s\n", want);
+}
+
+// a module file into the kernel (the ramdisk has no modprobe)
+static long load_module(int fd) {
+#ifdef NOLIBC
+    return __nolibc_syscall3(__NR_finit_module, fd, "", 0);
+#else
+    return syscall(SYS_finit_module, fd, "", 0);
+#endif
+}
+
+// a word into a file (configfs, sysfs)
+static int put_text(const char* p, const char* s) {
+    int fd = open(p, O_WRONLY);
+    if (fd < 0) return -1;
+    int ok = write(fd, s, strlen(s)) == (ssize_t)strlen(s);
+    close(fd);
+    return ok ? 0 : -1;
+}
+
+// the boot ramdisk's modules (storage, USB ...), in its list's order,
+// before the partition is looked for
+static void phone_ramdisk(void) {
+    static char names[65536];
+    if (read_all("/lib/early/modules.load", names, sizeof names) <= 0)
+        return;
+    int n = 0, bad = 0;
+    char* p = names;
+    while (*p) {
+        char* e = p;
+        while (*e && *e != '\n') e++;
+        int last = !*e;
+        *e = 0;
+        if (*p) {
+            char ko[300];
+            snprintf(ko, sizeof ko, "/lib/early/%s.ko", p);
+            int fd = open(ko, O_RDONLY);
+            long r = fd >= 0 ? load_module(fd) : -1;
+            if (fd >= 0) close(fd);
+            // already in (EEXIST) is fine
+            if (r < 0 && errno != EEXIST) {
+                fprintf(stderr, "orbiter-os init: %s did not load (%d)\n", p, errno);
+                bad++;
+            }
+            n++;
+        }
+        if (last) break;
+        p = e + 1;
+    }
+    fprintf(stderr, "orbiter-os init: %d boot modules, %d failed\n", n, bad);
+}
+
+// a USB serial port on the phone (the PC's ttyACM): the kernel's
+// log copied to it, init's own lines in that log
+static void phone_gadget(const char* product) {
+    static const char g[] = "/sys/kernel/config/usb_gadget/orbiter";
+    char p[200], udc[64] = "";
+    mount("configfs", "/sys/kernel/config", "configfs", 0, NULL);
+    mkdir(g, 0755);
+    snprintf(p, sizeof p, "%s/idVendor", g);
+    put_text(p, "0x1d6b");
+    snprintf(p, sizeof p, "%s/idProduct", g);
+    put_text(p, "0x0104");
+    snprintf(p, sizeof p, "%s/strings/0x409", g);
+    mkdir(p, 0755);
+    snprintf(p, sizeof p, "%s/strings/0x409/manufacturer", g);
+    put_text(p, "orbiter-os");
+    snprintf(p, sizeof p, "%s/strings/0x409/product", g);
+    put_text(p, product);
+    snprintf(p, sizeof p, "%s/functions/acm.gs0", g);
+    mkdir(p, 0755);
+    snprintf(p, sizeof p, "%s/configs/c.1", g);
+    mkdir(p, 0755);
+    char to[200];
+    snprintf(to, sizeof to, "%s/configs/c.1/acm.gs0", g);
+    snprintf(p, sizeof p, "%s/functions/acm.gs0", g);
+    symlink(p, to);
+    // the phone's USB controller, once its module has made it
+    for (int i = 0; i < 50 && !udc[0]; i++) {
+        DIR* d = opendir("/sys/class/udc");
+        struct dirent* e;
+        while (d && (e = readdir(d)))
+            if (e->d_name[0] != '.') {
+                snprintf(udc, sizeof udc, "%s", e->d_name);
+                break;
+            }
+        if (d) closedir(d);
+        if (!udc[0]) usleep(100000);
+    }
+    snprintf(p, sizeof p, "%s/UDC", g);
+    if (!udc[0] || put_text(p, udc)) {
+        fprintf(stderr, "orbiter-os init: no USB gadget (%s)\n", udc);
+        return;
+    }
+    // init's lines into the kernel's log
+    int km = open("/dev/kmsg", O_WRONLY);
+    if (km >= 0) { dup2(km, 1); dup2(km, 2); close(km); }
+    fprintf(stderr, "orbiter-os init: USB serial on %s\n", udc);
+    if (fork() != 0) return;
+    // the child: the whole log, from the start, to the port
+    int tty = -1;
+    for (int i = 0; i < 50 && tty < 0; i++) {
+        tty = open("/dev/ttyGS0", O_WRONLY | O_NOCTTY);
+        if (tty < 0) usleep(100000);
+    }
+    int in = open("/dev/kmsg", O_RDONLY);
+    if (tty < 0 || in < 0) _exit(1);
+    char line[8192];
+    for (;;) {
+        ssize_t n = read(in, line, sizeof line - 1);
+        if (n > 0) {
+            // a record: its text after the header's ';'
+            line[n] = 0;
+            char* t = strchr(line, ';');
+            t = t ? t + 1 : line;
+            write(tty, t, strlen(t));
+            write(tty, "\r", 1);
+        } else if (n < 0) usleep(1000);
+    }
+}
+
+// modprobe's words to stay in the phone's folder, from argv[k]
+static int phone_args(char** argv, int k) {
+    if (!phone_base[0]) return k;
+    argv[k++] = "-d";
+    argv[k++] = phone_base;
+    argv[k++] = "-C";
+    argv[k++] = phone_conf;
+    return k;
+}
+
+// the phone's modules.load, one at a time in its order (the
+// chip's before the phone's: some depend on that order)
+static void phone_early(void) {
+    static char names[65536];
+    char lp[300];
+    if (!phone_base[0]) return;
+    snprintf(lp, sizeof lp, "%s/modules.load", phone_base);
+    if (read_all(lp, names, sizeof names) <= 0) return;
+    int n = 0;
+    char* p = names;
+    while (*p) {
+        char* e = p;
+        while (*e && *e != '\n') e++;
+        int last = !*e;
+        *e = 0;
+        if (*p) {
+            char* argv[10];
+            int k = 0;
+            argv[k++] = MODPROBE;
+            argv[k++] = "-q";
+            k = phone_args(argv, k);
+            argv[k++] = p;
+            argv[k] = NULL;
+            run(argv);
+            n++;
+        }
+        if (last) break;
+        p = e + 1;
+    }
+    fprintf(stderr, "orbiter-os init: %d phone modules in order\n", n);
+}
+
 // every device's driver: modprobe takes each id in /sys
 static void load_hardware(void) {
     static char ids[512][256];
-    char* argv[520] = { MODPROBE, "-q", "-b", "-a" };
+    char* argv[524] = { MODPROBE, "-q", "-b" };
+    int at = phone_args(argv, 3);
+    argv[at++] = "-a";
     int n = 0;
     DIR* buses = opendir("/sys/bus");
     struct dirent* b;
@@ -219,13 +446,13 @@ static void load_hardware(void) {
             close(fd);
             if (k <= 1) continue;
             ids[n][k - 1] = 0;
-            argv[4 + n] = ids[n];
+            argv[at + n] = ids[n];
             n++;
         }
         if (devs) closedir(devs);
     }
     if (buses) closedir(buses);
-    argv[4 + n] = NULL;
+    argv[at + n] = NULL;
     fprintf(stderr, "orbiter-os init: %d device ids to modprobe\n", n);
     if (n) run(argv);
 }
@@ -258,7 +485,10 @@ static void hotplug(int fd) {
         if (strncmp(msg, "add@", 4)) continue;
         for (char* f = msg; f < msg + n; f += strlen(f) + 1)
             if (!strncmp(f, "MODALIAS=", 9)) {
-                char* argv[] = { MODPROBE, "-q", "-b", f + 9, NULL };
+                char* argv[10] = { MODPROBE, "-q", "-b" };
+                int k = phone_args(argv, 3);
+                argv[k++] = f + 9;
+                argv[k] = NULL;
                 run(argv);
             }
     }
@@ -365,7 +595,11 @@ static void load_modules(void) {
     for (char* name = strtok(list, ","); name; name = strtok(NULL, ",")) {
         char* params = strchr(name, ':');
         if (params) *params++ = 0;
-        char* argv[] = { MODPROBE, name, params, NULL };
+        char* argv[10] = { MODPROBE };
+        int k = phone_args(argv, 1);
+        argv[k++] = name;
+        argv[k++] = params;
+        argv[k] = NULL;
         run(argv);
     }
     // nvidia has no udev here: its nodes, major 195
@@ -405,6 +639,12 @@ int main(void) {
         ssize_t n = read(cf, cmdline, sizeof cmdline - 1);
         cmdline[n > 0 ? n : 0] = 0;
         close(cf);
+    }
+    // a phone: its boot modules, then the USB log port
+    char phone[64];
+    if (arg("orbiter.phone", phone, sizeof phone)) {
+        phone_ramdisk();
+        phone_gadget(phone);
     }
     char uuid_s[64], dir[256], init[512];
     if (!arg("orbiter.uuid", uuid_s, sizeof uuid_s)) die("no orbiter.uuid", NULL);
@@ -447,6 +687,8 @@ int main(void) {
     // the kernel's own driver requests: our modprobe's place
     int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);
     if (kp >= 0) { write(kp, MODPROBE, strlen(MODPROBE)); close(kp); }
+    phone_find();
+    phone_early();
     hotplug(uevents());
     load_hardware();
     // devices made by the first pass's drivers (usb hid devices)

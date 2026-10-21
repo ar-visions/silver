@@ -203,6 +203,10 @@ class Render
     intern  fb_color_view                  : VkImageView
     # creation-site tag; propagates to this render's textures (SAMP)
     public  tag                            : string
+    # a scene's: how much wider a mirror sees it than the viewer
+    public  mirror_wide                    : f32 [ 1.0 ]
+    # and how bright the mirror shows it
+    public  mirror_gain                    : f32 [ 1.0 ]
 
     public func hash[] -> u64
         return u64[handle[a]]
@@ -4228,8 +4232,11 @@ class Model
     # (split normals per face) must still join into one surface.
     # off for models with coincident opposite-normal skins (lips)
     public weld_pos_only    : bool
-    # its pipelines' blend if set (a glow adds); kept last
+    # its pipelines' blend if set (a glow adds)
     public blend            : BlendState
+    # seen in a mirror's view of its scene (false: a near moon a
+    # scene stands on)
+    public reflects         : bool [ true ]
 
     public func rebind_model [ ]
         if [ pipelines ]
@@ -5761,6 +5768,62 @@ Texture Display
         fclose[ fp ]
         return put == n
 
+    # the backdrop once more through a mirror's camera: every
+    # shader's view turned, the picture kept as win.mirror
+    func mirror_pass [ win: Window, r: Render ]
+        if [ !r.models || !r.color ] return
+        views : vec mat4f []
+        projs : vec mat4f []
+        # the scene's own widening of a mirror's view
+        mp : mat4f win.mirror_proj
+        mw : f32 [ (r.mirror_wide > 0.0) ? r.mirror_wide : 1.0 ]
+        mp.m[ 0 ] = mp.m[ 0 ] / mw
+        mp.m[ 5 ] = mp.m[ 5 ] / mw
+        mp.m[ 8 ] = mp.m[ 8 ] / mw
+        for [ m: Model ] in r.models
+            if [ m.s inherits ModelViewProject ]
+                mv : ModelViewProject m.s
+                views.push[ mv.view ]
+                projs.push[ mv.proj ]
+                mv.view = win.mirror_turn.mul[ mv.view ]
+                mv.proj = mp
+        # what a mirror sees: the models that reflect
+        mods : vec Model []
+        for [ m: Model ] in r.models
+            if [ m.reflects ] mods.push[ m ]
+        r.draw_with[ mods ]
+        r.sync_fence[]
+        k : i32 [ 0 ]
+        for [ m: Model ] in r.models
+            if [ m.s inherits ModelViewProject ]
+                mv : ModelViewProject m.s
+                mv.view = views[ k ]
+                mv.proj = projs[ k ]
+                k += 1
+        tx : Texture r.color
+        fresh : bool [ !win.mirror_raw || win.mirror_raw.width != tx.width
+                       || win.mirror_raw.height != tx.height ]
+        if [ fresh ]
+            win.mirror_raw = Texture [ vk: vk, w: a, width: tx.width,
+                                       height: tx.height,
+                                       vk_format: tx.vk_format ]
+        vk.copy_image[ tx, win.mirror_raw ]
+        win.mirror_gain = (r.mirror_gain > 0.0) ? r.mirror_gain : 1.0
+        # the stage's blur, as the backdrop has it: frost halves it
+        # four times, blur twice, clear none
+        ef : i32 win.frost_eff[]
+        steps : i32 [ (ef == 0) ? 4 : ((ef == 1) ? 2 : 0) ]
+        if [ steps == 0 ]
+            win.mirror = win.mirror_raw
+            return
+        if [ fresh || !win.mirror_blur || win.mirror_steps != steps ]
+            bs : f32 [ (scale > 1.0) ? 1.0 / scale : 1.0 ]
+            win.mirror_blur = ReduceBlur []
+            win.mirror_blur.build[ vk, a, win.mirror_raw, bs, steps ]
+            win.mirror_steps = steps
+        win.mirror_blur.run[]
+        win.mirror = win.mirror_blur.color[]
+
     func update[ ]
         return
 
@@ -6104,7 +6167,14 @@ Texture Display
         repaint_once : bool [ bp && backdrop_once ]
         hold : bool [ bp && !backdrop_once ]
         drew : bool [ false ]
+        # the mirror's scene: its own (drawn for the mirror alone),
+        # else the backdrop
+        msrc : Render [ (win) ? ((win.mirror_src) ? win.mirror_src
+                                 : win.backdrop) : null ]
         for [ r: Render, id: string ] in element_targets
+            if [ r && r == msrc && win.mirror_ask ]
+                win.mirror_ask = false
+                mirror_pass[ win, r ]
             if [ !r || r.skip || r == skip_target ] continue
             if [ hold && win.backdrop == r ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ]

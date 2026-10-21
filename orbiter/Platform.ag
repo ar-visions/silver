@@ -162,11 +162,23 @@ ModelViewProject PlatLit
     # x: 1 a mirror; y: alpha; z: the etching (0 none)
     mutable look    : vec4f
     # x: 1 when the scene's picture is bound; y, z: one over the
-    # picture's width and height
+    # picture's width and height; w: the reflection's gain (0 none)
     mutable has     : vec4f
     # where this picture lands in the window, over 0..1: x y its top
     # left, z w its size
     mutable win     : vec4f
+    # a local light over the floor (xyz) and its strength (w)
+    mutable light   : vec4f
+    # the avatars' glows nearest the view (halo, beam): xyz where,
+    # w how strong; the tint its colour
+    mutable glow_a  : vec4f
+    mutable glow_b  : vec4f
+    mutable glow_c  : vec4f
+    mutable glow_d  : vec4f
+    mutable tint_a  : vec4f
+    mutable tint_b  : vec4f
+    mutable tint_c  : vec4f
+    mutable tint_d  : vec4f
 
     attrib scene : LayoutBinding [ type:typeid[ PlatSurface ],
                                    id:PlatSurface.scene, count:1,
@@ -203,6 +215,17 @@ ModelViewProject PlatLit
         gl_Position = ubo.proj * ubo.view * wp;
     }
 
+    # one glow on the glass: a wide wash of its light, by how the
+    # glass faces it and how far it is; the etching takes more
+    func glow_on [ g: vec4f, t: vec4f, p: vec3f, n: vec3f, v: vec3f,
+                   fm: f32 ] -> GLSL vec3f {
+        if (g.w <= 0.0) return vec3(0.0);
+        vec3  l  = g.xyz - p;
+        float d  = length(l);
+        float nl = max(dot(n, l / max(d, 0.0001)), 0.0);
+        return t.rgb * g.w * nl * mix(1.0, 1.5, fm) / (1.0 + 0.6 * d * d);
+    }
+
     func fold [ uv: vec2f ] -> GLSL vec2f {
         return vec2(1.0) - abs(vec2(1.0) - mod(uv, 2.0));
     }
@@ -220,6 +243,10 @@ ModelViewProject PlatLit
         vec2  wuv = ubo.win.xy + tuv * ubo.win.zw;
         vec2  uv  = vec2(wuv.x, 1.0 - wuv.y)
                   + N.xz * 0.10 + R.xz * 0.04;
+        // the scene drawn from the mirrored camera: this pixel's
+        // own; the bevels bend it
+        if (ubo.has.w > 0.0)
+            uv = vec2(tuv.x, 1.0 - tuv.y) + N.xz * 0.05;
         // the etching: on the tops only
         float fm = 0.0;
         if (ubo.look.z > 0.0 && v_top > 0.99)
@@ -236,13 +263,33 @@ ModelViewProject PlatLit
         // etched: the same mirror, its reflection frosted
         vec3 refl = mix(sharp, soft, fm) * (1.0 - 0.06 * fm)
                   * ubo.has.x;
+        // the scene's reflection: 1.5, by the scene's own gain (w)
+        if (ubo.has.w > 0.0) refl *= 1.5 * ubo.has.w;
         float F = 0.06 + 0.94 * pow(1.0 - nv, 5.0);
         // the bevels catch a cool light from above the scene
         float bev = (v_top > 0.3 && v_top < 0.99) ? 1.0 : 0.0;
-        // a mirror: its top whole, its bevel and side darker
-        vec3 col = refl * mix(0.35, mix(0.72, 0.97, F), top)
+        // every side a mirror: the edges at half the top's
+        vec3 col = refl * mix(0.72, 0.97, F) * mix(0.5, 1.0, top)
                  + vec3(0.012, 0.012, 0.02)
                  + vec3(0.50, 0.42, 1.0) * bev * 0.10;
+        // the local light's highlight on the glass, falling off with
+        // its distance
+        vec3  Lv  = ubo.light.xyz - v_wpos;
+        float ld  = length(Lv);
+        vec3  H   = normalize(Lv / max(ld, 0.0001) + V);
+        float sp  = pow(max(dot(N, H), 0.0), 400.0)
+                  * ubo.light.w / (1.0 + 0.01 * ld * ld);
+        // the etching scatters it: a broad lobe, stronger
+        vec3 lit = vec3(0.85, 0.88, 1.0) * sp * mix(0.3, 1.0, top)
+                 + vec3(0.85, 0.88, 1.0) * pow(max(dot(N, H), 0.0), 16.0)
+                 * fm * 0.25 * ubo.light.w / (1.0 + 0.01 * ld * ld);
+        // the avatars' halos and beams on the glass
+        vec3 orb = glow_on(ubo.glow_a, ubo.tint_a, v_wpos, N, V, fm)
+                 + glow_on(ubo.glow_b, ubo.tint_b, v_wpos, N, V, fm)
+                 + glow_on(ubo.glow_c, ubo.tint_c, v_wpos, N, V, fm)
+                 + glow_on(ubo.glow_d, ubo.tint_d, v_wpos, N, V, fm);
+        // the lamp a hint; the orbiters' own light stronger
+        col += lit * 0.2 + orb * 0.1;
         fragColor = vec4(col, ubo.look.y);
     }
 
@@ -265,6 +312,11 @@ OrbiterAvatar PlatAvatar
             # a build burns its beam
             swap_on   = work_on && dg == 'build'
             mic_on    = false
+            # held in one state to check it (ctrl / cmd + 1 2 3)
+            if [ orb.avatar_mode > 0 ]
+                work_on  = true
+                edits_in = orb.avatar_mode == 2
+                swap_on  = orb.avatar_mode == 3
         super.on_state[ m ]
 
     # the platform draws it, in order: never by itself
@@ -326,6 +378,8 @@ element PlatformView
     intern hexm    : GltfModel
     intern frost_cv : Canvas
     intern scene_tx : Texture
+    # the scene from the mirrored camera
+    intern mirror_tx : Texture
     # the agents, a pad each, and how far each is open (0 shut,
     # 1 its avatar up)
     intern names   : vec string
@@ -594,6 +648,10 @@ element PlatformView
                 o : f32 [ 0.0 ]
                 for [ j: i32 0, j < was_n.count, j += 1 ]
                     if [ was_n[ j ] == nm ] o = was_o[ j ]
+                # risen before (this platform made again): up already
+                if [ orb.home_risen && orb.home_risen.index_of[ nm ] >= 0
+                     && orb.home_session[ nm ] ]
+                    o = 1.0
                 opens.push[ o ]
             build[ w ]
         if [ !target ] return
@@ -603,9 +661,15 @@ element PlatformView
              || target.height != i32[ psz.y ] ]
             target.width  = i32[ psz.x ]
             target.height = i32[ psz.y ]
-        # the scene's picture moved (a new size): bound again
-        if [ w.backdrop && w.backdrop.color != scene_tx ]
-            scene_tx = w.backdrop.color
+        # the scene from the mirrored camera (trinity draws it once
+        # the platform asks)
+        mirror_tx = w.mirror
+        # what the mirrors read: the reflection, else the scene's
+        # picture by place; bound again when it moves
+        want : Texture [ (mirror_tx) ? mirror_tx
+                         : ((w.backdrop) ? w.backdrop.color : null) ]
+        if [ want && want != scene_tx ]
+            scene_tx = want
             for [ md: Model ] in models
                 md.samplers[ 'scene' ] = scene_tx
                 md.rebind_model[]
@@ -625,6 +689,13 @@ element PlatformView
             st : f32 [ dt / 1.8 ]
             opens[ i ] = (on) ? min[ opens[ i ] + st, 1.0 ]
                               : max[ opens[ i ] - st, 0.0 ]
+            # risen: kept, so it does not rise again; sunk: let go
+            if [ !orb.home_risen ] orb.home_risen = vec string []
+            rk : i32 [ orb.home_risen.index_of[ names[ i ] ] ]
+            if [ opens[ i ] >= 1.0 && rk < 0 ]
+                orb.home_risen.push[ names[ i ] ]
+            el [ !on && rk >= 0 ]
+                orb.home_risen.remove[ rk ]
             sel : bool [ on && orb.home_open == names[ i ] ]
             if [ sel ] pick = i
         # the floor's reach from its middle
@@ -684,9 +755,19 @@ element PlatformView
         pm.m[ 8 ] = 1.0 - fw / bounds.w
         proj_m = pm
         cam : vec4f [ eye.x, eye.y, eye.z, 1.0 ]
-        has : vec4f [ (w.backdrop) ? 1.0 : 0.0,
+        has : vec4f [ (scene_tx) ? 1.0 : 0.0,
                       1.0 / f32[ target.width ],
-                      1.0 / f32[ target.height ], 0.0 ]
+                      1.0 / f32[ target.height ],
+                      (mirror_tx) ? ((w.mirror_gain > 0.0)
+                                     ? w.mirror_gain : 1.0) : 0.0 ]
+        # ask the scene for itself through this camera: it is seen
+        # level, so its mirror in the floor is that picture with its
+        # rows flipped about the horizon (the shader reads it so)
+        w.mirror_turn = mat4f.identity[]
+        w.mirror_proj = proj_m
+        w.mirror_w    = target.width / 2
+        w.mirror_h    = target.height / 2
+        w.mirror_ask  = true
         # this element in the window: its bounds summed up the tree
         ax : f32 [ 0.0 ]
         ay : f32 [ 0.0 ]
@@ -700,6 +781,57 @@ element PlatformView
         ww : f32 [ f32[ w.width ] / sc ]
         wh : f32 [ f32[ w.height ] / sc ]
         win : vec4f [ ax / ww, ay / wh, bounds.w / ww, bounds.h / wh ]
+        # the local light: low, past the floor's far side on the line
+        # of sight, so its highlight runs down the middle toward us
+        ldx : f32 [ mp.x - eye.x ]
+        ldz : f32 [ mp.z - eye.z ]
+        ldl : f32 [ sqrt[ ldx * ldx + ldz * ldz ] ]
+        if [ ldl < 0.001 ] ldl = 1.0
+        lamp : vec4f [ mp.x + ldx / ldl * rb * 1.3, 1.2,
+                       mp.z + ldz / ldl * rb * 1.3, 3.0 ]
+        # the avatars' glows nearest the view, for the glass to catch:
+        # the halo (always, stronger while working), the beam
+        glows : vec vec4f []
+        tints : vec vec4f []
+        taken : vec bool []
+        for [ i: i32 0, i < n, i += 1 ]
+            taken.push[ false ]
+        for [ k: i32 0, k < 4, k += 1 ]
+            best : i32 [ -1 ]
+            bd2  : f32 [ 1.0e9 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ taken[ i ] || opens[ i ] < 0.5 ] continue
+                q : vec3f avatar_at[ i ]
+                gx : f32 [ q.x - tgt.x ]
+                gz : f32 [ q.z - tgt.z ]
+                dd : f32 [ gx * gx + gz * gz ]
+                if [ dd < bd2 ]
+                    bd2  = dd
+                    best = i
+            if [ best < 0 ] break
+            taken[ best ] = true
+            pg : cast PlatAvatar [
+                (elements) ? elements[ 'pav_{names[ best ]}' ] : null ]
+            if [ !pg ] continue
+            q : vec3f avatar_at[ best ]
+            fade : f32 [ smooth[ 0.5, 1.0, opens[ best ] ] ]
+            hs : f32 [ (0.5 + 0.5 * pg.halo_cur) * fade ]
+            bs : f32 [ pg.beam_cur * fade ]
+            bm : f32 [ bs / max[ hs + bs, 0.001 ] ]
+            # the halo's pink lobe turns about the axis (the shader's
+            # cos(angle - spin)); the beam's light stands on the axis
+            sa : f32 [ pg.spin_phase ]
+            lr : f32 [ 0.8 * (1.0 - bm) ]
+            glows.push[ vec4f [ q.x + sin[ sa ] * lr,
+                                q.y + 0.4 + 1.1 * bm,
+                                q.z - cos[ sa ] * lr,
+                                hs + 2.0 * bs ] ]
+            tints.push[ vec4f [ 1.0, 0.5 + 0.25 * bm,
+                                1.0 - 0.45 * bm, 0.0 ] ]
+        none4 : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        while [ glows.count < 4 ]
+            glows.push[ none4 ]
+            tints.push[ none4 ]
         # the floor: its mirrors, the agents on the first ones
         for [ i: i32 0, i < nh, i += 1 ]
             p : vec3f pad_at[ i ]
@@ -718,6 +850,15 @@ element PlatformView
             pd.look    = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
             pd.has     = has
             pd.win     = win
+            pd.light   = lamp
+            pd.glow_a  = glows[ 0 ]
+            pd.glow_b  = glows[ 1 ]
+            pd.glow_c  = glows[ 2 ]
+            pd.glow_d  = glows[ 3 ]
+            pd.tint_a  = tints[ 0 ]
+            pd.tint_b  = tints[ 1 ]
+            pd.tint_c  = tints[ 2 ]
+            pd.tint_d  = tints[ 3 ]
         # the chosen avatar's box, in whole device pixels; its
         # picture keeps its size while the box moves within it
         dscale = sc

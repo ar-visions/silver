@@ -147,9 +147,10 @@ Backdrop Titan
         t_samplers : map Image [string] [
             'color': Image [ uri: path '../{share_name}/baked/titan-color.png', surface: TitanSurface.color ]
         ]
+        # Titan is under us: a mirror on it sees Saturn alone
         titan_model : Model [ vk: vk, w: ux, id: gltf, s: titan,
                               samplers: t_samplers,
-                              straight_alpha: true ]
+                              straight_alpha: true, reflects: false ]
         saturn    = SaturnShader [ vk: vk ]
         s_samplers : map Image [string] [
             'color': Image [ uri: path '{scenes_share[]}/textures/saturn-color.png', surface: TitanSurface.color,
