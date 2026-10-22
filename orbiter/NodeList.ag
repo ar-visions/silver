@@ -1200,6 +1200,35 @@ element StatusLabel
             null ]
         cv.set_font[ null ]
 
+# a panel's group: a faint frame, its title centred at the top
+element SetGroup
+    public title  : string
+    # the heading band's height, px: the chips' row height
+    public head_h : f32 [ 33.0 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        rr : f32 [ 20.0 ]
+        cv.save[]
+        cv.rounded[ rr, rr, rr, rr ]
+        cv.fill_color[ rgba [ '#ffffff08' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff24' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+        px : i32 [ i32[ head_h * 0.5 ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', px ] ]
+        cv.font_size[ f32[ px ] ]
+        cv.fill_color[ rgba [ '#b4aacb' ] ]
+        cv.draw_text[ title, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                    h: head_h ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null ]
+
 # a scene setting as one pill: its name, a colon, its value in the
 # accent; a press opens its choices in the row under it
 element PropChip

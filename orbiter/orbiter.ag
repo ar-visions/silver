@@ -154,6 +154,11 @@ element EditorView
             orb.nav_root = p9
             orb.run_search[]
             return
+        # a take's file: named here, the recording starts there
+        if [ orb.pick_field == 'rec' ]
+            newfile_exit[]
+            orb.rec_deliver[ p9 ]
+            return
         # a program's save: the name goes back to it, nothing made
         if [ orb.pick_field == 'portal' ]
             newfile_exit[]
@@ -3658,6 +3663,16 @@ element orbiter : trinity # implements compiler
     mutable rec_sec       : i64
     # what the tab records next: orbiter (0) or the selected app (1)
     mutable rec_pick      : i32
+    # what the display panel records next: -1 orbiter, else an iid
+    mutable rec_want      : i32 [ -1 ]
+    # the folder the last take was saved in: the next one starts there
+    mutable rec_dir       : path
+    # minimized free windows: each one's instance and x y w h px
+    mutable mini_iids     : vec i32
+    mutable mini_rect     : vec f32
+    # a restored one waits for its new pane's editor
+    mutable mini_wait     : i32 [ -1 ]
+    mutable mini_pane     : i32 [ -1 ]
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # the nav lists the scene cards
@@ -5448,7 +5463,7 @@ element orbiter : trinity # implements compiler
     # record, which trinity watches) or an app's, asked over its
     # socket; each records itself, as --record does, into
     # ~/Videos/<name>-<date>/
-    func rec_start [ av: AppView ]
+    func rec_start [ av: AppView, file: path ]
         now : i64 [ time[ null ] ]
         tm : struct tm
         localtime_r[ @now, @tm ]
@@ -5459,13 +5474,24 @@ element orbiter : trinity # implements compiler
         nm : string (av) ? app_name[ av ] : 'orbiter'
         hm : string getenv[ 'HOME' ]
         dir : path '{hm}/Videos/{nm}-{stamp}'
-        dir.make_dir[]
-        rec_path = '{dir}/{dir.filename[]}.mp4'
+        # a chosen file is the take itself, its notes beside it
+        if [ file ]
+            pd : path file.parent_dir[]
+            pd.make_dir[]
+            dir = file
+            rec_path = file
+        el
+            dir.make_dir[]
+            rec_path = '{dir}/{dir.filename[]}.mp4'
         rec_from = epoch_millis[]
         rec_sec  = 0
         if [ av ]
             rec_iid = av.iid
-            agent_sock_send[ av.sock_name[].chars, 'record {dir}\n' ]
+            sk : string av.sock_name[]
+            mic : string [ (record_mic) ? 'true' : 'false' ]
+            agent_sock_send[ sk.chars, 'set rec_qp {rec_qp_name[]}\n' ]
+            agent_sock_send[ sk.chars, 'set record_mic {mic}\n' ]
+            agent_sock_send[ sk.chars, 'record {dir}\n' ]
         el
             rec_iid = -1
             record = '{dir}'
@@ -5492,7 +5518,8 @@ element orbiter : trinity # implements compiler
         sec : i64 [ (epoch_millis[] - rec_from) / 1000 ]
         if [ sec != rec_sec ]
             rec_sec = sec
-            if [ rec_open && ux ] ux.restyle = true
+            if [ (rec_open || sys_view == 'display') && ux ]
+                ux.restyle = true
 
     func instance_by [ iid: i32 ] -> AppView
         if [ instances ]
@@ -9855,7 +9882,8 @@ element orbiter : trinity # implements compiler
                                 combined.push[ '{e}' ]
                     # bottom of the results: a break, then the create
                     # buttons
-                    if [ !picking || portal_saving[] ]
+                    if [ !picking || portal_saving[]
+                         || pick_field == 'rec' ]
                         find_hits.push[
                             FindHit [ is_header: true, is_spacer: true,
                                       text: '' ] ]
@@ -9930,6 +9958,7 @@ element orbiter : trinity # implements compiler
         if [ stats ] log 'PICK deliver {p0}'
         if [ !pick_field || pick_field.count == 0 ] return false
         if [ pick_field == 'portal' ] return portal_deliver[ p0 ]
+        if [ pick_field == 'rec' ] return rec_deliver[ p0 ]
         # a folder field given a file takes the file's folder
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
         fe : element (pick_field == 'arg_edit') ? null : find_el[ a,
@@ -10815,6 +10844,11 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        if [ ev.target.id == 'rec_toggle' ]
+            rec_toggle[]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         # a setting's chip in a system menu panel: its choices under
         # it; again, away. a choice: taken
         if [ ev.target.id && ev.target.id.starts_with[ 'xchip_' ] ]
@@ -10829,7 +10863,7 @@ element orbiter : trinity # implements compiler
             if [ ev.target.id.starts_with[ pre ] ]
                 k : i32 [ i32[ ev.target.id.mid[ pre.count,
                     ev.target.id.count - pre.count ].integer_value[] ] ]
-                for [ p8: Prop ] in panel_settings[ sys_view ]
+                for [ p8: Prop ] in setting_props[ sys_view ]
                     if [ p8.ident == set_open && p8.stops
                          && k >= 0 && k < p8.stops.count ]
                         setting_set[ p8.ident, p8.stops[ k ] ]
@@ -10964,6 +10998,14 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         # a tab's close: that pane closes
+        # minimize: the pane goes, its app runs on (the menu's Hide)
+        if [ ev.target.id.starts_with[ 'pmin_' ] ]
+            mp : i32 [ ev.target.id.mid[ 5,
+                ev.target.id.count - 5 ].integer_value[] ]
+            if [ mp >= 0 && mp < editor_slots.count ] minimize[ mp ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id.starts_with[ 'pclose_' ] ]
             cp : i32 [ ev.target.id.mid[ 7,
                 ev.target.id.count - 7 ].integer_value[] ]
@@ -11544,7 +11586,7 @@ element orbiter : trinity # implements compiler
                 av9 : AppView (ed9) ? ed9.run_view : null
                 up9 : bool [ av9 && av9.slot >= 0 && !av9.ended
                              && !av9.held ]
-                rec_start[ (rec_pick == 1 && up9) ? av9 : null ]
+                rec_start[ (rec_pick == 1 && up9) ? av9 : null, null ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
@@ -12415,6 +12457,8 @@ element orbiter : trinity # implements compiler
                 cover9 = true
         if [ ux ] ux.backdrop_bypass = cover9
         attach_publish[]
+        # a restored free window: shown once its pane has an editor
+        if [ mini_wait >= 0 ] mini_show[]
         if [ pending_show > 0 ]
             edp9 : Editor pane_at[ pending_show_pane ]
             avp : AppView instance_by[ pending_show ]
@@ -12845,6 +12889,8 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             if [ !pane_floats[ i ] || !pane_empty[ i ] ] continue
             if [ pane_browsing[ i ] || pending_finder == i ] continue
+            # a minimized window coming back into it
+            if [ mini_wait >= 0 && i == mini_pane ] continue
             if [ editor_slots.count == 1 ]
                 dock_pane[ i ]
             el
@@ -13001,10 +13047,111 @@ element orbiter : trinity # implements compiler
             return (e.id) ? e.id : ''
         return ''
  
+    # the app a pane shows: its editor's, else its window's
+    func pane_instance [ pi: i32 ] -> AppView
+        ed : Editor pane_at[ pi ]
+        if [ ed && ed.run_view ] return ed.run_view
+        wv : u64 pane_window[ pi ]
+        if [ wv != 0 && instances ]
+            for [ v: AppView ] in instances
+                if [ window_of[ v ] == wv ] return v
+        return null
+
+    # the pane goes, its app runs on; a free window's place is kept
+    # for its return
+    func minimize [ pi: i32 ]
+        av : AppView pane_instance[ pi ]
+        if [ av && pane_floats[ pi ] ]
+            mini_forget[ av.iid ]
+            mini_iids.push[ av.iid ]
+            for [ r: i32 0, r < 4, r += 1 ]
+                mini_rect.push[ pane_free[ pi * 4 + r ] ]
+        # the last pane stays, emptied: its window and free place go
+        if [ editor_slots.count == 1 ]
+            free_drop[ pi ]
+            if [ pane_win && pi < pane_win.count ]
+                pane_win[ pi ] = u64[ 0 ]
+        close_pane[ pi ]
+
+    func mini_forget [ iid: i32 ]
+        if [ !mini_iids ] mini_iids = vec i32 []
+        if [ !mini_rect ] mini_rect = vec f32 []
+        for [ j: i32 0, j < mini_iids.count, j += 1 ]
+            if [ mini_iids[ j ] == iid ]
+                mini_iids.remove[ j ]
+                for [ r: i32 0, r < 4, r += 1 ]
+                    mini_rect.remove[ j * 4 ]
+                return
+
+    # a minimized free window comes back free, where it was, in a
+    # pane of its own; false when it was not one
+    func mini_restore [ iid: i32 ] -> bool
+        if [ !mini_iids ] return false
+        j : i32 [ -1 ]
+        for [ k: i32 0, k < mini_iids.count, k += 1 ]
+            if [ mini_iids[ k ] == iid ] j = k
+        if [ j < 0 ] return false
+        x : f32 mini_rect[ j * 4 ]
+        y : f32 mini_rect[ j * 4 + 1 ]
+        w : f32 mini_rect[ j * 4 + 2 ]
+        h : f32 mini_rect[ j * 4 + 3 ]
+        mini_forget[ iid ]
+        av : AppView instance_by[ iid ]
+        if [ !av || av.ended || editor_slots.count >= 4 ] return false
+        # shown in a pane since: it stays as it is
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ pane_instance[ q ] == av ] return false
+        pane_add[]
+        pending_finder = -1
+        pi : i32 [ editor_slots.count - 1 ]
+        if [ !pane_free ] pane_free = vec f32 []
+        if [ !pane_shown ] pane_shown = vec f32 []
+        if [ !free_order ] free_order = vec i32 []
+        while [ pane_free.count < (pi + 1) * 4 ] pane_free.push[ 0.0 ]
+        while [ pane_shown.count < (pi + 1) * 4 ] pane_shown.push[ 0.0 ]
+        k : i32 [ pi * 4 ]
+        pane_free[ k ]      = x
+        pane_free[ k + 1 ]  = y
+        pane_free[ k + 2 ]  = w
+        pane_free[ k + 3 ]  = h
+        pane_shown[ k ]     = x
+        pane_shown[ k + 1 ] = y
+        pane_shown[ k + 2 ] = w
+        pane_shown[ k + 3 ] = h
+        free_order.push[ pi ]
+        mini_wait = iid
+        mini_pane = pi
+        force_update[]
+        return true
+
+    # the restored one into its pane: a program's window as it is; an
+    # app shown in the pane's editor, its file opened first if none
+    func mini_show []
+        av : AppView instance_by[ mini_wait ]
+        pi : i32 [ mini_pane ]
+        mini_wait = -1
+        if [ !av || pi < 0 || pi >= editor_slots.count ] return
+        active_pane = pi
+        wv : u64 window_of[ av ]
+        if [ wv != 0 ]
+            if [ !pane_win ] pane_win = vec u64 []
+            while [ pane_win.count <= pi ] pane_win.push[ u64[ 0 ] ]
+            pane_win[ pi ] = wv
+            wlc_window_focus[ wv ]
+        el [ pane_at[ pi ] ]
+            show_instance[ av.iid, pi ]
+        el [ av.src ]
+            open_in_pane[ av.src, pi ]
+            pending_show      = av.iid
+            pending_show_pane = pi
+        session_dirty = true
+        if [ ux ] ux.restyle = true
+
     # apps are toggles: one in view goes out of it (still running),
     # the pane back where it was; a window's pane has no editor
     # mounted until the next frame
     func dock_run_click [ iid: i32 ]
+        if [ mini_restore[ iid ] ] return
         avd : AppView instance_by[ iid ]
         edd : Editor pane_at[ active_pane ]
         wvd : u64 window_of[ avd ]
@@ -13463,7 +13610,7 @@ element orbiter : trinity # implements compiler
             pane_views_el[ t, pi, re ]
         el [ pv && bounds && !pane_empty[ pi ] ]
             # the close at the right end, the arrows left of it
-            rx : f32 pane_close_el[ t, pi, re ]
+            rx : f32 pane_close_el[ t, pi, re, 0.0, 0.0 ]
             vx : f32 nav_arrows_el[ t, pi, rx ]
             # a URL app's address: up to the arrows; a press edits
             url : bool [ pi == active_pane && bar_url_on[] ]
@@ -13481,6 +13628,9 @@ element orbiter : trinity # implements compiler
             gw : f32 [ max[ re - x, 8.0 ] ]
             t['bar_grab'] = BarGrab [ pane: grab_pane,
                 area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
+        # last: drawn over every menu on the bar
+        if [ rec_iid != -2 ]
+            t['rec_bar'] = RecBar [ area: Region { l0 b2px r0 b0 } ]
         return t
 
     # the pane shows the navigator
@@ -13555,7 +13705,13 @@ element orbiter : trinity # implements compiler
         uu : f32 ux_unit[ ux ]
         # end to end: the window's mask rounds the corner buttons
         x : f32 menu_group_els[ t, 0.0, uu, pi, 's{pi}_' ]
-        rx : f32 pane_close_el[ t, pi, w ]
+        # the strip's place on screen: the window's, in the panes' area
+        sx : f32 [ (pane_shown && pi * 4 + 1 < pane_shown.count)
+            ? pane_shown[ pi * 4 ] : 0.0 ]
+        sy : f32 [ (pane_shown && pi * 4 + 1 < pane_shown.count)
+            ? pane_shown[ pi * 4 + 1 ] : 0.0 ]
+        top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
+        rx : f32 pane_close_el[ t, pi, w, sx, sy + top ]
         vx : f32 nav_arrows_el[ t, pi, rx ]
         x = pane_outline_el[ t, pi, x, 's{pi}_' ]
         # the load mark left of the arrows, as on the bar
@@ -13659,15 +13815,33 @@ element orbiter : trinity # implements compiler
 
     # the pane's close, always, ending at xr (the pane's right end);
     # the x where it starts
-    func pane_close_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+    func pane_close_el [ t: Elements, pi: i32, xr: f32, ox: f32,
+                         oy: f32 ] -> f32
         # the load button's width
         cw : f32 [ 1.33 * unit_px[] ]
-        t['pclose_{pi}'] = AltTab [
-            buttons: vec string [] [ 'pclose_{pi}' ],
-            icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+        # Rule #12: ctrl, or shift over it (by place: no hover kept)
+        over : bool [ false ]
+        if [ shift_down && ux ]
+            mx : f32 [ f32[ ux.mouse.x ] - ox ]
+            my : f32 [ f32[ ux.mouse.y ] - oy ]
+            over = mx >= xr - cw && mx < xr && my >= 0.0
+                && my < 0.91 * unit_px[]
+        mini : bool [ cmd_down || over ]
+        if [ mini ]
+            # minimize: the close's ringed minus; the app runs on
+            t['pmin_{pi}'] = AltTab [
+                buttons: vec string [] [ 'pmin_{pi}' ],
+                icon_ids: vec string [] [ 'minus' ], icon_scale: 0.6,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ], second: true,
+                area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+        el
+            t['pclose_{pi}'] = AltTab [
+                buttons: vec string [] [ 'pclose_{pi}' ],
+                icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
         # the app's panel: its toggle beside the close, lit open (the
         # app keeps it open until it is pressed again)
         ed : Editor pane_at[ pi ]
@@ -15152,6 +15326,167 @@ element orbiter : trinity # implements compiler
                 return d.mid[ bar + 1, d.count - bar - 1 ]
         return name
 
+    # the instances a take can come from: running, not held
+    func rec_sources [] -> vec AppView
+        out : vec AppView []
+        if [ !instances ] return out
+        for [ v: AppView ] in instances
+            if [ v.slot >= 0 && !v.ended && !v.held ] out.push[ v ]
+        return out
+
+    # the recording group's choices, kept for the next start: what
+    # records, its quality, the mic
+    func rec_settings [] -> vec Prop
+        ps : vec Prop []
+        on : bool [ rec_iid != -2 ]
+        srcs : vec string [] [ 'orbiter' ]
+        what : string [ 'orbiter' ]
+        cur : i32 [ (on) ? rec_iid : rec_want ]
+        for [ v: AppView ] in rec_sources[]
+            nm : string instance_name[ v ]
+            srcs.push[ nm ]
+            if [ v.iid == cur ] what = nm
+        # the running take's source stays as it is
+        ps.push[ setting[ 'source', what,
+            (on) ? vec string [] [ what ] : srcs ] ]
+        ps.push[ setting[ 'quality', rec_qp_name[],
+            vec string [] [ 'stream', 'high', 'stage', 'lossless' ] ] ]
+        ps.push[ setting[ 'with mic', (record_mic) ? 'on' : 'off',
+            vec string [] [ 'on', 'off' ] ] ]
+        return ps
+
+    # the display panel: its settings, then the recording as a group
+    # of its own (choices, start or stop with the clock, the take)
+    func display_body [] -> Elements
+        t : Elements chip_grid[ panel_settings[ 'display' ], set_open,
+                                'x' ]
+        top : f32 [ chips_h ]
+        un : f32 unit_px[]
+        ch : f32 [ round[ 1.1 * un ] ]
+        gap : f32 [ round[ 0.3 * un ] ]
+        rec : Elements []
+        rec['rec_choices'] = element [
+            elements: chip_grid[ rec_settings[], set_open, 'x' ],
+            area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+        y : f32 [ ch + chips_h ]
+        on : bool [ rec_iid != -2 ]
+        secs : i64 [ (on) ? (epoch_millis[] - rec_from) / 1000 : 0 ]
+        ss : i64 [ secs % 60 ]
+        mn : i64 [ secs / 60 ]
+        tm : string [ (ss < 10) ? '{mn}:0{ss}' : '{mn}:{ss}' ]
+        rec['rec_toggle'] = RoundTab [
+            buttons: vec string [] [ 'rec_toggle' ],
+            icon_ids: vec string [] [ '_text' ],
+            labels: vec string [] [ (on) ? 'stop   {tm}' : 'start' ],
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            label_px: 0.5 * ch, manual: true,
+            seg_radius: ch * 0.5, use_spacing: false,
+            rest_fill: rgba [ (on) ? '#c2185b88' : '#0000' ],
+            sel_mask: (on) ? 1 : 0,
+            area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+        y += ch + gap
+        if [ rec_path ]
+            rec['rec_saved'] = PropChip [ name: 'saved to',
+                value: '{rec_path}',
+                area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+            y += ch + gap
+        t['rec_group'] = SetGroup [ title: 'recording', head_h: ch,
+            elements: rec,
+            area: Region [
+                'l{gap}px t{top + gap}px r{gap}px h{y}px' ] ]
+        return t
+
+    # a panel's settings, the display's recording choices with them
+    func setting_props [ tab: string ] -> vec Prop
+        ps : vec Prop panel_settings[ tab ]
+        if [ tab == 'display' ]
+            for [ p: Prop ] in rec_settings[] ps.push[ p ]
+        return ps
+
+    # the recording group's button: the running take stops; else the
+    # navigator asks where the take goes, and its answer starts it
+    func rec_toggle []
+        if [ rec_iid != -2 ]
+            rec_stop[]
+            return
+        av : AppView rec_source[]
+        now : i64 [ time[ null ] ]
+        tm : struct tm
+        localtime_r[ @now, @tm ]
+        b : local i8 [ 64 ]
+        fmt : '%Y%m%d-%H%M%S'
+        strftime[ @b[0], 64, fmt.chars, @tm ]
+        stamp : string [ @b[0] ]
+        nm : string (av) ? app_name[ av ] : 'orbiter'
+        hm : string getenv[ 'HOME' ]
+        dir : path (rec_dir) ? rec_dir : path '{hm}/Videos'
+        dir.make_dir[]
+        drawer_shut[]
+        pick_field  = 'rec'
+        pick_dir    = false
+        pick_editor = pane_at[ active_pane ]
+        pick_launch = null
+        pick_exts   = vec string []
+        pick_cache  = null
+        nav_root    = dir
+        focus_finder[]
+        run_search[]
+        pv : element pane_view[ active_pane ]
+        if [ pv && pv inherits EditorView ]
+            ev : EditorView pv
+            ev.newfile_enter[ null ]
+            ev.newfile_text = '{nm}-{stamp}.mp4'
+            pending_finder = active_pane
+
+    # the app the group records, else null: orbiter itself
+    func rec_source [] -> AppView
+        for [ s: AppView ] in rec_sources[]
+            if [ s.iid == rec_want ] return s
+        return null
+
+    # the navigator's answer for a take: a folder is gone into, a
+    # file named starts the take there (.mp4 when it has no kind)
+    func rec_deliver [ p0: path ] -> bool
+        if [ p0 && p0.is_dir[] ]
+            nav_root = p0
+            run_search[]
+            return true
+        # an existing file is never written over
+        if [ !p0 || p0.exists[] ] return true
+        fs : string '{p0}'
+        ex : string p0.ext[]
+        if [ !ex || ex.count == 0 ] fs = '{fs}.mp4'
+        pick_field = null
+        exit_finder[]
+        exit_find_mode[]
+        rec_dir = path fs.mid[ 0, fs.rindex_of[ '/' ] ]
+        rec_start[ rec_source[], path fs ]
+        if [ ux ] ux.restyle = true
+        return true
+
+    func rec_qp_name [] -> string
+        if [ rec_qp == RecQuality.stream ] return 'stream'
+        if [ rec_qp == RecQuality.high ]   return 'high'
+        if [ rec_qp == RecQuality.stage ]  return 'stage'
+        return 'lossless'
+
+    # a recording setting taken: true when the name was one
+    func rec_setting_set [ name: string, v: string ] -> bool
+        if [ name == 'source' ]
+            rec_want = -1
+            for [ s: AppView ] in rec_sources[]
+                if [ instance_name[ s ] == v ] rec_want = s.iid
+        el [ name == 'quality' ]
+            if [ v == 'stream' ]     rec_qp = RecQuality.stream
+            el [ v == 'high' ]       rec_qp = RecQuality.high
+            el [ v == 'stage' ]      rec_qp = RecQuality.stage
+            el                       rec_qp = RecQuality.lossless
+        el [ name == 'with mic' ]
+            record_mic = v == 'on'
+        el
+            return false
+        return true
+
     # a system menu panel's settings, as chips
     func panel_settings [ tab: string ] -> vec Prop
         ps : vec Prop []
@@ -15214,6 +15549,9 @@ element orbiter : trinity # implements compiler
     # a choice taken: kept, and put to work
     func setting_set [ name: string, v: string ]
         n : f32 [ v.real_value[] ]
+        if [ rec_setting_set[ name, v ] ]
+            if [ ux ] ux.restyle = true
+            return
         if [ name == 'scroll' ]        set_scroll = n
         el [ name == 'easing' ]        set_easing = v
         el [ name == 'delay' ]         set_delay = i32[ n ]
@@ -15391,8 +15729,10 @@ element orbiter : trinity # implements compiler
                 area: Region [ body ], elements: grid ]
         el [ tab == 'wifi' ]
             t['wifi_panel'] = WifiPanel [ area: Region [ body ] ]
-        el [ tab == 'mouse' || tab == 'keyboard' || tab == 'display'
-             || tab == 'sound' ]
+        el [ tab == 'display' ]
+            t['set_body'] = element [ area: Region [ body ],
+                elements: display_body[] ]
+        el [ tab == 'mouse' || tab == 'keyboard' || tab == 'sound' ]
             t['set_body'] = element [ area: Region [ body ],
                 elements: chip_grid[ panel_settings[ tab ], set_open,
                                      'x' ] ]

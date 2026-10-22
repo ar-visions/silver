@@ -26,6 +26,16 @@ Group SystemBar
             area: l0 b1px r0 h1px
     }
 
+# a take running: a yellow line along the bar's whole foot, over
+# every menu on it
+element RecBar
+    no_cache    : true
+    user_events : false
+    style : CSS {
+        layers.line:
+            fill_color: #ffd400ff
+    }
+
 # the clock's words, in the bar's middle
 element SystemClock
     no_cache : true

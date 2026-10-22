@@ -630,6 +630,9 @@ abstract live_app media_app
                  || (want && want.compare[ have ] != 0) ]
                 record_stop[]
                 record = want
+                # a take starts with the quality and mic set now
+                rec_qp     = ap.rec_qp
+                record_mic = ap.record_mic
         if [ !record ] return
         scv : Canvas [ wn.screen ]
         if [ !scv ] return
@@ -1791,12 +1794,18 @@ abstract live_app media_app
                                     parts[1].chars ] == 1
                     agent_sock_reply[ (called) ? 'ok\n' : 'unknown\n' ]
                     continue
-                el [ cmd == 'set' && parts.count >= 3 ]
+                el [ cmd == 'set' && parts.count >= 2 ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ],
                             parts[1].chars,
                         AU_MEMBER_VAR, 0, true ] : null ]
+                    # a string with no value is cleared (record stops)
+                    if [ member && parts.count < 3
+                         && member.src != typeid[ string ] ]
+                        member = null
                     if [ member ]
-                        val : Au.convert[ member.src, parts[2] ]
+                        word : string [
+                            (parts.count >= 3) ? parts[2] : '' ]
+                        val : Au.convert[ member.src, word ]
                         if [ val ] aa.set_property[ parts[1], val ]
                         wn.title_refresh[]
                     agent_sock_reply[ (member) ? 'ok\n' : 'unknown\n' ]
@@ -1845,15 +1854,21 @@ abstract live_app media_app
                     if [ aa ]
                         aa.on_agent*[ line.mid[ 4, line.count - 4 ] ]
                     el ok = false
-                el [ cmd == 'set' && parts.count >= 3 ]
+                el [ cmd == 'set' && parts.count >= 2 ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ],
                             parts[1].chars,
                         AU_MEMBER_VAR, 0, true ] : null ]
+                    # a string with no value is cleared (record stops)
+                    if [ member && parts.count < 3
+                         && member.src != typeid[ string ] ]
+                        member = null
                     if [ member ]
                         # the member's own type does the conversion, so
                         # a bool prop takes a bool and an i32 takes an
                         # i32
-                        val : Au.convert[ member.src, parts[2] ]
+                        word : string [
+                            (parts.count >= 3) ? parts[2] : '' ]
+                        val : Au.convert[ member.src, word ]
                         if [ val ]
                             aa.set_property[ parts[1].chars, val ]
                             wn.title_refresh[]
