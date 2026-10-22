@@ -213,6 +213,139 @@ func nav_icon_paint [ cv: Canvas, ico: SVGModel, x: f32,
     cv.draw_svg[ ico, x + 38.0 * u, round[ ry + 4.5 * u ], sz, sz ]
     return x + 67.0 * u
 
+# an app's or module's icon: its images/icon.png, else the icon its
+# export names, else the module cube or folder
+class AppIcon
+    public  file   : path
+    public  module : bool
+    # a program's own icon file (its .desktop's), drawn instead
+    public  icon_file : path
+    # the module's export, where its icon name is
+    public  agi    : path
+    mutable tex    : Texture
+    mutable svg    : SVGModel
+    mutable loaded : bool
+    # the png, colour scaled by alpha; tex is it shrunk to tex_side px
+    mutable src    : Image
+    mutable tex_side : i32
+
+    # each drawn pixel the mean of the source pixels it covers
+    func shrink [ ps: i32 ] -> Image
+        sw : i32 [ src.width ]
+        sh : i32 [ src.height ]
+        # the picture's shape kept inside the ps square
+        dw : i32 [ (sw >= sh) ? ps : max[ 1, ps * sw / sh ] ]
+        dh : i32 [ (sh >= sw) ? ps : max[ 1, ps * sh / sw ] ]
+        out : Image [ width: dw, height: dh, format: Pixel.rgba8,
+                      channels: 4 ]
+        sp9 : @u8 src.vdata[]
+        dp9 : @u8 out.vdata[]
+        fx : f32 [ f32[ sw ] / f32[ dw ] ]
+        fy : f32 [ f32[ sh ] / f32[ dh ] ]
+        for [ dy: i32 0, dy < dh, dy += 1 ]
+            y0 : f32 [ f32[ dy ] * fy ]
+            y1 : f32 [ y0 + fy ]
+            for [ dx: i32 0, dx < dw, dx += 1 ]
+                x0 : f32 [ f32[ dx ] * fx ]
+                x1 : f32 [ x0 + fx ]
+                acc : local f32 [ 4 ] [ 0.0, 0.0, 0.0, 0.0 ]
+                wt  : f32 [ 0.0 ]
+                for [ sy: i32 i32[ y0 ], f32[ sy ] < y1 && sy < sh, sy += 1 ]
+                    wy : f32 [
+                        min[ f32[ sy + 1 ], y1 ]
+                        - max[ f32[ sy ], y0 ] ]
+                    for [ sx: i32 i32[ x0 ], f32[ sx ] < x1 && sx < sw, sx += 1 ]
+                        w9 : f32 [
+                            wy
+                            * (min[ f32[ sx + 1 ], x1 ] - max[ f32[ sx ], x0 ]) ]
+                        o9 : i64 [
+                            (i64[ sy ] * i64[ sw ] + i64[ sx ]) * 4 ]
+                        for [ c: i32 0, c < 4, c += 1 ]
+                            acc[ c ] += f32[ sp9[ o9 + c ] ] * w9
+                        wt += w9
+                d9 : i64 [ (i64[ dy ] * i64[ dw ] + i64[ dx ]) * 4 ]
+                for [ c: i32 0, c < 4, c += 1 ]
+                    dp9[ d9 + c ] = u8[
+                        min[ acc[ c ] / wt + 0.5, 255.0 ] ]
+        return out
+
+    # the name on the export's icon line: icon: ['tune']
+    func export_icon [] -> string
+        if [ !agi || !agi.exists[] ] return null
+        tx : string agi.load[ typeid[string], null ]
+        if [ !tx ] return null
+        ix : tx.index_of[ 'icon: [' ]
+        if [ ix < 0 ] return null
+        i  : i32 [ ix ]
+        n  : i32 [ tx.count ]
+        q0 : i32 [ 0 - 1 ]
+        while [ i < n ]
+            c : i32 [ (i32 tx.chars[i]) & 255 ]
+            if [ c == 10 ] break
+            i += 1
+            if [ c != 39 ] continue
+            if [ q0 < 0 ]
+                q0 = i
+                continue
+            return tx.mid[ q0, i - 1 - q0 ]
+        return null
+
+    func paint [ cv: Canvas, x: f32, y: f32, side: f32 ]
+        if [ !loaded ]
+            loaded = true
+            png : path '{file}/images/icon.png'
+            if [ icon_file && icon_file.ext[] == 'svg' ]
+                svg = SVGModel [ icon_file ]
+                png = path '/nonexistent'
+            el [ icon_file ]
+                png = icon_file
+            if [ png.exists[] ]
+                im : Image [ '{png}' ]
+                # the canvas adds colour unscaled: scale it by alpha
+                if [
+                    im.width > 0 && im.height > 0
+                    && im.format == Pixel.rgba8 ]
+                    px9 : @u8 im.vdata[]
+                    n9  : i64 [ i64[ im.width ] * i64[ im.height ] * 4 ]
+                    for [ k: i64 0, k < n9, k += 4 ]
+                        al : u32 [ px9[ k + 3 ] ]
+                        px9[ k ]     = u8[
+                            (u32[ px9[ k ] ] * al + 127) / 255 ]
+                        px9[ k + 1 ] = u8[
+                            (u32[ px9[ k + 1 ] ] * al + 127) / 255 ]
+                        px9[ k + 2 ] = u8[
+                            (u32[ px9[ k + 2 ] ] * al + 127) / 255 ]
+                    src = im
+            nm : string export_icon[]
+            if [ !src && nm ]
+                mp : path 'images/material/{nm}.svg'
+                if [ !mp.exists[] ] mp = path 'images/{nm}.svg'
+                if [ mp.exists[] ] svg = SVGModel [ mp ]
+            if [ !src && !svg ]
+                sp : path (module) ? path 'images/material/3d.svg'
+                    : path 'images/material/folder.svg'
+                if [ sp.exists[] ] svg = SVGModel [ sp ]
+            # a file: its type's icon, as the nav list draws it
+            if [ !src && !svg && !module && !file.is_dir[] ]
+                fi : FileIcons []
+                svg = fi.icon[ file.filename[], 64 ]
+        # drawn one texel a pixel: made at the size it is drawn
+        ps9 : i32 [ round[ side ] ]
+        if [ src && ps9 > 0 && (!tex || tex_side != ps9) ]
+            sm : Image shrink[ ps9 ]
+            tex = Texture [ vk: cv.vk, w: cv.w, sampler: sm,
+                width: sm.width, height: sm.height, linear: true ]
+            tex_side = ps9
+        if [ tex ]
+            tw : f32 [ tex.width ]
+            th : f32 [ tex.height ]
+            cv.draw_image[ tex,
+                           rect [ x: round[ x + (side - tw) * 0.5 ],
+                y: round[ y + (side - th) * 0.5 ], w: tw, h: th ] ]
+        el [ svg ]
+            cv.fill_color[ rgba [ '#fff' ] ]
+            cv.draw_svg[ svg, x, y, side, side ]
+
 # the dialog: under the orbiter bar over the app, a solid ground
 # with its rows over it (NavRows); keys reach it from the Window
 element NavigationView
@@ -292,6 +425,11 @@ element NavRows
     intern module_icon : SVGModel
     intern resource_icon : SVGModel
     intern ficons      : FileIcons
+    # module folders' own icons, and the folders found without one
+    intern mod_icons   : map AppIcon [string]
+    intern mod_noicon  : vec string
+    # the exports' file names, read once
+    intern exports     : vec string
     public  nav_hover_fill : rgba [ '#d25cc826' ]
     public  nav_hover_edge : rgba [ '#e07ad899' ]
     # the row a press chose: its release there opens it
@@ -299,6 +437,33 @@ element NavRows
 
     func row_h [] -> f32
         return 30.0
+
+    # a module folder's own icon (images/icon.png, else its export's
+    # icon: install/export/<owner>-<name>.agi); null: the cube
+    func mod_icon [ dir: path ] -> AppIcon
+        k : string '{dir}'
+        if [ !mod_icons ] mod_icons = map AppIcon [string] []
+        if [ !mod_noicon ] mod_noicon = vec string []
+        if [ mod_icons.contains[ k ] ] return mod_icons[ k ]
+        for [ m: string ] in mod_noicon
+            if [ m == k ] return null
+        ex : path '{path.path_install[]}/export'
+        if [ !exports ]
+            exports = vec string []
+            if [ ex.exists[] ]
+                for [ f: path ] in ex.ls[ null, false ]
+                    exports.push[ f.filename[] ]
+        tail : string '-{dir.filename[]}.agi'
+        agi : path null
+        for [ f: string ] in exports
+            if [ f.ends_with[ tail ] ] agi = path '{ex}/{f}'
+        ai : AppIcon [ file: dir, module: true, agi: agi ]
+        png : path '{dir}/images/icon.png'
+        if [ !png.exists[] && !ai.export_icon[] ]
+            mod_noicon.push[ k ]
+            return null
+        mod_icons[ k ] = ai
+        return ai
 
     # the dialog it is in: its rows and the chosen one
     func dialog [] -> NavigationView
@@ -395,7 +560,14 @@ element NavRows
                 nav_hover_paint[ cv, a, x0 + 32.0, ry + 1.0,
                     right - x0 - 32.0, rh - 2.0, nav_hover_fill,
                     nav_hover_edge, 0.0 - scroll.y ]
-            tx : nav_icon_paint[ cv, icon_of[ h ], x0, ry, 1.0 ]
+            # a module with an icon of its own shows it
+            mi : AppIcon (h.is_dir && h.is_module && h.file)
+                ? mod_icon[ h.file ] : null
+            tx : f32 [ x0 + 67.0 ]
+            if [ mi ]
+                mi.paint[ cv, x0 + 38.0, round[ ry + 4.5 ], 21.0 ]
+            el
+                tx = nav_icon_paint[ cv, icon_of[ h ], x0, ry, 1.0 ]
             cv.font_size[ 16 ]
             cv.fill_color[ (h.is_dir) ? '#6cb6ff' : '#fff' ]
             cv.draw_text[ h.text, rect [ x: tx, y: ry,

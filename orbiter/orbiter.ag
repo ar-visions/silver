@@ -66,6 +66,7 @@ import Editor
 import NodeList
 import Platform
 import Git
+import Contrib
 import SystemBar
 import Login
 
@@ -2242,137 +2243,6 @@ class AppEntry
     # a module that builds a program: the program it installs
     public built   : path
 
-class AppIcon
-    public  file   : path
-    public  module : bool
-    # a program's own icon file (its .desktop's), drawn instead
-    public  icon_file : path
-    # the module's export, where its icon name is
-    public  agi    : path
-    mutable tex    : Texture
-    mutable svg    : SVGModel
-    mutable loaded : bool
-    # the png, colour scaled by alpha; tex is it shrunk to tex_side px
-    mutable src    : Image
-    mutable tex_side : i32
-
-    # each drawn pixel the mean of the source pixels it covers
-    func shrink [ ps: i32 ] -> Image
-        sw : i32 [ src.width ]
-        sh : i32 [ src.height ]
-        # the picture's shape kept inside the ps square
-        dw : i32 [ (sw >= sh) ? ps : max[ 1, ps * sw / sh ] ]
-        dh : i32 [ (sh >= sw) ? ps : max[ 1, ps * sh / sw ] ]
-        out : Image [ width: dw, height: dh, format: Pixel.rgba8,
-                      channels: 4 ]
-        sp9 : @u8 src.vdata[]
-        dp9 : @u8 out.vdata[]
-        fx : f32 [ f32[ sw ] / f32[ dw ] ]
-        fy : f32 [ f32[ sh ] / f32[ dh ] ]
-        for [ dy: i32 0, dy < dh, dy += 1 ]
-            y0 : f32 [ f32[ dy ] * fy ]
-            y1 : f32 [ y0 + fy ]
-            for [ dx: i32 0, dx < dw, dx += 1 ]
-                x0 : f32 [ f32[ dx ] * fx ]
-                x1 : f32 [ x0 + fx ]
-                acc : local f32 [ 4 ] [ 0.0, 0.0, 0.0, 0.0 ]
-                wt  : f32 [ 0.0 ]
-                for [ sy: i32 i32[ y0 ], f32[ sy ] < y1 && sy < sh, sy += 1 ]
-                    wy : f32 [
-                        min[ f32[ sy + 1 ], y1 ]
-                        - max[ f32[ sy ], y0 ] ]
-                    for [ sx: i32 i32[ x0 ], f32[ sx ] < x1 && sx < sw, sx += 1 ]
-                        w9 : f32 [
-                            wy
-                            * (min[ f32[ sx + 1 ], x1 ] - max[ f32[ sx ], x0 ]) ]
-                        o9 : i64 [
-                            (i64[ sy ] * i64[ sw ] + i64[ sx ]) * 4 ]
-                        for [ c: i32 0, c < 4, c += 1 ]
-                            acc[ c ] += f32[ sp9[ o9 + c ] ] * w9
-                        wt += w9
-                d9 : i64 [ (i64[ dy ] * i64[ dw ] + i64[ dx ]) * 4 ]
-                for [ c: i32 0, c < 4, c += 1 ]
-                    dp9[ d9 + c ] = u8[
-                        min[ acc[ c ] / wt + 0.5, 255.0 ] ]
-        return out
-
-    # the name on the export's icon line: icon: ['tune']
-    func export_icon [] -> string
-        if [ !agi || !agi.exists[] ] return null
-        tx : string agi.load[ typeid[string], null ]
-        if [ !tx ] return null
-        ix : tx.index_of[ 'icon: [' ]
-        if [ ix < 0 ] return null
-        i  : i32 [ ix ]
-        n  : i32 [ tx.count ]
-        q0 : i32 [ 0 - 1 ]
-        while [ i < n ]
-            c : i32 [ (i32 tx.chars[i]) & 255 ]
-            if [ c == 10 ] break
-            i += 1
-            if [ c != 39 ] continue
-            if [ q0 < 0 ]
-                q0 = i
-                continue
-            return tx.mid[ q0, i - 1 - q0 ]
-        return null
-
-    func paint [ cv: Canvas, x: f32, y: f32, side: f32 ]
-        if [ !loaded ]
-            loaded = true
-            png : path '{file}/images/icon.png'
-            if [ icon_file && icon_file.ext[] == 'svg' ]
-                svg = SVGModel [ icon_file ]
-                png = path '/nonexistent'
-            el [ icon_file ]
-                png = icon_file
-            if [ png.exists[] ]
-                im : Image [ '{png}' ]
-                # the canvas adds colour unscaled: scale it by alpha
-                if [
-                    im.width > 0 && im.height > 0
-                    && im.format == Pixel.rgba8 ]
-                    px9 : @u8 im.vdata[]
-                    n9  : i64 [ i64[ im.width ] * i64[ im.height ] * 4 ]
-                    for [ k: i64 0, k < n9, k += 4 ]
-                        al : u32 [ px9[ k + 3 ] ]
-                        px9[ k ]     = u8[
-                            (u32[ px9[ k ] ] * al + 127) / 255 ]
-                        px9[ k + 1 ] = u8[
-                            (u32[ px9[ k + 1 ] ] * al + 127) / 255 ]
-                        px9[ k + 2 ] = u8[
-                            (u32[ px9[ k + 2 ] ] * al + 127) / 255 ]
-                    src = im
-            nm : string export_icon[]
-            if [ !src && nm ]
-                mp : path 'images/material/{nm}.svg'
-                if [ !mp.exists[] ] mp = path 'images/{nm}.svg'
-                if [ mp.exists[] ] svg = SVGModel [ mp ]
-            if [ !src && !svg ]
-                sp : path (module) ? path 'images/material/3d.svg'
-                    : path 'images/material/folder.svg'
-                if [ sp.exists[] ] svg = SVGModel [ sp ]
-            # a file: its type's icon, as the nav list draws it
-            if [ !src && !svg && !module && !file.is_dir[] ]
-                fi : FileIcons []
-                svg = fi.icon[ file.filename[], 64 ]
-        # drawn one texel a pixel: made at the size it is drawn
-        ps9 : i32 [ round[ side ] ]
-        if [ src && ps9 > 0 && (!tex || tex_side != ps9) ]
-            sm : Image shrink[ ps9 ]
-            tex = Texture [ vk: cv.vk, w: cv.w, sampler: sm,
-                width: sm.width, height: sm.height, linear: true ]
-            tex_side = ps9
-        if [ tex ]
-            tw : f32 [ tex.width ]
-            th : f32 [ tex.height ]
-            cv.draw_image[ tex,
-                           rect [ x: round[ x + (side - tw) * 0.5 ],
-                y: round[ y + (side - th) * 0.5 ], w: tw, h: th ] ]
-        el [ svg ]
-            cv.fill_color[ rgba [ '#fff' ] ]
-            cv.draw_svg[ svg, x, y, side, side ]
-
 # a pin in the dock: its app icon, else the nav list's icon
 element DockIcon
     no_cache : true
@@ -3125,6 +2995,9 @@ element orbiter : trinity # implements compiler
     # the system bar as on orbiter-os, always (Kalen); false turns it
     # off in a window
     public force_system : bool  [ true ]
+    # --test_propose: every repo reads as not ours; propose walks its
+    # steps and runs none of them
+    public test_propose : bool
     public live_reload : bool   [ true ]
     public startup_path  : path
     # the home's view: 'home' (the apps) or 'agent' (orbiter's
@@ -3451,6 +3324,15 @@ element orbiter : trinity # implements compiler
     public find_hits     : vec FindHit
     # the finder's repository listing: user: lists a host user's repos
     intern repo_host     : RepoHost
+    # the commit band's repo work (state, sends) for the browsed repo
+    intern contrib       : Contrib
+    # changed files left out of the next commit, absolute
+    intern commit_skip   : vec string
+    # the bar's breadcrumb: each piece's folder, by its number
+    intern crumb_paths   : vec string
+    # the navigator's module icons by folder, and folders without one
+    intern mod_icons     : map AppIcon [string]
+    intern mod_noicon    : vec string
     intern repo_user     : string
     intern repo_items    : vec RepoInfo
     # what the header says instead of a count
@@ -6718,6 +6600,7 @@ element orbiter : trinity # implements compiler
         if [ git_live ]
             pthread_join[ git_tid, null ]
             git_live = false
+        if [ contrib ] contrib.join[]
         attach_tasks = null
         # a quit leaves the lists to the process's end; a reload frees
         if [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
@@ -8956,6 +8839,71 @@ element orbiter : trinity # implements compiler
         git_summarize[]
         force_update[]
 
+    # a module folder's own icon for the navigator's rows (its
+    # images/icon.png, else its export's icon); null: the cube
+    func nav_mod_icon [ dir: path ] -> AppIcon
+        k : string '{dir}'
+        if [ !mod_icons ] mod_icons = map AppIcon [string] []
+        if [ !mod_noicon ] mod_noicon = vec string []
+        if [ mod_icons.contains[ k ] ] return mod_icons[ k ]
+        if [ vec_has[ mod_noicon, k ] ] return null
+        if [ !startup_path ] startup_path = path.path_startup[]
+        nm : string dir.filename[]
+        inm : string install_name_of[ nm ]
+        agi : path '{startup_path}/install/export/{inm}.agi'
+        ai : AppIcon [ file: dir, module: true, agi: agi ]
+        png : path '{dir}/images/icon.png'
+        if [ !png.exists[] && !ai.export_icon[] ]
+            mod_noicon.push[ k ]
+            return null
+        mod_icons[ k ] = ai
+        return ai
+
+    # the browsed repo's contributor state; a new repo, a new one
+    func contrib_of [] -> Contrib
+        r : path repo_root[]
+        if [ !r ] return null
+        rs : string '{r}'
+        if [ contrib && contrib.repo == rs ] return contrib
+        if [ contrib && contrib.busy ] return contrib
+        if [ contrib ] contrib.join[]
+        contrib = Contrib [ host: repo_host_of[], repo: rs,
+                            dry: test_propose ]
+        return contrib
+
+    # the band's file chip: in the next commit or left out
+    func commit_skips [ f: string ] -> bool
+        return commit_skip && vec_has[ commit_skip, f ]
+
+    func commit_skip_flip [ f: string ]
+        if [ !commit_skip ] commit_skip = vec string []
+        for [ i: i32 0, i < commit_skip.count, i += 1 ]
+            if [ commit_skip[ i ] == f ]
+                commit_skip.remove[ i ]
+                return
+        commit_skip.push[ f ]
+
+    # a finished read or send: its state shown, the tabs read again;
+    # while one runs the band repaints for its step
+    func contrib_pump []
+        if [ !contrib ] return
+        cv9 : element find_el[ a, 'commit' ]
+        if [ contrib.take[] ]
+            git_summarize[]
+            # a send that went through closes the form; a failed one
+            # keeps the message, its error beside the button
+            st : RepoState contrib.state
+            ok : bool [ !st || !st.error || st.error.count == 0 ]
+            if [ contrib.sent && ok && cv9 && cv9 inherits CommitView ]
+                cmv : CommitView cv9
+                cmv.commit_open = false
+                cmv.commit_text = null
+            if [ cv9 ] cv9.pristine = false
+            if [ ux ] ux.restyle = true
+        el [ contrib.busy ]
+            if [ cv9 ] cv9.pristine = false
+            if [ ux ] ux.will_animate = true
+
     # the browsed folder's home repo — arbitrary per location
     func repo_root [] -> path
         base : path [ (nav_root) ? nav_root : project_root[] ]
@@ -10844,6 +10792,23 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        # a folder of the navigator's path: browse there
+        if [ ev.target.id.starts_with[ 'crumb_' ] && crumb_paths ]
+            ci : i32 [ (ev.target.id == 'crumb_last')
+                ? crumb_paths.count - 1
+                : i32[ ev.target.id.mid[ 6,
+                       ev.target.id.count - 6 ].integer_value[] ] ]
+            if [ ci >= 0 && ci < crumb_paths.count ]
+                nav_go[ path crumb_paths[ ci ] ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # the take's file: opened here, in the active pane
+        if [ ev.target.id == 'rec_saved' && rec_path ]
+            drawer_shut[]
+            open_in_pane[ path '{rec_path}', active_pane ]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'rec_toggle' ]
             rec_toggle[]
             if [ ux ] ux.restyle = true
@@ -12227,6 +12192,7 @@ element orbiter : trinity # implements compiler
         repo_pump[ w ]
         repo_fetch_pump[ w ]
         repo_one_pump[ w ]
+        contrib_pump[]
         if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
         mic_frame[]
         if [ findbar_open ] findbar_sync[]
@@ -13607,7 +13573,8 @@ element orbiter : trinity # implements compiler
         # and its arrows, or the navigator's views
         re : f32 [ (bounds) ? bounds.w - right_w[] : 0.0 ]
         if [ pv && pane_browsing[ pi ] ]
-            pane_views_el[ t, pi, re ]
+            vx : f32 pane_views_el[ t, pi, re ]
+            crumbs_el[ t, x + 8.0 * uu, vx - 8.0 * uu, uu ]
         el [ pv && bounds && !pane_empty[ pi ] ]
             # the close at the right end, the arrows left of it
             rx : f32 pane_close_el[ t, pi, re, 0.0, 0.0 ]
@@ -13662,6 +13629,60 @@ element orbiter : trinity # implements compiler
             sel_mask: lit, seg_reach: 0.5,
             area: Region [ 'l{xr - bw}px t0 w{bw}px b0' ] ]
         return xr - bw
+
+    # the navigator's folder as its path, from x0 up to xr: home is ~,
+    # the folders before what fits fold into …
+    func crumbs_el [ t: Elements, x0: f32, xr: f32, uu: f32 ]
+        crumb_paths = vec string []
+        if [ !nav_root ] return
+        full : string '{nav_root.absolute[]}'
+        hm : string getenv[ 'HOME' ]
+        labels : vec string []
+        at : string ''
+        rest : string full
+        if [ hm && hm.count > 1 && (full == hm
+             || full.starts_with[ '{hm}/' ]) ]
+            labels.push[ '~' ]
+            crumb_paths.push[ hm ]
+            at = hm
+            rest = full.mid[ hm.count, full.count - hm.count ]
+        el
+            labels.push[ '/' ]
+            crumb_paths.push[ '/' ]
+        for [ w: string ] in rest.split[ '/' ]
+            if [ w.count == 0 ] continue
+            at = '{at}/{w}'
+            labels.push[ w ]
+            crumb_paths.push[ at ]
+        sw : f32 [ 14.0 * uu ]
+        ws : vec f32 []
+        sum : f32 [ 0.0 ]
+        for [ l: string ] in labels
+            ws.push[ (f32[ l.count ] * 9.5 + 22.0) * uu ]
+            sum += ws[ ws.count - 1 ] + sw
+        # the first folders shown: the rest fit, with … before them
+        first : i32 [ 0 ]
+        ew : f32 [ 26.0 * uu ]
+        while [ first < labels.count - 1
+                && sum + ((first > 0) ? ew : 0.0) > xr - x0 ]
+            sum -= ws[ first ] + sw
+            first += 1
+        x : f32 [ x0 ]
+        if [ first > 0 ]
+            t['crumb_more'] = CrumbSep [ label: '…',
+                area: Region [ 'l{x}px t0 w{ew}px b0' ] ]
+            x += ew
+        for [ i: i32 first, i < labels.count, i += 1 ]
+            if [ i > first || first > 0 ]
+                t['crumbsep_{i}'] = CrumbSep [ label: '›',
+                    area: Region [ 'l{x}px t0 w{sw}px b0' ] ]
+                x += sw
+            # the shown folder its own key: made anew, so its look is
+            lst : bool [ i == labels.count - 1 ]
+            t[ (lst) ? 'crumb_last' : 'crumb_{i}' ] = BarCrumb [
+                label: labels[ i ], last: lst,
+                area: Region [ 'l{x}px t0 w{ws[ i ]}px b0' ] ]
+            x += ws[ i ]
 
     # the system bar's right end: nothing (the bottom bar holds them)
     func right_w [] -> f32

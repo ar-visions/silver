@@ -789,9 +789,23 @@ Layer CommitLayer
                             uri: 'fonts/BarlowCondensed-Bold.ttf',
                             size_px: i32[ f32[ fs ] * bsc ] ]
                 if [ cb.bold_font ] cv.set_font[ cb.bold_font ]
-            cv.fill_color[ (thov) ? rgba['#ffffff'] : rgba['#ffd9e4'] ]
+            # its ring: filled while in the next commit
+            out9 : bool orb.commit_skips[ rp ]
+            cv.save[ ]
+            rr9 : f32 [ 5.0 * u ]
+            cv.rounded[ rr9, rr9, rr9, rr9 ]
+            cv.fill_color[ (out9) ? rgba['#0000'] : rgba['#ff7aa4cc'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.stroke_color[ rgba['#ff9ab9cc'] ]
+            cv.rect_to[ tx + 9.0 * u, ty + lh * 0.5 - rr9,
+                        rr9 * 2.0, rr9 * 2.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (out9) ? rgba['#9a8a95']
+                : ((thov) ? rgba['#ffffff'] : rgba['#ffd9e4']) ]
             cv.draw_text[ nm,
-                rect [ x: tx + 4.0 * u, y: ty, w: 136.0 * u, h: lh ],
+                rect [ x: tx + 22.0 * u, y: ty, w: 118.0 * u, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, null ]
             if [ dirty ] nav_font[ cv, fs ]
@@ -856,6 +870,17 @@ Layer CommitLayer
                        h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
+            # the last send's result, after the totals, while closed
+            ct8 : Contrib (open9) ? null : orb.contrib
+            nt8 : string [ (ct8 && ct8.state && ct8.state.note)
+                ? ct8.state.note : '' ]
+            if [ nt8.count > 0 && bx9 - mnx > 40.0 * u ]
+                cv.fill_color[ rgba['#6a9955'] ]
+                cv.draw_text[ nt8,
+                    rect [ x: mnx, y: cy, w: bx9 - mnx - 12.0 * u,
+                           h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null ]
             cv.fill_color[
                 (open9) ? rgba['#ffd9d2']
                 : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
@@ -908,26 +933,59 @@ Layer CommitLayer
                 cv.rect_to[ ccx, ccy + 4.0 * u, 2.0 * u, lh - 8.0 * u ]
                 cv.paint[ ]
             nav_font[ cv, fs ]
-            # the commit button: centered on the same axis as cancel
+            # the commit row: where the commit goes, then the button
+            # named for what it does there, at the right
             gy : f32 [ yb + f32[ trs + 4 ] * lh ]
-            gx : f32 [
-                x0
-                + (bounds.x + bounds.w - 24.0 * u - x0 - 80.0 * u) * 0.5 ]
+            ct : Contrib orb.contrib_of[]
+            st : RepoState (ct) ? ct.state : null
+            md : i32 [ (st) ? st.mode[] : 1 ]
+            gl : string [ (md == 2) ? 'propose'
+                : ((md == 3) ? 'update proposal'
+                : ((orb.shift_down) ? 'commit' : 'commit & push')) ]
+            gw : f32 [ f32[ gl.count ] * mtm.w + 22.0 * u ]
+            gx : f32 [ bounds.x + bounds.w - 24.0 * u - gw ]
             ghov : bool [ cb.hov_ctl == 2 ]
             cb.gx0 = gx - bounds.x
-            cb.gx1 = gx + 80.0 * u - bounds.x
+            cb.gx1 = gx + gw - bounds.x
+            steps : vec string [] [ 'reading the repository',
+                'committing', 'forking', 'pushing',
+                'opening the pull request' ]
+            sline : string ''
+            scol : rgba['#9a94b0']
+            if [ ct && ct.busy ]
+                sline = '{steps[ clamp[ ct.step, 0, 4 ] ]}…'
+            el [ st && st.error && st.error.count > 0 ]
+                sline = st.error
+                scol = rgba['#e06c75']
+            el [ st ]
+                rp9 : path '{st.repo}'
+                nm9 : string [ (st.full && st.full.count > 0) ? st.full
+                    : rp9.filename[] ]
+                sline = '{nm9} · {st.branch} → {st.remote}'
+                if [ md == 2 ]
+                    sline = '{sline}  ·  will fork'
+                if [ st.pr_num > 0 ]
+                    sline = '{sline}  ·  pull request #{st.pr_num}'
+                if [ st.note && st.note.count > 0 ]
+                    sline = '{st.note}  ·  {sline}'
+                    scol = rgba['#6a9955']
+            cv.fill_color[ scol ]
+            cv.draw_text[ sline,
+                rect [ x: x0, y: gy, w: gx - x0 - 12.0 * u, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null ]
             cv.save[ ]
             cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
             cv.fill_color[ (ghov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
             cv.stroke_color[ (ghov) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
-            cv.rect_to[ gx, gy + 5.0 * u, 80.0 * u, 26.0 * u ]
+            cv.rect_to[ gx, gy + 5.0 * u, gw, 26.0 * u ]
             cv.paint[ ]
             cv.restore[ ]
             cv.fill_color[ (ghov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
-            cv.draw_text[ 'commit',
-                rect [ x: gx, y: gy, w: 80.0 * u, h: lh ],
+            cv.draw_text[ gl,
+                rect [ x: gx, y: gy, w: gw, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
         # the browse list rides the same scroll, below the band; a
@@ -1125,7 +1183,12 @@ Layer CommitLayer
                             ry + 2.0 * u, cw9 - 8.0 * u, rh - 4.0 * u,
                             cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
                     isz : f32 [ round[ 32.0 * u ] ]
-                    if [ ico ]
+                    mg9 : AppIcon (h.is_dir && h.is_module && h.file)
+                        ? orb.nav_mod_icon[ h.file ] : null
+                    if [ mg9 ]
+                        mg9.paint[ cv, round[ cx9 + (cw9 - isz) * 0.5 ],
+                                   round[ ry + 10.0 * u ], isz ]
+                    el [ ico ]
                         cv.fill_color[ rgba [ '#ffffff' ] ]
                         cv.stroke_color[ rgba [ '#ffffff' ] ]
                         ix9 : f32 [ round[ cx9 + (cw9 - isz) * 0.5 ] ]
@@ -1226,7 +1289,15 @@ Layer CommitLayer
                     cv.draw_svg[ cb.edit_svg,
                         round[ xr0 + 18.5 * u - es * 0.5 ],
                         round[ ry + 15.0 * u - es * 0.5 ], es, es ]
-                tx0 : nav_icon_paint[ cv, ico, xr0, ry, u ]
+                # a module with an icon of its own shows it
+                mi9 : AppIcon (h.is_dir && h.is_module && h.file)
+                    ? orb.nav_mod_icon[ h.file ] : null
+                tx0 : f32 [ xr0 + 67.0 * u ]
+                if [ mi9 ]
+                    mi9.paint[ cv, xr0 + 38.0 * u,
+                               round[ ry + 4.5 * u ], round[ 21.0 * u ] ]
+                el
+                    tx0 = nav_icon_paint[ cv, ico, xr0, ry, u ]
                 nmw : f32 [ xe - tx0 - 24.0 * u - drs ]
                 nav_font[ cv, 21 ]
                 # a repository row: light blue when checked out, faint
@@ -1559,6 +1630,9 @@ element CommitView
             commit_text = vec string [] [ '', '', '' ]
             cl = 0
             cc = 0
+            o : orb9[]
+            ct : Contrib (o) ? o.contrib_of[] : null
+            if [ ct ] ct.start_read[]
         pristine = false
         ux.will_animate = true
 
@@ -1571,9 +1645,17 @@ element CommitView
             if [ !l9 || l9.trim[].count == 0 ] continue
             msg = (msg.count > 0) ? msg + '\n' + l9 : l9
         if [ msg.count == 0 ] return
-        o.do_commit[ msg, !o.shift_down ]
-        commit_open = false
-        commit_text = null
+        ct : Contrib o.contrib_of[]
+        if [ !ct || !ct.state || ct.busy || !o.git_snap ] return
+        # the lit files under this repo, relative to it
+        pre : string '{ct.repo}/'
+        fs : vec string []
+        if [ o.git_snap.files ]
+            for [ f: string ] in o.git_snap.files
+                if [ f.starts_with[ pre ] && !o.commit_skips[ f ] ]
+                    fs.push[ f.mid[ pre.count, f.count - pre.count ] ]
+        if [ fs.count == 0 ] return
+        ct.start_send[ msg, fs, !o.shift_down ]
         pristine = false
 
     func render [] -> Elements
@@ -2060,6 +2142,13 @@ element CommitView
                 rx >= cx0 && cx >= 0 && cx < cap_st
                 && (rx - cx0) - f32[ cx ] * (150.0 * u) <= 144.0 * u ]
                 idx : i32 [ r * cap_st + cx ]
+                # the ring's end of the chip: in or out of the commit
+                ring : bool [
+                    (rx - cx0) - f32[ cx ] * (150.0 * u) <= 22.0 * u ]
+                if [ ring && idx < o.git_snap.files.count ]
+                    o.commit_skip_flip[ o.git_snap.files[idx] ]
+                    pristine = false
+                    return
                 if [ idx < o.git_snap.files.count ]
                     fp9 : string o.git_snap.files[idx]
                     o.open_in_pane[ path '{fp9}', (ev9) ? ev9.pane_index : o.active_pane ]
@@ -2094,6 +2183,11 @@ element CommitView
             return
         if [ commit_open && band_st > 0 && r == trs + 4 ]
             if [ rx >= gx0 && rx <= gx1 ] commit_send[]
+            el [ rx < gx0 ]
+                ct : Contrib o.contrib_of[]
+                pu : string [ (ct && ct.state) ? ct.state.pr_url : '' ]
+                ped : Editor o.pane_at[ o.active_pane ]
+                if [ pu && pu.count > 0 && ped ] ped.open_url[ pu ]
             return
         # the browse list below the band
         if [ r >= band_st ]

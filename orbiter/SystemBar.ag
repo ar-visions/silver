@@ -158,6 +158,45 @@ Layer TabProgress
             cv.rect_to[ bounds.x, y, bounds.w * mt.progress, h ]
             cv.paint[]
 
+# a folder of the navigator's path in the bar: a press goes there;
+# the last is the folder shown
+Button BarCrumb
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.face:
+            label_color: #b8b4c8
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :last
+            layers.face:
+                label_color: #ffffff
+                label_font: 'fonts/BarlowCondensed-Bold.ttf'
+    }
+    public last : bool
+
+# the mark between two folders of the path
+element CrumbSep
+    user_events : false
+    style : CSS {
+        layers.face:
+            label_color: #6c6880
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
+    }
+
 # the active pane's title, after the app's name: an action, not a
 # menu. a press changes what the app shows: a URL is typed here, a
 # file opens the navigator

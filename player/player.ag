@@ -1,5 +1,7 @@
 # player: a video file on the gpu decoder: mp4 mov m4v, raw h264 h265
 export 0.1.0
+export extensions ['.mp4', '.mov', '.m4v', '.h264', '.264', '.h265',
+                   '.265', '.hevc']
 
 import vec
 import img

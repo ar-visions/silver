@@ -1,0 +1,384 @@
+extend orbiter
+import <stdio.h>
+import <unistd.h>
+import <pthread.h>
+
+# a shell line's output (stderr with it) into out; its exit status
+func sh_run [ cmd: string, out: vec string ] -> i32
+    run : command [ '{cmd} 2>&1' ]
+    fh  : handle run.stream[]
+    if [ !fh ] return -1
+    b : local i8 [ 1024 ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln : string[ @b[0] ]
+        t : ln.trim[]
+        if [ t.count > 0 ] out.push[ t ]
+    st : i32 [ pclose[ fh ] ]
+    return (st >> 8) & 255
+
+# a word in single quotes for the shell
+func sh_word [ s: string ] -> string
+    o : string ''
+    for [ i: i32 0, i < s.count, i += 1 ]
+        if [ s.chars[ i ] == 39 ] o = o + '\'\\\'\''
+        el o = o + s.mid[ i, 1 ]
+    return '\'{o}\''
+
+# text as a json string's inside: quotes, backslashes, line breaks
+func json_esc [ s: string ] -> string
+    o : string ''
+    for [ i: i32 0, i < s.count, i += 1 ]
+        c : i32 [ s.chars[ i ] ]
+        if [ c == 34 ]       o = o + '\\"'
+        el [ c == 92 ]       o = o + '\\\\'
+        el [ c == 10 ]       o = o + '\\n'
+        el [ c == 9 ]        o = o + '\\t'
+        el [ c >= 32 ]       o = o + s.mid[ i, 1 ]
+    return o
+
+# the first value of a key in a json reply: a string's text, else the
+# bare word (number, true, false); '' when absent
+func json_first [ text: string, key: string ] -> string
+    if [ !text ] return ''
+    at : i32 [ text.index_of[ '"{key}":' ] ]
+    if [ at < 0 ] return ''
+    rest : string text.mid[ at + key.count + 3,
+                            text.count - at - key.count - 3 ]
+    v : string rest.trim[]
+    if [ v.count == 0 ] return ''
+    if [ v.chars[ 0 ] == 34 ]
+        o : string ''
+        i : i32 [ 1 ]
+        while [ i < v.count && v.chars[ i ] != 34 ]
+            if [ v.chars[ i ] == 92 && i + 1 < v.count ] i += 1
+            o = o + v.mid[ i, 1 ]
+            i += 1
+        return o
+    e : i32 [ 0 ]
+    while [ e < v.count && v.chars[ e ] != 44 && v.chars[ e ] != 10
+            && v.chars[ e ] != 125 ]
+        e += 1
+    return v.mid[ 0, e ].trim[]
+
+# a branch name from a message's first line: lower case words joined
+# by dashes, at most 40 letters
+func branch_slug [ msg: string ] -> string
+    nl : i32 [ msg.index_of[ '\n' ] ]
+    l0 : string (nl >= 0) ? msg.mid[ 0, nl ] : msg
+    lw : string l0.lcase[]
+    o : string ''
+    dash : bool [ false ]
+    for [ i: i32 0, i < lw.count && o.count < 40, i += 1 ]
+        c : i32 [ lw.chars[ i ] ]
+        ok : bool [ (c >= 97 && c <= 122) || (c >= 48 && c <= 57) ]
+        if [ ok ]
+            if [ dash && o.count > 0 ] o = o + '-'
+            o = o + lw.mid[ i, 1 ]
+            dash = false
+        el dash = true
+    return (o.count > 0) ? o : 'change'
+
+# owner/name of a github remote url (ssh or https); '' for others
+func github_full [ url: string ] -> string
+    u : string url.trim[]
+    at : i32 [ u.index_of[ 'github.com:' ] ]
+    rest : string ''
+    if [ at >= 0 ] rest = u.mid[ at + 11, u.count - at - 11 ]
+    el
+        at = u.index_of[ 'github.com/' ]
+        if [ at < 0 ] return ''
+        rest = u.mid[ at + 11, u.count - at - 11 ]
+    if [ rest.ends_with[ '.git' ] ] rest = rest.mid[ 0, rest.count - 4 ]
+    if [ rest.ends_with[ '/' ] ] rest = rest.mid[ 0, rest.count - 1 ]
+    return rest
+
+# what the commit band knows of a repo: where a commit goes and what
+# the button does there
+class RepoState
+    public repo     : string
+    public full     : string
+    public owner    : string
+    public branch   : string
+    public base     : string
+    public remote   : string
+    public me       : string
+    public can_push : bool [ true ]
+    public pr_num   : i32
+    public pr_url   : string
+    # what a send ended with: done (note) or not (error)
+    public note     : string
+    public error    : string
+    # --test_propose: read as not ours, whatever the remote
+    public dry      : bool
+
+    # 1 commit and push, 2 propose, 3 update proposal
+    func mode [] -> i32
+        if [ pr_num > 0 ] return 3
+        if [ dry ] return 2
+        if [ can_push || !full || full.count == 0 ] return 1
+        return 2
+
+# the band's repo work, off the main thread: reading the state, and a
+# send (commit, and for a proposal branch, fork, push, pull request)
+class Contrib
+    public host  : RepoHost
+    public repo  : string
+    # the band's state: the main thread's alone
+    public state : RepoState
+    # what the send is doing: 1 commit, 2 fork, 3 push, 4 pull request
+    public busy  : bool
+    public step  : i32
+    # the run taken last was a send
+    public sent  : bool
+    # a dry run: not ours, and a send only shows its steps
+    public dry   : bool
+    # a read or send's result, handed to the main thread by take
+    intern staged : RepoState
+    intern live   : bool
+    intern tid    : pthread_t
+    intern sending : bool
+    intern msg     : string
+    intern files   : vec string
+    intern push    : bool
+    intern from    : RepoState
+
+    func start_read []
+        if [ busy || live ] return
+        sending = false
+        go[]
+
+    # files relative to the repo; push false keeps the commit local
+    func start_send [ m: string, f: vec string, p: bool ]
+        if [ busy || live || !state ] return
+        sending = true
+        msg   = m
+        files = f
+        push  = p
+        from  = state
+        go[]
+
+    func go []
+        busy = true
+        step = 0
+        live = true
+        pthread_create[ @tid, null, @entry, a ]
+
+    # the main thread: a finished run's state taken; true when one was
+    func take [] -> bool
+        if [ !live || busy ] return false
+        pthread_join[ tid, null ]
+        live = false
+        sent = sending
+        if [ staged ] state = staged
+        staged = null
+        return true
+
+    func join []
+        if [ live ] pthread_join[ tid, null ]
+        live = false
+
+    func entry [] -> none
+        st : RepoState read_state[]
+        if [ sending ]
+            send[ st ]
+            if [ !st.error || st.error.count == 0 ]
+                nt : string st.note
+                st = read_state[]
+                st.note = nt
+        staged = st
+        step = 0
+        busy = false
+        Au.auto_free[]
+
+    func git [ args: string, out: vec string ] -> i32
+        return sh_run[ 'git -C {sh_word[ repo ]} {args}', out ]
+
+    func git_line [ args: string ] -> string
+        o : vec string []
+        if [ git[ args, o ] != 0 || o.count == 0 ] return ''
+        return o[ 0 ]
+
+    func api [ method: string, url: string, body: string ] -> string
+        acc : string '-H "Accept: application/vnd.github+json"'
+        cmd : string 'curl -s {host.auth[]}{acc}'
+        if [ body ]
+            sd : path path.path_storage[ 'orbiter' ]
+            bf : path '{sd}/github-body.json'
+            bf.save[ body, null ]
+            ct : string '-H "Content-Type: application/json"'
+            bw : string sh_word[ '{bf}' ]
+            cmd = '{cmd} -X {method} {ct} --data-binary @{bw}'
+        el [ method != 'GET' ]
+            cmd = '{cmd} -X {method}'
+        o : vec string []
+        sh_run[ '{cmd} {sh_word[ url ]}', o ]
+        t : string ''
+        for [ l: string ] in o
+            t = '{t}{l}\n'
+        return t
+
+    func read_state [] -> RepoState
+        st : RepoState [ repo: repo, dry: dry ]
+        st.branch = git_line[ 'rev-parse --abbrev-ref HEAD' ]
+        up : string git_line[
+            'rev-parse --abbrev-ref --symbolic-full-name @{{u}}' ]
+        sl : i32 [ up.index_of[ '/' ] ]
+        st.remote = (sl > 0) ? up.mid[ 0, sl ] : 'origin'
+        # the main line as git knows it; the host's answer wins below
+        hb : string git_line[
+            'symbolic-ref --short refs/remotes/origin/HEAD' ]
+        hs : i32 [ hb.index_of[ '/' ] ]
+        st.base = (hs > 0) ? hb.mid[ hs + 1, hb.count - hs - 1 ]
+            : 'master'
+        st.full = github_full[ git_line[ 'remote get-url origin' ] ]
+        if [ st.full.count == 0 ] return st
+        st.owner = st.full.mid[ 0, st.full.index_of[ '/' ] ]
+        has_token : bool [ host.token && host.token.count > 0 ]
+        if [ has_token ]
+            u : string api[ 'GET', 'https://api.github.com/user', null ]
+            st.me = json_first[ u, 'login' ]
+            r : string api[ 'GET',
+                'https://api.github.com/repos/{st.full}', null ]
+            db : string json_first[ r, 'default_branch' ]
+            if [ db.count > 0 ] st.base = db
+            st.can_push = json_first[ r, 'push' ] == 'true'
+        el
+            st.me = repo_whoami[ host ]
+            st.can_push = st.me.count > 0 && st.me == st.owner
+        if [ dry ] st.can_push = false
+        # an open pull request from this branch
+        if [ has_token && st.me.count > 0 && st.branch != st.base ]
+            qb : 'https://api.github.com/repos/{st.full}/pulls'
+            q : '{qb}?state=open&head={st.me}:{st.branch}'
+            pr : string api[ 'GET', q, null ]
+            nb : string json_first[ pr, 'number' ]
+            if [ nb.count > 0 ]
+                st.pr_num = i32[ nb.integer_value[] ]
+                st.pr_url = json_first[ pr, 'html_url' ]
+        return st
+
+    # the failure's words: git's or the host's last line
+    func fail [ st: RepoState, what: string, o: vec string ]
+        last : string (o && o.count > 0) ? o[ o.count - 1 ] : ''
+        st.error = (last.count > 0) ? '{what}: {last}' : what
+
+    # the host's own reason: a validation's first error, else its
+    # message
+    func why [ text: string ] -> string
+        ex : i32 [ (text) ? text.index_of[ '"errors"' ] : -1 ]
+        if [ ex >= 0 ]
+            m : string json_first[ text.mid[ ex, text.count - ex ],
+                                   'message' ]
+            if [ m.count > 0 ] return m
+        return json_first[ text, 'message' ]
+
+    # the steps a send takes, each shown a second; nothing is run
+    func send_dry [ st: RepoState ]
+        md : i32 from.mode[]
+        br : string from.branch
+        if [ md == 2 && br == from.base ] br = branch_slug[ msg ]
+        # a plain push has no fork or pull request step
+        for [ s: i32 1, s <= 4, s += 1 ]
+            if [ md != 2 && (s == 2 || s == 4) ] continue
+            step = s
+            usleep[ 1000000 ]
+        nl : i32 [ msg.index_of[ '\n' ] ]
+        title : string (nl >= 0) ? msg.mid[ 0, nl ] : msg
+        who : string [
+            (from.me && from.me.count > 0) ? from.me : 'you' ]
+        st.note = (md == 2)
+            ? 'test: would open "{title}" from {who}:{br}'
+            : 'test: would push {files.count} files to {br}'
+
+    func send [ st: RepoState ]
+        md : i32 from.mode[]
+        o : vec string []
+        if [ dry ]
+            send_dry[ st ]
+            return
+        if [ md == 2 && (!host.token || host.token.count == 0) ]
+            st.error = 'a GitHub token is needed to propose'
+            return
+        br : string from.branch
+        step = 1
+        # a proposal from the main line starts its own branch
+        if [ md == 2 && br == from.base ]
+            nm : string branch_slug[ msg ]
+            k : i32 [ 2 ]
+            vq : string 'rev-parse --verify --quiet'
+            while [ git_line[ '{vq} refs/heads/{nm}' ].count > 0 ]
+                nm = '{branch_slug[ msg ]}-{k}'
+                k += 1
+            if [ git[ 'checkout -b {sh_word[ nm ]}', o ] != 0 ]
+                fail[ st, 'new branch', o ]
+                return
+            br = nm
+        fl : string ''
+        for [ f: string ] in files
+            fl = '{fl} {sh_word[ f ]}'
+        sd : path path.path_storage[ 'orbiter' ]
+        mf : path '{sd}/commit-msg.txt'
+        mf.save[ msg, null ]
+        if [ git[ 'add -A --{fl}', o ] != 0 ]
+            fail[ st, 'add', o ]
+            return
+        if [ git[ 'commit -F {sh_word[ '{mf}' ]} --{fl}', o ] != 0 ]
+            fail[ st, 'commit', o ]
+            return
+        if [ md == 1 ]
+            if [ !push ]
+                st.note = 'committed on {br}'
+                return
+            step = 3
+            if [ git[ 'push', o ] != 0 ]
+                fail[ st, 'push', o ]
+                return
+            st.note = 'pushed to {from.remote}/{br}'
+            return
+        if [ md == 3 ]
+            step = 3
+            if [ git[ 'push', o ] != 0 ]
+                fail[ st, 'push', o ]
+                return
+            st.note = 'pull request #{from.pr_num} updated'
+            return
+        # propose: a fork of ours, the branch pushed there, the request
+        step = 2
+        fk : string api[ 'POST',
+            'https://api.github.com/repos/{from.full}/forks', '{{}}' ]
+        ff : string json_first[ fk, 'full_name' ]
+        if [ ff.count == 0 ]
+            st.error = 'fork: {why[ fk ]}'
+            return
+        url : string 'git@github.com:{ff}.git'
+        if [ git_line[ 'remote get-url fork' ].count == 0 ]
+            git[ 'remote add fork {sh_word[ url ]}', o ]
+        el
+            git[ 'remote set-url fork {sh_word[ url ]}', o ]
+        step = 3
+        # a new fork takes a few seconds to be there
+        ok : bool [ false ]
+        for [ t: i32 0, t < 10 && !ok, t += 1 ]
+            o = vec string []
+            ok = git[ 'push -u fork {sh_word[ br ]}', o ] == 0
+            if [ !ok ] usleep[ 2000000 ]
+        if [ !ok ]
+            fail[ st, 'push', o ]
+            return
+        step = 4
+        nl : i32 [ msg.index_of[ '\n' ] ]
+        title : string (nl >= 0) ? msg.mid[ 0, nl ] : msg
+        body : string (nl >= 0) ? msg.mid[ nl + 1, msg.count - nl - 1 ]
+            : ''
+        me : string json_first[ fk, 'login' ]
+        jt : '"title":"{json_esc[ title ]}"'
+        jb : '"body":"{json_esc[ body ]}"'
+        jh : '"head":"{me}:{br}","base":"{from.base}"'
+        js : '{{{jt},{jb},{jh}}}'
+        pr : string api[ 'POST',
+            'https://api.github.com/repos/{from.full}/pulls', js ]
+        nb : string json_first[ pr, 'number' ]
+        if [ nb.count == 0 ]
+            st.error = 'pull request: {why[ pr ]}'
+            return
+        st.note = 'pull request #{nb} opened'

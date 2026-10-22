@@ -279,6 +279,7 @@ element asnes : trinity
 			while [ emu_running ] usleep[ 1000 ]
 			emu_stop    = false
 			emu_started = false
+		sram_flush[]
 		cpu = null
 	public  state          	: path             # --state <file>: boot then load this savestate
 	public  beep           	: bool
@@ -339,6 +340,11 @@ element asnes : trinity
 	mutable frame_m7x      	: i16              # m7x/m7y latched at frame start (active for THIS frame's
 	mutable frame_m7y      	: i16              # display) so the center aligns with the HDMA'd m7 scroll
 	mutable is_hirom       	: bool             # HiROM mapping (banks $40-$7D/$C0-$FF are full ROM, no WRAM mirror)
+	# battery save RAM: bytes, .srm file, unsaved, last write
+	mutable sram_size      	: i64
+	mutable sram_file      	: path
+	mutable sram_dirty     	: bool
+	mutable sram_frame     	: u32
 	mutable se_shader      	: SuperEagle
 	mutable se_model       	: Model
 	mutable se_render      	: Render
@@ -2546,6 +2552,10 @@ element asnes : trinity
 	func cpu_long_r [ la: u32 ] -> u8
 		bank : u32 [ la >> 16 ]
 		addr : u16 [ la & 0xFFFF ]
+		sa   : i64 [ sram_at[ bank, addr ] ]
+		if [ sa >= 0 ]
+			cpu_tick[ bank, addr ]
+			return cpu.memory[ sa ]
 		if [ (bank & 0x40) == 0 && addr < 0x2000 ]           # banks 00-3F/80-BF, $0000-1FFF = WRAM mirror — flat memory[la] there is JUNK (zelda's story parser reads its command list through a bank-00 long pointer)
 			cpu_tick[ bank, addr ]
 			wa : u32 [ 0x7E0000 + u32[addr] ]
@@ -2558,6 +2568,11 @@ element asnes : trinity
 	func cpu_long_w [ la: u32, val: u8 ]
 		bank : u32 [ la >> 16 ]
 		addr : u16 [ la & 0xFFFF ]
+		sa   : i64 [ sram_at[ bank, addr ] ]
+		if [ sa >= 0 ]
+			cpu_tick[ bank, addr ]
+			sram_put[ sa, val ]
+			return
 		if [ (bank & 0x40) == 0 && addr < 0x2000 ]           # WRAM mirror (see cpu_long_r)
 			cpu_tick[ bank, addr ]
 			wa : u32 [ 0x7E0000 + u32[addr] ]
@@ -2649,8 +2664,80 @@ element asnes : trinity
 		el
 			cpu.p = (cpu.p & ~0x82) | ((v == 0) ? 0x02 : 0) | (((v & 0x8000) != 0) ? 0x80 : 0)
 
+	# a battery RAM byte's flat place: its first bank's, unused
+	func sram_place [ off: i64 ] -> i64
+		if [ is_hirom ]
+			page : i64 [ off >> 13 ]
+			return 0x206000 + page * 0x10000 + (off & 0x1FFF)
+		return 0x700000 + (off >> 15) * 0x10000 + (off & 0x7FFF)
+
+	# an address in the battery RAM: its flat place, else -1
+	func sram_at [ bank: u32, addr: u16 ] -> i64
+		if [ sram_size == 0 ] return -1
+		bk : u32 [ bank & 0x7F ]
+		off : i64 [ 0 ]
+		if [ is_hirom ]
+			if [ bk < 0x20 || bk > 0x3F || addr < 0x6000
+				 || addr >= 0x8000 ]
+				return -1
+			off = i64[ bk & 0x1F ] * 0x2000 + i64[ addr ] - 0x6000
+		el
+			if [ bk < 0x70 || bk > 0x7D || addr >= 0x8000 ] return -1
+			off = i64[ bk & 0xF ] * 0x8000 + i64[ addr ]
+		return sram_place[ off & (sram_size - 1) ]
+
+	# the game writes its battery RAM: kept, the file to follow
+	func sram_put [ at: i64, val: u8 ]
+		if [ cpu.memory[ at ] == val ] return
+		cpu.memory[ at ] = val
+		sram_dirty = true
+		sram_frame = dbg_frames
+
+	# the cart's battery RAM: size from $FFD8, then its file
+	func sram_open []
+		sr : i32 [ cpu.memory[ 0xFFD8 ] ]
+		sram_size  = 0
+		sram_dirty = false
+		if [ sr <= 0 || sr > 8 ] return
+		sram_size = i64[ 0x400 << sr ]
+		d : path.path_storage[ 'asnes' ]
+		if [ d ]
+			sram_file = path '{d}/{rom.stem[]}.srm'
+		el
+			sram_file = path '/tmp/asnes.srm'
+		f : @FILE [ fopen[ sram_file.chars, 'rb' ] ]
+		if [ !f ] return
+		buf : @u8 [ calloc[ 1, sram_size ] ]
+		n : sz [ fread[ buf, 1, sram_size, f ] ]
+		fclose[ f ]
+		for [ i: sz 0, i < n, i += 1 ]
+			cpu.memory[ sram_place[ i ] ] = buf[ i ]
+		free[ buf ]
+		log 'asnes: battery save read from {sram_file} ({n} bytes)'
+
+	# the battery RAM to its file, when the game changed it
+	func sram_flush []
+		if [ !sram_dirty || sram_size == 0 || !cpu ] return
+		sram_dirty = false
+		buf : @u8 [ calloc[ 1, sram_size ] ]
+		for [ i: i64 0, i < sram_size, i += 1 ]
+			buf[ i ] = cpu.memory[ sram_place[ i ] ]
+		fn  : string '{sram_file}'
+		tmp : string '{sram_file}.part'
+		f : @FILE [ fopen[ tmp.chars, 'wb' ] ]
+		if [ f ]
+			fwrite[ buf, 1, sram_size, f ]
+			fclose[ f ]
+			rename[ tmp.chars, fn.chars ]
+			log 'asnes: battery save written to {sram_file}'
+		free[ buf ]
+
 	func cpu_bank_r [ bank: u32, addr: u16 ] -> u8
 		a32  : u32 [ addr ]
+		sa   : i64 [ sram_at[ bank, addr ] ]
+		if [ sa >= 0 ]
+			cpu_tick[ bank, addr ]
+			return cpu.memory[ sa ]
 		if [ is_hirom && ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) ]
 			cpu_tick[ bank, addr ]
 			return cpu.memory[ (bank << 16) | a32 ]
@@ -2670,6 +2757,11 @@ element asnes : trinity
 
 	func cpu_bank_w [ bank: u32, addr: u16, val: u8 ]
 		a32  : u32 [ addr ]
+		sa   : i64 [ sram_at[ bank, addr ] ]
+		if [ sa >= 0 ]
+			cpu_tick[ bank, addr ]
+			sram_put[ sa, val ]
+			return
 		if [ is_hirom && ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) ]
 			cpu_tick[ bank, addr ]
 			cpu.memory[ (bank << 16) | a32 ] = val
@@ -3596,6 +3688,7 @@ element asnes : trinity
 				src   : i64 [ chunk * 0x8000 ]
 				memcpy[ cpu.memory + dst, rombuf + src, 0x8000 ]
 		free[ rombuf ]
+		sram_open[]
 
 		puts[ 'loaded rom: {rom} ({size} bytes)' ]
 		reset_vector : u16 [ cpu.memory[0xFFFC] | (cpu.memory[0xFFFD] << 8) ]
@@ -5441,6 +5534,8 @@ element asnes : trinity
 		emu_ms30 += e9
 		if [ e9 > emu_max30 ] emu_max30 = e9
 		dbg_frames += 1
+		# an in-game save: its file a second after the last write
+		if [ sram_dirty && dbg_frames - sram_frame > 60 ] sram_flush[]
 		if [ getenv[ 'ASNES_CYCLOG' ] && (dbg_frames % 30) == 0 ]
 			printf[ "CYCF frame %u cyc_total=%ld carry=%d adone=%d emu_ms=%ld itv_ms=%ld emu_max=%ld itv_max=%ld drop=%ld cls_us=%ld uni_us=%ld lay_us=%ld pub_us=%ld\n", dbg_frames, cpu_cycles, frame_carry, spc.audio_done, emu_ms30, itv_ms30, emu_max30, itv_max30, drop30, cls_us30, uni_us30, lay_us30, pub_us30 ]
 			cls_us30 = 0
@@ -5670,6 +5765,7 @@ element asnes : trinity
 			while [ emu_running ]
 				usleep[ 2000 ]
 			emu_started = false
+		sram_flush[]
 
 	public func on_unload []
 		if [ emu_started ]
@@ -5679,6 +5775,7 @@ element asnes : trinity
 			if [ getenv[ 'SILVER_RELOAD_SAVE' ] && cpu ]
 				state_write[ '/tmp/asnes_flash.state' ]
 				log 'asnes flash: state saved for reload'
+		sram_flush[]
 
 	func dealloc []
 		if [ emu_started ]
@@ -5687,6 +5784,7 @@ element asnes : trinity
 				usleep[ 2000 ]
 		# the sound stops with the emulator, nothing left to play out
 		if [ audio ] audio.close[]
+		sram_flush[]
 		if [ cpu ]
 			free[ cpu.memory ]
 		if [ spc ]
