@@ -129,10 +129,8 @@ class ConsoleSession
                 execl[ '/bin/bash', 'bash', dashc.chars, ec.chars,
                        null ]
             el
-                lbl : string (name && name.count > 0) ? name : 'sh'
-                if [ lbl.count > 3 && lbl.mid[ 0, 3 ] == 'ed:' ]
-                    lbl = lbl.mid[ 3, lbl.count - 3 ]
-                setenv[ 'PS1', '{lbl}> ', 1 ]
+                # the prompt is its working folder, as it changes
+                setenv[ 'PS1', '\\w> ', 1 ]
                 norc : string '--norc'
                 execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]

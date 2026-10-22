@@ -7031,6 +7031,14 @@ of the media memory below, done as a streaming backend.
 
 ## Active work: browser built by silver, no SQLite, TLS (Sep 27 2026)
 
+DONE (Oct 21, Kalen: every site failed in aura) the page process
+(WPEWebProcess) died right after each load (the title went empty,
+no frame came): libsilver-webgfx.so was from Oct 19, built against
+an older trinity, and WebKit loads it directly, so nothing rebuilt
+it when trinity's classes changed. `silver --clean --build webgfx`
+fixed it (example.com drawn hidden; webgfx tests exit 0). OPEN
+silver: a module is not rebuilt when a module it imports changes.
+
 The browser module is `aura` (renamed from `browser`, Sep 28:
 aura/, aura.ag, aura.c, ~/.cache/aura, trinity-aura.sock; the
 WebKit helper keeps its name WPETrinityBrowser).
@@ -8946,6 +8954,19 @@ moments later, then a final encode). The RTX 3060 on driver
 2. DONE, built, not confirmed on colourful footage: the NV12
    convert used BT.601 coefficients while the SPS says BT.709
    (matrix 1): hues shifted. Now BT.709 limited range.
+3. DONE (Oct 21, Kalen: his orbiter take at 1888 x 888 had a
+   diagonal staircase of blocks and red / blue scraps in every
+   frame) the colour planes (U, V) of a 4:4:4 take came out
+   sheared, brightness exact, whenever the width was not a
+   multiple of 64 (1888 wrong; 1920, 1024, 640 right; height
+   and 4:2:0 unaffected). The encoder's picture is now padded to
+   a multiple of 64 wide in 4:4:4 (Encoder.coded_w), cropped back
+   by the conformance window as the height already was. Checked
+   with texttest takes against its own shot (Y, U, V within 1 of
+   bt.709 at 1888x888, 1600x900, 1000x600); the file reads
+   1888x888; our decoder equals ffmpeg's byte for byte (composer
+   t_hevc_decode, 223 frames); trinity and composer tests pass.
+   Takes made before the fix keep the damage.
 
 
 ## Active work: psx emulator (Oct 6 2026)
@@ -10311,3 +10332,33 @@ as any trinity app (install/build/quake2 --hidden true).
    ones go to ~/.cache/quake2/config.cfg, run at start. gi
    cprintf / bprintf reach the console. NOT done: alias, exec,
    bind, condump, say / say_team, messagemode.
+
+## player (Oct 21 2026)
+
+1. DONE (Kalen: an h264 viewer that loads mp4, h264, etc)
+   `silver player <file>`: mp4 / mov / m4v (plain or fragmented)
+   and raw .h264 / .264 / .h265 / .265 / .hevc on the Vulkan
+   decoder, AAC sound on spectra's mixer. A raw stream is cut
+   into pictures at its start codes, timed by display order at
+   --fps (30). Space or a click pauses, left / right seek 5 s,
+   a click on the foot strip seeks there. Seen hidden: clip.mp4,
+   a B-frame h264 and an h265 stream, pause holds the frame,
+   right arrow lands on the right frame. Sound not heard.
+   OPEN: a raw stream's rate from its SPS timing.
+   Then (Kalen): opens with no file (ctrl+o's dialog, at the start
+   folder, picks one); our own fragmented takes play.
+2. DONE (Oct 21, Kalen: the player stays a player; recording is
+   orbiter's) the side panel's record tab (beside properties,
+   instruments, callstack): orbiter or the selected app, then
+   record / stop with the take's clock, the take's path under it.
+   A take goes to ~/Videos/<name>-<date>/. trinity: an app records
+   while its element's `record` is set and stops when it clears
+   (record_pump, record_stop), and its socket takes `record <folder
+   or file>` / `record stop`. Seen hidden: orbiter's own take (3.5
+   s, h.265 + aac), two takes in one player run. NOT driven: an app
+   hosted in orbiter (a hidden run hosts none). A take of orbiter
+   starts its dictation marks, as --record does.
+3. DONE (Oct 21) 4:4:4 takes with a height not a multiple of 64 were
+   damaged at the foot (1280x720: 127 of 179 frames); the coded
+   height is padded to 64 as the width is (Encoder.coded_h). After:
+   0 of 179. trinity tests exit 0.

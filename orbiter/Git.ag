@@ -1029,7 +1029,10 @@ Layer CommitLayer
                         Overflow.clip, null ]
                     nav_font[ cv, 21 ]
                     continue
-                if [ nls - 1 == cb.hov_list && !h.card[] ]
+                # the icon view's cell: drawn whole below
+                cell9 : bool [ orb.nav_icons && h.file && !h.card[]
+                               && !(!h.is_header && h.line > 0) ]
+                if [ nls - 1 == cb.hov_list && !h.card[] && !cell9 ]
                     # an entry's highlight starts at its icon: the 30px
                     # before it is the delete mark's, never painted
                     hl9 : f32 [ 2.0 * u ]
@@ -1037,7 +1040,7 @@ Layer CommitLayer
                     nav_hover_paint[ cv, cb, xr0 + hl9, ry + 1.0,
                         xe - xr0 - 20.0 * u - hl9, rh - 2.0 * u,
                         cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
-                el [ !h.card[] && cb.hov_in ]
+                el [ !h.card[] && cb.hov_in && !cell9 ]
                     # an unselected row: its border unseen at rest, the
                     # near light (the distance field) bringing up the
                     # part by the pointer, faintly; clear inside
@@ -1115,6 +1118,29 @@ Layer CommitLayer
                     if [ !h.is_dir && nm.count > 0 ]
                         mim : SVGModel ed.ficons.icon[ nm, 21 ]
                         if [ mim ] ico = mim
+                if [ cell9 ]
+                    cw9 : f32 [ cb.lay_w[ nls - 1 ] ]
+                    if [ nls - 1 == cb.hov_list ]
+                        nav_hover_paint[ cv, cb, cx9 + 4.0 * u,
+                            ry + 2.0 * u, cw9 - 8.0 * u, rh - 4.0 * u,
+                            cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
+                    isz : f32 [ round[ 32.0 * u ] ]
+                    if [ ico ]
+                        cv.fill_color[ rgba [ '#ffffff' ] ]
+                        cv.stroke_color[ rgba [ '#ffffff' ] ]
+                        ix9 : f32 [ round[ cx9 + (cw9 - isz) * 0.5 ] ]
+                        cv.draw_svg[ ico, ix9, round[ ry + 10.0 * u ],
+                                     isz, isz ]
+                    nav_font[ cv, 16 ]
+                    cv.fill_color[
+                        (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                    cv.draw_text[ nm,
+                        rect [ x: cx9 + 6.0 * u, y: ry + 48.0 * u,
+                               w: cw9 - 12.0 * u, h: 26.0 * u ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.ellipsis, null ]
+                    nav_font[ cv, 21 ]
+                    continue
                 # shift: a red-outlined delete at the row's right end,
                 # on the row under the pointer (or the one held); held
                 # down it fills left to right over 2 s. the 30px before
@@ -1327,6 +1353,10 @@ Layer CommitLayer
 
 element CommitView
     mutable hov_row : i32 [ -1 ]
+    # a press waiting for its release on the same spot
+    mutable down_on : bool
+    mutable down_x  : f32
+    mutable down_y  : f32
     mutable hov_tab : i32 [ -1 ]
     # 0 = reveal-all, 1 = make commit / cancel, 2 = commit
     mutable hov_ctl : i32 [ -1 ]
@@ -1481,6 +1511,7 @@ element CommitView
         if [ r < band_st ] return null
         dr : i32 [ r - band_st ]
         if [ !lay_x || dr >= i32[ lay_x.count ] ] return null
+        if [ o.nav_icons ] return null
         ox : f32 [ (from_right) ? lay_x[ dr ] + lay_w[ dr ]
             : lay_x[ dr ] ]
         if [ rx < ox + x0 || rx >= ox + x1 ] return null
@@ -1569,22 +1600,22 @@ element CommitView
     # event y already includes the element's own scroll offset
     # a run of plain rows into columns, top to bottom then across
     func lay_run [ run: vec i32, y: f32, left: f32, colw: f32,
-                   cols: i32 ] -> f32
-        u : f32 ux_unit[ ux ]
+                   cols: i32, rh: f32, least: i32 ] -> f32
         n : i32 [ i32[ run.count ] ]
         if [ n == 0 ] return y
         per : i32 [ (n + cols - 1) / cols ]
-        # a column holds 8 rows at least before the next one starts
-        if [ per < 8 ] per = 8
+        # a column holds a few rows at least before the next one starts
+        if [ per < least ] per = least
         # whole column and row numbers: down a column, then the next
         for [ k: i32 0, k < n, k += 1 ]
             ri  : i32 [ run[ k ] ]
             col : i32 [ k / per ]
             row : i32 [ k - col * per ]
             lay_x[ ri ] = left + colw * f32[ col ]
-            lay_y[ ri ] = y + 30.0 * u * f32[ row ]
+            lay_y[ ri ] = y + rh * f32[ row ]
             lay_w[ ri ] = colw
-        return y + 30.0 * u * f32[ per ]
+            lay_h[ ri ] = rh
+        return y + rh * f32[ per ]
 
     # every display row's place (x and width in the view, y from the
     # list's top); the list's height back
@@ -1601,7 +1632,12 @@ element CommitView
         cdw   : f32 [ 152.0 * u ]
         per9  : i32 [ (ww - 100.0 * u - side_w) / cdw ]
         if [ per9 < 1 ] per9 = 1
-        cols  : i32 [ i32[ (right - left) / (300.0 * u) ] ]
+        # the icon view: a 32 px icon over its name in each cell
+        icons : bool [ o.nav_icons ]
+        cellw : f32 [ (icons) ? 104.0 * u : 300.0 * u ]
+        rh    : f32 [ (icons) ? 84.0 * u : 30.0 * u ]
+        least : i32 [ (icons) ? 3 : 8 ]
+        cols  : i32 [ i32[ (right - left) / cellw ] ]
         if [ cols < 1 ] cols = 1
         colw  : f32 [ (right - left) / f32[ cols ] ]
         y   : f32 [ 0.0 ]
@@ -1617,8 +1653,10 @@ element CommitView
                 continue
             plain : bool [ !h.card[] && !h.is_spacer && !h.is_newfile
                 && !(!h.is_header && h.line > 0) ]
+            # a row naming no file keeps its line in the icon view
+            if [ icons && !h.file ] plain = false
             if [ !plain ]
-                y = lay_run[ run, y, left, colw, cols ]
+                y = lay_run[ run, y, left, colw, cols, rh, least ]
                 run = vec i32 []
             ri : i32 [ i32[ lay_x.count ] ]
             lay_x.push[ left ]
@@ -1642,7 +1680,7 @@ element CommitView
                 ci = 0
                 if [ plain ] run.push[ ri ]
                 el y += 30.0 * u
-        y = lay_run[ run, y, left, colw, cols ]
+        y = lay_run[ run, y, left, colw, cols, rh, least ]
         return y
 
     func row_at [ ry: f32, rx: f32, trs: i32 ] -> i32
@@ -1876,6 +1914,13 @@ element CommitView
         return -1
 
     func on_release [ ev: Event ]
+        # a row acts at the release, where it was pressed
+        if [ down_on ]
+            down_on = false
+            dx : f32 [ ev.mouse.pos.x - down_x ]
+            dy : f32 [ ev.mouse.pos.y - down_y ]
+            if [ !del_path && !sb_drag && dx * dx + dy * dy <= 36.0 ]
+                press_act[ ev ]
         # a held delete: released over it once full, the entry goes;
         # anywhere else, or early, it is a cancel
         if [ del_path ]
@@ -1899,7 +1944,31 @@ element CommitView
             sbl.active = false
             ux.will_animate = true
 
+    # the scrollbar and a held delete take the press; the rest waits
+    # for the release
     func on_press [ ev: Event ]
+        ev.no_default = true
+        if [ press_now[ ev ] ]
+            press_act[ ev ]
+            return
+        down_on = true
+        down_x  = ev.mouse.pos.x
+        down_y  = ev.mouse.pos.y
+
+    func press_now [ ev: Event ] -> bool
+        if [ delete_hit[ ev ] ] return true
+        ly : lay[]
+        if [ !ly ] return false
+        u : f32 ux_unit[ ux ]
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
+        grab : f32 [
+            (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 * u
+            : 16.0 * u ]
+        return sbl && sbl.scroll_max > 0.0 && rx > ly.bounds.w - grab
+
+    func press_act [ ev: Event ]
         u : f32 ux_unit[ ux ]
         ly : lay[]
         o  : orb9[]

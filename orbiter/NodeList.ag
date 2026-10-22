@@ -1397,6 +1397,7 @@ Control InstancePanel
         if [ orb.props_open ] return 0
         if [ orb.instr_open ] return 1
         if [ orb.stack_open ] return 2
+        if [ orb.rec_open ] return 3
         return -1
 
     # the first render comes before any layout: no bounds yet
@@ -1428,6 +1429,7 @@ Control InstancePanel
         orb.props_open = !was && i == 0
         orb.instr_open = !was && i == 1
         orb.stack_open = !was && i == 2
+        orb.rec_open   = !was && i == 3
 
     # a section header: a fold marker at the left when asked, the name
     # beside it
@@ -1512,7 +1514,8 @@ Control InstancePanel
                 rest_fill: rgba [ '#5a1a4a22' ],
                 lit_fill: rgba [ '#5a1a4a55' ],
                 buttons: vec string [] [
-                    'properties', 'instruments', 'callstack' ],
+                    'properties', 'instruments', 'callstack',
+                    'record' ],
                 sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
                 label_px: (row_h[] * 0.5 - 2.0) * 1.6,
                 label_font: 'fonts/BarlowCondensed-Regular.ttf',
@@ -1578,7 +1581,49 @@ Control InstancePanel
             t['callstack'] = Callstack [
                 frames: orb.stack_frames[],
                 area: Region [ 'l0 t{ly9}px r0 b0' ] ]
+        if [ orb.rec_open ]
+            rec_els[ t, orb, av9 ]
         return t
+
+    # the record tab: what records (orbiter's whole window, or the
+    # selected app), the button that starts and stops it, the take
+    func rec_els [ t: Elements, orb: orbiter, av9: AppView ]
+        rh : f32 row_h[]
+        y  : f32 [ tab_y[] + tabs_h[] + 8.0 ]
+        up : bool [ av9 && av9.slot >= 0 && !av9.ended && !av9.held ]
+        on : bool [ orb.rec_iid != -2 ]
+        anm : string (up) ? orb.instance_name[ av9 ] : 'no app'
+        # the running take's own source stays lit
+        pk : i32 [ (on) ? ((orb.rec_iid == -1) ? 0 : 1)
+            : ((up) ? orb.rec_pick : 0) ]
+        t['rec_pick'] = TButtons [
+            buttons: vec string [] [ 'rec_self', 'rec_app' ],
+            labels: vec string [] [ 'orbiter', anm ],
+            icons: false, manual: true, seg_radius: 0.0,
+            label_px: rh * 0.5 + 2.0,
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            sel_mask: 1 << pk,
+            disable_mask: (on) ? 3 : ((up) ? 0 : 2),
+            area: Region [ 'l8px t{y}px r8px h{rh}px' ] ]
+        y += rh + 8.0
+        el9 : i64 [ (on) ? (epoch_millis[] - orb.rec_from) / 1000 : 0 ]
+        ss : i64 [ el9 % 60 ]
+        mn : i64 [ el9 / 60 ]
+        tm : string [ (ss < 10) ? '{mn}:0{ss}' : '{mn}:{ss}' ]
+        t['rec_go'] = TButtons [
+            buttons: vec string [] [ 'rec_go' ],
+            labels: vec string [] [ (on) ? 'stop   {tm}' : 'record' ],
+            icons: false, manual: true, seg_radius: 6.0,
+            label_px: rh * 0.5 + 4.0,
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            sel_mask: (on) ? 1 : 0,
+            rest_fill: (on) ? rgba [ '#c2185b88' ] : rgba [ '#0000' ],
+            area: Region [ 'l8px t{y}px r8px h{rh * 1.5}px' ] ]
+        y += rh * 1.5 + 8.0
+        if [ orb.rec_path ]
+            t['rec_where'] = LabelButton [ label: orb.rec_path,
+                manual_mode: true,
+                area: Region [ 'l8px t{y}px r8px h{rh}px' ] ]
 
     func inst_color [ av: AppView ] -> rgba
         if [ av.held ]   return rgba [ '#8f89a3' ]

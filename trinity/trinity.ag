@@ -1,4 +1,5 @@
 # trinity: the window, the elements, and the light behind both
+# three in one, yet every frame it still asks for one more
 export 0.1.0
 export VK_LAYER_PATH: '{install}/share/vulkan/explicit_layer.d'
 ifdef [ apple ]
@@ -615,8 +616,21 @@ abstract live_app media_app
     # the encoder pipe lives in Au, so a reload keeps writing the same
     # take
     func record_pump []
-        if [ !record || !w ] return
+        if [ !w ] return
         wn  : Window [ w ]
+        # the app element's record is the take wanted: set or cleared
+        # while the app runs, a take starts or ends
+        ap : element [ wn.app_object ]
+        if [ ap ]
+            want : string [ (ap.record && ap.record.count > 0)
+                ? ap.record : null ]
+            have : string [ (record && record.count > 0)
+                ? record : null ]
+            if [ (want != null) != (have != null)
+                 || (want && want.compare[ have ] != 0) ]
+                record_stop[]
+                record = want
+        if [ !record ] return
         scv : Canvas [ wn.screen ]
         if [ !scv ] return
         tx  : Texture [ scv.color ]
@@ -705,6 +719,23 @@ abstract live_app media_app
     func record_close []
         if [ recorder ] recorder.close[]
         rec_live = null
+
+    # the take ends while the app runs on: its file closed, the window
+    # free to size again
+    func record_stop []
+        if [ !recorder ] return
+        record_close[]
+        fd : i32 [ Au.live_record_get[] ]
+        if [ fd > 0 ] close[ fd ]
+        Au.live_record_set[ 0, 0, 0 ]
+        Au.live_record_mux_set[ 0, 0, 0 ]
+        recorder = null
+        wn : Window [ w ]
+        wn.rec     = null
+        wn.rec_app = null
+        wn.rec_mic = null
+        wn.set_resizable[ true ]
+        log 'record: stopped'
 
     # the marks file: the take's stem with .agi; a stream keeps none
     func record_notes [ rpath: string, fmt: string ] -> string
@@ -1720,6 +1751,16 @@ abstract live_app media_app
                 # leaks: the --leaks report now, into the app log
                 el [ cmd == 'leaks' ]
                     Au.leak_report[]
+                    agent_sock_reply[ 'ok\n' ]
+                    continue
+                # record <folder or file>: a take of this app, as
+                # --record; record stop ends it
+                el [ cmd == 'record' && line.count > 7 ]
+                    rq : string line.mid[ 7, line.count - 7 ]
+                    if [ aa && rq.compare[ 'stop' ] == 0 ]
+                        aa.record = null
+                    el [ aa ]
+                        aa.record = rq
                     agent_sock_reply[ 'ok\n' ]
                     continue
                 # quit: the orderly close, as the window's close button
@@ -4200,7 +4241,7 @@ Display Window
 
     # an element's own title: kept here, and told to the host three
     # bytes a message, a 0 byte last
-    # no title of its own: its default argument's stem, else module
+    # no title of its own: its default argument's stem, else none
     func app_name [] -> string
         ae : element [ cast element [ app_object ] ]
         if [ !ae ] return null
@@ -4216,8 +4257,7 @@ Display Window
                 if [ v && Au.inherits[ typeid[ v ], typeid[ path ] ] ]
                     src_path : path [ cast path [ v ] ]
                     return src_path.stem[]
-        return (app_type && app_type.module) ? module_name[
-            app_type.module ] : null
+        return null
 
     # an app that never named itself: title from its argument
     public func title_refresh []

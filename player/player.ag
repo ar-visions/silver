@@ -1,0 +1,500 @@
+# player: a video file on the gpu decoder: mp4 mov m4v, raw h264 h265
+export 0.1.0
+
+import vec
+import img
+import trinity
+import spectra
+import <unistd.h>
+    +_DEFAULT_SOURCE
+import <fcntl.h>
+import <string.h>
+
+func file_bytes [ p: path ] -> vec u8
+    fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
+    if [ fd < 0 ] return null
+    n : i64 [ lseek[ fd, 0, SEEK_END ] ]
+    lseek[ fd, 0, SEEK_SET ]
+    b : vec u8 [ n ]
+    got : i64 [ 0 ]
+    while [ got < n ]
+        k : i64 [ read[ fd, @b[ got ], n - got ] ]
+        if [ k <= 0 ] break
+        got += k
+    close[ fd ]
+    return b
+
+# 12 floats: limited-range yuv to rgb, three rows of (y, u, v, add)
+func yuv_rows [ bt: bool ] -> @f32
+    ky : f32 [ 255.0 / 219.0 ]
+    kc : f32 [ 255.0 / 224.0 ]
+    rv : f32 [ (bt) ? 1.5748 : 1.402 ]
+    gu : f32 [ (bt) ? 0.1873 : 0.3441 ]
+    gv : f32 [ (bt) ? 0.4681 : 0.7141 ]
+    bu : f32 [ (bt) ? 1.8556 : 1.772 ]
+    y0 : f32 [ 16.0 / 255.0 * ky ]
+    c0 : f32 [ 128.0 / 255.0 * kc ]
+    r : new f32 [ 12 ]
+    r[0]  = ky
+    r[1]  = 0.0
+    r[2]  = rv * kc
+    r[3]  = 0.0 - y0 - rv * c0
+    r[4]  = ky
+    r[5]  = 0.0 - gu * kc
+    r[6]  = 0.0 - gv * kc
+    r[7]  = 0.0 - y0 + (gu + gv) * c0
+    r[8]  = ky
+    r[9]  = bu * kc
+    r[10] = 0.0
+    r[11] = 0.0 - y0 - bu * c0
+    return r
+
+# a picture's three planes on the gpu
+class Planes
+    context vk     : vk_context
+    context w      : Display
+    public  y      : Texture
+    public  u      : Texture
+    public  v      : Texture
+    public  width  : i32
+    public  height : i32
+    public  bt709  : bool
+
+    func plane [ pw: i32, ph: i32 ] -> Texture
+        return Texture [ vk: vk, w: w, width: pw, height: ph,
+                         linear: true, pixel_format: Pixel.u8,
+                         surface: Surface.color, tag: 'player' ]
+
+    func put [ f: VideoFrame ]
+        cw : i32 [ (f.full) ? f.width : f.width / 2 ]
+        ch : i32 [ (f.full) ? f.height : f.height / 2 ]
+        if [ !y || width != f.width || height != f.height
+             || u.width != cw ]
+            y = plane[ f.width, f.height ]
+            u = plane[ cw, ch ]
+            v = plane[ cw, ch ]
+            width  = f.width
+            height = f.height
+        y.upload[ @f.y[ 0 ], i64[ f.width ] * f.height ]
+        u.upload[ @f.u[ 0 ], i64[ cw ] * ch ]
+        v.upload[ @f.v[ 0 ], i64[ cw ] * ch ]
+
+    func draw [ cv: Canvas, r: rect ]
+        if [ !y ] return
+        cv.draw_yuv[ y, u, v, r.x, r.y, r.w, r.h, yuv_rows[ bt709 ] ]
+
+# 'hvc1' / 'hev1' as the sample entry's four bytes
+func is_hevc [ codec: i64 ] -> bool
+    return codec == 0x68766331 || codec == 0x68657631
+
+# the first video track with a config
+func video_of [ dm: Demux ] -> DemuxTrack
+    for [ t: DemuxTrack ] in dm.tracks
+        if [ t.kind == 1 && t.config.count > 0 ] return t
+    return null
+
+# a fragmented file's aac samples gathered, as pcm
+func clip_of [ t: DemuxTrack, got: vec DemuxSample ] -> AudioClip
+    total : i64 [ 0 ]
+    for [ ds: DemuxSample ] in got
+        if [ ds.track == t.id ] total += ds.data.count
+    if [ total == 0 || t.config.count == 0 ] return null
+    data : vec u8 [ total ]
+    offs : vec i64 []
+    szs  : vec i64 []
+    o : i64 [ 0 ]
+    for [ ds: DemuxSample ] in got
+        if [ ds.track == t.id ]
+            n : i64 [ ds.data.count ]
+            memcpy[ @data[ o ], @ds.data[ 0 ], n ]
+            offs.push[ o ]
+            szs.push[ n ]
+            o += n
+    return aac_clip[ @t.config[ 0 ], i32[ t.config.count ], @data[ 0 ],
+                     offs, szs, t.shift ]
+
+# the video's samples in decode order, its config and sound
+class Movie
+    public samples : vec DemuxSample
+    public config  : vec u8
+    public hevc    : bool
+    public scale   : i64                 # pts units a second
+    public length  : f64                 # seconds
+    # a raw stream: pictures are timed by display order
+    public raw     : bool
+    public sound   : AudioClip
+
+    # mp4, mov, m4v: plain or fragmented
+    func load_mp4 [ bytes: vec u8 ] -> bool
+        dm : Demux []
+        plain : bool dm.read_bytes[ @bytes[ 0 ], bytes.count ]
+        vt : DemuxTrack video_of[ dm ]
+        # a fragmented file (our own takes): samples by its fragments
+        if [ !plain || !vt || vt.samples[] == 0 ]
+            plain = false
+            dm = Demux []
+            dm.append[ @bytes[ 0 ], bytes.count ]
+            vt = video_of[ dm ]
+        if [ !vt ] return false
+        at : DemuxTrack [ null ]
+        for [ t: DemuxTrack ] in dm.tracks
+            if [ t.kind == 2 && !at ] at = t
+        hevc   = is_hevc[ vt.codec ]
+        config = vt.config
+        scale  = vt.timescale
+        samples = vec DemuxSample []
+        if [ plain ]
+            for [ i: i64 0, i < vt.samples[], i += 1 ]
+                ds : DemuxSample [ track: vt.id, pts: vt.pts[ i ],
+                                   sync: vt.sync[ i ] != 0 ]
+                ds.data = vec u8 [ vt.sizes[ i ] ]
+                memcpy[ @ds.data[ 0 ], @bytes[ vt.offsets[ i ] ],
+                        vt.sizes[ i ] ]
+                samples.push[ ds ]
+            if [ at && at.samples[] > 0 ]
+                sound = aac_clip[ @at.config[ 0 ],
+                                  i32[ at.config.count ], @bytes[ 0 ],
+                                  at.offsets, at.sizes, at.shift ]
+        el
+            for [ ds: DemuxSample ] in dm.ready
+                if [ ds.track == vt.id ] samples.push[ ds ]
+            if [ at ] sound = clip_of[ at, dm.ready ]
+        last : i64 [ 0 ]
+        for [ ds: DemuxSample ] in samples
+            if [ ds.pts > last ] last = ds.pts
+        length = f64[ last ] / f64[ scale ]
+        return samples.count > 0
+
+    # annex b: start codes, nal units grouped into pictures
+    func load_raw [ b: vec u8, fps: f64 ] -> bool
+        raw = true
+        scale = i64[ fps * 1000.0 ]
+        starts : vec i64 []
+        n : i64 [ b.count ]
+        for [ i: i64 0, i + 2 < n, i += 1 ]
+            if [ b[ i ] == 0 && b[ i + 1 ] == 0 && b[ i + 2 ] == 1 ]
+                starts.push[ i + 3 ]
+                i += 2
+        ends : vec i64 []
+        for [ k: i64 0, k < starts.count, k += 1 ]
+            e : i64 [ (k + 1 < starts.count) ? starts[ k + 1 ] - 3 : n ]
+            while [ e > starts[ k ] && b[ e - 1 ] == 0 ] e -= 1
+            ends.push[ e ]
+        params : vec i64 [] [ -1, -1, -1 ]
+        samples = vec DemuxSample []
+        first : i64 [ 0 ]
+        vcl : bool [ false ]
+        for [ k: i64 0, k <= starts.count, k += 1 ]
+            begin : bool [ k == starts.count ]
+            if [ !begin ]
+                s : i64 [ starts[ k ] ]
+                t : i32 [ (hevc) ? (b[ s ] >> 1) & 63 : b[ s ] & 31 ]
+                pic : bool [ (hevc) ? t < 32 : t == 1 || t == 5 ]
+                hb : i64 [ s + ((hevc) ? 2 : 1) ]
+                at_top : bool [ pic && (b[ hb ] & 0x80) != 0 ]
+                lead : bool [ (hevc) ? (t >= 32 && t <= 35) || t == 39
+                                     : t >= 6 && t <= 9 ]
+                begin = vcl && (at_top || lead)
+                ps : i32 [ (hevc) ? t - 32 : t - 6 ]
+                if [ ps >= 0 && ps <= 2 && params[ ps ] < 0 ]
+                    params[ ps ] = k
+            if [ begin ]
+                put_unit[ b, starts, ends, first, k ]
+                first = k
+                vcl = false
+            if [ k < starts.count ]
+                s2 : i64 [ starts[ k ] ]
+                t2 : i32 [ (hevc) ? (b[ s2 ] >> 1) & 63 : b[ s2 ] & 31 ]
+                if [ (hevc) ? t2 < 32 : t2 == 1 || t2 == 5 ] vcl = true
+        if [ samples.count == 0 ] return false
+        length = f64[ samples.count ] / fps
+        config = (hevc) ? hvcc_of[ b, starts, ends, params ]
+                        : avcc_of[ b, starts, ends, params ]
+        return config != null
+
+    # nal units first .. upto as one length-prefixed sample
+    func put_unit [ b: vec u8, starts: vec i64, ends: vec i64,
+                    first: i64, upto: i64 ]
+        total : i64 [ 0 ]
+        for [ k: i64 first, k < upto, k += 1 ]
+            total += 4 + ends[ k ] - starts[ k ]
+        if [ total == 0 ] return
+        ds : DemuxSample [ pts: samples.count * 1000 ]
+        ds.data = vec u8 [ total ]
+        o : i64 [ 0 ]
+        for [ k: i64 first, k < upto, k += 1 ]
+            len : i64 [ ends[ k ] - starts[ k ] ]
+            ds.data[ o ]     = u8[ (len >> 24) & 255 ]
+            ds.data[ o + 1 ] = u8[ (len >> 16) & 255 ]
+            ds.data[ o + 2 ] = u8[ (len >> 8) & 255 ]
+            ds.data[ o + 3 ] = u8[ len & 255 ]
+            memcpy[ @ds.data[ o + 4 ], @b[ starts[ k ] ], len ]
+            o += 4 + len
+            t : i32 [ (hevc) ? (b[ starts[ k ] ] >> 1) & 63
+                             : b[ starts[ k ] ] & 31 ]
+            if [ (hevc) ? t >= 16 && t <= 21 : t == 5 ] ds.sync = true
+        samples.push[ ds ]
+
+    # one parameter set: two bytes of length, then the bytes
+    func put_set [ out: vec u8, b: vec u8, s: i64, e: i64 ]
+        len : i64 [ e - s ]
+        out.push[ u8[ (len >> 8) & 255 ] ]
+        out.push[ u8[ len & 255 ] ]
+        for [ i: i64 s, i < e, i += 1 ]
+            byte : u8 [ b[ i ] ]
+            out.push[ byte ]
+
+    # sps at params[1], pps at params[2]
+    func avcc_of [ b: vec u8, starts: vec i64, ends: vec i64,
+                   params: vec i64 ] -> vec u8
+        sp : i64 [ params[ 1 ] ]
+        pp : i64 [ params[ 2 ] ]
+        if [ sp < 0 || pp < 0 ] return null
+        s : i64 [ starts[ sp ] ]
+        out : vec u8 []
+        out.push[ 1 ]
+        for [ i: i64 1, i <= 3, i += 1 ]
+            byte : u8 [ b[ s + i ] ]
+            out.push[ byte ]
+        out.push[ 0xFF ]
+        out.push[ 0xE1 ]
+        put_set[ out, b, s, ends[ sp ] ]
+        out.push[ 1 ]
+        put_set[ out, b, starts[ pp ], ends[ pp ] ]
+        return out
+
+    # vps, sps, pps at params[0..2]; the decoder reads the arrays
+    func hvcc_of [ b: vec u8, starts: vec i64, ends: vec i64,
+                   params: vec i64 ] -> vec u8
+        for [ i: i32 0, i < 3, i += 1 ]
+            if [ params[ i ] < 0 ] return null
+        out : vec u8 []
+        out.push[ 1 ]
+        for [ i: i32 1, i < 21, i += 1 ]
+            out.push[ 0 ]
+        out.push[ 3 ]
+        out.push[ 3 ]
+        for [ i: i32 0, i < 3, i += 1 ]
+            out.push[ u8[ 32 + i ] ]
+            out.push[ 0 ]
+            out.push[ 1 ]
+            k : i64 [ params[ i ] ]
+            put_set[ out, b, starts[ k ], ends[ k ] ]
+        return out
+
+element player : trinity
+    public  width  : i32    [ 1280 ]
+    public  height : i32    [ 720 ]
+    public  title  : string [ 'player' ]
+    default [ Launch ] file : path
+    # a raw stream's pictures a second
+    public  [ Launch ] fps : f64 [ 30.0 ]
+    mutable clip    : Movie
+    mutable dec     : Decoder
+    mutable planes  : Planes
+    mutable next    : i64                # the next sample to decode
+    mutable out_n   : i64                # a raw stream's next picture
+    mutable at      : f64                # seconds at from_ms
+    mutable from_ms : i64
+    mutable paused  : bool
+    mutable shown   : bool
+    mutable failed  : string
+    mutable mixer   : AudioMixer
+    mutable voice   : i32
+
+    func init []
+        animated  = true
+        focusable = true
+        if [ file && !file.is_dir[] ]
+            open_file[ file ]
+
+    # a video in place of the one playing; false when unreadable
+    func open_file [ p: path ] -> bool
+        if [ !p.exists[] || p.is_dir[] ]
+            failed = 'no file: {p}'
+            return false
+        bytes : vec u8 file_bytes[ p ]
+        low : string '{p}'.lcase[]
+        mv : Movie []
+        ok : bool [ false ]
+        if [ low.ends_with[ '.h264' ] || low.ends_with[ '.264' ] ]
+            ok = mv.load_raw[ bytes, fps ]
+        el [ low.ends_with[ '.h265' ] || low.ends_with[ '.265' ]
+             || low.ends_with[ '.hevc' ] ]
+            mv.hevc = true
+            ok = mv.load_raw[ bytes, fps ]
+        el
+            ok = mv.load_mp4[ bytes ]
+        if [ !ok ]
+            failed = 'cannot read {p}'
+            return false
+        if [ mixer && voice > 0 ] mixer.voice_stop[ voice ]
+        voice   = 0
+        clip    = mv
+        file    = p
+        dec     = null
+        next    = 0
+        out_n   = 0
+        at      = 0.0
+        paused  = false
+        shown   = false
+        failed  = null
+        from_ms = epoch_millis[]
+        title   = '{p.filename[]}'
+        set_title[ title ]
+        sound_at[ 0.0 ]
+        return true
+
+    # ctrl+o: the dialog lists the video's folder, else the start one
+    public func nav_folder [] -> path
+        if [ file && file.exists[] ] return file.directory[]
+        return path.path_startup[]
+
+    public func nav_open [ p: path ] -> bool
+        if [ p.is_dir[] ] return false
+        return open_file[ p ]
+
+    func secs [ pts: i64 ] -> f64
+        return f64[ pts ] / f64[ clip.scale ]
+
+    # the play position now
+    func now [] -> f64
+        if [ paused ] return at
+        return at + f64[ epoch_millis[] - from_ms ] / 1000.0
+
+    func sound_at [ t: f64 ]
+        if [ !clip.sound ] return
+        if [ !mixer ]
+            mixer = AudioMixer [ sample_rate: 48000 ]
+            if [ !mixer.start[] ]
+                clip.sound = null
+                return
+        if [ voice > 0 ] mixer.voice_stop[ voice ]
+        voice = 0
+        if [ paused ] return
+        voice = mixer.play_voice[ clip.sound, false, 1.0, 1.0 ]
+        if [ voice > 0 ]
+            mixer.voice_seek[ voice, t * f64[ clip.sound.rate ] ]
+
+    # a new decoder from the key sample at or before t
+    func seek [ t: f64 ]
+        go : f64 [ max[ 0.0, min[ t, clip.length ] ] ]
+        key : i64 [ 0 ]
+        for [ i: i64 0, i < clip.samples.count, i += 1 ]
+            ds : DemuxSample clip.samples[ i ]
+            if [ ds.sync && secs[ ds.pts ] <= go ] key = i
+        dec = null
+        next  = key
+        out_n = key * 1000
+        at = go
+        from_ms = epoch_millis[]
+        sound_at[ go ]
+
+    func decode_one []
+        ds : DemuxSample clip.samples[ next ]
+        before : i64 [ dec.frames.count ]
+        dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ], ds.pts ]
+        next += 1
+        if [ next == clip.samples.count ] dec.finish[]
+        if [ clip.raw ]
+            for [ i: i64 before, i < dec.frames.count, i += 1 ]
+                f : VideoFrame dec.frames[ i ]
+                f.pts = out_n
+                out_n += 1000
+
+    # decode until the picture for t is known; it goes up
+    func advance [ cv: Canvas, t: f64 ]
+        if [ !dec ]
+            dec = Decoder [ vk: cv.vk ]
+            ok : bool [ (clip.hevc)
+                ? dec.config_hevc[ @clip.config[ 0 ],
+                                   i32[ clip.config.count ] ]
+                : dec.config[ @clip.config[ 0 ],
+                              i32[ clip.config.count ] ] ]
+            if [ !ok ]
+                failed = 'the decoder refused {file}'
+                return
+        if [ !planes ]
+            planes = Planes [ vk: cv.vk, w: cv.w,
+                              bt709: dec.height >= 720 ]
+        while [ next < clip.samples.count ]
+            n : i64 [ dec.frames.count ]
+            if [ n > 0 && secs[ dec.frames[ n - 1 ].pts ] > t ] break
+            decode_one[]
+        pick : i64 [ -1 ]
+        for [ i: i64 0, i < dec.frames.count, i += 1 ]
+            if [ secs[ dec.frames[ i ].pts ] <= t ] pick = i
+        if [ pick < 0 && !shown && dec.frames.count > 0 ] pick = 0
+        if [ pick < 0 ] return
+        planes.put[ dec.frames[ pick ] ]
+        shown = true
+        for [ i: i64 0, i <= pick, i += 1 ]
+            dec.frames.shift[]
+
+    func toggle []
+        at = now[]
+        paused = !paused
+        from_ms = epoch_millis[]
+        sound_at[ at ]
+
+    public func on_press [ ev: Event ]
+        set_focus[]
+        if [ !clip || failed ] return
+        # the bar's strip seeks; the picture pauses
+        if [ ev.mouse.pos.y > bounds.h - 24.0 && bounds.w > 0.0 ]
+            seek[ f64[ ev.mouse.pos.x / bounds.w ] * clip.length ]
+        el
+            toggle[]
+
+    public func on_key [ ev: Event ]
+        if [ ev.key.state == 0 || !clip || failed ] return
+        code : i32 [ ev.key.unicode ]
+        if [ code == 32 ]
+            toggle[]
+        el [ code == 262 ]
+            seek[ now[] + 5.0 ]
+        el [ code == 263 ]
+            seek[ now[] - 5.0 ]
+        el
+            return
+        ev.stop[]
+
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv ] return
+        cv.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+        if [ failed ]
+            cv.fill_color[ rgba['#ffffff'] ]
+            cv.font_size[ 16 ]
+            cv.draw_text[ failed, rect [ x: 20.0, y: 20.0,
+                                         w: bounds.w - 40.0, h: 24.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cv.paint[]
+            return
+        if [ !clip ] return
+        t : f64 now[]
+        if [ !paused && t >= clip.length ]
+            at = clip.length
+            paused = true
+            sound_at[ at ]
+            t = at
+        advance[ cv, t ]
+        if [ failed || !planes || !planes.y ] return
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        k : f32 [ min[ bw / f32[ planes.width ],
+                       bh / f32[ planes.height ] ] ]
+        pw : f32 [ f32[ planes.width ] * k ]
+        ph : f32 [ f32[ planes.height ] * k ]
+        planes.draw[ cv, rect [ x: (bw - pw) / 2.0, y: (bh - ph) / 2.0,
+                                w: pw, h: ph ] ]
+        # the play position along the foot
+        done : f32 [ (clip.length > 0.0)
+            ? f32[ t / clip.length ] : 0.0 ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba['#ffffff33'] ]
+        cv.rect_to[ 0.0, bh - 4.0, bw, 4.0 ]
+        cv.paint[]
+        cv.fill_color[ rgba['#ff84ff'] ]
+        cv.rect_to[ 0.0, bh - 4.0, bw * done, 4.0 ]
+        cv.paint[]

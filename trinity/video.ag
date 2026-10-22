@@ -382,8 +382,10 @@ class Encoder
             dev, "vkCmdEncodeVideoKHR" ]
         expect _vkCmdEncodeVideoKHR, 'encode: vulkan video entry points missing'
 
-        coded_w = (width  + 15) / 16 * 16
-        coded_h = (height + 15) / 16 * 16
+        # 4:4:4 chroma shears unless the width is a multiple of 64
+        wa : i32 [ (chroma444) ? 64 : 16 ]
+        coded_w = (width  + wa - 1) / wa * wa
+        coded_h = (height + wa - 1) / wa * wa
         gop     = fps * 2
 
         h264_profile = VkVideoEncodeH264ProfileInfoKHR [

@@ -98,8 +98,8 @@ AgentRun GeminiAgent
             status[ 'busy', on ]
 
 # at the build: the package's bundle for this version in
-# install/lib/gemini-cli/<version>, install/bin/gemini runs it on
-# our node
+# install/lib/gemini-cli/<version>, its gemini runs it on our node;
+# install/bin/gemini links to it
 export func install_gemini []
     ins : string '{path.path_install[]}'
     ver : gemini_ver[]
@@ -112,9 +112,10 @@ export func install_gemini []
         if [ get.exec[ false ] != 0 ]
             log 'gemini: {ver} failed'
             return
-    bin : '{ins}/bin/gemini'
+    exe : string '{dir}/gemini'
     sh : string '#!/bin/sh\nexec {ins}/node/bin/node {js} "$@"\n'
-    out : path [ bin ]
+    out : path [ exe ]
     out.save[ sh, null ]
-    chmod[ bin.chars, 0x1ED ]
-    log 'gemini: {ver}'
+    chmod[ exe.chars, 0x1ED ]
+    ln : command { ln -sfn {exe} {ins}/bin/gemini }
+    if [ ln.exec[ false ] == 0 ] log 'gemini: {ver}'

@@ -7,6 +7,8 @@
 # why orbit the sun? it was the only thing in our pane
 # orbiter never crashes; it just changes its orbit
 # the side panel never argues; it just folds
+# the task bar never rests; it always has chips to carry
+# the camera leans in when you work; it is a supportive lens
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -745,17 +747,19 @@ element EditorView
         # only an error, centred in the title, as wide as its words
         # the band floor grows by the open launch panel: it is a
         # toolbar, never clipped
-        t['split'] = Splitter [ area: Region [ cont9 ],
-                                vertical: true,
-            inner: pane_els[], deflt: 180.0,
-            min_size: 44.0 ]
         # the empty pane: the apps, glass over the clear space
         # nothing in it: no file, and no app running in it
         ap9 : Editor text_of[]
         runs9 : bool [ ap9 && ap9.run_view && !ap9.run_view.ended ]
         # nor a terminal (an agent's, a console)
-        if [ !file[] && !runs9 && !browse_active[] && !wn9
+        home9 : bool [ !file[] && !runs9 && !browse_active[] && !wn9
              && psess[].count == 0 ]
+        # under the home the empty editor draws nothing (its gutter)
+        t['split'] = Splitter [ area: Region [ cont9 ],
+                                vertical: true, hide: home9,
+            inner: pane_els[], deflt: 180.0,
+            min_size: 44.0 ]
+        if [ home9 ]
             # typing filters them: the box mounts at the foot, the
             # cards scroll above it
             af9 : string [ (pane_index == orb[].active_pane)
@@ -3040,8 +3044,6 @@ class pane_state
     public file      : path
     public selection : vec2i
     public scroll    : f32
-    # it showed its app running: the next session starts it there
-    public app       : bool
 
 # an instance as old sessions kept it; read, never restored
 class inst_state
@@ -3152,8 +3154,8 @@ element orbiter : trinity # implements compiler
     # the rest
     default module_args  : string
     intern resource      : string
-    # per-source-file state, keyed by path; persisted with the session
-    public [ StatePersist ] file_states   : map file_state [string]
+    # per-source-file state, keyed by path; this session only
+    public file_states   : map file_state [string]
     public log           : string
     intern tee_started   : bool
     intern cap_fd        : i32 [ -1 ]
@@ -3269,6 +3271,10 @@ element orbiter : trinity # implements compiler
     # the deferred show is for the instance's code, not its window
     mutable pending_code      : bool
     intern pending_run      : i32 [ -1 ]
+    # a console asked for a pane whose editor is not up yet (an
+    # agent's terminal was shown there): its folder, once it is
+    intern console_pane     : i32 [ -1 ]
+    intern console_dir      : path
     # a pane to add a held instance to, once it is up
     intern pending_held     : i32 [ -1 ]
     # ...once that pane shows this source (null: any)
@@ -3291,7 +3297,7 @@ element orbiter : trinity # implements compiler
     # the free panes, bottom to top
     intern free_order       : vec i32
     # the console's toolbar: the debugger's console up; every app's
-    # log (Global) or the selected app's
+    # log (System) or the selected app's
     intern con_dbg          : bool
     intern con_global       : bool
     # the log's filter: typed while the log has focus, its lines
@@ -3319,6 +3325,8 @@ element orbiter : trinity # implements compiler
     public show_instruments : bool
     # the side panel folded to its strip; kept across launches
     public [ StatePersist ] inst_hidden : bool
+    # the navigator's entries as icons over their names, not rows
+    public [ StatePersist ] nav_icons : bool
     # the side panel's width before it folded, and the fold last set
     mutable side_saved      : f32
     mutable side_closed     : bool
@@ -3629,9 +3637,6 @@ element orbiter : trinity # implements compiler
     # launch panel over the console
     public show_launch    : bool
     public show_console   : bool
-    # the last props a module's instance answered: its config outlives
-    # the run
-    public [ StatePersist ] module_props : map string [string]
     mutable shift_down    : bool
     mutable cmd_down      : bool
     # recording from a shift-click on orbiter's button: a click on it
@@ -3644,6 +3649,15 @@ element orbiter : trinity # implements compiler
     # the callstack lists frames with no known source too
     mutable stack_unknown : bool
     mutable instr_open    : bool
+    mutable rec_open      : bool
+    # the record tab's take: whose (-1 orbiter itself, else an
+    # instance's iid; -2 none), the file, its start, the second shown
+    mutable rec_iid       : i32 [ -2 ]
+    mutable rec_path      : string
+    mutable rec_from      : i64
+    mutable rec_sec       : i64
+    # what the tab records next: orbiter (0) or the selected app (1)
+    mutable rec_pick      : i32
     # module whose build set err_file; only it may clear
     intern err_mod       : string
     # the nav lists the scene cards
@@ -3975,12 +3989,9 @@ element orbiter : trinity # implements compiler
                 e9 : Editor pane_at[ i ]
                 sel9 : vec2i [ x: (e9) ? e9.sel_line : 0,
                     y: (e9) ? e9.sel_col : 0 ]
-                rv9 : AppView (e9) ? e9.run_view : null
                 panes.push[ pane_state [
                     file: open_files[slot], selection: sel9,
-                    scroll: (e9) ? e9.scroll.y : 0.0,
-                    app: e9 && e9.app_view && rv9 && !rv9.ended
-                        && !rv9.held && rv9.slot >= 0 ] ]
+                    scroll: (e9) ? e9.scroll.y : 0.0 ] ]
         pane_states = panes
         # instances do not persist: a session starts with none
         inst_states = vec inst_state []
@@ -3996,9 +4007,6 @@ element orbiter : trinity # implements compiler
             for [ i: i32 0, i < pane_states.count, i += 1 ]
                 ps9 : pane_state pane_states[i]
                 if [ ps9 && ps9.file ]
-                    # its app was showing: it runs there again
-                    if [ ps9.app && pending_run < 0 ]
-                        pending_run = editor_slots.count
                     editor_slots += file_slot[ ps9.file ]
                     pending_sel += ps9.selection
                     pending_scroll += ps9.scroll
@@ -5387,6 +5395,7 @@ element orbiter : trinity # implements compiler
         if [ av.paused ]
             props_open = false
             instr_open = false
+            rec_open   = false
             stack_open = true
             if [ ux ] ux.restyle = true
 
@@ -5434,6 +5443,56 @@ element orbiter : trinity # implements compiler
             vs : string '{v.src.absolute[]}'
             if [ vs.compare[ ps ] == 0 ] out.push[ v ]
         return out
+
+    # a take from the record tab: orbiter's own window (its element's
+    # record, which trinity watches) or an app's, asked over its
+    # socket; each records itself, as --record does, into
+    # ~/Videos/<name>-<date>/
+    func rec_start [ av: AppView ]
+        now : i64 [ time[ null ] ]
+        tm : struct tm
+        localtime_r[ @now, @tm ]
+        b : local i8 [ 64 ]
+        fmt : '%Y%m%d-%H%M%S'
+        strftime[ @b[0], 64, fmt.chars, @tm ]
+        stamp : string [ @b[0] ]
+        nm : string (av) ? app_name[ av ] : 'orbiter'
+        hm : string getenv[ 'HOME' ]
+        dir : path '{hm}/Videos/{nm}-{stamp}'
+        dir.make_dir[]
+        rec_path = '{dir}/{dir.filename[]}.mp4'
+        rec_from = epoch_millis[]
+        rec_sec  = 0
+        if [ av ]
+            rec_iid = av.iid
+            agent_sock_send[ av.sock_name[].chars, 'record {dir}\n' ]
+        el
+            rec_iid = -1
+            record = '{dir}'
+
+    func rec_stop []
+        if [ rec_iid == -1 ]
+            record = null
+        el [ rec_iid >= 0 ]
+            av : AppView instance_by[ rec_iid ]
+            if [ av && !av.ended && av.slot >= 0 ]
+                agent_sock_send[ av.sock_name[].chars, 'record stop\n' ]
+        rec_iid = -2
+
+    # the take's clock in the record tab, a second at a time; an app
+    # that ended took its take with it
+    func rec_tick []
+        if [ rec_iid == -2 ] return
+        if [ rec_iid >= 0 ]
+            av : AppView instance_by[ rec_iid ]
+            if [ !av || av.ended ]
+                rec_iid = -2
+                if [ ux ] ux.restyle = true
+                return
+        sec : i64 [ (epoch_millis[] - rec_from) / 1000 ]
+        if [ sec != rec_sec ]
+            rec_sec = sec
+            if [ rec_open && ux ] ux.restyle = true
 
     func instance_by [ iid: i32 ] -> AppView
         if [ instances ]
@@ -5680,11 +5739,6 @@ element orbiter : trinity # implements compiler
 
     func module_spec [ mod: string ] -> string
         if [ !mod || mod.count == 0 ] return null
-        if [ module_props && module_props.contains[ mod ] ]
-            # a session from before the agi form kept a line: not one
-            # now
-            mp9 : string module_props[ mod ]
-            if [ mp9 && mp9.starts_with[ 'props:' ] ] return mp9
         if [ !startup_path ] startup_path = path.path_startup[]
         agi : path '{startup_path}/install/export/{install_name_of[ mod ]}.agi'
         if [ !agi.exists[] ] return null
@@ -6201,6 +6255,16 @@ element orbiter : trinity # implements compiler
                         use_spacing: false,
                         sel_mask: (ex == cx9) ? 1 : 0,
                         area: Region { r0.15+ t0.15 w1.6 h1.0 } ]
+
+        # the navigator's search: list or icons, at its right end
+        if [ nv9 && !fb_on ]
+            nvb : vec string [] [ 'nav_list', 'nav_icons' ]
+            els['nav_view'] = AltTab [ buttons: nvb,
+                icon_ids: vec string [] [ 'view_list', 'grid_view' ],
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ], icon_scale: 0.45,
+                sel_mask: (nav_icons) ? 2 : 1,
+                area: Region [ 'r-1px+ t0 w{bwd * 2.0}px b0' ] ]
 
         if [ rv ]
             vel : Elements rv.title_elements*[]
@@ -6931,6 +6995,17 @@ element orbiter : trinity # implements compiler
         if [ e.action == 'orb.pane_close' ]
             if [ ed ] close_pane[ ed.pane_index ]
             return
+        # a shell in the app's own folder, in this pane; an agent's
+        # terminal it covers runs on
+        if [ e.action == 'orb.console' ]
+            dir : path app_place[]
+            if [ !dir ] return
+            if [ active_pane < pane_console.count ]
+                pane_console[ active_pane ] = ''
+            console_pane = active_pane
+            console_dir  = dir
+            if [ ux ] ux.restyle = true
+            return
         if [ e.action == 'orb.git' && ed ]
             ed.git_on = !ed.git_on
             if [ ed.git_on ] set_pane_view[ ed, 'git' ]
@@ -7054,6 +7129,29 @@ element orbiter : trinity # implements compiler
         ed : Editor pane_at[ active_pane ]
         av : AppView (ed) ? ed.run_view : null
         return (av && av.src) ? av.src.directory[] : null
+
+    # where the active pane's app really is: its program's file with
+    # links followed (an agent's, a window's), else its module
+    func app_place [] -> path
+        pc : string [ (active_pane < pane_console.count)
+                      ? pane_console[ active_pane ] : '' ]
+        pn : string window_program[ active_pane ]
+        if [ pc.starts_with[ 'home:' ] ]
+            nm : string pc.mid[ 5, pc.count - 5 ]
+            pn = (home_agent && home_agent.contains[ nm ])
+                ? home_agent[ nm ] : nm
+        if [ pn.count > 0 ]
+            dirs : string '{path.path_startup[]}/install/bin'
+            pv : cstr getenv[ 'PATH' ]
+            if [ pv ] dirs = '{dirs}:{string [ pv ]}'
+            for [ d: string ] in dirs.split[ ':' ]
+                bin : path '{d}/{pn}'
+                if [ d.count > 0 && bin.exists[] ]
+                    return bin.absolute[].directory[]
+        ed : Editor pane_at[ active_pane ]
+        av : AppView (ed) ? ed.run_view : null
+        if [ av && av.origin ] return av.origin.directory[]
+        return app_module[]
 
     func menu_read [ wn: u64 ] -> vec TrayEntry
         if [ wn == 0 ] return vec TrayEntry []
@@ -8611,6 +8709,8 @@ element orbiter : trinity # implements compiler
             if [ pe ]
                 pe.run_view = null
                 pe.app_view = false
+            # a terminal shown here goes too; its session runs on
+            if [ pi < pane_console.count ] pane_console[ pi ] = ''
             pane_drop_file[ pi ]
             # the text goes now, not on the pane's next load
             if [ pe ]
@@ -10944,6 +11044,13 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        # the navigator's two views
+        if [ ev.target.id == 'nav_list' || ev.target.id == 'nav_icons' ]
+            nav_icons = ev.target.id == 'nav_icons'
+            if [ ux ] ux.restyle = true
+            force_update[]
+            ev.no_default = true
+            return
         # the console's toolbar
         if [ ev.target.id == 'con_dbg' || ev.target.id == 'con_app'
              || ev.target.id == 'con_global' ]
@@ -11410,14 +11517,35 @@ element orbiter : trinity # implements compiler
         if [
             ev.target.id == 'properties'
             || ev.target.id == 'instruments'
-            || ev.target.id == 'callstack' ]
+            || ev.target.id == 'callstack'
+            || ev.target.id == 'record' ]
             wp : bool [ props_open ]
             wi : bool [ instr_open ]
             ws : bool [ stack_open ]
+            wr : bool [ rec_open ]
             props_open = (ev.target.id == 'properties') && !wp
             instr_open = (ev.target.id == 'instruments') && !wi
             stack_open = (ev.target.id == 'callstack') && !ws
+            rec_open   = (ev.target.id == 'record') && !wr
             if [ ev.target ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        # the record tab: its source, then the button
+        if [ ev.target.id == 'rec_self' || ev.target.id == 'rec_app' ]
+            rec_pick = (ev.target.id == 'rec_app') ? 1 : 0
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ ev.target.id == 'rec_go' ]
+            if [ rec_iid != -2 ]
+                rec_stop[]
+            el
+                ed9 : Editor pane_at[ active_pane ]
+                av9 : AppView (ed9) ? ed9.run_view : null
+                up9 : bool [ av9 && av9.slot >= 0 && !av9.ended
+                             && !av9.held ]
+                rec_start[ (rec_pick == 1 && up9) ? av9 : null ]
+            if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         # the callstack's one toggle: list frames with no known source,
@@ -12150,6 +12278,13 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
                 pending_held     = -1
                 pending_held_src = null
+        if [ console_pane >= 0 ]
+            ced : Editor pane_at[ console_pane ]
+            if [ ced ]
+                ced.host_module[ 'console', null,
+                                 '--folder {console_dir}' ]
+                console_pane = -1
+                console_dir  = null
         if [ pending_run >= 0 ]
             red : Editor pane_at[ pending_run ]
             if [ red ]
@@ -12225,10 +12360,6 @@ element orbiter : trinity # implements compiler
 
         if [ instances ]
             for [ av8: AppView ] in instances
-                if [ av8.props && av8.props.count > 0 && av8.app_mod ]
-                    if [ !module_props ]
-                        module_props = map string [string] []
-                    module_props[ av8.app_mod ] = av8.props
                 # the app changed its own display: the pane and panel
                 # follow it
                 if [ av8.disp_pending >= 0 ]
@@ -13263,9 +13394,10 @@ element orbiter : trinity # implements compiler
         # colour, so the state reads at a glance; thinking: blue
         icon : string [ (rec) ? 'orbiter4_red'
             : ((thinking) ? 'orbiter4_blue' : 'orbiter4') ]
-        # its slideout (the exchange) out: the menus' lit fill, as a
-        # menu name's
-        xup : bool [ ux && ux.shot_ask && !ux.agent_min ]
+        # its slideout (the exchange) out, or the agent view shown:
+        # the menus' lit fill, as a menu name's
+        xup : bool [ (ux && ux.shot_ask && !ux.agent_min)
+            || (home_tab == 'agent' && home_seen[]) ]
         tint : rgba [ (rec) ? '#ff3a3a33'
             : ((thinking) ? '#3a8aff40'
             : ((xup) ? '#4d3dbcaa' : '#0000')) ]
@@ -13600,6 +13732,7 @@ element orbiter : trinity # implements compiler
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
             || act == 'orb.build' || act == 'orb.clean'
+            || act == 'orb.console'
 
     # the pane's controls under the app's own menu (its first): a
     # pane added, this one closed, git, its views
@@ -13665,8 +13798,12 @@ element orbiter : trinity # implements compiler
                 at = (q > f + 1 && menu_items[ q - 1 ].rule) ? q - 1 : q
                 break
         add : vec TrayEntry []
+        # with the app's own entries: a shell where its files really are
+        if [ app_place[] ]
+            add.push[ own_entry[ 'Console', 'orb.console', 1 ] ]
         # a line before them, unless one is there already
-        if [ at > f + 1 && !menu_items[ at - 1 ].rule ]
+        if [ add.count > 0
+             || (at > f + 1 && !menu_items[ at - 1 ].rule) ]
             add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
                 action: 'orb.prule' ] ]
         ed : Editor pane_at[ active_pane ]
@@ -13881,11 +14018,7 @@ element orbiter : trinity # implements compiler
                 return rv.app_title
             if [ rv.app_address && rv.app_address.count > 0 ]
                 return rv.app_address
-            ar : string (rv.arg_text && rv.arg_text.count > 0)
-                ? rv.arg_text : default_arg_of[ rv.module_args ]
-            if [ ar.count > 0 ]
-                if [ ar.index_of[ '://' ] > 0 ] return ar
-                return (path [ ar ]).filename[]
+            return ''
         if [ ed && ed.src ] return ed.src.filename[]
         pv : element pane_view[ pi ]
         if [ !pv || !(pv inherits EditorView) ] return ''
@@ -14027,7 +14160,7 @@ element orbiter : trinity # implements compiler
         return ux.shift && dc && dc.hovered
 
     # the session the console shows: the debugger's; else the selected
-    # instance's (all, by the toolbar's Global), else all
+    # instance's (all, by the toolbar's System), else all
     func console_sid [] -> string
         if [ con_dbg ]
             dbg_log[]
@@ -14139,7 +14272,7 @@ element orbiter : trinity # implements compiler
         t['con_scope'] = AltTab [
             buttons: vec string [] [ 'con_app', 'con_global' ],
             icon_ids: vec string [] [ '_text', '_text' ],
-            labels: vec string [] [ 'App', 'Global' ],
+            labels: vec string [] [ 'App', 'System' ],
             label_font: 'fonts/BarlowCondensed-Regular.ttf',
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
@@ -15515,6 +15648,7 @@ element orbiter : trinity # implements compiler
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
         mirror_source[ w ]
+        rec_tick[]
         if [ !set_applied ]
             set_applied = true
             apply_settings[ w ]

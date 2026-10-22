@@ -294,6 +294,8 @@ element NavRows
     intern ficons      : FileIcons
     public  nav_hover_fill : rgba [ '#d25cc826' ]
     public  nav_hover_edge : rgba [ '#e07ad899' ]
+    # the row a press chose: its release there opens it
+    intern  pressed : i32 [ -1 ]
 
     func row_h [] -> f32
         return 30.0
@@ -335,9 +337,21 @@ element NavRows
     public func on_press [ ev: Event ]
         view : dialog[]
         if [ !view ] return
+        i : i32 [ row_of[ ev.mouse.pos.y ] ]
+        pressed = i
+        view.at = i
+        pristine = false
+        ev.no_propagation = true
+
+    public func on_release [ ev: Event ]
+        view : dialog[]
+        was : i32 [ pressed ]
+        pressed = -1
+        if [ !view ] return
         list : view.hits[]
         i : i32 [ row_of[ ev.mouse.pos.y ] ]
-        if [ i >= 0 && i < list.count ] view.pick[ list[ i ] ]
+        if [ i == was && i >= 0 && i < list.count ]
+            view.pick[ list[ i ] ]
         ev.no_propagation = true
 
     func icon_of [ h: FindHit ] -> SVGModel

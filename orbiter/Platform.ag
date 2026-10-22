@@ -726,6 +726,10 @@ element PlatformView
             tz = pp.z
             td = max[ 2.2 * fl * bounds.h / (fw * 0.9), 2.2 * fl ]
             te = 0.85
+            # at work: the camera closes in, 40% nearer, from above
+            if [ !orb.home_waiting[ names[ pick ] ] ]
+                td *= 0.6
+                te = 1.25
         if [ cam_d <= 0.0 ]
             cam_x = tx
             cam_z = tz
