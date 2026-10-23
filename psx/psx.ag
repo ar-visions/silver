@@ -50,7 +50,8 @@ element psx : trinity
     public  width    : i32    [ 960 ]
     public  height   : i32    [ 720 ]
     public  title    : string [ 'psx' ]
-    expect default [ Live ] disc : resource
+    # a disc is its folder: the .cue in it is found
+    expect default [ Live, Directory ] disc : resource
         # a new disc while it runs: the same instance boots it next
         # frame; the old machine's sound stops first
         if [ booted ] unboot[]
@@ -87,15 +88,17 @@ element psx : trinity
         failed = false
         frames = 0
 
-    # the host's menu: kept beside the disc, taken on the next frame
+    # the host's menu: taken on the next frame
     public [ Action ] func save_state []
         save_req = true
 
     public [ Action ] func load_state []
         load_req = true
 
+    # in psx's own storage, by the disc's name: its folder may be a
+    # read only share
     func state_file [] -> path
-        return disc.change_ext[ 'state' ]
+        return path '{path.path_storage[ 'psx' ]}/{disc.stem[]}.state'
 
     # every device, in one order both ways
     func state_all [ s: StateIO ]
@@ -117,7 +120,7 @@ element psx : trinity
         bus.spu.state_io[ s ]
         bus.gpu.state_io[ s ]
 
-    # the whole machine into <disc>.state
+    # the whole machine into the disc's state file
     func state_save [] -> bool
         s : StateIO [ saving: true ]
         state_all[ s ]
@@ -188,6 +191,9 @@ element psx : trinity
         log 'psx: BIOS loaded'
         cue : '{disc}'
         if [ !bus.cd.insert[ cue ] ] log 'psx: no disc read from {cue}'
+        el
+            vol : bus.cd.disc.volume_name[]
+            if [ vol.count > 0 ] set_title[ vol ]
         sound = AudioOut [ sample_rate: 44100, channels: 2,
                            buffer_size: SOUND_BLOCK ]
         if [ sound.open[] ]

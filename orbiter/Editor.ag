@@ -1236,7 +1236,7 @@ ResourceView AppView
                                            h: ch ],
                     0.0, 0.0, cw / fitw, ch / fith ]
         # no frame yet: say what it is doing instead of drawing nothing
-        if [ ended || paused || !have_frame ]
+        if [ ended || halted[] || !have_frame ]
             overlay[ cv, bounds ]
 
     func render [ cv: Canvas, bounds: rect ]
@@ -1267,10 +1267,16 @@ ResourceView AppView
 
     # one word for the instance chip; empty once the app is up and
     # drawing
+    # stopped: under a debugger, while it holds the app at a stop;
+    # else the host's pause
+    func halted [] -> bool
+        if [ debugger && debugger.active ] return !debugger.running
+        return paused
+
     func status_word [] -> string
         if [ held ]      return 'not running'
         if [ ended ]     return 'exited'
-        if [ paused ]    return 'paused'
+        if [ halted[] ]  return 'paused'
         if [ attaching ] return 'attaching'
         st8 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         if [ st8 == 1 ]  return 'compiling'
@@ -1286,7 +1292,7 @@ ResourceView AppView
         if [ ended ]
             msg = (failed[]) ? '{note} — F5 or play to run again'
                 : '{note} — F5 or click to restart'
-        el [ paused ]
+        el [ halted[] ]
             msg = (note && note.count > 0) ? '{note} — F5 to relaunch' : 'paused — F8 or click to resume'
         el [ attaching ]
             msg = 'attaching debugger to {app_mod}…'
@@ -2592,8 +2598,9 @@ Layer EditorLayer
                 cv.stroke_color[ rgba['#ff44'] ]
                 cv.stroke_width[ 1.0 ]
                 cv.stroke_offset[ -0.5 ]
-                cv.rect_to[ bounds.x + 1.0, yg + 1.0,
-                            bounds.w - rin - 2.0, lh - 2.0 ]
+                # the filled row's own box (glow_row): one shape
+                cv.rect_to[ bounds.x + lin + 8.0, yg + 1.0,
+                            bounds.w - lin - rin - 32.0, lh - 2.0 ]
                 cv.paint[ ]
                 cv.stroke_width[ 0.0 ]
                 cv.stroke_offset[ 0.0 ]
@@ -3677,6 +3684,8 @@ Control Editor
     intern static export_lib      : map string[string]
     # scheme (https) -> the module that exported it
     intern static export_protocol : map string[string]
+    # a program module's run line by module (featured/blender: blender)
+    intern static export_run      : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
@@ -5303,6 +5312,7 @@ Control Editor
         export_ftype    = map string[string] []
         export_lib      = map string[string] []
         export_protocol = map string[string] []
+        export_run      = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{root}/install/export'
@@ -5318,6 +5328,12 @@ Control Editor
             if [ !ftext ] continue
             for [ pr: string ] in export_names[ ftext, 'protocols:' ]
                 export_protocol[ pr ] = mod
+            # a program's module: how its files run (the program, then
+            # the file)
+            rl : string ''
+            for [ rw: string ] in export_names[ ftext, 'run: [' ]
+                rl = (rl.count > 0) ? '{rl} {rw}' : rw
+            if [ rl.count > 0 ] export_run[ mod ] = rl
             ix : ftext.index_of[ 'extensions:' ]
             if [ ix < 0 ] continue
             # the line: 'ext' [: filetype], 'ext' ... to its end
@@ -5450,10 +5466,27 @@ Control Editor
         if [ ft && ft == 'binary' ] return binary_view_name[]
         return 'editor'
 
+    # a file a program module claims: its run line with the file, once
+    # the program is installed (install/bin); else null
+    func program_for [ p: path ] -> string
+        ext : file_ext[ p ]
+        if [ ext.count == 0 ] return null
+        ensure_export_registry[]
+        mod : string export_registry[ ext ]
+        if [ !mod || !export_run.contains[ mod ] ] return null
+        rl : string export_run[ mod ]
+        sp : i32 [ rl.index_of[ ' ' ] ]
+        pg : string [ (sp < 0) ? rl : rl.mid[ 0, sp ] ]
+        rest : string [ (sp < 0) ? '' : rl.mid[ sp, rl.count - sp ] ]
+        bin : path '{path.path_startup[]}/install/bin/{pg}'
+        if [ !bin.exists[] ] return null
+        return '{bin}{rest} "{p.absolute[]}"'
+
     # default action's name: peer handler module or hosted element
     func default_view_for [ p: path ] -> string
         hm : handler_module_for[ p ]
         if [ hm ] return hm
+        if [ program_for[ p ] ] return 'program'
         ext : file_ext[ p ]
         if [ ext.count == 0 ] return null
         ensure_view_registry[]
@@ -5496,7 +5529,10 @@ Control Editor
     public func open_program [ prog: string, display: string,
                                fonts: string, bus: string ]
         fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
-        bl : (bus.count > 0) ? '--bus {bus} ' : ''
+        # paths, so a bound console is handed each one read only
+        bp : string (bus.starts_with[ 'unix:path=' ]) ? bus.mid[ 10,
+            bus.count - 10 ] : bus
+        bl : (bp.count > 0) ? '--bus {bp} ' : ''
         # orbiter's socket: an address the program opens comes back
         # here (orbiter's xdg-open), shown in aura
         so : cstr getenv[ 'ORBITER_SOCKET' ]
@@ -5522,8 +5558,10 @@ Control Editor
         nv.viewer = true
         nv.module_args = args
         nv.host_hz = (ux) ? ux.refresh_hz[] : 60
-        nv.start[]
         orb : cast orbiter [ ux.app_object ]
+        # the menu's Debug: in debug mode from its start
+        if [ orb && orb.inst_debug_next ] nv.debug_build = true
+        nv.start[]
         if [ orb ] orb.add_instance[ nv ]
         run_view  = nv
         app_view  = true
@@ -5879,8 +5917,10 @@ Control Editor
         mounted = key
         close_view[]
         # a hosted handler (the markdown viewer) gives way to any other
-        # view; a program run from the apps view (no document) stays
-        dv : bool [ run_view && run_view.viewer && run_view.doc ]
+        # view; a program run from the apps view (no document) stays,
+        # and so does one whose own source this is (its code)
+        dv : bool [ run_view && run_view.viewer && run_view.doc
+                    && !(src && owns_src[ run_view, src ]) ]
         if [ want.compare[ 'editor' ] == 0 ]
             if [ dv ] close_app[]
             app_view = false
@@ -5917,6 +5957,14 @@ Control Editor
             scroll_target = 0.0
             content_h     = 0.0
             saved_scroll  = 0.0
+            return
+        # a program module's file: the program runs on it in this pane
+        if [ want == 'program' ]
+            pl : string program_for[ src ]
+            orbp : cast orbiter [ ux.app_object ]
+            if [ pl && orbp ]
+                if [ run_view && run_view.viewer ] close_app[]
+                orbp.run_line[ pl, pane_index ]
             return
         # a peer module owns this view: it runs as its own process
         lines = list string []
@@ -6094,8 +6142,10 @@ Control Editor
             view_name = ''
             # a debugger stepping into another module moves the pane;
             # the app stays. a document's viewer goes with its document
-            # (a program run from the apps view has none: it stays)
-            if [ run_view && run_view.viewer && run_view.doc ]
+            # (a program run from the apps view has none: it stays),
+            # but not for its own module's source: that is its code
+            if [ run_view && run_view.viewer && run_view.doc && src
+                 && !owns_src[ run_view, src ] ]
                 close_app[]
             # a module picked from the nav list lets go of the old
             # module's instance (it keeps running); an instance stopped

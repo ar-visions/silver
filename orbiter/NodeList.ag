@@ -113,6 +113,8 @@ Layer NodeLayer
     public text_color  : string
     # left-column width in px; >0 switches rows to two aligned columns
     public col_w       : f32
+    # the line between the two columns
+    public div_color   : string
 
     func draw [ cv: Canvas ]
         nl : NodeList[ parent ]
@@ -183,7 +185,7 @@ Layer NodeLayer
                     Overflow.clip, null ]
         # one solid divider down the whole column, not a dash per row
         if [ col_w > 0.0 ]
-            cv.fill_color[ '#ffffff26' ]
+            cv.fill_color[ (div_color) ? div_color : '#ffffff26' ]
             cv.stroke_width[ 0.0 ]
             cv.rect_to[ x0 + 8.0 + col_w, bounds.y, 1.0, bounds.h ]
             cv.paint[]
@@ -271,6 +273,23 @@ NodeList Callstack
 
     func render [] -> Elements
         return null
+
+# the call stack in the console: on the console's own ground
+Callstack ConStack
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.content: NodeLayer
+            area: l4px t2px r4px b2px
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            row_spacing: 1.2
+            text_color: #cfe
+            col_w: 160
+            div_color: #fff1
+        layers.edge:
+            fill_color: #fff1
+            area: l0 t0 w1px b0
+    }
 
 # the members list's header: the type's name and where it lives
 element TypeHead
@@ -1587,7 +1606,6 @@ Control InstancePanel
                 t['launch_panel'] = LaunchPanel [
                     spec: sp9, args: ar9, inst: (av9) ? av9.iid : -1,
                     live_vals: lv, dbg_row: av9 != null,
-                    dbg_on: av9 && av9.debug_build,
                     cov_on: av9 && av9.cov_build, pid_val: pd9,
                     area: Region [ 'l0 t{py9}px r0 b{mh}px' ] ]
         in9 : bool [ av9 && orb.instr_open && av9.instr_names ]

@@ -812,8 +812,12 @@ Layer CommitLayer
         # control row: reveal-all pill left, totals + make commit right
         cy : f32 [ yb + f32[ trs ] * lh ]
         if [ trs > 0 ]
-            rvl : string '{nfl} files changed'
-            rvw : f32 [ f32[ rvl.count ] * mtm.w + 16.0 * u ]
+            # what the commit takes: chosen files and their lines
+            tot9 : vec i32 orb.commit_totals[]
+            rvl : string '{tot9[ 0 ]} files changed'
+            # every width here is its words measured: the font is
+            # proportional
+            rvw : f32 [ cv.measure_text[ rvl ].w + 16.0 * u ]
             lhov : bool [ cb.hov_ctl == 0 ]
             cv.save[ ]
             cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
@@ -833,17 +837,18 @@ Layer CommitLayer
             # button that dodges anything sequenced before it
             rhov : bool [ cb.hov_ctl == 1 ]
             lbl : string [ (open9) ? 'cancel' : 'make commit' ]
-            lw9 : f32 [ f32[ lbl.count ] * mtm.w ]
-            as9 : string '+{orb.git_snap.adds}'
-            ds : string '-{orb.git_snap.dels}'
+            lw9 : f32 [ cv.measure_text[ lbl ].w ]
+            as9 : string '+{tot9[ 1 ]}'
+            ds : string '-{tot9[ 2 ]}'
+            asw : f32 [ cv.measure_text[ as9 ].w ]
+            dsw : f32 [ cv.measure_text[ ds ].w ]
             asx : f32 [ x0 + rvw + 16.0 * u ]
-            dsx : f32 [ asx + f32[ as9.count + 1 ] * mtm.w ]
+            dsx : f32 [ asx + asw + mtm.w ]
             bw : f32 [ lw9 + 22.0 * u ]
             cxc : f32 [
                 x0 + (bounds.x + bounds.w - 24.0 * u - x0 - bw) * 0.5 ]
-            mnx : f32 [ dsx + f32[ ds.count ] * mtm.w + 16.0 * u ]
+            mnx : f32 [ dsx + dsw + 16.0 * u ]
             bx9 : f32 [ (cxc > mnx) ? cxc : mnx ]
-            lbx : f32 [ bx9 + 11.0 * u ]
             cb.rx0 = bx9 - bounds.x
             cb.rx1 = bx9 + bw - bounds.x
             # borderless, same 26px height as the create buttons
@@ -858,16 +863,12 @@ Layer CommitLayer
             cv.restore[ ]
             cv.fill_color[ rgba['#6a9955'] ]
             cv.draw_text[ as9,
-                rect [ x: asx, y: cy,
-                       w: f32[ as9.count ] * mtm.w + 4.0 * u,
-                       h: lh ],
+                rect [ x: asx, y: cy, w: asw + 4.0 * u, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
             cv.fill_color[ rgba['#e06c75'] ]
             cv.draw_text[ ds,
-                rect [ x: dsx, y: cy,
-                       w: f32[ ds.count ] * mtm.w + 4.0 * u,
-                       h: lh ],
+                rect [ x: dsx, y: cy, w: dsw + 4.0 * u, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
             # the last send's result, after the totals, while closed
@@ -885,8 +886,8 @@ Layer CommitLayer
                 (open9) ? rgba['#ffd9d2']
                 : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
             cv.draw_text[ lbl,
-                rect [ x: lbx, y: cy, w: lw9 + 4.0 * u, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                rect [ x: bx9, y: cy, w: bw, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null ]
             # divider under the whole band, 4px clear of the button
             cv.fill_color[ rgba['#fff2'] ]
@@ -944,7 +945,9 @@ Layer CommitLayer
                 : ((orb.shift_down) ? 'commit' : 'commit & push')) ]
             gw : f32 [ f32[ gl.count ] * mtm.w + 22.0 * u ]
             gx : f32 [ bounds.x + bounds.w - 24.0 * u - gw ]
-            ghov : bool [ cb.hov_ctl == 2 ]
+            # no file chosen: nothing to commit, the button dim
+            none9 : bool [ orb.commit_chosen[] == 0 ]
+            ghov : bool [ cb.hov_ctl == 2 && !none9 ]
             cb.gx0 = gx - bounds.x
             cb.gx1 = gx + gw - bounds.x
             steps : vec string [] [ 'reading the repository',
@@ -957,6 +960,8 @@ Layer CommitLayer
             el [ st && st.error && st.error.count > 0 ]
                 sline = st.error
                 scol = rgba['#e06c75']
+            el [ none9 ]
+                sline = 'no files chosen'
             el [ st ]
                 rp9 : path '{st.repo}'
                 nm9 : string [ (st.full && st.full.count > 0) ? st.full
@@ -979,11 +984,13 @@ Layer CommitLayer
             cv.fill_color[ (ghov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ -0.5 ]
-            cv.stroke_color[ (ghov) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+            cv.stroke_color[ (ghov) ? rgba['#8fd0ff']
+                : ((none9) ? rgba['#fff1'] : rgba['#fff3']) ]
             cv.rect_to[ gx, gy + 5.0 * u, gw, 26.0 * u ]
             cv.paint[ ]
             cv.restore[ ]
-            cv.fill_color[ (ghov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+            cv.fill_color[ (ghov) ? rgba['#ffffff']
+                : ((none9) ? rgba['#9a94b055'] : rgba['#9a94b0']) ]
             cv.draw_text[ gl,
                 rect [ x: gx, y: gy, w: gw, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
@@ -1434,6 +1441,9 @@ element CommitView
     # hovered browse-list display row
     mutable hov_list : i32 [ -1 ]
     mutable chip_hov : i32 [ -1 ]
+    # the search text the list last showed: a new one starts it at
+    # its top, at once
+    mutable seen_find : string
     # THIS view's commit form: no tab ever sees another's state
     mutable commit_open : bool
     mutable commit_text : vec string
@@ -1654,6 +1664,7 @@ element CommitView
             for [ f: string ] in o.git_snap.files
                 if [ f.starts_with[ pre ] && !o.commit_skips[ f ] ]
                     fs.push[ f.mid[ pre.count, f.count - pre.count ] ]
+        # no file chosen: the button is dim and does nothing
         if [ fs.count == 0 ] return
         ct.start_send[ msg, fs, !o.shift_down ]
         pristine = false
@@ -1661,6 +1672,13 @@ element CommitView
     func render [] -> Elements
         u : f32 ux_unit[ ux ]
         orb7 : cast orbiter [ (ux) ? ux.app_object : null ]
+        fq : string [ (orb7 && orb7.find_text) ? orb7.find_text : '' ]
+        if [ !seen_find || seen_find != fq ]
+            seen_find   = fq
+            scroll.y    = 0.0
+            scroll_goal = 0.0
+            scroll_anim = false
+            hov_list    = -1
         ev7 : EditorView view[]
         ed7 : Editor (ev7) ? ev7.text_of[] : null
         # the file's views are the system bar's

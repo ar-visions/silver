@@ -145,7 +145,6 @@ forward(evar)
     M(A,U,i, prop,     public,  map,                      libs) \
     M(A,U,i, prop,     public,  map,                      frameworks) \
     M(A,U,i, prop,     public,  map,                      user_type_ids) \
-    M(A,U,i, prop,     public,  map,                      prop_defaults) \
     M(A,U,i, prop,     public,  array,                    lexical) \
     M(A,U,i, prop,     public,  bool,                     is_Au_import) \
     M(A,U,i, prop,     public,  bool,                     in_ref) \

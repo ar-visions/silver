@@ -5,6 +5,7 @@
 //#include <features.h>
 #include <lldb/API/LLDB.h>
 #include <mutex>
+#include <dlfcn.h>
 #include <import>
 #undef   read
 #include <sys/types.h>
@@ -53,6 +54,8 @@ struct dbg_state {
     // parked: the owner is reloading and its callbacks point into an image
     // being unloaded. the poll thread delivers nothing until dbg_adopt
     bool             parked      = false;
+    // steps taken on their own to get a step back into .ag code
+    int              auto_steps  = 0;
     std::mutex       deliver;
 };
 #define S(d)  ((dbg_state*)(d)->impl)
@@ -80,6 +83,122 @@ static void dbg_deliver(dbg debug, callback cb, Au arg) {
     std::lock_guard<std::mutex> g(S(debug)->deliver);
     if (S(debug)->parked || !cb) return;
     cb((Au)debug->target, arg);
+}
+
+// a frame in a silver module's code with no line info (a release
+// build): its module's source, from <stem>.source beside the library
+// (its first line the module's main .ag; the rest its other files),
+// at the function's own func line when found by name, else line 1
+static bool dbg_module_src(lldb::SBFrame& fr, char* out, size_t n,
+                           u32* line) {
+    lldb::SBFileSpec ms = fr.GetModule().GetFileSpec();
+    const char* fn = ms.GetFilename();
+    const char* dir = ms.GetDirectory();
+    if (!fn || !dir) return false;
+    char stem[512];
+    size_t fl = strlen(fn);
+    // a module's library only: the app binary is the host (silver-host.c,
+    // which has its own lines), and its _start is no one's source
+    if (strncmp(fn, "lib", 3) != 0 || fl <= 6 ||
+        strcmp(fn + fl - 3, ".so") != 0)
+        return false;
+    snprintf(stem, sizeof(stem), "%.*s", (int)(fl - 6), fn + 3);
+    char sp[1024];
+    snprintf(sp, sizeof(sp), "%s/%s.source", dir, stem);
+    FILE* lf = fopen(sp, "r");
+    if (!lf) return false;
+    // the function's last word: media_app.frame or media_app_frame -> frame
+    const char* fnm = fr.GetFunctionName();
+    char want[256]; want[0] = 0;
+    if (fnm) {
+        const char* w = fnm;
+        for (const char* c = fnm; *c; c++)
+            if (*c == '.' || *c == '_' || *c == ':') w = c + 1;
+        snprintf(want, sizeof(want), "func %s ", w);
+    }
+    char file[1024];
+    bool first = true;
+    *line = 1;
+    while (fgets(file, sizeof(file), lf)) {
+        size_t k = strlen(file);
+        while (k && (file[k-1] == '\n' || file[k-1] == '\r')) file[--k] = 0;
+        if (k < 3 || strcmp(file + k - 3, ".ag") != 0) continue;
+        if (first) { snprintf(out, n, "%s", file); first = false; }
+        if (!want[0]) break;
+        FILE* af = fopen(file, "r");
+        if (!af) continue;
+        char row[4096];
+        u32 ln = 0;
+        bool hit = false;
+        while (fgets(row, sizeof(row), af)) {
+            ln++;
+            const char* r = row;
+            while (*r == ' ' || *r == '\t') r++;
+            if (strncmp(r, "public ", 7) == 0) r += 7;
+            if (strncmp(r, want, strlen(want)) == 0) { hit = true; break; }
+        }
+        fclose(af);
+        if (hit) {
+            snprintf(out, n, "%s", file);
+            *line = ln;
+            break;
+        }
+    }
+    fclose(lf);
+    return !first;
+}
+
+// the machine code of the function holding fr's pc, one instruction
+// a line, written to install/tmp/asm/<function>.s; the pc's line
+static bool dbg_asm_file(dbg debug, lldb::SBFrame& fr, char* out,
+                         size_t n, u32* line) {
+    lldb::SBTarget tg = S(debug)->target;
+    lldb::addr_t   pc = fr.GetPC();
+    lldb::SBInstructionList il;
+    lldb::SBFunction fn = fr.GetFunction();
+    lldb::SBSymbol   sy = fr.GetSymbol();
+    if (fn.IsValid())      il = fn.GetInstructions(tg);
+    else if (sy.IsValid()) il = sy.GetInstructions(tg);
+    if (!il.IsValid() || il.GetSize() == 0)
+        il = tg.ReadInstructions(fr.GetPCAddress(), 64);
+    if (!il.IsValid() || il.GetSize() == 0) return false;
+    // install/tmp beside install/build, where this library lives
+    Dl_info di;
+    if (!dladdr((void*)&dbg_asm_file, &di) || !di.dli_fname) return false;
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s", di.dli_fname);
+    char* sl = strrchr(dir, '/');
+    if (!sl) return false;
+    *sl = 0;
+    char ad[1100];
+    snprintf(ad, sizeof(ad), "%s/../tmp/asm", dir);
+    mkdir(ad, 0755);
+    const char* nm = fr.GetFunctionName();
+    char safe[200];
+    snprintf(safe, sizeof(safe), "%s", nm ? nm : "code");
+    for (char* c = safe; *c; c++)
+        if (*c == '/' || *c == ' ' || *c == '(' || *c == ')' ||
+            *c == '<' || *c == '>' || *c == ',' || *c == '*') *c = '_';
+    snprintf(out, n, "%s/%s.s", ad, safe);
+    FILE* af = fopen(out, "w");
+    if (!af) return false;
+    const char* mn = fr.GetModule().GetFileSpec().GetFilename();
+    fprintf(af, "# %s in %s\n", nm ? nm : "?", mn ? mn : "?");
+    *line = 1;
+    size_t cnt = il.GetSize();
+    for (size_t i = 0; i < cnt; i++) {
+        lldb::SBInstruction in = il.GetInstructionAtIndex(i);
+        lldb::addr_t la = in.GetAddress().GetLoadAddress(tg);
+        const char* op = in.GetMnemonic(tg);
+        const char* ar = in.GetOperands(tg);
+        const char* cm = in.GetComment(tg);
+        fprintf(af, "%llx  %-8s %s%s%s\n", (unsigned long long)la,
+                op ? op : "", ar ? ar : "",
+                (cm && cm[0]) ? "   ; " : "", (cm && cm[0]) ? cm : "");
+        if (la == pc) *line = (u32)(i + 2);
+    }
+    fclose(af);
+    return true;
 }
 
 DBG_API Au dbg_poll(dbg debug) {
@@ -192,10 +311,51 @@ DBG_API Au dbg_poll(dbg debug) {
                     (unsigned long long)pa.GetFileAddress(), f0.GetFunctionName() ? f0.GetFunctionName() : "?");
             }
             fflush(stdout);
+            // a step stops wherever it lands with source on this disk:
+            // .ag code, the host's C (silver-host.c), any of it, so the
+            // whole stack can be walked. one in code with no source here
+            // (libc, the dynamic linker) steps back out to its caller
+            bool has_src = false;
+            if (line_entry.IsValid() && line > 0) {
+                FILE* sf = fopen(file_path, "r");
+                if (sf) { has_src = true; fclose(sf); }
+            }
+            // no line info, but a silver module's code: its source,
+            // so the step shows the module it went into
+            if (is_step && !has_src) {
+                char mp[1024];
+                u32  ml = 1;
+                if (dbg_module_src(frame, mp, sizeof(mp), &ml)) {
+                    source  = f(path, "%s", mp);
+                    line    = ml;
+                    column  = 0;
+                    has_src = true;
+                }
+            }
+            // assembly: every stop is its function's machine code
+            if (debug->asm_view && (is_step || !is_sig)) {
+                char ap[1024];
+                u32  al = 1;
+                lldb::SBFrame f0 = thread.GetFrameAtIndex(0);
+                if (dbg_asm_file(debug, f0, ap, sizeof(ap), &al)) {
+                    source  = f(path, "%s", ap);
+                    line    = al;
+                    column  = 0;
+                    has_src = true;
+                    is_ag   = true;
+                }
+            }
+            if (is_step && !has_src && S(debug)->auto_steps < 200) {
+                S(debug)->auto_steps++;
+                thread.StepOut();
+                continue;   // running stays true; poll catches the step
+            }
+            if (is_step && has_src) is_ag = true;
             if ((is_step || is_sig) && !is_ag) {
                 S(debug)->process.Continue();   // running stays true; poll catches next stop
                 continue;
             }
+            S(debug)->auto_steps = 0;
             debug->running = false;
             cursor cur = construct(cursor,
                 debug,  debug,
@@ -427,24 +587,125 @@ static bool dbg_at_stop(dbg debug) {
     return process.IsValid() && process.GetState() == lldb::eStateStopped;
 }
 
+// the frame the pane shows: after a pause it is the .ag frame up the
+// stack, not frame 0 (a libc sleep); 0 when they are the same
+static uint32_t dbg_shown_frame(lldb::SBThread& thread) {
+    lldb::SBFrame sel = thread.GetSelectedFrame();
+    return sel.IsValid() ? sel.GetFrameID() : 0;
+}
+
+// a step from a frame above frame 0: the call it is inside (on the
+// shown line) finishes, and the step stops back in the shown frame.
+// stepping frame 0 there stepped libc, ended outside .ag code and ran on
+static bool dbg_finish_inner(lldb::SBThread& thread) {
+    uint32_t ix = dbg_shown_frame(thread);
+    if (ix == 0) return false;
+    lldb::SBFrame inner = thread.GetFrameAtIndex(ix - 1);
+    thread.StepOutOfFrame(inner);
+    return true;
+}
+
 DBG_API none dbg_step_into(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
+    S(debug)->auto_steps = 0;
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
+    if (dbg_finish_inner(thread)) return;
+    // an instruction, into a call (code with no source too)
+    if (debug->asm_view) { thread.StepInstruction(false); return; }
     thread.StepInto();
 }
 
 DBG_API none dbg_step_over(dbg debug) {
     if (!dbg_at_stop(debug)) return;
     debug->running = true;   // re-arm dbg_poll to catch the step's stop
+    S(debug)->auto_steps = 0;
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
+    if (dbg_finish_inner(thread)) return;
+    if (debug->asm_view) { thread.StepInstruction(true); return; }
     thread.StepOver();
+}
+
+// the stop delivered again: its source, or its machine code
+DBG_API none dbg_show(dbg debug) {
+    if (!dbg_at_stop(debug)) return;
+    lldb::SBThread thread = S(debug)->process.GetSelectedThread();
+    lldb::SBFrame  fr = (debug->asm_view) ? thread.GetFrameAtIndex(0)
+                                          : thread.GetSelectedFrame();
+    char fp[1024]; fp[0] = 0;
+    u32  ln = 0, col = 0;
+    if (debug->asm_view && dbg_asm_file(debug, fr, fp, sizeof(fp), &ln))
+        col = 0;
+    else {
+        // the nearest frame from the shown one up with its lines
+        uint32_t nf = thread.GetNumFrames();
+        for (uint32_t fi = fr.GetFrameID(); fi < nf && !fp[0]; ++fi) {
+            lldb::SBFrame     cf = thread.GetFrameAtIndex(fi);
+            lldb::SBLineEntry le = cf.GetLineEntry();
+            if (le.IsValid() && le.GetLine() > 0) {
+                le.GetFileSpec().GetPath(fp, sizeof(fp));
+                FILE* sf = fopen(fp, "r");
+                if (sf) {
+                    fclose(sf);
+                    ln  = le.GetLine();
+                    col = le.GetColumn();
+                    thread.SetSelectedFrame(fi);
+                    break;
+                }
+                fp[0] = 0;
+            }
+        }
+        // none with lines: a silver module's own source
+        for (uint32_t fi = fr.GetFrameID(); fi < nf && !fp[0]; ++fi) {
+            lldb::SBFrame cf = thread.GetFrameAtIndex(fi);
+            if (dbg_module_src(cf, fp, sizeof(fp), &ln))
+                thread.SetSelectedFrame(fi);
+        }
+    }
+    if (!fp[0]) return;
+    cursor cur = construct(cursor,
+        debug,  debug,
+        source, f(path, "%s", fp),
+        line,   ln,
+        column, col);
+    dbg_deliver(debug, debug->on_break, (Au)cur);
+}
+
+// a frame above ix with its source on this disk: somewhere a step out
+// can stop (none above main: it returns only as the app quits)
+static bool dbg_caller_has_src(lldb::SBThread& thread, uint32_t ix) {
+    uint32_t nf = thread.GetNumFrames();
+    for (uint32_t fi = ix + 1; fi < nf; ++fi) {
+        lldb::SBFrame fr = thread.GetFrameAtIndex(fi);
+        lldb::SBLineEntry le = fr.GetLineEntry();
+        if (le.IsValid() && le.GetLine() > 0) {
+            char fp[1024]; fp[0] = 0;
+            le.GetFileSpec().GetPath(fp, sizeof(fp));
+            FILE* sf = fopen(fp, "r");
+            if (sf) { fclose(sf); return true; }
+        }
+        // a silver module with no line info still has its source
+        char mp[1024];
+        u32  ml = 1;
+        if (dbg_module_src(fr, mp, sizeof(mp), &ml)) return true;
+    }
+    return false;
 }
 
 DBG_API none dbg_step_out(dbg debug) {
     if (!dbg_at_stop(debug)) return;
-    debug->running = true;   // re-arm dbg_poll to catch the step's stop
     lldb::SBThread thread = S(debug)->process.GetSelectedThread();
+    // out of the shown frame, not of frame 0
+    uint32_t ix = dbg_shown_frame(thread);
+    // the outermost frame with source: nowhere to step out to, it stays
+    if (!dbg_caller_has_src(thread, ix)) return;
+    debug->running = true;   // re-arm dbg_poll to catch the step's stop
+    S(debug)->auto_steps = 0;
+    if (ix > 0) {
+        lldb::SBFrame shown = thread.GetFrameAtIndex(ix);
+        thread.StepOutOfFrame(shown);
+        return;
+    }
     thread.StepOut();
 }
 

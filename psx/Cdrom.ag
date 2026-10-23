@@ -117,6 +117,20 @@ class Disc
         got : i64 [ i64[ fread[ out, 1, SECTOR, f ] ] ]
         return got == i64[ SECTOR ]
 
+    # the ISO 9660 volume name: sector 16, bytes 40..71 of its data
+    public func volume_name [] -> string
+        raw : new u8 [ SECTOR ]
+        if [ !read[ 16, @raw[ 0 ] ] ] return ''
+        name : local i8 [ 33 ]
+        n : i32 [ 0 ]
+        for [ i: i32 0, i < 32, i += 1 ]
+            ch : u8 [ raw[ 24 + 40 + i ] ]
+            if [ ch < 32 || ch > 126 ] break
+            name[ i ] = i8[ ch ]
+            if [ ch != 32 ] n = i + 1
+        name[ n ] = 0
+        return string[ name ]
+
 class Cdrom
     public bus      : Bus
     public disc     : Disc

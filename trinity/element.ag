@@ -730,13 +730,28 @@ class Layer
     mutable text_shift  : f32  [ 0.0 ]
     # the pointer light's reach, a factor of the window's (0 = 1)
     public  near_reach  : f32
+    # an editable field that shows a dot for each character typed
+    public  secret      : bool
+    # where each caret place was drawn, from the text's left
+    mutable col_xs      : vec f32
 
     # a press lands on the text as drawn: after its alignment and scroll
     func hit_col [ ev: Event ] -> i32
         cw    : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
         text  : string [ (parent.edit) ? parent.edit : '' ]
         rel_x : f32 [ ev.mouse.pos.x - text_x ]
-        return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
+        if [ !col_xs || col_xs.count != text.count + 1 ]
+            return clamp[ i32[ round[ rel_x / cw ] ], 0, text.count ]
+        # the caret place nearest the press, as the text was drawn
+        best : i32 [ 0 ]
+        near : f32 [ 1000000.0 ]
+        for [ i: i32 0, i < col_xs.count, i += 1 ]
+            d : f32 [ col_xs[ i ] - rel_x ]
+            if [ d < 0.0 ] d = -d
+            if [ d < near ]
+                near = d
+                best = i
+        return best
 
     func on_press [ ev: Event ]
         if [ parent.sel_col < 0 ] parent.sel_col = 0
@@ -786,13 +801,53 @@ class Layer
         parent.anchor_col = parent.sel_col
         parent.pristine = false
 
+    # the field's own text between the caret and its anchor
+    func selected_text [ text: string ] -> string
+        sc : i32 [ (parent.sel_col < parent.anchor_col)
+            ? parent.sel_col : parent.anchor_col ]
+        ec : i32 [ (parent.sel_col < parent.anchor_col)
+            ? parent.anchor_col : parent.sel_col ]
+        if [ sc < 0 || ec > text.count || sc == ec ] return ''
+        return text.mid[ sc, ec - sc ]
+
     func on_key [ ev: Event ]
         if [ !ev.key.state ] return
         if [ parent.sel_col < 0 ] parent.sel_col = 0
         text : string [ (parent.edit) ? parent.edit : '' ]
         col  : i32 [ parent.sel_col ]
         key  : i32 [ ev.key.unicode ]
-        if [ key == 259 ]
+        mod  : bool [ ev.key.ctrl || ev.key.meta ]
+        w    : Window parent.ux
+        # ctrl/cmd: all, copy, cut, paste (one line: a field)
+        if [ mod && key == 65 ]
+            parent.anchor_col = 0
+            parent.sel_col    = text.count
+        el [ mod && (key == 67 || key == 88) && !secret ]
+            part : string selected_text[ text ]
+            if [ part.count > 0 && w ] w.set_clipboard[ part ]
+            if [ key == 88 ] delete_selection[ text ]
+        el [ mod && key == 86 ]
+            clip : string (w) ? w.get_clipboard[] : null
+            if [ clip ]
+                nl : i32 [ clip.index_of[ '\n' ] ]
+                if [ nl >= 0 ] clip = clip.mid[ 0, nl ]
+            if [ clip && clip.count > 0 ]
+                delete_selection[ text ]
+                text = (parent.edit) ? parent.edit : ''
+                col  = parent.sel_col
+                parent.edit = text.mid[ 0, col ] + clip
+                    + text.mid[ col, text.count - col ]
+                parent.sel_col    = col + clip.count
+                parent.anchor_col = parent.sel_col
+        el [ key == 261 ]
+            if [ !delete_selection[ text ] && col < text.count ]
+                parent.edit = text.mid[ 0, col ]
+                    + text.mid[ col + 1, text.count - col - 1 ]
+            parent.anchor_col = parent.sel_col
+        el [ key == 268 || key == 269 ]
+            parent.sel_col = (key == 268) ? 0 : text.count
+            if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
+        el [ key == 259 ]
             if [ !delete_selection[ text ] ]
                 if [ col > 0 ]
                     parent.edit = text.mid[ 0,
@@ -840,6 +895,12 @@ class Layer
         if [ !cv.font ] return
         etext    : string [ (parent.edit) ? parent.edit : '' ]
         has_edit : bool   [ etext.count > 0 ]
+        # a secret's dots stand one for each character
+        if [ secret && has_edit ]
+            dots : ''
+            for [ i: i32 0, i < etext.count, i += 1 ]
+                dots = '{dots}•'
+            etext = dots
         disp     : string [
             (has_edit) ? etext : ((parent.label) ? parent.label : '') ]
         metrics    : cv.measure_text[ disp ]
@@ -869,7 +930,17 @@ class Layer
 
         # the caret stays in view: the scroll holds while the caret is
         # inside the box, and moves only as far as it takes to show it
-        prefix : string [ (has_edit) ? etext.mid[ 0, col ] : '' ]
+        # a dot is three bytes: the caret counts characters
+        step   : i32 [ (secret && has_edit) ? 3 : 1 ]
+        cb     : i32 [ col * step ]
+        # each caret place's x, measured as it is drawn
+        n      : i32 [ (has_edit) ? etext.count / step : 0 ]
+        col_xs = vec f32 []
+        col_xs.push[ 0.0 ]
+        for [ i: i32 1, i <= n, i += 1 ]
+            px : f32 [ cv.measure_text[ etext.mid[ 0, i * step ] ].w ]
+            col_xs.push[ px ]
+        prefix : string [ (has_edit) ? etext.mid[ 0, cb ] : '' ]
         pm     : cv.measure_text[ prefix ]
         right  : f32 [ bounds.x + bounds.w - ox - 4.0 ]
         left   : f32 [ bounds.x + ox ]
@@ -894,9 +965,13 @@ class Layer
         if [ has_edit && sc != ec ]
             cv.fill_color[ (parent.focused) ? '#264f78' : '#ffffff1c' ]
             cv.stroke_width[ 0.0 ]
-            cv.rect_to[ text_left + f32[sc] * cw,
+            sx : f32 [ (sc < col_xs.count) ? col_xs[ sc ]
+                : f32[ sc ] * cw ]
+            ex : f32 [ (ec < col_xs.count) ? col_xs[ ec ]
+                : f32[ ec ] * cw ]
+            cv.rect_to[ text_left + sx,
                         baseline - metrics.ascent + 2.0,
-                        f32[ec - sc] * cw, fh - 4.0 ]
+                        ex - sx, fh - 4.0 ]
             cv.paint[]
 
         # typing scrolls; a resting label keeps its own overflow
@@ -957,6 +1032,26 @@ class Event
 
 
 alias EventCallback : lambda none [ Event ]
+
+# a field whose app reads its text: the editable layer edits first
+func field_key [ e: element, ev: Event ]
+    if [ !e || !e.layers ] return
+    k : i32 [ ev.key.unicode ]
+    own : bool [ k == 65 || k == 67 || k == 86 || k == 88
+                 || k == 263 || k == 262 || k == 259 ]
+    if [ (ev.key.ctrl || ev.key.meta) && !own ] return
+    for [ l: Layer, n: string ] in e.layers
+        if [ l.editable ]
+            l.on_key[ ev ]
+            return
+
+func field_char [ e: element, ev: Event ]
+    if [ !e || !e.layers || !ev.key.text || ev.key.text.count == 0 ]
+        return
+    for [ l: Layer, n: string ] in e.layers
+        if [ l.editable ]
+            l.on_char[ ev ]
+            return
 
 struct EventDispatch
     callbacks : vec EventCallback

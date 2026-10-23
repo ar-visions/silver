@@ -580,8 +580,10 @@ func entry_matches [ e: TrayEntry, f: string ] -> bool
     if [ e.rule ] return false
     return e.label.lcase[].index_of[ f.lcase[] ] >= 0
 
-# what is typed into an open menu, at its foot: the rows stay put
+# what is typed into an open menu, at its foot: the rows stay put.
+# its field edits, then the app reads its text
 Button MenuFilter
+    focusable : true
     style : CSS {
         layers.body:
             fill_color: #ffffff12
@@ -591,13 +593,37 @@ Button MenuFilter
         layers.face:
             label_color: #ffffff
             label_size: 15
+            editable: true
             label_align: 0.0 0.5
             label_offset: 14.0 0.0
     }
 
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        if [ ux && ux.app_object ] ux.app_object.on_key*[ ev ]
+        ev.no_default = true
+
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        if [ ux && ux.app_object ] ux.app_object.on_char*[ ev ]
+        ev.no_default = true
+
 # a menu icon's file: a path as given, else the name in the icon
 # themes (Yaru, Adwaita, hicolor), an svg; '' none. kept per name
 menu_icons : map string [string]
+
+# each row icon's picture, by its file and tint: kept, so a menu's
+# rows (new each time it opens) draw their icons once
+row_icons : map SVGModel [string]
+
+func row_icon [ file: string, tint: string ] -> SVGModel
+    if [ !row_icons ] row_icons = map SVGModel [string] []
+    key : string '{file}|{tint}'
+    m : SVGModel row_icons[ key ]
+    if [ !m ]
+        m = SVGModel [ path file ]
+        row_icons[ key ] = m
+    return m
 
 # the themes to look in: the desktop's, then each app's own icon
 # folders (/usr/share/<app>/icons/<theme>: Inkscape's, GIMP's)
@@ -690,6 +716,9 @@ class MenuBuild
     # it becomes elements; the rest is only measured
     public v0   : f32 [ -1000000.0 ]
     public v1   : f32 [ 1000000.0 ]
+    # the entry the arrow keys chose (-1 none), and its row's top
+    public lit     : i32 [ -1 ]
+    public lit_top : f32 [ -1.0 ]
     # the chip being gathered: its entries' keys, entries and places
     intern keys : vec string
     intern ents : vec TrayEntry
@@ -715,6 +744,8 @@ class MenuBuild
             top : f32 [ y + gap ]
             h   : f32 [ 0.9 * f32[ n ] ]
             y = top + h
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ ats[ i ] == lit ] lit_top = top + 0.9 * f32[ i ]
             if [ top + h >= v0 && top <= v1 ]
                 cur : Elements []
                 for [ i: i32 0, i < n, i += 1 ]
@@ -724,7 +755,8 @@ class MenuBuild
                     # a second part takes the row's right end
                     sw : f32 [ (e.side && e.side.count > 0) ? 2.6 : 0.0 ]
                     cur[ keys[ i ] ] = TrayRow [ label: e.label,
-                        entry: ats[ i ], disable: !e.enabled,
+                        entry: ats[ i ], chosen: ats[ i ] == lit,
+                        disable: !e.enabled,
                         checked: e.check == 1,
                         icon_file: menu_icon_file[ e.icon ],
                         keys: (sw > 0.0) ? '' : e.keys,
@@ -780,6 +812,23 @@ class MenuBuild
             out[ 'foot' ] = element [ area: Region [
                 'l0 t{y - shown}+ w1px h1px' ] ]
 
+
+    # the lit row kept in view: the scroll eases to it
+    func keep_lit [ rows: element ]
+        if [ lit_top < 0.0 || !rows || !rows.bounds || rows.fc <= 0.0 ]
+            return
+        u  : f32 [ rows.fc ]
+        ty : f32 [ lit_top * u ]
+        by : f32 [ (lit_top + 0.9) * u ]
+        if [ ty < rows.scroll_goal ]
+            rows.scroll_goal = ty
+        el [ by > rows.scroll_goal + rows.bounds.h ]
+            rows.scroll_goal = by - rows.bounds.h
+        el
+            return
+        rows.scroll_anim = true
+        rows.pristine    = false
+        if [ rows.ux ] rows.ux.will_animate = true
 
     # the visible slice of a scroll area: from where it is to where its
     # easing is heading, a screen's height more either side (a fast
@@ -1431,6 +1480,11 @@ Button TrayRow
             layers.body:
                 fill_color: #ffffff12
                 near_inset: 4.0
+        # chosen by the arrow keys: the look of the hover
+        :chosen
+            layers.body:
+                fill_color: #ffffff12
+                near_inset: 4.0
         :first
             layers.body:
                 radius: 7 7 0 0
@@ -1450,6 +1504,16 @@ Button TrayRow
     }
     public entry : i32
     public sided : bool
+    # the arrow keys' choice
+    public chosen : bool
+    mutable chosen_drawn : bool
+
+    # lit or let go: painted again (the list's picture holds it)
+    public func tick [ w: Window ]
+        if [ chosen == chosen_drawn ] return
+        chosen_drawn = chosen
+        pristine  = false
+        w.restyle = true
     # alone in its chip, with a second part: round on the left only
     public sided_single : bool
     # alone in its chip (trinity marks first and last itself)
@@ -1461,7 +1525,6 @@ Button TrayRow
     # its shortcut, dim at the row's right end
     public keys : string
     mutable icon_svg : SVGModel
-    mutable icon_was : string
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
@@ -1488,17 +1551,15 @@ Button TrayRow
             dc.paint[]
             dc.restore[]
         if [ !icon_file || icon_file.count == 0 ] return
-        if [ !icon_svg || icon_was != icon_file ]
-            icon_svg = SVGModel [ path icon_file ]
-            icon_was = icon_file
-        cv : Canvas w.screen
-        sz : f32 [ 16.0 ]
-        cv.save[]
         # symbolic icons are drawn dark: here they go light; a colour
         # icon keeps its colours
         sym : bool [ icon_file.index_of[ 'symbolic' ] >= 0 ]
-        if [ sym ]
-            cv.svg_override[ rgba [ (disable) ? '#ffffff55' : '#e4e4ea' ] ]
+        tint : string [ (!sym) ? '' : ((disable) ? '#ffffff55' : '#e4e4ea') ]
+        icon_svg = row_icon[ icon_file, tint ]
+        cv : Canvas w.screen
+        sz : f32 [ 16.0 ]
+        cv.save[]
+        if [ sym ] cv.svg_override[ rgba [ tint ] ]
         cv.draw_svg[ icon_svg, round[ 15.0 - sz * 0.5 ],
                      round[ (bounds.h - sz) * 0.5 ], sz, sz ]
         if [ sym ] cv.svg_override_off[]
@@ -1511,6 +1572,8 @@ element TrayPanel
     public filter : string
     # counts the entries chosen: the host shuts its drawer on one
     public picks : i32
+    # the entry the arrow keys chose (-1 none)
+    public lit   : i32 [ -1 ]
 
     public func tick [ w: Window ]
         if [ !tray ] tray = tray_shared[]
@@ -1533,7 +1596,7 @@ element TrayPanel
             area: Region { r0.7 t0.45 w4.5 h1.05 } ]
         rows : Elements []
         fl : bool [ filter && filter.count > 0 ]
-        mb : MenuBuild []
+        mb : MenuBuild [ lit: lit ]
         mb.view[ (elements && elements.contains[ 'rows' ])
             ? elements[ 'rows' ] : null ]
         if [ it.tip.count > 0 && it.tip != it.title ]
@@ -1546,11 +1609,13 @@ element TrayPanel
                 continue
             mb.row[ 'entry_{i}', e, i, e.depth ]
         mb.finish[]
+        mb.keep_lit[ (elements && elements.contains[ 'rows' ])
+            ? elements[ 'rows' ] : null ]
         rows = mb.out
         t[ 'rows' ] = PanelRows [ elements: rows,
             area: Region [ (fl) ? 'l0 t1.85 r0 b2.2' : 'l0 t1.85 r0 b0' ] ]
         if [ fl ]
-            t[ 'filter' ] = MenuFilter [ label: filter,
+            t[ 'filter' ] = MenuFilter [ edit: filter,
                 area: Region { l0.7 b1.8 r0.7 h1.2 } ]
         return t
 

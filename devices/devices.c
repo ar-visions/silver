@@ -2681,7 +2681,18 @@ static HostShared* host_shared(void) {
     void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (p == MAP_FAILED) return 0;
     g_hs = (HostShared*)p;
+    // a bound app is pid 2 inside: the host uses its own pid
+    const char* hp = getenv("SILVER_HOST_PID");
+    const char* sl = getenv("SILVER_APP_SLOT");
+    int k = (sl && *sl) ? atoi(sl) : 0;
+    if (hp && *hp && k > 0 && k < HOST_APPS) g_hs->app[k].app_pid = atoi(hp);
     return g_hs;
+}
+
+// this process as the host sees it
+static int host_self_pid(void) {
+    const char* hp = getenv("SILVER_HOST_PID");
+    return (hp && *hp) ? atoi(hp) : (int)getpid();
 }
 
 // this process's own slot (SILVER_APP_SLOT, 0 when unset — the primary app)
@@ -2860,7 +2871,15 @@ static void* slot_player_run(void* arg) {
                 pcm = 0;
             }
         }
-        if (!pcm) { usleep(5000); continue; }
+        if (!pcm) {
+            // no device: the ring still plays out in time, unheard, or
+            // an app pacing on it (host_audio_pace) waits forever
+            if (rate > 0) {
+                host_audio_play_take(sp->slot, buf, PLAYER_CHUNK);
+                usleep((useconds_t)(PLAYER_CHUNK * 1000000LL / rate));
+            } else usleep(5000);
+            continue;
+        }
         // wait half a chunk for the app; then silence fills it
         int got = 0, waited = 0, half_ms = PLAYER_CHUNK * 500 / rate;
         while (!sp->stop && got < PLAYER_CHUNK) {
@@ -3048,7 +3067,7 @@ HOST_API void host_tex_publish(int slot, int side, int fd0, int fd1, int w, int 
 #ifdef __linux__
     prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
 #endif
-    t->pid    = (int)getpid();
+    t->pid    = host_self_pid();
     t->fd0    = fd0;
     t->fd1    = fd1;
     t->front  = -1;              // nothing complete yet
@@ -3104,7 +3123,7 @@ HOST_API int host_tex_pull(int slot, int side, int which, int* w, int* h, int* f
     if (fmt) *fmt = t->format;
 #ifdef __linux__
     // a dma-buf fd is only a number in the publisher: duplicate the real one
-    if (t->pid == (int)getpid()) return dup(fd);
+    if (t->pid == host_self_pid()) return dup(fd);
     int pfd = (int)syscall(SYS_pidfd_open, (pid_t)t->pid, 0);
     if (pfd < 0) return -1;
     int r = (int)syscall(SYS_pidfd_getfd, pfd, fd, 0);

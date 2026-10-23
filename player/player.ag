@@ -288,7 +288,7 @@ element player : trinity
     public  width  : i32    [ 1280 ]
     public  height : i32    [ 720 ]
     public  title  : string [ 'player' ]
-    default [ Launch ] file : path
+    default [ Launch, Live ] file : path
     # a raw stream's pictures a second
     public  [ Launch ] fps : f64 [ 30.0 ]
     mutable clip    : Movie
@@ -303,12 +303,11 @@ element player : trinity
     mutable failed  : string
     mutable mixer   : AudioMixer
     mutable voice   : i32
+    mutable tried   : string             # the file last opened
 
     func init []
         animated  = true
         focusable = true
-        if [ file && !file.is_dir[] ]
-            open_file[ file ]
 
     # a video in place of the one playing; false when unreadable
     func open_file [ p: path ] -> bool
@@ -316,6 +315,9 @@ element player : trinity
             failed = 'no file: {p}'
             return false
         bytes : vec u8 file_bytes[ p ]
+        if [ !bytes ]
+            failed = 'cannot open {p}'
+            return false
         low : string '{p}'.lcase[]
         mv : Movie []
         ok : bool [ false ]
@@ -464,6 +466,11 @@ element player : trinity
     public func on_canvas [ cv: Canvas ]
         if [ !cv ] return
         cv.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+        # the file, at start or set live (orbiter's pick)
+        if [ file && !file.is_dir[] && '{file}' != tried ]
+            tried  = '{file}'
+            failed = null
+            open_file[ file ]
         if [ failed ]
             cv.fill_color[ rgba['#ffffff'] ]
             cv.font_size[ 16 ]

@@ -98,6 +98,11 @@ typedef struct {
 } HostShared;
 
 static int rebuild_blocking(const char* name, int clean);
+#if defined(__linux__)
+// a bound app's line to its holder, which runs its builds
+static int g_broker = -1;
+static int broker_build_wait(int block, int* st);
+#endif
 // a module outside silver's folder: the path silver builds
 static const char* g_build_path = NULL;
 
@@ -335,6 +340,8 @@ static char** g_argv;
 // filesystem name, no socket) created once here and inherited by every
 // process we spawn. its number in each child is published as SILVER_SHM_FD.
 static int         g_shm_fd = -1;
+// each slot's spawned process: the one its exit is read from
+static pid_t       g_slot_proc[HOST_APPS];
 static HostShared* g_shm    = NULL;
 #define SILVER_SHM_CHILD_FD 21   // fixed number the channel lands on in children
 
@@ -561,6 +568,8 @@ static void spawn_slot_app(int k, const char* bindir) {
         ap->state = 3;
         return;
     }
+    // a bound app puts its own pid here
+    g_slot_proc[k] = pid;
     ap->app_pid = (int32_t)pid;
     ap->state   = 2;
     fprintf(stderr, "silver-host: hosting %s (pid %d, slot %d)\n", name, (int)pid, k);
@@ -691,7 +700,8 @@ static int supervise_wait(int argc, char** argv, const char* appname,
         if (r != pid) {                    // a hosted app exited
             if (g_shm)
                 for (int k = 1; k < HOST_APPS; k++)
-                    if (g_shm->app[k].app_pid == (int32_t)r) {
+                    if (g_slot_proc[k] == r) {
+                        g_slot_proc[k] = 0;
                         g_shm->app[k].verdict = WIFSIGNALED(st)
                             ? -WTERMSIG(st) : WEXITSTATUS(st) + 1;
                         g_shm->app[k].state = 3;
@@ -1124,6 +1134,14 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // a debug build (-O0 -g) when the launch asked for one: per build, nothing sticky
     const char* dbgb = getenv("SILVER_DEBUG_BUILD") ? " --debug" : "";
     const char* covb = getenv("SILVER_COVERAGE_BUILD") ? " --coverage" : "";
+#if defined(__linux__)
+    // a bound app cannot write silver's folder: its holder builds
+    if (g_broker >= 0) {
+        char rq[4200];
+        int rn = snprintf(rq, sizeof(rq), "build %d %s\n", clean, what);
+        return write(g_broker, rq, (size_t)rn) == rn ? 1 : -1;
+    }
+#endif
     // --build: compile ONLY. bare `silver <app>` would LAUNCH the app (silver_live_run execs
     // the live host), spawning a whole second process+window on every reload while this one
     // keeps running. we just want the fresh .so produced so the host below hot-swaps it.
@@ -1142,9 +1160,11 @@ static pid_t rebuild_spawn(const char* name, int clean) {
         "set \"SILVER_DEBUG=\" && cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
         root, root, clean ? " --clean" : "", dbgb, covb, what);
 #else
+    // silver's flags before the module: after it they are the app's,
+    // and silver would launch it with them instead of building
     snprintf(cmd, sizeof(cmd),
-        "unset SILVER_DEBUG; cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" %s --build%s%s%s",
-        what, clean ? " --clean" : "", dbgb, covb);
+        "unset SILVER_DEBUG; cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" --build%s%s%s %s",
+        clean ? " --clean" : "", dbgb, covb, what);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
@@ -1204,6 +1224,12 @@ static int rebuild_blocking(const char* name, int clean) {
     pid_t pid = rebuild_spawn(name, clean);
     if (pid < 0) return -1;
     int rc = 0;
+#if defined(__linux__)
+    if (g_broker >= 0) {
+        broker_build_wait(1, &rc);
+        return rebuild_status(rc, name);
+    }
+#endif
     pid_t w;
     do { w = waitpid(pid, &rc, 0); } while (w < 0 && errno == EINTR);
     if (w < 0) {
@@ -1302,7 +1328,709 @@ static void init_as_pid1(void) {
 static void init_as_pid1(void) {}
 #endif
 
+#if defined(__linux__)
+#include <linux/capability.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <linux/audit.h>
+#include <sched.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/ioctl.h>
+#include <glob.h>
+// the app's root, in its holder's namespace only
+#define VIEW_ROOT "/mnt"
+
+static pid_t g_view_app = 0;    // the app, as the host sees it
+
+static int view_mkdirs(const char* p, mode_t m) {
+    char b[4300];
+    snprintf(b, sizeof(b), "%s", p);
+    for (char* s = b + 1; *s; s++)
+        if (*s == '/') { *s = 0; mkdir(b, m); *s = '/'; }
+    return mkdir(b, m) == 0 || errno == EEXIST ? 0 : -1;
+}
+
+// an empty file to mount a file on, its folders made
+static void view_touch(const char* p) {
+    char b[4300];
+    snprintf(b, sizeof(b), "%s", p);
+    char* sl = strrchr(b, '/');
+    if (sl) { *sl = 0; view_mkdirs(b, 0755); }
+    int fd = open(p, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) close(fd);
+}
+
+static int bound_write(const char* p, const char* s) {
+    int fd = open(p, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    ssize_t n = write(fd, s, strlen(s));
+    close(fd);
+    return n == (ssize_t)strlen(s) ? 0 : -1;
+}
+
+static void view_attr(const char* dst, uint64_t set) {
+    struct mount_attr ma = { .attr_set = set };
+    mount_setattr(AT_FDCWD, dst, AT_RECURSIVE, &ma, sizeof(ma));
+}
+
+// src at dst in the view; a link stays a link
+static int view_put(const char* src, const char* dst, int rw) {
+    char at[4300];
+    struct stat st;
+    snprintf(at, sizeof(at), VIEW_ROOT "%s", dst);
+    if (lstat(src, &st) != 0) return -1;
+    if (S_ISLNK(st.st_mode)) {
+        char to[4096];
+        ssize_t n = readlink(src, to, sizeof(to) - 1);
+        if (n < 0) return -1;
+        to[n] = 0;
+        view_touch(at);
+        unlink(at);
+        return symlink(to, at);
+    }
+    if (S_ISDIR(st.st_mode)) view_mkdirs(at, 0755);
+    else view_touch(at);
+    if (mount(src, at, NULL, MS_BIND | MS_REC, NULL) != 0) {
+        fprintf(stderr, "view: bind %s: %s\n", src, strerror(errno));
+        return -1;
+    }
+    view_attr(at, (rw ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID);
+    return 0;
+}
+
+static int view_tmpfs(const char* dst, const char* mode) {
+    char at[4300];
+    snprintf(at, sizeof(at), VIEW_ROOT "%s", dst);
+    view_mkdirs(at, 0755);
+    return mount("tmpfs", at, "tmpfs", MS_NOSUID | MS_NODEV, mode);
+}
+
+// a share, made read only before it reaches the view
+static int view_graft(const char* src, const char* at, int dir, int rw) {
+    unsigned fl = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC |
+        (dir ? AT_RECURSIVE : 0);
+    int fd = open_tree(AT_FDCWD, src, fl);
+    if (fd < 0) {
+        fprintf(stderr, "view: share %s: %s\n", src, strerror(errno));
+        return -1;
+    }
+    struct mount_attr ma = {
+        .attr_set = (rw ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID };
+    mount_setattr(fd, "", AT_EMPTY_PATH | (dir ? AT_RECURSIVE : 0), &ma,
+        sizeof(ma));
+    unlink(at);
+    rmdir(at);
+    if (dir) view_mkdirs(at, 0755); else view_touch(at);
+    int r = move_mount(fd, "", AT_FDCWD, at, MOVE_MOUNT_F_EMPTY_PATH);
+    if (r != 0)
+        fprintf(stderr, "view: share %s: %s\n", src, strerror(errno));
+    close(fd);
+    return r;
+}
+
+// its own home: its old folders come over as hard links
+static void view_home(const char* app, const char* home) {
+    const char* real = getenv("HOME");
+    const char* subs[] = { ".cache", ".local/state", ".config",
+                           ".local/share" };
+    char from[4600], to[4600], cmd[9400];
+    for (int i = 0; i < 4; i++) {
+        snprintf(to, sizeof(to), "%s/%s", home, subs[i]);
+        view_mkdirs(to, 0755);
+        for (int s = 0; s < 2; s++) {
+            const char* pre = s ? "silver-" : "";
+            snprintf(to, sizeof(to), "%s/%s/%s%s", home, subs[i], pre,
+                app);
+            if (access(to, F_OK) == 0) continue;
+            snprintf(from, sizeof(from), "%s/install/home/%s/%s%s",
+                SILVER_ROOT, subs[i], pre, app);
+            if (access(from, F_OK) != 0 && real)
+                snprintf(from, sizeof(from), "%s/%s/%s%s", real, subs[i],
+                    pre, app);
+            if (access(from, F_OK) != 0) continue;
+            snprintf(cmd, sizeof(cmd), "cp -al '%s' '%s'", from, to);
+            if (system(cmd) == 0)
+                fprintf(stderr, "silver-host: %s brought into %s\n", from,
+                    to);
+        }
+    }
+}
+
+// the holder makes the process space its children live in
+static int view_ns_differs(pid_t p) {
+    char a[64], b[64];
+    struct stat sa, sb;
+    snprintf(a, sizeof(a), "/proc/%d/ns/pid", (int)p);
+    snprintf(b, sizeof(b), "/proc/%d/ns/pid_for_children", (int)p);
+    return stat(a, &sa) == 0 && stat(b, &sb) == 0 && sa.st_ino != sb.st_ino;
+}
+
+// a bound app's holder: the pid given, or two parents up
+static pid_t view_holder(pid_t p) {
+    for (int i = 0; i < 3 && p > 1; i++) {
+        if (view_ns_differs(p)) return p;
+        char b[600], e[64];
+        snprintf(e, sizeof(e), "/proc/%d/stat", (int)p);
+        FILE* f = fopen(e, "rb");
+        if (!f) return 0;
+        size_t n = fread(b, 1, sizeof(b) - 1, f);
+        fclose(f);
+        b[n] = 0;
+        char* rp = strrchr(b, ')');
+        int pp = 0;
+        if (!rp || sscanf(rp + 2, "%*c %d", &pp) != 1) return 0;
+        p = pp;
+    }
+    return 0;
+}
+
+// --view-share <pid> <app> <file> [rw]; --view-unshare <path>
+static int view_share(int argc, char** argv) {
+    int take = strcmp(argv[1], "--view-share") == 0;
+    if (argc < 5) {
+        fprintf(stderr, "%s <pid> <app> <file|name>\n", argv[1]);
+        return 2;
+    }
+    char src[4096] = "", at[4600], ns[64];
+    struct stat st;
+    if (take && (!realpath(argv[4], src) || stat(src, &st) != 0)) {
+        fprintf(stderr, "view: no file %s\n", argv[4]);
+        return 1;
+    }
+    pid_t hold = view_holder(atoi(argv[2]));
+    if (!hold) {
+        fprintf(stderr, "view: %s is not a bound app\n", argv[2]);
+        return 1;
+    }
+    // a share is at its own path in the view
+    if (!take) snprintf(src, sizeof(src), "%s", argv[4]);
+    snprintf(at, sizeof(at), VIEW_ROOT "%s", src);
+    snprintf(ns, sizeof(ns), "/proc/%d/ns/user", (int)hold);
+    int userns = open(ns, O_RDONLY | O_CLOEXEC);
+    snprintf(ns, sizeof(ns), "/proc/%d/ns/mnt", (int)hold);
+    int mntns = open(ns, O_RDONLY | O_CLOEXEC);
+    if (userns < 0 || mntns < 0 || setns(userns, CLONE_NEWUSER) != 0 ||
+        setns(mntns, CLONE_NEWNS) != 0) {
+        fprintf(stderr, "view: cannot enter %s's view: %s\n", argv[3],
+            strerror(errno));
+        return 1;
+    }
+    umount2(at, MNT_DETACH);
+    if (!take) {
+        unlink(at);
+        rmdir(at);
+        return 0;
+    }
+    int rw = argc > 5 && strcmp(argv[5], "rw") == 0;
+    if (view_graft(src, at, S_ISDIR(st.st_mode), rw) != 0) return 1;
+    printf("%s\n", src);
+    return 0;
+}
+
+static int bound_under(const char* p, const char* dir) {
+    size_t n = strlen(dir);
+    return strncmp(p, dir, n) == 0 && (p[n] == '/' || p[n] == 0);
+}
+
+// the view shows it as it is on the host
+static int bound_reaches(const char* p) {
+    const char* own[] = { "/install/home", "/install/tmp" };
+    char d[4300];
+    for (size_t i = 0; i < sizeof(own) / sizeof(*own); i++) {
+        snprintf(d, sizeof(d), "%s%s", SILVER_ROOT, own[i]);
+        if (bound_under(p, d)) return 0;
+    }
+    const char* seen[] = { SILVER_ROOT, "/usr", "/etc", "/opt" };
+    for (size_t i = 0; i < sizeof(seen) / sizeof(*seen); i++)
+        if (bound_under(p, seen[i])) return 1;
+    return 0;
+}
+
+// the app's root: read only but its own folders
+static int view_build(const char* home, const char* run,
+                      const char* tmp, const char* log) {
+    char p[4600], q[4600];
+    if (mount("tmpfs", VIEW_ROOT, "tmpfs", MS_NOSUID | MS_NODEV,
+              "mode=755") != 0) {
+        fprintf(stderr, "view: root: %s\n", strerror(errno));
+        return -1;
+    }
+    mount(NULL, VIEW_ROOT, NULL, MS_PRIVATE, NULL);
+    const char* sys[] = { "/usr", "/etc", "/opt", "/bin", "/sbin", "/lib",
+        "/lib32", "/lib64", "/libx32", "/sys", "/var/cache/fontconfig",
+        "/run/systemd/resolve", "/tmp/.X11-unix" };
+    // the standard places, each the app's own folder outside
+    uid_t uid = getuid();
+    const char* real = getenv("HOME");
+    view_put(tmp, "/tmp", 1);
+    view_tmpfs("/run", "mode=755");
+    snprintf(q, sizeof(q), "/run/user/%u", uid);
+    view_put(run, q, 1);
+    if (real && *real) view_put(home, real, 1);
+    for (size_t i = 0; i < sizeof(sys) / sizeof(*sys); i++)
+        view_put(sys[i], sys[i], 0);
+    // the devices a drawing, sounding app opens; its own ptys
+    view_tmpfs("/dev", "mode=755");
+    const char* dev[] = { "/dev/null", "/dev/zero", "/dev/full",
+        "/dev/random", "/dev/urandom", "/dev/tty", "/dev/dri",
+        "/dev/snd", "/dev/kfd", "/dev/nvidia-caps" };
+    for (size_t i = 0; i < sizeof(dev) / sizeof(*dev); i++)
+        if (access(dev[i], F_OK) == 0) view_put(dev[i], dev[i], 1);
+    glob_t g;
+    if (glob("/dev/nvidia*", 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; i++)
+            if (strcmp(g.gl_pathv[i], "/dev/nvidia-caps") != 0)
+                view_put(g.gl_pathv[i], g.gl_pathv[i], 1);
+        globfree(&g);
+    }
+    view_tmpfs("/dev/shm", "mode=1777");
+    view_mkdirs(VIEW_ROOT "/dev/pts", 0755);
+    mount("devpts", VIEW_ROOT "/dev/pts", "devpts", MS_NOSUID | MS_NOEXEC,
+        "newinstance,ptmxmode=0666,mode=620");
+    symlink("pts/ptmx", VIEW_ROOT "/dev/ptmx");
+    symlink("/proc/self/fd", VIEW_ROOT "/dev/fd");
+    symlink("/proc/self/fd/0", VIEW_ROOT "/dev/stdin");
+    symlink("/proc/self/fd/1", VIEW_ROOT "/dev/stdout");
+    symlink("/proc/self/fd/2", VIEW_ROOT "/dev/stderr");
+    view_mkdirs(VIEW_ROOT "/proc", 0555);
+    // silver's folder, but no app's home or tmp; its own log
+    view_put(SILVER_ROOT, SILVER_ROOT, 0);
+    snprintf(p, sizeof(p), "%s/install/home", SILVER_ROOT);
+    view_tmpfs(p, "mode=755");
+    snprintf(p, sizeof(p), "%s/install/tmp", SILVER_ROOT);
+    view_tmpfs(p, "mode=755");
+    view_put(log, log, 1);
+    // the covers themselves take no files
+    struct mount_attr ro = { .attr_set = MOUNT_ATTR_RDONLY };
+    snprintf(q, sizeof(q), VIEW_ROOT "%s/install/tmp", SILVER_ROOT);
+    mount_setattr(AT_FDCWD, q, 0, &ro, sizeof(ro));
+    snprintf(q, sizeof(q), VIEW_ROOT "%s/install/home", SILVER_ROOT);
+    mount_setattr(AT_FDCWD, q, 0, &ro, sizeof(ro));
+    // the sound servers' sockets in its runtime folder
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    const char* snd[] = { "pulse/native", "pipewire-0" };
+    for (size_t i = 0; rt && i < sizeof(snd) / sizeof(*snd); i++) {
+        snprintf(q, sizeof(q), "%s/%s", rt, snd[i]);
+        if (!realpath(q, p)) continue;
+        snprintf(q, sizeof(q), "/run/user/%u/%s", uid, snd[i]);
+        view_put(p, q, 0);
+    }
+    const char* xa = getenv("XAUTHORITY");
+    if (xa && *xa && realpath(xa, p)) view_put(p, xa, 0);
+    return 0;
+}
+
+// calls refused: other processes, mounts, kernel powers
+static int view_filter(void) {
+    struct sock_filter f[160];
+    int n = 0;
+#define VF_STMT(c, k)        f[n++] = (struct sock_filter)BPF_STMT(c, k)
+#define VF_JUMP(c, k, t, e)  f[n++] = (struct sock_filter)BPF_JUMP(c, k, t, e)
+#define VF_RET(v)            VF_STMT(BPF_RET | BPF_K, v)
+#define VF_DENY(nr)          VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1); \
+                             VF_RET(SECCOMP_RET_ERRNO | EPERM)
+    unsigned perm = SECCOMP_RET_ERRNO | EPERM;
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
+#if defined(__x86_64__)
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
+#elif defined(__aarch64__)
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0);
+#endif
+    VF_RET(SECCOMP_RET_KILL_PROCESS);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+#if defined(__x86_64__)
+    // x32 numbers reach the same calls by another door
+    VF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1);
+    VF_RET(perm);
+#endif
+    const int deny[] = {
+        __NR_ptrace, __NR_process_vm_readv, __NR_process_vm_writev,
+        __NR_pidfd_getfd, __NR_kexec_load, __NR_kexec_file_load,
+        __NR_init_module, __NR_finit_module, __NR_delete_module, __NR_bpf,
+        __NR_perf_event_open, __NR_keyctl, __NR_add_key, __NR_request_key,
+        __NR_mount, __NR_umount2, __NR_pivot_root, __NR_chroot,
+        __NR_unshare, __NR_setns, __NR_open_tree, __NR_move_mount,
+        __NR_fsopen, __NR_fsconfig, __NR_fsmount, __NR_fspick,
+        __NR_mount_setattr, __NR_swapon, __NR_swapoff, __NR_reboot,
+        __NR_settimeofday, __NR_clock_settime, __NR_clock_adjtime,
+        __NR_acct, __NR_quotactl, __NR_name_to_handle_at,
+        __NR_open_by_handle_at, __NR_userfaultfd, __NR_vhangup,
+        __NR_io_uring_setup, __NR_io_uring_enter, __NR_io_uring_register,
+        __NR_syslog, __NR_fanotify_init,
+#if defined(__x86_64__)
+        __NR_iopl, __NR_ioperm, __NR_uselib, __NR_ustat, __NR_sysfs,
+#endif
+    };
+    for (size_t i = 0; i < sizeof(deny) / sizeof(*deny); i++) {
+        VF_DENY(deny[i]);
+    }
+    // clone3's flags are out of reach: libc falls back
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 0, 1);
+    VF_RET(SECCOMP_RET_ERRNO | ENOSYS);
+    unsigned spaces = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS |
+        CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | 0x80;
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 4);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args));
+    VF_JUMP(BPF_JMP | BPF_JSET | BPF_K, spaces, 0, 1);
+    VF_RET(perm);
+    VF_RET(SECCOMP_RET_ALLOW);
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ioctl, 0, 5);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS,
+        offsetof(struct seccomp_data, args) + sizeof(uint64_t));
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 1, 0);
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 0, 1);
+    VF_RET(perm);
+    VF_RET(SECCOMP_RET_ALLOW);
+    VF_RET(SECCOMP_RET_ALLOW);
+#undef VF_DENY
+#undef VF_RET
+#undef VF_JUMP
+#undef VF_STMT
+    struct sock_fprog prog = { .len = (unsigned short)n, .filter = f };
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
+    return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
+}
+
+static void view_signal(int sig) {
+    if (g_view_app <= 0) return;
+    kill(g_view_app, sig);
+    // an app parked in a stop takes it as it wakes
+    if (sig != SIGUSR1 && sig != SIGUSR2) kill(g_view_app, SIGCONT);
+}
+
+static int broker_line(int fd, char* out, size_t cap) {
+    size_t n = 0;
+    while (n + 1 < cap) {
+        char c;
+        ssize_t r = read(fd, &c, 1);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return -1;
+        if (c == '\n') break;
+        out[n++] = c;
+    }
+    out[n] = 0;
+    return (int)n;
+}
+
+// the holder: the app's host pid, its builds, its end
+static void view_hold(const char* app, int fd, int status_fd, pid_t init,
+                      const char* sock, const char* run) {
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_PASSCRED, &one, sizeof(one));
+    pid_t build = 0;
+    char in[8192];
+    size_t got = 0;
+    int st = 0, ended = 0;
+    while (!ended) {
+        struct pollfd pf = { .fd = fd, .events = POLLIN };
+        int pr = poll(&pf, fd >= 0 ? 1 : 0, 50);
+        if (pr > 0 && (pf.revents & (POLLIN | POLLHUP))) {
+            char cb[CMSG_SPACE(sizeof(struct ucred))];
+            struct iovec io = { in + got, sizeof(in) - 1 - got };
+            struct msghdr mh = { .msg_iov = &io, .msg_iovlen = 1,
+                .msg_control = cb, .msg_controllen = sizeof(cb) };
+            ssize_t r = recvmsg(fd, &mh, 0);
+            if (r <= 0) { close(fd); fd = -1; }
+            struct cmsghdr* cm = r > 0 ? CMSG_FIRSTHDR(&mh) : NULL;
+            if (cm && cm->cmsg_type == SCM_CREDENTIALS) {
+                struct ucred uc;
+                memcpy(&uc, CMSG_DATA(cm), sizeof(uc));
+                g_view_app = uc.pid;
+            }
+            got += r > 0 ? (size_t)r : 0;
+            in[got] = 0;
+            char* nl;
+            while (fd >= 0 && (nl = strchr(in, '\n'))) {
+                *nl = 0;
+                char out[64] = "";
+                int clean = 0;
+                if (strcmp(in, "pid") == 0)
+                    snprintf(out, sizeof(out), "pid %d\n", (int)g_view_app);
+                // its own module only: never a path the app names
+                else if (sscanf(in, "build %d", &clean) == 1 && !build) {
+                    build = rebuild_spawn(app, clean != 0);
+                    if (build < 0) {
+                        build = 0;
+                        snprintf(out, sizeof(out), "built %d\n", 1 << 8);
+                    }
+                }
+                if (out[0]) (void)!write(fd, out, strlen(out));
+                size_t used = (size_t)(nl - in) + 1;
+                memmove(in, nl + 1, got - used + 1);
+                got -= used;
+            }
+        }
+        int ws;
+        pid_t w;
+        while ((w = waitpid(-1, &ws, WNOHANG)) > 0) {
+            if (w == build) {
+                char out[64];
+                snprintf(out, sizeof(out), "built %d\n", ws);
+                if (fd >= 0) (void)!write(fd, out, strlen(out));
+                build = 0;
+            } else if (w == init) {
+                ended = 1;
+                if (read(status_fd, &st, sizeof(st)) != sizeof(st))
+                    st = ws;
+            }
+        }
+    }
+    // the host's name for its socket, and its runtime folder
+    char to[4600];
+    ssize_t n = readlink(sock, to, sizeof(to) - 1);
+    if (n > 0) { to[n] = 0; if (strstr(to, "silver-view/")) unlink(sock); }
+    snprintf(to, sizeof(to), "rm -rf '%s'", run);
+    (void)system(to);
+    if (WIFSIGNALED(st)) {
+        signal(WTERMSIG(st), SIG_DFL);
+        kill(getpid(), WTERMSIG(st));
+        pause();
+    }
+    _exit(WIFEXITED(st) ? WEXITSTATUS(st) : 1);
+}
+
+// the app's env: no tokens, agents or buses of the user
+static void view_env(void) {
+    const char* keep[] = { "DISPLAY", "XAUTHORITY", "PATH", "TERM",
+        "COLORTERM", "LANG", "LANGUAGE", "TZ", "USER", "LOGNAME", "SHELL",
+        "LD_LIBRARY_PATH", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP",
+        "LC_", "SILVER", "VK_", "VULKAN_", "__GL_", "__NV_", "__VK_",
+        "MESA_", "NVIDIA_", "PULSE_", "PIPEWIRE_", "ALSA_", "FONTCONFIG_",
+        "XCURSOR_", "GDK_SCALE", "QT_SCALE", "AU_", "ORBITER_", "HOME",
+        "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS" };
+    for (int i = 0; environ[i];) {
+        const char* e = environ[i];
+        const char* eq = strchr(e, '=');
+        size_t n = eq ? (size_t)(eq - e) : strlen(e);
+        int ok = 0;
+        for (size_t k = 0; k < sizeof(keep) / sizeof(*keep) && !ok; k++) {
+            size_t kl = strlen(keep[k]);
+            int pre = keep[k][kl - 1] == '_';
+            ok = pre ? n >= kl && strncmp(e, keep[k], kl) == 0
+                     : n == kl && strncmp(e, keep[k], kl) == 0;
+            // silver's own: SILVER, SILVER_*
+            if (!ok && kl == 6 && strncmp(keep[k], "SILVER", 6) == 0)
+                ok = strncmp(e, "SILVER_", 7) == 0;
+        }
+        if (ok) { i++; continue; }
+        char name[256];
+        snprintf(name, sizeof(name), "%.*s", (int)n, e);
+        unsetenv(name);
+    }
+}
+
+// pid 1: enters the root, waits on the app, reports
+static void view_init(int status_fd, int broker_fd) {
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (unshare(CLONE_NEWNS) != 0 ||
+        mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0 ||
+        chdir(VIEW_ROOT) != 0) {
+        fprintf(stderr, "view: enter: %s\n", strerror(errno));
+        _exit(127);
+    }
+    mkdir(".old", 0700);
+    if (syscall(SYS_pivot_root, ".", ".old") != 0) {
+        fprintf(stderr, "view: pivot: %s\n", strerror(errno));
+        _exit(127);
+    }
+    if (chdir("/") != 0 ||
+        mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC,
+              NULL) != 0) {
+        fprintf(stderr, "view: proc: %s\n", strerror(errno));
+        _exit(127);
+    }
+    umount2("/.old", MNT_DETACH);
+    rmdir("/.old");
+    pid_t a = fork();
+    if (a < 0) _exit(127);
+    if (a == 0) { close(status_fd); return; }
+    close(broker_fd);
+    for (int f = 0; f < 4096; f++)
+        if (f != status_fd && f != 2) close(f);
+    int st = 0;
+    for (;;) {
+        int ws;
+        pid_t w = waitpid(-1, &ws, 0);
+        if (w < 0 && errno == ECHILD) break;
+        if (w == a) { st = ws; break; }
+    }
+    (void)!write(status_fd, &st, sizeof(st));
+    _exit(0);
+}
+
+// an app with no view does not run
+static void bound_lock(const char* app, int argc, char** argv) {
+    uid_t uid = getuid();
+    gid_t gid = getgid();
+    int slot = atoi(getenv("SILVER_APP_SLOT"));
+    // ubuntu lets a namespace be made but strips it of its powers
+    // unless our apparmor profile names this program
+    char label[256] = "";
+    int lf = open("/proc/self/attr/current", O_RDONLY | O_CLOEXEC);
+    if (lf >= 0) { (void)!read(lf, label, sizeof(label) - 1); close(lf); }
+    int fenced = 0;
+    lf = open("/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+        O_RDONLY | O_CLOEXEC);
+    if (lf >= 0) { char c = 0; (void)!read(lf, &c, 1); close(lf);
+                   fenced = c == '1'; }
+    if (fenced && strncmp(label, "silver-host", 11) != 0) {
+        fprintf(stderr, "silver-host: no private view for %s: install "
+            "support/apparmor/silver-host\n", app);
+        exit(1);
+    }
+    // its folders on the host: home, tmp, runtime, the share point
+    char home[4300], tmp[4300], run[4300], sock[4300], log[4300];
+    snprintf(home, sizeof(home), "%s/install/home/%s", SILVER_ROOT, app);
+    view_home(app, home);
+    // its /tmp starts empty, as a boot leaves one
+    snprintf(tmp, sizeof(tmp), "%s/install/tmp/view/%s-%d", SILVER_ROOT,
+        app, slot);
+    snprintf(sock, sizeof(sock), "rm -rf '%s'", tmp);
+    (void)system(sock);
+    view_mkdirs(tmp, 01777);
+    app_log_path(log, sizeof(log), app, slot);
+    view_touch(log);
+    const char* rt = getenv("XDG_RUNTIME_DIR");
+    char rtd[512];
+    snprintf(rtd, sizeof(rtd), "/run/user/%u", uid);
+    if (!rt || !*rt) rt = rtd;
+    snprintf(run, sizeof(run), "%s/silver-view/%s-%d", rt, app, slot);
+    snprintf(sock, sizeof(sock), "rm -rf '%s'", run);
+    (void)system(sock);
+    view_mkdirs(run, 0700);
+    // the host finds its socket where it always was
+    snprintf(sock, sizeof(sock), "%s/trinity-%s-%d.sock", rt, app, slot);
+    unlink(sock);
+    char rel[600];
+    snprintf(rel, sizeof(rel), "silver-view/%s-%d/trinity-%s-%d.sock", app,
+        slot, app, slot);
+    (void)!symlink(rel, sock);
+    // the launch line's paths, found while the host's tree is seen
+    char** found = calloc(argc, sizeof(char*));
+    char real[4096];
+    for (int i = 1; i < argc; i++)
+        if (argv[i][0] == '/' && realpath(argv[i], real) &&
+            strcmp(real, "/") != 0 && !bound_reaches(real))
+            found[i] = strdup(real);
+    if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) {
+        fprintf(stderr, "silver-host: no private view for %s: %s\n", app,
+            strerror(errno));
+        exit(1);
+    }
+    char map[64];
+    bound_write("/proc/self/setgroups", "deny");
+    snprintf(map, sizeof(map), "%u %u 1", uid, uid);
+    int mapped = bound_write("/proc/self/uid_map", map) == 0;
+    snprintf(map, sizeof(map), "%u %u 1", gid, gid);
+    mapped = mapped && bound_write("/proc/self/gid_map", map) == 0;
+    // the host's new mounts still arrive; ours stay ours
+    if (!mapped || mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0 ||
+        view_build(home, run, tmp, log) != 0) {
+        fprintf(stderr, "silver-host: %s's view failed: %s\n", app,
+            strerror(errno));
+        exit(1);
+    }
+    // a launch path it cannot reach is shared there, read only
+    for (int i = 1; i < argc; i++) {
+        if (!found[i]) continue;
+        struct stat st;
+        char at[4600];
+        snprintf(at, sizeof(at), VIEW_ROOT "%s", found[i]);
+        if (stat(found[i], &st) == 0 &&
+            view_graft(found[i], at, S_ISDIR(st.st_mode), 0) == 0)
+            fprintf(stderr, "silver-host: %s shared into %s's view\n",
+                found[i], app);
+        free(found[i]);
+    }
+    free(found);
+    // orbiter's later shares reach the app through this
+    mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
+    int bp[2], sp[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
+        pipe2(sp, O_CLOEXEC) != 0 || unshare(CLONE_NEWPID) != 0) {
+        fprintf(stderr, "silver-host: %s's process space: %s\n", app,
+            strerror(errno));
+        exit(1);
+    }
+    const int fwd[] = { SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1,
+                        SIGUSR2 };
+    for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
+        signal(fwd[i], view_signal);
+    pid_t init = fork();
+    if (init < 0) exit(1);
+    if (init > 0) {
+        close(bp[1]);
+        close(sp[1]);
+        fprintf(stderr, "silver-host: %s has its own root\n", app);
+        view_hold(app, bp[0], sp[0], init, sock, run);
+    }
+    close(bp[0]);
+    close(sp[0]);
+    view_init(sp[1], bp[1]);
+    // the app
+    for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
+        signal(fwd[i], SIG_DFL);
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    g_broker = bp[1];
+    char ans[64] = "";
+    if (write(g_broker, "pid\n", 4) == 4) broker_line(g_broker, ans,
+        sizeof(ans));
+    int hp = 0;
+    if (sscanf(ans, "pid %d", &hp) == 1 && hp > 0) {
+        char hs[32];
+        snprintf(hs, sizeof(hs), "%d", hp);
+        setenv("SILVER_HOST_PID", hs, 1);
+        // the slot names the app itself, before its first frame
+        const char* fds = getenv("SILVER_SHM_FD");
+        int sfd = (fds && *fds) ? atoi(fds) : -1;
+        void* m = sfd < 0 ? MAP_FAILED : mmap(0, sizeof(HostShared),
+            PROT_READ | PROT_WRITE, MAP_SHARED, sfd, 0);
+        if (m != MAP_FAILED) {
+            if (slot > 0 && slot < HOST_APPS)
+                ((HostShared*)m)->app[slot].app_pid = hp;
+            munmap(m, sizeof(HostShared));
+        }
+    }
+    // the standard places: ~, /tmp and /run/user/<uid> are its own
+    const char* envs[] = { "XDG_CACHE_HOME", "XDG_STATE_HOME",
+        "XDG_CONFIG_HOME", "XDG_DATA_HOME", "TMPDIR" };
+    for (size_t i = 0; i < sizeof(envs) / sizeof(*envs); i++)
+        unsetenv(envs[i]);
+    setenv("XDG_RUNTIME_DIR", rtd, 1);
+    view_env();
+    // no powers left: it cannot undo the root it was given
+    struct __user_cap_header_struct ch = { _LINUX_CAPABILITY_VERSION_3, 0 };
+    struct __user_cap_data_struct cd[2];
+    memset(cd, 0, sizeof(cd));
+    syscall(SYS_capset, &ch, cd);
+    if (view_filter() != 0) {
+        fprintf(stderr, "silver-host: %s's filter: %s\n", app,
+            strerror(errno));
+        exit(1);
+    }
+    fprintf(stderr, "silver-host: %s bound to its view\n", app);
+}
+
+// a build asked of the holder: 0 while it runs, 1 when done
+static int broker_build_wait(int block, int* st) {
+    struct pollfd pf = { .fd = g_broker, .events = POLLIN };
+    if (!block && poll(&pf, 1, 0) <= 0) return 0;
+    char ans[64];
+    if (broker_line(g_broker, ans, sizeof(ans)) < 0 ||
+        sscanf(ans, "built %d", st) != 1)
+        *st = 1 << 8;
+    return 1;
+}
+#endif
+
 int main(int argc, char** argv) {
+#if defined(__linux__) && defined(SILVER_ROOT)
+    if (argc > 1 && (strcmp(argv[1], "--view-share") == 0 ||
+                     strcmp(argv[1], "--view-unshare") == 0))
+        return view_share(argc, argv);
+#endif
     init_as_pid1();
 #ifndef _WIN32
     // the nvidia driver opens a /dev/nvidia fd per GPU allocation: a reload's
@@ -1493,6 +2221,10 @@ int main(int argc, char** argv) {
     // apps resolve {SILVER}/export and root modules through this
     setenv("SILVER", SILVER_ROOT, 1);
 #endif
+#if defined(__linux__) && defined(SILVER_ROOT)
+    // a slot is an app orbiter runs; orbiter itself is the user
+    if (getenv("SILVER_APP_SLOT")) bound_lock(name, argc, argv);
+#endif
     cd_share(bindir, name);
 
     // up-front staleness check: only recompile when a source is actually newer
@@ -1587,6 +2319,13 @@ int main(int argc, char** argv) {
         typedef const char* (*au_live_take_switch_fn)(void);
         au_live_take_switch_fn take_switch = (au_live_take_switch_fn)dlsym(handle, "au_live_take_switch");
         const char* sw9 = take_switch ? take_switch() : NULL;
+#if defined(__linux__)
+        // a bound app starts nothing outside its view
+        if (sw9 && sw9[0] && g_broker >= 0) {
+            fprintf(stderr, "[%s] cannot launch %s from a view\n", name, sw9);
+            sw9 = NULL;
+        }
+#endif
         if (sw9 && sw9[0]) {
             char to_bin[4300];
             snprintf(to_bin, sizeof(to_bin), "%s/%s", bindir, sw9);
@@ -1671,7 +2410,13 @@ int main(int argc, char** argv) {
         // reap an in-flight recompile without blocking the frame loop
         if (compile_pid) {
             int st = 0;
-            pid_t r = waitpid(compile_pid, &st, WNOHANG);
+            pid_t r;
+#if defined(__linux__)
+            if (g_broker >= 0)
+                r = broker_build_wait(0, &st) ? compile_pid : 0;
+            else
+#endif
+            r = waitpid(compile_pid, &st, WNOHANG);
             if (r == compile_pid) {
                 compile_pid = 0;
                 if (rebuild_status(st, name) == 0) {

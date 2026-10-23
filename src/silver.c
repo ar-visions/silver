@@ -4048,6 +4048,8 @@ AU_EXPORT void silver_init(silver a) {
             if (a->build_none) {
                 // its imports are built: the record is the proof
                 imports_record(a);
+                // its exports (extensions, run, icon) still register
+                exporter(a);
             } else {
                 build_product(a);
 
@@ -4314,6 +4316,44 @@ static array read_within(silver a) {
 // read compacted keyword tokens inside { ... } — returns tokens literal.
 // an expected non-tokens type with a string ctr receives the literal as a
 // space-joined string through that ctr (area: Region { l0 t0 r0 b0 })
+// a { } block given to a type made from text: its text, as
+// read_keywords builds it for that type (lines and indents kept)
+static string keyword_default(etype rtype, array raw) {
+    int n = (int)len(raw);
+    if (n < 2) return null;
+    token open = (token)raw->origin[0];
+    if (!eq(open, "{") || !eq((token)raw->origin[n - 1], "}")) return null;
+    Au_t target = rtype->autype ? au_arg_type((Au)rtype->autype) : null;
+    if (!target || target == typeid(tokens) || inherits(target, typeid(string)))
+        return null;
+    if (!constructs_with(target, typeid(string)) &&
+        !constructs_with(target, typeid(cstr)) &&
+        !constructs_with(target, typeid(symbol)))
+        return null;
+    string joined = string(alloc, 64);
+    num prev_line = open->line;
+    for (int i = 1; i < n - 1; i++) {
+        token ft = (token)raw->origin[i];
+        string compacted = string(ft->chars);
+        // neighbors on one line are one chunk, as the reader joins them
+        while (i + 2 < n) {
+            token b = (token)raw->origin[i];
+            token c = (token)raw->origin[i + 1];
+            if (b->column + b->count != c->column || eq(c, "}")) break;
+            concat(compacted, (string)c);
+            i++;
+        }
+        if (ft->line != prev_line) {
+            push(joined, '\n');
+            for (num k = 0; k < ft->indent; k++) push(joined, ' ');
+        } else if (i > 1)
+            push(joined, ' ');
+        prev_line = ft->line;
+        concat(joined, compacted);
+    }
+    return joined;
+}
+
 static enode read_keywords(silver a, etype mdl_expect) {
     if (!next_is(a, "{"))
         return null;
@@ -7626,13 +7666,15 @@ enode parse_statement(silver a)
             mem->autype->access_type = (u8)access;
             mem->autype->member_type = AU_MEMBER_VAR;
             mem->autype->src         = canonical(rtype)->autype;
+            // a keyword block's text is its default too (a class's style)
+            string kt = (rtype && instanceof(expr, array)) ?
+                keyword_default(rtype, (array)expr) : null;
+            if (kt) mem->autype->dflt = cstr_copy((cstr)kt->chars);
             // a one-token literal initializer is the member's declared default
-            if (rtype && instanceof(expr, array) && len((array)expr) == 1) {
+            else if (rtype && instanceof(expr, array) && len((array)expr) == 1) {
                 token dt = (token)((array)expr)->origin[0];
-                if (dt && dt->chars && (dt->literal || eq(dt, "true") || eq(dt, "false"))) {
-                    if (!a->prop_defaults) a->prop_defaults = map(hsize, 32);
-                    set(a->prop_defaults, (Au)mem->autype, (Au)string(dt->chars));
-                }
+                if (dt && dt->chars && (dt->literal || eq(dt, "true") || eq(dt, "false")))
+                    mem->autype->dflt = cstr_copy((cstr)dt->chars);
             }
             // a persist slot is static; the keyword must not clear it
             mem->autype->is_static   = is_static || !!(traits & AU_TRAIT_IS_PERSIST);

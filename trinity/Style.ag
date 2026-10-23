@@ -11,6 +11,12 @@ class LayerDef
     public params : vec string
     public body   : vec CSSLine
 
+# a style line and the lines under it, keyed for merging
+class CSSNode
+    public key  : string
+    public text : string
+    public kids : vec CSSNode
+
 class StyleHit
     public file : path
     public line : i32
@@ -737,6 +743,76 @@ class Style
 
         return match
 
+    # a class's own style text: the default its `style` declares
+    func class_css [ t: Au_t ] -> string
+        for [ m: i32 0, m < t.members.count, m += 1 ]
+            mem : Au_t t.members.origin[m]
+            if [ mem.member_type == AU_MEMBER_VAR && mem.dflt
+                 && strcmp[ mem.ident, "style" ] == 0 ]
+                return string [ mem.dflt ]
+        return null
+
+    # a line's key: a heading whole, a declaration by its name
+    func css_key [ c: string ] -> string
+        if [ c.chars[0] == ':' || c.last[] == ':' ] return c
+        ci : num [ c.index_of[ ':' ] ]
+        return (ci > 0) ? c.mid[ 0, ci ].trim[] : c
+
+    func css_tree [ body: string ] -> CSSNode
+        root : CSSNode [ key: '', text: '', kids: vec CSSNode [] ]
+        open : vec CSSNode []
+        ind  : vec i32 []
+        open.push[ root ]
+        ind.push[ -1 ]
+        for [ cl: CSSLine ] in split_css[ body ]
+            c : string cl.content.trim[]
+            if [ c.count == 0 ] continue
+            while [ ind[ ind.count - 1 ] >= cl.indent ]
+                open.pop[]
+                ind.pop[]
+            n : CSSNode [ key: css_key[ c ], text: c,
+                          kids: vec CSSNode [] ]
+            open[ open.count - 1 ].kids.push[ n ]
+            open.push[ n ]
+            ind.push[ cl.indent ]
+        return root
+
+    # the base's order kept: a same key takes the subclass's line in
+    # its place, a new one goes after
+    func css_merge [ into: CSSNode, from: CSSNode ]
+        for [ k: CSSNode ] in from.kids
+            same : CSSNode [ null ]
+            for [ f: CSSNode ] in into.kids
+                if [ f.key == k.key ] same = f
+            if [ !same ]
+                into.kids.push[ k ]
+            el [ same.kids.count > 0 && k.kids.count > 0 ]
+                css_merge[ same, k ]
+            el
+                same.text = k.text
+                same.kids = k.kids
+
+    func css_text [ n: CSSNode, depth: i32, out: string ] -> string
+        r : out
+        for [ k: CSSNode ] in n.kids
+            pad : ''
+            for [ i: i32 0, i < depth * 4, i += 1 ] pad = '{pad} '
+            r = '{r}{pad}{k.text}\n'
+            r = css_text[ k, depth + 1, r ]
+        return r
+
+    # the class's style with its bases': one set, read once
+    func css_flat [ t: Au_t, own: string ] -> string
+        chain : vec string []
+        for [ c : t, c && c != typeid[ Au ], c = c.context ]
+            cs : string class_css[ c ]
+            if [ cs ] chain.insert[ cs, 0 ]
+        if [ chain.count < 2 ] return own
+        flat : CSSNode css_tree[ chain[0] ]
+        for [ i: i32 1, i < chain.count, i += 1 ]
+            css_merge[ flat, css_tree[ chain[i] ] ]
+        return css_text[ flat, 0, '' ]
+
     # pull an instance's embedded style member into base, once per type.
     # null style is not memoized: defaults may not be applied yet
     func integrate_instance [ n: element ] -> bool
@@ -752,7 +828,7 @@ class Style
         key : 'type:{ty.ident}'
         if [ visited.index_of[ key ] >= 0 ] return false
         visited.push[ key ]
-        lines : split_css[ css.body ]
+        lines : split_css[ css_flat[ ty, string [ css.body ] ] ]
         min_i : i32 [ 100000 ]
         for [ cl: CSSLine ] in lines
             if [ cl.indent < min_i ] min_i = cl.indent
@@ -1896,3 +1972,31 @@ func nib [ n: i8 ] -> i8
     if [ n >= 'A' && n <= 'F' ]
         return 10 + (n - 'A')
     return 0
+
+element FlatBase
+    style : CSS {
+        layers.body:
+            fill_color: #101820
+            radius: 8
+        layers.face:
+            label_color: #ffffff80
+            label_size: 18
+        :focused
+            layers.body:
+                fill_color: #162531
+    }
+
+FlatBase FlatSub
+    style : CSS {
+        layers.face:
+            label_color: #0000
+        layers.glow:
+            radius: 4
+    }
+
+# a subclass's style is its base's, with its own lines in place
+expect func t_style_flat [] -> bool
+    st : Style []
+    flat : string st.css_flat[ typeid[ FlatSub ], '' ]
+    want : string [ 'layers.body:\n    fill_color: #101820\n    radius: 8\nlayers.face:\n    label_color: #0000\n    label_size: 18\n:focused\n    layers.body:\n        fill_color: #162531\nlayers.glow:\n    radius: 4\n' ]
+    return flat == want

@@ -1,0 +1,17 @@
+# blender: blender.org's own Linux build (its standard package),
+# unpacked into silver's install; it runs in a pane over orbiter's
+# display, and .blend files open in it
+export 4.5.14
+export software ['creative']
+export icon ['blender']
+export extensions ['.blend']
+# how a file of it runs: this program in install/bin, the file after
+export run ['blender']
+export build none
+
+# the release tarball (aeon takes the same one: one download), linked
+# as install/bin/blender
+import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+    > mkdir -p {install}/blender
+    > test -x {install}/blender/blender || tar -xJf {import_file} --strip-components 1 -C {install}/blender
+    > ln -sfn ../blender/blender {install}/bin/blender

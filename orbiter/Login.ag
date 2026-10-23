@@ -15,6 +15,20 @@ Control Login
     mutable ch   : f32
     mutable tile : f32
     mutable icon : AppIcon
+    # the password field's place, as drawn last
+    mutable fx   : f32
+    mutable fy   : f32
+    mutable fw   : f32
+    mutable fh   : f32
+
+    # the chosen card's password: a secret field under the cards
+    public func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb || orb.login_sel < 0 || fw <= 0.0 ] return t
+        t['login_pass'] = LoginPass [ label: 'password',
+            area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
+        return t
 
     func card_at [ x: f32, y: f32 ] -> i32
         if [ !rx || y < ry || y >= ry + ch ] return -1
@@ -48,8 +62,10 @@ Control Login
             orb.login_sel  = i
             orb.login_pass = ''
             orb.login_note = ''
-        if [ ux ] ux.set_focus[ a ]
+        # its field comes up focused
+        orb.filter_focus = 'login_pass'
         pristine = false
+        if [ ux ] ux.restyle = true
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
@@ -65,8 +81,8 @@ Control Login
         cw = round[ 124.0 * un ]
         ch = tile + round[ 8.0 * un ] + nh
         gap : f32 [ round[ 18.0 * un ] ]
-        fh : f32 [ round[ 34.0 * un ] ]
-        fw : f32 [ round[ 260.0 * un ] ]
+        fh = round[ 34.0 * un ]
+        fw = round[ 260.0 * un ]
         # centered under the avatar (its foot 10px under the middle)
         row : f32 [ f32[ n ] * cw + f32[ n - 1 ] * gap ]
         x0 : f32 [ round[ (bounds.w - row) * 0.5 ] ]
@@ -87,9 +103,13 @@ Control Login
             words[ cv, fp, orb.login_users[ i ], '#ffffffdd',
                    rx[ i ], ry + tile + round[ 8.0 * un ], cw, nh ]
         if [ orb.login_sel < 0 ] return
-        fx : f32 [ round[ (bounds.w - fw) * 0.5 ] ]
-        fy : f32 [ ry + ch + gap ]
-        draw_field[ cv, orb.login_pass.count, fp, fx, fy, fw, fh, un ]
+        nx : f32 [ round[ (bounds.w - fw) * 0.5 ] ]
+        ny : f32 [ ry + ch + gap ]
+        # the field follows where it is drawn
+        if [ nx != fx || ny != fy ]
+            fx = nx
+            fy = ny
+            if [ ux ] ux.restyle = true
         if [ orb.login_note.count > 0 ]
             words[ cv, fp, orb.login_note, '#ff7a7add', fx, fy + fh,
                    fw, nh ]
@@ -117,36 +137,6 @@ Control Login
         cv.no_shadows[]
         cv.restore[]
 
-    # the password as dots in a pill; empty: its word, dim
-    func draw_field [ cv: Canvas, dots: i32, fp: i32, x: f32, y: f32,
-                      fw: f32, fh: f32, un: f32 ]
-        r : f32 [ fh * 0.5 ]
-        cv.save[]
-        cv.rounded[ r, r, r, r ]
-        cv.stroke_width[ 1.0 ]
-        cv.stroke_offset[ -0.5 ]
-        cv.fill_color[ rgba [ '#00000066' ] ]
-        cv.stroke_color[ rgba [ '#806bff' ] ]
-        cv.rect_to[ x, y, fw, fh ]
-        cv.paint[]
-        cv.restore[]
-        if [ dots == 0 ]
-            words[ cv, fp, 'password', '#ffffff55', x, y, fw, fh ]
-            return
-        d : f32 [ round[ 7.0 * un ] ]
-        sp : f32 [ round[ 13.0 * un ] ]
-        shown : i32 [ min[ dots, 16 ] ]
-        dx : f32 [ x + round[ (fw - f32[ shown ] * sp) * 0.5 ] ]
-        cv.save[]
-        cv.stroke_width[ 0.0 ]
-        cv.rounded[ d * 0.5, d * 0.5, d * 0.5, d * 0.5 ]
-        cv.fill_color[ rgba [ '#ffffffdd' ] ]
-        for [ i: i32 0, i < shown, i += 1 ]
-            cv.rect_to[ dx + f32[ i ] * sp + (sp - d) * 0.5,
-                        y + round[ (fh - d) * 0.5 ], d, d ]
-            cv.paint[]
-        cv.restore[]
-
     func words [ cv: Canvas, fp: i32, t: string, c: string, x: f32,
                  y: f32, wd: f32, h: f32 ]
         cv.set_font[ shared_font[ cv,
@@ -157,3 +147,38 @@ Control Login
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
             null ]
         cv.set_font[ null ]
+
+# the password as dots in a pill; empty: its word, dim. the field
+# edits, then the login reads it (Enter tries it)
+element LoginPass
+    focusable : true
+    style : CSS {
+        layers.body:
+            fill_color: #00000066
+            radius: 999
+            stroke_width: 1
+            stroke_offset: -0.5
+            stroke_color: #806bff
+        layers.face:
+            label_color: #ffffff55
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            editable: true
+            secret: true
+            label_align: 0.5 0.5
+        :has_value
+            layers.face:
+                label_color: #ffffffdd
+    }
+
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.login_edit[ a, ev ]
+        ev.no_default = true
+
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.login_edit[ a, ev ]
+        ev.no_default = true

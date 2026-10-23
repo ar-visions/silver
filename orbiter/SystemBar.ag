@@ -36,6 +36,92 @@ element RecBar
             fill_color: #ffd400ff
     }
 
+# the system menu's dock: the navigator's dock column in a colour
+# of its own (the system's)
+Group SysDock
+    style : CSS {
+        layers.dock:
+            fill_color: #0d2a3a
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #8fd0ffaa
+        layers.ddiv:
+            fill_color: #ffffff11
+            area: r0 t0 w1px b0
+    }
+
+# a cell of the system menu's dock, shaped as the navigator's: its
+# icon high, its name under it; lit while its view shows, yellow for
+# a second action (restart)
+element DockRow
+    no_cache : true
+    public icon_id : string
+    public label   : string
+    public second  : bool
+    # its place in the column: neighbours share one border
+    public first   : bool
+    public last    : bool
+    mutable svg    : SVGModel
+    mutable svg_id : string
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8fd0ff04
+            stroke_width: 1 1 0 1
+            stroke_color: #ffffff09
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #8fd0ffff
+        :first
+            layers.edge:
+                stroke_width: 0 1 0 1
+        :last
+            layers.edge:
+                stroke_width: 1 1 1 1
+        :selected
+            layers.edge:
+                fill_color: #2a5a7a99
+                stroke_color: #fff3
+                box_shadow: inset 0 0 13px #8fd0ff88
+        :second
+            layers.edge:
+                box_shadow: inset 0 0 13px #ffd84a66
+                near_inset_color: #ffd84aff
+    }
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        if [ !svg || svg_id != icon_id ]
+            svg_id = icon_id
+            ip : path 'images/material/{icon_id}.svg'
+            if [ !ip.exists[] ] ip = path 'images/{icon_id}.svg'
+            svg = (ip.exists[]) ? SVGModel [ ip ] : null
+        # the icon high, its name under it, as the navigator's dock
+        isz : f32 [ round[ bounds.w * 0.4 ] ]
+        ix  : f32 [ round[ (bounds.w - isz) * 0.5 ] ]
+        iy  : f32 [ round[ bounds.h * 0.18 ] ]
+        if [ svg ]
+            cv.fill_color[ (second) ? rgba [ '#ffd84a' ]
+                : rgba [ '#ffffff' ] ]
+            cv.draw_svg[ svg, ix, iy, isz, isz ]
+        un : f32 ux_unit[ w ]
+        fpx : i32 [ i32[ round[ 14.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fpx ] ]
+        cv.font_size[ fpx ]
+        cv.fill_color[ rgba [ '#ffffffcc' ] ]
+        cv.draw_text[ label,
+            rect [ x: 4.0, y: iy + isz + 4.0 * un,
+                   w: bounds.w - 8.0, h: 16.0 * un ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        cv.set_font[ null ]
+
 # the clock's words, in the bar's middle
 element SystemClock
     no_cache : true
@@ -158,9 +244,18 @@ Layer TabProgress
             cv.rect_to[ bounds.x, y, bounds.w * mt.progress, h ]
             cv.paint[]
 
-# a folder of the navigator's path in the bar: a press goes there;
-# the last is the folder shown
+# a folder of the navigator's path in the bar: a press lists its
+# folders; the last, the folder shown, is white
 Button BarCrumb
+    # a path's drawer open: moving onto this piece opens its own
+    public func on_move [ ev: Event ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.crumb_hover[ a ]
+    # its folder (or file), its pane (-1 the navigator's), and whether
+    # it is a pane's file (its drawers list files too)
+    public dir  : string
+    public pane : i32 [ -1 ]
+    public code : bool
     style : CSS {
         layers.body:
             fill_color: #0000
@@ -182,11 +277,14 @@ Button BarCrumb
         :last
             layers.face:
                 label_color: #ffffff
-                label_font: 'fonts/BarlowCondensed-Bold.ttf'
+        # its drawer open: lit as an open menu's name
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
     }
     public last : bool
 
-# the mark between two folders of the path
+# the folded front of the path: …
 element CrumbSep
     user_events : false
     style : CSS {
@@ -218,6 +316,7 @@ Button BarTitle
             label_align: 0.0 0.5
             # the typed URL starts where the site name does
             label_offset: 10 0
+            editable: true
         :hovered
             layers.body:
                 fill_color: #ffffff18
@@ -226,7 +325,9 @@ Button BarTitle
                 stroke_color: #806bffff
                 fill_color: #4d3dbc55
     }
-    # a URL being typed: its edge lit, a caret after the text
+    # a field only while a URL is typed in it
+    read_only : true
+    # a URL being typed: its edge lit, the field's caret in it
     public typing : bool
     # not typing: the site's name and its domain, drawn over it by
     # the bar (a button never caches, so it cannot mask); their
@@ -236,6 +337,17 @@ Button BarTitle
     mutable site_w   : f32
     mutable domain_w : f32
     measure : BarMeasure []
+
+    # the field edits, then orbiter reads it (Enter, Esc)
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_key[ ev ]
+        ev.no_default = true
+
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        ev.no_default = true
 
 # measures the site's and domain's words in their fonts; a change
 # lays the title out again
@@ -291,7 +403,11 @@ element MenuPanel
     public top    : i32
     # what is typed: only the entries holding it show
     public filter : string
-
+    # the entry the arrow keys chose (-1 none)
+    public lit    : i32 [ -1 ]
+    # the filter the rows last showed: a new one starts them at
+    # their top, at once
+    mutable seen_filter : string
 
     public func render [] -> Elements
         t : Elements []
@@ -303,7 +419,16 @@ element MenuPanel
         # the entries flow under the heading and scroll, a chip
         # between separators
         fl : bool [ filter && filter.count > 0 ]
-        mb : MenuBuild []
+        fq : string [ (filter) ? filter : '' ]
+        rw : element [ (elements && elements.contains[ 'rows' ])
+            ? elements[ 'rows' ] : null ]
+        if [ !seen_filter || seen_filter != fq ]
+            seen_filter = fq
+            if [ rw ]
+                rw.scroll.y    = 0.0
+                rw.scroll_goal = 0.0
+                rw.scroll_anim = false
+        mb : MenuBuild [ lit: lit ]
         mb.view[ (elements && elements.contains[ 'rows' ])
             ? elements[ 'rows' ] : null ]
         for [ i: i32 top + 1, i < items.count, i += 1 ]
@@ -324,11 +449,12 @@ element MenuPanel
             el
                 mb.row[ 'entry_{i}', e, i, dp ]
         mb.finish[]
+        mb.keep_lit[ rw ]
         rows : Elements mb.out
         t[ 'rows' ] = PanelRows [ elements: rows,
             area: Region [ (fl) ? 'l0 t0.3 r0 b2.2' : 'l0 t0.3 r0 b0' ] ]
         if [ fl ]
-            t[ 'filter' ] = MenuFilter [ label: filter,
+            t[ 'filter' ] = MenuFilter [ edit: filter,
                 area: Region { l0.7 b1.8 r0.7 h1.2 } ]
         return t
 
@@ -371,6 +497,13 @@ Layer DrawerGround
         cv.fill_color[ '#140a2a99' ]
         cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
         cv.paint[]
+        # a faint line down each side (painted here: style layers on
+        # a drawer subclass went missing once its base was styled)
+        cv.fill_color[ '#ffffff11' ]
+        cv.rect_to[ bounds.x, bounds.y, 1.0, bounds.h ]
+        cv.paint[]
+        cv.rect_to[ bounds.x + bounds.w - 1.0, bounds.y, 1.0, bounds.h ]
+        cv.paint[]
         cv.restore[]
 
 # orbiter's one popover: a menu (the window's, a tray icon's) slides
@@ -388,10 +521,6 @@ element MenuDrawer
     style : CSS {
         area: l-10.91 t0 w10.91 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
-        # a faint line down its right side
-        layers.redge:
-            fill_color: #fff2
-            area: r1px t0 r0 b0
     :open
         area: l0 t0 w10.91 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
@@ -403,9 +532,6 @@ MenuDrawer WinDrawer
     style : CSS {
         area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
-        layers.redge:
-            fill_color: #fff2
-            area: r1px t0 r0 b0
     :open
         area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
@@ -440,9 +566,9 @@ MenuDrawer ExchangeDrawer
 # sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
     style : CSS {
-        area: l-12 t0.91 w12 b1.06, 240ms cubic outward
+        area: l-15 t0.91 w15 b1.06, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0 t0.91 w12 b1.06, 260ms cubic inward
+        area: l0 t0.91 w15 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     }

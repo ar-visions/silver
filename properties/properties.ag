@@ -1278,10 +1278,8 @@ element LaunchPanel
     public  inst      : i32
     # the spec's defaults are the running instance's own values
     public  live_vals : bool
-    # the instance's own switch above its properties: a debug build on
-    # its next start
+    # the instance's own rows above its properties (coverage, pid)
     public  dbg_row   : bool
-    public  dbg_on    : bool
     public  cov_on    : bool        # a coverage build on its next start
     # the running process, shown read-only; 0 = none
     public  pid_val   : i32
@@ -1471,17 +1469,6 @@ element LaunchPanel
         # no export: not compiling, so none of our rows either
         parse_fields[]
         runs : bool [ dbg_row && fields.props.count > 0 ]
-        # the build switch is the instance's, not the module's: orbiter
-        # owns its state, so its value is given every frame
-        if [ runs ]
-            t['lp_debug_lbl'] = LaunchLabel [ label: 'debug',
-                                              area: Region [
-                                                  'l6px t{y}px w{lw - 6.0}px h{rh}px' ] ]
-            t['lp_debug'] = LaunchCheck [ label: '', selected: dbg_on,
-                area: Region [
-                    'l{lw + 1.0}px t{y}px w{rh}px h{rh}px' ] ]
-            y += rh
-            rule_ys.push[ y ]
         # coverage: its build switch, and clear for the one map
         if [ runs ]
             t['lp_coverage_lbl'] = LaunchLabel [ label: 'coverage',

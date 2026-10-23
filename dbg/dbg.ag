@@ -61,9 +61,14 @@ class dbg
     # set_breakpoint results live here: unheld, the pool drain deallocs
     # them and breakpoint_dealloc deletes them out of lldb
     public   bps         : vec breakpoint
+    # steps go by instruction and a stop shows the function's machine
+    # code (into code with no source too: libc's stat)
+    public   asm_view    : bool
 
     intern   impl        : handle
 
+    # the current stop delivered again (asm_view switched)
+    func show               [ ]
     func step_into          [ ]
     func step_over          [ ]
     func step_out           [ ]

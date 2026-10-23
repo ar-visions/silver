@@ -226,6 +226,10 @@ static void on_surface_commit(struct wl_listener *l, void *data) {
         if (t->xdg->parent || fixed) {
             t->sheet = true;
             wlr_xdg_toplevel_set_size(t->xdg, 0, 0);
+        } else {
+            // its first configure answers its first commit
+            wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+            if (g_fullscreen) wlr_xdg_toplevel_set_fullscreen(t->xdg, true);
         }
         return;
     }

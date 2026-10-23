@@ -306,6 +306,13 @@ class LaunchProps
     public module : string
     public props  : vec Prop
 
+# the value of a socket `set <name> <value>`: the rest of the line,
+# so a path with spaces stays whole
+func set_word [ line: string, parts: vec string ] -> string
+    if [ parts.count < 3 ] return ''
+    at : i32 [ parts[ 0 ].count + parts[ 1 ].count + 2 ]
+    return line.mid[ at, line.count - at ]
+
 # a module's plain name: silver-trinity is trinity, the flag namespace
 func module_name [ m: Au_t ] -> string
     nm : string [ m.ident ]
@@ -1803,8 +1810,7 @@ abstract live_app media_app
                          && member.src != typeid[ string ] ]
                         member = null
                     if [ member ]
-                        word : string [
-                            (parts.count >= 3) ? parts[2] : '' ]
+                        word : string set_word[ line, parts ]
                         val : Au.convert[ member.src, word ]
                         if [ val ] aa.set_property[ parts[1], val ]
                         wn.title_refresh[]
@@ -1866,8 +1872,7 @@ abstract live_app media_app
                         # the member's own type does the conversion, so
                         # a bool prop takes a bool and an i32 takes an
                         # i32
-                        word : string [
-                            (parts.count >= 3) ? parts[2] : '' ]
+                        word : string set_word[ line, parts ]
                         val : Au.convert[ member.src, word ]
                         if [ val ]
                             aa.set_property[ parts[1].chars, val ]
@@ -4167,7 +4172,8 @@ Display Window
 
     # the dialog closed: its focus goes with it
     public func nav_close []
-        if [ focus && focus inherits NavigationView ]
+        if [ focus && (focus inherits NavigationView
+                       || focus inherits NavField) ]
             release_focus[ focus ]
         nav_open   = false
         nav_saving = false
@@ -4233,16 +4239,22 @@ Display Window
             restyle    = true
 
     # a key while the dialog is open: it takes them all; escape
-    # and backspace are the bar's, the rest the dialog's
+    # closes it, the arrows and enter are the list's, the bar's
+    # field edits the rest
     func nav_key [ ev: Event ]
         if [ !ev.key.state ] return
         k : i32 [ ev.key.unicode ]
+        nf : bool [ focus && focus inherits NavField ]
         if [ k == 256 ]
             nav_close[]
-        el [ k == 259 && nav_filter.count > 0 ]
-            nav_filter = nav_filter.mid[ 0, nav_filter.count - 1 ]
-        el [ focus && focus inherits NavigationView ]
-            focus.on_key*[ ev ]
+        el [ k == 264 || k == 265 || k == 257 || k == 335 || !nf ]
+            nv : element [ (root && root.elements
+                && root.elements.contains[ 'navigation' ])
+                ? root.elements[ 'navigation' ] : null ]
+            if [ nv ] nv.on_key*[ ev ]
+        el
+            field_key[ focus, ev ]
+            nav_filter = (focus.edit) ? focus.edit : ''
         restyle = true
 
     # an element's word on its history: kept here, and told to the host
@@ -4581,14 +4593,18 @@ Display Window
         return null
 
     public func text_event [ ev: Event ]
-        # the orbiter bar's dialog filters by what is typed
+        # the orbiter bar's dialog filters by what its field holds
         if [ nav_open ]
-            if [ ev.key.text ]
-                nav_filter = '{nav_filter}{ev.key.text}'
+            if [ focus && focus inherits NavField ]
+                field_char[ focus, ev ]
+                nav_filter = (focus.edit) ? focus.edit : ''
                 restyle = true
             return
         ev.target = focus
-        if [ focus && focus.on_char*[ ev ] ] return
+        # a focused element that took the text marks it handled
+        if [ focus ]
+            focus.on_char*[ ev ]
+            if [ ev.no_default ] return
         # typed into an edit element: nowhere else
         ted : editing_layer[]
         if [ ted ]
@@ -4788,7 +4804,10 @@ Display Window
                 set_clipboard[ sel ]
                 return
         ev.target = focus
-        if [ focus && focus.on_key*[ ev ] ] return
+        # a focused element that took the key marks it handled
+        if [ focus ]
+            focus.on_key*[ ev ]
+            if [ ev.no_default ] return
         # esc while dictating CANCELS the take — nothing submits
         if [ ev.key.unicode == 256 && ev.key.state && dict_on ]
             dict_on   = false
@@ -8667,6 +8686,17 @@ element OrbiterBar
                 manual: true, sel_mask: lit, label_px: 14.0,
                 rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
                 area: Region [ 'l{x}px t5px w{wide}px b5px' ] ]
+        # the dialog open: what is typed filters it, in the bar's
+        # field (after 'save as' when saving)
+        if [ ux.nav_open ]
+            fx : f32 [ title_x[] ]
+            if [ ux.nav_saving && ux.screen ]
+                sc : Canvas [ ux.screen ]
+                sc.font_size[ 17 ]
+                fx += sc.measure_text[ 'save as  ' ].w
+            out[ 'nav_field' ] = NavField [ edit: ux.nav_filter,
+                label: '{ux.nav_dir}',
+                area: Region [ 'l{fx}px t0 r1.8 b0' ] ]
         # the app's panel: its toggle at the bar's right end, lit open
         if [ ae && ae.has_panel*[] ]
             out[ 'panel_toggle' ] = TButtons [
@@ -8721,36 +8751,25 @@ element OrbiterBar
             if [ b && b.bounds ] x = max[ x, b.bounds.x + b.bounds.w ]
         return x + 14.0
 
-    # the title, after the arrows; the dialog open, what is typed
-    # to filter it (or a hint), with a caret
+    # the title, after the arrows; the dialog open, its field (and
+    # 'save as' before it)
     func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         t : string [ w.nav_title ]
-        hint : bool [ false ]
-        if [ w.nav_open ]
-            t = w.nav_filter
-            if [ t.count == 0 ]
-                t = '{w.nav_dir}'
-                hint = true
-            if [ w.nav_saving ] t = 'save as  {t}'
+        # the dialog open: the field has the text, 'save as' before it
+        if [ w.nav_open ] t = (w.nav_saving) ? 'save as' : ''
         if [ !t || t.count == 0 ] return
         x : f32 title_x[]
         cv : Canvas [ w.screen ]
         cv.save[]
         cv.font_size[ 17 ]
-        cv.fill_color[ (hint) ? '#ffffff66' : '#fff' ]
+        cv.fill_color[ '#fff' ]
         cv.stroke_width[ 0.0 ]
         cv.draw_text[ t, rect [ x: x, y: 0.0, w: bounds.w - x,
                                 h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
             null ]
         cv.paint[]
-        if [ w.nav_open ]
-            typed : cv.measure_text[ (hint) ? '' : t ]
-            cv.fill_color[ '#fff' ]
-            cv.rect_to[ x + typed.w + 1.0, bounds.h * 0.25, 2.0,
-                        bounds.h * 0.5 ]
-            cv.paint[]
         cv.restore[]
 
 element Control

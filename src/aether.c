@@ -10937,9 +10937,8 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
             ), false, false);
             // the declared default rides the descriptor: reflection reads it
-            string dflt = a->prop_defaults ? (string)get(a->prop_defaults, (Au)mem) : null;
-            if (dflt)
-                e_fn_call(a, fn_def_dflt, a(prop_reg, const_string(chars, dflt->chars)), false, false);
+            if (mem->dflt)
+                e_fn_call(a, fn_def_dflt, a(prop_reg, const_string(chars, mem->dflt)), false, false);
         }
     }
 
@@ -11165,7 +11164,7 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                 u64 prop_traits = mem->traits;
                 if (mem->is_explicit_ref && mem->src->is_primitive)
                     prop_traits &= ~AU_TRAIT_EXPLICIT_REF;
-                e_fn_call(a, fn_def_prop, a(
+                enode class_prop = e_fn_call(a, fn_def_prop, a(
                     type_id,
                     const_string(chars, mem->ident),
                     e_typeid(a, prop_type),
@@ -11183,6 +11182,11 @@ AU_EXPORT none aether_build_module_initializer(aether a, enode init) {
                     mem->meta.m ? e_typeid(a, u(etype, mem->meta.m)) : e_null(a, etypeid(Au_t)),
                     mem->meta.member_b ? e_typeid(a, u(etype, mem->meta.member_b)) : e_null(a, etypeid(Au_t))
                 ), false, false);
+                // its declared default: a class's style text is read
+                // across its bases
+                if (mem->dflt)
+                    e_fn_call(a, fn_def_dflt, a(class_prop,
+                        const_string(chars, mem->dflt)), false, false);
             } else if (mem->member_type == AU_MEMBER_ENUMV) {
                 static int seq = 0;
                 seq++;

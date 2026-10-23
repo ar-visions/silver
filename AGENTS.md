@@ -6803,7 +6803,7 @@ GPU, MoltenVK included).
 Kalen: no SQLite in the browser; site storage is plain files in
 the browser's cache folder (the helper's --data dir). All of it
 in the overlay aura/wpewebkit/. In order:
-1. WRITTEN, not compiled: localStorage is FileStorageArea, a
+1. DONE, not compiled: localStorage is FileStorageArea, a
    readable localStorage.txt per site (key TAB value per line,
    \t \n \r \\ \uXXXX escapes), saved 500 ms after a change and
    on sync/close. SQLiteStorageArea deleted (wpewebkit.deleted).
@@ -6813,7 +6813,7 @@ in the overlay aura/wpewebkit/. In order:
    is gone (NetworkStorageManager).
 1c. OPEN: the page Cache API (CacheStorageDiskStore) and the
    HTTP disk cache still name files by salted SHA-1.
-2. WRITTEN, not compiled: IndexedDB is WebKit's non-SQL
+2. DONE, not compiled: IndexedDB is WebKit's non-SQL
    MemoryIDBBackingStore with a file path: loaded on open,
    rewritten after each writing commit, deleted with the
    database (IDBStorageManager). File <name>.indexeddb.txt in
@@ -7052,7 +7052,7 @@ overlay aura/wpewebkit/). Never ninja by hand in a checkout.
 4. DONE no SQLite storage: Sources.txt lists, HSTS and cookie
    stores on libsoup's folder types, FileStorageArea and
    MemoryIDBBackingStoreFile listed; GSTREAMER_GL needs GStreamer.
-5. WRITTEN, not built: https. glib-networking import with a new
+5. DONE, not built: https. glib-networking import with a new
    mbedtls 4 backend (overlay aura/glib-networking/tls/mbedtls,
    8 files, shaped like its gnutls backend over tls/base). Clean
    -fsyntax-only -Wall -Wextra. The base verifies the peer after
@@ -8516,7 +8516,7 @@ root module (`<planet>/<planet>.ag`) that imports scenes and
 exports its scene names (`export scenes [...]`), so it builds,
 iterates and exports alone; orbiter finds it by the export.
 Never `extend scenes` for a planet.
-1. WRITTEN, building: one root module per planet, each with
+1. DONE, building: one root module per planet, each with
    its own textures/, bakes and `export func <m>_thumbs` (last):
    earth (Moon, EarthPrev, Earth/Ocean/Cloud shaders), mars
    (Mars, TerraMars), milkyway, pluto, titan, enceladus, europa,
@@ -10362,3 +10362,250 @@ as any trinity app (install/build/quake2 --hidden true).
    damaged at the foot (1280x720: 127 of 179 frames); the coded
    height is padded to 64 as the width is (Encoder.coded_h). After:
    0 of 179. trinity tests exit 0.
+
+## Apps bound to silver's folder — live list (Oct 22 2026)
+
+Kalen: orbiter is the user and is not locked. An app orbiter runs
+reaches silver's folder only, never /home. The shell syncs a user
+file into silver when an app needs one, unless a way without copying
+works.
+1. REPLACED by item 6 (no Landlock now). Was: silver-host locked
+   a slot app (one with SILVER_APP_SLOT) with Landlock before it loads: everything under
+   SILVER_ROOT, /tmp, /dev, /run and /proc; /usr /etc /opt /var /snap
+   /bin /sbin /lib* /sys read only. Its HOME and XDG folders are
+   install/home; its own ~/.cache, ~/.local/state folders (<app> and
+   silver-<app>) come over once as hard links (cp -al: no bytes
+   copied). Checked: psx hosted in orbiter logs "psx bound", reads
+   ref/ridge_racer; player run as a slot cannot open a file in
+   ~/Videos (player now says "cannot open" instead of crashing).
+2. DONE the title's file pick: no '..' at /src/silver, a folder
+   outside it lands back on silver, typed results outside it hidden.
+   OPEN: the crumbs above silver (src) and the left column (other
+   projects, home) still show in a pick.
+3. DONE (Kalen: views, not accounts) each slot app has its own view
+   (user + mount namespace, silver-host bound_view): /home, /media and
+   /run/user/<id>/gvfs, doc are empty; the real tree waits at /mnt,
+   which the lock keeps from the app; all powers dropped after. No
+   view, no run (Kalen: no fallback to Landlock alone). Needs
+   support/apparmor/silver-host in /etc/apparmor.d (Ubuntu strips a
+   namespace's powers otherwise; installed by Kalen Oct 22).
+   Sharing while it runs: <any app host> --view-share <pid> <app>
+   <file|folder> [rw] binds it at install/shared/<app>/<pid>/<name>
+   (read only unless rw; a folder with what is mounted in it);
+   --view-unshare <pid> <app> <name>. A starting app clears the
+   share folders of instances gone. Checked: ~/Videos shared as a
+   folder (listed, read, a new file refused) beside one file.
+   Checked: /home empty inside; a ~/Videos .agi shared, read inside,
+   a write refused (read-only), gone after unshare; the player opens
+   neither /home nor /mnt paths.
+   DONE the navigator shares (Kalen: only orbiter's navigator, never
+   trinity's in-app one): a pick for a running app's live argument
+   (pick_deliver) outside silver goes through orbiter share_into:
+   the app's host --view-share, then `set <arg> <shared path>`.
+   Checked hidden: player started on a ~/Videos take ('no file'),
+   the title's navigator opened at ~/Videos, the pick played it
+   (h.265 1888x888 decoded, the app's own shot shows the video).
+   player's file is Live now (opens on a change).
+   psx (Kalen): a disc is its folder (disc has the Directory
+   control; Cdrom.insert finds the .cue in it); orbiter's pick takes
+   a folder when the default prop's control is Directory (a control
+   with no members arrives as its name). States go in psx's storage
+   by the folder's name (a shared folder is read only). Checked
+   hidden: psx on ref/ridge_racer, the navigator's double-click on a
+   folder outside silver shared it read only, psx booted it to the
+   title screen.
+   Fixed on the way: trinity's socket `set` kept the first word of a
+   value (a path with a space was cut): set_word takes the rest of
+   the line. orbiter's slot player with no sound device stopped
+   draining the ring, so an app pacing on it (host_audio_pace) hung,
+   and psx's disc change hung joining its sound thread: the ring now
+   plays out in time, unheard (devices.c slot_player_run).
+   DONE a pick for an app not yet running: its launch line keeps
+   the picked path; silver-host, as the app starts, shares each
+   path on its line the app cannot reach (bound_args, read only)
+   and puts the share's path in its place. Checked: player run as
+   a slot on a ~/Videos take decodes it (h.265 1888x888). NOT
+   driven through orbiter's pick (the line is the same).
+   OPEN: the properties panel's path fields, drops, unsharing.
+4. OPEN the exchange (an agent) started inside a bound app: the agent
+   needs ~/.claude; orbiter should run it for the app.
+5. DONE (Oct 23) builds leave the app: its holder runs them (item 6),
+   as the user, with the real home (~/.cargo, ~/.gitconfig reach).
+6. DONE (Oct 23, Kalen: no Landlock; "use your head what is the best
+   actual practice"; every app keeps the network) the view is now
+   Flatpak's and Chrome's way, and Landlock is gone from silver-host:
+   - the holder (the slot process orbiter's host spawned) makes a
+     user + mount namespace, builds the app's root at /mnt there,
+     then a pid namespace: pid 1 (view_init) enters the root by
+     pivot_root, mounts its own /proc, drops the old root, forks the
+     app (pid 2) and reports how it ended; the holder ends the same
+     way (signal or exit code). The holder forwards TERM, INT, HUP,
+     QUIT, USR1, USR2 to the app.
+   - the root: /usr /etc /opt /bin /sbin /lib* /sys
+     /var/cache/fontconfig /run/systemd/resolve /tmp/.X11-unix and
+     silver's folder read only; its own /tmp, /dev/shm, /dev/pts
+     (new instance); /dev with null zero full random urandom tty dri
+     snd kfd nvidia*; writable: install/home/<app> (HOME; the old
+     shared install/home's folders come over as hard links),
+     install/tmp (a folder of its own, install/tmp/view/<app>-<slot>,
+     with its log bound in), install/shared/<app>/<slot> (a tmpfs the
+     shares land in), /run/user/<uid> (<rt>/silver-view/<app>-<slot>,
+     the pulse and pipewire sockets and the X cookie bound in). The
+     host finds its socket as before: <rt>/trinity-<app>-<slot>.sock
+     is a link into that folder.
+   - the app: no capabilities, no_new_privs, a seccomp filter
+     (view_filter: ptrace, process_vm_*, pidfd_getfd, mount and the
+     new mount calls, unshare, setns, new namespaces by clone,
+     clone3 (ENOSYS: libc falls back), bpf, perf_event_open, key
+     calls, modules, kexec, io_uring, userfaultfd, handle opens,
+     TIOCSTI / TIOCLINUX, x32 numbers, others), and an environment
+     kept to what drawing, sound and silver need (view_env: no
+     tokens, SSH_AUTH_SOCK, DBUS, GPG).
+   - its pid as the host sees it: the holder reads it from the app's
+     first broker message (SCM_CREDENTIALS) and answers it; the app
+     sets SILVER_HOST_PID and writes it into its slot (app_pid), so
+     orbiter stops, attaches to, measures and pulls textures from the
+     app itself. The supervisor reads a slot's exit from the process
+     it spawned (g_slot_proc). devices: t->pid is host_self_pid.
+   - builds: rebuild_spawn in a bound app asks the holder (`build
+     <clean>` on the broker socket; `built <status>` back). The
+     holder builds only the app's own module: a path from the app
+     (first written so, fixed Oct 23) let it build a module it wrote
+     in its home, whose export funcs and > lines ran as the user.
+     A bound app cannot launch another app (au_live_take_switch).
+   - shares: --view-share <pid of the app or holder> <app> <file>
+     [rw] finds the holder (the process whose children have a new
+     pid namespace), enters its namespaces, clones the file's mount
+     (open_tree), makes it read only, then move_mount into the share
+     tmpfs: it reaches the app as /src/silver/install/shared/<app>/
+     <slot>/<name>. orbiter's share_into names it by slot now.
+   Checked hidden (a harness built from silver-host.c, run from
+   platform/native/build so the apparmor profile applies): pid 2
+   inside, the host pid reported; /home, /run/user/<uid>/bus and the
+   SSH agent absent; /etc, libc, silver's folder readable; writes to
+   install/bin, silver's folder and /usr refused (read-only), to its
+   home, tmp and /tmp allowed; 2 processes in /proc, /proc/1/exe
+   refused, orbiter's pid unreachable; ptrace, unshare, mount,
+   TIOCSTI refused; fork, threads and the network work; exit code
+   passed through. A live share of ~/.bashrc appeared read only and
+   went on unshare. player bound alone: decodes a ~/Videos take,
+   sound plays (AudioOut 48000 Hz), env clean. A touched player.ag
+   was built by the holder and reloaded (the player then crashed:
+   it does the same unbound, an old player reload bug, OPEN). Hidden
+   orbiter hosting player: bound, the socket answers through the
+   link, the panel shows the app's own pid, orbiter's pidfd_getfd of
+   its textures works. NOT seen: the frame in the pane (the pane was
+   empty in that run; not chased).
+   Needs: properties built --clean after trinity's rebuild (a stale
+   one crashed orbiter in LaunchPanel_init).
+7. DECIDED (Kalen, Oct 23: "silver cant secure other operating
+   systems better than its own") X11 stays as it is: an app opens
+   its own window, so on an X11 desktop it reaches the X server, and
+   X lets any client read the screen and input (a bound player's
+   `shot` returned the whole desktop). orbiter-os has no X server.
+8. OPEN a debug launch's lldb attach to a bound app: the pid is
+   right now; not driven.
+9. DONE (Oct 23, Kalen: Wayland programs broke out onto the
+   desktop; then "as bound as the others but WORK") the console was
+   bound with orbiter's Wayland display passed as a name and its bus
+   as an address, so neither reached its view and GTK fell back to
+   X. orbiter now passes full paths (run_program: <rt>/wayland-0-
+   orbiter; open_program: the bus as its path, console builds
+   unix:path=), so they are shared like any launch path. The opener
+   (trinity-orbiter.sock) is shared too: OPEN, a program in the
+   console can send orbiter any socket command, not only open.
+   Checked hidden: console bound, gnome-calculator in its own user
+   namespace (pid 13 inside) on orbiter's Wayland, drawn in the pane.
+10. DONE (Oct 23, Kalen: the paths are the standard places, "that's
+   the map") inside, an app uses the standard places and each is its
+   own folder outside: /tmp = install/tmp/view/<app>-<slot> (emptied
+   at each start), /run/user/<uid> = <rt>/silver-view/<app>-<slot>,
+   ~ = /home/<user> backed by install/home/<app> (Kalen's pick);
+   XDG_*_HOME and TMPDIR unset. A share is at its own real path
+   (~/Videos/x.mp4 inside is that file, read only; the placeholder it
+   covers is in the app's home); launch args are no longer rewritten,
+   and --view-unshare takes the path. install/shared is gone.
+   install/home and install/tmp under silver's folder are read-only
+   covers inside (the app's log bound in at its path).
+   Checked (harness): /tmp/mapped.txt landed in install/tmp/view/
+   vtest-7, HOME /home/kalen, ~/.bashrc shared and unshared live,
+   install/tmp read only; player bound plays a ~/Videos take with
+   sound.
+
+## Text fields on trinity's editable layer — live list (Oct 23 2026)
+
+Kalen: the aura URL in the system bar took no arrow keys; every
+field that is typed into uses trinity's editable layer, never a
+string orbiter appends to. trinity: the layer gained Delete, Home,
+End, ctrl/cmd + a c x v (one line pasted) and `secret` (a dot a
+character; Layer's last member); a key or character the focused
+element marks no_default goes no further; field_key / field_char
+(element.ag) edit first so the app then reads `edit`.
+1. DONE the system bar's URL (BarTitle bar_url): its field.
+2. DONE the pane title's find, new file name and navigator
+   search read the title's edit (were appended beside it).
+3. DONE orbiter.filter_text (written, never read) removed.
+4. DONE the menu drawer's and apps screen's MenuFilter (tray):
+   a field; the first key brings it up focused (filter_focus).
+5. DONE the console's log filter (ConFind): a field.
+6. DONE the login password (LoginPass): a secret field.
+7. DONE trinity's orbiter-bar navigator filter (NavField).
+Find / replace / pattern rows pass their keys to orbiter now
+(Enter never reached it before).
+8. DONE (Kalen) the menu drawer's entries by the arrows: up /
+   down light one (orbiter menu_lit; TrayRow :chosen, the hover's
+   look; MenuBuild keeps it in view), Enter runs it; a text box in
+   the menu (not its filter) keeps the arrows; a filter change
+   drops the choice.
+Also: the layer measures each caret place (Layer.col_xs, after
+secret): selections and clicks follow the real text, not the width
+of an x. A navigator with no orbiter bar (player) has the field
+along the top of its list.
+Seen hidden (Oct 23): URL bar (select all, arrows, Home / End, a
+click mid-word, Enter loaded example.org, Esc), drawer arrows and
+Enter (New instance started slot 2), drawer filter, apps filter
+(Delete), console filter (emptied: pill gone, console focused),
+login (dots, Backspace, Enter signed in), pane title search,
+player's and aeon's navigator field.
+OPEN: the login dots are the font's bullet at 17 px (smaller than
+the old drawn dots); aeon's view chip covers the bar field's right
+part; Layer grew two members: every trinity app built before needs
+a --clean build (orbiter's imports, aura, player, aeon done).
+OPEN silver: a style block's state named `:lit` was joined with the
+line after it (`:litlayers.body:` in the compiled CSS): the block
+was disabled. Not chased; the state is `:chosen`.
+9. BUILT, not seen (Kalen, Oct 23) in an open bar drawer, left /
+   right open the next name's drawer along the bar (bar_step: the
+   selected MenuTop / BarCrumb, its siblings by x, opened as a
+   press would); the drawer's filter or a text box keeps them.
+   Fixed with it: the path drawer's arrows stopped on its
+   separator after Navigate (drawer_choices skips rules).
+10. BUILT, not seen (Kalen, Oct 23) an Alt tap (Alt down and up,
+   no key or press between) lights the app's name at the bar's
+   start (bar_hl, the name's `selected`); left / right move the
+   light along the bar, down or enter opens that name's drawer,
+   escape, a press or another tap lets the bar go; a tap with a
+   drawer open shuts it. Not F keys (Kalen: Fn on laptops).
+   Limit: a plain text field that takes its own keys (no app
+   forwarding) never passes Alt on.
+11. BUILT, not seen (Kalen, Oct 23) ctrl / cmd + space: the
+   navigator, as the bar's globe (globe_press, shared with the
+   click); the globe is one of the bar's names for the arrows: left
+   past the first name lights it (a drawer open shuts), down or
+   enter opens the navigator.
+12. DONE (Kalen, Oct 23) featured/blender: blender.org's Linux
+   tarball (the one aeon imports), install/bin/blender, `export
+   extensions ['.blend']` and `export run ['blender']` (how a
+   program module's file runs: that program, the file after it).
+   orbiter: the export registry reads run: (export_run), Editor
+   program_for gives the line, default_view_for says 'program',
+   mount runs it in the pane (orbiter run_line). silver: a build
+   none module writes its exports too (exporter). console: its
+   programs get XDG_CURRENT_DESKTOP=orbiter (Blender took GNOME's
+   for a frameless shell and died: "xdg_surface has never been
+   configured"). wayland.c: a window's first commit is answered
+   with its configure. Seen hidden: flower888.16.blend opened in
+   Blender 4.5.14 in the pane, its scene loaded.
+   OPEN: before install a .blend opens as hex (no prompt to
+   install); the module's name in the registry is silver-blender
+   (module_of_export finds no root folder for featured modules).

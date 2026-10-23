@@ -375,12 +375,30 @@ element NavigationView
 
     func render [] -> Elements
         out : Elements []
-        # brought up: it takes the keys (arrows choose, enter goes)
-        if [ ux && ux.focus != a ] ux.set_focus[ a ]
+        # brought up: it takes the keys (arrows choose, enter goes),
+        # unless the bar's field has them
+        if [ ux && ux.focus != a
+             && !(ux.focus && ux.focus inherits NavField) ]
+            ux.set_focus[ a ]
         hits[]
+        # no orbiter bar to type in: the field heads the list
+        own : bool [ ux && !bar_in[ ux.root ] ]
+        if [ own ]
+            out[ 'nav_field' ] = NavField [ edit: ux.nav_filter,
+                label: '{ux.nav_dir}',
+                area: Region { l0.6 t0 r0.6 h1.3 } ]
         out[ 'rows' ] = NavRows [ scroll_fade: 24.0,
-                                  area: Region { l0 t0 r0 b0 } ]
+            area: Region [ (own) ? 'l0 t1.3 r0 b0' : 'l0 t0 r0 b0' ] ]
         return out
+
+    # an orbiter bar mounted anywhere under e
+    func bar_in [ e: element ] -> bool
+        if [ !e ] return false
+        if [ e inherits OrbiterBar ] return true
+        if [ !e.elements ] return false
+        for [ c: element, k: string ] in e.elements
+            if [ c != a && bar_in[ c ] ] return true
+        return false
 
     func pick [ h: FindHit ]
         if [ h && h.file ] ux.nav_pick[ h.file ]
@@ -575,3 +593,29 @@ element NavRows
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, null ]
         cv.restore[]
+
+# what is typed to filter the dialog, in the orbiter bar: the folder
+# shown dim while empty. the Window hands it its keys
+element NavField
+    focusable : true
+    mutable seeded : bool
+    style : CSS {
+        layers.face:
+            label_color: #ffffff66
+            label_size: 17
+            editable: true
+            label_align: 0.0 0.5
+        :has_value
+            layers.face:
+                label_color: #ffffff
+    }
+
+    # up: it takes the focus, the caret after what is in it
+    func render [] -> Elements
+        if [ !seeded && ux ]
+            seeded = true
+            n : i32 [ (edit) ? edit.count : 0 ]
+            sel_col    = n
+            anchor_col = n
+            ux.set_focus[ a ]
+        return null

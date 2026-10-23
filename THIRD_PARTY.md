@@ -116,6 +116,7 @@ Keep it in step with the imports.
 | Material Symbols: apps, list, grid_view (white fill added) | orbiter/images (apps_grid, view_list, grid_view) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: delete_sweep (white fill added) | orbiter/images/delete_sweep.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: find_replace (white fill added) | orbiter/images/find_replace.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: edit (white fill added) | orbiter/images/edit.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: eject (white fill added) | orbiter/images/eject.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: person (white fill added) | orbiter/images/person.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
