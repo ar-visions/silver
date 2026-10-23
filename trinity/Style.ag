@@ -803,10 +803,13 @@ class Style
 
     # the class's style with its bases': one set, read once
     func css_flat [ t: Au_t, own: string ] -> string
+        # its own last: the instance's, so an older build keeps it
         chain : vec string []
-        for [ c : t, c && c != typeid[ Au ], c = c.context ]
+        for [ c : t.context, c && c != typeid[ Au ], c = c.context ]
             cs : string class_css[ c ]
             if [ cs ] chain.insert[ cs, 0 ]
+        mine : string (own && own.count > 0) ? own : class_css[ t ]
+        if [ mine ] chain.push[ mine ]
         if [ chain.count < 2 ] return own
         flat : CSSNode css_tree[ chain[0] ]
         for [ i: i32 1, i < chain.count, i += 1 ]
