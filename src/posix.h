@@ -58,7 +58,16 @@ typedef int64_t __int64_t;
 #define utimbuf _utimbuf
 #define utime   _utime
 
-// mingw declares off_t, mode_t, and pid_t in <sys/types.h>
+// the ucrt declares off_t from <sys/types.h> only when non-standard names are
+// enabled; llvm's headers want it either way, so fill the gap when it is off
+// mirrors the ucrt's own condition in <sys/types.h>, inverted: define it only
+// in the case where they don't
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) || \
+      (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+typedef long long off_t;
+#endif
+typedef uint16_t mode_t;
+typedef int      pid_t;
 
 struct dirent {
     char d_name[260];  // Name of the file
@@ -160,6 +169,12 @@ AU_EXPORT FILE*       popen   (const char* cmd, const char* mode);
 AU_EXPORT int         pclose  (FILE* stream);
 AU_EXPORT int         dup     (int fd);
 AU_EXPORT int         isatty  (int fd);
+// the ucrt spells it with an int count, and declares it only when
+// non-standard names are on -- ours stands in just when they're off
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) || \
+      (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+AU_EXPORT char*       getcwd  (char* buf, size_t size);
+#endif
 // the crt declares getpid only when it is feeling non-standard, and
 // -fno-ms-compatibility turns that off -- so ours, aliased like the execs
 AU_EXPORT pid_t       au_getpid(void);
@@ -347,6 +362,14 @@ typedef union {
 #define PTHREAD_COND_INITIALIZER   {0}
 #define PTHREAD_RWLOCK_INITIALIZER {0}
 
+// INIT_ONCE is pointer-sized; all-zero is its start state
+typedef union {
+    void*   __align;
+    uint8_t __opaque[8];
+} pthread_once_t;
+
+#define PTHREAD_ONCE_INIT          {0}
+
 typedef uintptr_t           pthread_t;
 typedef void*               pthread_attr_t;
 
@@ -371,6 +394,7 @@ AU_EXPORT int pthread_cond_destroy    (pthread_cond_t* cv);
 AU_EXPORT int pthread_cond_wait       (pthread_cond_t* cv, pthread_mutex_t* m);
 AU_EXPORT int pthread_cond_broadcast  (pthread_cond_t* cv);
 AU_EXPORT int pthread_cond_signal     (pthread_cond_t* cv);
+AU_EXPORT int pthread_once            (pthread_once_t* o, void (*init)(void));
 AU_EXPORT int pthread_rwlock_init     (pthread_rwlock_t* rw, void* attr);
 AU_EXPORT int pthread_rwlock_destroy  (pthread_rwlock_t* rw);
 AU_EXPORT int pthread_rwlock_rdlock   (pthread_rwlock_t* rw);
@@ -410,8 +434,10 @@ struct timespec;
 AU_EXPORT int  clock_gettime(int clk, struct timespec* ts);
 AU_EXPORT int  strcasecmp   (const char* a, const char* b);
 
-// same layout winsock uses, and the same guard so both can appear
-#ifndef _TIMEVAL_DEFINED
+// same layout winsock uses, so both can appear. winsock.h defines it
+// behind no guard of its own, so _WINSOCKAPI_ is what names it here
+#if !defined(_TIMEVAL_DEFINED) && !defined(_WINSOCKAPI_) && \
+    !defined(_WINSOCK2API_)
 #define _TIMEVAL_DEFINED
 struct timeval {
     long tv_sec;
@@ -477,6 +503,29 @@ typedef struct _fd_set_ {
 // named pipes only; winsock owns the name `select` for sockets
 AU_EXPORT int     pipe_select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _fd_set_* exceptfds, struct _timeval_* timeout);
 
+// same layout winsock uses, and the same guard so both can appear
+#ifndef POLLIN
+#define POLLRDNORM 0x0100
+#define POLLRDBAND 0x0200
+#define POLLIN     (POLLRDNORM | POLLRDBAND)
+#define POLLWRNORM 0x0010
+#define POLLOUT    (POLLWRNORM)
+#define POLLERR    0x0001
+#define POLLHUP    0x0002
+#define POLLNVAL   0x0004
+#endif
+
+#ifndef _WINSOCK2API_
+struct pollfd {
+    _SOCKET_ fd;
+    short    events;
+    short    revents;
+};
+#endif
+
+typedef unsigned long nfds_t;
+AU_EXPORT int poll(struct pollfd* fds, nfds_t n, int timeout);
+
 // User permissions
 #define S_IRUSR 0000400  // Read permission, owner
 #define S_IWUSR 0000200  // Write permission, owner  
@@ -525,11 +574,21 @@ AU_EXPORT int     pipe_select(int nfds, _fd_set_* readfds, _fd_set_* writefds, _
 
 typedef unsigned long sigset_t;
 
+// a three-argument handler names this in its signature; no field of
+// it is ever read here, so the posix shape is all that is needed
+typedef struct {
+    int   si_signo;
+    int   si_errno;
+    int   si_code;
+    void* si_addr;
+    pid_t si_pid;
+} siginfo_t;
+
 struct sigaction {
     void   (*sa_handler)(int);
     sigset_t sa_mask;
     int      sa_flags;
-    void   (*sa_sigaction)(int, void*, void*);
+    void   (*sa_sigaction)(int, siginfo_t*, void*);
 };
 
 typedef struct { void* ss_sp; int ss_flags; size_t ss_size; } stack_t;
@@ -566,6 +625,12 @@ typedef struct {
 
 typedef struct { int flags; } posix_spawnattr_t;
 
+// a spawn here always gets its own process group, which is as close
+// as windows comes to a session; the flag is recorded, not acted on
+#define POSIX_SPAWN_SETSID    0x0001
+#define POSIX_SPAWN_SETSIGDEF 0x0002
+#define POSIX_SPAWN_SETSIGMASK 0x0004
+
 AU_EXPORT int sigaction (int sig, const struct sigaction* act, struct sigaction* old);
 AU_EXPORT int sigemptyset(sigset_t* set);
 AU_EXPORT int sigaddset (sigset_t* set, int sig);
@@ -582,6 +647,10 @@ AU_EXPORT int posix_spawn_file_actions_destroy    (posix_spawn_file_actions_t*);
 AU_EXPORT int posix_spawn_file_actions_adddup2    (posix_spawn_file_actions_t*, int fd, int newfd);
 AU_EXPORT int posix_spawn_file_actions_addopen    (posix_spawn_file_actions_t*, int fd, const char* path, int oflag, unsigned mode);
 AU_EXPORT int posix_spawn_file_actions_addchdir_np(posix_spawn_file_actions_t*, const char* path);
+AU_EXPORT int posix_spawnattr_init    (posix_spawnattr_t*);
+AU_EXPORT int posix_spawnattr_destroy (posix_spawnattr_t*);
+AU_EXPORT int posix_spawnattr_setflags(posix_spawnattr_t*, short flags);
+AU_EXPORT int posix_spawnattr_getflags(const posix_spawnattr_t*, short* flags);
 AU_EXPORT int posix_spawn(pid_t* pid, const char* path,
                           const posix_spawn_file_actions_t* fa,
                           const posix_spawnattr_t* attr,
@@ -614,6 +683,11 @@ typedef __int64_t ssize_t;
 #define le64toh(x) OSSwapLittleToHostInt64(x)
 #endif
 typedef fd_set  _fd_set_;
+
+// on windows these route a synthetic inotify fd; here they are
+// the real calls, so shared code can spell it one way
+#define au_read  read
+#define au_write write
 
 #endif
 

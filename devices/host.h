@@ -8,6 +8,16 @@
 extern "C" {
 #endif
 
+// a dll exports nothing unnamed; devices owns these, others import
+#ifndef AU_LINK_devices
+#ifdef _WIN32
+#define AU_LINK_devices __attribute__((dllimport))
+#else
+#define AU_LINK_devices
+#endif
+#endif
+#define PLATFORM_API AU_LINK_devices
+
 /* one window + input + gpu-surface layer for desktop and mobile.
    key codes, mods and actions keep GLFW's numbering so app code
    that stored key values keeps working. no vulkan here: the app
@@ -129,129 +139,129 @@ typedef void (*platform_focus_fn)    (platform_window* w, int focused);
 typedef bool (*platform_loop_fn)     (void* ctx);
 
 /* lifecycle */
-bool  platform_init      (void);
-void  platform_terminate (void);
+PLATFORM_API bool  platform_init      (void);
+PLATFORM_API void  platform_terminate (void);
 /* desktop: calls loop until it returns false. ios: never returns */
-int   platform_run       (platform_loop_fn loop, void* ctx);
-void  platform_poll      (void);
-double platform_time     (void);
+PLATFORM_API int   platform_run       (platform_loop_fn loop, void* ctx);
+PLATFORM_API void  platform_poll      (void);
+PLATFORM_API double platform_time     (void);
 
 /* window */
-platform_window* platform_window_create (int width, int height, const char* title, bool visible);
-void  platform_window_destroy           (platform_window* w);
-void  platform_window_show              (platform_window* w);
+PLATFORM_API platform_window* platform_window_create (int width, int height, const char* title, bool visible);
+PLATFORM_API void  platform_window_destroy           (platform_window* w);
+PLATFORM_API void  platform_window_show              (platform_window* w);
 // brought to the front with the keyboard, over other windows
-void  platform_window_raise             (platform_window* w);
-void  platform_window_hide              (platform_window* w);
-int   platform_window_refresh_hz        (platform_window* w);
+PLATFORM_API void  platform_window_raise             (platform_window* w);
+PLATFORM_API void  platform_window_hide              (platform_window* w);
+PLATFORM_API int   platform_window_refresh_hz        (platform_window* w);
 /* the monitor the window is on: its place and size in pixels */
-void  platform_screen_rect              (platform_window* w, int* x, int* y, int* width, int* height);
-void  platform_window_presented         (platform_window* w, int pw, int ph);
-bool  platform_window_should_close      (platform_window* w);
-void  platform_window_set_title         (platform_window* w, const char* title);
-void  platform_window_set_resizable     (platform_window* w, bool on);
-void  platform_window_set_size          (platform_window* w, int width, int height);
-void  platform_window_get_size          (platform_window* w, int* width, int* height);
-void  platform_window_get_framebuffer   (platform_window* w, int* width, int* height);
-void  platform_window_get_pos           (platform_window* w, int* x, int* y);
-void  platform_window_set_pos           (platform_window* w, int x, int y);
-float platform_window_scale             (platform_window* w);
-void  platform_window_set_aspect        (platform_window* w, int num, int den);
-void  platform_window_set_fullscreen    (platform_window* w, bool on);
-bool  platform_window_fullscreen        (platform_window* w);
-void  platform_window_safe_area         (platform_window* w, int* top, int* left, int* bottom, int* right);
-void  platform_window_native            (platform_window* w, platform_native* out);
+PLATFORM_API void  platform_screen_rect              (platform_window* w, int* x, int* y, int* width, int* height);
+PLATFORM_API void  platform_window_presented         (platform_window* w, int pw, int ph);
+PLATFORM_API bool  platform_window_should_close      (platform_window* w);
+PLATFORM_API void  platform_window_set_title         (platform_window* w, const char* title);
+PLATFORM_API void  platform_window_set_resizable     (platform_window* w, bool on);
+PLATFORM_API void  platform_window_set_size          (platform_window* w, int width, int height);
+PLATFORM_API void  platform_window_get_size          (platform_window* w, int* width, int* height);
+PLATFORM_API void  platform_window_get_framebuffer   (platform_window* w, int* width, int* height);
+PLATFORM_API void  platform_window_get_pos           (platform_window* w, int* x, int* y);
+PLATFORM_API void  platform_window_set_pos           (platform_window* w, int x, int y);
+PLATFORM_API float platform_window_scale             (platform_window* w);
+PLATFORM_API void  platform_window_set_aspect        (platform_window* w, int num, int den);
+PLATFORM_API void  platform_window_set_fullscreen    (platform_window* w, bool on);
+PLATFORM_API bool  platform_window_fullscreen        (platform_window* w);
+PLATFORM_API void  platform_window_safe_area         (platform_window* w, int* top, int* left, int* bottom, int* right);
+PLATFORM_API void  platform_window_native            (platform_window* w, platform_native* out);
 /* kms: scan out a dma-buf fd as the display framebuffer (no-op elsewhere) */
-void  platform_window_present_dmabuf    (int fd, int width, int height, int stride, uint32_t fourcc);
-int   platform_is_kms                   (void);  /* guest console: no window system */
-int   platform_kms_scanout_buffer      (int* w, int* h, int* stride);
+PLATFORM_API void  platform_window_present_dmabuf    (int fd, int width, int height, int stride, uint32_t fourcc);
+PLATFORM_API int   platform_is_kms                   (void);  /* guest console: no window system */
+PLATFORM_API int   platform_kms_scanout_buffer      (int* w, int* h, int* stride);
 /* kms: scanout on drm card<minor> (vulkan's), page flips, cursor plane */
-int   platform_kms_open                 (int minor);
-int   platform_kms_add_fb               (int fd, int w, int h, int pitch);
-void  platform_kms_clear_fbs            (void);
-int   platform_kms_back                 (void);
-void  platform_kms_wait                 (void);
-void  platform_kms_flip                 (int slot);
-void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
+PLATFORM_API int   platform_kms_open                 (int minor);
+PLATFORM_API int   platform_kms_add_fb               (int fd, int w, int h, int pitch);
+PLATFORM_API void  platform_kms_clear_fbs            (void);
+PLATFORM_API int   platform_kms_back                 (void);
+PLATFORM_API void  platform_kms_wait                 (void);
+PLATFORM_API void  platform_kms_flip                 (int slot);
+PLATFORM_API void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
 /* the pointer's easing: share of the way per display refresh */
-void  platform_cursor_ease              (float amount);
-void  platform_key_repeat               (int delay_ms, int rate);
-int   platform_kms_mode_count           (void);
-int   platform_kms_mode_info            (int i, int* w, int* h, int* hz);
-int   platform_kms_mode_current         (void);
-int   platform_kms_set_mode             (int i);
-void  platform_window_set_user          (platform_window* w, void* user);
-void* platform_window_get_user          (platform_window* w);
+PLATFORM_API void  platform_cursor_ease              (float amount);
+PLATFORM_API void  platform_key_repeat               (int delay_ms, int rate);
+PLATFORM_API int   platform_kms_mode_count           (void);
+PLATFORM_API int   platform_kms_mode_info            (int i, int* w, int* h, int* hz);
+PLATFORM_API int   platform_kms_mode_current         (void);
+PLATFORM_API int   platform_kms_set_mode             (int i);
+PLATFORM_API void  platform_window_set_user          (platform_window* w, void* user);
+PLATFORM_API void* platform_window_get_user          (platform_window* w);
 
 /* input */
-int   platform_get_key          (platform_window* w, int key);
-int   platform_get_mods         (platform_window* w);
-void  platform_set_cursor       (platform_window* w, int kind);
+PLATFORM_API int   platform_get_key          (platform_window* w, int key);
+PLATFORM_API int   platform_get_mods         (platform_window* w);
+PLATFORM_API void  platform_set_cursor       (platform_window* w, int kind);
 /* mouse lock: hide the cursor while on (the kind comes back on release), warp it (client px) */
-void  platform_cursor_lock      (platform_window* w, int on);
-void  platform_warp_cursor      (platform_window* w, int x, int y);
-void  platform_set_clipboard    (platform_window* w, const char* text);
-const char* platform_get_clipboard (platform_window* w);
+PLATFORM_API void  platform_cursor_lock      (platform_window* w, int on);
+PLATFORM_API void  platform_warp_cursor      (platform_window* w, int x, int y);
+PLATFORM_API void  platform_set_clipboard    (platform_window* w, const char* text);
+PLATFORM_API const char* platform_get_clipboard (platform_window* w);
 /* a picture on the clipboard, as png bytes */
-void  platform_set_clipboard_png (platform_window* w, const uint8_t* data, int n);
-const uint8_t* platform_get_clipboard_png (platform_window* w, int* n);
-void  platform_show_keyboard    (platform_window* w, bool show);
+PLATFORM_API void  platform_set_clipboard_png (platform_window* w, const uint8_t* data, int n);
+PLATFORM_API const uint8_t* platform_get_clipboard_png (platform_window* w, int* n);
+PLATFORM_API void  platform_show_keyboard    (platform_window* w, bool show);
 
 /* joystick: polled. buttons/hats 0/1 per index, axes -1..1 */
-bool  platform_joystick_present (int j);
-const uint8_t* platform_joystick_buttons (int j, int* count);
-const float*   platform_joystick_axes    (int j, int* count);
-const uint8_t* platform_joystick_hats    (int j, int* count);
+PLATFORM_API bool  platform_joystick_present (int j);
+PLATFORM_API const uint8_t* platform_joystick_buttons (int j, int* count);
+PLATFORM_API const float*   platform_joystick_axes    (int j, int* count);
+PLATFORM_API const uint8_t* platform_joystick_hats    (int j, int* count);
 // device motion: accelerometer (g) and gyro (rad/s), false where there is none
-bool  platform_motion(float* accel, float* gyro);
+PLATFORM_API bool  platform_motion(float* accel, float* gyro);
 // interface orientation: 0 portrait, 1 landscape-left, 2 landscape-right.
 // the accelerometer axes are DEVICE-relative, so a tilt-steered app must
 // know which way round the interface is or its steering inverts
-int   platform_orientation(void);
+PLATFORM_API int   platform_orientation(void);
 // a stable per-install id. ios gives identifierForVendor; android ANDROID_ID;
 // macos the hardware uuid. empty where the platform has no notion of one
-const char* platform_device_id(void);
+PLATFORM_API const char* platform_device_id(void);
 /* peer-to-peer, the GKSession shape the old game used: send bytes to the peer,
    get bytes back. GKSession itself is gone from ios; MultipeerConnectivity is
    its successor and takes the same two calls. */
 // advertise and browse under `service` (a bonjour type, <= 15 chars, a-z0-9-)
-bool  platform_peer_start(const char* service);
-void  platform_peer_stop(void);
+PLATFORM_API bool  platform_peer_start(const char* service);
+PLATFORM_API void  platform_peer_stop(void);
 // true once a peer is joined
-bool  platform_peer_connected(void);
+PLATFORM_API bool  platform_peer_connected(void);
 // the joined peer's display name, empty when unpaired
-const char* platform_peer_name(void);
+PLATFORM_API const char* platform_peer_name(void);
 // reliable maps to MCSessionSendDataReliable, else unreliable
-void  platform_peer_send(const void* data, int len, bool reliable);
+PLATFORM_API void  platform_peer_send(const void* data, int len, bool reliable);
 // drain one queued packet into `out`; returns its length, 0 when empty.
 // MCSession delivers off-thread, so packets are queued and polled here
-int   platform_peer_poll(void* out, int max);
+PLATFORM_API int   platform_peer_poll(void* out, int max);
 
 /* microphone: the input the system has selected for recording, mono s16 at the
    rate it runs (written to *rate). read returns the frames now available, 0 when
    none yet, negative once the device is gone */
-bool  platform_mic_open (int* rate);
-int   platform_mic_read (int16_t* out, int frames);
-void  platform_mic_close(void);
+PLATFORM_API bool  platform_mic_open (int* rate);
+PLATFORM_API int   platform_mic_read (int16_t* out, int frames);
+PLATFORM_API void  platform_mic_close(void);
 
 /* callbacks */
-void  platform_set_key_callback    (platform_window* w, platform_key_fn fn);
-void  platform_set_char_callback   (platform_window* w, platform_char_fn fn);
-void  platform_set_mouse_callback  (platform_window* w, platform_mouse_fn fn);
-void  platform_set_cursor_callback (platform_window* w, platform_cursor_fn fn);
-void  platform_set_enter_callback  (platform_window* w, platform_enter_fn fn);
-void  platform_set_scroll_callback (platform_window* w, platform_scroll_fn fn);
-void  platform_set_drop_callback   (platform_window* w, platform_drop_fn fn);
-void  platform_set_size_callback   (platform_window* w, platform_size_fn fn);
-void  platform_set_touch_callback  (platform_window* w, platform_touch_fn fn);
-void  platform_set_focus_callback  (platform_window* w, platform_focus_fn fn);
+PLATFORM_API void  platform_set_key_callback    (platform_window* w, platform_key_fn fn);
+PLATFORM_API void  platform_set_char_callback   (platform_window* w, platform_char_fn fn);
+PLATFORM_API void  platform_set_mouse_callback  (platform_window* w, platform_mouse_fn fn);
+PLATFORM_API void  platform_set_cursor_callback (platform_window* w, platform_cursor_fn fn);
+PLATFORM_API void  platform_set_enter_callback  (platform_window* w, platform_enter_fn fn);
+PLATFORM_API void  platform_set_scroll_callback (platform_window* w, platform_scroll_fn fn);
+PLATFORM_API void  platform_set_drop_callback   (platform_window* w, platform_drop_fn fn);
+PLATFORM_API void  platform_set_size_callback   (platform_window* w, platform_size_fn fn);
+PLATFORM_API void  platform_set_touch_callback  (platform_window* w, platform_touch_fn fn);
+PLATFORM_API void  platform_set_focus_callback  (platform_window* w, platform_focus_fn fn);
 
 /* the vulkan surface extension this platform needs, after VK_KHR_surface */
-const char* platform_surface_extension (void);
+PLATFORM_API const char* platform_surface_extension (void);
 
 /* android: NativeActivity's onCreate hands the activity here with the
    app's main, which runs on its own thread and ends with the activity */
-void  platform_android_start (void* activity, int (*main)(int, char**));
+PLATFORM_API void  platform_android_start (void* activity, int (*main)(int, char**));
 
 #ifdef __cplusplus
 }

@@ -2,6 +2,7 @@
 #include <import>
 #include <limits.h>
 #include <posix.h>      // on windows this is the whole posix surface
+#include <time.h>       // rpm build time
 #ifndef _WIN32
 #include <execinfo.h>
 #include <sys/file.h>   // flock — serialize external-checkout builds across processes
@@ -11,7 +12,6 @@
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
 #include <ctype.h>      // package names are lower-case on every distro
-#include <time.h>       // rpm build time
 #endif
 
 #ifdef BUILD_LIBRARY
@@ -391,10 +391,9 @@ static symbol app_ext = "";
 static symbol platform = "linux";
 static symbol shared   = "-shared";
 #elif defined(_WIN32)
-// mingw installs an import library beside the dll; that is what a link finds
-static symbol lib_pre = "lib";
-static symbol lib_ext = ".dll.a";
-static symbol lib_static = ".a";
+static symbol lib_pre = "";
+static symbol lib_ext = ".dll";
+static symbol lib_static = ".lib";
 static symbol app_ext = ".exe";
 static symbol platform = "windows";
 static symbol shared   = "-shared";
@@ -522,7 +521,9 @@ bool silver_is_cmode(silver a) {
 
 string git_remote_info(path path, string *out_service, string *out_owner, string *out_project) {
     // run git command
-    string cmd = f(string, "git -C %s remote get-url origin 2>/dev/null", path->chars);
+    // no 2>/dev/null: popen has no shell here, and command_run already
+    // merges stderr -- the redirect would reach git as an argument
+    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
     string remote = command_run((command)cmd, false);
 
     // no repository or no origin: the module goes by its own name
@@ -549,7 +550,8 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
         // SSH form: git@github.com:owner/repo.git
         domain = strchr(url, '@') + 1;
     } else {
-        fault("git_remote_info: unrecognized URL: %s", url);
+        // git's own error text lands here: no origin, so go by name
+        return null;
     }
 
     // domain ends at first ':' or '/'
@@ -1266,9 +1268,10 @@ static void progress_clear_line() {
 }
 
 // an error never prints on the tail of the progress line
-extern void (*aether_error_prelude)(void);
-extern void (*au_print_prelude)(void);
-extern void (*au_print_after)(void);
+// data crosses a dll only through the import attribute
+extern AU_LINK_aether void (*aether_error_prelude)(void);
+extern AU_LINK_Au     void (*au_print_prelude)(void);
+extern AU_LINK_Au     void (*au_print_after)(void);
 #undef verify
 #define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); \
     au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); } true; })
@@ -2203,11 +2206,15 @@ static path build_silver_host(silver a) {
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
     cstr host_fmt = "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"";
+    // three SILVER slots here (-I, -L, SILVER_ROOT), not the four the
+    // unix format takes: it has one more for -Wl,-rpath. a fourth made
+    // every later argument land one slot early, and SILVER then met the
+    // %o meant for share_name
     string cmd = f(string, host_fmt,
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_out, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
     // the temp name carries the pid: the record names the real output
     string key = f(string, host_fmt,
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
+        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
 #else
     // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
     string cmd = f(string, "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
@@ -2473,6 +2480,9 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
         chdir(cwd->chars);
         void* h = dlopen(bin->chars, RTLD_NOW);
         chdir(back->chars);
+        // say why: a failed load here reported only an exit status, and
+        // the reason (a missing import, a bad init) was never printed
+        if (!h) print("%s: cannot load %o: %s", env, bin, dlerror());
         st = h ? 0 : (1 << 8);
         // release it: a pinned dll cannot be relinked later this run
         if (h) dlclose(h);
@@ -9608,6 +9618,13 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     bool native_host = !a->platform || !len(a->platform) || cmp(a->platform, "native") == 0;
     if (a->isysroot && native_host)
         cenv = f(string, "SDKROOT=%o %o", a->isysroot, cenv);
+#ifdef _WIN32
+    // autoconf probes the separator by asking sh, gets ':' and then
+    // splits our ';' PATH on drive letters, so nothing is ever found.
+    // it honours both of these from the environment; .exe is the other
+    // half, since it searches PATH for a bare name
+    cenv = f(string, "PATH_SEPARATOR=';' ac_executable_extensions=.exe %o", cenv);
+#endif
 
     validate(command_exists("git"), "git required for import feature");
 
@@ -9649,12 +9666,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 make_dir(idir);
                 path   arc  = f(path, "%o/%08llx-%s", idir,
                                 (u64)(Au_hash((Au)uri) & 0xffffffff), sl ? sl + 1 : us);
-                if (!file_exists("%o", arc))
+                // no shell here, so the chain is ours: fetch beside the
+                // name, rename on success, and make the dir in-process
+                if (!file_exists("%o", arc)) {
+                    path part = f(path, "%o.part", arc);
                     checkout_verify(a, label, "fetch", "fetch",
-                        f(command, "curl -fL -o %o.part %o && mv %o.part %o", arc, uri, arc, arc));
+                        f(command, "curl -fL -o %o %o", part, uri));
+                    verify(rename(part->chars, arc->chars) == 0,
+                        "could not rename %o to %o", part, arc);
+                }
+                make_dir(project_f);
                 checkout_verify(a, label, "unpack", "unpack",
-                    f(command, "mkdir -p %o && tar xf %o -C %o --strip-components=1",
-                        project_f, arc, project_f));
+                    f(command, "tar xf %o -C %o --strip-components=1",
+                        arc, project_f));
             } else
             // shallow: only the pinned commit comes down, never the history
             if (!commit) {
@@ -9662,10 +9686,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                     f(command, "git clone --progress --depth 1 %o %o",
                         uri, project_f));
             } else if (is_commit_hash(commit) && len(commit) == 40) {
-                checkout_verify(a, label, "clone", "clone",
-                    f(command, "mkdir -p %o && git -C %o init -q && git -C %o remote add origin %o && "
-                               "git -C %o fetch --progress --depth 1 origin %o",
-                        project_f, project_f, project_f, uri, project_f, commit));
+                // one step per command: nothing interprets && here
+                make_dir(project_f);
+                checkout_verify(a, label, "clone", "init",
+                    f(command, "git -C %o init -q", project_f));
+                // origin stays (relative submodule urls resolve against
+                // it); a re-run already has one, so add then fall to set
+                if (checkout_exec(a, label, "clone",
+                        f(command, "git -C %o remote add origin %o", project_f, uri)))
+                    checkout_verify(a, label, "clone", "remote",
+                        f(command, "git -C %o remote set-url origin %o", project_f, uri));
+                checkout_verify(a, label, "clone", "fetch",
+                    f(command, "git -C %o fetch --progress --depth 1 origin %o",
+                        project_f, commit));
                 checkout_verify(a, label, "checkout", "checkout",
                     f(command, "git -C %o checkout --detach FETCH_HEAD", project_f));
             } else if (is_commit_hash(commit)) {
@@ -9880,9 +9913,16 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         cstr build = "release";
 
         string x_meson = device_meson_cross(a);
+#ifdef _WIN32
+        // we link with lld everywhere, and clang's lto path refuses
+        // to run unless the linker is named outright
+        cstr x_link = "-Dc_link_args=-fuse-ld=lld -Dcpp_link_args=-fuse-ld=lld ";
+#else
+        cstr x_link = "";
+#endif
         checkout_verify(a, label, "setup", "setup",
-            f(command, "%o meson setup %o %o --prefix=%o --libdir=lib --buildtype=%s %o%o",
-              cenv, build_f, project_f, install, build, x_meson, config));
+            f(command, "%o meson setup %o %o --prefix=%o --libdir=lib --buildtype=%s %s%o%o",
+              cenv, build_f, project_f, install, build, x_link, x_meson, config));
 
         import_build(a, label, cenv, build_f, false, true);
     } else if (is_gn) {
@@ -9979,6 +10019,24 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                                    "CXX='%o/clang++ --target=%s' AR=%o/llvm-ar "
                                    "RANLIB=%o/llvm-ranlib ", tri, tb, tri, tb, tri, tb, tb);
             }
+#ifdef _WIN32
+            // autoconf probes PATH for an extensionless name and finds
+            // none of ours, so the toolchain is named outright here.
+            // config.guess reads uname -s, gets Windows_NT and gives
+            // up, so --build names it: plain windows, never mingw,
+            // since that would switch packages onto mingw's flags
+            if (!len(x_host)) {
+                path tb = f(path, "%s/platform/native/bin", SILVER);
+                // depmode comes out 'none' here, and automake's depfiles
+                // step cannot bootstrap from that
+                x_host  = f(string, "--build=x86_64-pc-windows "
+                                    "--disable-dependency-tracking "
+                                    "CC=%o/clang.exe CXX=%o/clang++.exe "
+                                    "AR=%o/llvm-ar.exe RANLIB=%o/llvm-ranlib.exe "
+                                    "LD=%o/lld-link.exe ",
+                                    tb, tb, tb, tb, tb);
+            }
+#endif
             if (file_exists("%o/%o", project_f, configure)) {
                 checkout_verify(a, label, "configure", "configure",
                     f(command, "(cd %o && %o %o%s --prefix=%o %o%o)",
@@ -10055,6 +10113,14 @@ string compile_implements(silver a, array files, string cflags) {
 #else
     cstr   sysroot_flag = "";
 #endif
+#ifdef _WIN32
+    // the dynamic crt every dependency here is built against. left to
+    // itself a .cc object takes /MT, and /failifmismatch rejects it.
+    // this names the crt for the headers AND the defaultlib directives
+    cstr   crt_flag = "-fms-runtime-lib=dll";
+#else
+    cstr   crt_flag = "";
+#endif
     each(files, path, i) {
         string ext      = ext(i);
         if (eq(ext, "rs")) {
@@ -10086,8 +10152,8 @@ string compile_implements(silver a, array files, string cflags) {
         path tool_root = a->base_install ? a->base_install : install;
         string base_inc = a->base_install ?
             f(string, " -I%o/include -I%o/include/Au", a->base_install, a->base_install) : string("");
-        string cmd = f(string, "%o/bin/%s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
-            tool_root, compiler, std_flag, lang_flag, sysroot_flag, own_link, cflags, a->debug ? "-g" : "-O2", i, i_name, install, st, install, install, base_inc);
+        string cmd = f(string, "%o/bin/%s %s %s %s %s %o %o %s -w -c %o -o %o -I%o/include/%o -I%o/include -I%o/include/Au%o",
+            tool_root, compiler, std_flag, lang_flag, sysroot_flag, crt_flag, own_link, cflags, a->debug ? "-g" : "-O2", i, i_name, install, st, install, install, base_inc);
         if (a->verbose) print("[%o] %o", a->name, cmd);
         verify(exec(a->verbose, "%o", cmd) == 0, "failed to compile %o", i);
         au_exec_prefix(null);
@@ -10179,7 +10245,13 @@ static string late_object(silver a, path install) {
 #else
     cstr sdk = "";
 #endif
-    verify(exec(a->verbose, "%o/bin/clang %s -c -fPIC %o -o %o", install, sdk, src, obj) == 0,
+#ifdef _WIN32
+    // pic has no meaning on PE, and clang rejects the flag there
+    cstr pic = "";
+#else
+    cstr pic = "-fPIC";
+#endif
+    verify(exec(a->verbose, "%o/bin/clang %s %s -c %o -o %o", install, sdk, pic, src, obj) == 0,
         "late object failed for %o", a->name);
     return (string)obj;
 }
@@ -10519,7 +10591,12 @@ none silver_build_product(silver a) {
     // on the live dll makes that delete fail ("unable to remove file"). a temp
     // has nothing to remove, and au_replace_file rides out the scan window.
 #ifdef _WIN32
-    path link_out = f(path, "%o.new%i", a->product, (i32)getpid());
+    // a temp DIR, not a temp NAME: the import lib records the output's
+    // basename as the dll to load, so `<product>.new<pid>` made every
+    // consumer import a name that never exists after the rename
+    path link_dir = f(path, "%o/.link%i", parent_dir(a->product), (i32)getpid());
+    make_dir(link_dir);
+    path link_out = f(path, "%o/%o", link_dir, path_filename(a->product));
 #else
     path link_out = a->product;
 #endif
@@ -10532,6 +10609,15 @@ none silver_build_product(silver a) {
 #ifdef __linux__
     string shared_n = a->is_library ?
         f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product)) : string("");
+#elif defined(_WIN32)
+    // lld names the import lib after the OUTPUT, and ours is a temp
+    // (<product>.new<pid>), so it landed as <name>.dll.lib and the
+    // rename only fixed the dll. name it for the product instead.
+    // the crt must match what the objects were compiled against
+    string shared_n = a->is_library ?
+        f(string, "%s -fms-runtime-lib=dll -Wl,/IMPLIB:%o/%o%s", shared,
+            parent_dir(a->product), stem(a->product), lib_static) :
+        string("-fms-runtime-lib=dll");
 #else
     string shared_n = string(a->is_library ? shared : "");
 #endif
@@ -10561,6 +10647,7 @@ none silver_build_product(silver a) {
 #ifdef _WIN32
     verify(au_replace_file(link_out->chars, a->product->chars) == 0,
         "could not replace %o: locked by another process", a->product);
+    rmdir(link_dir->chars);
 #endif
     
     unlink(a->product_link->chars);
@@ -15198,10 +15285,12 @@ etype silver_read_def(silver a, interface access) {
 #else
 
 // orbiter could build silver in this way from .c
-// importing 
+// importing
+// main calls this too, so it is declared outside the guard
+void silver_build_end(int rc);
+
 #ifndef _WIN32
 #include <signal.h>
-void silver_build_end(int rc);
 
 // a compiler crash names its stack in the build output
 static void silver_crash(int sig) {

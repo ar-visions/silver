@@ -1,6 +1,10 @@
 extend trinity
 
-import <strings.h>
+# strcasecmp: posix.h carries it where there is no <strings.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <strings.h>
 
 ifdef [ linux ]
     import <fontconfig/fontconfig.h>

@@ -182,6 +182,26 @@ set "PYTHONPATH=%SILVER%\src"
 :: that python must win over the vendored one for child builds too
 for %%I in ("%PYTHON%") do set "PATH=%%~dpI;%PATH%"
 
+:: ---------------- meson ----------------
+:: rnnoise and friends build with meson. it comes from pip, and the exe
+:: is vendored into our own bin: CreateProcess resolves a .exe on PATH
+:: but never a .cmd, and the scripts dir is not on PATH at all
+:: a store python installs to the USER site, not its own read-only
+:: scripts dir, so both candidates are tried
+if not exist "%NATIVE%\bin\meson.exe" (
+    echo installing meson...
+    "%PYTHON%" -m pip install --quiet --upgrade --no-warn-script-location meson || exit /b 1
+    "%PYTHON%" -c "import sysconfig;c=[sysconfig.get_path('scripts'),sysconfig.get_path('scripts','nt_user')];open(r'%TEMP%\silver_pyscripts.txt','w').write(chr(10).join(c))" || exit /b 1
+    for /f "usebackq delims=" %%S in ("%TEMP%\silver_pyscripts.txt") do (
+        if not exist "%NATIVE%\bin\meson.exe" if exist "%%S\meson.exe" copy /Y "%%S\meson.exe" "%NATIVE%\bin\meson.exe" >nul
+    )
+    del "%TEMP%\silver_pyscripts.txt" >nul 2>&1
+    if not exist "%NATIVE%\bin\meson.exe" (
+        echo bootstrap: meson installed but its meson.exe was not found
+        exit /b 1
+    )
+)
+
 :: ---------------- target.cmake ----------------
 echo Generating target.cmake for %TRIPLE% (Windows)
 set "TC=%IMPORT%\target.cmake"

@@ -719,6 +719,48 @@ func ntfs_least [ dev: string ] -> i64
     pclose[ fh ]
     return out
 
+# $id: our firmware entry's {id}, found by its label
+func win_find [] -> string
+    f : '$b=((bcdedit /enum firmware) -join [char]10)'
+    f = '{f} -split \'\\n\\s*\\n\''
+    f = '{f} | ? {{$_ -match \'orbiter-os\'}} | select -First 1;'
+    f = '{f} $id=$(if ($b -match \'\\{{[0-9a-fA-F-]{{36}}\\}}\')'
+    return '{f} {{$Matches[0]}});'
+
+# bcdedit needs an administrator: rerun as one
+func win_head [] -> string
+    h : '@echo off\nnet session >nul 2>&1 || (powershell -NoProfile'
+    h = '{h} -Command "Start-Process -Verb RunAs'
+    return '{h} -FilePath \'%~f0\'" & exit /b)\n'
+
+# orbiter-os on the next restart only; Windows stays default
+func win_start [] -> string
+    p : '{win_find[]} if (-not $id) {{Write-Host'
+    p = '{p} \'orbiter-os is not in the firmware boot menu.\';'
+    p = '{p} exit 1}}; bcdedit /set \'{{fwbootmgr}}\' bootsequence'
+    p = '{p} $id | Out-Null; if ($LASTEXITCODE) {{exit 1}};'
+    p = '{p} bcdedit /set \'{{bootmgr}}\' displaybootmenu yes'
+    p = '{p} | Out-Null'
+    s : '{win_head[]}powershell -NoProfile -Command "{p}"\n'
+    s = '{s}if errorlevel 1 (pause & exit /b 1)\n'
+    return '{s}shutdown /r /t 5 /c "Restarting into orbiter-os"\n'
+
+# the entry, \EFI\orbiter, then this folder once let go
+func win_remove [] -> string
+    p : '{win_find[]} if ($id) {{bcdedit /delete $id | Out-Null}};'
+    p = '{p} bcdedit /deletevalue \'{{bootmgr}}\' displaybootmenu'
+    p = '{p} 2>&1 | Out-Null;'
+    p = '{p} $l=([char[]](90..68) | ? {{-not (Test-Path ($_+\':\'))}}'
+    p = '{p} | select -First 1)+\':\'; mountvol $l /S;'
+    p = '{p} if ($LASTEXITCODE -eq 0) {{Remove-Item -Recurse -Force'
+    p = '{p} ($l+\'\\EFI\\orbiter\') -ErrorAction SilentlyContinue;'
+    p = '{p} mountvol $l /D}}'
+    s : '{win_head[]}choice /m "Remove orbiter-os and its files'
+    s = '{s} from this PC"\nif errorlevel 2 exit /b\n'
+    s = '{s}powershell -NoProfile -Command "{p}"\ncd /d %SystemRoot%\n'
+    s = '{s}start "" /min cmd /c timeout /t 2 /nobreak ^>nul'
+    return '{s} ^& rmdir /s /q "%~dp0."\n'
+
 # unallocated runs of 16 MB or more, a MB aligned, after the
 # table's first MB and before its backup at the end
 func disk_gaps [ dk: Disk ] -> vec Gap
@@ -2010,6 +2052,12 @@ element InstallWizard
             s = step[ StepKind.file, 'Copy the initramfs to {ob}' ]
             s.src = rd
             s.dst = '{mnt}/orbiter-os/boot/initramfs'
+            s = step[ StepKind.write, 'Write Start orbiter-os.cmd' ]
+            s.dst  = '{mnt}/orbiter-os/Start orbiter-os.cmd'
+            s.text = win_start[]
+            s = step[ StepKind.write, 'Write Uninstall orbiter-os.cmd' ]
+            s.dst  = '{mnt}/orbiter-os/Uninstall orbiter-os.cmd'
+            s.text = win_remove[]
             s = step[ StepKind.unmount, 'Unmount the image' ]
             s.dst = tree
         esd : part_dev[ dk.name, espn ]
@@ -2074,6 +2122,10 @@ element InstallWizard
         s.dst = mnt
         if [ boot == BootKind.grub_debian ]
             notes.push[ 'GRUB lists it after: sudo update-grub' ]
+        el [ win ]
+            st : 'From Windows: orbiter-os\\Start orbiter-os.cmd'
+            st = '{st} boots it once; Uninstall orbiter-os.cmd'
+            notes.push[ '{st} removes it.' ]
         el [ boot == BootKind.windows || boot == BootKind.unknown ]
             fw : 'orbiter-os is in the firmware boot menu only.'
             notes.push[ fw ]
@@ -3030,7 +3082,10 @@ expect func t_windows_plan [] -> bool
         '/run/wizard/efi/EFI/orbiter/ntfs_x64.efi',
         'orbiter.image=/orbiter-os/root.img',
         'initrd=\\orbiter-os\\boot\\initramfs',
-        '--loader \'\\EFI\\orbiter\\orbiter.efi\'' ]
+        '--loader \'\\EFI\\orbiter\\orbiter.efi\'',
+        '/run/wizard/root/orbiter-os/Start orbiter-os.cmd',
+        '/run/wizard/root/orbiter-os/Uninstall orbiter-os.cmd',
+        'bootsequence $id', 'bcdedit /delete $id' ]
     ok : bool [ true ]
     for [ x: string ] in want
         if [ cmds.index_of[ x ] < 0 ]

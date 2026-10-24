@@ -23,8 +23,11 @@
 #include <fcntl.h>
 #endif
 #include <sys/stat.h>
+#ifndef _WIN32
+// posix.h above carries dirent and flock where these do not exist
 #include <dirent.h>
 #include <sys/file.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <sys/ucontext.h>
@@ -2404,8 +2407,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     lib[n] = '\0';
-    // a relative link resolves beside the product file, not the cwd (share)
-    if (lib[0] != '/') {
+    // a relative link resolves beside the product file, not the cwd (share).
+    // a drive letter and a UNC root are absolute too: testing only for '/'
+    // joined "C:/..." onto the product dir and dlopen got a doubled path
+    bool lib_abs = lib[0] == '/' || lib[0] == '\\' ||
+        (((lib[0] >= 'A' && lib[0] <= 'Z') || (lib[0] >= 'a' && lib[0] <= 'z'))
+            && lib[1] == ':');
+    if (!lib_abs) {
         char pdir[4096], rel[4096];
         strncpy(pdir, product, sizeof(pdir) - 1); pdir[sizeof(pdir) - 1] = '\0';
         snprintf(rel, sizeof(rel), "%s/%s", dirname(pdir), lib);

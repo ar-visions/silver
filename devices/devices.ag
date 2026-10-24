@@ -29,7 +29,8 @@ ifdef [ android ]
 
 ifdef [ windows ]
     import <host.h>
-        -luser32 -lgdi32 -lshell32 -lxinput -lole32
+        # uuid carries the wasapi CLSID/IID definitions
+        -luser32 -lgdi32 -lshell32 -lxinput -lole32 -luuid
 
 # instance extensions a surface on this os needs; vk adds its own after
 func surface_extensions [] -> vec string

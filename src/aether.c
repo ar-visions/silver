@@ -841,7 +841,7 @@ static void mark_set(enode n, u64* masks);
 
 void aether_emit_listen_value(aether a, enode n); // defined below (debug listen trace)
 
-enode e_convert_or_cast(aether a, etype output, enode input);
+AU_EXPORT enode e_convert_or_cast(aether a, etype output, enode input);
 // a typedef may name a fixed array: its size is on the target
 static Au_t fixed_array_of(Au_t t) {
     while (t && t->member_type == AU_MEMBER_VAR) t = t->src;
@@ -2516,7 +2516,7 @@ enode aether_e_eval(aether a, string value) { sequencer
 }
 
 
-enode e_convert_or_cast(aether a, etype output, enode input);
+AU_EXPORT enode e_convert_or_cast(aether a, etype output, enode input);
 
 enode aether_e_interpolate(aether a, string str) { sequencer
     enode accum = null;
@@ -2725,7 +2725,9 @@ enode aether_e_op(aether a, OPType optype, string op_name, Au L, Au R) { sequenc
     enode Lnode = (enode)L;
     etype rtype = determine_rtype(a, optype, (etype)LV, (etype)RV); // todo: return bool for equal/not_equal/gt/lt/etc, i64 for compare; there are other ones too
 
-    LLVMValueRef RES;
+    // every assignment below is gated on !no_build, so a speculative
+    // read_expression pass would store this slot uninitialized
+    LLVMValueRef RES = null;
     enode LL = (enode)LV; // optype <= OPType__assign ? LV : e_create(a, rtype, (Au)LV, false); // we dont need the 'load' in here, or convert even
     enode RL = (enode)RV; // e_create(a, rtype, (Au)RV, false);
     symbol N = cstring(f(string, "%i_%o", seq, op_name));
@@ -5956,7 +5958,7 @@ enode e_create_from_array(aether a, etype t, array ar) {
     return res;
 }
 
-enode e_convert_or_cast(aether a, etype output, enode input) {
+AU_EXPORT enode e_convert_or_cast(aether a, etype output, enode input) {
     emit_guard;
     if (a->no_build) return e_noop(a, output);
 
@@ -6321,7 +6323,9 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             a->is_const_op = false;
             if (a->no_build) return e_noop(a, mdl);
             
-            if (LLVMIsAConstantPointerNull(_llvalue((enode)input)))
+            // llvm reads the value's class id, so a null one faults
+            if (_llvalue((enode)input) &&
+                    LLVMIsAConstantPointerNull(_llvalue((enode)input)))
                 return value(mdl, LLVMConstPointerNull(lltype(mdl)));
 
             // an element read is its address until loaded: box the value
@@ -6382,8 +6386,10 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
             Au_t ip9 = canonical(input) ? canonical(input)->autype : null;
             Au_t pe9 = (ip9 && (ip9->is_pointer || ip9->is_explicit_ref) && ip9->src) ?
                 au_arg_type((Au)ip9->src) : null;
+            // one lookup, not two: the slot is read once here
+            LLVMValueRef v9 = _llvalue((enode)input);
             bool tx9 = canonical(input) == etypeid(cstr) || canonical(input) == etypeid(symbol) ||
-                (_llvalue((enode)input) && LLVMIsAConstantPointerNull(_llvalue((enode)input)));
+                (v9 && LLVMIsAConstantPointerNull(v9));
             if (pe9 && !tx9 && (pe9 == typeid(u8) || pe9 == typeid(i8)) && tm9 && tm9->is_class &&
                     tm9 != typeid(Au) && !au_is_vector(tm9) &&
                     (constructs_with(tm9, typeid(cstr)) || constructs_with(tm9, typeid(symbol)))) {
@@ -12262,6 +12268,21 @@ AU_EXPORT void aether_overlay(path install, path base) {
     g_overlay_base    = base;
 }
 
+#ifdef _WIN32
+// the sdk and msvc each live under a version dir. these names are
+// fixed width, so the greatest string is the newest one
+static string newest_sub(path dir) {
+    array  all  = ls(dir, null, false);
+    string pick = null;
+    each (all, path, p) {
+        string nm = filename(p);
+        if (!nm || !len(nm)) continue;
+        if (!pick || compare(nm, pick) > 0) pick = nm;
+    }
+    return pick ? pick : string("");
+}
+#endif
+
 AU_EXPORT none aether_init(aether a) {
     emit_guard;
     // every target llvm was built with, not just this machine's: a device
@@ -12307,12 +12328,21 @@ AU_EXPORT none aether_init(aether a) {
 
 
 #ifdef _WIN32
-    // mingw's own tree, laid out by bootstrap beside the toolchain — kept
-    // apart from install/include, which holds silver's installed headers
-    a->sys_inc_paths = a(f(path, "%o/sysroot/include", a->install));
+    // the windows sdk and msvc each sit under a version dir; take the
+    // newest. no shell here, so the listing is our own
+    string kits = f(string, "C:/Program Files (x86)/Windows Kits/10");
+    string kv   = newest_sub(f(path, "%o/Include", kits));
+    path   vsd  = f(path,   "%o/vs2022/VC/Tools/MSVC", a->install);
+    string mv   = newest_sub(vsd);
+    a->sys_inc_paths = a(f(path, "%o/%o/include",      vsd,  mv),
+                         f(path, "%o/Include/%o/ucrt", kits, kv),
+                         f(path, "%o/Include/%o/um",   kits, kv),
+                         f(path, "%o/Include/%o/shared", kits, kv));
     a->lib_paths     = a(f(path, "%o/bin", a->install),
                          f(path, "%o/lib", a->install),
-                         f(path, "%o/sysroot/lib", a->install));
+                         f(path, "%o/%o/lib/x64",      vsd,  mv),
+                         f(path, "%o/Lib/%o/ucrt/x64", kits, kv),
+                         f(path, "%o/Lib/%o/um/x64",   kits, kv));
 #elif defined(__linux)
     a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
     a->lib_paths     = array(alloc, 32);

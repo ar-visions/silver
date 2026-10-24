@@ -1232,7 +1232,19 @@ long sysconf(int name) {
     return -1;
 }
 
-// clock_gettime comes from winpthreads, which mingw links by default
+int clock_gettime(int clk, struct timespec* ts) {
+    (void)clk;
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    ULARGE_INTEGER t;
+    t.LowPart  = ft.dwLowDateTime;
+    t.HighPart = ft.dwHighDateTime;
+    // FILETIME counts 100ns ticks from 1601; rebase onto the unix epoch
+    uint64_t ns = (t.QuadPart - 116444736000000000ULL) * 100;
+    ts->tv_sec  = (time_t)(ns / 1000000000ULL);
+    ts->tv_nsec = (long)  (ns % 1000000000ULL);
+    return 0;
+}
 
 int ftruncate(int fd, long long length) {
     return _chsize_s(fd, (__int64)length) == 0 ? 0 : -1;
@@ -1349,9 +1361,70 @@ static void win_invalid_parameter(
     fflush(err);
 }
 
+// one module+offset line per frame, the way the handler above does
+static void win_frame_line(FILE* err, unsigned i, void* addr) {
+    HMODULE mod = NULL;
+    char    name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)addr, &mod) && mod)
+        GetModuleFileNameA(mod, name, sizeof(name));
+    fprintf(err, "  [%u] %p  %s +0x%llX\n", i, addr, name,
+        (unsigned long long)((char*)addr - (char*)mod));
+}
+
+// an access violation otherwise exits 0xC0000005 printing nothing;
+// linux prints a backtrace on SIGSEGV, so match it here
+static LONG CALLBACK win_unhandled(EXCEPTION_POINTERS* ep) {
+    FILE*             err = __acrt_iob_func(2);
+    EXCEPTION_RECORD* r   = ep->ExceptionRecord;
+    fprintf(err, "\nfatal: exception 0x%08lX at %p\n",
+        (unsigned long)r->ExceptionCode, r->ExceptionAddress);
+    if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+            r->NumberParameters >= 2)
+        fprintf(err, "  %s address %p\n",
+            r->ExceptionInformation[0] ? "writing" : "reading",
+            (void*)r->ExceptionInformation[1]);
+    fprintf(err, "  faulting instruction:\n");
+    win_frame_line(err, 0, r->ExceptionAddress);
+    void*  frames[24];
+    USHORT n = CaptureStackBackTrace(0, 24, frames, NULL);
+    if (n) fprintf(err, "  stack:\n");
+    for (USHORT i = 0; i < n; i++) win_frame_line(err, i, frames[i]);
+    fflush(err);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// llvm registers an unhandled filter of its own and the last one
+// wins, so take the first look through a vectored handler instead.
+// access violations only, reported once, then normal handling
+static LONG CALLBACK win_vectored(EXCEPTION_POINTERS* ep) {
+    static bool said = false;
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION &&
+            !said) {
+        said = true;
+        win_unhandled(ep);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+#if defined(__SANITIZE_ADDRESS__)
+#define AU_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define AU_ASAN 1
+#endif
+#endif
+
 static void __attribute__((constructor)) win_console_utf8(void) {
     SetConsoleOutputCP(CP_UTF8);
     _set_invalid_parameter_handler(win_invalid_parameter);
+    SetUnhandledExceptionFilter(win_unhandled);
+#ifndef AU_ASAN
+    // asan probes shadow memory by faulting and handling it itself; a
+    // handler that prints on every one of those breaks it. it reports
+    AddVectoredExceptionHandler(1, win_vectored);
+#endif
 }
 
 extern "C" {
@@ -1393,6 +1466,31 @@ int ttyname_r(int fd, char* buf, size_t len) {
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t* fa) {
     if (!fa) return EINVAL;
     fa->count = 0;
+    return 0;
+}
+
+// every spawn here already takes CREATE_NEW_PROCESS_GROUP, so SETSID
+// is satisfied by construction; the flags are kept for the caller
+int posix_spawnattr_init(posix_spawnattr_t* at) {
+    if (!at) return EINVAL;
+    at->flags = 0;
+    return 0;
+}
+
+int posix_spawnattr_destroy(posix_spawnattr_t* at) {
+    if (at) at->flags = 0;
+    return 0;
+}
+
+int posix_spawnattr_setflags(posix_spawnattr_t* at, short flags) {
+    if (!at) return EINVAL;
+    at->flags = flags;
+    return 0;
+}
+
+int posix_spawnattr_getflags(const posix_spawnattr_t* at, short* flags) {
+    if (!at || !flags) return EINVAL;
+    *flags = (short)at->flags;
     return 0;
 }
 
@@ -1695,6 +1793,41 @@ ssize_t au_write(int fd, void* buf, size_t sz) {
     return _write(fd, buf, sz);
 }
 
+// an inotify fd is ours, a pipe the crt's: each is asked its
+// own way. a watcher needs no finer grain than readable
+static bool poll_ready(int fd) {
+    {
+        std::lock_guard<std::mutex> lock(g_instanceMutex);
+        auto it = g_inotifyInstances.find(fd);
+        if (it != g_inotifyInstances.end())
+            return it->second->pending.load() > 0;
+    }
+    intptr_t h = _get_osfhandle(fd);
+    if (h == -1 || h == -2) return false;
+    DWORD avail = 0;
+    if (PeekNamedPipe((HANDLE)h, NULL, 0, NULL, &avail, NULL))
+        return avail > 0;
+    return WaitForSingleObject((HANDLE)h, 0) == WAIT_OBJECT_0;
+}
+
+// no waitable handle spans both fd kinds, so this ticks
+int poll(struct pollfd* fds, nfds_t n, int timeout) {
+    int waited = 0;
+    for (;;) {
+        int ready = 0;
+        for (nfds_t i = 0; i < n; i++) {
+            fds[i].revents = 0;
+            if (!poll_ready((int)fds[i].fd)) continue;
+            fds[i].revents = fds[i].events & POLLIN;
+            if (fds[i].revents) ready++;
+        }
+        if (ready) return ready;
+        if (timeout >= 0 && waited >= timeout) return 0;
+        Sleep(10);
+        waited += 10;
+    }
+}
+
 FILE* fdopen(int fd, const char* mode) {
     return _fdopen(fd, mode);
 }
@@ -1774,6 +1907,23 @@ int pthread_cond_broadcast(pthread_cond_t* cv) {
 
 int pthread_cond_signal(pthread_cond_t* cv) {
     WakeConditionVariable(CV(cv));
+    return 0;
+}
+
+static_assert(sizeof(INIT_ONCE) <= sizeof(pthread_once_t),
+    "pthread_once_t opaque storage too small");
+static_assert(alignof(pthread_once_t) >= alignof(INIT_ONCE),
+    "pthread_once_t underaligned for INIT_ONCE");
+
+// INIT_ONCE passes a context; the plain init fn rides in it
+static BOOL CALLBACK once_thunk(PINIT_ONCE o, PVOID param, PVOID* ctx) {
+    (void)o; (void)ctx;
+    ((void (*)(void))param)();
+    return TRUE;
+}
+
+int pthread_once(pthread_once_t* o, void (*init)(void)) {
+    InitOnceExecuteOnce((PINIT_ONCE)o, once_thunk, (void*)init, NULL);
     return 0;
 }
 

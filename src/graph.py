@@ -126,19 +126,19 @@ def parse_g_file(path):
                 # collide with the same ones in the static components
                 comp = lambda pat: sorted('-l' + p.stem for p in libdir.glob(pat)
                                           if p.stem != 'LLVM-C') if libdir.is_dir() else []
-                # windows: some names differ, and some libs have no counterpart
+                # windows: msvc names differ, and some libs have no counterpart
                 windows_link = {
-                    # compiler-rt arrives through -rtlib=compiler-rt
+                    # gen.py adds compiler-rt by full path; see win_rt there
                     "-latomic":     [],
-                    "-lpthread":    ["-lwinpthread"],  # mingw's own pthreads
+                    "-lpthread":    [],                # posix.cc supplies the pthread api
                     "-ltinfo":      [],                # no terminfo
-                    "-lstdc++":     [],                # -stdlib=libc++ names it
+                    "-lstdc++":     [],                # the msvc stl comes in via msvcprt
                     # windows has no libLLVM/clang-cpp dylib: LLVM_BUILD_LLVM_DYLIB
                     # is unsupported there, and LLVM-C.dll carries only the C
                     # API. the frontend aclang.cc drives is C++, so link static.
-                    "-lclang-cpp":  comp('clang*.a'),
+                    "-lclang-cpp":  comp('clang*.lib'),
                     "-lclang":      ["-llibclang"],
-                    "-lLLVM":       comp('LLVM*.a'),
+                    "-lLLVM":       comp('LLVM*.lib'),
                     "-lz":          ["-lzlib"],
                     "-lmbedcrypto": ["-ltfpsacrypto"], # mbedtls 3.6 moved crypto out
                 }

@@ -18,6 +18,17 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 
+// the sdk declares these EXTERN_C and defines them in no lib of its
+// own, so initguid alone emits nothing: name them here
+DEFINE_GUID(CLSID_MMDeviceEnumerator, 0xbcde0395, 0xe52f, 0x467c,
+    0x8e,0x3d, 0xc4,0x57,0x92,0x91,0x69,0x2e);
+DEFINE_GUID(IID_IMMDeviceEnumerator,  0xa95664d2, 0x9614, 0x4f35,
+    0xa7,0x46, 0xde,0x8d,0xb6,0x36,0x17,0xe6);
+DEFINE_GUID(IID_IAudioClient,         0x1cb9ad4c, 0xdbfa, 0x4c32,
+    0xb1,0x78, 0xc2,0xf5,0x68,0xa7,0x03,0xb2);
+DEFINE_GUID(IID_IAudioCaptureClient,  0xc8adbd64, 0xe71e, 0x48a0,
+    0xa4,0xde, 0x18,0x5c,0x39,0x5c,0xd3,0x17);
+
 struct platform_window {
     platform_key_fn    on_key;
     platform_char_fn   on_char;
@@ -140,7 +151,7 @@ static void key_event(platform_window* w, int key, int scan, int action, int mod
     if (w->on_key) w->on_key(w, key, scan, action, mods);
 }
 
-static void mouse_event(platform_window* w, int b, int action) {
+static void mouse_button_event(platform_window* w, int b, int action) {
     if (action == PLATFORM_PRESS) SetCapture(w->hwnd); else ReleaseCapture();
     w->mods = mods_now();
     if (w->on_mouse) w->on_mouse(w, b, action, w->mods);
@@ -175,14 +186,14 @@ static LRESULT CALLBACK wnd_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case WM_MOUSELEAVE: w->tracking = false; if (w->on_enter) w->on_enter(w, 0); return 0;
-        case WM_LBUTTONDOWN: mouse_event(w, PLATFORM_MOUSE_LEFT,   PLATFORM_PRESS);   return 0;
-        case WM_LBUTTONUP:   mouse_event(w, PLATFORM_MOUSE_LEFT,   PLATFORM_RELEASE); return 0;
-        case WM_RBUTTONDOWN: mouse_event(w, PLATFORM_MOUSE_RIGHT,  PLATFORM_PRESS);   return 0;
-        case WM_RBUTTONUP:   mouse_event(w, PLATFORM_MOUSE_RIGHT,  PLATFORM_RELEASE); return 0;
-        case WM_MBUTTONDOWN: mouse_event(w, PLATFORM_MOUSE_MIDDLE, PLATFORM_PRESS);   return 0;
-        case WM_MBUTTONUP:   mouse_event(w, PLATFORM_MOUSE_MIDDLE, PLATFORM_RELEASE); return 0;
-        case WM_XBUTTONDOWN: mouse_event(w, 2 + GET_XBUTTON_WPARAM(wp), PLATFORM_PRESS);   return TRUE;
-        case WM_XBUTTONUP:   mouse_event(w, 2 + GET_XBUTTON_WPARAM(wp), PLATFORM_RELEASE); return TRUE;
+        case WM_LBUTTONDOWN: mouse_button_event(w, PLATFORM_MOUSE_LEFT,   PLATFORM_PRESS);   return 0;
+        case WM_LBUTTONUP:   mouse_button_event(w, PLATFORM_MOUSE_LEFT,   PLATFORM_RELEASE); return 0;
+        case WM_RBUTTONDOWN: mouse_button_event(w, PLATFORM_MOUSE_RIGHT,  PLATFORM_PRESS);   return 0;
+        case WM_RBUTTONUP:   mouse_button_event(w, PLATFORM_MOUSE_RIGHT,  PLATFORM_RELEASE); return 0;
+        case WM_MBUTTONDOWN: mouse_button_event(w, PLATFORM_MOUSE_MIDDLE, PLATFORM_PRESS);   return 0;
+        case WM_MBUTTONUP:   mouse_button_event(w, PLATFORM_MOUSE_MIDDLE, PLATFORM_RELEASE); return 0;
+        case WM_XBUTTONDOWN: mouse_button_event(w, 2 + GET_XBUTTON_WPARAM(wp), PLATFORM_PRESS);   return TRUE;
+        case WM_XBUTTONUP:   mouse_button_event(w, 2 + GET_XBUTTON_WPARAM(wp), PLATFORM_RELEASE); return TRUE;
         case WM_MOUSEWHEEL:
             w->mods = mods_now();
             if (w->on_scroll) w->on_scroll(w, 0, (double)GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA);
@@ -2652,6 +2663,13 @@ HOST_API void host_audio_play_set(int s, int on)                 { }
 HOST_API int  host_audio_play_take(int s, int16_t* o, int m)     { return 0; }
 HOST_API void host_audio_player_start(int s)                     { }
 HOST_API void host_audio_player_stop(int s)                      { }
+// the mixer ones too: their stubs sit in the linux branch's else,
+// which windows never reaches
+HOST_API int  host_master_get(float* vol, int* muted)            { return 0; }
+HOST_API int  host_master_set(float vol, int muted)              { return 0; }
+HOST_API int  host_capture_get(float* vol, int* muted)           { return 0; }
+HOST_API int  host_capture_set(float vol, int muted)             { return 0; }
+HOST_API int  host_audio_scope(int slot, float* out, int n)      { return 0; }
 HOST_API void host_tex_publish(int s, int sd, int f0, int f1, int w, int h, int f) { }
 HOST_API int  host_tex_gen(int s, int sd)                        { return 0; }
 HOST_API void host_tex_clear(int s, int sd)                      { }

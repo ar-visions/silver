@@ -1,5 +1,9 @@
 #include <import>
 
+#ifdef _WIN32
+#include <posix.h>      // getcwd and friends live here on windows
+#endif
+
 // this module asserts the C++ way: one expression, no message
 #undef assert
 #include <cassert>

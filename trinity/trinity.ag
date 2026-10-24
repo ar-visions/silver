@@ -61,10 +61,8 @@ import knik0:faac/3aa4c6d3b0d99223dfb8cab922f2db3ff9ce66b8 <faac.h>
     -Dfrontend=false
     -lfaac
 
-# the mic's fan and breath noise out of a recording (BSD-3-Clause)
+# mic noise out of a recording; rnnoise/ adds a cmake build
 import rnnoise/0.2 from https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
-    --disable-examples
-    --disable-doc
     -lrnnoise
 
 import KhronosGroup:SPIRV-Headers/vulkan-sdk-1.4.341.0

@@ -3,7 +3,10 @@ extend trinity
 import <faac.h>
 import <rnnoise.h>
 import <string.h>
-import <unistd.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
 import <fcntl.h>
 import <math.h>
 ifndef [ windows ]

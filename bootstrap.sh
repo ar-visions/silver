@@ -381,6 +381,13 @@ if ! [ -f "$NATIVE/bin/python3" ]; then
     fi
 fi
 
+# rnnoise and friends build with meson; it lands beside our own python
+if [ ! -x "$NATIVE/bin/meson" ]; then
+    echo "installing meson..."
+    "$NATIVE/bin/python3" -m pip install --quiet --upgrade meson || \
+        python3 -m pip install --quiet --upgrade meson
+fi
+
 if [[ "$SDK" != "native" ]]; then
 
     # build builtins for ARCH

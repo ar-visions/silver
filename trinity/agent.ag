@@ -5,7 +5,11 @@
 # program writes; it answers with the exchange's statuses
 extend trinity
 
-import <dlfcn.h>
+# posix.h carries dlopen/dlsym where there is no <dlfcn.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <dlfcn.h>
 
 # an agent program: what to run, and what its output means
 class AgentRun

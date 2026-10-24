@@ -1803,10 +1803,10 @@ static void au_tee_flush() {
     fflush(stdout);
     char buf[4096];
     int  n;
-    while ((n = (int)read(au_tee_read, buf, sizeof(buf))) > 0) {
+    while ((n = (int)au_read(au_tee_read, buf, sizeof(buf))) > 0) {
         int off = 0;
         while (off < n) {
-            int w = (int)write(au_tee_real, buf + off, (size_t)(n - off));
+            int w = (int)au_write(au_tee_real, buf + off, (size_t)(n - off));
             if (w <= 0) break;
             off += w;
         }
@@ -1836,11 +1836,11 @@ AU_EXPORT string stdout_line() {
     if (au_tee_read < 0) return null;
     char buf[4096];
     int  n;
-    while ((n = (int)read(au_tee_read, buf, sizeof(buf))) > 0) {
+    while ((n = (int)au_read(au_tee_read, buf, sizeof(buf))) > 0) {
         if (au_tee_real >= 0) {
             int off = 0;
             while (off < n) {
-                int w = (int)write(au_tee_real, buf + off, (size_t)(n - off));
+                int w = (int)au_write(au_tee_real, buf + off, (size_t)(n - off));
                 if (w <= 0) break;
                 off += w;
             }
@@ -2225,10 +2225,10 @@ AU_EXPORT int au_capture_stdout(void) {
     // round-trip self-test: write straight to the (now redirected) fd 1 and read
     // it back off the pipe. if this lands, the redirect works in-process.
     static const char msg[] = "CAPTURE_SELFTEST\n";
-    ssize_t w = write(STDOUT_FILENO, (void*)msg, sizeof(msg) - 1);
+    ssize_t w = au_write(STDOUT_FILENO, (void*)msg, sizeof(msg) - 1);
     usleep(2000);
     char tb[64];
-    ssize_t rd = read(fds[0], tb, sizeof(tb) - 1);
+    ssize_t rd = au_read(fds[0], tb, sizeof(tb) - 1);
     if (rd > 0) tb[rd] = 0; else tb[0] = 0;
     if (dbg) {
         fprintf(dbg, "au_capture_stdout: orig=%d rfd=%d dup2(out)=%d dup2(err)=%d selftest_write=%zd read=%zd got='%s'\n",
@@ -3036,7 +3036,7 @@ AU_EXPORT string command_run(command cmd, bool verbose) {
     char    buffer[1024];
     ssize_t bytes;
     int     fd = fileno(p);
-    while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
+    while ((bytes = au_read(fd, buffer, sizeof(buffer))) > 0) {
         append_count(result, buffer, (int)bytes);
         if (verbose) { fwrite(buffer, 1, (size_t)bytes, stdout); fflush(stdout); }
     }
@@ -3118,8 +3118,14 @@ AU_EXPORT int command_exec_hook(command cmd, bool verbose, bool merge_err,
     // a prefixed command claims its whole output: popen captures stdout
     // only, so a tool writing to stderr (curl's meter, compiler warnings)
     // would print unattributed. merge it into the pipe we prefix
+    // not on windows: popen already points stderr at the pipe, and the
+    // redirect would only force a shell onto an otherwise plain command
+#ifdef _WIN32
+    string merged = null;
+#else
     string merged = (exec_prefix[0] || merge_err) ?
         form(string, "%o 2>&1", cmd) : null;
+#endif
     string run = au_in_env(merged ? cstring(merged) : cstring(cmd));
     FILE* p = popen(cstring(run), "r");
     if (!p) return -1;
@@ -3129,7 +3135,7 @@ AU_EXPORT int command_exec_hook(command cmd, bool verbose, bool merge_err,
     char    buffer[1024];
     ssize_t bytes;
     int     fd = fileno(p);
-    while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
+    while ((bytes = au_read(fd, buffer, sizeof(buffer))) > 0) {
         bool handled = hook && hook(ctx, buffer, bytes);
         if (!handled)
             exec_write(buffer, bytes);
@@ -8004,10 +8010,10 @@ AU_EXPORT i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
             break;
         }
         // drain any pending events (old ones)
-        read(fd, buf, sizeof(buf));
+        au_read(fd, buf, sizeof(buf));
 
         // block until something *new* arrives
-        int ln = read(fd, buf, sizeof(buf));
+        int ln = au_read(fd, buf, sizeof(buf));
         if (ln > 0) continue;
         usleep(100000); // 100 ms safety
     }
@@ -10207,7 +10213,9 @@ static void watch_add_tree(int fd, const char* dir, int depth) {
 // each running watch's wake pipe: pause writes one byte and the runner,
 // blocked in poll(), returns at once. a small table keyed by the watch keeps
 // the type's layout unchanged
+#ifndef _WIN32
 #include <poll.h>
+#endif
 #define AU_WATCH_MAX 256
 static struct { watch w; int rd, wr; } au_watch_wake[AU_WATCH_MAX];
 static pthread_mutex_t au_watch_wake_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -10233,7 +10241,7 @@ static int au_watch_wake_add(watch a) {
 static void au_watch_wake_signal(watch a) {
     pthread_mutex_lock(&au_watch_wake_mx);
     for (int i = 0; i < AU_WATCH_MAX; i++)
-        if (au_watch_wake[i].w == a) { char c = 1; (void)!write(au_watch_wake[i].wr, &c, 1); break; }
+        if (au_watch_wake[i].w == a) { char c = 1; (void)!au_write(au_watch_wake[i].wr, &c, 1); break; }
     pthread_mutex_unlock(&au_watch_wake_mx);
 }
 
@@ -10271,7 +10279,7 @@ static void* watch_runner(void* arg) {
         if (!a->running) break;
         if (r > 0 && (pf[0].revents & POLLIN)) {
             bool any = false;
-            while (read(fd, buf, sizeof(buf)) > 0) any = true;   // drain the batch
+            while (au_read(fd, buf, sizeof(buf)) > 0) any = true; // drain the batch
             // callback is a lambda: captures ride its context
             if (any && a->running && a->callback)
                 lambda_call(a->callback, null);
