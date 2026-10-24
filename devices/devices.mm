@@ -441,6 +441,11 @@ void platform_window_show(platform_window* w) {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+void platform_window_raise(platform_window* w) {
+    [w->window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
 void platform_window_hide(platform_window* w) {
     [w->window orderOut:nil];
 }
@@ -452,6 +457,14 @@ int platform_window_refresh_hz(platform_window* w) {
     if (!s) return 60;
     if (@available(macOS 12.0, *)) { int hz = (int)s.maximumFramesPerSecond; return hz > 0 ? hz : 60; }
     return 60;
+}
+
+void platform_screen_rect(platform_window* w, int* x, int* y, int* width, int* height) {
+    NSScreen* s = w->window.screen ? w->window.screen : [NSScreen mainScreen];
+    NSRect f = s ? s.frame : NSMakeRect(0, 0, 0, 0);
+    CGFloat k = s ? s.backingScaleFactor : 1.0;
+    *x = (int)(f.origin.x * k); *y = (int)(f.origin.y * k);
+    *width = (int)(f.size.width * k); *height = (int)(f.size.height * k);
 }
 
 void platform_window_set_title(platform_window* w, const char* t) {
@@ -966,9 +979,14 @@ platform_window* platform_window_create(int width, int height, const char* title
 
 void platform_window_destroy(platform_window* w) { if (w) { w->window.hidden = YES; free(w->clip); free(w); } }
 void platform_window_show(platform_window* w) { [w->window makeKeyAndVisible]; }
+void platform_window_raise(platform_window* w) { [w->window makeKeyAndVisible]; }
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_presented(platform_window* w, int pw, int ph) {}
+void platform_screen_rect(platform_window* w, int* x, int* y, int* width, int* height) {
+    CGRect b = UIScreen.mainScreen.nativeBounds;
+    *x = *y = 0; *width = (int)b.size.width; *height = (int)b.size.height;
+}
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}

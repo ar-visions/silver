@@ -1,0 +1,165 @@
+# wine: Valve's Wine, at the commit Proton Experimental is built
+# from, for Windows programs; its windows go to orbiter's Wayland
+# display alone (no X11 driver), its Windows side built by our clang
+export 11.0.0
+export extensions ['.exe']
+# how a file of it runs: this program in install/bin, the file after
+export run ['wine']
+export build none
+
+# xkbregistry (Wine's Wayland keyboard layouts): the system has the
+# library but not its headers; the layouts stay the system's
+import libxkbcommon/1.6.0 from https://xkbcommon.org/download/libxkbcommon-1.6.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    -Denable-x11=false
+    -Denable-wayland=false
+    -Denable-tools=false
+    -Denable-docs=false
+    -Denable-bash-completion=false
+    -Denable-xkbregistry=true
+    -Dxkb-config-root=/usr/share/X11/xkb
+    -Dx-locale-root=/usr/share/X11/locale
+
+# NASM: FFmpeg's x86 assembly (its fast H.264 decode paths)
+import nasm/2.16.03 from https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
+    PATH={install}/bin:$PATH
+
+# FFmpeg: Wine's media demuxer (winedmo) reads containers with it, and
+# gst-libav decodes with it (H.264 among them; Proton has none); 4.x,
+# the API Valve's winedmo is written for (Proton pins 4.3.3)
+import ffmpeg/4.4.5 from https://ffmpeg.org/releases/ffmpeg-4.4.5.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    --enable-shared
+    --disable-static
+    --disable-programs
+    --disable-doc
+    --disable-autodetect
+
+# GStreamer: Wine's media decoders (winegstreamer) run its pipelines
+import gstreamer/1.24.12 from https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.24.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=disabled
+    -Dexamples=disabled
+    -Dbenchmarks=disabled
+    -Ddoc=disabled
+    -Dintrospection=disabled
+    -Dnls=disabled
+    -Dlibunwind=disabled
+    -Dlibdw=disabled
+    -Dbash-completion=disabled
+    -Dptp-helper=disabled
+
+# its libraries (video, audio, tag) and the elements Wine builds
+# pipelines from: app, playback, convert, resample, typefind
+import gst-plugins-base/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.24.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dauto_features=disabled
+    -Dapp=enabled
+    -Dplayback=enabled
+    -Dtypefind=enabled
+    -Dvideoconvertscale=enabled
+    -Daudioconvert=enabled
+    -Daudioresample=enabled
+    # Valve's winegstreamer needs gstreamer-gl; EGL alone, no window
+    -Dgl=enabled
+    -Dgl_api=opengl
+    -Dgl_platform=egl
+    -Dgl_winsys=egl,surfaceless
+    -Dtests=disabled
+    -Dexamples=disabled
+    -Dtools=disabled
+    -Ddoc=disabled
+    -Dintrospection=disabled
+    -Dnls=disabled
+
+# the mp4 demuxer (qtdemux) alone
+import gst-plugins-good/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.24.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dauto_features=disabled
+    -Disomp4=enabled
+    -Dtests=disabled
+    -Dexamples=disabled
+    -Ddoc=disabled
+    -Dnls=disabled
+
+# the stream parsers (h264parse) alone
+import gst-plugins-bad/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.24.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dauto_features=disabled
+    -Dvideoparsers=enabled
+    -Dtests=disabled
+    -Dexamples=disabled
+    -Dtools=disabled
+    -Ddoc=disabled
+    -Dintrospection=disabled
+    -Dnls=disabled
+
+# FFmpeg's decoders as GStreamer elements (avdec_h264 ...)
+import gst-libav/1.24.12 from https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.24.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=disabled
+    -Ddoc=disabled
+
+# Valve's tree ships no configure; 64-bit Windows code only (Hot
+# Lava is 64-bit), built in its checkout
+import wine/6d211aabd1d325c9990a5fd7a81b9db37caae12d from https://github.com/ValveSoftware/wine
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    # the system's FreeType: Wine opens it by its soname at run time,
+    # and silver's install holds only the static one
+    FREETYPE_CFLAGS=-I/usr/include/freetype2
+    FREETYPE_LIBS=-lfreetype
+    > autoreconf -fi
+    --enable-archs=x86_64
+    --enable-win64
+    --disable-tests
+    --without-x
+    --with-wayland
+    --without-cups
+    --without-sane
+    --without-krb5
+    --without-netapi
+    --without-capi
+    --without-pcsclite
+    --without-v4l2
+    --without-gphoto
+    --without-usb
+    --without-oss
+    >> make -C {root_path}/checkout/ValveSoftware/wine -j16
+    >> make -C {root_path}/checkout/ValveSoftware/wine install
+    # Valve's loader runs 64-bit programs by i386-unix/wine64, as
+    # Proton's own package places it
+    >> mkdir -p {install}/lib/wine/i386-unix
+    >> cp --remove-destination {install}/lib/wine/x86_64-unix/wine {install}/lib/wine/i386-unix/wine64
+    >> cp --remove-destination {install}/lib/wine/x86_64-unix/wine-preloader {install}/lib/wine/i386-unix/wine64-preloader
+
+# Proton at the same release: lsteamclient (a game's calls to Steam's
+# Windows client, answered by the Linux Steam that runs) and its
+# steam.exe (Steam's registry keys, then the game); each built out of
+# Wine's tree by Wine's makedep, as Proton builds them
+import proton/70b7e109e8fc0783a509805f3d1bc090b55dac3f from https://github.com/ValveSoftware/Proton/archive/70b7e109e8fc0783a509805f3d1bc090b55dac3f.tar.gz
+    PATH={install}/bin:$PATH
+    > rm -rf {install}/build/lsteamclient && mkdir -p {install}/build/lsteamclient && touch {install}/build/lsteamclient/config.status
+    > cp {root_path}/checkout/ValveSoftware/wine/Makefile {install}/build/lsteamclient/Makefile
+    > sed -i -e '1 i UNIX_LIBS = {root_path}/checkout/ValveSoftware/wine/dlls/ntdll/ntdll.so' -e '/^all:$/,$c all:' -e '/^SUBDIRS/,/[^\]$/c SUBDIRS = {root_path}/checkout/archive/proton/lsteamclient {root_path}/checkout/archive/proton/steam_helper' -e '/^TOP_INSTALL_LIB/c TOP_INSTALL_LIB = dlls/src-lsteamclient' -e 's#^srcdir = .*#srcdir = {root_path}/checkout/ValveSoftware/wine#' -e '/^srcdir/a objdir = {root_path}/checkout/ValveSoftware/wine' -e '/^prefix/c prefix = {install}' -e '/^libdir/c libdir = {install}/lib' -e '/^toolsdir/c toolsdir = {root_path}/checkout/ValveSoftware/wine' -e '/^CXXFLAGS/c CXXFLAGS = -std=c++17 -g -O2' {install}/build/lsteamclient/Makefile
+    > cd {install}/build/lsteamclient && {root_path}/checkout/ValveSoftware/wine/tools/makedep && make -j16 && make install
+
+# DXVK: Direct3D 9-11 on Vulkan (Proton's own way); its release build,
+# the DLLs a prefix takes in place of Wine's (wined3d has no GL here)
+import https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz
+    > mkdir -p {install}/lib/wine/dxvk
+    > tar -xzf {import_file} --strip-components 1 -C {install}/lib/wine/dxvk

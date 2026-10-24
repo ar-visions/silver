@@ -547,21 +547,14 @@ Button WifiRow
 # a password: the text is drawn as dots
 TextInput WifiSecret
     style : CSS {
-        layers.body:
-            fill_color: #101820
-            stroke_width: 1.0
-            stroke_color: #ffffff40
-            radius: 8
         layers.face:
             label_color: #0000
-            label_size: 18
-            editable: true
-            label_align: 0.0 0.5
-            label_offset: 14.0 0.0
         :focused
-            layers.body:
-                fill_color: #162531
-                stroke_color: #72d6c9
+            layers.face:
+                label_color: #0000
+        :has_value
+            layers.face:
+                label_color: #0000
     }
 
     public func draw [ w: Window ]

@@ -213,8 +213,8 @@ func nav_icon_paint [ cv: Canvas, ico: SVGModel, x: f32,
     cv.draw_svg[ ico, x + 38.0 * u, round[ ry + 4.5 * u ], sz, sz ]
     return x + 67.0 * u
 
-# an app's or module's icon: its images/icon.png, else the icon its
-# export names, else the module cube or folder
+# an app's or module's icon: its images/icon.png (or .jpg), else its
+# export's icon name, else the module cube or folder
 class AppIcon
     public  file   : path
     public  module : bool
@@ -294,6 +294,8 @@ class AppIcon
         if [ !loaded ]
             loaded = true
             png : path '{file}/images/icon.png'
+            jpg : path '{file}/images/icon.jpg'
+            if [ !png.exists[] && jpg.exists[] ] png = jpg
             if [ icon_file && icon_file.ext[] == 'svg' ]
                 svg = SVGModel [ icon_file ]
                 png = path '/nonexistent'

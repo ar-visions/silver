@@ -785,8 +785,7 @@ Control SceneGrid
                        i == hov ]
 
 # the empty pane's apps: glass cards over the clear space, our app
-# modules, then the recommended (software/software.agi); trinity
-# scrolls it
+# modules by section; trinity scrolls it
 Control AppsGrid
     style : CSS {
         area: l0 t0 r0 b0
@@ -808,8 +807,8 @@ Control AppsGrid
     # the card a press went down on, -1 none
     mutable press_i : i32 [ -1 ]
 
-    # the cards in their order: each section of SoftwareGroup, ours
-    # first, then the recommended; heads holds each section's name
+    # the cards in their order: each section of SoftwareGroup;
+    # heads holds each section's name
     # and its first card
     mutable shown : vec AppEntry
     # an icon a card, made once with the list
@@ -818,11 +817,26 @@ Control AppsGrid
     mutable head_at : vec i32
     # the filter the cards were gathered with
     mutable gathered : string
+    # the store whose folder is open: its apps follow its card
+    mutable open : string
+    # orbiter's apps_gen when the cards were gathered
+    mutable gen_seen : i32
+    # the open store's card and its apps' run in shown (-1 none); its
+    # apps go on lines of their own, in a band under the store's line
+    mutable band_of : i32 [ -1 ]
+    mutable band_at : i32 [ -1 ]
+    mutable band_n  : i32
+    # the band as laid out: top and height in content space
+    mutable band_y  : f32
+    mutable band_h  : f32
 
     func entry [ i: i32 ] -> AppEntry
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
 
     func gather [ orb: orbiter ]
+        band_of = -1
+        band_at = -1
+        band_n  = 0
         shown   = vec AppEntry []
         heads   = vec string []
         head_at = vec i32 []
@@ -832,8 +846,6 @@ Control AppsGrid
             ev : Au_t et.members.origin[ k ]
             if [ ev && ev.member_type == AU_MEMBER_ENUMV ]
                 names.push[ string [ ev.ident ] ]
-        # names on the featured list with no module yet: last
-        names.push[ 'recommended' ]
         names.push[ 'other' ]
         ours : vec AppEntry orb.app_entries[]
         gathered = orb.apps_filter
@@ -852,9 +864,20 @@ Control AppsGrid
                     if [ nn == g ] known = true
                 if [ g == gn || (gn == 'other' && !known) ]
                     shown.push[ ae ]
+                    # an open store: itself (it runs), then its apps
+                    if [ ae.apps && open == ae.name ]
+                        band_of = shown.count - 1
+                        band_at = shown.count
+                        band_n  = ae.apps.count + 1
+                        shown.push[ AppEntry [ name: ae.name,
+                            file: ae.file, module: true, agi: ae.agi,
+                            group: ae.group, built: ae.built ] ]
+                        for [ sa: AppEntry ] in ae.apps
+                            shown.push[ sa ]
             if [ shown.count > start ]
                 heads.push[ gn ]
                 head_at.push[ start ]
+        gen_seen = orb.apps_gen
         icons = vec AppIcon []
         for [ ae: AppEntry ] in shown
             icons.push[ AppIcon [ module: true, file: ae.file,
@@ -925,6 +948,12 @@ Control AppsGrid
         here : bool [ ae.module && (!ae.built || ae.built.exists[]) ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
+        # a store with apps opens as a folder; again, it shuts
+        if [ here && ae.apps && ae.apps.count > 0 ]
+            sel   = -1
+            open  = (open == ae.name) ? '' : ae.name
+            shown = null
+            return
         if [ here ]
             sel = -1
             orb.apps_pick[ pane, ae ]
@@ -940,6 +969,31 @@ Control AppsGrid
         el
             sel = i
             if [ ux ] ux.set_focus[ a ]
+
+    # an open store's band, cut across the view: a tint, 6 px of
+    # shade inside its top and bottom, a faint line above and below
+    func draw_band [ cv: Canvas, y: f32, h: f32 ]
+        bw : f32 [ bounds.w ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0008' ] ]
+        cv.rect_to[ 0.0, y, bw, h ]
+        cv.paint[]
+        for [ side: i32 0, side < 2, side += 1 ]
+            g : Gradient [ (side == 0)
+                ? linear_gradient[ 0.0, y, 0.0, y + 6.0 ]
+                : linear_gradient[ 0.0, y + h, 0.0, y + h - 6.0 ] ]
+            g.add_stop[ 0.0, 0x88000000 ]
+            g.add_stop[ 1.0, 0x00000000 ]
+            cv.rect_to[ 0.0, (side == 0) ? y : y + h - 6.0, bw, 6.0 ]
+            cv.set_fill_gradient[ g ]
+            cv.paint[]
+            cv.clear_fill_gradient[]
+        cv.fill_color[ rgba [ '#fff2' ] ]
+        cv.rect_to[ 0.0, y - 1.0, bw, 1.0 ]
+        cv.paint[]
+        cv.rect_to[ 0.0, y + h, bw, 1.0 ]
+        cv.paint[]
+        cv.restore[]
 
     # a heading over a section
     func heading [ cv: Canvas, w: Window, t: string, x: f32, y: f32 ]
@@ -961,7 +1015,8 @@ Control AppsGrid
         if [ !orb ] return
         cv : Canvas w.screen
         un : f32 ux_unit[ w ]
-        if [ !shown || gathered != orb.apps_filter ]
+        if [ !shown || gathered != orb.apps_filter
+             || gen_seen != orb.apps_gen ]
             gather[ orb ]
             hov = -1
             sel = -1
@@ -982,6 +1037,7 @@ Control AppsGrid
         x0 : f32 [ pad ]
         rx = vec f32 []
         ry = vec f32 []
+        band_h = 0.0
         hys : vec f32 []
         y : f32 [ pad ]
         for [ h: i32 0, h < heads.count, h += 1 ]
@@ -991,10 +1047,35 @@ Control AppsGrid
             s0 : i32 [ head_at[ h ] ]
             s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
                 : shown.count ]
+            # the open store's line, if it is in this section
+            rs : i32 [ -1 ]
+            j : i32 [ 0 ]
             for [ i: i32 s0, i < s1, i += 1 ]
-                rx.push[ x0 + f32[ (i - s0) % pr ] * (cw9 + gap) ]
-                ry.push[ y + f32[ (i - s0) / pr ] * (ch9 + gap) ]
-            y += f32[ (s1 - s0 + pr - 1) / pr ] * (ch9 + gap)
+                if [ i >= band_at && i < band_at + band_n ] continue
+                if [ i == band_of ] rs = j / pr
+                j += 1
+            # the band: its apps' lines with a gap round them
+            bh : f32 [ 0.0 ]
+            by : f32 [ 0.0 ]
+            if [ rs >= 0 ]
+                lines : i32 [ (band_n + pr - 1) / pr ]
+                bh = gap * 2.0 + f32[ lines ] * (ch9 + gap) - gap
+                by = y + f32[ rs + 1 ] * (ch9 + gap) - gap * 0.5
+                band_y = by
+                band_h = bh
+            j = 0
+            for [ i: i32 s0, i < s1, i += 1 ]
+                if [ rs >= 0 && i >= band_at && i < band_at + band_n ]
+                    b : i32 [ i - band_at ]
+                    rx.push[ x0 + f32[ b % pr ] * (cw9 + gap) ]
+                    ry.push[ by + gap + f32[ b / pr ] * (ch9 + gap) ]
+                    continue
+                r : i32 [ j / pr ]
+                rx.push[ x0 + f32[ j % pr ] * (cw9 + gap) ]
+                ry.push[ y + f32[ r ] * (ch9 + gap)
+                    + ((rs >= 0 && r > rs) ? bh : 0.0) ]
+                j += 1
+            y += f32[ (j + pr - 1) / pr ] * (ch9 + gap) + bh
         content_h = y + pad
         mx : f32 [ content_h - bounds.h ]
         if [ mx < 0.0 ] mx = 0.0
@@ -1002,6 +1083,7 @@ Control AppsGrid
             scroll.y    = mx
             scroll_goal = mx
         sy : f32 [ scroll.y ]
+        if [ band_h > 0.0 ] draw_band[ cv, band_y - sy, band_h ]
         for [ h: i32 0, h < heads.count, h += 1 ]
             heading[ cv, w, heads[ h ], x0 + 4.0, hys[ h ] - sy ]
         n : i32 [ rx.count ]
@@ -1021,7 +1103,9 @@ Control AppsGrid
             busy : bool [ iw == 'starting' || iw == 'building' ]
             failed : bool [ iw == 'failed' ]
             chosen : bool [ i == sel && !here && !busy ]
-            draw_tile[ cv, w, i, tx, cy, cr, here, chosen ]
+            # an open store's card stays lit
+            folder : bool [ ae.apps && open == ae.name ]
+            draw_tile[ cv, w, i, tx, cy, cr, here, chosen || folder ]
             # the icon fills the tile, dim until it is here
             ic : AppIcon icons[ i ]
             isz : f32 [ round[ tile * 0.72 ] ]
@@ -1114,8 +1198,7 @@ Control AppsGrid
             'fonts/BarlowCondensed-Regular.ttf', fp ] ]
         cv.font_size[ f32[ fp ] ]
         cv.fill_color[ rgba [ (can) ? '#ffffff' : '#ffffff66' ] ]
-        word : 'No module'
-        if [ can ] word = (failed) ? 'Retry' : 'Download'
+        word : (failed) ? 'Retry' : 'Download'
         cv.draw_text[ word, rect [ x: bx, y: y, w: bw, h: h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
             null ]

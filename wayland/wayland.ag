@@ -9,17 +9,30 @@ import <string.h>
     -lwlroots
     -lwayland-server
     -lxkbcommon
+    -lxcb
+    -lxcb-res
     +WLR_USE_UNSTABLE
 
 # the compositor lives in wayland.c on wlroots; this is its surface
 func wlc_create         [ w: i32, h: i32 ] -> i32
 func wlc_socket         [] -> cstr
+func wlc_x11_display    [] -> cstr
 func wlc_pump           []
 func wlc_resize         [ w: i32, h: i32 ]
 func wlc_fullscreen     [ on: i32 ]
+# the real monitor's size: programs see it as their screen
+func wlc_screen         [ w: i32, h: i32, hz: i32 ]
+# it has the whole screen (it asked for it)
+func wlc_window_full    [ id: u64 ] -> i32
+# the window that last asked into or out of fullscreen, once (0 none)
+func wlc_window_full_asked [] -> u64
 func wlc_window_count  [] -> i32
 func wlc_window_at     [ i: i32 ] -> u64
 func wlc_window_newest [] -> u64
+# the window that last asked to come forward, once (0 none)
+func wlc_window_asked  [] -> u64
+# the window that last asked to be minimized, once (0 none)
+func wlc_window_hide_asked [] -> u64
 func wlc_window_open   [ id: u64 ] -> i32
 func wlc_window_title  [ id: u64 ] -> cstr
 func wlc_window_app    [ id: u64 ] -> cstr
@@ -27,6 +40,8 @@ func wlc_window_pid    [ id: u64 ] -> i32
 func wlc_window_resize [ id: u64, w: i32, h: i32 ]
 func wlc_window_focus  [ id: u64 ]
 func wlc_window_close  [ id: u64 ]
+# one that did not answer its close ends (its process, or X client)
+func wlc_window_kill   [ id: u64 ]
 # it draws its own header (neither decoration protocol took it)
 func wlc_window_csd    [ id: u64 ] -> i32
 # a dialog's window (its parent), else 0
@@ -56,6 +71,10 @@ func wlc_pointer_motion [ id: u64, x: f32, y: f32 ]
 func wlc_pointer_button [ id: u64, x: f32, y: f32, button: i32,
                           state: i32 ]
 func wlc_pointer_axis   [ dx: f32, dy: f32 ]
+# the window whose pointer is held still (a game's mouse look), 0 none
+func wlc_pointer_held   [] -> u64
+# the mouse's raw motion to the window under the pointer
+func wlc_pointer_relative [ dx: f32, dy: f32 ]
 func wlc_key            [ glfw: i32, state: i32 ]
 # the windows' keyboard: an xkb layout and variant ('' default)
 func wlc_key_layout     [ layout: cstr, variant: cstr ]
@@ -178,6 +197,15 @@ element WaylandView
     mutable sheet_y      : f32
     mutable sheet_w      : f32
     mutable sheet_h      : f32
+    # the mouse locked for the window's held pointer; let go by Esc
+    # (held off until the next press in the pane)
+    mutable held_lock    : bool
+    mutable held_off     : bool
+    # the window in fullscreen: shown on the real monitor in a window
+    # of its own, its keys and mouse from there; closed there, it
+    # stays off until the window asks again
+    mutable screen       : ScreenOut
+    mutable screen_off   : bool
 
     func ensure [ w: i32, h: i32 ]
         if [ up ] return
@@ -186,6 +214,8 @@ element WaylandView
             return
         up = true
         log 'wayland: display {string[ wlc_socket[] ]} up at {w}x{h}'
+        sr : rect screen_rect[]
+        wlc_screen[ i32[ sr.w ], i32[ sr.h ], screen_hz[] ]
 
     # the output follows the pane's size
     func frame_out [ cv: Canvas, vp: rect ]
@@ -209,7 +239,9 @@ element WaylandView
             sent_w  = 0
             sent_h  = 0
         if [ win == 0 ] return
-        settle[ w9, h9 ]
+        full : bool [ screen_follow[ cv ] ]
+        if [ full ] settle[ screen.width, screen.height ]
+        el settle[ w9, h9 ]
         retire[]
         if [ !frames ] frames = map Texture [string] []
         t : Texture frame_of[ cv, win, frames ]
@@ -217,6 +249,11 @@ element WaylandView
         el t = last_t
         if [ !t ] return
         shown = wlc_frame_id[ win ]
+        # on the screen alone: the pane draws no second copy
+        if [ full ]
+            screen.show[ t ]
+            screen_input[ t ]
+            return
         ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
         # the cut header and anything past the pane stay off screen
         cv.save[]
@@ -226,6 +263,58 @@ element WaylandView
                               h: f32[ t.height ] ] ]
         cv.restore[]
         draw_sheet[ cv, vp ]
+
+    # the screen window opens as the window asks for fullscreen and
+    # goes as it leaves; true while it shows the window
+    func screen_follow [ cv: Canvas ] -> bool
+        full : bool [ wlc_window_full[ win ] != 0 ]
+        if [ !full ] screen_off = false
+        if [ screen && (!full || screen.closed) ]
+            if [ screen.closed ] screen_off = true
+            screen.close[]
+            screen = null
+            sent_w = 0
+            log 'wayland: window {win} left the screen'
+        if [ full && !screen && !screen_off ]
+            screen = ScreenOut [ vk: cv.vk, hidden: ux.hidden,
+                title: string[ wlc_window_title[ win ] ] ]
+            if [ !screen.win ]
+                screen = null
+                screen_off = true
+                return false
+            wlc_window_focus[ win ]
+            log 'wayland: window {win} on the screen'
+        return screen != null
+
+    # the screen window's keys and mouse to the window: a held
+    # pointer locks the mouse there and takes raw motion
+    func screen_input [ t: Texture ]
+        held : bool [ wlc_pointer_held[] == win ]
+        screen.lock[ held ]
+        k : f64 [ min[ f64[ screen.width ] / f64[ t.width ],
+                       f64[ screen.height ] / f64[ t.height ] ] ]
+        ox : f64 [ (f64[ screen.width ] - f64[ t.width ] * k) * 0.5 ]
+        oy : f64 [ (f64[ screen.height ] - f64[ t.height ] * k) * 0.5 ]
+        # read in place, then cleared: a list swapped out was freed
+        for [ e: ScreenEvent ] in screen.events
+            x : f32 [ (e.x - ox) / k ]
+            y : f32 [ (e.y - oy) / k ]
+            if [ e.kind == 1 ]
+                wlc_key[ e.code, e.state ]
+            el [ e.kind == 2 ]
+                if [ held ]
+                    wlc_pointer_button[ win, 0.0, 0.0, e.code, e.state ]
+                el
+                    wlc_pointer_button[ win, x, y, e.code, e.state ]
+            el [ e.kind == 3 ]
+                if [ held ]
+                    wlc_pointer_relative[ f32[ e.dx ], f32[ e.dy ] ]
+                el
+                    wlc_pointer_motion[ win, x, y ]
+            el [ e.kind == 4 ]
+                wlc_pointer_axis[ f32[ e.dx ] * ux.window_wheel,
+                                  f32[ e.dy ] * ux.window_wheel ]
+        screen.events.clear[]
 
     # a window's current frame, imported once per buffer into got
     func frame_of [ cv: Canvas, id: u64, got: map Texture [string] ]
@@ -336,8 +425,23 @@ element WaylandView
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
+        hold_mouse[]
         frame_out[ w.screen,
                    rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+
+    # the window holds its pointer: the mouse locks to the pane (its
+    # moves go as raw motion) until the window lets go or Esc
+    func hold_mouse []
+        held : bool [ up && win != 0 && wlc_pointer_held[] == win ]
+        mine : bool [ ux.locked == a ]
+        if [ held_lock && !mine ] held_off = held
+        held_lock = mine
+        if [ held && !mine && !held_off && ux.focus == a ]
+            ux.mouse_lock[ a ]
+            held_lock = true
+        el [ !held && mine ]
+            ux.mouse_unlock[]
+            held_lock = false
 
     # the pane's y plus the cropped top is the window's y
     func win_y [ y: f32 ] -> f32
@@ -353,6 +457,10 @@ element WaylandView
             wlc_pointer_button[ sheet, sx, sy, ev.mouse.button, 1 ]
             if [ ux ] ux.set_focus[ a ]
             return
+        held_off = false
+        if [ held_lock ]
+            wlc_pointer_button[ win, 0.0, 0.0, ev.mouse.button, 1 ]
+            return
         y : f32 win_y[ ev.mouse.pos.y ]
         wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
         wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 1 ]
@@ -364,11 +472,17 @@ element WaylandView
             wlc_pointer_button[ sheet, ev.mouse.pos.x - sheet_x,
                 ev.mouse.pos.y - sheet_y, ev.mouse.button, 0 ]
             return
+        if [ held_lock ]
+            wlc_pointer_button[ win, 0.0, 0.0, ev.mouse.button, 0 ]
+            return
         y : f32 win_y[ ev.mouse.pos.y ]
         wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 0 ]
 
     public func on_move [ ev: Event ]
         if [ !up || win == 0 ] return
+        if [ held_lock ]
+            wlc_pointer_relative[ ev.mouse.delta.x, ev.mouse.delta.y ]
+            return
         if [ sheet_w > 0.0 ]
             if [ to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
                 wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,

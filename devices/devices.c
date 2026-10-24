@@ -314,9 +314,17 @@ void platform_window_destroy(platform_window* w) {
 }
 
 void platform_window_show(platform_window* w) { ShowWindow(w->hwnd, SW_SHOW); SetForegroundWindow(w->hwnd); }
+void platform_window_raise(platform_window* w) { SetForegroundWindow(w->hwnd); }
 void platform_window_hide(platform_window* w) { ShowWindow(w->hwnd, SW_HIDE); }
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_presented(platform_window* w, int pw, int ph) {}
+void platform_screen_rect(platform_window* w, int* x, int* y, int* width, int* height) {
+    MONITORINFO mi = { sizeof mi };
+    GetMonitorInfoW(MonitorFromWindow(w->hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    *x = mi.rcMonitor.left; *y = mi.rcMonitor.top;
+    *width = mi.rcMonitor.right - mi.rcMonitor.left;
+    *height = mi.rcMonitor.bottom - mi.rcMonitor.top;
+}
 
 void platform_window_set_title(platform_window* w, const char* t) {
     WCHAR* wt = to_wide(t); SetWindowTextW(w->hwnd, wt); free(wt);
@@ -955,9 +963,15 @@ platform_window* platform_window_create(int width, int height, const char* title
 
 void platform_window_destroy(platform_window* w) { if (w) { if (g_win == w) g_win = NULL; free(w->clip); free(w); } }
 void platform_window_show(platform_window* w) {}
+void platform_window_raise(platform_window* w) {}
 void platform_window_hide(platform_window* w) {}
 int  platform_window_refresh_hz(platform_window* w) { return 60; }
 void platform_window_presented(platform_window* w, int pw, int ph) {}
+void platform_screen_rect(platform_window* w, int* x, int* y, int* width, int* height) {
+    *x = *y = 0;
+    *width  = g_anw ? ANativeWindow_getWidth(g_anw) : 0;
+    *height = g_anw ? ANativeWindow_getHeight(g_anw) : 0;
+}
 void platform_window_set_title(platform_window* w, const char* t) {}
 void platform_window_set_resizable(platform_window* w, bool on) {}
 void platform_window_set_size(platform_window* w, int width, int height) {}
@@ -1056,6 +1070,8 @@ struct platform_window {
     int                mods;
     bool               should_close;
     bool               fullscreen;
+    // mapped once: the wm owns _NET_WM_STATE from then on
+    bool               shown;
     int                aspect_num, aspect_den;
     char*              clip;
     char*              clip_own;
@@ -1677,6 +1693,7 @@ static xcb_generic_event_t* next_event(void) {
 }
 static xcb_atom_t A_NET_WM_SYNC_REQUEST, A_NET_WM_SYNC_REQUEST_COUNTER;
 static xcb_atom_t A_WM_PROTOCOLS, A_WM_DELETE, A_NET_WM_STATE, A_NET_WM_STATE_FULLSCREEN,
+                  A_NET_ACTIVE_WINDOW,
                   A_CLIPBOARD, A_UTF8_STRING, A_TARGETS, A_PLATFORM_SEL, A_PNG;
 
 // the picture on the clipboard (image/png), ours to serve; and one read
@@ -2079,6 +2096,7 @@ bool platform_init(void) {
     A_NET_WM_SYNC_REQUEST_COUNTER = atom("_NET_WM_SYNC_REQUEST_COUNTER");
     A_NET_WM_STATE = atom("_NET_WM_STATE");
     A_NET_WM_STATE_FULLSCREEN = atom("_NET_WM_STATE_FULLSCREEN");
+    A_NET_ACTIVE_WINDOW = atom("_NET_ACTIVE_WINDOW");
     A_CLIPBOARD = atom("CLIPBOARD");
     A_UTF8_STRING = atom("UTF8_STRING");
     A_TARGETS = atom("TARGETS");
@@ -2170,7 +2188,25 @@ void platform_window_destroy(platform_window* w) {
     free(w);
 }
 
-void platform_window_show(platform_window* w) { if (g_kms) return; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
+void platform_window_show(platform_window* w) { if (g_kms) return; w->shown = true; xcb_map_window(g_conn, w->win); xcb_flush(g_conn); }
+
+// asked as a pager asks (source 2): GNOME raises and focuses it then,
+// where a new window of a program not in front would open behind
+void platform_window_raise(platform_window* w) {
+    if (g_kms) return;
+    xcb_client_message_event_t e = {0};
+    e.response_type = XCB_CLIENT_MESSAGE;
+    e.format = 32;
+    e.window = w->win;
+    e.type = A_NET_ACTIVE_WINDOW;
+    e.data.data32[0] = 2;
+    e.data.data32[1] = XCB_CURRENT_TIME;
+    xcb_send_event(g_conn, 0, g_screen->root,
+        XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT | XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY, (const char*)&e);
+    uint32_t above = XCB_STACK_MODE_ABOVE;
+    xcb_configure_window(g_conn, w->win, XCB_CONFIG_WINDOW_STACK_MODE, &above);
+    xcb_flush(g_conn);
+}
 void platform_window_hide(platform_window* w) { if (g_kms) return; xcb_unmap_window(g_conn, w->win); xcb_flush(g_conn); }
 // a frame of pw x ph went out: a resize the wm waits on is answered
 // once the frame is the window's size
@@ -2209,6 +2245,39 @@ int  platform_window_refresh_hz(platform_window* w) {
     }
     free(res);
     return best > 0 ? best : 60;
+}
+
+// the crtc holding the window's middle, else the first lit one
+void platform_screen_rect(platform_window* w, int* x, int* y, int* width, int* height) {
+    *x = *y = 0;
+    *width = w->width; *height = w->height;
+    if (g_kms) { if (g_drm_w > 0) { *width = g_drm_w; *height = g_drm_h; } return; }
+    *width = g_screen->width_in_pixels; *height = g_screen->height_in_pixels;
+    int wx = 0, wy = 0;
+    platform_window_get_pos(w, &wx, &wy);
+    int cx = wx + w->width / 2, cy = wy + w->height / 2;
+    xcb_randr_get_screen_resources_current_reply_t* res =
+        xcb_randr_get_screen_resources_current_reply(g_conn,
+            xcb_randr_get_screen_resources_current(g_conn, g_screen->root), NULL);
+    if (!res) return;
+    xcb_randr_crtc_t* crtcs = xcb_randr_get_screen_resources_current_crtcs(res);
+    int ncrtc = xcb_randr_get_screen_resources_current_crtcs_length(res);
+    bool lit = false, in = false;
+    for (int i = 0; i < ncrtc && !in; i++) {
+        xcb_randr_get_crtc_info_reply_t* ci = xcb_randr_get_crtc_info_reply(g_conn,
+            xcb_randr_get_crtc_info(g_conn, crtcs[i], res->config_timestamp), NULL);
+        if (!ci) continue;
+        if (ci->mode && ci->width && ci->height) {
+            in = cx >= ci->x && cx < ci->x + ci->width
+              && cy >= ci->y && cy < ci->y + ci->height;
+            if (in || !lit) {
+                *x = ci->x; *y = ci->y; *width = ci->width; *height = ci->height;
+            }
+            lit = true;
+        }
+        free(ci);
+    }
+    free(res);
 }
 
 void platform_window_set_title(platform_window* w, const char* t) {
@@ -2281,6 +2350,15 @@ void platform_window_set_aspect(platform_window* w, int num, int den) {
 
 void platform_window_set_fullscreen(platform_window* w, bool on) {
     if (g_kms) { w->fullscreen = on; return; }
+    w->fullscreen = on;
+    // not yet mapped: the wm reads the state at the map, not a message
+    if (!w->shown) {
+        if (on) xcb_change_property(g_conn, XCB_PROP_MODE_REPLACE, w->win, A_NET_WM_STATE,
+                    XCB_ATOM_ATOM, 32, 1, &A_NET_WM_STATE_FULLSCREEN);
+        else    xcb_delete_property(g_conn, w->win, A_NET_WM_STATE);
+        xcb_flush(g_conn);
+        return;
+    }
     xcb_client_message_event_t e = {0};
     e.response_type = XCB_CLIENT_MESSAGE;
     e.format = 32;

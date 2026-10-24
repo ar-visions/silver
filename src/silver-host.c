@@ -24,6 +24,7 @@
 #endif
 #include <sys/stat.h>
 #include <dirent.h>
+#include <sys/file.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #include <sys/ucontext.h>
@@ -1342,6 +1343,61 @@ static void init_as_pid1(void) {}
 #define VIEW_ROOT "/mnt"
 
 static pid_t g_view_app = 0;    // the app, as the host sees it
+static const char* view_app_name = "";
+static int g_view_lock = -1;    // held by a view's pid 1 while it lives
+
+// the view an app's first instance made, if it still runs: its pid 1
+// as the host sees it, checked by its process space
+static pid_t view_running(const char* vf) {
+    FILE* f = fopen(vf, "rb");
+    if (!f) return 0;
+    int p = 0;
+    unsigned long ino = 0;
+    int ok = fscanf(f, "%d %lu", &p, &ino) == 2;
+    fclose(f);
+    char ns[64];
+    struct stat st;
+    snprintf(ns, sizeof(ns), "/proc/%d/ns/pid", p);
+    if (!ok || p <= 1 || stat(ns, &st) != 0 || st.st_ino != ino) return 0;
+    return p;
+}
+
+// the /tmp folders of an app's views no pid 1 holds any more
+static void view_tidy(const char* app) {
+    char dir[4300], p[4600], cmd[4700];
+    snprintf(dir, sizeof(dir), "%s/install/tmp/view", SILVER_ROOT);
+    DIR* d = opendir(dir);
+    if (!d) return;
+    size_t n = strlen(app);
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        size_t len = strlen(e->d_name);
+        if (strncmp(e->d_name, app, n) != 0 || e->d_name[n] != '-' ||
+            len < 5 || strcmp(e->d_name + len - 5, ".lock") != 0)
+            continue;
+        snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
+        int lf = open(p, O_RDONLY | O_CLOEXEC);
+        int gone = lf >= 0 && flock(lf, LOCK_EX | LOCK_NB) == 0;
+        if (lf >= 0) close(lf);
+        if (!gone) continue;
+        snprintf(cmd, sizeof(cmd), "rm -rf '%s/%.*s' '%s'", dir,
+            (int)(len - 5), e->d_name, p);
+        (void)system(cmd);
+    }
+    closedir(d);
+}
+
+// pid 1's own space: any process in it but itself
+static int view_others(void) {
+    DIR* d = opendir("/proc");
+    if (!d) return 0;
+    struct dirent* e;
+    int n = 0;
+    while (!n && (e = readdir(d)))
+        n = atoi(e->d_name) > 1;
+    closedir(d);
+    return n;
+}
 
 static int view_mkdirs(const char* p, mode_t m) {
     char b[4300];
@@ -1516,6 +1572,10 @@ static int view_share(int argc, char** argv) {
             strerror(errno));
         return 1;
     }
+    // a joined instance's holder is inside the view itself
+    char seen[4600];
+    snprintf(seen, sizeof(seen), VIEW_ROOT "%s", SILVER_ROOT);
+    if (access(seen, F_OK) != 0) snprintf(at, sizeof(at), "%s", src);
     umount2(at, MNT_DETACH);
     if (!take) {
         unlink(at);
@@ -1563,11 +1623,13 @@ static int view_build(const char* home, const char* run,
     // the standard places, each the app's own folder outside
     uid_t uid = getuid();
     const char* real = getenv("HOME");
+    // home first: a program naming a disk by its first mount (Steam's
+    // library drive) names it by the home, never /tmp
+    if (real && *real) view_put(home, real, 1);
     view_put(tmp, "/tmp", 1);
     view_tmpfs("/run", "mode=755");
     snprintf(q, sizeof(q), "/run/user/%u", uid);
     view_put(run, q, 1);
-    if (real && *real) view_put(home, real, 1);
     for (size_t i = 0; i < sizeof(sys) / sizeof(*sys); i++)
         view_put(sys[i], sys[i], 0);
     // the devices a drawing, sounding app opens; its own ptys
@@ -1601,6 +1663,13 @@ static int view_build(const char* home, const char* run,
     snprintf(p, sizeof(p), "%s/install/tmp", SILVER_ROOT);
     view_tmpfs(p, "mode=755");
     view_put(log, log, 1);
+    // each slot's log: a later instance of the app joins this view
+    for (int k = 1; k < HOST_APPS; k++) {
+        app_log_path(q, sizeof(q), view_app_name, k);
+        if (strcmp(q, log) == 0) continue;
+        view_touch(q);
+        view_put(q, q, 1);
+    }
     // the covers themselves take no files
     struct mount_attr ro = { .attr_set = MOUNT_ATTR_RDONLY };
     snprintf(q, sizeof(q), VIEW_ROOT "%s/install/tmp", SILVER_ROOT);
@@ -1621,38 +1690,40 @@ static int view_build(const char* home, const char* run,
     return 0;
 }
 
-// calls refused: other processes, mounts, kernel powers
-static int view_filter(void) {
-    struct sock_filter f[160];
-    int n = 0;
 #define VF_STMT(c, k)        f[n++] = (struct sock_filter)BPF_STMT(c, k)
 #define VF_JUMP(c, k, t, e)  f[n++] = (struct sock_filter)BPF_JUMP(c, k, t, e)
 #define VF_RET(v)            VF_STMT(BPF_RET | BPF_K, v)
-#define VF_DENY(nr)          VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, nr, 0, 1); \
-                             VF_RET(SECCOMP_RET_ERRNO | EPERM)
+
+// one architecture's refusals; its own namespaces are allowed
+static int view_rules(struct sock_filter* f, int n, const int* deny,
+                      size_t nd, int ioctl_nr) {
     unsigned perm = SECCOMP_RET_ERRNO | EPERM;
-    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
-#if defined(__x86_64__)
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
-#elif defined(__aarch64__)
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0);
-#endif
-    VF_RET(SECCOMP_RET_KILL_PROCESS);
     VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
-#if defined(__x86_64__)
-    // x32 numbers reach the same calls by another door
-    VF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1);
+    for (size_t i = 0; i < nd; i++) {
+        VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, deny[i], 0, 1);
+        VF_RET(perm);
+    }
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ioctl_nr, 0, 5);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS,
+        offsetof(struct seccomp_data, args) + sizeof(uint64_t));
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 1, 0);
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 0, 1);
     VF_RET(perm);
-#endif
+    VF_RET(SECCOMP_RET_ALLOW);
+    VF_RET(SECCOMP_RET_ALLOW);
+    return n;
+}
+
+// calls refused: other processes, mounts, kernel powers
+static int view_filter(void) {
+    struct sock_filter f[400];
+    int n = 0;
     const int deny[] = {
         __NR_ptrace, __NR_process_vm_readv, __NR_process_vm_writev,
         __NR_pidfd_getfd, __NR_kexec_load, __NR_kexec_file_load,
         __NR_init_module, __NR_finit_module, __NR_delete_module, __NR_bpf,
         __NR_perf_event_open, __NR_keyctl, __NR_add_key, __NR_request_key,
-        __NR_mount, __NR_umount2, __NR_pivot_root, __NR_chroot,
-        __NR_unshare, __NR_setns, __NR_open_tree, __NR_move_mount,
-        __NR_fsopen, __NR_fsconfig, __NR_fsmount, __NR_fspick,
-        __NR_mount_setattr, __NR_swapon, __NR_swapoff, __NR_reboot,
+        __NR_swapon, __NR_swapoff, __NR_reboot,
         __NR_settimeofday, __NR_clock_settime, __NR_clock_adjtime,
         __NR_acct, __NR_quotactl, __NR_name_to_handle_at,
         __NR_open_by_handle_at, __NR_userfaultfd, __NR_vhangup,
@@ -1662,35 +1733,38 @@ static int view_filter(void) {
         __NR_iopl, __NR_ioperm, __NR_uselib, __NR_ustat, __NR_sysfs,
 #endif
     };
-    for (size_t i = 0; i < sizeof(deny) / sizeof(*deny); i++) {
-        VF_DENY(deny[i]);
-    }
-    // clone3's flags are out of reach: libc falls back
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone3, 0, 1);
-    VF_RET(SECCOMP_RET_ERRNO | ENOSYS);
-    unsigned spaces = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS |
-        CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | 0x80;
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_clone, 0, 4);
-    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args));
-    VF_JUMP(BPF_JMP | BPF_JSET | BPF_K, spaces, 0, 1);
-    VF_RET(perm);
-    VF_RET(SECCOMP_RET_ALLOW);
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ioctl, 0, 5);
-    VF_STMT(BPF_LD | BPF_W | BPF_ABS,
-        offsetof(struct seccomp_data, args) + sizeof(uint64_t));
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCSTI, 1, 0);
-    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, TIOCLINUX, 0, 1);
-    VF_RET(perm);
-    VF_RET(SECCOMP_RET_ALLOW);
-    VF_RET(SECCOMP_RET_ALLOW);
-#undef VF_DENY
-#undef VF_RET
-#undef VF_JUMP
-#undef VF_STMT
+    size_t nd = sizeof(deny) / sizeof(*deny);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
+#if defined(__x86_64__)
+    // the same refusals by 32-bit x86's numbers (unistd_32.h)
+    const int deny32[] = { 26, 347, 348, 438, 283, 128, 350, 129, 357,
+        336, 288, 286, 287, 87, 115, 88, 79, 25, 124, 264, 404, 343, 405,
+        51, 131, 341, 342, 374, 111, 425, 426, 427, 103, 338, 110, 101,
+        86, 62, 135, 166, 113 };
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_I386, 0, 1);
+    int to32 = n;
+    VF_STMT(BPF_JMP | BPF_JA, 0);
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
+    VF_RET(SECCOMP_RET_KILL_PROCESS);
+    VF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
+    // x32 numbers reach the same calls by another door
+    VF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1);
+    VF_RET(SECCOMP_RET_ERRNO | EPERM);
+    n = view_rules(f, n, deny, nd, __NR_ioctl);
+    f[to32].k = (unsigned)(n - to32 - 1);
+    n = view_rules(f, n, deny32, sizeof(deny32) / sizeof(*deny32), 54);
+#elif defined(__aarch64__)
+    VF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0);
+    VF_RET(SECCOMP_RET_KILL_PROCESS);
+    n = view_rules(f, n, deny, nd, __NR_ioctl);
+#endif
     struct sock_fprog prog = { .len = (unsigned short)n, .filter = f };
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) return -1;
     return prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog);
 }
+#undef VF_RET
+#undef VF_JUMP
+#undef VF_STMT
 
 static void view_signal(int sig) {
     if (g_view_app <= 0) return;
@@ -1723,6 +1797,12 @@ static void view_hold(const char* app, int fd, int status_fd, pid_t init,
     size_t got = 0;
     int st = 0, ended = 0;
     while (!ended) {
+        struct pollfd sf = { .fd = status_fd, .events = POLLIN };
+        if (poll(&sf, 1, 0) > 0 && (sf.revents & POLLIN) &&
+            read(status_fd, &st, sizeof(st)) == sizeof(st)) {
+            ended = 1;
+            break;
+        }
         struct pollfd pf = { .fd = fd, .events = POLLIN };
         int pr = poll(&pf, fd >= 0 ? 1 : 0, 50);
         if (pr > 0 && (pf.revents & (POLLIN | POLLHUP))) {
@@ -1780,8 +1860,7 @@ static void view_hold(const char* app, int fd, int status_fd, pid_t init,
     char to[4600];
     ssize_t n = readlink(sock, to, sizeof(to) - 1);
     if (n > 0) { to[n] = 0; if (strstr(to, "silver-view/")) unlink(sock); }
-    snprintf(to, sizeof(to), "rm -rf '%s'", run);
-    (void)system(to);
+    (void)run;
     if (WIFSIGNALED(st)) {
         signal(WTERMSIG(st), SIG_DFL);
         kill(getpid(), WTERMSIG(st));
@@ -1845,10 +1924,14 @@ static void view_init(int status_fd, int broker_fd) {
     rmdir("/.old");
     pid_t a = fork();
     if (a < 0) _exit(127);
-    if (a == 0) { close(status_fd); return; }
+    if (a == 0) {
+        close(status_fd);
+        if (g_view_lock >= 0) close(g_view_lock);
+        return;
+    }
     close(broker_fd);
     for (int f = 0; f < 4096; f++)
-        if (f != status_fd && f != 2) close(f);
+        if (f != status_fd && f != 2 && f != g_view_lock) close(f);
     int st = 0;
     for (;;) {
         int ws;
@@ -1856,7 +1939,42 @@ static void view_init(int status_fd, int broker_fd) {
         if (w < 0 && errno == ECHILD) break;
         if (w == a) { st = ws; break; }
     }
+    // later instances still in it: the view stays for them
+    if (view_others()) prctl(PR_SET_PDEATHSIG, 0);
     (void)!write(status_fd, &st, sizeof(st));
+    close(status_fd);
+    while (view_others()) {
+        while (waitpid(-1, NULL, WNOHANG) > 0) {}
+        usleep(200000);
+    }
+    _exit(0);
+}
+
+// a later instance: into the first one's view, its app a child here
+static void view_join(pid_t keep, int status_fd, int broker_fd) {
+    prctl(PR_SET_PDEATHSIG, SIGKILL);
+    const char* kinds[] = { "user", "mnt", "pid" };
+    const int flags[] = { CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWPID };
+    int fds[3];
+    char ns[64];
+    for (int i = 0; i < 3; i++) {
+        snprintf(ns, sizeof(ns), "/proc/%d/ns/%s", (int)keep, kinds[i]);
+        fds[i] = open(ns, O_RDONLY | O_CLOEXEC);
+    }
+    for (int i = 0; i < 3; i++)
+        if (fds[i] < 0 || setns(fds[i], flags[i]) != 0) {
+            fprintf(stderr, "view: join %s: %s\n", kinds[i],
+                strerror(errno));
+            _exit(127);
+        }
+    if (chdir("/") != 0) _exit(127);
+    pid_t a = fork();
+    if (a < 0) _exit(127);
+    if (a == 0) { close(status_fd); return; }
+    close(broker_fd);
+    int ws = 0;
+    while (waitpid(a, &ws, 0) < 0 && errno == EINTR) {}
+    (void)!write(status_fd, &ws, sizeof(ws));
     _exit(0);
 }
 
@@ -1880,95 +1998,133 @@ static void bound_lock(const char* app, int argc, char** argv) {
             "support/apparmor/silver-host\n", app);
         exit(1);
     }
-    // its folders on the host: home, tmp, runtime, the share point
+    // its folders on the host: home, tmp, runtime, the share point;
+    // one view an app: a later instance joins the first one's
+    view_app_name = app;
     char home[4300], tmp[4300], run[4300], sock[4300], log[4300];
-    snprintf(home, sizeof(home), "%s/install/home/%s", SILVER_ROOT, app);
-    view_home(app, home);
-    // its /tmp starts empty, as a boot leaves one
-    snprintf(tmp, sizeof(tmp), "%s/install/tmp/view/%s-%d", SILVER_ROOT,
-        app, slot);
-    snprintf(sock, sizeof(sock), "rm -rf '%s'", tmp);
-    (void)system(sock);
-    view_mkdirs(tmp, 01777);
-    app_log_path(log, sizeof(log), app, slot);
-    view_touch(log);
     const char* rt = getenv("XDG_RUNTIME_DIR");
     char rtd[512];
     snprintf(rtd, sizeof(rtd), "/run/user/%u", uid);
     if (!rt || !*rt) rt = rtd;
-    snprintf(run, sizeof(run), "%s/silver-view/%s-%d", rt, app, slot);
-    snprintf(sock, sizeof(sock), "rm -rf '%s'", run);
-    (void)system(sock);
+    char vf[4400];
+    snprintf(vf, sizeof(vf), "%s/silver-view/%s.view", rt, app);
+    pid_t keep = view_running(vf);
+    snprintf(home, sizeof(home), "%s/install/home/%s", SILVER_ROOT, app);
+    view_home(app, home);
+    // a view's /tmp: its first holder's, empty as a boot leaves one;
+    // those of views gone are let go
+    snprintf(tmp, sizeof(tmp), "%s/install/tmp/view/%s-%d", SILVER_ROOT,
+        app, (int)getpid());
+    snprintf(run, sizeof(run), "%s/silver-view/%s", rt, app);
+    if (!keep) {
+        snprintf(sock, sizeof(sock), "rm -rf '%s'", run);
+        (void)system(sock);
+        view_tidy(app);
+        snprintf(sock, sizeof(sock), "%s.lock", tmp);
+        g_view_lock = open(sock, O_RDONLY | O_CREAT, 0600);
+        if (g_view_lock >= 0) flock(g_view_lock, LOCK_SH);
+    }
+    if (!keep) view_mkdirs(tmp, 01777);
     view_mkdirs(run, 0700);
+    app_log_path(log, sizeof(log), app, slot);
+    view_touch(log);
     // the host finds its socket where it always was
     snprintf(sock, sizeof(sock), "%s/trinity-%s-%d.sock", rt, app, slot);
     unlink(sock);
     char rel[600];
-    snprintf(rel, sizeof(rel), "silver-view/%s-%d/trinity-%s-%d.sock", app,
-        slot, app, slot);
+    snprintf(rel, sizeof(rel), "silver-view/%s/trinity-%s-%d.sock", app,
+        app, slot);
     (void)!symlink(rel, sock);
-    // the launch line's paths, found while the host's tree is seen
-    char** found = calloc(argc, sizeof(char*));
-    char real[4096];
-    for (int i = 1; i < argc; i++)
-        if (argv[i][0] == '/' && realpath(argv[i], real) &&
-            strcmp(real, "/") != 0 && !bound_reaches(real))
-            found[i] = strdup(real);
-    if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) {
-        fprintf(stderr, "silver-host: no private view for %s: %s\n", app,
-            strerror(errno));
-        exit(1);
-    }
-    char map[64];
-    bound_write("/proc/self/setgroups", "deny");
-    snprintf(map, sizeof(map), "%u %u 1", uid, uid);
-    int mapped = bound_write("/proc/self/uid_map", map) == 0;
-    snprintf(map, sizeof(map), "%u %u 1", gid, gid);
-    mapped = mapped && bound_write("/proc/self/gid_map", map) == 0;
-    // the host's new mounts still arrive; ours stay ours
-    if (!mapped || mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0 ||
-        view_build(home, run, tmp, log) != 0) {
-        fprintf(stderr, "silver-host: %s's view failed: %s\n", app,
-            strerror(errno));
-        exit(1);
-    }
-    // a launch path it cannot reach is shared there, read only
-    for (int i = 1; i < argc; i++) {
-        if (!found[i]) continue;
-        struct stat st;
-        char at[4600];
-        snprintf(at, sizeof(at), VIEW_ROOT "%s", found[i]);
-        if (stat(found[i], &st) == 0 &&
-            view_graft(found[i], at, S_ISDIR(st.st_mode), 0) == 0)
-            fprintf(stderr, "silver-host: %s shared into %s's view\n",
-                found[i], app);
-        free(found[i]);
-    }
-    free(found);
-    // orbiter's later shares reach the app through this
-    mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
-    int bp[2], sp[2];
-    if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
-        pipe2(sp, O_CLOEXEC) != 0 || unshare(CLONE_NEWPID) != 0) {
-        fprintf(stderr, "silver-host: %s's process space: %s\n", app,
-            strerror(errno));
-        exit(1);
-    }
     const int fwd[] = { SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1,
                         SIGUSR2 };
-    for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
-        signal(fwd[i], view_signal);
-    pid_t init = fork();
-    if (init < 0) exit(1);
-    if (init > 0) {
-        close(bp[1]);
-        close(sp[1]);
-        fprintf(stderr, "silver-host: %s has its own root\n", app);
-        view_hold(app, bp[0], sp[0], init, sock, run);
+    int bp[2], sp[2];
+    if (keep) {
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
+            pipe2(sp, O_CLOEXEC) != 0) exit(1);
+        for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
+            signal(fwd[i], view_signal);
+        pid_t c = fork();
+        if (c < 0) exit(1);
+        if (c > 0) {
+            close(bp[1]);
+            close(sp[1]);
+            fprintf(stderr, "silver-host: %s joins its view\n", app);
+            view_hold(app, bp[0], sp[0], c, sock, run);
+        }
+        close(bp[0]);
+        close(sp[0]);
+        view_join(keep, sp[1], bp[1]);
+    } else {
+        // the launch line's paths, found while the host's tree is seen
+        char** found = calloc(argc, sizeof(char*));
+        char real[4096];
+        for (int i = 1; i < argc; i++)
+            if (argv[i][0] == '/' && realpath(argv[i], real) &&
+                strcmp(real, "/") != 0 && !bound_reaches(real))
+                found[i] = strdup(real);
+        if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) {
+            fprintf(stderr, "silver-host: no private view for %s: %s\n", app,
+                strerror(errno));
+            exit(1);
+        }
+        char map[64];
+        bound_write("/proc/self/setgroups", "deny");
+        snprintf(map, sizeof(map), "%u %u 1", uid, uid);
+        int mapped = bound_write("/proc/self/uid_map", map) == 0;
+        snprintf(map, sizeof(map), "%u %u 1", gid, gid);
+        mapped = mapped && bound_write("/proc/self/gid_map", map) == 0;
+        // the host's new mounts still arrive; ours stay ours
+        if (!mapped || mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0 ||
+            view_build(home, run, tmp, log) != 0) {
+            fprintf(stderr, "silver-host: %s's view failed: %s\n", app,
+                strerror(errno));
+            exit(1);
+        }
+        // a launch path it cannot reach is shared there, read only
+        for (int i = 1; i < argc; i++) {
+            if (!found[i]) continue;
+            struct stat st;
+            char at[4600];
+            snprintf(at, sizeof(at), VIEW_ROOT "%s", found[i]);
+            if (stat(found[i], &st) == 0 &&
+                view_graft(found[i], at, S_ISDIR(st.st_mode), 0) == 0)
+                fprintf(stderr, "silver-host: %s shared into %s's view\n",
+                    found[i], app);
+            free(found[i]);
+        }
+        free(found);
+        // orbiter's later shares reach the app through this
+        mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
+            pipe2(sp, O_CLOEXEC) != 0 || unshare(CLONE_NEWPID) != 0) {
+            fprintf(stderr, "silver-host: %s's process space: %s\n", app,
+                strerror(errno));
+            exit(1);
+        }
+        for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
+            signal(fwd[i], view_signal);
+        pid_t init = fork();
+        if (init < 0) exit(1);
+        if (init > 0) {
+            close(bp[1]);
+            close(sp[1]);
+            // the lock is pid 1's now; later instances find it by pid 1
+        if (g_view_lock >= 0) close(g_view_lock);
+            char ns[64];
+            struct stat pst;
+            snprintf(ns, sizeof(ns), "/proc/%d/ns/pid", (int)init);
+            FILE* vw = stat(ns, &pst) == 0 ? fopen(vf, "wb") : NULL;
+            if (vw) {
+                fprintf(vw, "%d %lu\n", (int)init, (unsigned long)pst.st_ino);
+                fclose(vw);
+            }
+            fprintf(stderr, "silver-host: %s has its own root\n", app);
+            view_hold(app, bp[0], sp[0], init, sock, run);
+        }
+        close(bp[0]);
+        close(sp[0]);
+        view_init(sp[1], bp[1]);
     }
-    close(bp[0]);
-    close(sp[0]);
-    view_init(sp[1], bp[1]);
     // the app
     for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
         signal(fwd[i], SIG_DFL);

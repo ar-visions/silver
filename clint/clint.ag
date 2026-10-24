@@ -1,0 +1,1056 @@
+# clint: an IRC client, plain or over TLS
+export 0.1.0
+export software ['communication']
+
+import vec
+import img
+import trinity
+# mbedtls comes from tls's library: one copy, one PSA state
+import tls
+import <mbedtls/ssl.h>
+import <mbedtls/net_sockets.h>
+import <psa/crypto.h>
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <time.h>
+import <unistd.h>
+import <fcntl.h>
+import <poll.h>
+import <netdb.h>
+import <sys/socket.h>
+import <netinet/in.h>
+import <arpa/inet.h>
+
+# a line of a conversation: when, who, what, and its kind
+class IrcLine
+    public at   : string
+    public who  : string
+    public text : string
+    # 0 said, 1 action, 2 event, 3 problem, 4 our own
+    public kind : i32
+
+# a conversation: the server's, a channel, or one person
+class IrcBuffer
+    public name   : string
+    public lines  : vec IrcLine
+    public users  : vec string
+    public topic  : string
+    public unread : i32
+    # someone said our nick here since we last looked
+    public called : bool
+    public joined : bool
+    # its people hidden in the list
+    public folded : bool
+
+    func init []
+        lines = vec IrcLine []
+        users = vec string []
+        topic = ''
+
+    func channel [] -> bool
+        return name.count > 0 && (name.chars[ 0 ] == '#'
+            || name.chars[ 0 ] == '&')
+
+    func add_user [ u: string ]
+        for [ have: string ] in users
+            if [ have == u ] return
+        users.push[ u ]
+
+    func drop_user [ u: string ] -> bool
+        for [ i: i32 0, i < users.count, i += 1 ]
+            if [ users[ i ] == u ]
+                users.remove[ i ]
+                return true
+        return false
+
+# the clock as a line shows it
+func irc_clock [] -> string
+    now : i64 [ time[ null ] ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    b : local i8 [ 16 ]
+    fmt : '%H:%M'
+    strftime[ @b[0], 16, fmt.chars, @tm ]
+    return string [ @b[0] ]
+
+# a nick without its mode mark (@, +) and from a prefix (nick!user@host)
+func irc_nick [ p: string ] -> string
+    s : p
+    bang : i32 [ s.index_of[ '!' ] ]
+    if [ bang > 0 ] s = s.mid[ 0, bang ]
+    while [ s.count > 0 && (s.chars[ 0 ] == '@' || s.chars[ 0 ] == '+'
+            || s.chars[ 0 ] == '%' || s.chars[ 0 ] == '~'
+            || s.chars[ 0 ] == '&') ]
+        s = s.mid[ 1, s.count - 1 ]
+    return s
+
+# the server connection, plain or TLS; read without waiting
+class IrcLink
+    public host    : string
+    public port    : i32 [ 6697 ]
+    public secure  : bool [ true ]
+    public up      : bool
+    public problem : string
+    # 1 reaching the server, 2 TLS, 3 up; 0 not started or failed
+    public stage   : i32
+    intern net     : mbedtls_net_context
+    intern ssl     : mbedtls_ssl_context
+    intern conf    : mbedtls_ssl_config
+    intern ready   : bool
+    intern rest    : string
+    intern began   : i64
+    # the host's addresses, tried in turn
+    intern addrs   : vec u32
+    intern at      : i32
+    intern tls_on  : bool
+    # the server said welcome (001): the connection is ours
+    public welcomed : bool
+
+    func init []
+        problem = ''
+        rest    = ''
+
+    # starts reaching the server; step[] goes on each frame
+    func open [] -> bool
+        mbedtls_net_init[ @net ]
+        mbedtls_ssl_init[ @ssl ]
+        mbedtls_ssl_config_init[ @conf ]
+        ready = true
+        addrs = vec u32 []
+        addr : in_addr
+        if [ inet_pton[ AF_INET, host.chars, @addr ] == 1 ]
+            addrs.push[ addr.s_addr ]
+        el
+            h : gethostbyname[ host.chars ]
+            for [ i: i32 0, h && h.h_addr_list[ i ], i += 1 ]
+                ip : u32 [ 0 ]
+                memcpy[ @ip, h.h_addr_list[ i ], 4 ]
+                addrs.push[ ip ]
+        if [ addrs.count == 0 ]
+            problem = 'No address for {host}'
+            return false
+        at = 0
+        return dial[]
+
+    # a connection begun to the address at `at`
+    func dial [] -> bool
+        fd : i32 [ socket[ AF_INET, SOCK_STREAM, IPPROTO_TCP ] ]
+        if [ fd < 0 ]
+            problem = 'No socket for {host}'
+            return false
+        fcntl[ fd, F_SETFL, fcntl[ fd, F_GETFL, 0 ] | O_NONBLOCK ]
+        sa : sockaddr_in
+        memset[ @sa, 0, sizeof[ sockaddr_in ] ]
+        sa.sin_family = AF_INET
+        sa.sin_addr.s_addr = addrs[ at ]
+        sa.sin_port   = htons[ port ]
+        connect[ fd, cast @sockaddr [ @sa ], sizeof[ sockaddr_in ] ]
+        net.fd = fd
+        began  = time[ null ]
+        stage  = 1
+        return true
+
+    # one more step of reaching the server, without waiting
+    func step []
+        if [ stage == 1 ]
+            pf : pollfd
+            pf.fd     = net.fd
+            pf.events = POLLOUT
+            if [ poll[ @pf, 1, 0 ] <= 0 ]
+                if [ time[ null ] - began > 15 ]
+                    fail[ 'No answer from {host}:{port}' ]
+                return
+            err : i32 [ 0 ]
+            n : socklen_t [ sizeof[ i32 ] ]
+            getsockopt[ net.fd, SOL_SOCKET, SO_ERROR, @err, @n ]
+            if [ err != 0 ]
+                fail[ 'Could not reach {host}:{port}' ]
+                return
+            if [ !secure ]
+                stage = 3
+                up    = true
+                began = time[ null ]
+                return
+            if [ !tls_on && !tls_setup[] ]
+                stage = 0
+                return
+            tls_on = true
+            stage  = 2
+        if [ stage == 2 ]
+            hs : i32 [ mbedtls_ssl_handshake[ @ssl ] ]
+            if [ hs == 0 ]
+                stage = 3
+                up    = true
+                began = time[ null ]
+                return
+            if [ hs != MBEDTLS_ERR_SSL_WANT_READ
+                 && hs != MBEDTLS_ERR_SSL_WANT_WRITE ]
+                fail[ 'TLS refused by {host} ({hs})' ]
+                return
+            if [ time[ null ] - began > 20 ]
+                fail[ 'TLS with {host} took too long' ]
+
+    # one server failed: the next of the host's, else give up
+    func fail [ why: string ]
+        mbedtls_net_close[ @net ]
+        if [ at + 1 < addrs.count ]
+            at += 1
+            problem = '{why}: trying another of its servers'
+            if [ tls_on ] mbedtls_ssl_session_reset[ @ssl ]
+            if [ !dial[] ] stage = 0
+            return
+        problem = why
+        stage   = 0
+
+    # TLS on the connection; the host the user named is trusted
+    func tls_setup [] -> bool
+        psa_crypto_init[]
+        rc : i32 [ mbedtls_ssl_config_defaults[ @conf,
+            MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+            MBEDTLS_SSL_PRESET_DEFAULT ] ]
+        if [ rc != 0 ]
+            problem = 'TLS would not start ({rc})'
+            return false
+        mbedtls_ssl_conf_authmode[ @conf, MBEDTLS_SSL_VERIFY_NONE ]
+        if [ mbedtls_ssl_setup[ @ssl, @conf ] != 0 ]
+            problem = 'TLS would not start'
+            return false
+        mbedtls_ssl_set_hostname[ @ssl, host.chars ]
+        mbedtls_ssl_set_bio[ @ssl, @net, @mbedtls_net_send,
+            @mbedtls_net_recv, null ]
+        return true
+
+    func send_line [ s: string ]
+        if [ !up ] return
+        out : string '{s}\r\n'
+        sent : i64 [ 0 ]
+        n : i64 [ out.count ]
+        tries : i32 [ 0 ]
+        while [ sent < n && tries < 1000 ]
+            data : cstr [ out.chars ]
+            r : i32 [ (secure)
+                ? mbedtls_ssl_write[ @ssl, @data[ sent ], n - sent ]
+                : mbedtls_net_send[ @net, @data[ sent ], n - sent ] ]
+            if [ r == MBEDTLS_ERR_SSL_WANT_READ
+                 || r == MBEDTLS_ERR_SSL_WANT_WRITE ]
+                tries += 1
+                continue
+            if [ r <= 0 ]
+                lost[ 'The connection dropped' ]
+                return
+            sent += r
+
+    # every whole line that has come in since the last call
+    func lines [] -> vec string
+        got : vec string []
+        if [ !up ] return got
+        b : local u8 [ 4097 ]
+        for [ true ]
+            r : i32 [ (secure)
+                ? mbedtls_ssl_read[ @ssl, @b[0], 4096 ]
+                : mbedtls_net_recv[ @net, @b[0], 4096 ] ]
+            if [ r == MBEDTLS_ERR_SSL_WANT_READ
+                 || r == MBEDTLS_ERR_SSL_WANT_WRITE
+                 || r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ]
+                break
+            if [ r <= 0 ]
+                lost[ 'The server closed the connection' ]
+                break
+            b[ r ] = 0
+            rest = rest + string [ @b[0] ]
+        nl : i32 [ rest.index_of[ '\n' ] ]
+        while [ nl >= 0 ]
+            ln : string rest.mid[ 0, nl ]
+            if [ ln.count > 0 && ln.chars[ ln.count - 1 ] == 13 ]
+                ln = ln.mid[ 0, ln.count - 1 ]
+            got.push[ ln ]
+            rest = rest.mid[ nl + 1, rest.count - nl - 1 ]
+            nl = rest.index_of[ '\n' ]
+        return got
+
+    # a server that never says welcome: the next of the host's
+    func waited []
+        if [ !up || welcomed || time[ null ] - began < 30 ] return
+        lost[ '{host} gave no welcome' ]
+
+    func lost [ why: string ]
+        was : bool [ up ]
+        up = false
+        # dropped before its welcome: another of the host's servers
+        if [ was && !welcomed && at + 1 < addrs.count ]
+            rest = ''
+            fail[ why ]
+            return
+        if [ was ] problem = why
+
+    func close []
+        if [ !ready ] return
+        if [ up && secure ] mbedtls_ssl_close_notify[ @ssl ]
+        mbedtls_net_free[ @net ]
+        mbedtls_ssl_free[ @ssl ]
+        mbedtls_ssl_config_free[ @conf ]
+        ready = false
+        up    = false
+
+# a nick's own colour, the same each time it is seen
+func nick_color [ n: string ] -> rgba
+    h : u32 [ 5381 ]
+    for [ i: i32 0, i < n.count, i += 1 ]
+        h = h * 33 + u32[ n.chars[ i ] ]
+    tones : vec string [] [ '#8fb8ff', '#ff9ec7', '#9be5b0', '#ffd27a',
+        '#c3a6ff', '#7fe3e8', '#ffab85', '#d7f07a' ]
+    return rgba [ tones[ i32[ h % 8 ] ] ]
+
+# one list: the server, under it its channels and talks, under
+# each channel its people; a press shows one, or talks to a person
+element BufferList
+    public bufs   : vec IrcBuffer
+    public chosen : i32
+    # what it shows, as one number: a change draws it anew
+    public sig    : i64
+    # px scrolled down
+    intern top    : f32
+    # the rows as last drawn: buffer, person ('' none), top, height
+    intern row_buf : vec i32
+    intern row_who : vec string
+    intern row_y   : vec f32
+    intern row_hs  : vec f32
+    intern full_h  : f32
+
+    public func on_wheel [ ev: Event ]
+        top = top - ev.mouse.wheel_delta.y * 48.0
+        most : f32 [ full_h - bounds.h ]
+        if [ top > most ] top = most
+        if [ top < 0.0 ] top = 0.0
+        pristine = false
+        ev.no_default = true
+
+    # one row: edge to edge, a 1px border the pointer lights
+    func row [ cv: Canvas, w: Window, y: f32, h: f32, lit: bool ]
+        cv.save[]
+        cv.fill_color[ rgba [ (lit) ? '#4d3dbcaa' : '#0000' ] ]
+        cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0,
+            true ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#fff1' ] ]
+        w.near_light_on[ cv, a, 0.0, 0.0 ]
+        cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ], w.near_y_fade ]
+        cv.rect_to[ 0.0, y, bounds.w, h ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.restore[]
+
+    func label [ cv: Canvas, t: string, x: f32, y: f32, h: f32,
+                 col: rgba ]
+        cv.fill_color[ col ]
+        cv.draw_text[ t, rect [ x: x, y: y, w: bounds.w - x - 40.0,
+            h: h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !bufs ]
+            return
+        cv : Canvas [ w.screen ]
+        row_buf = vec i32 []
+        row_who = vec string []
+        row_y   = vec f32 []
+        row_hs  = vec f32 []
+        cv.save[]
+        cv.clip_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        y : f32 [ round[ -top ] ]
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            b : IrcBuffer bufs[ i ]
+            # the server is the heading, the rest sit a step in
+            head : bool [ i == 0 ]
+            h : f32 [ (head) ? 34.0 : 30.0 ]
+            row[ cv, w, y, h, i == chosen ]
+            cv.font_size[ (head) ? 19 : 18 ]
+            col : string [ (b.called) ? '#ffd27a'
+                : ((i == chosen || head) ? '#ffffff' : '#ffffffaa') ]
+            label[ cv, b.name, (head) ? 12.0 : 26.0, y, h,
+                rgba [ col ] ]
+            if [ b.unread > 0 && i != chosen ]
+                cv.fill_color[ rgba [ '#ffffff66' ] ]
+                cv.draw_text[ '{b.unread}', rect [ x: 0.0, y: y,
+                    w: bounds.w - 12.0, h: h ], vec2f [ 1.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            el [ b.channel[] && b.users.count > 0 ]
+                cv.fill_color[ rgba [ '#ffffff44' ] ]
+                cv.draw_text[ '{b.users.count}', rect [ x: 0.0, y: y,
+                    w: bounds.w - 12.0, h: h ], vec2f [ 1.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            row_buf.push[ i ]
+            row_who.push[ '' ]
+            row_y.push[ y + top ]
+            row_hs.push[ h ]
+            y += h
+            if [ b.folded || !b.channel[] ] continue
+            cv.font_size[ 17 ]
+            for [ u: string ] in b.users
+                if [ y + 24.0 > 0.0 && y < bounds.h ]
+                    row[ cv, w, y, 24.0, false ]
+                    label[ cv, u, 42.0, y, 24.0,
+                        nick_color[ irc_nick[ u ] ] ]
+                row_buf.push[ i ]
+                row_who.push[ irc_nick[ u ] ]
+                row_y.push[ y + top ]
+                row_hs.push[ 24.0 ]
+                y += 24.0
+        full_h = y + top
+        cv.paint[]
+        cv.set_font[ null ]
+        cv.restore[]
+
+    # a channel shows; the shown one again folds its people; a
+    # person opens a talk with them
+    public func on_press [ ev: Event ]
+        ev.no_default = true
+        app : cast clint [ ux.app_object ]
+        if [ !app || !row_y ] return
+        py : f32 [ ev.mouse.pos.y + top ]
+        for [ k: i32 0, k < row_y.count, k += 1 ]
+            if [ py < row_y[ k ] || py >= row_y[ k ] + row_hs[ k ] ]
+                continue
+            i : i32 [ row_buf[ k ] ]
+            who : string row_who[ k ]
+            if [ who.count > 0 ]
+                app.talk_to[ who ]
+            el [ i == chosen ]
+                bufs[ i ].folded = !bufs[ i ].folded
+                pristine = false
+            el
+                app.show[ i ]
+            return
+
+# the conversation, newest at the foot; the wheel goes back
+element ChatLog
+    public lines : vec IrcLine
+    # how many: a new line makes it a different element, so it draws
+    public seen  : i32
+    public me    : string
+    # lines scrolled back from the newest
+    intern back  : i32
+    # the rows as last drawn: line, first column, text, top
+    intern row_line : vec i32
+    intern row_off  : vec i32
+    intern row_text : vec string
+    intern row_y    : vec f32
+    intern text_x   : f32
+    intern char_w   : f32
+    intern row_h    : f32
+    # the selection: anchor and caret, a line and a column each
+    intern sel_of   : vec IrcLine
+    intern a_line   : i32 [ -1 ]
+    intern a_col    : i32
+    intern c_line   : i32 [ -1 ]
+    intern c_col    : i32
+    intern dragging : bool
+
+    public func on_wheel [ ev: Event ]
+        back = back + i32[ ev.mouse.wheel_delta.y * 3.0 ]
+        if [ back < 0 ] back = 0
+        if [ lines && back > lines.count - 1 ] back = lines.count - 1
+        pristine = false
+        ev.no_default = true
+
+    # the line and column under a point, as last drawn
+    func hit [ p: vec2f ] -> vec i32
+        n : i32 [ i32[ row_line.count ] ]
+        if [ n == 0 ] return vec i32 [] [ -1, 0 ]
+        k : i32 [ 0 ]
+        while [ k < n - 1 && p.y >= row_y[ k ] + row_h ]
+            k += 1
+        t : string row_text[ k ]
+        c : i32 [ 0 ]
+        if [ p.y >= row_y[ 0 ] ]
+            c = i32[ round[ (p.x - text_x) / char_w ] ]
+        if [ c < 0 ] c = 0
+        if [ c > t.count ] c = t.count
+        if [ p.y >= row_y[ n - 1 ] + row_h ] c = t.count
+        return vec i32 [] [ row_line[ k ], row_off[ k ] + c ]
+
+    # the selection in order: first line, column, last line, column
+    func span [] -> vec i32
+        if [ a_line < 0 || c_line < 0 ] return vec i32 [] [ -1, 0, -1, 0 ]
+        first : bool [ a_line < c_line
+            || (a_line == c_line && a_col <= c_col) ]
+        if [ first ] return vec i32 [] [ a_line, a_col, c_line, c_col ]
+        return vec i32 [] [ c_line, c_col, a_line, a_col ]
+
+    func has_selection [] -> bool
+        if [ !lines || sel_of != lines ] return false
+        return a_line >= 0 && (a_line != c_line || a_col != c_col)
+
+    # the selected words; whole lines carry their nick
+    func selected [] -> string
+        if [ !has_selection[] ] return ''
+        sp : vec i32 span[]
+        out : string [ '' ]
+        for [ li: i32 sp[ 0 ], li <= sp[ 2 ], li += 1 ]
+            ln : IrcLine lines[ li ]
+            c0 : i32 [ (li == sp[ 0 ]) ? sp[ 1 ] : 0 ]
+            c1 : i32 [ (li == sp[ 2 ]) ? sp[ 3 ] : ln.text.count ]
+            part : string ln.text.mid[ c0, c1 - c0 ]
+            if [ sp[ 0 ] != sp[ 2 ] && c0 == 0 && ln.who.count > 0 ]
+                lead : string [ (ln.kind == 1) ? '* ' : '<' ]
+                tail : string [ (ln.kind == 1) ? ' ' : '> ' ]
+                part = '{lead}{ln.who}{tail}{part}'
+            if [ out.count > 0 ] out = out + '\n'
+            out = out + part
+        return out
+
+    # the word round a column: its first and last column
+    func word_at [ t: string, c: i32 ] -> vec i32
+        s0 : i32 [ c ]
+        s1 : i32 [ c ]
+        while [ s0 > 0 && t.chars[ s0 - 1 ] != 32 ]
+            s0 -= 1
+        while [ s1 < t.count && t.chars[ s1 ] != 32 ]
+            s1 += 1
+        return vec i32 [] [ s0, s1 ]
+
+    public func on_press [ ev: Event ]
+        at : vec i32 hit[ ev.mouse.pos ]
+        if [ at[ 0 ] < 0 ] return
+        if [ sel_of != lines ] a_line = -1
+        sel_of = lines
+        if [ ev.mouse.double_click ]
+            wd : vec i32 word_at[ lines[ at[ 0 ] ].text, at[ 1 ] ]
+            a_line = at[ 0 ]
+            a_col  = wd[ 0 ]
+            c_line = at[ 0 ]
+            c_col  = wd[ 1 ]
+        el [ ev.key.shift && a_line >= 0 ]
+            c_line = at[ 0 ]
+            c_col  = at[ 1 ]
+        el
+            a_line = at[ 0 ]
+            a_col  = at[ 1 ]
+            c_line = at[ 0 ]
+            c_col  = at[ 1 ]
+        dragging = true
+        set_capture[]
+        pristine = false
+        ev.no_default = true
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        at : vec i32 hit[ ev.mouse.pos ]
+        if [ at[ 0 ] < 0 ] return
+        c_line = at[ 0 ]
+        c_col  = at[ 1 ]
+        pristine = false
+
+    public func on_release [ ev: Event ]
+        dragging = false
+        release_capture[]
+        # typing still goes to the field
+        app : cast clint [ ux.app_object ]
+        if [ app ] app.focus_say[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !lines ]
+            return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv, 'fonts/SpaceMono-Regular.ttf',
+            label_px[ cv, 15.0 ] ] ]
+        cv.font_size[ 15 ]
+        lh : f32 [ 22.0 ]
+        stamp_w : f32 [ cv.measure_text[ '00:00 ' ].w ]
+        who_w : f32 [ cv.measure_text[ 'abcdefghijkl ' ].w ]
+        tx : f32 [ 12.0 + stamp_w + who_w ]
+        tw : f32 [ bounds.w - tx - 12.0 ]
+        text_x = tx
+        char_w = cv.measure_text[ '0000000000' ].w / 10.0
+        row_h  = lh
+        # the rows that show, newest at the foot
+        row_line = vec i32 []
+        row_off  = vec i32 []
+        row_text = vec string []
+        row_y    = vec f32 []
+        y : f32 [ bounds.h - 8.0 ]
+        i : i32 [ i32[ lines.count ] - 1 - back ]
+        while [ i >= 0 && y > 0.0 ]
+            ln : IrcLine lines[ i ]
+            rows : vec string wrap[ cv, ln.text, tw ]
+            y -= lh * f32[ rows.count ]
+            ry : f32 [ y ]
+            off : i32 [ 0 ]
+            at : i32 [ 0 ]
+            for [ r: string ] in rows
+                row_line.insert[ i, at ]
+                row_off.insert[ off, at ]
+                row_text.insert[ r, at ]
+                row_y.insert[ ry, at ]
+                at += 1
+                off += r.count + 1
+                ry += lh
+            i -= 1
+        if [ has_selection[] ] draw_selection[ cv, w ]
+        for [ k: i32 0, k < row_line.count, k += 1 ]
+            ln : IrcLine lines[ row_line[ k ] ]
+            ry : f32 [ row_y[ k ] ]
+            if [ row_off[ k ] == 0 ]
+                cv.fill_color[ rgba [ '#ffffff44' ] ]
+                cv.draw_text[ ln.at, rect [ x: 12.0, y: ry,
+                    w: stamp_w, h: lh ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                who : string [ (ln.kind == 1) ? '* {ln.who}' : ln.who ]
+                cv.fill_color[ (ln.kind >= 2 && ln.kind <= 3)
+                    ? rgba [ '#ffffff55' ] : nick_color[ ln.who ] ]
+                cv.draw_text[ who, rect [ x: 12.0 + stamp_w, y: ry,
+                    w: who_w - 8.0, h: lh ], vec2f [ 1.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            col : string [ '#e6e1ff' ]
+            if [ ln.kind == 2 ] col = '#ffffff77'
+            if [ ln.kind == 3 ] col = '#ff8080'
+            if [ ln.kind == 1 ] col = '#d7c8ff'
+            if [ ln.kind == 0 && me.count > 0
+                 && ln.text.lcase[].index_of[ me.lcase[] ] >= 0 ]
+                col = '#ffd27a'
+            cv.fill_color[ rgba [ col ] ]
+            cv.draw_text[ row_text[ k ], rect [ x: tx, y: ry, w: tw,
+                h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+    # the selection: whole rows, a 1px border the pointer lights
+    func draw_selection [ cv: Canvas, w: Window ]
+        sp : vec i32 span[]
+        cv.save[]
+        cv.fill_color[ rgba [ '#425' ] ]
+        cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0, true ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#fff1' ] ]
+        w.near_light_on[ cv, a, 0.0, 0.0 ]
+        cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ], w.near_y_fade ]
+        for [ k: i32 0, k < row_line.count, k += 1 ]
+            li : i32 [ row_line[ k ] ]
+            if [ li < sp[ 0 ] || li > sp[ 2 ] ] continue
+            r0 : i32 [ row_off[ k ] ]
+            r1 : i32 [ r0 + row_text[ k ].count ]
+            c0 : i32 [ (li == sp[ 0 ]) ? sp[ 1 ] : 0 ]
+            c1 : i32 [ (li == sp[ 2 ]) ? sp[ 3 ] : 1 << 30 ]
+            if [ c0 < r0 ] c0 = r0
+            # past the row's end: through its space, or the line's end
+            past : bool [ c1 > r1 ]
+            if [ c1 > r1 ] c1 = r1
+            if [ c1 < c0 || (c1 == c0 && !past) ] continue
+            x0 : f32 [ round[ text_x + f32[ c0 - r0 ] * char_w ] ]
+            x1 : f32 [ round[ text_x + f32[ c1 - r0 ] * char_w ] ]
+            if [ past ] x1 = round[ x1 + char_w ]
+            cv.rect_to[ x0, row_y[ k ], x1 - x0, row_h ]
+            cv.paint[]
+        cv.no_shadows[]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.restore[]
+
+    # a line cut into rows at spaces, each no wider than wd
+    func wrap [ cv: Canvas, s: string, wd: f32 ] -> vec string
+        rows : vec string []
+        words : vec string s.split[ ' ' ]
+        cur : string [ '' ]
+        for [ wd9: string ] in words
+            tryit : string [ (cur.count > 0) ? '{cur} {wd9}' : wd9 ]
+            if [ cur.count > 0 && cv.measure_text[ tryit ].w > wd ]
+                rows.push[ cur ]
+                cur = wd9
+            el
+                cur = tryit
+        rows.push[ cur ]
+        return rows
+
+# the topic over the conversation
+element TopicBar
+    public topic : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        cv.font_size[ 18 ]
+        cv.fill_color[ rgba [ '#ffffffbb' ] ]
+        cv.draw_text[ (topic) ? topic : '', rect [ x: 14.0, y: 0.0,
+            w: bounds.w - 28.0, h: bounds.h ], vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# what is typed; Enter says it (or runs its /command)
+TextInput ClintInput
+    # edge to edge, square, a 1px border the pointer lights
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            stroke_width: 1.0
+            stroke_color: #fff1
+            radius: 0
+            box_shadow: inset 0 0 13px #c890ff04
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        :focused
+            layers.body:
+                fill_color: #ffffff08
+                stroke_color: #fff1
+    }
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        mod : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ mod && ev.key.unicode == 67 && sel_col == anchor_col ]
+            app : cast clint [ ux.app_object ]
+            log : cast ChatLog [ (app) ? app.part[ 'log' ] : null ]
+            if [ log && log.has_selection[] ]
+                ux.set_clipboard[ log.selected[] ]
+                ev.no_default = true
+                return
+        if [ ev.key.unicode != 257 ] return
+        text : string [ (edit) ? edit : '' ]
+        if [ text.count == 0 ] return
+        app : cast clint [ ux.app_object ]
+        if [ app ] app.say[ text ]
+        edit       = ''
+        sel_col    = 0
+        anchor_col = 0
+        pristine   = false
+        ev.stop[]
+
+# the conversation: its topic, the log and the field
+element ChatPane
+    public topic : string
+    public lines : vec IrcLine
+    public seen  : i32
+    public me    : string
+
+    func render [] -> Elements
+        e : Elements []
+        e[ 'topic' ] = TopicBar [ topic: topic,
+            area: Region { l0 t0 r0 h1.2 } ]
+        e[ 'log' ] = ChatLog [ lines: lines, seen: seen, me: me,
+            area: Region { l0 t1.2 r0 b1.4 } ]
+        e[ 'say' ] = ClintInput [ area: Region { l0 b1.4 r0 b0 } ]
+        return e
+
+element clint : trinity
+    public width      : i32    [ 1100 ]
+    public height     : i32    [ 700 ]
+    public title      : string [ 'clint' ]
+    public background : string [ 'Background' ]
+    # where it connects; the nick, else the user's own name
+    public [ Launch ] server   : string [ 'irc.efnet.org' ]
+    public [ Launch ] port     : i32 [ 6697 ]
+    public [ Launch ] secure   : bool [ true ]
+    public [ Launch ] nick     : string
+    # channels joined once in, by commas: #silver,#linux
+    public [ Launch ] channels : string
+    intern link    : IrcLink
+    intern bufs    : vec IrcBuffer
+    intern cur     : i32
+    intern me      : string
+    intern started : bool
+    intern focused : bool
+
+    style : CSS {
+        layers.ground:
+            fill_color: #0e0b1a
+    }
+
+    func buf [ name: string ] -> IrcBuffer
+        for [ b: IrcBuffer ] in bufs
+            if [ b.name.lcase[] == name.lcase[] ] return b
+        b : IrcBuffer [ name: name ]
+        bufs.push[ b ]
+        pristine = false
+        return b
+
+    func current [] -> IrcBuffer
+        if [ cur < 0 || cur >= bufs.count ] return bufs[ 0 ]
+        return bufs[ cur ]
+
+    func note [ b: IrcBuffer, who: string, text: string, kind: i32 ]
+        b.lines.push[ IrcLine [ at: irc_clock[], who: who, text: text,
+            kind: kind ] ]
+        if [ b != current[] ]
+            if [ kind == 0 || kind == 1 ] b.unread += 1
+            if [ kind <= 1 && me.count > 0
+                 && text.lcase[].index_of[ me.lcase[] ] >= 0 ]
+                b.called = true
+        pristine = false
+
+    func status [ text: string, kind: i32 ]
+        note[ bufs[ 0 ], '', text, kind ]
+
+    # a talk with one person, opened and shown
+    func talk_to [ who: string ]
+        b : IrcBuffer buf[ who ]
+        show[ index_of[ b ] ]
+
+    public func show [ i: i32 ]
+        if [ i < 0 || i >= bufs.count ] return
+        cur = i
+        bufs[ i ].unread = 0
+        bufs[ i ].called = false
+        pristine = false
+
+    func connect []
+        if [ link ] link.close[]
+        if [ !me || me.count == 0 ]
+            me = (nick && nick.count > 0) ? nick : ''
+        if [ me.count == 0 ]
+            u : cstr [ getenv[ 'USER' ] ]
+            me = (u) ? string [ u ] : 'clint'
+        how : string [ (secure) ? ' (TLS)' : '' ]
+        status[ 'Connecting to {server}:{port}{how}', 2 ]
+        link = IrcLink [ host: server, port: port, secure: secure ]
+        if [ !link.open[] ]
+            status[ link.problem, 3 ]
+            link.problem = ''
+
+    func tick [ w: Window ]
+        if [ !started ]
+            started = true
+            bufs = vec IrcBuffer []
+            bufs.push[ IrcBuffer [ name: server ] ]
+            connect[]
+        if [ !link ] return
+        # the socket is read each frame: keep the frames coming
+        if [ link.stage > 0 ] w.will_animate = true
+        if [ link.stage == 1 || link.stage == 2 ]
+            link.step[]
+            if [ link.up ]
+                link.send_line[ 'NICK {me}' ]
+                link.send_line[ 'USER {me} 0 * :{me}' ]
+        for [ ln: string ] in link.lines[]
+            heard[ ln ]
+        link.waited[]
+        if [ link.problem.count > 0 ]
+            status[ link.problem, 3 ]
+            link.problem = ''
+
+    # a line from the server
+    func heard [ ln: string ]
+        if [ ln.count == 0 ] return
+        from : string [ '' ]
+        rest : string [ ln ]
+        if [ rest.chars[ 0 ] == ':' ]
+            sp : i32 [ rest.index_of[ ' ' ] ]
+            if [ sp < 0 ] return
+            from = rest.mid[ 1, sp - 1 ]
+            rest = rest.mid[ sp + 1, rest.count - sp - 1 ]
+        # the words, the last one after ' :' whole
+        tail : string [ '' ]
+        tc : i32 [ rest.index_of[ ' :' ] ]
+        if [ tc >= 0 ]
+            tail = rest.mid[ tc + 2, rest.count - tc - 2 ]
+            rest = rest.mid[ 0, tc ]
+        el [ rest.count > 0 && rest.chars[ 0 ] == ':' ]
+            tail = rest.mid[ 1, rest.count - 1 ]
+            rest = ''
+        args : vec string rest.split[ ' ' ]
+        cmd : string [ (args.count > 0) ? args[ 0 ] : '' ]
+        who : string irc_nick[ from ]
+        a1 : string [ (args.count > 1) ? args[ 1 ] : '' ]
+        a2 : string [ (args.count > 2) ? args[ 2 ] : '' ]
+        if [ cmd == 'PING' ]
+            link.send_line[ 'PONG :{tail}' ]
+        el [ cmd == '001' ]
+            link.welcomed = true
+            me = a1
+            status[ tail, 2 ]
+            if [ channels && channels.count > 0 ]
+                link.send_line[ 'JOIN {channels}' ]
+        el [ cmd == '433' ]
+            me = '{me}_'
+            status[ 'That nick is taken: trying {me}', 2 ]
+            link.send_line[ 'NICK {me}' ]
+        el [ cmd == 'JOIN' ]
+            ch : string [ (a1.count > 0) ? a1 : tail ]
+            b : IrcBuffer buf[ ch ]
+            b.add_user[ who ]
+            if [ who == me ]
+                b.joined = true
+                show[ index_of[ b ] ]
+            el
+                note[ b, '', '{who} joined', 2 ]
+        el [ cmd == 'PART' ]
+            b : IrcBuffer buf[ a1 ]
+            b.drop_user[ who ]
+            if [ who == me ] b.joined = false
+            why : string [ (tail.count > 0) ? ' ({tail})' : '' ]
+            note[ b, '', '{who} left{why}', 2 ]
+        el [ cmd == 'QUIT' ]
+            for [ b: IrcBuffer ] in bufs
+                if [ b.drop_user[ who ] ]
+                    note[ b, '', '{who} quit ({tail})', 2 ]
+        el [ cmd == 'NICK' ]
+            to : string [ (tail.count > 0) ? tail : a1 ]
+            if [ who == me ] me = to
+            for [ b: IrcBuffer ] in bufs
+                if [ b.drop_user[ who ] ]
+                    b.add_user[ to ]
+                    note[ b, '', '{who} is now {to}', 2 ]
+        el [ cmd == 'KICK' ]
+            b : IrcBuffer buf[ a1 ]
+            b.drop_user[ a2 ]
+            if [ a2 == me ] b.joined = false
+            note[ b, '', '{a2} was kicked by {who} ({tail})', 2 ]
+        el [ cmd == 'PRIVMSG' || cmd == 'NOTICE' ]
+            # to a channel, or to us (the sender is the conversation)
+            place : string [ (a1.count > 0 && (a1.chars[ 0 ] == '#'
+                || a1.chars[ 0 ] == '&')) ? a1 : who ]
+            if [ who.count == 0 || who.index_of[ '.' ] >= 0
+                 && cmd == 'NOTICE' ]
+                status[ tail, 2 ]
+                return
+            b : IrcBuffer buf[ place ]
+            if [ tail.starts_with[ '\x01ACTION ' ] ]
+                act : string tail.mid[ 8, tail.count - 8 ]
+                if [ act.ends_with[ '\x01' ] ]
+                    act = act.mid[ 0, act.count - 1 ]
+                note[ b, who, act, 1 ]
+            el [ tail.starts_with[ '\x01' ] ]
+                # other CTCP (VERSION ...): answered briefly
+                if [ tail.starts_with[ '\x01VERSION' ] ]
+                    ver : '\x01VERSION clint 0.1\x01'
+                    link.send_line[ 'NOTICE {who} :{ver}' ]
+            el
+                note[ b, who, tail, (cmd == 'NOTICE') ? 2 : 0 ]
+        el [ cmd == '332' ]
+            buf[ a2 ].topic = tail
+        el [ cmd == 'TOPIC' ]
+            b : IrcBuffer buf[ a1 ]
+            b.topic = tail
+            note[ b, '', '{who} set the topic: {tail}', 2 ]
+        el [ cmd == '353' ]
+            # names: = #chan :nick nick
+            ch : string [ (args.count > 3) ? args[ 3 ] : a2 ]
+            b : IrcBuffer buf[ ch ]
+            for [ u: string ] in tail.split[ ' ' ]
+                if [ u.count > 0 ] b.add_user[ u ]
+        el [ cmd == '366' || cmd == '333' ]
+            pristine = false
+        el [ cmd.count == 3 && cmd.chars[ 0 ] >= '4'
+             && cmd.chars[ 0 ] <= '5' ]
+            on : string [ (args.count > 2) ? '{args[ 2 ]}: ' : '' ]
+            status[ '{on}{tail}', 3 ]
+        el
+            status[ (tail.count > 0) ? tail : rest, 2 ]
+
+    func index_of [ b: IrcBuffer ] -> i32
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            if [ bufs[ i ] == b ] return i
+        return 0
+
+    # what the user typed: a /command or words to the conversation
+    public func say [ text: string ]
+        b : IrcBuffer current[]
+        if [ text.chars[ 0 ] != '/' || text.starts_with[ '//' ] ]
+            words : string [ (text.starts_with[ '//' ])
+                ? text.mid[ 1, text.count - 1 ] : text ]
+            if [ b == bufs[ 0 ] ]
+                status[ 'Join a channel first: /join #name', 3 ]
+                return
+            link.send_line[ 'PRIVMSG {b.name} :{words}' ]
+            note[ b, me, words, 4 ]
+            return
+        sp : i32 [ text.index_of[ ' ' ] ]
+        verb : ((sp > 0) ? text.mid[ 1, sp - 1 ]
+            : text.mid[ 1, text.count - 1 ]).lcase[]
+        arg : string [ (sp > 0)
+            ? text.mid[ sp + 1, text.count - sp - 1 ] : '' ]
+        if [ verb == 'join' || verb == 'j' ]
+            link.send_line[ 'JOIN {arg}' ]
+        el [ verb == 'part' || verb == 'leave' ]
+            ch : string [ (arg.count > 0 && arg.chars[ 0 ] == '#')
+                ? arg : b.name ]
+            link.send_line[ 'PART {ch}' ]
+        el [ verb == 'msg' || verb == 'query' ]
+            ms : i32 [ arg.index_of[ ' ' ] ]
+            to : string [ (ms > 0) ? arg.mid[ 0, ms ] : arg ]
+            q : IrcBuffer buf[ to ]
+            show[ index_of[ q ] ]
+            if [ ms > 0 ]
+                words : string arg.mid[ ms + 1, arg.count - ms - 1 ]
+                link.send_line[ 'PRIVMSG {to} :{words}' ]
+                note[ q, me, words, 4 ]
+        el [ verb == 'me' ]
+            link.send_line[ 'PRIVMSG {b.name} :\x01ACTION {arg}\x01' ]
+            note[ b, me, arg, 1 ]
+        el [ verb == 'nick' ]
+            link.send_line[ 'NICK {arg}' ]
+        el [ verb == 'topic' ]
+            link.send_line[ 'TOPIC {b.name} :{arg}' ]
+        el [ verb == 'quit' ]
+            bye : string [ (arg.count > 0) ? arg : 'clint' ]
+            link.send_line[ 'QUIT :{bye}' ]
+            link.close[]
+            status[ 'Disconnected', 2 ]
+        el [ verb == 'close' ]
+            if [ b != bufs[ 0 ] ]
+                if [ b.joined ] link.send_line[ 'PART {b.name}' ]
+                bufs.remove[ cur ]
+                show[ cur - 1 ]
+        el [ verb == 'raw' || verb == 'quote' ]
+            link.send_line[ arg ]
+        el [ verb == 'connect' || verb == 'server' ]
+            ws : vec string arg.split[ ' ' ]
+            if [ ws.count > 0 && ws[ 0 ].count > 0 ] server = ws[ 0 ]
+            if [ ws.count > 1 ] port = i32[ ws[ 1 ].integer_value[] ]
+            if [ ws.count > 2 ] secure = ws[ 2 ] != 'plain'
+            el [ ws.count > 1 ] secure = port != 6667
+            connect[]
+        el
+            status[ 'Unknown command /{verb}', 3 ]
+
+    func render [] -> Elements
+        e : Elements []
+        if [ !bufs || bufs.count == 0 ] return e
+        b : IrcBuffer current[]
+        # the list's contents as one number
+        sig : i64 [ bufs.count ]
+        for [ x: IrcBuffer ] in bufs
+            sig = sig * 31 + x.users.count * 7 + x.unread * 3
+                + ((x.called) ? 1 : 0) + ((x.folded) ? 2 : 0)
+                + x.name.count
+        # the chat, its people and the conversations: a split
+        panes : map element [ string ] []
+        panes[ 'chat' ] = ChatPane [ topic: b.topic, lines: b.lines,
+            seen: b.lines.count, me: me ]
+        panes[ 'list' ] = BufferList [ bufs: bufs, chosen: cur,
+            sig: sig ]
+        e[ 'split' ] = Splitter [ area: Region { l0 t0 r0 b0 },
+            inner: panes, flex: 0, min_size: 80.0, near_seam: true,
+            sizes: vec f32 [] [ 0.0, 240.0 ] ]
+        return e
+
+    # a part of the chat pane, as mounted: log, say, topic
+    func part [ name: string ] -> element
+        sp : element (elements) ? elements[ 'split' ] : null
+        if [ !sp || !sp.elements ] return null
+        ch : element sp.elements[ 'chat' ]
+        if [ !ch || !ch.elements ] return null
+        return ch.elements[ name ]
+
+    # the field takes the keys again
+    func focus_say []
+        say : element part[ 'say' ]
+        if [ ux && say ] ux.set_focus[ say ]
+
+    func on_frame [ w: Window ]
+        # the field takes the keys from the start
+        if [ !focused && part[ 'say' ] ]
+            focused = true
+            w.set_focus[ part[ 'say' ] ]

@@ -899,8 +899,8 @@ func follow_scroll [ con_el: object, s: ConsoleSession, max_s: f32,
     s.max_scroll = max_s
     if [ !s.scroll_dragging && !s.user_scrolled ]
         s.scroll_goal = max_s
-        # more than a screen behind (a log first shown): at once
-        if [ max_s - s.scroll > vh ] s.scroll = max_s
+        # new output follows at once: an eased follow bounces
+        s.scroll = max_s
     s.scroll_goal = clamp[ s.scroll_goal, 0.0, max_s ]
     if [ s.scroll_dragging ] s.scroll = s.scroll_goal
     d : f32 [ s.scroll_goal - s.scroll ]

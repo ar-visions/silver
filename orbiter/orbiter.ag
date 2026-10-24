@@ -1625,6 +1625,8 @@ element AgentHome
 
 # the avatar for the exchange under the screenshot prompt
 AppAvatar AgentAvatar
+    # under a narrow exchange's split (trinity's exch_stacked)
+    public stacked : bool
     # shift-click steps the avatar through its states (face on, tilted,
     # working, done with the flame): a look at each without an agent
     public func on_press [ ev: Event ]
@@ -1661,6 +1663,9 @@ AppAvatar AgentAvatar
         # offset): a transition mixes the two, and a percent mixed with a
         # plain pixel value snaps
         area: l0%+30px t25%+110px w408px h408px, 900ms cubic in_out
+    :stacked
+        # a narrow exchange: the box under the split, all of it
+        area: l0%+0px t0%+0px w100% h100%, 900ms cubic in_out
     :fading
         opacity: 0.0, 3000ms cubic outward
     }
@@ -1898,17 +1903,8 @@ Group StatusBar
 # the bottom bar: its task buttons flush on it, the bar's height
 StatusBar TasksBar
     style : CSS {
-        area: l0 b1.06 r0 h1.06
         spacing_x: 0px
         spacing_y: 0px
-        layers.sbar:
-            fill_color: #000c, 400ms cubic outward
-            box_shadow: inset 0 0 13px #8af2
-            stroke_width: 1
-            stroke_color: #fff1
-            near_border: true
-            near_inset: 1.0
-            near_inset_color: #c890ffaa
     }
 
 # the side panel's toolbar: no ground of its own, the panel's shows
@@ -2304,6 +2300,10 @@ class AppEntry
     public group   : string
     # a module that builds a program: the program it installs
     public built   : path
+    # a store's apps (install/stores/<name>), shown as its folder
+    public apps    : vec AppEntry
+    # a store app: the line it runs with, its program in install/bin
+    public launch  : string
 
 # a pin in the dock: its app icon, else the nav list's icon
 element DockIcon
@@ -3545,6 +3545,13 @@ element orbiter : trinity # implements compiler
     mutable wl_tried       : bool
     mutable win_seen       : u64
     mutable pane_win       : vec u64
+    # the window a floating pane was opened for (0: a pane of its
+    # own); it closes with that window
+    mutable pane_spawn     : vec u64
+    # windows asked to close, and when (ms): one still open 3 s on
+    # is ended (a frozen program never answers)
+    mutable close_ids      : vec u64
+    mutable close_at       : vec i64
     # every window placed, in order, and its pane: a closed one
     # hands its pane back to the last one still open there
     mutable placed_win     : vec u64
@@ -3740,6 +3747,11 @@ element orbiter : trinity # implements compiler
     intern attach_mod      : string
     intern attach_av       : AppView
     mutable instances      : vec AppView
+    # each store folder's time as last seen, and when it was looked at
+    mutable store_seen     : map string [string]
+    mutable store_check_ms : i64
+    # counts each new gathering of the app cards (the grid redraws)
+    mutable apps_gen       : i32
     mutable inst_seq       : i32
     intern  all_cmd        : string
     public scene_load    : string
@@ -4552,6 +4564,11 @@ element orbiter : trinity # implements compiler
             el
                 log 'orbiter: no module opens {url}'
             return
+        # 'run <program>': as its row in the search runs it
+        if [ s && s.count > 4 && s.mid[ 0, 4 ] == 'run ' ]
+            run_program[ path [ s.mid[ 4, s.count - 4 ].trim[] ],
+                         active_pane ]
+            return
         # an agent on the platform: 'home <agent> <state> <words>'
         if [ s && s.count > 5 && s.mid[ 0, 5 ] == 'home ' ]
             hw : vec string s.mid[ 5, s.count - 5 ].trim[].split[ ' ' ]
@@ -4674,6 +4691,7 @@ element orbiter : trinity # implements compiler
             agent_av = AgentAvatar [ topmost: true,
                                      animate_always: true ]
         if [ ux && !ux.agent_view ] agent_av.settled = false
+        agent_av.stacked = ux && ux.exch_stacked
         # in the slideout: small, at its top
         return agent_av
 
@@ -5800,9 +5818,18 @@ element orbiter : trinity # implements compiler
     # the program a console instance runs: its args' last word's name
     func program_of [ av: AppView ] -> string
         if [ av.app_mod != 'console' || !av.module_args ] return ''
-        words : vec string av.module_args.split[ ' ' ]
-        if [ words.count == 0 ] return ''
-        prog : string words[ words.count - 1 ]
+        line : string av.module_args.trim[]
+        if [ line.count == 0 ] return ''
+        # the last word, or a quoted last one whole (a path with spaces)
+        prog : string ''
+        q : string line.mid[ line.count - 1, 1 ]
+        if [ line.count > 1 && (q == '"' || q == '\'') ]
+            body : string line.mid[ 0, line.count - 1 ]
+            open : i32 [ body.rindex_of[ q ] ]
+            prog = body.mid[ open + 1, body.count - open - 1 ]
+        el
+            words : vec string line.split[ ' ' ]
+            prog = words[ words.count - 1 ]
         at : i32 [ prog.rindex_of[ '/' ] ]
         if [ at < 0 ] return prog
         return prog.mid[ at + 1, prog.count - at - 1 ]
@@ -6848,13 +6875,18 @@ element orbiter : trinity # implements compiler
                 log 'orbiter: the Wayland display did not start'
                 return false
             wl_sock = string[ wlc_socket[] ]
+            # programs see the real monitor as their screen
+            sr : rect screen_rect[]
+            wlc_screen[ i32[ sr.w ], i32[ sr.h ], screen_hz[] ]
             # trinity apps orbiter hosts stay off it: only the
             # console's programs are given it
             unsetenv[ 'WAYLAND_DISPLAY' ]
             wl_fonts = write_fonts_conf[]
             log 'orbiter: Wayland display {wl_sock}'
+            run_startup[]
         if [ wl_sock.count == 0 ] return false
         wlc_pump[]
+        close_check[]
         changed : false
         n : i32 wlc_window_count[]
         for [ i: i32 0, i < n, i += 1 ]
@@ -6863,6 +6895,17 @@ element orbiter : trinity # implements compiler
                 win_seen = wn
                 place_window[ wn ]
                 changed = true
+        # a window asking to come forward (out of its tray, or a
+        # program's own "show"): its pane shows it
+        aw : u64 wlc_window_asked[]
+        if [ aw != 0 && wlc_window_open[ aw ] != 0 ]
+            place_window[ aw ]
+            changed = true
+        # one asking to be minimized (its own button, Steam's Hide)
+        hw : u64 wlc_window_hide_asked[]
+        if [ hw != 0 ]
+            hide_window[ hw ]
+            changed = true
         # a closed window gives its pane back: to the window it covered
         # (an about box over its app), else to nothing
         for [ i: i32 0, i < pane_win.count, i += 1 ]
@@ -6870,6 +6913,15 @@ element orbiter : trinity # implements compiler
             if [ pw != 0 && wlc_window_open[ pw ] == 0 ]
                 pane_win[ i ] = window_under[ i, pw ]
                 changed = true
+        # a pane opened for a window goes with it
+        if [ pane_spawn ]
+            for [ i: i32 0, i < pane_spawn.count, i += 1 ]
+                sw : u64 pane_spawn[ i ]
+                if [ sw != 0 && wlc_window_open[ sw ] == 0
+                     && i < editor_slots.count ]
+                    close_pane[ i ]
+                    changed = true
+                    break
         for [ i: i32 0, i < pane_sheet.count, i += 1 ]
             ps : u64 pane_sheet[ i ]
             if [ ps != 0 && wlc_window_open[ ps ] == 0 ]
@@ -6903,12 +6955,27 @@ element orbiter : trinity # implements compiler
         stale : bool [ menu_got == 0 && wn != 0
                        && now - menu_ms > 1000 ]
         if [ wn == menu_win && !stale ] return false
+        fresh : vec TrayEntry menu_read[ wn ]
+        # still none: what shows (our entries, an open drawer) stays
+        if [ wn == menu_win && fresh.count == 0 ]
+            menu_ms = now
+            return false
         had : bool [ !empty ]
+        # an open drawer stays on the name it shows, by its label
+        was : string [ (wn == menu_win && menu_items && menu_top >= 0
+            && menu_top < menu_items.count)
+            ? menu_items[ menu_top ].label : '' ]
         menu_win = wn
         menu_ms  = now
         menu_top = -1
-        menu_items = menu_read[ wn ]
+        menu_items = fresh
         menu_got = i32[ menu_items.count ]
+        if [ was.count > 0 ]
+            pane_menu[]
+            for [ i: i32 0, i < menu_items.count, i += 1 ]
+                e : TrayEntry menu_items[ i ]
+                if [ menu_top < 0 && e.depth == 0 && e.label == was ]
+                    menu_top = i
         return had || menu_items.count > 0
 
     # the pane's app without a window menu (a trinity app): one menu
@@ -7068,14 +7135,23 @@ element orbiter : trinity # implements compiler
             return
         # a shell in the app's own folder, in this pane; an agent's
         # terminal it covers runs on
+        # a console of its own, new, in the app's folder: the app keeps
+        # its window (its pane), the console takes a new one
         if [ e.action == 'orb.console' ]
             dir : path app_place[]
             if [ !dir ] return
-            if [ active_pane < pane_console.count ]
-                pane_console[ active_pane ] = ''
-            console_pane = active_pane
+            cp : i32 [ active_pane ]
+            if [ editor_slots.count < 4 ]
+                editor_slots += -1
+                pane_console += ''
+                cp = editor_slots.count - 1
+                active_pane = cp
+                save_session[]
+            el [ cp < pane_console.count ]
+                pane_console[ cp ] = ''
+            console_pane = cp
             console_dir  = dir
-            if [ ux ] ux.restyle = true
+            force_update[]
             return
         if [ e.action == 'orb.git' && ed ]
             ed.git_on = !ed.git_on
@@ -7125,6 +7201,11 @@ element orbiter : trinity # implements compiler
             vn : string e.action.mid[ 10, e.action.count - 10 ]
             set_pane_view[ ed, (vn == ed.resolve_view[]) ? '' : vn ]
             force_update[]
+            return
+        # the pane's window or app quits (a window that does not
+        # answer is ended 3 s on)
+        if [ e.action == 'orb.wquit' ]
+            quit_app_in[ active_pane ]
             return
         # in the pane, as at startup: an app never run has no instance
         if [ e.action == 'orb.run' ]
@@ -7722,6 +7803,13 @@ element orbiter : trinity # implements compiler
     # the window's pane: the one whose app started it (its process is
     # one of the window's ancestors), else the active pane
     func place_window [ wn: u64 ]
+        # already in a pane (it asks to come forward): that pane
+        if [ pane_win ]
+            for [ i: i32 0, i < pane_win.count, i += 1 ]
+                if [ pane_win[ i ] == wn ]
+                    raise_pane[ i ]
+                    wlc_window_focus[ wn ]
+                    return
         # a dialog is a sheet over its window's pane, not the pane's
         over : u64 wlc_window_parent[ wn ]
         if [ over != 0 ]
@@ -7753,6 +7841,22 @@ element orbiter : trinity # implements compiler
                     rv.wl_window = wn
             p = parent_pid[ p ]
             steps += 1
+        # a background program's (a tray app's): a floating pane
+        bg : AppView background_of[ wn ]
+        if [ pane < 0 && bg && editor_slots.count < 4 ]
+            bg.wl_window = wn
+            mini_forget[ bg.iid ]
+            pane = window_pane[]
+            while [ pane_win.count <= pane ] pane_win.push[ u64[ 0 ] ]
+            pane_win[ pane ] = wn
+            if [ !pane_spawn ] pane_spawn = vec u64 []
+            while [ pane_spawn.count <= pane ] pane_spawn.push[ u64[ 0 ] ]
+            pane_spawn[ pane ] = wn
+            placed_win.push[ wn ]
+            placed_pane.push[ pane ]
+            wlc_window_focus[ wn ]
+            log 'orbiter: window {wn} of a background program, floating'
+            return
         if [ pane < 0 ]
             pane = active_pane
             # a program that left its starter (VS Code detaches): the
@@ -7762,14 +7866,57 @@ element orbiter : trinity # implements compiler
             if [ fv && fv.wl_window == 0 && program_of[ fv ].count > 0 ]
                 fv.wl_window = wn
         if [ pane < 0 ] pane = 0
+        # another window of the process its pane already shows (Steam's
+        # friends list beside its main): a floating window of its own
+        spawned : bool [ false ]
+        if [ pane < pane_win.count && pane_win[ pane ] != 0
+             && pane_win[ pane ] != wn
+             && wlc_window_open[ pane_win[ pane ] ] != 0
+             && wlc_window_pid[ pane_win[ pane ] ] == wlc_window_pid[ wn ]
+             && editor_slots.count < 4 ]
+            pane    = window_pane[]
+            spawned = true
         while [ pane_win.count <= pane ]
             pane_win.push[ u64[ 0 ] ]
         pane_win[ pane ] = wn
+        if [ !pane_spawn ] pane_spawn = vec u64 []
+        while [ pane_spawn.count <= pane ]
+            pane_spawn.push[ u64[ 0 ] ]
+        pane_spawn[ pane ] = (spawned) ? wn : u64[ 0 ]
         placed_win.push[ wn ]
         placed_pane.push[ pane ]
         wlc_window_focus[ wn ]
         nm : string[ wlc_window_title[ wn ] ]
         log 'orbiter: window {wn} ({nm}) in pane {pane}'
+
+    # a floating pane for a program's next window, in the middle of
+    # the area, each later one a step down and right
+    func window_pane [] -> i32
+        n : i32 [ (free_order) ? free_order.count : 0 ]
+        pane_add[]
+        pending_finder = -1
+        pi : i32 [ editor_slots.count - 1 ]
+        if [ !pane_free ] pane_free = vec f32 []
+        if [ !pane_shown ] pane_shown = vec f32 []
+        if [ !free_order ] free_order = vec i32 []
+        while [ pane_free.count < (pi + 1) * 4 ] pane_free.push[ 0.0 ]
+        while [ pane_shown.count < (pi + 1) * 4 ] pane_shown.push[ 0.0 ]
+        aw : f32 [ (ux && ux.root && ux.root.bounds) ? ux.root.bounds.w
+                   : 1280.0 ]
+        ah : f32 [ (ux && ux.root && ux.root.bounds) ? ux.root.bounds.h
+                   : 800.0 ]
+        w : f32 [ round[ aw * 0.42 ] ]
+        h : f32 [ round[ ah * 0.62 ] ]
+        k : i32 [ pi * 4 ]
+        pane_free[ k ]     = round[ (aw - w) * 0.5 ] + 36.0 * n
+        pane_free[ k + 1 ] = round[ ah * 0.1 ] + 36.0 * n
+        pane_free[ k + 2 ] = w
+        pane_free[ k + 3 ] = h
+        for [ r: i32 0, r < 4, r += 1 ]
+            pane_shown[ k + r ] = pane_free[ k + r ]
+        free_order.push[ pi ]
+        force_update[]
+        return pi
 
     # the last window still open that was placed in pane pi before
     # gone; its instance shows it again
@@ -7782,9 +7929,42 @@ element orbiter : trinity # implements compiler
                 back = w
                 break
         for [ av: AppView ] in instances
-            if [ av.wl_window == gone ] av.wl_window = back
+            if [ av.wl_window == gone ]
+                av.wl_window = (back != 0) ? back : window_left[ av ]
         if [ back != 0 ] wlc_window_focus[ back ]
         return back
+
+    # a window still open that an instance's program made (Steam's main
+    # window, its sign-in gone); one shown in a pane first
+    func window_left [ av: AppView ] -> u64
+        if [ !av || av.slot < 0 ] return u64[ 0 ]
+        first : u64 [ 0 ]
+        n : i32 wlc_window_count[]
+        for [ i: i32 0, i < n, i += 1 ]
+            w : u64 wlc_window_at[ i ]
+            if [ !made_by[ w, host_app_pid[ av.slot ] ] ] continue
+            if [ pane_win ]
+                for [ q: i32 0, q < pane_win.count, q += 1 ]
+                    if [ pane_win[ q ] == w ] return w
+            if [ first == 0 ] first = w
+        return first
+
+    # the background instance whose program made the window, if any
+    func background_of [ wn: u64 ] -> AppView
+        if [ !instances ] return null
+        for [ v: AppView ] in instances
+            if [ v.background && v.slot >= 0 && !v.ended
+                 && made_by[ wn, host_app_pid[ v.slot ] ] ]
+                return v
+        return null
+
+    # its process is pid or one of pid's children
+    func made_by [ w: u64, pid: i32 ] -> bool
+        p : i32 wlc_window_pid[ w ]
+        for [ steps: i32 0, p > 1 && steps < 64, steps += 1 ]
+            if [ p == pid ] return true
+            p = parent_pid[ p ]
+        return false
 
     # the dialog over a pane's window, 0 when none
     func pane_sheet_of [ i: i32 ] -> u64
@@ -7826,6 +8006,48 @@ element orbiter : trinity # implements compiler
         sock : (wl_sock && rt) ? '{string [ rt ]}/{wl_sock}' : ''
         # its own fonts: orbiter's lettering is never put on a program
         ed.open_program[ line, sock, '', portal_shared[].address ]
+
+    # a program in no pane (a startup app, to its tray): no button
+    # until its window opens, which opens floating
+    func run_background [ line: string ]
+        root : path.path_startup[]
+        if [ !root || wl_sock.count == 0 ] return
+        rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+        sock : (rt) ? '{string [ rt ]}/{wl_sock}' : ''
+        bin : string '{root}/install/bin'
+        nv : AppView [ ]
+        nv.src = path '{root}/console/console.ag'
+        nv.viewer = true
+        nv.background = true
+        nv.module_args = program_args[ 'env PATH={bin}:$PATH {line}',
+            sock, '', portal_shared[].address ]
+        nv.host_hz = (ux) ? ux.refresh_hz[] : 60
+        nv.start[]
+        add_instance[ nv ]
+        log 'orbiter: started {line} in the background'
+
+    # every module's startup line (export startup ['steam -silent'])
+    func run_startup []
+        # a hidden (test) run starts none of the user's programs
+        if [ hidden ] return
+        root : path.path_startup[]
+        if [ !root ] return
+        d : path '{root}/install/export'
+        es : d.ls[ null, false ]
+        if [ !es ] return
+        for [ e: path ] in es
+            if [ e.ext[] != 'agi' ] continue
+            tx : string e.load[ typeid[string], null ]
+            if [ !tx ] continue
+            ln : string source_word[ tx, 'startup:' ]
+            if [ ln.count > 0 ] run_background[ ln ]
+
+    # a module's startup line, '' when it has none
+    func startup_of [ module: string ] -> string
+        ag : path '{path.path_startup[]}/install/export/{install_name_of[ module ]}.agi'
+        if [ !ag.exists[] ] return ''
+        tx : string ag.load[ typeid[string], null ]
+        return (tx) ? source_word[ tx, 'startup:' ] : ''
 
     # a program's row in the list: run, never edited
     func is_program [ p: path ] -> bool
@@ -9093,6 +9315,7 @@ element orbiter : trinity # implements compiler
     # the later panes' move down a place
     func pane_lists_drop [ pi: i32 ]
         if [ pane_win && pi < pane_win.count ] pane_win.remove[ pi ]
+        if [ pane_spawn && pi < pane_spawn.count ] pane_spawn.remove[ pi ]
         if [ pane_sheet && pi < pane_sheet.count ]
             pane_sheet.remove[ pi ]
         if [ pending_sel && pi < pending_sel.count ]
@@ -11235,7 +11458,7 @@ element orbiter : trinity # implements compiler
             # a dialog up over it closes first
             wv : u64 pane_sheet_of[ pw ]
             if [ wv == 0 ] wv = pane_window[ pw ]
-            if [ wv != 0 ] wlc_window_close[ wv ]
+            if [ wv != 0 ] close_window[ wv ]
             ev.no_default = true
             return
         # the title's run: shift or cmd adds an instance, else a running
@@ -11393,14 +11616,15 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        # a tray app's tile: as a left click on its icon
+        # a tray app's tile: as a click on its icon (left: its own
+        # action; else its menu)
         if [ ev.target.id && ev.target.id.starts_with[ 'tray_tile_' ] ]
             tix : i32 [ i32[ ev.target.id.mid[ 10,
                 ev.target.id.count - 10 ].integer_value[] ] ]
             trt : Tray tray_shared[]
             if [ tix >= 0 && tix < trt.items.count ]
                 tit : TrayItem trt.items[ tix ]
-                if [ !tit.menu_only ]
+                if [ !tit.menu_only && ev.mouse.button == 0 ]
                     trt.activate[ tit ]
                     drawer_shut[]
                 el
@@ -12863,6 +13087,9 @@ element orbiter : trinity # implements compiler
             fmt_poll[]
             fmt_borrow[]
             cov_poll[]
+            if [ now_ms - store_check_ms >= 10000 ]
+                store_check_ms = now_ms
+                store_poll[]
             # refresh policy: nothing on a timer. the watches (FSEvents
             # on macOS) mark the snapshot dirty on a real change, and
             # the scan reruns on its own thread, at most once a second,
@@ -13545,6 +13772,12 @@ element orbiter : trinity # implements compiler
                 pane_win[ pi ] = u64[ 0 ]
         close_pane[ pi ]
 
+    func minimized_iid [ iid: i32 ] -> bool
+        if [ !mini_iids ] return false
+        for [ k: i32 0, k < mini_iids.count, k += 1 ]
+            if [ mini_iids[ k ] == iid ] return true
+        return false
+
     func mini_forget [ iid: i32 ]
         if [ !mini_iids ] mini_iids = vec i32 []
         if [ !mini_rect ] mini_rect = vec f32 []
@@ -13619,6 +13852,19 @@ element orbiter : trinity # implements compiler
         session_dirty = true
         if [ ux ] ux.restyle = true
 
+    # a window out of view, its program running: a free one minimized
+    # (its place kept), a docked one off its pane
+    func hide_window [ w: u64 ]
+        if [ !pane_win ] return
+        for [ q: i32 0, q < pane_win.count, q += 1 ]
+            if [ pane_win[ q ] != w ] continue
+            if [ pane_floats[ q ] ]
+                minimize[ q ]
+            el
+                pane_win[ q ] = u64[ 0 ]
+            if [ ux ] ux.restyle = true
+            return
+
     # apps are toggles: one in view goes out of it (still running),
     # the pane back where it was; a window's pane has no editor
     # mounted until the next frame
@@ -13627,6 +13873,12 @@ element orbiter : trinity # implements compiler
         avd : AppView instance_by[ iid ]
         edd : Editor pane_at[ active_pane ]
         wvd : u64 window_of[ avd ]
+        # its window in another pane (a free one): put away from there
+        if [ wvd != 0 && pane_window[ active_pane ] != wvd && pane_win ]
+            for [ q: i32 0, q < pane_win.count, q += 1 ]
+                if [ pane_win[ q ] == wvd ]
+                    hide_window[ wvd ]
+                    return
         shown : bool [ avd && ((wvd != 0
             && pane_window[ active_pane ] == wvd)
             || (wvd == 0 && edd && edd.run_view == avd
@@ -14638,11 +14890,13 @@ element orbiter : trinity # implements compiler
         while [ at < menu_items.count && menu_items[ at ].depth > 0 ]
             at += 1
         # Quit stays the last: ours go before it (and its rule)
+        has_quit : false
         for [ q: i32 f + 1, q < at, q += 1 ]
             qe : TrayEntry menu_items[ q ]
             if [ qe.depth == 1 && !qe.rule
                  && (qe.action == 'orb.quit' || qe.label == 'Quit') ]
                 at = (q > f + 1 && menu_items[ q - 1 ].rule) ? q - 1 : q
+                has_quit = true
                 break
         add : vec TrayEntry []
         # with the app's own entries: a shell where its files really are
@@ -14659,12 +14913,20 @@ element orbiter : trinity # implements compiler
         if [ ed && ed.run_view ]
             add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
         add.push[ own_entry[ 'Hide', 'orb.pane_close', 1 ] ]
-        # every app here is built from its source: again, or clean
-        if [ app_module[] ]
+        # an app built from its source here: again, or clean (not one
+        # the apps view installs: featured/ wraps others' software)
+        am : path app_module[]
+        fd : string '{path.path_startup[]}/featured/'
+        if [ am && !'{am}'.starts_with[ fd ] ]
             add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
                 action: 'orb.prule' ] ]
             add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
             add.push[ own_entry[ 'Clean build', 'orb.clean', 1 ] ]
+        # always a way out: a program's window brings no Quit of its own
+        if [ !has_quit ]
+            add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
+                action: 'orb.prule' ] ]
+            add.push[ own_entry[ 'Quit', 'orb.wquit', 1 ] ]
         for [ k: i32 add.count - 1, k >= 0, k -= 1 ]
             menu_items.insert[ add[ k ], at ]
 
@@ -15256,18 +15518,13 @@ element orbiter : trinity # implements compiler
             # once it is in install/bin
             if [ tx.index_of[ '\nprops:' ] < 0 ]
                 ae.built = path '{root}/install/bin/{mn}'
+            ae.apps = store_apps[ mn, gr ]
             app_list.push[ ae ]
-        # the featured: featured/software.agi's names, in its order,
-        # each a module featured/<name>/<name>.ag that names its
+        # the featured: each module in featured/ that names its
         # section (export software ['everyday']), built or not
         for [ fn: string ] in featured_names[]
             d : path '{root}/featured/{fn}'
             fm : path '{d}/{fn}.ag'
-            # no module yet: recommended, by name alone
-            if [ !fm.exists[] ]
-                app_list.push[ AppEntry [ name: fn, file: d,
-                    module: false, group: 'recommended' ] ]
-                continue
             seen : bool [ false ]
             for [ e9: AppEntry ] in app_list
                 if [ e9.name == fn ] seen = true
@@ -15277,8 +15534,66 @@ element orbiter : trinity # implements compiler
             if [ fg.count == 0 ] continue
             fe : AppEntry [ name: fn, file: d, module: true, group: fg ]
             fe.built = path '{root}/install/bin/{fn}'
+            fe.apps = store_apps[ fn, fg ]
             app_list.push[ fe ]
+        apps_gen += 1
         return app_list
+
+    # what a store wrote into its folder, install/stores/<store>:
+    # each <name>/<name>.ag, named by its first comment line
+    func store_apps [ store: string, group: string ] -> vec AppEntry
+        sd : path '{path.path_startup[]}/install/stores/{store}'
+        if [ !sd.exists[] ] return null
+        res : vec AppEntry []
+        for [ d: path ] in sd.ls[ null, false ]
+            n : string d.filename[]
+            m : path '{d}/{n}.ag'
+            if [ !d.is_dir[] || !m.exists[] ] continue
+            src : string m.load[ typeid[ string ], null ]
+            if [ !src ] continue
+            title : string n
+            c : i32 [ src.index_of[ ':' ] ]
+            if [ src.starts_with[ '# ' ] && c > 2 ]
+                title = src.mid[ 2, c - 2 ]
+            sa : AppEntry [ name: title, file: d, module: true,
+                group: group, launch: source_word[ src, 'export launch' ] ]
+            # by name: the folder's listing order is the disk's
+            at : i32 [ res.count ]
+            for [ k: i32 0, k < res.count, k += 1 ]
+                if [ at == res.count
+                     && title.lcase[].compare[ res[ k ].name.lcase[] ] < 0 ]
+                    at = k
+            res.insert[ sa, at ]
+        return res
+
+    # a store whose program runs: its exports again (it writes what
+    # finished installing), and the cards anew when its folder moved
+    func store_poll []
+        if [ !app_list ] return
+        if [ !store_seen ] store_seen = map string [string] []
+        root : string '{path.path_startup[]}'
+        for [ ae: AppEntry ] in app_list
+            if [ !ae.apps ] continue
+            sd : path '{root}/install/stores/{ae.name}'
+            mt : i64 [ sd.modified_time[] ]
+            if [ store_seen.contains[ ae.name ]
+                 && store_seen[ ae.name ] != '{mt}' ]
+                # noted first: the list (and ae) go with app_list
+                store_seen[ ae.name ] = '{mt}'
+                app_list = null
+                apps_gen += 1
+                if [ ux ] ux.restyle = true
+                return
+            store_seen[ ae.name ] = '{mt}'
+            on : bool [ false ]
+            if [ instances ]
+                for [ v: AppView ] in instances
+                    if [ !v.ended && program_of[ v ] == ae.name ] on = true
+            if [ !on ] continue
+            sv : string '{root}/install/bin/silver'
+            md : string '{ae.file}'
+            ex : command { {sv} --export --build {md} >/dev/null 2>&1 & }
+            ex.exec[ false ]
 
     # a line's first quoted word in source: "export software
     # ['games']" gives games; '' when the line is not there
@@ -15319,24 +15634,15 @@ element orbiter : trinity # implements compiler
             return (q2 >= 0) ? r2.mid[ 0, q2 ] : r2
         return v
 
-    # featured/software.agi: its featured: [ ... ] names, in order
+    # the featured: each module in featured/ (<name>/<name>.ag)
     func featured_names [] -> vec string
         res : vec string []
-        sf : path '{path.path_startup[]}/featured/software.agi'
-        if [ !sf.exists[] ] return res
-        tx : string sf.load[ typeid[ string ], null ]
-        at : i32 [ tx.index_of[ 'featured:' ] ]
-        if [ at < 0 ] return res
-        rest : tx.mid[ at, tx.count - at ]
-        ob : i32 [ rest.index_of[ '[' ] ]
-        cb : i32 [ rest.index_of[ ']' ] ]
-        if [ ob < 0 || cb < ob ] return res
-        inner : string rest.mid[ ob + 1, cb - ob - 1 ]
-        for [ w: string ] in inner.split[ ',' ]
-            n : string w.trim[]
-            if [ n.starts_with[ "'" ] && n.count >= 2 ]
-                n = n.mid[ 1, n.count - 2 ]
-            if [ n.count > 0 ] res.push[ n ]
+        fd : path '{path.path_startup[]}/featured'
+        if [ !fd.exists[] ] return res
+        for [ d: path ] in fd.ls[ null, false ]
+            n : string d.filename[]
+            m : path '{d}/{n}.ag'
+            if [ d.is_dir[] && m.exists[] ] res.push[ n ]
         return res
 
     # a card pressed in pane pi's apps view: ours opens there; a
@@ -15399,6 +15705,36 @@ element orbiter : trinity # implements compiler
         login_pass = ''
         if [ ux ] ux.restyle = true
 
+    # a window asked to close as its own X would; ended 3 s on if it
+    # has not gone (a second ask restarts nothing)
+    func close_window [ wv: u64 ]
+        wlc_window_close[ wv ]
+        if [ !close_ids ]
+            close_ids = vec u64 []
+            close_at  = vec i64 []
+        for [ i: i32 0, i < close_ids.count, i += 1 ]
+            if [ close_ids[ i ] == wv ] return
+        close_ids.push[ wv ]
+        close_at.push[ epoch_millis[] ]
+
+    # each frame: a window gone is forgotten, one past its 3 s ended
+    func close_check []
+        if [ !close_ids || close_ids.count == 0 ] return
+        now : i64 [ epoch_millis[] ]
+        ids : vec u64 []
+        ats : vec i64 []
+        for [ i: i32 0, i < close_ids.count, i += 1 ]
+            wv : u64 [ close_ids[ i ] ]
+            if [ wlc_window_open[ wv ] == 0 ] continue
+            if [ now - close_at[ i ] >= 3000 ]
+                log 'orbiter: window {wv} did not close; ending it'
+                wlc_window_kill[ wv ]
+                continue
+            ids.push[ wv ]
+            ats.push[ close_at[ i ] ]
+        close_ids = ids
+        close_at  = ats
+
     # the selected pane's app quits: true when there was one
     func quit_pane_app [] -> bool
         return quit_app_in[ active_pane ]
@@ -15407,7 +15743,7 @@ element orbiter : trinity # implements compiler
     func quit_app_in [ pi: i32 ] -> bool
         wv : u64 pane_window[ pi ]
         if [ wv != 0 ]
-            wlc_window_close[ wv ]
+            close_window[ wv ]
             return true
         ed : Editor pane_at[ pi ]
         av : AppView (ed) ? ed.run_view : null
@@ -15658,6 +15994,15 @@ element orbiter : trinity # implements compiler
 
     func apps_pick [ pi: i32, ae: AppEntry ]
         if [ !ae ] return
+        # a store's app: its line, run in a console as its store runs
+        if [ ae.launch && ae.launch.count > 0 && pi >= 0 ]
+            active_pane = pi
+            set_active[ pi ]
+            # the line may set its own environment before its program
+            bin : string '{path.path_startup[]}/install/bin'
+            run_line[ 'env PATH={bin}:$PATH {ae.launch}', pi ]
+            if [ ux ] ux.restyle = true
+            return
         # the desktop behind free windows: the app opens maximized in a
         # docked view of its own, made now, the pick its next frame
         # (a new pane has no editor until it is drawn)
@@ -15677,6 +16022,13 @@ element orbiter : trinity # implements compiler
             nm : string home_first[ ae.name ]
             if [ nm.count == 0 ] nm = home_new[ ae.name ]
             if [ nm.count > 0 ] home_in_pane[ nm, pi ]
+            if [ ux ] ux.restyle = true
+            return
+        # a tray app (it starts with orbiter): never a pane of its own;
+        # run again, it shows its window
+        if [ ae.module && ae.built && ae.built.exists[]
+             && startup_of[ ae.name ].count > 0 ]
+            run_background[ ae.name ]
             if [ ux ] ux.restyle = true
             return
         if [ ae.module && ae.built && ae.built.exists[] ]
@@ -16654,6 +17006,10 @@ element orbiter : trinity # implements compiler
                 if [ av.slot < 0 || av.held ] continue
                 # only a running instance: a failed one is its code
                 if [ av.ended ] continue
+                # in its tray: a button while its window is up, or
+                # minimized
+                if [ av.background && window_of[ av ] == 0
+                     && !minimized_iid[ av.iid ] ] continue
                 run9.push[ av ]
         # grouped by app (its module), groups in first-seen order
         kinds : vec string []

@@ -1,0 +1,184 @@
+extend trinity
+
+import <screen.h>
+
+# what the screen's own window felt, for its owner to read
+class ScreenEvent
+    # 1 key, 2 button, 3 move, 4 wheel
+    public kind  : i32
+    # a key's or button's number (devices'), and 1 down / 0 up
+    public code  : i32
+    public state : i32
+    # where (the window's px); a move's raw motion while locked; a
+    # wheel's steps
+    public x     : f64
+    public y     : f64
+    public dx    : f64
+    public dy    : f64
+
+# the monitor the app's window is on, in pixels (none: 0 x 0)
+func screen_rect [] -> rect
+    sx : i32 [ 0 ]
+    sy : i32 [ 0 ]
+    sw : i32 [ 0 ]
+    sh : i32 [ 0 ]
+    app : handle [ Au.live_window_get[] ]
+    if [ app ] platform_screen_rect[ app, @sx, @sy, @sw, @sh ]
+    return rect [ x: f32[ sx ], y: f32[ sy ], w: f32[ sw ], h: f32[ sh ] ]
+
+# that monitor's refresh rate in Hz (none known: 0)
+func screen_hz [] -> i32
+    app : handle [ Au.live_window_get[] ]
+    if [ !app ] return 0
+    return platform_window_refresh_hz[ app ]
+
+# one picture on the real monitor, in a fullscreen window of its own
+# beside the app's: a fullscreen game while the shell is a window
+class ScreenOut
+    public vk     : vk_context
+    public title  : string
+    # the platform window, shown fullscreen on the app's monitor
+    public win    : handle
+    public width  : i32
+    public height : i32
+    # an app run hidden keeps it unmapped, the mouse never taken
+    public hidden : bool
+    # the mouse held at the middle, hidden; moves come as raw motion
+    public locked : bool
+    # the window was closed, or lost its size
+    public closed : bool
+    public events : vec ScreenEvent
+    intern surf   : handle
+    intern out    : handle
+    # its size changed: the swapchain is made again before a frame
+    public resize : bool
+    # pictures shown on it
+    public frames : i64
+
+    func init []
+        events = vec ScreenEvent []
+        r : rect screen_rect[]
+        sx : i32 [ r.x ]
+        sy : i32 [ r.y ]
+        sw : i32 [ (r.w > 0.0) ? r.w : 1280.0 ]
+        sh : i32 [ (r.h > 0.0) ? r.h : 720.0 ]
+        width  = sw
+        height = sh
+        nm : 'screen'
+        if [ title ] nm = title
+        win = platform_window_create[ sw, sh, nm.chars, false ]
+        if [ !win ] return
+        platform_window_set_user[ win, handle[ a ] ]
+        platform_set_key_callback   [ win, @screen_key ]
+        platform_set_mouse_callback [ win, @screen_mouse ]
+        platform_set_cursor_callback[ win, @screen_cursor ]
+        platform_set_scroll_callback[ win, @screen_scroll ]
+        platform_set_size_callback  [ win, @screen_size ]
+        platform_window_set_pos[ win, sx, sy ]
+        # asked before the map: the wm takes it as the window appears
+        if [ !hidden ]
+            platform_window_set_fullscreen[ win, true ]
+            platform_window_show[ win ]
+        native : platform_native
+        platform_window_native[ win, @native ]
+        result : VkResult [ VK_ERROR_INITIALIZATION_FAILED ]
+        ifdef [ windows ]
+            wci : VkWin32SurfaceCreateInfoKHR
+            wci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
+            wci.hinstance = native.a
+            wci.hwnd      = native.b
+            result = vkCreateWin32SurfaceKHR[ vk.instance, @wci, null,
+                                              @surf ]
+        ifdef [ linux ]
+            xci : VkXcbSurfaceCreateInfoKHR
+            xci.sType      = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR
+            xci.connection = native.a
+            xci.window     = native.window
+            result = vkCreateXcbSurfaceKHR[ vk.instance, @xci, null,
+                                            @surf ]
+        if [ result != VK_SUCCESS ]
+            log 'screen: no surface on the screen window'
+            return
+        out = screen_out_new[ vk.physical_device, vk.device,
+            u32[ vk.queue_family_index ], surf, sw, sh ]
+        if [ !out ] log 'screen: no swapchain on the screen window'
+        el log 'screen: {sw}x{sh} at {sx}, {sy}'
+
+    # the picture, fitted to the screen; false when it was not shown
+    func show [ t: Texture ] -> bool
+        if [ win && platform_window_should_close[ win ] ] closed = true
+        if [ !out || !t || !t.vk_image ] return false
+        if [ resize ]
+            resize = false
+            screen_out_resize[ out, width, height ]
+        if [ screen_out_frame[ out, t.vk_image, t.vk_layout, t.width,
+                               t.height ] == 0 ]
+            return false
+        vk.qlock.lock[]
+        stale : i32 [ screen_out_submit[ out, vk.queue ] ]
+        vk.qlock.unlock[]
+        if [ stale != 0 ] resize = true
+        frames += 1
+        if [ frames == 1 ] log 'screen: first picture shown'
+        # in front of the shell's window, which takes the clicks else;
+        # again once the wm has surely taken it in
+        if [ !hidden && (frames == 1 || frames == 30) ]
+            platform_window_raise[ win ]
+        return true
+
+    func lock [ on: bool ]
+        if [ !win || hidden || on == locked ] return
+        locked = on
+        platform_cursor_lock[ win, (on) ? 1 : 0 ]
+        if [ on ] platform_warp_cursor[ win, width / 2, height / 2 ]
+
+    func close []
+        if [ out ] screen_out_free[ out ]
+        out = null
+        if [ surf ] vkDestroySurfaceKHR[ vk.instance, surf, null ]
+        surf = null
+        if [ win ] platform_window_destroy[ win ]
+        win = null
+
+    func dealloc []
+        close[]
+
+intern func screen_key [ win: @platform_window, key: i32,
+                         scan_code: i32, action: i32, mods: i32 ]
+    s : cast ScreenOut [ platform_window_get_user[ win ] ]
+    if [ action == PLATFORM_REPEAT ] return
+    s.events.push[ ScreenEvent [ kind: 1, code: key,
+        state: (action == PLATFORM_PRESS) ? 1 : 0 ] ]
+
+intern func screen_mouse [ win: @platform_window, id: i32, action: i32,
+                           mods: i32 ]
+    s : cast ScreenOut [ platform_window_get_user[ win ] ]
+    s.events.push[ ScreenEvent [ kind: 2,
+        code: id - PLATFORM_MOUSE_LEFT,
+        state: (action == PLATFORM_PRESS) ? 1 : 0 ] ]
+
+# locked, every move is its distance from the middle, put back there
+intern func screen_cursor [ win: @platform_window, x: f64, y: f64 ]
+    s : cast ScreenOut [ platform_window_get_user[ win ] ]
+    if [ s.locked ]
+        cx : f64 [ s.width / 2 ]
+        cy : f64 [ s.height / 2 ]
+        if [ x == cx && y == cy ] return
+        s.events.push[ ScreenEvent [ kind: 3, x: x, y: y,
+            dx: x - cx, dy: y - cy ] ]
+        platform_warp_cursor[ win, i32[ cx ], i32[ cy ] ]
+        return
+    s.events.push[ ScreenEvent [ kind: 3, x: x, y: y ] ]
+
+intern func screen_scroll [ win: @platform_window, x: f64, y: f64 ]
+    s : cast ScreenOut [ platform_window_get_user[ win ] ]
+    s.events.push[ ScreenEvent [ kind: 4, dx: x, dy: y ] ]
+
+intern func screen_size [ win: @platform_window, width: i32,
+                          height: i32 ]
+    s : cast ScreenOut [ platform_window_get_user[ win ] ]
+    if [ width <= 0 || height <= 0 ] return
+    if [ width == s.width && height == s.height ] return
+    s.width  = width
+    s.height = height
+    s.resize = true

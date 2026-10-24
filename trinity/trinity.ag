@@ -179,6 +179,7 @@ import Canvas
 import Console
 import FontMatch
 import video
+import screen
 import mux
 import demux
 import navigation
@@ -2840,6 +2841,15 @@ Display Window
             restyle      = true
             will_animate = true
 
+    # where the exchange lays out: its box, else the window
+    func exch_bounds [] -> rect
+        if [ !root || !root.bounds ] return null
+        if [ exchange_region && exchange_region.count > 0
+             && root.elements ]
+            bx : element root.elements[ 'exchange' ]
+            if [ bx && bx.bounds ] return bx.bounds
+        return root.bounds
+
     # the conversation on screen, else null
     func term_session [] -> ExchangeSession
         if [ !sessions || session_cur < 0
@@ -4027,11 +4037,28 @@ Display Window
                 hw : i32 [ tw / 2 ]
                 tt : i32 [ tb + th ]
                 rest : string 'l50%-{hw}px b{tt}px w{tw}px h{th}px'
+                # too narrow beside the avatar: the text across, down
+                # to the split; the avatar under it
+                xb : rect exch_bounds[]
+                ww : f32 [ (xb) ? xb.w : 0.0 ]
+                wh : f32 [ (xb) ? xb.h : 0.0 ]
+                exch_stacked = agent_view
+                    && ww - 524.0 * ux_scale < 560.0 * ux_scale
+                sy : i32 [ round[ wh * exch_split ] ]
+                sx : i32 [ round[ 64.0 * ux_scale ] ]
+                st : i32 [ round[ 24.0 * ux_scale ] ]
+                sb : i32 [ i32[ wh ] - sy + 6 ]
                 ta : Region [
-                    (agent_view)
+                    (exch_stacked)
+                    ? Region [ 'l{sx}px t15%+{st}px r{sx}px b{sb}px' ]
+                    : (agent_view)
                     ? ux_area[ 'l460px t15%+24px r64px b24px',
                                ux_scale ]
                     : Region [ rest ] ]
+                if [ exch_stacked ]
+                    e[ 'exch_split' ] = ExchSplit [ topmost: true,
+                        fading: swap_fade,
+                        area: Region [ 'l0 t{sy - 5}px r0 h10px' ] ]
                 e[ 'agent_term' ] = Console [ topmost: true,
                     fading: swap_fade, focusable: true, sessions: one,
                     session_id: 'agent', cwd: cs.term.cwd, area: ta ]
@@ -4074,6 +4101,17 @@ Display Window
         if [ av ]
             av.fading = swap_fade
             e[ 'agent_av' ] = av
+        # stacked, the avatar fills the part under the split
+        if [ !shot_ask || !agent_view ] exch_stacked = false
+        xr : rect exch_bounds[]
+        if [ av && exch_stacked && xr ]
+            sy : i32 [ round[ xr.h * exch_split ] ]
+            ab : Elements []
+            ab[ 'agent_av' ] = av
+            e.rm[ 'agent_av' ]
+            e[ 'agent_av_box' ] = element [ topmost: true,
+                area: Region [ 'l0 t{sy + 6}px r0 b16px' ],
+                elements: ab ]
         # a host put the exchange in a region: its elements (and the
         # avatar) go in one box there, laid out against the box
         # the box stays while closed too: the avatar keeps its place
@@ -4081,7 +4119,8 @@ Display Window
         if [ exchange_region && exchange_region.count > 0 ]
             inbox : vec string [] [ 'shot_bg', 'agent_term',
                 'shot_close', 'agent_pick', 'model_pick',
-                'shot_error', 'session_tabs', 'agent_av' ]
+                'shot_error', 'session_tabs', 'agent_av',
+                'exch_split', 'agent_av_box' ]
             bx : Elements []
             rest : Elements []
             for [ ve: element, vk: string ] in e
@@ -5457,6 +5496,10 @@ Display Window
     public  mirror_raw          : Texture
     public  mirror_blur         : ReduceBlur
     public  mirror_steps        : i32
+    # a narrow exchange: the text over a split the user drags (its
+    # share of the height), the avatar under it
+    public  exch_split          : f32 [ 0.62 ]
+    public  exch_stacked        : bool
 
     # the selected text, wrapped rows joined by a space
     public func note_selection [] -> string
@@ -8266,6 +8309,47 @@ element TButtons
         if [ hover_ix != was ]
             pristine = false
             if [ ux ] ux.restyle = true
+
+# the line between a narrow exchange's text and its avatar: dragged,
+# it moves (the share of the window's height, 0.3 to 0.85)
+element ExchSplit
+    intern dragging  : bool
+    intern cursor_on : bool
+    style : CSS {
+        layers.line:
+            fill_color: #ffffff14
+            radius: 2
+        :hovered
+            layers.line:
+                fill_color: #806bff80
+    }
+
+    func on_press [ ev: Event ]
+        dragging = true
+        ux.set_capture[ a ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    func on_move [ ev: Event ]
+        if [ !cursor_on ]
+            ux.seam_cursor[ 2 ]
+            cursor_on = true
+        xb : rect ux.exch_bounds[]
+        if [ !dragging || !xb ] return
+        f : f32 [ (ux.mouse.y - xb.y) / xb.h ]
+        ux.exch_split   = min[ max[ f, 0.3 ], 0.85 ]
+        ux.will_animate = true
+        pristine        = false
+        ev.no_default   = true
+
+    func on_release [ ev: Event ]
+        if [ dragging ] ux.release_capture[ a ]
+        dragging = false
+
+    func on_leave [ ev: Event ]
+        if [ !dragging && cursor_on ]
+            ux.seam_cursor[ 0 ]
+            cursor_on = false
 
 element Splitter
     public inner       : map element [ string ]

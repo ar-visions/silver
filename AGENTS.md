@@ -971,6 +971,48 @@ is `wizard`; it uses whatever supported card is in the machine.
    for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
    stick as PCs do. (7.x is in the kernel choices now: item 18.)
 
+## orbiter-os in a Windows partition — live list (Oct 23 2026)
+
+Kalen: an orbiter-os folder on the Windows (NTFS) partition holds
+everything; it boots from the firmware's boot list (Windows Boot
+Manager cannot start a non-Windows loader on UEFI). His picks: the
+system is one ext4 image (orbiter-os\root.img, as Wubi did), the
+kernel stays in the folder (orbiter-os\boot), the wizard writes it
+from Linux. In order:
+1. DONE EfiFs v1.13's ntfs_x64.efi (GPL-3.0, a separate EFI binary)
+   imported by os-bootstrap into share/silver-os-bootstrap/efifs;
+   THIRD_PARTY.md; sha256 equal to the release's.
+2. DONE efistub: no kernel beside it on the EFI partition, it loads
+   the NTFS driver, connects every disk, finds the volume holding
+   \orbiter-os\boot\vmlinuz.efi and starts the kernel from there
+   (initrd= on that volume).
+3. DONE init.c: orbiter.image=<path in the partition> with
+   orbiter.ntfs=<serial, as blkid prints it>: the NTFS partition by
+   its boot sector serial, ntfs3 (a module: the initramfs carries the
+   chosen kernel's lib/ntfs3.ko, boot_files) loaded, the image
+   loop-mounted (LOOP_CONFIGURE) as the root, the partition at /host.
+4. BUILT, dry run only: the folder-beside target on an NTFS
+   partition (wizard in_win, win_ser from lsblk): mount it ntfs3,
+   orbiter-os\root.img (the copy's size + 16 GB, fallocate, mkfs.ext4
+   with the plan's uuid), the image mounted and the system copied in
+   (settings, hostname, swap file inside it), kernel + initramfs to
+   orbiter-os\boot, the image unmounted; on the EFI partition
+   EFI\orbiter\orbiter.efi (the stub), ntfs_x64.efi, cmdline.txt
+   (boot_line: initrd=\orbiter-os\boot\initramfs orbiter.ntfs=
+   orbiter.image=/orbiter-os/root.img orbiter.root=/ and the words);
+   a firmware entry for orbiter.efi after the default (boot_second).
+   os-bootstrap write_boot builds the stub into the tree's
+   boot/orbiter.efi with boot/ntfs_x64.efi beside it. wizard
+   t_windows_plan passes. NOT run: a real install (root, pkexec),
+   the tree written again with these, the UI picking an NTFS row.
+5. PARTLY DONE booted in qemu (edk2 UEFI, NVMe, kernel 7.2.11): a
+   GPT disk, EFI partition with the stub as BOOTX64.EFI, driver,
+   cmdline.txt; NTFS partition with orbiter-os\boot and root.img (a
+   test init): the firmware ran the stub, the kernel and initrd came
+   from NTFS, init mounted the image and ran the test init, /host
+   held root.img. os-bootstrap tests: t_installer_image passes
+   (t_installer_image_arm fails as before). OPEN: europa itself.
+
 ## orbiter-os on phones (Oct 21 2026)
 
 DROPPED (Kalen, Oct 21): the Pixel line. Tensor Pixels use Samsung's
@@ -10532,6 +10574,330 @@ works.
    install/tmp read only; player bound plays a ~/Videos take with
    sound.
 
+## Projects, featured apps and game data — live list (Oct 23 2026)
+
+Kalen: a project is a silver module; a bare repo has no category,
+icon or launch, so it is never an app. The apps grid's index is the
+featured/ folder itself (each featured/<name>/<name>.ag) and silver's
+own modules: software.agi's list is no longer read, and names with no
+module (krita, obs ...) are gone, with the recommended row.
+1. REMOVED (Kalen, Oct 23: "do NOTHING steam related in silver.c")
+   silver's `import steam:<app id>` and its Steam library search are
+   gone from silver.c. Steam's folders are the steam module's alone.
+2. DONE quake2 (/src/quake2): export software ['games'];
+   `import steam:2320` copies baseq2 and ctf into its share
+   (install/share/ar-visions-quake2, cp -ru: 358 MB once); `game`
+   defaults to 'baseq2' (relative to the share; a full path still
+   works). Checked: quake2 bound in its view (no ~/.steam there) loads
+   base1 from its copy (3 archives, 3,588 files). Seen once: a first
+   load logs 'pak: 0 archives' and 'bsp: no palette' before the real
+   one; not chased (unknown whether it predates this). OPEN: an icon
+   (images/icon.png); quake2 lives outside featured/ so the grid does
+   not list it.
+3. DONE (Kalen: Steam as an app in orbiter, featured)
+   featured/steam/steam.ag: Valve's steam-launcher 1.0.0.87 (sha256
+   from Valve's package list), unpacked into install/lib/steam/<ver>,
+   bin_steam.sh linked as install/bin/steam; games section; icon from
+   the package. Shown in the grid. NOT run (it opens a login window).
+   Found (Kalen: Steam says the 32-bit libraries are missing): the
+   view's seccomp filter killed every 32-bit process (it allowed the
+   x86-64 arch alone), so Steam's 32-bit client and ldd of a 32-bit
+   library died. view_filter now has a section per arch (view_rules):
+   i386 gets the same refusals by its own numbers (unistd_32.h).
+   Checked in a view: ldd of 32-bit libGL resolves; raw int 0x80
+   calls: getpid works, ptrace and TIOCSTI refused. The console's host rebuilt; other apps take it at
+   their next build.
+   Steam's log then stops at "Steam now requires user namespaces"
+   (bwrap): the filter refused them. Then (Kalen: adding a namespace
+   is no less secure, as it cannot redirect other apps) every bound
+   app may make namespaces and mounts of its own: unshare, setns,
+   clone's namespace flags, clone3, mount and the new mount calls are
+   no longer in the filter (a nested namespace only narrows: the
+   mounts it inherits are locked, other apps have their own). A
+   console-only permission (host bit 17) was built first and removed.
+   Checked in a view: bwrap runs, inside it no ~/.ssh and the
+   install/tmp cover cannot be unmounted ("must be superuser"); ptrace
+   and TIOCSTI still refused, 32-bit too. Steam itself not run by me.
+   Then (Kalen: Steam opened outside orbiter, on the desktop) Steam's
+   client speaks X11 only: it took the desktop's DISPLAY. orbiter's
+   compositor (wayland.c) now runs Xwayland (wlr_xwayland, lazy: it
+   starts with its first client): an X11 window is a toplevel like an
+   xdg one (its own output at id x SPAN, configured there, the pane's
+   size; a dialog (parent or modal) keeps its own; menus and tooltips
+   (override redirect) placed where they put themselves); title,
+   class, pid, close, focus for both kinds. wlc_x11_display (:N);
+   open_program passes --x11 :N, console sets DISPLAY to it.
+   Checked hidden: xclock from the bound console mapped as an X11
+   window in orbiter, drawn in the pane at its size, its task button
+   in the bar. Steam not run by me.
+   Fixed (Kalen: the mouse shows but does not click): X11 windows
+   were configured at their place in orbiter's layout (x 16384), off
+   the X screen (1528 x 823), so X dropped the clicks. They sit at
+   0, 0 of the X screen now (Xwayland gives input to the surface the
+   pointer is on); a menu or tooltip goes at its owner window's place
+   plus its own (xpop_base: its parent, else the focused X11 window).
+   Checked hidden: xcalc via `app run` (new orbiter socket command:
+   runs a program as its search row does), two clicks on 7 show 77,
+   the 8 key 778.
+   Then (Kalen: Steam shows its friends list, no way to its other
+   windows; its menu opened was the main window's):
+   - X's stacking follows ours: every X11 window sits at 0, 0, so X
+     sent clicks to its own top one. x_raise restacks the window
+     under our pointer or focus to X's top (wlr_xwayland_surface_
+     restack); menus belong to it (g_xtop).
+   - a window asking to come forward (X11 request_activate, or shown
+     again after hiding: Steam's tray Library / Store) is shown in
+     its pane: wlc_window_asked, orbiter wl_tick -> place_window.
+   - the tray held the watcher on the desktop's session bus (GNOME
+     has it there, so ours stood aside); it holds it on the bus
+     orbiter gives its programs (the portal's) now, so their icons
+     reach the system menu's tiles. A tile's right click opens its
+     menu (left: the app's action).
+   - an item's properties are read after its register call is
+     answered (an app waiting on that reply could not answer).
+   - tray readers check each value's type (a malformed menu crashed
+     orbiter: SIGSEGV in tray_text).
+   Checked hidden: xcalc then xeyes; xcalc asking forward came back
+   in the pane, a click on 7 reached it; a stand-in tray app (dbus-
+   python) on the program bus: its tile named, left click Activate,
+   right click its menu, Library chosen reached it; a malformed one
+   did not crash orbiter. NOT run: Steam. OPEN: an X11 window's pid
+   is the one inside its sandbox (_NET_WM_PID), so orbiter cannot
+   find its pane by pid (it takes the active pane); one task button
+   per program, not per window.
+   Then (Kalen: Steam's install dialog offered /tmp): Steam names a
+   library's drive by the first mount of its disk, and /tmp was
+   mounted before the home (both on the same ext4). view_build
+   mounts the home first now; checked: mountinfo's first ext4 entry
+   is /home/kalen, /tmp and home still work. Not seen in Steam.
+   Then (Kalen: windows spawn when it switches to the friends list) a
+   new window of the process a pane already shows (same pid as that
+   pane's window) opens as its own floating pane (window_pane: the
+   middle of the area, 42% x 62%, each later one 36 px down and
+   right; at most 4 panes); pane_spawn remembers the window a pane
+   was opened for, and the pane closes with it. A window asking to
+   come forward that already has a pane brings that pane up.
+   Checked hidden: one X11 process (python Xlib) mapping Main then
+   Friends: Friends floated over Main with its own strip; closed,
+   its pane went. OPEN: pane_add saves the session, so a floating
+   window open at a quit comes back as an empty docked pane.
+   OPEN, expected to bite: Steam's game runtime (pressure-vessel) and
+   its web helper make namespaces of their own, which a bound app's
+   seccomp filter refuses; its udev rules (controllers) need root.
+3b. DONE (Kalen, Oct 23) stores: an app that sells software writes a
+   module per finished app into its own namespace, install/stores/
+   <store>/<name>/<name>.ag, never elsewhere (no collisions). steam's
+   export steam_store reads each Steam's libraryfolders.vdf (the
+   user's, and each one run in orbiter: install/home/<app>, its view's
+   home path mapped back) and every appmanifest with StateFlags 4,
+   Steam's tools skipped; writes `export steam ['<id>']`, build none;
+   removes a folder whose game is gone. Runs at steam's build only.
+   Checked: 12 games (Hot Lava from orbiter's Steam), hot_lava builds.
+   Each also gets `export launch ['steam -applaunch <id>']` and its
+   cover (Steam's library_600x900.jpg) as images/icon.jpg (AppIcon
+   reads icon.jpg when there is no icon.png).
+   Then (Kalen: the home screen expands store apps like folders) a
+   store's card (orbiter AppEntry.apps, from install/stores/<name>)
+   opens in place: itself first (it still runs), then its apps by
+   name; pressed again it shuts. A store app's press runs its launch
+   line in a console (run_line), where its store runs. Every 10 s
+   orbiter re-reads a store folder whose time moved, and while the
+   store's program runs it reruns `silver --export --build` on the
+   store's module (0.06 s cached), which writes what finished.
+   Seen hidden: the folder with covers, a module added while running
+   showed within 10 s, the folder shut. NOT driven: a game's press
+   (it would start the real Steam in orbiter's Steam home), the
+   rerun while Steam runs. quake2's `import steam:2320` no longer
+   parses (left, Kalen).
+3c. DONE (Kalen, Oct 23: Hot Lava runs on our own Wine) featured/wine:
+   Valve's Wine at 6d211aab (Proton Experimental 11.0-20261001's
+   submodule), fetched by git at the commit, autoreconf, configured
+   x86_64 only with --enable-win64 (as Proton), --without-x,
+   --with-wayland; PE side by our clang (-target x86_64-windows).
+   libxkbcommon 1.6.0 imported for xkbregistry's headers; FreeType
+   the system's (FREETYPE_CFLAGS/LIBS: install has only a .a).
+   Valve's loader runs 64-bit programs by lib/wine/i386-unix/wine64
+   (+ -preloader); the module copies them there as Proton's package
+   does (without: wineboot never starts, kernel32 not found).
+   Checked: `wine cmd /c echo` in a fresh prefix (563 MB); notepad on
+   orbiter's Wayland mapped in pane 0, drawn. No GnuTLS (bcrypt: no
+   encryption). The compositor lacks pointer constraints and relative
+   motion (mouse look), text input, data control, toplevel icons.
+   OPEN: those protocols; DXVK; Steam's bridge (lsteamclient); the
+   steam store's launch line as `wine <exe>`.
+   Then (Kalen: stay on Valve's tree; every fix goes out as a PR):
+   media: NASM 2.16.03, FFmpeg 4.4.5 (the 4.x API Valve's winedmo is
+   written for; Proton pins 4.3.3), GStreamer 1.24.12 with base (gl on
+   EGL: Valve's winegstreamer wants gstreamer-gl), good (isomp4), bad
+   (videoparsers), gst-libav; DXVK 3.1.1's release DLLs in
+   install/lib/wine/dxvk. Fixed in Valve's Wine, kept as
+   featured/wine/wine.diff (the PR to ValveSoftware/wine): Valve's
+   win32u gives a window no window surface when its client surface
+   clips it (window_clip_client_surfaces, not upstream); winewayland
+   then destroyed its wl_surface, the Vulkan subsurface had no parent,
+   the first vkQueuePresentKHR waited for a frame callback forever and
+   Unity's main thread with it (seen as the intro stalling at two
+   frames). Now such a visible toplevel keeps its xdg toplevel.
+   Seen hidden: Hot Lava mapped in pane 0, the Klei intro played (two
+   shots 2.5 s apart), Display Splash Complete, then it quits at
+   SteamAPI_Init() failed (no bridge). The test prefix is set up by
+   hand (DXVK DLLs copied, mscoree/mshtml off, d3d*/dxgi n,b).
+   Then (Kalen: still black, sound only) his card ran `steam
+   -applaunch`: Steam's Proton on X11, not our Wine. The steam store
+   now reads each game's program from appinfo.vdf (binary v29) and,
+   for a 64-bit .exe in a Steam run in orbiter, writes `env -C <its
+   folder> WINEPREFIX=$HOME/.../compatdata/<id>/wine WINEDLLOVERRIDES
+   =... wine <exe>`, DXVK copied into that prefix's system32 first
+   (Wine's first boot keeps it). Others keep steam -applaunch.
+   orbiter runs a store line as `env PATH=<install/bin>:$PATH <line>`.
+   Seen hidden through that line: prefix made, window in pane 0,
+   splash done, then SteamAPI_Init failed. NEXT: lsteamclient.
+   Found: a HOME under /tmp is covered by the view's own /tmp.
+   Then (Kalen: build the lsteamclient bridge; one view per app)
+   featured/wine imports Proton 70b7e109 (archive) and builds its
+   lsteamclient and steam.exe out of Wine's tree by Wine's makedep
+   (as Proton's rules-makedep); Valve's ntdll hands a game's
+   steamclient64.dll to lsteamclient. The store line runs `wine steam
+   <exe>` with SteamGameId/SteamAppId/STEAM_COMPAT_CLIENT_INSTALL_PATH;
+   steam_into copies Steam's legacycompat client files into the
+   prefix's Program Files (x86)/Steam and steam.exe + lsteamclient.dll
+   into system32 (Wine finds no builtin without a file there).
+   silver-host: every instance of one app shares one view (the first's
+   user, mount and pid space, found by <rt>/silver-view/<app>.view):
+   Steam's client meets the running Steam by /dev/shm and its pid.
+   view_join enters it; pid 1 outlives the first app while others
+   run; /tmp is install/tmp/view/<app>-<holder pid>, kept while its
+   .lock is held; the runtime folder <rt>/silver-view/<app>; every
+   slot's log bound in. Checked hidden: 2nd instance sees the 1st's
+   shm and processes, survives its quit, a 3rd joins after.
+   Seen hidden: Steam in one console, the store line in another:
+   "Logged into Steam", auth ticket, Hot Lava's title screen in pane 0
+   (it offers GO OFFLINE: no GnuTLS, bcrypt has no encryption).
+   Fixed on the way: store_poll freed app_list mid-loop (orbiter
+   SIGSEGV at 11:29); the traced mfreadwrite/winedmo rebuilt (and
+   their copies in the prefix).
+   Mine, undone: a test Steam under a scratch HOME rewrote ~/.steam
+   links and libraryfolders.vdf; put back to /home/kalen.
+   Then (Kalen: Steam's window cannot be hidden; mouse look barely
+   moves, lock until Esc):
+   - hide: wayland.c takes X11 and xdg minimize requests (Steam's
+     Hide, a minimize button): wlc_window_hide_asked; orbiter
+     hide_window minimizes a free pane, takes a docked window off its
+     pane. The taskbar button hides the instance's window from any
+     pane. A closed first window (Steam's sign-in) handed the instance
+     no window; window_left finds another open one of its program.
+     Seen hidden with Xlib test windows: minimize, taskbar toggle
+     docked and floating.
+   - mouse look BUILT, NOT RUN (a hidden lock warps Kalen's pointer):
+     pointer constraints and relative pointer in wayland.c
+     (wlc_pointer_held, wlc_pointer_relative; a held surface gets no
+     absolute motion); WaylandView.hold_mouse locks the mouse
+     (ux.mouse_lock) while the focused window holds its pointer, moves
+     go as raw motion, Esc lets go until the next press in the pane.
+     Takes the compositor (orbiter's start) and orbiter's build.
+   - Steam crashed at start now and then (SIGSEGV after "Desktop state
+     changed", BadRROutput RRGetOutputInfo; 11:14, 12:00, 12:35 x2):
+     every window's headless output was a wl_output, so X's screens
+     came and went with windows. wayland.c global_seen: Xwayland sees
+     only the base output's wl_output (Wayland clients see all).
+     Checked hidden: two X11 windows open, xrandr lists one output
+     (1280x800), windows draw at the pane's size. Steam's own starts
+     not repeated (it is Kalen's signed-in account).
+   - (Kalen: Steam a console pane plus a window that cannot be
+     hidden; to its tray, a startup app) a module's `export startup
+     ['steam -silent']` runs at orbiter's start (run_startup), in no
+     pane (run_background: AppView.background, console with
+     program_args, shared with Editor.open_program). Its windows open
+     in a floating pane of their own (background_of, place_window);
+     its taskbar button shows only while a window is up or minimized.
+     A startup app's card runs it the same way (run again, it shows
+     its window). Seen on Kalen's orbiter (12:44): started in the
+     background, tray: registered .../NotificationItem/steam.
+   - (Kalen: games do not go fullscreen; straight to the real screen
+     even with orbiter in a window; his pick: a window of its own)
+     the base output (X's screen, a program's primary display) takes
+     the real monitor's size (devices platform_screen_rect: the crtc
+     under the app's window; trinity screen_rect; wlc_screen at the
+     compositor's start). A window asking fullscreen (xdg
+     request_fullscreen, X11 _NET_WM_STATE) gets it (wlc_window_full);
+     WaylandView then opens trinity's ScreenOut: a fullscreen platform
+     window on that monitor with its own swapchain (trinity.c
+     screen_out_*, screen.h: acquire without waiting, blit fitted,
+     FIFO, under vk.qlock), sizes the window to the monitor, and sends
+     that window's keys, buttons, moves and wheel to it (a held pointer
+     locks the mouse there, raw motion); the pane keeps a fitted
+     picture. Leaving fullscreen closes it; closed by hand, it stays
+     off until the window asks again. A hidden app keeps it unmapped
+     and never takes the mouse. Seen hidden (an Xlib window): X screen
+     2560x1440, "screen: 2560x1440 at 0, 0", the window configured
+     2560x1440, first picture shown, back to 1528x823 on leaving. NOT
+     seen on a screen, NOT driven: its input, Hot Lava asking
+     fullscreen. Takes orbiter's next start (compositor and trinity).
+4. DONE, tree written Oct 23 04:41 (Kalen: add the 32-bit libs)
+   os-bootstrap add_steam: install/bin/steam and install/lib/steam
+   (20 MB), /lib/ld-linux.so.2, and what Valve's steam-libs-i386 /
+   -amd64 leave to the system, both arches with their ldd closure
+   (libc, libcrypt, libgcc_s, libstdc++, libGL, libGLX, libEGL,
+   libgbm, libX11, libxcb, libxcb-dri3, libXinerama, libudev,
+   libgpg-error, libdbus-1), libnss3 (64), and NVIDIA's 32-bit half
+   (GLX, EGL, glcore, tls, glsi, glvkspirv, gpucomp, eglcore): about
+   215 MB more. Every drive tree is x86 (Kalen: no ARM or FEX for
+   Steam). No 32-bit Mesa (AMD / Intel). Tree: 71,159 entries,
+   5.23 GB. Checked: the tree's 32-bit loader resolves libGLX_nvidia's
+   whole closure inside the tree. The 32-bit libraries sit twice
+   (usr/lib/i386-linux-gnu 224 MB, lib/i386-linux-gnu 181 MB: ldd
+   names /lib, and the tree's /lib is a folder, as for 64-bit). Not
+   booted. On Ubuntu, Steam in orbiter uses the system's own i386
+   libraries (the view shows /usr and /lib).
+
+## The exchange, narrow — live list (Oct 23 2026)
+
+1. DONE (Kalen: the agent's text must not be squeezed to show the
+   avatar) when the exchange (its box, or the window) is narrower than
+   the avatar's column plus 560 px of text (ux units), the text runs
+   across the whole width down to a split, and the avatar fills the
+   box under it (exch_stacked). The split (trinity ExchSplit) is
+   dragged: Window.exch_split, its share of the exchange's height,
+   0.3 to 0.85 (0.62 at first); the seam cursor over it. orbiter's
+   AgentAvatar has `stacked` and a :stacked area (all of its box).
+   Window gained exch_split and exch_stacked (last members): every
+   trinity app builds before it runs again. Checked hidden: 900 px
+   wide stacked, a drag of the split down grew the text and shrank
+   the avatar; 1700 px wide unchanged (side by side); trinity tests
+   exit 0. NOT kept: the split's place across restarts.
+
+## Style inheritance — live list (Oct 23 2026)
+
+Kalen: a subclass's style is its base's with its own lines in place,
+compiled together once as it is read: one set of declarations, never
+more applied in layers; the order of Type:State blocks is kept.
+1. DONE silver: a member whose initializer is a { } block for a type
+   made from text (CSS) keeps that text as its declared default on its
+   descriptor (keyword_default, Au_t.dflt; def_prop_default is now
+   also emitted where class members register). The defaults no longer
+   go through aether.prop_defaults (removed): that map matched members
+   by name, so every member named `style` shared one default (the
+   one-token Launch defaults had the same flaw).
+2. DONE trinity Style: css_flat walks the class chain base first
+   (class_css: each class's own `style` default), merges each text
+   into a tree of lines (css_tree; a heading keyed whole, a
+   declaration by its name): the same key takes the subclass's line
+   in its place, a new one goes after (css_merge); the instance's own
+   CSS is last, so an app built before this keeps its own lines.
+   integrate_instance feeds the flat text to the reader as before.
+   trinity t_style_flat (FlatBase, FlatSub) passes; trinity tests exit
+   0; features 262/263 (t_codegen_resource as before).
+3. DONE the 30 subclasses that restyle a styled base now get what
+   they left out. Seen hidden (orbiter hosting player, against a shot
+   from before): identical but for DragField's numbers, 12 px right
+   (LaunchField now took ArgsField's face offset 10, size 18):
+   LaunchField's style states label_size 17, label_offset 0 0; then
+   identical but the pid. Reduced: TasksBar to its spacing alone;
+   WifiSecret to WizSecret's form (its face clear in every state:
+   merged, TextInput's :focused / :has_value would have shown the
+   password's text under the dots). NOT seen: menu drawers, the
+   system menu (RoundTab), HomeState, the Wi-Fi panel, ShotPrompt.
+
 ## Text fields on trinity's editable layer — live list (Oct 23 2026)
 
 Kalen: the aura URL in the system bar took no arrow keys; every
@@ -10609,3 +10975,109 @@ was disabled. Not chased; the state is `:chosen`.
    OPEN: before install a .blend opens as hex (no prompt to
    install); the module's name in the registry is silver-blender
    (module_of_export finds no root folder for featured modules).
+13. DONE (Kalen, Oct 23) an app's Console entry starts a new console
+   instance in a new pane, in the app's folder (orb.console: a pane
+   added, console_pane its index); the app keeps its window. At four
+   panes it falls back to the app's pane. Seen hidden: two picks
+   from aura gave slot 2 and slot 3 in panes of their own.
+
+## clint, the IRC client (Oct 23 2026)
+
+1. BUILT, seen hidden (Kalen: an irc client app, named clint)
+   clint/clint.ag, `silver clint`; flags --server (irc.efnet.org),
+   --port (6697), --secure (TLS, true), --nick (else $USER),
+   --channels '#a,#b'. mbedtls over a non-blocking socket, read
+   each frame. Left: the conversations (server, channels, people;
+   unread counts, yellow when your nick was said); middle: topic,
+   the log (time, nick in its own colour, wrapped, wheel goes
+   back), the field (Enter says it); right: the channel's people.
+   Commands: /join /part /msg /query /me /nick /topic /close /quit
+   /raw /connect host [port [plain]]. PING answered, a taken nick
+   gets _, CTCP VERSION answered.
+   Checked hidden against a local stand-in server (plain): join,
+   topic, names, a long line wrapped, an action, a join, a line
+   said and answered, /msg opening a conversation. NOT run against
+   a real network or over TLS. No icon yet; no logs kept to disk.
+2. DONE (Kalen: "doesnt do anything there") three causes:
+   - mbedtls_net_connect blocked the main thread (EFnet's first
+     address is IPv6 and never answered: SYN-SENT for minutes), so
+     no frame drew. The connection is now steps each frame
+     (IrcLink.open / step: IPv4, non-blocking connect, poll, then
+     the TLS handshake a step at a time; 15 s and 20 s limits).
+   - clint linked its own static mbedtls while trinity's tls
+     library has one too: the x509 code came from clint's copy and
+     the key parsing from tls's, whose PSA was never started, so
+     every root failed (-0x3B00). clint takes mbedtls from tls now.
+   - EFnet's servers use self-signed certificates (openssl: verify
+     error 18). Kalen: the user typed the host, so its certificate
+     is the one they trust: no check (VERIFY_NONE), no pinning, no
+     roots loaded.
+   - (Kalen: "TLS refused by irc.efnet.org -15104") irc.efnet.org
+     is ten servers by DNS; 188.240.145.90 has a 6144-bit RSA key,
+     past the 4096 bits our mbedtls (tls's build) takes: -15104 is
+     -0x3B00, invalid public key; 195.159.90.90 does not answer on
+     6697. open[] keeps every IPv4 address and fail[] goes on to the
+     next one ("<why>: trying another of its servers"). Reproduced
+     on 188.240.145.90 alone; irc.efnet.org joined #linux after.
+     OPEN: tls's mbedtls could take keys up to 8192 bits.
+   - (Kalen: efnet.deic.eu ended at "Found your hostname", then
+     "The server closed the connection") that server drops IPv4
+     clients before its welcome, with no ERROR line; openssl -4
+     sees the same (over IPv6 it waits on). A connection closed
+     before 001 (IrcLink.welcomed) goes on to the host's next
+     server. Checked: irc.efnet.org joined, MOTD shown.
+   - (Kalen: still no connection) checked every irc.efnet.org
+     server with openssl: over TLS on 6697 only 4 of 10 ever say
+     welcome (swepipe, colosolutions, deft, Prison.NET; swepipe's
+     key is too big for us); the rest hang after "Found your
+     hostname" or time out. A server with no welcome 30 s after
+     the connection (IrcLink.waited) now goes to the next. Three
+     hidden runs in a row joined #linux.
+3. BUILT, seen hidden (Kalen: selection as in the code editor;
+   the list on the right) the log selects: press and drag (across
+   lines, by character), double-click a word, shift+click extends;
+   drawn as the editor's (#425 fill, soft #ede3 glow, rounded 4).
+   ctrl/cmd + c with nothing selected in the field copies it; a
+   selection over several lines puts <nick> before each whole
+   line. After a release the field has the keys again.
+   Conversations at the right edge, people left of them, the log
+   and field on the left. NOT driven: ctrl+c (the hidden run
+   shares the desktop's clipboard). Limit: columns count bytes in
+   a monospace font, so a line with UTF-8 selects a little off.
+4. BUILT, seen hidden (Kalen: no padding, no rounding, edge to
+   edge, near 1 px borders, the toolbars' near glow; a user split)
+   the selection and the list's rows are square, the row's whole
+   height, a 1 px #fff1 border the pointer's near light brings up
+   (the task chips' style: inset #c890ff04, near_style 2 3
+   #c890ffaa). The window is a Splitter (near_seam): ChatPane
+   (topic, log, field; flex), the people (220 px), the
+   conversations (200 px); each seam drags. clint.part[ name ]
+   finds the chat pane's mounted parts. Seen: the first seam
+   dragged 680 -> 560 px, the log rewrapped, the borders lit
+   near the pointer.
+5. BUILT, seen hidden (Kalen: one list; the server's heading
+   groups its channels and each one's people) the right pane is
+   one list (BufferList; UserList gone): the server as the
+   heading, its channels and talks a step in, each channel's
+   people under it (IrcBuffer.folded hides them), counts at the
+   right (unread, else people). A press shows a conversation; on
+   the shown channel it folds or opens its people; on a person
+   it opens a talk (clint.talk_to). The wheel scrolls it. The
+   split is the chat and this list (240 px). Seen: fold, unfold,
+   alice pressed opened 'alice' under the server.
+6. DONE (Kalen) the field the same way: ClintInput's style is
+   edge to edge, square, clear, #fff1 1 px, near-lit, no green
+   when focused. Seen hidden.
+7. BUILT, not seen (Kalen: the server heading took no click once
+   another conversation was chosen) orbiter's: Editor.on_press
+   gave the top rows of a pane to the source's pinned header band
+   (pinned_rows, two rows here, 44 px) even while the running app
+   was shown over it, so a press there jumped in the hidden source
+   and never reached the app (clint's log: his presses on the
+   heading arrived only below 44 px). The band is skipped while
+   the app's live frame shows (the draw's own test). Every hosted
+   app's top rows were affected.
+   The socket is read each frame (will_animate while connected).
+   Checked hidden on irc.efnet.org:6697: joined #linux, its topic
+   and 76 people listed. Nicks over 9 letters are
+   cut by EfNet (clintprobe7 -> clintprob).

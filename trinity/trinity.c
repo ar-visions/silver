@@ -1,6 +1,7 @@
 #include "video.h"
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 void h264_sps(StdVideoH264SequenceParameterSet* sps, StdVideoH264SequenceParameterSetVui* vui,
               int coded_w, int coded_h, int width, int height, int fps,
@@ -2254,4 +2255,188 @@ void yuv444_rgba(const uint8_t* yp, const uint8_t* up, const uint8_t* vp, int w,
         dst[i * 4 + 2] = clamp8((l + bu * u + 32768) >> 16);
         dst[i * 4 + 3] = 255;
     }
+}
+
+// ---- a picture on a window of its own (screen.h) ------------------------
+
+#include "screen.h"
+
+#define SCREEN_MAX 8
+
+struct screen_out {
+    VkPhysicalDevice pd;
+    VkDevice         dev;
+    uint32_t         family;
+    VkSurfaceKHR     surf;
+    VkSwapchainKHR   swap;
+    VkFormat         format;
+    int              w, h;
+    uint32_t         count, index;
+    VkImage          images[SCREEN_MAX];
+    // signalled by the acquire; one per image, signalled by the blit
+    VkSemaphore      acquired;
+    VkSemaphore      done[SCREEN_MAX];
+    VkCommandPool    pool;
+    VkCommandBuffer  cmd;
+    VkFence          fence;
+    int              in_flight;
+};
+
+static void screen_swap_make(screen_out* s) {
+    VkSurfaceCapabilitiesKHR caps;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(s->pd, s->surf, &caps);
+    if (caps.currentExtent.width != 0xFFFFFFFFu) {
+        s->w = (int)caps.currentExtent.width;
+        s->h = (int)caps.currentExtent.height;
+    }
+    uint32_t nf = 0;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(s->pd, s->surf, &nf, NULL);
+    VkSurfaceFormatKHR fmts[64];
+    if (nf > 64) nf = 64;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(s->pd, s->surf, &nf, fmts);
+    s->format = nf ? fmts[0].format : VK_FORMAT_B8G8R8A8_UNORM;
+    VkColorSpaceKHR cs = nf ? fmts[0].colorSpace : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+    // the frame's bytes go through unchanged: an unorm format, as the
+    // game wrote them
+    for (uint32_t i = 0; i < nf; i++)
+        if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM) { s->format = fmts[i].format; cs = fmts[i].colorSpace; }
+    uint32_t want = caps.minImageCount + 1;
+    if (caps.maxImageCount && want > caps.maxImageCount) want = caps.maxImageCount;
+    if (want > SCREEN_MAX) want = SCREEN_MAX;
+    VkSwapchainKHR old = s->swap;
+    VkSwapchainCreateInfoKHR ci = {
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .surface = s->surf, .minImageCount = want,
+        .imageFormat = s->format, .imageColorSpace = cs,
+        .imageExtent = { (uint32_t)s->w, (uint32_t)s->h },
+        .imageArrayLayers = 1,
+        .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform = caps.currentTransform,
+        .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        .clipped = VK_TRUE, .oldSwapchain = old };
+    s->swap = VK_NULL_HANDLE;
+    if (vkCreateSwapchainKHR(s->dev, &ci, NULL, &s->swap) != VK_SUCCESS) s->swap = VK_NULL_HANDLE;
+    if (old) vkDestroySwapchainKHR(s->dev, old, NULL);
+    s->count = 0;
+    if (!s->swap) return;
+    vkGetSwapchainImagesKHR(s->dev, s->swap, &s->count, NULL);
+    if (s->count > SCREEN_MAX) s->count = SCREEN_MAX;
+    vkGetSwapchainImagesKHR(s->dev, s->swap, &s->count, s->images);
+}
+
+screen_out* screen_out_new(VkPhysicalDevice pd, VkDevice dev, uint32_t family,
+                           VkSurfaceKHR surf, int width, int height) {
+    VkBool32 ok = VK_FALSE;
+    vkGetPhysicalDeviceSurfaceSupportKHR(pd, family, surf, &ok);
+    if (!ok) return NULL;
+    screen_out* s = calloc(1, sizeof *s);
+    s->pd = pd; s->dev = dev; s->family = family; s->surf = surf;
+    s->w = width; s->h = height;
+    VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    vkCreateSemaphore(dev, &si, NULL, &s->acquired);
+    for (int i = 0; i < SCREEN_MAX; i++) vkCreateSemaphore(dev, &si, NULL, &s->done[i]);
+    VkCommandPoolCreateInfo pi = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = family };
+    vkCreateCommandPool(dev, &pi, NULL, &s->pool);
+    VkCommandBufferAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = s->pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
+    vkAllocateCommandBuffers(dev, &ai, &s->cmd);
+    VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    vkCreateFence(dev, &fi, NULL, &s->fence);
+    screen_swap_make(s);
+    if (!s->swap) { screen_out_free(s); return NULL; }
+    return s;
+}
+
+static void screen_wait(screen_out* s) {
+    if (!s->in_flight) return;
+    vkWaitForFences(s->dev, 1, &s->fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(s->dev, 1, &s->fence);
+    s->in_flight = 0;
+}
+
+static void screen_barrier(VkCommandBuffer c, VkImage im, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier b = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        .oldLayout = from, .newLayout = to,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = im, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    vkCmdPipelineBarrier(c, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        0, 0, NULL, 0, NULL, 1, &b);
+}
+
+int screen_out_frame(screen_out* s, VkImage src, VkImageLayout layout, int src_w, int src_h) {
+    if (!s || !s->swap || !src || src_w <= 0 || src_h <= 0) return 0;
+    screen_wait(s);
+    // never block the shell's frame: no image free, no new picture
+    VkResult r = vkAcquireNextImageKHR(s->dev, s->swap, 0, s->acquired, VK_NULL_HANDLE, &s->index);
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) return 0;
+    VkImage dst = s->images[s->index];
+    VkCommandBuffer c = s->cmd;
+    vkResetCommandBuffer(c, 0);
+    VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+    vkBeginCommandBuffer(c, &bi);
+    screen_barrier(c, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    if (layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        screen_barrier(c, src, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkClearColorValue black = { .float32 = { 0, 0, 0, 1 } };
+    VkImageSubresourceRange all = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+    // the picture fills the screen one way, bars the other
+    double k = fmin((double)s->w / src_w, (double)s->h / src_h);
+    int dw = (int)lround(src_w * k), dh = (int)lround(src_h * k);
+    int dx = (s->w - dw) / 2, dy = (s->h - dh) / 2;
+    if (dw != s->w || dh != s->h)
+        vkCmdClearColorImage(c, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
+    VkImageBlit blit = {
+        .srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .srcOffsets = { { 0, 0, 0 }, { src_w, src_h, 1 } },
+        .dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .dstOffsets = { { dx, dy, 0 }, { dx + dw, dy + dh, 1 } } };
+    vkCmdBlitImage(c, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+        (dw == src_w && dh == src_h) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR);
+    if (layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        screen_barrier(c, src, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, layout);
+    screen_barrier(c, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkEndCommandBuffer(c);
+    return 1;
+}
+
+int screen_out_submit(screen_out* s, VkQueue queue) {
+    VkPipelineStageFlags stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &s->acquired, .pWaitDstStageMask = &stage,
+        .commandBufferCount = 1, .pCommandBuffers = &s->cmd,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = &s->done[s->index] };
+    if (vkQueueSubmit(queue, 1, &si, s->fence) != VK_SUCCESS) return 0;
+    s->in_flight = 1;
+    VkPresentInfoKHR pr = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &s->done[s->index],
+        .swapchainCount = 1, .pSwapchains = &s->swap, .pImageIndices = &s->index };
+    VkResult r = vkQueuePresentKHR(queue, &pr);
+    return (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) ? 1 : 0;
+}
+
+void screen_out_resize(screen_out* s, int width, int height) {
+    if (!s) return;
+    screen_wait(s);
+    vkDeviceWaitIdle(s->dev);
+    s->w = width; s->h = height;
+    screen_swap_make(s);
+}
+
+void screen_out_free(screen_out* s) {
+    if (!s) return;
+    screen_wait(s);
+    vkDeviceWaitIdle(s->dev);
+    if (s->swap) vkDestroySwapchainKHR(s->dev, s->swap, NULL);
+    vkDestroySemaphore(s->dev, s->acquired, NULL);
+    for (int i = 0; i < SCREEN_MAX; i++) vkDestroySemaphore(s->dev, s->done[i], NULL);
+    vkDestroyCommandPool(s->dev, s->pool, NULL);
+    vkDestroyFence(s->dev, s->fence, NULL);
+    free(s);
 }

@@ -50,6 +50,12 @@ import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
     -Dshared-llvm=enabled
     -Dvideo-codecs=
 
+# EfiFs's UEFI NTFS driver: our boot program reads the kernel from an
+# orbiter-os folder on a Windows partition through it
+import https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi
+    > mkdir -p {install}/share/silver-os-bootstrap/efifs
+    > cp {import_file} {install}/share/silver-os-bootstrap/efifs/ntfs_x64.efi
+
 import vec
 import img
 import trinity
@@ -2311,6 +2317,7 @@ element Bootstrap
         add_file[ '{install}/lib/libvulkan.so.1' ]
         add_deps[ '{install}/lib/libvulkan.so.1' ]
         add_nvidia[]
+        add_steam[]
         add_tools[]
         add_shell[]
         # programs run in the console module, hosted at run time
@@ -2384,6 +2391,37 @@ element Bootstrap
         for [ l: string ] in libs
             add_file[ '{lib}/{l}' ]
             add_deps[ '{lib}/{l}' ]
+
+    # Steam: its launcher, and what its own runtime leaves to the
+    # system (Valve's steam-libs-i386 and -amd64), 32-bit and 64
+    func add_steam []
+        add_file[ '{install}/bin/steam' ]
+        add_file[ '{install}/lib/steam' ]
+        l32 : '/usr/lib/i386-linux-gnu'
+        l64 : '/usr/lib/x86_64-linux-gnu'
+        add_file[ '/lib/ld-linux.so.2' ]
+        base : vec string [] [ 'libc.so.6', 'libcrypt.so.1',
+            'libgcc_s.so.1', 'libstdc++.so.6', 'libGL.so.1', 'libGLX.so.0',
+            'libEGL.so.1', 'libgbm.so.1', 'libX11.so.6', 'libxcb.so.1',
+            'libxcb-dri3.so.0', 'libXinerama.so.1', 'libudev.so.1',
+            'libgpg-error.so.0', 'libdbus-1.so.3' ]
+        for [ l: string ] in base
+            for [ d: string ] in vec string [] [ l32, l64 ]
+                add_file[ '{d}/{l}' ]
+                add_deps[ '{d}/{l}' ]
+        add_file[ '{l64}/libnss3.so' ]
+        add_deps[ '{l64}/libnss3.so' ]
+        # the gpu's own 32-bit half
+        v : nvidias[][ 0 ]
+        nv : vec string [] [ 'libGLX_nvidia.so.0', 'libEGL_nvidia.so.0',
+            'libGLdispatch.so.0', 'libnvidia-glcore.so.{v}',
+            'libnvidia-tls.so.{v}', 'libnvidia-glsi.so.{v}',
+            'libnvidia-glvkspirv.so.{v}', 'libnvidia-gpucomp.so.{v}',
+            'libnvidia-eglcore.so.{v}' ]
+        for [ l: string ] in nv
+            add_file[ '{l32}/{l}' ]
+            add_deps[ '{l32}/{l}' ]
+        log 'os-bootstrap: steam done, {files.count} entries'
 
     # a module orbiter hosts at run time (not in its link closure)
     func add_module [ mod: string ]
@@ -2534,6 +2572,21 @@ element Bootstrap
             return
         rd : path '{out_dir}/root/boot/initramfs'
         write_cpio[ boot_files[ bin ], rd ]
+        # for an install into a Windows partition: the boot program
+        # and the NTFS driver it reads the kernel through
+        bd : '{out_dir}/root/boot'
+        cc : '{install}/bin/clang -target x86_64-unknown-windows'
+        cc = '{cc} -ffreestanding -fno-stack-protector -O2'
+        cc = '{cc} -mno-red-zone'
+        ld : '{install}/bin/lld-link -subsystem:efi_application'
+        ld = '{ld} -entry:efi_main -nodefaultlib'
+        efs : '{install}/share/silver-os-bootstrap/efifs/ntfs_x64.efi'
+        stub : command {
+            {cc} -c {root}/os-bootstrap/efistub.c -o {out_dir}/stub.o &&
+            {ld} -out:{bd}/orbiter.efi {out_dir}/stub.o &&
+            cp {efs} {bd}/ntfs_x64.efi }
+        if [ stub.exec[ false ] != 0 ]
+            log 'os-bootstrap: the boot program did not build'
 
     # an initramfs's few entries: the device folders and /init
     func boot_files [ bin: string ] -> vec OsFile
@@ -2543,6 +2596,13 @@ element Bootstrap
         boot.push[ OsFile [ dst: 'proc', dir: true ] ]
         boot.push[ OsFile [ dst: 'sys', dir: true ] ]
         boot.push[ OsFile [ src: bin, dst: 'init' ] ]
+        # NTFS before the root: a system in a Windows partition's image
+        kb : selected[]
+        if [ kb ]
+            nt : path '{kb.dir}/kmods/lib/modules/{kb.release}/kernel/fs/ntfs3/ntfs3.ko'
+            if [ nt.exists[] ]
+                boot.push[ OsFile [ dst: 'lib', dir: true ] ]
+                boot.push[ OsFile [ src: '{nt}', dst: 'lib/ntfs3.ko' ] ]
         return boot
 
     # a host file into the tree: mode 0755, source time kept

@@ -1,0 +1,196 @@
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 6b945bd..fd2b628 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -2476,6 +2476,37 @@ static UINT gcd( UINT a, UINT b )
+     }
+ }
+ 
++/* pack num / den as (den << 16) | num, each in 16 bits; a ratio that
++ * does not fit in lowest terms (an odd mode size against a large one)
++ * is approximated instead of failing */
++static UINT pack_dpi_ratio( UINT num, UINT den )
++{
++    UINT d = gcd( num, den );
++
++    if (d)
++    {
++        num /= d;
++        den /= d;
++    }
++    if (num >= 65536 || den >= 65536)
++    {
++        UINT64 n = num, m = den;
++
++        if (n >= m)
++        {
++            den = max( 65535 * m / n, 1 );
++            num = min( (n * den + m / 2) / m, 65535 );
++        }
++        else
++        {
++            num = max( 65535 * n / m, 1 );
++            den = min( (m * num + n / 2) / n, 65535 );
++        }
++    }
++    if (den == 1) den = 0;
++    return (den << 16) | num;
++}
++
+ /* display_lock must be held */
+ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UINT *dpi_x, UINT *dpi_y )
+ {
+@@ -2485,25 +2516,8 @@ static UINT monitor_get_dpi( struct monitor *monitor, MONITOR_DPI_TYPE type, UIN
+     if (!source || !(dpi = source->dpi)) dpi = system_dpi;
+     if (source && type != MDT_EFFECTIVE_DPI)
+     {
+-        UINT num, den, d;
+-
+-        num = source->physical.dmPelsWidth;
+-        den = source->current.dmPelsWidth;
+-        d = gcd( num * dpi, den );
+-        assert( num * dpi / d < 65536 );
+-        assert( den / d < 65536 );
+-        den /= d;
+-        if (den == 1) den = 0;
+-        *dpi_x = (den << 16) | (num * dpi / d);
+-
+-        num = source->physical.dmPelsHeight;
+-        den = source->current.dmPelsHeight;
+-        d = gcd( num * dpi, den );
+-        assert( num * dpi / d < 65536 );
+-        assert( den / d < 65536 );
+-        den /= d;
+-        if (den == 1) den = 0;
+-        *dpi_y = (den << 16) | (num * dpi / d);
++        *dpi_x = pack_dpi_ratio( source->physical.dmPelsWidth * dpi, source->current.dmPelsWidth );
++        *dpi_y = pack_dpi_ratio( source->physical.dmPelsHeight * dpi, source->current.dmPelsHeight );
+         if (source->physical.dmPelsWidth * source->current.dmPelsHeight <=
+             source->physical.dmPelsHeight * source->current.dmPelsWidth)
+             dpi_ret = *dpi_x;
+diff --git a/dlls/win32u/vulkan.c b/dlls/win32u/vulkan.c
+index b397641..2508313 100644
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -3024,7 +3024,11 @@ static VkResult init_fs_hack_images( struct vulkan_device *device, struct swapch
+         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+         viewInfo.image = swapchain->fs_hack_images[i].user_image;
+         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+-        viewInfo.format = VK_FORMAT_B8G8R8A8_SRGB;
++        /* sampled in the application's own channel order */
++        if (createinfo->imageFormat == VK_FORMAT_R8G8B8A8_UNORM || createinfo->imageFormat == VK_FORMAT_R8G8B8A8_SRGB)
++            viewInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
++        else
++            viewInfo.format = VK_FORMAT_B8G8R8A8_SRGB;
+         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+         viewInfo.subresourceRange.baseMipLevel = 0;
+         viewInfo.subresourceRange.levelCount = 1;
+@@ -3119,7 +3123,17 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
+             FIXME( "Swapchain does not support required VK_IMAGE_USAGE_STORAGE_BIT\n" );
+ 
+         swapchain->host_extents = capabilities.minImageExtent;
+-        create_info_host.imageExtent = capabilities.minImageExtent;
++        /* A surface the swapchain sizes (Wayland) has a 1x1 minimum: take
++         * the window's client area in physical pixels instead. */
++        if (caps.currentExtent.width == 0xffffffff &&
++            get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_WINE_RAW_DPI ) ))
++        {
++            swapchain->host_extents.width = min( max( client_rect.right, caps.minImageExtent.width ),
++                                                 caps.maxImageExtent.width );
++            swapchain->host_extents.height = min( max( client_rect.bottom, caps.minImageExtent.height ),
++                                                  caps.maxImageExtent.height );
++        }
++        create_info_host.imageExtent = swapchain->host_extents;
+         create_info_host.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+         create_info_host.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
+ 
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 07e0858..3b3efc0 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -460,7 +460,14 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
+     data->is_fullscreen = fullscreen;
+     data->managed = managed;
+ 
+-    if (!surface)
++    /* A visible window whose client surface clips its contents gets no
++     * window surface, but its client surface still needs a toplevel. */
++    if (!surface && data->client_surface && NtUserIsWindowVisible(hwnd) && toplevel == hwnd)
++    {
++        if (wayland_win_data_create_wayland_surface(data, toplevel_surface))
++            wayland_win_data_update_wayland_state(data);
++    }
++    else if (!surface)
+     {
+         if ((client = data->client_surface))
+         {
+diff --git a/programs/conhost/conhost.c b/programs/conhost/conhost.c
+index 8298743..4c6e673 100644
+--- a/programs/conhost/conhost.c
++++ b/programs/conhost/conhost.c
+@@ -3059,6 +3059,18 @@ int __cdecl wmain(int argc, WCHAR *argv[])
+         return 1;
+     }
+ 
++    /* A console for a Unix tty only bridges it and keeps no session
++     * alive: one waiting for the last user process (Proton's steam.exe)
++     * would otherwise wait on it, while it waits on that client. */
++    if (console.is_unix)
++    {
++        HANDLE exit_event = NULL;
++
++        NtSetInformationProcess( GetCurrentProcess(), ProcessWineMakeProcessSystem,
++                                 &exit_event, sizeof(HANDLE *) );
++        if (exit_event) CloseHandle( exit_event );
++    }
++
+     if (!width)  width = 80;
+     if (!height) height = 150;
+ 
+diff --git a/programs/start/start.c b/programs/start/start.c
+index b6619b6..d8e525d 100644
+--- a/programs/start/start.c
++++ b/programs/start/start.c
+@@ -25,6 +25,7 @@
+ #include <windows.h>
+ #include <shlobj.h>
+ #include <shellapi.h>
++#include <winternl.h>
+ 
+ #include <wine/debug.h>
+ 
+@@ -419,6 +420,7 @@ static struct
+     DWORD             creation_flags;
+     USHORT            machine;
+     BOOL              cp_inherit;
++    BOOL              exec_mode;
+ } opts;
+ 
+ static void parse_command_line( int argc, WCHAR *argv[] )
+@@ -507,6 +509,7 @@ static void parse_command_line( int argc, WCHAR *argv[] )
+             break;
+         }
+         else if (is_option(argv[i], L"/exec")) {
++            opts.exec_mode = TRUE;
+             opts.creation_flags = 0;
+             opts.sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE | SEE_MASK_FLAG_NO_UI;
+             opts.cp_inherit = TRUE;
+@@ -659,6 +662,18 @@ done:
+ 		SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info));
+ 		AssignProcessToJobObject(hJob, opts.sei.hProcess);
+ 
++		/* Started by the loader for a Unix tty, this only relays the
++		 * child's exit: it keeps no session alive, else a child waiting
++		 * for the last user process (Proton's steam.exe) waits on it. */
++		if (opts.exec_mode)
++		{
++			HANDLE exit_event = NULL;
++
++			NtSetInformationProcess(GetCurrentProcess(), ProcessWineMakeProcessSystem,
++			                        &exit_event, sizeof(HANDLE *));
++			if (exit_event) CloseHandle(exit_event);
++		}
++
+ 		WaitForSingleObject(opts.sei.hProcess, INFINITE);
+ 		GetExitCodeProcess(opts.sei.hProcess, &exitcode);
+ 		ExitProcess(exitcode);

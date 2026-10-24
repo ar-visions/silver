@@ -11,6 +11,8 @@
 #include <sys/sysmacros.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <linux/loop.h>
 
 #ifdef NOLIBC
 // the kernel's nolibc (arm64 sticks) lacks these few
@@ -267,6 +269,63 @@ static long load_module(int fd) {
 #else
     return syscall(SYS_finit_module, fd, "", 0);
 #endif
+}
+
+// an NTFS volume serial as blkid prints it: 16 hex digits
+static int parse_serial(const char* s, unsigned long long* v) {
+    *v = 0;
+    int k = 0;
+    for (; *s; s++) {
+        int d = *s >= '0' && *s <= '9' ? *s - '0'
+              : *s >= 'a' && *s <= 'f' ? *s - 'a' + 10
+              : *s >= 'A' && *s <= 'F' ? *s - 'A' + 10 : -1;
+        if (d < 0) return 0;
+        *v = (*v << 4) | (unsigned)d;
+        k++;
+    }
+    return k == 16;
+}
+
+// the block device whose NTFS boot sector has this serial (at 0x48)
+static int find_ntfs(unsigned long long want, char* dev, size_t cap) {
+    DIR* d = opendir("/sys/class/block");
+    if (!d) return 0;
+    struct dirent* e;
+    int found = 0;
+    while (!found && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(dev, cap, "/dev/%s", e->d_name);
+        int fd = open(dev, O_RDONLY);
+        if (fd < 0) continue;
+        unsigned char bs[512];
+        if (pread(fd, bs, sizeof bs, 0) == (ssize_t)sizeof bs &&
+            !memcmp(bs + 3, "NTFS    ", 8)) {
+            unsigned long long v = 0;
+            for (int i = 7; i >= 0; i--) v = (v << 8) | bs[0x48 + i];
+            found = v == want;
+        }
+        close(fd);
+    }
+    closedir(d);
+    return found;
+}
+
+// a file as a block device: the first free loop device, its name
+static int loop_attach(const char* file, char* dev, size_t cap) {
+    int ctl = open("/dev/loop-control", O_RDWR);
+    if (ctl < 0) return 0;
+    int n = ioctl(ctl, LOOP_CTL_GET_FREE);
+    close(ctl);
+    if (n < 0) return 0;
+    snprintf(dev, cap, "/dev/loop%d", n);
+    int lf = open(dev, O_RDWR), ff = open(file, O_RDWR);
+    struct loop_config lc;
+    memset(&lc, 0, sizeof lc);
+    lc.fd = ff;
+    int ok = lf >= 0 && ff >= 0 && ioctl(lf, LOOP_CONFIGURE, &lc) == 0;
+    if (ff >= 0) close(ff);
+    if (lf >= 0) close(lf);
+    return ok;
 }
 
 // a word into a file (configfs, sysfs)
@@ -646,24 +705,48 @@ int main(void) {
         phone_ramdisk();
         phone_gadget(phone);
     }
-    char uuid_s[64], dir[256], init[512];
-    if (!arg("orbiter.uuid", uuid_s, sizeof uuid_s)) die("no orbiter.uuid", NULL);
-    if (!arg("orbiter.root", dir, sizeof dir)) strcpy(dir, "/orbiter-os");
+    char uuid_s[64], dir[256], init[512], image[512];
+    // in a Windows partition: the system is an ext4 image in it
+    int in_ntfs = arg("orbiter.image", image, sizeof image) != NULL;
+    if (!in_ntfs && !arg("orbiter.uuid", uuid_s, sizeof uuid_s))
+        die("no orbiter.uuid", NULL);
+    if (!arg("orbiter.root", dir, sizeof dir))
+        strcpy(dir, in_ntfs ? "/" : "/orbiter-os");
     if (!arg("orbiter.init", init, sizeof init)) die("no orbiter.init", NULL);
-    unsigned char uuid[16];
-    if (!parse_uuid(uuid_s, uuid)) die("bad uuid", uuid_s);
 
     // the nvme drive appears a moment after boot: 10 s
     char dev[128];
     int found = 0;
-    for (int i = 0; i < 100 && !found; i++) {
-        found = find_uuid(uuid, dev, sizeof dev);
-        if (!found) usleep(100000);
-    }
-    if (!found) die("no partition with uuid", uuid_s);
-
     mkdir("/mnt", 0755);
-    if (mount(dev, "/mnt", "ext4", 0, NULL)) die("cannot mount", dev);
+    if (in_ntfs) {
+        char ser_s[64];
+        unsigned long long ser;
+        if (!arg("orbiter.ntfs", ser_s, sizeof ser_s) || !parse_serial(ser_s, &ser))
+            die("no orbiter.ntfs serial", NULL);
+        for (int i = 0; i < 100 && !found; i++) {
+            found = find_ntfs(ser, dev, sizeof dev);
+            if (!found) usleep(100000);
+        }
+        if (!found) die("no NTFS partition with serial", ser_s);
+        int kf = open("/lib/ntfs3.ko", O_RDONLY);
+        if (kf >= 0) { load_module(kf); close(kf); }
+        mkdir("/host", 0755);
+        if (mount(dev, "/host", "ntfs3", 0, NULL))
+            die("cannot mount (Windows left it in use? shut it down fully)", dev);
+        char file[1024], loop[64];
+        snprintf(file, sizeof file, "/host%s", image);
+        if (!loop_attach(file, loop, sizeof loop)) die("cannot attach", file);
+        if (mount(loop, "/mnt", "ext4", 0, NULL)) die("cannot mount", file);
+    } else {
+        unsigned char uuid[16];
+        if (!parse_uuid(uuid_s, uuid)) die("bad uuid", uuid_s);
+        for (int i = 0; i < 100 && !found; i++) {
+            found = find_uuid(uuid, dev, sizeof dev);
+            if (!found) usleep(100000);
+        }
+        if (!found) die("no partition with uuid", uuid_s);
+        if (mount(dev, "/mnt", "ext4", 0, NULL)) die("cannot mount", dev);
+    }
     // the relative /orbiter-os link resolves inside /mnt
     char full[1024], real[4096];
     snprintf(full, sizeof full, "/mnt%s", dir);
@@ -674,6 +757,11 @@ int main(void) {
     mount("/dev", "/newroot/dev", NULL, MS_MOVE, NULL);
     mount("/proc", "/newroot/proc", NULL, MS_MOVE, NULL);
     mount("/sys", "/newroot/sys", NULL, MS_MOVE, NULL);
+    // the Windows partition stays reachable, under the image's /host
+    if (in_ntfs) {
+        mkdir("/newroot/host", 0755);
+        mount("/host", "/newroot/host", NULL, MS_MOVE, NULL);
+    }
     // scratch stays in memory, not in the project tree
     mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
     mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);

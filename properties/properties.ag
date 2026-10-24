@@ -365,6 +365,9 @@ ArgsField LaunchField
             fill_color: #0000
             radius: 0
             stroke_width: 0
+        layers.face:
+            label_size: 17
+            label_offset: 0.0 0.0
         :focused
             layers.body:
                 fill_color: #2f6b4a40

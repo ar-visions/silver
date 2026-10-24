@@ -17,6 +17,9 @@ element console : trinity
     public  [ Launch ] folder : string
     # orbiter's Wayland display: a window the program opens goes there
     public  [ Launch ] wayland : string
+    # orbiter's X11 display (:N): X programs open in it, never the
+    # desktop's
+    public  [ Launch ] x11 : string
     # a fontconfig file for its programs (orbiter's lettering)
     public  [ Launch ] fonts : string
     # orbiter's bus: its portal answers the program's file dialogs
@@ -41,6 +44,8 @@ element console : trinity
                 # orbiter is their desktop, not the one it runs in:
                 # Blender takes GNOME for a frameless shell and fails
                 setenv[ 'XDG_CURRENT_DESKTOP', 'orbiter', 1 ]
+            if [ x11 && x11.count > 0 ]
+                setenv[ 'DISPLAY', x11.chars, 1 ]
             if [ fonts && fonts.count > 0 ]
                 setenv[ 'FONTCONFIG_FILE', fonts.chars, 1 ]
             if [ opener && opener.count > 0 ]
@@ -74,6 +79,9 @@ element console : trinity
     # a program run here ends the console with it (no empty shell)
     public func on_frame [ w: Window ]
         if [ !sessions ] return
+        # its keys go to the shell from the start, not after a click
+        sh : element [ (elements) ? elements[ 'shell' ] : null ]
+        if [ sh && !w.focus ] w.set_focus[ sh ]
         s : ConsoleSession sessions.get[ 'shell' ]
         if [ !s || s.pid <= 0 ] return
         pass_input[ s ]

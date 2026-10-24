@@ -1,0 +1,347 @@
+# steam: Valve's store and launcher. Installed from the apps view (its
+# build fetches Valve's launcher package into silver's install); its
+# first run downloads the client into its home
+export 1.0.0.87
+export software ['games']
+export icon ['steam']
+# it starts with orbiter, to its tray
+export startup ['steam -silent']
+
+import <stdlib.h>
+import <stdio.h>
+
+# the launcher taken, and its sha256 as Valve's package list gives it
+func steam_ver [] -> string
+    return '1.0.0.87'
+func steam_sum [] -> string
+    return '765aba9a0ed339a50226ceb614fcc9879a991ba184098bc8de920efb12c714a4'
+
+# at the build: Valve's launcher package, checked, unpacked in
+# install/lib/steam/<version>; bin_steam.sh linked as install/bin/steam
+export func install_steam []
+    ins : string '{path.path_install[]}'
+    ver : steam_ver[]
+    dir : '{ins}/lib/steam/{ver}'
+    sh : path '{dir}/usr/lib/steam/bin_steam.sh'
+    if [ !sh.exists[] ]
+        url : 'https://repo.steampowered.com/steam/pool/steam/s/steam/steam-launcher_{ver}_amd64.deb'
+        deb : '{dir}/steam.deb'
+        get : command { mkdir -p {dir} && curl -fsSL {url} -o {deb}
+            && echo "{steam_sum[]}  {deb}" | sha256sum -c --quiet
+            && dpkg-deb -x {deb} {dir} && rm {deb} }
+        if [ get.exec[ false ] != 0 ]
+            log 'steam: {ver} failed'
+            return
+    ln : command { ln -sfn {sh} {ins}/bin/steam }
+    if [ ln.exec[ false ] == 0 ] log 'steam: {ver}'
+
+# a value in Steam's key-value text: the quoted word after "key"
+func acf_value [ text: string, key: string ] -> string
+    at : i32 [ text.index_of[ '"{key}"' ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + key.count + 2 ]
+    rest : string text.mid[ from, text.count - from ]
+    a : i32 [ rest.index_of[ '"' ] ]
+    if [ a < 0 ] return ''
+    tail : string rest.mid[ a + 1, rest.count - a - 1 ]
+    b : i32 [ tail.index_of[ '"' ] ]
+    return (b < 0) ? '' : tail.mid[ 0, b ]
+
+# every "path" a libraryfolders.vdf lists, each once; a Steam run in
+# orbiter names its view's home (home), which is the folder seen
+func library_paths [ text: string, home: string, seen: string,
+                     root: string, into: map string[string] ]
+    rest : string text
+    for [ at: i32 rest.index_of[ '"path"' ], at >= 0,
+          at = rest.index_of[ '"path"' ] ]
+        p : string acf_value[ rest, 'path' ]
+        if [ seen.count > 0 && p.starts_with[ '{home}/' ] ]
+            p = '{seen}{p.mid[ home.count, p.count - home.count ]}'
+        if [ p.count > 0 ] into[ p ] = root
+        rest = rest.mid[ at + 6, rest.count - at - 6 ]
+
+# a folder name from a game's name: letters and digits, _ between
+func store_name [ title: string ] -> string
+    low : string title.lcase[]
+    out : string ''
+    gap : bool [ false ]
+    for [ i: i32 0, i < low.count, i += 1 ]
+        c : i32 [ (i32 low.chars[ i ]) & 255 ]
+        word : bool [ (c >= 97 && c <= 122) || (c >= 48 && c <= 57) ]
+        if [ !word ]
+            gap = out.count > 0
+            continue
+        if [ gap ] out = '{out}_'
+        gap = false
+        out = '{out}{low.mid[ i, 1 ]}'
+    return out
+
+# a line inside an .ag string: its quotes escaped
+func quoted [ line: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < line.count, i += 1 ]
+        c : string line.mid[ i, 1 ]
+        out = (c == '\'' || c == '\\') ? '{out}\\{c}' : '{out}{c}'
+    return out
+
+# a 64-bit Windows program: its PE header names the x86-64 machine
+func pe64 [ file: string ] -> bool
+    fh : handle fopen[ file.chars, 'rb' ]
+    if [ !fh ] return false
+    head : new u8 [ 4096 ]
+    got : i64 [ i64[ fread[ @head[0], 1, 4096, fh ] ] ]
+    fclose[ fh ]
+    b : ref u8 [ @head[0] ]
+    if [ got < 64 ] return false
+    pe : i64 [ le32[ b, 60 ] ]
+    if [ pe + 6 > got || le32[ b, pe ] != 0x4550 ] return false
+    return i64[ b[ pe + 4 ] ] == 0x64 && i64[ b[ pe + 5 ] ] == 0x86
+
+# a little-endian u32 in Steam's binary files
+func le32 [ b: ref u8, at: i64 ] -> i64
+    return i64[ b[ at ] ] | (i64[ b[ at + 1 ] ] << 8)
+        | (i64[ b[ at + 2 ] ] << 16) | (i64[ b[ at + 3 ] ] << 24)
+
+# the one launch of a config's list that runs on Windows: its keys
+# (0, 1 ...) to the values read under them
+func windows_launch [ exes: map string[string], oses: map string[string],
+                      kinds: map string[string] ] -> string
+    for [ i: i32 0, i < 16, i += 1 ]
+        n : string '{i}'
+        exe : string exes.get[ n ]
+        if [ !exe || exe.count == 0 ] continue
+        os : string oses.get[ n ]
+        if [ os && os.count > 0 && os.index_of[ 'windows' ] < 0 ] continue
+        ty : string kinds.get[ n ]
+        if [ ty && ty != 'default' && ty != 'none' ] continue
+        return exe
+    return ''
+
+# each app's Windows program, from Steam's appinfo.vdf (version 29:
+# binary key-values, keys by number into a string table at the end)
+func app_exes [ file: string ] -> map string[string]
+    out : map string[string] []
+    fh : handle fopen[ file.chars, 'rb' ]
+    if [ !fh ] return out
+    fseek[ fh, 0, SEEK_END ]
+    size : i64 [ ftell[ fh ] ]
+    fseek[ fh, 0, SEEK_SET ]
+    data : new u8 [ size ]
+    got : i64 [ i64[ fread[ @data[0], 1, size, fh ] ] ]
+    fclose[ fh ]
+    b : ref u8 [ @data[0] ]
+    if [ got != size || size < 16 || le32[ b, 0 ] != 0x07564429 ]
+        return out
+    keys : vec string []
+    so : i64 [ le32[ b, 8 ] ]
+    nk : i64 [ le32[ b, so ] ]
+    q : i64 [ so + 4 ]
+    for [ i: i64 0, i < nk && q < size, i += 1 ]
+        k : string [ @b[ q ] ]
+        keys.push[ k ]
+        q += k.count + 1
+    p : i64 [ 16 ]
+    while [ p + 8 <= so ]
+        aid : i64 [ le32[ b, p ] ]
+        if [ aid == 0 ] break
+        end : i64 [ p + 8 + le32[ b, p + 4 ] ]
+        # past the entry's state, token, hashes and change number
+        q = p + 68
+        at : vec string []
+        exes : map string[string] []
+        oses : map string[string] []
+        kinds : map string[string] []
+        while [ q < end ]
+            t : i32 [ i32[ b[ q ] ] ]
+            q += 1
+            if [ t == 8 ]
+                if [ at.count == 0 ] break
+                at.pop[]
+                continue
+            ki : i64 [ le32[ b, q ] ]
+            q += 4
+            k : string (ki < keys.count) ? keys[ ki ] : ''
+            if [ t == 0 ]
+                at.push[ k ]
+                continue
+            if [ t == 2 || t == 4 || t == 6 ]
+                q += 4
+                continue
+            if [ t == 7 ]
+                q += 8
+                continue
+            if [ t != 1 ] break
+            v : string [ @b[ q ] ]
+            q += v.count + 1
+            if [ at.count < 4 || at[ 0 ] != 'appinfo'
+                 || at[ 1 ] != 'config' || at[ 2 ] != 'launch' ] continue
+            n : string at[ 3 ]
+            if [ at.count == 4 && k == 'executable' ] exes[ n ] = v
+            if [ at.count == 4 && k == 'type' ] kinds[ n ] = v
+            if [ at.count == 5 && at[ 4 ] == 'config' && k == 'oslist' ]
+                oses[ n ] = v
+        exe : windows_launch[ exes, oses, kinds ]
+        if [ exe.count > 0 ] out[ '{aid}' ] = exe
+        p = end
+    return out
+
+# Wine's own d3d set by DXVK's (Proton's way), no Mono or Gecko asked
+func wine_dlls [] -> string
+    return 'WINEDLLOVERRIDES="mscoree,mshtml=;steam.exe=b;d3d11,dxgi,d3d10core,d3d9,d3d8=n,b"'
+
+# DXVK's 64-bit DLLs into a prefix's system32, before its first run
+func dxvk_into [ pfx: string ]
+    ins : string '{path.path_install[]}'
+    sys : string '{pfx}/drive_c/windows/system32'
+    have : path '{sys}/d3d11.dll'
+    if [ have.exists[] ] return
+    cp : command { mkdir -p "{sys}"
+        && cp {ins}/lib/wine/dxvk/x64/*.dll "{sys}/" }
+    if [ cp.exec[ false ] == 0 ] log 'steam store: dxvk in {pfx}'
+
+# a folder of an app's home as that app sees it ($HOME in its view)
+func view_path [ p: string, homes: string ] -> string
+    if [ !p.starts_with[ homes ] ] return p
+    rest : string p.mid[ homes.count, p.count - homes.count ]
+    cut : i32 [ rest.index_of[ '/' ] ]
+    if [ cut <= 0 ] return p
+    return '$HOME{rest.mid[ cut, rest.count - cut ]}'
+
+# Steam's Windows client into the prefix, as Proton puts it: Wine
+# hands its steamclient64.dll calls to lsteamclient
+func steam_into [ root: string, pfx: string ]
+    # Proton's steam.exe starts it, lsteamclient answers for Steam;
+    # each a file in system32 for Wine to find (their builds kept new)
+    ins : string '{path.path_install[]}/lib/wine/x86_64-windows'
+    sys : string '{pfx}/drive_c/windows/system32'
+    se : command { mkdir -p "{sys}" && cp -u {ins}/steam.exe
+        {ins}/lsteamclient.dll "{sys}/" }
+    se.exec[ false ]
+    to : string '{pfx}/drive_c/Program Files (x86)/Steam'
+    have : path '{to}/steamclient64.dll'
+    if [ have.exists[] ] return
+    lc : string '{root}/legacycompat'
+    cp : command { mkdir -p "{to}" && cp "{lc}/steamclient64.dll"
+        "{lc}/steamclient.dll" "{lc}/GameOverlayRenderer64.dll"
+        "{lc}/Steam.dll" "{to}/" && cp "{lc}/SteamService.exe"
+        "{to}/steam.exe" }
+    if [ cp.exec[ false ] == 0 ] log 'steam store: steam client in {pfx}'
+
+# Steam's own pieces, never a game
+func steam_tool [ title: string ] -> bool
+    return title.starts_with[ 'Proton' ]
+        || title.starts_with[ 'Steam Linux Runtime' ]
+        || title.starts_with[ 'Steamworks Common' ]
+
+# the Steams here: the user's own, and each one run in orbiter;
+# each library to the Steam folder that lists it
+func steam_libraries [] -> map string[string]
+    libs : map string[string] []
+    roots : map string[string] []
+    home : string [ getenv[ 'HOME' ] ]
+    roots[ '{home}/.local/share/Steam' ] = ''
+    roots[ '{home}/.steam/debian-installation' ] = ''
+    ins : path.path_install[]
+    homes : path '{ins.absolute[]}/home'
+    hs : homes.ls[ null, false ]
+    if [ hs ]
+        for [ h: path ] in hs
+            roots[ '{h}/.local/share/Steam' ] = '{h}'
+    for [ seen: string, r: string ] in roots
+        vf : path '{r}/steamapps/libraryfolders.vdf'
+        if [ !vf.exists[] ] continue
+        text : string vf.load[ typeid[string], null ]
+        if [ text ] library_paths[ text, home, seen, r, libs ]
+    return libs
+
+# a game Steam finished installing becomes a module of the steam store:
+# install/stores/steam/<name>/<name>.ag; one gone from Steam goes
+export func steam_store []
+    ins : path.path_install[]
+    store : string '{ins.absolute[]}/stores/steam'
+    made : map string[string] []
+    # a Steam run in orbiter sees its view's home as the user's
+    homes : string '{ins.absolute[]}/home/'
+    # each app's program, from every Steam's own app list
+    exes : map string[string] []
+    read : map string[string] []
+    for [ root: string, lib: string ] in steam_libraries[]
+        if [ !read.get[ root ] ]
+            read[ root ] = root
+            got : app_exes[ '{root}/appcache/appinfo.vdf' ]
+            for [ e: string, id: string ] in got
+                exes[ id ] = e
+        seen : view_path[ lib, homes ]
+        apps : path '{lib}/steamapps'
+        ms : apps.ls[ null, false ]
+        if [ !ms ] continue
+        for [ m: path ] in ms
+            if [ !m.stem[].starts_with[ 'appmanifest_' ] ] continue
+            text : string m.load[ typeid[string], null ]
+            if [ !text ] continue
+            # 4: fully installed (not queued, downloading or updating)
+            if [ acf_value[ text, 'StateFlags' ] != '4' ] continue
+            title : acf_value[ text, 'name' ]
+            if [ steam_tool[ title ] ] continue
+            id : acf_value[ text, 'appid' ]
+            name : store_name[ title ]
+            if [ name.count == 0 || made.get[ name ] ] continue
+            made[ name ] = id
+            bid : acf_value[ text, 'buildid' ]
+            src : string '# {title}: Steam app {id} (build {bid}), as\n'
+            src = '{src}# Steam installed it; the steam store wrote this\n'
+            src = '{src}# from its manifest in\n# {lib}\n'
+            src = '{src}export 1.0.0\nexport software [\'games\']\n'
+            src = '{src}export steam [\'{id}\']\n'
+            # run by our own Wine, in a prefix of its own beside Proton's
+            exe : string exes.get[ id ]
+            dirn : acf_value[ text, 'installdir' ]
+            run : string 'steam -applaunch {id}'
+            prog : string ''
+            sroot : view_path[ root, homes ]
+            # the prefix stays in Steam's own folder, whatever library
+            # holds the game: a Wine prefix breaks on NTFS
+            pfx : string '{sroot}/steamapps/compatdata/{id}/wine'
+            if [ exe && exe.count > 0 && seen != lib ]
+                rel : string ''
+                for [ i: i32 0, i < exe.count, i += 1 ]
+                    c : string exe.mid[ i, 1 ]
+                    rel = (c == '\\') ? '{rel}/' : '{rel}{c}'
+                # our Wine runs 64-bit Windows programs alone
+                if [ pe64[ '{lib}/steamapps/common/{dirn}/{rel}' ] ]
+                    prog = '{seen}/steamapps/common/{dirn}/{rel}'
+            if [ prog.count > 0 ]
+                # started in its own folder, as Steam starts it
+                cd : string prog.mid[ 0, i32[ prog.rindex_of[ '/' ] ] ]
+                run = 'env -C "{cd}" WINEPREFIX="{pfx}" {wine_dlls[]}'
+                # Proton's steam.exe starts it: Steam's registry keys,
+                # and its client reached through lsteamclient
+                run = '{run} SteamGameId={id} SteamAppId={id}'
+                run = '{run} STEAM_COMPAT_CLIENT_INSTALL_PATH="{sroot}"'
+                run = '{run} wine steam "{prog}"'
+                dxvk_into[ '{root}/steamapps/compatdata/{id}/wine' ]
+                steam_into[ root, '{root}/steamapps/compatdata/{id}/wine' ]
+            src = '{src}export launch [\'{quoted[ run ]}\']\n'
+            src = '{src}export build none\n'
+            dir : string '{store}/{name}'
+            # its cover, as Steam's library shows it, is its icon
+            art : path '{root}/appcache/librarycache/{id}/library_600x900.jpg'
+            ic : path '{dir}/images/icon.jpg'
+            if [ art.exists[] && !ic.exists[] ]
+                cp : command { mkdir -p {dir}/images && cp {art} {ic} }
+                cp.exec[ false ]
+            out : path '{dir}/{name}.ag'
+            was : string (out.exists[]) ? out.load[ typeid[string], null ] : ''
+            if [ was == src ] continue
+            mk : command { mkdir -p {dir} }
+            mk.exec[ false ]
+            out.save[ src, null ]
+            log 'steam store: {name} ({id})'
+    sd : path [ store ]
+    have : sd.ls[ null, false ]
+    if [ !have ] return
+    for [ d: path ] in have
+        dn : string d.filename[]
+        if [ made.get[ dn ] ] continue
+        gone : command { rm -rf {d} }
+        if [ gone.exec[ false ] == 0 ] log 'steam store: {dn} removed'

@@ -1256,12 +1256,14 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
     }
     if ((is_class_set || is_shaped_slot) && is_member_slot && !_p7_self_init) {
         if (is_class_set && is_reassign_op && !a->init_props_retain_skip) retain(L);
+        // the old value goes to the pool, not freed here: a local
+        // naming it (got : events, then events = new) keeps it a while
         if (prev_value) {
-            efunc fn_drop = (efunc)u(efunc,
-                find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, true));
-            etype L_type = (etype)evar_type((evar)L);
-            enode prev_node = with_value(prev_value, enode(mod, a, autype, L_type->autype, loaded, true));
-            e_fn_call(a, fn_drop, a(prev_node), false, false);
+            LLVMTypeRef  ptr_t = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMTypeRef  rel_t = LLVMFunctionType(ptr_t, &ptr_t, 1, 0);
+            LLVMValueRef rel   = LLVMGetNamedFunction(a->module_ref, "au_release");
+            if (!rel) rel = LLVMAddFunction(a->module_ref, "au_release", rel_t);
+            LLVMBuildCall2(B, rel_t, rel, &prev_value, 1, "");
         }
     }
 

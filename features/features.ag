@@ -2573,6 +2573,31 @@ expect func t_vec_literal_local [] -> bool
     last : '~~'
     return last.count == 2 && last[ 0 ] == 126
 
+class SwapEv
+    public kind : i32
+
+class SwapBox
+    public events : vec SwapEv
+
+    func init []
+        events = vec SwapEv []
+
+    func take [] -> vec SwapEv
+        got : events
+        events = vec SwapEv []
+        return got
+
+# a local keeps the vec a member let go of, swapped out for a new one
+expect func t_member_swap_local [] -> bool
+    b : SwapBox []
+    b.events.push[ SwapEv [ kind: 1 ] ]
+    b.events.push[ SwapEv [ kind: 2 ] ]
+    n : i32 [ 0 ]
+    for [ e: SwapEv ] in b.take[]
+        n += e.kind
+    log 'member swap local: {n}'
+    return n == 3 && b.events.count == 0
+
 # a map key computed from an expression in braces
 expect func t_computed_key [] -> bool
     nm : string [ 'b' ]

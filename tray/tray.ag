@@ -63,6 +63,9 @@ class TrayItem
 
 # a variant's string or object path
 func tray_text [ v: @DBusMessageIter ] -> string
+    # an app's value that is no variant reads as none
+    if [ dbus_message_iter_get_arg_type[ v ] != DBUS_TYPE_VARIANT ]
+        return ''
     inner : DBusMessageIter
     dbus_message_iter_recurse[ v, @inner ]
     t : i32 [ dbus_message_iter_get_arg_type[ @inner ] ]
@@ -73,6 +76,9 @@ func tray_text [ v: @DBusMessageIter ] -> string
     return string[ cs ]
 
 func tray_bool [ v: @DBusMessageIter ] -> bool
+    # an app's value that is no variant reads as none
+    if [ dbus_message_iter_get_arg_type[ v ] != DBUS_TYPE_VARIANT ]
+        return false
     inner : DBusMessageIter
     dbus_message_iter_recurse[ v, @inner ]
     if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_BOOLEAN ]
@@ -82,6 +88,9 @@ func tray_bool [ v: @DBusMessageIter ] -> bool
     return b != 0
 
 func tray_int [ v: @DBusMessageIter ] -> i32
+    # an app's value that is no variant reads as none
+    if [ dbus_message_iter_get_arg_type[ v ] != DBUS_TYPE_VARIANT ]
+        return 0
     inner : DBusMessageIter
     dbus_message_iter_recurse[ v, @inner ]
     if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_INT32 ]
@@ -141,6 +150,9 @@ func tray_accel [ a: string ] -> string
 
 # dbusmenu's shortcut (aas: key lists) as Ctrl+S, the first one
 func tray_shortcut [ v: @DBusMessageIter ] -> string
+    # an app's value that is no variant reads as none
+    if [ dbus_message_iter_get_arg_type[ v ] != DBUS_TYPE_VARIANT ]
+        return ''
     inner : DBusMessageIter
     dbus_message_iter_recurse[ v, @inner ]
     if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_ARRAY ]
@@ -242,10 +254,13 @@ func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
     dbus_message_iter_recurse[ node, @f ]
     e : TrayEntry [ label: '', enabled: true, check: -1,
         depth: depth - 1, action: '', target: '' ]
+    # an app's entry not shaped (ia{sv}av) is left out
+    if [ dbus_message_iter_get_arg_type[ @f ] != DBUS_TYPE_INT32 ] return
     eid : i32 [ 0 ]
     dbus_message_iter_get_basic[ @f, @eid ]
     e.id = eid
     dbus_message_iter_next[ @f ]
+    if [ dbus_message_iter_get_arg_type[ @f ] != DBUS_TYPE_ARRAY ] return
     shown : true
     d : DBusMessageIter
     dbus_message_iter_recurse[ @f, @d ]
@@ -253,9 +268,10 @@ func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
             == DBUS_TYPE_DICT_ENTRY ]
         kv : DBusMessageIter
         dbus_message_iter_recurse[ @d, @kv ]
-        kc : cstr
-        dbus_message_iter_get_basic[ @kv, @kc ]
-        key : string[ kc ]
+        kc : cstr [ null ]
+        if [ dbus_message_iter_get_arg_type[ @kv ] == DBUS_TYPE_STRING ]
+            dbus_message_iter_get_basic[ @kv, @kc ]
+        key : string (kc) ? string[ kc ] : ''
         dbus_message_iter_next[ @kv ]
         if [ key == 'label' ]
             e.label = tray_label[ tray_text[ @kv ] ]
@@ -270,6 +286,7 @@ func dbm_walk [ out: vec TrayEntry, node: @DBusMessageIter, depth: i32 ]
     if [ !shown ] return
     if [ depth > 0 ] out.push[ e ]
     dbus_message_iter_next[ @f ]
+    if [ dbus_message_iter_get_arg_type[ @f ] != DBUS_TYPE_ARRAY ] return
     kids : DBusMessageIter
     dbus_message_iter_recurse[ @f, @kids ]
     while [ dbus_message_iter_get_arg_type[ @kids ]
@@ -856,8 +873,8 @@ func app_menu [] -> AppMenu
     if [ !app_menu_now ] app_menu_now = AppMenu []
     return app_menu_now
 
-# the tray: orbiter holds org.kde.StatusNotifierWatcher on the
-# session bus; apps register their icons with it, and it reads
+# the tray: orbiter holds org.kde.StatusNotifierWatcher on the bus
+# its programs get; apps register their icons with it, and it reads
 # their icons and menus and passes clicks back
 class Tray
     public items    : vec TrayItem
@@ -883,13 +900,24 @@ class Tray
         tried = epoch_micros[]
         err : DBusError
         dbus_error_init[ @err ]
-        conn = dbus_bus_get_private[ DBUS_BUS_SESSION, @err ]
-        if [ dbus_error_is_set[ @err ] ]
-            problem = 'No session bus: {string[ err.message ]}'
-            dbus_error_free[ @err ]
+        # the bus orbiter gives the programs it starts (the
+        # portal's), so their icons reach this tray, not the desktop's
+        at : string portal_shared[].address
+        if [ at.count == 0 ]
+            problem = 'No bus for programs yet'
+            return false
+        conn = dbus_connection_open_private[ at.chars, @err ]
+        if [ dbus_error_is_set[ @err ] || !conn ]
+            problem = 'No program bus: {string[ err.message ]}'
+            if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
             conn = null
             return false
         dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        if [ dbus_bus_register[ conn, @err ] == 0 ]
+            problem = 'The program bus refused us'
+            dbus_error_free[ @err ]
+            close[]
+            return false
         nm : watcher[]
         got : i32 [ dbus_bus_request_name[ conn, nm.chars,
             DBUS_NAME_FLAG_DO_NOT_QUEUE, @err ] ]
@@ -1102,9 +1130,10 @@ class Tray
             theme: '', icon_file: '',
             entries: vec TrayEntry [] ]
         items.push[ t ]
-        read_item[ t ]
+        # read after the reply: the app may wait on it, unanswering
+        t.dirty = true
         announce[ 'StatusNotifierItemRegistered', t.reg ]
-        log 'tray: {t.title} registered ({svc}{pt})'
+        log 'tray: registered {svc}{pt}'
         return true
 
     func signal_in [ m: @DBusMessage ] -> bool

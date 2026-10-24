@@ -15,6 +15,14 @@ Keep it in step with the imports.
 | GIMP (its official AppImage, unpacked; not redistributed) | 3.2.6 | featured/gimp (install/bin/gimp) | https://download.gimp.org/gimp/v3.2/linux | GPL-3.0-or-later (its bundled libraries under their own licenses) | The GIMP Team |
 | Firefox (Mozilla's release build, not redistributed) | 158.0 | featured/firefox (install/bin/firefox) | https://archive.mozilla.org/pub/firefox/releases | MPL-2.0 (the Firefox name and logo: Mozilla's trademarks) | Mozilla Foundation and contributors |
 | Claude Code (native binary, not redistributed) | 2.1.304 | claude (install/bin/claude) | https://downloads.claude.ai/claude-code-releases | proprietary, Anthropic's terms | Anthropic PBC |
+| Wine (Valve's tree, Proton Experimental 11.0-20261001's commit) | 6d211aab | featured/wine (install/bin/wine, Wayland driver) | https://github.com/ValveSoftware/wine | LGPL-2.1-or-later | the Wine project, Valve and CodeWeavers |
+| Proton's lsteamclient and steam.exe (Steam's Windows client bridged to the Linux Steam) | experimental-11.0-20261001 (70b7e109) | featured/wine (install/lib/wine) | https://github.com/ValveSoftware/Proton | BSD 3-Clause; lsteamclient carries Valve's Steamworks SDK headers under the Steamworks SDK license | Valve Corporation |
+| DXVK (its release build: Windows DLLs, not built here) | 3.1.1 | featured/wine (install/lib/wine/dxvk) | https://github.com/doitsujin/dxvk | zlib | Philip Rebohle and contributors |
+| libxkbcommon (for xkbregistry) | 1.6.0 | featured/wine | https://xkbcommon.org | MIT | Daniel Stone, Ran Benita and contributors |
+| NASM (build tool) | 2.16.03 | featured/wine (FFmpeg's assembly) | https://www.nasm.us | BSD-2-Clause | the NASM development team |
+| FFmpeg (shared, LGPL build: no --enable-gpl) | 4.4.5 | featured/wine (winedmo, gst-libav) | https://ffmpeg.org | LGPL-2.1-or-later | the FFmpeg developers |
+| GStreamer | 1.24.12 | featured/wine (winegstreamer) | https://gstreamer.freedesktop.org | LGPL-2.1-or-later | the GStreamer team |
+| gst-plugins-base, -good (isomp4), -bad (videoparsers), gst-libav | 1.24.12 | featured/wine (winegstreamer) | https://gstreamer.freedesktop.org | LGPL-2.1-or-later | the GStreamer team |
 | libxkbfile | 1.1.3 | featured/vscode | https://gitlab.freedesktop.org/xorg/lib/libxkbfile | MIT | X.Org Foundation |
 | libsecret | 0.21.7 | featured/vscode | https://gitlab.gnome.org/GNOME/libsecret | LGPL-2.1-or-later | The libsecret authors |
 | MIT Kerberos | 1.21.3 | featured/vscode | https://github.com/krb5/krb5 | MIT (krb5 notice) | Massachusetts Institute of Technology |
@@ -109,6 +117,7 @@ Keep it in step with the imports.
 | NVIDIA open GPU kernel modules 610.57.04 | os-bootstrap (fetched by its build page) | https://github.com/NVIDIA/open-gpu-kernel-modules | MIT OR GPL-2.0-only | NVIDIA Corporation |
 | Linux firmware (the build host's /lib/firmware, copied into the drive tree) | os-bootstrap | https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git | per file (see its WHENCE) | the hardware vendors, gathered by the linux-firmware project |
 | mtools 4.0.48 (build tool) | os-bootstrap (the installer stick's EFI partition) | https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz | GPL-3.0-or-later | Alain Knaff, David Niemi and contributors |
+| EfiFs NTFS driver (ntfs_x64.efi) v1.13 | os-bootstrap (the boot program reads the kernel from an orbiter-os folder on a Windows partition) | https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi (sha256 202aeb2cc078693e9c03f3c0a64e8c6c44f2c75eded8a32ada5e1589753b3317) | GPL-3.0-or-later (built on GRUB's file system code) | Pete Batard and the GRUB contributors |
 | gtk-shell.xml (GTK 4.14.5's Wayland protocol; C made from it by wayland-scanner) | wayland (a GTK app's menu bar address) | https://gitlab.gnome.org/GNOME/gtk/-/raw/4.14.5/gdk/wayland/protocol/gtk-shell.xml | LGPL-2.1-or-later | The GTK Team |
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |

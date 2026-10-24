@@ -1,4 +1,5 @@
-// the stick's BOOTX64.EFI: cmdline.txt, then vmlinuz.efi
+// the stick's BOOTX64.EFI: cmdline.txt, then vmlinuz.efi; with no
+// kernel beside it, the NTFS driver beside it reads \orbiter-os\boot
 typedef unsigned long long u64;
 typedef unsigned int       u32;
 typedef unsigned short     u16;
@@ -31,6 +32,10 @@ typedef struct {
     status_t (*start_image)(handle_t, u64*, u16**);
     void *exit, *unload_image, *exit_boot, *next_count;
     status_t (*stall)(u64);
+    void *watchdog;
+    status_t (*connect)(handle_t, handle_t*, void*, u8);
+    void *disconnect, *open_proto, *close_proto, *open_info, *per_handle;
+    status_t (*locate_buffer)(u32, guid_t*, void*, u64*, handle_t**);
 } boot_t;
 
 typedef struct {
@@ -82,6 +87,8 @@ static guid_t fs_guid =
       { 0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b } };
 
 #define LOADER_DATA 2
+#define ALL_HANDLES 0
+#define BY_PROTOCOL 2
 
 static system_t* st;
 
@@ -106,6 +113,42 @@ static status_t read_all(file_t* root, u16* name, u8** data, u64* size) {
     return s;
 }
 
+// no kernel beside us: EfiFs's NTFS driver (beside us) gives each NTFS
+// partition a file system, and the one with \orbiter-os\boot's kernel
+// is the system's (a Windows partition holding the orbiter-os folder)
+static status_t ntfs_kernel(handle_t image, file_t* root, handle_t* from,
+                            u8** kernel, u64* kernel_n) {
+    u8* drv; u64 drv_n;
+    status_t s = read_all(root, u"\\EFI\\orbiter\\ntfs_x64.efi", &drv, &drv_n);
+    if (s) return s;
+    handle_t dh;
+    s = st->boot->load_image(0, image, 0, drv, drv_n, &dh);
+    if (s) return s;
+    s = st->boot->start_image(dh, 0, 0);
+    if (s) return s;
+    // every controller again: the driver binds to the partitions
+    handle_t* all; u64 all_n;
+    s = st->boot->locate_buffer(ALL_HANDLES, 0, 0, &all_n, &all);
+    if (s) return s;
+    for (u64 i = 0; i < all_n; i++) st->boot->connect(all[i], 0, 0, 1);
+    st->boot->free_pool(all);
+    handle_t* vols; u64 vols_n;
+    s = st->boot->locate_buffer(BY_PROTOCOL, &fs_guid, 0, &vols_n, &vols);
+    if (s) return s;
+    for (u64 i = 0; i < vols_n; i++) {
+        fs_t* fs; file_t* vr;
+        if (st->boot->handle_protocol(vols[i], &fs_guid, (void**)&fs)) continue;
+        if (fs->open_volume(fs, &vr)) continue;
+        if (!read_all(vr, u"\\orbiter-os\\boot\\vmlinuz.efi", kernel, kernel_n)) {
+            *from = vols[i];
+            st->boot->free_pool(vols);
+            return 0;
+        }
+    }
+    st->boot->free_pool(vols);
+    return (1ULL << 63) | 14; // EFI_NOT_FOUND
+}
+
 u64 efi_main(handle_t image, system_t* system) {
     st = system;
     loaded_image_t* me;
@@ -123,8 +166,12 @@ u64 efi_main(handle_t image, system_t* system) {
     s = read_all(root, u"\\EFI\\orbiter\\cmdline.txt", &line, &line_n);
     if (s) return fail(u"orbiter: no EFI\\orbiter\\cmdline.txt\r\n", s);
     u8* kernel; u64 kernel_n;
+    handle_t from = me->device;
     s = read_all(root, u"\\EFI\\orbiter\\vmlinuz.efi", &kernel, &kernel_n);
-    if (s) return fail(u"orbiter: no EFI\\orbiter\\vmlinuz.efi\r\n", s);
+    if (s) {
+        s = ntfs_kernel(image, root, &from, &kernel, &kernel_n);
+        if (s) return fail(u"orbiter: no kernel here or in \\orbiter-os\\boot\r\n", s);
+    }
 
     // the line in UTF-16, ended at its first newline
     u16* wide;
@@ -143,8 +190,8 @@ u64 efi_main(handle_t image, system_t* system) {
     loaded_image_t* li;
     s = st->boot->handle_protocol(child, &loaded_image_guid, (void**)&li);
     if (s) return fail(u"orbiter: no kernel image\r\n", s);
-    // loaded from memory: give it this volume, for initrd=
-    li->device       = me->device;
+    // loaded from memory: give it its volume, for initrd=
+    li->device       = from;
     li->options      = wide;
     li->options_size = (u32)((n + 1) * 2);
     s = st->boot->start_image(child, 0, 0);

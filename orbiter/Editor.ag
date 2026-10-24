@@ -524,6 +524,9 @@ ResourceView AppView
     mutable module_args : string
     # the Wayland window this instance's program opened (0: none)
     mutable wl_window   : u64
+    # run in no pane (a startup app in its tray): a button only while
+    # its window is open, the window in a floating pane
+    mutable background  : bool
     # orbiter has attached lldb to this app's pid
     public  attached   : bool
     # lldb attach is running on a worker
@@ -5528,18 +5531,8 @@ Control Editor
     # where a window it opens goes
     public func open_program [ prog: string, display: string,
                                fonts: string, bus: string ]
-        fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
-        # paths, so a bound console is handed each one read only
-        bp : string (bus.starts_with[ 'unix:path=' ]) ? bus.mid[ 10,
-            bus.count - 10 ] : bus
-        bl : (bp.count > 0) ? '--bus {bp} ' : ''
-        # orbiter's socket: an address the program opens comes back
-        # here (orbiter's xdg-open), shown in aura
-        so : cstr getenv[ 'ORBITER_SOCKET' ]
-        ol : string [ (so) ? '--opener {string [ so ]} ' : '' ]
-        args : (display.count > 0)
-            ? '--wayland {display} {fl}{bl}{ol}{prog}' : '{ol}{prog}'
-        host_module[ 'console', null, args ]
+        host_module[ 'console', null,
+                     program_args[ prog, display, fonts, bus ] ]
 
     # host a module's app in this pane, on a file or with args alone
     # the file is the instance's own: its source, or the module it
@@ -6844,7 +6837,10 @@ Control Editor
         # press
         pel  : (layers) ? cast EditorLayer [ layers['content'] ] : null
         pins : vec i32 pinned_rows[]
-        if [ pel && pel.bounds && pins.count > 0 ]
+        # a running app shown in the pane hides the band: its press
+        live : bool [ run_view && app_view && !stopped[]
+            && !run_view.ended && !run_view.held ]
+        if [ !live && pel && pel.bounds && pins.count > 0 ]
             plh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             # event pos is CONTENT space; the band is at the top of the
             # VIEW
@@ -7473,9 +7469,13 @@ Control Editor
         # the finder owns the keyboard while it is up: forwarding to the
         # app ate escape, so the list could not be closed
         ui_keys : bool [ nav_list || show_hits ]
+        # ctrl/cmd keys are the app's too (ctrl+c ends its program);
+        # ctrl/cmd + r stays orbiter's run toggle
+        own_run : bool [ (ev.key.ctrl || ev.key.meta)
+                         && i32[ ev.key.unicode ] == 82 ]
         if [
             run_view && app_view && !run_view.held && !run_view.ended
-            && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
+            && !ui_keys && !own_run ]
             run_view.on_key*[ ev ]
             return
         if [ rview && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
@@ -7732,6 +7732,24 @@ Control Editor
         pristine = false
 
 # bytes from the host as text (string[ @v[0] ] is a pointer cast)
+# a program's console line: its display, X11, fonts, bus and opener
+func program_args [ prog: string, display: string, fonts: string,
+                    bus: string ] -> string
+    fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''
+    # paths, so a bound console is handed each one read only
+    bp : string (bus.starts_with[ 'unix:path=' ]) ? bus.mid[ 10,
+        bus.count - 10 ] : bus
+    bl : (bp.count > 0) ? '--bus {bp} ' : ''
+    # orbiter's socket: an address the program opens comes back
+    # here (orbiter's xdg-open), shown in aura
+    so : cstr getenv[ 'ORBITER_SOCKET' ]
+    ol : string [ (so) ? '--opener {string [ so ]} ' : '' ]
+    # orbiter's own X11 display, for programs that speak only X
+    xd : string [ (display.count > 0) ? wlc_x11_display[] : '' ]
+    xl : (xd.count > 0) ? '--x11 {xd} ' : ''
+    return (display.count > 0)
+        ? '--wayland {display} {xl}{fl}{bl}{ol}{prog}' : '{ol}{prog}'
+
 func bytes_text [ b: vec u8 ] -> string
     tb : local i8 [ 1024 ]
     tn : i32 [ (b.count < 1023) ? i32[ b.count ] : 1023 ]

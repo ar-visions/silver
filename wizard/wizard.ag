@@ -1306,6 +1306,9 @@ element InstallWizard
     mutable swap_word : string
     # orbiter-os's partition's uuid: read, or given to mkfs
     mutable ruuid     : string
+    # into a Windows partition, and its NTFS serial (blkid's)
+    mutable in_win    : bool
+    mutable win_ser   : string
     mutable user    : string
     mutable pass    : string
     mutable again   : string
@@ -1588,8 +1591,8 @@ element InstallWizard
             if [ beside ]
                 pt : part[]
                 if [ !pt ] return 'Choose the partition for the folder.'
-                if [ pt.fs != 'ext4' && !dry_run ]
-                    return 'The folder needs an ext4 partition.'
+                if [ pt.fs != 'ext4' && pt.fs != 'ntfs' && !dry_run ]
+                    return 'The folder needs an ext4 or NTFS partition.'
                 if [ !esp[] ] return 'This disk has no EFI partition.'
             if [ fresh ]
                 if [ !esp[] ] return 'This disk has no EFI partition.'
@@ -1644,6 +1647,12 @@ element InstallWizard
             'orbiter.swap=', 'vt.handoff=', 'resume=' ]
         out : 'orbiter.uuid={uuid} orbiter.root={root}'
         if [ efi ] out = 'initrd=\\EFI\\orbiter\\initramfs {out}'
+        # in a Windows partition: the image there, the kernel beside it
+        if [ in_win ]
+            out = 'initrd=\\orbiter-os\\boot\\initramfs'
+            out = '{out} orbiter.ntfs={win_ser}'
+            out = '{out} orbiter.image=/orbiter-os/root.img'
+            out = '{out} orbiter.root={root}'
         if [ swap_word.count > 0 ] out = '{out} {swap_word}'
         # from another system: orbiter-os's own words, not its
         if [ !booted_os[] ]
@@ -1667,7 +1676,7 @@ element InstallWizard
 
     # orbiter.root: the folder on the partition, or all of it
     func root_dir [] -> string
-        return (beside) ? '/orbiter-os' : '/'
+        return (beside && !in_win) ? '/orbiter-os' : '/'
 
     # the tree's place on its partition, for a menu's paths
     func tree_rel [] -> string
@@ -1771,6 +1780,8 @@ element InstallWizard
         problems = vec string []
         notes    = vec string []
         boot     = BootKind.none
+        in_win   = false
+        win_ser  = ''
         dk : disk[]
         if [ !dk ] return
         tools : vec string [] [ 'sfdisk', 'mkfs.vfat', 'mkfs.ext4',
@@ -1843,6 +1854,47 @@ element InstallWizard
             s.dst = mnt
             s.fs  = 'ext4'
             if [ lp ] lmnt = '/run/wizard/linux'
+        el [ beside && part[] && part[].fs == 'ntfs' ]
+            # in a Windows partition: one ext4 image in its orbiter-os
+            # folder holds the system, the kernel beside it
+            pt : part[]
+            es : esp[]
+            espn = es.number
+            rdev = '/dev/{pt.name}'
+            in_win = true
+            ser : vec string capture[ 'lsblk -no UUID {rdev}' ]
+            if [ ser.count > 0 ] win_ser = ser[ 0 ]
+            if [ win_ser.count != 16 ]
+                problems.push[ 'No NTFS serial for {rdev}.' ]
+            ruuid = read_line[ '/proc/sys/kernel/random/uuid' ]
+            boot = BootKind.windows
+            for [ f: string ] in vec string [] [ 'orbiter.efi',
+                                                 'ntfs_x64.efi' ]
+                fp : path '{base}/boot/{f}'
+                if [ !fp.exists[] ] problems.push[ 'Missing {fp}' ]
+            img : '{mnt}/orbiter-os/root.img'
+            tree = '/run/wizard/image'
+            root = '/'
+            room : i64 [ need ]
+            if [ room < 0 ] room = tree_bytes[ source ]
+            room = room + 16 * GIB
+            sz : size_text[ room ]
+            notes.push[ 'orbiter-os\\root.img on {rdev}: {sz}' ]
+            fs : 'Windows must be shut down fully (no Fast Startup).'
+            notes.push[ fs ]
+            s : step[ StepKind.mount, 'Mount {rdev} (Windows)' ]
+            s.src = rdev
+            s.dst = mnt
+            s.fs  = 'ntfs3'
+            s = step[ StepKind.run, 'Make orbiter-os\\root.img, {sz}' ]
+            s.cmd = 'mkdir -p {mnt}/orbiter-os/boot && rm -f {img}'
+            s.cmd = '{s.cmd} && fallocate -l {room} {img}'
+            s = step[ StepKind.run, 'Format the image as ext4' ]
+            s.cmd = 'mkfs.ext4 -q -F -L orbiter-os -U {ruuid} {img}'
+            s = step[ StepKind.mount, 'Mount the image' ]
+            s.src = img
+            s.dst = tree
+            s.fs  = 'ext4'
         el [ beside ]
             pt : part[]
             es : esp[]
@@ -1948,17 +2000,42 @@ element InstallWizard
             if [ fresh && lp ]
                 s = step[ StepKind.unmount, 'Unmount /dev/{lp.name}' ]
                 s.dst = lmnt
+        win : bool [ in_win ]
+        # in a Windows partition: the kernel beside the image
+        if [ win ]
+            ob : 'orbiter-os\\boot'
+            s = step[ StepKind.file, 'Copy the kernel to {ob}' ]
+            s.src = kern
+            s.dst = '{mnt}/orbiter-os/boot/vmlinuz.efi'
+            s = step[ StepKind.file, 'Copy the initramfs to {ob}' ]
+            s.src = rd
+            s.dst = '{mnt}/orbiter-os/boot/initramfs'
+            s = step[ StepKind.unmount, 'Unmount the image' ]
+            s.dst = tree
         esd : part_dev[ dk.name, espn ]
         s = step[ StepKind.mount, 'Mount {esd}' ]
         s.src = esd
         s.dst = efi
         s.fs  = 'vfat'
-        s = step[ StepKind.file, 'Copy the kernel to EFI' ]
-        s.src = kern
-        s.dst = '{efi}/EFI/orbiter/vmlinuz.efi'
-        s = step[ StepKind.file, 'Copy the initramfs to EFI' ]
-        s.src = rd
-        s.dst = '{efi}/EFI/orbiter/initramfs'
+        if [ win ]
+            # our boot program reads its line, then the kernel from
+            # NTFS through the driver beside it
+            s = step[ StepKind.file, 'Copy the boot program to EFI' ]
+            s.src = '{base}/boot/orbiter.efi'
+            s.dst = '{efi}/EFI/orbiter/orbiter.efi'
+            s = step[ StepKind.file, 'Copy the NTFS driver to EFI' ]
+            s.src = '{base}/boot/ntfs_x64.efi'
+            s.dst = '{efi}/EFI/orbiter/ntfs_x64.efi'
+            s = step[ StepKind.write, 'Write the boot line to EFI' ]
+            s.dst  = '{efi}/EFI/orbiter/cmdline.txt'
+            s.text = '{boot_line[ ruuid, root, true ]}\n'
+        el
+            s = step[ StepKind.file, 'Copy the kernel to EFI' ]
+            s.src = kern
+            s.dst = '{efi}/EFI/orbiter/vmlinuz.efi'
+            s = step[ StepKind.file, 'Copy the initramfs to EFI' ]
+            s.src = rd
+            s.dst = '{efi}/EFI/orbiter/initramfs'
         if [ boot == BootKind.systemd_boot || boot == BootKind.refind ]
             mt : string [ (boot == BootKind.refind)
                 ? '{efi}/EFI/orbiter/refind_linux.conf'
@@ -1978,14 +2055,21 @@ element InstallWizard
         bt : string [ 'Add orbiter-os to the boot menu, first' ]
         if [ keep_boot ]
             bt = 'Add orbiter-os to the boot menu; the default stays'
-        s = step[ StepKind.boot, bt ]
-        s.src    = rdev
-        s.dst    = root
-        s.second = keep_boot
-        mk : string [ (keep_boot) ? '--create-only' : '--create' ]
-        s.cmd = 'efibootmgr {mk} --disk {dev} --part {espn}'
-        s.cmd = '{s.cmd} --label orbiter-os'
-        s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\vmlinuz.efi\''
+        if [ win ]
+            # the boot program takes no options: its line is the file
+            s = step[ StepKind.run, bt ]
+            s.cmd = 'boot_second efibootmgr --create-only --disk {dev}'
+            s.cmd = '{s.cmd} --part {espn} --label orbiter-os'
+            s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\orbiter.efi\''
+        el
+            s = step[ StepKind.boot, bt ]
+            s.src    = rdev
+            s.dst    = root
+            s.second = keep_boot
+            mk : string [ (keep_boot) ? '--create-only' : '--create' ]
+            s.cmd = 'efibootmgr {mk} --disk {dev} --part {espn}'
+            s.cmd = '{s.cmd} --label orbiter-os'
+            s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\vmlinuz.efi\''
         s = step[ StepKind.unmount, 'Unmount {rdev}' ]
         s.dst = mnt
         if [ boot == BootKind.grub_debian ]
@@ -2917,6 +3001,45 @@ expect func t_disk_gaps [] -> bool
     return ok && at_end && freed
 
 # into free space after shrinking the ext4: the plan's commands
+# into a Windows partition: the image, the kernel beside it, the
+# boot program and its line on the EFI partition, a firmware entry
+expect func t_windows_plan [] -> bool
+    dk : test_disk[]
+    w : InstallWizard [ dry_run: true, source: '/' ]
+    if [ !w.lines ] w.lines = vec string []
+    if [ !w.swap_word ] w.swap_word = ''
+    w.user = 'test'
+    w.pass = 'test'
+    w.host = 'test'
+    w.keys = 'us'
+    w.zone = 'UTC'
+    w.disks = vec Disk [] [ dk ]
+    w.disk_at = 0
+    w.beside = true
+    w.part_at = 2
+    w.make_plan[]
+    cmds : string ''
+    for [ st: Step ] in w.plan
+        cmds = '{cmds}{st.title} | {w.step_sh[ st ]}\n'
+    log 'wizard windows plan:\n{cmds}'
+    want : vec string [] [ 'mount -t ntfs3 \'/dev/tst3\'',
+        'fallocate -l ', '/run/wizard/root/orbiter-os/root.img',
+        'mount -t ext4 \'/run/wizard/root/orbiter-os/root.img\'',
+        '/run/wizard/root/orbiter-os/boot/vmlinuz.efi',
+        '/run/wizard/efi/EFI/orbiter/orbiter.efi',
+        '/run/wizard/efi/EFI/orbiter/ntfs_x64.efi',
+        'orbiter.image=/orbiter-os/root.img',
+        'initrd=\\orbiter-os\\boot\\initramfs',
+        '--loader \'\\EFI\\orbiter\\orbiter.efi\'' ]
+    ok : bool [ true ]
+    for [ x: string ] in want
+        if [ cmds.index_of[ x ] < 0 ]
+            log 'wizard windows plan: missing {x}'
+            ok = false
+    # no kernel or entry of the plain path
+    if [ cmds.index_of[ 'EFI/orbiter/vmlinuz.efi' ] >= 0 ] ok = false
+    return ok && w.in_win
+
 expect func t_free_plan [] -> bool
     dk : test_disk[]
     dk.shrink_at = 1

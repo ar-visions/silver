@@ -15,6 +15,8 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <signal.h>
+#include <xcb/xcb.h>
+#include <xcb/res.h>
 #include <poll.h>
 #include <pthread.h>
 #include <wayland-server-core.h>
@@ -31,6 +33,7 @@
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/xwayland.h>
 #include <wlr/util/edges.h>
 #include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
@@ -39,6 +42,8 @@
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/types/wlr_pointer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/interfaces/wlr_keyboard.h>
 #include <wlr/util/log.h>
 #include <xkbcommon/xkbcommon.h>
@@ -60,12 +65,31 @@ static struct wlr_scene         *g_scene;
 static struct wlr_scene_output_layout *g_scene_layout;
 static struct wlr_output_layout *g_layout;
 static struct wlr_xdg_shell     *g_xdg;
+// X11 programs: an X server of our own, its windows ours too
+static struct wlr_xwayland      *g_xwl;
+// the output at 0 no window draws on: X's one screen
+static struct wlr_output        *g_base;
+// the last window that asked to come forward (0 none); the shell
+// takes it
+static uint64_t                  g_asked;
+// the last window that asked to be minimized (0 none)
+static uint64_t                  g_hide;
+// the last window that asked into or out of fullscreen (0 none)
+static uint64_t                  g_full_asked;
+// a window's pointer held still (a game's mouse look): its constraint,
+// and the raw motion orbiter sends while it holds
+static struct wlr_pointer_constraints_v1      *g_constraints;
+static struct wlr_relative_pointer_manager_v1 *g_relative;
+static struct wlr_pointer_constraint_v1       *g_held;
+static struct wl_listener                      g_new_constraint;
+static void on_new_constraint(struct wl_listener *l, void *data);
 static struct wlr_seat          *g_seat;
 static struct wlr_keyboard       g_kb;
 static const char               *g_socket;
 static int                       g_w, g_h;
 
 static struct wl_listener l_new_xdg, l_kb_key, l_kb_mods, l_client, l_deco;
+static struct wl_listener l_new_xw;
 static int g_commits;
 static int g_fullscreen;   // toplevels open fullscreen: no shadows, and apps that hide their chrome do
 
@@ -90,7 +114,9 @@ static uint32_t now_ms(void) {
 
 struct toplevel {
     uint64_t                 id;
+    // an xdg toplevel, or an X11 window (one or the other)
     struct wlr_xdg_toplevel *xdg;
+    struct wlr_xwayland_surface *xw;
     struct wlr_scene_tree   *tree;
     struct wlr_output       *out;
     struct wlr_scene_output *sout;
@@ -117,6 +143,14 @@ struct toplevel {
     uint64_t                 gen;
     struct wl_listener       map, unmap, destroy, frame_l, commit_l;
     struct wl_listener       surf_l;
+    // an X11 window's surface comes and goes (associate)
+    struct wl_listener       assoc_l, dissoc_l, req_l, act_l, min_l;
+    // it asks for the whole screen, and has it
+    struct wl_listener       full_l;
+    bool                     full;
+    bool                     assoc;
+    // it was shown before: shown again (out of its tray), it asks
+    bool                     shown_once;
     struct wl_list           link;
 };
 
@@ -130,16 +164,46 @@ static struct toplevel *top_of(uint64_t id) {
     return NULL;
 }
 
+// a window's surface, its size asked (its own units), its activation
+static struct wlr_surface *top_surface(struct toplevel *t) {
+    if (!t) return NULL;
+    if (t->xdg) return t->xdg->base->surface;
+    return (t->xw && t->assoc) ? t->xw->surface : NULL;
+}
+
+static void top_size(struct toplevel *t, int w, int h) {
+    if (t->xdg) wlr_xdg_toplevel_set_size(t->xdg, w, h);
+    else if (t->xw && w > 0 && h > 0)
+        wlr_xwayland_surface_configure(t->xw, 0, 0, w, h);
+}
+
+// the X11 window last raised: X's top window at 0, 0, so the one
+// the X server gives clicks to, and the one a menu belongs to
+static struct toplevel *g_xtop;
+
+// X's stacking follows ours: the window under our pointer or focus
+// is X's top, or X sends its clicks to another at the same place
+static void x_raise(struct toplevel *t) {
+    if (!t || !t->xw || g_xtop == t) return;
+    wlr_xwayland_surface_restack(t->xw, NULL, XCB_STACK_MODE_ABOVE);
+    g_xtop = t;
+}
+
+static void surface_activate(struct wlr_surface *s, bool on) {
+    struct wlr_xdg_toplevel *xt = wlr_xdg_toplevel_try_from_wlr_surface(s);
+    if (xt) { wlr_xdg_toplevel_set_activated(xt, on); return; }
+    struct wlr_xwayland_surface *xs = wlr_xwayland_surface_try_from_wlr_surface(s);
+    if (xs) wlr_xwayland_surface_activate(xs, on);
+}
+
 static void focus_toplevel(struct toplevel *t) {
-    if (!t || !t->xdg) return;
-    struct wlr_surface *surf = t->xdg->base->surface;
+    struct wlr_surface *surf = top_surface(t);
+    if (!surf) return;
     struct wlr_surface *prev = g_seat->keyboard_state.focused_surface;
     if (prev == surf) { g_focused = t; return; }
-    if (prev) {
-        struct wlr_xdg_toplevel *pt = wlr_xdg_toplevel_try_from_wlr_surface(prev);
-        if (pt) wlr_xdg_toplevel_set_activated(pt, false);
-    }
-    wlr_xdg_toplevel_set_activated(t->xdg, true);
+    if (prev) surface_activate(prev, false);
+    surface_activate(surf, true);
+    x_raise(t);
     wlr_seat_keyboard_notify_enter(g_seat, surf, g_kb.keycodes, g_kb.num_keycodes, &g_kb.modifiers);
     g_focused = t;
 }
@@ -151,11 +215,15 @@ static double g_scale = 1.0;
 // pixels in a window's own units
 static int lg(int px) { return (int)lround(px / g_scale); }
 
+// the real monitor's refresh in mHz; 0 until told (wlroots: 60 Hz)
+static int g_refresh;
+
+// every output paces its frames at the monitor's refresh
 static void output_mode(struct wlr_output *o, int w, int h) {
     struct wlr_output_state st;
     wlr_output_state_init(&st);
     wlr_output_state_set_enabled(&st, true);
-    wlr_output_state_set_custom_mode(&st, w, h, 0);
+    wlr_output_state_set_custom_mode(&st, w, h, g_refresh);
     wlr_output_state_set_scale(&st, g_scale);
     wlr_output_commit_state(o, &st);
     wlr_output_state_finish(&st);
@@ -251,15 +319,20 @@ static void on_surface_commit(struct wl_listener *l, void *data) {
 static void on_map(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, map);
     t->mapped = true;
-    if (!t->sheet) {
+    if (!t->sheet && t->xdg) {
         // tiled, not maximized: Firefox flickers when maximized
         wlr_xdg_toplevel_set_tiled(t->xdg, WLR_EDGE_TOP | WLR_EDGE_BOTTOM
             | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
-        wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
     }
+    if (!t->sheet) top_size(t, lg(t->w), lg(t->h));
     focus_toplevel(t);
-    fprintf(stderr, "wayland: window %llu mapped '%s' (%s)\n", (unsigned long long)t->id,
-        t->xdg->title ? t->xdg->title : "", t->xdg->app_id ? t->xdg->app_id : "");
+    if (t->shown_once) g_asked = t->id;
+    t->shown_once = true;
+    const char *ti = t->xdg ? t->xdg->title : t->xw->title;
+    const char *ap = t->xdg ? t->xdg->app_id : t->xw->class;
+    fprintf(stderr, "wayland: window %llu mapped '%s' (%s)%s\n",
+        (unsigned long long)t->id, ti ? ti : "", ap ? ap : "",
+        t->xw ? " x11" : "");
 }
 
 static void on_unmap(struct wl_listener *l, void *data) {
@@ -268,22 +341,72 @@ static void on_unmap(struct wl_listener *l, void *data) {
     if (g_focused == t) g_focused = NULL;
 }
 
+// it asks to be minimized: out of its pane, still running
+static void on_xdg_minimize(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, min_l);
+    g_hide = t->id;
+}
+
+// it asks for the whole screen, or out of it: the shell gives it
+// the monitor's size and a window of its own there
+static void on_xdg_fullscreen(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, full_l);
+    bool on = t->xdg->requested.fullscreen;
+    if (t->xdg->base->initialized) wlr_xdg_toplevel_set_fullscreen(t->xdg, on);
+    t->full = on;
+    g_full_asked = t->id;
+    fprintf(stderr, "wayland: window %llu %s fullscreen\n",
+        (unsigned long long)t->id, on ? "asks" : "leaves");
+}
+
 static void on_destroy(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, destroy);
-    wl_list_remove(&t->map.link);
-    wl_list_remove(&t->unmap.link);
+    if (t->xdg || t->assoc) {
+        wl_list_remove(&t->map.link);
+        wl_list_remove(&t->unmap.link);
+        wl_list_remove(&t->surf_l.link);
+    }
+    if (t->xw) {
+        wl_list_remove(&t->assoc_l.link);
+        wl_list_remove(&t->dissoc_l.link);
+        wl_list_remove(&t->req_l.link);
+        wl_list_remove(&t->act_l.link);
+        wl_list_remove(&t->min_l.link);
+        wl_list_remove(&t->full_l.link);
+    }
+    if (t->xdg) {
+        wl_list_remove(&t->min_l.link);
+        wl_list_remove(&t->full_l.link);
+    }
     wl_list_remove(&t->destroy.link);
     wl_list_remove(&t->frame_l.link);
     wl_list_remove(&t->commit_l.link);
-    wl_list_remove(&t->surf_l.link);
     wl_list_remove(&t->link);
     if (g_focused == t) g_focused = NULL;
+    if (g_xtop == t) g_xtop = NULL;
     if (t->frame_buf) wlr_buffer_unlock(t->frame_buf);
     wlr_scene_output_destroy(t->sout);
     wlr_output_layout_remove(g_layout, t->out);
     wlr_output_destroy(t->out);
     fprintf(stderr, "wayland: window %llu closed\n", (unsigned long long)t->id);
     free(t);
+}
+
+// a window: its own output, at its own place
+static struct toplevel *top_new(void) {
+    struct toplevel *t = calloc(1, sizeof(*t));
+    t->id  = g_next_id++;
+    t->w   = g_w; t->h = g_h;
+    t->x   = (int)(t->id * SPAN);
+    t->out = wlr_headless_add_output(g_backend, t->w, t->h);
+    wlr_output_init_render(t->out, g_allocator, g_renderer);
+    t->frame_l.notify  = on_top_frame;  wl_signal_add(&t->out->events.frame,  &t->frame_l);
+    t->commit_l.notify = on_top_commit; wl_signal_add(&t->out->events.commit, &t->commit_l);
+    output_mode(t->out, t->w, t->h);
+    struct wlr_output_layout_output *lo = wlr_output_layout_add(g_layout, t->out, t->x, 0);
+    t->sout = wlr_scene_output_create(g_scene, t->out);
+    wlr_scene_output_layout_add_output(g_scene_layout, lo, t->sout);
+    return t;
 }
 
 static void on_new_xdg_surface(struct wl_listener *l, void *data) {
@@ -297,20 +420,8 @@ static void on_new_xdg_surface(struct wl_listener *l, void *data) {
         return;
     }
     if (xs->role != WLR_XDG_SURFACE_ROLE_TOPLEVEL) return;
-    struct toplevel *t = calloc(1, sizeof(*t));
-    t->id  = g_next_id++;
+    struct toplevel *t = top_new();
     t->xdg = xs->toplevel;
-    t->w   = g_w; t->h = g_h;
-    t->x   = (int)(t->id * SPAN);
-    // its own output, at its own place
-    t->out = wlr_headless_add_output(g_backend, t->w, t->h);
-    wlr_output_init_render(t->out, g_allocator, g_renderer);
-    t->frame_l.notify  = on_top_frame;  wl_signal_add(&t->out->events.frame,  &t->frame_l);
-    t->commit_l.notify = on_top_commit; wl_signal_add(&t->out->events.commit, &t->commit_l);
-    output_mode(t->out, t->w, t->h);
-    struct wlr_output_layout_output *lo = wlr_output_layout_add(g_layout, t->out, t->x, 0);
-    t->sout = wlr_scene_output_create(g_scene, t->out);
-    wlr_scene_output_layout_add_output(g_scene_layout, lo, t->sout);
     t->tree = wlr_scene_xdg_surface_create(&g_scene->tree, xs);
     wlr_scene_node_set_position(&t->tree->node, t->x, 0);
     xs->data = t->tree;
@@ -318,11 +429,187 @@ static void on_new_xdg_surface(struct wl_listener *l, void *data) {
     t->unmap.notify   = on_unmap;   wl_signal_add(&xs->surface->events.unmap, &t->unmap);
     t->destroy.notify = on_destroy; wl_signal_add(&xs->events.destroy,        &t->destroy);
     t->surf_l.notify  = on_surface_commit; wl_signal_add(&xs->surface->events.commit, &t->surf_l);
+    t->min_l.notify   = on_xdg_minimize; wl_signal_add(&t->xdg->events.request_minimize, &t->min_l);
+    t->full_l.notify  = on_xdg_fullscreen; wl_signal_add(&t->xdg->events.request_fullscreen, &t->full_l);
     wl_list_insert(g_tops.prev, &t->link);
     // sized before its first commit, so it opens the size of its pane
     wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
     if (g_fullscreen) wlr_xdg_toplevel_set_fullscreen(t->xdg, true);
     fprintf(stderr, "wayland: window %llu new\n", (unsigned long long)t->id);
+}
+
+// ---- X11 windows ---------------------------------------------------------
+
+// a dialog keeps its own size; a window, the pane's
+static void on_xw_commit(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, surf_l);
+    struct wlr_xwayland_surface *xs = t->xw;
+    if (!t->sheet) { t->cw = xs->width; t->ch = xs->height; return; }
+    if (xs->width <= 0 || xs->height <= 0) return;
+    if (xs->width == t->w && xs->height == t->h) return;
+    t->w = xs->width; t->h = xs->height;
+    t->epoch += 1;
+    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
+        (int)ceil((t->h + SHEET_ROOM) * g_scale));
+}
+
+static void on_xw_associate(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, assoc_l);
+    struct wlr_surface *s = t->xw->surface;
+    t->assoc = true;
+    t->sheet = t->xw->parent || t->xw->modal;
+    t->tree = wlr_scene_subsurface_tree_create(&g_scene->tree, s);
+    wlr_scene_node_set_position(&t->tree->node, t->x, 0);
+    t->map.notify    = on_map;       wl_signal_add(&s->events.map,    &t->map);
+    t->unmap.notify  = on_unmap;     wl_signal_add(&s->events.unmap,  &t->unmap);
+    t->surf_l.notify = on_xw_commit; wl_signal_add(&s->events.commit, &t->surf_l);
+    // on its own screen from the start: its menus open beside it
+    if (t->sheet)
+        wlr_xwayland_surface_configure(t->xw, 0, 0,
+            t->xw->width ? t->xw->width : 1, t->xw->height ? t->xw->height : 1);
+    else top_size(t, lg(t->w), lg(t->h));
+}
+
+static void on_xw_dissociate(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, dissoc_l);
+    if (!t->assoc) return;
+    wl_list_remove(&t->map.link);
+    wl_list_remove(&t->unmap.link);
+    wl_list_remove(&t->surf_l.link);
+    t->assoc  = false;
+    t->mapped = false;
+    t->tree   = NULL;
+    if (g_focused == t) g_focused = NULL;
+}
+
+// it asks a size: a dialog has it, a window keeps its pane's
+static void on_xw_request(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, req_l);
+    struct wlr_xwayland_surface_configure_event *ev = data;
+    if (t->sheet || !t->w)
+        wlr_xwayland_surface_configure(t->xw, 0, 0, ev->width, ev->height);
+    else
+        top_size(t, lg(t->w), lg(t->h));
+}
+
+// X11 windows all sit at 0, 0 of the X screen (Xwayland sends input
+// to the surface the pointer is on); a menu or tooltip (override
+// redirect) places itself there, and goes where its window is ours
+struct xpop {
+    struct wlr_xwayland_surface *xs;
+    struct wlr_scene_tree       *tree;
+    struct wl_listener           assoc_l, dissoc_l, map, unmap, geo, destroy;
+    bool                         assoc;
+};
+
+// the window it belongs to: its parent, else X's top one, else the
+// newest
+static int xpop_base(struct xpop *p) {
+    struct toplevel *t, *b = NULL;
+    wl_list_for_each(t, &g_tops, link) {
+        if (!t->xw) continue;
+        if (p->xs->parent && t->xw == p->xs->parent) return t->x;
+        b = t;
+    }
+    if (g_xtop) return g_xtop->x;
+    return b ? b->x : 0;
+}
+
+static void xpop_map(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, map);
+    p->tree = wlr_scene_subsurface_tree_create(&g_scene->tree, p->xs->surface);
+    wlr_scene_node_set_position(&p->tree->node, xpop_base(p) + p->xs->x, p->xs->y);
+}
+static void xpop_unmap(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, unmap);
+    if (p->tree) wlr_scene_node_destroy(&p->tree->node);
+    p->tree = NULL;
+}
+static void xpop_geo(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, geo);
+    if (p->tree)
+        wlr_scene_node_set_position(&p->tree->node, xpop_base(p) + p->xs->x, p->xs->y);
+}
+static void xpop_assoc(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, assoc_l);
+    struct wlr_surface *s = p->xs->surface;
+    p->assoc = true;
+    p->map.notify   = xpop_map;   wl_signal_add(&s->events.map,   &p->map);
+    p->unmap.notify = xpop_unmap; wl_signal_add(&s->events.unmap, &p->unmap);
+}
+static void xpop_dissoc(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, dissoc_l);
+    if (!p->assoc) return;
+    wl_list_remove(&p->map.link);
+    wl_list_remove(&p->unmap.link);
+    p->assoc = false;
+}
+static void xpop_destroy(struct wl_listener *l, void *data) {
+    struct xpop *p = wl_container_of(l, p, destroy);
+    if (p->assoc) { wl_list_remove(&p->map.link); wl_list_remove(&p->unmap.link); }
+    wl_list_remove(&p->assoc_l.link);
+    wl_list_remove(&p->dissoc_l.link);
+    wl_list_remove(&p->geo.link);
+    wl_list_remove(&p->destroy.link);
+    free(p);
+}
+
+// it asks to come forward (Steam's tray: Library, Store)
+static void on_xw_activate(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, act_l);
+    g_asked = t->id;
+}
+
+// it asks to be minimized (its own button, Steam's Hide)
+static void on_xw_minimize(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, min_l);
+    struct wlr_xwayland_minimize_event *ev = data;
+    wlr_xwayland_surface_set_minimized(t->xw, ev->minimize);
+    if (ev->minimize) g_hide = t->id;
+    else g_asked = t->id;
+}
+
+// an X11 window asks for the whole screen, or out of it
+static void on_xw_fullscreen(struct wl_listener *l, void *data) {
+    struct toplevel *t = wl_container_of(l, t, full_l);
+    bool on = t->xw->fullscreen;
+    wlr_xwayland_surface_set_fullscreen(t->xw, on);
+    t->full = on;
+    g_full_asked = t->id;
+    fprintf(stderr, "wayland: window %llu %s fullscreen\n",
+        (unsigned long long)t->id, on ? "asks" : "leaves");
+}
+
+// every program sees the base output alone: a window's own output
+// changing size changed screens under it (Steam, Wine died)
+static bool global_seen(const struct wl_client *c,
+                        const struct wl_global *g, void *data) {
+    if (strcmp(wl_global_get_interface(g)->name, "wl_output") != 0) return true;
+    return g_base && g_base->global == g;
+}
+
+static void on_new_xw(struct wl_listener *l, void *data) {
+    struct wlr_xwayland_surface *xs = data;
+    if (xs->override_redirect) {
+        struct xpop *p = calloc(1, sizeof(*p));
+        p->xs = xs;
+        p->assoc_l.notify  = xpop_assoc;   wl_signal_add(&xs->events.associate,    &p->assoc_l);
+        p->dissoc_l.notify = xpop_dissoc;  wl_signal_add(&xs->events.dissociate,   &p->dissoc_l);
+        p->geo.notify      = xpop_geo;     wl_signal_add(&xs->events.set_geometry, &p->geo);
+        p->destroy.notify  = xpop_destroy; wl_signal_add(&xs->events.destroy,      &p->destroy);
+        return;
+    }
+    struct toplevel *t = top_new();
+    t->xw = xs;
+    t->assoc_l.notify  = on_xw_associate;  wl_signal_add(&xs->events.associate,  &t->assoc_l);
+    t->dissoc_l.notify = on_xw_dissociate; wl_signal_add(&xs->events.dissociate, &t->dissoc_l);
+    t->req_l.notify    = on_xw_request;    wl_signal_add(&xs->events.request_configure, &t->req_l);
+    t->act_l.notify    = on_xw_activate;   wl_signal_add(&xs->events.request_activate,  &t->act_l);
+    t->min_l.notify    = on_xw_minimize;   wl_signal_add(&xs->events.request_minimize,  &t->min_l);
+    t->full_l.notify   = on_xw_fullscreen; wl_signal_add(&xs->events.request_fullscreen, &t->full_l);
+    t->destroy.notify  = on_destroy;       wl_signal_add(&xs->events.destroy,    &t->destroy);
+    wl_list_insert(g_tops.prev, &t->link);
+    fprintf(stderr, "wayland: window %llu new (x11)\n", (unsigned long long)t->id);
 }
 
 // we decorate, which is to say nobody does: clients drop their shadows and
@@ -365,7 +652,7 @@ static struct menu_ref *menu_of(struct toplevel *t) {
     if (!t) return NULL;
     struct menu_ref *m;
     wl_list_for_each(m, &g_menus, link)
-        if (m->surface == t->xdg->base->surface && m->kind) return m;
+        if (m->surface == top_surface(t) && m->kind) return m;
     return NULL;
 }
 
@@ -445,7 +732,7 @@ static void menus_init(void) {
 
 // the window draws its own header: neither decoration protocol took it
 static int csd_of(struct toplevel *t) {
-    if (!t) return 0;
+    if (!t || t->xw) return 0;
     if (t->ssd) return 0;
     struct wlr_server_decoration *d;
     wl_list_for_each(d, &g_kde_deco->decorations, link)
@@ -463,8 +750,12 @@ static int u_wlc_window_pid(uint64_t id);
 static uint64_t u_wlc_window_parent(uint64_t id) {
     struct toplevel *t = top_of(id), *p;
     if (!t || !t->sheet) return 0;
-    if (t->xdg->parent) {
+    if (t->xdg && t->xdg->parent) {
         wl_list_for_each(p, &g_tops, link) if (p->xdg == t->xdg->parent) return p->id;
+        return 0;
+    }
+    if (t->xw && t->xw->parent) {
+        wl_list_for_each(p, &g_tops, link) if (p->xw == t->xw->parent) return p->id;
         return 0;
     }
     int pid = u_wlc_window_pid(id);
@@ -561,7 +852,7 @@ static void apply_sizes(void) {
             t->w = t->want_w; t->h = t->want_h;
             t->asked_at = mono_now();
             t->mode_w = t->w; t->mode_h = t->h;
-            wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+            top_size(t, lg(t->w), lg(t->h));
         }
     }
 }
@@ -635,7 +926,7 @@ static void u_wlc_set_scale(double sc) {
         }
         t->asked_at = mono_now();
         t->mode_w = t->w; t->mode_h = t->h;
-        wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+        top_size(t, lg(t->w), lg(t->h));
     }
 }
 
@@ -661,7 +952,7 @@ WLC_API int wlc_create(int w, int h) {
     wlr_renderer_init_wl_display(g_renderer, g_display);
     g_allocator = wlr_allocator_autocreate(g_backend, g_renderer);
     if (!g_allocator) { fprintf(stderr, "wayland: no allocator\n"); return 0; }
-    wlr_compositor_create(g_display, 5, g_renderer);
+    struct wlr_compositor *comp = wlr_compositor_create(g_display, 5, g_renderer);
     wlr_subcompositor_create(g_display);
     wlr_data_device_manager_create(g_display);
     g_layout = wlr_output_layout_create();
@@ -679,6 +970,10 @@ WLC_API int wlc_create(int w, int h) {
     wl_signal_add(&deco->events.new_toplevel_decoration, &l_deco);
     // the seat: a pointer and a keyboard, both fed by the pane
     g_seat = wlr_seat_create(g_display, "seat0");
+    g_constraints = wlr_pointer_constraints_v1_create(g_display);
+    g_new_constraint.notify = on_new_constraint;
+    wl_signal_add(&g_constraints->events.new_constraint, &g_new_constraint);
+    g_relative = wlr_relative_pointer_manager_v1_create(g_display);
     wlr_seat_set_capabilities(g_seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_keyboard_init(&g_kb, NULL, "silver");
     g_kb_up = true;
@@ -690,7 +985,16 @@ WLC_API int wlc_create(int w, int h) {
     // each window brings its own output; new ones open at this size
     g_w = w; g_h = h;
     wl_list_init(&g_tops);
+    // X11 programs: Xwayland starts with its first client
+    g_xwl = wlr_xwayland_create(g_display, comp, true);
+    if (g_xwl) {
+        l_new_xw.notify = on_new_xw;
+        wl_signal_add(&g_xwl->events.new_surface, &l_new_xw);
+        wlr_xwayland_set_seat(g_xwl, g_seat);
+        fprintf(stderr, "wayland: x11 display %s\n", g_xwl->display_name);
+    }
     menus_init();
+    wl_display_set_global_filter(g_display, global_seen, NULL);
     // a base output at 0, never drawn: clients wait for one before
     // they open a window (windows sit from SPAN on)
     struct wlr_output *base = wlr_headless_add_output(g_backend, w, h);
@@ -698,6 +1002,7 @@ WLC_API int wlc_create(int w, int h) {
     wlr_output_init_render(base, g_allocator, g_renderer);
     output_mode(base, w, h);
     wlr_output_layout_add(g_layout, base, 0, 0);
+    g_base = base;
     l_client.notify = on_client_created;
     wl_display_add_client_created_listener(g_display, &l_client);
     // snaps take wayland-<digit>*; never bare wayland-0
@@ -727,16 +1032,41 @@ __attribute__((destructor)) static void wlc_unload(void) {
 
 WLC_API const char *wlc_socket(void) { return g_socket ? g_socket : ""; }
 
+// the X11 display of ours (:N), "" when none
+WLC_API const char *wlc_x11_display(void) {
+    return (g_xwl && g_xwl->display_name) ? g_xwl->display_name : "";
+}
+
 // the thread does the work now; kept for callers
 WLC_API void wlc_pump(void) {}
 
 // new windows open at this size
 static void u_wlc_resize(int w, int h) { if (w > 0 && h > 0) { g_w = w; g_h = h; } }
+// the real monitor: the base output (X's screen, a program's primary
+// display) takes its size and refresh, so a game sees the screen it
+// will fill and paces to it
+static void u_wlc_screen(int w, int h, int hz) {
+    if (!g_base || w <= 0 || h <= 0) return;
+    int refresh = hz > 0 ? hz * 1000 : g_refresh;
+    if (g_base->width == w && g_base->height == h && refresh == g_refresh) return;
+    bool paced = refresh != g_refresh;
+    g_refresh = refresh;
+    output_mode(g_base, w, h);
+    // windows already open take the new pace at their own size
+    if (paced) {
+        struct toplevel *t;
+        wl_list_for_each(t, &g_tops, link)
+            if (t->out) output_mode(t->out, t->out->width, t->out->height);
+    }
+    fprintf(stderr, "wayland: screen %dx%d at %d Hz\n", w, h, g_base->refresh / 1000);
+}
+static int u_wlc_window_full(uint64_t id) { struct toplevel *t = top_of(id); return t && t->full; }
 
 // toplevels open fullscreen from now on; the focused one follows at once
 static void u_wlc_fullscreen(int on) {
     g_fullscreen = on;
-    if (g_focused) wlr_xdg_toplevel_set_fullscreen(g_focused->xdg, on != 0);
+    if (g_focused && g_focused->xdg)
+        wlr_xdg_toplevel_set_fullscreen(g_focused->xdg, on != 0);
 }
 
 // ---- windows, for the shell ------------------------------------------
@@ -771,18 +1101,21 @@ static int u_wlc_window_open(uint64_t id) {
 
 static const char * u_wlc_window_title(uint64_t id) {
     struct toplevel *t = top_of(id);
-    return (t && t->xdg->title) ? t->xdg->title : "";
+    const char *s = !t ? NULL : t->xdg ? t->xdg->title : t->xw->title;
+    return s ? s : "";
 }
 
 static const char * u_wlc_window_app(uint64_t id) {
     struct toplevel *t = top_of(id);
-    return (t && t->xdg->app_id) ? t->xdg->app_id : "";
+    const char *s = !t ? NULL : t->xdg ? t->xdg->app_id : t->xw->class;
+    return s ? s : "";
 }
 
 // the process that made the window
 static int u_wlc_window_pid(uint64_t id) {
     struct toplevel *t = top_of(id);
     if (!t) return 0;
+    if (t->xw) return (int)t->xw->pid;
     struct wl_client *c = wl_resource_get_client(t->xdg->base->resource);
     pid_t pid = 0; uid_t uid; gid_t gid;
     if (c) wl_client_get_credentials(c, &pid, &uid, &gid);
@@ -795,12 +1128,58 @@ static void u_wlc_window_resize(uint64_t id, int w, int h) {
     if (t && w > 0 && h > 0) { t->want_w = w; t->want_h = h; }
 }
 
-static void u_wlc_window_focus(uint64_t id) { focus_toplevel(top_of(id)); }
+// shown again by the shell: no longer minimized
+static void u_wlc_window_focus(uint64_t id) {
+    struct toplevel *t = top_of(id);
+    if (t && t->xw && t->xw->minimized)
+        wlr_xwayland_surface_set_minimized(t->xw, false);
+    focus_toplevel(t);
+}
 
 // ask the window to close, as its own close button would
 static void u_wlc_window_close(uint64_t id) {
     struct toplevel *t = top_of(id);
-    if (t) wlr_xdg_toplevel_send_close(t->xdg);
+    if (t && t->xdg) wlr_xdg_toplevel_send_close(t->xdg);
+    else if (t && t->xw) wlr_xwayland_surface_close(t->xw);
+}
+
+// a window that did not answer its close: an X11 one loses its
+// connection to X (as xkill does: its pid is its sandbox's), a
+// Wayland one's process ends
+static void u_wlc_window_kill(uint64_t id) {
+    struct toplevel *t = top_of(id);
+    if (!t) return;
+    if (t->xw) {
+        if (!g_xwl || !g_xwl->display_name) return;
+        xcb_connection_t *c = xcb_connect(g_xwl->display_name, NULL);
+        int pid = 0;
+        if (!xcb_connection_has_error(c)) {
+            // Xwayland's own view of the client: its real pid
+            xcb_res_client_id_spec_t spec = { t->xw->window_id,
+                XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID };
+            xcb_res_query_client_ids_reply_t *r = xcb_res_query_client_ids_reply(c,
+                xcb_res_query_client_ids(c, 1, &spec), NULL);
+            if (r) {
+                xcb_res_client_id_value_iterator_t it =
+                    xcb_res_query_client_ids_ids_iterator(r);
+                for (; it.rem; xcb_res_client_id_value_next(&it))
+                    if ((it.data->spec.mask & XCB_RES_CLIENT_ID_MASK_LOCAL_CLIENT_PID) &&
+                        xcb_res_client_id_value_value_length(it.data) >= 1)
+                        pid = (int)*xcb_res_client_id_value_value(it.data);
+                free(r);
+            }
+            xcb_kill_client(c, t->xw->window_id);
+            xcb_flush(c);
+        }
+        xcb_disconnect(c);
+        if (pid > 1 && pid != getpid()) kill(pid, SIGKILL);
+        fprintf(stderr, "wayland: window %llu ended (X client, process %d)\n", (unsigned long long)id, pid);
+        return;
+    }
+    int pid = u_wlc_window_pid(id);
+    if (pid <= 1 || pid == getpid()) return;
+    kill(pid, SIGKILL);
+    fprintf(stderr, "wayland: window %llu ended (process %d)\n", (unsigned long long)id, pid);
 }
 
 // a window's frame: its id (the buffer, reused by the swapchain), and its
@@ -839,17 +1218,72 @@ static struct wlr_surface *surface_at(struct toplevel *t, double x, double y, do
     return ss ? ss->surface : NULL;
 }
 
+struct held { struct wl_listener destroy; };
+
+static void on_constraint_destroy(struct wl_listener *l, void *data) {
+    struct held *h = wl_container_of(l, h, destroy);
+    if (g_held == data) g_held = NULL;
+    wl_list_remove(&h->destroy.link);
+    free(h);
+}
+
+// the pointer over a surface: its constraint, if it asks one, holds
+static void hold_for(struct wlr_surface *s) {
+    struct wlr_pointer_constraint_v1 *c = s ?
+        wlr_pointer_constraints_v1_constraint_for_surface(g_constraints,
+            s, g_seat) : NULL;
+    if (c == g_held) return;
+    if (g_held) wlr_pointer_constraint_v1_send_deactivated(g_held);
+    g_held = c;
+    if (c) wlr_pointer_constraint_v1_send_activated(c);
+}
+
+static void on_new_constraint(struct wl_listener *l, void *data) {
+    struct wlr_pointer_constraint_v1 *c = data;
+    struct held *h = calloc(1, sizeof(*h));
+    h->destroy.notify = on_constraint_destroy;
+    wl_signal_add(&c->events.destroy, &h->destroy);
+    if (c->surface == g_seat->pointer_state.focused_surface) hold_for(c->surface);
+}
+
+// the window whose pointer is held, 0 none; a confined one still
+// moves (a menu kept inside its window), only a locked one is held
+static uint64_t u_wlc_pointer_held(void) {
+    if (!g_held || g_held->type != WLR_POINTER_CONSTRAINT_V1_LOCKED) return 0;
+    struct wlr_surface *root = wlr_surface_get_root_surface(g_held->surface);
+    struct toplevel *t;
+    wl_list_for_each(t, &g_tops, link)
+        if (top_surface(t) == root) return t->id;
+    return 0;
+}
+
+// raw motion (the mouse's own counts) to the window under the pointer
+static void u_wlc_pointer_relative(float dx, float dy) {
+    if (!g_seat || !g_relative) return;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t us = (uint64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    wlr_relative_pointer_manager_v1_send_relative_motion(g_relative, g_seat,
+        us, dx, dy, dx, dy);
+    wlr_seat_pointer_notify_frame(g_seat);
+}
+
 static void u_wlc_pointer_motion(uint64_t id, float x, float y) {
     struct toplevel *t = top_of(id);
     if (!g_seat || !t) return;
+    x_raise(t);
     double sx, sy;
     struct wlr_surface *s = surface_at(t, x, y, &sx, &sy);
     if (s) {
         wlr_seat_pointer_notify_enter(g_seat, s, sx, sy);
-        wlr_seat_pointer_notify_motion(g_seat, now_ms(), sx, sy);
+        // a held pointer stays where it is: the window reads raw motion
+        if (!g_held || g_held->surface != s ||
+            g_held->type != WLR_POINTER_CONSTRAINT_V1_LOCKED)
+            wlr_seat_pointer_notify_motion(g_seat, now_ms(), sx, sy);
     } else {
         wlr_seat_pointer_clear_focus(g_seat);
     }
+    hold_for(s);
     wlr_seat_pointer_notify_frame(g_seat);
 }
 
@@ -857,11 +1291,15 @@ static void u_wlc_pointer_motion(uint64_t id, float x, float y) {
 static void u_wlc_pointer_button(uint64_t id, float x, float y, int button, int state) {
     struct toplevel *t = top_of(id);
     if (!g_seat || !t) return;
+    x_raise(t);
     double sx, sy;
     struct wlr_surface *s = surface_at(t, x, y, &sx, &sy);
     // a press gives the window the keyboard
     if (state) focus_toplevel(t);
-    if (state && s) wlr_seat_pointer_notify_enter(g_seat, s, sx, sy);
+    // a held pointer keeps its surface and place
+    bool held = g_held &&
+        g_seat->pointer_state.focused_surface == g_held->surface;
+    if (state && s && !held) wlr_seat_pointer_notify_enter(g_seat, s, sx, sy);
     uint32_t code = button == 1 ? BTN_RIGHT : button == 2 ? BTN_MIDDLE : BTN_LEFT;
     wlr_seat_pointer_notify_button(g_seat, now_ms(), code, state ? WLR_BUTTON_PRESSED : WLR_BUTTON_RELEASED);
     wlr_seat_pointer_notify_frame(g_seat);
@@ -907,6 +1345,16 @@ static void u_wlc_keys_release(void) {
 
 // ---- the locked api ----------------------------------------------------
 WLC_API void wlc_resize(int w, int h) { pthread_mutex_lock(&g_lock); u_wlc_resize(w, h); pthread_mutex_unlock(&g_lock); }
+WLC_API void wlc_screen(int w, int h, int hz) { pthread_mutex_lock(&g_lock); u_wlc_screen(w, h, hz); pthread_mutex_unlock(&g_lock); }
+WLC_API int wlc_window_full(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_full(id); pthread_mutex_unlock(&g_lock); return r; }
+// the window that last asked into or out of fullscreen, once (0 none)
+WLC_API uint64_t wlc_window_full_asked(void) {
+    pthread_mutex_lock(&g_lock);
+    uint64_t r = g_full_asked;
+    g_full_asked = 0;
+    pthread_mutex_unlock(&g_lock);
+    return r;
+}
 WLC_API void wlc_fullscreen(int on) { pthread_mutex_lock(&g_lock); u_wlc_fullscreen(on); pthread_mutex_unlock(&g_lock); }
 WLC_API int wlc_window_count(void) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_count(); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API uint64_t wlc_window_at(int i) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_at(i); pthread_mutex_unlock(&g_lock); return r; }
@@ -918,6 +1366,7 @@ WLC_API int wlc_window_pid(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u
 WLC_API void wlc_window_resize(uint64_t id, int w, int h) { pthread_mutex_lock(&g_lock); u_wlc_window_resize(id, w, h); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_window_focus(uint64_t id) { pthread_mutex_lock(&g_lock); u_wlc_window_focus(id); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_window_close(uint64_t id) { pthread_mutex_lock(&g_lock); u_wlc_window_close(id); pthread_mutex_unlock(&g_lock); }
+WLC_API void wlc_window_kill(uint64_t id) { pthread_mutex_lock(&g_lock); u_wlc_window_kill(id); pthread_mutex_unlock(&g_lock); }
 WLC_API uint64_t wlc_frame_id(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_frame_id(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API uint64_t wlc_frame_gen(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_frame_gen(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_frame_w(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_frame_w(id); pthread_mutex_unlock(&g_lock); return r; }
@@ -932,6 +1381,26 @@ WLC_API void wlc_pointer_button(uint64_t id, float x, float y, int button, int s
 WLC_API void wlc_pointer_axis(float dx, float dy) { pthread_mutex_lock(&g_lock); u_wlc_pointer_axis(dx, dy); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_key(int glfw, int state) { pthread_mutex_lock(&g_lock); u_wlc_key(glfw, state); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_keys_release(void) { pthread_mutex_lock(&g_lock); u_wlc_keys_release(); pthread_mutex_unlock(&g_lock); }
+// the window that last asked to come forward, once (0 none)
+WLC_API uint64_t wlc_pointer_held(void) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_pointer_held(); pthread_mutex_unlock(&g_lock); return r; }
+WLC_API void wlc_pointer_relative(float dx, float dy) { pthread_mutex_lock(&g_lock); u_wlc_pointer_relative(dx, dy); pthread_mutex_unlock(&g_lock); }
+
+// the window that last asked to be minimized, once (0 none)
+WLC_API uint64_t wlc_window_hide_asked(void) {
+    pthread_mutex_lock(&g_lock);
+    uint64_t r = g_hide;
+    g_hide = 0;
+    pthread_mutex_unlock(&g_lock);
+    return r;
+}
+
+WLC_API uint64_t wlc_window_asked(void) {
+    pthread_mutex_lock(&g_lock);
+    uint64_t r = g_asked;
+    g_asked = 0;
+    pthread_mutex_unlock(&g_lock);
+    return r;
+}
 WLC_API uint64_t wlc_window_epoch(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_window_epoch(id); pthread_mutex_unlock(&g_lock); return r; }
 // it has drawn at the size last asked of it
 WLC_API int wlc_window_drawn(uint64_t id) {
@@ -962,7 +1431,8 @@ WLC_API int wlc_spawn(const char *cmd) {
         setenv("QT_QPA_PLATFORM", "wayland", 1);
         setenv("MOZ_ENABLE_WAYLAND", "1", 1);
         setenv("SDL_VIDEODRIVER", "wayland", 1);
-        unsetenv("DISPLAY");
+        if (g_xwl && g_xwl->display_name) setenv("DISPLAY", g_xwl->display_name, 1);
+        else unsetenv("DISPLAY");
         signal(SIGPIPE, SIG_DFL);
         execl("/bin/sh", "/bin/sh", "-c", cmd, (char *)NULL);
         _exit(127);
