@@ -12,9 +12,11 @@ import <stdlib.h>
 import <string.h>
 import <math.h>
 import <vulkan/vulkan.h>
+    # a module that calls vulkan must name the library it links
+    -lvulkan
 
 import Poly
-import Design
+import Nodes
 import View
 import Stage
 import Stencil

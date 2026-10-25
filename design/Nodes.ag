@@ -1,0 +1,614 @@
+# the design: mesh nodes, objects, and the project folder
+extend design
+
+# where unsaved copies of a design's files are kept ('' none: an
+# editor sets it); a copy there, under the original's own path,
+# is read in its place
+persist shadow_root : string
+
+func set_shadow_root [ r: string ]
+    shadow_root = r
+
+# the file to read for p: its kept copy when there is one
+func shadowed [ p: path ] -> path
+    if [ !shadow_root || shadow_root.count == 0 ] return p
+    kept : path '{shadow_root}{p}'
+    if [ kept.exists[] ] return kept
+    return p
+
+# a mesh node makes one mesh from the one it names as input
+class MeshNode
+    public name  : string
+    public input : string
+    # switched off on its card: its input passes through
+    public muted : bool
+
+    func make [ src: Poly, dir: path ] -> Poly
+        return src
+
+    # the members its properties panel shows and edits
+    func props [] -> vec string
+        return vec string []
+
+    # its points as weighted sums of its input's (the compute
+    # passes run these); none: the input's own
+    func steps [ src: Poly, dir: path ] -> vec Stencil
+        return vec Stencil []
+
+    # its tables depend on where the points are (a merge)
+    func reads_points [] -> bool
+        return false
+
+# the cage: a .mesh file in the project, read once and edited
+MeshNode Cage
+    public file       : string
+    # the shape alone (no uv, colour or material): an edit's pass
+    public shape_only : bool
+    intern poly       : Poly
+    intern bare       : Poly
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ !poly ]
+            p : path '{dir}/{file}'
+            poly = read_mesh[ shadowed[ p ] ]
+            if [ !poly ] log 'aeon: no mesh at {p}'
+        if [ !poly || !shape_only ] return poly
+        # its points are the cage's own: an edit shows in both
+        if [ !bare ]
+            bare = Poly [ pos: poly.pos, fsize: poly.fsize,
+                          fstart: poly.fstart, corner: poly.corner,
+                          sa: poly.sa, sb: poly.sb, sharp: poly.sharp,
+                          attrs: vec Attr [] ]
+        return bare
+
+    # the edited points written into the .mesh, the rest kept
+    func save [ dir: path ] -> bool
+        if [ !poly ] return false
+        p : path '{dir}/{file}'
+        f : handle [ fopen[ p, "r+b" ] ]
+        if [ !f ] return false
+        fseek[ f, 24, SEEK_SET ]
+        n : i64 [ poly.pos.count ]
+        fwrite[ @poly.pos[ 0 ], 4, n, f ]
+        fclose[ f ]
+        return true
+
+# the mesh and its reflection, axis by axis
+MeshNode Mirror
+    public axes   : vec string
+    public merge  : f32
+    public clip   : bool
+    public bisect : vec string
+
+    func props [] -> vec string
+        return vec string [] [ 'axes', 'merge' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ bisect && bisect.count > 0 ]
+            log 'aeon: mirror bisect is not done'
+        m : src
+        names : vec string [] [ 'x', 'y', 'z' ]
+        for [ axis: i32 0, axis < 3, axis += 1 ]
+            on : bool [ false ]
+            if [ axes ]
+                for [ word: string ] in axes
+                    if [ word.compare[ names[ axis ] ] == 0 ] on = true
+            if [ on ] m = mirror_axis[ m, axis, merge ]
+        return m
+
+    func steps [ src: Poly, dir: path ] -> vec Stencil
+        out : vec Stencil []
+        m : src
+        names : vec string [] [ 'x', 'y', 'z' ]
+        for [ axis: i32 0, axis < 3, axis += 1 ]
+            on : bool [ false ]
+            if [ axes ]
+                for [ word: string ] in axes
+                    if [ word.compare[ names[ axis ] ] == 0 ] on = true
+            if [ !on ] continue
+            out.push[ mirror_stencil[ m, axis, merge ] ]
+            m = mirror_axis[ m, axis, merge ]
+        return out
+
+    func reads_points [] -> bool
+        return merge > 0.0
+
+# catmull-clark, as blender's subdivision surface
+MeshNode Subdivision
+    public levels        : i32 [ 1 ]
+    public render_levels : i32 [ 2 ]
+    public creases       : bool [ true ]
+    public boundary      : string
+    public uv            : string
+    public limit         : bool [ true ]
+    public quality       : i32 [ 3 ]
+    public simple        : bool
+
+    func props [] -> vec string
+        return vec string [] [ 'levels', 'creases', 'limit' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ simple ] log 'aeon: simple subdivision is not done'
+        m : src
+        if [ !creases ]
+            m = Poly [ pos: m.pos, fsize: m.fsize, fstart: m.fstart,
+                       corner: m.corner, attrs: m.attrs ]
+        for [ i: i32 0, i < levels, i += 1 ]
+            m = subdivide_once[ m ]
+        if [ limit && levels > 0 ] m = limit_of[ m ]
+        return m
+
+    func steps [ src: Poly, dir: path ] -> vec Stencil
+        out : vec Stencil []
+        m : src
+        if [ !creases ]
+            m = Poly [ pos: m.pos, fsize: m.fsize, fstart: m.fstart,
+                       corner: m.corner, attrs: m.attrs ]
+        for [ i: i32 0, i < levels, i += 1 ]
+            out.push[ subdiv_stencil[ m ] ]
+            m = subdivide_once[ m ]
+        if [ limit && levels > 0 ] out.push[ limit_stencil[ m ] ]
+        return out
+
+# copies, each moved by the step once more than the last
+MeshNode Array
+    public count      : i32 [ 2 ]
+    public step       : Placement
+    public merge      : f32
+    public merge_ends : bool
+    public relative   : vec f32
+    public constant   : vec f32
+
+    func props [] -> vec string
+        return vec string [] [ 'count', 'merge', 'merge_ends' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        if [ relative || constant ]
+            log 'aeon: array offsets by size are not done'
+        mat : vec f32 mat_identity[]
+        if [ step ] mat = step.matrix[]
+        return array_copies[ src, count, mat, merge, merge_ends ]
+
+    func steps [ src: Poly, dir: path ] -> vec Stencil
+        mat : vec f32 mat_identity[]
+        if [ step ] mat = step.matrix[]
+        return vec Stencil [] [ array_stencil[ src, count, mat, merge,
+                                               merge_ends ] ]
+
+    func reads_points [] -> bool
+        return merge > 0.0 && count > 1
+
+# a thing in the design: its place, materials and nodes
+# an .svg of the project on a flat panel, standing up and
+# facing -y (the front view), as wide as the drawing's ratio
+MeshNode SvgPanel
+    public file    : string
+    # the panel's height, in units
+    public height  : f32 [ 1.0 ]
+    # the drawing, read once, and drawn for the GPU (a stage
+    # fills it the first time a model shows it)
+    intern drawing : SVGModel
+    intern picture : Canvas
+
+    func props [] -> vec string
+        return vec string [] [ 'file', 'height' ]
+
+    func make [ src: Poly, dir: path ] -> Poly
+        p : path '{dir}/{file}'
+        if [ !drawing ]
+            if [ !p.exists[] ]
+                log 'aeon: no svg at {p}'
+                return null
+            drawing = SVGModel [ p ]
+        h : f32 [ (height > 0.0) ? height : 1.0 ]
+        half : f32 [ h * drawing.w / drawing.h * 0.5 ]
+        left : f32 [ 0.0 - half ]
+        pos : vec f32 [] [ left, 0.0, 0.0, half, 0.0, 0.0,
+                           half, 0.0, h, left, 0.0, h ]
+        # the drawing's top row at the panel's top
+        uv : Attr [ name: 'UVMap', domain: 3, width: 2,
+                    data: vec f32 [] [ 0.0, 1.0, 1.0, 1.0, 1.0, 0.0,
+                                       0.0, 0.0 ] ]
+        return Poly [ pos: pos, fsize: vec i32 [] [ 4 ],
+                      fstart: vec i32 [] [ 0 ],
+                      corner: vec i32 [] [ 0, 1, 2, 3 ],
+                      attrs: vec Attr [] [ uv ] ]
+
+    # the drawing on the GPU, 2048 pixels its long side, colours
+    # made linear (a material's are); drawn once
+    func picture_of [ vk: vk_context, w: Window ] -> Texture
+        if [ picture ] return picture.color
+        if [ !drawing || drawing.w <= 0.0 || drawing.h <= 0.0 ]
+            return null
+        side : f32 [ 2048.0 ]
+        wide : bool [ drawing.w >= drawing.h ]
+        pw : i32 [ (wide) ? side : side * drawing.w / drawing.h ]
+        ph : i32 [ (wide) ? side * drawing.h / drawing.w : side ]
+        cv : Canvas [ vk: vk, w: w, format: Pixel.rgba8, width: pw,
+                      height: ph, load_existing: true,
+                      tag: 'svg-panel' ]
+        cv.update[]
+        cv.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        s : f32 [ f32[ pw ] / drawing.w ]
+        for [ sh: SVGShape ] in drawing.shapes
+            cv.save[]
+            cv.set_opacity[ sh.opacity ]
+            cv.fill_color[ linear_of[ sh.fill, sh.fill_none ] ]
+            cv.stroke_color[ linear_of[ sh.stroke, sh.stroke_none ] ]
+            sw : f32 [ (sh.stroke_none) ? 0.0 : sh.sw * s ]
+            cv.set_stroke_size[ sw ]
+            for [ c: SVGCmd ] in sh.cmds
+                if [ c.op == SVGOp.move ]
+                    cv.move_to[ c.x * s, c.y * s ]
+                el [ c.op == SVGOp.line ]
+                    cv.line_to[ c.x * s, c.y * s ]
+                el [ c.op == SVGOp.cubic ]
+                    cv.cubic_to[ c.x1 * s, c.y1 * s, c.x2 * s,
+                                 c.y2 * s, c.x * s, c.y * s ]
+                el [ c.op == SVGOp.quad ]
+                    cv.quad_to[ c.x1 * s, c.y1 * s, c.x * s, c.y * s ]
+                el [ c.op == SVGOp.close ]
+                    cv.close_path[]
+            cv.paint[]
+            cv.restore[]
+        cv.sync_fence[]
+        cv.flush_submit[]
+        cv.flush_text[]
+        cv.color.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        picture = cv
+        return cv.color
+
+    # an svg colour as a material's: linear, none clear
+    func linear_of [ c: rgba, none: bool ] -> rgba
+        if [ none || !c ] return rgba [ '#00000000' ]
+        return rgba [ r: pow[ c.r, 2.2 ], g: pow[ c.g, 2.2 ],
+                      b: pow[ c.b, 2.2 ], a: c.a ]
+
+class Object
+    public name        : string
+    public at          : vec f32
+    public turn        : vec f32
+    public size        : vec f32
+    public parent      : string
+    public shown       : bool [ true ]
+    public collections : vec string
+    public materials   : vec string
+    public nodes       : vec MeshNode
+    public out         : string
+    # each step's result as last made: a change runs from the
+    # changed step down, the steps above it are kept
+    intern kept        : map Poly [ string ]
+    # the cage moved since: the kept points are old, their faces
+    # still right (joins_hold reads them)
+    intern moved       : bool
+    # every step's tables, made once a shape
+    intern chain       : vec Stencil
+
+    # a step changed: its result and every later one's go
+    func forget_from [ node: string ]
+        chain = null
+        if [ !kept ] return
+        from : i32 [ -1 ]
+        for [ i: i32 0, i < nodes.count, i += 1 ]
+            if [ nodes[ i ].name.compare[ node ] == 0 ] from = i
+        if [ from < 0 ]
+            kept = null
+            return
+        for [ i: i32 from, i < nodes.count, i += 1 ]
+            if [ kept.contains[ nodes[ i ].name ] ]
+                kept.rm[ nodes[ i ].name ]
+
+    # every step's tables, from the cage to the out node: the
+    # cage's points through these are the object's points
+    func stencils [ dir: path ] -> vec Stencil
+        if [ chain ] return chain
+        tables : vec Stencil []
+        if [ !evaluate[ dir ] ] return tables
+        # the chain from the out node back to the cage
+        path_names : vec string []
+        at_name : out_name[]
+        while [ at_name && at_name.count > 0 ]
+            path_names.insert[ at_name, 0 ]
+            nx : string [ null ]
+            for [ n: MeshNode ] in nodes
+                if [ n.name.compare[ at_name ] == 0 ] nx = n.input
+            at_name = nx
+        for [ nm: string ] in path_names
+            for [ n: MeshNode ] in nodes
+                if [ n.name.compare[ nm ] != 0 ] continue
+                if [ !n.input || n.muted ] continue
+                for [ st: Stencil ] in n.steps*[ kept[ n.input ], dir ]
+                    st.node = n.name
+                    tables.push[ st ]
+        chain = tables
+        return tables
+
+    # after a cage move: every step that merges by distance makes
+    # the same tables from the moved points (the GPU's still hold)
+    func joins_hold [ dir: path ] -> bool
+        c : cage[]
+        if [ !chain || !kept || !c || !c.poly ] return false
+        # past the last step that reads points, none are needed
+        need : i32 [ -1 ]
+        for [ i: i32 0, i < chain.count, i += 1 ]
+            if [ node_of[ chain[ i ].node ].reads_points*[] ] need = i
+        p : c.poly.pos
+        i : i32 [ 0 ]
+        while [ i <= need ]
+            n : node_of[ chain[ i ].node ]
+            e : i32 [ i ]
+            while [ e < chain.count
+                    && chain[ e ].node.compare[ n.name ] == 0 ]
+                e += 1
+            if [ n.reads_points*[] ]
+                src : kept[ n.input ]
+                if [ !src ] return false
+                now : Poly [ pos: p, fsize: src.fsize,
+                    fstart: src.fstart, corner: src.corner,
+                    sa: src.sa, sb: src.sb, sharp: src.sharp,
+                    attrs: vec Attr [] ]
+                fresh : n.steps*[ now, dir ]
+                if [ fresh.count != e - i ] return false
+                for [ k: i32 0, k < fresh.count, k += 1 ]
+                    if [ !same_terms[ fresh[ k ], chain[ i + k ] ] ]
+                        return false
+            if [ e <= need ]
+                for [ k: i32 i, k < e, k += 1 ]
+                    p = apply_stencil[ chain[ k ], p ]
+            i = e
+        return true
+
+    func node_of [ nm: string ] -> MeshNode
+        for [ n: MeshNode ] in nodes
+            if [ n.name.compare[ nm ] == 0 ] return n
+        return null
+
+    # the node whose mesh is the object's: out, else the last
+    func out_name [] -> string
+        if [ out && out.count > 0 ] return out
+        if [ nodes && nodes.count > 0 ]
+            return nodes[ nodes.count - 1 ].name
+        return ''
+
+    # the svg panel node, if the object is one
+    func panel [] -> SvgPanel
+        for [ n: MeshNode ] in nodes
+            if [ n inherits SvgPanel ] return cast SvgPanel [ n ]
+        return null
+
+    # the first cage node: the points an edit moves
+    func cage [] -> Cage
+        for [ n: MeshNode ] in nodes
+            if [ n inherits Cage ] return cast Cage [ n ]
+        return null
+
+    # the out node's points alone, for an edit: same topology
+    func evaluate_shape [ dir: path ] -> Poly
+        c : cage[]
+        if [ c ] c.shape_only = true
+        m : evaluate[ dir ]
+        if [ c ] c.shape_only = false
+        return m
+
+    # the out node's mesh, every node made in order
+    func evaluate [ dir: path ] -> Poly
+        if [ moved ]
+            kept  = null
+            moved = false
+        made : map Poly [ string ] []
+        last : Poly [ null ]
+        # an edit's shape alone is never kept: it has no attributes
+        c : cage[]
+        keep : bool [ !c || !c.shape_only ]
+        if [ keep && !kept ] kept = map Poly [ string ] []
+        for [ n: MeshNode ] in nodes
+            if [ keep && kept.contains[ n.name ] ]
+                made[ n.name ] = kept[ n.name ]
+                last = made[ n.name ]
+                continue
+            src : Poly [ null ]
+            if [ n.input ] src = made[ n.input ]
+            m : Poly [ src ]
+            if [ !n.muted || !src ] m = n.make*[ src, dir ]
+            if [ !m ] return null
+            made[ n.name ] = m
+            if [ keep ] kept[ n.name ] = m
+            last = m
+        if [ out ] return made[ out ]
+        return last
+
+# a project folder: <dir>/<name>.agi and what it names
+class Design
+    public dir     : path
+    public objects : vec Object
+    # the passes, from the file's render: block (none: default)
+    public render  : StageGraph
+    # each object made once, by name and axes: draws share it
+    public made    : map Made [ string ]
+    # the model module it names (model: 'fmodel'), a peer folder
+    public model   : path
+    # each material read once, by name: an edit changes it here
+    public finishes : map Finish [ string ]
+
+    # a material by name, read the first time it is asked for
+    func finish_of [ name: string ] -> Finish
+        if [ !finishes ] finishes = map Finish [ string ] []
+        if [ finishes.contains[ name ] ] return finishes[ name ]
+        f : read_finish[ base[], name ]
+        if [ f ] finishes[ name ] = f
+        return f
+
+    # the folder its objects' files are in: the model's, else its own
+    func base [] -> path
+        if [ model ] return model
+        return dir
+
+    # the file its objects live in
+    func objects_file [] -> path
+        b : base[]
+        nm : string b.filename[]
+        return path '{b}/{nm}.agi'
+
+    # an object changed: it is made again when next drawn
+    func forget [ name: string ]
+        for [ o: Object ] in objects
+            if [ o.name.compare[ name ] == 0 ]
+                o.kept  = null
+                o.chain = null
+        drop_made[ name ]
+
+    # its cage moved: the kept points and filled models are old,
+    # the shape's tables still hold
+    func moved [ name: string ]
+        for [ o: Object ] in objects
+            if [ o.name.compare[ name ] == 0 ] o.moved = true
+        drop_made[ name ]
+
+    # a step of an object changed: made again from that step on
+    func forget_from [ name: string, node: string ]
+        for [ o: Object ] in objects
+            if [ o.name.compare[ name ] == 0 ] o.forget_from[ node ]
+        drop_made[ name ]
+
+    # the object's filled models go
+    func drop_made [ name: string ]
+        if [ !made ] return
+        for [ key: string ] in vec string [] [ '{name}|true',
+                                               '{name}|false' ]
+            if [ made.contains[ key ] ] made.rm[ key ]
+
+    # the top-level values of <dir>/<name>.agi, or null
+    func read_top [] -> map Au [ string ]
+        if [ !dir ] return null
+        nm : string dir.filename[]
+        return read_agi[ path '{dir}/{nm}.agi' ]
+
+    # an .agi file's top-level values, or null
+    func read_agi [ p: path ] -> map Au [ string ]
+        if [ !p.exists[] ] return null
+        from : shadowed[ p ]
+        txt : string [ from.load[ typeid[ string ], null ] ]
+        return Au.parse_agi[ typeid[ map ], txt.chars, null ]
+
+    # the render: block read again from the file
+    func read_render [] -> StageGraph
+        top : read_top[]
+        if [ !top ] return null
+        for [ v: Au, k: string ] in top
+            if [ v && v inherits StageGraph ] return cast StageGraph [ v ]
+        return null
+
+    # the file's text without its render: block: what a change
+    # outside the passes is told by
+    func body_text [] -> string
+        nm : string dir.filename[]
+        p : path '{dir}/{nm}.agi'
+        if [ !p.exists[] ] return ''
+        from : shadowed[ p ]
+        txt : string [ from.load[ typeid[ string ], null ] ]
+        out : ''
+        inside : bool [ false ]
+        for [ ln: string ] in txt.split[ '\n' ]
+            top : bool [ ln.count > 0 && !ln.starts_with[ '\t' ]
+                         && !ln.starts_with[ '#' ] ]
+            if [ top ] inside = ln.starts_with[ 'render:' ]
+            if [ !inside ] out = '{out}{ln}\n'
+        return out
+
+    # an object's at, turn and size written into its block of
+    # <name>.agi: each line replaced, or added after its head
+    func save_place [ o: Object ] -> bool
+        return save_place_to[ o, objects_file[] ]
+
+    # the same, into another copy of that file
+    func save_place_to [ o: Object, p: path ] -> bool
+        if [ !p.exists[] || !o.at ] return false
+        txt : string [ p.load[ typeid[ string ], null ] ]
+        lines : txt.split[ '\n' ]
+        head : '{o.name}: Object'
+        keys : vec string [] [ 'at', 'turn', 'size' ]
+        found : bool [ true ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            v : o.at
+            if [ k == 1 ] v = o.turn
+            if [ k == 2 ] v = o.size
+            if [ !v ] continue
+            key : keys[ k ]
+            line : '\t{key}: [ {v[ 0 ]}, {v[ 1 ]}, {v[ 2 ]} ]'
+            inside : bool [ false ]
+            done : bool [ false ]
+            at_head : i32 [ -1 ]
+            for [ i: i32 0, i < lines.count, i += 1 ]
+                ln : lines[ i ]
+                top : bool [ ln.count > 0 && !ln.starts_with[ '\t' ] ]
+                if [ top ]
+                    inside = ln.compare[ head ] == 0
+                    if [ inside ] at_head = i
+                if [ inside && !done
+                     && ln.starts_with[ '\t{key}:' ] ]
+                    lines[ i ] = line
+                    done = true
+            if [ at_head < 0 ] found = false
+            if [ at_head >= 0 && !done ]
+                lines.insert[ line, at_head + 1 ]
+        if [ !found ] return false
+        out : ''
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            ln : lines[ i ]
+            if [ i == lines.count - 1 && ln.count == 0 ] continue
+            out = '{out}{ln}\n'
+        f : handle [ fopen[ p, "w" ] ]
+        if [ !f ] return false
+        fputs[ out.chars, f ]
+        fclose[ f ]
+        return true
+
+    func init []
+        load[]
+
+    # the objects from <dir>/<name>.agi, read again in place
+    func load []
+        objects = vec Object []
+        render = null
+        made = null
+        model = null
+        finishes = null
+        if [ !dir ] return
+        top : read_top[]
+        if [ !top ]
+            log 'aeon: no design at {dir}'
+            return
+        # map gives value then key
+        for [ v: Au, k: string ] in top
+            if [ v && v inherits StageGraph ]
+                render = cast StageGraph [ v ]
+                continue
+            if [ k.compare[ 'model' ] == 0 ]
+                named : string [ v ]
+                model = module_of[ named ]
+                continue
+            keep_object[ v, k ]
+        # the model module it names: its objects
+        if [ !model ] return
+        mtop : read_agi[ objects_file[] ]
+        if [ !mtop ] return
+        for [ v: Au, k: string ] in mtop
+            keep_object[ v, k ]
+
+    # a module by name: the nearest folder of that name holding
+    # <name>.agi, from this one's parent upward
+    func module_of [ named: string ] -> path
+        at : '{dir}'
+        while [ at.rindex_of[ '/' ] > 0 ]
+            at = at.mid[ 0, i32[ at.rindex_of[ '/' ] ] ]
+            p : path '{at}/{named}/{named}.agi'
+            if [ p.exists[] ] return path '{at}/{named}'
+        log 'aeon: no module {named} above {dir}'
+        return null
+
+    # an object block, named by its key
+    func keep_object [ v: Au, k: string ]
+        if [ !v || !(v inherits Object) ] return
+        o : cast Object [ v ]
+        o.name = k
+        objects.push[ o ]

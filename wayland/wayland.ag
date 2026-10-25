@@ -2,16 +2,21 @@ import trinity
 import vec
 import <stdio.h>
 import <stdlib.h>
-import <string.h>
-    -I/usr/include/pixman-1
-    -I/usr/include/libdrm
-    -I{root_path}/wayland
-    -lwlroots
-    -lwayland-server
-    -lxkbcommon
-    -lxcb
-    -lxcb-res
-    +WLR_USE_UNSTABLE
+# wlroots and xcb are linux's; windows takes wayland-win.c, which
+# answers every call with nothing
+ifdef [ windows ]
+    import <string.h>
+ifndef [ windows ]
+    import <string.h>
+        -I/usr/include/pixman-1
+        -I/usr/include/libdrm
+        -I{root_path}/wayland
+        -lwlroots
+        -lwayland-server
+        -lxkbcommon
+        -lxcb
+        -lxcb-res
+        +WLR_USE_UNSTABLE
 
 # the compositor lives in wayland.c on wlroots; this is its surface
 func wlc_create         [ w: i32, h: i32 ] -> i32
@@ -96,29 +101,34 @@ wl_thumbs : map WinThumbs [string]
 # a window's frame as a texture for any picture of it (a card in the
 # navigator), whatever pane shows it, or none
 func window_texture [ cv: Canvas, id: u64 ] -> Texture
-    fid : u64 [ wlc_frame_id[ id ] ]
-    if [ fid == 0 ] return null
-    if [ !wl_thumbs ] wl_thumbs = map WinThumbs [string] []
-    wk : '{id}'
-    if [ !wl_thumbs.contains[ wk ] ]
-        wl_thumbs[ wk ] = WinThumbs [ frames: map Texture [string] [] ]
-    wt : WinThumbs wl_thumbs[ wk ]
-    ep : u64 [ wlc_window_epoch[ id ] ]
-    if [ ep != wt.epoch ]
-        wt.epoch  = ep
-        wt.prev   = wt.frames
-        wt.frames = map Texture [string] []
-    key : '{fid}'
-    if [ wt.frames.contains[ key ] ] return wt.frames[ key ]
-    fw : i32 [ wlc_frame_w[ id ] ]
-    fh : i32 [ wlc_frame_h[ id ] ]
-    fd : i32 [ wlc_frame_fd[ id ] ]
-    if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
-    t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
-        wlc_frame_format[ id ], wlc_frame_modifier[ id ],
-        wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
-    wt.frames[ key ] = t
-    return t
+    # a frame arrives as a dma-buf, which only linux has. no guest
+    # window ever appears here, so there is no frame to import
+    ifndef [ windows ]
+        fid : u64 [ wlc_frame_id[ id ] ]
+        if [ fid == 0 ] return null
+        if [ !wl_thumbs ] wl_thumbs = map WinThumbs [string] []
+        wk : '{id}'
+        if [ !wl_thumbs.contains[ wk ] ]
+            wl_thumbs[ wk ] = WinThumbs [ frames: map Texture [string] [] ]
+        wt : WinThumbs wl_thumbs[ wk ]
+        ep : u64 [ wlc_window_epoch[ id ] ]
+        if [ ep != wt.epoch ]
+            wt.epoch  = ep
+            wt.prev   = wt.frames
+            wt.frames = map Texture [string] []
+        key : '{fid}'
+        if [ wt.frames.contains[ key ] ] return wt.frames[ key ]
+        fw : i32 [ wlc_frame_w[ id ] ]
+        fh : i32 [ wlc_frame_h[ id ] ]
+        fd : i32 [ wlc_frame_fd[ id ] ]
+        if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
+        t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
+            wlc_frame_format[ id ], wlc_frame_modifier[ id ],
+            wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
+        wt.frames[ key ] = t
+        return t
+
+    return null
 
 # a Wayland display as one silver app: it shows one window (the
 # newest, or the one chosen); orbiter mounts WaylandView in its panes
@@ -319,21 +329,24 @@ element WaylandView
     # a window's current frame, imported once per buffer into got
     func frame_of [ cv: Canvas, id: u64, got: map Texture [string] ]
                   -> Texture
-        fid : u64 [ wlc_frame_id[ id ] ]
-        if [ fid == 0 ] return null
-        key : string '{fid}'
-        if [ got.contains[ key ] ] return got[ key ]
-        fw : i32 [ wlc_frame_w[ id ] ]
-        fh : i32 [ wlc_frame_h[ id ] ]
-        fd : i32 [ wlc_frame_fd[ id ] ]
-        if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
-        t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
-                                               wlc_frame_format[ id ],
-                                               wlc_frame_modifier[ id ],
-            wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
-        got[ key ] = t
-        log 'wayland: imported frame {key} {fw}x{fh}'
-        return t
+        # the import is linux's; no frame ever arrives here
+        ifndef [ windows ]
+            fid : u64 [ wlc_frame_id[ id ] ]
+            if [ fid == 0 ] return null
+            key : string '{fid}'
+            if [ got.contains[ key ] ] return got[ key ]
+            fw : i32 [ wlc_frame_w[ id ] ]
+            fh : i32 [ wlc_frame_h[ id ] ]
+            fd : i32 [ wlc_frame_fd[ id ] ]
+            if [ fd < 0 || fw <= 0 || fh <= 0 ] return null
+            t : Texture cv.vk.import_dmabuf_image[ fd, fw, fh,
+                                                   wlc_frame_format[ id ],
+                                                   wlc_frame_modifier[ id ],
+                wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
+            got[ key ] = t
+            log 'wayland: imported frame {key} {fw}x{fh}'
+            return t
+        return null
 
     # the dialog over the window, centred, coming down from the top
     func draw_sheet [ cv: Canvas, vp: rect ]

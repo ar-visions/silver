@@ -568,6 +568,8 @@ def main():
     # tree, so that copy must track src/posix.h on every build, not just on
     # bootstrap
     sync_installed_header(paths, 'posix.h')
+    sync_installed_header(paths, 'pwd.h')
+    sync_installed_header(paths, 'dbus-win.h')
     
     # Process modules (files without extension)
     process_modules(paths)

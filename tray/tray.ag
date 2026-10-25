@@ -2,10 +2,14 @@
 import vec
 import img
 import trinity
-import <dbus/dbus.h>
-    -I/usr/include/dbus-1.0
-    -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
-    -ldbus-1
+# windows has no session bus; dbus-win.h is that surface, inert
+ifdef [ windows ]
+    import <dbus-win.h>
+ifndef [ windows ]
+    import <dbus/dbus.h>
+        -I/usr/include/dbus-1.0
+        -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -ldbus-1
 import <stdio.h>
 import <stdlib.h>
 import <time.h>

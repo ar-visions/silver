@@ -1,54 +1,59 @@
 # os-bootstrap — assembles orbiter-os (linux + orbiter as init) for the drive
 export 1.0.0
 
-# FAT without root: the installer stick's EFI partition image
-import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
-    --disable-floppyd
+# these four are build-only ARTIFACTS: mcopy/mformat are run as
+# programs and mesa/libdrm/spirv are files bundled into the image.
+# nothing here links them, so gating them leaves every function
+# this module exports -- which is what the installer calls
+ifndef [ windows ]
+    # FAT without root: the installer stick's EFI partition image
+    import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
+        --disable-floppyd
 
-# radv and anv need a newer libdrm than the system's
-import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
-    PYTHONPATH={install}/pylib
-    PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
-    -Damdgpu=enabled
-    -Dintel=enabled
-    -Dradeon=disabled
-    -Dnouveau=disabled
-    -Dvmwgfx=disabled
-    -Dcairo-tests=disabled
-    -Dvalgrind=disabled
-    -Dman-pages=disabled
-    -Dtests=false
+    # radv and anv need a newer libdrm than the system's
+    import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+        PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+        PYTHONPATH={install}/pylib
+        PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+        -Damdgpu=enabled
+        -Dintel=enabled
+        -Dradeon=disabled
+        -Dnouveau=disabled
+        -Dvmwgfx=disabled
+        -Dcairo-tests=disabled
+        -Dvalgrind=disabled
+        -Dman-pages=disabled
+        -Dtests=false
 
-# anv's built-in GPU programs: SPIR-V from OpenCL C (the
-# translator, then libclc from our LLVM's own source)
-import KhronosGroup:SPIRV-LLVM-Translator/8e829705b660a4c3a1fcd97885c35b8d78941276
-    -DLLVM_DIR={install}/lib/cmake/llvm
-    -DLLVM_SPIRV_INCLUDE_TESTS=OFF
-    -DCMAKE_INSTALL_RPATH={install}/lib
-    -DCMAKE_BUILD_TYPE=Release
-    >> test -f {install}/share/pkgconfig/libclc.pc || cmake -S {root_path}/checkout/LLVM/llvm-project/libclc -B {install}/build/libclc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install} -DLLVM_DIR={install}/lib/cmake/llvm -DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR={install}/bin -DLIBCLC_TARGETS_TO_BUILD=spirv64-mesa3d-
-    >> test -f {install}/share/pkgconfig/libclc.pc || cmake --build {install}/build/libclc
-    >> test -f {install}/share/pkgconfig/libclc.pc || cmake --install {install}/build/libclc
+    # anv's built-in GPU programs: SPIR-V from OpenCL C (the
+    # translator, then libclc from our LLVM's own source)
+    import KhronosGroup:SPIRV-LLVM-Translator/8e829705b660a4c3a1fcd97885c35b8d78941276
+        -DLLVM_DIR={install}/lib/cmake/llvm
+        -DLLVM_SPIRV_INCLUDE_TESTS=OFF
+        -DCMAKE_INSTALL_RPATH={install}/lib
+        -DCMAKE_BUILD_TYPE=Release
+        >> test -f {install}/share/pkgconfig/libclc.pc || cmake -S {root_path}/checkout/LLVM/llvm-project/libclc -B {install}/build/libclc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install} -DLLVM_DIR={install}/lib/cmake/llvm -DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR={install}/bin -DLIBCLC_TARGETS_TO_BUILD=spirv64-mesa3d-
+        >> test -f {install}/share/pkgconfig/libclc.pc || cmake --build {install}/build/libclc
+        >> test -f {install}/share/pkgconfig/libclc.pc || cmake --install {install}/build/libclc
 
-# Vulkan drivers: venus (qemu guests), radv (amd), anv (intel)
-import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
-    PYTHONPATH={install}/pylib
-    PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
-    -Dvulkan-drivers=virtio,amd,intel
-    -Dintel-rt=disabled
-    -Damd-use-llvm=false
-    -Dgallium-drivers=
-    -Dplatforms=
-    -Dglx=disabled
-    -Degl=disabled
-    -Dgbm=disabled
-    -Dllvm=enabled
-    -Dshared-llvm=enabled
-    -Dvideo-codecs=
+    # Vulkan drivers: venus (qemu guests), radv (amd), anv (intel)
+    import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
+        PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+        PYTHONPATH={install}/pylib
+        PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+        LDFLAGS=-Wl,-rpath,{install}/lib
+        > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
+        -Dvulkan-drivers=virtio,amd,intel
+        -Dintel-rt=disabled
+        -Damd-use-llvm=false
+        -Dgallium-drivers=
+        -Dplatforms=
+        -Dglx=disabled
+        -Degl=disabled
+        -Dgbm=disabled
+        -Dllvm=enabled
+        -Dshared-llvm=enabled
+        -Dvideo-codecs=
 
 # EfiFs's UEFI NTFS driver: our boot program reads the kernel from an
 # orbiter-os folder on a Windows partition through it
@@ -59,16 +64,24 @@ import https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi
 import vec
 import img
 import trinity
-import fastboot
+# fastboot is the phone flasher over libusb. phone_look and
+# phone_install are its only callers, and both are gated below:
+# the usb stick and disk paths never touch it
+ifndef [ windows ]
+    import fastboot
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
-import <unistd.h>
+# posix.h carries unistd, pthread, utime and statvfs here
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+    import <sys/statvfs.h>
+    import <utime.h>
+    import <pthread.h>
 import <time.h>
 import <sys/stat.h>
-import <sys/statvfs.h>
-import <utime.h>
-import <pthread.h>
 import <signal.h>
 
 # one entry of the guest file system
@@ -1053,26 +1066,28 @@ element Bootstrap
         return sk && sk.hardware == 'Fairphone 6'
 
     # the phone on USB as its bootloader answers, in words
-    func phone_look []
-        fb : Fastboot []
-        if [ !fb.open[] ]
-            phone_ok = false
-            plug : 'Connect the phone in fastboot mode (from off: '
-            plug = '{plug}Power and Volume Down).'
-            refused : bool [ fb.problem == 'access refused' ]
-            phone_word = (refused)
-                ? 'A phone is there; Install asks once for USB access.'
-                : plug
-            phone_ok = refused
-            return
-        pr : fb.getvar[ 'product' ]
-        un : fb.getvar[ 'unlocked' ]
-        fb.close[]
-        lock : string [ (un == 'yes') ? 'unlocked' : 'locked' ]
-        phone_word = '{pr}, {lock}'
-        if [ !is_fp6[ pr ] ]
-            phone_word = '{phone_word}: not a Fairphone 6'
-        phone_ok = is_fp6[ pr ]
+    # fastboot/libusb; the usb stick and disk paths do not use it
+    ifndef [ windows ]
+        func phone_look []
+            fb : Fastboot []
+            if [ !fb.open[] ]
+                phone_ok = false
+                plug : 'Connect the phone in fastboot mode (from off: '
+                plug = '{plug}Power and Volume Down).'
+                refused : bool [ fb.problem == 'access refused' ]
+                phone_word = (refused)
+                    ? 'A phone is there; Install asks once for USB access.'
+                    : plug
+                phone_ok = refused
+                return
+            pr : fb.getvar[ 'product' ]
+            un : fb.getvar[ 'unlocked' ]
+            fb.close[]
+            lock : string [ (un == 'yes') ? 'unlocked' : 'locked' ]
+            phone_word = '{pr}, {lock}'
+            if [ !is_fp6[ pr ] ]
+                phone_word = '{phone_word}: not a Fairphone 6'
+            phone_ok = is_fp6[ pr ]
 
     # USB access to fastboot phones (any maker: by the fastboot
     # interface) and to orbiter-os's serial port; asked once
@@ -1093,78 +1108,80 @@ element Bootstrap
 
     # the lit Fairphone kernel's boot image written to the phone's
     # boot partition (its current slot), then its log over USB
-    public func phone_install [] -> bool
-        kb : stick_kernel[]
-        if [ !kb || kb.hardware != 'Fairphone 6' ]
-            say[ 'Light a Fairphone 6 kernel in the list first' ]
-            return false
-        fb : Fastboot []
-        if [ !fb.open[] && fb.problem == 'access refused' ]
-            if [ !phone_udev[] ] return false
-            sleep[ 1 ]
-        if [ !fb.open[] ]
-            say[ 'No phone: {fb.problem}' ]
-            return false
-        product : fb.getvar[ 'product' ]
-        unlocked : fb.getvar[ 'unlocked' ]
-        room : var_bytes[ fb.getvar[ 'partition-size:boot' ] ]
-        data : var_bytes[ fb.getvar[ 'partition-size:userdata' ] ]
-        most : var_bytes[ fb.getvar[ 'max-download-size' ] ]
-        fb.close[]
-        if [ !is_fp6[ product ] ]
-            say[ '{product} is not a Fairphone 6' ]
-            return false
-        if [ unlocked != 'yes' ]
-            say[ 'The bootloader is locked. Unlocking wipes the phone:' ]
-            say[ 'turn on OEM unlocking in Android\'s Developer options,' ]
-            say[ 'then unlock it (fastboot flashing unlock) and come back.' ]
-            return false
-        say[ 'Phone {product}, kernel {kb.name}' ]
-        # the root's uuid: the boot line finds userdata by it
-        uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
-        img : phone_image[ kb, uuid ]
-        if [ img.count == 0 ] return false
-        fs : phone_rootfs[ kb, uuid ]
-        if [ fs.count == 0 ] return false
-        # each against its partition, when the phone says
-        if [ room > 0 && file_bytes[ img ] > room ]
-            say[ 'boot.img is {file_bytes[ img ]} bytes; boot holds {room}' ]
-            return false
-        if [ data > 0 && file_bytes[ fs ] > data ]
-            say[ 'rootfs.img is {file_bytes[ fs ]} bytes; userdata holds {data}' ]
-            return false
-        # in sparse pieces the phone takes in one download each
-        if [ most <= 0 ] most = 256 * 1024 * 1024
-        work : '{install}/tmp/phone-fp6'
-        pieces : sparse_pieces[ fs, '{work}/rootfs', most ]
-        if [ pieces.count == 0 ]
-            say[ 'rootfs.img could not be split into sparse pieces' ]
-            return false
-        say[ 'rootfs in {pieces.count} sparse pieces of at most {most} bytes' ]
-        if [ phone_dry ]
-            say[ 'would flash boot with {img}' ]
-            say[ 'would flash userdata with {pieces.count} pieces' ]
-            say[ 'Check only: nothing written to the phone' ]
-            return true
-        if [ !fb.open[] ]
-            say[ 'The phone went away: {fb.problem}' ]
-            return false
-        say[ 'Flashing boot' ]
-        if [ !fb.flash[ 'boot', img ] ]
-            say[ 'Flashing boot stopped: {fb.problem}' ]
+    # fastboot/libusb; the usb stick and disk paths do not use it
+    ifndef [ windows ]
+        public func phone_install [] -> bool
+            kb : stick_kernel[]
+            if [ !kb || kb.hardware != 'Fairphone 6' ]
+                say[ 'Light a Fairphone 6 kernel in the list first' ]
+                return false
+            fb : Fastboot []
+            if [ !fb.open[] && fb.problem == 'access refused' ]
+                if [ !phone_udev[] ] return false
+                sleep[ 1 ]
+            if [ !fb.open[] ]
+                say[ 'No phone: {fb.problem}' ]
+                return false
+            product : fb.getvar[ 'product' ]
+            unlocked : fb.getvar[ 'unlocked' ]
+            room : var_bytes[ fb.getvar[ 'partition-size:boot' ] ]
+            data : var_bytes[ fb.getvar[ 'partition-size:userdata' ] ]
+            most : var_bytes[ fb.getvar[ 'max-download-size' ] ]
             fb.close[]
-            return false
-        say[ 'Flashing userdata (Android\'s data is erased)' ]
-        if [ !fb.flash_pieces[ 'userdata', pieces ] ]
-            say[ 'Flashing userdata stopped: {fb.problem}' ]
+            if [ !is_fp6[ product ] ]
+                say[ '{product} is not a Fairphone 6' ]
+                return false
+            if [ unlocked != 'yes' ]
+                say[ 'The bootloader is locked. Unlocking wipes the phone:' ]
+                say[ 'turn on OEM unlocking in Android\'s Developer options,' ]
+                say[ 'then unlock it (fastboot flashing unlock) and come back.' ]
+                return false
+            say[ 'Phone {product}, kernel {kb.name}' ]
+            # the root's uuid: the boot line finds userdata by it
+            uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
+            img : phone_image[ kb, uuid ]
+            if [ img.count == 0 ] return false
+            fs : phone_rootfs[ kb, uuid ]
+            if [ fs.count == 0 ] return false
+            # each against its partition, when the phone says
+            if [ room > 0 && file_bytes[ img ] > room ]
+                say[ 'boot.img is {file_bytes[ img ]} bytes; boot holds {room}' ]
+                return false
+            if [ data > 0 && file_bytes[ fs ] > data ]
+                say[ 'rootfs.img is {file_bytes[ fs ]} bytes; userdata holds {data}' ]
+                return false
+            # in sparse pieces the phone takes in one download each
+            if [ most <= 0 ] most = 256 * 1024 * 1024
+            work : '{install}/tmp/phone-fp6'
+            pieces : sparse_pieces[ fs, '{work}/rootfs', most ]
+            if [ pieces.count == 0 ]
+                say[ 'rootfs.img could not be split into sparse pieces' ]
+                return false
+            say[ 'rootfs in {pieces.count} sparse pieces of at most {most} bytes' ]
+            if [ phone_dry ]
+                say[ 'would flash boot with {img}' ]
+                say[ 'would flash userdata with {pieces.count} pieces' ]
+                say[ 'Check only: nothing written to the phone' ]
+                return true
+            if [ !fb.open[] ]
+                say[ 'The phone went away: {fb.problem}' ]
+                return false
+            say[ 'Flashing boot' ]
+            if [ !fb.flash[ 'boot', img ] ]
+                say[ 'Flashing boot stopped: {fb.problem}' ]
+                fb.close[]
+                return false
+            say[ 'Flashing userdata (Android\'s data is erased)' ]
+            if [ !fb.flash_pieces[ 'userdata', pieces ] ]
+                say[ 'Flashing userdata stopped: {fb.problem}' ]
+                fb.close[]
+                return false
+            for [ n: string ] in fb.notes
+                say[ '  {n}' ]
+            say[ 'Rebooting the phone' ]
+            fb.reboot[]
             fb.close[]
-            return false
-        for [ n: string ] in fb.notes
-            say[ '  {n}' ]
-        say[ 'Rebooting the phone' ]
-        fb.reboot[]
-        fb.close[]
-        return phone_serial[ product ]
+            return phone_serial[ product ]
 
     # postmarketOS's deviceinfo value for a key ('' when none)
     func device_value [ di: string, key: string ] -> string
@@ -1692,7 +1709,9 @@ element Bootstrap
         el [ job == 'usb' ]
             failed = !write_installer[]
         el [ job == 'phone' ]
-            failed = !phone_install[]
+            # phone flashing is fastboot/libusb: not on windows
+            ifndef [ windows ]
+                failed = !phone_install[]
         el
             say[ 'Writing the drive tree with {chosen}' ]
             out_dir.make_dir[]
@@ -2017,7 +2036,9 @@ element Bootstrap
         # phones come and go: look again every two seconds
         now : i64 [ epoch_millis[] ]
         if [ !building && now - phone_at > 2000 ]
-            phone_look[]
+            # phone flashing is fastboot/libusb: not on windows
+            ifndef [ windows ]
+                phone_look[]
             phone_at = now
         pristine = false
         t[ 'phone_name' ] = BootText [ label: 'Phone',

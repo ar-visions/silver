@@ -3,6 +3,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+// the posix surface this file assumes: pthreads, strdup
+#include <posix.h>
+#endif
 
 // ---- the zip: stored entries only (torch.save writes them so) ----
 typedef struct { char* name; int64_t off, size; int method; } ZEntry;
@@ -463,7 +467,9 @@ int pthf_read_f32(PthFile* p, int i, float* out) {
 
 // ---- c[m, n] = a[m, k] . b[n, k] (+ bias[n]): every row of a
 // against every row of b, on every core, avx2 + fma ----
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 typedef struct { const float *a, *b, *bias; float* c; int m, n, k, n0, n1; } GemmJob;
 

@@ -3,25 +3,30 @@ import vec
 import img
 import trinity
 import <time.h>
-import <dbus/dbus.h>
-    -I/usr/include/dbus-1.0
-    -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
-    -ldbus-1
+# windows has no session bus; dbus-win.h is that surface, inert
+ifdef [ windows ]
+    import <dbus-win.h>
+ifndef [ windows ]
+    import <dbus/dbus.h>
+        -I/usr/include/dbus-1.0
+        -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -ldbus-1
 import <stdio.h>
 import <stdlib.h>
 import <signal.h>
 
 # the daemon that joins networks (scan, WPA, DHCP); orbiter-os
 # runs it, orbiter drives it
-import iwd/3.12 from https://mirrors.edge.kernel.org/pub/linux/network/wireless/iwd-3.12.tar.xz
-    --disable-client
-    --disable-monitor
-    --disable-wired
-    --disable-systemd-service
-    --disable-manual-pages
-    --disable-tools
-    --with-dbus-datadir={install}/share
-    --with-dbus-busdir={install}/share/dbus-1/system-services
+ifndef [ windows ]
+    import iwd/3.12 from https://mirrors.edge.kernel.org/pub/linux/network/wireless/iwd-3.12.tar.xz
+        --disable-client
+        --disable-monitor
+        --disable-wired
+        --disable-systemd-service
+        --disable-manual-pages
+        --disable-tools
+        --with-dbus-datadir={install}/share
+        --with-dbus-busdir={install}/share/dbus-1/system-services
 
 
 # one network as iwd lists it

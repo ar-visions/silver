@@ -13,7 +13,12 @@ int feat_add(int a, int b) {
 }
 
 #include <stdio.h>
+#ifdef _WIN32
+/* posix.h carries sysconf and the rest windows has no header for */
+#include <posix.h>
+#else
 #include <unistd.h>
+#endif
 
 /* resident memory in KB — a 10MB block is mmap'd, so a real free
    returns it to the OS and this number falls */

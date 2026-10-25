@@ -329,20 +329,31 @@ static bool silver_fail(silver a, symbol file, int line, int seq,
     return false;
 }
 
-#define error(t, ...) silver_fail(a, __FILE__, __LINE__, seq, false, \
+// clang joins a quoted include with the native separator, so
+// __FILE__ here reads src\silver.c. one spelling in diagnostics
+static symbol src_file(symbol f) {
+    static char buf[512];
+    int i = 0;
+    for (; f[i] && i < (int)sizeof(buf) - 1; i++)
+        buf[i] = (f[i] == '\\') ? '/' : f[i];
+    buf[i] = 0;
+    return buf;
+}
+
+#define error(t, ...) silver_fail(a, src_file(__FILE__), __LINE__, seq, false, \
     (symbol)t __VA_OPT__(,) __VA_ARGS__)
 
 #define log_tokens(t, ...) ({ \
-    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, src_file(__FILE__), __LINE__, seq, a->module_file, \
                 peek(a)->line, peek(a)->column, ##__VA_ARGS__); \
 })
 
 #define validate(cond, t, ...) ((cond) ? true : \
-    silver_fail(a, __FILE__, __LINE__, seq, true, \
+    silver_fail(a, src_file(__FILE__), __LINE__, seq, true, \
         (symbol)t __VA_OPT__(,) __VA_ARGS__))
 
 #define breakpoint(tok, t, ...) ({ \
-    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, __FILE__, __LINE__, seq, a->module_file, \
+    string s = (string)formatter((Au_t)null, false, stderr, (Au) true, seq, (symbol) "\n%s: %s:%i@%i, %o:%i:%i\n            " t, a->name->chars, src_file(__FILE__), __LINE__, seq, a->module_file, \
                 tok->line, tok->column, ##__VA_ARGS__); \
     raise(SIGTRAP); \
 })
@@ -397,6 +408,14 @@ static symbol lib_static = ".lib";
 static symbol app_ext = ".exe";
 static symbol platform = "windows";
 static symbol shared   = "-shared";
+// the SHARED crt, named outright. a module of pure silver has no object
+// asking for a crt, so a vendored static lib's directive decided it --
+// and a FILE* from Au's crt is foreign to a static one, which fastfails
+// on it. one crt per process, as designed
+static symbol crt_libs = " -Wl,/DEFAULTLIB:msvcrt -Wl,/DEFAULTLIB:ucrt"
+                         " -Wl,/NODEFAULTLIB:libucrt -Wl,/NODEFAULTLIB:libucrtd"
+                         " -Wl,/NODEFAULTLIB:libcmt -Wl,/NODEFAULTLIB:libcmtd"
+                         " -Wl,/NODEFAULTLIB:msvcrtd";
 #elif defined(__APPLE__)
 static symbol lib_pre = "lib";
 static symbol lib_ext = ".dylib";
@@ -637,6 +656,9 @@ static string resolve_versioned_lib(silver a, string nm) {
     if (cmp(nm, "png") == 0) nm = string("libpng");
     // mbedtls 4 folded the crypto library into tf-psa-crypto
     if (cmp(nm, "mbedcrypto") == 0) nm = string("tfpsacrypto");
+    // our own src/lldb.c installs lldb.lib, which shadows lldb's real
+    // import library -- that one is spelled liblldb here
+    if (cmp(nm, "lldb") == 0) nm = string("liblldb");
     // -l:libfoo.so.N names an exact file for gnu ld; nothing here answers to it
     if (len(nm) && nm->chars[0] == ':') return null;
 
@@ -2205,7 +2227,7 @@ static path build_silver_host(silver a) {
     // link to a temp, then replace: a running app or a mid-scan file locks
     // the exe against in-place relink (LNK1168). the temp always writes.
     path host_out = f(path, "%o.new%i", host_dst, (i32)getpid());
-    cstr host_fmt = "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"";
+    cstr host_fmt = "%s/install/bin/clang %s %s -o %o %o %s %s -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_WARNINGS -D_CRT_DECLARE_NONSTDC_NAMES=0 -I%s/install/include -L%s/install/lib -DSILVER_ROOT=\\\"%s\\\" -DSILVER_SHARE_NAME=\\\"%o\\\" -DSILVER_BUILD_TAG=\\\"%s\\\"";
     // three SILVER slots here (-I, -L, SILVER_ROOT), not the four the
     // unix format takes: it has one more for -Wl,-rpath. a fourth made
     // every later argument land one slot early, and SILVER then met the
@@ -2469,36 +2491,36 @@ static void silver_live_run(silver a) {
 static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
                                 cstr env, cstr env_force) {
 #ifdef _WIN32
-    // no fork here, so the setup a child would do runs in THIS process and the
-    // app is spawned outright. a library's module init is loaded in-process,
-    // which is the one thing isolation cannot buy us
+    // no fork: a library loads in a child silver instead
     setenv(env, "1", 1);
     if (env_force) setenv(env_force, "1", 1);
+    bool own_startup = !getenv("SILVER_STARTUP");
+    if (own_startup) setenv("SILVER_STARTUP", path_startup()->chars, 1);
     int st = 0;
-    if (lib) {
-        path back = path_cwd();
-        chdir(cwd->chars);
-        void* h = dlopen(bin->chars, RTLD_NOW);
-        chdir(back->chars);
-        // say why: a failed load here reported only an exit status, and
-        // the reason (a missing import, a bad init) was never printed
-        if (!h) print("%s: cannot load %o: %s", env, bin, dlerror());
-        st = h ? 0 : (1 << 8);
-        // release it: a pinned dll cannot be relinked later this run
-        if (h) dlclose(h);
-    } else {
+    {
+        char self[4096];
+        ssize_t sn = readlink("/proc/self/exe", self, sizeof(self) - 1);
+        verify(sn > 0, "%s: cannot find silver's own exe", env);
+        self[sn] = 0;
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
         posix_spawn_file_actions_addchdir_np(&fa, cwd->chars);
-        char* argv[2] = { bin->chars, NULL };
+        string entry = late_entry_name(a);
+        char* argv_lib[5] = { self, "--load-product", bin->chars,
+            (char*)entry->chars, NULL };
+        if (lib) setenv("SILVER_LATE_DEFER", "1", 1);
+        char* argv_exe[2] = { bin->chars, NULL };
+        char** argv = lib ? argv_lib : argv_exe;
         pid_t pid = 0;
-        int   sp  = posix_spawn(&pid, bin->chars, &fa, NULL, argv, environ);
+        int   sp  = posix_spawn(&pid, argv[0], &fa, NULL, argv, environ);
         posix_spawn_file_actions_destroy(&fa);
         verify(sp == 0, "%s: cannot spawn %o: %s", env, bin, strerror(sp));
         waitpid(pid, &st, 0);
     }
     unsetenv(env);
     if (env_force) unsetenv(env_force);
+    if (own_startup) unsetenv("SILVER_STARTUP");
+    unsetenv("SILVER_LATE_DEFER");
 #else
     pid_t pid = fork();
     if (pid == 0) {
@@ -9517,6 +9539,9 @@ static int checkout_exec(silver a, string label,
 static none checkout_verify(silver a, string label,
                             symbol phase, symbol name, command cmd) {
     int rc = checkout_exec(a, label, phase, cmd);
+    // the command itself, when it fails: a quoting fault in a path is
+    // invisible otherwise, and these lines are long
+    if (rc != 0) print("failed command: %o", cmd);
     verify(rc == 0, "shell command failed: %s", name);
 }
 
@@ -9623,7 +9648,27 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // splits our ';' PATH on drive letters, so nothing is ever found.
     // it honours both of these from the environment; .exe is the other
     // half, since it searches PATH for a bare name
-    cenv = f(string, "PATH_SEPARATOR=';' ac_executable_extensions=.exe %o", cenv);
+    // CPATH so a dependency's own compile finds our shims (pwd.h and
+    // the rest of the posix surface); clang reads it for every compile
+    // CPATH so a dependency's compile finds our shims. the posix.h
+    // force-include is NOT here: it belongs to autotools alone, and
+    // applied to every cmake build it broke them
+    // PATH_SEPARATOR follows the SHELL. busybox's sh is native, so the
+    // path configure sees is ';'-separated and autoconf's own probe
+    // (which asks sh) would guess ':' and find nothing. .exe for the
+    // same reason: it searches PATH for a bare name
+    // llvm-rc preprocesses a .rc and wants the sdk's winresrc.h. it reads
+    // INCLUDE, the way rc.exe does, and aether already located these
+    string winc = string(alloc, 512);
+    each(((aether)a)->sys_inc_paths, path, sp) {
+        if (len(winc)) append(winc, ";");
+        concat(winc, cast(string, sp));
+    }
+    // CPATH as well as INCLUDE: llvm-rc preprocesses with clang's own
+    // preprocessor, and that reads CPATH rather than rc.exe's INCLUDE
+    cenv = f(string, "PATH_SEPARATOR=';' ac_executable_extensions=.exe "
+                     "INCLUDE='%o' CPATH='%o/include;%o' %o",
+                     winc, a->install, winc, cenv);
 #endif
 
     validate(command_exists("git"), "git required for import feature");
@@ -9984,13 +10029,15 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             file_exists("%o/configure", project_f) ||
             file_exists("%o/config", project_f)) {
 
-            // fix common race condition with autotools
-            if (!file_exists("%o/ltmain.sh", project_f))
-                checkout_verify(a, label, "configure", "libtoolize",
-                    f(command, "libtoolize --install --copy --force"));
-
             // a release archive ships configure ready; autogen is git's
             bool shipped = is_archive && file_exists("%o/configure", project_f);
+
+            // fix common race condition with autotools. only when we are
+            // the ones regenerating: a shipped configure needs no libtool
+            // bootstrap, and asking for one fails where it is not installed
+            if (!shipped && !file_exists("%o/ltmain.sh", project_f))
+                checkout_verify(a, label, "configure", "libtoolize",
+                    f(command, "libtoolize --install --copy --force"));
             // common preference on these repos
             if (!shipped && file_exists("%o/autogen.sh", project_f))
                 checkout_verify(a, label, "configure", "autogen",
@@ -10029,12 +10076,29 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 path tb = f(path, "%s/platform/native/bin", SILVER);
                 // depmode comes out 'none' here, and automake's depfiles
                 // step cannot bootstrap from that
-                x_host  = f(string, "--build=x86_64-pc-windows "
+                // mingw32, not a plain 'windows': every autotools project
+                // selects its windows backend by matching *-mingw*, and
+                // libusb silently took its POSIX one (poll.h) without it
+                x_host  = f(string, "--build=x86_64-w64-mingw32 "
                                     "--disable-dependency-tracking "
+                                    // MACROS are safe to hand over, where a
+                                    // prototype is not: the crt's <time.h>
+                                    // names no clock, and configure looks
+                                    "CPPFLAGS='-DCLOCK_REALTIME=0 -DCLOCK_MONOTONIC=1' "
+                                    // NO -include posix.h: autoconf probes a
+                                    // function by declaring `char f();`, and
+                                    // a real prototype in scope makes every
+                                    // one of those fail to compile. the probe
+                                    // only needs to LINK, which -lAu answers
+                                    "LDFLAGS='-L%o/lib' LIBS='-lAu' "
                                     "CC=%o/clang.exe CXX=%o/clang++.exe "
                                     "AR=%o/llvm-ar.exe RANLIB=%o/llvm-ranlib.exe "
+                                    // libtool configures its RC tag only when
+                                    // it finds a resource compiler; without
+                                    // one it reports 'unknown tag RC'
+                                    "RC=%o/llvm-windres.exe "
                                     "LD=%o/lld-link.exe ",
-                                    tb, tb, tb, tb, tb);
+                                    install, tb, tb, tb, tb, tb, tb);
             }
 #endif
             if (file_exists("%o/%o", project_f, configure)) {
@@ -10088,6 +10152,16 @@ static string target_dir(silver a) {
 // windows is a mingw sysroot, so it is shaped like every other target
 static bool platform_is_windows(silver a) {
     cstr p = a->platform ? a->platform->chars : "";
+    // an empty or 'native' platform means the HOST. testing only the
+    // string left every native windows build on the elf branch: no
+    // /IMPLIB, no crt names, and a soname flag that means nothing here
+    if (!*p || strcmp(p, "native") == 0) {
+#ifdef _WIN32
+        return true;
+#else
+        return false;
+#endif
+    }
     return strstr(p, "windows") != NULL;
 }
 
@@ -10117,7 +10191,10 @@ string compile_implements(silver a, array files, string cflags) {
     // the dynamic crt every dependency here is built against. left to
     // itself a .cc object takes /MT, and /failifmismatch rejects it.
     // this names the crt for the headers AND the defaultlib directives
-    cstr   crt_flag = "-fms-runtime-lib=dll";
+    // NONSTDC_NAMES=0: posix.h declares mkdir/getcwd/off_t with posix
+    // signatures, and the crt's own differ. a .cc includes <import>
+    // first, so the header's guard is too late -- it belongs here
+    cstr   crt_flag = "-fms-runtime-lib=dll -D_CRT_DECLARE_NONSTDC_NAMES=0";
 #else
     cstr   crt_flag = "";
 #endif
@@ -10234,6 +10311,7 @@ static string late_object(silver a, path install) {
     save(src, (Au)f(string,
         "#include <stdlib.h>\n"
         "extern void %o(void);\n"
+        "#ifdef _WIN32\n__declspec(dllexport)\n#endif\n"
         "void %o(void) { %o(); }\n"
         "__attribute__((constructor)) static void silver_late(void) {\n"
         "    if (!getenv(\"SILVER_LATE_DEFER\")) %o();\n"
@@ -10254,6 +10332,42 @@ static string late_object(silver a, path install) {
     verify(exec(a->verbose, "%o/bin/clang %s %s -c %o -o %o", install, sdk, pic, src, obj) == 0,
         "late object failed for %o", a->name);
     return (string)obj;
+}
+
+// stem() cuts at the FIRST dot, and a module name can carry two of
+// them -- silver-random.RandomExtra.dll -- so an import library named
+// from it came out silver-random.lib. this drops only the LAST
+static string drop_ext(path p) {
+    string fn = cast(string, path_filename(p));
+    string e  = ext(p);
+    if (!e || !len(e)) return fn;
+    return mid(fn, 0, len(fn) - len(e) - 1);
+}
+
+// a dll is never linked against directly: a consumer takes its import
+// library, and looks for it beside the .product it was handed. that
+// name needs the same link the product itself got, or a hashed build
+// (silver-fcfg-6d9b52.dll) leaves silver-fcfg.lib missing
+static void link_import_lib(silver a) {
+#ifdef _WIN32
+    if (!a->is_library || !a->product || !a->product_link) return;
+    // absolute on BOTH: a->product is absolute(product_link), so the
+    // two spell the SAME file differently -- comparing the raw strings
+    // missed that and the unlink below ate the real import library
+    path real_il = absolute(f(path, "%o/%o%s", parent_dir(a->product),
+                     drop_ext(a->product), lib_static));
+    path link_il = absolute(f(path, "%o/%o%s", parent_dir(a->product_link),
+                     drop_ext(a->product_link), lib_static));
+    if (!file_exists("%o", real_il)) return;
+    // NEVER unlink here. absolute() normalizes separators, so these two
+    // can name the same file in different spellings -- and the unlink
+    // that used to stand here deleted the import library it was meant
+    // to publish. only fill the name in when nothing holds it
+    if (file_exists("%o", link_il)) return;
+    create_symlink(real_il, link_il);
+#else
+    (void)a;
+#endif
 }
 
 none silver_build_product(silver a) {
@@ -10354,7 +10468,7 @@ none silver_build_product(silver a) {
             path   lp   = path(lib_name->chars);
             string pext = ext(lp);
             if (pext && (cmp(pext, "product") == 0 || cmp(pext, "dll") == 0)) {
-                path il = f(path, "%o/%o%s", parent_dir(lp), stem(lp), lib_static);
+                path il = f(path, "%o/%o%s", parent_dir(lp), drop_ext(lp), lib_static);
                 verify(file_exists("%o", il),
                     "no import library for %o (expected %o)", lib_name, il);
                 use = cast(string, il);
@@ -10493,8 +10607,16 @@ none silver_build_product(silver a) {
             f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
         // a library carries its leaf as soname: consumers record that, not
         // the absolute build path, and resolve by rpath
-        string shared_d = a->is_library ? (target_is_apple(a) || win ? string(shared) :
-            f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))) : string("");
+        // this path linked without /IMPLIB or the crt names, so an
+        // extension module (silver-random.RandomExtra) produced a dll
+        // its consumers had no import library for
+        string win_lib = win ? f(string, "%s -fms-runtime-lib=dll%s -Wl,/IMPLIB:%o/%o%s",
+            shared, crt_libs, parent_dir(a->product), drop_ext(a->product),
+            lib_static) : string("");
+        string shared_d = a->is_library
+            ? (win ? win_lib : (target_is_apple(a) ? string(shared) :
+               f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))))
+            : (win ? f(string, "-fms-runtime-lib=dll%s", crt_libs) : string(""));
         if (!win && !android && a->base_install)
             concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
                 a->base_install, a->base_install));
@@ -10519,6 +10641,7 @@ none silver_build_product(silver a) {
             unlink(a->product_link->chars);
             verify(create_symlink(a->product, a->product_link),
                 "could not create product symlink from %o -> %o", a->product_link, a->product);
+            link_import_lib(a);
         }
         // the root phone app ships as a bundle; libraries stay bare
         if (target_is_mobile(a) && !a->is_external && ((aether)a)->is_live)
@@ -10594,7 +10717,10 @@ none silver_build_product(silver a) {
     // a temp DIR, not a temp NAME: the import lib records the output's
     // basename as the dll to load, so `<product>.new<pid>` made every
     // consumer import a name that never exists after the rename
-    path link_dir = f(path, "%o/.link%i", parent_dir(a->product), (i32)getpid());
+    // per PRODUCT, not just per process: concurrent module links shared
+    // one directory, and the first to finish rmdir'd it mid-link
+    path link_dir = f(path, "%o/.link%i-%o", parent_dir(a->product),
+        (i32)getpid(), stem(a->product));
     make_dir(link_dir);
     path link_out = f(path, "%o/%o", link_dir, path_filename(a->product));
 #else
@@ -10614,10 +10740,16 @@ none silver_build_product(silver a) {
     // (<product>.new<pid>), so it landed as <name>.dll.lib and the
     // rename only fixed the dll. name it for the product instead.
     // the crt must match what the objects were compiled against
+    // the pdb follows the OUTPUT, and ours is a temp directory that is
+    // removed after the move -- so every module linked without symbols.
+    // name it for the product and it lands beside the dll, as expected
+    string pdb_n = a->debug ? f(string, " -Wl,/PDB:%o/%o.pdb",
+        parent_dir(a->product), path_filename(a->product)) : string("");
     string shared_n = a->is_library ?
-        f(string, "%s -fms-runtime-lib=dll -Wl,/IMPLIB:%o/%o%s", shared,
-            parent_dir(a->product), stem(a->product), lib_static) :
-        string("-fms-runtime-lib=dll");
+        f(string, "%s -fms-runtime-lib=dll%s -Wl,/IMPLIB:%o/%o%s%o", shared,
+            crt_libs, parent_dir(a->product), drop_ext(a->product),
+            lib_static, pdb_n) :
+        f(string, "-fms-runtime-lib=dll%s%o", crt_libs, pdb_n);
 #else
     string shared_n = string(a->is_library ? shared : "");
 #endif
@@ -10647,6 +10779,23 @@ none silver_build_product(silver a) {
 #ifdef _WIN32
     verify(au_replace_file(link_out->chars, a->product->chars) == 0,
         "could not replace %o: locked by another process", a->product);
+    // clang appends an /IMPLIB of its own for the output path it was
+    // handed, and lld takes the LAST one -- so the import library is
+    // written into the staging directory no matter what we asked for.
+    // move it beside the product before that directory is removed
+    if (a->is_library) {
+        path il_tmp = f(path, "%o/%o%s", link_dir, drop_ext(link_out),
+                        lib_static);
+        path il_dst = f(path, "%o/%o%s", parent_dir(a->product),
+                        drop_ext(a->product), lib_static);
+        if (file_exists("%o", il_tmp)) {
+            unlink(il_dst->chars);
+            au_replace_file(il_tmp->chars, il_dst->chars);
+        }
+        // the export table file rides along; it has no consumer here
+        path ex_tmp = f(path, "%o/%o.exp", link_dir, drop_ext(link_out));
+        if (file_exists("%o", ex_tmp)) unlink(ex_tmp->chars);
+    }
     rmdir(link_dir->chars);
 #endif
     
@@ -10654,6 +10803,7 @@ none silver_build_product(silver a) {
 
     verify(create_symlink(a->product, a->product_link),
         "could not create product symlink from %o -> %o", a->product_link, a->product);
+    link_import_lib(a);
 
     }
 
@@ -12539,7 +12689,7 @@ enode parse_import(silver a) {
                     (Au_t)null, false, stderr, (Au)true, seq,
                     (symbol)"\n%o:%i:%i (%s:%i)\nimport: header <%o> not found in any include path",
                     (itok->source ? (Au)itok->source : (Au)a->module_file),
-                    itok->line, itok->column, __FILE__, __LINE__, inc);
+                    itok->line, itok->column, src_file(__FILE__), __LINE__, inc);
                 if (level_err >= fault_level) halt(s, itok);
             }
             if (ipath)
@@ -15328,6 +15478,16 @@ int main(int argc, cstrs argv) {
     }
 #endif
     engage(argv);
+#ifdef _WIN32
+    // spawn_product's child: the late entry runs outside DllMain
+    if (argc == 4 && strcmp(argv[1], "--load-product") == 0) {
+        void* h = dlopen(argv[2], RTLD_NOW);
+        if (!h) fprintf(stderr, "cannot load %s: %s\n", argv[2], dlerror());
+        void (*late)(void) = h ? (void(*)(void))dlsym(h, argv[3]) : null;
+        if (late) late();
+        _exit(h ? 0 : 1);
+    }
+#endif
     // silver [flags] module [app-args]: the app's flags are its own
     au_argv_launcher(true);
     silver a = silver(argv);

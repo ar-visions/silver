@@ -2,7 +2,11 @@
 # targets; the host draws what it hands back, where it likes
 extend design
 
-import <dlfcn.h>
+# posix.h carries these where the headers do not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <dlfcn.h>
 
 # one draw in a pass: a shader over objects, or over a quad
 class Draw

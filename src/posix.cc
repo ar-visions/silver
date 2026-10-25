@@ -63,6 +63,9 @@ int inotify_close(int fd) {
 #include <posix.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shlwapi.h>
+#include <bcrypt.h>
+#include <wincrypt.h>
 #include <dbghelp.h>
 #include <time.h>
 #include <io.h>
@@ -236,6 +239,22 @@ char* realpath(const char* path, char* resolved_path) {
         return NULL;
     }
 
+    // posix resolves links: a .product symlink names its dll
+    HANDLE h = CreateFileA(temp, 0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        char fin[MAX_PATH];
+        DWORD n = GetFinalPathNameByHandleA(h, fin, MAX_PATH,
+            FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        CloseHandle(h);
+        if (n > 0 && n < MAX_PATH) {
+            win_norm_sep(fin);
+            strcpy(temp, fin);
+            len = (DWORD)strlen(temp);
+        }
+    }
+
     // If caller passed NULL, allocate buffer
     if (!resolved_path) {
         resolved_path = (char*)malloc(len + 1);
@@ -293,7 +312,51 @@ ssize_t readlink(const char *path, char *buf, size_t bufsiz) {
     return strlen(buf);
 }
 
-int lstat(const char* path, struct _stat* st) {
+// _utime64 is the crt's, and takes its own struct
+int utime(const char* path, const struct utimbuf* t) {
+    if (!t) return _utime64(path, 0);
+    struct __utimbuf64 u;
+    u.actime  = (__time64_t)t->actime;
+    u.modtime = (__time64_t)t->modtime;
+    return _utime64(path, &u);
+}
+
+// the crt's _stat64 is the one with a 64-bit size; everything else
+// is a straight copy into our own layout
+static void from_stat64(struct stat* st, const struct _stat64* s) {
+    memset(st, 0, sizeof(*st));
+    st->st_dev     = s->st_dev;
+    st->st_ino     = s->st_ino;
+    st->st_mode    = s->st_mode;
+    st->st_nlink   = s->st_nlink;
+    st->st_uid     = s->st_uid;
+    st->st_gid     = s->st_gid;
+    st->st_rdev    = s->st_rdev;
+    st->st_size    = s->st_size;
+    st->st_atime   = (time_t)s->st_atime;
+    st->st_mtime   = (time_t)s->st_mtime;
+    st->st_ctime   = (time_t)s->st_ctime;
+    st->st_blksize = 4096;
+    st->st_blocks  = (s->st_size + 511) / 512;
+}
+
+int stat(const char* path, struct stat* st) {
+    struct _stat64 s;
+    if (!st) { errno = EINVAL; return -1; }
+    if (_stat64(path, &s) != 0) return -1;
+    from_stat64(st, &s);
+    return 0;
+}
+
+int fstat(int fd, struct stat* st) {
+    struct _stat64 s;
+    if (!st) { errno = EINVAL; return -1; }
+    if (_fstat64(fd, &s) != 0) return -1;
+    from_stat64(st, &s);
+    return 0;
+}
+
+int lstat(const char* path, struct stat* st) {
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(path, &findData);
     if (hFind == INVALID_HANDLE_VALUE) {
@@ -660,14 +723,10 @@ int inotify_close(int fd) {
     }
 
     ctx->closed = true;
-    for (auto& pair : ctx->watches) {
-        WatchInfo* w = pair.second.get();
-        SetEvent(w->stopEvent);                 // wakes its INFINITE wait
-        if (w->watchThread.joinable())
-            w->watchThread.join();
-        CloseHandle(w->dirHandle);
-        CloseHandle(w->stopEvent);
-    }
+    // ~WatchInfo already does all of this: it signals stopEvent, joins
+    // the thread and closes both handles. doing it here as well closed
+    // each handle TWICE -- silent normally, but an invalid handle
+    // RAISES under a debugger, which is what killed every lldb run
     ctx->watches.clear();
     return 0;
 }
@@ -888,9 +947,27 @@ pid_t waitpid(pid_t pid, int* status, int options) {
             // as "Terminated" and hid real crashes, so each is named, and one
             // we cannot name is reported rather than disguised
             // never hide it: an abnormal exit always names its NTSTATUS
-            if (code >= 0x80000000)
-                fprintf(stderr, "waitpid: pid %d ended with NTSTATUS 0x%08lX\n",
-                    (int)pids[k], (unsigned long)code);
+            if (code >= 0x80000000) {
+                // a bare hex code is a dead end for whoever reads it.
+                // name it, and say where the real report lives: the
+                // child prints its own stack, which this never sees
+                const char* what;
+                switch (code) {
+                    case 0xC0000005: what = "access violation";        break;
+                    case 0xC00000FD: what = "stack overflow";          break;
+                    case 0xC000001D: what = "illegal instruction";     break;
+                    case 0xC0000094: what = "integer divide by zero";  break;
+                    case 0xC0000409: what = "stack buffer overrun";    break;
+                    case 0xC0000374: what = "heap corruption";         break;
+                    case 0xC0000135: what = "a dll was not found";     break;
+                    case 0xC0000139: what = "an entry point was not found"; break;
+                    case 0xC000013A: what = "interrupted";             break;
+                    default:         what = "an unhandled exception";  break;
+                }
+                fprintf(stderr,
+                    "waitpid: pid %d died of %s (NTSTATUS 0x%08lX)\n",
+                    (int)pids[k], what, (unsigned long)code);
+            }
             switch (code) {
                 case 0xC0000005: *status = SIGSEGV; break;  // access violation
                 case 0xC00000FD: *status = SIGSEGV; break;  // stack overflow
@@ -966,11 +1043,11 @@ FILE* popen(const char* cmd, const char* mode) {
         while (*start == ' ' || *start == '	') start++;
         char* eq = NULL;
         char* p  = start;
-        while (*p && *p != ' ' && *p != '	') {
-            if (*p == '=' && !eq) eq = p;
-            p++;
-        }
-        if (!eq || eq == start) break;
+        // the name half ends at the '='; a blank before one means this
+        // is no assignment, and the run of prefixes is over
+        while (*p && *p != ' ' && *p != '	' && *p != '=') p++;
+        if (*p != '=' || p == start) break;
+        eq = p;
         bool is_name = true;
         for (char* q = start; q < eq && is_name; q++)
             is_name = (*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') ||
@@ -978,7 +1055,26 @@ FILE* popen(const char* cmd, const char* mode) {
         if (!is_name || (*start >= '0' && *start <= '9')) break;
 
         std::string name(start, (size_t)(eq - start));
-        std::string value(eq + 1, (size_t)(p - eq - 1));
+        // the value ends at an UNQUOTED blank, and the quotes come off,
+        // the way sh does it. a windows include path carries both a
+        // space and parentheses -- Program Files (x86) -- so cutting at
+        // the first blank left (x86) in the command for sh to choke on
+        std::string value;
+        char quote = 0;
+        p = eq + 1;
+        while (*p) {
+            if (quote) {
+                if (*p == quote) quote = 0;
+                else             value += *p;
+                p++;
+            } else if (*p == '\'' || *p == '"') {
+                quote = *p++;
+            } else if (*p == ' ' || *p == '	') {
+                break;
+            } else {
+                value += *p++;
+            }
+        }
         char  prev[32767];
         DWORD n = GetEnvironmentVariableA(name.c_str(), prev, (DWORD)sizeof(prev));
         env_save sv;
@@ -988,6 +1084,26 @@ FILE* popen(const char* cmd, const char* mode) {
         restore.push_back(sv);
         SetEnvironmentVariableA(name.c_str(), value.c_str());
         start = p;
+    }
+
+    // &&, pipes and redirects are shell syntax and CreateProcess knows
+    // none of it. kbuild and every autotools configure are written in it,
+    // so those go to busybox's sh. it is a NATIVE windows shell: the path
+    // it hands a child stays ';'-separated and C:\ stays a path, where an
+    // msys shell would translate both. a plain command still spawns direct
+    std::vector<char> shbuf;
+    if (strpbrk(start, "&|<>;`$")) {
+        std::string s = "sh -c \"";
+        for (char* c = start; *c; c++) {
+            if (*c == '"') s += '\\';
+            s += *c;
+        }
+        // a trailing backslash would escape the closing quote
+        if (!s.empty() && s[s.size() - 1] == '\\') s += '\\';
+        s += '"';
+        shbuf.assign(s.begin(), s.end());
+        shbuf.push_back('\0');
+        start = shbuf.data();
     }
 
     // its own group: sharing ours means one console control event kills the
@@ -1045,6 +1161,25 @@ pid_t au_getpid()    { return (pid_t)GetCurrentProcessId(); }
 
 int strcasecmp(const char* a, const char* b) { return _stricmp(a, b); }
 int rmdir(const char* path) { return RemoveDirectoryA(path) ? 0 : -1; }
+
+wchar_t* wcsdup(const wchar_t* s) { return _wcsdup(s); }
+
+// no password database here; callers already handle "no such user"
+struct passwd* getpwnam(const char* name) { (void)name; return NULL; }
+struct passwd* getpwuid(int uid)          { (void)uid;  return NULL; }
+
+// the mode is posix's; windows carries no permission bits on a dir
+int mkdir(const char* path, mode_t mode) {
+    (void)mode;
+    return CreateDirectoryA(path, NULL) ? 0 : -1;
+}
+
+// off_t is 64-bit here, so the i64 seek is the matching one
+off_t lseek  (int fd, off_t off, int whence) { return _lseeki64(fd, off, whence); }
+int   chmod  (const char* path, mode_t mode) { return _chmod(path, (int)mode); }
+int   umask  (mode_t mask)                   { return _umask((int)mask); }
+int   creat  (const char* path, mode_t mode) { return _creat(path, (int)mode); }
+int   setmode(int fd, int mode)              { return _setmode(fd, mode); }
 
 // flock is per open-file-description and idempotent: locking an fd you
 // already hold succeeds. LockFileEx instead treats it as a conflicting
@@ -1789,9 +1924,13 @@ ssize_t au_read(int fd, void* buf, size_t sz) {
     return _read(fd, buf, sz);
 }
 
-ssize_t au_write(int fd, void* buf, size_t sz) {
+ssize_t au_write(int fd, const void* buf, size_t sz) {
     return _write(fd, buf, sz);
 }
+
+// the posix spellings route through ours, so an inotify fd is handled
+ssize_t read (int fd, void* buf, size_t sz) { return au_read (fd, buf, sz); }
+ssize_t write(int fd, const void* buf, size_t sz) { return au_write(fd, buf, sz); }
 
 // an inotify fd is ours, a pipe the crt's: each is asked its
 // own way. a watcher needs no finer grain than readable
@@ -1995,14 +2134,324 @@ int pthread_join(pthread_t thread, void** retval) {
     return 0;
 }
 
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+// Sleep() rounds to the scheduler tick (~15ms unguarded), so a wait
+// under a millisecond never happened -- usleep(100) slept 15000us. a
+// waitable timer made with the high-resolution flag counts in 100ns
+// units and honours them. one per THREAD: SetWaitableTimer on a shared
+// handle would have two threads racing the same due time
+static void win_wait_100ns(long long units) {
+    if (units <= 0) return;
+    static __thread HANDLE timer = NULL;
+    if (!timer)
+        timer = CreateWaitableTimerExW(NULL, NULL,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -units;   // negative is relative to now
+    // before 1803, or if the timer will not arm, the tick is all there is
+    if (!timer || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+        Sleep((DWORD)((units + 9999) / 10000));
+        return;
+    }
+    WaitForSingleObject(timer, INFINITE);
+}
+
+// the ROOT store holds what windows trusts. each cert goes out as
+// PEM, newlines normalized to LF -- CRLF is not written here
+int win_trust_pem(const char* out_path) {
+    if (!out_path) return -1;
+    FILE* f = fopen(out_path, "wb");
+    if (!f) return -1;
+    int n = 0;
+    // ROOT holds the roots windows has materialized, AUTHROOT the
+    // published list, CA the intermediates. windows installs a root
+    // only when something first needs it, so ROOT alone is a snapshot
+    // of what has been asked for -- not of what is trusted
+    static const char* stores[3] = { "ROOT", "AUTHROOT", "CA" };
+    for (int si = 0; si < 3; si++) {
+    HCERTSTORE st = CertOpenSystemStoreA(0, stores[si]);
+    if (!st) continue;
+    PCCERT_CONTEXT c = 0;
+    while ((c = CertEnumCertificatesInStore(st, c)) != 0) {
+        DWORD len = 0;
+        if (!CryptBinaryToStringA(c->pbCertEncoded, c->cbCertEncoded,
+                CRYPT_STRING_BASE64HEADER, 0, &len)) continue;
+        char* pem = (char*)malloc((size_t)len + 1);
+        if (!pem) continue;
+        if (CryptBinaryToStringA(c->pbCertEncoded, c->cbCertEncoded,
+                CRYPT_STRING_BASE64HEADER, pem, &len)) {
+            for (char* p = pem; *p; p++)
+                if (*p != '\r') fputc(*p, f);
+            n++;
+        }
+        free(pem);
+    }
+    CertCloseStore(st, 0);
+    }
+    fclose(f);
+    return n > 0 ? 0 : -1;
+}
+
+// elevated means root for our purposes: the installer needs the
+// same powers either way, and checks for uid 0 to find out
+uid_t geteuid(void) {
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID admins = 0;
+    BOOL  in = FALSE;
+    if (AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &admins)) {
+        if (!CheckTokenMembership(0, admins, &in)) in = FALSE;
+        FreeSid(admins);
+    }
+    return in ? 0 : 1000;
+}
+
+uid_t getuid (void) { return geteuid(); }
+gid_t getegid(void) { return geteuid(); }
+gid_t getgid (void) { return geteuid(); }
+
+// the closest thing: hand every volume we can open a flush. the
+// ones we cannot open are the ones we never wrote to
+void sync(void) {
+    char drives[512];
+    DWORD n = GetLogicalDriveStringsA(sizeof(drives) - 1, drives);
+    if (!n || n > sizeof(drives) - 1) return;
+    for (char* d = drives; *d; d += strlen(d) + 1) {
+        if (GetDriveTypeA(d) != DRIVE_FIXED &&
+            GetDriveTypeA(d) != DRIVE_REMOVABLE) continue;
+        char vol[7];
+        // the raw volume path: dot-device, drive letter, colon
+        vol[0] = '\\'; vol[1] = '\\'; vol[2] = '.';
+        vol[3] = '\\'; vol[4] = d[0]; vol[5] = ':'; vol[6] = 0;
+        HANDLE h = CreateFileA(vol, GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        FlushFileBuffers(h);
+        CloseHandle(h);
+    }
+}
+
+// no filesystem can be mounted here; lwext4 is how the ext4 image
+// gets written on windows, so these report the absence plainly
+int mount(const char* src, const char* target, const char* fs,
+          unsigned long flags, const void* data) {
+    (void)src; (void)target; (void)fs; (void)flags; (void)data;
+    errno = ENOSYS;
+    return -1;
+}
+
+int umount(const char* target) {
+    (void)target;
+    errno = ENOSYS;
+    return -1;
+}
+
+int umount2(const char* target, int flags) {
+    (void)target; (void)flags;
+    errno = ENOSYS;
+    return -1;
+}
+
+// --- sha512-crypt ----------------------------------------------------
+// drepper's sha512-crypt, verified against all 7 published vectors.
+// the installed system's /etc/shadow needs this exact format
+typedef struct { BCRYPT_HASH_HANDLE h; } s5;
+static BCRYPT_ALG_HANDLE s5_alg;
+
+static void s5_init(s5* c) {
+    if (!s5_alg)
+        BCryptOpenAlgorithmProvider(&s5_alg, BCRYPT_SHA512_ALGORITHM, 0, 0);
+    c->h = 0;
+    BCryptCreateHash(s5_alg, &c->h, 0, 0, 0, 0, 0);
+}
+
+static void s5_add(s5* c, const void* p, size_t n) {
+    if (n) BCryptHashData(c->h, (PUCHAR)p, (ULONG)n, 0);
+}
+
+static void s5_done(s5* c, unsigned char out[64]) {
+    BCryptFinishHash(c->h, out, 64, 0);
+    BCryptDestroyHash(c->h);
+    c->h = 0;
+}
+
+static const char b64t[65] =
+    "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+static char* b64_24(char* p, unsigned b2, unsigned b1, unsigned b0, int n) {
+    unsigned w = (b2 << 16) | (b1 << 8) | b0;
+    while (n-- > 0) { *p++ = b64t[w & 0x3f]; w >>= 6; }
+    return p;
+}
+
+char* crypt(const char* key, const char* salt) {
+    static char out[256];
+    if (!key || !salt) return 0;
+    if (strncmp(salt, "$6$", 3) != 0) return 0;   // sha-512 only
+    salt += 3;
+
+    unsigned long rounds = 5000;
+    bool custom = false;
+    if (strncmp(salt, "rounds=", 7) == 0) {
+        char* end = 0;
+        unsigned long r = strtoul(salt + 7, &end, 10);
+        if (end && *end == '$') {
+            salt = end + 1;
+            if (r < 1000)      r = 1000;
+            if (r > 999999999) r = 999999999;
+            rounds = r; custom = true;
+        }
+    }
+    size_t slen = strcspn(salt, "$");
+    if (slen > 16) slen = 16;
+    size_t klen = strlen(key);
+
+    unsigned char A[64], B[64], DP[64], DS[64], C[64];
+    s5 c;
+
+    // B = sha512(key | salt | key)
+    s5_init(&c); s5_add(&c, key, klen); s5_add(&c, salt, slen);
+    s5_add(&c, key, klen); s5_done(&c, B);
+
+    // A: key | salt, then B cycled across the key's length, then one
+    // of B/key per bit of that length, lowest bit first
+    s5_init(&c); s5_add(&c, key, klen); s5_add(&c, salt, slen);
+    size_t cnt = klen;
+    for (; cnt > 64; cnt -= 64) s5_add(&c, B, 64);
+    s5_add(&c, B, cnt);
+    for (size_t i = klen; i > 0; i >>= 1)
+        if (i & 1) s5_add(&c, B, 64); else s5_add(&c, key, klen);
+    s5_done(&c, A);
+
+    // P: one byte per key byte, from sha512(key repeated klen times)
+    s5_init(&c);
+    for (size_t i = 0; i < klen; i++) s5_add(&c, key, klen);
+    s5_done(&c, DP);
+    unsigned char* P = (unsigned char*)malloc(klen + 64);
+    for (size_t i = 0; i < klen; i++) P[i] = DP[i % 64];
+
+    // S: likewise for the salt, repeated 16 + A[0] times
+    s5_init(&c);
+    for (int i = 0; i < 16 + (int)A[0]; i++) s5_add(&c, salt, slen);
+    s5_done(&c, DS);
+    unsigned char* S = (unsigned char*)malloc(slen + 64);
+    for (size_t i = 0; i < slen; i++) S[i] = DS[i % 64];
+
+    memcpy(C, A, 64);
+    for (unsigned long r = 0; r < rounds; r++) {
+        s5_init(&c);
+        if (r & 1) s5_add(&c, P, klen); else s5_add(&c, C, 64);
+        if (r % 3) s5_add(&c, S, slen);
+        if (r % 7) s5_add(&c, P, klen);
+        if (r & 1) s5_add(&c, C, 64); else s5_add(&c, P, klen);
+        s5_done(&c, C);
+    }
+    free(P); free(S);
+
+    char* p = out;
+    p += sprintf(p, "$6$");
+    if (custom) p += sprintf(p, "rounds=%lu$", rounds);
+    memcpy(p, salt, slen); p += slen;
+    *p++ = '$';
+    // the digest's bytes go out in this order, not in sequence
+    static const unsigned char ix[21][3] = {
+        {0,21,42},{22,43,1},{44,2,23},{3,24,45},{25,46,4},{47,5,26},
+        {6,27,48},{28,49,7},{50,8,29},{9,30,51},{31,52,10},{53,11,32},
+        {12,33,54},{34,55,13},{56,14,35},{15,36,57},{37,58,16},
+        {59,17,38},{18,39,60},{40,61,19},{62,20,41}};
+    for (int i = 0; i < 21; i++)
+        p = b64_24(p, C[ix[i][0]], C[ix[i][1]], C[ix[i][2]], 4);
+    p = b64_24(p, 0, 0, C[63], 2);
+    *p = 0;
+    return out;
+}
+
+// shutdown needs the privilege handed over first; it is off by default
+static bool win_shutdown_priv(void) {
+    HANDLE tok = 0;
+    if (!OpenProcessToken(GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &tok)) return false;
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    bool ok = LookupPrivilegeValueA(0, "SeShutdownPrivilege",
+                                    &tp.Privileges[0].Luid) != 0;
+    if (ok) ok = AdjustTokenPrivileges(tok, FALSE, &tp, 0, 0, 0) != 0 &&
+                 GetLastError() == ERROR_SUCCESS;
+    CloseHandle(tok);
+    return ok;
+}
+
+int reboot(int howto) {
+    if (howto != RB_AUTOBOOT && howto != RB_POWER_OFF &&
+        howto != RB_HALT_SYSTEM) return 0;          // CAD, suspend: no-ops
+    if (!win_shutdown_priv()) { errno = EPERM; return -1; }
+    BOOL again = howto == RB_AUTOBOOT;
+    DWORD why = SHTDN_REASON_MAJOR_OPERATINGSYSTEM |
+                SHTDN_REASON_MINOR_INSTALLATION |
+                SHTDN_REASON_FLAG_PLANNED;
+    if (!InitiateSystemShutdownExA(0, 0, 0, TRUE, again, why)) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+// PathMatchSpec takes them the other way round, and is case-folding
+int fnmatch(const char* pat, const char* s, int flags) {
+    (void)flags;
+    if (!pat || !s) return FNM_NOMATCH;
+    return PathMatchSpecA(s, pat) ? 0 : FNM_NOMATCH;
+}
+
+int statvfs(const char* path, struct statvfs* b) {
+    if (!b) return -1;
+    ULARGE_INTEGER avail, total, freeb;
+    memset(b, 0, sizeof(*b));
+    if (!GetDiskFreeSpaceExA(path, &avail, &total, &freeb)) return -1;
+    // a block IS a byte here, so bavail * frsize is the byte count
+    b->f_bsize = b->f_frsize = 1;
+    b->f_blocks  = total.QuadPart;
+    b->f_bfree   = freeb.QuadPart;
+    b->f_bavail  = avail.QuadPart;
+    b->f_namemax = 255;
+    return 0;
+}
+
+// posix returns the seconds left if interrupted; nothing interrupts here
+unsigned sleep(unsigned int seconds) {
+    win_wait_100ns((long long)seconds * 10000000LL);
+    return 0;
+}
+
+// 100ns is the timer's grain, so a request rounds up to it. nothing
+// here is interruptible, so the remainder is always zero
+// localtime_s takes (out, in); the posix spelling is the reverse
+struct tm* localtime_r(const time_t* t, struct tm* out) {
+    if (!t || !out) return 0;
+    return localtime_s(out, t) == 0 ? out : 0;
+}
+
+struct tm* gmtime_r(const time_t* t, struct tm* out) {
+    if (!t || !out) return 0;
+    return gmtime_s(out, t) == 0 ? out : 0;
+}
+
+int nanosleep(const struct timespec* req, struct timespec* rem) {
+    if (rem) { rem->tv_sec = 0; rem->tv_nsec = 0; }
+    if (!req || req->tv_sec < 0 || req->tv_nsec < 0 ||
+        req->tv_nsec > 999999999L) { errno = EINVAL; return -1; }
+    long long units = (long long)req->tv_sec * 10000000LL +
+                      ((long long)req->tv_nsec + 99) / 100;
+    win_wait_100ns(units);
+    return 0;
+}
+
 int usleep(unsigned int usec) {
-    // Windows Sleep() is in milliseconds, so convert:
-    DWORD msec = usec / 1000;
-
-    // Round up to ensure non-zero micro sleeps actually sleep
-    if (usec > 0 && msec == 0) msec = 1;
-
-    Sleep(msec);
+    win_wait_100ns((long long)usec * 10LL);
     return 0;
 }
 

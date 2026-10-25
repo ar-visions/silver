@@ -1,6 +1,10 @@
 extend tray
 
-import <unistd.h>
+# posix.h carries these where the headers do not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
 
 # a program's file request (OpenFile, SaveFile): the navigator
 # answers it on the request's own object

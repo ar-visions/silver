@@ -9,9 +9,13 @@ import tls
 
 import <stdio.h>
 import <stdlib.h>
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
+# posix.h carries unistd where the header does not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
 
 enum PurpleSurface
     color        : 0

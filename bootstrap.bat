@@ -95,6 +95,8 @@ powershell -NoProfile -Command ^
 :: src tree (e.g. foundry\dbg) -- copy it into the install include dir
 copy /Y "%SILVER%\src\posix.h" "%NATIVE%\include\posix.h" >nul
 copy /Y "%SILVER%\src\undefcpp.h" "%NATIVE%\include\undefcpp.h" >nul
+copy /Y "%SILVER%\src\pwd.h" "%NATIVE%\include\pwd.h" >nul
+copy /Y "%SILVER%\src\dbus-win.h" "%NATIVE%\include\dbus-win.h" >nul
 
 :: ---------------- dbg ----------------
 :: thin lldb shortcut: `dbg <app> [args...]` runs the app under the vendored
@@ -161,6 +163,57 @@ if not exist "%NATIVE%\bin\ninja.exe" (
     del "%NATIVE%\bin\ninja.zip"
 )
 
+:: ---------------- gnu make ----------------
+:: busybox's make cannot parse a gnu makefile, and the kernel build and
+:: every autotools dependency need the real one. built from source with
+:: our own clang: clang-cl IS a cl driver, and lld-link a link driver,
+:: so no third-party binary is taken on trust
+set "MAKE_VER=4.4.1"
+set "MAKE_URL=https://ftp.gnu.org/gnu/make/make-%MAKE_VER%.tar.gz"
+if not exist "%NATIVE%\bin\make-%MAKE_VER%.stamp" (
+    echo building gnu make %MAKE_VER%...
+    set "MK=%CHECKOUT%\make-%MAKE_VER%"
+    if not exist "!MK!\build_w32.bat" (
+        powershell -NoProfile -Command "Invoke-WebRequest -Uri '%MAKE_URL%' -OutFile '%CHECKOUT%\make.tar.gz'" || exit /b 1
+        "%SystemRoot%\System32\tar.exe" -xf "%CHECKOUT%\make.tar.gz" -C "%CHECKOUT%" || exit /b 1
+        del "%CHECKOUT%\make.tar.gz"
+    )
+    :: its script looks for cl/link by name; our drivers answer for both
+    if not exist "%CHECKOUT%\clshim" mkdir "%CHECKOUT%\clshim"
+    copy /Y "%NATIVE%\bin\clang-cl.exe" "%CHECKOUT%\clshim\cl.exe"   >nul || exit /b 1
+    copy /Y "%NATIVE%\bin\lld-link.exe" "%CHECKOUT%\clshim\link.exe" >nul || exit /b 1
+    pushd "!MK!"
+    set "PATH=%CHECKOUT%\clshim;%PATH%"
+    cmd /c ".\build_w32.bat" >nul 2>&1
+    popd
+    if not exist "!MK!\WinRel\gnumake.exe" (
+        echo bootstrap: gnu make did not build -- see !MK!\WinRel
+        exit /b 1
+    )
+    :: delete first, never copy INTO it: the vendored tools were hard
+    :: links to one inode, so writing make.exe wrote all 178 of them
+    if exist "%NATIVE%\bin\make.exe" del "%NATIVE%\bin\make.exe"
+    copy /Y "!MK!\WinRel\gnumake.exe" "%NATIVE%\bin\make.exe" >nul || exit /b 1
+    echo %MAKE_VER% > "%NATIVE%\bin\make-%MAKE_VER%.stamp"
+)
+
+:: ---------------- busybox: the posix userland ----------------
+:: kbuild is shell, and so is every autotools configure. busybox-w32 is a
+:: NATIVE windows shell -- it hands configure a ';' path and reads C:\ as a
+:: path, where an msys shell translates both and breaks them.
+:: AFTER gnu make deliberately: busybox carries a `make` applet that cannot
+:: parse a gnu makefile, and the links below never overwrite what is there.
+:: the applets are hard links to the one binary, so never copy INTO one --
+:: that writes through every name at once
+if not exist "%NATIVE%\bin\busybox.exe" (
+    echo downloading busybox-w32...
+    powershell -NoProfile -Command "Invoke-WebRequest -Uri 'https://frippery.org/files/busybox/busybox64.exe' -OutFile '%NATIVE%\bin\busybox.exe'" || exit /b 1
+)
+if not exist "%NATIVE%\bin\sh.exe" (
+    echo linking busybox applets...
+    for /f "delims=" %%A in ('"%NATIVE%\bin\busybox.exe" --list') do if /i not "%%A"=="make" if not exist "%NATIVE%\bin\%%A.exe" mklink /H "%NATIVE%\bin\%%A.exe" "%NATIVE%\bin\busybox.exe" >nul
+)
+
 :: ---------------- python ----------------
 :: a real python, NOT the vendored embedded one: its python311._pth replaces
 :: sys.path outright, so a script never gets its own directory on the path and
@@ -168,7 +221,11 @@ if not exist "%NATIVE%\bin\ninja.exe" (
 set "PYTHON="
 for /f "delims=" %%Q in ('where python.exe python3.exe 2^>nul') do (
     if not defined PYTHON (
-        echo %%Q | findstr /i /c:"%NATIVE%" >nul || set "PYTHON=%%Q"
+        rem BOTH names: install is a junction onto platform\native, so
+        rem the vendored python answers to two paths and only one was
+        rem excluded -- the embedded one then won and its _pth, whose
+        rem entries are relative, resolved a level high and lost src\
+        echo %%Q | findstr /i /c:"%NATIVE%" /c:"%IMPORT%" >nul || set "PYTHON=%%Q"
     )
 )
 if not defined PYTHON if exist "%NATIVE%\bin\python.exe" set "PYTHON=%NATIVE%\bin\python.exe"
@@ -201,6 +258,40 @@ if not exist "%NATIVE%\bin\meson.exe" (
         exit /b 1
     )
 )
+
+:: ---------------- rust + cbindgen ----------------
+:: a module's <name>.rs companion is compiled by rustc, and cbindgen
+:: emits its extern "C" header -- silver calls both by name. vendored
+:: under platform\native like every other tool, never the user profile,
+:: and the two homes are persisted because rustup's shims read them
+set "RUSTUP_HOME=%NATIVE%\rustup"
+set "CARGO_HOME=%NATIVE%\cargo"
+set "PATH=%CARGO_HOME%\bin;%PATH%"
+set "RUSTUP_URL=https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
+if not exist "%CARGO_HOME%\bin\rustc.exe" (
+    echo installing rust...
+    powershell -NoProfile -Command "Invoke-WebRequest -Uri '%RUSTUP_URL%' -OutFile '%TEMP%\rustup-init.exe'" || exit /b 1
+    :: minimal profile: rustc, cargo and std, no docs or clippy. msvc
+    :: host to match our own target -- a gnu host would mix abis
+    "%TEMP%\rustup-init.exe" -y --no-modify-path --profile minimal ^
+        --default-toolchain stable --default-host x86_64-pc-windows-msvc || exit /b 1
+    del "%TEMP%\rustup-init.exe" >nul 2>&1
+    if not exist "%CARGO_HOME%\bin\rustc.exe" (
+        echo bootstrap: rust installed but rustc.exe was not found
+        exit /b 1
+    )
+)
+
+:: cbindgen turns the rust companion into a header silver can import
+if not exist "%NATIVE%\bin\cbindgen.exe" (
+    echo installing cbindgen...
+    "%CARGO_HOME%\bin\cargo.exe" install cbindgen --root "%NATIVE%" --quiet ^
+        || echo warning: cbindgen install failed; rust imports build headerless
+)
+
+:: new shells need the homes, or the shims look under %USERPROFILE%
+powershell -NoProfile -Command ^
+  "foreach ($kv in @{'RUSTUP_HOME'='%NATIVE%\rustup';'CARGO_HOME'='%NATIVE%\cargo'}.GetEnumerator()) { if ([Environment]::GetEnvironmentVariable($kv.Key,'User') -ne $kv.Value) { [Environment]::SetEnvironmentVariable($kv.Key, $kv.Value, 'User') } }; $p=[Environment]::GetEnvironmentVariable('PATH','User'); if ($null -eq $p) { $p='' }; $cb='%NATIVE%\cargo\bin'; if (-not $p.ToLower().Contains($cb.ToLower())) { [Environment]::SetEnvironmentVariable('PATH', $cb+';'+$p, 'User') }"
 
 :: ---------------- target.cmake ----------------
 echo Generating target.cmake for %TRIPLE% (Windows)

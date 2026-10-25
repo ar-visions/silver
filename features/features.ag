@@ -13,6 +13,9 @@ export extensions [ '.feat' ]       # registry: export/silver-features.agi
 export landscape: true              # a one-value manifest flag
 export formats [ '.fa': FileType.ascii, '.fb' ]  # a value tagged by kind
 
+# posix.h carries the posix surface windows has no header for
+ifdef [ windows ]
+    import <posix.h>
 import <stdio.h>                    # C header, read by libclang
 import <string.h>
 import <stdlib.h>
@@ -39,6 +42,11 @@ import fribidi:fribidi/v1.0.16 <fribidi.h>   # meson; its .pc file supplies the 
 import bzip2:bzip2/66c46b8c9436613fd81bc5d03f63a61933a4dcc3 <bzlib.h> from gitlab
     -DENABLE_LIB_ONLY=ON
     -lbz2
+    # libbz2.def names the library bz2-1, so the import lib records
+    # bz2-1.dll while cmake writes the file as bz2.dll. the loader
+    # goes by the recorded name, and looks for it on PATH
+    ifdef [ windows ]
+        >> cp {install}/lib/bz2.dll {install}/bin/bz2-1.dll
 import vec                          # Au's own vector module: its records come from libAu's tables
 import <cpp.hpp>                    # C++ header: .hpp marks the unit
 import More                         # sibling .ag, headed extend

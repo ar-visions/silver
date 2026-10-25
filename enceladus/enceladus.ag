@@ -11,9 +11,13 @@ import scenes
 
 import <stdio.h>
 import <stdlib.h>
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
+# posix.h carries unistd where the header does not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
 
 # enceladus geysers: procedural jets fanning off the south cone
 # into a soft veil — a shell around the moon, nothing textured

@@ -38,16 +38,18 @@ import <stdio.h>
     -lm
 import <stdlib.h>
 import <string.h>
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
+# posix.h below carries these where the headers do not exist
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+    import <dlfcn.h>
+    import <sys/reboot.h>
+    import <sys/wait.h>
+    import <pthread.h>
 import <fcntl.h>
-import <dlfcn.h>
 import <signal.h>
 import <time.h>
-import <sys/reboot.h>
-import <sys/wait.h>
-import <pthread.h>
 
 ifdef [ apple ]
     import <util.h>
@@ -13394,8 +13396,8 @@ element orbiter : trinity # implements compiler
     # the panes, and the context panel of the selected one beside them
     func main_els [] -> Elements
         t : Elements []
-        # the editors with the status bar under them; the side panel
-        # beside both, down to the window's bottom
+        # the editors with the status bar under them, down to the
+        # window's bottom
         left : Elements []
         # the editors over the one console, which is the selected
         # editor's module's; hide_ui hides them, the bar stays
@@ -13412,12 +13414,9 @@ element orbiter : trinity # implements compiler
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         left['status'] = TasksBar [ elements: status_els[] ]
-        # the side panel's shade, cast over the editors' right edge
-        if [ !hide_ui && !inst_hidden ]
-            left['seam_shade'] = SeamShade [ ghost: true ]
+        # no right panel: the callstack is on the bottom bar now,
+        # and its seam shade had nothing left to shade
         t['left'] = element [ elements: left ]
-        # folded, it stays mounted at no width: it slides back open
-        if [ !hide_ui ] t['side'] = SidePanel [ ]
         return t
 
     # a free window's edges and corners, a ring just outside it (its
@@ -17246,6 +17245,7 @@ element orbiter : trinity # implements compiler
             carry_landed = true
 
     public func render [] -> Elements
+        # --install shows only the wizard, over the scene
         if [ ux && install ]
             return Elements [ 'scene': scene_element[],
                 'wizard': InstallWizard [ dry_run: dry_run ] ]

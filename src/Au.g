@@ -1,4 +1,4 @@
 type:       shared
-modules:    posix
+modules:    posix dbus-win
 link:       -latomic
 install:    object.h macros.h

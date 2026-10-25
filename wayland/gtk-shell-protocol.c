@@ -71,3 +71,4 @@ WL_PRIVATE const struct wl_interface gtk_surface1_interface = {
 	2, gtk_surface1_events,
 };
 
+

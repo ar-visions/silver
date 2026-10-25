@@ -9,6 +9,8 @@ import Mbed-TLS:mbedtls/ec4044008d2d069da38288bc76b0fee34ec78646 <mbedtls/ssl.h>
     -lmbedx509
     -lmbedtls
 
+ifdef [ windows ]
+    import <posix.h>
 import <mbedtls/net_sockets.h>
 import <mbedtls/x509_crt.h>
 import <psa/crypto.h>
@@ -53,6 +55,20 @@ class TLSClient
                         > "{ca3}" }
                     keychain.exec[ false ]
                 if [ ca3.exists[] ] ca_ok = mbedtls_x509_crt_parse_file[ @cacert, ca3.chars ]
+        ifdef [ windows ]
+            # windows keeps its roots in a store, not a file: write
+            # them out once, then read them as any bundle
+            if [ ca_ok != 0 ]
+                dir : path.path_storage[ 'silver' ]
+                ca4 : path '{dir}/trust.crt'
+                if [ !ca4.exists[] ] win_trust_pem[ ca4.chars ]
+                if [ ca4.exists[] ]
+                    r4 : i32 [ mbedtls_x509_crt_parse_file[
+                        @cacert, ca4.chars ] ]
+                    # a positive result counts the certs it could not
+                    # parse; the rest are loaded, which is enough. the
+                    # ROOT store always holds a few mbedtls declines
+                    if [ r4 >= 0 ] ca_ok = 0
         if [ ca_ok != 0 ]
             log 'net: no CA bundle (ssl/trust.crt or system certs)'
             return

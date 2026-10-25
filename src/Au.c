@@ -2804,6 +2804,17 @@ static none init_recur(Au a, Au_t current, raw last_init) {
     none(*init)(Au) = au_f->ft.init;
     init_recur(a, current->context, (raw)init);
     if (init && init != (none*)last_init) {
+        // AU_TRACE_INIT names each type as it runs: an init that dies
+        // takes the process with it, and the last name printed is it
+        static int trace = -1;
+        if (trace < 0) trace = getenv("AU_TRACE_INIT") ? 1 : 0;
+        if (trace) {
+            fprintf(stderr, "init: %s (%s:%d)\n",
+                current->ident ? current->ident : "?",
+                current->source ? current->source : "?",
+                current->src_line);
+            fflush(stderr);
+        }
         init(a);
     }
 }
@@ -3810,9 +3821,22 @@ AU_EXPORT Au au_release(Au o) {
 // drain this thread's pool: every unreferenced object in it is freed
 AU_EXPORT none auto_free(void) {
     dbg_add_since_drain = 0;
+    // AU_TRACE_FREE names each type as the pool releases it, in the
+    // order it goes, so a dependent freed after its owner is visible
+    static int tf = -1;
+    if (tf < 0) tf = getenv("AU_TRACE_FREE") ? 1 : 0;
     // only managed objects go into af
     for (num i = 2; i < af_count; i++) {
         Au a = af[i];
+        // only the lifetimes under investigation: a full trace is
+        // millions of lines and changes the timing it is measuring
+        if (tf && a && a->au && a->au->ident &&
+            (strstr(a->au->ident, "Render") ||
+             strstr(a->au->ident, "Window") ||
+             strstr(a->au->ident, "Display") ||
+             strstr(a->au->ident, "vk_context")))
+            fprintf(stderr, "free[%d] %s refs=%d\n",
+                (int)i, a->au->ident, (int)a->refs), fflush(stderr);
         if (a && a->refs == 0)
             Au_free(&a[1]);
         else if (a)
@@ -11197,12 +11221,14 @@ AU_EXPORT void __coverage_report(void) {
 __int64_t _epoch_millis();
 
 __int64_t _epoch_millis() {
-    struct timeval tv;
 #ifdef _WIN32
-    gettimeofday((struct _timeval_*)&tv, 0L);
+    // _timeval_ is posix.h's own: windows has no public timeval that
+    // does not collide with winsock's unguarded one
+    struct _timeval_ tv;
 #else
-    gettimeofday(&tv, 0L);
+    struct timeval tv;
 #endif
+    gettimeofday(&tv, 0L);
     return (__int64_t)(tv.tv_sec) * 1000 + (__int64_t)(tv.tv_usec) / 1000;
 }
 
@@ -11211,12 +11237,14 @@ AU_EXPORT i64 epoch_millis() {
 }
 
 AU_EXPORT i64 epoch_micros() {
-    struct timeval tv;
 #ifdef _WIN32
-    gettimeofday((struct _timeval_*)&tv, 0L);
+    // _timeval_ is posix.h's own: windows has no public timeval that
+    // does not collide with winsock's unguarded one
+    struct _timeval_ tv;
 #else
-    gettimeofday(&tv, 0L);
+    struct timeval tv;
 #endif
+    gettimeofday(&tv, 0L);
     return (__int64_t)(tv.tv_sec) * 1000000 + (__int64_t)(tv.tv_usec);
 }
 

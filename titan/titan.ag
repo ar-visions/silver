@@ -11,9 +11,13 @@ import scenes
 
 import <stdio.h>
 import <stdlib.h>
-import <unistd.h>
-    +_DEFAULT_SOURCE
-    +_XOPEN_SOURCE=500
+# posix.h carries unistd where the header does not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
 
 # titan: NASA/JPL-Caltech/SSI Cassini ISS mosaic PIA22770 "Titan Mosaic:
 # The Surface Under the Haze"

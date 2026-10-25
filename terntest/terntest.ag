@@ -1,0 +1,12 @@
+# video.ag:1666 shape: element assignment of an object literal whose
+# nested literal uses ternary prop values
+import <tern.h>
+    -I{root_path}/terntest
+
+func mk [ w: i32, flag: bool ] -> none
+    regions : local TernCopy [2]
+    regions[1] = TernCopy [
+        offset: 0,
+        extent: TernExt [
+            width: (flag) ? w : w / 2,
+            height: (flag) ? w : w / 2, depth: 1 ] ]

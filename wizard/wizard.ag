@@ -9,20 +9,29 @@ import os-bootstrap
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
-import <unistd.h>
-    +_DEFAULT_SOURCE
+# posix.h carries unistd, utime, statvfs, fnmatch and pthread here.
+# mount has no windows equivalent; its uses are gated where they are
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+    import <utime.h>
+    import <sys/statvfs.h>
+    import <fnmatch.h>
+    import <pthread.h>
+    import <sys/mount.h>
+    import <sys/reboot.h>
+    import <crypt.h>
+        -lcrypt
 import <errno.h>
-import <utime.h>
 import <sys/stat.h>
-import <sys/statvfs.h>
-import <fnmatch.h>
-import <pthread.h>
-import <sys/mount.h>
-import <sys/reboot.h>
-import <crypt.h>
-    -lcrypt
 ifdef [ linux ]
     import <vulkan/vulkan.h>
+        -lvulkan
+ifdef [ windows ]
+    import <vulkan/vulkan.h>
+        +VK_USE_PLATFORM_WIN32_KHR
         -lvulkan
 
 # the first line of a small file, trimmed; '' when unreadable

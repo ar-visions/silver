@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+// popen/pclose live here where the crt spells them with an underscore
+#include <posix.h>
+#endif
 
 // Syntax kinds, as the Au enum numbers them
 enum { K_NONE, K_KEYWORD, K_TYPE, K_IDENT, K_FUNCTION, K_PARAM, K_PROPERTY, K_NUMBER,

@@ -77,7 +77,7 @@ def get_platform_info():
                               '-luser32', '-lkernel32', '-lshell32', '-ldbghelp',
                               '-lbcrypt', '-lws2_32', '-lntdll', '-lversion',
                               '-lole32', '-loleaut32', '-luuid', '-ladvapi32',
-                              '-lpsapi', '-lshlwapi', '-ldiaguids',
+                              '-lpsapi', '-lshlwapi', '-ldiaguids', '-lcrypt32',
                               '-llegacy_stdio_definitions']
         },
         'Darwin': {

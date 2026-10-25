@@ -1,6 +1,10 @@
 extend ai
 
-import <sys/stat.h>
+# mkdir lives in <sys/stat.h> on posix; here posix.h carries it
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <sys/stat.h>
 
 # gpu tensors; kernels read addresses from push constants
 

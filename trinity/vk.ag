@@ -884,15 +884,13 @@ class Render
                 vk_command_buffers[ci] = null
 
     func dealloc [ ]
-        # a dead render must never stay registered: the display
-        # drives element_targets every frame
-        if [ w && w.element_targets ]
-            dead_keys : vec string []
-            for [ target: Render,
-                  target_key: string ] in w.element_targets
-                if [ target == a ] dead_keys += target_key
-            for [ target_key: string ] in dead_keys
-                w.element_targets[ target_key ] = null
+        # no scan of w.element_targets here. an entry in that map HOLDS
+        # its Render -- which is why the teardown has to clear entries
+        # to avoid a double-free -- so a Render that is still registered
+        # has a reference and can never reach this dealloc. the scan
+        # could match nothing, and all it did was read a window that
+        # the pool may already have freed (the startup crash in the
+        # env bake, where Display and Render are both throwaways)
         destroy_ring[]
 
 

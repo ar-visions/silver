@@ -15,6 +15,16 @@ extern "C" {
 
 // portable dirent / gettimeofday functionality
 #ifdef _WIN32
+// silver's own code compiles with _CRT_DECLARE_NONSTDC_NAMES=0 (the
+// flag is on those command lines, where it precedes every include) so
+// the posix spellings are ours; several differ from the ucrt's in
+// signature. a DEPENDENCY compiles with the crt's own names on and
+// wants them, so this header adapts rather than deciding for it
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) || \
+      (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+#define AU_POSIX_NAMES_OURS 1
+#endif
+
 typedef struct DIR DIR;
 
 #define PATH_MAX 4096
@@ -55,8 +65,16 @@ typedef __int32 ssize_t;
 // glibc spells this with underscores; shared code uses it
 typedef int64_t __int64_t;
 
-#define utimbuf _utimbuf
-#define utime   _utime
+// the ucrt withdraws these with the posix names ours, and a macro
+// over _utimbuf left the name invisible to silver's import. the
+// fields are spelled long long so an i64 lands in them directly
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) ||       (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+struct utimbuf {
+    long long actime;
+    long long modtime;
+};
+AU_EXPORT int         utime   (const char* path, const struct utimbuf* t);
+#endif
 
 // the ucrt declares off_t from <sys/types.h> only when non-standard names are
 // enabled; llvm's headers want it either way, so fill the gap when it is off
@@ -108,15 +126,25 @@ AU_EXPORT int gettimeofday(struct _timeval_* tp, void* tzp);
 #define MAP_FAILED      ((void *)-1)
 
           char*       strdup  (const char* s);
+// the crt spells it _wcsdup, and hides the posix name with the rest
+#ifdef AU_POSIX_NAMES_OURS
+AU_EXPORT wchar_t*    wcsdup  (const wchar_t* s);
+#endif
 AU_EXPORT int         chdir   (const char* path);
 AU_EXPORT int         symlink (const char* target, const char* linkpath);
-// mingw's mkdir takes only a path; the mode has no meaning here
-#define mkdir(p, m) _mkdir(p)
+// a real declaration, not a macro over _mkdir: silver's header import
+// reads declarations, so a macro left `mkdir` unknown to a .ag module.
+// the ucrt spells it with no mode, and declares it only when
+// non-standard names are on -- ours stands in just when they're off
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) || \
+      (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+AU_EXPORT int mkdir(const char* path, mode_t mode);
+#endif
 AU_EXPORT char*       realpath(const char* path, char* resolved_path);
 AU_EXPORT char*       dirname (char* path);
 AU_EXPORT char*       basename(char* path);
 AU_EXPORT ssize_t     readlink(const char *path, char *buf, size_t bufsiz);
-AU_EXPORT int         lstat   (const char* path, struct _stat* st);
+AU_EXPORT int         lstat   (const char* path, struct stat* st);
 // ours under our own name, then aliased: the crt's execvp is a dllimport we
 // cannot define, and its intptr_t return will not match a plain int
 AU_EXPORT int         au_execvp(const char *file, char *const argv[]);
@@ -133,6 +161,15 @@ AU_EXPORT int         au_execlp(const char* file, const char* arg0, ...);
 // only reachable from a forkpty child, which never happens here
 AU_EXPORT int         au_execl (const char* path, const char* arg0, ...);
 #define execl au_execl
+// the rest of the spellings the crt hides with NONSTDC_NAMES off;
+// each is the underscore version with posix's argument types
+#ifdef AU_POSIX_NAMES_OURS
+AU_EXPORT off_t       lseek   (int fd, off_t off, int whence);
+AU_EXPORT int         chmod   (const char* path, mode_t mode);
+AU_EXPORT int         umask   (mode_t mask);
+AU_EXPORT int         creat   (const char* path, mode_t mode);
+AU_EXPORT int         setmode (int fd, int mode);
+#endif
 AU_EXPORT int         pipe    (int pipefd[2]);
 AU_EXPORT int         dup2    (int oldfd, int newfd);
 AU_EXPORT int         close   (int fd);
@@ -140,11 +177,100 @@ AU_EXPORT int         close   (int fd);
 // has struct members by those names — a macro would rewrite those too.
 // callers get the crt's read/write; ours stay reachable under their own name
 AU_EXPORT ssize_t     au_read (int fd, void* buf, size_t sz);
-AU_EXPORT ssize_t     au_write(int fd, void* buf, size_t sz);
+AU_EXPORT ssize_t     au_write(int fd, const void* buf, size_t sz);
+// the crt's own are off now, so the posix spelling is ours to declare.
+// Au names methods this way too, so its macros step aside as above
+#pragma push_macro("read")
+#pragma push_macro("write")
+#undef read
+#undef write
+#ifdef AU_POSIX_NAMES_OURS
+AU_EXPORT ssize_t     read    (int fd, void* buf, size_t sz);
+AU_EXPORT ssize_t     write   (int fd, const void* buf, size_t sz);
+#endif
+#pragma pop_macro("write")
+#pragma pop_macro("read")
           FILE*       fdopen  (int fd, const char* mode);
 // the crt spells this one with an underscore
 #define               fileno(f) _fileno(f)
+// windows keeps its trusted roots in a cert store, not in a file
+// like debian or rh. this writes them out as PEM, so mbedtls can
+// read them as it reads any bundle. 0 when at least one landed
+AU_EXPORT int         win_trust_pem(const char* out_path);
+
+// windows has no uid. 0 when the process is elevated, so the
+// installer's "am i root" check reads administrator here
+typedef unsigned int  uid_t;
+typedef unsigned int  gid_t;
+AU_EXPORT uid_t       geteuid (void);
+AU_EXPORT uid_t       getuid  (void);
+AU_EXPORT gid_t       getegid (void);
+AU_EXPORT gid_t       getgid  (void);
+// no global sync here; this flushes each volume it can open.
+// Au's generated methods define a sync macro; declare past it
+#pragma push_macro("sync")
+#undef sync
+AU_EXPORT void        sync    (void);
+#pragma pop_macro("sync")
+
+// windows has no mount: these fail the way a system without it
+// does, so the install reports the step instead of faking it
+#define MS_RDONLY   1
+#define MS_NOSUID   2
+#define MS_NODEV    4
+#define MS_NOEXEC   8
+#define MS_REMOUNT  32
+#define MS_BIND     4096
+#define MS_MOVE     8192
+#define MS_REC      16384
+#define MNT_FORCE   1
+#define MNT_DETACH  2
+AU_EXPORT int         mount   (const char* src, const char* target,
+                               const char* fs, unsigned long flags,
+                               const void* data);
+AU_EXPORT int         umount  (const char* target);
+AU_EXPORT int         umount2 (const char* target, int flags);
+
+// sha512-crypt for the installed system's shadow file, and reboot.
+// linux spells these magic numbers out in sys/reboot.h
+#define RB_AUTOBOOT    0x01234567
+#define RB_HALT_SYSTEM 0xcdef0123
+#define RB_ENABLE_CAD  0x89abcdef
+#define RB_DISABLE_CAD 0
+#define RB_POWER_OFF   0x4321fedc
+#define RB_SW_SUSPEND  0xd000fce2
+#define RB_KEXEC       0x45584543
+AU_EXPORT char*       crypt   (const char* key, const char* salt);
+AU_EXPORT int         reboot  (int howto);
+
+// shell-glob matching; windows spells it PathMatchSpec. the flags are
+// accepted and ignored: that call has no equivalent for them
+#define FNM_NOMATCH  1
+#define FNM_PATHNAME 1
+#define FNM_NOESCAPE 2
+#define FNM_PERIOD   4
+#define FNM_CASEFOLD 16
+AU_EXPORT int         fnmatch (const char* pat, const char* s, int flags);
+
+// windows answers free space by path, not by a mounted filesystem.
+// frsize is 1 here so the usual f_bavail * f_frsize gives bytes
+struct statvfs {
+    unsigned long      f_bsize;
+    unsigned long      f_frsize;
+    unsigned long long f_blocks;
+    unsigned long long f_bfree;
+    unsigned long long f_bavail;
+    unsigned long long f_files;
+    unsigned long long f_ffree;
+    unsigned long long f_favail;
+    unsigned long      f_fsid;
+    unsigned long      f_flag;
+    unsigned long      f_namemax;
+};
+AU_EXPORT int         statvfs (const char* path, struct statvfs* b);
 AU_EXPORT int         usleep  (unsigned int usec);
+// windows has only Sleep, and it counts milliseconds
+AU_EXPORT unsigned    sleep   (unsigned int seconds);
 AU_EXPORT int         open    (const char* pathname, int flags, ... /* mode_t mode */);
 AU_EXPORT pid_t       wait    (int* status);
 AU_EXPORT pid_t       waitpid (pid_t pid, int* status, int options);
@@ -316,7 +442,33 @@ AU_EXPORT int dladdr(const void* addr, Dl_info* info);
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-#define stat _stat
+// the ucrt withdraws struct stat when the posix names are ours, and
+// a macro over _stat left the name invisible to silver's import. this
+// one also carries a 64-bit size: disk images outgrow the crt's long
+#if !((defined _CRT_DECLARE_NONSTDC_NAMES && _CRT_DECLARE_NONSTDC_NAMES) ||       (!defined _CRT_DECLARE_NONSTDC_NAMES && !__STDC__))
+typedef unsigned int   dev_t;
+typedef unsigned short ino_t;
+typedef short          nlink_t;
+typedef long           blksize_t;
+typedef long long      blkcnt_t;
+struct stat {
+    dev_t      st_dev;
+    ino_t      st_ino;
+    mode_t     st_mode;
+    nlink_t    st_nlink;
+    uid_t      st_uid;
+    gid_t      st_gid;
+    dev_t      st_rdev;
+    long long  st_size;
+    time_t     st_atime;
+    time_t     st_mtime;
+    time_t     st_ctime;
+    blksize_t  st_blksize;
+    blkcnt_t   st_blocks;
+};
+AU_EXPORT int         stat    (const char* path, struct stat* st);
+AU_EXPORT int         fstat   (int fd, struct stat* st);
+#endif
 
 // the ucrt defines S_IFMT and the type bits but none of the S_IS* macros, so
 // each needs its own guard -- one #ifndef S_IFMT around the lot skips them all
@@ -432,18 +584,21 @@ AU_EXPORT long sysconf      (int name);
 // <time.h> put struct tm into every module that includes us
 struct timespec;
 AU_EXPORT int  clock_gettime(int clk, struct timespec* ts);
+// the waitable timer counts in 100ns, so this keeps its grain
+AU_EXPORT int  nanosleep(const struct timespec* req,
+                         struct timespec* rem);
 AU_EXPORT int  strcasecmp   (const char* a, const char* b);
+// the crt spells these _s and takes the arguments the other way
+// round. a pointer is all that crosses, so no <time.h> needed
+struct tm;
+AU_EXPORT struct tm* localtime_r(const time_t* t, struct tm* out);
+AU_EXPORT struct tm* gmtime_r   (const time_t* t, struct tm* out);
 
-// same layout winsock uses, so both can appear. winsock.h defines it
-// behind no guard of its own, so _WINSOCKAPI_ is what names it here
-#if !defined(_TIMEVAL_DEFINED) && !defined(_WINSOCKAPI_) && \
-    !defined(_WINSOCK2API_)
-#define _TIMEVAL_DEFINED
-struct timeval {
-    long tv_sec;
-    long tv_usec;
-};
-#endif
+// NO public struct timeval here: winsock.h AND winsock2.h both
+// define it behind no guard of their own, so whichever arrives
+// second is an error -- and any header that reaches windows.h
+// drags one of them in. _timeval_ above is what gettimeofday
+// takes; a caller that wants the real one includes winsock2
 
 // winsize/ioctl live in <sys/ioctl.h>, the header that declares them
 

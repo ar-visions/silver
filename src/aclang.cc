@@ -290,16 +290,20 @@ static std::string cxx_mangle(const NamedDecl* D, ASTContext& ctx) {
     std::string out;
     llvm::raw_string_ostream os(out);
 
-    std::unique_ptr<MangleContext> MC(
-        ItaniumMangleContext::create(ctx, ctx.getDiagnostics()));
+    // the ast context hands back the mangler its TARGET uses. forcing
+    // itanium here named every c++ symbol _ZN..., while the object we
+    // compile alongside it carried msvc's ??0... -- every one undefined
+    std::unique_ptr<MangleContext> MC(ctx.createMangleContext());
+    bool ms = MC->getKind() == MangleContext::MK_Microsoft;
 
     if (const auto *VD = dyn_cast<VarDecl>(D)) {
         MC->mangleName(VD, os);
     } else if (const auto *CD = dyn_cast<CXXConstructorDecl>(D)) {
         // C2: -femit-all-decls emits base-object variants; C1==C2 sans virtual bases
-        MC->mangleName(GlobalDecl(CD, Ctor_Base), os);
+        // msvc has no separate base-object ctor: one symbol serves both
+        MC->mangleName(GlobalDecl(CD, ms ? Ctor_Complete : Ctor_Base), os);
     } else if (const auto *DD = dyn_cast<CXXDestructorDecl>(D)) {
-        MC->mangleName(GlobalDecl(DD, Dtor_Base), os);
+        MC->mangleName(GlobalDecl(DD, ms ? Dtor_Complete : Dtor_Base), os);
     } else if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
         MC->mangleName(FD, os);
     } else if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
@@ -568,14 +572,16 @@ static Au_t map_clang_type(const QualType& qt, ASTContext& ctx, aether e, symbol
         return existing ? existing : create_enum(decl, ctx, e, get_name((NamedDecl*)decl));
     }
 
-    // References → treat as pointers
+    // References → treat as pointers. a pointee we cannot map leaves
+    // nothing to point AT, and def_pointer reads the type it is given;
+    // every caller here already skips a null, so hand one back
     if (auto* L = dyn_cast<LValueReferenceType>(type)) {
         Au_t base = map_clang_type(L->getPointeeType(), ctx, e, null);
-        return def_pointer(null, base, use_name);
+        return base ? def_pointer(null, base, use_name) : null;
     }
     if (auto* R = dyn_cast<RValueReferenceType>(type)) {
         Au_t base = map_clang_type(R->getPointeeType(), ctx, e, null);
-        return def_pointer(null, base, use_name);
+        return base ? def_pointer(null, base, use_name) : null;
     }
 
     // Member pointers — opaque for now
@@ -725,10 +731,31 @@ static std::string qual_spell(QualType t, ASTContext& ctx) {
     return clang::TypeName::getFullyQualifiedName(t, ctx, pol);
 }
 
+// a C identifier cannot hold msvc's mangling -- ? @ $ all appear in
+// it -- and the sret thunk's name is written into C source. fold the
+// mangled name to identifier characters, with a hash of the original
+// kept on the end so two different manglings cannot fold together
+static std::string sret_name(const std::string& mg) {
+    std::string out;
+    out.reserve(mg.size() + 10);
+    unsigned h = 2166136261u;
+    for (size_t i = 0; i < mg.size(); i++) {
+        unsigned char c = (unsigned char)mg[i];
+        h = (h ^ c) * 16777619u;
+        bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '_';
+        out += ok ? (char)c : '_';
+    }
+    char tail[16];
+    snprintf(tail, sizeof(tail), "_%08x", h);
+    out += tail;
+    return out;
+}
+
 static std::string sret_thunk_source(FunctionDecl* fd, ASTContext& ctx) {
     std::string ret = qual_spell(fd->getReturnType(), ctx);
     std::string out = "extern \"C\" __attribute__((weak)) void silver_sret_" +
-        cxx_mangle(fd, ctx) + "(" + ret + "* out";
+        sret_name(cxx_mangle(fd, ctx)) + "(" + ret + "* out";
     std::string call;
     if (auto* md = dyn_cast<CXXMethodDecl>(fd)) {
         out += ", " + qual_spell(ctx.getRecordType(md->getParent()), ctx) + "* self";
@@ -842,12 +869,20 @@ static void set_methods(CXXRecordDecl* cxx, ASTContext& ctx, aether e, Au_t rec)
             GlobalDecl gd = isa<CXXDestructorDecl>(md)
                 ? GlobalDecl(cast<CXXDestructorDecl>(md), Dtor_Complete)
                 : GlobalDecl(md);
-            fn->member_index   = (i64)cast<ItaniumVTableContext>(
-                ctx.getVTableContext())->getMethodVTableIndex(gd);
+            // the microsoft abi lays its vftables out differently, and
+            // its context answers a different question than itanium's.
+            // casting to itanium's on an msvc target asserted outright
+            VTableContextBase* vtc = ctx.getVTableContext();
+            fn->member_index = vtc->isMicrosoft()
+                ? (i64)cast<MicrosoftVTableContext>(vtc)
+                      ->getMethodVFTableLocation(gd).Index
+                : (i64)cast<ItaniumVTableContext>(vtc)
+                      ->getMethodVTableIndex(gd);
         }
         // the thunk dispatches virtuals itself
         if (wants_sret_thunk(md, ctx) && fn->rtype->is_struct && !fn->rtype->is_pointer) {
-            fn->alt = (cstr)cstr_copy((cstr)("silver_sret_" + mg).c_str());
+            fn->alt = (cstr)cstr_copy(
+                (cstr)("silver_sret_" + sret_name(mg)).c_str());
             fn->is_sret_thunk  = true;
             fn->is_cpp_virtual = false;
         }
@@ -986,7 +1021,8 @@ static Au_t create_fn(FunctionDecl* decl, ASTContext& ctx, aether e, std::string
     fn->rtype = map_clang_type(decl->getReturnType(), ctx, e, null);
     if (!fn->rtype) fn->rtype = au_lookup("none");
     if (wants_sret_thunk(decl, ctx) && fn->rtype->is_struct && !fn->rtype->is_pointer) {
-        fn->alt = (cstr)cstr_copy((cstr)("silver_sret_" + cxx_mangle(decl, ctx)).c_str());
+        fn->alt = (cstr)cstr_copy((cstr)("silver_sret_" +
+            sret_name(cxx_mangle(decl, ctx))).c_str());
         fn->is_sret_thunk = true;
     }
     // `const T&` returned: the symbol hands back an address; the call
@@ -1537,6 +1573,11 @@ static void build_unit_args(aether a, import_unit* u) {
         if (win && u->cpp) args.push_back("-stdlib=libc++");
     }
     args.push_back("-D_POSIX_C_SOURCE=200809L");
+#ifdef _WIN32
+    // the compile path sets this too. left alone, the ucrt declares
+    // its own 1-arg mkdir and posix.h's real one is compiled out
+    args.push_back("-D_CRT_DECLARE_NONSTDC_NAMES=0");
+#endif
 #ifdef __APPLE__
     args.push_back("-D_DARWIN_C_SOURCE");
 #endif
@@ -2102,8 +2143,18 @@ none aether_import_includes(aether a) {
                 cargs += u->args[ai];
             }
             path obj = f(path, "%o.o", u->c);
-            string cmd = f(string, "%o/bin/clang++ -fPIC -femit-all-decls%s -o %o",
-                a->base_install ? a->base_install : a->install, cargs.c_str(), obj);
+            // pic has no meaning on PE, and clang rejects the flag
+            // outright for an msvc target. the crt must be named too:
+            // without it this object came out MT while everything we
+            // link it with is MD, and /failifmismatch stopped the link
+#ifdef _WIN32
+            symbol pic = "-fms-runtime-lib=dll ";
+#else
+            symbol pic = "-fPIC ";
+#endif
+            string cmd = f(string, "%o/bin/clang++ %s-femit-all-decls%s -o %o",
+                a->base_install ? a->base_install : a->install, pic,
+                cargs.c_str(), obj);
             if (a->verbose) printf("%s\n", cmd->chars);
             if (system(cmd->chars) == 0) {
                 if (!a->import_objects)
@@ -2158,6 +2209,9 @@ path aether_include(aether e, Au inc, string ns) {
         "c",
         "-std=c11",
         "-D_POSIX_C_SOURCE=200809L",
+#ifdef _WIN32
+        "-D_CRT_DECLARE_NONSTDC_NAMES=0",
+#endif
 #ifdef __APPLE__
         "-D_DARWIN_C_SOURCE",
 #endif

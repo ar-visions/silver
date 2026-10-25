@@ -1,7 +1,11 @@
 extend orbiter
 import <stdio.h>
-import <unistd.h>
-import <pthread.h>
+# posix.h carries these where the headers do not exist
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+    import <pthread.h>
 
 # a shell line's output (stderr with it) into out; its exit status
 func sh_run [ cmd: string, out: vec string ] -> i32

@@ -1,3 +1,9 @@
+// wlroots, wayland-server and xcb exist only on linux. windows
+// takes wayland-win.c, which answers the same surface with
+// nothing -- included here because only <module>.c is compiled
+#ifdef _WIN32
+#include "wayland-win.c"
+#else
 // a Wayland compositor on wlroots for silver: each window has its own
 // headless output, the size of the pane that shows it, composited by
 // wlr_scene; its finished frames go to trinity as dma-bufs. input arrives
@@ -1439,3 +1445,5 @@ WLC_API int wlc_spawn(const char *cmd) {
     }
     return (int)pid;
 }
+
+#endif
