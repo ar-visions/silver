@@ -2504,7 +2504,8 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
         self[sn] = 0;
         posix_spawn_file_actions_t fa;
         posix_spawn_file_actions_init(&fa);
-        posix_spawn_file_actions_addchdir_np(&fa, cwd->chars);
+        // an exe is the host: it records the launch dir, then cd's
+        if (lib) posix_spawn_file_actions_addchdir_np(&fa, cwd->chars);
         string entry = late_entry_name(a);
         char* argv_lib[5] = { self, "--load-product", bin->chars,
             (char*)entry->chars, NULL };
