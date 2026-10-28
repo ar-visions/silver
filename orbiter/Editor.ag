@@ -508,6 +508,10 @@ ResourceView AppView
     # the app has an outline (its toggle left of the title), open
     public  has_outline : bool
     public  outline_on  : bool
+    # the app's focus takes words (a phone's keyboard comes up)
+    public  app_words   : bool
+    # the app's focus types plainly (a console): nothing composed
+    public  app_plain   : bool
     public  nav_fwd_on  : bool
     # the app's own title, shown on the pane
     public  app_title   : string
@@ -713,6 +717,11 @@ ResourceView AppView
                 outline_on  = (host_pb[] & 2) != 0
                 wp : cast Window [ cv.w ]
                 if [ wp ] wp.restyle = true
+            el [ t == i32[ HM.words ] ]
+                app_words = host_pa[] != 0
+                app_plain = host_pa[] == 2
+                ww : cast Window [ cv.w ]
+                if [ ww ] ww.restyle = true
             el [ t == i32[ HM.nav_state ] ]
                 nav_back_on = host_pa[] != 0
                 nav_fwd_on  = host_pb[] != 0
@@ -813,10 +822,9 @@ ResourceView AppView
                 # line
                 wv9 : cast Window [ cv.w ]
                 ob : cast orbiter [ (wv9) ? wv9.app_object : null ]
-                rt : path.path_startup[]
                 if [ ob && app_mod ]
                     bl : string ob.app_build_error[ app_mod,
-                        '{rt}/install/tmp/{app_mod}.{slot}.log' ]
+                        '{install_root[]}/tmp/{app_mod}.{slot}.log' ]
                     if [ bl.count > 0 ] note = bl
             el [ v9 < 0 ]
                 sig : i32 [ 0 - v9 ]
@@ -1387,8 +1395,8 @@ ResourceView AppView
             return
         # orbiter plays its sound: a debugger's pause is silence
         host_audio_player_start[ slot ]
-        root9 : path.path_startup[]
-        cmd = 'tail -n +1 -F {root9}/install/tmp/{mod}.{slot}.log'
+        ir : path install_root[]
+        cmd = 'tail -n +1 -F {ir}/tmp/{mod}.{slot}.log'
 
     # hosted apps open one socket per instance:
     # trinity-<mod>-<slot>.sock
@@ -1686,7 +1694,7 @@ Layer EditorLayer
             use = EdLineCache [ ]
             editor.code_lines.push[ use ]
         disp : editor.display_of[ ln ]
-        cw_i : i32 [ ceil[ f32[ disp.count ] * cw + cw ] ]
+        cw_i : i32 [ ceil[ f32[ editor.cells[ disp ] ] * cw + cw ] ]
         if [ cw_i < 1 ] cw_i = 1
         lh_i : i32 [ i32[ ceil[ lh ] ] + 1 ]
         if [ !use.canvas ]
@@ -1715,9 +1723,7 @@ Layer EditorLayer
                     tc = cmt_c
                     break
             lc.fill_color[ tc ]
-            lc.draw_text[ disp, rect [ x: 0.0, y: 0.0, w: rw, h: lh ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+            editor.grid_text[ lc, disp, 0.0, 0.0, rw, lh ]
         el
             col : i32 [ 0 ]
             for [ ri: i32 0, ri < nrg, ri += 1 ]
@@ -1728,25 +1734,17 @@ Layer EditorLayer
                 sl : i32 [ cr.len ]
                 if [ c0 + sl > ll ] sl = ll - c0
                 if [ c0 > col ]
-                    gx : f32[
-                        editor.display_of[
-                            ln.mid[ 0, col ] ].count ] * cw
+                    gx : editor.col_x[ ln, col ]
                     lc.fill_color[ rgba['#fff'] ]
-                    lc.draw_text[
+                    editor.grid_text[ lc,
                         editor.display_of[ ln.mid[ col, c0 - col ] ],
-                        rect [ x: gx, y: 0.0, w: rw, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.visible, null ]
+                        gx, 0.0, rw, lh ]
                     col = c0
                 if [ sl > 0 ]
-                    tx : f32[
-                        editor.display_of[
-                            ln.mid[ 0, c0 ] ].count ] * cw
+                    tx : editor.col_x[ ln, c0 ]
                     lc.fill_color[ cr.color ]
-                    lc.draw_text[ ln.mid[ c0, sl ],
-                        rect [ x: tx, y: 0.0, w: rw, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.visible, null ]
+                    editor.grid_text[ lc, ln.mid[ c0, sl ], tx, 0.0, rw,
+                        lh ]
                     col = c0 + sl
             if [ col < ll ]
                 gc : rgba['#fff']
@@ -1754,15 +1752,11 @@ Layer EditorLayer
                     if [ ln[k] == 35 ]
                         gc = cmt_c
                         break
-                ex : f32 [
-                    f32[ editor.display_of[ ln.mid[ 0, col ] ].count ]
-                    * cw ]
+                ex : editor.col_x[ ln, col ]
                 lc.fill_color[ gc ]
-                lc.draw_text[
+                editor.grid_text[ lc,
                     editor.display_of[ ln.mid[ col, ll - col ] ],
-                    rect [ x: ex, y: 0.0, w: rw, h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    ex, 0.0, rw, lh ]
         lc.paint[ ]
         use.hash  = h
         use.frame = editor.cl_frame
@@ -1913,7 +1907,7 @@ Layer EditorLayer
             has_code = true
             cwi : i32 [
                 ceil[
-                    f32[ editor.display_of[ ln ].count ] * cw + cw
+                    editor.col_x[ ln, ln.count ] + cw
                     - hoff ] ]
             if [ cwi > maxw ] maxw = cwi
         if [ !has_code ] return null
@@ -1972,11 +1966,7 @@ Layer EditorLayer
                         tc = cmt_c
                         break
                 lc.fill_color[ tc ]
-                lc.draw_text[ disp,
-                              rect [ x: 0.0 - hoff, y: yk, w: rw,
-                                     h: lh ],
-                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                editor.grid_text[ lc, disp, 0.0 - hoff, yk, rw, lh ]
             el
                 col : i32 [ 0 ]
                 for [ ri: i32 0, ri < nrg, ri += 1 ]
@@ -1987,30 +1977,16 @@ Layer EditorLayer
                     sl : i32 [ cr.len ]
                     if [ c0 + sl > ll ] sl = ll - c0
                     if [ c0 > col ]
-                        gx : f32 [
-                            f32[
-                                editor.display_of[
-                                    ln.mid[ 0, col ] ].count ] * cw
-                                    - hoff ]
+                        gx : f32 [ editor.col_x[ ln, col ] - hoff ]
                         lc.fill_color[ rgba['#fff'] ]
-                        lc.draw_text[
-                            editor.display_of[
-                                ln.mid[ col, c0 - col ] ],
-                            rect [ x: gx, y: yk, w: rw, h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.visible, null ]
+                        editor.grid_text[ lc, editor.display_of[
+                            ln.mid[ col, c0 - col ] ], gx, yk, rw, lh ]
                         col = c0
                     if [ sl > 0 ]
-                        tx : f32 [
-                            f32[
-                                editor.display_of[
-                                    ln.mid[ 0, c0 ] ].count ] * cw
-                                    - hoff ]
+                        tx : f32 [ editor.col_x[ ln, c0 ] - hoff ]
                         lc.fill_color[ cr.color ]
-                        lc.draw_text[ ln.mid[ c0, sl ],
-                            rect [ x: tx, y: yk, w: rw, h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.visible, null ]
+                        editor.grid_text[ lc, ln.mid[ c0, sl ], tx, yk,
+                            rw, lh ]
                         col = c0 + sl
                 if [ col < ll ]
                     gc : rgba['#fff']
@@ -2018,16 +1994,11 @@ Layer EditorLayer
                         if [ ln[kk] == 35 ]
                             gc = cmt_c
                             break
-                    ex : f32 [
-                        f32[
-                            editor.display_of[
-                                ln.mid[ 0, col ] ].count ] * cw - hoff ]
+                    ex : f32 [ editor.col_x[ ln, col ] - hoff ]
                     lc.fill_color[ gc ]
-                    lc.draw_text[
+                    editor.grid_text[ lc,
                         editor.display_of[ ln.mid[ col, ll - col ] ],
-                        rect [ x: ex, y: yk, w: rw, h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.visible, null ]
+                        ex, yk, rw, lh ]
         lc.paint[ ]
         use.hash  = h
         use.cover = want
@@ -2054,10 +2025,8 @@ Layer EditorLayer
             ok9 : bool [ cr.dsrc && cr.dline > 0 ]
             if [ cr.kind == 14 ] ok9 = editor.module_path[ w9 ] != null
             if [ !ok9 ] continue
-            tx9 : f32 [
-                f32[ editor.display_of[ ln.mid[ 0, c09 ] ].count ]
-                * cw ]
-            ww : f32 [ f32[ editor.display_of[ w9 ].count ] * cw ]
+            tx9 : f32 [ editor.col_x[ ln, c09 ] ]
+            ww : f32 [ editor.col_x[ ln, c09 + sl9 ] - tx9 ]
             cv.save[ ]
             cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
             # faint at rest; the pointer's light brings the border and
@@ -2146,24 +2115,24 @@ Layer EditorLayer
                     if [ hms < 0.0 ] hms = 0.0
                     hjd : f32 [ editor.scroll.y - editor.hx_last_y ]
                     if [ hjd > 0.5 || hjd < 0.0 - 0.5 ]
-                        editor.scroll_target = editor.scroll.y
+                        editor.scroll_goal = editor.scroll.y
                     if [ editor.pending_wheel != 0.0 ]
-                        editor.scroll_target = editor.scroll_target - editor.pending_wheel * hlh * 0.6
+                        editor.scroll_goal = editor.scroll_goal - editor.pending_wheel * hlh * 1.2
                         editor.pending_wheel = 0.0
-                    if [ editor.scroll_target < 0.0 ]
-                        editor.scroll_target = 0.0
-                    if [ editor.scroll_target > hms ]
-                        editor.scroll_target = hms
-                    hdy : f32 [ editor.scroll_target - editor.scroll.y ]
+                    if [ editor.scroll_goal < 0.0 ]
+                        editor.scroll_goal = 0.0
+                    if [ editor.scroll_goal > hms ]
+                        editor.scroll_goal = hms
+                    hdy : f32 [ editor.scroll_goal - editor.scroll.y ]
                     if [ (hdy > 0.5) || (hdy < 0.0 - 0.5) ]
                         editor.scroll.y = filter_n[ editor.scroll.y,
-                                                    editor.scroll_target,
+                                                    editor.scroll_goal,
                             (editor.scroll_dragging) ? 0.2 : 0.14,
                                                     editor.ux.frame_factor ]
                         parent.needs_frame = true
                         if [ editor.ux ] editor.ux.will_animate = true
                     el
-                        editor.scroll.y = editor.scroll_target
+                        editor.scroll.y = editor.scroll_goal
                     if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
                     if [ editor.scroll.y > hms ] editor.scroll.y = hms
                     editor.lh_cache  = hlh
@@ -2219,8 +2188,7 @@ Layer EditorLayer
         # a new row height keeps the same rows in view: scroll is in px
         if [ editor.lh_cache > 0.0 && editor.lh_cache != lh ]
             editor.scroll.y      = editor.scroll.y * lh / editor.lh_cache
-            editor.scroll_target = editor.scroll.y
-            editor.scroll_goal   = editor.scroll.y
+            editor.scroll_goal = editor.scroll.y
         editor.lh_cache = lh
         pins0   : vec i32 editor.pinned_rows[]
         pt0     : f32 [ (showing) ? 0.0 : f32[ pins0.count ] * lh ]
@@ -2330,22 +2298,22 @@ Layer EditorLayer
         max_scroll : f32 [ editor.content_h - vh ]
         if [ max_scroll < 0.0 ] max_scroll = 0.0
         if [ editor.pending_wheel != 0.0 ]
-            editor.scroll_target = editor.scroll_target - editor.pending_wheel * lh * 0.6
+            editor.scroll_goal = editor.scroll_goal - editor.pending_wheel * lh * 1.2
             editor.pending_wheel = 0.0
-        if [ editor.scroll_target < 0.0 ] editor.scroll_target = 0.0
-        if [ editor.scroll_target > max_scroll ]
-            editor.scroll_target = max_scroll
-        sdy : f32 [ editor.scroll_target - editor.scroll.y ]
+        if [ editor.scroll_goal < 0.0 ] editor.scroll_goal = 0.0
+        if [ editor.scroll_goal > max_scroll ]
+            editor.scroll_goal = max_scroll
+        sdy : f32 [ editor.scroll_goal - editor.scroll.y ]
         if [ (sdy > 0.5) || (sdy < 0.0 - 0.5) ]
             # the thumb held: 20% to the goal a frame, 80% kept
             ease : f32 [ (editor.scroll_dragging) ? 0.2 : 0.14 ]
             editor.scroll.y = filter_n[ editor.scroll.y,
-                                        editor.scroll_target, ease,
+                                        editor.scroll_goal, ease,
                                         editor.ux.frame_factor ]
             parent.needs_frame = true
             if [ editor.ux ] editor.ux.will_animate = true
         el
-            editor.scroll.y = editor.scroll_target
+            editor.scroll.y = editor.scroll_goal
         if [ editor.scroll.y < 0.0 ] editor.scroll.y = 0.0
         if [ editor.scroll.y > max_scroll ] editor.scroll.y = max_scroll
 
@@ -3089,13 +3057,8 @@ Layer EditorLayer
                     rel : i32 [ rem.index_of[ editor.find_query ] ]
                     if [ rel < 0 ] break
                     mpos : i32 [ base + rel ]
-                    pre : f32 [
-                        cv.measure_text[
-                            editor.display_of[ ln.mid[ 0, mpos ] ] ].w ]
-                    mw  : f32 [
-                        cv.measure_text[
-                            editor.display_of[
-                                ln.mid[ mpos, qn ] ] ].w ]
+                    pre : f32 [ editor.col_x[ ln, mpos ] ]
+                    mw  : f32 [ editor.col_x[ ln, mpos + qn ] - pre ]
                     # a row's text starts at its own indent (a variable
                     # row hangs left)
                     mx  : f32 [
@@ -3109,12 +3072,9 @@ Layer EditorLayer
                                           lh - 4.0, 3.0, 3.0, 3.0, 3.0 ]
                         cv.paint        [ ]
                         cv.fill_color   [ rgba['#101418'] ]
-                        cv.draw_text    [
+                        editor.grid_text[ cv,
                             editor.display_of[ ln.mid[ mpos, qn ] ],
-                            rect [ x: mx + 1.0, y: y, w: mw + 2.0,
-                                   h: lh ],
-                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.visible, null ]
+                            mx + 1.0, y, mw + 2.0, lh ]
                         cv.paint        [ ]
                     el
                         cv.fill_color   [ rgba['#0000'] ]
@@ -3152,14 +3112,9 @@ Layer EditorLayer
                             mpos + tn >= ln.count
                             || !editor.word_char[ i32[ ln[mpos + tn] ] ] ]
                         if [ bok && aok ]
-                            pre : f32 [
-                                cv.measure_text[
-                                    editor.display_of[
-                                        ln.mid[ 0, mpos ] ] ].w ]
+                            pre : f32 [ editor.col_x[ ln, mpos ] ]
                             mw  : f32 [
-                                cv.measure_text[
-                                    editor.display_of[
-                                        ln.mid[ mpos, tn ] ] ].w ]
+                                editor.col_x[ ln, mpos + tn ] - pre ]
                             mx  : f32 [
                                 x0 + editor.row_indent[ li ] + pre
                                 - 1.0 ]
@@ -3252,10 +3207,11 @@ Layer EditorLayer
                     dnv    : editor.display_of[ lnv ]
                     col_x0 : f32 [
                         (is_sl)
-                        ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, start_col ] ] ].w : 0.0 ]
+                        ? editor.col_x[ lnv, start_col ] : 0.0 ]
                     col_x1 : f32 [
                         (is_el)
-                        ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, end_col ] ] ].w : bounds.w - gut_w - rin ]
+                        ? editor.col_x[ lnv, end_col ]
+                        : bounds.w - gut_w - rin ]
                     bx     : f32 [ x0 + editor.row_indent[ li ] ]
                     rx     : f32 [ bx + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
@@ -3316,10 +3272,11 @@ Layer EditorLayer
                     dnv    : editor.display_of[ lnv ]
                     col_x0 : f32 [
                         (is_sl)
-                        ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, start_col ] ] ].w : 0.0 ]
+                        ? editor.col_x[ lnv, start_col ] : 0.0 ]
                     col_x1 : f32 [
                         (is_el)
-                        ? cv.measure_text[ dnv.mid[ 0, editor.vis_col[ lnv, end_col ] ] ].w : bounds.w - gut_w - rin ]
+                        ? editor.col_x[ lnv, end_col ]
+                        : bounds.w - gut_w - rin ]
                     bx     : f32 [ x0 + editor.row_indent[ li ] ]
                     rx     : f32 [ bx + col_x0 ]
                     rw     : f32 [ col_x1 - col_x0 ]
@@ -3336,11 +3293,8 @@ Layer EditorLayer
                     cv.set_crop[ tx + sel_lx, ty + bounds.y,
                         tx + crop_x + crop_w, ty + bounds.y + bounds.h ]
                     cv.fill_color[ '#fff' ]
-                    cv.draw_text[ editor.display_of[ lnv ],
-                        rect [ x: bx, y: y_row, w: bounds.w - gut_w,
-                               h: lh ],
-                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.visible, null ]
+                    editor.grid_text[ cv, editor.display_of[ lnv ],
+                        bx, y_row, bounds.w - gut_w, lh ]
                 cv.paint[ ]
                 cv.set_crop[ tx + bounds.x + gut_w, ty + bounds.y,
                     tx + bounds.x + bounds.w, ty + bounds.y + bounds.h ]
@@ -3362,10 +3316,8 @@ Layer EditorLayer
                         cy = editor.filter_rect.y
                     el
                         clnv : editor.line_get[ editor.sel_line ]
-                        pre  : editor.display_of[
-                            clnv.mid[ 0, editor.sel_col ] ]
-                        cx   = x0 + editor.row_indent[
-                            editor.sel_line ] + cv.measure_text[ pre ].w
+                        cx   = x0 + editor.row_indent[ editor.sel_line ]
+                            + editor.col_x[ clnv, editor.sel_col ]
                         cy   = y_sel
                     cv.fill_color[ '#fff' ]
                     cv.stroke_width[ 0.0 ]
@@ -3724,7 +3676,6 @@ Control Editor
     mutable cov_stamp     : i64 [ -1 ]
     mutable cov_src       : string
     mutable disk_ms       : i64 [ 0 ]
-    mutable scroll_target : f32 [ 0.0 ]
     mutable pending_wheel : f32 [ 0.0 ]
     mutable hx_last_y     : f32 [ 0.0 ]
     mutable text_lines_frame : i32 [ 0 ]
@@ -3988,7 +3939,7 @@ Control Editor
     # the code, with any existing comment excluded
     func ann_col [ vr: i32 ] -> i32
         s : string display_of[ code_only[ line_get[ vr ] ] ]
-        return (s.count / tab_w + 1) * tab_w
+        return (cells[ s ] / tab_w + 1) * tab_w
 
     func var_summary [ v: variable ] -> string
         if [ !v ] return ''
@@ -4078,8 +4029,7 @@ Control Editor
         rebuild_flat[]
         scroll.y += f32[ vis_row[ osl ] - vrl ] * lh
         if [ scroll.y < 0.0 ] scroll.y = 0.0
-        scroll_target = scroll.y
-        scroll_goal   = scroll.y
+        scroll_goal = scroll.y
         scroll_anim   = false
         # leaving puts the caret at the end of the pressed line
         sel_line = vis_row[ (outline && ocl >= 0) ? ocl : osl ]
@@ -4096,8 +4046,7 @@ Control Editor
         flat_lines = -1
         rebuild_flat[]
         scroll.y      = outline_from_y
-        scroll_target = scroll.y
-        scroll_goal   = scroll.y
+        scroll_goal = scroll.y
         scroll_anim   = false
         sel_line    = vis_row[
             (outline_from_line >= 0) ? outline_from_line : 0 ]
@@ -4343,15 +4292,27 @@ Control Editor
         n  : i32 [ ln.count ]
         if [ n == 0 ] return
         s  : i32 [ clamp[ sel_col, 0, n ] ]
-        if [ s >= n || !word_char[ i32[ ln[s] ] ] ] s = s - 1
-        if [ s < 0 || !word_char[ i32[ ln[s] ] ] ] return
+        if [ s < n && utf8_inside[ ln, s ] ] s = utf8_prev[ ln, s ]
+        if [ (s >= n || !word_at[ ln, s ]) && s > 0 ]
+            s = utf8_prev[ ln, s ]
+        if [ s >= n || !word_at[ ln, s ] ] return
         a : i32 [ s ]
-        while [ a > 0 && word_char[ i32[ ln[a - 1] ] ] ] a -= 1
+        while [ a > 0 && word_at[ ln, utf8_prev[ ln, a ] ] ]
+            a = utf8_prev[ ln, a ]
         b : i32 [ s ]
-        while [ b < n - 1 && word_char[ i32[ ln[b + 1] ] ] ] b += 1
+        while [ b < n && word_at[ ln, b ] ]
+            b = utf8_next[ ln, b ]
         anchor_line = sel_line
         anchor_col  = a
-        sel_col     = b + 1
+        sel_col     = b
+
+    # the character at byte i is part of a word: a digit, or a letter
+    # of any script (silver's own names: punctuation is not)
+    func word_at [ s: string, i: i32 ] -> bool
+        c : i32 [ i32[ s.chars[ i ] ] & 255 ]
+        if [ c < 128 ] return word_char[ c ]
+        ch : string s.mid[ i, utf8_next[ s, i ] - i ]
+        return au_name_len[ ch.chars, 0 ] > 0
 
     func snap_row [ ln: i32 ] -> i32
         n : i32 [ line_count[] ]
@@ -4391,9 +4352,9 @@ Control Editor
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         top : f32 [ f32[ r ] * lh ]
         vh9 : f32 [ (bounds) ? bounds.h : 600.0 ]
-        if [ top < scroll_target ] scroll_target = top
-        el [ top + lh > scroll_target + vh9 ]
-            scroll_target = top + lh - vh9
+        if [ top < scroll_goal ] scroll_goal = top
+        el [ top + lh > scroll_goal + vh9 ]
+            scroll_goal = top + lh - vh9
         pristine = false
         if [ ux ] ux.will_animate = true
 
@@ -4439,14 +4400,94 @@ Control Editor
         v : i32 [ 0 ]
         for [ i: i32 0, i < c && i < s.count, i += 1 ]
             if [ s[i] == 9 ] v = (v / tab_w + 1) * tab_w
-            el               v += 1
+            el               v += cell_w[ s, i ]
         return v
+
+    # the x of a column (a byte) of a line, on the cell grid
+    func col_x [ s: string, col: i32 ] -> f32
+        cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        return f32[ vis_col[ s, col ] ] * cw
+
+    # the code point of the UTF-8 character starting at byte i
+    func point_at [ s: string, i: i32 ] -> i32
+        c : i32 [ i32[ s.chars[ i ] ] & 255 ]
+        if [ c < 192 ] return c
+        n : i32 [ (c >= 240) ? 3 : ((c >= 224) ? 2 : 1) ]
+        cp : i32 [ c & ((n == 3) ? 7 : ((n == 2) ? 15 : 31)) ]
+        for [ k: i32 1, k <= n && i + k < s.count, k += 1 ]
+            cp = (cp << 6) | (i32[ s.chars[ i + k ] ] & 63)
+        return cp
+
+    # east asian wide and fullwidth: two cells, as a terminal has
+    func wide_point [ cp: i32 ] -> bool
+        return (cp >= 4352 && cp <= 4447)       # hangul jamo
+            || (cp >= 11904 && cp <= 12350)     # cjk radicals, symbols
+            || (cp >= 12353 && cp <= 13311)     # kana ... cjk compat
+            || (cp >= 13312 && cp <= 19903)     # cjk extension a
+            || (cp >= 19968 && cp <= 40959)     # cjk ideographs
+            || (cp >= 40960 && cp <= 42191)     # yi
+            || (cp >= 44032 && cp <= 55203)     # hangul syllables
+            || (cp >= 63744 && cp <= 64255)     # cjk compat ideographs
+            || (cp >= 65040 && cp <= 65049)     # vertical forms
+            || (cp >= 65072 && cp <= 65135)     # cjk compat forms
+            || (cp >= 65280 && cp <= 65376)     # fullwidth forms
+            || (cp >= 65504 && cp <= 65510)     # fullwidth signs
+            || (cp >= 127744 && cp <= 129791)   # emoji, pictographs
+            || (cp >= 131072 && cp <= 262141)   # cjk extensions b on
+
+    # the cells the byte at i takes: 0 inside a character, 2 wide
+    func cell_w [ s: string, i: i32 ] -> i32
+        c : i32 [ i32[ s.chars[ i ] ] & 255 ]
+        if [ c < 128 ] return 1
+        if [ c < 192 ] return 0
+        return (wide_point[ point_at[ s, i ] ]) ? 2 : 1
+
+    # the cells a shown (tabs expanded) string takes
+    func cells [ s: string ] -> i32
+        n : i32 [ 0 ]
+        for [ i: i32 0, i < s.count, i += 1 ]
+            n += cell_w[ s, i ]
+        return n
+
+    # a shown string drawn on the cell grid: an ASCII run as text,
+    # any other character alone, in the middle of its cells
+    func grid_text [ cv: Canvas, s: string, x: f32, y: f32, w: f32,
+                     h: f32 ]
+        cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        i    : i32 [ 0 ]
+        cell : i32 [ 0 ]
+        while [ i < s.count ]
+            j : i32 [ i ]
+            while [ j < s.count && (i32[ s.chars[ j ] ] & 255) < 128 ]
+                j += 1
+            if [ j > i ]
+                cv.draw_text[ s.mid[ i, j - i ],
+                    rect [ x: x + f32[ cell ] * cw, y: y, w: w, h: h ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.visible, null ]
+                cell += j - i
+                i = j
+                continue
+            nx : i32 [ utf8_next[ s, i ] ]
+            k  : i32 [ cell_w[ s, i ] ]
+            ch : string s.mid[ i, nx - i ]
+            gw : f32 [ cv.measure_text[ ch ].w ]
+            cx : f32 [ x + f32[ cell ] * cw
+                + (f32[ k ] * cw - gw) / 2.0 ]
+            cv.draw_text[ ch, rect [ x: cx, y: y, w: w, h: h ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null ]
+            cell += k
+            i = nx
 
     func model_col [ s: string, vx: i32 ] -> i32
         v : i32 [ 0 ]
         for [ i: i32 0, i < s.count, i += 1 ]
             adv : i32 [
-                (s[i] == 9) ? ((v / tab_w + 1) * tab_w - v) : 1 ]
+                (s[i] == 9) ? ((v / tab_w + 1) * tab_w - v)
+                : cell_w[ s, i ] ]
+            # inside a character: never a place between its bytes
+            if [ adv == 0 ] continue
             if [ vx < v + (adv + 1) / 2 ] return i
             v += adv
         return s.count
@@ -4881,7 +4922,7 @@ Control Editor
         if [ top < scroll.y + band || top + lh > scroll.y + vh - foot ]
             scroll.y = top - vh * 0.4
             if [ scroll.y < 0.0 ] scroll.y = 0.0
-            scroll_target = scroll.y
+            scroll_goal = scroll.y
         pristine = false
 
     # the selected lines one tab in, or with out one level out (a
@@ -4937,7 +4978,7 @@ Control Editor
             stop_y = round[ (vh - lh) * 0.5 ]
         scroll.y = top - stop_y
         if [ scroll.y < 0.0 ] scroll.y = 0.0
-        scroll_target = scroll.y
+        scroll_goal = scroll.y
         if [ nav && src ]
             nav.record[ pane_index, '{src.absolute[]}', sl, col,
                         scroll.y ]
@@ -5318,7 +5359,7 @@ Control Editor
         export_run      = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
-        d : path '{root}/install/export'
+        d : path '{install_root[]}/export'
         entries : d.ls[ null, false ]
         if [ !entries ] return
         for [ e: path ] in entries
@@ -5416,6 +5457,15 @@ Control Editor
     # that only processes text (a syntax map) is not a view, so the file
     # stays in the code editor. silver's own rule tells them apart: an
     # app has its host binary beside the product
+    # the extensions a module opens, by its export
+    public func exts_of [ mod: string ] -> vec string
+        out : vec string []
+        ensure_export_registry[]
+        if [ !export_registry ] return out
+        for [ m: string, ext: string ] in export_registry
+            if [ m == mod ] out.push[ ext ]
+        return out
+
     func handler_module_for [ p: path ] -> string
         ext : file_ext[ p ]
         if [ ext.count == 0 ] return null
@@ -5423,7 +5473,7 @@ Control Editor
         hm : string export_registry[ ext ]
         if [ !hm ] return null
         root : path.path_startup[]
-        host : path '{root}/install/build/{hm}'
+        host : path '{install_root[]}/build/{hm}'
         return (host.exists[]) ? hm : null
 
     # the handler's lib stem (silver-markdown) for a file's extension,
@@ -5481,7 +5531,7 @@ Control Editor
         sp : i32 [ rl.index_of[ ' ' ] ]
         pg : string [ (sp < 0) ? rl : rl.mid[ 0, sp ] ]
         rest : string [ (sp < 0) ? '' : rl.mid[ sp, rl.count - sp ] ]
-        bin : path '{path.path_startup[]}/install/bin/{pg}'
+        bin : path '{install_root[]}/bin/{pg}'
         if [ !bin.exists[] ] return null
         return '{bin}{rest} "{p.absolute[]}"'
 
@@ -5548,10 +5598,14 @@ Control Editor
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
         nv.doc = p
+        orb : cast orbiter [ ux.app_object ]
+        # a folder argument opened by a file in it: the folder, so
+        # its view holds the file's neighbours (a disc's tracks)
+        if [ orb && p && !p.is_dir[] && orb.takes_dir[ mod ] ]
+            nv.doc = p.parent_dir[]
         nv.viewer = true
         nv.module_args = args
         nv.host_hz = (ux) ? ux.refresh_hz[] : 60
-        orb : cast orbiter [ ux.app_object ]
         # the menu's Debug: in debug mode from its start
         if [ orb && orb.inst_debug_next ] nv.debug_build = true
         nv.start[]
@@ -5947,7 +6001,7 @@ Control Editor
             pristine      = false
             scroll.x      = 0.0
             scroll.y      = 0.0
-            scroll_target = 0.0
+            scroll_goal = 0.0
             content_h     = 0.0
             saved_scroll  = 0.0
             return
@@ -6416,8 +6470,7 @@ Control Editor
         if [ tp < scroll.y || tp + lh > scroll.y + vh ]
             scroll.y = tp - vh * 0.4
             if [ scroll.y < 0.0 ] scroll.y = 0.0
-            scroll_target = scroll.y
-            scroll_goal   = scroll.y
+            scroll_goal = scroll.y
             scroll_anim   = false
         pristine = false
         if [ ux ] ux.will_animate = true
@@ -6445,7 +6498,7 @@ Control Editor
             diff_rebuild[ false ]
             scroll.x      = 0.0
             scroll.y      = 0.0
-            scroll_target = 0.0
+            scroll_goal = 0.0
             return
         # a folder is never text: its time walks its whole tree
         if [ src.is_dir[] ]
@@ -6778,7 +6831,19 @@ Control Editor
         if [ orb ] orb.exit_find_mode[]
         if [ ux ] ux.restyle = true
 
+    # on a phone a press in the text may begin a scroll: it waits for
+    # the release, and acts only when the finger did not scroll (as
+    # trinity's focus); an app shown in the pane gets it at once
+    intern tap_held : bool
+
     func on_press [ ev: Event ]
+        if [ use_mobile && !(run_view && app_view && !run_view.held
+             && !run_view.ended) ]
+            tap_held = true
+            return
+        press_at[ ev ]
+
+    func press_at [ ev: Event ]
         caret_touch += 1
         # the error band along the foot: a press goes to its line,
         # nothing else
@@ -6825,7 +6890,7 @@ Control Editor
                 sb0.grab_at[ my0 ]
                 sy0 : f32 [ sb0.drag_to[ my0 ] ]
                 if [ sy0 >= 0.0 ]
-                    scroll_target   = sy0
+                    scroll_goal   = sy0
                     scroll_dragging = true
                     sb0.active      = true
                     pristine        = false
@@ -6889,7 +6954,7 @@ Control Editor
                     return
                 scroll.y      = f32[ pr - pi ] * plh
                 if [ scroll.y < 0.0 ] scroll.y = 0.0
-                scroll_target = scroll.y
+                scroll_goal = scroll.y
                 # no easing left over to pull it a pixel off the row
                 scroll_goal   = scroll.y
                 scroll_anim   = false
@@ -6968,7 +7033,8 @@ Control Editor
                     # text itself selects like a comment
                     tgx : f32 [
                         gutter_w + row_indent[ cln ]
-                        + f32[ line_get[ cln ].count ] * cwp ]
+                        + f32[ cells[ display_of[ line_get[ cln ] ] ] ]
+                        * cwp ]
                     if [ var_expandable[ rv ] && rel_x >= tgx ]
                         if [ rv.expanded ] collapse_from[ rv ]
                         el                 expand_only[ rv ]
@@ -6979,8 +7045,7 @@ Control Editor
                         nr : i32 [ var_row[ rv ] ]
                         if [ nr >= 0 ] scroll.y += f32[ nr - cln ] * lhp
                         if [ scroll.y < 0.0 ] scroll.y = 0.0
-                        scroll_target = scroll.y
-                        scroll_goal   = scroll.y
+                        scroll_goal = scroll.y
                         scroll_anim   = false
                         pristine = false
                         ux.will_animate = true
@@ -7005,8 +7070,7 @@ Control Editor
                                 scroll.y += f32[
                                     vis_row[ src9 ] - cln ] * lhp
                                 if [ scroll.y < 0.0 ] scroll.y = 0.0
-                                scroll_target = scroll.y
-                                scroll_goal   = scroll.y
+                                scroll_goal = scroll.y
                                 scroll_anim   = false
                                 pristine = false
                                 ux.will_animate = true
@@ -7107,7 +7171,7 @@ Control Editor
                     sb.drag_to[
                         ev.mouse.pos.y - ele.bounds.y - scroll.y ] ]
                 # the draw eases to it: frames between the moves
-                if [ sy >= 0.0 ] scroll_target = sy
+                if [ sy >= 0.0 ] scroll_goal = sy
             pristine = false
             ux.will_animate = true
             return
@@ -7229,6 +7293,10 @@ Control Editor
             pristine = false
 
     func on_release [ ev: Event ]
+        # a phone's held tap: no scroll came of it, so it is a press
+        if [ tap_held ]
+            tap_held = false
+            if [ ux.pressing ] press_at[ ev ]
         if [ run_view ] run_view.view_release*[ ev ]
         if [ rview ] rview.view_release*[ ev ]
         dragging        = false
@@ -7245,7 +7313,7 @@ Control Editor
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         if [ ev.key.shift ]
             cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
-            scroll.x = scroll.x - ev.mouse.wheel_delta.y * cw * 3.0
+            scroll.x = scroll.x - ev.mouse.wheel_delta.y * cw * 6.0
             if [ scroll.x < 0.0 ] scroll.x = 0.0
         el
             pending_wheel = pending_wheel + ev.mouse.wheel_delta.y
@@ -7261,7 +7329,7 @@ Control Editor
         bot : top + lh
         if [ bot > scroll.y + vh ] scroll.y = bot - vh
         if [ top < scroll.y ]      scroll.y = top
-        scroll_target = scroll.y
+        scroll_goal = scroll.y
         pristine = false
         ux.will_animate = true
 
@@ -7271,6 +7339,18 @@ Control Editor
              || run_view.ended || nav_list || stopped[] ] return
         if [ run_view.on_drop_text*[ ev.key.text ] ]
             ev.no_default = true
+
+    # a running app shown here: its own focus says; code takes words
+    # the shown app's focus types plainly
+    public func types_plain [] -> bool
+        return run_view && app_view && !run_view.held
+            && !run_view.ended && run_view.app_plain
+
+    public func takes_words [] -> bool
+        if [ run_view && app_view && !run_view.held && !run_view.ended
+             && !nav_list && !show_hits && !stopped[] ]
+            return run_view.app_words
+        return true
 
     func on_char [ ev: Event ]
         if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ]
@@ -7293,7 +7373,7 @@ Control Editor
         ed_set[ row,
                 line.mid[0, col] + ch
                 + line.mid[col, line.count - col] ]
-        sel_col += 1
+        sel_col += ch.count
         anchor_line = sel_line
         anchor_col  = sel_col
         end_edit[]
@@ -7459,7 +7539,7 @@ Control Editor
         anchor_line   = np.line
         anchor_col    = np.col
         scroll.y      = np.scroll_y
-        scroll_target = np.scroll_y
+        scroll_goal = np.scroll_y
         ensure_caret_visible[]
         pristine      = false
 
@@ -7599,7 +7679,7 @@ Control Editor
                 sel_line = snap_row[
                     clamp[ sel_line + half, 0, line_count[] - 1 ] ]
                 scroll.y = scroll.y + f32[ half ] * lh
-            scroll_target = scroll.y
+            scroll_goal = scroll.y
             sel_col  = clamp[ sel_col, 0, line_get[ sel_line ].count ]
             if [ !ev.key.shift ]
                 anchor_line = sel_line
@@ -7671,10 +7751,11 @@ Control Editor
                 pristine = false
             el [ col > 0 ]
                 line : line_get[ row ]
+                back : i32 [ utf8_prev[ line, col ] ]
                 ed_set[ row,
-                        line.mid[0, col - 1]
+                        line.mid[0, back]
                         + line.mid[col, line.count - col] ]
-                sel_col -= 1
+                sel_col = back
             el [ row > 0 && !show_hits ]
                 prev : line_get[ row - 1 ]
                 sel_col  = prev.count
@@ -7693,9 +7774,9 @@ Control Editor
             el
                 np : i32 [ prev_editable[ sel_line - 1 ] ]
                 if [ np >= 0 ]
+                    vx : i32 [ vis_col[ line_get[ sel_line ], sel_col ] ]
                     sel_line = np
-                    sel_col = clamp[ sel_col, 0,
-                                     line_get[ sel_line ].count ]
+                    sel_col = model_col[ line_get[ np ], vx ]
 
         el [ key == 264 ]    # Key.Down
             if [ finder_list || show_hits ]
@@ -7703,13 +7784,13 @@ Control Editor
             el
                 np : i32 [ next_editable[ sel_line + 1 ] ]
                 if [ np < line_count[] ]
+                    vx : i32 [ vis_col[ line_get[ sel_line ], sel_col ] ]
                     sel_line = np
-                    sel_col = clamp[ sel_col, 0,
-                                     line_get[ sel_line ].count ]
+                    sel_col = model_col[ line_get[ np ], vx ]
 
         el [ key == 263 ]    # Key.Left
             if [ col > 0 ]
-                sel_col -= 1
+                sel_col = utf8_prev[ line_get[ row ], col ]
             el [ row > 0 ]
                 np : i32 [ prev_editable[ row - 1 ] ]
                 if [ np >= 0 ]
@@ -7718,7 +7799,7 @@ Control Editor
 
         el [ key == 262 ]    # Key.Right
             if [ col < line_get[ row ].count ]
-                sel_col += 1
+                sel_col = utf8_next[ line_get[ row ], col ]
             el [ row < line_count[] - 1 ]
                 np : i32 [ next_editable[ row + 1 ] ]
                 if [ np < line_count[] ]

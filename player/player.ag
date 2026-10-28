@@ -1,7 +1,7 @@
 # player: a video file on the gpu decoder: mp4 mov m4v, raw h264 h265
 export 0.1.0
 export extensions ['.mp4', '.mov', '.m4v', '.h264', '.264', '.h265',
-                   '.265', '.hevc']
+                   '.265', '.hevc', '.wav']
 
 import vec
 import img
@@ -11,6 +11,10 @@ import <unistd.h>
     +_DEFAULT_SOURCE
 import <fcntl.h>
 import <string.h>
+import <stdio.h>
+import <stdlib.h>
+
+import Wave
 
 func file_bytes [ p: path ] -> vec u8
     fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
@@ -304,6 +308,25 @@ element player : trinity
     mutable mixer   : AudioMixer
     mutable voice   : i32
     mutable tried   : string             # the file last opened
+    # a sound file: shown from .. to seconds, a span chosen
+    mutable wave    : Wave
+    # what shows and what is chosen, in seconds (set live)
+    public  [ Live ] view_from : f64
+    public  [ Live ] view_to   : f64
+    public  [ Live ] sel_from  : f64
+    public  [ Live ] sel_to    : f64
+    # the selection's files: this name beside the open file, then
+    # the span's seconds (empty: the open file's name)
+    public  [ Live ] out_name  : string
+    # the spectrogram and the waveform, made for pic_key's view
+    mutable spec_tex : Texture
+    mutable wave_tex : Texture
+    mutable pic_key : string
+    # where the panels sit across the element (pixels)
+    mutable panel_x : f32
+    mutable panel_w : f32
+    mutable drag_x  : f32
+    mutable picking : bool
 
     func init []
         animated  = true
@@ -314,6 +337,8 @@ element player : trinity
         if [ !p.exists[] || p.is_dir[] ]
             failed = 'no file: {p}'
             return false
+        if [ '{p}'.lcase[].ends_with[ '.wav' ] ] return open_wave[ p ]
+        wave = null
         bytes : vec u8 file_bytes[ p ]
         if [ !bytes ]
             failed = 'cannot open {p}'
@@ -348,6 +373,292 @@ element player : trinity
         set_title[ title ]
         sound_at[ 0.0 ]
         return true
+
+    func open_wave [ p: path ] -> bool
+        wv : Wave []
+        if [ !wv.load[ p ] ]
+            failed = 'cannot read {p} (16-bit pcm wav)'
+            return false
+        if [ mixer && voice > 0 ] mixer.voice_stop[ voice ]
+        voice  = 0
+        clip   = null
+        wave   = wv
+        file   = p
+        view_from = 0.0
+        view_to   = wv.length
+        sel_from = 0.0
+        sel_to   = 0.0
+        at     = 0.0
+        paused = true
+        failed = null
+        pic_key = null
+        title  = '{p.filename[]}'
+        set_title[ title ]
+        return true
+
+    # the sound from t, to its chosen span's end if any
+    # with no sound device the play line still runs, silent
+    func wave_play [ t: f64 ]
+        at = t
+        from_ms = epoch_millis[]
+        paused = false
+        if [ !mixer ]
+            mixer = AudioMixer [ sample_rate: 48000 ]
+            if [ !mixer.start[] ] return
+        if [ voice > 0 ] mixer.voice_stop[ voice ]
+        voice = mixer.play_voice[ wave.clip, false, 1.0, 1.0 ]
+        if [ voice > 0 ]
+            mixer.voice_seek[ voice, t * f64[ wave.rate ] ]
+
+    func wave_halt []
+        if [ !paused ] at = now[]
+        if [ mixer && voice > 0 ] mixer.voice_stop[ voice ]
+        voice = 0
+        paused = true
+
+    # a path as given, else beside the open file
+    func out_path [ s: string ] -> path
+        if [ s.starts_with[ '/' ] ] return path [ s ]
+        return path [ '{file.directory[]}/{s}' ]
+
+
+    # spans by seconds, files by name beside the open file
+    action func open_sound [ name: string ]
+        open_file[ out_path[ name ] ]
+        tried = '{file}'
+
+    action func view_span [ from: f64, to: f64 ]
+        if [ !wave || to <= from ] return
+        view_from = max[ 0.0, from ]
+        view_to = min[ wave.length, to ]
+
+    action func select_span [ from: f64, to: f64 ]
+        sel_from = from
+        sel_to = to
+
+    action func play_from [ t: f64 ]
+        if [ wave ] wave_play[ t ]
+
+    # its ends faded fade_ms
+    action func crop [ from: f64, to: f64, fade_ms: f64, name: string ]
+        if [ !wave ] return
+        op : path out_path[ name ]
+        ok : bool wave.write_span[ from, to, op, fade_ms ]
+        log 'player: crop {from} .. {to} -> {op}: {ok}'
+
+    # its last xfade_ms laid over its start, to loop
+    action func make_loop [ from: f64, to: f64, xfade_ms: f64,
+                            name: string ]
+        if [ !wave ] return
+        op : path out_path[ name ]
+        ok : bool wave.write_loop[ from, to, op, xfade_ms ]
+        log 'player: loop {from} .. {to} -> {op}: {ok}'
+
+    # a line of numbers every step seconds, as text
+    action func measure [ from: f64, to: f64, step: f64, name: string ]
+        if [ !wave ] return
+        op : path out_path[ name ]
+        txt : string wave.stats[ from, to, step ]
+        fp : @FILE [ fopen[ '{op}', 'wb' ] ]
+        if [ !fp ] return
+        fwrite[ txt.chars, 1, txt.count, fp ]
+        fclose[ fp ]
+        log 'player: measure {from} .. {to} -> {op}'
+
+    # the selection (else all) by db
+    action func gain [ db: f64 ]
+        if [ !wave ] return
+        wave.gain[ sel_from, sel_to, db ]
+        edited[]
+
+    action func normalize_to [ db: f64 ]
+        if [ !wave ] return
+        wave.normalize[ sel_from, sel_to, db ]
+        edited[]
+
+    action func high_pass [ hz: f64 ]
+        if [ !wave ] return
+        wave.filter[ sel_from, sel_to, hz, true ]
+        edited[]
+
+    action func low_pass [ hz: f64 ]
+        if [ !wave ] return
+        wave.filter[ sel_from, sel_to, hz, false ]
+        edited[]
+
+    # a file for the chosen span: <name>-<from>-<to>.<ext>
+    func span_file [ ext: string ] -> path
+        nm : string [ (out_name && out_name.count > 0) ? out_name
+                      : file.stem[] ]
+        a : i32 [ i32[ sel_from * 1000.0 ] ]
+        b : i32 [ i32[ sel_to * 1000.0 ] ]
+        return out_path[ '{nm}-{a}-{b}.{ext}' ]
+
+    func chosen [] -> bool
+        return wave && sel_to > sel_from
+
+    # the menu's work on the selection (a socket's `call <name>`)
+    action func play_selection []
+        if [ chosen[] ] wave_play[ sel_from ]
+
+    action func stop_playing []
+        if [ wave ] wave_halt[]
+
+    action func zoom_to_selection []
+        if [ !chosen[] ] return
+        view_from = sel_from
+        view_to = sel_to
+
+    action func show_all []
+        if [ !wave ] return
+        view_from = 0.0
+        view_to = wave.length
+
+    action func select_view []
+        if [ !wave ] return
+        sel_from = view_from
+        sel_to = view_to
+
+    action func clear_selection []
+        sel_from = 0.0
+        sel_to = 0.0
+
+    # its ends faded 10 ms
+    action func save_selection []
+        if [ !chosen[] ] return
+        op : path span_file[ 'wav' ]
+        ok : bool wave.write_span[ sel_from, sel_to, op, 10.0 ]
+        log 'player: saved {op}: {ok}'
+
+    # made to loop: its last 150 ms laid over its start
+    action func save_as_loop []
+        if [ !chosen[] ] return
+        op : path span_file[ 'loop.wav' ]
+        ok : bool wave.write_loop[ sel_from, sel_to, op, 150.0 ]
+        log 'player: saved {op}: {ok}'
+
+    # its numbers every tenth of a second, as text
+    action func measure_selection []
+        if [ !chosen[] ] return
+        op : path span_file[ 'txt' ]
+        txt : string wave.stats[ sel_from, sel_to, 0.1 ]
+        fp : @FILE [ fopen[ '{op}', 'wb' ] ]
+        if [ !fp ] return
+        fwrite[ txt.chars, 1, txt.count, fp ]
+        fclose[ fp ]
+        log 'player: saved {op}'
+
+    # after an edit: the old sound stops, the picture is made again
+    func edited []
+        if [ mixer && voice > 0 ] mixer.voice_stop[ voice ]
+        voice = 0
+        paused = true
+        pic_key = null
+        view_to = min[ view_to, wave.length ]
+        if [ view_to <= view_from ]
+            view_from = 0.0
+            view_to = wave.length
+        sel_to = min[ sel_to, wave.length ]
+
+    # edits work on the selection, else on the whole sound
+    action func normalize []
+        if [ !wave ] return
+        wave.normalize[ sel_from, sel_to, -1.0 ]
+        edited[]
+
+    action func balance_channels []
+        if [ !wave ] return
+        wave.balance[ sel_from, sel_to ]
+        edited[]
+
+    action func make_mono []
+        if [ !wave ] return
+        wave.make_mono[ sel_from, sel_to ]
+        edited[]
+
+    action func swap_channels []
+        if [ !wave ] return
+        wave.swap_sides[ sel_from, sel_to ]
+        edited[]
+
+    action func louder []
+        if [ !wave ] return
+        wave.gain[ sel_from, sel_to, 3.0 ]
+        edited[]
+
+    action func quieter []
+        if [ !wave ] return
+        wave.gain[ sel_from, sel_to, -3.0 ]
+        edited[]
+
+    action func fade_in []
+        if [ !wave ] return
+        wave.fade[ sel_from, sel_to, true ]
+        edited[]
+
+    action func fade_out []
+        if [ !wave ] return
+        wave.fade[ sel_from, sel_to, false ]
+        edited[]
+
+    action func silence []
+        if [ !wave ] return
+        wave.silence[ sel_from, sel_to ]
+        edited[]
+
+    action func reverse []
+        if [ !wave ] return
+        wave.reverse[ sel_from, sel_to ]
+        edited[]
+
+    action func remove_dc []
+        if [ !wave ] return
+        wave.remove_dc[ sel_from, sel_to ]
+        edited[]
+
+    # under 40 Hz
+    action func cut_rumble []
+        if [ !wave ] return
+        wave.filter[ sel_from, sel_to, 40.0, true ]
+        edited[]
+
+    # over 8 kHz
+    action func cut_hiss []
+        if [ !wave ] return
+        wave.filter[ sel_from, sel_to, 8000.0, false ]
+        edited[]
+
+    action func delete_selection []
+        if [ !chosen[] ] return
+        wave.cut[ sel_from, sel_to, false ]
+        sel_to = sel_from
+        edited[]
+
+    action func trim_to_selection []
+        if [ !chosen[] ] return
+        wave.cut[ sel_from, sel_to, true ]
+        sel_from = 0.0
+        sel_to = 0.0
+        view_from = 0.0
+        view_to = wave.length
+        edited[]
+
+    action func undo []
+        if [ wave && wave.undo[] ] edited[]
+
+    # the whole edited sound: <name>-edit.wav beside the open file
+    action func save_file []
+        if [ !wave ] return
+        nm : string [ (out_name && out_name.count > 0) ? out_name
+                      : file.stem[] ]
+        op : path out_path[ '{nm}-edit.wav' ]
+        ok : bool wave.save[ op ]
+        log 'player: saved {op}: {ok}'
+
+    func x_time [ x: f32 ] -> f64
+        w : f32 [ max[ panel_w, 1.0 ] ]
+        u : f32 [ clamp[ (x - panel_x) / w, 0.0, 1.0 ] ]
+        return view_from + (view_to - view_from) * f64[ u ]
 
     # ctrl+o: the dialog lists the video's folder, else the start one
     public func nav_folder [] -> path
@@ -443,6 +754,10 @@ element player : trinity
 
     public func on_press [ ev: Event ]
         set_focus[]
+        if [ wave && !failed ]
+            drag_x = ev.mouse.pos.x
+            picking = true
+            return
         if [ !clip || failed ] return
         # the bar's strip seeks; the picture pauses
         if [ ev.mouse.pos.y > bounds.h - 24.0 && bounds.w > 0.0 ]
@@ -450,7 +765,55 @@ element player : trinity
         el
             toggle[]
 
+    # a drag chooses a span; a click alone plays from there
+    public func on_move [ ev: Event ]
+        if [ !wave || !picking ] return
+        x : f32 [ ev.mouse.pos.x ]
+        if [ abs[ x - drag_x ] < 3.0 ] return
+        sel_from = x_time[ min[ x, drag_x ] ]
+        sel_to   = x_time[ max[ x, drag_x ] ]
+
+    public func on_release [ ev: Event ]
+        if [ !wave || !picking ] return
+        picking = false
+        if [ abs[ ev.mouse.pos.x - drag_x ] < 3.0 ]
+            sel_from = 0.0
+            sel_to = 0.0
+            wave_play[ x_time[ drag_x ] ]
+
+    # the wheel zooms about the pointer
+    public func on_wheel [ ev: Event ]
+        if [ !wave ] return
+        k : f64 [ (ev.mouse.wheel_delta.y > 0.0) ? 0.8 : 1.25 ]
+        c : f64 x_time[ ev.mouse.pos.x ]
+        span : f64 [ min[ wave.length,
+                          max[ 0.05, (view_to - view_from) * k ] ] ]
+        f : f64 [ f64[ clamp[ (ev.mouse.pos.x - panel_x)
+                            / max[ panel_w, 1.0 ], 0.0, 1.0 ] ] ]
+        view_from = max[ 0.0, c - span * f ]
+        view_to = min[ wave.length, view_from + span ]
+        view_from = view_to - span
+
+    # space plays the span (or from the cursor), enter zooms to it,
+    # escape shows it all
+    func wave_key [ code: i32 ] -> bool
+        if [ code == 32 ]
+            if [ !paused ] wave_halt[]
+            el wave_play[ (sel_to > sel_from) ? sel_from : at ]
+        el [ code == 257 && sel_to > sel_from ]
+            view_from = sel_from
+            view_to = sel_to
+        el [ code == 256 ]
+            view_from = 0.0
+            view_to = wave.length
+        el
+            return false
+        return true
+
     public func on_key [ ev: Event ]
+        if [ ev.key.state != 0 && wave && !failed ]
+            if [ wave_key[ ev.key.unicode ] ] ev.stop[]
+            return
         if [ ev.key.state == 0 || !clip || failed ] return
         code : i32 [ ev.key.unicode ]
         if [ code == 32 ]
@@ -480,6 +843,9 @@ element player : trinity
                 Overflow.visible, null ]
             cv.paint[]
             return
+        if [ wave ]
+            draw_wave[ cv ]
+            return
         if [ !clip ] return
         t : f64 now[]
         if [ !paused && t >= clip.length ]
@@ -507,3 +873,163 @@ element player : trinity
         cv.fill_color[ rgba['#ff84ff'] ]
         cv.rect_to[ 0.0, bh - 4.0, bw * done, 4.0 ]
         cv.paint[]
+
+    # a seconds ruler's step for this span: 1, 2 or 5 x 10^n
+    func tick_of [ span: f64 ] -> f64
+        st : f64 [ 0.001 ]
+        while [ span / st > 12.0 ]
+            if [ span / (st * 2.0) <= 12.0 ] return st * 2.0
+            if [ span / (st * 5.0) <= 12.0 ] return st * 5.0
+            st = st * 10.0
+        return st
+
+    # a texture of w x h made (or kept) and filled with px
+    func tex_of [ cv: Canvas, tx: Texture, w: i32, h: i32, px: vec u8 ]
+            -> Texture
+        tt : Texture [ tx ]
+        if [ !tt || tt.width != w || tt.height != h ]
+            tt = Texture [ vk: cv.vk, w: cv.w, width: w, height: h,
+                           linear: true, pixel_format: Pixel.rgba8,
+                           surface: Surface.color, tag: 'wave' ]
+        tt.upload[ @px[ 0 ], w * h * 4 ]
+        return tt
+
+    func label [ cv: Canvas, s: string, x: f32, y: f32, w: f32,
+                 ax: f32, col: string ]
+        cv.fill_color[ rgba[ col ] ]
+        cv.draw_text[ s, rect [ x: x, y: y, w: w, h: 14.0 ],
+            vec2f [ ax, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
+
+    # a panel: its ground, rounded, a hairline round it
+    func panel [ cv: Canvas, x: f32, y: f32, w: f32, h: f32 ]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba['#101018'] ]
+        cv.rounded_rect[ x, y, w, h, 10.0, 10.0, 10.0, 10.0 ]
+        cv.paint[]
+
+    func hairline [ cv: Canvas, x: f32, y: f32, w: f32, h: f32 ]
+        cv.fill_color[ rgba['#00000000'] ]
+        cv.stroke_color[ rgba['#ffffff1a'] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ x + 0.5, y + 0.5, w - 1.0, h - 1.0,
+                         10.0, 10.0, 10.0, 10.0 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    # a picture in a panel, cut to its rounded corners
+    func panel_image [ cv: Canvas, tx: Texture, x: f32, y: f32, w: f32,
+                       h: f32 ]
+        cv.save[]
+        cv.clip_rounded_rect[ x, y, w, h, 10.0, 10.0, 10.0, 10.0 ]
+        cv.draw_image[ tx, rect [ x: x, y: y, w: w, h: h ] ]
+        cv.restore[]
+
+    # the ruler over the spectrogram (at most 256 px tall) over the
+    # waveform; past that height the whole is centred
+    func draw_wave [ cv: Canvas ]
+        cv.reset[ vec4f[ 0.03, 0.03, 0.05, 1.0 ] ]
+        pad : f32 [ 20.0 ]
+        rul : f32 [ 26.0 ]
+        gap : f32 [ 12.0 ]
+        aw  : f32 [ bounds.w - pad * 2.0 ]
+        room : f32 [ bounds.h - pad * 2.0 - rul - gap ]
+        if [ aw < 32.0 || room < 32.0 ] return
+        sh : f32 [ min[ 256.0, room * 0.62 ] ]
+        wh : f32 [ min[ 140.0, room - sh ] ]
+        tall : f32 [ rul + sh + gap + wh ]
+        y0 : f32 [ max[ pad, (bounds.h - tall) * 0.5 ] ]
+        px0 : f32 [ pad ]
+        panel_x = px0
+        panel_w = aw
+        sy : f32 [ y0 + rul ]
+        wy : f32 [ sy + sh + gap ]
+        t : f64 now[]
+        if [ !paused ]
+            stop_at : f64 [ (sel_to > sel_from) ? sel_to : wave.length ]
+            if [ t >= stop_at ]
+                wave_halt[]
+                at = stop_at
+                t = at
+        iw : i32 [ i32[ aw ] ]
+        ish : i32 [ i32[ sh ] ]
+        iwh : i32 [ i32[ wh ] ]
+        key : string '{view_from} {view_to} {iw} {ish} {iwh}'
+        if [ !spec_tex || key != pic_key ]
+            sp : vec u8 wave.spec_picture[ view_from, view_to, iw, ish ]
+            spec_tex = tex_of[ cv, spec_tex, iw, ish, sp ]
+            wp : vec u8 wave.wave_picture[ view_from, view_to, iw, iwh ]
+            wave_tex = tex_of[ cv, wave_tex, iw, iwh, wp ]
+            pic_key = key
+        span : f64 [ view_to - view_from ]
+        panel[ cv, px0, sy, aw, sh ]
+        panel_image[ cv, spec_tex, px0, sy, aw, sh ]
+        panel[ cv, px0, wy, aw, wh ]
+        # the centre line under the waveform
+        cv.fill_color[ rgba['#ffffff12'] ]
+        cv.rect_to[ px0 + 10.0, wy + wh * 0.5, aw - 20.0, 1.0 ]
+        cv.paint[]
+        panel_image[ cv, wave_tex, px0, wy, aw, wh ]
+        cv.font_size[ 12 ]
+        # hertz along the spectrogram's left edge, a faint line each
+        top : f64 [ f64[ wave.rate ] * 0.5 ]
+        hz : vec f64 [] [ 100.0, 1000.0, 10000.0 ]
+        names : vec string [] [ '100 Hz', '1 kHz', '10 kHz' ]
+        for [ k: i32 0, k < hz.count, k += 1 ]
+            u : f64 [ log[ hz[ k ] / 30.0 ] / log[ top / 30.0 ] ]
+            if [ u <= 0.0 || u >= 1.0 ] continue
+            ly : f32 [ sy + sh * f32[ 1.0 - u ] ]
+            cv.fill_color[ rgba['#ffffff14'] ]
+            cv.rect_to[ px0, ly, aw, 1.0 ]
+            cv.paint[]
+            label[ cv, names[ k ], px0 + 8.0, ly - 15.0, 80.0, 0.0,
+                   '#ffffffa0' ]
+        # the chosen span over both panels: a wash, a bright edge each
+        # side, a tab at the top
+        if [ sel_to > sel_from ]
+            fa : f64 [ max[ sel_from, view_from ] - view_from ]
+            xa : f32 [ px0 + f32[ fa / span ] * aw ]
+            xb : f32 [ px0 + f32[ (min[ sel_to, view_to ] - view_from)
+                                  / span ] * aw ]
+            if [ xb > xa ]
+                cv.fill_color[ rgba['#806bff2e'] ]
+                cv.rect_to[ xa, sy, xb - xa, wy + wh - sy ]
+                cv.paint[]
+                cv.fill_color[ rgba['#b3a6ffcc'] ]
+                cv.rect_to[ xa, sy, 1.0, wy + wh - sy ]
+                cv.rect_to[ xb - 1.0, sy, 1.0, wy + wh - sy ]
+                cv.paint[]
+                cv.fill_color[ rgba['#806bff'] ]
+                cv.rounded_rect[ xa, sy - 6.0, xb - xa, 6.0,
+                                 3.0, 3.0, 0.0, 0.0 ]
+                cv.paint[]
+        hairline[ cv, px0, sy, aw, sh ]
+        hairline[ cv, px0, wy, aw, wh ]
+        # the ruler: a tick and its seconds every step, a smaller one
+        # at each fifth
+        st : f64 tick_of[ span ]
+        mn : f64 [ st / 5.0 ]
+        tk : f64 [ f64[ i64[ view_from / mn ] ] * mn ]
+        while [ tk <= view_to ]
+            if [ tk >= view_from ]
+                x : f32 [ px0 + f32[ (tk - view_from) / span ] * aw ]
+                nr : f64 [ f64[ i64[ tk / st + 0.5 ] ] ]
+                big : bool [ abs[ tk / st - nr ] < 0.001 ]
+                cv.fill_color[ rgba[ (big) ? '#ffffff66'
+                                           : '#ffffff26' ] ]
+                cv.rect_to[ x, sy - ((big) ? 9.0 : 5.0), 1.0,
+                            (big) ? 9.0 : 5.0 ]
+                cv.paint[]
+                if [ big ]
+                    label[ cv, '{f32[ tk ]} s', x + 4.0, y0, 80.0, 0.0,
+                           '#ffffffb0' ]
+            tk += mn
+        # the play line, with a soft glow
+        if [ t >= view_from && t <= view_to ]
+            cx : f32 [ px0 + f32[ (t - view_from) / span ] * aw ]
+            cv.fill_color[ rgba['#ff84ff30'] ]
+            cv.rect_to[ cx - 3.0, sy, 7.0, wy + wh - sy ]
+            cv.paint[]
+            cv.fill_color[ rgba['#ff9cff'] ]
+            cv.rect_to[ cx - 0.5, sy, 2.0, wy + wh - sy ]
+            cv.paint[]

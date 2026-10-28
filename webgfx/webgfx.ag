@@ -35,6 +35,8 @@ class WebVideo
     public  ph     : i32
     # next picture for the compositor
     public  taken  : VideoFrame
+    # a decoder transform's aac (Wine's media)
+    public  aac    : AacDecoder
 
     # seconds of sample pts
     func seconds [ pts: i64 ] -> f64
@@ -2137,6 +2139,78 @@ func video_of [ id: i32 ] -> WebVideo
         v = gfx.videos[ id - 1 ]
     pthread_mutex_unlock[ @gfx_lock ]
     return v
+
+# a decoder for Wine's media transforms: samples in decode order,
+# pictures out in display order; kind 1 h.264 (avcC), 2 h.265 (hvcC)
+func webgfx_decoder_new [ kind: i32, config: @u8, n: i32 ] -> i32
+    d9 : gfx_display[]
+    v : WebVideo []
+    v.dec = Decoder [ vk: gfx.vk ]
+    ok : bool [ (kind == 2) ? v.dec.config_hevc[ config, n ]
+                            : v.dec.config[ config, n ] ]
+    if [ !ok ] return 0
+    return video_put[ v ]
+
+# one length-prefixed sample; 0 when it could not be decoded
+func webgfx_decoder_push [ id: i32, bytes: @u8, n: i32, pts: i64 ] -> i32
+    v : video_of[ id ]
+    if [ !v || !v.dec ] return 0
+    return (v.dec.decode[ bytes, n, pts ]) ? 1 : 0
+
+# end of stream: the pictures held for reordering come out
+func webgfx_decoder_finish [ id: i32 ]
+    v : video_of[ id ]
+    if [ v && v.dec ] v.dec.finish[]
+
+# the next picture: width, height, pts, 1 when u and v are full size
+func webgfx_decoder_frame [ id: i32, info: @i64 ] -> i32
+    v : video_of[ id ]
+    if [ !v || !v.dec || v.dec.frames.count == 0 ] return 0
+    f : v.dec.frames[0]
+    info[0] = f.width
+    info[1] = f.height
+    info[2] = f.pts
+    info[3] = (f.full) ? 1 : 0
+    return 1
+
+# that picture's planes copied out; then it goes
+func webgfx_decoder_take [ id: i32, y: @u8, u: @u8, v: @u8 ]
+    s : video_of[ id ]
+    if [ !s || !s.dec || s.dec.frames.count == 0 ] return
+    f : s.dec.frames[0]
+    memcpy[ y, @f.y[ 0 ], f.y.count ]
+    memcpy[ u, @f.u[ 0 ], f.u.count ]
+    memcpy[ v, @f.v[ 0 ], f.v.count ]
+    s.dec.frames.shift[]
+
+# every picture waiting goes (a seek)
+func webgfx_decoder_drop [ id: i32 ]
+    v : video_of[ id ]
+    if [ v && v.dec ] v.dec.frames.clear[]
+
+# a decoder or aac decoder's slot let go
+func webgfx_decoder_free [ id: i32 ]
+    v : video_of[ id ]
+    if [ !v ] return
+    pthread_mutex_lock[ @gfx_lock ]
+    gfx.videos[ id - 1 ] = null
+    pthread_mutex_unlock[ @gfx_lock ]
+
+# an aac decoder from its AudioSpecificConfig; its rate and channels
+func webgfx_aac_new [ asc: @u8, n: i32, rate: @i32, ch: @i32 ] -> i32
+    v : WebVideo []
+    v.aac = AacDecoder []
+    if [ !v.aac.config[ asc, n ] ] return 0
+    rate[0] = v.aac.rate
+    ch[0]   = v.aac.channels
+    return video_put[ v ]
+
+# one packet into out, interleaved floats; the values written, or -1
+func webgfx_aac_decode [ id: i32, data: @u8, n: i64, out: @f32,
+                         cap: i64 ] -> i64
+    v : video_of[ id ]
+    if [ !v || !v.aac ] return -1
+    return v.aac.decode[ data, n, out, cap ]
 
 # a whole media file: its h.264 track ready to decode; 0 if unplayable
 func webgfx_video_new [ bytes: @u8, n: i64 ] -> i32

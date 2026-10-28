@@ -152,6 +152,16 @@ class Fastboot
         if [ !download[ file ] ] return false
         return okay[ command[ 'flash:{slot_name[ part ]}' ] ]
 
+    # a partition emptied (its current slot's)
+    func erase [ part: string ] -> bool
+        return okay[ command[ 'erase:{slot_name[ part ]}' ] ]
+
+    # the current slot started again: clears its unbootable mark
+    func set_active [] -> bool
+        slot : getvar[ 'current-slot' ]
+        if [ slot.count == 0 ] return true
+        return okay[ command[ 'set_active:{slot}' ] ]
+
     func reboot [] -> bool
         return okay[ command[ 'reboot' ] ]
 

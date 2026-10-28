@@ -425,7 +425,10 @@ HOST_API int agent_proc_start(const char* root, int keep_in) {
     else posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addclose(&fa, pipes[0]);
     posix_spawn_file_actions_addclose(&fa, pipes[1]);
+#if !defined(__ANDROID__) || __ANDROID_API__ >= 34
+    // bionic has addchdir_np from api 34 on
     if (root && *root) posix_spawn_file_actions_addchdir_np(&fa, root);
+#endif
     posix_spawnattr_t at;
     posix_spawnattr_init(&at);
     posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP);

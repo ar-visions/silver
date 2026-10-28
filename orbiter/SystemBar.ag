@@ -131,7 +131,15 @@ element SystemClock
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
+
+# the system bar's height in units: twice as tall on a phone
+func bar_units [] -> f32
+    return (mobile_on[]) ? 1.82 : 0.91
 
 # booted into orbiter-os: init put orbiter.init= on the boot line
 func on_the_os [] -> bool
@@ -178,6 +186,10 @@ Button BarClock
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
 
 # a top menu of the active window's menu bar, at the bar's left
@@ -212,6 +224,13 @@ Button MenuTop
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 27
+        :close_part&use_mobile
+            layers.face:
+                label_size: 30
     }
     public at : i32
     # a pane not active: its menu name (a press selects the pane)
@@ -281,6 +300,10 @@ Button BarCrumb
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
     public last : bool
 
@@ -293,6 +316,10 @@ element CrumbSep
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
 
 # the active pane's title, after the app's name: an action, not a
@@ -324,6 +351,10 @@ Button BarTitle
             layers.body:
                 stroke_color: #806bffff
                 fill_color: #4d3dbc55
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
     # a field only while a URL is typed in it
     read_only : true
@@ -357,11 +388,13 @@ Layer BarMeasure
         if [ !bt ] return
         uri : 'fonts/BarlowCondensed-Regular.ttf'
         # the sizes the labels draw at (with the text size)
-        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 17.0 ] ] ]
-        cv.font_size[ 17 ]
+        # a phone's bar: its labels half again as big
+        mb : f32 [ (mobile_on[]) ? 1.5 : 1.0 ]
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 17.0 * mb ] ] ]
+        cv.font_size[ i32[ 17.0 * mb ] ]
         sw : f32 [ (bt.site) ? cv.measure_text[ bt.site ].w : 0.0 ]
-        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 16.0 ] ] ]
-        cv.font_size[ 16 ]
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 16.0 * mb ] ] ]
+        cv.font_size[ i32[ 16.0 * mb ] ]
         dw : f32 [ (bt.domain) ? cv.measure_text[ bt.domain ].w : 0.0 ]
         if [ sw != bt.site_w || dw != bt.domain_w ]
             bt.site_w   = sw
@@ -379,6 +412,10 @@ element BarText
             label_align: 0.0 0.5
             # cut, not ellipsized: the mask fades its end
             label_overflow: clip
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 26
     }
 
 # the site's domain at the title's right: yellow over https, else
@@ -395,6 +432,10 @@ element BarDomain
     :secure
         layers.face:
             label_color: #ffd24aff
+        # a phone's bar: its text half again as big
+        :use_mobile
+            layers.face:
+                label_size: 24
     }
 
 # the side panel's list of one top menu's entries
@@ -524,6 +565,12 @@ element MenuDrawer
     :open
         area: l0 t0 w10.91 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
+    # a phone has no bottom bar: the drawers reach the foot
+    # a phone's drawers are its whole width
+    :use_mobile
+        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
+    :open&use_mobile
+        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
     }
 
 # a free window's menu: its area is the menu's room in the window
@@ -535,6 +582,10 @@ MenuDrawer WinDrawer
     :open
         area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
+    :use_mobile
+        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
+    :open&use_mobile
+        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
     }
 
 # what a free window's menu slides in: it shows only inside the
@@ -559,16 +610,24 @@ MenuDrawer ExchangeDrawer
     :open
         area: l0%+0 t0.91 r0%+0 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
+    :use_mobile
+        area: l-100%+0 t1.82 r100%+0 b0, 240ms cubic outward
+    :open&use_mobile
+        area: l0%+0 t1.82 r0%+0 b0, 260ms cubic inward
     }
 
 # the system menu, the desktop's (orbiter's): out of the left under
-# the bar, over the app; the view buttons and power on top, the
+# the bar, the whole screen; the view buttons and power on top, the
 # sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
     style : CSS {
-        area: l-15 t0.91 w15 b1.06, 240ms cubic outward
+        area: l-100%+0 t0.91 r100%+0 b0, 240ms cubic outward
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0 t0.91 w15 b1.06, 260ms cubic inward
+        area: l0%+0 t0.91 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
+    :use_mobile
+        area: l-100%+0 t1.82 r100%+0 b0, 240ms cubic outward
+    :open&use_mobile
+        area: l0%+0 t1.82 r0%+0 b0, 260ms cubic inward
     }

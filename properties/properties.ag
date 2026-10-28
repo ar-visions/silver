@@ -1325,6 +1325,8 @@ element LaunchPanel
     mutable owed       : string
     # a vector cell's dividers: x, top and height each
     mutable cuts       : vec f32
+    # inside a menu's chip: its lines, no ground, no column rule
+    public  menu       : bool
 
     # the spec parsed once per change: every row reads a Prop
     func parse_fields []
@@ -1335,10 +1337,13 @@ element LaunchPanel
         if [ spec && spec.count > 0 ]
             Au.parse_agi[ null, spec.chars, fields ]
         if [ !fields.props ] fields.props = vec Prop []
-        # the display is the instance panel's own bar, never a row
+        # the display is the instance panel's own bar, never a row;
+        # an action taking arguments is the agent's, not a button
         kept : vec Prop []
         for [ p: Prop ] in fields.props
-            if [ p.ident != 'display' ] kept.push[ p ]
+            if [ p.ident == 'display' ] continue
+            if [ p.params && p.params.count > 0 ] continue
+            kept.push[ p ]
         fields.props = kept
 
     # another module's prop (trinity's display) is flagged with its
@@ -1375,8 +1380,7 @@ element LaunchPanel
         return ''
 
     func prop_live [ p: Prop ] -> bool
-        return p.type == 'func' || has_meta[ p, 'Live' ] || has_meta[ p,
-                                                                      'Action' ]
+        return p.type == 'func' || has_meta[ p, 'Live' ]
 
     # a vector's parts: vec2f 2, vec3f 3, vec4f 4, else 0
     func vec_n [ ty: string ] -> i32
@@ -1739,6 +1743,8 @@ element LaunchPanel
         rows_h    = content_h
         col_x     = lw
         body.area = Region [ 'l0 t0 r0 h{i32[ y ]}px' ]
+        # a menu's chip is the ground
+        if [ menu ] body.fill_color = rgba [ '#0000' ]
         return t
 
     # the 1px rules: one under every row, one between the name and value
@@ -1748,6 +1754,15 @@ element LaunchPanel
             return
         cv : Canvas w.screen
         cv.stroke_width[ 0.0 ]
+        # a menu's chip: its row lines between rows, nothing else
+        if [ menu ]
+            cv.fill_color[ rgba [ '#ffffff14' ] ]
+            if [ rule_ys ]
+                for [ ry: f32 ] in rule_ys
+                    if [ ry >= rows_h - scroll.y - 1.0 ] continue
+                    cv.rect_to[ 1.0, ry - 1.0, bounds.w - 2.0, 1.0 ]
+                    cv.paint[]
+            return
         cv.fill_color[ rgba [ '#ffffff1a' ] ]
         if [ rule_ys ]
             for [ y9: f32 ] in rule_ys

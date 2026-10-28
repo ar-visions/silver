@@ -5955,10 +5955,10 @@ element n64 : trinity
 		return s
 
 	# the host's menu: saved and loaded on the emulator's next frame
-	public [ Action ] func save_state []
+	action func save_state []
 		save_req = true
 
-	public [ Action ] func load_state []
+	action func load_state []
 		load_req = true
 
 	public func on_key [ ev: Event ]

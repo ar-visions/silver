@@ -3216,8 +3216,10 @@ class whisper
 
     func transcribe [ enc: tensor, max_toks: i32 ] -> vec i32
         prepare[ enc ]
-        last : i32 [ step[ 50258 ] ]
-        last = step[ 50259 ]
+        language : i32 [ step[ 50258 ] ]
+        if [ language < 50259 || language > 50357 ]
+            language = 50259
+        last : i32 [ step[ language ] ]
         last = step[ 50359 ]
         last = step[ 50363 ]
         res : vec i32 [ ]

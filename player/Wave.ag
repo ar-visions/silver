@@ -1,0 +1,477 @@
+# a sound file: its picture (spectrogram over waveform), spans
+# cut out as files, and numbers along it for an agent to read
+extend player
+
+# inferno (matplotlib's, as a polynomial fit) over 0..1, opaque
+func heat_px [ x: f32, px: vec u8, o: i64 ]
+    t : f32 [ clamp[ x, 0.0, 1.0 ] ]
+    r : f32 [ 0.00022 + t * (0.10651 + t * (11.60249 + t * (-41.70400
+        + t * (77.16294 + t * (-71.31943 + t * 25.13113))))) ]
+    g : f32 [ 0.00165 + t * (0.56396 + t * (-3.97285 + t * (17.43640
+        + t * (-33.40236 + t * (32.62606 + t * -12.24267))))) ]
+    b : f32 [ -0.01948 + t * (3.93271 + t * (-15.94239 + t * (44.35415
+        + t * (-81.80731 + t * (73.20952 + t * -23.07033))))) ]
+    px[ o ]     = u8[ clamp[ r, 0.0, 1.0 ] * 255.0 ]
+    px[ o + 1 ] = u8[ clamp[ g, 0.0, 1.0 ] * 255.0 ]
+    px[ o + 2 ] = u8[ clamp[ b, 0.0, 1.0 ] * 255.0 ]
+    px[ o + 3 ] = 255
+
+# a premultiplied pixel: c (0..1 each) at coverage a
+func put_px [ px: vec u8, o: i64, r: f32, g: f32, b: f32, a: f32 ]
+    k : f32 [ clamp[ a, 0.0, 1.0 ] ]
+    px[ o ]     = u8[ r * k * 255.0 ]
+    px[ o + 1 ] = u8[ g * k * 255.0 ]
+    px[ o + 2 ] = u8[ b * k * 255.0 ]
+    px[ o + 3 ] = u8[ k * 255.0 ]
+
+# how much of the row y .. y + 1 lies within lo .. hi
+func cover [ y: f32, lo: f32, hi: f32 ] -> f32
+    return clamp[ min[ y + 1.0, hi ] - max[ y, lo ], 0.0, 1.0 ]
+
+class Wave
+    public clip   : AudioClip
+    public mono   : vec f32
+    public rate   : i32
+    public length : f64
+    # the sound before each edit, last on top
+    public undos  : vec AudioClip
+
+    func load [ p: path ] -> bool
+        c : AudioClip wav_load[ p ]
+        if [ !c ] return false
+        undos = vec AudioClip []
+        take[ c ]
+        return true
+
+    # c becomes the sound; its mono mix made again
+    func take [ c: AudioClip ]
+        clip = c
+        rate = c.rate
+        length = f64[ c.frames ] / f64[ rate ]
+        ch : i64 [ c.channels ]
+        mono = vec f32 [ c.frames ]
+        for [ i: i64 0, i < c.frames, i += 1 ]
+            sum : f32 [ 0.0 ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                sum += f32[ c.pcm[ i * ch + k ] ]
+            mono[ i ] = sum / (32768.0 * f32[ ch ])
+
+    # a sound of n frames, c's channels and rate, silent
+    func blank [ n: i64 ] -> AudioClip
+        ch : i64 [ clip.channels ]
+        cnt : i32 [ i32[ n * ch ] ]
+        pcm : new i16 [ cnt ]
+        memset[ pcm, 0, i64[ cnt ] * 2 ]
+        c : AudioClip [ rate: rate, channels: i32[ ch ], frames: n ]
+        pcm.hold[]
+        c.pcm = pcm
+        return c
+
+    # a copy to edit; the sound as it was goes on the undo list
+    func begin [] -> AudioClip
+        c : AudioClip blank[ clip.frames ]
+        memcpy[ c.pcm, clip.pcm, clip.frames * clip.channels * 2 ]
+        undos.push[ clip ]
+        if [ undos.count > 16 ] undos.shift[]
+        return c
+
+    func undo [] -> bool
+        if [ undos.count == 0 ] return false
+        c : AudioClip undos[ undos.count - 1 ]
+        undos.pop[]
+        take[ c ]
+        return true
+
+    # the frames of from .. to seconds; none chosen: all of it
+    func lo_of [ from: f64, to: f64 ] -> i64
+        if [ to <= from ] return 0
+        return max[ i64[ 0 ], i64[ from * f64[ rate ] ] ]
+
+    func hi_of [ from: f64, to: f64 ] -> i64
+        if [ to <= from ] return clip.frames
+        return min[ clip.frames, i64[ to * f64[ rate ] ] ]
+
+    func put [ c: AudioClip, i: i64, v: f64 ]
+        c.pcm[ i ] = i16[ clamp[ v, -32768.0, 32767.0 ] ]
+
+    # every sample of the span times g
+    func gain [ from: f64, to: f64, db: f64 ]
+        g : f64 [ pow[ 10.0, db / 20.0 ] ]
+        c : AudioClip begin[]
+        ch : i64 [ c.channels ]
+        for [ i: i64 lo_of[ from, to ] * ch, i < hi_of[ from, to ] * ch,
+              i += 1 ]
+            put[ c, i, f64[ c.pcm[ i ] ] * g ]
+        take[ c ]
+
+    # its loudest sample to db (below full scale)
+    func normalize [ from: f64, to: f64, db: f64 ]
+        ch : i64 [ clip.channels ]
+        pk : f64 [ 1.0 ]
+        for [ i: i64 lo_of[ from, to ] * ch, i < hi_of[ from, to ] * ch,
+              i += 1 ]
+            v : f64 [ abs[ f64[ clip.pcm[ i ] ] ] ]
+            if [ v > pk ] pk = v
+        gain[ from, to, db - 8.6859 * log[ pk / 32767.0 ] ]
+
+    # each channel's loudness (rms) brought to their mean
+    func balance [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        rs : vec f64 [ ch ]
+        mean : f64 [ 0.0 ]
+        for [ k: i64 0, k < ch, k += 1 ]
+            sq : f64 [ 0.0 ]
+            for [ i: i64 a, i < b, i += 1 ]
+                v : f64 [ f64[ clip.pcm[ i * ch + k ] ] ]
+                sq += v * v
+            rs[ k ] = sqrt[ sq / f64[ max[ b - a, i64[ 1 ] ] ] ] + 1e-9
+            mean += rs[ k ] / f64[ ch ]
+        c : AudioClip begin[]
+        for [ k: i64 0, k < ch, k += 1 ]
+            g : f64 [ mean / rs[ k ] ]
+            for [ i: i64 a, i < b, i += 1 ]
+                put[ c, i * ch + k, f64[ c.pcm[ i * ch + k ] ] * g ]
+        take[ c ]
+
+    # every channel the mean of them all
+    func make_mono [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        c : AudioClip begin[]
+        for [ i: i64 lo_of[ from, to ], i < hi_of[ from, to ], i += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                sum += f64[ c.pcm[ i * ch + k ] ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                put[ c, i * ch + k, sum / f64[ ch ] ]
+        take[ c ]
+
+    # left and right traded
+    func swap_sides [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        if [ ch < 2 ] return
+        c : AudioClip begin[]
+        for [ i: i64 lo_of[ from, to ], i < hi_of[ from, to ], i += 1 ]
+            l : i16 [ c.pcm[ i * ch ] ]
+            c.pcm[ i * ch ] = c.pcm[ i * ch + 1 ]
+            c.pcm[ i * ch + 1 ] = l
+        take[ c ]
+
+    # up from nothing (rise) or down to it, equal power
+    func fade [ from: f64, to: f64, rise: bool ]
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        c : AudioClip begin[]
+        for [ i: i64 a, i < b, i += 1 ]
+            t : f64 [ f64[ i - a ] / f64[ max[ b - a, i64[ 1 ] ] ] ]
+            g : f64 [ sin[ ((rise) ? t : 1.0 - t) * 1.5707963 ] ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                put[ c, i * ch + k, f64[ c.pcm[ i * ch + k ] ] * g ]
+        take[ c ]
+
+    func silence [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        c : AudioClip begin[]
+        for [ i: i64 lo_of[ from, to ] * ch, i < hi_of[ from, to ] * ch,
+              i += 1 ]
+            c.pcm[ i ] = 0
+        take[ c ]
+
+    # the span played backwards
+    func reverse [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        c : AudioClip begin[]
+        for [ i: i64 a, i < b, i += 1 ]
+            j : i64 [ a + b - 1 - i ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                c.pcm[ i * ch + k ] = clip.pcm[ j * ch + k ]
+        take[ c ]
+
+    # each channel's mean taken away (a steady offset)
+    func remove_dc [ from: f64, to: f64 ]
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        c : AudioClip begin[]
+        for [ k: i64 0, k < ch, k += 1 ]
+            sum : f64 [ 0.0 ]
+            for [ i: i64 a, i < b, i += 1 ]
+                sum += f64[ c.pcm[ i * ch + k ] ]
+            m : f64 [ sum / f64[ max[ b - a, i64[ 1 ] ] ] ]
+            for [ i: i64 a, i < b, i += 1 ]
+                put[ c, i * ch + k, f64[ c.pcm[ i * ch + k ] ] - m ]
+        take[ c ]
+
+    # a second order butterworth (rbj's biquad) under or over hz
+    func filter [ from: f64, to: f64, hz: f64, high: bool ]
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        w : f64 [ 6.2831853 * hz / f64[ rate ] ]
+        cw : f64 [ cos[ w ] ]
+        al : f64 [ sin[ w ] / 1.4142136 ]
+        a0 : f64 [ 1.0 + al ]
+        b0 : f64 [ ((high) ? (1.0 + cw) : (1.0 - cw)) * 0.5 / a0 ]
+        b1 : f64 [ ((high) ? 0.0 - (1.0 + cw) : (1.0 - cw)) / a0 ]
+        f1 : f64 [ -2.0 * cw / a0 ]
+        f2 : f64 [ (1.0 - al) / a0 ]
+        c : AudioClip begin[]
+        for [ k: i64 0, k < ch, k += 1 ]
+            xa : f64 [ 0.0 ]
+            xb : f64 [ 0.0 ]
+            ya : f64 [ 0.0 ]
+            yb : f64 [ 0.0 ]
+            for [ i: i64 a, i < b, i += 1 ]
+                x : f64 [ f64[ c.pcm[ i * ch + k ] ] ]
+                y : f64 [ b0 * x + b1 * xa + b0 * xb
+                          - f1 * ya - f2 * yb ]
+                xb = xa
+                xa = x
+                yb = ya
+                ya = y
+                put[ c, i * ch + k, y ]
+        take[ c ]
+
+    # the span taken out (keep false), or all but it (keep true)
+    func cut [ from: f64, to: f64, keep: bool ]
+        if [ to <= from ] return
+        ch : i64 [ clip.channels ]
+        a : i64 lo_of[ from, to ]
+        b : i64 hi_of[ from, to ]
+        n : i64 [ (keep) ? b - a : clip.frames - (b - a) ]
+        if [ n <= 0 ] return
+        c : AudioClip blank[ n ]
+        if [ keep ]
+            memcpy[ c.pcm, @clip.pcm[ a * ch ], n * ch * 2 ]
+        el
+            memcpy[ c.pcm, clip.pcm, a * ch * 2 ]
+            memcpy[ @c.pcm[ a * ch ], @clip.pcm[ b * ch ],
+                    (clip.frames - b) * ch * 2 ]
+        undos.push[ clip ]
+        take[ c ]
+
+    # the whole sound as a file
+    func save [ p: path ] -> bool
+        ch : i64 [ clip.channels ]
+        out : vec i16 [ clip.frames * ch ]
+        memcpy[ @out[ 0 ], clip.pcm, clip.frames * ch * 2 ]
+        return wav_put[ p, out, clip.frames, i32[ ch ], rate ]
+
+    # magnitudes in decibels of 1024 bins round t (2048 points)
+    func spectrum [ t: f64, re: vec f32, im: vec f32 ]
+        n : i64 [ 2048 ]
+        mid : i64 [ i64[ t * f64[ rate ] ] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            j : i64 [ mid - n / 2 + i ]
+            v : f32 [ (j >= 0 && j < mono.count) ? mono[ j ] : 0.0 ]
+            w : f32 [ 0.5 - 0.5
+                      * cos[ 6.2831853 * f32[ i ] / 2047.0 ] ]
+            re[ i ] = v * w
+            im[ i ] = 0.0
+        fft[ @re[ 0 ], @im[ 0 ], 2048 ]
+        for [ i: i64 0, i < 1024, i += 1 ]
+            m : f32 [ re[ i ] * re[ i ] + im[ i ] * im[ i ] ]
+            re[ i ] = 4.3429 * log[ m + 1e-12 ] - 54.0
+
+    # w x h rgba: the spectrogram, 30 Hz at the foot to the top
+    # (log), -90 .. -10 dB; a row over several bins takes their
+    # loudest, a row between two takes the line between them
+    func spec_picture [ from: f64, to: f64, w: i32, h: i32 ] -> vec u8
+        px : vec u8 [ i64[ w ] * h * 4 ]
+        re : vec f32 [ 2048 ]
+        im : vec f32 [ 2048 ]
+        top : f32 [ f32[ rate ] * 0.5 ]
+        bw : f32 [ top / 1024.0 ]
+        span : f64 [ to - from ]
+        for [ x: i32 0, x < w, x += 1 ]
+            t : f64 [ from + span * (f64[ x ] + 0.5) / f64[ w ] ]
+            spectrum[ t, re, im ]
+            for [ y: i32 0, y < h, y += 1 ]
+                ua : f32 [ 1.0 - f32[ y + 1 ] / f32[ h ] ]
+                ub : f32 [ 1.0 - f32[ y ] / f32[ h ] ]
+                fa : f32 [ 30.0 * pow[ top / 30.0, ua ] / bw ]
+                fb : f32 [ 30.0 * pow[ top / 30.0, ub ] / bw ]
+                db : f32 [ -200.0 ]
+                if [ fb - fa >= 1.0 ]
+                    for [ k: i32 i32[ fa ], k <= i32[ fb ], k += 1 ]
+                        if [ k < 1024 && re[ k ] > db ] db = re[ k ]
+                el
+                    fm : f32 [ (fa + fb) * 0.5 ]
+                    k : i32 [ min[ i32[ fm ], 1022 ] ]
+                    q : f32 [ fm - f32[ k ] ]
+                    db = re[ k ] * (1.0 - q) + re[ k + 1 ] * q
+                heat_px[ pow[ clamp[ (db + 90.0) / 80.0, 0.0, 1.0 ],
+                              1.2 ],
+                         px, (i64[ y ] * w + x) * 4 ]
+        return px
+
+    # w x h rgba, clear behind: the waveform's reach, its edges
+    # smooth, cyan at the middle to violet at the peaks, the rms
+    # brighter within
+    func wave_picture [ from: f64, to: f64, w: i32, h: i32 ] -> vec u8
+        px : vec u8 [ i64[ w ] * h * 4 ]
+        span : f64 [ to - from ]
+        mid : f32 [ f32[ h ] * 0.5 ]
+        half : f32 [ f32[ h ] * 0.46 ]
+        for [ x: i32 0, x < w, x += 1 ]
+            a : i64 [ i64[ (from + span * f64[ x ] / f64[ w ])
+                           * f64[ rate ] ] ]
+            b : i64 [ i64[ (from + span * f64[ x + 1 ] / f64[ w ])
+                           * f64[ rate ] ] ]
+            if [ b <= a ] b = a + 1
+            lo : f32 [ 0.0 ]
+            hi : f32 [ 0.0 ]
+            sq : f64 [ 0.0 ]
+            for [ i: i64 a, i < b, i += 1 ]
+                if [ i >= 0 && i < mono.count ]
+                    v : f32 [ mono[ i ] ]
+                    if [ v < lo ] lo = v
+                    if [ v > hi ] hi = v
+                    sq += f64[ v * v ]
+            rms : f32 [ f32[ sqrt[ sq / f64[ b - a ] ] ] ]
+            # a sliver never vanishes: at least a pixel tall
+            ytop : f32 [ min[ mid - hi * half, mid - 0.5 ] ]
+            ybot : f32 [ max[ mid - lo * half, mid + 0.5 ] ]
+            rtop : f32 [ mid - rms * half ]
+            rbot : f32 [ mid + rms * half ]
+            for [ y: i32 0, y < h, y += 1 ]
+                fy : f32 [ f32[ y ] ]
+                c : f32 cover[ fy, ytop, ybot ]
+                if [ c <= 0.0 ] continue
+                cr : f32 cover[ fy, rtop, rbot ]
+                d : f32 [ clamp[ abs[ fy + 0.5 - mid ] / half,
+                                 0.0, 1.0 ] ]
+                # violet (0.61, 0.48, 1.0) at the peaks to cyan
+                r : f32 [ 0.30 + 0.31 * d ]
+                g : f32 [ 0.85 - 0.37 * d ]
+                bl : f32 [ 1.0 ]
+                al : f32 [ 0.55 * c + 0.45 * cr ]
+                r = r + (1.0 - r) * 0.35 * cr
+                g = g + (1.0 - g) * 0.35 * cr
+                put_px[ px, (i64[ y ] * w + x) * 4, r, g, bl, al ]
+        return px
+
+    # from .. to seconds as a 16-bit wav, its ends faded fade_ms
+    func write_span [ from: f64, to: f64, p: path, fade_ms: f64 ]
+            -> bool
+        ch : i64 [ clip.channels ]
+        a : i64 [ max[ i64[ 0 ], i64[ from * f64[ rate ] ] ] ]
+        b : i64 [ min[ clip.frames, i64[ to * f64[ rate ] ] ] ]
+        if [ b <= a ] return false
+        n : i64 [ b - a ]
+        out : vec i16 [ n * ch ]
+        fd : f64 [ fade_ms * 0.001 * f64[ rate ] ]
+        for [ i: i64 0, i < n, i += 1 ]
+            g : f64 [ 1.0 ]
+            if [ fd > 0.0 ]
+                g = min[ 1.0, min[ f64[ i ] / fd,
+                                   f64[ n - 1 - i ] / fd ] ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                v : f64 [ f64[ clip.pcm[ (a + i) * ch + k ] ] ]
+                out[ i * ch + k ] = i16[ v * g ]
+        return wav_put[ p, out, n, i32[ ch ], rate ]
+
+    # from .. to made to loop: its last xf_ms laid over its start
+    func write_loop [ from: f64, to: f64, p: path, xf_ms: f64 ] -> bool
+        ch : i64 [ clip.channels ]
+        a : i64 [ max[ i64[ 0 ], i64[ from * f64[ rate ] ] ] ]
+        b : i64 [ min[ clip.frames, i64[ to * f64[ rate ] ] ] ]
+        x : i64 [ i64[ xf_ms * 0.001 * f64[ rate ] ] ]
+        if [ b - a <= x * 2 ] return false
+        n : i64 [ b - a - x ]
+        out : vec i16 [ n * ch ]
+        for [ i: i64 0, i < n, i += 1 ]
+            for [ k: i64 0, k < ch, k += 1 ]
+                v : f64 [ f64[ clip.pcm[ (a + i) * ch + k ] ] ]
+                if [ i < x ]
+                    # equal power: the tail fades out as the head comes
+                    t : f64 [ f64[ i ] / f64[ x ] ]
+                    j : i64 [ (a + n + i) * ch + k ]
+                    tail : f64 [ f64[ clip.pcm[ j ] ] ]
+                    v = v * sin[ t * 1.5707963 ]
+                        + tail * cos[ t * 1.5707963 ]
+                out[ i * ch + k ] = i16[ clamp[ v, -32768.0, 32767.0 ] ]
+        return wav_put[ p, out, n, i32[ ch ], rate ]
+
+    # a line every step seconds: time, rms and peak dB, the centre of
+    # the sound (Hz), the loudest band (Hz), low / mid / high dB
+    func stats [ from: f64, to: f64, step: f64 ] -> string
+        re : vec f32 [ 2048 ]
+        im : vec f32 [ 2048 ]
+        txt : string 'time rms_db peak_db centroid_hz peak_hz'
+        txt = '{txt} low_db mid_db high_db\n'
+        hzb : f64 [ f64[ rate ] / 2048.0 ]
+        t : f64 [ from ]
+        while [ t < to ]
+            a : i64 [ i64[ t * f64[ rate ] ] ]
+            b : i64 [ min[ mono.count,
+                           i64[ (t + step) * f64[ rate ] ] ] ]
+            sq : f64 [ 0.0 ]
+            pk : f64 [ 0.0 ]
+            for [ i: i64 a, i < b, i += 1 ]
+                v : f64 [ f64[ mono[ i ] ] ]
+                sq += v * v
+                if [ abs[ v ] > pk ] pk = abs[ v ]
+            cnt : f64 [ f64[ max[ b - a, i64[ 1 ] ] ] ]
+            spectrum[ t + step * 0.5, re, im ]
+            ws : f64 [ 0.0 ]
+            wf : f64 [ 0.0 ]
+            best : i64 [ 1 ]
+            lo : f64 [ 0.0 ]
+            md : f64 [ 0.0 ]
+            hi : f64 [ 0.0 ]
+            for [ i: i64 1, i < 1024, i += 1 ]
+                e : f64 [ exp[ f64[ re[ i ] + 54.0 ] / 4.3429 ] ]
+                hz : f64 [ f64[ i ] * hzb ]
+                ws += e
+                wf += e * hz
+                if [ re[ i ] > re[ best ] ] best = i
+                if [ hz < 250.0 ] lo += e
+                el [ hz < 2500.0 ] md += e
+                el hi += e
+            db_rms : f64 [ 4.3429 * log[ sq / cnt + 1e-12 ] ]
+            db_pk : f64 [ 8.6859 * log[ pk + 1e-9 ] ]
+            cen : f64 [ wf / max[ ws, 1e-12 ] ]
+            pz : i32 [ i32[ f64[ best ] * hzb ] ]
+            lb : f32 [ f32[ 4.3429 * log[ lo + 1e-12 ] - 54.0 ] ]
+            mb : f32 [ f32[ 4.3429 * log[ md + 1e-12 ] - 54.0 ] ]
+            hb : f32 [ f32[ 4.3429 * log[ hi + 1e-12 ] - 54.0 ] ]
+            row : string '{f32[ t ]} {f32[ db_rms ]} {f32[ db_pk ]}'
+            txt = '{txt}{row} {i32[ cen ]} {pz} {lb} {mb} {hb}\n'
+            t += step
+        return txt
+
+# a 16-bit pcm wav
+func wav_put [ p: path, out: vec i16, n: i64, ch: i32, rate: i32 ]
+        -> bool
+    fp : @FILE [ fopen[ '{p}', 'wb' ] ]
+    if [ !fp ] return false
+    data : i64 [ n * ch * 2 ]
+    hd : vec u8 [ 44 ]
+    put4 : vec i64 [] [ 0x46464952, 36 + data, 0x45564157, 0x20746d66,
+                        16, 0, 0, 0, 0, 0x61746164, data ]
+    for [ i: i64 0, i < 11, i += 1 ]
+        v : i64 [ put4[ i ] ]
+        for [ k: i64 0, k < 4, k += 1 ]
+            hd[ i * 4 + k ] = u8[ (v >> (k * 8)) & 255 ]
+    # format 1 (pcm), channels, rate, bytes a second, frame, bits
+    hd[ 20 ] = 1
+    hd[ 21 ] = 0
+    hd[ 22 ] = u8[ ch ]
+    hd[ 23 ] = 0
+    br : i64 [ i64[ rate ] * ch * 2 ]
+    for [ k: i64 0, k < 4, k += 1 ]
+        hd[ 24 + k ] = u8[ (i64[ rate ] >> (k * 8)) & 255 ]
+        hd[ 28 + k ] = u8[ (br >> (k * 8)) & 255 ]
+    hd[ 32 ] = u8[ ch * 2 ]
+    hd[ 33 ] = 0
+    hd[ 34 ] = 16
+    hd[ 35 ] = 0
+    fwrite[ @hd[ 0 ], 1, 44, fp ]
+    fwrite[ @out[ 0 ], 2, n * ch, fp ]
+    fclose[ fp ]
+    return true

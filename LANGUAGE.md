@@ -74,6 +74,19 @@ s: string [ '{minutes}' ]    # error: string is redundant
 n: f32 [ count ]             # right: count is i64, n is f32
 ```
 
+A name is letters of any script, `_` and digits (not first):
+Chinese, Japanese, Cyrillic, accented Latin. Punctuation, symbols
+and emoji are not letters (`、` `。` `×` end a name). Names stay
+UTF-8 bytes from the source to the symbols in the binary:
+
+```
+func 加 [ 甲: i32, 乙: i32 ] -> i32
+    return 甲 + 乙
+
+class 帐户
+    public 余额 : i32
+```
+
 ---
 
 ## Types
@@ -335,6 +348,14 @@ as written.
 ```
 items: array i32 [ 1, 2, 3 ]
 data:  map image<string> [ hsize: 32 ]
+```
+
+A map type's own settings follow its key after a comma, set on each
+map made of the type before its init: a map that will hold many
+keys is made with buckets for them.
+
+```
+heads : map string [ string, hsize: 1048576 ] []
 ```
 
 ### Type Parameters

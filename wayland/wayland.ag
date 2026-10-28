@@ -7,8 +7,15 @@ import <stdlib.h>
 ifdef [ windows ]
     import <string.h>
 ifndef [ windows ]
+    import <pthread.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+ifndef [ windows ]
     import <string.h>
+        -I=/usr/include/pixman-1
         -I/usr/include/pixman-1
+        -I=/usr/include/libdrm
         -I/usr/include/libdrm
         -I{root_path}/wayland
         -lwlroots
@@ -65,6 +72,10 @@ func wlc_window_menu_app  [ id: u64 ] -> cstr
 func wlc_window_menu_win  [ id: u64 ] -> cstr
 func wlc_frame_id       [ id: u64 ] -> u64
 func wlc_frame_gen      [ id: u64 ] -> u64
+# a reader's hold on the current frame, its render waited, let go
+func wlc_frame_take     [ id: u64 ] -> u64
+func wlc_frame_ready    [ b: u64, ms: i32 ] -> i32
+func wlc_frame_drop     [ b: u64 ]
 func wlc_frame_w        [ id: u64 ] -> i32
 func wlc_frame_h        [ id: u64 ] -> i32
 func wlc_frame_format   [ id: u64 ] -> u32
@@ -127,8 +138,8 @@ func window_texture [ cv: Canvas, id: u64 ] -> Texture
             wlc_frame_stride[ id ], wlc_frame_offset[ id ], cv.w ]
         wt.frames[ key ] = t
         return t
-
-    return null
+    el
+        return null
 
 # a Wayland display as one silver app: it shows one window (the
 # newest, or the one chosen); orbiter mounts WaylandView in its panes
@@ -216,6 +227,17 @@ element WaylandView
     # stays off until the window asks again
     mutable screen       : ScreenOut
     mutable screen_off   : bool
+    # on the screen, a thread of its own takes each new frame there:
+    # the shell's frames never carry them
+    mutable screen_cv    : Canvas
+    mutable screen_gen   : u64
+    mutable shown_w      : i32
+    mutable shown_h      : i32
+    mutable present_on   : bool
+    # the frame the last copy read: held until the next copy, which
+    # waits for it, has started
+    mutable held_frame   : u64
+    intern  present_tid  : pthread_t
 
     func ensure [ w: i32, h: i32 ]
         if [ up ] return
@@ -249,9 +271,14 @@ element WaylandView
             sent_w  = 0
             sent_h  = 0
         if [ win == 0 ] return
-        full : bool [ screen_follow[ cv ] ]
-        if [ full ] settle[ screen.width, screen.height ]
-        el settle[ w9, h9 ]
+        # on the screen: its own thread shows it, the shell pauses
+        # until the window closes
+        if [ screen_follow[ cv ] ]
+            settle[ screen.width, screen.height ]
+            present_start[ cv ]
+            ux.pause_for = a
+            return
+        settle[ w9, h9 ]
         retire[]
         if [ !frames ] frames = map Texture [string] []
         t : Texture frame_of[ cv, win, frames ]
@@ -259,11 +286,6 @@ element WaylandView
         el t = last_t
         if [ !t ] return
         shown = wlc_frame_id[ win ]
-        # on the screen alone: the pane draws no second copy
-        if [ full ]
-            screen.show[ t ]
-            screen_input[ t ]
-            return
         ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
         # the cut header and anything past the pane stay off screen
         cv.save[]
@@ -274,18 +296,13 @@ element WaylandView
         cv.restore[]
         draw_sheet[ cv, vp ]
 
-    # the screen window opens as the window asks for fullscreen and
-    # goes as it leaves; true while it shows the window
+    # the screen window opens as the window asks for fullscreen; it
+    # stays until the window closes (on_frame); true while it shows
     func screen_follow [ cv: Canvas ] -> bool
+        if [ screen ] return true
         full : bool [ wlc_window_full[ win ] != 0 ]
         if [ !full ] screen_off = false
-        if [ screen && (!full || screen.closed) ]
-            if [ screen.closed ] screen_off = true
-            screen.close[]
-            screen = null
-            sent_w = 0
-            log 'wayland: window {win} left the screen'
-        if [ full && !screen && !screen_off ]
+        if [ full && !screen_off ]
             screen = ScreenOut [ vk: cv.vk, hidden: ux.hidden,
                 title: string[ wlc_window_title[ win ] ] ]
             if [ !screen.win ]
@@ -298,13 +315,13 @@ element WaylandView
 
     # the screen window's keys and mouse to the window: a held
     # pointer locks the mouse there and takes raw motion
-    func screen_input [ t: Texture ]
+    func screen_input [ tw: i32, th: i32 ]
         held : bool [ wlc_pointer_held[] == win ]
         screen.lock[ held ]
-        k : f64 [ min[ f64[ screen.width ] / f64[ t.width ],
-                       f64[ screen.height ] / f64[ t.height ] ] ]
-        ox : f64 [ (f64[ screen.width ] - f64[ t.width ] * k) * 0.5 ]
-        oy : f64 [ (f64[ screen.height ] - f64[ t.height ] * k) * 0.5 ]
+        k : f64 [ min[ f64[ screen.width ] / f64[ tw ],
+                       f64[ screen.height ] / f64[ th ] ] ]
+        ox : f64 [ (f64[ screen.width ] - f64[ tw ] * k) * 0.5 ]
+        oy : f64 [ (f64[ screen.height ] - f64[ th ] * k) * 0.5 ]
         # read in place, then cleared: a list swapped out was freed
         for [ e: ScreenEvent ] in screen.events
             x : f32 [ (e.x - ox) / k ]
@@ -346,7 +363,8 @@ element WaylandView
             got[ key ] = t
             log 'wayland: imported frame {key} {fw}x{fh}'
             return t
-        return null
+        el
+            return null
 
     # the dialog over the window, centred, coming down from the top
     func draw_sheet [ cv: Canvas, vp: rect ]
@@ -434,6 +452,72 @@ element WaylandView
             retired.push[ t ]
         frames   = map Texture [string] []
         retire_n = 8
+
+    # the thread's frames: imported here (this thread owns frames
+    # while it runs) and shown once per commit
+    func present_start [ cv: Canvas ]
+        if [ present_on ] return
+        screen_cv  = cv
+        screen_gen = 0
+        if [ !frames ] frames = map Texture [string] []
+        present_on = true
+        ifndef [ windows ]
+            pthread_create[ @present_tid, null, @present_entry, a ]
+
+    func present_stop []
+        if [ !present_on ] return
+        present_on = false
+        ifndef [ windows ]
+            pthread_join[ present_tid, null ]
+
+    func present_entry [] -> none
+        while [ present_on ]
+            retire[]
+            g : u64 [ wlc_frame_gen[ win ] ]
+            if [ g != screen_gen ] present_one[ g ]
+            Au.auto_free[]
+            usleep[ 1000 ]
+        wlc_frame_drop[ held_frame ]
+        held_frame = 0
+
+    # one frame: held, its render done, imported, copied; a frame
+    # changed while taken is left for the next pass
+    func present_one [ g: u64 ]
+        b : u64 [ wlc_frame_take[ win ] ]
+        if [ b == 0 ] return
+        if [ wlc_frame_id[ win ] != b || wlc_frame_ready[ b, 100 ] == 0 ]
+            wlc_frame_drop[ b ]
+            return
+        t : Texture frame_of[ screen_cv, win, frames ]
+        if [ wlc_frame_id[ win ] != b || !t || !screen.show[ t ] ]
+            wlc_frame_drop[ b ]
+            return
+        # the copy before this one is done: its frame may be reused
+        wlc_frame_drop[ held_frame ]
+        held_frame = b
+        screen_gen = g
+        shown_w = t.width
+        shown_h = t.height
+
+    # the shell paused for this window: its input from the screen
+    # window, until the window closes or the screen window does
+    public func on_frame [ w: Window ]
+        if [ w.pause_for != a ] return
+        open : bool [ win != 0 && wlc_window_open[ win ] != 0 ]
+        if [ open && screen && !screen.shut[] ]
+            screen.keep_front[]
+            settle[ screen.width, screen.height ]
+            if [ shown_w > 0 ] screen_input[ shown_w, shown_h ]
+            return
+        present_stop[]
+        if [ screen ]
+            if [ screen.closed ] screen_off = true
+            screen.close[]
+            screen = null
+            log 'wayland: window {win} left the screen'
+        sent_w = 0
+        w.pause_for = null
+        w.restyle = true
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return

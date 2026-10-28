@@ -2796,8 +2796,6 @@ element InstallWizard
                 edits_in: bs && bs.building && bs.job == 'usb',
                 swap_on: (bs && bs.building && bs.job != 'usb')
                          || beam_test ],
-            'beam_test': WizGo [ label: 'A',
-                area: Region { l1 t1 w2 h1.05 } ],
             'panel': WizPanel [ elements: page_els[ panel ],
                 area: Region { l50%-8 t50%-10.5 w32 h21 } ] ]
 

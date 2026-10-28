@@ -7,8 +7,11 @@ ifdef [ windows ]
     import <dbus-win.h>
 ifndef [ windows ]
     import <dbus/dbus.h>
+        -I=/usr/include/dbus-1.0
         -I/usr/include/dbus-1.0
+        -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
         -ldbus-1
 import <stdio.h>
 import <stdlib.h>
@@ -707,6 +710,17 @@ element MenuGroup
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
+        # no icons (a properties chip): no strip, lines edge to edge
+        if [ strip <= 0.0 ]
+            if [ rows < 2 ] return
+            cv.fill_color[ rgba [ '#ffffff14' ] ]
+            cv.stroke_width[ 0.0 ]
+            rl : f32 [ bounds.h / f32[ rows ] ]
+            for [ i: i32 1, i < rows, i += 1 ]
+                cv.rect_to[ 1.0, round[ rl * f32[ i ] ], bounds.w - 2.0,
+                    1.0 ]
+                cv.paint[]
+            return
         g : Gradient linear_gradient[ 0.0, 0.0, strip, 0.0 ]
         g.add_stop[ 0.0, 0x14ffffff ]
         g.add_stop[ 1.0, 0x00ffffff ]

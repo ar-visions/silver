@@ -1,0 +1,49 @@
+# Windows DLLs (vkd3d-proton, DXVK) on Wine's own runtime, no MinGW:
+# our clang for x86_64-windows, Wine's headers and C runtime, our
+# libc++ and C++ start-up (cxx/crt_cxx.c). C++ has exceptions and
+# RTTI (Wine's vcruntime140 runs them); a project without sets
+# cpp_eh and cpp_rtti. `install` comes from the cross file written
+# beside it at build time.
+
+[constants]
+wine_inc = ['-isystem', install / 'include/wine/msvcrt',
+            '-isystem', install / 'include/wine/windows',
+            '-D_UCRT', '-D__MSVCRT__']
+cxx_inc = ['-D_LIBCPP_NO_VCRUNTIME', '-fexceptions', '-fcxx-exceptions',
+           '-nostdinc++',
+           '-isystem', install / 'lib/wine/cxx/include/c++/v1']
+# lld-link's own syntax: meson hands link flags to it as they are
+wine_libs = ['-Wl,/nodefaultlib',
+             '-Wl,/libpath:' + install / 'lib/wine/cxx/winelibs',
+             '-Wl,/entry:__cxx_dll_entry',
+             '-Wl,' + install / 'lib/wine/cxx/lib/libcxxrt.a',
+             '-Wl,winecrt0.lib', '-Wl,compiler-rt.lib', '-Wl,ucrtbase.lib',
+             '-Wl,kernel32.lib', '-Wl,ntdll.lib', '-Wl,user32.lib',
+             '-Wl,advapi32.lib', '-Wl,gdi32.lib']
+# after libc++: its own definitions win over the runtime DLLs'
+wine_cxx = ['-Wl,' + install / 'lib/wine/cxx/lib/libc++.lib',
+            '-Wl,vcruntime140.lib', '-Wl,msvcp140.lib']
+
+[binaries]
+c = ['clang', '-target', 'x86_64-windows', '--no-default-config', '-fuse-ld=lld']
+cpp = ['clang++', '-target', 'x86_64-windows', '--no-default-config', '-fuse-ld=lld']
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+windres = ['llvm-windres', '-I', install / 'include/wine/windows',
+           '-I', install / 'include/wine/msvcrt']
+widl = 'widl'
+
+[built-in options]
+c_args = wine_inc
+cpp_args = cxx_inc + wine_inc
+c_link_args = wine_libs
+cpp_link_args = wine_libs + wine_cxx
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'windows'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'

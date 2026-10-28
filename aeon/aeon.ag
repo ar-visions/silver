@@ -9,6 +9,8 @@ import gltf
 import trinity
 import properties
 import design
+# the menu's chips (MenuGroup) hold the properties
+import tray
 
 # blender 4.5.14: its python 3.11 (with numpy) runs blend.py
 import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz

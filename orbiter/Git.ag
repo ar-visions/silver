@@ -171,7 +171,7 @@ Layer GitLayer
         gl.content_y    = bounds.y
         gl.content_h    = f32[n] * lh
         gl.view_h       = bounds.h
-        gl.scroll_speed = lh
+        gl.scroll_speed = lh * 2.0
         x0  : f32 [ bounds.x ]
         y0  : f32 [ bounds.y ]
         wtx : f32 [ cv.transform_tx[] ]
@@ -1607,7 +1607,7 @@ element CommitView
     public func draw [ w: Window ]
         u : f32 ux_unit[ ux ]
         if [ w.draw_stage != CanvasType.screen ] return
-        if [ scroll_speed <= 0.0 ] scroll_speed = 36.0 * u
+        if [ scroll_speed <= 0.0 ] scroll_speed = 72.0 * u
         # the column repaints with the view (hover, its scroll, picks)
         sd9 : element (elements) ? elements['side'] : null
         if [ sd9 && !pristine ] sd9.pristine = false
@@ -1684,8 +1684,6 @@ element CommitView
         # the file's views are the system bar's
         rail_w = 0.0
         return Elements [
-            'rail' : ToolRail [ top: 3.0 * u, no_scroll: true,
-                                area: Region [ 'l0 t0 w64px b0' ] ],
             # the column: presses and the wheel are the view's
             'side' : NavSide [ no_scroll: true, ghost: true,
                 scroll_fade: 24.0,
@@ -1999,7 +1997,7 @@ element CommitView
             sd : element (elements) ? elements[ 'side' ] : null
             if [ sd && rx < 6.0 * u + side_w ]
                 # the standard eased wheel scroll, as every list
-                sd.scroll_speed = 26.0 * u
+                sd.scroll_speed = 52.0 * u
                 sd.on_wheel[ ev ]
                 return
         super.on_wheel[ ev ]
@@ -2285,7 +2283,7 @@ element CommitView
                 h.is_dir && h.file && h.is_module && h.text.count > 0
                 && h.text != '..' ]
                 mp9 : path '{h.file}/{h.text}.ag'
-                bin9 : path '{path.path_startup[]}/install/build/{h.text}'
+                bin9 : path '{install_root[]}/build/{h.text}'
                 ed9 : Editor o.pane_at[ pane ]
                 if [ o.shift_down ]
                     if [ !o.open_new_tab[ mp9 ] ] o.open_in_pane[ mp9, pane ]

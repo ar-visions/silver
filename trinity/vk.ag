@@ -97,6 +97,9 @@ class Render
     public  gpu_us                         : f32
     intern  query_pool                     : VkQueryPool
     intern  ts_period                      : f32
+    # the ring slots whose timestamps were written, a bit each (read
+    # once the slot's fence has cleared)
+    intern  ts_wrote                       : i32
     public  id                             : i32
     mutable wscale                         : f32
     mutable width                          : i32
@@ -207,6 +210,15 @@ class Render
     public  mirror_wide                    : f32 [ 1.0 ]
     # and how bright the mirror shows it
     public  mirror_gain                    : f32 [ 1.0 ]
+    # what this render has drawn since it was cleared, in its own
+    # coordinates (ink_known: every draw since said where); a draw
+    # that does not say leaves it unknown: composited whole
+    public  ink_known                      : bool
+    public  ink_x0                         : f32
+    public  ink_y0                         : f32
+    public  ink_x1                         : f32
+    public  ink_y1                         : f32
+    intern  ink_noted                      : bool
 
     public func hash[] -> u64
         return u64[handle[a]]
@@ -340,33 +352,62 @@ class Render
 
     # opt-in GPU timestamps: two queries per ring slot, read back once
     # that slot's fence has cleared (the previous use of the slot)
+    # timed: asked for, or while stats asks (vk.time_until)
+    func timed [] -> bool
+        return timing || (vk && vk.time_until > epoch_millis[])
+
+    # the query pool, made the first time a pass is timed
+    func ts_first []
+        if [ !timed[] || query_pool ] return
+        vkCreateQueryPool[ vk.device, VkQueryPoolCreateInfo [
+            sType:      VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            queryType:  VK_QUERY_TYPE_TIMESTAMP,
+            queryCount: 16 ], null, @query_pool ]
+        props : VkPhysicalDeviceProperties
+        vkGetPhysicalDeviceProperties[ vk.physical_device, @props ]
+        ts_period = props.limits.timestampPeriod
+
     func ts_read [ s: i32 ]
-        if [ !timing ] return
-        if [ !query_pool ]
-            vkCreateQueryPool[ vk.device, VkQueryPoolCreateInfo [
-                sType:      VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-                queryType:  VK_QUERY_TYPE_TIMESTAMP,
-                queryCount: 16 ], null, @query_pool ]
-            props : VkPhysicalDeviceProperties
-            vkGetPhysicalDeviceProperties[ vk.physical_device, @props ]
-            ts_period = props.limits.timestampPeriod
-            return
-        if [ ring_primed[s] == 0 ] return
+        bit : i32 [ 1 << s ]
+        if [ !timed[] || !query_pool || (ts_wrote & bit) == 0 ] return
+        ts_wrote = ts_wrote & ~bit
         ts : vec u64 [ 2 ]
         qr : vkGetQueryPoolResults[ vk.device, query_pool, u32[ s * 2 ],
                                     2, 16, @ts[0], 8,
                                     VK_QUERY_RESULT_64_BIT ]
         if [ qr == VK_SUCCESS ]
             gpu_us = f32[ ts[1] - ts[0] ] * ts_period / 1000.0
+            if [ vk.time_until > 0 ] pass_time[]
+
+    # this pass's time summed under its name, for stats
+    func pass_time []
+        if [ !vk.pass_names ]
+            vk.pass_names = vec string []
+            vk.pass_us = vec f32 []
+        # its target's tag, else (a plain canvas) its element's id
+        tg : string [ (color && color.tag) ? color.tag : '' ]
+        if [ tg == 'rcolor' || tg.count == 0 ]
+            tg = (owner && owner.id) ? owner.id : 'render{id}'
+        cw : i32 [ (color) ? color.width : 0 ]
+        ch : i32 [ (color) ? color.height : 0 ]
+        key : '{tg}@{cw}x{ch}'
+        at : i64 [ vk.pass_names.index_of[ key ] ]
+        if [ at < 0 ]
+            vk.pass_names.push[ key ]
+            vk.pass_us.push[ gpu_us ]
+        el
+            sum : f32 [ vk.pass_us[ at ] + gpu_us ]
+            vk.pass_us[ at ] = sum
 
     func ts_begin [ cmd: VkCommandBuffer, s: i32 ]
-        if [ !timing || !query_pool ] return
+        if [ !timed[] || !query_pool ] return
+        ts_wrote = ts_wrote | (1 << s)
         vkCmdResetQueryPool[ cmd, query_pool, u32[ s * 2 ], 2 ]
         vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                              query_pool, u32[ s * 2 ] ]
 
     func ts_end [ cmd: VkCommandBuffer, s: i32 ]
-        if [ !timing || !query_pool ] return
+        if [ !timed[] || !query_pool ] return
         vkCmdWriteTimestamp[ cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                              query_pool, u32[ s * 2 + 1 ] ]
 
@@ -382,9 +423,11 @@ class Render
             vk_fence = vk_fences[s]
             vk.fence_release[ vk_fence ]
             handle_slot_set[ @vk_fences[s], null ]
+            # its timestamps are final once its fence has cleared
+            ts_read[ s ]
             ring_primed[s] = 0
             ring_has[s]    = 0
-        ts_read[ s ]
+        ts_first[]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
             fa : VkFence [ vk.fence_acquire[] ]
@@ -516,6 +559,9 @@ class Render
 
     # record mods into this render's batch, in call order
     public func draw_with [ mods: vec Model ]
+        # a draw that did not say where it lands: the ink is unknown
+        if [ !ink_noted ] ink_known = false
+        ink_noted = false
         # width/height may have been assigned since the last frame
         # (avatar settle, pane resize) — rebuild attachments BEFORE the
         # render pass uses the new extent, or it begins against the
@@ -614,6 +660,8 @@ class Render
             sync_fence[]
 
     func draw_immediate [ mods: vec Model ]
+        if [ !ink_noted ] ink_known = false
+        ink_noted = false
         s : i32 [ ring_i ]
         if [ ring_primed[s] != 0 ]
             vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE,
@@ -621,9 +669,11 @@ class Render
             vk_fence = vk_fences[s]
             vk.fence_release[ vk_fence ]
             handle_slot_set[ @vk_fences[s], null ]
+            # its timestamps are final once its fence has cleared
+            ts_read[ s ]
             ring_primed[s] = 0
             ring_has[s]    = 0
-        ts_read[ s ]
+        ts_first[]
         vk_command_buffer = vk_command_buffers[s]
         if [ ring_has[s] == 0 ]
             fa : VkFence [ vk.fence_acquire[] ]
@@ -789,6 +839,7 @@ class Render
             vk_fence = vk_fences[n]
             vk.fence_release[ vk_fence ]
             handle_slot_set[ @vk_fences[n], null ]
+            ts_read[ n ]
             ring_primed[n] = 0
             ring_has[n]    = 0
         draw_slot = n
@@ -833,6 +884,7 @@ class Render
                 vk_fence = vk_fences[ri]
                 vk.fence_release[ vk_fence ]
                 handle_slot_set[ @vk_fences[ri], null ]
+                ts_read[ ri ]
                 ring_primed[ri] = 0
                 ring_has[ri]    = 0
 
@@ -1498,6 +1550,17 @@ class vk_context
     mutable font_cache: map Au [ string ]
     # px of the default font, the size of unit 1.0; 0 reads as 22
     mutable font_unit: i32
+    # each pass's GPU time while stats asks for it: on until this
+    # (epoch ms), the passes by name and their summed us
+    mutable time_until : i64
+    mutable pass_names : vec string
+    mutable pass_us    : vec f32
+    # the screen canvas's covered pixels per draw mode, the same time
+    mutable mode_px    : vec f32
+    # stats asks: the element drawing now, and its big draws
+    mutable paint_who  : string
+    mutable big_names  : vec string
+    mutable big_px     : vec f32
 
     func init [ ]
         hold[]
@@ -5864,13 +5927,9 @@ Texture Display
     # letterbox (fit, its own uniform)
     func swap_transform []
         if [ !swap_shader ] return
-        m : mat4f.identity[]
-        if [ swap_rot != 0 ]
-            half_angle : f32 [ 0.0 - radians[ f32[ swap_rot ] ] * 0.5 ]
-            m = m.rotate[ quatf [ x: 0.0, y: 0.0, z: sin[ half_angle ],
-                                  w: cos[ half_angle ] ] ]
-        swap_shader.model = m
-        swap_shader.fit   = vec4f [ fit_sx, fit_sy, 0.0, 0.0 ]
+        angle : f32 [ radians[ f32[ swap_rot ] ] ]
+        swap_shader.turn = vec4f [ cos[ angle ], sin[ angle ], 0.0, 0.0 ]
+        swap_shader.fit  = vec4f [ fit_sx, fit_sy, 0.0, 0.0 ]
 
     # a locked aspect the surface does not have: the logical frame keeps
     # the aspect (the largest that fits) and the swap quad centres it. a
@@ -5942,6 +6001,17 @@ Texture Display
                     || swap_rot == 270) ? extent.width : extent.height) / scale ]
             if [ rec_scale > 1 ] scale *= rec_scale
             fit_aspect[]
+        el [ kms ]
+            # the mode's own pixels, whatever size is asked (a caller
+            # may pass points); points at the screen's density
+            mw : i32
+            mh : i32
+            platform_window_get_framebuffer[ glfw, @mw, @mh ]
+            scale  = platform_window_scale[ glfw ]
+            width  = i32[ mw / scale ]
+            height = i32[ mh / scale ]
+            extent.width  = u32[ mw ]
+            extent.height = u32[ mh ]
         el
             width  = w_new
             height = h_new
@@ -6161,7 +6231,9 @@ Texture Display
         # a covered backdrop holds its frame, except the one repaint a
         # resize or a mode change asks for (rate gates step aside for
         # that one)
-        bp  : bool [ win && win.backdrop_bypass ]
+        # on a phone the backdrop and its blur never animate: drawn
+        # once (and again on a resize or a mode change), then held
+        bp  : bool [ win && (win.backdrop_bypass || mobile_on[]) ]
         repaint_once : bool [ bp && backdrop_once ]
         hold : bool [ bp && !backdrop_once ]
         drew : bool [ false ]
@@ -6546,15 +6618,17 @@ Texture Display
             # DRM_FORMAT_XRGB8888 in memory
             surface_format.format     = VK_FORMAT_B8G8R8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+            # the screen's own pixels; its density is the pixel
+            # scale (2 a point on a phone), as a retina window's
             kw : i32
             kh : i32
             platform_window_get_size[ glfw, @kw, @kh ]
-            width  = kw
-            height = kh
-            scale  = 1.0
+            scale  = platform_window_scale[ glfw ]
+            width  = i32[ kw / scale ]
+            height = i32[ kh / scale ]
             extent.width  = u32[ kw ]
             extent.height = u32[ kh ]
-            log 'display: kms {width}x{height}'
+            log 'display: kms {kw}x{kh}, scale {scale}'
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR

@@ -442,6 +442,11 @@ ModelViewProject NubisSky
     mutable jitter    : vec4f
     # x: render an equirect environment instead of the camera view
     mutable env       : vec4f
+    # a ship under way: xy its middle (world metres), zw its heading;
+    # then x speed m/s, y waterline length, z waterline beam, w the
+    # bow wave's height (m). speed 0: no ship
+    mutable vessel_a  : vec4f
+    mutable vessel_b  : vec4f
     mutable view_mode : i32
     mutable frame     : i32
 
@@ -837,6 +842,102 @@ ModelViewProject NubisSky
         return vec4(nrm, J);
     }
 
+    # the ship's Kelvin waves: both systems (transverse and divergent)
+    # by stationary phase, inside the 19.5 degree wedge from the bow.
+    # xb: metres behind the bow, y: metres to the side
+    func kelvin_h [ xb: @f32, y: @f32, kmax: @f32 ] -> GLSL f32 {
+        float U  = ubo.vessel_b.x;
+        float L  = ubo.vessel_b.y;
+        if (xb <= 1.0) return 0.0;
+        float k0 = 9.81 / (U * U);
+        float ay = abs(y);
+        float tp = ay / xb;
+        float d2 = 1.0 - 8.0 * tp * tp;
+        // past the cusp line the waves die off
+        float past = exp(min(d2, 0.0) * 6.0);
+        float dc = sqrt(max(d2, 0.0));
+        float t1 = 2.0 * tp / (1.0 + dc);
+        float t2 = (1.0 + dc) / max(4.0 * tp, 1e-4);
+        float s1 = 1.0 + t1 * t1;
+        float s2 = 1.0 + t2 * t2;
+        float p1 = k0 * sqrt(s1) * (xb + ay * t1);
+        float p2 = k0 * sqrt(s2) * (xb + ay * t2);
+        // they spread as they go (one over the root of the distance)
+        // and pile up along the cusp line
+        float r  = sqrt(xb * xb + y * y);
+        float A  = ubo.vessel_b.w * sqrt(L / (r + 0.3 * L)) * exp(-r / (4.0 * L)) * past;
+        float cusp = 1.0 + 0.7 * exp(-dc * 3.0);
+        float a1 = A * 0.55 * cusp * smoothstep(kmax * 2.0, kmax * 0.5, k0 * s1);
+        float a2 = A * cusp * smoothstep(kmax * 2.0, kmax * 0.5, k0 * s2) * smoothstep(0.0, 0.08, tp);
+        return a1 * cos(p1) + a2 * cos(p2);
+    }
+
+    # a ship's wake where the ray meets the sea: xy the slope its
+    # waves add (world x, z), z its white water, w how much the
+    # churned trail flattens the sea's own waves
+    func wake_at [ q: @vec2f, kmax: @f32, fp: @f32 ] -> GLSL vec4f {
+        vec4  res = vec4(0.0);
+        if (ubo.vessel_b.x < 0.5) return res;
+        float L  = ubo.vessel_b.y;
+        float B  = ubo.vessel_b.z;
+        vec2  hd = ubo.vessel_a.zw;
+        vec2  sd = vec2(hd.y, -hd.x);
+        vec2  wq = q + ubo.world.xy;
+        vec2  rl = wq - ubo.vessel_a.xy;
+        float along = dot(rl, hd);
+        float side  = dot(rl, sd);
+        float xb = 0.5 * L - along;
+        float aside = abs(side);
+        if (xb < -0.2 * L || xb > 60.0 * L || aside > 0.45 * max(xb, 0.0) + L) return res;
+        // slopes by differences, one step a pixel's width
+        float e  = max(fp, 0.25);
+        float h0 = kelvin_h(xb, side, kmax);
+        float hX = kelvin_h(0.5 * L - dot(rl + vec2(e, 0.0), hd), dot(rl + vec2(e, 0.0), sd), kmax);
+        float hZ = kelvin_h(0.5 * L - dot(rl + vec2(0.0, e), hd), dot(rl + vec2(0.0, e), sd), kmax);
+        // white water stays where the water is: its noise is fixed to
+        // the sea, streaked along the track as the screws leave it
+        float t  = ubo.wind.w;
+        vec2  sq = vec2(dot(wq, sd), dot(wq, hd) * 0.15);
+        // the finest lace only where a pixel can still hold it
+        float fine = smoothstep(6.0, 1.0, fp);
+        float n  = texture(detail, vec3(sq * 0.012, t * 0.004)).r * 0.5
+                 + texture(detail, vec3(sq * 0.043 + 0.31, t * 0.009)).g * 0.3
+                 + mix(0.5, texture(detail, vec3(sq * 0.17 + 0.7, t * 0.02)).b, fine) * 0.2;
+        // the sea's own waves break the wake's crests up
+        float kn = 0.4 + 1.2 * texture(detail, vec3(wq * 0.004, t * 0.003)).b;
+        res.x = (hX - h0) / e * kn;
+        res.y = (hZ - h0) / e * kn;
+        // down the hull: the bow throws its wave off white, widening aft
+        float hb = 0.5 * B * sqrt(clamp(xb / (0.35 * L), 0.0, 1.0));
+        float bw = 6.0 + 0.08 * max(xb, 0.0) + 12.0 * exp(-max(xb, 0.0) / 80.0);
+        float hull = 0.0;
+        if (xb >= 0.0 && xb <= L) hull = smoothstep(hb + bw, hb + bw * 0.3, aside) * (0.65 + 0.35 * exp(-xb / 60.0));
+        // behind the stern the churned trail spreads and ages
+        float ds = xb - L;
+        float trail = 0.0;
+        float calm  = 0.0;
+        if (ds > 0.0) {{
+            float w0 = 0.5 * B + 6.0 + 0.08 * L;
+            // its edges wander with the water's own slow swirls
+            float sw = texture(detail, vec3(wq * 0.0021, t * 0.002)).r;
+            float wh = (w0 + 0.25 * B * sqrt(ds / B)) * (0.7 + 0.6 * sw);
+            // the screws' wash is whitest down the middle
+            float u    = aside / wh;
+            float core = exp(-u * u * 2.5);
+            // solid white only just astern, then it thins to patches
+            float age  = 0.7 * exp(-ds / 500.0) + 0.55 * exp(-ds / 4000.0);
+            trail = core * min(age, 1.0);
+            calm  = smoothstep(1.3, 0.6, u) * exp(-ds / 9000.0) * 0.75;
+        }}
+        float fo = max(hull, trail);
+        // fresh it is nearly all white; older only its peaks
+        float patchy = smoothstep(0.9 - fo, 1.1 - fo, n) * mix(0.6, 1.0, fo);
+        // too far to resolve the patches: their average
+        res.z = mix(patchy, fo * 0.8, smoothstep(1.0, 12.0, fp));
+        res.w = max(calm, hull * 0.8);
+        return res;
+    }
+
     func fragment [] -> GLSL none {
         vec2  uvj = v_uv + ubo.jitter.xy;
         vec2  ndc = vec2(uvj.x * 2.0 - 1.0, 1.0 - uvj.y * 2.0);
@@ -891,7 +992,8 @@ ModelViewProject NubisSky
             // close in the waves carry the reflection; far out they are
             // under a pixel, so the flat surface normal takes over and
             // what is left of them widens the specular lobe instead
-            vec3  n    = normalize(mix(up, ndj.xyz, fade));
+            vec4  wk   = wake_at(gp.xz, kmax, fp);
+            vec3  n    = normalize(mix(up, ndj.xyz, fade * (1.0 - wk.w)) + vec3(-wk.x, 0.0, -wk.y));
             vec3  V    = -d;
             // whitecaps break where the surface folds over itself, and
             // only once the wind is strong enough to tear the crests
@@ -905,6 +1007,7 @@ ModelViewProject NubisSky
             // foam belongs to waves we can still resolve: kept at any
             // distance it reads as white speckle on the flat sea
             foam = clamp(foam * (0.15 + 1.5 * fn) - 0.12, 0.0, 1.0) * fade;
+            foam = max(foam * (1.0 - wk.w), wk.z);
             // the mirror normal settles to the water's up direction
             // sooner than the shading one: a reflected ray swings twice
             // as fast as the surface tilts. EVERYTHING mirror-like reads
@@ -914,9 +1017,11 @@ ModelViewProject NubisSky
             // with a filtered environment map behind it the reflection can
             // follow the waves again: what used to alias is now handled by
             // the mip the roughness picks
-            vec3  nr = normalize(mix(up, ndj.xyz, fade));
+            vec3  nr = normalize(mix(up, ndj.xyz, fade * (1.0 - wk.w)) + vec3(-wk.x, 0.0, -wk.y));
             // the waves we dropped still scatter: they widen the lobe
             float e_rough = mix(0.06, 0.22, clamp(ubo.sea_b.x / 20.0, 0.0, 1.0)) + clamp(fp * 0.01, 0.0, 0.22);
+            // the churned trail is a slick: its small waves are gone
+            e_rough *= 1.0 - 0.6 * wk.w;
             float ndl = max(dot(n, sun), 0.0);
             float ndv = max(dot(nr, V), 0.0);
             float F = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
@@ -981,6 +1086,8 @@ ModelViewProject NubisSky
             vec3  fogc = atmosphere(o, hzd, 1e12).rgb;
             // foam sits on top: lit by sun and sky, not a mirror
             vec3  fc   = (sc * sh * ndl * 0.30 + skyl * 0.85) * 0.55;
+            // a ship's white water is thick and bright, not a thin cap
+            fc *= 1.0 + 1.4 * clamp(wk.z * 2.0, 0.0, 1.0);
             gc = mix(gc, fc, foam);
             // the haze goes on AFTER the aerial perspective, or the far
             // sea ends up brighter than the sky it is dissolving into
@@ -1751,6 +1858,14 @@ element SkyView
     public cam_h     : f32 [ 2.0 ]
     public cam_x     : f32
     public cam_z     : f32
+    # a host's own camera: facing and up (zero: yaw and pitch), and
+    # the tangent of half the vertical field of view
+    public look_fwd  : vec3f
+    public look_up   : vec3f
+    public fov_tan   : f32 [ 0.577 ]
+    # a ship under way on the sea (NubisSky's vessel_a / vessel_b)
+    public vessel_a  : vec4f
+    public vessel_b  : vec4f
     public exposure  : f32 [ 1.0 ]
     public quality   : f32 [ 1.0 ]
     public view_mode : i32
@@ -1782,6 +1897,12 @@ element SkyView
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
 
+    # the sky as a reflection for anything in it: 512 x 256, its
+    # longitude across, gamma encoded, 6 mips; null till built
+    public func env_map [] -> Texture
+        if [ !world || !world.env_render ] return null
+        return world.env_render.color
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
@@ -1803,6 +1924,8 @@ element SkyView
             vrender.timing = true
             # owned: the element's own passes, never the backdrop
             vrender.owner = a
+            # drawn here once its camera is set: a frame late else
+            vrender.skip = true
             w.element_targets[ 'sky_{id}' ] = vrender
             # history ping-pong: each compose reads the other's last
             # frame
@@ -1859,11 +1982,31 @@ element SkyView
         ux2 : f32 [ 0.0 - rz * fy ]
         uy : f32 [ rz * fx - rx * fz ]
         uz : f32 [ rx * fy ]
-        th : f32 [ 0.577 ]
+        ry : f32 [ 0.0 ]
+        if [ look_fwd.x != 0.0 || look_fwd.y != 0.0
+             || look_fwd.z != 0.0 ]
+            # right = forward x up, up = right x forward
+            fl : f32 [ sqrt[ look_fwd.x * look_fwd.x + look_fwd.y
+                             * look_fwd.y + look_fwd.z * look_fwd.z ] ]
+            fx = look_fwd.x / fl
+            fy = look_fwd.y / fl
+            fz = look_fwd.z / fl
+            rx = fy * look_up.z - fz * look_up.y
+            ry = fz * look_up.x - fx * look_up.z
+            rz = fx * look_up.y - fy * look_up.x
+            rn : f32 [ sqrt[ rx * rx + ry * ry + rz * rz ] ]
+            if [ rn < 0.0001 ] rn = 0.0001
+            rx = rx / rn
+            ry = ry / rn
+            rz = rz / rn
+            ux2 = ry * fz - rz * fy
+            uy  = rz * fx - rx * fz
+            uz  = rx * fy - ry * fx
+        th : f32 [ fov_tan ]
         aspect : f32 [ bounds.w / bounds.h ]
         sky : world.sky
         sky.cam_pos   = vec4f [ 0.0, cam_h, 0.0, 0.0 ]
-        sky.cam_right = vec4f [ rx, 0.0, rz, th * aspect ]
+        sky.cam_right = vec4f [ rx, ry, rz, th * aspect ]
         sky.cam_up    = vec4f [ ux2, uy, uz, th ]
         sky.cam_fwd   = vec4f [ fx, fy, fz, exposure ]
         se : f32 [ cos[ cur.sun_el ] ]
@@ -1902,8 +2045,12 @@ element SkyView
         # it
         sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
                              seconds * 0.0008 ]
+        sky.vessel_a = vessel_a
+        sky.vessel_b = vessel_b
         world.env_pass[ vec4f [ jx, jy, (temporal) ? 0.0 : 1.0,
                                 0.0 ] ]
+        vrender.draw[]
+        vrender.sync_fence[]
         gpu_ms = vrender.gpu_us / 1000.0
         if [ !temporal ]
             hist_a.skip = true
@@ -1914,8 +2061,8 @@ element SkyView
                                   h: bounds.h ] ]
             return
         use_a : bool [ (frame & 1) == 0 ]
-        hist_a.skip = !use_a
-        hist_b.skip = use_a
+        hist_a.skip = true
+        hist_b.skip = true
         hist_a.update[]
         hist_b.update[]
         # attachments are rebuilt on resize: keep the samplers current
@@ -1954,6 +2101,8 @@ element SkyView
         prev_pos   = sky.cam_pos
         hist_valid = true
         out : Render [ (use_a) ? hist_a : hist_b ]
+        out.draw[]
+        out.sync_fence[]
         cv.draw_image[ out.color,
                        rect [ x: 0.0, y: 0.0, w: bounds.w,
                               h: bounds.h ] ]

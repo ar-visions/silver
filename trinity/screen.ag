@@ -54,6 +54,8 @@ class ScreenOut
     public resize : bool
     # pictures shown on it
     public frames : i64
+    # the pictures shown when it was last raised
+    public raised : i64
 
     func init []
         events = vec ScreenEvent []
@@ -120,11 +122,21 @@ class ScreenOut
         if [ stale != 0 ] resize = true
         frames += 1
         if [ frames == 1 ] log 'screen: first picture shown'
-        # in front of the shell's window, which takes the clicks else;
-        # again once the wm has surely taken it in
-        if [ !hidden && (frames == 1 || frames == 30) ]
-            platform_window_raise[ win ]
         return true
+
+    # closed by the user (the main thread's look)
+    func shut [] -> bool
+        if [ win && platform_window_should_close[ win ] ] closed = true
+        return closed
+
+    # in front of the shell's window, which takes the clicks else;
+    # again once the wm has surely taken it in (the main thread)
+    func keep_front []
+        if [ hidden || !win || frames == raised ] return
+        if [ (frames >= 1 && raised < 1)
+             || (frames >= 30 && raised < 30) ]
+            platform_window_raise[ win ]
+            raised = frames
 
     func lock [ on: bool ]
         if [ !win || hidden || on == locked ] return

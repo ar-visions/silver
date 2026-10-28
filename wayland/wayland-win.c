@@ -48,6 +48,9 @@ WLC_API const char* wlc_window_menu_app(uint64_t id) { (void)id; return ""; }
 WLC_API const char* wlc_window_menu_win(uint64_t id) { (void)id; return ""; }
 WLC_API uint64_t wlc_frame_id(uint64_t id) { (void)id; return 0; }
 WLC_API uint64_t wlc_frame_gen(uint64_t id) { (void)id; return 0; }
+WLC_API uint64_t wlc_frame_take(uint64_t id) { (void)id; return 0; }
+WLC_API void wlc_frame_drop(uint64_t b) { (void)b; }
+WLC_API int wlc_frame_ready(uint64_t b, int ms) { (void)b; (void)ms; return 0; }
 WLC_API int32_t wlc_frame_w(uint64_t id) { (void)id; return 0; }
 WLC_API int32_t wlc_frame_h(uint64_t id) { (void)id; return 0; }
 WLC_API uint32_t wlc_frame_format(uint64_t id) { (void)id; return 0; }

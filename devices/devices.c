@@ -695,11 +695,50 @@ static void cb_window_destroyed(ANativeActivity* a, ANativeWindow* w) { on_windo
 static void cb_window_resized  (ANativeActivity* a, ANativeWindow* w) { send_cmd(CMD_RESIZE); }
 static void cb_queue_created   (ANativeActivity* a, AInputQueue* q)   { on_queue(a, q); }
 static void cb_queue_destroyed (ANativeActivity* a, AInputQueue* q)   { on_queue(a, NULL); }
-static void cb_focus           (ANativeActivity* a, int has)          { send_cmd(has ? CMD_FOCUS : CMD_BLUR); }
-static void cb_destroy(ANativeActivity* a) {
-    send_cmd(CMD_DESTROY);
-    pthread_join(g_thread, NULL);
+// the whole screen: bars hidden until swiped in, under the
+// camera's cutout too. java on the ui thread (this callback's)
+static void immersive(ANativeActivity* a) {
+    JNIEnv* env = a->env;
+    jclass  act = (*env)->GetObjectClass(env, a->clazz);
+    jobject win = (*env)->CallObjectMethod(env, a->clazz,
+        (*env)->GetMethodID(env, act, "getWindow", "()Landroid/view/Window;"));
+    jclass  wc  = (*env)->GetObjectClass(env, win);
+    jobject lp  = (*env)->CallObjectMethod(env, win,
+        (*env)->GetMethodID(env, wc, "getAttributes",
+            "()Landroid/view/WindowManager$LayoutParams;"));
+    jclass  lc  = (*env)->GetObjectClass(env, lp);
+    jfieldID cut = (*env)->GetFieldID(env, lc, "layoutInDisplayCutoutMode", "I");
+    // LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+    if (cut && (*env)->GetIntField(env, lp, cut) != 1) {
+        (*env)->SetIntField(env, lp, cut, 1);
+        (*env)->CallVoidMethod(env, win, (*env)->GetMethodID(env, wc, "setAttributes",
+            "(Landroid/view/WindowManager$LayoutParams;)V"), lp);
+    }
+    jobject dv = (*env)->CallObjectMethod(env, win,
+        (*env)->GetMethodID(env, wc, "getDecorView", "()Landroid/view/View;"));
+    jclass  vc = (*env)->GetObjectClass(env, dv);
+    // IMMERSIVE_STICKY, the bars hidden, laid out as if gone
+    (*env)->CallVoidMethod(env, dv,
+        (*env)->GetMethodID(env, vc, "setSystemUiVisibility", "(I)V"), 0x1706);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionDescribe(env);
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env, vc);  (*env)->DeleteLocalRef(env, dv);
+    (*env)->DeleteLocalRef(env, lc);  (*env)->DeleteLocalRef(env, lp);
+    (*env)->DeleteLocalRef(env, wc);  (*env)->DeleteLocalRef(env, win);
+    (*env)->DeleteLocalRef(env, act);
 }
+
+static void cb_focus(ANativeActivity* a, int has) {
+    if (has) immersive(a);
+    send_cmd(has ? CMD_FOCUS : CMD_BLUR);
+}
+
+// the app thread outlives a recreated activity
+static bool g_running;
+static bool g_landscape_req;
+static void cb_destroy(ANativeActivity* a) { }
 
 static void key_event(platform_window* w, int key, int scan, int action, int mods) {
     if (key >= 0 && key <= PLATFORM_KEY_LAST) w->keys[key] = action != PLATFORM_RELEASE;
@@ -906,6 +945,18 @@ void platform_android_start(void* activity, int (*main)(int, char**)) {
     a->callbacks->onWindowFocusChanged    = cb_focus;
     a->callbacks->onDestroy               = cb_destroy;
     ANativeActivity_setWindowFlags(a, AWINDOW_FLAG_FULLSCREEN | AWINDOW_FLAG_KEEP_SCREEN_ON, 0);
+    // a new activity for the running app: it keeps its thread
+    if (g_running) {
+        JNIEnv* env = a->env;
+        jclass  cls = (*env)->GetObjectClass(env, a->clazz);
+        jmethodID mid = (*env)->GetMethodID(env, cls, "setRequestedOrientation", "(I)V");
+        if (mid) (*env)->CallVoidMethod(env, a->clazz, mid, g_landscape_req ? 6 : 7);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        __android_log_print(ANDROID_LOG_INFO, "silver", "devices: activity replaced, app kept");
+        return;
+    }
+    g_running = true;
     pipe(g_cmd);
     pthread_create(&g_thread, NULL, app_thread, NULL);
 }
@@ -928,7 +979,6 @@ void platform_poll(void) { pump(0); }
 // the window is the activity's: this waits for it, then describes it
 // the app's window shape picks the orientation: landscape when it is wider
 // than tall. NativeActivity has no ndk call for it, so it goes through java
-static bool g_landscape_req = false;
 static void request_orientation(bool landscape) {
     g_landscape_req = landscape;
     JavaVM* vm = g_activity->vm;
@@ -1057,6 +1107,8 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <time.h>
 #include <linux/joystick.h>
 #include <linux/input.h>
+#include <sched.h>
+#include <dirent.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <sys/mman.h>
@@ -1118,12 +1170,22 @@ static int    g_ev[64];
 static bool   g_ev_on[64];
 static int    g_ev_n;
 static int    g_ev_abs_max[64];
+// each device's own axis ranges; a touchscreen (direct) is a finger
+static int    g_ev_x0[64], g_ev_x1[64], g_ev_y0[64], g_ev_y1[64];
+static bool   g_ev_direct[64];
+// a touch begun (1) or ended (0) in this frame, else -1
+static int    g_touch = -1;
 static double g_ev_scan;
 static double g_mx, g_my;
 static bool   g_moved;
 static int    g_drm_fd = -1;    // master: the guest scans out a dma-buf here
 static uint32_t g_drm_conn;     // the connected connector
+static bool   g_drm_dsi;        // it is a built-in panel
 static int    g_drm_w, g_drm_h; // its preferred mode
+// its density over 160, as Android counts it
+static float  g_kms_scale = 1.0f;
+// the screen dark (its power key): nothing flips, no touch counts
+static bool   g_screen_off;
 // the connector's modes, as drm lists them; the one shown
 static drmModeModeInfo g_modes[64];
 static int    g_mode_n, g_mode_i = -1;
@@ -1207,7 +1269,39 @@ static void kms_cursor_put(void) {
     drmModeMoveCursor(g_drm_fd, g_drm_crtc, x, y);
 }
 
+// the process's threads onto its fastest cores (a phone's prime and
+// big ones; within 75% of the fastest top clock): with no energy
+// model the scheduler keeps a busy thread on a slow core. a PC's
+// cores are alike: nothing changes
+static void kms_fast_cores(void) {
+    long top[256] = { 0 }, best = 0;
+    int n = 0;
+    for (; n < 256; n++) {
+        char p[96];
+        snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", n);
+        FILE* f = fopen(p, "r");
+        if (!f) break;
+        if (fscanf(f, "%ld", &top[n]) != 1) top[n] = 0;
+        fclose(f);
+        if (top[n] > best) best = top[n];
+    }
+    if (n == 0 || best == 0) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int fast = 0;
+    for (int i = 0; i < n; i++)
+        if (top[i] * 4 >= best * 3) { CPU_SET(i, &set); fast++; }
+    if (fast == n) return;
+    DIR* d = opendir("/proc/self/task");
+    struct dirent* e;
+    while (d && (e = readdir(d)))
+        if (e->d_name[0] != '.') sched_setaffinity(atoi(e->d_name), sizeof set, &set);
+    if (d) closedir(d);
+    fprintf(stderr, "kms: on the %d fastest of %d cores\n", fast, n);
+}
+
 int platform_kms_open(int minor) {
+    kms_fast_cores();
     char path[32];
     snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
     int fd = open(path, O_RDWR | O_CLOEXEC);
@@ -1233,6 +1327,7 @@ int platform_kms_open(int minor) {
     if (g_drm_fd >= 0) close(g_drm_fd);
     g_drm_fd   = fd;
     g_drm_conn = conn->connector_id;
+    g_drm_dsi  = conn->connector_type == DRM_MODE_CONNECTOR_DSI;
     // the preferred mode, else the first
     g_drm_mode = conn->modes[0];
     g_mode_i = 0;
@@ -1242,6 +1337,13 @@ int platform_kms_open(int minor) {
     for (int m = 0; m < g_mode_n; m++) g_modes[m] = conn->modes[m];
     g_drm_w = g_drm_mode.hdisplay;
     g_drm_h = g_drm_mode.vdisplay;
+    // a phone's panel says its width: density from it, whole steps
+    if (conn->mmWidth > 0) {
+        double dpi = g_drm_w * 25.4 / conn->mmWidth;
+        double sc  = floor(dpi / 160.0);
+        g_kms_scale = sc < 1.0 ? 1.0f : (float)sc;
+    }
+    fprintf(stderr, "kms: %u mm wide, scale %.2f\n", conn->mmWidth, g_kms_scale);
     // the crtc it drives now, else the first its encoders can take
     g_drm_crtc = 0;
     drmModeEncoder* enc = conn->encoder_id ? drmModeGetEncoder(fd, conn->encoder_id) : NULL;
@@ -1316,12 +1418,24 @@ void platform_kms_wait(void) {
 // show a slot at the next vblank; the first one sets the mode
 void platform_kms_flip(int slot) {
     if (g_drm_fd < 0 || !g_drm_crtc || slot < 0 || slot >= g_fb_n) return;
+    // a dark screen takes no frames
+    if (g_screen_off) return;
     uint32_t fb = g_fbs[slot];
     g_back = (slot + 1) % g_fb_n;
     if (!g_crtc_set) {
         static bool told;
         if (drmModeSetCrtc(g_drm_fd, g_drm_crtc, fb, 0, 0, &g_drm_conn, 1, &g_drm_mode)) {
-            if (!told) fprintf(stderr, "kms: SetCrtc: %s\n", strerror(errno));
+            if (!told) {
+                fprintf(stderr, "kms: SetCrtc fb %u crtc %u %ux%u: %s\n", fb,
+                    g_drm_crtc, g_drm_mode.hdisplay, g_drm_mode.vdisplay, strerror(errno));
+                // once more with the kernel's display log on: its reason
+                // lands in dmesg (root only; else nothing changes)
+                FILE* dbg = fopen("/sys/module/drm/parameters/debug", "w");
+                if (dbg) { fputs("0x116", dbg); fclose(dbg); }
+                drmModeSetCrtc(g_drm_fd, g_drm_crtc, fb, 0, 0, &g_drm_conn, 1, &g_drm_mode);
+                dbg = fopen("/sys/module/drm/parameters/debug", "w");
+                if (dbg) { fputs("0", dbg); fclose(dbg); }
+            }
             told = true;
             return;
         }
@@ -1343,7 +1457,8 @@ void platform_kms_flip(int slot) {
 // the cursor plane's picture: premultiplied argb, w x h at most the
 // plane's size, the point that clicks at hx, hy
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {
-    if (g_drm_fd < 0) return;
+    // a built-in panel (a phone's, a tablet's) is touched, not pointed at
+    if (g_drm_fd < 0 || g_drm_dsi) return;
     if (!g_cur_handle) {
         uint64_t cw = 64, ch = 64;
         drmGetCap(g_drm_fd, DRM_CAP_CURSOR_WIDTH, &cw);
@@ -1473,7 +1588,7 @@ static void kms_ease(platform_window* w) {
     g_cy += ey * (1 - keep);
     if (fabs(g_mx - g_cx) < 0.05 && fabs(g_my - g_cy) < 0.05) { g_cx = g_mx; g_cy = g_my; }
     kms_cursor_put();
-    if (w->on_cursor) w->on_cursor(w, g_cx, g_cy);
+    if (w->on_cursor) w->on_cursor(w, g_cx / g_kms_scale, g_cy / g_kms_scale);
 }
 
 // every event node not yet open; usb ones come after startup
@@ -1484,8 +1599,22 @@ static void kms_open_inputs(void) {
         snprintf(path, sizeof(path), "/dev/input/event%d", i);
         int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) continue;
-        struct input_absinfo ai;
+        struct input_absinfo ai, bi;
         g_ev_abs_max[i] = ioctl(fd, EVIOCGABS(ABS_X), &ai) == 0 ? ai.maximum : 0;
+        // a touchscreen may give only its multitouch axes
+        if (g_ev_abs_max[i] <= 0 &&
+            ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &ai) == 0)
+            g_ev_abs_max[i] = ai.maximum;
+        g_ev_x0[i] = ai.minimum;
+        g_ev_x1[i] = ai.maximum;
+        if (ioctl(fd, EVIOCGABS(ABS_Y), &bi) != 0 || bi.maximum <= 0)
+            if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &bi) != 0)
+                bi.minimum = bi.maximum = 0;
+        g_ev_y0[i] = bi.minimum;
+        g_ev_y1[i] = bi.maximum;
+        unsigned long props = 0;
+        ioctl(fd, EVIOCGPROP(sizeof props), &props);
+        g_ev_direct[i] = (props >> INPUT_PROP_DIRECT) & 1;
         g_ev[i] = fd;
         g_ev_on[i] = true;
         g_ev_n++;
@@ -1611,9 +1740,39 @@ static int kms_mods(platform_window* w) {
     return m;
 }
 
+// the connector's DPMS: the panel on or off, the mode kept
+static void kms_screen(bool on) {
+    if (g_drm_fd < 0 || !g_drm_conn) return;
+    drmModeObjectProperties* ps = drmModeObjectGetProperties(g_drm_fd,
+        g_drm_conn, DRM_MODE_OBJECT_CONNECTOR);
+    for (uint32_t i = 0; ps && i < ps->count_props; i++) {
+        drmModePropertyRes* pr = drmModeGetProperty(g_drm_fd, ps->props[i]);
+        if (pr && strcmp(pr->name, "DPMS") == 0)
+            if (drmModeConnectorSetProperty(g_drm_fd, g_drm_conn, pr->prop_id,
+                    on ? DRM_MODE_DPMS_ON : DRM_MODE_DPMS_OFF))
+                fprintf(stderr, "kms: DPMS: %s\n", strerror(errno));
+        if (pr) drmModeFreeProperty(pr);
+    }
+    if (ps) drmModeFreeObjectProperties(ps);
+    g_screen_off = !on;
+    fprintf(stderr, "kms: screen %s\n", on ? "on" : "off");
+}
+
 static void kms_event(platform_window* w, int dev, struct input_event* e) {
+    // a phone's power key: the screen off, and on again
+    if (e->type == EV_KEY && e->code == KEY_POWER) {
+        if (e->value == 1) kms_screen(g_screen_off);
+        return;
+    }
+    // dark: a touch in a pocket presses nothing
+    if (g_screen_off && g_ev_direct[dev]) return;
     if (e->type == EV_KEY) {
         int c = e->code;
+        // a finger down or up: sent with its frame, after the point
+        if (c == BTN_TOUCH) {
+            g_touch = e->value ? 1 : 0;
+            return;
+        }
         if (c == BTN_LEFT || c == BTN_RIGHT || c == BTN_MIDDLE) {
             int b = c == BTN_LEFT ? PLATFORM_MOUSE_LEFT : c == BTN_RIGHT ? PLATFORM_MOUSE_RIGHT : PLATFORM_MOUSE_MIDDLE;
             if (w->on_mouse) w->on_mouse(w, b, e->value ? PLATFORM_PRESS : PLATFORM_RELEASE, w->mods);
@@ -1636,14 +1795,31 @@ static void kms_event(platform_window* w, int dev, struct input_event* e) {
         else if (e->code == REL_WHEEL && w->on_scroll) w->on_scroll(w, 0, e->value);
         else if (e->code == REL_HWHEEL && w->on_scroll) w->on_scroll(w, e->value, 0);
     } else if (e->type == EV_ABS && g_ev_abs_max[dev] > 0) {
-        // a tablet reports 0..max across the whole screen
-        double s = (double)e->value / (double)g_ev_abs_max[dev];
-        if (e->code == ABS_X) { g_mx = s * w->width;  g_moved = true; }
-        else if (e->code == ABS_Y) { g_my = s * w->height; g_moved = true; }
-    } else if (e->type == EV_SYN && g_moved) {
+        // a tablet or touchscreen spans the whole screen, each axis
+        // its own range
+        int xr = g_ev_x1[dev] - g_ev_x0[dev], yr = g_ev_y1[dev] - g_ev_y0[dev];
+        if ((e->code == ABS_X || e->code == ABS_MT_POSITION_X) && xr > 0) {
+            g_mx = (double)(e->value - g_ev_x0[dev]) / xr * w->width;
+            g_moved = true;
+        } else if ((e->code == ABS_Y || e->code == ABS_MT_POSITION_Y) && yr > 0) {
+            g_my = (double)(e->value - g_ev_y0[dev]) / yr * w->height;
+            g_moved = true;
+        }
+    } else if (e->type == EV_SYN && (g_moved || g_touch >= 0)) {
         g_moved = false;
         if (g_mx < 0) g_mx = 0; if (g_mx > w->width - 1)  g_mx = w->width - 1;
         if (g_my < 0) g_my = 0; if (g_my > w->height - 1) g_my = w->height - 1;
+        // a finger is where it is: no easing, the point before the press
+        if (g_ev_direct[dev]) {
+            g_cx = g_mx;
+            g_cy = g_my;
+            kms_cursor_put();
+            if (w->on_cursor) w->on_cursor(w, g_cx / g_kms_scale, g_cy / g_kms_scale);
+        }
+        if (g_touch >= 0 && w->on_mouse)
+            w->on_mouse(w, PLATFORM_MOUSE_LEFT,
+                g_touch ? PLATFORM_PRESS : PLATFORM_RELEASE, w->mods);
+        g_touch = -1;
     }
 }
 
@@ -2314,9 +2490,8 @@ void platform_window_set_resizable(platform_window* w, bool on) {
 }
 
 void platform_window_set_size(platform_window* w, int width, int height) {
-    if (g_kms) { // the display mode decides; vk reports it here
-        w->width = width; w->height = height;
-        if (w->on_size) w->on_size(w, width, height);
+    if (g_kms) { // the display mode decides its size
+        if (w->on_size) w->on_size(w, w->width, w->height);
         return;
     }
     uint32_t v[2] = { width, height };
@@ -2330,7 +2505,9 @@ void platform_window_get_size(platform_window* w, int* width, int* height) {
 void platform_window_get_framebuffer(platform_window* w, int* width, int* height) {
     platform_window_get_size(w, width, height);
 }
-float platform_window_scale(platform_window* w) { return 1.0f; }
+// the screen's density: its pixels a point (kms; a window's is 1).
+// sizes stay pixels; the pointer is in points
+float platform_window_scale(platform_window* w) { return g_kms ? g_kms_scale : 1.0f; }
 
 void platform_window_get_pos(platform_window* w, int* x, int* y) {
     if (g_kms) { if (x) *x = 0; if (y) *y = 0; return; }

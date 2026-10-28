@@ -1,0 +1,13 @@
+# Fairphone 6 running orbiter-os: ubuntu 24.04's arm64 userspace (the
+# same release as the x86 drive tree): its base, then the dev packages
+# our modules link and everything they depend on, from ubuntu's ports
+# archive. { is written {{ here: silver interpolates fetch lines
+fp6: Device
+	platform: linux-arm64
+	root:     /src/silver
+	fetch:
+		curl -sL https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.5-base-arm64.tar.gz | tar -xz -C {sysroot}
+		for d in noble noble-updates; do for c in main universe; do curl -sL http://ports.ubuntu.com/ubuntu-ports/dists/$d/$c/binary-arm64/Packages.xz | xz -d; done; done > {sysroot}/../Packages
+		awk -v want="libc6-dev libgcc-13-dev libstdc++-13-dev libcrypt-dev libxcb1-dev libxcb-randr0-dev libxcb-sync-dev libxcb-res0-dev libx11-dev libx11-xcb-dev libxrandr-dev libdrm-dev libasound2-dev libwayland-dev libwlroots-dev libxkbcommon-dev libpixman-1-dev libdbus-1-dev libfontconfig-dev kmod git" 'function add(p,  k, parts, i, a) {{ if (p in seen) return; if (!(p in f) && (p in prov)) p = prov[p]; if (p in seen) return; seen[p]=1; if (!(p in f)) {{ print "MISSING " p > "/dev/stderr"; return }} print f[p]; k = split(d[p], parts, ","); for (i = 1; i <= k; i++) {{ split(parts[i], a, "|"); gsub(/\(.*\)|:any|[ \t]/, "", a[1]); if (a[1] != "") add(a[1]) }} }} $1=="Package:" {{n=$2}} $1=="Filename:" {{f[n]=$2}} $1=="Provides:" {{sub(/^Provides: /,""); k=split($0,pp,","); for(i=1;i<=k;i++){{x=pp[i]; gsub(/\(.*\)|[ \t]/,"",x); if(!(x in prov)) prov[x]=n}}}} ($1=="Depends:"||$1=="Pre-Depends:") {{sub(/^[A-Za-z-]*: /,""); d[n]=d[n] "," $0}} END {{ k=split(want,w," "); for(i=1;i<=k;i++) add(w[i]) }} ' {sysroot}/../Packages > {sysroot}/../debs.txt
+		for f in $(cat {sysroot}/../debs.txt); do curl -sL http://ports.ubuntu.com/ubuntu-ports/$f -o {sysroot}/../pkg.deb && (cd {sysroot}/.. && {sysroot}/../../native/bin/llvm-ar x pkg.deb $({sysroot}/../../native/bin/llvm-ar t pkg.deb | grep data.tar) && tar --keep-directory-symlink -xf data.tar.* -C {sysroot} && rm -f data.tar.* pkg.deb) || exit 1; done
+		sed -i -E "s|^([A-Za-z_]+)=/usr|\1={sysroot}/usr|" {sysroot}/usr/lib/aarch64-linux-gnu/pkgconfig/*.pc {sysroot}/usr/share/pkgconfig/*.pc

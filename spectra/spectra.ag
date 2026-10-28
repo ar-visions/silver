@@ -1043,6 +1043,44 @@ func aac_clip [ asc: @u8, asc_n: i32, data: @u8, offsets: vec i64,
     clip.pcm = pcm
     return clip
 
+# aac packets decoded one at a time into float frames, no clock
+class AacDecoder
+    public  rate     : i32
+    public  channels : i32
+    intern  h        : NeAACDecHandle
+
+    # the AudioSpecificConfig
+    public func config [ asc: @u8, n: i32 ] -> bool
+        if [ h ] NeAACDecClose[ h ]
+        h = NeAACDecOpen[]
+        conf : NeAACDecGetCurrentConfiguration[ h ]
+        conf.outputFormat = FAAD_FMT_FLOAT
+        NeAACDecSetConfiguration[ h, conf ]
+        sr : u64 [ 0 ]
+        ch : u8 [ 0 ]
+        if [ NeAACDecInit2[ h, asc, u64[ n ], @sr, @ch ] != 0 ]
+            NeAACDecClose[ h ]
+            h = null
+            return false
+        rate     = i32[ sr ]
+        channels = i32[ ch ]
+        return true
+
+    # one packet into out (interleaved); the values written, or -1
+    public func decode [ data: @u8, n: i64, out: @f32, cap: i64 ] -> i64
+        if [ !h ] return -1
+        info : NeAACDecFrameInfo
+        smp : @f32 [ NeAACDecDecode[ h, @info, data, u64[ n ] ] ]
+        if [ info.error != 0 ] return -1
+        if [ !smp || info.samples == 0 ] return 0
+        got : i64 [ info.samples ]
+        if [ got > cap ] got = cap
+        memcpy[ out, smp, got * 4 ]
+        return got
+
+    func dealloc []
+        if [ h ] NeAACDecClose[ h ]
+
 # aac packets decoded as they arrive; the mixer plays them
 class AudioStream
     public  rate     : i32

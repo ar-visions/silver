@@ -37,6 +37,8 @@ static int find_iface(libusb_device* d, unsigned char* in,
 int fb_usb_open(char* serial, int cap) {
     if (serial && cap > 0) serial[0] = 0;
     if (!ctx && libusb_init(&ctx)) return -1;
+    // an open still held keeps its claim: a second one finds it busy
+    fb_usb_close();
     libusb_device** list;
     ssize_t n = libusb_get_device_list(ctx, &list);
     if (n < 0) return -1;

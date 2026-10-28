@@ -1881,7 +1881,9 @@ static void view_env(void) {
         "MESA_", "NVIDIA_", "PULSE_", "PIPEWIRE_", "ALSA_", "FONTCONFIG_",
         "XCURSOR_", "GDK_SCALE", "QT_SCALE", "AU_", "ORBITER_", "HOME",
         "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS" };
+        "XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS",
+        // where it was started: an agent's shell, and its session
+        "AI_AGENT", "CLAUDE_CODE_SESSION_ID" };
     for (int i = 0; environ[i];) {
         const char* e = environ[i];
         const char* eq = strchr(e, '=');

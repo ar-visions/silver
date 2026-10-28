@@ -9,6 +9,8 @@ export startup ['steam -silent']
 
 import <stdlib.h>
 import <stdio.h>
+# the games run on our Wine, DXVK and vkd3d-proton
+import wine
 
 # the launcher taken, and its sha256 as Valve's package list gives it
 func steam_ver [] -> string
@@ -28,7 +30,9 @@ export func install_steam []
         deb : '{dir}/steam.deb'
         get : command { mkdir -p {dir} && curl -fsSL {url} -o {deb}
             && echo "{steam_sum[]}  {deb}" | sha256sum -c --quiet
-            && dpkg-deb -x {deb} {dir} && rm {deb} }
+            && cd {dir} && {ins}/bin/llvm-ar x {deb}
+            && tar -xf data.tar.xz && rm -f {deb} control.tar.* data.tar.*
+            debian-binary }
         if [ get.exec[ false ] != 0 ]
             log 'steam: {ver} failed'
             return
@@ -54,11 +58,62 @@ func library_paths [ text: string, home: string, seen: string,
     rest : string text
     for [ at: i32 rest.index_of[ '"path"' ], at >= 0,
           at = rest.index_of[ '"path"' ] ]
-        p : string acf_value[ rest, 'path' ]
+        p : string slashes[ acf_value[ rest, 'path' ] ]
         if [ seen.count > 0 && p.starts_with[ '{home}/' ] ]
             p = '{seen}{p.mid[ home.count, p.count - home.count ]}'
         if [ p.count > 0 ] into[ p ] = root
         rest = rest.mid[ at + 6, rest.count - at - 6 ]
+
+# a vdf path with / for its \\ pairs (Windows writes them so)
+func slashes [ p: string ] -> string
+    out : string ''
+    last : string ''
+    for [ i: i32 0, i < p.count, i += 1 ]
+        c : string p.mid[ i, 1 ]
+        if [ c == '\\' ]
+            if [ last != '\\' ] out = '{out}/'
+        el out = '{out}{c}'
+        last = c
+    return out
+
+# the library a store module came from: its fourth line
+func lib_of [ file: string ] -> string
+    fp : path [ file ]
+    if [ !fp.exists[] ] return ''
+    src : string fp.load[ typeid[string], null ]
+    k : string '# from its manifest in\n# '
+    at : i32 [ src.index_of[ k ] ]
+    if [ at < 0 ] return ''
+    rest : string src.mid[ at + k.count, src.count - at - k.count ]
+    e : i32 [ rest.index_of[ '\n' ] ]
+    return (e < 0) ? rest : rest.mid[ 0, e ]
+
+# a file that is a png by its first bytes, whatever its name
+func is_png [ file: string ] -> bool
+    fh : handle fopen[ file.chars, 'rb' ]
+    if [ !fh ] return false
+    head : new u8 [ 8 ]
+    got : i64 [ i64[ fread[ @head[0], 1, 8, fh ] ] ]
+    fclose[ fh ]
+    return got == 8 && i64[ head[ 0 ] ] == 0x89 && i64[ head[ 1 ] ] == 0x50
+        && i64[ head[ 2 ] ] == 0x4e && i64[ head[ 3 ] ] == 0x47
+
+# an app's cover: library_600x900.jpg, or (newer Steam) the
+# library_capsule.jpg in one of its hash-named folders
+func cover_of [ dir: string ] -> string
+    flat : path '{dir}/library_600x900.jpg'
+    if [ flat.exists[] ] return '{flat}'
+    dp : path [ dir ]
+    for [ d: path ] in dp.ls[ null, false ]
+        if [ !d.is_dir[] ] continue
+        cap : path '{d}/library_capsule.jpg'
+        if [ cap.exists[] ] return '{cap}'
+    return '{flat}'
+
+# the watch list with a folder on it, each once
+func watched [ list: string, w: string ] -> string
+    if [ list.index_of[ '{w}\n' ] >= 0 ] return list
+    return '{list}{w}\n'
 
 # a folder name from a game's name: letters and digits, _ between
 func store_name [ title: string ] -> string
@@ -102,10 +157,11 @@ func le32 [ b: ref u8, at: i64 ] -> i64
     return i64[ b[ at ] ] | (i64[ b[ at + 1 ] ] << 8)
         | (i64[ b[ at + 2 ] ] << 16) | (i64[ b[ at + 3 ] ] << 24)
 
-# the one launch of a config's list that runs on Windows: its keys
-# (0, 1 ...) to the values read under them
+# the launches of a config's list that run on Windows, | between,
+# in its order: its keys (0, 1 ...) to the values read under them
 func windows_launch [ exes: map string[string], oses: map string[string],
                       kinds: map string[string] ] -> string
+    all : string ''
     for [ i: i32 0, i < 16, i += 1 ]
         n : string '{i}'
         exe : string exes.get[ n ]
@@ -114,8 +170,8 @@ func windows_launch [ exes: map string[string], oses: map string[string],
         if [ os && os.count > 0 && os.index_of[ 'windows' ] < 0 ] continue
         ty : string kinds.get[ n ]
         if [ ty && ty != 'default' && ty != 'none' ] continue
-        return exe
-    return ''
+        all = (all.count > 0) ? '{all}|{exe}' : exe
+    return all
 
 # each app's Windows program, from Steam's appinfo.vdf (version 29:
 # binary key-values, keys by number into a string table at the end)
@@ -187,17 +243,29 @@ func app_exes [ file: string ] -> map string[string]
 
 # Wine's own d3d set by DXVK's (Proton's way), no Mono or Gecko asked
 func wine_dlls [] -> string
-    return 'WINEDLLOVERRIDES="mscoree,mshtml=;steam.exe=b;d3d11,dxgi,d3d10core,d3d9,d3d8=n,b"'
+    return 'WINEDLLOVERRIDES="mscoree,mshtml=;steam.exe=b;d3d12,d3d12core,d3d11,dxgi,d3d10core,d3d9,d3d8=n,b"'
 
-# DXVK's 64-bit DLLs into a prefix's system32, before its first run
+# DXVK's 64-bit DLLs into a prefix's system32
 func dxvk_into [ pfx: string ]
     ins : string '{path.path_install[]}'
     sys : string '{pfx}/drive_c/windows/system32'
-    have : path '{sys}/d3d11.dll'
-    if [ have.exists[] ] return
-    cp : command { mkdir -p "{sys}"
-        && cp {ins}/lib/wine/dxvk/x64/*.dll "{sys}/" }
+    src : string '{ins}/lib/wine/dxvk/x64'
+    # by content: a new build replaces the last
+    same : command { cmp -s "{src}/d3d11.dll" "{sys}/d3d11.dll" }
+    if [ same.exec[ false ] == 0 ] return
+    cp : command { mkdir -p "{sys}" && cp {src}/*.dll "{sys}/" }
     if [ cp.exec[ false ] == 0 ] log 'steam store: dxvk in {pfx}'
+
+# vkd3d-proton's 64-bit DLLs over Wine's d3d12 (Wine's first boot
+# puts its own there, so the copy is by content, not by name)
+func vkd3d_into [ pfx: string ]
+    ins : string '{path.path_install[]}'
+    sys : string '{pfx}/drive_c/windows/system32'
+    src : string '{ins}/lib/wine/vkd3d/x64'
+    same : command { cmp -s "{src}/d3d12.dll" "{sys}/d3d12.dll" }
+    if [ same.exec[ false ] == 0 ] return
+    cp : command { mkdir -p "{sys}" && cp {src}/*.dll "{sys}/" }
+    if [ cp.exec[ false ] == 0 ] log 'steam store: vkd3d in {pfx}'
 
 # a folder of an app's home as that app sees it ($HOME in its view)
 func view_path [ p: string, homes: string ] -> string
@@ -239,27 +307,109 @@ func steam_libraries [] -> map string[string]
     libs : map string[string] []
     roots : map string[string] []
     home : string [ getenv[ 'HOME' ] ]
-    roots[ '{home}/.local/share/Steam' ] = ''
-    roots[ '{home}/.steam/debian-installation' ] = ''
-    ins : path.path_install[]
-    homes : path '{ins.absolute[]}/home'
-    hs : homes.ls[ null, false ]
-    if [ hs ]
-        for [ h: path ] in hs
-            roots[ '{h}/.local/share/Steam' ] = '{h}'
+    drives : ntfs_mounts[]
+    ifdef [ windows ]
+        # where Steam's installer puts it
+        pf : string [ getenv[ 'ProgramFiles(x86)' ] ]
+        if [ !pf || pf.count == 0 ] pf = 'C:/Program Files (x86)'
+        roots[ '{slashes[ pf ]}/Steam' ] = ''
+    el
+        # Windows' Steam, on each Windows drive mounted here
+        for [ m: string ] in drives
+            ws : path '{m}/Program Files (x86)/Steam'
+            if [ ws.exists[] ] roots[ '{ws}' ] = ''
     for [ seen: string, r: string ] in roots
         vf : path '{r}/steamapps/libraryfolders.vdf'
         if [ !vf.exists[] ] continue
         text : string vf.load[ typeid[string], null ]
-        if [ text ] library_paths[ text, home, seen, r, libs ]
+        if [ !text ] continue
+        got : map string[string] []
+        library_paths[ text, home, seen, r, got ]
+        for [ lr: string, lp: string ] in got
+            at : string drive_path[ lp, drives ]
+            if [ at.count > 0 ] libs[ at ] = lr
     return libs
+
+# a /proc file's text: its size reads 0, so read to its end
+func proc_text [ file: string ] -> string
+    fh : handle fopen[ file.chars, 'rb' ]
+    if [ !fh ] return ''
+    out : string ''
+    buf : new u8 [ 4097 ]
+    for [ n: i64 i64[ fread[ @buf[0], 1, 4096, fh ] ], n > 0,
+          n = i64[ fread[ @buf[0], 1, 4096, fh ] ] ]
+        buf[ n ] = 0
+        piece : string [ @buf[0] ]
+        out = '{out}{piece}'
+    fclose[ fh ]
+    return out
+
+# the Windows (NTFS) drives mounted here, by where they are mounted
+func ntfs_mounts [] -> vec string
+    out : vec string []
+    ifndef [ windows ]
+        text : string proc_text[ '/proc/mounts' ]
+        if [ text ]
+            for [ ln: string ] in text.split[ '\n' ]
+                f : vec string ln.split[ ' ' ]
+                if [ f.count < 3 ] continue
+                ty : string f[ 2 ]
+                if [ ty != 'ntfs' && ty != 'ntfs3' && ty != 'fuseblk' ]
+                    continue
+                # /proc/mounts writes a space as \040
+                mp : string ''
+                raw : string f[ 1 ]
+                for [ i: i32 0, i < raw.count, i += 1 ]
+                    if [ raw.mid[ i, 4 ] == '\\040' ]
+                        mp = '{mp} '
+                        i += 3
+                    el mp = '{mp}{raw.mid[ i, 1 ]}'
+                out.push[ mp ]
+    return out
+
+# a Windows path (C:/...) as it is here: on the drive holding it;
+# '' when no mounted drive has it. Other paths stay as they are
+func drive_path [ p: string, drives: vec string ] -> string
+    ifdef [ windows ]
+        return p
+    el
+        if [ p.count < 3 || p.mid[ 1, 1 ] != ':' ] return p
+        rest : string p.mid[ 3, p.count - 3 ]
+        for [ m: string ] in drives
+            here : path '{m}/{rest}'
+            if [ here.exists[] ] return '{here}'
+        return ''
+
+# the Linux Steam that runs a Windows game here: its client, and the
+# Wine prefixes (a prefix breaks on NTFS)
+func client_root [] -> string
+    # the Steam run in orbiter first: the game runs in its view
+    homes : path '{path.path_install[].absolute[]}/home'
+    for [ h: path ] in homes.ls[ null, false ]
+        lc : path '{h}/.local/share/Steam/legacycompat'
+        if [ lc.exists[] ] return '{h}/.local/share/Steam'
+    home : string [ getenv[ 'HOME' ] ]
+    deb : path '{home}/.steam/debian-installation/legacycompat'
+    if [ deb.exists[] ] return '{home}/.steam/debian-installation'
+    own : path '{home}/.local/share/Steam/legacycompat'
+    if [ own.exists[] ] return '{home}/.local/share/Steam'
+    return ''
+
+# the store is Windows' Steam games alone: Linux's stay out of it
+export func steam_store []
+    store_write[]
 
 # a game Steam finished installing becomes a module of the steam store:
 # install/stores/steam/<name>/<name>.ag; one gone from Steam goes
-export func steam_store []
+func store_write []
     ins : path.path_install[]
     store : string '{ins.absolute[]}/stores/steam'
     made : map string[string] []
+    sd : path [ store ]
+    sd.make_dir[]
+    # what orbiter watches: a change there runs this again
+    watch : string ''
+    read_libs : map string[string] []
     # a Steam run in orbiter sees its view's home as the user's
     homes : string '{ins.absolute[]}/home/'
     # each app's program, from every Steam's own app list
@@ -273,8 +423,11 @@ export func steam_store []
                 exes[ id ] = e
         seen : view_path[ lib, homes ]
         apps : path '{lib}/steamapps'
+        watch = watched[ watched[ watch, '{root}/steamapps' ],
+                         '{lib}/steamapps' ]
         ms : apps.ls[ null, false ]
         if [ !ms ] continue
+        read_libs[ lib ] = lib
         for [ m: path ] in ms
             if [ !m.stem[].starts_with[ 'appmanifest_' ] ] continue
             text : string m.load[ typeid[string], null ]
@@ -297,51 +450,72 @@ export func steam_store []
             exe : string exes.get[ id ]
             dirn : acf_value[ text, 'installdir' ]
             run : string 'steam -applaunch {id}'
+            ifdef [ windows ]
+                run = '"{root}/steam.exe" -applaunch {id}'
             prog : string ''
-            sroot : view_path[ root, homes ]
-            # the prefix stays in Steam's own folder, whatever library
-            # holds the game: a Wine prefix breaks on NTFS
+            # a Linux Steam is the client and holds the prefix: the
+            # game's own drive is NTFS, where a Wine prefix breaks
+            sroot : client_root[]
             pfx : string '{sroot}/steamapps/compatdata/{id}/wine'
-            if [ exe && exe.count > 0 && seen != lib ]
-                rel : string ''
-                for [ i: i32 0, i < exe.count, i += 1 ]
-                    c : string exe.mid[ i, 1 ]
-                    rel = (c == '\\') ? '{rel}/' : '{rel}{c}'
-                # our Wine runs 64-bit Windows programs alone
-                if [ pe64[ '{lib}/steamapps/common/{dirn}/{rel}' ] ]
-                    prog = '{seen}/steamapps/common/{dirn}/{rel}'
+            if [ exe && exe.count > 0 && sroot.count > 0 ]
+                # our Wine runs 64-bit Windows programs alone: the first
+                # launch that is one (a launcher may be missing)
+                for [ one: string ] in exe.split[ '|' ]
+                    if [ prog.count > 0 ] break
+                    rel : string slashes[ one ]
+                    at : string '{lib}/steamapps/common/{dirn}/{rel}'
+                    if [ pe64[ at ] ] prog = at
             if [ prog.count > 0 ]
                 # started in its own folder, as Steam starts it
                 cd : string prog.mid[ 0, i32[ prog.rindex_of[ '/' ] ] ]
-                run = 'env -C "{cd}" WINEPREFIX="{pfx}" {wine_dlls[]}'
+                # orbiter's Steam and the prefix as its view has them
+                homes : string '{ins.absolute[]}/home/'
+                vp : string view_path[ pfx, homes ]
+                vs : string view_path[ sroot, homes ]
+                run = 'env -C "{cd}" WINEPREFIX="{vp}" {wine_dlls[]}'
                 # Proton's steam.exe starts it: Steam's registry keys,
                 # and its client reached through lsteamclient
                 run = '{run} SteamGameId={id} SteamAppId={id}'
-                run = '{run} STEAM_COMPAT_CLIENT_INSTALL_PATH="{sroot}"'
+                run = '{run} STEAM_COMPAT_CLIENT_INSTALL_PATH="{vs}"'
                 run = '{run} wine steam "{prog}"'
-                dxvk_into[ '{root}/steamapps/compatdata/{id}/wine' ]
-                steam_into[ root, '{root}/steamapps/compatdata/{id}/wine' ]
+                dxvk_into[ pfx ]
+                vkd3d_into[ pfx ]
+                steam_into[ sroot, pfx ]
             src = '{src}export launch [\'{quoted[ run ]}\']\n'
+            # the game's folder, shared into the view it runs in
+            if [ prog.count > 0 ]
+                gd : string '{lib}/steamapps/common/{dirn}'
+                src = '{src}export share [\'{quoted[ gd ]}\']\n'
             src = '{src}export build none\n'
             dir : string '{store}/{name}'
             # its cover, as Steam's library shows it, is its icon
-            art : path '{root}/appcache/librarycache/{id}/library_600x900.jpg'
-            ic : path '{dir}/images/icon.jpg'
+            art : path cover_of[ '{root}/appcache/librarycache/{id}' ]
+            # named by what it holds: Steam keeps some covers as png
+            # in a .jpg, and img decodes by the name
+            ext : string (is_png[ '{art}' ]) ? 'png' : 'jpg'
+            ic : path '{dir}/images/icon.{ext}'
+            other : path '{dir}/images/icon.{(ext == 'png') ? 'jpg' : 'png'}'
+            if [ other.exists[] ] other.remove[]
             if [ art.exists[] && !ic.exists[] ]
-                cp : command { mkdir -p {dir}/images && cp {art} {ic} }
-                cp.exec[ false ]
+                ims : path '{dir}/images'
+                ims.make_dir[]
+                art.cp[ ic, false, false ]
             out : path '{dir}/{name}.ag'
             was : string (out.exists[]) ? out.load[ typeid[string], null ] : ''
             if [ was == src ] continue
-            mk : command { mkdir -p {dir} }
-            mk.exec[ false ]
+            dp : path [ dir ]
+            dp.make_dir[]
             out.save[ src, null ]
             log 'steam store: {name} ({id})'
-    sd : path [ store ]
+    wf : path '{store}/.watch'
+    was : string (wf.exists[]) ? wf.load[ typeid[string], null ] : ''
+    if [ was != watch ] wf.save[ watch, null ]
     have : sd.ls[ null, false ]
     if [ !have ] return
     for [ d: path ] in have
         dn : string d.filename[]
-        if [ made.get[ dn ] ] continue
-        gone : command { rm -rf {d} }
-        if [ gone.exec[ false ] == 0 ] log 'steam store: {dn} removed'
+        if [ !d.is_dir[] || made.get[ dn ] ] continue
+        # gone only from a library read now: one not found this run
+        # (a drive away, another HOME) keeps its games
+        if [ !read_libs.get[ lib_of[ '{d}/{dn}.ag' ] ] ] continue
+        if [ d.remove_dir[] ] log 'steam store: {dn} removed'

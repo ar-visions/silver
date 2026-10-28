@@ -358,6 +358,9 @@ OrbiterAvatar PlatAvatar
 element PlatformView
     animated : true
     public frame_w : f32
+    # seen from right above: the agents' pads and one ring round
+    public top_down : bool
+    intern built_down : bool
     intern target  : Render
     # the chosen avatar's box at 4x, the floor under it drawn
     # again; its 4 x 4 average at the screen's pixels
@@ -427,7 +430,14 @@ element PlatformView
 
     # the mirrors of the floor; the agents take the first ones
     func hexes [] -> i32
-        return 64
+        if [ !top_down ] return 64
+        # the rings that hold the agents, then one ring round them
+        need : i32 [ (names) ? i32[ names.count ] : 0 ]
+        k : i32 [ 0 ]
+        while [ 1 + 3 * k * (k + 1) < need ]
+            k += 1
+        k += 1
+        return 1 + 3 * k * (k + 1)
 
     # the floor's middle
     func mid [] -> vec3f
@@ -635,7 +645,8 @@ element PlatformView
         if [ same ]
             for [ i: i32 0, i < now.count, i += 1 ]
                 if [ names[ i ] != now[ i ] ] same = false
-        if [ !same ]
+        if [ !same || built_down != top_down ]
+            built_down = top_down
             # copies: the members are replaced below
             was_n : vec string []
             was_o : vec f32 []
@@ -720,7 +731,11 @@ element PlatformView
         tz : f32 [ mp.z ]
         td : f32 [ fit * 0.55 ]
         te : f32 [ 0.60 ]
-        if [ pick >= 0 ]
+        # from right above: the plates fill the box, a margin round
+        if [ top_down ]
+            td = rb * fl / 0.9 * max[ 1.0, bounds.h / fw ]
+            te = 1.5707
+        if [ pick >= 0 && !top_down ]
             pp : vec3f pad_at[ pick ]
             tx = pp.x
             tz = pp.z
@@ -741,17 +756,21 @@ element PlatformView
         cam_d = filter_n[ cam_d, td, ease, w.frame_factor ]
         cam_e = filter_n[ cam_e, te, ease, w.frame_factor ]
         # looking above the floor's middle: the field sits low
-        cam_y = filter_n[ cam_y, (pick >= 0) ? 0.1 : 1.6, ease,
-                          w.frame_factor ]
+        cam_y = filter_n[ cam_y,
+            (pick >= 0 || top_down) ? 0.1 : 1.6, ease,
+            w.frame_factor ]
         # a slow sway, so the mirrors move
-        az : f32 [ sin[ f32[ ms % 600000 ] / 9000.0 ] * 0.12 ]
+        az : f32 [ (top_down) ? 0.0
+                   : sin[ f32[ ms % 600000 ] / 9000.0 ] * 0.12 ]
         eye = vec3f [ cam_x + cam_d * cos[ cam_e ] * sin[ az ],
                       cam_d * sin[ cam_e ],
                       cam_z + cam_d * cos[ cam_e ] * cos[ az ] ]
         # looking above the floor's middle: the field sits low
         tgt : vec3f [ cam_x, cam_y, cam_z ]
         look = tgt
+        # straight down the line of sight is y: up is then along z
         up : vec3f [ 0.0, -1.0, 0.0 ]
+        if [ top_down ] up = vec3f [ 0.0, 0.0, -1.0 ]
         asp : f32 [ bounds.w / bounds.h ]
         view_m = mat4f.look_at[ eye, tgt, up ]
         pm : mat4f mat4f.perspective[ fov, asp, 0.1, 200.0 ]

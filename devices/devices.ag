@@ -15,6 +15,7 @@ ifdef [ apple ]
 
 ifdef [ linux ]
     import <host.h>
+        -I=/usr/include/libdrm
         -I/usr/include/libdrm
         -lxcb
         -lxcb-randr

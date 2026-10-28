@@ -7,30 +7,253 @@ export extensions ['.exe']
 export run ['wine']
 export build none
 
-# xkbregistry (Wine's Wayland keyboard layouts): the system has the
-# library but not its headers; the layouts stay the system's
+# every library below comes from these imports alone: no system
+# pkg-config folder is searched (the system keeps glibc, the GPU
+# driver and the sound and bus services)
+
+# the build tools: Wine's parsers (widl, wrc), then cmake (silver
+# configures cmake's own tree with it again once it is built)
+import bison/3.8.2 from https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz
+    PATH={install}/bin:$PATH
+    --disable-nls
+import flex/2.6.4 from https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz
+    PATH={install}/bin:$PATH
+    --disable-nls
+import cmake/3.31.6 from https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6.tar.gz
+    PATH={install}/bin:$PATH
+    > ./bootstrap --prefix={install} --parallel=16 -- -DCMAKE_USE_OPENSSL=ON -DBUILD_TESTING=OFF
+    > make -j16 install
+    -DCMAKE_USE_OPENSSL=ON
+    -DBUILD_TESTING=OFF
+import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
+    --with-system-includedir=/usr/include
+    --with-system-libdir=/usr/lib
+    >> ln -sf pkgconf {install}/bin/pkg-config
+import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+    > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+
+# the base libraries
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
+import glennrp:libpng/3061454d980de7d53608f594194cfac722721d2a <png.h>
+    -lpng
+import libffi/3.4.6 from https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz
+    PATH={install}/bin:$PATH
+    --disable-docs
+import expat/2.6.4 from https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz
+    PATH={install}/bin:$PATH
+    -DEXPAT_BUILD_DOCS=OFF
+    -DEXPAT_BUILD_EXAMPLES=OFF
+    -DEXPAT_BUILD_TESTS=OFF
+    -DEXPAT_BUILD_TOOLS=OFF
+import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dman-pages=disabled
+    -Ddocumentation=false
+    -Dnls=disabled
+# xkbregistry reads its layout lists with it
+import libxml2/2.13.5 from https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.5.tar.xz
+    PATH={install}/bin:$PATH
+    -DLIBXML2_WITH_PYTHON=OFF
+    -DLIBXML2_WITH_ICU=OFF
+    -DLIBXML2_WITH_LZMA=OFF
+    -DLIBXML2_WITH_ZLIB=OFF
+    -DLIBXML2_WITH_READLINE=OFF
+    -DLIBXML2_WITH_TESTS=OFF
+    -DLIBXML2_WITH_PROGRAMS=OFF
+
+# Wine's display: the Wayland client, its keyboard layouts and maps
+import wayland/1.23.1 from https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.23.1/downloads/wayland-1.23.1.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Ddocumentation=false
+    -Dtests=false
+    -Ddtd_validation=false
+import xkeyboard-config/2.43 from https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.43.tar.xz
+    PATH={install}/bin:$PATH
+    -Dxorg-rules-symlinks=false
+    -Dnls=false
+# libX11: the Vulkan loader's X11 support, and the compose tables
+# (dead keys, accents) libxkbcommon reads from its locale folder
+import xorgproto/2024.1 from https://www.x.org/releases/individual/proto/xorgproto-2024.1.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    --disable-specs
+import xtrans/1.5.2 from https://www.x.org/releases/individual/lib/xtrans-1.5.2.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    --disable-docs
+import libXau/1.0.12 from https://www.x.org/releases/individual/lib/libXau-1.0.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+import xcb-proto/1.17.0 from https://www.x.org/releases/individual/proto/xcb-proto-1.17.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+import libxcb/1.17.0 from https://www.x.org/releases/individual/lib/libxcb-1.17.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    --disable-devel-docs
+    --without-doxygen
+import libX11/1.8.10 from https://www.x.org/releases/individual/lib/libX11-1.8.10.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    --disable-specs
+    --without-xmlto
+    --without-fop
+    --disable-xf86bigfont
+# the Vulkan loader's X11 display (VK_EXT_acquire_xlib_display)
+import libXext/1.3.6 from https://www.x.org/releases/individual/lib/libXext-1.3.6.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+import libXrender/0.9.12 from https://www.x.org/releases/individual/lib/libXrender-0.9.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+import libXrandr/1.5.4 from https://www.x.org/releases/individual/lib/libXrandr-1.5.4.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
 import libxkbcommon/1.6.0 from https://xkbcommon.org/download/libxkbcommon-1.6.0.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
     -Denable-x11=false
     -Denable-wayland=false
     -Denable-tools=false
     -Denable-docs=false
     -Denable-bash-completion=false
     -Denable-xkbregistry=true
-    -Dxkb-config-root=/usr/share/X11/xkb
-    -Dx-locale-root=/usr/share/X11/locale
+    -Dxkb-config-root={install}/share/X11/xkb
+    -Dx-locale-root={install}/share/X11/locale
 
-# NASM: FFmpeg's x86 assembly (its fast H.264 decode paths)
+# fonts: one FreeType, shared, as trinity imports it
+import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h, freetype/tttables.h, freetype/ftmm.h>
+    -I{install}/include/freetype2
+    -lfreetype
+    -lpng -lz
+    -DBUILD_SHARED_LIBS=ON
+    -DCMAKE_INSTALL_RPATH={install}/lib
+    -DFT_DISABLE_BROTLI=TRUE
+    -DFT_DISABLE_BZIP2=TRUE
+    -DFT_DISABLE_HARFBUZZ=TRUE
+import fontconfig/2.15.0 from https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    --disable-docs
+    --disable-nls
+    --disable-cache-build
+
+# sound: the PulseAudio client (PipeWire answers it); its sample
+# file library with no codecs
+import libsndfile/1.2.2 from https://github.com/libsndfile/libsndfile/releases/download/1.2.2/libsndfile-1.2.2.tar.xz
+    PATH={install}/bin:$PATH
+    -DBUILD_SHARED_LIBS=ON
+    -DENABLE_EXTERNAL_LIBS=OFF
+    -DENABLE_MPEG=OFF
+    -DBUILD_PROGRAMS=OFF
+    -DBUILD_EXAMPLES=OFF
+    -DBUILD_TESTING=OFF
+    -DENABLE_CPACK=OFF
+    -DINSTALL_MANPAGES=OFF
+import pulseaudio/17.0 from https://www.freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    # its version script names the glib and simple APIs left out
+    LDFLAGS=-Wl,-rpath,{install}/lib,--undefined-version
+    -Ddaemon=false
+    -Dclient=true
+    -Ddoxygen=false
+    -Dman=false
+    -Dtests=false
+    -Ddatabase=simple
+    -Dauto_features=disabled
+    -Dbashcompletiondir=no
+    -Dzshcompletiondir=no
+
+# the bus (Wine's mount manager asks udisks over it), device events
+# (controllers), Wine's crypto, GL dispatch to the driver, game pads
+import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dmessage_bus=false
+    -Dtools=false
+    -Dmodular_tests=disabled
+    -Ddoxygen_docs=disabled
+    -Dxml_docs=disabled
+    -Dducktype_docs=disabled
+    -Dqt_help=disabled
+    -Dsystemd=disabled
+    -Dx11_autolaunch=disabled
+    -Dselinux=disabled
+    -Dapparmor=disabled
+    -Dlibaudit=disabled
+    -Dsystem_socket=/run/dbus/system_bus_socket
+import libudev-zero/1.0.3 from https://github.com/illiliti/libudev-zero/archive/refs/tags/1.0.3.tar.gz
+    PATH={install}/bin:$PATH
+    > make -j16 PREFIX={install} install
+import libgpg-error/1.51 from https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2
+    --disable-doc
+import libgcrypt/1.11.0 from https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2
+    --disable-doc
+    --with-libgpg-error-prefix={install}
+# libglvnd.diff: the vendor files are the driver's, in /usr/share;
+# Wine's OpenGL reaches the driver by its EGL
+import libglvnd/1.7.0 from https://gitlab.freedesktop.org/glvnd/libglvnd/-/archive/v1.7.0/libglvnd-v1.7.0.tar.gz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dx11=disabled
+    -Dglx=disabled
+    -Dtls=true
+import SDL2/2.30.11 from https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-2.30.11.tar.gz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -DSDL_STATIC=OFF
+    -DSDL_TEST=OFF
+    -DSDL_VIDEO=OFF
+    -DSDL_RENDER=OFF
+    -DSDL_AUDIO=OFF
+    -DSDL_X11=OFF
+    -DSDL_WAYLAND=OFF
+    -DSDL_DBUS=OFF
+    -DSDL_IBUS=OFF
+    -DSDL_PIPEWIRE=OFF
+    -DSDL_PULSEAUDIO=OFF
+    -DSDL_ALSA=OFF
+    -DSDL_LIBUDEV=OFF
+import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Damdgpu=enabled
+    -Dintel=disabled
+    -Dradeon=disabled
+    -Dnouveau=disabled
+    -Dvmwgfx=disabled
+    -Dman-pages=disabled
+    -Dtests=false
+import KhronosGroup:Vulkan-Headers/29184b98984f6169a5e83e97557a77cff1e5b0ca
+import KhronosGroup:Vulkan-Loader/e042a3a
+
+# NASM: FFmpeg's x86 assembly
 import nasm/2.16.03 from https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/nasm-2.16.03.tar.xz
     PATH={install}/bin:$PATH
 
-# FFmpeg: Wine's media demuxer (winedmo) reads containers with it, and
-# gst-libav decodes with it (H.264 among them; Proton has none); 4.x,
-# the API Valve's winedmo is written for (Proton pins 4.3.3)
+# FFmpeg: Wine's media demuxer (winedmo) reads containers with it;
+# 4.x, the API Valve's winedmo is written for (Proton pins 4.3.3)
 import ffmpeg/4.4.5 from https://ffmpeg.org/releases/ffmpeg-4.4.5.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
     LDFLAGS=-Wl,-rpath,{install}/lib
     --enable-shared
     --disable-static
@@ -38,91 +261,20 @@ import ffmpeg/4.4.5 from https://ffmpeg.org/releases/ffmpeg-4.4.5.tar.xz
     --disable-doc
     --disable-autodetect
 
-# GStreamer: Wine's media decoders (winegstreamer) run its pipelines
-import gstreamer/1.24.12 from https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.24.12.tar.xz
-    PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    -Dtests=disabled
-    -Dexamples=disabled
-    -Dbenchmarks=disabled
-    -Ddoc=disabled
-    -Dintrospection=disabled
-    -Dnls=disabled
-    -Dlibunwind=disabled
-    -Dlibdw=disabled
-    -Dbash-completion=disabled
-    -Dptp-helper=disabled
-
-# its libraries (video, audio, tag) and the elements Wine builds
-# pipelines from: app, playback, convert, resample, typefind
-import gst-plugins-base/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.24.12.tar.xz
-    PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    -Dauto_features=disabled
-    -Dapp=enabled
-    -Dplayback=enabled
-    -Dtypefind=enabled
-    -Dvideoconvertscale=enabled
-    -Daudioconvert=enabled
-    -Daudioresample=enabled
-    # Valve's winegstreamer needs gstreamer-gl; EGL alone, no window
-    -Dgl=enabled
-    -Dgl_api=opengl
-    -Dgl_platform=egl
-    -Dgl_winsys=egl,surfaceless
-    -Dtests=disabled
-    -Dexamples=disabled
-    -Dtools=disabled
-    -Ddoc=disabled
-    -Dintrospection=disabled
-    -Dnls=disabled
-
-# the mp4 demuxer (qtdemux) alone
-import gst-plugins-good/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.24.12.tar.xz
-    PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    -Dauto_features=disabled
-    -Disomp4=enabled
-    -Dtests=disabled
-    -Dexamples=disabled
-    -Ddoc=disabled
-    -Dnls=disabled
-
-# the stream parsers (h264parse) alone
-import gst-plugins-bad/1.24.12 from https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.24.12.tar.xz
-    PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    -Dauto_features=disabled
-    -Dvideoparsers=enabled
-    -Dtests=disabled
-    -Dexamples=disabled
-    -Dtools=disabled
-    -Ddoc=disabled
-    -Dintrospection=disabled
-    -Dnls=disabled
-
-# FFmpeg's decoders as GStreamer elements (avdec_h264 ...)
-import gst-libav/1.24.12 from https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.24.12.tar.xz
-    PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
-    -Dtests=disabled
-    -Ddoc=disabled
+# trinity: the H.264, H.265 and AAC decoders Wine's media calls
+import webgfx
 
 # Valve's tree ships no configure; 64-bit Windows code only (Hot
 # Lava is 64-bit), built in its checkout
 import wine/6d211aabd1d325c9990a5fd7a81b9db37caae12d from https://github.com/ValveSoftware/wine
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
     LDFLAGS=-Wl,-rpath,{install}/lib
-    # the system's FreeType: Wine opens it by its soname at run time,
-    # and silver's install holds only the static one
-    FREETYPE_CFLAGS=-I/usr/include/freetype2
+    # Wine opens FreeType by its soname
+    FREETYPE_CFLAGS=-I{install}/include/freetype2
     FREETYPE_LIBS=-lfreetype
+    # winegstreamer's decoders: trinity, through webgfx's C calls
+    TRINITY_LIBS="-L{install}/build -lsilver-webgfx -Wl,-rpath,{install}/build"
     > autoreconf -fi
     --enable-archs=x86_64
     --enable-win64
@@ -139,6 +291,7 @@ import wine/6d211aabd1d325c9990a5fd7a81b9db37caae12d from https://github.com/Val
     --without-gphoto
     --without-usb
     --without-oss
+    --without-alsa
     >> make -C {root_path}/checkout/ValveSoftware/wine -j16
     >> make -C {root_path}/checkout/ValveSoftware/wine install
     # Valve's loader runs 64-bit programs by i386-unix/wine64, as
@@ -158,8 +311,40 @@ import proton/70b7e109e8fc0783a509805f3d1bc090b55dac3f from https://github.com/V
     > sed -i -e '1 i UNIX_LIBS = {root_path}/checkout/ValveSoftware/wine/dlls/ntdll/ntdll.so' -e '/^all:$/,$c all:' -e '/^SUBDIRS/,/[^\]$/c SUBDIRS = {root_path}/checkout/archive/proton/lsteamclient {root_path}/checkout/archive/proton/steam_helper' -e '/^TOP_INSTALL_LIB/c TOP_INSTALL_LIB = dlls/src-lsteamclient' -e 's#^srcdir = .*#srcdir = {root_path}/checkout/ValveSoftware/wine#' -e '/^srcdir/a objdir = {root_path}/checkout/ValveSoftware/wine' -e '/^prefix/c prefix = {install}' -e '/^libdir/c libdir = {install}/lib' -e '/^toolsdir/c toolsdir = {root_path}/checkout/ValveSoftware/wine' -e '/^CXXFLAGS/c CXXFLAGS = -std=c++17 -g -O2' {install}/build/lsteamclient/Makefile
     > cd {install}/build/lsteamclient && {root_path}/checkout/ValveSoftware/wine/tools/makedep && make -j16 && make install
 
-# DXVK: Direct3D 9-11 on Vulkan (Proton's own way); its release build,
-# the DLLs a prefix takes in place of Wine's (wined3d has no GL here)
-import https://github.com/doitsujin/dxvk/releases/download/v3.1.1/dxvk-3.1.1.tar.gz
-    > mkdir -p {install}/lib/wine/dxvk
-    > tar -xzf {import_file} --strip-components 1 -C {install}/lib/wine/dxvk
+# vkd3d-proton 3.0.1: Direct3D 12 on Vulkan (Proton's own; Wine's
+# vkd3d runs few DX12 games), built from source as Windows DLLs on
+# our Wine (wine.cross), no MinGW. Its C++ (dxil-spirv) takes
+# libc++ from our LLVM, built for Windows code on Wine's C runtime,
+# and our C++ start-up (cxx/crt_cxx.c): Wine has no C++ of its own
+import vkd3d-proton/3b10bd7a7ec6a7347e616cf8bea59333afec2255 from https://github.com/HansKristian-Work/vkd3d-proton
+    PATH={install}/bin:$PATH
+    > rm -rf {install}/lib/wine/vkd3d {install}/lib/wine/cxx {install}/build/libcxx-wine
+    > cmake -G Ninja -S {root_path}/checkout/llvm-project/runtimes -B {install}/build/libcxx-wine -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=AMD64 -DCMAKE_C_COMPILER={install}/bin/clang -DCMAKE_CXX_COMPILER={install}/bin/clang++ -DCMAKE_AR={install}/bin/llvm-ar -DCMAKE_RANLIB={install}/bin/llvm-ranlib -DCMAKE_C_COMPILER_TARGET=x86_64-windows -DCMAKE_CXX_COMPILER_TARGET=x86_64-windows "-DCMAKE_C_FLAGS=--no-default-config -isystem {install}/include/wine/msvcrt -isystem {install}/include/wine/windows -D_UCRT -D_WIN32_WINNT=0x0601 -D_LIBCPP_NO_VCRUNTIME" "-DCMAKE_CXX_FLAGS=--no-default-config -isystem {install}/include/wine/msvcrt -isystem {install}/include/wine/windows -D_UCRT -D_WIN32_WINNT=0x0601 -D_LIBCPP_NO_VCRUNTIME" "-DLIBCXX_ADDITIONAL_COMPILE_FLAGS=-include;__concepts/same_as.h" -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install}/lib/wine/cxx -DLLVM_ENABLE_RUNTIMES=libcxx -DLIBCXX_CXX_ABI=none -DLIBCXX_ENABLE_NEW_DELETE_DEFINITIONS=ON -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXX_ENABLE_STATIC=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON -DLIBCXX_ENABLE_RTTI=ON -DLIBCXX_ENABLE_FILESYSTEM=ON -DLIBCXX_ENABLE_TIME_ZONE_DATABASE=OFF -DLIBCXX_INCLUDE_TESTS=OFF -DLIBCXX_INCLUDE_BENCHMARKS=OFF -DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=OFF -DLIBCXX_INSTALL_MODULES=OFF -DLLVM_INCLUDE_TESTS=OFF
+    > ninja -C {install}/build/libcxx-wine install-cxx
+    > clang -target x86_64-windows --no-default-config -O2 -isystem {install}/include/wine/msvcrt -isystem {install}/include/wine/windows -D_UCRT -c {root_path}/featured/wine/cxx/crt_cxx.c -o {install}/build/libcxx-wine/crt_cxx.o
+    > llvm-ar rcs {install}/lib/wine/cxx/lib/libcxxrt.a {install}/build/libcxx-wine/crt_cxx.o
+    # Wine's import libraries by the names lld-link looks for
+    > mkdir -p {install}/lib/wine/cxx/winelibs
+    > for f in {install}/lib/wine/x86_64-windows/lib*.a; do ln -sf $f {install}/lib/wine/cxx/winelibs/$(basename $f .a | sed s/^lib//).lib; done
+    > printf "[constants]\ninstall = '%s'\n" {install} | tee {install}/build/libcxx-wine/paths.txt
+    --cross-file {install}/build/libcxx-wine/paths.txt
+    --cross-file {root_path}/featured/wine/wine.cross
+    -Dcpp_eh=none
+    -Dcpp_rtti=false
+    --bindir=lib/wine/vkd3d/x64
+    --libdir=lib/wine/vkd3d/x64
+
+# DXVK 3.1.1: Direct3D 8-11 on Vulkan (the DLLs a prefix takes in
+# place of Wine's; wined3d has no GL here), built from source on our
+# Wine as vkd3d-proton is, after it: its libc++ and cross files.
+# C++ with exceptions and RTTI, run by Wine's vcruntime140.
+# dxvk.diff: Wine's headers take DXVK's MinGW-header branches; its
+# libdisplay-info submodule takes its own diff once fetched
+import dxvk/b1a1c99ab52b687cf950d62c88bc2fa316b41663 from https://github.com/doitsujin/dxvk
+    PATH={install}/bin:$PATH
+    > rm -rf {install}/lib/wine/dxvk
+    > patch -d subprojects/libdisplay-info -p1 -R --dry-run -s -f -i {root_path}/featured/wine/libdisplay-info.diff || patch -d subprojects/libdisplay-info -p1 -f -i {root_path}/featured/wine/libdisplay-info.diff
+    --cross-file {install}/build/libcxx-wine/paths.txt
+    --cross-file {root_path}/featured/wine/wine.cross
+    --bindir=lib/wine/dxvk/x64
+    --libdir=lib/wine/dxvk/x64

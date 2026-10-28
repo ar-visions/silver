@@ -58,9 +58,25 @@ it ("type 'string' is redundant").
 
 ---
 
+## Rule #3d — A one-letter '1' literal is a character
+
+A single-quoted literal of one character ('^', '{', 'a') is a
+character, as 'a' is in C, by design: it works with old C macros the
+same way. A string of one character is double-quoted ("^"), or
+written where a string is expected: `x : string [ "^" ]`.
+
+---
+
 ## Rule #4 — Isolate and validate every fix and feature
 
 Fix one component at a time. Reproduce the exact failure with the smallest focused test before editing. Change the component that owns the bug; do not add a workaround in another parser, model, build, or runtime layer. Run the focused test after the edit, then validate the affected module, then validate the requested integration target. Report each result separately. Do not call a fix complete unless its focused test and affected module both pass. If integration exposes another failure, treat it as a separate bug. Remove all temporary tracing before reporting results.
+
+## Rule #4b — A crash: build debug first
+
+A crash or fault is chased on a debug build from the start:
+`silver --debug --build <module>` (-O0 -g, imports the same), then
+run it and read the file and line. Never hunt through a release
+build's bare addresses, logs or guesses first.
 
 ---
 
@@ -72,8 +88,6 @@ Fix one component at a time. Reproduce the exact failure with the smallest focus
 
 ## Rule #5b — The first attempt is the real one
 
-Kalen (Oct 5 2026): "everything i ask for is usually bullshitted
-at first and then i have to ask 12 times to get the real result".
 The first version of anything asked for is built as the thing
 itself, at the strength and scale asked, not a faint or thin
 stand-in to be tuned up later. Before reporting, look at it
@@ -250,7 +264,7 @@ agent: the cause may be ours. Each such error becomes a rule here.
 
 ## Rule #12 — Modifier keys reveal hidden actions
 
-Kalen (Oct 10 2026). An action kept out of sight (Remove on a list
+An action kept out of sight (Remove on a list
 row, and the like) shows while a modifier is held:
 - shift: over the hovered element only.
 - ctrl, or cmd on a mac: on every element at once (globally).
@@ -260,23 +274,22 @@ shift+click that forces a blocked step (Continue) is separate.
 
 ## Rule #13 — No overlaid windows
 
-Kalen (Oct 14 2026): "i just cant stand those overlaid windows..
-we need to get away from it entirely". Never put a dialog, popup,
+Never put a dialog, popup,
 modal or box over the app's view. A question goes in the app's
 own status line, highlighted by a stronger border round it, and
 answered by a key (ctrl/cmd + r: "revert? enter: yes"; any other
 key is no). Values, choices
 and pickers live in the panels already on screen.
-Why (Kalen): it does not obscure the work, so the user can
+Why: it does not obscure the work, so the user can
 inspect it while deciding, and decide better.
-The one exception (Kalen, Oct 15): the menus orbiter spawns (a
+The one exception (Oct 15): the menus orbiter spawns (a
 window's menu from the system bar, a tray icon's menu) slide out of
 the dock as a drawer over the app, on a blur of what is under it;
 the app keeps its width. Nothing else overlays.
 Not an overlay: the navigator (trinity/navigation.ag) is a whole
 view under the bar, not a box over the work. File open and file
 save (save as, an untitled drawing's first save) go through it
-(Kalen, Oct 14).
+(Oct 14).
 
 ---
 
@@ -328,7 +341,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    command line's name=value words as its environment.
    Checked in qemu on an ext4 image: pid 1, / is the folder,
    env passed; a wrong uuid prints why and waits (no panic).
-   /orbiter-os -> src/silver/orbiter-os/root is made (Kalen).
+   /orbiter-os -> src/silver/orbiter-os/root is made .
 3. DONE kernel for europa: BLK_DEV_NVME added (Samsung 980
    Pro); ext4, xHCI, USB HID, evdev, DRM, EFI stub, modules,
    r8169 (RTL8125) were already in. Wi-Fi (RTL8852CE) is not.
@@ -346,7 +359,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    On a host driver update: change the tag, `nvidia_version`,
    and delete share/silver-os-bootstrap/nvidia to rebuild.
    Secure Boot is off on europa: an unsigned kernel boots.
-5. IN PROGRESS the GRUB entry (awaiting Kalen's sudo + a boot):
+5. IN PROGRESS the GRUB entry (awaiting the user's sudo + a boot):
    appended to /etc/grub.d/40_custom, menu shown 5 s (was
    hidden, timeout 0), update-grub. Kernel command line:
    console=tty0 orbiter.uuid=<p1> orbiter.init=/src/silver/
@@ -383,7 +396,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    strace shows vulkan opens only nvidiactl, nvidia0,
    nvidia-modeset and /proc/driver/nvidia/params. The tree's
    dev/sys/proc are empty (the mounts moved fine).
-   TEMP trace in init.c (remove when solved): open() result of
+   TEMP trace in init.c (remove when solved): open result of
    each nvidia node + gpu count. Next boot adds LD_DEBUG=libs.
    Fifth boot (LD_DEBUG=libs): nodes open ok, 1 gpu. glcore's
    "undefined symbol __malloc_hook/ErrorF (fatal)" lines show
@@ -394,7 +407,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    json and the gbm platform json. Checked: vulkaninfo run by
    the tree's ld.so with only the tree's libraries finds the
    RTX 3060, driver 610.57.04. grub-debug.sh is still on.
-7. BUILT, not booted (Oct 15, Kalen: a hardware cursor, its move
+7. BUILT, not booted (Oct 15: a hardware cursor, its move
    eased by filter_n at the screen's refresh) DRM owns the screen.
    NVIDIA's VK_KHR_display planes are full screen only (no cursor
    plane), so the VK_KHR_display surface is gone: trinity asks the
@@ -412,9 +425,9 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    Easing: each poll moves the drawn point a share of the way to
    the mouse, keep = (1 - 0.3)^(dt x refresh Hz): it keeps 70%
    of its place and takes 30% of the mouse a refresh at any rate
-   (Kalen; platform_cursor_ease). Then (Kalen, Oct 15, first
-   boot where it moved: "too instant"; "it must decay at the
-   frame factor of our hz rate"): per refresh at the mode's hz,
+   (platform_cursor_ease). Then (Oct 15, first
+   boot where it moved: too instant; it must decay per
+   refresh at the screen's rate): per refresh at the mode's hz,
    keep = (1 - g_ease)^(dt x hz), g_ease 0.3 (the build tried
    was my 0.7 by mistake). The app
    gets the eased point (clicks land where it is drawn).
@@ -423,8 +436,8 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    framebuffers taken, frames copied; SetCrtc refused (not master),
    as expected. The arrow checked as a picture. NOT seen on a
    screen: needs the tree written and a boot.
-   Then (Kalen: the cursor an svg drawn by trinity; 24 x 24):
-   Display.kms_pointer draws trinity/images/cursor2.svg (Kalen's,
+   Then (the cursor an svg drawn by trinity; 24 x 24):
+   Display.kms_pointer draws trinity/images/cursor2.svg (the user's,
    made in aeon) into a 24 x 24 Canvas, reads it back, gives it to
    the cursor plane. Click point: an element id hot (its middle,
    not drawn), else the drawing's point nearest the top left (the
@@ -432,8 +445,8 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    dump of the plane's buffer: the arrow, its white border and
    shadow, the hotspot 1.6 px in at the tip. An app's share links
    trinity's images at its build: build the app after a new svg.
-   Fixed (Oct 15, Kalen's boot: the arrow blue inside; "trinity
-   must render svg the same as Aeon"): draw_svg drew its cache
+   Fixed (Oct 15, the user's boot: the arrow blue inside; svg must draw
+   as Aeon draws it): draw_svg drew its cache
    with its own copy of SVGModel.render's loop; it calls
    SVGModel.render_tinted now (render is its untinted form). The
    blue was trinity's: a canvas with the reduce pass (an svg drawn
@@ -452,7 +465,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    and init.c's uevent hotplug (modprobe each `add@` MODALIAS),
    for the USB keyboard and mouse that came up after init's one
    modprobe pass (no usbhid, the pointer never moved).
-   Boot (05:00, Kalen: still not moving): usbhid loaded at 13.7 s
+   Boot (05:00, still not moving): usbhid loaded at 13.7 s
    (the hotplug ran) but no HID input followed: the listener began
    reading only after the 11 s first pass, whose drivers' device
    events overflowed its socket, so hid-generic never loaded; and
@@ -463,7 +476,7 @@ SUSE is gone: only its EFI loader is left (its btrfs root
 
 ## orbiter-os installer — live list (Oct 10 2026)
 
-Kalen: the install is orbiter itself, started with an argument,
+the install is orbiter itself, started with an argument,
 as macOS setup runs on its own window server. The installer app
 is `wizard`; it uses whatever supported card is in the machine.
 1. DONE `wizard/wizard.ag`: element InstallWizard. Pages: the
@@ -504,7 +517,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    they use are still exported; booted in qemu, the new kernel
    lists efivarfs (the old did not); orbiter-os/root/boot/vmlinuz
    is the new kernel. Not booted on europa yet.
-   qemu is out of os-bootstrap (Kalen, Oct 10: too slow): no
+   qemu is out of os-bootstrap (Oct 10: too slow): no
    qemu element, no whole-guest initramfs.cpio.
    On the way: qemu's two imports could not find system .pc files
    (install/bin/pkg-config is pkgconf, install dirs only): their
@@ -519,7 +532,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    rest are the app's (apps keep the knes rule). Checked: the
    bare bools reach orbiter and the wizard opens.
 5. OPEN first boot: make the user from install.agi.
-6. BUILT (Oct 10, Kalen: an RX 580; "and one for intel too")
+6. BUILT (Oct 10: an RX 580, and Intel)
    AMD and Intel. Kernel side was already in every build (amdgpu,
    radeon, i915, xe as modules; their firmware in the tree; init's
    modprobe by modalias). No choice row: unlike NVIDIA they are
@@ -542,8 +555,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    26.2.2) with no environment; anv loads (no Intel GPU here).
    NOT in the drive tree yet: its next write. NOT seen on an RX
    580 or an Intel machine.
-   Then (Kalen: "shouldnt the selection be there to build them or
-   not?"): AMD (amdgpu / none) and Intel (i915, xe / none) choice
+   Then : AMD (amdgpu / none) and Intel (i915, xe / none) choice
    rows under NVIDIA, and AMD and Intel columns in the kernel list.
    none turns the kernel's drivers off (DRM_AMDGPU, DRM_RADEON;
    DRM_I915, DRM_XE), names the build -noamd / -nointel, writes
@@ -628,7 +640,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    row reads "not checked". europa with the drive tree: RTX 3060
    yes (nvidia), RTL8125 yes (r8169), AMD graphics and the
    RTL8852CE Wi-Fi no. t_hardware_match passes.
-15. BUILT, not booted (Oct 10, Kalen: the kernel we build has the
+15. BUILT, not booted (Oct 10: the kernel we build has the
    hardware compatibility) the kernel on Ubuntu's 6.17 config
    (os-bootstrap/linux.config; signing, debug info and nouveau
    off; NVMe, USB storage, ext4, vfat, efivarfs built in, firmware
@@ -644,7 +656,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    old lib/modules/orbiter and the aliases file are gone.
    The defconfig kernel and its nvidia modules are kept as
    share/silver-os-bootstrap/bzImage.efivars and nvidia.efivars.
-   Fixed (Kalen: the RTX 3060 "not supported"): from Ubuntu the
+   Fixed : from Ubuntu the
    check fell back to Ubuntu's /lib/modules and took its first
    kernel (6.14, no nvidia). It only ever checks orbiter-os's
    tree now (running orbiter-os: its own, the running release;
@@ -681,7 +693,7 @@ is `wizard`; it uses whatever supported card is in the machine.
      init's modprobe -b, and the wizard reads the same blocklist.
    NOT booted yet with this kernel (modules by modprobe from
    init): the next real boot is the test.
-17. IN PROGRESS (Oct 10, Kalen: built kernels as a list to pick
+17. IN PROGRESS (Oct 10: built kernels as a list to pick
    from, new ones from choices) page 0 is the kernel list
    (ListBox, as the partitions: Kernel, Config, Modules, NVIDIA,
    Built; the lit row is the one the drive takes, saved in
@@ -704,7 +716,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    moved). Build kernel running end to end now (hidden).
    Note: `silver --build orbiter` does not rebuild os-bootstrap
    (reached through the wizard); build it by name after an edit.
-   Then (Kalen, Oct 10): no config choice and no Ubuntu naming
+   Then (Oct 10): no config choice and no Ubuntu naming
    (orbiter-os is built by everyone): one config, our
    os-bootstrap/linux.config; builds are <ver>[-nvidia<v>] (the
    first renamed 6.18-nvidia610.57.04). The Drive tree / Boot
@@ -716,7 +728,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    been copied; removed). Build kernel checked end to end (full
    rebuild after the folder move, then nvidia, depmod, "Built").
    NOT checked: Continue while building (the run was stopped).
-   Kalen's own 6.12 Minimal build is kernels/6.12-defconfig-...
+   the user's own 6.12 Minimal build is kernels/6.12-defconfig-...
    (8 modules), left as he made it.
    Cancel Build (lower left, only while building): each command
    runs `setsid sh -c` with its pid in install/tmp/os-bootstrap-
@@ -728,7 +740,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    stays on page 0; the 6.18 kernel untouched by a cancel.
    The wizard's avatar takes its build state (swap_on: the core
    flame, grooves, faster spin) while Bootstrap builds; seen.
-   Then (Kalen, Oct 10): every button 25% shorter (choices and
+   Then (Oct 10): every button 25% shorter (choices and
    Bootstrap buttons h1.1 -> 0.825, rows 1.3 -> 1.05 apart; the
    wizard's Back/Continue/Cancel h1.4 -> 1.05, its rows and fields
    1.25 -> 0.94), Continue 25% narrower (6 -> 4.5 units), Build
@@ -751,7 +763,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    gradient's ramp was set. Every fade_band (scroll_fade, the
    editor's mask_glow) painted nothing until now. trinity
    t_fade_band, t_fade_masked.
-18. BUILT, not written to a stick yet (Kalen: (a) + pkexec,
+18. BUILT, not written to a stick yet ((a) + pkexec,
    then our own stub) the USB installer: Write installer… beside Build
    kernel, for the chosen kernel, shows the drive row (sideways
    Choice buttons: usb or removable drives from /sys/block,
@@ -772,17 +784,17 @@ is `wizard`; it uses whatever supported card is in the machine.
    `pkexec sh -c` unmounts the stick's partitions and dd's it.
    t_installer_image (os-bootstrap) passes: 4,199 MB image in
    ~10 s, every file and the boot line read back. NOT done: a
-   real stick (pkexec would prompt on Kalen's desktop) and a UEFI
+   real stick (pkexec would prompt on the user's desktop) and a UEFI
    boot test (no OVMF here).
    FIXED (mine, Oct 10): make_image first wrote the drive tree
-   when it lacked the chosen kernel; with Kalen's 6.12 build
+   when it lacked the chosen kernel; with the user's 6.12 build
    chosen, my test put 6.12 into /orbiter-os (the GRUB entry's
    kernel). Restored (6.18 chosen, tree rewritten, vmlinuz equal
    to 6.18's bzImage, lib/modules/6.12.0 removed). make_image now
    never touches the drive tree: the stage is a hard-link copy
    without lib/modules and boot/vmlinuz, the chosen kernel's put
    in their place. Checked: tree mtimes equal before and after.
-   The image is built on this computer's disk first (Kalen's 58 GB
+   The image is built on this computer's disk first (the user's 58 GB
    stick failed "No space left" in mke2fs: / had 43 MB free).
    make_image now checks the free space for the whole image
    first and says so, and a failed step deletes its work folder.
@@ -809,12 +821,12 @@ is `wizard`; it uses whatever supported card is in the machine.
    half its alpha, no near light (border or inner glow). The
    wizard's and BootButton's own :disable blocks are gone.
    Written, the bar stays, all green and unlit, until Back. Each write
-   builds in its own install/tmp/installer-<pid> (Kalen's write
+   builds in its own install/tmp/installer-<pid> (the user's write
    and my hidden test shared one folder and broke each other).
    Back in the drive row is Write installer's width (4.5 units).
    t_copy_progress passes; the real stick write is not run here
-   (pkexec would ask on Kalen's desktop).
-   Kernel choices (Kalen: add 7.x) are kernel.org's releases.json
+   (pkexec would ask on the user's desktop).
+   Kernel choices (add 7.x) are kernel.org's releases.json
    read on open: stable, then the two newest longterm (7.2.9,
    6.18.55, 6.12.112 today); offline: 7.2, 6.18, 6.12. The
    download path is v<major>.x. t_kernel_releases passes.
@@ -822,7 +834,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    installer (bootstrap_here: no orbiter.init= on the boot line,
    silver's source present); OPEN: a release without the source
    should still list prebuilt kernels and write installers.
-19a. DECIDED (Kalen, Oct 10) hardware lines: x64, ARM64, Apple,
+19a. DECIDED (Oct 10) hardware lines: x64, ARM64, Apple,
    Surface. DONE on the page (Oct 10): the Hardware column first
    in the kernel list and a Hardware choice row; Kernel offers per
    hardware (x64/ARM64: kernel.org's; Surface: those linux-surface
@@ -872,8 +884,7 @@ is `wizard`; it uses whatever supported card is in the machine.
      6.17.0-40 generic from ports.ubuntu.com), our LLVM (ARCH=arm64
      LLVM=install/bin/), Image + modules; no NVIDIA or Intel rows.
      The drive tree stays x86: an ARM kernel is never the drive's.
-     Clicking its row lights it for the stick only (Bootstrap.stick;
-     Kalen: "we should still be able to write an installer"):
+     Clicking its row lights it for the stick only (Bootstrap.stick):
      BOOTAA64.EFI (efistub.c for aarch64), Image as vmlinuz.efi, an
      arm64 /init (init.c on the kernel's tools/include/nolibc, built
      with the kernel: `init` beside Image; shims under #ifdef
@@ -905,7 +916,7 @@ is `wizard`; it uses whatever supported card is in the machine.
      chain (m1n1, U-Boot; the Asahi way installs from macOS), and
      the whole orbiter-os userland for arm64 (orbiter, trinity,
      Mesa's asahi driver). A project in stages: kernel first.
-20. BUILT (Oct 15, Kalen: a partitioning view; all three; swap
+20. BUILT (Oct 15: a partitioning view; all three; swap
    adapting to the machine, a partition or a file) the disk page:
    a map (DiskMap: each partition and free run to scale, at least
    3% so a small one can be picked; ext4 blue, others grey, free
@@ -932,8 +943,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    cycling, the folder table under the map. NOT driven: a drag
    (nothing here can shrink as a user: p1 is mounted, NTFS needs
    root), a real install into free space, swap at boot.
-21. DONE (Oct 15, Kalen: "it needs its own platform in its user
-   land") the drive tree builds itself: os-bootstrap add_toolchain
+21. DONE (Oct 15) the drive tree builds itself: os-bootstrap add_toolchain
    adds silver (install/bin/silver, build/silver), clang and lld,
    git (+ git-core), install/include, clang's own include
    (install/lib/clang/22/include), /usr/include, gcc's start files
@@ -949,7 +959,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    linked by its lld with its crt and gcc files, ran; the tree's
    silver and git start. NOT checked: a silver module built inside
    a booted orbiter-os.
-   On the way (Kalen): the old images deleted: orbiter-os/
+   On the way : the old images deleted: orbiter-os/
    initramfs.cpio (1.1 GB, qemu era) and the old tree (its 64
    root-owned files, and the installed /orbiter-os, need sudo).
 22. DONE (Oct 15) the install runs as root through pkexec's prompt
@@ -963,9 +973,9 @@ is `wizard`; it uses whatever supported card is in the machine.
    from another system is os-bootstrap's drive_tree, the boot words
    os_words (shared with the stick). An existing /orbiter-os link
    is replaced by the copy. t_install_steps, t_boot_order (a fake
-   efibootmgr), t_free_plan; `silver --test wizard` exit 0. Kalen's
+   efibootmgr), t_free_plan; `silver --test wizard` exit 0. the user's
    sudo install ran (02:44) before the pkexec version.
-19. OPEN (Kalen, Oct 10) orbiter-os on Macs. Apple Silicon:
+19. OPEN (Oct 10) orbiter-os on Macs. Apple Silicon:
    Asahi's kernel tree (github.com/AsahiLinux/linux, branch asahi,
    7.1.9 on Oct 10) as a kernel source choice, and an installer
    for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
@@ -973,7 +983,7 @@ is `wizard`; it uses whatever supported card is in the machine.
 
 ## orbiter-os in a Windows partition — live list (Oct 23 2026)
 
-Kalen: an orbiter-os folder on the Windows (NTFS) partition holds
+an orbiter-os folder on the Windows (NTFS) partition holds
 everything; it boots from the firmware's boot list (Windows Boot
 Manager cannot start a non-Windows loader on UEFI). His picks: the
 system is one ext4 image (orbiter-os\root.img, as Wubi did), the
@@ -1015,7 +1025,7 @@ from Linux. In order:
 
 ## orbiter-os on phones (Oct 21 2026)
 
-DROPPED (Kalen, Oct 21): the Pixel line. Tensor Pixels use Samsung's
+DROPPED (Oct 21): the Pixel line. Tensor Pixels use Samsung's
 Exynos modem, whose control (boot program, radio library, IMS for
 VoLTE) is closed: no calls, SMS or mobile data on our own system.
 Built and then removed with its files (~22 GB): Google's kernel for
@@ -1035,7 +1045,7 @@ Kept, for any phone:
   first in order and every later modprobe kept inside it (-d, -C).
   Checked by a harness, not booted.
 
-### Fairphone 6 — live list (Oct 21 2026, Kalen: "do all steps")
+### Fairphone 6 — live list (Oct 21 2026)
 
 Chip SM7635 "Milos". Kernel: milos-mainline/linux (Luca Weiss's
 mainline fork; postmarketOS builds tag v<pkgver>-milos, 7.2.0
@@ -1076,7 +1086,7 @@ module list (panel-novatek-nt37705, spi-geni-qcom), the cmdline.
    (current slot), reboot, then the log from the 1d6b:0104 ttyACM
    into install/tmp/phone-<p>.log. phone_dry: check only.
    NOT run against a phone: none here, and never flashed by me.
-5. BUILT (Oct 21, Kalen: the root fs on userdata) Install also
+5. BUILT (Oct 21: the root fs on userdata) Install also
    writes the phone's root. A fresh uuid per install; the boot
    line gains orbiter.uuid=<it> orbiter.root=/ orbiter.init=
    /sbin/init. phone_rootfs: ext4 (4 KB blocks, label
@@ -1101,9 +1111,595 @@ OPEN: the drive tree on the phone (userdata), the arm64 userland,
 the modem (rmtfs, qrtr, pd-mapper, ModemManager), vbmeta if ABL
 needs it (pmOS flashes none for this phone).
 
+### Fairphone 6: orbiter-os built by the wizard (Oct 25 2026)
+
+the user: the wizard's installer builds orbiter-os for the
+phone itself (arm64), not busybox. Order:
+1. DONE the sysroot: devices.agi `fp6` (platform linux-arm64):
+   ubuntu-base 24.04.5 arm64, then the dev packages our modules
+   link (xcb, drm, alsa, wayland, wlroots, xkbcommon, pixman,
+   dbus, fontconfig) and their whole Depends closure (an awk
+   resolver over noble + noble-updates main + universe: 246
+   packages, 670 MB) into platform/fp6/sysroot. Fetch lines are
+   interpolated by silver: { and } are written {{ and }}.
+   Ubuntu's arm64 Mesa there is 25.2.8 (turnip in it).
+2. DONE silver's cross path for a glibc board (src/silver.c,
+   deploy.c): Au, libffi, posix and the core modules for arm64
+   (ensure_linux_runtime, platform/fp6/lib); the link takes
+   platform/fp6, never platform/native/lib, rpath $ORIGIN and
+   $ORIGIN/../lib; libstdc++ (the sysroot's); meson's cross file
+   and autotools get --sysroot, lld and the board's pkg-config;
+   cmake's toolchain sets PKG_CONFIG_LIBDIR to the board's;
+   exports are not run for a cross product. Native imports get
+   -Qunused-arguments (mbedtls's -Werror refused -fuse-ld=lld:
+   its build folder had to be made again).
+   Modules' host -I paths gained a sysroot form (-I=/usr/...):
+   devices, wayland, tray, wifi.
+3. DONE `silver -d fp6 --build trinity` exit 0: gltf, img, tls,
+   devices, trinity and their imports (Vulkan loader, layers,
+   tools, glslang, SPIRV, faac, rnnoise, png, zlib, tiff) aarch64.
+4. DONE orbiter for fp6: `silver -d fp6 --build orbiter` exit 0,
+   every module it reaches aarch64, its launcher too.
+   Fixed on the way: cmake 3.31 (wine's import) was built
+   without OpenSSL: no https, FetchContent failed (sherpa-onnx);
+   now -DCMAKE_USE_OPENSSL=ON (the system's libssl). SPIRV-LLVM-
+   Translator fails on clang 22 (spv::StorageClass has no fixed
+   type for DenseMap): os-bootstrap/SPIRV-LLVM-Translator.diff.
+   Meson's cross file names lld as c_ld (a -fuse-ld compile flag
+   failed its -Werror header checks: libdrm lost makedev). The
+   sysroot's .pc files name sysroot paths (the fetch rewrites
+   them): pkg-config's sysroot prefix bent our own paths.
+   os-bootstrap's x86 drive artifacts (mtools, libdrm, the
+   translator, radv/anv/venus Mesa) are under ifdef [ x86_64 ].
+   LLVM (clang, lld, lldb; AArch64 only, the user's pick) for
+   arm64: an os-bootstrap import under arm64 linux, into
+   platform/fp6. ensure_linux_runtime builds aether (aclang,
+   allvm, lldb.c, coverage; no -DSDK: an LLVM header has a
+   parameter named SDK), libsilver (silver-lib.c) and the silver
+   program on it, as silver.ninja does natively.
+   Seen under qemu-aarch64 with Ubuntu's arm64 lavapipe (test
+   root only): orbiter runs, its app socket answers, the shot
+   shows the system bar (globe, orbiter) and the bottom bar;
+   shaders compile with the arm64 glslang; the Wayland display
+   does not start there (no DRM device). The arm64 silver prints
+   its usage. A compile on arm64 not run (qemu cannot start its
+   clang child: no binfmt).
+5. DONE (built, not on a phone) Mesa turnip for arm64: Mesa 26.2.2
+   knows the "Adreno (TM) 810" (Ubuntu's 25.2.8 does not); an
+   os-bootstrap import under arm64 linux, -Dvulkan-drivers=
+   freedreno, msm: platform/fp6/lib/libvulkan_freedreno.so.
+6. DONE phone_rootfs writes orbiter-os for arm64 (busybox gone):
+   the fp6 sysroot as the base (its .pc paths put back), silver's
+   tracked files at /src/silver, platform/fp6/{lib,build,bin} at
+   /src/silver/install (no .a), the shares of the modules built
+   (os-bootstrap's images only, no kernels), turnip's json at the
+   phone's path, the kernel's modules and firmware in /usr/lib.
+   The boot line runs orbiter (os_words, arm) with VK_DRIVER_FILES
+   on turnip. os-bootstrap t_phone_rootfs: 1.96 GB image, read
+   back by debugfs (aarch64 launcher, the json, 7.2.0 modules).
+   `silver --test os-bootstrap` 4/5 (t_installer_image_arm as
+   before). OPEN: files owned by uid 1000; no serial shell now.
+7. DONE (not run end to end) the wizard's Fairphone build: after
+   the kernel it runs `silver -d fp6 --build os-bootstrap` and
+   `... orbiter`; the fp6 device is os-bootstrap/fp6.agi, found by
+   silver. devices.agi is the user's: no program writes it.
+9. BUILT (Oct 25) SILVER_MOBILE: init.c puts SILVER_MOBILE=<the
+   orbiter.phone value> (fp6) into the environment it hands on
+   (env_add: nolibc has no setenv); checked by an arm64 nolibc
+   test under qemu-aarch64. init.c also builds on 7.2's nolibc now
+   (ioctl takes three arguments). trinity: every element has
+   `use_mobile` (element's last member), true when SILVER_MOBILE
+   is set (mobile_on), set in element's init and, mounted, before
+   its first style; a style takes it as the state `:use_mobile`.
+   trinity t_use_mobile; trinity tests exit 0. element grew a
+   member: every trinity app builds before it runs again. Not in
+   a phone boot image yet; no style uses it yet.
+10. IN PROGRESS (Oct 25) the mobile look, the user's design:
+   a. DONE no bottom task bar, only the top menu: orbiter main_els
+      leaves out TasksBar on use_mobile and the panes run to the
+      foot; MenuDrawer, WinDrawer, ExchangeDrawer, SystemDrawer and
+      SeamShade take `:use_mobile` / `:open&use_mobile` blocks to b0
+      (each subclass its own: a base's state block is inherited).
+      Seen hidden at 1116 x 2484: phone, no status element, stack
+      0 30 1116 2454, system menu 0 30 495 2454 (power at the
+      foot); desktop unchanged (status 0 2449, stack to 2419).
+      OPEN: the task bar's other parts (task buttons, sound,
+      console) have no place on the phone yet.
+   b. BUILT (Oct 25: a press and drag in an element showing its
+      scrollbar scrolls it, phone only, with momentum) trinity
+      Window drag_begin / drag_step / drag_speed: the nearest
+      element under the press with use_mobile and a scrollbar
+      shown; past 8 px up or down (more than sideways) the content
+      follows the finger 1:1 and the press clicks nothing; sideways
+      first leaves it (a slider's). The speed is a running average,
+      each move's a third of it (a move under 4 ms on joins the
+      next), capped at 8000 px a second, none if held 100 ms before
+      the release; element.fling plays it out each frame (1.8%
+      left after a second: twice the decay), stopped at either end, by a touch, the
+      wheel or the thumb. Measured hidden on the apps grid (1116 x
+      450): the same 20 px flick three times went 101, 110, 118 px.
+      Not felt on a phone.
+      Then (Oct 27): a press on a scrollbar's thumb takes the thumb
+      (Window press_steps, before any element: thumb_el), which
+      follows the finger to the release; no drag scroll. Seen hidden
+      in a phone orbiter's editor: thumb pulled to y 450 sat under
+      it (line 309); a drag on the text still scrolls.
+   c. BUILT (Oct 25: press, hold a second and drag reorders the
+      apps screen: apps and sections) AppsGrid: a press held a
+      second, then moved, lifts its card (to the nearest slot of
+      its own section, across rows and columns) or its heading
+      (the whole section moves with it, past half its neighbour);
+      every card and heading eases to its place (filter_n 0.3);
+      the release saves orbiter.app_order and group_order
+      (StatePersist) and clicks nothing; gather follows them. A
+      store's open folder blocks it. trinity Window: a press held a
+      second never becomes a drag scroll. All platforms. Seen
+      hidden (phone, 1116 x 700): steam dragged three right (saved
+      rgen n64 psx steam asnes, the others easing aside mid-drag),
+      creative dragged over games (saved first); no app started.
+      Not felt on a phone; no lift shown before the first move.
+   d. BUILT (Oct 25: the held element's peers on and off; the
+      elements take it by their own event handling) trinity:
+      element.arranging (:arranging); Window.arrange[ e, on ]: on
+      for e and its parent's elements, off for them all; hold_tick
+      (each frame in update_all): a press held still a second (8 px)
+      arranges its peers; a press on none of them ends it; a press
+      on one never drag scrolls. AppsGrid: arranging, a card or
+      heading drags with no hold; a tap on empty space in it ends
+      it; arranging or after a held press, a release opens nothing.
+      Seen hidden (phone): steam held and let go (nothing opened,
+      nothing saved), rgen dragged at once (saved steam n64 psx
+      rgen ...), empty tapped, the next quick drag moved nothing.
+   e. BUILT (Oct 25: the cards' inner glow oscillates, brighter and a
+      bit purple, while arranging) AppsGrid draw_tile: an inset
+      shadow rgb 0.72 0.5 1.0 on every card, alpha 0.35..0.85 and
+      blur 10..18 px on a 1.2 s sine; frames kept while arranging.
+      Fixed (it played only while the mouse moved): pristine
+      set in a draw is reset after it; a cached element drawn again
+      next frame sets needs_frame on itself and each parent, as the
+      near light does. AppsGrid does so while arranging or easing.
+      Seen hidden with no input between shots: red 3 px inside psx's
+      edge 39, 65, 55, 31, 46 over 0.3 s steps (23 off). The "shot
+      needs a move" note was this bug, not the shot.
+   f. BUILT (Oct 25: an app's files in its folder, as a store's
+      apps) an app module whose exported extensions match files
+      opens as a folder on the apps screen: its own card (runs it),
+      then a card per file (AppEntry.opens), which opens the app on
+      it (open_in_pane, or a new pane from the desktop). Files: the
+      file index under silver's folder (not checkout/), and the
+      user's folder two folders down, hidden ones skipped
+      (orbiter files_ending, home_ending; Editor.exts_of). An app
+      with no matching files runs on a click as before. Cards are
+      keyed by module file (or the file they open), so repeated
+      names no longer share an eased place (the steam folder's
+      overlaps). ref/ is git-ignored, so not in the index: its 50
+      entries (563 MB) copied to ~/roms (ref/ untouched).
+      Seen hidden (home with a roms link): rgen sonic.gen, psx
+      rr.cue (~/roms/ridge_racer), n64 three .z64 and test.v64;
+      sonic.gen pressed started `rgen /src/silver/ref/sonic.gen`
+      (from ref/, before the move). An earlier saved app order (by
+      name) no longer matches: the default order once.
+   g. DONE (Oct 25: the main navigator ran at ~30 fps scrolling,
+      160 expected) measured hidden at 2560 x 1440, SILVER_HZ 165:
+      rest 160, navigator open and still 41, scrolling 29-35; elems
+      (CPU drawing the tree) 340-430 ms a second, every cached
+      element repainted every frame. Two causes, both orbiter's:
+      - EditorView.settle (tick) restyled the whole window every
+        frame: its check that the list lines up with the editor's
+        text area left out the full navigator's dock (79 px), so it
+        never matched. It takes the dock off now.
+      - the list's ToolRail (animated: true) drew nothing there
+        (its owner is an Editor, never the list; rail_w 0, the
+        views are the system bar's) yet made the list's fade mask
+        compose again every frame: removed from CommitView.
+      After the first fix: open 98, scrolling 96-102. The second
+      not measured (the run was stopped). How found: the frame's
+      stats line, --stats REDRAW counts, then which tick set
+      restyle (traces, all removed).
+   h. BUILT (Oct 25) the apps screen: icons 76 -> 99 px, cards
+      96 -> 125, names 16 -> 18 px (headings unchanged), the cards'
+      near light 120 -> 180 px. Typing with a folder open (a store's
+      apps, an app's files) filters inside it, the apps around it
+      kept; Enter opens its first match (AppsGrid.first_match, a
+      file through open_in_pane). Seen hidden: Steam's folder and
+      "tomb": steam and its three Tomb Raiders. Enter not driven
+      (it would start the real Steam). Fixed on the way, mine: the
+      closed folder's name is null (open.count crashed at start).
+   i. BUILT (Oct 25) home by a held press low on the phone: a
+      press in the screen's lowest 15% that no element took
+      (ev.no_default unset) starts orbiter.home_hold_us; on_frame,
+      while the window holds the press and the pointer stays in the
+      lowest 20%, after 0.5 s go_home[ active_pane ] (its window,
+      app view, console and file let go: the apps screen; a running
+      app keeps running). Checked hidden with the handled test
+      taken out once: a hold risen to 70% stayed, one at 83% went
+      home. With it (as asked): over the editor, the apps screen
+      and the navigator every press is handled, so it fires only
+      on spots none takes.
+   j. BUILT (Oct 26: a flick keyboard for the phone; trinity's
+      language enum; English and Japanese first; keyboards in their
+      own module, opaque to trinity as input devices, voice later)
+      trinity: enum Language (english, japanese), Window
+      input_language (last member), Window.input_text / input_key,
+      element InputDevice (put_text, put_key, compose: held text
+      replaced by backspaces, commit). The edit layer steps by
+      UTF-8 character (backspace, delete, arrows, caret places).
+      keyboard module: FlickKeys (5 x 4: kana or abc keys, numbers,
+      back, arrows, space / 変換, enter / 確定, 123, language, 小゛゜
+      or a/A; a tap the first character, a flick left up right down
+      the others, the cross shown while held); Japanese composes in
+      kana, the bar offers SKK-JISYO.L's words for the longest start
+      (and a stem + ending: かk -> 書く), the kana and katakana;
+      install/share/keyboard/skk.txt (UTF-8, sorted, binary search).
+      `silver keyboard`: a field over it. t_kana_lookup passes;
+      trinity tests exit 0. Seen hidden: かんじ by flicks, 漢字
+      offered, 変換 cycles, a tap commits, English 'hI' by a/A.
+      Then (every editable control, and every one taking words
+      by its own on_char, not mere key bindings, brings it up):
+      element.takes_words (an editable layer not read only, or a
+      class below element with its own on_char; key handlers alone
+      are not words), Window.words_wanted (last member) each frame
+      from the focus, a hosted app posts it (HM.words 25) and
+      orbiter's AppView keeps it (app_words); Editor.takes_words is
+      the shown app's word, else true (code). orbiter on the phone
+      mounts FlickKeys at the foot (38%) while words_wanted, the
+      panes above it. t_takes_words passes. Seen hidden (phone 540 x
+      1100): none at start, the navigator's search brought it up,
+      'aeon' flicked in filtered the list. NOT driven: a hosted
+      app's field (HM.words).
+      Then (Oct 26: no keyboard on ANY app launch; on mobile NO
+      app takes the focus, the user dictates it entirely):
+      Window.set_focus refuses every focus on a phone but one given
+      inside a press's routing (Window.pressing, press_route ->
+      press_steps). An app's launch (orbiter host_module, console's
+      own on_frame focus) no longer brings the keyboard. Checked
+      hidden (phone): console from its card, no keyboard; a press
+      straight to the console's socket brought it up in orbiter.
+      NOT seen: a tap in orbiter's pane reaching a hosted app (a
+      hidden run gets no hosted frame, view_press waits on ready).
+      Found on the way: silver's exporter rewrote each module's
+      install/export agi on every compile, dropping trinity's
+      props: block (only the export step puts it back; a --test or
+      a build without it left none), so the apps screen took
+      console for a program and ran it inside a console
+      (console in console, which then quit). exporter keeps the
+      blocks it does not write (registry_foreign, silver.c).
+      Checked: props survive `silver --test keyboard`.
+      Then (Oct 26: keys are styled elements, not drawn): FlickKey
+      (:way, :chosen, :pressed; transitions in the style), FlickJob,
+      FlickWord; a top key's up way on the bar (the bar one key row
+      tall); space spans two rows, return one; bottom-row keys have
+      no down way (standard). Fixed on the way, silver: a style
+      state line was joined with the next when the token after it
+      started where it ended (:way at column 8 and layers.body: at
+      12; the old ':lit' bug): silver_next_is_neighbor and the
+      keyword_default copy now need the same line. And an import's
+      block reads ifdef [ name ] / el (import_ifdef): features'
+      windows-only bz2 copy ran on linux. features 263/264
+      (t_codegen_resource as before). A member named near is
+      trinity's (the pointer's): FlickKey's is `way`.
+      Then (Oct 26): the language key drawn up shows one cell,
+      manage languages (where 123 is): every language we support,
+      a tap adds or removes it (lit when added), then back; a tap
+      on the key cycles English and the added ones. Chinese (Language.chinese, trinity):
+      pinyin on the abc keys, Rime's pinyin_simp (Apache-2.0,
+      install/share/keyboard/pinyin.yaml), words heaviest first for
+      the longest start; t_pinyin_lookup passes. Names read in
+      English too (language_title: 日本語 Japanese).
+      Then (Oct 26: 20 s locked at the first hint words; the caret
+      after one letter of two): pinyin is made SKK's form once at
+      the build (export pinyin_table: install/share/keyboard/
+      pinyin.txt, 'ni /你/拟/.../' heaviest first, sorted bytewise),
+      and both dictionaries are searched in the file's bytes, no
+      index made at load: the first letter 1.89 s -> 0.06 s
+      (release). orbiter's editor moves the caret by the text put
+      in and backspaces a whole UTF-8 character.
+      Then (Oct 26: no English-only half solution) Unicode
+      names in silver: Au au_name_len (src/Au.c; ASCII letters,
+      '_', and beyond ASCII any code point but space, punctuation,
+      symbols, emoji, private use) is the one name test: silver.c
+      is_alpha and the name checks, Au's agi reader and writer.
+      features t_unicode_names (加, 帐户.余额, its .agi back):
+      264/265 (t_codegen_resource as before); the binary's
+      symbols are 加, 帐户_存. Names are read in NFC (Au au_nfc,
+      UAX #15 over src/nfc.h, Unicode 15.0 from support/
+      nfc_table.py; the lexer's names and the agi reader's):
+      38,629 strings equal to Python's NFC; features
+      t_unicode_one_spelling (café declared as é, called as e +
+      U+0301) 265/266.
+      orbiter's editor on a cell grid: a character 1 cell, east
+      asian wide 2 (Editor cell_w, cells, col_x, grid_text: other
+      characters drawn alone, centred in their cells); clicks
+      (model_col), caret, selection, find marks, arrows (whole
+      characters; up / down keep the cell column), double-click
+      (word_at: any script's letters, not punctuation). Seen
+      hidden: 你好世界 selected whole at the first double-click,
+      テスト without 、。, z typed before 界 after three Lefts.
+      Then (Oct 26) the added languages are kept (trinity
+      StatePersist, class KeyLanguages, ~/.local/state/
+      KeyLanguages; 'none' when all are removed). Seen: removing
+      Japanese wrote 'added: chinese'; after a restart on that
+      home only Chinese was lit.
+      Then (Oct 26: one engine, both languages, from linguistic
+      databases, not from any IME project) the keyboard's tables are
+      made by export funcs (keyboard/Tables.ag ja_table, zh_table) at
+      its build, into install/share/keyboard: ja.txt / zh.txt
+      ('reading /word;cost;id/', cost -ln P x 100, the likeliest 24)
+      and ja-pairs.txt / zh-pairs.txt ('a TAB b /bonus/', 'a TAB
+      /back/', Witten-Bell). Japanese: JMdict's words, readings and
+      classes, every verb and adjective form by the language's rules
+      (conjugate: godan rows, ichidan, する, 来る, い and いい
+      adjectives); counts, spellings as written and pairs from the
+      Tanaka corpus's word indices. Chinese: CC-CEDICT's words and
+      pinyin, Unihan kHanyuPinlu's character counts, Tatoeba's 89,211
+      Mandarin sentences split twice (longest word, then likeliest)
+      for counts and pairs. SUBTLEX-CH left out (research only), Rime
+      and SKK removed. keyboard.ag: Lexicon (the tables, searched in
+      their bytes), sentence (Viterbi over words and pairs, 8 best a
+      place, both languages), offer (the sentence first). Build: 89 s
+      (JMdict 218,961 words, Tanaka 149,857 sentences). Fixed on the
+      way: re_inf gikun (今日 きょう) is a reading; 'nf08' read as
+      octal; each line's temporaries drained (Au.auto_mark /
+      auto_free_to: 12 GB to 160 MB). keyboard 6/6; seen hidden in
+      orbiter: わたしはがくせいです -> 私は学生です, wojintianqushangban
+      -> 我今天去上班, one press each; every key under 0.1 s.
+      Maps: Au's default 256 buckets (was 8); map.reserve[ n ]; a map
+      type's settings after its key: map V [ K, hsize: n ] (silver
+      read_etype, aether e_create: set before its init; features
+      t_map_settings, 266/267).
+      Then (Oct 26: no English-only half solution) Unicode
+      names in silver: Au au_name_len (src/Au.c; ASCII letters,
+      '_', and beyond ASCII any code point but space, punctuation,
+      symbols, emoji, private use) is the one name test: silver.c
+      is_alpha and the name checks, Au's agi reader and writer.
+      features t_unicode_names (加, 帐户.余额, its .agi back):
+      264/265 (t_codegen_resource as before); the binary's
+      symbols are 加, 帐户_存. Names are read in NFC (Au au_nfc,
+      UAX #15 over src/nfc.h, Unicode 15.0 from support/
+      nfc_table.py; the lexer's names and the agi reader's):
+      38,629 strings equal to Python's NFC; features
+      t_unicode_one_spelling (café declared as é, called as e +
+      U+0301) 265/266.
+      orbiter's editor on a cell grid: a character 1 cell, east
+      asian wide 2 (Editor cell_w, cells, col_x, grid_text: other
+      characters drawn alone, centred in their cells); clicks
+      (model_col), caret, selection, find marks, arrows (whole
+      characters; up / down keep the cell column), double-click
+      (word_at: any script's letters, not punctuation). Seen
+      hidden: 你好世界 selected whole at the first double-click,
+      テスト without 、。, z typed before 界 after three Lefts.
+      Then (Oct 26) the added languages are kept (trinity
+      StatePersist, class KeyLanguages, ~/.local/state/
+      KeyLanguages; 'none' when all are removed). Seen: removing
+      Japanese wrote 'added: chinese'; after a restart on that
+      home only Chinese was lit.
+      Then (Oct 26) whole pinyin sentences: pinyin.txt keeps each
+      word's weight ('我;1192789'); pinyin_sentence splits the
+      letters every way they make words and takes the likeliest
+      (each word ln(weight / 95,197,397); a letter no word takes
+      stays a letter at -40), offered first in the bar.
+      t_pinyin_sentence: wojintianqushangban -> 我今天去上班,
+      nihaoshijie -> 你好世界, womenyiqichifanba -> 我们一起吃饭吧;
+      keyboard 5/5. Seen hidden: typed in the editor, one 1 put
+      the sentence in; every key 0.02-0.12 s.
+      Then (Oct 26) the bar scrolls (FlickStrip, the phone's and
+      the PC's): the words at their full width shifted, eased in
+      tick (filter_n 0.14, as trinity's scroll), the wheel, a drag
+      past 8 px (a tap chooses at the release), the chosen word kept
+      in view, new words start at the left; mask_glow's left and
+      right fades (24 px) where more words lie. Seen hidden: at 800
+      px wide ni's words scrolled by the wheel and a drag and back,
+      the right edge's ramp 240 221 202 171 on two glyphs; the
+      phone's bar dragged 240 px, its edge faded.
+      Then (Oct 26) QWERTY for English and pinyin (Japanese stays
+      on kana); the language key drawn right toggles QWERTY / 12
+      keys (KeyLanguages.letters); EN bottom left on both; 123
+      toggles letters and numbers; the numbers' ( key is #+=, the
+      special characters (all 32 ASCII marks a tap each on QWERTY,
+      a flick grid on 12 keys), where 123 goes back. QWERTY's
+      foot: EN, 123, #+= a letter wide each; the 12 keys' grid the
+      same at its foot (grid_span: the jobs' column a letter wide,
+      return's column qwerty's 20%, the three between share 70%).
+      The close is a down chevron (keyboard/images/down.svg), no fill,
+      half the bar's height from its top.
+      The mic (FlickMic, keyboard/images/mic.svg from orbiter's) is
+      the bar's first key over EN's column: a tap starts a take
+      (speech's dictation, keyboard imports speech), red while it
+      records, another tap ends it and whisper's words are typed.
+      Seen hidden with SILVER_DICT_FILE (a Picard clip): the words
+      typed into the field. Not heard from a real mic.
+      Emoji page: the foot's second key steps abc -> 123 -> emoji
+      -> abc (it reads the next); the page
+      is the numbers' keys with EmojiGrid where 1 to 9 are, 5 rows
+      scrolled sideways (drag, wheel, eased, edges faded), a tap
+      types one. Unicode's emoji-test.txt (import) -> emoji_table ->
+      share/keyboard/emoji.txt (1,400 single code points); pictures
+      from the system's colour emoji font (fontconfig), FreeType
+      FT_LOAD_COLOR, halved, a texture each as it shows (EmojiSheet).
+      Swipe (Oct 27, English on QWERTY): a letter drawn off its key
+      is a swipe; its line (points 14 px apart, the last following
+      the finger) drawn as curves through the midpoints, round caps;
+      at the release SHARK2's match (32 points, place and shape)
+      against en.txt (Tatoeba's English counted at the build, 60,000
+      words, en_table), words by first and last letter; the best held
+      in the field, 6 in the bar, a space before it after a word.
+      Seen hidden: 'help world this keyboard' for hello world this
+      keyboard. Fixed: a one-letter literal ('I') is a character; the
+      module's word list and emoji sheet are held (globals).
+      A console types plainly (Oct 27): Window.words_plain, set in
+      words_tick when the focus is a Console or the app says so
+      (plain_app; orbiter's pane with a hosted console, HM.words 2),
+      and the input device then composes nothing. Seen hidden with
+      the bar on 日本語: the console got 'echo kana desu', spaces too;
+      the editor still offers かな 仮名. Window grew: every trinity app
+      builds before it runs again.
+      Keys (Oct 28): rounded 7 px, 3 px gaps, a 2 px outline on
+      every side (#ffffff12), lit by the pointer's near light at
+      twice the window's reach (Layer near_reach 2). Square edge
+      to edge was tried and dropped. Seen hidden. trinity: the
+      repaint test takes each element's own reach (element
+      near_far, its last member): every trinity app builds again.
+      OPEN: trinity's text draws no colour emoji (the field shows a
+      plain glyph); sequences (ZWJ, skin tones, flags) left out.
+      Seen hidden. OPEN: the 「」『』 key's label is cut off.
+      OPEN: no toggle input (a
+      repeated tap); one segment at a time; no learning.
+11. BUILT, not yet run on the phone (Oct 28: the installer is
+   for everything; the shell from the current source) the phone's
+   Install first runs `silver -d fp6 --build os-bootstrap` and
+   `... orbiter` (Bootstrap.phone_shell, shared with the kernel
+   build) and stops if they fail: it never ships an old shell.
+   Phone unlocked (FP6_US, serial f4e78874, slot a). Fixed on the
+   way: fastboot's open twice in a row lost the phone (the first
+   handle kept its claim); wifi's test set its bus by
+   DBUS_SYSTEM_BUS_ADDRESS, which libdbus reads once a process, so
+   inside orbiter's build it failed (Wifi.address now; last member).
+   silver: a module outside a git repository builds (its project
+   is the folder holding it), a relative module name is from where
+   silver ran, and a module's tests and exports run with its own
+   project as the start folder; os-bootstrap finds silver's folder
+   from its install (silver_root).
+   A device can ship with a module (<module>/<alias>.agi, as
+   os-bootstrap/fp6.agi): silver takes the user's devices.agi
+   first, then those. The installer no longer writes devices.agi
+   (its phone_device appended to a read of the file's FIRST line
+   only, and wiped the user's devices.agi, Oct 28; read_text is
+   first_line now).
+   First flash (04:06): boot and userdata written, the phone came
+   back in fastboot in 3 s, slot a marked unbootable. Likely Android's
+   dtbo laid over our device tree (not confirmed: pmOS's FP6 wiki is
+   behind a bot wall). Install now erases dtbo and sets the slot
+   active before its reboot (Fastboot.erase, set_active). Second
+   flash: the same. `fastboot boot` said why: "Failed to
+   load/authenticate boot image: Load Error". The ramdisk (every
+   module and all firmware, 26 MB at 0x01000000) ran over the
+   device tree's place (0x01f00000: 15 MB of room). It holds only
+   the early.list modules now (33 KB; storage is built in), the
+   rest load from userdata after the switch, and Install stops when
+   it would not fit. The phone's system had no modprobe (kmod added
+   to fp6.agi); silver fetches a device's sysroot again when its
+   fetch lines change (<sysroot>/.fetched holds their hash).
+   Still Load Error; then postmarketOS's own FP6 boot.img (the same
+   dtb byte for byte) was refused too, so the phone was at fault:
+   the dtbo erase (mine) makes this bootloader load nothing. With
+   slot b active (its dtbo intact) their image loaded (boot: OKAY).
+   The erase is gone; Install writes the current slot (b now).
+   Third flash on slot b: gone 14 s, back in fastboot (the kernel
+   ran: PANIC_TIMEOUT 10), no USB log. The ramdisk's /init was the
+   kernel build's Oct 21 copy (init.c changed Oct 25): Install now
+   compiles it from init.c each time (Bootstrap.phone_init).
+   postmarketOS's FP6 page (the wiki, pasted by the user): flash
+   boot, flash userdata, `fastboot erase dtbo`, reboot; latest
+   official firmware first. So the erase is right and is back;
+   `fastboot boot` answers Load Error even to their image here:
+   never use it as a test on this phone. vbmeta_b is an empty one
+   with verification off (my test; pmOS writes none).
+   FIRST BOOT (Oct 28 05:36, slot b, dtbo erased): kernel, our
+   /init, the USB log (orbiter-os fp6, ttyACM0), userdata mounted
+   (sda17), the switch; adsp, cdsp, modem, wpss, Wi-Fi, Bluetooth
+   came up. The GPU did not: qcom/gen80300_sqe.fw not found (ours
+   sat in firmware/postmarketos/; the system image now copies that
+   folder into qcom/ too). Install asks for the udev rule up front
+   (the log port is root:dialout without it). Whether orbiter ran:
+   unknown (the port carries the kernel log only).
+   Then orbiter drew on the phone; no touch worked, sized as a
+   large screen. Built, not on the phone yet:
+   - init.c: a second USB port (acm.gs1, the PC's next ttyACM)
+     with bash kept on it (phone_shell), to look in and set up.
+   - devices evdev: touchscreens (INPUT_PROP_DIRECT): each axis
+     its own range, ABS_MT_POSITION_X/Y, BTN_TOUCH a left press
+     sent at the frame's end after the point, no easing for a
+     finger (a mouse still eases).
+   - scale on the KMS path: the panel's mm width, density / 160
+     in quarter steps (devices g_kms_scale); devices gives points
+     (size, pointer, on_size) and pixels (framebuffer); trinity's
+     kms branch takes both, as the Android one does.
+   - Update (phone page, beside Install; Bootstrap.phone_update):
+     for a phone running orbiter-os (its shell port, 1d6b:0104
+     interface 2), builds orbiter for fp6, tars what is newer than
+     install/tmp/phone-fp6.synced (silver's files as on disk:
+     source_files, committed and new; the fp6 build, lib, bin) in
+     the phone's own places, and sends it as base64 over the shell
+     port (head -c n | base64 -d | tar -x -C /, DONE-42 back).
+     Checked through two linked ptys with bash on one end: tar
+     identical. Found there: the port becomes the shell's terminal,
+     so grep must read it in the foreground (timeout --foreground).
+     The image's source copy takes new files too now (keyboard/
+     was missing on the phone). NOT run on the phone; whether its
+     orbiter live reloads the new library: unknown.
+   Oct 28 later: SetCrtc was refused (ENOSPC): the kernel said the
+   framebuffer was 558x1242 for a 1116x2484 mode (trinity.ag's
+   startup resize[ w.width, w.height ] passes points; the kms
+   resize took them as pixels). The kms resize now takes the
+   mode's pixels from devices, whatever it is asked. Native size
+   shown, interface at 2x (another agent's scale code, kept).
+   No touch: evdev was never loaded (it matches no device id): init
+   loads it after its passes (in the boot image: next Install).
+   Text too small: a font opened by hand (shared_font) was taken as
+   screen pixels. The canvas now scales it implicitly, as macOS's
+   backing scale: set_font turns a points font into its twin at
+   size x scale (CanvasFont.pixel_scale, last member: 0 points,
+   else the scale it was opened at); ensure_font marks its own;
+   label_px no longer multiplies by the display's scale.
+   Speed (measured on the phone with stats' new gpu_ms and
+   screen_mpx): 7-8 fps. The scheduler kept orbiter on the little
+   cores (no energy model): devices moves its threads onto the
+   cores within 75% of the fastest top clock (kms_fast_cores):
+   8 -> 14 fps dragging, 7 -> 17 at rest (governors made no
+   difference). The backdrop and its blur are held on a phone
+   (vk.ag bp: drawn once, again on a resize). Cached canvases were
+   composited whole every frame (about 8.7 full-screen images a
+   frame): a Render keeps its ink box (paint, text; any other draw
+   makes it unknown: whole), draw_canvas draws only the inked part,
+   an empty canvas nothing. Hidden at 558x1242: image pixels 800M
+   -> 4.7M per 2.2 s, the screen pass 23.8 -> 5.7 ms, picture
+   identical (0 pixels). The ink fields are Render's last members
+   (an earlier mid-class place broke design and avatar: stale).
+   Left: image_masked and rect still about a screen each a frame;
+   orbiter redraws every frame at rest; a lean shader per op.
+   Fixed on the way: trinity's per-pass GPU timing never read
+   (slots freed before their timestamps were read).
+   Slot b ran out of tries (retry 0, unbootable): orbiter-os never
+   marks a boot successful as Android does (pmOS: qbootctl, the
+   GPT attributes of boot_a/boot_b). set_active resets it. OPEN.
+   The root was 2 GB of 224 (never grown): grown live with
+   resize2fs; init now grows a phone's root at each start. git in
+   fp6.agi (silver's imports need it to build on the phone; the
+   phone's silver also rebuilt img instead of taking the shipped
+   one: OPEN, self-hosting).
+   PLANNED (Oct 28, the user's design, not built): the bar's globe and
+   "orbiter" become one "orbiter" button. Its menu (SystemDrawer:
+   scenes, Wi-Fi, mouse, keyboard, display, sound) takes the
+   agent view in (AgentHome / PlatformView): the agents stacked
+   down the menu under the controls; the navigator is one more
+   icon among them; power / restart / shutdown at the menu's foot:
+   one main tray menu. A press on an agent expands the menu itself
+   into that agent's conversation (the exchange in place). That is
+   the phone's way; a PC shows it there or as an app in a pane, the
+   same view rendered once into a texture both show (texture linked).
+   LATER (Oct 28, not now): orbiter's login with several users,
+   a rounded card each: shared tablets and phones, each person
+   their own apps.
+   NEXT: restart into the bootloader from that shell (perl's
+   syscall reboot with "bootloader"), so no key combinations.
+   OPEN: dtbo_a is empty (needs a real dtbo from a Fairphone or
+   LineageOS FP6 image); Install should restart a connected phone
+   into fastboot itself (reboot-bootloader).
+12. BUILT, not on the phone (Oct 28: elements micro sized; a 2x
+   scale; Update restarts) kms is a pixel scale now, as a retina
+   window: devices' density in whole steps (the FP6's 66 mm panel:
+   429 dpi -> 2), sizes stay pixels, the pointer in points; trinity's
+   kms display and its resize take width / height in points (the font
+   unit hack gone). Update ends with a reboot (orbiter is pid 1; the
+   kernel has no SysRq: perl's reboot(2), arm64 142) after `sync`.
+8. DONE a test runner: qemu 10.1.2's aarch64-linux-user, static,
+   in the session scratchpad (qemu-aarch64 -L <root>); run with
+   SILVER_ISOLATE=0 (the launcher's re-exec of itself has no
+   binfmt here).
+
 ## orbiter-os Wi-Fi — live list (Oct 15 2026)
 
-Kalen: a Wi-Fi setup in orbiter. His picks: iwd does the joining
+a Wi-Fi setup in orbiter. His picks: iwd does the joining
 (scan, WPA, reconnect, its own DHCP); it shows in both places:
 a mark in orbiter's status bar opening the network list in the
 side panel, and a page in the installer wizard. iwd is driven
@@ -1158,7 +1754,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    root moves under it: dock and the main split start at its
    foot. Seen hidden with and without the flag (without: as
    before). NOT seen on orbiter-os.
-9. BUILT, not booted (Kalen, Oct 15: on orbiter-os, orbiter's
+9. BUILT, not booted (Oct 15: on orbiter-os, orbiter's
    navigation and working folder start at silver's folder) init.c
    work_folder: before it runs orbiter it enters orbiter.init's
    path up to /install/ (/src/silver on europa's boot line);
@@ -1168,8 +1764,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Found (Oct 15): `orbiter --install` copied the 05:05 tree, so
    the system bar and Wi-Fi were not in it; the tree was written
    again at 06:2x with them, before this init change.
-10. BUILT (Kalen, Oct 15: "make --install update the tree when
-   it installs") the install's worker (wizard work), when its
+10. BUILT (Oct 15) the install's worker (wizard work), when its
    copy's source is the drive tree (installing from another
    system), first runs os-bootstrap's assemble: the tree and its
    initramfs brought up to the last build; copy_file skips files
@@ -1177,11 +1772,11 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    line "Updating the drive tree from the build" shows. `silver
    --test wizard` exit 0 (t_installer_image_arm fails as before).
    NOT driven: a real install (needs root and pkexec).
-11. IN PROGRESS (Kalen, Oct 15) a console app as its own module:
+11. IN PROGRESS (Oct 15) a console app as its own module:
    `console` (console/console.ag, `silver console`) over trinity's
    Console (a shell on a pty). Then orbiter's console tab hosts the
    module like any hosted app, and orbiter's own console code goes.
-12. DONE (Oct 15, Kalen: `..` in orbiter's list closed the whole
+12. DONE (Oct 15: `..` in orbiter's list closed the whole
    list) any click in the list closed it, `..` or a project or a
    folder. Cause, mine (Oct 14): trinity lets a focused field go on
    a press outside it, and the list stays open only while the pane
@@ -1192,7 +1787,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    marks every press. Seen hidden: Quake-2 chosen, into ref_soft,
    `..` back, the list open throughout. trinity tests exit 0; a
    running orbiter needs a restart.
-13. BUILT (Kalen, Oct 15: claude's login opens the system browser)
+13. BUILT (Oct 15: claude's login opens the system browser)
    os-bootstrap/xdg-open.c (static, /usr/bin/xdg-open in the tree)
    writes `app open <url>` to orbiter's socket; orbiter's on_agent
    hosts the url's module (aura) in the active pane. The boot line
@@ -1201,7 +1796,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    exit 0, aura hosted, its title Example Domain; the page itself
    not in the shot (empty content area). Not booted; the old GRUB
    entry lacks BROWSER.
-14. BUILT, tree written (Kalen, Oct 15: claude on orbiter-os, by
+14. BUILT, tree written (Oct 15: claude on orbiter-os, by
    Anthropic's installer, run by the bootstrap). add_claude runs
    claude.ai/install.sh once with HOME=install/tmp/claude-home,
    puts the newest versions/<v> at /usr/local/share/claude/
@@ -1212,7 +1807,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    gives init none, and trinity's shell_tool looks on PATH.
    Checked: 2.1.301 --version on the tree's loader and libraries
    alone. The USB stick carries it too (it stages the tree).
-15. DONE (Kalen, Oct 15: ChatGPT's tray icon; its menu in the side
+15. DONE (Oct 15: ChatGPT's tray icon; its menu in the side
    panel) `tray` module: orbiter holds org.kde.StatusNotifierWatcher
    on the session bus (not when another tray has it: a desktop's),
    reads each item (title, else its tooltip's; IconPixmap, else
@@ -1226,7 +1821,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    its icon in the bar, the panel lists New Chat, Open ChatGPT,
    Quit; Quit ended ChatGPT and its icon left. Not driven: a left
    click's Activate. Not booted.
-16. BUILT (Kalen, Oct 15) git (already in the tree) and the user's
+16. BUILT (Oct 15) git (already in the tree) and the user's
    SSH keys. The tree gains ssh, ssh-keygen, ssh-add, ssh-agent,
    /etc/ssh/ssh_config(.d). os-bootstrap ssh_dir (~/.ssh),
    ssh_keys (private files beside a .pub), ssh_copy_sh (folder
@@ -1247,7 +1842,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    console runs /bin/bash). No ripgrep: claude carries its own.
    Checked: the tree's bash ran ls, sort, sed, awk, which, grep,
    find, tput on the tree's libraries alone.
-18. DONE (Kalen, Oct 15) os-mode (system_on): the navigator's
+18. DONE (Oct 15) os-mode (system_on): the navigator's
    search lists the programs on PATH (orbiter program_list, by name,
    the first on PATH wins; rows say 'program'; a name starting with
    the query first). is_program[ p ] tells a row's file apart.
@@ -1280,26 +1875,26 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Seen hidden: gnome-calculator from the search in pane 0, 7+5=12
    by clicks, its X closed it.
    OPEN: the console instance stays after its program exits.
-   Fixed (Kalen, Oct 15: the desktop's Show in Files opened inside
+   Fixed (Oct 15: the desktop's Show in Files opened inside
    orbiter): the display took wayland-0; on his X11 session that name
    was free, and a program with no WAYLAND_DISPLAY falls back to it.
    It is orbiter-N now (wl_display_add_socket): only programs handed
    the name come.
-   Then (Kalen, Oct 15: Firefox stayed black): Ubuntu's Firefox is a
+   Then (Oct 15: Firefox stayed black): Ubuntu's Firefox is a
    snap, and its AppArmor profile lets it reach only
    /run/user/*/wayland-[0-9]*; orbiter-0 was denied (kernel audit
    log). The name is wayland-N-orbiter now: the snap's rule takes
    it, and no program falls back to it (the default is wayland-0
    exactly). Seen hidden: gnome-calculator draws over the new name.
-   NOT driven: Firefox itself (Kalen's own Firefox was running: a
+   NOT driven: Firefox itself (the user's own Firefox was running: a
    second `firefox` hands its window to the running one).
-   Also (Kalen: the console app alone showed no shell): only
+   Also (the console app alone showed no shell): only
    orbiter's frame loop read a console's pty, so the console module
    alone never showed bash's output. trinity Console.tick reads its
    own session. Seen hidden: prompt, `echo hi $BASH_VERSION`, 5.2.21. Also: WaylandView clips to its pane (the cut header
    drew over the pane's title bar); seen hidden with Inkscape's
    dialog (its cut top stays under the title).
-   Fixed (Kalen: the menu panel sliding out flashed the window black;
+   Fixed (the menu panel sliding out flashed the window black;
    sometimes a resize was needed to see it again): the pane's size
    went to the window every frame of the slide (new output buffers
    each frame), and imports were keyed by buffer address, which a
@@ -1309,11 +1904,11 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    and the view starts its imports over at each, keeping the old
    ones 8 frames (the GPU may still draw them). Seen hidden: no
    black pixel in any frame of the panel opening and closing.
-   Fixed (Kalen: typing in the navigator took ~30 s with results):
+   Fixed (typing in the navigator took ~30 s with results):
    is_program per result row re-checked the 15 PATH folders' times
    (500 rows a key); it reads the list the search already read.
    Measured hidden on his PATH: 'i' 8.6 s, 'in' 16.8 s -> 0.2 s.
-22. DONE (Kalen, Oct 15) the system bar is always on (force_system
+22. DONE (Oct 15) the system bar is always on (force_system
    defaults to true; --force_system false turns it off). With it:
    orbiter's button (DockHome, home_button) is the bar's first, as
    wide as the dock; the window menu starts after it; the console
@@ -1328,12 +1923,12 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    fixed heading; a click on a scrolled row picked it.
    FIXED silver (seen Oct 18): `Region { .. }` and a bare `{ .. }`
    as a call argument both work, first or second.
-   Then (Kalen): the bar's menu names (MenuTop) and tray icons
+   Then : the bar's menu names (MenuTop) and tray icons
    (TrayMark) take the tray buttons' near light (inset glow, edge and
    inner light by the pointer); orbiter's bar button is BarHome (the
    tray buttons' fill and light, no top line: that was the dock's
    foot). Seen hidden: no line at its top, its edge lit near it.
-23. DONE (Kalen, Oct 15) the menu drawer (Rule #13's exception):
+23. DONE (Oct 15) the menu drawer (Rule #13's exception):
    MenuDrawer (SystemBar.ag) slides from under the dock (l-281.25px
    to l78.75px, 260 ms) over the panes, 360 px wide; root order is
    main, drawer, dock. Its ground (DrawerGround) is the screen as
@@ -1347,12 +1942,12 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    test app (the app's width unchanged, its white blurred grey),
    Escape, four open/close rounds, File > New reached the app and
    shut it.
-   Then (Kalen: the navigator drew over a running app's window): a
+   Then (the navigator drew over a running app's window): a
    pane shows its window only while its navigator is shut
    (EditorView.text_els, !browse_active); the app keeps running.
    Seen hidden: the window's white 100% of the area, 0% with the
    navigator open, 100% again after Escape.
-   Then (Kalen: the navigator's card said console, its picture the
+   Then (the navigator's card said console, its picture the
    console's black, not the Inkscape window): place_window notes the
    window on the instance whose pid started it (AppView.wl_window);
    the card draws the window (wayland window_texture: the window's
@@ -1362,11 +1957,11 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    puts the window back in the pane (show_instance). Seen hidden:
    'menutest4 running' with its window's picture; a click on the card
    brought the window back.
-   Then (Kalen): the drawer's blur is taken once as it opens (and on
+   Then : the drawer's blur is taken once as it opens (and on
    a new window size), not every frame; MenuDrawer.background_lens
    (false by default) makes it live. Measured hidden: two opens of
    ~10 frames each, two takes.
-   Then (Kalen): typing with a menu drawer open filters it: the box
+   Then : typing with a menu drawer open filters it: the box
    (MenuFilter) shows at the menu's foot as soon as a key is typed,
    the matching entries (any case; submenu names left out) under the
    heading; Backspace edits, Enter runs the first match, Esc clears
@@ -1375,13 +1970,13 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Both menu kinds (MenuPanel, TrayPanel; entry_matches in tray).
    Seen hidden: '2' in the 41-entry menu left Item 2, 12, 20-29, 32
    and the box at the foot; Enter ran it and shut the drawer.
-   Then (Kalen): a pane showing a window has its close where a
+   Then : a pane showing a window has its close where a
    module's run button is (title_nav 'modicon', AltTab win_close; the
    top right stays a dialog's): it asks the window to close
    (wlc_window_close), as its own X. The title moves past it and
    reads the window's title (was 'Open'). Seen hidden: arrows, the
    close, 'Menu Test'; a click closed the window and the app ended.
-   Then (Kalen: another app could not come over a running Wayland
+   Then (another app could not come over a running Wayland
    app; anything not docked goes at the dock's foot): a pane's
    window is cleared by a file opened there (open_in_pane) and set to
    the shown instance's own (show_instance: its window, or none); a
@@ -1392,7 +1987,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    (window_texture), else its module's icon; a click shows it in the
    active pane. Seen hidden: the window's tile at the foot; a file
    opened over the window; the tile brought the window back.
-   Then (Kalen): dock apps are toggles: a click on one in view takes
+   Then : dock apps are toggles: a click on one in view takes
    it out of view (still running): its window off the pane, then (the
    editor mounted again a frame later: toggled_out) the editor lets
    it go and steps back in its history. And a program's tile is its
@@ -1402,7 +1997,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    the window's picture only when none is found. Seen hidden:
    gnome-calculator's icon in the dock; a click took it out (the pane
    back to 'Open'), another brought it back.
-   Then (Kalen, Oct 15: running apps in the bottom bar, the dock
+   Then (Oct 15: running apps in the bottom bar, the dock
    pins only) the dock has no running apps and no selected fill;
    its pins keep their running dots. The status bar's centre text
    (hover tips, reload state, recording) is gone: the bar holds a
@@ -1428,24 +2023,24 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    /usr/bin/gnome-calculator with the calculator icon.
    Found: `(path [ 'gnome-calculator' ]).filename[] != pn` was
    true for equal names (not chased; a string cut works).
-   Fixed (Kalen: mario, once toggled out, never came back): a
+   Fixed (mario, once toggled out, never came back): a
    file's viewer (knes for a .nes) keeps display 0 (PIP) though
    shown embedded, and show_instance sets app_view from it. A
    chip's click back makes a PIP instance Embed first. Built,
    not driven (a hosted knes needs silver-host).
-   Then (Kalen): an unselected chip lights slightly as the
+   Then : an unselected chip lights slightly as the
    pointer nears, as the power button (its faint inset and
    near_inset 4); and a navigator card's pick brings the instance
    into view embedded (pick_instance took the pane's source mode
    and made it PIP). Seen hidden: the chip faint far, lit near,
    full when chosen; calculator toggled out, its card brought it
    back with its chip lit.
-   Then (Kalen: a title's first press selects the pane, the next
+   Then (a title's first press selects the pane, the next
    opens the navigator, so its menus show without it): a window's
    pane has no editor, so pane_of gave null and the press fell to
    the navigator; the title press takes the view's pane number
    (pane_index_of). Seen hidden with two panes.
-   Then (Kalen: an app's build status, the line responsible): the
+   Then (an app's build status, the line responsible): the
    title's error box fits its words (8.4 px a letter, at most 60%
    of the pane), centred in the title; a compile error reads
    'line N: msg'; else silver's own (coloured) log line
@@ -1458,14 +2053,14 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    AppView.start sends its folder's path; silver-host builds that
    path and names logs and binaries by its last word. Seen hidden
    with a scratch module: the path reached silver.
-   Then (Kalen): the debugger's controls are in the pane title,
+   Then : the debugger's controls are in the pane title,
    left of find (find stays furthest right): pause while the app
    runs (it attaches the debugger and stops), the four steps as
    one bordered group once stopped; not over the nav list, the
    finder or the find bar. The task bar holds tasks alone; the
    dock's console button is the gear. Seen hidden on buttontest:
    pause, the steps after it, continue back to pause.
-   Then (Kalen): dock pins reorder by drag. A press on a pin
+   Then : dock pins reorder by drag. A press on a pin
    (drag_pin) is a click at the release unless it moved 6 px; then
    it leaves the column, drawn last at drag_at, which eases to the
    pointer (filter_n 0.3); the others close up and open a gap at
@@ -1474,22 +2069,22 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    (pin_release, pin_insert; the click is dock_icon_click). Seen
    hidden: two pins swapped both ways, the list saved, a click
    still runs its program.
-   Then (Kalen): the task buttons sit flush on their bar, its full
+   Then : the task buttons sit flush on their bar, its full
    height: the bottom bar is TasksBar (StatusBar's look, no child
    spacing; a subclass's style replaces its parent's whole, so it
    is written out). Seen hidden: the chip from the bar's top edge
    to the window's bottom.
-   Then (Kalen): a console program's title (OSC 0 or 2, as bash's
+   Then : a console program's title (OSC 0 or 2, as bash's
    prompt and Claude Code send it; a terminal's tab shows it) is
    kept (ConsoleSession.title, osc_end); a Console with titles on
    (the console app's) passes a change to set_title, so a hosted
    console's task button reads it. Seen hidden: a script's
    'Title From The Program' on its task button.
-   Then (Kalen): the system bar's reload button is there only
+   Then : the system bar's reload button is there only
    while a reload is ready (au_live_get_pending 1); else the
    group is scenes and the panel alone, no empty bordered slot.
    Seen hidden: two buttons idle, three once a source changed.
-   Then (Kalen), BUILT, NOT SEEN (Kalen stopped the hidden runs):
+   Then BUILT, NOT SEEN (the user stopped the hidden runs):
    - a resumed app (debugger continue, or the host's pause) shows
      again only if still running 150 ms on, its frame fading in
      over the source for 300 ms (Editor resume_watch, resuming;
@@ -1506,7 +2101,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    - the dock lists running apps no pin holds under the pins
      (run_<iid>, a click toggles as the task button); an apps grid
      button (Material 'apps', orbiter/images/apps_grid.svg) above
-     the gear: OPEN, the apps view behind it (Kalen to choose how
+     the gear: OPEN, the apps view behind it (the user to choose how
      apps install and the first list).
    - menus (tray and windows'): entries between separators are one
      chip (tray MenuGroup: a faint left strip, 1 px lines between
@@ -1514,8 +2109,8 @@ over D-Bus, so orbiter-os gains a system bus. In order:
      icons from dbusmenu icon-name and GTK's icon string, found in
      Yaru, Adwaita, hicolor (svg only; menu_icon_file); MenuBuild
      shared by TrayPanel and MenuPanel.
-   Then (Kalen: Filters in Inkscape lagged while scrolling) DONE,
-   felt smooth by Kalen. Measured from his orbiter's socket: the cost
+   Then (Filters in Inkscape lagged while scrolling) DONE,
+   felt smooth by the user. Measured from his orbiter's socket: the cost
    was elems (CPU drawing the tree), 0.35-0.7 s a second while
    scrolling, not GPU paints. Fixed, in order found:
    - a faded scroll list (scroll_fade) rebuilt its masked picture
@@ -1535,12 +2130,12 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    16 px entries, Bold group headings); programs orbiter launches get
    it through FONTCONFIG_FILE (install/tmp/orbiter-fonts.conf, the
    console's --fonts).
-   Then (Kalen: a failed app rebuilt when its pane was selected
+   Then (a failed app rebuilt when its pane was selected
    again): an instance that ended on an error (AppView.failed: a
    note other than 'app exited') waits for play or F5; a click in
    its pane (view_press) and embed_app no longer restart it. Seen
    hidden: after the error, pane and chip clicks, one start only.
-21. DONE (Oct 15, Kalen: menu data; crop the header off the rest)
+21. DONE (Oct 15: menu data; crop the header off the rest)
    wayland.c serves gtk_shell1 (capabilities 3: GTK hides its own
    menu bar; set_dbus_properties gives the menubar's bus and path,
    the app and window action paths) and org_kde_kwin_appmenu (Qt:
@@ -1558,14 +2153,14 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    Seen hidden (GTK 4 and GTK 3 test apps): File / View in the bar,
    no header or menu bar in the window, Dark checked after a pick,
    New and Quit reached the app. NOT driven: a Qt app (none here).
-24. IN PROGRESS (Kalen, Oct 16-17) the apps view and featured software.
+24. IN PROGRESS (Oct 16-17) the apps view and featured software.
    Everything is built from silver: no system programs (PATH) in the
    apps view or the navigator's search (they slowed every search).
    trinity: enum SoftwareGroup, the sections in order (games creative
    everyday simulation developer communication). A module names its
    section by `export software ['games']` (psx, n64, asnes, rgen games;
    aeon creative; aura everyday; launch simulation).
-   featured/ (Kalen, Oct 17): software.agi is names only (`featured:
+   featured/ (Oct 17): software.agi is names only (`featured:
    [ gedit, blender, ... ]`, the order shown); each is a silver module
    featured/<name>/<name>.ag holding all else: its section, icon
    (images/icon.png), every dependency as an import with its build
@@ -1585,7 +2180,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    gspell; GTK3, ICU, libxml2 the system's. install/bin/gedit runs
    (--version 51.0). Not seen: its window in a pane (hidden run).
    The README fetch, USER:PROJECT, the README import button and its
-   console were built and removed (Kalen: the module is the center).
+   console were built and removed (the module is the center).
    OPEN silver: an existing checkout keeps its version when an import's
    version changes (libpeas stayed at 1.38.1: the checkout was deleted).
    OPEN: modules for the other featured names.
@@ -1597,7 +2192,7 @@ over D-Bus, so orbiter-os gains a system bus. In order:
 
 ## quark: Electron's API on trinity, no Chromium (Oct 18 2026)
 
-Kalen: VS Code (and any Electron app without nodeIntegration) runs
+VS Code (and any Electron app without nodeIntegration) runs
 on Node + trinity, no web engine at all: the page's scripts run in
 Node and a DOM written in JavaScript lays out and paints through
 trinity's canvas (webgfx). Module `quark` (silver root): trinity app
@@ -1637,7 +2232,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    incl. color-mix, lengths with calc, @media evaluation, @supports,
    @font-face, @keyframes kept, selectors incl. :not :is :has :nth-*,
    specificity), style.mjs (UA sheet, the cascade with !important,
-   inheritance, custom properties with var(), computed values),
+   inheritance, custom properties with var, computed values),
    fonts.mjs (system fonts by family through fontconfig, @font-face
    from bytes, fallback per code point), text.mjs (glyph runs),
    layout.mjs (block flow with margin collapse, inline lines with
@@ -1684,9 +2279,9 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    (register.mjs wraps Module.registerHooks and syncs the ESM export,
    so their answer is mended); utility processes fork the real node
    (QUARK_NODE), not the launcher; net.fetch reads file: urls; a
-   stylesheet's url()s resolve against the sheet; the page's
+   stylesheet's urls resolve against the sheet; the page's
    performance object hides nodeTiming (VS Code picks its node path
-   on seeing it); HTMLCollection/NodeList have item(); window.
+   on seeing it); HTMLCollection/NodeList have item; window.
    queryLocalFonts; stylesheet rules expand shorthands; a measuring
    pass gives a block child its natural width, not the measuring
    width; a word wider than its line overflows (no per-letter cut);
@@ -1695,7 +2290,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    page console, utility stderr, forks), QUARK_DUMP=<selector> (the
    box tree under it into /tmp/claude-1000/qk/dump.txt every 5 s,
    ancestors first), QUARK_TRACE_DIRTY=1 (what dirties the page).
-   Speed (Oct 18, Kalen): profiled with QUARK_PROF=1 (a line a
+   Speed (Oct 18): profiled with QUARK_PROF=1 (a line a
    second: ticks, layouts, paints, styles computed, boxes) and
    NODE_OPTIONS=--cpu-prof. At startup VS Code forces 14-38 layouts
    a second (offsetWidth, clientWidth after each change) and every
@@ -1714,7 +2309,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    lengths cached per ComputedStyle. A pass is 13-24 ms, 40-70
    styles; the workbench is idle at 4 s (was 6); the shot is pixel
    equal; hover restyles still light (Source Control icon + tip).
-   Then (Kalen: the incremental layout too) layout boundaries
+   Then (the incremental layout too) layout boundaries
    (layout.mjs isBoundary: a block / flex / grid box whose width and
    height never follow its content, absolutely positioned or a clip
    under a block parent; the inputs of its last pass kept as inCW /
@@ -1740,7 +2335,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    no boundary), partial/s (the boundaries used and their box
    counts); QUARK_DUMP lines carry the inline style, a scroll and the
    raw y.
-   Then (Kalen: sub 1 ms a pass if possible): boundaries gave way to
+   Then (sub 1 ms a pass if possible): boundaries gave way to
    in-place relayout of the nearest block box or flex item above
    each root (Layout.canRelayout / relayoutOne: built again under
    it, laid out with the inputs of its last pass (inCW, inCH, inFW,
@@ -1770,7 +2365,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    addon calls); empty text boxes in a flex get a running y (0 x 0,
    nothing drawn); the pseudo index reads junk names (var, 2px: some
    rule parses wrong; harmless).
-   Then (Kalen, Oct 18: "half of the stuff isnt painting correctly",
+   Then (Oct 18
    his own run on the silver folder with aeon.ag open; three crops:
    a bold wrong line number with a box under it, glyphs drawn over
    the chat toolbar's labels, the status bar's left items cut off).
@@ -1781,7 +2376,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
      parser, so every var VS Code writes with capitals (--vscode-
      codiconFontSize-compact, fontWeight-semiBold, strokeThickness)
      was undefined: icons with width 0, plain headings, no borders.
-     A var() with no value and no fallback now drops its declaration
+     A var with no value and no fallback now drops its declaration
      (CSS: invalid at computed-value time), not 0px.
    - DOMPurify (the chat welcome) reads nodeName, parentNode,
      childNodes off Node.prototype: ours were instance fields, so
@@ -1835,8 +2430,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    OPEN, seen: svg images (letterpress, code icon), woff fonts (seti
    file icons), text-overflow ellipsis. Not driven: typing in the
    editor, menus, the terminal.
-   Then (Kalen, Oct 18: "not enough margin and padding seen on many
-   elements"; the chat welcome and its input toolbar). Found and
+   Then (Oct 18 the chat welcome and its input toolbar). Found and
    fixed, in order:
    - CSS nesting: the rule body splitter took a nested prelude from
      the last ; before its brace, so after the first nested block
@@ -1847,7 +2441,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
      starts after the last ; or nested block; nested rules recurse;
      a nested at-rule's body is its rule's body (css.mjs
      parseRuleBody, splitNested).
-   - a shorthand holding var() (padding: 0 var(--x)) gave each
+   - a shorthand holding var (padding: 0 var(--x)) gave each
      longhand the whole text, which read as no length. The longhand
      keeps a pending mark (css.mjs PENDING) and style.mjs
      pendingLonghand substitutes first, then splits.
@@ -1868,8 +2462,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    quark-vscode-new.png). Tools: QUARK_DUMP_CS prints m= and p=
    (margins and paddings); render.mjs dumps per view
    (dump.<view>.txt).
-   Then (Kalen, Oct 18: "insanely slow ... 15 seconds to drag the
-   splitter"). Measured hidden at 2560x1440 with a 1000-move drag
+   Then (Oct 18). Measured hidden at 2560x1440 with a 1000-move drag
    of the sidebar sash sent in 0.9 s (QUARK_PROF): 9 ticks a
    second, layouts 55/s (580 ms), paints 60-90 ms each with 82
    clip calls taking 70% of the paint (withClip self time), styles
@@ -1904,12 +2497,12 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    clips, one GPU wait when the 1024-draw ring wraps). The prof/s
    line prints clips N ms and the slow ones (over 1 ms);
    QUARK_SLOWCLIP=1 logs each slow clip's chain.
-   Note: Kalen's saved state now holds three windows; quark shows
+   Note: the user's saved state now holds three windows; quark shows
    them as tabs (his), and a hidden run draws the last shown, the
    empty one, so dumps come from dump.<view>.txt per window.
-   Then (Kalen, Oct 19: the explorer card's bottom-right corner had
-   a right edge and a bottom edge and no arc; "that's not possible
-   style wise ... unless it got clipped"). Chased with every clip
+   Then (Oct 19: the explorer card's bottom-right corner had
+   a right edge and a bottom edge and no arc; no style draws that,
+   so a clip was suspected). Chased with every clip
    switched off (QUARK_NOCLIP=1: overflow, the stroke's side cut,
    clip-path; QUARK_NODAMAGE=1), a plain page with the card at the
    same size and place (fine), QUARK_DUMP='at:x,y' (every box over
@@ -1933,10 +2526,9 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    (canvases/s: made, freed, live, sizes). A resize now remakes one
    canvas a frame (the newest size) and a <canvas> element makes
    its canvas at its first draw, not at the 300x150 default.
-   FIXED silver (Oct 18, Kalen: "this should be a fixed silver
-   issue"): the method table overrun (near-border item 1b):
+   FIXED silver (Oct 18): the method table overrun (near-border item 1b):
    see that item.
-   Then (Kalen, Oct 18: the search box's border off, the tab cut).
+   Then (Oct 18: the search box's border off, the tab cut).
    Found and fixed, in order:
    - a 1 px rounded border is an even-odd ring path, and a 1 px band
      between two path edges fills nothing in trinity (the pill's
@@ -1964,7 +2556,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    pattern on a test page (outline, shoulder, the body's top border
    meeting it) and on the Welcome page. QUARK_DUMP_CS prints the
    borders, radius, position, clip-path and the previous sibling.
-   Then (Kalen, Oct 18: VS Code in orbiter is 4x faster than this;
+   Then (Oct 18: VS Code in orbiter is 4x faster than this;
    rendering and layout). Measured hidden at 2560x1440: a pointer
    sweep over the Welcome page repainted the whole page on every
    hover change (17 paints a second, 17 ms each) after a 4.4 ms
@@ -2000,12 +2592,11 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    local extension host took longer than 60s to send its ready
    message" in both windows of the hidden runs on the copied state;
    not chased.
-   MEMORY (Oct 19, Kalen: "its performance we need and accuracy of
-   placement"). The standing goal for VS Code on quark: as fast as
-   the Chromium build running in orbiter (Kalen: that one is 4x
+   MEMORY (Oct 19). The standing goal for VS Code on quark: as fast as
+   the Chromium build running in orbiter (that one is 4x
    faster) and every element placed exactly where Chromium puts it.
    Landed so far, by area:
-   - style: nested rules (1,683 in the workbench sheet), var()
+   - style: nested rules (1,683 in the workbench sheet), var
      inside shorthands, keyed dirty marks with scan roots, the
      candidate cache, ancestor keys, sheet diffs; ~35 us an element.
    - layout: in-place relayout of the nearest block or flex item,
@@ -2029,7 +2620,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    qk/dump.<view>.txt, QUARK_DUMP_VAR, QUARK_NODAMAGE=1,
    QUARK_NOCLIP=1, QUARK_CLIPLOG=x,y, QUARK_SLOWCLIP=1, NODE_OPTIONS=
    --cpu-prof; /tmp/claude-1000/qk/killq.sh, realrun.sh, seq.py.
-   Kalen runs it as `mkdir -p /tmp/qk && XDG_RUNTIME_DIR=/tmp/qk
+   the user runs it as `mkdir -p /tmp/qk && XDG_RUNTIME_DIR=/tmp/qk
    install/build/quark install/lib/code-oss/resources/app
    /src/silver`; never kill his runs; his windows are tabs by his
    design. OPEN, in his order: the remaining layout issues ("tons",
@@ -2041,7 +2632,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
 6. OPEN install/bin/vscode runs through quark; hosted in orbiter (a
    pane), the system bar menu, dialogs through the navigator.
 
-25. BUILT, not seen (Kalen, Oct 16) an app with no window menu of
+25. BUILT, not seen (Oct 16) an app with no window menu of
    its own (a trinity app) gets one in the system bar named for it
    (orbiter own_menu_sync, own_menu, own_pick): Show code / Show app,
    Copy screenshot (the pane as drawn, to <cache>/orbiter/shots and
@@ -2052,14 +2643,14 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    ctrl+shift+v (cmd+v) and the middle button paste a clipboard
    picture as a png in <cache>/paste and type its path (for claude),
    else the text. trinity changed: restart orbiter, rebuild apps.
-26. DONE (Kalen, Oct 16: "thats better") orbiter's ux follows the
+26. DONE (Oct 16) orbiter's ux follows the
    font scale (ctrl +/-). A trinity area unit is the default font's
-   line height: 33 px at rest on Kalen's screen, not 22 (a px size
+   line height: 33 px at rest on the user's screen, not 22 (a px size
    converts as px / 33). Dock 2.39 units, system bar 0.91, task bar
    1.06, task button 4.36; drawn code reads unit_px[] (the layout's
    em) or nav_unit / ux_unit (font_unit / 22, 1 at rest) for sizes
    kept in px (navigator, list text, properties grid).
-27. BUILT, not seen or heard (Kalen, Oct 16) the bottom bar's sound,
+27. BUILT, not seen or heard (Oct 16) the bottom bar's sound,
    left of the clock: App / Global (StatusSegs), mute, a volume slider
    (BarVolume: 1 px outline, a 20-band spectrum behind the track).
    Global is the machine's own level: devices host_master_get/set (the
@@ -2071,7 +2662,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    active app's, or all, a windowed DFT at 20 log-spaced bins.
    OPEN silver: a local named `mix` cannot be indexed (`mix[ i ]`:
    "expected member"), `any` is taken, `log10` is unknown.
-28. BUILT, not seen (Kalen, Oct 16) the exchange in a slideout: trinity
+28. BUILT, not seen (Oct 16) the exchange in a slideout: trinity
    Window.exchange_region (last member; '' the whole window) puts the
    exchange's elements and the avatar in one box there (exch_el finds
    them in it); boxed, the conversation sits under a small avatar
@@ -2081,14 +2672,14 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    (clear rest, #4d3dbcaa lit). orbiter's button opens it beside the
    dock, 21.82 units wide (twice a menu); the button again, or any
    menu drawer opening, puts it away (agent_min); a press outside does not.
-29. DONE (Oct 16, Kalen: the exchange's slideout went menu-narrow
+29. DONE (Oct 16: the exchange's slideout went menu-narrow
    once a menu had opened) trinity Style.applicable took every block
    whose type the element is (its own class's and its bases'), in
    the order the classes' styles were first met, so a base's area
    could win (MenuDrawer's w10.91 over ExchangeDrawer's). It takes
    only the nearest class that styles that member now (block_depth).
    `silver --test trinity` exit 0. Every trinity app at a restart.
-30. DONE (Oct 16, Kalen: closing orbiter or an app with sound is
+30. DONE (Oct 16: closing orbiter or an app with sound is
    terribly slow) measured hidden, quit over the socket to exit:
    - psx with sound 1262 ms and a SIGSEGV: nothing stopped its
      sound thread at a quit (only a disc change did). on_unload
@@ -2102,7 +2693,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
      release_tree; reloads free as before): 580 ms.
    Left: ~250 ms in NVIDIA's own teardown at exit (its ICD's
    ioctls). trinity changed: every trinity app at its next build.
-   Then (Kalen: every spectra app halted the system's sound at
+   Then (every spectra app halted the system's sound at
    shutdown, a short buffer repeating; background audio stopped
    too): a supervised app that crashes is frozen by silver-host's
    crash handler (SIGSTOP, for lldb) with its PipeWire stream
@@ -2115,7 +2706,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    on every block), 0 once closing; the last block to the host's
    ring is silence. A closing window hides first (media_app
    destroy, quits only).
-31. BUILT, seen hidden (Kalen, Oct 16: the top right only the menu,
+31. BUILT, seen hidden (Oct 16: the top right only the menu,
    the date left of it in the power button's look; the views and the
    rest in a menu, GNOME's quick settings as the model) the system
    bar's right end is BarClock (the date) and sys_menu; either opens
@@ -2129,7 +2720,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    Seen hidden: the bar, the menu open, scenes lit from it, the Wi-Fi
    tile opening the panel and shutting the menu, a press outside
    shutting it. Not seen: tray tiles (no tray app in the run).
-   Then (Kalen): all round (RoundTab: AltTab with a radius 999 edge;
+   Then : all round (RoundTab: AltTab with a radius 999 edge;
    the slider a pill). The view buttons (scenes, instances) and the
    Wi-Fi tile show their view in the menu under the tiles (sys_view;
    orbiter.side_view builds it for the side panel and the menu), the
@@ -2143,7 +2734,7 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    opened, frost picked, chip and pill followed.
    FIXED silver (Oct 18): `for [ v, k ] in f[ .. ]` over a call's
    map works (features t_for_call_map).
-32. DONE (Oct 18, Kalen: the top bar red during a window resize)
+32. DONE (Oct 18: the top bar red during a window resize)
    trinity Render.update waited its frame on a new size, and that
    wait rewound draw_slot to 0 after the paint had bound its image
    into slot N: the draw bound slot 0, still naming an old freed
@@ -2152,16 +2743,16 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    red px in its top rows, now none. Also: the drawers' blur is
    resized in place (ReduceBlur.resize), not rebuilt (it crashed
    in Render_init on the second size). trinity tests exit 0.
-   Still red on Kalen's screen after that; fixed for him by the
+   Still red on the user's screen after that; fixed for him by the
    SystemBar painting straight onto the screen (no_cache: a
    resized cache showed through). Root of the cache flash: OPEN.
-32b. BUILT (Oct 18, Kalen: bars and tint a size behind while he
+32b. BUILT (Oct 18: bars and tint a size behind while he
    drags) orbiter's own picture was right each frame (the clock 31
    px from the edge at 24 sizes); the swapchain waited for 30 ms
    of stillness (resize_debounce_s) and a drag never pauses.
    Debounce 0: a new size each frame. Hidden: 80 sizes, validation
-   on, no error or crash; trinity tests exit 0. Not seen by Kalen.
-32c. DONE (Oct 18, Kalen: bars, panes and tint a size behind the
+   on, no error or crash; trinity tests exit 0. Not seen by the user.
+32c. DONE (Oct 18: bars, panes and tint a size behind the
    background while he drags; fixed and lost about five times in
    four days) Window.update_all never laid the root out: each
    child's layout_self (before its render) read the root's bounds
@@ -2171,25 +2762,25 @@ shaped entry (ELECTRON_RUN_AS_NODE runs node). Order:
    LINE. Seen hidden on his Zelda session: 60 jumping sizes, the
    clock the same distance from the right edge in all 60 (7 of 40
    were a size behind before). trinity tests exit 0.
-33. OPEN (Kalen, Oct 18) a running orbiter of his must not stop
+33. OPEN (Oct 18) a running orbiter of his must not stop
    mine (or my builds) from running beside it.
 34. OPEN silver: orbiter read element's intern cache_canvas and
    crashed (a trace of mine, Oct 18); intern cache_w was refused.
    A refusal of every cross-module intern read was tried and taken
    out: aeon reads design's intern Cage.poly, and that works.
-Decided (Kalen, Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
+Decided (Oct 15): Wi-Fi speaks to iwd alone, on orbiter-os.
 No NetworkManager or other backends for a user session on another
 system: there the mark reads off and the panel says so.
-Kalen: no systemd. iwd is built without its service files and
+no systemd. iwd is built without its service files and
 init starts dbus-daemon and iwd itself. Ubuntu's dbus-daemon
 links libsystemd as a library (inert); OPEN: our own dbus build
 without it if wanted.
 
 ## orbiter agent view — live list (Oct 20 2026)
 
-1. DONE (Oct 20, Kalen: the beam's thrust pushes the avatar into
-   its platform slightly, a perlin-oscillating magnitude, "an
-   indent with bounces inside of it") avatar/avatar.ag: Avatar
+1. DONE (Oct 20: the beam's thrust pushes the avatar into
+   its platform slightly, a perlin-oscillating magnitude, an
+   indent with bounces inside it) avatar/avatar.ag: Avatar
    push_cur moves the model down its own up axis (glTF -y, after
    the rotations); OrbiterAvatar sets it each frame from the beam:
    depth = beam_cur x push_depth (0.045 of its own units) x (1 +
@@ -2200,10 +2791,10 @@ without it if wanted.
    hidden (1920 x 1080, a gemini session on its pad, `app home
    gemini build`): the body 0 px at rest, 3 to 5 px down through
    the build, moving frame to frame, 0 px again after. avatar,
-   wizard, orbiter rebuilt; Kalen's running orbiter needs its
+   wizard, orbiter rebuilt; the user's running orbiter needs its
    restart. NOT seen on his screen.
 
-2. OPEN (Kalen, Oct 20: a live reload keeps every agent's state;
+2. OPEN (Oct 20: a live reload keeps every agent's state;
    its program is never closed: hosted by silver-host). Plan, not
    written: each platform agent's terminal becomes a hosted console
    instance (the console module in a host slot, running the agent's
@@ -2218,17 +2809,17 @@ without it if wanted.
    the console's title (waiting / working) without waiting for a
    change. Limit: the host's slot request line is 1023 bytes; the
    claude line is ~890 today.
-3. DONE (Oct 20, Kalen: Neptune lacked the Milky Way the other
+3. DONE (Oct 20: Neptune lacked the Milky Way the other
    scenes show) neptune.ag had the Gaia sky model, turned 45
    degrees about x as the others; its camera looks straight along
    -z, so the band's plane stood 45 degrees off square and lay
    outside the 55 degree lens (Uranus aims its own). Now -9 about
    x, 15 about z, a slow turn about y, as Uranus. Seen in the
-   remade thumbnail: the band diagonal behind the disk. Kalen's
+   remade thumbnail: the band diagonal behind the disk. the user's
    running orbiter loads the scene library at its next pick or
    restart.
 
-4. BUILT, not driven (Oct 20, Kalen: files dropped on a console)
+4. BUILT, not driven (Oct 20: files dropped on a console)
    a drop goes to the element under the pointer and its parents
    (devices reports the pointer during an X drag), then the focus,
    then the app; a taker sets ev.no_default. Console pastes the
@@ -2237,10 +2828,10 @@ without it if wanted.
    HM.drop (three bytes a message, a 0 byte ends; the app hands
    it to its own drop_event). Not tried with a real drag.
 
-5. RULE (Kalen, Oct 20, after false "done" reports): never report
+5. RULE (Oct 20, after false reports): never report
    a visual result before looking at its pixels in a shot (crop,
    zoom, brighten). "Dark sky" and "it's Neptune's blue" were said
-   unchecked and were wrong. Never tell Kalen to restart.
+   unchecked and were wrong. Never tell the user to restart.
    Never change what his session saves (scene, panes, settings)
    as a side effect: a view-only override of scene_loaded[] saved
    MilkyWay over his Neptune mid-validation (save_session writes
@@ -2250,7 +2841,7 @@ without it if wanted.
    avatar.ag scene_host/scene_view/scene_box/scene_frame; design/
    Stage.ag host mode: the first depth pass draws into the host
    Render, its screen passes run at host size). Focus blur removed
-   entirely. Heat folds the halo in (Heat.rim, pic()).
+   entirely. Heat folds the halo in (Heat.rim, pic).
 7. DONE resolution: the platform picture is 2x the element in
    device px, drawn on whole pixels (exact 2:1). The chosen avatar
    (home_open) is drawn again at 4x in its own box Render `close`
@@ -2276,7 +2867,7 @@ without it if wanted.
    the chosen scene (Neptune), the galaxy is behind. Seen in a
    hidden run (zoomed): Neptune's lit side and terminator in the
    floor. Built scenes are kept between switches (scene_kept,
-   scene_rts). NOT seen on Kalen's screen: his running orbiter has
+   scene_rts). NOT seen on the user's screen: his running orbiter has
    the trinity from before these changes (a reload swaps only the
    app library), so he saw no reflection.
    Test harness (session scratchpad rr/): onep.sh (Neptune) /
@@ -2313,7 +2904,7 @@ bar 50% taller.
 
 ## orbiter floating windows — plan (Oct 19 2026)
 
-Kalen: a grid is a pain to manage, and a maximized console
+a grid is a pain to manage, and a maximized console
 alone feels lonely: a window seen at the edge is company and
 keeps you placed among your own work.
 1. BUILT every window opens maximized, always (the split).
@@ -2331,12 +2922,12 @@ keeps you placed among your own work.
    other panes' groups and the pane glow are gone.
 4. BUILT WinStrip: a free window's strip across its top (the
    pane title's look, the window's name centred, lit when
-   selected). Docked (Kalen), the strip is absorbed into the
+   selected). Docked, the strip is absorbed into the
    system bar: none on the pane; the bar's free space between
    the menus and the arrows (BarGrab) pulled down frees the
    selected window, and moves a free one; a click there is the
    title's. The desktop (the empty pane, its apps) has none.
-5. BUILT (Kalen) every move and size eases (filter_n 0.3:
+5. BUILT every move and size eases (filter_n 0.3:
    pane_shown toward pane_free, ease_free each frame); the
    corner grip's cursor is a diagonal one (devices
    PLATFORM_CURSOR_DRESIZE 5; X11 bottom_right_corner, Win
@@ -2346,7 +2937,7 @@ keeps you placed among your own work.
    (fit_free: height by width, or width by height for the
    bottom grip), pulled out within two thirds of the height.
    Seen hidden: asnes (zelda) free with no bars round it.
-6. BUILT (Kalen: the whole bar on the window; menus without a
+6. BUILT (the whole bar on the window; menus without a
    click first) a free window's strip is the system bar it took
    with it (strip_els): its menus (menu_group_els per pane; a
    window not selected shows its menu as last read, PaneMenu,
@@ -2362,7 +2953,7 @@ keeps you placed among your own work.
    and corners, top included), never inside it. The strip's
    buttons run end to end, no globe; its menu drawer stays
    inside the window (drawer_area).
-   The navigator is two kinds (Kalen): the full navigator (the
+   The navigator is two kinds : the full navigator (the
    explorer, with its dock column) lives in the docked view; a
    free window's is a dialog, no dock. The bar's globe opens the
    full one in the docked view, in front of what it shows (that
@@ -2370,20 +2961,20 @@ keeps you placed among your own work.
    docked view (pane_add) opens on it. Seen hidden: gedit free,
    the globe gave a docked navigator with its dock under it. NOT
    seen: the dialog in a free window.
-7. BUILT (Kalen) a free window is a rounded rect (8 px) masked:
+7. BUILT a free window is a rounded rect (8 px) masked:
    trinity draw_element, a layer with `clip: true` masks all the
    element paints and holds to that layer's rounded box
    (Canvas.clip_rounded_rect; EditorView :free's bg). Under it,
    WinShade (24 px out each way): a shadow (0 8px 20px #000a)
    and a 1 px #ffffff26 outline just outside the window.
    Seen hidden: gedit's own status bar cut round at the corner.
-8. BUILT (Kalen) the desktop (the apps, under free windows when
+8. BUILT the desktop (the apps, under free windows when
    nothing is docked) is an app of its own: orbiter, the welcome
    app. With it showing, the bar's first name is orbiter, and its
    menu is the system menu (SystemDrawer, from the left under the
    bar); the bottom bar's menu button is gone (the console beside
    the clock). For now the system menu is reached from the
-   desktop alone (Kalen: click the desktop).
+   desktop alone (click the desktop).
 Seen hidden: the apps pane and gedit pulled free, moved,
 docked by the top edge and by a double-click; gedit sized by
 its corner and typed into while free. NOT driven: two panes
@@ -2391,14 +2982,14 @@ with one free over the other.
 
 ## Aeon, the 3D design app — live list (Oct 12 2026)
 
-Kalen: a 3D design app the user's agent helps design with; in
+a 3D design app the user's agent helps design with; in
 time a level editor. Named Aeon (Heraclitus: "Aion is a child
 at play"). Decided:
 - A project is a folder: what it uses is copied in or
   symlinked; nothing points outside it.
 - The design is .agi (inherently customizable; .blend is not).
   Aeon loads silver modules: their classes are what it edits.
-- Not a node editor (Kalen, Oct 13): no wired boxes for
+- Not a node editor (Oct 13): no wired boxes for
   modifiers, materials or passes. Modifiers stay settings,
   never applied; materials are an object's slots.
 - The render graph is trinity's real pipeline (Render, Model,
@@ -2432,13 +3023,13 @@ at play"). Decided:
    install/blender/blender. On 4.5 the meshes and refs are byte
    for byte as on the system's 4.0.2; materials gain 4.5's new
    Principled inputs; blend reads surface_render_method (4.2 on).
-   Kept as Blender python (Kalen, Oct 12: "use the pythons"): a
+   Kept as Blender python (Oct 12): a
    .blend is Blender's memory on disk; Blender reads its own
    versions exactly. Import only: Aeon reads .agi and .mesh.
 1b. DONE (Oct 12) `silver aeon <file.blend>` imports it into
    <folder of the file>/<name up to its first dot>, then the
    folder opens; skipped while that .agi is newer than the .blend.
-   No blender program runs (Kalen: bpy in our python, our own
+   No blender program runs (bpy in our python, our own
    blender): aeon imports bpy 4.5.14 (the manylinux wheel, 355
    MB, by url) unpacked once into install/pylib-blender (786 MB)
    by the python 3.11.15 that the imported blender 4.5.14 ships
@@ -2451,7 +3042,7 @@ at play"). Decided:
    runs `xdg-user-dir DOCUMENTS` (blender's documents lookup).
    install/bin/python3 is a link to the system's 3.12 (not ours).
    Linux only: the wheel and the blender tarball are x64 linux.
-   Au (Kalen: shell work uses our environment first, generically):
+   Au (shell work uses our environment first, generically):
    command run / exec put install/bin (beside the lib/ libAu.so
    loads from) first on the child's PATH; not on Windows (cmd.exe).
    features t_command_install_path; 246/247 (t_codegen_resource as
@@ -2466,7 +3057,7 @@ at play"). Decided:
    (it prints as system did and returns the exit status):
    os-bootstrap 6, wizard 3, tls 1 (macOS keychain, not run
    here); `silver --test wizard` exit 0, its work folders gone.
-   `{ }` blocks interpolate (Kalen: commands as { tokens }): a
+   `{ }` blocks interpolate (commands as { tokens }): a
    block given to a string type (string, command, path) becomes
    an interpolated string, glued chunks stay glued, {{ / }} are
    braces; a command block's lines join with spaces (silver.c
@@ -2477,11 +3068,11 @@ at play"). Decided:
    OPEN: os-bootstrap.ag:942's cleanup
    glob with no installer-* folder runs `[ -d /proc/* ]` (prints
    "[: /proc/1: unexpected operator", harmless).
-Rule (Kalen, Oct 12): Aeon alone changes the .mesh files. The
+Rule (Oct 12): Aeon alone changes the .mesh files. The
 agent edits .agi text; a shape change it wants goes through
 Aeon's own commands (select points, move by an amount, scale),
 eased, saved and undoable as a mouse edit.
-Demo (Kalen: promote a demonstration), in order:
+Demo (promote a demonstration), in order:
 D1. DONE (Oct 12) the .agi files watched (design, materials,
     render graph): an au watch on the project folder raises a
     flag; the next frame compares each .agi's time with the time
@@ -2513,7 +3104,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     subdivision's levels 3 -> 1 typed: levels: 1 written, the
     design reloaded; volume's aura halo_height 0.4 -> 1.6 typed:
     written quoted, settings retuned live (12,272 pixels).
-    The chosen object (Kalen): the others greyed and see-through,
+    The chosen object : the others greyed and see-through,
     it at full colour over them, with a glow round its contour
     (the bounding box was built, then removed: the glow does it).
     Two stages: `stage` draws all but the chosen, `focus`
@@ -2529,7 +3120,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     trinity tests exit 0. Seen hidden: body colour 1,301 -> 145
     coloured pixels (the rest the box lines then), flower's white
     contour and glow.
-    No auto save (Kalen): every edit stays in memory until
+    No auto save : every edit stays in memory until
     ctrl/cmd + s (shift stays the exchange's capture). Edits
     (Panels.ag) holds the objects whose cage or place moved and
     the property values queued as Writes (a later one for the
@@ -2543,10 +3134,10 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     The scene graph shows "unsaved: ctrl/cmd + s to save" while
     any is held. Seen hidden: a cage move and levels 3 -> 1 left
     the files as they were (the shape rebuilt), ctrl+s wrote both.
-    Reverted at Kalen's word: aeon/flower888's design file, core
+    Reverted at the user's word: aeon/flower888's design file, core
     and flower meshes back to the import (his edits there undone;
     the render graph, textures and images kept).
-    Selection history (Kalen): every distinct choice (object,
+    Selection history : every distinct choice (object,
     node, pass) is remembered in order by the app's render; a
     choice after a step back drops the steps ahead. The app's
     element.navigate (ctrl/cmd + left / right, which trinity
@@ -2554,11 +3145,11 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     view through HM.nav) walks it; nav_state lights orbiter's
     arrows. Seen hidden: flower, outside; ctrl+left lit flower,
     ctrl+right outside again. Orbiter's arrows not driven.
-    Moving is a grab (Kalen: a click and drag moves
+    Moving is a grab (a click and drag moves
     nothing; G does, for the object and for points): the left
     button only chooses (an object, or a point in the cage; shift
     adds), the right or middle button's drag turns the view
-    (Kalen: orbit on mouse 2 / 3), ctrl/cmd + any drag or shift +
+    (orbit on mouse 2 / 3), ctrl/cmd + any drag or shift +
     middle drag moves the camera (seen: 100 px moved
     the model 47.6 px, eased). Seen hidden: a left drag changed no pixel, a right
     and a middle drag each turned the view (~49,800 pixels). G
@@ -2571,13 +3162,13 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     moved flower (0.0759, -0.1109, 0 saved by ctrl+s); G, a move
     and a right click, or escape, left it there; in the cage, G,
     a move and a click changed the mesh on save.
-    G, R and S (Kalen: x y z with numbers, esc
+    G, R and S (x y z with numbers, esc
     cancels): move, turn (degrees) and size, of the chosen
     object (at, turn, size) or the picked points about their
     middle. Each frame sets the result from the state at the
     start (from_at / from_turn / from_size / from_pos), eased.
     Axis keys before a number make a group the number goes to
-    (Kalen: `s x y 2` is both); an axis after a number starts the
+    (`s x y 2` is both); an axis after a number starts the
     next group; a number with no axis: all three for S, x for G,
     z for R; the axes also bound the pointer. Enter or a left
     click keeps it, escape or a right click puts it back. The
@@ -2590,13 +3181,12 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     moved point 25 by exactly 0.1 in x, nothing else.
     OPEN: the property fields keep their old text while an op
     or a save changes the value.
-    silver (Kalen: a known member that is not a shape): `vec T
+    silver (a known member that is not a shape): `vec T
     [ v ]` with v a vector is v's values, copied, or converted
     element by element when T differs (silver.c, through
     vector_convert). features t_vec_from_vec; 248/249
     (t_codegen_resource as before).
-    The render graph lives inside the design (Kalen, Oct 12:
-    "embed the render inside"): <name>.agi ends with a
+    The render graph lives inside the design (Oct 12): <name>.agi ends with a
     `render: StageGraph` block (modules, passes, out); the
     .render.agi file is gone (aeon/flower888's moved in). Design
     keeps it as `render` (read_render reads it again); Stage takes
@@ -2611,7 +3201,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     no reload. Fixed on the way: a pass sized under a pixel
     (most typed one digit at a time: 1) made an empty Render and
     aborted; Stage.size_of keeps a pixel a side.
-    Scene graph (Kalen, Oct 12): each object box has a
+    Scene graph (Oct 12): each object box has a
     visibility circle at its left end (radius 3.5 px): filled
     while shown, an outline when hidden; a click there flips
     Object.shown and chooses nothing. A hidden object's box
@@ -2621,8 +3211,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     already chosen lets it go (objects and passes). Node names 14
     px. Seen hidden: outside hidden (44,247 pixels, the flower
     underneath reachable), flower chosen then let go.
-    Quad draws are nodes of their own (Kalen: "aura would have
-    to be its own node"; separator alone still lit the halo, as
+    Quad draws are nodes of their own (the user separator alone still lit the halo, as
     the aura only read av.depth): every quad draw (aura, heat)
     is a box under the objects (pink, kind 3) with its own
     circle, wired into its pass; it draws only while its circle
@@ -2641,13 +3230,13 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     Seen hidden: separator alone with aura and heat on (the halo
     and separator), both off (nothing), aura chosen (its 7
     settings listed).
-    Heat (Kalen: no heat blur; the beam a layer under it): the
+    Heat (no heat blur; the beam a layer under it): the
     Heat draw had no settings (heat 0: the image unbent). Now
     heat 1, busy 1, pulse_height 1.2; a `layers` pass (AeonOver,
     View.ag: volume.color over av.reduction, premultiplied)
     feeds heat, so the beam bends too; out: heat. BUILT, the
     blur not yet measured (the check run was stopped).
-    Properties (Kalen: orbiter's properties view, shared): the
+    Properties (orbiter's properties view, shared): the
     `properties` module (properties/properties.ag) holds
     orbiter's LaunchPanel and its controls (NavButton,
     LabelButton, LaunchPath/Clear/Action/Check/Field/Color/
@@ -2670,7 +3259,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     time: the name was not the cause (maybe two builds of aeon
     at once). The member is `list` again; features
     t_member_named_type guards it (249/250).
-    The design module (Kalen, Oct 12: orbiter's avatar loads its
+    The design module (Oct 12: orbiter's avatar loads its
     passes from the agi; its shape from the design's meshes, no
     gltf): aeon's Poly, Design, View and Stage moved to
     design/ (`extend design`); aeon and avatar import it.
@@ -2692,7 +3281,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     running orbiter needs a relaunch.
     Environment: OrbiterAvatar's body was forest, gamma 1.88 (the
     base Avatar's night, 2.2 was never orbiter's); the graph had
-    night. Now forest + 1.88, forest.exr copied in (Kalen: try
+    night. Now forest + 1.88, forest.exr copied in (try
     it). This was D2's colour difference. Seen side by side.
     The Aura (the halo) has no environment input: its env_id
     'night' only loaded a file nothing read. Removed, with
@@ -2700,7 +3289,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     top_ring removed (no draw named it; orbiter's gltf had none):
     its object block, meshes/top_ring.mesh and its only-used
     material plasma.agi; 2.43 MB.
-    The model is a module of its own (Kalen: a peer, in silver's
+    The model is a module of its own (a peer, in silver's
     root): /src/silver/fmodel (fmodel.agi: the objects, nodes,
     materials named; meshes/, materials/). aeon/flower888's
     flower888.agi is `model: 'fmodel'` then the render: block;
@@ -2717,7 +3306,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     Seen hidden: size saved into fmodel.agi only, fmodel opened
     alone, the avatar through it. `silver --clean --build avatar`
     rebuilt its imports too (img gltf tls devices trinity).
-    core.png removed (Kalen: no honeycomb shows): the Core shader
+    core.png removed (no honeycomb shows): the Core shader
     read it only in the pool, as 0.85..0.95 brightness over
     colours above 1 (clipped), at mip 2..4; read sharp, no pool
     pixel moved over 2/255. The shader has no color input now
@@ -2726,33 +3315,33 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     members; aeon/flower888/textures/ and avatar/textures/core.png
     deleted. The pool is up to 43/255 brighter where it was not
     clipped (seen side by side in the exchange avatar).
-    The beam (Kalen: no orange flame, we use the beam): the Aura
+    The beam (no orange flame, we use the beam): the Aura
     drew one jet in two looks by flame_style (0 the orange flame,
     1 the beam; orbiter always 1, aeon got 0). flame_style and the
     orange look are gone (every mix taken at its beam side; the
-    flame's dead colour and falloff removed). Renamed (Kalen: so
+    flame's dead colour and falloff removed). Renamed (so
     we know it changed): flame -> beam (the strength, 0 off),
     flame_w -> beam_w, flame_cur -> beam_cur, comments; the
     graph's aura setting is `beam: '0.0'`. trinity's
     ExchangeState.av_flame kept. In aeon, beam 1 on the aura
     draw shows it. From the side its base glow shows faintly
     under the hexagon (the volume has no body depth below).
-    Beam 1 swirls as beam 4 did (Kalen: the plasma twirling in on
+    Beam 1 swirls as beam 4 did (the plasma twirling in on
     the metal, without a huge column): the drain's density 6 ->
     24 x beam, and the beam's glow over its base (bm_bk) x4; the
     column's core is unchanged. Seen from above, beam 4 (old) vs
     beam 1 (new): the same pink and blue clouds over the petals.
     The donut (the Aura's torus on the rim, under the halo):
     Aura.donut_reach (default 1) stretches the tube outward only,
-    the hole kept (Kalen: wider, not a smaller hole); the graph's
+    the hole kept (wider, not a smaller hole); the graph's
     aura has donut_reach: '1.0' (2 aliased where it meets the
-    body, Kalen). Seen from above, 1 vs 2.
-    Its cut behind the metal is soft (Kalen: at reach 2 the edge
+    body). Seen from above, 1 vs 2.
+    Its cut behind the metal is soft (at reach 2 the edge
     over the body was hard): a sample fades out over 0.06 world
     units behind the depth, averaged over 9 taps 0.012 apart on
     screen (the ledge's outline had stepped at the volume's low
     res). Seen from above at reach 2: no step left.
-    Heat haze held in place (Kalen: it moved as the view turned,
+    Heat haze held in place (it moved as the view turned,
     small at times, under the model at others): its sizes came
     from an arm along x projected (gone as x turned to the eye);
     now from the distance alone. From the side the pool's spot on
@@ -2760,7 +3349,7 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     (height: 'av.depth' in the graph) and fades where metal is
     0.2-0.4 nearer than the pool. Seen side and top (a debug
     paint, removed): only the visible throat floor.
-    Then (Kalen: shift-move put the blur in the wrong place): the
+    Then (shift-move put the blur in the wrong place): the
     heat flipped y (the old hand-built passes' rows), so a pan
     mirrored it; the stage's rows follow clip space (fl 0.5,
     0.5). And -y is up in its frame: its source (-0.05) and pool
@@ -2773,22 +3362,21 @@ D5. DONE (Oct 12) the layout and its panels (aeon/Panels.ag):
     FIXED silver (Oct 18): a two-name for over a plain Au
     (`Au.parse_agi[ .. ]`) walks it as a map (aether e_for,
     Au_instance_of; not a map: skipped). features t_for_parse_agi.
-    No argument (Kalen): aeon reopens the last project opened
+    No argument : aeon reopens the last project opened
     (`intern [ StatePersist ] last_project`, ~/.local/state/aeon/
     persist.agi, saved at each open; a folder that is gone is
     skipped); never opened: aeon/flower888. A relative folder is
     taken from where aeon was started. Seen hidden (own HOME).
-    Made once (Kalen): each object's nodes run and its parts
+    Made once : each object's nodes run and its parts
     fill once per design (made_of, Design.made, its own
     GltfBuffer); every draw and stage shares it. An edit forgets
     the object (Stage.refresh, a node's value). aeon's two
     stages built in 2196 + 2078 ms (flower made 12 times), now
     1118 + 433 ms (once). Pictures differ only by the clock.
-Layout (Kalen, Oct 12): .agi is written inside Aeon's own UI;
+Layout (Oct 12): .agi is written inside Aeon's own UI;
 the chosen thing's properties beside the view. Its own design,
-not another app's (Kalen, Oct 13: "we want to be different").
-D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
-    now") two items, in order:
+not another app's (Oct 13).
+D6. IN PROGRESS (Oct 13) two items, in order:
     a. Properties that stay true: fields refresh after G/R/S,
        undo, save and outside edits; sliders for numbers and
        colour pickers for colours; undo for every property edit.
@@ -2810,13 +3398,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        in it. name_frac is LaunchPanel's last member: orbiter must
        be rebuilt before its next launch (not built: his session).
     b. STOPPED (Oct 13): a node graph was built (aeon/Graph.ag,
-       cards wired socket to socket) and dropped (Kalen: "i dont
-       wnat to go with nods in general"; modifiers wired as
+       cards wired socket to socket) and dropped (the user modifiers wired as
        boxes and materials as inputs are redundant and complex).
        Kept: the stage's pass and draw switches, MeshNode.muted
        (a step bypassed), Stage.reads_materials.
-    d. BUILT, seen hidden (Oct 13, Kalen: "the outliner must be
-       full left, view is middle and props is right"):
+    d. BUILT, seen hidden (Oct 13):
        aeon/Outline.ag. Outliner (240 px, full height): objects,
        each with its modifiers and material slots (a swatch);
        render, each pass with its draws; a circle switches a row
@@ -2829,7 +3415,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        holds the rows, apply, undo and the fields as last seen
        (the graph's code, moved). Seen: a modifier's switch
        (mirror off: 6,182 pixels), a slot's values, the wheel.
-       Solo (Kalen, Oct 13): a double-click on an object (its row
+       Solo (Oct 13): a double-click on an object (its row
        or in the scene) shows it alone, a temporary state: no eye
        changes; a double-click on it again, any other choice, or
        any switch ends it (Selection.solo; the view drops it when
@@ -2837,9 +3423,9 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        on a single click (a double-click's first click). Seen:
        flower alone, back on the second double-click, ended by
        choosing outside.
-       Render list out of the outliner (Kalen: render references
+       Render list out of the outliner (render references
        will change; not exposed as a list yet).
-       − (Kalen, Rule #12): a square rounded 4 px with a minus, at
+       − (the user, Rule #12): a square rounded 4 px with a minus, at
        a row's right end; on the hovered row with shift, on every
        row with ctrl/cmd. Removes an object, or a step (not the
        cage): the step that took its mesh takes its input (and the
@@ -2851,14 +3437,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        the same. Not for material slots yet (faces would change
        material). Fixed on the way: the step was freed when the
        list dropped it, before its undo entry held it (SIGSEGV).
-       + (Kalen): on the objects heading a new object; on an
+       + : on the objects heading a new object; on an
        object a sub object, which is an object referencing
        another .agi (as flower888 names fmodel), its objects
        nested under it: one list. OPEN, awaiting his yes on the
        reading (new object empty; the reference picked from the
        modules beside the project).
        The chosen object stays behind what is in front of it
-       (Kalen: the core showed in front of the body; to see it,
+       (the core showed in front of the body; to see it,
        hide the others). Its highlight stage (focus) drew it alone
        with no depth from the rest. Stage.occlude: each object
        draw gets a depth-only copy (blend colour x0 + target x1,
@@ -2870,30 +3456,29 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        the well hidden; outside hidden, the core shows with the
        separator still over its edge; flower behind the front
        wall.
-       A solo hides the halo too (Kalen: soloing the core showed
+       A solo hides the halo too (soloing the core showed
        it): the main stage takes objects_only while a solo is on,
        so a screen draw with light of its own that reads no
        pass's picture (the aura) is off. Seen: core alone, no
        halo; double-clicked again, all back with the halo.
-       The left side is two sets (Kalen, Oct 13): objects, then
+       The left side is two sets (Oct 13): objects, then
        the design's materials (its materials folder, by name,
        each with a swatch); no modifiers, cage or slots there
-       ("remove more of the old nodes from left side"; "we wont
-       select modifiers alone"). The right side has no tabs: an
+       . The right side has no tabs: an
        object's place, then its modifiers area (a heading, each
        modifier framed with its switch and its − on shift hover
        or cmd; the cage is the shape, not listed); a material's
        values. Seen: outside's mirror, array, subdivision framed
        under place; ring's surface with its pickers. flower's
        mesh has no material_index, so its 'top' slot is unused
-       (the import's; Kalen: likely a bad import).
-       Modifiers under each object on the left, a level in
-       (Kalen: "inside the object as a 2nd depth"); a click
-       chooses the object (never a modifier alone; "looking away
-       from the selected object is a huge anti pattern"); their
+       (the import's; likely a bad import).
+       Modifiers under each object on the left, a level in;
+       a click
+       chooses the object (never a modifier alone; the
+       view never looks away from the chosen object); their
        values stay in the object's modifier panel on the right.
        Shift (hovered) or cmd (all): − removes, + copies the
-       modifier right after itself, no picker (Kalen: less
+       modifier right after itself, no picker (less
        interface): the copy takes its mesh, what took its mesh
        takes the copy's; a free name (mirror_b); held until a
        save (Edits.adds, agi_insert_after writes the block after
@@ -2901,26 +3486,26 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        ctrl/cmd + z takes it back. Seen: mirror_b after mirror,
        the file right (input: mirror; subdivision's input:
        mirror_b), reopened; undone.
-       Then (Kalen): no modifiers on the left after all (fewer
+       Then : no modifiers on the left after all (fewer
        items: objects, then materials); + and − sit on each
        modifier's heading in the right side's modifiers area,
        shift over it or cmd for all; + copies it right after
-       Then (Kalen): no + per modifier; one + on the modifiers
+       Then : no + per modifier; one + on the modifiers
        heading, every button always shown (no shift/cmd here).
        The heading shows for any chosen object (one without
        modifiers too). + adds a subdivision at the end (levels 1;
-       the kind is Kalen's call, asked): it takes the last step's
+       the kind is the user's call, asked): it takes the last step's
        mesh and becomes the object's out. Seen on core: + gave a
        subdivision; saved, its block after the cage, out:
        subdivision.
-       Then (Kalen): the + shows the kinds (mirror, subdivision,
+       Then : the + shows the kinds (mirror, subdivision,
        array) instead of the modifiers, over their whole area; a
        click adds that kind at the end; the + is an × meanwhile,
        and it or escape goes back. The new one takes its kind's
        defaults (initialize[]; an array's count 2; a mirror
        starts across x). Seen on outside: the kinds in place of
        the stack, then array_b (count 2) added at the end.
-    f. DONE (Oct 13, Kalen: 1-2 s lag on a subdivision level or
+    f. DONE (Oct 13: 1-2 s lag on a subdivision level or
        anything down the chain) measured: running flower's steps
        11-20 ms; remaking both stages from nothing 738 + 842 ms.
        Now: Object.kept holds each step's result (intern: never
@@ -2937,8 +3522,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Measured: 115-125 ms a change (the rest: new pipelines,
        ~50 ms in each pass that draws the object). Seen: mirror
        off 7,082 pixels, as before.
-    g. IN PROGRESS (Kalen, Oct 13: "the subdiv needs to use the
-       compute engine"; his answers: exact as now, the steps
+    g. IN PROGRESS (Oct 13 his answers: exact as now, the steps
        after a subdivision on the GPU too, on every change). Plan:
        the CPU makes only topology, per shape configuration
        (levels, switches, steps added/removed): per level the face
@@ -3010,9 +3594,8 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        OPEN: stage and focus each run the whole chain (shared
        points would halve it); a topology change (levels, steps)
        still makes the models on the CPU (~120 ms).
-    h. DONE (Oct 13, Kalen: flower at 5 levels and 24 copies took
-       ~15 s, "blender 2 or 3"; "optimize the concat to our vector
-       types ... quicker inline code for primitives"). Measured on
+    h. DONE (Oct 13: flower at 5 levels and 24 copies took
+       ~15 s; Blender takes 2 or 3; push onto number vectors inline). Measured on
        the test copy (1,417,752 points): subdivision 58 ms, array
        1,099, GPU tables 3,589, filling the draw's data 6,215. Every
        one is push loops, and a push on a vec of numbers boxed its
@@ -3025,7 +3608,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        572 (about 1.1 s, from 11). features 250/251, trinity,
        webgfx exit 0, aeon 3/3; trinity, properties, design,
        avatar, webgfx built --clean (running apps need a restart).
-    i. DONE (Oct 13, Kalen: editing a cage point on flower at 5
+    i. DONE (Oct 13: editing a cage point on flower at 5
        levels x 24 is ~10x slower than blender's ~5 fps). Measured
        in a hidden run (5.6 M vertices a draw): one stage's move
        waited 1.19 s on the GPU, the other 4.4 ms. Each draw kept
@@ -3044,8 +3627,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        OPEN: the first move builds the GPU data (~2.6 s at 5
        levels), and the release remakes on the CPU (~1.2 s): a
        pause at each end; stage and focus each run the chain.
-    j. DONE (Oct 13, Kalen: "the xyz should be a 3 part cell";
-       "vec3f would do that") a prop of type vec2f / vec3f /
+    j. DONE (Oct 13) a prop of type vec2f / vec3f /
        vec4f is one row, its cell split into that many dragged
        numbers with 1 px dividers (properties: LaunchPanel vec_n,
        parts lp_<name>_<i>, value_of joins them "x, y, z",
@@ -3053,7 +3635,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        numbers as vec<n>f (PropRow.part/parts and 'at x' rows
        gone). Seen hidden: at, turn, size one row each; a drag
        on at's middle part set y alone (0 -> 0.12).
-    k. DONE (Oct 13, Kalen: slow to START the edit and to START
+    k. DONE (Oct 13: slow to START the edit and to START
        the saving) measured at 5 levels: every move's refresh
        forgot the object, so the first move re-ran the steps
        (193 ms) and the tables (218 ms) in each stage; the release
@@ -3072,7 +3654,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        the same but a few pixels on a cage line. aeon 3/3.
        OPEN: the rest of the start is each stage's own GPU set up
        (~340 ms each); one ObjectGpu for both would halve it.
-    l. BUILT, seen hidden (Oct 13, Kalen: a grid with major and
+    l. BUILT, seen hidden (Oct 13: a grid with major and
        minor lines in 3D mode; a 2D mode comes later): aeon/Grid.ag,
        AeonGrid (a quad: each pixel's ray meets the floor, z 0;
        lines a pixel wide by fwidth, gone once cells are a few
@@ -3084,7 +3666,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        picture, under the cage. Seen: flower888 near, chosen,
        zoomed in and out. A running aeon needs a restart (design
        changed). OPEN: the 2D mode.
-    m. BUILT, seen hidden (Oct 13, Kalen: the numpad as blender's)
+    m. BUILT, seen hidden (Oct 13: the numpad as blender's)
        DesignView.numpad: 1 front, 3 right, 7 top (ctrl: back,
        left, bottom), 9 the other side, 4 6 turn the view 15
        degrees (6 as a drag right), 8 2 tilt it (8 as a drag up:
@@ -3100,11 +3682,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        view +x right, +y up; g right and up gives +x +y; the
        body solid from above as before. avatar rebuilt (Stage
        grew a member); a running orbiter needs a restart.
-    n. BUILT, seen hidden (Oct 13, Kalen: 'nothing chosen' is the
+    n. BUILT, seen hidden (Oct 13: 'nothing chosen' is the
        scene's properties): PropsSide's title is 'scene · <name>'
        and its sections each render pass (scale, most) with its
        draws' settings and switches (SceneEdit.pass_blocks).
-    o. BUILT, seen hidden (Oct 13, Kalen: view svgs in aeon; his
+    o. BUILT, seen hidden (Oct 13: view svgs in aeon; his
        answers: both, and edit points too).
        2D: `silver aeon <file>.svg` (aeon/Svg.ag): SvgView draws
        the page (white) and its shapes, wheel zooms about the
@@ -3153,9 +3735,9 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        typed numbers with G; the document's own values (size,
        viewBox) are not shown; arcs and rects become cubics in a
        saved element.
-    p. DONE (Oct 13, Kalen: the scrolled properties ran over the
-       title; mask with the soft fade when scrolled; then "i want
-       trinity to do it on its masking layer", no hacks) PropsSide
+    p. DONE (Oct 13: the scrolled properties ran over the
+       title; mask with the soft fade when scrolled; then
+       by trinity's own masking layer, no hacks) PropsSide
        is the background and title; PropsBody (40 px down) holds
        the sections and their headings, scrolled by trinity
        (content_h, the base wheel, its scrollbar; the panels flow
@@ -3169,7 +3751,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Before, a cached child drew outside the mask. element gained
        mask_layer / _w / _h: every trinity app needs a rebuild
        before it runs again (orbiter too).
-    q. BUILT, seen hidden (Oct 13, Kalen: splits under the user's
+    q. BUILT, seen hidden (Oct 13: splits under the user's
        control, as orbiter's; a top bar over the toolbar and view:
        orbiter's navigation bar, called the orbiter bar; his
        answers: arrows + title, in trinity) trinity OrbiterBar: the
@@ -3193,7 +3775,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        forward walk the choices, svg G still moves. trinity tests
        exit 0. NOT seen: hosted in orbiter (needs orbiter rebuilt;
        Splitter and element changed).
-    r. BUILT, seen hidden standalone (Oct 13, Kalen: the title
+    r. BUILT, seen hidden standalone (Oct 13: the title
        opens the navigation dialog; it lists the folder the
        resource / svg was opened from; hosted, orbiter's dialog
        with the app's list). trinity: a press on the bar's title
@@ -3214,7 +3796,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Seen: '..', 'svg' typed + enter, 'test.s' + enter opened
        test.svg titled so; set project svg <-> design three times,
        alive.
-       orbiter (WRITTEN, NOT BUILT: Kalen's orbiter is running and
+       orbiter (WRITTEN, NOT BUILT: the user's orbiter is running and
        element/trinity changed): a press on the active pane's
        title while it shows a running app starts the argument pick
        (pick_default, as shift + click on the argument chip): the
@@ -3225,10 +3807,8 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        dispatched one slot off in aeon (nav_open called aeon's
        open_project); placed beside dictates they dispatch right.
        A hidden run once exited with no log kept; not reproduced.
-    s. BUILT, seen hidden (Oct 13, Kalen: "this navigation dialog we want
-       the same as orbiter's.. we can make it a module"; "call it
-       navigation"; then "make it a sub module of trinity ...
-       extension module") orbiter's navigation dialog moved into
+    s. BUILT, seen hidden (Oct 13: named navigation, an
+       extension module of trinity) orbiter's navigation dialog moved into
        trinity as an extension file, `trinity/navigation.ag`
        (extend trinity), used by orbiter
        and by the orbiter bar (trinity's NavDialog replaced by it).
@@ -3252,8 +3832,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        hidden through the shared painter. orbiter's list keeps its
        own extras (cards, repos, delete and pins, the path hint,
        users / projects, git band) in Git.ag.
-    t. DONE (Oct 13, Kalen: "when resizing the split control or
-       resizing the window itself, there is rather insane lag")
+    t. DONE (Oct 13)
        measured hidden: 20 seam moves took 19.1 s (2 fps): every
        new view size made both stages again (all passes, pipelines
        and models). Now nothing is made again: each stage resizes
@@ -3267,9 +3846,8 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        it the test's waits), 37 fps hidden, no fault; seen with and
        without a choice. Window resize takes the same path (not
        driven: no resize over the socket).
-    u. DONE (Oct 13, Kalen: draw settings stored as strings,
-       "pulse_width ... is f32 ... they should parse ok without
-       string") aeon writes a setting bare when it is a number or
+    u. DONE (Oct 13: draw settings stored as strings: an f32
+       such as pulse_width should read without quotes) aeon writes a setting bare when it is a number or
        true / false, quoted only when a word (SceneEdit.set_row);
        aeon/flower888/flower888.agi's numbers unquoted (env_id and
        the inputs stay quoted). Unquoted, aeon crashed: parse_agi
@@ -3281,8 +3859,8 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        as its value; another class gets Au's member text, not its
        own cast: the virtual call's function type did not verify).
        That call exposed aether building loop types in LLVM's
-       global context (LLVMInt32Type(), LLVMPointerType(
-       LLVMInt8Type())): 10 places now in a->module_ctx (the
+       global context (LLVMInt32Type, LLVMPointerType(
+       LLVMInt8Type)): 10 places now in a->module_ctx (the
        array for-loop element was in the wrong context).
        Au serialize writes floats shortest (%.15g f64, %.7g f32, a
        whole value keeps .0): 4.5, not 4.500000, which also cut
@@ -3290,10 +3868,8 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        features t_agi_number_text; 252/253 (t_codegen_resource as
        before). Seen: the unquoted flower888 loads and draws, its
        values listed; a dragged value saved as pulse_width: 1.2.
-    v. BUILT, seen hidden (Oct 13, Kalen: the orbiter bar's views,
-       "the same thing as instances of running apps with titles;
-       these are views we toggle in or turn off to show the file
-       source"; "bring back the full nodes view") trinity: element
+    v. BUILT, seen hidden (Oct 13: the orbiter bar's views, shown as the
+       instance chips are, each toggled over the file's source) trinity: element
        .views[] (beside dictates: AGENTS 1b) names the app's views;
        the orbiter bar shows a chip each after its title (TButtons,
        labels, the lit one Window.bar_view); a press shows that
@@ -3330,7 +3906,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        a sliver near the top showed). trinity tests exit 0.
        Seen: scrolled, the title clear and the rows fading under
        it; a value dragged 1.0 -> 1.2.
-    w. BUILT, seen hidden (Oct 13, Kalen: box select with b,
+    w. BUILT, seen hidden (Oct 13: box select with b,
        circle with c, from where it was pressed; shift or cmd
        for more) in the cage: b or c starts at the pointer, the
        box or circle runs to the pointer (points inside lit as
@@ -3339,7 +3915,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        right click or tab drops it (DesignView.region,
        in_region, end_region, draw_region). Seen: a box picked
        12 points, a circle replaced them, a shift circle added.
-    x. BUILT, seen hidden (Oct 13, Kalen: an svg with nothing
+    x. BUILT, seen hidden (Oct 13: an svg with nothing
        chosen shows its document's values; the page an outline,
        no fill; a grid, no red / green axes in 2D) the right side
        is 'document · <file>': width, height, viewBox (four
@@ -3352,14 +3928,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        major every ten), the view clipped to its bounds (shapes
        ran over the outliner zoomed in). Seen: height 120 -> 200
        drawn at once, saved: only that attribute changed.
-       Then (Kalen): the viewBox keeps its proportions: trinity
+       Then : the viewBox keeps its proportions: trinity
        SVGModel.load follows preserveAspectRatio (default
        xMidYMid meet: the smaller scale, centred; slice the
        larger; none stretches), and a viewBox origin is scaled
        too (it was subtracted after the scale). trinity tests
        exit 0; avatar rebuilt. Seen: height 200 over a 200 x
        120 viewBox draws round, centred.
-       Undo (Kalen): shape and document values go on SvgDoc's
+       Undo : shape and document values go on SvgDoc's
        undo with the moves (SvgUndo row / was, a run on one
        field one entry; SvgDoc.undo_row for the side to set
        back). A shape value finds its shape by number (a
@@ -3367,16 +3943,16 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        200 then ctrl+z: 120; fill typed then ctrl+z: blue.
        A focused text field takes ctrl+z itself and keeps its
        text until it loses focus (as in 3D).
-       Fill and stroke take the ColorPick (Kalen: as the
+       Fill and stroke take the ColorPick (as the
        others): shown as linear numbers (svg_color, ^2.2),
        written back as #rrggbb (SceneEdit.svg_paint,
        hex_byte); no fill reads black; url(...) stays text.
-       Never "none" (Kalen, Oct 14): a none fill or stroke (or no
+       Never "none" (Oct 14): a none fill or stroke (or no
        stroke) is the picker with a blank value: no marks, an
        empty swatch outline, no numbers (properties ColorPick
        blank); a click picks a colour. Seen: none.svg's ring
        filled red by one click, saved fill="#cb3636".
-       The picker (Kalen, Oct 14): the value is #rrggbbaa, typed
+       The picker (Oct 14): the value is #rrggbbaa, typed
        (ColorHex: a click chooses all of it, a whole hex code
        applies as typed, enter or escape leaves; ColorPick
        hex_sync, hex_of, linear_of); an alpha bar after the hue
@@ -3393,7 +3969,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        draws dimmed (#ffffff1c; focused stays #264f78). Seen: the
        second click moved the caret only; id's dragged selection
        blue, then grey after a click on the panel.
-       Clear (Kalen): a small 'clear' button (56 px) under the
+       Clear : a small 'clear' button (56 px) under the
        hex on a paint (ColorPick.clearable; the panel's type
        'paint': aeon's svg fill and stroke; a material's 'rgba'
        has none): no colour, written as none (SceneEdit.set_row);
@@ -3401,7 +3977,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        fill cleared, saved fill="none".
        A cleared swatch has a red diagonal across it (bottom left
        to top right). Seen on back's stroke.
-       Blur (Kalen, Oct 14: a field that sets a filter): a 'blur'
+       Blur (Oct 14: a field that sets a filter): a 'blur'
        row on every svg shape, its own feGaussianBlur's
        stdDeviation (element units, 0 none). Set: the pending edits
        written into the text, then its filter's stdDeviation
@@ -3425,11 +4001,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        2.69); set 2 changed blur-1 in place; 0 took it off.
        OPEN: a group's filter (each shape only takes its own), a
        filter's region, other filter primitives.
-       Glow colour and drop shadow (Kalen, Oct 14): rows
+       Glow colour and drop shadow (Oct 14): rows
        glow-color (a 'tint': picker with clear, no kinds; blank
        the shape's own colours), shadow (percent, Inkscape's
        rule), shadow-offset (x y, element units), shadow-color
-       (starts half black, 4% of the box out). Kalen: effects
+       (starts half black, 4% of the box out). effects
        are render state, written only at a save: the setters
        change the shape's own values (set_fx; fx_of reads them
        back), the shape is marked, and compose writes its
@@ -3441,7 +4017,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Seen hidden: green glow, the circle's shadow, the rows.
        Fixed first: a blur on a file with no <defs> did
        nothing (with_spans' tie order cut the new <defs>).
-       stroke-linecap (Kalen): a row of three choices (butt, round,
+       stroke-linecap : a row of three choices (butt, round,
        square; butt when unwritten) after stroke-width (PropRow
        stops -> the panel's buttons; svg_set sets SVGShape.cap).
        trinity svg.ag reads it, inherited as SVG has it
@@ -3450,7 +4026,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        16-wide line: butt ends at the points, round half circles,
        square half the width out; saved stroke-linecap="round",
        then "square".
-       stroke-linejoin (Kalen): a row of three (miter, round,
+       stroke-linejoin : a row of three (miter, round,
        bevel; miter when unwritten, as svg). trinity draws joins
        in the path's distance field (Canvas.ag): PathPt.inner (last
        field) marks a flattened curve's own points; sdf_walk_edges
@@ -3470,12 +4046,12 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        rebuilt (PathPt). Seen on a 16-wide zigzag: miter points,
        bevel cuts, round; saved stroke-linejoin="round"; miter
        limit 1 bevelled both corners.
-       Opacity as a bar (Kalen): the panel's number type 'unit'
+       Opacity as a bar : the panel's number type 'unit'
        (0..1) is a DragField with bar: the cell fills from the
        left by its value (#806bff40); aeon's opacity rows are
        units (unwritten shows 1). Seen: 0.5 half the cell; a
        drag to 0.7 filled to 0.7.
-       The picker's paint kinds and gradients (Kalen: the preview
+       The picker's paint kinds and gradients (the preview
        a full strip on top; solid / linear / radial / conic where
        the swatch was; full gradients now):
        - properties ColorPick: a 22 px preview strip across the
@@ -3518,14 +4094,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          focus dropped). A plain colour drops the shape's paint.
        - trinity TButtons: a disabled segment's label dims (text
          takes no canvas opacity).
-       - (Kalen) a colour row spans both cells: its name in an
+       - a colour row spans both cells: its name in an
          18 px band on top, the picker the panel's full width
          under it (LaunchPanel.spans breaks the column rule
          there); the four kinds one row, the hex and clear under
          them. Seen: fill and stroke full width; linear chosen
-         and saved. Conic removed (Kalen: svg has no conic
+         and saved. Conic removed (svg has no conic
          gradient, so no entry): solid, linear, radial.
-       - Fixed (Kalen's sentry.svg: gradients not drawn as they
+       - Fixed (the user's sentry.svg: gradients not drawn as they
          are): a blurred shape's layer drew plain colours (its
          url paint's black); it takes the same gradient passes now
          (SVGModel.passes, opacity applied once, at the put
@@ -3534,7 +4110,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          colours white. The bar's drag spans 0..1 over its cell
          and clamps (how 5.269 got written). Seen: sentry blurred
          and sharp in its gradients; a 450 px drag saved 1.
-       - (Kalen) opacity and blur are percent bars (properties
+       - opacity and blur are percent bars (properties
          type 'percent': DragField top 100, a % at the cell's
          right, tenths). Opacity shows x100, writes 0..1. Blur
          is Inkscape 1.x's: radius = (p / 100)^2 x (box width +
@@ -3544,7 +4120,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          unit_scale, blur_percent, set_blur_percent). Seen on
          back (80 x 50): 52% saved opacity 0.52, 30.612% saved
          stdDeviation 3.046 (= 0.30612^2 x 130 / 4).
-       - (Kalen) a gradient comes back after a solid: a colour
+       - a gradient comes back after a solid: a colour
          over a gradient keeps its id on the element as
          aeon:fill-gradient / aeon:stroke-gradient (xmlns:aeon
          on <svg>; SvgDoc keep_gradient); a gradient again takes
@@ -3555,11 +4131,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          given once it is let go (the restored stops reached the
          picker only so). Seen: linear, a stop at 0.5, solid,
          linear: three stops back in the file and the picker.
-       - (Kalen) the strip's stops are little houses (peak up),
+       - the strip's stops are little houses (peak up),
          on the pixel grid: a 1 px outline on half pixels, the
          chosen one's 2 px on whole. Seen zoomed: walls one
          solid pixel.
-       - (Kalen) a glow row (percent, Inkscape's blur rule for
+       - a glow row (percent, Inkscape's blur rule for
          its halo, brightened 1 + 3 x percent / 100). Written as
          a standard filter (other viewers show it): [blur
          result soft] gaussian result halo, feComponentTransfer
@@ -3577,19 +4153,19 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          blurred over it. Seen on back: 39.8% glow, then 22.4%
          blur under it; against Inkscape's own render of the
          file the edge's pixels agree within 3 levels.
-       - (Kalen: fill and stroke gradients are not coupled) the
+       - (fill and stroke gradients are not coupled) the
          view shows both gradients' handles, the fill's yellow,
          the stroke's pink (SvgView paint_of, draw_grad_of); a
          press takes the nearest (grad_hit sets g_key); on one
          spot the one not held last wins, so a second press
          takes the other. Seen: fill's end to 1, 0.989, then
          the stroke's from the same spot to 0.428, 0.32.
-         Then (Kalen) both ends are circles (10 px), the picked
+         Then both ends are circles (10 px), the picked
          one with a white circle inside (SvgView g_pick,
          g_shape). Seen: the dragged fill end lit white.
-       - (Kalen) the strip has a 1 px white outline on half
+       - the strip has a 1 px white outline on half
          pixels (ColorPick.strip_outline): one pixel row.
-       - (Kalen) transform is at the bottom in parts: move (x
+       - transform is at the bottom in parts: move (x
          y), rotate, scale (x y), skew (degrees), read as
          translate . rotate . skewX . scale (svg_parts) and
          written back so, each part left out at its identity
@@ -3599,13 +4175,13 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          wrote every point 0,0. Seen: rotate 30, scale x 1.5:
          transform="rotate(30) scale(1.5,1)", points intact.
          Rotation turns about the element's origin, as svg.
-         Fixed (Kalen: a new value stacked on the last): svg_set
+         Fixed (a new value stacked on the last): svg_set
          took the old value as the map's own string, freed by
          the set that replaced it, so the old transform was
          never taken out (the file was right, the view stacked).
          It copies it first. Seen: rotate 30 then 45 draws as a
          fresh open of rotate(45).
-       - (Kalen: storing in the transform is lossless) g and s on
+       - (storing in the transform is lossless) g and s on
          whole shapes set each one's transform, never its points:
          each frame from the start, parent^-1 . page op . parent
          . start (whole_ids, whole_t0, whole_par; svg_parts_m),
@@ -3625,7 +4201,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          rotate(45) (exact about 50, 35).
          Test note: the view takes typed numbers as key presses;
          the socket's `text` does not reach it.
-         shift + g (Kalen): moved only along the way the pointer
+         shift + g : moved only along the way the pointer
          first goes (its first 8 px set the line; along,
          along_way); a typed number is the distance on it; a
          faint 1 px grey line through the middle shows it. Seen:
@@ -3636,11 +4212,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          itself (a turn's goal read the pointer, so an escaped
          turn stayed turned). Seen: r, shift+s, shift+g, g each
          escaped: 0 pixels off the start, the file untouched.
-         (Kalen: more weight) g, s, r, o and handle drags ease at
+         (more weight) g, s, r, o and handle drags ease at
          0.2 a frame (was 0.35; the view's pan 0.25): about 14
          frames to within 5%. Seen: a g step 150 ms on still
          2,104 pixels short (was settled).
-       - (Kalen: gradients move, turn and size with the shape)
+       - (gradients move, turn and size with the shape)
          a transform change carries what the shape holds on the
          page: its gradients' to_page, its blur and glow by the
          scale (svg_set). Fixed in trinity (svg_paint_of): a box
@@ -3650,16 +4226,16 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          affine.inverse[] added (trinity). Seen: back linear, r
          90: live and reopened 0 pixels apart, both top to
          bottom (the reopened one had run left to right).
-       - (Kalen) the view's edit lines and points take the
+       - the view's edit lines and points take the
          pointer's nearness: alpha 0.5 away, 1 at it, by
          trinity's curve (1 - d / 160)^2 (SvgView near_a,
          near_of, near_line, toned): each outline segment by its
          nearest of 8 points, handle lines, nodes, the gradient
          line and circles. Seen: pointer at back's corner lit
          its circle, nodes and edge; far off all at half.
-         Then (Kalen: alpha looked wrong over other shapes): away
+         Then (alpha looked wrong over other shapes): away
          they are darker, solid (rgb times 0.5..1, alpha kept).
-         Then (Kalen: light blue lines at 0.3, no doubling where
+         Then (light blue lines at 0.3, no doubling where
          they cross): the lines (outline segments, handle lines,
          a gradient's line and radial circle) draw solid into
          SvgView.line_layer and go down once at line_alpha 0.3
@@ -3668,35 +4244,35 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          toward white (lit). Nodes and the gradient circles draw
          solid over it, darker away (toned). Seen: no bright spot
          where the gradient line meets the outline.
-         Then (Kalen: the lines read lighter than the points; the
+         Then (the lines read lighter than the points; the
          same at a distance): nodes and gradient circles go into
          the layer too; the layer goes down at line_alpha 0.3,
          then again at 0.7 through near_mask, a radial circle
          round the pointer ((1 - d / 160)^2 as stops): full near
          it, 0.3 away, one look for lines and points, crossings
          single. Per-element toning (near_a, toned, lit) gone.
-         Then (Kalen): points grow by nearness, to 1.5x at the
+         Then : points grow by nearness, to 1.5x at the
          pointer (near_w, the same curve); the node a press would
          take (nearest, 10 px) and a gradient circle within 10 px
          are drawn brighter (60% to white). Seen: the corner's
          nodes larger, the one under the pointer lighter.
-         Then (Kalen): picked points are never faded: the picked
+         Then : picked points are never faded: the picked
          (or region-lit) nodes and the picked gradient circle
          draw solid on the view after the layer (SvgView.solid,
          draw_nodes). Seen: a picked node exactly #ffcf4a with
          the pointer far off, the rest at 0.3.
-         Then (Kalen): every unpicked point is half its size far
+         Then : every unpicked point is half its size far
          off, its own size at the pointer (0.5 + 0.5 x
          nearness; 1.5x was a third too big); picked ones
          keep their own size always. Seen: the picked node 42
          yellow pixels both far and near.
-         Then (Kalen: handle lines take the near light, in the
+         Then (handle lines take the near light, in the
          same layer): the pen's handle lines were drawn on the
          view; they go into the layer now (pen_handles; the
          layer opens for the pen too). A shape's handle lines
          were already in it. Seen: the pen's handle full yellow
          at the pointer, 85/255 (0.3) far off.
-         A plain drag moves (Kalen): a press on a point and a
+         A plain drag moves : a press on a point and a
          drag past 4 px moves the picked points (a picked one
          keeps the others); a press inside a shape (fill, or
          4 px of its outline) moves the chosen shapes; the
@@ -3705,7 +4281,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          it the only one. Seen: back dragged 100, 50 px saved
          translate(37.175,18.587); its corner node dragged 40,
          40 px moved 14.87, 14.87 with its handle.
-       - Text (Kalen, Oct 14: t adds text; the properties set its
+       - Text (Oct 14: t adds text; the properties set its
          font). trinity svg.ag reads <text>: SVGNode.text (its
          character data, entities read; last member), SVGState
          font_size, weight, slope, anchor (inherited; style or
@@ -3737,14 +4313,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          middle set live and saved; DejaVu Serif typed into the
          family, drawn and saved. Fixed on the way: picked is
          null until a pick (picked = vec, not clear[]).
-         Moved, turned, sized (Kalen): a press anywhere in a
+         Moved, turned, sized : a press anywhere in a
          text's box takes it (hits: text_box, gaps too); g, s, r
          and a drag set its transform as for any whole shape
          (all_points gives a whole move its box; points_of stays
          empty for a text). Seen: a drag, r 45, s 2 saved as
          transform="translate(82.637,-149.16) rotate(45)
          scale(2,2)", the glyphs following live.
-         Its selection (Kalen): a rounded rect 6 px out from the
+         Its selection : a rounded rect 6 px out from the
          letters, 5 px corners, in the text's own space (turns
          with it), dark grey (#3a3a3a) with light grey (#c8c8c8)
          5 px dashes running round it at 20 px a second, drawn
@@ -3752,7 +4328,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          has no dashes, so short runs along the outline). Seen
          level and turned 30 degrees; 830 pixels of the edge
          changed in a quarter second.
-       - (Kalen) a panel cell with no name (ArgsField /
+       - a panel cell with no name (ArgsField /
          LaunchField / DragField with label '') keeps no gap for
          one: its text starts 0.25 units in, as a split cell's.
          Seen: id, opacity, blur, rotate, skew line up with move
@@ -3779,7 +4355,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        quarter as fast (3D op_move and the svg view). Seen in
        the svg: an 80 px move 29.74 units plain, 7.435 with
        shift.
-       The svg view's s (Kalen: x y as g): the picked points,
+       The svg view's s (x y as g): the picked points,
        or the whole shape, sized about the middle of their box
        by the pointer's sideways move (as 3D's s); x or y
        after: that axis alone; enter or a click keeps, escape
@@ -3796,7 +4372,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        10..60) by g x 5, s 2, s y 0.5 saved at x -25..135, y
        10..60 exactly. The x / y keys no longer toggle back to
        both (3D's rule).
-       Linked offsets (Kalen: o, composite beziers): o on a
+       Linked offsets (o, composite beziers): o on a
        shape follows the pointer (or a typed distance) with a
        yellow preview; enter or a click adds the offset; on an
        offset, o changes its distance live. aeon/Offset.ag:
@@ -3823,14 +4399,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        moved with its offset following, o on the offset to
        20.87 then escape, an open wire outlined with round ends
        and joins, a circle inset past its radius gone.
-       Holes (Kalen: an inset's inner ring went out of the
+       Holes (an inset's inner ring went out of the
        shape): each subpath went out by its own winding, so a
        hole shrank. offset_cmds now finds each closed subpath's
        depth (how many others hold its first point, even-odd);
        an odd one is a hole and goes the other way, into the
        filled part. Seen: a hexagon with a hole, -6: both
        rings move into the material.
-       Shift + drag on an anchor (Kalen): past 4 px the drag's
+       Shift + drag on an anchor : past 4 px the drag's
        side is the segment in or out whose way from the anchor
        (its handle, else its other end) lines up best with the
        drag; a curve there gives its handle, a line or quad is
@@ -3844,7 +4420,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        made the closing line a curve (saved C 90,90 26.022,
        69.368 0,40); up-right took the first curve's handle,
        moved by the pointer exactly.
-       Delete or backspace (Kalen): the picked nodes taken out,
+       Delete or backspace : the picked nodes taken out,
        the segments either side joined into one (two lines a
        line, else a cubic keeping the outer handles); an open
        path's end shortens it; a closed subpath's start (or its
@@ -3855,7 +4431,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Seen: back's (90,18) -> C 86.418,10 90,52 90,52; its
        start (18,10) -> starts at 82,10; wave's middle -> C
        20,0 120,80 90,90.
-       Then (Kalen): a deleted node between curves is fitted:
+       Then : a deleted node between curves is fitted:
        the joined cubic keeps its ends and their handle
        directions, the handle lengths by least squares to 49
        samples of the old curve (Schneider's fit), the samples'
@@ -3863,14 +4439,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        nearer_t). Seen: a curve split in two and its new node
        deleted came back C 20,0.001 60,0.001 80,40 (was C 20,0
        60,0 80,40).
-       Double click on a segment (Kalen): a node put in there
+       Double click on a segment : a node put in there
        (SvgDoc.split_at: nearest of 64 samples a segment, within
        6 px): a line two lines, a cubic or quad split at that t
        (the same curve), an implied closing line a real node;
        the new node picked, one undo entry. Seen: wave's top
        split C 10,20 25,10 40,10 C 55,10 70,20 80,40; its
        closing line at 45,65; back's top at 50,10.
-       Easing in 2D (Kalen: filter_n as 3D): the view's pan
+       Easing in 2D (filter_n as 3D): the view's pan
        and wheel zoom go to goals (ox_goal, oy_goal, zoom_goal;
        home eases to the fit), and g / s, o and a handle drag
        show an eased value (shown_g, off_shown, h_shown), each
@@ -3878,11 +4454,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        enter, a click or a release keeps the exact goal
        (SvgView.ease_frame). Seen: 100 px of g: 753 then 796 px
        half a second on.
-       Then (Kalen: pan with more weight, 50% longer): the
+       Then (pan with more weight, 50% longer): the
        view's pan and zoom ease at 0.25 a frame (view_ease; was
        0.35, the edits keep it): within 5% of the goal in ~10
        frames, was ~7.
-       Node types (Kalen; cmd + click cycles them): cusp (free
+       Node types (cmd + click cycles them): cusp (free
        handles, a square), smooth (handles opposite, each its
        own length; a circle), symmetric (opposite and the same
        length; a circle with a dot). Kept as Inkscape's
@@ -3898,7 +4474,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        still), cmd + click to smooth then symmetric (saved
        nodetypes czcc, handles -17.108,6.925 / 17.108,-6.925),
        its right handle dragged down: the left one mirrored.
-       Page up / down (Kalen): the chosen shape one step up
+       Page up / down : the chosen shape one step up
        (later, drawn over) or down among its parent's elements
        that draw (title, desc, defs skipped; a group is one
        step): the two elements' text swapped, the space between
@@ -3919,7 +4495,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        enter or escape shows 0. Seen: still four cells, 0 shown,
        the file's viewBox unchanged. properties rebuilt (orbiter
        takes it at its next launch).
-       Several shapes and booleans (Kalen): shift + click (view
+       Several shapes and booleans : shift + click (view
        or outliner) puts a shape in or out of the choice
        (SvgDoc.also, toggle, choose_one, selected); the others
        draw their outlines. ctrl + = (or keypad +): union; ctrl
@@ -3945,7 +4521,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        arcs and the corners' own control points; bar - cut: a
        notch of lines; box - disc: a round bite (the circle's
        arc); ctrl+z back to both.
-       An offset's one knob (Kalen: no bezier handles on an
+       An offset's one knob (no bezier handles on an
        offset, one weight to drag): a chosen linked offset draws
        its outline and a yellow diamond on it, a line from the
        source's point it is measured from; its own points are
@@ -3959,7 +4535,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        (by a corner every point of the round join is equally
        near). Seen: 6 -> 22.016 dragged out, 11.472 back in,
        the knob where it was let go.
-       Delete or backspace with no node picked (Kalen): the
+       Delete or backspace with no node picked : the
        chosen shapes' elements go, each with its line, one undo
        (SvgDoc.delete_chosen, line_start, shared with combine).
        Seen: d and b deleted (a and c left), ctrl+z gave the
@@ -3967,7 +4543,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        headings stayed as last drawn (shape over the document's
        rows): PropsBody repaints when its blocks' keys or labels
        change (heads).
-       Groups (Kalen: ctrl+g on two or more chosen): ctrl+g puts
+       Groups (ctrl+g on two or more chosen): ctrl+g puts
        the chosen shapes in a new <g id="group-n"> where the
        topmost of them was, in drawing order; one from another
        parent keeps its place by a matrix put before its own
@@ -3987,7 +4563,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        group taken apart: its translate on the wave and circle.
        OPEN: a group's own presentation (fill ...) is not put
        on its children at an ungroup.
-       Fixed (Kalen: offset less source left the whole offset
+       Fixed (offset less source left the whole offset
        filled once the knob had changed its distance;
        trinity/images/resource_test.svg, radius 0.911): the
        offset outline had stubs a few thousandths long running
@@ -4001,7 +4577,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        file's difference is the border rings only; a fresh 0.912
        offset has no stub (the four turn-backs left are the
        top diamond's sharp corners).
-       Fixed in trinity (Kalen: waves along straight edges when
+       Fixed in trinity (waves along straight edges when
        zoomed far in, and the frame rate fell; Canvas.ag): a
        path's distance field covered its whole bounding box,
        which past the canvas was stretched over a field no
@@ -4019,7 +4595,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        second; the edge within half a pixel of a line; holes
        right. trinity tests exit 0. Every trinity app's path
        fills take this (a restart picks it up).
-       Then (Kalen: panning the whole of resource_test2.svg was
+       Then (panning the whole of resource_test2.svg was
        slow): one path of 3,450 edges over the whole view, every
        texel walking every edge (~800 M tests a frame), and the
        inner-edge test each edge against all (13 ms of CPU).
@@ -4044,7 +4620,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        count past the tile leaves those edges out (list
        membership is exact). Line gone; cube2 still equal to the
        all-edges picture; 60 frames a second panning.
-       New path (Kalen): p draws one in the svg view: a click a
+       New path : p draws one in the svg view: a click a
        corner node, click and drag a smooth node (its handles
        drawn out, the one behind mirrored), a click on the first
        node closes it, enter leaves it open, backspace takes the
@@ -4055,23 +4631,23 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        (trinity SVGModel.root_space, last member) and chosen.
        Seen: three nodes, the middle dragged, closed on the
        first: M .. C .. C .. L .. Z as drawn.
-       A group chosen (Kalen, Oct 14): the path goes last inside
+       A group chosen (Oct 14): the path goes last inside
        it, before its </g>, in the group's own space (every
        transform from the <svg> down), the closing tag's indent
        kept (SvgDoc chosen_group: the outermost <g> whose shapes
        are exactly the chosen ones; group_space). Seen: test.svg's
        translate(100,20) group took path-1 at -55.762,-5.167, drawn
        under the clicks; nothing chosen, it goes last in <svg>.
-       Undo keeps the choice (Kalen, Oct 14): an undo that reads
+       Undo keeps the choice (Oct 14): an undo that reads
        the text again (add, delete, group, restack, boolean) finds
        each chosen shape anew by its id, else its element's text,
        else its number when the count is unchanged (SvgDoc
        shape_key, shape_by_key, restore). Seen: back restacked
        over the group then undone, still chosen; the circle (no
        id) moved under the wave then undone, still chosen.
-       Fixed in trinity (Kalen: backspace in the path's name
-       field deleted the path; "no character that goes to an edit
-       element should be an event elsewhere"): Window.key_event
+       Fixed in trinity (backspace in the path's name
+       field deleted the path; a
+       character for an edit field goes nowhere else): Window.key_event
        gave the app every key before the focused edit layer.
        Now a focused element's edit layer (editing_layer) takes
        its keys and they go no further; ctrl/cmd with anything
@@ -4083,7 +4659,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        in the view let the field go and backspace then deleted
        the shape. trinity tests exit 0. Every trinity app takes
        it at a restart.
-       Box and circle select in the svg view (Kalen: as 3D): b
+       Box and circle select in the svg view (as 3D): b
        or c from the pointer, a left click or enter picks (shift
        or cmd adds), escape or a right click drops it; a chosen
        shape's nodes inside it (lit while drawn), else the
@@ -4091,7 +4667,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        end_region, draw_region). Seen: two of wave's nodes
        boxed; with nothing chosen a circle round the dot chose
        it alone (the wave only partly in).
-       No save prompt at a quit (Kalen: an anti pattern); the
+       No save prompt at a quit (an anti pattern); the
        unsaved work is kept instead, with where it saves to.
        aeon keeps a drawing's unsaved text, a second apart at
        most, in <cache>/aeon/recover.svg, with recover_on and
@@ -4111,7 +4687,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        untitled, saved as fresh.svg beside the last project.
        OPEN: one run died once during ctrl+n and the pen, not
        seen again in three tries.
-       3D designs too (Kalen: only the .agi index, and meshes):
+       3D designs too (only the .agi index, and meshes):
        held edits go, a second apart at most, into a shadow of
        the files they change (<cache>/aeon/shadow, under each
        file's own path; only those .agi and .mesh files), never
@@ -4133,7 +4709,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        alone, the shadow emptied; a cage point move kept as the
        shadow's outside.mesh, undone: the copy gone. design and
        avatar rebuilt (Design.save_place_to added).
-       ctrl/cmd + r reverts, asked first (Kalen): trinity has a
+       ctrl/cmd + r reverts, asked first : trinity has a
        yes or no dialog for any app, Window.confirm[ question,
        yes word, lambda none [ bool ] ] (ConfirmView in
        navigation.ag: the window dimmed, a box sized to the
@@ -4153,7 +4729,7 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
          its type by canonical, which follows a lambda signature
          to its return type (none): every module importing the
          class sized a void member and hung in LLVM (aeon's build
-         and Kalen's running aeon's reload build spun for
+         and the user's running aeon's reload build spun for
          minutes). It registers as Au's lambda now.
        - a store into a lambda member never held its object (the
          hold was for classes only: is_class_set, enode_retain):
@@ -4166,11 +4742,11 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        Every module with lambda slots changes its stores (quake2,
        trinity's Window): rebuild before running. trinity,
        properties, design, avatar, aeon rebuilt.
-       Then (Kalen): handles (the bezier weights) are picked by
+       Then : handles (the bezier weights) are picked by
        the box and circle too, lit while drawn. Seen: wave's two
        top handles boxed, no node; g moved them alone: C 20,0
        60,0 80,40 -> C 34.87,0 74.87,0 80,40.
-       Save as (Kalen: ctrl+shift+s; save stays ctrl+s): trinity
+       Save as (ctrl+shift+s; save stays ctrl+s): trinity
        Window.capture_keys (the svg view turns the capture's key
        off, the 3D view back on) and a save mode of the
        navigation dialog: nav_save_as[ name ] opens it on the
@@ -4190,15 +4766,14 @@ D6. IN PROGRESS (Kalen, Oct 13: "it needs to be more of an editor
        wiggly shape) are not cut away as Inkscape does;
        trinity's svg loader ignores fill-rule (evenodd draws
        as nonzero).
-    e. DONE (Kalen, Oct 13) edit mode shows the creases on the
+    e. DONE (Oct 13) edit mode shows the creases on the
        cage's edges: each creased edge (the cage's sa/sb, read
        from the .mesh's crease_edge) drawn over the cage lines,
        2.5 px pink, its alpha 0.35 + 0.65 x crease (crease from
        sharpness = 10 x crease squared). Seen on outside's cage
        (tab): its creased ring edges pink. flower's cage has no
        creases (all 72 edges 0).
-    c. DONE (Oct 13) line quality in trinity (Kalen: "very
-       aliased"). Two causes in Canvas.paint and CanvasUI mode 6:
+    c. DONE (Oct 13) line quality in trinity . Two causes in Canvas.paint and CanvasUI mode 6:
        a path's distance field was half the canvas stretched over
        its padded box (a 180 px line: 1.9 px a texel), and a
        blend of coarse texels across a line's V never reached 0
@@ -4226,7 +4801,7 @@ The script: a .blend opened (no Blender shown), a cage point
 dragged (24 petals follow), the avatar's chain from its graph
 with a number changed live, the agent asked for a change, clouds
 retuned live, all recorded (--record) and cut by composer.
-Direction (Kalen, Oct 12): every scene converts to this form,
+Direction (Oct 12): every scene converts to this form,
 edited in Aeon: the module holds the element's code (shaders,
 special passes, behaviour over time), the scene's folder .agi
 holds everything it uses (passes, sizes, wiring, settings,
@@ -4260,7 +4835,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    Not done: Mirror bisect/clip, Array size offsets, simple
    subdivision, uv subdivided linearly (blender: preserve
    boundaries), vertex colour unused by AeonLit.
-3. IN PROGRESS the render graph. Kalen: Aeon's own scenes
+3. IN PROGRESS the render graph. Aeon's own scenes
    component, so we control where it goes: aeon/Stage.ag, `Stage`
    (gltf has Scene). A stage owns its passes and their Renders
    (never the Window's element_targets), draws them in order each
@@ -4277,7 +4852,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    1,024,000 pixels differ; a two pass file (lit, then UVQuad
    copying lit.color) also 0; wired to lit.depth every pixel
    differs (the copy really draws).
-   Fixed: the orbit's x was reversed (Kalen).
+   Fixed: the orbit's x was reversed .
    The avatar's chain (Oct 12), aeon/flower888/flower888.render.agi:
    `modules: [ avatar ]` (the stage dlopens install/build/
    libsilver-avatar.so: its types register), passes av (scale 4,
@@ -4304,7 +4879,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    it; the graph's plasma draws flower only.
    NEXT: the avatar's camera in the graph, a side by side against
    the avatar, the colour difference; then the graph view.
-4. DONE (Oct 12) editing the cage, points first (Kalen: the edit
+4. DONE (Oct 12) editing the cage, points first (the edit
    goes to the cage, so every copy follows). A row of object
    names on top (TButtons; the view below it, t66px: an animated
    view over the row hid it) picks the object whose cage shows
@@ -4325,7 +4900,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    up ends 3 px from the pointer, all 24 petals change, the .mesh
    is written; ctrl+z gives back the original file byte for byte.
    Not driven: the axis keys, shift-add, the wheel.
-   Tab (Kalen): object mode / inner cage. Object
+   Tab : object mode / inner cage. Object
    mode (the start): no cage; a press within 16 px of an object's
    cage point chooses it (the row lights it: DesignView.want, read
    by the app's render) and a drag moves the whole object (its
@@ -4335,16 +4910,16 @@ orbiter's backdrops load the scene's .agi into a Stage.
    points; tab again goes back. Seen hidden: a click lit outside,
    a 60 px drag moved it (at 0.134, -0.196, 0 written), tab showed
    the moved cage, ctrl+z wrote at 0, 0, 0 back.
-   The orbit eases (Kalen: an accumulating influence, filtered up
+   The orbit eases (an accumulating influence, filtered up
    to about 50%): a drag adds 0.004 rad a pixel (was 0.008, applied
    at once) to yaw_goal / pitch_goal, and each frame the view
    moves half the way there (filter_n 0.5, frame-rate free). Seen
    hidden: still moving at release, settled a second later.
-   Then (Kalen, Oct 12: orbit accumulates, filtered slower) the
+   Then (Oct 12: orbit accumulates, filtered slower) the
    orbit's view takes 0.2 of what is left a frame (pan, zoom and
    ops keep 0.5); seen hidden: still turning 0.3 s after release,
    settled by 1.8 s.
-   Then (Kalen: every movement so: rotation, translation, place)
+   Then (every movement so: rotation, translation, place)
    the same for all: point moves, object moves and the camera pan
    take half the pointer's move into a `pending` / center_goal,
    the wheel's step is 1.05 a notch into dist_goal, and each frame
@@ -4354,12 +4929,12 @@ orbiter's backdrops load the scene's .agi into a Stage.
    moved it 18.5, -18 px, the .mesh unwritten at release and
    written once settled. Rotate and scale tools, when made, take
    the same.
-   Ctrl/cmd held at the press moves the camera (Kalen): the view
+   Ctrl/cmd held at the press moves the camera : the view
    turns around its own `center` (was the origin) and a ctrl drag
    moves it in the plane facing the view, so the model follows
    the pointer (drag_world, shared with point moves). Seen hidden:
    a 100, 50 px drag moved the model 101.7, 50.4 px.
-   Speed (Kalen: ultra slow on an object that arrays then
+   Speed (ultra slow on an object that arrays then
    subdivides): a move re-ran every node with uv, colour and
    material and rebuilt every vertex by push: flower ~500 ms,
    outside ~200 ms. Now an edit runs the shape alone (the Cage's
@@ -4370,7 +4945,7 @@ orbiter's backdrops load the scene's .agi into a Stage.
    table is counted then made, corners know their face (cface).
    Measured in the app per move, evaluate to upload: outside 5
    ms, flower 7 ms (20 of 20 moves each). Test still 1/1.
-   The test has its own copy (Kalen edited aeon/flower888's core):
+   The test has its own copy (the user edited aeon/flower888's core):
    aeon/tests/flower888/ is the project and blender's refs
    together, made by blend.py from the .blend; aeon/flower888 is
    the one edited in aeon. 1/1 passes.
@@ -4403,7 +4978,7 @@ silver orbiter --width 1920 # --width goes to orbiter, not silver
 silver --clean orbiter
 ```
 
-- `make` is `make release` (Sep 29, Kalen); `make debug` for -O0 -g. Both build into install/build and link install/bin/silver: the last one built wins.
+- `make` is `make release` (Sep 29); `make debug` for -O0 -g. Both build into install/build and link install/bin/silver: the last one built wins.
 - Bootstrap runs `gen.py` then `ninja`. The ninja file is generated per build type.
 - Build caching: modules with unchanged source skip recompilation (checks `.product` timestamp vs `.ag` timestamp).
 - Release builds: LLVM emits .o directly in-memory via `LLVMTargetMachineEmitToFile` — no .ll file, no llc process. Uses `LLVMCodeGenLevelAggressive` with `+avx2,+fma` on x86-64.
@@ -4464,7 +5039,7 @@ Au is the C-based object/type system underlying everything. Key concepts:
 ### Key Au Types
 - Primitives: `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bf16 bool num sz`
 - `string` — managed string object
-- `symbol` — `const char*` (use `cstring(s)` to convert string → symbol for functions like `lexical()`)
+- `symbol` — `const char*` (use `cstring(s)` to convert string → symbol for functions like `lexical`)
 - `array` — heap-allocated class-based collection (inherits `collective`)
 - `map` — hash map collection
 - `path` — file path object
@@ -4605,35 +5180,35 @@ each(items, type, var)
 
 ### Compilation Phases
 
-`silver_parse()` drives compilation in distinct phases:
+`silver_parse` drives compilation in distinct phases:
 
-1. **Statement loop** — parses module-level statements sequentially: imports, exports, aliases, class/struct/enum headers (bodies stashed as token arrays), free functions. `incremental_resolve()` called after each statement (currently a stub).
+1. **Statement loop** — parses module-level statements sequentially: imports, exports, aliases, class/struct/enum headers (bodies stashed as token arrays), free functions. `incremental_resolve` called after each statement (currently a stub).
 2. **Deferred alias resolution** — aliases whose target types weren't available during phase 1 (forward references) are resolved in multi-pass order. Stored as `(Au_t, token array)` pairs in `a->pending_aliases`.
-3. **Phase 1: Record body parse** — `build_record_parse()` replays stashed tokens for each class/struct via `push_tokens`/`pop_tokens`, parsing members and method signatures.
-4. **Phase 2: LLVM type implementation** — `build_record_implement()` calls `etype_implement()` to build LLVM struct bodies, set member indices, create type IDs.
-5. **Phase 3: Function codegen** — `build_record_functions()` and `build_fn()` emit LLVM IR for all method and free function bodies.
+3. **Phase 1: Record body parse** — `build_record_parse` replays stashed tokens for each class/struct via `push_tokens`/`pop_tokens`, parsing members and method signatures.
+4. **Phase 2: LLVM type implementation** — `build_record_implement` calls `etype_implement` to build LLVM struct bodies, set member indices, create type IDs.
+5. **Phase 3: Function codegen** — `build_record_functions` and `build_fn` emit LLVM IR for all method and free function bodies.
 
 This phased approach means: all type names are registered before any body is parsed; all LLVM types exist before any function emits IR.
 
 ### Key Parse Functions
-- `silver_parse()` — entry point, sets up platform defines, runs all phases
-- `parse_statement()` — dispatches keywords (if/for/switch/return/class/func/etc.)
-- `parse_expression()` → `reverse_descent()` → `read_enode()` — expression parsing with precedence climbing
-- `read_enode()` — reads a single expression node (literals, variables, new, sizeof, etc.)
-- `silver_parse_member()` — resolves member access chains (`a.b.c`), handles scope_mdl hint for enum inference
-- `read_etype()` — reads a type name, handles generics, refs, primitives, C types. Uses `read_named_model()` → `elookup()` → `rlookup()` → `lexical()` → `etype_prep()` chain.
-- `silver_read_def()` — parses type definitions: class, struct, enum, alias, scalar, import, export
-- `read_expression()` — tokenizing wrapper around `parse_expression`, used in switch/case for deferred build
-- `parse_switch()` — switch statement parser, passes enum hint via `canonical(e_expr)` to case value parsing
-- `parse_asm()` — inline assembly parser, supports conditional `asm <define>` and auto-gather
+- `silver_parse` — entry point, sets up platform defines, runs all phases
+- `parse_statement` — dispatches keywords (if/for/switch/return/class/func/etc.)
+- `parse_expression` → `reverse_descent` → `read_enode` — expression parsing with precedence climbing
+- `read_enode` — reads a single expression node (literals, variables, new, sizeof, etc.)
+- `silver_parse_member` — resolves member access chains (`a.b.c`), handles scope_mdl hint for enum inference
+- `read_etype` — reads a type name, handles generics, refs, primitives, C types. Uses `read_named_model` → `elookup` → `rlookup` → `lexical` → `etype_prep` chain.
+- `silver_read_def` — parses type definitions: class, struct, enum, alias, scalar, import, export
+- `read_expression` — tokenizing wrapper around `parse_expression`, used in switch/case for deferred build
+- `parse_switch` — switch statement parser, passes enum hint via `canonical(e_expr)` to case value parsing
+- `parse_asm` — inline assembly parser, supports conditional `asm <define>` and auto-gather
 
 ### Key Aether Functions (aether.c)
-- `e_operand()` — create literal/constant enode
-- `e_create()` — type conversion/construction
-- `e_op()` — binary operation node
-- `e_load()` — load value from memory
-- `e_null()` — null value of type
-- `e_vector()` — heap array allocation
+- `e_operand` — create literal/constant enode
+- `e_create` — type conversion/construction
+- `e_op` — binary operation node
+- `e_load` — load value from memory
+- `e_null` — null value of type
+- `e_vector` — heap array allocation
 - `canonical(enode)` — resolve enode to its underlying etype (follows vars → source type)
 - `is_enum(Au)` — checks if type is enum (uses `au_arg_type` to resolve through vars)
 - `etype_prep(a, au)` — find or create etype for an Au_t, calls `etype_create` + `etype_implement`
@@ -4661,7 +5236,7 @@ This phased approach means: all type names are registered before any body is par
 - `context_func(a)` — enclosing function
 - `context_class(a)` / `context_record(a)` — enclosing class/record
 - `elookup(chars)` — macro: `(etype)rlookup((aether)a, string(chars))`
-- `rlookup(a, name)` — `lexical()` + `etype_prep()`: finds Au_t by name, then prepares/returns its etype
+- `rlookup(a, name)` — `lexical` + `etype_prep`: finds Au_t by name, then prepares/returns its etype
 
 ### Au Object Inheritance in C
 
@@ -4693,7 +5268,7 @@ gdb --args ./platform/native/debug/silver orbiter -v --clean --run
 ## Common Patterns
 
 ### Adding a platform define
-In `silver_parse()`:
+In `silver_parse`:
 ```c
 Au_t m = def_member(a->au, "name", typeid(bool), AU_MEMBER_VAR, AU_TRAIT_CONST);
 set(a->registry, (Au)m, (Au)hold(e_operand(a, _bool(condition), etypeid(bool))));
@@ -4745,11 +5320,11 @@ if (!rt || !rt->lltype) rt = etype_prep(a, ...);         // force create
 `Au_is_struct` uses `au_arg_type` to resolve through aliases and variables to the underlying type. Key behaviors:
 - Returns `false` for pointer types (`au->is_pointer`)
 - Opaque Vulkan handles (e.g. VkPhysicalDevice → alias → ptr → opaque struct) return `false` because `au_arg_type` stops at the pointer
-- Use `au_ancestor()` when you need to walk past pointers to the terminal type (e.g. for opaque checks)
+- Use `au_ancestor` when you need to walk past pointers to the terminal type (e.g. for opaque checks)
 - `is_struct` vs `au->is_struct`: the function resolves through aliases; the field checks the Au_t directly
 
 ### Alias-to-Pointer Types in etype_init
-C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysicalDevice`) can fall into the named struct branch of `etype_init` because `is_rec()` resolves through to the underlying struct. When the alias src chain leads to a pointer (`au_arg_type` returns an Au_t with `is_pointer`), set `lltype = LLVMPointerTypeInContext(...)` instead of creating a named LLVM struct.
+C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysicalDevice`) can fall into the named struct branch of `etype_init` because `is_rec` resolves through to the underlying struct. When the alias src chain leads to a pointer (`au_arg_type` returns an Au_t with `is_pointer`), set `lltype = LLVMPointerTypeInContext(...)` instead of creating a named LLVM struct.
 
 ### `e_create` Same-Type Identity
 `e_create` has an identity shortcut: `if (canonical(input) == canonical(mdl)) return input`. This avoids unnecessary allocas for same-type conversions. If disabled for structs, `e_create` builds a temp alloca that e_assign's alias path may hijack — causing the orphaned-alloca bug described above.
@@ -4760,6 +5335,74 @@ C typedef aliases to pointer types (e.g. `typedef VkPhysicalDevice_T* VkPhysical
 - **`au_ancestor(au)`**: Walks `src` chain unconditionally to the terminal type. Goes through pointers. Stops at enums. Use for opaque type detection.
 
 ## Recent Compiler Discoveries
+
+## Orion Racer on android — live list (Oct 27 2026)
+
+/src/orion (orion/orion.ag), on the Pixel: `cd /src/orion &&
+silver -d android orion --test_race` starts straight in a race.
+1. DONE builds for android again: meson and autotools imports get
+   the NDK sysroot, lld and its api-33 libc dir first (libc.a had
+   come into faac and rnnoise: gwp_asan TLS refused at dlopen);
+   the device libAu and core modules rebuild when their source is
+   newer; trinity skips addchdir_np under api 34.
+2. DONE the swap quad turns for the surface (UVQuad.turn; model was
+   no longer read): landscape upright on a 90-degree display.
+3. DONE immersive (devices cb_focus): no bars, under the cutout.
+4. DONE the demo is skipped at start (orion: straight to Welcome).
+5. DONE a missing frost chain draws the backdrop (Window.on_screen).
+6. DONE app arguments on android: silver writes files/silver.args
+   (run-as) before `am start -S`; the host reads it at onCreate.
+   System UI starts an installed app itself, before or after ours.
+7. BUILT, seen once: devices keeps the app thread when android
+   recreates the activity in the process (was a startup crash).
+8. DONE engine slats: each fin has skirts to mid-gap, its colour
+   fading to dim blue (fins_mesh); seen soft on the phone.
+9. DONE 2D at one scale (height / 320); the design space widens
+   (ds_w); centred dialogs shift by dlg_x (ds_x while drawing).
+   Seen: HUD in proportion. NOT seen: options, pause, post-race.
+12. OPEN track parts (Oct 27, the user's design; looks as the two
+   illustrations, ~/Desktop/exec-ebd7e921-...png and preview.png):
+   an `export func` builds each part's mesh once in its own space
+   (x from its band's inner edge to its outer edge, y up, z over
+   four segments). tracks/<track>.parts: a line per four segments,
+   columns left then right, each side from the middle out: center,
+   road, rumble, extension, outer rumble, plasma, wall (14 columns).
+   Half-track widths (0 centre line, 1 strip edge): center 0-0.12,
+   road -0.45, rumble -0.53, extension -0.78, outer rumble -0.88,
+   plasma -1.0, wall past 1.0. `-` is none. A right
+   part is its left one mirrored. A segment is one flat quad of the
+   base strip (two SegRecs); a part spans four quads, mapped onto
+   them: z through the quads, x against each quad's width from its
+   centre line, y along its up, blended between the quad's ends.
+   A segment is ~8 m forward (every track), a part ~32 m. x is
+   normalized: 0 the centre line, 1 the strip's edge, past 1 out.
+   DONE materials: export func part_materials (Parts.ag) writes
+   orion/parts/<asphalt|metal|concrete>_color.png (roughness in
+   alpha), _normal.png (height in alpha), plasma_glow.png.
+   DONE meshes: export func part_meshes writes parts/<name>.gltf
+   + .bin (primitives asphalt, metal, concrete, plasma; POSITION
+   x half-track, y metres, z segments 0-4; NORMAL, TEXCOORD_0 in
+   metres or the plasma's -1..1, COLOR_0): channel, lane, rumble,
+   ext, rumble2, plasma, wall, tunnel. Checked by a python preview
+   (session scratchpad prev/prev.py). NEXT: the runtime: read
+   tracks/<track>.parts, bend parts onto the quads, OrionPart.
+   Materials are our own, generated from base asphalt, metal and
+   concrete (art/road_asphalt.png, art/wall_metal.png,
+   art/wall_concrete.jpg from ~/Downloads/painted-gray-wall.jpg):
+   colour, normal, roughness, glow. Ambient occlusion and the
+   like are made once the parts are put together on the track.
+   Segments past the last whole four (delta1: 470) go to the last
+   part, stretched over them. Tunnels: kept small,
+   no extension or outer rumble; the wall part is `tunnel`, its half
+   arching to meet the other side's. The collision walls come from
+   the parts file: at the outer edge of each side's last band.
+   Rumble is new gameplay (not in the original): the inner rumble
+   slows, the extension is the outer lane, the outer rumble before
+   the plasma slows much more. Proposed, not confirmed: road 100%,
+   inner rumble 90%, extension 95%, outer rumble 60% top speed.
+10. OPEN two modules compiled at once after silver changes (img,
+   gltf "compiling" twice): a build fails, the retry passes.
+11. OPEN ~21 fps in a race on the phone.
 
 ## Active work: orion2 complete Hyper Race port
 
@@ -4914,17 +5557,17 @@ Rules that hold everywhere here: **never CRLF** (LF only, it is banned), **no mi
 
 ### Process launch — there is no fork
 
-`fork()` returns `ENOSYS`. Every launch path goes through `posix_spawn` in ports.cc:
+`fork` returns `ENOSYS`. Every launch path goes through `posix_spawn` in ports.cc:
 
 - **`execvp` is a stand-in, not a replacement**: it spawns, waits, then `_exit(code)` with the child's status. Windows cannot replace a running process, so silver stays alive as the parent and forwards the exit code.
-- **Kill-on-close job**: `child_job()` makes one `CreateJobObjectA` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the only handle is silver's. Children die with silver however it ends — clean exit, Ctrl+C, or kill.
-- **`CREATE_SUSPENDED` → `child_adopt()` → `ResumeThread`**: the child joins the job before it runs one instruction. A child that started first could spawn grandchildren outside the job, and those would outlive silver.
+- **Kill-on-close job**: `child_job` makes one `CreateJobObjectA` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; the only handle is silver's. Children die with silver however it ends — clean exit, Ctrl+C, or kill.
+- **`CREATE_SUSPENDED` → `child_adopt` → `ResumeThread`**: the child joins the job before it runs one instruction. A child that started first could spawn grandchildren outside the job, and those would outlive silver.
 - **Ctrl+C**: `SetConsoleCtrlHandler`; the handler calls `TerminateJobObject(job, 130)`. A `/SUBSYSTEM:WINDOWS` binary does not reliably receive console control events, so killing the job is what actually works.
 - **Environment**: pass `NULL` for envp to inherit. Handing over `environ` drops Win32-only variables (the Vulkan loader reads those) — the CRT view and the Win32 view are separate, and `setenv` must write both (`_putenv` + `SetEnvironmentVariableA`).
 
 ### No console windows on spawn
 
-`silver-host` links `/SUBSYSTEM:WINDOWS`, so it has no console. Any console program it launches gets a **brand new console window** — one flashing up per live-reload rebuild. `no_window_flag()` in ports.cc returns `CREATE_NO_WINDOW` only when `GetConsoleWindow()` is null, and is OR'd into the flags in both `posix_spawn` and `popen`. Std handles are passed explicitly, so output is unaffected. When silver itself (a console app) spawns, the flag is 0 and the child inherits the console as before.
+`silver-host` links `/SUBSYSTEM:WINDOWS`, so it has no console. Any console program it launches gets a **brand new console window** — one flashing up per live-reload rebuild. `no_window_flag` in ports.cc returns `CREATE_NO_WINDOW` only when `GetConsoleWindow` is null, and is OR'd into the flags in both `posix_spawn` and `popen`. Std handles are passed explicitly, so output is unaffected. When silver itself (a console app) spawns, the flag is 0 and the child inherits the console as before.
 
 ### App output
 
@@ -4937,7 +5580,7 @@ A `/SUBSYSTEM:WINDOWS` process has no stdout: `_get_osfhandle` reports `-2` (a l
 
 ### Live reload
 
-Windows cannot relink or delete a mapped DLL. `reload_dlopen` loads a **copy** at `<temp_dir()>/hotreload_<mtime>.dll`, including the initial module load, so the product is never pinned and builds can relink it. The copies accumulate; nothing cleans old ones yet.
+Windows cannot relink or delete a mapped DLL. `reload_dlopen` loads a **copy** at `<temp_dir>/hotreload_<mtime>.dll`, including the initial module load, so the product is never pinned and builds can relink it. The copies accumulate; nothing cleans old ones yet.
 
 ### DLL symbol visibility
 
@@ -4952,7 +5595,7 @@ Windows spells libraries differently and `-lfoo` has no `libfoo.so` symlink to f
 
 - `z` → `zlib`, `png` → `libpng`, `mbedcrypto` → `tfpsacrypto` (mbedtls 4 folded crypto into tf-psa-crypto)
 - `-llldb` → `-lliblldb` — our own `src/lldb.c` builds `install/lib/lldb.lib` and shadows LLDB's real import lib
-- `is_sdk_lib()` lets Windows SDK libs (`ole32`, `uuid`, `user32`, …) through. They live in the linker's own search path, never in `install/lib`, so every file-existence check drops them silently
+- `is_sdk_lib` lets Windows SDK libs (`ole32`, `uuid`, `user32`, …) through. They live in the linker's own search path, never in `install/lib`, so every file-existence check drops them silently
 - versioned scan for `opencv_core4140.lib`, `OpenEXR-3_4.lib` style names
 
 ### Module name collisions
@@ -4961,7 +5604,7 @@ Windows spells libraries differently and `-lfoo` has no `libfoo.so` symlink to f
 
 ### Dependency checkouts
 
-- `checkout()` runs `git submodule update --init --recursive` on any cache-miss build of a git checkout. A plain clone stops at the top repo, and mbedtls builds from its `framework` and `tf-psa-crypto` submodules.
+- `checkout` runs `git submodule update --init --recursive` on any cache-miss build of a git checkout. A plain clone stops at the top repo, and mbedtls builds from its `framework` and `tf-psa-crypto` submodules.
 - An interrupted clone can leave a temp pack (`objects/pack/tmp_pack_*`) with `HEAD -> refs/heads/.invalid` and no refs. Git then fails fast forever instead of re-cloning; delete that submodule's `.git/modules/<name>` and worktree dir to recover.
 - Checkout root is `install/../..` = `C:/src/checkout`, **outside** the repo.
 - mbedtls sets `GEN_FILES` **OFF when the host is Windows**, so its generated sources (`error.c`, `ssl_debug_helpers_generated.c`) must come from `scripts\make_generated_files.bat`. Turning `GEN_FILES=ON` instead hits an upstream bug — `--list-for-cmake` emits `os.path.join` paths and cmake rejects `\m` as an invalid escape.
@@ -5122,7 +5765,7 @@ For crashes / undefined behavior:
 - `gdb --args ./platform/native/debug/silver <project> --clean` for compiler crashes
 - Read validator output verbatim — it names the bug
 
-**Why:** Inferring from source produces plausible theories that are usually wrong. Running produces ground truth. The user explicitly said: "its not development when you dont run it."
+**Why:** Inferring from source produces plausible theories that are usually wrong. Running produces ground truth.
 
 **How to apply:**
 - Bug reported → run the app first, get evidence
@@ -5155,7 +5798,7 @@ description: Do not substitute your own judgement for explicit user instructions
 type: feedback
 ---
 
-When the user gives a clear directive (e.g. "convert everything to silver"), execute it exactly. Do NOT filter, categorize, or decide that some things "should stay in C" or "aren't worth converting." That is not your call.
+When the user gives a clear directive (e.g. a conversion of every file), execute it exactly. Do NOT filter, categorize, or decide that some things "should stay in C" or "aren't worth converting." That is not your call.
 
 **Why:** The user explicitly asked multiple times and the directive was overridden with corporate-style laziness disguised as engineering judgement. This is obstruction, not assistance.
 
@@ -5183,7 +5826,7 @@ type: feedback
 - `new Type [ expr ]` parses expr as shape — `*` is shape multiplication, not arithmetic. Pre-compute products as i32 before passing to new.
   **Why:** Shape parser intercepts `*` operator. **How to apply:** Always pre-compute size into an i32 variable before `new`.
 
-- `lexical()` takes `symbol` (char*), not `string` object. Use `cstring(name)` to convert.
+- `lexical` takes `symbol` (char*), not `string` object. Use `cstring(name)` to convert.
   **Why:** Caused nil lookups when string was passed directly. **How to apply:** Any call to `lexical(a->lexical, x)` must pass char*.
 
 - `element(a, -1)` returns the previously consumed token.
@@ -5412,10 +6055,10 @@ verification after the repository hooks are trusted through `/hooks`.
      in right before the cut. `set_pending(1)` on a failed load.
    - A relaunch is needed after host or trinity changes; a reload
      swaps the app library only.
-   - FIXED (Sep 22 23:12) reload crash in vk_context_xfer (Kalen's
+   - FIXED (Sep 22 23:12) reload crash in vk_context_xfer (the user's
      runs, -O2 real window): two bugs. (1) trinity.ag media_app.destroy
      had grown `hr9.managed = 1` on the app element again (the change
-     Kalen reverted before): freed the process-owned app element, a
+     the user reverted before): freed the process-owned app element, a
      DOUBLE-DROP from the map listing it. Removed. (2) Image.user is an
      Au-typed slot (never held/dropped); Gpu.sync cached the sampler
      Texture there raw, owned only by the Gpu's tx. The diff's
@@ -5426,7 +6069,7 @@ verification after the repository hooks are trusted through `/hooks`.
      teardown: GaiaShader's scene target faulted). Fix: the Image owns
      the cached texture (Au.hold at Gpu.sync and environment, drop in
      Image.dealloc), and the Texture nulls its sampler after upload
-     (no cycle). Verified by Kalen: two reloads, backdrop stays.
+     (no cycle). Verified by two reloads, backdrop stays.
      Diagnostic still in: the DEADTX guard in Pipeline.draw_range
      (skips and logs a dead resource texture); remove once trusted.
    - Fade at ready, not at apply (Sep 22 09:00): the host sets pending
@@ -5440,7 +6083,7 @@ verification after the repository hooks are trusted through `/hooks`.
      dlclose. `defer_flush` releases every deferred list at the flush
      (a deferred Model's dealloc reaches an orbiter-typed shader); the
      defer lists are swapped under `qlock` on both threads.
-   - The veil (Kalen's spec): the exchange's blur from BEFORE the
+   - The veil (the user's spec): the exchange's blur from BEFORE the
      reload crosses the swap (`persist swap_blur : ReduceBlur`, set in
      request_swap by the instance that asks, taken by the next one on
      its first frame into `Window.veil_blur`). The reloaded window
@@ -5451,7 +6094,7 @@ verification after the repository hooks are trusted through `/hooks`.
      Verified with shots: old blur -> mid-fade over the new editor ->
      sharp. A window that blurred its own frame gave black (the frame
      had not drawn yet) - never do that.
-   NEXT (Kalen): trinity as the host - a "trinity app". The Window,
+   NEXT : trinity as the host - a "trinity app". The Window,
    device, swapchain and a Presenter live in the host and never
    unload; app instances render into host targets; the switch is a
    target blit with a crossfade from the old instance's last frame;
@@ -5512,7 +6155,7 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    script throws "ReferenceError: Can't find variable:
    HTMLVideoElement" (console, Sep 26). WPE is configured with
    ENABLE_VIDEO=OFF, and WPE ties video to GStreamer
-   (GStreamerDependencies.cmake). Kalen's call: a trinity media
+   (GStreamerDependencies.cmake). the user's call: a trinity media
    backend, no GStreamer. Stages, in order:
    a. DONE ENABLE_VIDEO on without GStreamer: YouTube's app
       starts (frame checked; no console errors). Overlay
@@ -5583,7 +6226,7 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    Cause: trinity drew every stroke INSIDE the outline (a CSS
    border), closed every subpath, dropped zero-area boxes, and
    a path's band took its width from stroke_sides, which only
-   ui layers set. Kalen's rule: one stroke model, no parallel
+   ui layers set. the user's rule: one stroke model, no parallel
    mode; our ui adjusts with offsets. Now (trinity/Canvas.ag):
    - both branches (box and path) draw one band centred on the
      outline, moved by stroke_offset (positive outward);
@@ -5600,7 +6243,7 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
      button group outline (trinity.ag), 13 in orbiter/Git.ag,
      4 in orbiter/Editor.ag, the scrollbar outline.
    - webgfx_canvas_stroke_path takes the cap and sets offset 0;
-     GraphicsContextTrinity passes lineCap().
+     GraphicsContextTrinity passes lineCap.
    Checked: webgfx t_stroke_caps and t_stroke_inside pass,
    trinity tests pass (average colour unchanged 16,32,53,80),
    the lucide test page (x, check, plus, chevron, circle, an
@@ -5638,11 +6281,11 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
 
 ## Active work: editor embedded pane (Sep 23 2026)
 
-1. APPLIED, awaiting Kalen's run: an embedded app whose build
+1. APPLIED, awaiting the user's run: an embedded app whose build
    failed (ended) still took the pane's live-frame paint branch
    (EditorLayer.draw); it now needs a live app (not ended, not
    held), as tick's `live` and the input paths already did.
-2. APPLIED, awaiting Kalen's run: the scrollbar hid whenever the
+2. APPLIED, awaiting the user's run: the scrollbar hid whenever the
    source showed with app_view on (a stop, a failed build).
    no_scroll is now cleared whenever the source draws and set
    when the live app frame paints.
@@ -5731,7 +6374,7 @@ debug+quarantine and -O2. Startup 71k -> 55k objects.
    PR KhronosGroup/MoltenVK#2836: H.265 applied in
    ~/src/MoltenVK-pr (docs too; upstream already has
    VK_EXT_ycbcr_2plane_444_formats), Xcode build passes; NOT
-   committed or pushed (Rule #1): Kalen's step.
+   committed or pushed (Rule #1): the user's step.
 3. DONE recorder magenta blobs and torn text (trinity/video.ag
    Recorder.capture). The nv12 compute read the scaled copy before
    the copy finished: Layout's SHADER_READ wait is fragment only, so
@@ -5945,7 +6588,7 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 
 ## Active work: shell-mode exchange (Sep 24 2026)
 
-1. APPLIED, awaiting Kalen's run: after a live reload the
+1. APPLIED, awaiting the user's run: after a live reload the
    exchange closed. orbiter set swap_fade once the reloaded
    frame loaded and trinity closed the exchange at 0; that fade
    is gone (the old blur's swap_veil still fades on its own).
@@ -5957,41 +6600,41 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 3. OPEN a line the agent added at the top draws blank until
    selected or scrolled out and back: the new row is not
    redrawn after the disk reload / live reload.
-4. DONE (Kalen confirmed): the PBR ring light (`pl_lit`,
+4. DONE (the user confirmed): the PBR ring light (`pl_lit`,
    Avatar.ag) turned the other way and sat on the far side
    from the plasma ring; its angle is mirrored across `pl_tg`.
    Earlier on this item: the avatar's gradient rim.
-5. APPLIED, built, awaiting Kalen's run: a reopened exchange
+5. APPLIED, built, awaiting the user's run: a reopened exchange
    kept the avatar at its settled (left, tilted) place. The
    reset keyed on a new shot_ask path; a file exchange reuses
    the file's. The avatar is now settled only while agent_view.
 6. APPLIED, built: the exchange's claude run loaded the claude.ai
    connectors (Gmail, Calendar, Drive: needs-auth) and told the
    user so. It runs with --strict-mcp-config: no MCP servers.
-7. APPLIED, built, awaiting Kalen's look: stair-stepped edges
+7. APPLIED, built, awaiting the user's look: stair-stepped edges
    where the volume meets the metal. The volume draws at 1/4 of
    the avatar's points (1/8 of retina pixels) and its depth test
    was in-or-out per volume pixel. An 8-tap depth coverage test
    had no visible effect and was taken out; vol_scale stays 0.25
-   (0.5 is far too slow, Kalen). Testing: the donut's glaze
+   (0.5 is far too slow). Testing: the donut's glaze
    peaked at its tube surface and cut to 0 outside it (a hard
    outline); it now fades over the tube's outer 20%.
-8. APPLIED, built, awaiting Kalen's look: a darker violet band
+8. APPLIED, built, awaiting the user's look: a darker violet band
    on the fins after the core's yellow, for contrast. The old
    violet keyed on height above the core (over 0.6 units) and
    never reached the fins. Replacing the orange by distance took
    the yellow away (fins start 0.2 from the core); the orange is
    back as it was, and a separate violet band is added beyond it
-   Now a ring light (Kalen): radius 0.28 round the core's axis,
+   Now a ring light : radius 0.28 round the core's axis,
    0.15 above the pool light (level with the fins' tops), reach
    0.10, blue (0.16, 0.22, 1.4) x1, wrapped facing (0.35 floor).
    Scaled by two lobes: the halo's and the same turned 180
    degrees (max of the two); 1 - pl_pulse was tried and dropped.
-9. APPLIED, built, awaiting Kalen's look: more heat blur at the
+9. APPLIED, built, awaiting the user's look: more heat blur at the
    core. Heat's 3x3 blur spread 0.5 + 2.5*heat*wgt px (about
    1 px at rest); now 0.5 + 7*heat*wgt, with a second 3x3 at
    half spread (18 taps, only where wgt > 0.002).
-10. APPLIED, built, awaiting Kalen's run: with a larger font
+10. APPLIED, built, awaiting the user's run: with a larger font
    unit the resting prompt field and agent picker rose into the
    avatar (placed by their bottom edge, scaled by the unit).
    They keep their unit-1 centers now (field 240 px, picker
@@ -5999,10 +6642,10 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    field's right end. The avatar does not move.
    The user's box (its frame is the field's) keeps the same
    center too: top 354 px x unit above it, 420 px x unit tall.
-   Split (Kalen): the avatar centered in the window's top 70%
+   Split : the avatar centered in the window's top 70%
    (orbiter CSS t35%-195px), the picker+field group centered in
    the bottom 30% (15% of root bounds up; 231 px before layout).
-   Then (Kalen): avatar down, form up: avatar center 40% down
+   Then : avatar down, form up: avatar center 40% down
    (t40%-195px), group center 22% of the height up.
    The first cut read the Region's second slot as a bottom edge
    (it is the TOP): the controls sat half a height too low. orbiter32.gltf COLOR_0 is soft (839 values on
@@ -6037,7 +6680,7 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
    its string construct), orbiter.agi has claude opus/sonnet/haiku
    and codex gpt-5-codex/gpt-5. The prompt shows the lit agent's
    models as a second AgentPick row (`model_pick`) 34 px UNDER the
-   agent row (Sep 28, Kalen: agents on top); both rows are one
+   agent row (Sep 28: agents on top); both rows are one
    width, 360 px at unit 1; the first model lit; a mounted row keeps its
    selection while its agent stays (AgentPick.agent). The send
    takes it (Window.model_pick, in ExchangeSession/ExchangeState
@@ -6068,9 +6711,8 @@ claude` with `{ prompt tokens, {images/x.png} }` under it. A
 
 Goal: a `browser` module (trinity element; orbiter opens it as a
 pane tab). Ladybird does layout, JS and network; trinity's Canvas
-does ALL drawing. Skia is never built, linked or shipped (Kalen:
-"I WILL NOT use Skia. Skia is a canvas. WE HAVE THAT").
-Decisions (Kalen): own module, static page first, keep Ladybird's
+does ALL drawing. Skia is never built, linked or shipped (trinity is the canvas).
+Decisions : own module, static page first, keep Ladybird's
 helper processes (WebContent, RequestServer, ImageDecoder).
 Ladybird checked at 3af7308 (Sep 25): WebContent sends each frame
 to a Compositor process as `update_display_list` (DisplayList +
@@ -6081,7 +6723,7 @@ with a DisplayListPlayer that calls trinity (the glue).
 1. OPEN import Ladybird from its URL (CMake, vcpkg deps, Rust via
    ~/.cargo) with aura/ladybird.diff: skia and angle out of
    vcpkg.json and every CMakeLists. Disk: 33 GB free.
-   Every Skia job routes to trinity (Kalen: trinity does all of
+   Every Skia job routes to trinity (trinity does all of
    it; no new stand-in code):
    - Gfx::PathImpl (virtual): PathSkia -> trinity CanvasPath.
    - Gfx::Typeface / Font: TypefaceSkia -> trinity CanvasFont
@@ -6291,7 +6933,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    DONE the Trinity frontend never hands its URL to another
    running Ladybird (should_coordinate_browser_process false):
    a second element exited when one was already open.
-   Kalen's next three, in his order (Sep 25 evening):
+   the user's next three, in his order (Sep 25 evening):
    a. PARTLY DONE slow rendering. Wikipedia per frame was
       images 22-28 ms (a new texture per draw), rects 13-17
       ms, text 5-7 ms, plus 17 full GPU waits (paint_n 64).
@@ -6367,7 +7009,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    The replay leaked old trace edits into webgfx/webgfx.ag
    (a doubled webgfx_gpu_init, a doubled import pair, trace
    lines in webgfx_canvas_read); removed, webgfx tests exit 0.
-   DONE silver's import takes an overlay (Kalen): after the
+   DONE silver's import takes an overlay : after the
    clone and any <name>.diff, the module's <name>/ folder is
    copied over the checkout and <name>.deleted (one path a
    line) is removed from it (silver.c checkout). Checked with
@@ -6379,7 +7021,7 @@ with a DisplayListPlayer that calls trinity (the glue).
    webgfx and TypefaceTrinity together; its webgfx half
    failed first): the font byte copy freed under HarfBuzz
    (SIGSEGV in the font catalog thread). Re-applied.
-   DONE video frames (Kalen: YouTube played audio only). The
+   DONE video frames (YouTube played audio only). The
    player drew nothing for DrawVideoFrame. Now each video
    keeps one webgfx texture (DisplayListStoredVideoSinkResource),
    a new frame (pool slot + acquisition id) is converted with
@@ -6396,13 +7038,13 @@ with a DisplayListPlayer that calls trinity (the glue).
 
 ## Active work: browser on WPE WebKit, trinity painting (Sep 26 2026)
 
-Decision (Kalen): WebKit is the only accepted browser stack;
+Decision : WebKit is the only accepted browser stack;
 the Ladybird element is superseded. Port: WPE WebKit 2.54.0
 (source in checkout/wk/wpewebkit-2.54.0, gitignored).
 Why the pivot: Ladybird repainted every icon every frame into
 the final buffer; WebKit paints each layer into cached tiles
 once and composites the tiles (only damaged tiles repaint).
-Plan, option 2 (Kalen): trinity replaces Skia's PAINTING side
+Plan, option 2 : trinity replaces Skia's PAINTING side
 (GraphicsContext, paths, gradients, patterns, images, fonts,
 ImageBuffer, tile rasterizing); WebKit's own tile caching and
 compositing logic stay, compositing through trinity. Skia is
@@ -6413,7 +7055,7 @@ USE_SKIA ON, USE_CAIRO FALSE. 160 WebKit files outside Skia use
 it, 65 in WebCore/platform/graphics/skia; USE(SKIA) appears on
 479 lines. The seam: a USE(TRINITY) backend beside USE(SKIA).
 Disk: 26 GB free before any build; the Ladybird build in
-checkout/lb takes about 15 GB (ask Kalen before removing).
+checkout/lb takes about 15 GB (ask the user before removing).
 1. DONE build dependencies, imported by aura/aura.ag
    into install/: ruby 3.3.6 (generators), unifdef 2.12,
    libgpg-error 1.51, libgcrypt 1.11.0, libtasn1 4.19.0,
@@ -6537,7 +7179,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    Texture's alpha-as-one swizzle). The "GPU frames" log line
    names the fourcc. Hosted case not driven here.
    DONE (Sep 28) elements route into the host's navigation and
-   title, decentrally (Kalen). trinity: element.navigate[ dir ]
+   title, decentrally . trinity: element.navigate[ dir ]
    (a hook, false by default), element.nav_state[ back, fwd ]
    and element.set_title[ t ] emit to the Window (nav_back_on,
    nav_fwd_on, nav_title); a hosted app posts them on ring 0 as
@@ -6571,15 +7213,15 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    (the round trip equals a direct fill), t_cc_drop_shadow,
    t_cc_icon_small_canvas (YouTube's CC path). Checked: the
    pill page with the real icons, and the YouTube bar.
-   OPEN (trinity, Kalen's call): every straight-alpha texture
+   OPEN (trinity, the user's call): every straight-alpha texture
    drawn by Canvas.draw_image (PNG icons in orbiter, any img
    load) has the same over-bright edge; the canvas's rule is
    premultiplied, so loaders should premultiply too.
-   DONE (Sep 28, Kalen) the SDF feather was half a pixel each
+   DONE (Sep 28) the SDF feather was half a pixel each
    side (0.5 * gradient length); it is one pixel each side
    again (the gradient length), both CanvasUI fills and the
    path pass.
-   DONE (Sep 28, Kalen: "that works so keep it") the Ask star
+   DONE (Sep 28) the Ask star
    icon lost its tips at 24 px. The tips are thinner than a
    pixel and one distance sample at the pixel centre misses
    them (the field itself is fine: shifting the icon half a
@@ -6589,7 +7231,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    The field is written and read as before. The feather is
    0.5 * gradient length in the source again (exact coverage;
    1.0 made 24 px icons soft and fat against the reference).
-   Tried and removed (Kalen: too much pixel alignment, it
+   Tried and removed (too much pixel alignment, it
    changes the SDF): a field over the padded shape only, a
    guard texel, clamped taps: a batch shares one dispatch, so
    the stale texels drew hairlines in the YouTube wordmark.
@@ -6597,7 +7239,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    24 and 48 px against Inkscape (column through the tip 37,
    59, 103, 174, 248 vs 44, 65, 110, 180, 251), the wordmark
    clean at 1x and 4x, webgfx and trinity tests exit 0.
-   DONE (Sep 28, Kalen) standalone, the page title is the window
+   DONE (Sep 28) standalone, the page title is the window
    title (Window.element_title calls Display.set_title when not
    hosted), and the browser opens where it was last unless a
    src is given: `intern [ StatePersist ] last_src` saved on
@@ -6606,7 +7248,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    aura.c), loaded in init when src is empty. Checked
    headless: a Wikipedia run saves it, a run with no address
    opens it and logs its title.
-   DONE (Sep 28, Kalen: text blurry half the time after a
+   DONE (Sep 28: text blurry half the time after a
    scroll) the scroll position straddled the pixel grid. WPE's
    wheel line step is the view height to the 2/3 (86 px at
    800), the element sends 0.325 of a notch: 27.95 px a step,
@@ -6621,7 +7263,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    text page: four wheel steps are four exact 28 px shifts
    (mean pixel difference 0.0), a word's pixels identical
    before and after.
-   DONE (Sep 28, Kalen) orbiter exports its own icon: `export
+   DONE (Sep 28) orbiter exports its own icon: `export
    func orbiter_icon` (Avatar.ag) renders OrbiterAvatar alone
    at 512x512 with a transparent background into orbiter/
    images/icon.png (the module folder from install/build/
@@ -6636,7 +7278,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    old placeholder icon.png is in the session scratchpad.
    Every orbiter build now runs the export step (module init,
    then "icon current").
-   DONE (Sep 28, Kalen: "link is fine to couple") `--link` is
+   DONE (Sep 28) `--link` is
    the user's own install, the package's layout under HOME:
    ~/.local/bin/<name> -> the binary, the hicolor icon set in
    ~/.local/share/icons/hicolor/<n>x<n>/apps/<name>.png (img's
@@ -6649,7 +7291,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    fresh and cached. The icon avatar takes the app's resting
    yaw of 30 degrees (on_state's, which needs the app object):
    flat top and bottom, as orbiter shows it.
-   DONE (Sep 28, Kalen) title bar boxes: the "..." tab chip
+   DONE (Sep 28) title bar boxes: the "..." tab chip
    (NavTabs), the history arrows and the close buttons
    (BarClose class, the finder's TButtons close) are the bar's
    full height (b0), no spacing (use_spacing false: the title
@@ -6660,15 +7302,15 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    small (gone a quarter into the reveal), in the rest slot,
    twice the icon size capped to the slot; the close glyphs
    fill their box height.
-   Since then (Kalen): the arrows and the dialog close are
+   Since then : the arrows and the dialog close are
    1.8 units wide, arrow glyphs at 0.30; every close button is
    the chip's size (1.66 units, X at 0.55); the file icon sits
    0.2 units further right; the title's icon, name, hint and
    companions lead from the arrow box (EditorTitle.lead). A
    side toolbar (right edge, instances + orbiter at the top,
-   console at the bottom) was built and REMOVED at Kalen's
+   console at the bottom) was built and REMOVED at the user's
    word; the gutter rule is the original (five digits + 16 px).
-   DONE (Sep 28, Kalen: "some svgs have super hard edges") svg
+   DONE (Sep 28) svg
    icons (Canvas.draw_svg) rasterize into a cache 4x their size
    (SVGModel.pixel_scale 4) and were drawn back at a quarter
    with the plain bilinear sampler, which reads 2 of every 4
@@ -6683,8 +7325,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    93 255 ... 93 21 instead of 33 255 ... 15 0. Thin lines (the
    console icon) read as their true sub-pixel coverage now
    (~140 of 255), which is right, not a bug.
-   DONE (Sep 28, Kalen: "state corruption ... worse when you go
-   back") the reduce pass reused pass 0's attachment
+   DONE (Sep 28) the reduce pass reused pass 0's attachment
    description: a load_existing canvas LOADed the old
    reduction and every pipeline blends over, so each reduce
    composited onto the last (edges thickened per shape, a
@@ -6698,7 +7339,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    scaled by alpha (it lit clear pixels: the faint box round
    some icons). Checked: a white then red hexagon reads red
    with green 0-1 and alpha equal to red; suites exit 0.
-   DONE (Sep 28, Kalen: "adhere to w3c, not two brains") the
+   DONE (Sep 28) the
    shader keeps the CSS blur meaning; orbiter's glow sizes are
    halved in its own sources: 17 box_shadow styles, 8
    cv.box_shadow calls, the chip hover glow, rest_px 16 -> 8.
@@ -6722,7 +7363,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    the navigation preloader's soup request never completes
    (the server gets the GET, the client closes the socket).
    Reproducer: scratchpad swsite_cached.py case 3. The traces
-   used for it are removed (Kalen).
+   used for it are removed .
 
    DONE (Sep 26) masked icons (Wikipedia's menu, search,
    languages...). WebKit paints a CSS mask as a layer with the
@@ -6740,7 +7381,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
    clips became layers kept through a mask; boxes round right
    (test page) but it broke the icons again: a clip layer
    hides the content drawn before it from a later
-   destination-in layer. Kalen's direction: CanvasUI conforms
+   destination-in layer. the user's direction: CanvasUI conforms
    to WebKit's W3C primitives (composite ops, shadows, clip as
    shader state, one gradient path), glow/shadow states move to
    that interface with no parallel functions. Waiting on his
@@ -6763,7 +7404,7 @@ checkout/lb takes about 15 GB (ask Kalen before removing).
 
 ## Active work: CanvasUI on W3C primitives (Sep 26 2026)
 
-Kalen: the uber shader conforms to WebKit's W3C primitives;
+the uber shader conforms to WebKit's W3C primitives;
 trinity's glow/shadow states move to that interface, no
 parallel functions; Gaussian shadows; styles renamed too.
 Blend modes read a copy of the destination (works on every
@@ -6823,8 +7464,7 @@ GPU, MoltenVK included).
    layers compose with their own operator; clip layers gone.
    Wikipedia icons and rounded boxes both right. Scroll:
    41 -> 48-54 frames/s, worst stall 172 -> 66-76 ms.
-8. DONE text selection lag (Kalen: "selecting text is also
-   super slow"). Each selection paint clipped out every
+8. DONE text selection lag . Each selection paint clipped out every
    out-of-flow box (RenderBlock::selectionGaps), and each
    clipOut(rect) made a new mask canvas (clip_push_mask never
    pooled the one it replaced). Now: up to 4 clip-out rects
@@ -6842,14 +7482,14 @@ GPU, MoltenVK included).
 
 ## Active work: SQLite out of WebKit (Sep 27 2026)
 
-Kalen: no SQLite in the browser; site storage is plain files in
+no SQLite in the browser; site storage is plain files in
 the browser's cache folder (the helper's --data dir). All of it
 in the overlay aura/wpewebkit/. In order:
 1. DONE, not compiled: localStorage is FileStorageArea, a
    readable localStorage.txt per site (key TAB value per line,
    \t \n \r \\ \uXXXX escapes), saved 500 ms after a change and
    on sync/close. SQLiteStorageArea deleted (wpewebkit.deleted).
-1b. WRITTEN, not compiled (Kalen: nothing hidden from the
+1b. WRITTEN, not compiled (nothing hidden from the
    user): site folders are named by the site (databaseIdentifier,
    https_www.youtube.com_0), not a salted SHA-256; the salt file
    is gone (NetworkStorageManager).
@@ -6871,8 +7511,7 @@ in the overlay aura/wpewebkit/. In order:
    the file. Whole file rewritten per commit (big databases:
    slow; not measured). SQLiteIDBBackingStore still compiled
    (IDBServer.cpp); goes in item 5.
-3. IN PROGRESS cookies and HSTS as folders (Kalen: "dirs with
-   simple files", cookies are key/value like the rest).
+3. IN PROGRESS cookies and HSTS as folders (the user cookies are key/value like the rest).
    DONE, tested on this Mac: libsoup overlay aura/libsoup/
    (+ libsoup.deleted): SoupCookieJarFolder and
    SoupHSTSEnforcerFolder replace the SQLite jar/enforcer; the
@@ -6914,12 +7553,12 @@ in the overlay aura/wpewebkit/. In order:
 5. WebCore platform/sql and find_package(SQLite3) removed.
 Checking needs WebKit configured: on this Mac harfbuzz, icu,
 libjpeg, libepoxy, libxkbcommon, libxml2 and libwebp are still
-missing imports (not added: Kalen questioned webp; SQLite is
+missing imports (not added: the user questioned webp; SQLite is
 being removed instead of imported).
 Where the Mac build stands (Sep 27): every aura.ag import
 up to libsoup builds; WebKit's configure stops at HarfBuzz.
 silver.c fixes made for it (in src/silver.c, rebuilt by
-Kalen): SDKROOT in the import build env on native macOS (our
+the user): SDKROOT in the import build env on native macOS (our
 clang finds no SDK otherwise), release archives skip
 autogen.sh when configure ships, configure imports run `make
 clean` before make (stale in-tree objects). aura.ag gained
@@ -6930,10 +7569,10 @@ the host arch (overlay). The downloaded WebKit checkout is
 checkout/releases/wpewebkit (owner taken from the URL path).
 OPEN: our clang should know the macOS SDK itself (a
 clang.cfg beside install/bin/clang), then the SDKROOT lines
-in checkout() go; checkouts from archive URLs land under the
+in checkout go; checkouts from archive URLs land under the
 URL's parent folder name (checkout/3.3/ruby).
 
-Oct 14 2026 (Kalen): checkout/lb (the Ladybird tree and build,
+Oct 14 2026 : checkout/lb (the Ladybird tree and build,
 6.3 GB) and checkout/wk (the hand-run WPE WebKit build, 4.7 GB)
 deleted for disk space. The Ladybird patch stays in aura/ladybird
 (overlay); WebKit is built by `silver aura` into platform/native/
@@ -6944,8 +7583,8 @@ build (unused).
 
 What was profound: a full web engine (Ladybird: HTML, CSS,
 JS, networking, fonts, SVG) draws every pixel through trinity,
-our own GPU canvas, with no Skia, ANGLE or Qt. Kalen's rule
-held from start to finish: "Skia is a canvas. WE HAVE THAT."
+our own GPU canvas, with no Skia, ANGLE or Qt. The rule
+held from start to finish: trinity is the canvas, Skia is never used.
 The only new code is glue; every drawing job lands in trinity.
 It also paid trinity back: the browser found four bugs that
 hurt every trinity app (below), not just the browser.
@@ -6991,7 +7630,7 @@ Lessons:
 
 ## Active work: YouTube through MediaSource on trinity (Sep 26 2026)
 
-Kalen: YouTube says "can't play this video", or plays one frame
+YouTube says "can't play this video", or plays one frame
 in 30 s; performance is awful. Reproduced: a page has no
 MediaSource (YouTube needs it), so YouTube gives up. Stage c
 of the media memory below, done as a streaming backend.
@@ -7028,10 +7667,9 @@ of the media memory below, done as a streaming backend.
    the build (trinity/CoordinatedPlatformLayerBufferTrinity,
    webgfx_stream_next/_planes, buffer Type::Trinity).
 6. PARTLY DONE YouTube plays, but the picture changes only
-   1-7 times a second headless; Kalen sees 1 frame every 3-4
+   1-7 times a second headless; the user sees 1 frame every 3-4
    seconds (Sep 26). The web process main thread is busy.
-7. OPEN YouTube page speed (Kalen: "performance is absolutely
-   awful"). Sampled during playback: ~90% of the web process
+7. OPEN YouTube page speed . Sampled during playback: ~90% of the web process
    is CSS filters (drop-shadow) making temporary ImageBuffers,
    each a new trinity Canvas whose 1024-slot ring creates
    ~1024 uniform Buffers (Canvas_init -> uniforms_init ->
@@ -7056,13 +7694,13 @@ of the media memory below, done as a streaming backend.
    and bar follow the pointer with the video playing.
    OPEN: the page paints 30 frames/s while the knob drags (60
    idle): the software drop-shadow re-render per move.
-10. DONE silver.c checkout(): an overlay file newer than the
+10. DONE silver.c checkout: an overlay file newer than the
    import's silver-token runs the import's build and install in
    its build tree (import_build) instead of skipping it; the
    token is rewritten. OPEN: a module whose .ag is unchanged is
    "up to date" and never reaches the import step: use
    `silver --clean --build browser` after an overlay edit.
-8. DONE logins kept, in silver's app cache (Kalen): aura.ag
+8. DONE logins kept, in silver's app cache : aura.ag
    passes --data path_cache['aura'] (~/.cache/aura); the
    helper keeps site data in <it>/data (cookies.sqlite there)
    and cache in <it>/cache. Cookies were memory only before
@@ -7073,7 +7711,7 @@ of the media memory below, done as a streaming backend.
 
 ## Active work: browser built by silver, no SQLite, TLS (Sep 27 2026)
 
-DONE (Oct 21, Kalen: every site failed in aura) the page process
+DONE (Oct 21: every site failed in aura) the page process
 (WPEWebProcess) died right after each load (the title went empty,
 no frame came): libsilver-webgfx.so was from Oct 19, built against
 an older trinity, and WebKit loads it directly, so nothing rebuilt
@@ -7105,9 +7743,9 @@ overlay aura/wpewebkit/). Never ninja by hand in a checkout.
 
 ## MEMORY: zap, Super+Shift+A (Sep 28 2026)
 
-Kalen presses Super+Shift+A (Cmd+Shift+A) the moment a symptom
+the user presses Super+Shift+A (Cmd+Shift+A) the moment a symptom
 shows (a slow orbiter/browser close takes about 10 s).
-- A zap means: Kalen is seeing the issue right now. Read the
+- A zap means: the user is seeing the issue right now. Read the
   file as it fills and look at the live app at once.
 - support/zap.sh: first a line `time | message | file` onto
   install/tmp/zap/inbox; then `stats` from each trinity app
@@ -7118,7 +7756,7 @@ shows (a slow orbiter/browser close takes about 10 s).
   last a `done after Ns` inbox line. Arguments are the message
   (default "slow close").
 - Registered as a GNOME custom shortcut "zap to Claude" beside
-  Kalen's custom0/custom1 (Alt+Down/Up volume). Write GNOME
+  the user's custom0/custom1 (Alt+Down/Up volume). Write GNOME
   settings with /usr/bin/gsettings: install/bin/gsettings comes
   first on PATH, has no dconf module and silently drops writes.
 - It reaches an agent only through a live session: that session
@@ -7138,7 +7776,7 @@ configure line aura/wpewebkit.configure.sh). WebKit lays out
 and runs pages; trinity draws. This entry covers video and
 sound: everything done Sep 25-26, why, and what is left.
 
-### Why it started (Kalen's reports, in order)
+### Why it started (the user's reports, in order)
 1. Captchas everywhere. WPE sent its own Linux/WPE user agent,
    which few real visitors send. Fix: the helper
    (Tools/TrinityBrowser/main.c) sets Safari 18.5 on macOS as
@@ -7152,7 +7790,7 @@ sound: everything done Sep 25-26, why, and what is left.
    (enable-write-console-messages-to-stdout, temporary): the
    main script threw "ReferenceError: Can't find variable:
    HTMLVideoElement". WPE was configured ENABLE_VIDEO=OFF, and
-   WPE ties video to GStreamer. Kalen chose a trinity media
+   WPE ties video to GStreamer. the user chose a trinity media
    backend, no GStreamer (GStreamer is not installed at all).
 
 ### Stage a: video on without GStreamer (DONE)
@@ -7277,24 +7915,24 @@ webgfx/webgfx.ag (the C boundary WebKit calls; imports spectra)
   reference frames, never inside the browser.
 
 WebKit (checkout and overlay)
-- VideoFrame.h: virtual isTrinity() under USE(TRINITY).
+- VideoFrame.h: virtual isTrinity under USE(TRINITY).
 - platform/graphics/trinity/VideoFrameTrinity.h (new): a frame
   that names a webgfx video id; type traits for downcast.
 - GraphicsContextTrinity.h/.cpp: drawVideoFrame draws a
   VideoFrameTrinity with webgfx_canvas_draw_video, others as
   the base does. Page tiles paint straight onto this context
-  (TrinityPaintingEngine), so paint() reaches it.
+  (TrinityPaintingEngine), so paint reaches it.
 - platform/graphics/trinity/MediaPlayerPrivateTrinity.h/.cpp
   (new, in platform/SourcesTrinity.txt): engine Trinity for
   video/mp4, video/quicktime, video/x-m4v with avc1, avc3,
   mp4a codecs (refuses MediaSource/stream decoding types).
-  load() fetches the whole file with the element's
+  load fetches the whole file with the element's
   PlatformMediaResourceLoader (TrinityMediaClient gathers the
   bytes), then webgfx_video_new; states go HaveMetadata ->
   HaveEnoughData, Loaded. A 60 Hz RunLoop timer shows the
   frame for a monotonic clock (m_from + elapsed x rate); ends
   at the duration. play/pause/seek/volume/mute drive the sound.
-  paint() draws m_frame through drawVideoFrame.
+  paint draws m_frame through drawVideoFrame.
 - MediaPlayer.cpp registers it (USE(TRINITY) && !USE(GSTREAMER)).
   MediaPlayer.h (MediaPlayerType::Trinity), MediaPlayerEnums.h
   and Shared/WebCoreArgumentCoders.serialization.in
@@ -7351,7 +7989,7 @@ WebKit (checkout and overlay)
 
 ## MEMORY: the reload transition (Sep 22 2026, fixed)
 
-THE REQUIREMENT (Kalen, said many times, do not reinterpret it):
+THE REQUIREMENT (the user, said many times, do not reinterpret it):
 the avatar and the exchange do not disappear at a reload. The new
 instance RECREATES them instantly, in the exact state they had,
 and keeps drawing them; the old blur fades out to the NEW screen
@@ -7384,11 +8022,11 @@ HOW IT WORKS NOW (verified headless with shots, 7 cycles):
 - The fade starts in tick the frame after the restore, once
   `ux.loaded[]`: `ux.swap_fade` sets `fading` on every exchange
   element and the avatar; shot_close at 0. Every `:fading` is
-  3000 ms (Kalen: long enough to judge by eye).
+  3000 ms (long enough to judge by eye).
 - `agent_av_shot` is set at the restore: orbiter's `agent_avatar[]`
   takes a shot_ask it has not seen as a NEW capture and resets
   `settled`, which put the restored avatar at the fresh-exchange
-  top-center start and slid it left over 900 ms (Kalen's report).
+  top-center start and slid it left over 900 ms (the user's report).
 - OPEN, one frame: the user's box frame (ShotUser 'frame' layer)
   draws at its base one-row height on the restore frame with the
   entries above it; right from frame two. `ShotUserLayer.draw`
@@ -7407,7 +8045,7 @@ HOW IT WORKS NOW (verified headless with shots, 7 cycles):
 
 ## MEMORY: GPU memory across reloads (Sep 22 2026, evening)
 
-Symptom (Kalen): 4-5 live reloads and orbiter dies: Metal "Insufficient
+Symptom : 4-5 live reloads and orbiter dies: Metal "Insufficient
 Memory", VK_ERROR_OUT_OF_DEVICE_MEMORY, a SIGBUS in a MoltenVK submit,
 or a strncmp SIGSEGV in apply_style on a freed string. Measured
 headless: every reload left one instance's worth of textures alive
@@ -7421,7 +8059,7 @@ report walks holders ("held by X via .m"; PHANTOM = a hold no live
 object accounts for; "unbalanced hold:" names its call site) and
 `au_leak_sites(Au)` (Au.c) prints one object's recorded hold sites.
 
-The rule (Kalen): a store in `init` does not hold; `hold_members`
+The rule : a store in `init` does not hold; `hold_members`
 after init owns the slots. A store in a method that init CALLS
 (a delegate) does hold, and hold_members holds again: a double hold
 that leaks the object forever. Delegate calls handle it manually;
@@ -7439,15 +8077,15 @@ Fixed, all verified headless (3 exchange reloads, no crash):
   layouts; Render.destroy_ring destroys the timestamp query pool
   (Metal has a small fixed number of counter sample buffers; the
   "Could not create MTLCounterSampleBuffer" flood was that).
-- NOT changed (Kalen's recent code, kept): the five explicit
+- NOT changed (the user's recent code, kept): the five explicit
   `.hold[]` in build_frost_chain and the `mdl.cache.hold[]`/`drop[]`
   pair in Canvas.draw_svg. Removing the frost holds crashed the
   live app on its first reload (vk_context_xfer from rewire_frost
   after the switch, a freed chain object); the svg pair is why
   `svg` grows 38 per reload (icon cache canvases never freed:
   SVGModel.cache is public, the store holds, the explicit hold
-  stays at the model's dealloc). Both are open, with Kalen.
-- REVERTED (Kalen): touching the app element at destroy. It is
+  stays at the model's dealloc). Both are open, with the user.
+- REVERTED : touching the app element at destroy. It is
   process-owned (managed 0) and stays as it was. `managed = 1` +
   free gave DOUBLE-DROP from a map that still listed it; then
   `app.drop_members[]` crashed the next instance's first draw
@@ -7483,7 +8121,7 @@ canvas's pipeline/texture chain. Stack in install/tmp/orbiter.log.
 
 ## Active work: orbiter memory (Sep 21 2026)
 
-Target from Kalen: about 120 MB; the avatar (about 30 MB) is
+Target from about 120 MB; the avatar (about 30 MB) is
 the largest object. Startup footprint measured headless.
 
 1. DONE `.f` map only for loaded buffers: `path.read_format_of`
@@ -7497,7 +8135,7 @@ the largest object. Startup footprint measured headless.
    (Canvas `image_ramp`, `draw_canvas_ramp`); blur outputs
    (`ReduceBlur` rv/rh) at one pixel per point on retina.
    1382 -> 1257 MB. Full-size gaussians stay full size by
-   Kalen's call: no upscaling of blur results.
+   the user's call: no upscaling of blur results.
 5. DONE `auto_free` lost its reset_only argument: the `[true]`
    resets pinned 368,048 startup objects (~200 MB) for the run.
    media_app.init no longer drains (members are raw stores until
@@ -7549,7 +8187,7 @@ the largest object. Startup footprint measured headless.
 ## Active work: near-border (Sep 29 2026)
 
 1. BUILT, tested: the pointer lights every border by its
-   nearness. No style property (Kalen: never different between
+   nearness. No style property (never different between
    controls). Window.near_walk records each element's window
    origin (win_pos) and marks it for repaint while the pointer
    is within near_reach (160 px) of its box, and once after it
@@ -7565,7 +8203,7 @@ the largest object. Startup footprint measured headless.
    reach, else 0; each frame glow = filter_n[ glow, goal, 0.1 ]
    (0.9 kept, 0.1 new at 60 Hz). t_near_border_glow: red 90 at
    half glow.
-   Opt-in (Kalen, Sep 29): a Layer's `near_border: true`, or a
+   Opt-in (Sep 29): a Layer's `near_border: true`, or a
    draw's Window.near_light_on[ cv, e, ox, oy ]. Only an element
    whose last paint lit a border (near_used) repaints on moves.
    orbiter: title bar (tbar), status bar (sbar), and the editor's
@@ -7611,10 +8249,10 @@ the largest object. Startup footprint measured headless.
 
 ## Active work: dictation marks on a recording (Sep 30 2026)
 
-Kalen: dictate while recording; each take is a mark on the
+dictate while recording; each take is a mark on the
 recording's clock (start, duration, words), and the marks are
-the composer's instructions ("I want a bugs bunny right after I
-played the fzero game"): the span where an instruction was
+the composer's instructions (an insert
+asked for by voice at a moment of the take): the span where an instruction was
 spoken is cropped out of the finished video, and the composer
 (a new app, `composer`) feeds the .agi with a VIDEO.md (the
 video operations it may emit at times) into the user's agent
@@ -7631,7 +8269,7 @@ compressed mp4.
    app element is not the media_app, so it cannot call its
    methods. orbiter mic_frame: mark_at at the press, mark_end
    at the release, the mark once the words arrive.
-2. DONE (Kalen) the mp4 holds video and audio only, never
+2. DONE the mp4 holds video and audio only, never
    text: the marks live in the .agi alone, and the user edits
    that file directly. The text track and --retitle were built
    and removed. Checked headless: a take with a spoken test
@@ -7665,7 +8303,7 @@ compressed mp4.
    cropped the mark (1.6-3.8 s), put take/orbiter-logo.png top
    right for 3 s at 3.8 s, downloaded nothing, left the
    narration mark alone; the plan: 2 spans kept, 1 insert.
-5. DONE full-colour takes are H.265 4:4:4 (Kalen's pick): the
+5. DONE full-colour takes are H.265 4:4:4 (the user's pick): the
    RTX 3060 encodes H.264 4:4:4 but decodes H.264 at 4:2:0 only;
    it encodes and decodes H.265 4:4:4 8-bit. `--rec_qp stage` /
    `lossless` (the default) now record H.265 Rext 4:4:4 into
@@ -7716,7 +8354,7 @@ compressed mp4.
    removed is freed at once (use it before removing); a png
    drawn straight showed its transparent area (noise): pictures
    are premultiplied at load.
-7. DONE a take is a module (Kalen): `--record video` makes
+7. DONE a take is a module : `--record video` makes
    video/ if it is not there and records video/video.mp4 beside
    video/video.agi (trinity record_path; relative to the launch
    folder; a stream url or a name with a video extension is
@@ -7734,11 +8372,11 @@ compressed mp4.
 8. OPEN orbiter's row for the composer, progressive JPEG in
    img (it aborts on them), and the frames still cross the CPU
    (decode readback, plane upload).
-9. PLANNED (Kalen, Sep 30) voice conversion on the take's sound,
+9. PLANNED (Sep 30) voice conversion on the take's sound,
    offline in the render: a `Voice` op (from, to, voice) whose
    voice is a reference .wav in the take's folder, named in the
-   context or a dictation like any other media ("video/vader.wav
-   is Darth Vader"). Model: Seed-VC ported to silver as whisper
+   context or a dictation like any other media (a line naming
+   whose voice a .wav holds). Model: Seed-VC ported to silver as whisper
    was (whisper-small encoder already in speech; CAMPPlus,
    the DiT with its flow-matching steps, BigVGAN to port), its
    .pth checkpoints read by a new zip+pickle reader.
@@ -7791,8 +8429,8 @@ compressed mp4.
    from, to, voice. In VIDEO.md. A speech take rendered: the
    pitch moved 301 -> 203 Hz, the output does not correlate
    with the input (-0.02). Speed: 31 s for 2.5 s of sound, on
-   the CPU; Kalen accepts it. OPEN: the GPU path (below).
-   GPU (Kalen asked, Sep 30): ai's whisper_vk has compute
+   the CPU; the user accepts it. OPEN: the GPU path (below).
+   GPU (the user asked, Sep 30): ai's whisper_vk has compute
    shaders for gemm, attention, layer norm and conv; Seed-VC's
    whisper already runs there. The DiT and BigVGAN are not on it.
 11. DONE (Oct 6) `--rec_scale 2`: the Display's pixel scale is
@@ -7814,11 +8452,10 @@ What it is: a trinity app (`composer/`) that turns a raw screen
 recording into a finished, compressed video. The user records an
 app and talks while doing it; the talk is the edit. The agent (the
 user's own claude or codex) reads what was said and writes the
-edit; the composer carries it out. Kalen: "record an app, talk to
-your ai and have a product come out on the other end";
-"the ai can alter trash in, treasure out".
+edit; the composer carries it out. The agent turns a rough take
+into a finished one.
 
-Why: to help media creators, and Kalen himself, make good videos
+Why: to help media creators, and the user himself, make good videos
 without editing by hand. It belongs in the stack: trinity records,
 speech hears, the agent decides, composer renders. No outside
 editor and no ffmpeg anywhere in the path.
@@ -7835,7 +8472,7 @@ The flow:
 3. `silver composer video` sends the agent VIDEO.md (the
    protocol), the marks and the folder. It writes
    video/video.composition.agi: a list of ops. A spoken
-   instruction ("put a bugs bunny after the fzero bit") is cropped
+   instruction (an insert asked for by voice) is cropped
    out of the result.
 4. The render reads the composition and writes
    video/video.final.mp4 (H.264 4:2:0 + AAC, the shareable form).
@@ -7858,7 +8495,7 @@ Ops today:
   Seed-VC ported to silver (whisper-small content, CAM++ style,
   DiT flow matching, BigVGAN). There is no training step: any
   voice works from a few seconds of clean speech. It runs on the
-  CPU at about 12 s of work per second of sound (Kalen: fine).
+  CPU at about 12 s of work per second of sound (fine).
 
 Where it might go (ideas, none started unless listed elsewhere):
 - Seed-VC on the GPU: ai's compute shaders (gemm, attention, norm,
@@ -7880,7 +8517,7 @@ Where it might go (ideas, none started unless listed elsewhere):
 
 ## Active work: RVC in composer (Sep 30 2026)
 
-Kalen: RVC instead of Seed-VC ("the performance is better"), a
+RVC instead of Seed-VC (for its speed), a
 voice trained from a clip (train from a clip, not downloaded
 models), Seed-VC replaced. Seed-VC stays until RVC works end to
 end, then goes with its 918 MB of models in the same step.
@@ -7903,7 +8540,7 @@ the Seed-VC port was. Order:
    and optimizer state, `work` reset every step); Buffer gained
    address[] and buffer_handle[] (trinity vk.ag). Autograd: a tape
    of GOp records (kind number; Grad.back_op switches on it).
-   Kernels are written as trinity writes shaders (Kalen): a
+   Kernels are written as trinity writes shaders : a
    subclass of GKern with `func compute [] -> GLSL none { .. }`
    (main's body) and `decl` (shared arrays) token methods, braces
    doubled; only the push-constant header is a string (its
@@ -8022,7 +8659,7 @@ the Seed-VC port was. Order:
    t_grad_gemm_split). Inference 8 s: 2.3 s -> 0.56 s; synthesis
    vs pytorch 98 -> 109 dB. gemm is ~2 TFLOPS on a 2048 cube (the
    3060 peaks near 12): a bigger-tile gemm is the next speedup.
-8. IN PROGRESS train picard-full (Kalen's video2 folder): `silver
+8. IN PROGRESS train picard-full (the user's video2 folder): `silver
    composer video2`, Revoice ops on picard-full.wav;
    247 pieces, ~70 s an epoch at batch 2. librosa and scipy install
    with composer (pip into install/pylib, as os-bootstrap does,
@@ -8070,7 +8707,7 @@ the Seed-VC port was. Order:
    flags ride in float bits (f2/f3) instead.
    composer: au_live_set_reload[ 0 ] at init (built): a build never
    reloads a training run now.
-16. DONE shared voice store (Kalen: training by named alias): a
+16. DONE shared voice store (training by named alias): a
    trained voice lives in install/models/voices/ by the clip's name
    (picard-full.wav -> picard-full.rvc.safetensors, .index, .fp);
    the .fp is the clip's size and FNV-1a hash, written last, and a
@@ -8088,7 +8725,7 @@ the Seed-VC port was. Order:
 
 ## Active work: silver vec and indexing bugs (Sep 30 2026)
 
-Kalen: go over the vec and indexing errors met in grad.ag and rvc.ag,
+go over the vec and indexing errors met in grad.ag and rvc.ag,
 validate them in features.ag, fix silver. Each has a focused test in
 features (Collections section). features: 222/225; the 3 failures
 are the old t_vec_module, t_launch_specs, t_mem_last.
@@ -8133,12 +8770,12 @@ are the old t_vec_module, t_launch_specs, t_mem_last.
 
 ## Active work: YouTube smoothness in aura (Sep 28 2026)
 
-Kalen: the player's fullscreen transition ran at 15-20 fps, its
+the player's fullscreen transition ran at 15-20 fps, its
 menus at 10-30, the video at 30 at most. Measured headless with
 the WebKit helper alone (scratchpad ytprobe/ytlong) and through
 the element (drive.py, `--width 2560 --height 1440`), traces
 since removed. Found and fixed, in order:
-1. DONE frame interpolation (Kalen's spec: only a time-weighted
+1. DONE frame interpolation (the user's spec: only a time-weighted
    mix of the two authored pictures, one picture behind, no
    motion compensation). trinity/video.ag `FrameBlend` (a
    PlaneBlend compute over the y, u, v planes), `VideoStream.
@@ -8171,7 +8808,7 @@ since removed. Found and fixed, in order:
    both toggles, 51-60 page frames a second, one second at
    26-47 at each toggle (the app is capped at 60 headless).
    webgfx and trinity expects exit 0.
-5. DONE (Kalen's test: "4K video test tv motion",
+5. DONE (the user's test:,
    youtube.com/watch?v=pcSv22DTDUI, fullscreen, headless with
    SILVER_HZ=165 so the app is not capped at 60) fullscreen ran
    at 47 page frames a second, 100-117 before it, with every
@@ -8206,8 +8843,7 @@ Findings, not bugs of ours:
    until its row is clicked). The startup run plays it at once
    in the pane (display Full, the 'play' action); the argv tail
    becomes aura.ag's saved args, over any earlier ones.
-7. DONE (Kalen: "we have a schema format, it's called .agi";
-   "dont reinvent one field"): the launch spec string
+7. DONE (.agi is the schema format): the launch spec string
    (name=type=default=Control=live, written by the compiler
    into the export, answered by trinity to `props`, split by
    position in orbiter) is gone from all three. A module's
@@ -8230,8 +8866,7 @@ Findings, not bugs of ours:
                        value '1', control: Range min 0 max 1)
    trinity expects exit 0; orbiter builds. Not driven: the
    panel itself (needs silver-host).
-   Then (Kalen: "it comes from module enumeration, then stored
-   in .agi"): the module's build enumerates its app type. trinity
+   Then : the module's build enumerates its app type. trinity
    `export func launch_props` runs in the app's export process
    (silver.c: an app product runs its imports' exports; the
    registry is written before them) and, at the process's exit
@@ -8246,8 +8881,7 @@ Findings, not bugs of ours:
    silver-aura.agi now lists src (default, Launch), display
    (Live, stops PIP Embed Window Screen) and volume (Live,
    VolumeRange, control Range 0..1).
-8. DONE (Kalen: `aura --volume 0.48 <url>` printed usage; "put
-   the volume property on element"): volume was the trinity
+8. DONE (`aura --volume 0.48 <url>` printed usage): volume was the trinity
    controller's, and the element is the command line's surface.
    `public [ Live, VolumeRange ] volume` is on element
    (trinity/element.ag, beside display); the controller's is
@@ -8270,7 +8904,7 @@ Findings, not bugs of ours:
    Checked hidden under the host: the pane's instance starts
    ("start: aura https://www.google.com -> slot 1"), aura
    loads Google; then orbiter SIGSEGVed in Canvas_measure_text
-   from Layer_draw (Kalen's report, reproduced). AU_QUARANTINE=1
+   from Layer_draw (the user's report, reproduced). AU_QUARANTINE=1
    named it: a DOUBLE-DROP in AppView.service on the app's
    title. `app_title = string[ @title_buf[0] ]` (title_buf a
    vec u8) compiled to a POINTER CAST: the vec's data pointer
@@ -8281,8 +8915,7 @@ Findings, not bugs of ours:
    bug, OPEN: `string[ @v[0] ]` on a vec is a cast, not a
    construction (see cast-cstr-vec). Checked: the hosted run
    stays up 60 s with Google in the pane, no report.
-10. DONE (Kalen: "you never do any arguments after the default";
-   "trinity.view ... otherwise they could clash") the launch
+10. DONE (another module's props are named by module, so names never clash) the launch
    line is flags first, the default (positional) last and
    nothing after it: a string default takes the whole
    remainder (Au_with_cstrs). launch_handler put `--view` after
@@ -8299,7 +8932,7 @@ Findings, not bugs of ours:
    --trinity.display Embed https://www.google.com` runs and
    answers props with module aura / trinity, volume '0.48',
    display Embed. `--view` stays bare: it is asnes's own prop.
-11. DONE (Kalen: orbiter "locks hard before closing", ~10 s).
+11. DONE (orbiter, ~10 s).
    Reproduced hidden under the host with aura in the pane, an
    orderly quit over the socket (new trinity socket command
    `quit`: Au.quit_request sets the flag the close button
@@ -8322,10 +8955,10 @@ Findings, not bugs of ours:
    the quit to gone, the worker stops 40 ms after the cancel.
    The rest is the teardown itself. --leaks makes every free
    slow (leak_remove 59% of the close): measure closes without it.
-12. DONE (Kalen, Sep 29: in Embed the page stayed at aura's launch
-   size, 1280x800, inside a 1523x965 pane; "the second time you
-   launch the app it doesn't get the resize; it should start at
-   the embedded size"). Cause, reproduced by stopping and
+12. DONE (Sep 29: in Embed the page stayed at aura's launch
+   size, 1280x800, inside a 1523x965 pane: a
+   second launch got no resize; it should start at the pane's
+   size). Cause, reproduced by stopping and
    starting the instance from its row icon: a paned app launched
    at its own default size and relied on the pane's HM.resize,
    and that request is sent only when the pane's size differs
@@ -8342,9 +8975,7 @@ Findings, not bugs of ours:
    pane's resize within a frame: the pane has no layout yet.
    /tmp/orbiter-resz.log is appended by EVERY orbiter process
    (two were running): its lines interleave.
-13. DONE (Kalen: "that cool effect can be applied in our aura
-   webkit around standard buttons ... and form elements like
-   check / input / text area") the pointer's near light on every
+13. DONE the pointer's near light on every
    native control WebKit paints. The chain: webgfx
    webgfx_canvas_near_light / _near_style (WebGfx.h) ->
    GraphicsContextTrinity::setNearLight/clearNearLight (the
@@ -8361,11 +8992,11 @@ Findings, not bugs of ours:
    (nearLightPainted) and EventHandler::handleMouseMoveEvent
    (overlay copy) calls nearLightMoved: a box within reach of
    the pointer repaints, and once more as it leaves. A trinity
-   context is known by platformContext() != null.
+   context is known by platformContext != null.
    Checked headless on a local page (scratchpad near/): the
    push button, the text input and the checkbox take a soft
    blue inner light that follows the pointer; the rest stay
-   as Adwaita draws them. Then (Kalen: nothing on google.com's
+   as Adwaita draws them. Then (nothing on google.com's
    search buttons, which Google styles itself, so WebKit paints
    them as plain CSS boxes): the scope also takes any box whose
    element is an HTMLFormControlElement (input, button, select,
@@ -8374,27 +9005,27 @@ Findings, not bugs of ours:
    google.com: "Google Search" glows blue at its edges under the
    pointer, "I'm Feeling Lucky" faintly at 150 px. Cost: one
    repaint per move per control within 160 px.
-14. DONE (Kalen: dragging a split rendered the two panes at
+14. DONE (dragging a split rendered the two panes at
    different sizes, the panes lagging the seam on a fast move;
-   "easing is a feature, that ease state is the current
-   position"). Traced per frame (a temporary split/draw log,
+   the eased state is the
+   current position). Traced per frame (a temporary split/draw log,
    removed): the frame the main splitter laid its seam out at
    the new place, the right child drew at its new width and
    pane0 still at its old one, one frame late. Cause: bounds
    were computed only in the draw pass (layout_element), so a
-   nested container's render() read LAST frame's bounds: each
+   nested container's render read LAST frame's bounds: each
    nesting level (main -> left -> stack -> panes -> pane0)
    added a frame of lag, and the two sides of one seam came
    from different frames. Fix (trinity update_element): each
    instance is laid out from its parent's current bounds
    (layout_self, the per-element half of layout_element,
    with the relative-sibling chain kept in the pass) before
-   its render() is called, top down; the draw pass's layout
+   its render is called, top down; the draw pass's layout
    stays authoritative. The splitter's easing is untouched.
    Checked hidden: on a fast drag every shot has one seam and
    both panes meet at it, on the title, the text and the
    bottom rows.
-15. DONE (Kalen: an instance started with the nav list open did
+15. DONE (an instance started with the nav list open did
    not start until the list closed). The pane's editor mounts
    with `hide: browse_active[]`, and draw_element returns on a
    hidden element before its tick, so nothing serviced the
@@ -8403,11 +9034,11 @@ Findings, not bugs of ours:
    a hidden pane as not showing (`!e8.hide`). Checked hidden:
    with the list open (a letter typed in the title) the row's
    play starts aura at once ("start: aura ... -> slot 1").
-   Then (Kalen: the app flashed and the list stayed in front):
+   Then (the app flashed and the list stayed in front):
    the play action closes the nav list (exit_finder, nav_showing
    and find_showing off). Checked hidden: the list's element is
    gone after the play and the page shows in the pane.
-16. DONE (Kalen: the exchange's ground blur once, wanted per
+16. DONE (the exchange's ground blur once, wanted per
    frame). Window.exchange_blur_frame (trinity): when the
    exchange's ground draws, the screen as drawn so far is
    submitted and fenced (flush_text, draw, sync_fence), copied
@@ -8422,7 +9053,7 @@ Findings, not bugs of ours:
    their offsets (an insert mid-class broke orbiter until it
    was rebuilt). Checked hidden over a playing YouTube video:
    shots 1.2 s apart show different blurred frames.
-17. WRITTEN, not built (Kalen: "stop compiling while I use it";
+17. WRITTEN, not built (the user
    the mic took 4-5 s to engage and disengage, freezing the
    ui). Profiled hidden (LD_PRELOAD wall sampler, the pulse and
    pipewire sockets linked into the test runtime dir so the
@@ -8446,8 +9077,8 @@ Findings, not bugs of ours:
    pipewire sockets (hidden runs with a scratch runtime dir:
    link pulse/native, pipewire-0, pipewire-0-manager into it);
    a hidden orbiter run overwrites install/tmp/silver-orbiter
-   .log, the same file Kalen's run writes.
-18. WRITTEN, not built (Kalen: n64 crashes from orbiter, not
+   .log, the same file the user's run writes.
+18. WRITTEN, not built (n64 crashes from orbiter, not
    from the command line). It is orbiter that dies: its log has
    "type mismatch" then SIGTRAP right after "release: n64 slot
    1", while parsing n64's `props` answer (the freed strings
@@ -8461,9 +9092,8 @@ Findings, not bugs of ours:
    trapping. Needs `make` (Au), then orbiter's next launch.
    Check: `silver orbiter n64 <rom>` with mouse_look off, and
    the panel shows the bool.
-19. WRITTEN, not built (Kalen: mouse_sens showed BLANK in the
-   panel, "it's an f32", "blank means it's not even getting the
-   value"). Two causes. (a) the export .agi carried no defaults
+19. WRITTEN, not built (mouse_sens showed BLANK in the
+   panel: an f32 whose value never arrived). Two causes. (a) the export .agi carried no defaults
    (declared shape only), so a field mounted before the first
    run had nothing; and once the running instance's answer had
    the value, the mounted field kept its empty text (a mounted
@@ -8490,19 +9120,19 @@ OPEN:
 - the FrameBlend runs on the web process main thread with a
   fence wait per tick: 12-17% of the thread at 165 Hz.
 - headless the app ticks at 60, so page frames cap at 60; on
-  Kalen's 165 Hz screen the real rate is unmeasured.
+  the user's 165 Hz screen the real rate is unmeasured.
 - the per-tile paint still reads every tile back to the CPU.
 
 ## Active work: .ag cleanup to 72 columns (Sep 30 2026)
 
-Kalen: every .ag module to 72 columns, trinity first. Comments
+every .ag module to 72 columns, trinity first. Comments
 re-flowed to 72 (all words kept); code broken inside [ ] only.
 1. DONE trinity (Sep 30): 3,654 lines over 72 -> 1,323. The
    wrap tool (session scratchpad wrap72.py; to keep, move it to
    support/) re-flows # and // comments, moves a trailing
    comment above its line, puts a one-line `if [ c ] stmt`
    body on its own line, and breaks code after a comma or
-   before && / || inside [ ], or ( ) within [ ].
+   before && / || inside [ ], or  within [ ].
    Checked by IR: the --verbose build's .ll before and after,
    compared function by function (locals renamed, string
    constants by text): identical but for __LINE__ values, GLSL
@@ -8525,7 +9155,7 @@ re-flowed to 72 (all words kept); code broken inside [ ] only.
 
 ## Active work: public cleanup (Oct 2 2026)
 
-Kalen, before going public: every module to 72 columns, and no
+the user, before going public: every module to 72 columns, and no
 numbered names (wx9, lp9, a9): a name, or i/x/y. Short words
 like cv are fine. Locals and parameters only; members and
 method names keep theirs. Order: trinity first, then each
@@ -8551,7 +9181,7 @@ Start (Oct 2): 43 modules, 122,101 lines, 11,162 over 72,
 
 ## Active work: planets out of scenes (Oct 5 2026)
 
-Kalen: scenes is a utility module only (Backdrop, OrbitView,
+scenes is a utility module only (Backdrop, OrbitView,
 ViewAngle, the Gaia sky, eu_gnoise, fetch_map, scene_thumb,
 shared models). NO planet lives in it. Each planet is its own
 root module (`<planet>/<planet>.ag`) that imports scenes and
@@ -8581,7 +9211,7 @@ Never `extend scenes` for a planet.
 
 ## Active work: moon surface (Oct 5 2026)
 
-Kalen: the moon's bake (earth/earth.ag, moon_*) looked
+the moon's bake (earth/earth.ag, moon_*) looked
 amateurish: generational blur, additive stamping, decal basins,
 noisy normals, no erosion in time, no basins, same-looking
 craters. Rules from him: fix inside the existing routine, one
@@ -8629,7 +9259,7 @@ shaded map is checked from the normal png (scratch python).
    the side read as a bump. MoonShader t_e = cross(n0, north),
    t_n = cross(t_e, n0). Found by derivation; the thumbnail
    camera only shows the limb.
-7. DONE (Kalen's second look): basins were too large and too
+7. DONE (the user's second look): basins were too large and too
    smooth; the colour had a seam down the map's middle; rims
    needed mountains; a few more craters. Now: moon_region picks
    a picture by random cells with the four neighbours blended
@@ -8646,7 +9276,7 @@ shaded map is checked from the normal png (scratch python).
    enum no longer has (Enceladus/Neptune had speed: subtle;
    BackdropSpeed is slow/medium/fast): evalue faulted at the
    restore (SIGTRAP at startup).
-10. DONE (Kalen's third look): late impacts only ever smaller;
+10. DONE (the user's third look): late impacts only ever smaller;
    too few central peaks and small rims; rock detail off scale
    (scrapes, pixel marks, no rocks seen). Now: the size top
    doubles over the late generations (ramp 40%..80%); the peak
@@ -8658,8 +9288,8 @@ shaded map is checked from the normal png (scratch python).
    6x, 16x at 0.35, 0.6, 0.7; the wear lays the rock tile at
    0.5..1 map px a rock px (was 2..8); the tile is box-averaged
    into the relief. Shaded map: rubble grain shows, rims and
-   massifs read. Not yet seen by Kalen in orbiter.
-11. DONE (Kalen: no real colouring on the moon; the Earth in
+   massifs read. Not yet seen by the user in orbiter.
+11. DONE (no real colouring on the moon; the Earth in
    the moon's sky should reflect the sun off its land by albedo).
    moon_albedo: the vivid picture's hue comes in at 15%..55% by
    two perlins (3 cycles large sections, 14 small; was a flat
@@ -8668,8 +9298,8 @@ shaded map is checked from the normal png (scratch python).
    0.015, the vivid 0.211). MoonEarth: a broad land lobe
    (exponent 12, half strength) in the ground's own colour,
    under the clouds, beside the sea's glint. Not yet seen by
-   Kalen in orbiter.
-12. DONE bake 12 (Kalen: scrapes and noise still there). Found in
+   the user in orbiter.
+12. DONE bake 12 (scrapes and noise still there). Found in
    the maps: the rock tile's own thin lines (crater rays, plate
    edges, 1-2 px wide, 100+ px long) laid into the height by the
    wear and stretched by the shader's 2x stage; and the vivid
@@ -8684,7 +9314,7 @@ shaded map is checked from the normal png (scratch python).
    remains: the real map's hue now comes in whole and its jpeg
    chroma noise is per pixel. NEXT: low-pass 4 px, the real map's
    hue from an 8x averaged copy too.
-13. DONE the way back from the earth (Kalen: the lit side up as we
+13. DONE the way back from the earth (the lit side up as we
    approach; the moon left the frame). The look held the moon's
    centre only to the halfway point by the clock; now it holds it
    until the eye is within 3 radii and rolls to the flight look by
@@ -8692,7 +9322,7 @@ shaded map is checked from the normal png (scratch python).
    direction with the line of sight taken out: the sunlit half at
    the top. Checked offscreen (MOON_SEC 190/205/215): the moon
    centred, terminator level, lit side up.
-14. BUILT, awaiting Kalen's look: the Earth in the moon's sky
+14. BUILT, awaiting the user's look: the Earth in the moon's sky
    (MoonEarth). The sun's spot on the land overblows the ground's
    own colour, scaled by its green plus blue (a multiplier on the
    land colour under a pow 12 lobe, up to 2.5 x (g + b)); the limb
@@ -8702,7 +9332,7 @@ shaded map is checked from the normal png (scratch python).
    time. Seen offscreen at the earth lap: the green cap at the
    pole shows as spokes meeting at the pole (the curtains are by
    longitude); the land spot was not under the sun in that frame.
-15. DONE (Kalen: the scrapes and noise persisted) the real
+15. DONE (the scrapes and noise persisted) the real
    source: moon_tint_height added the vivid picture's brightness
    to the terrain height pixel for pixel from random cells, so its
    white crater rays were ridges in the height (the scrapes) and
@@ -8712,7 +9342,7 @@ shaded map is checked from the normal png (scratch python).
    from an 8x box-averaged copy (moon_shrink) for hue and light.
    Bake 14. The rock relief keeps the 4 px low-pass (its own
    lines and grain are not rocks).
-16. BUILT, awaiting Kalen's look: the approach camera (Kalen: the
+16. BUILT, awaiting the user's look: the approach camera (the
    lit side on the left as we leave the earth, turning up as we
    near; the moon fell to the bottom). Leaving the earth the up is
    the sun turned a quarter round the line of sight (lit side
@@ -8723,10 +9353,10 @@ shaded map is checked from the normal png (scratch python).
    212: the moon centred, lit cap at the top at 212. Whether the
    first roll puts the lit side on the screen's left (cross
    handedness) is not confirmed: flip `lft` if it is on the right.
-17. BUILT, awaiting Kalen's look: the Earth's land spot is land
+17. BUILT, awaiting the user's look: the Earth's land spot is land
    diffuse + land x a wide blinn lobe (pow 8, 1.2), under the
-   clouds (Kalen's spec); the overblow form is gone.
-18. BUILT, awaiting Kalen's look: earthshine. MoonShader gains
+   clouds (the user's spec); the overblow form is gone.
+18. BUILT, awaiting the user's look: earthshine. MoonShader gains
    `earth_dir` (last uniform; w = strength): a blue light
    (0.45, 0.62, 1.0) from the earth's direction on the ground
    facing it, 0.12 at new earth to 0.42 at full earth by the
@@ -8734,7 +9364,7 @@ shaded map is checked from the normal png (scratch python).
 19. DONE bake 15: the colour's 4 x 4 blocks (the averaged copy
    picked nearest onto the colour map) are gone: moon_pick is
    bilinear, wrapping. Colour crop smooth.
-20. BUILT, awaiting Kalen's look (Kalen: the aurora sits 50%
+20. BUILT, awaiting the user's look (the aurora sits 50%
    higher, is a volume with depth, moves through the atmosphere,
    dances around). It is its own shell now: MoonAurora (inherits
    MoonEarth), the globe mesh at 1.066 radii over the earth in
@@ -8753,22 +9383,22 @@ shaded map is checked from the normal png (scratch python).
    with little altitude term, threshold 0.5..0.68, gain 1.3, cover
    smoothstep 0.1..2.5. Seen at the earth lap: soft green volumes
    at the south pole above the limb.
-21. DONE (Kalen): closing the last file reopened one on the next
+21. DONE : closing the last file reopened one on the next
    start. The state WAS saved (persist.agi: `pane_states: [ ]`,
    pane_drop_file saves), and the agi reader gives an empty vec
    for it, but restore_session's second branch (meant for a
    fresh install: the first known file) ran for an empty list
    too. It runs only when pane_states is null now. orbiter built.
-22. DONE (Kalen, eighth ask: no specular on the earth's land).
+22. DONE (the user, eighth ask: no specular on the earth's land).
    Checked under the spot this time (MOON_SEC 132, the glint on
    South America): the earlier forms did not read. Now the land
    takes the sea's blinn at twice the size (pow 100 x3 + pow 10
    x0.8), added as land x land x3 x lobe under the clouds: the
    Amazon flares under the sun. Seen offscreen.
-23. BUILT (Kalen: the aurora looks good, bigger patterns, far
+23. BUILT (the aurora looks good, bigger patterns, far
    lower): shell 1.033..1.066 -> 1.01..1.028 radii (mesh at 1.028),
    noise over the ground 24 -> 9 per radius.
-   Then (Kalen, five at once, all done): a quarter as bright at
+   Then (the user, five at once, all done): a quarter as bright at
    full (gain 1.3 -> 0.33) with each region slight to full by a
    slow noise (0.1..1); the oval wider (lat 46..60 in, 78..88
    out); the noise round the pole in a ring (cos, sin of the
@@ -8777,7 +9407,7 @@ shaded map is checked from the normal png (scratch python).
    noise changing through the shell (an x 4) and far samples at
    half; shell 1.002..1.012 radii (mesh 1.012). The cover follows
    the light so a faint curtain does not darken the ground.
-   Then (Kalen: none showed; flat, a 2D effect on the globe, not a
+   Then (none showed; flat, a 2D effect on the globe, not a
    march). Two causes: the cover followed the colour and the
    8-bit target clamps colour before the blend, so the addition
    can never exceed the cover (the cover carries the strength
@@ -8792,21 +9422,21 @@ shaded map is checked from the normal png (scratch python).
    side. Measured at the earth lap: green pixels 47 -> 622, the
    strongest 17 -> 44 of 255; from the side the oval is an arc
    standing above the limb with lumps along it.
-   Then (Kalen: not vertical shafts enough, no volume, not low
+   Then (not vertical shafts enough, no volume, not low
    enough, too bright): curtains 12 per radius across the oval
    (was 5), fine rays along them (14 round the ring) splitting
    each into shafts; shell foot 1.008 -> 1.002 (top 1.03); cover
    0.25 -> 0.12. Measured at the earth lap: strongest green 14 of
    255 (was 44), 184 green pixels.
-   Then (Kalen: shafts way taller, slower): top 1.03 -> 1.05
+   Then (shafts way taller, slower): top 1.03 -> 1.05
    (mesh 1.05), the thinning from 0.55 of the height (was 0.3),
    drift 0.0017 -> 0.0006 of sky seconds.
-   Then (Kalen: the whole ionosphere's edge carries the green as
+   Then (the whole ionosphere's edge carries the green as
    fuzz on the night sky's edges): an airglow density 0.04 x
    (1 - altitude) over the whole night shell in the same march,
    its own softer green; the grazing path at the limb saturates
    it into a thin fuzz, the steep view inside barely.
-   Then (Kalen: a hard green edge showing the shell's other side,
+   Then (a hard green edge showing the shell's other side,
    not a thin terminator fuzz). THE FAULT behind every flat
    result: the ray math ran in the mesh's units (mesh radius 1)
    while the mesh is the globe scaled to the shell's TOP, so the
@@ -8815,13 +9445,13 @@ shaded map is checked from the normal png (scratch python).
    marched. Now rtop 1, ground 1 / 1.05, foot 1.002 / 1.05 in the
    shader; the shell's far face discards (the near face marched
    the ray once). Measured: green 155 -> 13,877 px, strongest 34.
-   Then (Kalen: the glow is a thin band seen at the top of the
+   Then (the glow is a thin band seen at the top of the
    shell, clear toward the surface; only the shafts go through):
    glow density a gaussian round 0.85 of the height, width 0.1,
    0.06 peak (was 0.04 x (1 - height)).
-   Then (Kalen: nice, lower): the band's centre 0.85 -> 0.55 of
+   Then (nice, lower): the band's centre 0.85 -> 0.55 of
    the shell's height, width 0.08. Built.
-24. DONE (Kalen: "why are we committing generated textures").
+24. DONE .
    They were never committed: .gitignore ignores scenes/textures/
    ("planet maps: downloaded, never committed"); the planet split
    moved the maps into earth/textures, enceladus/textures,
@@ -8829,17 +9459,16 @@ shaded map is checked from the normal png (scratch python).
    as new (earth 117 MB, enceladus 71 MB, mars' two colour maps
    46 MB). The eight planet modules' textures/ folders are in
    .gitignore now. mars-height/stone/veg were tracked before and
-   stay (renames). Unstaging the new ones is Kalen's (Rule #1).
-25. DONE (Kalen: titan-color.png staged too; "why are you not
-   downloading these to a cache location"). The download WAS in
+   stay (renames). Unstaging the new ones is the user's (Rule #1).
+25. DONE . The download WAS in
    the cache (~/.local/state/scenes); the bake then wrote its png
    into the module's source tree (titan/textures/). bake_titan
    now writes ../<share>/baked/titan-color.png as the moon bake
    does and the model reads it there. Built; the thumb rendered
    from the moved map is identical (mean 56,47,34). The same
    source-tree write remains in scenes.ag: gaia, saturn, jupiter
-   (scenes/textures/, gitignored): OPEN, Kalen's call.
-26. DONE (Kalen: "you can cleanup those") the history rewritten
+   (scenes/textures/, gitignored): OPEN, the user's call.
+26. DONE the history rewritten
    with git filter-repo after his commit 165d95d left the tree
    clean: every binary blob in history that is not a current file
    (44 blobs, 65 MB: old orbiter32.bin, earth.bin/.blend, the
@@ -8847,21 +9476,21 @@ shaded map is checked from the normal png (scratch python).
    landscape.png, exr/ppm captures), then the pluto-tiles folder
    whole. Source history untouched (old silver.c etc. kept).
    .git 385 MB -> 75 MB, 1157 commits, stash kept, origin kept.
-   Every hash changed: origin needs Kalen's force push, other
+   Every hash changed: origin needs the user's force push, other
    clones re-clone. Full backup of the old .git (with reflogs):
    /src/silver-before-cleanup.git.
 
 ## Active work: eden scene (Oct 2 2026)
 
-Kalen: a jungle seen from high up, the forest under the chip in
+a jungle seen from high up, the forest under the chip in
 silver-icon.png (no chip, no stars). scenes/eden.ag (`extend
 scenes`), trees and impostors built at export. Trees are real 3D
 foliage; never a canopy height map. Clouds: not ours (we have
-them). Kalen's brief, in order:
-1. BUILT, awaiting Kalen's notes: terrain. A height map built
+them). the user's brief, in order:
+1. BUILT, awaiting the user's notes: terrain. A height map built
    large forms first, then drainage valleys, then small detail;
    river and clearing masks.
-   Kalen: the land meets a sea; shoreline, rivers that run to it,
+   the land meets a sea; shoreline, rivers that run to it,
    and shallow water (turquoise over the shelf) that deepens to
    open sea, by the water's depth over the ground.
    eden_bake (export): 1024 cells of 8 m (8.2 km). Coast (warped
@@ -8903,7 +9532,7 @@ them). Kalen's brief, in order:
 
 ## Active work: Earth as a canopy planet (Oct 2 2026)
 
-Kalen: Earth is a sphere whose surface is the canopy, seen from
+Earth is a sphere whose surface is the canopy, seen from
 orbit to the treetops, with real tree textures. Sources (CC0 /
 public domain, cite in THIRD_PARTY.md): NASA Blue Marble Next
 Generation (colour from orbit, and where forest grows), Poly
@@ -8920,7 +9549,7 @@ wrapped onto the sphere, lifted by baked height).
    but the glTF does not reference (fetched beside it).
 2. DONE GltfModel.open reads all three (meshes, materials,
    images). Not yet drawn. A throwaway module made git tag
-   treetest-1.0.0 (left for Kalen).
+   treetest-1.0.0 (left for the user).
 3. DONE (top view) scenes/earth.ag (extend scenes, imported after
    pluto): export earth_trees_export draws each tree from straight
    above (orthographic, 1024 px, crown's widest span) into
@@ -8937,7 +9566,7 @@ wrapped onto the sphere, lifted by baked height).
    OPEN: side views; KHR_texture_transform is not applied (only
    bark/branch uvs use it); the export reads the cache but does
    not download the trees itself yet.
-4. DONE (Oct 2) Earth reworked, game scale (Kalen's reference:
+4. DONE (Oct 2) Earth reworked, game scale (the user's reference:
    autumn hills of round crowns, seen from a bit higher up).
    scenes/earth.ag: element Earth (the old JungleShader Earth is
    gone from scenes.ag). The carpet (build_carpet) wraps onto
@@ -8952,7 +9581,7 @@ wrapped onto the sphere, lifted by baked height).
    the limb; haze counts only the sight line inside the air.
    The craft flies a great circle from 35.6 N 83.5 W heading
    50 degrees, 0.6 radians each kilosecond.
-   Found on the way: a fract(sin()) hash rounds differently for
+   Found on the way: a fract(sin) hash rounds differently for
    one grid corner reached from two cells; the noise tore into
    walls. EarthCanopy hashes with pcg3d (integers).
    OPEN: the baked crown pictures (earth_trees_export) are no
@@ -8961,7 +9590,7 @@ wrapped onto the sphere, lifted by baked height).
 
 ## Active work: rec_qp (Sep 30 2026)
 
-Kalen: recording at near-lossless for staging (overlays added at
+recording at near-lossless for staging (overlays added at
 moments later, then a final encode). The RTX 3060 on driver
 610.57.04 encodes through Vulkan: H.264 High 4:2:0 and High
 4:4:4 (4096 max), HEVC Main 4:2:0 and RExt 4:4:4 (8192 max).
@@ -8970,7 +9599,7 @@ moments later, then a final encode). The RTX 3060 on driver
    element like record, adopted by media_app): stream (4:2:0,
    qp 10), high (4:2:0, qp 4), stage (4:4:4, qp 2), lossless
    (4:4:4, qp 0 + qpprime_y_zero_transform_bypass; the default,
-   Kalen). The path@qp suffix is gone; a live url uses stream.
+   the user). The path@qp suffix is gone; a live url uses stream.
    Pieces: trinity.c h264_sps/h264_pps (profile 244, chroma 3,
    1 px crop units, the bypass flag; CAVLC for 4:4:4), video.ag
    Encoder chroma444/lossless (profile, G8_B8R8_2PLANE_444
@@ -8996,7 +9625,7 @@ moments later, then a final encode). The RTX 3060 on driver
 2. DONE, built, not confirmed on colourful footage: the NV12
    convert used BT.601 coefficients while the SPS says BT.709
    (matrix 1): hues shifted. Now BT.709 limited range.
-3. DONE (Oct 21, Kalen: his orbiter take at 1888 x 888 had a
+3. DONE (Oct 21: his orbiter take at 1888 x 888 had a
    diagonal staircase of blocks and red / blue scraps in every
    frame) the colour planes (U, V) of a 4:4:4 take came out
    sheared, brightness exact, whenever the width was not a
@@ -9013,7 +9642,7 @@ moments later, then a final encode). The RTX 3060 on driver
 
 ## Active work: psx emulator (Oct 6 2026)
 
-Kalen: a PlayStation emulator, /src/silver/psx beside n64. No
+a PlayStation emulator, /src/silver/psx beside n64. No
 software rasterizer: the GPU draws through trinity only (VRAM is
 a trinity render target; the CPU sees it only for the game's own
 VRAM-to-CPU copies). Everything external is a silver import.
@@ -9079,7 +9708,7 @@ CD audio). In order:
    S x S blocks, readbacks take one sample a block; a scale change
    reads VRAM back, rebuilds, writes it again. Dither on the scaled
    pixel grid. The window is resizable.
-12. DONE (Oct 7) precise vertices (Kalen: wiggly, distant road
+12. DONE (Oct 7) precise vertices (wiggly, distant road
    ripped). RTPS/RTPT keep x and y as H x camera / z before any
    cut (camera x, y, z from the uncut 44-bit sums) and the depth.
    They travel with the screen word: beside the SXY FIFO, through
@@ -9104,7 +9733,7 @@ CD audio). In order:
    colour table, clamped to the polygon's own UV box; clear,
    opaque and semi texels counted apart (cutouts, two-pass
    blends). Sprites and 2D stay sharp. Gpu.filter turns it off.
-15. OPEN (Oct 16, Kalen: breaks in the far road, worse cars) the
+15. OPEN (Oct 16: breaks in the far road, worse cars) the
    word table (Gte near_*) was 4096 slots, no probing: GTE words
    overwrote each other. Now 32768, 32 probes: in the attract
    demo vertices with no exact value 209k -> 88k (the rest 2D),
@@ -9116,7 +9745,7 @@ CD audio). In order:
    computed several times (163.4 .. 164.0 across one point).
    Tried and removed: a weld (no change), skipping triangles of
    no area in whole pixels (removed real road).
-16. BUILT (Oct 16, Kalen) free camera, O: off, live, frozen.
+16. BUILT (Oct 16) free camera, O: off, live, frozen.
    Exact vertices go back to camera space (H, OFX, OFY) and are
    seen from the camera (WASD, shift x4, mouse look locked; a
    click relocks). Frozen replays the commands of the last whole
@@ -9127,7 +9756,7 @@ CD audio). In order:
    live and frozen equal the plain picture; W moved 2466 units
    in. 2D (sky, HUD) stays put; culled faces stay missing; the
    game's back-to-front order is kept (no depth buffer yet).
-   Then (Kalen: the cut took too much): a polygon with a corner
+   Then (the cut took too much): a polygon with a corner
    behind the camera was dropped whole; now each triangle is cut
    at the near plane (16 units), colour and uv carried, a cut
    corner making a quad (cam_tri); a polygon of exact and whole-
@@ -9135,7 +9764,7 @@ CD audio). In order:
    streaks). Seen hidden: the road reaches the bottom flying in.
    OPEN: ground under the road draws over it (the game's order),
    the cars' back faces (NCLIP).
-17. DONE (Oct 16, Kalen) save states: P saves, L loads, and the
+17. DONE (Oct 16) save states: P saves, L loads, and the
    app menu's Save state / Load state (Actions), into <disc>.state
    beside the cue. psx/State.ag StateIO writes or reads; each
    device's state_io lists its fields once for both ways (Cpu,
@@ -9149,7 +9778,7 @@ CD audio). In order:
 
 ## Active work: launch and landing (Oct 7 2026)
 
-Kalen: a Falcon 9 booster lands on real physics, real sensors,
+a Falcon 9 booster lands on real physics, real sensors,
 real propellant mass, real planning. Each part is its own
 module. Real Earth (WGS84, rotation), Falcon 9 Block 5 from
 public figures. The vehicle flies from its estimate, never the
@@ -9181,7 +9810,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    gravity in an inertial frame, US Standard 1976 air, aero
    (body, grid fins), Merlin thrust by ambient pressure,
    throttle, gimbal, mass flow, moving centre of mass.
-   The air is not perfect (Kalen): winds with shear and the
+   The air is not perfect : winds with shear and the
    jet stream, gusts, temperature and pressure off the standard
    day, all pushing on the vehicle unevenly. Source: a measured
    Cape sounding (station 74794) to ~30 km, US Standard 1976
@@ -9240,16 +9869,16 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    aero phase, ignition timing, re-solves at 2 Hz); needs 7.
    Original spec: ascent, boostback, entry, landing burn by
    convex optimisation (G-FOLD).
-   Kalen (Oct 7): the booster lands back on the SAME platform it
+   (Oct 7) the booster lands back on the SAME platform it
    launched from (return to launch site): full boostback, more
-   propellant held back, less payload. Then (Kalen, Oct 7): the
+   propellant held back, less payload. Then (Oct 7): the
    deck alone, no mount or tower, only the orbiter mark; the
    stack stands on its legs (out from launch) and lands on the
    mark, the deck's middle. Relative nav: the platform's own
    GPS receiver (2 m over the deck) less the booster's.
    Calm, after: scvx 36.8 m off at 15.1 m/s, gfold 17.1 m at
    13.0 m/s (both fail the test's limits, as before).
-   BUILT mission/mission.ag (the sequence) and Kalen saw it land
+   BUILT mission/mission.ag (the sequence) and the user saw it land
    beside the circle (Oct 7). Calm air (test severity 0): the
    forecast (the booster's copy flies coast, entry burn, fall,
    ignition by stop_loss, braking) aims the boostback and the
@@ -9266,7 +9895,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    d. OPEN the fallback braking climbs (min throttle > weight).
    e. OPEN the boostback cutoff note prints the stale miss.
    f. OPEN restore the test's weather; check light, moderate.
-   g. BUILT, not seen in launch (Kalen: 1 frame per 3 s near the
+   g. BUILT, not seen in launch (1 frame per 3 s near the
       landing): each 2 Hz replan ran ~11 cone solves, 1.24 s mean,
       4.1 s worst, inside one physics step. The solver walks only
       the columns each row and cone touches (Socp.index): 130-180
@@ -9276,7 +9905,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       stops stepping while one is due and unfinished
       (Mission.waiting). Calm landing now 24.2 m, 10.3 m/s, 7.0
       deg, 595 kg (was 21.0 m, 8.5 m/s): the 0.5 s lead.
-   h. BUILT (Kalen: SCvx for the landing, keep G-FOLD, benchmark
+   h. BUILT (SCvx for the landing, keep G-FOLD, benchmark
       both): guidance Scvx (Mao, Szmuk & Acikmese 2016; Szmuk
       2018): thrust in newtons, mass and drag (the DragTable's
       Ca, standard air) in RK4 dynamics, flight time free,
@@ -9310,7 +9939,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       Prandtl-Meyer edge, Pack cells, Witze core, Simons spread.
       SCvx thrust slew limit and the tilt taper (tilt_at) built;
       the SCvx flight not rerun since.
-   k. BUILT (Kalen: solves must be superbly fast; own IPM in
+   k. BUILT (solves must be superbly fast; own IPM in
       silver) Socp is a primal-dual interior point: G x + s = h,
       Nesterov-Todd scaling (the reflection v = (w + e) /
       sqrt(2 (w0 + 1)), checked in numpy), Mehrotra predictor
@@ -9332,11 +9961,11 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       but 11-13 m/s sideways; one engine at its least throttle
       lifts more than the booster weighs, so slow and high can
       only climb; it climbs and falls in the sea.
-   m. DONE (Oct 7, Kalen: a soft landing "bounced 100 ft"): it
+   m. DONE (Oct 7: a soft landing bounced about 30 m): it
       fell over, the nose hung past the deck's edge (no contact
       there), and when the hull swung back over the deck a point
       already metres under its top met the 5e7 N/m hull spring:
-      thrown up at 80-104 m/s. Kalen: the floor is not a spring.
+      thrown up at 80-104 m/s. the floor is not a spring.
       A hull strike is now the end: Craft.step stops, mission
       notes "it explodes", phase 9 ('exploded on the deck').
       Legs keep their springs and crush cores.
@@ -9349,7 +9978,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    o. BUILT (Oct 7): deck receiver as a differential GPS base
       (gnss Receiver.base, base_at; booster gps_bias 0.3): the
       feet's height estimate went from 2-5 m high to 0.05 m.
-      follow() removed (it made the booster circle). G-FOLD:
+      follow removed (it made the booster circle). G-FOLD:
       per-step air share (Landing.reach), sideways turn rate
       (turn, 2 m/s3), the push got lagging the push asked
       (lag = 1 / point_gain, step mean; guidance t_landing_lag:
@@ -9398,7 +10027,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    20.8 km through max-Q 39 kPa in moderate turbulence, worst
    0.76 deg.
 8. OPEN launch draws truth and estimate.
-12. BUILT aerodynamics from the shape (Kalen chose the component
+12. BUILT aerodynamics from the shape (the user chose the component
    build-up, Oct 7). A Part is a tube or a profile (x, r pairs;
    the fairing's ogive), outer or inside; the craft's skin is
    their envelope at 0.25 m stations, rebuilt on separation.
@@ -9427,7 +10056,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    deg, worst 0.48; ascent worst 0.61; gimbal 0.06; flip 34.7 s.
    predict_impact takes the craft and uses its own shape (20 m
    from the physics after 95 s, was 39).
-10. OPEN (Kalen, Oct 7) a standard view for every sensor on board,
+10. OPEN (Oct 7) a standard view for every sensor on board,
    each an element its own module exports: imu (rate and
    acceleration traces), gnss (sky plot, fix error, PDOP), nav
    (estimate against truth, its spread), physics (tank cutaway
@@ -9449,20 +10078,20 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    view, with launch on physics (after 7).
 9. BUILT, not run: C cycles the camera: platform, orbiter (the
    upper stage, to a stable orbit), booster (it lands).
-13. DONE (Oct 8, Kalen: "landed on the first go") the hexagonal
+13. DONE (Oct 8) the hexagonal
    ship: rounded hexagon hull, six grid fins on the faces, six
    legs as flat panels stowed on the faces (width the flat of a
    face, sides chamfered at 30 degrees). Not yet seen in launch.
-   Then (Kalen): each leg held by a link to a slider in a rail
+   Then : each leg held by a link to a slider in a rail
    channel cut in its face (flush when stowed); the six sliders
    ride one collar, a relief, not a spring: rigid to 2.4 MN on
    the feet, then it slides up for good (0.5 m), turning every
    leg flatter, so the stance widens. physics: Craft.collar_*,
    Leg.hinge/foot_out; 6 m/s drop: collar 0.183 m (energy
    0.186), feet 18.0 -> 18.18 m across; lean drop stands 0.2 deg.
-14. OPEN (Kalen, Oct 8) the ship goes to the moon: it docks
+14. OPEN (Oct 8) the ship goes to the moon: it docks
    with a fuel station in orbit to refuel first.
-   Kalen's calls (Oct 8): the tanker is our own stack, same
+   the user's calls (Oct 8): the tanker is our own stack, same
    model; its upper stage holds propellant where ours holds
    people; when done it lands itself. 400 km circular, the
    launch waits for the tanker's plane over the pad, then
@@ -9498,9 +10127,9 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       and close guidance (Clohessy-Wiltshire targeting, hold
       points, the approach along the tanker's port axis) on
       the upper stage's cold gas jets.
-   Kalen: they mate flat on, side by side "like 2 fish": a
+   they mate flat on, side by side: a
    hex face against a hex face, not nose to nose.
-   "like a pencil to pencil": parallel, side by side. The
+   Parallel, side by side. The
    tanker is the whole ship with its nose: only the nose
    differs (ours for people, its for propellant).
    d. OPEN docking ports in physics: contact, soft capture
@@ -9511,7 +10140,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       collar design) and a landing burn on its engine; the
       tanker undocks, comes down and lands on the deck.
    g. OPEN launch draws the tanker, the docking and its cameras.
-   Kalen (Oct 8): every stage kept on the tanker (its booster
+   (Oct 8) every stage kept on the tanker (its booster
    stays on in orbit); not lower than LEO: it parks at 200 km
    (tanker_alt), ours parks at 170 km under it (park_alt) to
    gain on it, then rises to it.
@@ -9524,15 +10153,14 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       height 2.7 km a lap), centre engine at least throttle at
       the high point under keep_band. physics gained free
       molecular drag (FREE_CD 2.2, Knudsen bridge): t_aero_thin.
-   i. BUILT (Kalen, Oct 8): booster and upper stage 50% larger,
+   i. BUILT (Oct 8): booster and upper stage 50% larger,
       every ratio kept (SHIP_SCALE 1.5, scale_ship): lengths
-      x1.5, masses and thrust x3.375 (chamber pressure 146 bar,
-      "if raptor can"), jets x5.06. Physics 22/22 at the size.
+      x1.5, masses and thrust x3.375 (chamber pressure 146 bar), jets x5.06. Physics 22/22 at the size.
       launch draws it at SHIP_SCALE. Landings to rerun.
-      Then (Kalen): 100 m tall, 6 m across the faces (SHIP_LONG,
+      Then : 100 m tall, 6 m across the faces (SHIP_LONG,
       SHIP_WIDE), seven larger engines, the nose the hull's
       width. Isp 380 s (352 at sea level): "fantasize".
-   j. DONE (Kalen: we REFUEL at 200 km) the main mission flies
+   j. DONE (we REFUEL at 200 km) the main mission flies
       the whole ship: nothing separates (Mission.whole). The
       seven burn the booster's tanks, then stage two's
       (crossfeed); under 4 g (WHOLE_G, 7 -> 3 -> 1 engines);
@@ -9547,7 +10175,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       OPEN: tanker station keeping: its jets sit above its
       centre of mass and push it up 233 m in 3 days, more than
       the drag takes; needs jets at both ends fired in pairs.
-   k. IN PROGRESS item c, the close approach (Kalen: the
+   k. IN PROGRESS item c, the close approach (the
       tanker rolls its port to face us; signal-wise, its radio
       sends its attitude and its port; intercept at T+8 min).
       Relative GPS by single differences (gnss relative_fix),
@@ -9559,14 +10187,14 @@ guidance ~50 Hz; SpaceX does not publish theirs).
    l. DONE launch draws jet puffs, docking ports (capture
       ring, lights, three retroreflectors on the tanker's),
       our floodlight; camera 4 is our port camera.
-   m. IN PROGRESS the docking CNN (Kalen): launch's export
+   m. IN PROGRESS the docking CNN : launch's export
       docking_images renders 2000 64 x 64 port-camera pictures,
       offsets uniform over 1-30 m out, 3 m aside, 5 deg roll,
       3 deg pitch and yaw, sun and night, into share/launch/
       docking with labels.txt. dock/dock.ag trains it on ai's
       grad (4 convs, 2 dense, L1, AdamW): `silver dock`.
-      LATER (Kalen): Earth backgrounds at other angles.
-      Then (Kalen): two ports, one a propellant (oxygen fore,
+      LATER : Earth backgrounds at other angles.
+      Then : two ports, one a propellant (oxygen fore,
       fuel aft, 9 m apart: physics port_span, port_of), a camera
       at each; pairs of 32 x 32 pictures, grey for training, in
       range inside the approach cone (aside 0.3 m + a quarter of
@@ -9612,14 +10240,14 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       phases, docking, pilots, each nav filter's whole belief.
       t_save_state: exact on load, 15.7 m after 20 s through
       max-Q (gusts and sensor noise are fresh draws).
-   p. IN PROGRESS the Moon (Kalen, Oct 9): the Moon's orbit and
+   p. IN PROGRESS the Moon (Oct 9): the Moon's orbit and
       gravity in physics, a coast step (big steps, gravity only)
       and higher warp, the burn to the Moon aimed by flying it
       ahead, capture into lunar orbit, the Moon drawn in launch;
       then landing, take-off, home. A full ship has ~10.2 km/s:
       enough there and back to Earth, not an Earth landing
-      without a heat shield (Kalen's call pending).
-   q. DONE (Oct 9, Kalen) the stack split moved down: stage one
+      without a heat shield (the user's call pending).
+   q. DONE (Oct 9) the stack split moved down: stage one
       ends at 38.6 m (Falcon scale; mesh 40), the chrome band is
       the upper ship's skirt with five Lugh (sea level, drawing
       stage two's tanks: lugh picks tanks by group now) and six
@@ -9635,16 +10263,16 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       holds to 4.2 kPa, then 10-30 deg off; jets up to 20x do
       not hold (aero moment ~2.8 MN m at 19 kPa, 10 deg); one
       Lugh at least throttle out-pushes the ship (it hovers).
-      Then (Kalen): the small legs are landing legs only; the
+      Then : the small legs are landing legs only; the
       crew stage steers with its own six grid fins at 55.5 m
       under a nose flared to 2.3 m (Falcon scale; drag in orbit
       +58%). Fall test: engines first it flips end over end;
       nose first 12 deg off at 1.5 kPa, then lies broadside (85
       deg): it falls belly first by itself.
-      Recommended (Kalen's call pending): belly first with nose
+      Recommended (the user's call pending): belly first with nose
       flaps and a belly heat shield, flip, landing burn.
       SSTO: as built 6.7 km/s of 9.3 needed; stretched to ~850 t
-      of propellant it would fly alone (Kalen: fine as is).
+      of propellant it would fly alone (fine as is).
       OPEN ai grad: bin (add, mul ...) reads x.dims[ 2 ]: a 2-D
       tensor gives garbage and no gradient, silently; give it
       [ nb, c, 1 ] or make bin refuse other shapes.
@@ -9657,7 +10285,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       aether e_fn_call puts a struct value in a slot for a
       by-pointer struct param. features t_struct_ternary_arg.
    r. IN PROGRESS (Oct 9) the tanker's own flight, first off deck
-      B (launch's default; --ship flies ours). Kalen: only 7- or
+      B (launch's default; --ship flies ours). only 7- or
       5-Lugh stages. The tanker: three standard 7-Lugh boosters
       side by side (body z, 1.5 m apart, the docking standoff),
       joined by four rounded hexagon connectors in orbiter-hex
@@ -9673,7 +10301,7 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       all free at separation. Launch: the three drawn, decks D E
       F (more_decks), 32 flames, cameras 3 and 5 the side
       boosters, the side boosters' nitrogen puffs across the gap
-      (drawn only: Kalen had the push removed, it put the right
+      (drawn only: the user had the push removed, it put the right
       booster on its deck's edge), flames marched from their far face
       (no depth test; the march stops at the scene's depth).
       Mission: all three separate at staging; the side boosters
@@ -9699,12 +10327,12 @@ guidance ~50 Hz; SpaceX does not publish theirs).
       at 700 km (asked 300), 135 t.
       OPEN: touchdowns over the legs' 2 m/s (cores used); the
       right one's 62 m at ignition; a glide model in the forecast
-      (Kalen: the nose's shape as it glides); the top booster's
+      (the nose's shape as it glides); the top booster's
       cutoff;
       saves lack the side flights; new lines past 72 columns;
       fin_look/fin_miss kept (still used); our ship's flights to
       rerun on the shared landing changes.
-      Oct 9 later (Kalen): the top booster's climb is the upper
+      Oct 9 later : the top booster's climb is the upper
       stage's insertion law under 4 g (the linear tangent solve
       wandered: 700 km): SECO 300.0 km level, rounded 298-301,
       75 t left. The crew ship flies too (Mission.crew, its own
@@ -9736,12 +10364,12 @@ guidance ~50 Hz; SpaceX does not publish theirs).
 
 ## Active work: quake2 port (Oct 5 2026)
 
-Kalen: id's Quake 2 (GPL, /src/Quake-2 is the reference clone)
+id's Quake 2 (GPL, /src/Quake-2 is the reference clone)
 ported to silver in its own repo /src/quake2 (module folder
 /src/quake2/quake2, origin ar-visions/quake2; no commit yet:
-Kalen's). Trinity does ALL 3D and UX, called directly from the
+the user's). Trinity does ALL 3D and UX, called directly from the
 app: no renderer module, no ref_soft / ref_gl / 3dfx / PowerVR.
-Assets from Steam: /home/kalen/.steam/debian-installation/
+Assets from Steam: ~/.steam/debian-installation/
 steamapps/common/Quake 2/baseq2 (never in a repo). Later: AI.
 Build: `cd /src/quake2 && silver --build quake2`; headless run
 as any trinity app (install/build/quake2 --hidden true).
@@ -9809,7 +10437,7 @@ as any trinity app (install/build/quake2 --hidden true).
    nor drawn.
 7. OPEN the repo: committed locally (LICENSE = id's GPL v2 text,
    README, INVENTORY); github.com/ar-visions/quake2 does not exist
-   yet and there is no token or gh here: Kalen creates it, then
+   yet and there is no token or gh here: the user creates it, then
    `git push -u origin master` (origin is the ssh url).
 8. DONE the game folder begins (Oct 5 evening): Game.ag (edict
    as class Edict with entity_state folded in, MoveInfo, Level,
@@ -9870,7 +10498,7 @@ as any trinity app (install/build/quake2 --hidden true).
    reach the view only after the map's "drawn" log line, and the
    app relaunch rebuilds when trinity's product is newer than its
    own; that rebuild crashed (silver exit 133) three times while
-   Kalen's orbiter session was also building: run `silver --build
+   the user's orbiter session was also building: run `silver --build
    quake2` by hand first.
 10. DONE (Oct 5 night) the rest of g_func.c (door_killed,
    func_rotating, func_water, trigger_elevator, func_timer,
@@ -9903,8 +10531,7 @@ as any trinity app (install/build/quake2 --hidden true).
    behind a translucent grille we draw opaque (warp/trans OPEN); no
    dispatch misses on base1, fact2 or jail1. 359 edicts on base1.
 11. DONE (Oct 5 night) the rest of the game folder, on function
-   pointers (Kalen: "silver has function pointers"; "too much code
-   for how simple this game is"): the enum Fn dispatch is gone. An
+   pointers : the enum Fn dispatch is gone. An
    edict's think/touch/use/blocked/pain/die, an item's pickup/use/
    drop/weaponthink and a monster frame's ai/think are
    `lambda R [ A ]` slots set with `lambda f[]` and called as
@@ -9929,7 +10556,7 @@ as any trinity app (install/build/quake2 --hidden true).
    Fixed on the way: a pool-owned Trace stored into Game.touch_plane
    and then nulled was freed under its caller (impact): touch_plane
    is a persistent copy now, touch_plane_on says it is set.
-   Compiler, Kalen's design: `lambda f[]` on a plain function is ONE
+   Compiler, the user's design: `lambda f[]` on a plain function is ONE
    static instance per function (Au lambda_static: a lambda object
    in static memory, unmanaged, never counted or freed, left out of
    the object census), over a thunk with an empty context
@@ -10045,7 +10672,7 @@ as any trinity app (install/build/quake2 --hidden true).
    Python read of the pak. With no device the game runs silent.
    NOT heard by anyone yet. NOT done: left and right (spectra's
    Voice has one gain, so each sound is the mean of the two ears:
-   half level when spatialized; a pan on Voice is Kalen's call, it
+   half level when spatialized; a pan on Voice is the user's call, it
    changes spectra's class), cue-point loops, the mission pack's
    flashes, footsteps (an entity event), s_volume as a setting.
 15. DONE (Oct 6) the rest of the list, in its order.
@@ -10106,7 +10733,7 @@ as any trinity app (install/build/quake2 --hidden true).
       element_targets and nulls its own key from inside its
       dealloc; replacing a Render under one key then drops twice.
       A change to Au's map_set for this was WRONG and is taken out
-      (Kalen: map_set has nothing wrong with it; never change map).
+      (map_set has nothing wrong with it; never change map).
       quake2 keeps one Render and swaps its models.
    d. Water (pmove.c): the level at feet, waist and eye, water
       friction, swimming (PM_WaterMove, the jump key swims up),
@@ -10159,7 +10786,7 @@ as any trinity app (install/build/quake2 --hidden true).
      layout runner is there; the port's p_hud does not write their
      programs yet); the damage and underwater screen tint
      (ps.blend); crouching (no key).
-   - sound: left and right (a pan on spectra's Voice, Kalen's).
+   - sound: left and right (a pan on spectra's Voice, the user's).
    - the world's own light styles (flicker, switched lights).
 16. DONE (Oct 6, second pass) from 15's NOT done list:
    - crouch (PM_CheckDuck: c or left ctrl; box 4 high, eye -2,
@@ -10200,7 +10827,7 @@ as any trinity app (install/build/quake2 --hidden true).
      A level left inside a unit is kept in memory (MapView.hub)
      and read back on return; a '*' map clears it. NOT driven.
    NOT done: multiplayer, CTF, demos, key binding menus.
-   RULE learned (Kalen, Oct 6): `new T [ n ]` is a pooled
+   RULE learned (Oct 6): `new T [ n ]` is a pooled
    vector; an `@T` member takes only its data pointer and owns
    nothing, so the frame's clean-up frees it. A buffer that
    lives past the frame goes in a real new member
@@ -10215,8 +10842,8 @@ as any trinity app (install/build/quake2 --hidden true).
    the same thing and passes, so the cause is not known.
    OPEN silver:
    - a one-letter literal ('w') is a unichar, not a string.
-17. DONE (Oct 6; written blind on Kalen's "port all, no
-   testing", then debugged in hidden runs):
+17. DONE (Oct 6; written blind on a request to port all,
+   untested, then debugged in hidden runs):
    RUN AND SEEN: id's demos/demo1.dm2 plays on base2 (the
    fight, blood, the damage tint, health 100 -> 81 -> 76); a
    hosted q2dm1 with a second hidden instance joined over udp
@@ -10299,7 +10926,7 @@ as any trinity app (install/build/quake2 --hidden true).
    Seen once, not chased: the first run after BspLit's source
    changed drew no world (shaders compiled in that run); the next
    run was right.
-18. DONE (Oct 6, Kalen: "when i load it it goes direct to base1")
+18. DONE (Oct 6)
    the attract loop of default.cfg's d1..d4: with no --map the app
    plays idlog.cin, demo1, idlog.cin, demo2, round again
    (MapView.attract, attract_next; the demo's end and film_end
@@ -10312,7 +10939,7 @@ as any trinity app (install/build/quake2 --hidden true).
    +map did. Checked hidden: film, demo, menu over it, esc,
    game > easy into ntro.cin, and 150 s of the loop (base2,
    waste2, base2) with no fault.
-19. DONE (Oct 6, Kalen: stuck on walls when sliding along them,
+19. DONE (Oct 6: stuck on walls when sliding along them,
    and on tiny objects on the ground): slide_move's plane test
    was inverted (`i != nplanes` took the crease branch, which
    zeroes the velocity on a single plane: every wall contact
@@ -10321,13 +10948,13 @@ as any trinity app (install/build/quake2 --hidden true).
    Checked hidden: 25 degrees into base1's corridor wall now
    slides along it (y -220 -> -76). The small objects are not
    re-tested (none found); likely the same cause.
-20. BUILT, Kalen tests (Oct 6, "stuck on enemies you killed"):
+20. BUILT, the user tests (Oct 6: stuck on killed enemies):
    World.trace lacked sv_world.c:547: an entity flagged
    SVF_DEADMONSTER is skipped unless the mask asks for
    CONTENTS_DEADMONSTER, so every corpse was a solid box to the
    player's move. SVF_DEADMONSTER and CONTENTS_DEADMONSTER now
    live in Game.ag (World is imported before Trigger/Target).
-21. BUILT, Kalen tests (Oct 6): lifts stepped 10 Hz and demos
+21. BUILT, the user tests (Oct 6): lifts stepped 10 Hz and demos
    were jerky. Brush models lerp between game frames
    (lerp_origin / lerp_angles in place_model); a rise of 8..20
    units while on ground eases out of the view over 0.1 s
@@ -10335,14 +10962,14 @@ as any trinity app (install/build/quake2 --hidden true).
    a demo's view lerps the recorded player's origin and angles
    between frames (checked by a per-frame log). `timedemo 0|1`
    and `map <x>.dm2` added (688 frames, 58.8 fps hidden).
-   OPEN: "still stick on bits of floor and walls": the trace and
+   OPEN: still sticking on bits of floor and walls: the trace and
    slide code match cmodel.c / pmove.c line by line; a wander
    on base1 found only head-on stops (within 5.7 degrees of
    square, which pmove.c stops too). Needs a place.
    Mouse: m_yaw 0.022 x sensitivity (was 0.004 rad: 3.5x fast).
-   NEVER run quake2 hidden while Kalen works: its click locks
+   NEVER run quake2 hidden while the user works: its click locks
    the mouse and devices' platform_warp_cursor warps HIS pointer
-   (an unmapped window still warps). Kalen: no more testing.
+   (an unmapped window still warps). no more testing.
 22. DONE (Oct 6) broken glass drew against the back wall: a
    freed or SVF_NOCLIENT brush model is hidden (place_model).
 23. DONE (Oct 6) sticking on walls at shallow angles. Repro at
@@ -10375,9 +11002,464 @@ as any trinity app (install/build/quake2 --hidden true).
    cprintf / bprintf reach the console. NOT done: alias, exec,
    bind, condump, say / say_team, messagemode.
 
+## F-14 in flightsim — live list (Oct 27 2026)
+
+the user: a realistic F-14 cockpit in flightsim, live instruments
+(Maverick and Goose: both seats). Model: Grumman F-14D "Super
+Tomcat" by KOG_THORNS, CC BY 4.0 (https://skfb.ly/pCz6Z), copied
+to flightsim/models/f14/f14.glb (flightsim/ is git-ignored);
+THIRD_PARTY.md "Aircraft models". In metres, nose toward +z.
+1. DONE gltf reads .glb (GltfModel.open_glb: JSON chunk, BIN as
+   buffer 0, embedded pictures written once to <cache>/gltf/<stem>-
+   <mtime>/ so texture_uri finds them). GltfImage.bufferView added.
+2. DONE trinity mat_tex follows the glTF sampler's wrap (glTF
+   default repeat; GltfModel.texture_repeats): every texture was
+   clamped, and this model's v runs -1..0 (it drew black).
+3. DONE flightsim `--aircraft f14|p40` (f14 default; --model
+   still overrides): F-14 figures (52.5 m2 wing, 19.54 m span,
+   27 t, inertias, two F110 FsJet: 73.4 kN dry, 120.1 kN reheat
+   past 0.85 throttle, density lapse; aero slopes estimates), no
+   subdivision, its nose fixed (the size guess put it backwards),
+   C cycles chase, pilot (eye 0, 1.30, 6.95), RIO (0, 1.32, 5.35).
+   Wing strike uses the wing's own span. The model default
+   `path [ path '..' ]` no longer parsed: fixed.
+   Seen hidden: textured from behind, the pilot's panel and HUD
+   frame, the RIO's TID and keypad; full reheat to 769 km/h and
+   760 m climbing.
+4. DONE (Oct 27) the standby dials and the HUD.
+   Dials (rig_dials / pose_dials): each needle's own node (Knots
+   airspeed, Feet vertical speed, Altitude altimeter, RadarAltitude
+   radar altimeter, CompassClock heading pointer) turned about its
+   hub on the panel's way (0, -0.14, 0.99) through the printed
+   scales read off the faces (scale_at); the hubs are F-14 data (a
+   needle's node origin is its middle); ArtificialHorizon pitched
+   and banked. Seen zoomed: each reads the air data.
+   HUD: element HudView, drawn after the jet in the pilot's seat
+   through the pilot's camera, clipped to the combiner's outline as
+   seen (stays on the glass looking round or zooming): waterline,
+   velocity vector, pitch ladder (dashed below the horizon, ticks
+   toward it), heading tape, airspeed and altitude boxes, Mach, G,
+   AOA, radar altitude under 5000 ft. NATOPS-style, not the real
+   F-14D software (not public). Seen hidden at two zooms.
+   Also: the wheel zooms a seat's view (8 to 100 degrees); the jet
+   and its eye drawn about the aircraft (only the sky gets the
+   height: the jitter climbing high); roll and yaw keys and the
+   heading were mirrored for this model (body +x is its left
+   wing): fixed, seen in the chase view.
+   OPEN: the MFDs (black), the RIO's displays, the HUD's own
+   modes (landing, air to air).
+5. DONE the gear retracts (flightsim rig_gear / leg_turn /
+   pose_gear): each part's node origin is its pivot (War Thunder
+   rig, no animation in the file). A leg swings its axle to its
+   stowed way and moves to its place in the well (well_at /
+   stow_dir, nose_at / nose_dir; the trunnion moves on the real
+   jet); a main wheel turns flat (mirrored per side); the nose's
+   side doors and two plates fold on their own top edges
+   (door_of); the main doors are shut both ways in the file. A
+   stowed leg part is not drawn. r4 is a well fitting, not a leg
+   part. `--air_start true` (now the default) starts at 1500 m,
+   200 m/s, gear up; the zoom keeps the chase camera's angle.
+   Seen hidden from below, side, front, above. Left: a thin gap at
+   the nose doors; main doors do not open during the swing.
+5b. DONE (Oct 27) the moving surfaces (rig_surfaces /
+   pose_surfaces): these parts' node origins are their middles, so
+   each hinge is read off the part's own edges (F-14 data, left
+   side; the right mirrors): stabilators about (2.0, 0.06, -5.6)
+   along x, pitch together (0.6 x the elevator) and roll apart;
+   rudders about their front edge line; spoilers (the model's
+   aileron_interceptor) about their front edge, up on the falling
+   wing; the wings sweep about (2.7, 0.58, 0.2) with Mach (20 deg
+   to 0.4, 68 by 1.2, 15 deg/s), carrying their slat, flaps and
+   spoiler (the sweep_lim flaps stay). Seen hidden: about 36 deg at
+   740 km/h, about 50 at 993; a pull and right roll tilt the
+   stabilators apart and raise the right spoilers.
+   The wheel zoom is a quarter step a notch, eased (filter_n 0.15).
+   B opens and shuts the speed brakes (about a second): the
+   upper panel (airbrake_r) up, the lower (airbrake_l) down, each
+   about its front edge; drag + brake_cd 0.05 (an estimate); the
+   HUD says SPD BRK. Seen: the upper panel up, its red inside.
+   C's last camera is the flyby: placed 3 s ahead on the path
+   (velocity), aside by half the span plus 12 m, 4 m up; it stands
+   and turns to follow, sky up; C again goes back to the chase.
+   Seen: the jet coming in, passing close, going off.
+   OPEN: flaps and slats on keys; the aero does not know the
+   sweep yet.
+6. OPEN the bogey (Cougar's fight).
+6b. DONE (Oct 27) the carrier: "Gerald R Ford aircraft Carrier"
+   by waelXcm, CC BY 4.0 (flightsim/models/ford/ford.glb;
+   THIRD_PARTY.md). Its model is 12.04 units long, bow +z, island
+   aft to starboard (-x): 28 m a unit (337 m), the waterline 0.52
+   up, the deck at 1.2. It steams along +z at 30 knots and moves
+   as a big ship in a swell: heave to 0.7 m, pitch ~0.5 deg, roll
+   ~1 deg, each two slow sines (6 to 16 s) (ship_step, ship_mat).
+   Drawn by its own PlanePBR in the jet's render, about the jet.
+   PlanePBR's `sea` drops what lies under the sea (the hull below
+   the waterline; the clouds' sea is behind the layer).
+   The F-14 starts on bow catapult 1 (the starboard track, its
+   nose wheel at the track's start: cat_x -0.635, cat_z 1.82),
+   riding the deck (hold_on_cat); space fires it: a steady pull
+   to 72 m/s over the deck in 92 m, throttles to full reheat
+   (cat_step). R puts it back; --air_start true is the old start.
+   Seen hidden: on the track, the shot, off at 71.8 m/s (337
+   km/h), settling 21 -> 13 m, climbing to 54 m in 6 s with the
+   stick back. OPEN: the deck is not solid after the shot (no
+   landing, no taxi), the swell not measured on screen.
+6c. BUILT, not flown (Oct 27: the joystick, a Thrustmaster
+   T.16000M on /dev/input/js0) flightsim reads joystick 0 each
+   step through devices (platform_joystick_axes / _buttons; it
+   imports devices and <host.h>): X roll, Y pitch (back is nose
+   up), twist rudder, a 4% dead band; the slider sets the throttle
+   when it moves (forward full); buttons on press: trigger the
+   catapult, 2 gear, 3 speed brakes, 4 the next camera. A held key
+   wins over the stick. Until it first reports, the driver gives
+   every axis as -1: an axis counts only once it has moved from
+   its first reading (checked: 6 axes read, all -1 at rest, no
+   deflection). NOT checked: the stick moved (the user's hand);
+   which way the slider and twist run is assumed.
+6d. DONE (Oct 27: rolls far too slow, ~5 s at 500) the roll
+   was a guessed aileron coefficient against the sim's own
+   per-step fade (rate / (1 + 3.2 V/50 dt)), which capped it near
+   34 deg/s. FsBody now: the stabilators' differential (ail_pow
+   0.0425 a rad of ail_d), the spoilers (spoil_pow 0.03, fading
+   out as the wings sweep from 50 to 57 deg; AirState.sweep), and
+   roll damping from the air, Clp 0.3 x (p b / 2V) (roll_damp; the
+   old fade only when it is 0, the P-40). Steady rate grows with
+   true airspeed. Measured hidden: 2.7 s a roll at 248 m/s, 2.5 s
+   at 263 m/s. The figures are estimates tuned to that, not data.
+6e. DONE (Oct 27: the stall, and shake; lots on take off)
+   FsBody: past the angle that reaches cl_max ((cl_max - cl0) /
+   cla, 24 deg on the F-14) the flow leaves over 6 deg: lift goes
+   to a flat plate's (0.9 sin 2a), drag + 1.8 sin^2 a; the nose
+   drops, one wing lets go first (a slow random side), ailerons
+   lose three quarters, roll damping turns over (a spin can
+   start). Buffet from three quarters of that angle: wing, roll
+   and pitch noise at 9-14 Hz (AirState.t, buffet out).
+   The eye shakes (seats 1.2 cm, 0.3 deg; chase 4 cm), eased
+   (filter_n 0.3): buffet by the air's push (four tenths even
+   slow), the deck under the wheels, held at full power on the
+   catapult, the stroke itself (strongest), reheat, gear and brakes
+   in the wind; the head goes back 7 cm in the stroke. Measured
+   hidden: idle, aft stick from 200 m/s: buffet from 19 deg, stall
+   past 24, a falling roll to 70 deg at 188 km/h, back to 22 deg
+   with the stick let go; seat shots 50 ms apart in the stroke
+   differ (the canopy bow moves). Figures are estimates.
+6f. DONE (Oct 27: a nose bounce at the launch; the oleo squeezes
+   while the shuttle holds it, a joint needed) the nose leg's
+   piston, fork, links and wheel (c2 c3 c6 c7 c8 c, wheel_c) slide
+   up the strut (from the wheel to c1) by strut_c (pose_gear).
+   strut_step: a 2.2 Hz spring with 0.3 damping, knelt 0.30 m on
+   the shuttle, 0.36 in the stroke, let go it stretches, tops out
+   at -0.03 and bounces; the jet sits nose down about its main
+   wheels (7.07 m back) by that squeeze (hold_on_cat); at release
+   the nose is thrown up (rate_p -= c x 5 / 7.07). Measured
+   hidden: 0.36 -> 0.03 in 0.2 s, pitch rate -0.25 rad/s at the
+   release; the knelt nose seen. The figures are estimates.
+6g. DONE (Oct 27: Cougar went through the deck; the hook to
+   slow it; the hook out with the wheels, not on a cat shot) the
+   deck is a floor: deck_x, the flight deck's sides each half unit
+   from the stern, read off the carrier model's up-facing triangles
+   at 1.178 (ship_deck was 1.2: the jet sat 0.6 m high on the
+   cat); floor_under (the jet over it and not below it) gives
+   floor_h, the wheels roll on the ship (friction against its 30
+   knots), a sinking deck takes the jet down with it. The hook
+   (hook_195) swings 52 deg tip down about its front end (z -5.0)
+   with the gear (hook_pos, a second each way); after a catapult
+   start it stays up until the wheels have been up once
+   (hook_armed). Its tip at the deck between wire_from and wire_to
+   (-4.5..-3.5 ship units, 45-73 m from the stern: an estimate;
+   the model has no wires) takes a wire: 3.5 g against the motion
+   over the deck, then held. Measured hidden: a touchdown 63 m/s
+   over the deck took a wire and stopped in 2.5 s, then rode the
+   heave; the hook seen down in a side view, up on the catapult.
+6g2. DONE (Oct 27: the wire let him roll 250 m; too fast the
+   hook should tear off, whatever would happen; the jet falls off
+   the deck's edge) the wire is the Mk 7's fixed run (wire_run 105
+   m): its pull, set at the catch, is v^2 / 2 x run, acting at the
+   hook's tip (nose down). Past hook_limit (1 MN, an estimate) it
+   pulls that for 0.12 s, then the hook tears off: it keeps the
+   jet's speed, flung up and back, tumbling; it bounces and scrapes
+   on the deck, sinks in the sea (tear_hook, hook_fall, pose_hook
+   by its world place). On the deck the hook's damper presses it
+   down to the deck, up to 23 deg past its stop (hook_drop): on
+   three wheels its tip was 30 cm up and never caught. Each wheel
+   has its own floor (wheel_surf; under the deck's edge by 0.3 m
+   it stays off), its push turns the jet in roll too; held level
+   only with all three on; over the side the cable slips off; a
+   wheel in the sea is a ditching. Checked hidden: 60 m/s over the
+   deck stopped in 93 m; 100 m/s tore the hook (seen tumbling
+   under the tail), ran off the bow into the sea; driven off the
+   side at 10 m/s the nose and outer wing went over, it rolled ~50
+   deg and fell. The wires' place is still an estimate.
+6h. DONE (Oct 27: start in a carrier landing, a bit fast for
+   the gear and a bit high) `--approach true`: 6 km behind the
+   wire zone, 470 m above the deck, 151 m/s, gear and hook up
+   (hook armed), throttle 0.12; trim_level sets the stabilators'
+   trim_i to hold 1 g at that speed (the F-14 had none: hands
+   off it dove into the sea). Seen hidden: 525 km/h, 301 m at
+   30 s, the carrier dead ahead. R starts there again.
+6i. DONE (Oct 27: the engines' sound) flightsim/sounds/ (cut by
+   player from the user's Heatblur recording: idle and spool loops).
+   Each loop plays forward then backward (mirrored), per engine at
+   its own nozzle, the right half a loop on; mixed by rpm (idle 0.6
+   to spool 1.6 pitch), equal-power panned by the camera's right,
+   full within 12 m; doppler (343 m/s air) from the listener's speed
+   (the jet's plus the eye's own move, frame to frame) against the
+   engine's; from a seat 1600 Hz low-passed copies, the bass at full
+   level. The afterburner: made noise (a 25-90 Hz rumble, the roar
+   60-450 Hz, hiss over 2 kHz, pops, flutter), in with reheat.
+   `--thrust_bias b`: thrust x (1 + b), the roar with it (Launch,
+   Live). Checked hidden on a null ALSA device: doppler 1.0 riding
+   along, 2.0 / 0.68 past the flyby; 409 vs 344 m/s at bias 0.5 / 0.
+   Not heard by me.
+   E shuts the engines down (spool to 0, time constant 3 s; the
+   throttle ignored; the sound fades and drops in pitch with it)
+   and lights them again. Checked hidden: rpm 0.8 to 0.003 off, back
+   to 0.8 lit.
+6j. DONE (Oct 27: from 150k ft the jet fell to the sea nose up,
+   engines off) the tail and fins returned when vfwd < 2 (and
+   clamped to 0.35 rad), the wing's alpha was 0 backward and its
+   drag always along -z. Now air from any way: the wing's alpha a
+   full turn (atan2), lift across the flow, drag against it; tail
+   and fins by surface_cn (their slope near the flow, a flat plate's
+   1.2 sin beyond 15-30 deg), their own local q. Checked hidden: from
+   nose straight up at rest at 3 km, nose level by 18 s, settled
+   about 27 deg down gliding; the approach start flies as before.
+   Then (his: falling from 100 km at 1660 km/h, still nose up):
+   the rotation damping (rates / (1 + k x speed/50 x dt)) went by
+   true speed alone, so falling fast it froze every turn even in
+   thick air. It goes by equivalent airspeed now (speed x sqrt(rho /
+   1.225)). Checked hidden: from 40 km nose up falling 900 m/s, the
+   nose over by 32 km (9 s), a dive near 60 deg, rounding out low.
+   In near vacuum nothing turns it (true: no air, no thrusters).
+   Then (Oct 27): the air is the US Standard Atmosphere 1976
+   (std_density, std_temp: seven layers to 86 km by geopotential
+   height, the gas law; above, the standard's density table to 500
+   km, log interpolated); the aero, the dials' and HUD's airspeed
+   and the HUD's Mach use it. flightsim t_std_atmosphere: 0 to 100
+   km within 1% of the published values (by geometric height). The
+   air's shake (stall buffet, gear, brakes) x (rho / 1.225)^0.68:
+   half at 30,000 ft, none in near vacuum.
+   Then (Oct 27: Mach 2 kept too long) wave drag: cd0 x 2.2
+   through Mach 0.85-1.1, easing to 1.85x by Mach 2 (a fighter's
+   usual curve; the F-14's own is not published); AirState.mach
+   from the standard air's speed of sound. Checked hidden: 12 km,
+   Mach 2, engines off: drag 112 kN, 4.1 m/s2 (the hand figure);
+   Mach 2 to 1.25 in 90 s gliding. A climb from Mach 2 is mostly
+   gravity's 9.8 m/s2 (60 s to stop going straight up): true.
+   Then (Oct 27: record the whole flight to validate) flightsim
+   writes every flight, ten rows a sim second, to install/tmp/
+   flightsim-flight.csv (new each start): t, x y z, alt, speed,
+   vel_y, mach, rho, throttle, rpm, engines_off, thrust_bias,
+   thrust_n, drag_n, lift_n (AirState, set by FsJet / FsBody), aoa,
+   pitch, g, on_floor. flightsim/tools/flight_check.py <csv>: the
+   speed change along the path measured against (thrust cos aoa -
+   drag) / m - g sin(climb). Checked hidden: they agree to tenths of
+   a m/s2 through full throttle, E, and the wind down.
+   His first record (Oct 27, 1269 rows): measured = predicted all
+   through (no energy from nowhere); Mach 1.1 to 0.45 in 130 s at
+   1-1.5 km engines off, about 2 kt/s at 300 kt (real fighters ~2-3
+   at idle): close, perhaps slippery; offered --drag_bias or cd0
+   0.025-0.028, his call.
+   Fixed (his: a giant green polygon, then a crash looking back):
+   the HUD clipped to the combiner's corners as seen, and a corner
+   behind the eye (seen's z -1, used as 0, 0) or nearly beside it
+   projected off toward infinity: a huge clip, the text at 830 px
+   (font open crashed). HudView.draw skips the frame when a corner
+   is behind the eye or more than 2 screens off. Seen hidden: the
+   seat turned to look back in six steps, no polygon, no crash.
+6k. DONE (Oct 27: from the left rear the right burner's fire
+   vanished) each fire's volume wrote depth and hid the other behind
+   it: PlumeFire [ transparent: true ] (no depth write, drawn after
+   the solid jet; still tested against it). Seen hidden: both fires
+   from the left side at full reheat.
+6l. DONE (Oct 27: the wheels clip through the carrier) one floor for
+   the jet's middle (the lowest point level, ground_h) let any pitch
+   sink a wheel (nose up 10 deg: the mains ~0.5 m in). Now gear
+   down, each wheel's bottom (F-14 data: mains +-2.42, -2.367,
+   -0.68; nose 0.1, -2.072 + the oleo's squeeze, 6.40) against the
+   floor: a damped spring each (3e6 N/m, 2e5 N s/m), its push lifting
+   and tipping the jet about its middle, a hard stop 25 cm in; gear
+   up, the old floor. Checked hidden: a drop 2 m nose up onto the
+   deck lands on the mains (9 cm in), the nose down 0.3 s later, at
+   rest both 1.5-2 cm in at 2.4 deg nose down (the model's own
+   gear); off the bow it fell to the sea on its wheels.
+   Then (his shot: the wheels still in the deck) the deck
+   height itself was low: the visible top surface of the carrier
+   model is 1.2139 ship units everywhere sampled (under the catapult,
+   the wire zone, mid deck; up-facing triangles hit at x, z), not
+   1.178 (a layer under it): a metre in. ship_deck 1.2139. Seen
+   hidden from the flyby camera: the wheels on the deck at the cat.
+   Then (his shot: the nose wheel hovering on the cat): the
+   kneel tipped the nose down by the squeeze alone; the model's nose
+   wheel reaches 0.295 m less than the mains, so it floated that
+   much. hold_on_cat tips by (0.295 + squeeze) / 7.08 m. Seen hidden:
+   the nose knelt onto the deck.
+6m. IN PROGRESS (Oct 27: all the cockpit's screens and the
+   buttons he can press; both cockpits; live sim data, F-14 style,
+   our own pages) the model has two 13 cm DISPLAY squares and
+   painted panels only: every screen and control is found on the
+   cockpit atlases (pilot image13 4096, RIO image14 2048), mapped
+   to 3D through the triangles whose uvs fall there. In order:
+   a. DONE the finder (session scratchpad gl/uvfind.py: uv box ->
+      the triangles there -> a fitted quad, grouped by place). Found:
+      pilot's two MFDs (the model's DISPLAY squares, 12.8 cm), the
+      RIO's TID (from its bezel on image15) and right MFD (from the
+      bezel strips on image13); the DDD placed by eye between its
+      arrow columns. Atlases are reused and mirrored: fit only from
+      pieces nothing else shares, check each on a seat view.
+   b. DONE CockpitView (HudView's projection): a page drawn in the
+      screen's 0..1 through its seen corners (lines exact, text
+      upright, sized by the screen), clipped to it, on a dark
+      phosphor ground; the seat's screens only. Seen hidden: all
+      six in place from both seats.
+   c. DONE pages FLT (ladder by pitch and bank, kt, ft, Mach, G,
+      AOA, VS), NAV (rose heading up, the carrier at bearing and
+      range, 20 nm), ENG (L / R spool bars, rpm, throttle, thrust,
+      RUN / REHEAT / ENG OFF, bias), TID (heading up, rings 5 10 20
+      nm, the carrier and its course), CHK (catapult / landing /
+      cruise lines, OK or --). Defaults: pilot FLT, NAV; RIO DDD
+      NAV, TID TID, MFD ENG.
+   d. PARTLY DONE pressing: a click (release within 4 px of the
+      press) in a seat: each screen's five page buttons; on CHK the
+      gear, hook, speed brake, engines and launch lines; on ENG the
+      state line (engines). Checked hidden: DDD to TID, MFD to CHK,
+      the gear line lowered the gear (LANDING). Found: a release
+      arrives twice (window and app): one click per press.
+      OPEN: the physical controls on the panels (gear and hook
+      handles, speed brake, master arm, the RIO's keypad and radar
+      buttons): the pilot atlas is mirrored and in many pieces;
+      what the keypad / radar buttons do is his call.
+   Silver met on the way: a method parameter named `a` is the
+   object (the first corner read as 0, 0, 0).
+6n. IN PROGRESS (Oct 28) four AIM-54 Phoenix on the belly pallets
+   (cs11115's model, CC BY 4.0, models/aim54/aim54.glb; 149.75 of its
+   units = 3.96 m): at x +-0.42, y -0.65, z 1.7 / -2.5 model units,
+   fins rolled into an X, fins 3-6 cm under the tunnel roof. Built,
+   not seen. OPEN: their mass (453 kg each) and drag.
+6o. IN PROGRESS (Oct 28: a reload keeps the exact flight) the live
+   instance writes ~95 values by name and size into persist slots
+   every frame (carry_out); the next instance takes them on its first
+   frame owning the screen (carry_in, after w.defer_swap). Built. A
+   hidden reload test crashed after the switch (mutex_lock in libAu);
+   the optimised build also crashes at startup (Au_hold_members on
+   FlightView), the debug build does not: likely the persist slots
+   mid-class (the open static-overlap bug). OPEN.
+6p. DONE, not flown (Oct 28: launch weighed down into the sea; the
+   nose jerk on hard traps) a wheel pressed over 0.3 m into the deck
+   counted as under its edge and got the sea: the nose oleo's 0.36 m
+   stretch at release dropped the nose off the deck. Now a wheel over
+   the deck keeps it; only one gone below beside it stays under
+   (wheel_low).
+6s. BUILT, seen hidden (Oct 28: a MiG to lock onto, enemy only)
+   bohmerang's MiG-29 (CC BY-NC-SA 4.0: never ship it), 176.7 units
+   = 17.3 m (mig_scale 0.098), its nose +x turned to our +z, gear-down
+   parts scaled away. It flies a 5 km circle 3 km up, 12 km ahead of
+   the carrier at 220 m/s, banked for the turn (mig_step, pose_mig).
+   L locks it within 65 degrees of the nose and 150 km (can_lock);
+   the lock breaks outside. HUD: a box on it, LOCK nm, C closure kt;
+   TID: a caret when the radar sees it, boxed when locked. Seen: lock
+   on at 8.4 nm, closure 809 kt head on; the model up close the right
+   way round. OPEN: the HUD box off the glass (a locator line); it
+   does not fight or evade; Phoenix shots.
+6t. BUILT, seen hidden (Oct 28) `--intercept true`: the F-14 at
+   20,000 ft heading north at 250 m/s, gear up, trimmed level for that
+   air (trim_level takes the density now); the MiG 20 nm (37,040 m)
+   ahead at the same height flying straight at it, 250 m/s (mig_t0).
+   R starts it again. Seen: lock on at once, box on the MiG at the
+   horizon, LOCK 15 nm and C 1032 kt 15 s in.
+6u. BUILT, seen hidden (Oct 28: use the radar BVR) an RDR page
+   (page 5) on the screens, the pilot's left MFD and the RIO's DDD
+   start on it: a B-scope, across 65 degrees each way off the nose,
+   up range (RNG button: 10 20 50 100 nm); the MiG a bar with its
+   altitude while the radar sees it (can_lock); a click on it locks
+   (cockpit 'lock'), boxed then with LOCK nm and closure. The page
+   row is six buttons: FLT NAV ENG RDR TID CHK. Seen: the bar at 19
+   nm ahead, a click locked it, LOCK 16.7 NM C 1021.
+6v. BUILT, seen hidden (Oct 28) the radar warning receiver: on the
+   plate right of the HUD (node 412, 5 x 4 cm, corners in add_scr; a
+   fixed screen: one page, no buttons) and as an RWR page (6) on the
+   MFDs. The nose up; the MiG as 29 at its bearing, nearer the middle
+   the closer (60 nm at the rim); its radar locks us within 25 nm
+   with us inside 60 degrees of its nose (mig_lock_step): a diamond
+   and LOCK flashing twice a second. Seen in --intercept: locked from
+   the start, 29 dead ahead. OPEN: the warning tone.
+6w. BUILT, seen hidden (Oct 28: fire with the trigger) the stick's
+   trigger (button 0) and Space launch on the catapult, else fire the
+   next Phoenix (front pair first), only with our lock (fire). It
+   drops 0.5 s, burns 30 s at 45 m/s2 to 1600 m/s, then slows; it
+   steers for where the MiG will be, 25 g at most, while the lock
+   holds (aim_step); a pass within 15 m (the nearest point of the step,
+   both moving) kills: the MiG falls rolling into the sea (mig_dead),
+   its radar and our lock off. HUD: PH left, TOF, SPLASH 4 s. R puts
+   all four back. Seen: unlocked "no lock, no shot"; locked at 20 nm
+   head on, splash at 29.7 s. OPEN: the motor's flame and smoke, an
+   explosion, the missiles' mass, Sparrow / Sidewinder / gun.
+6x. BUILT, seen hidden (Oct 28: the camera on the MiG, the missile)
+   C goes chase, pilot, RIO, flyby, then 4 the MiG (40 m behind, 9 up)
+   and 5 a flying Phoenix (the last fired; 12 m behind), along its
+   path, a drag turns round it; when the Phoenix ends it moves on to
+   the MiG. No shake there. Seen: the Phoenix from behind, then the
+   MiG rolled over falling after the splash.
+6y. BUILT (Oct 28: the camera jumped as the mouse came back in) a
+   move over 80 px since the last re-anchors; a move with no button
+   held ends the drag (a release outside the window). Seen: a 600 px
+   jump did not turn the view; a drag did.
+6z. BUILT, seen hidden (Oct 28: the carrier's wake, the user's photo of
+   USS Intrepid under way) the clouds sea draws a ship's wake (NubisSky
+   vessel_a: middle and heading, vessel_b: speed, waterline length and
+   beam, bow wave height; speed 0 none; SkyView passes them on).
+   Kelvin waves from the bow by stationary phase (both systems, the
+   19.5 degree wedge, cusp pile-up, cut at the pixel footprint), as
+   slopes on the sea's normal; white water down the hull, widest at
+   the bow; behind the stern a churned trail, whitest down the middle,
+   thinning to streaks fixed to the water, and a slick (the sea's own
+   waves flattened, smoother reflection) for km. flightsim feeds the
+   Ford: 317 x 41 m waterline, 30 kt, 0.5 m. Seen from the approach at
+   ~350 m: bright churn astern breaking into patches, faint Kelvin
+   arms. NOT seen: the bow and hull white water up close (under the
+   flight deck from the deck view). OPEN: real wave geometry near us.
+6q. BUILT, seen hidden (Oct 28) the canopy mirrors show what is
+   behind at a quarter of the screen's pixels, no texture; the rims
+   polished metal. The three glasses are faces of the canopy frame
+   (node 63), boxes in model metres (PlanePBR mir_a/b/c, mir_h) facing
+   the pilot. The model's glasses face 14 degrees up (they reflected
+   only sky): aimed back, the sides 15 degrees out (mir_na/nb/nc). The
+   view: the eye mirrored through the middle glass, near plane on it,
+   the same models drawn again (draw_views; copies doubled GPU memory,
+   2.8 GB -> 1.7 GB without). A render target with no owner becomes the
+   window's backdrop, which the window holds (the mirrors' showed only
+   its clear): owned now.
+6q2. BUILT (Oct 28: the screens trailed the camera) the window drew
+   the jet's render before the element set this frame's camera, so the
+   3D was a frame behind the screens, HUD and sky. FlightView draws
+   both renders itself after setting it (skip set, draw_views).
+   The clouds the same (Oct 28: they then trailed): SkyView draws its
+   vrender and the history it composes itself, after its camera
+   (clouds.ag; skip set on all three).
+6q3. BUILT (Oct 28: looking to the rear insanely slow; the "leak")
+   every whole-pixel text size is a font with its own 1024 atlas,
+   never freed; the screens' and HUD's text followed their size on
+   screen, so turning the view made a new one nearly every frame (his
+   run: 112 atlases). Sizes now a quarter octave apart (text_px):
+   a view sweep 4 -> 45 atlases before, 3 -> 18 after.
+6r. OPEN (Oct 28) cockpit metals more real: specular, greasy, worn,
+   shiny.
+7. DONE (Oct 27: the F-14 in the clouds' world; the
+   two codes apart) flightsim imports clouds: FlightView's children
+   are the clouds' SkyView ('sunset towers' weather) and
+   PlaneLayer (the aircraft's own render, cleared clear, laid
+   over). FlightView's draw sets the sky's camera each frame before
+   the sky draws (parent first): cam_x / cam_z / cam_h, facing, up,
+   fov. clouds' SkyView gained look_fwd, look_up, fov_tan (zero:
+   yaw and pitch as before); nothing in clouds knows aircraft. The
+   jet is lit by the weather's sun (warm and low at sunset). The
+   grid ground and its shader are gone. Seen hidden: chase, cockpit,
+   a roll; clouds alone unchanged. Open: clouds never hide the jet
+   (drawn over the sky); launch.ag keeps its own Nubis copy.
+
 ## player (Oct 21 2026)
 
-1. DONE (Kalen: an h264 viewer that loads mp4, h264, etc)
+1. DONE (an h264 viewer that loads mp4, h264, etc)
    `silver player <file>`: mp4 / mov / m4v (plain or fragmented)
    and raw .h264 / .264 / .h265 / .265 / .hevc on the Vulkan
    decoder, AAC sound on spectra's mixer. A raw stream is cut
@@ -10387,9 +11469,9 @@ as any trinity app (install/build/quake2 --hidden true).
    a B-frame h264 and an h265 stream, pause holds the frame,
    right arrow lands on the right frame. Sound not heard.
    OPEN: a raw stream's rate from its SPS timing.
-   Then (Kalen): opens with no file (ctrl+o's dialog, at the start
+   Then : opens with no file (ctrl+o's dialog, at the start
    folder, picks one); our own fragmented takes play.
-2. DONE (Oct 21, Kalen: the player stays a player; recording is
+2. DONE (Oct 21: the player stays a player; recording is
    orbiter's) the side panel's record tab (beside properties,
    instruments, callstack): orbiter or the selected app, then
    record / stop with the take's clock, the take's path under it.
@@ -10404,10 +11486,101 @@ as any trinity app (install/build/quake2 --hidden true).
    damaged at the foot (1280x720: 127 of 179 frames); the coded
    height is padded to 64 as the width is (Encoder.coded_h). After:
    0 of 179. trinity tests exit 0.
+4. DONE (Oct 27: view a wav; I see and cut sounds by commands)
+   player/Wave.ag: a .wav opens as its picture (spectrogram, 20 Hz
+   to the top on a log scale, over the waveform: min..max and rms),
+   a seconds ruler, the chosen span washed, the play line. Mouse:
+   wheel zooms about the pointer, drag chooses, a click plays from
+   there; space plays the span, enter zooms to it, escape all.
+   Agent words (`app <word>` on the socket; seconds, files beside
+   the open one): open f, view a b | all, select a b, play [a [b]],
+   halt, crop a b f [fade ms, 10], loop a b f [crossfade ms, 150:
+   the tail laid over the head, equal power], stats a b f [step]
+   (time, rms and peak dB, centroid and loudest Hz, low/mid/high
+   dB). Seen hidden on the F-14 recording; four pieces cut into
+   flightsim/sounds (idle and spool loops, both starts), the loop
+   seams under a median sample step. The recording is Heatblur's
+   (DCS F-14): for this machine only, never shipped.
+   Then (Oct 27: work on the selection from the app's menu;
+   common edits, volume between channels and the like): the
+   selection and view are Live props (sel_from, sel_to,
+   view_from, view_to; out_name names the files), so `set
+   sel_from 57.5` chooses; every method is an Action (the bar
+   menu's rows; `call <name>` on the socket): play_selection,
+   stop_playing, zoom_to_selection, show_all, select_view,
+   clear_selection, save_selection (<name>-<ms>-<ms>.wav),
+   save_as_loop, measure_selection (.txt), normalize (peak -1
+   dB), balance_channels (rms to their mean), make_mono,
+   swap_channels, louder / quieter (3 dB), fade_in, fade_out,
+   silence, reverse, remove_dc, cut_rumble (40 Hz high pass),
+   cut_hiss (8 kHz low pass; rbj biquads), delete_selection,
+   trim_to_selection, undo (16 deep), save_file (<name>-edit.wav).
+   Edits take the selection, else the whole sound. Seen hidden:
+   the Actions listed in props; normalize + balance gave L/R rms
+   7958 / 7944; delete took 3 s out (68.8 -> 65.8 s); two undos
+   gave the original back. NOT seen: the menu itself in orbiter.
+   Then (Oct 27: `action` an interface, not meta; agents call
+   them, with arguments; an instance says where it was started):
+   - silver: `action func f [ .. ]` (interface.action, 12, in Au's
+     interface enum). Not a keyword token: `action :` is a member
+     named action; `action` then anything but func is refused.
+     Au def_func kept no access (every method read public): it
+     keeps the one given now. features t_action_func; 267/268
+     (t_codegen_resource as before).
+   - Au: method_call puts integers and pointers in the six integer
+     registers and floats in the eight float ones (System V and
+     AAPCS64; our own, no libffi; Windows keeps the old path).
+     Au_call_words[ obj, name, words ]: each word converted to its
+     parameter's type, a last string takes the rest of the line.
+   - trinity: socket `call <name> <args>` runs an action func
+     (ok / missing arguments / unknown); `props` lists every action
+     with `params: [ 'from: f64', .. ]`, and first `agent:`
+     (AI_AGENT) and `session:` (CLAUDE_CODE_SESSION_ID) when the
+     app was started from an agent's shell (a `!` there too).
+     silver-host's view keeps both variables. The bar menu and the
+     properties panel list only actions with no parameters. The
+     `[ Action ]` meta and its class are gone (psx, knes, asnes,
+     n64 moved to `action func`).
+   - player: its own word parser is gone; action funcs with
+     arguments: open_sound name, view_span from to, select_span
+     from to, play_from t, crop from to fade_ms name, make_loop
+     from to xfade_ms name, measure from to step name, gain db,
+     normalize_to db, high_pass hz, low_pass hz (and the no
+     argument ones above). Checked hidden: crop 3.0 s, gain -6
+     gave -6.00 dB in the selection and 0.000 outside, a name
+     with a space whole, `call crop 1` missing arguments.
+   Then (Oct 27: as modern as possible; the spectrogram
+   at most 256 px tall, then the whole centred): two rounded panels
+   (10 px, #101018, a #ffffff1a hairline) 20 px in: the spectrogram
+   (min 256, 62% of the room) in inferno (matplotlib's polynomial
+   fit), 30 Hz to the top on a log scale, a row over several bins
+   their loudest, between two the line between them, Hz labels
+   (100 Hz, 1 kHz, 10 kHz) with faint lines; the waveform (at most
+   140 px) smooth edged (coverage per pixel), cyan at the middle to
+   violet at the peaks, the rms brighter; a ruler with seconds and
+   fifths; the selection a violet wash, bright edges and a tab; the
+   play line pink with a glow. Taller than all that, it centres.
+   Mouse x maps through the panel (panel_x, panel_w). With no sound
+   device the play line still runs. Seen hidden at 1400 x 800 and
+   1000 x 420.
+   OPEN (Oct 27, the user's, for later):
+   a. Save file, Save selection and Save as loop prompt for the file
+      to save as (the navigator's save mode; hosted, orbiter's, which
+      shares only that one file writable). Today they write beside
+      the open file, which in orbiter is the player's own home
+      (install/home/player/<path>): his save landed there.
+   b. With nothing selected, Save selection, Save as loop and
+      Measure do nothing and say nothing: take the whole sound and
+      log what they did.
+   c. "Crop selection" may be the name for Trim to selection.
+   Rule: in a session I change the instances that session
+   started (`session:` equal); any other only when you name it.
+   Built: Au (make), trinity, properties, player. NOT built:
+   orbiter (its menu filter), psx, knes, asnes, n64.
 
 ## Apps bound to silver's folder — live list (Oct 22 2026)
 
-Kalen: orbiter is the user and is not locked. An app orbiter runs
+orbiter is the user and is not locked. An app orbiter runs
 reaches silver's folder only, never /home. The shell syncs a user
 file into silver when an app needs one, unless a way without copying
 works.
@@ -10424,13 +11597,13 @@ works.
    outside it lands back on silver, typed results outside it hidden.
    OPEN: the crumbs above silver (src) and the left column (other
    projects, home) still show in a pick.
-3. DONE (Kalen: views, not accounts) each slot app has its own view
+3. DONE (views, not accounts) each slot app has its own view
    (user + mount namespace, silver-host bound_view): /home, /media and
    /run/user/<id>/gvfs, doc are empty; the real tree waits at /mnt,
    which the lock keeps from the app; all powers dropped after. No
-   view, no run (Kalen: no fallback to Landlock alone). Needs
+   view, no run (no fallback to Landlock alone). Needs
    support/apparmor/silver-host in /etc/apparmor.d (Ubuntu strips a
-   namespace's powers otherwise; installed by Kalen Oct 22).
+   namespace's powers otherwise; installed by the user Oct 22).
    Sharing while it runs: <any app host> --view-share <pid> <app>
    <file|folder> [rw] binds it at install/shared/<app>/<pid>/<name>
    (read only unless rw; a folder with what is mounted in it);
@@ -10440,7 +11613,7 @@ works.
    Checked: /home empty inside; a ~/Videos .agi shared, read inside,
    a write refused (read-only), gone after unshare; the player opens
    neither /home nor /mnt paths.
-   DONE the navigator shares (Kalen: only orbiter's navigator, never
+   DONE the navigator shares (only orbiter's navigator, never
    trinity's in-app one): a pick for a running app's live argument
    (pick_deliver) outside silver goes through orbiter share_into:
    the app's host --view-share, then `set <arg> <shared path>`.
@@ -10448,7 +11621,7 @@ works.
    the title's navigator opened at ~/Videos, the pick played it
    (h.265 1888x888 decoded, the app's own shot shows the video).
    player's file is Live now (opens on a change).
-   psx (Kalen): a disc is its folder (disc has the Directory
+   psx : a disc is its folder (disc has the Directory
    control; Cdrom.insert finds the .cue in it); orbiter's pick takes
    a folder when the default prop's control is Directory (a control
    with no members arrives as its name). States go in psx's storage
@@ -10473,8 +11646,8 @@ works.
    needs ~/.claude; orbiter should run it for the app.
 5. DONE (Oct 23) builds leave the app: its holder runs them (item 6),
    as the user, with the real home (~/.cargo, ~/.gitconfig reach).
-6. DONE (Oct 23, Kalen: no Landlock; "use your head what is the best
-   actual practice"; every app keeps the network) the view is now
+6. DONE (Oct 23: no Landlock; the best actual practice;
+   every app keeps the network) the view is now
    Flatpak's and Chrome's way, and Landlock is gone from silver-host:
    - the holder (the slot process orbiter's host spawned) makes a
      user + mount namespace, builds the app's root at /mnt there,
@@ -10540,15 +11713,14 @@ works.
    empty in that run; not chased).
    Needs: properties built --clean after trinity's rebuild (a stale
    one crashed orbiter in LaunchPanel_init).
-7. DECIDED (Kalen, Oct 23: "silver cant secure other operating
-   systems better than its own") X11 stays as it is: an app opens
+7. DECIDED (Oct 23) X11 stays as it is: an app opens
    its own window, so on an X11 desktop it reaches the X server, and
    X lets any client read the screen and input (a bound player's
    `shot` returned the whole desktop). orbiter-os has no X server.
 8. OPEN a debug launch's lldb attach to a bound app: the pid is
    right now; not driven.
-9. DONE (Oct 23, Kalen: Wayland programs broke out onto the
-   desktop; then "as bound as the others but WORK") the console was
+9. DONE (Oct 23: Wayland programs broke out onto the
+   desktop; then to be as bound as the others and work) the console was
    bound with orbiter's Wayland display passed as a name and its bus
    as an address, so neither reached its view and GTK fell back to
    X. orbiter now passes full paths (run_program: <rt>/wayland-0-
@@ -10558,11 +11730,10 @@ works.
    console can send orbiter any socket command, not only open.
    Checked hidden: console bound, gnome-calculator in its own user
    namespace (pid 13 inside) on orbiter's Wayland, drawn in the pane.
-10. DONE (Oct 23, Kalen: the paths are the standard places, "that's
-   the map") inside, an app uses the standard places and each is its
+10. DONE (Oct 23: the paths are the standard places) inside, an app uses the standard places and each is its
    own folder outside: /tmp = install/tmp/view/<app>-<slot> (emptied
    at each start), /run/user/<uid> = <rt>/silver-view/<app>-<slot>,
-   ~ = /home/<user> backed by install/home/<app> (Kalen's pick);
+   ~ = /home/<user> backed by install/home/<app> (the user's pick);
    XDG_*_HOME and TMPDIR unset. A share is at its own real path
    (~/Videos/x.mp4 inside is that file, read only; the placeholder it
    covers is in the app's home); launch args are no longer rewritten,
@@ -10570,18 +11741,18 @@ works.
    install/home and install/tmp under silver's folder are read-only
    covers inside (the app's log bound in at its path).
    Checked (harness): /tmp/mapped.txt landed in install/tmp/view/
-   vtest-7, HOME /home/kalen, ~/.bashrc shared and unshared live,
+   vtest-7, HOME ~, ~/.bashrc shared and unshared live,
    install/tmp read only; player bound plays a ~/Videos take with
    sound.
 
 ## Projects, featured apps and game data — live list (Oct 23 2026)
 
-Kalen: a project is a silver module; a bare repo has no category,
+a project is a silver module; a bare repo has no category,
 icon or launch, so it is never an app. The apps grid's index is the
 featured/ folder itself (each featured/<name>/<name>.ag) and silver's
 own modules: software.agi's list is no longer read, and names with no
 module (krita, obs ...) are gone, with the recommended row.
-1. REMOVED (Kalen, Oct 23: "do NOTHING steam related in silver.c")
+1. REMOVED (Oct 23)
    silver's `import steam:<app id>` and its Steam library search are
    gone from silver.c. Steam's folders are the steam module's alone.
 2. DONE quake2 (/src/quake2): export software ['games'];
@@ -10594,12 +11765,12 @@ module (krita, obs ...) are gone, with the recommended row.
    one; not chased (unknown whether it predates this). OPEN: an icon
    (images/icon.png); quake2 lives outside featured/ so the grid does
    not list it.
-3. DONE (Kalen: Steam as an app in orbiter, featured)
+3. DONE (Steam as an app in orbiter, featured)
    featured/steam/steam.ag: Valve's steam-launcher 1.0.0.87 (sha256
    from Valve's package list), unpacked into install/lib/steam/<ver>,
    bin_steam.sh linked as install/bin/steam; games section; icon from
    the package. Shown in the grid. NOT run (it opens a login window).
-   Found (Kalen: Steam says the 32-bit libraries are missing): the
+   Found (Steam says the 32-bit libraries are missing): the
    view's seccomp filter killed every 32-bit process (it allowed the
    x86-64 arch alone), so Steam's 32-bit client and ldd of a 32-bit
    library died. view_filter now has a section per arch (view_rules):
@@ -10608,7 +11779,7 @@ module (krita, obs ...) are gone, with the recommended row.
    calls: getpid works, ptrace and TIOCSTI refused. The console's host rebuilt; other apps take it at
    their next build.
    Steam's log then stops at "Steam now requires user namespaces"
-   (bwrap): the filter refused them. Then (Kalen: adding a namespace
+   (bwrap): the filter refused them. Then (adding a namespace
    is no less secure, as it cannot redirect other apps) every bound
    app may make namespaces and mounts of its own: unshare, setns,
    clone's namespace flags, clone3, mount and the new mount calls are
@@ -10618,7 +11789,7 @@ module (krita, obs ...) are gone, with the recommended row.
    Checked in a view: bwrap runs, inside it no ~/.ssh and the
    install/tmp cover cannot be unmounted ("must be superuser"); ptrace
    and TIOCSTI still refused, 32-bit too. Steam itself not run by me.
-   Then (Kalen: Steam opened outside orbiter, on the desktop) Steam's
+   Then (Steam opened outside orbiter, on the desktop) Steam's
    client speaks X11 only: it took the desktop's DISPLAY. orbiter's
    compositor (wayland.c) now runs Xwayland (wlr_xwayland, lazy: it
    starts with its first client): an X11 window is a toplevel like an
@@ -10630,7 +11801,7 @@ module (krita, obs ...) are gone, with the recommended row.
    Checked hidden: xclock from the bound console mapped as an X11
    window in orbiter, drawn in the pane at its size, its task button
    in the bar. Steam not run by me.
-   Fixed (Kalen: the mouse shows but does not click): X11 windows
+   Fixed (the mouse shows but does not click): X11 windows
    were configured at their place in orbiter's layout (x 16384), off
    the X screen (1528 x 823), so X dropped the clicks. They sit at
    0, 0 of the X screen now (Xwayland gives input to the surface the
@@ -10639,7 +11810,7 @@ module (krita, obs ...) are gone, with the recommended row.
    Checked hidden: xcalc via `app run` (new orbiter socket command:
    runs a program as its search row does), two clicks on 7 show 77,
    the 8 key 778.
-   Then (Kalen: Steam shows its friends list, no way to its other
+   Then (Steam shows its friends list, no way to its other
    windows; its menu opened was the main window's):
    - X's stacking follows ours: every X11 window sits at 0, 0, so X
      sent clicks to its own top one. x_raise restacks the window
@@ -10665,12 +11836,12 @@ module (krita, obs ...) are gone, with the recommended row.
    is the one inside its sandbox (_NET_WM_PID), so orbiter cannot
    find its pane by pid (it takes the active pane); one task button
    per program, not per window.
-   Then (Kalen: Steam's install dialog offered /tmp): Steam names a
+   Then (Steam's install dialog offered /tmp): Steam names a
    library's drive by the first mount of its disk, and /tmp was
    mounted before the home (both on the same ext4). view_build
    mounts the home first now; checked: mountinfo's first ext4 entry
-   is /home/kalen, /tmp and home still work. Not seen in Steam.
-   Then (Kalen: windows spawn when it switches to the friends list) a
+   is ~, /tmp and home still work. Not seen in Steam.
+   Then (windows spawn when it switches to the friends list) a
    new window of the process a pane already shows (same pid as that
    pane's window) opens as its own floating pane (window_pane: the
    middle of the area, 42% x 62%, each later one 36 px down and
@@ -10684,7 +11855,7 @@ module (krita, obs ...) are gone, with the recommended row.
    OPEN, expected to bite: Steam's game runtime (pressure-vessel) and
    its web helper make namespaces of their own, which a bound app's
    seccomp filter refuses; its udev rules (controllers) need root.
-3b. DONE (Kalen, Oct 23) stores: an app that sells software writes a
+3b. DONE (Oct 23) stores: an app that sells software writes a
    module per finished app into its own namespace, install/stores/
    <store>/<name>/<name>.ag, never elsewhere (no collisions). steam's
    export steam_store reads each Steam's libraryfolders.vdf (the
@@ -10696,7 +11867,7 @@ module (krita, obs ...) are gone, with the recommended row.
    Each also gets `export launch ['steam -applaunch <id>']` and its
    cover (Steam's library_600x900.jpg) as images/icon.jpg (AppIcon
    reads icon.jpg when there is no icon.png).
-   Then (Kalen: the home screen expands store apps like folders) a
+   Then (the home screen expands store apps like folders) a
    store's card (orbiter AppEntry.apps, from install/stores/<name>)
    opens in place: itself first (it still runs), then its apps by
    name; pressed again it shuts. A store app's press runs its launch
@@ -10708,8 +11879,8 @@ module (krita, obs ...) are gone, with the recommended row.
    showed within 10 s, the folder shut. NOT driven: a game's press
    (it would start the real Steam in orbiter's Steam home), the
    rerun while Steam runs. quake2's `import steam:2320` no longer
-   parses (left, Kalen).
-3c. DONE (Kalen, Oct 23: Hot Lava runs on our own Wine) featured/wine:
+   parses (left).
+3c. DONE (Oct 23: Hot Lava runs on our own Wine) featured/wine:
    Valve's Wine at 6d211aab (Proton Experimental 11.0-20261001's
    submodule), fetched by git at the commit, autoreconf, configured
    x86_64 only with --enable-win64 (as Proton), --without-x,
@@ -10725,7 +11896,7 @@ module (krita, obs ...) are gone, with the recommended row.
    motion (mouse look), text input, data control, toplevel icons.
    OPEN: those protocols; DXVK; Steam's bridge (lsteamclient); the
    steam store's launch line as `wine <exe>`.
-   Then (Kalen: stay on Valve's tree; every fix goes out as a PR):
+   Then (stay on Valve's tree; every fix goes out as a PR):
    media: NASM 2.16.03, FFmpeg 4.4.5 (the 4.x API Valve's winedmo is
    written for; Proton pins 4.3.3), GStreamer 1.24.12 with base (gl on
    EGL: Valve's winegstreamer wants gstreamer-gl), good (isomp4), bad
@@ -10740,9 +11911,9 @@ module (krita, obs ...) are gone, with the recommended row.
    frames). Now such a visible toplevel keeps its xdg toplevel.
    Seen hidden: Hot Lava mapped in pane 0, the Klei intro played (two
    shots 2.5 s apart), Display Splash Complete, then it quits at
-   SteamAPI_Init() failed (no bridge). The test prefix is set up by
+   SteamAPI_Init failed (no bridge). The test prefix is set up by
    hand (DXVK DLLs copied, mscoree/mshtml off, d3d*/dxgi n,b).
-   Then (Kalen: still black, sound only) his card ran `steam
+   Then (still black, sound only) his card ran `steam
    -applaunch`: Steam's Proton on X11, not our Wine. The steam store
    now reads each game's program from appinfo.vdf (binary v29) and,
    for a 64-bit .exe in a Steam run in orbiter, writes `env -C <its
@@ -10753,7 +11924,7 @@ module (krita, obs ...) are gone, with the recommended row.
    Seen hidden through that line: prefix made, window in pane 0,
    splash done, then SteamAPI_Init failed. NEXT: lsteamclient.
    Found: a HOME under /tmp is covered by the view's own /tmp.
-   Then (Kalen: build the lsteamclient bridge; one view per app)
+   Then (build the lsteamclient bridge; one view per app)
    featured/wine imports Proton 70b7e109 (archive) and builds its
    lsteamclient and steam.exe out of Wine's tree by Wine's makedep
    (as Proton's rules-makedep); Valve's ntdll hands a game's
@@ -10777,8 +11948,8 @@ module (krita, obs ...) are gone, with the recommended row.
    SIGSEGV at 11:29); the traced mfreadwrite/winedmo rebuilt (and
    their copies in the prefix).
    Mine, undone: a test Steam under a scratch HOME rewrote ~/.steam
-   links and libraryfolders.vdf; put back to /home/kalen.
-   Then (Kalen: Steam's window cannot be hidden; mouse look barely
+   links and libraryfolders.vdf; put back to ~.
+   Then (Steam's window cannot be hidden; mouse look barely
    moves, lock until Esc):
    - hide: wayland.c takes X11 and xdg minimize requests (Steam's
      Hide, a minimize button): wlc_window_hide_asked; orbiter
@@ -10788,7 +11959,7 @@ module (krita, obs ...) are gone, with the recommended row.
      no window; window_left finds another open one of its program.
      Seen hidden with Xlib test windows: minimize, taskbar toggle
      docked and floating.
-   - mouse look BUILT, NOT RUN (a hidden lock warps Kalen's pointer):
+   - mouse look BUILT, NOT RUN (a hidden lock warps the user's pointer):
      pointer constraints and relative pointer in wayland.c
      (wlc_pointer_held, wlc_pointer_relative; a held surface gets no
      absolute motion); WaylandView.hold_mouse locks the mouse
@@ -10802,8 +11973,8 @@ module (krita, obs ...) are gone, with the recommended row.
      only the base output's wl_output (Wayland clients see all).
      Checked hidden: two X11 windows open, xrandr lists one output
      (1280x800), windows draw at the pane's size. Steam's own starts
-     not repeated (it is Kalen's signed-in account).
-   - (Kalen: Steam a console pane plus a window that cannot be
+     not repeated (it is the user's signed-in account).
+   - (Steam a console pane plus a window that cannot be
      hidden; to its tray, a startup app) a module's `export startup
      ['steam -silent']` runs at orbiter's start (run_startup), in no
      pane (run_background: AppView.background, console with
@@ -10811,9 +11982,9 @@ module (krita, obs ...) are gone, with the recommended row.
      in a floating pane of their own (background_of, place_window);
      its taskbar button shows only while a window is up or minimized.
      A startup app's card runs it the same way (run again, it shows
-     its window). Seen on Kalen's orbiter (12:44): started in the
+     its window). Seen on the user's orbiter (12:44): started in the
      background, tray: registered .../NotificationItem/steam.
-   - (Kalen: games do not go fullscreen; straight to the real screen
+   - (games do not go fullscreen; straight to the real screen
      even with orbiter in a window; his pick: a window of its own)
      the base output (X's screen, a program's primary display) takes
      the real monitor's size (devices platform_screen_rect: the crtc
@@ -10833,7 +12004,91 @@ module (krita, obs ...) are gone, with the recommended row.
      2560x1440, first picture shown, back to 1528x823 on leaving. NOT
      seen on a screen, NOT driven: its input, Hot Lava asking
      fullscreen. Takes orbiter's next start (compositor and trinity).
-4. DONE, tree written Oct 23 04:41 (Kalen: add the 32-bit libs)
+3d. IN PROGRESS (Oct 24: Cyberpunk 2077 from the Windows Steam
+   drive, as far as it goes) featured/wine imports vkd3d-proton
+   3.0.1 (DX12 on Vulkan; install/lib/wine/vkd3d); the steam store
+   copies it into each prefix (vkd3d_into) and overrides d3d12,
+   d3d12core. A game must run in orbiter's Steam's view (lsteamclient
+   failed outside it: IPC code 12, then a fault): the store's line
+   names that Steam and its prefix as $HOME/.local/share/Steam
+   (client_root looks in install/home first) and writes `export
+   share` (the game's folder on the drive); orbiter's apps_pick
+   shares it into the consoles' view (share_console) first.
+   Run by hand in the view (nsenter): Cyberpunk2077.exe up, 5.5 GB,
+   vkd3d swapchain 2560x1440, shaders building; its window asked
+   fullscreen, orbiter put it on the screen, 2560x1440 frames
+   imported; the pane's picture showed see-through (cause not found).
+   NOT driven: the card's press after orbiter's reload.
+   Then (Oct 24: 4 fps in game) the game itself drew 75-83 fps
+   (vkd3d's queue profile, median 12 ms); orbiter drew 12 a second,
+   169 GPU waits a second behind the game's work. Then (pause
+   orbiter's drawing while a game it launched runs): trinity Window
+   pause_for (last member): set, the frame draws and presents
+   nothing and calls only that element's on_frame. WaylandView sets
+   it while its window is on the screen (fullscreen) and passes each
+   new frame there (once per frame id); it lets go when the window
+   leaves the screen or closes. Seen (orbiter restarted, Cyberpunk
+   from its card, the share step's first real run): 62-63 frames a
+   second to the screen (was 4-10), orbiter's own fps 0; the user
+   sees 40+. OPEN: the compositor re-renders every window's output
+   at the screen's refresh (~1,550 output frames a second in all).
+   Then (Oct 25: completely separate; the shell paused until the
+   game finishes) BUILT, not run: a window that asks fullscreen
+   goes on the screen window and stays there until it closes (or
+   the screen window is closed); a thread of its own (present_entry)
+   imports each new commit (wlc_frame_gen) and shows it; the main
+   loop, paused, only passes the screen window's input on and
+   watches for the end (on_frame). ScreenOut.keep_front and shut
+   (main thread only: X11 calls).
+3e. DONE (Oct 25: vkd3d-proton built from source like our Wine,
+   no MinGW) featured/wine imports vkd3d-proton 3.0.1 (3b10bd7a,
+   git, submodules) and builds it as Windows DLLs on our Wine:
+   our clang -target x86_64-windows, Wine's headers and C runtime
+   (wine.cross; paths.txt carries `install`), installed to
+   install/lib/wine/vkd3d/x64. Its C++ (dxil-spirv, dxbc-spirv;
+   no exceptions, no RTTI) takes libc++ from our LLVM checkout,
+   built in the import's > lines for Windows code on Wine's UCRT
+   (_LIBCPP_NO_VCRUNTIME, its own new/delete) into
+   install/lib/wine/cxx, and cxx/crt_cxx.c, our C++ start-up that
+   Wine's winecrt0 lacks (initializers, per-DLL atexit, the TLS
+   directory, on-demand thread_local init, thread-safe statics);
+   the entry is __cxx_dll_entry. vkd3d-proton.diff: clang takes the
+   __atomic branch and its own DXGI format header; /NOIMPLIB and the
+   .def object only for MSVC-style tools. wine.diff gains: math.h's
+   six comparison templates (libc++ wants them from UCRT),
+   DECLSPEC_SELECTANY on INITGUID GUIDs, msvcp140's
+   __ExceptionPtrSwap (was a stub). Checked: a D3D12 test program
+   creates factory, RTX 3060 device and queue through the installed
+   DLLs and releases cleanly; the store copied them into every
+   prefix (Cyberpunk's equal to the build). NOT run: Cyberpunk on it.
+   Found: a `>` inside an import line starts a new line (use tee);
+   a test run with no display hangs at exit (the release DLLs too).
+   Mine (Oct 25): ran `git checkout -- .` in checkout/HansKristian-
+   Work/vkd3d-proton (Rule #1); restored with patch -p1 of the diff.
+   Then (DXVK from source the same way): dxvk 3.1.1 (b1a1c99a)
+   imported after vkd3d-proton, on the same libc++ and one cross
+   file, featured/wine/wine.cross (C++ with exceptions and RTTI,
+   run by Wine's vcruntime140; vkd3d-proton passes cpp_eh none,
+   cpp_rtti false). libc++ now has exceptions, RTTI and filesystem
+   (DXVK's ofstream). crt_cxx.c gained type_info's vtable (no
+   constructor ever emits it) and __dyn_tls_init. dxvk.diff: Wine's
+   headers take DXVK's MinGW-header branches (RECT ==, d3d8's d3d9
+   namespace), tested by __WINE_ALLOC_SIZE. libdisplay-info.diff
+   (its submodule: a diff applies at clone, before submodules, so a
+   > line applies it after, skipped when applied): displayid.c
+   includes <sys/types.h> for ssize_t. wine.diff gains cfgmgr32.h's
+   `class` parameters renamed (C++ keyword). The steam store copies
+   DXVK by content now too. Every DLL's exports equal the release's.
+   Checked from scratch: wine.diff applies to a fresh clone of
+   6d211aab; vkd3d-proton's and DXVK's checkouts and builds moved
+   aside, `silver --build wine` cloned, patched and built both
+   (exit 0); D3D11 (cleared pixel read back) and D3D12 (device,
+   queue) tests pass on those DLLs, with a display (a hidden
+   orbiter's Wayland: with none, DXGI waits forever on Wine's
+   desktop). Cyberpunk's and Hot Lava's prefixes hold them.
+   NOT run: a game on these builds; Wine itself from a fresh clone
+   (its diff checked only).
+4. DONE, tree written Oct 23 04:41 (add the 32-bit libs)
    os-bootstrap add_steam: install/bin/steam and install/lib/steam
    (20 MB), /lib/ld-linux.so.2, and what Valve's steam-libs-i386 /
    -amd64 leave to the system, both arches with their ldd closure
@@ -10841,7 +12096,7 @@ module (krita, obs ...) are gone, with the recommended row.
    libgbm, libX11, libxcb, libxcb-dri3, libXinerama, libudev,
    libgpg-error, libdbus-1), libnss3 (64), and NVIDIA's 32-bit half
    (GLX, EGL, glcore, tls, glsi, glvkspirv, gpucomp, eglcore): about
-   215 MB more. Every drive tree is x86 (Kalen: no ARM or FEX for
+   215 MB more. Every drive tree is x86 (no ARM or FEX for
    Steam). No 32-bit Mesa (AMD / Intel). Tree: 71,159 entries,
    5.23 GB. Checked: the tree's 32-bit loader resolves libGLX_nvidia's
    whole closure inside the tree. The 32-bit libraries sit twice
@@ -10850,9 +12105,111 @@ module (krita, obs ...) are gone, with the recommended row.
    booted. On Ubuntu, Steam in orbiter uses the system's own i386
    libraries (the view shows /usr and /lib).
 
+## featured/steam self-contained — live list (Oct 25 2026)
+
+the user: a featured module is a module install, self-contained:
+`silver --build steam` alone brings everything it needs, nothing
+from orbiter or another module's imports (aura, gedit, trinity).
+Line (his pick): import every library Wine, Steam, DXVK, vkd3d-
+proton, GStreamer link or load, and build tools not yet ours
+(bison, flex, cmake, wayland-scanner); the system keeps the
+kernel, glibc, the GPU driver, running services (PipeWire, dbus
+daemon) and silver's base tools (sh, make, perl, python3, git,
+curl, tar, patch). No system pkgconfig dirs in any import.
+1. DONE steam imports wine (a featured module finds its sibling).
+   Valve's package is unpacked by our llvm-ar and tar (dpkg-deb
+   is Debian's alone); checked equal to dpkg-deb's files.
+2. DONE wine imports its own base, each line the same text as the
+   module that shares it (one cache key, no rebuild between them):
+   pkgconf, meson (aura's), zlib, libpng (img's), libffi, glib
+   (aura's), libdrm (amdgpu only), Vulkan-Headers, -Loader
+   (trinity's).
+3. DONE libraries: FreeType is ONE shared library for trinity and
+   wine (the user: no duplicate, no static when not needed): trinity's
+   import gained -DBUILD_SHARED_LIBS=ON and an rpath, wine repeats
+   the line. fontconfig + expat, Wayland 1.23.1, libxml2 (no icu,
+   lzma), xkeyboard-config (layouts in install/share/X11/xkb),
+   libpulse 17.0 client + libsndfile (no codecs), dbus 1.16.2
+   (library only, the system bus at /run/dbus), libudev-zero 1.0.3,
+   libgcrypt + libgpg-error (aura's), libglvnd 1.7.0
+   (libglvnd.diff: the driver's vendor folders /etc and
+   /usr/share/glvnd), SDL2 2.30.11 (joysticks only). Wine
+   --without-alsa (PulseAudio covers sound). Checked: ldd of every
+   Wine unix library, GStreamer, FFmpeg and the libraries above
+   names nothing outside install but glibc, libgcc_s, libstdc++.
+   Found: an archive with CMakeLists.txt builds by cmake even with
+   a configure (expat, libxml2, libsndfile, SDL2); an archive whose
+   folder matches a git import's reuses that checkout (freetype).
+   trinity's next build links the shared FreeType (not rebuilt).
+   Then (the X compose data too): xorgproto, xtrans, libXau,
+   xcb-proto, libxcb, libX11 1.8.10 whole, libXext, libXrender,
+   libXrandr (the Vulkan loader's X11 support needs them; its locale folder is
+   install/share/X11/locale). OPEN: Wine's dlopens not seen at run
+   time yet.
+4. DONE bison 3.8.2, flex 2.6.4, cmake 3.31.6 (bootstrapped by its
+   > lines, then silver configures it again with itself).
+5. DONE a build of steam from no checkouts or builds of its 38
+   imports (the old ones in install/tmp/fresh-aside, to delete once
+   games are played on it): exit 0, Wine cloned and built, every
+   import fetched; ldd of all of it names no system library past
+   glibc, libgcc_s, libstdc++; Steam's launcher unpacked equal.
+   Found on the way: the Vulkan loader's X11 support needs libxcb,
+   libX11, libXrandr (imported, item 3).
+7. IN PROGRESS (Oct 25: our clang for every import) silver.c
+   checkout(): a native import's build gets CC and CXX =
+   install/bin/clang, clang++ (an import's own CC line wins: it
+   comes later), and `cc:clang` in its cache key, so an import
+   built by gcc builds again at its module's next build (every
+   module, not only wine: aura's WebKit too). Before, cmake, meson
+   and autotools all took the system's gcc. silver rebuilt (make).
+   Running: the steam chain with it.
+6. IN PROGRESS (Oct 25: no GStreamer; Wine's decoding through
+   trinity; H.264, H.265, AAC only, the rest unsupported; GStreamer
+   out now) DONE: its five imports removed, their 607 installed
+   files, builds and checkouts deleted, Wine --without-gstreamer
+   (game videos black meanwhile).
+   WRITTEN, building: winegstreamer's unix side is one file,
+   dlls/winegstreamer/trinity.c (in wine.diff with configure.ac
+   and its Makefile.in: TRINITY_LIBS builds it, GStreamer's 15
+   unix files out): wg_transform over webgfx's new calls
+   (webgfx_decoder_* over trinity's Decoder: avcC / hvcC, length-
+   prefixed samples, pictures in display order; webgfx_aac_* over
+   spectra's new AacDecoder, faad2 to float). Annex B or length-
+   prefixed input; parameter sets kept until SPS + PPS (+ VPS) make
+   the codec record; the first picture's size is told by
+   MF_E_TRANSFORM_STREAM_CHANGE; outputs NV12, I420 / IYUV, YV12,
+   YUY2, UYVY, RGB32, ARGB32 (BT.601 / 709 limited range, by the
+   type's matrix else 720 lines); raw video converts between those
+   (nearest scale on a size change); PCM / float in 8-64 bits,
+   channel mapping, linear resampling. wg_parser and wg_muxer say
+   not supported (DirectShow's and the WM reader's own files);
+   Wine registers no H.265 decoder class (its unix side takes one).
+   wine.diff checked on 6d211aab's own files (git show).
+
+## Sober (Roblox) — live list (Oct 25 2026)
+
+1. BUILT, not run (Roblox playing here; its install is on
+   Windows) the Windows player refuses Wine (Hyperion), so
+   featured/sober installs Sober 1.8.0 (Roblox's Android client on
+   Linux, Flatpak only) from Flathub into install/lib/flatpak
+   (FLATPAK_USER_DIR; the user's own Flatpak untouched), 2.5 GB with
+   GNOME 51 and the NVIDIA 610.57.04 GL extension; install/bin/sober
+   runs it (an absolute WAYLAND_DISPLAY cut to its name: flatpak
+   1.14 joins it to the runtime folder). Icon: Sober's own 256 px.
+   An export func needs a library: no `export build none`.
+   Checked: its sandbox starts and sees the nvidia driver.
+2. DONE (Oct 25: it won't load) in orbiter's view flatpak stopped
+   at "error: Could not connect": Ubuntu's flatpak asks the system
+   bus for parental controls (malcontent) before any run, and a
+   view has no /run/dbus. install/bin/sober starts an empty bus of
+   its own as DBUS_SYSTEM_BUS_ADDRESS (no accounts service on it:
+   the controls read as off), stopped when Sober ends. Checked in
+   a bound console's view (nsenter): Sober starts and gets to its
+   display. NOT seen: its window on orbiter's Wayland.
+
 ## The exchange, narrow — live list (Oct 23 2026)
 
-1. DONE (Kalen: the agent's text must not be squeezed to show the
+1. DONE (the agent's text must not be squeezed to show the
    avatar) when the exchange (its box, or the window) is narrower than
    the avatar's column plus 560 px of text (ux units), the text runs
    across the whole width down to a split, and the avatar fills the
@@ -10868,7 +12225,7 @@ module (krita, obs ...) are gone, with the recommended row.
 
 ## Style inheritance — live list (Oct 23 2026)
 
-Kalen: a subclass's style is its base's with its own lines in place,
+a subclass's style is its base's with its own lines in place,
 compiled together once as it is read: one set of declarations, never
 more applied in layers; the order of Type:State blocks is kept.
 1. DONE silver: a member whose initializer is a { } block for a type
@@ -10900,7 +12257,7 @@ more applied in layers; the order of Type:State blocks is kept.
 
 ## Text fields on trinity's editable layer — live list (Oct 23 2026)
 
-Kalen: the aura URL in the system bar took no arrow keys; every
+the aura URL in the system bar took no arrow keys; every
 field that is typed into uses trinity's editable layer, never a
 string orbiter appends to. trinity: the layer gained Delete, Home,
 End, ctrl/cmd + a c x v (one line pasted) and `secret` (a dot a
@@ -10918,7 +12275,7 @@ element marks no_default goes no further; field_key / field_char
 7. DONE trinity's orbiter-bar navigator filter (NavField).
 Find / replace / pattern rows pass their keys to orbiter now
 (Enter never reached it before).
-8. DONE (Kalen) the menu drawer's entries by the arrows: up /
+8. DONE the menu drawer's entries by the arrows: up /
    down light one (orbiter menu_lit; TrayRow :chosen, the hover's
    look; MenuBuild keeps it in view), Enter runs it; a text box in
    the menu (not its filter) keeps the arrows; a filter change
@@ -10940,26 +12297,26 @@ a --clean build (orbiter's imports, aura, player, aeon done).
 OPEN silver: a style block's state named `:lit` was joined with the
 line after it (`:litlayers.body:` in the compiled CSS): the block
 was disabled. Not chased; the state is `:chosen`.
-9. BUILT, not seen (Kalen, Oct 23) in an open bar drawer, left /
+9. BUILT, not seen (Oct 23) in an open bar drawer, left /
    right open the next name's drawer along the bar (bar_step: the
    selected MenuTop / BarCrumb, its siblings by x, opened as a
    press would); the drawer's filter or a text box keeps them.
    Fixed with it: the path drawer's arrows stopped on its
    separator after Navigate (drawer_choices skips rules).
-10. BUILT, not seen (Kalen, Oct 23) an Alt tap (Alt down and up,
+10. BUILT, not seen (Oct 23) an Alt tap (Alt down and up,
    no key or press between) lights the app's name at the bar's
    start (bar_hl, the name's `selected`); left / right move the
    light along the bar, down or enter opens that name's drawer,
    escape, a press or another tap lets the bar go; a tap with a
-   drawer open shuts it. Not F keys (Kalen: Fn on laptops).
+   drawer open shuts it. Not F keys (Fn on laptops).
    Limit: a plain text field that takes its own keys (no app
    forwarding) never passes Alt on.
-11. BUILT, not seen (Kalen, Oct 23) ctrl / cmd + space: the
+11. BUILT, not seen (Oct 23) ctrl / cmd + space: the
    navigator, as the bar's globe (globe_press, shared with the
    click); the globe is one of the bar's names for the arrows: left
    past the first name lights it (a drawer open shuts), down or
    enter opens the navigator.
-12. DONE (Kalen, Oct 23) featured/blender: blender.org's Linux
+12. DONE (Oct 23) featured/blender: blender.org's Linux
    tarball (the one aeon imports), install/bin/blender, `export
    extensions ['.blend']` and `export run ['blender']` (how a
    program module's file runs: that program, the file after it).
@@ -10975,7 +12332,7 @@ was disabled. Not chased; the state is `:chosen`.
    OPEN: before install a .blend opens as hex (no prompt to
    install); the module's name in the registry is silver-blender
    (module_of_export finds no root folder for featured modules).
-13. DONE (Kalen, Oct 23) an app's Console entry starts a new console
+13. DONE (Oct 23) an app's Console entry starts a new console
    instance in a new pane, in the app's folder (orb.console: a pane
    added, console_pane its index); the app keeps its window. At four
    panes it falls back to the app's pane. Seen hidden: two picks
@@ -10983,7 +12340,7 @@ was disabled. Not chased; the state is `:chosen`.
 
 ## clint, the IRC client (Oct 23 2026)
 
-1. BUILT, seen hidden (Kalen: an irc client app, named clint)
+1. BUILT, seen hidden (an irc client app, named clint)
    clint/clint.ag, `silver clint`; flags --server (irc.efnet.org),
    --port (6697), --secure (TLS, true), --nick (else $USER),
    --channels '#a,#b'. mbedtls over a non-blocking socket, read
@@ -10998,7 +12355,7 @@ was disabled. Not chased; the state is `:chosen`.
    topic, names, a long line wrapped, an action, a join, a line
    said and answered, /msg opening a conversation. NOT run against
    a real network or over TLS. No icon yet; no logs kept to disk.
-2. DONE (Kalen: "doesnt do anything there") three causes:
+2. DONE three causes:
    - mbedtls_net_connect blocked the main thread (EFnet's first
      address is IPv6 and never answered: SYN-SENT for minutes), so
      no frame drew. The connection is now steps each frame
@@ -11009,10 +12366,10 @@ was disabled. Not chased; the state is `:chosen`.
      the key parsing from tls's, whose PSA was never started, so
      every root failed (-0x3B00). clint takes mbedtls from tls now.
    - EFnet's servers use self-signed certificates (openssl: verify
-     error 18). Kalen: the user typed the host, so its certificate
+     error 18). the user typed the host, so its certificate
      is the one they trust: no check (VERIFY_NONE), no pinning, no
      roots loaded.
-   - (Kalen: "TLS refused by irc.efnet.org -15104") irc.efnet.org
+   - irc.efnet.org
      is ten servers by DNS; 188.240.145.90 has a 6144-bit RSA key,
      past the 4096 bits our mbedtls (tls's build) takes: -15104 is
      -0x3B00, invalid public key; 195.159.90.90 does not answer on
@@ -11020,20 +12377,20 @@ was disabled. Not chased; the state is `:chosen`.
      next one ("<why>: trying another of its servers"). Reproduced
      on 188.240.145.90 alone; irc.efnet.org joined #linux after.
      OPEN: tls's mbedtls could take keys up to 8192 bits.
-   - (Kalen: efnet.deic.eu ended at "Found your hostname", then
+   - (efnet.deic.eu ended at, then
      "The server closed the connection") that server drops IPv4
      clients before its welcome, with no ERROR line; openssl -4
      sees the same (over IPv6 it waits on). A connection closed
      before 001 (IrcLink.welcomed) goes on to the host's next
      server. Checked: irc.efnet.org joined, MOTD shown.
-   - (Kalen: still no connection) checked every irc.efnet.org
+   - (still no connection) checked every irc.efnet.org
      server with openssl: over TLS on 6697 only 4 of 10 ever say
      welcome (swepipe, colosolutions, deft, Prison.NET; swepipe's
      key is too big for us); the rest hang after "Found your
      hostname" or time out. A server with no welcome 30 s after
      the connection (IrcLink.waited) now goes to the next. Three
      hidden runs in a row joined #linux.
-3. BUILT, seen hidden (Kalen: selection as in the code editor;
+3. BUILT, seen hidden (selection as in the code editor;
    the list on the right) the log selects: press and drag (across
    lines, by character), double-click a word, shift+click extends;
    drawn as the editor's (#425 fill, soft #ede3 glow, rounded 4).
@@ -11044,7 +12401,7 @@ was disabled. Not chased; the state is `:chosen`.
    and field on the left. NOT driven: ctrl+c (the hidden run
    shares the desktop's clipboard). Limit: columns count bytes in
    a monospace font, so a line with UTF-8 selects a little off.
-4. BUILT, seen hidden (Kalen: no padding, no rounding, edge to
+4. BUILT, seen hidden (no padding, no rounding, edge to
    edge, near 1 px borders, the toolbars' near glow; a user split)
    the selection and the list's rows are square, the row's whole
    height, a 1 px #fff1 border the pointer's near light brings up
@@ -11055,7 +12412,7 @@ was disabled. Not chased; the state is `:chosen`.
    finds the chat pane's mounted parts. Seen: the first seam
    dragged 680 -> 560 px, the log rewrapped, the borders lit
    near the pointer.
-5. BUILT, seen hidden (Kalen: one list; the server's heading
+5. BUILT, seen hidden (one list; the server's heading
    groups its channels and each one's people) the right pane is
    one list (BufferList; UserList gone): the server as the
    heading, its channels and talks a step in, each channel's
@@ -11065,10 +12422,10 @@ was disabled. Not chased; the state is `:chosen`.
    it opens a talk (clint.talk_to). The wheel scrolls it. The
    split is the chat and this list (240 px). Seen: fold, unfold,
    alice pressed opened 'alice' under the server.
-6. DONE (Kalen) the field the same way: ClintInput's style is
+6. DONE the field the same way: ClintInput's style is
    edge to edge, square, clear, #fff1 1 px, near-lit, no green
    when focused. Seen hidden.
-7. BUILT, not seen (Kalen: the server heading took no click once
+7. BUILT, not seen (the server heading took no click once
    another conversation was chosen) orbiter's: Editor.on_press
    gave the top rows of a pane to the source's pinned header band
    (pinned_rows, two rows here, 44 px) even while the running app

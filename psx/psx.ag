@@ -89,10 +89,10 @@ element psx : trinity
         frames = 0
 
     # the host's menu: taken on the next frame
-    public [ Action ] func save_state []
+    action func save_state []
         save_req = true
 
-    public [ Action ] func load_state []
+    action func load_state []
         load_req = true
 
     # in psx's own storage, by the disc's name: its folder may be a

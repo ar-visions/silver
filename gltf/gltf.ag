@@ -616,10 +616,11 @@ class TextureInfo
 
 class PbrMetallicRoughness
     public ior:                          f32
-    public baseColorFactor:              vec4f
+    # glTF's defaults when a file leaves a factor out
+    public baseColorFactor:              vec4f [ 1.0, 1.0, 1.0, 1.0 ]
     public baseColorTexture:             TextureInfo
-    public metallicFactor:               f32
-    public roughnessFactor:              f32
+    public metallicFactor:               f32 [ 1.0 ]
+    public roughnessFactor:              f32 [ 1.0 ]
     public metallicRoughnessTexture:     TextureInfo
     public normalTexture:                TextureInfo
     public occlusionTexture:             TextureInfo
@@ -670,6 +671,8 @@ class GltfImage
     public name:            string
     public uri:             path
     public mimeType:        string
+    # a .glb's picture lives in its binary chunk, not a file
+    public bufferView:      i64
 
 class Material
     public name:             string
@@ -702,12 +705,77 @@ class GltfModel
 
     # gltf uris resolve relative to the gltf file itself
     static func open [ p: path ] -> GltfModel
+        if [ p.is_ext[ 'glb' ] ] return open_glb[ p ]
         GltfBuffer.set_base[ p.parent_dir[] ]
         m : p.load[ typeid[ GltfModel ], null ]
         GltfBuffer.set_base[ null ]
         g : cast GltfModel [ m ]
         if [ g ] g.src_dir = p.parent_dir[]
         return g
+
+    # binary glTF: a JSON chunk, then one BIN chunk as buffer 0
+    static func open_glb [ p: path ] -> GltfModel
+        fp : @FILE [ fopen[ p.chars, "rb" ] ]
+        if [ !fp ]
+            log 'gltf: cannot open {p}'
+            return null
+        fseek[ fp, 0, SEEK_END ]
+        length : i64 [ ftell[ fp ] ]
+        rewind[ fp ]
+        bytes : new u8 [ length ]
+        fread[ bytes, 1, length, fp ]
+        fclose[ fp ]
+        b8   : @u8 [ bytes ]
+        head : cast @u32 [ b8 ]
+        if [ length < 28 || head[ 0 ] != 0x46546C67 || head[ 1 ] != 2 ]
+            log 'gltf: {p} is not a version 2 glb'
+            return null
+        jlen  : i64 [ i64[ head[ 3 ] ] ]
+        jtext : new i8 [ jlen + 1 ]
+        jc    : @i8 [ jtext ]
+        memcpy[ jc, @b8[ 20 ], jlen ]
+        jc[ jlen ] = 0
+        g : cast GltfModel [ Au.parse[ typeid[ GltfModel ], jc, null ] ]
+        if [ !g ]
+            log 'gltf: {p} has no readable JSON chunk'
+            return null
+        g.src_dir = p.parent_dir[]
+        at : i64 [ 20 + jlen ]
+        if [ at + 8 <= length && g.buffers && g.buffers.count > 0 ]
+            bh   : cast @u32 [ @b8[ at ] ]
+            blen : i64 [ i64[ bh[ 0 ] ] ]
+            bin  : new u8 [ blen ]
+            memcpy[ bin, @b8[ at + 8 ], blen ]
+            buf0 : g.buffers[ 0 ]
+            buf0.data       = bin
+            buf0.byteLength = u64[ blen ]
+        g.unpack_images[ p ]
+        return g
+
+    # a .glb's pictures go to the cache as files, named by the
+    # glb and its time, so texture_uri finds them as any other
+    func unpack_images [ p: path ]
+        if [ !images || !buffers || buffers.count == 0 ] return
+        cache : path.path_cache[ 'gltf' ]
+        dir   : path '{cache}/{p.stem[]}-{p.modified_time[]}'
+        dir.make_dir[]
+        bin : buffers[ 0 ].data
+        for [ i: i32 0, i < images.count, i += 1 ]
+            im : images[ i ]
+            if [ !im || im.uri || !im.mimeType ] continue
+            png : bool [ im.mimeType == 'image/png' ]
+            ext : string [ (png) ? 'png' : 'jpg' ]
+            bv  : bufferViews[ im.bufferView ]
+            to  : path '{dir}/image{i}.{ext}'
+            if [ !to.exists[] ]
+                out : @FILE [ fopen[ to.chars, "wb" ] ]
+                if [ !out ]
+                    log 'gltf: cannot write {to}'
+                    continue
+                src : @u8 [ bin ]
+                fwrite[ @src[ bv.byteOffset ], 1, bv.byteLength, out ]
+                fclose[ out ]
+            im.uri = to
 
     func texture_uri [ ti: TextureInfo ] -> path
         if [ !ti || !textures ] return null
@@ -724,6 +792,19 @@ class GltfModel
         base : GltfBuffer.get_base[]
         if [ base ] return path '{base}/{im.uri}'
         return im.uri
+
+    # glTF's default and 10497 repeat; 33071 is clamp to the edge
+    func texture_repeats [ ti: TextureInfo, along_v: bool ] -> bool
+        if [ !ti || !textures ] return true
+        if [ ti.index < 0 || ti.index >= textures.count ] return true
+        tx : textures[ ti.index ]
+        if [ !tx || !samplers ] return true
+        if [ tx.sampler < 0 || tx.sampler >= samplers.count ]
+            return true
+        sm : samplers[ tx.sampler ]
+        mode : i64 [ (along_v) ? sm.wrapT : sm.wrapS ]
+        return mode != 33071
+
     func find [n: cstr] -> Node
         for [node: Node] in nodes
             if [strcmp [node.name, n] == 0]
@@ -878,3 +959,16 @@ func pbr_defaults [] -> PbrMetallicRoughness
         pbr.iridescenceThicknessMinimum = 100.0
         pbr.iridescenceThicknessMaximum = 400.0
     return pbr
+
+# a factor the file leaves out reads as glTF's default, 1
+expect func t_pbr_defaults [] -> bool
+    text : string '{{ "pbrMetallicRoughness": {{ "baseColorTexture": {{ "index": 0 }} }} }}'
+    m : cast Material [ Au.parse[ typeid[ Material ], text.chars, null ] ]
+    pbr : m.pbrMetallicRoughness
+    given : string '{{ "pbrMetallicRoughness": {{ "metallicFactor": 0.05, "roughnessFactor": 0.6 }} }}'
+    g : cast Material [ Au.parse[ typeid[ Material ], given.chars, null ] ]
+    gp : g.pbrMetallicRoughness
+    log 'pbr defaults: metal {pbr.metallicFactor} rough {pbr.roughnessFactor} base {pbr.baseColorFactor.x}; given {gp.metallicFactor} {gp.roughnessFactor}'
+    return pbr.metallicFactor == 1.0 && pbr.roughnessFactor == 1.0
+        && pbr.baseColorFactor.w == 1.0 && gp.metallicFactor < 0.1
+        && gp.roughnessFactor < 0.7

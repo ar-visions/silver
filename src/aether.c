@@ -5809,7 +5809,14 @@ enode e_create_from_map(aether a, etype t, map m) {
     res->meta_a = hold(t->meta_a);
     res->meta_b = hold(t->meta_b);
 
-    if (is_m) {
+    if (is_m && t->meta_props) {
+        // its settings (map V [ K, hsize: n ]) set before its init
+        res->is_alloc = !a->building_initializer;
+        res = e_init(a, res, t->meta_props, null, null);
+        pairs(m, i) {
+            e_fn_call(a, f_mset, a(res, i->key, i->value), false, false);
+        }
+    } else if (is_m) {
         // map type: initialize first, then populate entries
         efunc f_initialize = (efunc)u(efunc,
             find_member(etypeid(Au)->autype, "initialize", AU_MEMBER_FUNC, 0, false));
@@ -5977,6 +5984,23 @@ AU_EXPORT enode e_convert_or_cast(aether a, etype output, enode input) {
             enode au9 = with_value(_llvalue((enode)av9),
                 enode(mod, a, loaded, false, autype, typeid(Au)));
             return e_fn_call(a, u(efunc, fn_cast), a(au9), false, false);
+        }
+        // a value of any type to a number: Au's au_real_of / au_int_of
+        // read the box by its own type (a boxed f64 read as f32 was junk)
+        Au_t on9 = co9 ? au_arg_type((Au)co9->autype) : null;
+        if (ci9 && on9 && ci9->autype == typeid(Au) &&
+                (on9->traits & AU_TRAIT_PRIMITIVE) && !on9->is_pointer &&
+                !(on9->traits & AU_TRAIT_POINTER) && on9 != typeid(bool)) {
+            bool real9 = on9 == typeid(f32) || on9 == typeid(f64);
+            enode av9 = input->loaded ? input : enode_value(input, true);
+            LLVMTypeRef  pt9 = LLVMPointerTypeInContext(a->module_ctx, 0);
+            LLVMTypeRef  rt9 = real9 ? LLVMDoubleTypeInContext(a->module_ctx)
+                                     : LLVMInt64TypeInContext(a->module_ctx);
+            LLVMValueRef ar9 = _llvalue((enode)av9);
+            LLVMValueRef nl9 = error_call(a, real9 ? "au_real_of" : "au_int_of",
+                rt9, &pt9, &ar9, 1);
+            enode nv9 = value(real9 ? etypeid(f64) : etypeid(i64), nl9);
+            return e_create(a, output, (Au)nv9, false);
         }
     }
 
@@ -6513,7 +6537,8 @@ enode aether_e_create(aether a, etype mdl, Au args, bool no_pool) { sequencer
                 e_fn_call(a, f_hold_members, a(alloc), false, false);
                 res = alloc;
             } else {
-                res = e_init(a, alloc, null, null, null);
+                // a collection's settings from its type (map V [ K, hsize: n ])
+                res = e_init(a, alloc, m->meta_props, null, null);
             }
         }
 
@@ -11688,7 +11713,13 @@ void aether_import_Au(aether a, string ident, Au lib) {
         // we run silver in lldb we arrive at user code
         //
         // this is great for advancing language and foundation
-        if (lib_instance) {
+        // once per build of the import: a library no newer than the mark
+        // its passing tests left has passed them already
+        path   libp   = instanceof(lib, path) ? (path)lib : null;
+        path   tested = libp ? f(path, "%o.tested", libp) : null;
+        bool   passed = tested && file_exists("%o", tested) &&
+            modified_time(tested) >= modified_time(libp);
+        if (lib_instance && !passed) {
             members(au_module, mem) {
                 if (mem->member_type == AU_MEMBER_FUNC &&
                     mem->access_type == interface_expect &&
@@ -11701,6 +11732,8 @@ void aether_import_Au(aether a, string ident, Au lib) {
                     print       ("[import %s] expect: %s successful",  au_module->ident, mem->ident);
                 }
             }
+            // every one passed (a failure stops the build above)
+            if (tested) save(tested, (Au)string("passed\n"), null);
         }
 
         au_module->is_closed = true;

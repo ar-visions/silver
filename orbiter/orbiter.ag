@@ -31,6 +31,7 @@ import wizard
 import wifi
 import tray
 import wayland
+import keyboard
 
 
 # import c headers
@@ -76,6 +77,13 @@ import Login
 # split, and the editor keeps key 'text' inside it
 # the editor down the 'text' chain: pane split, the editor|panel split,
 # the editor|band column, the editor
+# silver's install, wherever orbiter was started: silver-host runs
+# it in <install>/share/<app>; else the start folder's install
+func install_root [] -> path
+    i : path path.path_install[]
+    if [ i ] return i
+    return path '{path.path_startup[]}/install'
+
 func editor_under [ spl: element ] -> Editor 
     te : element [ spl ]
     for [ d: i32 0, d < 4, d += 1 ]
@@ -570,7 +578,7 @@ element EditorView
         if [ ed0 && ed0.src && psess[].count == 0 ]
             dir0 : string ed0.src.parent_dir[].filename[]
             if [ ed0.src.stem[] == dir0 && ed0.src.ext[] == 'ag' ]
-                bin : path '{o.startup_path}/install/build/{dir0}'
+                bin : path '{install_root[]}/build/{dir0}'
                 li0  : vec AppView o.instances_of[ ed0.src ]
                 if [
                     bin.exists[] && li0.count == 0
@@ -812,13 +820,6 @@ element EditorView
                 # bounds are parent-relative: compose split + inner
                 # split + editor
                 cx8 : f32 [ spl.bounds.x + tx8.bounds.x + ed.bounds.x ]
-                # the dock, the full navigator's own with the system bar
-                # (a free window's is a dialog, without it)
-                if [ bot9 && !orb[].pane_floats[ pane_index ] ]
-                    dk8 : f32 orb[].dock_w[]
-                    t['dock'] = Dock [ elements: orb[].dock_els[],
-                        area: Region [ 'l{cx8}px t0 w{dk8}px b0' ] ]
-                    cx8 += dk8
                 cy8 : f32 [ spl.bounds.y + tx8.bounds.y + ed.bounds.y ]
                 ch8 : f32 [ ed.bounds.h ]
                 # never under the bottom bar
@@ -923,7 +924,7 @@ element BuildCard
         if [ dir && (!icon || '{icon.file}' != '{dir}') ]
             orb : orbiter [ ux.app_object ]
             nm : string orb.install_name_of[ dir.filename[] ]
-            ag : path '{path.path_startup[]}/install/export/{nm}.agi'
+            ag : path '{install_root[]}/export/{nm}.agi'
             icon = AppIcon [ file: dir, module: true, agi: ag ]
         isz : f32 [ 64.0 ]
         nm  : string [ (inst.app_mod) ? inst.app_mod : '' ]
@@ -1520,17 +1521,29 @@ element AgentHome
         area: l0 t0 r0 b0
     }
 
+    # in the main menu: the avatars on top, the agents under them
+    public stacked : bool
+
     func render [] -> Elements
         t : Elements []
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ !orb || !bounds ] return t
         un : f32 ux_unit[ ux ]
-        # the platform behind; the list at the right, beside it
-        lx : f32 [ round[ bounds.w * 0.42 ] ]
-        t['plat'] = orb.platform_of[ lx ]
+        # the platform behind; the list at the right, beside it (or
+        # under it, stacked)
+        ph : f32 [ round[ bounds.h * 0.38 ] ]
+        lx : f32 [ (stacked) ? round[ 8.0 * un ]
+                             : round[ bounds.w * 0.42 ] ]
+        pl : element orb.platform_of[ (stacked) ? bounds.w : lx ]
+        pv : PlatformView pl
+        pv.top_down = stacked
+        pl.area = (stacked) ? Region [ 'l0 t0 r0 h{ph}px' ]
+                            : Region { l0 t0 r0 b0 }
+        t['plat'] = pl
         rh : f32 [ round[ 30.0 * un ] ]
-        ed : f32 [ round[ 24.0 * un ] ]
-        top : f32 [ round[ 12.0 * un ] ]
+        ed : f32 [ (stacked) ? round[ 8.0 * un ] : round[ 24.0 * un ] ]
+        top : f32 [ (stacked) ? ph + round[ 8.0 * un ]
+                              : round[ 12.0 * un ] ]
         y : f32 [ top ]
         if [ orb.home_why && orb.home_why.count > 0 ]
             t['ahome_why'] = HomeError [ label: orb.home_why,
@@ -1952,6 +1965,8 @@ element SeamShade
             fill_gradient_angle: 180.0
             fill_gradient_radius: 12.0
             stroke_width: 0
+    :use_mobile
+        area: r0 t0 w0.36 b0
     }
 
 # the nav list's view column: a shaded right edge, its buttons lit
@@ -2306,6 +2321,10 @@ class AppEntry
     public apps    : vec AppEntry
     # a store app: the line it runs with, its program in install/bin
     public launch  : string
+    # a store app's folder outside silver, shared into its view
+    public share   : string
+    # a file its app opens (a rom, a disc): the card opens it
+    public opens   : path
 
 # a pin in the dock: its app icon, else the nav list's icon
 element DockIcon
@@ -3493,6 +3512,10 @@ element orbiter : trinity # implements compiler
     # (never in a search's results); shift's + and − on an entry manage
     # it
     public [ StatePersist ] pins : vec string
+    # the apps screen's order, as the user dragged it: app names,
+    # and its sections (each held a second, then moved)
+    public [ StatePersist ] app_order   : vec string
+    public [ StatePersist ] group_order : vec string
     # the nav entry whose delete is held down
     public delete_armed    : string
     public delete_armed_ms : i64       # when the hold began
@@ -3584,6 +3607,9 @@ element orbiter : trinity # implements compiler
     mutable menu_filter    : string
     # typed on the apps screen: the apps whose names hold it
     mutable apps_filter    : string [ '' ]
+    # a phone: when a press low on the screen that nothing took went
+    # down (0 none); held there half a second, the pane goes home
+    mutable home_hold_us   : i64
     # the bar's title being typed (a URL), what is typed, and whether
     # the first key replaces it whole
     mutable bar_typing     : bool
@@ -3766,6 +3792,8 @@ element orbiter : trinity # implements compiler
     # are, 1 the halo (thinking), 2 edits coming in, 3 the beam
     public avatar_mode   : i32
     intern scene_el_nm   : string
+    # the scene last found missing: said once, tried again each frame
+    intern scene_miss    : string
     # built scenes kept between switches (the agent view's Milky Way
     # and the chosen one), with their pictures while off the window
     intern scene_kept    : map element [ string ]
@@ -3892,7 +3920,7 @@ element orbiter : trinity # implements compiler
                     fs8 : file_state fstate[ rp ]
                     if [ fs8 ] fs8.args = '{rp}'
             el
-                bp : path '{startup_path}/install/build/{resource}'
+                bp : path '{install_root[]}/build/{resource}'
                 if [ bp.exists[] ]
                     # open the module's SOURCE and host it in the pane.
                     # exec'ing the binary here gave it its own window
@@ -4093,7 +4121,7 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < target_names.count, i += 1 ]
             name    : string target_names[i]
             src     : path   target_srcs[i]
-            product : path  '{startup_path}/install/build/{name}'
+            product : path  '{install_root[]}/build/{name}'
             if [ !product.exists[] ]
                 compile_log.push[ 'stale (no product): {name}' ]
                 compile[ name ]
@@ -4178,7 +4206,7 @@ element orbiter : trinity # implements compiler
         di   : i32 [ fn.rindex_of[ '.' ] ]
         if [ di > 0 ] stem = fn.mid[ 0, di ]
         fw : FmtWatch [ proj: stem, file: f,
-                        map: '{startup_path}/install/syntax/{stem}.f',
+                        map: '{install_root[]}/syntax/{stem}.f',
                         start_us: epoch_micros[] ]
         fmt_watch[ k ] = fw
 
@@ -4246,7 +4274,7 @@ element orbiter : trinity # implements compiler
             if [ fmt_borrowed.contains[ fa ] && fmt_borrowed[ fa ] == sm ]
                 continue
             fmt_borrowed[ fa ] = sm
-            sd : path '{startup_path}/install/syntax'
+            sd : path '{install_root[]}/syntax'
             entries : sd.ls[ null, false ]
             if [ !entries ] continue
             best : fmt_file null
@@ -4302,7 +4330,7 @@ element orbiter : trinity # implements compiler
             fmt_stop[ stale[i] ]
 
     func cov_file [] -> path
-        return path '{path.path_startup[]}/install/tmp/coverage.lcov'
+        return path '{install_root[]}/tmp/coverage.lcov'
 
     # the map follows the file: a run replaces it, clear removes it
     func cov_poll []
@@ -4479,6 +4507,21 @@ element orbiter : trinity # implements compiler
 
     # a console is dir context, not a file's: picking one in a pane lets
     # go of the pane's file, and with it every view of that file
+    # a pane's apps screen: what it showed goes out of view (a
+    # running app keeps running)
+    func go_home [ pi: i32 ]
+        if [ pi < 0 || pi >= editor_slots.count ] return
+        if [ pane_win && pi < pane_win.count ] pane_win[ pi ] = u64[ 0 ]
+        exit_finder[]
+        ed : Editor pane_at[ pi ]
+        if [ ed ]
+            ed.run_view = null
+            ed.app_view = false
+        if [ pane_console && pi < pane_console.count ]
+            pane_console[ pi ] = ''
+        pane_drop_file[ pi ]
+        if [ ux ] ux.restyle = true
+
     func pane_drop_file [ pi: i32 ]
         if [ pi < 0 || pi >= editor_slots.count ] return
         editor_slots[ pi ] = -1
@@ -4958,10 +5001,10 @@ element orbiter : trinity # implements compiler
         loc : path (p) ? p.product : null
         if [ !loc && p && p.run && p.run.count > 0 ]
             rb : string p.run[0].chars
-            ps : string '{startup_path}/install/build/{rb}'
+            ps : string '{install_root[]}/build/{rb}'
             loc = path [ ps.chars ]
         if [ !loc ]
-            ps2 : string '{startup_path}/install/build/{name}'
+            ps2 : string '{install_root[]}/build/{name}'
             l2  : path [ ps2.chars ]
             if [ l2.exists[] ] loc = l2
         if [ !loc ]
@@ -5006,7 +5049,7 @@ element orbiter : trinity # implements compiler
             av.note      = ''
             return
         loc : path
-        ps  : string '{o.startup_path}/install/build/{mod}'
+        ps  : string '{install_root[]}/build/{mod}'
         l   : path [ ps.chars ]
         if [ l.exists[] ] loc = l
         if [ !loc ]
@@ -5580,7 +5623,8 @@ element orbiter : trinity # implements compiler
             if [ req.count > mod.count ]
                 nv.module_args = req.mid[ mod.count + 1,
                                           req.count - mod.count - 1 ]
-            nv.cmd      = 'tail -n +1 -F {root}/install/tmp/{mod}.{s}.log'
+            ir : path install_root[]
+            nv.cmd      = 'tail -n +1 -F {ir}/tmp/{mod}.{s}.log'
             # a restored instance of this module still held: it IS this
             # one
             took : bool [ false ]
@@ -5633,7 +5677,7 @@ element orbiter : trinity # implements compiler
         # the global log: each featured install's import messages too
         if [ !mod && inst_names ]
             for [ nm: string ] in inst_names
-                il : string '{startup_path}/install/tmp/install-{nm}.log'
+                il : string '{install_root[]}/tmp/install-{nm}.log'
                 one : string 'tail -n +1 -F {il} | sed -u "s/^/import {nm}: /"'
                 c = (n == 0) ? one : '{c} & {one}'
                 n += 1
@@ -5641,7 +5685,7 @@ element orbiter : trinity # implements compiler
         for [ v: AppView ] in instances
             if [ v.ended || v.slot <= 0 || !v.app_mod ] continue
             if [ mod && v.app_mod.compare[ mod ] != 0 ] continue
-            one : string 'tail -n +1 -F {startup_path}/install/tmp/{v.app_mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
+            one : string 'tail -n +1 -F {install_root[]}/tmp/{v.app_mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
             c = (n == 0) ? one : '{c} & {one}'
             n += 1
         return (n > 0) ? '{c} & wait' : c
@@ -5725,6 +5769,14 @@ element orbiter : trinity # implements compiler
                 return p
         return null
 
+    # the module's bare argument takes a folder (a control with no
+    # members arrives as its name)
+    public func takes_dir [ mod: string ] -> bool
+        dp : Prop default_prop[ mod ]
+        ctl : Au (dp) ? dp.control : null
+        return ctl && (ctl inherits Directory
+            || (ctl inherits string && '{ctl}' == 'Directory'))
+
     # a running instance's bare argument, from its own props, when
     # it may be set while it runs
     func live_arg_of [ av: AppView ] -> Prop
@@ -5771,10 +5823,7 @@ element orbiter : trinity # implements compiler
         pick_field  = 'arg_edit'
         # an argument with the Directory control takes a folder (a
         # control with no members arrives as its name)
-        dp : Prop default_prop[ mod ]
-        ctl : Au (dp) ? dp.control : null
-        pick_dir    = ctl && (ctl inherits Directory
-            || (ctl inherits string && '{ctl}' == 'Directory'))
+        pick_dir    = takes_dir[ mod ]
         pick_editor = pe
         pick_launch = launch
         pick_exts   = vec string []
@@ -5793,7 +5842,7 @@ element orbiter : trinity # implements compiler
     func module_spec [ mod: string ] -> string
         if [ !mod || mod.count == 0 ] return null
         if [ !startup_path ] startup_path = path.path_startup[]
-        agi : path '{startup_path}/install/export/{install_name_of[ mod ]}.agi'
+        agi : path '{install_root[]}/export/{install_name_of[ mod ]}.agi'
         if [ !agi.exists[] ] return null
         return agi.load[ typeid[string], null ]
 
@@ -6839,8 +6888,7 @@ element orbiter : trinity # implements compiler
     # the programs' fontconfig: the system's, our fonts folder, and
     # Barlow Condensed for the interface families (monospace kept)
     func write_fonts_conf [] -> string
-        rt : path.path_startup[]
-        out : '{rt}/install/tmp/orbiter-fonts.conf'
+        out : '{install_root[]}/tmp/orbiter-fonts.conf'
         fd : path 'fonts'
         fa : string '{fd.absolute[]}'
         fam : vec string [] [ 'sans-serif', 'sans', 'Ubuntu',
@@ -7044,7 +7092,8 @@ element orbiter : trinity # implements compiler
         mine : vec TrayEntry []
         if [ lp.props ]
             for [ q: Prop ] in lp.props
-                if [ q.type == 'func' ]
+                if [ q.type == 'func'
+                     && (!q.params || q.params.count == 0) ]
                     mine.push[ own_entry[ menu_words[ q.ident ],
                         'orb.call:{q.ident}', 1 ] ]
         if [ mine.count > 0 ]
@@ -7291,7 +7340,7 @@ element orbiter : trinity # implements compiler
             pn = (home_agent && home_agent.contains[ nm ])
                 ? home_agent[ nm ] : nm
         if [ pn.count > 0 ]
-            dirs : string '{path.path_startup[]}/install/bin'
+            dirs : string '{install_root[]}/bin'
             pv : cstr getenv[ 'PATH' ]
             if [ pv ] dirs = '{dirs}:{string [ pv ]}'
             for [ d: string ] in dirs.split[ ':' ]
@@ -7315,7 +7364,7 @@ element orbiter : trinity # implements compiler
     # the exchange's slideout: from the dock's edge under the system
     # bar, to the window's right edge
     func exchange_box [] -> string
-        tp : string [ (system_on[]) ? 't0.91' : 't0' ]
+        tp : string [ (system_on[]) ? 't{bar_units[]}' : 't0' ]
         return 'l0 {tp} r0 b0'
 
     # the drawer opens on a menu; the same one again shuts it
@@ -8016,7 +8065,7 @@ element orbiter : trinity # implements compiler
         if [ !root || wl_sock.count == 0 ] return
         rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
         sock : (rt) ? '{string [ rt ]}/{wl_sock}' : ''
-        bin : string '{root}/install/bin'
+        bin : string '{install_root[]}/bin'
         nv : AppView [ ]
         nv.src = path '{root}/console/console.ag'
         nv.viewer = true
@@ -8034,7 +8083,7 @@ element orbiter : trinity # implements compiler
         if [ hidden ] return
         root : path.path_startup[]
         if [ !root ] return
-        d : path '{root}/install/export'
+        d : path '{install_root[]}/export'
         es : d.ls[ null, false ]
         if [ !es ] return
         for [ e: path ] in es
@@ -8046,7 +8095,7 @@ element orbiter : trinity # implements compiler
 
     # a module's startup line, '' when it has none
     func startup_of [ module: string ] -> string
-        ag : path '{path.path_startup[]}/install/export/{install_name_of[ module ]}.agi'
+        ag : path '{install_root[]}/export/{install_name_of[ module ]}.agi'
         if [ !ag.exists[] ] return ''
         tx : string ag.load[ typeid[string], null ]
         return (tx) ? source_word[ tx, 'startup:' ] : ''
@@ -8058,6 +8107,58 @@ element orbiter : trinity # implements compiler
         ps : string '{p}'
         nm : string p.filename[]
         return programs.contains[ nm ] && programs[ nm ] == ps
+
+    # the extensions a module opens, by its export
+    func opens_exts [ mod: string ] -> vec string
+        out : vec string []
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            if [ !ed ] continue
+            return ed.exts_of[ mod ]
+        return out
+
+    # the files the navigator's search sees with one of these
+    # extensions, by name (at most 200)
+    func files_ending [ exts: vec string ] -> vec string
+        out : vec string []
+        if [ !exts || exts.count == 0 || !file_index ] return out
+        if [ index_dirty && !index_building ] start_index[]
+        rp : string '{project_root[]}'
+        ck : string '{project_root[]}/checkout/'
+        index_lock.lock[]
+        for [ f: string ] in file_index
+            if [ out.count >= 200 ] break
+            if [ f.index_of[ rp ] != 0 || f.index_of[ ck ] == 0 ] continue
+            for [ ext: string ] in exts
+                e : string [ (ext.starts_with[ '.' ]) ? ext : '.{ext}' ]
+                if [ f.ends_with[ e ] ]
+                    out.push[ f ]
+                    break
+        index_lock.unlock[]
+        # the user's folder, two folders down (not the hidden ones):
+        # ~/roms and its discs' folders
+        hs : string getenv[ 'HOME' ]
+        if [ hs && hs.count > 0 ] home_ending[ path '{hs}', exts, out, 2 ]
+        return out
+
+    # files in d ending in one of exts, then its folders to depth
+    func home_ending [ d: path, exts: vec string, out: vec string,
+                       depth: i32 ]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            if [ out.count >= 200 ] return
+            nm : string e.filename[]
+            if [ nm.starts_with[ '.' ] ] continue
+            if [ e.is_dir[] ]
+                if [ depth > 0 ] home_ending[ e, exts, out, depth - 1 ]
+                continue
+            fs : string '{e}'
+            for [ ext: string ] in exts
+                x : string [ (ext.starts_with[ '.' ]) ? ext : '.{ext}' ]
+                if [ fs.ends_with[ x ] ]
+                    out.push[ fs ]
+                    break
 
     func index_search [ query: string ] -> list string
         out : list string []
@@ -8498,7 +8599,7 @@ element orbiter : trinity # implements compiler
         if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
             ed.scroll.y = top - vh * 0.4
             if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
-            ed.scroll_target = ed.scroll.y
+            ed.scroll_goal = ed.scroll.y
         if [ row >= 0 && row < ed.line_count[] ]
             ln  : string ed.line_get[ row ]
             cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
@@ -8760,7 +8861,7 @@ element orbiter : trinity # implements compiler
         any9a : vec string []
         root : path.path_startup[]
         if [ root ]
-            d : path '{root}/install/export'
+            d : path '{install_root[]}/export'
             entries : d.ls[ null, false ]
             if [ entries ]
                 for [ e: path ] in entries
@@ -8869,7 +8970,7 @@ element orbiter : trinity # implements compiler
                 ed.load_file[]
                 if [ was_search ]
                     ed.scroll.y      = ed.saved_scroll
-                    ed.scroll_target = ed.saved_scroll
+                    ed.scroll_goal = ed.saved_scroll
                 ed.pristine = false
         el
             if [ ed.lines && ed.lines.count > 0 ]
@@ -8901,7 +9002,7 @@ element orbiter : trinity # implements compiler
         scene_names.push[ string 'none' ]
         root : path.path_startup[]
         if [ !root ] return
-        d : path '{root}/install/export'
+        d : path '{install_root[]}/export'
         entries : d.ls[ null, false ]
         if [ !entries ] return
         for [ e: path ] in entries
@@ -8987,10 +9088,10 @@ element orbiter : trinity # implements compiler
         if [ !startup_path ] startup_path = path.path_startup[]
         tag : string [ (debug) ? '-dbg' : '' ]
         mn : string '{ln}{tag}'
-        own : path '{startup_path}/install/build/{path.path_library[ mn.chars ]}'
+        own : path '{install_root[]}/build/{path.path_library[ mn.chars ]}'
         if [ own.exists[] ] return own
         an9 : string [ (debug) ? '{ln}' : '{ln}-dbg' ]
-        alt : path '{startup_path}/install/build/{path.path_library[ an9.chars ]}'
+        alt : path '{install_root[]}/build/{path.path_library[ an9.chars ]}'
         return (alt.exists[]) ? alt : own
 
     # scenes compile separately; load the lib only if it is available
@@ -9004,7 +9105,8 @@ element orbiter : trinity # implements compiler
         # module init registers its types
         h : dlopen[ lib.chars, 258 ]
         if [ !h ]
-            log 'scenes: dlopen failed for {lib}'
+            er : cstr [ dlerror[] ]
+            log 'scenes: dlopen failed for {lib}: {string [ er ]}'
             return
         if [ Au.find_type[ nm.chars, null ] ] return
         # an app's library has no load-time init (its main runs it):
@@ -9057,7 +9159,11 @@ element orbiter : trinity # implements compiler
                 scene_module_ensure[ nm ]
                 st = Au.find_type[ nm.chars, null ]
             if [ !st ]
-                log 'scene: no class for {nm}'
+                if [ !scene_miss || scene_miss.compare[ nm ] != 0 ]
+                    scene_miss = string [ nm ]
+                    md : string (scene_mods) ? scene_mods[ nm ] : null
+                    lb : string [ (md) ? '{module_lib[ md ]}' : 'none' ]
+                    log 'scene: no class for {nm} (module {md}, library {lb})'
                 return null
             e = element [ Au.new_object[ st, null, null, true,
                 __FILE__, __LINE__, __SEQUENCE__ ] ]
@@ -9165,7 +9271,7 @@ element orbiter : trinity # implements compiler
         sl : scene_list[]
         for [ nm: string ] in sl
             mod : string (scene_mods && scene_mods.contains[ nm ]) ? scene_mods[ nm ] : null
-            th : path (mod && mod.count > 0) ? path '{startup_path}/install/share/{install_name_of[ mod ]}/thumbs/{nm}.png' : null
+            th : path (mod && mod.count > 0) ? path '{install_root[]}/share/{install_name_of[ mod ]}/thumbs/{nm}.png' : null
             res.push[
                 FindHit [ is_header: true, text: nm.lcase[], dir: '',
                           scene: nm, thumb: th ] ]
@@ -9502,7 +9608,7 @@ element orbiter : trinity # implements compiler
         if [ !startup_path ] startup_path = path.path_startup[]
         nm : string dir.filename[]
         inm : string install_name_of[ nm ]
-        agi : path '{startup_path}/install/export/{inm}.agi'
+        agi : path '{install_root[]}/export/{inm}.agi'
         ai : AppIcon [ file: dir, module: true, agi: agi ]
         png : path '{dir}/images/icon.png'
         if [ !png.exists[] && !ai.export_icon[] ]
@@ -10677,6 +10783,16 @@ element orbiter : trinity # implements compiler
         # the view shows it at its own path
         return fs
 
+    # a folder into the consoles' one view (its store runs there)
+    func share_console [ dir: string ]
+        for [ av: AppView ] in instances
+            if [ av.app_mod != 'console' || av.slot < 0 || av.ended ]
+                continue
+            if [ host_app_pid[ av.slot ] <= 0 ] continue
+            share_into[ av, path [ dir ] ]
+            return
+        log 'share: no console runs to take {dir}'
+
     # the program's file: picked, or named in the new-file box
     func portal_deliver [ p0: path ] -> bool
         k : PortalAsk portal_ask
@@ -11144,7 +11260,7 @@ element orbiter : trinity # implements compiler
             ed.anchor_line   = -1
             ed.hover_line    = -1
             ed.scroll.y      = 0.0
-            ed.scroll_target = 0.0
+            ed.scroll_goal = 0.0
             run_search[]
             te : element title_at[ ed.pane_index ]
             if [ te ] te.set_focus[]
@@ -11165,6 +11281,12 @@ element orbiter : trinity # implements compiler
         return false
 
     func on_press [ ev: Event ]
+        # a phone: a press in the screen's lowest 15% that nothing took
+        home_hold_us = 0
+        if [ use_mobile && ux && ev.mouse.button == 0 && !ev.no_default
+             && f32[ ux.mouse.y ] > f32[ ux.height ] * 0.85 ]
+            home_hold_us = epoch_micros[]
+            ux.will_animate = true
         # a press is no Alt tap, and lets the bar's keys go
         alt_tap = false
         if [ bar_hl.count > 0 ]
@@ -11599,6 +11721,12 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        # the menu's navigator: the menu shuts, the navigator opens
+        if [ ev.target.id == 'sv_navigator' ]
+            drawer_toggle[ 'system', true ]
+            globe_press[]
+            ev.no_default = true
+            return
         # the system menu's view buttons: the view under its tiles;
         # the lit one again puts it away
         if [ ev.target.id == 'sv_scenes' || ev.target.id == 'sv_instances'
@@ -11666,8 +11794,10 @@ element orbiter : trinity # implements compiler
             if [ pane_loads[ active_pane ] ] bar_title_press[]
             ev.no_default = true
             return
+        # the bar's orbiter: the main menu, as the desktop's name
         if [ ev.target.id == 'bar_title' ]
-            globe_press[]
+            drawer_toggle[ 'system', drawer_open
+                           && menu_kind == 'system' ]
             ev.no_default = true
             return
         # an app's outline toggle (the bar's, or a window's strip's)
@@ -12541,10 +12671,11 @@ element orbiter : trinity # implements compiler
                 return
             if [ ks == 257 ]
                 ag : cast AppsGrid [ find_el[ a, 'apps' ] ]
-                if [ ag && ag.shown && ag.shown.count > 0 ]
-                    top : AppEntry ag.shown[ 0 ]
+                top : AppEntry (ag) ? ag.first_match[] : null
+                if [ top ]
                     filter_done[ 'apps_filter' ]
-                    apps_pick[ active_pane, top ]
+                    if [ top.opens ] open_in_pane[ top.opens, active_pane ]
+                    el apps_pick[ active_pane, top ]
                 if [ ux ] ux.restyle = true
                 return
         # Esc while recording from orbiter's button: the take is dropped
@@ -12834,7 +12965,7 @@ element orbiter : trinity # implements compiler
                             ed.anchor_line = sl
                             ed.anchor_col  = 0
                             # reveal the line (centered-ish), pinning
-                            # scroll_target
+                            # scroll_goal
                             lh : f32 [
                                 (ed.lh_cache > 0.0) ? ed.lh_cache
                                 : 22.0 ]
@@ -12847,7 +12978,7 @@ element orbiter : trinity # implements compiler
                                 ed.scroll.y      = tp - vh * 0.4
                                 if [ ed.scroll.y < 0.0 ]
                                     ed.scroll.y = 0.0
-                                ed.scroll_target = ed.scroll.y
+                                ed.scroll_goal = ed.scroll.y
                             ed.saved_scroll = ed.scroll.y
                             ed.pristine = false
                         exit_finder[]
@@ -13211,7 +13342,7 @@ element orbiter : trinity # implements compiler
                 is9.name = isd
                 is9.nowrap = true
                 ed_sessions[ isd ] = is9
-                lg : string '{startup_path}/install/tmp'
+                lg : string '{install_root[]}/tmp'
                 lf : string '{lg}/{rva.app_mod}.{rva.slot}.log'
                 # the tail is its program: no shell, no prompt
                 is9.launch_cmd = 'tail -n +1 -F {lf}'
@@ -13409,11 +13540,25 @@ element orbiter : trinity # implements compiler
         if [ show_console && pv && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
-        left['stack'] = Splitter [
-            area: Region { l0 t0 r0 b1.06 },
+        # a phone has the top bar alone: the panes to the bottom
+        # its keyboard under them while the focus takes words; a PC
+        # has the keyboard's bar alone, once a language is added
+        keys : bool [ use_mobile && ux.words_wanted ]
+        bar : bool [ !use_mobile && ux.words_wanted
+            && languages_added[] ]
+        foot : string [ (keys) ? 'l0 t0 r0 b41%'
+            : ((use_mobile) ? 'l0 t0 r0 b0'
+            : ((bar) ? 'l0 t0 r0 b2.4' : 'l0 t0 r0 b1.06')) ]
+        left['stack'] = Splitter [ area: Region [ foot ],
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
-        left['status'] = TasksBar [ elements: status_els[] ]
+        if [ !use_mobile ]
+            left['status'] = TasksBar [ elements: status_els[] ]
+            if [ bar ]
+                left['keys'] = FlickKeys [ bar_only: true,
+                    area: Region { l0 b2.4 r0 b1.06 } ]
+        el [ keys ]
+            left['keys'] = FlickKeys [ area: Region { l0 b41% r0 b0 } ]
         # no right panel: the callstack is on the bottom bar now,
         # and its seam shade had nothing left to shade
         t['left'] = element [ elements: left ]
@@ -14187,7 +14332,7 @@ element orbiter : trinity # implements compiler
                 ism : bool [ pp.is_dir[] && mm.exists[] ]
                 prg : bool [ !pp.is_dir[]
                              && access[ ps9.chars, X_OK ] == 0 ]
-                ag9 : path (ism) ? path '{path.path_startup[]}/install/export/{install_name_of[ pp.filename[] ]}.agi' : null
+                ag9 : path (ism) ? path '{install_root[]}/export/{install_name_of[ pp.filename[] ]}.agi' : null
                 n9 : i32 [ 0 ]
                 if [ ism ]
                     for [ v9: AppView ] in instances_of[ mm ]
@@ -14620,7 +14765,7 @@ element orbiter : trinity # implements compiler
             ? pane_shown[ pi * 4 ] : 0.0 ]
         sy : f32 [ (pane_shown && pi * 4 + 1 < pane_shown.count)
             ? pane_shown[ pi * 4 + 1 ] : 0.0 ]
-        top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
+        top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
         rx : f32 pane_close_el[ t, pi, w, sx, sy + top ]
         vx : f32 nav_arrows_el[ t, pi, rx ]
         x = pane_outline_el[ t, pi, x, 's{pi}_' ]
@@ -14649,8 +14794,8 @@ element orbiter : trinity # implements compiler
     # a pane's menus from x0, its ids led by pre ('' the bar's)
     func menu_group_els [ t: Elements, x0: f32, uu: f32, pi: i32,
                           pre: string ] -> f32
-        # the bar's globe first (the full navigator); a window's strip
-        # has none. its controls are in its menu
+        # the bar's first: orbiter, the main menu (the navigator,
+        # the agents, power); a window's strip has none
         gp : i32 [ (pi >= 0) ? pi : active_pane ]
         x : f32 [ x0 ]
         if [ pre.count == 0 ] x = globe_el[ t, 'bar_title', x0, gp ]
@@ -14742,7 +14887,7 @@ element orbiter : trinity # implements compiler
             mx : f32 [ f32[ ux.mouse.x ] - ox ]
             my : f32 [ f32[ ux.mouse.y ] - oy ]
             over = mx >= xr - cw && mx < xr && my >= 0.0
-                && my < 0.91 * unit_px[]
+                && my < bar_units[] * unit_px[]
         mini : bool [ cmd_down || over ]
         if [ mini ]
             # minimize: the close's ringed minus; the app runs on
@@ -14806,11 +14951,11 @@ element orbiter : trinity # implements compiler
         # with the code
         gw : f32 globe_w[ pi ]
         t[ id ] = AltTab [ buttons: vec string [] [ id ],
-            icon_ids: vec string [] [ 'navigator' ], icon_scale: 0.55,
+            icon_ids: vec string [] [ 'orbiter4' ], icon_scale: 0.55,
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
-            sel_mask: ((nav_showing || bar_hl == id)
-                && id == 'bar_title') ? 1 : 0,
+            sel_mask: (((drawer_open && menu_kind == 'system')
+                || bar_hl == id) && id == 'bar_title') ? 1 : 0,
             area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
         return x + gw
 
@@ -14824,7 +14969,7 @@ element orbiter : trinity # implements compiler
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
             || act == 'orb.build' || act == 'orb.clean'
-            || act == 'orb.console'
+            || act == 'orb.console' || act == 'orb.wquit'
 
     # the pane's controls under the app's own menu (its first): a
     # pane added, this one closed, git, its views
@@ -15397,7 +15542,7 @@ element orbiter : trinity # implements compiler
         ed : Editor pane_at[ active_pane ]
         av : AppView (ed) ? ed.run_view : null
         if [ !av || av.ended || av.slot <= 0 || !av.app_mod ] return
-        at : string '{startup_path}/install/tmp/{av.app_mod}.{av.slot}'
+        at : string '{install_root[]}/tmp/{av.app_mod}.{av.slot}'
         ip : string '{at}.in'
         fd : i32 open[ ip.chars, O_WRONLY | O_NONBLOCK ]
         if [ fd < 0 ] return
@@ -15479,7 +15624,7 @@ element orbiter : trinity # implements compiler
         if [ app_list ] return app_list
         app_list = vec AppEntry []
         root : path path.path_startup[]
-        ex : path '{root}/install/export'
+        ex : path '{install_root[]}/export'
         for [ f: path ] in ex.ls[ null, false ]
             if [ f.ext[] != 'agi' ] continue
             tx : string f.load[ typeid[ string ], null ]
@@ -15516,7 +15661,7 @@ element orbiter : trinity # implements compiler
             # not a trinity app (no props): it builds a program, ours
             # once it is in install/bin
             if [ tx.index_of[ '\nprops:' ] < 0 ]
-                ae.built = path '{root}/install/bin/{mn}'
+                ae.built = path '{install_root[]}/bin/{mn}'
             ae.apps = store_apps[ mn, gr ]
             app_list.push[ ae ]
         # the featured: each module in featured/ that names its
@@ -15532,7 +15677,7 @@ element orbiter : trinity # implements compiler
             fg : string source_word[ src, 'export software' ]
             if [ fg.count == 0 ] continue
             fe : AppEntry [ name: fn, file: d, module: true, group: fg ]
-            fe.built = path '{root}/install/bin/{fn}'
+            fe.built = path '{install_root[]}/bin/{fn}'
             fe.apps = store_apps[ fn, fg ]
             app_list.push[ fe ]
         apps_gen += 1
@@ -15541,7 +15686,7 @@ element orbiter : trinity # implements compiler
     # what a store wrote into its folder, install/stores/<store>:
     # each <name>/<name>.ag, named by its first comment line
     func store_apps [ store: string, group: string ] -> vec AppEntry
-        sd : path '{path.path_startup[]}/install/stores/{store}'
+        sd : path '{install_root[]}/stores/{store}'
         if [ !sd.exists[] ] return null
         res : vec AppEntry []
         for [ d: path ] in sd.ls[ null, false ]
@@ -15555,7 +15700,8 @@ element orbiter : trinity # implements compiler
             if [ src.starts_with[ '# ' ] && c > 2 ]
                 title = src.mid[ 2, c - 2 ]
             sa : AppEntry [ name: title, file: d, module: true,
-                group: group, launch: source_word[ src, 'export launch' ] ]
+                group: group, launch: source_word[ src, 'export launch' ],
+                share: source_word[ src, 'export share' ] ]
             # by name: the folder's listing order is the disk's
             at : i32 [ res.count ]
             for [ k: i32 0, k < res.count, k += 1 ]
@@ -15568,12 +15714,12 @@ element orbiter : trinity # implements compiler
     # a store whose program runs: its exports again (it writes what
     # finished installing), and the cards anew when its folder moved
     func store_poll []
-        if [ !app_list ] return
         if [ !store_seen ] store_seen = map string [string] []
         root : string '{path.path_startup[]}'
-        for [ ae: AppEntry ] in app_list
+        # read here too: the apps view need not have been shown
+        for [ ae: AppEntry ] in app_entries[]
             if [ !ae.apps ] continue
-            sd : path '{root}/install/stores/{ae.name}'
+            sd : path '{install_root[]}/stores/{ae.name}'
             mt : i64 [ sd.modified_time[] ]
             if [ store_seen.contains[ ae.name ]
                  && store_seen[ ae.name ] != '{mt}' ]
@@ -15588,11 +15734,40 @@ element orbiter : trinity # implements compiler
             if [ instances ]
                 for [ v: AppView ] in instances
                     if [ !v.ended && program_of[ v ] == ae.name ] on = true
+            # the folders its export read (.watch): one that moved, or
+            # never seen in this run, has news (a game added outside)
+            wf : path '{sd}/.watch'
+            wt : string (wf.exists[])
+                ? wf.load[ typeid[ string ], null ] : ''
+            if [ wt ]
+                for [ w: string ] in wt.split[ '\n' ]
+                    if [ w.count == 0 ] continue
+                    wk : string '{ae.name}|{w}'
+                    # marked: an empty folder is not an empty string
+                    wm : string '#{store_files[ w ]}'
+                    was : string store_seen.get[ wk ]
+                    if [ !was || was.compare[ wm ] != 0 ] on = true
+                    store_seen[ wk ] = wm
             if [ !on ] continue
-            sv : string '{root}/install/bin/silver'
+            sv : string '{install_root[]}/bin/silver'
             md : string '{ae.file}'
-            ex : command { {sv} --export --build {md} >/dev/null 2>&1 & }
-            ex.exec[ false ]
+            ifdef [ windows ]
+                ex : command { start /b "" "{sv}" --export
+                    --build "{md}" >NUL 2>&1 }
+                ex.exec[ false ]
+            el
+                ex : command { {sv} --export --build {md} >/dev/null 2>&1 & }
+                ex.exec[ false ]
+
+    # the files right in a folder, by name and time: a folder's own
+    # modified_time walks everything under it
+    func store_files [ dir: string ] -> string
+        sig : string ''
+        dp : path [ dir ]
+        for [ f: path ] in dp.ls[ null, false ]
+            if [ f.is_dir[] ] continue
+            sig = '{sig}{f.filename[]} {f.modified_time[]}\n'
+        return sig
 
     # a line's first quoted word in source: "export software
     # ['games']" gives games; '' when the line is not there
@@ -15993,12 +16168,15 @@ element orbiter : trinity # implements compiler
 
     func apps_pick [ pi: i32, ae: AppEntry ]
         if [ !ae ] return
+        # a pick by click, as by Enter: the filter that found it goes
+        if [ apps_filter.count > 0 ] filter_done[ 'apps_filter' ]
         # a store's app: its line, run in a console as its store runs
         if [ ae.launch && ae.launch.count > 0 && pi >= 0 ]
             active_pane = pi
             set_active[ pi ]
             # the line may set its own environment before its program
-            bin : string '{path.path_startup[]}/install/bin'
+            bin : string '{install_root[]}/bin'
+            if [ ae.share && ae.share.count > 0 ] share_console[ ae.share ]
             run_line[ 'env PATH={bin}:$PATH {ae.launch}', pi ]
             if [ ux ] ux.restyle = true
             return
@@ -16058,13 +16236,13 @@ element orbiter : trinity # implements compiler
         root : string '{path.path_startup[]}'
         nm : string ae.name
         md : string '{ae.file}'
-        lg : string '{root}/install/tmp/install-{nm}.log'
+        lg : string '{install_root[]}/tmp/install-{nm}.log'
         # the transaction: silver's own events (SILVER_EVENTS), then
         # end <exit code> as it exits
-        ev : string '{root}/install/tmp/install-{nm}.events'
+        ev : string '{install_root[]}/tmp/install-{nm}.events'
         for [ old: string ] in vec string [] [ lg, ev ]
             unlink[ old.chars ]
-        sv : string '{root}/install/bin/silver'
+        sv : string '{install_root[]}/bin/silver'
         # script gives silver a terminal (its own progress line shows)
         # and keeps a log of it all for the global console
         # verbose: every tool's own output (meson, ninja, make, the
@@ -16152,7 +16330,7 @@ element orbiter : trinity # implements compiler
         for [ i: i32 0, i < inst_names.count, i += 1 ]
             nm : string inst_names[ i ]
             if [ inst_word[ i ] == 'cancelled' ] continue
-            evp : string '{root}/install/tmp/install-{nm}.events'
+            evp : string '{install_root[]}/tmp/install-{nm}.events'
             tx : string log_tail[ evp, 65536 ]
             wd : string inst_word[ i ]
             pc : f32 [ inst_pct[ i ] ]
@@ -16197,7 +16375,7 @@ element orbiter : trinity # implements compiler
     # app updating. a watch on their folder marks it; only a file
     # changed since its last read is read, at most twice a second
     func build_poll []
-        dir : path '{path.path_startup[]}/install/tmp/builds'
+        dir : path '{install_root[]}/tmp/builds'
         if [ !build_watch ]
             dir.make_dir[]
             build_seen = map i64 [string] []
@@ -16871,8 +17049,8 @@ element orbiter : trinity # implements compiler
         dw : f32 dock_w[]
         cells : Elements []
         keys : vec string []
-        rows : vec string [] [ 'scenes', 'wifi', 'mouse', 'keyboard',
-                               'display', 'sound' ]
+        rows : vec string [] [ 'navigator', 'scenes', 'wifi',
+                               'mouse', 'keyboard', 'display', 'sound' ]
         for [ pn: string ] in rows
             keys.push[ 'sv_{pn}' ]
         net : Wifi wifi_shared[]
@@ -16952,12 +17130,16 @@ element orbiter : trinity # implements compiler
                 use_spacing: false, rest_fill: rgba [ '#ffffff10' ],
                 area: Region [ 'l{rx + 1.7} t{y} r0.6 h1.5' ] ]
             y += 1.8
-        # the view a row chose, right of the dock, under the rest
+        # the view a row chose, right of the dock, under the rest;
+        # else the agents, stacked under their avatars
         if [ sys_view.count > 0 ]
             sv : Elements side_view[ sys_view,
                 'l{rx - 0.3} t{y} r0.3 b0.3' ]
             for [ ve: element, vk: string ] in sv
                 t[ vk ] = ve
+        el
+            t['sys_agents'] = AgentHome [ stacked: true,
+                area: Region [ 'l{rx - 0.3} t{y} r0 b0' ] ]
         return t
 
     # power off or restart: only orbiter-os itself, never the
@@ -16987,11 +17169,8 @@ element orbiter : trinity # implements compiler
                 sel_mask: (show_console) ? 1 : 0,
                 area: Region { l0 t0 w1.66 b0 } ]
         # every running instance (the bar is for tasks alone); a
-        # drag onto the dock pins it
-        if [ sys ]
-            t['sys_orbiter'] = home_button[
-                Region [ 'l0 t0 w{dock_w[]}px b0' ], true ]
-        x0 : f32 [ (sys) ? dock_w[] : 1.66 * 22.0 ]
+        # drag onto the dock pins it. orbiter's view is the bar's menu
+        x0 : f32 [ (sys) ? 0.0 : 1.66 * 22.0 ]
         sb : element find_el[ a, 'status' ]
         # with the system bar its right end is the console, the menu
         # and the date
@@ -17046,7 +17225,7 @@ element orbiter : trinity # implements compiler
             kind : '{fo}'
             if [ was && kind != was ] x += gap
             was = kind
-            ag : path (fo) ? path '{path.path_startup[]}/install/export/{install_name_of[ fo.filename[] ]}.agi' : null
+            ag : path (fo) ? path '{install_root[]}/export/{install_name_of[ fo.filename[] ]}.agi' : null
             wv : u64 window_of[ av ]
             lit : bool [ (wv != 0 && pane_window[ active_pane ] == wv)
                 || (wv == 0 && edv && edv.run_view == av
@@ -17122,6 +17301,18 @@ element orbiter : trinity # implements compiler
     # the state the last instance left: it lands before the window
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
+        # a console shown in the active pane types plainly
+        pe : Editor pane_at[ active_pane ]
+        w.plain_app = pe && pe.types_plain[]
+        # held half a second, still in the lowest 20%: home
+        if [ home_hold_us > 0 ]
+            if [ !w.capture || f32[ w.mouse.y ] < f32[ w.height ] * 0.8 ]
+                home_hold_us = 0
+            el [ epoch_micros[] - home_hold_us >= 500000 ]
+                home_hold_us = 0
+                go_home[ active_pane ]
+            el
+                w.will_animate = true
         mirror_source[ w ]
         rec_tick[]
         if [ !set_applied ]
@@ -17253,7 +17444,7 @@ element orbiter : trinity # implements compiler
             return Elements [ 'scene': scene_element[],
                 'login': Login [], 'login_av': LoginAvatar [] ]
         # the system bar takes the top; everything else is under it
-        top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
+        top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
         return (!ux) ? null : Elements [
             'galaxy' : galaxy_element[],
             'scene'  : scene_element[],
@@ -17325,6 +17516,8 @@ element orbiter : trinity # implements compiler
 
     func drawer_area [ top: f32 ] -> string
         dy : f32 drawer_y[ top ]
+        # a phone's drawers are its whole width
+        if [ mobile_on[] ] return 'l0 t{dy}px r0 b0'
         pv : element pane_view[ active_pane ]
         if [ !win_menu[] || !pv || !pv.bounds ]
             return 'l{drawer_x[]}px t{dy}px w10.91 b0'
@@ -17339,7 +17532,7 @@ element orbiter : trinity # implements compiler
     # a free window's menu opens under its strip, else under the bar
     func drawer_y [ top: f32 ] -> f32
         if [ !win_menu[] ] return top
-        return win_y[ active_pane ] + round[ 0.91 * unit_px[] ]
+        return win_y[ active_pane ] + round[ bar_units[] * unit_px[] ]
 
     # a pane's left and top in the window; a free window's from where
     # it is drawn this frame (its laid-out bounds are a frame behind:
@@ -17353,7 +17546,7 @@ element orbiter : trinity # implements compiler
     func win_y [ pi: i32 ] -> f32
         if [ pane_floats[ pi ] && pane_shown
              && pi * 4 + 1 < pane_shown.count ]
-            top : f32 [ (system_on[]) ? 0.91 * unit_px[] : 0.0 ]
+            top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
             return pane_shown[ pi * 4 + 1 ] + top
         return pane_top[ pi ]
 
@@ -17388,8 +17581,7 @@ element orbiter : trinity # implements compiler
                         pending_scroll && i9 < pending_scroll.count
                         && pending_scroll[i9] >= 0.0 ]
                         e9.scroll.y      = pending_scroll[i9]
-                        e9.scroll_target = e9.scroll.y
-                        e9.scroll_goal   = e9.scroll.y
+                        e9.scroll_goal = e9.scroll.y
                         e9.pristine      = false
                     el e9.ensure_caret_visible[]
                     pending_sel[i9] = vec2i [ x: -1, y: -1 ]

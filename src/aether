@@ -67,6 +67,7 @@ forward(enode)
     M(X, Y, i, prop,     public,  bool,            is_explicit_ref) \
     M(X, Y, i, prop,     public,  Au,              meta_a) \
     M(X, Y, i, prop,     public,  Au,              meta_b) \
+    M(X, Y, i, prop,     public,  map,             meta_props) \
     M(X, Y, i, prop,     public,  array,           dims) \
     M(X, Y, i, prop,     public,  aether,          mod, meta, weak) \
     M(X, Y, i, prop,     public,  etype,           schema) \

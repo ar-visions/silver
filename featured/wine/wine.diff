@@ -1,3 +1,76 @@
+diff --git a/configure.ac b/configure.ac
+index 7434ef9..cb05b2d 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1725,24 +1725,9 @@ fi
+ WINE_NOTICE_WITH(ffmpeg,[test "x$FFMPEG_LIBS" = x],
+         [FFmpeg ${notice_platform}development files not found.])
+ 
+-dnl **** Check for gstreamer ****
+-if test "x$with_gstreamer" != "xno"
+-then
+-    WINE_PACKAGE_FLAGS(GSTREAMER,[gstreamer-1.0 gstreamer-video-1.0 gstreamer-audio-1.0 gstreamer-tag-1.0 gstreamer-gl-1.0],,,,
+-        [AC_CHECK_HEADER([gst/gst.h],
+-            [AC_MSG_CHECKING([whether gint64 defined by gst/gst.h is indeed 64-bit])
+-              AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <gst/gst.h>]],
+-                                                 [[static int a[sizeof(gint64) > 4 ? 1 : -1]; if (a[0]) return 0;]])],
+-                [AC_MSG_RESULT([yes])
+-                 AC_CHECK_LIB(gstreamer-1.0,gst_pad_new,[:],,[$GSTREAMER_LIBS])],
+-                [AC_MSG_RESULT([no])
+-                 ac_glib2_broken=yes
+-                 enable_winegstreamer=${enable_winegstreamer:-no}
+-                 WINE_NOTICE([glib-2.0 pkgconfig configuration is for the wrong architecture, winegstreamer won't be built.])])])])
+-fi
+-WINE_NOTICE_WITH(gstreamer,[test "x$ac_glib2_broken" != xyes -a "x$ac_cv_lib_gstreamer_1_0_gst_pad_new" != xyes],
+-                 [gstreamer-1.0 base plugins ${notice_platform}development files not found, GStreamer won't be supported.],
+-                 [enable_winegstreamer])
++dnl **** winegstreamer's decoders: trinity, through webgfx ****
++AC_ARG_VAR([TRINITY_LIBS],[linker flags for trinity's media calls (winegstreamer)])
++AS_IF([test "x$TRINITY_LIBS" = x],[enable_winegstreamer=${enable_winegstreamer:-no}])
+ 
+ dnl **** Check for ALSA 1.x ****
+ AC_SUBST(ALSA_LIBS,"")
+diff --git a/dlls/msvcp140/msvcp140.spec b/dlls/msvcp140/msvcp140.spec
+index 0a8af0e..8e769af 100644
+--- a/dlls/msvcp140/msvcp140.spec
++++ b/dlls/msvcp140/msvcp140.spec
+@@ -1706,8 +1706,8 @@
+ @ cdecl -arch=win64 ?__ExceptionPtrDestroy@@YAXPEAX@Z(ptr) __ExceptionPtrDestroy
+ @ cdecl -arch=win32 ?__ExceptionPtrRethrow@@YAXPBX@Z(ptr) __ExceptionPtrRethrow
+ @ cdecl -arch=win64 ?__ExceptionPtrRethrow@@YAXPEBX@Z(ptr) __ExceptionPtrRethrow
+-@ stub -arch=win32 ?__ExceptionPtrSwap@@YAXPAX0@Z
+-@ stub -arch=win64 ?__ExceptionPtrSwap@@YAXPEAX0@Z
++@ cdecl -arch=win32 ?__ExceptionPtrSwap@@YAXPAX0@Z(ptr ptr) __ExceptionPtrSwap
++@ cdecl -arch=win64 ?__ExceptionPtrSwap@@YAXPEAX0@Z(ptr ptr) __ExceptionPtrSwap
+ @ cdecl -arch=win32 ?__ExceptionPtrToBool@@YA_NPBX@Z(ptr) __ExceptionPtrToBool
+ @ cdecl -arch=win64 ?__ExceptionPtrToBool@@YA_NPEBX@Z(ptr) __ExceptionPtrToBool
+ @ cdecl -arch=arm ?always_noconv@codecvt_base@std@@QBA_NXZ(ptr) codecvt_base_always_noconv
+diff --git a/dlls/msvcp90/exception.c b/dlls/msvcp90/exception.c
+index ab8de5d..f14a3db 100644
+--- a/dlls/msvcp90/exception.c
++++ b/dlls/msvcp90/exception.c
+@@ -1293,6 +1293,21 @@ void __cdecl __ExceptionPtrAssign(exception_ptr *ep, const exception_ptr *assign
+         InterlockedIncrement(ep->ref);
+ }
+ 
++/*********************************************************************
++ * ?__ExceptionPtrSwap@@YAXPAX0@Z
++ * ?__ExceptionPtrSwap@@YAXPEAX0@Z
++ */
++void __cdecl __ExceptionPtrSwap(exception_ptr *ep, exception_ptr *other)
++{
++    exception_ptr tmp;
++
++    TRACE("(%p %p)\n", ep, other);
++
++    tmp = *ep;
++    *ep = *other;
++    *other = tmp;
++}
++
+ /*********************************************************************
+  * ?__ExceptionPtrRethrow@@YAXPBX@Z
+  * ?__ExceptionPtrRethrow@@YAXPEBX@Z
 diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
 index 6b945bd..fd2b628 100644
 --- a/dlls/win32u/sysparams.c
@@ -104,6 +177,52 @@ index b397641..2508313 100644
          create_info_host.imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
          create_info_host.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
  
+diff --git a/dlls/winegstreamer/Makefile.in b/dlls/winegstreamer/Makefile.in
+index 9965dc0..318d48e 100644
+--- a/dlls/winegstreamer/Makefile.in
++++ b/dlls/winegstreamer/Makefile.in
+@@ -3,20 +3,12 @@ UNIXLIB   = winegstreamer.so
+ IMPORTLIB = winegstreamer
+ IMPORTS   = strmbase ole32 oleaut32 msdmo msvcrt user32
+ DELAYIMPORTS = mfplat mf
+-UNIX_CFLAGS  = $(GSTREAMER_CFLAGS)
+-UNIX_LIBS    = $(GSTREAMER_LIBS) $(PTHREAD_LIBS)
++UNIX_LIBS    = $(TRINITY_LIBS) $(PTHREAD_LIBS)
+ 
+ SOURCES = \
+ 	audio_decoder.c \
+ 	color_convert.c \
+ 	main.c \
+-	media-converter/audioconv.c \
+-	media-converter/audioconvbin.c \
+-	media-converter/fossilize.c \
+-	media-converter/lib.c \
+-	media-converter/murmur3.c \
+-	media-converter/protondemuxer.c \
+-	media-converter/videoconv.c \
+ 	media_sink.c \
+ 	media_source.c \
+ 	mfplat.c \
+@@ -24,18 +16,11 @@ SOURCES = \
+ 	quartz_transform.c \
+ 	resampler.c \
+ 	rsrc.rc \
+-	unixlib.c \
++	trinity.c \
+ 	video_decoder.c \
+ 	video_encoder.c \
+ 	video_processor.c \
+-	wg_allocator.c \
+-	wg_format.c \
+-	wg_media_type.c \
+-	wg_muxer.c \
+-	wg_parser.c \
+ 	wg_sample.c \
+-	wg_task_pool.c \
+-	wg_transform.c \
+ 	winegstreamer_classes.idl \
+ 	wm_reader.c \
+ 	wma_decoder.c
 diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
 index 07e0858..3b3efc0 100644
 --- a/dlls/winewayland.drv/window.c
@@ -124,6 +243,193 @@ index 07e0858..3b3efc0 100644
      {
          if ((client = data->client_surface))
          {
+diff --git a/include/cfgmgr32.h b/include/cfgmgr32.h
+index f9a4fe7..92c7cd2 100644
+--- a/include/cfgmgr32.h
++++ b/include/cfgmgr32.h
+@@ -359,8 +359,8 @@ CMAPI CONFIGRET WINAPI CM_Create_DevNodeA( DEVINST *node, DEVINSTID_A instance_i
+ CMAPI CONFIGRET WINAPI CM_Create_DevNodeW( DEVINST *node, DEVINSTID_W instance_id, DEVINST parent, ULONG flags );
+ #define                CM_Create_DevNode WINELIB_NAME_AW(CM_Create_DevNode)
+ CMAPI CONFIGRET WINAPI CM_Create_Range_List( RANGE_LIST *ranges, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Delete_Class_Key( GUID *class, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Delete_Class_Key_Ex( GUID *class, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Delete_Class_Key( GUID *class_guid, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Delete_Class_Key_Ex( GUID *class_guid, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Delete_Device_Interface_Key_ExA( const char *iface, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Delete_Device_Interface_Key_ExW( const WCHAR *iface, ULONG flags, HMACHINE machine );
+ #define                CM_Delete_Device_Interface_Key_Ex WINELIB_NAME_AW(CM_Delete_Device_Interface_Key_Ex)
+@@ -378,8 +378,8 @@ CMAPI CONFIGRET WINAPI CM_Disconnect_Machine( HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Dup_Range_List( RANGE_LIST old_ranges, RANGE_LIST new_ranges, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Enable_DevNode( DEVINST node, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Enable_DevNode_Ex( DEVINST node, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Enumerate_Classes( ULONG index, GUID *class, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Enumerate_Classes_Ex( ULONG index, GUID *class, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Enumerate_Classes( ULONG index, GUID *class_guid, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Enumerate_Classes_Ex( ULONG index, GUID *class_guid, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Enumerate_Enumerators_ExA( ULONG index, char *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Enumerate_Enumerators_ExW( ULONG index, WCHAR *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+ #define                CM_Enumerate_Enumerators_Ex WINELIB_NAME_AW(CM_Enumerate_Enumerators_Ex)
+@@ -398,24 +398,24 @@ CMAPI CONFIGRET WINAPI CM_Free_Res_Des_Handle( RES_DES desc );
+ CMAPI CONFIGRET WINAPI CM_Free_Resource_Conflict_Handle( CONFLICT_LIST conflicts );
+ CMAPI CONFIGRET WINAPI CM_Get_Child( DEVINST *child, DEVINST node, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Get_Child_Ex( DEVINST *child, DEVINST node, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Key_Name_ExA( GUID *class, char *name, ULONG *len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Key_Name_ExW( GUID *class, WCHAR *name, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Key_Name_ExA( GUID *class_guid, char *name, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Key_Name_ExW( GUID *class_guid, WCHAR *name, ULONG *len, ULONG flags, HMACHINE machine );
+ #define                CM_Get_Class_Key_Name_Ex WINELIB_NAME_AW(CM_Get_Class_Key_Name_Ex)
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Key_NameA( GUID *class, char *name, ULONG *len, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Key_NameW( GUID *class, WCHAR *name, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Key_NameA( GUID *class_guid, char *name, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Key_NameW( GUID *class_guid, WCHAR *name, ULONG *len, ULONG flags );
+ #define                CM_Get_Class_Key_Name WINELIB_NAME_AW(CM_Get_Class_Key_Name)
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Name_ExA( GUID *class, char *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Name_ExW( GUID *class, WCHAR *buffer, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Name_ExA( GUID *class_guid, char *buffer, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Name_ExW( GUID *class_guid, WCHAR *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+ #define                CM_Get_Class_Name_Ex WINELIB_NAME_AW(CM_Get_Class_Name_Ex)
+-CMAPI CONFIGRET WINAPI CM_Get_Class_NameA( GUID *class, char *buffer, ULONG *len, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_NameW( GUID *class, WCHAR *buffer, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_NameA( GUID *class_guid, char *buffer, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_NameW( GUID *class_guid, WCHAR *buffer, ULONG *len, ULONG flags );
+ #define                CM_Get_Class_Name WINELIB_NAME_AW(CM_Get_Class_Name)
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Property_ExW( const GUID *class, const DEVPROPKEY *key, DEVPROPTYPE *type, BYTE *buffer, ULONG *size, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Property_Keys( const GUID *class, DEVPROPKEY *keys, ULONG *count, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Property_Keys_Ex( const GUID *class, DEVPROPKEY *keys, ULONG *count, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_PropertyW( const GUID *class, const DEVPROPKEY *key, DEVPROPTYPE *type, BYTE *buffer, ULONG *size, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Registry_PropertyA( GUID *class, ULONG property, ULONG *type, void *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Class_Registry_PropertyW( GUID *class, ULONG property, ULONG *type, void *buffer, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Property_ExW( const GUID *class_guid, const DEVPROPKEY *key, DEVPROPTYPE *type, BYTE *buffer, ULONG *size, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Property_Keys( const GUID *class_guid, DEVPROPKEY *keys, ULONG *count, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Property_Keys_Ex( const GUID *class_guid, DEVPROPKEY *keys, ULONG *count, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_PropertyW( const GUID *class_guid, const DEVPROPKEY *key, DEVPROPTYPE *type, BYTE *buffer, ULONG *size, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Registry_PropertyA( GUID *class_guid, ULONG property, ULONG *type, void *buffer, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Class_Registry_PropertyW( GUID *class_guid, ULONG property, ULONG *type, void *buffer, ULONG *len, ULONG flags, HMACHINE machine );
+ #define                CM_Get_Class_Registry_Property WINELIB_NAME_AW(CM_Get_Class_Registry_Property)
+ CMAPI CONFIGRET WINAPI CM_Get_Depth( ULONG *depth, DEVINST node, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Get_Depth_Ex( ULONG *depth, DEVINST node, ULONG flags, HMACHINE machine );
+@@ -445,17 +445,17 @@ CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_Alias_ExW( const WCHAR *iface, GU
+ CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_AliasA( const char *iface, GUID *alias_guid, char *alias_iface, ULONG *len, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_AliasW( const WCHAR *iface, GUID *alias_guid, WCHAR *alias_iface, ULONG *len, ULONG flags );
+ #define                CM_Get_Device_Interface_Alias WINELIB_NAME_AW(CM_Get_Device_Interface_Alias)
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_ExA( GUID *class, DEVINSTID_A instance_id, char *buffer, ULONG len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_ExW( GUID *class, DEVINSTID_W instance_id, WCHAR *buffer, ULONG len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_ExA( GUID *class_guid, DEVINSTID_A instance_id, char *buffer, ULONG len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_ExW( GUID *class_guid, DEVINSTID_W instance_id, WCHAR *buffer, ULONG len, ULONG flags, HMACHINE machine );
+ #define                CM_Get_Device_Interface_List_Ex WINELIB_NAME_AW(CM_Get_Device_Interface_List_Ex)
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_Size_ExA( ULONG *len, GUID *class, DEVINSTID_A instance_id, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_Size_ExW( ULONG *len, GUID *class, DEVINSTID_W instance_id, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_Size_ExA( ULONG *len, GUID *class_guid, DEVINSTID_A instance_id, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_Size_ExW( ULONG *len, GUID *class_guid, DEVINSTID_W instance_id, ULONG flags, HMACHINE machine );
+ #define                CM_Get_Device_Interface_List_Size_Ex WINELIB_NAME_AW(CM_Get_Device_Interface_List_Size_Ex)
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeA( ULONG *len, GUID *class, DEVINSTID_A instance_id, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeW( ULONG *len, GUID *class, DEVINSTID_W instance_id, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeA( ULONG *len, GUID *class_guid, DEVINSTID_A instance_id, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_List_SizeW( ULONG *len, GUID *class_guid, DEVINSTID_W instance_id, ULONG flags );
+ #define                CM_Get_Device_Interface_List_Size WINELIB_NAME_AW(CM_Get_Device_Interface_List_Size)
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_ListA( GUID *class, DEVINSTID_A instance_id, char *buffer, ULONG len, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_ListW( GUID *class, DEVINSTID_W instance_id, WCHAR *buffer, ULONG len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_ListA( GUID *class_guid, DEVINSTID_A instance_id, char *buffer, ULONG len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_ListW( GUID *class_guid, DEVINSTID_W instance_id, WCHAR *buffer, ULONG len, ULONG flags );
+ #define                CM_Get_Device_Interface_List WINELIB_NAME_AW(CM_Get_Device_Interface_List)
+ CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_Property_ExW( const WCHAR *iface, const DEVPROPKEY *key, DEVPROPTYPE *type, BYTE *buffer, ULONG *size, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Get_Device_Interface_Property_Keys_ExW( const WCHAR *iface, DEVPROPKEY *keys, ULONG *count, ULONG flags, HMACHINE machine );
+@@ -534,11 +534,11 @@ CMAPI CONFIGRET WINAPI CM_Modify_Res_Des_Ex( RES_DES *new_desc, RES_DES old_desc
+ CMAPI CONFIGRET WINAPI CM_Move_DevNode( DEVINST node_src, DEVINST node_dst, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Move_DevNode_Ex( DEVINST node_src, DEVINST node_dst, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Next_Range( RANGE_ELEMENT *element, DWORDLONG *start, DWORDLONG *end, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Open_Class_Key_ExA( GUID *class, const char *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Open_Class_Key_ExW( GUID *class, const WCHAR *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Open_Class_Key_ExA( GUID *class_guid, const char *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Open_Class_Key_ExW( GUID *class_guid, const WCHAR *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
+ #define                CM_Open_Class_Key_Ex WINELIB_NAME_AW(CM_Open_Class_Key_Ex)
+-CMAPI CONFIGRET WINAPI CM_Open_Class_KeyA( GUID *class, const char *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Open_Class_KeyW( GUID *class, const WCHAR *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Open_Class_KeyA( GUID *class_guid, const char *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Open_Class_KeyW( GUID *class_guid, const WCHAR *name, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags );
+ #define                CM_Open_Class_Key WINELIB_NAME_AW(CM_Open_Class_Key)
+ CMAPI CONFIGRET WINAPI CM_Open_Device_Interface_Key_ExA( const char *iface, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Open_Device_Interface_Key_ExW( const WCHAR *iface, REGSAM access, REGDISPOSITION disposition, HKEY *hkey, ULONG flags, HMACHINE machine );
+@@ -565,11 +565,11 @@ CMAPI CONFIGRET WINAPI CM_Reenumerate_DevNode( DEVINST node, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Reenumerate_DevNode_Ex( DEVINST node, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Register_Device_Driver( DEVINST node, ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Register_Device_Driver_Ex( DEVINST node, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Register_Device_Interface_ExA( DEVINST node, GUID *class, const char *reference, char *iface, ULONG *len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Register_Device_Interface_ExW( DEVINST node, GUID *class, const WCHAR *reference, WCHAR *iface, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Register_Device_Interface_ExA( DEVINST node, GUID *class_guid, const char *reference, char *iface, ULONG *len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Register_Device_Interface_ExW( DEVINST node, GUID *class_guid, const WCHAR *reference, WCHAR *iface, ULONG *len, ULONG flags, HMACHINE machine );
+ #define                CM_Register_Device_Interface_Ex WINELIB_NAME_AW(CM_Register_Device_Interface_Ex)
+-CMAPI CONFIGRET WINAPI CM_Register_Device_InterfaceA( DEVINST node, GUID *class, const char *reference, char *iface, ULONG *len, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Register_Device_InterfaceW( DEVINST node, GUID *class, const WCHAR *reference, WCHAR *iface, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Register_Device_InterfaceA( DEVINST node, GUID *class_guid, const char *reference, char *iface, ULONG *len, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Register_Device_InterfaceW( DEVINST node, GUID *class_guid, const WCHAR *reference, WCHAR *iface, ULONG *len, ULONG flags );
+ #define                CM_Register_Device_Interface WINELIB_NAME_AW(CM_Register_Device_Interface)
+ CMAPI CONFIGRET WINAPI CM_Register_Notification( CM_NOTIFY_FILTER *filter, void *context, PCM_NOTIFY_CALLBACK callback, HCMNOTIFICATION *notify );
+ CMAPI CONFIGRET WINAPI CM_Remove_SubTree( DEVINST ancestor, ULONG flags );
+@@ -584,10 +584,10 @@ CMAPI CONFIGRET WINAPI CM_Request_Eject_PC(void);
+ CMAPI CONFIGRET WINAPI CM_Request_Eject_PC_Ex( HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Run_Detection( ULONG flags );
+ CMAPI CONFIGRET WINAPI CM_Run_Detection_Ex( ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Set_Class_Property_ExW( const GUID *class, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Set_Class_PropertyW( const GUID *class, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags );
+-CMAPI CONFIGRET WINAPI CM_Set_Class_Registry_PropertyA( GUID *class, ULONG property, const void *buffer, ULONG len, ULONG flags, HMACHINE machine );
+-CMAPI CONFIGRET WINAPI CM_Set_Class_Registry_PropertyW( GUID *class, ULONG property, const void *buffer, ULONG len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Set_Class_Property_ExW( const GUID *class_guid, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Set_Class_PropertyW( const GUID *class_guid, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags );
++CMAPI CONFIGRET WINAPI CM_Set_Class_Registry_PropertyA( GUID *class_guid, ULONG property, const void *buffer, ULONG len, ULONG flags, HMACHINE machine );
++CMAPI CONFIGRET WINAPI CM_Set_Class_Registry_PropertyW( GUID *class_guid, ULONG property, const void *buffer, ULONG len, ULONG flags, HMACHINE machine );
+ #define                CM_Set_Class_Registry_Property WINELIB_NAME_AW(CM_Set_Class_Registry_Property)
+ CMAPI CONFIGRET WINAPI CM_Set_Device_Interface_Property_ExW( const WCHAR *iface, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags, HMACHINE machine );
+ CMAPI CONFIGRET WINAPI CM_Set_Device_Interface_PropertyW( const WCHAR *iface, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags );
+diff --git a/include/guiddef.h b/include/guiddef.h
+index d447388..c20f20a 100644
+--- a/include/guiddef.h
++++ b/include/guiddef.h
+@@ -91,13 +91,25 @@ extern "C++" {
+ #undef DEFINE_GUID
+ 
+ #ifdef INITGUID
++/* each unit defining a GUID keeps one copy, as the SDK's does */
++#ifndef DECLSPEC_SELECTANY
++# ifdef __MINGW32__
++#  define DECLSPEC_SELECTANY __attribute__((selectany))
++# elif defined(__GNUC__)
++#  define DECLSPEC_SELECTANY __attribute__((weak))
++# elif defined(_MSC_VER)
++#  define DECLSPEC_SELECTANY __declspec(selectany)
++# else
++#  define DECLSPEC_SELECTANY
++# endif
++#endif
+ #ifdef __cplusplus
+ #define DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) \
+-        EXTERN_C const GUID name = \
++        EXTERN_C const GUID DECLSPEC_SELECTANY name = \
+ 	{ l, w1, w2, { b1, b2,  b3,  b4,  b5,  b6,  b7,  b8 } }
+ #else
+ #define DEFINE_GUID(name, l, w1, w2, b1, b2, b3, b4, b5, b6, b7, b8) \
+-        const GUID name = \
++        const GUID DECLSPEC_SELECTANY name = \
+ 	{ l, w1, w2, { b1, b2,  b3,  b4,  b5,  b6,  b7,  b8 } }
+ #endif
+ #else
+diff --git a/include/msvcrt/math.h b/include/msvcrt/math.h
+index 39d285e..d483f41 100644
+--- a/include/msvcrt/math.h
++++ b/include/msvcrt/math.h
+@@ -304,6 +304,12 @@ template <class T> inline bool isfinite(T x) throw() { return fpclassify(x) <= 0
+ template <class T> inline bool isinf(T x) throw() { return fpclassify(x) == FP_INFINITE; }
+ template <class T> inline bool isnan(T x) throw() { return fpclassify(x) == FP_NAN; }
+ template <class T> inline bool isnormal(T x) throw() { return fpclassify(x) == FP_NORMAL; }
++template <class T, class U> inline bool isgreater(T x, U y) throw() { return __builtin_isgreater(x, y); }
++template <class T, class U> inline bool isgreaterequal(T x, U y) throw() { return __builtin_isgreaterequal(x, y); }
++template <class T, class U> inline bool isless(T x, U y) throw() { return __builtin_isless(x, y); }
++template <class T, class U> inline bool islessequal(T x, U y) throw() { return __builtin_islessequal(x, y); }
++template <class T, class U> inline bool islessgreater(T x, U y) throw() { return __builtin_islessgreater(x, y); }
++template <class T, class U> inline bool isunordered(T x, U y) throw() { return __builtin_isunordered(x, y); }
+ } /* extern "C++" */
+ 
+ #elif _MSVCR_VER >= 120
 diff --git a/programs/conhost/conhost.c b/programs/conhost/conhost.c
 index 8298743..4c6e673 100644
 --- a/programs/conhost/conhost.c
@@ -194,3 +500,1428 @@ index b6619b6..d8e525d 100644
  		WaitForSingleObject(opts.sei.hProcess, INFINITE);
  		GetExitCodeProcess(opts.sei.hProcess, &exitcode);
  		ExitProcess(exitcode);
+diff --git a/dlls/winegstreamer/trinity.c b/dlls/winegstreamer/trinity.c
+new file mode 100644
+index 0000000..d9fb26d
+--- /dev/null
++++ b/dlls/winegstreamer/trinity.c
+@@ -0,0 +1,1419 @@
++/*
++ * winegstreamer's Unix side on trinity (silver's GPU and media
++ * library), through webgfx's C calls: H.264 and H.265 on the Vulkan
++ * video decoder, AAC through faad2, and the raw conversions (colour,
++ * sample formats, rates) here. Other codecs are not supported.
++ *
++ * This library is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdarg.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <pthread.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "winternl.h"
++#include "windef.h"
++#include "winbase.h"
++
++#include "initguid.h"
++#include "d3d9types.h"
++#include "mfapi.h"
++#include "mferror.h"
++#include "ks.h"
++#include "ksmedia.h"
++
++#include "unixlib.h"
++
++DEFINE_MEDIATYPE_GUID(MFAudioFormat_RAW_AAC, WAVE_FORMAT_RAW_AAC1);
++
++/* webgfx (install/build/libsilver-webgfx.so) */
++int     webgfx_decoder_new(int kind, const uint8_t *config, int n);
++int     webgfx_decoder_push(int id, const uint8_t *bytes, int n, int64_t pts);
++void    webgfx_decoder_finish(int id);
++int     webgfx_decoder_frame(int id, int64_t *info);
++void    webgfx_decoder_take(int id, uint8_t *y, uint8_t *u, uint8_t *v);
++void    webgfx_decoder_drop(int id);
++void    webgfx_decoder_free(int id);
++int     webgfx_aac_new(const uint8_t *asc, int n, int *rate, int *ch);
++int64_t webgfx_aac_decode(int id, const uint8_t *data, int64_t n, float *out, int64_t cap);
++
++enum kind
++{
++    KIND_H264 = 1,
++    KIND_HEVC,
++    KIND_AAC,
++    KIND_VIDEO_RAW,
++    KIND_AUDIO_RAW,
++};
++
++enum pix
++{
++    PIX_NONE,
++    PIX_NV12,
++    PIX_I420,
++    PIX_YV12,
++    PIX_YUY2,
++    PIX_UYVY,
++    PIX_RGB32,
++    PIX_ARGB32,
++};
++
++/* a picture in 4:2:0 planes, display size */
++struct picture
++{
++    int w, h;
++    uint8_t *y, *u, *v;
++    INT64 pts;
++    UINT64 duration;
++    UINT32 flags;
++};
++
++struct pcm
++{
++    WORD tag;
++    UINT32 bits, channels, rate;
++};
++
++struct transform
++{
++    enum kind kind;
++    struct wg_transform_attrs attrs;
++    pthread_mutex_t lock;
++
++    /* video output */
++    MFVIDEOFORMAT out_video;
++    enum pix out_pix;
++    BOOL changed;
++    /* video raw input */
++    MFVIDEOFORMAT in_video;
++    enum pix in_pix;
++
++    /* decoder state */
++    int dec;
++    BOOL configured;
++    int nal_len;
++    uint8_t *ps[3];
++    int ps_n[3];
++    UINT32 ps_have;
++
++    /* decoded pictures in order, for the raw path and dropped samples */
++    struct picture *pics;
++    int pic_n, pic_cap;
++    UINT64 last_duration;
++
++    /* audio */
++    struct pcm in_pcm, out_pcm;
++    int aac;
++    int aac_rate, aac_ch;
++    float *frames;              /* interleaved, out channels, out rate */
++    size_t frame_n, frame_cap;  /* in frames */
++    INT64 next_pts;
++    BOOL have_pts;
++    /* the resampler: position into the input and the last frame */
++    double rs_pos;
++    float rs_last[8];
++    BOOL rs_primed;
++    BOOL draining;
++};
++
++static struct transform *get_transform(wg_transform_t handle)
++{
++    return (struct transform *)(ULONG_PTR)handle;
++}
++
++static void *sample_data(const struct wg_sample *sample)
++{
++    return (void *)(ULONG_PTR)sample->data;
++}
++
++static enum pix pix_of(const GUID *subtype)
++{
++    if (IsEqualGUID(subtype, &MFVideoFormat_NV12)) return PIX_NV12;
++    if (IsEqualGUID(subtype, &MFVideoFormat_I420)) return PIX_I420;
++    if (IsEqualGUID(subtype, &MFVideoFormat_IYUV)) return PIX_I420;
++    if (IsEqualGUID(subtype, &MFVideoFormat_YV12)) return PIX_YV12;
++    if (IsEqualGUID(subtype, &MFVideoFormat_YUY2)) return PIX_YUY2;
++    if (IsEqualGUID(subtype, &MFVideoFormat_UYVY)) return PIX_UYVY;
++    if (IsEqualGUID(subtype, &MFVideoFormat_RGB32)) return PIX_RGB32;
++    if (IsEqualGUID(subtype, &MFVideoFormat_ARGB32)) return PIX_ARGB32;
++    return PIX_NONE;
++}
++
++static BOOL pix_rgb(enum pix pix)
++{
++    return pix == PIX_RGB32 || pix == PIX_ARGB32;
++}
++
++/* the display size a video format names */
++static void video_size(const MFVIDEOFORMAT *format, int *w, int *h)
++{
++    const MFVideoArea *area = &format->videoInfo.MinimumDisplayAperture;
++    *w = format->videoInfo.dwWidth;
++    *h = format->videoInfo.dwHeight;
++    if (area->Area.cx && area->Area.cy)
++    {
++        *w = area->Area.cx;
++        *h = area->Area.cy;
++    }
++}
++
++static int align_up(int value, UINT32 align)
++{
++    return (value + align) & ~align;
++}
++
++/* the first plane's row in bytes and the rows a picture takes */
++static void plane_layout(enum pix pix, int w, int h, UINT32 align, INT32 stride,
++        int *pitch, int *rows, BOOL *flip)
++{
++    int aw = align_up(w, align), ah = align_up(h, align);
++    int bpp = pix_rgb(pix) ? 4 : (pix == PIX_YUY2 || pix == PIX_UYVY) ? 2 : 1;
++
++    *pitch = stride ? abs(stride) : aw * bpp;
++    if (!stride && (pix == PIX_NV12 || pix == PIX_I420 || pix == PIX_YV12))
++        *pitch = (aw + 1) & ~1;
++    *rows = ah;
++    *flip = stride < 0;
++}
++
++static size_t frame_size(enum pix pix, int pitch, int rows)
++{
++    switch (pix)
++    {
++    case PIX_NV12:
++    case PIX_I420:
++    case PIX_YV12:
++        return (size_t)pitch * rows + (size_t)pitch * ((rows + 1) / 2);
++    default:
++        return (size_t)pitch * rows;
++    }
++}
++
++/* limited-range BT.601 or BT.709 */
++static void yuv_coefficients(BOOL bt709, int *cr_r, int *cb_g, int *cr_g, int *cb_b)
++{
++    if (bt709)
++    {
++        *cr_r = 459; *cb_g = 55; *cr_g = 136; *cb_b = 541;
++    }
++    else
++    {
++        *cr_r = 409; *cb_g = 100; *cr_g = 208; *cb_b = 516;
++    }
++}
++
++static uint8_t clamp8(int value)
++{
++    return value < 0 ? 0 : value > 255 ? 255 : value;
++}
++
++static BOOL format_bt709(const MFVIDEOFORMAT *format, int h)
++{
++    if (format->videoInfo.TransferMatrix == MFVideoTransferMatrix_BT709) return TRUE;
++    if (format->videoInfo.TransferMatrix == MFVideoTransferMatrix_BT601) return FALSE;
++    return h >= 720;
++}
++
++/* a picture into an output buffer in its format */
++static void write_picture(const struct picture *pic, enum pix pix, uint8_t *dst,
++        int pitch, int rows, BOOL flip, BOOL bt709)
++{
++    int x, y, cw = (pic->w + 1) / 2;
++    int cr_r, cb_g, cr_g, cb_b;
++
++    switch (pix)
++    {
++    case PIX_NV12:
++    {
++        uint8_t *uv = dst + (size_t)pitch * rows;
++        for (y = 0; y < pic->h; y++)
++            memcpy(dst + (size_t)y * pitch, pic->y + (size_t)y * pic->w, pic->w);
++        for (y = 0; y < (pic->h + 1) / 2; y++)
++        {
++            uint8_t *row = uv + (size_t)y * pitch;
++            for (x = 0; x < cw; x++)
++            {
++                row[2 * x] = pic->u[(size_t)y * cw + x];
++                row[2 * x + 1] = pic->v[(size_t)y * cw + x];
++            }
++        }
++        break;
++    }
++    case PIX_I420:
++    case PIX_YV12:
++    {
++        uint8_t *first = dst + (size_t)pitch * rows;
++        uint8_t *second = first + (size_t)(pitch / 2) * ((rows + 1) / 2);
++        uint8_t *u = pix == PIX_I420 ? first : second, *v = pix == PIX_I420 ? second : first;
++        for (y = 0; y < pic->h; y++)
++            memcpy(dst + (size_t)y * pitch, pic->y + (size_t)y * pic->w, pic->w);
++        for (y = 0; y < (pic->h + 1) / 2; y++)
++        {
++            memcpy(u + (size_t)y * (pitch / 2), pic->u + (size_t)y * cw, cw);
++            memcpy(v + (size_t)y * (pitch / 2), pic->v + (size_t)y * cw, cw);
++        }
++        break;
++    }
++    case PIX_YUY2:
++    case PIX_UYVY:
++        for (y = 0; y < pic->h; y++)
++        {
++            uint8_t *row = dst + (size_t)y * pitch;
++            const uint8_t *ys = pic->y + (size_t)y * pic->w;
++            const uint8_t *us = pic->u + (size_t)(y / 2) * cw, *vs = pic->v + (size_t)(y / 2) * cw;
++            for (x = 0; x < pic->w; x += 2)
++            {
++                uint8_t y0 = ys[x], y1 = x + 1 < pic->w ? ys[x + 1] : ys[x];
++                if (pix == PIX_YUY2)
++                {
++                    row[2 * x] = y0; row[2 * x + 1] = us[x / 2];
++                    row[2 * x + 2] = y1; row[2 * x + 3] = vs[x / 2];
++                }
++                else
++                {
++                    row[2 * x] = us[x / 2]; row[2 * x + 1] = y0;
++                    row[2 * x + 2] = vs[x / 2]; row[2 * x + 3] = y1;
++                }
++            }
++        }
++        break;
++    case PIX_RGB32:
++    case PIX_ARGB32:
++        yuv_coefficients(bt709, &cr_r, &cb_g, &cr_g, &cb_b);
++        for (y = 0; y < pic->h; y++)
++        {
++            uint8_t *row = dst + (size_t)(flip ? pic->h - 1 - y : y) * pitch;
++            const uint8_t *ys = pic->y + (size_t)y * pic->w;
++            const uint8_t *us = pic->u + (size_t)(y / 2) * cw, *vs = pic->v + (size_t)(y / 2) * cw;
++            for (x = 0; x < pic->w; x++)
++            {
++                int c = 298 * (ys[x] - 16), d = us[x / 2] - 128, e = vs[x / 2] - 128;
++                row[4 * x] = clamp8((c + cb_b * d + 128) >> 8);
++                row[4 * x + 1] = clamp8((c - cb_g * d - cr_g * e + 128) >> 8);
++                row[4 * x + 2] = clamp8((c + cr_r * e + 128) >> 8);
++                row[4 * x + 3] = 0xff;
++            }
++        }
++        break;
++    default:
++        break;
++    }
++}
++
++/* an input buffer in a raw format into 4:2:0 planes */
++static BOOL read_picture(struct picture *pic, enum pix pix, const uint8_t *src, size_t size,
++        int pitch, int rows, BOOL flip, BOOL bt709)
++{
++    int x, y, cw = (pic->w + 1) / 2, ch = (pic->h + 1) / 2;
++
++    if (size < frame_size(pix, pitch, rows) && size < frame_size(pix, pitch, pic->h))
++        return FALSE;
++    switch (pix)
++    {
++    case PIX_NV12:
++    {
++        const uint8_t *uv = src + (size_t)pitch * (size >= frame_size(pix, pitch, rows) ? rows : pic->h);
++        for (y = 0; y < pic->h; y++)
++            memcpy(pic->y + (size_t)y * pic->w, src + (size_t)y * pitch, pic->w);
++        for (y = 0; y < ch; y++)
++            for (x = 0; x < cw; x++)
++            {
++                pic->u[(size_t)y * cw + x] = uv[(size_t)y * pitch + 2 * x];
++                pic->v[(size_t)y * cw + x] = uv[(size_t)y * pitch + 2 * x + 1];
++            }
++        return TRUE;
++    }
++    case PIX_I420:
++    case PIX_YV12:
++    {
++        int r = size >= frame_size(pix, pitch, rows) ? rows : pic->h;
++        const uint8_t *first = src + (size_t)pitch * r;
++        const uint8_t *second = first + (size_t)(pitch / 2) * ((r + 1) / 2);
++        const uint8_t *u = pix == PIX_I420 ? first : second, *v = pix == PIX_I420 ? second : first;
++        for (y = 0; y < pic->h; y++)
++            memcpy(pic->y + (size_t)y * pic->w, src + (size_t)y * pitch, pic->w);
++        for (y = 0; y < ch; y++)
++        {
++            memcpy(pic->u + (size_t)y * cw, u + (size_t)y * (pitch / 2), cw);
++            memcpy(pic->v + (size_t)y * cw, v + (size_t)y * (pitch / 2), cw);
++        }
++        return TRUE;
++    }
++    case PIX_YUY2:
++    case PIX_UYVY:
++        for (y = 0; y < pic->h; y++)
++        {
++            const uint8_t *row = src + (size_t)y * pitch;
++            for (x = 0; x < pic->w; x++)
++                pic->y[(size_t)y * pic->w + x] = row[2 * x + (pix == PIX_YUY2 ? 0 : 1)];
++            if (y % 2) continue;
++            for (x = 0; x < cw; x++)
++            {
++                pic->u[(size_t)(y / 2) * cw + x] = row[4 * x + (pix == PIX_YUY2 ? 1 : 0)];
++                pic->v[(size_t)(y / 2) * cw + x] = row[4 * x + (pix == PIX_YUY2 ? 3 : 2)];
++            }
++        }
++        return TRUE;
++    case PIX_RGB32:
++    case PIX_ARGB32:
++    {
++        /* Y'CbCr from R'G'B', limited range */
++        int ry = bt709 ? 47 : 66, gy = bt709 ? 157 : 129, by = bt709 ? 16 : 25;
++        int ru = bt709 ? -26 : -38, gu = bt709 ? -87 : -74, bu = 112;
++        int rv = 112, gv = bt709 ? -102 : -94, bv = bt709 ? -10 : -18;
++        for (y = 0; y < pic->h; y++)
++        {
++            const uint8_t *row = src + (size_t)(flip ? pic->h - 1 - y : y) * pitch;
++            for (x = 0; x < pic->w; x++)
++            {
++                int b = row[4 * x], g = row[4 * x + 1], r = row[4 * x + 2];
++                pic->y[(size_t)y * pic->w + x] = clamp8(((ry * r + gy * g + by * b + 128) >> 8) + 16);
++                if (y % 2 || x % 2) continue;
++                pic->u[(size_t)(y / 2) * cw + x / 2] = clamp8(((ru * r + gu * g + bu * b + 128) >> 8) + 128);
++                pic->v[(size_t)(y / 2) * cw + x / 2] = clamp8(((rv * r + gv * g + bv * b + 128) >> 8) + 128);
++            }
++        }
++        return TRUE;
++    }
++    default:
++        return FALSE;
++    }
++}
++
++static BOOL picture_alloc(struct picture *pic, int w, int h)
++{
++    size_t luma = (size_t)w * h, chroma = (size_t)((w + 1) / 2) * ((h + 1) / 2);
++    pic->w = w;
++    pic->h = h;
++    if (!(pic->y = malloc(luma + 2 * chroma))) return FALSE;
++    pic->u = pic->y + luma;
++    pic->v = pic->u + chroma;
++    return TRUE;
++}
++
++static void queue_picture(struct transform *transform, struct picture *pic)
++{
++    if (transform->pic_n == transform->pic_cap)
++    {
++        int cap = transform->pic_cap ? transform->pic_cap * 2 : 8;
++        struct picture *pics = realloc(transform->pics, cap * sizeof(*pics));
++        if (!pics)
++        {
++            free(pic->y);
++            return;
++        }
++        transform->pics = pics;
++        transform->pic_cap = cap;
++    }
++    transform->pics[transform->pic_n++] = *pic;
++}
++
++static void drop_pictures(struct transform *transform)
++{
++    int i;
++    for (i = 0; i < transform->pic_n; i++)
++        free(transform->pics[i].y);
++    transform->pic_n = 0;
++}
++
++/* pictures the decoder finished, into the queue */
++static void collect_pictures(struct transform *transform)
++{
++    int64_t info[4];
++    struct picture pic = {0};
++
++    while (transform->dec && webgfx_decoder_frame(transform->dec, info))
++    {
++        int w = info[0], h = info[1];
++        if (info[3])
++        {
++            /* 4:4:4 comes in whole: averaged to 4:2:0 */
++            uint8_t *full = malloc((size_t)w * h * 3);
++            int x, y, cw = (w + 1) / 2;
++            if (!full || !picture_alloc(&pic, w, h))
++            {
++                free(full);
++                webgfx_decoder_drop(transform->dec);
++                return;
++            }
++            webgfx_decoder_take(transform->dec, full, full + (size_t)w * h, full + (size_t)2 * w * h);
++            memcpy(pic.y, full, (size_t)w * h);
++            for (y = 0; y < (h + 1) / 2; y++)
++                for (x = 0; x < cw; x++)
++                {
++                    int x1 = min(2 * x + 1, w - 1), y1 = min(2 * y + 1, h - 1);
++                    const uint8_t *u = full + (size_t)w * h, *v = u + (size_t)w * h;
++                    pic.u[(size_t)y * cw + x] = (u[2 * y * w + 2 * x] + u[2 * y * w + x1]
++                            + u[y1 * w + 2 * x] + u[y1 * w + x1] + 2) / 4;
++                    pic.v[(size_t)y * cw + x] = (v[2 * y * w + 2 * x] + v[2 * y * w + x1]
++                            + v[y1 * w + 2 * x] + v[y1 * w + x1] + 2) / 4;
++                }
++            free(full);
++        }
++        else
++        {
++            if (!picture_alloc(&pic, w, h))
++            {
++                webgfx_decoder_drop(transform->dec);
++                return;
++            }
++            webgfx_decoder_take(transform->dec, pic.y, pic.u, pic.v);
++        }
++        pic.pts = info[2];
++        pic.duration = transform->last_duration;
++        pic.flags = WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_SYNC_POINT
++                | (transform->last_duration ? WG_SAMPLE_FLAG_HAS_DURATION : 0);
++        queue_picture(transform, &pic);
++    }
++}
++
++/* ---- H.264 / H.265 bitstream: Annex B or length-prefixed */
++
++static const uint8_t *next_start(const uint8_t *p, const uint8_t *end, int *code)
++{
++    for (; p + 3 <= end; p++)
++    {
++        if (p[0] || p[1]) continue;
++        if (p[2] == 1) { *code = 3; return p; }
++        if (p + 4 <= end && !p[2] && p[3] == 1) { *code = 4; return p; }
++    }
++    *code = 0;
++    return end;
++}
++
++static BOOL annexb(const uint8_t *data, size_t size)
++{
++    return size >= 4 && !data[0] && !data[1] && (data[2] == 1 || (!data[2] && data[3] == 1));
++}
++
++/* a parameter set's slot: H.264 SPS, PPS; H.265 VPS, SPS, PPS */
++static int ps_slot(const struct transform *transform, const uint8_t *nal, size_t size)
++{
++    if (!size) return -1;
++    if (transform->kind == KIND_H264)
++    {
++        int type = nal[0] & 0x1f;
++        return type == 7 ? 0 : type == 8 ? 1 : -1;
++    }
++    else
++    {
++        int type = (nal[0] >> 1) & 0x3f;
++        return type == 32 ? 2 : type == 33 ? 0 : type == 34 ? 1 : -1;
++    }
++}
++
++static void keep_ps(struct transform *transform, const uint8_t *nal, size_t size)
++{
++    int slot = ps_slot(transform, nal, size);
++    uint8_t *copy;
++
++    if (slot < 0 || size > 0xffff || !(copy = malloc(size))) return;
++    memcpy(copy, nal, size);
++    free(transform->ps[slot]);
++    transform->ps[slot] = copy;
++    transform->ps_n[slot] = size;
++    transform->ps_have |= 1u << slot;
++}
++
++/* avcC or hvcC from the parameter sets seen; 4-byte lengths */
++static int make_config(const struct transform *transform, uint8_t *out, int cap)
++{
++    int at = 0, i;
++    if (transform->kind == KIND_H264)
++    {
++        const uint8_t *sps = transform->ps[0];
++        int need = 11 + transform->ps_n[0] + transform->ps_n[1];
++        if (need > cap || transform->ps_n[0] < 4) return 0;
++        out[at++] = 1;
++        out[at++] = sps[1];
++        out[at++] = sps[2];
++        out[at++] = sps[3];
++        out[at++] = 0xff;
++        out[at++] = 0xe1;
++        out[at++] = transform->ps_n[0] >> 8;
++        out[at++] = transform->ps_n[0];
++        memcpy(out + at, sps, transform->ps_n[0]);
++        at += transform->ps_n[0];
++        out[at++] = 1;
++        out[at++] = transform->ps_n[1] >> 8;
++        out[at++] = transform->ps_n[1];
++        memcpy(out + at, transform->ps[1], transform->ps_n[1]);
++        return at + transform->ps_n[1];
++    }
++    /* hvcC: trinity reads its length size (byte 21) and the arrays */
++    if (23 + 3 * 5 + transform->ps_n[0] + transform->ps_n[1] + transform->ps_n[2] > cap) return 0;
++    memset(out, 0, 23);
++    out[0] = 1;
++    out[21] = 0xfc | 3;
++    out[22] = 3;
++    at = 23;
++    for (i = 0; i < 3; i++)
++    {
++        static const int order[3] = {2, 0, 1}, types[3] = {32, 33, 34};
++        int slot = order[i];
++        out[at++] = 0x80 | types[i];
++        out[at++] = 0;
++        out[at++] = 1;
++        out[at++] = transform->ps_n[slot] >> 8;
++        out[at++] = transform->ps_n[slot];
++        memcpy(out + at, transform->ps[slot], transform->ps_n[slot]);
++        at += transform->ps_n[slot];
++    }
++    return at;
++}
++
++static UINT32 ps_needed(const struct transform *transform)
++{
++    return transform->kind == KIND_H264 ? 3 : 7;
++}
++
++/* parameter sets out of a codec record (avcC, hvcC) */
++static void read_config(struct transform *transform, const uint8_t *c, size_t n)
++{
++    size_t at;
++    int i, k;
++
++    if (transform->kind == KIND_H264)
++    {
++        int count;
++        if (n < 7) return;
++        transform->nal_len = (c[4] & 3) + 1;
++        count = c[5] & 0x1f;
++        at = 6;
++        for (k = 0; k < 2; k++)
++        {
++            for (i = 0; i < count && at + 2 <= n; i++)
++            {
++                size_t len = (c[at] << 8) | c[at + 1];
++                at += 2;
++                if (at + len > n) return;
++                keep_ps(transform, c + at, len);
++                at += len;
++            }
++            if (at >= n) return;
++            count = c[at++];
++        }
++        return;
++    }
++    if (n < 23) return;
++    transform->nal_len = (c[21] & 3) + 1;
++    at = 23;
++    for (k = 0; k < c[22] && at + 3 <= n; k++)
++    {
++        int count = (c[at + 1] << 8) | c[at + 2];
++        at += 3;
++        for (i = 0; i < count && at + 2 <= n; i++)
++        {
++            size_t len = (c[at] << 8) | c[at + 1];
++            at += 2;
++            if (at + len > n) return;
++            keep_ps(transform, c + at, len);
++            at += len;
++        }
++    }
++}
++
++/* the NAL units of a sample, rewritten with 4-byte lengths */
++static uint8_t *length_prefixed(struct transform *transform, const uint8_t *data, size_t size, size_t *out_n)
++{
++    uint8_t *out = malloc(size + 64 + size / 2), *w = out;
++    const uint8_t *end = data + size;
++
++    if (!out) return NULL;
++    if (annexb(data, size))
++    {
++        int code;
++        const uint8_t *p = next_start(data, end, &code);
++        while (p < end)
++        {
++            const uint8_t *nal = p + code, *q;
++            int next_code;
++            size_t len;
++            q = next_start(nal, end, &next_code);
++            len = q - nal;
++            while (len && !nal[len - 1] && q < end) len--;
++            if (len)
++            {
++                keep_ps(transform, nal, len);
++                w[0] = len >> 24; w[1] = len >> 16; w[2] = len >> 8; w[3] = len;
++                memcpy(w + 4, nal, len);
++                w += 4 + len;
++            }
++            p = q;
++            code = next_code;
++        }
++    }
++    else
++    {
++        size_t at = 0;
++        int nl = transform->nal_len ? transform->nal_len : 4;
++        while (at + nl <= size)
++        {
++            size_t len = 0;
++            int i;
++            for (i = 0; i < nl; i++) len = (len << 8) | data[at + i];
++            at += nl;
++            if (at + len > size) break;
++            keep_ps(transform, data + at, len);
++            w[0] = len >> 24; w[1] = len >> 16; w[2] = len >> 8; w[3] = len;
++            memcpy(w + 4, data + at, len);
++            w += 4 + len;
++            at += len;
++        }
++    }
++    *out_n = w - out;
++    return out;
++}
++
++static BOOL configure_decoder(struct transform *transform)
++{
++    uint8_t config[4096];
++    int n;
++
++    if ((transform->ps_have & ps_needed(transform)) != ps_needed(transform)) return FALSE;
++    if (!(n = make_config(transform, config, sizeof(config)))) return FALSE;
++    if (!(transform->dec = webgfx_decoder_new(transform->kind == KIND_H264 ? 1 : 2, config, n)))
++        return FALSE;
++    transform->configured = TRUE;
++    return TRUE;
++}
++
++/* ---- audio */
++
++static BOOL pcm_from_wave(const WAVEFORMATEX *format, UINT32 size, struct pcm *pcm)
++{
++    WORD tag = format->wFormatTag;
++    if (tag == WAVE_FORMAT_EXTENSIBLE && size >= sizeof(WAVEFORMATEXTENSIBLE))
++    {
++        const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)format;
++        if (IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM)) tag = WAVE_FORMAT_PCM;
++        else if (IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT)) tag = WAVE_FORMAT_IEEE_FLOAT;
++        else return FALSE;
++    }
++    if (tag != WAVE_FORMAT_PCM && tag != WAVE_FORMAT_IEEE_FLOAT) return FALSE;
++    pcm->tag = tag;
++    pcm->bits = format->wBitsPerSample;
++    pcm->channels = format->nChannels;
++    pcm->rate = format->nSamplesPerSec;
++    if (!pcm->channels || pcm->channels > 8 || !pcm->rate) return FALSE;
++    if (tag == WAVE_FORMAT_IEEE_FLOAT) return pcm->bits == 32 || pcm->bits == 64;
++    return pcm->bits == 8 || pcm->bits == 16 || pcm->bits == 24 || pcm->bits == 32;
++}
++
++static UINT32 pcm_frame_bytes(const struct pcm *pcm)
++{
++    return pcm->channels * pcm->bits / 8;
++}
++
++static float pcm_read(const struct pcm *pcm, const uint8_t *p)
++{
++    if (pcm->tag == WAVE_FORMAT_IEEE_FLOAT)
++        return pcm->bits == 32 ? *(const float *)p : (float)*(const double *)p;
++    switch (pcm->bits)
++    {
++    case 8: return (p[0] - 128) / 128.0f;
++    case 16: return *(const int16_t *)p / 32768.0f;
++    case 24: return (int32_t)((p[0] << 8) | (p[1] << 16) | ((uint32_t)p[2] << 24)) / 2147483648.0f;
++    default: return *(const int32_t *)p / 2147483648.0f;
++    }
++}
++
++static void pcm_write(const struct pcm *pcm, uint8_t *p, float value)
++{
++    double s;
++    if (pcm->tag == WAVE_FORMAT_IEEE_FLOAT)
++    {
++        if (pcm->bits == 32) *(float *)p = value;
++        else *(double *)p = value;
++        return;
++    }
++    s = value < -1.0f ? -1.0 : value > 1.0f ? 1.0 : value;
++    switch (pcm->bits)
++    {
++    case 8: p[0] = clamp8((int)(s * 127.0 + 128.5)); break;
++    case 16: *(int16_t *)p = (int16_t)(s < 0 ? s * 32768.0 : s * 32767.0); break;
++    case 24:
++    {
++        int32_t v = (int32_t)(s < 0 ? s * 8388608.0 : s * 8388607.0);
++        p[0] = v; p[1] = v >> 8; p[2] = v >> 16;
++        break;
++    }
++    default: *(int32_t *)p = (int32_t)(s < 0 ? s * 2147483648.0 : s * 2147483647.0); break;
++    }
++}
++
++static BOOL grow_frames(struct transform *transform, size_t more)
++{
++    size_t need = transform->frame_n + more, ch = transform->out_pcm.channels;
++    if (need > transform->frame_cap)
++    {
++        size_t cap = max(need, transform->frame_cap * 2);
++        float *frames = realloc(transform->frames, cap * ch * sizeof(float));
++        if (!frames) return FALSE;
++        transform->frames = frames;
++        transform->frame_cap = cap;
++    }
++    return TRUE;
++}
++
++/* one input frame's channels mapped onto the output's */
++static void map_channels(const float *in, UINT32 in_ch, float *out, UINT32 out_ch)
++{
++    UINT32 c;
++    if (in_ch == out_ch)
++    {
++        memcpy(out, in, out_ch * sizeof(float));
++        return;
++    }
++    if (out_ch == 1)
++    {
++        float sum = 0.0f;
++        for (c = 0; c < min(in_ch, 2); c++) sum += in[c];
++        out[0] = sum / min(in_ch, 2);
++        return;
++    }
++    for (c = 0; c < out_ch; c++)
++        out[c] = in_ch == 1 ? in[0] : c < in_ch ? in[c] : 0.0f;
++}
++
++/* interleaved float frames at in_rate into the output queue */
++static void append_frames(struct transform *transform, const float *in, size_t n, UINT32 in_ch, UINT32 in_rate)
++{
++    UINT32 out_ch = transform->out_pcm.channels, out_rate = transform->out_pcm.rate;
++    float mapped[8];
++    size_t i;
++
++    if (in_rate == out_rate)
++    {
++        if (!grow_frames(transform, n)) return;
++        for (i = 0; i < n; i++)
++            map_channels(in + i * in_ch, in_ch, transform->frames + (transform->frame_n + i) * out_ch, out_ch);
++        transform->frame_n += n;
++        return;
++    }
++
++    /* linear resampling across calls: rs_pos runs over [last, in...] */
++    {
++        double step = (double)in_rate / out_rate;
++        size_t produce = (size_t)((n + (transform->rs_primed ? 1 : 0) - transform->rs_pos) / step) + 2;
++        if (!grow_frames(transform, produce)) return;
++        if (!transform->rs_primed && n)
++        {
++            map_channels(in, in_ch, transform->rs_last, out_ch);
++            transform->rs_primed = TRUE;
++        }
++        for (;;)
++        {
++            double pos = transform->rs_pos;
++            size_t at = (size_t)pos;
++            float frac = pos - at, a[8], b[8];
++            UINT32 c;
++            if (at + 1 > n) break;
++            if (at == 0) memcpy(a, transform->rs_last, sizeof(a));
++            else map_channels(in + (at - 1) * in_ch, in_ch, a, out_ch);
++            map_channels(in + at * in_ch, in_ch, b, out_ch);
++            for (c = 0; c < out_ch; c++)
++                mapped[c] = a[c] + (b[c] - a[c]) * frac;
++            if (transform->frame_n >= transform->frame_cap && !grow_frames(transform, 64)) break;
++            memcpy(transform->frames + transform->frame_n * out_ch, mapped, out_ch * sizeof(float));
++            transform->frame_n++;
++            transform->rs_pos += step;
++        }
++        if (n)
++        {
++            map_channels(in + (n - 1) * in_ch, in_ch, transform->rs_last, out_ch);
++            transform->rs_pos -= n;
++        }
++    }
++}
++
++/* ---- the transform calls */
++
++static NTSTATUS video_output_type(struct transform *transform, int w, int h)
++{
++    MFVIDEOFORMAT *format = &transform->out_video;
++    UINT32 align = transform->attrs.output_plane_align;
++    int aw = align_up(w, align), ah = align_up(h, align);
++
++    format->dwSize = sizeof(*format);
++    format->videoInfo.dwWidth = aw;
++    format->videoInfo.dwHeight = ah;
++    memset(&format->videoInfo.MinimumDisplayAperture, 0, sizeof(MFVideoArea));
++    if (aw != w || ah != h)
++    {
++        format->videoInfo.MinimumDisplayAperture.Area.cx = w;
++        format->videoInfo.MinimumDisplayAperture.Area.cy = h;
++    }
++    format->videoInfo.GeometricAperture = format->videoInfo.MinimumDisplayAperture;
++    format->videoInfo.PanScanAperture = format->videoInfo.MinimumDisplayAperture;
++    if (!format->videoInfo.PixelAspectRatio.Denominator)
++    {
++        format->videoInfo.PixelAspectRatio.Numerator = 1;
++        format->videoInfo.PixelAspectRatio.Denominator = 1;
++    }
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_create(void *args)
++{
++    struct wg_transform_create_params *params = args;
++    const struct wg_media_type *in = &params->input_type, *out = &params->output_type;
++    struct transform *transform;
++
++    if (!(transform = calloc(1, sizeof(*transform))))
++        return STATUS_NO_MEMORY;
++    transform->attrs = params->attrs;
++    pthread_mutex_init(&transform->lock, NULL);
++
++    if (IsEqualGUID(&in->major, &MFMediaType_Video) && IsEqualGUID(&out->major, &MFMediaType_Video)
++            && in->format_size >= sizeof(MFVIDEOFORMAT) && out->format_size >= sizeof(MFVIDEOFORMAT))
++    {
++        const MFVIDEOFORMAT *iv = in->u.video;
++        transform->out_video = *out->u.video;
++        transform->out_video.dwSize = sizeof(MFVIDEOFORMAT);
++        if (!(transform->out_pix = pix_of(&transform->out_video.guidFormat)))
++            goto unsupported;
++
++        if (IsEqualGUID(&iv->guidFormat, &MFVideoFormat_H264))
++            transform->kind = KIND_H264;
++        else if (IsEqualGUID(&iv->guidFormat, &MFVideoFormat_HEVC) || IsEqualGUID(&iv->guidFormat, &MFVideoFormat_H265))
++            transform->kind = KIND_HEVC;
++        else if ((transform->in_pix = pix_of(&iv->guidFormat)))
++        {
++            transform->kind = KIND_VIDEO_RAW;
++            transform->in_video = *iv;
++        }
++        else
++            goto unsupported;
++
++        if (transform->kind != KIND_VIDEO_RAW && in->format_size > sizeof(MFVIDEOFORMAT))
++        {
++            /* the sequence header: Annex B, or a codec record */
++            const uint8_t *extra = (const uint8_t *)(iv + 1);
++            size_t n = in->format_size - sizeof(MFVIDEOFORMAT);
++            size_t lp_n;
++            if (annexb(extra, n))
++                free(length_prefixed(transform, extra, n, &lp_n));
++            else
++                read_config(transform, extra, n);
++            configure_decoder(transform);
++        }
++        if (transform->kind != KIND_VIDEO_RAW)
++        {
++            int w, h;
++            video_size(iv, &w, &h);
++            if (!w || !h) video_size(&transform->out_video, &w, &h);
++            video_output_type(transform, w, h);
++        }
++    }
++    else if (IsEqualGUID(&in->major, &MFMediaType_Audio) && IsEqualGUID(&out->major, &MFMediaType_Audio)
++            && in->format_size >= sizeof(WAVEFORMATEX) && out->format_size >= sizeof(WAVEFORMATEX))
++    {
++        const WAVEFORMATEX *ia = in->u.audio;
++        if (!pcm_from_wave(out->u.audio, out->format_size, &transform->out_pcm))
++            goto unsupported;
++        if (ia->wFormatTag == WAVE_FORMAT_MPEG_HEAAC || ia->wFormatTag == WAVE_FORMAT_RAW_AAC1)
++        {
++            /* the AudioSpecificConfig after HEAACWAVEINFO, or after the header */
++            const uint8_t *asc;
++            size_t n;
++            if (ia->wFormatTag == WAVE_FORMAT_MPEG_HEAAC)
++            {
++                const HEAACWAVEFORMAT *heaac = (const HEAACWAVEFORMAT *)ia;
++                if (in->format_size < sizeof(HEAACWAVEINFO) || heaac->wfInfo.wPayloadType != 0)
++                    goto unsupported;
++                asc = heaac->pbAudioSpecificConfig;
++                n = in->format_size - sizeof(HEAACWAVEINFO);
++            }
++            else
++            {
++                asc = (const uint8_t *)(ia + 1);
++                n = in->format_size - sizeof(WAVEFORMATEX);
++            }
++            if (!n || !(transform->aac = webgfx_aac_new(asc, n, &transform->aac_rate, &transform->aac_ch)))
++                goto unsupported;
++            transform->kind = KIND_AAC;
++        }
++        else if (pcm_from_wave(ia, in->format_size, &transform->in_pcm))
++            transform->kind = KIND_AUDIO_RAW;
++        else
++            goto unsupported;
++    }
++    else
++        goto unsupported;
++
++    params->transform = (wg_transform_t)(ULONG_PTR)transform;
++    return STATUS_SUCCESS;
++
++unsupported:
++    pthread_mutex_destroy(&transform->lock);
++    free(transform);
++    return STATUS_NOT_SUPPORTED;
++}
++
++NTSTATUS wg_transform_destroy(void *args)
++{
++    struct transform *transform = get_transform(*(wg_transform_t *)args);
++    int i;
++
++    if (transform->dec) webgfx_decoder_free(transform->dec);
++    if (transform->aac) webgfx_decoder_free(transform->aac);
++    drop_pictures(transform);
++    free(transform->pics);
++    free(transform->frames);
++    for (i = 0; i < 3; i++) free(transform->ps[i]);
++    pthread_mutex_destroy(&transform->lock);
++    free(transform);
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_get_output_type(void *args)
++{
++    struct wg_transform_get_output_type_params *params = args;
++    struct transform *transform = get_transform(params->transform);
++    UINT32 size;
++
++    if (transform->kind == KIND_AAC || transform->kind == KIND_AUDIO_RAW)
++    {
++        const struct pcm *pcm = &transform->out_pcm;
++        WAVEFORMATEXTENSIBLE *wfx;
++        size = sizeof(WAVEFORMATEXTENSIBLE);
++        params->media_type.major = MFMediaType_Audio;
++        if (params->media_type.format_size < size)
++        {
++            params->media_type.format_size = size;
++            return STATUS_BUFFER_TOO_SMALL;
++        }
++        params->media_type.format_size = size;
++        wfx = (WAVEFORMATEXTENSIBLE *)params->media_type.u.audio;
++        memset(wfx, 0, size);
++        wfx->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++        wfx->Format.nChannels = pcm->channels;
++        wfx->Format.nSamplesPerSec = pcm->rate;
++        wfx->Format.wBitsPerSample = pcm->bits;
++        wfx->Format.nBlockAlign = pcm_frame_bytes(pcm);
++        wfx->Format.nAvgBytesPerSec = pcm->rate * wfx->Format.nBlockAlign;
++        wfx->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
++        wfx->Samples.wValidBitsPerSample = pcm->bits;
++        wfx->dwChannelMask = pcm->channels == 1 ? SPEAKER_FRONT_CENTER
++                : pcm->channels == 2 ? SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT : 0;
++        wfx->SubFormat = pcm->tag == WAVE_FORMAT_IEEE_FLOAT ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
++                : KSDATAFORMAT_SUBTYPE_PCM;
++        return STATUS_SUCCESS;
++    }
++
++    size = sizeof(MFVIDEOFORMAT);
++    params->media_type.major = MFMediaType_Video;
++    if (params->media_type.format_size < size)
++    {
++        params->media_type.format_size = size;
++        return STATUS_BUFFER_TOO_SMALL;
++    }
++    params->media_type.format_size = size;
++    *params->media_type.u.video = transform->out_video;
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_set_output_type(void *args)
++{
++    struct wg_transform_set_output_type_params *params = args;
++    struct transform *transform = get_transform(params->transform);
++    const struct wg_media_type *type = &params->media_type;
++
++    pthread_mutex_lock(&transform->lock);
++    if (IsEqualGUID(&type->major, &MFMediaType_Video) && type->format_size >= sizeof(MFVIDEOFORMAT)
++            && transform->kind != KIND_AAC && transform->kind != KIND_AUDIO_RAW)
++    {
++        enum pix pix = pix_of(&type->u.video->guidFormat);
++        int w, h, ow, oh;
++        if (!pix)
++        {
++            pthread_mutex_unlock(&transform->lock);
++            return STATUS_NOT_SUPPORTED;
++        }
++        video_size(&transform->out_video, &ow, &oh);
++        transform->out_video = *type->u.video;
++        transform->out_video.dwSize = sizeof(MFVIDEOFORMAT);
++        transform->out_pix = pix;
++        video_size(&transform->out_video, &w, &h);
++        if (!w || !h)
++            video_output_type(transform, ow, oh);
++    }
++    else if (IsEqualGUID(&type->major, &MFMediaType_Audio) && type->format_size >= sizeof(WAVEFORMATEX))
++    {
++        struct pcm pcm;
++        if (!pcm_from_wave(type->u.audio, type->format_size, &pcm) || pcm.channels != transform->out_pcm.channels)
++        {
++            pthread_mutex_unlock(&transform->lock);
++            return STATUS_NOT_SUPPORTED;
++        }
++        transform->out_pcm = pcm;
++    }
++    else
++    {
++        pthread_mutex_unlock(&transform->lock);
++        return STATUS_NOT_SUPPORTED;
++    }
++    pthread_mutex_unlock(&transform->lock);
++    return STATUS_SUCCESS;
++}
++
++static BOOL accepts_input(const struct transform *transform)
++{
++    if (transform->draining) return FALSE;
++    if (transform->kind == KIND_AAC || transform->kind == KIND_AUDIO_RAW)
++        return transform->frame_n < (size_t)transform->out_pcm.rate;
++    return transform->pic_n <= (int)transform->attrs.input_queue_length;
++}
++
++NTSTATUS wg_transform_push_data(void *args)
++{
++    struct wg_transform_push_data_params *params = args;
++    struct transform *transform = get_transform(params->transform);
++    struct wg_sample *sample = params->sample;
++    const uint8_t *data = sample_data(sample);
++
++    pthread_mutex_lock(&transform->lock);
++    if (!accepts_input(transform))
++    {
++        params->result = MF_E_NOTACCEPTING;
++        pthread_mutex_unlock(&transform->lock);
++        return STATUS_SUCCESS;
++    }
++
++    if (sample->flags & WG_SAMPLE_FLAG_HAS_DURATION)
++        transform->last_duration = sample->duration;
++    if ((sample->flags & WG_SAMPLE_FLAG_HAS_PTS) && !transform->have_pts)
++    {
++        transform->next_pts = sample->pts;
++        transform->have_pts = TRUE;
++    }
++
++    switch (transform->kind)
++    {
++    case KIND_H264:
++    case KIND_HEVC:
++    {
++        size_t n;
++        uint8_t *nals = length_prefixed(transform, data, sample->size, &n);
++        if (!nals)
++        {
++            pthread_mutex_unlock(&transform->lock);
++            return STATUS_NO_MEMORY;
++        }
++        if (!transform->configured) configure_decoder(transform);
++        if (transform->configured && n)
++            webgfx_decoder_push(transform->dec, nals, n,
++                    (sample->flags & WG_SAMPLE_FLAG_HAS_PTS) ? sample->pts : 0);
++        free(nals);
++        collect_pictures(transform);
++        break;
++    }
++    case KIND_VIDEO_RAW:
++    {
++        struct picture pic = {0};
++        int w, h, pitch, rows;
++        BOOL flip;
++        video_size(&transform->in_video, &w, &h);
++        plane_layout(transform->in_pix, w, h, 0, sample->stride, &pitch, &rows, &flip);
++        if (!sample->stride && pix_rgb(transform->in_pix))
++            flip = !!(transform->in_video.videoInfo.VideoFlags & MFVideoFlag_BottomUpLinearRep);
++        if (picture_alloc(&pic, w, h))
++        {
++            if (read_picture(&pic, transform->in_pix, data, sample->size, pitch, rows, flip,
++                    format_bt709(&transform->in_video, h)))
++            {
++                pic.pts = sample->pts;
++                pic.duration = sample->duration;
++                pic.flags = sample->flags & (WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_HAS_DURATION
++                        | WG_SAMPLE_FLAG_SYNC_POINT | WG_SAMPLE_FLAG_DISCONTINUITY);
++                queue_picture(transform, &pic);
++            }
++            else
++                free(pic.y);
++        }
++        break;
++    }
++    case KIND_AAC:
++    {
++        float out[8 * 2048 * 2];
++        int64_t got = webgfx_aac_decode(transform->aac, data, sample->size, out, ARRAY_SIZE(out));
++        if (got > 0)
++            append_frames(transform, out, got / transform->aac_ch, transform->aac_ch, transform->aac_rate);
++        break;
++    }
++    case KIND_AUDIO_RAW:
++    {
++        UINT32 fb = pcm_frame_bytes(&transform->in_pcm), ch = transform->in_pcm.channels, c;
++        size_t frames = sample->size / fb, i, at = 0;
++        float block[1024 * 8];
++        while (at < frames)
++        {
++            size_t n = min(frames - at, 1024);
++            for (i = 0; i < n; i++)
++                for (c = 0; c < ch; c++)
++                    block[i * ch + c] = pcm_read(&transform->in_pcm,
++                            data + (at + i) * fb + c * (transform->in_pcm.bits / 8));
++            append_frames(transform, block, n, ch, transform->in_pcm.rate);
++            at += n;
++        }
++        break;
++    }
++    }
++
++    params->result = S_OK;
++    pthread_mutex_unlock(&transform->lock);
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS read_video(struct transform *transform, struct wg_sample *sample, HRESULT *result)
++{
++    struct picture pic;
++    int w, h, pitch, rows;
++    BOOL flip;
++    size_t size;
++
++    if (!transform->pic_n)
++    {
++        sample->size = 0;
++        *result = MF_E_TRANSFORM_NEED_MORE_INPUT;
++        return STATUS_SUCCESS;
++    }
++    pic = transform->pics[0];
++    video_size(&transform->out_video, &w, &h);
++    if (transform->kind != KIND_VIDEO_RAW && (pic.w != w || pic.h != h || !transform->changed))
++    {
++        /* the stream's own size, told before its first picture */
++        transform->changed = TRUE;
++        if (pic.w != w || pic.h != h)
++        {
++            video_output_type(transform, pic.w, pic.h);
++            sample->size = 0;
++            *result = MF_E_TRANSFORM_STREAM_CHANGE;
++            return STATUS_SUCCESS;
++        }
++    }
++
++    plane_layout(transform->out_pix, w, h, transform->attrs.output_plane_align, sample->stride, &pitch, &rows, &flip);
++    if (!sample->stride && pix_rgb(transform->out_pix))
++        flip = !!(transform->out_video.videoInfo.VideoFlags & MFVideoFlag_BottomUpLinearRep);
++    if (transform->out_video.videoInfo.dwHeight > (DWORD)rows && !sample->stride)
++        rows = transform->out_video.videoInfo.dwHeight;
++    size = frame_size(transform->out_pix, pitch, rows);
++    if (sample->max_size < size)
++    {
++        sample->size = 0;
++        return STATUS_BUFFER_TOO_SMALL;
++    }
++    memset(sample_data(sample), 0, size);
++    if (pic.w == w && pic.h == h)
++        write_picture(&pic, transform->out_pix, sample_data(sample), pitch, rows, flip,
++                format_bt709(&transform->out_video, pic.h));
++    else
++    {
++        /* a converter with a different output size: nearest scale */
++        struct picture scaled = {0};
++        int x, y, cw = (w + 1) / 2, pcw = (pic.w + 1) / 2;
++        if (!picture_alloc(&scaled, w, h))
++            return STATUS_NO_MEMORY;
++        for (y = 0; y < h; y++)
++            for (x = 0; x < w; x++)
++                scaled.y[(size_t)y * w + x] = pic.y[(size_t)(y * pic.h / h) * pic.w + x * pic.w / w];
++        for (y = 0; y < (h + 1) / 2; y++)
++            for (x = 0; x < cw; x++)
++            {
++                size_t from = (size_t)(y * ((pic.h + 1) / 2) / ((h + 1) / 2)) * pcw + x * pcw / cw;
++                scaled.u[(size_t)y * cw + x] = pic.u[from];
++                scaled.v[(size_t)y * cw + x] = pic.v[from];
++            }
++        write_picture(&scaled, transform->out_pix, sample_data(sample), pitch, rows, flip,
++                format_bt709(&transform->out_video, h));
++        free(scaled.y);
++    }
++    sample->size = size;
++    sample->pts = pic.pts;
++    sample->duration = pic.duration;
++    sample->flags = pic.flags | (transform->attrs.preserve_timestamps ? WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS : 0);
++    free(pic.y);
++    memmove(transform->pics, transform->pics + 1, (transform->pic_n - 1) * sizeof(*transform->pics));
++    transform->pic_n--;
++    *result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS read_audio(struct transform *transform, struct wg_sample *sample, HRESULT *result)
++{
++    UINT32 fb = pcm_frame_bytes(&transform->out_pcm), ch = transform->out_pcm.channels, c;
++    size_t n = min(transform->frame_n, sample->max_size / fb), i;
++    uint8_t *dst = sample_data(sample);
++
++    if (!n)
++    {
++        sample->size = 0;
++        *result = MF_E_TRANSFORM_NEED_MORE_INPUT;
++        return STATUS_SUCCESS;
++    }
++    for (i = 0; i < n; i++)
++        for (c = 0; c < ch; c++)
++            pcm_write(&transform->out_pcm, dst + i * fb + c * (transform->out_pcm.bits / 8),
++                    transform->frames[i * ch + c]);
++    memmove(transform->frames, transform->frames + n * ch, (transform->frame_n - n) * ch * sizeof(float));
++    transform->frame_n -= n;
++
++    sample->size = n * fb;
++    sample->flags = WG_SAMPLE_FLAG_SYNC_POINT;
++    if (transform->have_pts)
++    {
++        sample->flags |= WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_HAS_DURATION;
++        sample->pts = transform->next_pts;
++        sample->duration = (UINT64)n * 10000000 / transform->out_pcm.rate;
++        transform->next_pts += sample->duration;
++    }
++    if (transform->frame_n)
++        sample->flags |= WG_SAMPLE_FLAG_INCOMPLETE;
++    *result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_read_data(void *args)
++{
++    struct wg_transform_read_data_params *params = args;
++    struct transform *transform = get_transform(params->transform);
++    NTSTATUS status;
++
++    pthread_mutex_lock(&transform->lock);
++    if (transform->kind == KIND_AAC || transform->kind == KIND_AUDIO_RAW)
++        status = read_audio(transform, params->sample, &params->result);
++    else
++        status = read_video(transform, params->sample, &params->result);
++    if (params->result == MF_E_TRANSFORM_NEED_MORE_INPUT)
++        transform->draining = FALSE;
++    pthread_mutex_unlock(&transform->lock);
++    return status;
++}
++
++NTSTATUS wg_transform_get_status(void *args)
++{
++    struct wg_transform_get_status_params *params = args;
++    struct transform *transform = get_transform(params->transform);
++
++    pthread_mutex_lock(&transform->lock);
++    params->accepts_input = accepts_input(transform);
++    pthread_mutex_unlock(&transform->lock);
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_drain(void *args)
++{
++    struct transform *transform = get_transform(*(wg_transform_t *)args);
++
++    pthread_mutex_lock(&transform->lock);
++    if (transform->dec)
++    {
++        webgfx_decoder_finish(transform->dec);
++        collect_pictures(transform);
++    }
++    transform->draining = transform->pic_n || transform->frame_n;
++    pthread_mutex_unlock(&transform->lock);
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_flush(void *args)
++{
++    struct transform *transform = get_transform(*(wg_transform_t *)args);
++
++    pthread_mutex_lock(&transform->lock);
++    if (transform->dec)
++    {
++        /* a fresh decoder: the next key frame starts it again */
++        webgfx_decoder_free(transform->dec);
++        transform->dec = 0;
++        transform->configured = FALSE;
++        configure_decoder(transform);
++    }
++    drop_pictures(transform);
++    transform->frame_n = 0;
++    transform->rs_pos = 0.0;
++    transform->rs_primed = FALSE;
++    transform->have_pts = FALSE;
++    transform->draining = FALSE;
++    pthread_mutex_unlock(&transform->lock);
++    return STATUS_SUCCESS;
++}
++
++NTSTATUS wg_transform_notify_qos(void *args)
++{
++    return STATUS_SUCCESS;
++}
++
++/* ---- no file reader or muxer: DirectShow and the WM reader say so */
++
++static NTSTATUS not_supported(void *args)
++{
++    return STATUS_NOT_SUPPORTED;
++}
++
++static NTSTATUS init_media(void *args)
++{
++    return STATUS_SUCCESS;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    [unix_wg_init_gstreamer] = init_media,
++
++    [unix_wg_parser_create] = not_supported,
++    [unix_wg_parser_destroy] = not_supported,
++    [unix_wg_parser_connect] = not_supported,
++    [unix_wg_parser_disconnect] = not_supported,
++    [unix_wg_parser_get_next_read_offset] = not_supported,
++    [unix_wg_parser_push_data] = not_supported,
++    [unix_wg_parser_get_stream_count] = not_supported,
++    [unix_wg_parser_get_stream] = not_supported,
++    [unix_wg_parser_stream_get_current_format] = not_supported,
++    [unix_wg_parser_stream_get_codec_format] = not_supported,
++    [unix_wg_parser_stream_enable] = not_supported,
++    [unix_wg_parser_stream_disable] = not_supported,
++    [unix_wg_parser_stream_get_buffer] = not_supported,
++    [unix_wg_parser_stream_copy_buffer] = not_supported,
++    [unix_wg_parser_stream_release_buffer] = not_supported,
++    [unix_wg_parser_stream_notify_qos] = not_supported,
++    [unix_wg_parser_stream_get_duration] = not_supported,
++    [unix_wg_parser_stream_get_tag] = not_supported,
++    [unix_wg_parser_stream_seek] = not_supported,
++
++    [unix_wg_transform_create] = wg_transform_create,
++    [unix_wg_transform_destroy] = wg_transform_destroy,
++    [unix_wg_transform_get_output_type] = wg_transform_get_output_type,
++    [unix_wg_transform_set_output_type] = wg_transform_set_output_type,
++    [unix_wg_transform_push_data] = wg_transform_push_data,
++    [unix_wg_transform_read_data] = wg_transform_read_data,
++    [unix_wg_transform_get_status] = wg_transform_get_status,
++    [unix_wg_transform_drain] = wg_transform_drain,
++    [unix_wg_transform_flush] = wg_transform_flush,
++    [unix_wg_transform_notify_qos] = wg_transform_notify_qos,
++
++    [unix_wg_muxer_create] = not_supported,
++    [unix_wg_muxer_destroy] = not_supported,
++    [unix_wg_muxer_add_stream] = not_supported,
++    [unix_wg_muxer_start] = not_supported,
++    [unix_wg_muxer_push_sample] = not_supported,
++    [unix_wg_muxer_read_data] = not_supported,
++    [unix_wg_muxer_finalize] = not_supported,
++};
++
++C_ASSERT(ARRAYSIZE(__wine_unix_call_funcs) == unix_wg_funcs_count);

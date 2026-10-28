@@ -23,14 +23,15 @@ static ANativeActivity* g_activity;
 static void*            g_handle;
 static init_fn          g_init;
 static frame_fn         g_frame;
+static int              g_argc;
+static char**           g_argv;
 
 static bool tick(void* ctx) {
     if (!g_handle) {
         g_handle = dlopen(SILVER_PRODUCT, RTLD_NOW);
         if (!g_handle) { fprintf(stderr, "silver-host: dlopen %s: %s\n", SILVER_PRODUCT, dlerror()); return false; }
         au_main_args_fn set_args = (au_main_args_fn)dlsym(RTLD_DEFAULT, "au_main_args");
-        static char* argv[] = { (char*)SILVER_SHARE_NAME, NULL };
-        if (set_args) set_args(1, argv);
+        if (set_args) set_args(g_argc, g_argv);
         g_init  = (init_fn) dlsym(g_handle, "silver_live_init");
         g_frame = (frame_fn)dlsym(g_handle, "silver_live_frame");
         if (g_init) g_init();
@@ -146,8 +147,28 @@ static int host_main(int argc, char** argv) {
     return platform_run(tick, NULL);
 }
 
+// the app's name, then files/silver.args, one a line (silver -d
+// writes it before the start); read once, then removed
+static void launch_args(ANativeActivity* a) {
+    char file[1024];
+    snprintf(file, sizeof(file), "%s/silver.args", a->internalDataPath);
+    g_argv    = calloc(64, sizeof(char*));
+    g_argv[0] = strdup(SILVER_SHARE_NAME);
+    g_argc    = 1;
+    FILE* f   = fopen(file, "rb");
+    if (!f) return;
+    char line[1024];
+    while (g_argc < 63 && fgets(line, sizeof(line), f)) {
+        line[strcspn(line, "\n")] = 0;
+        g_argv[g_argc++] = strdup(line);
+    }
+    fclose(f);
+    unlink(file);
+}
+
 __attribute__((visibility("default")))
 void ANativeActivity_onCreate(ANativeActivity* activity, void* saved, size_t saved_size) {
     g_activity = activity;
+    launch_args(activity);
     platform_android_start(activity, host_main);
 }

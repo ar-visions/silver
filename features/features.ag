@@ -905,6 +905,38 @@ expect func t_member_meta [] -> bool
            sm.meta.m == typeid[ MemberMeta ] &&
            hf != null && hf.meta.m == typeid[ MemberMeta ]
 
+# a boxed number to a number converts by the box's own type
+expect func t_au_to_number [] -> bool
+    x  : f64 [ 68.8 ]
+    bx : Au [ x ]
+    k  : i32 [ 7 ]
+    bk : Au [ k ]
+    f  : f32 [ bx ]
+    d  : f64 [ bx ]
+    i  : i32 [ bx ]
+    kd : f64 [ bk ]
+    log 'au to number: {f} {d} {i} {kd}'
+    return f > 68.79 && f < 68.81 && d == 68.8 && i == 68 && kd == 7.0
+
+# action: a func a host or an agent may call, found by its
+# interface; a member may still be named action
+class ActionHost
+    public action : string
+    public n : i32
+
+    action func bump []
+        n += 1
+
+expect func t_action_func [] -> bool
+    ct: Au_t [ typeid[ ActionHost ] ]
+    fm: Au.find_member[ ct, 'bump', AU_MEMBER_FUNC, 0, false ]
+    vm: Au.find_member[ ct, 'action', AU_MEMBER_VAR, 0, false ]
+    h : ActionHost [ action: 'go' ]
+    h.bump[]
+    log 'action: access {i32[ fm.access_type ]}'
+    return fm != null && fm.access_type == interface.action
+        && vm != null && h.action == 'go' && h.n == 1
+
 # attrib is declaration-time metadata: trinity reads shader bindings this way
 expect func t_attrib [] -> bool
     found: i32 [ 0 ]
@@ -1756,6 +1788,36 @@ func type_only_arg [ i32 ] -> i32
 func type_void [] -> void
     no-op
 
+# Names may be any letters Unicode counts as letters: they stay
+# UTF-8 bytes from the source to the object file's symbols.
+func 加 [ 甲: i32, 乙: i32 ] -> i32
+    return 甲 + 乙
+
+class 帐户
+    public 余额 : i32
+    func 存 [ 数: i32 ]
+        余额 += 数
+
+# A name is read in Unicode's NFC: é as one character or as e and
+# an accent is the same name (the call below spells it the second
+# way, the declaration the first).
+func café [] -> i32
+    return 7
+
+expect func t_unicode_one_spelling [] -> bool
+    return café[] == 7
+
+expect func t_unicode_names [] -> bool
+    和 : i32 [ 加[ 2, 3 ] ]
+    户 : 帐户 [ 余额: 10 ]
+    户.存[ 和 ]
+    words : '和 {和} 余额 {户.余额}'
+    # written as .agi and read back by its name
+    txt  : Au.string_agi[ 户 ]
+    back : cast 帐户 [ Au.parse_agi[ typeid[ 帐户 ], txt.chars, null ] ]
+    return 和 == 5 && 户.余额 == 15 && words == '和 5 余额 15'
+        && back && back.余额 == 15
+
 func commaless [ p: px, m: ms, d: deg ] -> f32
     return 1.0
 
@@ -2161,6 +2223,16 @@ expect func t_vec [] -> bool
     return v.count == 3 && s == 16 && v[ 1 ] == 5
 
 # quoted literals to an Au param arrive as real strings, so keys match
+# A map type's settings follow its key after a comma: a map that
+# will hold many keys is made with buckets for them
+expect func t_map_settings [] -> bool
+    big : map i64 [ string, hsize: 4096 ] []
+    big[ 'a' ] = 1
+    some : map i64 [ string, hsize: 64 ] [ 'b': 2, 'c': 3 ]
+    plain : map i64 [ string ] []
+    return big.hsize == 4096 && big[ 'a' ] == 1 && some.hsize == 64
+        && some[ 'c' ] == 3 && plain.hsize == 256
+
 expect func t_map_contains [] -> bool
     m: map i64 [ string ] [ ]
     m[ 'a' ] = 5

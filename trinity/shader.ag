@@ -510,10 +510,13 @@ ModelViewProject UVQuad
     # since ubo.model also carries the quad mesh's node matrix, which
     # flips it
     mutable fit      : vec4f
+    # the surface's pre-rotation as cos, sin of its angle
+    mutable turn     : vec4f
 
     func init [ ]
         model = mat4f.identity[]
         fit   = vec4f [ 1.0, 1.0, 0.0, 0.0 ]
+        turn  = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
         eye:    vec3f [ 0.0, 0.0, 2.0 ]
         center: vec3f [ 0.0, 0.0, 0.0 ]
         up:     vec3f [ 0.0, 1.0, 0.0 ]
@@ -522,8 +525,9 @@ ModelViewProject UVQuad
 
     func vertex [] -> GLSL none {
         v_uv        = uv;
-        gl_Position = vec4(pos.x * ubo.fit.x, pos.y * ubo.fit.y, 0.0,
-                           1.0);
+        vec2 p      = vec2(pos.x * ubo.fit.x, pos.y * ubo.fit.y);
+        gl_Position = vec4(p.x * ubo.turn.x - p.y * ubo.turn.y,
+                           p.x * ubo.turn.y + p.y * ubo.turn.x, 0.0, 1.0);
     }
 
     func fragment [] -> GLSL none {
@@ -1598,7 +1602,9 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string,
         for [ q: i32 mx, q > 1, q = q / 2 ]
             ml += 1
         tx = Texture [ w: m.w, vk: m.vk, linear: true, mip_levels: ml,
-                       sampler: im ]
+                       sampler: im,
+                       wrap_u: mdl.texture_repeats[ ti, false ],
+                       wrap_v: mdl.texture_repeats[ ti, true ] ]
         m.tex_cache[ key ] = tx
     out[ name ] = tx
 

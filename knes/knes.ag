@@ -2,6 +2,7 @@
 export 0.8.8
 export extensions ['.nes']
 export icon ['knes']
+export software ['games']
 
 import trinity
 import vec
@@ -309,10 +310,10 @@ element knes : trinity
 		smooth = true
 
 	# the host's menu: kept beside the rom, taken on the next frame
-	public [ Action ] func save_state []
+	action func save_state []
 		save_req = true
 
-	public [ Action ] func load_state []
+	action func load_state []
 		load_req = true
 
 	public func on_key [ ev: Event ]

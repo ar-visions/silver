@@ -1058,7 +1058,10 @@ element PropsBody
         if [ !elements || !shown ] return false
         for [ b: Block ] in shown
             if [ !elements.contains[ b.key ] ] continue
-            lp : cast LaunchPanel [ elements[ b.key ] ]
+            grp : element elements[ b.key ]
+            if [ !grp.elements || !grp.elements.contains[ 'lp' ] ]
+                continue
+            lp : cast LaunchPanel [ grp.elements[ 'lp' ] ]
             if [ !lp.fields ] continue
             for [ r: PropRow ] in b.rows
                 p : lp.prop_of[ r.label ]
@@ -1120,10 +1123,14 @@ element PropsBody
                 y += 6.0
                 continue
             gap : f32 [ y - last_end ]
-            out[ b.key ] = LaunchPanel [ spec: scene.spec_of[ b ],
+            # the menu's chip (no icon strip) round the rows
+            rows : Elements []
+            rows[ 'lp' ] = LaunchPanel [ spec: scene.spec_of[ b ],
                 args: '', inst: 1, live_vals: true,
-                changing: b.busy, name_frac: 0.42,
-                area: Region [ 'l0 t{gap}px+ r0 h{b.h}px' ] ]
+                changing: b.busy, name_frac: 0.42, menu: true,
+                area: Region { l0 t0 r0 b0 } ]
+            out[ b.key ] = MenuGroup [ strip: 0.0, elements: rows,
+                area: Region [ 'l8px t{gap}px+ r8px h{b.h}px' ] ]
             last_end = y + b.h
             y += b.h + 6.0
         # an object without modifiers still has the area, for +
@@ -1236,12 +1243,10 @@ element PropsBody
             for [ b: Block ] in shown
                 # the kinds show instead of the modifiers
                 if [ b.modifier && scene.choosing ] continue
+                # its name as a menu names a group (MenuNote's look)
                 hy : f32 [ b.y - 26.0 ]
-                hx : f32 [ 0.0 ]
-                cv.fill_color[ rgba [ '#22222c' ] ]
-                cv.rect_to[ hx, hy, bounds.w - hx * 2.0, 24.0 ]
-                cv.paint[]
-                tx : f32 [ hx + 10.0 ]
+                hx : f32 [ 8.0 ]
+                tx : f32 [ hx + 2.0 ]
                 if [ b.flip.count > 0 ]
                     cv.fill_color[ rgba [ (b.on) ? '#d8d8e0' : '#0000' ] ]
                     cv.stroke_color[ rgba [ '#d8d8e0' ] ]
@@ -1264,10 +1269,15 @@ element PropsBody
                     cv.rect_to[ mx + 4.0, hy + 11.4, 6.0, 1.2 ]
                     cv.paint[]
 
-                cv.fill_color[ rgba [ (b.on) ? '#c9c4dd' : '#7a7a86' ] ]
+                cv.set_font[ shared_font[ cv,
+                    'fonts/BarlowCondensed-Bold.ttf', 18 ] ]
+                cv.font_size[ 18 ]
+                cv.fill_color[ rgba [ (b.on) ? '#ffffffaa' : '#ffffff55' ] ]
                 cv.draw_text[ b.label, rect [ x: tx, y: hy,
                     w: bounds.w - tx - 8.0, h: 24.0 ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                     Overflow.visible, null ]
                 cv.paint[]
+                cv.set_font[ null ]
+                cv.font_size[ 13 ]
         cv.restore[]

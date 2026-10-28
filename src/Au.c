@@ -1407,7 +1407,7 @@ Au_t def_func(Au_t type, symbol ident, Au_t rtype, u32 member_type,
     func->rtype         = rtype;
     func->member_type   = member_type;
     func->operator_type = operator_type;
-    func->access_type   = interface_public;
+    func->access_type   = (interface)access_type;
     func->value         = (object)value;
     func->alt           = alt ? cstr_copy((cstr)alt) : null;
     func->member_index         = index;
@@ -4085,6 +4085,69 @@ AU_EXPORT Au method_call(Au_t m, array args) {
                 (none*)arg_data[i] : (none*)&arg_data[i];
         }
     }
+#ifndef _WIN32
+    // System V and AAPCS64 fill integer and float registers apart, in
+    // order: one pointer typed (six integers, eight doubles) reaches
+    // any method whose integers fit six and floats fit eight
+    i64 iv[6];
+    f64 fv[8];
+    memset(iv, 0, sizeof(iv));
+    memset(fv, 0, sizeof(fv));
+    int ni = 0, nf = 0;
+    for (num i = 0; i < a->atypes->count; i++) {
+        Au_t at   = au_arg_type((Au)a->atypes->origin[i]);
+        bool prim = (at->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) != 0;
+        none* data = arg_values[i];
+        if (prim && (at == typeid(f64) || at == typeid(f32))) {
+            assert(nf < 8, "method_call takes up to 8 float arguments");
+            if (data && at == typeid(f64)) fv[nf] = *(f64*)data;
+            else if (data) memcpy(&fv[nf], data, sizeof(f32));
+            nf++;
+            continue;
+        }
+        assert(ni < 6, "method_call takes up to 6 integer arguments");
+        if (prim) {
+            i64 v = 0;
+            if (data) {
+                if (at == typeid(i8))       v = *(i8*)data;
+                else if (at == typeid(i16)) v = *(i16*)data;
+                else if (at == typeid(i32)) v = *(i32*)data;
+                else memcpy(&v, data, at->typesize < 8 ? at->typesize : 8);
+            }
+            iv[ni++] = v;
+        } else
+            iv[ni++] = data ? (i64)*(none**)data : 0;
+    }
+    #define AU_CALL_ARGS iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], \
+        fv[0], fv[1], fv[2], fv[3], fv[4], fv[5], fv[6], fv[7]
+    #define AU_CALL_SIG i64, i64, i64, i64, i64, i64, \
+        f64, f64, f64, f64, f64, f64, f64, f64
+    if (a->rtype->traits & AU_TRAIT_PRIMITIVE) {
+        none* result[8];
+        memset(result, 0, sizeof(result));
+        if (a->rtype == typeid(f32)) {
+            f32 r = ((f32 (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
+            memcpy(result, &r, sizeof(r));
+        } else if (a->rtype == typeid(f64)) {
+            f64 r = ((f64 (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
+            memcpy(result, &r, sizeof(r));
+        } else {
+            i64 r = ((i64 (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
+            memcpy(result, &r, sizeof(r));
+        }
+        return primitive(a->rtype, result);
+    }
+    if (a->rtype->traits & AU_TRAIT_ENUM) {
+        verify(a->rtype->src == typeid(i32), "i32 enums supported");
+        i32 r  = ((i32 (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
+        Au  res = alloc(a->rtype, 1, null, null, null, __FILE__, __LINE__, 0);
+        *((i32*)res) = r;
+        return res;
+    }
+    return ((Au (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
+    #undef AU_CALL_ARGS
+    #undef AU_CALL_SIG
+#else
     // the address is called directly -- no libffi. x64 is caller-cleanup in
     // both ABIs, so a longer argument list than the callee declares cannot
     // corrupt the stack. arg_values holds &object for an object arg and the
@@ -4128,6 +4191,34 @@ AU_EXPORT Au method_call(Au_t m, array args) {
     }
     typedef Au (*fn_obj)(none*, none*, none*, none*, none*, none*, none*, none*);
     return ((fn_obj)a->address)(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+#endif
+}
+
+/// a's method by name, its arguments from words (space apart, each
+/// converted to its parameter's type; a last string takes the rest
+/// of the line); 1 called, 0 no such method, -1 too few words
+AU_EXPORT int Au_call_words(Au a, symbol name, cstr words) {
+    if (!a || !name) return 0;
+    Au_t type = isa(a);
+    if (!type || type->is_struct) return 0;
+    Au_t cf = find_member(type, (cstr)name, AU_MEMBER_FUNC, 0, true);
+    if (!cf || !cf->value) return 0;
+    array args = new(array, alloc, cf->args.count + 1);
+    push(args, a);
+    cstr at = words ? words : "";
+    for (num i = 1; i < cf->args.count; i++) {
+        Au_t pt = au_arg_type((Au)cf->args.origin[i]);
+        while (*at == ' ') at++;
+        if (!*at) return -1;
+        bool rest = i == cf->args.count - 1 && pt == typeid(string);
+        cstr end = rest ? at + strlen(at) : strchr(at, ' ');
+        if (!end) end = at + strlen(at);
+        string w = string(chars, at, ref_length, (i32)(end - at));
+        push(args, convert(pt, (Au)w));
+        at = end;
+    }
+    method_call(cf, args);
+    return 1;
 }
 
 /// this calls type methods
@@ -4136,6 +4227,39 @@ AU_EXPORT Au method(Au_t type, cstr method_name, array args) {
     assert(mem->ffi, "method not set");
     Au res = method_call(mem, args);
     return res;
+}
+
+AU_EXPORT i64 au_int_of(Au v);
+
+/// a boxed number by its own type (no schema entry: the compiler
+/// calls these by name, so Au's method table keeps its layout) (an enum by its value, a string
+/// read as a number); null is 0
+AU_EXPORT f64 au_real_of(Au v) {
+    if (!v) return 0;
+    Au_t t = isa(v);
+    if (t == typeid(f64)) return *(f64*)v;
+    if (t == typeid(f32)) return *(f32*)v;
+    if (t == typeid(string)) return atof(((string)v)->chars);
+    return (f64)au_int_of(v);
+}
+
+AU_EXPORT i64 au_int_of(Au v) {
+    if (!v) return 0;
+    Au_t t = isa(v);
+    if (t == typeid(f64)) return (i64)*(f64*)v;
+    if (t == typeid(f32)) return (i64)*(f32*)v;
+    if (t == typeid(i64) || t == typeid(u64) || t == typeid(num) ||
+        t == typeid(sz)) return *(i64*)v;
+    if (t == typeid(i32)) return *(i32*)v;
+    if (t == typeid(u32)) return *(u32*)v;
+    if (t == typeid(i16)) return *(i16*)v;
+    if (t == typeid(u16)) return *(u16*)v;
+    if (t == typeid(i8))  return *(i8*)v;
+    if (t == typeid(u8))  return *(u8*)v;
+    if (t == typeid(bool)) return *(bool*)v ? 1 : 0;
+    if (t && (t->traits & AU_TRAIT_ENUM)) return *(i32*)v;
+    if (t == typeid(string)) return atoll(((string)v)->chars);
+    return 0;
 }
 
 AU_EXPORT Au convert(Au_t type, Au input) {
@@ -5803,6 +5927,184 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
         (Au)res;
 }
 
+// a UTF-8 sequence's code point and byte count (0: not one)
+static u32 utf8_point(const u8* s, int* n) {
+    u8 c = s[0];
+    int k = (c >= 0xF0 && c < 0xF8) ? 4 : (c >= 0xE0) ? 3
+          : (c >= 0xC2 && c < 0xE0) ? 2 : 0;
+    if (c >= 0xF8) k = 0;
+    u32 cp = (k == 4) ? (c & 7) : (k == 3) ? (c & 15) : (c & 31);
+    for (int i = 1; i < k; i++) {
+        if ((s[i] & 0xC0) != 0x80) { *n = 0; return 0; }
+        cp = (cp << 6) | (s[i] & 63);
+    }
+    *n = k;
+    return cp;
+}
+
+// beyond ASCII, a letter unless it is space, punctuation or a symbol
+static bool point_is_letter(u32 cp) {
+    if (cp < 0xC0)                    return cp == 0xAA || cp == 0xB5
+                                          || cp == 0xBA;
+    if (cp == 0xD7 || cp == 0xF7)     return false;    // × ÷
+    if (cp >= 0x2000 && cp <= 0x2BFF) return false;    // punctuation, symbols, arrows
+    if (cp >= 0x2E00 && cp <= 0x2E7F) return false;    // more punctuation
+    if (cp >= 0x3000 && cp <= 0x3003) return false;    // CJK space 、。〃
+    if (cp >= 0x3008 && cp <= 0x3020) return false;    // CJK brackets 「」【】
+    if (cp == 0x3030 || cp == 0x303D) return false;
+    if (cp >= 0xFE10 && cp <= 0xFE6F) return false;    // vertical, small forms
+    if (cp >= 0xFF01 && cp <= 0xFF0F) return false;    // fullwidth ！＂…／
+    if (cp >= 0xFF1A && cp <= 0xFF20) return false;    // fullwidth ：；＜＝＞？＠
+    if (cp >= 0xFF3B && cp <= 0xFF40) return false;
+    if (cp >= 0xFF5B && cp <= 0xFF65) return false;
+    if (cp == 0xFEFF || (cp >= 0xFFF0 && cp <= 0xFFFF)) return false;
+    if (cp >= 0x1F000 && cp <= 0x1FAFF) return false;  // emoji, pictographs
+    if (cp >= 0xE000 && cp <= 0xF8FF)   return false;  // private use
+    return true;
+}
+
+// the bytes of the name character at s (0: none); first: may start one
+AU_EXPORT int au_name_len(const char* s, int first) {
+    if (!s || !*s) return 0;
+    u8 c = (u8)s[0];
+    if (c < 0x80)
+        return (isalpha(c) || c == '_' || (!first && isdigit(c))) ? 1 : 0;
+    int n = 0;
+    u32 cp = utf8_point((const u8*)s, &n);
+    return (n && point_is_letter(cp)) ? n : 0;
+}
+
+#include "nfc.h"
+
+#define NFC_ROWS(t) (int)(sizeof(t) / sizeof(t[0]))
+
+// hangul syllables compose by arithmetic, not by table
+enum { H_S = 0xAC00, H_L = 0x1100, H_V = 0x1161, H_T = 0x11A7,
+       H_LN = 19, H_VN = 21, H_TN = 28, H_N = 11172 };
+
+static int nfc_class(u32 cp) {
+    int lo = 0, hi = NFC_ROWS(nfc_ccc) - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if      (cp < nfc_ccc[m][0]) hi = m - 1;
+        else if (cp > nfc_ccc[m][1]) lo = m + 1;
+        else return (int)nfc_ccc[m][2];
+    }
+    return 0;
+}
+
+// cp's canonical decomposition, whole, onto out
+static void nfc_decompose(u32 cp, u32* out, int* n) {
+    if (cp >= H_S && cp < H_S + H_N) {
+        u32 si = cp - H_S;
+        out[(*n)++] = H_L + si / (H_VN * H_TN);
+        out[(*n)++] = H_V + (si % (H_VN * H_TN)) / H_TN;
+        if (si % H_TN) out[(*n)++] = H_T + si % H_TN;
+        return;
+    }
+    int lo = 0, hi = NFC_ROWS(nfc_decomp) - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if      (cp < nfc_decomp[m][0]) hi = m - 1;
+        else if (cp > nfc_decomp[m][0]) lo = m + 1;
+        else {
+            nfc_decompose(nfc_decomp[m][1], out, n);
+            if (nfc_decomp[m][2]) nfc_decompose(nfc_decomp[m][2], out, n);
+            return;
+        }
+    }
+    out[(*n)++] = cp;
+}
+
+// the primary composite of a and b, else 0
+static u32 nfc_pair(u32 a, u32 b) {
+    if (a >= H_L && a < H_L + H_LN && b >= H_V && b < H_V + H_VN)
+        return H_S + ((a - H_L) * H_VN + (b - H_V)) * H_TN;
+    if (a >= H_S && a < H_S + H_N && (a - H_S) % H_TN == 0 &&
+            b > H_T && b < H_T + H_TN)
+        return a + (b - H_T);
+    int lo = 0, hi = NFC_ROWS(nfc_comp) - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        u32 ma = nfc_comp[m][0], mb = nfc_comp[m][1];
+        if      (a < ma || (a == ma && b < mb)) hi = m - 1;
+        else if (a > ma || (a == ma && b > mb)) lo = m + 1;
+        else return nfc_comp[m][2];
+    }
+    return 0;
+}
+
+// decompose, put marks in canonical order, compose (UAX #15)
+AU_EXPORT char* au_nfc(const char* s) {
+    if (!s) return null;
+    size_t len = strlen(s);
+    bool ascii = true;
+    for (size_t i = 0; i < len; i++)
+        if ((u8)s[i] >= 0x80) { ascii = false; break; }
+    if (ascii) return null;
+    u32* cp = (u32*)malloc((len * 4 + 4) * sizeof(u32));
+    int  n  = 0;
+    for (size_t i = 0; i < len; ) {
+        int k = 0;
+        u32 c = utf8_point((const u8*)&s[i], &k);
+        if (!k) { c = (u8)s[i]; k = 1; }
+        nfc_decompose(c, cp, &n);
+        i += k;
+    }
+    for (int i = 1; i < n; i++) {
+        int c = nfc_class(cp[i]);
+        for (int j = i; c && j > 0 && nfc_class(cp[j - 1]) > c; j--) {
+            u32 t = cp[j]; cp[j] = cp[j - 1]; cp[j - 1] = t;
+        }
+    }
+    int out = 0;
+    if (n) {
+        int at = 0, last = nfc_class(cp[0]) ? 256 : 0;
+        out = 1;
+        for (int i = 1; i < n; i++) {
+            u32 ch = cp[i];
+            int cc = nfc_class(ch);
+            u32 cm = nfc_pair(cp[at], ch);
+            if (cm && (last == 0 || last < cc)) {
+                cp[at] = cm;
+                continue;
+            }
+            if (cc == 0) at = out;
+            last = cc;
+            cp[out++] = ch;
+        }
+    }
+    char* r = (char*)malloc(out * 4 + 1);
+    int   w = 0;
+    for (int i = 0; i < out; i++) {
+        u32 c = cp[i];
+        if (c < 0x80) r[w++] = (char)c;
+        else if (c < 0x800) {
+            r[w++] = (char)(0xC0 | (c >> 6));
+            r[w++] = (char)(0x80 | (c & 63));
+        } else if (c < 0x10000) {
+            r[w++] = (char)(0xE0 | (c >> 12));
+            r[w++] = (char)(0x80 | ((c >> 6) & 63));
+            r[w++] = (char)(0x80 | (c & 63));
+        } else {
+            r[w++] = (char)(0xF0 | (c >> 18));
+            r[w++] = (char)(0x80 | ((c >> 12) & 63));
+            r[w++] = (char)(0x80 | ((c >> 6) & 63));
+            r[w++] = (char)(0x80 | (c & 63));
+        }
+    }
+    r[w] = 0;
+    free(cp);
+    if ((size_t)w == len && !memcmp(r, s, len)) {
+        free(r);
+        return null;
+    }
+    return r;
+}
+
+AU_EXPORT int au_name_start(const char* s) { return au_name_len(s, 1) > 0; }
+AU_EXPORT int au_name_char (const char* s) { return au_name_len(s, 0) > 0; }
+
 AU_EXPORT u64 fnv1a_hash(const none* data, size_t length, u64 hash) {
     const u8* bytes = (const u8*)data;
     for (size_t i = 0; i < length; ++i) {
@@ -5947,7 +6249,7 @@ AU_EXPORT none store_rm(store a, Au key) {
 
 
 AU_EXPORT none map_init(map m) {
-    if (m->hsize <= 0) m->hsize = 8;
+    if (m->hsize <= 0) m->hsize = 256;
     if (m->hsize) m->hlist = (item*)calloc(m->hsize, sizeof(item));
     m->assorted = true;
 }
@@ -6034,6 +6336,26 @@ AU_EXPORT num map_compare(map a, map b) {
         if (c != 0) return c;
     }
     return 0;
+}
+
+// n buckets for a map about to hold many keys, its entries (if
+// any) moved by the hash each keeps; called once, by its maker
+AU_EXPORT none map_reserve(map m, i32 n) {
+    if (n <= m->hsize) return;
+    item* nl = (item*)calloc(n, sizeof(item));
+    item* ol = (item*)m->hlist;
+    if (ol)
+        for (i32 b = 0; b < m->hsize; b++)
+            for (item i = ol[b]; i; ) {
+                item next = i->next;
+                u64  nb   = (u64)i->h % (u64)n;
+                i->next   = nl[nb];
+                nl[nb]    = i;
+                i         = next;
+            }
+    free(ol);
+    m->hlist = (struct _item*)nl;
+    m->hsize = n;
 }
 
 AU_EXPORT none map_set(map m, Au k, Au v) {
@@ -8512,6 +8834,21 @@ AU_EXPORT path path_install() {
     path shr = f(path, "%o/share", up);
     if (dir_exists("%o", shr))
         return up;
+#ifndef _WIN32
+    // any folder: the install that libAu loads from (<install>/lib)
+    Dl_info di;
+    if (dladdr((void*)path_install, &di) && di.dli_fname) {
+        char dir[4096];
+        snprintf(dir, sizeof(dir), "%s", di.dli_fname);
+        cstr sl = strrchr(dir, '/');
+        if (sl) {
+            *sl = 0;
+            path lib = f(path, "%s/..", dir);
+            if (dir_exists("%o/share", lib))
+                return lib;
+        }
+    }
+#endif
     return null;
 }
 
@@ -8899,12 +9236,12 @@ AU_EXPORT string json(Au a) {
 static string parse_symbol(cstr input, cstr* remainder, ctx context) {
     cstr start = null;
     bool second = false;
-    while ((!second && isalpha(*input)) || 
-           ( second && isalnum(*input)) ||
-           ((*input == '-' || *input == '_')  && second))
+    int n;
+    while ((n = au_name_len(input, !second)) > 0 ||
+           (*input == '-' && second))
     {
         if (!start) start = input;
-        input++;
+        input += (n > 0) ? n : 1;
         second = true;
     }
     *remainder = ws(input);
@@ -8913,6 +9250,11 @@ static string parse_symbol(cstr input, cstr* remainder, ctx context) {
         string r = string(chars, start, ref_length, (size_t)input - (size_t)start);
         for (int i = 0; i < r->count; i++)
             if (r->chars[i] == '-') ((cstr)r->chars)[i] = '_';
+        char* one = au_nfc(r->chars);
+        if (one) {
+            r = string(one);
+            free(one);
+        }
         return r;
     }
     
@@ -9491,9 +9833,12 @@ AU_EXPORT Au parse_agi(Au_t schema, cstr s, Au target) {
 
 // ---- .agi : generic writer (inverse of parse_agi) ---------------------------
 static bool agi_symbol_safe(cstr s) {
-    if (!s || !isalpha((u8)*s)) return false;
-    for (cstr p = s; *p; p++)
-        if (!isalnum((u8)*p) && *p != '_' && *p != '-') return false;
+    if (!s || !au_name_start(s)) return false;
+    for (cstr p = s; *p; ) {
+        int n = au_name_len(p, false);
+        if (!n && *p != '-') return false;
+        p += n ? n : 1;
+    }
     return true;
 }
 
@@ -9510,9 +9855,12 @@ static none agi_indent(string res, int n) {
 // typed leaves (shape 32x32x1, path models/look.bin) may start with a digit
 static bool agi_bare_safe(cstr s) {
     if (!s || !*s) return false;
-    for (cstr p = s; *p; p++)
-        if (!isalnum((u8)*p) && *p != '_' && *p != '-' && *p != '.' && *p != '/')
+    for (cstr p = s; *p; ) {
+        int n = au_name_len(p, false);
+        if (!n && *p != '-' && *p != '.' && *p != '/')
             return false;
+        p += n ? n : 1;
+    }
     return true;
 }
 

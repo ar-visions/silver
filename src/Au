@@ -136,6 +136,12 @@ AU_EXPORT void au_error_frame_drop(__error_t*);
 AU_EXPORT string au_error_frame_message(__error_t*);
 AU_EXPORT void au_error_frame_rethrow(__error_t*);
 AU_EXPORT void au_error_raise(string, token);
+// names: ASCII letters, '_', and any letter beyond ASCII (UTF-8)
+AU_EXPORT int  au_name_len(const char* s, int first);
+AU_EXPORT int  au_name_start(const char* s);
+AU_EXPORT int  au_name_char(const char* s);
+// a name in Unicode's NFC (one spelling), malloc'd; null: it is
+AU_EXPORT char* au_nfc(const char* s);
 
 #define attempt() \
     { \
@@ -1267,7 +1273,8 @@ declare_class(collective)
     enum_value       (E,T,Y, context,    8) \
     enum_value       (E,T,Y, keyword,    9) \
     enum_value       (E,T,Y, export,     10) \
-    enum_value       (E,T,Y, persist,    11)
+    enum_value       (E,T,Y, persist,    11) \
+    enum_value       (E,T,Y, action,     12)
 declare_enum(interface)
 
 #define comparison_module_ Au
@@ -1987,6 +1994,7 @@ declare_enum(level)
     M(AA,BB, i, method, public, bool, contains,   Au) \
     M(AA,BB, i, method, public, none, concat,     map) \
     M(AA,BB, i, method, public, none, clear) \
+    M(AA,BB, i, method, public, none, reserve,    i32) \
     M(AA,BB, i, getter, public, Au,   Au) \
     M(AA,BB, i, setter, public, none) \
     M(AA,BB, i, ctr,    public, i32) \

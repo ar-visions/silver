@@ -138,6 +138,8 @@ import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h, freetype/t
     -I{install}/include/freetype2
     -lfreetype
     -lpng -lz
+    -DBUILD_SHARED_LIBS=ON
+    -DCMAKE_INSTALL_RPATH={install}/lib
     -DFT_DISABLE_BROTLI=TRUE
     -DFT_DISABLE_BZIP2=TRUE
     -DFT_DISABLE_HARFBUZZ=TRUE
@@ -237,6 +239,8 @@ enum HM
     panel   : 23
     # ide -> app: three bytes of dropped paths; a 0 byte ends them
     drop    : 24
+    # app -> ide: a = its focus takes words (a keyboard for it)
+    words   : 25
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -251,6 +255,7 @@ func host_pid_alive   [ pid: i32 ] -> i32
 func host_pid_stopped [ pid: i32 ] -> i32
 func Au_call_changed  [ a: Au, name: cstr ] -> i32
 func Au_call_named    [ a: Au, name: cstr ] -> i32
+func Au_call_words    [ a: Au, name: cstr, words: cstr ] -> i32
 func au_live_set_reload [ on: i32 ]
 func au_mem_fraction  [] -> f32
 func au_mem_rss       [] -> i64
@@ -285,7 +290,7 @@ class Prop
     public ident   : string
     # the module declaring it: its flag namespace
     public module  : string
-    # the member's type; func for an Action
+    # the member's type; func for an action func
     public type    : string
     # public, or default: the bare argument
     public access  : string
@@ -298,11 +303,18 @@ class Prop
     public stops   : vec string
     # `expect default`: no value, the host asks for one first
     public expected : bool
+    # an action func's parameters, 'name: type' each in order (a
+    # menu shows only those with none)
+    public params  : vec string
 
 # an app's props, answered to `props` as agi
 class LaunchProps
     # the app's own module: bare flags
     public module : string
+    # started from an agent's shell: the agent (AI_AGENT) and its
+    # session; empty from the user's desktop or orbiter
+    public agent   : string
+    public session : string
     public props  : vec Prop
 
 # the value of a socket `set <name> <value>`: the rest of the line,
@@ -331,6 +343,24 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
         for [ i: i32 0, i < ty.members.count, i += 1 ]
             mem : Au_t ty.members.origin[i]
             if [ !mem ] continue
+            # an action func: no value, the host calls it
+            if [ mem.member_type == AU_MEMBER_FUNC
+                 && mem.access_type == interface.action ]
+                an : string [ mem.ident ]
+                seen : bool [ false ]
+                for [ q: Prop ] in acc.props
+                    if [ q.ident == an ] seen = true
+                if [ seen ] continue
+                ap : Prop [ ident: an, type: 'func' ]
+                if [ ty.module ] ap.module = module_name[ ty.module ]
+                # the first is the object itself
+                for [ k: i32 1, k < mem.args.count, k += 1 ]
+                    pa : Au_t mem.args.origin[ k ]
+                    pt : string [ (pa.src) ? pa.src.ident : '' ]
+                    if [ !ap.params ] ap.params = vec string []
+                    ap.params.push[ '{pa.ident}: {pt}' ]
+                acc.props.push[ ap ]
+                continue
             mt : Au_t mem.meta.m
             if [ !mt || !Au.inherits[ mt, typeid[ Launch ] ] ] continue
             if [ mem.member_type != AU_MEMBER_VAR
@@ -350,12 +380,7 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
             p.meta.push[ string [ mt.ident ] ]
             mb : Au_t mem.meta.member_b
             if [ mb ] p.meta.push[ string [ mb.ident ] ]
-            # an Action is a method: it has no value, the host calls it
-            if [ mem.member_type == AU_MEMBER_FUNC ]
-                if [ !Au.inherits[ mt, typeid[ Action ] ] ] continue
-                p.type = 'func'
-                acc.props.push[ p ]
-                continue
+            if [ mem.member_type == AU_MEMBER_FUNC ] continue
             p.type   = (mem.src) ? string [ mem.src.ident ] : ''
             # bit 50 of traits: AU_TRAIT_IS_DEFAULT, the bare argument
             p.access = (((mem.traits >> 50) & 1) != 0) ?
@@ -408,10 +433,12 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
                                 p.value = string [ ev.ident ]
                     el
                         p.value = '{iv}'
-                el [ mem.src == typeid[ f32 ]
-                     || mem.src == typeid[ f64 ] ]
+                el [ mem.src == typeid[ f32 ] ]
                     fv : f32 [ v ]
                     p.value = '{fv}'
+                el [ mem.src == typeid[ f64 ] ]
+                    dv : f64 [ v ]
+                    p.value = '{dv}'
                 el [ mem.src == typeid[ string ]
                      || Au.inherits[ mem.src, typeid[ path ] ] ]
                     p.value = '{v}'
@@ -918,6 +945,9 @@ abstract live_app media_app
                     if [ tag_count > 0 ]
                         tag_line = '{tag_line} {tag_key}={tag_count}'
             stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush} | objects {Au.alloc_count[ null ]} samplers {vk.sampler_count} rcolor {vk.samp_rcolor} rdepth {vk.samp_rdepth} rreduce {vk.samp_rreduce} sdf {vk.samp_sdf} atlas {vk.samp_atlas} other {vk.samp_other} renders {vk.render_allocs}/{vk.ring_frees} | tags{tag_line}'
+            sd : StatDetail stat_detail[]
+            stat_line = '{stat_line}{sd.line[]}'
+            sd.clear[]
             if [ pwn.stats ] log '{stat_line}'
             if [ pwn.show_fps ]
                 fl : string 'fps {frames}'
@@ -1129,6 +1159,14 @@ abstract live_app media_app
             wn : Window [ w ]
             ao : element [ cast element [ wn.app_object ] ]
             ps : LaunchProps []
+            ag : getenv[ 'AI_AGENT' ]
+            se : getenv[ 'CLAUDE_CODE_SESSION_ID' ]
+            if [ ag ]
+                an : string [ ag ]
+                ps.agent = an
+            if [ se ]
+                sn : string [ se ]
+                ps.session = sn
             if [ ao ] props_of[ typeid[ ao ], ao, ps ]
             return Au.string_agi[ ps ]
 
@@ -1753,9 +1791,14 @@ abstract live_app media_app
                         && ps.count > 0) ? '{ps}\n' : '\n\n' ]
                     continue
                 # stats: the last second's frame and gpu counters
+                # each asks the next two seconds' GPU time per pass
+                # too: ask, wait, ask again
                 el [ cmd == 'stats' ]
+                    gl : string pass_line[ vk ]
                     agent_sock_reply[ (stat_line
-                        && stat_line.count > 0) ? '{stat_line}\n' : '\n' ]
+                        && stat_line.count > 0) ? '{stat_line}{gl}\n'
+                        : '{gl}\n' ]
+                    if [ vk ] vk.time_until = epoch_millis[] + 2000
                     continue
                 # leaks: the --leaks report now, into the app log
                 el [ cmd == 'leaks' ]
@@ -1785,20 +1828,20 @@ abstract live_app media_app
                     au_census[ mn ]
                     agent_sock_reply[ 'ok\n' ]
                     continue
-                # call <name>: run an Action method of the app, no
-                # arguments
+                # call <name> [args]: run an action func of the app,
+                # its arguments the rest of the line
                 el [ cmd == 'call' && parts.count >= 2 ]
                     fm : Au_t [ (aa) ? find_member[ typeid[ aa ],
                             parts[1].chars,
                         AU_MEMBER_FUNC, 0, true ] : null ]
-                    called : bool [ false ]
-                    if [ fm ]
-                        am : Au_t fm.meta.m
-                        if [ am
-                             && Au.inherits[ am, typeid[ Action ] ] ]
-                            called = Au_call_named[ aa,
-                                    parts[1].chars ] == 1
-                    agent_sock_reply[ (called) ? 'ok\n' : 'unknown\n' ]
+                    got : i32 [ 0 ]
+                    if [ fm && fm.access_type == interface.action ]
+                        rest : string set_word[ line, parts ]
+                        got = Au_call_words[ aa, parts[1].chars,
+                                             rest.chars ]
+                    agent_sock_reply[ (got == 1) ? 'ok\n'
+                        : ((got < 0) ? 'missing arguments\n'
+                                     : 'unknown\n') ]
                     continue
                 el [ cmd == 'set' && parts.count >= 2 ]
                     member : Au_t [ (aa) ? find_member[ typeid[ aa ],
@@ -2083,6 +2126,109 @@ func bind_members [ instance: element ]
 # from_scale of the window) halved `steps` times, then the vertical and
 # horizontal gaussian at that reduction, output full size. the frost
 # chain builds three of these off its entry copy; the screenshot builds
+# a name's sums, in the order first seen
+class Tally
+    public keys : vec string [] []
+    public vals : vec i64 [] []
+
+    func add [ k: string, v: i64 ]
+        at : i32 [ keys.index_of[ k ] ]
+        if [ at < 0 ]
+            keys.push[ k ]
+            vals.push[ v ]
+        el vals[ at ] = vals[ at ] + v
+
+    # the n largest, as 'name=value' words
+    func top [ n: i32 ] -> string
+        out : ''
+        taken : vec bool []
+        for [ i: i32 0, i < keys.count, i += 1 ] taken.push[ false ]
+        for [ r: i32 0, r < n, r += 1 ]
+            bi : i32 [ -1 ]
+            for [ i: i32 0, i < keys.count, i += 1 ]
+                if [ !taken[ i ] && (bi < 0 || vals[ i ] > vals[ bi ]) ]
+                    bi = i
+            if [ bi < 0 ] break
+            taken[ bi ] = true
+            out = '{out} {keys[ bi ]}={vals[ bi ]}'
+        return out
+
+# the stats line's detail, summed over its second: the compose
+# phase's parts, whole-tree restyles, each element type's render and
+# tick in us
+class StatDetail
+    public onframe  : i64
+    public update   : i64
+    public animate  : i64
+    public restyles : i64
+    public styled   : i64
+    public render_us : Tally
+    public tick_us   : Tally
+    public renders   : Tally
+
+    func line [] -> string
+        return ' | onframe {onframe} update {update} animate {animate} restyles {restyles} styled {styled} | render_us{render_us.top[ 10 ]} | renders{renders.top[ 10 ]} | tick_us{tick_us.top[ 10 ]}'
+
+    func clear []
+        onframe  = 0
+        update   = 0
+        animate  = 0
+        restyles = 0
+        styled   = 0
+        render_us = Tally []
+        tick_us   = Tally []
+        renders   = Tally []
+
+intern stat_d : StatDetail [ null ]
+
+# a phone's press on a scrollbar's thumb: the element whose thumb
+# follows the finger until the release
+intern thumb_el : element [ null ]
+
+# the GPU time each pass took since the last ask, largest first, in
+# ms; cleared for the next
+func pass_line [ vk: vk_context ] -> string
+    if [ !vk || !vk.pass_names || vk.pass_names.count == 0 ] return ''
+    out : ' | gpu_ms'
+    n : i32 [ i32[ vk.pass_names.count ] ]
+    # the largest first: each turn takes the largest of those left
+    for [ k: i32 0, k < n && k < 16, k += 1 ]
+        best : i32 [ k ]
+        for [ i: i32 k + 1, i < n, i += 1 ]
+            if [ vk.pass_us[ i ] > vk.pass_us[ best ] ] best = i
+        bu : f32 [ vk.pass_us[ best ] ]
+        bn : vk.pass_names[ best ]
+        vk.pass_us[ best ] = vk.pass_us[ k ]
+        vk.pass_names[ best ] = vk.pass_names[ k ]
+        vk.pass_us[ k ] = bu
+        vk.pass_names[ k ] = bn
+        ms : f32 [ bu / 1000.0 ]
+        out = '{out} {bn}={ms}'
+    vk.pass_names.clear[]
+    vk.pass_us.clear[]
+    # the screen's pixels by draw mode (DrawMode's numbers), millions
+    if [ vk.mode_px ]
+        out = '{out} | screen_mpx'
+        for [ m: i32 0, m < 32, m += 1 ]
+            mp : f32 [ vk.mode_px[ m ] / 1000000.0 ]
+            if [ mp > 0.01 ] out = '{out} m{m}={mp}'
+            vk.mode_px[ m ] = 0.0
+    if [ vk.big_names ]
+        out = '{out} | big'
+        for [ i: i32 0, i < vk.big_names.count, i += 1 ]
+            bp : f32 [ vk.big_px[ i ] / 1000000.0 ]
+            out = '{out} {vk.big_names[ i ]}={bp}'
+        vk.big_names.clear[]
+        vk.big_px.clear[]
+    return out
+
+func stat_detail [] -> StatDetail
+    if [ !stat_d ]
+        stat_d = StatDetail []
+        stat_d.clear[]
+        stat_d.hold[]
+    return stat_d
+
 # one off its capture and runs it once
 class ReduceBlur
     # the reduces in order, then the two blur passes
@@ -3585,6 +3731,10 @@ Display Window
                             focus = null
                             break
                     if [ capture == instance ] capture = null
+                    for [ h: element* input_device, h, h = h.parent ]
+                        if [ h == instance ]
+                            input_device = null
+                            break
                     instance.release_tree[]
                     if [ instance.ux ]
                         instance.ux.vk.defer_drop[ instance ]
@@ -3641,6 +3791,8 @@ Display Window
                     home_object.member_set[ imember, instance ]
                  
                 instance.set_context_from[ home_object ]
+                # before its first style, which init comes after
+                instance.use_mobile = mobile_on[]
                 call_init = true
                 changed = true
             el
@@ -3672,10 +3824,17 @@ Display Window
             child_pos += 1
 
             if [ changed ]
+                tsc : i64 [ epoch_micros[] ]
                 avail  : (st) ? st.compute[ instance ] : null
                 ts : i64 [ epoch_micros[] ]
                 apply_style[ instance, avail, home_object ]
                 a.t_apply_style += epoch_micros[] - ts
+                sds : StatDetail stat_detail[]
+                sds.styled += 1
+                sty : typeid[ instance ]
+                stn : sty.ident
+                sds.render_us.add[ 'style:{stn}',
+                         epoch_micros[] - tsc ]
 
                 if [ call_init && !instance.initialized ]
                     if [ !text_mode ]
@@ -3690,6 +3849,7 @@ Display Window
                     if [ st && st.integrate_instance[ instance ] ]
                         restyled : st.compute[ instance ]
                         apply_style[ instance, restyled, home_object ]
+                        stat_detail[].styled += 1
             inst    : typeid[ instance ]
             # a container renders from this frame's bounds, not the last
             # draw's: a nested splitter laid its panes out a frame late
@@ -3705,6 +3865,11 @@ Display Window
             tr : i64 [ epoch_micros[] ]
             rendered_map : Elements instance.render*[]
             a.t_render += epoch_micros[] - tr
+            sdt : StatDetail stat_detail[]
+            cid : inst.ident
+            cn : '{cid}'
+            sdt.render_us.add[ cn, epoch_micros[] - tr ]
+            sdt.renders.add[ cn, 1 ]
             irender : Elements rendered_map
             if [ irender == null ] irender = e.elements
             if [ irender == null ] irender = instance.elements
@@ -3740,6 +3905,10 @@ Display Window
                     for [ h: element* capture, h, h = h.parent ]
                         if [ h == e ]
                             capture = null
+                            break
+                    for [ h: element* input_device, h, h = h.parent ]
+                        if [ h == e ]
+                            input_device = null
                             break
                     e.release_tree[]
                     e.parent = null
@@ -4140,6 +4309,8 @@ Display Window
         return e
 
     public func update_all [ render: Elements ]
+        hold_tick[]
+        words_tick[]
         if [ !root ]
             root    = element [ id: string[ 'root' ], ux:a ]
             root.initialize[]
@@ -4163,6 +4334,7 @@ Display Window
         update_start : i64 [ epoch_micros[] ]
         # children lay out from the root: at this frame's window size
         if [ screen ] layout_self[ root, null, null, null, screen ]
+        if [ restyle ] stat_detail[].restyles += 1
         update_element[ root, render, restyle ]
         render.drop[]
         update_end : i64 [ epoch_micros[] ]
@@ -4356,6 +4528,10 @@ Display Window
         if [ n % 3 == 0 ] host_post[ 0, kind, 0, 0, 0 ]
 
     public func set_focus [ e: element ]
+        # a phone: the user's own tap alone gives the focus (during
+        # it, or what it asked for within half a second)
+        if [ e && !pressing && mobile_on[]
+             && epoch_micros[] - user_us > 500000 ] return
         if [ focus != e ]
             if [ focus ]
                 focus.focused = false
@@ -4510,10 +4686,12 @@ Display Window
                     restyle = true
                 # borders in reach repaint as the light moves
                 c.win_pos = vec2f [ cx, cy ]
-                lit : bool [ !shut && mx >= cx - near_reach
-                             && mx < cx + c.bounds.w + near_reach &&
-                             my >= cy - near_reach
-                             && my < cy + c.bounds.h + near_reach ]
+                rc : f32 [ near_reach
+                    * ((c.near_far > 0.0) ? c.near_far : 1.0) ]
+                lit : bool [ !shut && mx >= cx - rc
+                             && mx < cx + c.bounds.w + rc &&
+                             my >= cy - rc
+                             && my < cy + c.bounds.h + rc ]
                 if [ c.near_used && (lit || c.near_lit) ]
                     for [ p: element* c, p, p = p.parent ]
                         p.pristine = false
@@ -4561,6 +4739,7 @@ Display Window
     public func near_light_reach [ cv: Canvas, e: element, ox: f32,
                                    oy: f32, scale: f32 ]
         e.near_used = true
+        e.near_far  = scale
         if [ e.near_glow <= 0.0 ] return
         sc : f32 [ cv.transform_scale[] ]
         if [ sc <= 0.0 ] sc = 1.0
@@ -4638,6 +4817,10 @@ Display Window
                 restyle = true
             return
         ev.target = focus
+        # typed text goes to the input device first (it composes)
+        if [ input_device && !injecting && words_wanted && !words_plain
+             && input_device.take_text*[ ev ] ]
+            return
         # a focused element that took the text marks it handled
         if [ focus ]
             focus.on_char*[ ev ]
@@ -4656,6 +4839,27 @@ Display Window
                 if [ l.editable ]
                     l.on_char[ ev ]
                     break
+
+    # an input device's text, given to the focus as typed text
+    public func input_text [ s: string ]
+        if [ !s || s.count == 0 ] return
+        e : Event []
+        e.key.text  = s
+        e.key.state = 1
+        injecting = true
+        text_event[ e ]
+        injecting = false
+        will_animate = true
+
+    # an input device's key (a glfw code: 259 backspace, 257 enter)
+    public func input_key [ code: i32 ]
+        e : Event []
+        e.key.unicode = code
+        e.key.state   = 1
+        injecting = true
+        key_event[ e ]
+        injecting = false
+        will_animate = true
 
     func dirty_tree [ e: element* ]
         if [ !e ] return
@@ -4841,6 +5045,10 @@ Display Window
                 set_clipboard[ sel ]
                 return
         ev.target = focus
+        # the input device's keys first, while it composes
+        if [ input_device && !injecting && words_wanted && !words_plain
+             && input_device.take_key*[ ev ] ]
+            return
         # a focused element that took the key marks it handled
         if [ focus ]
             focus.on_key*[ ev ]
@@ -4949,6 +5157,26 @@ Display Window
                     platform_warp_cursor[ g, i32[ c.x ], i32[ c.y ] ]
                 mouse     = c
                 last_move = c
+                return
+        if [ hold_el ]
+            hx : f32 [ ev.mouse.pos.x - hold_at.x ]
+            hy : f32 [ ev.mouse.pos.y - hold_at.y ]
+            if [ hx * hx + hy * hy > 64.0 ] hold_el = null
+        if [ drag_scroll && drag_step[ ev.mouse.pos ] ] return
+        if [ thumb_el ]
+            if [ !thumb_el.bounds ]
+                thumb_el = null
+            el
+                at_m : vec2f [ ev.mouse.pos ]
+                mouse.x = f64[ at_m.x ]
+                mouse.y = f64[ at_m.y ]
+                find_target[ root, ev, thumb_el ]
+                ev.mouse.pos = at_m
+                tsb : ScrollLayer (thumb_el.layers) ? cast ScrollLayer [
+                    thumb_el.layers['scrollbar'] ] : null
+                if [ tsb ]
+                    thumb_el.scroll_to[ tsb.drag_to[
+                        thumb_el.cursor_pos.y * thumb_el.bounds.h ] ]
                 return
         orig_pos : vec2f [ ev.mouse.pos ]
         mouse.x = f64[ ev.mouse.pos.x ]
@@ -5084,11 +5312,37 @@ Display Window
                 if [ c.bounds ]
                     log '  child {cid} @ {c.bounds.x},{c.bounds.y} {c.bounds.w}x{c.bounds.h}'
         press_route[ f, ev ]
+        if [ ev.mouse.button == 0 ]
+            # a tap on none of the arranging ends it; on one, it drags
+            on_peer : bool [ false ]
+            for [ c: element* f, c, c = c.parent ]
+                if [ c.arranging ] on_peer = true
+            if [ arrange_of && !on_peer ] arrange[ null, false ]
+            hold_el = (f && !on_peer) ? f : null
+            hold_at = world_m
+            hold_us = epoch_micros[]
+            if [ !on_peer && !thumb_el ] drag_begin[ f, world_m ]
 
     # dispatch to a KNOWN target: the routing press_event does after
     # hit-test
     public func press_route [ f: element, ev: Event ]
+        pressing = true
+        user_us  = epoch_micros[]
+        press_steps[ f, ev ]
+        pressing = false
+
+    func press_steps [ f: element, ev: Event ]
         release_capture[ capture ]
+        # a phone's press on a scrollbar's thumb takes the thumb, not
+        # the list: it follows the finger (find_target set cursor_pos)
+        thumb_el = null
+        if [ ev.mouse.button == 0 ]
+            for [ e: element* f, e, e = e.parent ]
+                if [ e.use_mobile && e.scroll_grab[ ev ] ]
+                    thumb_el = e
+                    set_capture[ e ]
+                    ev.no_default = true
+                    return
         ev.origin = f
         element_pos : vec2f [ ev.mouse.pos ]
         consumed_p : bool [ false ]
@@ -5129,14 +5383,14 @@ Display Window
                     break
         if [ ev.mouse.button == 0 && f && (f.focusable || edit_l)
              && !ev.no_default ]
-            set_focus[ f ]
+            focus_on[ f ]
         el [ ev.mouse.button == 0 && focus && focus.focused
              && !ev.no_default ]
             # a press outside the field being typed in lets it go
             inside : bool [ false ]
             for [ c: element* f, c, c = c.parent ]
                 if [ c == focus ] inside = true
-            if [ !inside ] release_focus[ focus ]
+            if [ !inside ] focus_on[ null ]
         # the text field's caret and focus are the default too
         if [ edit_l && ev.mouse.button == 0 && !ev.no_default ]
             ev.mouse.pos = element_pos
@@ -5156,6 +5410,26 @@ Display Window
         el [ ev.mouse.button == 1 ]
             context_pressed = f
 
+    # a press's focus: at once, or on a phone at its release
+    func focus_on [ e: element ]
+        if [ mobile_on[] ]
+            focus_wait = true
+            focus_next = e
+            return
+        if [ e ] set_focus[ e ]
+        el release_focus[ focus ]
+
+    # the press ended: its focus change, unless it scrolled
+    func focus_settle []
+        if [ !focus_wait ] return
+        focus_wait = false
+        if [ drag_moving ] return
+        pressing = true
+        if [ focus_next ] set_focus[ focus_next ]
+        el release_focus[ focus ]
+        pressing   = false
+        focus_next = null
+
     public func release_event [ ev: Event ]
         if [ screenshot_active ]
             if [ ev.mouse.button == 0 && screenshot_dragging ]
@@ -5165,8 +5439,37 @@ Display Window
                 screenshot_dragging = false
                 will_animate        = true
             return
+        hold_el = null
+        # the thumb let go: nothing else hears this press's release
+        if [ thumb_el ]
+            te : element [ thumb_el ]
+            thumb_el   = null
+            te.sb_drag = false
+            tsl : ScrollLayer (te.layers) ? cast ScrollLayer [
+                te.layers['scrollbar'] ] : null
+            if [ tsl ] tsl.active = false
+            release_capture[ te ]
+            will_animate = true
+            return
+        # a drag scrolled: the release ends presses, clicks nothing,
+        # and the list goes on at the finger's speed (held still
+        # 0.1 s before the release: none)
+        if [ drag_scroll && drag_moving ]
+            v : f32 drag_speed[]
+            if [ v != 0.0 ]
+                drag_scroll.fling       = v
+                drag_scroll.scroll_anim = true
+                will_animate            = true
+        focus_settle[]
+        scrolled : bool [ drag_moving ]
+        drag_scroll = null
+        drag_moving = false
         f : find_target[ root, ev, capture ]
+        # a scroll's release is no tap: it gives no focus
+        pressing = !scrolled
+        if [ !scrolled ] user_us = epoch_micros[]
         release_route[ f, ev ]
+        pressing = false
 
     public func release_route [ f: element, ev: Event ]
         ev.origin = f
@@ -5498,6 +5801,157 @@ Display Window
     # share of the height), the avatar under it
     public  exch_split          : f32 [ 0.62 ]
     public  exch_stacked        : bool
+    # a window on the screen alone (a game): the frame draws
+    # nothing of the app, only this element's on_frame
+    public  pause_for           : element
+    # a phone: a press in a scrolled element, and from where; once
+    # the finger moves it is a scroll, never the press's click
+    manual  drag_scroll         : element
+    mutable drag_from           : vec2f
+    mutable drag_y0             : f32
+    mutable drag_moving         : bool
+    # the finger's last sample, and its speed (scroll px a second)
+    # as a running average, each move's a third of it
+    mutable drag_last           : f32
+    mutable drag_us             : i64
+    mutable drag_v              : f32
+    # a press being held: where and when; the parent whose children
+    # are arranging (each one's arranging set)
+    manual  hold_el             : element
+    mutable hold_at             : vec2f
+    mutable hold_us             : i64
+    manual  arrange_of          : element
+    # what the input devices speak (a keyboard's layout, a voice's)
+    public  input_language      : Language
+    # the focus takes the user's words: a phone shows a keyboard
+    public  words_wanted        : bool
+    # inside a press's or release's routing: a focus given now is
+    # the user's; and when the last tap was
+    public  pressing            : bool
+    intern  user_us             : i64
+    # the input device mounted (a keyboard, its bar): it sees typed
+    # text and keys first; what it gives back skips it (injecting)
+    manual  input_device        : InputDevice
+    intern  injecting           : bool
+    # a phone: the press's focus change waits for its release, and a
+    # drag scroll in between drops it (the keyboard holds still)
+    intern  focus_wait          : bool
+    manual  focus_next          : element
+    # the focus types plainly (a console): the input device composes
+    # nothing; an app sets plain_app for a hosted app's focus
+    public  words_plain         : bool
+    public  plain_app           : bool
+
+    # the element and its peers arranging, or none
+    public func arrange [ e: element, on: bool ]
+        if [ arrange_of && arrange_of.elements ]
+            for [ c: element, k: string ] in arrange_of.elements
+                c.arranging = false
+                c.pristine  = false
+        arrange_of = null
+        if [ on && e && e.parent ]
+            arrange_of = e.parent
+            for [ c: element, k: string ] in e.parent.elements
+                c.arranging = true
+                c.pristine  = false
+        el [ on && e ]
+            e.arranging = true
+        restyle      = true
+        will_animate = true
+
+    # each frame: whether the focus takes words, told to the host
+    func words_tick []
+        on : bool [ focus && focus.focused && focus.takes_words*[] ]
+        plain : bool [ on && (plain_app || focus inherits Console) ]
+        if [ on == words_wanted && plain == words_plain ] return
+        words_wanted = on
+        words_plain  = plain
+        restyle      = true
+        will_animate = true
+        # to the host: 1 words, 2 plain words (a console's)
+        if [ host_slot[] > 0 ]
+            host_post[ 0, i32[ HM.words ],
+                (plain) ? 2 : ((on) ? 1 : 0), 0, 0 ]
+
+    # each frame: a press held still a second arranges its peers
+    func hold_tick []
+        if [ !hold_el ] return
+        if [ epoch_micros[] - hold_us < 1000000 ]
+            will_animate = true
+            return
+        e : element [ hold_el ]
+        hold_el = null
+        if [ !e.arranging ] arrange[ e, true ]
+
+    # the nearest scrolled element at the press, if on a phone
+    func drag_begin [ f: element, at: vec2f ]
+        drag_scroll = null
+        drag_moving = false
+        for [ e: element* f, e, e = e.parent ]
+            # a touch stops a list still moving
+            e.fling = 0.0
+            if [ !e.use_mobile || e.no_scroll || e.sb_drag ] continue
+            sbl : ScrollLayer (e.layers) ? cast ScrollLayer [
+                e.layers['scrollbar'] ] : null
+            if [ !sbl || sbl.scroll_max <= 0.0 ] continue
+            drag_scroll = e
+            drag_from   = at
+            drag_y0     = e.scroll.y
+            drag_last   = at.y
+            drag_us     = epoch_micros[]
+            drag_v      = 0.0
+            return
+
+    # the fling: the running speed, 0 when the finger held still
+    # 100 ms before the release
+    func drag_speed [] -> f32
+        if [ epoch_micros[] - drag_us > 100000 ] return 0.0
+        if [ drag_v > 8000.0 ]  return 8000.0
+        if [ drag_v < -8000.0 ] return -8000.0
+        return drag_v
+
+    # true: the move scrolled, and goes no further
+    func drag_step [ at: vec2f ] -> bool
+        d  : element [ drag_scroll ]
+        dx : f32 [ at.x - drag_from.x ]
+        dy : f32 [ at.y - drag_from.y ]
+        if [ !drag_moving ]
+            # held a second first: the element's own drag (a reorder)
+            if [ epoch_micros[] - drag_us >= 1000000 ]
+                drag_scroll = null
+                return false
+            ax : f32 [ (dx < 0.0) ? -dx : dx ]
+            ay : f32 [ (dy < 0.0) ? -dy : dy ]
+            # sideways first: a slider's, not a scroll
+            if [ ax > 8.0 && ax >= ay ]
+                drag_scroll = null
+                return false
+            if [ ay <= 8.0 ] return false
+            drag_moving = true
+            if [ action_pressed ]
+                action_pressed.pressed  = false
+                action_pressed.pristine = false
+                action_pressed = null
+            restyle = true
+        # a move under 4 ms on joins the next: no speed from a sliver
+        now : i64 [ epoch_micros[] ]
+        if [ now - drag_us >= 4000 ]
+            ds : f32 [ f32[ now - drag_us ] / 1000000.0 ]
+            drag_v = drag_v + ((drag_last - at.y) / ds - drag_v) / 3.0
+            drag_last = at.y
+            drag_us   = now
+        top : f32 [ d.content_h - d.bounds.h ]
+        to  : f32 [ drag_y0 - dy ]
+        if [ to > top ] to = top
+        if [ to < 0.0 ] to = 0.0
+        d.scroll_goal = to
+        d.scroll.y    = to
+        d.scroll_anim = true
+        d.pristine    = false
+        mouse.x       = f64[ at.x ]
+        mouse.y       = f64[ at.y ]
+        will_animate  = true
+        return true
 
     # the selected text, wrapped rows joined by a space
     public func note_selection [] -> string
@@ -5525,12 +5979,20 @@ Display Window
     func on_compose []
         if [ resizing ] return
         if [ screenshot_active ] return
+        sd : StatDetail stat_detail[]
+        c0 : i64 [ epoch_micros[] ]
         ae : element [ cast element [ app_object ] ]
         if [ ae ] ae.on_frame*[ a ]
+        c1 : i64 [ epoch_micros[] ]
         update_all      [ app_render[] ]
+        c2 : i64 [ epoch_micros[] ]
         # a frost element publishes its target mid-frame, not on resize
         bind_backdrop   [ ]
         if [ !ide_active ] animate [ ]
+        c3 : i64 [ epoch_micros[] ]
+        sd.onframe += c1 - c0
+        sd.update  += c2 - c1
+        sd.animate += c3 - c2
         if [ scroll_under ]
             scroll_under = null
             if [ !capture && !locked ]
@@ -5568,7 +6030,8 @@ Display Window
             screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
             screen.paint[]
         el
-            bl : Render blur_src[]
+            # no frost chain: the backdrop is drawn as it is
+            bl : Render [ (chain) ? blur_src[] : null ]
             screen.draw_image[ (bl) ? bl.color : backdrop.color,
                 rect [ x: 0.0, y: 0.0, w: f32[ width ],
                        h: f32[ height ] ] ]
@@ -5591,6 +6054,7 @@ Display Window
             draw_element[ root, CanvasType.screen, null ]
 
         overlay_start : i64 [ epoch_micros[] ]
+        if [ vk.time_until > 0 ] vk.paint_who = 'overlay'
         app_object.on_overlay*[ screen ]
         overlay_end : i64 [ epoch_micros[] ]
 
@@ -5644,6 +6108,7 @@ Display Window
             false ]
         ##
         flush_start : i64 [ epoch_micros[] ]
+        if [ vk.time_until > 0 ] vk.paint_who = 'flush'
         screen.paint[]
         screen.flush_text[]
         screen.sync_fence[]
@@ -6630,6 +7095,7 @@ Display Window
         if [ opt->selected ] bits += i32[ State.selected ]
         e.on_state*[ bits ]
         if [ !e.parent && e != root ] return
+        if [ vk.time_until > 0 ] vk.paint_who = e.id
         cv : screen
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ]
             return
@@ -6721,7 +7187,13 @@ Display Window
 
         # tick first: what it sets (animated) decides the target
         if [ stage == CanvasType.screen ] near_filter[ e ]
-        if [ stage == CanvasType.screen ] e.tick*[ a ]
+        if [ stage == CanvasType.screen ]
+            tt : i64 [ epoch_micros[] ]
+            e.tick*[ a ]
+            sdk : StatDetail stat_detail[]
+            tky : typeid[ e ]
+            tkn : tky.ident
+            sdk.tick_us.add[ '{tkn}', epoch_micros[] - tt ]
         target_cv : (e.cache_canvas && !e.animated && !nc && stage == CanvasType.screen) ? e.cache_canvas : cv
         element_text : (e.label && e.label.count) ? e.label : null
 
@@ -7396,10 +7868,6 @@ Range VolumeRange
 # and captures the next key for it, one member per button
 class KeyBind
 
-# a method the host may call while the app runs: `public [ Action ] func
-# reset []`
-Live Action
-
 # a '#rrggbb' string: the host shows a swatch beside the hex
 class Color
 
@@ -7616,6 +8084,12 @@ abstract media_app trinity
             frames += 1
             return
         window : Window[w]
+        if [ window.pause_for ]
+            window.pause_for.on_frame*[ window ]
+            # no present paces it: a refresh's time
+            hz : i32 [ max[ window.refresh_hz[], 30 ] ]
+            usleep[ u32[ 1000000 / hz ] ]
+            return
         window.will_animate = false
         update_start : i64 [ epoch_micros[] ]
         # headless hosts render alongside the window (no present)
@@ -9255,6 +9729,48 @@ element TextInput
                 label_color: #ffffff
     }
 
+
+# a keyboard, a voice, anything that types: trinity sees only
+# what it gives (text and keys), never how it was made; it
+# speaks the window's input_language
+element InputDevice
+    # characters it put in that are still being chosen
+    intern held     : i32
+
+    # typed text and keys (a hardware keyboard's): true when taken
+    public func take_text [ ev: Event ] -> bool
+        return false
+    public func take_key [ ev: Event ] -> bool
+        return false
+
+    # text into the focus, done
+    public func put_text [ t: string ]
+        commit[ t ]
+
+    public func put_key [ code: i32 ]
+        held = 0
+        ux.input_key[ code ]
+
+    # text still being chosen: it replaces what was held before
+    public func compose [ t: string ]
+        for [ i: i32 0, i < held, i += 1 ]
+            ux.input_key[ 259 ]
+        held = 0
+        if [ !t || t.count == 0 ] return
+        ux.input_text[ t ]
+        held = utf8_count[ t ]
+
+    # the held text becomes t, and is let go
+    public func commit [ t: string ]
+        compose[ t ]
+        held = 0
+
+# characters (UTF-8 starts) in a string
+func utf8_count [ t: string ] -> i32
+    n : i32 [ 0 ]
+    for [ i: i32 0, i < t.count, i += 1 ]
+        if [ !utf8_inside[ t, i ] ] n += 1
+    return n
 
 element IDEOverlay
     area       : Region { l0 t0 r0 b0 }

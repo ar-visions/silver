@@ -15,14 +15,14 @@ Keep it in step with the imports.
 | GIMP (its official AppImage, unpacked; not redistributed) | 3.2.6 | featured/gimp (install/bin/gimp) | https://download.gimp.org/gimp/v3.2/linux | GPL-3.0-or-later (its bundled libraries under their own licenses) | The GIMP Team |
 | Firefox (Mozilla's release build, not redistributed) | 158.0 | featured/firefox (install/bin/firefox) | https://archive.mozilla.org/pub/firefox/releases | MPL-2.0 (the Firefox name and logo: Mozilla's trademarks) | Mozilla Foundation and contributors |
 | Claude Code (native binary, not redistributed) | 2.1.304 | claude (install/bin/claude) | https://downloads.claude.ai/claude-code-releases | proprietary, Anthropic's terms | Anthropic PBC |
-| Wine (Valve's tree, Proton Experimental 11.0-20261001's commit) | 6d211aab | featured/wine (install/bin/wine, Wayland driver) | https://github.com/ValveSoftware/wine | LGPL-2.1-or-later | the Wine project, Valve and CodeWeavers |
+| Wine (Valve's tree, Proton Experimental 11.0-20261001's commit) | 6d211aab | featured/wine (install/bin/wine, Wayland driver), featured/steam | https://github.com/ValveSoftware/wine | LGPL-2.1-or-later | the Wine project, Valve and CodeWeavers |
 | Proton's lsteamclient and steam.exe (Steam's Windows client bridged to the Linux Steam) | experimental-11.0-20261001 (70b7e109) | featured/wine (install/lib/wine) | https://github.com/ValveSoftware/Proton | BSD 3-Clause; lsteamclient carries Valve's Steamworks SDK headers under the Steamworks SDK license | Valve Corporation |
-| DXVK (its release build: Windows DLLs, not built here) | 3.1.1 | featured/wine (install/lib/wine/dxvk) | https://github.com/doitsujin/dxvk | zlib | Philip Rebohle and contributors |
+| DXVK (built from source as Windows DLLs on our Wine; featured/wine/dxvk.diff), with its dxbc-spirv, libdisplay-info (featured/wine/libdisplay-info.diff), SPIRV-Headers and Vulkan-Headers submodules; its include/native submodule (MinGW-w64 DirectX headers, for its Linux-native build) is fetched, never compiled | 3.1.1 (b1a1c99a) | featured/wine (install/lib/wine/dxvk/x64) | https://github.com/doitsujin/dxvk | zlib (dxbc-spirv, libdisplay-info: MIT; headers: MIT / Apache-2.0) | Philip Rebohle, Joshua Ashton and contributors |
+| vkd3d-proton (built from source as Windows DLLs on our Wine; featured/wine/vkd3d-proton.diff), with its dxil-spirv, dxbc-spirv, SPIRV-Headers and Vulkan-Headers submodules | 3.0.1 (3b10bd7a) | featured/wine (install/lib/wine/vkd3d/x64) | https://github.com/HansKristian-Work/vkd3d-proton | LGPL-2.1 (dxil-spirv, dxbc-spirv: MIT; headers: MIT / Apache-2.0) | Hans-Kristian Arntzen and contributors |
+| libc++ (our LLVM checkout, built for Windows code on Wine's C runtime; linked into vkd3d-proton) | LLVM bd7db754 | featured/wine (install/lib/wine/cxx) | https://github.com/llvm/llvm-project | Apache-2.0 WITH LLVM-exception | the LLVM project |
 | libxkbcommon (for xkbregistry) | 1.6.0 | featured/wine | https://xkbcommon.org | MIT | Daniel Stone, Ran Benita and contributors |
 | NASM (build tool) | 2.16.03 | featured/wine (FFmpeg's assembly) | https://www.nasm.us | BSD-2-Clause | the NASM development team |
-| FFmpeg (shared, LGPL build: no --enable-gpl) | 4.4.5 | featured/wine (winedmo, gst-libav) | https://ffmpeg.org | LGPL-2.1-or-later | the FFmpeg developers |
-| GStreamer | 1.24.12 | featured/wine (winegstreamer) | https://gstreamer.freedesktop.org | LGPL-2.1-or-later | the GStreamer team |
-| gst-plugins-base, -good (isomp4), -bad (videoparsers), gst-libav | 1.24.12 | featured/wine (winegstreamer) | https://gstreamer.freedesktop.org | LGPL-2.1-or-later | the GStreamer team |
+| FFmpeg (shared, LGPL build: no --enable-gpl) | 4.4.5 | featured/wine (winedmo) | https://ffmpeg.org | LGPL-2.1-or-later | the FFmpeg developers |
 | libxkbfile | 1.1.3 | featured/vscode | https://gitlab.freedesktop.org/xorg/lib/libxkbfile | MIT | X.Org Foundation |
 | libsecret | 0.21.7 | featured/vscode | https://gitlab.gnome.org/GNOME/libsecret | LGPL-2.1-or-later | The libsecret authors |
 | MIT Kerberos | 1.21.3 | featured/vscode | https://github.com/krb5/krb5 | MIT (krb5 notice) | Massachusetts Institute of Technology |
@@ -34,7 +34,7 @@ Keep it in step with the imports.
 | FLAC | 1.4.3 | featured/audacity | https://xiph.org/flac | BSD-3-Clause (libFLAC) | Josh Coalson, Xiph.Org Foundation |
 | Opus | 1.5.2 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation, Skype, Octasic and others |
 | opusfile | 0.12 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation |
-| libsndfile | 1.2.2 | featured/audacity | https://github.com/libsndfile/libsndfile | LGPL-2.1-or-later | Erik de Castro Lopo and contributors |
+| libsndfile | 1.2.2 | featured/audacity, featured/wine | https://github.com/libsndfile/libsndfile | LGPL-2.1-or-later | Erik de Castro Lopo and contributors |
 | libid3tag | 0.16.3 | featured/audacity | https://codeberg.org/tenacityteam/libid3tag | GPL-2.0-or-later | Underbit Technologies, Tenacity team |
 | WavPack | 5.7.0 | featured/audacity | https://www.wavpack.com | BSD-3-Clause | David Bryant |
 | PortMidi | 2.0.4 | featured/audacity | https://github.com/PortMidi/portmidi | MIT | Roger B. Dannenberg and contributors |
@@ -48,13 +48,14 @@ Keep it in step with the imports.
 | libpeas | libpeas-1.36.0 | featured/gedit | https://gitlab.gnome.org/GNOME/libpeas | LGPL-2.1-or-later | GNOME |
 | gspell | 1.14.5 | featured/gedit | https://gitlab.gnome.org/GNOME/gspell | LGPL-2.1-or-later | GNOME |
 | gedit | 51.0 | featured/gedit | https://gitlab.gnome.org/GNOME/gedit | GPL-2.0-or-later | The gedit team |
-| FreeType | VER-2-13-3 | trinity | https://github.com/freetype/freetype | FreeType License (FTL); GPL-2.0 alternative | David Turner, Robert Wilhelm, Werner Lemberg and the FreeType project |
+| FreeType | VER-2-13-3 | trinity, featured/wine | https://github.com/freetype/freetype | FreeType License (FTL); GPL-2.0 alternative | David Turner, Robert Wilhelm, Werner Lemberg and the FreeType project |
 | FriBidi | v1.0.16 | features | https://github.com/fribidi/fribidi | LGPL-2.1-or-later | Behdad Esfahbod, Dov Grobgeld, Roozbeh Pournader |
 | FAAC | 3aa4c6d | trinity (recording's AAC track, shared library) | https://github.com/knik0/faac | LGPL-2.1-or-later | M. Bakker, Krzysztof Nikiel and the FAAC contributors |
-| libpng | 3061454d980de7d53608f594194cfac722721d2a | img | https://github.com/glennrp/libpng | PNG Reference Library License v2 | Glenn Randers-Pehrson, Cosmin Truta and contributors |
+| libpng | 3061454d980de7d53608f594194cfac722721d2a | img, featured/wine | https://github.com/glennrp/libpng | PNG Reference Library License v2 | Glenn Randers-Pehrson, Cosmin Truta and contributors |
 | libtiff | v4.7.2 | img | https://gitlab.com/libtiff/libtiff | libtiff License (BSD-style) | Sam Leffler, Silicon Graphics, Inc. and contributors |
-| zlib | 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf | img, features | https://github.com/madler/zlib | zlib License | Jean-loup Gailly, Mark Adler |
-| Vulkan-Headers | 29184b98984f6169a5e83e97557a77cff1e5b0ca | trinity, wintest | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT | The Khronos Group |
+| zlib | 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf | img, features, featured/wine | https://github.com/madler/zlib | zlib License | Jean-loup Gailly, Mark Adler |
+| Vulkan-Headers | 29184b98984f6169a5e83e97557a77cff1e5b0ca | trinity, wintest, featured/wine | https://github.com/KhronosGroup/Vulkan-Headers | Apache-2.0 OR MIT | The Khronos Group |
+| Vulkan-Loader | e042a3a | trinity, featured/wine (Wine opens libvulkan.so.1) | https://github.com/KhronosGroup/Vulkan-Loader | Apache-2.0 | The Khronos Group, LunarG |
 | Vulkan-Utility-Libraries | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/Vulkan-Utility-Libraries | Apache-2.0 | The Khronos Group, LunarG |
 | Vulkan-Tools | 734638e | trinity | https://github.com/KhronosGroup/Vulkan-Tools | Apache-2.0 | The Khronos Group, LunarG |
 | Vulkan-ValidationLayers | vulkan-sdk-1.4.341.0 | trinity | https://github.com/KhronosGroup/Vulkan-ValidationLayers | Apache-2.0 | The Khronos Group, LunarG |
@@ -71,7 +72,7 @@ Keep it in step with the imports.
 | QEMU | e47e2d0 | qemu | https://github.com/qemu/qemu | GPL-2.0-only (mixed, see its LICENSE) | Fabrice Bellard and the QEMU project |
 | virglrenderer | main | qemu | https://gitlab.freedesktop.org/virgl/virglrenderer | MIT | Dave Airlie, Collabora and contributors |
 | Mesa | 26.2.2 | os-bootstrap (Vulkan: venus, radv for AMD, anv for Intel; patched: os-bootstrap/mesa.diff) | https://gitlab.freedesktop.org/mesa/mesa | MIT (with other permissive parts) | The Mesa 3D project |
-| libdrm | 2.4.134 | os-bootstrap (radv and anv need 2.4.133+) | https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz | MIT | The DRI project |
+| libdrm | 2.4.134 | os-bootstrap (radv and anv need 2.4.133+), featured/wine | https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz | MIT | The DRI project |
 | libusb | 1.0.27 | fastboot (a phone's bootloader over USB) | https://github.com/libusb/libusb/releases/download/v1.0.27/libusb-1.0.27.tar.bz2 | LGPL-2.1-or-later | the libusb project (Peter Stuge, Nathan Hjelm and contributors) |
 | milos-mainline Linux | v7.2.0-milos | os-bootstrap (the Fairphone 6's kernel, built) | https://github.com/milos-mainline/linux | GPL-2.0-only | Linus Torvalds and the kernel's contributors; Milos (SM7635) work by Luca Weiss and contributors |
 | postmarketOS pmaports (Fairphone 6 kernel config, deviceinfo, modules-initfs, kernel-cmdline.conf; read at build time) | main | os-bootstrap (how the Fairphone 6 kernel is configured and booted) | https://gitlab.postmarketos.org/postmarketOS/pmaports | MIT (packaging); the kernel config is part of the GPL-2.0-only kernel | the postmarketOS contributors (Luca Weiss, maintainer) |
@@ -112,6 +113,14 @@ Keep it in step with the imports.
 
 | file | used by | source | license | authors |
 |---|---|---|---|---|
+| Unicode Character Database 15.0.0 (canonical decompositions, combining classes, composition exclusions; tables in src/nfc.h, made by support/nfc_table.py) | Au (au_nfc: silver reads every name in NFC) | https://www.unicode.org/ucd/ (through Python 3.12's unicodedata) | Unicode License v3 | Unicode, Inc. |
+| JMdict (Japanese words, readings, word classes, frequency marks) | keyboard (Tables.ag ja_table: install/share/keyboard/ja.txt with conjugated forms) | http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz | CC BY-SA 4.0 (EDRDG licence) | the Electronic Dictionary Research and Development Group, Jim Breen and contributors |
+| Tanaka corpus word indices (Japanese sentences as JMdict words, as written) | keyboard (ja_table: how often each word is used and written, which word follows which) | https://downloads.tatoeba.org/exports/jpn_indices.tar.bz2 | CC BY 2.0 FR (Tatoeba); the corpus public domain (Yasuhito Tanaka) | Yasuhito Tanaka; Jim Breen; Tatoeba contributors |
+| CC-CEDICT (Chinese words, simplified and traditional, pinyin) | keyboard (Tables.ag zh_table: install/share/keyboard/zh.txt) | https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz | CC BY-SA 4.0 | MDBG; Paul Andrew Denisowski (CEDICT) and contributors |
+| Tatoeba Mandarin sentences | keyboard (zh_table: words' counts and pairs) | https://downloads.tatoeba.org/exports/per_language/cmn/cmn_sentences.tsv.bz2 | CC BY 2.0 FR | Tatoeba contributors |
+| Tatoeba English sentences | keyboard (Tables.ag en_table: install/share/keyboard/en.txt, words' counts for swiping) | https://downloads.tatoeba.org/exports/per_language/eng/eng_sentences.tsv.bz2 | CC BY 2.0 FR | Tatoeba contributors |
+| Unihan Readings, kHanyuPinlu (characters' counts by reading, from 现代汉语频率词典) | keyboard (zh_table: single characters' priors) | https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip | Unicode License v3 | Unicode, Inc. |
+| Unicode emoji-test.txt (the emoji and their order) | keyboard (Tables.ag emoji_table: install/share/keyboard/emoji.txt) | https://unicode.org/Public/emoji/latest/emoji-test.txt | Unicode License v3 | Unicode, Inc. |
 | Linux kernel source (6.18, 6.12: the build page's choices) | os-bootstrap (fetched by its build page) | https://cdn.kernel.org/pub/linux/kernel/v6.x/ | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
 | Kernel configuration (os-bootstrap/linux.config, begun from Ubuntu's 6.17 config) | os-bootstrap | /boot/config-6.17.0-40-generic (Ubuntu 24.04) | GPL-2.0-only (part of the kernel build) | Canonical and the Ubuntu kernel team |
 | NVIDIA open GPU kernel modules 610.57.04 | os-bootstrap (fetched by its build page) | https://github.com/NVIDIA/open-gpu-kernel-modules | MIT OR GPL-2.0-only | NVIDIA Corporation |
@@ -135,25 +144,49 @@ Keep it in step with the imports.
 | RVC v2 base generator and discriminator, 40 kHz with pitch (f0G40k.pth, f0D40k.pth) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | RMVPE pitch model (rmvpe.pt) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | RVC-Project |
 | Blender 4.5.14 LTS (Linux x64 release; run as a program, not linked) | aeon (blend.py reads .blend files into a project folder) | https://download.blender.org/release/Blender4.5/ | GPL-3.0-or-later | the Blender Foundation and the Blender community |
+| Sober 1.8.0 (Flatpak from Flathub, with its GNOME 51 runtime; run as a program, not linked) | featured/sober (install/lib/flatpak, install/bin/sober) | https://sober.vinegarhq.org | proprietary (https://sober.vinegarhq.org/notice.txt); runs Roblox's Android client under Roblox's terms | the Vinegar team; Roblox Corporation |
 | HuBERT base content encoder (hubert_base/pytorch_model.bin + config.json) | composer | https://huggingface.co/lj1995/VoiceConversionWebUI | MIT | Meta AI (fairseq), as shipped by RVC-Project |
 | Kokoro English TTS model (kokoro-en-v0_19) | speech | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2 | Apache-2.0 | hexgrad (Kokoro-82M), packaged by k2-fsa |
 | silver LICENSE | features (an import test) | https://raw.githubusercontent.com/ar-visions/silver/master/LICENSE | this repository's own | ar-visions |
 | WPE WebKit 2.54.0 | aura | https://wpewebkit.org/releases/wpewebkit-2.54.0.tar.xz | LGPL-2.1-or-later and BSD-2-Clause (per file) | Apple, Igalia and the WebKit contributors |
 | Ruby 3.3.6 (build tool) | aura | https://cache.ruby-lang.org/pub/ruby/3.3/ruby-3.3.6.tar.gz | Ruby License or BSD-2-Clause | Yukihiro Matsumoto and the Ruby contributors |
 | unifdef 2.12 (build tool) | aura | https://dotat.at/prog/unifdef/unifdef-2.12.tar.gz | BSD-2-Clause | Tony Finch and contributors |
-| pkgconf 2.3.0 (build tool) | aura | https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz | ISC | Ariadne Conill and contributors |
-| Meson 1.8.3 (build tool) | aura | https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz | Apache-2.0 | The Meson development team |
-| libgpg-error 1.51 | aura | https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH |
-| libgcrypt 1.11.0 | aura | https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH and the Free Software Foundation |
+| pkgconf 2.3.0 (build tool) | aura, featured/wine | https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz | ISC | Ariadne Conill and contributors |
+| Meson 1.8.3 (build tool) | aura, featured/wine | https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz | Apache-2.0 | The Meson development team |
+| libgpg-error 1.51 | aura, featured/wine | https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.51.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH |
+| libgcrypt 1.11.0 | aura, featured/wine | https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.0.tar.bz2 | LGPL-2.1-or-later | g10 Code GmbH and the Free Software Foundation |
 | libtasn1 4.19.0 | aura | https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz | LGPL-2.1-or-later | Free Software Foundation |
 | libpsl 0.21.5 | aura | https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz | MIT | Tim Rühsen and contributors |
 | nghttp2 1.64.0 | aura | https://github.com/nghttp2/nghttp2/releases/download/v1.64.0/nghttp2-1.64.0.tar.xz | MIT | Tatsuhiro Tsujikawa and contributors |
-| GLib 2.84.4 | aura, featured/gedit (with its GIRs) | https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz | LGPL-2.1-or-later | The GLib developers (GNOME) |
+| GLib 2.84.4 | aura, featured/gedit (with its GIRs), featured/wine | https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz | LGPL-2.1-or-later | The GLib developers (GNOME) |
 | libsoup 3.6.5 | aura | https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz | LGPL-2.0-or-later | The libsoup developers (GNOME) |
 | glib-networking 2.80.1 | aura | https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz | LGPL-2.1-or-later | The glib-networking developers (GNOME) |
 | gobject-introspection 1.84.0 | featured/gedit | https://download.gnome.org/sources/gobject-introspection/1.84/gobject-introspection-1.84.0.tar.xz | LGPL-2.0-or-later (library), GPL-2.0-or-later (tools) | The GObject Introspection developers (GNOME) |
 | gsettings-desktop-schemas 47.1 | featured/gedit | https://download.gnome.org/sources/gsettings-desktop-schemas/47/gsettings-desktop-schemas-47.1.tar.xz | LGPL-2.1-or-later | GNOME |
 | enchant 2.8.2 | featured/gedit | https://github.com/rrthomas/enchant/releases/download/v2.8.2/enchant-2.8.2.tar.gz | LGPL-2.1-or-later | The Enchant developers |
+| bison 3.8.2 (build tool) | featured/wine (Wine) | https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz | GPL-3.0-or-later (its generated parsers: the Bison exception) | The Free Software Foundation |
+| flex 2.6.4 (build tool) | featured/wine (Wine) | https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz | BSD-2-Clause-style (flex license) | Vern Paxson and the flex contributors |
+| CMake 3.31.6 (build tool) | featured/wine (every cmake import after it) | https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6.tar.gz | BSD-3-Clause | Kitware and contributors |
+| libffi 3.4.6 | featured/wine (GLib, Wayland) | https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz | MIT | Anthony Green and contributors |
+| Expat 2.6.4 | featured/wine (fontconfig, D-Bus, Wayland's scanner) | https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz | MIT | James Clark, Sebastian Pipping and contributors |
+| libxml2 2.13.5 | featured/wine (xkbregistry's layout lists) | https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.5.tar.xz | MIT | Daniel Veillard, Nick Wellnhofer and contributors |
+| Wayland 1.23.1 (client, scanner) | featured/wine (Wine's Wayland driver) | https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.23.1/downloads/wayland-1.23.1.tar.xz | MIT | Kristian Høgsberg and the Wayland contributors |
+| xkeyboard-config 2.43 (data) | featured/wine (the keyboard layouts libxkbcommon reads) | https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.43.tar.xz | MIT-style (see its COPYING) | The X.Org Foundation and contributors |
+| Fontconfig 2.15.0 | featured/wine (Wine's font list) | https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz | MIT-style (HPND, see its COPYING) | Keith Packard and the Fontconfig contributors |
+| PulseAudio 17.0 (client library only) | featured/wine (winepulse; PipeWire answers it) | https://www.freedesktop.org/software/pulseaudio/releases/pulseaudio-17.0.tar.xz | LGPL-2.1-or-later | The PulseAudio developers |
+| D-Bus 1.16.2 (libdbus-1 only) | featured/wine (Wine's mount manager) | https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz | AFL-2.1 OR GPL-2.0-or-later | Red Hat, Havoc Pennington and contributors |
+| libudev-zero 1.0.3 | featured/wine (Wine's device events: game pads) | https://github.com/illiliti/libudev-zero/archive/refs/tags/1.0.3.tar.gz | ISC | illiliti and contributors |
+| libglvnd 1.7.0 (featured/wine/libglvnd.diff: the driver's vendor folders) | featured/wine (EGL for Wine's OpenGL) | https://gitlab.freedesktop.org/glvnd/libglvnd/-/archive/v1.7.0/libglvnd-v1.7.0.tar.gz | MIT-style (see its README) | NVIDIA and the libglvnd contributors |
+| SDL2 2.30.11 (joysticks and game controllers only) | featured/wine (Wine's game pad bus) | https://github.com/libsdl-org/SDL/releases/download/release-2.30.11/SDL2-2.30.11.tar.gz | Zlib | Sam Lantinga and contributors |
+| xorgproto 2024.1 (headers) | featured/wine (libX11's configure) | https://www.x.org/releases/individual/proto/xorgproto-2024.1.tar.xz | MIT-style (see its COPYING files) | The X.Org Foundation |
+| xtrans 1.5.2 (headers) | featured/wine (libX11's configure) | https://www.x.org/releases/individual/lib/xtrans-1.5.2.tar.xz | MIT-style | The X.Org Foundation |
+| libXau 1.0.12 | featured/wine (libxcb) | https://www.x.org/releases/individual/lib/libXau-1.0.12.tar.xz | MIT-style | The X.Org Foundation |
+| xcb-proto 1.17.0 | featured/wine (libxcb's generator) | https://www.x.org/releases/individual/proto/xcb-proto-1.17.0.tar.xz | MIT-style | Bart Massey, Jamey Sharp and the XCB contributors |
+| libxcb 1.17.0 | featured/wine (libX11, the Vulkan loader) | https://www.x.org/releases/individual/lib/libxcb-1.17.0.tar.xz | MIT-style | Bart Massey, Jamey Sharp and the XCB contributors |
+| libX11 1.8.10 | featured/wine (the Vulkan loader's X11 support; its compose tables for libxkbcommon: dead keys in Wine) | https://www.x.org/releases/individual/lib/libX11-1.8.10.tar.xz | MIT-style (see its COPYING) | The X.Org Foundation and contributors |
+| libXext 1.3.6 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXext-1.3.6.tar.xz | MIT-style | The X.Org Foundation |
+| libXrender 0.9.12 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXrender-0.9.12.tar.xz | MIT-style | The X.Org Foundation |
+| libXrandr 1.5.4 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXrandr-1.5.4.tar.xz | MIT-style | The X.Org Foundation |
 
 ## Scene assets (fetched at `silver --export scenes`, never committed)
 
@@ -169,6 +202,15 @@ Keep it in step with the imports.
 | Fir Tree 01 (fir_tree_01), glTF 1k + twig alpha | scenes/baked/earth-fir_tree_01-{color,height,normal}.png | https://polyhaven.com/a/fir_tree_01 | Poly Haven | CC0 1.0 |
 | Island Tree 01 (island_tree_01), glTF 1k + leaves alpha | scenes/baked/earth-island_tree_01-{color,height,normal}.png; its leaves scattered into scenes/baked/earth-foliage.png | https://polyhaven.com/a/island_tree_01 | Poly Haven | CC0 1.0 |
 | Island Tree 02 (island_tree_02), glTF 1k + leaves alpha | scenes/baked/earth-island_tree_02-{color,height,normal}.png | https://polyhaven.com/a/island_tree_02 | Poly Haven | CC0 1.0 |
+
+## Aircraft models (downloaded by hand, never committed)
+
+| model | used as | source | credit | license |
+|---|---|---|---|---|
+| Grumman F-14D "Super Tomcat" (glb, 408k triangles, 17 textures) | flightsim/models/f14/f14.glb: the F-14, its cockpit and instruments | https://skfb.ly/pCz6Z | "Grumman F-14D "Super Tomcat"" by KOG_THORNS | CC BY 4.0 |
+| Gerald R Ford aircraft Carrier (glb, 158 meshes, 30 textures) | flightsim/models/ford/ford.glb: the carrier the F-14 starts on | https://sketchfab.com/3d-models/gerald-r-ford-aircraft-carrier-562bf516e1494df38d8f222504dc798b | "Gerald R Ford aircraft Carrier" by waelXcm | CC BY 4.0 |
+| AIM-54 Phoenix Missile (glb, 6 meshes, colours only) | flightsim/models/aim54/aim54.glb: the four Phoenixes under the F-14 | https://sketchfab.com/3d-models/aim-54-phoenix-missile-5d9008de99e7422c97a39e3cff8f2d6c | "AIM-54 Phoenix Missile" by cs11115 | CC BY 4.0 |
+| MiG-29 - Fighter Jet - Free (glb, 34k triangles) | flightsim/models/mig29/mig29.glb: the bandit the F-14 locks onto | https://sketchfab.com/3d-models/mig-29-fighter-jet-free-0a21787096244220b246ec8747e7b09c | "MiG-29 - Fighter Jet - Free" by bohmerang | CC BY-NC-SA 4.0 (non-commercial; never ship it) |
 
 ## Notes on the copyleft entries
 

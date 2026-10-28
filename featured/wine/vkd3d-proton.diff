@@ -1,0 +1,74 @@
+diff --git a/include/private/vkd3d_atomic.h b/include/private/vkd3d_atomic.h
+index 01a8f47..06cadef 100644
+--- a/include/private/vkd3d_atomic.h
++++ b/include/private/vkd3d_atomic.h
+@@ -21,7 +21,7 @@
+ 
+ #include <stdint.h>
+ 
+-#if defined(_MSC_VER)
++#if defined(_MSC_VER) && !defined(__clang__)
+ 
+ # include <intrin.h>
+ 
+@@ -246,7 +246,7 @@ static inline uint64_t vkd3d_atomic_uint64_compare_exchange(UINT64* target, uint
+     return expected;
+ }
+ 
+-# ifndef __MINGW32__
++# ifndef _WIN32
+ #  define InterlockedIncrement(target)                            vkd3d_atomic_uint32_increment(target, vkd3d_memory_order_seq_cst)
+ #  define InterlockedDecrement(target)                            vkd3d_atomic_uint32_decrement(target, vkd3d_memory_order_seq_cst)
+ #  define InterlockedCompareExchange(target, desired, expected)   vkd3d_atomic_uint32_compare_exchange(target, expected, desired, vkd3d_memory_order_seq_cst, vkd3d_memory_order_acquire)
+diff --git a/include/vkd3d_win32.h b/include/vkd3d_win32.h
+index 4e5b5bd..98b7d18 100644
+--- a/include/vkd3d_win32.h
++++ b/include/vkd3d_win32.h
+@@ -29,7 +29,7 @@
+ #include "private/vulkan_private_extensions.h"
+ 
+ /* Upstream MinGW headers don't have all DXGI_FORMAT types, force our own header. */
+-#ifdef __MINGW32__
++#if defined(__MINGW32__) || defined(__clang__)
+ #include <vkd3d_dxgiformat.h>
+ #define __dxgiformat_h__
+ #endif
+diff --git a/libs/d3d12/meson.build b/libs/d3d12/meson.build
+index d99da14..0539f32 100644
+--- a/libs/d3d12/meson.build
++++ b/libs/d3d12/meson.build
+@@ -17,7 +17,7 @@ else
+   d3d12_dependencies = [ vkd3d_common_dep, lib_dl, d3d12core_dep ]
+ endif
+ 
+-d3d12_needs_defs = (not vkd3d_is_msvc) and (vkd3d_platform == 'windows')
++d3d12_needs_defs = (vkd3d_compiler.get_linker_id() not in [ 'link', 'lld-link' ]) and (vkd3d_platform == 'windows')
+ 
+ d3d12_lib = shared_library(d3d12_name_prefix + 'd3d12', d3d12_src,
+   name_prefix         : '',
+diff --git a/libs/d3d12core/meson.build b/libs/d3d12core/meson.build
+index dd1f779..7b25832 100644
+--- a/libs/d3d12core/meson.build
++++ b/libs/d3d12core/meson.build
+@@ -11,7 +11,7 @@ else
+   d3d12core_dependencies = [ vkd3d_dep, lib_dl ]
+ endif
+ 
+-d3d12core_needs_defs = (not vkd3d_is_msvc) and (vkd3d_platform == 'windows')
++d3d12core_needs_defs = (vkd3d_compiler.get_linker_id() not in [ 'link', 'lld-link' ]) and (vkd3d_platform == 'windows')
+ 
+ d3d12core_lib = shared_library(d3d12core_name_prefix + 'd3d12core', d3d12core_src,
+   name_prefix         : '',
+diff --git a/meson.build b/meson.build
+index 3822f44..60438f6 100644
+--- a/meson.build
++++ b/meson.build
+@@ -155,7 +155,7 @@ if vkd3d_platform == 'windows'
+   if vkd3d_compiler.has_link_argument('-static-libstdc++')
+     add_global_link_arguments('-static-libstdc++', language : [ 'cpp' ])
+   endif
+-  if vkd3d_compiler.has_link_argument('/NOIMPLIB')
++  if vkd3d_compiler.get_argument_syntax() == 'msvc' and vkd3d_compiler.has_link_argument('/NOIMPLIB')
+     add_global_link_arguments('/NOIMPLIB', language : [ 'c', 'cpp' ])
+   endif
+   if not vkd3d_is_clang and vkd3d_compiler.has_link_argument('/NOEXP')

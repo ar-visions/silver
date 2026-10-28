@@ -60,6 +60,16 @@ static char* realpath(const char* p, char* out) {
 extern char** environ;
 static char cmdline[4096];
 
+// a name=value word into environ (nolibc has no setenv)
+static void env_add(char* kv) {
+    static char* env[64];
+    int n = 0;
+    for (; environ && environ[n] && n < 62; n++) env[n] = environ[n];
+    env[n++] = kv;
+    env[n] = NULL;
+    environ = env;
+}
+
 // pid 1 must never return: say why and wait
 static void die(const char* why, const char* what) {
     fprintf(stderr, "orbiter-os init: %s %s\n", why, what ? what : "");
@@ -314,7 +324,7 @@ static int find_ntfs(unsigned long long want, char* dev, size_t cap) {
 static int loop_attach(const char* file, char* dev, size_t cap) {
     int ctl = open("/dev/loop-control", O_RDWR);
     if (ctl < 0) return 0;
-    int n = ioctl(ctl, LOOP_CTL_GET_FREE);
+    int n = ioctl(ctl, LOOP_CTL_GET_FREE, 0);
     close(ctl);
     if (n < 0) return 0;
     snprintf(dev, cap, "/dev/loop%d", n);
@@ -393,6 +403,11 @@ static void phone_gadget(const char* product) {
     char to[200];
     snprintf(to, sizeof to, "%s/configs/c.1/acm.gs0", g);
     snprintf(p, sizeof p, "%s/functions/acm.gs0", g);
+    symlink(p, to);
+    // a second port: a shell (the PC's next ttyACM)
+    snprintf(p, sizeof p, "%s/functions/acm.gs1", g);
+    mkdir(p, 0755);
+    snprintf(to, sizeof to, "%s/configs/c.1/acm.gs1", g);
     symlink(p, to);
     // the phone's USB controller, once its module has made it
     for (int i = 0; i < 50 && !udc[0]; i++) {
@@ -631,6 +646,31 @@ static void net_start(const char* init) {}
 static void session_start(void) {}
 #endif
 
+// bash on the phone's second USB port, to look in and set it up;
+// started again whenever it ends
+static void phone_shell(void) {
+    if (access("/dev/ttyGS1", F_OK)) return;
+    if (fork() != 0) return;
+    for (;;) {
+        pid_t s = fork();
+        if (s == 0) {
+            setsid();
+            int t = open("/dev/ttyGS1", O_RDWR);
+            if (t < 0) _exit(1);
+            ioctl(t, TIOCSCTTY, 0);
+            dup2(t, 0);
+            dup2(t, 1);
+            dup2(t, 2);
+            if (t > 2) close(t);
+            char* sh[] = { "/bin/bash", "-l", NULL };
+            execve(sh[0], sh, environ);
+            _exit(127);
+        }
+        if (s > 0) waitpid(s, NULL, 0);
+        sleep(1);
+    }
+}
+
 // orbiter starts in silver's folder: orbiter.init up to /install/
 static void work_folder(const char* init) {
     static const char key[] = "/install/";
@@ -702,6 +742,9 @@ int main(void) {
     // a phone: its boot modules, then the USB log port
     char phone[64];
     if (arg("orbiter.phone", phone, sizeof phone)) {
+        static char mobile[96];
+        snprintf(mobile, sizeof mobile, "SILVER_MOBILE=%s", phone);
+        env_add(mobile);
         phone_ramdisk();
         phone_gadget(phone);
     }
@@ -781,10 +824,24 @@ int main(void) {
     load_hardware();
     // devices made by the first pass's drivers (usb hid devices)
     load_hardware();
+    // evdev matches no device id, so the passes never load it, and
+    // without it no input device has an event node to read
+    char* ev[] = { MODPROBE, "-q", "evdev", NULL };
+    run(ev);
+    // a phone's root grows to its whole partition (the install writes
+    // it just big enough); nothing to do once it fills it. never a
+    // PC's: there the root is a folder in someone's partition
+    char ph[64];
+    if (!in_ntfs && arg("orbiter.phone", ph, sizeof ph) && dev[0]
+        && access("/usr/sbin/resize2fs", X_OK) == 0) {
+        char* rs[] = { "/usr/sbin/resize2fs", dev, NULL };
+        run(rs);
+    }
     load_modules();
     swap_on();
     net_start(init);
     session_start();
+    phone_shell();
 
     // orbiter.args=--install,true: init's arguments, by comma
     char args[1024];

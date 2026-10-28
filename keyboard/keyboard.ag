@@ -1,0 +1,2159 @@
+# keyboard: on-screen input devices; trinity sees only what they type
+export 0.1.0
+export software ['everyday']
+
+import vec
+import img
+import trinity
+import speech
+import <stdio.h>
+import <math.h>
+import <ft2build.h, freetype/freetype.h>
+    -I{install}/include/freetype2
+    -lfreetype
+
+import Tables
+
+# the linguistic databases the keyboard's tables are made from
+# (Tables.ag, at the build), kept under build/keyboard-data:
+# JMdict, Japanese words, readings, classes, frequency marks (EDRDG)
+import http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz
+    > mkdir -p {install}/build/keyboard-data {install}/share/keyboard
+    > cp {import_file} {install}/build/keyboard-data/JMdict_e.gz
+    > gunzip -f {install}/build/keyboard-data/JMdict_e.gz
+
+# the Tanaka corpus's word indices: Japanese sentences as JMdict words
+import https://downloads.tatoeba.org/exports/jpn_indices.tar.bz2
+    > mkdir -p {install}/build/keyboard-data
+    > tar xjf {import_file} -C {install}/build/keyboard-data
+
+# CC-CEDICT: Chinese words, simplified and traditional, with pinyin
+import https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz
+    > mkdir -p {install}/build/keyboard-data
+    > cp {import_file} {install}/build/keyboard-data/cedict.txt.gz
+    > gunzip -f {install}/build/keyboard-data/cedict.txt.gz
+
+# Tatoeba's Mandarin sentences, for the words' counts and pairs
+import https://downloads.tatoeba.org/exports/per_language/cmn/cmn_sentences.tsv.bz2
+    > mkdir -p {install}/build/keyboard-data
+    > cp {import_file} {install}/build/keyboard-data/cmn.tsv.bz2
+    > bunzip2 -f {install}/build/keyboard-data/cmn.tsv.bz2
+
+# Unicode's Unihan: kHanyuPinlu, characters' counts by reading
+import https://www.unicode.org/Public/UCD/latest/ucd/Unihan.zip
+    > mkdir -p {install}/build/keyboard-data
+    > unzip -o -q {import_file} Unihan_Readings.txt -d {install}/build/keyboard-data
+
+# Tatoeba's English sentences: English words' counts, for swiping
+import https://downloads.tatoeba.org/exports/per_language/eng/eng_sentences.tsv.bz2
+    > mkdir -p {install}/build/keyboard-data
+    > cp {import_file} {install}/build/keyboard-data/eng.tsv.bz2
+    > bunzip2 -f {install}/build/keyboard-data/eng.tsv.bz2
+
+# Unicode's emoji list, in its order (smileys first): the emoji page
+import https://unicode.org/Public/emoji/latest/emoji-test.txt
+    > mkdir -p {install}/build/keyboard-data
+    > cp {import_file} {install}/build/keyboard-data/emoji-test.txt
+
+# a string's characters, one a string
+func chars_of [ t: string ] -> vec string
+    out : vec string []
+    i : i32 [ 0 ]
+    while [ i < t.count ]
+        nx : i32 [ utf8_next[ t, i ] ]
+        out.push[ t.mid[ i, nx - i ] ]
+        i = nx
+    return out
+
+# strings with sep between them
+func joined_by [ v: vec string, sep: string ] -> string
+    s : ''
+    for [ i: i32 0, i < v.count, i += 1 ]
+        s = (i == 0) ? v[ i ] : '{s}{sep}{v[ i ]}'
+    return s
+
+func joined [ v: vec string, from: i32, to: i32 ] -> string
+    s : ''
+    for [ i: i32 from, i < to, i += 1 ]
+        s = '{s}{v[ i ]}'
+    return s
+
+# hiragana and katakana, the same place in each
+func hiragana [] -> string
+    return joined[ vec string [] [
+        'ぁあぃいぅうぇえぉおかがきぎ', 'くぐけげこごさざしじすずせぜ', 'そぞただちぢっつづてでとどな',
+        'にぬねのはばぱひびぴふぶぷへ', 'べぺほぼぽまみむめもゃやゅゆ', 'ょよらりるれろゎわゐゑをんゔ' ], 0, 6 ]
+
+func katakana [] -> string
+    return joined[ vec string [] [
+        'ァアィイゥウェエォオカガキギ', 'クグケゲコゴサザシジスズセゼ', 'ソゾタダチヂッツヅテデトドナ',
+        'ニヌネノハバパヒビピフブプヘ', 'ベペホボポマミムメモャヤュユ', 'ョヨラリルレロヮワヰヱヲンヴ' ], 0, 6 ]
+
+# what 小゛゜ steps a kana through
+func kana_rings [] -> vec string
+    return vec string [] [
+        'あぁ', 'いぃ', 'うぅゔ', 'えぇ', 'おぉ', 'かが', 'きぎ', 'くぐ', 'けげ', 'こご',
+        'さざ', 'しじ', 'すず', 'せぜ', 'そぞ', 'ただ', 'ちぢ', 'つっづ', 'てで', 'とど',
+        'はばぱ', 'ひびぴ', 'ふぶぷ', 'へべぺ', 'ほぼぽ', 'やゃ', 'ゆゅ', 'よょ', 'わゎ' ]
+
+# the keys' own marks: left, right, back, space, wide space, close
+func glyphs [] -> vec string
+    return '←|→|⌫| |　|×'.split[ '|' ]
+
+func to_katakana [ t: string ] -> string
+    hs : vec string chars_of[ hiragana[] ]
+    ks : vec string chars_of[ katakana[] ]
+    s : ''
+    for [ c: string ] in chars_of[ t ]
+        out : string [ c ]
+        for [ i: i32 0, i < hs.count, i += 1 ]
+            if [ hs[ i ] == c ]
+                out = ks[ i ]
+                break
+        s = '{s}{out}'
+    return s
+
+# a table's lines, 'key /entry/entry/', sorted bytewise; a key's
+# entries by a search in the bytes (nothing made at load)
+class Lexicon
+    public file   : string
+    public text   : string
+    intern tried  : bool
+
+    func load []
+        tried = true
+        f : path '{path.path_install[]}/share/keyboard/{file}'
+        if [ !f.exists[] ]
+            log 'keyboard: no dictionary at {f}'
+            return
+        text = f.load[ typeid[string], null ]
+
+    # the start of the line holding the byte at i
+    func line_start [ i: i32 ] -> i32
+        n : i32 [ i ]
+        while [ n > 0 && i32[ text.chars[ n - 1 ] ] != 10 ]
+            n -= 1
+        return n
+
+    # the start of the line after the one starting at off
+    func line_next [ off: i32 ] -> i32
+        n : i32 [ off ]
+        while [ n < text.count && i32[ text.chars[ n ] ] != 10 ]
+            n += 1
+        return n + 1
+
+    # a line's key against key: below, equal, above
+    func key_cmp [ off: i32, key: string ] -> i32
+        for [ i: i32 0, i < key.count, i += 1 ]
+            c : i32 [ i32[ text.chars[ off + i ] ] & 255 ]
+            k : i32 [ i32[ key.chars[ i ] ] & 255 ]
+            if [ c == 32 || c == 10 ] return -1
+            if [ c != k ] return (c < k) ? -1 : 1
+        e : i32 [ i32[ text.chars[ off + key.count ] ] & 255 ]
+        return (e == 32) ? 0 : 1
+
+    # the entries on a line from its first slash
+    func pieces_at [ off: i32 ] -> vec string
+        out : vec string []
+        e : i32 [ off ]
+        while [ e < text.count && i32[ text.chars[ e ] ] != 10 ]
+            e += 1
+        line : string text.mid[ off, e - off ]
+        for [ w: string ] in line.split[ '/' ]
+            if [ w.count > 0 ] out.push[ w ]
+        return out
+
+    # where key's words start on its line, else -1
+    func entry [ key: string ] -> i32
+        if [ !tried ] load[]
+        if [ !text || key.count == 0 ] return -1
+        # lines in [ lo, hi ): the first one not below key
+        lo : i32 [ 0 ]
+        hi : i32 [ text.count ]
+        while [ lo < hi ]
+            off : i32 [ line_start[ (lo + hi) / 2 ] ]
+            if [ off < lo ] off = lo
+            if [ key_cmp[ off, key ] < 0 ] lo = line_next[ off ]
+            el hi = off
+        if [ lo < text.count && key_cmp[ lo, key ] == 0 ]
+            return lo + key.count + 1
+        return -1
+
+    # key's entries: 'word;cost;id' in a words table, lowest cost
+    # first; a pair's or a back off's number in a pairs table
+    public func entries [ key: string ] -> vec string
+        at : i32 [ entry[ key ] ]
+        return (at >= 0) ? pieces_at[ at ] : vec string []
+
+    # key's words alone, likeliest first
+    public func find [ key: string ] -> vec string
+        out : vec string []
+        for [ e: string ] in entries[ key ]
+            semi : i32 [ e.index_of[ ';' ] ]
+            out.push[ (semi >= 0) ? e.mid[ 0, semi ] : e ]
+        return out
+
+# the tables, one each for the process
+ja_words : Lexicon
+ja_pairs : Lexicon
+zh_words : Lexicon
+zh_pairs : Lexicon
+
+func words_of [ lang: Language ] -> Lexicon
+    if [ lang == Language.chinese ]
+        if [ !zh_words ] zh_words = Lexicon [ file: 'zh.txt' ]
+        return zh_words
+    if [ !ja_words ] ja_words = Lexicon [ file: 'ja.txt' ]
+    return ja_words
+
+func pairs_of [ lang: Language ] -> Lexicon
+    if [ lang == Language.chinese ]
+        if [ !zh_pairs ] zh_pairs = Lexicon [ file: 'zh-pairs.txt' ]
+        return zh_pairs
+    if [ !ja_pairs ] ja_pairs = Lexicon [ file: 'ja-pairs.txt' ]
+    return ja_pairs
+
+# the cost of word b after word a: the pair's own when it was seen,
+# else a's back off; a character kept as typed pairs with nothing
+func pair_cost [ pr: Lexicon, a: string, b: string ] -> i64
+    if [ a.count == 0 || b.count == 0 ] return 0
+    seen : vec string pr.entries[ '{a}\t{b}' ]
+    if [ seen.count > 0 ] return i64[ seen[ 0 ] ]
+    back : vec string pr.entries[ '{a}\t' ]
+    return (back.count > 0) ? i64[ back[ 0 ] ] : 0
+
+# a reading's likeliest words, as far as they reach (Viterbi): the
+# letters (pinyin) or kana split every way they make words, each
+# split's cost its words' and its pairs', the best 8 kept at each
+# place. n: the characters used; '' when no more than one word.
+# A character kept as typed: pinyin letters dearly (they cannot
+# stay), kana less (a word the tables lack)
+func sentence [ rc: vec string, lang: Language, n: ref i32 ] -> string
+    zh  : bool [ lang == Language.chinese ]
+    lex : Lexicon words_of[ lang ]
+    prs : Lexicon pairs_of[ lang ]
+    len : i32 [ rc.count ]
+    keep : i64 [ (zh) ? 4000 : 1500 ]
+    at   : vec i32 []
+    end  : vec i32 []
+    word : vec string []
+    id   : vec string []
+    cost : vec i64 []
+    best : vec i64 []
+    prev : vec i32 []
+    for [ i: i32 0, i < len, i += 1 ]
+        at.push[ i ]
+        end.push[ i + 1 ]
+        word.push[ rc[ i ] ]
+        id.push[ '' ]
+        cost.push[ keep ]
+        best.push[ -1 ]
+        prev.push[ -1 ]
+        for [ j: i32 i + 1, j <= len && j <= i + 16, j += 1 ]
+            k : i32 [ 0 ]
+            for [ e: string ] in lex.entries[ joined[ rc, i, j ] ]
+                if [ k >= 6 ] break
+                ps : vec string e.split[ ';' ]
+                if [ ps.count < 3 ] continue
+                at.push[ i ]
+                end.push[ j ]
+                word.push[ ps[ 0 ] ]
+                id.push[ ps[ 2 ] ]
+                cost.push[ i64[ ps[ 1 ] ] ]
+                best.push[ -1 ]
+                prev.push[ -1 ]
+                k += 1
+    nodes : i32 [ at.count ]
+    beam  : vec i32 []
+    place : i32 [ -1 ]
+    for [ x: i32 0, x < nodes, x += 1 ]
+        p : i32 [ at[ x ] ]
+        if [ p == 0 ]
+            best[ x ] = cost[ x ] + pair_cost[ prs, "^", id[ x ] ]
+            continue
+        # the 8 best words ending where this one starts
+        if [ p != place ]
+            place = p
+            beam = vec i32 []
+            for [ y: i32 0, y < x, y += 1 ]
+                if [ end[ y ] != p || best[ y ] < 0 ] continue
+                beam.push[ y ]
+                q : i32 [ beam.count - 1 ]
+                while [ q > 0
+                        && best[ beam[ q - 1 ] ] > best[ beam[ q ] ] ]
+                    t : i32 [ beam[ q ] ]
+                    beam[ q ] = beam[ q - 1 ]
+                    beam[ q - 1 ] = t
+                    q -= 1
+                if [ beam.count > 8 ] beam.pop[]
+        for [ y: i32 ] in beam
+            c : i64 [ best[ y ] + cost[ x ]
+                + pair_cost[ prs, id[ y ], id[ x ] ] ]
+            if [ best[ x ] < 0 || c < best[ x ] ]
+                best[ x ] = c
+                prev[ x ] = y
+    last : i32 [ -1 ]
+    lc   : i64 [ -1 ]
+    for [ x: i32 0, x < nodes, x += 1 ]
+        if [ end[ x ] != len || best[ x ] < 0 ] continue
+        c : i64 [ best[ x ] + pair_cost[ prs, id[ x ], "$" ] ]
+        if [ lc < 0 || c < lc ]
+            lc = c
+            last = x
+    path : vec i32 []
+    for [ x: i32 last, x >= 0, x = prev[ x ] ]
+        path.push[ x ]
+    out    : ''
+    pieces : i32 [ 0 ]
+    made   : i32 [ 0 ]
+    n[ 0 ] = 0
+    for [ q: i32 path.count - 1, q >= 0, q -= 1 ]
+        x : i32 [ path[ q ] ]
+        # a pinyin letter left over: the sentence ends before it
+        if [ zh && id[ x ].count == 0 ] break
+        out = '{out}{word[ x ]}'
+        pieces += 1
+        if [ id[ x ].count > 0 ] made += 1
+        n[ 0 ] = end[ x ]
+    if [ pieces < 2 || made == 0 ] return ''
+    return out
+
+# the languages a keyboard offers beside English (its primary)
+func second_languages [] -> vec string
+    out : vec string []
+    et : Au_t typeid[ Language ]
+    for [ k: i32 0, k < et.members.count, k += 1 ]
+        ev : Au_t et.members.origin[ k ]
+        if [ !ev || ev.member_type != AU_MEMBER_ENUMV ] continue
+        name : string [ ev.ident ]
+        if [ name != 'english' ] out.push[ name ]
+    return out
+
+# a language as its key names it
+func language_label [ name: string ] -> string
+    if [ name == 'english' ] return 'EN'
+    if [ name == 'japanese' ] return '日本語'
+    if [ name == 'chinese' ] return '中文'
+    return name
+
+# a language as read in its own script and in English (日本語 Japanese)
+func language_title [ name: string ] -> string
+    first : string name.mid[ 0, 1 ].ucase[]
+    en : string '{first}{name.mid[ 1, name.count - 1 ]}'
+    own : string language_label[ name ]
+    if [ own == name ] return en
+    return '{own} {en}'
+
+# the languages added beside English, by name
+# (one list for the process: a keyboard mounts and goes)
+lang_slots : vec string
+
+# the added languages kept across starts ('none': none added)
+class KeyLanguages
+    public [ StatePersist ] added : string [ 'japanese|chinese' ]
+    # the letters' keys: 'qwerty', or 'flick' (12 keys)
+    public [ StatePersist ] letters : string [ 'qwerty' ]
+
+lang_kept : KeyLanguages
+
+func kept_prefs [] -> KeyLanguages
+    if [ !lang_kept ]
+        lang_kept = KeyLanguages []
+        state_persist_load[ lang_kept ]
+    return lang_kept
+
+func qwerty_on [] -> bool
+    return kept_prefs[].letters != 'flick'
+
+func set_qwerty [ on: bool ]
+    kl : KeyLanguages kept_prefs[]
+    kl.letters = (on) ? 'qwerty' : 'flick'
+    state_persist_store[ kl ]
+
+func added_languages [] -> vec string
+    if [ !lang_slots ]
+        kl : KeyLanguages kept_prefs[]
+        lang_slots = vec string []
+        for [ n: string ] in kl.added.split[ '|' ]
+            for [ o: string ] in second_languages[]
+                if [ o == n ] lang_slots.push[ n ]
+    return lang_slots
+
+# the added languages written, for the next start
+func save_languages []
+    kl : KeyLanguages kept_prefs[]
+    kl.added = (lang_slots.count > 0)
+        ? joined_by[ lang_slots, '|' ] : 'none'
+    state_persist_store[ kl ]
+
+# any language added: a PC then shows the keyboard's bar
+func languages_added [] -> bool
+    return added_languages[].count > 0
+
+# a language is added
+func language_added [ name: string ] -> bool
+    for [ o: string ] in added_languages[]
+        if [ o == name ] return true
+    return false
+
+# romaji to kana, a hardware keyboard's Japanese ('ka:か')
+func romaji [] -> vec string
+    return vec string [] [
+        'a:あ', 'i:い', 'u:う', 'e:え', 'o:お', 'ka:か', 'ki:き', 'ku:く',
+        'ke:け', 'ko:こ', 'sa:さ', 'si:し', 'su:す', 'se:せ', 'so:そ',
+        'ta:た', 'ti:ち', 'tu:つ', 'te:て', 'to:と', 'na:な', 'ni:に',
+        'nu:ぬ', 'ne:ね', 'no:の', 'ha:は', 'hi:ひ', 'hu:ふ', 'he:へ',
+        'ho:ほ', 'ma:ま', 'mi:み', 'mu:む', 'me:め', 'mo:も', 'ra:ら',
+        'ri:り', 'ru:る', 're:れ', 'ro:ろ', 'ga:が', 'gi:ぎ', 'gu:ぐ',
+        'ge:げ', 'go:ご', 'za:ざ', 'zi:じ', 'zu:ず', 'ze:ぜ', 'zo:ぞ',
+        'da:だ', 'di:ぢ', 'du:づ', 'de:で', 'do:ど', 'ba:ば', 'bi:び',
+        'bu:ぶ', 'be:べ', 'bo:ぼ', 'pa:ぱ', 'pi:ぴ', 'pu:ぷ', 'pe:ぺ',
+        'po:ぽ', 'kya:きゃ', 'kyu:きゅ', 'kyo:きょ', 'nya:にゃ', 'nyu:にゅ',
+        'nyo:にょ', 'hya:ひゃ', 'hyu:ひゅ', 'hyo:ひょ', 'mya:みゃ', 'myu:みゅ',
+        'myo:みょ', 'rya:りゃ', 'ryu:りゅ', 'ryo:りょ', 'gya:ぎゃ', 'gyu:ぎゅ',
+        'gyo:ぎょ', 'bya:びゃ', 'byu:びゅ', 'byo:びょ', 'pya:ぴゃ', 'pyu:ぴゅ',
+        'pyo:ぴょ', 'sya:しゃ', 'syu:しゅ', 'syo:しょ', 'tya:ちゃ', 'tyu:ちゅ',
+        'tyo:ちょ', 'zya:じゃ', 'zyu:じゅ', 'zyo:じょ', 'dya:ぢゃ', 'dyu:ぢゅ',
+        'dyo:ぢょ', 'shi:し', 'chi:ち', 'tsu:つ', 'fu:ふ', 'ji:じ', 'ya:や',
+        'yu:ゆ', 'yo:よ', 'wa:わ', 'wo:を', 'nn:ん', 'xa:ぁ', 'xi:ぃ',
+        'xu:ぅ', 'xe:ぇ', 'xo:ぉ', 'xtu:っ', 'xya:ゃ', 'xyu:ゅ', 'xyo:ょ',
+        '-:ー', 'ja:じゃ', 'ju:じゅ', 'jo:じょ', 'sha:しゃ', 'shu:しゅ',
+        'sho:しょ', 'cha:ちゃ', 'chu:ちゅ', 'cho:ちょ' ]
+
+func romaji_kana [ r: string ] -> string
+    for [ p: string ] in romaji[]
+        c : i32 [ p.index_of[ ':' ] ]
+        if [ p.mid[ 0, c ] == r ] return p.mid[ c + 1, p.count - c - 1 ]
+    return ''
+
+# a romaji that more letters may still finish
+func romaji_starts [ r: string ] -> bool
+    for [ p: string ] in romaji[]
+        c : i32 [ p.index_of[ ':' ] ]
+        if [ c > r.count && p.mid[ 0, r.count ] == r ] return true
+    return false
+
+# one key: its characters (tap, left, up, right, down) or its job
+class FKey
+    public outs  : vec string
+    # 0 characters, 1 back, 2 left, 3 right, 4 space, 5 enter,
+    # 6 numbers, 7 language, 8 小゛゜ or a/A, 9 special characters,
+    # 10 none (a place a flick's way shows on)
+    public kind  : i32
+    public col   : i32
+    public row   : i32
+    public rows  : i32 [ 1 ]
+    # a qwerty key's place and width, shares of the width (w 0:
+    # the flick grid's col)
+    public x     : f32
+    public w     : f32
+
+func flick_key [ spec: string, col: i32, row: i32 ] -> FKey
+    return FKey [ outs: spec.split[ '|' ], kind: 0, col: col,
+        row: row ]
+
+func job_key [ kind: i32, col: i32, row: i32, rows: i32 ] -> FKey
+    return FKey [ outs: vec string [], kind: kind, col: col,
+        row: row, rows: rows ]
+
+# the 12 keys of a language, or of numbers, with the jobs round them
+func flick_layout [ lang: Language, numbers: bool ] -> vec FKey
+    sp : vec string []
+    if [ numbers ]
+        sp = vec string [] [
+            '1|☆|♪|→', '2|¥|$|€', '3|%|°|#', '4|○|*|・', '5|+|×|÷',
+            '6|<|=|>', '7|「|」|:', '8|〒|々|〆', '9|^|`|~', '(|)|[|]',
+            '0|〜|…', '.|', '|-|/' ]
+    el [ lang == Language.japanese ]
+        sp = vec string [] [
+            'あ|い|う|え|お', 'か|き|く|け|こ', 'さ|し|す|せ|そ', 'た|ち|つ|て|と',
+            'な|に|ぬ|ね|の', 'は|ひ|ふ|へ|ほ', 'ま|み|む|め|も', 'や|（|ゆ|）|よ',
+            'ら|り|る|れ|ろ', '-', 'わ|を|ん|ー', '、|。|？|！' ]
+    el
+        sp = vec string [] [
+            '@|#|/|&|_', 'a|b|c', 'd|e|f', 'g|h|i', 'j|k|l', 'm|n|o',
+            'p|q|r|s', 't|u|v', 'w|x|y|z', '-', '\'|"|(|)',
+            '.|,|?|!' ]
+    ks : vec FKey []
+    for [ i: i32 0, i < 12, i += 1 ]
+        col : i32 [ 1 + i % 3 ]
+        row : i32 [ i / 3 ]
+        # the place of 小゛゜ (a/A in English)
+        if [ sp[ i ] == '-' ]
+            ks.push[ job_key[ 8, col, row, 1 ] ]
+            # English a/A: up is upper case on, down off
+            if [ lang == Language.english && !numbers ]
+                ks[ ks.count - 1 ].outs = '||A||a'.split[ '|' ]
+        # the numbers' ( key: the special characters
+        el [ numbers && i == 9 ] ks.push[ job_key[ 9, col, row, 1 ] ]
+        el ks.push[ flick_key[ sp[ i ], col, row ] ]
+    flick_jobs[ ks ]
+    return ks
+
+# the emoji page: the numbers' keys, the grid where 1 to 9 are
+func emoji_layout [ lang: Language ] -> vec FKey
+    ks : vec FKey []
+    for [ k: FKey ] in flick_layout[ lang, true ]
+        digit : bool [ k.kind == 0 && k.w == 0.0 && k.row <= 2
+            && k.col >= 1 && k.col <= 3 ]
+        if [ !digit ] ks.push[ k ]
+    return ks
+
+# the jobs round the 12 keys: arrows, 123, language, back, space
+func flick_jobs [ ks: vec FKey ]
+    ks.push[ job_key[ 2, 0, 0, 1 ] ]
+    ks.push[ job_key[ 3, 0, 1, 1 ] ]
+    ks.push[ job_key[ 10, 0, 2, 1 ] ]
+    # the language and 123 where qwerty has them
+    ks.push[ wide_key[ 7, '', 0.0, 0.1, 3 ] ]
+    f : vec2f foot_span[ 0 ]
+    ks.push[ wide_key[ 6, '', f.x, f.y, 3 ] ]
+    ks.push[ job_key[ 1, 4, 0, 1 ] ]
+    ks.push[ job_key[ 4, 4, 1, 2 ] ]
+    ks.push[ job_key[ 5, 4, 3, 1 ] ]
+
+# the special characters on 12 keys, a space between each one's
+func flick_symbols [] -> vec FKey
+    sp : vec string [] [
+        '! ? : ; ,', '@ # $ %', '& * ^ ~ …', '( ) [ ]',
+        "{ } < >", '+ - = /', '\' " ` _', '\\ | € £ ¥',
+        '° • § ※ ♪', '', '「 」 『 』', '© ® ™ ¶' ]
+    ks : vec FKey []
+    for [ i: i32 0, i < 12, i += 1 ]
+        # where the numbers' ( key is: back to the numbers
+        if [ i == 9 ]
+            ks.push[ job_key[ 9, 1, 3, 1 ] ]
+            continue
+        ks.push[ FKey [ outs: sp[ i ].split[ ' ' ], kind: 0,
+            col: 1 + i % 3, row: i / 3 ] ]
+    flick_jobs[ ks ]
+    return ks
+
+# a key typing the one character c, placed as qwerty's
+func char_key [ c: string, x: f32, w: f32, row: i32 ] -> FKey
+    outs : vec string []
+    outs.push[ c ]
+    return FKey [ outs: outs, kind: 0, col: 0, row: row, x: x,
+        w: w ]
+
+# every special character on qwerty's rows, a tap each
+func qwerty_symbols [] -> vec FKey
+    ks : vec FKey []
+    rows : vec string [] [ '!@#$%^&*()', "-_=+[]{};:",
+        '\'"`~<>/\\|' ]
+    for [ r: i32 0, r < 3, r += 1 ]
+        cs : vec string chars_of[ rows[ r ] ]
+        for [ i: i32 0, i < cs.count, i += 1 ]
+            ks.push[ char_key[ cs[ i ], f32[ i ] * 0.1, 0.1, r ] ]
+    ks.push[ wide_key[ 1, '', 0.9, 0.1, 2 ] ]
+    ks.push[ wide_key[ 7, '', 0.0, 0.1, 3 ] ]
+    f : vec2f foot_span[ 0 ]
+    ks.push[ wide_key[ 6, '', f.x, f.y, 3 ] ]
+    # the 12 keys' second at the foot: the same place
+    g : vec2f grid_span[ 1, 3 ]
+    ks.push[ wide_key[ 9, '', g.x, g.y, 3 ] ]
+    ks.push[ wide_key[ 4, '', g.x + g.y, 0.6 - g.x - g.y, 3 ] ]
+    ks.push[ wide_key[ 0, ',', 0.6, 0.1, 3 ] ]
+    ks.push[ wide_key[ 0, '?', 0.7, 0.1, 3 ] ]
+    ks.push[ wide_key[ 5, '', 0.8, 0.2, 3 ] ]
+    return ks
+
+# a grid key's place and width, shares of the width: the jobs'
+# column a letter wide, the return column qwerty's; at the foot
+# 123 and the key after it share the first key's width (foot_span)
+func grid_span [ col: i32, row: i32 ] -> vec2f
+    third : f32 [ 0.7 / 3.0 ]
+    if [ col == 0 ] return vec2f [ 0.0, 0.1 ]
+    if [ col == 4 ] return vec2f [ 0.8, 0.2 ]
+    if [ row == 3 && col == 1 ] return foot_span[ 1 ]
+    return vec2f [ 0.1 + f32[ col - 1 ] * third, third ]
+
+# the foot's 123 (0) and the key after it (1), the same width
+func foot_span [ i: i32 ] -> vec2f
+    half : f32 [ 0.35 / 3.0 ]
+    return vec2f [ 0.1 + f32[ i ] * half, half ]
+
+# a key placed by shares of the width (qwerty)
+func wide_key [ kind: i32, s: string, x: f32, w: f32, row: i32 ] -> FKey
+    outs : vec string []
+    if [ s.count > 0 ] outs = s.split[ '|' ]
+    return FKey [ outs: outs, kind: kind, col: 0, row: row, x: x,
+        w: w ]
+
+# the standard qwerty rows, a tenth of the width a letter
+func qwerty_layout [] -> vec FKey
+    ks : vec FKey []
+    rows : vec string [] [ 'qwertyuiop', 'asdfghjkl', 'zxcvbnm' ]
+    lead : vec f32 [] [ 0.0, 0.05, 0.15 ]
+    for [ r: i32 0, r < 3, r += 1 ]
+        cs : vec string chars_of[ rows[ r ] ]
+        for [ i: i32 0, i < cs.count, i += 1 ]
+            ks.push[ wide_key[ 0, cs[ i ],
+                lead[ r ] + f32[ i ] * 0.1, 0.1, r ] ]
+    ks.push[ wide_key[ 8, '', 0.0, 0.15, 2 ] ]
+    ks.push[ wide_key[ 1, '', 0.85, 0.15, 2 ] ]
+    ks.push[ wide_key[ 7, '', 0.0, 0.1, 3 ] ]
+    f : vec2f foot_span[ 0 ]
+    ks.push[ wide_key[ 6, '', f.x, f.y, 3 ] ]
+    g : vec2f grid_span[ 1, 3 ]
+    ks.push[ wide_key[ 9, '', g.x, g.y, 3 ] ]
+    ks.push[ wide_key[ 4, '', g.x + g.y, 0.7 - g.x - g.y, 3 ] ]
+    ks.push[ wide_key[ 0, '.', 0.7, 0.1, 3 ] ]
+    ks.push[ wide_key[ 5, '', 0.8, 0.2, 3 ] ]
+    return ks
+
+# k moved by dc of its own widths and dr rows
+func key_beside [ k: FKey, dc: i32, dr: i32 ] -> FKey
+    return FKey [ outs: vec string [], kind: k.kind,
+        col: k.col + dc, row: k.row + dr, rows: 1,
+        x: k.x + f32[ dc ] * k.w, w: k.w ]
+
+# a character key; its looks, the held one and its ways, are its
+# style's
+element FlickKey
+    no_cache : true
+    # a way of the held key lies here; the one it flicks to: chosen
+    public way    : bool
+    public chosen : bool
+    style : CSS {
+        # a 2 px outline, lit by the pointer twice as far off
+        layers.body:
+            fill_color: #2d2838
+            radius: 7
+            stroke_width: 2
+            near_reach: 2.0
+            stroke_color: #ffffff12
+            box_shadow: inset 0 0 16px #c8f0, 150ms cubic outward
+            near_border: true
+            near_inset: 3.0
+            near_inset_color: #c890ffaa
+        layers.face:
+            label_color: #ffffff
+            label_size: 26
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
+        :way
+            layers.body:
+                fill_color: #3a2f5a
+                box_shadow: inset 0 0 16px #c8f9, 150ms cubic outward
+        :chosen
+            layers.body:
+                box_shadow: inset 0 0 18px #c8ff, 120ms cubic outward
+        :pressed
+            layers.body:
+                fill_color: #4d3dbc
+    }
+
+# a key with a job (back, space, enter ...)
+FlickKey FlickJob
+    style : CSS {
+        layers.body:
+            fill_color: #1f1b28
+        layers.face:
+            label_size: 18
+    }
+
+# a job key's way: the same, its words smaller
+FlickKey FlickWay
+    style : CSS {
+        layers.face:
+            label_size: 14
+    }
+
+# a language while managing (-1: back); a tap adds or removes it
+FlickKey FlickChoice
+    public slot : i32
+    style : CSS {
+        layers.face:
+            label_size: 22
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        fk : cast FlickKeys [ parent ]
+        if [ fk && slot >= 0 ] fk.toggle_language[ slot ]
+        el [ fk ] fk.close_choices[]
+
+# the keyboard's close: the field lets go, so the keys go away
+FlickKey FlickClose
+    style : CSS {
+        layers.body:
+            fill_color: #1f1b28
+            radius: 0
+        layers.face:
+            label_size: 30
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        fk : cast FlickKeys [ parent ]
+        if [ fk ] fk.close_keys[]
+
+# the phone's close: a down arrow on no fill (the PC bar keeps x)
+FlickKey FlickHide
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            stroke_width: 0
+            near_border: false
+            near_inset: 0.0
+        layers.face:
+            image_svg: 'images/down.svg'
+            image_fit: 0.5
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        fk : cast FlickKeys [ parent ]
+        if [ fk ] fk.close_keys[]
+
+# the words of one first and last letter
+class WordIds
+    public ids : vec i32 [] []
+
+# English words by how often they are used (en.txt: word TAB
+# count, likeliest first), found by their first and last letters
+class EnWords
+    public words : vec string
+    public cost  : vec f32
+    intern by    : map WordIds [ string ]
+    intern tried : bool
+
+    func load []
+        if [ tried ] return
+        tried = true
+        words = vec string []
+        cost  = vec f32 []
+        by    = map WordIds [ string, hsize: 1024 ] []
+        lr : LineReader [
+            file: '{path.path_install[]}/share/keyboard/en.txt' ]
+        if [ !lr.open[] ] return
+        for [ ln : string lr.read_line[], !lr.done,
+              ln = lr.read_line[] ]
+            tab : i32 [ ln.index_of[ '\t' ] ]
+            if [ tab < 1 ] continue
+            w : string ln.mid[ 0, tab ]
+            n : f64 [ f64[ ln.mid[ tab + 1, ln.count - tab - 1 ] ] ]
+            ls : string letters_of[ w ]
+            if [ ls.count < 2 ] continue
+            k : '{ls.mid[ 0, 1 ]}{ls.mid[ ls.count - 1, 1 ]}'
+            if [ !by[ k ] ] by[ k ] = WordIds []
+            by[ k ].ids.push[ words.count ]
+            if [ w == "i" ] w = "I"
+            words.push[ w ]
+            cost.push[ f32[ nat_log[ n + 1.0 ] ] ]
+
+    # the words whose first and last letters are these
+    func ending [ k: string ] -> vec i32
+        load[]
+        got : WordIds by[ k ]
+        return (got) ? got.ids : vec i32 []
+
+en_words : EnWords
+
+func english [] -> EnWords
+    if [ !en_words ]
+        en_words = EnWords []
+        en_words.hold[]
+    return en_words
+
+# a word's letters, its apostrophes left out
+func letters_of [ w: string ] -> string
+    out : ''
+    for [ i: i32 0, i < w.count, i += 1 ]
+        c : i32 [ i32[ w.chars[ i ] ] ]
+        if [ c >= 97 && c <= 122 ] out = '{out}{w.mid[ i, 1 ]}'
+    return out
+
+# two points' distance
+func apart_of [ a: vec2f, b: vec2f ] -> f32
+    dx : f32 [ a.x - b.x ]
+    dy : f32 [ a.y - b.y ]
+    return sqrt[ dx * dx + dy * dy ]
+
+# a line through pts, n points spaced evenly along it
+func resampled [ pts: vec vec2f, n: i32 ] -> vec vec2f
+    out : vec vec2f []
+    total : f32 [ 0.0 ]
+    for [ i: i32 1, i < pts.count, i += 1 ]
+        total += apart_of[ pts[ i ], pts[ i - 1 ] ]
+    if [ pts.count == 1 || total <= 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ] out.push[ pts[ 0 ] ]
+        return out
+    step : f32 [ total / f32[ n - 1 ] ]
+    out.push[ pts[ 0 ] ]
+    gone : f32 [ 0.0 ]
+    j : i32 [ 1 ]
+    prev : vec2f pts[ 0 ]
+    while [ out.count < n - 1 && j < pts.count ]
+        seg : f32 [ apart_of[ pts[ j ], prev ] ]
+        if [ gone + seg >= step && seg > 0.0 ]
+            t : f32 [ (step - gone) / seg ]
+            q : vec2f [ prev.x + (pts[ j ].x - prev.x) * t,
+                        prev.y + (pts[ j ].y - prev.y) * t ]
+            out.push[ q ]
+            prev = q
+            gone = 0.0
+        el
+            gone += seg
+            prev = pts[ j ]
+            j += 1
+    while [ out.count < n ] out.push[ pts[ pts.count - 1 ] ]
+    return out
+
+# a line's points about their middle, its longer side made 1
+func shape_of [ pts: vec vec2f ] -> vec vec2f
+    lo : vec2f pts[ 0 ]
+    hi : vec2f pts[ 0 ]
+    for [ p: vec2f ] in pts
+        lo = vec2f [ min[ lo.x, p.x ], min[ lo.y, p.y ] ]
+        hi = vec2f [ max[ hi.x, p.x ], max[ hi.y, p.y ] ]
+    side : f32 [ max[ max[ hi.x - lo.x, hi.y - lo.y ], 1.0 ] ]
+    cx : f32 [ (lo.x + hi.x) * 0.5 ]
+    cy : f32 [ (lo.y + hi.y) * 0.5 ]
+    out : vec vec2f []
+    for [ p: vec2f ] in pts
+        out.push[ vec2f [ (p.x - cx) / side, (p.y - cy) / side ] ]
+    return out
+
+# the mean distance between two lines' points, one for one
+func apart [ a: vec vec2f, b: vec vec2f ] -> f32
+    d : f32 [ 0.0 ]
+    for [ i: i32 0, i < a.count, i += 1 ]
+        d += apart_of[ a[ i ], b[ i ] ]
+    return d / f32[ a.count ]
+
+# the swiping finger's line, over the keys
+element SwipeTrail
+    public pts : vec vec2f
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !pts
+             || pts.count < 2 ] return
+        cv : Canvas w.screen
+        cv.fill_color[ '#0000' ]
+        cv.stroke_color[ '#c8a0ffb0' ]
+        cv.stroke_width[ 7.0 ]
+        cv.set_stroke_cap[ Cap.round ]
+        cv.set_stroke_join[ Join.round ]
+        # curves through the points' midpoints, each point a control
+        n : i32 [ pts.count ]
+        cv.move_to[ pts[ 0 ].x, pts[ 0 ].y ]
+        for [ i: i32 1, i < n - 1, i += 1 ]
+            mx : f32 [ (pts[ i ].x + pts[ i + 1 ].x) * 0.5 ]
+            my : f32 [ (pts[ i ].y + pts[ i + 1 ].y) * 0.5 ]
+            cv.quad_to[ pts[ i ].x, pts[ i ].y, mx, my ]
+        cv.line_to[ pts[ n - 1 ].x, pts[ n - 1 ].y ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    public func tick [ w: Window ]
+        pristine = false
+
+# the colour emoji font's pictures, all in one texture: each drawn
+# at the size it shows, the first time it shows (none kept twice)
+class EmojiSheet
+    public texts : vec string
+    intern cps   : vec i32
+    intern face  : FT_Face
+    intern tried : bool
+    intern atlas : Texture
+    intern side  : i32
+    intern done  : vec bool
+    intern cols  : i32 [ 40 ]
+
+    func load []
+        if [ tried ] return
+        tried = true
+        texts = vec string []
+        cps   = vec i32 []
+        fm : FontMatch font_match[ 'emoji', 400, 5, 0, 128512, true ]
+        if [ !fm.found ] return
+        if [ FT_New_Face[ ft_init[], fm.file.chars, fm.index,
+             @face ] != 0 ]
+            face = null
+            return
+        if [ face.num_fixed_sizes > 0 ] FT_Select_Size[ face, 0 ]
+        el FT_Set_Pixel_Sizes[ face, 0, 128 ]
+        lr : LineReader [
+            file: '{path.path_install[]}/share/keyboard/emoji.txt' ]
+        if [ !lr.open[] ] return
+        for [ ln : string lr.read_line[], !lr.done,
+              ln = lr.read_line[] ]
+            if [ ln.count == 0 ] continue
+            cp : i32 [ hex_of[ ln ] ]
+            # newer than the font: left out
+            if [ FT_Get_Char_Index[ face, u64[ cp ] ] == 0 ] continue
+            cps.push[ cp ]
+            texts.push[ utf8_char[ cp ] ]
+
+    func count [] -> i32
+        load[]
+        return texts.count
+
+    func texture [] -> Texture
+        return atlas
+
+    # emoji i drawn sz px in the atlas: its place there (u0 v0 u1
+    # v1), x below 0 when there is none
+    func spot [ i: i32, sz: i32, w: Window ] -> vec4f
+        none : vec4f [ -1.0, 0.0, 0.0, 0.0 ]
+        load[]
+        if [ !face || i < 0 || i >= cps.count || sz < 2 ] return none
+        rows : i32 [ (cps.count + cols - 1) / cols ]
+        # a new size: the atlas made again, every emoji drawn anew
+        if [ !atlas || side != sz ]
+            side  = sz
+            atlas = Texture [ vk: w.vk, w: w, width: cols * sz,
+                height: rows * sz, linear: true,
+                pixel_format: Pixel.rgba8, surface: Surface.color,
+                tag: 'emoji' ]
+            done = vec bool []
+            for [ k: i32 0, k < cps.count, k += 1 ] done.push[ false ]
+        cx : i32 [ (i % cols) * sz ]
+        cy : i32 [ (i / cols) * sz ]
+        if [ !done[ i ] ]
+            done[ i ] = true
+            put[ i, cx, cy ]
+        aw : f32 [ f32[ cols * sz ] ]
+        ah : f32 [ f32[ rows * sz ] ]
+        return vec4f [ f32[ cx ] / aw, f32[ cy ] / ah,
+                       f32[ cx + sz ] / aw, f32[ cy + sz ] / ah ]
+
+    # the font's picture of emoji i, averaged down into its cell
+    func put [ i: i32, cx: i32, cy: i32 ]
+        # FT_LOAD_COLOR: the font's own colours, premultiplied BGRA
+        if [ FT_Load_Char[ face, u64[ cps[ i ] ], 1048576 ] != 0 ]
+            return
+        slot : face.glyph
+        bw : i32 [ slot.bitmap.width ]
+        bh : i32 [ slot.bitmap.rows ]
+        if [ bw < 1 || bh < 1 || slot.bitmap.pixel_mode != 7 ] return
+        pitch : i32 [ slot.bitmap.pitch ]
+        bb : @u8 [ slot.bitmap.buffer ]
+        sz : i32 [ side ]
+        # source px a cell px, the picture centred
+        k  : f32 [ f32[ max[ bw, bh ] ] / f32[ sz ] ]
+        ox : f32 [ (f32[ bw ] - k * f32[ sz ]) * 0.5 ]
+        oy : f32 [ (f32[ bh ] - k * f32[ sz ]) * 0.5 ]
+        n  : i32 [ sz * sz * 4 ]
+        px : new u8 [ n ]
+        for [ y: i32 0, y < sz, y += 1 ]
+            y0 : i32 [ max[ 0, i32[ oy + f32[ y ] * k ] ] ]
+            y1 : i32 [ min[ bh, max[ y0 + 1,
+                i32[ oy + f32[ y + 1 ] * k ] ] ] ]
+            for [ x: i32 0, x < sz, x += 1 ]
+                x0 : i32 [ max[ 0, i32[ ox + f32[ x ] * k ] ] ]
+                x1 : i32 [ min[ bw, max[ x0 + 1,
+                    i32[ ox + f32[ x + 1 ] * k ] ] ] ]
+                if [ y0 >= y1 || x0 >= x1 ] continue
+                o : i32 [ (y * sz + x) * 4 ]
+                cnt : i32 [ (y1 - y0) * (x1 - x0) ]
+                for [ c: i32 0, c < 4, c += 1 ]
+                    sum : i32 [ 0 ]
+                    for [ sy: i32 y0, sy < y1, sy += 1 ]
+                        for [ sx: i32 x0, sx < x1, sx += 1 ]
+                            sum += i32[ bb[ sy * pitch + sx * 4 + c ] ]
+                    # BGRA to RGBA
+                    d : i32 [ (c == 3) ? 3 : 2 - c ]
+                    px[ o + d ] = u8[ sum / cnt ]
+        atlas.upload_region[ cx, cy, sz, sz, px, n ]
+
+emoji_sheet : EmojiSheet
+
+func emojis [] -> EmojiSheet
+    if [ !emoji_sheet ]
+        emoji_sheet = EmojiSheet []
+        emoji_sheet.hold[]
+    return emoji_sheet
+
+# the emoji, columns of rows_n scrolled sideways; a tap types one
+element EmojiGrid
+    public rows_n : i32 [ 5 ]
+    # px scrolled, and where it eases to
+    intern shift : f32
+    intern goal  : f32
+    # the pointer's x at a press, -1 none; the scroll then
+    intern grab  : f32 [ -1.0 ]
+    intern from  : f32
+    intern moved : bool
+    intern at_x  : f32
+    intern at_y  : f32
+
+    func cell [] -> f32
+        return (bounds) ? bounds.h / f32[ rows_n ] : 1.0
+
+    func most [] -> f32
+        n : i32 [ emojis[].count[] ]
+        cols : i32 [ (n + rows_n - 1) / rows_n ]
+        m : f32 [ f32[ cols ] * cell[] - ((bounds) ? bounds.w : 0.0) ]
+        return (m > 0.0) ? m : 0.0
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        es : EmojiSheet emojis[]
+        n  : i32 [ es.count[] ]
+        c  : f32 [ cell[] ]
+        sz : f32 [ round[ c * 0.74 ] ]
+        # drawn at its own size in device px: one texture, 1:1
+        ps : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+        dev : i32 [ i32[ round[ sz * ps ] ] ]
+        c0 : i32 [ i32[ shift / c ] ]
+        c1 : i32 [ i32[ (shift + bounds.w) / c ] + 1 ]
+        for [ col: i32 c0, col <= c1, col += 1 ]
+            for [ r: i32 0, r < rows_n, r += 1 ]
+                i : i32 [ col * rows_n + r ]
+                if [ i >= n ] break
+                uv : vec4f es.spot[ i, dev, w ]
+                if [ uv.x < 0.0 ] continue
+                x : f32 [ round[ f32[ col ] * c - shift
+                    + (c - sz) * 0.5 ] ]
+                y : f32 [ round[ f32[ r ] * c + (c - sz) * 0.5 ] ]
+                cv.draw_image_crop[ es.texture[],
+                    rect [ x: x, y: y, w: sz, h: sz ],
+                    uv.x, uv.y, uv.z, uv.w ]
+
+    public func tick [ w: Window ]
+        goal = clamp[ goal, 0.0, most[] ]
+        if [ shift != goal ]
+            shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
+            if [ abs[ goal - shift ] < 0.5 ] shift = goal
+            pristine        = false
+            ux.will_animate = true
+        # the edges fade where more emoji lie past them
+        left  : f32 [ (shift > 0.5) ? 24.0 : 0.0 ]
+        right : f32 [ (most[] - shift > 0.5) ? 24.0 : 0.0 ]
+        if [ mask_glow.w != left || mask_glow.y != right ]
+            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+            pristine  = false
+
+    public func on_wheel [ ev: Event ]
+        ev.no_propagation = true
+        goal -= f32[ ev.mouse.wheel_delta.y ] * 40.0
+        ux.will_animate = true
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        grab  = f32[ ux.mouse.x ]
+        from  = goal
+        moved = false
+        at_x  = ev.mouse.pos.x
+        at_y  = ev.mouse.pos.y
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        d : f32 [ f32[ ux.mouse.x ] - grab ]
+        if [ abs[ d ] > 8.0 ] moved = true
+        if [ !moved ] return
+        # the emoji follow the finger
+        goal  = clamp[ from - d, 0.0, most[] ]
+        shift = goal
+        pristine = false
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        drag : bool [ moved ]
+        grab = -1.0
+        if [ drag ] return
+        c : f32 [ cell[] ]
+        col : i32 [ i32[ (at_x + shift) / c ] ]
+        r : i32 [ i32[ at_y / c ] ]
+        i : i32 [ col * rows_n + r ]
+        es : EmojiSheet emojis[]
+        fk : cast FlickKeys [ parent ]
+        if [ fk && r >= 0 && r < rows_n && i >= 0 && i < es.count[] ]
+            fk.type_emoji[ es.texts[ i ] ]
+
+# the mic: a tap starts a take, another ends it; its words are typed
+FlickKey FlickMic
+    style : CSS {
+        layers.body:
+            fill_color: #1f1b28
+        layers.face:
+            image_svg: 'images/mic.svg'
+            image_fit: 0.45
+        :chosen
+            layers.body:
+                fill_color: #b8325a
+                box_shadow: inset 0 0 16px #ff9ab8, 120ms cubic outward
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        fk : cast FlickKeys [ parent ]
+        if [ fk ] fk.toggle_mic[]
+
+# a PC bar's language key: a press steps to the next language
+FlickKey FlickLang
+    style : CSS {
+        layers.body:
+            fill_color: #1f1b28
+        layers.face:
+            label_size: 18
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        fk : cast FlickKeys [ parent ]
+        if [ fk ] fk.press_language[]
+
+# a word the bar offers; a press takes it
+element FlickWord
+    no_cache : true
+    public at     : i32
+    public chosen : bool
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 7
+        layers.face:
+            label_color: #ffffff
+            label_size: 22
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
+        :chosen
+            layers.body:
+                fill_color: #4d3dbcaa
+        :pressed
+            layers.body:
+                fill_color: #4d3dbcaa
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        # in the scrolling bar: a tap chooses, a drag scrolls
+        st : cast FlickStrip [ parent ]
+        if [ st ]
+            st.hold_at[ at ]
+            return
+        fk : cast FlickKeys [ parent ]
+        if [ fk ] fk.choose[ at ]
+
+# the bar's words, scrolling sideways: the wheel or a drag moves
+# them, eased; an edge fades (the mask) where more words lie
+element FlickStrip
+    public words : vec string
+    public pick  : i32 [ -1 ]
+    # px scrolled, and where it eases to
+    intern shift : f32
+    intern goal  : f32
+    # the pointer's x at a press, -1 none; the scroll then
+    intern grab  : f32 [ -1.0 ]
+    intern from  : f32
+    intern moved : bool
+    intern tap   : i32 [ -1 ]
+    # the words last laid out: new ones start at the left
+    intern seen  : string [ '' ]
+
+    func word_w [ w: string ] -> f32
+        return f32[ utf8_count[ w ] ] * 22.0 + 28.0
+
+    func full_w [] -> f32
+        x : f32 [ 0.0 ]
+        if [ words ]
+            for [ w: string ] in words
+                x += word_w[ w ]
+        return x
+
+    func most [] -> f32
+        m : f32 [ full_w[] - ((bounds) ? bounds.w : 0.0) ]
+        return (m > 0.0) ? m : 0.0
+
+    func render [] -> Elements
+        e : Elements []
+        if [ !words ] return e
+        x : f32 [ 0.0 ]
+        for [ i: i32 0, i < words.count, i += 1 ]
+            ww : f32 [ word_w[ words[ i ] ] ]
+            e[ 'word_{i}' ] = FlickWord [ label: words[ i ], at: i,
+                chosen: i == pick,
+                area: Region [ 'l{x - shift}px t0 w{ww}px b0' ] ]
+            x += ww
+        return e
+
+    public func tick [ w: Window ]
+        key : string [ (words && words.count > 0)
+            ? '{words.count}{words[ 0 ]}' : '' ]
+        if [ key != seen ]
+            seen  = key
+            shift = 0.0
+            goal  = 0.0
+        # the chosen word kept in view
+        if [ words && pick >= 0 && pick < words.count && bounds
+             && grab < 0.0 ]
+            px : f32 [ 0.0 ]
+            for [ i: i32 0, i < pick, i += 1 ]
+                px += word_w[ words[ i ] ]
+            pw : f32 [ word_w[ words[ pick ] ] ]
+            if [ px < goal ] goal = px
+            if [ px + pw > goal + bounds.w ] goal = px + pw - bounds.w
+        goal = clamp[ goal, 0.0, most[] ]
+        if [ shift != goal ]
+            shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
+            if [ abs[ goal - shift ] < 0.5 ] shift = goal
+            ux.restyle      = true
+            ux.will_animate = true
+        # the mask: the left edge fades once scrolled, the right while
+        # more words lie past it
+        left  : f32 [ (shift > 0.5) ? 24.0 : 0.0 ]
+        right : f32 [ (most[] - shift > 0.5) ? 24.0 : 0.0 ]
+        if [ mask_glow.w != left || mask_glow.y != right ]
+            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+            pristine  = false
+
+    public func on_wheel [ ev: Event ]
+        ev.no_propagation = true
+        goal -= f32[ ev.mouse.wheel_delta.y ] * 40.0
+        ux.will_animate = true
+
+    # a press on a word (or between): a tap chooses it at the release,
+    # a move past 8 px scrolls instead
+    public func hold_at [ i: i32 ]
+        grab  = f32[ ux.mouse.x ]
+        from  = goal
+        moved = false
+        tap   = i
+        ux.set_capture[ a ]
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        hold_at[ -1 ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        d : f32 [ f32[ ux.mouse.x ] - grab ]
+        if [ abs[ d ] > 8.0 ] moved = true
+        if [ !moved ] return
+        # the words follow the finger
+        goal  = clamp[ from - d, 0.0, most[] ]
+        shift = goal
+        ux.restyle = true
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        was : i32 [ tap ]
+        drag : bool [ moved ]
+        grab = -1.0
+        tap  = -1
+        fk : cast FlickKeys [ parent ]
+        if [ fk && !drag && was >= 0 ] fk.choose[ was ]
+
+# a phone's flick keyboard: a tap gives a key's first character, a
+# flick left, up, right or down its others; Japanese is composed in
+# kana and chosen from the bar above the keys
+InputDevice FlickKeys
+    public numbers : bool
+    # numbers on: the special characters' page, not the numbers'
+    intern symbols : bool
+    # a PC's: the bar alone (its keys are the hardware's)
+    public bar_only : bool
+    # romaji typed on a hardware keyboard, not yet a kana
+    intern roma    : string
+    intern keys    : vec FKey
+    intern made_as : i32 [ -1 ]
+    # kana typed and not yet chosen, and what the bar offers for it
+    intern reading : string
+    intern cands   : vec string
+    intern cand_n  : vec i32
+    # the candidate shown in the field (-1: the kana themselves)
+    intern pick    : i32 [ -1 ]
+    # the key held, where it was pressed (window px), the way flicked
+    intern down    : i32 [ -1 ]
+    intern from    : vec2f
+    # where it was pressed in the keyboard's own space
+    intern at      : vec2f
+    intern dir     : i32
+    # the last letter typed in English (a/A changes its case)
+    intern last    : string
+    # upper case mode: letters typed capitalized (a/A flicked up)
+    intern caps    : bool
+    # the language toggled with English; choosing: the keys are the
+    # languages offered (the language key flicked up)
+    intern choosing : bool
+    # the language key drawn up onto manage languages (0), else -1
+    intern lang_at  : i32 [ -1 ]
+    # the language key drawn right onto the other keys' type
+    intern type_at  : bool
+    # qwerty's shift held for good (its second tap)
+    intern caps_lock : bool
+    # the mic's take: recording, then its words being made
+    intern hearing   : bool
+    intern flushing  : bool
+    # numbers on: the emoji page
+    intern emoji     : bool
+    # a swipe over qwerty's letters: the finger's line (keyboard
+    # space), on once it leaves its first key; the word it made
+    # held in the field (choosing from the bar)
+    intern trail     : vec vec2f
+    intern swiping   : bool
+    intern swiped    : bool
+
+    style : CSS {
+        layers.ground:
+            fill_color: #141019
+    }
+
+    func lang [] -> Language
+        return ux.input_language
+
+    # the letters on qwerty: every language but Japanese's kana
+    func letters_qwerty [] -> bool
+        return lang[] != Language.japanese && qwerty_on[]
+
+    func layout [] -> vec FKey
+        q : bool [ letters_qwerty[] && !numbers ]
+        sym : bool [ numbers && symbols ]
+        emo : bool [ numbers && emoji && !symbols ]
+        sig : i32 [ i32[ lang[] ] * 16 + ((numbers) ? 1 : 0)
+            + ((q) ? 2 : 0) + ((sym) ? 4 : 0) + ((emo) ? 8 : 0) ]
+        if [ !keys || made_as != sig ]
+            if [ emo ] keys = emoji_layout[ lang[] ]
+            el [ sym ]
+                keys = (letters_qwerty[]) ? qwerty_symbols[]
+                    : flick_symbols[]
+            el [ q ] keys = qwerty_layout[]
+            el keys = flick_layout[ lang[], numbers ]
+            made_as = sig
+        return keys
+
+    func key_rect [ k: FKey ] -> rect
+        kh : f32 [ bounds.h * 0.2 ]
+        sp : vec2f span_of[ k ]
+        return rect [ x: sp.x * bounds.w,
+            y: kh + f32[ k.row ] * kh, w: sp.y * bounds.w,
+            h: kh * f32[ k.rows ] ]
+
+    # a key's place and width, shares of the width
+    func span_of [ k: FKey ] -> vec2f
+        if [ k.w > 0.0 ] return vec2f [ k.x, k.w ]
+        return grid_span[ k.col, k.row ]
+
+    func key_at [ x: f32, y: f32 ] -> i32
+        ks : vec FKey layout[]
+        for [ i: i32 0, i < ks.count, i += 1 ]
+            r : rect key_rect[ ks[ i ] ]
+            if [ x >= r.x && x < r.x + r.w && y >= r.y
+                 && y < r.y + r.h ]
+                return i
+        return -1
+
+    func composing [] -> bool
+        return (reading && reading.count > 0)
+            || (roma && roma.count > 0)
+
+    # what the field holds for the reading now
+    func shown [] -> string
+        if [ pick < 0 || pick >= cands.count ]
+            rd : string [ (reading) ? reading : '' ]
+            rm : string [ (roma) ? roma : '' ]
+            return '{rd}{rm}'
+        rc : vec string chars_of[ reading ]
+        return '{cands[ pick ]}{joined[ rc, cand_n[ pick ], rc.count ]}'
+
+    # the bar's words: the whole sentence first, then the words of
+    # the reading's longest start; Japanese also its kana as typed
+    func offer []
+        cands  = vec string []
+        cand_n = vec i32 []
+        pick   = -1
+        if [ !composing[] ] return
+        rc  : vec string chars_of[ reading ]
+        n   : i32 [ rc.count ]
+        ja  : bool [ lang[] == Language.japanese ]
+        lex : Lexicon words_of[ lang[] ]
+        sn  : i32 [ 0 ]
+        st  : string sentence[ rc, lang[], @sn ]
+        if [ st.count > 0 ] take[ st, sn ]
+        for [ len: i32 n, len >= 1, len -= 1 ]
+            for [ w: string ] in lex.find[ joined[ rc, 0, len ] ]
+                take[ w, len ]
+            if [ ja && len == n ]
+                take[ reading, n ]
+                take[ to_katakana[ reading ], n ]
+            if [ cands.count >= 40 ] break
+        if [ !ja ] take[ reading, n ]
+
+    func take [ w: string, len: i32 ]
+        for [ have: string ] in cands
+            if [ have == w ] return
+        cands.push[ w ]
+        cand_n.push[ len ]
+
+    func set_reading [ t: string ]
+        reading = t
+        offer[]
+        compose[ shown[] ]
+        ux.restyle = true
+
+    # the composed text stays as shown; nothing is held after
+    func settle []
+        swiped = false
+        if [ !composing[] ] return
+        commit[ shown[] ]
+        reading = ''
+        roma    = ''
+        offer[]
+        ux.restyle = true
+
+    func choose [ i: i32 ]
+        if [ i < 0 || i >= cands.count ] return
+        rc : vec string chars_of[ reading ]
+        rest : string joined[ rc, cand_n[ i ], rc.count ]
+        commit[ cands[ i ] ]
+        set_reading[ rest ]
+
+    func type [ s: string ]
+        if [ !s || s.count == 0 ] return
+        jp : bool [ lang[] == Language.japanese && !numbers ]
+        zh : bool [ lang[] == Language.chinese && !numbers ]
+        c0 : i32 [ i32[ s.chars[ 0 ] ] ]
+        # Chinese: the letters are pinyin, chosen from the bar
+        pin : bool [ zh && s.count == 1 && c0 >= 97 && c0 <= 122 ]
+        if [ pin || (jp && (hiragana[].index_of[ s ] >= 0
+             || s == 'ー' || s == '〜')) ]
+            had : string [ (reading) ? reading : '' ]
+            set_reading[ '{had}{s}' ]
+            return
+        settle[]
+        b : i32 [ i32[ s.chars[ 0 ] ] ]
+        up : string [ (caps && s.count == 1 && b >= 97 && b <= 122)
+            ? s.ucase[] : s ]
+        put_text[ up ]
+        last = up
+        # qwerty's shift: one letter, unless held for good
+        if [ up != s && keys && keys.count > 0 && keys[ 0 ].w > 0.0
+             && !caps_lock ]
+            caps = false
+
+    # 小゛゜ steps the last kana; a/A the last letter's case
+    func modify []
+        if [ lang[] == Language.japanese && !numbers ]
+            if [ !composing[] ] return
+            rc : vec string chars_of[ reading ]
+            c  : string rc[ rc.count - 1 ]
+            for [ ring: string ] in kana_rings[]
+                rs : vec string chars_of[ ring ]
+                for [ i: i32 0, i < rs.count, i += 1 ]
+                    if [ rs[ i ] == c ]
+                        nx : string rs[ (i + 1) % rs.count ]
+                        head : string joined[ rc, 0, rc.count - 1 ]
+                        set_reading[ '{head}{nx}' ]
+                        return
+            return
+        if [ !last || last.count != 1 ] return
+        b : i32 [ i32[ last.chars[ 0 ] ] ]
+        sw : string [ (b >= 97 && b <= 122) ? last.ucase[]
+            : last.lcase[] ]
+        if [ sw == last ] return
+        put_key[ 259 ]
+        put_text[ sw ]
+        last = sw
+
+    func back []
+        # a swiped word goes whole
+        if [ swiped && composing[] ]
+            compose[ '' ]
+            reading = ''
+            swiped  = false
+            offer[]
+            ux.restyle = true
+            return
+        if [ roma && roma.count > 0 ]
+            roma = roma.mid[ 0, roma.count - 1 ]
+            set_reading[ (reading) ? reading : '' ]
+            return
+        if [ composing[] ]
+            rc : vec string chars_of[ reading ]
+            set_reading[ joined[ rc, 0, rc.count - 1 ] ]
+            return
+        put_key[ 259 ]
+
+    func space []
+        # a swiped word is chosen in the bar; space keeps it
+        if [ swiped ] settle[]
+        # Chinese, as its input methods: space puts in the lit word
+        # (the first, else the one chosen); Enter the letters
+        if [ lang[] == Language.chinese && composing[]
+             && cands.count > 0 ]
+            choose[ (pick >= 0) ? pick : 0 ]
+            return
+        if [ composing[] && cands.count > 0 ]
+            pick = (pick + 1) % cands.count
+            compose[ shown[] ]
+            ux.restyle = true
+            return
+        g : vec string glyphs[]
+        put_text[ (lang[] == Language.japanese) ? g[ 4 ] : g[ 3 ] ]
+        last = ' '
+
+    # swiping: on qwerty's English letters
+    func swipes [] -> bool
+        return lang[] == Language.english && letters_qwerty[]
+            && !numbers
+
+    # the likeliest words for the finger's line (SHARK2: its shape
+    # and its place against each word's line through its keys)
+    func swipe_words [] -> vec string
+        out : vec string []
+        if [ trail.count < 2 ] return out
+        kw : f32 [ bounds.w * 0.1 ]
+        # each letter's key middle, a to z
+        mid : vec vec2f []
+        for [ i: i32 0, i < 26, i += 1 ] mid.push[ vec2f [ -1e6, -1e6 ] ]
+        for [ k: FKey ] in keys
+            if [ k.kind != 0 || k.w <= 0.0 || k.outs.count == 0 ]
+                continue
+            c : i32 [ i32[ k.outs[ 0 ].chars[ 0 ] ] ]
+            if [ c < 97 || c > 122 ] continue
+            r : rect key_rect[ k ]
+            mid[ c - 97 ] = vec2f [ r.x + r.w * 0.5, r.y + r.h * 0.5 ]
+        g  : vec vec2f resampled[ trail, 32 ]
+        gs : vec vec2f shape_of[ g ]
+        glen : f32 [ 0.0 ]
+        for [ i: i32 1, i < trail.count, i += 1 ]
+            glen += apart_of[ trail[ i ], trail[ i - 1 ] ]
+        # the letters near where the finger began and ended
+        firsts : vec string []
+        lasts  : vec string []
+        abc : vec string chars_of[ 'abcdefghijklmnopqrstuvwxyz' ]
+        for [ i: i32 0, i < 26, i += 1 ]
+            if [ apart_of[ mid[ i ], g[ 0 ] ] < kw * 1.3 ]
+                firsts.push[ abc[ i ] ]
+            if [ apart_of[ mid[ i ], g[ 31 ] ] < kw * 1.3 ]
+                lasts.push[ abc[ i ] ]
+        en : EnWords english[]
+        best  : vec f32 []
+        for [ f: string ] in firsts
+            for [ l: string ] in lasts
+                for [ wi: i32 ] in en.ending[ '{f}{l}' ]
+                    ls : string letters_of[ en.words[ wi ].lcase[] ]
+                    ideal : vec vec2f []
+                    prev : ''
+                    for [ ch: string ] in chars_of[ ls ]
+                        if [ ch == prev ] continue
+                        prev = ch
+                        ideal.push[ mid[ i32[ ch.chars[ 0 ] ] - 97 ] ]
+                    ilen : f32 [ 0.0 ]
+                    for [ i: i32 1, i < ideal.count, i += 1 ]
+                        ilen += apart_of[ ideal[ i ], ideal[ i - 1 ] ]
+                    # a line far longer or shorter is not this word
+                    if [ ilen > glen * 2.2 + kw
+                         || glen > ilen * 2.2 + kw ] continue
+                    t : vec vec2f resampled[ ideal, 32 ]
+                    loc : f32 [ apart[ g, t ] / kw ]
+                    sh  : f32 [ apart[ gs, shape_of[ t ] ] ]
+                    sc : f32 [ en.cost[ wi ] - loc * loc * 2.0
+                        - sh * sh * 22.0 ]
+                    # kept: the 6 best, best first
+                    q : i32 [ best.count ]
+                    while [ q > 0 && best[ q - 1 ] < sc ] q -= 1
+                    if [ q >= 6 ] continue
+                    best.insert[ sc, q ]
+                    out.insert[ en.words[ wi ], q ]
+                    if [ best.count > 6 ]
+                        best.pop[]
+                        out.pop[]
+        return out
+
+    # a swipe let go: its likeliest word held, the others in the bar
+    func swipe_end []
+        ws : vec string swipe_words[]
+        if [ ws.count == 0 ] return
+        settle[]
+        # after a word or a mark, a space first
+        if [ last && last.count > 0 && last != ' ' ] put_text[ ' ' ]
+        if [ caps ]
+            up : vec string []
+            for [ w: string ] in ws
+                head : string w.mid[ 0, 1 ].ucase[]
+                up.push[ '{head}{w.mid[ 1, w.count - 1 ]}' ]
+            ws = up
+            if [ !caps_lock ] caps = false
+        n : i32 [ chars_of[ ws[ 0 ] ].count ]
+        reading = ws[ 0 ]
+        cands   = ws
+        cand_n  = vec i32 []
+        for [ w: string ] in ws
+            cand_n.push[ n ]
+        pick   = 0
+        swiped = true
+        compose[ shown[] ]
+        last = ws[ 0 ].mid[ ws[ 0 ].count - 1, 1 ]
+        ux.restyle = true
+
+    func press_key [ k: FKey ]
+        switch [ k.kind ]
+            case 0
+                # a qwerty key types its letter, slid or not
+                if [ k.w > 0.0 ] type[ k.outs[ 0 ] ]
+                el [ dir < k.outs.count ] type[ k.outs[ dir ] ]
+            case 1
+                back[]
+            case 2
+                settle[]
+                put_key[ 263 ]
+            case 3
+                settle[]
+                put_key[ 262 ]
+            case 4
+                space[]
+            case 5
+                if [ composing[] ] settle[]
+                el put_key[ 257 ]
+            case 6
+                # letters, numbers, emoji, round (the special
+                # characters' page goes back to the letters)
+                settle[]
+                if [ !numbers ] numbers = true
+                el [ !emoji && !symbols ] emoji = true
+                el
+                    numbers = false
+                    symbols = false
+                    emoji   = false
+            case 9
+                # from the letters (qwerty's #+=): straight there
+                symbols = !symbols || !numbers || emoji
+                numbers = true
+                emoji   = false
+            case 7
+                settle[]
+                numbers = false
+                symbols = false
+                emoji   = false
+                if [ dir == 2 && lang_at == 0 ] choosing = true
+                el [ dir == 3 && type_at ]
+                    set_qwerty[ !qwerty_on[] ]
+                el ux.input_language = Language [ next_language[] ]
+                lang_at = -1
+                type_at = false
+            case 8
+                # qwerty's shift: once, held for good, off
+                if [ k.w > 0.0 ]
+                    if [ !caps ] caps = true
+                    el [ !caps_lock ] caps_lock = true
+                    el
+                        caps      = false
+                        caps_lock = false
+                el [ k.outs.count > 0 && dir == 2 ] caps = true
+                el [ k.outs.count > 0 && dir == 4 ] caps = false
+                el modify[]
+        ux.restyle = true
+
+    public func on_press [ ev: Event ]
+        # a key never takes the focus from the field it types into
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ choosing ] return
+        ux.set_capture[ a ]
+        from = ux.mouse
+        at   = ev.mouse.pos
+        dir  = 0
+        down = key_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        trail   = vec vec2f []
+        trail.push[ at ]
+        swiping = false
+        ux.restyle = true
+
+    public func on_move [ ev: Event ]
+        if [ down < 0 ] return
+        r  : rect key_rect[ keys[ down ] ]
+        dx : f32 [ ux.mouse.x - from.x ]
+        dy : f32 [ ux.mouse.y - from.y ]
+        # a letter drawn off its key: a swipe
+        if [ keys[ down ].kind == 0 && keys[ down ].w > 0.0
+             && swipes[] ]
+            # points 14 px apart; the last one follows the finger
+            p : vec2f [ at.x + dx, at.y + dy ]
+            n : i32 [ trail.count ]
+            if [ n >= 2 && apart_of[ p, trail[ n - 2 ] ] < 14.0 ]
+                trail[ n - 1 ] = p
+            el trail.push[ p ]
+            if [ !swiping && apart_of[ p, at ] > r.w * 0.9 ]
+                swiping = true
+            if [ swiping ]
+                ux.restyle = true
+                return
+        reach : f32 [ max[ 18.0, min[ r.w, r.h ] * 0.25 ] ]
+        was : i32 [ dir ]
+        if [ dx * dx + dy * dy < reach * reach ]
+            dir = 0
+        el [ abs[ dx ] > abs[ dy ] ]
+            dir = (dx < 0.0) ? 1 : 3
+        el
+            dir = (dy < 0.0) ? 2 : 4
+        # a/A's down goes to the edge: within 15% of a key of the
+        # keyboard's foot, else a tap
+        # the finger in the keyboard's own space: the press and the move
+        y : f32 [ at.y + dy ]
+        edge : f32 [ bounds.h - r.h * 0.15 ]
+        if [ keys[ down ].kind == 8 && dir == 4 && y < edge ]
+            dir = 0
+        # the language key drawn up: onto manage languages
+        if [ keys[ down ].kind == 7 ]
+            row : i32 [ (dir == 2 && y < r.y) ? 0 : -1 ]
+            if [ row != lang_at ]
+                lang_at    = row
+                ux.restyle = true
+            # drawn right past it: the letters' type (not kana)
+            px : f32 [ at.x + dx ]
+            right : bool [ dir == 3 && px > r.x + r.w
+                && lang[] != Language.japanese && !numbers ]
+            if [ right != type_at ]
+                type_at    = right
+                ux.restyle = true
+        if [ dir != was ] ux.restyle = true
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        if [ down >= 0 ]
+            k : FKey keys[ down ]
+            down = -1
+            if [ swiping ] swipe_end[]
+            el press_key[ k ]
+        swiping = false
+        ux.restyle = true
+
+    # what a key says
+    func label_of [ k: FKey ] -> string
+        jp : bool [ lang[] == Language.japanese ]
+        zh : bool [ lang[] == Language.chinese ]
+        g  : vec string glyphs[]
+        switch [ k.kind ]
+            case 0
+                # a qwerty letter, upper case while shifted
+                if [ k.w > 0.0 ]
+                    return (caps) ? k.outs[ 0 ].ucase[] : k.outs[ 0 ]
+                # English letters show all of theirs (abc)
+                if [ k.outs.count > 0 && (symbols || (!jp && !numbers
+                     && k.outs[ 0 ] != '@')) ]
+                    return joined[ k.outs, 0, k.outs.count ]
+                return k.outs[ 0 ]
+            case 1
+                return g[ 2 ]
+            case 2
+                return g[ 0 ]
+            case 3
+                return g[ 1 ]
+            case 4
+                if [ zh ] return (composing[]) ? '选择' : '空格'
+                if [ composing[] ] return '変換'
+                return (jp) ? '空白' : 'space'
+            case 5
+                if [ zh ] return (composing[]) ? '确认' : '换行'
+                if [ composing[] ] return '確定'
+                return (jp) ? '改行' : 'return'
+            case 6
+                if [ !numbers ] return '123'
+                if [ !emoji && !symbols ] return 'emoji'
+                return (jp) ? 'あいう' : 'abc'
+            case 9
+                return (symbols) ? '123' : '#+='
+            case 7
+                # the language typed in now (a tap: the next)
+                return language_label[ lang_name[] ]
+            case 8
+                if [ k.w > 0.0 ] return (caps_lock) ? 'CAPS' : 'shift'
+                return (jp && !numbers) ? '小゛゜' : 'a/A'
+        return ''
+
+    # the way of the held key lying on key i (0 itself), else -1
+    func way_on [ i: i32 ] -> i32
+        if [ down < 0 || keys[ down ].outs.count == 0 ] return -1
+        h : FKey keys[ down ]
+        k : FKey keys[ i ]
+        if [ i == down ] return 0
+        if [ h.w > 0.0 ] return -1
+        dc : vec i32 [] [ 0, -1, 0, 1, 0 ]
+        dr : vec i32 [] [ 0, 0, -1, 0, 1 ]
+        for [ d: i32 1, d < h.outs.count && d < 5, d += 1 ]
+            if [ h.outs[ d ].count == 0 ] continue
+            c : i32 [ h.col + dc[ d ] ]
+            r : i32 [ h.row + dr[ d ] ]
+            if [ k.col == c && r >= k.row && r < k.row + k.rows ]
+                return d
+        return -1
+
+    # its place: a fifth of the width, a row (the bar is one too)
+    func area_of [ k: FKey ] -> Region
+        sp : vec2f span_of[ k ]
+        l : f32 [ sp.x * 100.0 ]
+        t : f32 [ 20.0 + f32[ k.row ] * 20.0 ]
+        r : f32 [ 100.0 - l - sp.y * 100.0 ]
+        b : f32 [ 100.0 - t - 20.0 * f32[ k.rows ] ]
+        return Region [ 'l{l}%+3px t{t}%+3px r{r}%+3px b{b}%+3px' ]
+
+    # each key an element: the held one and its ways are its states
+    # the other languages added
+    func slots [] -> vec string
+        return added_languages[]
+
+    # the key's next: English, then each kept language, round
+    func next_language [] -> string
+        ring : vec string [] [ 'english' ]
+        for [ o: string ] in slots[]
+            ring.push[ o ]
+        for [ i: i32 0, i < ring.count, i += 1 ]
+            if [ Language [ ring[ i ] ] == lang[] ]
+                return ring[ (i + 1) % ring.count ]
+        return 'english'
+
+    # the j-th language we support added, or removed if it was
+    public func toggle_language [ j: i32 ]
+        n : string second_languages[][ j ]
+        ss : vec string slots[]
+        kept : vec string []
+        for [ o: string ] in ss
+            if [ o != n ] kept.push[ o ]
+        if [ kept.count == ss.count ] kept.push[ n ]
+        lang_slots = kept
+        save_languages[]
+        # its language removed while typed in: English
+        if [ !language_added[ n ] && Language [ n ] == lang[] ]
+            ux.input_language = Language.english
+        ux.restyle = true
+
+    # closed: what was being chosen stays as it is, the focus goes
+    # a hardware letter in Japanese: romaji, kana once it reads as one
+    func type_romaji [ c: string ]
+        was : string [ (roma) ? roma : '' ]
+        r : string '{was}{c}'
+        had : string [ (reading) ? reading : '' ]
+        while [ r.count > 0 ]
+            k : string romaji_kana[ r ]
+            if [ k.count > 0 ]
+                had = '{had}{k}'
+                r = ''
+            el [ romaji_starts[ r ] ]
+                break
+            el [ r.count >= 2 && r.mid[ 0, 1 ] == r.mid[ 1, 1 ]
+                 && i32[ r.chars[ 0 ] ] != 110 ]
+                # a doubled consonant: っ, the second starts anew
+                had = '{had}っ'
+                r = r.mid[ 1, r.count - 1 ]
+            el [ r.count >= 2 && i32[ r.chars[ 0 ] ] == 110 ]
+                had = '{had}ん'
+                r = r.mid[ 1, r.count - 1 ]
+            el
+                had = '{had}{r.mid[ 0, 1 ]}'
+                r = r.mid[ 1, r.count - 1 ]
+        roma = r
+        set_reading[ had ]
+
+    # a hardware keyboard's text: composed in a composing language
+    public func take_text [ ev: Event ] -> bool
+        t : string ev.key.text
+        if [ !t || t.count != 1 || numbers ] return false
+        if [ lang[] == Language.english ] return false
+        b : i32 [ i32[ t.chars[ 0 ] ] ]
+        letter : bool [ (b >= 97 && b <= 122) || (b >= 65 && b <= 90) ]
+        c : string t.lcase[]
+        if [ composing[] && b == 32 ]
+            space[]
+            return true
+        # 1 to 9 while choosing: that word
+        if [ composing[] && b >= 49 && b <= 57 && cands
+             && b - 49 < cands.count ]
+            choose[ b - 49 ]
+            return true
+        if [ letter && lang[] == Language.chinese ]
+            type[ c ]
+            return true
+        if [ (letter || b == 45) && lang[] == Language.japanese ]
+            type_romaji[ c ]
+            return true
+        if [ composing[] ] settle[]
+        return false
+
+    # its keys while choosing: back, enter, escape
+    public func take_key [ ev: Event ] -> bool
+        if [ !composing[] || !ev.key.state ] return false
+        k : i32 [ ev.key.unicode ]
+        if [ k == 259 ]
+            back[]
+            return true
+        if [ k == 257 ]
+            # Chinese: Enter puts in the letters as typed
+            if [ lang[] == Language.chinese ] pick = -1
+            settle[]
+            return true
+        if [ k == 256 ]
+            reading = ''
+            roma    = ''
+            compose[ '' ]
+            offer[]
+            ux.restyle = true
+            return true
+        if [ k == 263 || k == 262 ] settle[]
+        return false
+
+    # the bar's language key: the next language (English, the added)
+    public func press_language []
+        settle[]
+        ux.input_language = Language [ next_language[] ]
+        ux.restyle = true
+
+    public func type_emoji [ t: string ]
+        settle[]
+        put_text[ t ]
+
+    public func toggle_mic []
+        if [ hearing ]
+            dictation_stop[]
+            hearing  = false
+            flushing = true
+        el
+            settle[]
+            if [ dictation_start[] == 0 ] hearing = true
+        ux.restyle      = true
+        ux.will_animate = true
+
+    # the take's sound read each frame; its words typed once made
+    public func tick [ w: Window ]
+        if [ !hearing && !flushing ] return
+        dictation_gpu[ Canvas w.screen ]
+        ux.will_animate = true
+        if [ hearing ]
+            for [ i: i32 0, i < 64, i += 1 ]
+                if [ !dictation_poll[] ] break
+            return
+        if [ !dictation_flush[] ] return
+        flushing = false
+        t : string dictation_take[]
+        if [ t && t.count > 0 ] put_text[ t ]
+        # the mic is let go between takes
+        dictation_release[]
+        ux.restyle = true
+
+    public func close_keys []
+        settle[]
+        choosing = false
+        if [ ux.focus ] ux.release_focus[ ux.focus ]
+        ux.restyle = true
+
+    public func close_choices []
+        choosing   = false
+        ux.restyle = true
+
+    # managing: every language we support, lit when added, then back
+    func choices [] -> Elements
+        e : Elements []
+        e[ 'title' ] = FlickWord [ label: 'manage languages', at: -1,
+            area: Region { l0 t0 r0 h20% } ]
+        os : vec string second_languages[]
+        h : f32 [ 80.0 / f32[ os.count + 1 ] ]
+        for [ j: i32 0, j < os.count, j += 1 ]
+            t : f32 [ 20.0 + f32[ j ] * h ]
+            b : f32 [ 80.0 - f32[ j + 1 ] * h ]
+            e[ 'lang_{j}' ] = FlickChoice [ slot: j,
+                label: language_title[ os[ j ] ],
+                chosen: language_added[ os[ j ] ],
+                area: Region [ 'l3px t{t}%+3px r3px b{b}%+3px' ] ]
+        bt : f32 [ 20.0 + f32[ os.count ] * h ]
+        e[ 'back' ] = FlickChoice [ slot: -1, label: 'back',
+            area: Region [ 'l3px t{bt}%+3px r3px b3px' ] ]
+        return e
+
+    # a PC's bar: the language, the words, the close
+    func bar_render [] -> Elements
+        e : Elements []
+        e[ 'lang' ] = FlickLang [ label: language_label[ lang_name[] ],
+            area: Region { l3px t3px w70px b3px } ]
+        # as the task bar's right button: flush, its width
+        e[ 'close' ] = FlickClose [ label: glyphs[][ 5 ],
+            area: Region { r0 t0 w1.33 b0 } ]
+        e[ 'words' ] = FlickStrip [ words: cands, pick: pick,
+            area: Region { l80px t0 r1.33 b0 } ]
+        return e
+
+    # the language typed in, by its enum name
+    func lang_name [] -> string
+        for [ o: string ] in second_languages[]
+            if [ Language [ o ] == lang[] ] return o
+        return 'english'
+
+    func render [] -> Elements
+        ux.input_device = a
+        if [ bar_only ] return bar_render[]
+        if [ choosing ] return choices[]
+        e : Elements []
+        ks : vec FKey layout[]
+        for [ i: i32 0, i < ks.count, i += 1 ]
+            k : FKey ks[ i ]
+            w : i32 [ way_on[ i ] ]
+            t : string [ (w > 0) ? keys[ down ].outs[ w ]
+                : label_of[ k ] ]
+            ar : Region area_of[ k ]
+            # a job key's way (manage languages): a smaller label
+            if [ w > 0 && keys[ down ].kind != 0 ]
+                e[ 'key_{i}' ] = FlickWay [ label: t, area: ar,
+                    way: true, chosen: w == dir ]
+            # a place with no key: nothing while no way lies on it
+            el [ k.kind == 10 && w < 0 ] continue
+            el [ k.kind == 0 || w > 0 ]
+                e[ 'key_{i}' ] = FlickKey [ label: t, area: ar,
+                    way: w >= 0, chosen: w >= 0 && w == dir ]
+            el
+                e[ 'key_{i}' ] = FlickJob [ label: t, area: ar,
+                    chosen: k.kind == 8 && caps ]
+        # the bar: the reading's words (short of the close), the
+        # shown one chosen
+        e[ 'close' ] = FlickHide [
+            area: Region { l80%+3px t3px r3px b90%+3px } ]
+        # a top key held: its up way lies on the bar, the words aside
+        top_up : bool [ down >= 0 && keys[ down ].kind == 0
+             && keys[ down ].row == 0 && keys[ down ].outs.count > 2
+             && keys[ down ].outs[ 2 ].count > 0 ]
+        if [ !top_up ]
+            e[ 'words' ] = FlickStrip [ words: cands, pick: pick,
+                area: Region { l10%+6px t0 r20% h20% } ]
+        if [ swiping ]
+            e[ 'trail' ] = SwipeTrail [ pts: trail,
+                area: Region { l0 t0 r0 b0 } ]
+        # the emoji page: the grid where the numbers' 1 to 9 are
+        if [ numbers && emoji && !symbols ]
+            e[ 'emoji' ] = EmojiGrid [
+                area: Region { l10%+3px t20%+3px r20%+3px b20%+3px } ]
+        # the mic, the bar's first key, over the language key's column
+        e[ 'mic' ] = FlickMic [ chosen: hearing,
+            area: Region { l3px t3px r90%+3px b80%+3px } ]
+        # the language key drawn up: manage languages over it
+        if [ down >= 0 && keys[ down ].kind == 7 && dir == 2 ]
+            lk : FKey keys[ down ]
+            cell : FKey key_beside[ lk, 0, -1 ]
+            e[ 'lang_0' ] = FlickWay [ label: 'manage languages',
+                way: true, chosen: lang_at == 0,
+                area: area_of[ cell ] ]
+        # drawn right: the other type of keys for the letters
+        if [ down >= 0 && keys[ down ].kind == 7 && dir == 3
+             && lang[] != Language.japanese && !numbers ]
+            lk : FKey keys[ down ]
+            e[ 'type_0' ] = FlickWay [
+                label: (qwerty_on[]) ? '12 keys' : 'qwerty',
+                way: true, chosen: type_at,
+                area: area_of[ key_beside[ lk, 1, 0 ] ] ]
+        # a top key's up way has no key over it: it lies on the bar
+        if [ top_up ]
+            h : FKey keys[ down ]
+            sp : vec2f span_of[ h ]
+            l : f32 [ sp.x * 100.0 ]
+            r : f32 [ 100.0 - l - sp.y * 100.0 ]
+            up : string 'l{l}%+3px t3px r{r}%+3px b80%+3px'
+            e[ 'way_up' ] = FlickKey [ label: h.outs[ 2 ],
+                way: true, chosen: dir == 2, area: Region [ up ] ]
+        return e
+
+# a field over the keys, to try them: `silver keyboard`
+element keyboard : trinity
+    public width      : i32    [ 540 ]
+    public height     : i32    [ 960 ]
+    public title      : string [ 'keyboard' ]
+    public background : string [ 'Background' ]
+    public [ Launch ] language : Language [ Language.japanese ]
+    intern started : bool
+
+    style : CSS {
+        layers.ground:
+            fill_color: #0e0b1a
+    }
+
+    func render [] -> Elements
+        if [ !started ] ux.input_language = language
+        e : Elements []
+        e[ 'field' ] = TextInput [
+            area: Region { l0.5 t0.5 r0.5 h1.6 } ]
+        if [ ux.words_wanted ]
+            e[ 'keys' ] = FlickKeys [ area: Region { l0 b49% r0 b0 } ]
+        return e
+
+    # the field has the keys from the start
+    public func on_frame [ w: Window ]
+        if [ started || !elements ] return
+        f : element elements[ 'field' ]
+        if [ !f ] return
+        w.set_focus[ f ]
+        started = true
+
+# the Japanese table: words, their conjugated forms, katakana
+# (かんじ: 感じ before 漢字, as the sentences use them)
+expect func t_kana_lookup [] -> bool
+    d : Lexicon words_of[ Language.japanese ]
+    kanji : bool [ false ]
+    for [ w: string ] in d.find[ 'かんじ' ]
+        if [ w == '漢字' ] kanji = true
+    if [ !kanji ] return false
+    has : bool [ false ]
+    for [ w: string ] in d.find[ 'かいた' ]
+        if [ w == '書いた' ] has = true
+    if [ !has ] return false
+    if [ d.find[ 'んんんんん' ].count != 0 ] return false
+    if [ to_katakana[ 'かんじ' ] != 'カンジ' ] return false
+    return chars_of[ 'aか漢' ].count == 3
+
+# an element with its own on_char takes words; one with on_key alone
+element WordsProbe
+    func on_char [ ev: Event ]
+        return
+
+element KeysProbe
+    func on_key [ ev: Event ]
+        return
+
+expect func t_takes_words [] -> bool
+    w : WordsProbe []
+    k : KeysProbe []
+    p : element []
+    return w.takes_words*[] && !k.takes_words*[] && !p.takes_words*[]
+
+# pinyin to words, the heaviest first
+expect func t_pinyin_lookup [] -> bool
+    py : Lexicon words_of[ Language.chinese ]
+    shi : vec string py.find[ 'shi' ]
+    zg  : vec string py.find[ 'zhongguo' ]
+    nh  : vec string py.find[ 'nihao' ]
+    if [ shi.count == 0 || shi[ 0 ] != '是' ] return false
+    if [ zg.count == 0 || zg[ 0 ] != '中国' ] return false
+    return nh.count > 0 && nh[ 0 ] == '你好'
+
+# romaji to kana: whole ones, ones still being typed
+expect func t_romaji [] -> bool
+    if [ romaji_kana[ 'shi' ] != 'し' ] return false
+    if [ romaji_kana[ 'kya' ] != 'きゃ' ] return false
+    if [ !romaji_starts[ 'sh' ] || romaji_starts[ 'shi' ] ] return false
+    return romaji_kana[ 'q' ].count == 0
+
+# whole sentences, Chinese and Japanese: one function (良い天気: the
+# sentences write the set phrase so, after は too; いい天気 is as good)
+expect func t_sentence [] -> bool
+    ok : bool [ true ]
+    for [ pair: string ] in vec string [] [
+            'wojintianqushangban:我今天去上班',
+            'nihaoshijie:你好世界',
+            'womenyiqichifanba:我们一起吃饭吧',
+            'わたしはがくせいです:私は学生です',
+            'きょうはいいてんきですね:今日は良い天気ですね' ]
+        at : i32 [ pair.index_of[ ':' ] ]
+        py : string pair.mid[ 0, at ]
+        want : string pair.mid[ at + 1, pair.count - at - 1 ]
+        n : i32 [ 0 ]
+        rc : vec string chars_of[ py ]
+        zh : bool [ (i32[ py.chars[ 0 ] ] & 255) < 128 ]
+        got : string sentence[ rc,
+            (zh) ? Language.chinese : Language.japanese, @n ]
+        log '{py} -> {got} ({n} of {rc.count})'
+        if [ got != want || n != rc.count ] ok = false
+    # a half typed syllable stays letters: the words before it
+    n : i32 [ 0 ]
+    half : string sentence[ chars_of[ 'nihaoshij' ],
+        Language.chinese, @n ]
+    log 'nihaoshij -> {half} ({n})'
+    return ok && n == 8

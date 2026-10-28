@@ -97,6 +97,16 @@ enum State
     shifted   : 8192
 
 
+# the languages an input device speaks
+enum Language
+    english  : 0
+    japanese : 1
+    chinese  : 2
+
+# on a phone: init.c sets SILVER_MOBILE from orbiter.phone
+func mobile_on [] -> bool
+    return getenv[ 'SILVER_MOBILE' ] != null
+
 alias Elements : map    element [ string ]
 alias Layers   : map    Layer   [ string ]
 alias astrings : vec string
@@ -225,9 +235,27 @@ ielement element
         scroll_to[ sbl.drag_to[ my ] ]
         return true
 
+    # momentum: 1.8% of the speed left after a second (twice a
+    # phone list's decay); it stops at either end
+    func fling_step []
+        dt  : f32 [ ux.frame_factor / 60.0 ]
+        top : f32 [ content_h - bounds.h ]
+        to  : f32 [ scroll.y + fling * dt ]
+        if [ to > top ] to = top
+        if [ to < 0.0 ] to = 0.0
+        if [ to == 0.0 || to == top ] fling = 0.0
+        fling = fling * pow[ 0.018, dt ]
+        if [ fling < 20.0 && fling > -20.0 ] fling = 0.0
+        scroll.y    = to
+        scroll_goal = to
+        scroll_anim = true
+        pristine    = false
+        ux.will_animate = true
+
     # the thumb's goal: the scroll eases there frame by frame
     func scroll_to [ sy: f32 ]
         if [ sy < 0.0 ] return
+        fling = 0.0
         scroll_goal = sy
         scroll_anim = true
         pristine    = false
@@ -253,6 +281,7 @@ ielement element
         if [ sbl ] scroll_to[ sbl.drag_to[ cursor_pos.y * bounds.h ] ]
     public func on_wheel [ ev: Event ]
         if [ content_h <= 0.0 ] return
+        fling = 0.0
         speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 26.0 ]
         if [ !scroll_anim ] scroll_goal = scroll.y
         scroll_goal += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
@@ -264,6 +293,18 @@ ielement element
         pristine = false
         ux.will_animate = true
     public func on_key     [ ev: Event ] return
+    # the user's words go here (a field, or its own on_char), not
+    # only its keys: a phone's keyboard comes up for it
+    public func takes_words [] -> bool
+        if [ layers && !read_only ]
+            for [ l: Layer, k: string ] in layers
+                if [ l.editable ] return true
+        for [ ty : typeid[ a ], ty && ty != typeid[ element ],
+              ty = ty.context ]
+            if [ find_member[ ty, "on_char", AU_MEMBER_FUNC, 0,
+                 false ] ]
+                return true
+        return false
     public func on_pad     [ ev: Event ] return
     public func on_char    [ ev: Event ] return
     public func on_drop    [ ev: Event ] return
@@ -328,6 +369,18 @@ ielement element
     # the picture is drawn again as it was
     intern mask_sx      : f32 [ -1.0 ]
     intern mask_sy      : f32 [ -1.0 ]
+    # on a phone (SILVER_MOBILE): :use_mobile in a style
+    public use_mobile   : bool
+    # a drag let go while moving: px a second, decaying each frame
+    mutable fling       : f32
+    # a press held still a second sets it on the element and its
+    # peers (:arranging); any of them then drags; a tap on none ends it
+    public arranging    : bool
+    # its last lit paint's reach, a factor of the window's (0 = 1)
+    mutable near_far    : f32
+
+    func init []
+        use_mobile = mobile_on[]
 
     public func set_capture []
         ux.set_capture[ a ]
@@ -512,6 +565,7 @@ ielement element
 
 
     intern func animate_within [ ]
+        if [ fling != 0.0 ] fling_step[]
         if [ scroll_anim ]
             # the thumb held: 20% to the goal a frame, 80% kept
             scroll.y = filter_n[ scroll.y, scroll_goal,
@@ -840,9 +894,10 @@ class Layer
                 parent.sel_col    = col + clip.count
                 parent.anchor_col = parent.sel_col
         el [ key == 261 ]
+            nx : i32 [ utf8_next[ text, col ] ]
             if [ !delete_selection[ text ] && col < text.count ]
                 parent.edit = text.mid[ 0, col ]
-                    + text.mid[ col + 1, text.count - col - 1 ]
+                    + text.mid[ nx, text.count - nx ]
             parent.anchor_col = parent.sel_col
         el [ key == 268 || key == 269 ]
             parent.sel_col = (key == 268) ? 0 : text.count
@@ -850,10 +905,10 @@ class Layer
         el [ key == 259 ]
             if [ !delete_selection[ text ] ]
                 if [ col > 0 ]
-                    parent.edit = text.mid[ 0,
-                            col - 1 ] + text.mid[ col,
-                                    text.count - col ]
-                    parent.sel_col -= 1
+                    pv : i32 [ utf8_prev[ text, col ] ]
+                    parent.edit = text.mid[ 0, pv ]
+                        + text.mid[ col, text.count - col ]
+                    parent.sel_col = pv
             parent.anchor_col = parent.sel_col
         el [ key == 263 ]
             if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
@@ -863,7 +918,7 @@ class Layer
                 parent.sel_col    = sc
                 parent.anchor_col = sc
             el [ col > 0 ]
-                parent.sel_col -= 1
+                parent.sel_col = utf8_prev[ text, col ]
                 if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
         el [ key == 262 ]
             if [ parent.sel_col != parent.anchor_col && !ev.key.shift ]
@@ -873,7 +928,7 @@ class Layer
                 parent.sel_col    = ec
                 parent.anchor_col = ec
             el [ col < text.count ]
-                parent.sel_col += 1
+                parent.sel_col = utf8_next[ text, col ]
                 if [ !ev.key.shift ] parent.anchor_col = parent.sel_col
         el [ key == 256 ]
             parent.edit = ''
@@ -938,6 +993,10 @@ class Layer
         col_xs = vec f32 []
         col_xs.push[ 0.0 ]
         for [ i: i32 1, i <= n, i += 1 ]
+            # inside a character: the place before it, never a caret
+            if [ step == 1 && utf8_inside[ etext, i ] ]
+                col_xs.push[ col_xs[ i - 1 ] ]
+                continue
             px : f32 [ cv.measure_text[ etext.mid[ 0, i * step ] ].w ]
             col_xs.push[ px ]
         prefix : string [ (has_edit) ? etext.mid[ 0, cb ] : '' ]
@@ -1032,6 +1091,29 @@ class Event
 
 
 alias EventCallback : lambda none [ Event ]
+
+# a byte inside a UTF-8 character: never a caret place
+func utf8_inside [ t: string, i: i32 ] -> bool
+    if [ i <= 0 || i >= t.count ] return false
+    return (i32[ t.chars[ i ] ] & 192) == 128
+
+# Au's name test: the bytes of the name character at s, 0 if none
+# (any script's letters; first: one that may start a name)
+func au_name_len [ s: cstr, first: i32 ] -> i32
+
+# the caret place one character back
+func utf8_prev [ t: string, col: i32 ] -> i32
+    n : i32 [ col - 1 ]
+    while [ n > 0 && utf8_inside[ t, n ] ]
+        n -= 1
+    return max[ n, 0 ]
+
+# the caret place one character on
+func utf8_next [ t: string, col: i32 ] -> i32
+    n : i32 [ col + 1 ]
+    while [ n < t.count && utf8_inside[ t, n ] ]
+        n += 1
+    return min[ n, t.count ]
 
 # a field whose app reads its text: the editable layer edits first
 func field_key [ e: element, ev: Event ]

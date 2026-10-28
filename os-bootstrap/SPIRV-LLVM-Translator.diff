@@ -1,0 +1,28 @@
+--- a/lib/SPIRV/libSPIRV/SPIRVModule.cpp
++++ b/lib/SPIRV/libSPIRV/SPIRVModule.cpp
+@@ -58,6 +58,25 @@
+ #include <unordered_map>
+ #include <unordered_set>
+ 
++// spv::StorageClass has no fixed underlying type, so LLVM's enum
++// keys (~0 cast to it) are not constant to clang 20 and later
++namespace llvm {
++template <> struct DenseMapInfo<spv::StorageClass> {
++  static inline spv::StorageClass getEmptyKey() {
++    return static_cast<spv::StorageClass>(0x7ffffffe);
++  }
++  static inline spv::StorageClass getTombstoneKey() {
++    return static_cast<spv::StorageClass>(0x7ffffffd);
++  }
++  static unsigned getHashValue(spv::StorageClass V) {
++    return static_cast<unsigned>(V) * 37U;
++  }
++  static bool isEqual(spv::StorageClass A, spv::StorageClass B) {
++    return A == B;
++  }
++};
++} // namespace llvm
++
+ namespace SPIRV {
+ 
+ namespace {

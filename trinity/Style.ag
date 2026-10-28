@@ -2003,3 +2003,16 @@ expect func t_style_flat [] -> bool
     flat : string st.css_flat[ typeid[ FlatSub ], '' ]
     want : string [ 'layers.body:\n    fill_color: #101820\n    radius: 8\nlayers.face:\n    label_color: #0000\n    label_size: 18\n:focused\n    layers.body:\n        fill_color: #162531\nlayers.glow:\n    radius: 4\n' ]
     return flat == want
+
+# SILVER_MOBILE gives every element :use_mobile, as a style reads it
+expect func t_use_mobile [] -> bool
+    unsetenv[ 'SILVER_MOBILE' ]
+    off : FlatBase []
+    off.initialize[]
+    setenv[ 'SILVER_MOBILE', 'fp6', 1 ]
+    on : FlatBase []
+    on.initialize[]
+    unsetenv[ 'SILVER_MOBILE' ]
+    off_st : Au off.get_property[ 'use_mobile' ]
+    on_st  : Au on.get_property[ 'use_mobile' ]
+    return !off_st.cast_bool[] && on_st.cast_bool[]

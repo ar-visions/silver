@@ -2206,6 +2206,12 @@ Render Canvas
     func reset [ c: vec4f ]
         if [ !color || !color.vk_image ]
             return
+        # cleared: nothing drawn yet, and every draw will say where
+        ink_known = true
+        ink_x0 = 1e30
+        ink_y0 = 1e30
+        ink_x1 = -1e30
+        ink_y1 = -1e30
         color.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
         cv : VkClearColorValue
         cv.float32[0] = c.x
@@ -2448,9 +2454,67 @@ Render Canvas
         defaults.stroke_color = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
 
     # an explicit font holds until set_font[null] releases it
+    # a font sized in points draws at the display's own pixels: its
+    # twin opened at size x scale (a pixel-sized one as it is)
+    # a box in drawing coordinates added to the ink, through the
+    # state's transform, widened by what reaches past the shape
+    func ink_add [ st: CanvasState, x: f32, y: f32, bw: f32, bh: f32,
+                   pad: f32 ]
+        t : affine [ st.transform ]
+        xs : vec f32 [] [ x - pad, x + bw + pad ]
+        ys : vec f32 [] [ y - pad, y + bh + pad ]
+        for [ i: i32 0, i < 2, i += 1 ]
+            for [ j: i32 0, j < 2, j += 1 ]
+                cx : f32 [ t.apply_x[ xs[ i ], ys[ j ] ] ]
+                cy : f32 [ t.apply_y[ xs[ i ], ys[ j ] ] ]
+                ink_x0 = minf[ ink_x0, cx ]
+                ink_y0 = minf[ ink_y0, cy ]
+                ink_x1 = maxf[ ink_x1, cx ]
+                ink_y1 = maxf[ ink_y1, cy ]
+        ink_noted = true
+
+    # a draw's covered area summed under its mode, for stats
+    func mode_pixels [ m: i32, area: f32 ]
+        if [ !vk.mode_px ]
+            vk.mode_px = vec f32 []
+            for [ i: i32 0, i < 32, i += 1 ]
+                vk.mode_px.push[ 0.0 ]
+        if [ m < 0 || m >= 32 ] return
+        sum : f32 [ vk.mode_px[ m ] + area ]
+        vk.mode_px[ m ] = sum
+        # a quarter of the screen or more: by who drew it
+        if [ area < f32[ width * height ] * 0.25 ] return
+        if [ !vk.big_names ]
+            vk.big_names = vec string []
+            vk.big_px    = vec f32 []
+        who : string [ (vk.paint_who) ? vk.paint_who : '?' ]
+        key : '{who}:m{m}'
+        at : i32 [ vk.big_names.index_of[ key ] ]
+        if [ at < 0 ]
+            vk.big_names.push[ key ]
+            vk.big_px.push[ area ]
+        el
+            tot : f32 [ vk.big_px[ at ] + area ]
+            vk.big_px[ at ] = tot
+
     func set_font [ fnt: CanvasFont ]
-        font = fnt
+        font = pixel_font[ fnt ]
         font_set = (fnt) ? true : false
+
+    func pixel_font [ fnt: CanvasFont ] -> CanvasFont
+        ds : f32 [ (w && w.scale > 0) ? w.scale : 1.0 ]
+        if [ !fnt || fnt.pixel_scale > 0.0 || ds == 1.0 ] return fnt
+        if [ !fnt.uri || fnt.uri.count == 0 ] return fnt
+        px : i32 [ i32[ round[ f32[ fnt.size_px ] * ds ] ] ]
+        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
+        key : string '{fnt.uri}@{px}x{ds}'
+        cf  : CanvasFont vk.font_cache[ key ]
+        if [ !cf ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: fnt.uri,
+                face_index: fnt.face_index, size_px: px,
+                pixel_scale: ds ]
+            vk.font_cache[ key ] = cf
+        return cf
 
     # paint svgs one flat color (state tinting); off restores authored
     func svg_override [ c: rgba ]
@@ -2517,7 +2581,8 @@ Render Canvas
         if [ !cf ]
             cf = CanvasFont [ ft_lib: ft_lib,
                               uri: 'fonts/SpaceMono-Combined.ttf',
-                              size_px: dsz ]
+                              size_px: dsz,
+                              pixel_scale: (w.scale > 0) ? w.scale : 1.0 ]
             vk.font_cache[ key ] = cf
         font = cf
 
@@ -2876,6 +2941,19 @@ Render Canvas
     func text_end [ fnt: CanvasFont, vi: i32 ]
         text_vbo.vertex_count = vi
         if [ text_vbo.vertex && vi > 0 ]
+            # the glyphs' quads are where the text lands
+            vd : @f32 [ text_vbo.vertex_data ]
+            lx : f32 [ 1e30 ]
+            ly : f32 [ 1e30 ]
+            hx : f32 [ -1e30 ]
+            hy : f32 [ -1e30 ]
+            for [ q: i32 0, q < vi, q += 1 ]
+                lx = minf[ lx, vd[ q * 4 ] ]
+                hx = maxf[ hx, vd[ q * 4 ] ]
+                ly = minf[ ly, vd[ q * 4 + 1 ] ]
+                hy = maxf[ hy, vd[ q * 4 + 1 ] ]
+            ink_add[ states[ state_depth - 1 ], lx, ly, hx - lx, hy - ly,
+                2.0 + shadow_reach[] ]
             text_vbo.vertex.update_part[ text_vbo.vertex_data,
                     i64[ vi ] * 16 ]
             text_pipeline.ensure_bound[]
@@ -3295,6 +3373,25 @@ Render Canvas
         if [ src ]
             src.flush_submit[]
             src.flush_text[]
+        # only where it has ink: an empty canvas costs nothing, a
+        # sparse one its drawn part (a phone's screen is mostly that)
+        if [ src && src.ink_known && src.content_w > 0
+             && src.content_h > 0 ]
+            if [ src.ink_x1 <= src.ink_x0 || src.ink_y1 <= src.ink_y0 ]
+                return
+            cw : f32 [ f32[ src.content_w ] ]
+            chh : f32 [ f32[ src.content_h ] ]
+            u0 : f32 [ clamp[ src.ink_x0 / cw, 0.0, 1.0 ] ]
+            v0 : f32 [ clamp[ src.ink_y0 / chh, 0.0, 1.0 ] ]
+            u1 : f32 [ clamp[ src.ink_x1 / cw, 0.0, 1.0 ] ]
+            v1 : f32 [ clamp[ src.ink_y1 / chh, 0.0, 1.0 ] ]
+            if [ u1 <= u0 || v1 <= v0 ] return
+            # all of it: as before
+            if [ u0 > 0.0 || v0 > 0.0 || u1 < 1.0 || v1 < 1.0 ]
+                draw_canvas_crop[ src, rect [ x: x + u0 * rw,
+                    y: y + v0 * rh, w: (u1 - u0) * rw,
+                    h: (v1 - v0) * rh ], u0, v0, u1, v1 ]
+                return
         tex : Texture [ (src.reduction) ? src.reduction : src.color ]
         tex.transition[ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         image_override = tex
@@ -3349,10 +3446,28 @@ Render Canvas
             (mask_src.height > 0)
             ? f32[ mask_src.content_h ] * ms / f32[ mask_src.height ]
             : 1.0 ]
-        image_uv = vec4f [ 0.0, 0.0, uvx, uvy ]
-        mask_uv  = vec4f [ 0.0, 0.0, muvx, muvy ]
+        # only where the layer has ink, the mask cut the same
+        u0 : f32 [ 0.0 ]
+        v0 : f32 [ 0.0 ]
+        u1 : f32 [ 1.0 ]
+        v1 : f32 [ 1.0 ]
+        if [ src.ink_known && src.content_w > 0 && src.content_h > 0 ]
+            cw : f32 [ f32[ src.content_w ] ]
+            chh : f32 [ f32[ src.content_h ] ]
+            u0 = clamp[ src.ink_x0 / cw, 0.0, 1.0 ]
+            v0 = clamp[ src.ink_y0 / chh, 0.0, 1.0 ]
+            u1 = clamp[ src.ink_x1 / cw, 0.0, 1.0 ]
+            v1 = clamp[ src.ink_y1 / chh, 0.0, 1.0 ]
+        if [ u1 <= u0 || v1 <= v0 ]
+            image_override = null
+            mask_override  = null
+            return
+        image_uv = vec4f [ u0 * uvx, v0 * uvy, u1 * uvx, v1 * uvy ]
+        mask_uv  = vec4f [ u0 * muvx, v0 * muvy, u1 * muvx,
+                           v1 * muvy ]
         path.clear[]
-        path.add_rect[ x, y, rw, rh ]
+        path.add_rect[ x + u0 * rw, y + v0 * rh, (u1 - u0) * rw,
+                       (v1 - v0) * rh ]
         paint[]
         image_uv = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
         mask_uv  = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
@@ -4130,6 +4245,9 @@ Render Canvas
         if [ (bw < 0.5 || bh < 0.5) && st.stroke_width <= 0.0 ]
             path.clear[]
             return
+        # where this lands: its stroke, blur and shadows reach past it
+        ink_add[ st, box_left, box_top, bw, bh, st.stroke_width
+            + st.blur_rad * 3.0 + shadow_reach[] + 2.0 ]
 
         if [ pcount == 5 && n == 4 ]
             compute_skip = true    # rect / image: no SDF pass
@@ -4192,6 +4310,11 @@ Render Canvas
                 if [ square_corners ] mode = DrawMode.rect
             ui_shader.params = vec4f [ st.stroke_width, st.opacity,
                                        st.blur_rad, mode ]
+            # stats asks: the screen-sized canvas's pixels per mode
+            if [ vk.time_until > 0 && w
+                 && u32[ width ] == w.extent.width
+                 && u32[ height ] == w.extent.height ]
+                mode_pixels[ i32[ mode ], bw * bh ]
             if [ image_override && models ]
                 for [ mi: i32 0, mi < models.count, mi += 1 ]
                     cmod : Model models[mi]
@@ -4469,6 +4592,8 @@ class CanvasFont
     public cache      : vec GlyphEntry
     public cache_size : i32
     public atlas      : GlyphAtlas
+    # 0: sized in points; else the display scale it was opened at
+    public pixel_scale : f32
 
     func loaded [] -> bool
         return ft_face != null
@@ -5564,11 +5689,12 @@ func ft_init [] -> handle
 # the module's method table, AGENTS 1b)
 # a label's size in the canvas's pixels: by its screen's scale and
 # the text size, as ensure_font sizes the default font
+# a label's size in points with the font unit; set_font takes it to
+# the display's pixels
 func label_px [ cv: Canvas, size: f32 ] -> i32
     fu : f32 [ (cv.vk && cv.vk.font_unit > 0)
         ? f32[ cv.vk.font_unit ] / 22.0 : 1.0 ]
-    ds : f32 [ ((cv.w && cv.w.scale > 0) ? cv.w.scale : 1.0) * fu ]
-    px : i32 [ size * ds ]
+    px : i32 [ size * fu ]
     return (px > 0) ? px : i32[ size ]
 
 func shared_font [ cv: Canvas, uri: string, px: i32 ] -> CanvasFont

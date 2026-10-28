@@ -1,0 +1,804 @@
+# the keyboard's tables, made at the build from linguistic databases:
+# words with readings (JMdict, CC-CEDICT, Unihan), how often each
+# is used and which word follows which (counted in the Tanaka and
+# Tatoeba sentences). One form for both languages:
+#   reading /word;cost;id/...   costs are -ln P x 100, lowest first
+#   id<TAB>id /bonus/           a pair's -ln P(b | a) less -ln P(b)
+#   id<TAB> /back/              a word's cost of a pair never seen
+extend keyboard
+
+# a file's lines, one at a time
+class LineReader
+    public file : string
+    # the end was reached (a blank line is not the end)
+    public done : bool
+    intern fh   : handle
+
+    func open [] -> bool
+        fh = fopen[ file.chars, 'r' ]
+        done = !fh
+        return !done
+
+    func read_line [] -> string
+        if [ !fh ]
+            done = true
+            return ''
+        b : local i8 [ 16384 ]
+        if [ !fgets[ @b[0], 16384, fh ] ]
+            fclose[ fh ]
+            fh = null
+            done = true
+            return ''
+        s : string [ @b[0] ]
+        if [ s.count > 0 && s[ s.count - 1 ] == 10 ]
+            s = s.mid[ 0, s.count - 1 ]
+        return s
+
+# a file written a line at a time
+class LineWriter
+    public file : string
+    intern fh   : handle
+
+    func open [] -> bool
+        fh = fopen[ file.chars, 'w' ]
+        return fh != null
+
+    func put [ s: string ]
+        fputs[ '{s}\n'.chars, fh ]
+
+    func close []
+        if [ fh ] fclose[ fh ]
+        fh = null
+
+# the natural log (silver's log prints)
+func nat_log [ x: f64 ] -> f64
+    return log1p[ x - 1.0 ]
+
+# a code point as UTF-8 text
+func utf8_char [ cp: i32 ] -> string
+    b : local u8 [ 8 ]
+    if [ cp < 128 ]
+        b[ 0 ] = u8[ cp ]
+        b[ 1 ] = 0
+    el [ cp < 2048 ]
+        b[ 0 ] = u8[ 192 | (cp >> 6) ]
+        b[ 1 ] = u8[ 128 | (cp & 63) ]
+        b[ 2 ] = 0
+    el [ cp < 65536 ]
+        b[ 0 ] = u8[ 224 | (cp >> 12) ]
+        b[ 1 ] = u8[ 128 | ((cp >> 6) & 63) ]
+        b[ 2 ] = u8[ 128 | (cp & 63) ]
+        b[ 3 ] = 0
+    el
+        b[ 0 ] = u8[ 240 | (cp >> 18) ]
+        b[ 1 ] = u8[ 128 | ((cp >> 12) & 63) ]
+        b[ 2 ] = u8[ 128 | ((cp >> 6) & 63) ]
+        b[ 3 ] = u8[ 128 | (cp & 63) ]
+        b[ 4 ] = 0
+    return string [ @b[0] ]
+
+# a hexadecimal number ('4E00')
+func hex_of [ s: string ] -> i32
+    v : i32 [ 0 ]
+    for [ i: i32 0, i < s.count, i += 1 ]
+        c : i32 [ i32[ s.chars[ i ] ] ]
+        d : i32 [ (c >= 97) ? c - 87 : ((c >= 65) ? c - 55 : c - 48) ]
+        v = v * 16 + d
+    return v
+
+# a JMdict entry as its lines are read (held past each drain)
+class JmEntry
+    public kebs  : vec string [] []
+    public kbad  : vec bool [] []
+    public krank : vec i64 [] []
+    public rebs  : vec string [] []
+    public rbad  : vec bool [] []
+    public rrank : vec i64 [] []
+    public rres  : vec string [] []
+    public rnok  : vec bool [] []
+    public cls   : string [ '' ]
+    public uk    : bool
+    public sense : i32
+
+    func clear []
+        kebs  = vec string []
+        kbad  = vec bool []
+        krank = vec i64 []
+        rebs  = vec string []
+        rbad  = vec bool []
+        rrank = vec i64 []
+        rres  = vec string []
+        rnok  = vec bool []
+        cls   = ''
+        uk    = false
+        sense = 0
+
+# a reading's words gathered over its lines (held past each drain)
+class ReadingWords
+    public key : string [ '' ]
+    public ws  : string [ '' ]
+    public n   : i32
+
+func run_sh [ s: string ]
+    c : command [ s ]
+    c.exec[ false ]
+
+# the text between a tag's > and its </
+func tag_text [ ln: string ] -> string
+    a : i32 [ ln.index_of[ '>' ] ]
+    b : i32 [ ln.rindex_of[ '</' ] ]
+    if [ a < 0 || b <= a ] return ''
+    return ln.mid[ a + 1, b - a - 1 ]
+
+# a JMdict priority as a frequency rank: nf bands are 500 words a
+# band by newspaper counts; the lists without a band a rank past them
+func pri_rank [ p: string ] -> i64
+    if [ p.starts_with[ 'nf' ] ]
+        # 'nf08': a leading 0 would read as octal
+        digits : string p.mid[ 2, p.count - 2 ]
+        if [ digits.starts_with[ '0' ] ] digits = digits.mid[ 1, 1 ]
+        band : i64 [ i64[ digits ] ]
+        return (band - 1) * 500 + 250
+    if [ p.ends_with[ '1' ] ] return 12000
+    if [ p.ends_with[ '2' ] ] return 30000
+    return 200000
+
+# a godan verb's last kana: its a i e o rows and its te / ta forms
+func godan_rows [ last: string ] -> vec string
+    for [ r: string ] in vec string [] [
+            'う:わいえお:って:った', 'く:かきけこ:いて:いた',
+            'ぐ:がぎげご:いで:いだ', 'す:さしせそ:して:した',
+            'つ:たちてと:って:った', 'ぬ:なにねの:んで:んだ',
+            'ぶ:ばびべぼ:んで:んだ', 'む:まみめも:んで:んだ',
+            'る:らりれろ:って:った' ]
+        ps : vec string r.split[ ':' ]
+        if [ ps[ 0 ] == last ] return ps
+    return vec string []
+
+# a word's written forms with their readings: the dictionary form,
+# then each conjugated one (the language's own rules by its class)
+# as 'reading TAB surface TAB extra cost'
+func conjugate [ rd: string, sf: string, cls: string ] -> vec string
+    out : vec string [] [ '{rd}\t{sf}\t0' ]
+    rc : vec string chars_of[ rd ]
+    sc : vec string chars_of[ sf ]
+    if [ cls.count == 0 || rc.count < 2 ] return out
+    last : string rc[ rc.count - 1 ]
+    # the stems: the reading and the surface less the changing kana
+    cut : i32 [ 1 ]
+    if [ cls == 'vs' ] cut = 2
+    if [ sc.count < cut + 1 && cls != 'vk' ] return out
+    rs : string joined[ rc, 0, rc.count - cut ]
+    ss : string joined[ sc, 0, sc.count - cut ]
+    ends : vec string []
+    if [ cls == 'v1' ]
+        ends = 'ない|なかった|なくて|なければ|ず|ます|ました|ません|ませんでした|ましょう|たい|たかった|たくない|ながら||て|た|たら|たり|られる|られた|られない|させる|させた|よう|れば|ろ|れる'.split[ '|' ]
+    el [ cls == 'vs' ]
+        ends = 'しない|しなかった|します|しました|しません|しませんでした|した|して|したい|しよう|すれば|しろ|される|させる|したら|し'.split[ '|' ]
+    el [ cls == 'adj' || cls == 'adjx' ]
+        if [ cls == 'adjx' ]
+            # いい takes よ before its endings
+            rs = '{joined[ rc, 0, rc.count - 2 ]}よ'
+            if [ sc[ sc.count - 2 ] == 'い' ]
+                ss = '{joined[ sc, 0, sc.count - 2 ]}よ'
+        ends = 'く|くて|かった|くない|くなかった|ければ|さ|そう|かったら'.split[ '|' ]
+    el [ cls == 'vk' ]
+        # 来る: the reading's first kana changes, the kanji does not
+        k0 : string [ (sc.count > 0 && sc[ 0 ] != 'く') ? sc[ 0 ] : '' ]
+        for [ f: string ] in 'こない|こなかった|きます|きました|きません|きた|きて|きたい|きたら|こよう|くれば|こい|こられる'.split[ '|' ]
+            fr : vec string chars_of[ f ]
+            s2 : string [ (k0.count > 0) ? '{k0}{joined[ fr, 1, fr.count ]}'
+                : f ]
+            out.push[ '{f}\t{s2}\t100' ]
+        return out
+    el
+        rows : vec string godan_rows[ last ]
+        if [ rows.count == 0 ] return out
+        rw : vec string chars_of[ rows[ 1 ] ]
+        ka : string rw[ 0 ]
+        ki : string [ (cls == 'v5aru') ? 'い' : rw[ 1 ] ]
+        ke : string rw[ 2 ]
+        ko : string rw[ 3 ]
+        te : string [ (cls == 'v5ks') ? 'って' : rows[ 2 ] ]
+        ta : string [ (cls == 'v5ks') ? 'った' : rows[ 3 ] ]
+        if [ cls != 'v5ri' ]
+            for [ e: string ] in 'ない|なかった|なくて|なければ|ず|れる|れた|せる|せた'.split[ '|' ]
+                ends.push[ '{ka}{e}' ]
+        for [ e: string ] in 'ます|ました|ません|ませんでした|ましょう|たい|たかった|たくない|ながら|'.split[ '|' ]
+            ends.push[ '{ki}{e}' ]
+        ends.push[ te ]
+        ends.push[ ta ]
+        ends.push[ '{ta}ら' ]
+        ends.push[ '{ta}り' ]
+        for [ e: string ] in 'る|ない|ます|た|て|ば|'.split[ '|' ]
+            ends.push[ '{ke}{e}' ]
+        ends.push[ '{ko}う' ]
+    for [ e: string ] in ends
+        if [ e.count == 0 && cls != 'v1' ] continue
+        out.push[ '{rs}{e}\t{ss}{e}\t100' ]
+    return out
+
+# a JMdict part of speech as the conjugation class it takes
+func pos_class [ p: string ] -> string
+    if [ p == '&v1;' || p == '&v1-s;' ] return 'v1'
+    if [ p == '&vs-i;' || p == '&vs-s;' ] return 'vs'
+    if [ p == '&vk;' ] return 'vk'
+    if [ p == '&adj-i;' ] return 'adj'
+    if [ p == '&adj-ix;' ] return 'adjx'
+    if [ p == '&v5k-s;' ] return 'v5ks'
+    if [ p == '&v5r-i;' ] return 'v5ri'
+    if [ p == '&v5aru;' ] return 'v5aru'
+    if [ p.starts_with[ '&v5' ] ] return 'v5'
+    return ''
+
+# the counts of a file's lines ('count TAB line'), by sort and uniq
+func count_lines [ dir: string, from: string, to: string ]
+    run_sh[ 'cd {dir} && LC_ALL=C sort {from} | uniq -c | sed -e "s/^ *\\([0-9]*\\) /\\1\\t/" | tee {to} | wc -l' ]
+
+# counts read back: line -> count
+func read_counts [ f: string ] -> map i64 [ string ]
+    m : map i64 [ string, hsize: 2048 ] []
+    lr : LineReader [ file: f ]
+    if [ !lr.open[] ] return m
+    mk : i32 [ Au.auto_mark[] ]
+    for [ ln : string lr.read_line[], !lr.done,
+          ln = lr.read_line[] ]
+        t : i32 [ ln.index_of[ '\t' ] ]
+        if [ t > 0 ]
+            m[ ln.mid[ t + 1, ln.count - t - 1 ] ] = i64[ ln.mid[ 0, t ] ]
+        Au.auto_free_to[ mk ]
+    return m
+
+# the tables from the forms, the words' counts and the pairs:
+# P(w) = (count + mu x prior) / (all + mu); a pair's bonus by
+# Witten-Bell's weight of the pair's count against P(w) alone
+func make_tables [ dir: string, name: string, out: string,
+                   prior: map f64 [ string ], mu: f64 ]
+    uni : map i64 [ string ] read_counts[ '{dir}/{name}.uc' ]
+    # how the sentences wrote each word ('id TAB spelling'), if known
+    wrote : map i64 [ string ] read_counts[ '{dir}/{name}.sc' ]
+    all : f64 [ 0.0 ]
+    for [ c: i64, k: string ] in uni
+        all += f64[ c ]
+    lw : LineWriter [ file: '{dir}/{name}.r' ]
+    lw.open[]
+    lr : LineReader [ file: '{dir}/{name}.forms' ]
+    lr.open[]
+    mk : i32 [ Au.auto_mark[] ]
+    for [ ln : string lr.read_line[], !lr.done,
+          ln = lr.read_line[] ]
+        ps : vec string ln.split[ '\t' ]
+        if [ ps.count >= 4 ]
+            id : string ps[ 2 ]
+            c  : f64 [ (uni.contains[ id ]) ? f64[ uni[ id ] ] : 0.0 ]
+            pr : f64 [ (prior.contains[ id ]) ? prior[ id ] : 0.0 ]
+            p  : f64 [ (c + mu * pr) / (all + mu) + 1.0e-9 ]
+            # the spelling and form: P(as written | word), from how the
+            # sentences wrote it, the dictionary's order a small prior
+            prior_s : f64 [ 0.2 * exp[ 0.0 - f64[ i64[ ps[ 3 ] ] ] / 100.0 ] ]
+            ws : string '{id}\t{ps[ 1 ]}'
+            cw : f64 [ (wrote.contains[ ws ]) ? f64[ wrote[ ws ] ] : 0.0 ]
+            pen : i64 [ i64[ 0.0 - nat_log[ (cw + prior_s) / (c + 2.0) ]
+                * 100.0 ] ]
+            wc : i64 [ i64[ 0.0 - nat_log[ p ] * 100.0 ] + pen ]
+            lw.put[ '{ps[ 0 ]}\t{wc}\t{ps[ 1 ]}\t{id}' ]
+        Au.auto_free_to[ mk ]
+    lw.close[]
+    # each reading's words, the likeliest 24, lowest cost first
+    run_sh[ 'cd {dir} && LC_ALL=C sort -t "$(printf \'\\t\')" -k1,1 -k2,2n -o {name}.rs {name}.r' ]
+    gw : LineWriter [ file: '{dir}/{name}.g' ]
+    gw.open[]
+    gr : LineReader [ file: '{dir}/{name}.rs' ]
+    gr.open[]
+    g : ReadingWords []
+    mk = Au.auto_mark[]
+    for [ ln : string gr.read_line[], !gr.done,
+          ln = gr.read_line[] ]
+        ps : vec string ln.split[ '\t' ]
+        if [ ps.count >= 4 ]
+            if [ ps[ 0 ] != g.key ]
+                if [ g.key.count > 0 ] gw.put[ '{g.key} /{g.ws}' ]
+                g.key = ps[ 0 ]
+                g.ws  = ''
+                g.n   = 0
+            if [ g.n < 24 ]
+                g.ws = '{g.ws}{ps[ 2 ]};{ps[ 1 ]};{ps[ 3 ]}/'
+                g.n += 1
+        Au.auto_free_to[ mk ]
+    if [ g.key.count > 0 ] gw.put[ '{g.key} /{g.ws}' ]
+    gw.close[]
+    run_sh[ 'cd {dir} && LC_ALL=C sort -o {out}/{name}.txt {name}.g' ]
+    # the pairs: a word's left count is its count; ^ starts, $ ends
+    bi : map i64 [ string ] read_counts[ '{dir}/{name}.bc' ]
+    pw : LineWriter [ file: '{dir}/{name}.p' ]
+    pw.open[]
+    kwb : f64 [ 3.0 ]
+    pm : i32 [ Au.auto_mark[] ]
+    for [ c: i64, k: string ] in bi
+        Au.auto_free_to[ pm ]
+        t : i32 [ k.index_of[ '\t' ] ]
+        a : string k.mid[ 0, t ]
+        b : string k.mid[ t + 1, k.count - t - 1 ]
+        ca : f64 [ (uni.contains[ a ]) ? f64[ uni[ a ] ] : 0.0 ]
+        cb : f64 [ (uni.contains[ b ]) ? f64[ uni[ b ] ] : 0.0 ]
+        if [ ca <= 0.0 ] continue
+        pb : f64 [ (cb + 0.5) / (all + 1.0) ]
+        lam : f64 [ ca / (ca + kwb) ]
+        blend : f64 [ lam * f64[ c ] / ca + (1.0 - lam) * pb ]
+        bonus : i64 [ i64[ (nat_log[ pb ] - nat_log[ blend ]) * 100.0 ] ]
+        pw.put[ '{a}\t{b} /{bonus}/' ]
+    for [ c: i64, a: string ] in uni
+        Au.auto_free_to[ pm ]
+        ca : f64 [ f64[ c ] ]
+        back : i64 [ i64[ 0.0 - nat_log[ kwb / (ca + kwb) ] * 100.0 ] ]
+        pw.put[ '{a}\t /{back}/' ]
+    pw.close[]
+    run_sh[ 'cd {dir} && LC_ALL=C sort -o {out}/{name}-pairs.txt {name}.p' ]
+
+# a Tanaka index token's word, lemma(reading)[sense]{form}~, as
+# the key heads holds: lemma|reading, else lemma
+func index_key [ tok: string ] -> string
+    t : string [ tok ]
+    if [ t.ends_with[ '~' ] ] t = t.mid[ 0, t.count - 1 ]
+    br : i32 [ t.index_of[ "{" ] ]
+    if [ br >= 0 ] t = t.mid[ 0, br ]
+    sq : i32 [ t.index_of[ '[' ] ]
+    if [ sq >= 0 ] t = t.mid[ 0, sq ]
+    pa : i32 [ t.index_of[ '(' ] ]
+    if [ pa < 0 ] return t
+    rd : string t.mid[ pa + 1, t.count - pa - 2 ]
+    return '{t.mid[ 0, pa ]}|{rd}'
+
+# a JMdict entry's words: its id (headword|first reading), its
+# prior (by frequency rank), the Tanaka names, every reading's
+# spellings with their forms; 0 when it has no reading to use
+func jm_emit [ je: JmEntry, forms: LineWriter, prior: map f64 [ string ],
+               heads: map string [ string ],
+               hrank: map i64 [ string ] ] -> i32
+    head : ''
+    for [ i: i32 0, i < je.kebs.count, i += 1 ]
+        if [ !je.kbad[ i ] && head.count == 0 ] head = je.kebs[ i ]
+    r0 : ''
+    for [ i: i32 0, i < je.rebs.count, i += 1 ]
+        if [ !je.rbad[ i ] && r0.count == 0 ] r0 = je.rebs[ i ]
+    if [ r0.count == 0 ] return 0
+    if [ head.count == 0 ] head = r0
+    id : '{head}|{r0}'
+    rank : i64 [ 200000 ]
+    for [ v: i64 ] in je.krank
+        if [ v < rank ] rank = v
+    for [ v: i64 ] in je.rrank
+        if [ v < rank ] rank = v
+    prior[ id ] = 1.0 / (f64[ rank ] * 13.0)
+    # the Tanaka indices name a word by its headword, with its
+    # reading where two words share one
+    for [ i: i32 0, i < je.rebs.count, i += 1 ]
+        heads[ '{head}|{je.rebs[ i ]}' ] = id
+    names : vec string [] [ head ]
+    for [ k: string ] in je.kebs
+        names.push[ k ]
+    for [ nm: string ] in names
+        if [ !hrank.contains[ nm ] || rank < hrank[ nm ] ]
+            heads[ nm ] = id
+            hrank[ nm ] = rank
+    for [ i: i32 0, i < je.rebs.count, i += 1 ]
+        if [ je.rbad[ i ] ] continue
+        r : string je.rebs[ i ]
+        ok : vec string []
+        for [ k: i32 0, k < je.kebs.count, k += 1 ]
+            if [ je.kbad[ k ] || je.rnok[ i ] ] continue
+            if [ je.rres[ i ].count > 0
+                 && je.rres[ i ].index_of[ '|{je.kebs[ k ]}|' ] < 0 ]
+                continue
+            ok.push[ je.kebs[ k ] ]
+        ss : vec string []
+        if [ je.uk || ok.count == 0 ] ss.push[ r ]
+        for [ k: string ] in ok
+            ss.push[ k ]
+        if [ !je.uk && ok.count > 0 ] ss.push[ r ]
+        for [ j: i32 0, j < ss.count, j += 1 ]
+            # a less usual spelling: dearer by its place
+            pen : i64 [ i64[ j ] * 150 ]
+            for [ f: string ] in conjugate[ r, ss[ j ], je.cls ]
+                fp : vec string f.split[ '\t' ]
+                fc : i64 [ pen + i64[ fp[ 2 ] ] ]
+                forms.put[ '{fp[ 0 ]}\t{fp[ 1 ]}\t{id}\t{fc}' ]
+    return 1
+
+# one line of JMdict into the entry being read; 1 when an entry ended
+# and was written
+func jm_line [ ln: string, je: JmEntry, forms: LineWriter,
+               prior: map f64 [ string ], heads: map string [ string ],
+               hrank: map i64 [ string ] ] -> i32
+    if [ ln == '<entry>' ]
+        je.clear[]
+    el [ ln.starts_with[ '<keb>' ] ]
+        je.kebs.push[ tag_text[ ln ] ]
+        je.kbad.push[ false ]
+        je.krank.push[ 200000 ]
+    el [ ln.starts_with[ '<ke_inf>' ] && je.kebs.count > 0 ]
+        # only spellings no one writes: search-only, outdated, irregular
+        f : string tag_text[ ln ]
+        if [ f == '&sK;' || f == '&oK;' || f == '&iK;' ]
+            je.kbad[ je.kbad.count - 1 ] = true
+    el [ ln.starts_with[ '<ke_pri>' ] && je.kebs.count > 0 ]
+        r : i64 [ pri_rank[ tag_text[ ln ] ] ]
+        k : i32 [ je.krank.count - 1 ]
+        if [ r < je.krank[ k ] ] je.krank[ k ] = r
+    el [ ln.starts_with[ '<reb>' ] ]
+        je.rebs.push[ tag_text[ ln ] ]
+        je.rbad.push[ false ]
+        je.rrank.push[ 200000 ]
+        je.rres.push[ '' ]
+        je.rnok.push[ false ]
+    el [ ln.starts_with[ '<re_inf>' ] && je.rebs.count > 0 ]
+        # a word reading (gikun: 今日 きょう) is a reading; only
+        # search-only, outdated and irregular kana are not
+        f : string tag_text[ ln ]
+        if [ f == '&sk;' || f == '&ok;' || f == '&ik;' ]
+            je.rbad[ je.rbad.count - 1 ] = true
+    el [ ln.starts_with[ '<re_pri>' ] && je.rebs.count > 0 ]
+        r : i64 [ pri_rank[ tag_text[ ln ] ] ]
+        k : i32 [ je.rrank.count - 1 ]
+        if [ r < je.rrank[ k ] ] je.rrank[ k ] = r
+    el [ ln.starts_with[ '<re_restr>' ] && je.rebs.count > 0 ]
+        k : i32 [ je.rres.count - 1 ]
+        je.rres[ k ] = '{je.rres[ k ]}|{tag_text[ ln ]}|'
+    el [ ln.starts_with[ '<re_nokanji' ] && je.rebs.count > 0 ]
+        je.rnok[ je.rnok.count - 1 ] = true
+    el [ ln == '<sense>' ]
+        je.sense += 1
+    el [ ln.starts_with[ '<pos>' ] && je.cls.count == 0 ]
+        je.cls = pos_class[ tag_text[ ln ] ]
+    el [ ln == '<misc>&uk;</misc>' && je.sense == 1 ]
+        je.uk = true
+    el [ ln == '</entry>' && je.rebs.count > 0 ]
+        return jm_emit[ je, forms, prior, heads, hrank ]
+    return 0
+
+# one Tanaka sentence's words and pairs; 1 when it was a sentence
+func tanaka_line [ ln: string, heads: map string [ string ],
+                   uw: LineWriter, bw: LineWriter,
+                   sw: LineWriter ] -> i32
+    cols : vec string ln.split[ '\t' ]
+    if [ cols.count < 3 ] return 0
+    prev : string [ "^" ]
+    uw.put[ "^" ]
+    for [ tok: string ] in cols[ 2 ].split[ ' ' ]
+        if [ tok.count == 0 ] continue
+        key : string index_key[ tok ]
+        if [ !heads.contains[ key ] ]
+            bar : i32 [ key.index_of[ '|' ] ]
+            if [ bar > 0 ] key = key.mid[ 0, bar ]
+        if [ !heads.contains[ key ] ]
+            prev = ''
+            continue
+        id : string heads[ key ]
+        uw.put[ id ]
+        sw.put[ '{id}\t{written_of[ tok ]}' ]
+        if [ prev.count > 0 ] bw.put[ '{prev}\t{id}' ]
+        prev = id
+    if [ prev.count > 0 ] bw.put[ '{prev}\t$' ]
+    uw.put[ "$" ]
+    return 1
+
+# how a Tanaka token was written: its {form}, else its lemma
+func written_of [ tok: string ] -> string
+    t : string [ tok ]
+    if [ t.ends_with[ '~' ] ] t = t.mid[ 0, t.count - 1 ]
+    br : i32 [ t.index_of[ "{" ] ]
+    if [ br >= 0 ] return t.mid[ br + 1, t.count - br - 2 ]
+    for [ cut: string ] in vec string [] [ '[', '(' ]
+        at : i32 [ t.index_of[ cut ] ]
+        if [ at >= 0 ] t = t.mid[ 0, at ]
+    return t
+
+# Japanese: JMdict's words and readings with their conjugated forms,
+# counted and paired in the Tanaka corpus (Tatoeba's word indices)
+export func ja_table []
+    src : '{path.path_install[]}/build/keyboard-data'
+    out : '{path.path_install[]}/share/keyboard'
+    done : path '{out}/ja.txt'
+    jm : path '{src}/JMdict_e'
+    if [ done.exists[] || !jm.exists[] ] return
+    forms : LineWriter [ file: '{src}/ja.forms' ]
+    forms.open[]
+    prior : map f64 [ string, hsize: 2048 ] []
+    heads : map string [ string, hsize: 2048 ] []
+    hrank : map i64 [ string, hsize: 2048 ] []
+    je : JmEntry []
+    lr : LineReader [ file: '{src}/JMdict_e' ]
+    lr.open[]
+    entries : i32 [ 0 ]
+    mk : i32 [ Au.auto_mark[] ]
+    for [ ln : string lr.read_line[], !lr.done,
+          ln = lr.read_line[] ]
+        entries += jm_line[ ln, je, forms, prior, heads, hrank ]
+        Au.auto_free_to[ mk ]
+    forms.close[]
+    log 'keyboard: JMdict {entries} words'
+    # the Tanaka sentences: each word, each pair
+    uw : LineWriter [ file: '{src}/ja.u' ]
+    uw.open[]
+    bw : LineWriter [ file: '{src}/ja.b' ]
+    bw.open[]
+    sw : LineWriter [ file: '{src}/ja.s' ]
+    sw.open[]
+    ir : LineReader [ file: '{src}/jpn_indices.csv' ]
+    ir.open[]
+    said : i32 [ 0 ]
+    mk = Au.auto_mark[]
+    for [ ln : string ir.read_line[], !ir.done,
+          ln = ir.read_line[] ]
+        said += tanaka_line[ ln, heads, uw, bw, sw ]
+        Au.auto_free_to[ mk ]
+    uw.close[]
+    bw.close[]
+    sw.close[]
+    log 'keyboard: Tanaka {said} sentences'
+    count_lines[ src, 'ja.u', 'ja.uc' ]
+    count_lines[ src, 'ja.b', 'ja.bc' ]
+    count_lines[ src, 'ja.s', 'ja.sc' ]
+    make_tables[ src, 'ja', out, prior, 50000.0 ]
+    log 'keyboard: Japanese tables made'
+
+# pinyin as typed: tone marks off, ü as v
+func plain_pinyin [ s: string ] -> string
+    out : ''
+    for [ c: string ] in chars_of[ s ]
+        p : string [ c ]
+        for [ row: string ] in vec string [] [
+                'a:āáǎà', 'e:ēéěè', 'i:īíǐì', 'o:ōóǒò', 'u:ūúǔù',
+                'v:ǖǘǚǜü' ]
+            if [ row.index_of[ c ] > 1 ] p = row.mid[ 0, 1 ]
+        out = '{out}{p}'
+    return out
+
+# a CC-CEDICT pinyin ('ni3 hao3') as typed ('nihao'), '' if not
+# letters alone
+func cedict_key [ py: string ] -> string
+    out : ''
+    s : string py.lcase[]
+    for [ i: i32 0, i < s.count, i += 1 ]
+        b : i32 [ i32[ s.chars[ i ] ] ]
+        # u: is ü, typed v
+        if [ b == 117 && i + 1 < s.count && i32[ s.chars[ i + 1 ] ] == 58 ]
+            out = '{out}v'
+            i += 1
+        el [ b >= 97 && b <= 122 ] out = '{out}{s.mid[ i, 1 ]}'
+        el [ b == 32 || (b >= 48 && b <= 53) ] continue
+        el return ''
+    return out
+
+# one Unihan line's kHanyuPinlu counts; the count it added
+func pinlu_line [ ln: string, pin: map f64 [ string ] ] -> f64
+    if [ ln.index_of[ '\tkHanyuPinlu\t' ] < 0 ] return 0.0
+    cols : vec string ln.split[ '\t' ]
+    ch : string utf8_char[ hex_of[
+        cols[ 0 ].mid[ 2, cols[ 0 ].count - 2 ] ] ]
+    added : f64 [ 0.0 ]
+    for [ r: string ] in cols[ 2 ].split[ ' ' ]
+        pa : i32 [ r.index_of[ '(' ] ]
+        if [ pa <= 0 ] continue
+        n : f64 [ f64[ i64[ r.mid[ pa + 1, r.count - pa - 2 ] ] ] ]
+        pin[ '{ch}|{plain_pinyin[ r.mid[ 0, pa ] ]}' ] = n
+        added += n
+    return added
+
+# one CC-CEDICT line: the word as written (simplified), its pinyin,
+# its prior, both spellings for the splitting; 1 when it was a word
+func cedict_line [ ln: string, pin: map f64 [ string ], ptotal: f64,
+                   forms: LineWriter, prior: map f64 [ string ],
+                   seg: map string [ string ],
+                   sbest: map f64 [ string ] ] -> i32
+    if [ ln.count == 0 || ln.starts_with[ '#' ] ] return 0
+    sp1 : i32 [ ln.index_of[ ' ' ] ]
+    b0 : i32 [ ln.index_of[ '[' ] ]
+    b1 : i32 [ ln.index_of[ ']' ] ]
+    if [ sp1 <= 0 || b0 < 0 || b1 < b0 ] return 0
+    trad : string ln.mid[ 0, sp1 ]
+    simp : string ln.mid[ sp1 + 1, b0 - sp1 - 2 ]
+    key : string cedict_key[ ln.mid[ b0 + 1, b1 - b0 - 1 ] ]
+    if [ key.count == 0 ] return 0
+    id : '{simp}|{key}'
+    if [ prior.contains[ id ] ] return 0
+    pc : f64 [ (pin.contains[ id ]) ? pin[ id ] : 0.0 ]
+    prior[ id ] = (ptotal > 0.0) ? 0.5 * pc / ptotal : 0.0
+    forms.put[ '{key}\t{simp}\t{id}\t0' ]
+    for [ w: string ] in vec string [] [ simp, trad ]
+        if [ !sbest.contains[ w ] || pc > sbest[ w ] ]
+            seg[ w ] = id
+            sbest[ w ] = pc
+    return 1
+
+# a sentence's words by the longest word at each place, counted
+func longest_count [ s: string, seg: map string [ string ],
+                     first: map i64 [ string ] ] -> f64
+    rc : vec string chars_of[ s ]
+    took_all : f64 [ 0.0 ]
+    i : i32 [ 0 ]
+    while [ i < rc.count ]
+        took : i32 [ 0 ]
+        for [ j: i32 min[ rc.count, i + 8 ], j > i, j -= 1 ]
+            w : string joined[ rc, i, j ]
+            if [ seg.contains[ w ] ]
+                id : string seg[ w ]
+                first[ id ] = ((first.contains[ id ]) ? first[ id ] : 0) + 1
+                took_all += 1.0
+                took = j - i
+                break
+        i += (took > 0) ? took : 1
+    return took_all
+
+# a sentence split into its likeliest words by the first counts;
+# its words and pairs written
+func likely_split [ s: string, seg: map string [ string ],
+                    first: map i64 [ string ], ftotal: f64,
+                    uw: LineWriter, bw: LineWriter ]
+    rc : vec string chars_of[ s ]
+    n : i32 [ rc.count ]
+    best : vec f64 []
+    back : vec i32 []
+    bid  : vec string []
+    for [ i: i32 0, i <= n, i += 1 ]
+        best.push[ -1.0e30 ]
+        back.push[ -1 ]
+        bid.push[ '' ]
+    best[ 0 ] = 0.0
+    for [ i: i32 0, i < n, i += 1 ]
+        if [ best[ i ] < -1.0e29 ] continue
+        # a character no word holds: a break
+        if [ best[ i ] - 30.0 > best[ i + 1 ] ]
+            best[ i + 1 ] = best[ i ] - 30.0
+            back[ i + 1 ] = i
+            bid[ i + 1 ] = ''
+        for [ j: i32 i + 1, j <= n && j <= i + 8, j += 1 ]
+            w : string joined[ rc, i, j ]
+            if [ !seg.contains[ w ] ] continue
+            id : string seg[ w ]
+            c : f64 [ (first.contains[ id ]) ? f64[ first[ id ] ] : 0.0 ]
+            sc : f64 [ best[ i ] + nat_log[ (c + 0.1) / (ftotal + 1.0) ] ]
+            if [ sc > best[ j ] ]
+                best[ j ] = sc
+                back[ j ] = i
+                bid[ j ] = id
+    route : vec string []
+    for [ k: i32 n, k > 0, k = back[ k ] ]
+        route.push[ bid[ k ] ]
+    prev : string [ "^" ]
+    uw.put[ "^" ]
+    for [ q: i32 route.count - 1, q >= 0, q -= 1 ]
+        id : string route[ q ]
+        if [ id.count == 0 ]
+            prev = ''
+            continue
+        uw.put[ id ]
+        if [ prev.count > 0 ] bw.put[ '{prev}\t{id}' ]
+        prev = id
+    if [ prev.count > 0 ] bw.put[ '{prev}\t$' ]
+    uw.put[ "$" ]
+
+# Chinese: CC-CEDICT's words and pinyin, Unihan's character counts
+# (kHanyuPinlu), counted and paired in Tatoeba's Mandarin sentences
+export func zh_table []
+    src : '{path.path_install[]}/build/keyboard-data'
+    out : '{path.path_install[]}/share/keyboard'
+    done : path '{out}/zh.txt'
+    ce : path '{src}/cedict.txt'
+    if [ done.exists[] || !ce.exists[] ] return
+    # the characters' counts by reading
+    pin : map f64 [ string, hsize: 2048 ] []
+    ptotal : f64 [ 0.0 ]
+    ur : LineReader [ file: '{src}/Unihan_Readings.txt' ]
+    ur.open[]
+    mk : i32 [ Au.auto_mark[] ]
+    for [ ln : string ur.read_line[], !ur.done,
+          ln = ur.read_line[] ]
+        ptotal += pinlu_line[ ln, pin ]
+        Au.auto_free_to[ mk ]
+    # the words: simplified as written, by both spellings for counting
+    forms : LineWriter [ file: '{src}/zh.forms' ]
+    forms.open[]
+    prior : map f64 [ string, hsize: 2048 ] []
+    seg   : map string [ string, hsize: 2048 ] []
+    sbest : map f64 [ string, hsize: 2048 ] []
+    lr : LineReader [ file: '{src}/cedict.txt' ]
+    lr.open[]
+    words : i32 [ 0 ]
+    mk = Au.auto_mark[]
+    for [ ln : string lr.read_line[], !lr.done,
+          ln = lr.read_line[] ]
+        words += cedict_line[ ln, pin, ptotal, forms, prior, seg, sbest ]
+        Au.auto_free_to[ mk ]
+    forms.close[]
+    log 'keyboard: CC-CEDICT {words} words'
+    # the sentences split twice: by the longest word, then by the
+    # likeliest words the first split's counts give
+    sents : vec string []
+    sr : LineReader [ file: '{src}/cmn.tsv' ]
+    sr.open[]
+    mk = Au.auto_mark[]
+    for [ ln : string sr.read_line[], !sr.done,
+          ln = sr.read_line[] ]
+        cols : vec string ln.split[ '\t' ]
+        if [ cols.count >= 3 ] sents.push[ cols[ 2 ] ]
+        Au.auto_free_to[ mk ]
+    first : map i64 [ string, hsize: 2048 ] []
+    ftotal : f64 [ 0.0 ]
+    mk = Au.auto_mark[]
+    for [ s: string ] in sents
+        ftotal += longest_count[ s, seg, first ]
+        Au.auto_free_to[ mk ]
+    uw : LineWriter [ file: '{src}/zh.u' ]
+    uw.open[]
+    bw : LineWriter [ file: '{src}/zh.b' ]
+    bw.open[]
+    mk = Au.auto_mark[]
+    for [ s: string ] in sents
+        likely_split[ s, seg, first, ftotal, uw, bw ]
+        Au.auto_free_to[ mk ]
+    uw.close[]
+    bw.close[]
+    log 'keyboard: Tatoeba {sents.count} Mandarin sentences'
+    count_lines[ src, 'zh.u', 'zh.uc' ]
+    count_lines[ src, 'zh.b', 'zh.bc' ]
+    make_tables[ src, 'zh', out, prior, 20000.0 ]
+    log 'keyboard: Chinese tables made'
+
+# a JMdict entry read line by line keeps each reading's marks: a
+# word reading (gikun) is a reading, an nf08 band is not octal
+expect func t_jm_entry [] -> bool
+    je : JmEntry []
+    fw : LineWriter [ file: '{path.path_install[]}/tmp/jm-test.forms' ]
+    fw.open[]
+    prior : map f64 [ string ] []
+    heads : map string [ string ] []
+    hrank : map i64 [ string ] []
+    for [ ln: string ] in vec string [] [ '<entry>', '<keb>今日</keb>',
+            '<ke_pri>ichi1</ke_pri>', '<ke_pri>nf02</ke_pri>',
+            '<reb>きょう</reb>', '<re_inf>&gikun;</re_inf>',
+            '<re_pri>ichi1</re_pri>',
+            '<reb>こんにち</reb>', '<re_pri>nf02</re_pri>' ]
+        jm_line[ ln, je, fw, prior, heads, hrank ]
+    jm_line[ '</entry>', je, fw, prior, heads, hrank ]
+    fw.close[]
+    return heads[ '今日' ] == '今日|きょう' && pri_rank[ 'nf08' ] == 3750
+
+# Unicode's fully qualified emoji of one code point, in its order:
+# install/share/keyboard/emoji.txt, a code point (hex) a line
+export func emoji_table []
+    src : '{path.path_install[]}/build/keyboard-data/emoji-test.txt'
+    out : '{path.path_install[]}/share/keyboard/emoji.txt'
+    done : path out
+    if [ done.exists[] ] return
+    lr : LineReader [ file: src ]
+    if [ !lr.open[] ] return
+    lw : LineWriter [ file: out ]
+    lw.open[]
+    n : i32 [ 0 ]
+    for [ ln : string lr.read_line[], !lr.done,
+          ln = lr.read_line[] ]
+        semi : i32 [ ln.index_of[ ';' ] ]
+        if [ semi <= 0 || ln.index_of[ 'fully-qualified' ] < 0 ]
+            continue
+        cs : vec string ln.mid[ 0, semi ].trim[].split[ ' ' ]
+        # FE0F asks for the colour form: one code point with it
+        one : vec string []
+        for [ c: string ] in cs
+            if [ c.count > 0 && c != 'FE0F' ] one.push[ c ]
+        if [ one.count != 1 ] continue
+        lw.put[ one[ 0 ] ]
+        n += 1
+    lw.close[]
+    log 'keyboard: {n} emoji'
+
+# English words by how often Tatoeba's sentences use them, likeliest
+# first: install/share/keyboard/en.txt, word TAB count
+export func en_table []
+    dir : '{path.path_install[]}/build/keyboard-data'
+    out : '{path.path_install[]}/share/keyboard'
+    done : path '{out}/en.txt'
+    src : path '{dir}/eng.tsv'
+    if [ done.exists[] || !src.exists[] ] return
+    run_sh[ 'cd {dir} && cut -f3 eng.tsv | tr -cs "A-Za-z\'" "\\n" | tr A-Z a-z | sed -e "s/^\'*//" -e "s/\'*$//" | grep -E "^[a-z][a-z\']*$" | LC_ALL=C sort | uniq -c | sort -rn | head -n 60000 | sed -e "s/^ *\\([0-9]*\\) \\(.*\\)$/\\2\\t\\1/" > {out}/en.txt' ]
+    log 'keyboard: english words'

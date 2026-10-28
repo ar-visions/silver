@@ -1,0 +1,37 @@
+diff --git a/src/d3d8/d3d8_include.h b/src/d3d8/d3d8_include.h
+index 86e077e..8d96ae3 100644
+--- a/src/d3d8/d3d8_include.h
++++ b/src/d3d8/d3d8_include.h
+@@ -50,7 +50,7 @@ interface DECLSPEC_UUID("4B8AAAFA-140F-42BA-9131-597EAFAA2EAD") IDirect3DVolumeT
+ #undef D3DSP_REGNUM_MASK    // changed from 0x00000FFF to 0x000007FF in D3D9
+ 
+ 
+-#if defined(__MINGW32__) || defined(__GNUC__)
++#if defined(__MINGW32__) || defined(__GNUC__) || defined(__WINE_ALLOC_SIZE)
+ 
+ // Avoid redundant definitions (add D3D*_DEFINED macros here)
+ #define D3DRECT_DEFINED
+@@ -81,7 +81,7 @@ namespace d3d9 {
+ #define DXVK_D3D9_NAMESPACE
+ 
+ 
+-#if defined(__MINGW32__) || defined(__GNUC__)
++#if defined(__MINGW32__) || defined(__GNUC__) || defined(__WINE_ALLOC_SIZE)
+ #pragma pop_macro("__CRT_UUID_DECL")
+ 
+ // Declare __uuidof for D3D9 interfaces, directly within the d3d9:: namespace
+diff --git a/src/d3d9/d3d9_util.h b/src/d3d9/d3d9_util.h
+index c9cc2d9..0f167ed 100644
+--- a/src/d3d9/d3d9_util.h
++++ b/src/d3d9/d3d9_util.h
+@@ -319,8 +319,8 @@ inline bool operator != (const D3DVIEWPORT9& a, const D3DVIEWPORT9& b) {
+ }
+ 
+ 
+-// Missing in some versions of mingw headers
+-#ifndef _MSC_VER
++// Missing in some versions of mingw headers, and Wine's
++#if !defined(_MSC_VER) || defined(__WINE_ALLOC_SIZE)
+ inline bool operator == (const RECT& a, const RECT& b) {
+   return a.left   == b.left  &&
+          a.right  == b.right &&

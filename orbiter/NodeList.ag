@@ -132,7 +132,7 @@ Layer NodeLayer
         nl.content_y    = bounds.y
         nl.content_h    = f32[mc] * lh
         nl.view_h       = bounds.h
-        nl.scroll_speed = lh
+        nl.scroll_speed = lh * 2.0
         x0 : f32 [ bounds.x ]
         y0 : f32 [ bounds.y ]
         wtx : f32 [ cv.transform_tx[] ]
@@ -829,6 +829,178 @@ Control AppsGrid
     # the band as laid out: top and height in content space
     mutable band_y  : f32
     mutable band_h  : f32
+    # each heading's top in content space, as last laid out
+    mutable head_ys : vec f32
+    mutable hh9     : f32
+    # a press on a heading (-1 none), when and where any press was
+    mutable press_h  : i32 [ -1 ]
+    mutable press_us : i64
+    mutable press_at : vec2f
+    # held a second, then moved: 1 a card, 2 a section, by name; the
+    # pointer, and where on the thing it was taken
+    mutable drag_kind : i32
+    mutable drag_name : string
+    mutable drag_pt   : vec2f
+    mutable grab      : vec2f
+    # each card's and heading's place as drawn, easing to its own
+    mutable ease_x : map f32 [string]
+    mutable ease_y : map f32 [string]
+    mutable head_e : map f32 [string]
+    # each shown card's own key: its module file (names repeat), a
+    # second of the same (an open store's own card) numbered
+    mutable keys : vec string
+
+    func app_key [ ae: AppEntry ] -> string
+        if [ ae.opens ] return '{ae.opens}'
+        return (ae.file) ? '{ae.file}' : ae.name
+
+    # the files an app module opens, as the navigator finds them
+    func files_of [ orb: orbiter, ae: AppEntry ] -> vec string
+        if [ !ae.module || ae.apps || ae.opens ] return vec string []
+        return orb.files_ending[ orb.opens_exts[ ae.name ] ]
+
+    # a name in a list
+    func has [ list: vec string, nm: string ] -> bool
+        if [ !list ] return false
+        for [ x: string ] in list
+            if [ x == nm ] return true
+        return false
+
+    # names in the user's order first, the rest as they come
+    func ordered [ names: vec string, order: vec string ] -> vec string
+        out : vec string []
+        if [ order ]
+            for [ o: string ] in order
+                if [ has[ names, o ] && !has[ out, o ] ] out.push[ o ]
+        for [ nm: string ] in names
+            if [ !has[ out, nm ] ] out.push[ nm ]
+        return out
+
+    # the apps in the user's order first, the rest as they come
+    func ranked [ list: vec AppEntry, order: vec string ]
+            -> vec AppEntry
+        out  : vec AppEntry []
+        seen : vec string []
+        if [ order ]
+            for [ o: string ] in order
+                for [ ae: AppEntry ] in list
+                    if [ app_key[ ae ] == o && !has[ seen, o ] ]
+                        out.push[ ae ]
+                        seen.push[ o ]
+        for [ ae: AppEntry ] in list
+            ak : string app_key[ ae ]
+            if [ !has[ seen, ak ] ]
+                out.push[ ae ]
+                seen.push[ ak ]
+        return out
+
+    # name moves to where at is, after it when moving down
+    func move_name [ list: vec string, nm: string, at: string,
+                     after: bool ]
+        for [ i: i32 0, i < list.count, i += 1 ]
+            if [ list[ i ] == nm ]
+                list.remove[ i ]
+                break
+        for [ i: i32 0, i < list.count, i += 1 ]
+            if [ list[ i ] == at ]
+                list.insert[ nm, (after) ? i + 1 : i ]
+                return
+
+    # the section card i is in
+    func section_of [ i: i32 ] -> i32
+        h : i32 [ 0 ]
+        for [ k: i32 0, k < head_at.count, k += 1 ]
+            if [ head_at[ k ] <= i ] h = k
+        return h
+
+    # the heading under x y in content space, or -1
+    func head_hit [ x: f32, y: f32 ] -> i32
+        if [ !head_ys ] return -1
+        for [ h: i32 0, h < head_ys.count, h += 1 ]
+            if [ y >= head_ys[ h ] && y < head_ys[ h ] + hh9 ] return h
+        return -1
+
+    # the press held a second: its card or section lifts; the orders
+    # take every name shown, in the order shown
+    func lift [ orb: orbiter ]
+        if [ band_of >= 0 || !shown || !rx ] return
+        if [ press_i >= 0 && press_i < rx.count ]
+            ae : AppEntry entry[ press_i ]
+            if [ !ae ] return
+            drag_kind = 1
+            drag_name = keys[ press_i ]
+            grab = vec2f [ press_at.x - rx[ press_i ],
+                           press_at.y - ry[ press_i ] ]
+        el [ press_h >= 0 && press_h < heads.count ]
+            drag_kind = 2
+            drag_name = heads[ press_h ]
+            grab = vec2f [ press_at.x,
+                           press_at.y - head_ys[ press_h ] ]
+        el
+            return
+        apps : vec string []
+        for [ ae: AppEntry ] in shown
+            apps.push[ app_key[ ae ] ]
+        orb.app_order   = ordered[ apps, orb.app_order ]
+        orb.group_order = ordered[ heads, orb.group_order ]
+        press_i = -1
+        press_h = -1
+        sel     = -1
+
+    # the dragged thing's place among the others: a card to the
+    # nearest slot of its section, a section past half its neighbour
+    func regroup [ orb: orbiter ]
+        if [ !shown || !rx ] return
+        if [ drag_kind == 1 ]
+            i : i32 [ -1 ]
+            for [ k: i32 0, k < shown.count, k += 1 ]
+                if [ keys[ k ] == drag_name ] i = k
+            if [ i < 0 || i >= rx.count ] return
+            h  : i32 section_of[ i ]
+            s0 : i32 [ head_at[ h ] ]
+            s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
+                : shown.count ]
+            cx : f32 [ drag_pt.x - grab.x + cw9 * 0.5 ]
+            cy : f32 [ drag_pt.y - grab.y + ch9 * 0.5 ]
+            best : i32 [ i ]
+            bd   : f32 [ 0.0 ]
+            for [ k: i32 s0, k < s1 && k < rx.count, k += 1 ]
+                ddx : f32 [ rx[ k ] + cw9 * 0.5 - cx ]
+                ddy : f32 [ ry[ k ] + ch9 * 0.5 - cy ]
+                d : f32 [ ddx * ddx + ddy * ddy ]
+                if [ k == s0 || d < bd ]
+                    bd   = d
+                    best = k
+            if [ best != i ]
+                move_name[ orb.app_order, drag_name, keys[ best ],
+                           best > i ]
+                shown = null
+        el [ drag_kind == 2 ]
+            h : i32 [ -1 ]
+            for [ k: i32 0, k < heads.count, k += 1 ]
+                if [ heads[ k ] == drag_name ] h = k
+            if [ h < 0 || h >= head_ys.count ] return
+            mid : f32 [ drag_pt.y - grab.y + hh9 * 0.5 ]
+            n : i32 [ i32[ head_ys.count ] ]
+            if [ h + 1 < n ]
+                nb : f32 [ (h + 2 < n) ? head_ys[ h + 2 ] : content_h ]
+                if [ mid > (head_ys[ h + 1 ] + nb) * 0.5 ]
+                    move_name[ orb.group_order, drag_name,
+                               heads[ h + 1 ], true ]
+                    shown = null
+                    return
+            if [ h > 0 && mid < (head_ys[ h - 1 ] + head_ys[ h ]) * 0.5 ]
+                move_name[ orb.group_order, drag_name, heads[ h - 1 ],
+                           false ]
+                shown = null
+
+    # Enter on the filter: the open folder's first match (after its
+    # app's own card), else the first app shown
+    public func first_match [] -> AppEntry
+        if [ !shown || shown.count == 0 ] return null
+        if [ band_at >= 0 && band_n > 1 ] return shown[ band_at + 1 ]
+        if [ band_at >= 0 ] return null
+        return shown[ 0 ]
 
     func entry [ i: i32 ] -> AppEntry
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
@@ -847,9 +1019,13 @@ Control AppsGrid
             if [ ev && ev.member_type == AU_MEMBER_ENUMV ]
                 names.push[ string [ ev.ident ] ]
         names.push[ 'other' ]
-        ours : vec AppEntry orb.app_entries[]
+        names = ordered[ names, orb.group_order ]
+        ours : vec AppEntry ranked[ orb.app_entries[], orb.app_order ]
         gathered = orb.apps_filter
-        if [ gathered.count > 0 ]
+        # an open folder: the filter finds within it, the apps stay
+        folder : bool [ open && open.count > 0 ]
+        inner : string [ (folder) ? gathered.lcase[] : '' ]
+        if [ gathered.count > 0 && !folder ]
             fl : string gathered.lcase[]
             kept : vec AppEntry []
             for [ ae: AppEntry ] in ours
@@ -868,16 +1044,47 @@ Control AppsGrid
                     if [ ae.apps && open == ae.name ]
                         band_of = shown.count - 1
                         band_at = shown.count
-                        band_n  = ae.apps.count + 1
                         shown.push[ AppEntry [ name: ae.name,
                             file: ae.file, module: true, agi: ae.agi,
                             group: ae.group, built: ae.built ] ]
                         for [ sa: AppEntry ] in ae.apps
-                            shown.push[ sa ]
+                            if [ inner.count == 0
+                                 || sa.name.lcase[].index_of[ inner ] >= 0 ]
+                                shown.push[ sa ]
+                        band_n = shown.count - band_at
+                    # an open app: itself, then the files it opens
+                    el [ open == ae.name ]
+                        fl : vec string files_of[ orb, ae ]
+                        if [ fl.count > 0 ]
+                            band_of = shown.count - 1
+                            band_at = shown.count
+                            shown.push[ AppEntry [ name: ae.name,
+                                file: ae.file, module: true,
+                                agi: ae.agi, group: ae.group,
+                                built: ae.built ] ]
+                            for [ f: string ] in fl
+                                fp : path '{f}'
+                                fn : string fp.filename[]
+                                if [ inner.count > 0
+                                     && fn.lcase[].index_of[ inner ] < 0 ]
+                                    continue
+                                shown.push[ AppEntry [
+                                    name: fp.filename[], file: ae.file,
+                                    module: true, agi: ae.agi,
+                                    group: ae.group, built: ae.built,
+                                    opens: fp ] ]
+                            band_n = shown.count - band_at
             if [ shown.count > start ]
                 heads.push[ gn ]
                 head_at.push[ start ]
         gen_seen = orb.apps_gen
+        keys = vec string []
+        for [ ae: AppEntry ] in shown
+            k : string app_key[ ae ]
+            n : i32 [ 0 ]
+            for [ x: string ] in keys
+                if [ x == k || x.starts_with[ '{k}#' ] ] n += 1
+            keys.push[ (n > 0) ? '{k}#{n}' : k ]
         icons = vec AppIcon []
         for [ ae: AppEntry ] in shown
             icons.push[ AppIcon [ module: true, file: ae.file,
@@ -903,6 +1110,19 @@ Control AppsGrid
         if [ sb_drag ] return
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
+        orb : cast orbiter [ ux.app_object ]
+        # a press held a second, or any while arranging, then moved:
+        # it reorders
+        if [ orb && drag_kind == 0 && (press_i >= 0 || press_h >= 0)
+             && (arranging || epoch_micros[] - press_us >= 1000000) ]
+            lift[ orb ]
+        if [ orb && drag_kind != 0 ]
+            drag_pt = vec2f [ mx, my ]
+            regroup[ orb ]
+            ev.no_default = true
+            pristine = false
+            ux.will_animate = true
+            return
         over : i32 [ card_at[ mx, my ] ]
         ob : bool [ over == sel && in_name[ over, mx, my ] ]
         if [ over != hov || ob != on_btn ]
@@ -925,15 +1145,34 @@ Control AppsGrid
             press_i = -1
             return
         ev.no_default = true
-        press_i = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        press_i  = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        press_h  = (press_i < 0)
+            ? head_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] : -1
+        press_us = epoch_micros[]
+        press_at = ev.mouse.pos
+        # arranging: a press on no card or heading ends it
+        if [ arranging && press_i < 0 && press_h < 0 ]
+            ux.arrange[ null, false ]
 
     func on_release [ ev: Event ]
         was : i32 [ press_i ]
         press_i = -1
+        press_h = -1
+        # a reorder ends where it was let go: saved, no click
+        if [ drag_kind != 0 ]
+            drag_kind = 0
+            drag_name = null
+            dorb : cast orbiter [ ux.app_object ]
+            if [ dorb ] dorb.save_session[]
+            pristine = false
+            ux.will_animate = true
+            return
         # a scrollbar drag ends in trinity's own release
         if [ sb_drag ]
             super.on_release[ ev ]
             return
+        # arranging, or a press held to start it: no app opens
+        if [ arranging || epoch_micros[] - press_us >= 1000000 ] return
         orb : cast orbiter [ ux.app_object ]
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
@@ -948,8 +1187,20 @@ Control AppsGrid
         here : bool [ ae.module && (!ae.built || ae.built.exists[]) ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
-        # a store with apps opens as a folder; again, it shuts
-        if [ here && ae.apps && ae.apps.count > 0 ]
+        # a file in an app's folder: the app opens it
+        if [ ae.opens ]
+            sel = -1
+            if [ orb.apps_filter.count > 0 ]
+                orb.filter_done[ 'apps_filter' ]
+            if [ pane >= 0 ] orb.open_in_pane[ ae.opens, pane ]
+            el orb.open_new_tab[ ae.opens ]
+            return
+        # a store with apps, or an app with files it opens, opens as a
+        # folder; again, it shuts (its own card inside runs it)
+        in_band : bool [ i >= band_at && i < band_at + band_n ]
+        folds : bool [ (ae.apps && ae.apps.count > 0)
+            || (!in_band && files_of[ orb, ae ].count > 0) ]
+        if [ here && folds ]
             sel   = -1
             open  = (open == ae.name) ? '' : ae.name
             shown = null
@@ -1024,9 +1275,10 @@ Control AppsGrid
         if [ !focused && sel >= 0 ]
             sel    = -1
             on_btn = false
-        tile = round[ 76.0 * un ]
-        nh : f32 [ round[ 24.0 * un ] ]
-        cw9 = round[ 96.0 * un ]
+        # the icons 30% over the 76 px they were, the card with them
+        tile = round[ 99.0 * un ]
+        nh : f32 [ round[ 26.0 * un ] ]
+        cw9 = round[ 125.0 * un ]
         ch9 = tile + round[ 6.0 * un ] + nh
         gap : f32 [ round[ 14.0 * un ] ]
         pad : f32 [ round[ 24.0 * un ] ]
@@ -1038,11 +1290,12 @@ Control AppsGrid
         rx = vec f32 []
         ry = vec f32 []
         band_h = 0.0
-        hys : vec f32 []
+        head_ys = vec f32 []
+        hh9 = hh
         y : f32 [ pad ]
         for [ h: i32 0, h < heads.count, h += 1 ]
             if [ h > 0 ] y += gap
-            hys.push[ y ]
+            head_ys.push[ y ]
             y += hh
             s0 : i32 [ head_at[ h ] ]
             s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
@@ -1084,18 +1337,81 @@ Control AppsGrid
             scroll_goal = mx
         sy : f32 [ scroll.y ]
         if [ band_h > 0.0 ] draw_band[ cv, band_y - sy, band_h ]
-        for [ h: i32 0, h < heads.count, h += 1 ]
-            heading[ cv, w, heads[ h ], x0 + 4.0, hys[ h ] - sy ]
         n : i32 [ rx.count ]
+        # each card and heading eases to its place; a dragged card
+        # is at the pointer, a dragged section's cards move with it
+        if [ !ease_x ] ease_x = map f32 [string] []
+        if [ !ease_y ] ease_y = map f32 [string] []
+        if [ !head_e ] head_e = map f32 [string] []
+        dsec : i32 [ -1 ]
+        if [ drag_kind == 2 ]
+            for [ k: i32 0, k < heads.count, k += 1 ]
+                if [ heads[ k ] == drag_name ] dsec = k
+        dd : f32 [ (dsec >= 0) ? drag_pt.y - grab.y - head_ys[ dsec ]
+            : 0.0 ]
+        moving : bool [ false ]
+        px : vec f32 []
+        py : vec f32 []
+        for [ i: i32 0, i < n && i < keys.count, i += 1 ]
+            gx : f32 [ rx[ i ] ]
+            gy : f32 [ ry[ i ] ]
+            if [ dsec >= 0 && section_of[ i ] == dsec ] gy += dd
+            ex : f32 [ gx ]
+            ey : f32 [ gy ]
+            ky : string keys[ i ]
+            lifted : bool [ drag_kind == 1 && ky == drag_name ]
+            if [ lifted ]
+                ex = drag_pt.x - grab.x
+                ey = drag_pt.y - grab.y
+            el [ ease_x.contains[ ky ] ]
+                ex = filter_n[ ease_x[ ky ], gx, 0.3, ux.frame_factor ]
+                ey = filter_n[ ease_y[ ky ], gy, 0.3, ux.frame_factor ]
+                if [ abs[ ex - gx ] < 0.5 && abs[ ey - gy ] < 0.5 ]
+                    ex = gx
+                    ey = gy
+                el
+                    moving = true
+            ease_x[ ky ] = ex
+            ease_y[ ky ] = ey
+            px.push[ ex ]
+            py.push[ ey ]
+        for [ h: i32 0, h < heads.count, h += 1 ]
+            gh : f32 [ head_ys[ h ] + ((h == dsec) ? dd : 0.0) ]
+            eh : f32 [ gh ]
+            if [ h != dsec && head_e.contains[ heads[ h ] ] ]
+                eh = filter_n[ head_e[ heads[ h ] ], gh, 0.3,
+                               ux.frame_factor ]
+                if [ abs[ eh - gh ] < 0.5 ]
+                    eh = gh
+                el
+                    moving = true
+            head_e[ heads[ h ] ] = eh
+            heading[ cv, w, heads[ h ], x0 + 4.0, eh - sy ]
+        # easing, or the glow breathing: drawn again next frame, and
+        # each cached parent with it
+        if [ moving || arranging ]
+            for [ p: element* a, p, p = p.parent ]
+                p.pristine    = false
+                p.needs_frame = true
+            ux.will_animate = true
+        # the dragged card last: over the others
+        drawn : vec i32 []
+        last : i32 [ -1 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ drag_kind == 1 && keys[ i ] == drag_name ]
+                last = i
+            el
+                drawn.push[ i ]
+        if [ last >= 0 ] drawn.push[ last ]
         # the tile's corners: an ios icon's share of its side
         cr : f32 [ round[ tile * 0.225 ] ]
-        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
-        for [ i: i32 0, i < n, i += 1 ]
-            cy : f32 [ ry[ i ] - sy ]
+        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        for [ i: i32 ] in drawn
+            cy : f32 [ py[ i ] - sy ]
             if [ cy + ch9 < 0.0 || cy > bounds.h ] continue
             ae : AppEntry entry[ i ]
             if [ !ae ] continue
-            tx : f32 [ rx[ i ] + round[ (cw9 - tile) * 0.5 ] ]
+            tx : f32 [ px[ i ] + round[ (cw9 - tile) * 0.5 ] ]
             # here: runs or opens; else it is imported first
             here : bool [ ae.module
                 && (!ae.built || ae.built.exists[]) ]
@@ -1104,7 +1420,7 @@ Control AppsGrid
             failed : bool [ iw == 'failed' ]
             chosen : bool [ i == sel && !here && !busy ]
             # an open store's card stays lit
-            folder : bool [ ae.apps && open == ae.name ]
+            folder : bool [ i == band_of ]
             draw_tile[ cv, w, i, tx, cy, cr, here, chosen || folder ]
             # the icon fills the tile, dim until it is here
             ic : AppIcon icons[ i ]
@@ -1121,12 +1437,12 @@ Control AppsGrid
             # its Cancel in place of the progress
             cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
             if [ cxl ]
-                draw_cancel[ cv, fp, rx[ i ], ny, nh ]
+                draw_cancel[ cv, fp, px[ i ], ny, nh ]
             el [ busy ]
-                draw_progress[ cv, un, rx[ i ], ny, nh,
+                draw_progress[ cv, un, px[ i ], ny, nh,
                                orb.install_frac[ ae ] ]
             el [ chosen ]
-                draw_button[ cv, fp, rx[ i ], ny, nh, ae.module,
+                draw_button[ cv, fp, px[ i ], ny, nh, ae.module,
                              failed ]
             el
                 cv.set_font[ shared_font[ cv,
@@ -1139,7 +1455,7 @@ Control AppsGrid
                     tc = '#ff7a7add'
                     nm = '{ae.name} failed'
                 cv.fill_color[ rgba [ tc ] ]
-                cv.draw_text[ nm, rect [ x: rx[ i ] + 2.0, y: ny,
+                cv.draw_text[ nm, rect [ x: px[ i ] + 2.0, y: ny,
                     w: cw9 - 4.0, h: nh ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                     Overflow.ellipsis, null ]
@@ -1154,23 +1470,31 @@ Control AppsGrid
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         if [ here ]
-            # half again the buttons' reach: the cards are larger
-            w.near_light_reach[ cv, a, 0.0, 0.0, 0.75 ]
+            # 180 px: the cards are larger than the buttons
+            w.near_light_reach[ cv, a, 0.0, 0.0, 1.125 ]
             cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ],
                            w.near_y_fade ]
             cv.box_shadow[ rgba [ '#8af2' ], 0.0, 0.0, 16.0, 0.0,
                            true ]
-            cv.fill_color[ rgba [ (i == hov) ? '#ffffff1c'
-                : '#ffffff0c' ] ]
+            # a dark tint behind the glass: bright scenes stay back
+            cv.fill_color[ rgba [ (i == hov) ? '#2a1a4a58'
+                : '#140a2a4c' ] ]
             cv.stroke_color[ rgba [ '#ffffff1c' ] ]
         el [ chosen ]
             cv.fill_color[ rgba [ '#4d3dbc55' ] ]
             cv.stroke_color[ rgba [ '#806bff' ] ]
         el
-            cv.fill_color[ rgba [ (i == hov) ? '#ffffff08'
-                : '#0000' ] ]
+            cv.fill_color[ rgba [ (i == hov) ? '#1c103650'
+                : '#140a2a3c' ] ]
             cv.stroke_color[ rgba [ (i == hov) ? '#ffffff30'
                 : '#ffffff16' ] ]
+        # arranging: a brighter purple inner glow, breathing
+        if [ arranging ]
+            ph : f32 [ f32[ epoch_millis[] % 1200 ] / 1200.0 ]
+            k  : f32 [ 0.5 + 0.5 * sin[ ph * 6.2831853 ] ]
+            ga : f32 [ 0.35 + 0.5 * k ]
+            cv.box_shadow[ rgba [ r: 0.72, g: 0.5, b: 1.0, a: ga ],
+                           0.0, 0.0, 10.0 + 8.0 * k, 0.0, true ]
         cv.rect_to[ x, y, tile, tile ]
         cv.paint[]
         cv.no_shadows[]
@@ -2109,7 +2433,7 @@ Control TaskBar
                 mk : string '{md9}'
                 if [ !app_icons.contains[ mk ] ]
                     app_icons[ mk ] = AppIcon [ file: md9, module: true,
-                        agi: path '{path.path_startup[]}/install/export/{orb.install_name_of[ md9.filename[] ]}.agi' ]
+                        agi: path '{install_root[]}/export/{orb.install_name_of[ md9.filename[] ]}.agi' ]
                 is9 : f32 [ round[ rh * 0.5 ] ]
                 im9 : f32 [ round[ (rh - is9) * 0.5 ] ]
                 ai : AppIcon app_icons[ mk ]
@@ -2270,7 +2594,7 @@ Layer PropsLayer
         pl.content_y    = bounds.y
         pl.content_h    = f32[mc] * lh
         pl.view_h       = bounds.h
-        pl.scroll_speed = lh
+        pl.scroll_speed = lh * 2.0
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
         colx : f32 [ round[ bounds.x + bounds.w * 0.45 ] ]
@@ -2335,7 +2659,7 @@ Layer FieldsLayer
         fl.content_y    = bounds.y
         fl.content_h    = f32[n] * lh
         fl.view_h       = bounds.h
-        fl.scroll_speed = lh
+        fl.scroll_speed = lh * 2.0
         x0   : f32 [ bounds.x ]
         y0   : f32 [ bounds.y ]
         colx : f32 [ bounds.x + bounds.w * 0.42 ]

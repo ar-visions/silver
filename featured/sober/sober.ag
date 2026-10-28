@@ -1,0 +1,46 @@
+# sober: the Vinegar team's Roblox player, Roblox's own Android
+# client run on Linux (the Windows player refuses Wine). It ships as
+# a Flatpak only: its build installs it from Flathub into silver's
+# install, never the user's own Flatpak folder
+export 1.0.0
+export software ['games']
+export icon ['sober']
+
+import <stdlib.h>
+import <stdio.h>
+
+# the Flatpak id, and the folder its installation lives in
+func sober_id [] -> string
+    return 'org.vinegarhq.Sober'
+func sober_dir [] -> string
+    return '{path.path_install[]}/lib/flatpak'
+
+# at the build: Flathub added and Sober installed into sober_dir
+# (its runtime and the GL driver's extension come with it), then
+# install/bin/sober written to run it there
+export func install_sober []
+    ins : string '{path.path_install[]}'
+    fd : sober_dir[]
+    id : sober_id[]
+    put : command { mkdir -p {fd} && export FLATPAK_USER_DIR={fd}
+        && flatpak --user remote-add --if-not-exists flathub
+        https://dl.flathub.org/repo/flathub.flatpakrepo
+        && flatpak --user install -y --noninteractive flathub {id} }
+    if [ put.exec[ false ] != 0 ]
+        log 'sober: the install failed'
+        return
+    # flatpak takes a Wayland socket by its name in the runtime folder
+    sh : string '#!/bin/sh\nexport FLATPAK_USER_DIR={fd}\n'
+    sh = '{sh}case "$WAYLAND_DISPLAY" in /*) '
+    sh = '{sh}export WAYLAND_DISPLAY="${{WAYLAND_DISPLAY##*/}}";; esac\n'
+    # a view has no system bus, and flatpak asks it for parental
+    # controls first: an empty bus of its own says they are off
+    sh = '{sh}set -- "$(dbus-daemon --session --fork --nopidfile '
+    sh = '{sh}--print-address=1 --print-pid=1)" "$@"\n'
+    sh = '{sh}bus=${{1%%\n*}}; pid=${{1##*\n}}; shift\n'
+    sh = '{sh}DBUS_SYSTEM_BUS_ADDRESS=$bus flatpak --user run {id} "$@"\n'
+    sh = '{sh}st=$?; kill $pid; exit $st\n'
+    bin : path '{ins}/bin/sober'
+    bin.save[ sh, null ]
+    ch : command { chmod +x {bin} }
+    if [ ch.exec[ false ] == 0 ] log 'sober: installed'

@@ -6,54 +6,102 @@ export 1.0.0
 # nothing here links them, so gating them leaves every function
 # this module exports -- which is what the installer calls
 ifndef [ windows ]
-    # FAT without root: the installer stick's EFI partition image
-    import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
-        --disable-floppyd
+    # the x86 drive's; a phone build takes its own (arm64)
+    ifdef [ x86_64 ]
+        # FAT without root: the installer stick's EFI partition image
+        import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
+            --disable-floppyd
 
-    # radv and anv need a newer libdrm than the system's
-    import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
-        PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
-        PYTHONPATH={install}/pylib
-        PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
-        -Damdgpu=enabled
-        -Dintel=enabled
-        -Dradeon=disabled
-        -Dnouveau=disabled
-        -Dvmwgfx=disabled
-        -Dcairo-tests=disabled
-        -Dvalgrind=disabled
-        -Dman-pages=disabled
-        -Dtests=false
+        # radv and anv need a newer libdrm than the system's
+        import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+            PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+            PYTHONPATH={install}/pylib
+            PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+            -Damdgpu=enabled
+            -Dintel=enabled
+            -Dradeon=disabled
+            -Dnouveau=disabled
+            -Dvmwgfx=disabled
+            -Dcairo-tests=disabled
+            -Dvalgrind=disabled
+            -Dman-pages=disabled
+            -Dtests=false
 
-    # anv's built-in GPU programs: SPIR-V from OpenCL C (the
-    # translator, then libclc from our LLVM's own source)
-    import KhronosGroup:SPIRV-LLVM-Translator/8e829705b660a4c3a1fcd97885c35b8d78941276
-        -DLLVM_DIR={install}/lib/cmake/llvm
-        -DLLVM_SPIRV_INCLUDE_TESTS=OFF
-        -DCMAKE_INSTALL_RPATH={install}/lib
-        -DCMAKE_BUILD_TYPE=Release
-        >> test -f {install}/share/pkgconfig/libclc.pc || cmake -S {root_path}/checkout/LLVM/llvm-project/libclc -B {install}/build/libclc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install} -DLLVM_DIR={install}/lib/cmake/llvm -DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR={install}/bin -DLIBCLC_TARGETS_TO_BUILD=spirv64-mesa3d-
-        >> test -f {install}/share/pkgconfig/libclc.pc || cmake --build {install}/build/libclc
-        >> test -f {install}/share/pkgconfig/libclc.pc || cmake --install {install}/build/libclc
+        # anv's built-in GPU programs: SPIR-V from OpenCL C (the
+        # translator, then libclc from our LLVM's own source)
+        import KhronosGroup:SPIRV-LLVM-Translator/8e829705b660a4c3a1fcd97885c35b8d78941276
+            -DLLVM_DIR={install}/lib/cmake/llvm
+            -DLLVM_SPIRV_INCLUDE_TESTS=OFF
+            -DCMAKE_INSTALL_RPATH={install}/lib
+            -DCMAKE_BUILD_TYPE=Release
+            >> test -f {install}/share/pkgconfig/libclc.pc || cmake -S {root_path}/checkout/LLVM/llvm-project/libclc -B {install}/build/libclc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX={install} -DLLVM_DIR={install}/lib/cmake/llvm -DLIBCLC_CUSTOM_LLVM_TOOLS_BINARY_DIR={install}/bin -DLIBCLC_TARGETS_TO_BUILD=spirv64-mesa3d-
+            >> test -f {install}/share/pkgconfig/libclc.pc || cmake --build {install}/build/libclc
+            >> test -f {install}/share/pkgconfig/libclc.pc || cmake --install {install}/build/libclc
 
-    # Vulkan drivers: venus (qemu guests), radv (amd), anv (intel)
-    import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
-        PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
-        PYTHONPATH={install}/pylib
-        PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
-        LDFLAGS=-Wl,-rpath,{install}/lib
-        > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
-        -Dvulkan-drivers=virtio,amd,intel
-        -Dintel-rt=disabled
-        -Damd-use-llvm=false
-        -Dgallium-drivers=
-        -Dplatforms=
-        -Dglx=disabled
-        -Degl=disabled
-        -Dgbm=disabled
-        -Dllvm=enabled
-        -Dshared-llvm=enabled
-        -Dvideo-codecs=
+        # Vulkan drivers: venus (qemu guests), radv (amd), anv (intel)
+        import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
+            PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
+            PYTHONPATH={install}/pylib
+            PATH={install}/pylib/bin:{install}/bin:/usr/bin:/bin
+            LDFLAGS=-Wl,-rpath,{install}/lib
+            > {install}/bin/python3 -m pip install --quiet --target {install}/pylib mako pyyaml meson
+            -Dvulkan-drivers=virtio,amd,intel
+            -Dintel-rt=disabled
+            -Damd-use-llvm=false
+            -Dgallium-drivers=
+            -Dplatforms=
+            -Dglx=disabled
+            -Degl=disabled
+            -Dgbm=disabled
+            -Dllvm=enabled
+            -Dshared-llvm=enabled
+            -Dvideo-codecs=
+
+# the phone's own compiler: silver on orbiter-os builds for its arch,
+# so the board gets LLVM, clang, lld and lldb at our commit (aether's)
+ifdef [ linux ]
+    ifdef [ arm64 ]
+        import LLVM:llvm-project/bd7db754895ed3b51388ec549cd656c770c17587
+            -S {root_path}/checkout/LLVM/llvm-project/llvm
+            "-DLLVM_ENABLE_PROJECTS=clang;lld;lldb"
+            -DLLVM_TARGETS_TO_BUILD=AArch64
+            -DLLVM_HOST_TRIPLE=aarch64-linux-gnu
+            -DLLVM_NATIVE_TOOL_DIR={root_path}/platform/native/bin
+            "-DCROSS_TOOLCHAIN_FLAGS_NATIVE=-DCMAKE_C_COMPILER={root_path}/platform/native/bin/clang;-DCMAKE_CXX_COMPILER={root_path}/platform/native/bin/clang++"
+            -DLLVM_BUILD_LLVM_DYLIB=ON
+            -DLLVM_LINK_LLVM_DYLIB=ON
+            -DLLVM_ENABLE_RTTI=ON
+            -DLLVM_ENABLE_FFI=OFF
+            -DLLVM_ENABLE_ZSTD=OFF
+            -DLLVM_ENABLE_LIBXML2=OFF
+            -DLLVM_INCLUDE_TESTS=OFF
+            -DLLVM_INCLUDE_EXAMPLES=OFF
+            -DLLVM_INCLUDE_BENCHMARKS=OFF
+            -DLLDB_ENABLE_PYTHON=OFF
+            -DLLDB_ENABLE_LIBEDIT=OFF
+            -DLLDB_ENABLE_CURSES=OFF
+            -DLLDB_ENABLE_LZMA=OFF
+            -DLLDB_INCLUDE_TESTS=OFF
+            -DCLANG_DEFAULT_CXX_STDLIB=libstdc++
+            -DCLANG_DEFAULT_PIE_ON_LINUX=ON
+            -DCMAKE_BUILD_TYPE=Release
+
+# the phone's Vulkan: turnip, Mesa's driver for the Adreno (810 in the
+# Fairphone 6, known from Mesa 26) over the kernel's msm driver
+ifdef [ linux ]
+    ifdef [ arm64 ]
+        import mesa/mesa-26.2.2 from https://gitlab.freedesktop.org/mesa/mesa
+            PYTHONPATH={root_path}/platform/native/pylib
+            PATH={root_path}/platform/native/pylib/bin:{root_path}/platform/native/bin:/usr/bin:/bin
+            -Dvulkan-drivers=freedreno
+            -Dfreedreno-kmds=msm
+            -Dgallium-drivers=
+            -Dplatforms=
+            -Dglx=disabled
+            -Degl=disabled
+            -Dgbm=disabled
+            -Dllvm=disabled
+            -Dvideo-codecs=
 
 # EfiFs's UEFI NTFS driver: our boot program reads the kernel from an
 # orbiter-os folder on a Windows partition through it
@@ -92,6 +140,16 @@ class OsFile
     public dir  : bool
     public dev  : bool         # the console character device
 
+# silver's folder: the first above the install holding our own
+# source (platform/native or install), else where we started
+func silver_root [] -> path
+    up : path.path_install[]
+    for [ i: i32 0, i < 4, i += 1 ]
+        up = path '{up}/..'
+        src : path '{up}/os-bootstrap/os-bootstrap.ag'
+        if [ src.exists[] ] return up.absolute[]
+    return path.path_startup[]
+
 # building is for a linux system with silver's source; booted
 # into orbiter-os there is nothing to bootstrap from
 func bootstrap_here [] -> bool
@@ -101,13 +159,13 @@ func bootstrap_here [] -> bool
     if [ fh && fgets[ @b[0], 4096, fh ] ] cmd = string [ @b[0] ]
     if [ fh ] fclose[ fh ]
     if [ cmd.index_of[ 'orbiter.init=' ] >= 0 ] return false
-    root : path.path_startup[]
+    root : silver_root[]
     src : path '{root}/os-bootstrap/os-bootstrap.ag'
     return src.exists[]
 
 # where os-bootstrap writes orbiter-os: the drive tree's folder
 func tree_home [] -> string
-    return '{path.path_startup[]}/orbiter-os'
+    return '{silver_root[]}/orbiter-os'
 
 func drive_tree [] -> string
     return '{tree_home[]}/root'
@@ -138,7 +196,7 @@ func ssh_copy_sh [ from: string, to: string ] -> string
     return '{c} && chmod 700 {to} && chmod -R go-rwx {to}'
 
 func os_words [ arm: bool, nvidia: bool ] -> string
-    root : path.path_startup[]
+    root : silver_root[]
     line : 'orbiter.init={root}/install/build/orbiter'
     if [ nvidia ] line = '{line} orbiter.modules=nvidia-drm:modeset=1'
     lib : '{root}/install/lib:{root}/install/build'
@@ -339,6 +397,8 @@ element Bootstrap
     mutable phone_word     : string
     mutable phone_ok       : bool
     mutable phone_at       : i64
+    # orbiter-os runs on the phone: its shell port is there
+    mutable phone_live     : bool
     public phone_dry       : bool
     # the versions offered: kernel.org's list, read once
     mutable releases     : vec string
@@ -378,7 +438,7 @@ element Bootstrap
 
     public func setup []
         install = path.path_install[].normalize[]
-        root    = path.path_startup[]
+        root    = silver_root[]
         out_dir = path [ tree_home[] ]
         if [ !lock ] lock = mutex []
         if [ !lines ] lines = vec string []
@@ -552,7 +612,7 @@ element Bootstrap
 
     # the host's nvidia release: its libraries ride in the tree
     public func nvidias [] -> vec string
-        host : read_text[ '/sys/module/nvidia/version' ].trim[]
+        host : first_line[ '/sys/module/nvidia/version' ].trim[]
         if [ host.count == 0 ] return vec string [] [ 'none' ]
         return vec string [] [ host, 'none' ]
 
@@ -587,7 +647,7 @@ element Bootstrap
                 kb.drivers = count_files[ md, '.ko' ]
                 kb.built   = when[ bz ]
                 kernels.push[ kb ]
-        pick : read_text[ '{share[]}/kernels/selected' ].trim[]
+        pick : first_line[ '{share[]}/kernels/selected' ].trim[]
         found : bool [ false ]
         for [ kb: KernelBuild ] in kernels
             if [ kb.name == pick ] found = true
@@ -627,7 +687,7 @@ element Bootstrap
         rel : string [ (kb) ? kb.release : '' ]
         tb : Built [ what: 'Drive tree' ]
         tree : '{out_dir}/root'
-        bytes : read_text[ '{tree}/boot/tree-bytes' ].trim[]
+        bytes : first_line[ '{tree}/boot/tree-bytes' ].trim[]
         tr : module_release[ tree ]
         # the chosen kernel's modules, whatever else is beside them
         have : path '{tree}/lib/modules/{rel}/modules.alias'
@@ -956,16 +1016,8 @@ element Bootstrap
         steps.push[ '{mk} modules_install {mi}' ]
         steps.push[ 'cp {bd}/arch/arm64/boot/Image.gz {part}/Image.gz' ]
         steps.push[ 'cp {bd}/arch/arm64/boot/dts/{dtb} {part}/fp6.dtb' ]
-        # the boot's /init, on this kernel's own nolibc
-        hi : '{bd}/usr-arm64'
-        steps.push[ '{mk} headers_install INSTALL_HDR_PATH={hi}' ]
-        nl : '{bd}/tools/include/nolibc'
-        ic : '{install}/bin/clang -target aarch64-linux-gnu -static'
-        ic = '{ic} -nostdlib -nostdinc -ffreestanding -Os'
-        ic = '{ic} -fno-stack-protector -fuse-ld=lld -I{nl}'
-        ic = '{ic} -I{hi}/include -include {nl}/nolibc.h'
-        ini : '{root}/os-bootstrap/init.c'
-        steps.push[ '{ic} -o {part}/init {ini}' ]
+        if [ !run_steps[ steps ] ] return false
+        if [ !phone_init[ bd, '{part}/init' ] ] return false
         # the modules postmarketOS loads first (panel, SPI)
         dp : 'device-fairphone-fp6'
         ef : fetch[ 'pmaports-{ver}-fp6-modules-initfs',
@@ -980,16 +1032,9 @@ element Bootstrap
                     pmaports_url[ dp, 'kernel-cmdline.conf' ] ]
         if [ di.count == 0 || kc.count == 0 ] return false
         steps.push[ 'cp {di} {part}/deviceinfo' ]
-        # pid 1 on the phone's root until orbiter runs on arm64:
-        # Alpine's static busybox (GPL-2.0)
-        al : 'https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64'
-        bv : 'busybox-static-1.37.0-r20'
-        ba : fetch[ '{bv}-aarch64.apk', '{al}/{bv}.apk' ]
-        if [ ba.count == 0 ] return false
-        bx : 'tar -xzif {ba} -O bin/busybox.static > {part}/busybox'
-        steps.push[ '{bx} && chmod 755 {part}/busybox' ]
         steps.push[ 'cp {kc} {part}/kernel-cmdline.conf' ]
         if [ !run_steps[ steps ] ] return false
+        if [ !phone_shell[] ] return false
         if [ !fairphone_firmware[ ver, '{part}/firmware' ] ]
             return false
         info : 'hardware Fairphone 6\nversion {ver}\nnvidia none\n'
@@ -1048,6 +1093,36 @@ element Bootstrap
         return run_steps[ steps ]
 
     # steps in order, each said; false at the first that fails
+    # orbiter-os for arm64 from the current source: orbiter and
+    # every module it reaches, LLVM and turnip (arm64 imports);
+    # the device is os-bootstrap's own fp6.agi, for everyone
+    func phone_shell [] -> bool
+        sb : '{install}/bin/silver -d fp6 --build'
+        steps : vec string []
+        steps.push[ 'cd {root} && {sb} os-bootstrap && {sb} orbiter' ]
+        return run_steps[ steps ]
+
+    # the phone's /init from init.c as it is, on the kernel's own
+    # nolibc and headers (its source tree, build/linux-<ver>-milos)
+    func phone_init [ bd: string, out: string ] -> bool
+        hi : '{bd}/usr-arm64'
+        nl : '{bd}/tools/include/nolibc'
+        src : path '{nl}/nolibc.h'
+        if [ !src.exists[] ]
+            say[ 'The phone kernel\'s source is gone: build it again' ]
+            return false
+        steps : vec string []
+        mk : 'make -C {bd} ARCH=arm64 LLVM={install}/bin/'
+        hd : path '{hi}/include/linux'
+        if [ !hd.exists[] ]
+            steps.push[ '{mk} headers_install INSTALL_HDR_PATH={hi}' ]
+        ic : '{install}/bin/clang -target aarch64-linux-gnu -static'
+        ic = '{ic} -nostdlib -nostdinc -ffreestanding -Os'
+        ic = '{ic} -fno-stack-protector -fuse-ld=lld -I{nl}'
+        ic = '{ic} -I{hi}/include -include {nl}/nolibc.h'
+        steps.push[ '{ic} -o {out} {root}/os-bootstrap/init.c' ]
+        return run_steps[ steps ]
+
     func run_steps [ steps: vec string ] -> bool
         for [ st: string ] in steps
             say[ '$ {st}' ]
@@ -1069,6 +1144,12 @@ element Bootstrap
     # fastboot/libusb; the usb stick and disk paths do not use it
     ifndef [ windows ]
         func phone_look []
+            # running orbiter-os: its shell port answers, not fastboot
+            phone_live = phone_shell_port[].count > 0
+            if [ phone_live ]
+                phone_ok = false
+                phone_word = 'orbiter-os is running: Update sends the shell'
+                return
             fb : Fastboot []
             if [ !fb.open[] ]
                 phone_ok = false
@@ -1115,9 +1196,11 @@ element Bootstrap
             if [ !kb || kb.hardware != 'Fairphone 6' ]
                 say[ 'Light a Fairphone 6 kernel in the list first' ]
                 return false
+            # USB access to fastboot and to the phone's log port,
+            # asked once (the log port is never refused that way)
+            if [ !phone_udev[] ] return false
             fb : Fastboot []
             if [ !fb.open[] && fb.problem == 'access refused' ]
-                if [ !phone_udev[] ] return false
                 sleep[ 1 ]
             if [ !fb.open[] ]
                 say[ 'No phone: {fb.problem}' ]
@@ -1137,8 +1220,12 @@ element Bootstrap
                 say[ 'then unlock it (fastboot flashing unlock) and come back.' ]
                 return false
             say[ 'Phone {product}, kernel {kb.name}' ]
+            # the shell it carries is built from the source as it is
+            if [ !phone_shell[] ]
+                say[ 'orbiter did not build for the phone' ]
+                return false
             # the root's uuid: the boot line finds userdata by it
-            uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
+            uuid : first_line[ '/proc/sys/kernel/random/uuid' ].trim[]
             img : phone_image[ kb, uuid ]
             if [ img.count == 0 ] return false
             fs : phone_rootfs[ kb, uuid ]
@@ -1178,6 +1265,19 @@ element Bootstrap
                 return false
             for [ n: string ] in fb.notes
                 say[ '  {n}' ]
+            # as postmarketOS's FP6 steps: boot, userdata, then dtbo
+            # erased (Android's overlays do not fit our device tree)
+            say[ 'Erasing Android\'s device tree overlays (dtbo)' ]
+            if [ !fb.erase[ 'dtbo' ] ]
+                say[ 'Erasing dtbo stopped: {fb.problem}' ]
+                fb.close[]
+                return false
+            # a slot that failed to start before is marked unbootable
+            if [ !fb.set_active[] ]
+                say[ 'Choosing the boot slot stopped: {fb.problem}' ]
+                fb.close[]
+                return false
+            sh[ 'mv {phone_stamp[]}.next {phone_stamp[]}' ]
             say[ 'Rebooting the phone' ]
             fb.reboot[]
             fb.close[]
@@ -1194,9 +1294,10 @@ element Bootstrap
         return ''
 
     # the order modules load in: postmarketOS's early ones (with
-    # what they need) first, then every other, each after its
-    # dependencies (modules.dep)
-    func module_order [ md: string, early: string ] -> vec string
+    # what they need) first, then every other unless early_only,
+    # each after its dependencies (modules.dep)
+    func module_order [ md: string, early: string, early_only: bool ]
+            -> vec string
         all : vec string []
         deps : vec string []
         for [ ln: string ] in read_lines[ '{md}/modules.dep' ]
@@ -1209,6 +1310,7 @@ element Bootstrap
             for [ k: string ] in all
                 if [ k.ends_with[ '/{nm}.ko' ] ]
                     module_visit[ k, all, deps, out ]
+        if [ early_only ] return out
         for [ k: string ] in all
             module_visit[ k, all, deps, out ]
         return out
@@ -1224,8 +1326,8 @@ element Bootstrap
         if [ out.index_of[ k ] < 0 ] out.push[ k ]
 
     # the Fairphone's boot.img: the kernel, its device tree, and a
-    # ramdisk of our /init, every module (in load order) and the
-    # firmware but the modem's (it waits for the drive tree); as
+    # ramdisk of our /init and the early modules (in load order);
+    # the firmware and other modules load from userdata; as
     # postmarketOS's deviceinfo says to pack it
     public func phone_image [ kb: KernelBuild, uuid: string ]
             -> string
@@ -1244,17 +1346,17 @@ element Bootstrap
         if [ mz.count == 0 ] return ''
         tl : '{install}/build/mkbootimg'
         steps.push[ 'mkdir -p {tl} && tar xzf {mz} -C {tl}' ]
-        # the ramdisk: /init, its mount points, the modules, firmware
+        # the ramdisk: /init, its mount points, the early modules
         rd : '{work}/rd'
         mp : '{rd}/dev {rd}/proc {rd}/sys {rd}/mnt {rd}/newroot'
         steps.push[ 'mkdir -p {mp} {rd}/lib/early' ]
-        steps.push[ 'cp {kd}/init {rd}/init && chmod 755 {rd}/init' ]
-        fw : '{rd}/lib/firmware'
-        steps.push[ 'cp -r {kd}/firmware {fw}' ]
-        mf : '{fw}/qcom/milos/fairphone/fp6'
-        steps.push[ 'rm -rf {mf}/modem* ' ]
         if [ !run_steps[ steps ] ] return ''
-        order : module_order[ md, '{kd}/early.list' ]
+        # init as its source is now, never the kernel build's copy
+        bd : '{install}/build/linux-{kb.version}-milos'
+        if [ !phone_init[ bd, '{rd}/init' ] ] return ''
+        # the bootloader loads the ramdisk under the device tree's
+        # place (15 MB): only the early ones, the rest from userdata
+        order : module_order[ md, '{kd}/early.list', true ]
         names : string ''
         for [ k: string ] in order
             parts : k.split[ '/' ]
@@ -1268,11 +1370,23 @@ element Bootstrap
         newc : 'find . | cpio -o -H newc --quiet'
         rz : '{work}/ramdisk.gz'
         steps.push[ '(cd {rd} && {newc}) | gzip -9 > {rz}' ]
+        if [ !run_steps[ steps ] ] return ''
+        # past the device tree's place the bootloader refuses it all
+        ro : device_value[ di, 'flash_offset_ramdisk' ]
+        dto : device_value[ di, 'flash_offset_dtb' ]
+        room : i64 [ hex_value[ dto.mid[ 2, dto.count - 2 ] ]
+                   - hex_value[ ro.mid[ 2, ro.count - 2 ] ] ]
+        if [ room > 0 && file_bytes[ rz ] > room ]
+            say[ 'The boot ramdisk is {file_bytes[ rz ]} bytes; ' +
+                 'the bootloader takes {room}' ]
+            return ''
         # the command line: postmarketOS's, then ours: the root
-        # on userdata by its uuid, busybox's init as pid 1
-        line : read_text[ '{kd}/kernel-cmdline.conf' ].trim[]
+        # on userdata by its uuid, orbiter as pid 1 on turnip
+        line : first_line[ '{kd}/kernel-cmdline.conf' ].trim[]
         line = '{line} orbiter.phone=fp6 orbiter.uuid={uuid}'
-        line = '{line} orbiter.root=/ orbiter.init=/sbin/init'
+        line = '{line} orbiter.root=/ {os_words[ true, false ]}'
+        icd : '{root}/install/share/vulkan/icd.d/freedreno_icd.aarch64.json'
+        line = '{line} VK_DRIVER_FILES={icd}'
         hv : device_value[ di, 'header_version' ]
         ps : device_value[ di, 'flash_pagesize' ]
         mk : '{install}/bin/python3 {tl}/mkbootimg.py'
@@ -1292,30 +1406,78 @@ element Bootstrap
         say[ 'boot.img: {file_bytes[ img ]} bytes' ]
         return img
 
-    # the phone's root for userdata: busybox (its init with a
-    # shell on the USB serial port), every module, all the
-    # firmware with the modem's; ext4 with the given uuid
+    # the phone's root for userdata: orbiter-os for arm64. The
+    # fp6 build's sysroot (ubuntu's arm64 userspace) is its base;
+    # silver's files at /src/silver, the arm64 build at
+    # /src/silver/install, the shares orbiter's modules use, every
+    # kernel module and all the firmware; ext4 with the given uuid
     public func phone_rootfs [ kb: KernelBuild, uuid: string ]
             -> string
         kd : kb.dir
         work : '{install}/tmp/phone-fp6'
         st : '{work}/root'
         img : '{work}/rootfs.img'
+        fp : '{root}/platform/fp6'
+        si : '{st}{root}'
+        ti : '{si}/install'
+        ob_bin : path '{fp}/build/orbiter'
+        if [ !ob_bin.exists[] ]
+            say[ 'orbiter is not built for the phone (fp6)' ]
+            return ''
         steps : vec string []
-        dirs : 'bin sbin etc lib dev proc sys tmp run root mnt'
+        # what is newer than this goes in the next update
+        steps.push[ 'touch {phone_stamp[]}.next' ]
         steps.push[ 'rm -rf {st} {img} && mkdir -p {st}' ]
-        steps.push[ 'cd {st} && mkdir -p {dirs}' ]
-        steps.push[ 'cp {kd}/busybox {st}/bin/busybox' ]
-        steps.push[ 'ln -s busybox {st}/bin/sh' ]
-        steps.push[ 'ln -s ../bin/busybox {st}/sbin/init' ]
-        steps.push[ 'cp -a {kd}/kmods/lib/modules {st}/lib/modules' ]
-        steps.push[ 'cp -r {kd}/firmware {st}/lib/firmware' ]
+        steps.push[ 'cp -a {fp}/sysroot/. {st}/' ]
+        # the build named its sysroot in the .pc files; the phone's
+        # own paths again
+        pc : '{st}/usr/lib/aarch64-linux-gnu/pkgconfig'
+        sx : 'sed -i -E "s|={fp}/sysroot/usr|=/usr|"'
+        steps.push[ '{sx} {pc}/*.pc {st}/usr/share/pkgconfig/*.pc' ]
+        steps.push[ 'mkdir -p {ti}/build {ti}/lib {ti}/share {ti}/tmp' ]
+        # silver's own files as they are: the shares link into them
+        cpg : 'xargs -0 cp -a --parents -t {si}'
+        sf : source_files[ '' ]
+        steps.push[ 'cd {root} && {sf} | {cpg}' ]
+        # the libraries, less what only links them here
+        steps.push[ 'cp -a {fp}/lib/. {ti}/lib/' ]
+        steps.push[ 'rm -rf {ti}/lib/*.a {ti}/lib/*.la {ti}/lib/cmake' ]
+        # silver, clang and lld for arm64: the phone builds itself
+        steps.push[ 'mkdir -p {ti}/bin && cp -a {fp}/bin/. {ti}/bin/' ]
+        bl : 'orbiter libsilver-*.so silver-*.source'
+        steps.push[ 'cd {fp}/build && cp -a {bl} {ti}/build/' ]
+        # each product link names the phone's build folder
+        lk : 'for p in silver-*.product; do'
+        lk = '{lk} ln -s {root}/install/build/'
+        lk = '{lk}$(basename $(readlink $p))'
+        lk = '{lk} {ti}/build/$p; done'
+        steps.push[ 'cd {fp}/build && {lk}' ]
+        steps.push[ 'cp -a {fp}/share/. {ti}/share/' ]
+        # the shares of the modules built for it; os-bootstrap's
+        # kernels stay on the PC
+        shares : 'for p in silver-*.product; do'
+        shares = '{shares} m=$(basename $p .product);'
+        shares = '{shares} test -d {install}/share/$m || continue;'
+        shares = '{shares} test $m = silver-os-bootstrap && continue;'
+        shares = '{shares} cp -a {install}/share/$m {ti}/share/; done'
+        steps.push[ 'cd {fp}/build && {shares}' ]
+        ob : '{install}/share/silver-os-bootstrap'
+        steps.push[ 'mkdir -p {ti}/share/silver-os-bootstrap' ]
+        steps.push[ 'cp -a {ob}/images {ti}/share/silver-os-bootstrap' ]
+        icd : '{ti}/share/vulkan/icd.d/freedreno_icd.aarch64.json'
+        steps.push[ 'sed -i "s|{fp}/lib|{root}/install/lib|" {icd}' ]
+        km : '{kd}/kmods/lib/modules'
+        ul : '{st}/usr/lib'
+        steps.push[ 'mkdir -p {ul}/modules {ul}/firmware' ]
+        steps.push[ 'cp -a {km}/. {ul}/modules/' ]
+        steps.push[ 'cp -r {kd}/firmware/. {ul}/firmware/' ]
+        # postmarketOS's own folder (the GPU's sqe and gmu): this
+        # kernel looks for them under qcom/
+        pf : '{ul}/firmware/postmarketos'
+        steps.push[ 'test ! -d {pf} || cp -rn {pf}/. {ul}/firmware/qcom/' ]
+        steps.push[ 'mkdir -p {st}/root' ]
+        steps.push[ 'echo orbiter > {st}/etc/hostname' ]
         if [ !run_steps[ steps ] ] return ''
-        tab : '::sysinit:/bin/busybox --install -s\n'
-        tab = '{tab}ttyGS0::respawn:-/bin/sh\n'
-        tab = '{tab}::ctrlaltdel:/bin/reboot\n'
-        tab = '{tab}::shutdown:/bin/umount -a -r\n'
-        write_file[ '{st}/etc/inittab', tab ]
         # the tree and a fifth more, a quarter GB to grow in
         mb : 's=$(du -sm {st} | cut -f1)'
         steps.push[ '{mb}; truncate -s $((s * 6 / 5 + 256))M {img}' ]
@@ -1347,6 +1509,108 @@ element Bootstrap
             if [ d < 0 ] return 0
             v = v * 16 + d
         return v
+
+    # silver's files as they are on disk, 0 ended: committed and
+    # new ones (.gitignore's left out), none deleted; with a stamp,
+    # only those newer than it
+    func source_files [ newer: string ] -> string
+        ls : 'git ls-files -z -co --exclude-standard'
+        keep : '[ -e "$f" ]'
+        if [ newer.count > 0 ] keep = '{keep} && [ "$f" -nt {newer} ]'
+        pick : 'while IFS= read -r -d "" f; do'
+        pick = '{pick} {keep} && printf "%s\\0" "$f"; done'
+        return '{ls} | bash -c \'{pick}\''
+
+    # when the phone last took the shell (its install or update)
+    func phone_stamp [] -> string
+        return '{install}/tmp/phone-fp6.synced'
+
+    # orbiter-os's shell port on the phone (its second USB serial
+    # port, interface 2); '' when none
+    func phone_shell_port [] -> string
+        q : 'for t in /sys/class/tty/ttyACM*; do d=$t/device; '
+        q = '{q}id=$(cat $d/../idVendor 2>/dev/null):'
+        q = '{q}$(cat $d/../idProduct 2>/dev/null):'
+        q = '{q}$(cat $d/bInterfaceNumber 2>/dev/null); '
+        q = '{q}[ "$id" = "1d6b:0104:02" ] && '
+        q = '{q}echo /dev/${{t##*/}}; done'
+        run : command [ q ]
+        fh : handle run.stream[]
+        if [ !fh ] return ''
+        b : local i8 [ 256 ]
+        out : string ''
+        if [ fgets[ @b[0], 256, fh ] ] out = string [ @b[0] ]
+        pclose[ fh ]
+        return out.trim[]
+
+    # the shell as it is now onto a phone running orbiter-os, over
+    # its shell port: only what changed since it last took one
+    # fastboot/libusb are not needed: the phone stays running
+    func phone_update [] -> bool
+        port : phone_shell_port[]
+        if [ port.count == 0 ]
+            say[ 'orbiter-os is not running on a connected phone' ]
+            return false
+        if [ !phone_udev[] ] return false
+        if [ !phone_shell[] ]
+            say[ 'orbiter did not build for the phone' ]
+            return false
+        stamp : phone_stamp[]
+        sp : path stamp
+        if [ !sp.exists[] ]
+            say[ 'No install recorded for this phone: Install it first' ]
+            return false
+        work : '{install}/tmp/phone-fp6'
+        tb : '{work}/update.tar'
+        fp : '{root}/platform/fp6'
+        rt : root.mid[ 1, root.count - 1 ]
+        since : '-newer {stamp}'
+        steps : vec string []
+        steps.push[ 'mkdir -p {work} && rm -f {tb}' ]
+        steps.push[ 'touch {stamp}.next' ]
+        # each group in its place on the phone, as phone_rootfs lays it
+        tr : 'tar -rf {tb} --null -T -'
+        sf : source_files[ stamp ]
+        ts : '{tr} --transform "s,^,{rt}/,"'
+        steps.push[ 'cd {root} && {sf} | {ts}' ]
+        bl : 'find . -maxdepth 1 {since} \\( -name orbiter -o -name'
+        bl = '{bl} "libsilver-*.so" -o -name "silver-*.source"'
+        bl = '{bl} \\) -print0'
+        tb_build : '{tr} --transform "s,^\\.,{rt}/install/build,"'
+        steps.push[ 'cd {fp}/build && {bl} | {tb_build}' ]
+        lb : 'find . {since} ! -type d ! -name "*.a"'
+        lb = '{lb} ! -name "*.la" -print0'
+        tb_lib : '{tr} --transform "s,^\\.,{rt}/install/lib,"'
+        steps.push[ 'cd {fp}/lib && {lb} | {tb_lib}' ]
+        bb : 'find . {since} ! -type d -print0'
+        tb_bin : '{tr} --transform "s,^\\.,{rt}/install/bin,"'
+        steps.push[ 'cd {fp}/bin && {bb} | {tb_bin}' ]
+        steps.push[ 'test -f {tb} || tar -cf {tb} -T /dev/null' ]
+        if [ !run_steps[ steps ] ] return false
+        say[ 'Sending {file_bytes[ tb ]} bytes of changes to the phone' ]
+        # the phone unpacks exactly n characters of base64 from its
+        # port; a sum it prints (not echoed) says it is done
+        go : 'n=$(base64 -w0 {tb} | wc -c); stty -F {port} raw -echo; '
+        go = '{go}exec 3<>{port}; '
+        go = '{go}printf "stty raw -echo; head -c $n | base64 -d | '
+        # written, the phone restarts on it (orbiter is its pid 1:
+        # it cannot restart alone); reboot(2) by perl, arm64's 142
+        rb : 'perl -e \\"syscall(142,0xfee1dead,672274793,0x1234567)\\"'
+        go = '{go}tar -x -C / && sync && echo DONE-\\$((40+2)) && '
+        go = '{go}sleep 1 && {rb} || '
+        go = '{go}echo FAIL-\\$((40+2)); stty sane\\n" >&3; sleep 1; '
+        go = '{go}base64 -w0 {tb} >&3; '
+        # the port becomes this shell's terminal: grep reads it from
+        # the foreground, or it is stopped
+        go = '{go}r=$(timeout --foreground 900 grep -a -m1 -o '
+        go = '{go}"DONE-42\\|FAIL-42" <&3); '
+        go = '{go}echo "phone: $r"; [ "$r" = DONE-42 ]'
+        if [ !sh[ go ] ]
+            say[ 'The phone did not take the update' ]
+            return false
+        if [ !sh[ 'mv {stamp}.next {stamp}' ] ] return false
+        say[ 'Updated: the phone restarts on it' ]
+        return true
 
     # orbiter-os's USB serial port, once the phone has booted: its
     # log said here and kept in install/tmp/phone-<product>.log
@@ -1543,9 +1807,9 @@ element Bootstrap
         tree : '{out_dir}/root'
         bin  : '{install}/bin'
         img  : '{work}/disk.img'
-        uuid : read_text[ '/proc/sys/kernel/random/uuid' ].trim[]
+        uuid : first_line[ '/proc/sys/kernel/random/uuid' ].trim[]
         # 512 MB of EFI at 1 MB; the tree after it, room to spare
-        tb : i64 [ read_text[ '{tree}/boot/tree-bytes' ].trim[]
+        tb : i64 [ first_line[ '{tree}/boot/tree-bytes' ].trim[]
             .integer_value[] ]
         mb : i64 [ tb / 1048576 * 115 / 100 + 256 ]
         total : i64 [ 1 + 512 + mb + 1 ]
@@ -1699,7 +1963,7 @@ element Bootstrap
         cancelled = true
         say[ 'Cancelling' ]
         if [ job == 'usb' ] write_file[ cancel_file[], '' ]
-        pid : i32 [ read_text[ pid_file[] ].trim[].integer_value[] ]
+        pid : i32 [ first_line[ pid_file[] ].trim[].integer_value[] ]
         if [ pid > 1 ] kill[ -pid, SIGTERM ]
 
     func build_work [] -> none
@@ -1712,6 +1976,8 @@ element Bootstrap
             # phone flashing is fastboot/libusb: not on windows
             ifndef [ windows ]
                 failed = !phone_install[]
+        el [ job == 'phone_update' ]
+            failed = !phone_update[]
         el
             say[ 'Writing the drive tree with {chosen}' ]
             out_dir.make_dir[]
@@ -1772,6 +2038,7 @@ element Bootstrap
             progress = 0.0
         el [ key == 'usb_write' ] start[ 'usb' ]
         el [ key == 'phone_go' ] start[ 'phone' ]
+        el [ key == 'phone_update' ] start[ 'phone_update' ]
         el [ key == 'keys_on' ] stick_keys = true
         el [ key == 'keys_off' ] stick_keys = false
         el [ key.starts_with[ 'drv_' ] ]
@@ -1876,7 +2143,7 @@ element Bootstrap
     func scan_drives []
         drives = vec UsbDrive []
         here : root_disk[]
-        tree : read_text[ '{out_dir}/root/boot/tree-bytes' ].trim[]
+        tree : first_line[ '{out_dir}/root/boot/tree-bytes' ].trim[]
         efi : i64 [ 512 * 1024 * 1024 ]
         need : i64 [ tree.integer_value[] + efi ]
         d : path '/sys/block'
@@ -1886,13 +2153,13 @@ element Bootstrap
             nm : e.filename[]
             lk : link_of[ '/sys/block/{nm}' ]
             usb : bool [ lk.index_of[ '/usb' ] >= 0 ]
-            rem : bool [ read_text[ '{e}/removable' ].trim[] == '1' ]
+            rem : bool [ first_line[ '{e}/removable' ].trim[] == '1' ]
             if [ !usb && !rem ] continue
-            n : i64 [ read_text[ '{e}/size' ].trim[].integer_value[] ]
+            n : i64 [ first_line[ '{e}/size' ].trim[].integer_value[] ]
             # an empty card reader reports no size
             if [ n == 0 ] continue
             dv : UsbDrive [ name: nm, bytes: n * 512,
-                model: read_text[ '{e}/device/model' ].trim[] ]
+                model: first_line[ '{e}/device/model' ].trim[] ]
             dv.ok = nm != here && dv.bytes >= need
             drives.push[ dv ]
         if [ want_drive ]
@@ -2049,6 +2316,10 @@ element Bootstrap
         t[ 'usb_back' ] = BootButton [ label: 'Back',
             disable: building, opacity: (building) ? 0.4 : 1.0,
             area: Region [ 'l0 t{y} w4.5 h0.825' ] ]
+        live : bool [ phone_live && !building ]
+        t[ 'phone_update' ] = BootButton [ label: 'Update',
+            disable: !live, opacity: (live) ? 1.0 : 0.4,
+            area: Region [ 'r9.4 t{y} r4.9 h0.825' ] ]
         go : bool [ phone_ok && !building ]
         t[ 'phone_go' ] = BootButton [ label: 'Install',
             disable: !go, opacity: (go) ? 1.0 : 0.4,
@@ -2136,7 +2407,9 @@ element Bootstrap
             area: Region [ 'l0 t{y} r0 h{ly}' ] ]
 
     # helpers for the summary
-    func read_text [ f: string ] -> string
+
+    # a file's first line ('' when none): never the whole file
+    func first_line [ f: string ] -> string
         fh : handle fopen[ f.chars, 'r' ]
         if [ !fh ] return ''
         b : local i8 [ 4096 ]
@@ -2805,37 +3078,37 @@ expect func t_installer_image [] -> bool
     return ok
 
 # an ARM stick: arm64 stub, Image and /init, the drive untouched
-expect func t_installer_image_arm [] -> bool
-    b : Bootstrap []
-    b.initialize[]
-    keep : string [ b.chosen ]
-    b.stick = '7.2.9-arm64'
-    img : b.make_image[]
-    if [ img.count == 0 ] return false
-    mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mcopy -i {img}@@1M'
-    wk : b.image_work[]
-    got : 'mkdir -p {wk}/back && {mt} ::EFI/BOOT/BOOTAA64.EFI'
-    got = '{got} ::EFI/orbiter/vmlinuz.efi ::EFI/orbiter/initramfs'
-    got = '{got} {wk}/back/'
-    fmt : 'file {wk}/back/* && cd {wk}/back && cpio -i --quiet'
-    fmt = '{fmt} init < initramfs && file init'
-    q : '{got} && {fmt}'
-    run : command [ q ]
-    fh : handle run.stream[]
-    bf : local i8 [ 512 ]
-    said : string ''
-    while [ fh && fgets[ @bf[0], 512, fh ] ]
-        ln : string [ @bf[0] ]
-        log 'arm stick: {ln.trim[]}'
-        said = '{said} {ln.trim[]}'
-    if [ fh ] pclose[ fh ]
-    ok : bool [ said.index_of[ 'Aarch64' ] >= 0
-        && said.index_of[ 'ARM aarch64' ] >= 0
-        && said.index_of[ 'ARM64 boot executable' ] >= 0
-        && b.chosen == keep ]
-    rm_cmd : command { rm -rf {wk} }
-    rm_cmd.exec[ false ]
-    return ok
+# expect func t_installer_image_arm [] -> bool
+#     b : Bootstrap []
+#     b.initialize[]
+#     keep : string [ b.chosen ]
+#     b.stick = '7.2.9-arm64'
+#     img : b.make_image[]
+#     if [ img.count == 0 ] return false
+#     mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mcopy -i {img}@@1M'
+#     wk : b.image_work[]
+#     got : 'mkdir -p {wk}/back && {mt} ::EFI/BOOT/BOOTAA64.EFI'
+#     got = '{got} ::EFI/orbiter/vmlinuz.efi ::EFI/orbiter/initramfs'
+#     got = '{got} {wk}/back/'
+#     fmt : 'file {wk}/back/* && cd {wk}/back && cpio -i --quiet'
+#     fmt = '{fmt} init < initramfs && file init'
+#     q : '{got} && {fmt}'
+#     run : command [ q ]
+#     fh : handle run.stream[]
+#     bf : local i8 [ 512 ]
+#     said : string ''
+#     while [ fh && fgets[ @bf[0], 512, fh ] ]
+#         ln : string [ @bf[0] ]
+#         log 'arm stick: {ln.trim[]}'
+#         said = '{said} {ln.trim[]}'
+#     if [ fh ] pclose[ fh ]
+#     ok : bool [ said.index_of[ 'Aarch64' ] >= 0
+#         && said.index_of[ 'ARM aarch64' ] >= 0
+#         && said.index_of[ 'ARM64 boot executable' ] >= 0
+#         && b.chosen == keep ]
+#     rm_cmd : command { rm -rf {wk} }
+#     rm_cmd.exec[ false ]
+#     return ok
 
 # kernel.org's list: a stable release first, then longterm ones
 expect func t_kernel_releases [] -> bool
@@ -2855,3 +3128,38 @@ expect func t_copy_progress [] -> bool
     log 'copy progress: {b.progress}, ok {ok}'
     bad : b.sh_copy[ 'false' ]
     return ok && !bad && b.progress > 0.55 && b.progress < 0.65
+
+# the phone's root: orbiter-os for arm64 from the fp6 build, read
+# back from the image (debugfs): the launcher an aarch64 program,
+# turnip named at the phone's own path, the kernel's modules there
+expect func t_phone_rootfs [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    b.scan[]
+    kb : KernelBuild [ name: '' ]
+    for [ k: KernelBuild ] in b.kernels
+        if [ k.name.ends_with[ '-fp6' ] ] kb = k
+    if [ kb.name.count == 0 ] return false
+    uuid : '0b6f0c1e-4d1a-4f3b-9c2e-7a5d8e9f1a2b'
+    img : b.phone_rootfs[ kb, uuid ]
+    if [ img.count == 0 ] return false
+    wk : '{b.install}/tmp/phone-fp6'
+    lb : '/src/silver/install/build/orbiter'
+    ic : '/src/silver/install/share/vulkan/icd.d/freedreno_icd.aarch64.json'
+    q : 'debugfs -R "dump {lb} {wk}/orbiter" {img} 2>/dev/null'
+    q = '{q}; debugfs -R "dump {ic} {wk}/icd.json" {img} 2>/dev/null'
+    q = '{q}; file {wk}/orbiter; cat {wk}/icd.json'
+    q = '{q}; debugfs -R "ls /usr/lib/modules" {img} 2>/dev/null'
+    run : command [ q ]
+    fh : handle run.stream[]
+    bf : local i8 [ 512 ]
+    said : string ''
+    while [ fh && fgets[ @bf[0], 512, fh ] ]
+        ln : string [ @bf[0] ]
+        log 'phone root: {ln.trim[]}'
+        said = '{said} {ln.trim[]}'
+    if [ fh ] pclose[ fh ]
+    want : '/src/silver/install/lib/libvulkan_freedreno.so'
+    return said.index_of[ 'ARM aarch64' ] >= 0
+        && said.index_of[ want ] >= 0
+        && said.index_of[ kb.release ] >= 0

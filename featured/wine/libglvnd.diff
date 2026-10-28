@@ -1,0 +1,11 @@
+--- a/src/EGL/meson.build	2026-10-25 03:07:38.811187550 -0700
++++ b/src/EGL/meson.build	2026-10-25 03:07:38.830389353 -0700
+@@ -42,6 +42,8 @@
+   egl_vendor_config_dirs = '@0@/glvnd/egl_vendor.d:@1@/glvnd/egl_vendor.d'.format(
+     join_paths(get_option('prefix'),get_option('sysconfdir')),
+     join_paths(get_option('prefix'),get_option('datadir')))
++  # the driver's own vendor files, where the system keeps them
++  egl_vendor_config_dirs += ':/etc/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d'
+ endif
+ 
+ libEGL = shared_library(

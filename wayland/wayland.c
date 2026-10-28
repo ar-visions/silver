@@ -1375,6 +1375,36 @@ WLC_API void wlc_window_close(uint64_t id) { pthread_mutex_lock(&g_lock); u_wlc_
 WLC_API void wlc_window_kill(uint64_t id) { pthread_mutex_lock(&g_lock); u_wlc_window_kill(id); pthread_mutex_unlock(&g_lock); }
 WLC_API uint64_t wlc_frame_id(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_frame_id(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API uint64_t wlc_frame_gen(uint64_t id) { pthread_mutex_lock(&g_lock); uint64_t r = u_wlc_frame_gen(id); pthread_mutex_unlock(&g_lock); return r; }
+// a reader's hold on the window's current frame: its buffer is not
+// drawn into again until dropped (0: no frame)
+WLC_API uint64_t wlc_frame_take(uint64_t id) {
+    pthread_mutex_lock(&g_lock);
+    struct toplevel *t = top_of(id);
+    struct wlr_buffer *b = (t && t->frame_buf) ? wlr_buffer_lock(t->frame_buf) : NULL;
+    pthread_mutex_unlock(&g_lock);
+    return (uint64_t)(uintptr_t)b;
+}
+WLC_API void wlc_frame_drop(uint64_t b) {
+    if (!b) return;
+    pthread_mutex_lock(&g_lock);
+    wlr_buffer_unlock((struct wlr_buffer *)(uintptr_t)b);
+    pthread_mutex_unlock(&g_lock);
+}
+// the renderer is done writing it (its dma-buf's fence); 0 on timeout
+WLC_API int wlc_frame_ready(uint64_t b, int ms) {
+    if (!b) return 0;
+    struct wlr_dmabuf_attributes at;
+    int fd = -1;
+    pthread_mutex_lock(&g_lock);
+    if (wlr_buffer_get_dmabuf((struct wlr_buffer *)(uintptr_t)b, &at))
+        fd = fcntl(at.fd[0], F_DUPFD_CLOEXEC, 0);
+    pthread_mutex_unlock(&g_lock);
+    if (fd < 0) return 0;
+    struct pollfd pf = { .fd = fd, .events = POLLIN };
+    int r = poll(&pf, 1, ms);
+    close(fd);
+    return r > 0;
+}
 WLC_API int wlc_frame_w(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_frame_w(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_frame_h(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_frame_h(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API uint32_t wlc_frame_format(uint64_t id) { pthread_mutex_lock(&g_lock); uint32_t r = u_wlc_frame_format(id); pthread_mutex_unlock(&g_lock); return r; }

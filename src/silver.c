@@ -64,6 +64,8 @@ static bool ensure_android_runtime(silver a, symbol triple, string tgt, string l
                                    string tools, string core_lib);
 static bool ensure_core_runtime(silver a, path install, symbol triple,
                                 string tgt, string ldld, string tools, string core_lib);
+static bool ensure_linux_runtime(silver a, symbol triple, string tgt, string ldld,
+                                 string tools, string core_lib);
 static symbol platform_abi_llc(silver a);
 #ifdef __APPLE__
 static void bundle_dylibs(silver a, path bin, path lib_dir, array done);
@@ -305,6 +307,16 @@ token aether_peek_safe(silver);
 
 #undef error
 token silver_element(silver, num);
+// the token an error is reported at: this parser's own place
+static struct _token* silver_where(silver a) {
+    struct _token* pk = aether_peek_safe(a);
+    struct _token* prev = (struct _token*)silver_element(a, -1);
+    if (prev && pk && prev->line != pk->line) pk = prev;
+    // replayed tokens carry line 0: use the last consumed
+    if (pk && pk->line == 0 && prev && prev->line) pk = prev;
+    return pk;
+}
+
 // error/validate: their branches live here once
 static bool silver_fail(silver a, symbol file, int line, int seq,
         bool trap, symbol t, ...) {
@@ -312,11 +324,7 @@ static bool silver_fail(silver a, symbol file, int line, int seq,
     va_start(args, t);
     string msg = (string)vformatter((Au_t)null, false, null, (Au)false, seq, t, args);
     va_end(args);
-    struct _token* pk = aether_peek_safe(a);
-    struct _token* prev = (struct _token*)silver_element(a, -1);
-    if (prev && pk && prev->line != pk->line) pk = prev;
-    // replayed tokens carry line 0: use the last consumed
-    if (pk && pk->line == 0 && prev && prev->line) pk = prev;
+    struct _token* pk = silver_where(a);
     string s = (string)formatter((Au_t)null, false, stderr, (Au)true, seq,
         "\n%o:%i:%i (%s:%i%o)\n%o",
         (pk && pk->source ? (Au)pk->source : (Au)a->module_file),
@@ -408,14 +416,6 @@ static symbol lib_static = ".lib";
 static symbol app_ext = ".exe";
 static symbol platform = "windows";
 static symbol shared   = "-shared";
-// the SHARED crt, named outright. a module of pure silver has no object
-// asking for a crt, so a vendored static lib's directive decided it --
-// and a FILE* from Au's crt is foreign to a static one, which fastfails
-// on it. one crt per process, as designed
-static symbol crt_libs = " -Wl,/DEFAULTLIB:msvcrt -Wl,/DEFAULTLIB:ucrt"
-                         " -Wl,/NODEFAULTLIB:libucrt -Wl,/NODEFAULTLIB:libucrtd"
-                         " -Wl,/NODEFAULTLIB:libcmt -Wl,/NODEFAULTLIB:libcmtd"
-                         " -Wl,/NODEFAULTLIB:msvcrtd";
 #elif defined(__APPLE__)
 static symbol lib_pre = "lib";
 static symbol lib_ext = ".dylib";
@@ -424,6 +424,14 @@ static symbol app_ext = "";
 static symbol platform = "darwin";
 static symbol shared   = "-dynamiclib";
 #endif
+// the SHARED crt, named outright. a module of pure silver has no object
+// asking for a crt, so a vendored static lib's directive decided it --
+// and a FILE* from Au's crt is foreign to a static one, which fastfails
+// on it. one crt per process, as designed
+static symbol crt_libs = " -Wl,/DEFAULTLIB:msvcrt -Wl,/DEFAULTLIB:ucrt"
+                         " -Wl,/NODEFAULTLIB:libucrt -Wl,/NODEFAULTLIB:libucrtd"
+                         " -Wl,/NODEFAULTLIB:libcmt -Wl,/NODEFAULTLIB:libcmtd"
+                         " -Wl,/NODEFAULTLIB:msvcrtd";
 
 // build status, one line per step, flushed: a host pipes this into the
 // app's log, and the console shows it while the build runs
@@ -517,11 +525,7 @@ static bool _is_alpha(Au any) {
     }
     if (index_of_cstr((Au)keywords, cstring(s)) >= 0)
         return false;
-    if (len(s) > 0) {
-        char first = s->chars[0];
-        return isalpha(first) || first == '_';
-    }
-    return false;
+    return len(s) > 0 && au_name_start(s->chars);
 }
 
 string silver_read_alpha(silver a) {
@@ -1103,7 +1107,15 @@ static void* build_fn_worker(void* arg) {
     }
     on_error() {
         aether_emit_recover();
-        w->err   = _frame.message ? (string)hold((Au)_frame.message) : string("worker error");
+        // a verify has no token: name this worker's own place
+        struct _token* pk = silver_where(a);
+        string at = f(string, "%o:%i:%i",
+            (pk && pk->source ? (Au)pk->source : (Au)a->module_file),
+            pk ? pk->line : 0, pk ? pk->column : 0);
+        fprintf(stderr, "%s\n", at->chars);
+        string m = _frame.message ? (string)_frame.message
+                                  : string("worker error");
+        w->err   = (string)hold((Au)f(string, "%o: %o", at, m));
         a->error = true;
         w->root->error = true; // wake the monitor loop on the root
     }
@@ -1546,7 +1558,7 @@ void silver_parse(silver a) {
         consume(a, Syntax__keyword);
         token nm    = peek(a);
         token after = element(a, 1);
-        bool  plain = nm && nm->chars && isalpha(nm->chars[0]) &&
+        bool  plain = nm && nm->chars && au_name_start(nm->chars) &&
                       !(after && after->line == line);
         if (plain) {
             bool  is_bin = false;
@@ -1822,16 +1834,53 @@ i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
 #endif
 
 // not sure what this does on windows without a repo -- probably freezes everything.
-static path is_git_project(silver a) {
+// Au's byte hash (Au.c): exported, not in its header
+u64 fnv1a_hash(const none* data, size_t length, u64 hash);
 
-    // must be repo path: a->project_path
-    // if so, return a->project_path
-    // walk up from project_path to find the git repo root
-    path dir = parent_dir(a->module_path);
+// the git repository holding a module's folder; null when none
+static path git_project_of(path module_dir) {
+    path dir = parent_dir(module_dir);
     while (dir && len(dir) > 1 && !dir_exists("%o/.git", dir))
         dir = parent_dir(dir);
 
     return (dir && len(dir) > 1) ? dir : null;
+}
+
+static path is_git_project(silver a) {
+    return git_project_of(a->module_path);
+}
+
+// a module's project: its repository, else the folder its own sits in
+static path project_of(path module_file) {
+    path md = parent_dir(module_file);
+    path gp = md ? git_project_of(md) : null;
+    return gp ? gp : (md ? parent_dir(md) : null);
+}
+
+// a registry's blocks other writers own (trinity's props:): every
+// top-level key but version and the export's own areas, kept whole
+static string registry_foreign(path efile, exports exp) {
+    string kept = string(alloc, 256);
+    FILE* fp = fopen(efile->chars, "r");
+    if (!fp) return kept;
+    char line[4096];
+    bool keep = false;
+    while (fgets(line, sizeof(line), fp)) {
+        if (line[0] != ' ' && line[0] != '\t' && line[0] != '\n') {
+            char* col = strchr(line, ':');
+            int   n   = col ? (int)(col - line) : 0;
+            keep = n > 0 && !(n == 7 && strncmp(line, "version", 7) == 0);
+            if (keep && exp->areas)
+                pairs(exp->areas, j) {
+                    string k = (string)j->key;
+                    if ((int)len(k) == n && strncmp(line, k->chars, n) == 0)
+                        keep = false;
+                }
+        }
+        if (keep) append(kept, line);
+    }
+    fclose(fp);
+    return kept;
 }
 
 static void exporter(silver a) {
@@ -1874,6 +1923,7 @@ static void exporter(silver a) {
                 snprintf(line + off, sizeof(line) - off, "]\n");
                 append(body, line);
             }
+        concat(body, registry_foreign(efile, exp));
         save(efile, (Au)body, null);
     }
 
@@ -1882,6 +1932,8 @@ static void exporter(silver a) {
         exports exp         = (exports)i->value;
 
         if (!exp->module_file || !exp->project_path || !exp->version)
+            continue;
+        if (!dir_exists("%o/.git", exp->project_path))
             continue;
         string mod_file = cast(string, exp->module_file);
         string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
@@ -2241,6 +2293,12 @@ static path build_silver_host(silver a) {
     // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
     string cmd = f(string, "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name, silver_build_tag(a));
+    // a glibc board's launcher: its arch, its sysroot, its own libAu
+    // (the tree puts build/ beside lib/, as install has them)
+    symbol tri = a->sysroot ? platform_triple(a) : "";
+    if (a->sysroot && strstr(tri, "linux-gnu"))
+        cmd = f(string, "%s/install/bin/clang -target %s --sysroot=%o -fuse-ld=lld %s -o %o %o -lAu -ldl -lm -I%s/install/include -L%s/platform/%o/lib -Wl,-rpath,'$ORIGIN/../lib' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
+            SILVER, tri, a->sysroot, a->debug ? "-O0 -g" : "-O2", host_dst, host_src, SILVER, SILVER, target_dir(a), SILVER, share_name, silver_build_tag(a));
     string key = cmd;
 #endif
     // same source, same command: the host already built is the host
@@ -2494,8 +2552,11 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
     // no fork: a library loads in a child silver instead
     setenv(env, "1", 1);
     if (env_force) setenv(env_force, "1", 1);
-    bool own_startup = !getenv("SILVER_STARTUP");
-    if (own_startup) setenv("SILVER_STARTUP", path_startup()->chars, 1);
+    // its own project, wherever silver was run
+    string was_startup = getenv("SILVER_STARTUP") ?
+        string(getenv("SILVER_STARTUP")) : null;
+    path start = a->project_path ? a->project_path : path_startup();
+    setenv("SILVER_STARTUP", start->chars, 1);
     int st = 0;
     {
         char self[4096];
@@ -2520,7 +2581,8 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
     }
     unsetenv(env);
     if (env_force) unsetenv(env_force);
-    if (own_startup) unsetenv("SILVER_STARTUP");
+    if (was_startup) setenv("SILVER_STARTUP", was_startup->chars, 1);
+    else unsetenv("SILVER_STARTUP");
     unsetenv("SILVER_LATE_DEFER");
 #else
     pid_t pid = fork();
@@ -2528,9 +2590,10 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
         auto_forget();
         setenv(env, "1", 1);
         if (env_force) setenv(env_force, "1", 1);
-        // as the host does: tests and exports resolve assets against the
-        // launch dir through path_startup, not the share dir
-        if (!getenv("SILVER_STARTUP")) setenv("SILVER_STARTUP", path_startup()->chars, 1);
+        // tests and exports resolve assets against their own project
+        // through path_startup, wherever silver was run
+        path start = a->project_path ? a->project_path : path_startup();
+        setenv("SILVER_STARTUP", start->chars, 1);
         if (a->verbose) fprintf(stderr, "%s: startup %s\n", env, getenv("SILVER_STARTUP"));
         if (lib) {
             // a library has no main: module init does the work, exits 0.
@@ -3297,6 +3360,9 @@ static void silver_package(silver a) { }
 // complete until the module's assets are baked. same launch as --test.
 static void silver_run_exports(silver a) {
     if (a->error || a->is_external) return;
+    // a cross product cannot run here; the native build ran them
+    if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0)
+        return;
     bool any = false;
     members(a->autype, mem)
         if (mem->member_type == AU_MEMBER_FUNC &&
@@ -3394,16 +3460,32 @@ AU_EXPORT void silver_init(silver a) {
         path dpath = here ? f(path, "%o/devices.agi", here) : null;
         if (!dpath || !file_exists("%o", dpath))
             dpath = f(path, "%s/devices.agi", SILVER);
-        verify(file_exists("%o", dpath),
-            "no devices.agi in %o or %s — list your devices there "
-            "(alias, platform, and either host: or image:)",
-            here ? (Au)here : (Au)string("."), SILVER);
-        string dtext = (string)load(dpath, typeid(string), null);
-        verify(dtext && len(dtext), "could not read %o", dpath);
-        // the file IS the map: alias -> Device
-        map    dmap = (map)parse_agi(typeid(map), dtext->chars, null);
-        Au     dent = dmap ? get(dmap, (Au)a->device) : null;
-        verify(dent, "device '%o' not found in %o", a->device, dpath);
+        Au   dent  = null;
+        if (file_exists("%o", dpath)) {
+            string dtext = (string)load(dpath, typeid(string), null);
+            // the file IS the map: alias -> Device
+            map dmap = (dtext && len(dtext)) ?
+                (map)parse_agi(typeid(map), dtext->chars, null) : null;
+            dent = dmap ? get(dmap, (Au)a->device) : null;
+        }
+        // else a module ships it: <module>/<alias>.agi (os-bootstrap's fp6)
+        if (!dent) {
+            DIR* sd = opendir(SILVER);
+            struct dirent* de;
+            while (sd && !dent && (de = readdir(sd))) {
+                if (de->d_name[0] == '.') continue;
+                path ship = f(path, "%s/%s/%o.agi", SILVER, de->d_name, a->device);
+                if (!file_exists("%o", ship)) continue;
+                string st = (string)load(ship, typeid(string), null);
+                map sm = (st && len(st)) ?
+                    (map)parse_agi(typeid(map), st->chars, null) : null;
+                dent = sm ? get(sm, (Au)a->device) : null;
+                if (dent) dpath = ship;
+            }
+            if (sd) closedir(sd);
+        }
+        verify(dent, "device '%o' not found in %o or any module's %o.agi",
+            a->device, dpath, a->device);
         Device dev  = (Device)instanceof(dent, Device);
         if (!dev) {
             // untyped block (no 'alias: Device' on the line): take the fields
@@ -3434,7 +3516,25 @@ AU_EXPORT void silver_init(silver a) {
         // one standing means the sysroot is already laid out
         path marker  = f(path, "%o/usr", sysroot);
         path marker2 = f(path, "%o/include", sysroot);
-        if (a->rsync || (!is_dir(marker) && !is_dir(marker2))) {
+        // a fetched sysroot keeps the hash of the lines that made it:
+        // a device whose lines changed fetches it again, from clean
+        // one fetch at a time: two builds for a device share its
+        // sysroot (a second waits, then finds it done)
+        path   lockp   = f(path, "%o/../.sysroot.lock", sysroot);
+        int    lockfd  = open(lockp->chars, O_CREAT | O_RDWR, 0644);
+        if (lockfd >= 0) flock(lockfd, LOCK_EX);
+        path   fetched = f(path, "%o/.fetched", sysroot);
+        string fhash   = (dev->fetch && len(dev->fetch)) ? f(string, "%llx",
+            (unsigned long long)fnv1a_hash(dev->fetch->chars,
+                len(dev->fetch), 0xcbf29ce484222325ull)) : null;
+        string had     = (fhash && file_exists("%o", fetched)) ?
+            (string)load(fetched, typeid(string), null) : null;
+        bool   changed = fhash && (is_dir(marker) || is_dir(marker2)) &&
+            (!had || compare(trim(had), fhash) != 0);
+        if (changed)
+            print("[%o] its fetch lines changed: fetching the sysroot again",
+                a->device);
+        if (a->rsync || changed || (!is_dir(marker) && !is_dir(marker2))) {
             make_dir(sysroot);
             // the DEVICE says which paths are its sysroot and what to skip —
             // only it knows. these are its .devices.agi directives
@@ -3449,7 +3549,7 @@ AU_EXPORT void silver_init(silver a) {
             if (dev->fetch && len(dev->fetch)) {
                 // a tarball transfers in full either way, and untarring over
                 // the old tree can only add — so a rsync starts clean here
-                if (a->rsync) {
+                if (a->rsync || changed) {
                     exec(false, "rm -rf %o", sysroot);
                     make_dir(sysroot);
                 }
@@ -3463,9 +3563,11 @@ AU_EXPORT void silver_init(silver a) {
                     if (exec(a->verbose, "%o", cmd) != 0) {
                         print("[%o] sysroot fetch failed: %o", a->device, cmd);
                         a->error = true;
+                        if (lockfd >= 0) { flock(lockfd, LOCK_UN); close(lockfd); }
                         return;
                     }
                 }
+                save(fetched, (Au)fhash, null);
             } else {
                 // no host means this machine — a device you can test against
                 string src = (dev->host && len(dev->host)) ?
@@ -3499,6 +3601,7 @@ AU_EXPORT void silver_init(silver a) {
                  is_dir(f(path, "%o/usr/lib64", sysroot)))
                 exec(false, "ln -sfn usr/lib64 %o/lib64", sysroot);
         }
+        if (lockfd >= 0) { flock(lockfd, LOCK_UN); close(lockfd); }
         // the header parse must see the DEVICE's headers: posix.h hides its
         // whole surface behind _WIN32, which a host parse never defines
         ((aether)a)->target_sysroot = hold(sysroot);
@@ -3647,7 +3750,11 @@ AU_EXPORT void silver_init(silver a) {
     verify(a->module && len(a->module), "required argument: module (path/to/module)");
 
     path cwd = path_cwd();
-    // aether_init already resolves module to absolute path
+    // a relative name is from where silver ran, not its share dir
+#ifndef _WIN32
+    if (a->module->chars[0] != '/')
+        a->module = f(path, "%o/%o", path_startup(), a->module);
+#endif
     // accept dir or .ag file
     bool retry_path = false;
     if (cmp(ext(a->module), "ag") == 0) {
@@ -3655,7 +3762,9 @@ AU_EXPORT void silver_init(silver a) {
         a->module      = parent_dir(a->module_file);
     } else {
         string m_stem  = stem(a->module);
-        a->module      = absolute(a->module);
+        // realpath empties a path not there: the retry needs it
+        if (dir_exists("%o", a->module))
+            a->module  = absolute(a->module);
         a->module_file = f(path, "%o/%o.ag", a->module, m_stem);
         retry_path = true;
     }
@@ -3697,8 +3806,12 @@ AU_EXPORT void silver_init(silver a) {
 
     a->project_path = is_git_project(a);
     path af = a->module ? directory(a->module) : path_cwd();
-    git_remote_info(af, &a->git_service, &a->git_owner,
-        &a->git_project);
+    // no repository: the folder holding the module's own
+    if (a->project_path)
+        git_remote_info(af, &a->git_service, &a->git_owner,
+            &a->git_project);
+    else
+        a->project_path = parent_dir(a->module_path);
     string install_name = silver_install_name(a);
     drop(((aether)a)->share_name);
     ((aether)a)->share_name = hold(install_name);
@@ -4372,7 +4485,8 @@ static string keyword_default(etype rtype, array raw) {
         while (i + 2 < n) {
             token b = (token)raw->origin[i];
             token c = (token)raw->origin[i + 1];
-            if (b->column + b->count != c->column || eq(c, "}")) break;
+            if (b->line != c->line || b->column + b->count != c->column
+                || eq(c, "}")) break;
             concat(compacted, (string)c);
             i++;
         }
@@ -5444,6 +5558,12 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             if (end < len(crop))
                 crop = mid(crop, 0, end);
         }
+        // a name has one spelling: the same letters, the same bytes
+        char* one = au_nfc(crop->chars);
+        if (one) {
+            crop = string(one);
+            free(one);
+        }
         push(tokens, (Au)token(
                          chars, crop->chars,
                          indent, indent,
@@ -5576,7 +5696,7 @@ OPType silver_read_operator(silver a, ARef fname) {
 
 string silver_read_alpha_any(silver a) {
     token n = element(a, 0);
-    if (n && isalpha(n->chars[0])) {
+    if (n && au_name_start(n->chars)) {
         next(a, Syntax__none);
         return string(n->chars);
     }
@@ -7043,8 +7163,7 @@ static void silver_listen_requery(silver a) {
     array q = a->listen_query;
     for (int i = 0; i < len(q); i++) {
         token t = (token)q->origin[i];
-        char  c = t->chars[0];
-        if (!(isalpha(c) || c == '_')) continue;
+        if (!au_name_start(t->chars)) continue;
         if (i > 0 && !strcmp(((token)q->origin[i - 1])->chars, ".")) continue;
         if (!strcmp(t->chars, "true") || !strcmp(t->chars, "false") ||
             !strcmp(t->chars, "null")) continue;
@@ -7154,7 +7273,7 @@ static void scan_template_requests(silver a) {
     for (int i = 1; ts && i + 2 < ts->count; i++) {
         token id = (token)ts->origin[i];
         token lt = (token)ts->origin[i + 1];
-        if (!isalpha(id->chars[0]) || !eq(lt, "<") || !lt->neighbor ||
+        if (!au_name_start(id->chars) || !eq(lt, "<") || !lt->neighbor ||
             id->literal || is_keyword((Au)id))
             continue;
         // qualified base: A::B<...> — fold in neighboring :: segments
@@ -7163,7 +7282,7 @@ static void scan_template_requests(silver a) {
             token qs = (token)ts->origin[b - 1];
             token qn = (token)ts->origin[b - 2];
             if (!eq(qs, "::") || !qs->neighbor || !((token)ts->origin[b])->neighbor ||
-                !isalpha(qn->chars[0]))
+                !au_name_start(qn->chars))
                 break;
             base = f(string, "%s::%o", qn->chars, base);
         }
@@ -7178,7 +7297,7 @@ static void scan_template_requests(silver a) {
                 if (isdigit(t->chars[0]))
                     // decimal-normalize so the key matches spec_name output
                     concat(key, f(string, "%i", (i32)strtoll(t->chars, null, 0)));
-                else if (isalpha(t->chars[0]))
+                else if (au_name_start(t->chars))
                     concat(key, (string)t);
                 else break;
                 arg = false;
@@ -7379,15 +7498,25 @@ enode parse_statement(silver a)
         // a static slot the live reload hands to the next instance
         access = interface_public;
         traits = AU_TRAIT_STATIC | AU_TRAIT_IS_PERSIST;
+    } else if (rec_top && next_is(a, "action") && element(a, 1)
+               && element(a, 1)->chars
+               && strcmp(element(a, 1)->chars, ":") != 0) {
+        // action: a name with ':' after it, else the method a host
+        // or an agent may call while the app runs (enumerable)
+        token nx = element(a, 1);
+        validate(strcmp(nx->chars, "func") == 0,
+            "action is for a func (or a member named action: type)");
+        consume(a, Syntax__none);
+        access = interface_action;
     } else if (rec_top && read_if(a, "default")) {
         /// a public that also carries the default-argument bit: a bare argv
         /// value converts into it (Au_args -> find_member AU_TRAIT_IS_DEFAULT),
         /// and it is the separator — everything after belongs to the program.
         access = interface_public;
         traits = AU_TRAIT_IS_DEFAULT;
-    } else if (!next_is(a, "export"))
-        // export is an interface value only via the export-func
-        // branch above; manifest exports must not read as access
+    } else if (!next_is(a, "export") && !next_is(a, "action"))
+        // export and action are interface values only via their
+        // func branches above; a member may be named action
         access = read_enum(a, interface_undefined, typeid(interface));
     // expect default: the default argument, required (the app asks)
     if (access == interface_expect && rec_top && read_if(a, "default"))
@@ -8431,7 +8560,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
                 token t1 = element(a, 1);
                 token t2 = element(a, 2);
                 if ((t1 && eq(t1, "]")) ||
-                    (t1 && isalpha(t1->chars[0]) && t2 && eq(t2, ":"))) {
+                    (t1 && au_name_start(t1->chars) && t2 && eq(t2, ":"))) {
                     pop_tokens(a, false);
                     return null;
                 }
@@ -8485,6 +8614,7 @@ etype read_etype(silver a, array* p_expr) { sequencer
 
             Au meta_a_val = null;
             Au meta_b_val = null;
+            map meta_props = null;
 
             if (!is_cmode(a) && read_meta) {
                 // meta_a: always a type
@@ -8509,6 +8639,18 @@ etype read_etype(silver a, array* p_expr) { sequencer
                         a->etype_level--;
                         validate(imdl, "expected type for meta_b, found %o", peek(a));
                         meta_b_val = (Au)imdl->autype;
+                        // after a comma, the collection's own settings
+                        // (map string [ string, hsize: 2048 ]): set on
+                        // each one made of this type, before its init
+                        while (read_if(a, ",")) {
+                            string pn = read_alpha(a);
+                            validate(pn, "expected a setting name after ,");
+                            validate(read_if(a, ":"), "expected : after %o", pn);
+                            enode pv = parse_expression(a, null, false, true);
+                            validate(pv, "expected a value for %o", pn);
+                            if (!meta_props) meta_props = map(assorted, true);
+                            set(meta_props, (Au)pn, (Au)pv);
+                        }
                         validate(read_if(a, "]"), "expected ] after meta_b type");
                     }
                 }
@@ -8517,7 +8659,8 @@ etype read_etype(silver a, array* p_expr) { sequencer
             validate(!has_depth_meta || read_if(a, ">"), "expected > to close <meta>");
 
             mdl = meta_a_val ? etype(mod, (aether)a, autype, mdl->autype,
-                is_explicit_ref, is_ref, meta_a, meta_a_val, meta_b, meta_b_val) : mdl;
+                is_explicit_ref, is_ref, meta_a, meta_a_val, meta_b, meta_b_val,
+                meta_props, meta_props) : mdl;
         }
 
     } else if (!mdl && explicit_un) {
@@ -9148,6 +9291,50 @@ static array import_build_commands(array input, symbol sym) {
     return res;
 }
 
+// an import's lines under ifdef [ name ] / el: the branch that holds
+// kept, its header and the others dropped (they are not statements)
+static array import_ifdef(silver a, array input) {
+    array out = array(alloc, len(input));
+    int i = 0, n = (int)len(input);
+    while (i < n) {
+        token t = (token)input->origin[i];
+        bool neg = eq(t, "ifndef");
+        if (!(eq(t, "ifdef") || neg) || i + 3 >= n ||
+            !eq((token)input->origin[i + 1], "[")) {
+            push(out, (Au)t);
+            i++;
+            continue;
+        }
+        num  head = t->indent;
+        bool done = false;
+        while (i < n) {
+            token h = (token)input->origin[i];
+            bool  cond = !done;
+            num   line = h->line;
+            if (eq(h, "ifdef") || eq(h, "ifndef") ||
+                (eq(h, "el") && i + 1 < n &&
+                 eq((token)input->origin[i + 1], "["))) {
+                token nm = (token)input->origin[i + 2];
+                cond = !done && (eval_define(a, (string)nm) != neg);
+                neg  = false;
+                i += 4;
+            } else if (eq(h, "el")) {
+                i += 1;
+            } else break;
+            while (i < n) {
+                token c = (token)input->origin[i];
+                if (c->line == line || c->indent <= head) break;
+                if (cond) push(out, (Au)c);
+                i++;
+            }
+            while (i < n && ((token)input->origin[i])->line == line) i++;
+            if (cond) done = true;
+            if (i >= n || !eq((token)input->origin[i], "el")) break;
+        }
+    }
+    return out;
+}
+
 string import_config(array input) {
     string config = string(alloc, 128);
     int token_line = -1;
@@ -9644,6 +9831,18 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     bool native_host = !a->platform || !len(a->platform) || cmp(a->platform, "native") == 0;
     if (a->isysroot && native_host)
         cenv = f(string, "SDKROOT=%o %o", a->isysroot, cenv);
+#ifndef _WIN32
+    // every import compiles with our clang and links with our lld
+    bool our_cc = native_host && !a->sysroot;
+    if (our_cc)
+        // -Q: a compile-only step never uses the linker flag, and a
+        // -Werror build (mbedtls) refuses an unused argument
+        cenv = f(string, "CC='%o/bin/clang -fuse-ld=lld -Qunused-arguments' "
+            "CXX='%o/bin/clang++ -fuse-ld=lld -Qunused-arguments' %o",
+            a->install, a->install, cenv);
+#else
+    bool our_cc = false;
+#endif
 #ifdef _WIN32
     // autoconf probes the separator by asking sh, gets ':' and then
     // splits our ';' PATH on drive letters, so nothing is ever found.
@@ -9860,6 +10059,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
         config = f(string, "%o mod:%o", config, mod_sel);
     // env lines change the build too (LDFLAGS, PATH): part of the key
     string cache_key = (env && len(env)) ? f(string, "%o env:%o", config, env) : config;
+    // built by gcc before: a new key, so it builds again with clang
+    if (our_cc) cache_key = f(string, "%o cc:clang-lld", cache_key);
     path token = is_silver
         ? f(path, "%o/build/.%o-%o.silver-token", install,
             owner ? owner : string("git"), name)
@@ -10063,9 +10264,26 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             if (a->platform && len(a->platform) && cmp(a->platform, "native") != 0) {
                 symbol tri = platform_triple(a);
                 path   tb  = f(path, "%s/platform/native/bin", SILVER);
-                x_host = f(string, "--host=%s CC='%o/clang --target=%s' "
-                                   "CXX='%o/clang++ --target=%s' AR=%o/llvm-ar "
-                                   "RANLIB=%o/llvm-ranlib ", tri, tb, tri, tb, tri, tb, tb);
+                // a glibc board: its sysroot, our lld, its pkg-config
+                bool   gnu = strstr(tri, "linux-gnu") && a->sysroot;
+                path   pr  = f(path, "%s/platform/%o", SILVER, target_dir(a));
+                bool   dro = target_is_android(a) && a->sysroot;
+                // bionic's shared libc is in the api dir; name it first
+                cstr   abi = strstr(tri, "x86_64") ? "x86_64-linux-android"
+                                                   : "aarch64-linux-android";
+                string xs  = gnu ? f(string,
+                    " --sysroot=%o -fuse-ld=lld -Qunused-arguments", a->sysroot) :
+                    dro ? f(string, " --sysroot=%o -fuse-ld=lld -Qunused-arguments"
+                        " -L%o/usr/lib/%s/33", a->sysroot, a->sysroot, abi)
+                        : string("");
+                string xp  = gnu ? f(string,
+                    "PKG_CONFIG_LIBDIR=%o/lib/pkgconfig:%o/usr/lib/%s/pkgconfig:"
+                    "%o/usr/share/pkgconfig PKG_CONFIG_SYSROOT_DIR= ",
+                    pr, a->sysroot, tri, a->sysroot) : string("");
+                x_host = f(string, "--host=%s CC='%o/clang --target=%s%o' "
+                                   "CXX='%o/clang++ --target=%s%o' AR=%o/llvm-ar "
+                                   "RANLIB=%o/llvm-ranlib %o", tri, tb, tri, xs, tb, tri, xs,
+                                   tb, tb, xp);
             }
 #ifdef _WIN32
             // autoconf probes PATH for an extensionless name and finds
@@ -10581,6 +10799,12 @@ none silver_build_product(silver a) {
             a->error = true;
             return;
         }
+        bool linux_x = !win && !apple && !android;
+        if (linux_x && !ensure_linux_runtime(a, triple, tgt, ldld, tools, core_lib)) {
+            print("[%o] could not build the Au runtime for %s", a->name, triple);
+            a->error = true;
+            return;
+        }
 
         // use clang++ when C++ objects are present
         bool has_cpp_d = false;
@@ -10589,7 +10813,8 @@ none silver_build_product(silver a) {
             if (is_cpp_source_ext(a, ext_d)) { has_cpp_d = true; break; }
         }
         cstr linker_d  = has_cpp_d ? "clang++" : "clang";
-        string cpp_libs_d = string(has_cpp_d ? "-stdlib=libc++" : "");
+        // a glibc sysroot brings libstdc++, as its cmake imports use
+        string cpp_libs_d = string(has_cpp_d && !linux_x ? "-stdlib=libc++" : "");
         // the device sdk is already named in tgt; the host's must not follow it
         string isysroot = (a->isysroot && !apple) ? f(string, "-isysroot %o ", a->isysroot) : string("");
         string fw_flags_d = string("");
@@ -10605,6 +10830,7 @@ none silver_build_product(silver a) {
         // android resolves sonames from the package's own lib dir: no rpath
         string rpaths = win || android ? string("") : apple ?
             f(string, "-Wl,-rpath,@loader_path -Wl,-rpath,@executable_path/Frameworks -Wl,-rpath,%s/platform/%o/lib ", SILVER, target_dir(a)) :
+            linux_x ? string("-Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ") :
             f(string, "-Wl,-rpath,%o -Wl,-rpath,%o/lib -Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/../lib' ", a->build_dir, install);
         // a library carries its leaf as soname: consumers record that, not
         // the absolute build path, and resolve by rpath
@@ -10618,12 +10844,15 @@ none silver_build_product(silver a) {
             ? (win ? win_lib : (target_is_apple(a) ? string(shared) :
                f(string, "%s -Wl,-soname,%o", shared, path_filename(a->product))))
             : (win ? f(string, "-fms-runtime-lib=dll%s", crt_libs) : string(""));
-        if (!win && !android && a->base_install)
+        if (!win && !android && !linux_x && a->base_install)
             concat(rpaths, f(string, "-L%o/lib -Wl,-rpath,%o/lib ",
                 a->base_install, a->base_install));
         cstr   bsym   = (a->is_library && !win && !apple) ? "-Wl,-Bsymbolic" : "";
         // the host's install/lib is the wrong platform for a phone
-        path   link_inst = apple || android ? (path)f(path, "%o/usr", a->sysroot) : install;
+        // a linux board links its own prefix, where its imports went
+        path   link_inst = apple || android ? (path)f(path, "%o/usr", a->sysroot) :
+                           linux_x ? (path)f(path, "%s/platform/%o", SILVER, target_dir(a)) :
+                           install;
         string x_link = f(string, "%o/%s %o%o%s %s %s %o %o/%o.o%o %o %o-o %o -L%o -L%o/lib %o%o %o %o %o",
             tools, linker_d, tgt, ldld,
             shared_d->chars, a->debug ? "-g" : "",
@@ -10879,12 +11108,13 @@ none silver_build_product(silver a) {
 bool silver_next_is_neighbor(silver a) {
     token b = element(a, -1);
     token c = element(a, 0);
-    return c && (b->column + b->count == c->column);
+    // a line's end and the next line's start are never neighbors
+    return c && b->line == c->line && (b->column + b->count == c->column);
 }
 
 string expect_alpha(silver a) {
     token t = next(a, Syntax__none);
-    verify(t && isalpha(*t->chars), "expected alpha identifier");
+    verify(t && au_name_start(t->chars), "expected alpha identifier");
     return string(t->chars);
 }
 
@@ -12053,7 +12283,7 @@ enode parse_import(silver a) {
         a->import_file = hold(dest);
     }
 
-    if (!utok && t && isalpha(t->chars[0])) {
+    if (!utok && t && au_name_start(t->chars)) {
         bool   cont     = false;
         service  = a->git_service;
         user     = a->git_owner;
@@ -12069,7 +12299,7 @@ enode parse_import(silver a) {
             token sl = element(a, 0), part = element(a, 1);
             token col = element(a, 2);
             if (!sl || !part || !col || !eq(sl, "/") || !eq(col, ":") ||
-                !isalpha(part->chars[0]))
+                !au_name_start(part->chars))
                 break;
             consume(a, Syntax__punctuation);
             string sub = expect_alpha(a);
@@ -12246,6 +12476,7 @@ enode parse_import(silver a) {
         }
         pop_tokens(a, false);
     }
+    if (b && b->count) b = (tokens)import_ifdef(a, (array)b);
     array all_config = (is_fields || (!b || !b->count)) ? array() : compact_tokens(b);
 
     map props = map();
@@ -12709,11 +12940,19 @@ enode parse_import(silver a) {
             mdl->external_product ? mdl->external_product->chars : "(null)",
             is_codegen ? 1 : 0);
     if (!is_codegen && (import_Au || mod || lib_path)) {
+        // its tests run as it loads: from its own project's folder
+        path   own = (module_source && eq(ext(module_source), "ag")) ?
+            project_of(absolute(module_source)) : null;
+        string was = getenv("SILVER_STARTUP") ?
+            string(getenv("SILVER_STARTUP")) : null;
+        if (own) setenv("SILVER_STARTUP", own->chars, 1);
         import_Au(a,
             mdl->external_name,
             // the loader runs HERE: prefer the host copy on a cross build
             mdl->host_product     ? (Au)mdl->host_product :
             mdl->external_product ? (Au)mdl->external_product : mod ? (Au)mod : (Au)lib_path);
+        if (own && was) setenv("SILVER_STARTUP", was->chars, 1);
+        else if (own)   unsetenv("SILVER_STARTUP");
         mdl->autype->is_closed = true;
         // the loader took the host copy; the link must take the device's
         if (mdl->host_product && mdl->external_product &&
@@ -13265,7 +13504,8 @@ void silver_write_header(silver a) {
                 // Au_t (is_required/is_context), so the C struct treats them as
                 // plain public fields.
                 if (header_access == interface_mutable || header_access == interface_manual ||
-                    header_access == interface_context || header_access == interface_expect)
+                    header_access == interface_context || header_access == interface_expect ||
+                    header_access == interface_action)
                     header_access = interface_public;
                 string access_type = estring(typeid(interface), header_access);
 
@@ -15107,7 +15347,7 @@ Au_t next_is_keyword(silver a, Au_t *fn) {
     token t = peek(a);
     if (!t)
         return null;
-    if (!isalpha(t->chars[0]))
+    if (!au_name_start(t->chars))
         return null;
     Au_t f = find_type((cstr)t->chars, null);
     string kw = f(string, "parse_%o", t);
