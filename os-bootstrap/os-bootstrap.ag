@@ -1090,6 +1090,11 @@ element Bootstrap
         steps.push[ 'cd {bl} && cp msbtfw12.mbn msnv12.bin {fw}/qca/' ]
         ah : '{fw}/ath11k/WCN6750/hw1.0'
         steps.push[ 'mkdir -p {ah} && cp {bb} {ah}/board-2.bin' ]
+        # Awinic config tested with Catcrafts audio
+        ac : 'e58a5be8fa0fb6bc5a5f2e29cc01c036ccf75710'
+        af : fetch[ 'aw882xx_acf-e58a5be8.bin',
+            '{gh}/FairBlobs/FP6-firmware/raw/{ac}/aw882xx_acf.bin' ]
+        if [ af.count > 0 ] steps.push[ 'cp {af} {q}/aw88261_acf.bin' ]
         return run_steps[ steps ]
 
     # steps in order, each said; false at the first that fails
@@ -1100,6 +1105,8 @@ element Bootstrap
         sb : '{install}/bin/silver -d fp6 --build'
         steps : vec string []
         steps.push[ 'cd {root} && {sb} os-bootstrap && {sb} orbiter' ]
+        # orbiter does not build the phone app
+        steps.push[ 'cd {root} && {sb} phone' ]
         return run_steps[ steps ]
 
     # the phone's /init from init.c as it is, on the kernel's own
@@ -1245,17 +1252,20 @@ element Bootstrap
                 say[ 'rootfs.img could not be split into sparse pieces' ]
                 return false
             say[ 'rootfs in {pieces.count} sparse pieces of at most {most} bytes' ]
+            ram : '{work}/boot-ram.img'
             if [ phone_dry ]
-                say[ 'would flash boot with {img}' ]
+                say[ 'would erase dtbo_a and dtbo_b' ]
                 say[ 'would flash userdata with {pieces.count} pieces' ]
+                say[ 'would RAM-boot {ram}, which writes boot itself' ]
                 say[ 'Check only: nothing written to the phone' ]
                 return true
             if [ !fb.open[] ]
                 say[ 'The phone went away: {fb.problem}' ]
                 return false
-            say[ 'Flashing boot' ]
-            if [ !fb.flash[ 'boot', img ] ]
-                say[ 'Flashing boot stopped: {fb.problem}' ]
+            # Android overlays do not fit our device tree
+            say[ 'Erasing Android\'s device tree overlays (dtbo)' ]
+            if [ !fb.erase[ 'dtbo_a' ] || !fb.erase[ 'dtbo_b' ] ]
+                say[ 'Erasing dtbo stopped: {fb.problem}' ]
                 fb.close[]
                 return false
             say[ 'Flashing userdata (Android\'s data is erased)' ]
@@ -1265,22 +1275,18 @@ element Bootstrap
                 return false
             for [ n: string ] in fb.notes
                 say[ '  {n}' ]
-            # as postmarketOS's FP6 steps: boot, userdata, then dtbo
-            # erased (Android's overlays do not fit our device tree)
-            say[ 'Erasing Android\'s device tree overlays (dtbo)' ]
-            if [ !fb.erase[ 'dtbo' ] ]
-                say[ 'Erasing dtbo stopped: {fb.problem}' ]
+            # fastboot flash boot erases the modem's NV
+            say[ 'RAM-booting orbiter-os once to write its boot slots' ]
+            if [ !fb.download[ ram ] ]
+                say[ 'Sending the boot image stopped: {fb.problem}' ]
                 fb.close[]
                 return false
-            # a slot that failed to start before is marked unbootable
-            if [ !fb.set_active[] ]
-                say[ 'Choosing the boot slot stopped: {fb.problem}' ]
+            if [ !fb.okay[ fb.command[ 'boot' ] ] ]
+                say[ 'The RAM boot was refused: {fb.problem}' ]
                 fb.close[]
                 return false
-            sh[ 'mv {phone_stamp[]}.next {phone_stamp[]}' ]
-            say[ 'Rebooting the phone' ]
-            fb.reboot[]
             fb.close[]
+            sh[ 'mv {phone_stamp[]}.next {phone_stamp[]}' ]
             return phone_serial[ product ]
 
     # postmarketOS's deviceinfo value for a key ('' when none)
@@ -1399,9 +1405,13 @@ element Bootstrap
             a = '{a} {fl} {ov}'
         ca : device_value[ di, 'bootimg_custom_args' ]
         a = '{a} {ca} --kernel {kd}/Image.gz --ramdisk {rz}'
-        a = '{a} --dtb {kd}/fp6.dtb --cmdline \'{line}\''
+        a = '{a} --dtb {kd}/fp6.dtb'
         img : '{work}/boot.img'
-        steps.push[ '{mk} {a} --output {img}' ]
+        steps.push[ '{mk} {a} --cmdline \'{line}\' --output {img}' ]
+        # RAM boot writes both slots without fastboot
+        ram : '{line} orbiter.writeboot=/boot/orbiter-boot.img'
+        rb : '{work}/boot-ram.img'
+        steps.push[ '{mk} {a} --cmdline \'{ram}\' --output {rb}' ]
         if [ !run_steps[ steps ] ] return ''
         say[ 'boot.img: {file_bytes[ img ]} bytes' ]
         return img
@@ -1477,6 +1487,26 @@ element Bootstrap
         steps.push[ 'test ! -d {pf} || cp -rn {pf}/. {ul}/firmware/qcom/' ]
         steps.push[ 'mkdir -p {st}/root' ]
         steps.push[ 'echo orbiter > {st}/etc/hostname' ]
+        # system bus policy for Wi-Fi and the modem
+        bus : '{root}/wifi/root/etc/dbus-1/orbiter.conf'
+        bd : '{st}/etc/dbus-1'
+        steps.push[ 'mkdir -p {bd} && cp {bus} {bd}/' ]
+        prep : '{root}/os-bootstrap/modem-prepare.sh'
+        ps : '{st}/usr/sbin/orbiter-modem-prepare'
+        steps.push[ 'cp {prep} {ps} && chmod 755 {ps}' ]
+        steps.push[ 'mkdir -p {st}/var/log' ]
+        # RAM boot copies this image to both slots
+        bi : '{install}/tmp/phone-fp6/boot.img'
+        kept : '{st}/boot/orbiter-boot.img'
+        steps.push[ 'mkdir -p {st}/boot && cp {bi} {kept}' ]
+        # copy the kernel's audio profiles
+        uc : '{kd}/ucm2'
+        su : '{st}/usr/share/alsa/ucm2'
+        uk : '(mkdir -p {su} && cp -a {uc}/. {su}/)'
+        steps.push[ 'test ! -d {uc} || {uk}' ]
+        # Catcrafts imsd carries its own libraries
+        ex : '{install}/share/silver-os-bootstrap/phone-extra'
+        steps.push[ 'test ! -d {ex} || cp -a {ex}/. {st}/' ]
         if [ !run_steps[ steps ] ] return ''
         # the tree and a fifth more, a quarter GB to grow in
         mb : 's=$(du -sm {st} | cut -f1)'

@@ -1,0 +1,639 @@
+# modem: calls and texts through ModemManager, over the system bus
+import vec
+import trinity
+import <time.h>
+ifdef [ windows ]
+    import <dbus-win.h>
+ifndef [ windows ]
+    import <dbus/dbus.h>
+        -I=/usr/include/dbus-1.0
+        -I/usr/include/dbus-1.0
+        -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -ldbus-1
+import <stdio.h>
+import <stdlib.h>
+
+# ModemManager's call states
+enum CallState
+    unknown:     0
+    dialing:     1
+    ringing_out: 2
+    ringing_in:  3
+    active:      4
+    held:        5
+    waiting:     6
+    terminated:  7
+
+# one call as ModemManager lists it
+class MmCall
+    public path     : string
+    public number   : string
+    public state    : i32
+    public incoming : bool
+    # when it was answered (us), 0 before
+    public since    : i64
+    # when it was first seen (us)
+    public began    : i64
+
+    func ringing [] -> bool
+        return incoming && (state == 3 || state == 6)
+
+    func live [] -> bool
+        return state != 7 && state != 0
+
+    # seconds since it was answered
+    func seconds [] -> i64
+        if [ since == 0 ] return 0
+        return (epoch_micros[] - since) / 1000000
+
+# one text: received, or written and sent
+class MmText
+    public path     : string
+    public number   : string
+    public text     : string
+    # as the network gave it (ISO 8601), '' for our own
+    public time     : string
+    public incoming : bool
+    # 1 stored, 2 receiving, 3 received, 4 sending, 5 sent
+    public state    : i32
+
+# a variant's value as text: numbers in decimal, a list or a
+# struct one value a line
+func mm_value [ v: @DBusMessageIter ] -> string
+    t : i32 [ dbus_message_iter_get_arg_type[ v ] ]
+    if [ t == DBUS_TYPE_VARIANT || t == DBUS_TYPE_ARRAY
+         || t == DBUS_TYPE_STRUCT ]
+        inner : DBusMessageIter
+        dbus_message_iter_recurse[ v, @inner ]
+        if [ t == DBUS_TYPE_VARIANT ] return mm_value[ @inner ]
+        out : string ''
+        while [ dbus_message_iter_get_arg_type[ @inner ]
+                != DBUS_TYPE_INVALID ]
+            one : mm_value[ @inner ]
+            out = (out.count > 0) ? '{out}\n{one}' : one
+            dbus_message_iter_next[ @inner ]
+        return out
+    if [ t == DBUS_TYPE_STRING || t == DBUS_TYPE_OBJECT_PATH ]
+        cs : cstr
+        dbus_message_iter_get_basic[ v, @cs ]
+        return string[ cs ]
+    if [ t == DBUS_TYPE_INT32 ]
+        i : i32 [ 0 ]
+        dbus_message_iter_get_basic[ v, @i ]
+        return '{i}'
+    if [ t == DBUS_TYPE_UINT32 || t == DBUS_TYPE_BOOLEAN ]
+        u : u32 [ 0 ]
+        dbus_message_iter_get_basic[ v, @u ]
+        return '{u}'
+    if [ t == DBUS_TYPE_BYTE ]
+        b : u8 [ 0 ]
+        dbus_message_iter_get_basic[ v, @b ]
+        return '{b}'
+    if [ t == DBUS_TYPE_INT64 || t == DBUS_TYPE_UINT64 ]
+        w : i64 [ 0 ]
+        dbus_message_iter_get_basic[ v, @w ]
+        return '{w}'
+    return ''
+
+# a{sv} into names and values (as mm_value gives them)
+func mm_props [ d: @DBusMessageIter ] -> map string [ string ]
+    out : map string [ string ] []
+    arr : DBusMessageIter
+    dbus_message_iter_recurse[ d, @arr ]
+    while [ dbus_message_iter_get_arg_type[ @arr ]
+            == DBUS_TYPE_DICT_ENTRY ]
+        kv : DBusMessageIter
+        dbus_message_iter_recurse[ @arr, @kv ]
+        kc : cstr
+        dbus_message_iter_get_basic[ @kv, @kc ]
+        key : string [ kc ]
+        dbus_message_iter_next[ @kv ]
+        out[ key ] = mm_value[ @kv ]
+        dbus_message_iter_next[ @arr ]
+    return out
+
+func mm_get [ m: map string [ string ], key: string ] -> string
+    if [ !m || !m.contains[ key ] ] return ''
+    return m[ key ]
+
+func mm_int [ m: map string [ string ], key: string ] -> i32
+    s : mm_get[ m, key ]
+    if [ s.count == 0 ] return 0
+    return i32[ s.integer_value[] ]
+
+# one string entry of an a{sv} being written
+func mm_dict_add [ d: @DBusMessageIter, key: string, val: string ]
+    e : DBusMessageIter
+    dbus_message_iter_open_container[ d, DBUS_TYPE_DICT_ENTRY, null,
+                                      @e ]
+    kc : cstr [ key.chars ]
+    dbus_message_iter_append_basic[ @e, DBUS_TYPE_STRING, @kc ]
+    v : DBusMessageIter
+    sig : string [ "s" ]
+    dbus_message_iter_open_container[ @e, DBUS_TYPE_VARIANT,
+                                      sig.chars, @v ]
+    vc : cstr [ val.chars ]
+    dbus_message_iter_append_basic[ @v, DBUS_TYPE_STRING, @vc ]
+    dbus_message_iter_close_container[ @e, @v ]
+    dbus_message_iter_close_container[ d, @e ]
+
+# the phone's modem: its state, the network, calls and texts
+class Modem
+    # the bus answered and ModemManager has a modem
+    public ready    : bool
+    # ModemManager's modem state (8 registered, 2 locked, ...)
+    public state    : i32
+    # 0 to 100
+    public signal   : i32
+    public carrier  : string
+    public number   : string
+    # the SIM waits for its PIN
+    public locked   : bool
+    public calls    : vec MmCall
+    public texts    : vec MmText
+    # the last failure, in plain words
+    public problem  : string
+    # a bus to use, else the system's ('' : the system bus)
+    public address  : string
+    intern conn     : @DBusConnection
+    intern modem    : string
+    intern sim      : string
+    intern dirty    : bool
+    intern tried    : i64
+    intern dest     : string
+
+    func init []
+        calls    = vec MmCall []
+        texts    = vec MmText []
+        problem  = ''
+        carrier  = ''
+        number   = ''
+        modem    = ''
+        sim      = ''
+        dest     = 'org.freedesktop.ModemManager1'
+
+    func open [] -> bool
+        tried = epoch_micros[]
+        err : DBusError
+        dbus_error_init[ @err ]
+        if [ address && address.count > 0 ]
+            conn = dbus_connection_open_private[ address.chars, @err ]
+            if [ !dbus_error_is_set[ @err ] ]
+                dbus_bus_register[ conn, @err ]
+        el
+            conn = dbus_bus_get_private[ DBUS_BUS_SYSTEM, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = 'No system bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        rule : 'type=\'signal\',sender=\'{dest}\''
+        dbus_bus_add_match[ conn, rule.chars, @err ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        refresh[]
+        return ready
+
+    func iface [ part: string ] -> string
+        if [ part.count == 0 ] return dest
+        return '{dest}.{part}'
+
+    func message [ obj: string, part: string, method: string ]
+            -> @DBusMessage
+        ic : iface[ part ]
+        return dbus_message_new_method_call[ dest.chars, obj.chars,
+            ic.chars, method.chars ]
+
+    # a method call that waits for its answer (timeout in ms)
+    func send_wait [ msg: @DBusMessage, ms: i32 ] -> @DBusMessage
+        if [ !conn ] return null
+        # never start ModemManager: no modem here, no wait
+        dbus_message_set_auto_start[ msg, 0 ]
+        err : DBusError
+        dbus_error_init[ @err ]
+        rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+            conn, msg, ms, @err ] ]
+        dbus_message_unref[ msg ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = string[ err.message ]
+            dbus_error_free[ @err ]
+            return null
+        return rep
+
+    # a call with string arguments; true when it was answered
+    func call_s [ obj: string, part: string, method: string,
+                  args: vec string ] -> bool
+        msg : message[ obj, part, method ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        for [ a: string ] in args
+            cs : cstr [ a.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        rep : send_wait[ msg, 20000 ]
+        if [ !rep ] return false
+        dbus_message_unref[ rep ]
+        dirty = true
+        return true
+
+    # a call with one object path argument
+    func call_o [ obj: string, part: string, method: string,
+                  arg: string ] -> bool
+        msg : message[ obj, part, method ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        cs : cstr [ arg.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH,
+                                        @cs ]
+        rep : send_wait[ msg, 5000 ]
+        if [ !rep ] return false
+        dbus_message_unref[ rep ]
+        dirty = true
+        return true
+
+    # an object's properties on one of its interfaces
+    func props_of [ obj: string, part: string ] -> map string [ string ]
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, 'org.freedesktop.DBus.Properties'.chars,
+            'GetAll'.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        ic : iface[ part ]
+        cs : cstr [ ic.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        rep : send_wait[ msg, 2000 ]
+        if [ !rep ] return null
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        out : mm_props[ @top ]
+        dbus_message_unref[ rep ]
+        return out
+
+    # the first modem, its network, its calls and texts
+    func refresh []
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            '/org/freedesktop/ModemManager1'.chars,
+            'org.freedesktop.DBus.ObjectManager'.chars,
+            'GetManagedObjects'.chars ] ]
+        rep : send_wait[ msg, 2000 ]
+        if [ !rep ]
+            ready = false
+            return
+        found : string ''
+        mp : map string [ string ] []
+        gp : map string [ string ] []
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        objs : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @objs ]
+        while [ found.count == 0 && dbus_message_iter_get_arg_type[
+                @objs ] == DBUS_TYPE_DICT_ENTRY ]
+            ent : DBusMessageIter
+            dbus_message_iter_recurse[ @objs, @ent ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @ent, @pc ]
+            found = string[ pc ]
+            dbus_message_iter_next[ @ent ]
+            ifs : DBusMessageIter
+            dbus_message_iter_recurse[ @ent, @ifs ]
+            while [ dbus_message_iter_get_arg_type[ @ifs ]
+                    == DBUS_TYPE_DICT_ENTRY ]
+                ie : DBusMessageIter
+                dbus_message_iter_recurse[ @ifs, @ie ]
+                ic : cstr
+                dbus_message_iter_get_basic[ @ie, @ic ]
+                name : string [ ic ]
+                dbus_message_iter_next[ @ie ]
+                if [ name == iface[ 'Modem' ] ] mp = mm_props[ @ie ]
+                if [ name == iface[ 'Modem.Modem3gpp' ] ]
+                    gp = mm_props[ @ie ]
+                dbus_message_iter_next[ @ifs ]
+            dbus_message_iter_next[ @objs ]
+        dbus_message_unref[ rep ]
+        modem = found
+        ready = modem.count > 0 && mp.contains[ 'State' ]
+        if [ !ready ]
+            problem = 'No modem found'
+            return
+        state   = mm_int[ mp, 'State' ]
+        sim     = mm_get[ mp, 'Sim' ]
+        # 2: the SIM's PIN (MM_MODEM_LOCK_SIM_PIN)
+        locked  = mm_int[ mp, 'UnlockRequired' ] == 2
+        sq : mm_get[ mp, 'SignalQuality' ].split[ '\n' ]
+        signal  = (sq.count > 0 && sq[ 0 ].count > 0)
+            ? i32[ sq[ 0 ].integer_value[] ] : 0
+        own : mm_get[ mp, 'OwnNumbers' ].split[ '\n' ]
+        number  = (own.count > 0) ? own[ 0 ] : ''
+        carrier = mm_get[ gp, 'OperatorName' ]
+        read_calls[]
+        read_texts[]
+
+    func read_calls []
+        vp : props_of[ modem, 'Modem.Voice' ]
+        list : vec MmCall []
+        paths : mm_get[ vp, 'Calls' ].split[ '\n' ]
+        for [ p: string ] in paths
+            if [ p.count == 0 ] continue
+            cp : props_of[ p, 'Call' ]
+            if [ !cp ] continue
+            c : MmCall [ path: p, number: mm_get[ cp, 'Number' ],
+                state: mm_int[ cp, 'State' ],
+                incoming: mm_int[ cp, 'Direction' ] == 1 ]
+            was : find_call[ p ]
+            c.began = (was) ? was.began : epoch_micros[]
+            if [ was && was.since > 0 ] c.since = was.since
+            el [ c.state == 4 ] c.since = epoch_micros[]
+            list.push[ c ]
+        calls = list
+
+    func read_texts []
+        gp : props_of[ modem, 'Modem.Messaging' ]
+        list : vec MmText []
+        paths : mm_get[ gp, 'Messages' ].split[ '\n' ]
+        for [ p: string ] in paths
+            if [ p.count == 0 ] continue
+            sp : props_of[ p, 'Sms' ]
+            if [ !sp ] continue
+            # 1 deliver: a text that came to us
+            list.push[ MmText [ path: p, number: mm_get[ sp, 'Number' ],
+                text: mm_get[ sp, 'Text' ],
+                time: mm_get[ sp, 'Timestamp' ],
+                incoming: mm_int[ sp, 'PduType' ] == 1,
+                state: mm_int[ sp, 'State' ] ] ]
+        texts = list
+
+    # take what came in; true when anything changed
+    func poll [] -> bool
+        if [ !conn ]
+            if [ epoch_micros[] - tried < 3000000 ] return false
+            return open[]
+        dbus_connection_read_write[ conn, 0 ]
+        while [ true ]
+            msg : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !msg ] break
+            if [ dbus_message_get_type[ msg ]
+                 == DBUS_MESSAGE_TYPE_SIGNAL ] dirty = true
+            dbus_message_unref[ msg ]
+        # no modem yet: ModemManager may still be finding it
+        if [ !ready && epoch_micros[] - tried > 3000000 ]
+            tried = epoch_micros[]
+            dirty = true
+        if [ !dirty ] return false
+        dirty = false
+        refresh[]
+        return true
+
+    # turn the radio on (ModemManager starts a modem disabled)
+    func enable []
+        if [ !ready ] return
+        msg : message[ modem, 'Modem', 'Enable' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        on : u32 [ 1 ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_BOOLEAN, @on ]
+        rep : send_wait[ msg, 20000 ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    func unlock [ pin: string ] -> bool
+        if [ sim.count == 0 ] return false
+        return call_s[ sim, 'Sim', 'SendPin', vec string [] [ pin ] ]
+
+    # a new call to the number, started at once
+    func dial [ num: string ] -> MmCall
+        if [ !ready || num.count == 0 ] return null
+        msg : message[ modem, 'Modem.Voice', 'CreateCall' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        d : DBusMessageIter
+        sig : '{{sv}}'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          sig.chars, @d ]
+        mm_dict_add[ @d, 'number', num ]
+        dbus_message_iter_close_container[ @it, @d ]
+        rep : send_wait[ msg, 5000 ]
+        if [ !rep ] return null
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        p : mm_value[ @top ]
+        dbus_message_unref[ rep ]
+        call_s[ p, 'Call', 'Start', vec string [] ]
+        refresh[]
+        return find_call[ p ]
+
+    func answer [ c: MmCall ] -> bool
+        return call_s[ c.path, 'Call', 'Accept', vec string [] ]
+
+    func hang_up [ c: MmCall ] -> bool
+        ok : call_s[ c.path, 'Call', 'Hangup', vec string [] ]
+        call_o[ modem, 'Modem.Voice', 'DeleteCall', c.path ]
+        return ok
+
+    # keypad tones during a call
+    func tones [ c: MmCall, digits: string ] -> bool
+        return call_s[ c.path, 'Call', 'SendDtmf',
+                       vec string [] [ digits ] ]
+
+    # write a text and send it
+    func send_text [ num: string, words: string ] -> bool
+        if [ !ready || num.count == 0 ] return false
+        msg : message[ modem, 'Modem.Messaging', 'Create' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        d : DBusMessageIter
+        sig : '{{sv}}'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          sig.chars, @d ]
+        mm_dict_add[ @d, 'number', num ]
+        mm_dict_add[ @d, 'text', words ]
+        dbus_message_iter_close_container[ @it, @d ]
+        rep : send_wait[ msg, 5000 ]
+        if [ !rep ] return false
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        p : mm_value[ @top ]
+        dbus_message_unref[ rep ]
+        return call_s[ p, 'Sms', 'Send', vec string [] ]
+
+    # take a text off the modem (the app keeps its own copy)
+    func delete_text [ t: MmText ] -> bool
+        return call_o[ modem, 'Modem.Messaging', 'Delete', t.path ]
+
+    func find_call [ p: string ] -> MmCall
+        for [ c: MmCall ] in calls
+            if [ c.path == p ] return c
+        return null
+
+    # an incoming call waiting to be answered, else null
+    func ringing [] -> MmCall
+        for [ c: MmCall ] in calls
+            if [ c.ringing[] ] return c
+        return null
+
+    # the call being made or talked on, else null
+    func current [] -> MmCall
+        for [ c: MmCall ] in calls
+            if [ c.live[] && !c.ringing[] ] return c
+        return null
+
+    # 0 to 4 bars
+    func bars [] -> i32
+        if [ !ready || state < 8 ] return 0
+        if [ signal >= 70 ] return 4
+        if [ signal >= 50 ] return 3
+        if [ signal >= 30 ] return 2
+        if [ signal >= 10 ] return 1
+        return 0
+
+    # the system bar's icon
+    func mark [] -> string
+        if [ !ready || state < 6 ] return 'cell_off'
+        return 'cell_{bars[]}'
+
+    # the network's name as the bar shows it
+    func network [] -> string
+        if [ !ready ] return ''
+        if [ locked ] return 'SIM locked'
+        if [ state < 6 ] return 'No service'
+        if [ state < 8 ] return 'Searching'
+        return carrier
+
+    func close []
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+        ready = false
+
+# one client for the process: the system bar and the phone app
+modem_now : Modem
+
+func modem_shared [] -> Modem
+    if [ !modem_now ]
+        modem_now = Modem []
+        modem_now.open[]
+    return modem_now
+
+# a private bus and the stand-in ModemManager on it, for tests
+class ModemStandIn
+    public bus  : string
+    intern pids : string
+
+    func start [] -> bool
+        inst : path.path_install[]
+        listed : path '{inst}/build/silver-modem.source'
+        txt : string [ listed.load[ typeid[ string ], null ] ]
+        lines : txt.split[ '\n' ]
+        first : path [ lines[ 0 ] ]
+        fake : path '{first.parent_dir[]}/tests/fake_mm.py'
+        dd : '/usr/bin/dbus-daemon --session --fork'
+        dd = '{dd} --print-address=1 --print-pid=1'
+        py : '/usr/bin/python3 {fake}'
+        sh : 'unset LD_LIBRARY_PATH;'
+        sh = '{sh} a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
+        sh = '{sh} {py} $1 >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
+        cmd : command [ sh ]
+        fh : handle cmd.stream[]
+        if [ !fh ] return false
+        b : local i8 [ 512 ]
+        ok : bool [ false ]
+        if [ fgets[ @b[0], 512, fh ] ]
+            ln : string [ @b[0] ]
+            words : ln.trim[].split[ ' ' ]
+            if [ words.count >= 3 ]
+                bus  = words[ 0 ]
+                pids = '{words[ 1 ]} {words[ 2 ]}'
+                ok = true
+        pclose[ fh ]
+        return ok
+
+    func stop []
+        if [ !pids ] return
+        kill_line : 'kill {pids} 2>/dev/null'
+        k : command [ kill_line ]
+        k.exec[ false ]
+
+func modem_nap []
+    ts : struct timespec
+    ts.tv_sec = 0
+    ts.tv_nsec = 10000000
+    nanosleep[ @ts, null ]
+
+# polls a second's worth
+func modem_settle [ m: Modem ]
+    for [ i: i32 0, i < 100, i += 1 ]
+        m.poll[]
+        modem_nap[]
+
+expect func t_modem_status [] -> bool
+    fake : ModemStandIn []
+    if [ !fake.start[] ] return false
+    m : Modem [ address: fake.bus ]
+    ok : bool [ m.open[] ]
+    log 'modem: {m.state} {m.signal} {m.carrier} {m.number}'
+    if [ ok ] ok = m.carrier == 'Orbiter Mobile' && m.signal == 62
+    if [ ok ] ok = m.bars[] == 3 && m.mark[] == 'cell_3'
+    if [ ok ] ok = m.number == '+15551230000'
+    m.close[]
+    fake.stop[]
+    return ok
+
+expect func t_modem_call [] -> bool
+    fake : ModemStandIn []
+    if [ !fake.start[] ] return false
+    m : Modem [ address: fake.bus ]
+    ok : bool [ m.open[] ]
+    c : MmCall [ (ok) ? m.dial[ '5551234' ] : null ]
+    if [ ok ] ok = c != null && !c.incoming
+    if [ ok ]
+        modem_settle[ m ]
+        c = m.current[]
+        ok = c != null && c.state == 4 && c.since > 0
+        log 'dialed: {(c) ? c.state : -1}'
+    if [ ok ]
+        ok = m.tones[ c, '12#' ] && m.hang_up[ c ]
+        modem_settle[ m ]
+        ok = ok && m.current[] == null
+    # a call comes in, is answered and hung up
+    if [ ok ]
+        m.call_s[ '/org/orbiter/Fake', '', 'Ring',
+                  vec string [] [ '+15559870000' ] ]
+        modem_settle[ m ]
+        r : m.ringing[]
+        ok = r != null && r.number == '+15559870000'
+        if [ ok ]
+            ok = m.answer[ r ]
+            modem_settle[ m ]
+            a : m.current[]
+            ok = ok && a != null && a.state == 4
+            if [ ok ] m.hang_up[ a ]
+    m.close[]
+    fake.stop[]
+    return ok
+
+expect func t_modem_text [] -> bool
+    fake : ModemStandIn []
+    if [ !fake.start[] ] return false
+    m : Modem [ address: fake.bus ]
+    ok : bool [ m.open[] ]
+    if [ ok ] ok = m.send_text[ '5551234', 'on my way' ]
+    if [ ok ]
+        m.call_s[ '/org/orbiter/Fake', '', 'Text',
+                  vec string [] [ '+15559870000', 'see you' ] ]
+        modem_settle[ m ]
+        sent : i32 [ 0 ]
+        got : i32 [ 0 ]
+        for [ t: MmText ] in m.texts
+            if [ !t.incoming && t.state == 5 && t.text == 'on my way' ]
+                sent += 1
+            if [ t.incoming && t.text == 'see you' ] got += 1
+        log 'texts: {m.texts.count} sent {sent} got {got}'
+        ok = sent == 1 && got == 1
+    if [ ok ]
+        ok = m.delete_text[ m.texts[ 0 ] ]
+        modem_settle[ m ]
+        ok = ok && m.texts.count == 1
+    m.close[]
+    fake.stop[]
+    return ok

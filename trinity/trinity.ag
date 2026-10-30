@@ -19,6 +19,7 @@ import <ctype.h>
 import <string.h>
 import <stdlib.h>
 import <math.h>
+import <time.h>
 import <vk_mem_alloc.h>
 import <sys/stat.h>
 import <fcntl.h>
@@ -183,6 +184,7 @@ import screen
 import mux
 import demux
 import navigation
+import chart
 import agent
 
 scalar sec : i64
@@ -946,7 +948,7 @@ abstract live_app media_app
                         tag_line = '{tag_line} {tag_key}={tag_count}'
             stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush} | objects {Au.alloc_count[ null ]} samplers {vk.sampler_count} rcolor {vk.samp_rcolor} rdepth {vk.samp_rdepth} rreduce {vk.samp_rreduce} sdf {vk.samp_sdf} atlas {vk.samp_atlas} other {vk.samp_other} renders {vk.render_allocs}/{vk.ring_frees} | tags{tag_line}'
             sd : StatDetail stat_detail[]
-            stat_line = '{stat_line}{sd.line[]}'
+            stat_line = '{stat_line}{sd.line[]} | {vk.gpu_line[]}'
             sd.clear[]
             if [ pwn.stats ] log '{stat_line}'
             if [ pwn.show_fps ]
@@ -1015,9 +1017,12 @@ abstract live_app media_app
                 hz  : i32 [ (frame_hz > 0) ? frame_hz : 60 ]
                 wait_start  : i64 [ epoch_micros[] ]
                 lim : i64 [ 2000000 / i64[ hz ] ]
+                # the host asks this socket from its frame and waits:
+                # answered here, not a frame later
                 while [ !frame_req
                         && epoch_micros[] - wait_start < lim ]
                     attach_pump[]
+                    agent_pump[]
                     if [ !frame_req ] usleep[ 50 ]
                 if [ frame_req ] pane_reqs += 1
                 el                pane_tmo  += 1
@@ -2191,19 +2196,20 @@ func pass_line [ vk: vk_context ] -> string
     if [ !vk || !vk.pass_names || vk.pass_names.count == 0 ] return ''
     out : ' | gpu_ms'
     n : i32 [ i32[ vk.pass_names.count ] ]
-    # the largest first: each turn takes the largest of those left
+    # the largest first: each turn takes the largest of those left.
+    # the order is sorted, never the names (a moved name is dropped)
+    order : vec i32 [ n ]
+    for [ i: i32 0, i < n, i += 1 ] order[ i ] = i
     for [ k: i32 0, k < n && k < 16, k += 1 ]
         best : i32 [ k ]
         for [ i: i32 k + 1, i < n, i += 1 ]
-            if [ vk.pass_us[ i ] > vk.pass_us[ best ] ] best = i
-        bu : f32 [ vk.pass_us[ best ] ]
-        bn : vk.pass_names[ best ]
-        vk.pass_us[ best ] = vk.pass_us[ k ]
-        vk.pass_names[ best ] = vk.pass_names[ k ]
-        vk.pass_us[ k ] = bu
-        vk.pass_names[ k ] = bn
-        ms : f32 [ bu / 1000.0 ]
-        out = '{out} {bn}={ms}'
+            if [ vk.pass_us[ order[ i ] ] > vk.pass_us[ order[ best ] ] ]
+                best = i
+        at : i32 [ order[ best ] ]
+        order[ best ] = order[ k ]
+        order[ k ]    = at
+        ms : f32 [ vk.pass_us[ at ] / 1000.0 ]
+        out = '{out} {vk.pass_names[ at ]}={ms}'
     vk.pass_names.clear[]
     vk.pass_us.clear[]
     # the screen's pixels by draw mode (DrawMode's numbers), millions
@@ -7121,6 +7127,8 @@ Display Window
         nc : bool [ e.no_cache ]
         for [ pe: element* e.parent, pe && !nc, pe = pe.parent ]
             if [ pe.no_cache ] nc = true
+        # a faded scroller keeps a canvas: its mask is drawn from one
+        if [ e.scroll_fade > 0.0 && !e.no_cache ] nc = false
         # css overflow: clip on a layer crops the children, as a
         # scrolling element does
         crops : bool [ e.content_h > 0.0 ]
@@ -8230,7 +8238,7 @@ Layer ScrollLayer
         # under a pixel past its box (a height's rounding): no bar
         if [ !e || e.content_h <= 0.0 || e.bounds.h + 1.0 >= e.content_h ]
             return
-        if [ e.no_scroll ] return
+        if [ e.no_scroll || e.no_thumb ] return
         top     : f32 [ bounds.y ]
         cl      : Layer (e.layers) ? e.layers['content'] : null
         if [ cl && cl.bounds ] top = cl.bounds.y + 8.0

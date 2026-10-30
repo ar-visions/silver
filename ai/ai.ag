@@ -713,7 +713,7 @@ op dense
                 d_out_f[i] *= 1.0 - out[i] * out[i]
 
         for [ i: i32 0, i < odim, i += 1 ]
-            d_b[i] = d_out_f[i]
+            d_b[i] += d_out_f[i]
             for [ j: i32 0, j < idim, j += 1 ]
                 d_w[j * odim + i] += d_out_f[i] * inp[j]
 
@@ -745,7 +745,7 @@ op dense
 
         # --- bias gradient (scalar, odim is small) ---
         for [ i: i32 0, i < odim, i += 1 ]
-            d_b[i] = d_out_f[i]
+            d_b[i] += d_out_f[i]
 
         odim8: i32 [ (odim / 8) * 8 ]
         for [ j: i32 0, j < idim, j += 1 ]

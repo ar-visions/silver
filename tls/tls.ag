@@ -160,8 +160,14 @@ class Http
         if [ ve < 0 ] return null
         return tail2.mid[ 0, ve ]
 
+    # the bytes written; else -1, or the HTTP status below 0 (-403)
     static func download [ url: string, dest: path ] -> i64
-        return request[ 'GET', url, dest, null, 0, null ]
+        return request[ 'GET', url, dest, null, 0, null, '' ]
+
+    # a GET with one more header line ('Authorization: Bearer k')
+    static func download_with [ url: string, dest: path,
+                                header: string ] -> i64
+        return request[ 'GET', url, dest, null, 0, null, header ]
 
     # one PUT; the status code comes back (-1 when the request never got an answer)
     static func put [ url: string, body: @u8, body_n: i64, content_type: string, agent: string ] -> i32
@@ -211,9 +217,39 @@ class Http
         fclose[ fp ]
         if [ rd != fsz ] return -1
         memcpy[ @body[ head.count + fsz ], tail.chars, tail.count ]
-        return request[ 'POST', url, dest, body, n, 'multipart/form-data; boundary={bd}' ]
+        return request[ 'POST', url, dest, body, n, 'multipart/form-data; boundary={bd}', '' ]
 
-    static func request [ method: string, url: string, dest: path, body: @u8, body_n: i64, content_type: string ] -> i64
+    # a chunked body into fp: the bytes written, -1 when it ends early
+    static func read_chunks [ t: TLSClient, fp: @FILE ] -> i64
+        csz  : i32 [ 262144 ]
+        data : new u8 [ csz ]
+        lb   : new u8 [ 64 ]
+        got  : i64 [ 0 ]
+        for [ true ]
+            # its size: a hex line (an extension after ; ignored)
+            ln : i32 [ 0 ]
+            for [ true ]
+                r : i64 [ t.recv[ @lb[ln], 1 ] ]
+                if [ r != 1 ] return -1
+                if [ lb[ln] == 10 ] break
+                if [ ln < 62 ] ln += 1
+            lb[ln] = 0
+            sz : i64 [ strtoll[ cast cstr [ @lb[0] ], null, 16 ] ]
+            if [ sz <= 0 ] return got
+            left : i64 [ sz ]
+            while [ left > 0 ]
+                want : i64 [ (left < i64[ csz ]) ? left : i64[ csz ] ]
+                r : i64 [ t.recv[ data, want ] ]
+                if [ r <= 0 ] return -1
+                if [ fwrite[ data, 1, r, fp ] != r ] return -1
+                left -= r
+                got  += r
+            # the CR LF after the piece
+            t.recv[ @lb[0], 1 ]
+            t.recv[ @lb[0], 1 ]
+        return got
+
+    static func request [ method: string, url: string, dest: path, body: @u8, body_n: i64, content_type: string, header: string ] -> i64
         u : UrlParts [ ]
         u.from_url[ url ]
         if [ !u.valid ]
@@ -227,6 +263,7 @@ class Http
                 t.close[]
                 return -1
             extra : string [ (body_n > 0) ? 'Content-Type: {content_type}\r\nContent-Length: {body_n}\r\n' : '' ]
+            if [ header && header.count > 0 ] extra = '{extra}{header}\r\n'
             req : string '{method} {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\n{extra}Connection: close\r\n\r\n'
             if [ t.send[ cast @u8 [ req.chars ], req.count ] != req.count ]
                 log 'net: send failed to {u.host}'
@@ -270,14 +307,34 @@ class Http
             if [ code != 200 ]
                 log 'net: status {code} for {u.host}'
                 t.close[]
-                return -1
+                # the status, below 0: a caller tells a refusal apart
+                return (code > 0) ? -i64[ code ] : -1
             cl : header_value[ hdr, 'ontent-Length: ' ]
             total : i64 [ (cl) ? atoll[ cl.chars ] : -1 ]
-            fp : @FILE [ fopen[ dest.chars, 'wb' ] ]
+            # written beside its name, moved in whole: a reader never
+            # sees half of it, a failure leaves the last one
+            part : string '{dest}.part'
+            fp : @FILE [ fopen[ part.chars, 'wb' ] ]
             if [ !fp ]
                 log 'net: cannot write {dest}'
                 t.close[]
                 return -1
+            # chunked: each piece after its size in hex, a 0 size last
+            # (the value may have more than one space before it)
+            hl : string hdr.lcase[]
+            ti : num hl.index_of[ "transfer-encoding:" ]
+            chunked : bool [ ti >= 0
+                && hl.mid[ ti, 40 ].index_of[ "chunked" ] >= 0 ]
+            if [ chunked ]
+                cg : i64 read_chunks[ t, fp ]
+                fclose[ fp ]
+                t.close[]
+                if [ cg < 0 ]
+                    log 'net: a chunked body ended early'
+                    remove[ part.chars ]
+                    return cg
+                rename[ part.chars, dest.chars ]
+                return cg
             csz  : i32 [ 262144 ]
             data : new u8 [ csz ]
             got  : i64 [ 0 ]
@@ -300,6 +357,8 @@ class Http
             t.close[]
             if [ got < 0 || (total > 0 && got < total) ]
                 log 'net: body short — got {got} of {total}'
+                remove[ part.chars ]
                 return -1
+            rename[ part.chars, dest.chars ]
             return got
         return -1

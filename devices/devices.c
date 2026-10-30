@@ -1100,6 +1100,8 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <xcb/xcb.h>
 #include <xcb/randr.h>
 #include <xcb/sync.h>
+#include <xcb/xcbext.h>
+#include <sys/uio.h>
 #include <X11/keysym.h>
 #include <alsa/asoundlib.h>
 #include <fcntl.h>
@@ -2226,7 +2228,10 @@ static void handle(xcb_generic_event_t* ev) {
             // release is synthetic, so the pair collapses to one repeat
             bool repeat = false;
             if (!press) {
+                // the pair's press can still be on the socket, unread:
+                // taken as a real release, a held key lets go each repeat
                 xcb_generic_event_t* nx = xcb_poll_for_queued_event(g_conn);
+                if (!nx) nx = xcb_poll_for_event(g_conn);
                 if (nx) {
                     xcb_key_press_event_t* ne = (void*)nx;
                     if ((nx->response_type & ~0x80) == XCB_KEY_PRESS &&
@@ -2259,6 +2264,37 @@ static void handle(xcb_generic_event_t* ev) {
     }
 }
 
+// x repeats a held key as a fake release and press; a second key
+// pressed between the two ends the repeat on the release, and the held
+// key reads as let go. XKB's per-client flag makes repeats presses
+// alone (as SDL and other emulators ask): no xkb library, so the two
+// requests go out raw
+static void detectable_autorepeat(void) {
+    static xcb_extension_t xkb = { "XKEYBOARD", 0 };
+    const xcb_query_extension_reply_t* ex = xcb_get_extension_data(g_conn, &xkb);
+    if (!ex || !ex->present) return;
+    // UseExtension 1.0 (minor 0), then PerClientFlags (minor 21)
+    struct { uint8_t major, minor; uint16_t len;
+             uint16_t want_major, want_minor; } use = { 0, 0, 0, 1, 0 };
+    struct { uint8_t major, minor; uint16_t len;
+             uint16_t device, pad;
+             uint32_t change, value, ctrls, auto_ctrls, auto_values; }
+        flags = { 0, 0, 0, 0x0100, 0, 1, 1, 0, 0, 0 };
+    struct iovec iov[3];
+    xcb_protocol_request_t rq = { 1, &xkb, 0, 0 };
+    iov[2].iov_base = &use;   iov[2].iov_len = sizeof use;
+    unsigned int sq = xcb_send_request(g_conn, XCB_REQUEST_CHECKED, iov + 2, &rq);
+    free(xcb_wait_for_reply(g_conn, sq, NULL));
+    rq.opcode = 21;
+    iov[2].iov_base = &flags; iov[2].iov_len = sizeof flags;
+    sq = xcb_send_request(g_conn, XCB_REQUEST_CHECKED, iov + 2, &rq);
+    uint8_t* r = xcb_wait_for_reply(g_conn, sq, NULL);
+    // the reply's supported and value masks: bit 0 is the flag
+    if (r) fprintf(stderr, "devices: detectable autorepeat %s\n",
+                   (r[12] & 1) ? "on" : "refused");
+    free(r);
+}
+
 bool platform_init(void) {
     g_t0 = now();
     int screen_n;
@@ -2273,6 +2309,7 @@ bool platform_init(void) {
         fprintf(stderr, "devices: %d evdev inputs\n", g_ev_n);
         return true;
     }
+    detectable_autorepeat();
     xcb_screen_iterator_t it = xcb_setup_roots_iterator(xcb_get_setup(g_conn));
     for (int i = 0; i < screen_n; i++) xcb_screen_next(&it);
     g_screen = it.data;
@@ -3124,6 +3161,26 @@ static void scope_put(int slot, const int16_t* b, int n) {
 typedef struct { int slot; volatile int stop; pthread_t tid; } SlotPlayer;
 static SlotPlayer* g_players[HOST_APPS];
 
+// two periods of the system's 1024 frame block: a shorter period
+// moves every stream's block (a glitch), more would only add delay
+static int player_params(snd_pcm_t* pcm, int rate) {
+    snd_pcm_hw_params_t* hw;
+    snd_pcm_hw_params_alloca(&hw);
+    snd_pcm_uframes_t per = 1024, buf = 2048;
+    unsigned int rt = (unsigned int)rate;
+    if (snd_pcm_hw_params_any(pcm, hw) < 0 ||
+        snd_pcm_hw_params_set_access(pcm, hw,
+            SND_PCM_ACCESS_RW_INTERLEAVED) < 0 ||
+        snd_pcm_hw_params_set_format(pcm, hw, SND_PCM_FORMAT_S16_LE) < 0 ||
+        snd_pcm_hw_params_set_channels(pcm, hw, 2) < 0 ||
+        snd_pcm_hw_params_set_rate_near(pcm, hw, &rt, 0) < 0 ||
+        snd_pcm_hw_params_set_period_size_near(pcm, hw, &per, 0) < 0 ||
+        snd_pcm_hw_params_set_buffer_size_near(pcm, hw, &buf) < 0 ||
+        snd_pcm_hw_params(pcm, hw) < 0)
+        return -1;
+    return snd_pcm_prepare(pcm);
+}
+
 static void* slot_player_run(void* arg) {
     SlotPlayer* sp = arg;
     snd_pcm_t* pcm = 0;
@@ -3135,10 +3192,8 @@ static void* slot_player_run(void* arg) {
             if (pcm) snd_pcm_close(pcm);
             pcm = 0;
             rate = rt;
-            // 32 ms of buffer, as the app's own stream had
             if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0 ||
-                snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE,
-                    SND_PCM_ACCESS_RW_INTERLEAVED, 2, rt, 1, 32000) < 0) {
+                player_params(pcm, rt) < 0) {
                 fprintf(stderr, "slot %d: no audio device\n", sp->slot);
                 if (pcm) snd_pcm_close(pcm);
                 pcm = 0;

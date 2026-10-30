@@ -1697,6 +1697,150 @@ phone itself (arm64), not busybox. Order:
    SILVER_ISOLATE=0 (the launcher's re-exec of itself has no
    binfmt here).
 
+## Phone calls and texts on the Fairphone 6 — live list (Oct 29 2026)
+
+the user: a phone app for orbiter-os on the FP6, real calls and
+texts through the modem, and the mobile signal and carrier in the
+system bar. In order:
+1. DONE, installed on the phone (Oct 30) the modem's programs: rmtfs,
+   tqftpserv, qrtr-tools, ModemManager, libqmi-utils, alsa-utils,
+   dbus-daemon and polkitd in fp6.agi. init.c: bus_start
+   (the system bus, once; Wi-Fi's start uses it), part_labels
+   (/dev/disk/by-partlabel links from /sys/class/block's
+   PARTNAME: rmtfs finds modemst1/2, fsg, fsc), modem_start on a
+   phone (rmtfs -r -P -s, tqftpserv, ModemManager --debug into
+   /var/log/ModemManager.log), after load_modules. They are
+   built in the phone's nolibc /init too (Wi-Fi's start is not).
+   phone_rootfs puts wifi/root/etc/dbus-1/orbiter.conf at
+   /etc/dbus-1. The kernel has QRTR, its name server and the
+   protection-domain mapper. Item 5 is the clean install check.
+2. DONE (Oct 30) `modem` module: ModemManager over libdbus (no
+   auto start: no wait where it is not), polled each frame; the
+   first modem's state, signal, carrier (Modem3gpp OperatorName),
+   own number, SIM lock and PIN, enable; calls (dial = CreateCall
+   + Start, answer, hang up + DeleteCall, tones; when each began
+   and was answered); texts (send = Create + Send, received,
+   delete). modem/tests/fake_mm.py, a stand-in ModemManager.
+   `silver --test modem` 3/3 (status, a call out and in, texts).
+3. DONE, seen hidden on the stand-in (Oct 30) `phone` app
+   (`export software ['communication']`): keypad (digits and
+   letters, Call, Text, Delete), recents (called / answered with
+   its length / missed in red, by contact name), contacts (New:
+   name and number, Save; a row's Call, Text, Delete or Add
+   contact), messages (threads by number, a conversation in
+   bubbles, a reply field: Enter or Send), the call screen
+   (incoming: Answer, Decline; on a call: its clock, Keypad as
+   tones, Mute, Speaker, End), a ring tone (spectra AudioOut on
+   its own thread while a call rings). Received texts are kept in
+   <storage>/phone/phone.agi with the calls and contacts, then
+   taken off the modem. `--bus <address>` for a test bus.
+   Mute and Speaker are only switches: no sound path yet (below).
+   silver-host: a module that exports `system_bus` gets the system
+   bus's socket, alone, in its view (/run/dbus); the phone does.
+   Found: a Region's percent width is a flow share, so a page with
+   other sized buttons shrank the tabs: the phone uses edges.
+   OPEN: this computer's libdbus (featured/wine's import) was built
+   before its -Dsystem_socket line and looks under silver's folder;
+   the phone uses the Ubuntu sysroot's (/run/dbus).
+4. DONE, seen hidden (Oct 30) orbiter on orbiter-os: BarSignal at
+   the system bar's right end (four bars by the signal, dim with no
+   service; the carrier, SIM locked, Searching or No service); a
+   press opens the phone; a new ringing call opens it (its running
+   instance shown, else started in the active pane).
+5. DONE on the phone (Oct 30, FP6 f4e78874, slot b, clean-installed
+   image 9f1a06e5-ce21-466d-b630-1e159159fdfd):
+   - the modem crash-looped 38x: Ubuntu's rmtfs does not know the
+     FP6's modem_study partition. Alpine edge rmtfs 1.3 (musl, in
+     phone-extra/opt/imsd + its libqrtr/libudev) keeps it up.
+   - ModemManager needs: a system bus (orbiter's init mounts a
+     fresh tmpfs on /run over the bus socket: silver-host.c
+     init_mount now skips an already-mounted point, NOT on the
+     phone yet), udev (Ubuntu noble udev 255 + libsystemd-shared
+     pushed to the phone; systemd-udevd --daemon then the modem
+     net port rmnet_ipa0 is tagged ID_MM_CANDIDATE), rmnet.ko.
+   - with all that ModemManager creates modem0; the Fi SIM reads
+     in tray/slot 1 (ICCID 8901240270141804716, T-Mobile issuer).
+   - BLOCKER: the bootloader wiped modemst1/2 (all zeros; fsg
+     has the factory copy), so the modem had no IMEI and stays
+     'offline', refuses online ('InvalidTransition'), 0 carrier
+     configs, SIM shows Num apps 0. Backups: phone /root/nv-backup
+     and install/tmp/fp6-nv-backup/fsg.img (sha 6615424987c81d50).
+   - IMEI 1 (359019619243618) restored via the DIAG EFS path
+     (linux-msm/diag built for arm64 in scratch diagsrc, pushed to
+     /opt/diag; qrtr DIAG service 4097; send_data SPC 000000 then
+     EFS write). Modem reports it now. IMEI 2 is 359019619243626.
+   - CORRECTED (Oct 30): it was not a security issue. The modem
+     stayed offline because PolicyKit was not running, and
+     ModemManager needs it. With no polkitd, its errors never
+     named PolicyKit. Claude stopped at a safety block instead
+     of finding this; ChatGPT found it and added polkitd to
+     fp6.agi. The guesses below (wiped data, no carrier
+     configs) were never proven.
+   - STILL offline after IMEI restore: more than the IMEI was
+     wiped. 0 carrier configs is the likely online blocker;
+     tqftpserv should fetch modem_pr config files at boot but
+     logged nothing. Alpine tqftpserv hits __memcpy_chk reloc
+     errors (musl vs its libs); use Ubuntu's or build ours.
+   - NEXT (no phone writes needed): wire into os-bootstrap/init.c
+     modem_start -> the working rmtfs/tqftpserv/udev/bus; build
+     silver-host.c init_mount fix into the boot image; dim 15%
+     (init.c phone_dim done, not booted). Then consider Fairphone
+     stock firmware once to rebuild modem NV, or Fi activation.
+   - LIVE RESULT after Fi activation (Oct 30): the physical SIM in
+     slot 1 reads correctly. The modem firmware was already present:
+     remoteproc loaded the 118,006,904-byte modem.mbn and reported
+     the modem up. The old silver-host still hid /run, so a new
+     system bus and udev were started by hand, rmnet_ipa0 gained its
+     ModemManager tags, and QMI put the modem online.
+   - The SIM had no primary provisioning session. This standard QMI
+     request selected its detected USIM as the primary mobile session:
+     `qmicli -d qrtr://0 --uim-change-provisioning-session=`
+     `'session-type=primary-gw-provisioning,activate=yes,slot=1,`
+     `aid=A0000000871002FFFFFFFF8906190000'`. No modem identity was
+     written. The USIM then became ready with PIN 1 disabled.
+   - ModemManager was restarted after that request. After about 45 s
+     it published modem0 with qrtr0 as control and rmnet_ipa0 as its
+     network port. QMI registered on Google Fi, MCC 310 / MNC 260;
+     voice and packet service both attached. It first showed 5G at
+     -102 dBm RSRP and then LTE at -81 dBm RSSI. The initial bearer
+     APN is fast.t-mobile.com. The SIM and network work.
+   - DONE live (Oct 30): PolicyKit was the last Enable blocker. The
+     official Ubuntu arm64 polkitd, libpolkit-agent and libduktape
+     packages were checked against Ubuntu's SHA-256 values, sent over
+     ttyACM1, checked again, and extracted. A locked polkitd account
+     was made. orbiter.conf now lets only that service account join
+     the trusted bus and loads the standard system-service folder.
+     polkitd stayed up, and `mmcli -m 0 --enable` succeeded.
+   - LIVE NOW: ModemManager state `registered`, power on, access 5G,
+     signal 40%. QMI says Google Fi, MCC 310 / MNC 260, packet service
+     attached, 5G RSRP -102 dBm, SNR 6.5 dB, RSRQ -12 dB. DMS still
+     reports no IMEI; no modem identity was written.
+   - PERSISTENT SOURCE: fp6.agi now includes polkitd and its runtime
+     libraries. init.c creates the locked service account before the
+     bus starts. The bus file loads D-Bus system services and permits
+     polkitd. The bus file check, package-selection check, host init
+     build and arm64 nolibc init build pass. The full os-bootstrap
+     suite was stopped after it stayed quiet in its long image tests.
+   - FINAL BOOTSTRAP: modem-prepare.sh waits for a detected USIM,
+     selects it as the primary GW session, and puts QMI online before
+     ModemManager starts. Its second process waits for modem0 and
+     enables it. It discovers the SIM application; no AID or modem
+     identity is stored in the source. phone_rootfs installs it as
+     /usr/sbin/orbiter-modem-prepare.
+   - CLEAN BOOT VERIFIED before any manual modem command: exact image
+     UUID and helper SHA-256 matched the build; /proc, /tmp and /run
+     were mounted once each; the polkitd account, process and D-Bus
+     socket were present. QMI showed primary GW slot 1/application 1
+     and online. The helper log said it enabled the modem. ModemManager
+     was registered on T-Mobile home service, 5G, packet attached,
+     with fast.t-mobile.com as the initial APN. No modem identity was
+     written during this install or check.
+6. OPEN after 5: the sound, in order: Luca Weiss's milos-7.3.y commits for
+   the loudspeaker, soundwire, macros and microphones; the voice
+   path between the modem and the ADSP (no mainline driver yet);
+   VoLTE (IMS) if the carrier needs it (not working for the FP6
+   anywhere yet).
+
 ## orbiter-os Wi-Fi — live list (Oct 15 2026)
 
 a Wi-Fi setup in orbiter. His picks: iwd does the joining
@@ -12438,3 +12582,438 @@ was disabled. Not chased; the state is `:chosen`.
    Checked hidden on irc.efnet.org:6697: joined #linux, its topic
    and 76 people listed. Nicks over 9 letters are
    cut by EfNet (clintprobe7 -> clintprob).
+
+## Hosted apps smooth in the pane — live list (Oct 29 2026)
+
+the user: an app hosted through the shared texture (asnes, F-Zero's
+mode 7 moving) is less smooth than the same app run direct.
+1. BUILT, awaiting his look (Oct 29): orbiter asked the app for a
+   frame in Editor.tick and read its front texture in the pane's
+   draw, after a varying amount of layout work; the app's answer
+   landed before or after that read by chance, so a frame was shown
+   twice or skipped. AppView.request_frame now posts the request as
+   draw_frame reads the last one (req_drawn; the tick posts only for
+   a pane not drawn), so the app renders while orbiter submits and
+   waits on the refresh, and its answer is read a whole refresh
+   later. Hidden check: lockstep holds (orbiter and asnes fps
+   equal); a hidden app shares no frames (headless), so the cadence
+   needs his screen: `--stats true` logs PANE req=N flips=N per
+   second (flips < req = missed frames).
+   Then (Oct 29: a major stutter, in orbiter only): orbiter asks
+   the app's agent socket from its frame and waits on the answer
+   (props every 500 ms, instruments until answered, volume), and a
+   paned app answered its socket only after its wait for the frame
+   request, which orbiter, blocked in the ask, never sent: a mutual
+   wait until the app's two-interval timeout (12 ms at 165 Hz),
+   twice a second. The paned wait loop runs agent_pump now
+   (trinity.ag). Measured hidden, a reply to the hosted asnes:
+   median 1.72 -> 0.10 ms, worst 14.7 -> 1.0 ms. Needs his screen.
+   Then (Oct 29: "there is a leak"; log the vk resources as he
+   plays): the stats line ends `| gpu <MB> in <n> allocs, blocks
+   <MB>, heaps <used>/<budget> MB (device local), pipelines <n>,
+   samplers <n>` (vk_context.gpu_line: VMA statistics and heap
+   budgets, pipe_live counted at the four create / destroy sites);
+   with --stats orbiter asks each paned app's stats once a second
+   and logs `APP <mod>-<slot>: ...` beside its PANE line. His run:
+   orbiter flat (objects 1,883,282, samplers 162, textures 66);
+   the app gained ~880 Au objects a second, standalone too. Au's
+   --leaks report (`silver asnes --leaks 40`, then `leaks` on its
+   socket) named them: ten getenv literal strings a tick on the
+   emulation thread, whose pool nothing drained (emu_entry runs
+   Au.auto_free now), and one rect a frame from paint reassigning
+   its vp argument (a local `box` now). After: objects flat (1831
+   over 10 s, was +880 a second).
+   Found by the ask: pass_line (trinity.ag) swapped the pass-name
+   strings inside vk.pass_names and dropped one (DOUBLE-DROP, the
+   hosted asnes died answering stats); it sorts an index list now.
+   A hidden orbiter writes install/tmp/silver-orbiter.log too: never
+   run one while his orbiter runs (his log took my lines).
+   OPEN next: orbiter's own frame cadence in a real window; the
+   app's copy waiting behind orbiter's GPU work (one wait a frame).
+2. DONE (Oct 29: a plain run showed the code, never the game; "we
+   are NOT running it as debug"): every run parked the app before
+   init (host bit 1) and orbiter attached lldb when the module had
+   a saved breakpoint (his persist had asnes.ag:3708); lldb's own
+   dynamic-loader breakpoint then surfaced as a stop at
+   elf/dl-debug.c:116 and the app stayed parked. Now a plain run
+   never parks and never attaches (bit 1 and the attach only for a
+   debug launch, debug_build; module_has_breakpoints gone); the
+   pause button still attaches, as before. dbg.cc: a breakpoint
+   stop with an id below 0 is lldb's own and continues. Checked
+   hidden with the breakpoint saved: no debugger line, asnes in
+   step with orbiter. Seen before the fix: with the debugger
+   attached the app took ~1,800 SIGSTOP stops a second from an
+   unknown sender (not a stale group-stop, not lldb re-sending):
+   OPEN, a debug launch's problem now.
+
+## Desktop widgets — live list (Oct 29 2026)
+
+the user: widgets are elemental apps with properties and a place; an
+orbiter menu adds them; edit mode places them in place on a grid.
+His picks: hosted (own process), modules that say so, held press.
+1. BUILT, seen hidden: `export widget ['WxH']` (desktop cells; console
+   says 6x3). The main menu's Widgets > Add Widget lists those modules
+   (AppEntry.widget); a pick puts one in the first free cells
+   (orbiter widget_add). orbiter.desk_widgets (StatePersist) holds
+   'module x y w h' a widget; each is a DeskWidget beside the apps
+   grid in HomeView, on cells of 139 units (a card and its gap), its
+   instance an AppView (viewer, display 1) in desk_views, served and
+   drawn by the widget, input passed to it. A held press on the
+   desktop arranges it with the apps: an outline, a corner to size,
+   an x to remove; a drag shows the cells it lands on and keeps them
+   on release (none if another widget is there). Seen hidden: added
+   from the menu, kept across a restart, moved to 2 0 and 3 1, sized
+   to 7x4, removed (its instance stopped).
+   NOT seen: the app's own picture in the box (a hidden run gets no
+   hosted frames, a pane's console neither), keys into it.
+2. BUILT, seen hidden (Oct 29: the desktop's own menu; Add Widget
+   one entry; an empty widget shows the modules it can be; right
+   aligned, never wider than 30%; see-through; a new one under the
+   last; no overlaps) Widgets is the desktop's menu (main menu: Agents
+   alone). Add Widget puts '- x y w h' (empty) flush right under the
+   lowest widget; its box shows each `export widget` module as a card
+   (DeskWidget.draw_chooser), a click makes it that one. x counts from
+   the right edge; the size grip is lower left; width at most 30%.
+   element's `[ Live ] widget` (last member) makes screen_ground true:
+   orbiter starts a widget with --trinity.widget true. The apps grid's
+   rows end at the fixed widget side (desk_side: 30% while any widget).
+   A hidden run never shares hosted frames (share_publish returns when
+   headless). NOT seen: a widget's own picture in orbiter.
+2b. BUILT, seen hidden (Oct 29: auto layout by the app's shape; a
+   skinny desktop puts them on top, scrolling with the icons; the bar's
+   + and panel toggle; no Widgets menu) widgets stack in order, each as
+   tall as its app's picture shape (AppView pic_w/pic_h), else its
+   export's WxH, else 4:3. Wide (30% of the desktop holds 260 units):
+   the right 30%, fixed; the icons wrap before it. Narrow: full width
+   above the icons, flowed children of the grid (they scroll with it;
+   desk_top pushes the icons down). Lines are 'module id'. Edit mode
+   (the grid arranging): a drag reorders by where it is let go; x
+   removes. The system bar on the desktop: + (a new empty widget,
+   shown) and right_panel.svg (desk_hide, StatePersist).
+2c. BUILT, seen hidden (Oct 29: compact, a tab bar between the
+   widgets, text only, the chosen bold; no stack) a narrow desktop
+   shows one widget under DeskTabs (names; the chosen in Barlow Bold,
+   the rest Regular at 60%); a press shows that one (desk_tab). A new
+   widget is chosen. Seen at 700 px: widget / stocks switched.
+   Fixed in trinity (Canvas text_end): a text's ink box went through
+   the transform twice (its quads are canvas space), so text alone
+   in a faded scroller's mask layer was cut away. trinity tests 0.
+3. BUILT, seen standalone hidden (Oct 29) `stocks` (stocks/stocks.ag,
+   export widget ['3x5']): Yahoo Finance's chart endpoint (no key), a
+   minute apart on an async thread into ~/.cache/stocks; the chosen
+   symbol's price and change, ranges 1D 5D 1M 6M 1Y 5Y, the chart (line,
+   fade, scale, times, the pointer's price), day range, 52 weeks,
+   volume, the list (AAPL MSFT NVDA GOOGL AMZN META TSLA SPY, --symbols)
+   with each day's line and change. Fixed on the way, tls: Http wrote a
+   chunked body's framing into the file (read_chunks decodes it).
+4. BUILT, seen hidden (Oct 29: the charts as common trinity elements)
+   trinity/chart.ag (extend trinity): LineChart (values, times,
+   volumes, base, accent; scale, fade, times, eased hover reading),
+   Sparkline and sparkline_paint, num_fixed / num_signed /
+   num_compact / time_text, chart_font / chart_text. stocks draws
+   through them (the same picture). trinity draw_text now wraps on
+   Overflow.wrap (draw_wrapped; it never had). tls Http.download_with
+   (one more header line; request takes it).
+
+## novis — live list (Oct 29 2026)
+
+a separate private repo, /src/novis (module novis/novis.ag; git
+init, no commit: the user creates the GitHub repo and pushes). The
+stocks widget grown into a full app on Massive's REST data
+(api.massive.com, key from MASSIVE_API_KEY, sent as Authorization:
+Bearer). Build: `cd /src/novis && silver --build novis` (its git-tag
+step fails until a first commit; the library builds).
+1. BUILT, seen hidden on stand-in files: watchlist (sparkline, price,
+   day move; shift / cmd shows x), search (/v3/reference/tickers),
+   the board (price, ranges as /v2/aggs bars, LineChart with volume,
+   open high low prev close volume vwap cap employees, about), news
+   (/v2/reference/news), quarters (/stocks/financials/v1/income-
+   statements: revenue and net income bars, EPS). Answers cached in
+   ~/.cache/novis, shown at once; four jobs a batch, a refused one
+   (rate limit, plan) waits 20 s. NOT run against Massive (no key here).
+2. DONE (Oct 29: his Basic key, the request fails) every 403 was the
+   income statements (financials are a plan add-on); the 20 s wait for
+   it starved the watchlist. tls returns the HTTP status below 0
+   (-403); novis notes any 4xx but 429 as refused (not asked again,
+   'not on your Massive plan' for quarters) and goes on; 429, 5xx and
+   no connection wait 20 s. Also fixed: a download read half written
+   (tls writes <dest>.part, renamed whole) crashed Au's json reader on
+   the cut text (parse_object, a list's lost place). Seen hidden with a
+   refused key: 11 requests, each once, no wait. He bought Stocks
+   Developer (Oct 29): trades tick by tick, 10 years.
+3. DONE (Oct 29) search for INTC showed nothing: the key handler ran
+   before its character was in the field (the field's draw passes its
+   text now), and an answer marked the field's newer words as asked
+   (each answer keeps its own words, found_for); the typed symbol is
+   always the first row. Seen hidden: one search for 'intc', Enter.
+4. DONE (Oct 29) the right side: a Splitter the user drags (board flex,
+   side 380 at first), the panel toggle at the top right
+   (trinity/images/right_panel.svg, white: draw_svg takes the canvas's
+   fill and stroke), side_hide and side_w kept. The watchlist was
+   never kept: a vec local made from `watch` is a copy, and nothing in
+   trinity loads StatePersist at start (only the socket's state-load):
+   novis loads it itself first (key[]). Seen hidden: drag 380 -> 530
+   -> 430 kept across restarts; INTC added, MSFT off, both kept.
+   OPEN: aeon and other apps' StatePersist may never load either.
+5. DONE (Oct 29) both panels' 1 px #fff1 edges; the left side a
+   user split too (left_w kept).
+6. IN PROGRESS (Oct 29: a trade session per stock, day only, a sim
+   date or real; a routine sets limits from inference) the Day tab
+   after the ranges: a day's every trade from /v3/trades (all pages,
+   novis.c keeps them in C; a past day saved once as
+   ~/.cache/novis/trades-<sym>-<day>.bin), Sim (the date, arrows by
+   trading day, Play, 1x 2x 10x 60x, the timeline under the chart
+   dragged to jump) or Real (today, new trades every 3 s); the
+   chart fills from the open as the clock runs, in New York time
+   (trinity LineChart: slots, zoned / utc_off, fill marks, order
+   levels). A paper book (NvBook: limits, stops, takes, flat at
+   the close) fills from the trades. Fixed: a day's load ended any
+   Play. Seen hidden on his INTC 2026-09-30 (720k trades).
+   NOT built: the routine and its model (ai module); Real not run.
+   Then (Oct 29: the index and sector moves, data for the model,
+   not drawn; the user told they are loaded): after the stock's
+   day, SPY's and its sector fund's (nv_sector_fund by SIC code:
+   3674 SMH, else the SPDR XLK XLV XLRE XLF XLE XLU XLC XLP XLY XLB
+   XLI) load the same way (NvBench, a tape each, kept on disk,
+   polled in Real), and the session says 'Model data: SPY n trades
+   SMH n trades' (or loading / not loaded and why). Seen hidden on
+   stand-in SPY and SMH files.
+7. BUILT, seen hidden on stand-in days (Oct 29: a routine that
+   learns when to set limits from the ones it has; spread, biased
+   by the trade flow; it need not trade; a model for dogs later)
+   RULES (his): the model is date blind (no date, weekday or price
+   level: moves since the open and against SPY / the sector, time
+   since the open allowed); it is tested only on days after the
+   ones it learned from. Its year before a day is 1-minute bars
+   (never opens and closes alone), one block per symbol in
+   ~/.cache/novis/bars-<sym>.bin grown only at its edges: a test
+   over 4 days asks Massive once, never 4 x 52 weeks.
+   novis.c: Bars (add_page, merge, cover, save, load, context: the
+   year's mean volume each minute, daily closes, range, typical
+   minute move), nv_tape_flow (tick rule), nv_rand. NvBook: order
+   lifetime (until), fee 0.005 a share, a limit fills only through
+   its price, set_exits (stop 0.6%, take 1.2% over the position).
+   NvRun: one day on a book, a decision every 30 s from the open
+   + 1 min to the close - 5 min, 26 inputs (features), 9 actions
+   (wait; buy 0.05 / 0.15 / 0.35% under; sell over; cancel; close),
+   20 orders a day, a lot a fifth of the account, two lots at most,
+   an order gone after 10 min, flat at the close. NvPolicy: ai's
+   dense 26-64-64 to 9 choices and a worth guess, Adam, gradients
+   kept to length 1; waiting likelier at the start. nv_learn_day:
+   advantage (discount 0.995, lambda 0.95), entropy 0.01. Learn
+   (session): days cached for the stock, the year's block first, a
+   thread, 30 epochs, the last fifth of days unseen; ~/.cache/
+   novis/routine.bin. Routine on: the session's book is played by
+   it. Get 20 days: the stock's, SPY's and the fund's past days.
+   ai fixed: dense's bias gradient is added, not set (keras clears
+   both first, so its results are the same).
+   Seen hidden (7 stand-in days made from two real INTC days, a
+   made-up year of minutes): learning plays every day (-12.7 bps a
+   day while drawing at random), the routine learned to wait (0
+   orders on the unseen day), Routine on played the session to
+   13:49 with no orders. NOT run on real days or against Massive's
+   minute bars. OPEN: the dog model; SPY's and the fund's own year.
+   Then (Oct 29) trained on INTC's 22 real days (17 learning, the
+   last 4 unseen): learning days +26.69 bps a day, unseen -32.81 bps
+   a day: it memorized. The model was not put in his cache.
+8. BUILT, played (Oct 29: his skimming rule, no model) skim_days
+   (an action; report ~/.cache/novis/skim-<sym>.txt). Each day as
+   20-second slots (his: one actual price is a 20 second average,
+   with its deviation; normalized prices): slots-<sym>-<day>.bin,
+   2880 from 4:00 New York, each the volume-weighted average and
+   deviation, high, low, volume, buying, selling (tick rule) and
+   trades, 184 KB a day (the trades' files kept, his call). Prices
+   read as ratios of the day's first regular average; decisions as
+   a slot ends, filled at the next slot's average. The week is the
+   stock's last 7 trading days from its minute bars (range, move,
+   typical 15-minute swing, half-hour rise; nv_bars_week). Rule:
+   the dip is half the larger of the half hour's swing and the
+   week's (a third when opportunist: the price in the week's top
+   third and the week beating SMH) under the 15 minutes' top; a buy
+   once back a third of the way from the low, by more than the
+   slot's deviation, with buying over selling in the last minute;
+   none in a fast fall (the half hour down two week's swings) until
+   a new 15-minute top, none within 15 minutes of the last without
+   a new top, 9:45 to 15:45, three held, a fifth each. The stop
+   starts 0.7% under, only rises: the middle of the top and bottom
+   since buying once the top is a week's swing up, and the clock's
+   pull to the top at 15:50, when all is sold. No sell limit.
+   Played on INTC's 22 days: -$2,016 (8 days up); on single
+   trades instead of slots it lost $13,884 (none up); before the
+   volatility entry, $36,119. The rule was changed three times
+   looking at these same 22 days: judge it on later days.
+   Then (Oct 29: the entry twice as deep) the dip is the whole
+   swing (two thirds opportunist): -$207, 17 trades in 22 days, 13
+   days with none, 4 up.
+   Then (Oct 29: a later buy never over the day's buys and sells)
+   the ceiling is the average of the day's median buy and median
+   sell (the median buy alone before any sell): -$499; only 10/1
+   changed (its second buy, +$55, skipped).
+   Then (Oct 29: on 9/22 it sold at the bottom of the plunge, not
+   on the way down) the stop was judged on each slot's average and
+   sold at the next slot's: a fast fall went through it and sold
+   at the bottom. The stop rests on the market now: a slot whose
+   low reaches it sells at the stop (at the average when the whole
+   slot is under it). 23 days: -$413, 5 up; 9/22 +$261 (3 wins).
+   Then (Oct 29: the last sharp dip of 9/22 should have bought) the
+   buying-over-selling test summed the last minute, which held the
+   fall's own selling: the turn at 14:00 lost to it. It counts only
+   the slots since the low now. 9/22 +$383 (4 of 4 won); 23 days
+   -$483 (10/15 turned from +$43 to -$101).
+9. BUILT, seen hidden (Oct 29: news positivity / negativity merged
+   in) Massive's /v2/reference/news carries insights: each story's
+   call per ticker (positive, neutral, negative, with a reason).
+   NvMood keeps a symbol's calls (+1 0 -1 at the story's time),
+   fetched as one block over the days asked and grown at its edges
+   like the minute bars (mood_ready, mood_bg, ~/.cache/novis/
+   mood-<sym>.txt). The model's inputs gain four (NV_IN 30): the
+   mean call and the story count over the day and the week before
+   each decision (date blind); its file is routine-30.bin (the old
+   26 one does not load into it: no routine learned yet). The Day
+   view says the last day's and week's positives and negatives at
+   the clock; the skim report gains a news 7d column. The skim
+   rule does not use it yet (his call how). INTC: 1,500+ calls a
+   year; 10/12-10/20 (its falling days) the week ran even to
+   negative, 9/22 and 10/28 strongly positive.
+   Then (Oct 29: the news must change the margins: far more
+   conservative entry, less profit taken for negative news, more for
+   positive) the week's mood (positives less negatives over all, -1
+   to 1, at the slot, every 15 minutes) sets: the dip x (1 + 2 x the
+   negative part), never shallower on good news (a shallower entry
+   tried first lost $787 in all); the first stop 0.7% x (1 + mood /
+   2); a sell limit at 2 week's swings x (1 + mood) over the price
+   paid, filled at it when a slot's high reaches it. 23 days: -$79
+   (was -$483), 10 trades; 10/13's take +$263.
+   Then (Oct 29: the simulator marks the trades) with Skimming on
+   the session's book is the skim's fills up to the clock: Position,
+   Avg cost, Cash, P&L and the trade list follow it as the day
+   plays. Seen hidden on 9/22 at 13:06: 164 sh at 121.25, +$223.
+   Then (Oct 29: profits eaten as it rose and fell back past an
+   unmoved stop; the stop must rise quickest as the price starts to
+   rise) the stop keeps 1 - e^(-gain / half a week's swing) of the
+   way from its first place to the top since buying (gain from the
+   price paid), with the midpoint and clock rules still as floors.
+   23 days: -$65 (was -$79); losses smaller (9/24 -408 -> -138,
+   10/14 -376 -> -206), winners cut too (10/13 +263 -> -28, 10/1
+   +108 -> -11). A full swing instead: -$171.
+10. BUILT, seen hidden (Oct 29: quarterly reports joined with the
+   7-day news; price targets left out: not on his Massive plan, no
+   free source) the SEC's data.sec.gov, no key (CIK from Massive's
+   ticker details): companyfacts (each 10-Q / 10-K's own quarter:
+   its latest period; a 10-K's Q4 the year less its three
+   quarters; revenue, net income, diluted EPS, and the same
+   quarter a year before) and submissions (each report dated by
+   its earnings release, the 8-K with item 2.02 after the quarter's
+   end; the 10-Q comes 1-2 weeks later). edgar-facts/subs-<sym>.json,
+   fetched again after a day. A report's score: half its revenue
+   against a year ago (5% a full half), half its EPS up or down.
+   For a week after a release the margins' mood is the mean of the
+   news week and that score; the model gains three inputs (days
+   since, score, revenue growth; NV_IN 33, routine-33.bin); the Day
+   view and the skim report show it. INTC's 7/23 release read as
+   revenue 16.1B +25.4% on a year, EPS -2.16 (was -0.67): score 0.
+   No release falls in the 23 days, so no trade changed.
+   Fixed on the way, tls: data.sec.gov sends "Transfer-Encoding:
+   chunked" with two spaces; Http missed it and wrote the chunk
+   sizes into the file (a 945 byte cut json).
+11. BUILT, played (Oct 29: momentum with nothing held) once a
+   second, a second's volume-weighted average against the one 4 s
+   before, in parts of the day's open: a rise of 0.25% plus a tenth
+   of how far the price is over the open (none off below it) buys
+   a factor of a lot (a fifth of the account): 0.5 at that bar,
+   rising in a line to 1.0 at 0.25% more; bought at the next
+   second's average; the dip buy's exits. Single prints first:
+   venues and odd lots spread +-0.5% within a second, 4 s print to
+   print crossed 0.25% all day (80 buys on 10/15, -$19,441 in all).
+   On averages: 133 momentum buys in 23 days, -$1,365 in all (was
+   -$65 without), 9 days up; 10/15 17 buys -$1,013, 10/22 +$576,
+   10/16 +$461. Nearly all end on the stop.
+   Then (Oct 29: momentum buys drain out; more needed later in
+   the day) the bar x (1 + 2 x the share of 9:45..15:45 gone: 3x at
+   15:45) x (1 + half the day's momentum buys so far). 23 days:
+   36 momentum buys, -$606 in all (was -$1,365), 6 days up.
+   Then (Oct 29: flip it: the only momentum rule buys a hard dip,
+   4x the move over 4x the time) a fall of a second's average under
+   the one 16 s before of 1% of the open (plus a tenth of how far
+   the price is under the open) buys half a lot, 2% a whole one;
+   the time and drain multipliers kept; the rise buy is gone. 23
+   days: 3 hard-dip buys (9/30 +$39, 10/8 +$18, 10/16 -$69), -$77.
+   Then (half the amount, same 16 s): 0.5% buys half a lot, 1% a
+   whole one. 23 days: 15 hard-dip buys, -$295, 4 days up.
+12. BUILT, running (Oct 29: the study tool on minute bars, 32
+   stocks; findings kept to add up) action study (the 32: INTC AAPL
+   NVDA GOOGL MSFT AMZN META TSLA AMD MU AVGO QCOM JPM BAC XOM CVX
+   KO PG WMT JNJ NFLX CRM ORCL ADBE COST HD UNH LLY PFE DIS BA CAT)
+   and study_of [ names ]. Per stock, two years: minute bars, news
+   mood, SEC reports (each fetched once, grown at its edges), then
+   nv_study_scan (novis.c): every dip of a week's swing or more
+   under the 15 minutes' top, 9:45-15:45, again after a new top or
+   15 minutes; every 5th minute as the baseline; what the price did
+   5, 15, 60 minutes on and at the close, the worst and best in 60.
+   Split by depth, time of day, the open, the news week, a report's
+   week. ~/.cache/novis/study.txt, every run appended to
+   study-history.txt with its best groups (t over 2, 100+ dips).
+   INTC alone (1,931 dips): 1-1.5 swings -3.0 bps at 60 min (base
+   +0.7), 1.5-2.5 swings +15.7 (58% up, t 1.56), 11:00-14:00 -4.9.
+   Found: a vec local made from a member is a copy (the groups were
+   summed into it; the table came out empty).
+   Then (Oct 29: decide by where the whole chart is, the week's and
+   the year's; across the 32) events kept across stocks; each has its
+   place in its week's range (7 days) and its year's (252 trading
+   days of regular highs and lows) and the share of the stocks over
+   their week's middle in its 5 minutes (breadth; counted when half
+   the stocks are seen), each in thirds. Grouped once all are
+   scanned (study_sum). INTC + AAPL: 1.5-2.5 swings +17.2 bps at 60
+   min, t 2.78 (the best list); week middle third +5.3 vs bottom
+   -0.8 and top +0.1.
+   The 32 (Oct 29, 63,809 dips; in his cache study.txt): all dips
+   +2.1 bps at 60 min (base +0.3, t 6.5): about a round trip's cost.
+   1.5-2.5 swings +7.8 (54% up, to the close +8.9; base there +5.4);
+   2.5+ +0.8 (falling knives); 1-1.5 +1.3. 11:00-14:00 +2.8 best;
+   over 1% above the open +4.6 (to the close +15.6); few or most
+   stocks over their week middle +5.2 / +4.0, half +0.8; week
+   middle third +3.3; the week after a mixed or poor report -15.9 /
+   -4.1 (small). Worst and best within 60 min about +-53 bps: the
+   0.7% stop sits inside the noise. INTC alone had said 11:00-14:00
+   was worst: single-stock results were noise. t overstated (events
+   overlap in time and across stocks). Fixed on the way: novis.c
+   held 31 minute-bar blocks (BA got none and was fetched ~80 times);
+   256 now.
+   Then (Oct 29: the skim buys at 1.5 to 2.5 swings) the dip line
+   is 1.5 week's swings under the 15 minutes' top (x the bad news
+   factor); under 2.5 it is a falling knife: disarmed, and left until
+   a new top or 15 minutes. The half hour's range and the
+   opportunist third no longer set it. 23 days: -$1,275 (was -$295),
+   6 up, 34 buys, every one ended on its stop: the exits (0.7%, a
+   fast rise) sit inside the 60 minutes' +-53 bps the edge needs.
+   Then (Oct 29: the study's exits) a dip buy's stop is one week's
+   swing under the 2.5-swing floor (the 15 minutes' top at the
+   decision) and stays put (no trailing, no clock pull); the profit
+   target kept; held to 15:50 (NV_HOLD; 60 minutes tried: -$316).
+   Hard-dip buys keep the old exits. 23 days: +$993, 10 of 23 up,
+   the first total above zero; 9 dip buys reached the target. The
+   losses left are mostly hard-dip buys stopped (9/30, 10/15,
+   10/22) and 10/2's two dip buys (-$707).
+13. BUILT, fetching (Oct 29: the skim over the 32; the raw trades
+   too big, ~160 GB: Massive's 1-second bars) nv_secs_to_slots
+   (novis.c, no globals): a day's 1-second bars (one request, ~2.7
+   MB) into the 20-second slots (average from the seconds' averages
+   by volume, spread from them, high, low, volume, trades, buying
+   and selling by the seconds' moves) and each slot's sharpest 16 s
+   fall with its prices (the hard-dip buy); written as NVS2, the
+   session only (9:30-16:00), ~100 KB: s1-<sym>-<day>.bin, a day
+   with none s1-<sym>-<day>.none. Checked against INTC's 10/15
+   trades: averages within 0.009%, spreads close. action
+   fetch_seconds (the 32, two years, 4 threads on a shared counter,
+   NvSecsJob): INTC 523 days in 3 m 45 s, 21 holidays, 0 failed;
+   the 32 about 2 hours. action skim_many: the skim over every day
+   with slots, a line a stock and all (skim-many.txt). The hard-dip
+   buy reads the slot's fall when there is no tape (nv_hard_bar).
+   The INTC 23-day skim unchanged (+$993) after the change.
+   The Day view shows it (Skimming / Skim this day, kept, on by
+   default): the 20-second averages as the line, its buys and
+   sells as triangles as the clock passes them, its day in a line.
+   The model's price is the 20-second average too (nv_tape_vwap);
+   it does not read the slots yet. Fixed on the way: a string
+   argument copied as `[ t ]` and then replaced freed the caller's
+   string (nv_pad); the queue's key freed by its own remove.

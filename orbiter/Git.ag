@@ -684,7 +684,9 @@ Layer CommitLayer
         orb : cast orbiter [ cb.ux.app_object ]
         if [ !orb ] return
         ev9 : EditorView cb.view[]
-        ed  : Editor [ (ev9) ? ev9.text_of[] : null ]
+        # in the main menu (no pane round it): the active pane's
+        ed  : Editor [ (ev9) ? ev9.text_of[]
+                             : orb.pane_at[ orb.active_pane ] ]
         # no ground of its own: the editor is hidden while we show,
         # so the pane's background is already ours
         cv.stroke_width[ 0.0 ]

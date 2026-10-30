@@ -546,7 +546,9 @@ string git_remote_info(path path, string *out_service, string *out_owner, string
     // run git command
     // no 2>/dev/null: popen has no shell here, and command_run already
     // merges stderr -- the redirect would reach git as an argument
-    string cmd = f(string, "git -C %s remote get-url origin", path->chars);
+    // config --get says nothing when there is no origin
+    string cmd = f(string, "git -C %s config --get remote.origin.url",
+                   path->chars);
     string remote = command_run((command)cmd, false);
 
     // no repository or no origin: the module goes by its own name
@@ -1934,6 +1936,11 @@ static void exporter(silver a) {
         if (!exp->module_file || !exp->project_path || !exp->version)
             continue;
         if (!dir_exists("%o/.git", exp->project_path))
+            continue;
+        // a repository with no commit yet has nothing to tag
+        string head = command_run((command)f(string,
+            "git -C %o rev-parse --verify -q HEAD", exp->project_path), false);
+        if (!head || !head->count)
             continue;
         string mod_file = cast(string, exp->module_file);
         string rel_mod = mid(mod_file, exp->project_path->count + 1, len(exp->project_path) - exp->project_path->count);
@@ -7814,11 +7821,23 @@ enode parse_statement(silver a)
             // `member : vec T [...]` — a managed buffer slot: assignment
             // auto-drops the old value and holds the new one (e_assign)
             bool  decl_new = !rtype && (next_is(a, "vec") || next_is(a, "new"));
+            bool  typed    = rtype != null;
             a->expr_level++;
             array expr = rtype ? read_initializer(a) : read_expression(a, (etype*)&rtype, &is_const);
             a->expr_level--;
 
             validate(rtype, "could not infer type");
+            // an untyped redeclaration of an inherited number keeps its
+            // type (`fade : 24.0` on an f32 is the base's f32, not f64)
+            if (!is_f && !typed && rec_top && rec_top->autype->context &&
+                    mem->autype->member_type == AU_MEMBER_DECL &&
+                    canonical(rtype)->autype->is_primitive) {
+                Au_t inh = find_member(rec_top->autype->context,
+                    (cstr)mem->autype->ident, AU_MEMBER_VAR, 0, true);
+                if (inh && inh->context != typeid(Au) && inh->src &&
+                        inh->src->is_primitive)
+                    rtype = etype_prep((aether)a, inh->src);
+            }
 
             if (a->debugmember && mem->autype->ident && eq(a->debugmember, mem->autype->ident)) {
                 print("breaking for member registration: %o", a->debugmember);

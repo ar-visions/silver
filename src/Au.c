@@ -9410,8 +9410,12 @@ static Au parse_object(cstr input, Au_t schema, Au_t meta_type, cstr* remainder,
                 res = construct_with(type, r, null);
             }
         } else {
-            res = parse_array (scan, schema, meta_type, remainder, context);
-            scan = *remainder;
+            // a list cut off (an unended string) leaves no place
+            cstr after = null;
+            res = parse_array (scan, schema, meta_type, &after, context);
+            if (!after)
+                return null;
+            scan = after;
         }
     }
     else if ((*scan >= '0' && *scan <= '9') || *scan == '-') {

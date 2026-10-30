@@ -1,0 +1,332 @@
+# charts any app mounts: a price line over time with its scale,
+# times and the pointer's reading, and a small line for a row
+extend trinity
+
+# a number with two places, or with its sign
+func num_fixed [ v: f64 ] -> string
+    b : local i8 [ 32 ]
+    snprintf[ @b[0], 32, "%.2f", v ]
+    return string [ @b[0] ]
+
+func num_signed [ v: f64 ] -> string
+    b : local i8 [ 32 ]
+    snprintf[ @b[0], 32, "%+.2f", v ]
+    return string [ @b[0] ]
+
+# a count as people say it: 34.4M, 1.2B, 3.1T
+func num_compact [ v: f64 ] -> string
+    b : local i8 [ 32 ]
+    m : f64 [ (v < 0.0) ? 0.0 - v : v ]
+    if [ m >= 1e12 ] snprintf[ @b[0], 32, "%.2fT", v / 1e12 ]
+    el [ m >= 1e9 ] snprintf[ @b[0], 32, "%.1fB", v / 1e9 ]
+    el [ m >= 1e6 ] snprintf[ @b[0], 32, "%.1fM", v / 1e6 ]
+    el [ m >= 1e3 ] snprintf[ @b[0], 32, "%.1fK", v / 1e3 ]
+    el snprintf[ @b[0], 32, "%.0f", v ]
+    return string [ @b[0] ]
+
+# a moment (unix seconds) in local time by strftime's pattern
+func time_text [ t: i64, fmt: string ] -> string
+    at : i64 [ t ]
+    tm : struct tm
+    localtime_r[ @at, @tm ]
+    b : local i8 [ 64 ]
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    return string [ @b[0] ]
+
+# a moment as the clock reads off seconds from UTC
+func time_text_off [ t: i64, fmt: string, off: i64 ] -> string
+    at : i64 [ t + off ]
+    tm : struct tm
+    gmtime_r[ @at, @tm ]
+    b : local i8 [ 64 ]
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    return string [ @b[0] ]
+
+# Barlow Condensed at a weight (Regular, SemiBold, Bold) and size
+func chart_font [ cv: Canvas, weight: string, px: f32 ]
+    f : string 'fonts/BarlowCondensed-{weight}.ttf'
+    cv.set_font[ shared_font[ cv, f, i32[ px ] ] ]
+    cv.font_size[ px ]
+
+func chart_text [ cv: Canvas, s: string, x: f32, y: f32, w: f32,
+                  h: f32, ax: f32, col: string ]
+    cv.fill_color[ rgba [ col ] ]
+    cv.draw_text[ s, rect [ x: x, y: y, w: w, h: h ],
+        vec2f [ ax, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+
+# values' low and high, the base among them, a margin each way
+func chart_span [ vs: vec f64, base: f64, margin: f64 ] -> vec2f
+    lo : f64 [ vs[ 0 ] ]
+    hi : f64 [ vs[ 0 ] ]
+    for [ v: f64 ] in vs
+        lo = min[ lo, v ]
+        hi = max[ hi, v ]
+    if [ base > 0.0 ]
+        lo = min[ lo, base ]
+        hi = max[ hi, base ]
+    sp : f64 [ hi - lo ]
+    if [ sp <= 0.0 ] sp = 1.0
+    return vec2f [ lo - sp * margin, hi + sp * margin ]
+
+# a small line through values in the box, in col
+func sparkline_paint [ cv: Canvas, vs: vec f64, base: f64, x: f32,
+                       y: f32, w: f32, h: f32, col: string,
+                       width: f32 ]
+    if [ !vs || vs.count < 2 ] return
+    n : i32 [ i32[ vs.count ] ]
+    sp : vec2f chart_span[ vs, base, 0.0 ]
+    rg : f32 [ sp.y - sp.x ]
+    cv.save[]
+    cv.fill_color[ rgba [ '#0000' ] ]
+    cv.stroke_color[ rgba [ col ] ]
+    cv.stroke_width[ width ]
+    for [ i: i32 0, i < n, i += 1 ]
+        px : f32 [ x + w * f32[ i ] / f32[ n - 1 ] ]
+        py : f32 [ y + h - f32[ vs[ i ] - sp.x ] / rg * h ]
+        if [ i == 0 ] cv.move_to[ px, py ]
+        el cv.line_to[ px, py ]
+    cv.paint[]
+    cv.restore[]
+
+# a small line of values, for a row of a list
+element Sparkline
+    animated : true
+    public values : vec f64
+    # drawn into the range when set (a day's last close)
+    public base   : f64
+    public color  : string [ '#34d399' ]
+    public width  : f32    [ 1.25 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        sparkline_paint[ w.screen, values, base, 0.0, 2.0, bounds.w,
+                         bounds.h - 4.0, color, width ]
+
+# a price over time: the line, a fade under it, its scale at the
+# right, the times under it, volume bars at its foot when given; the
+# pointer's reading at the pointer, its dot easing after it
+element LineChart
+    animated : true
+    public values  : vec f64
+    # unix seconds, one a value
+    public times   : vec i64
+    public volumes : vec f64
+    # a dashed level (the last close before the range), 0 none
+    public base    : f64
+    public accent  : string [ '#34d399' ]
+    public muted   : string [ '#8b93a7' ]
+    public ground  : string [ '#0b0e1a' ]
+    # the times under it, and the reading's
+    public time_fmt : string [ '%e %b' ]
+    public tip_fmt  : string [ '%a %e %b %H:%M' ]
+    # the times read in a zone (seconds from UTC), else local
+    public zoned    : bool
+    public utc_off  : i64
+    # the places along x (0: one a value); more than the values: a
+    # whole span filling in from the left (a day as it plays)
+    public slots   : i32
+    # marks on the line: their place (slot), price and side (+1 a
+    # buy, -1 a sell)
+    public mark_at   : vec f64
+    public mark_px   : vec f64
+    public mark_side : vec f64
+    # levels across it (orders waiting): price and side
+    public level_px   : vec f64
+    public level_side : vec f64
+    # the pointer in the view (-1 none) and the dot easing after it
+    mutable hover : f32 [ -1.0 ]
+    mutable glide : f32 [ -1.0 ]
+
+    func when [ t: i64, fmt: string ] -> string
+        if [ zoned ] return time_text_off[ t, fmt, utc_off ]
+        return time_text[ t, fmt ]
+
+    # the places along x
+    func span_n [] -> i32
+        return max[ i32[ values.count ], slots ]
+
+    # the value on the line at view x px, between its points
+    func value_at [ x: f32, w: f32, px: f32 ] -> f64
+        n : i32 [ i32[ values.count ] ]
+        f : f32 [ clamp[ (px - x) / w * f32[ span_n[] - 1 ], 0.0,
+                         f32[ n - 1 ] ] ]
+        at : i32 [ i32[ floor[ f ] ] ]
+        nx : i32 [ min[ at + 1, n - 1 ] ]
+        c0 : f64 [ values[ at ] ]
+        return c0 + (values[ nx ] - c0) * f64[ f - f32[ at ] ]
+
+    # the moment at view x px, between its points
+    func time_at [ x: f32, w: f32, px: f32 ] -> i64
+        n : i32 [ i32[ times.count ] ]
+        f : f32 [ clamp[ (px - x) / w * f32[ span_n[] - 1 ], 0.0,
+                         f32[ n - 1 ] ] ]
+        at : i32 [ i32[ floor[ f ] ] ]
+        nx : i32 [ min[ at + 1, n - 1 ] ]
+        t0 : f64 [ f64[ times[ at ] ] ]
+        part : f64 [ f64[ f - f32[ at ] ] ]
+        return i64[ t0 + (f64[ times[ nx ] ] - t0) * part ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !values || values.count < 2 ] return
+        if [ !hovered ] hover = -1.0
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        x : f32 [ 0.0 ]
+        y : f32 [ 0.0 ]
+        cw : f32 [ bounds.w - round[ 48.0 * un ] ]
+        ch : f32 [ bounds.h - y - round[ 26.0 * un ] ]
+        if [ cw <= 10.0 || ch <= 10.0 ] return
+        n : i32 [ i32[ values.count ] ]
+        m : i32 span_n[]
+        sp : vec2f chart_span[ values, base, 0.08 ]
+        lo : f64 [ sp.x ]
+        rg : f64 [ sp.y - sp.x ]
+        # the scale: four quiet lines, their values at the right
+        chart_font[ cv, 'Regular', round[ 13.0 * un ] ]
+        for [ g: i32 0, g < 4, g += 1 ]
+            gv : f64 [ lo + rg * f64[ g + 1 ] / 5.0 ]
+            gy : f32 [ y + ch - f32[ (gv - lo) / rg ] * ch ]
+            cv.fill_color[ rgba [ '#ffffff0a' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x, gy, cw, 1.0 ]
+            cv.paint[]
+            chart_text[ cv, num_fixed[ gv ], x + cw + 8.0,
+                        gy - 9.0 * un, 40.0 * un, 18.0 * un, 0.0,
+                        muted ]
+        # volume: faint bars along the foot, the tallest a fifth up
+        if [ volumes && volumes.count == values.count ]
+            vm : f64 [ 0.0 ]
+            for [ v: f64 ] in volumes
+                vm = max[ vm, v ]
+            if [ vm > 0.0 ]
+                bw : f32 [ clamp[ cw / f32[ m ] * 0.7, 1.0,
+                                  10.0 * un ] ]
+                cv.fill_color[ rgba [ '#ffffff0c' ] ]
+                cv.stroke_width[ 0.0 ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    vh : f32 [ f32[ volumes[ i ] / vm ] * ch * 0.16 ]
+                    bx : f32 [ clamp[ x + cw * f32[ i ] / f32[ m - 1 ]
+                               - bw * 0.5, x, x + cw - bw ] ]
+                    cv.rect_to[ bx, y + ch - vh, bw, vh ]
+                    cv.paint[]
+        # the last close before the range
+        if [ base > 0.0 ]
+            by : f32 [ y + ch - f32[ (base - lo) / rg ] * ch ]
+            cv.fill_color[ rgba [ '#ffffff26' ] ]
+            for [ dx: f32 0.0, dx < cw, dx += 8.0 ]
+                cv.rect_to[ x + dx, by, 4.0, 1.0 ]
+                cv.paint[]
+        # the fade under the line, then the line
+        ox : f32 [ cv.transform_tx[] ]
+        oy : f32 [ cv.transform_ty[] ]
+        ac : rgba [ accent ]
+        cv.save[]
+        cv.fill_color[ rgba [ r: ac.r, g: ac.g, b: ac.b, a: 0.28 ] ]
+        cv.fill_grad[ rgba [ r: ac.r, g: ac.g, b: ac.b, a: 0.004 ] ]
+        cv.fill_color_pos[ ox + x, oy + y ]
+        cv.fill_grad_pos[ ox + x, oy + y + ch ]
+        cv.fill_grad_radial[ false ]
+        cv.fill_grad_mirror[ false ]
+        cv.stroke_width[ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            px : f32 [ x + cw * f32[ i ] / f32[ m - 1 ] ]
+            py : f32 [ y + ch - f32[ (values[ i ] - lo) / rg ] * ch ]
+            if [ i == 0 ] cv.move_to[ px, py ]
+            el cv.line_to[ px, py ]
+        cv.line_to[ x + cw * f32[ n - 1 ] / f32[ m - 1 ], y + ch ]
+        cv.line_to[ x, y + ch ]
+        cv.close_path[]
+        cv.paint[]
+        cv.restore[]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ ac ]
+        cv.stroke_width[ 1.75 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            px : f32 [ x + cw * f32[ i ] / f32[ m - 1 ] ]
+            py : f32 [ y + ch - f32[ (values[ i ] - lo) / rg ] * ch ]
+            if [ i == 0 ] cv.move_to[ px, py ]
+            el cv.line_to[ px, py ]
+        cv.paint[]
+        cv.restore[]
+        # the times under it: first, middle, last
+        # orders waiting: a dashed line each, green buys, red sells
+        if [ level_px ]
+            for [ k: i32 0, k < level_px.count, k += 1 ]
+                lv : f64 [ (level_px[ k ] - lo) / rg ]
+                ly : f32 [ y + ch - f32[ lv ] * ch ]
+                if [ ly < y || ly > y + ch ] continue
+                cv.fill_color[ rgba [ (level_side[ k ] > 0.0)
+                    ? '#34d39999' : '#fb718599' ] ]
+                cv.stroke_width[ 0.0 ]
+                for [ dx: f32 0.0, dx < cw, dx += 10.0 ]
+                    cv.rect_to[ x + dx, ly, 6.0, 1.0 ]
+                    cv.paint[]
+        # fills: a triangle at each, up for a buy, down for a sell
+        if [ mark_at ]
+            for [ k: i32 0, k < mark_at.count, k += 1 ]
+                mx : f32 [ x + cw * f32[ mark_at[ k ] ] / f32[ m - 1 ] ]
+                mv : f64 [ (mark_px[ k ] - lo) / rg ]
+                my : f32 [ y + ch - f32[ mv ] * ch ]
+                buy : bool [ mark_side[ k ] > 0.0 ]
+                cv.fill_color[ rgba [ (buy) ? '#34d399' : '#fb7185' ] ]
+                cv.stroke_color[ rgba [ ground ] ]
+                cv.stroke_width[ 1.5 ]
+                tz : f32 [ 6.0 * un ]
+                ty : f32 [ (buy) ? my + 4.0 : my - 4.0 ]
+                cv.move_to[ mx, ty ]
+                cv.line_to[ mx - tz, (buy) ? ty + tz * 1.4
+                                           : ty - tz * 1.4 ]
+                cv.line_to[ mx + tz, (buy) ? ty + tz * 1.4
+                                           : ty - tz * 1.4 ]
+                cv.close_path[]
+                cv.paint[]
+        has_t : bool [ times && times.count >= m ]
+        if [ has_t ]
+            marks : vec i32 [] [ 0, (m - 1) / 2, m - 1 ]
+            for [ j: i32 0, j < 3, j += 1 ]
+                lx : f32 [ x + cw * f32[ marks[ j ] ] / f32[ m - 1 ] ]
+                ax : f32 [ f32[ j ] * 0.5 ]
+                mk : string when[ times[ marks[ j ] ], time_fmt ]
+                chart_text[ cv, mk, lx - 120.0 * ax, y + ch + 6.0,
+                            120.0, 18.0 * un, ax, muted ]
+        # the pointer's reading: the dot eases after the pointer on
+        # the line; the card's value and time are the pointer's own
+        if [ hover < x || hover > x + cw * f32[ n - 1 ] / f32[ m - 1 ] ]
+            glide = -1.0
+            cv.set_font[ null ]
+            return
+        glide = (glide < x) ? hover
+            : filter_n[ glide, hover, 0.25, ux.frame_factor ]
+        gv : f64 value_at[ x, cw, glide ]
+        hy : f32 [ y + ch - f32[ (gv - lo) / rg ] * ch ]
+        cv.fill_color[ rgba [ '#ffffff33' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ glide, y, 1.0, ch ]
+        cv.paint[]
+        cv.fill_color[ ac ]
+        cv.stroke_color[ rgba [ ground ] ]
+        cv.stroke_width[ 2.0 ]
+        cv.rounded_rect[ glide - 4.5, hy - 4.5, 9.0, 9.0, 4.5, 4.5,
+                         4.5, 4.5 ]
+        cv.paint[]
+        tw : f32 [ 132.0 * un ]
+        tl : f32 [ clamp[ glide - tw * 0.5, x, x + cw - tw ] ]
+        cv.fill_color[ rgba [ '#161a2bee' ] ]
+        cv.stroke_color[ rgba [ '#ffffff1f' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ tl, 0.0, tw, 40.0 * un, 8.0, 8.0, 8.0, 8.0 ]
+        cv.paint[]
+        chart_font[ cv, 'SemiBold', round[ 16.0 * un ] ]
+        chart_text[ cv, num_fixed[ value_at[ x, cw, hover ] ], tl, 2.0,
+                    tw, 20.0 * un, 0.5, '#ffffff' ]
+        if [ has_t ]
+            chart_font[ cv, 'Regular', round[ 13.0 * un ] ]
+            tv : i64 time_at[ x, cw, hover ]
+            chart_text[ cv, when[ tv, tip_fmt ], tl, 20.0 * un,
+                        tw, 18.0 * un, 0.5, muted ]
+        cv.set_font[ null ]
+
+    func on_move [ ev: Event ]
+        hover = ev.mouse.pos.x

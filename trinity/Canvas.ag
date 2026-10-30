@@ -2952,10 +2952,16 @@ Render Canvas
                 hx = maxf[ hx, vd[ q * 4 ] ]
                 ly = minf[ ly, vd[ q * 4 + 1 ] ]
                 hy = maxf[ hy, vd[ q * 4 + 1 ] ]
-            ink_add[ states[ state_depth - 1 ], lx, ly, hx - lx, hy - ly,
-                2.0 + shadow_reach[] ]
+            # the quads are in canvas space: the pen took the transform
+            pad : f32 [ 2.0 + shadow_reach[] ]
+            ink_x0 = minf[ ink_x0, lx - pad ]
+            ink_y0 = minf[ ink_y0, ly - pad ]
+            ink_x1 = maxf[ ink_x1, hx + pad ]
+            ink_y1 = maxf[ ink_y1, hy + pad ]
+            ink_noted = true
             text_vbo.vertex.update_part[ text_vbo.vertex_data,
                     i64[ vi ] * 16 ]
+            fnt.atlas.flush[]
             text_pipeline.ensure_bound[]
             text_pipeline.rebind_atlas[ fnt.atlas.texture ]
             apply_draw_state[]
@@ -3069,12 +3075,49 @@ Render Canvas
         states[state_depth - 1].transform = affine [ ma: ma, mb: mb,
                 mc: mc, md: md, tx: tx, ty: ty ]
 
+    # text broken at spaces into lines the width holds, from the top;
+    # the last line that fits ends in an ellipsis when more is left
+    func draw_wrapped [ text: string, bounds: rect, align: vec2f,
+                        offset: vec2f, shadow: BoxShadow ] -> rect
+        m : measure_text[ 'Ag' ]
+        lh : f32 [ (m.line_height > 0.0) ? m.line_height
+                   : (m.ascent - m.descent) * 1.25 ]
+        rows : i32 [ max[ 1, i32[ bounds.h / lh ] ] ]
+        words : vec string text.split[ " " ]
+        lines : vec string []
+        cur : string ''
+        rest : bool [ false ]
+        for [ wd: string ] in words
+            if [ wd.count == 0 ] continue
+            more : string [ (cur.count > 0) ? '{cur} {wd}' : wd ]
+            if [ cur.count == 0 || measure_text[ more ].w <= bounds.w ]
+                cur = more
+                continue
+            if [ lines.count + 1 >= rows ]
+                rest = true
+                cur = more
+                break
+            lines.push[ cur ]
+            cur = wd
+        if [ cur.count > 0 ] lines.push[ cur ]
+        y : f32 [ bounds.y ]
+        for [ i: i32 0, i < lines.count, i += 1 ]
+            last : bool [ i == lines.count - 1 && rest ]
+            draw_text[ lines[ i ], rect [ x: bounds.x, y: y,
+                w: bounds.w, h: lh ], vec2f [ align.x, 0.5 ], offset,
+                (last) ? Overflow.ellipsis : Overflow.clip, shadow ]
+            y += lh
+        return rect [ x: bounds.x, y: bounds.y, w: bounds.w,
+                      h: y - bounds.y ]
+
     func draw_text [ text: string, bounds: rect, align: vec2f,
                      offset: vec2f, overflow: Overflow,
                      shadow: BoxShadow ] -> rect
         if [ !text ] return bounds
         ensure_font[]
         if [ !font ] return bounds
+        if [ overflow == Overflow.wrap ]
+            return draw_wrapped[ text, bounds, align, offset, shadow ]
 
         display : string [
             (overflow == Overflow.ellipsis)
@@ -4840,8 +4883,13 @@ class GlyphAtlas
     intern  shelf_x     : i32
     intern  shelf_y     : i32
     intern  shelf_h     : i32
-    # scratch buffer for upload (atlas-sized)
+    # the atlas's bytes on the CPU: new glyphs land here, and go up
+    # as one rectangle before the text that uses them draws
     intern  staging     : @u8
+    intern  dirty_x0    : i32
+    intern  dirty_y0    : i32
+    intern  dirty_x1    : i32
+    intern  dirty_y1    : i32
 
     func release_gpu []
         if [ texture ] texture.release_gpu[]
@@ -4853,9 +4901,26 @@ class GlyphAtlas
             pixel_format: Pixel.u8, surface: Surface.color,
             tag: 'atlas' ]
         slots   = vec GlyphAtlasSlot []
+        staging = malloc[ size * size ]
+        memset[ staging, 0, size * size ]
         shelf_x = 0
         shelf_y = 0
         shelf_h = 0
+
+    # the glyphs added since the last flush, up in one copy
+    func flush []
+        if [ dirty_x1 <= dirty_x0 ] return
+        fw : i32 [ dirty_x1 - dirty_x0 ]
+        fh : i32 [ dirty_y1 - dirty_y0 ]
+        pk : @u8 [ malloc[ fw * fh ] ]
+        for [ row: i32 0, row < fh, row += 1 ]
+            memcpy[ @pk[ row * fw ],
+                    @staging[ (dirty_y0 + row) * size + dirty_x0 ], fw ]
+        texture.upload_region[ dirty_x0, dirty_y0, fw, fh, pk,
+                               fw * fh ]
+        free[ pk ]
+        dirty_x0 = 0
+        dirty_x1 = 0
 
     func find [ glyph: u32, size_px: i32 ] -> GlyphAtlasSlot
         n : slots.count
@@ -4906,7 +4971,19 @@ class GlyphAtlas
         ay : i32 [ shelf_y ]
         shelf_x += gw_pad
 
-        texture.upload_region[ ax, ay, gw, gh, g.bitmap, gw * gh ]
+        for [ row: i32 0, row < gh, row += 1 ]
+            memcpy[ @staging[ (ay + row) * size + ax ],
+                    @g.bitmap[ row * gw ], gw ]
+        if [ dirty_x1 <= dirty_x0 ]
+            dirty_x0 = ax
+            dirty_y0 = ay
+            dirty_x1 = ax + gw
+            dirty_y1 = ay + gh
+        el
+            dirty_x0 = min[ dirty_x0, ax ]
+            dirty_y0 = min[ dirty_y0, ay ]
+            dirty_x1 = max[ dirty_x1, ax + gw ]
+            dirty_y1 = max[ dirty_y1, ay + gh ]
         slot : GlyphAtlasSlot [
             glyph: glyph, size_px: font.size_px,
             atlas_x: ax, atlas_y: ay, atlas_w: gw, atlas_h: gh,

@@ -1282,7 +1282,17 @@ static void init_hold(void) {
     }
     for (;;) pause();
 }
+// a mount the initramfs's init already made stays: mounted again on
+// top, it hides what is in it (the system bus's socket in /run)
 static void init_mount(const char* fs, const char* at) {
+    struct stat here, up;
+    char parent[256];
+    snprintf(parent, sizeof parent, "%s/..", at);
+    if (stat(at, &here) == 0 && stat(parent, &up) == 0 &&
+        here.st_dev != up.st_dev) {
+        fprintf(stderr, "init: %s already mounted\n", at);
+        return;
+    }
     int rc = mount(fs, at, fs, 0, NULL);
     fprintf(stderr, "init: mount %s %s%s\n", fs, at, rc ? " FAILED" : "");
 }
@@ -1610,6 +1620,26 @@ static int bound_reaches(const char* p) {
     return 0;
 }
 
+// the module's own export says it wants this (a line `key:` in
+// install/export/silver-<app>.agi)
+static int view_wants(const char* app, const char* key) {
+    char f[4300], buf[65536];
+    snprintf(f, sizeof(f), "%s/install/export/silver-%s.agi",
+             SILVER_ROOT, app);
+    FILE* fh = fopen(f, "r");
+    if (!fh) return 0;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fh);
+    fclose(fh);
+    buf[n] = 0;
+    size_t kl = strlen(key);
+    for (char* l = buf; l && *l;) {
+        if (strncmp(l, key, kl) == 0 && l[kl] == ':') return 1;
+        l = strchr(l, '\n');
+        if (l) l++;
+    }
+    return 0;
+}
+
 // the app's root: read only but its own folders
 static int view_build(const char* home, const char* run,
                       const char* tmp, const char* log) {
@@ -1690,6 +1720,11 @@ static int view_build(const char* home, const char* run,
     }
     const char* xa = getenv("XAUTHORITY");
     if (xa && *xa && realpath(xa, p)) view_put(p, xa, 0);
+    // the system bus's socket, alone, for a module that exports
+    // system_bus (the phone: ModemManager)
+    static const char bus[] = "/run/dbus/system_bus_socket";
+    if (view_wants(view_app_name, "system_bus") && access(bus, F_OK) == 0)
+        view_put(bus, bus, 1);
     return 0;
 }
 

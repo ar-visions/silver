@@ -1169,6 +1169,19 @@ expect func t_member_named_type [] -> bool
     list : vec Listed [] [ r ]
     return list[ 0 ].list && list.count == 1
 
+# a redeclared number keeps the base's type: an f32, not the f64
+# its literal reads as
+class Faded
+    public fade : f32
+
+Faded Fader
+    fade : 24.0
+
+expect func t_override_number_type [] -> bool
+    f : Fader []
+    b : Faded [ f ]
+    return b.fade == 24.0 && f.fade == 24.0
+
 # ==== Expressions: Operators, literals and casts.
 # Precedence, ranges, comparisons and numeric forms, each checked
 # against the value it must produce.
@@ -2438,6 +2451,18 @@ expect func t_agi_number_text [] -> bool
     t : string [ one ]
     log 'agi number text: {t}'
     return t.compare[ '4.5' ] == 0
+
+# json cut off inside a list (a half written file) reads as
+# nothing; whole, it reads
+expect func t_json_cut_list [] -> bool
+    cut : string '{{"r":[{{"t":"x'
+    pv : Au Au.parse[ typeid[ map ], cut.chars, null ]
+    whole : string '{{"r":[{{"t":"x"}}]}}'
+    ok : Au Au.parse[ typeid[ map ], whole.chars, null ]
+    top : string '[{{"t":"x'
+    pt : Au Au.parse[ typeid[ array ], top.chars, null ]
+    log 'json cut: {(pv) ? "read" : "none"} {(ok) ? "read" : "none"}'
+    return !pv && ok != null && !pt
 
 # a vector of structs copied: every element whole
 struct VecPt

@@ -731,20 +731,16 @@ element PlatformView
         tz : f32 [ mp.z ]
         td : f32 [ fit * 0.55 ]
         te : f32 [ 0.60 ]
+        # from right above at rest; an open agent keeps its angle
+        down : bool [ top_down && pick < 0 ]
         # from right above: the plates fill the box, a margin round
-        if [ top_down ]
+        if [ down ]
             td = rb * fl / 0.9 * max[ 1.0, bounds.h / fw ]
             te = 1.5707
-        if [ pick >= 0 && !top_down ]
-            pp : vec3f pad_at[ pick ]
-            tx = pp.x
-            tz = pp.z
-            td = max[ 2.2 * fl * bounds.h / (fw * 0.9), 2.2 * fl ]
-            te = 0.85
-            # at work: the camera closes in, 40% nearer, from above
-            if [ !orb.home_waiting[ names[ pick ] ] ]
-                td *= 0.6
-                te = 1.25
+        # an open agent tilts the view, more while it works; it
+        # stays on the whole platform (no close up)
+        if [ pick >= 0 ]
+            te = (orb.home_waiting[ names[ pick ] ]) ? 0.85 : 1.25
         if [ cam_d <= 0.0 ]
             cam_x = tx
             cam_z = tz
@@ -757,10 +753,10 @@ element PlatformView
         cam_e = filter_n[ cam_e, te, ease, w.frame_factor ]
         # looking above the floor's middle: the field sits low
         cam_y = filter_n[ cam_y,
-            (pick >= 0 || top_down) ? 0.1 : 1.6, ease,
+            (pick >= 0 || down) ? 0.1 : 1.6, ease,
             w.frame_factor ]
         # a slow sway, so the mirrors move
-        az : f32 [ (top_down) ? 0.0
+        az : f32 [ (down) ? 0.0
                    : sin[ f32[ ms % 600000 ] / 9000.0 ] * 0.12 ]
         eye = vec3f [ cam_x + cam_d * cos[ cam_e ] * sin[ az ],
                       cam_d * sin[ cam_e ],
@@ -768,9 +764,9 @@ element PlatformView
         # looking above the floor's middle: the field sits low
         tgt : vec3f [ cam_x, cam_y, cam_z ]
         look = tgt
-        # straight down the line of sight is y: up is then along z
-        up : vec3f [ 0.0, -1.0, 0.0 ]
-        if [ top_down ] up = vec3f [ 0.0, 0.0, -1.0 ]
+        # the camera's own up as it tilts (y flipped): one up for
+        # every angle, straight down too, so easing turns nothing
+        up : vec3f [ 0.0, 0.0 - cos[ cam_e ], sin[ cam_e ] ]
         asp : f32 [ bounds.w / bounds.h ]
         view_m = mat4f.look_at[ eye, tgt, up ]
         pm : mat4f mat4f.perspective[ fov, asp, 0.1, 200.0 ]

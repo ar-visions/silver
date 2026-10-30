@@ -1369,6 +1369,8 @@ class vk_context
     # h.265 on the video queues: full-colour takes use it
     public  h265_encode         : bool
     public  h265_decode         : bool
+    # pipelines alive (made less destroyed)
+    public  pipe_live           : i32
 
     # queue a buffer for destruction once provably out of flight
     func defer_buffer [ b: Buffer ] -> none
@@ -2046,6 +2048,29 @@ class vk_context
         q.proj   = mat4f.ortho[ -1, 1, -1, 1, 0.1, 10.0 ]
         reduce_s = q
         return q
+
+    # what the GPU allocator holds, the heaps' use, pipelines alive
+    public func gpu_line [ ] -> string
+        st : VmaTotalStatistics
+        vmaCalculateStatistics[ allocator, @st ]
+        bud : local VmaBudget [ 16 ]
+        vmaGetHeapBudgets[ allocator, @bud[0] ]
+        used  : i64
+        total : i64
+        for [ i: i32 0, i < i32[ props.memoryHeapCount ], i += 1 ]
+            # the card's own memory, not the system's
+            if [ (props.memoryHeaps[ i ].flags
+                  & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0 ]
+                continue
+            used  += i64[ bud[ i ].usage ]
+            total += i64[ bud[ i ].budget ]
+        mb     : i64 1048576
+        held   : i64 [ i64[ st.total.statistics.allocationBytes ] / mb ]
+        blocks : i64 [ i64[ st.total.statistics.blockBytes ] / mb ]
+        n      : u32 [ st.total.statistics.allocationCount ]
+        head : 'gpu {held} MB in {n} allocs, blocks {blocks} MB'
+        heaps : 'heaps {used / mb}/{total / mb} MB'
+        return '{head}, {heaps}, pipelines {pipe_live}, samplers {sampler_count}'
 
     # bytes allocated from the GPU allocator
     public func gpu_bytes [ ] -> i64
@@ -4114,6 +4139,7 @@ class Pipeline
         result: vkCreateGraphicsPipelines[
             vk.device, null, 1, pipeline_info, null, @made ]
         expect result == VK_SUCCESS, 'pipeline creation fail: {s.name}'
+        vk.pipe_live += 1
         return made
 
     # the bound pipeline for the current composite operator
@@ -4170,6 +4196,7 @@ class Pipeline
             result = vkCreateComputePipelines[
                 vk.device, null, 1, comp_info, null, @vk_compute ]
             expect result == VK_SUCCESS, "failed to create compute pipeline"
+            vk.pipe_live += 1
 
     func init [ ]
         resources        = vec Gpu []
@@ -4186,14 +4213,17 @@ class Pipeline
         vkDestroyPipelineLayout[ vk.device, layout, null ]
         if [ vk_render ]
             vkDestroyPipeline[ vk.device, vk_render, null ]
+            vk.pipe_live -= 1
         if [ composite_pipes ]
             for [ i: i32 0, i < i32 composite_pipes.count, i += 1 ]
                 if [ composite_pipes[ i ] != 0 ]
                     vkDestroyPipeline[ vk.device,
                         cast VkPipeline [ composite_pipes[ i ] ], null ]
+                    vk.pipe_live -= 1
             composite_pipes = null
         if [ vk_compute ]
             vkDestroyPipeline[ vk.device, vk_compute, null ]
+            vk.pipe_live -= 1
         # the sets pin every bound image and buffer until the pool goes
         if [ descriptor_pool ]
             vkDestroyDescriptorPool[ vk.device, descriptor_pool, null ]
@@ -5258,6 +5288,35 @@ class Texture
                          dst_h: i32, data: ARef, byte_count: i32 ]
         expect vk, "vk_context not specified"
         expect vk_image, "vk_image not yet created"
+        # one level: in band, no host wait (the staging freed frames on)
+        if [ mip_levels <= 1 ]
+            if [ !up_cmd ] up_cmd = Command [ vk: vk ]
+            up_cmd.begin[]
+            part: Buffer [ vk: vk, size: byte_count, u_src: true,
+                m_host_visible: true, m_host_coherent: true,
+                data: data ]
+            transition_in[ up_cmd.cmd,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+            vkCmdCopyBufferToImage[ up_cmd.cmd, part.vk_buffer,
+                vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                VkBufferImageCopy [
+                    bufferOffset:      0,
+                    bufferRowLength:   0,
+                    bufferImageHeight: 0,
+                    imageSubresource:  VkImageSubresourceLayers [
+                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel:       0,
+                        baseArrayLayer: 0,
+                        layerCount:     1
+                    ],
+                    imageOffset: VkOffset3D [ dst_x, dst_y, 0 ],
+                    imageExtent: VkExtent3D [ dst_w, dst_h, 1 ]
+                ]]
+            transition_in[ up_cmd.cmd,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+            up_cmd.submit[ ]
+            vk.defer_buffer[ part ]
+            return
         transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
         cmd: Command [ vk: vk ]
         cmd.begin[]

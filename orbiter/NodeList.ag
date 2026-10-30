@@ -791,6 +791,13 @@ Control AppsGrid
         area: l0 t0 r0 b0
     }
     public pane : i32
+
+    # the desktop's widgets are its children: they scroll with it,
+    # and a wheel or press one leaves is the desktop's
+    func render [] -> Elements
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb || !bounds ] return Elements []
+        return orb.widget_els[ bounds.w ]
     mutable hov   : i32 [ -1 ]
     # each card's rect in content space, ours first, as last drawn
     mutable rx    : vec f32
@@ -813,6 +820,7 @@ Control AppsGrid
     mutable shown : vec AppEntry
     # an icon a card, made once with the list
     mutable icons : vec AppIcon
+    mutable icon_of : map AppIcon [string]
     mutable heads : vec string
     mutable head_at : vec i32
     # the filter the cards were gathered with
@@ -1079,16 +1087,23 @@ Control AppsGrid
                 head_at.push[ start ]
         gen_seen = orb.apps_gen
         keys = vec string []
+        seen : map i32 [string] []
         for [ ae: AppEntry ] in shown
             k : string app_key[ ae ]
-            n : i32 [ 0 ]
-            for [ x: string ] in keys
-                if [ x == k || x.starts_with[ '{k}#' ] ] n += 1
+            n : i32 [ (seen.contains[ k ]) ? seen[ k ] : 0 ]
+            seen[ k ] = n + 1
             keys.push[ (n > 0) ? '{k}#{n}' : k ]
+        # one icon a module: its files' cards share it
+        if [ !icon_of ] icon_of = map AppIcon [string] []
         icons = vec AppIcon []
         for [ ae: AppEntry ] in shown
-            icons.push[ AppIcon [ module: true, file: ae.file,
-                                  agi: ae.agi ] ]
+            ik : string '{ae.file} {ae.agi}'
+            ic : AppIcon icon_of[ ik ]
+            if [ !ic ]
+                ic = AppIcon [ module: true, file: ae.file,
+                               agi: ae.agi ]
+                icon_of[ ik ] = ic
+            icons.push[ ic ]
 
     # the card under x y in content space (trinity adds the scroll to
     # the pointer), or -1
@@ -1283,7 +1298,10 @@ Control AppsGrid
         gap : f32 [ round[ 14.0 * un ] ]
         pad : f32 [ round[ 24.0 * un ] ]
         hh  : f32 [ round[ 30.0 * un ] ]
-        pr : i32 [ i32[ (bounds.w - pad * 2.0 + gap) / (cw9 + gap) ] ]
+        # the rows end where the widget side begins (30% of a wide
+        # desktop while it has widgets): no icon behind one
+        room : f32 [ bounds.w - orb.desk_side[ bounds.w ] ]
+        pr : i32 [ i32[ (room - pad * 2.0 + gap) / (cw9 + gap) ] ]
         if [ pr < 1 ] pr = 1
         # held at the left: a width change only moves the row's end
         x0 : f32 [ pad ]
@@ -1292,7 +1310,8 @@ Control AppsGrid
         band_h = 0.0
         head_ys = vec f32 []
         hh9 = hh
-        y : f32 [ pad ]
+        # a narrow desktop's widgets sit above the apps
+        y : f32 [ pad + orb.desk_top ]
         for [ h: i32 0, h < heads.count, h += 1 ]
             if [ h > 0 ] y += gap
             head_ys.push[ y ]
@@ -1445,8 +1464,10 @@ Control AppsGrid
                 draw_button[ cv, fp, px[ i ], ny, nh, ae.module,
                              failed ]
             el
-                cv.set_font[ shared_font[ cv,
-                    'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+                # an expanded card's name is bold
+                cv.set_font[ shared_font[ cv, (folder)
+                    ? 'fonts/BarlowCondensed-Bold.ttf'
+                    : 'fonts/BarlowCondensed-Regular.ttf', fp ] ]
                 cv.font_size[ f32[ fp ] ]
                 tc : '#ffffff99'
                 if [ here ] tc = '#ffffffdd'

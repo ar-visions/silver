@@ -12,11 +12,14 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include <sys/reboot.h>
 #include <linux/loop.h>
 
 #ifdef NOLIBC
 // the kernel's nolibc (arm64 sticks) lacks these few
 static void pause(void) { for (;;) sleep(3600); }
+
+static void sync(void) { __nolibc_syscall0(__NR_sync); }
 
 static struct dirent* readdir(DIR* d) {
     static struct dirent e;
@@ -572,8 +575,7 @@ static int  uevents(void) { return -1; }
 static void hotplug(int fd) {}
 #endif
 
-#ifndef NOLIBC
-// a program left running: the system bus, iwd
+// a program left running: the system bus, iwd, the modem's
 static void spawn(char* const argv[], char* const envp[]) {
     pid_t p = fork();
     if (p == 0) { setsid(); execve(argv[0], argv, envp); _exit(127); }
@@ -593,6 +595,208 @@ static void machine_id(void) {
     if (out >= 0) { write(out, hex, 33); close(out); }
 }
 
+// a program left running, its output into a log file
+static void spawn_log(char* const argv[], char* const envp[],
+                      const char* logf) {
+    pid_t p = fork();
+    if (p != 0) return;
+    setsid();
+    int log = open(logf, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (log >= 0) { dup2(log, 1); dup2(log, 2); close(log); }
+    execve(argv[0], argv, envp);
+    _exit(127);
+}
+
+static int named_account(const char* path, const char* name) {
+    FILE* f = fopen(path, "r");
+    char line[256];
+    size_t n = strlen(name);
+    int found = 0;
+    while (f && fgets(line, sizeof line, f))
+        if (!strncmp(line, name, n) && line[n] == ':') {
+            found = 1;
+            break;
+        }
+    if (f) fclose(f);
+    return found;
+}
+
+static void polkit_account(void) {
+    if (access("/usr/lib/polkit-1/polkitd", X_OK)) return;
+    char* group[] = { "/usr/sbin/groupadd", "--system",
+                      "polkitd", NULL };
+    char* user[] = { "/usr/sbin/useradd", "--system", "--gid",
+                     "polkitd", "--home-dir", "/nonexistent",
+                     "--shell", "/usr/sbin/nologin", "--comment",
+                     "User for polkitd", "polkitd", NULL };
+    char* owner[] = { "/usr/bin/chown", "polkitd:polkitd",
+                      "/var/lib/polkit-1", NULL };
+    if (!named_account("/etc/group", "polkitd")) run(group);
+    if (!named_account("/etc/passwd", "polkitd")) run(user);
+    run(owner);
+}
+
+// the system bus, once, for iwd and ModemManager
+static void bus_start(void) {
+    static const char sock[] = "/run/dbus/system_bus_socket";
+    if (access(sock, F_OK) == 0) return;
+    polkit_account();
+    machine_id();
+    mkdir("/run/dbus", 0755);
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* bus[] = { "/usr/bin/dbus-daemon",
+                    "--config-file=/etc/dbus-1/orbiter.conf",
+                    "--nofork", "--nopidfile", NULL };
+    spawn(bus, env);
+    for (int i = 0; i < 200 && access(sock, F_OK); i++) usleep(10000);
+}
+
+// /dev/disk/by-partlabel/<name>: rmtfs finds the modem's
+// partitions so (no udev here)
+static void part_labels(void) {
+    DIR* d = opendir("/sys/class/block");
+    struct dirent* e;
+    mkdir("/dev/disk", 0755);
+    mkdir("/dev/disk/by-partlabel", 0755);
+    while (d && (e = readdir(d))) {
+        char f[300], buf[1024], name[128] = "", link[300], node[160];
+        if (e->d_name[0] == '.') continue;
+        snprintf(f, sizeof f, "/sys/class/block/%s/uevent", e->d_name);
+        int fd = open(f, O_RDONLY);
+        if (fd < 0) continue;
+        int n = read(fd, buf, sizeof buf - 1);
+        close(fd);
+        if (n <= 0) continue;
+        buf[n] = 0;
+        char* p = strstr(buf, "PARTNAME=");
+        if (!p) continue;
+        p += 9;
+        int k = 0;
+        while (p[k] && p[k] != '\n' && k < (int)sizeof name - 1)
+            { name[k] = p[k]; k++; }
+        name[k] = 0;
+        snprintf(link, sizeof link, "/dev/disk/by-partlabel/%s", name);
+        snprintf(node, sizeof node, "/dev/%s", e->d_name);
+        symlink(node, link);
+    }
+    if (d) closedir(d);
+}
+
+// a phone's backlight at 15% of its range: full is far too
+// bright to look at
+static void phone_dim(void) {
+    char ph[64];
+    if (!arg("orbiter.phone", ph, sizeof ph)) return;
+    DIR* d = opendir("/sys/class/backlight");
+    struct dirent* e;
+    while (d && (e = readdir(d))) {
+        char f[300], v[32];
+        if (e->d_name[0] == '.') continue;
+        snprintf(f, sizeof f, "/sys/class/backlight/%s/max_brightness",
+                 e->d_name);
+        int fd = open(f, O_RDONLY);
+        if (fd < 0) continue;
+        int n = read(fd, v, sizeof v - 1);
+        close(fd);
+        if (n <= 0) continue;
+        v[n] = 0;
+        long most = strtol(v, NULL, 10);
+        snprintf(f, sizeof f, "/sys/class/backlight/%s/brightness",
+                 e->d_name);
+        snprintf(v, sizeof v, "%ld\n", most * 15 / 100 > 0 ? most * 15 / 100 : 1);
+        fd = open(f, O_WRONLY);
+        if (fd >= 0) { write(fd, v, strlen(v)); close(fd); }
+    }
+    if (d) closedir(d);
+}
+
+// verify a partition copy before using it
+static int copy_check(const char* src, const char* dst) {
+    static char a[65536], b[65536];
+    int in = open(src, O_RDONLY), out = open(dst, O_RDWR);
+    long total = 0, n;
+    int ok = in >= 0 && out >= 0;
+    while (ok && (n = read(in, a, sizeof a)) > 0) {
+        ok = write(out, a, n) == n;
+        total += n;
+    }
+    ok = ok && fsync(out) == 0;
+    if (ok) { lseek(in, 0, SEEK_SET); lseek(out, 0, SEEK_SET); }
+    while (ok && (n = read(in, a, sizeof a)) > 0) {
+        long got = 0, m;
+        while (got < n && (m = read(out, b + got, n - got)) > 0) got += m;
+        ok = got == n && memcmp(a, b, n) == 0;
+    }
+    if (in >= 0) close(in);
+    if (out >= 0) close(out);
+    fprintf(stderr, "orbiter-os init: %s: %ld bytes %s\n", dst, total,
+            ok ? "written and read back the same" : "NOT written right");
+    return ok;
+}
+
+// RAM boot writes both slots without fastboot
+static void write_boot(void) {
+    char src[256];
+    if (!arg("orbiter.writeboot", src, sizeof src)) return;
+    part_labels();
+    int ok = copy_check(src, "/dev/disk/by-partlabel/boot_a");
+    ok = copy_check(src, "/dev/disk/by-partlabel/boot_b") && ok;
+    sync();
+    if (!ok) {
+        fprintf(stderr, "orbiter-os init: boot not written; going on\n");
+        return;
+    }
+    fprintf(stderr, "orbiter-os init: boot written; restarting\n");
+    sleep(2);
+    reboot(0x01234567);
+}
+
+// start the modem stack in dependency order
+static void modem_start(void) {
+    char ph[64];
+    if (!arg("orbiter.phone", ph, sizeof ph)) return;
+    if (access("/usr/sbin/ModemManager", X_OK)) return;
+    part_labels();
+    bus_start();
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    // the Alpine musl programs want their own libs; a glibc
+    // program given this path loads musl's libc and dies
+    char* menv[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                     "LD_LIBRARY_PATH=/opt/imsd/lib", NULL };
+    // Ubuntu rmtfs lacks FP6 modem_study
+    char* fs[] = { "/opt/imsd/bin/rmtfs", "-r", "-P", "-s", NULL };
+    char* tf[] = { "/opt/imsd/bin/tqftpserv", NULL };
+    char** fenv = menv;
+    if (access(fs[0], X_OK)) { fs[0] = (char*)"/usr/bin/rmtfs"; fenv = env; }
+    char** tenv = menv;
+    if (access(tf[0], X_OK)) { tf[0] = (char*)"/usr/bin/tqftpserv"; tenv = env; }
+    char* mm[] = { "/usr/sbin/ModemManager", "--debug", NULL };
+    spawn_log(fs, fenv, "/var/log/rmtfs.log");
+    spawn_log(tf, tenv, "/var/log/tqftpserv.log");
+    // udev marks the modem's network port
+    char* udevd[] = { "/usr/lib/systemd/systemd-udevd", "--daemon", NULL };
+    char* trig[] = { "/usr/bin/udevadm", "trigger", "--action=add", NULL };
+    char* settle[] = { "/usr/bin/udevadm", "settle", "-t", "20", NULL };
+    if (access(udevd[0], X_OK) == 0) {
+        spawn(udevd, env);
+        run(trig);
+        run(settle);
+    }
+    char* prep[] = { "/usr/sbin/orbiter-modem-prepare", NULL };
+    char* enable[] = { "/usr/sbin/orbiter-modem-prepare",
+                       "--enable", NULL };
+    if (access(prep[0], X_OK) == 0) run(prep);
+    spawn_log(mm, env, "/var/log/ModemManager.log");
+    if (access(enable[0], X_OK) == 0)
+        spawn_log(enable, env, "/var/log/modem-enable.log");
+    // VoLTE: Catcrafts imsd, when the root carries it
+    char* ims[] = { "/opt/imsd/bin/imsd-run", NULL };
+    if (access(ims[0], X_OK) == 0)
+        spawn_log(ims, env, "/var/log/imsd-run.log");
+    fprintf(stderr, "orbiter-os init: started the modem's programs\n");
+}
+
+#ifndef NOLIBC
 // Wi-Fi: the system bus, then iwd on it (orbiter drives it);
 // install is the folder orbiter.init's binary is under
 static void net_start(const char* init) {
@@ -605,15 +809,8 @@ static void net_start(const char* init) {
     char* crypto[] = { MODPROBE, "-q", "-a", "algif_hash", "algif_skcipher",
                        "cmac", "md4", "pkcs8_key_parser", NULL };
     run(crypto);
-    machine_id();
-    mkdir("/run/dbus", 0755);
+    bus_start();
     char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
-    char* bus[] = { "/usr/bin/dbus-daemon",
-                    "--config-file=/etc/dbus-1/orbiter.conf",
-                    "--nofork", "--nopidfile", NULL };
-    spawn(bus, env);
-    for (int i = 0; i < 200 && access("/run/dbus/system_bus_socket", F_OK); i++)
-        usleep(10000);
     // remembered networks: <install>/var/lib/iwd
     snprintf(lib, sizeof lib, "%.*s/var", (int)(b - init), init);
     mkdir(lib, 0755);
@@ -837,9 +1034,12 @@ int main(void) {
         char* rs[] = { "/usr/sbin/resize2fs", dev, NULL };
         run(rs);
     }
+    write_boot();
+    phone_dim();
     load_modules();
     swap_on();
     net_start(init);
+    modem_start();
     session_start();
     phone_shell();
 

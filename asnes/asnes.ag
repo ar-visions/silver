@@ -293,10 +293,10 @@ element asnes : trinity
 	public [ Live, KeyBind ] key_down   : i32 [ 83 ]
 	public [ Live, KeyBind ] key_left   : i32 [ 65 ]
 	public [ Live, KeyBind ] key_right  : i32 [ 68 ]
-	public [ Live, KeyBind ] key_a      : i32 [ 46 ]
-	public [ Live, KeyBind ] key_b      : i32 [ 47 ]
-	public [ Live, KeyBind ] key_x      : i32 [ 59 ]
-	public [ Live, KeyBind ] key_y      : i32 [ 39 ]
+	public [ Live, KeyBind ] key_a      : i32 [ 44 ]
+	public [ Live, KeyBind ] key_b      : i32 [ 46 ]
+	public [ Live, KeyBind ] key_x      : i32 [ 76 ]
+	public [ Live, KeyBind ] key_y      : i32 [ 59 ]
 	public [ Live, KeyBind ] key_l      : i32 [ 81 ]
 	public [ Live, KeyBind ] key_r      : i32 [ 69 ]
 	public [ Live, KeyBind ] key_select : i32 [ 340 ]
@@ -353,7 +353,7 @@ element asnes : trinity
 	public  blocky         	: bool             # sharp-bilinear hard squares
 	public  vec_m7         	: bool             # VectorScale the Mode-7 plane too (on top of its aniso sampling)
 	mutable save_req       	: bool             # 'P' key -> save savestate next frame
-	mutable load_req       	: bool             # 'L' key -> load savestate next frame
+	mutable load_req       	: bool             # 'O' key -> load savestate next frame
 	mutable state_loaded   	: bool             # --state boot-load done
 	mutable post_load      	: i32              # frames elapsed since --state load (for instant capture)
 	mutable test_buf       	: vec u32 [ 256 * 224 ]
@@ -404,6 +404,11 @@ element asnes : trinity
 	mutable rddiv          	: u16               # $4214/5 RDDIV quotient
 	mutable rdmpy          	: u16               # $4216/7 RDMPY product / remainder
 	mutable mdr            	: u8                # CPU memory data register (open-bus value), for $4210-$4212 unused bits
+	# what the game last read from the joypad registers ($4218, $4219)
+	mutable joy_read_lo    	: u8
+	mutable joy_read_hi    	: u8
+	# 0 toggles the pad drawn over the picture
+	public  pad_show       	: bool
 	mutable pad1           	: u16               # controller 1 button bitfield (B Y Sel St U D L R A X L R)
 	mutable joy_strobe     	: u8                # $4016 strobe latch
 	mutable joy_index      	: i32               # $4016 serial read bit index
@@ -486,7 +491,10 @@ element asnes : trinity
 	mutable context_out    	: string            # dump published by the emu thread
 	mutable context_seq    	: i32               # bumped per publish (host drains one-shot)
 	mutable pub_lock       	: mutex             # guards the published presentation snapshot below
-	public  smooth         	: bool [ true ]    # ground-truth scroll glide (mode-1 layers + mode-7 plane)
+	# the layers split and glided between frames; off: the picture as drawn
+	public [ Live ] smooth : bool
+	# the mode-7 matrix eased between frames (sprites then wiggle apart)
+	public [ Live ] mode7_lerp : bool
 	mutable m7g_prevx      	: f64               # prev rep-line origin (snes px)
 	mutable m7g_prevy      	: f64
 	mutable m7g_preva      	: f64               # prev matrix terms (rotation guard)
@@ -2364,12 +2372,14 @@ element asnes : trinity
 				if [ env_joylog && dbg_jl < 400 ]
 					printf[ "JOYR f%u $4218 val=%02X pc=%02X:%04X\n", dbg_frames, u32[pad1 & 0xFF], cpu.pbr, cpu.pc ]
 					dbg_jl += 1
-				return u8[pad1 & 0xFF]
+				joy_read_lo = u8[pad1 & 0xFF]
+				return joy_read_lo
 			if [ addr == 0x4219 ]            # JOY1H
 				if [ env_joylog && dbg_jl < 400 ]
 					printf[ "JOYR f%u $4219 val=%02X pc=%02X:%04X\n", dbg_frames, u32[(pad1 >> 8) & 0xFF], cpu.pbr, cpu.pc ]
 					dbg_jl += 1
-				return u8[(pad1 >> 8) & 0xFF]
+				joy_read_hi = u8[(pad1 >> 8) & 0xFF]
+				return joy_read_hi
 			if [ addr >= 0x421A && addr <= 0x421F ] return 0x00  # controllers 2-4
 			return 0x00
 		el [ addr >= 0x0000 && addr <= 0x1FFF ]
@@ -3828,7 +3838,6 @@ element asnes : trinity
 		# on spcfile BEFORE rom, so this is the whole routing
 		if [ rom && rom.ext[] == 'spc' ] spcfile = rom
 		if [ volume == 0.0 ] volume = 0.22         # default playback volume (keep prop-pair override)
-		smooth = true                              # [ true ] initializer doesn't apply on element publics
 		bnames = vec string [] [ 'Up', 'Down', 'Left', 'Right', 'A', 'B', 'X', 'Y', 'L', 'R', 'Select', 'Start' ]
 		bbits  = vec i32    [] [ 11, 10, 9, 8, 7, 15, 6, 14, 5, 4, 13, 12 ]
 		load-persistent[ a ]
@@ -3945,6 +3954,7 @@ element asnes : trinity
 			el [ code == 61 || code == 43 ] volume = clamp[ volume + 0.02, 0.0, 1.0 ]
 			if [ code == 45 || code == 61 || code == 43 ] log 'asnes volume {volume}'
 			if [ code == 57 ] dump_req = true              # '9' -> dump layer planes
+			if [ code == 48 ] pad_show = !pad_show          # '0' -> the pad drawn
 			# F1..F7 pick a rom view, F1 returns to the game
 			if [ code == 290 ] view = ''
 			if [ code == 291 ] view = 'chr'
@@ -3978,7 +3988,7 @@ element asnes : trinity
 						obj_off = clamp[ obj_off + pg * 32, 0, 96 ]
 						vhave   = false
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
-			if [ code == 76 ] load_req = true              # 'L' -> load savestate
+			if [ code == 79 ] load_req = true              # 'O' -> load savestate
 			if [ code == 32 ] paused = !paused             # Space pause/resume
 
 	func dump_layer [ buf: @u32, w9: i32, h9: i32, nm: string ]
@@ -4345,10 +4355,10 @@ element asnes : trinity
 		if [ fh9 > vp.h ]
 			fh9 = vp.h
 			fw9 = fh9 * ar9
-		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
-		bounds = vp                                # size basis for every scale below
+		box : rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
+		bounds = box                                # size basis for every scale below
 		if [ bind ]
-			paint_bind[ cv, vp ]
+			paint_bind[ cv, box ]
 			return
 		if [ spctest ]
 			if [ !spc ] spc_test[]
@@ -4378,16 +4388,16 @@ element asnes : trinity
 					test_buf[ y * 256 + x ] = 0xFF000000 | (bb << 16) | (gg << 8) | rr
 			test_t += 1
 			screen_tex.upload[ test_buf, 256 * 224 * 4 ]
-			dst : rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ]
+			dst : rect [ x: box.x, y: box.y, w: box.w, h: box.h ]
 			cv.draw_image[ screen_tex, dst ]
 			return
 		if [ !cpu || !pub_valid ]
 			# no video yet: the console screen is black, not transparent
 			cv.fill_color[ '#000' ]
 			cv.stroke_width[ 0.0 ]
-			cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
+			cv.rect_to[ box.x, box.y, box.w, box.h ]
 			cv.paint[]
-			paint_view[ cv, vp, view ]
+			paint_view[ cv, box, view ]
 			return
 		pub_lock.lock[]
 		if [ !screen_tex ]
@@ -4433,7 +4443,7 @@ element asnes : trinity
 		gmdy : f32 [ m7g_dy ]
 		gmt  : i64 [ m7g_t ]
 		gmp  : i64 [ m7g_p ]
-		out : rect [ x: vp.x, y: vp.y, w: vp.w, h: vp.h ]
+		out : rect [ x: box.x, y: box.y, w: box.w, h: box.h ]
 		m7_active : bool [ m7_gpu && (pub_mode[100] & 7) == 7 ]
 		if [ m7_active ]
 			if [ !m7_render ] m7_setup[ cv ]
@@ -4444,7 +4454,7 @@ element asnes : trinity
 				m7_vhash = vh
 				m7_bri_cache = i32[bri]
 			m7k : f32 [ 1.0 ]
-			if [ smooth ]
+			if [ mode7_lerp ]
 				g_pn : i64 [ wall_ms[] * 1000 ]
 				g_dt : i64 [ g_pn - m7f_last ]
 				m7f_last = g_pn
@@ -4518,17 +4528,17 @@ element asnes : trinity
 			o2y : f32 [ lay_off[ g2dy, g2t, g2p, g_now, g_scy ] ]
 			o3x : f32 [ lay_off[ g3dx, g3t, g3p, g_now, g_scx ] ]
 			o3y : f32 [ lay_off[ g3dy, g3t, g3p, g_now, g_scy ] ]
-			r1 : rect [ x: vp.x - 16.0 * g_scx + o1x, y: vp.y - 16.0 * g_scy + o1y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
-			r2 : rect [ x: vp.x - 16.0 * g_scx + o2x, y: vp.y - 16.0 * g_scy + o2y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
-			r3 : rect [ x: vp.x - 16.0 * g_scx + o3x, y: vp.y - 16.0 * g_scy + o3y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			r1 : rect [ x: box.x - 16.0 * g_scx + o1x, y: box.y - 16.0 * g_scy + o1y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			r2 : rect [ x: box.x - 16.0 * g_scx + o2x, y: box.y - 16.0 * g_scy + o2y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			r3 : rect [ x: box.x - 16.0 * g_scx + o3x, y: box.y - 16.0 * g_scy + o3y, w: 288.0 * g_scx, h: 256.0 * g_scy ]
 			owx : f32 [ o1x ]
 			owy : f32 [ o1y ]
 			if [ ganch == 1 ]
 				owx = o2x
 				owy = o2y
-			rw : rect [ x: vp.x + owx, y: vp.y + owy, w: vp.w, h: vp.h ]
+			rw : rect [ x: box.x + owx, y: box.y + owy, w: box.w, h: box.h ]
 			# this plane carries real tile art, not a flat color: filter it
-			rb : rect [ x: vp.x - 16.0 * g_scx, y: vp.y - 16.0 * g_scy, w: 288.0 * g_scx, h: 256.0 * g_scy ]
+			rb : rect [ x: box.x - 16.0 * g_scx, y: box.y - 16.0 * g_scy, w: 288.0 * g_scx, h: 256.0 * g_scy ]
 			if [ !vscale ] cv.draw_image[ layb_tex, rb ]
 			if [ vscale ]
 				# the six planes reconstructed and composed in two passes over rb
@@ -4584,7 +4594,37 @@ element asnes : trinity
 		# a shell-toggled instrument owns its own surface, not this pane.
 		# only the F-key view still paints over the running game
 		if [ view && view.count > 0 ]
-			if [ !paint_view[ cv, vp, view ] ] view = ''
+			if [ !paint_view[ cv, box, view ] ] view = ''
+		if [ pad_show ] paint_pad[ cv, box ]
+
+	# the pad over the picture: what asnes holds (top) and what the
+	# game last read from $4218/$4219 (under it), a cell a button
+	func paint_pad [ cv: Canvas, vp: rect ]
+		names : vec string [] [ 'B', 'Y', 'Se', 'St', 'U', 'D', 'L',
+			'R', 'A', 'X', 'L', 'R' ]
+		held : i32 [ i32[ pad1 ] ]
+		read : i32 [ (i32[ joy_read_hi ] << 8) | i32[ joy_read_lo ] ]
+		cw : f32 [ 30.0 ]
+		x0 : f32 [ vp.x + 8.0 ]
+		y0 : f32 [ vp.y + vp.h - 74.0 ]
+		cv.save[]
+		cv.fill_color[ '#000a' ]
+		cv.stroke_width[ 0.0 ]
+		cv.rect_to[ x0 - 4.0, y0 - 4.0, cw * 12.0 + 68.0, 70.0 ]
+		cv.paint[]
+		vtext[ cv, 'keys', x0, y0 + 14.0, '#aaa' ]
+		vtext[ cv, 'game', x0, y0 + 46.0, '#aaa' ]
+		for [ i: i32 0, i < 12, i += 1 ]
+			bit : i32 [ 1 << (15 - i) ]
+			x : f32 [ x0 + 60.0 + f32[ i ] * cw ]
+			for [ row: i32 0, row < 2, row += 1 ]
+				on : bool [ ((row == 0) ? held : read) & bit ]
+				cv.fill_color[ (on) ? '#ffd400' : '#333' ]
+				cv.rect_to[ x, y0 + f32[ row ] * 32.0, cw - 4.0, 28.0 ]
+				cv.paint[]
+				vtext[ cv, names[ i ], x + 4.0, y0 + f32[ row ] * 32.0 + 14.0,
+					(on) ? '#000' : '#bbb' ]
+		cv.restore[]
 
 	func state_hash [] -> u32
 		h : u32 [ 2166136261 ]
@@ -5736,6 +5776,8 @@ element asnes : trinity
 				usleep[ 15000 ]
 			el
 				emu_tick[]
+			# this thread's pool: nothing else drains it
+			Au.auto_free[]
 		emu_running = false
 
 	func ctx_hex2 [ v: u32 ] -> string

@@ -560,8 +560,11 @@ el
                                             channels ]
             snd_pcm_hw_params_set_rate    [ pcm_handle, params,
                                             sample_rate, 0 ]
-            bufsz : sz [ buffer_size * 2 ]
-            persz : sz [ buffer_size / 4 ]
+            # periods no shorter than the system's 1024 frame block (a
+            # shorter one moves every stream's block: a glitch); two of
+            # them, as the buffer was
+            persz : sz [ max[ buffer_size, 1024 ] ]
+            bufsz : sz [ persz * 2 ]
             snd_pcm_hw_params_set_buffer_size_near[ pcm_handle, params,
                                                     @bufsz ]
             snd_pcm_hw_params_set_period_size_near[ pcm_handle, params,
@@ -575,8 +578,8 @@ el
             snd_pcm_hw_params_get_rate[ params, @arate, @adir ]
             printf[
                 "AudioOut: asked %d Hz buf %ld per %ld -> got %d Hz buf %ld per %ld\n",
-                sample_rate, i64[ buffer_size * 2 ],
-                i64[ buffer_size / 4 ],
+                sample_rate, i64[ max[ buffer_size, 1024 ] * 2 ],
+                i64[ max[ buffer_size, 1024 ] ],
                 arate, i64[ bufsz ], i64[ persz ] ]
             free[ params ]
             if [ ok ]

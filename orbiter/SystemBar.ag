@@ -41,17 +41,31 @@ element RecBar
 Group SysDock
     style : CSS {
         layers.dock:
-            fill_color: #0d2a3a
-            box_shadow: inset 0 0 13px #8af2
+            fill_color: #1a1440
+            box_shadow: inset 0 0 13px #86f2
             stroke_width: 1
             stroke_color: #fff1
             near_border: true
             near_inset: 1.0
-            near_inset_color: #8fd0ffaa
+            near_inset_color: #c890ffaa
         layers.ddiv:
             fill_color: #ffffff11
             area: r0 t0 w1px b0
     }
+
+# the system menu's views down its dock: they scroll, faded at
+# the ends, in the room the fixed cells under them leave
+element SysDockRows
+    scroll_fade : 24.0
+    no_thumb    : true
+
+    public func tick [ w: Window ]
+        tall : f32 [ 0.0 ]
+        if [ elements ]
+            for [ c: element, k: string ] in elements
+                if [ c && c.bounds && c.bounds.y + c.bounds.h > tall ]
+                    tall = c.bounds.y + c.bounds.h
+        content_h = tall
 
 # a cell of the system menu's dock, shaped as the navigator's: its
 # icon high, its name under it; lit while its view shows, yellow for
@@ -69,13 +83,13 @@ element DockRow
     style : CSS {
         layers.edge:
             fill_color: #0000
-            box_shadow: inset 0 0 13px #8fd0ff04
+            box_shadow: inset 0 0 13px #806bff04
             stroke_width: 1 1 0 1
             stroke_color: #ffffff09
             near_border: true
             near_reach: 0.5
             near_inset: 4.0
-            near_inset_color: #8fd0ffff
+            near_inset_color: #c890ffff
         :first
             layers.edge:
                 stroke_width: 0 1 0 1
@@ -84,9 +98,9 @@ element DockRow
                 stroke_width: 1 1 1 1
         :selected
             layers.edge:
-                fill_color: #2a5a7a99
+                fill_color: #4d3dbc99
                 stroke_color: #fff3
-                box_shadow: inset 0 0 13px #8fd0ff88
+                box_shadow: inset 0 0 13px #806bff88
         :second
             layers.edge:
                 box_shadow: inset 0 0 13px #ffd84a66
@@ -191,6 +205,52 @@ Button BarClock
             layers.face:
                 label_size: 26
     }
+
+# the mobile network at the bar's right end: four rising bars, lit
+# by the signal, and the carrier's name; a press opens the phone
+Button BarSignal
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #ffffff01
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 1.0 0.5
+            label_offset: -10.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :use_mobile
+            layers.face:
+                label_size: 26
+    }
+    public bars : i32
+    # no service: the bars dim and crossed
+    public off  : bool
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas [ w.screen ]
+        h : f32 [ round[ bounds.h * 0.5 ] ]
+        bw : f32 [ max[ 2.0, round[ h * 0.22 ] ] ]
+        x : f32 [ 10.0 ]
+        y : f32 [ round[ (bounds.h + h) * 0.5 ] ]
+        cv.stroke_width[ 0.0 ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            bh : f32 [ round[ h * (i + 1) / 4.0 ] ]
+            lit : bool [ !off && i < bars ]
+            cv.fill_color[ rgba [ (lit) ? '#e8e8ee' : '#ffffff33' ] ]
+            cv.rect_to[ x, y - bh, bw, bh ]
+            cv.paint[]
+            x += bw + max[ 1.0, round[ bw * 0.5 ] ]
 
 # a top menu of the active window's menu bar, at the bar's left
 Button MenuTop
@@ -521,8 +581,10 @@ Layer DrawerGround
         w : Window parent.ux
         if [ !dr || !w || !w.root || !w.root.bounds ] return
         orb : cast orbiter [ w.app_object ]
+        # over the main menu: its background as it is, never taken
+        # again (the screen now holds the menu)
         b : ReduceBlur (orb) ? orb.drawer_blur[ w,
-            dr.background_lens ] : null
+            dr.background_lens && !orb.sys_under ] : null
         # its place in the window: the screen's origin is behind it
         ox : f32 [ 0.0 ]
         oy : f32 [ 0.0 ]
@@ -560,32 +622,24 @@ element MenuDrawer
     public background_lens : bool [ true ]
     ground : DrawerGround []
     style : CSS {
-        area: l-10.91 t0 w10.91 b1.06, 240ms cubic outward
+        area: l0 t0 w10.91 b1.06
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0 t0 w10.91 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     # a phone has no bottom bar: the drawers reach the foot
     # a phone's drawers are its whole width
     :use_mobile
-        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
-    :open&use_mobile
-        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
+        area: l0%+0 t0 r0%+0 b0
     }
 
 # a free window's menu: its area is the menu's room in the window
 # (orbiter's drawer_area), so it reaches the window's foot
 MenuDrawer WinDrawer
     style : CSS {
-        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
+        area: l0%+0 t0 r0%+0 b0
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
-    :use_mobile
-        area: l-100%+0 t0 r100%+0 b0, 240ms cubic outward
-    :open&use_mobile
-        area: l0%+0 t0 r0%+0 b0, 260ms cubic inward
     }
 
 # what a free window's menu slides in: it shows only inside the
@@ -605,29 +659,23 @@ element WinMenuArea
 MenuDrawer ExchangeDrawer
     # edges, never a w: a percent width is a flow share
     style : CSS {
-        area: l-100%+0 t0.91 r100%+0 b1.06, 240ms cubic outward
+        area: l0%+0 t0.91 r0%+0 b1.06
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0%+0 t0.91 r0%+0 b1.06, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     :use_mobile
-        area: l-100%+0 t1.82 r100%+0 b0, 240ms cubic outward
-    :open&use_mobile
-        area: l0%+0 t1.82 r0%+0 b0, 260ms cubic inward
+        area: l0%+0 t1.82 r0%+0 b0
     }
 
-# the system menu, the desktop's (orbiter's): out of the left under
-# the bar, the whole screen; the view buttons and power on top, the
+# the system menu, the desktop's (orbiter's): fades in under the
+# bar, the whole screen; the view buttons and power on top, the
 # sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
     style : CSS {
-        area: l-100%+0 t0.91 r100%+0 b0, 240ms cubic outward
+        area: l0%+0 t0.91 r0%+0 b0
         opacity: 0.0, 240ms cubic outward
     :open
-        area: l0%+0 t0.91 r0%+0 b0, 260ms cubic inward
         opacity: 1.0, 260ms cubic inward
     :use_mobile
-        area: l-100%+0 t1.82 r100%+0 b0, 240ms cubic outward
-    :open&use_mobile
-        area: l0%+0 t1.82 r0%+0 b0, 260ms cubic inward
+        area: l0%+0 t1.82 r0%+0 b0
     }

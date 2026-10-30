@@ -1,5 +1,6 @@
 export 0.1.0
 export software ['everyday']
+export widget ['6x3']
 
 import vec
 import img

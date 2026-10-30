@@ -1,0 +1,391 @@
+export 0.1.0
+export software ['everyday']
+export widget ['3x5']
+
+import vec
+import img
+import trinity
+import tls
+import <stdio.h>
+import <time.h>
+
+# stock prices: one chart, its ranges, and a list to choose from;
+# Yahoo Finance's chart data, a minute apart
+element stocks : trinity
+    public  width   : i32    [ 440 ]
+    public  height  : i32    [ 720 ]
+    public  title   : string [ 'stocks' ]
+    # the list, comma between
+    public  [ Launch ] symbols : string [
+        'AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,SPY' ]
+
+    func render [] -> Elements
+        t : Elements []
+        t['view'] = StockView [ symbols: symbols,
+            area: Region { l0 t0 r0 b0 } ]
+        return t
+
+# one symbol's prices over one range, as Yahoo gave them
+class Series
+    public sym   : string
+    public name  : string
+    public price : f64
+    # the close before the range began (the change's base)
+    public prev  : f64
+    public day_lo : f64
+    public day_hi : f64
+    public year_lo : f64
+    public year_hi : f64
+    public volume : f64
+    public ts    : vec i64
+    public close : vec f64
+
+# a range's name and its query
+func range_names [] -> vec string
+    return vec string [] [ '1D', '5D', '1M', '6M', '1Y', '5Y' ]
+
+func range_query [ r: i32 ] -> string
+    qs : vec string [] [ 'range=1d&interval=5m',
+        'range=5d&interval=15m', 'range=1mo&interval=60m',
+        'range=6mo&interval=1d', 'range=1y&interval=1d',
+        'range=5y&interval=1wk' ]
+    return qs[ r ]
+
+# the chart above, its ranges, the day's figures, the list under it.
+# drawn on a glass card: as a widget the desktop shows through it
+element StockView
+    animated : true
+    public  symbols : string
+    mutable syms    : vec string
+    mutable sel     : i32
+    mutable range   : i32
+    mutable data    : map Series [string]
+    # the fetch on its own thread: its jobs ('SYM|range'), files only
+    intern  task    : async
+    mutable jobs    : vec string
+    mutable busy    : bool
+    mutable fetched : bool
+    mutable last_ms : i64
+    # where the parts were last drawn: the ranges, the rows
+    mutable tab_x   : vec f32
+    mutable tab_w   : f32
+    mutable tab_y   : f32
+    mutable row_y   : f32
+    mutable row_h   : f32
+
+    # the chart, trinity's LineChart, under the price and ranges
+    func render [] -> Elements
+        t : Elements []
+        if [ !bounds || !ux ] return t
+        se : Series series[ range ]
+        if [ !se || se.close.count < 2 ] return t
+        un : f32 ux_unit[ ux ]
+        pad : f32 [ round[ 18.0 * un ] ]
+        top : f32 [ pad + 170.0 * un ]
+        ch : f32 [ max[ 120.0, bounds.h * 0.32 ] + 26.0 * un ]
+        cw : f32 [ bounds.w - pad * 2.0 ]
+        day : Series series[ 0 ]
+        last : f64 [ (range == 0 && day) ? day.price
+                     : se.close[ se.close.count - 1 ] ]
+        base : f64 [ (range == 0) ? se.prev : se.close[ 0 ] ]
+        fmt : string [ (range == 0) ? '%H:%M'
+            : ((range <= 1) ? '%a %H:%M'
+            : ((range == 5) ? '%b %Y' : '%e %b')) ]
+        t['chart'] = LineChart [ values: se.close, times: se.ts,
+            base: (range == 0) ? se.prev : 0.0,
+            accent: (last >= base) ? '#34d399' : '#fb7185',
+            time_fmt: fmt,
+            area: Region [ 'l{pad}px t{top}px w{cw}px h{ch}px' ] ]
+        return t
+
+    func file_of [ job: string ] -> path
+        dir : path.path_cache[ 'stocks' ]
+        ps : vec string job.split[ "|" ]
+        return path '{dir}/{ps[ 0 ]}-{ps[ 1 ]}.json'
+
+    # on the fetch thread: every job's answer into its file
+    func fetch_bg [ arg: object :: v: StockView ]
+        for [ job: string ] in v.jobs
+            ps : vec string job.split[ "|" ]
+            q : string range_query[ i32[ ps[ 1 ] ] ]
+            url : 'https://query1.finance.yahoo.com/v8/finance/chart/{ps[ 0 ]}?{q}'
+            Http.download[ url, v.file_of[ job ] ]
+        v.fetched = true
+
+    # the list's day and the chosen range, a minute apart, or when the
+    # chosen range has nothing yet
+    func fetch_due []
+        if [ busy || !syms || syms.count == 0 ] return
+        now : i64 [ epoch_millis[] ]
+        key : string '{syms[ sel ]}|{range}'
+        if [ now - last_ms < 60000 && data && data.contains[ key ] ]
+            return
+        jobs = vec string []
+        jobs.push[ key ]
+        for [ s: string ] in syms
+            k : string '{s}|0'
+            if [ k != key ] jobs.push[ k ]
+        busy = true
+        fetched = false
+        last_ms = now
+        work : vec Au []
+        work.push[ a ]
+        task = async [ target: a, work_fn: lambda fetch_bg[ a ],
+                       work: work ]
+
+    func str [ m: map, k: string ] -> string
+        if [ !m || !m.contains[ k ] ] return ''
+        v : Au m[ k ]
+        return (v) ? string [ v ] : ''
+
+    func num_of [ m: map, k: string ] -> f64
+        s : string str[ m, k ]
+        return (s.count > 0) ? s.real_value[] : 0.0
+
+    func obj [ m: map, k: string ] -> map
+        if [ !m || !m.contains[ k ] ] return null
+        return m[ k ]
+
+    func list [ m: map, k: string ] -> array
+        if [ !m || !m.contains[ k ] ] return null
+        return m[ k ]
+
+    # a fetched file as a series (null when it says nothing usable)
+    func read_series [ job: string ] -> Series
+        tx : string file_of[ job ].load[ typeid[ string ], null ]
+        if [ !tx || tx.count == 0 ] return null
+        pv : Au Au.parse[ typeid[ map ], tx.chars, null ]
+        # not json (an error page): nothing
+        if [ !pv || !(pv inherits map) ] return null
+        m : map pv
+        rs : array list[ obj[ m, 'chart' ], 'result' ]
+        if [ !rs || rs.count == 0 ] return null
+        r0 : map rs[ 0 ]
+        mt : map obj[ r0, 'meta' ]
+        tl : array list[ r0, 'timestamp' ]
+        qs : array list[ obj[ r0, 'indicators' ], 'quote' ]
+        if [ !mt || !tl || !qs || qs.count == 0 ] return null
+        cl : array list[ qs[ 0 ], 'close' ]
+        if [ !cl ] return null
+        se : Series [ sym: str[ mt, 'symbol' ],
+            name: str[ mt, 'shortName' ],
+            price: num_of[ mt, 'regularMarketPrice' ],
+            prev: num_of[ mt, 'chartPreviousClose' ],
+            day_lo: num_of[ mt, 'regularMarketDayLow' ],
+            day_hi: num_of[ mt, 'regularMarketDayHigh' ],
+            year_lo: num_of[ mt, 'fiftyTwoWeekLow' ],
+            year_hi: num_of[ mt, 'fiftyTwoWeekHigh' ],
+            volume: num_of[ mt, 'regularMarketVolume' ],
+            ts: vec i64 [], close: vec f64 [] ]
+        n : i32 [ min[ i32[ tl.count ], i32[ cl.count ] ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            c : Au cl[ i ]
+            t : Au tl[ i ]
+            if [ !c || !t ] continue
+            ts : string [ t ]
+            cs : string [ c ]
+            tv : i64 [ ts.integer_value[] ]
+            cv : f64 [ cs.real_value[] ]
+            se.ts.push[ tv ]
+            se.close.push[ cv ]
+        if [ se.close.count == 0 ] return null
+        return se
+
+    func take_fetched []
+        if [ !busy || !fetched ] return
+        if [ !data ] data = map Series [string] []
+        for [ job: string ] in jobs
+            se : Series read_series[ job ]
+            if [ se ] data[ job ] = se
+        busy = false
+        if [ ux ] ux.restyle = true
+        task = null
+
+    func series [ r: i32 ] -> Series
+        if [ !data || !syms || syms.count == 0 ] return null
+        k : string '{syms[ sel ]}|{r}'
+        return (data.contains[ k ]) ? data[ k ] : null
+
+    func font [ cv: Canvas, weight: string, px: f32 ]
+        chart_font[ cv, weight, px ]
+
+    func text [ cv: Canvas, s: string, x: f32, y: f32, w: f32, h: f32,
+                ax: f32, col: string ]
+        chart_text[ cv, s, x, y, w, h, ax, col ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !syms ]
+            syms = vec string []
+            for [ s: string ] in symbols.split[ "," ]
+                st : string s.trim[]
+                if [ st.count > 0 ] syms.push[ st ]
+        take_fetched[]
+        fetch_due[]
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        pad : f32 [ round[ 18.0 * un ] ]
+        up : string '#34d399'
+        down : string '#fb7185'
+        mute : string '#8b93a7'
+        # the glass card
+        cv.save[]
+        cv.fill_color[ rgba [ '#0b0e1acc' ] ]
+        cv.stroke_color[ rgba [ '#ffffff14' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ 0.5, 0.5, bw - 1.0, bh - 1.0, 14.0, 14.0, 14.0,
+                         14.0 ]
+        cv.paint[]
+        cv.restore[]
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, 0.0, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
+        se : Series series[ range ]
+        day : Series series[ 0 ]
+        y : f32 [ pad ]
+        # the symbol, its name; the price and how far it moved
+        sym : string [ (syms.count > 0) ? syms[ sel ] : '' ]
+        font[ cv, 'SemiBold', round[ 24.0 * un ] ]
+        text[ cv, sym, pad, y, bw * 0.4, 28.0 * un, 0.0, '#ffffff' ]
+        nm : string [ (day) ? day.name : ((se) ? se.name : '') ]
+        font[ cv, 'Regular', round[ 15.0 * un ] ]
+        text[ cv, nm, pad, y + 26.0 * un, bw - pad * 2.0, 20.0 * un,
+              0.0, mute ]
+        y += 52.0 * un
+        accent : string up
+        if [ se ]
+            last : f64 [ (range == 0 && day) ? day.price
+                         : se.close[ se.close.count - 1 ] ]
+            base : f64 [ (range == 0) ? se.prev : se.close[ 0 ] ]
+            ch : f64 [ last - base ]
+            pct : f64 [ (base != 0.0) ? ch / base * 100.0 : 0.0 ]
+            accent = (ch >= 0.0) ? up : down
+            font[ cv, 'SemiBold', round[ 44.0 * un ] ]
+            text[ cv, num_fixed[ last ], pad, y, bw * 0.6, 46.0 * un,
+                  0.0,
+                  '#ffffff' ]
+            font[ cv, 'SemiBold', round[ 17.0 * un ] ]
+            rn : vec string range_names[]
+            span : string [ (range == 0) ? 'today' : rn[ range ] ]
+            moved : string '{num_signed[ ch ]}  {num_signed[ pct ]}%'
+            text[ cv, '{moved}  {span}', pad, y + 44.0 * un,
+                  bw - pad * 2.0, 22.0 * un, 0.0, accent ]
+        el
+            font[ cv, 'Regular', round[ 17.0 * un ] ]
+            text[ cv, (busy) ? 'loading…' : 'no data', pad, y,
+                  bw - pad * 2.0, 46.0 * un, 0.0, mute ]
+        y += 78.0 * un
+        # the ranges, the chosen one in a soft pill
+        names : vec string range_names[]
+        tab_w = (bw - pad * 2.0) / 6.0
+        tab_y = y
+        tab_x = vec f32 []
+        font[ cv, 'SemiBold', round[ 15.0 * un ] ]
+        for [ i: i32 0, i < 6, i += 1 ]
+            tx : f32 [ pad + f32[ i ] * tab_w ]
+            tab_x.push[ tx ]
+            if [ i == range ]
+                cv.fill_color[ rgba [ '#ffffff14' ] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rounded_rect[ tx + 4.0, y, tab_w - 8.0, 26.0 * un,
+                                 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint[]
+            text[ cv, names[ i ], tx, y, tab_w, 26.0 * un, 0.5,
+                  (i == range) ? '#ffffff' : mute ]
+        y += 40.0 * un
+        # the chart: its scale at the right, the line, a fade under it
+        ch_h : f32 [ max[ 120.0, bh * 0.32 ] ]
+        y += ch_h + 28.0 * un
+        # the day's figures
+        if [ day ]
+            font[ cv, 'Regular', round[ 14.0 * un ] ]
+            fw : f32 [ (bw - pad * 2.0) / 3.0 ]
+            figs : vec string [] [ 'Day range', '52 weeks', 'Volume' ]
+            vals : vec string [] [
+                '{num_fixed[ day.day_lo ]} – {num_fixed[ day.day_hi ]}',
+                '{num_fixed[ day.year_lo ]} – '
+                + num_fixed[ day.year_hi ],
+                num_compact[ day.volume ] ]
+            for [ i: i32 0, i < 3, i += 1 ]
+                text[ cv, figs[ i ], pad + f32[ i ] * fw, y, fw,
+                      18.0 * un, 0.0, mute ]
+                text[ cv, vals[ i ], pad + f32[ i ] * fw, y + 18.0 * un,
+                      fw, 20.0 * un, 0.0, '#e5e7eb' ]
+            y += 48.0 * un
+        # a hairline, then the list
+        cv.fill_color[ rgba [ '#ffffff12' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ pad, y, bw - pad * 2.0, 1.0 ]
+        cv.paint[]
+        y += 6.0 * un
+        row_y = y
+        row_h = round[ 48.0 * un ]
+        for [ i: i32 0, i < syms.count, i += 1 ]
+            if [ y + row_h > bh ] break
+            draw_row[ cv, i, y, bw, pad, un, up, down, mute ]
+            y += row_h
+        cv.restore[]
+        cv.set_font[ null ]
+
+    # a row of the list: symbol and name, the day's line, the price and
+    # its change in a soft pill; the chosen row lit
+    func draw_row [ cv: Canvas, i: i32, y: f32, bw: f32, pad: f32,
+                    un: f32, up: string, down: string, mute: string ]
+        sym : string syms[ i ]
+        k : string '{sym}|0'
+        se : Series [ (data && data.contains[ k ]) ? data[ k ] : null ]
+        rh : f32 [ row_h ]
+        if [ i == sel ]
+            cv.fill_color[ rgba [ '#ffffff0d' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rounded_rect[ pad * 0.5, y + 2.0, bw - pad, rh - 4.0,
+                             10.0, 10.0, 10.0, 10.0 ]
+            cv.paint[]
+        font[ cv, 'SemiBold', round[ 17.0 * un ] ]
+        text[ cv, sym, pad, y + 4.0, bw * 0.3, 22.0 * un, 0.0,
+              '#ffffff' ]
+        font[ cv, 'Regular', round[ 13.0 * un ] ]
+        text[ cv, (se) ? se.name : '', pad, y + 24.0 * un, bw * 0.3,
+              18.0 * un, 0.0, mute ]
+        if [ !se ] return
+        ch : f64 [ se.price - se.prev ]
+        pct : f64 [ (se.prev != 0.0) ? ch / se.prev * 100.0 : 0.0 ]
+        col : string [ (ch >= 0.0) ? up : down ]
+        # the day's line, small
+        sx : f32 [ pad + bw * 0.32 ]
+        sw : f32 [ bw * 0.26 ]
+        sparkline_paint[ cv, se.close, se.prev, sx, y + 10.0, sw,
+                         rh - 20.0, col, 1.25 ]
+        # the price, its change
+        pw : f32 [ 64.0 * un ]
+        font[ cv, 'SemiBold', round[ 17.0 * un ] ]
+        text[ cv, num_fixed[ se.price ], bw - pad - pw - 76.0 * un, y,
+              76.0 * un, rh, 1.0, '#ffffff' ]
+        pc : rgba [ col ]
+        cv.fill_color[ rgba [ r: pc.r, g: pc.g, b: pc.b, a: 0.16 ] ]
+        cv.stroke_width[ 0.0 ]
+        pl : f32 [ bw - pad - pw + 6.0 ]
+        cv.rounded_rect[ pl, y + (rh - 24.0 * un) * 0.5, pw - 6.0,
+                         24.0 * un, 6.0, 6.0, 6.0, 6.0 ]
+        cv.paint[]
+        font[ cv, 'SemiBold', round[ 14.0 * un ] ]
+        text[ cv, '{num_signed[ pct ]}%', pl, y, pw - 6.0, rh, 0.5,
+              col ]
+
+    func on_press [ ev: Event ]
+        p : vec2f ev.mouse.pos
+        ev.no_default = true
+        # a range
+        if [ tab_x && p.y >= tab_y && p.y <= tab_y + 30.0 ]
+            for [ i: i32 0, i < tab_x.count, i += 1 ]
+                if [ p.x >= tab_x[ i ] && p.x < tab_x[ i ] + tab_w ]
+                    range = i
+                    if [ ux ] ux.restyle = true
+                    return
+        # a row of the list
+        if [ row_h > 0.0 && p.y >= row_y ]
+            r : i32 [ i32[ (p.y - row_y) / row_h ] ]
+            if [ syms && r >= 0 && r < syms.count ]
+                sel = r
+                if [ ux ] ux.restyle = true

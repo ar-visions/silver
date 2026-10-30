@@ -1,0 +1,896 @@
+export 0.1.0
+export software ['communication']
+# hosted, its view holds the system bus (ModemManager is on it)
+export system_bus ['ModemManager']
+
+import vec
+import trinity
+import modem
+import spectra
+import <stdio.h>
+import <time.h>
+import <math.h>
+import <pthread.h>
+
+# a person and their number
+class Contact
+    public name   : string
+    public number : string
+
+# a call as the phone remembers it
+class LogCall
+    public number : string
+    # when it began, unix seconds
+    public at     : i64
+    # seconds talked
+    public dur    : i64
+    # in, out or missed
+    public kind   : string
+
+# a text as the phone remembers it
+class LogText
+    public number   : string
+    public text     : string
+    public at       : i64
+    public incoming : bool
+
+# what the phone keeps: its people, its calls and its texts, in
+# its storage folder as phone.agi
+class PhoneBook
+    public contacts : vec Contact
+    public calls    : vec LogCall
+    public texts    : vec LogText
+
+    func file [] -> path
+        return path '{path.path_storage[ 'phone' ]}/phone.agi'
+
+    func load []
+        contacts = vec Contact []
+        calls    = vec LogCall []
+        texts    = vec LogText []
+        f : file[]
+        if [ !f.exists[] ] return
+        txt : string [ f.load[ typeid[ string ], null ] ]
+        Au.parse_agi[ null, txt.chars, a ]
+        if [ !contacts ] contacts = vec Contact []
+        if [ !calls ]    calls    = vec LogCall []
+        if [ !texts ]    texts    = vec LogText []
+
+    func save []
+        f : file[]
+        f.save[ Au.string_agi[ a ], null ]
+
+    # the contact's name for a number, else the number
+    func name_of [ num: string ] -> string
+        for [ c: Contact ] in contacts
+            if [ same_number[ c.number, num ] ] return c.name
+        return num
+
+# two numbers are one when their last nine digits match
+# (+1 555 123 4567 and 5551234567)
+func same_number [ a: string, b: string ] -> bool
+    da : digits_of[ a ]
+    db : digits_of[ b ]
+    if [ da.count == 0 || db.count == 0 ] return false
+    n : i32 [ (da.count < db.count) ? da.count : db.count ]
+    if [ n > 9 ] n = 9
+    return da.mid[ da.count - n, n ] == db.mid[ db.count - n, n ]
+
+func digits_of [ s: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < s.count, i += 1 ]
+        ch : s.mid[ i, 1 ]
+        if [ '0123456789'.index_of[ ch ] >= 0 ] out = '{out}{ch}'
+    return out
+
+func now_s [] -> i64
+    us : i64 [ Au.epoch_micros[] ]
+    return us / 1000000
+
+# a time as the lists show it: today's as 14:05, else Oct 29
+func when_text [ at: i64 ] -> string
+    t : i64 [ at ]
+    tm : struct tm
+    localtime_r[ @t, @tm ]
+    nt : i64 [ now_s[] ]
+    ntm : struct tm
+    localtime_r[ @nt, @ntm ]
+    today : bool [ tm.tm_yday == ntm.tm_yday
+                   && tm.tm_year == ntm.tm_year ]
+    fmt : (today) ? '%H:%M' : '%b %d'
+    b : local i8 [ 64 ]
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    return string[ @b[0] ]
+
+# seconds as 1:05
+func clock_text [ s: i64 ] -> string
+    m : i64 [ s / 60 ]
+    r : i64 [ s % 60 ]
+    return (r < 10) ? '{m}:0{r}' : '{m}:{r}'
+
+# the ring: two soft notes over and over, a second and a half on,
+# two off, on a thread of its own while a call rings
+class PhoneRing
+    mutable on  : bool
+    mutable tid : u64
+    mutable out : AudioOut
+    # samples played since it began
+    mutable at  : i64
+
+    func start []
+        if [ on ] return
+        out = AudioOut [ sample_rate: 48000, channels: 2,
+                         buffer_size: 1024 ]
+        if [ !out.open[] ] return
+        on = true
+        at = 0
+        pthread_create[ @tid, null, @run, a ]
+
+    func stop []
+        if [ !on ] return
+        on = false
+        pthread_join[ tid, null ]
+        out.close[]
+
+    # E6 and C#6 a tenth of a second each, faded in and out
+    func level [ n: i64 ] -> f64
+        cycle : i64 [ n % 168000 ]
+        if [ cycle >= 72000 ] return 0.0
+        part : i64 [ cycle % 4800 ]
+        hz : f64 [ ((cycle / 4800) % 2 == 0) ? 1318.5 : 1108.7 ]
+        fade : f64 [ sin[ 3.14159265 * part / 4800.0 ] ]
+        return sin[ 6.28318531 * hz * n / 48000.0 ] * fade * 0.3
+
+    func run [] -> none
+        while [ on ]
+            for [ i: i32 0, i < 1024, i += 1 ]
+                v : i16 [ level[ at ] * 32767.0 ]
+                out.buffer[ i * 2 ] = v
+                out.buffer[ i * 2 + 1 ] = v
+                at += 1
+            out.write[ 1024 ]
+
+element PhoneText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 20,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element PhoneNote
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# the number being dialed, large and centred
+element PhoneDial
+    face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 40,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+# the call screen's name and state
+element PhoneBig
+    face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 34,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+element PhoneMid
+    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 20,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.5, y: 0.5 ] ]
+
+Button PhoneButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+                stroke_color: #ffffff55
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+
+# the green call and answer button
+Button PhoneGo
+    style : CSS {
+        layers.body:
+            fill_color: #1f9d55
+            radius: 999
+            stroke_width: 1
+            stroke_color: #ffffff33
+            near_border: true
+        layers.face:
+            label_color: #ffffff
+            label_size: 20
+            label_font: 'fonts/BarlowCondensed-Bold.ttf'
+        :hovered
+            layers.body:
+                fill_color: #27b865
+    }
+
+# the red decline and hang up button
+Button PhoneStop
+    style : CSS {
+        layers.body:
+            fill_color: #c53030
+            radius: 999
+            stroke_width: 1
+            stroke_color: #ffffff33
+            near_border: true
+        layers.face:
+            label_color: #ffffff
+            label_size: 20
+            label_font: 'fonts/BarlowCondensed-Bold.ttf'
+        :hovered
+            layers.body:
+                fill_color: #e04040
+    }
+
+# a key of the keypad: its digit, and its letters under it
+Button PhoneKey
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff10
+            radius: 999
+            stroke_width: 1
+            stroke_color: #ffffff26
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #ffffff
+            label_size: 30
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_offset: 0.0 -6.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+    }
+    public sub : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !sub || sub.count == 0 ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 13.0 ] ] ]
+        cv.font_size[ 13 ]
+        cv.fill_color[ rgba [ '#ffffff88' ] ]
+        cv.draw_text[ sub, rect [ x: 0.0, y: bounds.h * 0.58,
+            w: bounds.w, h: bounds.h * 0.3 ], vec2f [ 0.5, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# a row of a list: its name, a note at the right
+Button PhoneRow
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 19
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+    }
+    public note : string
+    # the note in red (a missed call)
+    public warn : bool
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !note || note.count == 0 ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 16.0 ] ] ]
+        cv.font_size[ 16 ]
+        cv.fill_color[ rgba [ (warn) ? '#ff8a80' : '#ffffff88' ] ]
+        cv.draw_text[ note, rect [ x: bounds.w * 0.45, y: 0.0,
+            w: bounds.w * 0.55 - 14.0, h: bounds.h ],
+            vec2f [ 1.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# one text in a conversation: ours on the right in violet, theirs
+# on the left in grey
+element PhoneBubble
+    public mine : bool
+    public when : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas [ w.screen ]
+        bw : f32 [ bounds.w * 0.78 ]
+        x : f32 [ (mine) ? bounds.w - bw : 0.0 ]
+        cv.fill_color[ rgba [ (mine) ? '#4d3dbc' : '#ffffff1c' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ x, 0.0, bw, bounds.h - 16.0, 12.0, 12.0, 12.0,
+                         12.0 ]
+        cv.paint[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        cv.font_size[ 18 ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ label, rect [ x: x + 12.0, y: 6.0, w: bw - 24.0,
+            h: bounds.h - 28.0 ], vec2f [ 0.0, 0.0 ],
+            vec2f [ 0.0, 0.0 ],
+            Overflow.wrap, null ]
+        cv.font_size[ 13 ]
+        cv.fill_color[ rgba [ '#ffffff77' ] ]
+        cv.draw_text[ when, rect [ x: x, y: bounds.h - 16.0, w: bw,
+            h: 16.0 ], vec2f [ (mine) ? 1.0 : 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# a field; Enter presses the view's button for it
+TextInput PhoneInput
+    public go : string
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state || ev.key.unicode != 257 ] return
+        if [ !go || go.count == 0 ] return
+        v : cast PhoneView [ parent ]
+        if [ v ] v.press[ go ]
+        ev.stop[]
+
+# the whole phone: a status line, the four pages and their tabs,
+# and the call screen over them while a call is on
+element PhoneView
+    public  modem   : Modem
+    public  book    : PhoneBook
+    # a bus to find the modem on, else the system's
+    public  bus     : string
+    # keypad, recents, contacts, messages
+    mutable page    : string
+    mutable dialed  : string
+    # the conversation shown on messages, '' for the list
+    mutable thread  : string
+    # the chosen row of recents or contacts
+    mutable chosen  : i32
+    mutable adding  : bool
+    mutable writing : bool
+    mutable tones   : bool
+    mutable muted   : bool
+    mutable speaker : bool
+    mutable shown_s : i64
+    # the calls being watched, logged as each one ends
+    mutable watch   : vec MmCall
+    mutable note    : string
+    mutable ring    : PhoneRing
+
+    func init []
+        page   = 'keypad'
+        dialed = ''
+        thread = ''
+        chosen = -1
+        note   = ''
+        watch  = vec MmCall []
+
+    public func tick [ w: Window ]
+        if [ !modem && bus && bus.count > 0 ]
+            modem = Modem [ address: bus ]
+            modem.open[]
+        if [ !modem ] modem = modem_shared[]
+        if [ !book ]
+            book = PhoneBook []
+            book.load[]
+        changed : bool [ modem.poll[] ]
+        if [ changed ] take_in[]
+        if [ !ring ] ring = PhoneRing []
+        if [ modem.ringing[] ] ring.start[]
+        el ring.stop[]
+        c : modem.current[]
+        s : i64 [ (c) ? c.seconds[] : -1 ]
+        if [ changed || s != shown_s ]
+            shown_s = s
+            pristine = false
+            if [ ux ] ux.restyle = true
+
+    # what the modem has that the book has not: received texts
+    # (then taken off the modem), sent ones, ended calls
+    func take_in []
+        kept : bool [ false ]
+        for [ t: MmText ] in modem.texts
+            if [ t.incoming && t.state == 3 ]
+                book.texts.push[ LogText [ number: t.number,
+                    text: t.text, at: now_s[], incoming: true ] ]
+                modem.delete_text[ t ]
+                kept = true
+            el [ !t.incoming && t.state == 5 ]
+                modem.delete_text[ t ]
+        for [ c: MmCall ] in modem.calls
+            seen : bool [ false ]
+            for [ o: MmCall ] in watch
+                if [ o.path == c.path ]
+                    seen = true
+                    o.state = c.state
+                    if [ c.since > 0 ] o.since = c.since
+            if [ !seen ]
+                watch.push[ MmCall [ path: c.path, number: c.number,
+                    state: c.state, incoming: c.incoming,
+                    since: c.since, began: c.began ] ]
+        ended : vec MmCall []
+        for [ o: MmCall ] in watch
+            live : modem.find_call[ o.path ]
+            if [ !live || live.state == 7 ] ended.push[ o ]
+        for [ o: MmCall ] in ended
+            log_call[ o ]
+            live : modem.find_call[ o.path ]
+            if [ live ] modem.hang_up[ live ]
+            watch.remove[ watch.index_of[ o ] ]
+            kept = true
+            tones = false
+        if [ kept ] book.save[]
+
+    # o.since is when it was answered (0: never), o.began when
+    # it was first seen
+    func log_call [ o: MmCall ]
+        talked : i64 [ (o.since > 0) ? now_s[] - o.since / 1000000 : 0 ]
+        kind : (o.incoming) ? ((o.since > 0) ? 'in' : 'missed') : 'out'
+        book.calls.push[ LogCall [ number: o.number,
+            at: o.began / 1000000, dur: talked, kind: kind ] ]
+
+    public func render [] -> Elements
+        t : Elements []
+        if [ !modem || !book ] return t
+        status[ t ]
+        c : modem.ringing[]
+        if [ !c ] c = modem.current[]
+        if [ c ]
+            call_screen[ t, c ]
+            return t
+        if [ page == 'keypad' ]   keypad[ t ]
+        if [ page == 'recents' ]  recents[ t ]
+        if [ page == 'contacts' ] contacts[ t ]
+        if [ page == 'messages' ] messages[ t ]
+        tabs[ t ]
+        return t
+
+    # the network and its signal, or what is wrong
+    func status [ t: Elements ]
+        words : string ''
+        if [ !modem.ready ]
+            words = (modem.problem.count > 0) ? modem.problem
+                : 'No modem'
+        el
+            bars : modem.bars[]
+            words = '{modem.network[]}   {bars} of 4 bars'
+            if [ modem.number.count > 0 ]
+                words = '{words}   {modem.number}'
+        if [ note.count > 0 ] words = note
+        t[ 'status' ] = PhoneNote [ label: words,
+            area: Region { l0.7 t0.3 r0.7 h1 } ]
+        if [ modem.ready && modem.locked ]
+            mounted : bool [ elements && elements.contains[ 'pin' ] ]
+            ar : Region { l0.7 t1.5 r6 h1.3 }
+            t[ 'pin' ] = (mounted)
+                ? PhoneInput [ area: ar, go: 'unlock' ]
+                : PhoneInput [ area: ar, go: 'unlock', edit: '' ]
+            t[ 'unlock' ] = PhoneButton [ label: 'Unlock',
+                area: Region { r0.7 t1.5 w4.8 h1.3 } ]
+        el [ modem.ready && modem.state == 3 ]
+            t[ 'enable' ] = PhoneButton [ label: 'Turn on the radio',
+                area: Region { l0.7 t1.5 r0.7 h1.3 } ]
+
+    func tabs [ t: Elements ]
+        names : vec string [] [ 'keypad', 'recents', 'contacts',
+                                'messages' ]
+        words : vec string [] [ 'Keypad', 'Recents', 'Contacts',
+                                'Messages' ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            x : f32 [ 2.0 + i * 24.0 ]
+            r : f32 [ 75.0 - x ]
+            t[ 'tab_{names[ i ]}' ] = PhoneButton [ label: words[ i ],
+                selected: page == names[ i ],
+                area: Region [ 'l{x}% b2.0 r{r}% h1.6' ] ]
+
+    func keypad [ t: Elements ]
+        t[ 'dialed' ] = PhoneDial [ label: dialed,
+            area: Region { l0.7 t3.2 r0.7 h2.4 } ]
+        keys : vec string [] [ '1', '2', '3', '4', '5', '6', '7', '8',
+                               '9', '*', '0', '#' ]
+        subs : vec string [] [ '', 'ABC', 'DEF', 'GHI', 'JKL', 'MNO',
+                               'PQRS', 'TUV', 'WXYZ', '', '+', '' ]
+        for [ i: i32 0, i < 12, i += 1 ]
+            col : i32 [ i % 3 ]
+            row : i32 [ i / 3 ]
+            x : f32 [ 12.0 + col * 27.0 ]
+            r : f32 [ 78.0 - x ]
+            y : f32 [ 6.4 + row * 3.4 ]
+            t[ 'key_{i}' ] = PhoneKey [ label: keys[ i ],
+                sub: subs[ i ],
+                area: Region [ 'l{x}% t{y} r{r}% h2.9' ] ]
+        y : f32 [ 6.4 + 4 * 3.4 ]
+        t[ 'call' ] = PhoneGo [ label: 'Call',
+            disable: dialed.count == 0,
+            area: Region [ 'l35% t{y} r35% h2.6' ] ]
+        if [ dialed.count > 0 ]
+            t[ 'text_to' ] = PhoneButton [ label: 'Text',
+                area: Region [ 'l12% t{y} r70% h2.6' ] ]
+            t[ 'back' ] = PhoneButton [ label: 'Delete',
+                area: Region [ 'l70% t{y} r12% h2.6' ] ]
+
+    func recents [ t: Elements ]
+        t[ 'head' ] = PhoneText [ label: 'Recents',
+            area: Region { l0.7 t3 r0.7 h1.4 } ]
+        y : f32 [ 4.8 ]
+        n : i32 [ book.calls.count ]
+        if [ n == 0 ]
+            t[ 'none' ] = PhoneNote [ label: 'No calls yet',
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+        # newest first, as many as fit
+        for [ k: i32 0, k < n && k < 14, k += 1 ]
+            i : i32 [ n - 1 - k ]
+            lc : LogCall book.calls[ i ]
+            what : (lc.kind == 'missed') ? 'missed'
+                : ((lc.kind == 'out') ? 'called' : 'answered')
+            if [ lc.dur > 0 ] what = '{what} {clock_text[ lc.dur ]}'
+            t[ 'rec_{i}' ] = PhoneRow [
+                label: book.name_of[ lc.number ],
+                note: '{what}   {when_text[ lc.at ]}',
+                warn: lc.kind == 'missed', selected: chosen == i,
+                area: Region [ 'l0.7 t{y} r0.7 h1.5' ] ]
+            y += 1.65
+            if [ chosen == i ] y = row_actions[ t, lc.number, y, false ]
+
+    # under a chosen row: call, text, and delete for a contact
+    func row_actions [ t: Elements, num: string, y: f32, del: bool ]
+            -> f32
+        t[ 'dial_it' ] = PhoneGo [ label: 'Call',
+            area: Region [ 'l5.5% t{y} r66% h1.3' ] ]
+        t[ 'text_it' ] = PhoneButton [ label: 'Text',
+            area: Region [ 'l36% t{y} r36% h1.3' ] ]
+        if [ del ]
+            t[ 'forget' ] = PhoneButton [ label: 'Delete',
+                area: Region [ 'l66% t{y} r5.5% h1.3' ] ]
+        el [ book.name_of[ num ] == num ]
+            t[ 'keep' ] = PhoneButton [ label: 'Add contact',
+                area: Region [ 'l66% t{y} r5.5% h1.3' ] ]
+        return y + 1.6
+
+    func contacts [ t: Elements ]
+        t[ 'head' ] = PhoneText [ label: 'Contacts',
+            area: Region { l0.7 t3 r6 h1.4 } ]
+        t[ 'add' ] = PhoneButton [ label: (adding) ? 'Cancel' : 'New',
+            area: Region { r0.7 t3 w4.8 h1.3 } ]
+        y : f32 [ 4.8 ]
+        if [ adding ]
+            y = new_contact[ t, y ]
+        for [ i: i32 0, i < book.contacts.count, i += 1 ]
+            c : Contact book.contacts[ i ]
+            t[ 'con_{i}' ] = PhoneRow [ label: c.name, note: c.number,
+                selected: chosen == i,
+                area: Region [ 'l0.7 t{y} r0.7 h1.5' ] ]
+            y += 1.65
+            if [ chosen == i ] y = row_actions[ t, c.number, y, true ]
+        if [ book.contacts.count == 0 && !adding ]
+            t[ 'none' ] = PhoneNote [ label: 'No contacts yet',
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+
+    # a name and a number, then Save
+    func new_contact [ t: Elements, y: f32 ] -> f32
+        field[ t, 'c_name', 'save', Region [ 'l0.7 t{y} r0.7 h1.3' ] ]
+        y2 : f32 [ y + 1.55 ]
+        field[ t, 'c_num', 'save', Region [ 'l0.7 t{y2} r6 h1.3' ] ]
+        t[ 'save' ] = PhoneButton [ label: 'Save',
+            area: Region [ 'r0.7 t{y2} w4.8 h1.3' ] ]
+        return y2 + 1.8
+
+    # a field kept while mounted; a new one starts with seed
+    func field [ t: Elements, key: string, go: string, ar: Region ]
+        if [ elements && elements.contains[ key ] ]
+            t[ key ] = PhoneInput [ area: ar, go: go ]
+        el
+            t[ key ] = PhoneInput [ area: ar, go: go,
+                edit: (key == 'c_num' || key == 'to') ? dialed : '' ]
+
+    func typed [ key: string ] -> string
+        if [ !elements || !elements.contains[ key ] ] return ''
+        e : element elements[ key ]
+        return (e && e.edit) ? e.edit.trim[] : ''
+
+    func clear [ key: string ]
+        if [ !elements || !elements.contains[ key ] ] return
+        e : element elements[ key ]
+        e.edit = ''
+        e.sel_col = 0
+        e.anchor_col = 0
+        e.pristine = false
+
+    func messages [ t: Elements ]
+        if [ thread.count > 0 ]
+            conversation[ t ]
+            return
+        t[ 'head' ] = PhoneText [ label: 'Messages',
+            area: Region { l0.7 t3 r6 h1.4 } ]
+        t[ 'write' ] = PhoneButton [
+            label: (writing) ? 'Cancel' : 'New',
+            area: Region { r0.7 t3 w4.8 h1.3 } ]
+        y : f32 [ 4.8 ]
+        if [ writing ]
+            field[ t, 'to', 'open', Region [ 'l0.7 t{y} r6 h1.3' ] ]
+            t[ 'open' ] = PhoneButton [ label: 'Write',
+                area: Region [ 'r0.7 t{y} w4.8 h1.3' ] ]
+            y += 1.8
+        # each number once, the latest text first
+        seen : vec string []
+        n : i32 [ book.texts.count ]
+        for [ k: i32 0, k < n, k += 1 ]
+            lt : LogText book.texts[ n - 1 - k ]
+            had : bool [ false ]
+            for [ s: string ] in seen
+                if [ same_number[ s, lt.number ] ] had = true
+            if [ had || seen.count >= 14 ] continue
+            seen.push[ lt.number ]
+            words : (lt.incoming) ? lt.text : 'You: {lt.text}'
+            if [ words.count > 28 ] words = '{words.mid[ 0, 27 ]}…'
+            t[ 'thr_{seen.count}' ] = PhoneRow [
+                label: book.name_of[ lt.number ], note: words,
+                area: Region [ 'l0.7 t{y} r0.7 h1.5' ] ]
+            y += 1.65
+        if [ n == 0 && !writing ]
+            t[ 'none' ] = PhoneNote [ label: 'No messages yet',
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+
+    # one person's texts, the newest at the foot, a reply under them
+    func conversation [ t: Elements ]
+        t[ 'close' ] = PhoneButton [ label: 'Back',
+            area: Region { l0.7 t3 w4 h1.3 } ]
+        t[ 'head' ] = PhoneText [ label: book.name_of[ thread ],
+            area: Region { l0.7 t4.6 r0.7 h1.4 } ]
+        t[ 'dial_it' ] = PhoneGo [ label: 'Call',
+            area: Region { r0.7 t3 w4.8 h1.3 } ]
+        mine : vec LogText []
+        for [ lt: LogText ] in book.texts
+            if [ same_number[ lt.number, thread ] ] mine.push[ lt ]
+        # from the foot up, until the page is full
+        y : f32 [ 6.4 ]
+        bottom : f32 [ 0.0 ]
+        heights : vec f32 []
+        for [ lt: LogText ] in mine
+            rows : i32 [ 1 + lt.text.count / 30 ]
+            heights.push[ 0.75 * rows + 1.3 ]
+        first : i32 [ mine.count ]
+        room : f32 [ 13.5 ]
+        while [ first > 0 && bottom + heights[ first - 1 ] < room ]
+            first -= 1
+            bottom += heights[ first ]
+        for [ i: i32 first, i < mine.count, i += 1 ]
+            lt : LogText mine[ i ]
+            h : f32 [ heights[ i ] ]
+            t[ 'msg_{i}' ] = PhoneBubble [ label: lt.text,
+                mine: !lt.incoming, when: when_text[ lt.at ],
+                area: Region [ 'l0.7 t{y} r0.7 h{h}' ] ]
+            y += h
+        field[ t, 'reply', 'send', Region { l0.7 b4.2 r6 h1.4 } ]
+        t[ 'send' ] = PhoneGo [ label: 'Send',
+            area: Region { r0.7 b4.2 w4.8 h1.4 } ]
+
+    # a call coming in, being made or talked on
+    func call_screen [ t: Elements, c: MmCall ]
+        t[ 'who' ] = PhoneBig [ label: book.name_of[ c.number ],
+            area: Region { l0.7 t4 r0.7 h2 } ]
+        words : string ''
+        if [ c.ringing[] ]           words = 'Incoming call'
+        el [ c.state == 1 ]          words = 'Calling'
+        el [ c.state == 2 ]          words = 'Ringing'
+        el [ c.state == 5 ]          words = 'On hold'
+        el [ c.state == 4 ]          words = clock_text[ c.seconds[] ]
+        t[ 'what' ] = PhoneMid [ label: words,
+            area: Region { l0.7 t6 r0.7 h1.2 } ]
+        if [ c.number != book.name_of[ c.number ] ]
+            t[ 'num' ] = PhoneMid [ label: c.number,
+                area: Region { l0.7 t7.2 r0.7 h1.2 } ]
+        if [ c.ringing[] ]
+            t[ 'decline' ] = PhoneStop [ label: 'Decline',
+                area: Region [ 'l10% b4 r55% h2.6' ] ]
+            t[ 'answer' ] = PhoneGo [ label: 'Answer',
+                area: Region [ 'l55% b4 r10% h2.6' ] ]
+            return
+        if [ tones ]
+            keys : vec string [] [ '1', '2', '3', '4', '5', '6', '7',
+                                   '8', '9', '*', '0', '#' ]
+            for [ i: i32 0, i < 12, i += 1 ]
+                x : f32 [ 12.0 + (i % 3) * 27.0 ]
+                r : f32 [ 78.0 - x ]
+                y : f32 [ 9.0 + (i / 3) * 3.0 ]
+                t[ 'tone_{i}' ] = PhoneKey [ label: keys[ i ],
+                    area: Region [ 'l{x}% t{y} r{r}% h2.6' ] ]
+        el
+            t[ 'mute' ] = PhoneButton [ label: 'Mute', selected: muted,
+                area: Region [ 'l8% t12 r66% h2.4' ] ]
+            t[ 'pad' ] = PhoneButton [ label: 'Keypad',
+                area: Region [ 'l37% t12 r37% h2.4' ] ]
+            t[ 'loud' ] = PhoneButton [ label: 'Speaker',
+                selected: speaker,
+                area: Region [ 'l66% t12 r8% h2.4' ] ]
+        if [ tones ]
+            t[ 'pad' ] = PhoneButton [ label: 'Hide keypad',
+                area: Region [ 'l30% b7 r30% h1.6' ] ]
+        t[ 'end' ] = PhoneStop [ label: 'End',
+            area: Region [ 'l30% b4 r30% h2.6' ] ]
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id ] return
+        press[ e.id ]
+
+    # a button by its key (a click, or Enter in its field)
+    func press [ key: string ]
+        note = ''
+        if [ key.starts_with[ 'tab_' ] ]
+            page = key.mid[ 4, key.count - 4 ]
+            chosen = -1
+            thread = ''
+        el [ key.starts_with[ 'key_' ] ]
+            dialed = '{dialed}{key_char[ key ]}'
+        el [ key.starts_with[ 'tone_' ] ]
+            c : modem.current[]
+            if [ c ] modem.tones[ c, key_char[ key ] ]
+        el [ key == 'back' && dialed.count > 0 ]
+            dialed = dialed.mid[ 0, dialed.count - 1 ]
+        el [ key == 'call' ]
+            dial[ dialed ]
+        el [ key == 'text_to' ]
+            open_thread[ dialed ]
+        el [ key.starts_with[ 'rec_' ] || key.starts_with[ 'con_' ] ]
+            ix : key.mid[ 4, key.count - 4 ]
+            i : i32 [ ix.integer_value[] ]
+            chosen = (chosen == i) ? -1 : i
+        el [ key.starts_with[ 'thr_' ] ]
+            row : cast PhoneRow [ elements[ key ] ]
+            for [ lt: LogText ] in book.texts
+                if [ row && book.name_of[ lt.number ] == row.label ]
+                    thread = lt.number
+        el [ key == 'dial_it' ]
+            dial[ chosen_number[] ]
+        el [ key == 'text_it' ]
+            open_thread[ chosen_number[] ]
+        el [ key == 'keep' ]
+            dialed = chosen_number[]
+            page = 'contacts'
+            adding = true
+            chosen = -1
+        el [ key == 'forget' && page == 'contacts' && chosen >= 0 ]
+            book.contacts.remove[ chosen ]
+            chosen = -1
+            book.save[]
+        el [ key == 'add' ]
+            adding = !adding
+        el [ key == 'save' ]
+            save_contact[]
+        el [ key == 'write' ]
+            writing = !writing
+        el [ key == 'open' ]
+            open_thread[ typed[ 'to' ] ]
+        el [ key == 'close' ]
+            thread = ''
+        el [ key == 'send' ]
+            send[]
+        el [ key == 'unlock' ]
+            if [ !modem.unlock[ typed[ 'pin' ] ] ]
+                note = 'The PIN was not taken'
+            clear[ 'pin' ]
+        el [ key == 'enable' ]
+            modem.enable[]
+        el [ key == 'answer' ]
+            c : modem.ringing[]
+            if [ c ] modem.answer[ c ]
+        el [ key == 'decline' ]
+            c : modem.ringing[]
+            if [ c ] modem.hang_up[ c ]
+        el [ key == 'end' ]
+            c : modem.current[]
+            if [ c ] modem.hang_up[ c ]
+        el [ key == 'pad' ]
+            tones = !tones
+        el [ key == 'mute' ]
+            muted = !muted
+        el [ key == 'loud' ]
+            speaker = !speaker
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+    func key_char [ key: string ] -> string
+        keys : '123456789*0#'
+        i : i32 [ i32[ key.mid[ key.index_of[ '_' ] + 1,
+            key.count ].integer_value[] ] ]
+        return keys.mid[ i, 1 ]
+
+    # the number of the chosen recents or contacts row, or the
+    # conversation's
+    func chosen_number [] -> string
+        if [ page == 'messages' ] return thread
+        if [ chosen < 0 ] return ''
+        if [ page == 'recents' && chosen < book.calls.count ]
+            return book.calls[ chosen ].number
+        if [ page == 'contacts' && chosen < book.contacts.count ]
+            return book.contacts[ chosen ].number
+        return ''
+
+    func dial [ num: string ]
+        if [ num.count == 0 ] return
+        if [ !modem.ready ]
+            note = 'No modem to call with'
+            return
+        if [ !modem.dial[ num ] ]
+            note = 'The call did not start: {modem.problem}'
+            return
+        dialed = ''
+        chosen = -1
+
+    func open_thread [ num: string ]
+        if [ num.count == 0 ] return
+        page = 'messages'
+        thread = num
+        writing = false
+        chosen = -1
+
+    func save_contact []
+        nm : typed[ 'c_name' ]
+        num : typed[ 'c_num' ]
+        if [ nm.count == 0 || num.count == 0 ]
+            note = 'A contact needs a name and a number'
+            return
+        book.contacts.push[ Contact [ name: nm, number: num ] ]
+        book.save[]
+        adding = false
+        dialed = ''
+
+    func send []
+        words : typed[ 'reply' ]
+        if [ words.count == 0 ] return
+        if [ !modem.send_text[ thread, words ] ]
+            note = 'Not sent: {modem.problem}'
+            return
+        book.texts.push[ LogText [ number: thread, text: words,
+            at: now_s[], incoming: false ] ]
+        book.save[]
+        clear[ 'reply' ]
+
+element phone : trinity
+    public width  : i32    [ 420 ]
+    public height : i32    [ 820 ]
+    public title  : string [ 'phone' ]
+    # the bus ModemManager is on ('' : the system bus)
+    public [ Launch ] bus : string
+
+    func render [] -> Elements
+        t : Elements []
+        t[ 'view' ] = PhoneView [ bus: bus,
+            area: Region { l0 t0 r0 b0 } ]
+        return t

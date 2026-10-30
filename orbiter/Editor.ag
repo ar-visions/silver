@@ -672,6 +672,8 @@ ResourceView AppView
     mutable dbg_nh     : i32
     mutable dbg_aw     : i32
     mutable dbg_ah     : i32
+    # the pane's draw posted this frame's request itself
+    mutable req_drawn  : bool
 
     func extensions [] -> vec string
         return vec string []
@@ -922,28 +924,10 @@ ResourceView AppView
                                             512 ] > 0 ]
                             lv : string [ @vb[0] ]
                             app_vol = f32[ lv.trim[].real_value[] ]
-        # a paned app draws one frame per frame we draw: this frame
-        # shows the one it made for the last request, and the next
-        # request goes out now, so it renders while we draw and present.
-        # one frame of latency, and every frame shown once as long as it
-        # answers within a frame
-        if [
-            started && slot >= 0 && display <= 1 && !held && !ended
-            && !paused ]
-            host_post2[ slot, 1, i32[ HM.frame ], 0, 0, 0 ]
-            pane_req += 1
-            fr : i32 [ host_tex_front[ slot, 0 ] + 1 ]
-            if [ fr != pane_seen ]
-                pane_seen  = fr
-                pane_flip += 1
-            ps9 : i64 [ epoch_millis[] / 1000 ]
-            if [ ps9 != pane_sec ]
-                pw9 : Window [ cv.w ]
-                if [ pane_sec != 0 && pw9 && pw9.stats ]
-                    log 'PANE slot={slot} req={pane_req} flips={pane_flip}'
-                pane_sec  = ps9
-                pane_req  = 0
-                pane_flip = 0
+        # a pane that draws asks for the next frame as it reads this one
+        # (draw_frame); a pane out of view asks here, so the app runs on
+        if [ !req_drawn ] request_frame[ cv ]
+        req_drawn = false
         # the app's sound rides its slot's ring: into the recording, if
         # one is on
         if [ started && slot >= 0 && !held && !ended ]
@@ -1219,6 +1203,8 @@ ResourceView AppView
                     0.0, 0.0, cw / ow, ch / oh ]
             return
         if [ ft && have_frame ]
+            request_frame[ cv ]
+            req_drawn = true
             if [ locked ]
                 ar : f32 [ f32[ aw ] / f32[ ah ] ]
                 fw : f32 [ bounds.w ]
@@ -1250,6 +1236,41 @@ ResourceView AppView
         if [ ended || halted[] || !have_frame ]
             overlay[ cv, bounds ]
 
+    # a paned app draws one frame per frame we draw. the request goes
+    # out as the pane reads the last one, after the tick's work, so the
+    # app renders while we finish, submit and wait on the refresh, and
+    # the frame it answers is read a whole refresh later: every frame
+    # shown once, in order, as long as it answers within a refresh.
+    # asked at the tick, the answer landed before or after the read by
+    # chance, and a frame was shown twice or skipped
+    func request_frame [ cv: Canvas ]
+        if [
+            !started || slot < 0 || display > 1 || held || ended
+            || paused ]
+            return
+        host_post2[ slot, 1, i32[ HM.frame ], 0, 0, 0 ]
+        pane_req += 1
+        fr : i32 [ host_tex_front[ slot, 0 ] + 1 ]
+        if [ fr != pane_seen ]
+            pane_seen  = fr
+            pane_flip += 1
+        ps9 : i64 [ epoch_millis[] / 1000 ]
+        if [ ps9 != pane_sec ]
+            pw9 : Window [ cv.w ]
+            if [ pane_sec != 0 && pw9 && pw9.stats ]
+                log 'PANE slot={slot} req={pane_req} flips={pane_flip}'
+                # the app's own counters beside ours: a leak shows in
+                # either
+                sb9 : local i8 [ 8192 ]
+                if [
+                    agent_sock_ask[ sock_name[].chars, 'stats\n',
+                                    @sb9[0], 8192 ] > 0 ]
+                    sl9 : string [ @sb9[0] ]
+                    log 'APP {app_mod}-{slot}: {sl9.trim[]}'
+            pane_sec  = ps9
+            pane_req  = 0
+            pane_flip = 0
+
     func render [ cv: Canvas, bounds: rect ]
         service[ cv ]
         draw_frame[ cv, bounds ]
@@ -1260,6 +1281,53 @@ ResourceView AppView
         if [ aw > 0 && ah > 0 ] return f32[ aw ] / f32[ ah ]
         return 0.0
 
+    # what its build is doing now, read from the build's log (four
+    # times a second at most): compiling, testing, linking
+    intern step_ms  : i64
+    intern step_txt : string
+
+    func building [] -> bool
+        return slot >= 0 && host_app_state[ slot ] == 1
+
+    func build_step [] -> string
+        ms : i64 epoch_millis[]
+        if [ step_txt && ms - step_ms < 250 ] return step_txt
+        step_ms  = ms
+        step_txt = 'compiling {app_mod}'
+        lp : path '{install_root[]}/tmp/{app_mod}.{slot}.log'
+        if [ !lp.exists[] ] return step_txt
+        body : string lp.load[ typeid[string], null ]
+        if [ !body ] return step_txt
+        rows : body.split[ '\n' ]
+        for [ i: i32 i32[ rows.count ] - 1, i >= 0, i -= 1 ]
+            ln : string rows[ i ]
+            # its own words, then the module in brackets
+            if [ !ln.starts_with[ '[' ] ] continue
+            ce : i32 [ ln.index_of[ ']' ] ]
+            if [ ce < 2 ] continue
+            who : string ln.mid[ 1, ce - 1 ]
+            rest : string ln.mid[ ce + 1, ln.count - ce - 1 ].trim[]
+            if [ who.starts_with[ 'import ' ] ]
+                who = who.mid[ 7, who.count - 7 ]
+                if [ who.starts_with[ 'silver-' ] ]
+                    who = who.mid[ 7, who.count - 7 ]
+            if [ rest.starts_with[ 'expect: ' ] ]
+                tn : string rest.mid[ 8, rest.count - 8 ]
+                sp : i32 [ tn.index_of[ ' ' ] ]
+                if [ sp > 0 ] tn = tn.mid[ 0, sp ]
+                step_txt = 'testing {who}: {tn}'
+                return step_txt
+            if [ rest.starts_with[ 'compiling' ] ]
+                step_txt = 'compiling {who}'
+                return step_txt
+            if [ rest.starts_with[ 'linking' ] ]
+                step_txt = 'linking {who}'
+                return step_txt
+            if [ rest.starts_with[ 'built' ] ]
+                step_txt = 'built {who}'
+                return step_txt
+        return step_txt
+
     # what the shell should SAY about this app right now. null once it
     # is up and drawing — waiting blind is the thing this exists to stop
     func status_text [] -> string
@@ -1269,7 +1337,7 @@ ResourceView AppView
             return (note && note.count > 0) ? note : 'paused'
         if [ attaching ] return 'attaching debugger to {app_mod}...'
         st7 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
-        if [ st7 == 1 ]  return 'compiling {app_mod}...'
+        if [ st7 == 1 ]  return '{build_step[]}...'
         # its own window: no frame ever arrives here, so nothing is
         # awaited
         if [ display >= 2 ] return null
@@ -1298,7 +1366,7 @@ ResourceView AppView
     func overlay [ cv: Canvas, bounds: rect ]
         st9 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         msg : string [
-            (st9 == 1) ? 'compiling {app_mod}…'
+            (st9 == 1) ? '{build_step[]}…'
             : 'starting {app_mod}…' ]
         if [ ended ]
             msg = (failed[]) ? '{note} — F5 or play to run again'
@@ -1360,12 +1428,13 @@ ResourceView AppView
         started = true
         mod : string module_name[]
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the
-        # app for the debugger, which a viewer never asks; 2 builds
-        # clean; 4 builds -O0 -g bits 8-15: this display's refresh, the
-        # pace of an app shown in the pane bit 16: a coverage build
+        # app for the debugger, a debug launch only (a plain run is
+        # never traced); 2 builds clean; 4 builds -O0 -g; bits 8-15:
+        # this display's refresh, the pace of an app shown in the pane;
+        # bit 16: a coverage build
         hz : i32 [ (host_hz > 0) ? host_hz : 60 ]
         fl : i32 [
-            ((viewer) ? 0 : 1) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) |
+            ((debug_build) ? 1 : 0) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) |
             ((display & 3) << 3) | ((hz & 255) << 8) | ((cov_build) ? (1 << 16) : 0) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's
@@ -3418,6 +3487,10 @@ Layer EditorLayer
             cv.stroke_width[ 0.0 ]
             # shift over it: the copy action's own colour
             cpy : bool [ editor.hover_err && editor.shift_down ]
+            # a build under way is news, not an error: the info look
+            busy : bool [ editor.run_view && editor.run_view.building[]
+                          && !editor.err_band_line[] ]
+            if [ busy ] cpy = true
             cv.fill_color[
                 (cpy) ? rgba['#1d3a5c'] : (editor.hover_err)
                 ? rgba['#5a2430'] : rgba['#3a1219'] ]
@@ -4838,6 +4911,9 @@ Control Editor
         if [ !o9 ] return null
         et : string o9.err_text_for[ src ]
         if [ et ] return et
+        # its build under way: what it is doing (the band's info look)
+        if [ run_view && run_view.building[] ]
+            return '{o9.instance_name[ run_view ]}: {run_view.build_step[]}'
         # no line: the instance's own failure, as it said it
         if [ o9.run_failed[ run_view ] ]
             return '{o9.instance_name[ run_view ]}: {run_view.note}'

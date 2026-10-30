@@ -224,7 +224,8 @@ ielement element
     func scroll_grab [ ev: Event ] -> bool
         sbl : ScrollLayer (layers) ? cast ScrollLayer [
             layers['scrollbar'] ] : null
-        if [ !sbl || sbl.scroll_max <= 0.0 ] return false
+        if [ !sbl || no_thumb || sbl.scroll_max <= 0.0 ]
+            return false
         grab : f32 [
             (sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 : 16.0 ]
         if [ cursor_pos.x * bounds.w < bounds.w - grab ] return false
@@ -378,6 +379,11 @@ ielement element
     public arranging    : bool
     # its last lit paint's reach, a factor of the window's (0 = 1)
     mutable near_far    : f32
+    # it scrolls with no thumb drawn or taken
+    public no_thumb     : bool
+    # run as a desktop widget: its ground is clear, the desktop shows
+    # through what it leaves unpainted
+    public [ Live ] widget : bool
 
     func init []
         use_mobile = mobile_on[]
@@ -497,7 +503,7 @@ ielement element
     # its window starts each frame clear, so the host's ground (the
     # scene and its tint) shows through what it leaves see-through
     public func screen_ground [] -> bool
-        return false
+        return widget
 
     func unload_tree [ ]
         on_unload*[]

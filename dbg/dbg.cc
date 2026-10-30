@@ -261,6 +261,13 @@ DBG_API Au dbg_poll(dbg debug) {
                 u64 sig = thread.GetStopReasonDataAtIndex(0);
                 is_sig = (sig == SIGSTOP || sig == SIGCONT);
             }
+            // lldb's own breakpoints (the dynamic loader's) have ids < 0
+            if (reason == lldb::eStopReasonBreakpoint &&
+                (thread.GetStopReasonDataCount() == 0 ||
+                 (i64)thread.GetStopReasonDataAtIndex(0) < 0)) {
+                S(debug)->process.Continue();
+                continue;
+            }
             int  fl = 0; while (file_path[fl]) fl++;
             bool is_ag = line_entry.IsValid() && line > 0 && fl >= 3 &&
                          file_path[fl-3] == '.' && file_path[fl-2] == 'a' && file_path[fl-1] == 'g';
