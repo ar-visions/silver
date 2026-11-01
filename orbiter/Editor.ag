@@ -7529,8 +7529,9 @@ Control Editor
             if [ li < e_line ] out = out + '\n'
         return out
 
+    # an anchor with no line (a press off the text) is none
     func has_selection [] -> bool
-        return sel_line >= 0 &&
+        return sel_line >= 0 && anchor_line >= 0 &&
             (anchor_line != sel_line || anchor_col != sel_col)
 
     func delete_selection [] -> bool
@@ -7780,7 +7781,8 @@ Control Editor
 
         # printables arrive via on_char — they must not collapse the
         # anchor
-        if [ key != 257 && key != 258 && key != 259 && !(key >= 262 && key <= 265) ]
+        if [ key != 257 && key != 258 && key != 259 && key != 261
+             && !(key >= 262 && key <= 265) ]
             return
 
         if [ key == 257 ]    # Key.Enter
@@ -7849,6 +7851,21 @@ Control Editor
                 ed_set[ row - 1, prev + line_get[ row ] ]
                 ed_remove[ row ]
                 sel_line -= 1
+            end_edit[]
+
+        el [ key == 261 ]    # Key.Delete: the character after
+            if [ edits_locked ] return
+            begin_edit[ 2 ]
+            line : line_get[ row ]
+            if [ delete_selection[] ]
+                pristine = false
+            el [ col < line.count ]
+                on : i32 [ utf8_next[ line, col ] ]
+                ed_set[ row, line.mid[ 0, col ]
+                        + line.mid[ on, line.count - on ] ]
+            el [ row < line_count[] - 1 && !show_hits ]
+                ed_set[ row, line + line_get[ row + 1 ] ]
+                ed_remove[ row + 1 ]
             end_edit[]
 
         el [ key == 265 ]    # Key.Up

@@ -3994,6 +3994,8 @@ element orbiter : trinity # implements compiler
     intern side_tab      : string [ 'instances' ]
     # the system menu's lower part: scenes, instances, wifi, '' none
     intern sys_view      : string [ '' ]
+    # the bar's mobile network: the width its draw asked for
+    public sig_w         : f32
     # the scene setting whose choices are open under its chip
     intern scene_open    : string [ '' ]
     # chip_grid's height, as it last laid them out
@@ -14084,7 +14086,8 @@ element orbiter : trinity # implements compiler
         # a phone has the top bar alone: the panes to the bottom
         # its keyboard under them while the focus takes words; a PC
         # has the keyboard's bar alone, once a language is added
-        keys : bool [ use_mobile && ux.words_wanted ]
+        # the system menu up: its own keyboard, over this
+        keys : bool [ use_mobile && ux.words_wanted && !sys_up[] ]
         bar : bool [ !use_mobile && ux.words_wanted
             && languages_added[] ]
         foot : string [ (keys) ? 'l0 t0 r0 b41%'
@@ -15285,8 +15288,12 @@ element orbiter : trinity # implements compiler
 
     # the system bar's right end: nothing (the bottom bar holds them)
     func right_w [] -> f32
-        if [ !system_os || !modem_shared[].ready ] return 0.0
-        return 7.0 * unit_px[]
+        if [ !phone_here[] || !modem_shared[].ready ] return 0.0
+        return (sig_w > 0.0) ? sig_w : 7.0 * unit_px[]
+
+    # a mobile network to show: orbiter-os, or the simulated phone
+    func phone_here [] -> bool
+        return system_os || getenv[ 'SILVER_PHONE_SIMULATE' ] != null
 
     # the phone app: its running instance shown, else started here
     func open_phone []
@@ -17624,10 +17631,13 @@ element orbiter : trinity # implements compiler
         # a phone: one strip along the foot, scrolled sideways, the
         # view above it
         if [ use_mobile ]
+            # words wanted: the keyboard takes the foot, the row goes
+            kb : bool [ ux && ux.words_wanted ]
+            foot : string [ (kb) ? '41%' : '{dw}px' ]
             if [ sys_view == 'navigator' ]
                 t['sys_nav'] = CommitView [ focusable: true,
                     scroll_fade: 24.0,
-                    area: Region [ 'l0 t0 r0 b{dw}px' ] ]
+                    area: Region [ 'l0 t0 r0 b{foot}' ] ]
             el [ sys_view.count > 0 ]
                 sv : Elements side_view[ sys_view,
                     'l0.3 t0.7 r0.3 b{dw / un + 0.3}' ]
@@ -17635,10 +17645,14 @@ element orbiter : trinity # implements compiler
                     t[ vk ] = ve
             el
                 t['sys_agents'] = AgentHome [ stacked: true,
-                    area: Region [ 'l0 t0 r0 b{dw}px' ] ]
+                    area: Region [ 'l0 t0 r0 b{foot}' ] ]
             # last: over the avatar where it reaches past its box
-            t['sys_strip'] = SysStrip [
-                area: Region [ 'l0 b{dw}px r0 h{dw}px' ] ]
+            if [ kb ]
+                t['sys_keys'] = FlickKeys [
+                    area: Region { l0 b41% r0 b0 } ]
+            el
+                t['sys_strip'] = SysStrip [
+                    area: Region [ 'l0 b{dw}px r0 h{dw}px' ] ]
             return t
         cells : Elements []
         # the views' cells scroll, masked, over what the fixed foot
@@ -17986,7 +18000,7 @@ element orbiter : trinity # implements compiler
                 mo : Modem modem_shared[]
                 mo.data_on = true
             # a call coming in brings the phone up, once a call
-            if [ system_os && modem_shared[].poll[] ]
+            if [ phone_here[] && modem_shared[].poll[] ]
                 w.restyle = true
                 rc : modem_shared[].ringing[]
                 if [ rc && rc.path != ring_seen ]

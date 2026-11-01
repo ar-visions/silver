@@ -1578,6 +1578,18 @@ phone itself (arm64), not busybox. Order:
    s. DONE (Oct 31) the phone's system menu opens under the system
       bar (SystemDrawer's own :use_mobile, t0.91; the base drawer's
       t0 had covered the bar).
+   t. DONE (Oct 31) a tap on an agent's console in the phone's
+      menu brings the keyboard up: the menu mounts its own
+      FlickKeys at the foot (41%) in place of the bottom row while
+      words are wanted; the main area's keyboard stays off then.
+      Not driven: typing into the console from it.
+   u. DONE (Oct 31) Delete in the code editor deletes the
+      character after the caret, or at a line's end joins the next
+      (Editor on_key 261; the key filter let it through no more).
+      Found with it: a press off the text left the anchor on line
+      -1; the next delete took that as a selection and wrote line -1
+      ("could not fetch item at index -1", exit). has_selection now
+      needs an anchor line. Likely the mic crash's cause too.
    m. OPEN (Oct 31) the mic crash in the code editor: reproduced
       (debug, SILVER_DICT_FILE): after the take typed "Testing.",
       SIGSEGV in FlickStrip.render (keyboard.ag:1184) on a freed

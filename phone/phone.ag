@@ -701,18 +701,14 @@ element PhoneView
         tabs[ t ]
         return t
 
-    # the network and its signal, or what is wrong
+    # what is wrong, else our own number (the network and its
+    # signal are the system bar's)
     func status [ t: Elements ]
         words : string ''
         if [ !modem.ready ]
             words = (modem.problem.count > 0) ? modem.problem
                 : 'No modem'
-        el
-            bars : modem.bars[]
-            words = '{modem.network[]}   {bars} of 4 bars'
-            if [ modem.number.count > 0 ]
-                words = '{words}   {modem.number}'
-            if [ simulated ] words = '{words}   simulated'
+        el words = modem.number
         if [ note.count > 0 ] words = note
         t[ 'status' ] = PhoneNote [ label: words,
             area: Region { l0.7 t0.3 r0.7 h1 } ]
@@ -743,7 +739,7 @@ element PhoneView
 
     func keypad [ t: Elements ]
         t[ 'dialed' ] = PhoneDial [ label: dialed,
-            area: Region { l0.7 t3.2 r0.7 h2.4 } ]
+            area: Region { l0.7 t1.2 r0.7 h2.0 } ]
         keys : vec string [] [ '1', '2', '3', '4', '5', '6', '7', '8',
                                '9', '*', '0', '#' ]
         subs : vec string [] [ '', 'ABC', 'DEF', 'GHI', 'JKL', 'MNO',
@@ -751,21 +747,21 @@ element PhoneView
         for [ i: i32 0, i < 12, i += 1 ]
             col : i32 [ i % 3 ]
             row : i32 [ i / 3 ]
-            x : f32 [ 12.0 + col * 27.0 ]
-            r : f32 [ 78.0 - x ]
-            y : f32 [ 5.8 + row * 3.4 ]
+            # circles, centred on their thirds
+            cx : f32 [ 23.0 + col * 27.0 ]
+            y : f32 [ 3.4 + row * 2.8 ]
             t[ 'key_{i}' ] = PhoneKey [ label: keys[ i ],
                 sub: subs[ i ],
-                area: Region [ 'l{x}% t{y} r{r}% h2.9' ] ]
-        y : f32 [ 5.8 + 4 * 3.4 ]
+                area: Region [ 'l{cx}%-1.2 t{y} w2.4 h2.4' ] ]
+        y : f32 [ 3.4 + 4 * 2.8 ]
         t[ 'call' ] = PhoneGo [ label: 'Call',
             disable: dialed.count == 0,
-            area: Region [ 'l35% t{y} r35% h2.6' ] ]
+            area: Region [ 'l35% t{y} r35% h2.3' ] ]
         if [ dialed.count > 0 ]
             t[ 'text_to' ] = PhoneButton [ label: 'Text',
-                area: Region [ 'l12% t{y} r70% h2.6' ] ]
+                area: Region [ 'l12% t{y} r70% h2.3' ] ]
             t[ 'back' ] = PhoneButton [ label: 'Delete',
-                area: Region [ 'l70% t{y} r12% h2.6' ] ]
+                area: Region [ 'l70% t{y} r12% h2.3' ] ]
 
     func recents [ t: Elements ]
         t[ 'head' ] = PhoneText [ label: 'Recents',

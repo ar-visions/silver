@@ -1506,6 +1506,12 @@ Mixable BoxShadow
             cv.shadow[ i, color, offset.x, offset.y, blur, spread,
                        inset ]
 
+    # the same, its lengths times k (the near light's, by the font)
+    public func apply_by [ cv: Canvas, i: i32, k: f32 ]
+        if [ color ]
+            cv.shadow[ i, color, offset.x * k, offset.y * k, blur * k,
+                       spread * k, inset ]
+
     # a transition calls mix[]: without it the shadow snaps
     public func mix [ b: Mixable, f: f64 ] -> Mixable
         o : BoxShadow [ b ]

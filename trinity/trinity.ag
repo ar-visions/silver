@@ -4770,7 +4770,7 @@ Display Window
                     restyle = true
                 # borders in reach repaint as the light moves
                 c.win_pos = vec2f [ cx, cy ]
-                rc : f32 [ near_reach
+                rc : f32 [ near_reach * ux_unit[ a ]
                     * ((c.near_far > 0.0) ? c.near_far : 1.0) ]
                 lit : bool [ !shut && mx >= cx - rc
                              && mx < cx + c.bounds.w + rc &&
@@ -4831,7 +4831,9 @@ Display Window
             cv.transform_tx[] + (mouse.x - e.win_pos.x + ox) * sc ]
         y : f32 [
             cv.transform_ty[] + (mouse.y - e.win_pos.y + oy) * sc ]
-        cv.near_light[ x, y, near_reach * scale * sc, e.near_glow ]
+        # the reach follows the font's size, as the glow does
+        rr : f32 [ near_reach * ux_unit[ a ] * scale * sc ]
+        cv.near_light[ x, y, rr, e.near_glow ]
         cv.near_style[ 1.0, 0.0, null, near_y_fade ]
 
     public func find_target [ e: element, ev: Event,
@@ -7535,13 +7537,15 @@ Display Window
                     draw_cv.stroke_grad_radial [ false ]
                     draw_cv.stroke_grad_mirror [ false ]
                 draw_cv.no_shadows[]
-                if [ layer.box_shadow ]
-                    layer.box_shadow.apply[ draw_cv, 0 ]
                 # disabled: no light
                 nb : bool [ layer.near_border && sw_max > 0.0
                     && !e.disable ]
                 ni : bool [ layer.near_inset > 0.0
                              && layer.box_shadow && !e.disable ]
+                # a near lit glow follows the font's size
+                if [ layer.box_shadow ]
+                    layer.box_shadow.apply_by[ draw_cv, 0,
+                        (ni) ? ux_unit[ a ] : 1.0 ]
                 if [ nb || ni ]
                     near_light_reach[ draw_cv, e, 0.0, 0.0,
                         (layer.near_reach > 0.0) ? layer.near_reach

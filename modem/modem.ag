@@ -1039,15 +1039,6 @@ func mms_kind [ f: string ] -> string
     if [ low.ends_with[ '.txt' ] ]  return 'text/plain; charset=utf-8'
     return 'application/octet-stream'
 
-# one client for the process: the system bar and the phone app
-modem_now : Modem
-
-func modem_shared [] -> Modem
-    if [ !modem_now ]
-        modem_now = Modem []
-        modem_now.open[]
-    return modem_now
-
 # a private bus and the stand-in ModemManager on it, for tests
 class ModemStandIn
     public bus  : string
@@ -1091,6 +1082,20 @@ class ModemStandIn
         kill_line : 'kill {pids} 2>/dev/null'
         k : command [ kill_line ]
         k.exec[ false ]
+
+# one client for the process: the system bar and the phone app
+modem_now : Modem
+# the simulated phone's stand-in (SILVER_PHONE_SIMULATE)
+modem_sim : ModemStandIn
+
+func modem_shared [] -> Modem
+    if [ !modem_now ]
+        modem_now = Modem []
+        if [ getenv[ 'SILVER_PHONE_SIMULATE' ] ]
+            modem_sim = ModemStandIn [ simulate: true ]
+            if [ modem_sim.start[] ] modem_now.address = modem_sim.bus
+        modem_now.open[]
+    return modem_now
 
 func modem_nap []
     ts : struct timespec
