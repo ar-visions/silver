@@ -1,22 +1,4 @@
-# why is the dock calm? every app it holds is pinned down
-# orbiter took a break once; it called it a stable orbit
-# the avatar spins while it builds: it is just excited
-# orbiter never gets lost: it always knows its own module
-# a clean build is just orbiter starting its orbit over
-# the avatar builds itself; it just needs the right fuel
-# the avatar pushed into its platform: thrust has consequences
-# the aether is never lost: it is simply everywhere at once
-# the system bar stays up late: it holds all the menus
-# the dock went to therapy: too many apps leaned on it
-# a pane is just a window that failed to float
-# the menu went violet: green was never its colour
-# the build said exit 0; the reload said nothing at all
-# why did the window float free? it needed space
-# why orbit the sun? it was the only thing in our pane
-# orbiter never crashes; it just changes its orbit
-# the side panel never argues; it just folds
-# the task bar never rests; it always has chips to carry
-# the camera leans in when you work; it is a supportive lens
+# why did the pixel quit? it felt boxed in.
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -1452,6 +1434,8 @@ element HomeLabel
 # an agent's title in the agent view: a press opens its console
 # under it, again folds it
 element AgentHead
+    # a narrow menu's: edge to edge, square, no border
+    public flush : bool
     style : CSS {
         layers.face:
             fill_color: #ffffff0a
@@ -1466,17 +1450,26 @@ element AgentHead
             fill_color: #4d3dbc39
             stroke_color: #806bff55
             radius: 8 8 0 0
+    :flush
+        layers.face:
+            radius: 0
+            stroke_width: 0
     }
 
 # the open agent's console frame, joined to its title above,
 # rounded at the bottom
 element AgentBody
+    public flush : bool
     style : CSS {
         layers.face:
             fill_color: #202a
             radius: 0 0 8 8
             stroke_width: 1
             stroke_color: #806bff55
+    :flush
+        layers.face:
+            radius: 0
+            stroke_width: 0
     }
 
 # an agent's state on its title: running, or waiting (blue)
@@ -1535,6 +1528,8 @@ element DeskWidget
     animated  : true
     focusable : true
     public index : i32
+    # mounted over the apps (else at their side)
+    public top   : bool
     # dragged in edit mode: where the press went down, how far it went
     mutable drag : bool
     mutable from : vec2f
@@ -1723,6 +1718,12 @@ element DeskWidget
         av : AppView (o) ? o.widget_view[ index ] : null
         if [ av && !editing[] ] av.on_text*[ ev ]
 
+    # the hosted app's own focus says, as a pane's
+    public func takes_words [] -> bool
+        o : orbiter orb[]
+        av : AppView (o) ? o.widget_view[ index ] : null
+        return av != null && !editing[] && av.app_words
+
 # a narrow desktop's widgets as tabs: their names, the shown one
 # bold; a press shows that one
 element DeskTabs
@@ -1794,6 +1795,11 @@ element AgentHome
                                bounds.w / 0.8 ] ] ]
         lx : f32 [ (stacked) ? round[ 8.0 * un ]
                              : round[ bounds.w * 0.42 ] ]
+        # too narrow for the list beside the avatar (under 300 units):
+        # the avatar in the middle, the groups flush edge to edge
+        narrow : bool [ stacked
+            && bounds.w * 0.55 - 8.0 * un < 300.0 * un ]
+        if [ narrow ] lx = 0.0
         pl : element orb.platform_of[ (stacked) ? ps : lx ]
         pv : PlatformView pl
         pv.top_down = stacked
@@ -1801,6 +1807,9 @@ element AgentHome
         # 0.42 down from the top
         px : f32 [ round[ bounds.w - ps * 0.8 ] ]
         py : f32 [ round[ ps * -0.08 ] ]
+        if [ narrow ]
+            px = round[ (bounds.w - ps) * 0.5 ]
+            py = round[ (bounds.h - ps) * 0.5 ]
         pl.area = (stacked)
             ? Region [ 'l{px}px t{py}px w{ps}px h{ps}px' ]
             : Region { l0 t0 r0 b0 }
@@ -1808,7 +1817,8 @@ element AgentHome
         rh : f32 [ round[ 30.0 * un ] ]
         ed : f32 [ (stacked) ? round[ 8.0 * un ] : round[ 24.0 * un ] ]
         # stacked, the list keeps off the avatar's half
-        rr : f32 [ (stacked) ? round[ bounds.w * 0.45 ] : ed ]
+        rr : f32 [ (narrow) ? 0.0
+            : (stacked) ? round[ bounds.w * 0.45 ] : ed ]
         top : f32 [ round[ ((stacked) ? 8.0 : 12.0) * un ] ]
         y : f32 [ top ]
         if [ orb.home_why && orb.home_why.count > 0 ]
@@ -1832,6 +1842,7 @@ element AgentHome
             cs : ConsoleSession orb.home_session[ an ]
             open : bool [ orb.home_open == an && cs != null ]
             t['ahome_h_{an}'] = AgentHead [ selected: open,
+                flush: narrow,
                 area: Region [ 'l{lx}px t{y}px r{rr}px h{hh}px' ] ]
             mark : string [ (open) ? '▾' : '▸' ]
             md : string orb.home_model_of[ an ]
@@ -1869,7 +1880,7 @@ element AgentHome
                 one : map ConsoleSession [ string ] []
                 one[ an ] = cs
                 # its top edge on the title's bottom one: one line
-                t['ahome_b_{an}'] = AgentBody [
+                t['ahome_b_{an}'] = AgentBody [ flush: narrow,
                     area: Region [
                         'l{lx}px t{y - 1.0}px r{rr}px h{ch + gap + 1.0}px' ] ]
                 t['ahome_t_{an}'] = Console [ focusable: true,
@@ -3999,7 +4010,7 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] set_delay    : i32 [ 600 ]
     intern [ StatePersist ] set_rate     : i32 [ 25 ]
     intern [ StatePersist ] set_layout   : string [ 'us' ]
-    intern [ StatePersist ] set_size     : i32 [ 22 ]
+    intern [ StatePersist ] set_size     : i32 [ rest_unit[] ]
     # a new screen mode waits on keep: the mode before it, and when it
     # goes back by itself
     intern mode_was      : i32 [ -1 ]
@@ -4132,6 +4143,8 @@ element orbiter : trinity # implements compiler
         active_panel   = 'files'
         active_target  = 'silver'
         restore_session[]
+        # the phone's keyboard tables, at startup (never on a key)
+        if [ mobile_on[] ] keyboard_load[]
         adopt_live_slots[]
         nav_root       = project_root[]
         # warm the git snapshot now: the view reads it, never fetches
@@ -6072,6 +6085,20 @@ element orbiter : trinity # implements compiler
         pick_default[ ed, av, mod, '' ]
         return true
 
+    # the navigator for a file an app asked for (its + or open
+    # button); the choice is shared into its view and handed to it
+    # as its own dialog's pick
+    func app_pick [ pe: Editor ]
+        pick_field  = 'app_pick'
+        pick_dir    = false
+        pick_editor = pe
+        pick_launch = null
+        pick_exts   = vec string []
+        pick_cache  = null
+        active_pane = pe.pane_index
+        focus_finder[]
+        run_search[]
+
     # the resource pick for an app's bare argument; with launch,
     # the chosen file starts that instance
     func pick_default [ pe: Editor, launch: AppView, mod: string,
@@ -6680,7 +6707,7 @@ element orbiter : trinity # implements compiler
                         area: Region { r0.15+ t0.15 w1.6 h1.0 } ]
 
         # the navigator's search: list or icons, at its right end
-        if [ nv9 && !fb_on ]
+        if [ nv9 && !fb_on && !use_mobile ]
             nvb : vec string [] [ 'nav_list', 'nav_icons' ]
             els['nav_view'] = AltTab [ buttons: nvb,
                 icon_ids: vec string [] [ 'view_list', 'grid_view' ],
@@ -7355,12 +7382,15 @@ element orbiter : trinity # implements compiler
     # the widgets beside the apps while 30% of the desktop holds one
     # (260 units), else above them
     func desk_beside [ w: f32 ] -> bool
+        # a phone holds them on top: its home never turns sideways
+        if [ use_mobile ] return false
         return w * 0.3 >= round[ 260.0 * ux_unit[ ux ] ]
 
     # the desktop's widget side, px from the right edge (0 while they
     # sit above the apps, are hidden, or are none)
     func desk_side [ w: f32 ] -> f32
-        if [ !desk_widgets || desk_widgets.count == 0 || desk_hide
+        if [ !desk_widgets || desk_widgets.count == 0
+             || (desk_hide && !use_mobile)
              || !desk_beside[ w ] ]
             return 0.0
         return round[ w * 0.3 ]
@@ -7473,14 +7503,31 @@ element orbiter : trinity # implements compiler
     # stacked beside the apps (fixed while they scroll) when the
     # desktop is wide, else one at a time under a tab bar above them
     # (they scroll together). the grid mounts them as its children
+    # each widget told whether it sits over the apps: at its start,
+    # and live when that changes
+    func widget_place [ top: bool ]
+        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            av : AppView widget_view[ i ]
+            if [ !av || av.top_sent == i32[ top ] ] continue
+            av.top_sent = i32[ top ]
+            tf : string '--trinity.widget_top {top}'
+            av.module_args = '--trinity.widget true {tf}'
+            # not started yet: its launch line carries it
+            if [ av.slot > 0 ]
+                agent_sock_send[ av.sock_name[].chars,
+                    'set widget_top {top}\n' ]
+
     func widget_els [ gw: f32 ] -> Elements
         t : Elements []
         desk_top = 0.0
-        if [ !ux || gw <= 0.0 || !desk_widgets || desk_hide ] return t
+        if [ !ux || gw <= 0.0 || !desk_widgets
+             || (desk_hide && !use_mobile) ]
+            return t
         un : f32 ux_unit[ ux ]
         pad : f32 [ round[ 24.0 * un ] ]
         gap : f32 [ round[ 10.0 * un ] ]
         beside : bool desk_beside[ gw ]
+        widget_place[ !beside ]
         w : f32 [ (beside) ? round[ gw * 0.3 ] - pad : gw - pad * 2.0 ]
         x : f32 [ (beside) ? gw - pad - w : pad ]
         y : f32 [ pad ]
@@ -7492,7 +7539,7 @@ element orbiter : trinity # implements compiler
             t['widget_tabs'] = DeskTabs [
                 area: Region [ 'l{x}px t{pad}px+ w{w}px h{th}px' ] ]
             t['widget_{desk_tab}'] = DeskWidget [ index: desk_tab,
-                area: Region [ 'l{x}px t{gap}px+ w{w}px h{h}px' ] ]
+                top: true, area: Region [ 'l{x}px t{gap}px+ w{w}px h{h}px' ] ]
             desk_top = th + gap + h
             return t
         for [ i: i32 0, i < desk_widgets.count, i += 1 ]
@@ -7553,11 +7600,11 @@ element orbiter : trinity # implements compiler
             m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
             for [ e: TrayEntry ] in mine
                 m.push[ e ]
-        m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
-        # not running: it starts; running: it quits
+        # not running: it starts
         live : bool [ !av.ended && !av.held && av.slot >= 0 ]
-        m.push[ (live) ? own_entry[ 'Quit', 'orb.quit', 1 ]
-            : own_entry[ 'Run', 'orb.run', 1 ] ]
+        if [ !live ]
+            m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+            m.push[ own_entry[ 'Run', 'orb.run', 1 ] ]
         return m
 
     # the properties as menu rows between rules: the build switches
@@ -7639,13 +7686,6 @@ element orbiter : trinity # implements compiler
                                               e.action.count - 14 ] ]
             if [ nn.count > 0 ] home_in_pane[ nn, active_pane ]
             return
-        # the file's menu: the pane itself
-        if [ e.action == 'orb.pane_add' ]
-            pane_add[]
-            return
-        if [ e.action == 'orb.pane_close' ]
-            if [ ed ] close_pane[ ed.pane_index ]
-            return
         # a shell in the app's own folder, in this pane; an agent's
         # terminal it covers runs on
         # a console of its own, new, in the app's folder: the app keeps
@@ -7715,11 +7755,6 @@ element orbiter : trinity # implements compiler
             set_pane_view[ ed, (vn == ed.resolve_view[]) ? '' : vn ]
             force_update[]
             return
-        # the pane's window or app quits (a window that does not
-        # answer is ended 3 s on)
-        if [ e.action == 'orb.wquit' ]
-            quit_app_in[ active_pane ]
-            return
         # in the pane, as at startup: an app never run has no instance
         if [ e.action == 'orb.run' ]
             if [ ed ] pending_run = ed.pane_index
@@ -7740,8 +7775,6 @@ element orbiter : trinity # implements compiler
             el embed_app[ ed, av ]
         el [ e.action == 'orb.shot' ]
             copy_shot[ av ]
-        el [ e.action == 'orb.quit' ]
-            close_task[ av ]
         el [ e.action.starts_with[ 'orb.call:' ] ]
             nm : string e.action.mid[ 9, e.action.count - 9 ]
             agent_sock_send[ av.sock_name[].chars, 'call {nm}\n' ]
@@ -11216,6 +11249,21 @@ element orbiter : trinity # implements compiler
         if [ !pick_field || pick_field.count == 0 ] return false
         if [ pick_field == 'portal' ] return portal_deliver[ p0 ]
         if [ pick_field == 'rec' ] return rec_deliver[ p0 ]
+        # an app asked for a file: a folder is gone into, a file
+        # shared into its view and handed to it
+        if [ pick_field == 'app_pick' ]
+            if [ !p0 || p0.is_dir[] ] return false
+            ap : AppView (pick_editor) ? pick_editor.run_view : null
+            if [ ap && !ap.ended ]
+                given : string share_into[ ap, p0 ]
+                agent_sock_send[ ap.sock_name[].chars,
+                                 'pick {given}\n' ]
+            pick_field = null
+            pick_exts  = null
+            pick_cache = null
+            exit_find_mode[]
+            if [ ux ] ux.restyle = true
+            return true
         # a folder field given a file takes the file's folder
         p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
         fe : element (pick_field == 'arg_edit') ? null : find_el[ a,
@@ -12024,10 +12072,6 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        if [ ev.target.id == 'reload_ready' ]
-            request_swap[]
-            ev.no_default = true
-            return
         if [
             ev.target.id == 'error' || ev.target.id == 'our_app_error' ]
             goto_error[]
@@ -12234,23 +12278,7 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        # the menu's navigator: its view in the menu, beside the icons
-        if [ ev.target.id == 'sv_navigator' ]
-            sys_view = (sys_view == 'navigator') ? '' : 'navigator'
-            run_search[]
-            if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
-        # the system menu's view buttons: the view under its tiles;
-        # the lit one again puts it away
-        if [ ev.target.id == 'sv_scenes' || ev.target.id == 'sv_instances'
-             || ev.target.id == 'sv_wifi' || ev.target.id == 'sv_mouse'
-             || ev.target.id == 'sv_keyboard'
-             || ev.target.id == 'sv_display'
-             || ev.target.id == 'sv_sound' ]
-            vw : ev.target.id.mid[ 3, ev.target.id.count - 3 ]
-            sys_view = (sys_view == vw) ? '' : vw
-            if [ ux ] ux.restyle = true
+        if [ sys_pick[ ev.target.id ] ]
             ev.no_default = true
             return
         if [ ev.target.id == 'sys_wifi' ]
@@ -12414,11 +12442,6 @@ element orbiter : trinity # implements compiler
                 ti.dirty  = true
                 drawer_toggle[ 'tray', same ]
             if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'sys_power'
-             || ev.target.id == 'sys_restart' ]
-            power[ ev.target.id == 'sys_restart' ]
             ev.no_default = true
             return
         if [ ev.target.id == 'side_toggle' ]
@@ -14995,14 +15018,20 @@ element orbiter : trinity # implements compiler
         # the desktop: + adds a widget, the panel hides or shows them
         if [ pi >= 0 && pane_empty[ pi ] && !sys_up[] ]
             dw : f32 [ 1.33 * unit_px[] ]
+            # a phone always shows them: + alone
+            nb : f32 [ (use_mobile) ? 1.0 : 2.0 ]
+            bt : vec string [] [ 'desk_add' ]
+            ic : vec string [] [ 'plus' ]
+            if [ !use_mobile ]
+                bt.push[ 'desk_side' ]
+                ic.push[ 'right_panel' ]
             t['desk_bar'] = AltTab [
-                buttons: vec string [] [ 'desk_add', 'desk_side' ],
-                icon_ids: vec string [] [ 'plus', 'right_panel' ],
+                buttons: bt, icon_ids: ic,
                 icon_scale: 0.55, manual: true, seg_radius: 0.0,
                 use_spacing: false, rest_fill: rgba [ '#0000' ],
                 sel_mask: (desk_hide) ? 0 : 2,
                 area: Region [
-                    'l{re - dw * 2.0}px t0 w{dw * 2.0}px b0' ] ]
+                    'l{re - dw * nb}px t0 w{dw * nb}px b0' ] ]
         if [ pv && pane_browsing[ pi ] ]
             # the navigator's own back and forward, over the folders
             # it has been in, by its close; the views left of them
@@ -15509,14 +15538,13 @@ element orbiter : trinity # implements compiler
     func pane_entry [ act: string ] -> bool
         # a separator has no action
         if [ !act ] return false
-        return act == 'orb.pane_add' || act == 'orb.pane_close'
-            || act == 'orb.shot'
+        return act == 'orb.shot'
             || act.starts_with[ 'orb.code:' ]
             || act.starts_with[ 'orb.inst:' ] || act == 'orb.inst_new'
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
             || act == 'orb.build' || act == 'orb.clean'
-            || act == 'orb.console' || act == 'orb.wquit'
+            || act == 'orb.console'
 
     # the pane's controls under the app's own menu (its first): a
     # pane added, this one closed, git, its views
@@ -15584,13 +15612,11 @@ element orbiter : trinity # implements compiler
         while [ at < menu_items.count && menu_items[ at ].depth > 0 ]
             at += 1
         # Quit stays the last: ours go before it (and its rule)
-        has_quit : false
         for [ q: i32 f + 1, q < at, q += 1 ]
             qe : TrayEntry menu_items[ q ]
             if [ qe.depth == 1 && !qe.rule
                  && (qe.action == 'orb.quit' || qe.label == 'Quit') ]
                 at = (q > f + 1 && menu_items[ q - 1 ].rule) ? q - 1 : q
-                has_quit = true
                 break
         add : vec TrayEntry []
         # with the app's own entries: a shell where its files really are
@@ -15602,11 +15628,9 @@ element orbiter : trinity # implements compiler
             add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
                 action: 'orb.prule' ] ]
         ed : Editor pane_at[ active_pane ]
-        # the pane: split it, its app's picture to the clipboard, close
-        add.push[ own_entry[ 'Split', 'orb.pane_add', 1 ] ]
+        # its app's picture to the clipboard
         if [ ed && ed.run_view ]
             add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
-        add.push[ own_entry[ 'Hide', 'orb.pane_close', 1 ] ]
         # an app built from its source here: again, or clean (not one
         # the apps view installs: featured/ wraps others' software)
         am : path app_module[]
@@ -15616,11 +15640,6 @@ element orbiter : trinity # implements compiler
                 action: 'orb.prule' ] ]
             add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
             add.push[ own_entry[ 'Clean build', 'orb.clean', 1 ] ]
-        # always a way out: a program's window brings no Quit of its own
-        if [ !has_quit ]
-            add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
-                action: 'orb.prule' ] ]
-            add.push[ own_entry[ 'Quit', 'orb.wquit', 1 ] ]
         for [ k: i32 add.count - 1, k >= 0, k -= 1 ]
             menu_items.insert[ add[ k ], at ]
 
@@ -17355,7 +17374,8 @@ element orbiter : trinity # implements compiler
                                 'se', 'us dvorak' ] ] ]
         el [ tab == 'display' ]
             st : vec string []
-            for [ fu: i32 18, fu <= 30, fu += 2 ]
+            ru : i32 rest_unit[]
+            for [ fu: i32 ru - 4, fu <= ru + 8, fu += 2 ]
                 st.push[ '{i32[ round[ f32[ fu ] / 22.0 * 100.0 ] ]}%' ]
             ps.push[ setting[ 'text',
                 '{i32[ round[ f32[ set_size ] / 22.0 * 100.0 ] ]}%', st ] ]
@@ -17601,6 +17621,25 @@ element orbiter : trinity # implements compiler
         # the dock: a column down the left, as the navigator's; the
         # view a cell chose shows on its right
         dw : f32 dock_w[]
+        # a phone: one strip along the foot, scrolled sideways, the
+        # view above it
+        if [ use_mobile ]
+            if [ sys_view == 'navigator' ]
+                t['sys_nav'] = CommitView [ focusable: true,
+                    scroll_fade: 24.0,
+                    area: Region [ 'l0 t0 r0 b{dw}px' ] ]
+            el [ sys_view.count > 0 ]
+                sv : Elements side_view[ sys_view,
+                    'l0.3 t0.7 r0.3 b{dw / un + 0.3}' ]
+                for [ ve: element, vk: string ] in sv
+                    t[ vk ] = ve
+            el
+                t['sys_agents'] = AgentHome [ stacked: true,
+                    area: Region [ 'l0 t0 r0 b{dw}px' ] ]
+            # last: over the avatar where it reaches past its box
+            t['sys_strip'] = SysStrip [
+                area: Region [ 'l0 b{dw}px r0 h{dw}px' ] ]
+            return t
         cells : Elements []
         # the views' cells scroll, masked, over what the fixed foot
         # (power, a ready reload) leaves of the column
@@ -17662,6 +17701,69 @@ element orbiter : trinity # implements compiler
             t['sys_agents'] = AgentHome [ stacked: true,
                 area: Region [ 'l{dw}px t0 r0 b0' ] ]
         return t
+
+    # a system menu cell chosen: its view (the lit one again puts it
+    # away), power, restart, a ready reload; false: not a cell
+    public func sys_pick [ id: string ] -> bool
+        if [ id == 'sys_power' || id == 'sys_restart' ]
+            power[ id == 'sys_restart' ]
+            return true
+        if [ id == 'reload_ready' ]
+            request_swap[]
+            return true
+        if [ !id.starts_with[ 'sv_' ] ] return false
+        vw : id.mid[ 3, id.count - 3 ]
+        sys_view = (sys_view == vw) ? '' : vw
+        if [ vw == 'navigator' ] run_search[]
+        if [ ux ] ux.restyle = true
+        return true
+
+    # a phone's system menu cells, along its foot: every view, a
+    # ready reload, then power, moved left by the strip's scroll
+    public func sys_strip_els [ shift: f32 ] -> Elements
+        t : Elements []
+        dw : f32 dock_w[]
+        ids : vec string sys_strip_ids[]
+        net : Wifi wifi_shared[]
+        cur : element find_el[ a, 'sys_power' ]
+        again : bool [ cmd_down || (shift_down && cur && cur.hovered) ]
+        for [ i: i32 0, i < ids.count, i += 1 ]
+            ky : string ids[ i ]
+            pn : string [ (ky.starts_with[ 'sv_' ])
+                ? ky.mid[ 3, ky.count - 3 ] : '' ]
+            ic : string [ (pn == 'scenes') ? 'saturn'
+                : ((pn == 'wifi') ? net.mark[]
+                : ((pn == 'sound') ? 'volume_up'
+                : ((ky == 'reload_ready') ? 'recycle'
+                : ((pn.count > 0) ? pn
+                : ((again) ? 'restart' : 'power'))))) ]
+            cap : string pn.mid[ 0, 1 ].ucase[]
+            nm : string [ (pn == 'wifi') ? 'Wi-Fi'
+                : ((pn.count > 0) ? '{cap}{pn.mid[ 1, pn.count - 1 ]}'
+                : ((ky == 'reload_ready') ? 'Reload'
+                : ((again) ? 'Restart' : 'Power'))) ]
+            id : string [ (ky == 'sys_power' && again)
+                ? 'sys_restart' : ky ]
+            x : f32 [ f32[ i ] * dw - shift ]
+            t[ id ] = DockRow [ icon_id: ic, label: nm,
+                selected: pn.count > 0 && sys_view == pn,
+                second: ky == 'sys_power' && again,
+                first: i == 0, last: i == ids.count - 1,
+                user_events: false,
+                area: Region [ 'l{x}px t0 w{dw}px b0' ] ]
+        return t
+
+    # the strip's cells in order, by id
+    public func sys_strip_ids [] -> vec string
+        ids : vec string [] [ 'sv_navigator', 'sv_scenes', 'sv_wifi',
+            'sv_mouse', 'sv_keyboard', 'sv_display', 'sv_sound' ]
+        if [ au_live_get_pending[] == 1 ] ids.push[ 'reload_ready' ]
+        ids.push[ 'sys_power' ]
+        return ids
+
+    # the navigator as thumbnails: chosen, or always on a phone
+    public func nav_thumbs [] -> bool
+        return nav_icons || use_mobile
 
     # power off or restart: only orbiter-os itself, never the
     # computer a window is trying the bar on
@@ -17872,6 +17974,17 @@ element orbiter : trinity # implements compiler
         if [ system_on[] ]
             if [ wifi_shared[].poll[] ] w.restyle = true
             if [ tray_shared[].poll[] ] w.restyle = true
+            # an app asked for a file: its pane's title pick
+            for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                ep : Editor pane_at[ i ]
+                if [ !ep || !ep.run_view || !ep.run_view.pick_ask ]
+                    continue
+                ep.run_view.pick_ask = false
+                app_pick[ ep ]
+            # orbiter-os brings the mobile data link up (MMS too)
+            if [ system_os ]
+                mo : Modem modem_shared[]
+                mo.data_on = true
             # a call coming in brings the phone up, once a call
             if [ system_os && modem_shared[].poll[] ]
                 w.restyle = true

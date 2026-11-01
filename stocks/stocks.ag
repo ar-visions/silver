@@ -6,6 +6,7 @@ import vec
 import img
 import trinity
 import tls
+import devices
 import <stdio.h>
 import <time.h>
 
@@ -72,17 +73,43 @@ element StockView
     mutable tab_y   : f32
     mutable row_y   : f32
     mutable row_h   : f32
+    # the shape last told the host (a widget's box follows it)
+    mutable told_w  : i32
+    mutable told_h  : i32
+
+    # a widget's box is as tall as it asks: the chart a fixed height
+    func chart_h [ un: f32 ] -> f32
+        ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
+        if [ ap && ap.widget ] return round[ 150.0 * un ]
+        return max[ 120.0, bounds.h * 0.32 ]
+
+    # a widget tells the host its whole height for its width, so
+    # every row shows and nothing scrolls
+    func tell_shape [ want: f32 ]
+        ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
+        if [ !ap || !ap.widget || host_slot[] <= 0 ] return
+        tw : i32 [ i32[ bounds.w ] ]
+        th : i32 [ i32[ ceil[ want ] ] ]
+        if [ tw == told_w && th == told_h ] return
+        told_w = tw
+        told_h = th
+        host_post[ 0, i32[ HM.aspect ], tw, th, 0 ]
+
+    # mounted over the desktop's apps: the list alone
+    func list_only [] -> bool
+        ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
+        return ap != null && ap.widget && ap.widget_top
 
     # the chart, trinity's LineChart, under the price and ranges
     func render [] -> Elements
         t : Elements []
-        if [ !bounds || !ux ] return t
+        if [ !bounds || !ux || list_only[] ] return t
         se : Series series[ range ]
         if [ !se || se.close.count < 2 ] return t
         un : f32 ux_unit[ ux ]
         pad : f32 [ round[ 18.0 * un ] ]
         top : f32 [ pad + 170.0 * un ]
-        ch : f32 [ max[ 120.0, bounds.h * 0.32 ] + 26.0 * un ]
+        ch : f32 [ chart_h[ un ] + 26.0 * un ]
         cw : f32 [ bounds.w - pad * 2.0 ]
         day : Series series[ 0 ]
         last : f64 [ (range == 0 && day) ? day.price
@@ -244,6 +271,27 @@ element StockView
         se : Series series[ range ]
         day : Series series[ 0 ]
         y : f32 [ pad ]
+        lone : bool list_only[]
+        if [ lone ] tab_x = null
+        if [ !lone ]
+            y = head_draw[ cv, se, day, y, bw, bh, pad, un, up, down,
+                           mute ]
+        row_y = y
+        row_h = round[ 48.0 * un ]
+        tell_shape[ y + row_h * f32[ syms.count ] + pad ]
+        for [ i: i32 0, i < syms.count, i += 1 ]
+            if [ y + row_h > bh ] break
+            draw_row[ cv, i, y, bw, pad, un, up, down, mute ]
+            y += row_h
+        cv.restore[]
+        cv.set_font[ null ]
+
+    # the chosen symbol, its price, the ranges, the chart's room and
+    # the day's figures; where the list starts under them
+    func head_draw [ cv: Canvas, se: Series, day: Series, top: f32,
+                     bw: f32, bh: f32, pad: f32, un: f32, up: string,
+                     down: string, mute: string ] -> f32
+        y : f32 [ top ]
         # the symbol, its name; the price and how far it moved
         sym : string [ (syms.count > 0) ? syms[ sel ] : '' ]
         font[ cv, 'SemiBold', round[ 24.0 * un ] ]
@@ -295,7 +343,7 @@ element StockView
                   (i == range) ? '#ffffff' : mute ]
         y += 40.0 * un
         # the chart: its scale at the right, the line, a fade under it
-        ch_h : f32 [ max[ 120.0, bh * 0.32 ] ]
+        ch_h : f32 chart_h[ un ]
         y += ch_h + 28.0 * un
         # the day's figures
         if [ day ]
@@ -319,14 +367,7 @@ element StockView
         cv.rect_to[ pad, y, bw - pad * 2.0, 1.0 ]
         cv.paint[]
         y += 6.0 * un
-        row_y = y
-        row_h = round[ 48.0 * un ]
-        for [ i: i32 0, i < syms.count, i += 1 ]
-            if [ y + row_h > bh ] break
-            draw_row[ cv, i, y, bw, pad, un, up, down, mute ]
-            y += row_h
-        cv.restore[]
-        cv.set_font[ null ]
+        return y
 
     # a row of the list: symbol and name, the day's line, the price and
     # its change in a soft pill; the chosen row lit

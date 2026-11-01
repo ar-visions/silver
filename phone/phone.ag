@@ -2,12 +2,16 @@ export 0.1.0
 export software ['communication']
 # hosted, its view holds the system bus (ModemManager is on it)
 export system_bus ['ModemManager']
+# and mmsd-tng's session bus, its store and outbox (MMS)
+export mms ['mmsd-tng']
 
 import vec
 import trinity
+import img
 import modem
 import spectra
 import <stdio.h>
+import <stdlib.h>
 import <time.h>
 import <math.h>
 import <pthread.h>
@@ -33,6 +37,8 @@ class LogText
     public text     : string
     public at       : i64
     public incoming : bool
+    # pictures it carries (an MMS), kept in the phone's storage
+    public files    : vec string
 
 # what the phone keeps: its people, its calls and its texts, in
 # its storage folder as phone.agi
@@ -41,8 +47,12 @@ class PhoneBook
     public calls    : vec LogCall
     public texts    : vec LogText
 
+    # where it is kept: 'phone', or the simulated phone's own
+    public kept_as : string
+
     func file [] -> path
-        return path '{path.path_storage[ 'phone' ]}/phone.agi'
+        nm : (kept_as && kept_as.count > 0) ? kept_as : 'phone'
+        return path '{path.path_storage[ nm ]}/phone.agi'
 
     func load []
         contacts = vec Contact []
@@ -65,6 +75,50 @@ class PhoneBook
         for [ c: Contact ] in contacts
             if [ same_number[ c.number, num ] ] return c.name
         return num
+
+# a conversation's people: one number, or a group's joined by
+# commas; two are one when the same people are in both
+func same_thread [ a: string, b: string ] -> bool
+    if [ a.index_of[ ',' ] < 0 && b.index_of[ ',' ] < 0 ]
+        return same_number[ a, b ]
+    pa : a.split[ ',' ]
+    pb : b.split[ ',' ]
+    if [ pa.count != pb.count ] return false
+    for [ x: string ] in pa
+        found : bool [ false ]
+        for [ y: string ] in pb
+            if [ same_number[ x, y ] ] found = true
+        if [ !found ] return false
+    return true
+
+# numbers typed as '555 1234, 555 9876': one each, by commas
+func thread_key [ typed: string ] -> string
+    out : string ''
+    for [ x: string ] in typed.split[ ',' ]
+        n : string x.trim[]
+        if [ n.count == 0 ] continue
+        out = (out.count > 0) ? '{out},{n}' : n
+    return out
+
+# where the phone keeps the pictures its messages carry
+func picture_dir [] -> path
+    d : path '{path.path_storage[ 'phone' ]}/pictures'
+    if [ !d.exists[] ] d.make_dir[]
+    return d
+
+# where mmsd-tng reads a message's parts from (orbiter-os shares
+# it into the phone's view), else the phone's own storage
+func outbox_dir [] -> path
+    d : path '/var/lib/mmsd/outbox'
+    if [ d.exists[] ] return d
+    return picture_dir[]
+
+func copy_file [ from: string, to: string ] -> bool
+    c : command [ 'cp -f \'{from}\' \'{to}\'' ]
+    return c.exec[ false ] == 0
+
+# a picture's texture, made once a path
+phone_pics : map Texture [ string ]
 
 # two numbers are one when their last nine digits match
 # (+1 555 123 4567 and 5551234567)
@@ -278,6 +332,49 @@ Button PhoneKey
         cv.paint[]
         cv.set_font[ null ]
 
+# a round button, its icon in the middle (the tabs, attach): the
+# pointer's near light on its edge, filled while chosen
+Button PhoneRound
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 999
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 13px #88aaff22
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+                box_shadow: inset 0 0 13px #806bff88
+    }
+    public icon_id : string
+    mutable svg    : SVGModel
+    mutable svg_id : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ !icon_id ] return
+        if [ !svg || svg_id != icon_id ]
+            svg_id = icon_id
+            ip : path 'images/{icon_id}.svg'
+            svg = (ip.exists[]) ? SVGModel [ ip ] : null
+        if [ !svg ] return
+        cv : Canvas w.screen
+        side : f32 [ min[ bounds.w, bounds.h ] ]
+        isz : f32 [ round[ side * 0.46 ] ]
+        ix : f32 [ round[ (bounds.w - isz) * 0.5 ] ]
+        iy : f32 [ round[ (bounds.h - isz) * 0.5 ] ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_svg[ svg, ix, iy, isz, isz ]
+
 # a row of a list: its name, a note at the right
 Button PhoneRow
     style : CSS {
@@ -326,8 +423,11 @@ Button PhoneRow
 # one text in a conversation: ours on the right in violet, theirs
 # on the left in grey
 element PhoneBubble
-    public mine : bool
-    public when : string
+    public mine  : bool
+    public when  : string
+    # pictures over the words (an MMS), and their share of it
+    public pics  : vec string
+    public share : f32
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
@@ -339,13 +439,27 @@ element PhoneBubble
         cv.rounded_rect[ x, 0.0, bw, bounds.h - 16.0, 12.0, 12.0, 12.0,
                          12.0 ]
         cv.paint[]
+        top : f32 [ 6.0 ]
+        if [ pics && pics.count > 0 ]
+            ph : f32 [ (bounds.h - 16.0) * share - 8.0 ]
+            pw : f32 [ (bw - 24.0) / pics.count ]
+            for [ i: i32 0, i < pics.count, i += 1 ]
+                tx : picture[ w, pics[ i ] ]
+                if [ !tx || tx.height <= 0 ] continue
+                fit : f32 [ min[ pw / f32[ tx.width ],
+                                 ph / f32[ tx.height ] ] ]
+                iw : f32 [ tx.width * fit ]
+                ih : f32 [ tx.height * fit ]
+                cv.draw_image[ tx, rect [ x: x + 12.0 + pw * i,
+                    y: top + 2.0, w: iw, h: ih ] ]
+            top += ph + 4.0
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf',
             label_px[ cv, 18.0 ] ] ]
         cv.font_size[ 18 ]
         cv.fill_color[ rgba [ '#ffffff' ] ]
-        cv.draw_text[ label, rect [ x: x + 12.0, y: 6.0, w: bw - 24.0,
-            h: bounds.h - 28.0 ], vec2f [ 0.0, 0.0 ],
+        cv.draw_text[ label, rect [ x: x + 12.0, y: top, w: bw - 24.0,
+            h: bounds.h - 22.0 - top ], vec2f [ 0.0, 0.0 ],
             vec2f [ 0.0, 0.0 ],
             Overflow.wrap, null ]
         cv.font_size[ 13 ]
@@ -355,6 +469,37 @@ element PhoneBubble
             vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
         cv.paint[]
         cv.set_font[ null ]
+
+    # a picture's texture, loaded once
+    func picture [ w: Window, p: string ] -> Texture
+        if [ !phone_pics ] phone_pics = map Texture [ string ] []
+        if [ phone_pics.contains[ p ] ] return phone_pics[ p ]
+        f : path [ p ]
+        if [ !f.exists[] ] return null
+        im : Image [ uri: f ]
+        if [ !im || im.width <= 0 || im.height <= 0 ] return null
+        tx : Texture [ vk: w.vk, w: w, sampler: im, linear: true ]
+        phone_pics[ p ] = tx
+        return tx
+
+# a conversation's texts, scrolled by trinity (the wheel, a drag
+# on the phone); a new one brings the foot into view
+element PhoneThread
+    scroll_fade : 24.0
+    public count : i32
+    mutable shown : i32
+
+    public func tick [ w: Window ]
+        tall : f32 [ 0.0 ]
+        if [ elements ]
+            for [ c: element, k: string ] in elements
+                if [ c && c.bounds && c.bounds.y + c.bounds.h > tall ]
+                    tall = c.bounds.y + c.bounds.h
+        content_h = tall
+        if [ tall <= 0.0 || !bounds || count == shown ] return
+        shown = count
+        top : f32 [ content_h - bounds.h ]
+        scroll_to[ (top > 0.0) ? top : 0.0 ]
 
 # a field; Enter presses the view's button for it
 TextInput PhoneInput
@@ -374,6 +519,8 @@ element PhoneView
     public  book    : PhoneBook
     # a bus to find the modem on, else the system's
     public  bus     : string
+    # a stand-in modem on the desktop: its book kept apart
+    public  simulated : bool
     # keypad, recents, contacts, messages
     mutable page    : string
     mutable dialed  : string
@@ -391,6 +538,9 @@ element PhoneView
     mutable watch   : vec MmCall
     mutable note    : string
     mutable ring    : PhoneRing
+    # MMS through mmsd-tng, and the pictures for the next one
+    mutable mms     : Mms
+    mutable attached : vec string
 
     func init []
         page   = 'keypad'
@@ -399,6 +549,7 @@ element PhoneView
         chosen = -1
         note   = ''
         watch  = vec MmCall []
+        attached = vec string []
 
     public func tick [ w: Window ]
         if [ !modem && bus && bus.count > 0 ]
@@ -406,10 +557,19 @@ element PhoneView
             modem.open[]
         if [ !modem ] modem = modem_shared[]
         if [ !book ]
-            book = PhoneBook []
+            book = PhoneBook [ kept_as: (simulated)
+                ? 'phone-simulated' : 'phone' ]
             book.load[]
         changed : bool [ modem.poll[] ]
         if [ changed ] take_in[]
+        if [ !mms ] mms = Mms [ address: bus ]
+        if [ mms.poll[] ]
+            changed = true
+            take_mms[]
+        # mmsd-tng is told the APN the data link is on
+        own : carrier_mms[ modem.sim_name ]
+        server : (own.count > 1) ? own[ 1 ] : ''
+        mms.configure[ modem.data_apn, server ]
         if [ !ring ] ring = PhoneRing []
         if [ modem.ringing[] ] ring.start[]
         el ring.stop[]
@@ -425,6 +585,8 @@ element PhoneView
     func take_in []
         kept : bool [ false ]
         for [ t: MmText ] in modem.texts
+            # an MMS notice is mmsd-tng's, never shown or taken
+            if [ t.data ] continue
             if [ t.incoming && t.state == 3 ]
                 book.texts.push[ LogText [ number: t.number,
                     text: t.text, at: now_s[], incoming: true ] ]
@@ -455,6 +617,65 @@ element PhoneView
             kept = true
             tones = false
         if [ kept ] book.save[]
+
+    # picture messages that came in (kept, then taken out of
+    # mmsd-tng's store), and ours once sent or refused
+    func take_mms []
+        kept : bool [ false ]
+        for [ m: MmsMessage ] in mms.messages
+            if [ m.incoming[] ]
+                files : vec string []
+                for [ i: i32 0, i < m.parts.count, i += 1 ]
+                    pt : MmsPart m.parts[ i ]
+                    if [ !pt.picture[] ] continue
+                    ext : pt.kind.mid[ 6, pt.kind.count - 6 ]
+                    to : path '{picture_dir[]}/{now_s[]}-{i}.{ext}'
+                    if [ pt.copy_to[ to ] ] files.push[ '{to}' ]
+                book.texts.push[ LogText [ number: people_of[ m ],
+                    text: m.words[], at: now_s[], incoming: true,
+                    files: files ] ]
+                mms.remove_message[ m ]
+                kept = true
+            el [ m.status == 'sent' ]
+                mms.remove_message[ m ]
+            el [ m.status == 'sending_failed' ]
+                note = 'A picture message was not sent'
+                mms.remove_message[ m ]
+        if [ kept ] book.save[]
+
+    # an MMS's people but this phone: its conversation
+    func people_of [ m: MmsMessage ] -> string
+        mine : (m.own.count > 0) ? m.own : modem.number
+        out : string ''
+        all : vec string [] [ m.sender ]
+        for [ r: string ] in m.recipients
+            all.push[ r ]
+        for [ n: string ] in all
+            if [ n.count == 0 || same_number[ n, mine ] ] continue
+            if [ out.count > 0 && same_thread[ out, n ] ] continue
+            out = (out.count > 0) ? '{out},{n}' : n
+        # only this phone in it: one sent to itself
+        if [ out.count == 0 ]
+            out = (m.sender.count > 0) ? m.sender : mine
+        return out
+
+    # a conversation's name: its people's names by commas
+    func thread_name [ key: string ] -> string
+        out : string ''
+        for [ n: string ] in key.split[ ',' ]
+            nm : book.name_of[ n ]
+            out = (out.count > 0) ? '{out}, {nm}' : nm
+        return out
+
+    # a picture to go with the next message
+    func attach_file [ p: path ]
+        if [ !p || !p.exists[] || p.is_dir[] ] return
+        if [ !mms_kind[ '{p}' ].starts_with[ 'image/' ] ]
+            note = 'Only pictures go in a message'
+            return
+        attached.push[ '{p}' ]
+        pristine = false
+        if [ ux ] ux.restyle = true
 
     # o.since is when it was answered (0: never), o.began when
     # it was first seen
@@ -491,6 +712,7 @@ element PhoneView
             words = '{modem.network[]}   {bars} of 4 bars'
             if [ modem.number.count > 0 ]
                 words = '{words}   {modem.number}'
+            if [ simulated ] words = '{words}   simulated'
         if [ note.count > 0 ] words = note
         t[ 'status' ] = PhoneNote [ label: words,
             area: Region { l0.7 t0.3 r0.7 h1 } ]
@@ -506,17 +728,18 @@ element PhoneView
             t[ 'enable' ] = PhoneButton [ label: 'Turn on the radio',
                 area: Region { l0.7 t1.5 r0.7 h1.3 } ]
 
+    # four round tabs, each in the middle of its quarter
     func tabs [ t: Elements ]
         names : vec string [] [ 'keypad', 'recents', 'contacts',
                                 'messages' ]
-        words : vec string [] [ 'Keypad', 'Recents', 'Contacts',
-                                'Messages' ]
+        icons : vec string [] [ 'dialpad', 'history', 'person',
+                                'chat' ]
         for [ i: i32 0, i < 4, i += 1 ]
-            x : f32 [ 2.0 + i * 24.0 ]
-            r : f32 [ 75.0 - x ]
-            t[ 'tab_{names[ i ]}' ] = PhoneButton [ label: words[ i ],
-                selected: page == names[ i ],
-                area: Region [ 'l{x}% b2.0 r{r}% h1.6' ] ]
+            mid : f32 [ 12.5 + i * 25.0 ]
+            nm : string names[ i ]
+            t[ 'tab_{nm}' ] = PhoneRound [ icon_id: icons[ i ],
+                selected: page == nm,
+                area: Region [ 'l{mid}%-1.0 b2.5 w2.0 h2.0' ] ]
 
     func keypad [ t: Elements ]
         t[ 'dialed' ] = PhoneDial [ label: dialed,
@@ -530,11 +753,11 @@ element PhoneView
             row : i32 [ i / 3 ]
             x : f32 [ 12.0 + col * 27.0 ]
             r : f32 [ 78.0 - x ]
-            y : f32 [ 6.4 + row * 3.4 ]
+            y : f32 [ 5.8 + row * 3.4 ]
             t[ 'key_{i}' ] = PhoneKey [ label: keys[ i ],
                 sub: subs[ i ],
                 area: Region [ 'l{x}% t{y} r{r}% h2.9' ] ]
-        y : f32 [ 6.4 + 4 * 3.4 ]
+        y : f32 [ 5.8 + 4 * 3.4 ]
         t[ 'call' ] = PhoneGo [ label: 'Call',
             disable: dialed.count == 0,
             area: Region [ 'l35% t{y} r35% h2.6' ] ]
@@ -653,13 +876,16 @@ element PhoneView
             lt : LogText book.texts[ n - 1 - k ]
             had : bool [ false ]
             for [ s: string ] in seen
-                if [ same_number[ s, lt.number ] ] had = true
+                if [ same_thread[ s, lt.number ] ] had = true
             if [ had || seen.count >= 14 ] continue
             seen.push[ lt.number ]
-            words : (lt.incoming) ? lt.text : 'You: {lt.text}'
+            bare : bool [ lt.text.count == 0 ]
+            said : (bare && lt.files && lt.files.count > 0)
+                ? 'Picture' : lt.text
+            words : (lt.incoming) ? said : 'You: {said}'
             if [ words.count > 28 ] words = '{words.mid[ 0, 27 ]}…'
             t[ 'thr_{seen.count}' ] = PhoneRow [
-                label: book.name_of[ lt.number ], note: words,
+                label: thread_name[ lt.number ], note: words,
                 area: Region [ 'l0.7 t{y} r0.7 h1.5' ] ]
             y += 1.65
         if [ n == 0 && !writing ]
@@ -670,33 +896,38 @@ element PhoneView
     func conversation [ t: Elements ]
         t[ 'close' ] = PhoneButton [ label: 'Back',
             area: Region { l0.7 t3 w4 h1.3 } ]
-        t[ 'head' ] = PhoneText [ label: book.name_of[ thread ],
+        t[ 'head' ] = PhoneText [ label: thread_name[ thread ],
             area: Region { l0.7 t4.6 r0.7 h1.4 } ]
         t[ 'dial_it' ] = PhoneGo [ label: 'Call',
             area: Region { r0.7 t3 w4.8 h1.3 } ]
         mine : vec LogText []
         for [ lt: LogText ] in book.texts
-            if [ same_number[ lt.number, thread ] ] mine.push[ lt ]
-        # from the foot up, until the page is full
-        y : f32 [ 6.4 ]
-        bottom : f32 [ 0.0 ]
-        heights : vec f32 []
-        for [ lt: LogText ] in mine
-            rows : i32 [ 1 + lt.text.count / 30 ]
-            heights.push[ 0.75 * rows + 1.3 ]
-        first : i32 [ mine.count ]
-        room : f32 [ 13.5 ]
-        while [ first > 0 && bottom + heights[ first - 1 ] < room ]
-            first -= 1
-            bottom += heights[ first ]
-        for [ i: i32 first, i < mine.count, i += 1 ]
+            if [ same_thread[ lt.number, thread ] ] mine.push[ lt ]
+        # every text, scrolled; the newest in view as one comes
+        rows : Elements []
+        for [ i: i32 0, i < mine.count, i += 1 ]
             lt : LogText mine[ i ]
-            h : f32 [ heights[ i ] ]
-            t[ 'msg_{i}' ] = PhoneBubble [ label: lt.text,
+            lines : i32 [ 1 + lt.text.count / 30 ]
+            pics : (lt.files) ? lt.files : vec string []
+            pic : f32 [ (pics.count > 0) ? 5.0 : 0.0 ]
+            h : f32 [ 0.75 * lines + 1.3 + pic ]
+            share : f32 [ (pics.count > 0) ? 5.0 / (h - 1.0) : 0.0 ]
+            rows[ 'msg_{i}' ] = PhoneBubble [ label: lt.text,
                 mine: !lt.incoming, when: when_text[ lt.at ],
-                area: Region [ 'l0.7 t{y} r0.7 h{h}' ] ]
-            y += h
-        field[ t, 'reply', 'send', Region { l0.7 b4.2 r6 h1.4 } ]
+                pics: pics, share: share,
+                area: Region [ 'l0 t0+ r0 h{h}' ] ]
+        foot : f32 [ (attached.count > 0) ? 7.3 : 5.8 ]
+        t[ 'thread' ] = PhoneThread [ elements: rows, count: mine.count,
+            area: Region [ 'l0.7 t6.4 r0.7 b{foot}' ] ]
+        if [ attached.count > 0 ]
+            n : i32 [ attached.count ]
+            words : (n == 1) ? '1 picture to send (tap to take it out)'
+                : '{n} pictures to send (tap to take them out)'
+            t[ 'unattach' ] = PhoneRow [ label: words,
+                area: Region { l0.7 b5.8 r0.7 h1.3 } ]
+        t[ 'attach' ] = PhoneRound [ icon_id: 'attach_file',
+            area: Region { l0.7 b4.2 w1.4 h1.4 } ]
+        field[ t, 'reply', 'send', Region { l2.6 b4.2 r6 h1.4 } ]
         t[ 'send' ] = PhoneGo [ label: 'Send',
             area: Region { r0.7 b4.2 w4.8 h1.4 } ]
 
@@ -774,8 +1005,12 @@ element PhoneView
         el [ key.starts_with[ 'thr_' ] ]
             row : cast PhoneRow [ elements[ key ] ]
             for [ lt: LogText ] in book.texts
-                if [ row && book.name_of[ lt.number ] == row.label ]
+                if [ row && thread_name[ lt.number ] == row.label ]
                     thread = lt.number
+        el [ key == 'attach' ]
+            if [ ux ] ux.ask_pick[]
+        el [ key == 'unattach' ]
+            attached = vec string []
         el [ key == 'dial_it' ]
             dial[ chosen_number[] ]
         el [ key == 'text_it' ]
@@ -796,7 +1031,7 @@ element PhoneView
         el [ key == 'write' ]
             writing = !writing
         el [ key == 'open' ]
-            open_thread[ typed[ 'to' ] ]
+            open_thread[ thread_key[ typed[ 'to' ] ] ]
         el [ key == 'close' ]
             thread = ''
         el [ key == 'send' ]
@@ -871,16 +1106,58 @@ element PhoneView
         adding = false
         dialed = ''
 
+    # a text, or an MMS when it carries pictures or goes to a
+    # group; nothing silent: what stops it is said
     func send []
         words : typed[ 'reply' ]
-        if [ words.count == 0 ] return
-        if [ !modem.send_text[ thread, words ] ]
-            note = 'Not sent: {modem.problem}'
+        if [ words.count == 0 && attached.count == 0 ]
+            note = 'Nothing to send'
+            return
+        kept : vec string []
+        if [ attached.count > 0 || thread.index_of[ ',' ] >= 0 ]
+            if [ !send_mms[ words, kept ] ] return
+        el [ !modem.send_text[ thread, words ] ]
+            why : (modem.problem.count > 0) ? modem.problem
+                : 'the modem is not ready'
+            note = 'Not sent: {why}'
             return
         book.texts.push[ LogText [ number: thread, text: words,
-            at: now_s[], incoming: false ] ]
+            at: now_s[], incoming: false, files: kept ] ]
         book.save[]
+        attached = vec string []
         clear[ 'reply' ]
+
+    # the words and pictures handed to mmsd-tng (from its outbox);
+    # kept: the phone's own copies of the pictures
+    func send_mms [ words: string, kept: vec string ] -> bool
+        if [ !mms || !mms.ready ]
+            why : (mms && mms.problem.count > 0) ? mms.problem
+                : 'mmsd-tng is not running'
+            note = 'Picture message not sent: {why}'
+            return false
+        box : outbox_dir[]
+        stamp : now_s[]
+        files : vec string []
+        if [ words.count > 0 ]
+            tf : path '{box}/{stamp}-words.txt'
+            tf.save[ words, null ]
+            files.push[ '{tf}' ]
+        for [ i: i32 0, i < attached.count, i += 1 ]
+            a : string attached[ i ]
+            name : path [ a ]
+            out : path '{box}/{stamp}-{i}-{name.filename[]}'
+            own : path '{picture_dir[]}/{stamp}-{i}-{name.filename[]}'
+            if [ !copy_file[ a, '{out}' ] ]
+                note = 'Could not read {a}'
+                return false
+            copy_file[ a, '{own}' ]
+            files.push[ '{out}' ]
+            kept.push[ '{own}' ]
+        to : thread.split[ ',' ]
+        if [ mms.send_mms[ to, files ].count == 0 ]
+            note = 'Picture message not sent: {mms.problem}'
+            return false
+        return true
 
 element phone : trinity
     public width  : i32    [ 420 ]
@@ -888,9 +1165,40 @@ element phone : trinity
     public title  : string [ 'phone' ]
     # the bus ModemManager is on ('' : the system bus)
     public [ Launch ] bus : string
+    # no modem here (the desktop): a stand-in modem and MMS service
+    # that answer each text and picture message sent
+    public [ Launch ] simulate : bool
+    mutable stand_in : ModemStandIn
 
     func render [] -> Elements
         t : Elements []
-        t[ 'view' ] = PhoneView [ bus: bus,
+        # SILVER_PHONE_SIMULATE set: simulated (as orbiter hosts it)
+        asked : bool [ getenv[ 'SILVER_PHONE_SIMULATE' ] != null ]
+        sim : bool [ simulate || asked ]
+        if [ sim && !stand_in ]
+            stand_in = ModemStandIn [ simulate: true ]
+            if [ !stand_in.start[] ]
+                log 'phone: the stand-in did not start'
+        on_bus : (stand_in && stand_in.bus) ? stand_in.bus : bus
+        t[ 'view' ] = PhoneView [ bus: on_bus, simulated: sim,
             area: Region { l0 t0 r0 b0 } ]
         return t
+
+    func view [] -> PhoneView
+        if [ !elements || !elements.contains[ 'view' ] ] return null
+        return cast PhoneView [ elements[ 'view' ] ]
+
+    # its dialog (the + button) starts in the home's Pictures folder;
+    # a pick, its own or orbiter's, attaches the picture
+    public func nav_folder [] -> path
+        home : string [ getenv[ 'HOME'.chars ] ]
+        pics : path '{home}/Pictures'
+        if [ pics.is_dir[] ] return pics
+        return path [ home ]
+
+    public func nav_open [ p: path ] -> bool
+        if [ p.is_dir[] ] return false
+        v : view[]
+        if [ !v ] return false
+        v.attach_file[ p ]
+        return true

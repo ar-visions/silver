@@ -145,15 +145,11 @@ element SystemClock
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
 
-# the system bar's height in units: twice as tall on a phone
+# the system bar's height in units
 func bar_units [] -> f32
-    return (mobile_on[]) ? 1.82 : 0.91
+    return 0.91
 
 # booted into orbiter-os: init put orbiter.init= on the boot line
 func on_the_os [] -> bool
@@ -200,10 +196,6 @@ Button BarClock
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
 
 # the mobile network at the bar's right end: four rising bars, lit
@@ -228,9 +220,6 @@ Button BarSignal
         :hovered
             layers.body:
                 fill_color: #ffffff18
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
     public bars : i32
     # no service: the bars dim and crossed
@@ -284,13 +273,6 @@ Button MenuTop
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 27
-        :close_part&use_mobile
-            layers.face:
-                label_size: 30
     }
     public at : i32
     # a pane not active: its menu name (a press selects the pane)
@@ -360,10 +342,6 @@ Button BarCrumb
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
     public last : bool
 
@@ -376,10 +354,6 @@ element CrumbSep
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
 
 # the active pane's title, after the app's name: an action, not a
@@ -411,10 +385,6 @@ Button BarTitle
             layers.body:
                 stroke_color: #806bffff
                 fill_color: #4d3dbc55
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
     # a field only while a URL is typed in it
     read_only : true
@@ -448,13 +418,11 @@ Layer BarMeasure
         if [ !bt ] return
         uri : 'fonts/BarlowCondensed-Regular.ttf'
         # the sizes the labels draw at (with the text size)
-        # a phone's bar: its labels half again as big
-        mb : f32 [ (mobile_on[]) ? 1.5 : 1.0 ]
-        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 17.0 * mb ] ] ]
-        cv.font_size[ i32[ 17.0 * mb ] ]
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 17.0 ] ] ]
+        cv.font_size[ 17 ]
         sw : f32 [ (bt.site) ? cv.measure_text[ bt.site ].w : 0.0 ]
-        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 16.0 * mb ] ] ]
-        cv.font_size[ i32[ 16.0 * mb ] ]
+        cv.set_font[ shared_font[ cv, uri, label_px[ cv, 16.0 ] ] ]
+        cv.font_size[ 16 ]
         dw : f32 [ (bt.domain) ? cv.measure_text[ bt.domain ].w : 0.0 ]
         if [ sw != bt.site_w || dw != bt.domain_w ]
             bt.site_w   = sw
@@ -472,10 +440,6 @@ element BarText
             label_align: 0.0 0.5
             # cut, not ellipsized: the mask fades its end
             label_overflow: clip
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 26
     }
 
 # the site's domain at the title's right: yellow over https, else
@@ -492,10 +456,6 @@ element BarDomain
     :secure
         layers.face:
             label_color: #ffd24aff
-        # a phone's bar: its text half again as big
-        :use_mobile
-            layers.face:
-                label_size: 24
     }
 
 # the side panel's list of one top menu's entries
@@ -664,7 +624,7 @@ MenuDrawer ExchangeDrawer
     :open
         opacity: 1.0, 260ms cubic inward
     :use_mobile
-        area: l0%+0 t1.82 r0%+0 b0
+        area: l0%+0 t0.91 r0%+0 b0
     }
 
 # the system menu, the desktop's (orbiter's): fades in under the
@@ -676,6 +636,92 @@ MenuDrawer SystemDrawer
         opacity: 0.0, 240ms cubic outward
     :open
         opacity: 1.0, 260ms cubic inward
+    # a phone's too: the bar stays over it
     :use_mobile
-        area: l0%+0 t1.82 r0%+0 b0
+        area: l0%+0 t0.91 r0%+0 b0
     }
+
+# a phone's system menu cells in one row along its foot: a drag or
+# the wheel scrolls them sideways, eased; a tap picks the cell
+element SysStrip
+    # px scrolled, and where it eases to
+    intern shift : f32
+    intern goal  : f32
+    # the pointer's x at a press, -1 none; the scroll then
+    intern grab  : f32 [ -1.0 ]
+    intern from  : f32
+    intern moved : bool
+    # the press's x in the strip
+    intern tap_x : f32
+    style : CSS {
+        layers.dock:
+            fill_color: #1a1440
+            box_shadow: inset 0 0 13px #86f2
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.ddiv:
+            fill_color: #ffffff11
+            area: l0 t0 r0 h1px
+    }
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func most [] -> f32
+        o : orbiter orb[]
+        if [ !o || !bounds ] return 0.0
+        m : f32 [ f32[ o.sys_strip_ids[].count ] * o.dock_w[]
+            - bounds.w ]
+        return (m > 0.0) ? m : 0.0
+
+    public func render [] -> Elements
+        o : orbiter orb[]
+        return (o) ? o.sys_strip_els[ shift ] : null
+
+    public func tick [ w: Window ]
+        goal = clamp[ goal, 0.0, most[] ]
+        if [ shift != goal ]
+            shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
+            if [ abs[ goal - shift ] < 0.5 ] shift = goal
+            ux.restyle      = true
+            ux.will_animate = true
+        left  : f32 [ (shift > 0.5) ? 24.0 : 0.0 ]
+        right : f32 [ (most[] - shift > 0.5) ? 24.0 : 0.0 ]
+        if [ mask_glow.w != left || mask_glow.y != right ]
+            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+            pristine  = false
+
+    public func on_wheel [ ev: Event ]
+        ev.no_propagation = true
+        goal -= f32[ ev.mouse.wheel_delta.y ] * 40.0
+        ux.will_animate = true
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        grab  = f32[ ux.mouse.x ]
+        tap_x = ev.mouse.pos.x
+        from  = goal
+        moved = false
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        d : f32 [ f32[ ux.mouse.x ] - grab ]
+        if [ abs[ d ] > 8.0 ] moved = true
+        if [ !moved ] return
+        # the cells follow the finger
+        goal  = clamp[ from - d, 0.0, most[] ]
+        shift = goal
+        ux.restyle = true
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        drag : bool [ moved ]
+        held : bool [ grab >= 0.0 ]
+        grab = -1.0
+        o : orbiter orb[]
+        if [ drag || !o || !held ] return
+        ids : vec string o.sys_strip_ids[]
+        i : i32 [ i32[ (tap_x + shift) / o.dock_w[] ] ]
+        if [ i >= 0 && i < ids.count ] o.sys_pick[ ids[ i ] ]

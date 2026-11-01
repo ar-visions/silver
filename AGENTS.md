@@ -1544,6 +1544,46 @@ phone itself (arm64), not busybox. Order:
       Seen hidden. OPEN: the 「」『』 key's label is cut off.
       OPEN: no toggle input (a
       repeated tap); one segment at a time; no learning.
+   k. BUILT, seen hidden (Oct 31) the phone's apps grid: five
+      across, the cards their icons, 6 units apart, at the widgets'
+      x; headings bold white as the widget tabs (NodeList AppsGrid).
+      Wider, a column more each time a card would grow by half
+      (seen: 900 px wide, six across). OPEN: steam's name draws as
+      a grey bar in some shots (not chased).
+   l. BUILT, seen hidden (Oct 31: the menu's side column on the
+      bottom, one row scrolled sideways, power in it) orbiter
+      sys_strip_els / sys_strip_ids / sys_pick, SystemBar SysStrip
+      (a drag or the wheel scrolls, eased, edges faded; a tap
+      picks). Desktop unchanged.
+   n. BUILT, seen hidden (Oct 31) back held repeats: after 0.45 s
+      it deletes again every 70 ms until let go (FlickKeys tick,
+      held_us, repeats); a tap still deletes one.
+   o. DONE (Oct 31: no Split, Hide or Quit, desktop too) the
+      menus' Split, Hide, the added Quit and the app menu's Quit
+      are gone (Run stays while not running). A plain file's menu
+      opens empty (his call: kept so).
+   p. DONE (Oct 31) the phone's navigator is always thumbnails
+      (orbiter nav_thumbs: nav_icons or use_mobile); no list /
+      icons toggle there.
+   q. DONE (Oct 31) the navigator's side column (users,
+      projects, system) shows only when the list keeps 300 units
+      beside it (CommitView side_fit); else none, not pressed.
+   r. DONE (Oct 31) the menu's agents, too narrow for the list
+      beside the avatar (under 300 units): headers the full width,
+      the platform centred (AgentHome narrow); then the groups
+      flush: no side margin, square, no border (AgentHead and
+      AgentBody flush). Fixed with it: the
+      platform's picture drew at twice its box on a 2x phone (its
+      size by the canvas scale, 1 there; now the window's).
+   s. DONE (Oct 31) the phone's system menu opens under the system
+      bar (SystemDrawer's own :use_mobile, t0.91; the base drawer's
+      t0 had covered the bar).
+   m. OPEN (Oct 31) the mic crash in the code editor: reproduced
+      (debug, SILVER_DICT_FILE): after the take typed "Testing.",
+      SIGSEGV in FlickStrip.render (keyboard.ag:1184) on a freed
+      `words` vec (FlickKeys.cands, replaced by offer / swipe_end).
+      Not fixed on purpose; the user's run no longer crashes (Oct
+      31). Kept open: the freed vec was seen in the debug run.
 11. BUILT, not yet run on the phone (Oct 28: the installer is
    for everything; the shell from the current source) the phone's
    Install first runs `silver -d fp6 --build os-bootstrap` and
@@ -1835,6 +1875,45 @@ system bar. In order:
      was registered on T-Mobile home service, 5G, packet attached,
      with fast.t-mobile.com as the initial APN. No modem identity was
      written during this install or check.
+7. BUILT, seen hidden on the stand-in, not on the phone (Oct 30:
+   add MMS to the phone app) mmsd-tng 2.6.0 (Ubuntu's), iproute2
+   and mobile-broadband-provider-info in fp6.agi. init.c mms_start
+   (after ModemManager): the session bus if none (nolibc has no
+   session_start), /var/lib/mmsd (its HOME) with outbox/, mmsdtng
+   logging to /var/log/mmsd.log; the image gets
+   orbiter-session.conf. silver-host: a module exporting `mms`
+   (phone) gets the session bus socket and /var/lib/mmsd, read
+   and write, at the same paths.
+   modem: the data link (mmsd-tng needs one; nothing applied the
+   bearer before): on orbiter-os orbiter sets Modem.data_on; when
+   registered with no connected bearer, Modem.Simple.Connect is
+   asked without waiting (its reply found by serial in poll),
+   APNs in turn: carrier_mms's (Google Fi: h2g2, MMS server
+   http://m.fi.goog/mms/wapenc, from Google's support page),
+   then the network's initial bearer APN; the bearer's
+   addresses, MTU, default routes (metric 700) and name servers
+   (only when resolv.conf has none) set with `ip`. Mms (session
+   bus): services, messages and their parts (bytes at an offset
+   in mmsd-tng's file), send_mms, remove_message, configure
+   (ChangeAllSettings with the bearer's APN, then the queue).
+   phone: a text with pictures, or to a group ('a, b' typed in
+   New), goes as MMS; '+' attaches (standalone: ctrl+o's dialog;
+   hosted: orbiter's title pick sets `attach`); pictures copied to
+   the outbox and to <storage>/phone/pictures; received MMS kept
+   (text and pictures) then taken out of mmsd-tng; SMS with Data
+   (MMS notices) are left to mmsd-tng; bubbles draw pictures;
+   Send with nothing, or a refusal, now says so.
+   Checked: modem 5/5 (t_modem_data: Connect on h2g2, the link's
+   commands kept by `dry`; t_mms: sent with words and a picture,
+   one received, settings, removed); a hidden phone on the
+   stand-in: a group MMS with a picture sent and drawn, a received
+   picture shown in its conversation. init.c builds for the PC and
+   for the phone (nolibc) beside modem-prepare; orbiter,
+   os-bootstrap, phone build.
+   NOT checked: on the phone (needs an Install), whether Fi takes
+   h2g2 here (the bearer that worked by hand was
+   fast.t-mobile.com), the SIM's name reading 'Google Fi', video
+   parts.
 6. OPEN after 5: the sound, in order: Luca Weiss's milos-7.3.y commits for
    the loudspeaker, soundwire, macros and microphones; the voice
    path between the modem and the ADSP (no mainline driver yet);
@@ -11586,6 +11665,12 @@ THIRD_PARTY.md "Aircraft models". In metres, nose toward +z.
    screen, so turning the view made a new one nearly every frame (his
    run: 112 atlases). Sizes now a quarter octave apart (text_px):
    a view sweep 4 -> 45 atlases before, 3 -> 18 after.
+6r2. BUILT, seen hidden (Oct 30: a camera with the HUD overlay
+   alone, arcade style) C goes chase, arcade (cam_mode 6), pilot,
+   RIO, flyby ...: the eye 3.5 m ahead of the pilot's, so none of
+   the jet shows; the HUD over the whole view (no glass clip), its
+   ladder in the middle 85% of the height, speed and altitude at
+   the view's sides, text 2.6% of the height; the wheel zooms.
 6r. OPEN (Oct 28) cockpit metals more real: specular, greasy, worn,
    shiny.
 7. DONE (Oct 27: the F-14 in the clouds' world; the
@@ -11600,6 +11685,204 @@ THIRD_PARTY.md "Aircraft models". In metres, nose toward +z.
    grid ground and its shader are gone. Seen hidden: chase, cockpit,
    a roll; clouds alone unchanged. Open: clouds never hide the jet
    (drawn over the sky); launch.ag keeps its own Nubis copy.
+
+## Alaska terrain in flightsim — live list (Oct 30 2026)
+
+the user: a state-of-the-art landscape (no cities) for the flight sim,
+Alaska; photos rejected (all satellite maps are poor), the land is
+composited from height plus our own materials and brushes. His
+picks: code inside flightsim, drawn in flightsim under the F-14,
+first square Anchorage to Seward (204.8 km). Order:
+1. BUILT, seen hidden (Oct 30) the tile quadtree (flightsim/
+   Terrain.ag): UTM 6N square east 250,000-454,800, north
+   6,620,000-6,824,800; world x = west, z = north, origin (the
+   carrier) at 368,500 / 6,630,000 (open water south of Resurrection
+   Bay). Levels 0-9 (204.8 km to 400 m tiles), 129 x 129 heights
+   each, fetched on demand from USGS 3DEP's image server (5 m IfSAR
+   there; posts on edges, bilinear) into ~/.cache/flightsim/
+   terrain/<level>_<col>_<row>.f32, 12 fetch threads. A tile splits
+   within 3 of its children's widths; a missing child leaves its
+   quarter to the parent (quads mask), so a failed fetch never
+   blocks detail. 192 GPU slots (a 128 x 128 grid model each with
+   its own height texture, R32F), least lately used. CDLOD morph to
+   the coarser grid, skirts, log depth per pixel (gl_FragDepth;
+   clipping standard), sea below 0.4 m left to the clouds' sea.
+   First materials: snow by height, slope and facing, rock on
+   steeps, spruce low, tundra, shore; sun and the sky map's light;
+   haze by height (1.5 km scale, 75 km at the sea). Own Render
+   (fs_ground), drawn under the jet's picture (TerrainLayer).
+   Found: 3DEP leaves all-sea blocks out of the TIFF (offset 0);
+   an earlier reader stored header bytes as heights (cache wiped).
+   Seen: --intercept over the Kenai and Resurrection Bay, Seward's
+   valley, snow on the ridges. Terrain's cost ~30 ms a second.
+   Then (Oct 30: clouds looked under the terrain) clouds:
+   NubisSky takes a host's ground depth (gdepth, log; ground.x on)
+   and in that pass marches only to the ground, no sea, and writes
+   the cloud alone, premultiplied, coverage in alpha; pixels just
+   past the ground's edge are drawn too (no gap to blend in).
+   SkyView.ground_depth / ground_far / over_ground[] run it at the
+   sky's pass size. flightsim's TerrainLayer joins ground and that
+   layer (GroundCompose) where ground was drawn. Seen hidden at
+   20,000 ft: cumulus in front of the Kenai, no seam at the coasts.
+   Then (Oct 30: the slow start) one TerrainLit and one Model
+   for every tile; each tile is a draw (its own ring slot, paint_n
+   200) with its heights bound by name (trinity Pipeline and Model
+   rebind_named; Pipeline's last members slot_names, slot_ids).
+   Pipelines 965 -> 504, samplers ~4,700 -> 1,609; first frame 56
+   -> 32 s hidden. Seen: tiles at their own heights.
+   Then (Oct 30: no fetching while flying; a build pass for
+   export; his pick: down to level 8, 2 bytes a height) `export func
+   terrain_bake` (flightsim.ag, TerrainBake in Terrain.ag): level 8
+   (800 m tiles, 6.25 m apart) from 3DEP in 256 pieces of 2049 x 2049
+   heights, eight at once; levels 7..0 from their children's even
+   posts (what CDLOD morphs to). Packs in share/silver-flightsim/
+   terrain: L<n>.idx (each tile's lo, hi and place; -1 not made, -2
+   all sea) and L<n>.dat (129 x 129 u16 from lo to hi: 6 cm steps
+   at most, finer than f16's 2 m near 3 km). A build resumes missing
+   pieces; once done it is skipped. Built in 9 min: 2.3 GB, 52,722
+   land and 12,814 sea tiles at level 8, heights to 3,439 m. The sim
+   reads only the packs (no tls, threads or fetch states); a sea tile
+   draws nothing and its quarter is taken. Seen hidden: the whole
+   square drawn 3 s after the first frame. The old fetched cache
+   (~/.cache/flightsim/terrain) deleted.
+   Then (Oct 30: dark edges and aliased pixels where far clouds
+   meet the land) the clouds-over-ground pass (quarter size) cut
+   each pixel at the nearest of its ground's: blocks of land showed
+   dark through the cloud. Now it cuts at the farthest ground round
+   it and writes the cloud's front depth (log, as the ground's);
+   GroundCompose takes the four cloud texels round each pixel, each
+   kept only where it lies before that pixel's own ground (soft over
+   3% of the distance), at full size. Seen hidden: no dark holes,
+   cloud bottoms follow the ridges.
+   Then (Oct 31: the stepped coastlines) the coast was cut where
+   the height fell under 0.4 m, and the sea's posts read 0, so it
+   hugged the land posts in steps. Each pixel now takes land or sea
+   at the 16 posts round it through a cubic B-spline (the coast a
+   smooth curve between the posts), plus a small wander by noise at
+   the post spacing, soft over one pixel: the ground writes its
+   cover as alpha (premultiplied), GroundCompose keeps it. Seen
+   hidden: no stairs, the edge soft.
+   Then (Oct 31: a dark rim round every cloud's edge) the cloud's
+   distance was where its light first fell under half; a thin edge
+   never got there and took the march's start (0 inside the layer),
+   so it got no haze and stood out dark. The distance is now the
+   mean of each step's, weighted by the light it took (NubisSky).
+   Seen hidden in clouds alone, sunset towers from 6 km: the rim
+   gone. flightsim's own view of it not shot (no edge in frame).
+   Then (Oct 31: rings inside a near cloud at startup, "our number
+   one distortion") found by turning parts off one at a time: the
+   empty-space leap (the island map, the cloud footprints' distance)
+   puts every ray on the footprint's edge, which cancels the march's
+   per-pixel jitter; the slices lined up into contour rings. The
+   jitter is added at the cloud's entry, one fine step (a whole
+   coarse step after each leap was tried: heavy noise). Also the history step reads the cloud distance from the
+   fresh pass's 32-bit depth image, not its 8-bit alpha (235 m
+   steps). Seen hidden at the intercept start: rings gone; the
+   Clouds backdrop (orbiter) builds, not run.
+   Then (Oct 31: noisy instead of banded, a new noise each frame
+   and a pattern) the clouds before the land come from the over
+   pass, which has no history, yet took the per-frame jitter: its
+   raw pattern flickered. Its jitter now holds still in time, and
+   GroundCompose averages its texels under a tent two texels wide
+   (each still kept only before its pixel's land). The history's
+   jitter steps by the golden ratio a frame (was the same pattern
+   shifted every 8); at speed it keeps more history (fresh 0.3 at
+   250 m/s, was 0.58: the 32-bit distance reprojects it right).
+   Seen hidden after 40 frames: the pattern gone, edges kept.
+   Hidden runs draw a frame only on an input event: send moves.
+   Then (Oct 31: bands of distortion rolling through near clouds in
+   flight, hard far edges) three causes, each measured hidden:
+   - the march's jitter was an interleaved gradient noise, whose
+     lattice showed as diagonal bands wherever the history could not
+     hold (near clouds at speed; a light-march jitter made it a hex
+     grid). Now blue noise: CloudBake.bake_blue (void and cluster,
+     64^2, baked/blue.png, bake_version 8), sampler `blue` (id 10:
+     trinity shader.ag makes id 9 a samplerCube), texelFetch per
+     pixel, stepped by the golden ratio a frame. Seen: the hatch in
+     the moving near cloud gone, grain only.
+   - the light march's five point samples 225 m apart terraced the
+     shadow; each now reads the density filtered to the cone's width
+     there (cloud_density's new fp: the noise's mip, shape and
+     detail textures carry mips 6 / 4; the march passes the pixel's
+     footprint t x sea_b.z). Seen: no bands in sunset towers at 2.5
+     km, gpu pass 3.3 -> 2.9 ms.
+   - the over-ground pass had no history: its own TemporalOver
+     compose (rgba, the depth decoded from the ground's log code)
+     into ohist_a / ohist_b, the same blend as the sky's; over_ground
+     hands the host the history. The footprint mip alone changed the
+     far cloud's edge nothing at 20 km (A/B shot).
+   Found: a hard contour on a near cloud over land is the land's
+   own silhouette seen through thin cloud (the terrain draws no
+   anti-aliasing), not a cloud edge.
+   Then (Oct 31: huge wiggle at the far edges; nothing rendered
+   them soft in distance) a far pixel was all cloud or none: at
+   30 km a step is 200 m, any density saturates it, and the jitter
+   flipped the edge each frame. Now cloud_density returns vec2: x
+   the density over the footprint, y the share of the footprint in
+   cloud (the noise the mip averaged away still crosses the
+   threshold inside it: sg 0.26 x sqrt(mip level / 5) comp units,
+   the share a smoothstep of (comp - thr) / sg, the mean above the
+   threshold the Gaussian's positive part); the march's step is
+   Ts = 1 - share x (1 - exp(-density / share x ext x dt)), so an
+   edge pixel ends part covered. The footprint is never finer than
+   the step (fp = max(t x pixel angle, fine)): the noise between
+   two samples is what wiggled. A step under 0.02 optical depth
+   goes coarse, and one under 1e-3 counts as no cloud. Near (mip
+   0) it is the old math exactly. Measured hidden at the intercept:
+   the far cloud's top edge changed 693 -> 339 pixels frame to
+   frame, its notches gone, round and soft (A/B shots); sunset
+   towers at 2.5 km unchanged (40 px), gpu pass 2.9 -> 3.8 ms
+   (6.4 before the coarse thin steps).
+   Then (Oct 31: still hugely wiggling, 4x the amount): the filter
+   footprint is four times the pixel's, never under four steps
+   (fp = 4 x max(t x pixel angle, fine)). Far top edge 693 -> 300
+   px frame to frame, the far cloud round and smooth; the detail
+   noise now softens from about 800 m out (sunset towers at 2.5 km
+   visibly smoother); gpu pass 3.8 -> 4.8 ms at 1280 x 800.
+   Then (Oct 31: still an opaque cutout dancing by whole pixels;
+   soften AT DEPTH, into the cloud, in the alpha range: the cloud
+   above right of the plane at the intercept start is the check):
+   extinction is 0.016 / m at density 1, 60 m to opaque, and a
+   pixel there spans about 60 m; worse, a ray one pixel inside a
+   convex silhouette already cuts a chord of hundreds of metres
+   (the chord grows as the root of the depth in), so a rim-shape
+   fade (tried: base x smoothstep over a comp band; no visible
+   change) and a per-footprint cap (0.15 optical depth a footprint;
+   no visible change) both stayed opaque one pixel in. Now the
+   march holds the rim's density to cap = 1 / (sigma x chord),
+   chord = 2 sqrt(2 x 1500 m x 12 footprints), rising to the full
+   density over a band (0.5 comp units) of cloud_density's new z
+   (comp - thr, how deep inside the shape); none under a 10 m
+   footprint (~3 km). The thin-step rule is coarse only under 0.005
+   optical depth a coarse step. Seen hidden on that cloud: the
+   ridge behind shows through its lower half, its edges fade, the
+   core still solid; its pixels changed frame to frame 1330 -> 882.
+   Not seen by the user yet.
+   OPEN: headless flightsim runs 17 fps (cause not measured: not
+   the terrain); the jet always
+   draws over the ground (no shared depth); the over-ground cloud
+   pass has no temporal history (some flicker likely); no ground
+   collision; the coast still moves a little when a tile changes
+   level (its posts change); the sea's colour
+   is the clouds' (pink at sunset weather).
+2. OPEN masks and erosion (GPU, per tile).
+3. OPEN the runtime-painted virtual texture, height-blended
+   materials.
+4. OPEN brushes (outcrops, scree, drifts, moraines, rivers).
+5. OPEN placement and trees (about 20 models, impostors).
+   Trees (Oct 31, the user's design): real geometry, 1 to 4
+   low-poly cones stacked, placed where the forest layer is.
+6. OPEN light and water.
+   Water (Oct 31, the user's design): see-through where shallow, the
+   bottom seen (mud under it), deep parts dark by depth. Needs the
+   ground under the sea (3DEP reads it 0: a bathymetry source, e.g.
+   NOAA's coastal relief models) and the sea drawn over the ground
+   by depth, not cut away at 0.4 m (it is the clouds' sea now).
+   Per vertex on the water's mesh: the wave amount (calm in
+   sheltered bays and shallows, full in open water), translucency
+   (how clear: glacial silt milky, open sea clear), colour and the
+   like. Order: the ground (seabed included) draws first, then the
+   water over it, its thickness from the ground's depth there.
 
 ## player (Oct 21 2026)
 
@@ -13017,3 +13300,77 @@ step fails until a first commit; the library builds).
    it does not read the slots yet. Fixed on the way: a string
    argument copied as `[ t ]` and then replaced freed the caller's
    string (nv_pad); the queue's key freed by its own remove.
+14. BUILT, replayed (Oct 30: keep the stock near half of the
+   account, trading on each step off the last trade) action
+   rebalance <sym> replays 4 years of 1-second slots (nv_mix);
+   action fetch_years <names> <years> fetches them. A step of
+   the 20-second average off the last trade moves a share
+   (pull) of the way back to 50%. INTC 2022-10-31 to 2026-10-29,
+   1,003 days: every pull of 10% to 100% ends within -0.1% to
+   +2.2% of holding 50% (step 2%, pull 10%: +2.23%), worst fall
+   37% vs 41%; started at 90% it moves to half and ends ~$209k
+   against $295k for holding 90% (INTC 29 -> 92). A fixed
+   piece each step (2% of the account, scaled by distance from
+   half) LOST: $47k at 0.5% steps; it oversells rises and
+   overbuys falls. Checked by a separate Python replay (equal to
+   the cent). The slots are in a scratch HOME, not ~/.cache.
+
+## orbiter documentation — live list (Oct 31 2026)
+
+the user: document orbiter with screenshots of every part: menus,
+windowing, mobile, agents, silver-host and its debugging / reload.
+1. DONE orbiter/docs/orbiter.html (the site's look) with 33 shots in
+   orbiter/docs/images (webp, 1.8 MB), all from hidden runs on a
+   scratch HOME through the socket's `shot`: desktop, widgets,
+   arrange, system menu, scenes, sound, menu drawers, panes, a
+   hosted console, a free window, gnome-calculator on the Wayland
+   display, module and app menus, editor, navigator (list, cards,
+   search), the exchange, the phone layout (SILVER_MOBILE=fp6 at
+   558 x 1242), the keyboard (kana flicks, pinyin), the phone app
+   (its Oct 30 stand-in shots), a paused debug instance, the call
+   stack, a live reload's before and after; an SVG of the holder /
+   view / app processes. Rendered by headless Chrome and checked.
+2. OPEN found on the way: a paused debug instance stopped in
+   pthread_key_create, and the pane opened vk.ag at its top, not at
+   the stopped line (vk.ag:4211).
+3. OPEN found on the way: `phone` with fake_mm.py: dbus-send to
+   /org/orbiter/Fake (Ring, Text) got no reply and fake_mm logged
+   nothing (not chased).
+4. OPEN the desktop's navigator shows a bar with an EN key at the
+   foot on a PC (not SILVER_MOBILE; likely the keyboard): seen in
+   every navigator shot.
+
+## flightsim and clouds — live list (Oct 31 2026)
+
+1. BUILT, kept: the clouds lagged the filtered camera. The
+   history reprojection (TemporalCompose, TemporalOver) left out the
+   camera's x / z travel (cam_pos holds height only; travel is
+   sky.world). SkyView keeps prev_pos in world terms, prev_here[]
+   gives it relative to this frame's eye. Backdrop Clouds has the
+   same code (its camera does not travel: left).
+2. OPEN distant cloud edges over the terrain too opaque, aliased,
+   moving. Tried and removed: thinning by a surface normal from the
+   coarse density gradient: holes and bright flecks all over the
+   sheet (a layer seen from the side is all silhouette), 117 -> 36
+   fps. Likely cause still to fix: 200-300 m march steps past 20 km
+   make a thin edge solid in one step.
+3. BUILT, not seen: the arcade HUD cut about half the ladder. It used
+   the seat's 60 degree lens (about 36 degrees tall on a wide window)
+   for a ladder of 25 degrees either side. Entering arcade now sets
+   the lens so 25 degrees fill the 85% box (tan 25 / 0.85 x aspect);
+   the seat after it gets 60 degrees back.
+4. OPEN every flightsim build's export run ends in SIGSEGV after
+   "export: complete" (install/tmp/flightsim.log, several builds).
+
+## Alaska terrain textures — live list (Oct 31 2026)
+
+1. DONE three 1024 x 1024 textures: dark rock, sparse forest,
+   and moss field.
+2. DONE white snow with surface and tone variance.
+3. DONE exposed dirt.
+4. DONE wet mud.
+5. DONE wet land: saturated soil, moss and shallow water.
+6. DONE spruce forest seen from above.
+7. DONE alpine meadow with alder.
+8. DONE glacier ice.
+9. DONE grey beach gravel.

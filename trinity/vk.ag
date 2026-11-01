@@ -379,18 +379,36 @@ class Render
             gpu_us = f32[ ts[1] - ts[0] ] * ts_period / 1000.0
             if [ vk.time_until > 0 ] pass_time[]
 
-    # this pass's time summed under its name, for stats
-    func pass_time []
-        if [ !vk.pass_names ]
-            vk.pass_names = vec string []
-            vk.pass_us = vec f32 []
-        # its target's tag, else (a plain canvas) its element's id
+    # its name in stats: its target's tag, else (a plain canvas)
+    # its element's id, with its size
+    func pass_key [] -> string
         tg : string [ (color && color.tag) ? color.tag : '' ]
         if [ tg == 'rcolor' || tg.count == 0 ]
             tg = (owner && owner.id) ? owner.id : 'render{id}'
         cw : i32 [ (color) ? color.width : 0 ]
         ch : i32 [ (color) ? color.height : 0 ]
-        key : '{tg}@{cw}x{ch}'
+        return '{tg}@{cw}x{ch}'
+
+    # this pass's fence wait summed under its name, for stats
+    func wait_time [ us: f32 ]
+        if [ !vk.wait_names ]
+            vk.wait_names = vec string []
+            vk.wait_us = vec f32 []
+        key : string pass_key[]
+        at : i64 [ vk.wait_names.index_of[ key ] ]
+        if [ at < 0 ]
+            vk.wait_names.push[ key ]
+            vk.wait_us.push[ us ]
+        el
+            sum : f32 [ vk.wait_us[ at ] + us ]
+            vk.wait_us[ at ] = sum
+
+    # this pass's time summed under its name, for stats
+    func pass_time []
+        if [ !vk.pass_names ]
+            vk.pass_names = vec string []
+            vk.pass_us = vec f32 []
+        key : string pass_key[]
         at : i64 [ vk.pass_names.index_of[ key ] ]
         if [ at < 0 ]
             vk.pass_names.push[ key ]
@@ -441,6 +459,17 @@ class Render
             flags: VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
         ] ]
         ts_begin[ vk_command_buffer, s ]
+        # every earlier submit's writes (colour, depth) are seen by
+        # this batch: passes are not waited on, the GPU orders them
+        all_bar : VkMemoryBarrier [
+            sType:         VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            srcAccessMask: VK_ACCESS_MEMORY_WRITE_BIT,
+            dstAccessMask: VK_ACCESS_MEMORY_READ_BIT
+                         | VK_ACCESS_MEMORY_WRITE_BIT ]
+        vkCmdPipelineBarrier[ vk_command_buffer,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, @all_bar, 0, null, 0, null ]
         if [ bool[ color ]
             && color.vk_layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
             color.transition_in[ vk_command_buffer,
@@ -516,6 +545,11 @@ class Render
         if [ pass_open ]
             vkCmdEndRenderPass[ vk_command_buffer ]
             pass_open = false
+        # past half the ring: wait now, at the batch's end; a wrap
+        # mid-batch reopens the pass, whose clear wipes the batch
+        if [ draw_slot * 2 >= paint_n ]
+            sync_fence[]
+            return
         color.transition_in[ vk_command_buffer,
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         flush_submit[]
@@ -569,10 +603,8 @@ class Render
         update[]
         if [ !vk_framebuffer[0] ]
             return
-        # the pass writes this image; sampling it elsewhere left it
-        # read-only
-        if [ color ]
-            color.transition[ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
+        # a read-only image goes back to drawing inside the batch
+        # (begin_record, draw_immediate): no submit of its own
         vk.paint_calls += 1
         # reduction renders (two-pass) + the swapchain blit
         # (semaphores/present) can't batch — they record+submit in one
@@ -845,17 +877,98 @@ class Render
         draw_slot = n
 
     # rebuild the colour mip chain from what was just drawn
+    # the mip chain, recorded in this render's own batch after its
+    # draws and sent without a wait: each level blitted from the last
     public func gen_mips [ ]
-        if [ mips < 2 || !color ] return
-        color.transition[ VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
-        vk.create_mipmaps*[ color.vk_image, width, height, 1, mips, 1 ]
+        if [ mips < 2 || !color || !color.vk_image ] return
+        begin_record[]
+        if [ pass_open ]
+            vkCmdEndRenderPass[ vk_command_buffer ]
+            pass_open = false
+        c : VkCommandBuffer [ vk_command_buffer ]
+        img : VkImage [ color.vk_image ]
+        mip_bar[ c, img, 0, 1, color.vk_layout,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_ACCESS_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
+        mip_bar[ c, img, 1, mips - 1, VK_IMAGE_LAYOUT_UNDEFINED,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                 VK_ACCESS_TRANSFER_WRITE_BIT,
+                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ]
+        mw : i32 [ width ]
+        mh : i32 [ height ]
+        for [ i: i32 1, i < mips, i += 1 ]
+            nw : i32 [ max[ 1, mw / 2 ] ]
+            nh : i32 [ max[ 1, mh / 2 ] ]
+            vkCmdBlitImage[ c, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                VkImageBlit [
+                    srcSubresource: VkImageSubresourceLayers [
+                        aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel: i - 1, baseArrayLayer: 0,
+                        layerCount: 1 ],
+                    srcOffsets: [ VkOffset3D [ 0, 0, 0 ],
+                                  VkOffset3D [ mw, mh, 1 ] ],
+                    dstSubresource: VkImageSubresourceLayers [
+                        aspectMask: VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel: i, baseArrayLayer: 0,
+                        layerCount: 1 ],
+                    dstOffsets: [ VkOffset3D [ 0, 0, 0 ],
+                                  VkOffset3D [ nw, nh, 1 ] ] ],
+                VK_FILTER_LINEAR ]
+            # this level is the next one's source
+            mip_bar[ c, img, i, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT ]
+            mw = nw
+            mh = nh
+        mip_bar[ c, img, 0, mips, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+                 VK_PIPELINE_STAGE_TRANSFER_BIT ]
         color.vk_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        flush_submit[]
+
+    # one layout change of levels base .. base + n, recorded in c
+    func mip_bar [ c: VkCommandBuffer, img: VkImage, base: i32, n: i32,
+                   from: i32, to: i32, src_a: i32, dst_a: i32,
+                   src_s: i32 ]
+        dst_s : i32 [ (to == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                      ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                      : VK_PIPELINE_STAGE_TRANSFER_BIT ]
+        bar : VkImageMemoryBarrier [
+            sType:               VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcAccessMask:       src_a,
+            dstAccessMask:       dst_a,
+            oldLayout:           from,
+            newLayout:           to,
+            srcQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            dstQueueFamilyIndex: VK_QUEUE_FAMILY_IGNORED,
+            image:               img,
+            subresourceRange:    VkImageSubresourceRange [
+                aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                baseMipLevel:   base,
+                levelCount:     n,
+                baseArrayLayer: 0,
+                layerCount:     1 ] ]
+        vkCmdPipelineBarrier[ c, src_s, dst_s, 0, 0, null, 0, null,
+                              1, @bar ]
 
     public func sync_fence [ ]
         # submit the open batch (if any), then wait it. callers invoke
         # this before READING the render's color (blit/sample) or
         # presenting, which must see all of this canvas's accumulated
-        # draws.
+        # draws. the batch leaves its picture readable, in band: no
+        # sampler switches it later with a submit of its own
+        if [ recording && color && color.vk_image ]
+            if [ pass_open ]
+                vkCmdEndRenderPass[ vk_command_buffer ]
+                pass_open = false
+            color.transition_in[ vk_command_buffer,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         flush_submit[]
         # a slot with no pending submit has an unsignalable fence —
         # nothing to wait
@@ -866,8 +979,10 @@ class Render
         started_us: i64 [ epoch_micros[] ]
         result: vkWaitForFences[ vk.device, 1, @vk_fences[ring_last],
                                  VK_TRUE, UINT64_MAX ]
-        vk.sync_us    += epoch_micros[] - started_us
+        waited : i64 [ epoch_micros[] - started_us ]
+        vk.sync_us    += waited
         vk.sync_calls += 1
+        if [ vk.time_until > 0 ] wait_time[ f32[ waited ] ]
         if [ result != VK_SUCCESS ]
             rc : i32 [ cast i32 [ result ] ]
             log 'fence wait failed: id {id} {width}x{height} result {rc} slot {ring_last}'
@@ -1563,6 +1678,9 @@ class vk_context
     mutable paint_who  : string
     mutable big_names  : vec string
     mutable big_px     : vec f32
+    # each pass's CPU wait on its own fence, the same time (us)
+    mutable wait_names : vec string
+    mutable wait_us    : vec f32
 
     func init [ ]
         hold[]
@@ -3466,6 +3584,9 @@ class Pipeline
     intern layout             : VkPipelineLayout
     # set: this blend, not the composite operator's
     public blend              : BlendState
+    # each sampler's name and its binding in set 1
+    intern slot_names         : vec string
+    intern slot_ids           : vec i32
 
     public   func rebind [ ]
         if [ resources ]
@@ -3524,6 +3645,14 @@ class Pipeline
 
     public   func rebind_image [ tx: Texture ]
         rebind_texture[ image_slot, tx ]
+
+    # point the sampler named so at a texture for the next draw
+    public   func rebind_named [ key: string, tx: Texture ]
+        ensure_bound[]
+        for [ i: i32 0, i < slot_names.count, i += 1 ]
+            if [ slot_names[ i ] == key ]
+                rebind_texture[ slot_ids[ i ], tx ]
+                return
 
     # re-push this pipeline's node world to the uniform (for animated
     # rigid nodes whose bone parent rotates after the pipeline was
@@ -3720,6 +3849,8 @@ class Pipeline
             sc_chain.push[ sc_walk ]
             sc_walk = sc_walk.context
         sc_chain = sc_chain.reverse[]
+        slot_names = vec string []
+        slot_ids = vec i32 []
 
         for [ shader_schema: Au_t ] in sc_chain
             for [ i: 0, i < shader_schema.members.count, i += 1 ]
@@ -3749,6 +3880,8 @@ class Pipeline
                     expect res inherits Gpu, "expected Gpu resource"
                     res.sync [ w ]
                     resources.push [ res ]
+                    slot_names.push[ string [ mem.ident ] ]
+                    slot_ids.push[ set1_binds ]
                     if [ strcmp[ mem.ident, 'image' ] == 0 ]
                         image_slot = set1_binds
                     if [ strcmp[ mem.ident, 'mask' ] == 0 ]
@@ -4328,6 +4461,11 @@ class Model
     # seen in a mirror's view of its scene (false: a near moon a
     # scene stands on)
     public reflects         : bool [ true ]
+
+    # one sampler of every pipeline at a texture, for the next draw
+    public func rebind_named [ key: string, tx: Texture ]
+        for [ p: Pipeline ] in pipelines
+            p.rebind_named[ key, tx ]
 
     public func rebind_model [ ]
         if [ pipelines ]
@@ -5239,6 +5377,54 @@ class Texture
     # upload of THIS texture is still in flight
     intern up_cmd : Command
     intern up_buf : Buffer
+    # upload_regions: three commands in turn, so a frame's upload never
+    # waits on the last one
+    intern up_ring : vec Command
+    intern up_at   : i32
+
+    # several rectangles at once, one submit, no wait: rects holds x y
+    # w h each, data their pixels one after another (one mip level)
+    func upload_regions [ rects: vec i32, data: ARef, byte_count: i32 ]
+        expect vk_image, "vk_image not yet created"
+        if [ !up_ring ]
+            up_ring = vec Command []
+            for [ i: i32 0, i < 3, i += 1 ]
+                up_ring.push[ Command [ vk: vk ] ]
+        c : up_ring[ up_at ]
+        up_at = (up_at + 1) % 3
+        c.begin[]
+        part: Buffer [ vk: vk, size: byte_count, u_src: true,
+            m_host_visible: true, m_host_coherent: true, data: data ]
+        transition_in[ c.cmd, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ]
+        n : i32 [ i32[ rects.count ] / 4 ]
+        # bytes a pixel, from the whole: the format's size
+        area : i64 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            area += i64[ rects[ i * 4 + 2 ] ] * i64[ rects[ i * 4 + 3 ] ]
+        px : i64 [ i64[ byte_count ] / max[ area, 1 ] ]
+        off : i64 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            rx : i32 [ rects[ i * 4 ] ]
+            ry : i32 [ rects[ i * 4 + 1 ] ]
+            rw : i32 [ rects[ i * 4 + 2 ] ]
+            rh : i32 [ rects[ i * 4 + 3 ] ]
+            vkCmdCopyBufferToImage[ c.cmd, part.vk_buffer, vk_image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                VkBufferImageCopy [
+                    bufferOffset:      u64[ off ],
+                    bufferRowLength:   0,
+                    bufferImageHeight: 0,
+                    imageSubresource:  VkImageSubresourceLayers [
+                        aspectMask:     VK_IMAGE_ASPECT_COLOR_BIT,
+                        mipLevel:       0,
+                        baseArrayLayer: 0,
+                        layerCount:     1 ],
+                    imageOffset: VkOffset3D [ rx, ry, 0 ],
+                    imageExtent: VkExtent3D [ rw, rh, 1 ] ]]
+            off += i64[ rw ] * i64[ rh ] * px
+        transition_in[ c.cmd, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
+        c.submit[]
+        vk.defer_buffer[ part ]
 
     func upload [ data: ARef, byte_count: i32 ]
         expect vk, "vk_context not specified"

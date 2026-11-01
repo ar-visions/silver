@@ -1491,6 +1491,9 @@ element Bootstrap
         bus : '{root}/wifi/root/etc/dbus-1/orbiter.conf'
         bd : '{st}/etc/dbus-1'
         steps.push[ 'mkdir -p {bd} && cp {bus} {bd}/' ]
+        # the session bus: MMS (mmsd-tng) and the tray on it
+        sess : '{root}/tray/root/etc/dbus-1/orbiter-session.conf'
+        steps.push[ 'cp {sess} {bd}/' ]
         prep : '{root}/os-bootstrap/modem-prepare.sh'
         ps : '{st}/usr/sbin/orbiter-modem-prepare'
         steps.push[ 'cp {prep} {ps} && chmod 755 {ps}' ]

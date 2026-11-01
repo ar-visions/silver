@@ -121,6 +121,7 @@ class Lexicon
     intern tried  : bool
 
     func load []
+        if [ tried ] return
         tried = true
         f : path '{path.path_install[]}/share/keyboard/{file}'
         if [ !f.exists[] ]
@@ -201,16 +202,24 @@ zh_pairs : Lexicon
 
 func words_of [ lang: Language ] -> Lexicon
     if [ lang == Language.chinese ]
-        if [ !zh_words ] zh_words = Lexicon [ file: 'zh.txt' ]
+        if [ !zh_words ]
+            zh_words = Lexicon [ file: 'zh.txt' ]
+            zh_words.hold[]
         return zh_words
-    if [ !ja_words ] ja_words = Lexicon [ file: 'ja.txt' ]
+    if [ !ja_words ]
+        ja_words = Lexicon [ file: 'ja.txt' ]
+        ja_words.hold[]
     return ja_words
 
 func pairs_of [ lang: Language ] -> Lexicon
     if [ lang == Language.chinese ]
-        if [ !zh_pairs ] zh_pairs = Lexicon [ file: 'zh-pairs.txt' ]
+        if [ !zh_pairs ]
+            zh_pairs = Lexicon [ file: 'zh-pairs.txt' ]
+            zh_pairs.hold[]
         return zh_pairs
-    if [ !ja_pairs ] ja_pairs = Lexicon [ file: 'ja-pairs.txt' ]
+    if [ !ja_pairs ]
+        ja_pairs = Lexicon [ file: 'ja-pairs.txt' ]
+        ja_pairs.hold[]
     return ja_pairs
 
 # the cost of word b after word a: the pair's own when it was seen,
@@ -1273,6 +1282,9 @@ InputDevice FlickKeys
     # where it was pressed in the keyboard's own space
     intern at      : vec2f
     intern dir     : i32
+    # back held: when it went down, and the deletes it repeated
+    intern held_us : i64
+    intern repeats : i32
     # the last letter typed in English (a/A changes its case)
     intern last    : string
     # upper case mode: letters typed capitalized (a/A flicked up)
@@ -1659,6 +1671,10 @@ InputDevice FlickKeys
         at   = ev.mouse.pos
         dir  = 0
         down = key_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        held_us = epoch_micros[]
+        repeats = 0
+        if [ down >= 0 && keys[ down ].kind == 1 ]
+            ux.will_animate = true
         trail   = vec vec2f []
         trail.push[ at ]
         swiping = false
@@ -1719,7 +1735,8 @@ InputDevice FlickKeys
             k : FKey keys[ down ]
             down = -1
             if [ swiping ] swipe_end[]
-            el press_key[ k ]
+            # a back that repeated while held has deleted already
+            el [ k.kind != 1 || repeats == 0 ] press_key[ k ]
         swiping = false
         ux.restyle = true
 
@@ -1919,6 +1936,14 @@ InputDevice FlickKeys
 
     # the take's sound read each frame; its words typed once made
     public func tick [ w: Window ]
+        # back held half a second deletes again every 70 ms
+        if [ down >= 0 && keys[ down ].kind == 1 ]
+            due : i64 [ held_us + 450000 + i64[ repeats ] * 70000 ]
+            if [ epoch_micros[] >= due ]
+                back[]
+                repeats += 1
+                ux.restyle = true
+            ux.will_animate = true
         if [ !hearing && !flushing ] return
         dictation_gpu[ Canvas w.screen ]
         ux.will_animate = true
@@ -2053,6 +2078,19 @@ InputDevice FlickKeys
         return e
 
 # a field over the keys, to try them: `silver keyboard`
+# every table read at once, at startup (ja.txt is 97 MB): a key
+# never waits on a first load
+func keyboard_load []
+    t0 : i64 [ Au.epoch_micros[] ]
+    words_of[ Language.japanese ].load[]
+    pairs_of[ Language.japanese ].load[]
+    words_of[ Language.chinese ].load[]
+    pairs_of[ Language.chinese ].load[]
+    english[].load[]
+    emojis[].load[]
+    ms : i64 [ (Au.epoch_micros[] - t0) / 1000 ]
+    log 'keyboard: tables loaded in {ms} ms'
+
 element keyboard : trinity
     public width      : i32    [ 540 ]
     public height     : i32    [ 960 ]
@@ -2065,6 +2103,9 @@ element keyboard : trinity
         layers.ground:
             fill_color: #0e0b1a
     }
+
+    func init []
+        keyboard_load[]
 
     func render [] -> Elements
         if [ !started ] ux.input_language = language

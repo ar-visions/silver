@@ -243,6 +243,9 @@ enum HM
     drop    : 24
     # app -> ide: a = its focus takes words (a keyboard for it)
     words   : 25
+    # app -> ide: pick a file for the app's argument (its title's
+    # pick), as a press on its title does
+    pick    : 26
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -623,6 +626,41 @@ abstract live_app media_app
     intern  aspect_h    : i32
     # a host's drop as its bytes arrive (HM.drop)
     intern  drop_bytes  : vec u8
+    # the last frame's start and its phase totals (frame_trace)
+    intern  fr_at       : i64
+    intern  fr_snap     : vec i64
+
+    # a frame over 20 ms, with stats on: the time of each phase in it
+    # (ms), and what no phase holds (input, pacing, cleanup)
+    func frame_trace []
+        now : i64 [ epoch_micros[] ]
+        cur : vec i64 [ 11 ]
+        cur[ 0 ] = vk.ph_targets
+        cur[ 1 ] = vk.ph_compose
+        cur[ 2 ] = vk.ph_list
+        cur[ 3 ] = vk.ph_screen
+        cur[ 4 ] = vk.ph_swap
+        cur[ 5 ] = vk.ph_layout
+        cur[ 6 ] = vk.ph_elems
+        cur[ 7 ] = vk.ph_flush
+        cur[ 8 ] = vk.sync_us
+        cur[ 9 ] = vk.update_us
+        cur[ 10 ] = vk.draw_us
+        pw : Window [ w ]
+        if [ fr_at > 0 && fr_snap && pw && pw.stats
+             && now - fr_at > 20000 ]
+            d : vec f32 [ 11 ]
+            ok : bool [ true ]
+            for [ i: i32 0, i < 11, i += 1 ]
+                dv : i64 [ cur[ i ] - fr_snap[ i ] ]
+                if [ dv < 0 ] ok = false
+                d[ i ] = f32[ dv ] / 1000.0
+            if [ ok ]
+                all : f32 [ f32[ now - fr_at ] / 1000.0 ]
+                rest : f32 [ all - d[ 9 ] - d[ 10 ] ]
+                log 'FRAME {all} ms | draw {d[ 10 ]}: targets {d[ 0 ]} compose {d[ 1 ]} list {d[ 2 ]} screen {d[ 3 ]} (elements {d[ 6 ]} layout {d[ 5 ]} flush {d[ 7 ]}) present {d[ 4 ]} | gpu waits {d[ 8 ]} | update {d[ 9 ]} | outside the draw {rest}'
+        fr_snap = cur
+        fr_at = now
 
     # a 0 byte ends the drop: its paths go to the window
     func drop_byte [ b: i32 ]
@@ -882,6 +920,7 @@ abstract live_app media_app
         if [ frame_due > now ] usleep[ u32[ frame_due - now ] ]
 
     func frame [ ] -> bool
+        frame_trace[]
         if [ !path_said ]
             path_said = true
             file : fopen[ '/tmp/hostapp-path.log', 'a' ]
@@ -956,6 +995,11 @@ abstract live_app media_app
                 puts[ fl.chars ]
                 fflush[ stdout ]
             if [ pwn.stats ] log 'paint_us:{pwn.paint_top[]}'
+            # every pass timed while stats is on: each a frame
+            if [ pwn.stats ]
+                rl : string frame_line[ vk, f32[ frames ] ]
+                log 'renders{rl}'
+                vk.time_until = epoch_millis[] + 2000
             vk.pipe_draws   = 0
             vk.resize_us    = 0
             vk.resize_calls = 0
@@ -1932,6 +1976,12 @@ abstract live_app media_app
                 el [ cmd == 'state-load' ]
                     if [ aa ] state_persist_load[ aa ]
                     el ok = false
+                # pick <path>: a file the host's navigator chose, given
+                # to the app as its own dialog's pick (nav_open)
+                el [ cmd == 'pick' && line.count > 5 ]
+                    pp : path [ line.mid[ 5, line.count - 5 ] ]
+                    ae : cast element [ wn.app_object ]
+                    ok = ae != null && ae.nav_open*[ pp ]
                 el [ cmd == 'text' && line.count > 5 ]
                     wn.ev.clear[]
                     wn.ev.key.text = line.mid[ 5, line.count - 5 ]
@@ -2076,6 +2126,7 @@ abstract live_app media_app
             log 'media_app: reusing vk device {dh}'
         el
             vk = vk_context[]
+            vk.font_unit = rest_unit[]
             Au.live_vk_set[ handle[vk] ]
             au_module_erase_hook[ @vk_module_erased ]
 
@@ -2192,26 +2243,44 @@ intern thumb_el : element [ null ]
 
 # the GPU time each pass took since the last ask, largest first, in
 # ms; cleared for the next
-func pass_line [ vk: vk_context ] -> string
-    if [ !vk || !vk.pass_names || vk.pass_names.count == 0 ] return ''
-    out : ' | gpu_ms'
-    n : i32 [ i32[ vk.pass_names.count ] ]
-    # the largest first: each turn takes the largest of those left.
-    # the order is sorted, never the names (a moved name is dropped)
+# names and their summed us, the largest first (16 at most), in ms
+# each divided by per (the frames they were summed over)
+func ms_list [ label: string, names: vec string, us: vec f32,
+               per: f32 ] -> string
+    if [ !names || names.count == 0 ] return ''
+    out : ' | {label}'
+    n : i32 [ i32[ names.count ] ]
+    # each turn takes the largest of those left; the order is
+    # sorted, never the names (a moved name is dropped)
     order : vec i32 [ n ]
     for [ i: i32 0, i < n, i += 1 ] order[ i ] = i
     for [ k: i32 0, k < n && k < 16, k += 1 ]
         best : i32 [ k ]
         for [ i: i32 k + 1, i < n, i += 1 ]
-            if [ vk.pass_us[ order[ i ] ] > vk.pass_us[ order[ best ] ] ]
+            if [ us[ order[ i ] ] > us[ order[ best ] ] ]
                 best = i
         at : i32 [ order[ best ] ]
         order[ best ] = order[ k ]
         order[ k ]    = at
-        ms : f32 [ vk.pass_us[ at ] / 1000.0 ]
-        out = '{out} {vk.pass_names[ at ]}={ms}'
+        ms : f32 [ us[ at ] / 1000.0 / max[ per, 1.0 ] ]
+        out = '{out} {names[ at ]}={ms}'
+    return out
+
+func pass_line [ vk: vk_context ] -> string
+    return frame_line[ vk, 1.0 ]
+
+# each pass's GPU time and its fence wait, ms a frame over frames
+func frame_line [ vk: vk_context, frames: f32 ] -> string
+    if [ !vk || !vk.pass_names || vk.pass_names.count == 0 ] return ''
+    out : string ms_list[ 'gpu_ms', vk.pass_names, vk.pass_us, frames ]
+    waits : string ms_list[ 'wait_ms', vk.wait_names, vk.wait_us,
+                            frames ]
+    out = '{out}{waits}'
     vk.pass_names.clear[]
     vk.pass_us.clear[]
+    if [ vk.wait_names ]
+        vk.wait_names.clear[]
+        vk.wait_us.clear[]
     # the screen's pixels by draw mode (DrawMode's numbers), millions
     if [ vk.mode_px ]
         out = '{out} | screen_mpx'
@@ -4427,6 +4496,15 @@ Display Window
             return
         if [ ae && ae.nav_open*[ to ] ] nav_close[]
 
+    # the app asks for a file: hosted, its host's pick (orbiter's
+    # navigator, whose choice comes back as the app's argument);
+    # alone, its own dialog
+    public func ask_pick []
+        if [ host_slot[] > 0 ]
+            host_post[ 0, i32[ HM.pick ], 0, 0, 0 ]
+            return
+        nav_toggle[]
+
     # the orbiter bar's title pressed: the dialog on the folder the
     # app names, or closed
     public func nav_toggle []
@@ -4999,16 +5077,17 @@ Display Window
             nav_key[ ev ]
             return
         # ctrl/cmd with = or -: the font unit, 4 steps of 2px each way
-        # of 22
+        # of its rest
         if [ ev.key.state && (ev.key.ctrl || ev.key.meta) && vk
              && font_keys ]
             fk : i32 [ ev.key.unicode ]
             fd : i32 [ (fk == 61 || fk == 334) ? 2 : ((fk == 45
                        || fk == 333) ? -2 : 0) ]
             if [ fd != 0 ]
+                ru : i32 rest_unit[]
                 vk.font_unit = clamp[
-                    ((vk.font_unit > 0) ? vk.font_unit : 22) + fd, 14,
-                    30 ]
+                    ((vk.font_unit > 0) ? vk.font_unit : ru) + fd, ru - 8,
+                    ru + 8 ]
                 restyle = true
                 if [ root ] dirty_tree[ root ]
                 will_animate = true
@@ -7903,7 +7982,9 @@ func state_persist_path [ target: Au ] -> path
     ty : Au_t typeid[ target ]
     dir : path path.path_storage[ ty.ident ]
     if [ !dir ] return null
-    return path '{dir}/persist.agi'
+    # a phone keeps its own settings beside the desktop's
+    nm : string [ (mobile_on[]) ? 'persist-mobile' : 'persist' ]
+    return path '{dir}/{nm}.agi'
 
 func state_persist_store [ target: Au ]
     sp : state_persist_path[ target ]
@@ -8068,7 +8149,9 @@ abstract media_app trinity
             hidden: hidden, lock_aspect: lock_aspect,
             logical_width: logical_width,
             aspect_w: aspect_w, aspect_h: aspect_h,
-            rec_scale: (record) ? rec_scale : 1 ]
+            # a simulated phone draws at the phone's 2x, shown fitted
+            rec_scale: (record) ? rec_scale
+                : ((getenv[ 'SILVER_PHONE_SIMULATE' ]) ? 2 : 1) ]
         expect window.vk, "context didnt work"
         w = window
         Au.hold[ w ]

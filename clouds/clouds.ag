@@ -10,6 +10,7 @@ import scenes
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
+import <math.h>
 
 # clouds: real-time volumetric cloudscapes after Nubis (Schneider,
 # Guerrilla: SIGGRAPH 2015 / 2017 / Nubis Evolved 2022) with the
@@ -35,6 +36,8 @@ enum CloudSurface
     waves   : 5
     stars   : 6
     envmap  : 7
+    gdepth  : 8
+    blue    : 10
     tvar    : 5
 
 # ---------------------------------------------------------------
@@ -43,6 +46,10 @@ enum CloudSurface
 class CloudBake
     intern seed : u32 [ 1234567 ]
     intern perm : vec i32
+    # void and cluster: the kernel, each cell's energy, set
+    intern bl_kern   : vec f32
+    intern bl_energy : vec f32
+    intern bl_on     : vec i32
 
     func rnd [] -> f32
         seed = seed * 1664525 + 1013904223
@@ -209,6 +216,7 @@ class CloudBake
         bake_curl[ path '../clouds/baked/curl.png' ]
         bake_weather[ path '../clouds/baked/weather.png' ]
         bake_tops[ path '../clouds/baked/tops.png' ]
+        bake_blue[ path '../clouds/baked/blue.png' ]
         bake_ms : i64 [ (epoch_micros[] - t0) / 1000 ]
         log 'clouds: noise set baked in {bake_ms} ms'
 
@@ -277,6 +285,98 @@ class CloudBake
                         a4 * 0.625 + a8 * 0.25 + a16 * 0.125 ]
                     d[ i + 2 ] = to_byte[ a8 * 0.75 + a16 * 0.25 ]
                     d[ i + 3 ] = to_byte[ 1.0 ]
+        img.png[ out ]
+
+    # cell i set or cleared: its wrapped kernel on the energy
+    func blue_set [ i: i32, v: i32 ]
+        N : i32 [ 64 ]
+        bl_on[ i ] = v
+        sgn : f32 [ (v > 0) ? 1.0 : -1.0 ]
+        cy : i32 [ i / N ]
+        cx : i32 [ i % N ]
+        for [ y: i32 0, y < N, y += 1 ]
+            ky : i32 [ ((y - cy + N) % N) * N ]
+            row : i32 [ y * N ]
+            for [ x: i32 0, x < N, x += 1 ]
+                k : f32 [ bl_kern[ ky + (x - cx + N) % N ] ]
+                bl_energy[ row + x ] = bl_energy[ row + x ] + sgn * k
+
+    # of the cells in state want: the highest or lowest energy
+    func blue_peak [ want: i32, high: bool ] -> i32
+        cells : i32 [ 64 * 64 ]
+        best : i32 [ -1 ]
+        bv : f32 [ 0.0 ]
+        for [ i: i32 0, i < cells, i += 1 ]
+            if [ bl_on[ i ] != want ] continue
+            e : f32 [ bl_energy[ i ] ]
+            if [ best < 0 || (high && e > bv) || (!high && e < bv) ]
+                best = i
+                bv = e
+        return best
+
+    # blue noise 64^2: void and cluster, gaussian 1.9 cells
+    func bake_blue [ out: path ]
+        N : i32 [ 64 ]
+        cells : i32 [ N * N ]
+        bl_kern   = vec f32 [ cells ]
+        bl_energy = vec f32 [ cells ]
+        bl_on     = vec i32 [ cells ]
+        for [ y: i32 0, y < N, y += 1 ]
+            dy : i32 [ (y > N / 2) ? N - y : y ]
+            for [ x: i32 0, x < N, x += 1 ]
+                dx : i32 [ (x > N / 2) ? N - x : x ]
+                r2 : f32 [ dx * dx + dy * dy ]
+                bl_kern[ y * N + x ] = exp[ 0.0 - r2 / 7.22 ]
+                bl_energy[ y * N + x ] = 0.0
+                bl_on[ y * N + x ] = 0
+        # a tenth at random, then clusters moved into voids
+        first : i32 [ cells / 10 ]
+        placed : i32 [ 0 ]
+        while [ placed < first ]
+            i : i32 [ rnd[] * f32[ cells ] ]
+            if [ i >= cells ] i = cells - 1
+            if [ bl_on[ i ] != 0 ] continue
+            blue_set[ i, 1 ]
+            placed += 1
+        for [ it: i32 0, it < cells, it += 1 ]
+            c : i32 [ blue_peak[ 1, true ] ]
+            blue_set[ c, 0 ]
+            v : i32 [ blue_peak[ 0, false ] ]
+            if [ v == c ]
+                blue_set[ c, 1 ]
+                break
+            blue_set[ v, 1 ]
+        rank : vec i32 [ cells ]
+        start : vec i32 [ cells ]
+        for [ i: i32 0, i < cells, i += 1 ]
+            start[ i ] = bl_on[ i ]
+            rank[ i ] = 0
+        # the first ranked by taking the tightest cluster away
+        r : i32 [ first ]
+        while [ r > 0 ]
+            c : i32 [ blue_peak[ 1, true ] ]
+            blue_set[ c, 0 ]
+            r -= 1
+            rank[ c ] = r
+        for [ i: i32 0, i < cells, i += 1 ]
+            if [ start[ i ] != 0 ] blue_set[ i, 1 ]
+        # the rest ranked by filling the largest void
+        r = first
+        while [ r < cells ]
+            v : i32 [ blue_peak[ 0, false ] ]
+            blue_set[ v, 1 ]
+            rank[ v ] = r
+            r += 1
+        img : Image [ width: N, height: N, format: Pixel.rgba8,
+                      linear: true, wrap_u: true, wrap_v: true ]
+        d : @u8 [ img.vdata[] ]
+        for [ i: i32 0, i < cells, i += 1 ]
+            v : f32 [ (f32[ rank[ i ] ] + 0.5) / f32[ cells ] ]
+            b : u8 [ to_byte[ v ] ]
+            d[ i * 4 ]     = b
+            d[ i * 4 + 1 ] = b
+            d[ i * 4 + 2 ] = b
+            d[ i * 4 + 3 ] = to_byte[ 1.0 ]
         img.png[ out ]
 
     # curl 128^2: rotated gradient of a perlin field (divergence free)
@@ -375,7 +475,7 @@ func clouds_bake []
 # bump bake_version whenever CloudBake changes: the stamp hashes
 # only the wrapper below
 func bake_version [] -> i32
-    return 7
+    return 8
 
 export func clouds_export []
     h1 : u64 [ @clouds_bake ]
@@ -386,10 +486,11 @@ export func clouds_export []
     p2 : path '../clouds/baked/detail.png'
     p3 : path '../clouds/baked/curl.png'
     p4 : path '../clouds/baked/weather.png'
+    p5 : path '../clouds/baked/blue.png'
     force : getenv[ 'SILVER_EXPORT_FORCE' ]
     if [
         !force && sp.exists[] && p1.exists[] && p2.exists[]
-        && p3.exists[] && p4.exists[] ]
+        && p3.exists[] && p4.exists[] && p5.exists[] ]
         old : string [ sp.load[ typeid[string], null ] ]
         if [ old && old == stamp ]
             log 'clouds: noise set current'
@@ -447,6 +548,9 @@ ModelViewProject NubisSky
     # bow wave's height (m). speed 0: no ship
     mutable vessel_a  : vec4f
     mutable vessel_b  : vec4f
+    # x: 1 draws only the clouds before a host's ground (its depth in
+    # gdepth, written log2(1 + w) / y), as a layer: coverage in alpha
+    mutable ground    : vec4f
     mutable view_mode : i32
     mutable frame     : i32
 
@@ -480,6 +584,14 @@ ModelViewProject NubisSky
     attrib waves   : StorageBuffer [ type:typeid[ CloudSurface ],
                                      id: CloudSurface.waves,   count:1,
                                      format: typeid[ vec4f ] ]
+    # a host's ground depth (log), for the clouds-over-ground pass
+    attrib gdepth  : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.gdepth,  count:1,
+                                     format: typeid[ f32 ] ]
+    # blue noise 64^2: the march's per-pixel jitter
+    attrib blue    : LayoutBinding [ type:typeid[ CloudSurface ],
+                                     id: CloudSurface.blue,    count:1,
+                                     format: typeid[ rgba8 ] ]
     # R: cloud top height scale, G: base height offset
     attrib tvar    : LayoutBinding [ type:typeid[ CloudSurface ],
                                      id: CloudSurface.tvar,    count:1,
@@ -662,8 +774,14 @@ ModelViewProject NubisSky
         return base * mix(a, cu, clamp(t * 2.0 - 1.0, 0.0, 1.0));
     }
 
-    # the Nubis density sampler. lod 0 = full detail, 1 = shape only
-    func cloud_density [ p: @vec3f, hl: @f32, w: @vec3f, lod: @f32 ] -> GLSL f32 {
+    # the Nubis density sampler (2015 / 2017): lod 0 full detail, 1
+    # the shape only, past 1 the shape at mip lod - 1 (the light
+    # cone's coarser samples). fp: the pixel's footprint at p (m):
+    # only the detail noise is filtered by it (Nubis 2023).
+    # x the density, y 1, z how deep inside the shape, w the density
+    # before the detail erosion (the lighting's shape term)
+    func cloud_density [ p: @vec3f, hl: @f32, w: @vec3f, lod: @f32,
+                         fp: @f32 ] -> GLSL vec4f {
         float h = type_frac(p, w);
         // deformation runs on METRES above the base, never on the type
         // fraction: a tall tower would stretch the same shear over its
@@ -672,20 +790,25 @@ ModelViewProject NubisSky
         float hd = clamp(hm / 2500.0, 0.0, 1.0);
         vec3 q = p + vec3(ubo.world.x, 0.0, ubo.world.y) + ubo.wind.xyz * ubo.wind.w;
         q += ubo.wind.xyz * (hd * ubo.weather_b.y / max(length(ubo.wind.xyz), 0.01));
-        vec4 low = texture(shape, q / ubo.scales.x);
+        vec4 low = textureLod(shape, q / ubo.scales.x, max(lod - 1.0, 0.0));
         float lfbm = low.g * 0.625 + low.b * 0.25 + low.a * 0.125;
         // the composite spans 0.71..0.93 in the bake: stretch to 0..1
         float comp = remap(low.r, -(1.0 - lfbm), 1.0, 0.0, 1.0);
         comp = clamp(remap(comp, 0.70, 0.94, 0.0, 1.0), 0.0, 1.0);
         float cov = w.x;
         float profile = height_gradient(h, w) * cov;
-        float base = clamp(comp - (1.0 - profile), 0.0, 1.0) * clamp(cov * 1.5, 0.0, 1.0);
-        if (base <= 0.0) return 0.0;
+        float thr = 1.0 - profile;
+        float base = clamp(comp - thr, 0.0, 1.0) * clamp(cov * 1.5, 0.0, 1.0);
+        if (base <= 0.0) return vec4(0.0);
+        float tone  = ubo.weather_b.z * mix(0.45, 1.2, w.z);
+        float plain = clamp(base, 0.0, 1.0) * tone;
         if (lod < 0.5) {{
             vec3 cn = texture(curl, q.xz / ubo.scales.z).rgb * 2.0 - 1.0;
             // curl is a low-level turbulence: it fades out with height
             q += cn * ubo.march.y * (1.0 - hd) * ubo.scales.y * 0.15;
-            vec3  hi   = texture(detail, q / ubo.scales.y).rgb;
+            float nd = float(textureSize(detail, 0).x) / ubo.scales.y;
+            float ld = log2(1.0 + fp * nd);
+            vec3  hi   = textureLod(detail, q / ubo.scales.y, ld).rgb;
             float hfbm = hi.r * 0.625 + hi.g * 0.25 + hi.b * 0.125;
             // wispy bottoms, billowy tops; the flat base keeps its edge
             float m = mix(hfbm, 1.0 - hfbm, clamp(hm / 250.0, 0.0, 1.0));
@@ -693,11 +816,14 @@ ModelViewProject NubisSky
             base = remap(base, m * ubo.weather_b.w, 1.0, 0.0, 1.0);
         }}
         // a thin cloud is translucent; a deep one is dense
-        return clamp(base, 0.0, 1.0) * ubo.weather_b.z * mix(0.45, 1.2, w.z);
+        float dn = clamp(base, 0.0, 1.0) * tone;
+        return vec4(dn, 1.0, clamp(comp - thr, 0.0, 1.0), plain);
     }
 
-    # optical depth toward the sun: five cone samples and one far
-    func light_march [ p: @vec3f ] -> GLSL f32 {
+    # optical depth toward the sun (Nubis 2015 / 2017): five cone
+    # samples, each at a coarser level, and one far one; the first
+    # two at full detail until the pixel is 30% opaque (cheap)
+    func light_march [ p: @vec3f, fp: @f32, cheap: @f32 ] -> GLSL f32 {
         vec3  sun = ubo.sun_dir.xyz;
         float ls = 225.0;
         vec3 k0 = vec3( 0.38, -0.14,  0.24);
@@ -713,16 +839,19 @@ ModelViewProject NubisSky
             float h = height_frac(q);
             if (h <= 0.0 || h >= 1.0) continue;
             vec3  w = weather_at(q);
-            od += cloud_density(q, h, w, (i > 2) ? 1.0 : 0.0) * ls;
+            float lv = (i <= 2 && cheap < 0.5) ? 0.0 : 1.0 + float(i) * 0.5;
+            od += cloud_density(q, h, w, lv, fp).x * ls;
         }}
         vec3  qf = p + sun * ls * 9.0;
         float hf = height_frac(qf);
-        if (hf > 0.0 && hf < 1.0) od += cloud_density(qf, hf, weather_at(qf), 1.0) * ls * 3.0;
+        if (hf > 0.0 && hf < 1.0)
+            od += cloud_density(qf, hf, weather_at(qf), 4.0, fp).x
+                * ls * 3.0;
         return od;
     }
 
     # sunlight transmittance from a ground point up through the layer
-    func ground_shadow [ p: @vec3f ] -> GLSL f32 {
+    func ground_shadow [ p: @vec3f, fp: @f32 ] -> GLSL f32 {
         vec3  C  = vec3(0.0, -ubo.layer.z, 0.0);
         vec3  sun = ubo.sun_dir.xyz;
         if (sun.y <= 0.02) return 1.0;
@@ -732,7 +861,8 @@ ModelViewProject NubisSky
         float od = 0.0;
         for (int i = 0; i < 6; i++) {{
             vec3 q = p + sun * (t0.y + ds * (float(i) + 0.5));
-            od += cloud_density(q, height_frac(q), weather_at(q), 1.0) * ds;
+            od += cloud_density(q, height_frac(q), weather_at(q), 1.0,
+                                fp).x * ds;
         }}
         return exp(-od * ubo.light_b.w * 0.3);
     }
@@ -951,17 +1081,58 @@ ModelViewProject NubisSky
             float cl  = cos(lat);
             d = vec3(cl * sin(lon), sin(lat), cl * cos(lon));
         }}
+        // the sky and sea pass: under land none of it shows
+        if (ubo.ground.z > 0.5 && ubo.ground.x > 0.5) {{
+            vec2  gt   = 1.5 / vec2(textureSize(gdepth, 0));
+            float land = 1.0;
+            for (int j = -1; j <= 1; j++)
+                for (int i = -1; i <= 1; i++)
+                    if (texture(gdepth, v_uv + vec2(float(i),
+                            float(j)) * gt).r >= 0.99999) land = 0.0;
+            if (land > 0.5) {{
+                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                gl_FragDepth = 1.0;
+                return;
+            }}
+        }}
         vec3  C   = vec3(0.0, -ubo.layer.z, 0.0);
         float R   = ubo.layer.z;
         vec3  sun = ubo.sun_dir.xyz;
         float mu  = dot(d, sun);
-        // per-pixel, per-frame jitter for the march start
-        float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy + float(ubo.frame % 8) * 5.588238, vec2(0.06711056, 0.00583715))));
+        // jitter: blue noise, stepped by the golden ratio a frame
+        float bn = texelFetch(blue, ivec2(gl_FragCoord.xy) & 63, 0).r;
+        float jit = fract(bn + float(ubo.frame % 64) * 0.618034);
 
         // ground
         vec2  tg = ray_sphere(o - C, d, R);
         bool  ground = tg.y > 0.0 && tg.x > 0.0 && ubo.env.x < 0.5;
         float t_ground = ground ? tg.x : 1e12;
+        // a host's ground under this pixel: the march ends at the
+        // farthest ground round it and writes the cloud alone (the
+        // host's compose hides it by the pixel's own ground, at full
+        // size, from the cloud's depth); a sky pixel marches whole
+        // over a host's ground every pixel holds the cloud alone,
+        // premultiplied (black is clear); the sky and sea behind come
+        // from the background pass (ground.z), which marches nothing.
+        // over land the march ends at the farthest land round it
+        bool  over = ubo.ground.x > 0.5 && ubo.ground.z < 0.5
+                     && ubo.env.x < 0.5;
+        if (over && texture(gdepth, v_uv).r < 0.99999) {{
+            vec2  gt   = 0.5 / vec2(textureSize(gdepth, 0));
+            float gfar = 0.0;
+            for (int j = -1; j <= 1; j++)
+                for (int i = -1; i <= 1; i++) {{
+                    float g = texture(gdepth,
+                        v_uv + vec2(float(i), float(j)) * gt * 3.0).r;
+                    if (g < 0.99999) gfar = max(gfar, g);
+                }}
+            float gw = exp2(gfar * ubo.ground.y) - 1.0;
+            ground   = true;
+            t_ground = min(t_ground,
+                           gw / max(dot(d, ubo.cam_fwd.xyz), 1e-4));
+        }}
+        // the cloud's depth, written as log2(1 + view z) / log2(60001)
+        const float dcode = 15.8728;
 
         // sky behind everything
         vec4 sky = atmosphere(o, d, t_ground);
@@ -971,13 +1142,13 @@ ModelViewProject NubisSky
             bg += vec3(1.0, 0.96, 0.9) * sd * sky.a * ubo.sun_dir.w * 0.5;
             // stars sit behind the air, so the haze thins them out
             bg += night_stars(d) * sky.a;
-        }} else {{
+        }} else if (!over) {{
             vec3  gp  = o + d * tg.x;
             vec3  up  = normalize(gp - C);
             vec3  up0 = normalize(o - C);
             float ch0 = length(o - C) - R;
             vec3  sc  = sun_light(gp);
-            float sh  = ground_shadow(gp);
+            float sh  = ground_shadow(gp, max(tg.x * ubo.sea_b.z, 1.0));
             // a wave shorter than a few pixels can only alias: cut the
             // spectrum at the pixel footprint and carry what is left as
             // surface roughness instead
@@ -1095,6 +1266,19 @@ ModelViewProject NubisSky
             if (ubo.view_mode == 4) bg = vec3(fade, wf, 0.0);
         }}
 
+        // the background pass: sky and sea alone (ground.w: the sea
+        // alone, the sky black)
+        if (ubo.ground.z > 0.5) {{
+            if (ubo.ground.w > 0.5 && !ground) {{
+                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                gl_FragDepth = 1.0;
+                return;
+            }}
+            vec3 bt = aces(bg * ubo.cam_fwd.w);
+            fragColor = vec4(pow(bt, vec3(1.0 / 2.2)), 1.0);
+            gl_FragDepth = 1.0;
+            return;
+        }}
         // the cloud layer shells
         float r1 = R + ubo.layer.x;
         float r2 = R + ubo.layer.y;
@@ -1104,7 +1288,7 @@ ModelViewProject NubisSky
         float t_start = -1.0;
         float t_end   = -1.0;
         if (rc < r1) {{
-            if (!ground) {{ t_start = ti.y; t_end = to.y; }}
+            if (!ground || over) {{ t_start = ti.y; t_end = to.y; }}
         }} else if (rc < r2) {{
             t_start = 0.0;
             t_end   = (ti.x > 0.0) ? ti.x : to.y;
@@ -1113,57 +1297,138 @@ ModelViewProject NubisSky
         }}
         if (ground) t_end = min(t_end, t_ground);
         t_end = min(t_end, t_start + ubo.march.z);
+        // split by distance (env.z, the near end; env.w the overlap):
+        // the near march stops there, the far one starts there
+        bool  far   = ubo.env.y > 0.5;
+        float split = ubo.env.z;
+        float lap   = max(ubo.env.w, 1.0);
+        if (split > 0.0 && t_start >= 0.0) {{
+            if (far) t_start = max(t_start, split - lap);
+            else     t_end   = min(t_end, split);
+        }}
 
         vec3  col = vec3(0.0);
         float T   = 1.0;
         float depth = -1.0;
+        // a thin edge's own distance, not the march's start
+        float dsum = 0.0;
+        float wsum = 0.0;
         float steps_taken = 0.0;
+        // where the pixel turned half opaque: its haze (Nubis 2017)
+        float t_half = -1.0;
         if (t_start >= 0.0 && t_end > t_start) {{
-            float fine   = (6.0 + t_start * 0.01) / ubo.march.x;
-            float coarse = fine * 3.0;
-            float t = t_start + jit * fine;
+            // air: steps of the pixel's footprint (a cloud smaller
+            // than a pixel is not drawn), leaps by the island field;
+            // inside: each step's optical depth held near tau, so a
+            // surface lands where it is, never on the step pattern
+            // a new offset each frame: the history averages them;
+            // the far pass has none, so its offset stands still
+            float jt    = (far) ? bn : jit;
+            float sigma = ubo.light_b.w;
+            float ga    = ubo.light_a.x;
+            float tau   = 0.5 / max(ubo.march.x, 0.25);
+            // the step in the densest cloud: the walk to a surface
+            float edge  = clamp(tau / (ubo.weather_b.z * 1.2 * sigma),
+                                4.0, 60.0);
+            float t     = t_start + jt * clamp(t_start * ubo.sea_b.z,
+                                               30.0, 400.0);
+            // the farthest point already walked: never back past it
+            float t_done = t_start;
+            float gap    = 0.0;
+            // the empty step just taken inside the shape: it grows by
+            // half each time, so an eroded stretch costs few samples
+            float hop    = 0.0;
+            // the sun's optical depth, again only 60 m on (it changes
+            // slowly; six samples a step was most of the cost)
+            float od_sun = 0.0;
+            float t_lit  = -1e9;
             bool  in_cloud = false;
-            int   zeros = 0;
-            vec3  sun_c = vec3(-1.0);
+            vec3  sun_c   = vec3(-1.0);
             vec3  amb_top = vec3(0.0);
             vec3  amb_bot = vec3(0.0);
-            float sigma = ubo.light_b.w;
-            float ga = ubo.light_a.x;
             for (int i = 0; i < 512; i++) {{
                 if (t > t_end || T < 0.004) break;
-                fine   = (6.0 + t * 0.01) / ubo.march.x;
-                coarse = fine * 3.0;
                 vec3  p = o + d * t;
                 float h = height_frac(p);
                 vec3  w = weather_at(p);
+                // the pixel's footprint: the detail noise's level
+                float fp   = max(t * ubo.sea_b.z, 1.0);
+                float seek = clamp(fp, 30.0, 400.0);
                 steps_taken += 1.0;
                 if (!in_cloud) {{
                     // outside an island: leap by the island distance field
                     float isd = texture(island, (p.xz + ubo.world.xy) / ubo.scales.w + 0.5).r * 255.0 - 1.5;
                     if (isd > 0.0) {{
                         float leap = isd * (ubo.scales.w / 256.0) / max(length(d.xz), 0.02);
-                        t += max(leap, coarse);
+                        t_done = t;
+                        t += max(leap, seek);
                         continue;
                     }}
-                    float dl = cloud_density(p, h, w, 1.0);
-                    if (dl > 0.0) {{
-                        in_cloud = true;
-                        t = max(t - coarse, t_start);
+                    if (cloud_density(p, h, w, 1.0, fp).x <= 0.0) {{
+                        t_done = t;
+                        t += seek;
                         continue;
                     }}
-                    t += coarse;
+                    // the shape's surface between the last empty
+                    // sample and this one, by halves (to seek / 32)
+                    float lo = max(t - seek, t_done);
+                    float hi = t;
+                    for (int k = 0; k < 5; k++) {{
+                        float tm = 0.5 * (lo + hi);
+                        vec3  pm = o + d * tm;
+                        if (cloud_density(pm, height_frac(pm),
+                                weather_at(pm), 1.0, fp).x > 0.0)
+                            hi = tm;
+                        else
+                            lo = tm;
+                    }}
+                    t = lo;
+                    in_cloud = true;
+                    gap = 0.0;
+                    hop = 0.0;
                     continue;
                 }}
-                float dens = cloud_density(p, h, w, 0.0);
+                vec4  dc   = cloud_density(p, h, w, 0.0, fp);
+                float dens = dc.x;
                 // fade out toward the march cap so no cut face shows
                 dens *= clamp((t_start + ubo.march.z - t) / 8000.0, 0.0, 1.0);
+                // near: out over the overlap; far: in over it
+                if (split > 0.0)
+                    dens *= (far) ? clamp((t - (split - lap)) / lap,
+                                          0.0, 1.0)
+                                  : clamp((split - t) / lap, 0.0, 1.0);
+                float ext = sigma;
                 if (dens <= 0.0) {{
-                    zeros += 1;
-                    if (zeros > 8) {{ in_cloud = false; zeros = 0; }}
-                    t += fine;
+                    // empty inside the shape: growing steps, then air
+                    hop = min((hop > 0.0) ? hop * 1.5 : edge, seek);
+                    t_done = t;
+                    t   += hop;
+                    gap += hop;
+                    if (gap > seek * 4.0) in_cloud = false;
                     continue;
                 }}
-                zeros = 0;
+                gap = 0.0;
+                // this step: optical depth tau, 4 m to a footprint
+                float sd = clamp(tau / (dens * ext), 4.0, seek);
+                // a long empty step ran into cloud: find its surface
+                // by halves, so it lands where it is
+                if (hop > sd * 1.5) {{
+                    float lo = t - hop;
+                    float hi = t;
+                    for (int k = 0; k < 4; k++) {{
+                        float tm = 0.5 * (lo + hi);
+                        vec3  pm = o + d * tm;
+                        if (cloud_density(pm, height_frac(pm),
+                                weather_at(pm), 0.0, fp).x > 0.0)
+                            hi = tm;
+                        else
+                            lo = tm;
+                    }}
+                    t   = hi;
+                    hop = 0.0;
+                    continue;
+                }}
+                hop = 0.0;
                 if (sun_c.x < 0.0) {{
                     // lit once per pixel at the first cloud sample
                     sun_c   = sun_light(p);
@@ -1171,11 +1436,15 @@ ModelViewProject NubisSky
                     amb_top = atmosphere(p, upv, 1e12).rgb + vec3(0.016, 0.020, 0.034) * ubo.key_tint.w;
                     amb_bot = sun_c * max(sun.y, 0.0) * 0.05 * vec3(0.30, 0.31, 0.33) + amb_top * 0.35;
                 }}
-                float ext = sigma;
-                float od  = light_march(p) * ext;
+                // cheap cone samples once the pixel is 30% opaque
+                if (abs(t - t_lit) > 60.0) {{
+                    od_sun = light_march(p, fp, (T < 0.7) ? 1.0 : 0.0);
+                    t_lit  = t;
+                }}
+                float od = od_sun * ext;
                 // Nubis in-scatter probability: dark edges, dark bottoms
                 float ht = type_frac(p, w);
-                float lod_d = cloud_density(p, h, w, 1.0);
+                float lod_d = dc.w;
                 float depth_p = 0.05 + pow(clamp(lod_d, 0.0, 1.0), clamp(remap(ht, 0.3, 0.85, 0.5, 2.0), 0.5, 2.0));
                 float vert_p  = pow(clamp(remap(ht, 0.07, 0.14, 0.1, 1.0), 0.1, 1.0), 0.8);
                 // how much light reaches this point at all: it occludes
@@ -1207,32 +1476,60 @@ ModelViewProject NubisSky
                 float above = (1.0 - ht) * type_top(p, w) * lod_d;
                 float amb_t = exp(-above * ext * 0.15);
                 vec3  amb   = mix(amb_bot, amb_top, ht) * amb_t * ubo.light_a.w;
-                vec3  S    = (direct + amb) * dens * ext;
-                float e    = max(dens * ext, 1e-6);
-                float Ts   = exp(-e * fine);
-                col += T * (S - S * Ts) / e;
+                float Ts = exp(-max(dens * ext, 1e-6) * sd);
+                col += T * (direct + amb) * (1.0 - Ts);
+                if (t_half < 0.0 && T * Ts < 0.5) t_half = t;
+                dsum += t * T * (1.0 - Ts);
+                wsum += T * (1.0 - Ts);
                 T   *= Ts;
-                if (depth < 0.0 && T < 0.5) depth = t;
-                t += fine;
+                t_done = t;
+                t += sd;
             }}
         }}
-        if (depth < 0.0) depth = t_start;
-        // aerial perspective: the air between us and the cloud
+        depth = (wsum > 1e-5) ? dsum / wsum : t_start;
+        // the air between us and the cloud, to where it turned half
+        // opaque (Nubis 2017)
         if (T < 0.995 && depth > 0.0) {{
-            vec4 ap = atmosphere(o, d, depth);
+            vec4 ap = atmosphere(o, d, (t_half > 0.0) ? t_half : depth);
             col = col * ap.a + ap.rgb * (1.0 - T);
-            // Nubis: the far band dissolves into the horizon haze
-            float far = clamp((depth - 25000.0) / 40000.0, 0.0, 1.0);
-            col = mix(col, bg * (1.0 - T), far);
+        }}
+        // over a host's ground: the cloud alone, coverage in alpha,
+        // premultiplied (its own colour tone mapped)
+        if (over) {{
+            float cov = 1.0 - T;
+            vec3  cl  = (cov > 1e-4) ? col / cov : vec3(0.0);
+            // the host's land haze too (its law: 1.5 km scale, 75 km
+            // through at the sea), so a far cloud sits in the same air
+            if (cov > 1e-4) {{
+                float tc  = (t_half > 0.0) ? t_half : depth;
+                float he  = max(length(o - C) - R, 0.0);
+                float hp  = max(length(o + d * tc - C) - R, 0.0);
+                float dh  = hp - he;
+                float hs  = 1500.0;
+                float dn  = (abs(dh) < 1.0) ? exp(-hp / hs)
+                          : hs * (exp(-he / hs) - exp(-hp / hs)) / dh;
+                float fog = clamp(1.0 - exp(-tc * dn / 25000.0),
+                                  0.0, 0.95);
+                vec3  ad  = normalize(vec3(d.x, max(d.y, 0.02), d.z));
+                cl = mix(cl, atmosphere(o, ad, 1e12).rgb, fog);
+            }}
+            vec3  ct  = aces(cl * ubo.cam_fwd.w);
+            fragColor = vec4(pow(ct, vec3(1.0 / 2.2)) * cov, cov);
+            float cz = depth * max(dot(d, ubo.cam_fwd.xyz), 1e-4);
+            gl_FragDepth = (cov > 0.004)
+                ? min(log2(1.0 + cz) / dcode, 0.99998) : 1.0;
+            return;
         }}
         vec3 final = col + T * bg;
 
         if (ubo.view_mode == 1) final = vec3(1.0 - T);
         if (ubo.view_mode == 2) final = mix(vec3(0.0, 0.05, 0.3), vec3(1.0, 0.3, 0.0), steps_taken / 200.0);
         vec3 tm = (ubo.view_mode == 0) ? aces(final * ubo.cam_fwd.w) : clamp(final, 0.0, 1.0);
-        // alpha carries the cloud depth for the temporal reprojection
-        float dn = (depth > 0.0) ? clamp(depth / 60000.0, 0.0, 1.0) : 1.0;
-        fragColor = vec4(pow(tm, vec3(1.0 / 2.2)), (ubo.jitter.z > 0.5) ? 1.0 : dn);
+        fragColor = vec4(pow(tm, vec3(1.0 / 2.2)), 1.0);
+        // the depth image keeps the cloud's distance at 32 bits
+        float cz = depth * max(dot(d, ubo.cam_fwd.xyz), 1e-4);
+        gl_FragDepth = (depth > 0.0)
+            ? min(log2(1.0 + cz) / dcode, 0.99998) : 1.0;
     }
 
 # ---------------------------------------------------------------
@@ -1243,6 +1540,7 @@ ModelViewProject NubisSky
 enum TemporalSurface
     fresh   : 0
     history : 1
+    fdepth  : 2
 
 ModelViewProject TemporalCompose
     mutable cam_right  : vec4f    # w: tan(half fov) * aspect
@@ -1253,7 +1551,8 @@ ModelViewProject TemporalCompose
     mutable prev_fwd   : vec4f
     # xy: uv offset the fresh pass used, zw: fresh texel size
     mutable jitter     : vec4f
-    mutable blend      : vec4f    # x: history weight, y: history valid
+    # x: the fresh frame's share, y: history valid
+    mutable blend      : vec4f
     mutable cam_pos    : vec4f
     mutable prev_pos   : vec4f
 
@@ -1263,6 +1562,10 @@ ModelViewProject TemporalCompose
     attrib history : LayoutBinding [ type:typeid[ TemporalSurface ],
                                      id: TemporalSurface.history,
                                      count:1, format: typeid[ rgba8 ] ]
+    # the fresh pass's cloud distance, of 60 km
+    attrib fdepth  : LayoutBinding [ type:typeid[ TemporalSurface ],
+                                     id: TemporalSurface.fdepth,
+                                     count:1, format: typeid[ f32 ] ]
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
     attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
@@ -1279,47 +1582,50 @@ ModelViewProject TemporalCompose
         gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
     }
 
+    # every pixel marched each frame at the history's size, its
+    # sample moved by a sub-pixel offset; the history, moved by the
+    # camera to where each cloud point now lies and held inside the
+    # fresh frame's neighbourhood (variance clip), takes a share of it
     func fragment [] -> GLSL none {
         vec2  ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0);
         vec3  d   = normalize(ubo.cam_fwd.xyz + ubo.cam_right.xyz * (ndc.x * ubo.cam_right.w) + ubo.cam_up.xyz * (ndc.y * ubo.cam_up.w));
-        // the fresh texel at uv holds the ray at uv + jitter: read back by it
         vec2  fuv = v_uv - ubo.jitter.xy;
-        vec2  ts  = ubo.jitter.zw;
-        vec4  f4  = texture(fresh, fuv);
-        vec3  f   = f4.rgb;
-        // the neighbourhood's own spread decides how far the history may
-        // stray: tight where the sky is flat, wide across a cloud edge,
-        // so old samples still accumulate into the edges instead of
-        // aliasing, while a stale one in open sky is cut
-        vec3  m1  = vec3(0.0);
-        vec3  m2  = vec3(0.0);
+        vec4  cur = texture(fresh, fuv);
+        if (ubo.blend.y < 0.5) {{
+            fragColor = cur;
+            return;
+        }}
+        // the fresh frame round this pixel: its mean and spread
+        vec4 m1 = vec4(0.0);
+        vec4 m2 = vec4(0.0);
         for (int j = -1; j <= 1; j++)
             for (int i = -1; i <= 1; i++) {{
-                vec3 n = texture(fresh, fuv + vec2(float(i), float(j)) * ts).rgb;
-                m1 += n;
-                m2 += n * n;
+                vec4 c = texture(fresh, fuv + vec2(float(i),
+                                 float(j)) * ubo.jitter.zw);
+                m1 += c;
+                m2 += c * c;
             }}
-        vec3  mu  = m1 / 9.0;
-        vec3  sg  = sqrt(max(m2 / 9.0 - mu * mu, vec3(0.0)));
-        vec3  mn  = mu - 1.4 * sg;
-        vec3  mx  = mu + 1.4 * sg;
-        // where did this cloud point fall last frame (depth from the fresh alpha)
-        vec3  wp = ubo.cam_pos.xyz + d * (f4.a * 60000.0);
+        m1 /= 9.0;
+        m2 /= 9.0;
+        vec4  sd = sqrt(max(m2 - m1 * m1, vec4(0.0)));
+        vec4  lo = m1 - sd * 1.25;
+        vec4  hi = m1 + sd * 1.25;
+        // where this pixel's cloud point was last frame
+        float cz = exp2(texture(fdepth, fuv).r * 15.8728) - 1.0;
+        float fz = cz / max(dot(d, ubo.cam_fwd.xyz), 1e-4);
+        vec3  wp = ubo.cam_pos.xyz + d * fz;
         vec3  pd = normalize(wp - ubo.prev_pos.xyz);
         float pz = dot(pd, ubo.prev_fwd.xyz);
-        vec3  out_c = f;
-        if (pz > 0.0 && ubo.blend.y > 0.5) {{
-            vec2 pn = vec2(dot(pd, ubo.prev_right.xyz) / (pz * ubo.prev_right.w), dot(pd, ubo.prev_up.xyz) / (pz * ubo.prev_up.w));
-            vec2 puv = vec2(pn.x * 0.5 + 0.5, 0.5 - pn.y * 0.5);
-            if (puv.x > 0.0 && puv.x < 1.0 && puv.y > 0.0 && puv.y < 1.0) {{
-                vec3 h = texture(history, puv).rgb;
-                // a loose clamp lets a stale sample survive where the
-                // cloud has moved on: that is what leaves streaks
-                h = clamp(h, mn, mx);
-                out_c = mix(h, f, ubo.blend.x);
-            }}
+        vec2  pn = vec2(dot(pd, ubo.prev_right.xyz) / (pz * ubo.prev_right.w), dot(pd, ubo.prev_up.xyz) / (pz * ubo.prev_up.w));
+        vec2  puv = vec2(pn.x * 0.5 + 0.5, 0.5 - pn.y * 0.5);
+        bool  on = pz > 0.0 && puv.x > 0.0 && puv.x < 1.0
+                && puv.y > 0.0 && puv.y < 1.0;
+        if (!on) {{
+            fragColor = cur;
+            return;
         }}
-        fragColor = vec4(out_c, 1.0);
+        vec4 h = clamp(texture(history, puv), lo, hi);
+        fragColor = mix(h, cur, ubo.blend.x);
     }
 
 # ---------------------------------------------------------------
@@ -1377,6 +1683,7 @@ class CloudWorld
     public edt_z      : vec f32
     public edt_f      : vec f32
     public edt_d      : vec f32
+    public tx_blue    : Texture
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
@@ -1695,12 +2002,12 @@ class CloudWorld
         bolt_strike[]
 
     func noise_texture [ vk: vk_context, w: Window, p: path,
-                         depth: i32 ] -> Texture
+                         depth: i32, mips: i32 ] -> Texture
         expect p.exists[], 'baked noise missing: {p}'
         im : Image [ uri: p, linear: true, wrap_u: true, wrap_v: true ]
         im.hold[]
         tx : Texture [ vk: vk, w: w, sampler: im, depth: depth,
-                       mip_levels: 1, linear: true, wrap_u: true,
+                       mip_levels: mips, linear: true, wrap_u: true,
                        wrap_v: true ]
         tx.hold[]
         return tx
@@ -1719,12 +2026,14 @@ class CloudWorld
         curl_png : path '{baked}/curl.png'
         weather_png : path '{baked}/weather.png'
         tops_png : path '{baked}/tops.png'
-        tx_shape   = noise_texture[ vk, w, shape_png, 128 ]
-        tx_detail  = noise_texture[ vk, w, detail_png, 32 ]
-        tx_curl    = noise_texture[ vk, w, curl_png, 1 ]
-        tx_weather = noise_texture[ vk, w, weather_png, 1 ]
-        tx_tvar    = noise_texture[ vk, w, tops_png, 1 ]
-        tx_stars   = noise_texture[ vk, w, stars, 1 ]
+        tx_shape   = noise_texture[ vk, w, shape_png, 128, 6 ]
+        tx_detail  = noise_texture[ vk, w, detail_png, 32, 4 ]
+        tx_curl    = noise_texture[ vk, w, curl_png, 1, 1 ]
+        tx_weather = noise_texture[ vk, w, weather_png, 1, 1 ]
+        tx_tvar    = noise_texture[ vk, w, tops_png, 1, 1 ]
+        tx_stars   = noise_texture[ vk, w, stars, 1, 1 ]
+        blue_png : path '{baked}/blue.png'
+        tx_blue    = noise_texture[ vk, w, blue_png, 1, 1 ]
         wimg = Image [ uri: weather_png, linear: true ]
         wimg.hold[]
         timg = Image [ uri: tops_png, linear: true ]
@@ -1737,7 +2046,8 @@ class CloudWorld
                                'detail': tx_detail, 'curl': tx_curl,
                                'weather': tx_weather,
                                'island': tx_island, 'tvar': tx_tvar,
-                               'waves': wave_buf, 'stars': tx_stars ]
+                               'waves': wave_buf, 'stars': tx_stars,
+                               'blue': tx_blue, 'gdepth': tx_weather ]
         # the environment pass: the SAME shader instance, told to draw
         # the whole sky into a small mipped map the sea reflects. each
         # draw snapshots the uniforms, so the flag can differ per pass
@@ -1761,12 +2071,19 @@ class CloudWorld
         if [ dc < 0.0 ] dc = 0.0 - dc
         if [ dm < 0.0 ] dm = 0.0 - dm
         if [ (dc > 0.01 || dm > 0.02) && seconds - isl_secs > 0.25 ]
+            t_isl : i64 [ epoch_micros[] ]
             build_island[ vk, w ]
             vmodel.samplers[ 'island' ] = tx_island
             vmodel.rebind_model[]
+            isl_ms : f32 [ f32[ epoch_micros[] - t_isl ] / 1000.0 ]
+            log 'island map rebuilt: {isl_ms} ms (coverage {cur.coverage})'
         dw : f32 [ cur.wind - wave_wind ]
         if [ dw < 0.0 ] dw = 0.0 - dw
-        if [ dw > 0.5 ] build_waves[ vk, cur.wind ]
+        if [ dw > 0.5 ]
+            t_wav : i64 [ epoch_micros[] ]
+            build_waves[ vk, cur.wind ]
+            wav_ms : f32 [ f32[ epoch_micros[] - t_wav ] / 1000.0 ]
+            log 'waves rebuilt: {wav_ms} ms (wind {cur.wind})'
 
     # what every view sets alike: the strikes, the place in the world,
     # the cloud layer, the light and the sea
@@ -1801,7 +2118,6 @@ class CloudWorld
         sky.jitter = vec4f [ 0.0, 0.0, 1.0, 0.0 ]
         env_render.update[]
         env_render.draw[]
-        env_render.sync_fence[]
         env_render.gen_mips[]
         sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
         sky.jitter = jitter
@@ -1875,10 +2191,31 @@ element SkyView
     public bolts     : f32 [ 1.0 ]
     mutable last_dt  : f32 [ 0.016 ]
     public seconds   : f32
-    public temporal  : bool [ true ]
     public cur       : WeatherState
+    # a host's ground: its depth (log2(1 + w) / log2(1 + far)); the
+    # clouds before it come as a layer to draw over it (over_ground)
+    public ground_depth : Texture
+    # over a host's ground: the clouds alone, no sky or sea behind
+    public no_sky : bool
+    # over a host's ground: the sea alone, no sky, no clouds
+    public sea_only : bool
+    # over a host's ground: the sky and sea, no clouds
+    public no_clouds : bool
+    public ground_far   : f32
+    # over a host's ground: the near march ends here (m), the far
+    # one starts; they overlap by far_lap. 0: one march, all of it
+    public far_split    : f32 [ 0.0 ]
+    public far_lap      : f32 [ 2000.0 ]
+    mutable shown    : Render
+    # over a host's ground: the sky and sea alone, behind it
+    mutable back     : Render
+    mutable bmodel   : Model
     mutable world    : CloudWorld
     mutable vrender  : Render
+    # past far_split: half the history's size, no history
+    mutable frender  : Render
+    mutable fmodel   : Model
+    # the history (Nubis 2015): each compose reads the other's frame
     mutable comp_a   : TemporalCompose
     mutable comp_b   : TemporalCompose
     mutable hist_a   : Render
@@ -1893,19 +2230,158 @@ element SkyView
     mutable frame    : i32
     mutable last_secs : f32
     mutable gpu_ms   : f32
+    # the sky and sea pass behind a host's ground (ms)
+    mutable back_ms  : f32
+    # the whole draw on the CPU, waits included (ms)
+    mutable cpu_ms   : f32
+    # this frame's steps and their ms, for a host's slow frame log
+    mutable trace    : string
+    mutable tr_at    : i64
 
     func sat [ v: f32 ] -> f32
         return (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v)
 
+    # last frame's eye from this one's: x and z travel in world
+    func prev_here [] -> vec4f
+        return vec4f [ prev_pos.x - cam_x, prev_pos.y,
+                       prev_pos.z - cam_z, 0.0 ]
+
+    # the far clouds: their own model (its own uniforms), drawn at
+    # half the history's size, its offsets still
+    func far_draw [ cv: Canvas, w: Window, th: f32 ]
+        sky : world.sky
+        if [ !frender ]
+            fmodel = Model [ vk: cv.vk, w: w, s: sky,
+                             samplers: world.vmodel.samplers ]
+            fmodel.hold[]
+            frender = Render [ vk: cv.vk, w: w, wscale: wscale,
+                               tag: 'clouds-far', use_depth: true,
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+                models: [ fmodel ] ]
+            frender.hold[]
+            frender.timing = true
+            frender.owner = a
+            frender.skip = true
+            w.element_targets[ 'skyfar_{id}' ] = frender
+        if [ fmodel.samplers[ 'gdepth' ] != world.vmodel.samplers[
+                'gdepth' ] ]
+            fmodel.samplers[ 'gdepth' ] =
+                world.vmodel.samplers[ 'gdepth' ]
+            fmodel.rebind_model[]
+        frender.wscale = wscale * 0.5
+        frender.update[]
+        jt : vec4f [ sky.jitter ]
+        sky.jitter = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        fh : f32 [ frender.height ]
+        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / fh,
+                             seconds * 0.0008 ]
+        sky.env    = vec4f [ 0.0, 1.0, far_split, far_lap ]
+        frender.draw[]
+        tr[ 'far' ]
+        frender.seal[]
+        sky.jitter = jt
+        sky.env    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+
+    # the history's two targets and their composes, once
+    func build_history [ cv: Canvas, w: Window ]
+        clear : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        hist_a = Render [ vk: cv.vk, w: w, wscale: wscale,
+                          tag: 'clouds-ha', clear_color: clear ]
+        hist_b = Render [ vk: cv.vk, w: w, wscale: wscale,
+                          tag: 'clouds-hb', clear_color: clear ]
+        hist_a.hold[]
+        hist_b.hold[]
+        hist_a.timing = true
+        hist_b.timing = true
+        comp_a = TemporalCompose [ vk: cv.vk, name: 'temporal-a' ]
+        comp_b = TemporalCompose [ vk: cv.vk, name: 'temporal-b' ]
+        comp_a.hold[]
+        comp_b.hold[]
+        sa : map Au[string] [ 'fresh': vrender.color,
+                              'history': hist_b.color,
+                              'fdepth': vrender.depth ]
+        sb : map Au[string] [ 'fresh': vrender.color,
+                              'history': hist_a.color,
+                              'fdepth': vrender.depth ]
+        model_a = Model [ vk: cv.vk, w: w, s: comp_a, samplers: sa ]
+        model_b = Model [ vk: cv.vk, w: w, s: comp_b, samplers: sb ]
+        model_a.hold[]
+        model_b.hold[]
+        hist_a.models = vec Model [] [ model_a ]
+        hist_b.models = vec Model [] [ model_b ]
+        model_a.finish[ hist_a, 0 ]
+        model_b.finish[ hist_b, 0 ]
+        hist_a.owner = a
+        hist_b.owner = a
+        hist_a.skip = true
+        hist_b.skip = true
+        w.element_targets[ 'skya_{id}' ] = hist_a
+        w.element_targets[ 'skyb_{id}' ] = hist_b
+
+    # a history's compose reads this frame's march and the other
+    func bind_history [ m: Model, other: Render ]
+        if [ m.samplers[ 'fresh' ] != vrender.color
+             || m.samplers[ 'history' ] != other.color
+             || m.samplers[ 'fdepth' ] != vrender.depth ]
+            m.samplers[ 'fresh' ] = vrender.color
+            m.samplers[ 'history' ] = other.color
+            m.samplers[ 'fdepth' ] = vrender.depth
+            m.rebind_model[]
+            hist_valid = false
+
     # the sky as a reflection for anything in it: 512 x 256, its
     # longitude across, gamma encoded, 6 mips; null till built
+    # a step's ms since the last, onto this frame's trace
+    func tr [ name: string ]
+        now : i64 [ epoch_micros[] ]
+        ms : f32 [ f32[ now - tr_at ] / 1000.0 ]
+        trace = '{trace} {name} {ms}'
+        tr_at = now
+
     public func env_map [] -> Texture
         if [ !world || !world.env_render ] return null
         return world.env_render.color
 
+    # the sky's picture: over a host's ground each pixel holds the
+    # cloud before it alone, premultiplied; null without a ground
+    public func over_ground [] -> Texture
+        if [ !ground_depth || !shown ] return null
+        return shown.color
+
+    # the clouds' two pictures over a host's ground (they alternate
+    # frame to frame): bind both once, pick by over_index
+    public func over_tex [ i: i32 ] -> Texture
+        if [ !ground_depth || !hist_a || !hist_b ] return null
+        return (i == 0) ? hist_a.color : hist_b.color
+
+    # which of over_tex is this frame's: 0 or 1
+    public func over_index [] -> i32
+        return (hist_b && shown == hist_b) ? 1 : 0
+
+    # the far clouds over a host's ground, premultiplied
+    public func over_far [] -> Texture
+        if [ !ground_depth || !frender ] return null
+        return frender.color
+
+    # their front depth, coded as over_depth
+    public func over_far_depth [] -> Texture
+        if [ !ground_depth || !frender ] return null
+        return frender.depth
+
+    # the clouds' front depth: log2(1 + view z) / over_code
+    public func over_depth [] -> Texture
+        if [ !ground_depth || !vrender ] return null
+        return vrender.depth
+
+    public func over_code [] -> f32
+        return 15.8728
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
+        t_in : i64 [ epoch_micros[] ]
+        trace = ''
+        tr_at = t_in
         cv : Canvas [ w.screen ]
         if [ !world ]
             world = CloudWorld [ cur: cur, wseed: 987654321 ]
@@ -1916,9 +2392,12 @@ element SkyView
         world.bolts   = bolts
         if [ !vrender ]
             world.build[ cv.vk, w ]
+            # cleared clear: over a ground the clouds blend onto it
+            # premultiplied, and an opaque clear made every partly
+            # covered pixel opaque (black rims)
             vrender = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
-                               tag: 'clouds',
-                clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                               tag: 'clouds', use_depth: true,
+                clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
                 models: [ world.vmodel ] ]
             vrender.hold[]
             vrender.timing = true
@@ -1927,40 +2406,6 @@ element SkyView
             # drawn here once its camera is set: a frame late else
             vrender.skip = true
             w.element_targets[ 'sky_{id}' ] = vrender
-            # history ping-pong: each compose reads the other's last
-            # frame
-            hist_a = Render [ vk: cv.vk, w: w, wscale: wscale,
-                              tag: 'clouds-ha',
-                              clear_color: vec4f [ 0.0, 0.0, 0.0,
-                                                   1.0 ] ]
-            hist_b = Render [ vk: cv.vk, w: w, wscale: wscale,
-                              tag: 'clouds-hb',
-                              clear_color: vec4f [ 0.0, 0.0, 0.0,
-                                                   1.0 ] ]
-            hist_a.hold[]
-            hist_b.hold[]
-            hist_a.timing = true
-            hist_b.timing = true
-            comp_a = TemporalCompose [ vk: cv.vk, name: 'temporal-a' ]
-            comp_b = TemporalCompose [ vk: cv.vk, name: 'temporal-b' ]
-            comp_a.hold[]
-            comp_b.hold[]
-            sa : map Au[string] [ 'fresh': vrender.color,
-                                  'history': hist_b.color ]
-            sb : map Au[string] [ 'fresh': vrender.color,
-                                  'history': hist_a.color ]
-            model_a = Model [ vk: cv.vk, w: w, s: comp_a, samplers: sa ]
-            model_b = Model [ vk: cv.vk, w: w, s: comp_b, samplers: sb ]
-            model_a.hold[]
-            model_b.hold[]
-            hist_a.models = vec Model [] [ model_a ]
-            hist_b.models = vec Model [] [ model_b ]
-            model_a.finish[ hist_a, 0 ]
-            model_b.finish[ hist_b, 0 ]
-            hist_a.owner = a
-            hist_b.owner = a
-            w.element_targets[ 'skya_{id}' ] = hist_a
-            w.element_targets[ 'skyb_{id}' ] = hist_b
         frame += 1
         sdt : f32 [ seconds - last_secs ]
         if [ sdt <= 0.0 ] sdt = 0.016
@@ -2019,7 +2464,7 @@ element SkyView
         sky.weather_a = vec4f [ cur.coverage, cur.ctype, 0.0,
                                 cur.island ]
         sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
-        sky.march     = vec4f [ quality, 1.0, 60000.0, 1.0 / 45000.0 ]
+        sky.march     = vec4f [ quality, 1.0, 35000.0, 1.0 / 45000.0 ]
         world.bolt_dark = sat[ (0.16 - cur.sun_el) / 0.16 ]
         if [ night > 0.5 ] world.bolt_dark = 1.0
         world.bolt_tick[ last_dt ]
@@ -2029,57 +2474,84 @@ element SkyView
         sky.view_mode = view_mode
         sky.frame     = frame
         sky.time      = seconds
-        # 2x2 sub-pixel cycle: every full-res pixel is sampled once per
-        # 4 frames
-        ph : i32 [ frame % 4 ]
-        ox : f32 [ ((ph & 1) == 0) ? -0.25 : 0.25 ]
-        oy : f32 [ ((ph & 2) == 0) ? -0.25 : 0.25 ]
-        vrender.wscale = (temporal) ? wscale * 0.5 : wscale
+        # every pixel at half the history's size each way, each
+        # frame's sample moved inside its pixel by the Halton (2, 3)
+        # sequence: the history gathers them into its finer pixels
+        vrender.wscale = wscale * 0.5
         vrender.update[]
         lw : f32 [ vrender.width ]
         lh : f32 [ vrender.height ]
-        jx : f32 [ (temporal) ? ox / lw : 0.0 ]
-        jy : f32 [ (temporal) ? oy / lh : 0.0 ]
-        sky.jitter = vec4f [ jx, jy, (temporal) ? 0.0 : 1.0, 0.0 ]
-        # sea_b.z = the angle one pixel covers: the wave LOD works off
-        # it
-        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
-                             seconds * 0.0008 ]
+        hx : vec f32 [] [ 0.5, 0.25, 0.75, 0.125, 0.625, 0.375, 0.875,
+                          0.0625 ]
+        hy : vec f32 [] [ 0.333, 0.667, 0.111, 0.444, 0.778, 0.222,
+                          0.556, 0.889 ]
+        jx : f32 [ (hx[ frame % 8 ] - 0.5) / lw ]
+        jy : f32 [ (hy[ frame % 8 ] - 0.5) / lh ]
+        sky.jitter = vec4f [ jx, jy, 0.0, 0.0 ]
         sky.vessel_a = vessel_a
         sky.vessel_b = vessel_b
-        world.env_pass[ vec4f [ jx, jy, (temporal) ? 0.0 : 1.0,
-                                0.0 ] ]
+        gd : Texture [ (ground_depth) ? ground_depth : world.tx_weather ]
+        if [ world.vmodel.samplers[ 'gdepth' ] != gd ]
+            world.vmodel.samplers[ 'gdepth' ] = gd
+            world.vmodel.rebind_model[]
+            if [ bmodel ] bmodel.rebind_model[]
+        code : f32 [ log2[ ground_far + 1.0 ] ]
+        # the reflection's sky changes slowly: once a second
+        if [ frame % 60 == 1 ]
+            world.env_pass[ sky.jitter ]
+            tr[ 'env' ]
+        tr[ 'setup' ]
+        r : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        if [ ground_depth && !no_sky ]
+            if [ !back ]
+                bmodel = Model [ vk: cv.vk, w: w, s: sky,
+                                 samplers: world.vmodel.samplers ]
+                bmodel.hold[]
+                back = Render [ vk: cv.vk, w: w, wscale: wscale * 0.5,
+                                tag: 'clouds-back',
+                    clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+                    models: [ bmodel ] ]
+                back.hold[]
+                back.timing = true
+                back.owner = a
+                back.skip = true
+                w.element_targets[ 'skyback_{id}' ] = back
+            back.wscale = wscale * 0.5
+            back.update[]
+            # sea_b.z = the angle one pixel covers: the wave LOD
+            bh : f32 [ back.height ]
+            sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / bh,
+                                 seconds * 0.0008 ]
+            sky.ground = vec4f [ 1.0, code, 1.0,
+                                 (sea_only) ? 1.0 : 0.0 ]
+            back.draw[]
+            tr[ 'back' ]
+            back.seal[]
+            tr[ 'back-wait' ]
+            back_ms = back.gpu_us / 1000.0
+            if [ sea_only || no_clouds ]
+                cv.draw_image[ back.color, r ]
+                tr[ 'put' ]
+                cpu_ms = f32[ epoch_micros[] - t_in ] / 1000.0
+                return
+        sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
+                             seconds * 0.0008 ]
+        sky.ground = vec4f [ (ground_depth) ? 1.0 : 0.0, code, 0.0, 0.0 ]
+        if [ ground_depth && far_split > 0.0 ]
+            far_draw[ cv, w, th ]
+            sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh,
+                                 seconds * 0.0008 ]
+            sky.env    = vec4f [ 0.0, 0.0, far_split, far_lap ]
         vrender.draw[]
-        vrender.sync_fence[]
-        gpu_ms = vrender.gpu_us / 1000.0
-        if [ !temporal ]
-            hist_a.skip = true
-            hist_b.skip = true
-            hist_valid = false
-            cv.draw_image[ vrender.color,
-                           rect [ x: 0.0, y: 0.0, w: bounds.w,
-                                  h: bounds.h ] ]
-            return
-        use_a : bool [ (frame & 1) == 0 ]
-        hist_a.skip = true
-        hist_b.skip = true
+        tr[ 'march' ]
+        vrender.seal[]
+        tr[ 'march-wait' ]
+        if [ !hist_a ] build_history[ cv, w ]
         hist_a.update[]
         hist_b.update[]
-        # attachments are rebuilt on resize: keep the samplers current
-        if [
-            model_a.samplers[ 'fresh' ] != vrender.color
-            || model_a.samplers[ 'history' ] != hist_b.color ]
-            model_a.samplers[ 'fresh' ] = vrender.color
-            model_a.samplers[ 'history' ] = hist_b.color
-            model_a.rebind_model[]
-            hist_valid = false
-        if [
-            model_b.samplers[ 'fresh' ] != vrender.color
-            || model_b.samplers[ 'history' ] != hist_a.color ]
-            model_b.samplers[ 'fresh' ] = vrender.color
-            model_b.samplers[ 'history' ] = hist_a.color
-            model_b.rebind_model[]
-            hist_valid = false
+        bind_history[ model_a, hist_b ]
+        bind_history[ model_b, hist_a ]
+        use_a : bool [ (frame & 1) == 0 ]
         cm : TemporalCompose [ (use_a) ? comp_a : comp_b ]
         cm.cam_right  = sky.cam_right
         cm.cam_up     = sky.cam_up
@@ -2087,25 +2559,27 @@ element SkyView
         cm.prev_right = prev_right
         cm.prev_up    = prev_up
         cm.prev_fwd   = prev_fwd
-        cm.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
         cm.cam_pos    = sky.cam_pos
-        cm.prev_pos   = prev_pos
-        # the faster we move, the less the history can be trusted
-        bw : f32 [ 0.22 + speed / 700.0 ]
-        if [ bw > 0.75 ] bw = 0.75
-        cm.blend      = vec4f [ bw, (hist_valid) ? 1.0 : 0.0, 0.0, 0.0 ]
-        gpu_ms = (vrender.gpu_us + ((use_a) ? hist_b.gpu_us : hist_a.gpu_us)) / 1000.0
+        cm.prev_pos   = prev_here[]
+        cm.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
+        cm.blend      = vec4f [ 0.1, (hist_valid) ? 1.0 : 0.0, 0.0, 0.0 ]
+        out : Render [ (use_a) ? hist_a : hist_b ]
+        out.draw[]
+        tr[ 'history' ]
+        out.seal[]
+        tr[ 'history-wait' ]
+        gpu_ms = (vrender.gpu_us + out.gpu_us) / 1000.0
         prev_right = sky.cam_right
         prev_up    = sky.cam_up
         prev_fwd   = sky.cam_fwd
-        prev_pos   = sky.cam_pos
+        prev_pos   = vec4f [ cam_x, cam_h, cam_z, 0.0 ]
         hist_valid = true
-        out : Render [ (use_a) ? hist_a : hist_b ]
-        out.draw[]
-        out.sync_fence[]
-        cv.draw_image[ out.color,
-                       rect [ x: 0.0, y: 0.0, w: bounds.w,
-                              h: bounds.h ] ]
+        shown = out
+        # over a ground the clouds go on after it (the host composes)
+        if [ !ground_depth ] cv.draw_image[ out.color, r ]
+        el [ !no_sky ] cv.draw_image[ back.color, r ]
+        tr[ 'put' ]
+        cpu_ms = f32[ epoch_micros[] - t_in ] / 1000.0
 
 element clouds : trinity
     public width      : i32    [ 1280 ]
@@ -2127,7 +2601,6 @@ element clouds : trinity
     public view_mode  : i32
     public wscale     : f32    [ 1.0 ]
     public blend_secs : f32    [ 8.0 ]
-    public temporal   : bool   [ true ]
     public spin       : f32    [ 0.0 ]
     public tstart     : f32    [ 0.0 ]
     mutable states    : vec WeatherState
@@ -2160,7 +2633,7 @@ element clouds : trinity
         if [ sun_az >= 0.0 ] cur.sun_az = sun_az
         prev = copy_weather[ cur ]
         prev.hold[]
-        log 'clouds: 1-6 weather  arrows look  t/g sun  e/d exposure  q quality  v view  f fly  +/- speed  pgup/pgdn height  r temporal'
+        log 'clouds: 1-6 weather  arrows look  t/g sun  e/d exposure  q quality  v view  f fly  +/- speed  pgup/pgdn height'
 
     public func on_key [ ev: Event ]
         if [ !ev.key.state ] return
@@ -2182,7 +2655,6 @@ element clouds : trinity
         if [ k == 45 || k == 333 ] fly_speed = fly_speed / 1.5
         if [ k == 266 ] cam_h += 150.0
         if [ k == 267 ] cam_h = (cam_h > 152.0) ? cam_h - 150.0 : 2.0
-        if [ k == 82 ] temporal = !temporal
         if [ pitch > 1.5 ] pitch = 1.5
         if [ pitch < -0.3 ] pitch = -0.3
         if [ cur.sun_el > 1.5 ] cur.sun_el = 1.5
@@ -2212,7 +2684,7 @@ element clouds : trinity
         g_f : i32 [ g10 % 100 ]
         lines : vec string [] [
             'nubis clouds  {pn} {nm}  coverage {cv9}%  sun {sel} deg  wind {wnd} m/s',
-            '{fps} fps  frame {ms_i}.{ms_f} ms  gpu pass {g_i}.{g_f} ms  quality x{quality}  view {vm}  temporal {temporal}  alt {alt} m  speed {spd} m/s' ]
+            '{fps} fps  frame {ms_i}.{ms_f} ms  gpu pass {g_i}.{g_f} ms  quality x{quality}  view {vm}  alt {alt} m  speed {spd} m/s' ]
         y : f32 [ 10.0 ]
         for [ s: string ] in lines
             cv.fill_color[ '#0008' ]
@@ -2261,7 +2733,7 @@ element clouds : trinity
                              cam_x: cam_x, cam_z: cam_z,
                              exposure: exposure, quality: quality,
             view_mode: view_mode, wscale: wscale, seconds: seconds,
-            cur: cur, temporal: temporal, night: night, bolts: bolts,
+            cur: cur, night: night, bolts: bolts,
             speed: fly_speed, animated: true ]
         return e
 
@@ -2348,7 +2820,8 @@ Backdrop Clouds
         prev.hold[]
         world = CloudWorld [ cur: cur, wseed: 7919 ]
         world.build[ vk, ux ]
-        lowres = Render [ vk: vk, w: ux, wscale: 0.5, tag: 'nubis-low',
+        lowres = Render [ vk: vk, w: ux, wscale: 0.25, tag: 'nubis-low',
+            use_depth: true,
             clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
             models: [ world.vmodel ] ]
         lowres.hold[]
@@ -2362,7 +2835,8 @@ Backdrop Clouds
         comp_model = Model [ vk: vk, w: ux, s: comp,
                              samplers: map Au[string] [
                                  'fresh': lowres.color,
-                                 'history': hist.color ] ]
+                                 'history': hist.color,
+                                 'fdepth': lowres.depth ] ]
         comp_model.hold[]
         target = Render [ vk: vk, w: ux, wscale: 1.0, tag: 'nubis',
             clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
@@ -2490,6 +2964,7 @@ Backdrop Clouds
             last_rh = rh
             comp_model.samplers[ 'fresh' ]   = lowres.color
             comp_model.samplers[ 'history' ] = hist.color
+            comp_model.samplers[ 'fdepth' ]  = lowres.depth
             comp_model.rebind_model[]
             copy_model.samplers[ 'color' ] = target.color
             copy_model.rebind_model[]
@@ -2545,17 +3020,20 @@ Backdrop Clouds
         sky.weather_a = vec4f [ cur.coverage, cur.ctype, 1.0,
                                 cur.island ]
         sky.weather_b = vec4f [ 0.6, cur.skew, cur.density, cur.detail ]
-        sky.march     = vec4f [ 2.0, 1.0, 60000.0, 1.0 / 45000.0 ]
+        sky.march     = vec4f [ 2.0, 1.0, 35000.0, 1.0 / 45000.0 ]
         sky.view_mode = 0
         sky.frame     = frame
         sky.time      = wtime
-        ph : i32 [ frame % 4 ]
-        ox : f32 [ ((ph & 1) == 0) ? -0.25 : 0.25 ]
-        oy : f32 [ ((ph & 2) == 0) ? -0.25 : 0.25 ]
+        # Nubis 2015: one pixel of each 4 x 4 block a frame
+        order : vec i32 [] [ 0, 10, 2, 8, 5, 15, 7, 13, 1, 11, 3, 9,
+                             4, 14, 6, 12 ]
+        ph : i32 [ order[ frame % 16 ] ]
+        px : f32 [ ph % 4 ]
+        py : f32 [ ph / 4 ]
         lw : f32 [ lowres.width ]
         lh : f32 [ lowres.height ]
-        jx : f32 [ ox / lw ]
-        jy : f32 [ oy / lh ]
+        jx : f32 [ ((px + 0.5) / 4.0 - 0.5) / lw ]
+        jy : f32 [ ((py + 0.5) / 4.0 - 0.5) / lh ]
         # sea_b.z = the angle one pixel covers: the wave LOD works off
         # it
         sky.sea_b  = vec4f [ cur.wind, 1.0, 2.0 * th / lh, tod / 24.0 ]
@@ -2573,11 +3051,7 @@ Backdrop Clouds
         comp.prev_up    = prev_up
         comp.prev_fwd   = prev_fwd
         comp.jitter     = vec4f [ jx, jy, 1.0 / lw, 1.0 / lh ]
-        # the faster we move, the less the history can be trusted
-        bw : f32 [ 0.22 + spd / 700.0 ]
-        if [ bw > 0.75 ] bw = 0.75
-        comp.blend      = vec4f [ bw, (hist_valid) ? 1.0 : 0.0, 0.0,
-                                  0.0 ]
+        comp.blend      = vec4f [ 0.0, (hist_valid) ? 1.0 : 0.0, px, py ]
         comp.cam_pos    = sky.cam_pos
         comp.prev_pos   = prev_pos
         prev_right = sky.cam_right

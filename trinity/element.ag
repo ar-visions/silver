@@ -107,6 +107,10 @@ enum Language
 func mobile_on [] -> bool
     return getenv[ 'SILVER_MOBILE' ] != null
 
+# the text unit at rest, zoom's centre: 150% of 22 on a phone
+func rest_unit [] -> i32
+    return (mobile_on[]) ? 33 : 22
+
 alias Elements : map    element [ string ]
 alias Layers   : map    Layer   [ string ]
 alias astrings : vec string
@@ -384,6 +388,8 @@ ielement element
     # run as a desktop widget: its ground is clear, the desktop shows
     # through what it leaves unpainted
     public [ Live ] widget : bool
+    # a widget mounted over the apps (a phone's always), not beside
+    public [ Live ] widget_top : bool
 
     func init []
         use_mobile = mobile_on[]

@@ -751,6 +751,30 @@ static void write_boot(void) {
     reboot(0x01234567);
 }
 
+// MMS: mmsd-tng lives on a session bus; its store and outbox in
+// /var/lib/mmsd, which the phone app's view shares
+static void mms_start(void) {
+    static const char sock[] = "/run/dbus/session_bus_socket";
+    if (access("/usr/bin/mmsdtng", X_OK)) return;
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    if (access(sock, F_OK)
+        && access("/etc/dbus-1/orbiter-session.conf", F_OK) == 0) {
+        char* bus[] = { "/usr/bin/dbus-daemon",
+                        "--config-file=/etc/dbus-1/orbiter-session.conf",
+                        "--nofork", "--nopidfile", NULL };
+        spawn(bus, env);
+        for (int i = 0; i < 200 && access(sock, F_OK); i++) usleep(10000);
+    }
+    mkdir("/var/lib/mmsd", 0755);
+    mkdir("/var/lib/mmsd/outbox", 0777);
+    char* menv[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                     "HOME=/var/lib/mmsd",
+                     "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/dbus/session_bus_socket",
+                     NULL };
+    char* mms[] = { "/usr/bin/mmsdtng", "-d", NULL };
+    spawn_log(mms, menv, "/var/log/mmsd.log");
+}
+
 // start the modem stack in dependency order
 static void modem_start(void) {
     char ph[64];
@@ -787,6 +811,7 @@ static void modem_start(void) {
                        "--enable", NULL };
     if (access(prep[0], X_OK) == 0) run(prep);
     spawn_log(mm, env, "/var/log/ModemManager.log");
+    mms_start();
     if (access(enable[0], X_OK) == 0)
         spawn_log(enable, env, "/var/log/modem-enable.log");
     // VoLTE: Catcrafts imsd, when the root carries it
@@ -827,6 +852,11 @@ static void net_start(const char* init) {
 static void session_start(void) {
     static const char sock[] = "/run/dbus/session_bus_socket";
     if (access("/usr/bin/dbus-daemon", X_OK)) return;
+    // the phone's MMS start may have made it already
+    if (access(sock, F_OK) == 0) {
+        setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/dbus/session_bus_socket", 1);
+        return;
+    }
     machine_id();
     mkdir("/run/dbus", 0755);
     char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };

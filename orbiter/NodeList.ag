@@ -1265,10 +1265,12 @@ Control AppsGrid
     func heading [ cv: Canvas, w: Window, t: string, x: f32, y: f32 ]
         un : f32 ux_unit[ w ]
         fp : i32 [ i32[ round[ 17.0 * un ] ] ]
-        cv.set_font[ shared_font[ cv,
-            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        # a phone's headings are the widgets' tabs: bold, white
+        ff : string [ (use_mobile) ? 'fonts/BarlowCondensed-Bold.ttf'
+            : 'fonts/BarlowCondensed-Regular.ttf' ]
+        cv.set_font[ shared_font[ cv, ff, fp ] ]
         cv.font_size[ f32[ fp ] ]
-        cv.fill_color[ rgba [ '#b4aacb' ] ]
+        cv.fill_color[ rgba [ (use_mobile) ? '#ffffffff' : '#b4aacb' ] ]
         cv.draw_text[ t, rect [ x: x, y: y, w: 400.0 * un,
                                 h: 24.0 * un ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
@@ -1302,6 +1304,15 @@ Control AppsGrid
         # desktop while it has widgets): no icon behind one
         room : f32 [ bounds.w - orb.desk_side[ bounds.w ] ]
         pr : i32 [ i32[ (room - pad * 2.0 + gap) / (cw9 + gap) ] ]
+        # a phone's row holds five icons, close, the width filled;
+        # wider, one more each time a card would grow by half
+        if [ use_mobile ]
+            gap  = round[ 6.0 * un ]
+            full : f32 [ room - pad * 2.0 + gap ]
+            pr   = max[ 5, i32[ ceil[ full / (96.0 * un) ] ] ]
+            cw9  = round[ full / f32[ pr ] - gap ]
+            tile = cw9
+            ch9  = tile + round[ 6.0 * un ] + nh
         if [ pr < 1 ] pr = 1
         # held at the left: a width change only moves the row's end
         x0 : f32 [ pad ]
@@ -1405,7 +1416,8 @@ Control AppsGrid
                 el
                     moving = true
             head_e[ heads[ h ] ] = eh
-            heading[ cv, w, heads[ h ], x0 + 4.0, eh - sy ]
+            heading[ cv, w, heads[ h ],
+                (use_mobile) ? x0 : x0 + 4.0, eh - sy ]
         # easing, or the glow breathing: drawn again next frame, and
         # each cached parent with it
         if [ moving || arranging ]

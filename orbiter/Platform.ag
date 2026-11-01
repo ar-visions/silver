@@ -984,9 +984,11 @@ element PlatformView
         if [ ps <= 0.0 ] ps = 1.0
         ox : f32 cv.transform_tx[]
         oy : f32 cv.transform_ty[]
+        # its size in points by the window's scale: a phone's canvas
+        # reads 1 on a 2x screen
         b : rect [ x: (round[ ox ] - ox) / ps,
                    y: (round[ oy ] - oy) / ps,
-                   w: mw / ps, h: mh / ps ]
+                   w: mw / dscale, h: mh / dscale ]
         cv.draw_image[ pic, b ]
         # the chosen avatar's box over it, sixteen to a pixel
         if [ pick_nm ]
@@ -1005,8 +1007,8 @@ element PlatformView
             shrink.update[]
             shrink.draw[]
             shrink.sync_fence[]
-            nb : rect [ x: (round[ ox ] + near.x - ox) / ps,
-                        y: (round[ oy ] + near.y - oy) / ps,
-                        w: near.z / ps, h: near.w / ps ]
+            nb : rect [ x: (round[ ox ] - ox) / ps + near.x / dscale,
+                        y: (round[ oy ] - oy) / ps + near.y / dscale,
+                        w: near.z / dscale, h: near.w / dscale ]
             cv.draw_image[ shrink.color, nb ]
         needs_frame = true

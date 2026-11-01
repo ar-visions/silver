@@ -2387,6 +2387,22 @@ expect func t_vec_ops_class [] -> bool
     v.remove[ 1 ]
     return i1 == 1 && v.count == 2 && v.last[] == 'cc'
 
+class VecPick
+    public tile : string
+
+func vec_pick_names [] -> vec string
+    return vec string [] [ 'rock', 'scree', 'moss', 'heath' ]
+
+# index_of with a member's string (not a literal) in a vec from a call
+expect func t_vec_index_member [] -> bool
+    names : vec string vec_pick_names[]
+    part : string [ 'mo' ]
+    g : VecPick [ tile: '{part}ss' ]
+    h : VecPick [ tile: 'none' ]
+    fi : f32 [ f32[ names.index_of[ g.tile ] ] ]
+    log 'vec index member: {fi} {names.index_of[ h.tile ]}'
+    return fi == 2.0 && names.index_of[ h.tile ] == -1
+
 class VecProps
     public names : vec string
 

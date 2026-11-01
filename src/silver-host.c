@@ -1725,6 +1725,13 @@ static int view_build(const char* home, const char* run,
     static const char bus[] = "/run/dbus/system_bus_socket";
     if (view_wants(view_app_name, "system_bus") && access(bus, F_OK) == 0)
         view_put(bus, bus, 1);
+    // mms: mmsd-tng's session bus, and its store and outbox
+    static const char sbus[] = "/run/dbus/session_bus_socket";
+    static const char mms[] = "/var/lib/mmsd";
+    if (view_wants(view_app_name, "mms")) {
+        if (access(sbus, F_OK) == 0) view_put(sbus, sbus, 1);
+        if (access(mms, F_OK) == 0) view_put(mms, mms, 1);
+    }
     return 0;
 }
 

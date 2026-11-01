@@ -14,6 +14,8 @@ ifndef [ windows ]
         -ldbus-1
 import <stdio.h>
 import <stdlib.h>
+ifndef [ windows ]
+    import <unistd.h>
 
 # ModemManager's call states
 enum CallState
@@ -58,6 +60,8 @@ class MmText
     public incoming : bool
     # 1 stored, 2 receiving, 3 received, 4 sending, 5 sent
     public state    : i32
+    # bytes, not words: an MMS notice (mmsd-tng takes those)
+    public data     : bool
 
 # a variant's value as text: numbers in decimal, a list or a
 # struct one value a line
@@ -163,6 +167,23 @@ class Modem
     intern dirty    : bool
     intern tried    : i64
     intern dest     : string
+    # the SIM's provider, as the SIM names it
+    public sim_name : string
+    # mobile data wanted here: orbiter on orbiter-os sets it
+    public data_on  : bool
+    # the connected data link's interface and APN, '' when none
+    public link     : string
+    public data_apn : string
+    intern bearer   : string
+    intern applied  : string
+    # the serial of the data connect asked for, 0 none
+    intern asked    : u32
+    intern ask_at   : i64
+    intern tries    : i32
+    # the link's commands are only kept, never run (tests)
+    public dry      : bool
+    # the commands the last link was given
+    public link_sh  : string
 
     func init []
         calls    = vec MmCall []
@@ -173,6 +194,11 @@ class Modem
         modem    = ''
         sim      = ''
         dest     = 'org.freedesktop.ModemManager1'
+        sim_name = ''
+        link     = ''
+        data_apn = ''
+        bearer   = ''
+        applied  = ''
 
     func open [] -> bool
         tried = epoch_micros[]
@@ -326,6 +352,10 @@ class Modem
         own : mm_get[ mp, 'OwnNumbers' ].split[ '\n' ]
         number  = (own.count > 0) ? own[ 0 ] : ''
         carrier = mm_get[ gp, 'OperatorName' ]
+        if [ sim.count > 1 ]
+            sp : props_of[ sim, 'Sim' ]
+            sim_name = mm_get[ sp, 'OperatorName' ]
+        read_bearer[ mm_get[ mp, 'Bearers' ] ]
         read_calls[]
         read_texts[]
 
@@ -360,7 +390,8 @@ class Modem
                 text: mm_get[ sp, 'Text' ],
                 time: mm_get[ sp, 'Timestamp' ],
                 incoming: mm_int[ sp, 'PduType' ] == 1,
-                state: mm_int[ sp, 'State' ] ] ]
+                state: mm_int[ sp, 'State' ],
+                data: mm_get[ sp, 'Data' ].count > 0 ] ]
         texts = list
 
     # take what came in; true when anything changed
@@ -372,17 +403,174 @@ class Modem
         while [ true ]
             msg : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
             if [ !msg ] break
-            if [ dbus_message_get_type[ msg ]
-                 == DBUS_MESSAGE_TYPE_SIGNAL ] dirty = true
+            ty : i32 [ dbus_message_get_type[ msg ] ]
+            if [ ty == DBUS_MESSAGE_TYPE_SIGNAL ] dirty = true
+            if [ asked != 0
+                 && dbus_message_get_reply_serial[ msg ] == asked ]
+                connected[ msg ]
             dbus_message_unref[ msg ]
         # no modem yet: ModemManager may still be finding it
         if [ !ready && epoch_micros[] - tried > 3000000 ]
             tried = epoch_micros[]
             dirty = true
+        data_step[]
         if [ !dirty ] return false
         dirty = false
         refresh[]
         return true
+
+    # a{sv} property of an object, as names and values
+    func prop_dict [ obj: string, part: string, name: string ]
+            -> map string [ string ]
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, 'org.freedesktop.DBus.Properties'.chars,
+            'Get'.chars ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        ic : iface[ part ]
+        cs : cstr [ ic.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cs ]
+        ns : cstr [ name.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @ns ]
+        rep : send_wait[ msg, 2000 ]
+        if [ !rep ] return map string [ string ] []
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        v : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @v ]
+        out : map string [ string ] []
+        if [ dbus_message_iter_get_arg_type[ @v ] == DBUS_TYPE_ARRAY ]
+            out = mm_props[ @v ]
+        dbus_message_unref[ rep ]
+        return out
+
+    # the first connected bearer: its link and APN; the link is
+    # given its addresses here when data is wanted
+    func read_bearer [ list: string ]
+        bearer   = ''
+        link     = ''
+        data_apn = ''
+        for [ b: string ] in list.split[ '\n' ]
+            if [ b.count < 2 ] continue
+            bp : props_of[ b, 'Bearer' ]
+            if [ mm_get[ bp, 'Connected' ] != '1' ] continue
+            ps : prop_dict[ b, 'Bearer', 'Properties' ]
+            bearer   = b
+            link     = mm_get[ bp, 'Interface' ]
+            data_apn = mm_get[ ps, 'apn' ]
+            break
+        if [ bearer.count == 0 ] applied = ''
+        if [ data_on && bearer.count > 0 && applied != bearer ]
+            apply_bearer[]
+
+    # the APNs to try: the carrier's own, then the network's
+    func data_apns [] -> vec string
+        out : vec string []
+        own : carrier_mms[ sim_name ]
+        if [ own.count > 0 ]
+            first : string own[ 0 ]
+            out.push[ first ]
+        ib : prop_dict[ modem, 'Modem.Modem3gpp',
+                        'InitialEpsBearerSettings' ]
+        net : mm_get[ ib, 'apn' ]
+        if [ net.count > 0 && (out.count == 0 || out[ 0 ] != net) ]
+            out.push[ net ]
+        return out
+
+    # registered with no data link: ask for one, not waiting on
+    # the answer (a connect takes seconds); 15 s between tries
+    func data_step []
+        if [ !data_on || !ready || state < 8 || bearer.count > 0 ]
+            return
+        if [ asked != 0 || epoch_micros[] - ask_at < 15000000 ] return
+        apns : data_apns[]
+        if [ apns.count == 0 ] return
+        apn : string apns[ tries % apns.count ]
+        ask_at = epoch_micros[]
+        msg : message[ modem, 'Modem.Simple', 'Connect' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        d : DBusMessageIter
+        sig : '{{sv}}'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          sig.chars, @d ]
+        mm_dict_add[ @d, 'apn', apn ]
+        dbus_message_iter_close_container[ @it, @d ]
+        dbus_message_set_auto_start[ msg, 0 ]
+        ser : u32 [ 0 ]
+        dbus_connection_send[ conn, msg, @ser ]
+        dbus_message_unref[ msg ]
+        asked = ser
+        log 'modem: asking for mobile data on {apn}'
+
+    # the connect's answer: a bearer, or why not (the next APN)
+    func connected [ msg: @DBusMessage ]
+        asked = 0
+        dirty = true
+        if [ dbus_message_get_type[ msg ] != DBUS_MESSAGE_TYPE_ERROR ]
+            return
+        err : DBusError
+        dbus_error_init[ @err ]
+        dbus_set_error_from_message[ @err, msg ]
+        problem = 'Mobile data: {string[ err.message ]}'
+        dbus_error_free[ @err ]
+        tries += 1
+        log 'modem: {problem}'
+
+    # the bearer's addresses, routes and name servers on its link
+    # (ModemManager hands them out; nothing else here applies them)
+    func apply_bearer []
+        cfg : prop_dict[ bearer, 'Bearer', 'Ip4Config' ]
+        cfg_six : prop_dict[ bearer, 'Bearer', 'Ip6Config' ]
+        mp : props_of[ modem, 'Modem' ]
+        ports : mm_get[ mp, 'Ports' ].split[ '\n' ]
+        sh : string ''
+        # its net ports up first (rmnet_ipa0 under qmapmux0.0); a
+        # port is its name then its kind, 2 a net port
+        for [ i: i32 0, i + 1 < ports.count, i += 2 ]
+            port : string ports[ i ]
+            kind : string ports[ i + 1 ]
+            if [ kind == '2' && port != link ]
+                sh = '{sh}ip link set dev {port} up; '
+        sh = '{sh}ip link set dev {link} up; '
+        route : 'route replace default dev {link} metric 700; '
+        mtu : mm_get[ cfg, 'mtu' ]
+        if [ mtu.count > 0 && mtu != '0' ]
+            sh = '{sh}ip link set dev {link} mtu {mtu}; '
+        addr : mm_get[ cfg, 'address' ]
+        if [ addr.count > 0 ]
+            prefix : mm_get[ cfg, 'prefix' ]
+            sh = '{sh}ip -4 addr flush dev {link}; '
+            sh = '{sh}ip -4 addr add {addr}/{prefix} dev {link}; '
+            sh = '{sh}ip -4 {route}'
+        ra : '/proc/sys/net/ipv6/conf/{link}/accept_ra'
+        sh = '{sh}echo 1 > {ra}; '
+        addr_six : mm_get[ cfg_six, 'address' ]
+        if [ addr_six.count > 0 ]
+            prefix_six : mm_get[ cfg_six, 'prefix' ]
+            at : '{addr_six}/{prefix_six}'
+            sh = '{sh}ip -6 addr replace {at} dev {link}; '
+        how : mm_get[ cfg_six, 'method' ]
+        if [ addr_six.count > 0 || how.count > 0 ]
+            sh = '{sh}ip -6 {route}'
+        # name servers only where none are set (Wi-Fi's stay)
+        ns : string ''
+        keys : vec string [] [ 'dns1', 'dns2', 'dns3' ]
+        for [ k: string ] in keys
+            dns : mm_get[ cfg, k ]
+            if [ dns.count > 0 ] ns = '{ns}nameserver {dns}\\n'
+            dns_six : mm_get[ cfg_six, k ]
+            if [ dns_six.count > 0 ] ns = '{ns}nameserver {dns_six}\\n'
+        rc : '/etc/resolv.conf'
+        if [ ns.count > 0 ]
+            put : 'printf \'{ns}\' > {rc}'
+            sh = '{sh}grep -qs nameserver {rc} || {put}; '
+        link_sh = sh
+        applied = bearer
+        if [ dry ] return
+        c : command [ '( {sh}) 2>&1' ]
+        st : i32 [ c.exec[ false ] ]
+        log 'modem: mobile data on {link} ({addr} {addr_six}), apn {data_apn}: {st}'
 
     # turn the radio on (ModemManager starts a modem disabled)
     func enable []
@@ -506,6 +694,351 @@ class Modem
         conn = null
         ready = false
 
+# carriers the shared carrier database lacks, by the SIM's name:
+# [ APN, MMS server ]; none, mmsd-tng finds its own
+func carrier_mms [ name: string ] -> vec string
+    out : vec string []
+    if [ !name ] return out
+    low : string name.lcase[]
+    # Google Fi (Google's support page): APN h2g2
+    if [ low.index_of[ 'google' ] >= 0 || low == 'fi'
+         || low.starts_with[ 'fi ' ] ]
+        out.push[ 'h2g2' ]
+        out.push[ 'http://m.fi.goog/mms/wapenc' ]
+    return out
+
+# one part of an MMS: its kind and where its bytes sit in
+# mmsd-tng's stored file
+class MmsPart
+    public kind   : string
+    public file   : string
+    public offset : i64
+    public size   : i64
+
+    func picture [] -> bool
+        return kind.starts_with[ 'image/' ]
+
+    # its bytes as text (a text/plain part)
+    func text [] -> string
+        if [ size <= 0 || size > 65536 ] return ''
+        mode : 'rb'
+        f : handle fopen[ file.chars, mode.chars ]
+        if [ !f ] return ''
+        fseek[ f, offset, SEEK_SET ]
+        b : local u8 [ 65537 ]
+        got : i64 [ fread[ @b[0], 1, size, f ] ]
+        fclose[ f ]
+        if [ got < 0 ] got = 0
+        b[ got ] = 0
+        return string[ @b[0] ]
+
+    # its bytes into a file of its own
+    func copy_to [ dest: path ] -> bool
+        rm : 'rb'
+        wm : 'wb'
+        f : handle fopen[ file.chars, rm.chars ]
+        if [ !f ] return false
+        o : handle fopen[ '{dest}'.chars, wm.chars ]
+        if [ !o ]
+            fclose[ f ]
+            return false
+        fseek[ f, offset, SEEK_SET ]
+        b : local u8 [ 65536 ]
+        left : i64 [ size ]
+        while [ left > 0 ]
+            want : i64 [ (left < 65536) ? left : 65536 ]
+            got : i64 [ fread[ @b[0], 1, want, f ] ]
+            if [ got <= 0 ] break
+            fwrite[ @b[0], 1, got, o ]
+            left -= got
+        fclose[ f ]
+        fclose[ o ]
+        return left == 0
+
+# one MMS as mmsd-tng keeps it
+class MmsMessage
+    public path       : string
+    # received, read, sent, sending_failed, draft
+    public status     : string
+    public date       : string
+    public sender     : string
+    public recipients : vec string
+    # this phone's own number
+    public own        : string
+    public parts      : vec MmsPart
+
+    func incoming [] -> bool
+        return status == 'received' || status == 'read'
+
+    # its text parts, joined
+    func words [] -> string
+        out : string ''
+        for [ p: MmsPart ] in parts
+            if [ !p.kind.starts_with[ 'text/plain' ] ] continue
+            t : p.text[]
+            out = (out.count > 0) ? '{out}\n{t}' : t
+        return out
+
+# an object mmsd-tng lists, with its properties
+class MmsObject
+    public path  : string
+    public props : map string [ string ]
+
+# MMS through mmsd-tng, on the session bus (orbiter-os starts
+# both); its messages, sending, and its carrier settings
+class Mms
+    public ready    : bool
+    public messages : vec MmsMessage
+    public problem  : string
+    # a bus to use, else orbiter-os's session bus
+    public address  : string
+    intern conn     : @DBusConnection
+    intern service  : string
+    intern dirty    : bool
+    intern tried    : i64
+    intern dest     : string
+    # the settings last given, so they are given once
+    intern given    : string
+
+    func init []
+        messages = vec MmsMessage []
+        problem  = ''
+        service  = ''
+        given    = ''
+        dest     = 'org.ofono.mms'
+
+    func open [] -> bool
+        tried = epoch_micros[]
+        bus : string address
+        if [ !bus || bus.count == 0 ]
+            bus = 'unix:path=/run/dbus/session_bus_socket'
+        err : DBusError
+        dbus_error_init[ @err ]
+        conn = dbus_connection_open_private[ bus.chars, @err ]
+        if [ !dbus_error_is_set[ @err ] ]
+            dbus_bus_register[ conn, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = 'No session bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            if [ conn ] dbus_connection_unref[ conn ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        rule : 'type=\'signal\',sender=\'{dest}\''
+        dbus_bus_add_match[ conn, rule.chars, @err ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        refresh[]
+        return ready
+
+    func method_of [ obj: string, ic: string, method: string ]
+            -> @DBusMessage
+        return dbus_message_new_method_call[ dest.chars, obj.chars,
+            ic.chars, method.chars ]
+
+    func send_wait [ msg: @DBusMessage, ms: i32 ] -> @DBusMessage
+        if [ !conn ] return null
+        dbus_message_set_auto_start[ msg, 0 ]
+        err : DBusError
+        dbus_error_init[ @err ]
+        rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+            conn, msg, ms, @err ] ]
+        dbus_message_unref[ msg ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = string[ err.message ]
+            dbus_error_free[ @err ]
+            return null
+        return rep
+
+    # a list of (object, properties) as mmsd-tng answers it
+    func listing [ rep: @DBusMessage ] -> vec MmsObject
+        out : vec MmsObject []
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        arr : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @arr ]
+        while [ dbus_message_iter_get_arg_type[ @arr ]
+                == DBUS_TYPE_STRUCT ]
+            st : DBusMessageIter
+            dbus_message_iter_recurse[ @arr, @st ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @st, @pc ]
+            p : string [ pc ]
+            dbus_message_iter_next[ @st ]
+            out.push[ MmsObject [ path: p, props: mm_props[ @st ] ] ]
+            dbus_message_iter_next[ @arr ]
+        return out
+
+    # the first service, then its messages
+    func refresh []
+        if [ service.count == 0 ]
+            m : method_of[ '/org/ofono/mms', 'org.ofono.mms.Manager',
+                      'GetServices' ]
+            rep : send_wait[ m, 2000 ]
+            if [ !rep ]
+                ready = false
+                return
+            for [ o: MmsObject ] in listing[ rep ]
+                if [ service.count == 0 ] service = o.path
+            dbus_message_unref[ rep ]
+        ready = service.count > 0
+        if [ !ready ]
+            problem = 'mmsd-tng has no service yet'
+            return
+        g : method_of[ service, 'org.ofono.mms.Service', 'GetMessages' ]
+        rep : send_wait[ g, 5000 ]
+        if [ !rep ] return
+        list : vec MmsMessage []
+        for [ o: MmsObject ] in listing[ rep ]
+            list.push[ message_of[ o.path, o.props ] ]
+        dbus_message_unref[ rep ]
+        messages = list
+
+    func message_of [ p: string, props: map string [ string ] ]
+            -> MmsMessage
+        m : MmsMessage [ path: p, status: mm_get[ props, 'Status' ],
+            date: mm_get[ props, 'Date' ],
+            sender: mm_get[ props, 'Sender' ],
+            own: mm_get[ props, 'Modem Number' ],
+            recipients: vec string [], parts: vec MmsPart [] ]
+        for [ r: string ] in mm_get[ props, 'Recipients' ].split[ '\n' ]
+            if [ r.count > 0 ] m.recipients.push[ r ]
+        # each part: id, content type, file, offset, length
+        at : mm_get[ props, 'Attachments' ].split[ '\n' ]
+        for [ i: i32 0, i + 4 < at.count, i += 5 ]
+            kind : string at[ i + 1 ]
+            file : string at[ i + 2 ]
+            off : string at[ i + 3 ]
+            len : string at[ i + 4 ]
+            m.parts.push[ MmsPart [ kind: kind, file: file,
+                offset: off.integer_value[],
+                size: len.integer_value[] ] ]
+        return m
+
+    # signals mark it; true when anything changed
+    func poll [] -> bool
+        if [ !conn ]
+            if [ epoch_micros[] - tried < 3000000 ] return false
+            return open[]
+        dbus_connection_read_write[ conn, 0 ]
+        while [ true ]
+            msg : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !msg ] break
+            if [ dbus_message_get_type[ msg ]
+                 == DBUS_MESSAGE_TYPE_SIGNAL ] dirty = true
+            dbus_message_unref[ msg ]
+        if [ !ready && epoch_micros[] - tried > 3000000 ]
+            tried = epoch_micros[]
+            dirty = true
+        if [ !dirty ] return false
+        dirty = false
+        refresh[]
+        return true
+
+    # to these numbers: the words and the files (kinds by file
+    # name); the new message's path, '' when refused
+    func send_mms [ to: vec string, files: vec string ] -> string
+        if [ !ready ] return ''
+        m : method_of[ service, 'org.ofono.mms.Service', 'SendMessage' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ m, @it ]
+        r : DBusMessageIter
+        rs : string [ "s" ]
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          rs.chars, @r ]
+        for [ n: string ] in to
+            nc : cstr [ n.chars ]
+            dbus_message_iter_append_basic[ @r, DBUS_TYPE_STRING, @nc ]
+        dbus_message_iter_close_container[ @it, @r ]
+        o : DBusMessageIter
+        os : '{{sv}}'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          os.chars, @o ]
+        dbus_message_iter_close_container[ @it, @o ]
+        a : DBusMessageIter
+        sa : '(sss)'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          sa.chars, @a ]
+        for [ i: i32 0, i < files.count, i += 1 ]
+            f : string files[ i ]
+            s : DBusMessageIter
+            dbus_message_iter_open_container[ @a, DBUS_TYPE_STRUCT,
+                                              null, @s ]
+            id : 'part{i}'
+            kind : mms_kind[ f ]
+            ic : cstr [ id.chars ]
+            kc : cstr [ kind.chars ]
+            fc : cstr [ f.chars ]
+            dbus_message_iter_append_basic[ @s, DBUS_TYPE_STRING, @ic ]
+            dbus_message_iter_append_basic[ @s, DBUS_TYPE_STRING, @kc ]
+            dbus_message_iter_append_basic[ @s, DBUS_TYPE_STRING, @fc ]
+            dbus_message_iter_close_container[ @a, @s ]
+        dbus_message_iter_close_container[ @it, @a ]
+        rep : send_wait[ m, 20000 ]
+        if [ !rep ] return ''
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        p : mm_value[ @top ]
+        dbus_message_unref[ rep ]
+        dirty = true
+        return p
+
+    # take a message out of mmsd-tng's store
+    func remove_message [ m: MmsMessage ] -> bool
+        d : method_of[ m.path, 'org.ofono.mms.Message', 'Delete' ]
+        rep : send_wait[ d, 5000 ]
+        if [ !rep ] return false
+        dbus_message_unref[ rep ]
+        dirty = true
+        return true
+
+    # the carrier's APN and MMS server, given once; the queue
+    # then goes again under them
+    func configure [ apn: string, mmsc: string ]
+        if [ !ready || apn.count == 0 ] return
+        want : '{apn} {mmsc}'
+        if [ want == given ] return
+        ic : 'org.ofono.mms.ModemManager'
+        c : method_of[ '/org/ofono/mms', ic, 'ChangeAllSettings' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ c, @it ]
+        d : DBusMessageIter
+        sig : '{{sv}}'
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          sig.chars, @d ]
+        mm_dict_add[ @d, 'MMS_APN', apn ]
+        if [ mmsc.count > 0 ]
+            mm_dict_add[ @d, 'CarrierMMSC', mmsc ]
+            mm_dict_add[ @d, 'CarrierMMSProxy', 'NULL' ]
+        dbus_message_iter_close_container[ @it, @d ]
+        rep : send_wait[ c, 5000 ]
+        if [ !rep ] return
+        dbus_message_unref[ rep ]
+        given = want
+        q : method_of[ '/org/ofono/mms', ic, 'ProcessMessageQueue' ]
+        qr : send_wait[ q, 5000 ]
+        if [ qr ] dbus_message_unref[ qr ]
+        log 'mms: settings apn {apn} server {mmsc}'
+
+    func close []
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+        ready = false
+
+# a file's MIME type by its name, for an MMS part
+func mms_kind [ f: string ] -> string
+    low : string f.lcase[]
+    if [ low.ends_with[ '.jpg' ] || low.ends_with[ '.jpeg' ] ]
+        return 'image/jpeg'
+    if [ low.ends_with[ '.png' ] ]  return 'image/png'
+    if [ low.ends_with[ '.gif' ] ]  return 'image/gif'
+    if [ low.ends_with[ '.webp' ] ] return 'image/webp'
+    if [ low.ends_with[ '.mp4' ] ]  return 'video/mp4'
+    if [ low.ends_with[ '.3gp' ] ]  return 'video/3gpp'
+    if [ low.ends_with[ '.txt' ] ]  return 'text/plain; charset=utf-8'
+    return 'application/octet-stream'
+
 # one client for the process: the system bar and the phone app
 modem_now : Modem
 
@@ -519,6 +1052,9 @@ func modem_shared [] -> Modem
 class ModemStandIn
     public bus  : string
     intern pids : string
+    # the desktop's simulated phone: answers what is sent, and
+    # goes with this process
+    public simulate : bool
 
     func start [] -> bool
         inst : path.path_install[]
@@ -532,7 +1068,9 @@ class ModemStandIn
         py : '/usr/bin/python3 {fake}'
         sh : 'unset LD_LIBRARY_PATH;'
         sh = '{sh} a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
-        sh = '{sh} {py} $1 >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
+        args : string '$1'
+        if [ simulate ] args = '$1 --reply --watch {getpid[]} $2'
+        sh = '{sh} {py} {args} >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
         cmd : command [ sh ]
         fh : handle cmd.stream[]
         if [ !fh ] return false
@@ -635,5 +1173,102 @@ expect func t_modem_text [] -> bool
         modem_settle[ m ]
         ok = ok && m.texts.count == 1
     m.close[]
+    fake.stop[]
+    return ok
+
+# the Fi SIM's APN asked for, the link given its addresses (kept,
+# not run), and the bearer's APN read back
+expect func t_modem_data [] -> bool
+    fake : ModemStandIn []
+    if [ !fake.start[] ] return false
+    m : Modem [ address: fake.bus, data_on: true, dry: true ]
+    ok : bool [ m.open[] ]
+    if [ ok ] ok = m.sim_name == 'Google Fi'
+    if [ ok ]
+        apns : m.data_apns[]
+        ok = apns.count == 2 && apns[ 0 ] == 'h2g2'
+            && apns[ 1 ] == 'fast.t-mobile.com'
+    if [ ok ]
+        modem_settle[ m ]
+        log 'data: {m.link} {m.data_apn}: {m.link_sh}'
+        ok = m.link == 'qmapmux0.0' && m.data_apn == 'h2g2'
+        if [ ok ] ok = m.link_sh.index_of[ 'rmnet_ipa0 up' ] >= 0
+        if [ ok ] ok = m.link_sh.index_of[ '192.0.0.2/29' ] >= 0
+        if [ ok ] ok = m.link_sh.index_of[ '2607:fb90::5/64' ] >= 0
+        if [ ok ] ok = m.link_sh.index_of[ 'metric 700' ] >= 0
+    m.close[]
+    fake.stop[]
+    return ok
+
+# a picture message sent with words, one coming in, the
+# carrier's settings given, and one taken out
+expect func t_mms [] -> bool
+    fake : ModemStandIn []
+    if [ !fake.start[] ] return false
+    x : Mms [ address: fake.bus ]
+    ok : bool [ x.open[] ]
+    if [ !ok ] log 'mms: {x.problem}'
+    txt : path '/tmp/fake-mms-words.txt'
+    pic : path '/tmp/fake-mms-picture.png'
+    if [ ok ]
+        txt.save[ 'look at this', null ]
+        pic.save[ 'not really a png', null ]
+        to : vec string [] [ '5551234', '5559876' ]
+        files : vec string [] [ '{txt}', '{pic}' ]
+        sent : x.send_mms[ to, files ]
+        ok = sent.count > 0
+    if [ ok ]
+        for [ i: i32 0, i < 50, i += 1 ]
+            x.poll[]
+            modem_nap[]
+        ok = x.messages.count == 1
+        if [ ok ]
+            m : MmsMessage x.messages[ 0 ]
+            log 'mms sent: {m.status} {m.parts.count} {m.words[]}'
+            ok = m.status == 'sent' && m.words[] == 'look at this'
+                && m.recipients.count == 2
+    if [ ok ]
+        x.configure[ 'h2g2', 'http://m.fi.goog/mms/wapenc' ]
+        mf : x.method_of[ '/org/ofono/mms', 'org.ofono.mms.Fake',
+                          'Picture' ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ mf, @it ]
+        sc : cstr [ '+15559870000'.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @sc ]
+        r : DBusMessageIter
+        rs : string [ "s" ]
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                          rs.chars, @r ]
+        oc : cstr [ '+15551230000'.chars ]
+        dbus_message_iter_append_basic[ @r, DBUS_TYPE_STRING, @oc ]
+        dbus_message_iter_close_container[ @it, @r ]
+        wc : cstr [ 'hello'.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @wc ]
+        no : cstr [ ''.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @no ]
+        rep : x.send_wait[ mf, 2000 ]
+        if [ rep ] dbus_message_unref[ rep ]
+        for [ i: i32 0, i < 50, i += 1 ]
+            x.poll[]
+            modem_nap[]
+        got : MmsMessage [ null ]
+        for [ m: MmsMessage ] in x.messages
+            if [ m.incoming[] ] got = m
+        ok = got != null
+        if [ ok ]
+            out : path '/tmp/fake-mms-got.png'
+            pp : MmsPart [ null ]
+            for [ p: MmsPart ] in got.parts
+                if [ p.picture[] ] pp = p
+            ok = got.words[] == 'hello' && pp != null
+                && pp.copy_to[ out ] && out.exists[]
+            log 'mms got: {got.sender} {(got) ? got.words[] : ''}'
+            if [ ok ] ok = x.remove_message[ got ]
+        if [ ok ]
+            for [ i: i32 0, i < 20, i += 1 ]
+                x.poll[]
+                modem_nap[]
+            ok = x.messages.count == 1
+    x.close[]
     fake.stop[]
     return ok

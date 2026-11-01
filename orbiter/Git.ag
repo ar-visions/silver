@@ -467,7 +467,8 @@ Layer NavSideLayer
         wty : f32 [ cv.transform_ty[] ]
         # the navigation column, fixed, right of the rail: users and
         # projects
-        cb.side_w = 168.0 * u
+        cb.side_w = cb.side_fit[ u ]
+        if [ cb.side_w <= 0.0 ] return
         sw9 : f32 [ cb.side_w ]
         sx9 : f32 [ bounds.x + 6.0 * u ]
         cv.set_crop[ wtx + sx9, wty + bounds.y, wtx + sx9 + sw9,
@@ -694,7 +695,7 @@ Layer CommitLayer
         wty : f32 [ cv.transform_ty[] ]
         # the navigation column is its own child (NavSide): it fades
         # by its own scroll
-        cb.side_w = 168.0 * u
+        cb.side_w = cb.side_fit[ u ]
         sw9 : f32 [ cb.side_w ]
         # content right of the column; everything below rides one scroll
         x0  : f32 [ bounds.x + 14.0 * u + sw9 ]
@@ -1097,7 +1098,7 @@ Layer CommitLayer
                     nav_font[ cv, 21 ]
                     continue
                 # the icon view's cell: drawn whole below
-                cell9 : bool [ orb.nav_icons && h.file && !h.card[]
+                cell9 : bool [ orb.nav_thumbs[] && h.file && !h.card[]
                                && !(!h.is_header && h.line > 0) ]
                 if [ nls - 1 == cb.hov_list && !h.card[] && !cell9 ]
                     # an entry's highlight starts at its icon: the 30px
@@ -1594,7 +1595,7 @@ element CommitView
         if [ r < band_st ] return null
         dr : i32 [ r - band_st ]
         if [ !lay_x || dr >= i32[ lay_x.count ] ] return null
-        if [ o.nav_icons ] return null
+        if [ o.nav_thumbs[] ] return null
         ox : f32 [ (from_right) ? lay_x[ dr ] + lay_w[ dr ]
             : lay_x[ dr ] ]
         if [ rx < ox + x0 || rx >= ox + x1 ] return null
@@ -1685,6 +1686,7 @@ element CommitView
         ed7 : Editor (ev7) ? ev7.text_of[] : null
         # the file's views are the system bar's
         rail_w = 0.0
+        if [ side_w <= 0.0 ] return null
         return Elements [
             # the column: presses and the wheel are the view's
             'side' : NavSide [ no_scroll: true, ghost: true,
@@ -1733,7 +1735,7 @@ element CommitView
         per9  : i32 [ (ww - 100.0 * u - side_w) / cdw ]
         if [ per9 < 1 ] per9 = 1
         # the icon view: a 32 px icon over its name in each cell
-        icons : bool [ o.nav_icons ]
+        icons : bool [ o.nav_thumbs[] ]
         cellw : f32 [ (icons) ? 104.0 * u : 300.0 * u ]
         rh    : f32 [ (icons) ? 84.0 * u : 30.0 * u ]
         least : i32 [ (icons) ? 3 : 8 ]
@@ -2005,9 +2007,15 @@ element CommitView
         super.on_wheel[ ev ]
 
     # the navigation column row under a fixed (unscrolled) y, -1 outside
+    # the column's width: none when it would leave the list under
+    # 300 units
+    func side_fit [ u: f32 ] -> f32
+        if [ bounds && bounds.w - 182.0 * u < 300.0 * u ] return 0.0
+        return 168.0 * u
+
     func side_row_at [ ryf: f32 ] -> i32
         u : f32 ux_unit[ ux ]
-        if [ !side_ys ] return -1
+        if [ !side_ys || side_w <= 0.0 ] return -1
         for [ i: i32 0, i < side_ys.count, i += 1 ]
             if [ ryf >= side_ys[i] && ryf < side_ys[i] + 24.0 * u ]
                 return i
@@ -2097,7 +2105,7 @@ element CommitView
                 ux.will_animate = true
             return
         # the navigation column first, at the far left, fixed
-        if [ rx < 6.0 * u + side_w ]
+        if [ side_w > 0.0 && rx < 6.0 * u + side_w ]
             ryp : f32 [ ry - scroll.y ]
             if [
                 rx >= 6.0 * u + side_w - 30.0 * u && ryp >= plus_y

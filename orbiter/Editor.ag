@@ -512,6 +512,8 @@ ResourceView AppView
     public  app_words   : bool
     # the app's focus types plainly (a console): nothing composed
     public  app_plain   : bool
+    # the app asked for a file pick (its + or open button)
+    public  pick_ask    : bool
     public  nav_fwd_on  : bool
     # the app's own title, shown on the pane
     public  app_title   : string
@@ -526,6 +528,8 @@ ResourceView AppView
     mutable views_buf   : vec u8
     # orbiter's tail args, forwarded to the module
     mutable module_args : string
+    # a desktop widget: whether it was told it sits on top (-1 never)
+    mutable top_sent    : i32 [ -1 ]
     # the Wayland window this instance's program opened (0: none)
     mutable wl_window   : u64
     # run in no pane (a startup app in its tray): a button only while
@@ -711,6 +715,9 @@ ResourceView AppView
             el [ t == i32[ HM.aspect ] ]
                 pic_w = host_pa[]
                 pic_h = host_pb[]
+                # a desktop widget's box takes the new height
+                wg : cast Window [ cv.w ]
+                if [ wg ] wg.restyle = true
             # the app's history moved: the title's arrows follow
             el [ t == i32[ HM.panel_state ] ]
                 has_panel   = (host_pa[] & 1) != 0
@@ -719,6 +726,10 @@ ResourceView AppView
                 outline_on  = (host_pb[] & 2) != 0
                 wp : cast Window [ cv.w ]
                 if [ wp ] wp.restyle = true
+            el [ t == i32[ HM.pick ] ]
+                pick_ask = true
+                wk : cast Window [ cv.w ]
+                if [ wk ] wk.restyle = true
             el [ t == i32[ HM.words ] ]
                 app_words = host_pa[] != 0
                 app_plain = host_pa[] == 2
