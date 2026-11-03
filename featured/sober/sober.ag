@@ -4,6 +4,7 @@
 # install, never the user's own Flatpak folder
 export 1.0.0
 export software ['games']
+export platforms ['x64']
 export icon ['sober']
 
 import <stdlib.h>

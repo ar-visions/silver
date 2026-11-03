@@ -2275,7 +2275,7 @@ func model_init_pipeline [ m: Model, n: Node, prim: Primitive,
         indices: prim.indices
         ai:      mdl.accessors[ indices ]
         mat_id:  prim.material
-        itype:   Au_t[ ai.member_type[ ] ]
+        itype:   ai.member_type[ ]
 
         iview:   mdl.bufferViews[ ai.bufferView ]
         ibuffer: mdl.buffers[ iview.buffer ]

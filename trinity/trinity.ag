@@ -185,6 +185,7 @@ import mux
 import demux
 import navigation
 import chart
+import gamepad
 import agent
 
 scalar sec : i64
@@ -246,12 +247,25 @@ enum HM
     # app -> ide: pick a file for the app's argument (its title's
     # pick), as a press on its title does
     pick    : 26
+    # app -> ide: its keyboard's class name, three bytes a message as
+    # the title's ('' none); the ide's keyboard makes it
+    keys    : 27
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
     # fd is
     func IOSurfaceGetID  [ s: handle ] -> u32
     func IOSurfaceLookup [ csid: u32 ] -> handle
+
+# the rules matched for an element, as one number
+func style_sig [ avail: map StyleEntries[string] ] -> i64
+    h : i64 [ 1469598103 ]
+    if [ !avail ] return h
+    for [ es: StyleEntries, k: string ] in avail
+        h = h * 1099511 + i64[ k.hash[] ]
+        for [ f: StyleEntry ] in es
+            h = h * 1099511 + i64[ cast u64 [ f ] ]
+    return h
 
 func au_census [ min: i32 ]
 func au_raw_props_set [ on: bool ]
@@ -262,6 +276,8 @@ func Au_call_changed  [ a: Au, name: cstr ] -> i32
 func Au_call_named    [ a: Au, name: cstr ] -> i32
 func Au_call_words    [ a: Au, name: cstr, words: cstr ] -> i32
 func au_live_set_reload [ on: i32 ]
+func au_live_get_pending   [] -> i32
+func au_live_request_apply [] -> none
 func au_mem_fraction  [] -> f32
 func au_mem_rss       [] -> i64
 func au_mem_virt      [] -> i64
@@ -548,6 +564,8 @@ abstract live_app media_app
     intern  paned       : bool
     # the host asked for a frame (HM.frame)
     intern  frame_req   : bool
+    # this frame drew a new picture (render)
+    intern  drew        : bool
     # DIAG: requests answered this second
     intern  pane_reqs   : i32
     # DIAG: frames drawn on the fallback timer
@@ -584,6 +602,9 @@ abstract live_app media_app
     public  frame_hz    : i32
     intern  frame_due   : i64
     intern  frames      : i32
+    # the last frame drawn: one at least each quarter second, for
+    # what changes by itself
+    intern  drawn_us    : i64
     # the last whole second's counters, answered to `stats` on the agent
     # socket
     intern  stat_line   : string
@@ -988,6 +1009,10 @@ abstract live_app media_app
             stat_line = 'fps {frames} submits {vk.submit_calls} syncs {vk.sync_calls} sync_us {vk.sync_us} paints {vk.paint_calls} draws {vk.pipe_draws} draw_us {vk.draw_us} update_us {vk.update_us} sdf_miss {vk.sdf_miss} glyph_miss {vk.glyph_miss} geom_us {vk.geom_us} recreates {vk.swap_recreates} | targets {vk.ph_targets} compose {vk.ph_compose} list {vk.ph_list} screen {vk.ph_screen} swap {vk.ph_swap} | layout {vk.ph_layout} elems {vk.ph_elems} overlay {vk.ph_overlay} flush {vk.ph_flush} | objects {Au.alloc_count[ null ]} samplers {vk.sampler_count} rcolor {vk.samp_rcolor} rdepth {vk.samp_rdepth} rreduce {vk.samp_rreduce} sdf {vk.samp_sdf} atlas {vk.samp_atlas} other {vk.samp_other} renders {vk.render_allocs}/{vk.ring_frees} | tags{tag_line}'
             sd : StatDetail stat_detail[]
             stat_line = '{stat_line}{sd.line[]} | {vk.gpu_line[]}'
+            aw : string [ (pwn.anim_who) ? pwn.anim_who : '-' ]
+            pwn.anim_who = null
+            stat_line = '{stat_line} | quiet {pwn.quiet_frames} anim {aw}'
+            pwn.quiet_frames = 0
             sd.clear[]
             if [ pwn.stats ] log '{stat_line}'
             if [ pwn.show_fps ]
@@ -1049,7 +1074,7 @@ abstract live_app media_app
             # the dma-buf export the share path uses — never share on
             # kms
             if [ !w.kms && (isolate_child || in_pane)
-                 && !win.ide_active ]
+                 && !win.ide_active && (drew || !in_pane) ]
                 share_publish[ 0 ]
             if [ !w.kms ] instr_publish[]
             # no present paces a hidden window: the host does. one frame
@@ -1113,8 +1138,10 @@ abstract live_app media_app
         header : Au.header[ probe ]
         if [ header.managed > 100000 ]
             log 'AFPOOL ix={header.managed} — pool NOT draining'
-        alive : bool [ !platform_window_should_close[ w.glfw ]
-                       && !Au.quit_requested[] ]
+        # no window (an app hosted on orbiter-os): never closed by one
+        shut  : bool [ w.pwin
+                       && platform_window_should_close[ w.pwin ] ]
+        alive : bool [ !shut && !Au.quit_requested[] ]
         if [ !alive ] record_close[]
         return alive
 
@@ -1592,8 +1619,8 @@ abstract live_app media_app
                         # the display reads its size from the window:
                         # size the (hidden) window itself, in points,
                         # then resize
-                        if [ wn.glfw ]
-                            platform_window_set_size[ wn.glfw, rw, rh ]
+                        if [ wn.pwin ]
+                            platform_window_set_size[ wn.pwin, rw, rh ]
                         wn.resize[ rw, rh ]
                         width  = rw
                         height = rh
@@ -1660,8 +1687,8 @@ abstract live_app media_app
                         # the display reads its size from the window:
                         # size the (hidden) window itself, in points,
                         # then resize
-                        if [ wn.glfw ]
-                            platform_window_set_size[ wn.glfw, wide,
+                        if [ wn.pwin ]
+                            platform_window_set_size[ wn.pwin, wide,
                                     tall ]
                         wn.resize[ wide, tall ]
 
@@ -1757,6 +1784,22 @@ abstract live_app media_app
                         agent_press[ wn, px, py, pb, 1, pm ]
                     if [ cmd != 'press' ]
                         agent_press[ wn, px, py, pb, 0, pm ]
+                # every frame drawn whatever changed (a measure of the
+                # frame's own cost): animate 1, animate 0
+                el [ cmd == 'animate' && parts.count >= 2 ]
+                    force_animate = parts[1].integer_value[] != 0
+                    wn.will_animate = true
+                el [ cmd == 'skip' && parts.count >= 2 ]
+                    frame_skip = i32[ parts[1].integer_value[] ]
+                    wn.will_animate = true
+                # a finger past the first: touch <id> begin|move|end x y
+                el [ cmd == 'touch' && parts.count >= 5 ]
+                    tp : string parts[2]
+                    ph : i32 [ (tp == 'begin') ? PLATFORM_TOUCH_BEGIN
+                        : ((tp == 'move') ? PLATFORM_TOUCH_MOVE
+                        : PLATFORM_TOUCH_END) ]
+                    wn.touch_event[ i32[ parts[1].integer_value[] ], ph,
+                        parts[3].real_value[], parts[4].real_value[] ]
                 el [ cmd == 'tap' && parts.count >= 2 ]
                     te : element agent_find[ wn.root, parts[1] ]
                     if [ te ]
@@ -1989,8 +2032,8 @@ abstract live_app media_app
                 el [ cmd == 'resize' && parts.count >= 3 ]
                     # a real window resize, so the resize path can be
                     # driven and shot
-                    if [ wn.glfw ]
-                        platform_window_set_size[ wn.glfw,
+                    if [ wn.pwin ]
+                        platform_window_set_size[ wn.pwin,
                             i32[ parts[1].integer_value[] ],
                             i32[ parts[2].integer_value[] ] ]
                 el [ cmd == 'wheel' && parts.count >= 4 ]
@@ -2221,9 +2264,13 @@ class StatDetail
     public render_us : Tally
     public tick_us   : Tally
     public renders   : Tally
+    # the update's parts: props compared, styles, render[] calls
+    public args_us   : i64
+    public style_us  : i64
+    public render_t  : i64
 
     func line [] -> string
-        return ' | onframe {onframe} update {update} animate {animate} restyles {restyles} styled {styled} | render_us{render_us.top[ 10 ]} | renders{renders.top[ 10 ]} | tick_us{tick_us.top[ 10 ]}'
+        return ' | onframe {onframe} update {update} (args {args_us} style {style_us} render {render_t}) animate {animate} restyles {restyles} styled {styled} | render_us{render_us.top[ 10 ]} | renders{renders.top[ 10 ]} | tick_us{tick_us.top[ 10 ]}'
 
     func clear []
         onframe  = 0
@@ -2231,6 +2278,9 @@ class StatDetail
         animate  = 0
         restyles = 0
         styled   = 0
+        args_us  = 0
+        style_us = 0
+        render_t = 0
         render_us = Tally []
         tick_us   = Tally []
         renders   = Tally []
@@ -2543,7 +2593,7 @@ Display Window
     mutable draw_stage          : CanvasType
     mutable mouse               : vec2f
     # how far the pointer's light reaches borders, px
-    intern  near_reach          : f32 [ 160.0 ]
+    public  near_reach          : f32 [ 160.0 ]
     # the light's weight with the pointer inside, or outside
     intern  near_in_weight      : f32 [ 1.0 ]
     intern  near_out_weight     : f32 [ 0.5 ]
@@ -3261,6 +3311,8 @@ Display Window
             for [ mi: i32 0, mi < ty.members.count, mi += 1 ]
                 member : Au_t ty.members.origin[mi]
                 if [ member.member_type != AU_MEMBER_VAR ] continue
+                # only what this render set: a bit test, first
+                if [ !e.AF_get_member[ member ] ] continue
                 if [ strcmp[ member.ident, "elements" ] == 0 ] continue
                 if [ strcmp[ member.ident, "label" ] == 0 ] continue
                 if [ strcmp[ member.ident, "edit" ] == 0 ] continue
@@ -3272,7 +3324,6 @@ Display Window
                      || strcmp[ member.ident, "odd" ] == 0
                      || strcmp[ member.ident, "even" ] == 0 ]
                     continue
-                if [ !e.AF_get_member[ member ] ] continue
                 cur : inst.member_object[ member ]
                 nv  : e.member_object[ member ]
                 # a vector compares by element
@@ -3356,10 +3407,11 @@ Display Window
             ct.to        = best.instance.hold[]
             ct.type      = typeid[ best.instance ]
             ct.start     = epoch_millis[]
-            # the first frame after a load or live reload: the state
-            # lands as it is, no transition from the defaults; the arm
-            # is already over
-            if [ (frame_seq <= 1 || snap_transitions) && ct.duration ]
+            # the first frame after a load or live reload, or a new
+            # element's first style: the state lands as it is, no
+            # transition from the defaults; the arm is already over
+            if [ (frame_seq <= 1 || snap_transitions
+                  || !inst.initialized) && ct.duration ]
                 ct.start = ct.start - ct.duration.millis - 1
             ct.member    = member
             ct.invalidate = false
@@ -3370,9 +3422,7 @@ Display Window
             # a transition armed here runs on frames: ask for the first
             # one, or it only advances when something else redraws. the
             # cached canvases above it must repaint for it to show
-            inst.pristine = false
-            for [ p: element* inst.parent, p, p = p.parent ]
-                p.pristine = false
+            repaint_held[ inst, false ]
             will_animate  = true
             return
 
@@ -3788,6 +3838,7 @@ Display Window
             new_inst  : false
             brand_new : false
             call_init : false
+            args_moved : bool [ false ]
 
             if [ instance ]
                 instance.flags &= ~1
@@ -3874,6 +3925,7 @@ Display Window
                 instance.parent = parent
                 ta : i64 [ epoch_micros[] ]
                 args_changed : bool apply_args[ instance, e ]
+                args_moved = args_changed
                 a.t_apply_args += epoch_micros[] - ta
                 if [ args_changed ] instance.pristine = false
                 changed = args_changed || !instance.pristine || force
@@ -3900,16 +3952,32 @@ Display Window
 
             if [ changed ]
                 tsc : i64 [ epoch_micros[] ]
-                avail  : (st) ? st.compute[ instance ] : null
+                key : '{cast u64 [ instance ]}'
+                # an element's rules follow its type, id and parents:
+                # made again only when new or the sheet reloads
+                if [ !style_avails ] style_avails = map Au [ string ] []
+                if [ style_avails.count > 8192 ] style_avails.clear[]
+                avail : (st && !call_init && style_avails.contains[ key ])
+                    ? style_avails[ key ]
+                    : ((st) ? st.compute[ instance ] : null)
+                if [ st ] style_avails[ key ] = avail
                 ts : i64 [ epoch_micros[] ]
-                apply_style[ instance, avail, home_object ]
+                # the same rules as last time apply nothing new
+                if [ !style_sigs ] style_sigs = map i64 [ string ] []
+                sig : i64 style_sig[ avail ]
+                kept : bool [ !call_init && !force && !args_moved
+                              && style_sigs[ key ] == sig ]
+                if [ !kept ]
+                    style_sigs[ key ] = sig
+                    apply_style[ instance, avail, home_object ]
                 a.t_apply_style += epoch_micros[] - ts
-                sds : StatDetail stat_detail[]
-                sds.styled += 1
-                sty : typeid[ instance ]
-                stn : sty.ident
-                sds.render_us.add[ 'style:{stn}',
-                         epoch_micros[] - tsc ]
+                if [ stats ]
+                    sds : StatDetail stat_detail[]
+                    sds.styled += 1
+                    sty : typeid[ instance ]
+                    stn : sty.ident
+                    sds.render_us.add[ 'style:{stn}',
+                             epoch_micros[] - tsc ]
 
                 if [ call_init && !instance.initialized ]
                     if [ !text_mode ]
@@ -3923,6 +3991,7 @@ Display Window
                     # restyle
                     if [ st && st.integrate_instance[ instance ] ]
                         restyled : st.compute[ instance ]
+                        style_avails[ key ] = restyled
                         apply_style[ instance, restyled, home_object ]
                         stat_detail[].styled += 1
             inst    : typeid[ instance ]
@@ -3940,11 +4009,12 @@ Display Window
             tr : i64 [ epoch_micros[] ]
             rendered_map : Elements instance.render*[]
             a.t_render += epoch_micros[] - tr
-            sdt : StatDetail stat_detail[]
-            cid : inst.ident
-            cn : '{cid}'
-            sdt.render_us.add[ cn, epoch_micros[] - tr ]
-            sdt.renders.add[ cn, 1 ]
+            if [ stats ]
+                sdt : StatDetail stat_detail[]
+                cid : inst.ident
+                cn : '{cid}'
+                sdt.render_us.add[ cn, epoch_micros[] - tr ]
+                sdt.renders.add[ cn, 1 ]
             irender : Elements rendered_map
             if [ irender == null ] irender = e.elements
             if [ irender == null ] irender = instance.elements
@@ -4080,8 +4150,8 @@ Display Window
     func ide_restore_size []
         ide_size_w = width
         ide_size_h = height
-        if [ glfw && app_size_w > 0 && app_size_h > 0 ]
-            platform_window_set_size[ glfw, app_size_w, app_size_h ]
+        if [ pwin && app_size_w > 0 && app_size_h > 0 ]
+            platform_window_set_size[ pwin, app_size_w, app_size_h ]
 
     # a byte of text, 0 past its end
     func text_byte [ t: string, i: i32 ] -> i32
@@ -4158,6 +4228,23 @@ Display Window
             panel_post[]
         e[ 'app' ] = cast element [ app_object ]
         ae : cast element [ app_object ]
+        # a phone: the class of the app's own keyboard. Hosted, the
+        # host's keyboard makes it; alone, it goes at the foot here
+        kt : Au_t [ (ae && ae.use_mobile) ? ae.keyboard*[] : null ]
+        app_keys_px = 0.0
+        if [ host_slot[] > 0 ]
+            told : string [ (kt) ? '{kt.ident}' : '' ]
+            if [ !keys_told || keys_told.compare[ told ] != 0 ]
+                keys_told = told
+                host_text[ i32[ HM.keys ], told ]
+        el [ kt && !app_keys_hidden ]
+            if [ root && root.bounds ] app_keys_px = root.bounds.h * 0.41
+            e[ 'app_keys' ] = AppKeys [ topmost: true,
+                pad: keys_made[ kt ],
+                area: Region { l0 b41% r0 b0 } ]
+        el [ kt ]
+            e[ 'app_keys_tab' ] = AppKeysTab [ topmost: true,
+                area: Region { r8px b8px w1.6 h1.6 } ]
         if [ ae && ae.ux_generics ]
             e[ 'uxgenerics' ] = UXGenerics [ topmost: true, target: ae ]
         if [ ide_active ]
@@ -4399,6 +4486,7 @@ Display Window
             restyle     = true
 
         if [ force_restyle ]
+            if [ style_avails ] style_avails.clear[]
             root.invalidate_transitions[ ]
             apply_style[ root, root_styles, null ]
             root.remove_invalid_transitions[ ]
@@ -4592,7 +4680,7 @@ Display Window
         restyle   = true
         # standalone: the element's title is the window's
         if [ host_slot[] <= 0 ]
-            if [ glfw ]
+            if [ pwin ]
                 set_title[ (t) ? t : title ]
             return
         host_text[ i32[ HM.title ], t ]
@@ -4809,9 +4897,7 @@ Display Window
             will_animate = true
             easing       = true
         # set in a draw: needs_frame keeps a cached parent dirty
-        for [ p: element* e, p, p = p.parent ]
-            p.pristine = false
-            if [ easing ] p.needs_frame = true
+        repaint_held[ e, easing ]
 
     # the pointer's light on e's borders, in cv's space; ox oy
     # is e's top-left in the coordinates being drawn
@@ -4937,11 +5023,16 @@ Display Window
         injecting = false
         will_animate = true
 
-    # an input device's key (a glfw code: 259 backspace, 257 enter)
+    # an input device's key (a key code: 259 backspace, 257 enter)
     public func input_key [ code: i32 ]
+        input_key_state[ code, true ]
+
+    # a key held and let go (a game's controller): its press, then
+    # its release
+    public func input_key_state [ code: i32, down: bool ]
         e : Event []
         e.key.unicode = code
-        e.key.state   = 1
+        e.key.state   = (down) ? 1 : 0
         injecting = true
         key_event[ e ]
         injecting = false
@@ -4994,7 +5085,7 @@ Display Window
     # ios shows no soft keyboard unless the view is asked; harmless
     # elsewhere
     public func show_keyboard [ on: bool ]
-        if [ glfw ] platform_show_keyboard[ glfw, on ]
+        if [ pwin ] platform_show_keyboard[ pwin, on ]
 
     public func peer_name [ ] -> string
         cs : symbol [ platform_peer_name[ ] ]
@@ -5051,6 +5142,43 @@ Display Window
         if [ app_object ] app_object.on_pad*[ ev ]
 
     public func key_event [ ev: Event ]
+        # a key typed is the user's own act, as a tap: a field it
+        # brings up may take the focus (and a phone's keyboard)
+        if [ ev.key.state ] user_us = epoch_micros[]
+        # a phone's power and volume keys: the app's alone, no
+        # field's or pane's
+        if [ ev.key.unicode >= 349 && ev.key.unicode <= 351 ]
+            if [ app_object ] app_object.on_key*[ ev ]
+            return
+        # ctrl / cmd + space: the app's first (orbiter's navigator, a
+        # phone's button); taken, neither it nor its release reaches
+        # the focus (a hosted app would read the space)
+        if [ ev.key.unicode == 32 && (chord_space || (ev.key.state == 1
+             && (ev.key.ctrl || ev.key.meta))) ]
+            if [ ev.key.state == 0 && chord_space ]
+                chord_space = false
+                if [ app_object ] app_object.on_key*[ ev ]
+                return
+            ev.no_default = false
+            if [ app_object ] app_object.on_key*[ ev ]
+            if [ ev.no_default ]
+                if [ ev.key.state == 1 ] chord_space = true
+                return
+        # ctrl / cmd + shift + K: the app's (a phone's keyboard up or
+        # away), before any field takes it
+        if [ ev.key.unicode == 75 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ app_object ] app_object.on_key*[ ev ]
+            return
+        # ctrl / cmd + shift + R: the app's hot reload, when one is
+        # ready; the app first (it may keep its state), else the go
+        if [ ev.key.unicode == 82 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ ev.key.state == 1 ]
+                if [ app_object ] app_object.on_key*[ ev ]
+                if [ !ev.no_default && au_live_get_pending[] == 1 ]
+                    au_live_request_apply[]
+            return
         if [ screenshot_active ]
             if [ ev.key.state && ev.key.unicode == 256 ]
                 screenshot_end[]
@@ -5193,7 +5321,7 @@ Display Window
                     l.on_char[ ev ]
                     break
 
-    # the cursor left the window entirely. GLFW stops sending motion at
+    # the cursor left the window entirely. The platform stops motion at
     # the edge, so without this the last element keeps its hover lit --
     # same leave path move_event runs, just with nothing to hand it to.
     # CAPTURE is left alone on purpose: a drag that wanders outside is
@@ -5224,6 +5352,20 @@ Display Window
         ev.mouse.delta = [ ev.mouse.pos.x - last_move.x,
                            ev.mouse.pos.y - last_move.y ]
         last_move = ev.mouse.pos
+        # from a side, 48 px inward and more sideways than up or down:
+        # back (the left side) or forward (the right), once
+        if [ edge_dir != 0 && !edge_done ]
+            ex : f32 [ (ev.mouse.pos.x - edge_at.x) * f32[ -edge_dir ] ]
+            ey : f32 [ abs[ ev.mouse.pos.y - edge_at.y ] ]
+            if [ ex > 48.0 && ex > ey ]
+                edge_done = true
+                if [ action_pressed ]
+                    action_pressed.pressed  = false
+                    action_pressed.pristine = false
+                    action_pressed = null
+                navigate[ edge_dir ]
+                restyle      = true
+                will_animate = true
         if [ locked ]
             if [ !locked.bounds ]
                 mouse_unlock[]
@@ -5380,6 +5522,13 @@ Display Window
             return
         # world coords before find_target mangles it
         world_m : vec2f [ ev.mouse.pos ]
+        # a phone: a press within 20 px of a side may become a swipe
+        edge_dir  = 0
+        edge_done = false
+        if [ mobile_on[] && ev.mouse.button == 0 ]
+            if [ world_m.x < 20.0 ] edge_dir = -1
+            el [ world_m.x > f32[ width ] - 20.0 ] edge_dir = 1
+            edge_at = world_m
         if [ ev.mouse.button == 0 ]
             now : i64 [ epoch_micros[] ]
             dx  : f32 [ world_m.x - last_click_pos.x ]
@@ -5527,6 +5676,13 @@ Display Window
                 will_animate        = true
             return
         hold_el = null
+        # an edge swipe's release: it was a gesture, no click
+        if [ edge_done ]
+            edge_done = false
+            edge_dir  = 0
+            release_capture[ capture ]
+            return
+        edge_dir = 0
         # the thumb let go: nothing else hears this press's release
         if [ thumb_el ]
             te : element [ thumb_el ]
@@ -5566,6 +5722,8 @@ Display Window
             if [ e == app_object ] continue
             ev.target = e
             if [ e.on_release*[ ev ] ] consumed_r = true
+            # a control that acted on it stops it there
+            if [ ev.no_propagation ] consumed_r = true
         if [ !consumed_r && app_object ]
             ev.target = f
             app_object.on_release*[ ev ]
@@ -5578,7 +5736,7 @@ Display Window
                 f.pressed = false
                 restyle = true
             
-            if [ f && action_pressed == f && f.hovered ]
+            if [ f && action_pressed == f && f.hovered && !consumed_r ]
                 for [ e: element* f, e, e = e.parent ]
                     ev.target = e
                     e.on_click*[ ev ]
@@ -5696,7 +5854,9 @@ Display Window
             if [ r && !r.skip && r.owner && r.owner.frost ]
                 found = r
                 break
-        if [ found && !chain && is_setup ] build_frost_chain[]
+        # never inside a resize: the next frame builds it
+        if [ found && !chain && is_setup && !resizing ]
+            build_frost_chain[]
         if [ !found ]
             # owner is an OPTIONAL backref: an app that registers its
             # own target (orion's 'orion_wv') never sets one. requiring
@@ -5755,6 +5915,7 @@ Display Window
         apply_solid[]
         if [ !screen ]
             screen = Canvas [ w:a, vk: vk, format: Pixel.rgba8,
+                              paint_n: 1024,
                               load_existing: true, :width, :height ]
             # the screen is what presents and what a shot reads
             final = screen
@@ -5781,27 +5942,27 @@ Display Window
     # the display's refresh rate, for pacing what has no present of its
     # own
     func refresh_hz [] -> i32
-        if [ !glfw ] return 60
-        hz : i32 [ platform_window_refresh_hz[ glfw ] ]
+        if [ !pwin ] return 60
+        hz : i32 [ platform_window_refresh_hz[ pwin ] ]
         return (hz > 0) ? hz : 60
 
     # the window on or off the screen: off while the app shows in
     # orbiter
     func set_shown [ on: bool ]
-        if [ text_mode || backbuffer || !glfw ] return
+        if [ text_mode || backbuffer || !pwin ] return
         # hidden also holds the first present's auto-show off
         hidden = !on
-        if [ on ] platform_window_show[ glfw ]
-        el        platform_window_hide[ glfw ]
+        if [ on ] platform_window_show[ pwin ]
+        el        platform_window_hide[ pwin ]
 
     func set_fullscreen [ on: bool ]
         if [ on == fs_active ]
             return
         if [ on ]
             # remember windowed geometry
-            platform_window_set_fullscreen[ glfw, true ]
+            platform_window_set_fullscreen[ pwin, true ]
         el
-            platform_window_set_fullscreen[ glfw, false ]
+            platform_window_set_fullscreen[ pwin, false ]
         fs_active = on
 
     public func resize [ w: i32, h: i32 ] -> Window
@@ -5893,7 +6054,9 @@ Display Window
     public  pause_for           : element
     # a phone: a press in a scrolled element, and from where; once
     # the finger moves it is a scroll, never the press's click
-    manual  drag_scroll         : element
+    # held while the drag lasts: a tree made again mid-drag frees
+    # the element it was in
+    mutable drag_scroll         : element
     mutable drag_from           : vec2f
     mutable drag_y0             : f32
     mutable drag_moving         : bool
@@ -5928,6 +6091,80 @@ Display Window
     # nothing; an app sets plain_app for a hosted app's focus
     public  words_plain         : bool
     public  plain_app           : bool
+    # a phone: a press from the left or right edge (-1 back, 1
+    # forward, 0 none), where it began, and a swipe it became (its
+    # release clicks nothing)
+    # the app took a ctrl / cmd + space: its release is the app's too
+    mutable chord_space         : bool
+    mutable edge_dir            : i32
+    mutable edge_at             : vec2f
+    mutable edge_done           : bool
+    # the app's own keyboard put away, and the height it takes
+    public app_keys_hidden      : bool
+    public app_keys_px          : f32
+    # the keyboard class last told to the host
+    mutable keys_told           : string
+    # an element drawn every frame (animated) was on screen this frame:
+    # the next is drawn too; the last one's id, for the stats
+    public anim_seen            : bool
+    mutable anim_who            : string
+    # frames not drawn (nothing changed), this second
+    public quiet_frames         : i32
+    # each finger past the first (by its id): the element it presses
+    mutable touch_els           : vec element
+    # an event from such a finger is being dispatched
+    public touching             : bool
+
+    # a finger past the first (the first is the mouse): the element
+    # under it that takes touches gets its press, moves and release,
+    # each at its own place in that element
+    public func touch_event [ id: i32, phase: i32, x: f32, y: f32 ]
+        if [ id <= 0 || id >= 16 || !root ] return
+        if [ !touch_els ]
+            touch_els = vec element []
+            for [ i: i32 0, i < 16, i += 1 ]
+                touch_els.push[ null ]
+        e : Event []
+        e.mouse.pos = vec2f [ x, y ]
+        e.mouse.button = 0
+        held : touch_els[ id ]
+        if [ phase == PLATFORM_TOUCH_BEGIN ]
+            if [ held ] return
+            f : find_target[ root, e, null ]
+            for [ t: element* f, t, t = t.parent ]
+                if [ t.multi_touch ]
+                    held = t
+                    break
+            if [ !held ] return
+            touch_els[ id ] = held
+            e.mouse.pos = vec2f [ x, y ]
+            find_target[ root, e, held ]
+            e.mouse.state = true
+            e.target = held
+            held.pressed  = true
+            held.pristine = false
+            touching = true
+            held.on_press*[ e ]
+            touching = false
+        el [ !held ]
+            return
+        el [ phase == PLATFORM_TOUCH_MOVE ]
+            find_target[ root, e, held ]
+            e.target = held
+            touching = true
+            held.on_move*[ e ]
+            touching = false
+        el
+            touch_els[ id ] = null
+            find_target[ root, e, held ]
+            e.target = held
+            held.pressed  = false
+            held.pristine = false
+            touching = true
+            held.on_release*[ e ]
+            touching = false
+        restyle      = true
+        will_animate = true
 
     # the element and its peers arranging, or none
     public func arrange [ e: element, on: bool ]
@@ -6000,6 +6237,10 @@ Display Window
     # true: the move scrolled, and goes no further
     func drag_step [ at: vec2f ] -> bool
         d  : element [ drag_scroll ]
+        # gone from the screen: the drag ends
+        if [ !d.bounds || !d.parent ]
+            drag_scroll = null
+            return false
         dx : f32 [ at.x - drag_from.x ]
         dy : f32 [ at.y - drag_from.y ]
         if [ !drag_moving ]
@@ -6069,7 +6310,9 @@ Display Window
         sd : StatDetail stat_detail[]
         c0 : i64 [ epoch_micros[] ]
         ae : element [ cast element [ app_object ] ]
+        wa0 : bool [ will_animate || restyle ]
         if [ ae ] ae.on_frame*[ a ]
+        if [ !wa0 && (will_animate || restyle) ] anim_who = 'app on_frame'
         c1 : i64 [ epoch_micros[] ]
         update_all      [ app_render[] ]
         c2 : i64 [ epoch_micros[] ]
@@ -6079,6 +6322,9 @@ Display Window
         c3 : i64 [ epoch_micros[] ]
         sd.onframe += c1 - c0
         sd.update  += c2 - c1
+        sd.args_us  += t_apply_args
+        sd.style_us += t_apply_style
+        sd.render_t += t_render
         sd.animate += c3 - c2
         if [ scroll_under ]
             scroll_under = null
@@ -6101,6 +6347,8 @@ Display Window
             screen.restore[]
             return
 
+        # every pixel is painted again below: the first pass clears
+        fresh_render = screen
         # the backdrop under the ui: the flat colour in the solid stage,
         # else the blur pass for the stage, else the scene itself; a
         # hosted app on the screen's ground starts clear (the host's
@@ -6112,14 +6360,14 @@ Display Window
             screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
             screen.paint[]
             screen.set_composite[ Composite.source_over ]
-        el [ frost_eff[] == 3 || !backdrop ]
+        el [ (frame_skip & 1) != 0 ]
+            screen.fill_color[ solid_color ]
+        el [ !ground_image[] ]
             screen.fill_color[ solid_color ]
             screen.rect_to[ 0.0, 0.0, f32[ width ], f32[ height ] ]
             screen.paint[]
         el
-            # no frost chain: the backdrop is drawn as it is
-            bl : Render [ (chain) ? blur_src[] : null ]
-            screen.draw_image[ (bl) ? bl.color : backdrop.color,
+            screen.draw_image[ ground_image[],
                 rect [ x: 0.0, y: 0.0, w: f32[ width ],
                        h: f32[ height ] ] ]
 
@@ -6198,7 +6446,10 @@ Display Window
         if [ vk.time_until > 0 ] vk.paint_who = 'flush'
         screen.paint[]
         screen.flush_text[]
-        screen.sync_fence[]
+        kms_record[ screen ]
+        # sent without a wait: the next frame is built meanwhile
+        screen.seal[]
+        if [ kms_slot >= 0 ] kms_ring = screen.ring_last
         screen.restore[]
         vk.ph_layout  += elems_start - layout_start
         vk.ph_elems   += overlay_start - elems_start
@@ -7166,6 +7417,11 @@ Display Window
         draw_stage = stage
         expect e inherits element, 'e is not an element'
         if [ e.hide ] return
+        if [ e.animated && (frame_skip & 8) != 0 ] return
+        if [ e.animated && e.opacity > 0.0 ]
+            anim_seen = true
+            ti : Au_t typeid[ e ]
+            anim_who  = '{string[ ti.ident ]} animated'
         bits : i32 [ 0 ]
         if [ e.hovered   ] bits += i32[ State.hovered ]
         if [ e.pressed   ] bits += i32[ State.pressed ]
@@ -7278,7 +7534,11 @@ Display Window
         if [ stage == CanvasType.screen ] near_filter[ e ]
         if [ stage == CanvasType.screen ]
             tt : i64 [ epoch_micros[] ]
+            wa1 : bool [ will_animate || restyle ]
             e.tick*[ a ]
+            if [ !wa1 && (will_animate || restyle) ]
+                tk : Au_t typeid[ e ]
+                anim_who = '{string[ tk.ident ]} tick'
             sdk : StatDetail stat_detail[]
             tky : typeid[ e ]
             tkn : tky.ident
@@ -7785,22 +8045,38 @@ Display Window
                     || e.mask_sx != e.scroll.x || e.mask_sy != e.scroll.y ]
                 if [ !stale && e.elements ]
                     for [ ce: element, ck: string ] in e.elements
-                        if [ ce.animated || !ce.pristine ]
-                            stale = true
-                            break
+                        if [ !ce.animated && ce.pristine ] continue
+                        # scrolled out of sight: the layer leaves it out
+                        if [ crops && ce.bounds && !ce.topmost
+                             && !ce.hide ]
+                            csy : f32 [ (ce.no_scroll || !(ce.area
+                                && ce.area.t.relative)) ? 0.0
+                                : e.scroll.y ]
+                            if [ ce.bounds.y - csy + ce.bounds.h < 0.0
+                                 || ce.bounds.y - csy > e.bounds.h ]
+                                continue
+                        stale = true
+                        break
                 if [ stale ]
                     compose_mask_layer[ e, stage, ew, eh, crops ]
                     e.mask_sx = e.scroll.x
                     e.mask_sy = e.scroll.y
                 layered = true
-                cv.draw_canvas_masked[ e.mask_layer, e.mask_canvas,
-                    0.0 - f32 [ e.cache_ox ] + bsx,
-                    0.0 - f32 [ e.cache_oy ] + bsy, f32 [ ew ],
-                    f32 [ eh ] ]
+                if [ (frame_skip & 2) != 0 ]
+                    cv.draw_canvas[ e.mask_layer,
+                        0.0 - f32 [ e.cache_ox ] + bsx,
+                        0.0 - f32 [ e.cache_oy ] + bsy, f32 [ ew ],
+                        f32 [ eh ] ]
+                el
+                    cv.draw_canvas_masked[ e.mask_layer, e.mask_canvas,
+                        0.0 - f32 [ e.cache_ox ] + bsx,
+                        0.0 - f32 [ e.cache_oy ] + bsy, f32 [ ew ],
+                        f32 [ eh ] ]
             el
                 if [ dbg_blit < 14 ]
                     dbg_blit += 1
-                cv.draw_canvas[ e.cache_canvas,
+                if [ (frame_skip & 4) == 0 ]
+                    cv.draw_canvas[ e.cache_canvas,
                                 0.0 - f32 [ e.cache_ox ] + bsx,
                                 0.0 - f32 [ e.cache_oy ] + bsy,
                                 f32 [ ew ], f32 [ eh ] ]
@@ -7908,6 +8184,13 @@ Display Window
             drop[ over_screen ]
         cv.restore[]
 
+    # the screen's ground as painted under the ui: the frost stage's
+    # blur, else the scene as it is; null in the solid stage
+    # (solid_color)
+    public func ground_image [] -> Texture
+        if [ frost_eff[] == 3 || !backdrop ] return null
+        bl : Render [ (chain) ? blur_src[] : null ]
+        return (bl) ? bl.color : backdrop.color
 
 class offscreen
     context vk    : vk_context
@@ -8130,7 +8413,7 @@ abstract media_app trinity
         if [ hz ]
             hs : string [ hz ]
             hv : i32 [ hs.integer_value[] ]
-            if [ hv >= 24 && hv <= 480 ] frame_hz = hv
+            if [ hv >= 24 && hv <= 2000 ] frame_hz = hv
         rt : typeid[ root ]
         if [ text_mode ]
             console_size[]
@@ -8185,7 +8468,28 @@ abstract media_app trinity
             hz : i32 [ max[ window.refresh_hz[], 30 ] ]
             usleep[ u32[ 1000000 / hz ] ]
             return
+        # nothing moving, nothing changed, no input: no frame, a
+        # refresh's wait; still one a quarter second for what changes by
+        # itself (a clock, a poll). a hosted app asked for a frame keeps
+        # the one it sent (no new picture): the host paces it
+        now_us : i64 [ epoch_micros[] ]
+        drew = false
+        if [ !attach && frames > 30 && !force_animate
+             && !window.will_animate
+             && !window.restyle && !window.anim_seen
+             && (!window.hidden || paned)
+             && window.pending_w == 0 && now_us - drawn_us < 250000 ]
+            window.quiet_frames += 1
+            if [ paned ] return
+            # a frame sent last time still goes on screen
+            window.kms_settle[ window.screen ]
+            hz : i32 [ max[ window.refresh_hz[], 30 ] ]
+            usleep[ u32[ 1000000 / hz ] ]
+            return
+        drawn_us = now_us
+        drew = true
         window.will_animate = false
+        window.anim_seen    = false
         update_start : i64 [ epoch_micros[] ]
         # headless hosts render alongside the window (no present)
         if [ window.offscreens ]
@@ -8226,6 +8530,39 @@ abstract media_app trinity
 
 
 
+
+# every frame drawn, changed or not (the socket's `animate 1`)
+force_animate : bool
+
+# e's picture again: e and the canvas holding it (above no_cache)
+func repaint_held [ e: element, again: bool ]
+    held : element [ e ]
+    for [ p: element* e, p, p = p.parent ]
+        if [ p.no_cache ] held = p.parent
+    for [ p: element* e, p, p = p.parent ]
+        p.pristine = false
+        if [ again ] p.needs_frame = true
+        if [ p == held ] break
+# parts of the frame left out, to measure each one's cost (the
+# socket's `skip <bits>`): 1 the ground, 2 masks (drawn plain), 4
+# cached pictures, 8 elements drawn every frame, 32 the screen's
+# copy to the display (kms)
+frame_skip : i32
+# the render whose next pass begins a whole repaint (it clears)
+fresh_render : Render
+# kms: the scanout slot this frame was copied into, -1 none
+kms_slot : i32 [ -1 ]
+# the benchmark mode the swapchain was made in
+swap_bench    : bool
+# each element's last applied rules, by its address
+style_sigs    : map i64 [ string ]
+# each element's rules (Style.compute), by its address
+style_avails  : map Au [ string ]
+# the present modes the surface offers (the swapchain's choice)
+has_mailbox   : bool
+has_immediate : bool
+# kms: the screen's ring slot whose submit holds kms_slot's copy
+kms_ring : i32 [ -1 ]
 
 func agent_post [ obj: Au, text: string, priority: string ] -> bool
     return agent_post_as[ obj, null, null, text, priority ]
@@ -9832,6 +10169,10 @@ element InputDevice
     # characters it put in that are still being chosen
     intern held     : i32
 
+    # freed: the window no longer sends it keys
+    func dealloc []
+        if [ ux && ux.input_device == a ] ux.input_device = null
+
     # typed text and keys (a hardware keyboard's): true when taken
     public func take_text [ ev: Event ] -> bool
         return false
@@ -11247,3 +11588,62 @@ expect func t_fade_masked [ vk: vk_context ] -> bool
     low_a : i32 [ data[ (60 * img.width + 100) * 4 + 3 ] ]
     log 'fade masked alpha: top {top_a}, mid {mid_a}, below {low_a}'
     return top_a < 40 && mid_a > 80 && mid_a < 180 && low_a > 240
+
+# a phone's keyboard place given to the app's own element: the
+# keyboard's bar (its down arrow puts it away), the app's under it
+# an app's keyboard made from its class (the system's keyboard
+# shows it)
+func keys_made [ t: Au_t ] -> element
+    if [ !t ] return null
+    made : Au.new_object[ t, null, null, false, __FILE__, __LINE__,
+                          __SEQUENCE__ ]
+    return cast element [ made ]
+
+element AppKeys
+    public pad : element
+    style : CSS {
+        layers.ground:
+            fill_color: #141019
+    }
+
+    func render [] -> Elements
+        e : Elements [ ]
+        e[ 'hide' ] = AppKeysHide [
+            area: Region { l80%+3px t3px r3px b90%+3px } ]
+        if [ pad ]
+            pad.area = Region [ 'l0 t10% r0 b0' ]
+            e[ 'pad' ] = pad
+        return e
+
+# the bar's down arrow: the app's keyboard goes away
+element AppKeysHide
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+        layers.face:
+            image_svg: 'images/down.svg'
+            image_fit: 0.5
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        ux.app_keys_hidden = true
+        ux.restyle = true
+
+# put away: an up arrow in the corner brings it back
+element AppKeysTab
+    style : CSS {
+        layers.body:
+            fill_color: #141019cc
+            radius: 999
+        layers.face:
+            image_svg: 'images/up.svg'
+            image_fit: 0.5
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        ux.app_keys_hidden = false
+        ux.restyle = true

@@ -730,11 +730,11 @@ func ntfs_least [ dev: string ] -> i64
 
 # $id: our firmware entry's {id}, found by its label
 func win_find [] -> string
-    f : '$b=((bcdedit /enum firmware) -join [char]10)'
-    f = '{f} -split \'\\n\\s*\\n\''
-    f = '{f} | ? {{$_ -match \'orbiter-os\'}} | select -First 1;'
-    f = '{f} $id=$(if ($b -match \'\\{{[0-9a-fA-F-]{{36}}\\}}\')'
-    return '{f} {{$Matches[0]}});'
+    return command {
+        $b=((bcdedit /enum firmware) -join [char]10) -split '\n\s*\n'
+        | ? {{$_ -match 'orbiter-os'}} | select -First 1;
+        $id=$(if ($b -match '\{{[0-9a-fA-F-]{{36}}\}}')
+        {{$Matches[0]}}); }
 
 # bcdedit needs an administrator: rerun as one
 func win_head [] -> string
@@ -744,26 +744,26 @@ func win_head [] -> string
 
 # orbiter-os on the next restart only; Windows stays default
 func win_start [] -> string
-    p : '{win_find[]} if (-not $id) {{Write-Host'
-    p = '{p} \'orbiter-os is not in the firmware boot menu.\';'
-    p = '{p} exit 1}}; bcdedit /set \'{{fwbootmgr}}\' bootsequence'
-    p = '{p} $id | Out-Null; if ($LASTEXITCODE) {{exit 1}};'
-    p = '{p} bcdedit /set \'{{bootmgr}}\' displaybootmenu yes'
-    p = '{p} | Out-Null'
+    p : command { {win_find[]} if (-not $id) {{Write-Host
+        'orbiter-os is not in the firmware boot menu.'; exit 1}};
+        bcdedit /set '{{fwbootmgr}}' bootsequence $id | Out-Null;
+        if ($LASTEXITCODE) {{exit 1}};
+        bcdedit /set '{{bootmgr}}' displaybootmenu yes | Out-Null }
     s : '{win_head[]}powershell -NoProfile -Command "{p}"\n'
     s = '{s}if errorlevel 1 (pause & exit /b 1)\n'
     return '{s}shutdown /r /t 5 /c "Restarting into orbiter-os"\n'
 
 # the entry, \EFI\orbiter, then this folder once let go
 func win_remove [] -> string
-    p : '{win_find[]} if ($id) {{bcdedit /delete $id | Out-Null}};'
-    p = '{p} bcdedit /deletevalue \'{{bootmgr}}\' displaybootmenu'
-    p = '{p} 2>&1 | Out-Null;'
-    p = '{p} $l=([char[]](90..68) | ? {{-not (Test-Path ($_+\':\'))}}'
-    p = '{p} | select -First 1)+\':\'; mountvol $l /S;'
-    p = '{p} if ($LASTEXITCODE -eq 0) {{Remove-Item -Recurse -Force'
-    p = '{p} ($l+\'\\EFI\\orbiter\') -ErrorAction SilentlyContinue;'
-    p = '{p} mountvol $l /D}}'
+    p : command {
+        {win_find[]} if ($id) {{bcdedit /delete $id | Out-Null}};
+        bcdedit /deletevalue '{{bootmgr}}' displaybootmenu 2>&1
+        | Out-Null;
+        $l=([char[]](90..68) | ? {{-not (Test-Path ($_+':'))}}
+        | select -First 1)+':'; mountvol $l /S;
+        if ($LASTEXITCODE -eq 0) {{Remove-Item -Recurse -Force
+        ($l+'\EFI\orbiter') -ErrorAction SilentlyContinue;
+        mountvol $l /D}} }
     s : '{win_head[]}choice /m "Remove orbiter-os and its files'
     s = '{s} from this PC"\nif errorlevel 2 exit /b\n'
     s = '{s}powershell -NoProfile -Command "{p}"\ncd /d %SystemRoot%\n'
@@ -1888,8 +1888,8 @@ element InstallWizard
             sec : i64 [ 512 ]
             pn : size_text[ place.bytes ]
             s : step[ StepKind.run, 'Make {rdev}: {pn} of free space' ]
-            ln : 'start={place.start / sec}, size={place.bytes / sec},'
-            ln = '{ln} type=L, name=orbiter'
+            ln : command { start={place.start / sec},
+                size={place.bytes / sec}, type=L, name=orbiter }
             sf : 'sfdisk --no-reread -N {num} {dev}'
             s.cmd = 'echo \'{ln}\' | {sf}'
             s = step[ StepKind.run, 'Read {dev}\'s new table' ]
@@ -2219,8 +2219,8 @@ element InstallWizard
         dst : sh_word[ s.dst ]
         if [ s.kind == StepKind.wait ]
             ok : '[ -e {src} ] && [ -e {dst} ]'
-            w : 'i=0; while [ $i -lt 100 ]; do'
-            w = '{w} {ok} && break; sleep 0.1; i=$((i+1)); done'
+            w : command { i=0; while [ $i -lt 100 ]; do
+                {ok} && break; sleep 0.1; i=$((i+1)); done }
             return '{w}; {ok}'
         if [ s.kind == StepKind.mount ]
             # efivarfs is often there already
@@ -2236,10 +2236,11 @@ element InstallWizard
                 ex = '{ex} {sh_word[ '--exclude=./{d}/*' ]}'
             bad : '/run/wizard/copy.bad'
             pr : sh_word[ '--checkpoint-action=echo=@copied %u' ]
-            c : '( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} )'
-            c = '{c} && rm -f {bad} && ( tar -C {src}{ex}'
-            c = '{c} --checkpoint=100 {pr} -cf - . || touch {bad} )'
-            c = '{c} | tar -C {dst} --no-same-owner -xpf -'
+            c : command {
+                ( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} )
+                && rm -f {bad} && ( tar -C {src}{ex} --checkpoint=100 {pr}
+                -cf - . || touch {bad} )
+                | tar -C {dst} --no-same-owner -xpf - }
             return '{c} && [ ! -e {bad} ]'
         made : 'mkdir -p "$(dirname {dst})"'
         if [ s.kind == StepKind.file ]
@@ -2264,26 +2265,30 @@ element InstallWizard
     func sh_head [] -> string
         hx : '[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'
         ids : 'efibootmgr | sed -n \'s/^Boot\\({hx}\\)[* ].*/\\1/p\''
-        h : 'set -u\nmkdir -p /run/wizard\n'
-        h = '{h}boot_second() (\n'
-        h = '{h}  before=" $({ids} | tr \'\\n\' \' \') "\n'
-        h = '{h}  "$@" || exit 1\n  new=\'\'\n'
-        h = '{h}  for id in $({ids}); do\n'
-        h = '{h}    case "$before" in *" $id "*) ;;'
-        h = '{h} *) new=$id ;; esac\n'
-        h = '{h}  done\n  if [ -z "$new" ]; then\n'
-        h = '{h}    echo \'The new boot entry was not found.\''
-        h = '{h}; exit 1\n'
-        h = '{h}  fi\n'
-        h = '{h}  o=$(efibootmgr | sed -n \'s/^BootOrder: //p\')\n'
-        h = '{h}  if [ -z "$o" ]; then efibootmgr --bootorder "$new"; '
-        h = '{h}exit; fi\n'
-        h = '{h}  first=$(echo "$o" | cut -d, -f1)\n'
-        h = '{h}  rest=$(echo "$o" | tr \',\' \'\\n\' | sed 1d '
-        h = '{h}| grep -vx "$new" | paste -sd, -)\n'
-        h = '{h}  if [ -n "$rest" ]; then rest=",$rest"; fi\n'
-        h = '{h}  efibootmgr --bootorder "$first,$new$rest"\n)\n'
-        return h
+        h : string {
+            set -u
+            mkdir -p /run/wizard
+            boot_second() (
+              before=" $({ids} | tr '\n' ' ') "
+              "$@" || exit 1
+              new=''
+              for id in $({ids}); do
+                case "$before" in *" $id "*) ;; *) new=$id ;; esac
+              done
+              if [ -z "$new" ]; then
+                echo 'The new boot entry was not found.'; exit 1
+              fi
+              o=$(efibootmgr | sed -n 's/^BootOrder: //p')
+              if [ -z "$o" ]; then efibootmgr --bootorder "$new"; exit; fi
+              first=$(echo "$o" | cut -d, -f1)
+              rest=$(echo "$o" | tr ',' '\n' | sed 1d |
+                grep -vx "$new" | paste -sd, -)
+              if [ -n "$rest" ]; then rest=",$rest"; fi
+              efibootmgr --bootorder "$first,$new$rest"
+            )
+        }
+        # the block ends at its ')': the plan's steps start a line
+        return '{h}\n'
 
     # the plan as one script: each step says it starts, and where
     # it stopped when it fails

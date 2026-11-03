@@ -829,6 +829,11 @@ Control AppsGrid
     mutable open : string
     # orbiter's apps_gen when the cards were gathered
     mutable gen_seen : i32
+    # each card's picture and the look it was drawn with, by key
+    intern card_pics : map Canvas [string]
+    intern card_sigs : map string [string]
+    # where a card picture's own space is on the grid
+    intern light_off : vec2f
     # the open store's card and its apps' run in shown (-1 none); its
     # apps go on lines of their own, in a band under the store's line
     mutable band_of : i32 [ -1 ]
@@ -843,6 +848,8 @@ Control AppsGrid
     # a press on a heading (-1 none), when and where any press was
     mutable press_h  : i32 [ -1 ]
     mutable press_us : i64
+    # the window's stamp of that press: a launch needs the same
+    mutable press_click : i64
     mutable press_at : vec2f
     # held a second, then moved: 1 a card, 2 a section, by name; the
     # pointer, and where on the thing it was taken
@@ -1014,6 +1021,10 @@ Control AppsGrid
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
 
     func gather [ orb: orbiter ]
+        # pictures of cards long gone: let them go
+        if [ card_pics && card_pics.count > 96 ]
+            card_pics.clear[]
+            card_sigs.clear[]
         band_of = -1
         band_at = -1
         band_n  = 0
@@ -1055,10 +1066,14 @@ Control AppsGrid
                         shown.push[ AppEntry [ name: ae.name,
                             file: ae.file, module: true, agi: ae.agi,
                             group: ae.group, built: ae.built ] ]
-                        for [ sa: AppEntry ] in ae.apps
-                            if [ inner.count == 0
-                                 || sa.name.lcase[].index_of[ inner ] >= 0 ]
-                                shown.push[ sa ]
+                        # benchmark mode: 16 times the cards
+                        copies : i32 [ (force_animate) ? 16 : 1 ]
+                        for [ c: i32 0, c < copies, c += 1 ]
+                            for [ sa: AppEntry ] in ae.apps
+                                if [ inner.count == 0
+                                     || sa.name.lcase[].index_of[
+                                        inner ] >= 0 ]
+                                    shown.push[ sa ]
                         band_n = shown.count - band_at
                     # an open app: itself, then the files it opens
                     el [ open == ae.name ]
@@ -1164,6 +1179,7 @@ Control AppsGrid
         press_h  = (press_i < 0)
             ? head_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] : -1
         press_us = epoch_micros[]
+        press_click = ux.last_click_us
         press_at = ev.mouse.pos
         # arranging: a press on no card or heading ends it
         if [ arranging && press_i < 0 && press_h < 0 ]
@@ -1188,6 +1204,9 @@ Control AppsGrid
             return
         # arranging, or a press held to start it: no app opens
         if [ arranging || epoch_micros[] - press_us >= 1000000 ] return
+        # a launch is a press and its release here: another press
+        # since (a control's, over the grid) opens nothing
+        if [ press_click != ux.last_click_us ] return
         orb : cast orbiter [ ux.app_object ]
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
@@ -1380,6 +1399,8 @@ Control AppsGrid
         dd : f32 [ (dsec >= 0) ? drag_pt.y - grab.y - head_ys[ dsec ]
             : 0.0 ]
         moving : bool [ false ]
+        # unseen where it is and where it goes: it lands at once
+        hy : f32 [ (hh9 > ch9) ? hh9 : ch9 ]
         px : vec f32 []
         py : vec f32 []
         for [ i: i32 0, i < n && i < keys.count, i += 1 ]
@@ -1396,7 +1417,11 @@ Control AppsGrid
             el [ ease_x.contains[ ky ] ]
                 ex = filter_n[ ease_x[ ky ], gx, 0.3, ux.frame_factor ]
                 ey = filter_n[ ease_y[ ky ], gy, 0.3, ux.frame_factor ]
-                if [ abs[ ex - gx ] < 0.5 && abs[ ey - gy ] < 0.5 ]
+                seen : bool [
+                    !(ey - sy + ch9 < 0.0 && gy - sy + ch9 < 0.0)
+                    && !(ey - sy > bounds.h && gy - sy > bounds.h) ]
+                if [ !seen || (abs[ ex - gx ] < 0.5
+                               && abs[ ey - gy ] < 0.5) ]
                     ex = gx
                     ey = gy
                 el
@@ -1411,7 +1436,10 @@ Control AppsGrid
             if [ h != dsec && head_e.contains[ heads[ h ] ] ]
                 eh = filter_n[ head_e[ heads[ h ] ], gh, 0.3,
                                ux.frame_factor ]
-                if [ abs[ eh - gh ] < 0.5 ]
+                hseen : bool [
+                    !(eh - sy + hy < 0.0 && gh - sy + hy < 0.0)
+                    && !(eh - sy > bounds.h && gh - sy > bounds.h) ]
+                if [ !hseen || abs[ eh - gh ] < 0.5 ]
                     eh = gh
                 el
                     moving = true
@@ -1421,9 +1449,7 @@ Control AppsGrid
         # easing, or the glow breathing: drawn again next frame, and
         # each cached parent with it
         if [ moving || arranging ]
-            for [ p: element* a, p, p = p.parent ]
-                p.pristine    = false
-                p.needs_frame = true
+            repaint_held[ a, true ]
             ux.will_animate = true
         # the dragged card last: over the others
         drawn : vec i32 []
@@ -1437,62 +1463,125 @@ Control AppsGrid
         # the tile's corners: an ios icon's share of its side
         cr : f32 [ round[ tile * 0.225 ] ]
         fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        # moving, a card the pointer's light cannot reach is its
+        # picture, made once; at rest each is drawn live
+        reach : f32 [ w.near_reach * un * 1.125 + 2.0 ]
+        ptx : f32 [ w.mouse.x - win_pos.x ]
+        pty : f32 [ w.mouse.y - win_pos.y ]
+        sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
         for [ i: i32 ] in drawn
             cy : f32 [ py[ i ] - sy ]
             if [ cy + ch9 < 0.0 || cy > bounds.h ] continue
-            ae : AppEntry entry[ i ]
-            if [ !ae ] continue
-            tx : f32 [ px[ i ] + round[ (cw9 - tile) * 0.5 ] ]
-            # here: runs or opens; else it is imported first
-            here : bool [ ae.module
-                && (!ae.built || ae.built.exists[]) ]
-            iw : string orb.install_word[ ae ]
-            busy : bool [ iw == 'starting' || iw == 'building' ]
-            failed : bool [ iw == 'failed' ]
-            chosen : bool [ i == sel && !here && !busy ]
-            # an open store's card stays lit
-            folder : bool [ i == band_of ]
-            draw_tile[ cv, w, i, tx, cy, cr, here, chosen || folder ]
-            # the icon fills the tile, dim until it is here
-            ic : AppIcon icons[ i ]
-            isz : f32 [ round[ tile * 0.72 ] ]
-            cv.save[]
-            if [ !here ] cv.set_opacity[ (busy) ? 0.4 : 0.55 ]
-            ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
-                      round[ cy + (tile - isz) * 0.5 ], isz ]
-            cv.restore[]
-            # under the tile: the name, its Download button, or the
-            # build's progress in its place
-            ny : f32 [ cy + tile + round[ 6.0 * un ] ]
-            # Rule #12: shift over it, or ctrl / cmd for all, shows
-            # its Cancel in place of the progress
-            cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
-            if [ cxl ]
-                draw_cancel[ cv, fp, px[ i ], ny, nh ]
-            el [ busy ]
-                draw_progress[ cv, un, px[ i ], ny, nh,
-                               orb.install_frac[ ae ] ]
-            el [ chosen ]
-                draw_button[ cv, fp, px[ i ], ny, nh, ae.module,
-                             failed ]
+            if [ !entry[ i ] ] continue
+            dx : f32 [ max[ max[ px[ i ] - ptx, ptx - px[ i ] - cw9 ],
+                            0.0 ] ]
+            dy : f32 [ max[ max[ cy - pty, pty - cy - ch9 ], 0.0 ] ]
+            far : bool [ dx * dx + dy * dy > reach * reach ]
+            if [ moving && far ]
+                pic : card_picture[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
+                                    un ]
+                cv.draw_canvas[ pic, round[ px[ i ] * sc ] / sc,
+                                round[ cy * sc ] / sc, cw9, ch9 ]
             el
-                # an expanded card's name is bold
-                cv.set_font[ shared_font[ cv, (folder)
-                    ? 'fonts/BarlowCondensed-Bold.ttf'
-                    : 'fonts/BarlowCondensed-Regular.ttf', fp ] ]
-                cv.font_size[ f32[ fp ] ]
-                tc : '#ffffff99'
-                if [ here ] tc = '#ffffffdd'
-                nm : string ae.name
-                if [ failed ]
-                    tc = '#ff7a7add'
-                    nm = '{ae.name} failed'
-                cv.fill_color[ rgba [ tc ] ]
-                cv.draw_text[ nm, rect [ x: px[ i ] + 2.0, y: ny,
-                    w: cw9 - 4.0, h: nh ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
-                cv.set_font[ null ]
+                card_paint[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
+                            un ]
+
+    # a card's look: what its picture depends on
+    func card_sig [ orb: orbiter, i: i32, fp: i32 ] -> string
+        ae : AppEntry entry[ i ]
+        iw : string orb.install_word[ ae ]
+        busy : bool [ iw == 'starting' || iw == 'building' ]
+        fr : f32 [ (busy) ? orb.install_frac[ ae ] : 0.0 ]
+        return '{ae.name}|{iw}|{fr}|{i == sel}|{i == band_of}|{i == hov}|{ux.cmd}|{ux.shift}|{fp}|{cw9}|{ch9}|{tile}|{on_btn}'
+
+    # the card's picture: drawn again when its look changes
+    func card_picture [ cv: Canvas, w: Window, orb: orbiter, i: i32,
+                        gx: f32, gy: f32, cr: f32, fp: i32, nh: f32,
+                        un: f32 ] -> Canvas
+        if [ !card_pics ]
+            card_pics = map Canvas [string] []
+            card_sigs = map string [string] []
+        ky : string keys[ i ]
+        sg : string card_sig[ orb, i, fp ]
+        pic : Canvas [ (card_pics.contains[ ky ]) ? card_pics[ ky ]
+            : null ]
+        if [ pic && card_sigs[ ky ] == sg
+             && pic.content_w == i32[ ceil[ cw9 ] ]
+             && pic.content_h == i32[ ceil[ ch9 ] ] ]
+            return pic
+        pw : i32 [ i32[ ceil[ cw9 ] ] ]
+        ph : i32 [ i32[ ceil[ ch9 ] ] ]
+        if [ !pic ]
+            pic = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8,
+                           width: pw, height: ph,
+                           load_existing: true, tag: 'card' ]
+            pic.update[]
+            card_pics[ ky ] = pic
+        el [ pic.content_w != pw || pic.content_h != ph ]
+            pic.resize[ pw, ph ]
+        pic.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        # the pointer's light where it is over the grid
+        light_off = vec2f [ -gx, -gy ]
+        card_paint[ pic, w, orb, i, 0.0, 0.0, cr, fp, nh, un ]
+        light_off = vec2f [ 0.0, 0.0 ]
+        card_sigs[ ky ] = sg
+        return pic
+
+    # one card at x, y: its tile, icon and name
+    func card_paint [ cv: Canvas, w: Window, orb: orbiter, i: i32,
+                      x: f32, cy: f32, cr: f32, fp: i32, nh: f32,
+                      un: f32 ]
+        ae : AppEntry entry[ i ]
+        tx : f32 [ x + round[ (cw9 - tile) * 0.5 ] ]
+        # here: runs or opens; else it is imported first
+        here : bool [ ae.module
+            && (!ae.built || ae.built.exists[]) ]
+        iw : string orb.install_word[ ae ]
+        busy : bool [ iw == 'starting' || iw == 'building' ]
+        failed : bool [ iw == 'failed' ]
+        chosen : bool [ i == sel && !here && !busy ]
+        # an open store's card stays lit
+        folder : bool [ i == band_of ]
+        draw_tile[ cv, w, i, tx, cy, cr, here, chosen || folder ]
+        # the icon fills the tile, dim until it is here
+        ic : AppIcon icons[ i ]
+        isz : f32 [ round[ tile * 0.72 ] ]
+        cv.save[]
+        if [ !here ] cv.set_opacity[ (busy) ? 0.4 : 0.55 ]
+        ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
+                  round[ cy + (tile - isz) * 0.5 ], isz ]
+        cv.restore[]
+        # under the tile: the name, its Download button, or the
+        # build's progress in its place
+        ny : f32 [ cy + tile + round[ 6.0 * un ] ]
+        # Rule #12: shift over it, or ctrl / cmd for all, shows
+        # its Cancel in place of the progress
+        cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
+        if [ cxl ]
+            draw_cancel[ cv, fp, x, ny, nh ]
+        el [ busy ]
+            draw_progress[ cv, un, x, ny, nh,
+                           orb.install_frac[ ae ] ]
+        el [ chosen ]
+            draw_button[ cv, fp, x, ny, nh, ae.module, failed ]
+        el
+            # an expanded card's name is bold
+            cv.set_font[ shared_font[ cv, (folder)
+                ? 'fonts/BarlowCondensed-Bold.ttf'
+                : 'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+            cv.font_size[ f32[ fp ] ]
+            tc : '#ffffff99'
+            if [ here ] tc = '#ffffffdd'
+            nm : string ae.name
+            if [ failed ]
+                tc = '#ff7a7add'
+                nm = '{ae.name} failed'
+            cv.fill_color[ rgba [ tc ] ]
+            cv.draw_text[ nm, rect [ x: x + 2.0, y: ny,
+                w: cw9 - 4.0, h: nh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null ]
+            cv.set_font[ null ]
 
     # the icon's rounded tile: glass when here, an outline when
     # not; the chosen one takes the selected border
@@ -1504,7 +1593,8 @@ Control AppsGrid
         cv.stroke_offset[ -0.5 ]
         if [ here ]
             # 180 px: the cards are larger than the buttons
-            w.near_light_reach[ cv, a, 0.0, 0.0, 1.125 ]
+            w.near_light_reach[ cv, a, light_off.x, light_off.y,
+                                1.125 ]
             cv.near_style[ 1.0, 3.0, rgba [ '#c890ffff' ],
                            w.near_y_fade ]
             cv.box_shadow[ rgba [ '#8af2' ], 0.0, 0.0, 16.0, 0.0,

@@ -1,6 +1,7 @@
 # Inkscape 1.3.2 (GTK 3) and the libraries it needs
 export 1.3.2
 export software ['creative']
+export platforms ['x64']
 export icon ['inkscape']
 export build none
 

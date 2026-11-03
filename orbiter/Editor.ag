@@ -521,6 +521,9 @@ ResourceView AppView
     # the app's address (a URL), as it last said, and its bytes
     public  app_address : string
     mutable addr_buf    : vec u8
+    # the class of the app's own keyboard ('' none), its bytes
+    public  app_keys    : string
+    mutable keys_buf    : vec u8
     # the app's views (its orbiter bar's chips), the one it shows
     # (-1 its source), and their names' bytes as they arrive
     public  app_views   : vec string
@@ -530,6 +533,10 @@ ResourceView AppView
     mutable module_args : string
     # a desktop widget: whether it was told it sits on top (-1 never)
     mutable top_sent    : i32 [ -1 ]
+    # the home filter last told it (a widget)
+    mutable filter_sent : string
+    # a widget with nothing matching the home filter
+    mutable no_match    : bool
     # the Wayland window this instance's program opened (0: none)
     mutable wl_window   : u64
     # run in no pane (a startup app in its tray): a button only while
@@ -715,6 +722,8 @@ ResourceView AppView
             el [ t == i32[ HM.aspect ] ]
                 pic_w = host_pa[]
                 pic_h = host_pb[]
+                # a widget: the home filter left it nothing
+                no_match = host_pc[] != 0
                 # a desktop widget's box takes the new height
                 wg : cast Window [ cv.w ]
                 if [ wg ] wg.restyle = true
@@ -787,6 +796,22 @@ ResourceView AppView
                     addr_buf = vec u8 []
                     wa9 : cast Window [ cv.w ]
                     if [ wa9 ] wa9.restyle = true
+                    break
+            # the app's keyboard class, as its address comes
+            el [ t == i32[ HM.keys ] ]
+                if [ !keys_buf ] keys_buf = vec u8 []
+                kb : local i32 [ 3 ]
+                kb[0] = host_pa[]
+                kb[1] = host_pb[]
+                kb[2] = host_pc[]
+                for [ k9: i32 0, k9 < 3, k9 += 1 ]
+                    if [ kb[k9] != 0 ]
+                        keys_buf.push[ u8 kb[k9] ]
+                        continue
+                    app_keys = bytes_text[ keys_buf ]
+                    keys_buf = vec u8 []
+                    wk9 : cast Window [ cv.w ]
+                    if [ wk9 ] wk9.restyle = true
                     break
             # the app's title, three bytes a message; a 0 byte ends it
             el [ t == i32[ HM.title ] ]

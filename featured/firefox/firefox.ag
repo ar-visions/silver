@@ -3,6 +3,7 @@
 # it runs in a pane over orbiter's Wayland display
 export 158.0
 export software ['everyday']
+export platforms ['x64']
 export icon ['firefox']
 
 # the version taken, and its tarball's sha256 as Mozilla's SHA256SUMS

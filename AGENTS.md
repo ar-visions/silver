@@ -272,6 +272,17 @@ Release the key and it hides again. The Window tracks both
 (`ux.shift`, `ux.cmd`); each change re-renders the tree. A
 shift+click that forces a blocked step (Continue) is separate.
 
+## Rule #12b — Everything hot reloads; state is tracked
+
+silver apps hot reload: a reload swaps the app's code under the
+running app, and the app goes on exactly as it was. Everything built
+must survive it, never abandoned for a restart. So state is tracked
+properly: what the user sees and has open (dialogs, menus, the
+switcher, scroll places, a half-done slide) lives on the app's own
+object, not loose in an element, and crosses the reload (persist
+slots, filled before the swap, taken on the first frame).
+ctrl / cmd + shift + R applies a ready reload in any trinity app.
+
 ## Rule #13 — No overlaid windows
 
 Never put a dialog, popup,
@@ -981,6 +992,21 @@ is `wizard`; it uses whatever supported card is in the machine.
    for its boot chain (m1n1, U-Boot); Intel Macs boot the UEFI
    stick as PCs do. (7.x is in the kernel choices now: item 18.)
 
+23. DONE (Nov 2: every rom on the installation media, generic
+   for any user) os-bootstrap game_files: the file types the games
+   apps open, read from their exports (`software` games and
+   `extensions`: knes .nes, asnes .smc .sfc .spc, rgen .gen .smd,
+   n64 .z64 .n64 .v64, psx .cue), found in the user's home two
+   folders down (hidden ones skipped, as orbiter's apps screen
+   looks), each with the files named as it is (saves, a disc's
+   tracks) and those its cue sheet lists. add_games puts them in
+   the drive tree at root/<their place in the home> (HOME=/root;
+   the USB stick and an install copy the tree); phone_rootfs copies
+   the same list into the phone's /root. t_game_files (a scratch
+   home) passes. On europa: ~/roms (563 MB) and 18 roms plus 174
+   .spc in ~/Downloads (39 MB). NOT run: a tree write, a phone
+   image. OPEN: the phone's Update sends no games.
+
 ## orbiter-os in a Windows partition — live list (Oct 23 2026)
 
 an orbiter-os folder on the Windows (NTFS) partition holds
@@ -1590,6 +1616,516 @@ phone itself (arm64), not busybox. Order:
       -1; the next delete took that as a selection and wrote line -1
       ("could not fetch item at index -1", exit). has_selection now
       needs an anchor line. Likely the mic crash's cause too.
+   v. DONE (Oct 31) widgets are set in the orbiter menu: a
+      Widgets cell after Scenes (desktop and phone) shows each
+      `export widget` module as a card, lit while on the desktop; a
+      tap puts it on or takes it off (WidgetPick, widget_toggle,
+      widget_on). The bar's + and widget_add are gone (the desktop
+      keeps its show / hide panel toggle). Icon: Material Symbols
+      widgets, trinity/images/widgets.svg (THIRD_PARTY.md).
+      Not driven: a tap putting one back on.
+   w. BUILT, seen hidden (Nov 1: no gestures; the phone's one
+      button) the power key (devices: KEY_POWER is PLATFORM_KEY_POWER
+      349, no longer a screen toggle in devices; trinity hands it to
+      the app alone; ctrl / cmd + space stands in on a simulated phone,
+      the desktop keeps it for the navigator). Let go before
+      the hold, it goes home (on the release, not the press); a press
+      within 0.4 s of that turns the screen off (ScreenDark,
+      platform_screen_power: the panel's DPMS); dark, a press only
+      wakes it; held 0.6 s, the switcher (Switcher): the running
+      windows across the top (WinRow: picture, name; a drag
+      sideways scrolls; a tap shows it; a card dragged up rides the
+      finger and fades, let go past a fifth of its height or flicked
+      it ends, else it falls back; no x), the power
+      slide at its foot (PowerSlide: the knob dragged to the end shows
+      Power off and Restart; short of it, it eases back); a press on
+      its ground puts it away. The bottom held press for home is gone.
+      running_apps is the task bar's list. Seen: home, switcher empty
+      and with xcalc, slide opened, card tap back to xcalc, x ended
+      it, dark and wake. NOT on the phone: the real key, DPMS.
+   x. DONE (Nov 1: the menu's bottom cells wiggled and scaled while
+      dragged sideways) each cell sat at a fractional x, so its width
+      rounded to a pixel more or less frame to frame, and its icon's
+      size (0.4 of it) and centring with it. Cells are whole pixels
+      now (strip_cell, x rounded). Measured hidden over six drag
+      steps: every whole icon the same width in each.
+   y. BUILT, not run (Nov 1: Reload in the menu's bottom row also
+      launched the desktop icon under it; an action a control takes
+      ends the press; a launch needs a press and its release on it)
+      AppsGrid keeps the window's stamp of its press (last_click_us)
+      and launches only when the release is that same press's;
+      trinity release_route stops at a release marked no_propagation
+      (no app_object release, no click); SysStrip marks its release.
+   z. BUILT, not run (Nov 1: a reload key; the dialogs are the app's
+      state, Rule #12b) ctrl / cmd + shift + R: trinity gives it to
+      the app first, else applies a ready reload (pending 1); orbiter
+      runs request_swap (session saved). It was the editor's clean
+      rerun of a pane's app, now unreached. Carried across a reload
+      (ui_carry, ui_view; filled with panes_carry at pending 3, taken
+      on the first frame): the switcher, the dark screen, the system
+      menu open and its view, the bottom row's and the switcher's
+      scroll (orbiter strip_shift, switch_shift; the elements take
+      them at their first tick), the power slide opened (slide_open).
+   aa. BUILT, not run (Nov 1: no orbiter button at the bar's top
+      left, too Apple-like; the right end opens the menu) the bar's
+      first button (globe_el, 'bar_title') is gone; the right end opens
+      the main menu: a phone's signal (BarSignal; it no longer opens the
+      phone app, which runs from the apps screen), else the date
+      (bar_clock, BarClock, lit while the menu is up; right_w gives it
+      4.6 units, the window's arrows and close left of it).
+   bb. BUILT, not run (Nov 1: a hot reload started Steam again; Steam
+      is a service) found in his log: the reloaded instance ran
+      run_startup again (the Wayland display survives, so its start
+      path ran), "started steam -silent" twice, no press involved.
+      Kept across a reload now: startup_ran (persist; once a process)
+      and bg_slots (persist; the services' host slots, kept current
+      each frame by bg_track): adopt_live_slots marks those slots
+      background again, before the new instance places any window.
+   cc. BUILT, not run (Nov 1: a press anywhere on the bar opens the
+      basic navigator; a menu name or button keeps its own action) a
+      press on the bar's own ground (target 'system') runs globe_press,
+      but not while a menu was up as the press began (press_menu: the
+      navigator had opened behind the orbiter menu);
+      a click on the free space over a docked window (BarGrab) is its
+      title's (navigator, or an app's address), else globe_press. The
+      date opens the main menu for now; on orbiter-os it is to open a
+      clock panel (the user's, later).
+   dd. BUILT, not run (Nov 1: the OS simple, no swipe; a keyboard
+      for apps with no field, legacy ones and games) a keyboard button
+      in the bar, left of its right end, on a phone while an app is in
+      view (keys_btn: a running app shown, or a window), never while
+      the main menu is up; lit while the
+      keyboard is up; a press, or ctrl / cmd + shift + K (trinity
+      hands it to the app before any field), puts it up or away
+      (keys_force: 1, -1, 0
+      as the focus wants; a new focus's want resets it; carried across
+      a reload in ui_carry). A typed key counts as the user's act
+      (trinity user_us), so a field it brings up (the home filter) may
+      take the focus and the keyboard. devices maps the volume keys
+      (PLATFORM_KEY_VOLUME_DOWN 350, _UP 351), the app's alone; orbiter
+      does nothing with them yet. Limit: the flick keyboard sends key
+      presses only, no releases (a game may see a held key).
+   ee. BUILT, not run (Nov 1: the navigator's menus would not shut on
+      a second press) the navigator sits in the main menu, so a path
+      piece's drawer shut back to the main menu, a drawer still up; the
+      next pointer move over the piece (crumb_hover) opened it again.
+      crumb_hover now does nothing over the main menu alone, as
+      menu_hover already did.
+   ff. BUILT, not run (Nov 1: no x close buttons; the phone only for
+      now, the desktop keeps them) on use_mobile none of: the new-file
+      cancel, the dialog's panel_close, a window's title close
+      (modicon), the title's tabclose, the navigator's snav_close, the
+      bar's pane close or minus (pane_close_el: the panel toggle keeps
+      its place). The task bar's chip close never shows on a phone (no
+      task bar); the editor gutter's x is hover only. An app ends by the
+      switcher's flick up.
+   gg. BUILT, not run (Nov 1: widgets' borders the app cards' colour)
+      DeskWidget draws every widget's border itself: 1 px, #ffffff16
+      (#ffffff30 hovered), as NodeList draw_tile's cards; its clip and
+      border at 14 px corners (was 8). stocks as a widget draws its glass
+      card with no stroke (the host's border); alone it keeps its own.
+   hh. BUILT, not run (Nov 1: the home screen's bar has a menu
+      'orbiter', the same action: the orbiter menu) menu_group_els
+      leads with MenuTop 'orbiter' (at -2, the app-name look) on the
+      home screen and while the main menu is up (lit); a press is
+      desk_menu_open (opens, again shuts).
+   ii. BUILT, not run (Nov 1: menus covered the keyboard; never
+      possible) a phone's drawers (drawer_area) end at the keyboard's
+      top (b41%) while it is up (keys_up or words wanted), else run to
+      the foot.
+      Then (the navigator's path menus started a third in and covered
+      the main menu's foot): a phone's drawer is always the whole width
+      (l0; it took the main menu's offset over it), and over the main
+      menu it stops at that menu's bottom row (b{dock_w}) when no
+      keyboard is up.
+   jj. BUILT, not run (Nov 1: the home filter filters the widgets
+      too; each widget's view hides or shows its own elements) trinity
+      element widget_filter (Live, after widget_top: every trinity app
+      builds again); orbiter's widget_place sends 'set widget_filter
+      <apps_filter>' to each widget when it changes (AppView
+      filter_sent); stocks shows only the symbols holding the text (any
+      case; shown, the rows' map for presses), or whose company's
+      name does (Yahoo's shortName, stocks row_matches).
+      Then (Nov 1: a widget with nothing matching hides entirely): the
+      widget says so in HM.aspect's third number (stocks tell_shape
+      empty); AppView.no_match; orbiter widget_shown leaves it out
+      while a filter is typed (stacked, and the narrow tabs: its tab
+      too, the shown tab moving to the first that shows).
+   kk. BUILT, not run (Nov 1: the orbiter menu's ground is the
+      background chosen, not a blur) trinity Window.ground_image (the
+      screen's own ground: the frost stage's blur, else the scene; null
+      for solid), appended last in Window, used by on_screen; orbiter's
+      DrawerGround draws it under the SystemDrawer (solid_color when
+      null), no tint, and takes no blur for it. Other drawers as before.
+   ll. BUILT, not run (Nov 1: a larger menu font, one unit on both
+      platforms) tray menus: rows 0.9 -> 1.05 units (MenuBuild rh), row
+      and side text 16 -> 19, headings 18 -> 21, notes 14 -> 16, menu
+      buttons 14 -> 16; all through label_px (the font unit / 22), the
+      same on the phone and the desktop.
+   mm. BUILT, not run (Nov 1: a mere mouse down on a menu's background
+      shuts it) orbiter on_press: a press whose target is the drawer
+      itself or its rows area (MenuDrawer, PanelRows) shuts it.
+   nn. DONE (Nov 1: hosted apps outlived orbiter; seven stocks
+      widgets, knes and phone left running, reparented to the session;
+      they ALWAYS close with the main app) Ctrl+C on orbiter's process
+      group and a quit both ended everything (tested hidden): the apps
+      share the group. The leftovers came from runs that ended another
+      way (a crash or a kill), where nothing told them. Now the kernel
+      does: each hosted app's first process (bound_lock) and orbiter's
+      own window process (the supervised child) take PR_SET_PDEATHSIG
+      SIGKILL, tied to the supervisor (SILVER_SUPERVISOR; started on
+      its main thread); their children were already tied to them. Tested
+      hidden: kill -9 of the supervisor ended orbiter and all three
+      stocks processes within 3 s. A hot reload keeps the supervisor.
+      Launchers rebuilt: orbiter, stocks, console, phone (others at
+      their next build).
+   oo. BUILT, not run (Nov 1: swipe left on a stocks row reveals a
+      Delete button) StockView: a row dragged left (past 8 px, more
+      sideways than up) slides over a red Delete (84 units); let go past
+      half it stays open, else back; a tap on Delete takes the symbol
+      out, elsewhere shuts it; a row is chosen at the release now.
+      The list is kept in <cache>/stocks/symbols.txt (read before the
+      default symbols).
+   pp. BUILT, not run (Nov 1: no back / forward arrows on a phone at
+      all) the navigator's (snav_finder) and each window's
+      (nav_arrows_el) are not made on use_mobile, their room not kept;
+      the dock's are the desktop's alone.
+   qq. BUILT, not run (Nov 1: back and forward by a swipe in from
+      the screen's edges, where there is somewhere to go) trinity
+      Window (a phone): a press within 20 px of the left or right side,
+      moved 48 px inward and more sideways than up or down, is
+      navigate[ -1 ] (left: back) or [ 1 ] (right: forward), once; the
+      press's button lets go and the release clicks nothing (edge_dir,
+      edge_at, edge_done, last members of Window). orbiter.navigate:
+      the navigator's history while it shows, else the active pane's
+      (Editor.nav_walk), refused where nav_mask says there is none.
+   rr. BUILT, not run (Nov 1: no keyboard toggle button on the bar's
+      right side; I took the menu's Keyboard cell out first by
+      misreading, now put back) the bar's keyboard button (keys_btn,
+      keys_w, bar_keys) is gone; ctrl / cmd + shift + K still toggles
+      the keyboard (keys_force).
+   ss. BUILT, not run (Nov 1: ctrl / cmd + space used by orbiter
+      still reached rgen as a space, pausing it) trinity key_event gives
+      ctrl / cmd + space to the app first; taken (no_default), neither
+      it nor its release (chord_space, a Window member after
+      plain_app) reaches the focus, so a hosted app never reads it.
+   tt. BUILT, not run (Nov 1: a single press toggles home and the
+      switcher) power_key's release: the switcher up goes back to home;
+      home showing (the active pane empty, no menu or navigator up)
+      opens the switcher; from anywhere else, home.
+   uu. BUILT, not run (Nov 1: a flicked card froze the view until the
+      app closed, then vanished; it should fly out first, the close in
+      the background) devices host_app_stop waits for the app's own
+      close (300 ms, then SIGTERM) on a detached thread, never the
+      caller's (every app close, not only the switcher's). WinRow: a
+      flicked card flies up and fades (going; lift eased to 1.6 card
+      heights), and the app ends once it is out (1.3).
+   vv. BUILT, not run (Nov 1: the signal's name no wider than the
+      word 'Orbiter') BarSignal draws the carrier's name itself in at
+      most that width, a longer one cut with an ellipsis (its face's
+      label clear); sig_w (the bar's right end) follows.
+      The simulated phone's carrier is 'Mobile' (modem/tests/fake_mm.py
+      OperatorName; modem's test expects it), was 'Orbiter Mobile'.
+      Then (40% less cut the name; more width): its room is the
+      measured width plus 4 px, still at most the word Orbiter's;
+      then 10% more, then 15% more (x 1.265).
+   ww. BUILT, not run (Nov 1: the agent's end button flush at the
+      title's right, no border, square; always on a PC, a swipe right
+      shows it on a phone) an AltTab (seg_radius 0, clear) the title's
+      full height at its right edge; on a phone only for
+      orbiter.end_shown, set by a drag leftward on the title, from the
+      right where end sits (AgentHead, 24 px, more sideways than up); a phone's title acts at its
+      release: a tap hides a shown end, else opens or shuts as before.
+      Its label 16 x the unit (label_px is not scaled by trinity).
+   xx. BUILT, not run (Nov 1: 'featured' typed in the navigator found
+      no folder; the list's text sat offset with its side column
+      hidden) search lists folders whose own name holds the text first
+      (index_dirs: from the index's paths under the project root, once
+      each, 50 at most; checkout/ only with remotes); a module's folder
+      is not listed twice. The index has files only: folders were found
+      solely as modules. CommitView.list_layout sets side_w from
+      side_fit itself (it was 168 until a draw set it: the rows and
+      cells sat right by the hidden column).
+      Then (still no folders: a pick with an extension filter typed
+      searched its files alone): typing in a pick also lists the
+      folders named so, first: those on the paths of its files
+      (pick_cache, up to the project root), then index_dirs; each once.
+   yy. BUILT, not run (Nov 1: the navigator's filter bar sat in from
+      the left on a phone) the pane's bar at the navigator's foot
+      started after the navigator's dock column (bl9 = dock_w), which a
+      phone's navigator does not have; 0 on use_mobile.
+   zz. BUILT, not run (Nov 1: the menu rows' left side did not scale
+      with a phone's density or the font scale) the row's text offset
+      already scaled (Layer label_offset x the font unit); its icon (16),
+      the check dot (3 at 15), the keys' margin (12) and the group's
+      strip (30) were fixed px: now x ux_unit (TrayRow.draw,
+      MenuGroup.draw).
+   aaa. BUILT, not run (Nov 1: 'remotes' edge to edge as the bar's
+      left part, no rounding, no margins) RemoteToggle: the bar's full
+      height (t0 b0), radius 0, a 1 px line on its left only, 3.55
+      units wide (was 78 px, unscaled). Then (too wide, a gap above):
+      2.7 units, t-0.2 b-0.2 (over the title's spacing_y 0.2).
+   bbb. BUILT, not run (Nov 1: a press anywhere in the agents area,
+      not a title or the bottom row, goes back: shuts the menu; there
+      were dead zones) orbiter on_press: a target that is AgentHome,
+      PlatformView, a PlatAvatar, or another child of AgentHome but a
+      title, body, console, label or button shuts the menu (each avatar
+      spans the platform; the AgentHome and platform wrapper ground took
+      presses with no rule: the dead zones). Avatars no longer open their
+      agent by a press.
+   ccc. BUILT, not run (Nov 1: a Wayland app's own header showed a
+      strip at the top) the header cut was 46 px, but the compositor
+      gives windows the text size's scale (wlc_set_scale set_size /
+      22): their 46 units are 46 x that in pixels. The cut is scaled so.
+   ddd. BUILT, not run (Nov 1: the switcher's ground is the
+      background chosen, not a tint over the windows behind) Switcher
+      draws Window.ground_image (else solid_color) over its area, as the
+      orbiter menu does.
+   eee. BUILT, not run (option 1, Nov 1) trinity: element.keyboard[]
+      (a hook after is_animating: every trinity app builds again)
+      returns the app's own keyboard element; on a phone app_render
+      mounts AppKeys (the keyboard's place, l0 b41% r0 b0: its bar
+      with a down arrow, the element under it) or, put away
+      (Window.app_keys_hidden), AppKeysTab (an up arrow in the
+      corner); Window.app_keys_px is the height it takes. Hosted apps
+      draw it in their own window (orbiter's keyboard stays off: knes
+      wants no words). trinity/images down.svg, up.svg. knes:
+      keyboard[] is NesPad (d-pad, SELECT, START, B, A: NesKey sets
+      and clears its bit of pad_st on press and release); its picture
+      fits above it. Was: OPEN, asked (an app sets what the keyboard shows; knes
+      a NES controller) the user: the app returns a mere element, shown
+      inside the keyboard we already have (its size, its top bar with
+      the down arrow always), a user area in it. Asked: knes is hosted
+      (another process), so either knes draws the keyboard in its own
+      window (proposed) or orbiter shows a picture of knes's element.
+      knes's keys: / A, . B, Shift Select, Enter Start, arrows the pad.
+      REDONE (Nov 2, his shot: two keyboards, knes's pad in its own
+      window and orbiter's letters under it; "a class we return
+      which is instanced and rendered in there by the system"):
+      element.keyboard[] -> Au_t (the class). Hosted, trinity tells
+      the host its name (HM.keys 27, three bytes a message) and
+      draws nothing; orbiter (AppView.app_keys) loads the app's
+      module for it (module_load, shared with the scenes), makes it
+      (trinity keys_made) and gives it to its own keyboard
+      (FlickKeys.pad: the bar with the down arrow, the pad in the
+      keys' place; the arrow sets Window.app_keys_hidden, orbiter's
+      AppKeysTab brings it back). Alone, trinity's AppKeys makes it.
+      The pad's keys are key presses and releases (Window
+      input_key_state), so the same class works hosted and alone.
+      Seen hidden, knes alone on a simulated phone: the pad at the
+      foot, A pressed and let go reached knes (code 47 down, up).
+      NOT run: orbiter hosting it (his orbiter was running).
+      Fixed in silver for it: Au_t had no type id of its own, so a
+      method returning Au_t registered as returning Au (an override
+      check failed in debug; release passed garbage: knes crashed).
+      e_typeid implements Au_t's id, from libAu's Au_Au_t_i, and an
+      imported member is never defined (aether evar). A line
+      casting an Au_t to Au_t is now redundant (shader.ag itype).
+   fff. BUILT, not run (Nov 1: Aeon white in orbiter, its flower
+      gone) the hosted Aeon's own picture (its socket's shot) was white:
+      it opened flower888 with "unsaved edits kept from before", a held
+      copy in install/home/aeon/.cache/aeon/shadow from Oct 20 04:57,
+      equal to its base (no edits), older than the real file (21:04):
+      the old render graph (a layers / AeonOver pass). open_shadow now
+      drops a held copy older than its real file (logged). The stale
+      copy is left for the next open to drop.
+   ggg. BUILT, not run (Nov 1: a fresh start of orbiter started the
+      apps left open, as a hot reload keeps them; the log: n64 on
+      mario64.z64 from the restored pane) restore_session, when
+      startup_ran is empty (a fresh process; a reload keeps it),
+      marks every restored pane quiet; the pane's first mount of an
+      app (a handler module or a program) within 5 s goes home
+      instead (orbiter quiet_mount). A hot reload adopts as before.
+   hhh. BUILT, not run (Nov 1: an instance's Code on n64 running
+      mario64 showed the rom, not n64.ag) orb.code opens the app's own
+      module (Editor.module_path of AppView.app_mod), else its origin;
+      the file it was opened on (the rom, the document) is never it.
+   iii. BUILT, not run (Nov 1: the bar's orbiter opened the menu
+      behind the switcher, which stayed up) a menu opening
+      (drawer_toggle) puts the switcher away; the switcher opening (a
+      held power key, the home press) shuts an open menu first.
+   jjj. BUILT, not run (Nov 1: 'remotes' text sat low) RemoteToggle's
+      label_offset 0 -3 (scaled by the unit).
+   kkk. BUILT, not run (Nov 1: the Quit action back in the app menu
+      for now) the app menu ends with Run when not running, else Quit
+      (orb.quit: close_task, as the switcher's flick).
+   lll. DONE (Nov 1: --clean re-ran the exports every time; they are
+      one-off, kept by their results) each export func runs once:
+      aether emit_export_funcs asks Au au_export_due(module.func, the
+      module file's FNV hash) and after it ran au_export_done writes
+      <install>/tmp/exports/<share>.<module>.<func> holding the hash.
+      A later build (--clean too) skips it; a changed module source
+      or --export (SILVER_EXPORT_FORCE) runs it again. Checked: a
+      second `silver --clean --build keyboard` ran no export func.
+      Then the phone start crashed (SIGSEGV in Au_hold_members from
+      app_render): the keyboard hook sat after element's non-public
+      methods, so keyboard*[] was called a slot off (AGENTS 1b's
+      shape) and gave a bad element. It sits after screen_ground now,
+      among the public hooks; trinity and every module over it built
+      --clean. Seen hidden on the simulated phone: orbiter up.
+   mmm. BUILT, not run (Nov 1: all our apps on the apps screen, not
+      featured alone; nothing that cannot run here) orbiter app_entries
+      also lists every root module whose source says `export software`
+      (on a phone only those built: install/build/libsilver-<n>.so);
+      `export platforms ['x64']` (aura and every featured module today:
+      x64 downloads, or never built for arm64) hides a module on another
+      machine (runs_here; this_arch from /proc/sys/kernel/arch).
+      os-bootstrap phone_shell builds every root app that runs on arm64
+      with `silver -d fp6` after orbiter (a failure is said and left out),
+      so Install and Update carry them.
+   nnn. BUILT, not run (Nov 1: a free window's path menu filled the
+      screen; then: a phone allows no windows like that) on use of
+      SILVER_MOBILE every pane fills the screen: pane_floats is false,
+      pull_free does nothing (the strip and bar drags), a background
+      program's window and a process's second window show in the
+      active pane (no floating pane). The drawers keep the phone's
+      whole-width rule.
+   ooo. BUILT (Nov 1: the phone SHOULD build; orbiter-os is an
+      IDE with everything the PC has) a phone app opened its source:
+      silver-host builds every slot app before it runs, and the phone
+      had no install/include (Au's headers), no CA certificates (git
+      clones failed) and no .git. phone_rootfs now carries the whole
+      fp6 build (imports' silver-tokens), every header (ours, then
+      the phone's own over them), .git, the PC's CA bundle and
+      /etc/gitconfig (safe.directory *: the files are uid 1000).
+      Update sends the same: headers and .git whole the first time
+      (stamp .inc), then newer ones; the tokens; the product links
+      (rewritten to the phone's install/build). Update sends in 4 MB
+      pieces, each confirmed (OK-42) into /root/.update.tar, then
+      unpacks: one whole stream stalled at 127 KB and at 42 MB.
+      The phone's tty rule hides it from the PC's ModemManager
+      (ID_MM_DEVICE_IGNORE): its AT / QCDM probes typed into the
+      shell port. silver-host as pid 1 mounts /dev/pts (forkpty
+      failed: no console worked). A phone never shows the console
+      band (no task bar to shut it). The build card (the avatar
+      building) shows for any compiling app, not only once silver's
+      events give a percent. Seen: 169 pieces through, headers,
+      certificates and git on the phone; a phone build running
+      (imports' export tests first: no export stamps there). NOT
+      seen: a phone build finishing, the build card on the phone.
+      Then (Nov 2: validate the phone's build HERE, not on the
+      phone by trial): support/fp6-box.sh runs a command as the
+      phone's root on this PC: arm64 by a static qemu-aarch64
+      (install/tmp/fp6-box/qemu-aarch64, 10.1.2 linux-user) through
+      binfmt_misc in a user namespace (platform/native/build/fp6-box,
+      a copy of unshare: apparmor's silver-host profile allows it);
+      the tree is what phone_rootfs ships, as overlays (fp6
+      sysroot, silver's files, fp6 build / lib / bin, headers fp6's
+      over ours, shares; CA, gitconfig, product links), writes to
+      install/tmp/fp6-box/work. Found by it, each fixed:
+      - modem's and wifi's stand-in tests waited a fixed second for
+        their fake service: they wait for its name on the bus now.
+      - wizard's t_hardware_match reads pci.ids: pci.ids in fp6.agi.
+      - silver on arm64 searched /usr/include/x86_64-linux-gnu for
+        system headers (aether.c): <sys/reboot.h> was not found;
+        it takes the machine's own (aarch64-linux-gnu).
+      - building an import on the phone (a --clean) needs build
+        tools: cmake make ninja-build meson pkgconf autoconf
+        automake libtool bison flex patch xz-utils curl gettext in
+        fp6.agi.
+      - silver laid an import's overlay down before fetching its
+        submodules: tls's overlay file inside mbedtls's
+        tf-psa-crypto made that submodule's clone fail on any fresh
+        checkout (this PC's predates the overlay). A fresh clone
+        now fetches submodules first (silver.c checkout).
+      - mbedtls's generators need python3-jinja2 and
+        python3-jsonschema (fp6.agi).
+      - an archive import unpacked as root kept the archive's owner
+        uids: silver's tar takes --no-same-owner.
+      - our own libraries' pkg-config files named this PC's
+        platform/fp6 folder: phone_rootfs and orbiter-apply.sh
+        (Update) rewrite them to /src/silver/install.
+      - a module's data under its plain name (share/keyboard: the
+        ja / zh / en tables; share/scenes: the baked maps, 416 MB;
+        n64, orbiter ...) was never shipped: Install and Update
+        took only share/silver-<m>. Both take share/<m> too; the
+        .shares record was removed, so the next Update sends every
+        share once (~600 MB more).
+      - modem, tray and wifi named dbus's arm64 header folder only
+        in the sysroot form (-I=): built on the phone itself
+        dbus-arch-deps.h was not found. The native -I is there too.
+      - speech's kokoro model is a .tar.bz2: bzip2 (and unzip) in
+        fp6.agi.
+      - aeon imported Blender's x64 tarball and bpy wheel on every
+        machine: under ifdef [ x86_64 ] now (no .blend import on
+        the phone).
+      - OPEN, the user's call: psx's --clean rebuilds its BIOS for
+        MIPS; the phone's LLVM is AArch64 only (his pick), so that
+        step fails there. A plain build uses the shipped BIOS.
+      - an import's own tar lines (speech's kokoro) kept the packer's
+        uids as root too: silver's main sets TAR_OPTIONS to
+        --no-same-owner (no change for a user: tar never keeps them).
+      Clean sweep in the box (Nov 2): colortest console rgen stocks
+      knes asnes n64 clint build; phone (dbus path), keyboard
+      (bzip2), aeon (Blender) fixed, rerun; psx above.
+      - the box only (no GPU under qemu): Ubuntu's arm64 lavapipe
+        in install/tmp/fp6-box/lvp, VK_DRIVER_FILES on it.
+      Seen in the box (--clean, every import from source): img
+      (zlib, libpng, libtiff), gltf, tls (mbedtls and its
+      submodules), devices and trinity (Vulkan, SPIR-V) compiled
+      and linked for arm64.
+      Before every Update: the apps' builds pass in the box.
+   fff2. BUILT, seen hidden (Nov 2: the NES pad had no diagonals and
+      no arrows; the NES's look exactly, then SNES and Genesis)
+      trinity/gamepad.ag: PadCross (the d-pad: eight ways by the
+      finger's angle round its middle, 45 degree sectors, none in the
+      middle; a slide moves between them; arrows drawn on each arm,
+      lit while held; looks nes, snes, genesis), PadKey (held while
+      pressed), PadWord (a printed word as tall as its box), pad_fit.
+      knes NesPad: grey body, black face, the cross, striped middle,
+      SELECT / START pills, B and A red in grey squares, red print.
+      asnes SnesPad (keyboard[]): the grey bone, L and R, the cross,
+      SELECT / START, X A B Y blue red yellow green; asnes takes the
+      default keys as a fallback when no binding matches
+      (pad_key_bit). rgen GenesisPad (keyboard[]): black body, the
+      round pad, START, A B C rising. Seen: NES diagonal up + right,
+      the slide to right, release (knes's key log); SNES START in
+      orbiter (Mario World title to file select); Genesis START
+      alone (Sonic title to the level).
+      Then (Nov 2: multi-touch, the pad and A together) devices on
+      KMS reads a multitouch screen's slots (protocol B): slot 0 is
+      the mouse as one finger was; each other finger goes out as a
+      touch (on_touch, as Android's). trinity: element.multi_touch
+      (its last member: every trinity app builds again; done for
+      orbiter and its imports, knes, asnes, rgen) and
+      Window.touch_event: a finger past the first presses, moves and
+      releases the element under it that takes touches, each at its
+      own place; Window.touching while one is dispatched. PadCross
+      and PadKey take touches; the d-pad reads the event's place.
+      Socket: `touch <id> begin|move|end x y`. Seen hidden: knes
+      alone, right held by the mouse and A by a finger (pad 81),
+      then A held while a finger slid up, up-right, right; orbiter
+      hosting knes, both lit at once. NOT on the phone: its slots.
+      Then (Nov 2: inner glows and gradients to show each button's
+      shape) gamepad.ag draws every part lit from above, sized to it:
+      pad_fill (top to foot), pad_inset (an inner glow: oy over 0
+      the top rim, under 0 the foot), pad_drop, pad_sheen,
+      pad_panel (raised or sunk), pad_tone, pad_stop. PadKey has a
+      face colour and a kind (dome, dish, pill); pressed it sinks
+      (no drop, shade round its edge). The cross is one rounded path
+      (fill and inner glows; its drop shadow from its two bars: a
+      path's outer shadow darkened its whole box), arrows cut in.
+      The pads' bodies, faces, plates, dishes and strips are panels;
+      their own key subclasses are gone. Seen hidden: NES, SNES,
+      Genesis at rest and held.
+      Then (Nov 2: haptics; the keyboard panel's setting) devices
+      platform_haptic[ ms, strength ] (linux: the first input device
+      with force feedback and no keys or axes, a rumble effect
+      uploaded once, a play written; looked for again every 5 s;
+      0 elsewhere). The FP6's motor is the AW86927 (aw86927.ko in
+      the fp6 kernel). trinity haptic_level (a module global: under
+      0 off, 0 not set = medium) and haptic_tap[]: tap impulses
+      only, the faintest (the user's words): one 8 ms click at
+      0.2 (light, the default; medium 0.35, strong 0.55) as a finger
+      lands on a PadKey, the d-pad or a keyboard key; nothing on
+      slides or flicks. orbiter's keyboard panel: haptics off / light /
+      medium / strong (set_haptic, StatePersist), a tap at a
+      change. Read on the phone (Nov 2): event4 aw86927-haptics,
+      EV_FF only, FF_RUMBLE offered; the touchscreen (event3, ESWIN
+      EPH86XX) has ABS_MT_SLOT, positions and tracking ids.
+      OPEN: asnes
+      alone hidden never starts its CPU (stuck at 00:8000, before
+      this change too), hosted it runs.
    m. OPEN (Oct 31) the mic crash in the code editor: reproduced
       (debug, SILVER_DICT_FILE): after the take typed "Testing.",
       SIGSEGV in FlickStrip.render (keyboard.ag:1184) on a freed
@@ -1748,6 +2284,199 @@ phone itself (arm64), not busybox. Order:
    in the session scratchpad (qemu-aarch64 -L <root>); run with
    SILVER_ISOLATE=0 (the launcher's re-exec of itself has no
    binfmt here).
+
+## Apps on the Fairphone 6 — state (Nov 1 2026, end of a session)
+
+Update (Nov 1, late): APPS DRAW ON THE PHONE. colortest filled the screen
+magenta (slot: real pid, 1116x2392 at scale 2, frames flipping); the
+phone app drew and took presses. Each item below is checked unless
+marked.
+Tools (session scratchpad, gone after: rebuild them): the phone's
+bash on /dev/ttyACM1 (stty raw -echo; `set +H` first: ! breaks
+lines); orbiter's socket on the phone is /run/trinity-orbiter.sock
+(python3 there: press/release/key/text/shot); `shot /tmp/x.png` +
+base64 over the port gives the phone's screen here; the slot table
+is the mmap of SILVER_SHM_FD (fd 21 in an app): HostShared layout
+in devices.c (tex[0] of a slot: pid fd0 fd1 front gen w h fmt).
+Fixed this session (in source; on the phone):
+1. on-phone compiles: a missing syntax map counted as stale, so
+   every app compiled on the phone and ran the imports' tests
+   (modem's needed python3-dbus/gi; img's test_jpeg read a
+   git-ignored map). silver.c: only an existing older map is
+   stale; img test_jpeg reads img/tests/baseline.jpg;
+   fp6.agi has python3-dbus python3-gi.
+2. the phone has no system ld: silver's linux links and launchers
+   use -fuse-ld=lld; aether objects use .init_array
+   (allvm_init_array; lld ignores .ctors); launcher links no
+   glfw/X11 (glfw removed everywhere).
+3. Update (os-bootstrap phone_update; `os-bootstrap --update
+   true` runs it from a shell) now sends every app launcher,
+   every built module's share (all once, then changes;
+   <stamp>.shares), packages new in fp6.agi (<stamp>.debs), and
+   says its progress to the phone's bar (orbiter-note.sh -> `app
+   update i k`, a red line under the bar's orbiter name).
+4. a hosted app on KMS opened the screen itself (not master) and
+   never published frames: vk.ag sets backbuffer when
+   platform_is_kms && host_slot > 0; null-window guards
+   (trinity.ag alive/shut, vk.ag set_title); scale 1 if unset.
+5. the app's pid in the slot was the sandbox's (2): silver-host
+   set SO_PASSCRED on the holder's socket after the fork; now
+   before (both sandbox sites). After it: colortest's slot had its
+   real pid, both dma-buf fds, front flipping, no PULL FAIL in
+   /tmp/orbiter-resz.log, and the pane showed its 1280x800 frame
+   1:1 (trinity's ground #101014: colortest's old cv.reset clear
+   is painted over; colortest now paints magenta with a rect).
+6. cross builds overwrote this machine's install/bin/<app> links
+   with the phone's ARM launchers: silver.c links only native.
+   Stray on-phone install/export/silver-<app>.agi with no props:
+   (from builds on the phone) made orbiter run colortest and phone
+   as programs in a console: removed on the phone.
+Fixed Nov 1, late (all in source, Update carries them):
+7. the clock: modem-prepare.sh (init runs it before orbiter, then
+   --enable for the phone's life) restores /var/lib/orbiter-clock at
+   boot (never 1970 under orbiter), takes the modem's time
+   (qmicli --dms-get-time; its source says 'device': may drift),
+   saves the time every 15 s. Products built on the phone while it
+   was 1970 made the host reload apps ("source changed").
+8. service every boot: modem-prepare.sh --enable checks every 15 s:
+   the SIM's primary session (set up + online when missing), the
+   modem enabled (mmcli --enable). Logged with uptimes in
+   /var/log/modem-prepare.log. Two cold boots: SIM set up at 40 s,
+   modem enabled at 70 s, connected; no hand work.
+9. scale: trinity takes the panel's density without the screen
+   (devices platform_kms_density) and keeps it on resize.
+10. Update: live when no library under orbiter changed
+   (orbiter-apply.sh: tar --compare, --unlink-first, the host's
+   staged reload applied by ctrl+shift+R; else restart; why in
+   install/tmp/apply.log). Sends each app's export record
+   (install/export/silver-<app>.agi: props, system_bus), launchers,
+   shares. phone_update and wizard's scripts are command { }
+   blocks (a quoted string inside one keeps its line breaks).
+   `os-bootstrap --update true` runs it from a shell.
+11. launch is x64 only (export platforms): Update skips it.
+OPEN, in order:
+a. the phone app with the modem: "no modem to call with" was its
+   view missing the system bus (its export record was gone);
+   record restored, NOT yet verified on the phone (charging).
+b. stocks: TLS certificates now that the clock is right: NOT run.
+c. the switcher console (built, on the phone, seen only hidden).
+d. the phone's top bar 15% taller (built, sent): NOT seen.
+e. a stopped app needs orbiter restarted before a tap starts it.
+Rules learned: measure each step (slot table, fds, flips, shot);
+never build on the phone (its files get the phone's clock and its
+own export records, which made orbiter run apps as programs).
+
+## Home screen speed on the phone — live list (Nov 2 2026)
+
+the user: double the home screen's frame rate on the FP6.
+Measured with the socket's `animate 1` (draw every frame) and
+`skip <bits>` (leave parts out: 1 ground, 2 masks, 4 cached
+pictures, 8 animated elements, 32 the copy to the display).
+1. DONE at rest nothing is drawn (media_app.render skips a frame
+   with nothing animating, a frame every 250 ms at most).
+2. DONE the screen's first pass each frame clears instead of
+   loading the last frame (Render vk_render_pass[2], fresh_render).
+3. DONE the copy into the scanout image is in the screen's own
+   batch (vk kms_record), not a submit and a wait of its own.
+4. DONE the GPU clock at its top while the screen is lit
+   (devices kms_gpu_speed: governor performance; dark it goes
+   back to simple_ondemand).
+Forced drawing: 46 -> 62 fps. With every part left out: 94 fps.
+NEXT: what still costs ~7 ms a frame with nothing drawn (compose
+3.7 ms a frame, the flush 4.5 ms); the uber shader's work before
+its mode branch.
+Cyber typing test (Nov 2, 500 fps the goal; simulated phone,
+1116 x 2484 px, Steam's folder open, cyber typed and deleted 10
+times; /tmp/claude-1000/kv/cyber.sh): 247 -> 305-337 fps.
+5. DONE lean fragment routines (CanvasLean: rect, image, masked
+   image, rounded box), same uniforms; Pipeline.routine picks one
+   per draw (Canvas.pick_routine), else the uber shader.
+6. DONE the apps grid: each card's picture made once
+   (card_picture), placed while easing; out-of-view cards land at
+   once (they had kept it repainting).
+7. DONE a new element's first style lands its transitions at
+   once (the keyboard's keys faded from nothing at each mount).
+8. DONE the merge: Style.compute kept per element (style_avails;
+   dropped on a sheet reload); apply_args tests the set bit first;
+   per-element stats only with --stats. Update 170 -> 120 ms/s.
+9. DONE the grid's fade mask layer was composed every frame (~400/s,
+   ~140 ms/s): its animated children (DeskTabs, DeskWidget) made it
+   stale. Neither is animated now: orbiter desk_service runs each
+   widget's app per frame and marks its widget on a new picture;
+   DeskTabs repaints on a new tab or names. The stocks app drew
+   every frame asked: a paned app's window counts as hidden, which
+   kept it from ever being quiet; it skips render and publish when
+   quiet now (trinity media_app.drew). StockView polls from the
+   app's on_frame, not animated. Masks ~400/s -> ~13/s; 384 fps.
+10. POTENTIAL (not started) text: each draw_text decodes its
+   string three times (ellipsis, measure, draw); per letter a
+   FreeType cmap call and a linear search of every cached glyph
+   (GlyphAtlas.find, CanvasFont.get_glyph_id); each string its own
+   draw. Ideas: a codepoint -> slot map per font and size; laid
+   out quads kept per font, size, text and width; colour in the
+   vertices so strings merge into one draw.
+
+## Status everywhere — live list (Nov 1 2026)
+
+the user: far more status everywhere; leaving the user not knowing
+what is going on is invalid. Every wait says what it waits on.
+1. BUILT, not seen: an app opening shows the build card through
+   compiling AND starting (until its first frame), not a blank pane.
+2. OPEN an app that ends or fails says why (exit code, crash, build
+   error, its log's last line) and stays until the user acts.
+3. OPEN the bar's signal names the modem's step: SIM not ready,
+   setting up, modem off, enabling, searching, registered.
+4. OPEN Update shows each stage on the phone's bar: building (which
+   app), sending, applying, live or restarting.
+5. OPEN the boot shows its steps (modules, SIM, modem) on screen.
+6. BUILT, not seen (Nov 2: orbiter rebuilding itself shows in
+   the bar) while orbiter's own build runs (its events), the bar
+   shows its name and a pill 'building 45%' filled so (self_build,
+   StatusLabel).
+7. OPEN every app's card shows its build's real progress (the apps
+   screen reads build_poll's events; not seen on screen).
+8. BUILT, seen hidden on a simulated phone (Nov 2: a build is a
+   task preparing: the switcher, an entire screen on a phone, holds
+   build diagnostics; horizontal, faded at both sides, the chosen
+   one eased to the middle, rubber band ends; cards 30% shorter;
+   the chosen shows more than its console) silver keeps a copy of
+   what a build prints (Au au_print_mirror) as install/tmp/builds/
+   <module>.log beside its events. The switcher (WinRow) lists
+   builds first (running, or ended within 15 min, newest first, at
+   most 8; a flick up puts one away until it runs again), then the
+   apps; cards keyed 'b:<module>' / 'a:<iid>'; the chosen card eases
+   to the middle (lead = half the row's spare width), a drag past
+   an end gives a third as far and springs back, a drag let go
+   chooses the card nearest the middle. A chosen build shows the
+   build screen above the row (BuildScreen): its name, word and
+   share, then blocks (errors, tests, compiling, linking, exports)
+   with their counts and latest three lines; a tap opens a block's
+   whole log, another shuts it. Build cards: their share as a fill,
+   'tests n / m'. The chosen build crosses a reload (persist
+   ui_build); request_swap now carries the screen's state for a
+   product already built (it went only on pending 3).
+   Fixed in silver for it: `v += x` on a vec of numbers stored 0
+   (the value boxed as f64, 4 bytes copied): the operator method
+   takes it as the element type (aether e_assign). features
+   t_vec_f32_add_assign; 272/273 (t_codegen_resource as before).
+   Every carried switcher / slide / scroll value had been 0.
+   Then (Nov 2: only for actively launched items; a build error
+   stays) the row shows a build only for a module with an instance
+   here (launched), and only while it builds or once it failed; a
+   failure stays until put away or built again; a build that
+   succeeds leaves the row (its screen with it). An error reads
+   as the file's name and place, then its words (the compiler's
+   own place left out), wrapped. Seen hidden: a launched module
+   that failed showed alone (no builds from the shell), its error
+   in full; it stayed through a reload.
+   OPEN: a module's own tests (`silver --test`, run in the app's
+   process) are not in the build's log; a build's errors from
+   child processes (clang, the linker) neither.
+8. OPEN (Nov 2, the user's idea) a high-level build screen, shown
+   in the task switcher (a build is a task preparing): its
+   categories (compiling, tests run / passed, linking ...) at a
+   glance, each drilled into for its log (the compiler's, the
+   tests').
 
 ## Phone calls and texts on the Fairphone 6 — live list (Oct 29 2026)
 

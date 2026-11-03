@@ -2,6 +2,7 @@
 # library it needs; GTK3, ICU and libxml2 are the system's, glib ours
 export 51.0
 export software ['everyday']
+export platforms ['x64']
 export icon ['gedit']
 export build none
 

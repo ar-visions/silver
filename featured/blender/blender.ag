@@ -3,6 +3,7 @@
 # display, and .blend files open in it
 export 4.5.14
 export software ['creative']
+export platforms ['x64']
 export icon ['blender']
 export extensions ['.blend']
 # how a file of it runs: this program in install/bin, the file after

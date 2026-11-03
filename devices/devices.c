@@ -67,6 +67,7 @@ void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
+void platform_screen_power(int on) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}
@@ -577,6 +578,7 @@ const uint8_t* platform_joystick_hats   (int j, int* n) { if (!pad_read(j)) { *n
 bool platform_motion(float* accel, float* gyro) { return false; }
 int platform_orientation(void) { return 0; }
 const char* platform_device_id(void) { return ""; }
+int platform_haptic(int ms, float strength) { return 0; }
 bool platform_peer_start(const char* service) { return false; }
 void platform_peer_stop(void) {}
 bool platform_peer_connected(void) { return false; }
@@ -663,6 +665,7 @@ void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
+void platform_screen_power(int on) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}
@@ -1076,6 +1079,8 @@ bool platform_joystick_present(int j) { return false; }
 const uint8_t* platform_joystick_buttons(int j, int* n) { *n = 0; return NULL; }
 const float*   platform_joystick_axes   (int j, int* n) { *n = 0; return NULL; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { *n = 0; return NULL; }
+int platform_haptic(int ms, float strength) { return 0; }
+
 // the sensor queue lives on the app thread's looper; pump() drains it
 bool platform_motion(float* accel, float* gyro) {
     if (!g_motion) return false;
@@ -1109,6 +1114,7 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <time.h>
 #include <linux/joystick.h>
 #include <linux/input.h>
+#include <glob.h>
 #include <sched.h>
 #include <dirent.h>
 #include <xf86drm.h>
@@ -1177,6 +1183,13 @@ static int    g_ev_x0[64], g_ev_x1[64], g_ev_y0[64], g_ev_y1[64];
 static bool   g_ev_direct[64];
 // a touch begun (1) or ended (0) in this frame, else -1
 static int    g_touch = -1;
+// a multitouch screen (protocol B): each slot a finger; slot 0 is
+// the mouse, the others go out as touches
+#define MT_SLOTS 16
+static bool   g_ev_mt[64];
+static int    g_mt_x0, g_mt_x1, g_mt_y0, g_mt_y1;
+static int    g_mt_cur;
+static struct { double x, y; bool down, was, moved; } g_mt[MT_SLOTS];
 static double g_ev_scan;
 static double g_mx, g_my;
 static bool   g_moved;
@@ -1302,8 +1315,40 @@ static void kms_fast_cores(void) {
     fprintf(stderr, "kms: on the %d fastest of %d cores\n", fast, n);
 }
 
+// the panel's density as platform_kms_open works it out, for an app
+// that draws for orbiter and never takes the screen
+float platform_kms_density(int minor) {
+    char path[32];
+    snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return 1.0f;
+    float sc = 1.0f;
+    drmModeRes* res = drmModeGetResources(fd);
+    for (int c = 0; res && c < res->count_connectors; c++) {
+        drmModeConnector* conn = drmModeGetConnector(fd, res->connectors[c]);
+        if (!conn) continue;
+        if (conn->connection == DRM_MODE_CONNECTED && conn->count_modes > 0
+            && conn->mmWidth > 0) {
+            drmModeModeInfo* m = &conn->modes[0];
+            for (int k = 0; k < conn->count_modes; k++)
+                if (conn->modes[k].type & DRM_MODE_TYPE_PREFERRED) { m = &conn->modes[k]; break; }
+            double s = floor(m->hdisplay * 25.4 / conn->mmWidth / 160.0);
+            sc = s < 1.0 ? 1.0f : (float)s;
+            drmModeFreeConnector(conn);
+            break;
+        }
+        drmModeFreeConnector(conn);
+    }
+    if (res) drmModeFreeResources(res);
+    close(fd);
+    return sc;
+}
+
+static void kms_gpu_speed(bool fast);
+
 int platform_kms_open(int minor) {
     kms_fast_cores();
+    kms_gpu_speed(true);
     char path[32];
     snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
     int fd = open(path, O_RDWR | O_CLOEXEC);
@@ -1617,6 +1662,16 @@ static void kms_open_inputs(void) {
         unsigned long props = 0;
         ioctl(fd, EVIOCGPROP(sizeof props), &props);
         g_ev_direct[i] = (props >> INPUT_PROP_DIRECT) & 1;
+        struct input_absinfo si, mx, my;
+        g_ev_mt[i] = g_ev_direct[i] &&
+            ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &si) == 0 && si.maximum > 0 &&
+            ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &mx) == 0 &&
+            ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &my) == 0;
+        if (g_ev_mt[i]) {
+            g_mt_x0 = mx.minimum; g_mt_x1 = mx.maximum;
+            g_mt_y0 = my.minimum; g_mt_y1 = my.maximum;
+            g_mt_cur = si.value >= 0 && si.value < MT_SLOTS ? si.value : 0;
+        }
         g_ev[i] = fd;
         g_ev_on[i] = true;
         g_ev_n++;
@@ -1692,6 +1747,9 @@ static int evkey_to_key(int c) {
         case KEY_RIGHTALT:   return PLATFORM_KEY_RIGHT_ALT;
         case KEY_RIGHTMETA:  return PLATFORM_KEY_RIGHT_SUPER;
         case KEY_COMPOSE:    return PLATFORM_KEY_MENU;
+        case KEY_POWER:      return PLATFORM_KEY_POWER;
+        case KEY_VOLUMEDOWN: return PLATFORM_KEY_VOLUME_DOWN;
+        case KEY_VOLUMEUP:   return PLATFORM_KEY_VOLUME_UP;
     }
     return 0;
 }
@@ -1743,8 +1801,25 @@ static int kms_mods(platform_window* w) {
 }
 
 // the connector's DPMS: the panel on or off, the mode kept
+// the gpu's clock: its top while the screen is lit (orbiter-os owns
+// the machine; a frame waits on it), its governor's choice while dark
+static void kms_gpu_speed(bool fast) {
+    glob_t g;
+    if (glob("/sys/class/devfreq/*gpu*/governor", 0, NULL, &g) != 0) return;
+    for (size_t i = 0; i < g.gl_pathc; i++) {
+        int f = open(g.gl_pathv[i], O_WRONLY);
+        if (f < 0) continue;
+        const char* gv = fast ? "performance" : "simple_ondemand";
+        if (write(f, gv, strlen(gv)) < 0)
+            fprintf(stderr, "kms: gpu governor: %s\n", strerror(errno));
+        close(f);
+    }
+    globfree(&g);
+}
+
 static void kms_screen(bool on) {
     if (g_drm_fd < 0 || !g_drm_conn) return;
+    kms_gpu_speed(on);
     drmModeObjectProperties* ps = drmModeObjectGetProperties(g_drm_fd,
         g_drm_conn, DRM_MODE_OBJECT_CONNECTOR);
     for (uint32_t i = 0; ps && i < ps->count_props; i++) {
@@ -1760,14 +1835,66 @@ static void kms_screen(bool on) {
     fprintf(stderr, "kms: screen %s\n", on ? "on" : "off");
 }
 
-static void kms_event(platform_window* w, int dev, struct input_event* e) {
-    // a phone's power key: the screen off, and on again
-    if (e->type == EV_KEY && e->code == KEY_POWER) {
-        if (e->value == 1) kms_screen(g_screen_off);
+// the app's word: the panel lit or dark
+void platform_screen_power(int on) {
+    if (g_drm_fd >= 0 && g_screen_off == (on != 0)) kms_screen(on != 0);
+}
+
+// a multitouch screen's event: slots gathered, sent at the frame's end
+static void kms_mt_event(platform_window* w, struct input_event* e) {
+    if (e->type == EV_ABS) {
+        if (e->code == ABS_MT_SLOT) {
+            g_mt_cur = e->value >= 0 && e->value < MT_SLOTS ? e->value : -1;
+            return;
+        }
+        if (g_mt_cur < 0) return;
+        int xr = g_mt_x1 - g_mt_x0, yr = g_mt_y1 - g_mt_y0;
+        if (e->code == ABS_MT_TRACKING_ID) {
+            g_mt[g_mt_cur].down = e->value >= 0;
+        } else if (e->code == ABS_MT_POSITION_X && xr > 0) {
+            g_mt[g_mt_cur].x = (double)(e->value - g_mt_x0) / xr * w->width;
+            g_mt[g_mt_cur].moved = true;
+        } else if (e->code == ABS_MT_POSITION_Y && yr > 0) {
+            g_mt[g_mt_cur].y = (double)(e->value - g_mt_y0) / yr * w->height;
+            g_mt[g_mt_cur].moved = true;
+        }
         return;
     }
+    if (e->type != EV_SYN || e->code != SYN_REPORT) return;
+    for (int i = 0; i < MT_SLOTS; i++) {
+        bool turn = g_mt[i].down != g_mt[i].was;
+        if (!turn && !(g_mt[i].moved && g_mt[i].down)) continue;
+        double px = g_mt[i].x, py = g_mt[i].y;
+        if (px < 0) px = 0; if (px > w->width - 1)  px = w->width - 1;
+        if (py < 0) py = 0; if (py > w->height - 1) py = w->height - 1;
+        if (i == 0) {
+            // the first slot is the mouse, as one finger always was
+            g_mx = g_cx = px;
+            g_my = g_cy = py;
+            kms_cursor_put();
+            if (w->on_cursor) w->on_cursor(w, px / g_kms_scale, py / g_kms_scale);
+            if (turn && w->on_mouse)
+                w->on_mouse(w, PLATFORM_MOUSE_LEFT,
+                    g_mt[i].down ? PLATFORM_PRESS : PLATFORM_RELEASE, w->mods);
+        } else if (w->on_touch) {
+            int ph = !turn ? PLATFORM_TOUCH_MOVE
+                   : g_mt[i].down ? PLATFORM_TOUCH_BEGIN : PLATFORM_TOUCH_END;
+            w->on_touch(w, i, ph, px / g_kms_scale, py / g_kms_scale);
+        }
+        g_mt[i].was = g_mt[i].down;
+        g_mt[i].moved = false;
+    }
+}
+
+static void kms_event(platform_window* w, int dev, struct input_event* e) {
     // dark: a touch in a pocket presses nothing
     if (g_screen_off && g_ev_direct[dev]) return;
+    if (g_ev_mt[dev]) {
+        // its single-touch copies (BTN_TOUCH, ABS_X) are left out
+        if (e->type == EV_ABS || e->type == EV_SYN) kms_mt_event(w, e);
+        if (e->type == EV_ABS || e->type == EV_SYN ||
+            (e->type == EV_KEY && e->code == BTN_TOUCH)) return;
+    }
     if (e->type == EV_KEY) {
         int c = e->code;
         // a finger down or up: sent with its frame, after the point
@@ -2812,6 +2939,73 @@ bool platform_joystick_present(int j) { return js_open(j); }
 const uint8_t* platform_joystick_buttons(int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = g_js_nb[j]; return g_js_buttons[j]; }
 const float*   platform_joystick_axes   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = g_js_na[j]; return g_js_axes[j]; }
 const uint8_t* platform_joystick_hats   (int j, int* n) { if (!js_open(j)) { *n = 0; return NULL; } js_pump(j); *n = 1; return g_js_hats[j]; }
+// the phone's vibration motor: an input device that only rumbles
+// (a game pad, which has keys and axes too, is never taken for it)
+static int    g_ff_fd = -1;
+static int    g_ff_id = -1;
+static int    g_ff_ms, g_ff_mag;
+static double g_ff_seek = -10.0;
+
+static bool ff_bit(const unsigned long* bits, int b) {
+    int w = 8 * (int)sizeof(long);
+    return (bits[b / w] >> (b % w)) & 1;
+}
+
+static void ff_find(void) {
+    for (int i = 0; i < 64 && g_ff_fd < 0; i++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/input/event%d", i);
+        int fd = open(path, O_RDWR | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) continue;
+        unsigned long ev[1] = {0};
+        unsigned long ff[(FF_MAX + 64) / 64] = {0};
+        bool only = ioctl(fd, EVIOCGBIT(0, sizeof ev), ev) >= 0 &&
+            ff_bit(ev, EV_FF) && !ff_bit(ev, EV_KEY) && !ff_bit(ev, EV_ABS);
+        if (only && ioctl(fd, EVIOCGBIT(EV_FF, sizeof ff), ff) >= 0 &&
+            ff_bit(ff, FF_RUMBLE)) {
+            char name[128] = "";
+            ioctl(fd, EVIOCGNAME(sizeof name), name);
+            fprintf(stderr, "devices: haptics on event%d %s\n", i, name);
+            g_ff_fd = fd;
+        } else close(fd);
+    }
+}
+
+// a pulse of ms at a strength 0..1; 0 when there is no motor
+int platform_haptic(int ms, float strength) {
+    if (g_ff_fd < 0) {
+        // a motor's driver may load after we start: look again now
+        // and then
+        double t = now();
+        if (t - g_ff_seek < 5.0) return 0;
+        g_ff_seek = t;
+        ff_find();
+        if (g_ff_fd < 0) return 0;
+    }
+    if (ms <= 0 || strength <= 0) return 0;
+    if (strength > 1) strength = 1;
+    int mag = (int)(strength * 0xffff);
+    if (g_ff_id < 0 || ms != g_ff_ms || mag != g_ff_mag) {
+        struct ff_effect fx;
+        memset(&fx, 0, sizeof fx);
+        fx.type = FF_RUMBLE;
+        fx.id = g_ff_id;
+        fx.replay.length = ms;
+        fx.u.rumble.strong_magnitude = mag;
+        fx.u.rumble.weak_magnitude = mag;
+        if (ioctl(g_ff_fd, EVIOCSFF, &fx) < 0) return 0;
+        g_ff_id = fx.id;
+        g_ff_ms = ms;
+        g_ff_mag = mag;
+    }
+    struct input_event e;
+    memset(&e, 0, sizeof e);
+    e.type = EV_FF;
+    e.code = g_ff_id;
+    e.value = 1;
+    return write(g_ff_fd, &e, sizeof e) == (ssize_t)sizeof e;
+}
+
 bool platform_motion(float* accel, float* gyro) { return false; }
 int platform_orientation(void) { return 0; }
 /* the machine id stands in for the phone's unique identifier */
@@ -3520,17 +3714,35 @@ HOST_API int host_app_name(int slot, char* out, int cap) {
 // NEVER slot 0: the peer OWNS the shared window — one window, many
 // processes is the whole design. stopping the peer stops its WORLD, in
 // place, while the process keeps compositing the shell.
+// HM.close was just posted: the app closes itself (its sound stops
+// cleanly). a SIGTERM only for one that has not, 300ms on; waited on
+// a thread of its own, so the caller's frames go on meanwhile
+struct app_stop { int slot; int pid; };
+static void* app_stop_wait(void* p) {
+    struct app_stop st = *(struct app_stop*)p;
+    free(p);
+    HostShared* hs = host_shared();
+    for (int i = 0; i < 30; i++) {
+        if ((hs && hs->app[st.slot].state == 3) || kill((pid_t)st.pid, 0) != 0)
+            return NULL;
+        usleep(10000);
+    }
+    if (kill((pid_t)st.pid, 0) == 0) kill((pid_t)st.pid, SIGTERM);
+    return NULL;
+}
+
 HOST_API void host_app_stop(int slot) {
     HostShared* hs = host_shared();
     if (!hs || slot <= 0 || slot >= HOST_APPS) return;
     int pid = hs->app[slot].app_pid;
-    // HM.close was just posted: the app closes itself (its sound stops
-    // cleanly). a SIGTERM only for one that has not, 300ms on
-    for (int i = 0; i < 30 && pid > 0; i++) {
-        if (hs->app[slot].state == 3 || kill((pid_t)pid, 0) != 0) return;
-        usleep(10000);
-    }
-    if (pid > 0 && kill((pid_t)pid, 0) == 0) kill((pid_t)pid, SIGTERM);
+    if (pid <= 0) return;
+    struct app_stop* st = malloc(sizeof(*st));
+    if (!st) return;
+    st->slot = slot;
+    st->pid  = pid;
+    pthread_t t;
+    if (pthread_create(&t, NULL, app_stop_wait, st) == 0) pthread_detach(t);
+    else free(st);
 }
 
 // how the peer ended: 0 unset, >0 exit code+1, <0 -signal, -1000 build failed

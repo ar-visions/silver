@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <dlfcn.h>      // coverage libraries run in-process after build
 #include <ctype.h>      // package names are lower-case on every distro
+static void silver_tree_from_source(silver a);
 #endif
 
 #ifdef BUILD_LIBRARY
@@ -1308,6 +1309,7 @@ static void progress_clear_line() {
 extern AU_LINK_aether void (*aether_error_prelude)(void);
 extern AU_LINK_Au     void (*au_print_prelude)(void);
 extern AU_LINK_Au     void (*au_print_after)(void);
+extern AU_LINK_Au     FILE* au_print_mirror;
 #undef verify
 #define verify(a, t, ...) ({ if (!(a)) { progress_clear_line(); \
     au_verify_fail(seq, (symbol)t, ## __VA_ARGS__); } true; })
@@ -1358,6 +1360,10 @@ static void progress_events_for(cstr module) {
     snprintf(progress_default, sizeof(progress_default),
         "%s/%s.events", dir, nm);
     progress_events();
+    // what it prints, kept beside its events: the build screen's log
+    char lp[1024];
+    snprintf(lp, sizeof(lp), "%s/%s.log", dir, nm);
+    if (!getenv("SILVER_EVENTS")) au_print_mirror = fopen(lp, "w");
 }
 
 static void progress_event(const char* fmt, ...) {
@@ -2271,11 +2277,10 @@ static path build_silver_host(silver a) {
 #ifdef __APPLE__
     cstr host_libs = "-isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk -lAu -lm -framework Cocoa -framework IOKit -framework CoreFoundation -framework CoreGraphics -framework QuartzCore";
 #elif defined(_WIN32)
-    // glfw's win32 backend; no dl/X11/m here
     // -lAu: the posix shims (dlopen, backtrace, basename, ...) live in posix.obj
-    cstr host_libs = "-lAu -lglfw3 -lgdi32 -lopengl32 -luser32 -lkernel32 -lshell32";
+    cstr host_libs = "-lAu -luser32 -lkernel32 -lshell32";
 #else
-    cstr host_libs = "-lAu -ldl -lglfw3 -lX11 -lm";
+    cstr host_libs = "-lAu -ldl -lm";
 #endif
 #ifdef _WIN32
     // the define cannot use shell quoting: nothing expands it before
@@ -2298,8 +2303,14 @@ static path build_silver_host(silver a) {
         SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, subsystem, SILVER, SILVER, SILVER, share_name, silver_build_tag(a));
 #else
     // libAu resolves by soname: the tree's lib/ here, /usr/lib/<app>/ packaged
-    string cmd = f(string, "%s/install/bin/clang %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
-        SILVER, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name, silver_build_tag(a));
+#ifdef __linux__
+    // our lld: orbiter-os carries no system ld
+    cstr  host_ld = "-fuse-ld=lld";
+#else
+    cstr  host_ld = "";
+#endif
+    string cmd = f(string, "%s/install/bin/clang %s %s %s -o %o %o %s -I%s/install/include -L%s/install/lib -Wl,-rpath,%s/install/lib -Wl,-rpath,'$ORIGIN/../lib/%o' -DSILVER_ROOT='\"%s\"' -DSILVER_SHARE_NAME='\"%o\"' -DSILVER_BUILD_TAG='\"%s\"'",
+        SILVER, host_ld, a->debug ? "-O0 -g" : "-O2", a->asan ? "-fsanitize=address -shared-libasan" : "", host_dst, host_src, host_libs, SILVER, SILVER, SILVER, a->name, SILVER, share_name, silver_build_tag(a));
     // a glibc board's launcher: its arch, its sysroot, its own libAu
     // (the tree puts build/ beside lib/, as install has them)
     symbol tri = a->sysroot ? platform_triple(a) : "";
@@ -3983,8 +3994,10 @@ AU_EXPORT void silver_init(silver a) {
     if (((aether)a)->timing || ((aether)a)->coverage) update_product = true;
     // the syntax map is a product too: cached runs must not leave a map
     // older than the source (the editor withholds stale coloring)
-    if (!a->is_external && a->format && len(a->format)) {
-        u64 fmt_m = file_exists("%o", a->format) ? modified_time(a->format) : 0;
+    // none at all is no stale map: a shipped build (a phone) has none
+    if (!a->is_external && a->format && len(a->format) &&
+        file_exists("%o", a->format)) {
+        u64 fmt_m = modified_time(a->format);
         if (fmt_m < module_file_m) update_product = true;
     }
     // --release --test builds are measurement artifacts: always rebuilt,
@@ -4011,6 +4024,8 @@ AU_EXPORT void silver_init(silver a) {
         if (done && instanceof(done, path)) {
             a->product = hold((path)done);
             pthread_mutex_unlock(&compiled_lock);
+            // built earlier this run: its importer still needs its tree
+            silver_tree_from_source(a);
             return;
         }
         building* owner = building_find(compiled_key(a)->chars);
@@ -4027,19 +4042,7 @@ AU_EXPORT void silver_init(silver a) {
         // it into ITS .source, and an empty subtree here was why a module
         // built while its imports were current (spectra, speech) never saw
         // a later trinity change. the tree comes back from our own .source
-        if (a->tree && file_exists("%o", a->source_path)) {
-            FILE *sf = fopen(a->source_path->chars, "r");
-            if (sf) {
-                char buf[4096];
-                while (fgets(buf, sizeof(buf), sf)) {
-                    buf[strcspn(buf, "\n")] = '\0';
-                    if (!*buf) continue;
-                    path p = path(buf);
-                    if (!get(a->tree, (Au)p)) set(a->tree, (Au)p, (Au)map(hsize, 8));
-                }
-                fclose(sf);
-            }
-        }
+        silver_tree_from_source(a);
         a->product = hold(absolute(a->product_link));
         deploy_module_resources(a);
         publish_product(a);
@@ -9941,7 +9944,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                 }
                 make_dir(project_f);
                 checkout_verify(a, label, "unpack", "unpack",
-                    f(command, "tar xf %o -C %o --strip-components=1",
+                    f(command, "tar xf %o -C %o --strip-components=1 --no-same-owner",
                         arc, project_f));
             } else
             // shallow: only the pinned commit comes down, never the history
@@ -9977,6 +9980,14 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                         "git clone --progress --depth 1 --branch %o --single-branch %o %o",
                         commit, uri, project_f));
             }
+
+            // submodules before the diff and overlay: an overlay file
+            // inside one (tls's tf-psa-crypto) blocks its clone
+            if (dir_exists("%o/.git", project_f))
+                checkout_verify(a, label, "submodule", "submodule",
+                    f(command,
+                      "git -C %o submodule update --init --recursive --depth 1 --progress",
+                      project_f));
 
             // apply module-path diff if one exists (e.g. vulkan/MoltenVK.diff)
             path diff_f = f(path, "%o/%o.diff", a->module_path, name);
@@ -10514,6 +10525,22 @@ static void symlink_resources(path src, path dst) {
 // and collect every transitive source path into `out`, de-duped via `seen`. the tree is
 // the authoritative structure; flattening it here yields a COMPLETE source list (unlike
 // the old flat per-module shortcut, which missed transitive deps).
+// a cached module's dependency tree, read back from its .source
+static void silver_tree_from_source(silver a) {
+    if (!a->tree || !a->source_path) return;
+    if (!file_exists("%o", a->source_path)) return;
+    FILE *sf = fopen(a->source_path->chars, "r");
+    if (!sf) return;
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), sf)) {
+        buf[strcspn(buf, "\n")] = '\0';
+        if (!*buf) continue;
+        path p = path(buf);
+        if (!get(a->tree, (Au)p)) set(a->tree, (Au)p, (Au)map(hsize, 8));
+    }
+    fclose(sf);
+}
+
 static void silver_collect_tree(map tree, array out, map seen) {
     if (!tree || !len(tree)) return;
     pairs(tree, i) {
@@ -10956,6 +10983,10 @@ none silver_build_product(silver a) {
     if (a->base_install)
         plat_link = f(string, "%o -L%o/lib -Wl,-rpath,%o/lib",
             plat_link, a->base_install, a->base_install);
+#ifdef __linux__
+    // our lld: orbiter-os carries no system ld
+    plat_link = f(string, "-fuse-ld=lld %o", plat_link);
+#endif
 #endif
 
     // windows: link to a fresh temp, then atomically replace the product.
@@ -11067,9 +11098,14 @@ none silver_build_product(silver a) {
         a->live_binary = hold(host_dst);
         // symlink install/bin/<name> -> the built host binary, so the app runs
         // by name and dbg/lldb find it (the binary itself stays in build/)
+        // a device's build is not this machine's program: no link
+        bool native = !a->platform || !len(a->platform) ||
+            cmp(a->platform, "native") == 0;
         path bin_link = f(path, "%o/bin/%o", a->install, a->name);
-        unlink(bin_link->chars);
-        create_symlink(host_dst, bin_link);
+        if (native) {
+            unlink(bin_link->chars);
+            create_symlink(host_dst, bin_link);
+        }
     }
 
     silver_user_link(a);
@@ -11104,6 +11140,11 @@ none silver_build_product(silver a) {
     if (sr) {
         array all  = array(64);
         map   seen = map(hsize, 64);
+        // the module's own file first: readers find its folder there
+        if (a->module_file) {
+            set(seen, (Au)a->module_file, (Au)_bool(true));
+            push(all, (Au)a->module_file);
+        }
         silver_collect_tree(a->tree, all, seen);
         each(all, path, p) fprintf(sr, "%s\n", p->chars);
         // the module's own .c/.cc/.mm are sources too: an edit there rebuilds
@@ -12764,6 +12805,10 @@ enode parse_import(silver a) {
                         defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                 }
                 g_import_with = null;
+                // its whole source tree, not its main file alone: an edit to
+                // any file of it (trinity's vk.ag) rebuilds what imports it
+                if (external && external->module_file && external->tree && a->tree)
+                    set(a->tree, (Au)external->module_file, (Au)external->tree);
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
                 external_name    = silver_install_name(external);
@@ -15725,6 +15770,8 @@ int main(int argc, cstrs argv) {
     signal(SIGBUS,  silver_crash);
     signal(SIGINT,  silver_stopped);
     signal(SIGTERM, silver_stopped);
+    // as root (the phone) an import's tar would keep its packer's uids
+    setenv("TAR_OPTIONS", "--no-same-owner", 0);
 #endif
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies

@@ -2021,6 +2021,112 @@ func sk_color [ clr: rgba ] -> vec4f
 
 
 # ---- Canvas class (GPU draw-list builder) ----
+# lean routines: CanvasUI's uniforms, one draw mode's work each.
+# a paint takes one only when its state needs nothing else: square
+# corners, no colour filter, no clip (Canvas.pick_routine)
+CanvasUI CanvasLean
+    # the pixel in the rect's own space: the transform undone
+    func lean_pos [ p: @vec2f ] -> GLSL vec2f {
+        mat2 M    = mat2(ubo.xform_row0.x, ubo.xform_row0.z,
+                         ubo.xform_row0.y, ubo.xform_row0.w);
+        float det = M[0].x * M[1].y - M[0].y * M[1].x;
+        mat2 Minv = (abs(det) < 1e-6) ? mat2(1.0, 0.0, 0.0, 1.0)
+            : mat2(M[1].y, -M[0].y, -M[1].x, M[0].x) / det;
+        return Minv * (p - ubo.xform_row1.xy);
+    }
+
+    # the share of this pixel's square inside the rect
+    func lean_cover [ lp: @vec2f ] -> GLSL float {
+        vec2 lo = max(lp - vec2(0.5), ubo.rect.xy);
+        vec2 hi = min(lp + vec2(0.5), ubo.rect.xy + ubo.rect.zw);
+        vec2 ov = max(hi - lo, vec2(0.0));
+        return ov.x * ov.y;
+    }
+
+# DrawMode.rect: a flat fill by its exact area
+CanvasLean CanvasRectLean
+    func fragment [] -> GLSL none {
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x
+                || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
+        float cov = lean_cover(lean_pos(v_pos));
+        if (cov <= 0.0) discard;
+        vec4  fc = ubo.fill_color;
+        float ca = fc.a * cov * ubo.params.y;
+        o_color  = vec4(fc.rgb * ca, ca);
+    }
+
+# DrawMode.image: a texture in a square rect
+CanvasLean CanvasImageLean
+    func fragment [] -> GLSL none {
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x
+                || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
+        vec2 lpos  = lean_pos(v_pos);
+        vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
+        uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
+        vec4 texel = texture(image, uv) * ubo.image_tint;
+        float aa   = step(0.5, lean_cover(lpos));
+        o_color    = texel * aa * ubo.params.y;
+    }
+
+# DrawMode.image_masked: a texture through the mask's red
+CanvasLean CanvasMaskLean
+    func fragment [] -> GLSL none {
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x
+                || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
+        vec2 lpos    = lean_pos(v_pos);
+        vec2 uv_rect = (lpos - ubo.rect.xy) / ubo.rect.zw;
+        vec2 uv      = mix(ubo.grad0.xy, ubo.grad0.zw, uv_rect);
+        vec2 uv_m    = mix(ubo.mask_uv.xy, ubo.mask_uv.zw, uv_rect);
+        float m      = texture(mask, uv_m).r;
+        float aa     = step(0.5, lean_cover(lpos));
+        o_color      = texture(image, uv) * m * aa * ubo.params.y;
+    }
+
+# DrawMode.solid: a rounded box, one colour fill and an even stroke
+CanvasLean CanvasBoxLean
+    func fragment [] -> GLSL none {
+        if (ubo.crop_rect.z > ubo.crop_rect.x) {{
+            if (v_pos.x < ubo.crop_rect.x
+                || v_pos.x > ubo.crop_rect.z ||
+                v_pos.y < ubo.crop_rect.y || v_pos.y > ubo.crop_rect.w)
+                discard;
+        }}
+        vec2  lpos = lean_pos(v_pos);
+        vec2  half_size = ubo.rect.zw * 0.5;
+        float dist = sdf_rounded_rect(lpos, ubo.rect.xy + half_size,
+                                      half_size, ubo.radii);
+        float w = max(0.5 * length(vec2(dFdx(dist), dFdy(dist)))
+                      + ubo.params.z, 0.0001);
+        float fill_cov = 1.0 - smoothstep(-w, w,
+                dist - ubo.fill_offset);
+        float hw = ubo.stroke_sides.x * 0.5;
+        float nd = -dist + ubo.stroke_offset;
+        float stroke_cov = (hw > 0.0 && ubo.params.x > 0.0)
+            ? smoothstep(-hw - w, -hw + w, nd)
+              * (1.0 - smoothstep(hw - w, hw + w, nd))
+            : 0.0;
+        vec4 f = ubo.fill_color;
+        vec4 s = ubo.stroke_color;
+        float fa = f.a * fill_cov;
+        float sa = s.a * stroke_cov;
+        vec4 c = vec4(f.rgb * fa, fa);
+        c = vec4(s.rgb * sa, sa) + c * (1.0 - sa);
+        o_color = c * ubo.params.y;
+    }
+
+
 Render Canvas
     public path        : CanvasPath
     mutable states     : vec CanvasState
@@ -2034,6 +2140,9 @@ Render Canvas
     public ft_lib      : handle
     public glyph_atlas : GlyphAtlas
     intern ui_shader     : CanvasUI
+    # the lean routines (CanvasLean), and the pipeline that runs them
+    intern lean_shaders  : vec shader
+    intern ui_pipe       : Pipeline
     intern sdf_tex       : Texture
     intern image_override : Texture
     intern mask_override  : Texture
@@ -2162,6 +2271,17 @@ Render Canvas
         for [ m: Model ] in models
             m.finish[ a, 0 ]
 
+        # routines 1 2 3: image, rect, image_masked (pick_routine)
+        lean_shaders = vec shader []
+        lean_shaders.push[ CanvasImageLean [ vk: vk ] ]
+        lean_shaders.push[ CanvasRectLean [ vk: vk ] ]
+        lean_shaders.push[ CanvasMaskLean [ vk: vk ] ]
+        lean_shaders.push[ CanvasBoxLean [ vk: vk ] ]
+        ui_pipe = graphics_model.pipelines[0]
+        ui_pipe.routine_frags = vec u64 []
+        for [ ls: shader ] in lean_shaders
+            ui_pipe.routine_frags.push[ cast u64 [ ls.vk_frag ] ]
+
         text_shader = CanvasText [ vk: vk ]
         text_vbo_ring = vec Gpu []
         # one slot now; the rest of the ring is made as text is drawn
@@ -2196,7 +2316,41 @@ Render Canvas
 
     func flush []
         #update[]
+        pick_routine[]
         draw[]
+
+    # a solid draw that the lean box routine draws the same
+    func plain_box [] -> bool
+        u  : ui_shader
+        sd : vec4f [ u.stroke_sides ]
+        mr : f32 [ max[ max[ u.radii.x, u.radii.y ],
+                        max[ u.radii.z, u.radii.w ] ] ]
+        return u.grad_c1.w <= 0.0 && u.stroke_grad_c1.w <= 0.0
+            && u.ramp.x < 0.5 && u.color_filter.w < 0.5
+            && u.shadow_color0.w <= 0.0 && u.shadow_color1.w <= 0.0
+            && u.shadow_color2.w <= 0.0 && u.shadow_color3.w <= 0.0
+            && (u.near_light.w <= 0.0 || u.params.x <= 0.0)
+            && sd.x == sd.y && sd.x == sd.z && sd.x == sd.w
+            && (u.stroke_opts.x != 1.0 || mr > 0.0)
+
+    # the lean routine this draw can take: 0 the uber shader
+    func pick_routine []
+        if [ !ui_pipe ] return
+        md : f32 [ ui_shader.params.w ]
+        r  : vec4f [ ui_shader.radii ]
+        c  : vec4f [ ui_shader.clip_on ]
+        bare   : bool [ c.x < 0.5 && c.y < 0.5 && c.w < 0.5 ]
+        square : bool [ r.x <= 0.0 && r.y <= 0.0 && r.z <= 0.0
+                        && r.w <= 0.0 ]
+        rt : i32 [ 0 ]
+        if [ bare && md == f32[ DrawMode.rect ] ] rt = 2
+        el [ bare && square && ui_shader.color_filter.w < 0.5 ]
+            if [ md == f32[ DrawMode.image ] ] rt = 1
+            el [ md == f32[ DrawMode.image_masked ] ] rt = 3
+        if [ bare && md == f32[ DrawMode.solid ] && plain_box[] ]
+            rt = 4
+        ui_pipe.routine = rt
+
 
     func sync_all []
         sync_fence[]
@@ -3296,6 +3450,7 @@ Render Canvas
         mode : setup_gradient [ st ]
         ui_shader.params = vec4f [ st.stroke_width, st.opacity,
                                    st.blur_rad, mode ]
+        pick_routine[]
         draw[]
         
     func fill_rounded_rect_fast [ x: f32, y: f32, rw: f32, rh: f32,
@@ -3311,6 +3466,7 @@ Render Canvas
         mode : f32 setup_gradient [ st ]
         ui_shader.params = vec4f [ st.stroke_width, st.opacity,
                                    st.blur_rad, mode ]
+        pick_routine[]
         draw[]
 
     func clip_rect [ r_x: f32, r_y: f32, r_w: f32, r_h: f32, rx: f32,

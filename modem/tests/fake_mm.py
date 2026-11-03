@@ -148,7 +148,7 @@ class Modem(Obj):
                     dbus.Struct((dbus.String('qrtr0'),
                                  dbus.UInt32(6)))], '(su)')},
             MM + '.Modem.Modem3gpp': {
-                'OperatorName': dbus.String('Orbiter Mobile'),
+                'OperatorName': dbus.String('Mobile'),
                 'RegistrationState': dbus.UInt32(1),
                 'InitialEpsBearerSettings': dbus.Dictionary(
                     {'apn': dbus.String('fast.t-mobile.com')}, 'sv')},

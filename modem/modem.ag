@@ -11,6 +11,7 @@ ifndef [ windows ]
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include
         -ldbus-1
 import <stdio.h>
 import <stdlib.h>
@@ -1054,15 +1055,17 @@ class ModemStandIn
         lines : txt.split[ '\n' ]
         first : path [ lines[ 0 ] ]
         fake : path '{first.parent_dir[]}/tests/fake_mm.py'
-        dd : '/usr/bin/dbus-daemon --session --fork'
-        dd = '{dd} --print-address=1 --print-pid=1'
-        py : '/usr/bin/python3 {fake}'
-        sh : 'unset LD_LIBRARY_PATH;'
-        sh = '{sh} a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
         args : string '$1'
         if [ simulate ] args = '$1 --reply --watch {getpid[]} $2'
-        sh = '{sh} {py} {args} >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
-        cmd : command [ sh ]
+        cmd : command { unset LD_LIBRARY_PATH;
+            a=$(/usr/bin/dbus-daemon --session --fork --print-address=1
+                --print-pid=1 | tr '\n' ' '); set -- $a;
+            /usr/bin/python3 {fake} {args} >/dev/null 2>&1 &
+            for i in $(seq 100); do /usr/bin/dbus-send --bus=$1
+                --print-reply --dest=org.freedesktop.DBus /
+                org.freedesktop.DBus.ListNames 2>/dev/null
+                | grep -q ModemManager && break; sleep 0.1; done;
+            echo $1 $2 $! }
         fh : handle cmd.stream[]
         if [ !fh ] return false
         b : local i8 [ 512 ]
@@ -1115,7 +1118,7 @@ expect func t_modem_status [] -> bool
     m : Modem [ address: fake.bus ]
     ok : bool [ m.open[] ]
     log 'modem: {m.state} {m.signal} {m.carrier} {m.number}'
-    if [ ok ] ok = m.carrier == 'Orbiter Mobile' && m.signal == 62
+    if [ ok ] ok = m.carrier == 'Mobile' && m.signal == 62
     if [ ok ] ok = m.bars[] == 3 && m.mark[] == 'cell_3'
     if [ ok ] ok = m.number == '+15551230000'
     m.close[]

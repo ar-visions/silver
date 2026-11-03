@@ -131,6 +131,7 @@ Keep it in step with the imports.
 | appmenu.xml (KDE plasma-wayland-protocols 1.13.0; C made from it by wayland-scanner) | wayland (a Qt app's menu address) | https://invent.kde.org/libraries/plasma-wayland-protocols/-/raw/v1.13.0/src/protocols/appmenu.xml | LGPL-2.1-or-later | David Edmundson |
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: mouse, keyboard, desktop_windows as display (white fill added) | trinity/images (mouse, keyboard, display) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: widgets (white fill added) | trinity/images (widgets) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps, list, grid_view (white fill added) | orbiter/images (apps_grid, view_list, grid_view) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: delete_sweep (white fill added) | orbiter/images/delete_sweep.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |

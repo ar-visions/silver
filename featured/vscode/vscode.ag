@@ -2,6 +2,7 @@
 # by its own build on Node 24 into install/lib/code-oss
 export 1.142.0
 export software ['developer']
+export platforms ['x64']
 export icon ['vscode']
 export build none
 

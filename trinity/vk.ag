@@ -200,7 +200,9 @@ class Render
     intern  vk_image_available_semaphore   : VkSemaphore
     intern  vk_render_finished_semaphore   : VkSemaphore
     intern  vk_framebuffer                 : vec VkFramebuffer [2]
-    intern  vk_render_pass                 : vec VkRenderPass  [2]
+    # [0] the pass, [1] the reduce, [2] the first pass of a whole
+    # repaint (clears, never loads the last frame)
+    intern  vk_render_pass                 : vec VkRenderPass  [3]
     intern  last_width                     : i32
     intern  last_height                    : i32
     intern  fb_color_view                  : VkImageView
@@ -539,6 +541,14 @@ class Render
                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
 
     # end the batch readable by later work, sent without a wait
+    # wait one ring slot's submit, if it is still in flight
+    public func wait_slot [ s: i32 ]
+        if [ s < 0 || s >= ring_n || ring_primed[s] == 0 ] return
+        started : i64 [ epoch_micros[] ]
+        vkWaitForFences[ vk.device, 1, @vk_fences[s], VK_TRUE,
+                         UINT64_MAX ]
+        vk.sync_us += epoch_micros[] - started
+
     public func seal [ ]
         if [ !color || !color.vk_image ] return
         begin_record[]
@@ -655,9 +665,14 @@ class Render
             clear_values[0].color.float32[3] = clear_color.w
             clear_values[1].depthStencil.depth   = 1.0
             clear_values[1].depthStencil.stencil = 0
+            # the first pass of a whole repaint clears
+            rp : VkRenderPass [ vk_render_pass[0] ]
+            if [ fresh_render == a ]
+                fresh_render = null
+                if [ vk_render_pass[2] ] rp = vk_render_pass[2]
             render_pass_info : VkRenderPassBeginInfo [
                 sType:         VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-                renderPass:      vk_render_pass[0],
+                renderPass:      rp,
                 framebuffer:     vk_framebuffer[0],
                 renderArea:      VkRect2D [
                     offset: VkOffset2D [ 0, 0 ],
@@ -1016,8 +1031,8 @@ class Render
                 vkWaitForFences[ vk.device, 1, @vk_fences[ri], VK_TRUE,
                                  UINT64_MAX ]
                 ring_primed[ri] = 0
-        for [ i: 0, i < 2, i += 1 ]
-            if [ vk_framebuffer[i] ]
+        for [ i: 0, i < 3, i += 1 ]
+            if [ i < 2 && vk_framebuffer[i] ]
                 vkDestroyFramebuffer[ vk.device, vk_framebuffer[i],
                                       null ]
                 vk_framebuffer[i] = null
@@ -1167,6 +1182,18 @@ class Render
             pDependencies:   dependencies
         ]
 
+        # a pass that begins a frame's whole repaint: no load of the
+        # last (11 MB a screen on a phone, each frame)
+        if [ load_existing ]
+            ld : VkAttachmentLoadOp [ attachments[0].loadOp ]
+            il : VkImageLayout [ attachments[0].initialLayout ]
+            attachments[0].loadOp        = VK_ATTACHMENT_LOAD_OP_CLEAR
+            attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+            result = vkCreateRenderPass[ vk.device, @render_pass_info,
+                    null, @vk_render_pass[2] ]
+            expect result == VK_SUCCESS, "failed to create render pass"
+            attachments[0].loadOp        = ld
+            attachments[0].initialLayout = il
         n_passes : i32 [ 1 + ((reduce) ? 1 : 0) ]
         for [ i: 0, i < n_passes, i += 1 ]
             if [ i == 1 ]
@@ -3548,6 +3575,10 @@ class Pipeline
     # W3C composite operator of the next draws
     public composite        : Composite [ Composite.source_over ]
     intern composite_pipes  : vec u64       # VkPipeline per operator
+    # lean fragment modules, routine 1 up; 0 is the shader's own
+    public routine          : i32
+    public routine_frags    : vec u64
+    intern routine_pipes    : vec u64       # per routine and operator
     public cull_none        : bool
     # keep back faces only (far-side passes)
     public cull_front       : bool
@@ -4085,7 +4116,8 @@ class Pipeline
         vk.bindres_us += epoch_micros[] - br
 
     # the graphics pipeline, blending by a W3C composite operator
-    func build_graphics [ op: Composite ] -> VkPipeline
+    func build_graphics [ op: Composite,
+                          frag: VkShaderModule ] -> VkPipeline
         binding_description: VkVertexInputBindingDescription [
             binding:   0,
             stride:    vbo.vertex_size,
@@ -4152,7 +4184,7 @@ class Pipeline
         shader_stages[1] = VkPipelineShaderStageCreateInfo [
             sType:  VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
             stage:  VK_SHADER_STAGE_FRAGMENT_BIT,
-            module: s.vk_frag,
+            module: frag,
             pName:  "main"
         ]
         viewport_state: VkPipelineViewportStateCreateInfo [
@@ -4277,6 +4309,19 @@ class Pipeline
 
     # the bound pipeline for the current composite operator
     func graphics_pipeline [] -> VkPipeline
+        if [ routine > 0 && vbo && routine_frags
+             && routine <= i32[ routine_frags.count ] ]
+            if [ !routine_pipes ]
+                routine_pipes = vec u64 []
+                for [ i: i32 0, i < 16 * 8, i += 1 ]
+                    routine_pipes.push[ 0 ]
+            rk : i32 [ (routine - 1) * 16 + i32 composite ]
+            if [ routine_pipes[ rk ] == 0 ]
+                fm : VkShaderModule [ cast VkShaderModule [
+                    routine_frags[ routine - 1 ] ] ]
+                rp : build_graphics[ composite, fm ]
+                routine_pipes[ rk ] = cast u64 [ rp ]
+            return cast VkPipeline [ routine_pipes[ rk ] ]
         if [ composite == Composite.source_over || !vbo ]
             return vk_render
         if [ !composite_pipes ]
@@ -4285,7 +4330,7 @@ class Pipeline
                 composite_pipes.push[ 0 ]
         slot : i32 [ i32 composite ]
         if [ composite_pipes[ slot ] == 0 ]
-            made : build_graphics[ composite ]
+            made : build_graphics[ composite, s.vk_frag ]
             composite_pipes[ slot ] = cast u64 [ made ]
         return cast VkPipeline [ composite_pipes[ slot ] ]
 
@@ -4313,7 +4358,8 @@ class Pipeline
         # validator with "module is VK_NULL_HANDLE".
         is_compute_only: bool [ s && s.vk_comp != null && !s.vk_vert ]
         if [ vbo && !is_compute_only ]
-            vk_render = build_graphics[ Composite.source_over ]
+            vk_render = build_graphics[ Composite.source_over,
+                                        s.vk_frag ]
             
         el [ s && s.vk_comp != null ]
             comp_info: VkComputePipelineCreateInfo [
@@ -4354,6 +4400,13 @@ class Pipeline
                         cast VkPipeline [ composite_pipes[ i ] ], null ]
                     vk.pipe_live -= 1
             composite_pipes = null
+        if [ routine_pipes ]
+            for [ i: i32 0, i < i32 routine_pipes.count, i += 1 ]
+                if [ routine_pipes[ i ] != 0 ]
+                    vkDestroyPipeline[ vk.device,
+                        cast VkPipeline [ routine_pipes[ i ] ], null ]
+                    vk.pipe_live -= 1
+            routine_pipes = null
         if [ vk_compute ]
             vkDestroyPipeline[ vk.device, vk_compute, null ]
             vk.pipe_live -= 1
@@ -5904,7 +5957,7 @@ class Texture
 
 Texture Display
     intern semaphore_frame      : Render
-    intern glfw                 : handle
+    intern pwin                 : handle
     public mouse                : vec2f
     # borderless fullscreen state — saved windowed pos/size so we can
     # restore.
@@ -6010,12 +6063,12 @@ Texture Display
     intern isolate_session      : string
     # kms: three LINEAR dma-buf frames the display page-flips
     mutable scan                : vec Texture
-    # text mode: terminal character-grid output. no glfw window, no vk
+    # text mode: terminal character-grid output. no window, no vk
     # surface or swapchain, no vk_context — the Display only hosts the
     # element tree + layout while Window.draw_console paints to a
     # terminal (see trinity.ag).
     public text_mode            : bool
-    # create the glfw window invisible (batch generation: full pipeline,
+    # create the window invisible (batch generation: full pipeline,
     # nothing on screen)
     public hidden               : bool
     # the window is mapped by the first present, not by creation
@@ -6031,23 +6084,23 @@ Texture Display
         if [ final ] return final
         return list.last[]
 
-    # copy text to the system clipboard. keeps glfw contained in trinity
-    # — apps call this on their Window rather than touching glfw
+    # copy text to the system clipboard. keeps the window in trinity
+    # — apps call this on their Window rather than the platform
     # themselves.
     public func set_clipboard [ text: string ]
-        if [ glfw && text ] platform_set_clipboard[ glfw, text.chars ]
+        if [ pwin && text ] platform_set_clipboard[ pwin, text.chars ]
 
     # read the system clipboard (the paste source). returns '' when
     # empty/unset.
     public func get_clipboard [] -> string
-        if [ !glfw ] return ''
-        cs : symbol [ platform_get_clipboard[ glfw ] ]
+        if [ !pwin ] return ''
+        cs : symbol [ platform_get_clipboard[ pwin ] ]
         if [ !cs ] return ''
         return string[ cs ]
 
     # a png file's picture onto the system clipboard
     public func copy_picture [ p: path ] -> bool
-        if [ !glfw || !p ] return false
+        if [ !pwin || !p ] return false
         ps : string '{p}'
         fp : fopen[ ps.chars, 'rb' ]
         if [ !fp ] return false
@@ -6058,14 +6111,14 @@ Texture Display
         got : i64 [ fread[ @buf[ 0 ], 1, n, fp ] ]
         fclose[ fp ]
         if [ got != n || n <= 0 ] return false
-        platform_set_clipboard_png[ glfw, @buf[ 0 ], i32[ n ] ]
+        platform_set_clipboard_png[ pwin, @buf[ 0 ], i32[ n ] ]
         return true
 
     # the clipboard's picture written to p as png; false: none
     public func paste_picture [ p: path ] -> bool
-        if [ !glfw || !p ] return false
+        if [ !pwin || !p ] return false
         n : i32 [ 0 ]
-        bytes : ref u8 [ platform_get_clipboard_png[ glfw, @n ] ]
+        bytes : ref u8 [ platform_get_clipboard_png[ pwin, @n ] ]
         if [ !bytes || n <= 0 ] return false
         ps : string '{p}'
         fp : fopen[ ps.chars, 'wb' ]
@@ -6140,12 +6193,12 @@ Texture Display
         return
 
     func set_fullscreen [ on: bool ]
-        if [ text_mode || backbuffer || !glfw ] return
-        platform_window_set_fullscreen[ glfw, on ]
+        if [ text_mode || backbuffer || !pwin ] return
+        platform_window_set_fullscreen[ pwin, on ]
 
     # true while a framebuffer-size change is queued (debounced in
     # draw[]). lets the idle render loop keep drawing until the resize
-    # is applied — otherwise the final resize lands after the last glfw
+    # is applied — otherwise the final resize lands after the last
     # callback and never repaints until a mouse event.
     public func has_pending_resize [ ] -> bool
         return (pending_w > 0 && pending_h > 0) || swap_needs_recreate
@@ -6224,10 +6277,10 @@ Texture Display
                 vk.physical_device, vk_surface, @caps ]
             ww_i: i32
             wh_i: i32
-            platform_window_get_size[ glfw, @ww_i, @wh_i ]
+            platform_window_get_size[ pwin, @ww_i, @wh_i ]
             width  = ww_i
             height = wh_i
-            scale = platform_window_scale[ glfw ]
+            scale = platform_window_scale[ pwin ]
             if [ caps.currentExtent.width != UINT32_MAX ]
                 extent.width  = caps.currentExtent.width
                 extent.height = caps.currentExtent.height
@@ -6251,17 +6304,19 @@ Texture Display
             # may pass points); points at the screen's density
             mw : i32
             mh : i32
-            platform_window_get_framebuffer[ glfw, @mw, @mh ]
-            scale  = platform_window_scale[ glfw ]
+            platform_window_get_framebuffer[ pwin, @mw, @mh ]
+            scale  = platform_window_scale[ pwin ]
             width  = i32[ mw / scale ]
             height = i32[ mh / scale ]
             extent.width  = u32[ mw ]
             extent.height = u32[ mh ]
         el
+            # no surface: points asked, pixels at its scale
             width  = w_new
             height = h_new
-            extent.width  = w_new
-            extent.height = h_new
+            if [ scale <= 0.0 ] scale = 1.0
+            extent.width  = u32[ f32[ w_new ] * scale ]
+            extent.height = u32[ f32[ h_new ] * scale ]
 
         for [ r: Render, id: string ] in element_targets
             if [ !r ] continue
@@ -6295,6 +6350,7 @@ Texture Display
         resized = true
         if [ kms && !defer_swap ] make_scanout[]
         if [ !backbuffer && !kms && !defer_swap ]
+            pick_present[]
             old_swapchain : VkSwapchainKHR [ Au.live_swapchain_get[] ]
             result: vkCreateSwapchainKHR[ vk.device,
                     VkSwapchainCreateInfoKHR [
@@ -6365,6 +6421,40 @@ Texture Display
         return a
 
         
+    # MAILBOX when offered, else FIFO; benchmark mode IMMEDIATE (no
+    # wait on the refresh; it tears)
+    func pick_present [ ]
+        present_mode = (has_mailbox) ? VK_PRESENT_MODE_MAILBOX_KHR
+            : VK_PRESENT_MODE_FIFO_KHR
+        if [ force_animate && has_immediate ]
+            present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR
+        swap_bench = force_animate
+
+    # kms: the frame into the free scanout image, recorded in the
+    # screen's own batch before it is sent (one submit, one wait); the
+    # flip follows in draw
+    public func kms_record [ cv: Render ]
+        kms_settle[ cv ]
+        if [ !kms || !scan || hidden || (frame_skip & 32) != 0 ]
+            return
+        slot : i32 [ platform_kms_back[] ]
+        if [ slot < 0 || !cv ] return
+        box : local i32 [ 4 ]
+        box[ 0 ] = 0
+        box[ 1 ] = 0
+        box[ 2 ] = i32[ extent.width ]
+        box[ 3 ] = i32[ extent.height ]
+        cv.copy_recorded[ scan[ slot ], @box[ 0 ], 1 ]
+        kms_slot = slot
+
+    # the frame copied last time goes on screen once its submit is
+    # done; the next frame was built while the GPU drew it
+    public func kms_settle [ cv: Render ]
+        if [ kms_slot < 0 ] return
+        if [ cv ] cv.wait_slot[ kms_ring ]
+        platform_kms_flip[ kms_slot ]
+        kms_slot = -1
+
     # kms: three LINEAR exported images at the mode's size, each a
     # drm framebuffer; a new size makes them again
     func make_scanout [ ]
@@ -6465,6 +6555,9 @@ Texture Display
         # repainted before we present. doing it in the swap section
         # (after on_compose) presents the freshly-cleared canvases for
         # one frame: the black flash on resize.
+        # benchmark mode turned on or off: its present mode
+        if [ vk_swapchain && swap_bench != force_animate ]
+            swap_needs_recreate = true
         if [ swap_needs_recreate && !backbuffer && !kms
              && !defer_swap ]
             swap_needs_recreate = false
@@ -6491,12 +6584,12 @@ Texture Display
                 win.mirror_ask = false
                 mirror_pass[ win, r ]
             if [ !r || r.skip || r == skip_target ] continue
-            if [ hold && win.backdrop == r ] continue
+            if [ hold && win.backdrop == r && r.has_drawn ] continue
             if [ r.owner && (r.owner.hide || r.owner.opacity <= 0.0) ]
                 continue
             if [ !r.due[ now_ms ] && !repaint_once ] continue
             r.draw*[]
-            r.sync_fence*[]
+            r.seal[]
             r.has_drawn    = true
             r.last_draw_ms = now_ms
             if [ win && win.backdrop == r ] drew = true
@@ -6512,7 +6605,8 @@ Texture Display
         for [ r: Render ] in list
             if [ !r.due[ now_ms ] && !repaint_once ] continue
             # covered by a pane: only the screen compose (last) draws
-            if [ hold && r != list.last[] ] continue
+            # (a target remade since its last draw still draws once)
+            if [ hold && r != list.last[] && r.has_drawn ] continue
             # a chain stage reads the backdrop: unchanged since its last
             # pass, skip
             if [ !repaint_once && bd && r != list.last[] && r.has_drawn
@@ -6522,7 +6616,7 @@ Texture Display
             draw_start : i64 [ epoch_micros[] ]
             r.draw*[]
             draw_end : i64 [ epoch_micros[] ]
-            r.sync_fence*[]
+            r.seal[]
             wait_end : i64 [ epoch_micros[] ]
             if [ prof_report ]
                 log '  target {r.tag} {r.width}x{r.height} draw_us={draw_end - draw_start} wait_us={wait_end - draw_end} gpu_us={r.gpu_us}'
@@ -6595,8 +6689,8 @@ Texture Display
                 result = vkQueuePresentKHR[ vk.queue, presentInfo ]
                 vk.qlock.unlock[]
                 # the wm shows a resized window once this frame is out
-                if [ result == VK_SUCCESS && glfw ]
-                    platform_window_presented[ glfw, i32[ extent.width ],
+                if [ result == VK_SUCCESS && pwin ]
+                    platform_window_presented[ pwin, i32[ extent.width ],
                                                i32[ extent.height ] ]
                 swap_render_current.color.transition[
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ]
@@ -6619,19 +6713,14 @@ Texture Display
                     # the blit's slot fence guards its reuse; only the
                     # first frame waits here, so the window shows with
                     # real pixels
-                    if [ !shown && !hidden && glfw ]
+                    if [ !shown && !hidden && pwin ]
                         swap_render_current.sync_fence[]
                         shown = true
-                        platform_window_show[ glfw ]
+                        platform_window_show[ pwin ]
                         if [ prof_log ] log 'SHOWN t={epoch_millis[]}'
         # kms: the frame into the free scanout image, flipped at vblank
-        if [ kms && scan && !hidden ]
-            slot : i32 [ platform_kms_back[] ]
-            top : last_render[]
-            if [ slot >= 0 && top ]
-                top.sync_fence[]
-                vk.copy_image[ top.color, scan[ slot ] ]
-                platform_kms_flip[ slot ]
+        # (copied in the screen's batch: kms_record; it goes on
+        # screen at the next frame's kms_settle)
         at_swap : i64 [ epoch_micros[] ]
         vk.ph_targets += at_targets - at_start
         vk.ph_compose += at_compose - at_targets
@@ -6674,7 +6763,7 @@ Texture Display
             width  = 1200
             height = 1200
 
-        # text mode: never touch glfw or vk. the element tree + layout
+        # text mode: no window, no vk. the element tree + layout
         # live on this Display, but all paint goes to the terminal
         # (Window.draw_console).
         if [ text_mode ]
@@ -6682,6 +6771,9 @@ Texture Display
             return
 
         surf : handle
+        # a hosted app on orbiter-os: orbiter owns the screen; its
+        # frames go to orbiter's pane (share_publish), no surface
+        if [ platform_is_kms[] && host_slot[] > 0 ] backbuffer = true
         # kms (orbiter-os): no window system and no vulkan surface. the
         # frame is copied into a dma-buf drm page-flips; the pointer is
         # drm's cursor plane
@@ -6689,32 +6781,33 @@ Texture Display
             kms  = true
             card : i32 [ vk.drm_minor[] ]
             expect platform_kms_open[ card ] == 0, 'kms: no display on the gpu\'s card {card}'
-            glfw = platform_window_create[ width, height, title.chars,
+            pwin = platform_window_create[ width, height, title.chars,
                     false ]
-            expect glfw, "Failed to create window"
-            Au.live_window_set[ glfw ]
-            platform_window_set_user    [ glfw, handle[ a ] ]
-            platform_set_key_callback   [ glfw, @handle_key ]
-            platform_set_mouse_callback [ glfw, @handle_mouse ]
-            platform_set_cursor_callback[ glfw, @handle_cursor ]
-            platform_set_scroll_callback[ glfw, @handle_scroll ]
-            platform_set_char_callback  [ glfw, @handle_char ]
+            expect pwin, "Failed to create window"
+            Au.live_window_set[ pwin ]
+            platform_window_set_user    [ pwin, handle[ a ] ]
+            platform_set_key_callback   [ pwin, @handle_key ]
+            platform_set_mouse_callback [ pwin, @handle_mouse ]
+            platform_set_cursor_callback[ pwin, @handle_cursor ]
+            platform_set_scroll_callback[ pwin, @handle_scroll ]
+            platform_set_touch_callback [ pwin, @handle_touch ]
+            platform_set_char_callback  [ pwin, @handle_char ]
             # a new mode resizes the screen
-            platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
+            platform_set_size_callback  [ pwin, @handle_framebuffer_size ]
         el [ !backbuffer ]
-            glfw = handle Au.live_window_get[]
-            if [ !glfw ]
+            pwin = handle Au.live_window_get[]
+            if [ !pwin ]
                 # born invisible: mapping it before the ux shaders are
                 # built and a frame is presented shows a hole cut in the
                 # desktop. the first present shows it
-                glfw = platform_window_create[ width, height,
+                pwin = platform_window_create[ width, height,
                         title.chars, false ]
-                expect glfw, "Failed to create window"
-                Au.live_window_set[ glfw ]
+                expect pwin, "Failed to create window"
+                Au.live_window_set[ pwin ]
 
             # always refresh title (window is reused on reload, not
             # created again)
-            platform_window_set_title[ glfw, title.chars ]
+            platform_window_set_title[ pwin, title.chars ]
 
             # a parallel reload's display takes the input at the switch:
             # until then the live one's tree is what the main thread's
@@ -6724,7 +6817,7 @@ Texture Display
             # fixed-aspect apps (emulators): the WM may scale but never
             # distort
             if [ lock_aspect ]
-                platform_window_set_aspect[ glfw, width, height ]
+                platform_window_set_aspect[ pwin, width, height ]
 
             # reuse persistent surface across hot-reloads — drivers
             # disallow creating a new surface for the same xcb window
@@ -6732,7 +6825,7 @@ Texture Display
             surf = handle Au.live_surface_get[]
             if [ !surf ]
                 native : platform_native
-                platform_window_native[ glfw, @native ]
+                platform_window_native[ pwin, @native ]
                 result : VkResult [ VK_ERROR_INITIALIZATION_FAILED ]
                 ifdef [ apple ]
                     mci : VkMetalSurfaceCreateInfoEXT
@@ -6822,11 +6915,12 @@ Texture Display
             # IMMEDIATE is not a third option here -- it only tears, and
             # the extra frames buy nothing the sub-frame interpolation
             # can use
-            present_mode = VK_PRESENT_MODE_FIFO_KHR
             for [ i: u32 0, i < present_mode_count, i += 1 ]
                 if [ present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR ]
-                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR
-                    break
+                    has_mailbox = true
+                if [ present_modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR ]
+                    has_immediate = true
+            pick_present[]
             pm : i32 [ present_mode ]
             log 'swap: present mode {pm} ({present_mode_count} offered)'
 
@@ -6839,11 +6933,11 @@ Texture Display
             wh_i: i32
             pw_i: i32
             ph_i: i32
-            platform_window_get_size[ glfw, @ww_i, @wh_i ]
-            platform_window_get_framebuffer[ glfw, @pw_i, @ph_i ]
+            platform_window_get_size[ pwin, @ww_i, @wh_i ]
+            platform_window_get_framebuffer[ pwin, @pw_i, @ph_i ]
             # the platform knows its scale; pixels/points only agrees
             # after layout
-            scale         = platform_window_scale[ glfw ]
+            scale         = platform_window_scale[ pwin ]
             width         = ww_i
             height        = wh_i
             if [ logical_width > 0 && pw_i > 0 ]
@@ -6867,8 +6961,8 @@ Texture Display
             # scale (2 a point on a phone), as a retina window's
             kw : i32
             kh : i32
-            platform_window_get_size[ glfw, @kw, @kh ]
-            scale  = platform_window_scale[ glfw ]
+            platform_window_get_size[ pwin, @kw, @kh ]
+            scale  = platform_window_scale[ pwin ]
             width  = i32[ kw / scale ]
             height = i32[ kh / scale ]
             extent.width  = u32[ kw ]
@@ -6877,8 +6971,14 @@ Texture Display
         el
             surface_format.format     = (format == Pixel.rgbaf32) ? VK_FORMAT_R32G32B32A32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM
             surface_format.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
-            extent.width  = width
-            extent.height = height
+            # no window to say its density: the panel's on orbiter-os,
+            # else a pixel a point
+            if [ scale <= 0.0 && platform_is_kms[] ]
+                scale = platform_kms_density[ vk.drm_minor[] ]
+            if [ scale <= 0.0 ] scale = 1.0
+            extent.width  = u32[ f32[ width ] * scale ]
+            extent.height = u32[ f32[ height ] * scale ]
+            log 'display: no surface {width}x{height} points, scale {scale}'
 
     # a parallel reload builds its display beside the live one: the
     # swapchain is made on its first owned frame, retiring the live one
@@ -6887,16 +6987,17 @@ Texture Display
 
     # the window's input reaches this display's tree
     public func attach_input [ ]
-        if [ !glfw ] return
-        platform_window_set_user    [ glfw, handle[ a ] ]
-        platform_set_key_callback   [ glfw, @handle_key ]
-        platform_set_mouse_callback [ glfw, @handle_mouse ]
-        platform_set_cursor_callback[ glfw, @handle_cursor ]
-        platform_set_enter_callback [ glfw, @handle_enter ]
-        platform_set_char_callback  [ glfw, @handle_char ]
-        platform_set_scroll_callback[ glfw, @handle_scroll ]
-        platform_set_drop_callback  [ glfw, @handle_drop ]
-        platform_set_size_callback  [ glfw, @handle_framebuffer_size ]
+        if [ !pwin ] return
+        platform_window_set_user    [ pwin, handle[ a ] ]
+        platform_set_key_callback   [ pwin, @handle_key ]
+        platform_set_mouse_callback [ pwin, @handle_mouse ]
+        platform_set_cursor_callback[ pwin, @handle_cursor ]
+        platform_set_enter_callback [ pwin, @handle_enter ]
+        platform_set_char_callback  [ pwin, @handle_char ]
+        platform_set_scroll_callback[ pwin, @handle_scroll ]
+        platform_set_touch_callback [ pwin, @handle_touch ]
+        platform_set_drop_callback  [ pwin, @handle_drop ]
+        platform_set_size_callback  [ pwin, @handle_framebuffer_size ]
 
     # the switch: this display owns the surface and the input now
     public func take_swapchain [ ]
@@ -6912,10 +7013,11 @@ Texture Display
                 || present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR)
 
     public func set_title [ t: string ]
-        platform_window_set_title[ glfw, t.chars ]
+        if [ !pwin ] return
+        platform_window_set_title[ pwin, t.chars ]
 
     public func set_resizable [ on: bool ]
-        if [ glfw ] platform_window_set_resizable[ glfw, on ]
+        if [ pwin ] platform_window_set_resizable[ pwin, on ]
 
 
     func dealloc [ ]
@@ -7127,11 +7229,11 @@ func radians[f32] -> f32
 
 
 # --- window callbacks ---
-intern func handle_framebuffer_size [ glfw_window: @platform_window,
+intern func handle_framebuffer_size [ pwin: @platform_window,
                                       width: i32, height: i32 ]
     if [ width == 0 && height == 0 ]
         return
-    win : platform_window_get_user[ glfw_window ]
+    win : platform_window_get_user[ pwin ]
     w: cast Display [ win ]
     if [ !w ]
         return
@@ -7147,6 +7249,8 @@ intern func handle_framebuffer_size [ glfw_window: @platform_window,
 intern func handle_key [ win: @platform_window, key: i32,
                          scan_code: i32, action: i32, mods: i32 ] 
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     if [ action == PLATFORM_PRESS
          && (key == PLATFORM_KEY_UP || key == PLATFORM_KEY_DOWN) ]
         w.debug_value += (key == PLATFORM_KEY_UP) ? 1.0 : -1.0
@@ -7204,6 +7308,8 @@ func screen_set_mode [ i: i32 ] -> bool
 
 intern func handle_scroll [ win: @platform_window, x: f64, y: f64 ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     w.ev.clear[]
     w.ev.mouse.pos.x         = w.mouse.x
     w.ev.mouse.pos.y         = w.mouse.y
@@ -7221,6 +7327,8 @@ intern func handle_scroll [ win: @platform_window, x: f64, y: f64 ]
 intern func handle_mouse [ win: @platform_window, id: i32, action: i32,
                            mods: i32 ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     w.ev.clear[]
     w.ev.mouse.pos.x  = w.mouse.x
     w.ev.mouse.pos.y  = w.mouse.y
@@ -7241,6 +7349,8 @@ intern func handle_mouse [ win: @platform_window, id: i32, action: i32,
 
 intern func handle_char [ win: @platform_window, code_point: u32 ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     w.ev.clear[]
     cp  : u32 [ code_point ]
     buf : local i8 [ 5 ]
@@ -7271,6 +7381,8 @@ intern func handle_char [ win: @platform_window, code_point: u32 ]
 intern func handle_drop [ win: @platform_window, count: i32,
                           paths: @symbol ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     if [ count <= 0 ] return
     w.ev.clear[]
     s : string ['']
@@ -7287,6 +7399,8 @@ intern func handle_drop [ win: @platform_window, count: i32,
 
 intern func handle_enter [ win: @platform_window, entered: i32 ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     if [ entered != 0 ] return
     w.ev.clear[]
     w.clear_hover[ w.ev ]
@@ -7296,8 +7410,20 @@ intern func handle_enter [ win: @platform_window, entered: i32 ]
     w.near_walk[ w.root, 0.0, 0.0, null ]
 
 
+# a finger: the first is the mouse already; the rest go to the
+# window's touch_event, in the frame's own space
+intern func handle_touch [ win: @platform_window, id: i32, phase: i32,
+                           x: f64, y: f64 ]
+    w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
+    w.touch_event[ id, phase, f32[ x - f64[ w.fit_ox ] ],
+                   f32[ y - f64[ w.fit_oy ] ] ]
+
 intern func handle_cursor [ win: @platform_window, x: f64, y: f64 ]
     w: cast Window [ platform_window_get_user[ win ] ]
+    # input: the next frame is drawn
+    if [ w ] w.will_animate = true
     w.ev.clear[]
     # the pointer in the frame's own space: a letterboxed frame starts
     # past the bars

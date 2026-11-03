@@ -3,6 +3,7 @@
 # first run downloads the client into its home
 export 1.0.0.87
 export software ['games']
+export platforms ['x64']
 export icon ['steam']
 # it starts with orbiter, to its tray
 export startup ['steam -silent']

@@ -36,6 +36,16 @@ element RecBar
             fill_color: #ffd400ff
     }
 
+# an update coming in: a red line along the orbiter name's foot,
+# as long as the share received
+element UpdBar
+    no_cache    : true
+    user_events : false
+    style : CSS {
+        layers.line:
+            fill_color: #ff3040ff
+    }
+
 # the system menu's dock: the navigator's dock column in a colour
 # of its own (the system's)
 Group SysDock
@@ -147,9 +157,10 @@ element SystemClock
             label_align: 0.5 0.5
     }
 
-# the system bar's height in units
+# the system bar's height in units; a phone's 15% more (its camera
+# sits in the screen's top edge)
 func bar_units [] -> f32
-    return 0.91
+    return (mobile_on[]) ? 1.05 : 0.91
 
 # booted into orbiter-os: init put orbiter.init= on the boot line
 func on_the_os [] -> bool
@@ -212,7 +223,8 @@ Button BarSignal
             near_inset: 4.0
             near_inset_color: #c890ffff
         layers.face:
-            label_color: #e8e8ee
+            # drawn by draw (cut to its room), not by the face
+            label_color: #0000
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 1.0 0.5
@@ -245,8 +257,15 @@ Button BarSignal
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf', fp ] ]
         cv.font_size[ f32[ fp ] ]
-        tw : f32 [ cv.measure_text[ label ].w ]
+        # the name's room: 1.265 x what was measured (10%, then 15%
+        # more), the word Orbiter's at most (a longer name is cut)
+        tw : f32 [ 1.265 * (4.0 + min[ cv.measure_text[ label ].w,
+                                       cv.measure_text[ 'Orbiter' ].w ]) ]
         want : f32 [ round[ x + 8.0 + tw + 10.0 ] ]
+        cv.fill_color[ rgba [ '#e8e8ee' ] ]
+        cv.draw_text[ label, rect [ x: x + 8.0, y: 0.0, w: tw + 2.0,
+            h: bounds.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null ]
         cv.set_font[ null ]
         o : cast orbiter [ w.app_object ]
         if [ o && abs[ o.sig_w - want ] > 0.5 ]
@@ -555,7 +574,8 @@ Layer DrawerGround
         orb : cast orbiter [ w.app_object ]
         # over the main menu: its background as it is, never taken
         # again (the screen now holds the menu)
-        b : ReduceBlur (orb) ? orb.drawer_blur[ w,
+        b : ReduceBlur (orb && !(dr inherits SystemDrawer))
+            ? orb.drawer_blur[ w,
             dr.background_lens && !orb.sys_under ] : null
         # its place in the window: the screen's origin is behind it
         ox : f32 [ 0.0 ]
@@ -566,12 +586,24 @@ Layer DrawerGround
                 oy += e.bounds.y
         cv.save[]
         cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
-        if [ b ]
-            cv.draw_image[ b.color[], rect [ x: -ox, y: -oy,
-                w: w.root.bounds.w, h: w.root.bounds.h ] ]
-        cv.fill_color[ '#140a2a99' ]
-        cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
-        cv.paint[]
+        # the main menu: the ground chosen (the scene, as the screen
+        # paints it under the ui), not a blur of what is under it
+        if [ dr inherits SystemDrawer ]
+            gi : Texture w.ground_image[]
+            if [ gi ]
+                cv.draw_image[ gi, rect [ x: -ox, y: -oy,
+                    w: w.root.bounds.w, h: w.root.bounds.h ] ]
+            el
+                cv.fill_color[ w.solid_color ]
+                cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+                cv.paint[]
+        el
+            if [ b ]
+                cv.draw_image[ b.color[], rect [ x: -ox, y: -oy,
+                    w: w.root.bounds.w, h: w.root.bounds.h ] ]
+            cv.fill_color[ '#140a2a99' ]
+            cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+            cv.paint[]
         # a faint line down each side (painted here: style layers on
         # a drawer subclass went missing once its base was styled)
         cv.fill_color[ '#ffffff11' ]
@@ -636,7 +668,7 @@ MenuDrawer ExchangeDrawer
     :open
         opacity: 1.0, 260ms cubic inward
     :use_mobile
-        area: l0%+0 t0.91 r0%+0 b0
+        area: l0%+0 t1.05 r0%+0 b0
     }
 
 # the system menu, the desktop's (orbiter's): fades in under the
@@ -650,7 +682,7 @@ MenuDrawer SystemDrawer
         opacity: 1.0, 260ms cubic inward
     # a phone's too: the bar stays over it
     :use_mobile
-        area: l0%+0 t0.91 r0%+0 b0
+        area: l0%+0 t1.05 r0%+0 b0
     }
 
 # a phone's system menu cells in one row along its foot: a drag or
@@ -659,6 +691,7 @@ element SysStrip
     # px scrolled, and where it eases to
     intern shift : f32
     intern goal  : f32
+    intern took  : bool
     # the pointer's x at a press, -1 none; the scroll then
     intern grab  : f32 [ -1.0 ]
     intern from  : f32
@@ -682,7 +715,7 @@ element SysStrip
     func most [] -> f32
         o : orbiter orb[]
         if [ !o || !bounds ] return 0.0
-        m : f32 [ f32[ o.sys_strip_ids[].count ] * o.dock_w[]
+        m : f32 [ f32[ o.sys_strip_ids[].count ] * o.strip_cell[]
             - bounds.w ]
         return (m > 0.0) ? m : 0.0
 
@@ -691,7 +724,15 @@ element SysStrip
         return (o) ? o.sys_strip_els[ shift ] : null
 
     public func tick [ w: Window ]
+        # its scroll is orbiter's (it crosses a reload): taken at the
+        # start, kept after
+        o : orbiter orb[]
+        if [ o && !took ]
+            took  = true
+            shift = o.strip_shift
+            goal  = shift
         goal = clamp[ goal, 0.0, most[] ]
+        if [ o ] o.strip_shift = goal
         if [ shift != goal ]
             shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
             if [ abs[ goal - shift ] < 0.5 ] shift = goal
@@ -733,7 +774,11 @@ element SysStrip
         held : bool [ grab >= 0.0 ]
         grab = -1.0
         o : orbiter orb[]
-        if [ drag || !o || !held ] return
+        if [ !held ] return
+        # the strip's press: nothing under it hears its release
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ drag || !o ] return
         ids : vec string o.sys_strip_ids[]
-        i : i32 [ i32[ (tap_x + shift) / o.dock_w[] ] ]
+        i : i32 [ i32[ (tap_x + shift) / o.strip_cell[] ] ]
         if [ i >= 0 && i < ids.count ] o.sys_pick[ ids[ i ] ]

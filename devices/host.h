@@ -124,7 +124,12 @@ typedef struct platform_native {
 #define PLATFORM_KEY_RIGHT_ALT      346
 #define PLATFORM_KEY_RIGHT_SUPER    347
 #define PLATFORM_KEY_MENU           348
-#define PLATFORM_KEY_LAST           348
+// a phone's power button (no glfw number)
+#define PLATFORM_KEY_POWER          349
+// a phone's volume buttons
+#define PLATFORM_KEY_VOLUME_DOWN    350
+#define PLATFORM_KEY_VOLUME_UP      351
+#define PLATFORM_KEY_LAST           351
 
 typedef void (*platform_key_fn)      (platform_window* w, int key, int scancode, int action, int mods);
 typedef void (*platform_char_fn)     (platform_window* w, uint32_t codepoint);
@@ -177,11 +182,15 @@ PLATFORM_API int   platform_is_kms                   (void);  /* guest console: 
 PLATFORM_API int   platform_kms_scanout_buffer      (int* w, int* h, int* stride);
 /* kms: scanout on drm card<minor> (vulkan's), page flips, cursor plane */
 PLATFORM_API int   platform_kms_open                 (int minor);
+// the panel's density (pixels a point), read only: no master taken
+PLATFORM_API float platform_kms_density              (int minor);
 PLATFORM_API int   platform_kms_add_fb               (int fd, int w, int h, int pitch);
 PLATFORM_API void  platform_kms_clear_fbs            (void);
 PLATFORM_API int   platform_kms_back                 (void);
 PLATFORM_API void  platform_kms_wait                 (void);
 PLATFORM_API void  platform_kms_flip                 (int slot);
+// the panel lit or dark (the phone's screen; elsewhere nothing)
+PLATFORM_API void  platform_screen_power             (int on);
 PLATFORM_API void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
 /* the pointer's easing: share of the way per display refresh */
 PLATFORM_API void  platform_cursor_ease              (float amount);
@@ -214,6 +223,9 @@ PLATFORM_API const float*   platform_joystick_axes    (int j, int* count);
 PLATFORM_API const uint8_t* platform_joystick_hats    (int j, int* count);
 // device motion: accelerometer (g) and gyro (rad/s), false where there is none
 PLATFORM_API bool  platform_motion(float* accel, float* gyro);
+// a pulse on the device's vibration motor: ms long, strength 0..1;
+// 0 where there is none (a computer)
+PLATFORM_API int   platform_haptic(int ms, float strength);
 // interface orientation: 0 portrait, 1 landscape-left, 2 landscape-right.
 // the accelerometer axes are DEVICE-relative, so a tilt-steered app must
 // know which way round the interface is or its steering inverts

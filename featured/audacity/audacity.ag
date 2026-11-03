@@ -2,6 +2,7 @@
 # GTK 3, PortAudio, expat, sqlite, uuid and zlib are the system's
 export 3.7.9
 export software ['creative']
+export platforms ['x64']
 export icon ['audacity']
 export build none
 

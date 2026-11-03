@@ -5,6 +5,7 @@
 export 1.0.0
 export agent ['GeminiAgent']
 export software ['developer']
+export platforms ['x64']
 export icon ['gemini']
 
 import node/24.18.0 from https://nodejs.org/dist/v24.18.0/node-v24.18.0.tar.xz

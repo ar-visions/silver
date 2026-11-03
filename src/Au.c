@@ -4089,23 +4089,32 @@ AU_EXPORT Au method_call(Au_t m, array args) {
     // System V and AAPCS64 fill integer and float registers apart, in
     // order: one pointer typed (six integers, eight doubles) reaches
     // any method whose integers fit six and floats fit eight
-    i64 iv[6];
+#if defined(__aarch64__)
+    const int int_regs = 8;
+#else
+    const int int_regs = 6;
+#endif
+    // past the registers each argument takes the next stack slot
+    i64 iv[8];
     f64 fv[8];
+    i64 sv[10];
     memset(iv, 0, sizeof(iv));
     memset(fv, 0, sizeof(fv));
-    int ni = 0, nf = 0;
+    memset(sv, 0, sizeof(sv));
+    int ni = 0, nf = 0, ns = 0;
     for (num i = 0; i < a->atypes->count; i++) {
         Au_t at   = au_arg_type((Au)a->atypes->origin[i]);
         bool prim = (at->traits & (AU_TRAIT_PRIMITIVE | AU_TRAIT_ENUM)) != 0;
         none* data = arg_values[i];
         if (prim && (at == typeid(f64) || at == typeid(f32))) {
-            assert(nf < 8, "method_call takes up to 8 float arguments");
-            if (data && at == typeid(f64)) fv[nf] = *(f64*)data;
-            else if (data) memcpy(&fv[nf], data, sizeof(f32));
-            nf++;
+            f64* slot = nf < 8 ? &fv[nf++] : (f64*)&sv[ns++];
+            assert(ns <= 10, "method_call takes up to 10 stack arguments");
+            if (data && at == typeid(f64)) *slot = *(f64*)data;
+            else if (data) memcpy(slot, data, sizeof(f32));
             continue;
         }
-        assert(ni < 6, "method_call takes up to 6 integer arguments");
+        i64* slot = ni < int_regs ? &iv[ni++] : &sv[ns++];
+        assert(ns <= 10, "method_call takes up to 10 stack arguments");
         if (prim) {
             i64 v = 0;
             if (data) {
@@ -4114,14 +4123,25 @@ AU_EXPORT Au method_call(Au_t m, array args) {
                 else if (at == typeid(i32)) v = *(i32*)data;
                 else memcpy(&v, data, at->typesize < 8 ? at->typesize : 8);
             }
-            iv[ni++] = v;
+            *slot = v;
         } else
-            iv[ni++] = data ? (i64)*(none**)data : 0;
+            *slot = data ? (i64)*(none**)data : 0;
     }
-    #define AU_CALL_ARGS iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], \
-        fv[0], fv[1], fv[2], fv[3], fv[4], fv[5], fv[6], fv[7]
-    #define AU_CALL_SIG i64, i64, i64, i64, i64, i64, \
-        f64, f64, f64, f64, f64, f64, f64, f64
+    #if defined(__aarch64__)
+    #define AU_CALL_IREGS iv[0], iv[1], iv[2], iv[3], iv[4], iv[5], \
+        iv[6], iv[7]
+    #define AU_CALL_ISIG i64, i64, i64, i64, i64, i64, i64, i64
+    #else
+    #define AU_CALL_IREGS iv[0], iv[1], iv[2], iv[3], iv[4], iv[5]
+    #define AU_CALL_ISIG i64, i64, i64, i64, i64, i64
+    #endif
+    #define AU_CALL_ARGS AU_CALL_IREGS, \
+        fv[0], fv[1], fv[2], fv[3], fv[4], fv[5], fv[6], fv[7], \
+        sv[0], sv[1], sv[2], sv[3], sv[4], sv[5], sv[6], sv[7], \
+        sv[8], sv[9]
+    #define AU_CALL_SIG AU_CALL_ISIG, \
+        f64, f64, f64, f64, f64, f64, f64, f64, \
+        i64, i64, i64, i64, i64, i64, i64, i64, i64, i64
     if (a->rtype->traits & AU_TRAIT_PRIMITIVE) {
         none* result[8];
         memset(result, 0, sizeof(result));
@@ -4147,6 +4167,8 @@ AU_EXPORT Au method_call(Au_t m, array args) {
     return ((Au (*)(AU_CALL_SIG))a->address)(AU_CALL_ARGS);
     #undef AU_CALL_ARGS
     #undef AU_CALL_SIG
+    #undef AU_CALL_IREGS
+    #undef AU_CALL_ISIG
 #else
     // the address is called directly -- no libffi. x64 is caller-cleanup in
     // both ABIs, so a longer argument list than the callee declares cannot
@@ -5742,6 +5764,8 @@ Au formatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol temp
 // a progress line the terminal shows: cleared before a print
 AU_EXPORT void (*au_print_prelude)(void) = NULL;
 AU_EXPORT void (*au_print_after)(void)   = NULL;
+// a copy of what is printed to the terminal, plain (a build's log)
+AU_EXPORT FILE* au_print_mirror = NULL;
 
 AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, symbol template, va_list args) {
     FILE* f = (FILE*)ff;
@@ -5908,6 +5932,12 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
     if (f == stderr) {
         fwrite("\033[0m", 4, 1, f); // ANSI reset
         fflush(f);
+    }
+    if (term && au_print_mirror && res) {
+        string_writef(res, au_print_mirror, false);
+        if (!res->count || res->chars[res->count - 1] != '\n')
+            fwrite("\n", 1, 1, au_print_mirror);
+        fflush(au_print_mirror);
     }
     if (term && au_print_after) {
         fflush(f);
@@ -8828,6 +8858,43 @@ AU_EXPORT path path_startup() {
 // module runs, so cwd is that share dir and install is two up. if that
 // share dir is not there, cd_share never fired and cwd is the launch dir,
 // so return null rather than a confidently wrong path
+// the stamp of an export func run under this product (the share
+// folder it runs in), in <install>/tmp/exports
+static void export_stamp(char* out, size_t n, const char* key) {
+    char cwd[1024] = "";
+    if (!getcwd(cwd, sizeof(cwd))) cwd[0] = 0;
+    const char* host = strrchr(cwd, '/');
+    host = host ? host + 1 : cwd;
+    path ins = path_install();
+    snprintf(out, n, "%s/tmp/exports/%s.%s",
+        ins ? ins->chars : ".", host, key);
+}
+
+AU_EXPORT int au_export_due(const char* key, const char* hash) {
+    if (getenv("SILVER_EXPORT_FORCE")) return 1;
+    char sp[1400];
+    export_stamp(sp, sizeof(sp), key);
+    FILE* f = fopen(sp, "r");
+    if (!f) return 1;
+    char had[128] = "";
+    if (!fgets(had, sizeof(had), f)) had[0] = 0;
+    fclose(f);
+    return strcmp(had, hash) != 0;
+}
+
+AU_EXPORT void au_export_done(const char* key, const char* hash) {
+    char sp[1400];
+    export_stamp(sp, sizeof(sp), key);
+    char dir[1400];
+    snprintf(dir, sizeof(dir), "%s", sp);
+    char* sl = strrchr(dir, '/');
+    if (sl) { *sl = 0; mkdir(dir, 0755); }
+    FILE* f = fopen(sp, "w");
+    if (!f) return;
+    fputs(hash, f);
+    fclose(f);
+}
+
 AU_EXPORT path path_install() {
     path cwd = path_cwd();
     path up  = f(path, "%o/../..", cwd);

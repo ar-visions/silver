@@ -195,6 +195,95 @@ func ssh_copy_sh [ from: string, to: string ] -> string
     c : 'mkdir -p {to} && cp -a {from}/. {to}/'
     return '{c} && chmod 700 {to} && chmod -R go-rwx {to}'
 
+# the file types the games apps open (each module's export says its
+# section and extensions: knes '.nes', psx '.cue' ...)
+func game_exts [] -> vec string
+    out : vec string []
+    d : path '{silver_root[]}/install/export'
+    entries : d.ls[ null, false ]
+    if [ !entries ] return out
+    for [ e: path ] in entries
+        ax : e.ext[]
+        if [ !ax || !(ax == 'agi') ] continue
+        t : string e.load[ typeid[string], null ]
+        if [ !t ] continue
+        sx : i32 [ t.index_of[ 'software:' ] ]
+        ix : i32 [ t.index_of[ 'extensions:' ] ]
+        if [ sx < 0 || ix < 0 ] continue
+        sl : t.mid[ sx, t.count - sx ]
+        sl = sl.mid[ 0, sl.index_of[ "]" ] ]
+        if [ sl.index_of[ 'games' ] < 0 ] continue
+        xl : t.mid[ ix, t.count - ix ]
+        xl = xl.mid[ 0, xl.index_of[ "]" ] ]
+        # the quoted words: every other piece between quotes
+        parts : xl.split[ "'" ]
+        for [ i: i32 1, i < parts.count, i += 2 ]
+            if [ parts[ i ].starts_with[ "." ] ] out.push[ parts[ i ] ]
+    return out
+
+# the user's games: in their home folder, two folders down (not the
+# hidden ones), each file a games app opens, with what goes with it:
+# the files named as it is (its saves, a disc's tracks) and those a
+# cue sheet lists; as paths under the home
+func game_files [] -> vec string
+    out : vec string []
+    hc : cstr [ getenv[ "HOME" ] ]
+    exts : vec string game_exts[]
+    if [ hc == null || exts.count == 0 ] return out
+    home : string [ hc ]
+    found : map bool [ string ] []
+    game_walk[ path [ home ], home, exts, out, found, 2 ]
+    return out
+
+func game_walk [ d: path, home: string, exts: vec string,
+                 out: vec string, found: map bool [ string ],
+                 depth: i32 ]
+    entries : d.ls[ null, false ]
+    if [ !entries ] return
+    for [ e: path ] in entries
+        nm : string e.filename[]
+        if [ nm.starts_with[ "." ] || e.is_symlink[] ] continue
+        if [ e.is_dir[] ]
+            if [ depth > 0 ]
+                game_walk[ e, home, exts, out, found, depth - 1 ]
+            continue
+        for [ x: string ] in exts
+            if [ nm.ends_with[ x ] ]
+                game_with[ d, nm, home, entries, out, found ]
+                break
+
+# a game file and what goes with it, once each
+func game_with [ d: path, nm: string, home: string,
+                 entries: vec path, out: vec string,
+                 found: map bool [ string ] ]
+    dot : i32 [ nm.rindex_of[ "." ] ]
+    stem : string [ (dot > 0) ? nm.mid[ 0, dot ] : nm ]
+    for [ e: path ] in entries
+        if [ e.is_dir[] ] continue
+        if [ e.filename[].starts_with[ stem ] ]
+            game_keep[ '{e}', home, out, found ]
+    if [ !nm.ends_with[ '.cue' ] ] return
+    cue : path '{d}/{nm}'
+    t : string cue.load[ typeid[string], null ]
+    if [ !t ] return
+    # FILE "Track 1.bin" BINARY
+    for [ ln: string ] in t.split[ '\n' ]
+        q : i32 [ ln.index_of[ "\"" ] ]
+        if [ !ln.trim[].starts_with[ 'FILE' ] || q < 0 ] continue
+        rest : ln.mid[ q + 1, ln.count - q - 1 ]
+        e2 : i32 [ rest.index_of[ "\"" ] ]
+        if [ e2 <= 0 ] continue
+        tk : rest.mid[ 0, e2 ]
+        game_keep[ '{d}/{tk}', home, out, found ]
+
+func game_keep [ f: string, home: string, out: vec string,
+                 found: map bool [ string ] ]
+    if [ !f.starts_with[ '{home}/' ] || found.contains[ f ] ] return
+    p : path [ f ]
+    if [ !p.exists[] ] return
+    found[ f ] = true
+    out.push[ f.mid[ home.count + 1, f.count - home.count - 1 ] ]
+
 func os_words [ arm: bool, nvidia: bool ] -> string
     root : silver_root[]
     line : 'orbiter.init={root}/install/build/orbiter'
@@ -1105,9 +1194,27 @@ element Bootstrap
         sb : '{install}/bin/silver -d fp6 --build'
         steps : vec string []
         steps.push[ 'cd {root} && {sb} os-bootstrap && {sb} orbiter' ]
-        # orbiter does not build the phone app
-        steps.push[ 'cd {root} && {sb} phone' ]
-        return run_steps[ steps ]
+        if [ !run_steps[ steps ] ] return false
+        # every app that runs on the phone (its source names no
+        # platforms, or arm64): one that fails is said, the rest go on
+        rp : path [ root ]
+        for [ d: path ] in rp.ls[ null, false ]
+            n : string d.filename[]
+            m : path '{d}/{n}.ag'
+            if [ !d.is_dir[] || !m.exists[] ] continue
+            src : string m.load[ typeid[ string ], null ]
+            if [ !src || src.index_of[ '\nexport software ' ] < 0 ]
+                continue
+            pa : i32 [ src.index_of[ 'export platforms ' ] ]
+            if [ pa >= 0 ]
+                pr : src.mid[ pa, src.count - pa ]
+                pe : i32 [ pr.index_of[ '\n' ] ]
+                pl : string (pe >= 0) ? pr.mid[ 0, pe ] : pr
+                if [ pl.index_of[ "'arm64'" ] < 0 ] continue
+            st : 'cd {root} && {sb} {n}'
+            say[ '$ {st}' ]
+            if [ !sh[ st ] ] say[ 'phone: {n} did not build; left out' ]
+        return true
 
     # the phone's /init from init.c as it is, on the kernel's own
     # nolibc and headers (its source tree, build/linux-<ver>-milos)
@@ -1181,13 +1288,14 @@ element Bootstrap
     # interface) and to orbiter-os's serial port; asked once
     func phone_udev [] -> bool
         rules : '/etc/udev/rules.d/51-orbiter-phone.rules'
-        rp : path [ rules ]
-        if [ rp.exists[] ] return true
+        # the PC's ModemManager probes the shell port, typing
+        if [ sh[ 'grep -qs ID_MM_DEVICE_IGNORE {rules}' ] ] return true
         tmp : '{install}/tmp/51-orbiter-phone.rules'
         t : 'SUBSYSTEM=="usb", ENV{{ID_USB_INTERFACES}}=="*:ff4203:*", '
         t = '{t}TAG+="uaccess"\n'
         t = '{t}SUBSYSTEM=="tty", ATTRS{{idVendor}}=="1d6b", '
-        t = '{t}ATTRS{{idProduct}}=="0104", TAG+="uaccess"\n'
+        t = '{t}ATTRS{{idProduct}}=="0104", TAG+="uaccess", '
+        t = '{t}ENV{{ID_MM_DEVICE_IGNORE}}="1"\n'
         write_file[ tmp, t ]
         say[ 'USB access for the phone: the system asks for a password' ]
         up : 'udevadm control --reload-rules && udevadm trigger'
@@ -1287,6 +1395,8 @@ element Bootstrap
                 return false
             fb.close[]
             sh[ 'mv {phone_stamp[]}.next {phone_stamp[]}' ]
+            sh[ 'touch -r {phone_stamp[]} {phone_stamp[]}.inc' ]
+            sh[ 'mv {phone_stamp[]}.debs.next {phone_stamp[]}.debs' ]
             return phone_serial[ product ]
 
     # postmarketOS's deviceinfo value for a key ('' when none)
@@ -1437,6 +1547,7 @@ element Bootstrap
         steps : vec string []
         # what is newer than this goes in the next update
         steps.push[ 'touch {phone_stamp[]}.next' ]
+        steps.push[ 'cp {fp}/debs.txt {phone_stamp[]}.debs.next' ]
         steps.push[ 'rm -rf {st} {img} && mkdir -p {st}' ]
         steps.push[ 'cp -a {fp}/sysroot/. {st}/' ]
         # the build named its sysroot in the .pc files; the phone's
@@ -1452,24 +1563,44 @@ element Bootstrap
         # the libraries, less what only links them here
         steps.push[ 'cp -a {fp}/lib/. {ti}/lib/' ]
         steps.push[ 'rm -rf {ti}/lib/*.a {ti}/lib/*.la {ti}/lib/cmake' ]
+        # our libraries' pkg-config files name this PC's fp6 folder
+        rp : 'sed -i "s|{fp}|{root}/install|g"'
+        steps.push[ '{rp} {ti}/lib/pkgconfig/*.pc' ]
         # silver, clang and lld for arm64: the phone builds itself
         steps.push[ 'mkdir -p {ti}/bin && cp -a {fp}/bin/. {ti}/bin/' ]
-        bl : 'orbiter libsilver-*.so silver-*.source'
-        steps.push[ 'cd {fp}/build && cp -a {bl} {ti}/build/' ]
+        # an IDE as the PC is: the whole build (imports' stamps),
+        # every header (the phone's own over ours), silver's .git
+        steps.push[ 'cp -a {fp}/build/. {ti}/build/' ]
+        inc : 'mkdir -p {ti}/include && (cp -rL {install}/include/.'
+        inc = '{inc} {ti}/include/ || true) && cp -af {fp}/include/.'
+        steps.push[ '{inc} {ti}/include/' ]
+        steps.push[ 'cp -a {root}/.git {si}/' ]
+        # git's https: the PC's certificate authorities
+        ca : '/etc/ssl/certs/ca-certificates.crt'
+        steps.push[ 'mkdir -p {st}/etc/ssl/certs && cp {ca} {st}{ca}' ]
+        # the tree's files are the PC user's; root uses its git
+        gc : '[safe]\n\tdirectory = *\n'
+        steps.push[ 'printf "{gc}" > {st}/etc/gitconfig' ]
         # each product link names the phone's build folder
         lk : 'for p in silver-*.product; do'
-        lk = '{lk} ln -s {root}/install/build/'
+        lk = '{lk} ln -sfn {root}/install/build/'
         lk = '{lk}$(basename $(readlink $p))'
         lk = '{lk} {ti}/build/$p; done'
         steps.push[ 'cd {fp}/build && {lk}' ]
         steps.push[ 'cp -a {fp}/share/. {ti}/share/' ]
+        steps.push[ '{rp} {ti}/share/pkgconfig/*.pc' ]
         # the shares of the modules built for it; os-bootstrap's
         # kernels stay on the PC
         shares : 'for p in silver-*.product; do'
         shares = '{shares} m=$(basename $p .product);'
         shares = '{shares} test -d {install}/share/$m || continue;'
         shares = '{shares} test $m = silver-os-bootstrap && continue;'
-        shares = '{shares} cp -a {install}/share/$m {ti}/share/; done'
+        shares = '{shares} cp -a {install}/share/$m {ti}/share/;'
+        # a module's data by its plain name too (share/keyboard)
+        shares = '{shares} s=${{m#silver-}};'
+        shares = '{shares} if test -d {install}/share/$s; then'
+        shares = '{shares} cp -a {install}/share/$s {ti}/share/;'
+        shares = '{shares} fi; done'
         steps.push[ 'cd {fp}/build && {shares}' ]
         ob : '{install}/share/silver-os-bootstrap'
         steps.push[ 'mkdir -p {ti}/share/silver-os-bootstrap' ]
@@ -1486,6 +1617,13 @@ element Bootstrap
         pf : '{ul}/firmware/postmarketos'
         steps.push[ 'test ! -d {pf} || cp -rn {pf}/. {ul}/firmware/qcom/' ]
         steps.push[ 'mkdir -p {st}/root' ]
+        # the user's games, at their place in the phone's home: the
+        # list 0 ended, copied with their folders
+        hc : cstr [ getenv[ "HOME" ] ]
+        gl : '{work}/games.list'
+        if [ hc != null && games_list[ work, gl ] ]
+            cg : 'xargs -0 -r -a {gl} cp -a --parents -t {st}/root'
+            steps.push[ 'cd "{string[ hc ]}" && {cg}' ]
         steps.push[ 'echo orbiter > {st}/etc/hostname' ]
         # system bus policy for Wi-Fi and the modem
         bus : '{root}/wifi/root/etc/dbus-1/orbiter.conf'
@@ -1520,6 +1658,21 @@ element Bootstrap
         if [ !run_steps[ steps ] ] return ''
         say[ 'rootfs.img: {file_bytes[ img ]} bytes' ]
         return img
+
+    # the user's games, as paths under their home, 0 ended in a list
+    # file; false when there is no home or no list was written
+    func games_list [ work: string, gl: string ] -> bool
+        wd : path [ work ]
+        wd.make_dir[]
+        games : vec string game_files[]
+        gf : handle fopen[ gl.chars, 'w' ]
+        if [ !gf ] return false
+        for [ g: string ] in games
+            fputs[ g.chars, gf ]
+            fputc[ 0, gf ]
+        fclose[ gf ]
+        say[ 'games from your home: {games.count} files' ]
+        return true
 
     # a size as the bootloader says it: hex with 0x, else decimal
     func var_bytes [ v: string ] -> i64
@@ -1598,51 +1751,169 @@ element Bootstrap
         fp : '{root}/platform/fp6'
         rt : root.mid[ 1, root.count - 1 ]
         since : '-newer {stamp}'
-        steps : vec string []
-        steps.push[ 'mkdir -p {work} && rm -f {tb}' ]
-        steps.push[ 'touch {stamp}.next' ]
         # each group in its place on the phone, as phone_rootfs lays it
         tr : 'tar -rf {tb} --null -T -'
         sf : source_files[ stamp ]
-        ts : '{tr} --transform "s,^,{rt}/,"'
-        steps.push[ 'cd {root} && {sf} | {ts}' ]
-        bl : 'find . -maxdepth 1 {since} \\( -name orbiter -o -name'
-        bl = '{bl} "libsilver-*.so" -o -name "silver-*.source"'
-        bl = '{bl} \\) -print0'
-        tb_build : '{tr} --transform "s,^\\.,{rt}/install/build,"'
-        steps.push[ 'cd {fp}/build && {bl} | {tb_build}' ]
-        lb : 'find . {since} ! -type d ! -name "*.a"'
-        lb = '{lb} ! -name "*.la" -print0'
-        tb_lib : '{tr} --transform "s,^\\.,{rt}/install/lib,"'
-        steps.push[ 'cd {fp}/lib && {lb} | {tb_lib}' ]
-        bb : 'find . {since} ! -type d -print0'
-        tb_bin : '{tr} --transform "s,^\\.,{rt}/install/bin,"'
-        steps.push[ 'cd {fp}/bin && {bb} | {tb_bin}' ]
-        steps.push[ 'test -f {tb} || tar -cf {tb} -T /dev/null' ]
+        pk : '{fp}/debs.txt'
+        nd : '{work}/debs'
+        nl : '{work}/debs-new.txt'
+        ar : '{root}/platform/native/bin/llvm-ar'
+        ub : 'http://ports.ubuntu.com/ubuntu-ports'
+        mf : 'os-bootstrap/modem-prepare.sh'
+        steps : vec string []
+        steps.push[ command {
+            mkdir -p {work} && rm -f {tb} } ]
+        steps.push[ command { touch {stamp}.next } ]
+        steps.push[ command { cd {root} && {sf}
+            | {tr} --transform "s,^,{rt}/," } ]
+        steps.push[ command { cd {fp}/build
+            && find . -maxdepth 1 {since} \( -name orbiter
+                -o -name "libsilver-*.so" -o -name "silver-*.source" \)
+                -print0
+            | {tr} --transform "s,^\.,{rt}/install/build," } ]
+        # every app's launcher (a name with no dot), whatever its age:
+        # the phone runs an app through it
+        steps.push[ command { cd {fp}/build
+            && find . -maxdepth 1 -type f -perm -u+x ! -name "*.*"
+                -print0
+            | {tr} --transform "s,^\.,{rt}/install/build," } ]
+        # every built module's share (fonts, images: mostly links into
+        # silver's files), as Install lays them; os-bootstrap's stays;
+        # all once, then only what changed (.shares marks it); S: a
+        # link keeps its target
+        steps.push[ command { cd {fp}/build
+            && for p in silver-*.product; do m=$(basename $p .product);
+                test $m = silver-os-bootstrap && continue;
+                test -d {install}/share/$m && echo $m;
+                s=${{m#silver-}}; if test -d {install}/share/$s;
+                then echo $s; fi; done > {work}/shares } ]
+        steps.push[ command { cd {install}/share
+            && find $(cat {work}/shares)
+                $(test -f {stamp}.shares && echo {since}) ! -type d
+                -print0
+            | {tr} --transform "s,^,{rt}/install/share/,S" } ]
+        # the user's games, in the phone's home as Install puts them:
+        # all once, then those changed since (.games marks it)
+        hc : cstr [ getenv[ "HOME" ] ]
+        gl : '{work}/games.list'
+        if [ hc != null && games_list[ work, gl ] ]
+            gn : '$(test -f {stamp}.games && echo -N {stamp}.games)'
+            steps.push[ command { cd "{string[ hc ]}"
+                && tar -rf {tb} --null -T {gl} {gn}
+                    --transform "s,^,root/," } ]
+        # every built app's export record: its props (orbiter hosts
+        # it) and what its view needs (system_bus, mms)
+        steps.push[ command { cd {fp}/build
+            && for p in silver-*.product; do m=$(basename $p .product);
+                test -f {install}/export/$m.agi && echo $m.agi; done
+            | (cd {install}/export && tar -rf {tb} -T -
+                --transform "s,^,{rt}/install/export/,") } ]
+        # every app's build stamp, else the phone builds it again
+        steps.push[ command { cd {fp}/build
+            && find . -maxdepth 1 -name "silver-*.product" -print0
+            | {tr} --transform "s,^\.,{rt}/install/build,"
+                --transform "s,^{fp}/build,/{rt}/install/build," } ]
+        # the headers (ours, then the phone's own) and git's CAs; all
+        # of them the first time (the phone had none)
+        hs : '$(test -f {stamp}.inc && echo -newer {stamp}.inc)'
+        steps.push[ command { cd {install}/include
+            && find -L . {hs} -type f -print0
+            | {tr} -h --transform "s,^\.,{rt}/install/include," } ]
+        steps.push[ command { cd {fp}/include
+            && find -L . {hs} -type f -print0
+            | {tr} -h --transform "s,^\.,{rt}/install/include," } ]
+        ca : '/etc/ssl/certs/ca-certificates.crt'
+        steps.push[ command {
+            tar -rf {tb} -h -P --transform "s,^/,," {ca} } ]
+        steps.push[ command { cd {root}
+            && find .git {hs} ! -type d -print0
+            | {tr} --transform "s,^,{rt}/," } ]
+        # the imports' build stamps, then libraries and programs
+        steps.push[ command { cd {fp}/build
+            && find . -name silver-token -print0
+            | {tr} --transform "s,^\.,{rt}/install/build," } ]
+        steps.push[ command { cd {fp}/lib
+            && find . {since} ! -type d ! -name "*.a" ! -name "*.la"
+                -print0
+            | {tr} --transform "s,^\.,{rt}/install/lib," } ]
+        steps.push[ command { cd {fp}/bin
+            && find . {since} ! -type d -print0
+            | {tr} --transform "s,^\.,{rt}/install/bin," } ]
+        # packages fp6.agi gained since the phone was written; /lib,
+        # /bin, /sbin are links into /usr there, as here
+        steps.push[ command { test -f {stamp}.debs
+            && sort {stamp}.debs > {nl}.was
+            && sort {pk} | comm -13 {nl}.was - > {nl} || : > {nl} } ]
+        steps.push[ command {
+            rm -rf {nd} && mkdir -p {nd}/root && cd {nd}
+            && for d in lib bin sbin; do mkdir -p root/usr/$d
+                && ln -s usr/$d root/$d; done
+            && for f in $(cat {nl}); do
+                curl -sfL {ub}/$f -o p.deb
+                && {ar} x p.deb $({ar} t p.deb | grep data.tar)
+                && tar --keep-directory-symlink -xf data.tar.* -C root
+                && rm -f data.tar.* p.deb || exit 1; done;
+            rm -f root/lib root/bin root/sbin } ]
+        steps.push[ command { cd {nd}/root
+            && find . ! -type d -print0 | {tr} } ]
+        # the boot's modem script (it sets the clock from the network)
+        mp : 's,^{mf},usr/sbin/orbiter-modem-prepare,'
+        steps.push[ command {
+            cd {root} && tar -rf {tb} --transform "{mp}" {mf} } ]
+        steps.push[ command {
+            test -f {tb} || tar -cf {tb} -T /dev/null } ]
         if [ !run_steps[ steps ] ] return false
         say[ 'Sending {file_bytes[ tb ]} bytes of changes to the phone' ]
-        # the phone unpacks exactly n characters of base64 from its
-        # port; a sum it prints (not echoed) says it is done
-        go : 'n=$(base64 -w0 {tb} | wc -c); stty -F {port} raw -echo; '
-        go = '{go}exec 3<>{port}; '
-        go = '{go}printf "stty raw -echo; head -c $n | base64 -d | '
-        # written, the phone restarts on it (orbiter is its pid 1:
-        # it cannot restart alone); reboot(2) by perl, arm64's 142
+        # 4 MB pieces, each taken whole into a file on the phone and
+        # said so before the next (a stall stops at one piece); each
+        # said on the phone's bar (orbiter-note.sh). The port becomes
+        # this shell's terminal: grep reads it from the foreground.
+        # Written, orbiter-apply.sh (in the same tar) unpacks it: live
+        # when no library under orbiter changed, else the phone
+        # restarts (orbiter is pid 1); reboot(2) by perl, arm64's 142
+        pd : '{work}/pieces'
+        uf : '/root/.update.tar'
+        nt : 'sh /{rt}/os-bootstrap/orbiter-note.sh'
+        ap : '{rt}/os-bootstrap/orbiter-apply.sh'
         rb : 'perl -e \\"syscall(142,0xfee1dead,672274793,0x1234567)\\"'
-        go = '{go}tar -x -C / && sync && echo DONE-\\$((40+2)) && '
-        go = '{go}sleep 1 && {rb} || '
-        go = '{go}echo FAIL-\\$((40+2)); stty sane\\n" >&3; sleep 1; '
-        go = '{go}base64 -w0 {tb} >&3; '
-        # the port becomes this shell's terminal: grep reads it from
-        # the foreground, or it is stopped
-        go = '{go}r=$(timeout --foreground 900 grep -a -m1 -o '
-        go = '{go}"DONE-42\\|FAIL-42" <&3); '
-        go = '{go}echo "phone: $r"; [ "$r" = DONE-42 ]'
+        # what the phone's shell runs: one line each (a quoted string
+        # in a block keeps its line breaks, so these have none)
+        pc : command { {nt} $((i+1)) $k 2>/dev/null;
+            stty raw -echo; head -c $m | base64 -d $op {uf}
+            && echo OK-\$((40+2)) || echo FAIL-\$((40+2)); stty sane }
+        fin : command { tar -x -C / -f {uf} {ap};
+            sh /{ap} {uf}; a=\$?; rm -f {uf}; sync;
+            ({nt} done 2>/dev/null; true);
+            [ \$a = 0 ] && echo LIVE-\$((40+2));
+            [ \$a = 1 ] && echo DONE-\$((40+2)) && sleep 1 && {rb};
+            [ \$a -gt 1 ] && echo FAIL-\$((40+2)) }
+        go : command {
+            rm -rf {pd} && mkdir -p {pd}
+            && split -b 4M -d -a 4 {tb} {pd}/p
+            && k=$(ls {pd} | wc -l); i=0;
+            stty -F {port} raw -echo; exec 3<>{port};
+            printf "\025\r" >&3; sleep 1;
+            for f in {pd}/p*; do m=$(base64 -w0 $f | wc -c);
+                op=">>"; [ $i = 0 ] && op=">";
+                printf "{pc}\r" >&3;
+                sleep 0.3; base64 -w0 $f >&3;
+                r=$(timeout --foreground 60 grep -a -m1 -o
+                    "OK-42\|FAIL-42" <&3); i=$((i+1));
+                echo "phone: piece $i of $k: $r";
+                [ "$r" = OK-42 ] || exit 1; done;
+            printf "{fin}\r" >&3;
+            r=$(timeout --foreground 900 grep -a -m1 -o
+                "LIVE-42\|DONE-42\|FAIL-42" <&3);
+            echo "phone: $r"; [ "$r" != FAIL-42 ] && [ -n "$r" ] }
         if [ !sh[ go ] ]
             say[ 'The phone did not take the update' ]
             return false
         if [ !sh[ 'mv {stamp}.next {stamp}' ] ] return false
-        say[ 'Updated: the phone restarts on it' ]
+        sh[ 'touch -r {stamp} {stamp}.inc' ]
+        sh[ 'cp {pk} {stamp}.debs' ]
+        sh[ 'touch {stamp}.shares' ]
+        sh[ 'touch {stamp}.games' ]
+        say[ 'Updated: orbiter takes it live, or the phone restarts' ]
         return true
 
     # orbiter-os's USB serial port, once the phone has booted: its
@@ -2654,6 +2925,7 @@ element Bootstrap
         add_wifi[]
         add_tray[]
         add_toolchain[]
+        add_games[]
         write_tree[]
         write_boot[]
 
@@ -2661,6 +2933,21 @@ element Bootstrap
     # header they read, the C library's link files and gcc's start
     # files (clang links with them), silver's sources and its git
     # history (a module builds only inside its repository)
+    # the user's games, at the same place in the new system's home
+    func add_games []
+        hc : cstr [ getenv[ "HOME" ] ]
+        if [ hc == null ] return
+        home : string [ hc ]
+        games : vec string game_files[]
+        for [ g: string ] in games
+            dst : 'root/{g}'
+            if [ seen.contains[ dst ] ] continue
+            seen[ dst ] = true
+            n : i64 [ dst.rindex_of[ '/' ] ]
+            if [ n > 0 ] add_dir[ dst.mid[ 0, i32[ n ] ] ]
+            files.push[ OsFile [ src: '{home}/{g}', dst: dst ] ]
+        say[ 'games from your home: {games.count} files' ]
+
     func add_toolchain []
         for [ t: string ] in vec string [] [ '{install}/bin/silver',
                 '{install}/build/silver', '{install}/bin/clang',
@@ -3048,11 +3335,17 @@ element main : trinity
     public  height     : i32    [ 800 ]
     public  title      : string [ 'orbiter-os' ]
     public  background : string [ 'Background' ]
+    # the connected phone updated, as the phone page's Update
+    public  update     : bool
 
     func init []
         # outside a window: initialize gives it its defaults
         b : Bootstrap []
         b.initialize[]
+        if [ update ]
+            if [ !b.phone_update[] ] log 'os-bootstrap: no update'
+            Au.quit_request[]
+            return
         if [ b.kernels.count == 0 ]
             if [ !b.build_kernel[ b.want_hardware, b.want_version,
                     b.want_nvidia, b.want_amd, b.want_intel ] ]
@@ -3064,51 +3357,52 @@ element main : trinity
         Au.quit_request[]
 
 # the installer image from the chosen kernel, read back as a user
-expect func t_installer_image [] -> bool
-    b : Bootstrap []
-    b.initialize[]
-    img : b.make_image[]
-    if [ img.count == 0 ] return false
-    mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mdir -i {img}@@1M -b'
-    efi : vec string [] [ '::EFI/BOOT', '::EFI/orbiter' ]
-    found : string ''
-    for [ d: string ] in efi
-        cmd : '{mt} {d}'
-        run : command [ cmd ]
-        fh : handle run.stream[]
-        bf : local i8 [ 512 ]
-        while [ fh && fgets[ @bf[0], 512, fh ] ]
-            s0 : string [ @bf[0] ]
-            found = '{found} {s0.trim[]}'
-        if [ fh ] pclose[ fh ]
-    off : i64 [ 1050624 * 512 ]
-    dbg : 'debugfs -R "stat /src/silver/install" "{img}?offset={off}"'
-    q2 : '{dbg} 2>/dev/null | head -1'
-    tree_cmd : command [ q2 ]
-    fh2 : handle tree_cmd.stream[]
-    bf2 : local i8 [ 512 ]
-    tree : string ''
-    if [ fh2 && fgets[ @bf2[0], 512, fh2 ] ] tree = string [ @bf2[0] ]
-    if [ fh2 ] pclose[ fh2 ]
-    ty : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mtype -i {img}@@1M'
-    q3 : '{ty} ::EFI/orbiter/cmdline.txt'
-    line_cmd : command [ q3 ]
-    fh3 : handle line_cmd.stream[]
-    bf3 : local i8 [ 1024 ]
-    if [ fh3 && fgets[ @bf3[0], 1024, fh3 ] ]
-        ln3 : string [ @bf3[0] ]
-        log 'installer test: line {ln3.trim[]}'
-    if [ fh3 ] pclose[ fh3 ]
-    log 'installer test: {found}'
-    log 'installer test: tree {tree.trim[]}'
-    ok : bool [ found.index_of[ 'BOOTX64.EFI' ] >= 0
-        && found.index_of[ 'vmlinuz.efi' ] >= 0
-        && found.index_of[ 'initramfs' ] >= 0
-        && found.index_of[ 'cmdline.txt' ] >= 0
-        && tree.index_of[ 'Inode' ] >= 0 ]
-    rm_cmd : command { rm -rf {b.image_work[]} }
-    rm_cmd.exec[ false ]
-    return ok
+# off: needs gigabytes free (a whole disk image)
+# expect func t_installer_image [] -> bool
+#     b : Bootstrap []
+#     b.initialize[]
+#     img : b.make_image[]
+#     if [ img.count == 0 ] return false
+#     mt : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mdir -i {img}@@1M -b'
+#     efi : vec string [] [ '::EFI/BOOT', '::EFI/orbiter' ]
+#     found : string ''
+#     for [ d: string ] in efi
+#         cmd : '{mt} {d}'
+#         run : command [ cmd ]
+#         fh : handle run.stream[]
+#         bf : local i8 [ 512 ]
+#         while [ fh && fgets[ @bf[0], 512, fh ] ]
+#             s0 : string [ @bf[0] ]
+#             found = '{found} {s0.trim[]}'
+#         if [ fh ] pclose[ fh ]
+#     off : i64 [ 1050624 * 512 ]
+#     dbg : 'debugfs -R "stat /src/silver/install" "{img}?offset={off}"'
+#     q2 : '{dbg} 2>/dev/null | head -1'
+#     tree_cmd : command [ q2 ]
+#     fh2 : handle tree_cmd.stream[]
+#     bf2 : local i8 [ 512 ]
+#     tree : string ''
+#     if [ fh2 && fgets[ @bf2[0], 512, fh2 ] ] tree = string [ @bf2[0] ]
+#     if [ fh2 ] pclose[ fh2 ]
+#     ty : 'MTOOLS_SKIP_CHECK=1 {b.install}/bin/mtype -i {img}@@1M'
+#     q3 : '{ty} ::EFI/orbiter/cmdline.txt'
+#     line_cmd : command [ q3 ]
+#     fh3 : handle line_cmd.stream[]
+#     bf3 : local i8 [ 1024 ]
+#     if [ fh3 && fgets[ @bf3[0], 1024, fh3 ] ]
+#         ln3 : string [ @bf3[0] ]
+#         log 'installer test: line {ln3.trim[]}'
+#     if [ fh3 ] pclose[ fh3 ]
+#     log 'installer test: {found}'
+#     log 'installer test: tree {tree.trim[]}'
+#     ok : bool [ found.index_of[ 'BOOTX64.EFI' ] >= 0
+#         && found.index_of[ 'vmlinuz.efi' ] >= 0
+#         && found.index_of[ 'initramfs' ] >= 0
+#         && found.index_of[ 'cmdline.txt' ] >= 0
+#         && tree.index_of[ 'Inode' ] >= 0 ]
+#     rm_cmd : command { rm -rf {b.image_work[]} }
+#     rm_cmd.exec[ false ]
+#     return ok
 
 # an ARM stick: arm64 stub, Image and /init, the drive untouched
 # expect func t_installer_image_arm [] -> bool
@@ -3144,6 +3438,42 @@ expect func t_installer_image [] -> bool
 #     return ok
 
 # kernel.org's list: a stable release first, then longterm ones
+# a scratch home: a rom and its save, a disc folder with its cue
+# sheet and tracks, a note, a hidden folder and one too deep
+expect func t_game_files [] -> bool
+    h : '{silver_root[]}/install/tmp/game-home'
+    mk : command { rm -rf {h} && mkdir -p {h}/roms/disc {h}/.hid
+        {h}/a/b/c && cd {h} && touch roms/zelda.nes roms/zelda.srm
+        roms/notes.txt .hid/x.nes a/b/c/deep.nes
+        "roms/disc/Ridge (Track 1).bin"
+        "roms/disc/Ridge (Track 2).bin" }
+    mk.exec[ false ]
+    cue : '{h}/roms/disc/Ridge.cue'
+    cf : handle fopen[ cue.chars, 'w' ]
+    fputs[ "FILE \"Ridge (Track 1).bin\" BINARY\n", cf ]
+    fputs[ "  FILE \"Ridge (Track 2).bin\" BINARY\n", cf ]
+    fclose[ cf ]
+    was : cstr [ getenv[ "HOME" ] ]
+    keep : string [ (was) ? string[ was ] : '' ]
+    setenv[ "HOME", h.chars, 1 ]
+    games : vec string game_files[]
+    setenv[ "HOME", keep.chars, 1 ]
+    want : vec string [] [ 'roms/zelda.nes', 'roms/zelda.srm',
+        'roms/disc/Ridge.cue', 'roms/disc/Ridge (Track 1).bin',
+        'roms/disc/Ridge (Track 2).bin' ]
+    log 'game files: {games.count}'
+    ok : bool [ games.count == want.count ]
+    for [ w: string ] in want
+        hit : bool [ false ]
+        for [ g: string ] in games
+            if [ g == w ] hit = true
+        if [ !hit ]
+            log 'missing {w}'
+            ok = false
+    rm : command { rm -rf {h} }
+    rm.exec[ false ]
+    return ok
+
 expect func t_kernel_releases [] -> bool
     b : Bootstrap []
     vs : b.kernel_releases[]
@@ -3165,34 +3495,36 @@ expect func t_copy_progress [] -> bool
 # the phone's root: orbiter-os for arm64 from the fp6 build, read
 # back from the image (debugfs): the launcher an aarch64 program,
 # turnip named at the phone's own path, the kernel's modules there
-expect func t_phone_rootfs [] -> bool
-    b : Bootstrap []
-    b.initialize[]
-    b.scan[]
-    kb : KernelBuild [ name: '' ]
-    for [ k: KernelBuild ] in b.kernels
-        if [ k.name.ends_with[ '-fp6' ] ] kb = k
-    if [ kb.name.count == 0 ] return false
-    uuid : '0b6f0c1e-4d1a-4f3b-9c2e-7a5d8e9f1a2b'
-    img : b.phone_rootfs[ kb, uuid ]
-    if [ img.count == 0 ] return false
-    wk : '{b.install}/tmp/phone-fp6'
-    lb : '/src/silver/install/build/orbiter'
-    ic : '/src/silver/install/share/vulkan/icd.d/freedreno_icd.aarch64.json'
-    q : 'debugfs -R "dump {lb} {wk}/orbiter" {img} 2>/dev/null'
-    q = '{q}; debugfs -R "dump {ic} {wk}/icd.json" {img} 2>/dev/null'
-    q = '{q}; file {wk}/orbiter; cat {wk}/icd.json'
-    q = '{q}; debugfs -R "ls /usr/lib/modules" {img} 2>/dev/null'
-    run : command [ q ]
-    fh : handle run.stream[]
-    bf : local i8 [ 512 ]
-    said : string ''
-    while [ fh && fgets[ @bf[0], 512, fh ] ]
-        ln : string [ @bf[0] ]
-        log 'phone root: {ln.trim[]}'
-        said = '{said} {ln.trim[]}'
-    if [ fh ] pclose[ fh ]
-    want : '/src/silver/install/lib/libvulkan_freedreno.so'
-    return said.index_of[ 'ARM aarch64' ] >= 0
-        && said.index_of[ want ] >= 0
-        && said.index_of[ kb.release ] >= 0
+# off: needs gigabytes free (a whole disk image)
+# expect func t_phone_rootfs [] -> bool
+#     b : Bootstrap []
+#     b.initialize[]
+#     b.scan[]
+#     kb : KernelBuild [ name: '' ]
+#     for [ k: KernelBuild ] in b.kernels
+#         if [ k.name.ends_with[ '-fp6' ] ] kb = k
+#     if [ kb.name.count == 0 ] return false
+#     uuid : '0b6f0c1e-4d1a-4f3b-9c2e-7a5d8e9f1a2b'
+#     img : b.phone_rootfs[ kb, uuid ]
+#     if [ img.count == 0 ] return false
+#     wk : '{b.install}/tmp/phone-fp6'
+#     lb : '/src/silver/install/build/orbiter'
+#     ic : '/src/silver/install/share/vulkan/icd.d/freedreno_icd.aarch64.json'
+#     q : 'debugfs -R "dump {lb} {wk}/orbiter" {img} 2>/dev/null'
+#     q = '{q}; debugfs -R "dump {ic} {wk}/icd.json" {img} 2>/dev/null'
+#     q = '{q}; file {wk}/orbiter; cat {wk}/icd.json'
+#     q = '{q}; debugfs -R "ls /usr/lib/modules" {img} 2>/dev/null'
+#     run : command [ q ]
+#     fh : handle run.stream[]
+#     bf : local i8 [ 512 ]
+#     said : string ''
+#     while [ fh && fgets[ @bf[0], 512, fh ] ]
+#         ln : string [ @bf[0] ]
+#         log 'phone root: {ln.trim[]}'
+#         said = '{said} {ln.trim[]}'
+#     if [ fh ] pclose[ fh ]
+#     want : '/src/silver/install/lib/libvulkan_freedreno.so'
+#     return said.index_of[ 'ARM aarch64' ] >= 0
+#         && said.index_of[ want ] >= 0
+#         && said.index_of[ kb.release ] >= 0
+#

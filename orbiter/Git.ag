@@ -1723,6 +1723,9 @@ element CommitView
     # list's top); the list's height back
     func list_layout [ ww: f32 ] -> f32
         u : f32 ux_unit[ ux ]
+        # the side column's room as it is now (a draw may not have
+        # set it yet this frame): its absence moves nothing
+        side_w = side_fit[ u ]
         lay_x = vec f32 []
         lay_y = vec f32 []
         lay_w = vec f32 []

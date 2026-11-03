@@ -13,6 +13,7 @@ ifndef [ windows ]
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include
         -ldbus-1
 import <stdio.h>
 import <stdlib.h>
@@ -700,7 +701,14 @@ class WifiStandIn
         # the system's daemon and python take the system's libdbus
         sh : 'unset LD_LIBRARY_PATH;'
         sh = '{sh} a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
-        sh = '{sh} {py} $1 >/dev/null 2>&1 & echo $1 $2 $!; sleep 1'
+        sh = '{sh} {py} $1 >/dev/null 2>&1 & p=$!;'
+        # up when its name is on the bus, however slow the machine
+        ask : '/usr/bin/dbus-send --bus=$1 --print-reply'
+        ask = '{ask} --dest=org.freedesktop.DBus /'
+        ask = '{ask} org.freedesktop.DBus.ListNames 2>/dev/null'
+        sh = '{sh} for i in $(seq 100); do {ask}'
+        sh = '{sh} | grep -q net.connman.iwd && break; sleep 0.1; done;'
+        sh = '{sh} echo $1 $2 $p'
         cmd : command [ sh ]
         fh : handle cmd.stream[]
         if [ !fh ] return false

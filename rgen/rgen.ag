@@ -248,6 +248,10 @@ element rgen : trinity
 		if [ volume == 0.0 ] volume = 0.25
 		smooth = true                        # [ true ] initializer doesn't apply on element publics
 
+	# a phone: the Genesis controller in the keyboard's place
+	public func keyboard [] -> Au_t
+		return typeid[ GenesisPad ]
+
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -3045,3 +3049,63 @@ element rgen : trinity
 				z80_carry = zb - zs
 			el
 				z80_carry = 0
+# the Genesis controller on a phone, as the three-button one: the
+# black body, the round pad, START, and A B C rising to the right;
+# in the controller's own units (500 x 240), fitted to the place
+element GenesisPad
+	no_cache : true
+
+	# a part's place: controller units to px in the box
+	func at [ x: f32, y: f32, pw: f32, ph: f32 ] -> Region
+		if [ !bounds ] return Region [ 'l0 t0 r100% b100%' ]
+		f : rect pad_fit[ bounds.w, bounds.h, 500.0, 240.0 ]
+		k : f32 [ f.w / 500.0 ]
+		l : f32 [ f.x + x * k ]
+		t : f32 [ f.y + y * k ]
+		r : f32 [ bounds.w - l - pw * k ]
+		b : f32 [ bounds.h - t - ph * k ]
+		return Region [ 'l{l}px t{t}px r{r}px b{b}px' ]
+
+	func render [] -> Elements
+		e : Elements [ ]
+		grey : rgba [ '#8c8c94' ]
+		e[ 'cross' ] = PadCross [ look: PadLook.genesis,
+			up: 87, down: 83, left: 65, right: 68,
+			area: at[ 44.0, 58.0, 130.0, 130.0 ] ]
+		e[ 'start' ] = PadKey [ code: 257, face: rgba [ '#3e3e44' ],
+			kind: PadButton.pill,
+			area: at[ 216.0, 150.0, 56.0, 20.0 ] ]
+		e[ 'start_word' ] = PadWord [ word: 'START', colour: grey,
+			area: at[ 216.0, 174.0, 56.0, 13.0 ] ]
+		e[ 'a' ] = PadKey [ code: 44, face: rgba [ '#1a1a1d' ],
+			area: at[ 300.0, 128.0, 54.0, 54.0 ] ]
+		e[ 'b' ] = PadKey [ code: 46, face: rgba [ '#1a1a1d' ],
+			area: at[ 362.0, 104.0, 54.0, 54.0 ] ]
+		e[ 'c' ] = PadKey [ code: 47, face: rgba [ '#1a1a1d' ],
+			area: at[ 424.0, 80.0, 54.0, 54.0 ] ]
+		e[ 'a_word' ] = PadWord [ word: 'A', colour: grey,
+			area: at[ 318.0, 186.0, 18.0, 16.0 ] ]
+		e[ 'b_word' ] = PadWord [ word: 'B', colour: grey,
+			area: at[ 380.0, 162.0, 18.0, 16.0 ] ]
+		e[ 'c_word' ] = PadWord [ word: 'C', colour: grey,
+			area: at[ 442.0, 138.0, 18.0, 16.0 ] ]
+		return e
+
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen || !bounds ] return
+		cv : Canvas w.screen
+		f : rect pad_fit[ bounds.w, bounds.h, 500.0, 240.0 ]
+		k : f32 [ f.w / 500.0 ]
+		# the body: a wide round shape, its top catching the light
+		r : f32 [ 112.0 * k ]
+		pad_drop[ cv, f.x, f.y + 4.0 * k, f.w, 224.0 * k, r,
+			rgba [ '#000000c0' ], 6.0 * k, 14.0 * k ]
+		pad_panel[ cv, f.x, f.y + 4.0 * k, f.w, 224.0 * k, r,
+			rgba [ '#36363b' ], rgba [ '#141416' ], false, k ]
+		# the buttons' strip, set into the body
+		cv.save[]
+		cv.translate[ f.x + 389.0 * k, f.y + 131.0 * k ]
+		cv.rotate[ -0.37 ]
+		pad_panel[ cv, -112.0 * k, -38.0 * k, 224.0 * k, 76.0 * k,
+			38.0 * k, rgba [ '#0b0b0c' ], rgba [ '#1f1f22' ], true, k ]
+		cv.restore[]

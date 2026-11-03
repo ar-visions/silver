@@ -12,16 +12,18 @@ import design
 # the menu's chips (MenuGroup) hold the properties
 import tray
 
-# blender 4.5.14: its python 3.11 (with numpy) runs blend.py
-import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
-    > mkdir -p {install}/blender
-    > test -x {install}/blender/blender || tar -xJf {import_file} --strip-components 1 -C {install}/blender
-    > ln -sf ../blender/4.5/python/bin/python3.11 {install}/bin/blender-python
+# blender ships for x64 linux alone: no .blend import elsewhere
+ifdef [ x86_64 ]
+    # blender 4.5.14: its python 3.11 (with numpy) runs blend.py
+    import https://download.blender.org/release/Blender4.5/blender-4.5.14-linux-x64.tar.xz
+        > mkdir -p {install}/blender
+        > test -x {install}/blender/blender || tar -xJf {import_file} --strip-components 1 -C {install}/blender
+        > ln -sf ../blender/4.5/python/bin/python3.11 {install}/bin/blender-python
 
-# bpy 4.5.14: the same blender as a python module; blend.py
-# imports it, so no blender program is started
-import https://files.pythonhosted.org/packages/5e/e2/89cf67b8dcb0644e3bc97f46981d4e095d808179c4f93a348b57ac00af37/bpy-4.5.14-cp311-cp311-manylinux_2_28_x86_64.whl
-    > test -d {install}/pylib-blender/bpy || {install}/bin/blender-python -m zipfile -e {import_file} {install}/pylib-blender
+    # bpy 4.5.14: the same blender as a python module; blend.py
+    # imports it, so no blender program is started
+    import https://files.pythonhosted.org/packages/5e/e2/89cf67b8dcb0644e3bc97f46981d4e095d808179c4f93a348b57ac00af37/bpy-4.5.14-cp311-cp311-manylinux_2_28_x86_64.whl
+        > test -d {install}/pylib-blender/bpy || {install}/bin/blender-python -m zipfile -e {import_file} {install}/pylib-blender
 
 import <stdio.h>
 import <stdlib.h>
@@ -2079,6 +2081,14 @@ func open_shadow [ design: Design, edits: Edits ]
             fs : string '{f}'
             n : i32 [ root.count ]
             orig : fs.mid[ n, fs.count - n ]
+            # the file saved after this copy was held: the copy is
+            # stale, not unsaved edits (it would hide the file)
+            real : path orig
+            if [ real.exists[] && real.modified_time[]
+                 > f.modified_time[] ]
+                log 'aeon: {orig} changed since its held copy: dropped'
+                f.remove[]
+                continue
             to : path '{shadow_base[]}{orig}'
             up : to.parent_dir[]
             up.make_dir[]

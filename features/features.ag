@@ -2503,6 +2503,15 @@ expect func t_vec_f32_push_literal [] -> bool
     log 'vec f32 push: {v[ 0 ]} {v[ 1 ]}'
     return v.count == 2 && v[ 0 ] == 1.0 && v[ 1 ] == 0.25
 
+# += on a vec f32 takes a f64 literal or a ternary as its own element
+expect func t_vec_f32_add_assign [] -> bool
+    on : bool [ true ]
+    v : vec f32 []
+    v += (on) ? 1.0 : 0.0
+    v += 2.5
+    log 'vec f32 +=: {v[ 0 ]} {v[ 1 ]}'
+    return v.count == 2 && v[ 0 ] == 1.0 && v[ 1 ] == 2.5
+
 class Kelvin
     public k : f64
     # made from another class: a vec of Fahren converts through here

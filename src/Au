@@ -138,6 +138,10 @@ AU_EXPORT void au_error_frame_rethrow(__error_t*);
 AU_EXPORT void au_error_raise(string, token);
 // names: ASCII letters, '_', and any letter beyond ASCII (UTF-8)
 AU_EXPORT int  au_name_len(const char* s, int first);
+// export funcs run once: due when not yet run for this source
+// (or SILVER_EXPORT_FORCE); done marks it after it finished
+AU_EXPORT int  au_export_due(const char* key, const char* hash);
+AU_EXPORT void au_export_done(const char* key, const char* hash);
 AU_EXPORT int  au_name_start(const char* s);
 AU_EXPORT int  au_name_char(const char* s);
 // a name in Unicode's NFC (one spelling), malloc'd; null: it is

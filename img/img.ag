@@ -1305,13 +1305,14 @@ expect func test_exr_file [] -> bool
 
 expect func test_jpeg [] -> bool
     root : path.path_startup[]
-    p : path '{root}/mars/textures/mars-color-8192x4096.jpg'
+    # tracked, so on every machine silver's files go (a phone too)
+    p : path '{root}/img/tests/baseline.jpg'
     if [ !p.exists[] ] return false
     im : jpeg_decode[ p ]
     if [ !im ] return false
     log 'jpeg: decoded {im.width}x{im.height}'
-    if [ im.width != 8192 || im.height != 4096 ] return false
-    c : im.crop[ 3400, 1700, 640, 480 ]
+    if [ im.width != 640 || im.height != 480 ] return false
+    c : im.crop[ 100, 100, 320, 240 ]
     c.png[ path '/tmp/jpegtest.png' ]
     return true
 

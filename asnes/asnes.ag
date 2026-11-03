@@ -3923,6 +3923,26 @@ element asnes : trinity
 	action func load_state []
 		load_req = true
 
+	# a phone: the SNES controller in the keyboard's place
+	public func keyboard [] -> Au_t
+		return typeid[ SnesPad ]
+
+	# the default keys, as SnesPad sends them
+	func pad_key_bit [ code: i32 ] -> i32
+		if   [ code == 87 ]  return 11
+		el [ code == 83 ]  return 10
+		el [ code == 65 ]  return 9
+		el [ code == 68 ]  return 8
+		el [ code == 46 ]  return 15
+		el [ code == 59 ]  return 14
+		el [ code == 44 ]  return 7
+		el [ code == 76 ]  return 6
+		el [ code == 257 ] return 12
+		el [ code == 340 ] return 13
+		el [ code == 81 ]  return 5
+		el [ code == 69 ]  return 4
+		return -1
+
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -3945,6 +3965,8 @@ element asnes : trinity
 			el [ code == key_select ] bit = 13
 			el [ code == key_l ]      bit = 5
 			el [ code == key_r ]      bit = 4
+		# the on-screen pad's keys (the defaults), whatever is bound
+		if [ bit < 0 ] bit = pad_key_bit[ code ]
 		if [ bit >= 0 ]
 			m : u16 [ 1 << bit ]
 			if [ down ] pad1 = pad1 | m
@@ -9580,3 +9602,101 @@ element asnes : trinity
 		rc : i32 [ tm / 6 ]
 		cpu_master_rem = tm - rc * 6        # carry sub-cpu-cycle remainder so accounting stays exact
 		return rc
+# the SNES controller on a phone, as the real one: the grey bone,
+# L and R on its shoulders, the cross in its dish, SELECT and START,
+# X A B Y in their colours on the lavender dish; in the controller's
+# own units (500 x 220), fitted to the keyboard's place
+element SnesPad
+	no_cache : true
+
+	# a part's place: controller units to px in the box
+	func at [ x: f32, y: f32, pw: f32, ph: f32 ] -> Region
+		if [ !bounds ] return Region [ 'l0 t0 r100% b100%' ]
+		f : rect pad_fit[ bounds.w, bounds.h, 500.0, 220.0 ]
+		k : f32 [ f.w / 500.0 ]
+		l : f32 [ f.x + x * k ]
+		t : f32 [ f.y + y * k ]
+		r : f32 [ bounds.w - l - pw * k ]
+		b : f32 [ bounds.h - t - ph * k ]
+		return Region [ 'l{l}px t{t}px r{r}px b{b}px' ]
+
+	func render [] -> Elements
+		e : Elements [ ]
+		e[ 'l' ] = PadKey [ code: 81, face: rgba [ '#a3a3ac' ],
+			kind: PadButton.pill,
+			area: at[ 40.0, 0.0, 130.0, 22.0 ] ]
+		e[ 'r' ] = PadKey [ code: 69, face: rgba [ '#a3a3ac' ],
+			kind: PadButton.pill,
+			area: at[ 330.0, 0.0, 130.0, 22.0 ] ]
+		e[ 'cross' ] = PadCross [ look: PadLook.snes,
+			up: 87, down: 83, left: 65, right: 68,
+			area: at[ 56.0, 64.0, 108.0, 108.0 ] ]
+		e[ 'select' ] = PadKey [ code: 340, face: rgba [ '#5c5c66' ],
+			kind: PadButton.pill,
+			area: at[ 204.0, 116.0, 40.0, 14.0 ] ]
+		e[ 'start' ]  = PadKey [ code: 257, face: rgba [ '#5c5c66' ],
+			kind: PadButton.pill,
+			area: at[ 256.0, 116.0, 40.0, 14.0 ] ]
+		e[ 'select_word' ] = PadWord [ word: 'SELECT',
+			colour: rgba [ '#6c6c76' ],
+			area: at[ 199.0, 134.0, 50.0, 12.0 ] ]
+		e[ 'start_word' ]  = PadWord [ word: 'START',
+			colour: rgba [ '#6c6c76' ],
+			area: at[ 251.0, 134.0, 50.0, 12.0 ] ]
+		e[ 'x' ] = PadKey [ code: 76, face: rgba [ '#3557c4' ],
+			area: at[ 370.0, 50.0, 40.0, 40.0 ] ]
+		e[ 'a' ] = PadKey [ code: 44, face: rgba [ '#c8202e' ],
+			area: at[ 414.0, 94.0, 40.0, 40.0 ] ]
+		e[ 'b' ] = PadKey [ code: 46, face: rgba [ '#e8b70c' ],
+			area: at[ 370.0, 138.0, 40.0, 40.0 ] ]
+		e[ 'y' ] = PadKey [ code: 59, face: rgba [ '#1f9b4d' ],
+			area: at[ 326.0, 94.0, 40.0, 40.0 ] ]
+		grey : rgba [ '#6c6c76' ]
+		e[ 'x_word' ] = PadWord [ word: 'X', colour: grey,
+			area: at[ 418.0, 36.0, 14.0, 14.0 ] ]
+		e[ 'a_word' ] = PadWord [ word: 'A', colour: grey,
+			area: at[ 456.0, 136.0, 14.0, 14.0 ] ]
+		e[ 'b_word' ] = PadWord [ word: 'B', colour: grey,
+			area: at[ 354.0, 170.0, 14.0, 14.0 ] ]
+		e[ 'y_word' ] = PadWord [ word: 'Y', colour: grey,
+			area: at[ 296.0, 78.0, 14.0, 14.0 ] ]
+		return e
+
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen || !bounds ] return
+		cv : Canvas w.screen
+		f : rect pad_fit[ bounds.w, bounds.h, 500.0, 220.0 ]
+		k : f32 [ f.w / 500.0 ]
+		# the bone: two round ends and the middle between them, lit
+		# from above
+		disc_drop[ cv, f, k, 110.0, 118.0, 102.0 ]
+		disc_drop[ cv, f, k, 390.0, 118.0, 102.0 ]
+		pad_drop[ cv, f.x + 110.0 * k, f.y + 30.0 * k, 280.0 * k,
+			168.0 * k, 0.0, rgba [ '#000000a0' ], 5.0 * k, 12.0 * k ]
+		top : rgba [ '#d6d6dc' ]
+		foot : rgba [ '#a7a7af' ]
+		disc[ cv, f, k, 110.0, 118.0, 102.0, top, foot, false ]
+		disc[ cv, f, k, 390.0, 118.0, 102.0, top, foot, false ]
+		pad_fill[ cv, f.x + 108.0 * k, f.y + 30.0 * k, 284.0 * k,
+			168.0 * k, 0.0, rgba [ '#d4d4da' ], rgba [ '#acacb4' ] ]
+		# the dishes the cross and the buttons sit in
+		disc[ cv, f, k, 110.0, 118.0, 66.0, rgba [ '#a6a6ae' ],
+			rgba [ '#c6c6cd' ], true ]
+		disc[ cv, f, k, 390.0, 114.0, 80.0, rgba [ '#9690ad' ],
+			rgba [ '#b5afcb' ], true ]
+		# the strip SELECT and START sit in
+		pad_panel[ cv, f.x + 196.0 * k, f.y + 108.0 * k, 108.0 * k,
+			30.0 * k, 15.0 * k, rgba [ '#a9a9b1' ], rgba [ '#c4c4cb' ],
+			true, k * 0.6 ]
+
+	func disc [ cv: Canvas, f: rect, k: f32, x: f32, y: f32, r: f32,
+				top: rgba, foot: rgba, sunk: bool ]
+		d : f32 [ 2.0 * r * k ]
+		pad_panel[ cv, f.x + (x - r) * k, f.y + (y - r) * k, d, d,
+			r * k, top, foot, sunk, k ]
+
+	func disc_drop [ cv: Canvas, f: rect, k: f32, x: f32, y: f32,
+					 r: f32 ]
+		d : f32 [ 2.0 * r * k ]
+		pad_drop[ cv, f.x + (x - r) * k, f.y + (y - r) * k, d, d, r * k,
+			rgba [ '#000000a0' ], 5.0 * k, 12.0 * k ]

@@ -3,6 +3,7 @@
 # unpacked: no FUSE needed); it runs in a pane over orbiter's display
 export 3.2.6
 export software ['creative']
+export platforms ['x64']
 export icon ['gimp']
 
 # the version taken, and its AppImage's sha256 as GIMP's SHA256SUMS

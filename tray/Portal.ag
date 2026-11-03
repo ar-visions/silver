@@ -69,14 +69,14 @@ class Portal
     func start_bus [ at: string ]
         sock : string at.mid[ 10, at.count - 10 ]
         conf : path '{sock}.conf'
-        x : '<!DOCTYPE busconfig PUBLIC'
-        x = '{x} "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"'
-        x = '{x} "http://www.freedesktop.org/standards/dbus/1.0/'
-        x = '{x}busconfig.dtd">\n<busconfig><type>session</type>'
-        x = '{x}<listen>{at}</listen><auth>EXTERNAL</auth>'
-        x = '{x}<policy context="default"><allow own="*"/>'
-        x = '{x}<allow send_destination="*"/>'
-        x = '{x}<allow receive_sender="*"/></policy></busconfig>\n'
+        dtd : 'http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd'
+        x : command { <!DOCTYPE busconfig PUBLIC
+            "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "{dtd}">
+            <busconfig><type>session</type>
+            <listen>{at}</listen><auth>EXTERNAL</auth>
+            <policy context="default"><allow own="*"/>
+            <allow send_destination="*"/>
+            <allow receive_sender="*"/></policy></busconfig> }
         conf.save[ x, null ]
         unlink[ sock.chars ]
         run : command [ 'dbus-daemon --config-file={conf} --fork' ]

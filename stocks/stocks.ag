@@ -26,6 +26,12 @@ element stocks : trinity
             area: Region { l0 t0 r0 b0 } ]
         return t
 
+    # the fetch runs on each frame; the view draws only on a change
+    public func on_frame [ w: Window ]
+        if [ !elements || !elements.contains[ 'view' ] ] return
+        v : StockView [ elements[ 'view' ] inherits StockView ]
+        if [ v ] v.poll[]
+
 # one symbol's prices over one range, as Yahoo gave them
 class Series
     public sym   : string
@@ -55,9 +61,18 @@ func range_query [ r: i32 ] -> string
 # the chart above, its ranges, the day's figures, the list under it.
 # drawn on a glass card: as a widget the desktop shows through it
 element StockView
-    animated : true
     public  symbols : string
     mutable syms    : vec string
+    # the rows shown: syms that match the home filter, as a widget
+    mutable shown   : vec i32
+    # a row slid left shows Delete: the row pressed, how far it is
+    # slid, the one left open, the press's start
+    intern swipe_i : i32 [ -1 ]
+    intern open_i  : i32 [ -1 ]
+    intern slide   : f32
+    intern sliding : bool
+    intern press_x : f32
+    intern press_y : f32
     mutable sel     : i32
     mutable range   : i32
     mutable data    : map Series [string]
@@ -76,6 +91,7 @@ element StockView
     # the shape last told the host (a widget's box follows it)
     mutable told_w  : i32
     mutable told_h  : i32
+    mutable told_e  : bool
 
     # a widget's box is as tall as it asks: the chart a fixed height
     func chart_h [ un: f32 ] -> f32
@@ -83,17 +99,28 @@ element StockView
         if [ ap && ap.widget ] return round[ 150.0 * un ]
         return max[ 120.0, bounds.h * 0.32 ]
 
+    # a row matches the home filter: its symbol or its company's
+    # name holds the text (any case)
+    func row_matches [ i: i32, ft: string ] -> bool
+        if [ ft.count == 0 ] return true
+        if [ syms[ i ].lcase[].index_of[ ft ] >= 0 ] return true
+        k : string '{syms[ i ]}|0'
+        se : Series [ (data && data.contains[ k ]) ? data[ k ] : null ]
+        return se && se.name && se.name.lcase[].index_of[ ft ] >= 0
+
     # a widget tells the host its whole height for its width, so
     # every row shows and nothing scrolls
-    func tell_shape [ want: f32 ]
+    # and whether the home filter left it nothing to show (empty)
+    func tell_shape [ want: f32, empty: bool ]
         ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
         if [ !ap || !ap.widget || host_slot[] <= 0 ] return
         tw : i32 [ i32[ bounds.w ] ]
         th : i32 [ i32[ ceil[ want ] ] ]
-        if [ tw == told_w && th == told_h ] return
+        if [ tw == told_w && th == told_h && empty == told_e ] return
         told_w = tw
         told_h = th
-        host_post[ 0, i32[ HM.aspect ], tw, th, 0 ]
+        told_e = empty
+        host_post[ 0, i32[ HM.aspect ], tw, th, (empty) ? 1 : 0 ]
 
     # mounted over the desktop's apps: the list alone
     func list_only [] -> bool
@@ -240,15 +267,25 @@ element StockView
                 ax: f32, col: string ]
         chart_text[ cv, s, x, y, w, h, ax, col ]
 
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+    # the symbols once, a finished fetch taken, the next one due
+    func poll []
         if [ !syms ]
             syms = vec string []
-            for [ s: string ] in symbols.split[ "," ]
+            # the list as last edited (a row deleted), else the default
+            sp : path list_file[]
+            from : string symbols
+            if [ sp.exists[] ]
+                kept : string sp.load[ typeid[string], null ]
+                if [ kept ] from = kept
+            for [ s: string ] in from.split[ "," ]
                 st : string s.trim[]
                 if [ st.count > 0 ] syms.push[ st ]
         take_fetched[]
         fetch_due[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        poll[]
         cv : Canvas w.screen
         un : f32 ux_unit[ w ]
         bw : f32 [ bounds.w ]
@@ -257,17 +294,18 @@ element StockView
         up : string '#34d399'
         down : string '#fb7185'
         mute : string '#8b93a7'
-        # the glass card
+        # a widget is a rounded card, its border the host's
+        ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
+        wid : bool [ ap != null && ap.widget ]
+        rc : f32 [ (wid) ? 14.0 : 0.0 ]
         cv.save[]
         cv.fill_color[ rgba [ '#0b0e1acc' ] ]
-        cv.stroke_color[ rgba [ '#ffffff14' ] ]
-        cv.stroke_width[ 1.0 ]
-        cv.rounded_rect[ 0.5, 0.5, bw - 1.0, bh - 1.0, 14.0, 14.0, 14.0,
-                         14.0 ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
         cv.paint[]
         cv.restore[]
         cv.save[]
-        cv.clip_rounded_rect[ 0.0, 0.0, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
+        cv.clip_rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
         se : Series series[ range ]
         day : Series series[ 0 ]
         y : f32 [ pad ]
@@ -278,8 +316,14 @@ element StockView
                            mute ]
         row_y = y
         row_h = round[ 48.0 * un ]
-        tell_shape[ y + row_h * f32[ syms.count ] + pad ]
+        shown = vec i32 []
+        ft : string [ (ap != null && ap.widget_filter)
+            ? ap.widget_filter.lcase[] : '' ]
         for [ i: i32 0, i < syms.count, i += 1 ]
+            if [ row_matches[ i, ft ] ] shown.push[ i ]
+        tell_shape[ y + row_h * f32[ shown.count ] + pad,
+                    ft.count > 0 && shown.count == 0 ]
+        for [ i: i32 ] in shown
             if [ y + row_h > bh ] break
             draw_row[ cv, i, y, bw, pad, un, up, down, mute ]
             y += row_h
@@ -371,8 +415,53 @@ element StockView
 
     # a row of the list: symbol and name, the day's line, the price and
     # its change in a soft pill; the chosen row lit
+    # the Delete button's width
+    func del_w [] -> f32
+        return round[ 84.0 * ux_unit[ ux ] ]
+
+    # how far row i is slid left
+    func row_slide [ i: i32 ] -> f32
+        if [ i == swipe_i && sliding ] return slide
+        return (i == open_i) ? del_w[] : 0.0
+
+    # the saved list, in the cache
+    func list_file [] -> path
+        dir : path.path_cache[ 'stocks' ]
+        return path '{dir}/symbols.txt'
+
+    # a row's symbol taken out, the list saved
+    func delete_row [ i: i32 ]
+        if [ i < 0 || i >= syms.count ] return
+        syms.remove[ i ]
+        if [ sel >= syms.count ] sel = max[ 0, syms.count - 1 ]
+        open_i = -1
+        out : string ''
+        for [ s: string ] in syms
+            out = (out.count > 0) ? '{out},{s}' : s
+        list_file[].save[ out, null ]
+        if [ ux ] ux.restyle = true
+
     func draw_row [ cv: Canvas, i: i32, y: f32, bw: f32, pad: f32,
                     un: f32, up: string, down: string, mute: string ]
+        off : f32 row_slide[ i ]
+        if [ off > 0.0 ]
+            cv.save[]
+            cv.fill_color[ rgba [ '#e11d48' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ bw - off, y, off, row_h ]
+            cv.paint[]
+            font[ cv, 'SemiBold', round[ 15.0 * un ] ]
+            text[ cv, 'Delete', bw - off, y, off, row_h, 0.5, '#ffffff' ]
+            cv.restore[]
+            cv.save[]
+            cv.clip_rect[ 0.0, y, bw - off, row_h, 0.0, 0.0 ]
+            cv.translate[ -off, 0.0 ]
+        draw_row_body[ cv, i, y, bw, pad, un, up, down, mute ]
+        if [ off > 0.0 ] cv.restore[]
+
+    func draw_row_body [ cv: Canvas, i: i32, y: f32, bw: f32, pad: f32,
+                         un: f32, up: string, down: string,
+                         mute: string ]
         sym : string syms[ i ]
         k : string '{sym}|0'
         se : Series [ (data && data.contains[ k ]) ? data[ k ] : null ]
@@ -414,6 +503,40 @@ element StockView
         text[ cv, '{num_signed[ pct ]}%', pl, y, pw - 6.0, rh, 0.5,
               col ]
 
+    # a row dragged left slides, Delete under it
+    func on_move [ ev: Event ]
+        if [ swipe_i < 0 ] return
+        p : vec2f ev.mouse.pos
+        dx : f32 [ p.x - press_x ]
+        dy : f32 [ p.y - press_y ]
+        if [ !sliding && dx < -8.0 && abs[ dx ] > abs[ dy ] ]
+            sliding = true
+        if [ !sliding ] return
+        was : f32 [ (swipe_i == open_i) ? del_w[] : 0.0 ]
+        slide = clamp[ was - dx, 0.0, del_w[] * 1.5 ]
+        if [ ux ] ux.restyle = true
+
+    func on_release [ ev: Event ]
+        if [ ux ] ux.release_capture[ a ]
+        i : i32 [ swipe_i ]
+        swipe_i = -1
+        if [ i < 0 ] return
+        if [ sliding ]
+            sliding = false
+            # past half of the button: it stays open
+            open_i = (slide > del_w[] * 0.5) ? i : -1
+            if [ ux ] ux.restyle = true
+            return
+        # a tap: Delete on an open row, else it shuts, else it is chosen
+        if [ i == open_i ]
+            if [ press_x >= bounds.w - del_w[] ] delete_row[ i ]
+            el open_i = -1
+        el [ open_i >= 0 ]
+            open_i = -1
+        el
+            sel = i
+        if [ ux ] ux.restyle = true
+
     func on_press [ ev: Event ]
         p : vec2f ev.mouse.pos
         ev.no_default = true
@@ -424,9 +547,13 @@ element StockView
                     range = i
                     if [ ux ] ux.restyle = true
                     return
-        # a row of the list
+        # a row of the list: chosen at the release, unless it slid
+        swipe_i = -1
+        sliding = false
         if [ row_h > 0.0 && p.y >= row_y ]
             r : i32 [ i32[ (p.y - row_y) / row_h ] ]
-            if [ syms && r >= 0 && r < syms.count ]
-                sel = r
-                if [ ux ] ux.restyle = true
+            if [ shown && r >= 0 && r < shown.count ]
+                swipe_i = shown[ r ]
+                press_x = p.x
+                press_y = p.y
+                if [ ux ] ux.set_capture[ a ]

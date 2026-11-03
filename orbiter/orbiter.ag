@@ -1,4 +1,4 @@
-# why did the pixel quit? it felt boxed in.
+# orbiter never crashes; it just finds a lower orbit.
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
 # 32352
@@ -30,6 +30,9 @@ import <stdio.h>
     -lm
 import <stdlib.h>
 import <string.h>
+# devices' own calls (the phone's screen)
+import <host.h>
+    -I{project_path}/devices
 # posix.h below carries these where the headers do not exist
 ifndef [ windows ]
     import <unistd.h>
@@ -383,6 +386,8 @@ element EditorView
         if [ newfile ]
             # create mode has its own cancel: never two close buttons
             t.rm[ 'histnav' ]
+        # a phone shows no close (x) anywhere
+        if [ newfile && !use_mobile ]
             t['newfile_cancel'] = BarClose [ icon: 'close',
                                              manual_mode: true,
                 area: Region [ 'r0+ t0 w1.66 b0' ] ]
@@ -398,8 +403,13 @@ element EditorView
         if [ wid != 0 && !browse_active[] ]
             # a header it draws itself is cut off when its menu is in
             # the system bar; one with no menu there keeps it (its tabs)
+            # 46 of the window's own units: its pixels are that times
+            # the windows' scale (the text size, wlc_set_scale)
+            ws : f32 [ (o.set_size > 0) ? f32[ o.set_size ] / 22.0
+                : 1.0 ]
             cut : i32 [ (wlc_window_csd[ wid ] != 0
-                         && wlc_window_menu_kind[ wid ] != 0) ? 46 : 0 ]
+                         && wlc_window_menu_kind[ wid ] != 0)
+                ? i32[ round[ 46.0 * ws ] ] : 0 ]
             t['text'] = WaylandView [ window: wid, crop_top: cut,
                 sheet: o.pane_sheet_of[ pane_index ],
                 area: Region { l0 t0 r0 b0 } ]
@@ -417,14 +427,11 @@ element EditorView
                 if [ vel ] edels['view'] = vel
             # a resumed app fading in over the source
             fi9 : AppView (e) ? e.run_view : null
-            # an app really building (its build's events show progress):
-            # the build card; a check that found it up to date, and its
-            # start, show none
+            # an app building or starting (until its first frame): the
+            # build card, with its build's percent while it compiles
             bw9 : string [ (fi9) ? fi9.status_word[] : '' ]
-            built_pct : f32 [ (fi9 && fi9.app_mod)
-                ? o.build_frac[ fi9.app_mod ] : -2.0 ]
             if [ e && e.app_view && fi9 && fi9.display == 1
-                 && bw9 == 'compiling' && built_pct >= 0.0 ]
+                 && (bw9 == 'compiling' || bw9 == 'starting') ]
                 edels['build_card'] = BuildCard [ inst: fi9,
                     area: Region { l0 t0 r0 b0 } ]
             if [ fi9 && fi9.fade_in_ms > 0 ]
@@ -731,9 +738,10 @@ element EditorView
         # the navigator's dock runs down its left: its bar after it
         # a free window's navigator is a dialog: no dock
         dlg9 : bool orb[].pane_floats[ pane_index ]
-        bl9 : f32 [ (bot9 && browse_active[] && !dlg9)
-            ? orb[].dock_w[] : 0.0 ]
-        bar9 : string [ (bot9) ? 'l{bl9}px b{th9}px r0 h{th9}px'
+        # a phone's navigator has no dock: its bar runs from the left
+        dock_left : f32 [ (bot9 && browse_active[] && !dlg9
+            && !use_mobile) ? orb[].dock_w[] : 0.0 ]
+        bar9 : string [ (bot9) ? 'l{dock_left}px b{th9}px r0 h{th9}px'
             : 'l0 t{sp9}px r0 h{th9}px' ]
         if [ !inapp ]
             t['title'] = EditorTitle [
@@ -1337,8 +1345,12 @@ element BarGrab
     func on_release [ ev: Event ]
         if [ held ] ux.release_capture[ a ]
         o : orb[]
-        if [ held && !pulled && o && o.pane_loads[ pane ] ]
-            o.bar_title_press[]
+        # a click: the window's title (its navigator, or an address),
+        # else the navigator
+        if [ held && !pulled && o ]
+            if [ o.pane_loads[ pane ] ] o.bar_title_press[]
+            el o.globe_press[]
+            if [ ux ] ux.restyle = true
         el [ pulled && o ]
             o.drop_free[ pane ]
         if [ o ] o.grab_pane = -1
@@ -1436,6 +1448,41 @@ element HomeLabel
 element AgentHead
     # a narrow menu's: edge to edge, square, no border
     public flush : bool
+    # its agent; a phone's drag leftward on it (from the right, where
+    # the end sits) shows its end
+    public agent : string
+    intern grab_x : f32 [ -1.0 ]
+    intern grab_y : f32
+    intern swiped : bool
+
+    func on_press [ ev: Event ]
+        if [ !use_mobile ] return
+        grab_x = f32[ ux.mouse.x ]
+        grab_y = f32[ ux.mouse.y ]
+        swiped = false
+
+    func on_move [ ev: Event ]
+        if [ grab_x < 0.0 || swiped ] return
+        dx : f32 [ f32[ ux.mouse.x ] - grab_x ]
+        dy : f32 [ f32[ ux.mouse.y ] - grab_y ]
+        # dragged in from the right: leftward, more than up or down
+        if [ dx < -24.0 && -dx > abs[ dy ] ]
+            swiped = true
+            o : orbiter [ cast orbiter [ ux.app_object ] ]
+            if [ o ] o.end_shown = agent
+            ux.restyle = true
+
+    # a phone's tap (no swipe): a shown end goes, else it opens or
+    # shuts its console
+    func on_release [ ev: Event ]
+        held : bool [ grab_x >= 0.0 ]
+        grab_x = -1.0
+        if [ !held || swiped ] return
+        o : orbiter [ cast orbiter [ ux.app_object ] ]
+        if [ !o ] return
+        if [ o.end_shown.count > 0 ] o.end_shown = ''
+        el o.home_open = (o.home_open == agent) ? '' : agent
+        ux.restyle = true
     style : CSS {
         layers.face:
             fill_color: #ffffff0a
@@ -1525,7 +1572,6 @@ func desk_cell [ w: Window ] -> f32
 # be, as a store's folder does. in edit mode (a held press) a drag
 # takes it to another place in the stack; x takes it off
 element DeskWidget
-    animated  : true
     focusable : true
     public index : i32
     # mounted over the apps (else at their side)
@@ -1542,6 +1588,13 @@ element DeskWidget
 
     func orb [] -> orbiter
         return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # its app's new pictures are orbiter's to notice (desk_service);
+    # dragged or arranged it is drawn again each frame
+    public func tick [ w: Window ]
+        if [ drag || editing[] ]
+            repaint_held[ a, false ]
+            ux.will_animate = true
 
     # edit mode: a held press arranges the desktop (the grid holding
     # it) or it
@@ -1578,8 +1631,19 @@ element DeskWidget
             av.vsy = 0.0
             av.service[ cv ]
             cv.save[]
-            cv.clip_rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+            cv.clip_rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0,
+                                  14.0 ]
             av.draw_frame[ cv, rect [ x: 0.0, y: oy, w: bw, h: bh ] ]
+            cv.restore[]
+            # every widget's border: the app cards' (NodeList draw_tile)
+            cv.save[]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ (hovered) ? '#ffffff30'
+                : '#ffffff16' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
+            cv.paint[]
             cv.restore[]
         el
             draw_chooser[ cv, o, 0.0, oy, bw, bh ]
@@ -1724,11 +1788,920 @@ element DeskWidget
         av : AppView (o) ? o.widget_view[ index ] : null
         return av != null && !editing[] && av.app_words
 
+# the menu's widgets: each module that is one, as a card; lit while
+# on the desktop; a tap puts it on or takes it off
+# the phone's switcher (its power button held): the running windows
+# across the top, the power slide at its foot; a press on its ground
+# puts it away
+element Switcher
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # its ground: the background chosen (the scene, as the screen
+    # paints it under the ui), never the windows or dialogs behind
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !w.root
+             || !w.root.bounds ] return
+        cv : Canvas w.screen
+        ox : f32 [ 0.0 ]
+        oy : f32 [ 0.0 ]
+        for [ e: element* a, e, e = e.parent ]
+            if [ e.bounds ]
+                ox += e.bounds.x
+                oy += e.bounds.y
+        gi : Texture w.ground_image[]
+        cv.save[]
+        cv.clip_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0 ]
+        if [ gi ]
+            cv.draw_image[ gi, rect [ x: bounds.x - ox, y: bounds.y - oy,
+                w: w.root.bounds.w, h: w.root.bounds.h ] ]
+        el
+            cv.fill_color[ w.solid_color ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
+        cv.restore[]
+
+    public func render [] -> Elements
+        un : f32 ux_unit[ ux ]
+        pad : f32 [ round[ 24.0 * un ] ]
+        # the cards a third shorter than a phone's view: more of the
+        # log above them
+        rh : f32 [ round[ 231.0 * un ] ]
+        sh : f32 [ round[ 64.0 * un ] ]
+        o : orbiter orb[]
+        # a build chosen: its screen above the cards, console or not
+        bld : string [ (o) ? o.switch_build : '' ]
+        con : bool [ o && (o.switch_con || bld.count > 0) ]
+        lf : string (con) ? o.switch_log[] : ''
+        gp : f32 [ round[ 12.0 * un ] ]
+        # the console from the top (a keyboard comes up from the
+        # foot), the cards under it
+        bh : f32 [ (bounds) ? bounds.h : 0.0 ]
+        lh : f32 [ (con) ? round[ max[ bh - rh - sh * 2.0
+            - pad * 5.0, 0.0 ] ] : 0.0 ]
+        wy : f32 [ (con) ? pad * 2.0 + lh : pad ]
+        return Elements [
+            'wins'  : WinRow [ area: Region [ 'l0 t{wy}px r0 h{rh}px' ] ],
+            # the chosen build's screen
+            'build' : (bld.count > 0 && lh > 0.0) ? BuildScreen [
+                name: bld,
+                area: Region [ 'l{pad}px t{pad}px r{pad}px h{lh}px' ] ]
+                : null,
+            # the chosen app's log, else the system's, followed
+            'log'   : (bld.count == 0 && con && lf.count > 0
+                       && lh > 0.0) ? SwitchLog [
+                session_id: 'swlog:{lf}', sessions: o.ed_sessions,
+                feed: null, launch: 'tail -n 400 -F {lf}',
+                focusable: false, animated: true,
+                area: Region [ 'l{pad}px t{pad}px r{pad}px h{lh}px' ] ]
+                : null,
+            'slide' : PowerSlide [ area: Region [
+                'l{pad}px b{sh + pad}px r{pad + sh + gp}px h{sh}px' ] ],
+            # the console's toggle, beside the slide
+            'con'   : TButtons [ icons: true, manual: true,
+                buttons: vec string [] [ 'sw_console' ],
+                icon_ids: vec string [] [ 'console' ],
+                sel_mask: (con) ? 1 : 0, seg_radius: sh * 0.5,
+                area: Region [
+                    'r{pad}px b{sh + pad}px w{sh}px h{sh}px' ] ] ]
+
+    public func on_press [ ev: Event ]
+        # the log scrolls; a press in it puts nothing away
+        for [ e: element* ev.origin, e, e = e.parent ]
+            if [ e inherits Console ] return
+        ev.no_default = true
+        o : orbiter orb[]
+        if [ !o ] return
+        f : element ev.origin
+        if [ f && f inherits TButtons && f.id == 'sw_console' ]
+            ev.no_propagation = true
+            o.switch_con = !o.switch_con
+            if [ ux ] ux.restyle = true
+            return
+        o.switcher_shut[]
+
+# the switcher's console: its log in a rounded box
+Console SwitchLog
+    style : CSS {
+        layers.cbase: Layer
+            fill_color: #000c
+            radius: 12
+            clip: true
+        layers.content: TermLayer
+            area: l0.4 t0.3 r0.4 b0.3
+            label_height: 1.0
+            label_size: 12
+    }
+
+# a build at a glance: its name, word and share, then a block for
+# each part of it (compiling, tests, linking, exports, errors), its
+# count and latest lines; a tap opens a block's whole log, another
+# shuts it. read from silver's own copy of what the build printed
+element BuildScreen
+    animated : true
+    public name : string
+    # the open block ('' none)
+    intern drill : string [ '' ]
+    # the log as last read, by its time; its lines, plain
+    intern got   : i64 [ -1 ]
+    intern seen  : i64
+    intern lines : vec string
+    # the blocks' tops as drawn, and their kinds (for a tap)
+    intern tops  : vec f32
+    intern kinds : vec string
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func log_path [] -> string
+        return '{install_root[]}/tmp/builds/{name}.log'
+
+    # the log again when it changed (twice a second at most)
+    public func tick [ w: Window ]
+        now : i64 [ epoch_millis[] ]
+        if [ now - seen < 500 ] return
+        seen = now
+        f : path [ log_path[] ]
+        mt : i64 f.modified_time[]
+        if [ mt == got ] return
+        got = mt
+        lines = vec string []
+        tx : string f.load[ typeid[ string ], null ]
+        if [ tx ]
+            for [ ln: string ] in tx.split[ '\n' ]
+                pl : string plain_text[ ln ].trim[]
+                if [ pl.count > 0 ] lines.push[ pl ]
+        pristine = false
+        ux.will_animate = true
+
+    # a line without its terminal colours
+    func plain_text [ ln: string ] -> string
+        out : string ''
+        i : i32 [ 0 ]
+        while [ i < ln.count ]
+            if [ ln.mid[ i, 1 ] == '\x1b' ]
+                while [ i < ln.count && ln.mid[ i, 1 ] != 'm' ] i += 1
+                i += 1
+                continue
+            out = '{out}{ln.mid[ i, 1 ]}'
+            i += 1
+        return out
+
+    # which block a line is part of ('' none)
+    func kind_of [ ln: string ] -> string
+        if [ ln.index_of[ 'expect: ' ] >= 0 ] return 'tests'
+        if [ ln.index_of[ 'error' ] >= 0 || ln.index_of[ 'fault' ] >= 0
+             || ln.index_of[ 'failed' ] >= 0 ] return 'errors'
+        if [ ln.index_of[ '] compiling ' ] >= 0 ] return 'compiling'
+        if [ ln.index_of[ '] linking ' ] >= 0
+             || ln.index_of[ '] built ' ] >= 0 ] return 'linking'
+        if [ ln.index_of[ 'export' ] >= 0 ] return 'exports'
+        return ''
+
+    # a block's lines
+    func of_kind [ k: string ] -> vec string
+        out : vec string []
+        if [ !lines ] return out
+        for [ ln: string ] in lines
+            if [ k == 'all' || kind_of[ ln ] == k ] out.push[ ln ]
+        return out
+
+    # a block's word at a glance: its count, the tests' passes
+    func summary [ k: string, ls: vec string ] -> string
+        if [ k == 'tests' ]
+            bad : i32 [ 0 ]
+            for [ ln: string ] in ls
+                if [ ln.index_of[ 'failed' ] >= 0 ] bad += 1
+            ok : i32 [ ls.count - bad ]
+            if [ ls.count == 0 ] return 'none run'
+            if [ bad > 0 ] return '{ok} passed, {bad} failed'
+            return '{ok} passed'
+        if [ k == 'compiling' ] return '{ls.count} modules'
+        if [ k == 'linking' ] return '{ls.count} steps'
+        if [ k == 'errors' ] return '{ls.count}'
+        return '{ls.count}'
+
+    # an error as the file's name and place, then its words (the
+    # compiler's own place in between left out)
+    func error_text [ ln: string ] -> string
+        sp : i32 [ ln.index_of[ ' (' ] ]
+        cp : i32 [ ln.index_of[ ') ' ] ]
+        if [ sp < 0 || cp < sp ] return ln
+        at : string ln.mid[ 0, sp ]
+        sl : i32 [ at.rindex_of[ '/' ] ]
+        if [ sl >= 0 ] at = at.mid[ sl + 1, at.count - sl - 1 ]
+        return '{at}  {ln.mid[ cp + 2, ln.count - cp - 2 ]}'
+
+    # a line as an item: the test's name, the module's, else itself
+    func item_of [ k: string, ln: string ] -> string
+        if [ k == 'errors' ] return error_text[ ln ]
+        if [ k == 'tests' ]
+            at : i32 [ ln.index_of[ 'expect: ' ] ]
+            t : string ln.mid[ at + 8, ln.count - at - 8 ]
+            md : string ''
+            if [ ln.starts_with[ '[' ] ]
+                md = ln.mid[ 1, ln.index_of[ "]" ] - 1 ]
+                if [ md.starts_with[ 'import ' ] ]
+                    md = md.mid[ 7, md.count - 7 ]
+                if [ md.starts_with[ 'silver-' ] ]
+                    md = md.mid[ 7, md.count - 7 ]
+            return (md.count > 0) ? '{md}: {t}' : t
+        return ln
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        rd : f32 [ round[ 12.0 * un ] ]
+        cv.save[]
+        cv.rounded[ rd, rd, rd, rd ]
+        cv.fill_color[ rgba [ '#000000cc' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+        pd : f32 [ round[ 16.0 * un ] ]
+        wd : string o.build_word[ name ]
+        fr : f32 o.build_frac[ name ]
+        # the head: the build's name, its word, its share as a bar
+        hh : f32 [ round[ 34.0 * un ] ]
+        chart_font[ cv, 'Bold', round[ 22.0 * un ] ]
+        chart_text[ cv, name, pd, pd, bounds.w * 0.5, hh, 0.0,
+            '#ffffff' ]
+        st : string [ (wd == 'building' && fr >= 0.0)
+            ? 'building {i32[ fr * 100.0 ]}%' : wd ]
+        chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+        chart_text[ cv, st, bounds.w * 0.5, pd, bounds.w * 0.5 - pd, hh,
+            1.0, (wd == 'failed') ? '#ff8080'
+            : ((wd == 'built') ? '#7fe0a0' : '#c8b8ff') ]
+        bw : f32 [ bounds.w - pd * 2.0 ]
+        by : f32 [ pd + hh + round[ 4.0 * un ] ]
+        bh : f32 [ round[ 4.0 * un ] ]
+        cv.fill_color[ rgba [ '#ffffff18' ] ]
+        cv.rect_to[ pd, by, bw, bh ]
+        cv.paint[]
+        done : f32 [ (wd == 'building') ? max[ fr, 0.0 ] : 1.0 ]
+        cv.fill_color[ rgba [ (wd == 'failed') ? '#d04848'
+            : ((wd == 'built') ? '#48b070' : '#806bff') ] ]
+        cv.rect_to[ pd, by, round[ bw * done ], bh ]
+        cv.paint[]
+        y : f32 [ by + bh + pd ]
+        lh : f32 [ round[ 22.0 * un ] ]
+        tops  = vec f32 []
+        kinds = vec string []
+        # a block open: its whole log, the newest at the foot
+        if [ drill.count > 0 ]
+            ls : vec string of_kind[ (drill == 'compiling') ? 'all'
+                : drill ]
+            chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+            sm : string summary[ drill, of_kind[ drill ] ]
+            chart_text[ cv, '{drill}: {sm}', pd, y, bw, lh, 0.0,
+                '#ffffff' ]
+            tops.push[ y ]
+            kinds.push[ drill ]
+            y += lh + round[ 6.0 * un ]
+            n : i32 [ i32[ (bounds.h - y - pd) / lh ] ]
+            first : i32 [ (ls.count > n) ? ls.count - n : 0 ]
+            chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+            for [ i: i32 first, i < ls.count, i += 1 ]
+                ln : string ls[ i ]
+                bad : bool [ kind_of[ ln ] == 'errors' ]
+                it : string item_of[ (bad) ? 'errors' : drill, ln ]
+                # an error wraps to a second line
+                rows : f32 [ (bad && it.count > 40) ? 2.0 : 1.0 ]
+                if [ y + lh * rows > bounds.h - pd ] break
+                cv.fill_color[ rgba [ (bad) ? '#ff9090' : '#ffffffcc' ] ]
+                cv.draw_text[ it, rect [ x: pd, y: y, w: bw,
+                    h: lh * rows ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.wrap, null ]
+                y += lh * rows
+            return
+        # each block: its name and count, then its latest items
+        order : vec string [] [ 'errors', 'tests', 'compiling',
+            'linking', 'exports' ]
+        for [ k: string ] in order
+            ls : vec string of_kind[ k ]
+            if [ ls.count == 0 && k != 'compiling' && k != 'tests' ]
+                continue
+            if [ y + lh > bounds.h - pd ] break
+            tops.push[ y ]
+            kinds.push[ k ]
+            chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+            chart_text[ cv, k, pd, y, bw * 0.5, lh, 0.0,
+                (k == 'errors') ? '#ff8080' : '#ffffff' ]
+            chart_text[ cv, summary[ k, ls ], pd + bw * 0.5, y,
+                bw * 0.5, lh, 1.0, '#ffffffaa' ]
+            y += lh
+            # the latest three, under it
+            chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+            first : i32 [ (ls.count > 3) ? ls.count - 3 : 0 ]
+            for [ i: i32 first, i < ls.count, i += 1 ]
+                if [ y + lh > bounds.h - pd ] break
+                ln : string ls[ i ]
+                bad : bool [ ln.index_of[ 'failed' ] >= 0
+                    || kind_of[ ln ] == 'errors' ]
+                ind : f32 [ round[ 12.0 * un ] ]
+                chart_text[ cv, item_of[ k, ln ], pd + ind, y, bw - ind,
+                    lh, 0.0,
+                    (bad) ? '#ff9090' : '#ffffff88' ]
+                y += lh
+            y += round[ 8.0 * un ]
+
+    # a tap on a block opens its log; on the open one, shuts it
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ drill.count > 0 ]
+            drill = ''
+            pristine = false
+            return
+        if [ !tops ] return
+        k : i32 [ -1 ]
+        for [ i: i32 0, i < tops.count, i += 1 ]
+            if [ ev.mouse.pos.y >= tops[ i ] ] k = i
+        if [ k < 0 ] return
+        drill = kinds[ k ]
+        pristine = false
+
+# the switcher's windows: a card each, its picture and name, scrolled
+# sideways by a drag; a press shows it, a flick up ends it
+element WinRow
+    animated : true
+    # px scrolled, and where it eases to
+    intern shift : f32
+    intern goal  : f32
+    intern took  : bool
+    # the pointer's x at a press, -1 none; the scroll then
+    intern grab  : f32 [ -1.0 ]
+    intern grab_y : f32
+    intern from  : f32
+    intern moved : bool
+    intern tap   : vec2f
+    # the card pressed, how far it is lifted, and since when
+    intern lift_i : i32 [ -1 ]
+    intern lift   : f32
+    intern lifting : bool
+    intern lift_us : i64
+    # a flicked card flying off: the app it ends once it is out
+    intern going   : i32 [ -1 ]
+    # the chosen card it last eased to the middle ('-' none yet)
+    intern centred : string [ '-' ]
+    # its cards in order: 'b:<module>' a build, 'a:<iid>' an app
+    mutable keys : vec string
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func pad [] -> f32
+        return round[ 24.0 * ux_unit[ ux ] ]
+
+    func gap [] -> f32
+        return round[ 14.0 * ux_unit[ ux ] ]
+
+    # a card: the picture's height less the name under it
+    func card_h [] -> f32
+        return (bounds) ? bounds.h - round[ 30.0 * ux_unit[ ux ] ] : 0.0
+
+    func card_w [] -> f32
+        return round[ card_h[] * 0.56 ]
+
+    # the room left of the first card: it sits in the middle at rest
+    func lead [] -> f32
+        return (bounds) ? round[ (bounds.w - card_w[]) * 0.5 ] : 0.0
+
+    # the scroll that puts the last card in the middle
+    func most [] -> f32
+        if [ !bounds || !keys || keys.count < 2 ] return 0.0
+        return f32[ keys.count - 1 ] * (card_w[] + gap[])
+
+    # the scroll that puts card i in the middle
+    func middle_of [ i: i32 ] -> f32
+        return f32[ max[ i, 0 ] ] * (card_w[] + gap[])
+
+    # the card nearest the middle at a scroll
+    func nearest [ sx: f32 ] -> i32
+        if [ !keys || keys.count == 0 ] return -1
+        i : i32 [ i32[ round[ sx / (card_w[] + gap[]) ] ] ]
+        if [ i < 0 ] return 0
+        return (i >= keys.count) ? keys.count - 1 : i
+
+    # the chosen card's key: a build, else an app ('' none)
+    func sel_key [ o: orbiter ] -> string
+        if [ o.switch_build.count > 0 ] return 'b:{o.switch_build}'
+        return (o.switch_sel >= 0) ? 'a:{o.switch_sel}' : ''
+
+    # a card chosen by its key
+    func choose [ o: orbiter, k: string ]
+        if [ k.starts_with[ 'b:' ] ]
+            o.switch_build = k.mid[ 2, k.count - 2 ]
+            o.switch_sel   = -1
+        el
+            o.switch_build = ''
+            id : i64 k.mid[ 2, k.count - 2 ].integer_value[]
+            o.switch_sel   = i32[ id ]
+        if [ ux ] ux.restyle = true
+
+    # the card under x in the row, -1 none
+    func card_at [ x: f32 ] -> i32
+        if [ !keys ] return -1
+        st : f32 [ card_w[] + gap[] ]
+        rx : f32 [ x + shift - lead[] ]
+        i : i32 [ i32[ floor[ rx / st ] ] ]
+        if [ i < 0 || i >= keys.count || rx - f32[ i ] * st > card_w[] ]
+            return -1
+        return i
+
+    public func tick [ w: Window ]
+        # its scroll is orbiter's (it crosses a reload)
+        o : orbiter orb[]
+        if [ o && !took ]
+            took  = true
+            shift = o.switch_shift
+            goal  = shift
+        # the chosen card eases to the middle; let go past an end,
+        # the row springs back
+        # a chosen build gone from the row (it built): its screen goes
+        if [ o && keys && o.switch_build.count > 0 ]
+            here : bool [ false ]
+            for [ k: string ] in keys
+                if [ k == 'b:{o.switch_build}' ] here = true
+            if [ !here ]
+                o.switch_build = ''
+                ux.restyle = true
+        sk : string [ (o) ? sel_key[ o ] : '' ]
+        if [ o && keys && sk != centred && grab < 0.0 ]
+            centred = sk
+            for [ i: i32 0, i < keys.count, i += 1 ]
+                if [ keys[ i ] == centred ] goal = middle_of[ i ]
+        if [ grab < 0.0 ] goal = clamp[ goal, 0.0, most[] ]
+        if [ o ] o.switch_shift = goal
+        if [ shift != goal ]
+            shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
+            if [ abs[ goal - shift ] < 0.5 ] shift = goal
+            ux.will_animate = true
+        # a flicked card flies up and out; then its app ends (the
+        # close never holds a frame)
+        if [ going >= 0 ]
+            lift = filter_n[ lift, card_h[] * 1.6, 0.3, ux.frame_factor ]
+            ux.will_animate = true
+            if [ lift > card_h[] * 1.3 ]
+                host : orbiter orb[]
+                if [ host ] host.close_task[ host.instance_by[ going ] ]
+                going  = -1
+                lift   = 0.0
+                lift_i = -1
+            return
+        # a card let go short of the flick falls back
+        if [ !lifting && lift > 0.0 ]
+            lift = filter_n[ lift, 0.0, 0.25, ux.frame_factor ]
+            if [ lift < 0.5 ]
+                lift   = 0.0
+                lift_i = -1
+            ux.will_animate = true
+
+    # a build's card: its word large, its share as a fill along
+    # its foot, lit while chosen
+    func build_card [ cv: Canvas, o: orbiter, bn: string, x: f32,
+                      y: f32, cw: f32, ch: f32, rd: f32, on: bool,
+                      un: f32 ]
+        wd : string o.build_word[ bn ]
+        fr : f32 o.build_frac[ bn ]
+        cv.save[]
+        cv.rounded[ rd, rd, rd, rd ]
+        cv.fill_color[ rgba [ '#15121d' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ x, y, cw, ch ]
+        cv.paint[]
+        # its share done: a fill up from the foot
+        done : f32 [ (wd == 'building') ? max[ fr, 0.0 ]
+            : ((wd == 'built' || wd == 'failed') ? 1.0 : 0.0) ]
+        if [ done > 0.0 ]
+            fh : f32 [ round[ ch * done ] ]
+            cv.fill_color[ rgba [ (wd == 'failed') ? '#a0303055'
+                : ((wd == 'built') ? '#3a8a5a44' : '#4d3dbc55') ] ]
+            cv.rect_to[ x, y + ch - fh, cw, fh ]
+            cv.paint[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_width[ (on) ? 2.0 : 1.0 ]
+        cv.stroke_offset[ (on) ? -1.0 : -0.5 ]
+        cv.stroke_color[ rgba [ (on) ? '#806bff' : '#ffffff33' ] ]
+        cv.rect_to[ x, y, cw, ch ]
+        cv.paint[]
+        cv.restore[]
+        tx : string [ (wd == 'building' && fr >= 0.0)
+            ? '{i32[ fr * 100.0 ]}%' : wd ]
+        chart_font[ cv, 'SemiBold', round[ 26.0 * un ] ]
+        cv.fill_color[ rgba [ (wd == 'failed') ? '#ff8080'
+            : '#ffffff' ] ]
+        cv.draw_text[ tx, rect [ x: x, y: y, w: cw, h: ch * 0.6 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+        cv.fill_color[ rgba [ '#ffffff99' ] ]
+        sub : string [ (wd == 'building') ? 'building'
+            : o.build_tests[ bn ] ]
+        cv.draw_text[ sub,
+            rect [ x: x, y: y + ch * 0.45, w: cw, h: ch * 0.2 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null ]
+        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        runs : vec AppView o.running_apps[]
+        bns : vec string o.switch_builds[]
+        keys = vec string []
+        for [ bn: string ] in bns
+            keys.push[ 'b:{bn}' ]
+        for [ av: AppView ] in runs
+            keys.push[ 'a:{av.iid}' ]
+        cw : f32 card_w[]
+        ch : f32 card_h[]
+        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        if [ keys.count == 0 ]
+            cv.fill_color[ rgba [ '#ffffff88' ] ]
+            cv.draw_text[ 'No apps running', rect [ x: 0.0, y: 0.0,
+                w: bounds.w, h: ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            cv.set_font[ null ]
+            return
+        rd : f32 [ 10.0 * un ]
+        x : f32 [ lead[] - shift ]
+        k : i32 [ 0 ]
+        sk : string sel_key[ o ]
+        # a build is a task preparing: its card first
+        for [ bn: string ] in bns
+            y : f32 [ (k == lift_i) ? -round[ lift ] : 0.0 ]
+            fa : f32 [ (k == lift_i)
+                ? clamp[ 1.0 - lift / (ch * 0.8), 0.2, 1.0 ] : 1.0 ]
+            cv.set_opacity[ fa ]
+            bk : string 'b:{bn}'
+            bon : bool [ bk == sk ]
+            build_card[ cv, o, bn, x, y, cw, ch, rd, bon, un ]
+            cv.set_opacity[ 1.0 ]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ bn, rect [ x: x, y: y + ch,
+                w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            x += cw + gap[]
+            k += 1
+        for [ av: AppView ] in runs
+            # the lifted card rides the finger, fading as it goes
+            y : f32 [ (k == lift_i) ? -round[ lift ] : 0.0 ]
+            fa : f32 [ (k == lift_i)
+                ? clamp[ 1.0 - lift / (ch * 0.8), 0.2, 1.0 ] : 1.0 ]
+            cv.set_opacity[ fa ]
+            ft : Texture (av.have_frame) ? av.front[] : null
+            wv : u64 o.window_of[ av ]
+            if [ wv != 0 ] ft = window_texture[ cv, wv ]
+            cv.save[]
+            cv.rounded[ rd, rd, rd, rd ]
+            cv.fill_color[ rgba [ '#000' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x, y, cw, ch ]
+            cv.paint[]
+            if [ ft && ft.width > 0 && ft.height > 0 ]
+                sc : f32 [ min[ cw / f32[ ft.width ],
+                                ch / f32[ ft.height ] ] ]
+                dw : f32 [ round[ f32[ ft.width ] * sc ] ]
+                dh : f32 [ round[ f32[ ft.height ] * sc ] ]
+                cv.draw_image[ ft, rect [ x: x + round[ (cw - dw) * 0.5 ],
+                    y: y + round[ (ch - dh) * 0.5 ], w: dw, h: dh ] ]
+            ak : string 'a:{av.iid}'
+            on : bool [ ak == sk ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_width[ (on) ? 2.0 : 1.0 ]
+            cv.stroke_offset[ (on) ? -1.0 : -0.5 ]
+            cv.stroke_color[ rgba [ (on) ? '#806bff' : '#ffffff33' ] ]
+            cv.rect_to[ x, y, cw, ch ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ o.task_title[ av ], rect [ x: x, y: y + ch,
+                w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            cv.set_opacity[ 1.0 ]
+            x += cw + gap[]
+            k += 1
+        cv.set_font[ null ]
+        # both sides fade where cards run on past them
+        fw : f32 [ round[ 64.0 * un ] ]
+        ld : f32 lead[]
+        left  : f32 [ (shift + ld > 0.5) ? fw : 0.0 ]
+        right : f32 [ (most[] - shift + ld > 0.5) ? fw : 0.0 ]
+        if [ mask_glow.w != left || mask_glow.y != right ]
+            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+
+    public func on_wheel [ ev: Event ]
+        ev.no_propagation = true
+        goal -= f32[ ev.mouse.wheel_delta.y ] * 40.0
+        ux.will_animate = true
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        # a card still flying off: nothing new until it is gone
+        if [ going >= 0 ] return
+        grab    = f32[ ux.mouse.x ]
+        grab_y  = f32[ ux.mouse.y ]
+        tap     = ev.mouse.pos
+        from    = goal
+        moved   = false
+        lifting = false
+        lift    = 0.0
+        lift_i  = card_at[ tap.x ]
+        lift_us = epoch_micros[]
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        d  : f32 [ f32[ ux.mouse.x ] - grab ]
+        dy : f32 [ f32[ ux.mouse.y ] - grab_y ]
+        # the first 8 px decide: sideways scrolls, up lifts the card
+        if [ !moved && !lifting ]
+            if [ abs[ d ] > 8.0 && abs[ d ] >= abs[ dy ] ] moved = true
+            el [ dy < -8.0 && lift_i >= 0 ] lifting = true
+        if [ lifting ]
+            lift = max[ -dy, 0.0 ]
+            ux.will_animate = true
+            return
+        if [ !moved ] return
+        # the cards follow the finger; past an end, a third as far
+        g : f32 [ from - d ]
+        if [ g < 0.0 ] g = g * 0.35
+        el [ g > most[] ] g = most[] + (g - most[]) * 0.35
+        goal  = g
+        shift = g
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        held : bool [ grab >= 0.0 ]
+        grab = -1.0
+        if [ !held ] return
+        ev.no_default     = true
+        ev.no_propagation = true
+        o : orbiter orb[]
+        if [ !o || !keys ] return
+        # lifted: a fifth of its height, or a quick flick, ends it (a
+        # build: put away)
+        if [ lifting ]
+            lifting = false
+            quick : bool [ epoch_micros[] - lift_us < 300000
+                && lift > 40.0 * ux_unit[ ux ] ]
+            if [ lift_i >= 0 && lift_i < keys.count
+                 && (quick || lift > card_h[] * 0.2) ]
+                lk : string keys[ lift_i ]
+                if [ lk.starts_with[ 'b:' ] ]
+                    o.build_dismiss[ lk.mid[ 2, lk.count - 2 ] ]
+                    lift   = 0.0
+                    lift_i = -1
+                el
+                    gi : i64 lk.mid[ 2, lk.count - 2 ].integer_value[]
+                    going = i32[ gi ]
+            return
+        # a drag let go: the card nearest the middle is chosen
+        if [ moved ]
+            n : i32 nearest[ shift ]
+            if [ n >= 0 ]
+                choose[ o, keys[ n ] ]
+                centred = '-'
+            return
+        i : i32 card_at[ tap.x ]
+        # off the cards: back to the system's log
+        if [ i < 0 || tap.y > bounds.h ]
+            o.switch_sel   = -1
+            o.switch_build = ''
+            if [ ux ] ux.restyle = true
+            return
+        # a tap chooses a card (its log, or its build, shows); on the
+        # chosen app, opens it
+        ck : string keys[ i ]
+        if [ ck != sel_key[ o ] ]
+            choose[ o, ck ]
+            return
+        if [ ck.starts_with[ 'a:' ] ]
+            pi : i64 ck.mid[ 2, ck.count - 2 ].integer_value[]
+            o.switcher_pick[ i32[ pi ] ]
+
+# the switcher's foot: its knob dragged left to right shows power
+# off and restart; let go short of the end, it eases back
+element PowerSlide
+    animated : true
+    # px along the track, and where it eases to
+    intern knob : f32
+    intern goal : f32
+    intern grab : f32 [ -1.0 ]
+    intern from : f32
+    intern open : bool
+    mutable power_svg : SVGModel
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # how far the knob travels
+    func span [] -> f32
+        return (bounds) ? max[ bounds.w - bounds.h, 0.0 ] : 0.0
+
+    public func tick [ w: Window ]
+        # opened is orbiter's (it crosses a reload)
+        o : orbiter orb[]
+        if [ o && o.slide_open ] open = true
+        if [ grab < 0.0 && knob != goal ]
+            knob = filter_n[ knob, goal, 0.2, ux.frame_factor ]
+            if [ abs[ goal - knob ] < 0.5 ] knob = goal
+            ux.will_animate = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        h  : f32 [ bounds.h ]
+        r  : f32 [ h * 0.5 ]
+        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.save[]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff22' ] ]
+        if [ open ]
+            hw : f32 [ round[ (bounds.w - 10.0 * un) * 0.5 ] ]
+            cv.fill_color[ rgba [ '#b0304a99' ] ]
+            cv.rounded_rect[ 0.0, 0.0, hw, h, r, r, r, r ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#b0882a99' ] ]
+            cv.rounded_rect[ bounds.w - hw, 0.0, hw, h, r, r, r, r ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#fff' ] ]
+            cv.draw_text[ 'Power off', rect [ x: 0.0, y: 0.0, w: hw,
+                h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null ]
+            cv.draw_text[ 'Restart', rect [ x: bounds.w - hw, y: 0.0,
+                w: hw, h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null ]
+            cv.set_font[ null ]
+            return
+        cv.fill_color[ rgba [ '#ffffff10' ] ]
+        cv.rounded_rect[ 0.0, 0.0, bounds.w, h, r, r, r, r ]
+        cv.paint[]
+        # the way the knob has come
+        cv.fill_color[ rgba [ '#4d3dbc88' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ 0.0, 0.0, knob + h, h, r, r, r, r ]
+        cv.paint[]
+        cv.restore[]
+        fd : f32 [ (span[] > 0.0) ? 1.0 - knob / span[] : 1.0 ]
+        cv.set_opacity[ 0.6 * fd ]
+        cv.fill_color[ rgba [ '#fff' ] ]
+        # centred in the whole track, the knob not counted
+        cv.draw_text[ 'slide for power', rect [ x: 0.0, y: 0.0,
+            w: bounds.w, h: h ], vec2f [ 0.5, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+        cv.set_opacity[ 1.0 ]
+        cv.set_font[ null ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#806bff' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ knob, 0.0, h, h, r, r, r, r ]
+        cv.paint[]
+        cv.restore[]
+        if [ !power_svg ] power_svg = SVGModel [ 'images/power.svg' ]
+        ic : f32 [ round[ h * 0.5 ] ]
+        cv.fill_color[ rgba [ '#fff' ] ]
+        cv.draw_svg[ power_svg, round[ knob + (h - ic) * 0.5 ],
+            round[ (h - ic) * 0.5 ], ic, ic ]
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        p : vec2f ev.mouse.pos
+        if [ open ]
+            o : orbiter orb[]
+            act : string [ (p.x < bounds.w * 0.5) ? 'sys_power'
+                : 'sys_restart' ]
+            if [ o ] o.sys_pick[ act ]
+            return
+        if [ p.x < knob || p.x > knob + bounds.h ] return
+        grab = f32[ ux.mouse.x ]
+        from = knob
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        knob = clamp[ from + f32[ ux.mouse.x ] - grab, 0.0, span[] ]
+        goal = knob
+
+    public func on_release [ ev: Event ]
+        if [ grab < 0.0 ] return
+        ux.release_capture[ a ]
+        grab = -1.0
+        # all the way: power off and restart; short of it, back
+        if [ knob >= span[] * 0.92 ]
+            open = true
+            o : orbiter orb[]
+            if [ o ] o.slide_open = true
+        el goal = 0.0
+
+# the phone's screen turned off by its button: black, and a touch
+# reaches nothing
+element ScreenDark
+    style : CSS {
+        layers.ground:
+            fill_color: #000
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+element WidgetPick
+    mutable picks  : vec string
+    mutable pick_x : vec f32
+    mutable pick_y : vec f32
+    mutable pick_s : f32
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        side : f32 [ round[ 64.0 * un ] ]
+        cw : f32 [ side + round[ 24.0 * un ] ]
+        ch : f32 [ side + round[ 30.0 * un ] ]
+        cols : i32 [ max[ 1, i32[ bounds.w / cw ] ] ]
+        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        picks  = vec string []
+        pick_x = vec f32 []
+        pick_y = vec f32 []
+        pick_s = cw
+        k : i32 [ 0 ]
+        for [ ae: AppEntry ] in o.app_entries[]
+            if [ !ae.widget || ae.widget.count == 0 ] continue
+            cx : f32 [ f32[ k % cols ] * cw ]
+            cy : f32 [ f32[ k / cols ] * ch ]
+            picks.push[ ae.name ]
+            pick_x.push[ cx ]
+            pick_y.push[ cy ]
+            if [ o.widget_on[ ae.name ] ]
+                cv.save[]
+                cv.fill_color[ rgba [ '#4d3dbc66' ] ]
+                cv.stroke_color[ rgba [ '#806bffaa' ] ]
+                cv.stroke_width[ 1.0 ]
+                cv.rounded_rect[ cx + 2.0, cy, cw - 4.0, ch - 4.0,
+                                 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint[]
+                cv.restore[]
+            ic : AppIcon o.widget_icon[ ae ]
+            if [ ic ]
+                ic.paint[ cv, cx + (cw - side) * 0.5, cy + 4.0, side ]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ ae.name, rect [ x: cx, y: cy + side + 4.0,
+                w: cw, h: 22.0 * un ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            k += 1
+        cv.set_font[ null ]
+
+    func on_press [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o || !picks ] return
+        ev.no_default = true
+        p : vec2f ev.mouse.pos
+        for [ i: i32 0, i < picks.count, i += 1 ]
+            if [ p.x >= pick_x[ i ] && p.x < pick_x[ i ] + pick_s
+                 && p.y >= pick_y[ i ] && p.y < pick_y[ i ] + pick_s ]
+                o.widget_toggle[ picks[ i ] ]
+                pristine = false
+                return
+
 # a narrow desktop's widgets as tabs: their names, the shown one
 # bold; a press shows that one
 element DeskTabs
-    animated : true
     mutable tab_x : vec f32
+    # the tabs as last drawn: the chosen one and the names
+    intern seen : string
+    # the widget each tab is (hidden ones have none)
+    mutable tab_i : vec i32
 
     func orb [] -> orbiter
         return cast orbiter [ (ux) ? ux.app_object : null ]
@@ -1743,7 +2716,10 @@ element DeskTabs
         gap : f32 [ round[ 18.0 * un ] ]
         tab_x = vec f32 []
         x : f32 [ 0.0 ]
+        tab_i = vec i32 []
         for [ i: i32 0, i < o.desk_widgets.count, i += 1 ]
+            if [ !o.widget_shown[ i ] ] continue
+            tab_i.push[ i ]
             on : bool [ i == o.desk_tab ]
             ff : string [ (on) ? 'fonts/BarlowCondensed-Bold.ttf'
                 : 'fonts/BarlowCondensed-Regular.ttf' ]
@@ -1760,14 +2736,26 @@ element DeskTabs
         tab_x.push[ x ]
         cv.set_font[ null ]
 
+    # drawn again only when the chosen tab or the names change
+    public func tick [ w: Window ]
+        o : orbiter orb[]
+        if [ !o || !o.desk_widgets ] return
+        sig : '{o.desk_tab}'
+        for [ i: i32 0, i < o.desk_widgets.count, i += 1 ]
+            if [ o.widget_shown[ i ] ] sig = '{sig}|{o.widget_name[ i ]}'
+        if [ sig != seen ]
+            seen = sig
+            repaint_held[ a, false ]
+
     func on_press [ ev: Event ]
         o : orbiter orb[]
         if [ !o || !tab_x ] return
         ev.no_default = true
         p : vec2f ev.mouse.pos
         for [ i: i32 0, i + 1 < tab_x.count, i += 1 ]
-            if [ p.x >= tab_x[ i ] && p.x < tab_x[ i + 1 ] ]
-                o.widget_show[ i ]
+            if [ p.x >= tab_x[ i ] && p.x < tab_x[ i + 1 ]
+                 && tab_i && i < tab_i.count ]
+                o.widget_show[ tab_i[ i ] ]
                 return
 
 # the agent view: the avatar at the left; at the right the agents
@@ -1842,7 +2830,7 @@ element AgentHome
             cs : ConsoleSession orb.home_session[ an ]
             open : bool [ orb.home_open == an && cs != null ]
             t['ahome_h_{an}'] = AgentHead [ selected: open,
-                flush: narrow,
+                flush: narrow, agent: an,
                 area: Region [ 'l{lx}px t{y}px r{rr}px h{hh}px' ] ]
             mark : string [ (open) ? '▾' : '▸' ]
             md : string orb.home_model_of[ an ]
@@ -1865,15 +2853,19 @@ element AgentHome
                     selected: orb.home_waiting[ an ],
                     area: Region [
                         'l{lx + round[ 220.0 * un ]}px t{y}px w{round[ 330.0 * un ]}px h{hh}px' ] ]
+            # end: flush at the title's right, square, no border; on a
+            # phone only once a swipe right on the title shows it
             ew : f32 [ round[ 60.0 * un ] ]
-            t['ahome_e_{an}'] = TButtons [
-                buttons: vec string [] [ 'ahome_end_{an}' ],
-                labels: vec string [] [ 'end' ],
-                icons: false, manual: true, label_px: 16.0,
-                label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                seg_radius: 6.0 * un, selected: -1,
-                area: Region [
-                    'r{rr + pad}px t{y + pad}px w{ew}px h{hh - pad * 2.0}px' ] ]
+            if [ !use_mobile || orb.end_shown == an ]
+                t['ahome_e_{an}'] = AltTab [
+                    buttons: vec string [] [ 'ahome_end_{an}' ],
+                    labels: vec string [] [ 'end' ],
+                    icons: false, manual: true, label_px: 16.0 * un,
+                    label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                    seg_radius: 0.0, use_spacing: false,
+                    rest_fill: rgba [ '#0000' ],
+                    area: Region [
+                        'r{rr}px t{y}px w{ew}px h{hh}px' ] ]
             # open, its console joins its title: no gap between
             y += hh
             if [ open && ch > rh ]
@@ -2012,11 +3004,13 @@ Option ReloadButton
 Option RemoteToggle
     no_cache : true
     style : CSS {
-        area: r0+ t0 w78px h0.9
+        # edge to edge in the bar (over its 0.2 spacing above and
+        # below), square, a line on its left alone
+        area: r0+ t-0.2 w2.7 b-0.2
         layers.body:
             fill_color: #0000
-            radius: 8
-            stroke_width: 1
+            radius: 0
+            stroke_width: 0 0 0 1
             stroke_color: #fff1
             near_border: true
             near_inset: 2.0
@@ -2026,6 +3020,7 @@ Option RemoteToggle
             label_size: 16
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
+            label_offset: 0 -3
         :selected
             layers.body:
                 fill_color: #8c4a6440
@@ -3266,8 +4261,6 @@ Option  ProjectTab
 func au_space_clear[] -> none
 
 func au_live_set_defer[ on: i32 ] -> none
-func au_live_get_pending[]   -> i32
-func au_live_request_apply[] -> none
 
 func au_capture_stdout[] -> i32
 func au_stdout_orig[] -> i32
@@ -3462,6 +4455,16 @@ element orbiter : trinity # implements compiler
     # instance recreates them on its first frame, then they fade out
     persist swap_carry    : ExchangeState
     persist swap_view     : vec f32   # per pane: line, col, scroll
+    # the dialogs across a reload: switcher, dark, system menu up,
+    # strip scroll, switcher scroll, slide open; the menu's view
+    persist ui_carry      : vec f32
+    persist ui_view       : string
+    # the switcher's chosen build, across a reload
+    persist ui_build   : string
+    # the process's startup programs ran (a reload runs none again),
+    # and the host slots running as services (background)
+    persist startup_ran   : string
+    persist bg_slots      : vec i32
     mutable carry_sent    : bool      # this instance filled the carry
 
     # the panes' view crosses the swap in place: the slot is
@@ -3475,6 +4478,82 @@ element orbiter : trinity # implements compiler
             swap_view += (e9) ? f32[ e9.sel_col ]  : 0.0
             swap_view += (e9) ? e9.scroll.y        : 0.0
         carry_sent = true
+
+    # a phone: the shown app whose own keyboard is up, else null
+    func pad_view [] -> AppView
+        if [ !use_mobile || !ux || ux.app_keys_hidden ] return null
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed || !ed.app_view || !ed.run_view ] return null
+        av : ed.run_view
+        if [ av.ended || !av.app_keys || av.app_keys.count == 0 ]
+            return null
+        return av
+
+    # a phone: the shown app's own keyboard, made from its class
+    # (its module loaded for it), in the keyboard's place
+    func app_pad [] -> element
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed || !ed.app_view || !ed.run_view ] return null
+        av : ed.run_view
+        if [ av.ended || !av.app_keys || av.app_keys.count == 0 ]
+            return null
+        t : Au.find_type[ av.app_keys.chars, null ]
+        if [ !t && av.app_mod ]
+            module_load[ 'silver-{av.app_mod}', av.app_keys ]
+            t = Au.find_type[ av.app_keys.chars, null ]
+        return keys_made[ t ]
+
+    # the phone's keyboard up: the buttons said so, else the focus
+    # wants words
+    func keys_up [] -> bool
+        if [ keys_force != 0 ] return keys_force > 0
+        return ux && ux.words_wanted
+
+    # the phone's dialogs as they stand, for the next instance
+    func ui_carry_out []
+        if [ !ui_carry ] return
+        menu_up : bool [ drawer_open && menu_kind == 'system' ]
+        ui_carry.clear[]
+        ui_carry += (switcher) ? 1.0 : 0.0
+        ui_carry += (screen_dark) ? 1.0 : 0.0
+        ui_carry += (menu_up) ? 1.0 : 0.0
+        ui_carry += strip_shift
+        ui_carry += switch_shift
+        ui_carry += (slide_open) ? 1.0 : 0.0
+        ui_carry += f32[ keys_force ]
+        ui_carry += f32[ switch_sel ]
+        ui_carry += (switch_con) ? 1.0 : 0.0
+        ui_view = sys_view
+        ui_build = switch_build
+
+    # the host slots running as services (background), kept current:
+    # the next instance takes them over (adopt_live_slots) before its
+    # first frame, as services again, not as apps
+    func bg_track []
+        if [ !bg_slots ] bg_slots = vec i32 []
+        bg_slots.clear[]
+        if [ !instances ] return
+        for [ av: AppView ] in instances
+            if [ av.background && !av.ended && av.slot > 0 ]
+                bg_slots += av.slot
+
+    # the last instance's dialogs, open again where they were
+    func ui_carry_in []
+        if [ !ui_carry || ui_carry.count < 6 ] return
+        switcher     = ui_carry[ 0 ] > 0.5
+        screen_dark  = ui_carry[ 1 ] > 0.5
+        strip_shift  = ui_carry[ 3 ]
+        switch_shift = ui_carry[ 4 ]
+        slide_open   = ui_carry[ 5 ] > 0.5
+        if [ ui_carry.count > 6 ] keys_force = i32[ ui_carry[ 6 ] ]
+        if [ ui_carry.count > 7 ] switch_sel = i32[ ui_carry[ 7 ] ]
+        if [ ui_carry.count > 8 ] switch_con = ui_carry[ 8 ] > 0.5
+        switch_build = (ui_build) ? ui_build : ''
+        if [ ui_carry[ 2 ] > 0.5 ]
+            drawer_toggle[ 'system', false ]
+            sys_view = (ui_view) ? ui_view : ''
+        ui_carry.clear[]
+        if [ ux ] ux.restyle = true
     mutable carry_landed  : bool
     # when the flame lit: the apply waits for it to burn
     mutable swap_at       : i64
@@ -3783,6 +4862,8 @@ element orbiter : trinity # implements compiler
     public [ StatePersist ] desk_hide : bool
     # each widget's hosted instance, by its line
     intern desk_views : map AppView [string]
+    # each widget view's front frame, as its widget last drew it
+    intern desk_seen  : map i32 [string]
     # the height the widgets take above the apps (a narrow desktop)
     intern desk_top   : f32
     # the widget a narrow desktop's tab bar shows
@@ -3889,7 +4970,40 @@ element orbiter : trinity # implements compiler
     mutable apps_filter    : string [ '' ]
     # a phone: when a press low on the screen that nothing took went
     # down (0 none); held there half a second, the pane goes home
-    mutable home_hold_us   : i64
+    # the power button: when it went down (0 up), its last press
+    # (two quick ones: the screen off), the switcher up, the screen
+    # dark
+    mutable power_down_us  : i64
+    mutable power_last_us  : i64
+    mutable switcher       : bool
+    # a phone's agent title swiped right: its end shows ('' none)
+    mutable end_shown      : string [ '' ]
+    # a menu was up when the current press began
+    mutable press_menu     : bool
+    mutable screen_dark    : bool
+    # the keyboard by the bar's button: 1 shown, -1 put away, 0 as
+    # the focus wants; and the focus's want last frame
+    mutable keys_force     : i32
+    mutable keys_wanted    : bool
+    # where the phone's dialogs stand: the system menu's bottom row's
+    # scroll, the switcher's, the power slide opened
+    mutable strip_shift    : f32
+    mutable switch_shift   : f32
+    # the switcher's chosen card (its log shows), -1 none: the
+    # system's log
+    mutable switch_sel     : i32 [ -1 ]
+    # the switcher's chosen build ('' none): its build screen shows
+    mutable switch_build   : string [ '' ]
+    # builds put away from the switcher: their events' time then
+    # (a new run of one shows again)
+    intern build_gone      : map i64 [ string ]
+    # the switcher's console shown (its toggle by the power slide)
+    mutable switch_con     : bool
+    # an update coming in (orbiter-note.sh): its share, -1 none,
+    # and when it was last said
+    mutable upd_frac       : f32 [ -1.0 ]
+    mutable upd_us         : i64
+    mutable slide_open     : bool
     # the bar's title being typed (a URL), what is typed, and whether
     # the first key replaces it whole
     mutable bar_typing     : bool
@@ -4013,6 +5127,8 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] set_rate     : i32 [ 25 ]
     intern [ StatePersist ] set_layout   : string [ 'us' ]
     intern [ StatePersist ] set_size     : i32 [ rest_unit[] ]
+    # a key's tick on the phone's motor: off, light, medium, strong
+    intern [ StatePersist ] set_haptic   : string [ 'light' ]
     # a new screen mode waits on keep: the mode before it, and when it
     # goes back by itself
     intern mode_was      : i32 [ -1 ]
@@ -4071,6 +5187,8 @@ element orbiter : trinity # implements compiler
     public stats         : bool
     # --show_fps: the frame rate alone, each second on the console
     public show_fps      : bool
+    # --benchmark: every frame drawn, no wait on the refresh
+    public benchmark     : bool
     intern scene_el      : element
     # the platform's avatars held in a state to check: 0 as they
     # are, 1 the halo (thinking), 2 edits coming in, 3 the beam
@@ -4328,6 +5446,8 @@ element orbiter : trinity # implements compiler
                 slot >= 0 && slot < open_files.count
                 && open_files[slot] ]
                 e9 : Editor pane_at[ i ]
+                # a running app is not the session's: never relaunched
+                if [ e9 && e9.app_view && e9.run_view ] continue
                 sel9 : vec2i [ x: (e9) ? e9.sel_line : 0,
                     y: (e9) ? e9.sel_col : 0 ]
                 panes.push[ pane_state [
@@ -4808,6 +5928,52 @@ element orbiter : trinity # implements compiler
         pane_drop_file[ pi ]
         if [ ux ] ux.restyle = true
 
+    # the phone's one button (ctrl / cmd + space on a simulated
+    # phone): let go before the switcher (held 0.6 s, on_frame) it
+    # goes home; pressed again within 0.4 s of that, the screen goes
+    # off; dark, a press only wakes it
+    func power_key [ ev: Event ] -> bool
+        ks : i32 [ ev.key.unicode ]
+        # space let go ends the hold, whether ctrl / cmd went up first
+        sim : bool [ ks == 32 && use_mobile && !system_os
+            && (ev.key.ctrl || ev.key.meta
+                || (ev.key.state == 0 && power_down_us > 0)) ]
+        if [ ks != 349 && !sim ] return false
+        if [ ev.key.state == 2 ] return true
+        now : i64 epoch_micros[]
+        if [ ux ] ux.restyle = true
+        # let go: home, unless the hold opened the switcher (it took
+        # the press) or the press woke or darkened the screen
+        if [ ev.key.state == 0 ]
+            if [ power_down_us > 0 ]
+                power_down_us = 0
+                power_last_us = now
+                # home and the switcher toggle: home showing (nothing
+                # over it) opens the switcher, the switcher goes back
+                # to home; from anywhere else, home
+                home : bool [ pane_empty[ active_pane ] && !drawer_open
+                    && !pane_browsing[ active_pane ] ]
+                if [ switcher ] switcher = false
+                el [ home ]
+                    if [ drawer_open ] drawer_shut[]
+                    switcher = true
+                el go_home[ active_pane ]
+            return true
+        if [ screen_dark ]
+            screen_dark   = false
+            power_last_us = 0
+            platform_screen_power[ 1 ]
+            return true
+        if [ power_last_us > 0 && now - power_last_us < 400000 ]
+            power_last_us = 0
+            switcher      = false
+            screen_dark   = true
+            platform_screen_power[ 0 ]
+            return true
+        power_down_us = now
+        if [ ux ] ux.will_animate = true
+        return true
+
     func pane_drop_file [ pi: i32 ]
         if [ pi < 0 || pi >= editor_slots.count ] return
         editor_slots[ pi ] = -1
@@ -4895,6 +6061,17 @@ element orbiter : trinity # implements compiler
             el
                 log 'orbiter: no module opens {url}'
             return
+        # an update coming in: 'update <piece> <of>', or 'update done'
+        if [ s && s.count > 7 && s.mid[ 0, 7 ] == 'update ' ]
+            ws : vec string s.mid[ 7, s.count - 7 ].trim[].split[ ' ' ]
+            if [ ws.count >= 2 ]
+                n  : f32 [ f32[ ws[ 0 ].integer_value[] ] ]
+                of : f32 [ f32[ ws[ 1 ].integer_value[] ] ]
+                if [ of > 0.0 ] upd_frac = clamp[ n / of, 0.0, 1.0 ]
+            el upd_frac = 1.0
+            upd_us = epoch_micros[]
+            if [ ux ] ux.restyle = true
+            return
         # 'run <program>': as its row in the search runs it
         if [ s && s.count > 4 && s.mid[ 0, 4 ] == 'run ' ]
             run_program[ path [ s.mid[ 4, s.count - 4 ].trim[] ],
@@ -4975,6 +6152,15 @@ element orbiter : trinity # implements compiler
         # the next instance reads the session in its init, before this
         # one unloads: what is saved now is what it restores
         save_session[]
+        # a product built already swaps at once (no pending 3): what
+        # is on screen crosses now
+        if [ !swap_carry ] swap_carry = ExchangeState [ ]
+        if [ !swap_view  ] swap_view  = vec f32 []
+        if [ !ui_carry   ] ui_carry   = vec f32 []
+        if [ ux ] ux.exchange_carry[ swap_carry ]
+        if [ agent_av ] agent_av.carry[ swap_carry ]
+        panes_carry[]
+        ui_carry_out[]
         au_live_request_apply[]
 
     # the exchange's debug button: each press steps the avatar to its
@@ -5765,8 +6951,14 @@ element orbiter : trinity # implements compiler
         for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
             ed : Editor pane_at[ pi ]
             if [ ed && ed.run_view == av ]
-                ed.run_view = null
-                ed.app_view = false
+                # its file goes too; a desktop keeps a module's code
+                code : bool [ !use_mobile && ed.src
+                    && ed.src.ext[] == 'ag' ]
+                if [ code ]
+                    ed.run_view = null
+                    ed.app_view = false
+                el
+                    go_home[ pi ]
             if [ wv != 0 && pane_win && pi < pane_win.count
                  && pane_win[ pi ] == wv ]
                 pane_win[ pi ] = u64[ 0 ]
@@ -5915,6 +7107,10 @@ element orbiter : trinity # implements compiler
                     took = true
                     nv   = hv
             if [ !took ] add_instance[ nv ]
+            # a service (a startup program's console) stays one
+            if [ bg_slots ]
+                for [ bs: i32 ] in bg_slots
+                    if [ bs == s ] nv.background = true
             # a debug launch: the orbiter before this reload left its
             # session parked with the host; adopt it, its stop comes
             # back with it. none kept: attach
@@ -6543,7 +7739,7 @@ element orbiter : trinity # implements compiler
             1.8
             * ((win && win.vk && win.vk.font_unit > 0) ? f32[ win.vk.font_unit ] : 22.0) ]
         # a picked view is closed by its own lit button, not this
-        if [ dc ]
+        if [ dc && !use_mobile ]
             # the dialog's own close, furthest right: the arrows keep
             # the left
             els['panel_close'] = BarClose [ icon: 'close',
@@ -6596,9 +7792,10 @@ element orbiter : trinity # implements compiler
                     use_spacing: false,
                     area: Region [ 'r0+ t0 w12 b0' ] ]
         el [ wid != 0 ]
-            els['modicon'] = alt_tab[ pane_ix, 'modicon', 'win_close',
-                'close', 'win_close', 'close', false, false, false,
-                Region [ 'l-1px+ t0 w1.35 b0' ] ]
+            if [ !use_mobile ]
+                els['modicon'] = alt_tab[ pane_ix, 'modicon',
+                    'win_close', 'close', 'win_close', 'close', false,
+                    false, false, Region [ 'l-1px+ t0 w1.35 b0' ] ]
         # a module's run button sits at the right, by find
         el [ !mi && edp && edp.src ]
             # a module's folder wears its module's icon
@@ -6625,7 +7822,7 @@ element orbiter : trinity # implements compiler
         # with the system bar there is no close: the bar's title and
         # the navigator change what a pane holds
         sysb : bool system_on[]
-        if [ !engaged && (hx || closable) && !sysb ]
+        if [ !engaged && (hx || closable) && !sysb && !use_mobile ]
             els['tabclose'] = BarTab [
                 buttons: vec string [] [
                     (hx) ? 'view_close' : 'pane_close' ],
@@ -7351,14 +8548,25 @@ element orbiter : trinity # implements compiler
             menu_items = own_menu[ av, ed.app_view ]
         return had || menu_items.count > 0
 
-    # an empty widget (its module '-'), last in the stack; the id
-    # keeps two of one module apart
-    func widget_add []
+    # the menu's widgets: mod on the desktop (shown), or off it
+    public func widget_toggle [ mod: string ]
         if [ !desk_widgets ] desk_widgets = vec string []
-        desk_widgets.push[ '- {epoch_millis[]}' ]
+        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            if [ widget_mod[ i ] == mod ]
+                widget_remove[ i ]
+                return
+        desk_hide = false
+        desk_widgets.push[ '{mod} {epoch_millis[]}' ]
         desk_tab = desk_widgets.count - 1
         save_session[]
         if [ ux ] ux.restyle = true
+
+    # mod on the desktop
+    public func widget_on [ mod: string ] -> bool
+        if [ !desk_widgets ] return false
+        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            if [ widget_mod[ i ] == mod ] return true
+        return false
 
     # the chooser's pick: the widget becomes mod, in its place
     func widget_pick [ i: i32, mod: string ]
@@ -7453,6 +8661,36 @@ element orbiter : trinity # implements compiler
         return (mod == '-') ? 'widget' : mod
 
     # a widget's hosted instance, started the first time it shows
+    # the desktop's widgets: their apps run on each frame, and a
+    # widget is drawn again only when its app shows a new picture
+    func desk_service [ w: Window ]
+        if [ !desk_views || !desk_widgets ] return
+        if [ !desk_seen ] desk_seen = map i32 [string] []
+        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            if [ !desk_views.contains[ desk_widgets[ i ] ] ] continue
+            av : AppView desk_views[ desk_widgets[ i ] ]
+            if [ !av ] continue
+            av.service[ w.screen ]
+            fr : i32 [ (av.slot >= 0) ? host_tex_front[ av.slot, 0 ]
+                : -1 ]
+            ky : string desk_widgets[ i ]
+            if [ desk_seen.contains[ ky ] && desk_seen[ ky ] == fr ]
+                continue
+            desk_seen[ ky ] = fr
+            if [ w.root ] mark_widget[ w.root, i ]
+            w.will_animate = true
+
+    # the widget showing desk_widgets[ i ]: drawn again
+    func mark_widget [ e: element, i: i32 ] -> bool
+        if [ !e || !e.elements ] return false
+        for [ c: element, id: string ] in e.elements
+            dw : DeskWidget [ c inherits DeskWidget ]
+            if [ dw && dw.index == i ]
+                repaint_held[ c, false ]
+                return true
+            if [ mark_widget[ c, i ] ] return true
+        return false
+
     func widget_view [ i: i32 ] -> AppView
         if [ !desk_widgets || i < 0 || i >= desk_widgets.count ]
             return null
@@ -7510,7 +8748,15 @@ element orbiter : trinity # implements compiler
     func widget_place [ top: bool ]
         for [ i: i32 0, i < desk_widgets.count, i += 1 ]
             av : AppView widget_view[ i ]
-            if [ !av || av.top_sent == i32[ top ] ] continue
+            if [ !av ] continue
+            # the home filter: each widget hides or shows its own
+            # elements by it
+            ft : string apps_filter
+            if [ av.slot > 0 && av.filter_sent != ft ]
+                av.filter_sent = ft
+                agent_sock_send[ av.sock_name[].chars,
+                    'set widget_filter {ft}\n' ]
+            if [ av.top_sent == i32[ top ] ] continue
             av.top_sent = i32[ top ]
             tf : string '--trinity.widget_top {top}'
             av.module_args = '--trinity.widget true {tf}'
@@ -7518,6 +8764,12 @@ element orbiter : trinity # implements compiler
             if [ av.slot > 0 ]
                 agent_sock_send[ av.sock_name[].chars,
                     'set widget_top {top}\n' ]
+
+    # a widget shows: no filter typed, or something in it matches
+    func widget_shown [ i: i32 ] -> bool
+        if [ apps_filter.count == 0 || !desk_views ] return true
+        av : AppView desk_views[ desk_widgets[ i ] ]
+        return !av || !av.no_match
 
     func widget_els [ gw: f32 ] -> Elements
         t : Elements []
@@ -7536,6 +8788,13 @@ element orbiter : trinity # implements compiler
         if [ !beside ]
             if [ desk_widgets.count == 0 ] return t
             desk_tab = clamp[ desk_tab, 0, desk_widgets.count - 1 ]
+            # the tab shown hides with its widget: the first that shows
+            if [ !widget_shown[ desk_tab ] ]
+                for [ k: i32 0, k < desk_widgets.count, k += 1 ]
+                    if [ widget_shown[ k ] ]
+                        desk_tab = k
+                        break
+            if [ !widget_shown[ desk_tab ] ] return t
             th : f32 [ round[ 30.0 * un ] ]
             h : f32 [ round[ w * widget_ratio[ desk_tab ] ] ]
             t['widget_tabs'] = DeskTabs [
@@ -7545,6 +8804,7 @@ element orbiter : trinity # implements compiler
             desk_top = th + gap + h
             return t
         for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            if [ !widget_shown[ i ] ] continue
             h : f32 [ round[ w * widget_ratio[ i ] ] ]
             t['widget_{i}'] = DeskWidget [ index: i,
                 area: Region [ 'l{x}px t{y}px w{w}px h{h}px' ] ]
@@ -7604,9 +8864,9 @@ element orbiter : trinity # implements compiler
                 m.push[ e ]
         # not running: it starts
         live : bool [ !av.ended && !av.held && av.slot >= 0 ]
-        if [ !live ]
-            m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
-            m.push[ own_entry[ 'Run', 'orb.run', 1 ] ]
+        m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+        if [ !live ] m.push[ own_entry[ 'Run', 'orb.run', 1 ] ]
+        el m.push[ own_entry[ 'Quit', 'orb.quit', 1 ] ]
         return m
 
     # the properties as menu rows between rules: the build switches
@@ -7724,11 +8984,12 @@ element orbiter : trinity # implements compiler
                 e.action.count - 9 ] ] ]
             if [ cav ]
                 show_instance[ cav.iid, active_pane ]
-                # a viewer's pane holds no file: its own source opens,
-                # the module it came from, its document, else its own
-                own : path [ (cav.origin) ? cav.origin
-                    : ((cav.viewer && cav.doc) ? cav.doc : cav.src) ]
-                if [ cav.viewer && !ed.src && own && own.exists[] ]
+                # its code is the app's own module (n64.ag), never
+                # the file it was opened on (a rom); else its origin
+                own : path ed.module_path[ cav.app_mod ]
+                if [ !own ] own = cav.origin
+                if [ own && own.exists[] && (!ed.src
+                     || '{ed.src.absolute[]}' != '{own.absolute[]}') ]
                     open_in_pane[ own, active_pane ]
                 pending_code = pending_show > 0
                 ed.app_view = false
@@ -7763,6 +9024,11 @@ element orbiter : trinity # implements compiler
             return
         av : AppView (ed) ? ed.run_view : null
         if [ !av ] return
+        # the app ends, as the switcher's flick ends it
+        if [ e.action == 'orb.quit' ]
+            close_task[ av ]
+            force_update[]
+            return
         # one of the app's own views; the lit one again: its source
         if [ e.action.starts_with[ 'orb.aview:' ] ]
             vi : i32 [ e.action.mid[ 10, e.action.count - 10 ] ]
@@ -7916,6 +9182,8 @@ element orbiter : trinity # implements compiler
         # a menu opened over the main menu: it stays under
         if [ kind == 'system' ] sys_under = false
         el [ drawer_open && menu_kind == 'system' ] sys_under = true
+        # a menu and the switcher never show together
+        switcher     = false
         drawer_open  = true
         menu_kind    = kind
         # over the main menu: its one background, not taken again
@@ -8409,7 +9677,7 @@ element orbiter : trinity # implements compiler
             steps += 1
         # a background program's (a tray app's): a floating pane
         bg : AppView background_of[ wn ]
-        if [ pane < 0 && bg && editor_slots.count < 4 ]
+        if [ pane < 0 && bg && editor_slots.count < 4 && !mobile_on[] ]
             bg.wl_window = wn
             mini_forget[ bg.iid ]
             pane = window_pane[]
@@ -8439,7 +9707,7 @@ element orbiter : trinity # implements compiler
              && pane_win[ pane ] != wn
              && wlc_window_open[ pane_win[ pane ] ] != 0
              && wlc_window_pid[ pane_win[ pane ] ] == wlc_window_pid[ wn ]
-             && editor_slots.count < 4 ]
+             && editor_slots.count < 4 && !mobile_on[] ]
             pane    = window_pane[]
             spawned = true
         while [ pane_win.count <= pane ]
@@ -8596,6 +9864,9 @@ element orbiter : trinity # implements compiler
     func run_startup []
         # a hidden (test) run starts none of the user's programs
         if [ hidden ] return
+        # once a process: a reloaded instance finds them running
+        if [ startup_ran ] return
+        startup_ran = 'ran'
         root : path.path_startup[]
         if [ !root ] return
         d : path '{install_root[]}/export'
@@ -8733,6 +10004,34 @@ element orbiter : trinity # implements compiler
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     if [ dists[i] == d && out.count < 500 ]
                         out.push[ matches[i] ]
+        return out
+
+    # the folders whose own name holds the query (from the index's
+    # paths, under the project root; each once, 50 at most)
+    func index_dirs [ query: string ] -> vec string
+        out : vec string []
+        if [ !query || query.count == 0 ] return out
+        rp : string '{project_root[]}'
+        ck : string (search_remotes) ? '' : '{rp}/checkout/'
+        seen : map bool [ string ] []
+        index_lock.lock[]
+        for [ s: string ] in file_index
+            if [ out.count >= 50 ] break
+            if [ s.index_of[ rp ] != 0 ] continue
+            if [ ck.count > 0 && s.index_of[ ck ] == 0 ] continue
+            last : i32 [ s.rindex_of[ '/' ] ]
+            at : i32 [ s.mid[ rp.count, last - rp.count ].index_of[
+                query ] ]
+            if [ at < 0 ] continue
+            at += rp.count
+            # cut at the end of the folder name it is in
+            tail : string s.mid[ at, last - at + 1 ]
+            cut : i32 [ at + tail.index_of[ '/' ] ]
+            d : string s.mid[ 0, cut ]
+            if [ seen.contains[ d ] ] continue
+            seen[ d ] = true
+            out.push[ d ]
+        index_lock.unlock[]
         return out
 
     # a file pattern IS the switch: set means search all files
@@ -9634,14 +10933,18 @@ element orbiter : trinity # implements compiler
         ensure_scenes[]
         mod : string (scene_mods) ? scene_mods[ nm ] : null
         if [ !mod || mod.count == 0 ] return
+        module_load[ mod, nm ]
+
+    # a module's library loaded for one of its types (nm), its
+    # init run so its types register; mod as its export names it
+    func module_load [ mod: string, nm: string ]
         if [ !startup_path ] startup_path = path.path_startup[]
         lib : path module_lib[ mod ]
         if [ !lib.exists[] ] return
-        # module init registers its types
         h : dlopen[ lib.chars, 258 ]
         if [ !h ]
             er : cstr [ dlerror[] ]
-            log 'scenes: dlopen failed for {lib}: {string [ er ]}'
+            log 'module: dlopen failed for {lib}: {string [ er ]}'
             return
         if [ Au.find_type[ nm.chars, null ] ] return
         # an app's library has no load-time init (its main runs it):
@@ -10954,6 +12257,21 @@ element orbiter : trinity # implements compiler
         n9 : i32 [ nav_hist_ix + d ]
         return n9 >= 0 && n9 < nav_hist.count
 
+    # back (-1) or forward (1), from an edge swipe on a phone: the
+    # navigator's history while it shows, else the active pane's (its
+    # app, its file), as their arrows were
+    public func navigate [ dir: i32 ] -> bool
+        if [ pane_browsing[ active_pane ] ]
+            return nav_step[ dir ]
+        ed : Editor pane_at[ active_pane ]
+        if [ !ed ] return false
+        m : i32 nav_mask[ active_pane ]
+        if [ (dir < 0 && (m & 1) != 0) || (dir > 0 && (m & 2) != 0) ]
+            return false
+        ed.nav_walk[ dir ]
+        if [ ux ] ux.restyle = true
+        return true
+
     public func nav_step [ d: i32 ] -> bool
         if [ !nav_can[ d ] ] return false
         nav_hist_ix = nav_hist_ix + d
@@ -11034,6 +12352,28 @@ element orbiter : trinity # implements compiler
                             push_dir_hit[ row.file, row.text ]
                         el push_file_hit[ row.file, true ]
                         combined.push[ '{row.file}' ]
+                # typed: the folders named so first, to go into (those
+                # holding its kinds of file, then the project's)
+                if [ typing ]
+                    pseen : map bool [ string ] []
+                    rt : string '{project_root[]}'
+                    for [ pf: path ] in pick_cache
+                        for [ d: path pf.directory[], d,
+                              d = d.directory[] ]
+                            ds : string '{d}'
+                            if [ ds.count <= rt.count ] break
+                            if [ pseen.contains[ ds ] ] continue
+                            pseen[ ds ] = true
+                            if [ d.filename[].index_of[ find_text ] < 0 ]
+                                continue
+                            push_dir_hit[ d, d.filename[] ]
+                            combined.push[ ds ]
+                    for [ ds: string ] in index_dirs[ find_text ]
+                        if [ pseen.contains[ ds ] ] continue
+                        pseen[ ds ] = true
+                        dp : path ds
+                        push_dir_hit[ dp, dp.filename[] ]
+                        combined.push[ ds ]
                 for [ p9: path ] in pick_cache
                     if [ !typing ] break
                     if [ p9.filename[].index_of[ find_text ] < 0 ]
@@ -11092,6 +12432,13 @@ element orbiter : trinity # implements compiler
                         FindHit [ text: 'more...', dir: '',
                                   more: true ] ]
             el [ find_text && find_text.count > 0 ]
+                # folders named so first: the index lists files only
+                dseen : map bool [ string ] []
+                for [ ds: string ] in index_dirs[ find_text ]
+                    dp : path ds
+                    push_dir_hit[ dp, dp.filename[] ]
+                    combined.push[ ds ]
+                    dseen[ ds ] = true
                 matches : list string [ index_search[ find_text ] ]
                 for [ i: i32 0, i < matches.count, i += 1 ]
                     p : path '{matches.value_by_index[ i ]}'
@@ -11101,6 +12448,8 @@ element orbiter : trinity # implements compiler
                     ism : bool [ md && p.ext[] == 'ag'
                         && p.stem[] == md.filename[] ]
                     if [ ism ]
+                        # a module's folder already listed by its name
+                        if [ dseen.contains[ '{md}' ] ] continue
                         push_dir_hit[ md, md.filename[] ]
                         combined.push[ '{md}' ]
                     el [ is_program[ p ] ]
@@ -11111,7 +12460,7 @@ element orbiter : trinity # implements compiler
                     el
                         push_file_hit[ p, true ]
                         combined.push[ '{p}' ]
-                if [ matches.count == 0 ]
+                if [ matches.count == 0 && combined.count == 0 ]
                     find_hits.push[
                         FindHit [ is_header: true,
                                   text: 'no results for {find_text}',
@@ -11843,12 +13192,8 @@ element orbiter : trinity # implements compiler
         return false
 
     func on_press [ ev: Event ]
-        # a phone: a press in the screen's lowest 15% that nothing took
-        home_hold_us = 0
-        if [ use_mobile && ux && ev.mouse.button == 0 && !ev.no_default
-             && f32[ ux.mouse.y ] > f32[ ux.height ] * 0.85 ]
-            home_hold_us = epoch_micros[]
-            ux.will_animate = true
+        # a menu up as this press began (it may shut it below)
+        press_menu = drawer_open
         # a press is no Alt tap, and lets the bar's keys go
         alt_tap = false
         if [ bar_hl.count > 0 ]
@@ -11880,6 +13225,15 @@ element orbiter : trinity # implements compiler
             if [ !inx ]
                 ux.agent_min = true
                 ux.restyle   = true
+        # a mouse down on a menu's own ground (no row, button or field
+        # there) shuts it
+        if [ drawer_open && menu_kind != 'exchange'
+             && (ev.target inherits MenuDrawer
+                 || ev.target inherits PanelRows) ]
+            drawer_shut[]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ drawer_open && menu_kind != 'exchange'
              && !(ev.target inherits MenuTop)
              && ev.target.id != 'bar_title'
@@ -12338,8 +13692,17 @@ element orbiter : trinity # implements compiler
             if [ pane_loads[ active_pane ] ] bar_title_press[]
             ev.no_default = true
             return
-        # the bar's orbiter: the main menu, as the desktop's name
-        if [ ev.target.id == 'bar_title' ]
+        # the bar's own ground (no menu or button there): the
+        # navigator; with a menu up, nothing (the press shut it)
+        if [ ev.target.id == 'system' ]
+            if [ !press_menu ] globe_press[]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # the bar's right end (the clock, a phone's signal): the main
+        # menu
+        if [ ev.target.id == 'bar_title' || ev.target.id == 'bar_clock'
+             || ev.target.id == 'bar_signal' ]
             # lit while the main menu shows: a press shuts it all
             if [ sys_up[] ]
                 sys_under = false
@@ -12490,15 +13853,6 @@ element orbiter : trinity # implements compiler
             return
         # the desktop's bar: a new widget (shown), the widgets shown
         # or hidden
-        if [ ev.target.id == 'bar_signal' ]
-            open_phone[]
-            ev.no_default = true
-            return
-        if [ ev.target.id == 'desk_add' ]
-            desk_hide = false
-            widget_add[]
-            ev.no_default = true
-            return
         if [ ev.target.id == 'desk_side' ]
             desk_hide = !desk_hide
             save_session[]
@@ -12556,15 +13910,27 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        # an avatar on the platform: its instance, as its title
-        if [ ev.target.id.starts_with[ 'pav_' ] ]
-            nm : string ev.target.id.mid[ 4, ev.target.id.count - 4 ]
-            if [ home_session[ nm ] ] home_open = nm
+        # the agents area's own ground (the platform, its avatars, the
+        # space round them; not a title, its console or a button):
+        # the menu shuts, back to where it was
+        tg : element ev.target
+        ground : bool [ tg inherits AgentHome || tg inherits PlatformView
+            || tg inherits PlatAvatar ]
+        if [ !ground && tg.parent && tg.parent inherits AgentHome ]
+            ground = !(tg inherits AgentHead) && !(tg inherits AgentBody)
+                && !(tg inherits Console) && !(tg inherits HomeLabel)
+                && !(tg inherits TButtons)
+        if [ ground && drawer_open ]
+            drawer_shut[]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id.starts_with[ 'ahome_h_' ] ]
             nm : string ev.target.id.mid[ 8, ev.target.id.count - 8 ]
+            # a phone's title acts at its release (a swipe shows end)
+            if [ use_mobile ]
+                ev.no_default = true
+                return
             home_open = (home_open == nm) ? '' : nm
             if [ ux ] ux.restyle = true
             ev.no_default = true
@@ -13124,6 +14490,32 @@ element orbiter : trinity # implements compiler
                 run_search[]
 
     func on_key [ ev: Event ]
+        if [ power_key[ ev ] ]
+            ev.no_default = true
+            return
+        # the shown app's own keyboard is up: its keys are that app's
+        pv : AppView pad_view[]
+        if [ pv ]
+            pv.on_key*[ ev ]
+            ev.no_default = true
+            return
+        # ctrl / cmd + shift + K: the keyboard up or away, as the bar's
+        # button
+        if [ ev.key.unicode == 75 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ ev.key.state == 1 ]
+                keys_force = (keys_up[]) ? -1 : 1
+                if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # ctrl / cmd + shift + R: a ready reload, the session saved
+        # first (trinity sends it here)
+        if [ ev.key.unicode == 82 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ ev.key.state == 1 && au_live_get_pending[] == 1 ]
+                request_swap[]
+            ev.no_default = true
+            return
         ks : i32 [ ev.key.unicode ]
         # Alt alone, pressed and let go: the bar takes the keys (any
         # other key or a press between is no tap)
@@ -13823,6 +15215,7 @@ element orbiter : trinity # implements compiler
                     # display's refresh
                     if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
                     av8.service[ w.screen ]
+        desk_service[ w ]
         # a Full pane covers the ui: the backdrop scene and frost chain
         # skip
         cover9 : bool [ false ]
@@ -13947,6 +15340,7 @@ element orbiter : trinity # implements compiler
                 ux.restyle = true
             if [ !swap_carry ] swap_carry = ExchangeState [ ]
             if [ !swap_view  ] swap_view  = vec f32 []
+            if [ !ui_carry   ] ui_carry   = vec f32 []
             # the reloaded exchange stays open: the user closes it
             if [ carry_landed && ux.loaded[] ]
                 carry_landed = false
@@ -13957,6 +15351,7 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.exchange_carry[ swap_carry ]
                 if [ agent_av ] agent_av.carry[ swap_carry ]
                 panes_carry[]
+                ui_carry_out[]
                 au_live_request_apply[]
             if [ pend != 3 ] swap_fading = false
             # the exchange holds until the avatar's second halo has
@@ -14059,6 +15454,7 @@ element orbiter : trinity # implements compiler
                 'none' ] != 0
         if [ ux ] ux.stats = stats
         if [ ux ] ux.show_fps = show_fps
+        if [ benchmark ] force_animate = true
         if [ ux ] ux.prof_log = stats
         if [ ux && ux.vk ] ux.vk.stats_log = stats
         # push the flat color the instant the stage is set (retry until
@@ -14080,14 +15476,19 @@ element orbiter : trinity # implements compiler
             inner: pane_views[], deflt: 0.0, even: true,
             snap_close: true, loose: free_ids[] ]
         pv : element pane_view[ active_pane ]
-        if [ show_console && pv && pv inherits EditorView ]
+        # a phone has no task bar to shut it from: never shown
+        if [ show_console && !use_mobile && pv
+            && pv inherits EditorView ]
             ev9 : EditorView pv
             stack['band'] = RunBand [ elements: ev9.band_els[] ]
         # a phone has the top bar alone: the panes to the bottom
         # its keyboard under them while the focus takes words; a PC
         # has the keyboard's bar alone, once a language is added
         # the system menu up: its own keyboard, over this
-        keys : bool [ use_mobile && ux.words_wanted && !sys_up[] ]
+        # the shown app's own keyboard takes the letters' place
+        pad : element [ (use_mobile && !sys_up[]) ? app_pad[] : null ]
+        keys : bool [ use_mobile && !sys_up[]
+            && ((pad) ? !ux.app_keys_hidden : keys_up[]) ]
         bar : bool [ !use_mobile && ux.words_wanted
             && languages_added[] ]
         foot : string [ (keys) ? 'l0 t0 r0 b41%'
@@ -14102,7 +15503,11 @@ element orbiter : trinity # implements compiler
                 left['keys'] = FlickKeys [ bar_only: true,
                     area: Region { l0 b2.4 r0 b1.06 } ]
         el [ keys ]
-            left['keys'] = FlickKeys [ area: Region { l0 b41% r0 b0 } ]
+            left['keys'] = FlickKeys [ pad: pad,
+                area: Region { l0 b41% r0 b0 } ]
+        el [ pad ]
+            left['keys_tab'] = AppKeysTab [
+                area: Region { r8px b8px w1.6 h1.6 } ]
         # no right panel: the callstack is on the bottom bar now,
         # and its seam shade had nothing left to shade
         t['left'] = element [ elements: left ]
@@ -14164,7 +15569,9 @@ element orbiter : trinity # implements compiler
             if [ free_order[ j ] == i ] return j
         return -1
 
+    # a phone has no free windows: every pane fills the screen
     func pane_floats [ i: i32 ] -> bool
+        if [ mobile_on[] ] return false
         k : i32 [ i * 4 + 2 ]
         return i >= 0 && pane_free && k < pane_free.count
             && pane_free[ k ] > 0.0
@@ -14184,7 +15591,8 @@ element orbiter : trinity # implements compiler
     # its place set; a docked pane pulled free keeps its size, two
     # thirds of it when it filled the area
     func pull_free [ i: i32, pv: element ]
-        if [ pane_floats[ i ] || !pv || !pv.bounds ] return
+        if [ mobile_on[] || pane_floats[ i ] || !pv || !pv.bounds ]
+            return
         if [ !pane_free ] pane_free = vec f32 []
         if [ !free_order ] free_order = vec i32 []
         if [ !pane_shown ] pane_shown = vec f32 []
@@ -15013,49 +16421,48 @@ element orbiter : trinity # implements compiler
         # the selected window's menu alone, from the left, wherever
         # the window is (as macOS)
         pi : i32 bar_pane[]
-        pv : element (pi >= 0) ? pane_view[ pi ] : null
+        pv : element (pi >= 0 && !switcher) ? pane_view[ pi ] : null
         x = menu_group_els[ t, x0, uu, pi, '' ]
         # the right end, short of the bar's own: the window's close
         # and its arrows, or the navigator's views
         re : f32 [ (bounds) ? bounds.w - right_w[] : 0.0 ]
-        # the desktop: + adds a widget, the panel hides or shows them
-        if [ pi >= 0 && pane_empty[ pi ] && !sys_up[] ]
+        # the desktop: the panel hides or shows the widgets (a phone
+        # always shows them; the menu's Widgets adds them)
+        if [ pi >= 0 && !switcher && pane_empty[ pi ] && !sys_up[]
+             && !use_mobile ]
             dw : f32 [ 1.33 * unit_px[] ]
-            # a phone always shows them: + alone
-            nb : f32 [ (use_mobile) ? 1.0 : 2.0 ]
-            bt : vec string [] [ 'desk_add' ]
-            ic : vec string [] [ 'plus' ]
-            if [ !use_mobile ]
-                bt.push[ 'desk_side' ]
-                ic.push[ 'right_panel' ]
             t['desk_bar'] = AltTab [
-                buttons: bt, icon_ids: ic,
+                buttons: vec string [] [ 'desk_side' ],
+                icon_ids: vec string [] [ 'right_panel' ],
                 icon_scale: 0.55, manual: true, seg_radius: 0.0,
                 use_spacing: false, rest_fill: rgba [ '#0000' ],
-                sel_mask: (desk_hide) ? 0 : 2,
-                area: Region [
-                    'l{re - dw * nb}px t0 w{dw * nb}px b0' ] ]
+                sel_mask: (desk_hide) ? 0 : 1,
+                area: Region [ 'l{re - dw}px t0 w{dw}px b0' ] ]
         if [ pv && pane_browsing[ pi ] ]
             # the navigator's own back and forward, over the folders
             # it has been in, by its close; the views left of them
             cw : f32 [ 1.33 * unit_px[] ]
-            t['snav_close'] = AltTab [
-                buttons: vec string [] [ 'finder_close' ],
-                icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                area: Region [ 'l{re - cw}px t0 w{cw}px b0' ] ]
-            re -= cw
-            aw : f32 [ 2.39 * unit_px[] ]
+            if [ !use_mobile ]
+                t['snav_close'] = AltTab [
+                    buttons: vec string [] [ 'finder_close' ],
+                    icon_ids: vec string [] [ 'close' ],
+                    icon_scale: 0.6, manual: true, seg_radius: 0.0,
+                    use_spacing: false, rest_fill: rgba [ '#0000' ],
+                    area: Region [ 'l{re - cw}px t0 w{cw}px b0' ] ]
+                re -= cw
+            # a phone shows no back / forward arrows
+            aw : f32 [ (use_mobile) ? 0.0 : 2.39 * unit_px[] ]
             dm : i32 [ ((nav_can[ -1 ]) ? 0 : 1)
                        | ((nav_can[ 1 ]) ? 0 : 2) ]
-            t['snav_finder'] = AltTab [
-                buttons: vec string [] [ 'finder_back', 'finder_fwd' ],
-                icon_ids: vec string [] [ 'left', 'right' ],
-                icon_scale: 0.30, manual: true, seg_radius: 0.0,
-                use_spacing: false, rest_fill: rgba [ '#0000' ],
-                disable_mask: dm, seg_reach: 0.5,
-                area: Region [ 'l{re - aw}px t0 w{aw}px b0' ] ]
+            if [ !use_mobile ]
+                t['snav_finder'] = AltTab [
+                    buttons: vec string [] [ 'finder_back',
+                        'finder_fwd' ],
+                    icon_ids: vec string [] [ 'left', 'right' ],
+                    icon_scale: 0.30, manual: true, seg_radius: 0.0,
+                    use_spacing: false, rest_fill: rgba [ '#0000' ],
+                    disable_mask: dm, seg_reach: 0.5,
+                    area: Region [ 'l{re - aw}px t0 w{aw}px b0' ] ]
             vx : f32 pane_views_el[ t, pi, re - aw ]
             crumbs_el[ t, (nav_root) ? '{nav_root.absolute[]}' : '',
                        '', -1, false, x + 8.0 * uu, vx - 8.0 * uu,
@@ -15088,10 +16495,14 @@ element orbiter : trinity # implements compiler
                 area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
         # the mobile network: its bars and name; a press, the phone
         sw : f32 right_w[]
-        if [ sw > 0.0 && bounds ]
+        if [ signal_here[] && bounds ]
             mo : Modem modem_shared[]
             t['bar_signal'] = BarSignal [ bars: mo.bars[],
                 label: mo.network[], off: mo.state < 8,
+                area: Region [ 'l{bounds.w - sw}px t0 w{sw}px b0' ] ]
+        el [ bounds ]
+            t['bar_clock'] = BarClock [ label: clock_text[],
+                selected: sys_up[],
                 area: Region [ 'l{bounds.w - sw}px t0 w{sw}px b0' ] ]
         # last: drawn over every menu on the bar
         if [ rec_iid != -2 ]
@@ -15192,6 +16603,9 @@ element orbiter : trinity # implements compiler
     # opens that piece's drawer, as a menu bar's names do
     func crumb_hover [ bc: BarCrumb ]
         if [ !bar_drawer_up[] || !bc || !bc.dir ] return
+        # the main menu alone (a path's drawer shut back to it): its
+        # names open on a press only, so a second press stays shut
+        if [ menu_kind == 'system' ] return
         # the same piece: its drawer is already the one open
         if [ menu_kind == 'crumb' && crumb_at && crumb_at == bc.dir ]
             return
@@ -15287,9 +16701,16 @@ element orbiter : trinity # implements compiler
         drawer_focus = crumb_code
 
     # the system bar's right end: nothing (the bottom bar holds them)
+    # the bar's right end: a phone's signal, else the date; either
+    # opens the main menu
     func right_w [] -> f32
-        if [ !phone_here[] || !modem_shared[].ready ] return 0.0
+        if [ !phone_here[] || !modem_shared[].ready ]
+            return 4.6 * unit_px[]
         return (sig_w > 0.0) ? sig_w : 7.0 * unit_px[]
+
+    # the bar shows a mobile network at its right end
+    func signal_here [] -> bool
+        return phone_here[] && modem_shared[].ready
 
     # a mobile network to show: orbiter-os, or the simulated phone
     func phone_here [] -> bool
@@ -15380,16 +16801,43 @@ element orbiter : trinity # implements compiler
     # a pane's menus from x0, its ids led by pre ('' the bar's)
     func menu_group_els [ t: Elements, x0: f32, uu: f32, pi: i32,
                           pre: string ] -> f32
-        # the bar's first: orbiter, the main menu (the navigator,
-        # the agents, power); a window's strip has none
-        gp : i32 [ (pi >= 0) ? pi : active_pane ]
+        # no orbiter button: the main menu opens from the bar's right
+        # end (the clock, or a phone's signal)
         x : f32 [ x0 ]
-        if [ pre.count == 0 ] x = globe_el[ t, 'bar_title', x0, gp ]
         # the main menu up: its own menus (Agents), not the pane's
         sys : bool [ pre.count == 0 && sys_up[] ]
         mp : i32 [ (sys) ? active_pane : pi ]
-        # the desktop (the apps): no menu, its buttons at the right
-        if [ !sys && (mp < 0 || pane_empty[ mp ]) ] return x
+        # the switcher up: no app's state, orbiter's toggle alone
+        home : bool [ !sys
+            && (switcher || mp < 0 || pane_empty[ mp ]) ]
+        # the home screen's own name, orbiter: the main menu (lit, and
+        # a press shuts it, while it is up)
+        # an update coming in (within a minute of its last word)
+        up : bool [ upd_frac >= 0.0
+            && epoch_micros[] - upd_us < 60000000 ]
+        # orbiter itself building (a change on this system, or its
+        # live reload): its share done, from its build's events
+        ob : f32 build_frac[ 'orbiter' ]
+        bld : bool [ ob > -2.0 ]
+        if [ pre.count == 0 && (home || sys || up || bld) ]
+            ow : f32 [ (7.0 * 9.5 + 22.0) * uu ]
+            t['menu_orbiter'] = MenuTop [ label: 'orbiter', at: -2,
+                pane: mp, selected: sys, tab_on: true,
+                area: Region [ 'l{x}px t0 w{ow}px b0' ] ]
+            # its share received: a red line along the name's foot
+            if [ up ]
+                fw : f32 [ round[ ow * upd_frac ] ]
+                t['upd_bar'] = UpdBar [
+                    area: Region [ 'l{x}px b3px w{fw}px b0' ] ]
+            x += ow
+            # its build after its name: 'building 45%', filled so
+            if [ bld ]
+                sw : f32 [ (12.0 * 9.5 + 22.0) * uu ]
+                t['self_build'] = StatusLabel [ word: 'building',
+                    frac: ob, area: Region [ 'l{x}px t0 w{sw}px b0' ] ]
+                x += sw
+        # the desktop (the apps): no other menu
+        if [ home ] return x
         # Agents is the agents view's: another view (the navigator
         # and its path) takes the bar
         if [ sys && sys_view && sys_view.count > 0 ] return x
@@ -15472,7 +16920,10 @@ element orbiter : trinity # implements compiler
             over = mx >= xr - cw && mx < xr && my >= 0.0
                 && my < bar_units[] * unit_px[]
         mini : bool [ cmd_down || over ]
-        if [ mini ]
+        # a phone: no close (x); its switcher ends an app
+        xc : f32 [ (use_mobile) ? 0.0 : cw ]
+        if [ use_mobile ] mini = false
+        el [ mini ]
             # minimize: the close's ringed minus; the app runs on
             t['pmin_{pi}'] = AltTab [
                 buttons: vec string [] [ 'pmin_{pi}' ],
@@ -15480,7 +16931,7 @@ element orbiter : trinity # implements compiler
                 manual: true, seg_radius: 0.0, use_spacing: false,
                 rest_fill: rgba [ '#0000' ], second: true,
                 area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
-        el
+        el [ !use_mobile ]
             t['pclose_{pi}'] = AltTab [
                 buttons: vec string [] [ 'pclose_{pi}' ],
                 icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
@@ -15491,15 +16942,15 @@ element orbiter : trinity # implements compiler
         # app keeps it open until it is pressed again)
         ed : Editor pane_at[ pi ]
         av : AppView (ed && ed.app_view) ? ed.run_view : null
-        if [ !av || av.ended || !av.has_panel ] return xr - cw
+        if [ !av || av.ended || !av.has_panel ] return xr - xc
         t['ppanel_{pi}'] = AltTab [
             buttons: vec string [] [ 'ppanel_{pi}' ],
             icon_ids: vec string [] [ 'panel' ], icon_scale: 0.575,
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
             sel_mask: (av.panel_on) ? 1 : 0,
-            area: Region [ 'l{xr - cw * 2.0}px t0 w{cw}px b0' ] ]
-        return xr - cw * 2.0
+            area: Region [ 'l{xr - xc - cw}px t0 w{cw}px b0' ] ]
+        return xr - xc - cw
 
     # the app's outline: its toggle at x, lit open (the title after
     # it); the x after
@@ -15526,21 +16977,6 @@ element orbiter : trinity # implements compiler
             if [ e.bounds ] x += e.bounds.x
             if [ e.parent ] x -= e.parent.scroll.x
         return x
-
-    # the navigator's globe at x (lit while it shows); the x after
-    func globe_el [ t: Elements, id: string, x: f32, pi: i32 ]
-            -> f32
-        # as wide as the pane's editor gutter, so its menus line up
-        # with the code
-        gw : f32 globe_w[ pi ]
-        t[ id ] = AltTab [ buttons: vec string [] [ id ],
-            icon_ids: vec string [] [ 'orbiter4' ], icon_scale: 0.55,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: ((sys_up[] || bar_hl == id)
-                && id == 'bar_title') ? 1 : 0,
-            area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
-        return x + gw
 
     func pane_entry [ act: string ] -> bool
         # a separator has no action
@@ -15876,7 +17312,8 @@ element orbiter : trinity # implements compiler
     # where they start (xr when none)
     func nav_arrows_el [ t: Elements, pi: i32, xr: f32 ] -> f32
         dm : i32 nav_mask[ pi ]
-        if [ dm == 3 ] return xr
+        # a phone shows no back / forward arrows
+        if [ dm == 3 || use_mobile ] return xr
         aw : f32 [ 2.39 * unit_px[] ]
         t['snav_{pi}'] = AltTab [
             buttons: vec string [] [ 'nav_back:{pi}', 'nav_fwd:{pi}' ],
@@ -16232,6 +17669,7 @@ element orbiter : trinity # implements compiler
                         mf = tf
                         mn = cn
             if [ !md ] continue
+            if [ !runs_here[ mf ] ] continue
             ae : AppEntry [ name: mn, file: md, module: true, agi: f,
                 group: gr ]
             # not a trinity app (no props): it builds a program, ours
@@ -16241,6 +17679,25 @@ element orbiter : trinity # implements compiler
             ae.apps = store_apps[ mn, gr ]
             ae.widget = agi_word[ tx, 'widget' ]
             app_list.push[ ae ]
+        # ours at silver's root, from their source (a phone builds
+        # none: there only those built for it)
+        for [ d: path ] in root.ls[ null, false ]
+            n : string d.filename[]
+            m : path '{d}/{n}.ag'
+            if [ !d.is_dir[] || !m.exists[] ] continue
+            seen : bool [ false ]
+            for [ e9: AppEntry ] in app_list
+                if [ e9.name == n ] seen = true
+            if [ seen ] continue
+            src : string m.load[ typeid[ string ], null ]
+            g : string source_word[ src, 'export software' ]
+            if [ g.count == 0 || !runs_here[ m ] ] continue
+            lib : path '{install_root[]}/build/libsilver-{n}.so'
+            if [ mobile_on[] && !lib.exists[] ] continue
+            oe : AppEntry [ name: n, file: d, module: true, group: g ]
+            oe.apps = store_apps[ n, g ]
+            oe.widget = source_word[ src, 'export widget' ]
+            app_list.push[ oe ]
         # the featured: each module in featured/ that names its
         # section (export software ['everyday']), built or not
         for [ fn: string ] in featured_names[]
@@ -16252,7 +17709,7 @@ element orbiter : trinity # implements compiler
             if [ seen ] continue
             src : string fm.load[ typeid[ string ], null ]
             fg : string source_word[ src, 'export software' ]
-            if [ fg.count == 0 ] continue
+            if [ fg.count == 0 || !runs_here[ fm ] ] continue
             fe : AppEntry [ name: fn, file: d, module: true, group: fg ]
             fe.built = path '{install_root[]}/bin/{fn}'
             fe.apps = store_apps[ fn, fg ]
@@ -16385,6 +17842,26 @@ element orbiter : trinity # implements compiler
             q2 : i32 [ r2.index_of[ "'" ] ]
             return (q2 >= 0) ? r2.mid[ 0, q2 ] : r2
         return v
+
+    # this machine's kind: x64 or arm64 (the kernel's own word)
+    func this_arch [] -> string
+        ap : path [ '/proc/sys/kernel/arch' ]
+        w : string ap.load[ typeid[ string ], null ]
+        if [ w && w.index_of[ 'aarch64' ] >= 0 ] return 'arm64'
+        return 'x64'
+
+    # a module runs here: it names no platforms, or names this one
+    # (export platforms ['x64'])
+    func runs_here [ m: path ] -> bool
+        if [ !m ] return true
+        src : string m.load[ typeid[ string ], null ]
+        if [ !src ] return true
+        at : i32 [ src.index_of[ 'export platforms ' ] ]
+        if [ at < 0 ] return true
+        rest : src.mid[ at, src.count - at ]
+        e : i32 [ rest.index_of[ '\n' ] ]
+        ln : string (e >= 0) ? rest.mid[ 0, e ] : rest
+        return ln.index_of[ this_arch[] ] >= 0
 
     # the featured: each module in featured/ (<name>/<name>.ag)
     func featured_names [] -> vec string
@@ -17376,6 +18853,8 @@ element orbiter : trinity # implements compiler
                                 '800 ms' ] ] ]
             ps.push[ setting[ 'rate', '{set_rate}/s',
                 vec string [] [ '15/s', '25/s', '35/s', '50/s' ] ] ]
+            ps.push[ setting[ 'haptics', set_haptic,
+                vec string [] [ 'off', 'light', 'medium', 'strong' ] ] ]
             ps.push[ setting[ 'layout', set_layout,
                 vec string [] [ 'us', 'gb', 'de', 'fr', 'es', 'it',
                                 'se', 'us dvorak' ] ] ]
@@ -17433,6 +18912,13 @@ element orbiter : trinity # implements compiler
         el [ name == 'delay' ]         set_delay = i32[ n ]
         el [ name == 'rate' ]          set_rate = i32[ n ]
         el [ name == 'layout' ]        set_layout = v
+        el [ name == 'haptics' ]
+            set_haptic = v
+            apply_settings[ ux ]
+            # the new strength felt at once
+            haptic_tap[]
+            session_dirty = true
+            return
         el [ name == 'text' ]
             set_size = i32[ round[ n / 100.0 * 22.0 ] ]
             if [ ux && ux.vk ] ux.vk.font_unit = set_size
@@ -17486,6 +18972,11 @@ element orbiter : trinity # implements compiler
             : ((set_easing == 'light') ? 0.5
             : ((set_easing == 'heavy') ? 0.15 : 0.3)) ]
         pointer_easing[ ea ]
+        # the keys' and a game pad's ticks
+        # faint at its strongest: a tap, never a jolt
+        haptic_level = (set_haptic == 'off') ? -1.0
+            : ((set_haptic == 'medium') ? 0.35
+            : ((set_haptic == 'strong') ? 0.55 : 0.2))
         key_repeat[ set_delay, set_rate ]
         wlc_key_repeat[ set_rate, set_delay ]
         sp : i32 [ set_layout.index_of[ ' ' ] ]
@@ -17603,6 +19094,8 @@ element orbiter : trinity # implements compiler
                 area: Region [ 'l0 b{ph}px r0 h{ph}px' ] ]
             t['scene_body'] = element [
                 area: Region [ body ], elements: grid ]
+        el [ tab == 'widgets' ]
+            t['widget_pick'] = WidgetPick [ area: Region [ body ] ]
         el [ tab == 'wifi' ]
             t['wifi_panel'] = WifiPanel [ area: Region [ body ] ]
         el [ tab == 'display' ]
@@ -17659,8 +19152,8 @@ element orbiter : trinity # implements compiler
         # (power, a ready reload) leaves of the column
         views : Elements []
         keys : vec string []
-        rows : vec string [] [ 'navigator', 'scenes', 'wifi',
-                               'mouse', 'keyboard', 'display', 'sound' ]
+        rows : vec string [] [ 'navigator', 'scenes', 'widgets',
+            'wifi', 'mouse', 'keyboard', 'display', 'sound' ]
         for [ pn: string ] in rows
             keys.push[ 'sv_{pn}' ]
         net : Wifi wifi_shared[]
@@ -17718,6 +19211,104 @@ element orbiter : trinity # implements compiler
 
     # a system menu cell chosen: its view (the lit one again puts it
     # away), power, restart, a ready reload; false: not a cell
+    # the instances running, as the task bar and the switcher show
+    # them: none held, ended, or in its tray with no window
+    public func running_apps [] -> vec AppView
+        r : vec AppView []
+        if [ !instances ] return r
+        for [ av: AppView ] in instances
+            if [ av.slot < 0 || av.held || av.ended ] continue
+            if [ av.background && window_of[ av ] == 0
+                 && !minimized_iid[ av.iid ] ] continue
+            r.push[ av ]
+        return r
+
+    # the switcher's pick: that window in the active pane
+    public func switcher_pick [ iid: i32 ]
+        switcher = false
+        dock_run_click[ iid ]
+        if [ ux ] ux.restyle = true
+
+    public func switcher_shut []
+        switcher = false
+        if [ ux ] ux.restyle = true
+
+    # the builds the switcher shows, newest first: only an app
+    # launched here (an instance of it), while it builds, or failed
+    # (a failure stays until put away or built again; at most 8)
+    public func switch_builds [] -> vec string
+        out : vec string []
+        if [ !instances ] return out
+        dir : path '{install_root[]}/tmp/builds'
+        ents : dir.ls[ null, false ]
+        if [ !ents ] return out
+        mts : vec i64 []
+        for [ f: path ] in ents
+            fnm : string f.filename[]
+            if [ !fnm.ends_with[ '.events' ] ] continue
+            nm : string fnm.mid[ 0, fnm.count - 7 ]
+            launched : bool [ false ]
+            for [ av: AppView ] in instances
+                if [ av.app_mod == nm ] launched = true
+            if [ !launched ] continue
+            wd : string build_word[ nm ]
+            if [ wd != 'building' && wd != 'failed' ] continue
+            mt : i64 f.modified_time[]
+            if [ build_gone && build_gone.contains[ nm ]
+                 && build_gone[ nm ] == mt ] continue
+            at : i32 [ 0 ]
+            while [ at < mts.count && mts[ at ] >= mt ] at += 1
+            out.insert[ nm, at ]
+            mts.insert[ mt, at ]
+        if [ out.count <= 8 ] return out
+        top : vec string []
+        for [ i: i32 0, i < 8, i += 1 ]
+            top.push[ out[ i ] ]
+        return top
+
+    # a build's tests at a glance, from its log: 'tests 12 / 12', ''
+    # when none ran
+    public func build_tests [ nm: string ] -> string
+        f : path '{install_root[]}/tmp/builds/{nm}.log'
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] return ''
+        n : i32 [ 0 ]
+        bad : i32 [ 0 ]
+        for [ ln: string ] in tx.split[ '\n' ]
+            if [ ln.index_of[ 'expect: ' ] < 0 ] continue
+            n += 1
+            if [ ln.index_of[ 'failed' ] >= 0 ] bad += 1
+        if [ n == 0 ] return ''
+        return 'tests {n - bad} / {n}'
+
+    # a build put away from the switcher, until it runs again
+    public func build_dismiss [ nm: string ]
+        if [ !build_gone ] build_gone = map i64 [ string ] []
+        f : path '{install_root[]}/tmp/builds/{nm}.events'
+        build_gone[ nm ] = f.modified_time[]
+        if [ switch_build == nm ] switch_build = ''
+        if [ ux ] ux.restyle = true
+
+    # a build's word: building (its share in build_frac), built or
+    # failed by its end
+    public func build_word [ nm: string ] -> string
+        if [ build_frac[ nm ] > -2.0 ] return 'building'
+        f : path '{install_root[]}/tmp/builds/{nm}.events'
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] return 'ended'
+        at : i32 [ tx.index_of[ '\nend ' ] ]
+        if [ at < 0 ] return 'stopped'
+        rc : i64 tx.mid[ at + 5, tx.count - at - 5 ].trim[].integer_value[]
+        return (rc == 0) ? 'built' : 'failed'
+
+    # the switcher's log: the chosen app's, else the system's
+    public func switch_log [] -> string
+        ir : path install_root[]
+        av : AppView (switch_sel >= 0)
+            ? instance_by[ switch_sel ] : null
+        if [ !av || av.ended ] return '{ir}/tmp/silver-orbiter.log'
+        return '{ir}/tmp/{av.app_mod}.{av.slot}.log'
+
     public func sys_pick [ id: string ] -> bool
         if [ id == 'sys_power' || id == 'sys_restart' ]
             power[ id == 'sys_restart' ]
@@ -17736,7 +19327,7 @@ element orbiter : trinity # implements compiler
     # ready reload, then power, moved left by the strip's scroll
     public func sys_strip_els [ shift: f32 ] -> Elements
         t : Elements []
-        dw : f32 dock_w[]
+        dw : f32 strip_cell[]
         ids : vec string sys_strip_ids[]
         net : Wifi wifi_shared[]
         cur : element find_el[ a, 'sys_power' ]
@@ -17758,7 +19349,9 @@ element orbiter : trinity # implements compiler
                 : ((again) ? 'Restart' : 'Power'))) ]
             id : string [ (ky == 'sys_power' && again)
                 ? 'sys_restart' : ky ]
-            x : f32 [ f32[ i ] * dw - shift ]
+            # whole pixels: a cell's width and icon never change as
+            # it slides
+            x : f32 [ round[ f32[ i ] * dw - shift ] ]
             t[ id ] = DockRow [ icon_id: ic, label: nm,
                 selected: pn.count > 0 && sys_view == pn,
                 second: ky == 'sys_power' && again,
@@ -17767,10 +19360,15 @@ element orbiter : trinity # implements compiler
                 area: Region [ 'l{x}px t0 w{dw}px b0' ] ]
         return t
 
+    # a strip cell's width: the dock's, in whole pixels
+    public func strip_cell [] -> f32
+        return round[ dock_w[] ]
+
     # the strip's cells in order, by id
     public func sys_strip_ids [] -> vec string
-        ids : vec string [] [ 'sv_navigator', 'sv_scenes', 'sv_wifi',
-            'sv_mouse', 'sv_keyboard', 'sv_display', 'sv_sound' ]
+        ids : vec string [] [ 'sv_navigator', 'sv_scenes',
+            'sv_widgets', 'sv_wifi', 'sv_mouse', 'sv_keyboard',
+            'sv_display', 'sv_sound' ]
         if [ au_live_get_pending[] == 1 ] ids.push[ 'reload_ready' ]
         ids.push[ 'sys_power' ]
         return ids
@@ -17815,20 +19413,10 @@ element orbiter : trinity # implements compiler
             : 40.0 ]
         room : f32 [ (sb && sb.bounds) ? sb.bounds.w - x0 - rw
             : 800.0 ]
-        run9 : vec AppView []
-        if [ instances ]
-            for [ av: AppView ] in instances
-                if [ av.slot < 0 || av.held ] continue
-                # only a running instance: a failed one is its code
-                if [ av.ended ] continue
-                # in its tray: a button while its window is up, or
-                # minimized
-                if [ av.background && window_of[ av ] == 0
-                     && !minimized_iid[ av.iid ] ] continue
-                run9.push[ av ]
+        running : vec AppView running_apps[]
         # grouped by app (its module), groups in first-seen order
         kinds : vec string []
-        for [ av: AppView ] in run9
+        for [ av: AppView ] in running
             k : '{(av.src) ? av.src.directory[] : null}'
             seen : bool [ false ]
             for [ kn: string ] in kinds
@@ -17836,7 +19424,7 @@ element orbiter : trinity # implements compiler
             if [ !seen ] kinds.push[ k ]
         runs : vec AppView []
         for [ kn: string ] in kinds
-            for [ av: AppView ] in run9
+            for [ av: AppView ] in running
                 k : '{(av.src) ? av.src.directory[] : null}'
                 if [ k == kn ] runs.push[ av ]
         # a small gap between groups
@@ -17941,13 +19529,22 @@ element orbiter : trinity # implements compiler
         # a console shown in the active pane types plainly
         pe : Editor pane_at[ active_pane ]
         w.plain_app = pe && pe.types_plain[]
-        # held half a second, still in the lowest 20%: home
-        if [ home_hold_us > 0 ]
-            if [ !w.capture || f32[ w.mouse.y ] < f32[ w.height ] * 0.8 ]
-                home_hold_us = 0
-            el [ epoch_micros[] - home_hold_us >= 500000 ]
-                home_hold_us = 0
-                go_home[ active_pane ]
+        bg_track[]
+        # a new focus's want (a field tapped, or let go) ends what
+        # the buttons said
+        if [ w.words_wanted != keys_wanted ]
+            keys_wanted = w.words_wanted
+            keys_force  = 0
+        # a new switcher's slide starts shut
+        if [ !switcher ] slide_open = false
+        # the power button held 0.6 s: the switcher
+        if [ power_down_us > 0 ]
+            if [ epoch_micros[] - power_down_us >= 600000 ]
+                power_down_us = 0
+                power_last_us = 0
+                if [ drawer_open ] drawer_shut[]
+                switcher = true
+                w.restyle = true
             el
                 w.will_animate = true
         mirror_source[ w ]
@@ -18084,6 +19681,7 @@ element orbiter : trinity # implements compiler
                     pending_scroll[ i ] = sc9
                 el pending_scroll += sc9
             swap_view.clear[]
+        if [ !carry_sent ] ui_carry_in[]
         if [ swap_carry && swap_carry.has && !carry_sent ]
             swap_carry.has = false
             w.exchange_restore[ swap_carry ]
@@ -18148,11 +19746,16 @@ element orbiter : trinity # implements compiler
             'dock'   : (top > 0.0) ? null
                 : Dock [ elements: dock_els[], hide: hide_ui,
                 area: Region [ 'l0 t{top}px w2.39 b0' ] ],
+            # the phone's button: its switcher, and its dark screen
+            'switcher' : (switcher) ? Switcher [
+                area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
             'avatar' : CornerAvatar [ topmost: true,
                                       summoned: show_orbiter ],
             'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
             ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
-                    topmost: true, manual_mode: true ] : null ]
+                    topmost: true, manual_mode: true ] : null,
+            'dark'   : (screen_dark) ? ScreenDark [ topmost: true,
+                area: Region { l0 t0 r0 b0 } ] : null ]
 
     # where the menu drawer opens: the active pane's left edge for
     # its menu, the window's for a tray's
@@ -18174,9 +19777,16 @@ element orbiter : trinity # implements compiler
 
     func drawer_area [ top: f32 ] -> string
         dy : f32 drawer_y[ top ]
-        # a phone's drawers are its whole width
+        # a phone's drawers are its whole width, down to the keyboard
+        # while it is up (the bottom 41%), never over it
         if [ mobile_on[] ]
-            return 'l{(sys_under) ? drawer_x[] : 0.0}px t{dy}px r0 b0'
+            # the whole width; over the main menu (the navigator in
+            # it) down to that menu's own foot: its bottom row, or its
+            # keyboard while words are wanted
+            kb : bool [ keys_up[] || (ux && ux.words_wanted) ]
+            db : string [ (kb) ? 'b41%'
+                : ((sys_under) ? 'b{dock_w[]}px' : 'b0') ]
+            return 'l0 t{dy}px r0 {db}'
         pv : element pane_view[ active_pane ]
         if [ !win_menu[] || !pv || !pv.bounds ]
             return 'l{drawer_x[]}px t{dy}px w10.91 b0'
@@ -18220,7 +19830,6 @@ element orbiter : trinity # implements compiler
     public func on_canvas [ cv: Canvas ]
     	i2 : int [ 1 ]
         super.on_canvas[ cv ]
-        cv.sync_fence[ ]
         # disk watch runs here: layer draws skip pristine editors
         for [ i9: i32 0, i9 < editor_slots.count, i9 += 1 ]
             e9 : Editor pane_at[ i9 ]

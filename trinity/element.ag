@@ -390,6 +390,11 @@ ielement element
     public [ Live ] widget : bool
     # a widget mounted over the apps (a phone's always), not beside
     public [ Live ] widget_top : bool
+    # the home screen's filter as typed: a widget shows what matches
+    public [ Live ] widget_filter : string
+    # a finger past the first presses it too (a game pad's keys): it
+    # takes on_press, on_move and on_release from each finger alone
+    public multi_touch : bool
 
     func init []
         use_mobile = mobile_on[]
@@ -510,6 +515,11 @@ ielement element
     # scene and its tint) shows through what it leaves see-through
     public func screen_ground [] -> bool
         return widget
+    # a phone: the class of the app's own keyboard (a game's
+    # controller); the system's keyboard makes it, under its bar
+    public func keyboard [] -> Au_t
+        return null
+
 
     func unload_tree [ ]
         on_unload*[]

@@ -1266,6 +1266,9 @@ InputDevice FlickKeys
     intern symbols : bool
     # a PC's: the bar alone (its keys are the hardware's)
     public bar_only : bool
+    # the app's own keyboard (a game's controller): under the bar,
+    # in the keys' place
+    public pad      : element
     # romaji typed on a hardware keyboard, not yet a kana
     intern roma    : string
     intern keys    : vec FKey
@@ -1671,6 +1674,7 @@ InputDevice FlickKeys
         at   = ev.mouse.pos
         dir  = 0
         down = key_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
+        if [ down >= 0 ] haptic_tap[]
         held_us = epoch_micros[]
         repeats = 0
         if [ down >= 0 && keys[ down ].kind == 1 ]
@@ -1960,6 +1964,11 @@ InputDevice FlickKeys
         ux.restyle = true
 
     public func close_keys []
+        # the app's own keyboard: put away (its tab brings it back)
+        if [ pad ]
+            ux.app_keys_hidden = true
+            ux.restyle = true
+            return
         settle[]
         choosing = false
         if [ ux.focus ] ux.release_focus[ ux.focus ]
@@ -2009,6 +2018,13 @@ InputDevice FlickKeys
     func render [] -> Elements
         ux.input_device = a
         if [ bar_only ] return bar_render[]
+        if [ pad ]
+            pe : Elements []
+            pe[ 'close' ] = FlickHide [
+                area: Region { l80%+3px t3px r3px b90%+3px } ]
+            pad.area = Region [ 'l0 t20% r0 b0' ]
+            pe[ 'pad' ] = pad
+            return pe
         if [ choosing ] return choices[]
         e : Elements []
         ks : vec FKey layout[]

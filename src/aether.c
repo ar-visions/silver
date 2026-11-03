@@ -16,6 +16,9 @@ typedef LLVMMetadataRef LLVMScope;
 
 #include <aether/import>
 
+// allvm.cc: objects put constructors in .init_array
+void allvm_init_array(LLVMTargetMachineRef tm);
+
 // Active codegen instance. During build_fn, codegen helpers resolve the
 // emitting instance (its builder/lexical/stack) from here instead of
 // operand->mod. A worker clone shares context/module/registry/autype with the
@@ -969,6 +972,13 @@ enode aether_e_assign(aether a, enode L, Au R, OPType op_val) { sequencer
                         verify(Lt, "expected user structure for member %s", mem->ident);
                         verify(Lt->autype->args.count == 2,
                             "expected 2 arguments for operator method");
+                        // a vector of numbers takes the value as its own
+                        // element type: boxed as it came (a f64 literal),
+                        // the vector copied only its element's bytes of it
+                        Au_t pe9 = null;
+                        if (vec_prim_elem(L, &pe9) && is_prim((Au)rR) &&
+                                canonical(rR)->autype != pe9)
+                            rR = e_create(a, etype_prep(a, pe9), (Au)rR, false);
                         res = e_fn_call(a, (efunc)Lt, a(cur, rR), false, true);
                         no_store = true;
                         break;
@@ -5416,7 +5426,10 @@ enode aether_e_typeid(aether a, etype mdl) { sequencer
 
     if (!to_register->type_id) {
         bool is_c = au_is_c(to_register->autype);
-        if (is_c || (is_module(to_register->autype) || !to_register->autype->module->is_au)) {
+        // Au_t is no class, so Au's import made no id for it: without
+        // one it read as Au (a method returning Au_t registered so)
+        bool au_t = to_register->autype == typeid(Au_t);
+        if (is_c || au_t || (is_module(to_register->autype) || !to_register->autype->module->is_au)) {
             implement_type_id(to_register);
         }
     }
@@ -9553,9 +9566,12 @@ AU_EXPORT etype implement_type_id(etype t) {
         f(string, "%o_m", symbol_name((Au)(
             au == a->autype ? module_identity(a) : string(au->ident)))) :
         f(string, "%o_%s_i", symbol_name((Au)owner), au->ident);
+    // Au's own types live in libAu, whoever names them
+    bool in_au = a->is_Au_import
+        || (au->module && au->module == typeid(Au)->module);
     evar schema_i = evar(mod, a, autype, def_member(
                 null, name->chars, type_info, AU_MEMBER_VAR,
-                AU_TRAIT_SYSTEM | (a->is_Au_import ? AU_TRAIT_IS_IMPORTED : 0)));
+                AU_TRAIT_SYSTEM | (in_au ? AU_TRAIT_IS_IMPORTED : 0)));
     
     etype_implement((etype)schema_i, false);
 
@@ -9653,9 +9669,12 @@ none etype_implement(etype t, bool w) { sequencer
         bool parent_is_record = au->context && (au->context->is_struct || au->context->is_class);
         if (!au->context || (!au->context->context && !parent_is_record) || (au->is_c && au->is_static)) {
             // mod->is_Au_import indicates this is coming from a lib, or we are making a new global
+            // an imported member is another library's: named, not defined
             bool is_external = ((module && au->access_type == interface_public) ||
-                a->is_Au_import || au->is_system || (au->is_c && au->is_static));
-            bool set_init = !a->is_Au_import && !(au->is_c && au->is_static);
+                a->is_Au_import || au->is_system || au->is_imported ||
+                (au->is_c && au->is_static));
+            bool set_init = !a->is_Au_import && !au->is_imported &&
+                !(au->is_c && au->is_static);
             ll_global(a, n, mdl, llvm_id(a, (symbol)au->ident),
                 is_external, false, set_init);
             n->loaded = false;
@@ -10739,6 +10758,28 @@ static void emit_export_funcs(aether a, Au_t module_base, efunc f) {
     LLVMPositionBuilderAtEnd(B, bb_run);
     efunc fn_drop = (efunc)u(efunc,
         find_member(etypeid(Au)->autype, "drop", AU_MEMBER_FUNC, 0, false));
+    // each export runs once per source: a stamp of the module file's
+    // hash, written after it ran (--export forces it again)
+    char src_hash[32] = "0";
+    if (a->module_file) {
+        FILE* sf = fopen(a->module_file->chars, "rb");
+        if (sf) {
+            u64 h = 1469598103934665603ull;
+            int c;
+            while ((c = fgetc(sf)) != EOF) { h ^= (u64)(u8)c; h *= 1099511628211ull; }
+            fclose(sf);
+            snprintf(src_hash, sizeof(src_hash), "%016llx", (unsigned long long)h);
+        }
+    }
+    LLVMTypeRef  i32t   = LLVMInt32TypeInContext(a->module_ctx);
+    LLVMTypeRef  pp[2]  = { i8p, i8p };
+    LLVMTypeRef  due_ty = LLVMFunctionType(i32t, pp, 2, 0);
+    LLVMValueRef due_fn = LLVMGetNamedFunction(a->module_ref, "au_export_due");
+    if (!due_fn) due_fn = LLVMAddFunction(a->module_ref, "au_export_due", due_ty);
+    LLVMTypeRef  don_ty = LLVMFunctionType(LLVMVoidTypeInContext(a->module_ctx), pp, 2, 0);
+    LLVMValueRef don_fn = LLVMGetNamedFunction(a->module_ref, "au_export_done");
+    if (!don_fn) don_fn = LLVMAddFunction(a->module_ref, "au_export_done", don_ty);
+    LLVMValueRef hash_v = LLVMBuildGlobalStringPtr(B, src_hash, "");
     members(module_base, mem) {
         if (!is_export_fn(mem)) continue;
         efunc tf = (efunc)u(efunc, mem);
@@ -10758,6 +10799,17 @@ static void emit_export_funcs(aether a, Au_t module_base, efunc f) {
         }
         tf->used = true;
         etype_implement((etype)tf, false);
+        char key[512];
+        snprintf(key, sizeof(key), "%s.%s", module_base->ident, mem->ident);
+        LLVMValueRef key_v = LLVMBuildGlobalStringPtr(B, key, "");
+        LLVMValueRef dargs[2] = { key_v, hash_v };
+        LLVMValueRef due = LLVMBuildCall2(B, due_ty, due_fn, dargs, 2, "export_due");
+        LLVMValueRef go  = LLVMBuildICmp(B, LLVMIntNE, due,
+            LLVMConstInt(i32t, 0, 0), "export_go");
+        LLVMBasicBlockRef bb_one  = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.one");
+        LLVMBasicBlockRef bb_next = LLVMAppendBasicBlockInContext(a->module_ctx, fnv, "export.next");
+        LLVMBuildCondBr(B, go, bb_one, bb_next);
+        LLVMPositionBuilderAtEnd(B, bb_one);
         snprintf(buf, sizeof(buf), "[%s] export: %s", module_base->ident, mem->ident);
         emit_expect_puts(a, buf);
         array vals = array(alloc, 8);
@@ -10770,6 +10822,9 @@ static void emit_export_funcs(aether a, Au_t module_base, efunc f) {
         if (fn_drop)
             each(vals, Au, v)
                 e_fn_call(a, fn_drop, a((enode)v), false, false);
+        LLVMBuildCall2(B, don_ty, don_fn, dargs, 2, "");
+        LLVMBuildBr(B, bb_next);
+        LLVMPositionBuilderAtEnd(B, bb_next);
     }
     LLVMBuildBr(B, bb_skip);
     LLVMPositionBuilderAtEnd(B, bb_skip);
@@ -11936,6 +11991,8 @@ AU_EXPORT none aether_set_target(aether a, symbol triple) {
             tref, t, "generic", (cstr)feats,
             a->debug ? LLVMCodeGenLevelNone : LLVMCodeGenLevelAggressive,
             LLVMRelocPIC, LLVMCodeModelDefault);
+    for (int i = 0; i < AU_CORES; i++)
+        allvm_init_array((LLVMTargetMachineRef)a->target_machines[i]);
     // the object WRITER reads the module's own triple; without this it
     // falls back to the host and emits ELF for a windows machine
     for (int i = 0; i < AU_CORES; i++) {
@@ -12140,6 +12197,7 @@ AU_EXPORT void llvm_reinit(aether a) {
         // llvm force-picks it at CodeGenLevelNone -- so debug builds
         // at Less, where the full selector always runs
         LLVMSetTargetMachineFastISel((LLVMTargetMachineRef)a->target_machines[i], 0);
+        allvm_init_array((LLVMTargetMachineRef)a->target_machines[i]);
     }
     a->target_machine = (LLVMTargetMachineRef)a->target_machines[0];
     // DataLayout caches struct layouts as it answers size queries — one per core
@@ -12377,7 +12435,13 @@ AU_EXPORT none aether_init(aether a) {
                          f(path, "%o/Lib/%o/ucrt/x64", kits, kv),
                          f(path, "%o/Lib/%o/um/x64",   kits, kv));
 #elif defined(__linux)
-    a->sys_inc_paths = a(f(path, "/usr/include"), f(path, "/usr/include/x86_64-linux-gnu"));
+#if defined(__aarch64__)
+    // this machine's own arch: the phone is arm64
+    symbol multi = "/usr/include/aarch64-linux-gnu";
+#else
+    symbol multi = "/usr/include/x86_64-linux-gnu";
+#endif
+    a->sys_inc_paths = a(f(path, "/usr/include"), f(path, multi));
     a->lib_paths     = array(alloc, 32);
 #elif defined(__APPLE__)
     string sdk          = run(false, "xcrun --show-sdk-path");

@@ -1,6 +1,7 @@
 # aura: WebKit lays pages out, trinity draws them
 export 1.0.0
 export software ['everyday']
+export platforms ['x64']
 export extensions ['.html', '.htm']
 export protocols ['http', 'https']
 export icon ['http']

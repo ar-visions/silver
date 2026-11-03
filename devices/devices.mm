@@ -68,6 +68,7 @@ void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
+void platform_screen_power(int on) {}
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}
@@ -184,6 +185,7 @@ static void emit_codepoints(platform_window* w, NSString* s) {
 // ================================================================ macOS
 bool platform_motion(float* accel, float* gyro) { return false; }
 int  platform_orientation(void) { return 0; }
+int  platform_haptic(int ms, float strength) { return 0; }
 // macOS has no vendor id; the hardware uuid is the closest stable equivalent
 const char* platform_device_id(void) {
     static char id[64];
@@ -747,6 +749,8 @@ int platform_peer_poll(void* out, int max) {
     pthread_mutex_unlock(&g_peer_lock);
     return n;
 }
+
+int platform_haptic(int ms, float strength) { return 0; }
 
 static CMMotionManager* g_motion_mgr;
 // accelerometer in g, gyro in rad/s — started on first ask

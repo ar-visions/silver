@@ -1,0 +1,441 @@
+# a game controller drawn on a phone's screen: a d-pad that reads
+# eight ways from where the finger sits, and keys held and let go;
+# each sends key presses and releases (Window input_key_state)
+extend trinity
+
+# the strength of a key's tick, as the keyboard's setting has it:
+# under 0 off, 0 not set (the light tick), else 0..1
+haptic_level : f32
+
+# a tap's impulse on the device's motor (none on a computer): the
+# faintest short click as a finger lands on a key, never a jolt
+func haptic_tap []
+    lv : f32 [ (haptic_level == 0.0) ? 0.2 : haptic_level ]
+    if [ lv <= 0.0 ] return
+    platform_haptic[ 8, lv ]
+
+# whose d-pad it is drawn as
+enum PadLook
+    nes:     0
+    snes:    1
+    genesis: 2
+
+# the d-pad: up, down, left, right as keys; a finger between two arms
+# holds both (the diagonals), a slide moves between them
+element PadCross
+    no_cache    : true
+    multi_touch : true
+    public look  : PadLook
+    public up    : i32 [ 265 ]
+    public down  : i32 [ 264 ]
+    public left  : i32 [ 263 ]
+    public right : i32 [ 262 ]
+    # the ways held: 1 up, 2 down, 4 left, 8 right
+    intern held  : i32
+    # held by a press: the mouse's (0) or a finger's past the first
+    # (1), else -1
+    intern by    : i32 [ -1 ]
+
+    # the pad's square, centred in its box
+    func side [] -> f32
+        return (bounds.w < bounds.h) ? bounds.w : bounds.h
+
+    # the ways a point in the pad holds: by its angle round the
+    # middle, eight sectors of 45 degrees; none at the middle
+    func ways_at [ px: f32, py: f32 ] -> i32
+        h : f32 [ side[] * 0.5 ]
+        if [ h <= 0.0 ] return 0
+        dx : f32 [ (px - bounds.w * 0.5) / h ]
+        dy : f32 [ (py - bounds.h * 0.5) / h ]
+        n : f32 [ sqrt[ dx * dx + dy * dy ] ]
+        if [ n < 0.16 ] return 0
+        # sin of 22.5 degrees: the sectors' edges
+        ux : f32 [ dx / n ]
+        uy : f32 [ dy / n ]
+        ways : i32 [ 0 ]
+        if [ uy < -0.3827 ] ways = ways | 1
+        if [ uy >  0.3827 ] ways = ways | 2
+        if [ ux < -0.3827 ] ways = ways | 4
+        if [ ux >  0.3827 ] ways = ways | 8
+        return ways
+
+    func hold_ways [ ways: i32 ]
+        if [ ways == held ] return
+        was : i32 [ held ]
+        held = ways
+        send[ was, ways, 1, up ]
+        send[ was, ways, 2, down ]
+        send[ was, ways, 4, left ]
+        send[ was, ways, 8, right ]
+        pristine = false
+        ux.will_animate = true
+
+    func send [ was: i32, now: i32, bit: i32, code: i32 ]
+        on : bool [ (now & bit) != 0 ]
+        if [ ((was & bit) != 0) == on || code < 0 ] return
+        ux.input_key_state[ code, on ]
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ by >= 0 ] return
+        by = (ux.touching) ? 1 : 0
+        haptic_tap[]
+        if [ by == 0 ] ux.set_capture[ a ]
+        hold_ways[ ways_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+
+    # the place is in the pad's own space (the mouse captured, or
+    # the finger's own move)
+    public func on_move [ ev: Event ]
+        if [ by != ((ux.touching) ? 1 : 0) ] return
+        hold_ways[ ways_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+
+    public func on_release [ ev: Event ]
+        ev.no_default = true
+        if [ by != ((ux.touching) ? 1 : 0) ] return
+        if [ by == 0 ] ux.release_capture[ a ]
+        by = -1
+        hold_ways[ 0 ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        s  : f32 [ side[] ]
+        cx : f32 [ bounds.w * 0.5 ]
+        cy : f32 [ bounds.h * 0.5 ]
+        cv.save[]
+        if [ look == PadLook.genesis ]
+            draw_disc[ cv, cx, cy, s ]
+        el
+            draw_plus[ cv, cx, cy, s ]
+        # an arrow cut into each arm, toward its end
+        t : f32 [ s / 3.0 ]
+        ar : f32 [ t * 0.22 ]
+        r0 : f32 [ s * 0.36 ]
+        arrow[ cv, cx, cy - r0, 0.0, -1.0, ar, (held & 1) != 0 ]
+        arrow[ cv, cx, cy + r0, 0.0,  1.0, ar, (held & 2) != 0 ]
+        arrow[ cv, cx - r0, cy, -1.0, 0.0, ar, (held & 4) != 0 ]
+        arrow[ cv, cx + r0, cy,  1.0, 0.0, ar, (held & 8) != 0 ]
+        cv.restore[]
+
+    # the NES's and SNES's cross: one rounded plus, lit from above,
+    # its rim caught by the light, the middle a dish
+    func draw_plus [ cv: Canvas, cx: f32, cy: f32, s: f32 ]
+        t : f32 [ s / 3.0 ]
+        snes : bool [ look == PadLook.snes ]
+        rad  : f32 [ t * ((snes) ? 0.24 : 0.1) ]
+        top    : rgba [ (snes) ? '#55555f' : '#303030' ]
+        bottom : rgba [ (snes) ? '#2a2a31' : '#0b0b0b' ]
+        # its shadow on the face under it, cast by its two bars
+        sh : rgba [ '#000000a0' ]
+        pad_drop[ cv, cx - s * 0.5, cy - t * 0.5, s, t, rad, sh,
+            s * 0.03, s * 0.05 ]
+        pad_drop[ cv, cx - t * 0.5, cy - s * 0.5, t, s, rad, sh,
+            s * 0.03, s * 0.05 ]
+        g : linear_gradient[ 0.0, cy - s * 0.5, 0.0, cy + s * 0.5 ]
+        g.add_stop[ 0.0, pad_stop[ top ] ]
+        g.add_stop[ 1.0, pad_stop[ bottom ] ]
+        cv.set_fill_gradient[ g ]
+        plus_path[ cv, cx, cy, s, t, rad ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        # the light along its upper rim, the shade along its lower
+        plus_glow[ cv, cx, cy, s, t, rad, rgba [ '#ffffff30' ],
+            s * 0.012, s * 0.02 ]
+        plus_glow[ cv, cx, cy, s, t, rad, rgba [ '#00000080' ],
+            0.0 - s * 0.018, s * 0.035 ]
+        # an arm held is pressed in: its end in shade
+        hold_shade[ cv, cx, cy - s * 0.5 + t * 0.5, t, rad, 1 ]
+        hold_shade[ cv, cx, cy + s * 0.5 - t * 0.5, t, rad, 2 ]
+        hold_shade[ cv, cx - s * 0.5 + t * 0.5, cy, t, rad, 4 ]
+        hold_shade[ cv, cx + s * 0.5 - t * 0.5, cy, t, rad, 8 ]
+        # the dish in the middle: a hollow, dark at its top
+        d : f32 [ t * 0.36 ]
+        pad_fill[ cv, cx - d, cy - d, d * 2.0, d * 2.0, d,
+            rgba [ (snes) ? '#1d1d22' : '#050505' ],
+            rgba [ (snes) ? '#45454e' : '#262626' ] ]
+        pad_inset[ cv, cx - d, cy - d, d * 2.0, d * 2.0, d,
+            rgba [ '#000000b0' ], d * 0.25, d * 0.4 ]
+        pad_inset[ cv, cx - d, cy - d, d * 2.0, d * 2.0, d,
+            rgba [ '#ffffff1c' ], 0.0 - d * 0.12, d * 0.2 ]
+
+    func hold_shade [ cv: Canvas, x: f32, y: f32, t: f32, rad: f32,
+                      bit: i32 ]
+        if [ (held & bit) == 0 ] return
+        q : f32 [ t * 0.5 ]
+        pad_inset[ cv, x - q, y - q, t, t, rad, rgba [ '#000000c0' ],
+            0.0, t * 0.3 ]
+
+    # the plus as a path: the 8 outer corners rounded
+    func plus_path [ cv: Canvas, cx: f32, cy: f32, s: f32, t: f32,
+                     r: f32 ]
+        h : f32 [ s * 0.5 ]
+        q : f32 [ t * 0.5 ]
+        cv.move_to[ cx, cy - h ]
+        cv.arc_to[ cx + q, cy - h, cx + q, cy - q, r ]
+        cv.line_to[ cx + q, cy - q ]
+        cv.arc_to[ cx + h, cy - q, cx + h, cy + q, r ]
+        cv.arc_to[ cx + h, cy + q, cx + q, cy + q, r ]
+        cv.line_to[ cx + q, cy + q ]
+        cv.arc_to[ cx + q, cy + h, cx - q, cy + h, r ]
+        cv.arc_to[ cx - q, cy + h, cx - q, cy + q, r ]
+        cv.line_to[ cx - q, cy + q ]
+        cv.arc_to[ cx - h, cy + q, cx - h, cy - q, r ]
+        cv.arc_to[ cx - h, cy - q, cx - q, cy - q, r ]
+        cv.line_to[ cx - q, cy - q ]
+        cv.arc_to[ cx - q, cy - h, cx, cy - h, r ]
+        cv.close_path[]
+
+    # an inner glow along the plus's edge (positive oy: the top)
+    func plus_glow [ cv: Canvas, cx: f32, cy: f32, s: f32, t: f32,
+                     r: f32, c: rgba, oy: f32, blur: f32 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#00000000' ] ]
+        cv.box_shadow[ c, 0.0, oy, blur, 0.0, true ]
+        plus_path[ cv, cx, cy, s, t, r ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
+
+    # the Genesis's round pad: a dished disc, a raised cross on it
+    func draw_disc [ cv: Canvas, cx: f32, cy: f32, s: f32 ]
+        t : f32 [ s / 3.0 ]
+        r : f32 [ s * 0.5 ]
+        pad_drop[ cv, cx - r, cy - r, s, s, r, rgba [ '#000000b0' ],
+            s * 0.03, s * 0.06 ]
+        pad_fill[ cv, cx - r, cy - r, s, s, r, rgba [ '#45454b' ],
+            rgba [ '#141416' ] ]
+        pad_inset[ cv, cx - r, cy - r, s, s, r, rgba [ '#ffffff28' ],
+            s * 0.015, s * 0.03 ]
+        pad_inset[ cv, cx - r, cy - r, s, s, r, rgba [ '#000000a0' ],
+            0.0 - s * 0.03, s * 0.06 ]
+        # the cross raised on it
+        c : f32 [ s * 0.84 ]
+        plus_glow[ cv, cx, cy + s * 0.012, c, t * 0.8, t * 0.3,
+            rgba [ '#00000070' ], 0.0, s * 0.02 ]
+        g : linear_gradient[ 0.0, cy - c * 0.5, 0.0, cy + c * 0.5 ]
+        g.add_stop[ 0.0, pad_stop[ rgba [ '#3c3c42' ] ] ]
+        g.add_stop[ 1.0, pad_stop[ rgba [ '#1c1c1f' ] ] ]
+        cv.set_fill_gradient[ g ]
+        plus_path[ cv, cx, cy, c, t * 0.8, t * 0.3 ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        plus_glow[ cv, cx, cy, c, t * 0.8, t * 0.3,
+            rgba [ '#ffffff22' ], s * 0.01, s * 0.016 ]
+        # the side held tilts down into shade
+        if [ held != 0 ]
+            dx : f32 [ ((held & 8) != 0) ? 1.0
+                       : (((held & 4) != 0) ? -1.0 : 0.0) ]
+            dy : f32 [ ((held & 2) != 0) ? 1.0
+                       : (((held & 1) != 0) ? -1.0 : 0.0) ]
+            hr : f32 [ s * 0.2 ]
+            g2 : radial_gradient[ cx + dx * s * 0.3, cy + dy * s * 0.3,
+                0.0, hr ]
+            g2.add_stop[ 0.0, 0x70000000 ]
+            g2.add_stop[ 1.0, 0x00000000 ]
+            cv.set_fill_gradient[ g2 ]
+            cv.arc[ cx + dx * s * 0.3, cy + dy * s * 0.3, hr, 0.0,
+                6.2832 ]
+            cv.paint[]
+            cv.clear_fill_gradient[]
+        d : f32 [ t * 0.26 ]
+        pad_fill[ cv, cx - d, cy - d, d * 2.0, d * 2.0, d,
+            rgba [ '#0a0a0b' ], rgba [ '#2a2a2e' ] ]
+
+    # a triangle cut into the arm, along (dx, dy): its lower edge
+    # catches the light; held, it is lit
+    func arrow [ cv: Canvas, x: f32, y: f32, dx: f32, dy: f32, r: f32,
+                 lit: bool ]
+        snes : bool [ look == PadLook.snes ]
+        tri[ cv, x, y + r * 0.12, dx, dy, r, rgba [ '#ffffff24' ] ]
+        tri[ cv, x, y, dx, dy, r, rgba [ (lit) ? '#cfcfcf'
+            : ((snes) ? '#24242a' : '#050505') ] ]
+
+    func tri [ cv: Canvas, x: f32, y: f32, dx: f32, dy: f32, r: f32,
+               c: rgba ]
+        cv.fill_color[ c ]
+        # across the arrow: (-dy, dx)
+        bx : f32 [ x - dx * r * 0.7 ]
+        by : f32 [ y - dy * r * 0.7 ]
+        cv.move_to[ x + dx * r, y + dy * r ]
+        cv.line_to[ bx - dy * r, by + dx * r ]
+        cv.line_to[ bx + dy * r, by - dx * r ]
+        cv.close_path[]
+        cv.paint[]
+
+# how a controller's key is shaped
+enum PadButton
+    # rounded up out of the face (SNES, Genesis)
+    dome: 0
+    # hollowed for the thumb (the NES's B and A)
+    dish: 1
+    # flat rubber (SELECT, START, the shoulders)
+    pill: 2
+
+# a controller's key: held while pressed (a game's button), drawn
+# by its shape in its colour, lit from above
+element PadKey
+    no_cache    : true
+    multi_touch : true
+    # the key it sends (-1 none)
+    public code : i32 [ -1 ]
+    public face : rgba [ '#c8102e' ]
+    public kind : PadButton
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        haptic_tap[]
+        if [ code >= 0 ] ux.input_key_state[ code, true ]
+
+    public func on_release [ ev: Event ]
+        ev.no_default = true
+        if [ code >= 0 ] ux.input_key_state[ code, false ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        r  : f32 [ ((bw < bh) ? bw : bh) * 0.5 ]
+        dn : bool [ pressed ]
+        dish : bool [ kind == PadButton.dish ]
+        pill : bool [ kind == PadButton.pill ]
+        cv.save[]
+        if [ !dn ]
+            pad_drop[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#000000a0' ],
+                bh * 0.06, bh * 0.12 ]
+        # pressed in, a dome keeps its colour a shade lower
+        top : pad_tone[ face, (dish) ? -0.3
+            : ((dn) ? 0.06 : ((pill) ? 0.14 : 0.3)) ]
+        bottom : pad_tone[ face, (dish) ? 0.1
+            : ((dn) ? -0.4 : ((pill) ? -0.2 : -0.32)) ]
+        if [ dn && dish ]
+            top    = pad_tone[ face, -0.5 ]
+            bottom = pad_tone[ face, -0.15 ]
+        pad_fill[ cv, 0.0, 0.0, bw, bh, r, top, bottom ]
+        if [ dish ]
+            # a hollow: shade under its upper rim, light at its foot
+            pad_inset[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#000000a0' ],
+                bh * 0.09, bh * 0.18 ]
+            pad_inset[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#ffffff30' ],
+                0.0 - bh * 0.05, bh * 0.08 ]
+        el
+            # a dome: light on its upper rim, shade round its foot,
+            # a soft shine high on it
+            pad_inset[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#ffffff50' ],
+                bh * 0.05, bh * 0.08 ]
+            pad_inset[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#00000070' ],
+                0.0 - bh * 0.07, bh * 0.14 ]
+            # pressed in: a shade all round its edge, the shine dim
+            if [ dn ]
+                pad_inset[ cv, 0.0, 0.0, bw, bh, r, rgba [ '#000000a0' ],
+                    0.0, bh * 0.14 ]
+            if [ !pill ]
+                pad_sheen[ cv, bw * 0.4, bh * 0.3, r * 0.6,
+                    (dn) ? 0.2 : 0.45 ]
+        cv.restore[]
+
+# a word printed on a controller's face, as tall as its box; takes no
+# press
+element PadWord
+    no_cache : true
+    public word   : string
+    public colour : rgba [ '#c8102e' ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !word ]
+            return
+        cv : Canvas w.screen
+        cv.save[]
+        chart_font[ cv, 'Bold', round[ bounds.h * 0.9 ] ]
+        cv.fill_color[ colour ]
+        cv.draw_text[ word, rect [ x: 0.0, y: 0.0, w: bounds.w,
+            h: bounds.h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
+        cv.restore[]
+
+# the controller's place in its box: the shape asked (w by h) as
+# large as fits with a margin round it, centred
+func pad_fit [ bw: f32, bh: f32, aw: f32, ah: f32 ] -> rect
+    k : f32 [ bw / aw ]
+    if [ ah * k > bh ] k = bh / ah
+    k = k * 0.92
+    return rect [ x: (bw - aw * k) * 0.5, y: (bh - ah * k) * 0.5,
+                  w: aw * k, h: ah * k ]
+
+# a colour lighter (k over 0, toward white) or darker (toward black)
+func pad_tone [ c: rgba, k: f32 ] -> rgba
+    if [ k >= 0.0 ]
+        return rgba [ r: c.r + (1.0 - c.r) * k,
+                      g: c.g + (1.0 - c.g) * k,
+                      b: c.b + (1.0 - c.b) * k, a: c.a ]
+    return rgba [ r: c.r * (1.0 + k), g: c.g * (1.0 + k),
+                  b: c.b * (1.0 + k), a: c.a ]
+
+# a colour as a gradient stop
+func pad_stop [ c: rgba ] -> u32
+    return color_pack[ u8[ c.r * 255.0 ], u8[ c.g * 255.0 ],
+                       u8[ c.b * 255.0 ], u8[ c.a * 255.0 ] ]
+
+# a rounded box filled from one colour at its top to another at its
+# foot
+func pad_fill [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, r: f32,
+                top: rgba, bottom: rgba ]
+    g : linear_gradient[ 0.0, y, 0.0, y + bh ]
+    g.add_stop[ 0.0, pad_stop[ top ] ]
+    g.add_stop[ 1.0, pad_stop[ bottom ] ]
+    cv.set_fill_gradient[ g ]
+    cv.rounded_rect[ x, y, bw, bh, r, r, r, r ]
+    cv.paint[]
+    cv.clear_fill_gradient[]
+
+# an inner glow along a rounded box's edge; oy over 0 lays it along
+# the top, under 0 along the foot
+func pad_inset [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, r: f32,
+                 c: rgba, oy: f32, blur: f32 ]
+    cv.save[]
+    cv.fill_color[ rgba [ '#00000000' ] ]
+    cv.box_shadow[ c, 0.0, oy, blur, 0.0, true ]
+    cv.rounded_rect[ x, y, bw, bh, r, r, r, r ]
+    cv.paint[]
+    cv.no_shadows[]
+    cv.restore[]
+
+# a rounded box's shadow on what is under it
+func pad_drop [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, r: f32,
+                c: rgba, oy: f32, blur: f32 ]
+    cv.save[]
+    cv.fill_color[ c ]
+    cv.box_shadow[ c, 0.0, oy, blur, 0.0, false ]
+    cv.rounded_rect[ x, y, bw, bh, r, r, r, r ]
+    cv.paint[]
+    cv.no_shadows[]
+    cv.restore[]
+
+# a soft white shine, fading out from its middle
+func pad_sheen [ cv: Canvas, cx: f32, cy: f32, r: f32, al: f32 ]
+    g : radial_gradient[ cx, cy, 0.0, r ]
+    lit : rgba [ r: 1.0, g: 1.0, b: 1.0, a: al ]
+    g.add_stop[ 0.0, pad_stop[ lit ] ]
+    g.add_stop[ 1.0, 0x00ffffff ]
+    cv.set_fill_gradient[ g ]
+    cv.arc[ cx, cy, r, 0.0, 6.2832 ]
+    cv.paint[]
+    cv.clear_fill_gradient[]
+
+# a raised panel: filled top to foot, light on its upper rim, shade
+# at its foot (a hollow when sunk)
+func pad_panel [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, r: f32,
+                 top: rgba, bottom: rgba, sunk: bool, k: f32 ]
+    pad_fill[ cv, x, y, bw, bh, r, top, bottom ]
+    if [ sunk ]
+        pad_inset[ cv, x, y, bw, bh, r, rgba [ '#000000b0' ], k * 3.0,
+            k * 6.0 ]
+        pad_inset[ cv, x, y, bw, bh, r, rgba [ '#ffffff1a' ],
+            0.0 - k * 1.5, k * 2.5 ]
+    el
+        pad_inset[ cv, x, y, bw, bh, r, rgba [ '#ffffff60' ], k * 1.5,
+            k * 2.5 ]
+        pad_inset[ cv, x, y, bw, bh, r, rgba [ '#00000040' ],
+            0.0 - k * 2.0, k * 4.0 ]

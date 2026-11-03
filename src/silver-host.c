@@ -428,11 +428,15 @@ static pid_t isolate_spawn(void) {
     shm_inherit(&fa, fdenv, sizeof(fdenv));   // hand the app the channel memfd
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 3) * sizeof(char*));
+    char** cenv = malloc((n + 4) * sizeof(char*));
     memcpy(cenv, environ, n * sizeof(char*));
+    // the supervisor: the app dies with it (its death signal, main)
+    static char supenv[32];
+    snprintf(supenv, sizeof(supenv), "SILVER_SUPERVISOR=%d", (int)getpid());
     cenv[n]     = ISOLATE_CHILD_ENV "=1";
     cenv[n + 1] = fdenv;
-    cenv[n + 2] = NULL;
+    cenv[n + 2] = supenv;
+    cenv[n + 3] = NULL;
     pid_t pid = 0;
     // /proc is linux only: the same binary is what main resolved
     int sp = posix_spawn(&pid, g_exe_path[0] ? g_exe_path : "/proc/self/exe", &fa, NULL, cargv, cenv);
@@ -537,9 +541,12 @@ static void spawn_slot_app(int k, const char* bindir) {
     shm_inherit(&fa, fdenv, sizeof(fdenv));
     static char slotenv[32];
     snprintf(slotenv, sizeof(slotenv), "SILVER_APP_SLOT=%d", k);
+    // the supervisor: the app dies with it (bound_lock's death signal)
+    static char supenv[32];
+    snprintf(supenv, sizeof(supenv), "SILVER_SUPERVISOR=%d", (int)getpid());
     int n = 0;
     while (environ[n]) n++;
-    char** cenv = malloc((n + 9) * sizeof(char*));
+    char** cenv = malloc((n + 10) * sizeof(char*));
     // orbiter's own isolate marker stays here: an app that inherits it
     // skips its own supervision and never reports to us
     int ce = 0;
@@ -549,6 +556,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     cenv[ce++] = (char*)"SILVER_ISOLATE=0";
     cenv[ce++] = fdenv;
     cenv[ce++] = slotenv;
+    cenv[ce++] = supenv;
     // the display rides in the env: the app's args parse on its element,
     // which does not carry trinity's props
     static char dispenv[32];
@@ -1245,11 +1253,69 @@ static int rebuild_blocking(const char* name, int clean) {
 
 #if defined(__linux__)
 #include <sys/mount.h>
+#include <linux/input.h>
+#include <poll.h>
+#include <glob.h>
 // orbiter-os: this host IS init. the kernel hands us a bare rootfs,
 // so mount what a process expects before anything else looks
 // init must never return: the kernel panics and its trace scrolls the
 // real message off the screen. hold the console instead
 static void init_console_bind(int on);
+
+// the screen dark or lit while init holds the console: the panel's
+// framebuffer blank (4 powers it down) and every backlight
+static void init_screen(int on) {
+    int f = open("/sys/class/graphics/fb0/blank", O_WRONLY);
+    if (f >= 0) { (void)write(f, on ? "0" : "4", 1); close(f); }
+    glob_t g;
+    if (glob("/sys/class/backlight/*/bl_power", 0, NULL, &g) == 0) {
+        for (size_t i = 0; i < g.gl_pathc; i++) {
+            f = open(g.gl_pathv[i], O_WRONLY);
+            if (f >= 0) { (void)write(f, on ? "0" : "4", 1); close(f); }
+        }
+        globfree(&g);
+    }
+    fprintf(stderr, "init: screen %s\n", on ? "on" : "off");
+}
+
+// the power key, with the app gone: each press turns the screen
+// off, the next on again
+static void init_power_key(void) {
+    struct pollfd p[16];
+    int n = 0;
+    int w = 8 * (int)sizeof(long);
+    for (int i = 0; i < 32 && n < 16; i++) {
+        char path[32];
+        snprintf(path, sizeof path, "/dev/input/event%d", i);
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) continue;
+        unsigned long keys[KEY_MAX / (8 * sizeof(long)) + 1];
+        memset(keys, 0, sizeof keys);
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) >= 0 &&
+            ((keys[KEY_POWER / w] >> (KEY_POWER % w)) & 1)) {
+            p[n].fd = fd;
+            p[n].events = POLLIN;
+            n++;
+        } else close(fd);
+    }
+    fprintf(stderr, "init: power key on %d devices\n", n);
+    if (n == 0) for (;;) pause();
+    int lit = 1;
+    for (;;) {
+        if (poll(p, (nfds_t)n, -1) <= 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!(p[i].revents & POLLIN)) continue;
+            struct input_event e[16];
+            ssize_t r = read(p[i].fd, e, sizeof e);
+            for (ssize_t k = 0; k < r / (ssize_t)sizeof e[0]; k++) {
+                if (e[k].type != EV_KEY || e[k].code != KEY_POWER ||
+                    e[k].value != 1) continue;
+                lit = !lit;
+                init_screen(lit);
+            }
+        }
+    }
+}
 
 static void init_hold(void) {
     if (getpid() != 1) return;  // a forked helper exiting is not init
@@ -1280,7 +1346,7 @@ static void init_hold(void) {
         (void)write(tty, m, strlen(m));
         close(tty);
     }
-    for (;;) pause();
+    init_power_key();
 }
 // a mount the initramfs's init already made stays: mounted again on
 // top, it hides what is in it (the system bus's socket in /run)
@@ -1324,6 +1390,8 @@ static void init_as_pid1(void) {
     init_mount("sysfs",    "/sys");
     init_mount("tmpfs",    "/tmp");
     init_mount("tmpfs",    "/run");
+    mkdir("/dev/pts", 0755);  // consoles: forkpty needs it
+    init_mount("devpts",   "/dev/pts");
     setenv("HOME", "/root", 1);  // the kernel hands init HOME=/
     setenv("XDG_RUNTIME_DIR", "/run", 1);
     setenv("PATH", "/src/silver/install/bin:/usr/bin:/bin", 1);
@@ -2088,6 +2156,10 @@ static void bound_lock(const char* app, int argc, char** argv) {
     if (keep) {
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
             pipe2(sp, O_CLOEXEC) != 0) exit(1);
+        // before the fork: the app's first message (pid) carries its
+        // credentials only if the holder's end takes them by then
+        int pc = 1;
+        setsockopt(bp[0], SOL_SOCKET, SO_PASSCRED, &pc, sizeof(pc));
         for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
             signal(fwd[i], view_signal);
         pid_t c = fork();
@@ -2148,6 +2220,10 @@ static void bound_lock(const char* app, int argc, char** argv) {
                 strerror(errno));
             exit(1);
         }
+        // before the fork: the app's first message (pid) carries its
+        // credentials only if the holder's end takes them by then
+        int pc = 1;
+        setsockopt(bp[0], SOL_SOCKET, SO_PASSCRED, &pc, sizeof(pc));
         for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)
             signal(fwd[i], view_signal);
         pid_t init = fork();
@@ -2368,6 +2444,14 @@ int main(int argc, char** argv) {
     }
 
 
+#if defined(__linux__)
+    // supervised child: the kernel ends it with its supervisor
+    if (getenv(ISOLATE_CHILD_ENV)) {
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        const char* sv = getenv("SILVER_SUPERVISOR");
+        if (sv && atoi(sv) > 0 && getppid() != atoi(sv)) _exit(0);
+    }
+#endif
     // supervised child: map the channel so the crash handler can publish the
     // frozen verdict (state 4) before stopping at the crash site
     if (getenv(ISOLATE_CHILD_ENV) && !g_shm) {
@@ -2426,7 +2510,14 @@ int main(int argc, char** argv) {
 #endif
 #if defined(__linux__) && defined(SILVER_ROOT)
     // a slot is an app orbiter runs; orbiter itself is the user
-    if (getenv("SILVER_APP_SLOT")) bound_lock(name, argc, argv);
+    if (getenv("SILVER_APP_SLOT")) {
+        // the kernel ends it with orbiter's supervisor, however that
+        // ends (a crash, a kill); its view and app die with it in turn
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        const char* sv = getenv("SILVER_SUPERVISOR");
+        if (sv && atoi(sv) > 0 && getppid() != atoi(sv)) _exit(0);
+        bound_lock(name, argc, argv);
+    }
 #endif
     cd_share(bindir, name);
 

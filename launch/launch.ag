@@ -1,6 +1,7 @@
 export 0.1.0
 export software ['simulation']
 export icon ['rocket']
+export platforms ['x64']
 
 import vec
 import img

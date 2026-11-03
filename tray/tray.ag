@@ -12,6 +12,7 @@ ifndef [ windows ]
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
         -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include
         -ldbus-1
 import <stdio.h>
 import <stdlib.h>
@@ -610,10 +611,8 @@ Button MenuFilter
     focusable : true
     style : CSS {
         layers.body:
-            fill_color: #ffffff12
+            fill_color: #806bff55
             radius: 8
-            stroke_width: 1
-            stroke_color: #806bff
         layers.face:
             label_color: #ffffff
             label_size: 15
@@ -721,12 +720,14 @@ element MenuGroup
                     1.0 ]
                 cv.paint[]
             return
-        g : Gradient linear_gradient[ 0.0, 0.0, strip, 0.0 ]
+        # the strip in the menus' unit: it grows with the text
+        sw : f32 [ round[ strip * ux_unit[ w ] ] ]
+        g : Gradient linear_gradient[ 0.0, 0.0, sw, 0.0 ]
         g.add_stop[ 0.0, 0x14ffffff ]
         g.add_stop[ 1.0, 0x00ffffff ]
         cv.save[]
         cv.rounded[ 8.0, 0.0, 0.0, 8.0 ]
-        cv.rect_to[ 1.0, 1.0, strip, bounds.h - 2.0 ]
+        cv.rect_to[ 1.0, 1.0, sw, bounds.h - 2.0 ]
         cv.set_fill_gradient[ g ]
         cv.paint[]
         cv.clear_fill_gradient[]
@@ -734,12 +735,12 @@ element MenuGroup
         # the strip's right edge: the rows' own line, upright
         cv.fill_color[ rgba [ '#ffffff14' ] ]
         cv.stroke_width[ 0.0 ]
-        cv.rect_to[ strip, 1.0, 1.0, bounds.h - 2.0 ]
+        cv.rect_to[ sw, 1.0, 1.0, bounds.h - 2.0 ]
         cv.paint[]
         if [ rows < 2 ] return
         rh : f32 [ bounds.h / f32[ rows ] ]
         for [ i: i32 1, i < rows, i += 1 ]
-            cv.rect_to[ strip, round[ rh * f32[ i ] ], bounds.w - strip
+            cv.rect_to[ sw, round[ rh * f32[ i ] ], bounds.w - sw
                 - 1.0, 1.0 ]
             cv.paint[]
 
@@ -761,6 +762,8 @@ class MenuBuild
     intern gi   : i32
     intern dep  : i32
     intern gap  : f32 [ 0.15 ]
+    # a row's height in units (the text is 19 at rest)
+    intern rh   : f32 [ 1.05 ]
     # the foot of all measured so far, and of the last element made
     intern y    : f32
     intern shown : f32
@@ -777,15 +780,15 @@ class MenuBuild
         n : i32 [ i32[ keys.count ] ]
         if [ n > 0 ]
             top : f32 [ y + gap ]
-            h   : f32 [ 0.9 * f32[ n ] ]
+            h   : f32 [ rh * f32[ n ] ]
             y = top + h
             for [ i: i32 0, i < n, i += 1 ]
-                if [ ats[ i ] == lit ] lit_top = top + 0.9 * f32[ i ]
+                if [ ats[ i ] == lit ] lit_top = top + rh * f32[ i ]
             if [ top + h >= v0 && top <= v1 ]
                 cur : Elements []
                 for [ i: i32 0, i < n, i += 1 ]
-                    ry : f32 [ top + 0.9 * f32[ i ] ]
-                    if [ ry + 0.9 < v0 || ry > v1 ] continue
+                    ry : f32 [ top + rh * f32[ i ] ]
+                    if [ ry + rh < v0 || ry > v1 ] continue
                     e : TrayEntry ents[ i ]
                     # a second part takes the row's right end
                     sw : f32 [ (e.side && e.side.count > 0) ? 2.6 : 0.0 ]
@@ -797,8 +800,8 @@ class MenuBuild
                         keys: (sw > 0.0) ? '' : e.keys,
                         single: n == 1, sided: sw > 0.0,
                         sided_single: sw > 0.0 && n == 1, area: Region [
-                        (sw > 0.0) ? 'l1px t{0.9 * f32[ i ]} r{sw} h0.9'
-                        : 'l1px t{0.9 * f32[ i ]} r1px h0.9' ] ]
+                        (sw > 0.0) ? 'l1px t{rh * f32[ i ]} r{sw} h{rh}'
+                        : 'l1px t{rh * f32[ i ]} r1px h{rh}' ] ]
                     if [ sw > 0.0 ]
                         cur[ '{keys[ i ]}_side' ] = TraySide [
                             label: e.side, entry: ats[ i ],
@@ -806,7 +809,7 @@ class MenuBuild
                             top_row: i == 0 && n > 1,
                             foot_row: i == n - 1 && n > 1,
                             single: n == 1, area: Region [
-                            'r0 t{0.9 * f32[ i ]} w{sw} h0.9' ] ]
+                            'r0 t{rh * f32[ i ]} w{sw} h{rh}' ] ]
                 x : f32 [ 0.7 + f32[ dep ] * 1.0 ]
                 out[ 'grp_{gi}' ] = MenuGroup [ rows: n, elements: cur,
                     area: Region [ 'l{x} t{top - shown}+ r0.7 h{h}' ] ]
@@ -824,11 +827,11 @@ class MenuBuild
     func note [ key: string, label: string, depth: i32 ]
         close[]
         top : f32 [ y + gap ]
-        y = top + 0.9
-        if [ top + 0.9 >= v0 && top <= v1 ]
+        y = top + rh
+        if [ top + rh >= v0 && top <= v1 ]
             x : f32 [ 0.7 + f32[ depth ] * 1.0 ]
             out[ key ] = MenuNote [ label: label,
-                area: Region [ 'l{x} t{top - shown}+ r0.7 h0.9' ] ]
+                area: Region [ 'l{x} t{top - shown}+ r0.7 h{rh}' ] ]
             shown = y
         gap = 0.1
 
@@ -854,7 +857,7 @@ class MenuBuild
             return
         u  : f32 [ rows.fc ]
         ty : f32 [ lit_top * u ]
-        by : f32 [ (lit_top + 0.9) * u ]
+        by : f32 [ (lit_top + rh) * u ]
         if [ ty < rows.scroll_goal ]
             rows.scroll_goal = ty
         el [ by > rows.scroll_goal + rows.bounds.h ]
@@ -1112,22 +1115,22 @@ class Tray
             dbus_message_iter_close_container[ it, @sub ]
 
     func introspection [] -> string
-        x : '<node><interface name="org.kde.StatusNotifierWatcher">'
-        x = '{x}<method name="RegisterStatusNotifierItem">'
-        x = '{x}<arg name="service" type="s" direction="in"/></method>'
-        x = '{x}<method name="RegisterStatusNotifierHost">'
-        x = '{x}<arg name="service" type="s" direction="in"/></method>'
-        x = '{x}<property name="RegisteredStatusNotifierItems"'
-        x = '{x} type="as" access="read"/>'
-        x = '{x}<property name="IsStatusNotifierHostRegistered"'
-        x = '{x} type="b" access="read"/>'
-        x = '{x}<property name="ProtocolVersion" type="i"'
-        x = '{x} access="read"/>'
-        x = '{x}<signal name="StatusNotifierItemRegistered">'
-        x = '{x}<arg type="s"/></signal>'
-        x = '{x}<signal name="StatusNotifierItemUnregistered">'
-        x = '{x}<arg type="s"/></signal>'
-        x = '{x}<signal name="StatusNotifierHostRegistered"/>'
+        x : command {
+            <node><interface name="org.kde.StatusNotifierWatcher">
+            <method name="RegisterStatusNotifierItem">
+            <arg name="service" type="s" direction="in"/></method>
+            <method name="RegisterStatusNotifierHost">
+            <arg name="service" type="s" direction="in"/></method>
+            <property name="RegisteredStatusNotifierItems"
+                type="as" access="read"/>
+            <property name="IsStatusNotifierHostRegistered"
+                type="b" access="read"/>
+            <property name="ProtocolVersion" type="i" access="read"/>
+            <signal name="StatusNotifierItemRegistered">
+            <arg type="s"/></signal>
+            <signal name="StatusNotifierItemUnregistered">
+            <arg type="s"/></signal>
+            <signal name="StatusNotifierHostRegistered"/> }
         return '{x}</interface></node>'
 
     # an app's icon: a bus name (its object at /StatusNotifierItem)
@@ -1422,17 +1425,17 @@ element TrayMark
         cv.draw_image[ tex, rect [ x: x, y: y, w: sz, h: sz ] ]
 
 element TrayText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # a group's heading in a menu (a submenu's name): the bold lettering
 element MenuNote
-    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 18,
+    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 21,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element TrayNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 16,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 Button TrayButton
@@ -1448,7 +1451,7 @@ Button TrayButton
             near_inset_color: #ff84ffaa
         layers.face:
             label_color: #e4e4ea
-            label_size: 14
+            label_size: 16
         :hovered
             layers.body:
                 fill_color: #ffffff22
@@ -1474,7 +1477,7 @@ Button TraySide
             area: l0 t0 w1px b0
         layers.face:
             label_color: #e4e4ea
-            label_size: 16
+            label_size: 19
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
         :hovered
@@ -1519,7 +1522,7 @@ Button TrayRow
             near_inset_color: #ff84ffaa
         layers.face:
             label_color: #e4e4ea
-            label_size: 16
+            label_size: 19
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.0 0.5
             label_offset: 40.0 0.0
@@ -1575,6 +1578,8 @@ Button TrayRow
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        # the icon column in the menus' unit, as the text's offset
+        u : f32 ux_unit[ w ]
         if [ keys && keys.count > 0 ]
             kc : Canvas w.screen
             # save and restore keep no font: it goes back by hand
@@ -1585,7 +1590,8 @@ Button TrayRow
             kc.fill_color[ rgba [
                 (disable) ? '#ffffff33' : '#ffffff70' ] ]
             kc.draw_text[ keys, rect [ x: 0.0, y: 0.0,
-                w: bounds.w - 12.0, h: bounds.h ], vec2f [ 1.0, 0.5 ],
+                w: bounds.w - 12.0 * u, h: bounds.h ],
+                vec2f [ 1.0, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
             kc.paint[]
             kc.restore[]
@@ -1594,7 +1600,8 @@ Button TrayRow
             dc : Canvas w.screen
             dc.save[]
             dc.fill_color[ rgba [ (disable) ? '#ffffff55' : '#e4e4ea' ] ]
-            dc.arc[ 15.0, round[ bounds.h * 0.5 ], 3.0, 0.0, 6.2832 ]
+            dc.arc[ round[ 15.0 * u ], round[ bounds.h * 0.5 ], 3.0 * u,
+                    0.0, 6.2832 ]
             dc.paint[]
             dc.restore[]
         if [ !icon_file || icon_file.count == 0 ] return
@@ -1604,10 +1611,10 @@ Button TrayRow
         tint : string [ (!sym) ? '' : ((disable) ? '#ffffff55' : '#e4e4ea') ]
         icon_svg = row_icon[ icon_file, tint ]
         cv : Canvas w.screen
-        sz : f32 [ 16.0 ]
+        sz : f32 [ round[ 16.0 * u ] ]
         cv.save[]
         if [ sym ] cv.svg_override[ rgba [ tint ] ]
-        cv.draw_svg[ icon_svg, round[ 15.0 - sz * 0.5 ],
+        cv.draw_svg[ icon_svg, round[ 15.0 * u - sz * 0.5 ],
                      round[ (bounds.h - sz) * 0.5 ], sz, sz ]
         if [ sym ] cv.svg_override_off[]
         cv.restore[]

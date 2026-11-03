@@ -316,6 +316,10 @@ element knes : trinity
 	action func load_state []
 		load_req = true
 
+	# a phone: the NES controller in the keyboard's place
+	public func keyboard [] -> Au_t
+		return typeid[ NesPad ]
+
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
@@ -1946,7 +1950,9 @@ element knes : trinity
 	public func draw [ w: Window ]
 		if [ w.draw_stage != CanvasType.screen ] return
 		ux.will_animate = true
-		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+		# a phone's controller takes the foot
+		gh : f32 [ bounds.h - ux.app_keys_px ]
+		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: gh ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
 		ar9 : f32 [ 8.0 / 7.0 ]
@@ -2090,3 +2096,79 @@ element knes : trinity
 			emu_stop = true
 			while [ emu_running ]
 				usleep[ 2000 ]
+
+# the NES controller on a phone, as the real one: a grey body, the
+# black face, the cross with its arrows, SELECT and START on the
+# striped middle, B and A red in their grey squares; laid out in the
+# controller's own units (470 x 200), fitted to the keyboard's place
+element NesPad
+	no_cache : true
+
+	# a part's place: controller units to px in the box
+	func at [ x: f32, y: f32, pw: f32, ph: f32 ] -> Region
+		if [ !bounds ] return Region [ 'l0 t0 r100% b100%' ]
+		f : rect pad_fit[ bounds.w, bounds.h, 470.0, 200.0 ]
+		k : f32 [ f.w / 470.0 ]
+		l : f32 [ f.x + x * k ]
+		t : f32 [ f.y + y * k ]
+		r : f32 [ bounds.w - l - pw * k ]
+		b : f32 [ bounds.h - t - ph * k ]
+		return Region [ 'l{l}px t{t}px r{r}px b{b}px' ]
+
+	func render [] -> Elements
+		e : Elements [ ]
+		e[ 'cross' ] = PadCross [ look: PadLook.nes,
+			area: at[ 30.0, 66.0, 100.0, 100.0 ] ]
+		e[ 'select_word' ] = PadWord [ word: 'SELECT',
+			area: at[ 172.0, 100.0, 60.0, 16.0 ] ]
+		e[ 'start_word' ]  = PadWord [ word: 'START',
+			area: at[ 238.0, 100.0, 60.0, 16.0 ] ]
+		e[ 'select' ] = PadKey [ code: 340, face: rgba [ '#1e1e1e' ],
+			kind: PadButton.pill,
+			area: at[ 180.0, 128.0, 44.0, 16.0 ] ]
+		e[ 'start' ]  = PadKey [ code: 257, face: rgba [ '#1e1e1e' ],
+			kind: PadButton.pill,
+			area: at[ 246.0, 128.0, 44.0, 16.0 ] ]
+		e[ 'b' ] = PadKey [ code: 46, face: rgba [ '#c8102e' ],
+			kind: PadButton.dish,
+			area: at[ 324.0, 102.0, 48.0, 48.0 ] ]
+		e[ 'a' ] = PadKey [ code: 47, face: rgba [ '#c8102e' ],
+			kind: PadButton.dish,
+			area: at[ 394.0, 102.0, 48.0, 48.0 ] ]
+		e[ 'b_word' ] = PadWord [ word: 'B',
+			area: at[ 318.0, 160.0, 60.0, 20.0 ] ]
+		e[ 'a_word' ] = PadWord [ word: 'A',
+			area: at[ 388.0, 160.0, 60.0, 20.0 ] ]
+		return e
+
+	public func draw [ w: Window ]
+		if [ w.draw_stage != CanvasType.screen || !bounds ] return
+		cv : Canvas w.screen
+		f : rect pad_fit[ bounds.w, bounds.h, 470.0, 200.0 ]
+		k : f32 [ f.w / 470.0 ]
+		# the grey body, its black face sunk in it
+		pad_drop[ cv, f.x, f.y, f.w, f.h, 10.0 * k,
+			rgba [ '#000000a0' ], 4.0 * k, 10.0 * k ]
+		box[ cv, f, k, 0.0, 0.0, 470.0, 200.0, 10.0,
+			'#dad8d5', '#b1afac', false ]
+		box[ cv, f, k, 12.0, 44.0, 446.0, 144.0, 4.0,
+			'#2a2a2a', '#111111', true ]
+		# the middle's stripes, then its grey plate
+		box[ cv, f, k, 168.0, 56.0, 134.0, 9.0, 1.0,
+			'#a3a19e', '#7c7a77', false ]
+		box[ cv, f, k, 168.0, 74.0, 134.0, 9.0, 1.0,
+			'#a3a19e', '#7c7a77', false ]
+		box[ cv, f, k, 168.0, 92.0, 134.0, 9.0, 1.0,
+			'#a3a19e', '#7c7a77', false ]
+		box[ cv, f, k, 168.0, 118.0, 134.0, 36.0, 4.0,
+			'#d0cecb', '#a9a7a4', false ]
+		# B's and A's squares
+		box[ cv, f, k, 318.0, 96.0, 60.0, 60.0, 5.0,
+			'#efeeeb', '#c9c7c4', false ]
+		box[ cv, f, k, 388.0, 96.0, 60.0, 60.0, 5.0,
+			'#efeeeb', '#c9c7c4', false ]
+
+	func box [ cv: Canvas, f: rect, k: f32, x: f32, y: f32, bw: f32,
+			   bh: f32, r: f32, top: rgba, bottom: rgba, sunk: bool ]
+		pad_panel[ cv, f.x + x * k, f.y + y * k, bw * k, bh * k, r * k,
+			top, bottom, sunk, k ]

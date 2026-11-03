@@ -1,5 +1,6 @@
 # colortest — one solid color: proves a display path end to end
 export 1.0.0
+export software ['developer']
 
 import vec
 import img
@@ -13,7 +14,10 @@ element colortest : trinity
     func init []
         animated = true
 
-    # the actual clear color: a direct GPU clear of the screen canvas
+    # the whole screen painted magenta, over trinity's ground (a clear
+    # would be painted over)
     public func on_canvas [ cv: Canvas ]
         if [ !cv ] return
-        cv.reset[ vec4f[ 1.0, 0.0, 1.0, 1.0 ] ]
+        cv.fill_color[ rgba [ '#ff00ff' ] ]
+        cv.rect_to[ 0.0, 0.0, f32[ cv.width ], f32[ cv.height ] ]
+        cv.paint[]

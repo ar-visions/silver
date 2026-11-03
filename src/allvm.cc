@@ -11,6 +11,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Operator.h"
 #include "llvm/Support/CBindingWrapping.h"
+#include "llvm/Target/TargetMachine.h"
 
 #include <llvm/DebugInfo/Symbolize/Symbolize.h>
 #include <llvm/Support/Error.h>
@@ -192,5 +193,10 @@ LLVMValueRef LLVMConstOr(LLVMValueRef LHSConstant, LLVMValueRef RHSConstant) {
 
 // LLVMConstXor is NOT defined here: unlike the ten above, LLVM still
 // exports it, and a second definition is a duplicate symbol on COFF
+
+// constructors in .init_array, as clang: lld ignores .ctors
+void allvm_init_array(LLVMTargetMachineRef tm) {
+    reinterpret_cast<llvm::TargetMachine*>(tm)->Options.UseInitArray = true;
+}
 
 } // extern "C"

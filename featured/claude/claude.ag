@@ -5,6 +5,7 @@
 export 1.0.0
 export agent ['ClaudeAgent']
 export software ['developer']
+export platforms ['x64']
 export icon ['claude']
 
 import trinity
