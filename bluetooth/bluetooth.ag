@@ -1,0 +1,816 @@
+# bluetooth: devices found, paired and connected through BlueZ,
+# over the system bus
+import vec
+import img
+import trinity
+import <time.h>
+ifdef [ windows ]
+    import <dbus-win.h>
+ifndef [ windows ]
+    import <dbus/dbus.h>
+        -I=/usr/include/dbus-1.0
+        -I/usr/include/dbus-1.0
+        -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+        -I=/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -I/usr/lib/aarch64-linux-gnu/dbus-1.0/include
+        -ldbus-1
+import <stdio.h>
+import <stdlib.h>
+
+# one device as BlueZ lists it
+class BtDevice
+    public path      : string
+    public name      : string
+    public address   : string
+    # BlueZ's kind: audio-headset, input-keyboard, phone ...
+    public icon      : string
+    public paired    : bool
+    public connected : bool
+    # signal in dBm, 0 when not heard lately
+    public rssi      : i32
+
+# a variant's string or object path
+func var_text [ v: @DBusMessageIter ] -> string
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    t : i32 [ dbus_message_iter_get_arg_type[ @inner ] ]
+    if [ t != DBUS_TYPE_STRING && t != DBUS_TYPE_OBJECT_PATH ]
+        return ''
+    cs : cstr
+    dbus_message_iter_get_basic[ @inner, @cs ]
+    return string[ cs ]
+
+func var_bool [ v: @DBusMessageIter ] -> bool
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_BOOLEAN ]
+        return false
+    b : u32 [ 0 ]
+    dbus_message_iter_get_basic[ @inner, @b ]
+    return b != 0
+
+# a variant's 16-bit signed number
+func var_i16 [ v: @DBusMessageIter ] -> i32
+    inner : DBusMessageIter
+    dbus_message_iter_recurse[ v, @inner ]
+    if [ dbus_message_iter_get_arg_type[ @inner ] != DBUS_TYPE_INT16 ]
+        return 0
+    n : i16 [ 0 ]
+    dbus_message_iter_get_basic[ @inner, @n ]
+    return n
+
+# the adapter's state, its devices, pairing and connecting
+class Bluetooth
+    # the bus answered and BlueZ has an adapter
+    public ready      : bool
+    public powered    : bool
+    public scanning   : bool
+    public devices    : vec BtDevice
+    # the last failure, in plain words
+    public problem    : string
+    # a device being paired or connected, '' when none
+    public busy       : string
+    # a pairing asking to compare its code: the device and the code
+    public confirm    : string
+    public code       : u32
+    # a bus to use, else the system's ('' : the system bus)
+    public address    : string
+    intern conn       : @DBusConnection
+    intern adapter    : string
+    intern serial     : u32
+    intern dirty      : bool
+    intern tried      : i64
+    intern dest       : string
+    # the agent's question held until the user answers
+    intern asked      : @DBusMessage
+
+    func init []
+        devices = vec BtDevice []
+        problem = ''
+        busy    = ''
+        confirm = ''
+        adapter = ''
+        dest    = 'org.bluez'
+
+    func agent_path [] -> string
+        return '/orbiter/bluetooth'
+
+    # the system bus, our pairing agent, the first listing
+    func open [] -> bool
+        tried = epoch_micros[]
+        err : DBusError
+        dbus_error_init[ @err ]
+        # the standard socket first: our own libdbus looks for it
+        # under silver's folder
+        std : path '/run/dbus/system_bus_socket'
+        at : string [ (address && address.count > 0) ? address
+            : ((std.exists[]) ? 'unix:path={std}' : '') ]
+        if [ at.count > 0 ]
+            conn = dbus_connection_open_private[ at.chars, @err ]
+            if [ !dbus_error_is_set[ @err ] ]
+                dbus_bus_register[ conn, @err ]
+        el
+            conn = dbus_bus_get_private[ DBUS_BUS_SYSTEM, @err ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = 'No system bus: {string[ err.message ]}'
+            dbus_error_free[ @err ]
+            conn = null
+            return false
+        dbus_connection_set_exit_on_disconnect[ conn, 0 ]
+        rule : 'type=\'signal\',sender=\'org.bluez\''
+        dbus_bus_add_match[ conn, rule.chars, @err ]
+        if [ dbus_error_is_set[ @err ] ] dbus_error_free[ @err ]
+        register_agent[]
+        refresh[]
+        return ready
+
+    # we answer pairing questions: show a code and ask yes or no
+    func register_agent []
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            '/org/bluez', 'org.bluez.AgentManager1', 'RegisterAgent' ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        ap : string agent_path[]
+        cp : cstr [ ap.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH, @cp ]
+        cap : 'DisplayYesNo'
+        cc : cstr [ cap.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cc ]
+        rep : @DBusMessage send_wait[ msg ]
+        if [ rep ] dbus_message_unref[ rep ]
+        # every pairing's question only on orbiter-os: a desktop's
+        # own settings keep theirs
+        if [ !own_system[] ] return
+        msg2 : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            '/org/bluez', 'org.bluez.AgentManager1',
+            'RequestDefaultAgent' ] ]
+        it2 : DBusMessageIter
+        dbus_message_iter_init_append[ msg2, @it2 ]
+        dbus_message_iter_append_basic[ @it2, DBUS_TYPE_OBJECT_PATH,
+                                        @cp ]
+        rep2 : @DBusMessage send_wait[ msg2 ]
+        if [ rep2 ] dbus_message_unref[ rep2 ]
+
+    func send_wait [ msg: @DBusMessage ] -> @DBusMessage
+        if [ !conn ] return null
+        err : DBusError
+        dbus_error_init[ @err ]
+        rep : @DBusMessage [ dbus_connection_send_with_reply_and_block[
+            conn, msg, 2000, @err ] ]
+        dbus_message_unref[ msg ]
+        if [ dbus_error_is_set[ @err ] ]
+            problem = string[ err.message ]
+            dbus_error_free[ @err ]
+            return null
+        return rep
+
+    func call [ obj: string, iface: string, method: string ]
+            -> @DBusMessage
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, iface.chars, method.chars ] ]
+        return send_wait[ msg ]
+
+    # a long call (pairing, connecting): its answer comes to poll
+    func call_later [ obj: string, method: string ]
+        if [ !conn ] return
+        iface : 'org.bluez.Device1'
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            obj.chars, iface.chars, method.chars ] ]
+        s : u32 [ 0 ]
+        dbus_connection_send[ conn, msg, @s ]
+        dbus_message_unref[ msg ]
+        dbus_connection_flush[ conn ]
+        serial = s
+
+    # the adapter, its state and every device: connected, then
+    # paired, then the strongest
+    func refresh []
+        rep : @DBusMessage call[ '/',
+            'org.freedesktop.DBus.ObjectManager', 'GetManagedObjects' ]
+        if [ !rep ]
+            ready = false
+            return
+        found : vec BtDevice []
+        top : DBusMessageIter
+        dbus_message_iter_init[ rep, @top ]
+        objs : DBusMessageIter
+        dbus_message_iter_recurse[ @top, @objs ]
+        adapter = ''
+        while [ dbus_message_iter_get_arg_type[ @objs ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            ent : DBusMessageIter
+            dbus_message_iter_recurse[ @objs, @ent ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @ent, @pc ]
+            obj : string [ pc ]
+            dbus_message_iter_next[ @ent ]
+            ifs : DBusMessageIter
+            dbus_message_iter_recurse[ @ent, @ifs ]
+            while [ dbus_message_iter_get_arg_type[ @ifs ]
+                    == DBUS_TYPE_DICT_ENTRY ]
+                ie : DBusMessageIter
+                dbus_message_iter_recurse[ @ifs, @ie ]
+                ic : cstr
+                dbus_message_iter_get_basic[ @ie, @ic ]
+                iface : string [ ic ]
+                dbus_message_iter_next[ @ie ]
+                if [ iface == 'org.bluez.Adapter1' && adapter == '' ]
+                    adapter = obj
+                    read_adapter[ @ie ]
+                el [ iface == 'org.bluez.Device1' ]
+                    d : BtDevice [ path: obj, name: '', address: '',
+                                   icon: '' ]
+                    read_device[ @ie, d ]
+                    found.push[ d ]
+                dbus_message_iter_next[ @ifs ]
+            dbus_message_iter_next[ @objs ]
+        dbus_message_unref[ rep ]
+        ready = adapter.count > 0
+        devices = order[ found ]
+
+    func read_adapter [ props: @DBusMessageIter ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ props, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string [ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'Powered' ]     powered  = var_bool[ @kv ]
+            if [ key == 'Discovering' ] scanning = var_bool[ @kv ]
+            dbus_message_iter_next[ @d ]
+
+    func read_device [ props: @DBusMessageIter, dv: BtDevice ]
+        d : DBusMessageIter
+        dbus_message_iter_recurse[ props, @d ]
+        while [ dbus_message_iter_get_arg_type[ @d ]
+                == DBUS_TYPE_DICT_ENTRY ]
+            kv : DBusMessageIter
+            dbus_message_iter_recurse[ @d, @kv ]
+            kc : cstr
+            dbus_message_iter_get_basic[ @kv, @kc ]
+            key : string [ kc ]
+            dbus_message_iter_next[ @kv ]
+            if [ key == 'Alias' ]     dv.name      = var_text[ @kv ]
+            if [ key == 'Address' ]   dv.address   = var_text[ @kv ]
+            if [ key == 'Icon' ]      dv.icon      = var_text[ @kv ]
+            if [ key == 'Paired' ]    dv.paired    = var_bool[ @kv ]
+            if [ key == 'Connected' ] dv.connected = var_bool[ @kv ]
+            if [ key == 'RSSI' ]      dv.rssi      = var_i16[ @kv ]
+            dbus_message_iter_next[ @d ]
+        if [ dv.name.count == 0 ] dv.name = dv.address
+
+    # connected, then paired, then by signal; nameless ones last
+    func order [ found: vec BtDevice ] -> vec BtDevice
+        out : vec BtDevice []
+        for [ pass: i32 0, pass < 3, pass += 1 ]
+            left : vec BtDevice []
+            for [ d: BtDevice ] in found
+                take : bool [ (pass == 0) ? d.connected
+                    : ((pass == 1) ? d.paired : true) ]
+                if [ take && out.index_of[ d ] < 0 ] left.push[ d ]
+            while [ left.count > 0 ]
+                best : i32 [ 0 ]
+                for [ i: i32 1, i < left.count, i += 1 ]
+                    a : BtDevice left[ i ]
+                    b : BtDevice left[ best ]
+                    if [ rank[ a ] > rank[ b ] ] best = i
+                bd : BtDevice left[ best ]
+                out.push[ bd ]
+                left.remove[ best ]
+        return out
+
+    # a device with a real name before one known by address alone
+    func rank [ d: BtDevice ] -> i32
+        named : i32 [ (d.name != d.address) ? 1000 : 0 ]
+        heard : i32 [ (d.rssi != 0) ? 200 + d.rssi : 0 ]
+        return named + heard
+
+    # the adapter on or off
+    func power [ on: bool ]
+        if [ !conn || adapter.count == 0 ] return
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            adapter.chars, 'org.freedesktop.DBus.Properties', 'Set' ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        ifn : 'org.bluez.Adapter1'
+        pn : 'Powered'
+        ci : cstr [ ifn.chars ]
+        cn : cstr [ pn.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @ci ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @cn ]
+        va : DBusMessageIter
+        sig : string [ "b" ]
+        dbus_message_iter_open_container[ @it, DBUS_TYPE_VARIANT,
+                                          sig.chars, @va ]
+        b : u32 [ (on) ? 1 : 0 ]
+        dbus_message_iter_append_basic[ @va, DBUS_TYPE_BOOLEAN, @b ]
+        dbus_message_iter_close_container[ @it, @va ]
+        rep : @DBusMessage send_wait[ msg ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    func scan [ on: bool ]
+        if [ adapter.count == 0 ] return
+        m : string [ (on) ? 'StartDiscovery' : 'StopDiscovery' ]
+        rep : @DBusMessage call[ adapter, 'org.bluez.Adapter1', m ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    # pair a new device, then connect it; a paired one connects
+    func join [ d: BtDevice ]
+        if [ !conn || serial != 0 ] return
+        problem = ''
+        busy = d.path
+        call_later[ d.path, (d.paired) ? 'Connect' : 'Pair' ]
+
+    func leave [ d: BtDevice ]
+        rep : @DBusMessage call[ d.path, 'org.bluez.Device1',
+                                 'Disconnect' ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    # forget a paired device
+    func forget [ d: BtDevice ]
+        if [ adapter.count == 0 ] return
+        msg : @DBusMessage [ dbus_message_new_method_call[ dest.chars,
+            adapter.chars, 'org.bluez.Adapter1', 'RemoveDevice' ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ msg, @it ]
+        cp : cstr [ d.path.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH, @cp ]
+        rep : @DBusMessage send_wait[ msg ]
+        if [ rep ] dbus_message_unref[ rep ]
+        dirty = true
+
+    # the user's answer to a pairing's code
+    func answer_code [ yes: bool ]
+        if [ !asked ] return
+        rep : @DBusMessage [ null ]
+        if [ yes ]
+            rep = dbus_message_new_method_return[ asked ]
+        el
+            rep = dbus_message_new_error[ asked,
+                'org.bluez.Error.Rejected', 'the codes did not match' ]
+        dbus_connection_send[ conn, rep, null ]
+        dbus_message_unref[ rep ]
+        dbus_connection_flush[ conn ]
+        dbus_message_unref[ asked ]
+        asked = null
+        confirm = ''
+
+    # take what came in: a pairing question, a call's answer, a
+    # change; true when anything changed
+    func poll [] -> bool
+        if [ !conn ]
+            if [ epoch_micros[] - tried < 3000000 ] return false
+            return open[]
+        dbus_connection_read_write[ conn, 0 ]
+        while [ true ]
+            msg : @DBusMessage [ dbus_connection_pop_message[ conn ] ]
+            if [ !msg ] break
+            t : i32 [ dbus_message_get_type[ msg ] ]
+            keep : bool [ false ]
+            if [ t == DBUS_MESSAGE_TYPE_METHOD_CALL ]
+                keep = agent[ msg ]
+                dirty = true
+            el [ t == DBUS_MESSAGE_TYPE_SIGNAL ]
+                dirty = true
+            el [ serial != 0
+                 && dbus_message_get_reply_serial[ msg ] == serial ]
+                serial = 0
+                if [ t == DBUS_MESSAGE_TYPE_ERROR ]
+                    problem = failed[ msg ]
+                    busy = ''
+                el [ !then_connect[] ]
+                    busy = ''
+                dirty = true
+            if [ !keep ] dbus_message_unref[ msg ]
+        if [ !dirty ] return false
+        dirty = false
+        refresh[]
+        return true
+
+    # a pairing that finished goes on to connect
+    func then_connect [] -> bool
+        d : BtDevice find[ busy ]
+        if [ !d || d.connected ] return false
+        call_later[ d.path, 'Connect' ]
+        return true
+
+    # our agent: BlueZ asks it about a pairing; true: the message
+    # is held for the user's answer
+    func agent [ msg: @DBusMessage ] -> bool
+        ag : 'org.bluez.Agent1'
+        mm : string [ dbus_message_get_member[ msg ] ]
+        if [ dbus_message_has_interface[ msg, ag.chars ] == 0 ]
+            nm : 'org.freedesktop.DBus.Error.UnknownMethod'
+            no : dbus_message_new_error[ msg, nm.chars, mm.chars ]
+            dbus_connection_send[ conn, no, null ]
+            dbus_message_unref[ no ]
+            return false
+        if [ mm == 'RequestConfirmation' ]
+            it : DBusMessageIter
+            dbus_message_iter_init[ msg, @it ]
+            pc : cstr
+            dbus_message_iter_get_basic[ @it, @pc ]
+            dbus_message_iter_next[ @it ]
+            n : u32 [ 0 ]
+            dbus_message_iter_get_basic[ @it, @n ]
+            if [ asked ] answer_code[ false ]
+            asked   = msg
+            confirm = string[ pc ]
+            code    = n
+            return true
+        rep : @DBusMessage [ dbus_message_new_method_return[ msg ] ]
+        it2 : DBusMessageIter
+        dbus_message_iter_init_append[ rep, @it2 ]
+        # an old device's PIN: most take 0000
+        if [ mm == 'RequestPinCode' ]
+            pin : '0000'
+            cs : cstr [ pin.chars ]
+            dbus_message_iter_append_basic[ @it2, DBUS_TYPE_STRING, @cs ]
+        el [ mm == 'RequestPasskey' ]
+            pk : u32 [ 0 ]
+            dbus_message_iter_append_basic[ @it2, DBUS_TYPE_UINT32, @pk ]
+        el [ mm == 'Cancel' ]
+            if [ asked ]
+                dbus_message_unref[ asked ]
+                asked = null
+            confirm = ''
+        dbus_connection_send[ conn, rep, null ]
+        dbus_message_unref[ rep ]
+        dbus_connection_flush[ conn ]
+        return false
+
+    func failed [ msg: @DBusMessage ] -> string
+        nm : string[ dbus_message_get_error_name[ msg ] ]
+        d : BtDevice find[ busy ]
+        who : string [ (d) ? d.name : 'the device' ]
+        if [ nm == 'org.bluez.Error.AuthenticationFailed'
+             || nm == 'org.bluez.Error.AuthenticationRejected' ]
+            return 'Could not pair with {who}: the codes did not match'
+        if [ nm == 'org.bluez.Error.AuthenticationCanceled' ]
+            return 'Pairing with {who} was cancelled'
+        if [ nm == 'org.bluez.Error.ConnectionAttemptFailed'
+             || nm == 'org.bluez.Error.Failed' ]
+            return 'Could not connect to {who}: is it on and near?'
+        return 'Could not reach {who}'
+
+    # the system menu's icon
+    func mark [] -> string
+        if [ !ready || !powered ] return 'bluetooth_disabled'
+        for [ d: BtDevice ] in devices
+            if [ d.connected ] return 'bluetooth_connected'
+        if [ scanning ] return 'bluetooth_searching'
+        return 'bluetooth'
+
+    func find [ p: string ] -> BtDevice
+        for [ d: BtDevice ] in devices
+            if [ d.path == p ] return d
+        return null
+
+    func close []
+        if [ asked ] dbus_message_unref[ asked ]
+        asked = null
+        if [ conn ]
+            dbus_connection_close[ conn ]
+            dbus_connection_unref[ conn ]
+        conn = null
+        ready = false
+
+# orbiter-os: its boot line names orbiter's init
+func own_system [] -> bool
+    cl : path '/proc/cmdline'
+    if [ !cl.exists[] ] return false
+    f : handle fopen[ '/proc/cmdline', 'r' ]
+    if [ !f ] return false
+    b : local i8 [ 4096 ]
+    got : bool [ fgets[ @b[0], 4096, f ] != null ]
+    fclose[ f ]
+    if [ !got ] return false
+    ln : string [ @b[0] ]
+    return ln.index_of[ 'orbiter.init=' ] >= 0
+
+# one client for the process: the system menu's tile and panel
+bt_now : Bluetooth
+
+func bt_shared [] -> Bluetooth
+    if [ !bt_now ]
+        bt_now = Bluetooth []
+        bt_now.open[]
+    return bt_now
+
+element BtText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element BtNote
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+element BtBad
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+Button BtButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+                stroke_color: #ffffff55
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+    }
+
+# a device: its name, then what it is (connected, paired), its
+# signal's strength at the right
+Button BtRow
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                stroke_color: #ffffff40
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+    public path : string
+    public note : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ note.count == 0 ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 16.0 ] ] ]
+        cv.font_size[ 16 ]
+        cv.fill_color[ rgba [ '#ffffff99' ] ]
+        cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: bounds.w - 14.0,
+            h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# Bluetooth on or off, the devices (connected and paired first),
+# Scan; a click on one opens what can be done with it under it;
+# a pairing's code is asked here (no box over the screen)
+element BluetoothPanel
+    public bt     : Bluetooth
+    intern chosen : string
+
+    public func tick [ w: Window ]
+        if [ !bt ] bt = bt_shared[]
+        if [ bt.poll[] ] pristine = false
+
+    public func render [] -> Elements
+        if [ !bt ] bt = bt_shared[]
+        t : Elements []
+        t[ 'title' ] = BtText [ label: 'Bluetooth',
+            area: Region { l0.7 t0.4 r10 h1.2 } ]
+        if [ !bt.ready ]
+            why : (bt.problem.count > 0) ? bt.problem
+                : 'No Bluetooth adapter found'
+            t[ 'none' ] = BtNote [ label: why,
+                area: Region { l0.7 t2 r0.7 h1 } ]
+            return t
+        t[ 'power' ] = BtButton [ label: (bt.powered) ? 'On' : 'Off',
+            selected: bt.powered,
+            area: Region { r5.6 t0.45 w4 h1.05 } ]
+        if [ bt.powered ]
+            t[ 'scan' ] = BtButton [
+                label: (bt.scanning) ? 'Stop' : 'Scan',
+                area: Region { r0.7 t0.45 w4.5 h1.05 } ]
+        y : f32 [ 2.0 ]
+        # a pairing's code to compare with the other device's
+        if [ bt.confirm.count > 0 ]
+            d : BtDevice bt.find[ bt.confirm ]
+            who : string [ (d) ? d.name : 'a device' ]
+            six : string '{bt.code}'
+            while [ six.count < 6 ] six = '0{six}'
+            t[ 'ask' ] = BtText [
+                label: 'Pair with {who}? Code {six}',
+                area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
+            y += 1.35
+            t[ 'yes' ] = BtButton [ label: 'Pair',
+                area: Region [ 'l0.7 t{y} w4.5 h1.05' ] ]
+            t[ 'no' ] = BtButton [ label: 'Cancel',
+                area: Region [ 'l5.6 t{y} w4.5 h1.05' ] ]
+            y += 1.6
+        if [ !bt.powered ]
+            t[ 'off' ] = BtNote [ label: 'Bluetooth is off',
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+            return t
+        for [ i: i32 0, i < bt.devices.count, i += 1 ]
+            d : BtDevice bt.devices[ i ]
+            note : (d.path == bt.busy) ? 'connecting'
+                : ((d.connected) ? 'connected'
+                : ((d.paired) ? 'paired' : ''))
+            t[ 'dev_{i}' ] = BtRow [ label: d.name, path: d.path,
+                note: note, selected: d.path == chosen,
+                area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
+            y += 1.35
+            if [ d.path == chosen ] y = actions[ t, d, y ]
+        if [ bt.devices.count == 0 ]
+            words : (bt.scanning) ? 'Looking for devices'
+                : 'No devices: press Scan'
+            t[ 'empty' ] = BtNote [ label: words,
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+            y += 1.35
+        if [ bt.problem.count > 0 ]
+            t[ 'problem' ] = BtBad [ label: bt.problem,
+                area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
+        return t
+
+    # under the chosen device: connect or disconnect, and forget
+    func actions [ t: Elements, d: BtDevice, y: f32 ] -> f32
+        if [ d.connected ]
+            t[ 'leave' ] = BtButton [ label: 'Disconnect',
+                area: Region [ 'l0.7 t{y} w6 h1.05' ] ]
+        el
+            t[ 'join' ] = BtButton [
+                label: (d.paired) ? 'Connect' : 'Pair',
+                disable: bt.busy.count > 0,
+                area: Region [ 'l0.7 t{y} w6 h1.05' ] ]
+        if [ d.paired ]
+            t[ 'forget' ] = BtButton [ label: 'Forget',
+                area: Region [ 'l7 t{y} w4.5 h1.05' ] ]
+        return y + 1.35
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id ] return
+        key : e.id
+        d : BtDevice bt.find[ chosen ]
+        if [ key == 'power' ]
+            bt.power[ !bt.powered ]
+        el [ key == 'scan' ]
+            bt.scan[ !bt.scanning ]
+        el [ key == 'yes' ]
+            bt.answer_code[ true ]
+        el [ key == 'no' ]
+            bt.answer_code[ false ]
+        el [ e inherits BtRow ]
+            row : cast BtRow [ e ]
+            chosen = (chosen == row.path) ? '' : row.path
+        el [ key == 'join' && d ]
+            bt.join[ d ]
+        el [ key == 'leave' && d ]
+            bt.leave[ d ]
+        el [ key == 'forget' && d ]
+            bt.forget[ d ]
+            chosen = ''
+        pristine = false
+        if [ ux ] ux.restyle = true
+
+# a private bus and the stand-in BlueZ on it, for the tests
+class BtStandIn
+    public bus  : string
+    intern pids : string
+
+    func start [] -> bool
+        inst : path.path_install[]
+        listed : path '{inst}/build/silver-bluetooth.source'
+        txt : string [ listed.load[ typeid[ string ], null ] ]
+        lines : txt.split[ '\n' ]
+        first : path [ lines[ 0 ] ]
+        fake : path '{first.parent_dir[]}/tests/fake_bluez.py'
+        dd : '/usr/bin/dbus-daemon --session --fork'
+        dd = '{dd} --print-address=1 --print-pid=1'
+        py : '/usr/bin/python3 {fake}'
+        sh : 'unset LD_LIBRARY_PATH;'
+        sh = '{sh} a=$({dd} | tr \'\\n\' \' \'); set -- $a;'
+        sh = '{sh} {py} $1 >/dev/null 2>&1 & p=$!;'
+        ask : '/usr/bin/dbus-send --bus=$1 --print-reply'
+        ask = '{ask} --dest=org.freedesktop.DBus /'
+        ask = '{ask} org.freedesktop.DBus.ListNames 2>/dev/null'
+        sh = '{sh} for i in $(seq 100); do {ask}'
+        sh = '{sh} | grep -q org.bluez && break; sleep 0.1; done;'
+        sh = '{sh} echo $1 $2 $p'
+        cmd : command [ sh ]
+        fh : handle cmd.stream[]
+        if [ !fh ] return false
+        b : local i8 [ 512 ]
+        ok : bool [ false ]
+        if [ fgets[ @b[0], 512, fh ] ]
+            ln : string [ @b[0] ]
+            words : ln.trim[].split[ ' ' ]
+            if [ words.count >= 3 ]
+                bus  = words[ 0 ]
+                pids = '{words[ 1 ]} {words[ 2 ]}'
+                ok = true
+        pclose[ fh ]
+        return ok
+
+    func stop []
+        if [ !pids ] return
+        kill_line : 'kill {pids} 2>/dev/null'
+        k : command [ kill_line ]
+        k.exec[ false ]
+
+# ten milliseconds
+func bt_nap []
+    ts : struct timespec
+    ts.tv_sec = 0
+    ts.tv_nsec = 10000000
+    nanosleep[ @ts, null ]
+
+# polls for two seconds at most, until done says so
+func bt_until [ b: Bluetooth, what: string ] -> bool
+    for [ i: i32 0, i < 200, i += 1 ]
+        b.poll[]
+        if [ what == 'ask' && b.confirm.count > 0 ] return true
+        if [ what == 'idle' && b.busy.count == 0 ] return true
+        bt_nap[]
+    return false
+
+expect func t_bt_pair [] -> bool
+    fake : BtStandIn []
+    if [ !fake.start[] ] return false
+    b : Bluetooth [ address: fake.bus ]
+    ok : bool [ b.open[] ]
+    if [ ok ] ok = b.ready && b.powered && b.devices.count == 3
+    # the paired, connected one first; then paired; then the rest
+    if [ ok ]
+        ok = b.devices[ 0 ].name == 'Car' && b.devices[ 0 ].connected
+        log 'devices: {b.devices[ 0 ].name} {b.devices[ 1 ].name} {b.devices[ 2 ].name}'
+    if [ ok ] ok = b.devices[ 1 ].name == 'Keyboard'
+    phones : BtDevice [ (ok) ? b.devices[ 2 ] : null ]
+    if [ ok ] ok = phones.name == 'Headphones' && !phones.paired
+    # a wrong code: refused, not paired
+    if [ ok ]
+        b.join[ phones ]
+        ok = bt_until[ b, 'ask' ] && b.code == 123456
+    if [ ok ]
+        b.answer_code[ false ]
+        ok = bt_until[ b, 'idle' ] && b.problem.count > 0
+        log 'refused: {b.problem}'
+    # the right one: paired, then connected
+    if [ ok ]
+        b.problem = ''
+        b.join[ b.find[ phones.path ] ]
+        ok = bt_until[ b, 'ask' ]
+    if [ ok ]
+        b.answer_code[ true ]
+        ok = bt_until[ b, 'idle' ] && b.problem.count == 0
+    if [ ok ]
+        d : BtDevice b.find[ phones.path ]
+        ok = d && d.paired && d.connected
+        log 'paired: {ok} mark {b.mark[]}'
+    # forgotten: gone from the paired ones
+    if [ ok ]
+        b.forget[ b.find[ phones.path ] ]
+        b.poll[]
+        d2 : BtDevice b.find[ phones.path ]
+        ok = !d2 || !d2.paired
+    # off: the mark says so
+    if [ ok ]
+        b.power[ false ]
+        b.poll[]
+        ok = !b.powered && b.mark[] == 'bluetooth_disabled'
+    b.close[]
+    fake.stop[]
+    return ok

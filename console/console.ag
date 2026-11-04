@@ -22,6 +22,8 @@ element console : trinity
     # orbiter's X11 display (:N): X programs open in it, never the
     # desktop's
     public  [ Launch ] x11 : string
+    # its windows' scale: X has none, so its programs are told it
+    public  [ Launch ] x11_scale : f64
     # a fontconfig file for its programs (orbiter's lettering)
     public  [ Launch ] fonts : string
     # orbiter's bus: its portal answers the program's file dialogs
@@ -48,6 +50,10 @@ element console : trinity
                 setenv[ 'XDG_CURRENT_DESKTOP', 'orbiter', 1 ]
             if [ x11 && x11.count > 0 ]
                 setenv[ 'DISPLAY', x11.chars, 1 ]
+            # Steam's own word for its size (its window is X11)
+            if [ x11_scale > 1.0 ]
+                sc : string '{x11_scale}'
+                setenv[ 'STEAM_FORCE_DESKTOPUI_SCALING', sc.chars, 1 ]
             if [ fonts && fonts.count > 0 ]
                 setenv[ 'FONTCONFIG_FILE', fonts.chars, 1 ]
             if [ opener && opener.count > 0 ]

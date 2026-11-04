@@ -132,6 +132,9 @@ Keep it in step with the imports.
 | Material Symbols: Wi-Fi bars, lock, off, power, restart (white fill added) | trinity/images (wifi_*, power, restart) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: mouse, keyboard, desktop_windows as display (white fill added) | trinity/images (mouse, keyboard, display) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: widgets (white fill added) | trinity/images (widgets) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: battery_full as battery (white fill added) | trinity/images (battery) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: light_mode (white fill added) | trinity/images (light_mode) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
+| Material Symbols: bluetooth, bluetooth_connected, bluetooth_disabled, bluetooth_searching (white fill added) | trinity/images (bluetooth*) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: apps, list, grid_view (white fill added) | orbiter/images (apps_grid, view_list, grid_view) | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: clear_all (white fill added) | orbiter/images/clear_all.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |
 | Material Symbols: delete_sweep (white fill added) | orbiter/images/delete_sweep.svg | https://github.com/google/material-design-icons | Apache-2.0 | Google |

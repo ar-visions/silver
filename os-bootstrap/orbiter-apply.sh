@@ -52,10 +52,11 @@ if [ "$n" -lt 40 ] && grep -q 'reload staged' "$log"; then
     python3 -c 'import socket, sys
 for c in ("key 82 1 3", "key 82 0 3"):
     s = socket.socket(socket.AF_UNIX)
+    s.settimeout(3)
     s.connect(sys.argv[1])
     s.sendall((c + "\n").encode())
     s.recv(64)
-' "$sock"
+' "$sock" || echo "$(date -u) orbiter did not answer" >> "$note"
 fi
 echo "$(date -u) live" >> "$note"
 exit 0

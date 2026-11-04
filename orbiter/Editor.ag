@@ -7956,7 +7956,8 @@ func program_args [ prog: string, display: string, fonts: string,
     ol : string [ (so) ? '--opener {string [ so ]} ' : '' ]
     # orbiter's own X11 display, for programs that speak only X
     xd : string [ (display.count > 0) ? wlc_x11_display[] : '' ]
-    xl : (xd.count > 0) ? '--x11 {xd} ' : ''
+    # and the scale it has no way to say: the program is told it
+    xl : (xd.count > 0) ? '--x11 {xd} --x11_scale {wlc_scale[]} ' : ''
     return (display.count > 0)
         ? '--wayland {display} {xl}{fl}{bl}{ol}{prog}' : '{ol}{prog}'
 

@@ -4448,7 +4448,8 @@ Render Canvas
         ink_add[ st, box_left, box_top, bw, bh, st.stroke_width
             + st.blur_rad * 3.0 + shadow_reach[] + 2.0 ]
 
-        if [ pcount == 5 && n == 4 ]
+        # a rect's own corners; any other four sided path is a shape
+        if [ path.is_rect && pcount == 5 && n == 4 ]
             compute_skip = true    # rect / image: no SDF pass
             setup_shader [ st, box_left, box_top, bw, bh ]
             pr : vec4f [ path.corner_radii ]

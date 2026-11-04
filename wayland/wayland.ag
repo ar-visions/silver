@@ -97,6 +97,7 @@ func wlc_key_layout     [ layout: cstr, variant: cstr ]
 func wlc_key_repeat     [ rate: i32, delay_ms: i32 ]
 # the windows' scale: the text size, as their own dpi
 func wlc_set_scale      [ sc: f64 ]
+func wlc_scale          [] -> f64
 func wlc_keys_release   []
 func wlc_spawn          [ cmd: cstr ] -> i32
 
@@ -251,8 +252,10 @@ element WaylandView
 
     # the output follows the pane's size
     func frame_out [ cv: Canvas, vp: rect ]
-        w9 : i32 [ vp.w ]
-        h9 : i32 [ i32[ vp.h ] + ((crop_top > 0) ? crop_top : 0) ]
+        # the window draws the pane's real pixels, never a stretch
+        w9 : i32 [ round[ vp.w * ds[] ] ]
+        h9 : i32 [ i32[ round[ vp.h * ds[] ] ]
+            + ((crop_top > 0) ? crop_top : 0) ]
         if [ w9 < 16 || h9 < 16 ] return
         ensure[ w9, h9 ]
         if [ !up ] return
@@ -286,13 +289,14 @@ element WaylandView
         el t = last_t
         if [ !t ] return
         shown = wlc_frame_id[ win ]
-        ct : f32 [ (crop_top > 0) ? f32[ crop_top ] : 0.0 ]
+        k : f32 ds[]
+        ct : f32 [ (crop_top > 0) ? f32[ crop_top ] / k : 0.0 ]
         # the cut header and anything past the pane stay off screen
         cv.save[]
         cv.clip_rect[ vp.x, vp.y, vp.w, vp.h, 0.0, 0.0 ]
         cv.draw_image[ t,
-                       rect [ x: vp.x, y: vp.y - ct, w: f32[ t.width ],
-                              h: f32[ t.height ] ] ]
+                       rect [ x: vp.x, y: vp.y - ct, w: t.width / k,
+                              h: t.height / k ] ]
         cv.restore[]
         draw_sheet[ cv, vp ]
 
@@ -392,11 +396,13 @@ element WaylandView
         # its frame has room past it: the dialog is its own size of it
         tw : f32 [ f32[ t.width ] ]
         th : f32 [ f32[ t.height ] ]
-        sheet_w = min[ f32[ wlc_window_w[ sheet ] ], tw ]
-        sheet_h = min[ f32[ wlc_window_h[ sheet ] ], th ]
+        # the dialog's pixels, shown in the pane's points
+        k : f32 ds[]
+        sheet_w = min[ f32[ wlc_window_w[ sheet ] ], tw ] / k
+        sheet_h = min[ f32[ wlc_window_h[ sheet ] ], th ] / k
         if [ sheet_w <= 0.0 || sheet_h <= 0.0 ]
-            sheet_w = tw
-            sheet_h = th
+            sheet_w = tw / k
+            sheet_h = th / k
         sheet_x = round[ vp.x + (vp.w - sheet_w) * 0.5 ]
         sheet_y = round[ vp.y - sheet_h * (1.0 - sheet_at) ]
         cv.save[]
@@ -414,7 +420,7 @@ element WaylandView
         cv.no_shadows[]
         cv.draw_image_crop[ t, rect [ x: sheet_x, y: sheet_y,
                                       w: sheet_w, h: sheet_h ],
-            0.0, 0.0, sheet_w / tw, sheet_h / th ]
+            0.0, 0.0, sheet_w * k / tw, sheet_h * k / th ]
         cv.restore[]
 
     # x, y (the pane's) is on the sheet
@@ -540,16 +546,28 @@ element WaylandView
             ux.mouse_unlock[]
             held_lock = false
 
-    # the pane's y plus the cropped top is the window's y
+    # the screen's pixels a point (2 on a phone)
+    func ds [] -> f32
+        return (ux && ux.scale > 0.0) ? ux.scale : 1.0
+
+    # the pane's x in the window's pixels
+    func win_x [ x: f32 ] -> f32
+        return x * ds[]
+
+    # the pane's y plus the cropped top is the window's y, in pixels
     func win_y [ y: f32 ] -> f32
-        return y + ((crop_top > 0) ? f32[ crop_top ] : 0.0)
+        return y * ds[] + ((crop_top > 0) ? f32[ crop_top ] : 0.0)
+
+    # the pane's point on the dialog, in its pixels
+    func sheet_px [ v: f32, at: f32 ] -> f32
+        return (v - at) * ds[]
 
     public func on_press [ ev: Event ]
         if [ !up || win == 0 ] return
         if [ sheet_w > 0.0 ]
             if [ !to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ] return
-            sx : f32 [ ev.mouse.pos.x - sheet_x ]
-            sy : f32 [ ev.mouse.pos.y - sheet_y ]
+            sx : f32 sheet_px[ ev.mouse.pos.x, sheet_x ]
+            sy : f32 sheet_px[ ev.mouse.pos.y, sheet_y ]
             wlc_pointer_motion[ sheet, sx, sy ]
             wlc_pointer_button[ sheet, sx, sy, ev.mouse.button, 1 ]
             if [ ux ] ux.set_focus[ a ]
@@ -559,21 +577,25 @@ element WaylandView
             wlc_pointer_button[ win, 0.0, 0.0, ev.mouse.button, 1 ]
             return
         y : f32 win_y[ ev.mouse.pos.y ]
-        wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
-        wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 1 ]
+        wlc_pointer_motion[ win, win_x[ ev.mouse.pos.x ], y ]
+        wlc_pointer_button[ win, win_x[ ev.mouse.pos.x ], y,
+                            ev.mouse.button, 1 ]
         if [ ux ] ux.set_focus[ a ]
 
     public func on_release [ ev: Event ]
         if [ !up || win == 0 ] return
         if [ sheet_w > 0.0 ]
-            wlc_pointer_button[ sheet, ev.mouse.pos.x - sheet_x,
-                ev.mouse.pos.y - sheet_y, ev.mouse.button, 0 ]
+            wlc_pointer_button[ sheet,
+                sheet_px[ ev.mouse.pos.x, sheet_x ],
+                sheet_px[ ev.mouse.pos.y, sheet_y ], ev.mouse.button,
+                0 ]
             return
         if [ held_lock ]
             wlc_pointer_button[ win, 0.0, 0.0, ev.mouse.button, 0 ]
             return
         y : f32 win_y[ ev.mouse.pos.y ]
-        wlc_pointer_button[ win, ev.mouse.pos.x, y, ev.mouse.button, 0 ]
+        wlc_pointer_button[ win, win_x[ ev.mouse.pos.x ], y,
+                            ev.mouse.button, 0 ]
 
     public func on_move [ ev: Event ]
         if [ !up || win == 0 ] return
@@ -582,23 +604,25 @@ element WaylandView
             return
         if [ sheet_w > 0.0 ]
             if [ to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-                wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,
-                                    ev.mouse.pos.y - sheet_y ]
+                wlc_pointer_motion[ sheet,
+                    sheet_px[ ev.mouse.pos.x, sheet_x ],
+                    sheet_px[ ev.mouse.pos.y, sheet_y ] ]
             return
         y : f32 win_y[ ev.mouse.pos.y ]
-        wlc_pointer_motion[ win, ev.mouse.pos.x, y ]
+        wlc_pointer_motion[ win, win_x[ ev.mouse.pos.x ], y ]
 
     public func on_wheel [ ev: Event ]
         if [ !up || win == 0 ] return
         if [ sheet_w > 0.0 ]
             if [ !to_sheet[ ev.mouse.pos.x, ev.mouse.pos.y ] ] return
-            wlc_pointer_motion[ sheet, ev.mouse.pos.x - sheet_x,
-                                ev.mouse.pos.y - sheet_y ]
+            wlc_pointer_motion[ sheet,
+                sheet_px[ ev.mouse.pos.x, sheet_x ],
+                sheet_px[ ev.mouse.pos.y, sheet_y ] ]
             wlc_pointer_axis[ steps[ ev.mouse.wheel_delta.x ],
                               steps[ ev.mouse.wheel_delta.y ] ]
             return
         # the scroll goes to the surface under the pointer
-        wlc_pointer_motion[ win, ev.mouse.pos.x,
+        wlc_pointer_motion[ win, win_x[ ev.mouse.pos.x ],
                             win_y[ ev.mouse.pos.y ] ]
         wlc_pointer_axis[ steps[ ev.mouse.wheel_delta.x ],
                           steps[ ev.mouse.wheel_delta.y ] ]

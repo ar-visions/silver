@@ -6078,7 +6078,7 @@ Display Window
     # inside a press's or release's routing: a focus given now is
     # the user's; and when the last tap was
     public  pressing            : bool
-    intern  user_us             : i64
+    public  user_us             : i64
     # the input device mounted (a keyboard, its bar): it sees typed
     # text and keys first; what it gives back skips it (injecting)
     manual  input_device        : InputDevice
@@ -7418,7 +7418,10 @@ Display Window
         expect e inherits element, 'e is not an element'
         if [ e.hide ] return
         if [ e.animated && (frame_skip & 8) != 0 ] return
-        if [ e.animated && e.opacity > 0.0 ]
+        # a held backdrop (a phone's, or a covered one) draws nothing
+        held : bool [ (backdrop_bypass || mobile_on[]) && backdrop
+                      && backdrop.owner == e ]
+        if [ e.animated && e.opacity > 0.0 && !held ]
             anim_seen = true
             ti : Au_t typeid[ e ]
             anim_who  = '{string[ ti.ident ]} animated'
@@ -8468,13 +8471,20 @@ abstract media_app trinity
             hz : i32 [ max[ window.refresh_hz[], 30 ] ]
             usleep[ u32[ 1000000 / hz ] ]
             return
+        # a dark panel: nothing drawn, no refresh to pace it; the
+        # app's own step still runs (the power key wakes it)
+        if [ platform_screen_dark[] != 0 ]
+            ae : element [ cast element [ window.app_object ] ]
+            if [ ae ] ae.on_frame*[ window ]
+            usleep[ 50000 ]
+            return
         # nothing moving, nothing changed, no input: no frame, a
         # refresh's wait; still one a quarter second for what changes by
         # itself (a clock, a poll). a hosted app asked for a frame keeps
         # the one it sent (no new picture): the host paces it
         now_us : i64 [ epoch_micros[] ]
         drew = false
-        if [ !attach && frames > 30 && !force_animate
+        if [ !attach && frames_ever > 30 && !force_animate
              && !window.will_animate
              && !window.restyle && !window.anim_seen
              && (!window.hidden || paned)
@@ -8508,6 +8518,7 @@ abstract media_app trinity
         vk.update_us += draw_start - update_start
         vk.draw_us   += epoch_micros[] - draw_start
         frames += 1
+        frames_ever += 1
 
     ifdef [ unix ]
         func at_start [ rt: Au_t ]
@@ -8533,6 +8544,9 @@ abstract media_app trinity
 
 # every frame drawn, changed or not (the socket's `animate 1`)
 force_animate : bool
+
+# frames drawn since the start; the stats' count resets each second
+frames_ever : i64
 
 # e's picture again: e and the canvas holding it (above no_cache)
 func repaint_held [ e: element, again: bool ]
@@ -11531,6 +11545,29 @@ expect func t_line_aa [ vk: vk_context ] -> bool
     by : i32 [ data[ (49 * img.width + 100) * 4 ]
                + data[ (51 * img.width + 100) * 4 ] ]
     return ok && on > 240 && by < 10 && edge < 10
+
+# a four sided path that is no rect fills its own shape: a diamond
+# leaves its box's corners empty
+expect func t_quad_path [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 100, height: 100 ]
+    c: Canvas [ vk: vk, w: w, width: 100, height: 100 ]
+    c.update[]
+    c.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+    c.fill_color[ rgba [ '#fff' ] ]
+    c.move_to[ 50.0, 10.0 ]
+    c.line_to[ 90.0, 50.0 ]
+    c.line_to[ 50.0, 90.0 ]
+    c.line_to[ 10.0, 50.0 ]
+    c.close_path[]
+    c.paint[]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    mid : i32 [ data[ (50 * img.width + 50) * 4 ] ]
+    corner : i32 [ data[ (15 * img.width + 15) * 4 ] ]
+    log 'diamond: middle {mid}, box corner {corner}'
+    return mid > 240 && corner < 10
 
 # a top fade band: the mask runs from clear to kept over its width
 expect func t_fade_band [ vk: vk_context ] -> bool

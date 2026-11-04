@@ -68,6 +68,9 @@ int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_screen_power(int on) {}
+int  platform_screen_dark(void) { return 0; }
+int  platform_sleep(void) { return 0; }
+int  platform_battery_draw(float* amps, float* volts) { return 0; }
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}
@@ -666,6 +669,9 @@ int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_screen_power(int on) {}
+int  platform_screen_dark(void) { return 0; }
+int  platform_sleep(void) { return 0; }
+int  platform_battery_draw(float* amps, float* volts) { return 0; }
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}
@@ -1117,6 +1123,7 @@ int platform_peer_poll(void* out, int max) { return 0; }
 #include <glob.h>
 #include <sched.h>
 #include <dirent.h>
+#include <signal.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 #include <sys/mman.h>
@@ -1346,9 +1353,36 @@ float platform_kms_density(int minor) {
 
 static void kms_gpu_speed(bool fast);
 
+// the boot's cube holds the screen until the shell opens it: it is
+// stopped, and waited on (gone, or a zombie), three seconds at most
+static void kms_stop_boot_picture(void) {
+    FILE* f = fopen("/run/bootcube.pid", "r");
+    if (!f) return;
+    int pid = 0;
+    if (fscanf(f, "%d", &pid) != 1) pid = 0;
+    fclose(f);
+    if (pid <= 1 || pid == getpid()) return;
+    unlink("/run/bootcube.pid");
+    kill(pid, SIGTERM);
+    char st[64];
+    snprintf(st, sizeof st, "/proc/%d/stat", pid);
+    for (int i = 0; i < 300; i++) {
+        if (i == 100) kill(pid, SIGKILL);
+        FILE* s = fopen(st, "r");
+        if (!s) return;
+        char state = 0;
+        int got = fscanf(s, "%*d (%*[^)]) %c", &state);
+        fclose(s);
+        if (got == 1 && state == 'Z') return;
+        usleep(10000);
+    }
+}
+
 int platform_kms_open(int minor) {
+    kms_stop_boot_picture();
     kms_fast_cores();
-    kms_gpu_speed(true);
+    // the gpu's clock follows its load: the top clock heats it
+    kms_gpu_speed(false);
     char path[32];
     snprintf(path, sizeof(path), "/dev/dri/card%d", minor);
     int fd = open(path, O_RDWR | O_CLOEXEC);
@@ -1356,7 +1390,13 @@ int platform_kms_open(int minor) {
         fprintf(stderr, "kms: %s: %s\n", path, strerror(errno));
         return -1;
     }
-    if (drmSetMaster(fd)) fprintf(stderr, "kms: not master of %s: %s\n", path, strerror(errno));
+    // a closing holder can keep the screen a moment longer
+    int held = drmSetMaster(fd);
+    for (int i = 0; held && i < 40; i++) {
+        usleep(50000);
+        held = drmSetMaster(fd);
+    }
+    if (held) fprintf(stderr, "kms: not master of %s: %s\n", path, strerror(errno));
     drmModeRes* res = drmModeGetResources(fd);
     drmModeConnector* conn = NULL;
     for (int c = 0; res && c < res->count_connectors && !conn; c++) {
@@ -1804,6 +1844,9 @@ static int kms_mods(platform_window* w) {
 // the gpu's clock: its top while the screen is lit (orbiter-os owns
 // the machine; a frame waits on it), its governor's choice while dark
 static void kms_gpu_speed(bool fast) {
+    static int was = -1;
+    if (was == fast) return;
+    was = fast;
     glob_t g;
     if (glob("/sys/class/devfreq/*gpu*/governor", 0, NULL, &g) != 0) return;
     for (size_t i = 0; i < g.gl_pathc; i++) {
@@ -1819,7 +1862,6 @@ static void kms_gpu_speed(bool fast) {
 
 static void kms_screen(bool on) {
     if (g_drm_fd < 0 || !g_drm_conn) return;
-    kms_gpu_speed(on);
     drmModeObjectProperties* ps = drmModeObjectGetProperties(g_drm_fd,
         g_drm_conn, DRM_MODE_OBJECT_CONNECTOR);
     for (uint32_t i = 0; ps && i < ps->count_props; i++) {
@@ -1838,6 +1880,74 @@ static void kms_screen(bool on) {
 // the app's word: the panel lit or dark
 void platform_screen_power(int on) {
     if (g_drm_fd >= 0 && g_screen_off == (on != 0)) kms_screen(on != 0);
+}
+
+int platform_screen_dark(void) {
+    return g_drm_fd >= 0 && g_screen_off;
+}
+
+// a sysfs file's first line, without its newline
+static int sys_line(const char* f, char* out, size_t n) {
+    FILE* fp = fopen(f, "r");
+    if (!fp) return 0;
+    int ok = fgets(out, (int)n, fp) != NULL;
+    fclose(fp);
+    if (ok) out[strcspn(out, "\n")] = 0;
+    return ok;
+}
+
+// the whole machine asleep (suspend to memory) until a wakeup source
+// (the power key, the modem, the clock's alarm) calls it back; the
+// wakeup count first, so an event since it was read keeps it awake.
+// 1 when it slept, 0 when it would not (not orbiter-os's screen, or
+// an event came first)
+int platform_sleep(void) {
+    if (g_drm_fd < 0) return 0;
+    char wc[32];
+    if (!sys_line("/sys/power/wakeup_count", wc, sizeof wc)) return 0;
+    FILE* fp = fopen("/sys/power/wakeup_count", "w");
+    if (!fp) return 0;
+    int held = fputs(wc, fp) >= 0;
+    if (fclose(fp) != 0) held = 0;
+    if (!held) return 0;
+    sync();
+    fp = fopen("/sys/power/state", "w");
+    if (!fp) return 0;
+    int ok = fputs("mem", fp) >= 0;
+    if (fclose(fp) != 0) ok = 0;
+    char why[64] = "?";
+    sys_line("/sys/power/pm_wakeup_irq", why, sizeof why);
+    fprintf(stderr, "sleep: %s, woken by irq %s\n",
+            ok ? "slept" : "refused", why);
+    return ok;
+}
+
+// the battery's current (amps, below 0 while it drains) and voltage
+int platform_battery_draw(float* amps, float* volts) {
+    DIR* d = opendir("/sys/class/power_supply");
+    if (!d) return 0;
+    struct dirent* e; int got = 0;
+    while (!got && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char f[400], v[32];
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/type", e->d_name);
+        if (!sys_line(f, v, sizeof v) || strcmp(v, "Battery") != 0)
+            continue;
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/scope", e->d_name);
+        if (sys_line(f, v, sizeof v) && strcmp(v, "Device") == 0) continue;
+        char c[32], u[32];
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/current_now",
+                 e->d_name);
+        if (!sys_line(f, c, sizeof c)) continue;
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/voltage_now",
+                 e->d_name);
+        if (!sys_line(f, u, sizeof u)) continue;
+        *amps  = (float)(atof(c) / 1e6);
+        *volts = (float)(atof(u) / 1e6);
+        got = 1;
+    }
+    closedir(d);
+    return got;
 }
 
 // a multitouch screen's event: slots gathered, sent at the frame's end
@@ -3553,8 +3663,99 @@ HOST_API int host_capture_set(float vol, int muted) {
     snd_mixer_close(mx);
     return 1;
 }
+
+// the screen's light: the first panel under /sys/class/backlight
+static int backlight_dir(char* dir, size_t n) {
+    DIR* d = opendir("/sys/class/backlight");
+    if (!d) return 0;
+    struct dirent* e; int got = 0;
+    while (!got && (e = readdir(d)))
+        if (e->d_name[0] != '.') {
+            snprintf(dir, n, "/sys/class/backlight/%s", e->d_name);
+            got = 1;
+        }
+    closedir(d);
+    return got;
+}
+
+static long backlight_read(const char* dir, const char* name) {
+    char f[400]; long v = -1;
+    snprintf(f, sizeof f, "%s/%s", dir, name);
+    FILE* fp = fopen(f, "r");
+    if (fp) { if (fscanf(fp, "%ld", &v) != 1) v = -1; fclose(fp); }
+    return v;
+}
+
+// the light 0..1; -1 with no panel to light
+HOST_API float host_backlight_get(void) {
+    char dir[300];
+    if (!backlight_dir(dir, sizeof dir)) return -1;
+    long hi = backlight_read(dir, "max_brightness");
+    long v  = backlight_read(dir, "brightness");
+    if (hi <= 0 || v < 0) return -1;
+    return (float)v / (float)hi;
+}
+
+// never fully dark: 1 step of the panel's range at least
+HOST_API int host_backlight_set(float level) {
+    char dir[300], f[400];
+    if (!backlight_dir(dir, sizeof dir)) return 0;
+    long hi = backlight_read(dir, "max_brightness");
+    if (hi <= 0) return 0;
+    if (level < 0) level = 0;
+    if (level > 1) level = 1;
+    long v = (long)(level * hi + 0.5f);
+    if (v < 1) v = 1;
+    snprintf(f, sizeof f, "%s/brightness", dir);
+    FILE* fp = fopen(f, "w");
+    if (!fp) return 0;
+    fprintf(fp, "%ld\n", v);
+    fclose(fp);
+    return 1;
+}
+
+// the first battery under /sys/class/power_supply: its charge 0..1
+// and whether power comes in (charging or full); 0 with none
+HOST_API int host_battery_get(float* level, int* charging) {
+    DIR* d = opendir("/sys/class/power_supply");
+    if (!d) return 0;
+    struct dirent* e; int got = 0;
+    while (!got && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char f[400], v[32] = {0};
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/type", e->d_name);
+        FILE* fp = fopen(f, "r");
+        if (!fp) continue;
+        if (!fgets(v, sizeof v, fp)) v[0] = 0;
+        fclose(fp);
+        if (strncmp(v, "Battery", 7) != 0) continue;
+        // a mouse's or a headset's battery is the device's, not ours
+        snprintf(f, sizeof f, "/sys/class/power_supply/%s/scope", e->d_name);
+        v[0] = 0;
+        fp = fopen(f, "r");
+        if (fp) { if (!fgets(v, sizeof v, fp)) v[0] = 0; fclose(fp); }
+        if (strncmp(v, "Device", 6) == 0) continue;
+        char dir[300];
+        snprintf(dir, sizeof dir, "/sys/class/power_supply/%s", e->d_name);
+        long c = backlight_read(dir, "capacity");
+        if (c < 0) continue;
+        *level = (float)c / 100.0f;
+        snprintf(f, sizeof f, "%s/status", dir);
+        v[0] = 0;
+        fp = fopen(f, "r");
+        if (fp) { if (!fgets(v, sizeof v, fp)) v[0] = 0; fclose(fp); }
+        *charging = strncmp(v, "Charging", 8) == 0
+                 || strncmp(v, "Full", 4) == 0;
+        got = 1;
+    }
+    closedir(d);
+    return got;
+}
 #else
 // other platforms: the app keeps its own output
+HOST_API int  host_battery_get(float* level, int* charging) { return 0; }
+HOST_API float host_backlight_get(void) { return -1; }
+HOST_API int  host_backlight_set(float level) { return 0; }
 HOST_API int  host_master_get(float* vol, int* muted) { return 0; }
 HOST_API int  host_master_set(float vol, int muted) { return 0; }
 HOST_API int  host_capture_get(float* vol, int* muted) { return 0; }

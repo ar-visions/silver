@@ -46,6 +46,20 @@ sim() {
     return 1
 }
 
+# ModemManager gives up on a SIM it found missing; once the SIM's
+# session is up it starts again, at most every 5 minutes
+restarted=0
+restart() {
+    now=$(cut -d. -f1 /proc/uptime)
+    [ $((now - restarted)) -ge 300 ] || return
+    sim || return
+    restarted=$now
+    /usr/bin/pkill -x ModemManager
+    sleep 2
+    /usr/sbin/ModemManager --debug >> /var/log/ModemManager.log 2>&1 &
+    say "modem: ModemManager had failed, started again"
+}
+
 # ModemManager's modem enabled; 0 once it is
 enabled() {
     list=$("$mmcli" -L 2>/dev/null)
@@ -59,6 +73,7 @@ enabled() {
         / state:/ { gsub(/\033\[[0-9;]*m/, "", $2); print $2; exit }')
     case "$st" in
         registered|connected|connecting|enabled|searching) return 0 ;;
+        failed) restart; return 1 ;;
     esac
     if "$mmcli" -m "$modem" --enable >/dev/null 2>&1; then
         say "modem: enabled (was $st)"

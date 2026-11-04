@@ -144,6 +144,21 @@ func mm_dict_add [ d: @DBusMessageIter, key: string, val: string ]
     dbus_message_iter_close_container[ @e, @v ]
     dbus_message_iter_close_container[ d, @e ]
 
+func mm_dict_add_u32 [ d: @DBusMessageIter, key: string, val: u32 ]
+    e : DBusMessageIter
+    dbus_message_iter_open_container[ d, DBUS_TYPE_DICT_ENTRY, null,
+                                      @e ]
+    kc : cstr [ key.chars ]
+    dbus_message_iter_append_basic[ @e, DBUS_TYPE_STRING, @kc ]
+    v : DBusMessageIter
+    sig : string [ "u" ]
+    dbus_message_iter_open_container[ @e, DBUS_TYPE_VARIANT,
+                                      sig.chars, @v ]
+    n : val
+    dbus_message_iter_append_basic[ @v, DBUS_TYPE_UINT32, @n ]
+    dbus_message_iter_close_container[ @e, @v ]
+    dbus_message_iter_close_container[ d, @e ]
+
 # the phone's modem: its state, the network, calls and texts
 class Modem
     # the bus answered and ModemManager has a modem
@@ -496,6 +511,12 @@ class Modem
         dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
                                           sig.chars, @d ]
         mm_dict_add[ @d, 'apn', apn ]
+        # the network's own family (T-Mobile's is IPv6 only), else
+        # both (ModemManager's default asks for IPv4 alone)
+        ib : prop_dict[ modem, 'Modem.Modem3gpp',
+                        'InitialEpsBearerSettings' ]
+        fam : i32 mm_int[ ib, 'ip-type' ]
+        mm_dict_add_u32[ @d, 'ip-type', u32[ (fam > 0) ? fam : 4 ] ]
         dbus_message_iter_close_container[ @it, @d ]
         dbus_message_set_auto_start[ msg, 0 ]
         ser : u32 [ 0 ]

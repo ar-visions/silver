@@ -191,6 +191,12 @@ PLATFORM_API void  platform_kms_wait                 (void);
 PLATFORM_API void  platform_kms_flip                 (int slot);
 // the panel lit or dark (the phone's screen; elsewhere nothing)
 PLATFORM_API void  platform_screen_power             (int on);
+// 1 while the panel is dark: nothing to draw for
+PLATFORM_API int   platform_screen_dark              (void);
+// the machine asleep until a wakeup source: 1 when it slept
+PLATFORM_API int   platform_sleep                    (void);
+// the battery's current (A, below 0 draining) and voltage: 1 read
+PLATFORM_API int   platform_battery_draw             (float* amps, float* volts);
 PLATFORM_API void  platform_kms_cursor_image         (const uint32_t* argb, int w, int h, int hx, int hy);
 /* the pointer's easing: share of the way per display refresh */
 PLATFORM_API void  platform_cursor_ease              (float amount);

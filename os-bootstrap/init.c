@@ -775,6 +775,38 @@ static void mms_start(void) {
     spawn_log(mms, menv, "/var/log/mmsd.log");
 }
 
+// a phone's boot picture: bootcube, beside orbiter's binary, from
+// the moment the root is there until orbiter takes the screen
+// (devices stops it then, by /run/bootcube.pid)
+static void boot_cube(const char* init) {
+    char ph[64], cube[600];
+    if (!arg("orbiter.phone", ph, sizeof ph)) return;
+    size_t n = strlen(init);
+    while (n > 0 && init[n - 1] != '/') n--;
+    if (n == 0 || n + 9 > sizeof cube) return;
+    memcpy(cube, init, n);
+    strcpy(cube + n, "bootcube");
+    if (access(cube, X_OK)) return;
+    pid_t p = fork();
+    if (p == 0) {
+        // the cube alone runs in place: orbiter stays supervised
+        static char iso[] = "SILVER_ISOLATE=0";
+        env_add(iso);
+        setsid();
+        int log = open("/var/log/bootcube.log", O_WRONLY | O_CREAT | O_TRUNC,
+                       0644);
+        if (log >= 0) { dup2(log, 1); dup2(log, 2); close(log); }
+        char* argv[] = { cube, NULL };
+        execve(cube, argv, environ);
+        _exit(127);
+    }
+    if (p < 0) return;
+    char num[32];
+    int k = snprintf(num, sizeof num, "%d\n", (int)p);
+    int fd = open("/run/bootcube.pid", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, num, k); close(fd); }
+}
+
 // start the modem stack in dependency order
 static void modem_start(void) {
     char ph[64];
@@ -819,6 +851,17 @@ static void modem_start(void) {
     if (access(ims[0], X_OK) == 0)
         spawn_log(ims, env, "/var/log/imsd-run.log");
     fprintf(stderr, "orbiter-os init: started the modem's programs\n");
+}
+
+// Bluetooth: BlueZ on the system bus (orbiter's menu drives it)
+static void bt_start(void) {
+    char* bd[] = { "/usr/libexec/bluetooth/bluetoothd", "-n", NULL };
+    if (access(bd[0], X_OK)) return;
+    bus_start();
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    mkdir("/var/lib/bluetooth", 0700);
+    spawn_log(bd, env, "/var/log/bluetoothd.log");
+    fprintf(stderr, "orbiter-os init: started bluetoothd\n");
 }
 
 #ifndef NOLIBC
@@ -1045,6 +1088,7 @@ int main(void) {
     // the kernel's own driver requests: our modprobe's place
     int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);
     if (kp >= 0) { write(kp, MODPROBE, strlen(MODPROBE)); close(kp); }
+    boot_cube(init);
     phone_find();
     phone_early();
     hotplug(uevents());
@@ -1070,6 +1114,7 @@ int main(void) {
     swap_on();
     net_start(init);
     modem_start();
+    bt_start();
     session_start();
     phone_shell();
 

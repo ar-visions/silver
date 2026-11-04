@@ -1025,6 +1025,7 @@ Control AppsGrid
         if [ card_pics && card_pics.count > 96 ]
             card_pics.clear[]
             card_sigs.clear[]
+        # pictures of cards long gone: let them go
         band_of = -1
         band_at = -1
         band_n  = 0

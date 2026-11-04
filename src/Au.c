@@ -10639,6 +10639,11 @@ static void watch_add_tree(int fd, const char* dir, int depth) {
         // vendored dependency source; the indexer skips it for the same
         // reason and nothing under it is ours to react to
         if (strcmp(e->d_name, "checkout") == 0) continue;
+        // build output and logs: the indexer skips them too
+        if (strcmp(e->d_name, "install") == 0 ||
+            strcmp(e->d_name, "platform") == 0 ||
+            strcmp(e->d_name, "build") == 0 ||
+            strcmp(e->d_name, "packages") == 0) continue;
         char p[4096];
         snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
         struct stat st;

@@ -218,19 +218,23 @@ static void focus_toplevel(struct toplevel *t) {
 // pixels over it, and draws that many more pixels for each of its own
 static double g_scale = 1.0;
 
+// a window's scale: an X11 window draws real pixels (X has no
+// scale; it is told its dpi), a Wayland one the windows' scale
+static double ts(struct toplevel *t) { return (t && t->xw) ? 1.0 : g_scale; }
+
 // pixels in a window's own units
-static int lg(int px) { return (int)lround(px / g_scale); }
+static int lg(struct toplevel *t, int px) { return (int)lround(px / ts(t)); }
 
 // the real monitor's refresh in mHz; 0 until told (wlroots: 60 Hz)
 static int g_refresh;
 
 // every output paces its frames at the monitor's refresh
-static void output_mode(struct wlr_output *o, int w, int h) {
+static void output_mode(struct wlr_output *o, int w, int h, double sc) {
     struct wlr_output_state st;
     wlr_output_state_init(&st);
     wlr_output_state_set_enabled(&st, true);
     wlr_output_state_set_custom_mode(&st, w, h, g_refresh);
-    wlr_output_state_set_scale(&st, g_scale);
+    wlr_output_state_set_scale(&st, sc);
     wlr_output_commit_state(o, &st);
     wlr_output_state_finish(&st);
 }
@@ -246,14 +250,14 @@ static void on_top_frame(struct wl_listener *l, void *data) {
     // would show its old picture in the new size, the rest black);
     // it may still draw. after 300 ms frames go on (a size it refused)
     bool behind = !t->sheet && t->w > 0
-        && (t->cw != lg(t->w) || t->ch != lg(t->h))
+        && (t->cw != lg(t, t->w) || t->ch != lg(t, t->h))
         && mono_now() - t->asked_at < 0.3;
     if (!behind) {
         struct wlr_output_state st;
         wlr_output_state_init(&st);
         if (t->mode_w > 0) {
             wlr_output_state_set_custom_mode(&st, t->mode_w, t->mode_h, 0);
-            wlr_output_state_set_scale(&st, g_scale);
+            wlr_output_state_set_scale(&st, ts(t));
         }
         t->framing = true;
         // new buffers come at the new size, maybe at old addresses:
@@ -302,7 +306,7 @@ static void on_surface_commit(struct wl_listener *l, void *data) {
             wlr_xdg_toplevel_set_size(t->xdg, 0, 0);
         } else {
             // its first configure answers its first commit
-            wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+            wlr_xdg_toplevel_set_size(t->xdg, lg(t, t->w), lg(t, t->h));
             if (g_fullscreen) wlr_xdg_toplevel_set_fullscreen(t->xdg, true);
         }
         return;
@@ -318,8 +322,8 @@ static void on_surface_commit(struct wl_listener *l, void *data) {
     // the scene's xdg tree already sets the shadow margin outside. its
     // output is roomier than it: as its monitor, one its size made
     // GTK fit window and shadow inside it, 20 px less a commit
-    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
-        (int)ceil((t->h + SHEET_ROOM) * g_scale));
+    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * ts(t)),
+        (int)ceil((t->h + SHEET_ROOM) * ts(t)), ts(t));
 }
 
 static void on_map(struct wl_listener *l, void *data) {
@@ -330,7 +334,7 @@ static void on_map(struct wl_listener *l, void *data) {
         wlr_xdg_toplevel_set_tiled(t->xdg, WLR_EDGE_TOP | WLR_EDGE_BOTTOM
             | WLR_EDGE_LEFT | WLR_EDGE_RIGHT);
     }
-    if (!t->sheet) top_size(t, lg(t->w), lg(t->h));
+    if (!t->sheet) top_size(t, lg(t, t->w), lg(t, t->h));
     focus_toplevel(t);
     if (t->shown_once) g_asked = t->id;
     t->shown_once = true;
@@ -408,7 +412,7 @@ static struct toplevel *top_new(void) {
     wlr_output_init_render(t->out, g_allocator, g_renderer);
     t->frame_l.notify  = on_top_frame;  wl_signal_add(&t->out->events.frame,  &t->frame_l);
     t->commit_l.notify = on_top_commit; wl_signal_add(&t->out->events.commit, &t->commit_l);
-    output_mode(t->out, t->w, t->h);
+    output_mode(t->out, t->w, t->h, g_scale);
     struct wlr_output_layout_output *lo = wlr_output_layout_add(g_layout, t->out, t->x, 0);
     t->sout = wlr_scene_output_create(g_scene, t->out);
     wlr_scene_output_layout_add_output(g_scene_layout, lo, t->sout);
@@ -439,7 +443,7 @@ static void on_new_xdg_surface(struct wl_listener *l, void *data) {
     t->full_l.notify  = on_xdg_fullscreen; wl_signal_add(&t->xdg->events.request_fullscreen, &t->full_l);
     wl_list_insert(g_tops.prev, &t->link);
     // sized before its first commit, so it opens the size of its pane
-    wlr_xdg_toplevel_set_size(t->xdg, lg(t->w), lg(t->h));
+    wlr_xdg_toplevel_set_size(t->xdg, lg(t, t->w), lg(t, t->h));
     if (g_fullscreen) wlr_xdg_toplevel_set_fullscreen(t->xdg, true);
     fprintf(stderr, "wayland: window %llu new\n", (unsigned long long)t->id);
 }
@@ -455,8 +459,8 @@ static void on_xw_commit(struct wl_listener *l, void *data) {
     if (xs->width == t->w && xs->height == t->h) return;
     t->w = xs->width; t->h = xs->height;
     t->epoch += 1;
-    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
-        (int)ceil((t->h + SHEET_ROOM) * g_scale));
+    output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * ts(t)),
+        (int)ceil((t->h + SHEET_ROOM) * ts(t)), ts(t));
 }
 
 static void on_xw_associate(struct wl_listener *l, void *data) {
@@ -473,7 +477,7 @@ static void on_xw_associate(struct wl_listener *l, void *data) {
     if (t->sheet)
         wlr_xwayland_surface_configure(t->xw, 0, 0,
             t->xw->width ? t->xw->width : 1, t->xw->height ? t->xw->height : 1);
-    else top_size(t, lg(t->w), lg(t->h));
+    else top_size(t, lg(t, t->w), lg(t, t->h));
 }
 
 static void on_xw_dissociate(struct wl_listener *l, void *data) {
@@ -495,7 +499,7 @@ static void on_xw_request(struct wl_listener *l, void *data) {
     if (t->sheet || !t->w)
         wlr_xwayland_surface_configure(t->xw, 0, 0, ev->width, ev->height);
     else
-        top_size(t, lg(t->w), lg(t->h));
+        top_size(t, lg(t, t->w), lg(t, t->h));
 }
 
 // X11 windows all sit at 0, 0 of the X screen (Xwayland sends input
@@ -607,6 +611,7 @@ static void on_new_xw(struct wl_listener *l, void *data) {
     }
     struct toplevel *t = top_new();
     t->xw = xs;
+    output_mode(t->out, t->w, t->h, 1.0);
     t->assoc_l.notify  = on_xw_associate;  wl_signal_add(&xs->events.associate,  &t->assoc_l);
     t->dissoc_l.notify = on_xw_dissociate; wl_signal_add(&xs->events.dissociate, &t->dissoc_l);
     t->req_l.notify    = on_xw_request;    wl_signal_add(&xs->events.request_configure, &t->req_l);
@@ -858,7 +863,7 @@ static void apply_sizes(void) {
             t->w = t->want_w; t->h = t->want_h;
             t->asked_at = mono_now();
             t->mode_w = t->w; t->mode_h = t->h;
-            top_size(t, lg(t->w), lg(t->h));
+            top_size(t, lg(t, t->w), lg(t, t->h));
         }
     }
 }
@@ -918,24 +923,54 @@ static void u_wlc_key_repeat(int rate, int delay_ms) {
 WLC_API void wlc_key_layout(const char *layout, const char *variant) { pthread_mutex_lock(&g_lock); u_wlc_key_layout(layout, variant); pthread_mutex_unlock(&g_lock); }
 WLC_API void wlc_key_repeat(int rate, int delay_ms) { pthread_mutex_lock(&g_lock); u_wlc_key_repeat(rate, delay_ms); pthread_mutex_unlock(&g_lock); }
 
+// X programs' size: X has no scale, so the root's Xft.dpi says it
+// (toolkits read it; GDK_SCALE and Steam's own word go to the program)
+static bool g_xready;
+static void x_dpi(void) {
+    if (!g_xwl || !g_xready || !g_xwl->display_name) return;
+    xcb_connection_t *c = xcb_connect(g_xwl->display_name, NULL);
+    if (!c || xcb_connection_has_error(c)) { if (c) xcb_disconnect(c); return; }
+    xcb_screen_t *scr = xcb_setup_roots_iterator(xcb_get_setup(c)).data;
+    const char *nm = "RESOURCE_MANAGER";
+    xcb_intern_atom_reply_t *a = xcb_intern_atom_reply(c,
+        xcb_intern_atom(c, 0, (uint16_t)strlen(nm), nm), NULL);
+    if (a && scr) {
+        char v[64];
+        int n = snprintf(v, sizeof v, "Xft.dpi:\t%d\n", (int)lround(96.0 * g_scale));
+        xcb_change_property(c, XCB_PROP_MODE_REPLACE, scr->root, a->atom,
+            XCB_ATOM_STRING, 8, (uint32_t)n, v);
+        xcb_flush(c);
+    }
+    free(a);
+    xcb_disconnect(c);
+}
+
+static struct wl_listener l_xready;
+static void on_xready(struct wl_listener *l, void *data) {
+    g_xready = true;
+    x_dpi();
+}
+
 // a new scale: every window its size again, its output the new scale
 static void u_wlc_set_scale(double sc) {
-    if (sc < 0.5 || sc > 4.0 || fabs(sc - g_scale) < 0.001) return;
+    if (sc < 0.5 || sc > 8.0 || fabs(sc - g_scale) < 0.001) return;
     g_scale = sc;
     if (!g_display) return;
+    x_dpi();
     struct toplevel *t;
     wl_list_for_each(t, &g_tops, link) {
         if (t->sheet) {
-            output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * g_scale),
-                (int)ceil((t->h + SHEET_ROOM) * g_scale));
+            output_mode(t->out, (int)ceil((t->w + SHEET_ROOM) * ts(t)),
+                (int)ceil((t->h + SHEET_ROOM) * ts(t)), ts(t));
             continue;
         }
         t->asked_at = mono_now();
         t->mode_w = t->w; t->mode_h = t->h;
-        top_size(t, lg(t->w), lg(t->h));
+        top_size(t, lg(t, t->w), lg(t, t->h));
     }
 }
 
+WLC_API double wlc_scale(void) { return g_scale; }
 WLC_API void wlc_set_scale(double sc) { pthread_mutex_lock(&g_lock); u_wlc_set_scale(sc); pthread_mutex_unlock(&g_lock); }
 
 WLC_API int wlc_create(int w, int h) {
@@ -996,6 +1031,8 @@ WLC_API int wlc_create(int w, int h) {
     if (g_xwl) {
         l_new_xw.notify = on_new_xw;
         wl_signal_add(&g_xwl->events.new_surface, &l_new_xw);
+        l_xready.notify = on_xready;
+        wl_signal_add(&g_xwl->events.ready, &l_xready);
         wlr_xwayland_set_seat(g_xwl, g_seat);
         fprintf(stderr, "wayland: x11 display %s\n", g_xwl->display_name);
     }
@@ -1006,7 +1043,7 @@ WLC_API int wlc_create(int w, int h) {
     struct wlr_output *base = wlr_headless_add_output(g_backend, w, h);
     if (!base) { fprintf(stderr, "wayland: no output\n"); return 0; }
     wlr_output_init_render(base, g_allocator, g_renderer);
-    output_mode(base, w, h);
+    output_mode(base, w, h, 1.0);
     wlr_output_layout_add(g_layout, base, 0, 0);
     g_base = base;
     l_client.notify = on_client_created;
@@ -1057,12 +1094,12 @@ static void u_wlc_screen(int w, int h, int hz) {
     if (g_base->width == w && g_base->height == h && refresh == g_refresh) return;
     bool paced = refresh != g_refresh;
     g_refresh = refresh;
-    output_mode(g_base, w, h);
+    output_mode(g_base, w, h, 1.0);
     // windows already open take the new pace at their own size
     if (paced) {
         struct toplevel *t;
         wl_list_for_each(t, &g_tops, link)
-            if (t->out) output_mode(t->out, t->out->width, t->out->height);
+            if (t->out) output_mode(t->out, t->out->width, t->out->height, ts(t));
     }
     fprintf(stderr, "wayland: screen %dx%d at %d Hz\n", w, h, g_base->refresh / 1000);
 }
@@ -1197,8 +1234,8 @@ static uint64_t u_wlc_frame_id(uint64_t id) {
 static uint64_t u_wlc_window_epoch(uint64_t id) { struct toplevel *t = top_of(id); return t ? t->epoch : 0; }
 // a window's own size (a dialog's frame has room past it)
 // in pixels: a dialog's size is its own units, a window's the pane's
-static int u_wlc_window_w(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->w * g_scale) : t->w; }
-static int u_wlc_window_h(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->h * g_scale) : t->h; }
+static int u_wlc_window_w(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->w * ts(t)) : t->w; }
+static int u_wlc_window_h(uint64_t id) { struct toplevel *t = top_of(id); return !t ? 0 : t->sheet ? (int)lround(t->h * ts(t)) : t->h; }
 static uint64_t u_wlc_frame_gen(uint64_t id) { struct toplevel *t = top_of(id); return t ? t->gen : 0; }
 static int u_wlc_frame_w(uint64_t id) { struct toplevel *t = top_of(id); return (t && t->frame_buf) ? t->frame.width  : 0; }
 static int u_wlc_frame_h(uint64_t id) { struct toplevel *t = top_of(id); return (t && t->frame_buf) ? t->frame.height : 0; }
@@ -1218,7 +1255,7 @@ static int u_wlc_frame_fd(uint64_t id) {
 static struct wlr_surface *surface_at(struct toplevel *t, double x, double y, double *sx, double *sy) {
     // the pane's pixels in the window's own units
     struct wlr_scene_node *n = wlr_scene_node_at(&g_scene->tree.node,
-        t->x + x / g_scale, y / g_scale, sx, sy);
+        t->x + x / ts(t), y / ts(t), sx, sy);
     if (!n || n->type != WLR_SCENE_NODE_BUFFER) return NULL;
     struct wlr_scene_surface *ss = wlr_scene_surface_try_from_buffer(wlr_scene_buffer_from_node(n));
     return ss ? ss->surface : NULL;
@@ -1442,7 +1479,7 @@ WLC_API uint64_t wlc_window_epoch(uint64_t id) { pthread_mutex_lock(&g_lock); ui
 WLC_API int wlc_window_drawn(uint64_t id) {
     pthread_mutex_lock(&g_lock);
     struct toplevel *t = top_of(id);
-    int r = t && t->cw == lg(t->w) && t->ch == lg(t->h);
+    int r = t && t->cw == lg(t, t->w) && t->ch == lg(t, t->h);
     pthread_mutex_unlock(&g_lock);
     return r;
 }

@@ -2655,11 +2655,214 @@ system bar. In order:
    h2g2 here (the bearer that worked by hand was
    fast.t-mobile.com), the SIM's name reading 'Google Fi', video
    parts.
+8. DONE (Nov 2: no service after an Update) Update put
+   modem-prepare.sh on the phone without its run bit (the repo
+   file is 644), so init skipped it: no SIM session, the clock at
+   1970, ModemManager failed (sim-missing) for good. Update tars
+   it --mode=0755; the repo file is 755. The --enable loop starts
+   ModemManager again when it has failed and the SIM's session is
+   up (at most every 5 min). On the phone by hand: run bit, the
+   script, ModemManager restarted: connected, 5G, T-Mobile. The
+   user's reboot after: connected on its own. NOT driven: the
+   loop's own restart (the phone was connected).
+9. BUILT (Nov 2: a brightness gauge in the system panel)
+   BarLevel (the menu's unused round-thumb slider, an icon in its
+   left pad: trinity/images/light_mode.svg, Material Symbols) across
+   the system panel's top when /sys/class/backlight has a panel
+   (devices host_backlight_get / _set: 0..1, never 0). orbiter
+   set_light (StatePersist) applied at start; light_sync takes a
+   drag. Seen on the phone: mounted (500 x 54 points). NOT seen: a
+   drag changing the light (the first build overwrote the drag each
+   frame: fixed, not yet tried).
+10. DONE (Nov 2: orbiter crashed on a scene pick, then at every
+   start) the phone's libsilver-milkyway.so was built Oct 28,
+   against an older trinity: new_object in orbiter_scene_element
+   faulted. scenes and milkyway rebuilt for fp6 (silver -d fp6
+   --clean --build). Update's phone build never rebuilds scene
+   modules (not apps): OPEN.
+11. BUILT, sending (Nov 2) the next start quit (exit 1) on
+   share/silver-scenes/textures/gaia.png missing: the shares' links
+   reached the phone, their targets (untracked files: the planets'
+   maps, speech's models) did not. Update sends those targets once,
+   then changes (.links), not reference folders (~575 MB once).
+   OPEN: a texture that does not load ends the app (vk.ag expect
+   'did not load'); it should draw without it.
+12. OPEN (Nov 2) mobile data: ModemManager's connect retries fail
+   'ip-version-mismatch: IPv6 only allowed' on fast.t-mobile.com
+   (the boot console scrolls them); voice and SMS registration fine.
+13. OPEN (Nov 2) check the phone app: calls and texts.
+14. BUILT, sending (Nov 2: ?? on keys; no Chinese or Japanese
+   characters) the phone had DejaVu alone: the keyboard was on
+   Chinese or Japanese (空格 / 改行 labels). fonts-noto-cjk and
+   fonts-noto-color-emoji in fp6.agi. Swipe is English on QWERTY
+   only, so it was off in those languages (by design).
+15. OPEN (Nov 2) call audio: Luca's milos-7.3.y has speaker
+   playback only (the earpiece and microphones are a disabled
+   WIP). Catcrafts' imsd (forgejo.catcrafts.net/Catcrafts/imsd,
+   on our phone in /opt/imsd) does VoLTE in userspace and plays
+   call audio through PipeWire; its dialer API is D-Bus
+   net.catcrafts.IMS1 (Dial, HangUp, Accept, SendDtmf). Our phone
+   app dials through ModemManager (the modem's own IMS: no audio
+   reaches Linux).
+16. IN PROGRESS (Nov 2) the phone app's calls through imsd
+   (net.catcrafts.IMS1 Dial / Accept / HangUp / SendDtmf), so the
+   call's voice reaches Linux (PipeWire).
+17. OPEN (Nov 2) a Bluetooth panel for pairing.
+18. OPEN (Nov 2, asked) a 3D boot logo: the GPU driver loads at
+   39.6 s today (after init's full modprobe passes), storage at
+   10.4 s; loading GPU and display first: ~12-15 s (estimate).
+19. OPEN (Nov 3: it will not charge; dead after a restart) on our
+   system the battery fell while on the PC's USB: 356 mA in at 4.9 V,
+   the battery -1.34 A at 3.4 V, 1% to the end. The bootloader's
+   battery-soc-ok was no (3.56 V). Then: on a wall charger for hours
+   it never charged and was hot. BUILT, not on the phone: the GPU is
+   never pinned to its top clock (item 4 of the home speed list
+   undone; simple_ondemand, the kernel's own). OPEN: the 4 fast
+   cores pin; read the temperatures (tsens) and the charge current
+   on a wall charger; the screen's sleep.
+   Then (Nov 3: on a wall charger an hour, screen dark: 0%, 3.0 V,
+   -1.8 A, 92-96 C on the GPU and cores; orbiter 92% of a core,
+   the GPU at 1.15 GHz on simple_ondemand, a git at 100%). Dark,
+   devices skips the flip, so no refresh paced the frame loop: it
+   drew unseen as fast as it could. BUILT, not on the phone:
+   devices platform_screen_dark (host.h; 0 off KMS); trinity's
+   render, the panel dark, draws nothing, runs the app's on_frame
+   (the power key wakes it) and waits 50 ms. Not measured: a
+   hidden run always draws (the skip test needs !hidden), so this
+   PC cannot show it. OPEN: the git at 100% (orbiter's git polls
+   on the phone's /src/silver?), a heat guard from tsens.
+   BUILT, not seen (Nov 3: a battery indicator): devices
+   host_battery_get (the first power_supply of type Battery:
+   capacity, status Charging or Full); orbiter batt_sync reads it
+   every 10 s, BarBattery left of the signal or the date (shell
+   filled by the charge, red under 15%, a bolt while power comes
+   in, the percent). None here (no battery; a fake one needs a user
+   namespace, refused). Built for this PC, not for the phone.
+   DONE on the phone (Nov 3, measured): the GPU follows its load
+   (264 MHz idle); dark: orbiter 0%, -0.05 A on the PC's USB, 41 C.
+   Screen on, idle: 120 -> 4 frames a second, orbiter 33% -> 10%,
+   -0.5 A -> -0.25 A, 42 C. Three causes, all fixed:
+   - Au watch (linux) took build output and logs under silver's
+     folder: each log line re-ran `git diff` (git at 100% for
+     good). It skips install, platform, build, packages now.
+   - trinity: a held backdrop (phone, covered) still counted as
+     animated: the screen composed every frame.
+   - trinity: the skip's startup guard read `frames`, the stats'
+     count, which resets each second: 30 frames a second always
+     drawn, on every machine. frames_ever now.
+20. OPEN (Nov 3: the phone's apps before the next phone build; his
+   order) not built for the phone until these are in:
+   a. BUILT, seen hidden on a stand-in BlueZ (Nov 3) Bluetooth as a
+      system menu tile after Wi-Fi: the `bluetooth` module (Bluetooth
+      over BlueZ's D-Bus: adapter on / off, scan, devices connected
+      then paired then by signal; Pair then Connect; our agent
+      DisplayYesNo: a pairing's code asked in the panel (Pair /
+      Cancel), PIN 0000 for old devices; Disconnect, Forget),
+      BluetoothPanel, the tile's icon by state (Material Symbols
+      bluetooth*). t_bt_pair (tests/fake_bluez.py) passes. Seen in a
+      hidden orbiter on the stand-in: list, code asked, paired and
+      connected. The phone: bluez in fp6.agi, init.c bt_start
+      (bluetoothd -n, /var/log/bluetoothd.log); both inits compile.
+      NOT on the phone. On a hosted system (Ubuntu) it opens
+      /run/dbus/system_bus_socket itself (our libdbus looks under
+      silver's folder) and asks to be the default agent only on
+      orbiter-os (orbiter.init= on the boot line). Seen hidden on
+      this PC: Ubuntu's adapter, On, no devices (as bluetoothctl).
+      Found: importing wifi into a module that imports dbus.h too
+      broke `@DBusMessageIter` there ("expected alpha-numeric
+      identity"): OPEN silver bug; bluetooth does not import wifi.
+      Found: the bar's battery took a mouse's (power_supply scope
+      Device): skipped now.
+   b. OPEN Clock: alarms, timer, stopwatch, world clock.
+   c. OPEN Calculator.
+   d. OPEN Camera and Photos (pictures, video, a gallery).
+   e. OPEN Files and Settings (display, sound, network, storage,
+      battery).
+   f. OPEN the keyboard: a numbers-only mode when a field wants
+      numbers.
+   h. OPEN (Nov 3: programs' windows blurry on the phone, then
+      "fix both so they're sharp", then "its getting smaller") a
+      window was drawn at the text scale and stretched 2x. Built:
+      WaylandView sends the pane in pixels (ds[], win_x, win_y,
+      sheet_px), orbiter win_scale = text x the screen's scale (kept
+      current each frame, win_ds), X11 windows at scale 1 on their own
+      outputs (wayland.c ts()), the base output scale 1, Xft.dpi on
+      Xwayland's root, console --x11_scale -> STEAM_FORCE_DESKTOPUI_
+      SCALING. Seen in the simulation: gnome-calculator drew at 1x in
+      pixels (half size). Waiting on his pick: put it back, or go on
+      (base output at the full scale first).
+   g. BUILT, sending (Nov 3: make it sleep; its settings in the
+      display panel; panels generic) orbiter power_tick (orbiter-os
+      only): untouched for 'screen off' (30 s .. 10 min, never; 1 min
+      first) the light falls to a third for the last 5 s, then the
+      panel goes dark (screen_set); dark for 'sleep' (at once, after
+      15 s, 1 min, 5 min, never; 15 s first) devices platform_sleep
+      writes the wakeup count back, then mem to /sys/power/state
+      (deep on the FP6), and logs the waking irq; 20 s awake after
+      each wake for what woke it. A ringing or live call keeps it
+      awake; a ringing call lights the screen. Window.user_us is
+      public (the last tap or key). A panel is generic: any tab with
+      settings draws its chips (side_view). New battery panel (charge,
+      now, power W, voltage, times slept; platform_battery_draw) in
+      the system menu and the phone's strip when there is a battery;
+      icon Material battery_full (THIRD_PARTY.md). NOT seen: a sleep
+      and a wake on the phone, calls or texts waking it.
 6. OPEN after 5: the sound, in order: Luca Weiss's milos-7.3.y commits for
    the loudspeaker, soundwire, macros and microphones; the voice
    path between the modem and the ADSP (no mainline driver yet);
    VoLTE (IMS) if the carrier needs it (not working for the FP6
    anywhere yet).
+
+## Android on the phone and in orbiter — live list (Nov 3 2026)
+
+the user: Android on the FP6 and in orbiter on the PC. His picks:
+Waydroid (LineageOS in a container on our kernel), with Google
+Play, each Android app its own pane, the PC first. It must draw
+through Vulkan textures and play through our sound system.
+Found (Nov 3): the PC kernel has binder_linux and binderfs as
+modules (not loaded); the FP6 kernel has binder built in
+(binder, hwbinder, vndbinder; no binderfs). The PC's only Mesa
+GPU is the AMD one (renderD128): Waydroid does not run on
+NVIDIA's driver. / has 5.4 GB free.
+1. BUILT, run on his orbiter (Nov 3) featured/waydroid: LXC 6.0.6
+   (with libapparmor 4.1.8: Ubuntu's AppArmor; libcap, libseccomp),
+   libglibutil, libgbinder, gbinder-python (Cython into pylib),
+   Waydroid 1.6.3 in install/lib/waydroid; the GAPPS system and
+   MAINLINE vendor images in install/share/waydroid/images (linked
+   as /etc/waydroid-extra/images: init then downloads nothing).
+   install/bin/waydroid (our glib first for gi and gbinder; the
+   system bus at /run/dbus: our libdbus looks in silver's folder),
+   waydroid-root (pkexec: bus policy, inotify cap 8192, init, the
+   container's manager), waydroid-up (the manager by pkexec when
+   not running, the session on orbiter's display, multi-window).
+   export host ['line']: orbiter runs it itself, outside any view
+   (pkexec and binder cannot work in one); the waydroid card and
+   its store's apps (export func waydroid_store: each Android app
+   Waydroid lists, install/stores/waydroid/<pkg>). Orbiter's part
+   is written, NOT built (his orbiter reloads on a build).
+   Found: Android's system user is uid 1000, his too; his 151
+   inotify instances were over the kernel's 128, and system_server
+   aborted ("Could not register INotify for /dev/input").
+   Seen: Android booted, its apps listed (Calculator, Play Store,
+   Settings ...); Calculator opened in his orbiter's pane.
+   Leftover: /var/lib/waydroid/cache_http holds the VANILLA zips a
+   first init downloaded (root's; ~1 GB). A root logcat stream into
+   the scratchpad runs (logcat.txt), stopped with the container.
+2. PARTLY DONE its frames as Vulkan textures: Android draws on
+   the AMD chip (gralloc gbm on renderD128, Mesa, radv), wlroots
+   imports the dma-bufs on NVIDIA, orbiter draws them (seen).
+   OPEN: the Android window does not fill its pane (it sits at
+   its own place and size inside the surface, cut at the foot).
+3. OPEN its sound into orbiter's sound (the slot rings).
+3b. LATER (Nov 3: AMD fine for now) Android on the NVIDIA card:
+   Mesa's Venus in the vendor image over vtest's socket to our
+   patched virglrenderer render server, GL by Zink, frames NVIDIA
+   buffers from the start.
+4. OPEN the phone: the same on the FP6 (turnip in Android).
+His calls (Nov 3): on the PC Android draws on the AMD chip (an
+exception to never-AMD, for Android alone), its frames imported
+into Vulkan textures on the NVIDIA card; root by pkexec at each
+start; he frees room on / for the images (under install/).
 
 ## orbiter-os Wi-Fi — live list (Oct 15 2026)
 
@@ -14055,6 +14258,26 @@ step fails until a first commit; the library builds).
    half) LOST: $47k at 0.5% steps; it oversells rises and
    overbuys falls. Checked by a separate Python replay (equal to
    the cent). The slots are in a scratch HOME, not ~/.cache.
+15. BUILT, seen hidden (Nov 3: position-based; the app shows our
+   portfolio; it picks from the S&P 100 and brings stocks in and
+   out; a summary for the agent to judge; his picks: each day at the
+   close, a readable score, S&P 100 over 5 years) novis/Portfolio.ag:
+   nv_sp100 (102, each with its sector SPDR), daily bars six years
+   back (daily-<sym>.json, fetched when older than 20 h, the funds and
+   SPY too), NvGrid on SPY's days, seven measures (6m trend without
+   the last month, 1m move, vs SPY 3m, vs sector 3m, year place, over
+   200d, steadiness) ranked -3..3 among the stocks each day, summed by
+   weights (port_w, default 1 -0.25 0.5 0.25 0.25 0.5 0.5); hold the
+   best 10, out past rank 20, trades at the next open (5 bps, $0.005
+   a share). Actions: portfolio, portfolio_weights, portfolio_hold.
+   The Portfolio tab after Day: account chart, held, last moves.
+   ~/.cache/novis/portfolio-summary.txt (totals vs SPY and the list's
+   average, each year, each measure's 20-day rank correlation, t and
+   best-less-worst fifth, held, best and worst trades) and
+   portfolio-trades.tsv. First run 2021-11-04 to 2026-11-03: 6.9% a
+   year (SPY 10.1%), worst fall -23.9%; no measure foretold the next
+   20 days (all |t| under 2; steadiness and vs SPY slightly against).
+   NOT in the score yet: news mood and reports.
 
 ## orbiter documentation — live list (Oct 31 2026)
 

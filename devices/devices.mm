@@ -69,6 +69,9 @@ int platform_kms_back(void) { return -1; }
 void platform_kms_wait(void) {}
 void platform_kms_flip(int slot) {}
 void platform_screen_power(int on) {}
+int  platform_screen_dark(void) { return 0; }
+int  platform_sleep(void) { return 0; }
+int  platform_battery_draw(float* amps, float* volts) { return 0; }
 void platform_kms_cursor_image(const uint32_t* argb, int w, int h, int hx, int hy) {}
 void platform_cursor_ease(float amount) {}
 void platform_key_repeat(int delay_ms, int rate) {}

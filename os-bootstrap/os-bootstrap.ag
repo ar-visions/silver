@@ -1193,17 +1193,21 @@ element Bootstrap
     func phone_shell [] -> bool
         sb : '{install}/bin/silver -d fp6 --build'
         steps : vec string []
-        steps.push[ 'cd {root} && {sb} os-bootstrap && {sb} orbiter' ]
+        # bootcube: the phone's boot picture, until orbiter's
+        shell : 'cd {root} && {sb} os-bootstrap && {sb} orbiter'
+        steps.push[ '{shell} && {sb} bootcube' ]
         if [ !run_steps[ steps ] ] return false
-        # every app that runs on the phone (its source names no
-        # platforms, or arm64): one that fails is said, the rest go on
+        # every app and scene that runs on the phone (its source
+        # names no platforms, or arm64): one that fails is said, the
+        # rest go on
         rp : path [ root ]
         for [ d: path ] in rp.ls[ null, false ]
             n : string d.filename[]
             m : path '{d}/{n}.ag'
             if [ !d.is_dir[] || !m.exists[] ] continue
             src : string m.load[ typeid[ string ], null ]
-            if [ !src || src.index_of[ '\nexport software ' ] < 0 ]
+            if [ !src || (src.index_of[ '\nexport software ' ] < 0
+                 && src.index_of[ '\nexport scenes ' ] < 0) ]
                 continue
             pa : i32 [ src.index_of[ 'export platforms ' ] ]
             if [ pa >= 0 ]
@@ -1496,9 +1500,12 @@ element Bootstrap
             say[ 'The boot ramdisk is {file_bytes[ rz ]} bytes; ' +
                  'the bootloader takes {room}' ]
             return ''
-        # the command line: postmarketOS's, then ours: the root
-        # on userdata by its uuid, orbiter as pid 1 on turnip
-        line : first_line[ '{kd}/kernel-cmdline.conf' ].trim[]
+        # the command line: no text on the screen at any point (no
+        # console there, no framebuffer for one: the cube, then
+        # orbiter, draw by KMS), the root on userdata by its uuid,
+        # orbiter as pid 1 on turnip
+        line : 'quiet loglevel=0 drm_kms_helper.fbdev_emulation=0'
+        line = '{line} vt.global_cursor_default=0'
         line = '{line} orbiter.phone=fp6 orbiter.uuid={uuid}'
         line = '{line} orbiter.root=/ {os_words[ true, false ]}'
         icd : '{root}/install/share/vulkan/icd.d/freedreno_icd.aarch64.json'
@@ -1792,6 +1799,20 @@ element Bootstrap
                 $(test -f {stamp}.shares && echo {since}) ! -type d
                 -print0
             | {tr} --transform "s,^,{rt}/install/share/,S" } ]
+        # what those links point to in silver's folder that git does
+        # not track (a module's downloaded maps; not its reference
+        # sources): all once, then only what changed (.links marks it)
+        steps.push[ command { cd {install}/share
+            && find $(cat {work}/shares) -type l -print0
+            | xargs -0 -r readlink -f | grep "^{root}/"
+            | grep -v "/reference/"
+            | sed "s,^{root}/,," | sort -u > {work}/targets
+            && cd {root} && git ls-files > {work}/tracked
+            && grep -vxFf {work}/tracked {work}/targets
+            | while read f; do test -f "$f" || continue;
+                test -f {stamp}.links && test ! "$f" -nt {stamp}.links
+                && continue; printf "%s\0" "$f"; done
+            | {tr} --transform "s,^,{rt}/," } ]
         # the user's games, in the phone's home as Install puts them:
         # all once, then those changed since (.games marks it)
         hc : cstr [ getenv[ "HOME" ] ]
@@ -1859,7 +1880,8 @@ element Bootstrap
         # the boot's modem script (it sets the clock from the network)
         mp : 's,^{mf},usr/sbin/orbiter-modem-prepare,'
         steps.push[ command {
-            cd {root} && tar -rf {tb} --transform "{mp}" {mf} } ]
+            cd {root} && tar -rf {tb} --mode=0755
+                --transform "{mp}" {mf} } ]
         steps.push[ command {
             test -f {tb} || tar -cf {tb} -T /dev/null } ]
         if [ !run_steps[ steps ] ] return false
@@ -1912,6 +1934,7 @@ element Bootstrap
         sh[ 'touch -r {stamp} {stamp}.inc' ]
         sh[ 'cp {pk} {stamp}.debs' ]
         sh[ 'touch {stamp}.shares' ]
+        sh[ 'touch {stamp}.links' ]
         sh[ 'touch {stamp}.games' ]
         say[ 'Updated: orbiter takes it live, or the phone restarts' ]
         return true
@@ -3337,6 +3360,10 @@ element main : trinity
     public  background : string [ 'Background' ]
     # the connected phone updated, as the phone page's Update
     public  update     : bool
+    # the phone's boot.img alone, from this kernel build (its name),
+    # for the root whose uuid is boot_uuid
+    public  boot_image : string
+    public  boot_uuid  : string
 
     func init []
         # outside a window: initialize gives it its defaults
@@ -3344,6 +3371,14 @@ element main : trinity
         b.initialize[]
         if [ update ]
             if [ !b.phone_update[] ] log 'os-bootstrap: no update'
+            Au.quit_request[]
+            return
+        if [ boot_image && boot_image.count > 0 ]
+            img : ''
+            for [ kb: KernelBuild ] in b.kernels
+                if [ kb.name == boot_image ]
+                    img = b.phone_image[ kb, boot_uuid ]
+            log 'os-bootstrap: boot image {img}'
             Au.quit_request[]
             return
         if [ b.kernels.count == 0 ]

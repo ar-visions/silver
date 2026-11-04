@@ -151,7 +151,8 @@ class Modem(Obj):
                 'OperatorName': dbus.String('Mobile'),
                 'RegistrationState': dbus.UInt32(1),
                 'InitialEpsBearerSettings': dbus.Dictionary(
-                    {'apn': dbus.String('fast.t-mobile.com')}, 'sv')},
+                    {'apn': dbus.String('fast.t-mobile.com'),
+                     'ip-type': dbus.UInt32(2)}, 'sv')},
             MM + '.Modem.Voice': {'Calls': dbus.Array([], 'o')},
             MM + '.Modem.Messaging': {'Messages': dbus.Array([], 'o')}})
 
@@ -168,6 +169,11 @@ class Modem(Obj):
     @dbus.service.method(MM + '.Modem.Simple', in_signature='a{sv}',
                          out_signature='o')
     def Connect(self, props):
+        # as T-Mobile's network: IPv6 only
+        if int(props.get('ip-type', 1)) != 2:
+            raise dbus.exceptions.DBusException(
+                'ip-version-mismatch: IPv6 only allowed',
+                name='org.freedesktop.ModemManager1.Error.Core.Failed')
         b = Bearer(str(props['apn']))
         self.set(MM + '.Modem', 'Bearers',
                  dbus.Array([dbus.ObjectPath(b.path)], 'o'))

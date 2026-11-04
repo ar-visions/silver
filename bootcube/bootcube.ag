@@ -1,0 +1,102 @@
+# bootcube — the phone's boot: a cube turning in the dark until the
+# shell takes the screen (init starts it as the root mounts)
+export 1.0.0
+
+import vec
+import img
+import trinity
+
+element bootcube : trinity
+    public width      : i32    [ 1116 ]
+    public height     : i32    [ 2484 ]
+    public title      : string [ 'bootcube' ]
+    intern t0         : i64
+
+    func init []
+        animated = true
+
+    # a point of the unit cube turned about y then x, then put in
+    # perspective: x, y on the screen and its depth
+    func turn [ p: vec3f, ay: f32, ax: f32 ] -> vec3f
+        cy : f32 [ cos[ ay ] ]
+        sy : f32 [ sin[ ay ] ]
+        cx : f32 [ cos[ ax ] ]
+        sx : f32 [ sin[ ax ] ]
+        x : f32 [ p.x * cy + p.z * sy ]
+        z : f32 [ p.z * cy - p.x * sy ]
+        y : f32 [ p.y * cx - z * sx ]
+        z2 : f32 [ p.y * sx + z * cx ]
+        return vec3f [ x, y, z2 ]
+
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv || !bounds ] return
+        # the window draws only when asked: ask for the next frame
+        if [ ux ] ux.will_animate = true
+        if [ t0 == 0 ]
+            t0 = epoch_micros[]
+            # how long the boot took to show it: the kernel's clock
+            ut : path [ '/proc/uptime' ]
+            up : string ut.load[ typeid[ string ], null ]
+            if [ up ] log 'bootcube: first frame at {up}'
+        t : f32 [ f32[ epoch_micros[] - t0 ] / 1000000.0 ]
+        w : f32 [ bounds.w ]
+        h : f32 [ bounds.h ]
+        cv.fill_color[ rgba [ '#06050a' ] ]
+        cv.rect_to[ 0.0, 0.0, w, h ]
+        cv.paint[]
+        ay : f32 [ t * 0.7 ]
+        ax : f32 [ 0.45 + sin[ t * 0.4 ] * 0.2 ]
+        s : f32 [ min[ w, h ] * 0.22 ]
+        # it fades in over its first second
+        fade : f32 [ clamp[ t, 0.0, 1.0 ] ]
+        corners : vec vec3f []
+        for [ i: i32 0, i < 8, i += 1 ]
+            p : vec3f [ ((i & 1) != 0) ? 1.0 : -1.0,
+                        ((i & 2) != 0) ? 1.0 : -1.0,
+                        ((i & 4) != 0) ? 1.0 : -1.0 ]
+            corners.push[ turn[ p, ay, ax ] ]
+        # the faces: four corners each, wound outward
+        faces : vec i32 [] [ 0, 2, 3, 1,  4, 5, 7, 6,  0, 1, 5, 4,
+                             2, 6, 7, 3,  0, 4, 6, 2,  1, 3, 7, 5 ]
+        # the light from the upper left, toward the viewer
+        lx : f32 [ -0.45 ]
+        ly : f32 [ -0.6 ]
+        lz : f32 [ -0.66 ]
+        for [ f: i32 0, f < 6, f += 1 ]
+            a : vec3f corners[ faces[ f * 4 ] ]
+            b : vec3f corners[ faces[ f * 4 + 1 ] ]
+            c : vec3f corners[ faces[ f * 4 + 2 ] ]
+            # the face's normal; one facing away is not drawn
+            ux : f32 [ b.x - a.x ]
+            uy : f32 [ b.y - a.y ]
+            uz : f32 [ b.z - a.z ]
+            vx : f32 [ c.x - a.x ]
+            vy : f32 [ c.y - a.y ]
+            vz : f32 [ c.z - a.z ]
+            nx : f32 [ uy * vz - uz * vy ]
+            ny : f32 [ uz * vx - ux * vz ]
+            nz : f32 [ ux * vy - uy * vx ]
+            nl : f32 [ sqrt[ nx * nx + ny * ny + nz * nz ] ]
+            if [ nl <= 0.0 ] continue
+            nx /= nl
+            ny /= nl
+            nz /= nl
+            if [ nz >= 0.0 ] continue
+            lit : f32 [ max[ 0.0, nx * lx + ny * ly + nz * lz ] ]
+            k : f32 [ (0.18 + 0.82 * lit) * fade ]
+            cv.fill_color[ rgba [ r: 0.50 * k, g: 0.42 * k, b: k,
+                                  a: 1.0 ] ]
+            cv.stroke_color[ rgba [ r: 0.8, g: 0.75, b: 1.0,
+                                    a: 0.35 * fade ] ]
+            cv.stroke_width[ 1.5 ]
+            for [ j: i32 0, j < 4, j += 1 ]
+                q : vec3f corners[ faces[ f * 4 + j ] ]
+                # perspective: the eye 6 units back
+                d : f32 [ 6.0 / (6.0 + q.z) ]
+                px : f32 [ w * 0.5 + q.x * s * d ]
+                py : f32 [ h * 0.5 + q.y * s * d ]
+                if [ j == 0 ] cv.move_to[ px, py ]
+                el cv.line_to[ px, py ]
+            cv.close_path[]
+            cv.paint[]
+        cv.stroke_width[ 0.0 ]
