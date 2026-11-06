@@ -3818,6 +3818,16 @@ AU_EXPORT Au au_release(Au o) {
     return o;
 }
 
+// where a drain stops: what entered the pool before it stays (code
+// that drains, run inside a caller that holds pooled objects)
+static __thread i32 af_floor = 2;
+
+AU_EXPORT i32 auto_floor(i32 floor) {
+    i32 was = af_floor;
+    af_floor = floor < 2 ? 2 : floor;
+    return was;
+}
+
 // drain this thread's pool: every unreferenced object in it is freed
 AU_EXPORT none auto_free(void) {
     dbg_add_since_drain = 0;
@@ -3826,7 +3836,7 @@ AU_EXPORT none auto_free(void) {
     static int tf = -1;
     if (tf < 0) tf = getenv("AU_TRACE_FREE") ? 1 : 0;
     // only managed objects go into af
-    for (num i = 2; i < af_count; i++) {
+    for (num i = af_floor; i < af_count; i++) {
         Au a = af[i];
         // only the lifetimes under investigation: a full trace is
         // millions of lines and changes the timing it is measuring
@@ -3842,7 +3852,7 @@ AU_EXPORT none auto_free(void) {
         else if (a)
             a->managed = 1; // says i am not in the list, but managed
     }
-    af_count = 2;
+    af_count = af_floor;
 }
 
 // the pool's current end, for auto_free_to
@@ -3852,7 +3862,7 @@ AU_EXPORT i32 auto_mark(void) {
 
 // drain only what entered the pool after the mark
 AU_EXPORT none auto_free_to(i32 mark) {
-    if (mark < 2) mark = 2;
+    if (mark < af_floor) mark = af_floor;
     for (num i = mark; i < af_count; i++) {
         Au a = af[i];
         if (a && a->refs == 0)

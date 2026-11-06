@@ -184,7 +184,7 @@ class RvcNet
             v : GTensor conv[ '{ab}.conv_v', x, 1, 0, 1 ]
             y : GTensor gd.attention[ q, k, v, pm[ '{ab}.emb_rel_k' ],
                                       pm[ '{ab}.emb_rel_v' ], mask, 2,
-                                      10 ]
+                                      10, false ]
             y = conv[ '{ab}.conv_o', y, 1, 0, 1 ]
             x = gd.layer_norm[ gd.add[ x, y ],
                                pm[ 'enc_p.encoder.norm_layers_1.{l}.gamma' ], pm[ 'enc_p.encoder.norm_layers_1.{l}.beta' ] ]
@@ -493,7 +493,7 @@ class RvcHubert
             v : GTensor lin[ '{lb}.attention.v_proj', x ]
             a : GTensor lin[ '{lb}.attention.out_proj',
                              gd.attention[ q, k, v, zt, zt, null, 12,
-                                           0 ] ]
+                                           0, false ] ]
             x = gd.layer_norm[ gd.add[ x, a ],
                                pm[ '{lb}.layer_norm.weight' ],
                                pm[ '{lb}.layer_norm.bias' ] ]

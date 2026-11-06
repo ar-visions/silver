@@ -871,7 +871,7 @@ Control AppsGrid
 
     # the files an app module opens, as the navigator finds them
     func files_of [ orb: orbiter, ae: AppEntry ] -> vec string
-        if [ !ae.module || ae.apps || ae.opens ] return vec string []
+        if [ !ae.module || ae.store || ae.opens ] return vec string []
         return orb.files_ending[ orb.opens_exts[ ae.name ] ]
 
     # a name in a list
@@ -1061,7 +1061,7 @@ Control AppsGrid
                 if [ g == gn || (gn == 'other' && !known) ]
                     shown.push[ ae ]
                     # an open store: itself (it runs), then its apps
-                    if [ ae.apps && open == ae.name ]
+                    if [ ae.store && open == ae.name ]
                         band_of = shown.count - 1
                         band_at = shown.count
                         shown.push[ AppEntry [ name: ae.name,
@@ -1070,11 +1070,12 @@ Control AppsGrid
                         # benchmark mode: 16 times the cards
                         copies : i32 [ (force_animate) ? 16 : 1 ]
                         for [ c: i32 0, c < copies, c += 1 ]
-                            for [ sa: AppEntry ] in ae.apps
-                                if [ inner.count == 0
-                                     || sa.name.lcase[].index_of[
-                                        inner ] >= 0 ]
-                                    shown.push[ sa ]
+                            if [ ae.apps ]
+                                for [ sa: AppEntry ] in ae.apps
+                                    if [ inner.count == 0
+                                         || sa.name.lcase[].index_of[
+                                            inner ] >= 0 ]
+                                        shown.push[ sa ]
                         band_n = shown.count - band_at
                     # an open app: itself, then the files it opens
                     el [ open == ae.name ]
@@ -1233,7 +1234,7 @@ Control AppsGrid
         # a store with apps, or an app with files it opens, opens as a
         # folder; again, it shuts (its own card inside runs it)
         in_band : bool [ i >= band_at && i < band_at + band_n ]
-        folds : bool [ (ae.apps && ae.apps.count > 0)
+        folds : bool [ ae.store
             || (!in_band && files_of[ orb, ae ].count > 0) ]
         if [ here && folds ]
             sel   = -1
@@ -1552,20 +1553,25 @@ Control AppsGrid
         ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
                   round[ cy + (tile - isz) * 0.5 ], isz ]
         cv.restore[]
-        # under the tile: the name, its Download button, or the
-        # build's progress in its place
+        # under the tile: the name (a build's progress under it),
+        # or its Download button
         ny : f32 [ cy + tile + round[ 6.0 * un ] ]
         # Rule #12: shift over it, or ctrl / cmd for all, shows
         # its Cancel in place of the progress
         cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
         if [ cxl ]
             draw_cancel[ cv, fp, x, ny, nh ]
-        el [ busy ]
-            draw_progress[ cv, un, x, ny, nh,
-                           orb.install_frac[ ae ] ]
         el [ chosen ]
             draw_button[ cv, fp, x, ny, nh, ae.module, failed ]
         el
+            # building: the name stays, its progress under it in the
+            # row's last part (the card's picture ends with the row)
+            th : f32 [ nh ]
+            if [ busy ]
+                bb : f32 [ round[ 9.0 * un ] ]
+                th = nh - bb
+                draw_progress[ cv, un, x, ny + th, bb,
+                               orb.install_frac[ ae ] ]
             # an expanded card's name is bold
             cv.set_font[ shared_font[ cv, (folder)
                 ? 'fonts/BarlowCondensed-Bold.ttf'
@@ -1579,7 +1585,7 @@ Control AppsGrid
                 nm = '{ae.name} failed'
             cv.fill_color[ rgba [ tc ] ]
             cv.draw_text[ nm, rect [ x: x + 2.0, y: ny,
-                w: cw9 - 4.0, h: nh ],
+                w: cw9 - 4.0, h: th ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, null ]
             cv.set_font[ null ]
@@ -1675,7 +1681,7 @@ Control AppsGrid
             null ]
         cv.set_font[ null ]
 
-    # the build's progress where the name was; -1 not known yet
+    # the build's progress under the name; -1 not known yet
     func draw_progress [ cv: Canvas, un: f32, x: f32, y: f32,
                          h: f32, frac: f32 ]
         bw : f32 [ round[ cw9 * 0.78 ] ]

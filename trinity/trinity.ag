@@ -496,6 +496,18 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
 export func launch_props []
     atexit[ @launch_props_write ]
 
+func app_type_of [ mod: string ] -> Au_t
+    m : Au_t Au.find_module[ mod.chars ]
+    if [ !m ] m = Au.find_module[ 'silver-{mod}'.chars ]
+    if [ !m ] return null
+    for [ i: i32 0, i < m.members.count, i += 1 ]
+        t : Au_t m.members.origin[ i ]
+        # bit 60 of traits: is_app, the module's app element
+        if [ t && ((t.traits >> 60) & 1) != 0
+             && Au.inherits[ t, typeid[ element ] ] ]
+            return t
+    return null
+
 func launch_props_write [] -> none
     inst : path.path_install[]
     cwd  : path.path_cwd[]
@@ -505,8 +517,11 @@ func launch_props_write [] -> none
     if [ dash <= 0 ] return
     mod  : string name.mid[ dash + 1, name.count - dash - 1 ]
     ty   : Au_t Au.find_type[ mod.chars, null ]
+    if [ ty && !Au.inherits[ ty, typeid[ element ] ] ] ty = null
+    # an app element named apart from its module: the marked one
+    if [ !ty ] ty = app_type_of[ mod ]
     # a library's own export run: no app here
-    if [ !ty || !Au.inherits[ ty, typeid[ element ] ] ] return
+    if [ !ty ] return
     lp : LaunchProps []
     props_of[ ty, null, lp ]
     if [ !lp.props || lp.props.count == 0 ] return
@@ -519,6 +534,8 @@ func launch_props_write [] -> none
     skip : bool [ false ]
     lines : txt.split[ '\n' ]
     for [ ln: string ] in lines
+        # the module line is this block's too
+        if [ ln.starts_with[ 'module:' ] ] continue
         if [ ln.starts_with[ 'props:' ] ]
             skip = true
         el

@@ -67,6 +67,34 @@ written where a string is expected: `x : string [ "^" ]`.
 
 ---
 
+## Rule #3e — Text of several lines is a { } block, never s = '{s}..'
+
+A script, a file's text or any text of more than a line is ONE
+`string { }` (or `command { }`) block, written as it reads.
+Never build it a line at a time (`s = '{s}more\n'`): that is
+unreadable and was removed once already.
+```
+up : string {
+    export X=1
+    if ! has; then
+      start {bin}
+    fi
+}
+f.save[ '#!/bin/sh\n{up.trim[]}\n', null ]
+```
+- `{expr}` interpolates; `{{` and `}}` are literal braces (sh
+  functions `f() {{ ..; }}`, `${{HOME}}`).
+- Lines and their indents are kept, less the indent all the
+  lines share (Nov 4: silver read_keywords; features
+  t_keyword_dedent). The text starts with a newline: `.trim[]`.
+- A `#` line inside a block is a comment to the reader: put a
+  shebang or a `#` header outside, in the line that joins it.
+- A `command { }` block reaches the shell as one line.
+- Keep each source line in 72 columns: break the shell line
+  (after `|`, `&&`, `\`), or name a part in a shell variable.
+
+---
+
 ## Rule #4 — Isolate and validate every fix and feature
 
 Fix one component at a time. Reproduce the exact failure with the smallest focused test before editing. Change the component that owns the bug; do not add a workaround in another parser, model, build, or runtime layer. Run the focused test after the edit, then validate the affected module, then validate the requested integration target. Report each result separately. Do not call a fix complete unless its focused test and affected module both pass. If integration exposes another failure, treat it as a separate bug. Remove all temporary tracing before reporting results.
@@ -119,6 +147,14 @@ land.
 
 Never capture the desktop or enumerate desktop windows. Use the
 app's own screenshot socket and app tools for screenshots.
+
+## Rule #7b — No temp scratch folders
+
+Small scratch (a script, a shot, a log) goes in the session
+scratchpad; never copies of homes or big data there (Nov 5: it
+grew to 27 GB and filled the disk). Never litter scrap files in
+silver's tree (repo root, install/tmp): Nov 6, Maps run with
+silver as its working folder left xf_*.fb in the root.
 
 ## Rule #8 — Use Trinity app messaging
 
@@ -2813,56 +2849,646 @@ system bar. In order:
    VoLTE (IMS) if the carrier needs it (not working for the FP6
    anywhere yet).
 
-## Android on the phone and in orbiter — live list (Nov 3 2026)
+## Android apps, the Wine way — live list (Nov 4 2026)
 
-the user: Android on the FP6 and in orbiter on the PC. His picks:
-Waydroid (LineageOS in a container on our kernel), with Google
-Play, each Android app its own pane, the PC first. It must draw
-through Vulkan textures and play through our sound system.
-Found (Nov 3): the PC kernel has binder_linux and binderfs as
-modules (not loaded); the FP6 kernel has binder built in
-(binder, hwbinder, vndbinder; no binderfs). The PC's only Mesa
-GPU is the AMD one (renderD128): Waydroid does not run on
-NVIDIA's driver. / has 5.4 GB free.
-1. BUILT, run on his orbiter (Nov 3) featured/waydroid: LXC 6.0.6
-   (with libapparmor 4.1.8: Ubuntu's AppArmor; libcap, libseccomp),
-   libglibutil, libgbinder, gbinder-python (Cython into pylib),
-   Waydroid 1.6.3 in install/lib/waydroid; the GAPPS system and
-   MAINLINE vendor images in install/share/waydroid/images (linked
-   as /etc/waydroid-extra/images: init then downloads nothing).
-   install/bin/waydroid (our glib first for gi and gbinder; the
-   system bus at /run/dbus: our libdbus looks in silver's folder),
-   waydroid-root (pkexec: bus policy, inotify cap 8192, init, the
-   container's manager), waydroid-up (the manager by pkexec when
-   not running, the session on orbiter's display, multi-window).
-   export host ['line']: orbiter runs it itself, outside any view
-   (pkexec and binder cannot work in one); the waydroid card and
-   its store's apps (export func waydroid_store: each Android app
-   Waydroid lists, install/stores/waydroid/<pkg>). Orbiter's part
-   is written, NOT built (his orbiter reloads on a build).
-   Found: Android's system user is uid 1000, his too; his 151
-   inotify instances were over the kernel's 128, and system_server
-   aborted ("Could not register INotify for /dev/input").
-   Seen: Android booted, its apps listed (Calculator, Play Store,
-   Settings ...); Calculator opened in his orbiter's pane.
-   Leftover: /var/lib/waydroid/cache_http holds the VANILLA zips a
-   first init downloaded (root's; ~1 GB). A root logcat stream into
-   the scratchpad runs (logcat.txt), stopped with the container.
-2. PARTLY DONE its frames as Vulkan textures: Android draws on
-   the AMD chip (gralloc gbm on renderD128, Mesa, radv), wlroots
-   imports the dma-bufs on NVIDIA, orbiter draws them (seen).
-   OPEN: the Android window does not fill its pane (it sits at
-   its own place and size inside the surface, cut at the foot).
-3. OPEN its sound into orbiter's sound (the slot rings).
-3b. LATER (Nov 3: AMD fine for now) Android on the NVIDIA card:
-   Mesa's Venus in the vendor image over vtest's socket to our
-   patched virglrenderer render server, GL by Zink, frames NVIDIA
-   buffers from the start.
-4. OPEN the phone: the same on the FP6 (turnip in Android).
-His calls (Nov 3): on the PC Android draws on the AMD chip (an
-exception to never-AMD, for Android alone), its frames imported
-into Vulkan textures on the NVIDIA card; root by pkexec at each
-start; he frees room on / for the images (under install/).
+the user: Android apps in orbiter (then the phone), started as
+programs the way Wine runs Windows ones: no container, no Android
+system booting. Waydroid was tried (Nov 3-4) and REMOVED (Nov 4):
+it boots Android's whole userspace (init, zygote, system_server,
+GMS) before any app, about a minute, and needs root. Now: Android
+Translation Layer (ATL, gitlab.com/android_translation_layer):
+ART (art_standalone) runs the apk's dex, Android's APIs are
+reimplemented on GTK 4, bionic_translation loads its native code.
+No Google Play (apks from files or F-Droid); apps with ARM-only
+native code do not run on the x86 PC (they do on the phone).
+Kept from the Waydroid work, generic: wayland.c's centring of a
+window whose root takes no input, fixed-size windows
+(wlc_window_fixed_w/h, no grips), the stable socket link
+$XDG_RUNTIME_DIR/orbiter-wl/wayland-0, orbiter's export host /
+host_startup / service / ready and the card's starting state.
+Waydroid's root side is removed by one root script (session
+scratchpad waydroid-remove.sh: stuck root loops, the manager,
+/var/lib/waydroid, /etc/waydroid-extra, its bus policy,
+~/.local/share/waydroid); NOT run yet (needs his sudo).
+In order:
+1. IN PROGRESS (Nov 4) featured/atl BUILDS whole, with our clang
+   only (his call: no gcc 15, trimmed). Imports: JDK 17 (build
+   time), xz lz4 libmd libbsd libunwind elfutils openssl wolfssl
+   libcap, bionic_translation, art_standalone, GTK 4.16 and its
+   stack, libportal, sqlite, OpenXR headers; shared lines with wine.
+   System kept: ICU 74, ALSA (their dev files are on the PC).
+   Cut: WebKitGTK (WebView is ours over aura's helper:
+   android_webkit_WebView.c), FFmpeg (MediaCodec stubbed),
+   libsecret (accounts, keystore stubbed), libgudev (vibrator
+   stubbed), X11 paths (GDK_WINDOWING_X11 guards).
+   Overlays: art_standalone/ (clang: const jvalue* in jni.h (gcc's
+   -fpermissive hid it), offsetof, dladdr casts, cstring, C if-decl,
+   Makefile run paths: bins reach lib/, natives reach lib/art),
+   bionic_translation/ (COPYABLE_FUNC's section by asm for clang;
+   install_rpath), android_translation_layer/ (meson.build deps,
+   main.c's forced 32-bit .interp removed, xr_lazy_call, X11).
+   silver: an import whose > lines run ./configure is built by
+   them (wolfssl's cmake lacks JNI).
+   ART at -O1+ under clang: ClassLinker's class-path lookup drops
+   DefineClass's result (traced in gdb: rax holds the class, the
+   caller never reads it) and fails CHECK(IsExceptionPending);
+   art/runtime/class_linker.cc compiled with `#pragma clang optimize
+   off` (overlay). -O0 verified; the real cause in clang's view of
+   that code: OPEN. Hello on dalvikvm: "hello from ART 7".
+   RUN (hidden orbiter): Gravity Defied (ATL's test apk) mapped in
+   its pane in 0.77 s warm, menu and track drawn (shot). ART's boot
+   image compiles once (2.1 s) into ~/.cache/art.
+2. BUILT, seen hidden (Nov 4: the store app with all apps we have)
+   atl's card on the apps screen opens as a folder of every apk:
+   export func atl_store writes install/stores/atl/<name> per .apk
+   in install/share/atl/apks (ATL's test apks, imported) and in
+   ~/.local/share/android_translation_layer/_installed_apks_, each
+   `export launch ['atl <apk>']`, its icon the apk's densest
+   ic_launcher / icon / app_icon png; .watch lists both folders.
+   install/bin/atl runs android-translation-layer with install/share
+   on XDG_DATA_DIRS. Seen hidden: the folder, 14 apps, 10 icons.
+   NOT driven: a card's press (a hidden run hosts no console).
+2a. DECIDED (Nov 4) no Android container on any machine (a load
+   of minutes is a no go), so no Google Play Store and no paying
+   through Google: the Play Store and paid apps need Play Services,
+   which needs Android's own system layer (binder between apps,
+   accounts, the installer, Google's device check). ATL has none.
+   Left: free apps by ATL; apps bought on Google's website and
+   fetched by our own client (no in-app purchases, no licence
+   checks); our own store. His pick pending.
+2c. BUILT, not run (Nov 4: atl renamed; its card signs in to
+   Google Play and lists the account's apps, one fetched at a
+   time; fetched apps are cards in its folder; his picks: module
+   android, his own account, pieces loaded as they are) featured/
+   android (was featured/atl; the test apks import gone):
+   install/bin/android-run (ATL, no title bar), element PlayApps:
+   Google's sign-in page in an aura element (a phone's agent,
+   cookies to a file; aura agent / cookie_file, its helper's
+   TRINITY_BROWSER_AGENT / _COOKIES), its oauth_token -> the
+   account token (/auth), a device checkin as a Fairphone 6 (its
+   build id a stand-in), the device's description, the Google
+   Play token, kept by StatePersist; purchaseHistory lists the
+   apps; a row's Get: acquire, purchase, delivery, base.apk and
+   every piece into ~/.local/share/android-play/apps/<package>;
+   export android_store makes install/stores/android/<name> per
+   folder: `android-run base.apk piece.apk ...`. android.c: a
+   protobuf writer and path reader (checked against itself, nested
+   past 127 bytes), url encoding, key=value answers, the nonce.
+   Protocol as Aurora's gplayapi (GPL) does it, our own code.
+   tls: request_as (an agent; a POST with no body says length 0;
+   a refusal's body kept as <dest>.error), header lines by \n.
+   Fixed on the way: silver's import tests ran from the compiler's
+   folder (webgfx's fonts unfound): they run in the import's share
+   now; a test's drain freed the compiler's own objects (SIGSEGV):
+   Au auto_floor keeps a drain above a mark (aether: auto_mark,
+   auto_floor, auto_free_to round the tests). trinity draw_canvas:
+   a blur is drawn whole (the ink crop clipped it). Window chrome:
+   ATL_DISABLE_WINDOW_DECORATIONS; its back is the action app.back
+   (overlay back_button.c), tray AppMenu enabled / activate.
+   RUN (Nov 4): his sign-in, the account's 6 apps listed, Gemini
+   and Translate got (Keep in a test: base + 3 pieces, real apks).
+   Fixed on the way: the cookie set by "I agree" (a fetch, no load)
+   now reaches the file (helper: the cookie manager's changed
+   signal); a first sign-in's null tokens crashed work_bg; the
+   library's versions are 0, so details?doc= gives the version
+   first; the app in its view cannot write install/stores, so the
+   export reads the view's home too and writes .watch (orbiter
+   reruns it). trinity's launch_props finds an app element named
+   apart from its module (traits bit 60); silver's build-none test
+   took an indented line inside a { } block (android rebuilt on
+   every run). orbiter: AppEntry.store, a store with no apps still
+   opens as a drawer (its own card first: the Play page, signed in
+   it lists the account's apps). OPEN: no refresh button (reopen),
+   no store search, orbiter's bar back to app.back.
+   Then (Nov 4: the got apps crashed at load; implement what they
+   need in ATL) each died on a framework call ATL lacks (ART aborts
+   on the pending error). Added in featured/android's overlay of
+   api-impl (meson.build copied, new files listed there):
+   Process.isApplicationUid; ShortcutManager's whole API (no-ops);
+   ActivityManager.isRunningInTestHarness; Rect and RectF
+   Parcelable (ART's verifier refused Translate); TransitionManager
+   and Scene (no animation); Property.of (getter, setter or field)
+   and NoSuchPropertyException; UserManager (one owner, no
+   restrictions); StrictMode whole (every builder call, listeners;
+   never enforced) and strictmode.Violation; AttributionSource and
+   Context.getAttributionSource; Context.bindService with an
+   Executor, bindIsolatedService, bindServiceAsUser; View's
+   getWindowInsetsController null outside a window (as Android);
+   Resources.loadDrawable of a colour list: a ColorDrawable of its
+   colour (as Android). Seen on a test orbiter: Gemini, Google One
+   and Translate open their windows and stay up. Gemini says it
+   needs the Google app (googlequicksearchbox); Google One stays
+   blank (waits on Play Services); Translate's first sheet shows,
+   its buttons with no labels. OPEN: Play Services, the Google
+   app, button labels.
+   Test orbiter, never over his log: fp6-box -r -m binds a scratch
+   folder on platform/native/tmp, then fp6-box --map-user=1000
+   --map-group=1000 -U runs orbiter as him (scratchpad torb.sh).
+   Then (Nov 4: implement Play services) microG 0.3.17 (its
+   GmsCore and Companion apks, Apache-2.0) imported into
+   share/microg (the gms apk's x86_64 libs unpacked beside it);
+   android-run links both into ATL's _installed_apks_ (ATL loads
+   them into the app's process) and, given `--account <file>`,
+   writes the Google account into ATL's folder store. The account
+   file (email, then the AAS token; mode 600) is written by
+   PlayApps at sign-in; android_store's cards pass it. ATL api
+   (overlay): AccountManager on files (accounts/<type>/<name>/
+   <key>, %-encoded, 600), the authenticator classes; apk
+   certificates from the v3/v2 signing block (microG checks
+   Google's); a manifest's own permissions granted; AppOpsManager
+   all allowed; CursorWindow parcels; a Parcelable's class looked
+   for in the app's and Play services' loaders too; Binder caller
+   and ContentProvider.call for microG's providers.
+   TLS (Nov 4: our own TLS, no wolfSSL): wolfSSL is gone (its
+   import, ART's boot jar and natives, the installed files);
+   security.properties and Providers.java name our provider:
+   com.android.org.conscrypt.OpenSSLProvider ("AndroidOpenSSL",
+   Android's platform names so OkHttp drives ALPN and SNI by
+   reflection), its socket a wrap of tls's TLSClient: TLSClient
+   takes a connected socket (fd; polled waits, a lock so reads
+   and writes cross), ALPN, verify off for an app's own trust
+   manager; tls_wrap / tls_read / tls_write ... are its plain C
+   calls, ATL's TlsNative.c only JNI over them (links
+   libsilver-tls; no mbedtls of its own). Checked in ATL
+   (an Instrumentation test): 200s from example.com and google,
+   expired / wrong host / self-signed / untrusted root refused
+   with mbedtls's reason, ALPN h2 over TLS 1.3. Translate gets
+   200s from its own API (isUserAuthorized, phrasebook). OPEN: Google One blank (no error; waits on
+   something not found yet), Gemini needs the Google app,
+   Translate's button labels, microG's own Conscrypt (an app
+   asking ProviderInstaller would put it over ours), SSLEngine
+   and TLS servers (refused).
+   Then (Nov 4: no clicks worked; then no typing in the text
+   box) clicks: a view with no input handler passes a touch to
+   the views under it (WrapperWidget wrapper_widget_takes_input,
+   JavaWidget contains); Parcel booleans are ints (microG's flags
+   parse). Typing: the text screen drew blank because <include>'s
+   android:visibility was dropped (LayoutInflater.parseInclude):
+   a gone full-screen container covered it. Then LocaleSpan was
+   missing (the layout aborted): LocaleSpan, ScaleXSpan, TtsSpan
+   added, the color, size, typeface and appearance spans hold
+   their values, Annotation, Time.setToNow, TextUtils.replace and
+   writeToParcel, Paint keeps text scale and skew. Seen on a test
+   orbiter: 'hello' -> Hola, 'good' -> Buena. Keys to a Wayland
+   window are key presses (`key`), not the socket's `text`.
+   Then (Nov 4: raw <b><i> tags; square frames round the round
+   buttons; typing paints seconds late) Html.fromHtml parses as
+   Android's converter does (spans, entities, block newlines, the
+   TagHandler); TextView draws spans as Pango attributes on plain
+   text (native_setSpans; GTK markup mode gone: it broke on any
+   '<' or '&'); SuperscriptSpan added. Button drops GTK's frame on
+   every background set (was only a background at construction),
+   and ATL-no-border also clears Adwaita's fill, shadow, outline.
+   The pen button failed: InputMethodSubtype getLocale and the
+   rest, InputMethodManager's stylus / cursor / extracted text
+   calls, ExtractedText (a stub class hid in InputConnection).
+   Seen: "Did you mean receive" with no tags, frames gone.
+   NOT reproduced: the typing lag (hidden, with the pointer moving
+   every 10 ms: every letter in the next shot; his Translate's main
+   thread used 3.5 s of CPU in 3 min). His orbiter log had
+   "[wayland] Data too big for buffer (4088 + 20 > 4096)": the
+   compositor's queue to the app overflowed once. Not chased.
+   Then (Nov 4: the backup sheet flashed black on load) two
+   causes. orbiter's compositor (wayland.c, wlroots 0.17) filled
+   every pixel no surface covers with opaque black and drew into
+   XRGB: a dialog's clear parts were black. A dialog (sheet) now
+   renders itself into ARGB, cleared to clear (sheet_render: the
+   scene's buffers walked, the output's place taken off); orbiter's
+   draw_sheet puts no black box or shadow behind it. And ATL's
+   Dialog ignored its theme (the activity's opaque window
+   background): it wraps its context in the dialog's theme as
+   Android does (dialogTheme when none). Seen hidden: no black
+   frame, Translate dimmed under the sheet. Left: Translate's own
+   sheet animation (it grows as the account loads) under orbiter's
+   slide down; a black band at the sheet's rounded top; Continue's
+   label missing.
+   Then (Nov 4: the round buttons did nothing; "..." worked)
+   ATL's Button clicks only through GTK's "clicked", and GTK gives
+   a press to the widget it picks under the pointer; Translate's
+   round MaterialButtons sit under another widget, so Java's touch
+   reached them and GTK never clicked. Button.onTouchEvent now asks
+   GTK (native_picked: gtk_widget_pick at the touch's window place)
+   and, not picked, clicks in Java as Android does. Seen on a test
+   orbiter at 617 x 950: copy ("Translation copied"), speaker,
+   feedback each once; a picked button (swap) once, not twice.
+   Typing timed in his run (a key trace, removed): keys 1-5 ms,
+   handlers under 8 ms, paints under 15 ms; one key 5 s late, held
+   while the text screen opened. The screen opens in 0.5 s on a
+   test orbiter at his size, dozens of seconds in his: NOT found.
+   His Translate's main thread idles in poll while it waits; the
+   portal on orbiter's bus answers in under 10 ms (not it).
+   Then (Nov 4: nothing responded at all, not even typing) once
+   the round buttons clicked, the pen button turned on Translate's
+   handwriting input, which it keeps: the text screen then built
+   HandwritingInputView, whose helper (niv) implements Android's
+   KeyboardView.OnKeyboardActionListener; ATL had no KeyboardView,
+   the class failed to resolve, ART aborted on a JNI error and the
+   window froze. KeyboardView (draws nothing, the listener
+   interface) added. Seen on a test orbiter: the pen opens "Write
+   here", swap both ways, keyboard back, 'hello' -> Hola.
+   Then (Nov 4: the Google logo black on the dark theme) ATL gives
+   every Resources one shared AssetManager, whose native config is
+   the last one set: Translate's own dark mode makes a night
+   Resources, another a day one; the theme resolved night, the
+   lockup's style= lookup day (logoColor 1: google_black). Resources
+   now puts its own config back before each lookup (am(), a weak map
+   of the config last applied per AssetManager). BitmapDrawable takes
+   a tint and colour filter (drawn through a paint). Seen on a test
+   orbiter with his saved state: the wordmark white. He saw it fix
+   the buttons too (their styles had been looked up by day).
+   Then (Nov 4: Continue's label indented more than Cancel's) ATL
+   never applied android:gravity: every label sat at the start of
+   its box (xalign 0) and getGravity said CENTER whatever the style.
+   TextView reads gravity from its style and setGravity applies it
+   (native_setGravity: a Button centres its label box, a text view
+   aligns and justifies its text; the default is top start, as
+   Android). Seen on a test orbiter: the sheet's Sign In and Cancel
+   centred, its title and body centred, the language names centred.
+   Not seen: his signed-in Continue / Cancel pair (my state shows
+   the signed-out sheet). Found on the way, not mine: the bottom row
+   (Live translate, Camera, Practice) sits ~100 px left in some runs
+   and centred in others, gravity on or off: OPEN.
+   Then (Nov 4: download from another account) PlayApps gained
+   `action func sign_out` (the app's menu in the bar): tokens,
+   cookies and the account file forgotten, the sign-in page back;
+   fetched apps stay. Built, not driven. ATL's own account folder
+   in the console's home keeps the old account beside a new one.
+   Then (Nov 4: get any app from its play.google.com page in aura;
+   the site itself gives no file) a module exports the pages it
+   acts on, without their scheme (`export pages [..]`: the agi
+   writer splits a value at its colon); orbiter (Editor
+   page_module) shows a Get chip left of the domain on such a page;
+   a press hosts that module in a new pane with the address. android
+   exports play.google.com/store/apps/details; PlayApps takes it as
+   its default `src` and, signed in, gets the ?id= app as a row's
+   Get does (details names it, acquire, $0 purchase, delivery), so a
+   free app not on the account joins it. Paid apps: buy on the site
+   first. Built (android, orbiter), not driven.
+   Then (Nov 4: aura's folder shows aura and its bookmarks, no
+   .html files) aura: action funcs bookmark_page and
+   remove_bookmark (its bar menu) write ~/.local/share/aura/
+   bookmarks.txt ('address TAB title'); export func aura_store
+   makes install/stores/aura (always: a store folder keeps file
+   cards out, NodeList) with a card per bookmark, `export launch
+   ['<address>']`. orbiter apps_pick: a launch that is an address
+   goes to open_url (hosts its scheme's module), not a console.
+   orbiter host_module and module_of_export find featured/<m>/
+   (the Get pane had looked for silver-android/ and aborted).
+   Checked: a bookmark in a scratch HOME made its card's module,
+   removed again. NOT driven: the menu entries, a card's press.
+   Then (Nov 4: Roblox got, "here", no card) orbiter store_files
+   compared only the files right in a watched folder; Play's apps
+   folder holds one folder an app, so a new app never reran the
+   store's export. Folders count by name now. Roblox's card made
+   (its export run by hand once). Roblox came as arm64 pieces
+   only (we check in as an FP6): its native code cannot run on
+   this x86 PC.
+   Then (Nov 4: Roblox crashed loading, its arm64 engine on x86;
+   "define your device as what we're on") the device Play is told
+   is this machine's (dev_pc: /proc/sys/kernel/arch): an x86_64 PC
+   'orbiter-x64' (maker orbiter, hardware x86_64, abi x86_64 only,
+   1920 x 1080) or the FP6 as before; check-in, device config and
+   both agents follow. PlayApps keeps gsf_dev and checks in again
+   when it differs. A download clears the folder's .apk first and
+   app.txt's fourth line names the device; 'here' only for this
+   device's (got_here), so the FP6 downloads can be got again.
+   Built, not run against Google.
+   Then (Nov 4: Roblox's x86_64 piece got, but its card still
+   named the gone arm64 one; then minutes of "calling
+   apkenv_reloc_library with packed reloc" lines) store_files also
+   reads one level into each folder (a re-download remakes the
+   card); bionic_translation's overlay linker.c no longer prints a
+   line per packed relocation (libroblox.so: millions).
+   Then (Nov 4: still crashed: libroblox.so "cannot locate symbol
+   AImageReader_delete") every symbol libroblox.so (x86_64) needs,
+   against ATL's libraries and bionic_ names: 11 NDK functions and
+   __sendto_chk were missing, the rest weak. Added (overlay):
+   libandroid image_reader.c (AImageReader / AImage refuse:
+   AMEDIA_ERROR_UNSUPPORTED, no image source here;
+   AHardwareBuffer_acquire / release nothing), configuration.c's
+   AConfiguration_getScreenWidthDp / HeightDp (0, not set),
+   bionic libc-chk.c's bionic___sendto_chk. Built; NOT run.
+   Then (Nov 4: Roblox ran to "Connection error") two causes:
+   tls.ag's handshake and write loops took mbedtls's
+   RECEIVED_NEW_SESSION_TICKET (TLS 1.3's ticket: call again) as an
+   error (recv already retried); and ATL's Settings.Global.getString
+   (Secure: "NOTICEME"; Global: "STRING_FROM_SETTINGS_GLOBAL_
+   WITH_KEY_<key>") for an unknown key, which Roblox took as its
+   channel: clientsettingscdn answered 403 "The bucket name is
+   invalid." (found by a socket trace, removed). Unknown keys are
+   null now, as Android (overlay Settings.java). IBinder gained
+   linkToDeath and the rest as defaults (Play Core called it).
+   Then Roblox reached Loading and stopped: ViewConfiguration's
+   static and scaled calls Android has were added (getWindowTouchSlop
+   first), then View's pointer capture (OnCapturedPointerListener,
+   request / release / hasPointerCapture, kept as a state: no mouse
+   lock wired yet) and Activity.onPointerCaptureChanged.
+   Then (Display.getSupportedRefreshRates missing) every framework
+   call of Roblox's dex checked against ATL's jars at once (session
+   scratchpad tools/apicheck.py <jars,> <apk>: 120 classes, 671
+   members missing, most behind camera, accessibility, ads). Added
+   the startup and game ones: Display (refresh rates, state),
+   MotionEvent (action button, classification), InputDevice
+   MotionRange (min max range flat fuzz resolution), Activity
+   (onKeyDown, onKeyUp: back runs onBackPressed, finishAndRemoveTask,
+   lock-screen setters), Context (main executor, code cache,
+   deleteFile, registerReceiver with flags, foreground service ...),
+   AudioTrack / AudioManager, PowerManager thermal, Trace async,
+   Handler postDelayed with a token, BaseBundle doubles, Window
+   (its Callback's other methods as defaults, hierarchy state),
+   WindowInsets, Build SKU / SOC, View (ten simple ones). dx
+   refuses invokedynamic (no method references or lambdas).
+   Then (Roblox hung on Loading: a runtime abort) android-run keeps
+   each app's log in $HOME/.cache/android/<app>.log (a view's /tmp
+   goes with its window). The abort: AndroidX's lifecycle at SDK 26
+   runs through a ReportFragment that dispatches ON_CREATE from
+   onActivityCreated, which ATL's Fragment lacked; ON_CREATE came
+   late at ON_START and Roblox's media picker refused to register
+   while STARTED. Fragment gains onAttach, onActivityCreated (steps
+   once each, in order); Activity brings every fragment past
+   onActivityCreated in onPostCreate and before onStart.
+   Then (black screen) Roblox swapped one frame (grey) and aborted:
+   CookieManager.setCookie(url, value, callback) missing. ATL's
+   CookieManager kept nothing (getCookie ""): now a cookie jar for
+   the process (domain -> name -> value, Domain= and Max-Age<=0
+   read, a parent domain matches), the callback forms;
+   ValueCallback is Android's ValueCallback<T> with onReceiveValue.
+   TEMP trace still in: egl.c bionic_eglSwapBuffers TEMPSWAP (every
+   120 swaps the size and the middle pixel); remove when Roblox
+   draws.
+   Then (Nov 4, "just implement all of it": ATL is a rewrite of
+   Android's framework that implements only what its own test apps
+   need; we are on its latest commit) every framework class and
+   member Roblox, Translate, Gemini and Google One reference that ATL
+   lacks is generated from Android 15's API jar (platform-35 from
+   dl.google.com; javap): featured/android/apigen/ gen.py (each
+   declared exactly as android.jar has it; bodies Android's
+   "nothing here": no value, 0, false, null, a builder itself; enum
+   values appended to the enum's list; a constructor added to a class
+   keeps its default written out; supertypes checked against ATL's
+   own kinds), geniter.py (build, drop what does not compile into
+   skip.txt, again), apicheck.py (apk against jars). Inputs:
+   allclasses.txt, allmembers.txt (the four apps' scan). The scripts
+   still name the session scratchpad (base snapshot, base-api-impl.jar,
+   android.jar): OPEN, give them repo paths. 203 classes, 102 nested
+   classes, ~1,000 members; 130 dropped. Missing before / after:
+   Roblox 120 / 548 -> 1 / 60, Translate 170 / 745 -> 26 / 108, Gemini
+   46 / 312 -> 3 / 33, Google One 164 / 671 -> 20 / 104 (the rest:
+   dropped ones, API 36 calls, javax TLS).
+   ATL's Java jars now compile from a file list (overlay
+   api-impl/javac_list.sh; api-impl, gstub, ghax, test-runner
+   meson.build): one command line could not hold 1,000 sources.
+   Then (Nov 5: Roblox's audio class failed to verify: ATL's
+   BluetoothHeadset was no BluetoothProfile, a class there) every
+   class in both jars compared by what it extends and implements:
+   203 differed. BluetoothProfile is Android's interface now;
+   ~190 classes gained their interfaces (84 were not Parcelable),
+   38 interfaces ATL lacked were made from android.jar (methods as
+   defaults), the stubs javac asked for added (Android's do-nothing
+   answers; Drawable callbacks to the drawable). Real code:
+   InputConnectionWrapper passes every call to its target,
+   Anticipate / Cycle interpolators, CheckedTextView's state,
+   ResolveInfo.DisplayNameComparator; three exceptions, four
+   interpolators, LinkMovementMethod and Slide take Android's
+   parent. Generated lists, sets, maps and arrays return empty, not
+   null (gen.py too). 21 left: widgets on the wrong parent
+   (TabHost, Toolbar, WebView, MediaController ...), no source for
+   ProxyInfo and WindowId. Builds; not run with Roblox yet.
+   Coverage of Android 15's public API (Nov 5): classes 1,471 of
+   4,467 (33%); methods and fields 19,809 of 72,568 (27%), 4,799 of
+   them generated stubs; ATL alone was about 20%.
+   Then (Nov 5: Block Blast! got, no card) orbiter's store rerun
+   (`silver --export --build`) inherited orbiter's own
+   SILVER_ISOLATE_CHILD and SILVER_SUPERVISOR: the export's host took
+   itself for orbiter's child and quit before the export ran. silver
+   clears them at its start; silver-host drops inherited copies of the
+   values it sets (env_set_here). Checked with orbiter's environment:
+   the card is written.
+   Then (Nov 5: Block Blast! quits loading) SIGSEGV in its
+   libnesec-x86.so (NetEase's protector): it reads liblog.so's
+   dynamic section itself (GNU_HASH at 0x200), adding the load base
+   as on Android, but glibc had made those addresses absolute. glibc
+   leaves them as linked when PT_DYNAMIC is read only (checked on
+   2.39: dlsym still works). install_android clears PF_W on
+   PT_DYNAMIC of lib/art/*, the *_bio libraries, libandroid,
+   libOpenSLES, libz (android.c dyn_readonly_dir; 23 files). Its
+   card icon came as a JPEG named icon.png (libpng errors): the
+   card keeps the real type (pic_kind); icon lookups take .jpg.
+   NOT run since. OPEN: a later ART reinstall without an android.ag
+   change keeps writable PT_DYNAMIC (the export runs once).
+   Run after it: past that point, the protector checked for
+   repackaging and hook tools (FindClass of signature killers,
+   LSPatch, SandHook ...), then jumped to an address in its own
+   code with no load address added (SIGSEGV at 0x1013e6), from
+   code it decrypts at run time. Stopped there: getting past it
+   means defeating its environment checks. Not a benchmark app.
+   Checked again (Nov 5, gdb on a hidden compositor of my own):
+   ATL answered all 791 of its dlsym calls and every dlopen; the
+   loader fills dl_iterate_phdr's load bias. Not a missing ATL
+   symbol: the app's protector (NetEase nesec) stops itself. The
+   user's rule: no bypass, no change to any app. Left as it is.
+   Then (Nov 5: Maps white until orbiter lost focus) the map is a
+   Wayland subsurface, shown only from GTK's window's next commit,
+   and GTK at rest never commits. native_window.c window_direct
+   queues a redraw of the window once the subsurface exists. Seen
+   on a test compositor: the window commits 0.5 s later, no input.
+   Found: every app named base.apk shares ATL's data folder
+   base.apk_ (Roblox, Translate, Gemini ...): OPEN.
+   Then (Nov 6: Maps died on most starts; patch microG) microG
+   0.3.17's ISemanticLocationService took code 6 as a status
+   callback; Maps sends its ISemanticLocationCallbacks there and
+   died on the reply. ghax (ATL's jar loaded first in every app's
+   loader, microG's too) carries the corrected Stub: code 6 answers
+   callbacks code 2 (Status success, false, no metadata); codes 1 2
+   5 as microG's. microG's types compile from ghax-stubs/
+   (-implicit:none: not in the jar). Seen in the real orbiter: 5
+   starts, each up 60 s with the map, no mismatch in its log.
+   Then (Nov 5: Google Maps first) his fetch from Play; run hidden
+   on a compositor of my own (`install/build/wayland --hidden true`
+   on a scratch XDG_RUNTIME_DIR, WAYLAND_DISPLAY the full socket
+   path, a scratch HOME): no window on his desktop or in his
+   orbiter. Fixed in order, each seen in the log:
+   - libgoogle3.so (42 MB, the app's code) failed to link: ATL's
+     libandroid lacked 12 NDK functions (every dlsym was answered;
+     the loader's own lookups of a library's imports go elsewhere,
+     so a missing one shows only as "failed to link" with its
+     reason in dlerror; found by diffing the library's undefined
+     symbols against what ATL's shim libraries, glibc and its
+     sibling libraries export). Added (overlay libandroid):
+     choreographer.c (AChoreographer on the thread's ALooper: a
+     timerfd at 60 Hz, frame / frame64 / vsync callbacks, the
+     refresh rate told once, the FrameCallbackData accessors),
+     surface_texture.c (ASurfaceTexture over ATL's stub
+     SurfaceTexture: attach, detach, update answer done, identity
+     matrix), shared_memory.c (ASharedMemory on memfd),
+     AHardwareBuffer_describe (empty), ANativeWindow_
+     getBuffersDataSpace (unknown), android_get_device_api_level
+     (Build.VERSION.SDK_INT through get_jni_env, resolved at run
+     time from libtranslation_layer_main as the Looper calls are).
+     libelements.so (94 missing: Vulkan, zlib, AHardwareBuffer_
+     allocate / lock / unlock / from / toHardwareBuffer, ATrace):
+     not yet.
+   - "Couldn't find any tzdata file" then "The provider doesn't
+     support UTC" (libcore's TimeZone falls back to GMT alone):
+     android.c tzdata_write makes Android's tzdata (ZoneInfoDB's
+     form: header, a 52-byte index entry a zone with its standard
+     offset, the TZif files, zone.tab) from /usr/share/zoneinfo
+     (Ubuntu's files are fat TZif: the 32-bit block the old reader
+     uses is filled) at the android export: install/lib/java/dex/
+     art/misc/zoneinfo/current/tzdata, 499 zones; ATL's main sets
+     ANDROID_DATA to install/lib/java/dex/art when unset (libcore
+     reads $ANDROID_DATA/misc/zoneinfo/current; ART's own oat
+     cache ignores it; ANDROID_ROOT would move dex2oat and the
+     boot image, so not that). ICU4J's zone rules (java.time) are
+     resources in core-oj already.
+   - android.hardware.SensorEventListener2 missing (implemented by
+     an app class: apicheck now counts what app classes extend
+     and implement, 169 -> 178 classes). apigen's scripts are
+     repo and install rooted now: inputs featured/android/apigen/
+     allclasses.txt, allmembers.txt, skip.txt (Maps' 152 classes
+     and 510 members appended); working files install/tmp/apigen/
+     (sdk/android.jar = platform-35's, gen/base = the overlay as
+     it stood before a run, gen/base-api-impl.jar = the built jar,
+     last.json). A fresh base was taken (the Nov 4 one predated
+     the hand edits since). gen.py: 104 classes, 80 nested, 443
+     members for Maps; geniter: 3 rounds, 100 members skipped.
+   - getSystemService(Class) took the class's first constructor
+     (none: an index fault): ContextImpl keeps Android's
+     class-to-name table (SystemServiceRegistry's names), looks the
+     service up by name; Context.getSystemServiceName added.
+   - GLES20: 22 natives declared with no body (glStencilMask first):
+     written in the overlay's android_opengl_GLES20.c, both overloads
+     (an array with its offset, a Buffer) where ATL declares two.
+   - TextureView gave the app no SurfaceTexture and EGL14's window
+     surface, swap and queries were generated stubs: TextureView is
+     SurfaceView's widget with its own two @Export callbacks (a
+     SurfaceTexture handed out once realized and sized, its widget
+     in SurfaceTexture.widget; Surface(SurfaceTexture) carries it,
+     ANativeWindow_fromSurfaceTexture takes the same path as
+     fromSurface); EGL14 eglCreateWindowSurface (a SurfaceTexture
+     too), eglSwapBuffers, eglQuerySurface, eglQueryContext,
+     eglQueryString, eglGetError through EGLImpl, whose five new
+     natives are the plain EGL calls. Maps' map is a SurfaceView
+     in the end; the TextureView path is built, not driven.
+   - the map a red field over beige swaps (traced: the swaps carried
+     the map's background, a Compose drawRect of #ffff0000 covered
+     it). Two ATL answers: View.isShowingLayoutBounds returned true
+     (the developer option: Compose then strokes a red box round
+     every layout node; false now), and GskCanvas drawRect filled
+     whatever the paint's style (a STROKE rect is its outline now,
+     as drawPath already did). Seen hidden: the map's beige ground,
+     the search bar, the sheet, the tabs; no tiles yet (next).
+   - no tiles: the app connected to Google (IPv6, 443) 192 times and
+     closed each socket before a TLS byte. A temporary hook in
+     Throwable's constructors (printing the kinds in play with their
+     messages) named it all. Two libcore gaps, done: SSLParameters
+     setApplicationProtocols / getApplicationProtocols and SSLSocket
+     (and SSLEngine) getApplicationProtocol / getHandshakeApplication
+     Protocol (Java 9, Android 10; art_standalone overlay, libcore's
+     jar and the boot image rebuild with the module); our
+     OpenSSLSocketImpl carries them through set / getSSLParameters.
+     The real stop: Maps' socket factory throws "Blocked unpatched use
+     of SSL stack" unless Play Services' ProviderInstaller has put
+     GmsCore_OpenSSL in the process (installIfNeeded: the version
+     check, a dynamite load, then createPackageContext(gms) and its
+     loader's ProviderInstallerImpl.insertProvider). With no microG
+     (a run of the binary alone skips android-run's links into
+     _installed_apks_) the gms package is ATL's stub jar: class not
+     found. With microG (android-run) its installer ran and failed to
+     load libconscrypt_gmscore_jni.so from the app's cache dir:
+     ATL's getCacheDir was /tmp/atl_cache/<pkg>, outside the shim
+     linker's folders (the app's data dir and its lib). Android's
+     cache is <data dir>/cache: so is ATL's now (Context.java).
+     Also generated from android.jar (apigen inputs): WindowManager
+     BadTokenException, TransactionTooLargeException,
+     ReceiverCallNotAllowedException, MediaRouter.RouteGroup,
+     NumberPicker.Formatter, LocationRequest (+Builder: microG's
+     location manager), PendingIntent.OnFinished; by hand:
+     android.util.StatsEvent + Builder (a system API Cronet's
+     telemetry reaches, not in the public jar). Seen in the hooked
+     runs, not done: PackageInfo.signingInfo (API 28; the GMS client
+     reads it: "Unable to obtain package certificate history", caught);
+     com.android.extensions.xr and androidx.window.extensions probes
+     (vendor libraries, absent on most devices: normal); libelements
+     still unlinked (Maps' own loader then looks for it in base.apk).
+     TEMP hook still in: art_standalone overlay java/lang/
+     Throwable.java (TEMPTHROW): remove once the map draws.
+   Then (Nov 5: Maps sent nothing; the startup chain traced with
+   ART's method trace) found and fixed in ATL, in order:
+   - ConnectivityManager: registerDefaultNetworkCallback and
+     requestNetwork were empty, registerNetworkCallback never told
+     a callback of the network already up; one GLib network
+     monitor signal fans out to every callback (onAvailable,
+     capabilities, link, blocked, as Android's order).
+   - Binder.transact and Messenger's binder gave onTransact a null
+     reply parcel on oneway calls (NPE in writeNoException; the
+     Messenger one killed the app on the DroidGuard thread).
+   - StatsEvent.java was written but never listed in api-impl's
+     meson.build: the Cronet engine build died on NoClassDefFound
+     and every GmmNetwork request ended before sending. The jar's
+     target now also depends on its source list (hax_srcs.txt), so
+     a file added to the list rebuilds it. StatsLog.write added.
+   - GMS's signature check read PackageInfo.signingInfo, which ATL
+     left empty: "Unable to obtain package certificate history",
+     Play Services counted unavailable, no account. SigningInfo
+     holds the signers; generatePackageInfo fills it on
+     GET_SIGNING_CERTIFICATES; a package with microG's
+     fake-signature meta-data reports that signature (microG's
+     signature spoofing, a platform feature).
+   - Intent and PendingIntent had CREATOR null: microG's token
+     answer carried an Intent and the accounts call crashed.
+     Both parcel now; Parcel.readParcelable names the class when
+     a CREATOR is null.
+   - android-run wrote only the account and token files: microG
+     answers the account-id scope from the user data
+     "GoogleUserId", so Maps dropped the account. The account file
+     has a third line (the /auth answer's accountId); PlayApps
+     fetches it for an account signed in before (fetch_gaia) and
+     android-run writes userdata:GoogleUserId.
+   - ActivityManager.getMemoryInfo wrote nothing (10 KB of RAM
+     reported); it reads /proc/meminfo now; memory classes from
+     ART's heap. SystemProperties name the device as Google's
+     emulator image for the arch (sdk_gphone64_x86_64 / arm64);
+     Build.MANUFACTURER from the property (was "HTC").
+   State: signed in, every request succeeds (34/34), tiles land
+   in the disk cache, the GL thread clears and swaps. STILL BLANK:
+   the native map core (geoxp, NativeMapFactory) is never built.
+   Its provider (njy.d case 1076) needs bkfx.c, which is the
+   client-parameters group 240 field 5 (ENABLE_GEOXP_MAPCORE as a
+   startup flag) or field 68; Google's answer for this client has
+   neither (checked at SDK 26, 30, with the emulator identity and
+   the real memory). What in the request decides it is not known
+   (tried: identity, memory, GLES 3.0). SDK 35 crashes on
+   PackageManager$PackageInfoFlags.of (API 33 missing).
+   Tools (session scratchpad): tracenear.py takes a 6th arg, a
+   thread regex; tracelast.py, tracespan.py, tracetime.py,
+   pbdump.py (a protobuf's field tree); dexdis decodes switch
+   tables, moves and MUTF-8 strings. Each run script kills its
+   app by `pkill -9 -f '^<path>/android-translation-layer'`: an
+   app's main thread is renamed to its package, so -x misses it,
+   and six leftover instances once shared the GPU.
+   A fresh home spends ~60 s in dex2oat: a short run shows little.
+   TEMP still in: TEMPTHROW (Throwable.java), TEMPSURF, TEMPVK.
+   Hidden runs: the compositor is `install/build/wayland --hidden
+   true` on a scratch XDG_RUNTIME_DIR; run through android-run (it
+   links microG into the home's _installed_apks_); android-translation-layer
+   with WAYLAND_DISPLAY the socket's full path and a scratch HOME;
+   `shot` on <rt>/trinity-wayland.sock. The app's stdout is block
+   buffered to a file (stdbuf -oL to read its prints before a kill).
+   Found: Translate crashed (SIGSEGV, thread background-1) after a
+   dialog's on_close_request; what sent the close: OPEN.
+   OPEN, his order: the overflow menu cut off at the window's right
+   edge and its text too high beside its icons; the text screen
+   slow to open in his run; "Device history" drawn twice (the
+   collapsing toolbar); the backup sheet wider than a narrow
+   window.
+   OPEN: the language picker on a large screen (needs Translate's
+   redesign flag), a double free on 'OneGoogle #0'
+   seen once at startup.
+2b. OPEN orbiter: an .apk is a program (`android-translation-layer
+   <apk>`), its card from the apk's label and icon, a window of
+   its own in a pane; sound through orbiter's (PulseAudio).
+3. OPEN the phone: the same for arm64 (turnip, ART for arm64).
 
 ## orbiter-os Wi-Fi — live list (Oct 15 2026)
 
@@ -14338,3 +14964,202 @@ windowing, mobile, agents, silver-host and its debugging / reload.
 7. DONE alpine meadow with alder.
 8. DONE glacier ice.
 9. DONE grey beach gravel.
+
+## TurboGrafx-16 emulator — live list (Nov 4 2026)
+
+the user: a TurboGrafx-16 emulator sharing as much with knes as can be,
+the sprites shader too.
+1. DONE `cpu65` module (cpu65/cpu65.ag): class Cpu65, knes's 6502
+   core moved out of knes; a machine subclasses it and overrides rd,
+   wr (and st_port, irq_vector). `huc: true` adds the 65C02 and the
+   HuC6280: decimal ADC / SBC, the T flag, banks (mpr, TAM / TMA),
+   zero page at $2000 and stack at $2100, block moves, ST0-2, TST,
+   BSR, CSL / CSH. The accumulator is `acc` (a member named `a`
+   is the object itself). knes runs on it (NesCpu): Mario, Zelda
+   and Zelda II frame 600 byte for byte the same as before.
+2. BUILT, seen hidden `tg16` module (tg16/tg16.ag, `silver tg16
+   <file.pce>`): PceCpu on Cpu65, the 21-bit bus (ROM banks with
+   the 3 Mbit split, RAM, I/O), US HuCards' reversed bits put back,
+   VDC (VRAM, registers, auto increment, VRAM and sprite table DMA,
+   raster compare, vblank, BG maps 32-128 wide, 64 sprites 16-32
+   wide 16-64 tall with flips, 16 a line, sprite 0 collision),
+   VCE (512 colours, 256 / 320 / 512 dot modes), timer, interrupt
+   mask, pad (I II Select Run, keys as knes's), PSG (6 channels,
+   DDA, noise, balance, 1.5 dB steps), save states (P / L),
+   --record / --playback, --frames_exit (picture to
+   /tmp/tg16_fb.ppm), --wav_out (raw stereo s16), --autopress.
+   The picture is three planes into knes's VectorLayers shader
+   (trinity): backdrop and sprites behind, tiles, sprites in front.
+   TurboPad for a phone (trinity's PadCross / PadKey).
+   Checked with the 240p Test Suite 1.10 HuCard (GPL, downloaded to
+   the scratchpad, not in the repo): menus, colour bars, the scroll
+   test 1 px a frame, the Sound Test's tone 1000 Hz (asked 998.7)
+   centre and left only; with a test card of mine: a raster split
+   at line 100, the timer 118 interrupts a frame (116.9 expected);
+   the window's own picture through VectorLayers.
+   NOT checked: a commercial game, hosted in orbiter, heard sound,
+   the phone pad. NOT built: CD-ROM, the SuperGrafx, Street
+   Fighter II's mapper, backup RAM, the PSG's LFO, instruction
+   timing exact to the HuC6280 (6502 counts + 1 on memory ops).
+   Icon: tg16/images/icon.png (256 x 256).
+
+## Authorship attribution in a language model — live list (Nov 4 2026)
+
+the user: AGI as Aggregated Group Intelligence: a model infers
+the authors whose work went into a response, as a table beside
+it. First the enablers, on ai's grad engine, each checked
+against PyTorch (ai/tests/grad_gold.py writes the gold files;
+GRAD_GOLD=<dir> silver --test ai reads them).
+1. DONE grad ops: attention takes a `causal` flag and null
+   relative tables (ek, ev); bmm (batched matmul, autograd);
+   xent (mean cross entropy, classes on dim 1 of [b, v, t] or
+   plain rows, a target under 0 skipped). t_grad_lm_ops: every
+   value and gradient within 5e-7 of torch. GAttnOp grew a
+   member and Grad gained methods before top8 / fill: composer
+   and dock rebuilt. OPEN: the older gold sets (conv, element,
+   attention, misc, training) were lost with a scratchpad; with
+   GRAD_GOLD set those tests read no file and fail. Regenerate
+   them into grad_gold.py from the tests' shapes.
+2. DONE `author` module (author/author.ag): Passage (document,
+   passage, source, text, tokens, authors) and Corpus (names,
+   passages; save / load as .agi); GParam (a weight with adam
+   moments); Lm (a decoder on grad in [b, d, t]: token and place
+   tables, blocks of causal attention and a gelu layer, xent
+   loss, `pooled` by bmm with per-token weights); AuthorHead
+   (pooled vector -> 256-wide -> a sigmoid score per author plus
+   a bias; bce); author_rank (best first, over a floor, at most
+   k); author_batch; author_synthetic (each author favours a
+   band of tokens). Tests 3/3: the corpus file reads back whole;
+   the ranking; a 1-layer, 32-wide model trained 300 steps on 8
+   synthetic authors names the right author on 64 of 64 held-out
+   passages (lm loss 4.17 -> 3.17, held out 3.54).
+   Then (the user: test it with random data) t_author_random, the
+   control: the same labels on random tokens. The head stays at
+   chance (9.4% right of 12.5; 0.2 names over 0.5 a passage: the
+   unattributed outcome) and the held-out lm loss stays over
+   ln 64 (4.90). Found by it: the training loss fell to 3.2 on
+   random text (320 passages memorized), so author_trial reports
+   the held-out lm loss and both tests judge by it. 4/4.
+   Then (the user: random authors who all commit random texts,
+   our corpus) author_random_corpus: named authors (two made-up
+   syllables twice), each commit a passage of nt tokens on one
+   of 2 na documents, source 'commit n'; `export func
+   author_corpus` writes 16 authors, 512 commits of 16 tokens
+   over 64 (seed 2026) once at the build into install/share/
+   author/random.agi (86 KB). t_author_random trains on that
+   file: 4.7% right of 6.25 chance, 0.06 names over 0.5, held
+   out lm 4.90. 4/4.
+   Then (the user: sweep the overlap 0 to 7 tenths) t_author_sweep,
+   a row per own tenths (8 authors, 48 each, 300 steps): right%
+   9.4 23.4 45.3 71.9 82.8 93.8 98.4 100; names over 0.5 a
+   passage 0.20 0.30 0.75 0.77 0.89 0.92 0.94 0.98; held-out lm
+   4.90 4.75 4.57 4.45 4.27 4.10 3.86 3.54. The head names the
+   author once about 3 tenths of the text is their own; under 2
+   tenths it names nobody; the floor gives false names in the
+   2 to 3 tenths band (names 0.75 while right 45%). 5/5.
+   Then (the user: authors have biases over one uniform set of
+   words, noise around) the band generator is gone: an author is
+   a weight on every word, exp(bias x gauss) (author_weights,
+   author_draw); author_random_corpus takes the bias; the corpus
+   file is 16 authors at bias 1 (rewritten); t_author_corpus
+   trains on it: 60% right of 6.25 chance, 0.53 names over 0.5,
+   held-out lm 4.58; t_author_recovers at bias 3: 98.4%. The sweep
+   over bias 0 .25 .5 .75 1 1.5 2 3 4: right% 7.8 23.4 42.2 59.4
+   73.4 87.5 98.4 98.4 100; names over 0.5: 0.69 0.75 0.89 0.67
+   1.0 0.89 0.98 0.97 1.0; held-out lm 5.32 5.21 5.03 4.89 4.62
+   4.02 3.17 2.15 1.47. 5/5.
+   FOUND: at bias 0 the head names 0.69 authors a passage over
+   0.5 while right 7.8%: false names. The memorized training set
+   (train lm 2.9 against held-out 5.3) leaks into confident
+   scores; the floor is not calibrated. OPEN: calibrate the floor
+   on held-out commits (or stop the training by them), so the
+   unattributed outcome holds on random text.
+   Then (the user: the thesis is contribution, not likeness; the
+   author in a column beside the tokens, two heads on one state;
+   randomness draws the mix per exchange, the user's side and
+   the model's, and that is what validates) Passage gained
+   `asked` (the user's tokens at the start) and `column` (the
+   author of each token, -1 the user's); author_exchanges: a
+   query of nq tokens then a response of nr, 1 to 3 authors in
+   shares drawn at random, each token by one of them, the query
+   in the mix's words with no author; author_batch gives the
+   column as bits [nb, nt, na]; the pooling is out of the trial:
+   the head scores every token from the state the token head
+   reads (swap12 of hidden). author_trial returns the held-out
+   tokens named right, the share gap (total variation between the
+   drawn shares and the column's summed sigmoid scores), the
+   held-out lm, the mean score given an absent author.
+   t_author_mix (8 authors, 768 exchanges of 4 + 12 tokens, bias
+   2, 400 steps): tokens right 74.3%, share gap 0.249, absent
+   0.032. Corpus file (bias 1): tokens right 45.7% of 6.25,
+   gap 0.69. Sweep bias 0 .. 4: tokens right 12.5 17.4 29.8 55.1
+   62.0 74.7 85.2 91.8 94.6; share gap .88 .85 .77 .56 .46 .31
+   .19 .11 .06; absent score .128 .125 .112 .083 .066 .041 .026
+   .015 .009. At bias 0 the absent score is the prior (1/8): the
+   per-token column does not leak the memorized set the way the
+   pooled head did (the OPEN calibration above is answered by it;
+   a floor on these scores is the design's "fewer names"). 6/6.
+   Then (the user: do the next) Lm.generate: the model's own
+   response to each held-out query, a token at a time from the
+   vocabulary head's distribution; the column read along it.
+   Corpus keeps its truth (tastes, vocab: every author's word
+   weights; author_favoured gives the author whose taste most
+   favours a token). t_author_mix: share gap 0.25 on the drawn
+   response, 0.50 on the model's own, 0.76 for a flat column; on
+   the own response the column names the taste-favoured author
+   59.96% of tokens (chance 12.5). So the column reads what the
+   model wrote; the 4-token query underdetermines the mix and the
+   continuation drifts. The corpus file keeps its tastes (135 KB).
+   OPEN: real text through ai's gpt2_vocab; a longer query;
+   training targets from influence, not the label.
+   Then (the user: a total in summary, per token is too
+   expensive) the summary head: the response's states pooled
+   once (Lm.pooled, 1/n a token with an author), scored once
+   (a second AuthorHead `tot`), trained by bce against the drawn
+   shares as float targets (AuthorBatch wts, share); one head
+   call an exchange, not one a token. author_trial returns its
+   gap on the drawn response, its absent score and its gap on the
+   own response after the column's. t_author_mix: summary gap
+   0.24 (the column 0.24), own response 0.47 (0.48), absent
+   0.024. Sweep bias 0 .. 4, summary gap .85 .76 .59 .32 .22 .17
+   .04 .02 .02 against the column's .87 .83 .74 .55 .44 .30 .15
+   .10 .08: the summary gives the shares back better than the
+   summed column from bias 0.5 on; absent at bias 0 is 0.11 (the
+   prior 0.125): no leak. 6/6.
+   Then (the user: real text through gpt2_vocab) ai's gpt2_vocab
+   gained the encoder (`merges` path, encode [ text ] -> vec i64:
+   gpt2's chunking (a word with its leading space, a number, a run
+   of marks, contractions, white space), byte pair merges by rank
+   from merges.txt, chunks seen before cached); the class grew
+   members, so speech, composer and dock were rebuilt. author:
+   imports whisper-small's vocab.json and merges.txt (speech's
+   lines) and eight Gutenberg books (austen 1342, dickens 98,
+   twain 76, doyle 1661, shelley 84, wilde 174, melville 2701,
+   carroll 11) into install/share/author/books; author_real_corpus
+   (each book between its *** START / END lines, encoded, at most
+   cap tokens an author, passages of nt tokens, ids compacted:
+   Corpus.gpt2 gives each back); author_real_exchanges (a query
+   of nq tokens from the first author's text, a response of spans
+   of 4-8 tokens cut from the drawn authors' text in drawn
+   shares); author_trial shuffles the passages first (a corpus in
+   author order trained one author at a time: 0.26% right) and
+   sizes the arenas by the vocabulary (held out capped at 96);
+   with author_words set it prints the model's own responses as
+   words. Tests: t_gpt2_encode (145 ids equal to transformers'
+   WhisperTokenizer on author/tests/gpt2_text.txt, decodes back
+   whole); t_author_real (40,000 tokens an author, 10,000 passages
+   of 32, 13,453 distinct tokens, 400 steps): held-out tokens
+   named right 50.8% (chance 12.5), share gap 0.64 column / 0.52
+   summary, absent 0.096 / 0.081, held-out lm 4.90 (ln vocab
+   9.51); t_author_real_mix (3,000 exchanges of 8 + 24): right
+   32.4%, gap 0.64 / 0.60 against a flat 0.79, the model's own
+   response 0.77 / 0.75 (a 32-wide one-layer model writes
+   gibberish after 400 steps, so its own words carry no author).
+   9/9. OPEN: a bigger model and longer training before the own
+   response means anything; the influence targets.
+3. OPEN real text: a tokenizer (ai's gpt2_vocab) over a corpus
+   with real author records; paraphrase / question / combined
+   examples as the design asks; the influence targets (saved
+   checkpoints, grouped by author) as a second training signal;
+   the "unattributed" outcome; a validated allocation rule from
+   scores to shares.

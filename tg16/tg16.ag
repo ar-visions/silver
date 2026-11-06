@@ -1,0 +1,985 @@
+# the PC Engine / TurboGrafx-16: a HuC6280 (the shared Cpu65), the
+# HuC6270 VDC, the HuC6260 VCE and the PSG; HuCards only
+export 0.1.0
+export extensions ['.pce']
+export icon ['tg16']
+export software ['games']
+
+import trinity
+import vec
+import spectra
+import cpu65
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <unistd.h>
+    +_DEFAULT_SOURCE
+    +_XOPEN_SOURCE=500
+import <pthread.h>
+import <math.h>
+
+# the HuC6280: the shared 6502 core, its banks mapped onto the bus
+Cpu65 PceCpu
+    manual pce : tg16
+
+    # logical to 21-bit physical through MPR0-7
+    func rd [ addr: u32 ] -> u8
+        bank : u32 [ mpr[ (addr >> 13) & 7 ] ]
+        return pce.bus_rd[ (bank << 13) | (addr & 0x1FFF) ]
+
+    func wr [ addr: u32, v: u8 ] -> none
+        bank : u32 [ mpr[ (addr >> 13) & 7 ] ]
+        pce.bus_wr[ (bank << 13) | (addr & 0x1FFF), v ]
+
+    func st_port [ port: u32, v: u8 ] -> none
+        pce.vdc_wr[ port, v ]
+
+    # timer first, then the VDC; IRQ2 (CD) is never asserted
+    func irq_vector [] -> u32
+        if [ pce.timer_irq && (pce.irq_mask & 4) == 0 ] return 0xFFFA
+        if [ pce.vdc_irq && (pce.irq_mask & 2) == 0 ] return 0xFFF8
+        return 0
+
+element tg16 : trinity
+    public  width        : i32    [ 1024 ]
+    public  height       : i32    [ 896 ]
+    public  lock_aspect  : bool   [ true ]
+    public  background   : string [ 'Background' ]
+    expect default [ Live ] rom : resource
+        if [ emu_started ]
+            emu_stop = true
+            while [ emu_running ] usleep[ 1000 ]
+            emu_stop    = false
+            emu_started = false
+        rom_data = null
+        booted   = false
+    # leave after N frames, the picture in /tmp/tg16_fb.ppm
+    public  frames_exit  : i32
+    public  resume       : bool
+    # a TurboGrafx (US) console: the pad's region bit clear
+    public  us           : bool
+    # hold a pad bit from frame 60 to 120 (test rig; 0 none)
+    public  autopress    : i32
+    public [ Live, VolumeRange ] volume : f32 [ 0.3 ]
+    # VectorScale: continuous edges, any zoom
+    public [ Live ] vscale : bool [ true ]
+    # --record name / --playback name: a pad byte a frame
+    public  record       : path
+    public  playback     : path
+    # the sound as raw 44.1 kHz stereo s16, appended a frame at a time
+    public  wav_out      : path
+    mutable wav_f        : handle
+    mutable rec_f        : handle
+    mutable play_f       : handle
+    mutable cpu          : PceCpu
+    mutable audio        : AudioOut
+    mutable rom_data     : @u8
+    mutable rom_size     : sz
+    mutable ram          : new u8 [ 0x2000 ]
+    # VDC: 32K words of VRAM, its registers and the sprite table
+    mutable vram         : new u16 [ 0x8000 ]
+    mutable vreg         : new u16 [ 32 ]
+    mutable sat          : new u16 [ 256 ]
+    mutable vdc_ar       : u32
+    mutable vdc_status   : u32
+    mutable vwr_lo       : u32
+    mutable vrr          : u32
+    mutable satb_due     : bool
+    mutable byr_dirty    : bool
+    mutable bg_y         : u32
+    public  vdc_irq      : bool
+    # VCE: 512 colours, 9 bits (GGGRRRBBB)
+    mutable vce_ram      : new u16 [ 512 ]
+    mutable vce_rgb      : new u32 [ 512 ]
+    mutable vce_addr     : u32
+    mutable vce_ctrl     : u32
+    # timer: 7-bit, a step per 1024 clocks at 7.16 MHz
+    mutable tm_reload    : i32
+    mutable tm_count     : i32
+    mutable tm_on        : bool
+    mutable tm_acc       : i32
+    public  timer_irq    : bool
+    # interrupt disable bits: 1 IRQ2, 2 VDC, 4 timer
+    public  irq_mask     : u32
+    mutable io_buf       : u8
+    # pad: I II Sel Run Up Right Down Left (bits 0-7)
+    mutable pad_st       : u32
+    mutable pad_sel      : bool
+    mutable pad_clr      : bool
+    # PSG: six wave channels, two of them with noise
+    mutable psg_sel      : u32
+    mutable psg_main     : u32
+    mutable ch_freq      : new u32 [ 6 ]
+    mutable ch_ctrl      : new u32 [ 6 ]
+    mutable ch_bal       : new u32 [ 6 ]
+    mutable ch_wave      : new u8  [ 192 ]
+    mutable ch_wpos      : new u32 [ 6 ]
+    mutable ch_rpos      : new u32 [ 6 ]
+    mutable ch_acc       : new f64 [ 6 ]
+    mutable ch_dda       : new u32 [ 6 ]
+    mutable ch_noise     : new u32 [ 6 ]
+    mutable ch_lfsr      : new u32 [ 6 ]
+    mutable ch_nout      : new i32 [ 6 ]
+    # 1.5 dB a step of attenuation, 0 loudest
+    mutable att_tab      : new f32 [ 128 ]
+    # this frame's samples, stereo i16
+    mutable snd          : new i16 [ 4096 ]
+    mutable snd_n        : i32
+    mutable snd_frac     : f64
+    # the picture: three planes, as knes's (sprite planes on top)
+    # backdrop with the sprites behind the tiles
+    mutable fb_low       : new u32 [ 512 * 242 ]
+    # the tiles, clear where colour 0
+    mutable fb_bg        : new u32 [ 512 * 242 ]
+    # the sprites in front of the tiles
+    mutable fb_high      : new u32 [ 512 * 242 ]
+    mutable fb_w         : i32 [ 256 ]
+    mutable fb_h         : i32 [ 224 ]
+    mutable line_col     : new u32 [ 512 ]
+    mutable line_pri     : new u8  [ 512 ]
+    mutable pub_lock     : mutex
+    mutable pub_low      : new u32 [ 512 * 242 ]
+    mutable pub_bg       : new u32 [ 512 * 242 ]
+    mutable pub_high     : new u32 [ 512 * 242 ]
+    mutable pub_w        : i32 [ 256 ]
+    mutable pub_h        : i32 [ 224 ]
+    mutable low_tex      : Texture
+    mutable bg_tex       : Texture
+    mutable high_tex     : Texture
+    mutable tex_w        : i32
+    mutable tex_h        : i32
+    mutable vs_shader    : VectorLayers
+    mutable ps_model     : Model
+    mutable ps_render    : Render
+    mutable booted       : bool
+    mutable frames       : u32
+    mutable emu_started  : bool
+    mutable emu_stop     : bool
+    mutable emu_running  : bool
+    mutable paused       : bool
+    mutable save_req     : bool
+    mutable load_req     : bool
+    mutable st_hdr       : new u32 [ 64 ]
+    mutable next_us      : i64
+
+    func init []
+        animated  = true
+        focusable = true
+        if [ volume == 0.0 ] volume = 0.3
+        vscale = true
+
+    action func save_state []
+        save_req = true
+
+    action func load_state []
+        load_req = true
+
+    # a phone: the TurboPad in the keyboard's place
+    public func keyboard [] -> Au_t
+        return typeid[ TurboPad ]
+
+    public func on_key [ ev: Event ]
+        code : i32  [ ev.key.unicode ]
+        down : bool [ ev.key.state ]
+        bit : i32 [ -1 ]
+        if   [ code == 47 ]  bit = 0     # /  I (right, as the pad)
+        el [ code == 46 ]  bit = 1     # .  II
+        el [ code == 340 || code == 344 ] bit = 2   # Shift  Select
+        el [ code == 257 ] bit = 3     # Enter  Run
+        el [ code == 87 || code == 265 ] bit = 4   # W, Up
+        el [ code == 68 || code == 262 ] bit = 5   # D, Right
+        el [ code == 83 || code == 264 ] bit = 6   # S, Down
+        el [ code == 65 || code == 263 ] bit = 7   # A, Left
+        if [ bit >= 0 ]
+            m : u32 [ u32[ 1 ] << bit ]
+            if [ down ] pad_st = pad_st | m
+            el pad_st = pad_st & (~m)
+        if [ down ]
+            if [ code == 80 ] save_req = true   # P save
+            if [ code == 76 ] load_req = true   # L load
+            if [ code == 32 ] paused = !paused  # Space pause
+        return
+
+    # ---- the cart ----
+    func load_rom [] -> none
+        if [ !rom || !rom.exists[] ]
+            log 'tg16: no ROM ({rom})'
+            return
+        f : @FILE [ fopen[ rom, 'rb' ] ]
+        if [ !f ]
+            log 'tg16: could not open {rom}'
+            return
+        fseek[ f, 0, SEEK_END ]
+        n : sz [ ftell[ f ] ]
+        fseek[ f, 0, SEEK_SET ]
+        # a 512-byte copier header
+        if [ (n & 0x1FFF) == 512 ]
+            fseek[ f, 512, SEEK_SET ]
+            n -= 512
+        rom_size = n
+        rom_data = calloc[ 1, n + 0x2000 ]
+        fread[ rom_data, 1, n, f ]
+        fclose[ f ]
+        # US HuCards are bit-reversed: the reset vector says so
+        hi : u32 [ rom_data[ 0x1FFF ] ]
+        if [ hi < 0xE0 && bit_rev[ hi ] >= 0xE0 ]
+            for [ i: sz 0, i < n, i += 1 ]
+                rom_data[ i ] = u8[ bit_rev[ u32[ rom_data[ i ] ] ] ]
+            log 'tg16: US HuCard, bits put back'
+        log 'tg16: {rom} {n} bytes'
+
+    func bit_rev [ v: u32 ] -> u32
+        r : u32 [ 0 ]
+        for [ i: u32 0, i < 8, i += 1 ]
+            if [ ((v >> i) & 1) != 0 ] r = r | (u32[ 0x80 ] >> i)
+        return r
+
+    # a ROM bank's offset (3 Mbit cards split 256 KB + 128 KB)
+    func rom_off [ bank: u32 ] -> sz
+        if [ rom_size == 0x60000 ]
+            if [ bank < 0x40 ] return sz[ (bank & 0x1F) << 13 ]
+            return sz[ 0x40000 + ((bank & 0x0F) << 13) ]
+        o : sz [ sz[ bank ] << 13 ]
+        return o % rom_size
+
+    # ---- the bus (21-bit physical) ----
+    func bus_rd [ addr: u32 ] -> u8
+        bank : u32 [ addr >> 13 ]
+        o : u32 [ addr & 0x1FFF ]
+        if [ bank < 0x80 ]
+            if [ !rom_data ] return 0xFF
+            return rom_data[ rom_off[ bank ] + sz[ o ] ]
+        if [ bank >= 0xF8 && bank <= 0xFB ] return ram[ o ]
+        if [ bank == 0xFF ] return io_rd[ o ]
+        return 0xFF
+
+    func bus_wr [ addr: u32, v: u8 ] -> none
+        bank : u32 [ addr >> 13 ]
+        o : u32 [ addr & 0x1FFF ]
+        if [ bank >= 0xF8 && bank <= 0xFB ]
+            ram[ o ] = v
+            return
+        if [ bank == 0xFF ] io_wr[ o, v ]
+
+    func io_rd [ o: u32 ] -> u8
+        if [ o < 0x400 ]
+            r : u32 [ o & 3 ]
+            if [ r == 0 ]
+                s : u32 [ vdc_status ]
+                vdc_status = 0
+                vdc_irq = false
+                return u8[ s ]
+            if [ r == 2 ] return u8[ vrr & 0xFF ]
+            if [ r == 3 ]
+                hv : u8 [ u8[ (vrr >> 8) & 0xFF ] ]
+                if [ vdc_ar == 2 ]
+                    ma : u32 [ (u32[ vreg[ 1 ] ] + vdc_inc[]) & 0xFFFF ]
+                    vreg[ 1 ] = u16[ ma ]
+                    vrr = u32[ vram[ u32[ vreg[ 1 ] ] & 0x7FFF ] ]
+                return hv
+            return 0
+        if [ o < 0x800 ]
+            r2 : u32 [ o & 7 ]
+            if [ r2 == 4 ] return u8[ vce_ram[ vce_addr ] & 0xFF ]
+            if [ r2 == 5 ]
+                cv : u8 [ u8[ (vce_ram[ vce_addr ] >> 8) | 0xFE ] ]
+                vce_addr = (vce_addr + 1) & 0x1FF
+                return cv
+            return 0xFF
+        if [ o < 0xC00 ] return io_buf
+        if [ o < 0x1000 ]
+            io_buf = u8[ (io_buf & 0x80) | u8[ tm_count & 0x7F ] ]
+            return io_buf
+        if [ o < 0x1400 ]
+            d : u32 [ 0 ]
+            if [ !pad_clr ]
+                if [ pad_sel ] d = (pad_st >> 4) & 0x0F
+                el d = pad_st & 0x0F
+            v : u32 [ (~d & 0x0F) | 0x30 | 0x80 ]
+            if [ !us ] v = v | 0x40
+            io_buf = u8[ v ]
+            return io_buf
+        if [ o < 0x1800 ]
+            r3 : u32 [ o & 3 ]
+            ob : u32 [ u32[ io_buf ] & 0xF8 ]
+            if [ r3 == 2 ] return u8[ ob | irq_mask ]
+            if [ r3 == 3 ]
+                st : u32 [ 0 ]
+                if [ vdc_irq ] st = st | 2
+                if [ timer_irq ] st = st | 4
+                return u8[ ob | st ]
+            return io_buf
+        return 0xFF
+
+    func io_wr [ o: u32, v: u8 ] -> none
+        if [ o < 0x400 ]
+            vdc_wr[ o & 3, v ]
+            return
+        if [ o < 0x800 ]
+            vce_wr[ o & 7, v ]
+            return
+        io_buf = v
+        if [ o < 0xC00 ]
+            psg_wr[ o & 0x0F, u32[ v ] ]
+            return
+        if [ o < 0x1000 ]
+            if [ (o & 1) == 0 ] tm_reload = i32[ v & 0x7F ]
+            el
+                on : bool [ (v & 1) != 0 ]
+                if [ on && !tm_on ]
+                    tm_count = tm_reload
+                    tm_acc = 0
+                tm_on = on
+            return
+        if [ o < 0x1400 ]
+            pad_sel = (v & 1) != 0
+            pad_clr = (v & 2) != 0
+            return
+        if [ o < 0x1800 ]
+            r : u32 [ o & 3 ]
+            if [ r == 2 ] irq_mask = u32[ v ] & 7
+            if [ r == 3 ] timer_irq = false
+
+    # ---- VDC ----
+    func vdc_inc [] -> u32
+        s : u32 [ (u32[ vreg[ 5 ] ] >> 11) & 3 ]
+        if [ s == 0 ] return 1
+        if [ s == 1 ] return 32
+        if [ s == 2 ] return 64
+        return 128
+
+    func vdc_wr [ port: u32, v: u8 ] -> none
+        if [ port == 0 ]
+            vdc_ar = u32[ v ] & 0x1F
+            return
+        if [ port == 1 ] return
+        hi : bool [ port == 3 ]
+        if [ vdc_ar == 2 ]
+            if [ !hi ]
+                vwr_lo = u32[ v ]
+                return
+            w : u32 [ u32[ vreg[ 0 ] ] ]
+            wv : u32 [ vwr_lo | (u32[ v ] << 8) ]
+            if [ w < 0x8000 ] vram[ w ] = u16[ wv ]
+            vreg[ 0 ] = u16[ (w + vdc_inc[]) & 0xFFFF ]
+            return
+        old : u32 [ u32[ vreg[ vdc_ar ] ] ]
+        nv : u32 [ (hi) ? (old & 0xFF) | (u32[ v ] << 8) :
+                          (old & 0xFF00) | u32[ v ] ]
+        vreg[ vdc_ar ] = u16[ nv ]
+        if [ vdc_ar == 1 && hi ] vrr = u32[ vram[ nv & 0x7FFF ] ]
+        if [ vdc_ar == 8 ] byr_dirty = true
+        if [ vdc_ar == 0x12 && hi ] vram_dma[]
+        if [ vdc_ar == 0x13 && hi ] satb_due = true
+
+    # VRAM to VRAM: LENR + 1 words, now
+    func vram_dma [] -> none
+        dcr : u32 [ vreg[ 0x0F ] ]
+        src : u32 [ vreg[ 0x10 ] ]
+        dst : u32 [ vreg[ 0x11 ] ]
+        n : u32 [ u32[ vreg[ 0x12 ] ] + 1 ]
+        for [ i: u32 0, i < n, i += 1 ]
+            if [ dst < 0x8000 ] vram[ dst ] = vram[ src & 0x7FFF ]
+            if [ (dcr & 4) != 0 ] src = (src - 1) & 0xFFFF
+            el src = (src + 1) & 0xFFFF
+            if [ (dcr & 8) != 0 ] dst = (dst - 1) & 0xFFFF
+            el dst = (dst + 1) & 0xFFFF
+        vreg[ 0x10 ] = u16[ src ]
+        vreg[ 0x11 ] = u16[ dst ]
+        vdc_status = vdc_status | 0x10
+        if [ (dcr & 2) != 0 ] vdc_irq = true
+
+    # vblank: the status, its interrupt, the sprite table's copy
+    func vdc_vblank [] -> none
+        dcr : u32 [ vreg[ 0x0F ] ]
+        if [ satb_due || (dcr & 0x10) != 0 ]
+            src : u32 [ vreg[ 0x13 ] ]
+            for [ i: u32 0, i < 256, i += 1 ]
+                sat[ i ] = vram[ (src + i) & 0x7FFF ]
+            satb_due = false
+            vdc_status = vdc_status | 0x08
+            if [ (dcr & 1) != 0 ] vdc_irq = true
+        vdc_status = vdc_status | 0x20
+        if [ (u32[ vreg[ 5 ] ] & 0x08) != 0 ] vdc_irq = true
+
+    # ---- VCE ----
+    func vce_wr [ r: u32, v: u8 ] -> none
+        if [ r == 0 ] vce_ctrl = u32[ v ]
+        el [ r == 2 ] vce_addr = (vce_addr & 0x100) | u32[ v ]
+        el [ r == 3 ]
+            vce_addr = (vce_addr & 0xFF) | ((u32[ v ] & 1) << 8)
+        el [ r == 4 ]
+            c : u32 [ (u32[ vce_ram[ vce_addr ] ] & 0x100) | u32[ v ] ]
+            vce_set[ c ]
+        el [ r == 5 ]
+            c2 : u32 [ (u32[ vce_ram[ vce_addr ] ] & 0xFF) |
+                       ((u32[ v ] & 1) << 8) ]
+            vce_set[ c2 ]
+            vce_addr = (vce_addr + 1) & 0x1FF
+
+    # GGGRRRBBB to ABGR
+    func vce_set [ c: u32 ] -> none
+        vce_ram[ vce_addr ] = u16[ c ]
+        b : u32 [ ((c & 7) * 255) / 7 ]
+        r : u32 [ (((c >> 3) & 7) * 255) / 7 ]
+        g : u32 [ (((c >> 6) & 7) * 255) / 7 ]
+        vce_rgb[ vce_addr ] = 0xFF000000 | (b << 16) | (g << 8) | r
+
+    # ---- PSG ----
+    func psg_wr [ r: u32, v: u32 ] -> none
+        if [ r == 0 ]
+            psg_sel = v & 7
+            return
+        if [ r == 1 ]
+            psg_main = v
+            return
+        if [ psg_sel > 5 ] return
+        c : u32 [ psg_sel ]
+        if [ r == 2 ] ch_freq[ c ] = (ch_freq[ c ] & 0xF00) | v
+        el [ r == 3 ]
+            ch_freq[ c ] = (ch_freq[ c ] & 0xFF) | ((v & 0x0F) << 8)
+        el [ r == 4 ]
+            # DDA on with the channel off: the write index resets
+            if [ (v & 0xC0) == 0x40 ] ch_wpos[ c ] = 0
+            ch_ctrl[ c ] = v
+        el [ r == 5 ] ch_bal[ c ] = v
+        el [ r == 6 ]
+            if [ (ch_ctrl[ c ] & 0x40) != 0 ] ch_dda[ c ] = v & 0x1F
+            el [ (ch_ctrl[ c ] & 0x80) == 0 ]
+                ch_wave[ c * 32 + ch_wpos[ c ] ] = u8[ v & 0x1F ]
+                ch_wpos[ c ] = (ch_wpos[ c ] + 1) & 31
+        el [ r == 7 && c >= 4 ] ch_noise[ c ] = v
+
+    # one channel's level, -16..15
+    func psg_level [ c: u32, clocks: f64 ] -> i32
+        cv : u32 [ ch_ctrl[ c ] ]
+        if [ (cv & 0x40) != 0 ] return i32[ ch_dda[ c ] ] - 16
+        if [ c >= 4 && (ch_noise[ c ] & 0x80) != 0 ]
+            nf : u32 [ (ch_noise[ c ] & 0x1F) ^ 0x1F ]
+            per : f64 [ f64[ nf * 64 + 64 ] ]
+            ch_acc[ c ] += clocks
+            while [ ch_acc[ c ] >= per ]
+                ch_acc[ c ] -= per
+                l : u32 [ ch_lfsr[ c ] ]
+                fb : u32 [ (l ^ (l >> 1) ^ (l >> 11) ^ (l >> 12) ^
+                            (l >> 17)) & 1 ]
+                ch_lfsr[ c ] = (l >> 1) | (fb << 17)
+                ch_nout[ c ] = ((l & 1) != 0) ? 15 : -16
+            return ch_nout[ c ]
+        fq : u32 [ ch_freq[ c ] ]
+        if [ fq == 0 ] fq = 0x1000
+        # too fast to hear: the wave's middle
+        if [ fq < 8 ] return 0
+        ch_acc[ c ] += clocks
+        pf : f64 [ f64[ fq ] ]
+        while [ ch_acc[ c ] >= pf ]
+            ch_acc[ c ] -= pf
+            ch_rpos[ c ] = (ch_rpos[ c ] + 1) & 31
+        return i32[ ch_wave[ c * 32 + ch_rpos[ c ] ] ] - 16
+
+    # n stereo samples at 44.1 kHz into snd
+    func psg_run [ n: i32 ] -> none
+        clocks : f64 [ 3579545.0 / 44100.0 ]
+        ml : u32 [ (psg_main >> 4) & 0x0F ]
+        mr : u32 [ psg_main & 0x0F ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ snd_n >= 2040 ] return
+            sl : f32 [ 0.0 ]
+            sr : f32 [ 0.0 ]
+            for [ c: u32 0, c < 6, c += 1 ]
+                cv : u32 [ ch_ctrl[ c ] ]
+                if [ (cv & 0x80) == 0 ] continue
+                lv : f32 [ f32[ psg_level[ c, clocks ] ] ]
+                vol : u32 [ cv & 0x1F ]
+                bl : u32 [ (ch_bal[ c ] >> 4) & 0x0F ]
+                br : u32 [ ch_bal[ c ] & 0x0F ]
+                al : u32 [ (31 - vol) + (15 - bl) * 2 + (15 - ml) * 2 ]
+                ar : u32 [ (31 - vol) + (15 - br) * 2 + (15 - mr) * 2 ]
+                if [ bl != 0 && ml != 0 ] sl += lv * att_tab[ al ]
+                if [ br != 0 && mr != 0 ] sr += lv * att_tab[ ar ]
+            k : f32 [ 340.0 * volume * 4.0 ]
+            vl : i32 [ sl * k ]
+            vr : i32 [ sr * k ]
+            if [ vl > 32767 ] vl = 32767
+            if [ vl < -32768 ] vl = -32768
+            if [ vr > 32767 ] vr = 32767
+            if [ vr < -32768 ] vr = -32768
+            snd[ snd_n * 2 ] = i16[ vl ]
+            snd[ snd_n * 2 + 1 ] = i16[ vr ]
+            snd_n += 1
+
+    # ---- the picture ----
+    # one display line d: tiles and sprites into the three planes
+    func render_line [ d: i32 ] -> none
+        if [ d < 0 || d >= fb_h ] return
+        w : i32 [ fb_w ]
+        cr : u32 [ vreg[ 5 ] ]
+        back : u32 [ vce_rgb[ 0 ] ]
+        row : i32 [ d * 512 ]
+        for [ x: i32 0, x < w, x += 1 ]
+            fb_low[ row + x ] = back
+            fb_bg[ row + x ] = 0
+            fb_high[ row + x ] = 0
+        if [ (cr & 0x80) != 0 ]
+            mwr : u32 [ vreg[ 9 ] ]
+            ws : u32 [ (mwr >> 4) & 3 ]
+            mw : u32 [ (ws == 0) ? 32 : ((ws == 1) ? 64 : 128) ]
+            mh : u32 [ ((mwr & 0x40) != 0) ? 64 : 32 ]
+            bx0 : u32 [ vreg[ 7 ] ]
+            by : u32 [ bg_y & (mh * 8 - 1) ]
+            ty : u32 [ by >> 3 ]
+            fy : u32 [ by & 7 ]
+            for [ x2: i32 0, x2 < w, x2 += 1 ]
+                bx : u32 [ (bx0 + u32[ x2 ]) & (mw * 8 - 1) ]
+                bat : u32 [ vram[ (ty * mw + (bx >> 3)) & 0x7FFF ] ]
+                ta : u32 [ ((bat & 0xFFF) << 4) & 0x7FFF ]
+                w0 : u32 [ vram[ (ta + fy) & 0x7FFF ] ]
+                w1 : u32 [ vram[ (ta + 8 + fy) & 0x7FFF ] ]
+                b : u32 [ 7 - (bx & 7) ]
+                pix : u32 [ ((w0 >> b) & 1)
+                    | (((w0 >> (b + 8)) & 1) << 1)
+                    | (((w1 >> b) & 1) << 2)
+                    | (((w1 >> (b + 8)) & 1) << 3) ]
+                if [ pix != 0 ]
+                    ci : u32 [ ((bat >> 12) << 4) | pix ]
+                    fb_bg[ row + x2 ] = vce_rgb[ ci ]
+        if [ (cr & 0x40) != 0 ] sprite_line[ d, row, w ]
+
+    # the line's sprites, index 0 over the rest, 16 at most
+    func sprite_line [ d: i32, row: i32, w: i32 ] -> none
+        for [ x: i32 0, x < w, x += 1 ]
+            line_col[ x ] = 0
+        n : i32 [ 0 ]
+        for [ i: i32 0, i < 64, i += 1 ]
+            sy : i32 [ i32[ sat[ i * 4 ] & 0x3FF ] - 64 ]
+            at : u32 [ sat[ i * 4 + 3 ] ]
+            cgy : u32 [ (at >> 12) & 3 ]
+            sh : i32 [ (cgy == 0) ? 16 : ((cgy == 3) ? 64 : 32) ]
+            if [ d < sy || d >= sy + sh ] continue
+            n += 1
+            if [ n > 16 ]
+                vdc_status = vdc_status | 0x02
+                if [ (u32[ vreg[ 5 ] ] & 2) != 0 ] vdc_irq = true
+                break
+            sx : i32 [ i32[ sat[ i * 4 + 1 ] & 0x3FF ] - 32 ]
+            sw : i32 [ ((at & 0x100) != 0) ? 32 : 16 ]
+            pat : u32 [ (u32[ sat[ i * 4 + 2 ] ] >> 1) & 0x3FF ]
+            if [ sw == 32 ] pat = pat & 0x3FE
+            if [ sh == 32 ] pat = pat & 0x3FD
+            if [ sh == 64 ] pat = pat & 0x3F9
+            ry : i32 [ d - sy ]
+            if [ (at & 0x8000) != 0 ] ry = sh - 1 - ry
+            pal : u32 [ 256 + ((at & 0x0F) << 4) ]
+            front : u8 [ ((at & 0x80) != 0) ? 1 : 0 ]
+            for [ c: i32 0, c < sw, c += 1 ]
+                px : i32 [ sx + c ]
+                if [ px < 0 || px >= w ] continue
+                col : i32 [ ((at & 0x800) != 0) ? sw - 1 - c : c ]
+                cx : u32 [ u32[ col >> 4 ] ]
+                cell : u32 [ pat + cx + u32[ ry >> 4 ] * 2 ]
+                ad : u32 [ (cell << 6) + u32[ ry & 15 ] ]
+                b : u32 [ u32[ 15 - (col & 15) ] ]
+                p0 : u32 [ vram[ ad & 0x7FFF ] ]
+                p1 : u32 [ vram[ (ad + 16) & 0x7FFF ] ]
+                p2 : u32 [ vram[ (ad + 32) & 0x7FFF ] ]
+                p3 : u32 [ vram[ (ad + 48) & 0x7FFF ] ]
+                pix : u32 [ ((p0 >> b) & 1) | (((p1 >> b) & 1) << 1)
+                    | (((p2 >> b) & 1) << 2) | (((p3 >> b) & 1) << 3) ]
+                if [ pix == 0 ] continue
+                if [ line_col[ px ] != 0 ]
+                    # sprite 0 met another sprite
+                    if [ line_pri[ px ] >= 2 ]
+                        vdc_status = vdc_status | 0x01
+                        cr0 : u32 [ vreg[ 5 ] ]
+                        if [ (cr0 & 1) != 0 ] vdc_irq = true
+                    continue
+                line_col[ px ] = vce_rgb[ pal | pix ]
+                line_pri[ px ] = front | ((i == 0) ? 2 : 0)
+        for [ x2: i32 0, x2 < w, x2 += 1 ]
+            sc : u32 [ line_col[ x2 ] ]
+            if [ sc == 0 ] continue
+            if [ (line_pri[ x2 ] & 1) != 0 ] fb_high[ row + x2 ] = sc
+            el fb_low[ row + x2 ] = sc
+
+    # the CPU for clocks of 7.16 MHz, the timer beside it
+    func run_cpu [ clocks: i32 ] -> none
+        spent : i32 [ 0 ]
+        while [ spent < clocks ]
+            c : i32 [ cpu.step[] ]
+            if [ !cpu.fast ] c = c * 4
+            spent += c
+            if [ tm_on ]
+                tm_acc += c
+                while [ tm_acc >= 1024 ]
+                    tm_acc -= 1024
+                    tm_count -= 1
+                    if [ tm_count < 0 ]
+                        tm_count = tm_reload
+                        timer_irq = true
+
+    # 263 lines of 455 clocks; the display where the VDC says
+    func run_frame [] -> none
+        if [ playback ]
+            if [ !play_f ] play_f = handle[ fopen[ playback, 'rb' ] ]
+            if [ play_f ]
+                pf : @FILE [ cast @FILE [ play_f ] ]
+                b  : u8 [ 0 ]
+                if [ fread[ @b, 1, 1, pf ] == 1 ] pad_st = u32[ b ]
+        if [ record ]
+            if [ !rec_f ] rec_f = handle[ fopen[ record, 'wb' ] ]
+            if [ rec_f ]
+                rf : @FILE [ cast @FILE [ rec_f ] ]
+                b2 : u8 [ pad_st ]
+                fwrite[ @b2, 1, 1, rf ]
+                fflush[ rf ]
+        vsr : u32 [ vreg[ 0x0C ] ]
+        top : i32 [ i32[ vsr & 0x1F ] + i32[ (vsr >> 8) & 0xFF ] + 3 ]
+        vdw : i32 [ i32[ vreg[ 0x0D ] & 0x1FF ] + 1 ]
+        hd : i32 [ (i32[ vreg[ 0x0B ] & 0x7F ] + 1) * 8 ]
+        if [ hd > 512 ] hd = 512
+        if [ hd < 64 ] hd = 256
+        if [ vdw > 242 ] vdw = 242
+        if [ vdw < 16 ] vdw = 224
+        fb_w = hd
+        fb_h = vdw
+        if [ top > 263 - vdw ] top = 263 - vdw
+        snd_n = 0
+        for [ line: i32 0, line < 263, line += 1 ]
+            d : i32 [ line - top ]
+            if [ d >= 0 && d < vdw ]
+                if [ d == 0 ] bg_y = vreg[ 8 ]
+                el [ byr_dirty ] bg_y = u32[ vreg[ 8 ] ] + 1
+                el bg_y += 1
+                byr_dirty = false
+                # raster compare: the counter runs from 64
+                if [ i32[ vreg[ 6 ] & 0x3FF ] == d + 64 ]
+                    vdc_status = vdc_status | 0x04
+                    if [ (u32[ vreg[ 5 ] ] & 4) != 0 ] vdc_irq = true
+            if [ d == vdw ] vdc_vblank[]
+            run_cpu[ 85 ]
+            render_line[ d ]
+            run_cpu[ 370 ]
+            snd_frac += 44100.0 / (263.0 * 59.826)
+            ns : i32 [ i32[ snd_frac ] ]
+            snd_frac -= f64[ ns ]
+            psg_run[ ns ]
+
+    func compose [ i: i32 ] -> u32
+        h : u32 [ fb_high[ i ] ]
+        if [ h != 0 ] return h
+        g : u32 [ fb_bg[ i ] ]
+        if [ g != 0 ] return g
+        return fb_low[ i ]
+
+    func wall_us [] -> i64
+        tsp : local i64 [ 2 ]
+        cid : i32 [ 1 ]
+        ifdef [ apple ] cid = 6
+        clock_gettime[ cid, tsp ]
+        return tsp[0] * 1000000 + tsp[1] / 1000
+
+    func emu_tick [] -> none
+        if [ save_req ]
+            state_write[]
+            save_req = false
+        if [ load_req ]
+            state_read[]
+            load_req = false
+        if [ autopress > 0 ]
+            m : u32 [ u32[ autopress ] & 0xFF ]
+            if [ frames >= 60 && frames < 120 ] pad_st = pad_st | m
+            el pad_st = pad_st & (~m)
+        run_frame[]
+        pub_lock.lock[]
+        rb : i32 [ fb_w * 4 ]
+        for [ y: i32 0, y < fb_h, y += 1 ]
+            memcpy[ @pub_low[ y * fb_w ], @fb_low[ y * 512 ], rb ]
+            memcpy[ @pub_bg[ y * fb_w ], @fb_bg[ y * 512 ], rb ]
+            memcpy[ @pub_high[ y * fb_w ], @fb_high[ y * 512 ], rb ]
+        pub_w = fb_w
+        pub_h = fb_h
+        pub_lock.unlock[]
+        frames += 1
+        if [ wav_out && snd_n > 0 ]
+            if [ !wav_f ] wav_f = handle[ fopen[ wav_out, 'wb' ] ]
+            if [ wav_f ]
+                wf : @FILE [ cast @FILE [ wav_f ] ]
+                fwrite[ snd, 4, snd_n, wf ]
+                fflush[ wf ]
+        if [ audio && audio.active && snd_n > 0 ]
+            memcpy[ audio.buffer, snd, snd_n * 4 ]
+            audio.write[ snd_n ]
+        el
+            # no sound card to pace on: the clock does
+            now : i64 [ wall_us[] ]
+            if [ next_us == 0 ] next_us = now
+            next_us += 16715
+            if [ next_us > now ] usleep[ u32[ next_us - now ] ]
+            el next_us = now
+        if [ (frames % 600) == 0 ]
+            log 'tg16: f{frames} pc={cpu.pc} cr={vreg[ 5 ]} w={fb_w} h={fb_h}'
+        if [ frames_exit > 0 && frames >= u32[ frames_exit ] ]
+            dump_frame[]
+            _exit[ 0 ]
+
+    func dump_frame [] -> none
+        f : @FILE [ fopen[ '/tmp/tg16_fb.ppm', 'wb' ] ]
+        if [ !f ] return
+        fprintf[ f, "P6\n%d %d\n255\n", fb_w, fb_h ]
+        for [ y: i32 0, y < fb_h, y += 1 ]
+            for [ x: i32 0, x < fb_w, x += 1 ]
+                c : u32 [ compose[ y * 512 + x ] ]
+                fputc[ i32[ c & 0xFF ], f ]
+                fputc[ i32[ (c >> 8) & 0xFF ], f ]
+                fputc[ i32[ (c >> 16) & 0xFF ], f ]
+        fclose[ f ]
+        log 'tg16: frame {frames} in /tmp/tg16_fb.ppm, pc={cpu.pc}'
+
+    func emu_entry [] -> none
+        emu_running = true
+        while [ !emu_stop ]
+            if [ paused ] usleep[ 15000 ]
+            el emu_tick[]
+        emu_running = false
+
+    # ---- save states: beside the rom ----
+    func state_write [] -> none
+        spx : rom.change_ext[ 'state' ]
+        f : @FILE [ fopen[ spx, 'wb' ] ]
+        if [ !f ] return
+        st_hdr[ 0 ] = u32[ cpu.acc ]
+        st_hdr[ 1 ] = u32[ cpu.x ]
+        st_hdr[ 2 ] = u32[ cpu.y ]
+        st_hdr[ 3 ] = u32[ cpu.sp ]
+        st_hdr[ 4 ] = u32[ cpu.p ]
+        st_hdr[ 5 ] = u32[ cpu.pc ]
+        st_hdr[ 6 ] = (cpu.fast) ? 1 : 0
+        for [ i: i32 0, i < 8, i += 1 ]
+            st_hdr[ 7 + i ] = u32[ cpu.mpr[ i ] ]
+        st_hdr[ 15 ] = vdc_ar
+        st_hdr[ 16 ] = vdc_status
+        st_hdr[ 17 ] = vwr_lo
+        st_hdr[ 18 ] = vrr
+        st_hdr[ 19 ] = bg_y
+        st_hdr[ 20 ] = vce_addr
+        st_hdr[ 21 ] = vce_ctrl
+        st_hdr[ 22 ] = u32[ tm_reload ]
+        st_hdr[ 23 ] = u32[ tm_count ]
+        st_hdr[ 24 ] = (tm_on) ? 1 : 0
+        st_hdr[ 25 ] = irq_mask
+        st_hdr[ 26 ] = psg_sel
+        st_hdr[ 27 ] = psg_main
+        st_hdr[ 28 ] = frames
+        st_hdr[ 29 ] = ((vdc_irq) ? 1 : 0) | ((timer_irq) ? 2 : 0)
+        fwrite[ st_hdr, 4, 64, f ]
+        fwrite[ ram, 1, 0x2000, f ]
+        fwrite[ vram, 2, 0x8000, f ]
+        fwrite[ vreg, 2, 32, f ]
+        fwrite[ sat, 2, 256, f ]
+        fwrite[ vce_ram, 2, 512, f ]
+        fwrite[ ch_freq, 4, 6, f ]
+        fwrite[ ch_ctrl, 4, 6, f ]
+        fwrite[ ch_bal, 4, 6, f ]
+        fwrite[ ch_wave, 1, 192, f ]
+        fwrite[ ch_dda, 4, 6, f ]
+        fwrite[ ch_noise, 4, 6, f ]
+        fclose[ f ]
+        log 'tg16: state saved at frame {frames}'
+
+    func state_read [] -> none
+        spx : rom.change_ext[ 'state' ]
+        f : @FILE [ fopen[ spx, 'rb' ] ]
+        if [ !f ]
+            log 'tg16: no state file'
+            return
+        fread[ st_hdr, 4, 64, f ]
+        cpu.acc = u8[ st_hdr[ 0 ] ]
+        cpu.x = u8[ st_hdr[ 1 ] ]
+        cpu.y = u8[ st_hdr[ 2 ] ]
+        cpu.sp = u8[ st_hdr[ 3 ] ]
+        cpu.p = u8[ st_hdr[ 4 ] ]
+        cpu.pc = u16[ st_hdr[ 5 ] ]
+        cpu.fast = st_hdr[ 6 ] != 0
+        for [ i: i32 0, i < 8, i += 1 ]
+            cpu.mpr[ i ] = u8[ st_hdr[ 7 + i ] ]
+        vdc_ar = st_hdr[ 15 ]
+        vdc_status = st_hdr[ 16 ]
+        vwr_lo = st_hdr[ 17 ]
+        vrr = st_hdr[ 18 ]
+        bg_y = st_hdr[ 19 ]
+        vce_addr = st_hdr[ 20 ]
+        vce_ctrl = st_hdr[ 21 ]
+        tm_reload = i32[ st_hdr[ 22 ] ]
+        tm_count = i32[ st_hdr[ 23 ] ]
+        tm_on = st_hdr[ 24 ] != 0
+        irq_mask = st_hdr[ 25 ]
+        psg_sel = st_hdr[ 26 ]
+        psg_main = st_hdr[ 27 ]
+        frames = st_hdr[ 28 ]
+        vdc_irq = (st_hdr[ 29 ] & 1) != 0
+        timer_irq = (st_hdr[ 29 ] & 2) != 0
+        fread[ ram, 1, 0x2000, f ]
+        fread[ vram, 2, 0x8000, f ]
+        fread[ vreg, 2, 32, f ]
+        fread[ sat, 2, 256, f ]
+        fread[ vce_ram, 2, 512, f ]
+        fread[ ch_freq, 4, 6, f ]
+        fread[ ch_ctrl, 4, 6, f ]
+        fread[ ch_bal, 4, 6, f ]
+        fread[ ch_wave, 1, 192, f ]
+        fread[ ch_dda, 4, 6, f ]
+        fread[ ch_noise, 4, 6, f ]
+        fclose[ f ]
+        keep : u32 [ vce_addr ]
+        for [ c: u32 0, c < 512, c += 1 ]
+            vce_addr = c
+            vce_set[ u32[ vce_ram[ c ] ] ]
+        vce_addr = keep
+        log 'tg16: state loaded, frame {frames} pc={cpu.pc}'
+
+    func boot [] -> none
+        cpu = PceCpu [ huc: true ]
+        cpu.pce = a
+        audio = AudioOut [ sample_rate: 44100, channels: 2,
+                           buffer_size: 1024 ]
+        if [ !audio.open[] ]
+            log 'tg16: no sound device, playing silent'
+        for [ i: i32 0, i < 128, i += 1 ]
+            att_tab[ i ] = f32[ pow[ 10.0, -0.075 * f64[ i ] ] ]
+        for [ c: i32 0, c < 6, c += 1 ]
+            ch_lfsr[ c ] = 1
+        load_rom[]
+        if [ rom_data ]
+            cpu.reset[]
+            log 'tg16: reset pc={cpu.pc}'
+            if [ resume ] state_read[]
+        booted = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        ux.will_animate = true
+        gh : f32 [ bounds.h - ux.app_keys_px ]
+        paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: gh ] ]
+
+    # the planes as textures, then VectorLayers (knes's shader)
+    public func paint [ cv: Canvas, vp: rect ]
+        if [ !booted ] boot[]
+        if [ !rom_data ] return
+        if [ !emu_started ]
+            emu_started = true
+            pub_lock = mutex [ cond: false ]
+            tid : local u64 [ 1 ]
+            pthread_create[ tid, null, @emu_entry, a ]
+            return
+        pub_lock.lock[]
+        pw : i32 [ pub_w ]
+        ph : i32 [ pub_h ]
+        if [ pw != tex_w || ph != tex_h ]
+            low_tex = Texture [ vk: cv.vk, w: cv.w, width: pw,
+                                height: ph, linear: true ]
+            bg_tex = Texture [ vk: cv.vk, w: cv.w, width: pw,
+                               height: ph, linear: true ]
+            high_tex = Texture [ vk: cv.vk, w: cv.w, width: pw,
+                                 height: ph, linear: true ]
+            tex_w = pw
+            tex_h = ph
+            ps_render = null
+        bytes : i32 [ pw * ph * 4 ]
+        low_tex.upload[ pub_low, bytes ]
+        bg_tex.upload[ pub_bg, bytes ]
+        high_tex.upload[ pub_high, bytes ]
+        pub_lock.unlock[]
+        # the picture's shape: 256 dots at 8:7, whatever the clock
+        ar : f32 [ (256.0 * 8.0 / 7.0) / f32[ ph ] ]
+        fw : f32 [ vp.w ]
+        fh : f32 [ fw / ar ]
+        if [ fh > vp.h ]
+            fh = vp.h
+            fw = fh * ar
+        out : rect [ x: vp.x + (vp.w - fw) * 0.5,
+                     y: vp.y + (vp.h - fh) * 0.5, w: fw, h: fh ]
+        if [ !vscale ]
+            cv.draw_image[ low_tex, out ]
+            cv.draw_image[ bg_tex, out ]
+            cv.draw_image[ high_tex, out ]
+            return
+        if [ !ps_render ]
+            vs_shader = VectorLayers [ vk: cv.vk, name: 'vectorlayers' ]
+            ps_model  = Model [ w: cv.w, s: vs_shader,
+                samplers: map Texture[string] [ 'color': low_tex,
+                    'normal': bg_tex, 'emission': high_tex,
+                    'rough': high_tex ] ]
+            ps_render = Render [ vk: cv.vk, w: cv.w, wscale: 1.0,
+                                 models: [ ps_model ] ]
+        vs_shader.r0 = vec4f [ 0.0, 0.0, 1.0, 1.0 ]
+        vs_shader.r1 = vs_shader.r0
+        vs_shader.r2 = vs_shader.r0
+        # the fourth plane off
+        vs_shader.r3 = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        ps_render.update[]
+        ps_render.draw[]
+        ps_render.flush_submit[]
+        cv.draw_image[ ps_render.color, out ]
+
+    func dealloc []
+        if [ emu_started ]
+            emu_stop = true
+            while [ emu_running ] usleep[ 2000 ]
+
+# the TurboPad on a phone: a dark body, the cross, SELECT and RUN,
+# II and I; in the pad's own units (470 x 200)
+element TurboPad
+    no_cache : true
+
+    func at [ x: f32, y: f32, pw: f32, ph: f32 ] -> Region
+        if [ !bounds ] return Region [ 'l0 t0 r100% b100%' ]
+        f : rect pad_fit[ bounds.w, bounds.h, 470.0, 200.0 ]
+        k : f32 [ f.w / 470.0 ]
+        l : f32 [ f.x + x * k ]
+        t : f32 [ f.y + y * k ]
+        r : f32 [ bounds.w - l - pw * k ]
+        b : f32 [ bounds.h - t - ph * k ]
+        return Region [ 'l{l}px t{t}px r{r}px b{b}px' ]
+
+    func render [] -> Elements
+        e : Elements [ ]
+        e[ 'cross' ] = PadCross [ look: PadLook.nes,
+            area: at[ 30.0, 50.0, 110.0, 110.0 ] ]
+        e[ 'select_word' ] = PadWord [ word: 'SELECT',
+            colour: rgba [ '#d8d8d8' ],
+            area: at[ 172.0, 132.0, 56.0, 14.0 ] ]
+        e[ 'run_word' ] = PadWord [ word: 'RUN',
+            colour: rgba [ '#d8d8d8' ],
+            area: at[ 240.0, 132.0, 56.0, 14.0 ] ]
+        e[ 'select' ] = PadKey [ code: 340, face: rgba [ '#2a2a2a' ],
+            kind: PadButton.pill,
+            area: at[ 178.0, 108.0, 44.0, 16.0 ] ]
+        e[ 'run' ] = PadKey [ code: 257, face: rgba [ '#2a2a2a' ],
+            kind: PadButton.pill,
+            area: at[ 246.0, 108.0, 44.0, 16.0 ] ]
+        e[ 'ii' ] = PadKey [ code: 46, face: rgba [ '#3a3a3a' ],
+            kind: PadButton.dome,
+            area: at[ 320.0, 92.0, 56.0, 56.0 ] ]
+        e[ 'i' ] = PadKey [ code: 47, face: rgba [ '#3a3a3a' ],
+            kind: PadButton.dome,
+            area: at[ 392.0, 80.0, 56.0, 56.0 ] ]
+        e[ 'ii_word' ] = PadWord [ word: 'II',
+            colour: rgba [ '#d8d8d8' ],
+            area: at[ 330.0, 154.0, 36.0, 18.0 ] ]
+        e[ 'i_word' ] = PadWord [ word: 'I',
+            colour: rgba [ '#d8d8d8' ],
+            area: at[ 402.0, 142.0, 36.0, 18.0 ] ]
+        return e
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        f : rect pad_fit[ bounds.w, bounds.h, 470.0, 200.0 ]
+        k : f32 [ f.w / 470.0 ]
+        pad_drop[ cv, f.x, f.y, f.w, f.h, 40.0 * k,
+            rgba [ '#000000a0' ], 4.0 * k, 10.0 * k ]
+        pad_panel[ cv, f.x, f.y, f.w, f.h, 40.0 * k,
+            rgba [ '#3c3c40' ], rgba [ '#1c1c1f' ], false, k ]
+        pad_panel[ cv, f.x + 160.0 * k, f.y + 96.0 * k, 150.0 * k,
+            60.0 * k, 8.0 * k, rgba [ '#4a4a50' ],
+            rgba [ '#2c2c30' ], true, k ]

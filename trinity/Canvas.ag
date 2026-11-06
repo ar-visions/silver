@@ -3574,7 +3574,9 @@ Render Canvas
             src.flush_text[]
         # only where it has ink: an empty canvas costs nothing, a
         # sparse one its drawn part (a phone's screen is mostly that)
-        if [ src && src.ink_known && src.content_w > 0
+        # a blur spreads past its source's ink: drawn whole
+        spreads : bool [ fx_mode == f32[ DrawMode.image_blur ] ]
+        if [ src && src.ink_known && !spreads && src.content_w > 0
              && src.content_h > 0 ]
             if [ src.ink_x1 <= src.ink_x0 || src.ink_y1 <= src.ink_y0 ]
                 return

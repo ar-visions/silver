@@ -290,9 +290,9 @@ GKern KAttnRelSoft
         for (int j = int(l); j < T; j += 256) {{
           float s = P.v[base + uint(j)];
           int r = j - i + W;
-          if (r >= 0 && r <= 2 * W) {{ float a = 0.0; for (int d = 0; d < DK; d++) a += q.v[uint((b * H * DK + h * DK + d) * T + i)] * ek.v[uint(r * DK + d)]; s += a * p.f0; }}
+          if (p.a1 != 0ul && r >= 0 && r <= 2 * W) {{ float a = 0.0; for (int d = 0; d < DK; d++) a += q.v[uint((b * H * DK + h * DK + d) * T + i)] * ek.v[uint(r * DK + d)]; s += a * p.f0; }}
           float mj = (p.a3 != 0ul) ? F(p.a3).v[uint(b * T + j)] : 1.0;
-          if (mi * mj == 0.0) s = -1e4;
+          if (mi * mj == 0.0 || (p.n5 != 0 && j > i)) s = -1e4;
           P.v[base + uint(j)] = s; mx = max(mx, s);
         }}
         red[l] = mx; barrier();
@@ -331,7 +331,7 @@ GKern KAttnSoftBack
         for (int j = int(l); j < T; j += 256) {{
           float g = dP.v[base + uint(j)];
           int r = j - i + W;
-          if (r >= 0 && r <= 2 * W) {{ float a = 0.0; for (int d = 0; d < DK; d++) a += dO.v[uint((zi * DK + d) * T + i)] * ev.v[uint(r * DK + d)]; g += a; }}
+          if (p.a2 != 0ul && r >= 0 && r <= 2 * W) {{ float a = 0.0; for (int d = 0; d < DK; d++) a += dO.v[uint((zi * DK + d) * T + i)] * ev.v[uint(r * DK + d)]; g += a; }}
           dP.v[base + uint(j)] = g; acc += g * P.v[base + uint(j)];
         }}
         red[l] = acc; barrier();
@@ -339,7 +339,7 @@ GKern KAttnSoftBack
         float tot = red[0];
         int b = zi / H;
         float mi = (p.a4 != 0ul) ? F(p.a4).v[uint(b * T + i)] : 1.0;
-        for (int j = int(l); j < T; j += 256) {{ uint at = base + uint(j); float mj = (p.a4 != 0ul) ? F(p.a4).v[uint(b * T + j)] : 1.0; dP.v[at] = (mi * mj == 0.0) ? 0.0 : P.v[at] * (dP.v[at] - tot); }}
+        for (int j = int(l); j < T; j += 256) {{ uint at = base + uint(j); float mj = (p.a4 != 0ul) ? F(p.a4).v[uint(b * T + j)] : 1.0; dP.v[at] = (mi * mj == 0.0 || (p.n5 != 0 && j > i)) ? 0.0 : P.v[at] * (dP.v[at] - tot); }}
     }
 
 GKern KAttnDqRel
@@ -367,6 +367,62 @@ GKern KAttnDtab
         red[l] = s; barrier();
         for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) red[l] += red[l + w]; barrier(); }}
         if (l == 0u) D.v[o] += red[0] * p.f1;
+    }
+
+# one workgroup a row: its log-sum-exp and its loss
+GKern KXent
+    func decl [] -> GLSL none {
+        shared float red[256];
+    }
+    func compute [] -> GLSL none {
+        uint r = gl_WorkGroupID.x; uint l = gl_LocalInvocationID.x; int V = p.n1; int T = p.n2;
+        F x = F(p.a0); F tg = F(p.a1); F lse = F(p.a2); F pl = F(p.a3);
+        uint cs = (T > 0) ? uint(T) : 1u;
+        uint rb = (T > 0) ? (r / uint(T)) * uint(V) * uint(T) + (r % uint(T)) : r * uint(V);
+        float mx = -1e30;
+        for (int c = int(l); c < V; c += 256) mx = max(mx, x.v[rb + uint(c) * cs]);
+        red[l] = mx; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) red[l] = max(red[l], red[l + w]); barrier(); }}
+        mx = red[0]; barrier();
+        float s = 0.0;
+        for (int c = int(l); c < V; c += 256) s += exp(x.v[rb + uint(c) * cs] - mx);
+        red[l] = s; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) red[l] += red[l + w]; barrier(); }}
+        if (l == 0u) {{
+            float L = mx + log(red[0]); lse.v[r] = L;
+            int t = int(tg.v[r]);
+            pl.v[r] = (t >= 0) ? L - x.v[rb + uint(t) * cs] : 0.0;
+        }}
+    }
+
+# the rows' losses over the rows counted (targets at least 0)
+GKern KXentSum
+    func decl [] -> GLSL none {
+        shared float part[256];
+        shared float cnt[256];
+    }
+    func compute [] -> GLSL none {
+        uint l = gl_LocalInvocationID.x; uint N = uint(p.n0);
+        F pl = F(p.a0); F tg = F(p.a1); F o = F(p.a2); F nrm = F(p.a3);
+        float s = 0.0; float c = 0.0;
+        for (uint i = l; i < N; i += 256u) {{ s += pl.v[i]; if (tg.v[i] >= 0.0) c += 1.0; }}
+        part[l] = s; cnt[l] = c; barrier();
+        for (uint w = 128u; w > 0u; w >>= 1) {{ if (l < w) {{ part[l] += part[l + w]; cnt[l] += cnt[l + w]; }} barrier(); }}
+        if (l == 0u) {{ float k = max(cnt[0], 1.0); o.v[0] = part[0] / k; nrm.v[0] = 1.0 / k; }}
+    }
+
+GKern KXentBack
+    func compute [] -> GLSL none {
+        uint i = gl_GlobalInvocationID.x; uint N = uint(p.n0); int V = p.n1; int T = p.n2;
+        if (i >= N) return;
+        F x = F(p.a0); F tg = F(p.a1); F lse = F(p.a2); F nrm = F(p.a3); F dl = F(p.a4); F dx = F(p.a5);
+        uint r; uint c;
+        if (T > 0) {{ uint vt = uint(V) * uint(T); uint b = i / vt; uint rem = i - b * vt; c = rem / uint(T); r = b * uint(T) + (rem - c * uint(T)); }}
+        else {{ r = i / uint(V); c = i - r * uint(V); }}
+        int t = int(tg.v[r]);
+        if (t < 0) return;
+        float g = dl.v[0] * nrm.v[0];
+        dx.v[i] += g * (exp(x.v[i] - lse.v[r]) - ((int(c) == t) ? 1.0 : 0.0));
     }
 
 GKern KFill
@@ -1215,6 +1271,21 @@ GOp GAttnOp
     public pr   : GTensor
     public nh   : i64
     public win  : i64
+    public causal : bool
+
+# y[z] = a[z] x[z]: a [z, m, k], x [z, k, n]
+GOp GBmmOp
+    public ba : GTensor
+    public bx : GTensor
+
+# mean cross entropy; lse per row, nrm = 1 / rows counted
+GOp GXentOp
+    public xx  : GTensor
+    public xt  : GTensor
+    public lse : GTensor
+    public nrm : GTensor
+    public nv  : i64
+    public nt  : i64
 
 # [b, a, c] turned to [b, c, a]
 GOp GSwapOp
@@ -1575,6 +1646,10 @@ class Grad
                 loss_back[ cast GLossOp [ rec ] ]
             case 23
                 kl_back[ cast GKlOp [ rec ] ]
+            case 24
+                bmm_back[ cast GBmmOp [ rec ] ]
+            case 25
+                xent_back[ cast GXentOp [ rec ] ]
 
     func keeps [ t: GTensor ] -> bool
         return record && t && t.need
@@ -2129,9 +2204,10 @@ class Grad
         g.ff[ 0 ] = f32[ 1.0 / sqrt[ f64[ q.dims[ 1 ] / nh ] ] ]
         return g
 
+    # ek / ev (relative tables) may be null; causal hides j > i
     func attention [ q: GTensor, kk: GTensor, v: GTensor, ek: GTensor,
-                     ev: GTensor, am: GTensor, nh: i64,
-                     win: i64 ] -> GTensor
+                     ev: GTensor, am: GTensor, nh: i64, win: i64,
+                     causal: bool ] -> GTensor
         nb : i64 [ q.dims[ 0 ] ]
         nc : i64 [ q.dims[ 1 ] ]
         nt : i64 [ q.dims[ 2 ] ]
@@ -2147,28 +2223,31 @@ class Grad
         k1 : GKernel kernel[ 'attn_rel_soft', KAttnRelSoft [] ]
         g : GArgs attn_args[ q, nh, win ]
         g.ad[ 0 ] = q.addr[]
-        g.ad[ 1 ] = ek.addr[]
+        g.ad[ 1 ] = (ek) ? ek.addr[] : u64[ 0 ]
         g.ad[ 2 ] = pr.addr[]
         g.ad[ 3 ] = (am) ? am.addr[] : u64[ 0 ]
+        g.nn[ 5 ] = (causal) ? 1 : 0
         rn.dispatch[ k1, g, i32[ z * nt ], 1, 1 ]
         o : GTensor temp[ q.dims ]
         gemm[ GView [ t: pr, rs: nt, cs: 1, bs: nt * nt ],
               GView [ t: v, rs: 1, cs: nt, bs: dk * nt ],
               GView [ t: o, rs: 1, cs: nt, bs: dk * nt ], nt, dk, nt, z,
               1.0, 0.0 ]
-        k2 : GKernel kernel[ 'attn_rel_v', KAttnRelV [] ]
-        g2 : GArgs attn_args[ q, nh, win ]
-        g2.ad[ 0 ] = pr.addr[]
-        g2.ad[ 1 ] = ev.addr[]
-        g2.ad[ 2 ] = o.addr[]
-        rn.dispatch[ k2, g2, groups[ o.count ], 1, 1 ]
+        if [ ev ]
+            k2 : GKernel kernel[ 'attn_rel_v', KAttnRelV [] ]
+            g2 : GArgs attn_args[ q, nh, win ]
+            g2.ad[ 0 ] = pr.addr[]
+            g2.ad[ 1 ] = ev.addr[]
+            g2.ad[ 2 ] = o.addr[]
+            rn.dispatch[ k2, g2, groups[ o.count ], 1, 1 ]
         if [
             keeps[ q ] || keeps[ kk ] || keeps[ v ] || keeps[ ek ]
             || keeps[ ev ] ]
             o.need = true
             tape.push[
                 GAttnOp [ kind: 9, out: o, q: q, kk: kk, v: v, ek: ek,
-                          ev: ev, am: am, pr: pr, nh: nh, win: win ] ]
+                          ev: ev, am: am, pr: pr, nh: nh, win: win,
+                          causal: causal ] ]
         return o
 
     func attn_back [ rec: GAttnOp ]
@@ -2193,10 +2272,11 @@ class Grad
         g1 : GArgs attn_args[ q, nh, rec.win ]
         g1.ad[ 0 ] = pr.addr[]
         g1.ad[ 1 ] = dp.addr[]
-        g1.ad[ 2 ] = rec.ev.addr[]
+        g1.ad[ 2 ] = (rec.ev) ? rec.ev.addr[] : u64[ 0 ]
         g1.ad[ 3 ] = dout.addr[]
         # a masked score passes no gradient
         g1.ad[ 4 ] = (rec.am) ? rec.am.addr[] : u64[ 0 ]
+        g1.nn[ 5 ] = (rec.causal) ? 1 : 0
         rn.dispatch[ k1, g1, i32[ z * nt ], 1, 1 ]
         # dp now holds dS
         if [ q.need ]
@@ -2205,12 +2285,13 @@ class Grad
                   GView [ t: rec.kk, rs: 1, cs: nt, bs: dk * nt ],
                   GView [ t: dq, rs: 1, cs: nt, bs: dk * nt ], nt, dk,
                   nt, z, sc, 1.0 ]
-            k2 : GKernel kernel[ 'attn_dq_rel', KAttnDqRel [] ]
-            g2 : GArgs attn_args[ q, nh, rec.win ]
-            g2.ad[ 0 ] = dp.addr[]
-            g2.ad[ 1 ] = rec.ek.addr[]
-            g2.ad[ 2 ] = dq.addr[]
-            rn.dispatch[ k2, g2, groups[ q.count ], 1, 1 ]
+            if [ rec.ek ]
+                k2 : GKernel kernel[ 'attn_dq_rel', KAttnDqRel [] ]
+                g2 : GArgs attn_args[ q, nh, rec.win ]
+                g2.ad[ 0 ] = dp.addr[]
+                g2.ad[ 1 ] = rec.ek.addr[]
+                g2.ad[ 2 ] = dq.addr[]
+                rn.dispatch[ k2, g2, groups[ q.count ], 1, 1 ]
         if [ rec.kk.need ]
             gemm[ GView [ t: q, rs: nt, cs: 1, bs: dk * nt ],
                   GView [ t: dp, rs: nt, cs: 1, bs: nt * nt ],
@@ -2225,14 +2306,14 @@ class Grad
         # a workgroup per table entry sums every (z, i)
         k3 : GKernel kernel[ 'attn_dtab', KAttnDtab [] ]
         nr : i64 [ 2 * rec.win + 1 ]
-        if [ rec.ek.need ]
+        if [ rec.ek && rec.ek.need ]
             g3 : GArgs attn_args[ q, nh, rec.win ]
             g3.ad[ 0 ] = dp.addr[]
             g3.ad[ 1 ] = q.addr[]
             g3.ad[ 2 ] = grad_of[ rec.ek ].addr[]
             g3.ff[ 1 ] = sc
             rn.dispatch[ k3, g3, i32[ nr * dk ], 1, 1 ]
-        if [ rec.ev.need ]
+        if [ rec.ev && rec.ev.need ]
             g4 : GArgs attn_args[ q, nh, rec.win ]
             g4.ad[ 0 ] = pr.addr[]
             g4.ad[ 1 ] = dout.addr[]
@@ -2981,6 +3062,95 @@ class Grad
         rn.move[ x.ar.buf, x.off, y.ar.buf, y.off, x.count * 4 ]
         return y
 
+    # y[z] = a[z] x[z]: ma [z, m, k], mx [z, k, n] -> [z, m, n]
+    func bmm [ ma: GTensor, mx: GTensor ] -> GTensor
+        z : i64 [ ma.dims[ 0 ] ]
+        m : i64 [ ma.dims[ 1 ] ]
+        k : i64 [ ma.dims[ 2 ] ]
+        n : i64 [ mx.dims[ 2 ] ]
+        y : GTensor temp[ dims3[ z, m, n ] ]
+        gemm[ GView [ t: ma, rs: k, cs: 1, bs: m * k ],
+              GView [ t: mx, rs: n, cs: 1, bs: k * n ],
+              GView [ t: y, rs: n, cs: 1, bs: m * n ], m, n, k, z, 1.0,
+              0.0 ]
+        if [ keeps[ ma ] || keeps[ mx ] ]
+            y.need = true
+            tape.push[ GBmmOp [ kind: 24, out: y, ba: ma, bx: mx ] ]
+        return y
+
+    func bmm_back [ rec: GBmmOp ]
+        dy : GTensor rec.out.gr
+        if [ !dy ] return
+        ma : GTensor rec.ba
+        mx : GTensor rec.bx
+        z : i64 [ ma.dims[ 0 ] ]
+        m : i64 [ ma.dims[ 1 ] ]
+        k : i64 [ ma.dims[ 2 ] ]
+        n : i64 [ mx.dims[ 2 ] ]
+        # da = dy x^T, dx = a^T dy
+        if [ ma.need ]
+            gemm[ GView [ t: dy, rs: n, cs: 1, bs: m * n ],
+                  GView [ t: mx, rs: 1, cs: n, bs: k * n ],
+                  GView [ t: grad_of[ ma ], rs: k, cs: 1, bs: m * k ],
+                  m, k, n, z, 1.0, 1.0 ]
+        if [ mx.need ]
+            gemm[ GView [ t: ma, rs: 1, cs: k, bs: m * k ],
+                  GView [ t: dy, rs: n, cs: 1, bs: m * n ],
+                  GView [ t: grad_of[ mx ], rs: n, cs: 1, bs: k * n ],
+                  k, n, m, z, 1.0, 1.0 ]
+
+    # mean cross entropy of logits x over v classes at targets tg
+    # (whole numbers as floats; under 0 skipped); tlast: x is [b, v, t]
+    func xent [ x: GTensor, tg: GTensor, v: i64,
+                tlast: bool ] -> GTensor
+        rows : i64 [ x.count / v ]
+        nt : i64 [ (tlast) ? x.dims[ x.dims.count - 1 ] : 0 ]
+        lse : GTensor temp[ vec i64 [] [ rows ] ]
+        pl : GTensor temp[ vec i64 [] [ rows ] ]
+        o : GTensor temp[ one[] ]
+        nrm : GTensor temp[ one[] ]
+        k : GKernel kernel[ 'xent', KXent [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = tg.addr[]
+        g.ad[ 2 ] = lse.addr[]
+        g.ad[ 3 ] = pl.addr[]
+        g.nn[ 0 ] = i32[ rows ]
+        g.nn[ 1 ] = i32[ v ]
+        g.nn[ 2 ] = i32[ nt ]
+        rn.dispatch[ k, g, i32[ rows ], 1, 1 ]
+        k2 : GKernel kernel[ 'xent_sum', KXentSum [] ]
+        g2 : GArgs []
+        g2.ad[ 0 ] = pl.addr[]
+        g2.ad[ 1 ] = tg.addr[]
+        g2.ad[ 2 ] = o.addr[]
+        g2.ad[ 3 ] = nrm.addr[]
+        g2.nn[ 0 ] = i32[ rows ]
+        rn.dispatch[ k2, g2, 1, 1, 1 ]
+        if [ keeps[ x ] ]
+            o.need = true
+            tape.push[
+                GXentOp [ kind: 25, out: o, xx: x, xt: tg, lse: lse,
+                          nrm: nrm, nv: v, nt: nt ] ]
+        return o
+
+    func xent_back [ rec: GXentOp ]
+        dl : GTensor rec.out.gr
+        if [ !dl || !rec.xx.need ] return
+        x : GTensor rec.xx
+        k : GKernel kernel[ 'xent_back', KXentBack [] ]
+        g : GArgs []
+        g.ad[ 0 ] = x.addr[]
+        g.ad[ 1 ] = rec.xt.addr[]
+        g.ad[ 2 ] = rec.lse.addr[]
+        g.ad[ 3 ] = rec.nrm.addr[]
+        g.ad[ 4 ] = dl.addr[]
+        g.ad[ 5 ] = grad_of[ x ].addr[]
+        g.nn[ 0 ] = i32[ x.count ]
+        g.nn[ 1 ] = i32[ rec.nv ]
+        g.nn[ 2 ] = i32[ rec.nt ]
+        rn.dispatch[ k, g, groups[ x.count ], 1, 1 ]
+
     # the 8 least of every row of d [rows, n]: values and columns
     func top8 [ d: GTensor, rows: i64, n: i64, od: GTensor,
                 oi: GTensor ]
@@ -3249,7 +3419,7 @@ expect func t_grad_attention [] -> bool
                             true ]
     m  : GTensor grad_load[ gd, dir, 'a_m', vec i64 [] [ 2, 1, 30 ],
                             false ]
-    o  : GTensor gd.attention[ q, kk, v, ek, ev, m, 2, 10 ]
+    o  : GTensor gd.attention[ q, kk, v, ek, ev, m, 2, 10, false ]
     gd.upload[ gd.grad_of[ o ], grad_gold[ dir, 'a_do' ] ]
     gd.back_op[ gd.tape[ gd.tape.count - 1 ] ]
     gd.rn.finish[]
@@ -3261,6 +3431,67 @@ expect func t_grad_attention [] -> bool
         grad_worst[ gd.download[ ek.gr ], grad_gold[ dir, 'a_dek' ] ],
         grad_worst[ gd.download[ ev.gr ], grad_gold[ dir, 'a_dev' ] ] ]
     log 'grad attention: out {e[ 0 ]} dq {e[ 1 ]} dk {e[ 2 ]} dv {e[ 3 ]} dek {e[ 4 ]} dev {e[ 5 ]}'
+    ok : bool [ true ]
+    for [ w: f64 ] in e
+        if [ w > 0.0001 ] ok = false
+    return ok
+
+# causal attention with no relative tables, bmm, cross entropy
+# vs pytorch (GRAD_GOLD)
+expect func t_grad_lm_ops [] -> bool
+    ge : cstr [ getenv[ 'GRAD_GOLD' ] ]
+    if [ !ge ] return true
+    dir : string [ ge ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    gd : Grad [ vk: vk, keep_mb: 16, work_mb: 64 ]
+    gd.record = true
+    q  : GTensor grad_load[ gd, dir, 'c_q', vec i64 [] [ 2, 12, 9 ],
+                            true ]
+    kk : GTensor grad_load[ gd, dir, 'c_k', vec i64 [] [ 2, 12, 9 ],
+                            true ]
+    v  : GTensor grad_load[ gd, dir, 'c_v', vec i64 [] [ 2, 12, 9 ],
+                            true ]
+    m  : GTensor grad_load[ gd, dir, 'c_m', vec i64 [] [ 2, 1, 9 ],
+                            false ]
+    o  : GTensor gd.attention[ q, kk, v, null, null, m, 3, 0, true ]
+    gd.upload[ gd.grad_of[ o ], grad_gold[ dir, 'c_do' ] ]
+    ma : GTensor grad_load[ gd, dir, 'bm_a', vec i64 [] [ 2, 3, 5 ],
+                            true ]
+    mx : GTensor grad_load[ gd, dir, 'bm_x', vec i64 [] [ 2, 5, 4 ],
+                            true ]
+    y  : GTensor gd.bmm[ ma, mx ]
+    gd.upload[ gd.grad_of[ y ], grad_gold[ dir, 'bm_dy' ] ]
+    xl : GTensor grad_load[ gd, dir, 'xe_x', vec i64 [] [ 2, 7, 6 ],
+                            true ]
+    xt : GTensor grad_load[ gd, dir, 'xe_t', vec i64 [] [ 2, 6 ],
+                            false ]
+    ls : GTensor gd.xent[ xl, xt, 7, true ]
+    xr : GTensor grad_load[ gd, dir, 'xr_x', vec i64 [] [ 5, 7 ], true ]
+    xs : GTensor grad_load[ gd, dir, 'xr_t', vec i64 [] [ 5 ], false ]
+    lr : GTensor gd.xent[ xr, xs, 7, false ]
+    gd.fill[ gd.grad_of[ ls ], 1.0 ]
+    gd.fill[ gd.grad_of[ lr ], 1.0 ]
+    i : i64 [ gd.tape.count - 1 ]
+    while [ i >= 0 ]
+        gd.back_op[ gd.tape[ i ] ]
+        i -= 1
+    gd.rn.finish[]
+    e : vec f64 [] [
+        grad_worst[ gd.download[ o ], grad_gold[ dir, 'c_o' ] ],
+        grad_worst[ gd.download[ q.gr ], grad_gold[ dir, 'c_dq' ] ],
+        grad_worst[ gd.download[ kk.gr ], grad_gold[ dir, 'c_dk' ] ],
+        grad_worst[ gd.download[ v.gr ], grad_gold[ dir, 'c_dv' ] ],
+        grad_worst[ gd.download[ y ], grad_gold[ dir, 'bm_y' ] ],
+        grad_worst[ gd.download[ ma.gr ], grad_gold[ dir, 'bm_da' ] ],
+        grad_worst[ gd.download[ mx.gr ], grad_gold[ dir, 'bm_dx' ] ],
+        grad_worst[ gd.download[ ls ], grad_gold[ dir, 'xe_l' ] ],
+        grad_worst[ gd.download[ xl.gr ], grad_gold[ dir, 'xe_dx' ] ],
+        grad_worst[ gd.download[ lr ], grad_gold[ dir, 'xr_l' ] ],
+        grad_worst[ gd.download[ xr.gr ], grad_gold[ dir, 'xr_dx' ] ] ]
+    log 'grad lm ops: attn {e[ 0 ]} dq {e[ 1 ]} dk {e[ 2 ]} dv {e[ 3 ]}; bmm {e[ 4 ]} da {e[ 5 ]} dx {e[ 6 ]}; xent {e[ 7 ]} dx {e[ 8 ]}; rows {e[ 9 ]} dx {e[ 10 ]}'
     ok : bool [ true ]
     for [ w: f64 ] in e
         if [ w > 0.0001 ] ok = false

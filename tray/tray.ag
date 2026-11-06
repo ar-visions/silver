@@ -384,7 +384,7 @@ class AppMenu
     # a window's menu: kind 1 dbusmenu, 2 GTK
     func read [ kind: i32, bus: string, path: string, app: string,
                 win: string ] -> vec TrayEntry
-        if [ kind == 0 || !open[] ] return vec TrayEntry []
+        if [ kind == 0 || kind == 3 || !open[] ] return vec TrayEntry []
         if [ kind == 1 ] return dbm_entries[ conn, bus, path ]
         menus  = map GtkMenu [string] []
         groups = vec i32 []
@@ -403,10 +403,28 @@ class AppMenu
         if [ kind == 1 ]
             dbm_click[ conn, bus, path, e.id ]
             return
-        dot : i32 [ e.action.index_of[ '.' ] ]
+        activate[ bus, app, win, e.action, e.target ]
+
+    # whether an action ('app.back', 'win.back') is there and on:
+    # -1 there is none, 0 off, 1 on
+    func enabled [ bus: string, app: string, win: string,
+                   name: string ] -> i32
+        if [ !open[] ] return -1
+        able = map bool [string] []
+        state = map i32 [string] []
+        describe[ bus, app, 'app' ]
+        describe[ bus, win, 'win' ]
+        if [ !able.contains[ name ] ] return -1
+        return (able[ name ]) ? 1 : 0
+
+    # an action ('app.back') run, with a string target when given
+    func activate [ bus: string, app: string, win: string,
+                    action: string, target: string ]
+        if [ !open[] ] return
+        dot : i32 [ action.index_of[ '.' ] ]
         if [ dot <= 0 ] return
-        pre : e.action.mid[ 0, dot ]
-        nm : e.action.mid[ dot + 1, e.action.count - dot - 1 ]
+        pre : action.mid[ 0, dot ]
+        nm : action.mid[ dot + 1, action.count - dot - 1 ]
         at : (pre == 'win') ? win : app
         if [ at.count == 0 ] return
         ga : 'org.gtk.Actions'
@@ -420,11 +438,11 @@ class AppMenu
         ps : DBusMessageIter
         dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY, "v",
                                           @ps ]
-        if [ e.target.count > 0 ]
+        if [ target.count > 0 ]
             v : DBusMessageIter
             dbus_message_iter_open_container[ @ps, DBUS_TYPE_VARIANT,
                                               "s", @v ]
-            ts : cstr [ e.target.chars ]
+            ts : cstr [ target.chars ]
             dbus_message_iter_append_basic[ @v, DBUS_TYPE_STRING, @ts ]
             dbus_message_iter_close_container[ @ps, @v ]
         dbus_message_iter_close_container[ @it, @ps ]

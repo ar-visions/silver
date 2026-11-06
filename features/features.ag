@@ -1403,6 +1403,15 @@ expect func t_keyword_interpolate [] -> bool
     log 'keyword: [{c}] [{s}]'
     return c == 'rm -rf /tmp/x 2>&1' && s == 'a/tmp/xb ${{HOME}}'
 
+# a string block drops the indent its lines share
+expect func t_keyword_dedent [] -> bool
+    s : string {
+        a
+          b
+        c
+    }
+    return s == '\na\n  b\nc'
+
 ## a block comment
 # with a lone hash line inside
 ##

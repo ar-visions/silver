@@ -13,6 +13,7 @@ ifdef [ windows ]
     import <posix.h>
 import <mbedtls/net_sockets.h>
 import <mbedtls/x509_crt.h>
+import <mbedtls/error.h>
 import <psa/crypto.h>
 import <stdio.h>
 import <stdlib.h>
@@ -26,8 +27,38 @@ class TLSClient
     intern ssl     : mbedtls_ssl_context
     intern conf    : mbedtls_ssl_config
     intern cacert  : mbedtls_x509_crt
+    # a socket already connected, wrapped (Java's sockets)
+    public fd       : i32 [ -1 ]
+    # names offered by ALPN, with commas between
+    public alpn     : string
+    # false: the caller judges the chain after the handshake
+    public verify   : bool [ true ]
+    # a wrapped socket's waits in ms; 0 waits for ever
+    public read_ms  : i32
+    public write_ms : i32
+    # the handshake's error, or a send's
+    public failure  : i32
+    # only the trust loaded, for checking chains made elsewhere
+    public trust_only : bool
+    intern lk         : mutex
+    intern alpn_names : vec string
+    intern alpn_ptrs  : new cstr
+
+    # 1 again, 0 timed out, -1 not a wait (a wrapped one polls)
+    func ready [ r: i32, ms: i32 ] -> i32
+        if [ r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE ]
+            return -1
+        if [ fd < 0 ] return 1
+        rw : u32 [ MBEDTLS_NET_POLL_WRITE ]
+        if [ r == MBEDTLS_ERR_SSL_WANT_READ ] rw = MBEDTLS_NET_POLL_READ
+        wait : u32 [ 4294967295 ]
+        if [ ms > 0 ] wait = ms
+        got : i32 [ mbedtls_net_poll[ @net_ctx, rw, wait ] ]
+        if [ got == 0 ] return 0
+        return 1
 
     func init []
+        lk = mutex [ ]
         mbedtls_net_init          [ @net_ctx ]
         mbedtls_ssl_init          [ @ssl ]
         mbedtls_ssl_config_init   [ @conf ]
@@ -71,55 +102,136 @@ class TLSClient
                     if [ r4 >= 0 ] ca_ok = 0
         if [ ca_ok != 0 ]
             log 'net: no CA bundle (ssl/trust.crt or system certs)'
+            failure = -1
             return
-        ps : string '{port}'
-        crc : i32 [ mbedtls_net_connect[ @net_ctx, host.chars, ps.chars, MBEDTLS_NET_PROTO_TCP ] ]
-        if [ crc != 0 ]
-            log 'net: connect to {host}:{port} failed ({crc})'
-            return
+        if [ trust_only ] return
+        if [ fd >= 0 ]
+            net_ctx.fd = fd
+            mbedtls_net_set_nonblock[ @net_ctx ]
+        el
+            ps : string '{port}'
+            crc : i32 [ mbedtls_net_connect[ @net_ctx, host.chars, ps.chars, MBEDTLS_NET_PROTO_TCP ] ]
+            if [ crc != 0 ]
+                log 'net: connect to {host}:{port} failed ({crc})'
+                failure = crc
+                return
         dfc : i32 [ mbedtls_ssl_config_defaults[ @conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT ] ]
         if [ dfc != 0 ]
             log 'net: ssl config_defaults failed ({dfc})'
             return
-        mbedtls_ssl_conf_authmode  [ @conf, MBEDTLS_SSL_VERIFY_REQUIRED ]
+        if [ verify ]
+            mbedtls_ssl_conf_authmode[ @conf, MBEDTLS_SSL_VERIFY_REQUIRED ]
+        el
+            mbedtls_ssl_conf_authmode[ @conf, MBEDTLS_SSL_VERIFY_OPTIONAL ]
         mbedtls_ssl_conf_ca_chain  [ @conf, @cacert, null ]
+        if [ alpn && alpn.count > 0 ]
+            alpn_names = alpn.split[ "," ]
+            n : i32 [ i32 alpn_names.count ]
+            alpn_ptrs = new cstr [ n + 1 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                alpn_ptrs[ i ] = alpn_names[ i ].chars
+            alpn_ptrs[ n ] = null
+            mbedtls_ssl_conf_alpn_protocols[ @conf, alpn_ptrs ]
         suc : i32 [ mbedtls_ssl_setup[ @ssl, @conf ] ]
         if [ suc != 0 ]
             log 'net: ssl setup failed ({suc})'
             return
-        shc : i32 [ mbedtls_ssl_set_hostname[ @ssl, host.chars ] ]
-        if [ shc != 0 ]
-            log 'net: set_hostname failed ({shc})'
-            return
+        if [ host && host.count > 0 ]
+            shc : i32 [ mbedtls_ssl_set_hostname[ @ssl, host.chars ] ]
+            if [ shc != 0 ]
+                log 'net: set_hostname failed ({shc})'
+                failure = shc
+                return
+        el
+            mbedtls_ssl_set_hostname[ @ssl, null ]
         mbedtls_ssl_set_bio[ @ssl, @net_ctx, @mbedtls_net_send, @mbedtls_net_recv, null ]
         for [ true ]
+            lk.lock[]
             hs : i32 [ mbedtls_ssl_handshake[ @ssl ] ]
+            lk.unlock[]
             if [ hs == 0 ]
                 connected = true
                 return
-            if [ hs != MBEDTLS_ERR_SSL_WANT_READ && hs != MBEDTLS_ERR_SSL_WANT_WRITE ]
+            # TLS 1.3's ticket after the handshake: only call again
+            if [ hs == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ]
+                continue
+            w : i32 [ ready[ hs, read_ms ] ]
+            if [ w == 1 ] continue
+            failure = MBEDTLS_ERR_SSL_TIMEOUT
+            if [ w < 0 ]
+                failure = hs
                 log 'net: tls handshake failed ({hs}) for {host}'
-                return
+            return
 
+    # what it could send; on an error or a wait, failure says
     func send [ data: @u8, n: i64 ] -> i64
         sent : i64 [ 0 ]
         for [ sent < n ]
+            lk.lock[]
             r : i32 [ mbedtls_ssl_write[ @ssl, @data[sent], n - sent ] ]
-            if [ r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ] continue
-            if [ r <= 0 ] return sent
-            sent += r
+            lk.unlock[]
+            if [ r > 0 ]
+                sent += r
+                continue
+            if [ r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ]
+                continue
+            w : i32 [ ready[ r, write_ms ] ]
+            if [ w == 1 ] continue
+            failure = MBEDTLS_ERR_SSL_TIMEOUT
+            if [ w < 0 ] failure = r
+            return sent
         return sent
 
     func recv [ data: @u8, n: i64 ] -> i64
         for [ true ]
+            lk.lock[]
             r : i32 [ mbedtls_ssl_read[ @ssl, data, n ] ]
-            if [ r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE ] continue
+            lk.unlock[]
             if [ r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ] continue
+            w : i32 [ ready[ r, read_ms ] ]
+            if [ w == 1 ] continue
+            if [ w == 0 ] return MBEDTLS_ERR_SSL_TIMEOUT
             return r
         return -1
 
+    # bytes read and held, ready without a wait
+    func pending [] -> i64
+        lk.lock[]
+        n : i64 [ mbedtls_ssl_get_bytes_avail[ @ssl ] ]
+        lk.unlock[]
+        return n
+
+    func verify_flags [] -> u32
+        return mbedtls_ssl_get_verify_result[ @ssl ]
+
+    func cipher [] -> cstr
+        return mbedtls_ssl_get_ciphersuite[ @ssl ]
+
+    func version [] -> cstr
+        return mbedtls_ssl_get_version[ @ssl ]
+
+    func alpn_chosen [] -> cstr
+        return mbedtls_ssl_get_alpn_protocol[ @ssl ]
+
+    # a chain checked against this one's trust; flags out
+    func verify_chain [ chain: ref mbedtls_x509_crt, name: cstr,
+            flags: ref u32 ]
+        mbedtls_x509_crt_verify[ chain, @cacert, null, name, flags, null, null ]
+
+    # the peer's chain, the server's first
+    func peer_at [ i: i32 ] -> ref mbedtls_x509_crt
+        p : ref mbedtls_x509_crt [ mbedtls_ssl_get_peer_cert[ @ssl ] ]
+        for [ k: i32 0, k < i && p, k += 1 ]
+            p = p.next
+        return p
+
     func close []
-        if [ connected ] mbedtls_ssl_close_notify[ @ssl ]
+        if [ connected ]
+            lk.lock[]
+            mbedtls_ssl_close_notify[ @ssl ]
+            lk.unlock[]
+        # a wrapped socket is its owner's to close
+        if [ fd >= 0 ] net_ctx.fd = -1
         mbedtls_net_free        [ @net_ctx ]
         mbedtls_ssl_free        [ @ssl ]
         mbedtls_ssl_config_free [ @conf ]
@@ -219,6 +331,24 @@ class Http
         memcpy[ @body[ head.count + fsz ], tail.chars, tail.count ]
         return request[ 'POST', url, dest, body, n, 'multipart/form-data; boundary={bd}', '' ]
 
+    # a refusal's own words (64 KB at most), for the caller to show
+    static func keep_error [ t: TLSClient, hdr: string, file: string ]
+        fp : @FILE [ fopen[ file.chars, 'wb' ] ]
+        if [ !fp ] return
+        hl : string hdr.lcase[]
+        if [ hl.index_of[ "chunked" ] >= 0 ]
+            read_chunks[ t, fp ]
+            fclose[ fp ]
+            return
+        buf : new u8 [ 65536 ]
+        got : i64 [ 0 ]
+        while [ got < 65536 ]
+            r : i64 [ t.recv[ @buf[ got ], 65536 - got ] ]
+            if [ r <= 0 ] break
+            got += r
+        fwrite[ buf, 1, got, fp ]
+        fclose[ fp ]
+
     # a chunked body into fp: the bytes written, -1 when it ends early
     static func read_chunks [ t: TLSClient, fp: @FILE ] -> i64
         csz  : i32 [ 262144 ]
@@ -250,6 +380,15 @@ class Http
         return got
 
     static func request [ method: string, url: string, dest: path, body: @u8, body_n: i64, content_type: string, header: string ] -> i64
+        return request_as[ method, url, dest, body, body_n,
+                           content_type, header, 'silver' ]
+
+    # request with the client's own User-Agent; an answer other
+    # than 200 lands beside dest as <dest>.error (its reason)
+    static func request_as [ method: string, url: string, dest: path,
+                             body: @u8, body_n: i64,
+                             content_type: string, header: string,
+                             agent: string ] -> i64
         u : UrlParts [ ]
         u.from_url[ url ]
         if [ !u.valid ]
@@ -263,8 +402,15 @@ class Http
                 t.close[]
                 return -1
             extra : string [ (body_n > 0) ? 'Content-Type: {content_type}\r\nContent-Length: {body_n}\r\n' : '' ]
-            if [ header && header.count > 0 ] extra = '{extra}{header}\r\n'
-            req : string '{method} {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: silver\r\nAccept: */*\r\n{extra}Connection: close\r\n\r\n'
+            # a POST with no body still says so
+            if [ body_n == 0 && method == 'POST' ]
+                extra = 'Content-Length: 0\r\n'
+            # header: one line, or several apart by \n
+            if [ header && header.count > 0 ]
+                for [ ln: string ] in header.split[ "\n" ]
+                    if [ ln.trim[].count > 0 ]
+                        extra = '{extra}{ln.trim[]}\r\n'
+            req : string '{method} {u.query} HTTP/1.1\r\nHost: {u.host}\r\nUser-Agent: {agent}\r\nAccept: */*\r\n{extra}Connection: close\r\n\r\n'
             if [ t.send[ cast @u8 [ req.chars ], req.count ] != req.count ]
                 log 'net: send failed to {u.host}'
                 t.close[]
@@ -306,6 +452,7 @@ class Http
                 continue
             if [ code != 200 ]
                 log 'net: status {code} for {u.host}'
+                keep_error[ t, hdr, '{dest}.error' ]
                 t.close[]
                 # the status, below 0: a caller tells a refusal apart
                 return (code > 0) ? -i64[ code ] : -1
@@ -362,3 +509,131 @@ class Http
             rename[ part.chars, dest.chars ]
             return got
         return -1
+
+# ---- plain C calls: a socket made elsewhere wrapped (Java's) -----
+
+class TlsLinks
+    public clients : vec TLSClient
+
+intern links : TlsLinks
+
+func link_of [ id: i32 ] -> TLSClient
+    if [ !links || id < 1 || id > i32 links.clients.count ] return null
+    return links.clients[ id - 1 ]
+
+# the handshake done on fd; an id, its failure by tls_failure
+func tls_wrap [ fd: i32, host: cstr, alpn: cstr, verify: bool,
+        wait_ms: i32 ] -> i32
+    if [ !links ]
+        links = TlsLinks [ clients: vec TLSClient [] ]
+        links.hold[]
+    h : string [ '' ]
+    if [ host ] h = string [ host ]
+    a : string [ '' ]
+    if [ alpn ] a = string [ alpn ]
+    c : TLSClient [ fd: fd, host: h, alpn: a, verify: verify,
+        read_ms: wait_ms, write_ms: wait_ms ]
+    t : links.clients
+    for [ i: i32 0, i < i32 t.count, i += 1 ]
+        if [ !t[ i ] ]
+            t[ i ] = c
+            return i + 1
+    t.push[ c ]
+    return i32 t.count
+
+func tls_failure [ id: i32 ] -> i32
+    c : link_of[ id ]
+    if [ !c ] return -1
+    if [ c.connected ] return 0
+    return c.failure
+
+# bytes, 0 at the end, else mbedtls's error (a timeout's too)
+func tls_read [ id: i32, data: @u8, n: i64, wait_ms: i32 ] -> i64
+    c : link_of[ id ]
+    if [ !c ] return -1
+    c.read_ms = wait_ms
+    return c.recv[ data, n ]
+
+# 0 all sent, else mbedtls's error (a timeout's too)
+func tls_write [ id: i32, data: @u8, n: i64, wait_ms: i32 ] -> i32
+    c : link_of[ id ]
+    if [ !c ] return -1
+    c.write_ms = wait_ms
+    if [ c.send[ data, n ] == n ] return 0
+    return c.failure
+
+func tls_pending [ id: i32 ] -> i64
+    c : link_of[ id ]
+    if [ !c ] return 0
+    return c.pending[]
+
+func tls_close [ id: i32 ]
+    c : link_of[ id ]
+    if [ !c ] return
+    c.close[]
+    links.clients[ id - 1 ] = null
+
+func tls_verify_flags [ id: i32 ] -> u32
+    c : link_of[ id ]
+    if [ !c ] return 4294967295
+    return c.verify_flags[]
+
+func tls_cipher [ id: i32 ] -> cstr
+    c : link_of[ id ]
+    if [ !c ] return null
+    return c.cipher[]
+
+func tls_version [ id: i32 ] -> cstr
+    c : link_of[ id ]
+    if [ !c ] return null
+    return c.version[]
+
+func tls_alpn [ id: i32 ] -> cstr
+    c : link_of[ id ]
+    if [ !c ] return null
+    return c.alpn_chosen[]
+
+# the peer's certificate i (DER) and its length, null past the end
+func tls_peer_cert [ id: i32, i: i32, len: @i64 ] -> @u8
+    c : link_of[ id ]
+    if [ !c ] return null
+    p : c.peer_at[ i ]
+    if [ !p || p.raw.len == 0 ] return null
+    len[ 0 ] = p.raw.len
+    return p.raw.p
+
+func tls_verify_text [ flags: u32, out: @u8, cap: i64 ] -> i32
+    return mbedtls_x509_crt_verify_info[ out, cap, '', flags ]
+
+func tls_error_text [ code: i32, out: @u8, cap: i64 ]
+    mbedtls_strerror[ code, out, cap ]
+
+# a chain the caller holds (DER, one after another), checked
+# against the trust a TLSClient loads: flags, or -1 unreadable
+func tls_check_chain [ ders: @u8, lens: @i64, n: i32,
+        host: cstr ] -> i64
+    t : TLSClient [ trust_only: true ]
+    chain : mbedtls_x509_crt
+    mbedtls_x509_crt_init[ @chain ]
+    at : i64 [ 0 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        r : i32 [ mbedtls_x509_crt_parse_der[ @chain, @ders[ at ], lens[ i ] ] ]
+        if [ r != 0 ]
+            mbedtls_x509_crt_free[ @chain ]
+            return -1
+        at += lens[ i ]
+    flags : u32 [ 0 ]
+    t.verify_chain[ @chain, host, @flags ]
+    mbedtls_x509_crt_free[ @chain ]
+    t.close[]
+    return flags
+
+func tls_cipher_count [] -> i32
+    ids : ref i32 [ mbedtls_ssl_list_ciphersuites[] ]
+    n : i32 [ 0 ]
+    for [ ids[ n ] != 0 ] n += 1
+    return n
+
+func tls_cipher_name [ i: i32 ] -> cstr
+    ids : ref i32 [ mbedtls_ssl_list_ciphersuites[] ]
+    return mbedtls_ssl_get_ciphersuite_name[ ids[ i ] ]

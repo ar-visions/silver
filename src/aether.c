@@ -11775,6 +11775,15 @@ void aether_import_Au(aether a, string ident, Au lib) {
         bool   passed = tested && file_exists("%o", tested) &&
             modified_time(tested) >= modified_time(libp);
         if (lib_instance && !passed) {
+            // its tests read their files from its share, as --test does
+            char was[4096];
+            bool back = getcwd(was, sizeof was) != NULL;
+            path share = a->install
+                ? f(path, "%o/share/%s", a->install, au_module->ident) : null;
+            if (share && dir_exists("%o", share)) chdir(share->chars);
+            // a test may drain the pool: only its own objects go
+            i32 mark  = auto_mark();
+            i32 under = auto_floor(mark);
             members(au_module, mem) {
                 if (mem->member_type == AU_MEMBER_FUNC &&
                     mem->access_type == interface_expect &&
@@ -11787,6 +11796,9 @@ void aether_import_Au(aether a, string ident, Au lib) {
                     print       ("[import %s] expect: %s successful",  au_module->ident, mem->ident);
                 }
             }
+            auto_free_to(mark);
+            auto_floor(under);
+            if (back) chdir(was);
             // every one passed (a failure stops the build above)
             if (tested) save(tested, (Au)string("passed\n"), null);
         }

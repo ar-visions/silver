@@ -2726,6 +2726,14 @@ class gpt2_vocab
     intern inv_v   : vec i32
     intern nvoc  : i32
     intern inv   : @i32
+    # the encoder: merges.txt beside the vocab (its pairs in
+    # rank order); a byte string to its id; chunks seen before
+    public merges : path
+    intern table  : map i64 [ string ]
+    intern ranks  : map i64 [ string ]
+    intern seen   : map i64 [ string ]
+    intern seen_v : vec i64
+    intern ready  : bool
 
     intern func hexv [ ch: i32 ] -> i32
         if [ ch >= 48 && ch <= 57 ] return ch - 48
@@ -2840,6 +2848,225 @@ class gpt2_vocab
                     bn += 1
         buf[bn] = 0
         return string [ cast cstr [ @buf[0] ] ]
+
+    # n bytes as a map key
+    intern func key [ b: @u8, at: i64, n: i64 ] -> string
+        m : i64 [ n + 1 ]
+        buf : new u8 [ m ]
+        for [ i: i64 0, i < n, i += 1 ]
+            buf[ i ] = b[ at + i ]
+        buf[ n ] = 0
+        return string [ cast cstr [ @buf[0] ] ]
+
+    # a merge pair's key: the two pieces with a 1 byte between
+    intern func pair_key [ b: @u8, at: i64, la: i64, lb: i64 ]
+    -> string
+        m : i64 [ la + lb + 2 ]
+        buf : new u8 [ m ]
+        for [ i: i64 0, i < la, i += 1 ]
+            buf[ i ] = b[ at + i ]
+        buf[ la ] = 1
+        for [ i: i64 0, i < lb, i += 1 ]
+            buf[ la + 1 + i ] = b[ at + la + i ]
+        buf[ la + lb + 1 ] = 0
+        return string [ cast cstr [ @buf[0] ] ]
+
+    # a symbol of merges.txt (gpt2's unicode form) back to bytes;
+    # returns the byte count
+    intern func symbol_bytes [ js: @u8, p: i64, n: i64, out: @u8 ]
+    -> i64
+        k : i64 [ 0 ]
+        q : i64 [ p ]
+        for [ q < n && js[ q ] != 32 && js[ q ] != 10 ]
+            ch : i32 [ js[ q ] ]
+            cp : i32 [ 0 ]
+            if [ ch >= 224 ]
+                cp = (ch - 224) * 4096 + (i32[ js[ q + 1 ] ] - 128) * 64
+                     + (i32[ js[ q + 2 ] ] - 128)
+                q += 3
+            el [ ch >= 192 ]
+                cp = (ch - 192) * 64 + (i32[ js[ q + 1 ] ] - 128)
+                q += 2
+            el
+                cp = ch
+                q += 1
+            bv : i32 [ (cp < 512) ? inv[ cp ] : -1 ]
+            if [ bv >= 0 ]
+                out[ k ] = u8[ bv ]
+                k += 1
+        return k
+
+    # the id table from the arena and the ranks from merges.txt
+    intern func prepare []
+        ready = true
+        table = map i64 [ string ] []
+        ranks = map i64 [ string ] []
+        seen = map i64 [ string ] []
+        seen_v = vec i64 []
+        table.reserve[ 65536 ]
+        ranks.reserve[ 65536 ]
+        seen.reserve[ 65536 ]
+        for [ id: i64 0, id < nvoc, id += 1 ]
+            o : i64 [ offs[ id * 2 ] ]
+            l : i64 [ offs[ id * 2 + 1 ] ]
+            if [ l == 0 ] continue
+            zero : bool [ false ]
+            for [ i: i64 0, i < l, i += 1 ]
+                if [ arena[ o + i ] == 0 ] zero = true
+            if [ zero ] continue
+            table[ key[ arena, o, l ] ] = id
+        if [ !merges || !merges.exists[] ]
+            log 'gpt2_vocab: no merges file: {merges}'
+            return
+        txt : string [ merges.load[ typeid[ string ], null ] ]
+        n : i64 [ txt.count ]
+        js : new u8 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            js[ i ] = u8[ (i32 txt.chars[ i ]) & 255 ]
+        pair : new u8 [ 256 ]
+        p : i64 [ 0 ]
+        rank : i64 [ 0 ]
+        for [ p < n ]
+            q : i64 [ p ]
+            for [ q < n && js[ q ] != 10 ]
+                q += 1
+            if [ js[ p ] != 35 ]
+                la : i64 [ symbol_bytes[ js, p, q, pair ] ]
+                sp : i64 [ p ]
+                for [ sp < q && js[ sp ] != 32 ]
+                    sp += 1
+                if [ sp < q && la > 0 && la < 120 ]
+                    pair[ la ] = 1
+                    lb : i64 [ symbol_bytes[ js, sp + 1, q,
+                                             @pair[ la + 1 ] ] ]
+                    if [ lb > 0 && lb < 120 ]
+                        pair[ la + lb + 1 ] = 0
+                        ranks[ key[ pair, 0, la + lb + 1 ] ] = rank
+                        rank += 1
+            p = q + 1
+
+    intern func letter [ c: i64 ] -> bool
+        return (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+               || c >= 128
+
+    intern func digit [ c: i64 ] -> bool
+        return c >= 48 && c <= 57
+
+    intern func space [ c: i64 ] -> bool
+        return c == 32 || c == 10 || c == 13 || c == 9
+
+    # byte pair encoding of one chunk b[ p .. q ] into out
+    intern func bpe [ b: @u8, p: i64, q: i64, out: vec i64 ]
+        st : vec i64 []
+        ln : vec i64 []
+        for [ i: i64 p, i < q, i += 1 ]
+            st.push[ i ]
+            ln.push[ 1 ]
+        while [ st.count > 1 ]
+            best : i64 [ -1 ]
+            brank : i64 [ 1 << 40 ]
+            for [ i: i64 0, i + 1 < st.count, i += 1 ]
+                k : string pair_key[ b, st[ i ], ln[ i ], ln[ i + 1 ] ]
+                if [ !ranks.contains[ k ] ] continue
+                r : i64 [ ranks[ k ] ]
+                if [ r < brank ]
+                    brank = r
+                    best = i
+            if [ best < 0 ] break
+            la : i64 [ ln[ best ] ]
+            lb : i64 [ ln[ best + 1 ] ]
+            ns : vec i64 []
+            nl : vec i64 []
+            i : i64 [ 0 ]
+            while [ i < st.count ]
+                same : bool [ i + 1 < st.count && ln[ i ] == la
+                              && ln[ i + 1 ] == lb
+                              && memcmp[ @b[ st[ i ] ],
+                                         @b[ st[ best ] ], la + lb ] == 0 ]
+                if [ same ]
+                    ns.push[ st[ i ] ]
+                    nl.push[ la + lb ]
+                    i += 2
+                el
+                    ns.push[ st[ i ] ]
+                    nl.push[ ln[ i ] ]
+                    i += 1
+            st = ns
+            ln = nl
+        for [ i: i64 0, i < st.count, i += 1 ]
+            k : string key[ b, st[ i ], ln[ i ] ]
+            if [ table.contains[ k ] ]
+                out.push[ i64[ table[ k ] ] ]
+            el
+                # every single byte is a token
+                for [ j: i64 0, j < ln[ i ], j += 1 ]
+                    one : string key[ b, st[ i ] + j, 1 ]
+                    if [ table.contains[ one ] ]
+                        out.push[ i64[ table[ one ] ] ]
+
+    # text to ids, gpt2's way: chunks (a word with its leading
+    # space, a number, a run of marks, white space) each merged
+    # by rank; a control byte reads as a space
+    func encode [ text: string ] -> vec i64
+        out : vec i64 []
+        if [ !text ] return out
+        if [ !ready ] prepare[]
+        n : i64 [ text.count ]
+        b : new u8 [ n ]
+        for [ i: i64 0, i < n, i += 1 ]
+            c : i64 [ (i32 text.chars[ i ]) & 255 ]
+            b[ i ] = u8[ (c < 32 && c != 10) ? 32 : c ]
+        p : i64 [ 0 ]
+        while [ p < n ]
+            q : i64 [ p ]
+            r : i64 [ p ]
+            c : i64 [ b[ p ] ]
+            if [ c == 39 && p + 1 < n ]
+                c1 : i64 [ b[ p + 1 ] ]
+                c2 : i64 [ (p + 2 < n) ? b[ p + 2 ] : 0 ]
+                if [ (c1 == 114 && c2 == 101)
+                     || (c1 == 118 && c2 == 101)
+                     || (c1 == 108 && c2 == 108) ]
+                    q = p + 3
+                el [ c1 == 115 || c1 == 116 || c1 == 109 || c1 == 100 ]
+                    q = p + 2
+            if [ q == p ]
+                if [ c == 32 ] r = p + 1
+                if [ r < n && letter[ b[ r ] ] ]
+                    for [ r < n && letter[ b[ r ] ] ]
+                        r += 1
+                    q = r
+                el [ r < n && digit[ b[ r ] ] ]
+                    for [ r < n && digit[ b[ r ] ] ]
+                        r += 1
+                    q = r
+                el [ r < n && !space[ b[ r ] ] ]
+                    for [ r < n && !space[ b[ r ] ] && !letter[ b[ r ] ]
+                          && !digit[ b[ r ] ] ]
+                        r += 1
+                    q = r
+                el
+                    r = p
+                    for [ r < n && space[ b[ r ] ] ]
+                        r += 1
+                    q = (r < n && r - p > 1) ? r - 1 : r
+            if [ q <= p ] q = p + 1
+            k : string key[ b, p, q - p ]
+            if [ seen.contains[ k ] ]
+                at : i64 [ seen[ k ] ]
+                cnt : i64 [ seen_v[ at ] ]
+                for [ i: i64 0, i < cnt, i += 1 ]
+                    out.push[ seen_v[ at + 1 + i ] ]
+            el
+                piece : vec i64 []
+                bpe[ b, p, q, piece ]
+                seen[ k ] = seen_v.count
+                seen_v.push[ piece.count ]
+                for [ id: i64 ] in piece
+                    seen_v.push[ id ]
+                    out.push[ id ]
+            p = q
+        return out
 
 class whisper
     public src   : path

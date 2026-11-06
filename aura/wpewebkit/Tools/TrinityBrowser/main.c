@@ -163,11 +163,48 @@ static gboolean sendDMABuf(WPEBufferDMABuf* buffer, int width, int height)
     return sendmsg(STDIN_FILENO, &msg, MSG_NOSIGNAL) == (ssize_t)sizeof rec;
 }
 
+// the page's cookies, name TAB value a line, into the file a host
+// named (TRINITY_BROWSER_COOKIES): a sign-in it hosts reads its token
+static void cookiesGot(GObject* source, GAsyncResult* result, gpointer data)
+{
+    char* file = data;
+    GList* list = webkit_cookie_manager_get_cookies_finish(WEBKIT_COOKIE_MANAGER(source), result, NULL);
+    GString* text = g_string_new(NULL);
+    for (GList* l = list; l; l = l->next)
+        g_string_append_printf(text, "%s\t%s\n", soup_cookie_get_name(l->data), soup_cookie_get_value(l->data));
+    char* part = g_strconcat(file, ".part", NULL);
+    if (g_file_set_contents(part, text->str, text->len, NULL))
+        rename(part, file);
+    g_free(part);
+    g_string_free(text, TRUE);
+    g_list_free_full(list, (GDestroyNotify)soup_cookie_free);
+    g_free(file);
+}
+
+// the page's cookies into the named file, when one is named
+static void saveCookies(WebKitWebView* view)
+{
+    const char* file = g_getenv("TRINITY_BROWSER_COOKIES");
+    const char* uri = webkit_web_view_get_uri(view);
+    if (!file || !uri)
+        return;
+    WebKitNetworkSession* session = webkit_web_view_get_network_session(view);
+    webkit_cookie_manager_get_cookies(webkit_network_session_get_cookie_manager(session), uri, NULL, cookiesGot, g_strdup(file));
+}
+
 // each step of a load, on the helper's log: what a blank page was doing
 static void logLoad(WebKitWebView* view, WebKitLoadEvent event, gpointer data)
 {
     const char* names[] = { "started", "redirected", "committed", "finished" };
     fprintf(stderr, "trinity browser: load %s %s\n", event <= WEBKIT_LOAD_FINISHED ? names[event] : "?", webkit_web_view_get_uri(view));
+    if (event == WEBKIT_LOAD_COMMITTED || event == WEBKIT_LOAD_FINISHED)
+        saveCookies(view);
+}
+
+// a cookie set by a request with no load (a form's fetch) too
+static void cookiesChanged(WebKitCookieManager* manager, gpointer data)
+{
+    saveCookies(WEBKIT_WEB_VIEW(data));
 }
 
 // the page's history moved: the element lights its host's arrows
@@ -745,14 +782,17 @@ int main(int argc, char** argv)
     g_free(cacheDir);
     g_free(dataDir);
     webView = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, "network-session", session, NULL);
-    webkit_settings_set_user_agent(webkit_web_view_get_settings(webView), SAFARI_AGENT);
+    // a host may name the agent (a sign-in that wants a phone)
+    const char* agent = g_getenv("TRINITY_BROWSER_AGENT");
+    webkit_settings_set_user_agent(webkit_web_view_get_settings(webView), agent ? agent : SAFARI_AGENT);
     if (consoleOut)
         webkit_settings_set_enable_write_console_messages_to_stdout(webkit_web_view_get_settings(webView), TRUE);
     // the agent says Mac: navigator.platform must agree
     WebKitUserScript* platform = webkit_user_script_new(MAC_PLATFORM_SCRIPT,
         WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     WebKitUserContentManager* content = webkit_web_view_get_user_content_manager(webView);
-    webkit_user_content_manager_add_script(content, platform);
+    if (!agent)
+        webkit_user_content_manager_add_script(content, platform);
     webkit_user_script_unref(platform);
     WebKitUserScript* scrolls = webkit_user_script_new(SCROLL_SCRIPT,
         WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
@@ -774,6 +814,7 @@ int main(int argc, char** argv)
     g_signal_connect(webkit_web_view_get_back_forward_list(webView), "changed", G_CALLBACK(publishNav), NULL);
     g_signal_connect(webView, "notify::title", G_CALLBACK(publishTitle), NULL);
     g_signal_connect(webView, "load-changed", G_CALLBACK(logLoad), NULL);
+    g_signal_connect(webkit_network_session_get_cookie_manager(webkit_web_view_get_network_session(webView)), "changed", G_CALLBACK(cookiesChanged), webView);
     g_signal_connect(webView, "notify::uri", G_CALLBACK(publishAddress), NULL);
     wpe_view_resized(view, width, height);
     wpe_view_focus_in(view);

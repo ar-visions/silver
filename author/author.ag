@@ -1,0 +1,999 @@
+export 0.1.0
+
+import trinity
+import ai
+import <stdio.h>
+import <stdlib.h>
+import <math.h>
+import <sys/stat.h>
+
+# the encoder's merges beside speech's vocab (the same files)
+import https://huggingface.co/openai/whisper-small/resolve/main/vocab.json
+    > mkdir -p {install}/models
+    > cp {import_file} {install}/models/whisper-vocab.json
+
+import https://huggingface.co/openai/whisper-small/resolve/main/merges.txt
+    > mkdir -p {install}/models
+    > cp {import_file} {install}/models/whisper-merges.txt
+
+# real text: eight authors, a book each, from Project Gutenberg
+import https://www.gutenberg.org/cache/epub/1342/pg1342.txt
+    > mkdir -p {install}/share/author/books
+    > cp {import_file} {install}/share/author/books/austen.txt
+
+import https://www.gutenberg.org/cache/epub/98/pg98.txt
+    > cp {import_file} {install}/share/author/books/dickens.txt
+
+import https://www.gutenberg.org/cache/epub/76/pg76.txt
+    > cp {import_file} {install}/share/author/books/twain.txt
+
+import https://www.gutenberg.org/cache/epub/1661/pg1661.txt
+    > cp {import_file} {install}/share/author/books/doyle.txt
+
+import https://www.gutenberg.org/cache/epub/84/pg84.txt
+    > cp {import_file} {install}/share/author/books/shelley.txt
+
+import https://www.gutenberg.org/cache/epub/174/pg174.txt
+    > cp {import_file} {install}/share/author/books/wilde.txt
+
+import https://www.gutenberg.org/cache/epub/2701/pg2701.txt
+    > cp {import_file} {install}/share/author/books/melville.txt
+
+import https://www.gutenberg.org/cache/epub/11/pg11.txt
+    > cp {import_file} {install}/share/author/books/carroll.txt
+
+# authorship in a language model: every passage keeps who wrote
+# it, a small decoder learns the text on ai's grad engine, and
+# an attribution head scores every author for a pooled passage
+# vector. The scores are independent (sigmoid), so several
+# authors can stand together; rank keeps only the names the
+# evidence supports.
+
+# one passage with its provenance
+class Passage
+    public document : string
+    public passage  : string
+    public source   : string
+    public text     : string
+    # the passage as the model's token ids
+    public tokens   : vec i64
+    # author numbers in the corpus (coauthors, quoted authors)
+    public authors  : vec i64
+    # the user's tokens at the start (a query), none of an author
+    public asked    : i64
+    # the author of each token; the user's are -1
+    public column   : vec i64
+
+# every passage, and the author names their numbers point to
+class Corpus
+    public names    : vec string
+    public passages : vec Passage
+    # a made corpus keeps its truth: every author's weight on
+    # every word, one author after another (none for real text)
+    public tastes   : vec f64
+    public vocab    : i64
+    # a real corpus: each compact id's gpt2 id
+    public gpt2     : vec i64
+
+    func init []
+        if [ !names ] names = vec string []
+        if [ !passages ] passages = vec Passage []
+
+    # an author's number, given on first sight
+    func author [ name: string ] -> i64
+        for [ i: i64 0, i < names.count, i += 1 ]
+            if [ names[ i ] == name ] return i
+        names.push[ name ]
+        return names.count - 1
+
+    func save [ file: string ]
+        fp : path file
+        fp.save[ Au.string_agi[ a ], null ]
+
+    func load [ file: string ] -> bool
+        fp : path file
+        if [ !fp.exists[] ] return false
+        txt : string [ fp.load[ typeid[ string ], null ] ]
+        if [ !txt || txt.count == 0 ] return false
+        Au.parse_agi[ null, txt.chars, a ]
+        return true
+
+# a standard normal draw (Box-Muller over rand)
+func author_gauss [] -> f64
+    u1 : f64 [ (f64[ rand[] ] + 1.0) / (f64[ RAND_MAX ] + 2.0) ]
+    u2 : f64 [ f64[ rand[] ] / f64[ RAND_MAX ] ]
+    return sqrt[ -2.0 * log[ u1 ] ] * cos[ 6.283185307179586 * u2 ]
+
+# the author whose taste gives the token the most probability,
+# or -1 when the corpus keeps no tastes
+func author_favoured [ cp: Corpus, token: i64 ] -> i64
+    na : i64 [ cp.names.count ]
+    if [ !cp.tastes || cp.tastes.count < na * cp.vocab ] return -1
+    best : i64 [ -1 ]
+    bp : f64 [ -1.0 ]
+    for [ au: i64 0, au < na, au += 1 ]
+        total : f64 [ 0.0 ]
+        for [ i: i64 0, i < cp.vocab, i += 1 ]
+            total += cp.tastes[ au * cp.vocab + i ]
+        pr : f64 [ cp.tastes[ au * cp.vocab + token ] / total ]
+        if [ pr > bp ]
+            bp = pr
+            best = au
+    return best
+
+# a weight with its adam moments: random at scale, else start
+class GParam
+    public gd    : Grad
+    public dims  : vec i64
+    public scale : f32
+    public start : f32
+    public t     : GTensor
+    public m     : GTensor
+    public v     : GTensor
+
+    func init []
+        t = gd.param[ dims ]
+        m = gd.param[ dims ]
+        v = gd.param[ dims ]
+        gd.fill[ m, 0.0 ]
+        gd.fill[ v, 0.0 ]
+        t.need = true
+        if [ scale == 0.0 ]
+            gd.fill[ t, start ]
+            return
+        vals : vec f32 [ t.count ]
+        for [ i: i64 0, i < vals.count, i += 1 ]
+            vals[ i ] = f32[ author_gauss[] ] * scale
+        gd.upload[ t, vals ]
+
+    # adamw (betas 0.9 0.95, decay 0.01); the gradient is let go
+    func step [ lr: f32, n: i64 ]
+        gd.adamw[ t, m, v, lr, 0.9, 0.95, 0.00000001, 0.01, n ]
+        t.gr = null
+
+# one decoder block: attention, then the wide layer, each on a
+# layer norm with a residual; tensors are [b, d, t]
+class LmBlock
+    public gd    : Grad
+    public d     : i64
+    public g1    : GParam
+    public b1    : GParam
+    public wqkv  : GParam
+    public bqkv  : GParam
+    public wproj : GParam
+    public bproj : GParam
+    public g2    : GParam
+    public b2    : GParam
+    public wup   : GParam
+    public bup   : GParam
+    public wdown : GParam
+    public bdown : GParam
+
+    func init []
+        s : f32 [ 0.02 ]
+        g1 = GParam [ gd: gd, dims: vec i64 [] [ d ], start: 1.0 ]
+        b1 = GParam [ gd: gd, dims: vec i64 [] [ d ] ]
+        wqkv = GParam [ gd: gd, dims: vec i64 [] [ 3 * d, d, 1 ],
+                        scale: s ]
+        bqkv = GParam [ gd: gd, dims: vec i64 [] [ 3 * d ] ]
+        wproj = GParam [ gd: gd, dims: vec i64 [] [ d, d, 1 ],
+                         scale: s ]
+        bproj = GParam [ gd: gd, dims: vec i64 [] [ d ] ]
+        g2 = GParam [ gd: gd, dims: vec i64 [] [ d ], start: 1.0 ]
+        b2 = GParam [ gd: gd, dims: vec i64 [] [ d ] ]
+        wup = GParam [ gd: gd, dims: vec i64 [] [ 4 * d, d, 1 ],
+                       scale: s ]
+        bup = GParam [ gd: gd, dims: vec i64 [] [ 4 * d ] ]
+        wdown = GParam [ gd: gd, dims: vec i64 [] [ d, 4 * d, 1 ],
+                         scale: s ]
+        bdown = GParam [ gd: gd, dims: vec i64 [] [ d ] ]
+
+    func params [] -> vec GParam
+        return vec GParam [] [ g1, b1, wqkv, bqkv, wproj, bproj, g2,
+                               b2, wup, bup, wdown, bdown ]
+
+    func forward [ x: GTensor, am: GTensor, heads: i64 ] -> GTensor
+        h : GTensor gd.layer_norm[ x, g1.t, b1.t ]
+        qkv : GTensor gd.conv1d[ h, wqkv.t, bqkv.t, 1, 0, 1, 1 ]
+        q : GTensor gd.slice[ qkv, 0, d ]
+        k : GTensor gd.slice[ qkv, d, d ]
+        v : GTensor gd.slice[ qkv, 2 * d, d ]
+        at : GTensor gd.attention[ q, k, v, null, null, am, heads, 0,
+                                   true ]
+        y : GTensor gd.add[ x, gd.conv1d[ at, wproj.t, bproj.t, 1, 0,
+                                          1, 1 ] ]
+        h2 : GTensor gd.layer_norm[ y, g2.t, b2.t ]
+        up : GTensor gd.gelu[ gd.conv1d[ h2, wup.t, bup.t, 1, 0, 1,
+                                         1 ] ]
+        return gd.add[ y, gd.conv1d[ up, wdown.t, bdown.t, 1, 0, 1,
+                                     1 ] ]
+
+# a small decoder on grad: tokens in, next-token logits out, and
+# a pooled vector per passage for the attribution head
+class Lm
+    public gd     : Grad
+    public vocab  : i64
+    public d      : i64
+    public layers : i64
+    public heads  : i64
+    public tmax   : i64
+    public tok    : GParam
+    public pos    : GParam
+    public blocks : vec LmBlock
+    public gf     : GParam
+    public bf     : GParam
+    public out    : GParam
+    public params : vec GParam
+    public steps  : i64
+
+    func init []
+        s : f32 [ 0.02 ]
+        tok = GParam [ gd: gd, dims: vec i64 [] [ vocab, d ], scale: s ]
+        pos = GParam [ gd: gd, dims: vec i64 [] [ tmax, d ], scale: s ]
+        blocks = vec LmBlock []
+        for [ i: i64 0, i < layers, i += 1 ]
+            blocks.push[ LmBlock [ gd: gd, d: d ] ]
+        gf = GParam [ gd: gd, dims: vec i64 [] [ d ], start: 1.0 ]
+        bf = GParam [ gd: gd, dims: vec i64 [] [ d ] ]
+        out = GParam [ gd: gd, dims: vec i64 [] [ vocab, d, 1 ],
+                       scale: s ]
+        params = vec GParam [] [ tok, pos, gf, bf, out ]
+        for [ bl: LmBlock ] in blocks
+            for [ p: GParam ] in bl.params[]
+                params.push[ p ]
+
+    # ids [b, t] (whole numbers as floats), am [b, 1, t] or null
+    func hidden [ ids: GTensor, am: GTensor ] -> GTensor
+        nt : i64 [ ids.dims[ 1 ] ]
+        x : GTensor gd.swap12[ gd.lookup[ ids, tok.t ] ]
+        pid : GTensor gd.temp[ vec i64 [] [ nt ] ]
+        pv : vec f32 [ nt ]
+        for [ i: i64 0, i < nt, i += 1 ]
+            pv[ i ] = f32[ i ]
+        gd.upload[ pid, pv ]
+        pe : GTensor gd.swap12[
+            gd.reshape[ gd.lookup[ pid, pos.t ],
+                        vec i64 [] [ 1, nt, d ] ] ]
+        x = gd.add[ x, pe ]
+        for [ bl: LmBlock ] in blocks
+            x = bl.forward[ x, am, heads ]
+        return gd.layer_norm[ x, gf.t, bf.t ]
+
+    # [b, vocab, t]
+    func logits [ h: GTensor ] -> GTensor
+        return gd.conv1d[ h, out.t, null, 1, 0, 1, 1 ]
+
+    # mean cross entropy at targets [b, t]; under 0 is skipped
+    func loss [ lg: GTensor, tg: GTensor ] -> GTensor
+        return gd.xent[ lg, tg, vocab, true ]
+
+    # h [b, d, t] by weights [b, t, s] (each column summing to
+    # one) into one vector a passage: [b, s, d]
+    func pooled [ h: GTensor, wts: GTensor ] -> GTensor
+        return gd.swap12[ gd.bmm[ h, wts ] ]
+
+    func step [ lr: f32 ]
+        steps += 1
+        for [ p: GParam ] in params
+            p.step[ lr, steps ]
+
+    # the model's own response: ids [nh, nt] holding each query's
+    # nq tokens; the rest are written one at a time, each drawn
+    # from the vocabulary head's distribution at the last state
+    func generate [ ids: vec f32, nh: i64, nq: i64, nt: i64 ]
+    -> vec f32
+        out : vec f32 [ ids.count ]
+        for [ i: i64 0, i < ids.count, i += 1 ]
+            out[ i ] = ids[ i ]
+        for [ t: i64 nq, t < nt, t += 1 ]
+            gi : GTensor gd.temp[ vec i64 [] [ nh, nt ] ]
+            gd.upload[ gi, out ]
+            lg : vec f32 gd.download[ logits[ hidden[ gi, null ] ] ]
+            for [ r: i64 0, r < nh, r += 1 ]
+                base : i64 [ r * vocab * nt + t - 1 ]
+                mx : f32 [ -1.0e30 ]
+                for [ c: i64 0, c < vocab, c += 1 ]
+                    v : f32 [ lg[ base + c * nt ] ]
+                    if [ v > mx ] mx = v
+                total : f64 [ 0.0 ]
+                for [ c: i64 0, c < vocab, c += 1 ]
+                    total += exp[ f64[ lg[ base + c * nt ] - mx ] ]
+                u : f64 [ total * f64[ rand[] ]
+                          / (f64[ RAND_MAX ] + 1.0) ]
+                pick : i64 [ vocab - 1 ]
+                for [ c: i64 0, c < vocab, c += 1 ]
+                    u -= exp[ f64[ lg[ base + c * nt ] - mx ] ]
+                    if [ u < 0.0 ]
+                        pick = c
+                        break
+                out[ r * nt + t ] = f32[ pick ]
+            gd.reset_work[]
+        return out
+
+# the attribution head: a pooled vector into a 256-wide space,
+# a score per author against its learned vector, plus a bias
+class AuthorHead
+    public gd    : Grad
+    public d     : i64
+    public e     : i64 [ 256 ]
+    public n     : i64
+    public w     : GParam
+    public tab   : GParam
+    public bias  : GParam
+    public steps : i64
+
+    func init []
+        w = GParam [ gd: gd, dims: vec i64 [] [ e, d ],
+                     scale: f32[ 1.0 / sqrt[ f64[ d ] ] ] ]
+        tab = GParam [ gd: gd, dims: vec i64 [] [ n, e ],
+                       scale: f32[ 1.0 / sqrt[ f64[ e ] ] ] ]
+        # most authors are absent from most passages
+        bias = GParam [ gd: gd, dims: vec i64 [] [ n ], start: -2.0 ]
+
+    # h [.., d] -> logits [.., n]
+    func scores [ h: GTensor ] -> GTensor
+        return gd.linear[ gd.linear[ h, w.t, null ], tab.t, bias.t ]
+
+    # sigmoid cross entropy against bits [.., n]
+    func loss [ lg: GTensor, bits: GTensor ] -> GTensor
+        return gd.bce[ lg, bits ]
+
+    func step [ lr: f32 ]
+        steps += 1
+        w.step[ lr, steps ]
+        tab.step[ lr, steps ]
+        bias.step[ lr, steps ]
+
+# the authors one row of logits names, best first: at most k,
+# only those scoring over floor (a probability)
+func author_rank [ row: vec f32, k: i64, floor: f32 ] -> vec i64
+    out : vec i64 []
+    taken : vec i32 [ row.count ]
+    for [ j: i64 0, j < k, j += 1 ]
+        best : i64 [ -1 ]
+        for [ i: i64 0, i < row.count, i += 1 ]
+            if [ taken[ i ] != 0 ] continue
+            if [ best < 0 || row[ i ] > row[ best ] ] best = i
+        if [ best < 0 ] break
+        pr : f64 [ 1.0 / (1.0 + exp[ -f64[ row[ best ] ] ]) ]
+        if [ pr < f64[ floor ] ] break
+        out.push[ best ]
+        taken[ best ] = 1
+    return out
+
+# a training batch: nb passages of nt tokens each
+class AuthorBatch
+    public nb   : i64
+    public nt   : i64
+    public na   : i64
+    # token ids, next tokens (-1 past the end), the author column
+    # as bits [nb, nt, na] (none for the user's and padding)
+    public ids  : vec f32
+    public next : vec f32
+    public col  : vec f32
+    # one weight a token [nb, nt, 1]: 1/n over the authored ones
+    public wts  : vec f32
+    # each author's share of the authored tokens [nb, 1, na]
+    public share : vec f32
+
+# passages ps[ i0 .. i0 + nb ] as one batch; short ones are
+# padded with token 0 and skipped by the loss
+func author_batch [ ps: vec Passage, i0: i64, nb: i64, nt: i64,
+                    na: i64 ] -> AuthorBatch
+    b : AuthorBatch [ nb: nb, nt: nt, na: na ]
+    b.ids = vec f32 [ nb * nt ]
+    b.next = vec f32 [ nb * nt ]
+    b.col = vec f32 [ nb * nt * na ]
+    b.wts = vec f32 [ nb * nt ]
+    b.share = vec f32 [ nb * na ]
+    for [ r: i64 0, r < nb, r += 1 ]
+        p : Passage ps[ (i0 + r) % ps.count ]
+        used : i64 [ (p.tokens.count < nt) ? p.tokens.count : nt ]
+        n : i64 [ 0 ]
+        for [ t: i64 0, t < used, t += 1 ]
+            if [ p.column[ t ] >= 0 ] n += 1
+        one : f32 [ 1.0 / f64[ n ] ]
+        for [ t: i64 0, t < nt, t += 1 ]
+            at : i64 [ r * nt + t ]
+            b.ids[ at ] = (t < used) ? f32[ p.tokens[ t ] ] : 0.0
+            b.next[ at ] = (t + 1 < used) ? f32[ p.tokens[ t + 1 ] ]
+                           : -1.0
+            if [ t < used && p.column[ t ] >= 0 ]
+                b.col[ at * na + p.column[ t ] ] = 1.0
+                b.wts[ at ] = one
+                b.share[ r * na + p.column[ t ] ] += one
+    return b
+
+# a made-up name, two syllables twice
+func author_name [] -> string
+    syl : vec string [] [ 'ka', 'mi', 'ro', 'ten', 'lu', 'sa', 'vor',
+                          'ne', 'da', 'pi', 'el', 'ju', 'tha', 'go',
+                          'ri', 'ban', 'ce', 'wu', 'ol', 'fy' ]
+    first : string '{syl[ rand[] % 20 ]}{syl[ rand[] % 20 ]}'
+    last : string '{syl[ rand[] % 20 ]}{syl[ rand[] % 20 ]}'
+    return '{first} {last}'
+
+# an author's taste: a weight on every word of the one shared
+# vocabulary, exp(bias x gauss); bias 0 is uniform, no author
+func author_weights [ vocab: i64, bias: f64 ] -> vec f64
+    w : vec f64 [ vocab ]
+    for [ i: i64 0, i < vocab, i += 1 ]
+        w[ i ] = exp[ bias * author_gauss[] ]
+    return w
+
+# one word drawn by the n weights at w[ at .. ]
+func author_draw [ w: vec f64, at: i64, n: i64 ] -> i64
+    total : f64 [ 0.0 ]
+    for [ i: i64 0, i < n, i += 1 ]
+        total += w[ at + i ]
+    u : f64 [ total * f64[ rand[] ] / (f64[ RAND_MAX ] + 1.0) ]
+    for [ i: i64 0, i < n, i += 1 ]
+        u -= w[ at + i ]
+        if [ u < 0.0 ] return i
+    return n - 1
+
+# random authors, each with their own bias over the words, who
+# commit texts drawn by it: our corpus. Each commit is a passage
+# of nt tokens on one of 2 na documents, by one author, its
+# source the commit's number
+func author_random_corpus [ na: i64, commits: i64, nt: i64,
+                            vocab: i64, bias: f64 ] -> Corpus
+    cp : Corpus [ tastes: vec f64 [], vocab: vocab ]
+    tastes : vec f64 cp.tastes
+    while [ cp.names.count < na ]
+        cp.author[ author_name[] ]
+    for [ au: i64 0, au < na, au += 1 ]
+        for [ wv: f64 ] in author_weights[ vocab, bias ]
+            tastes.push[ wv ]
+    for [ c: i64 0, c < commits, c += 1 ]
+        au : i64 [ rand[] % na ]
+        p : Passage [ document: 'doc {rand[] % (2 * na)}',
+                      passage: '{c}', source: 'commit {c}',
+                      tokens: vec i64 [], authors: vec i64 [] [ au ],
+                      column: vec i64 [] ]
+        for [ t: i64 0, t < nt, t += 1 ]
+            p.tokens.push[ author_draw[ tastes, au * vocab, vocab ] ]
+            p.column.push[ au ]
+        cp.passages.push[ p ]
+    return cp
+
+# exchanges: the user's query (nq tokens), then the model's
+# response (nr tokens) mixed from 1 to 3 authors in shares drawn
+# at random, each token by one of them; the column keeps who.
+# The query's words come from the same mix (the user asks in the
+# topic's words) and belong to no author
+func author_exchanges [ na: i64, count: i64, nq: i64, nr: i64,
+                        vocab: i64, bias: f64 ] -> Corpus
+    cp : Corpus [ tastes: vec f64 [], vocab: vocab ]
+    tastes : vec f64 cp.tastes
+    while [ cp.names.count < na ]
+        cp.author[ author_name[] ]
+    for [ au: i64 0, au < na, au += 1 ]
+        for [ wv: f64 ] in author_weights[ vocab, bias ]
+            tastes.push[ wv ]
+    for [ c: i64 0, c < count, c += 1 ]
+        k : i64 [ 1 + rand[] % 3 ]
+        who : vec i64 []
+        share : vec f64 []
+        total : f64 [ 0.0 ]
+        while [ who.count < k ]
+            au : i64 [ rand[] % na ]
+            seen : bool [ false ]
+            for [ w: i64 ] in who
+                if [ w == au ] seen = true
+            if [ seen ] continue
+            who.push[ au ]
+            sv : f64 [ 0.2 + f64[ rand[] ] / f64[ RAND_MAX ] ]
+            share.push[ sv ]
+            total += sv
+        p : Passage [ document: 'exchange {c}', passage: 'response',
+                      source: 'mixed', tokens: vec i64 [],
+                      authors: who, asked: nq, column: vec i64 [] ]
+        for [ t: i64 0, t < nq + nr, t += 1 ]
+            u : f64 [ total * f64[ rand[] ] / (f64[ RAND_MAX ] + 1.0) ]
+            pick : i64 [ 0 ]
+            while [ pick < k - 1 && u >= share[ pick ] ]
+                u -= share[ pick ]
+                pick += 1
+            au : i64 [ who[ pick ] ]
+            p.tokens.push[ author_draw[ tastes, au * vocab, vocab ] ]
+            p.column.push[ (t < nq) ? -1 : au ]
+        cp.passages.push[ p ]
+    return cp
+
+# the corpus file: 16 authors at bias 1, 512 commits of 16 tokens
+# over 64 (author_random_corpus, seed 2026), written at the build
+# set by the real-text tests: the trial prints the model's own
+# responses as words through it
+author_words : gpt2_vocab
+
+func author_vocab [] -> gpt2_vocab
+    d : string '{path.path_install[]}/models'
+    return gpt2_vocab [ src: path '{d}/whisper-vocab.json',
+                        merges: path '{d}/whisper-merges.txt' ]
+
+# a Gutenberg text between its *** START and *** END lines
+func author_book_text [ name: string ] -> string
+    fp : path '{path.path_install[]}/share/author/books/{name}.txt'
+    if [ !fp.exists[] ] return ''
+    txt : string [ fp.load[ typeid[ string ], null ] ]
+    a : i64 [ txt.index_of[ '*** START OF' ] ]
+    if [ a >= 0 ]
+        rest : string txt.mid[ a, txt.count - a ]
+        a += rest.index_of[ '\n' ]
+    el
+        a = 0
+    b : i64 [ txt.index_of[ '*** END OF' ] ]
+    if [ b < 0 ] b = txt.count
+    return txt.mid[ a, b - a ]
+
+# real text: each author's book encoded with gpt2's vocabulary,
+# at most cap tokens an author, as passages of nt tokens with
+# the column all theirs; the ids compacted to the words seen
+# (cp.gpt2 gives each one back)
+func author_real_corpus [ names: vec string, nt: i64, cap: i64 ]
+-> Corpus
+    cp : Corpus [ tastes: vec f64 [], gpt2: vec i64 [] ]
+    if [ !author_words ] author_words = author_vocab[]
+    compact : map i64 [ i64 ] []
+    compact.reserve[ 65536 ]
+    for [ name: string ] in names
+        au : i64 cp.author[ name ]
+        txt : string author_book_text[ name ]
+        if [ txt.count == 0 ]
+            log 'author: no book for {name}'
+            continue
+        ids : vec i64 author_words.encode[ txt ]
+        n : i64 [ (ids.count < cap) ? ids.count : cap ]
+        log 'author: {name}: {ids.count} tokens, {n} used'
+        for [ at: i64 0, at + nt <= n, at += nt ]
+            p : Passage [ document: name, passage: '{at / nt}',
+                          source: 'book', tokens: vec i64 [],
+                          authors: vec i64 [] [ au ],
+                          column: vec i64 [] ]
+            for [ t: i64 0, t < nt, t += 1 ]
+                g : i64 [ ids[ at + t ] ]
+                if [ !compact.contains[ g ] ]
+                    compact[ g ] = cp.gpt2.count
+                    cp.gpt2.push[ g ]
+                p.tokens.push[ i64[ compact[ g ] ] ]
+                p.column.push[ au ]
+            cp.passages.push[ p ]
+    cp.vocab = cp.gpt2.count
+    return cp
+
+# exchanges from real text: a query of nq tokens (a span of the
+# first author's), then a response of nr tokens made of spans
+# (4 to 8 tokens, cut from the authors' own text) in shares
+# drawn at random over 1 to 3 authors; the column keeps who
+func author_real_exchanges [ cp: Corpus, count: i64, nq: i64,
+                             nr: i64 ] -> Corpus
+    na : i64 [ cp.names.count ]
+    # each author's text as one stream
+    streams : vec i64 []
+    starts : vec i64 [ na + 1 ]
+    for [ au: i64 0, au < na, au += 1 ]
+        starts[ au ] = streams.count
+        for [ p: Passage ] in cp.passages
+            if [ p.authors[ 0 ] != au ] continue
+            for [ t: i64 ] in p.tokens
+                streams.push[ t ]
+    starts[ na ] = streams.count
+    out : Corpus [ names: cp.names, tastes: vec f64 [],
+                   vocab: cp.vocab, gpt2: cp.gpt2 ]
+    for [ c: i64 0, c < count, c += 1 ]
+        k : i64 [ 1 + rand[] % 3 ]
+        who : vec i64 []
+        share : vec f64 []
+        total : f64 [ 0.0 ]
+        while [ who.count < k ]
+            au : i64 [ rand[] % na ]
+            seen : bool [ false ]
+            for [ w: i64 ] in who
+                if [ w == au ] seen = true
+            if [ seen ] continue
+            who.push[ au ]
+            sv : f64 [ 0.2 + f64[ rand[] ] / f64[ RAND_MAX ] ]
+            share.push[ sv ]
+            total += sv
+        p : Passage [ document: 'exchange {c}', passage: 'response',
+                      source: 'mixed', tokens: vec i64 [],
+                      authors: who, asked: nq, column: vec i64 [] ]
+        # the query: the first author's words
+        q0 : i64 [ starts[ who[ 0 ] ] ]
+        qn : i64 [ starts[ who[ 0 ] + 1 ] - q0 - nq ]
+        qa : i64 [ q0 + rand[] % qn ]
+        for [ t: i64 0, t < nq, t += 1 ]
+            p.tokens.push[ streams[ qa + t ] ]
+            p.column.push[ -1 ]
+        while [ p.tokens.count < nq + nr ]
+            u : f64 [ total * f64[ rand[] ] / (f64[ RAND_MAX ] + 1.0) ]
+            pick : i64 [ 0 ]
+            while [ pick < k - 1 && u >= share[ pick ] ]
+                u -= share[ pick ]
+                pick += 1
+            au : i64 [ who[ pick ] ]
+            span : i64 [ 4 + rand[] % 5 ]
+            left : i64 [ nq + nr - p.tokens.count ]
+            if [ span > left ] span = left
+            s0 : i64 [ starts[ au ] ]
+            sn : i64 [ starts[ au + 1 ] - s0 - span ]
+            sa : i64 [ s0 + rand[] % sn ]
+            for [ t: i64 0, t < span, t += 1 ]
+                p.tokens.push[ streams[ sa + t ] ]
+                p.column.push[ au ]
+        out.passages.push[ p ]
+    return out
+
+func author_corpus_file [] -> string
+    return '{path.path_install[]}/share/author/random.agi'
+
+export func author_corpus []
+    file : string author_corpus_file[]
+    fp : path file
+    if [ fp.exists[] ] return
+    dir : string '{path.path_install[]}/share/author'
+    mkdir[ dir.chars, 0x1ED ]
+    srand[ 2026 ]
+    cp : Corpus author_random_corpus[ 16, 512, 16, 64, 1.0 ]
+    cp.save[ file ]
+    log 'author: {cp.names.count} authors, {cp.passages.count} commits written to {file}'
+
+# the corpus file keeps every record whole
+expect func t_corpus_file [] -> bool
+    srand[ 3 ]
+    cp : Corpus author_random_corpus[ 3, 6, 5, 30, 1.0 ]
+    cp.passages[ 1 ].authors.push[ 2 ]
+    cp.passages[ 1 ].column[ 4 ] = 2
+    file : string '{path.path_install[]}/tmp/author-test.agi'
+    cp.save[ file ]
+    back : Corpus []
+    if [ !back.load[ file ] ] return false
+    ok : bool [ back.names.count == 3 && back.passages.count == 6 ]
+    if [ ok ]
+        p : Passage back.passages[ 1 ]
+        q : Passage cp.passages[ 1 ]
+        ok = p.authors.count == 2 && p.authors[ 1 ] == 2
+             && p.tokens.count == 5 && p.tokens[ 3 ] == q.tokens[ 3 ]
+             && p.document == q.document && p.column[ 4 ] == 2
+             && back.names[ 2 ] == cp.names[ 2 ]
+    log 'author corpus: {back.names.count} authors, {back.passages.count} passages read back, whole {ok}'
+    return ok
+
+# the ranking keeps the names over the floor, best first
+expect func t_author_rank [] -> bool
+    row : vec f32 [] [ -3.0, 2.0, 0.5, 4.0, -1.0 ]
+    r : vec i64 author_rank[ row, 3, 0.7 ]
+    ok : bool [ r.count == 2 && r[ 0 ] == 3 && r[ 1 ] == 1 ]
+    all : vec i64 author_rank[ row, 10, 0.0 ]
+    ok = ok && all.count == 5 && all[ 4 ] == 0
+    log 'author rank: {r.count} over 0.7 (3, 1), {all.count} with no floor'
+    return ok
+
+# a small decoder and its head trained steps on a corpus (every
+# sixth passage held out), the head scoring every token from the
+# state the token head reads. Back: the training lm loss first
+# and last; of the held-out tokens with an author, the share
+# whose top score is right; the mean gap between each held-out
+# passage's drawn shares and the shares the column's scores sum
+# to (total variation, 0 exact, 1 wholly wrong); the held-out lm
+# loss; the mean score given an author absent from the passage;
+# for exchanges, the gap between the drawn shares and the shares
+# the column gives the model's OWN response to the query (-1
+# when the corpus has no queries); the gap a flat column would
+# have; of the own response's tokens, the share whose named
+# author is the one whose taste most favours that token; then
+# the summary head (the response's states pooled once, scored
+# once): its gap on the drawn response, its absent score, its
+# gap on the own response
+func author_trial [ cp: Corpus, na: i64, nt: i64, vocab: i64,
+                    steps: i64 ] -> vec f64
+    nb : i64 [ 32 ]
+    fit : vec Passage []
+    held : vec Passage []
+    # a corpus in author order would train one author at a time
+    order : vec i64 [ cp.passages.count ]
+    for [ i: i64 0, i < order.count, i += 1 ]
+        order[ i ] = i
+    for [ i: i64 order.count - 1, i > 0, i -= 1 ]
+        j : i64 [ rand[] % (i + 1) ]
+        swap : i64 [ order[ i ] ]
+        order[ i ] = order[ j ]
+        order[ j ] = swap
+    for [ i: i64 0, i < order.count, i += 1 ]
+        if [ i % 6 == 5 && held.count < 96 ]
+            held.push[ cp.passages[ order[ i ] ] ]
+        el
+            fit.push[ cp.passages[ order[ i ] ] ]
+    vk : vk_context []
+    Au.hold[ vk ]
+    disp : Display [ vk: vk, backbuffer: true, width: 64, height: 64 ]
+    Au.hold[ disp ]
+    # the logits and their gradient grow with the vocabulary
+    rows : i64 [ (held.count > nb) ? held.count : nb ]
+    work : i64 [ 256 + 24 * vocab * rows * nt / 1048576 ]
+    gd : Grad [ vk: vk, keep_mb: 64, work_mb: work, scratch_mb: work ]
+    lm : Lm [ gd: gd, vocab: vocab, d: 32, layers: 1, heads: 2,
+              tmax: nt ]
+    head : AuthorHead [ gd: gd, d: 32, e: 32, n: na ]
+    # the summary: the response's states pooled, scored once
+    tot : AuthorHead [ gd: gd, d: 32, e: 32, n: na ]
+    first : f64 [ 0.0 ]
+    last : f64 [ 0.0 ]
+    for [ s: i64 0, s < steps, s += 1 ]
+        mark : i32 [ Au.auto_mark[] ]
+        gd.reset_work[]
+        gd.tape_cut[ 0 ]
+        gd.record = true
+        bt : AuthorBatch author_batch[ fit, s * nb, nb, nt, na ]
+        ids : GTensor gd.temp[ vec i64 [] [ nb, nt ] ]
+        tg : GTensor gd.temp[ vec i64 [] [ nb, nt ] ]
+        col : GTensor gd.temp[ vec i64 [] [ nb, nt, na ] ]
+        wts : GTensor gd.temp[ vec i64 [] [ nb, nt, 1 ] ]
+        share : GTensor gd.temp[ vec i64 [] [ nb, 1, na ] ]
+        gd.upload[ ids, bt.ids ]
+        gd.upload[ tg, bt.next ]
+        gd.upload[ col, bt.col ]
+        gd.upload[ wts, bt.wts ]
+        gd.upload[ share, bt.share ]
+        h : GTensor lm.hidden[ ids, null ]
+        l1 : GTensor lm.loss[ lm.logits[ h ], tg ]
+        l2 : GTensor head.loss[ head.scores[ gd.swap12[ h ] ], col ]
+        l3 : GTensor tot.loss[ tot.scores[ lm.pooled[ h, wts ] ],
+                               share ]
+        gd.backward_all[ vec GTensor [] [ l1, l2, l3 ],
+                         vec f32 [] [ 1.0, 1.0, 1.0 ] ]
+        gd.rn.finish[]
+        lm.step[ 0.003 ]
+        head.step[ 0.003 ]
+        tot.step[ 0.003 ]
+        gd.record = false
+        gd.tape_cut[ 0 ]
+        lv : vec f32 gd.download[ l1 ]
+        hv : vec f32 gd.download[ l2 ]
+        if [ s == 0 ] first = f64[ lv[ 0 ] ]
+        last = f64[ lv[ 0 ] ]
+        if [ (s + 1) % 100 == 0 ]
+            log 'author train: step {s + 1}: lm {lv[ 0 ]} head {hv[ 0 ]}'
+        Au.auto_free_to[ mark ]
+    # the held-out passages: each token's author, each mix
+    nh : i64 [ held.count ]
+    gd.reset_work[]
+    gd.tape_cut[ 0 ]
+    hb : AuthorBatch author_batch[ held, 0, nh, nt, na ]
+    ids : GTensor gd.temp[ vec i64 [] [ nh, nt ] ]
+    tg : GTensor gd.temp[ vec i64 [] [ nh, nt ] ]
+    wts : GTensor gd.temp[ vec i64 [] [ nh, nt, 1 ] ]
+    gd.upload[ ids, hb.ids ]
+    gd.upload[ tg, hb.next ]
+    gd.upload[ wts, hb.wts ]
+    h : GTensor lm.hidden[ ids, null ]
+    unseen : vec f32 gd.download[ lm.loss[ lm.logits[ h ], tg ] ]
+    sc : vec f32 gd.download[ head.scores[ gd.swap12[ h ] ] ]
+    ts : vec f32 gd.download[ tot.scores[ lm.pooled[ h, wts ] ] ]
+    right : i64 [ 0 ]
+    tokens : i64 [ 0 ]
+    gap : f64 [ 0.0 ]
+    absent : f64 [ 0.0 ]
+    nabsent : i64 [ 0 ]
+    tgap : f64 [ 0.0 ]
+    tabsent : f64 [ 0.0 ]
+    for [ i: i64 0, i < nh, i += 1 ]
+        p : Passage held[ i ]
+        want : vec f64 [ na ]
+        got : vec f64 [ na ]
+        n : i64 [ 0 ]
+        for [ t: i64 0, t < nt && t < p.tokens.count, t += 1 ]
+            au : i64 [ p.column[ t ] ]
+            if [ au < 0 ] continue
+            best : i64 [ 0 ]
+            for [ j: i64 0, j < na, j += 1 ]
+                v : f32 [ sc[ (i * nt + t) * na + j ] ]
+                got[ j ] += 1.0 / (1.0 + exp[ -f64[ v ] ])
+                if [ v > sc[ (i * nt + t) * na + best ] ] best = j
+            want[ au ] += 1.0
+            n += 1
+            tokens += 1
+            if [ best == au ] right += 1
+        if [ n == 0 ] continue
+        gsum : f64 [ 0.0 ]
+        tsum : f64 [ 0.0 ]
+        tot_got : vec f64 [ na ]
+        for [ j: i64 0, j < na, j += 1 ]
+            gsum += got[ j ]
+            tot_got[ j ] = 1.0 / (1.0 + exp[ -f64[ ts[ i * na + j ] ] ])
+            tsum += tot_got[ j ]
+        for [ j: i64 0, j < na, j += 1 ]
+            gap += 0.5 * fabs[ got[ j ] / gsum - want[ j ] / f64[ n ] ]
+            tgap += 0.5 * fabs[ tot_got[ j ] / tsum
+                                - want[ j ] / f64[ n ] ]
+            if [ want[ j ] == 0.0 ]
+                absent += got[ j ] / f64[ n ]
+                tabsent += tot_got[ j ]
+                nabsent += 1
+    # the model's own responses to the held-out queries
+    own : f64 [ -1.0 ]
+    flat : f64 [ 0.0 ]
+    town : f64 [ -1.0 ]
+    tasted : i64 [ 0 ]
+    agreed : i64 [ 0 ]
+    nq : i64 [ held[ 0 ].asked ]
+    if [ nq > 0 ]
+        gen : vec f32 lm.generate[ hb.ids, nh, nq, nt ]
+        gi : GTensor gd.temp[ vec i64 [] [ nh, nt ] ]
+        gd.upload[ gi, gen ]
+        # the written tokens weigh alike
+        gw : vec f32 [ nh * nt ]
+        for [ i: i64 0, i < nh * nt, i += 1 ]
+            if [ i % nt >= nq ] gw[ i ] = f32[ 1.0 / f64[ nt - nq ] ]
+        gwt : GTensor gd.temp[ vec i64 [] [ nh, nt, 1 ] ]
+        gd.upload[ gwt, gw ]
+        gh : GTensor lm.hidden[ gi, null ]
+        gs : vec f32 gd.download[ head.scores[ gd.swap12[ gh ] ] ]
+        gt : vec f32 gd.download[ tot.scores[ lm.pooled[ gh, gwt ] ] ]
+        own = 0.0
+        town = 0.0
+        # real text: the first responses as words
+        if [ author_words && cp.gpt2.count > 0 ]
+            for [ i: i64 0, i < 3 && i < nh, i += 1 ]
+                w : new i32 [ nt ]
+                for [ t: i64 0, t < nt, t += 1 ]
+                    w[ t ] = i32[ cp.gpt2[ i64[ gen[ i * nt + t ] ] ] ]
+                asked : string author_words.decode[
+                    cast handle [ @w[ 0 ] ], i32[ nq ] ]
+                said : string author_words.decode[
+                    cast handle [ @w[ nq ] ], i32[ nt - nq ] ]
+                who : string ''
+                for [ j: i64 ] in held[ i ].authors
+                    who = '{who} {cp.names[ j ]}'
+                log 'author words: asked "{asked}" (from{who}): "{said}"'
+        for [ i: i64 0, i < nh, i += 1 ]
+            p : Passage held[ i ]
+            want : vec f64 [ na ]
+            got : vec f64 [ na ]
+            n : i64 [ 0 ]
+            for [ t: i64 nq, t < nt && t < p.column.count, t += 1 ]
+                if [ p.column[ t ] >= 0 ]
+                    want[ p.column[ t ] ] += 1.0
+                    n += 1
+                best : i64 [ 0 ]
+                for [ j: i64 0, j < na, j += 1 ]
+                    v : f32 [ gs[ (i * nt + t) * na + j ] ]
+                    got[ j ] += 1.0 / (1.0 + exp[ -f64[ v ] ])
+                    if [ v > gs[ (i * nt + t) * na + best ] ] best = j
+                fav : i64 author_favoured[ cp,
+                                           i64[ gen[ i * nt + t ] ] ]
+                tasted += 1
+                if [ fav == best ] agreed += 1
+            gsum : f64 [ 0.0 ]
+            tsum : f64 [ 0.0 ]
+            tot_got : vec f64 [ na ]
+            for [ j: i64 0, j < na, j += 1 ]
+                gsum += got[ j ]
+                v : f64 [ gt[ i * na + j ] ]
+                tot_got[ j ] = 1.0 / (1.0 + exp[ -v ])
+                tsum += tot_got[ j ]
+            for [ j: i64 0, j < na, j += 1 ]
+                own += 0.5 * fabs[ got[ j ] / gsum
+                                   - want[ j ] / f64[ n ] ] / f64[ nh ]
+                town += 0.5 * fabs[ tot_got[ j ] / tsum
+                                    - want[ j ] / f64[ n ] ] / f64[ nh ]
+                flat += 0.5 * fabs[ 1.0 / f64[ na ]
+                                    - want[ j ] / f64[ n ] ] / f64[ nh ]
+    gd.release[]
+    return vec f64 [] [ first, last, f64[ right ] / f64[ tokens ],
+                        gap / f64[ nh ], f64[ unseen[ 0 ] ],
+                        absent / f64[ nabsent ], own, flat,
+                        (tasted > 0) ? f64[ agreed ] / f64[ tasted ]
+                        : -1.0, tgap / f64[ nh ],
+                        tabsent / f64[ nabsent ], town ]
+
+# authors of a strong taste (bias 3): the head names the right
+# author of held-out passages
+expect func t_author_recovers [] -> bool
+    srand[ 11 ]
+    cp : Corpus author_random_corpus[ 8, 384, 16, 64, 3.0 ]
+    r : vec f64 author_trial[ cp, 8, 16, 64, 300 ]
+    log 'author recovers: lm loss {r[ 0 ]} -> {r[ 1 ]}, held out {r[ 4 ]} (ln 64 = 4.159); held-out tokens named right {r[ 2 ] * 100.0}%; share gap {r[ 3 ]}; absent authors scored {r[ 5 ]}'
+    return r[ 4 ] < 4.0 && r[ 2 ] >= 0.75
+
+# our corpus (16 authors at bias 1, 512 commits): what the head
+# names on held-out commits, against chance (1 in 16)
+expect func t_author_corpus [] -> bool
+    cp : Corpus []
+    if [ !cp.load[ author_corpus_file[] ] ]
+        srand[ 2026 ]
+        cp = author_random_corpus[ 16, 512, 16, 64, 1.0 ]
+    na : i64 [ cp.names.count ]
+    srand[ 11 ]
+    r : vec f64 author_trial[ cp, na, 16, 64, 300 ]
+    log 'author corpus: {na} authors, {cp.passages.count} commits ({cp.names[ 0 ]}, {cp.names[ 1 ]} ...); lm loss {r[ 0 ]} -> {r[ 1 ]}, held out {r[ 4 ]} (ln 64 = 4.159); held-out tokens named right {r[ 2 ] * 100.0}% (chance {100.0 / f64[ na ]}); share gap {r[ 3 ]}; absent authors scored {r[ 5 ]}'
+    return r[ 2 ] > 2.0 / f64[ na ]
+
+# the mixing: exchanges whose responses mix 1 to 3 authors in
+# shares drawn at random; the column's scores summed over a
+# held-out response must give those shares back
+expect func t_author_mix [] -> bool
+    srand[ 5 ]
+    cp : Corpus author_exchanges[ 8, 768, 4, 12, 64, 2.0 ]
+    r : vec f64 author_trial[ cp, 8, 16, 64, 400 ]
+    log 'author mix: 8 authors, 768 exchanges, 1-3 authors a response; held-out tokens named right {r[ 2 ] * 100.0}%; share gap {r[ 3 ]} on the drawn response, {r[ 6 ]} on the model\'s own, {r[ 7 ]} for a flat column (0 exact); on the own response the column names the author whose taste most favours the token {r[ 8 ] * 100.0}% (chance 12.5); absent authors scored {r[ 5 ]}; held-out lm {r[ 4 ]}'
+    log 'author mix, the summary (pooled once a response): share gap {r[ 9 ]} on the drawn response, {r[ 11 ]} on the model\'s own; absent authors scored {r[ 10 ]}'
+    return r[ 3 ] < 0.3 && r[ 2 ] > 0.5 && r[ 6 ] < r[ 7 ]
+           && r[ 8 ] > 0.3 && r[ 9 ] < 0.3
+
+# the encoder against the reference tokenizer (transformers'
+# WhisperTokenizer on openai/whisper-small): a passage of
+# Austen with quotes, numbers, contractions and runs of spaces
+expect func t_gpt2_encode [] -> bool
+    d : string '{path.path_install[]}/build/silver-author.source'
+    src : path d
+    here : string [ src.load[ typeid[ string ], null ] ]
+    # its first line is the module's own file
+    first : i64 [ here.index_of[ '\n' ] ]
+    if [ first > 0 ] here = here.mid[ 0, first ]
+    own : path [ here.trim[] ]
+    folder : own.parent_dir[]
+    tp : path '{folder}/tests/gpt2_text.txt'
+    gp : path '{folder}/tests/gpt2_ids.txt'
+    text : string [ tp.load[ typeid[ string ], null ] ]
+    gold : string [ gp.load[ typeid[ string ], null ] ]
+    voc : gpt2_vocab author_vocab[]
+    ids : vec i64 voc.encode[ text ]
+    want : vec i64 []
+    for [ w: string ] in gold.trim[].split[ ' ' ]
+        want.push[ w.integer_value[] ]
+    same : i64 [ 0 ]
+    for [ i: i64 0, i < ids.count && i < want.count, i += 1 ]
+        if [ ids[ i ] == want[ i ] ] same += 1
+    w : new i32 [ ids.count ]
+    for [ i: i64 0, i < ids.count, i += 1 ]
+        w[ i ] = i32[ ids[ i ] ]
+    back : string voc.decode[ cast handle [ @w[ 0 ] ],
+                              i32[ ids.count ] ]
+    log 'gpt2 encode: {ids.count} ids, reference {want.count}, {same} equal in place; decodes back whole {back == text}'
+    return ids.count == want.count && same == want.count
+           && back == text
+
+# real text: eight authors' books (Gutenberg) through gpt2's
+# vocabulary; passages of 32 tokens; chance 1 in 8
+expect func t_author_real [] -> bool
+    names : vec string [] [ 'austen', 'dickens', 'twain', 'doyle',
+                            'shelley', 'wilde', 'melville',
+                            'carroll' ]
+    cp : Corpus author_real_corpus[ names, 32, 40000 ]
+    srand[ 11 ]
+    r : vec f64 author_trial[ cp, 8, 32, cp.vocab, 400 ]
+    log 'author real: {cp.passages.count} passages, {cp.vocab} distinct tokens; lm loss {r[ 0 ]} -> {r[ 1 ]}, held out {r[ 4 ]} (ln {cp.vocab} = {log[ f64[ cp.vocab ] ]}); held-out tokens named right {r[ 2 ] * 100.0}% (chance 12.5); share gap {r[ 3 ]} by the column, {r[ 9 ]} by the summary; absent authors scored {r[ 5 ]} / {r[ 10 ]}'
+    return r[ 2 ] > 0.25
+
+# real exchanges: responses cut from the authors' own text in
+# drawn shares; the model's own response printed as words
+expect func t_author_real_mix [] -> bool
+    names : vec string [] [ 'austen', 'dickens', 'twain', 'doyle',
+                            'shelley', 'wilde', 'melville',
+                            'carroll' ]
+    base : Corpus author_real_corpus[ names, 32, 40000 ]
+    srand[ 5 ]
+    cp : Corpus author_real_exchanges[ base, 3000, 8, 24 ]
+    r : vec f64 author_trial[ cp, 8, 32, cp.vocab, 400 ]
+    log 'author real mix: 3000 exchanges of 8 + 24 tokens; held-out tokens named right {r[ 2 ] * 100.0}% (chance 12.5); share gap {r[ 3 ]} by the column, {r[ 9 ]} by the summary; on the model\'s own response {r[ 6 ]} / {r[ 11 ]}, a flat column {r[ 7 ]}; absent authors scored {r[ 5 ]} / {r[ 10 ]}; held-out lm {r[ 4 ]}'
+    return r[ 2 ] > 0.25 && r[ 9 ] < r[ 7 ]
+
+# the margin: how strong an author's bias over the shared words
+# must be before the head names them, and where the floor starts
+# to give names; bias 0 (random) to 4, a row each
+expect func t_author_sweep [] -> bool
+    log 'author sweep: bias  tokens right%  share gap  absent score  summary gap  summary absent  held-out lm  train lm'
+    biases : vec f64 [] [ 0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0,
+                          4.0 ]
+    low : f64 [ 1.0 ]
+    high : f64 [ 0.0 ]
+    for [ bias: f64 ] in biases
+        srand[ 11 ]
+        cp : Corpus author_random_corpus[ 8, 384, 16, 64, bias ]
+        r : vec f64 author_trial[ cp, 8, 16, 64, 300 ]
+        log 'author sweep: {bias}  {r[ 2 ] * 100.0}  {r[ 3 ]}  {r[ 5 ]}  {r[ 9 ]}  {r[ 10 ]}  {r[ 4 ]}  {r[ 1 ]}'
+        if [ bias == 0.0 ] low = r[ 2 ]
+        if [ bias == 4.0 ] high = r[ 2 ]
+    return low < 0.3 && high >= 0.75

@@ -479,7 +479,8 @@ element NavRows
             if [ f.ends_with[ tail ] ] agi = path '{ex}/{f}'
         ai : AppIcon [ file: dir, module: true, agi: agi ]
         png : path '{dir}/images/icon.png'
-        if [ !png.exists[] && !ai.export_icon[] ]
+        jpg : path '{dir}/images/icon.jpg'
+        if [ !png.exists[] && !jpg.exists[] && !ai.export_icon[] ]
             mod_noicon.push[ k ]
             return null
         mod_icons[ k ] = ai

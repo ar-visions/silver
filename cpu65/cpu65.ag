@@ -1,0 +1,730 @@
+# the 6502 family, shared by the emulators: knes's NMOS core, and
+# with huc set the 65C02 and HuC6280 instructions (the PC Engine's);
+# a machine subclasses Cpu65 and gives rd and wr its bus
+export 0.1.0
+
+class Cpu65
+    public acc         : u8                # A (a is the object)
+    public x           : u8
+    public y           : u8
+    public sp          : u8
+    public p           : u8                # NV(T)BDIZC
+    public pc          : u16
+    public cycles      : i64
+    public nmi_pending : bool
+    # HuC6280: 65C02 + its own ops, decimal mode, T flag, banks
+    public huc         : bool
+    # HuC6280 clock: false 1.79 MHz, true 7.16 MHz (CSL / CSH)
+    public fast        : bool
+    # zero page and stack in the logical map ($2000, $2100 on HuC)
+    public zp          : u32
+    public stk         : u32
+    # HuC6280 bank registers MPR0-7: 8 KB pages of 21-bit space
+    public mpr         : new u8 [ 8 ]
+    # page-cross penalty from the address helpers
+    public xtra        : i32
+
+    func init []
+        if [ huc ] zp = 0x2000
+        stk = zp + 0x100
+
+    # ---- the machine's side (overridden) ----
+    # one byte of the logical (16-bit) map
+    func rd [ addr: u32 ] -> u8
+        return 0
+    func wr [ addr: u32, v: u8 ] -> none
+        return
+    # HuC6280 ST0 / ST1 / ST2: the VDC's ports 0, 2 and 3
+    func st_port [ port: u32, v: u8 ] -> none
+        return
+    # HuC6280: the vector of an asserted, enabled interrupt; 0 none
+    func irq_vector [] -> u32
+        return 0
+
+    func rd16 [ a2: u32 ] -> u32
+        return u32[ rd*[ a2 ] ] | (u32[ rd*[ a2 + 1 ] ] << 8)
+
+    func push8 [ v: u8 ] -> none
+        wr*[ stk + u32[ sp ], v ]
+        sp = sp - 1
+
+    func pull8 [] -> u8
+        sp = sp + 1
+        return rd*[ stk + u32[ sp ] ]
+
+    func set_zn [ v: u32 ] -> none
+        f : u8 [ p & 0x7D ]
+        if [ (v & 0xFF) == 0 ] f = f | 0x02
+        if [ (v & 0x80) != 0 ] f = f | 0x80
+        p = f
+
+    func fetch8 [] -> u32
+        v : u32 [ rd*[ u32[ pc ] ] ]
+        pc = pc + 1
+        return v
+
+    func fetch16 [] -> u32
+        lo : u32 [ fetch8[] ]
+        return lo | (fetch8[] << 8)
+
+    # addressing helpers; xtra = 1 on a page cross for the +1 modes
+    # (the HuC6280 has no such penalty)
+    func a_zp  [] -> u32
+        return zp + fetch8[]
+    func a_zpx [] -> u32
+        return zp + ((fetch8[] + u32[ x ]) & 0xFF)
+    func a_zpy [] -> u32
+        return zp + ((fetch8[] + u32[ y ]) & 0xFF)
+    func a_abs [] -> u32
+        return fetch16[]
+    func a_abx [] -> u32
+        b : u32 [ fetch16[] ]
+        r : u32 [ (b + u32[ x ]) & 0xFFFF ]
+        if [ !huc && (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+        return r
+    func a_aby [] -> u32
+        b : u32 [ fetch16[] ]
+        r : u32 [ (b + u32[ y ]) & 0xFFFF ]
+        if [ !huc && (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+        return r
+    # a pointer in the zero page
+    func zp_ptr [ z: u32 ] -> u32
+        lo : u32 [ rd*[ zp + (z & 0xFF) ] ]
+        return lo | (u32[ rd*[ zp + ((z + 1) & 0xFF) ] ] << 8)
+    func a_izx [] -> u32
+        return zp_ptr[ fetch8[] + u32[ x ] ]
+    func a_izy [] -> u32
+        b : u32 [ zp_ptr[ fetch8[] ] ]
+        r : u32 [ (b + u32[ y ]) & 0xFFFF ]
+        if [ !huc && (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
+        return r
+    # 65C02 (zp)
+    func a_izp [] -> u32
+        return zp_ptr[ fetch8[] ]
+
+    func op_adc [ v: u32 ] -> none
+        if [ huc && (p & 0x08) != 0 ]
+            adc_dec[ v ]
+            return
+        aa : u32 [ acc ]
+        c : u32 [ u32[ p ] & 1 ]
+        r : u32 [ aa + v + c ]
+        f : u8 [ p & 0x3C ]
+        if [ (r & 0x100) != 0 ] f = f | 0x01
+        if [ (((aa ^ r) & (v ^ r)) & 0x80) != 0 ] f = f | 0x40
+        if [ (r & 0xFF) == 0 ] f = f | 0x02
+        if [ (r & 0x80) != 0 ] f = f | 0x80
+        p = f
+        acc = u8[ r & 0xFF ]
+
+    # decimal add, as the 65C02 (flags from the result)
+    func adc_dec [ v: u32 ] -> none
+        c : i32 [ i32[ p & 1 ] ]
+        lo : i32 [ i32[ acc & 0x0F ] + i32[ v & 0x0F ] + c ]
+        if [ lo > 9 ] lo += 6
+        hi : i32 [ i32[ acc >> 4 ] + i32[ (v >> 4) & 0x0F ] ]
+        if [ lo > 0x0F ] hi += 1
+        if [ hi > 9 ] hi += 6
+        r : u32 [ u32[ ((hi << 4) | (lo & 0x0F)) & 0xFF ] ]
+        f : u8 [ p & 0x3C ]
+        if [ hi > 0x0F ] f = f | 0x01
+        if [ r == 0 ] f = f | 0x02
+        if [ (r & 0x80) != 0 ] f = f | 0x80
+        p = f
+        acc = u8[ r ]
+
+    # subtract: binary is add of the complement
+    func op_sbc [ v: u32 ] -> none
+        if [ !huc || (p & 0x08) == 0 ]
+            op_adc[ v ^ 0xFF ]
+            return
+        b : i32 [ 1 - i32[ p & 1 ] ]
+        lo : i32 [ i32[ acc & 0x0F ] - i32[ v & 0x0F ] - b ]
+        hi : i32 [ i32[ acc >> 4 ] - i32[ (v >> 4) & 0x0F ] ]
+        if [ lo < 0 ]
+            lo += 10
+            hi -= 1
+        f : u8 [ p & 0x3C ]
+        if [ hi < 0 ] hi += 10
+        el f = f | 0x01
+        r : u32 [ u32[ ((hi << 4) | (lo & 0x0F)) & 0xFF ] ]
+        if [ r == 0 ] f = f | 0x02
+        if [ (r & 0x80) != 0 ] f = f | 0x80
+        p = f
+        acc = u8[ r ]
+
+    func op_cmp [ reg: u32, v: u32 ] -> none
+        r : u32 [ (reg - v) & 0x1FF ]
+        f : u8 [ p & 0x7C ]
+        if [ reg >= v ] f = f | 0x01
+        if [ (r & 0xFF) == 0 ] f = f | 0x02
+        if [ (r & 0x80) != 0 ] f = f | 0x80
+        p = f
+
+    # BIT and TST: Z from the and, N and V from memory
+    func op_bit [ m: u32, v: u32 ] -> none
+        f : u8 [ p & 0x3D ]
+        if [ (v & m) == 0 ] f = f | 0x02
+        p = f | u8[ v & 0xC0 ]
+
+    func op_branch [ cond: bool ] -> i32
+        d : i32 [ i8[ u8[ fetch8[] ] ] ]
+        if [ ! cond ] return 2
+        np : u32 [ (u32[ pc ] + u32[ d ]) & 0xFFFF ]
+        c : i32 [ ((np & 0xFF00) != (u32[ pc ] & 0xFF00)) ? 4 : 3 ]
+        if [ huc ] c = 4
+        pc = u16[ np ]
+        return c
+
+    # NMI, IRQ or BRK through vect
+    func interrupt [ vect: u32, brk: bool ] -> i32
+        push8[ u8[ (pc >> 8) & 0xFF ] ]
+        push8[ u8[ pc & 0xFF ] ]
+        if [ huc ]
+            push8[ (brk) ? (p | 0x10) & 0xDF : p & 0xCF ]
+            p = (p & 0xD7) | 0x04          # D and T clear, I set
+        el
+            push8[ (brk) ? p | 0x30 : (p & 0xEF) | 0x20 ]
+            p = p | 0x04
+        pc = u16[ rd16[ vect ] ]
+        return (huc) ? 8 : 7
+
+    func reset [] -> none
+        sp = 0xFD
+        if [ huc ]
+            p = 0x04
+            fast = false
+            mpr[ 7 ] = 0                   # bank 0 at $E000
+            pc = u16[ rd16[ 0xFFFE ] ]
+        el
+            p = 0x24
+            pc = u16[ rd16[ 0xFFFC ] ]
+
+    # the ALU group (ORA AND EOR ADC STA LDA CMP SBC) on ea, or iv
+    # when imm; tm is the HuC6280's T: the first four act on the
+    # byte at zp + X in place of A
+    func alu [ aaa: u32, ea: u32, imm: bool, iv: u32, cyc: i32,
+               tm: bool ] -> i32
+        if [ aaa == 4 ]
+            wr*[ ea, acc ]
+            return cyc
+        v : u32 [ (imm) ? iv : u32[ rd*[ ea ] ] ]
+        ta : u32 [ 0 ]
+        sva : u8 [ acc ]
+        tx : bool [ tm && aaa <= 3 ]
+        if [ tx ]
+            ta = zp + u32[ x ]
+            acc = rd*[ ta ]
+        if [ aaa == 0 ]
+            acc = acc | u8[ v ]
+            set_zn[ u32[ acc ] ]
+        el [ aaa == 1 ]
+            acc = acc & u8[ v ]
+            set_zn[ u32[ acc ] ]
+        el [ aaa == 2 ]
+            acc = acc ^ u8[ v ]
+            set_zn[ u32[ acc ] ]
+        el [ aaa == 3 ] op_adc[ v ]
+        el [ aaa == 5 ]
+            acc = u8[ v ]
+            set_zn[ v ]
+        el [ aaa == 6 ] op_cmp[ u32[ acc ], v ]
+        el op_sbc[ v ]
+        if [ tx ]
+            wr*[ ta, acc ]
+            acc = sva
+            return cyc + 3
+        return cyc
+
+    # one instruction; returns CPU cycles
+    func step [] -> i32
+        if [ nmi_pending ]
+            nmi_pending = false
+            return interrupt[ (huc) ? 0xFFFC : 0xFFFA, false ]
+        tm : bool [ false ]
+        if [ huc ]
+            if [ (p & 0x04) == 0 ]
+                iv : u32 [ irq_vector*[] ]
+                if [ iv != 0 ] return interrupt[ iv, false ]
+            tm = (p & 0x20) != 0
+            p = p & 0xDF
+        op : u32 [ fetch8[] ]
+        xtra = 0
+        if [ huc ]
+            hc : i32 [ step_huc[ op, tm ] ]
+            if [ hc >= 0 ] return hc
+        hx : i32 [ (huc) ? 1 : 0 ]
+        # ---- singles ----
+        if [ op == 0xEA ] return 2                 # NOP
+        if [ op == 0x4C ]                          # JMP abs
+            pc = u16[ fetch16[] ]
+            return 3 + hx
+        # JMP (ind): the NMOS page bug
+        if [ op == 0x6C ]
+            pa : u32 [ fetch16[] ]
+            lo : u32 [ rd*[ pa ] ]
+            hi : u32 [ rd*[ (pa & 0xFF00) | ((pa + 1) & 0xFF) ] ]
+            pc = u16[ lo | (hi << 8) ]
+            return 5
+        if [ op == 0x20 ]                          # JSR
+            t : u32 [ fetch16[] ]
+            ra : u32 [ (u32[ pc ] - 1) & 0xFFFF ]
+            push8[ u8[ (ra >> 8) & 0xFF ] ]
+            push8[ u8[ ra & 0xFF ] ]
+            pc = u16[ t ]
+            return 6 + hx
+        if [ op == 0x60 ]                          # RTS
+            lo2 : u32 [ pull8[] ]
+            hi2 : u32 [ pull8[] ]
+            pc = u16[ ((lo2 | (hi2 << 8)) + 1) & 0xFFFF ]
+            return 6 + hx
+        if [ op == 0x40 ]                          # RTI
+            if [ huc ] p = pull8[] & 0xDF
+            el p = (pull8[] & 0xEF) | 0x20
+            lo3 : u32 [ pull8[] ]
+            hi3 : u32 [ pull8[] ]
+            pc = u16[ lo3 | (hi3 << 8) ]
+            return 6 + hx
+        if [ op == 0x00 ]                          # BRK
+            pc = pc + 1
+            return interrupt[ (huc) ? 0xFFF6 : 0xFFFE, true ]
+        if [ op == 0x08 ]                          # PHP
+            push8[ (huc) ? p | 0x10 : p | 0x30 ]
+            return 3
+        if [ op == 0x28 ]                          # PLP
+            if [ huc ] p = pull8[] & 0xDF
+            el p = (pull8[] & 0xEF) | 0x20
+            return 4
+        if [ op == 0x48 ]                          # PHA
+            push8[ acc ]
+            return 3
+        if [ op == 0x68 ]                          # PLA
+            acc = pull8[]
+            set_zn[ u32[ acc ] ]
+            return 4
+        if [ op == 0x18 ]
+            p = p & 0xFE
+            return 2                               # CLC
+        if [ op == 0x38 ]
+            p = p | 0x01
+            return 2                               # SEC
+        if [ op == 0x58 ]
+            p = p & 0xFB
+            return 2                               # CLI
+        if [ op == 0x78 ]
+            p = p | 0x04
+            return 2                               # SEI
+        if [ op == 0xB8 ]
+            p = p & 0xBF
+            return 2                               # CLV
+        if [ op == 0xD8 ]
+            p = p & 0xF7
+            return 2                               # CLD
+        if [ op == 0xF8 ]
+            p = p | 0x08
+            return 2                               # SED
+        if [ op == 0xAA ]
+            x = acc
+            set_zn[ u32[ x ] ]
+            return 2                               # TAX
+        if [ op == 0x8A ]
+            acc = x
+            set_zn[ u32[ acc ] ]
+            return 2                               # TXA
+        if [ op == 0xA8 ]
+            y = acc
+            set_zn[ u32[ y ] ]
+            return 2                               # TAY
+        if [ op == 0x98 ]
+            acc = y
+            set_zn[ u32[ acc ] ]
+            return 2                               # TYA
+        if [ op == 0xBA ]
+            x = sp
+            set_zn[ u32[ x ] ]
+            return 2                               # TSX
+        if [ op == 0x9A ]
+            sp = x
+            return 2                               # TXS
+        if [ op == 0xE8 ]
+            x = x + 1
+            set_zn[ u32[ x ] ]
+            return 2                               # INX
+        if [ op == 0xC8 ]
+            y = y + 1
+            set_zn[ u32[ y ] ]
+            return 2                               # INY
+        if [ op == 0xCA ]
+            x = x - 1
+            set_zn[ u32[ x ] ]
+            return 2                               # DEX
+        if [ op == 0x88 ]
+            y = y - 1
+            set_zn[ u32[ y ] ]
+            return 2                               # DEY
+        # BPL
+        if [ op == 0x10 ] return op_branch[ (p & 0x80) == 0 ]
+        # BMI
+        if [ op == 0x30 ] return op_branch[ (p & 0x80) != 0 ]
+        # BVC
+        if [ op == 0x50 ] return op_branch[ (p & 0x40) == 0 ]
+        # BVS
+        if [ op == 0x70 ] return op_branch[ (p & 0x40) != 0 ]
+        # BCC
+        if [ op == 0x90 ] return op_branch[ (p & 0x01) == 0 ]
+        # BCS
+        if [ op == 0xB0 ] return op_branch[ (p & 0x01) != 0 ]
+        # BNE
+        if [ op == 0xD0 ] return op_branch[ (p & 0x02) == 0 ]
+        # BEQ
+        if [ op == 0xF0 ] return op_branch[ (p & 0x02) != 0 ]
+        if [ op == 0x24 || op == 0x2C ]            # BIT zp/abs
+            ba : u32 [ (op == 0x24) ? a_zp[] : a_abs[] ]
+            op_bit[ u32[ acc ], u32[ rd*[ ba ] ] ]
+            return ((op == 0x24) ? 3 : 4) + hx
+        # LDY/STY/CPY/CPX
+        if [ op == 0xA0 ]
+            y = u8[ fetch8[] ]
+            set_zn[ u32[ y ] ]
+            return 2
+        if [ op == 0xA4 || op == 0xB4 || op == 0xAC || op == 0xBC ]
+            la : u32 [ 0 ]
+            lc : i32 [ 0 ]
+            if [ op == 0xA4 ]
+                la = a_zp[]
+                lc = 3
+            el [ op == 0xB4 ]
+                la = a_zpx[]
+                lc = 4
+            el [ op == 0xAC ]
+                la = a_abs[]
+                lc = 4
+            el
+                la = a_abx[]
+                lc = 4 + xtra
+            y = rd*[ la ]
+            set_zn[ u32[ y ] ]
+            return lc + hx
+        if [ op == 0x84 || op == 0x94 || op == 0x8C ]
+            sa : u32 [ 0 ]
+            if [ op == 0x84 ] sa = a_zp[]
+            el [ op == 0x94 ] sa = a_zpx[]
+            el sa = a_abs[]
+            wr*[ sa, y ]
+            return ((op == 0x84) ? 3 : 4) + hx
+        if [ op == 0xC0 || op == 0xC4 || op == 0xCC ]
+            cv : u32 [ 0 ]
+            cc2 : i32 [ 2 ]
+            if [ op == 0xC0 ] cv = fetch8[]
+            el [ op == 0xC4 ]
+                cv = u32[ rd*[ a_zp[] ] ]
+                cc2 = 3 + hx
+            el
+                cv = u32[ rd*[ a_abs[] ] ]
+                cc2 = 4 + hx
+            op_cmp[ u32[ y ], cv ]
+            return cc2
+        if [ op == 0xE0 || op == 0xE4 || op == 0xEC ]
+            xv : u32 [ 0 ]
+            xc : i32 [ 2 ]
+            if [ op == 0xE0 ] xv = fetch8[]
+            el [ op == 0xE4 ]
+                xv = u32[ rd*[ a_zp[] ] ]
+                xc = 3 + hx
+            el
+                xv = u32[ rd*[ a_abs[] ] ]
+                xc = 4 + hx
+            op_cmp[ u32[ x ], xv ]
+            return xc
+        # ---- cc=01 ALU block ----
+        cc : u32 [ op & 3 ]
+        aaa : u32 [ (op >> 5) & 7 ]
+        bbb : u32 [ (op >> 2) & 7 ]
+        if [ cc == 1 ]
+            ea : u32 [ 0 ]
+            cyc : i32 [ 0 ]
+            imm : bool [ false ]
+            iv2 : u32 [ 0 ]
+            if [ bbb == 0 ]
+                ea = a_izx[]
+                cyc = 6
+            el [ bbb == 1 ]
+                ea = a_zp[]
+                cyc = 3
+            el [ bbb == 2 ]
+                imm = true
+                iv2 = fetch8[]
+                cyc = 2
+            el [ bbb == 3 ]
+                ea = a_abs[]
+                cyc = 4
+            el [ bbb == 4 ]
+                ea = a_izy[]
+                cyc = 5 + xtra
+            el [ bbb == 5 ]
+                ea = a_zpx[]
+                cyc = 4
+            el [ bbb == 6 ]
+                ea = a_aby[]
+                cyc = 4 + xtra
+            el
+                ea = a_abx[]
+                cyc = 4 + xtra
+            # STA (no page-cross bonus)
+            if [ aaa == 4 ]
+                if [ bbb == 4 ] cyc = 6
+                if [ bbb == 6 || bbb == 7 ] cyc = 5
+            if [ !imm ] cyc += hx
+            return alu[ aaa, ea, imm, iv2, cyc, tm ]
+        # ---- cc=10: shifts / LDX / STX / INC / DEC ----
+        if [ cc == 2 ]
+            if [ aaa == 5 ]                        # LDX
+                la2 : u32 [ 0 ]
+                lc2 : i32 [ 0 ]
+                if [ bbb == 0 ]
+                    x = u8[ fetch8[] ]
+                    set_zn[ u32[ x ] ]
+                    return 2
+                if [ bbb == 1 ]
+                    la2 = a_zp[]
+                    lc2 = 3
+                el [ bbb == 3 ]
+                    la2 = a_abs[]
+                    lc2 = 4
+                el [ bbb == 5 ]
+                    la2 = a_zpy[]
+                    lc2 = 4
+                el
+                    la2 = a_aby[]
+                    lc2 = 4 + xtra
+                x = rd*[ la2 ]
+                set_zn[ u32[ x ] ]
+                return lc2 + hx
+            if [ aaa == 4 ]                        # STX
+                sa2 : u32 [ 0 ]
+                if [ bbb == 1 ] sa2 = a_zp[]
+                el [ bbb == 5 ] sa2 = a_zpy[]
+                el sa2 = a_abs[]
+                wr*[ sa2, x ]
+                return ((bbb == 1) ? 3 : 4) + hx
+            # RMW: ASL ROL LSR ROR DEC INC (+ accumulator forms)
+            onacc : bool [ bbb == 2 ]
+            ea2 : u32 [ 0 ]
+            rc : i32 [ 2 ]
+            if [ ! onacc ]
+                if [ bbb == 1 ]
+                    ea2 = a_zp[]
+                    rc = 5
+                el [ bbb == 3 ]
+                    ea2 = a_abs[]
+                    rc = 6
+                el [ bbb == 5 ]
+                    ea2 = a_zpx[]
+                    rc = 6
+                el
+                    ea2 = a_abx[]
+                    rc = 7
+                rc += hx
+            v2 : u32 [ (onacc) ? u32[ acc ] : u32[ rd*[ ea2 ] ] ]
+            c : u32 [ u32[ p ] & 1 ]
+            nc : u32 [ 0 ]
+            if [ aaa == 0 ]                        # ASL
+                nc = (v2 >> 7) & 1
+                v2 = (v2 << 1) & 0xFF
+            el [ aaa == 1 ]                        # ROL
+                nc = (v2 >> 7) & 1
+                v2 = ((v2 << 1) | c) & 0xFF
+            el [ aaa == 2 ]                        # LSR
+                nc = v2 & 1
+                v2 = v2 >> 1
+            el [ aaa == 3 ]                        # ROR
+                nc = v2 & 1
+                v2 = (v2 >> 1) | (c << 7)
+            el [ aaa == 6 ]                        # DEC
+                v2 = (v2 - 1) & 0xFF
+                nc = c
+            el [ aaa == 7 ]                        # INC
+                v2 = (v2 + 1) & 0xFF
+                nc = c
+            el return 2                            # unhandled slot
+            p = (p & 0xFE) | u8[ nc ]
+            set_zn[ v2 ]
+            if [ onacc ] acc = u8[ v2 ]
+            el wr*[ ea2, u8[ v2 ] ]
+            return rc
+        return 2
+
+    # the 65C02 and HuC6280 ops; -1 when op is the 6502's own
+    func step_huc [ op: u32, tm: bool ] -> i32
+        lo4 : u32 [ op & 0x0F ]
+        bitn : u32 [ (op >> 4) & 7 ]
+        # RMBn / SMBn zp
+        if [ lo4 == 0x07 ]
+            ra : u32 [ a_zp[] ]
+            rv : u8 [ rd*[ ra ] ]
+            m : u8 [ u8[ u32[ 1 ] << bitn ] ]
+            if [ (op & 0x80) != 0 ] rv = rv | m
+            el rv = rv & (~m)
+            wr*[ ra, rv ]
+            return 7
+        # BBRn / BBSn zp, rel
+        if [ lo4 == 0x0F ]
+            bv : u32 [ u32[ rd*[ a_zp[] ] ] ]
+            hit : bool [ ((bv >> bitn) & 1) != 0 ]
+            d : i32 [ i8[ u8[ fetch8[] ] ] ]
+            if [ hit != ((op & 0x80) != 0) ] return 6
+            pc = u16[ (u32[ pc ] + u32[ d ]) & 0xFFFF ]
+            return 8
+        # (zp) ALU
+        if [ lo4 == 0x02 && (op & 0x10) != 0 ]
+            return alu[ (op >> 5) & 7, a_izp[], false, 0, 7, tm ]
+        if [ op == 0x80 ] return op_branch[ true ]  # BRA
+        if [ op == 0x44 ]                           # BSR
+            d2 : i32 [ i8[ u8[ fetch8[] ] ] ]
+            ra2 : u32 [ (u32[ pc ] - 1) & 0xFFFF ]
+            push8[ u8[ (ra2 >> 8) & 0xFF ] ]
+            push8[ u8[ ra2 & 0xFF ] ]
+            pc = u16[ (u32[ pc ] + u32[ d2 ]) & 0xFFFF ]
+            return 8
+        if [ op == 0x6C ]                           # JMP (abs)
+            pc = u16[ rd16[ fetch16[] ] ]
+            return 7
+        if [ op == 0x7C ]                           # JMP (abs,x)
+            pc = u16[ rd16[ (fetch16[] + u32[ x ]) & 0xFFFF ] ]
+            return 7
+        # TSB / TRB
+        if [ op == 0x04 || op == 0x0C || op == 0x14 || op == 0x1C ]
+            ta : u32 [ ((op & 0x08) != 0) ? a_abs[] : a_zp[] ]
+            tv : u32 [ rd*[ ta ] ]
+            av : u32 [ acc ]
+            r : u32 [ ((op & 0x10) != 0) ? tv & ~av : tv | av ]
+            op_bit[ u32[ acc ], tv ]
+            wr*[ ta, u8[ r ] ]
+            return ((op & 0x08) != 0) ? 7 : 6
+        if [ op == 0x1A ]                           # INC A
+            acc = acc + 1
+            set_zn[ u32[ acc ] ]
+            return 2
+        if [ op == 0x3A ]                           # DEC A
+            acc = acc - 1
+            set_zn[ u32[ acc ] ]
+            return 2
+        if [ op == 0x34 ]                           # BIT zp,x
+            op_bit[ u32[ acc ], u32[ rd*[ a_zpx[] ] ] ]
+            return 4
+        if [ op == 0x3C ]                           # BIT abs,x
+            op_bit[ u32[ acc ], u32[ rd*[ a_abx[] ] ] ]
+            return 5
+        if [ op == 0x89 ]                           # BIT imm
+            op_bit[ u32[ acc ], fetch8[] ]
+            return 2
+        if [ op == 0x5A ]                           # PHY
+            push8[ y ]
+            return 3
+        if [ op == 0x7A ]                           # PLY
+            y = pull8[]
+            set_zn[ u32[ y ] ]
+            return 4
+        if [ op == 0xDA ]                           # PHX
+            push8[ x ]
+            return 3
+        if [ op == 0xFA ]                           # PLX
+            x = pull8[]
+            set_zn[ u32[ x ] ]
+            return 4
+        if [ op == 0x64 ]                           # STZ zp
+            wr*[ a_zp[], 0 ]
+            return 4
+        if [ op == 0x74 ]                           # STZ zp,x
+            wr*[ a_zpx[], 0 ]
+            return 4
+        if [ op == 0x9C ]                           # STZ abs
+            wr*[ a_abs[], 0 ]
+            return 5
+        if [ op == 0x9E ]                           # STZ abs,x
+            wr*[ a_abx[], 0 ]
+            return 5
+        if [ op == 0x02 ]                           # SXY
+            sx : u8 [ x ]
+            x = y
+            y = sx
+            return 3
+        if [ op == 0x22 ]                           # SAX
+            sa : u8 [ acc ]
+            acc = x
+            x = sa
+            return 3
+        if [ op == 0x42 ]                           # SAY
+            sa2 : u8 [ acc ]
+            acc = y
+            y = sa2
+            return 3
+        if [ op == 0x62 ]                           # CLA
+            acc = 0
+            return 2
+        if [ op == 0x82 ]                           # CLX
+            x = 0
+            return 2
+        if [ op == 0xC2 ]                           # CLY
+            y = 0
+            return 2
+        # ST0 / ST1 / ST2: the VDC's ports 0, 2, 3
+        if [ op == 0x03 || op == 0x13 || op == 0x23 ]
+            port : u32 [ (op == 0x03) ? 0 : ((op == 0x13) ? 2 : 3) ]
+            st_port*[ port, u8[ fetch8[] ] ]
+            return 5
+        if [ op == 0x43 ]                           # TMA
+            tma : u32 [ fetch8[] ]
+            for [ i: i32 0, i < 8, i += 1 ]
+                if [ ((tma >> u32[ i ]) & 1) != 0 ]
+                    acc = mpr[ i ]
+                    break
+            return 4
+        if [ op == 0x53 ]                           # TAM
+            tam : u32 [ fetch8[] ]
+            for [ j: i32 0, j < 8, j += 1 ]
+                if [ ((tam >> u32[ j ]) & 1) != 0 ] mpr[ j ] = acc
+            return 5
+        if [ op == 0x54 ]                           # CSL
+            fast = false
+            return 3
+        if [ op == 0xD4 ]                           # CSH
+            fast = true
+            return 3
+        if [ op == 0xF4 ]                           # SET
+            p = p | 0x20
+            return 2
+        # block moves: TII TDD TIN TIA TAI
+        if [ op == 0x73 || op == 0xC3 || op == 0xD3 || op == 0xE3
+             || op == 0xF3 ]
+            src : u32 [ fetch16[] ]
+            dst : u32 [ fetch16[] ]
+            n : u32 [ fetch16[] ]
+            if [ n == 0 ] n = 0x10000
+            alt : u32 [ 0 ]
+            for [ k: u32 0, k < n, k += 1 ]
+                sa3 : u32 [ src ]
+                da3 : u32 [ dst ]
+                if [ op == 0xF3 ] sa3 = (src + alt) & 0xFFFF
+                if [ op == 0xE3 ] da3 = (dst + alt) & 0xFFFF
+                wr*[ da3, rd*[ sa3 ] ]
+                alt = alt ^ 1
+                if [ op == 0xC3 ]
+                    src = (src - 1) & 0xFFFF
+                    dst = (dst - 1) & 0xFFFF
+                el [ op == 0xF3 ] dst = (dst + 1) & 0xFFFF
+                el
+                    src = (src + 1) & 0xFFFF
+                    if [ op == 0x73 ] dst = (dst + 1) & 0xFFFF
+            return i32[ 17 + 6 * n ]
+        # TST imm, zp / abs / zp,x / abs,x
+        if [ op == 0x83 || op == 0x93 || op == 0xA3 || op == 0xB3 ]
+            tm8 : u32 [ fetch8[] ]
+            tadr : u32 [ 0 ]
+            if [ op == 0x83 ] tadr = a_zp[]
+            el [ op == 0x93 ] tadr = a_abs[]
+            el [ op == 0xA3 ] tadr = a_zpx[]
+            el tadr = a_abx[]
+            op_bit[ tm8, u32[ rd*[ tadr ] ] ]
+            return ((op & 0x10) != 0) ? 8 : 7
+        return -1

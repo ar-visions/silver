@@ -407,8 +407,9 @@ element EditorView
             # 46 of the window's own units: its pixels are that times
             # the windows' scale (wlc_set_scale)
             ws : f32 [ (o.set_size > 0) ? f32[ o.win_scale[] ] : 1.0 ]
+            mk : i32 wlc_window_menu_kind[ wid ]
             cut : i32 [ (wlc_window_csd[ wid ] != 0
-                         && wlc_window_menu_kind[ wid ] != 0)
+                         && (mk == 1 || mk == 2))
                 ? i32[ round[ 46.0 * ws ] ] : 0 ]
             t['text'] = WaylandView [ window: wid, crop_top: cut,
                 sheet: o.pane_sheet_of[ pane_index ],
@@ -3559,10 +3560,14 @@ class AppEntry
     public share   : string
     # a line orbiter runs itself, outside any view (export host)
     public host    : string
+    # the service it needs up first (export service ['waydroid'])
+    public service : string
     # a file its app opens (a rom, a disc): the card opens it
     public opens   : path
     # a widget's size in desktop cells, 'WxH' (export widget ['4x3'])
     public widget  : string
+    # it has a store folder (install/stores/<name>), apps or none
+    public store   : bool
 
 # a pin in the dock: its app icon, else the nav list's icon
 element DockIcon
@@ -4589,6 +4594,10 @@ element orbiter : trinity # implements compiler
     # a console asked for a pane whose editor is not up yet (an
     # agent's terminal was shown there): its folder, once it is
     intern console_pane     : i32 [ -1 ]
+    # a page's module to host: its pane, module and address
+    intern page_pane        : i32 [ -1 ]
+    intern page_mod         : string
+    intern page_url         : string
     intern console_dir      : path
     # a pane to add a held instance to, once it is up
     intern pending_held     : i32 [ -1 ]
@@ -4916,7 +4925,9 @@ element orbiter : trinity # implements compiler
     # the fontconfig file its programs are given: our lettering
     mutable wl_fonts       : string
     mutable wl_tried       : bool
-    mutable win_seen       : u64
+    # windows placed; a dialog mapped before its window waits
+    mutable win_done       : vec u64
+    intern win_wait        : map i64 [string]
     mutable pane_win       : vec u64
     # the window a floating pane was opened for (0: a pane of its
     # own); it closes with that window
@@ -5169,6 +5180,23 @@ element orbiter : trinity # implements compiler
     intern import_counts : map i32 [string]
     intern build_pid     : map i64 [string]
     intern inst_ms       : i64
+    # cards whose host line was pressed, until its window maps: the
+    # entry's name, the line's last word (the app), the press's ms
+    intern host_names    : vec string
+    intern host_words    : vec string
+    intern host_ms       : vec i64
+    intern host_poll_ms  : i64
+    # services cards wait on: each its name, its ready line (export
+    # ready), its start line (export host_startup), when it was last
+    # started (ms, 0 never), its state (-1 unknown, 0 down, 1 up)
+    # and whether a check of it runs
+    intern svc_names     : vec string
+    intern svc_ready     : vec string
+    intern svc_start     : vec string
+    intern svc_ms        : vec i64
+    intern svc_state     : vec i32
+    intern svc_busy      : vec bool
+    intern svc_poll_ms   : i64
     # the system bar's height, and whether this is orbiter-os
     intern system_h      : f32 [ 30.0 ]
     intern system_known  : bool
@@ -8510,12 +8538,13 @@ element orbiter : trinity # implements compiler
         close_check[]
         changed : false
         n : i32 wlc_window_count[]
+        if [ !win_done ] win_done = vec u64 []
         for [ i: i32 0, i < n, i += 1 ]
             wn : u64 wlc_window_at[ i ]
-            if [ wn > win_seen ]
-                win_seen = wn
-                place_window[ wn ]
-                changed = true
+            if [ win_placed[ wn ] || waits_parent[ wn ] ] continue
+            win_done.push[ wn ]
+            place_window[ wn ]
+            changed = true
         # a window asking to come forward (out of its tray, or a
         # program's own "show"): its pane shows it
         aw : u64 wlc_window_asked[]
@@ -9728,6 +9757,7 @@ element orbiter : trinity # implements compiler
     # the window's pane: the one whose app started it (its process is
     # one of the window's ancestors), else the active pane
     func place_window [ wn: u64 ]
+        host_mapped[ wn ]
         # already in a pane (it asks to come forward): that pane
         if [ pane_win ]
             for [ i: i32 0, i < pane_win.count, i += 1 ]
@@ -9813,6 +9843,24 @@ element orbiter : trinity # implements compiler
         wlc_window_focus[ wn ]
         nm : string[ wlc_window_title[ wn ] ]
         log 'orbiter: window {wn} ({nm}) in pane {pane}'
+
+    func win_placed [ wn: u64 ] -> bool
+        for [ i: i32 0, i < win_done.count, i += 1 ]
+            if [ win_done[ i ] == wn ] return true
+        return false
+
+    # a dialog whose window has not mapped yet waits for it, 2 s
+    # at most, so it opens as a sheet over that window
+    func waits_parent [ wn: u64 ] -> bool
+        par : u64 wlc_window_parent[ wn ]
+        if [ par == 0 || win_placed[ par ] ] return false
+        if [ !win_wait ] win_wait = map i64 [string] []
+        k : string '{wn}'
+        now : i64 epoch_micros[]
+        if [ !win_wait.contains[ k ] ]
+            win_wait[ k ] = now
+            return true
+        return now - win_wait[ k ] < 2000000
 
     # a floating pane for a program's next window, in the middle of
     # the area, each later one a step down and right
@@ -9982,6 +10030,11 @@ element orbiter : trinity # implements compiler
             if [ !tx ] continue
             ln : string source_word[ tx, 'startup:' ]
             if [ ln.count > 0 ] run_background[ ln ]
+            hs : string source_word[ tx, 'host_startup:' ]
+            if [ hs.count > 0 ]
+                run_host[ hs ]
+                at : i32 svc_of_agi[ e ]
+                if [ at >= 0 ] svc_ms[ at ] = epoch_millis[]
 
     # a module's startup line, '' when it has none
     func startup_of [ module: string ] -> string
@@ -11553,7 +11606,8 @@ element orbiter : trinity # implements compiler
         agi : path '{install_root[]}/export/{inm}.agi'
         ai : AppIcon [ file: dir, module: true, agi: agi ]
         png : path '{dir}/images/icon.png'
-        if [ !png.exists[] && !ai.export_icon[] ]
+        jpg : path '{dir}/images/icon.jpg'
+        if [ !png.exists[] && !jpg.exists[] && !ai.export_icon[] ]
             mod_noicon.push[ k ]
             return null
         mod_icons[ k ] = ai
@@ -13784,6 +13838,26 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
+        # the page's module, on its address, in a pane of its own
+        if [ ev.target.id == 'bar_page' ]
+            ed8 : Editor pane_at[ active_pane ]
+            rv8 : AppView (ed8) ? ed8.run_view : null
+            pm8 : string (ed8 && rv8) ? ed8.page_module[ rv8.app_address ]
+                : ''
+            if [ pm8.count > 0 ]
+                hp : i32 [ active_pane ]
+                if [ editor_slots.count < 4 ]
+                    editor_slots += -1
+                    pane_console += ''
+                    hp = editor_slots.count - 1
+                    active_pane = hp
+                    save_session[]
+                page_pane = hp
+                page_mod  = pm8
+                page_url  = rv8.app_address
+                force_update[]
+            ev.no_default = true
+            return
         # another pane's title or load: that pane first
         if [ ev.target.id.starts_with[ 'bar_name' ]
              || ev.target.id.starts_with[ 'bar_load' ] ]
@@ -15200,6 +15274,10 @@ element orbiter : trinity # implements compiler
                                  '--folder {console_dir}' ]
                 console_pane = -1
                 console_dir  = null
+        if [ page_pane >= 0 ]
+            ped : Editor pane_at[ page_pane ]
+            if [ ped ] ped.host_module[ page_mod, null, page_url ]
+            page_pane = -1
         if [ pending_run >= 0 ]
             red : Editor pane_at[ pending_run ]
             if [ red ]
@@ -15767,6 +15845,25 @@ element orbiter : trinity # implements compiler
             pane_free[ k + 3 ] = round[ (pane_free[ k + 2 ] - ew) / ar
                 + eh ]
 
+    # a window of a fixed size (Android's) in pane i
+    func fixed_win [ i: i32 ] -> bool
+        wn : u64 pane_window[ i ]
+        return wn != 0 && wlc_window_fixed_w[ wn ] > 0
+
+    # a free pane round a fixed window takes the window's size, as
+    # it cannot be resized
+    func fit_fixed [ i: i32 ]
+        if [ !fixed_win[ i ] ] return
+        wn : u64 pane_window[ i ]
+        ed : Editor pane_at[ i ]
+        pv : element pane_view[ i ]
+        if [ !ed || !ed.bounds || !pv || !pv.bounds ] return
+        k : i32 [ i * 4 ]
+        pane_free[ k + 2 ] = f32[ wlc_window_fixed_w[ wn ] ]
+            + pv.bounds.w - ed.bounds.w
+        pane_free[ k + 3 ] = f32[ wlc_window_fixed_h[ wn ] ]
+            + pv.bounds.h - ed.bounds.h
+
     # the full navigator's fade toward shown or gone, 150 ms whole
     func fade_nav [ w: Window ]
         now : i64 [ epoch_millis[] ]
@@ -15808,6 +15905,7 @@ element orbiter : trinity # implements compiler
         for [ i: i32 ] in free_order
             if [ !pane_floats[ i ] ] continue
             fit_free[ i, false ]
+            fit_fixed[ i ]
             for [ r: i32 0, r < 4, r += 1 ]
                 k : i32 [ i * 4 + r ]
                 cur : f32 [ pane_shown[ k ] ]
@@ -15915,7 +16013,7 @@ element orbiter : trinity # implements compiler
                 t['edge{i}'] = WinEdge [ topmost: true, hide: away,
                     opacity: seen, square: sq,
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
-                if [ nav_fade <= 0.0 && !agents ]
+                if [ nav_fade <= 0.0 && !agents && !fixed_win[ i ] ]
                     grips_of[ t, i, fx, fy, fw, fh ]
                 continue
             t['pane{i}'] = ev
@@ -17290,6 +17388,18 @@ element orbiter : trinity # implements compiler
         pad : f32 [ 10.0 * uu ]
         bw : f32 [ xr - x ]
         dw : f32 [ (dm.count > 0) ? bt.domain_w + 2.0 * pad : 0.0 ]
+        # a module acts on this page: its chip left of the domain
+        pm : string (ed && rv) ? ed.page_module[ rv.app_address ] : ''
+        gw : f32 [ (pm.count > 0) ? round[ 56.0 * uu ] : 0.0 ]
+        if [ gw > 0.0 && bw - dw - gw > 4.0 * pad ]
+            t['bar_page'] = AltTab [
+                buttons: vec string [] [ 'bar_page' ],
+                labels: vec string [] [ 'Get' ],
+                icons: false, manual: true, label_px: 16.0 * uu,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                seg_radius: 0.0, use_spacing: false,
+                area: Region [ 'l{xr - dw - gw}px t0 w{gw}px b0' ] ]
+            dw += gw
         tw : f32 [ bt.site_w ]
         sx : f32 [ pad ]
         room : f32 [ bw - dw - sx ]
@@ -17792,7 +17902,9 @@ element orbiter : trinity # implements compiler
             if [ tx.index_of[ '\nprops:' ] < 0 ]
                 ae.built = path '{install_root[]}/bin/{mn}'
             ae.apps = store_apps[ mn, gr ]
+            ae.store = store_has[ mn ]
             ae.widget = agi_word[ tx, 'widget' ]
+            ae.service = agi_word[ tx, 'service' ]
             app_list.push[ ae ]
         # ours at silver's root, from their source (a phone builds
         # none: there only those built for it)
@@ -17811,7 +17923,9 @@ element orbiter : trinity # implements compiler
             if [ mobile_on[] && !lib.exists[] ] continue
             oe : AppEntry [ name: n, file: d, module: true, group: g ]
             oe.apps = store_apps[ n, g ]
+            oe.store = store_has[ n ]
             oe.widget = source_word[ src, 'export widget' ]
+            oe.service = source_word[ src, 'export service' ]
             app_list.push[ oe ]
         # the featured: each module in featured/ that names its
         # section (export software ['everyday']), built or not
@@ -17828,14 +17942,20 @@ element orbiter : trinity # implements compiler
             fe : AppEntry [ name: fn, file: d, module: true, group: fg ]
             fe.built = path '{install_root[]}/bin/{fn}'
             fe.apps = store_apps[ fn, fg ]
+            fe.store = store_has[ fn ]
             fe.widget = source_word[ src, 'export widget' ]
             fe.host = source_word[ src, 'export host' ]
+            fe.service = source_word[ src, 'export service' ]
             app_list.push[ fe ]
         apps_gen += 1
         return app_list
 
     # what a store wrote into its folder, install/stores/<store>:
     # each <name>/<name>.ag, named by its first comment line
+    func store_has [ store: string ] -> bool
+        sd : path '{install_root[]}/stores/{store}'
+        return sd.exists[]
+
     func store_apps [ store: string, group: string ] -> vec AppEntry
         sd : path '{install_root[]}/stores/{store}'
         if [ !sd.exists[] ] return null
@@ -17853,7 +17973,8 @@ element orbiter : trinity # implements compiler
             sa : AppEntry [ name: title, file: d, module: true,
                 group: group, launch: source_word[ src, 'export launch' ],
                 share: source_word[ src, 'export share' ],
-                host: source_word[ src, 'export host' ] ]
+                host: source_word[ src, 'export host' ],
+                service: source_word[ src, 'export service' ] ]
             # by name: the folder's listing order is the disk's
             at : i32 [ res.count ]
             for [ k: i32 0, k < res.count, k += 1 ]
@@ -17872,7 +17993,7 @@ element orbiter : trinity # implements compiler
         for [ ae: AppEntry ] in app_entries[]
             sd : path '{install_root[]}/stores/{ae.name}'
             # a store's folder made since the list was read: read again
-            if [ !ae.apps ]
+            if [ !ae.store ]
                 if [ !ae.module || !sd.exists[] ] continue
                 app_list = null
                 apps_gen += 1
@@ -17917,13 +18038,18 @@ element orbiter : trinity # implements compiler
                 ex : command { {sv} --export --build {md} >/dev/null 2>&1 & }
                 ex.exec[ false ]
 
-    # the files right in a folder, by name and time: a folder's own
-    # modified_time walks everything under it
+    # the files in a folder and in its folders (one level), by name
+    # and time: a folder's own modified_time walks everything under it
     func store_files [ dir: string ] -> string
         sig : string ''
         dp : path [ dir ]
         for [ f: path ] in dp.ls[ null, false ]
-            if [ f.is_dir[] ] continue
+            if [ f.is_dir[] ]
+                sig = '{sig}{f.filename[]}/\n'
+                for [ g: path ] in f.ls[ null, false ]
+                    if [ g.is_dir[] ] continue
+                    sig = '{sig} {g.filename[]} {g.modified_time[]}\n'
+                continue
             sig = '{sig}{f.filename[]} {f.modified_time[]}\n'
         return sig
 
@@ -18354,6 +18480,12 @@ element orbiter : trinity # implements compiler
         if [ ae.launch && ae.launch.count > 0 && pi >= 0 ]
             active_pane = pi
             set_active[ pi ]
+            # an address (a bookmark): the module of its scheme
+            ued : Editor pane_at[ pi ]
+            if [ ued && ae.launch.index_of[ '://' ] > 0
+                 && ued.open_url[ ae.launch ] ]
+                if [ ux ] ux.restyle = true
+                return
             # the line may set its own environment before its program
             bin : string '{install_root[]}/bin'
             if [ ae.share && ae.share.count > 0 ] share_console[ ae.share ]
@@ -18366,6 +18498,8 @@ element orbiter : trinity # implements compiler
              && (!ae.built || ae.built.exists[]) ]
             active_pane = pi
             set_active[ pi ]
+            host_press[ ae ]
+            svc_wake[ ae ]
             run_host[ ae.host ]
             if [ ux ] ux.restyle = true
             return
@@ -18489,9 +18623,161 @@ element orbiter : trinity # implements compiler
             if [ inst_names[ i ] == nm ] return i
         return -1
 
+    # a card's host line pressed: starting, unless its window is
+    # open already (then shown at once)
+    func host_press [ ae: AppEntry ]
+        ws : vec string ae.host.split[ ' ' ]
+        wd : string ws[ ws.count - 1 ]
+        n : i32 wlc_window_count[]
+        for [ i: i32 0, i < n, i += 1 ]
+            wn : u64 wlc_window_at[ i ]
+            ap : string[ wlc_window_app[ wn ] ]
+            if [ ap && ap.ends_with[ wd ] ]
+                place_window[ wn ]
+                return
+        if [ !host_names ]
+            host_names = vec string []
+            host_words = vec string []
+            host_ms = vec i64 []
+        host_names.push[ ae.name ]
+        host_words.push[ wd ]
+        host_ms.push[ epoch_millis[] ]
+        if [ ux ] ux.restyle = true
+
+    # a window mapped: the card that started it is done
+    func host_mapped [ wn: u64 ]
+        if [ !host_names ] return
+        ap : string[ wlc_window_app[ wn ] ]
+        if [ !ap ] return
+        for [ i: i32 i32[ host_names.count ] - 1, i >= 0, i -= 1 ]
+            if [ !ap.ends_with[ host_words[ i ] ] ] continue
+            host_names.remove[ i ]
+            host_words.remove[ i ]
+            host_ms.remove[ i ]
+            if [ ux ] ux.restyle = true
+
+    # the starting cards' bars move; two minutes is given up
+    func host_poll []
+        if [ !host_names || host_names.count == 0 ] return
+        now : i64 [ epoch_millis[] ]
+        if [ now - host_poll_ms < 100 ] return
+        host_poll_ms = now
+        for [ i: i32 i32[ host_names.count ] - 1, i >= 0, i -= 1 ]
+            if [ now - host_ms[ i ] < 120000 ] continue
+            host_names.remove[ i ]
+            host_words.remove[ i ]
+            host_ms.remove[ i ]
+        if [ ux ] ux.restyle = true
+
+    # ms since a card's host line was pressed, -1 when not starting
+    func host_since [ ae: AppEntry ] -> i64
+        if [ !ae || !host_names ] return -1
+        for [ i: i32 0, i < host_names.count, i += 1 ]
+            if [ host_names[ i ] == ae.name ]
+                return epoch_millis[] - host_ms[ i ]
+        return -1
+
     # an install's word ('starting', 'building', 'installed',
     # 'failed') and progress 0..1, or null / -1 while it has none
+    # a service by its module's name: its export record read once;
+    # -1 when it says no ready line
+    func svc_at [ name: string ] -> i32
+        if [ !name || name.count == 0 ] return -1
+        if [ !svc_names ]
+            svc_names = vec string []
+            svc_ready = vec string []
+            svc_start = vec string []
+            svc_ms = vec i64 []
+            svc_state = vec i32 []
+            svc_busy = vec bool []
+        for [ i: i32 0, i < svc_names.count, i += 1 ]
+            if [ svc_names[ i ] == name ]
+                return (svc_ready[ i ].count > 0) ? i : -1
+        d : path '{install_root[]}/export'
+        tx : string ''
+        for [ f: path ] in d.ls[ null, false ]
+            if [ f.ext[] != 'agi' ] continue
+            st : string f.stem[]
+            if [ st != name && !st.ends_with[ '-{name}' ] ] continue
+            tx = f.load[ typeid[ string ], null ]
+            if [ tx ] break
+        rd : string (tx) ? source_word[ tx, 'ready:' ] : ''
+        sl : string (tx) ? source_word[ tx, 'host_startup:' ] : ''
+        svc_names.push[ name ]
+        svc_ready.push[ rd ]
+        svc_start.push[ sl ]
+        svc_ms.push[ i64[ 0 ] ]
+        svc_state.push[ -1 ]
+        svc_busy.push[ false ]
+        return (rd.count > 0) ? i32[ svc_names.count ] - 1 : -1
+
+    # the service an export record (<owner>-<name>.agi) is
+    func svc_of_agi [ f: path ] -> i32
+        st : string f.stem[]
+        dh : i32 [ st.index_of[ '-' ] ]
+        nm : string (dh >= 0) ? st.mid[ dh + 1, st.count - dh - 1 ]
+            : st
+        return svc_at[ nm ]
+
+    # a card pressed whose service is not up: counted as starting
+    # it (its own line starts it, or its start line here)
+    func svc_wake [ ae: AppEntry ]
+        at : i32 svc_at[ ae.service ]
+        if [ at < 0 || svc_state[ at ] == 1 ] return
+        now : i64 [ epoch_millis[] ]
+        if [ svc_ms[ at ] > 0 && now - svc_ms[ at ] < 300000 ] return
+        svc_ms[ at ] = now
+        if [ !ae.host && svc_start[ at ].count > 0 ]
+            run_host[ svc_start[ at ] ]
+
+    # each service's ready line, run beside orbiter every two
+    # seconds; its exit code in a file (0: up)
+    func svc_poll []
+        if [ !svc_names || svc_names.count == 0 ] return
+        now : i64 [ epoch_millis[] ]
+        if [ now - svc_poll_ms < 500 ] return
+        svc_poll_ms = now
+        tmp : string '{install_root[]}/tmp'
+        bin : string '{install_root[]}/bin'
+        for [ i: i32 0, i < svc_names.count, i += 1 ]
+            if [ svc_ready[ i ].count == 0 ] continue
+            sn : string svc_names[ i ]
+            rc : path '{tmp}/service-{sn}.rc'
+            if [ svc_busy[ i ] ]
+                if [ !rc.exists[] ] continue
+                tx : string rc.load[ typeid[ string ], null ]
+                rc.remove[]
+                svc_busy[ i ] = false
+                up : i32 [ (tx && tx.trim[] == '0') ? 1 : 0 ]
+                if [ up != svc_state[ i ] ]
+                    svc_state[ i ] = up
+                    if [ ux ] ux.restyle = true
+                continue
+            if [ (now / 500) % 4 != 0 && svc_state[ i ] >= 0 ] continue
+            rl : string svc_ready[ i ]
+            sh : command { setsid sh -c
+                "env PATH={bin}:$PATH {rl} >/dev/null 2>&1;
+                 echo $? > {rc}" >/dev/null 2>&1 & }
+            sh.exec[ false ]
+            svc_busy[ i ] = true
+        # a starting card's bar moves
+        for [ i: i32 0, i < svc_names.count, i += 1 ]
+            if [ svc_state[ i ] != 1 && svc_ms[ i ] > 0 && ux ]
+                ux.restyle = true
+
+    # a card's service: 'starting' (started in the last five
+    # minutes, not up), 'failed' (started, never up), else null
+    func svc_word [ ae: AppEntry ] -> string
+        at : i32 svc_at[ ae.service ]
+        if [ at < 0 || svc_state[ at ] == 1 || svc_ms[ at ] == 0 ]
+            return null
+        el [ epoch_millis[] - svc_ms[ at ] < 300000 ] return 'starting'
+        return 'failed'
+
     func install_word [ ae: AppEntry ] -> string
+        if [ host_since[ ae ] >= 0 ] return 'starting'
+        sw : string svc_word[ ae ]
+        if [ sw ] return sw
         at : i32 [ (ae) ? install_at[ ae.name ] : -1 ]
         if [ at >= 0 && inst_word[ at ] != 'installed'
              && inst_word[ at ] != 'cancelled' ] return inst_word[ at ]
@@ -18500,6 +18786,14 @@ element orbiter : trinity # implements compiler
         return (at >= 0) ? inst_word[ at ] : null
 
     func install_frac [ ae: AppEntry ] -> f32
+        # starting: eased toward full, a third of the way in 3 s
+        hs : i64 host_since[ ae ]
+        sv : i32 svc_at[ ae.service ]
+        # a service still coming up: it is most of the wait
+        if [ sv >= 0 && svc_state[ sv ] != 1 && svc_ms[ sv ] > 0 ]
+            hs = epoch_millis[] - svc_ms[ sv ]
+            return 1.0 - exp[ f32[ hs ] / -40000.0 ]
+        if [ hs >= 0 ] return 1.0 - exp[ f32[ hs ] / -7500.0 ]
         at : i32 [ (ae) ? install_at[ ae.name ] : -1 ]
         if [ ae && (at < 0 || inst_word[ at ] == 'installed') ]
             bf : f32 build_frac[ ae.name ]
@@ -19817,6 +20111,8 @@ element orbiter : trinity # implements compiler
             desk_pick = null
             apps_pick[ active_pane, pick ]
         install_poll[]
+        host_poll[]
+        svc_poll[]
         build_poll[]
         dock_drag_frame[]
         filter_focus_take[ w ]

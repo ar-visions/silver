@@ -1,0 +1,1379 @@
+# android: Android apps as programs (as Wine runs Windows ones),
+# on Android Translation Layer: ART runs an apk's code, Android's
+# APIs are made on GTK 4, bionic_translation loads its native
+# libraries; no Android system boots. Its card signs in to Google
+# Play and lists the account's apps; each one fetched is a card
+export 0.0.0
+export software ['everyday']
+export platforms ['x64']
+export extensions ['.apk']
+export run ['android-run']
+export pages ['play.google.com/store/apps/details']
+
+import <stdlib.h>
+
+# every library below comes from these imports alone; the lines
+# shared with wine are the same text (one build, one cache key)
+
+# the build tools
+import bison/3.8.2 from https://ftp.gnu.org/gnu/bison/bison-3.8.2.tar.xz
+    PATH={install}/bin:$PATH
+    --disable-nls
+import flex/2.6.4 from https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz
+    PATH={install}/bin:$PATH
+    --disable-nls
+import cmake/3.31.6 from https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6.tar.gz
+    PATH={install}/bin:$PATH
+    > ./bootstrap --prefix={install} --parallel=16 -- -DCMAKE_USE_OPENSSL=ON -DBUILD_TESTING=OFF
+    > make -j16 install
+    -DCMAKE_USE_OPENSSL=ON
+    -DBUILD_TESTING=OFF
+import pkgconf/2.3.0 from https://distfiles.ariadne.space/pkgconf/pkgconf-2.3.0.tar.xz
+    --with-system-includedir=/usr/include
+    --with-system-libdir=/usr/lib
+    >> ln -sf pkgconf {install}/bin/pkg-config
+import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+    > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+# javac and jar for ART's and ATL's Java (build time only)
+import temurin-jdk/17.0.13 from https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B11/OpenJDK17U-jdk_x64_linux_hotspot_17.0.13_11.tar.gz
+    > rm -rf {install}/lib/jdk17 && mkdir -p {install}/lib/jdk17
+    > cp -a . {install}/lib/jdk17/
+
+# the base libraries
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
+import libffi/3.4.6 from https://github.com/libffi/libffi/releases/download/v3.4.6/libffi-3.4.6.tar.gz
+    PATH={install}/bin:$PATH
+    --disable-docs
+import expat/2.6.4 from https://github.com/libexpat/libexpat/releases/download/R_2_6_4/expat-2.6.4.tar.xz
+    PATH={install}/bin:$PATH
+    -DEXPAT_BUILD_DOCS=OFF
+    -DEXPAT_BUILD_EXAMPLES=OFF
+    -DEXPAT_BUILD_TESTS=OFF
+    -DEXPAT_BUILD_TOOLS=OFF
+import glib/2.84.4 from https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz
+    PATH={install}/bin:$PATH
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=false
+    -Dintrospection=disabled
+    -Dman-pages=disabled
+    -Ddocumentation=false
+    -Dnls=disabled
+# libglvnd.diff: the vendor files are the driver's, in /usr/share
+import libglvnd/1.7.0 from https://gitlab.freedesktop.org/glvnd/libglvnd/-/archive/v1.7.0/libglvnd-v1.7.0.tar.gz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dx11=disabled
+    -Dglx=disabled
+    -Dtls=true
+
+# ART's libraries
+import xz/5.6.3 from https://github.com/tukaani-project/xz/releases/download/v5.6.3/xz-5.6.3.tar.xz
+    PATH={install}/bin:$PATH
+    > ./configure --prefix={install} --disable-nls --disable-doc
+    > make -j16 install
+import lz4/1.10.0 from https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz
+    > make -j16 PREFIX={install} lib
+    > make PREFIX={install} install
+import libmd/1.1.0 from https://libbsd.freedesktop.org/releases/libmd-1.1.0.tar.xz
+    PATH={install}/bin:$PATH
+import libbsd/0.12.2 from https://libbsd.freedesktop.org/releases/libbsd-0.12.2.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    CPPFLAGS=-I{install}/include
+    LDFLAGS=-Wl,-L{install}/lib,-rpath,{install}/lib
+import libunwind/1.8.1 from https://github.com/libunwind/libunwind/releases/download/v1.8.1/libunwind-1.8.1.tar.gz
+    PATH={install}/bin:$PATH
+    --disable-tests
+    --disable-documentation
+# elfutils is written for gcc (nested functions)
+import elfutils/0.192 from https://sourceware.org/elfutils/ftp/0.192/elfutils-0.192.tar.bz2
+    PATH={install}/bin:$PATH
+    CC=gcc
+    CXX=g++
+    CPPFLAGS=-I{install}/include
+    LDFLAGS=-Wl,-L{install}/lib,-rpath,{install}/lib
+    --disable-debuginfod
+    --enable-libdebuginfod=no
+    --disable-nls
+    --without-bzlib
+    --without-zstd
+import openssl/3.4.0 from https://github.com/openssl/openssl/releases/download/openssl-3.4.0/openssl-3.4.0.tar.gz
+    > ./Configure --prefix={install} --libdir=lib shared no-tests -Wl,-rpath,{install}/lib
+    > make -j16
+    > make install_sw
+import libcap/2.73 from https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.73.tar.xz
+    > make -C libcap prefix={install} lib=lib GOLANG=no PAM_CAP=no
+    > make -C libcap prefix={install} lib=lib GOLANG=no PAM_CAP=no RAISE_SETFCAP=no install
+
+# an apk's native libraries (built for Android's libc) on glibc
+import bionic_translation/6253dec7f24a57a94039a088cb436d880e92e3be from https://gitlab.com/android_translation_layer/bionic_translation
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-L{install}/lib,-rpath,{install}/lib
+
+# ART, Android's runtime, outside Android; its build is AOSP's make,
+# here with our clang (art_standalone/ mends its gcc-only code); the
+# compiler takes our headers and libraries by CPATH and LIBRARY_PATH
+import art_standalone/7ead96be8423b3789457b920336149f3f35a61d0 from https://gitlab.com/android_translation_layer/art_standalone
+    PATH={install}/lib/jdk17/bin:{install}/bin:$PATH
+    JAVA_HOME={install}/lib/jdk17
+    CPATH={install}/include
+    LIBRARY_PATH={install}/lib
+    LD_LIBRARY_PATH={install}/lib
+    LD_RUN_PATH={install}/lib
+    > make -j16 ____PREFIX={install} ____LIBDIR=lib HOST_CC={install}/bin/clang HOST_CXX={install}/bin/clang++
+    > make ____PREFIX={install} ____LIBDIR=lib HOST_CC={install}/bin/clang HOST_CXX={install}/bin/clang++ install
+
+# the display: Wayland, keyboard maps, fonts (wine's lines)
+import glennrp:libpng/3061454d980de7d53608f594194cfac722721d2a <png.h>
+    -lpng
+import wayland/1.23.1 from https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.23.1/downloads/wayland-1.23.1.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Ddocumentation=false
+    -Dtests=false
+    -Ddtd_validation=false
+import wayland-protocols/1.38 from https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.38/downloads/wayland-protocols-1.38.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -Dtests=false
+import xkeyboard-config/2.43 from https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.43.tar.xz
+    PATH={install}/bin:$PATH
+    -Dxorg-rules-symlinks=false
+    -Dnls=false
+import libxkbcommon/1.6.0 from https://xkbcommon.org/download/libxkbcommon-1.6.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Denable-x11=false
+    -Denable-wayland=false
+    -Denable-tools=false
+    -Denable-docs=false
+    -Denable-bash-completion=false
+    -Denable-xkbregistry=true
+    -Dxkb-config-root={install}/share/X11/xkb
+    -Dx-locale-root={install}/share/X11/locale
+import freetype:freetype/VER-2-13-3 <ft2build.h, freetype/freetype.h, freetype/tttables.h, freetype/ftmm.h>
+    -I{install}/include/freetype2
+    -lfreetype
+    -lpng -lz
+    -DBUILD_SHARED_LIBS=ON
+    -DCMAKE_INSTALL_RPATH={install}/lib
+    -DFT_DISABLE_BROTLI=TRUE
+    -DFT_DISABLE_BZIP2=TRUE
+    -DFT_DISABLE_HARFBUZZ=TRUE
+import fontconfig/2.15.0 from https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    --disable-docs
+    --disable-nls
+    --disable-cache-build
+
+# GTK 4 and what it draws with
+import fribidi/1.0.16 from https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz
+    PATH={install}/bin:$PATH
+import harfbuzz/10.1.0 from https://github.com/harfbuzz/harfbuzz/releases/download/10.1.0/harfbuzz-10.1.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -DBUILD_SHARED_LIBS=ON
+    -DCMAKE_INSTALL_RPATH={install}/lib
+    -DHB_HAVE_FREETYPE=ON
+    -DHB_HAVE_GLIB=ON
+    -DHB_BUILD_UTILS=OFF
+import pixman/0.44.2 from https://www.cairographics.org/releases/pixman-0.44.2.tar.gz
+    PATH={install}/bin:$PATH
+    -Dtests=disabled
+    -Ddemos=disabled
+    -Dgtk=disabled
+import cairo/1.18.2 from https://www.cairographics.org/releases/cairo-1.18.2.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=disabled
+    -Dxlib=disabled
+    -Dxcb=disabled
+    -Dspectre=disabled
+import pango/1.54.0 from https://download.gnome.org/sources/pango/1.54/pango-1.54.0.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dintrospection=disabled
+    -Dbuild-testsuite=false
+    -Dbuild-examples=false
+    -Dxft=disabled
+    -Ddocumentation=false
+    -Dsysprof=disabled
+    -Dlibthai=disabled
+import gdk-pixbuf/2.42.12 from https://download.gnome.org/sources/gdk-pixbuf/2.42/gdk-pixbuf-2.42.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dpng=enabled
+    -Djpeg=disabled
+    -Dtiff=disabled
+    -Dothers=disabled
+    -Dintrospection=disabled
+    -Dman=false
+    -Dtests=false
+    -Dinstalled_tests=false
+    -Dgtk_doc=false
+    -Dgio_sniffing=false
+import libepoxy/1.5.10 from https://download.gnome.org/sources/libepoxy/1.5/libepoxy-1.5.10.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dtests=false
+    -Dx11=false
+    -Degl=yes
+import graphene/1.10.8 from https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    -Dtests=false
+    -Dinstalled_tests=false
+    -Dintrospection=disabled
+import gtk/4.16.12 from https://download.gnome.org/sources/gtk/4.16/gtk-4.16.12.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dx11-backend=false
+    -Dwayland-backend=true
+    -Dbroadway-backend=false
+    -Dmedia-gstreamer=disabled
+    -Dprint-cpdb=disabled
+    -Dprint-cups=disabled
+    -Dvulkan=disabled
+    -Dcloudproviders=disabled
+    -Dsysprof=disabled
+    -Dtracker=disabled
+    -Dcolord=disabled
+    -Dintrospection=disabled
+    -Ddocumentation=false
+    -Dman-pages=false
+    -Dscreenshots=false
+    -Dbuild-demos=false
+    -Dbuild-examples=false
+    -Dbuild-tests=false
+    -Dbuild-testsuite=false
+
+# ATL's other services: the portal (files, open with), its database
+import libportal/0.8.1 from https://github.com/flatpak/libportal/releases/download/0.8.1/libportal-0.8.1.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Dbackend-gtk4=enabled
+    -Dbackend-gtk3=disabled
+    -Dbackend-qt5=disabled
+    -Dbackend-qt6=disabled
+    -Dintrospection=false
+    -Dvapi=false
+    -Ddocs=false
+    -Dtests=false
+import sqlite/3.47.2 from https://www.sqlite.org/2024/sqlite-autoconf-3470200.tar.gz
+    PATH={install}/bin:$PATH
+    > ./configure --prefix={install} --disable-static
+    > make -j16 install
+import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
+    PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib
+    -Damdgpu=enabled
+    -Dintel=disabled
+    -Dradeon=disabled
+    -Dnouveau=disabled
+    -Dvmwgfx=disabled
+    -Dman-pages=disabled
+    -Dtests=false
+import KhronosGroup:Vulkan-Headers/29184b98984f6169a5e83e97557a77cff1e5b0ca
+import KhronosGroup:Vulkan-Loader/e042a3a
+# VR: its headers only (ATL loads the loader if a VR app runs)
+import OpenXR-SDK/1.1.43 from https://github.com/KhronosGroup/OpenXR-SDK/archive/refs/tags/release-1.1.43.tar.gz
+    PATH={install}/bin:$PATH
+    -DBUILD_LOADER=OFF
+    -DBUILD_API_LAYERS=OFF
+    -DBUILD_TESTS=OFF
+    -DBUILD_CONFORMANCE_TESTS=OFF
+# sound: the system's ALSA (its plugins reach PipeWire)
+
+# WebView's page is aura's browser helper (install/libexec, built
+# by aura); with no aura installed a WebView stays empty
+
+# our TLS: ART's javax.net.ssl runs on its mbedtls
+import tls
+
+# ATL; its jni_upcall_gen takes the ASM and getopt jars
+import android_translation_layer/bbb4d469405cdaea585475b17daef13202bc7e23 from https://gitlab.com/android_translation_layer/android_translation_layer
+    PATH={install}/lib/jdk17/bin:{install}/bin:$PATH
+    JAVA_HOME={install}/lib/jdk17
+    LIBRARY_PATH={install}/lib:{install}/build
+    LD_LIBRARY_PATH={install}/lib:{install}/build
+    CPATH={install}/include
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/lib:{install}/lib/art:{install}/build
+    > mkdir -p {install}/lib/atl-jars
+    > curl -fsSL -o {install}/lib/atl-jars/asm.jar https://repo1.maven.org/maven2/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar
+    > curl -fsSL -o {install}/lib/atl-jars/asm-tree.jar https://repo1.maven.org/maven2/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar
+    > curl -fsSL -o {install}/lib/atl-jars/getopt.jar https://repo1.maven.org/maven2/gnu/getopt/java-getopt/1.0.13/java-getopt-1.0.13.jar
+    -Dasm_jar_path={install}/lib/atl-jars/asm.jar
+    -Dasm_tree_jar_path={install}/lib/atl-jars/asm-tree.jar
+    -Dgetopt_jar_path={install}/lib/atl-jars/getopt.jar
+
+# microG (Play services' open copy, Apache 2.0): ATL loads these
+# apks beside an app, as Android has Google's
+import https://github.com/microg/GmsCore/releases/download/v0.3.17.252432/com.google.android.gms-252432034.apk
+    > rm -rf {install}/share/microg/com.google.android.gms_
+    > mkdir -p {install}/share/microg/com.google.android.gms_/lib
+    > cp {import_file} {install}/share/microg/com.google.android.gms.apk
+    > cd {install}/share/microg/com.google.android.gms_/lib && unzip -qjo ../../com.google.android.gms.apk 'lib/x86_64/*'
+import https://github.com/microg/GmsCore/releases/download/v0.3.17.252432/com.android.vending-84022634.apk
+    > mkdir -p {install}/share/microg
+    > cp {import_file} {install}/share/microg/com.android.vending.apk
+
+import vec
+import img
+import trinity
+import aura
+import <stdio.h>
+import <unistd.h>
+import <time.h>
+
+# protobuf and text helpers (android.c)
+intern func pbw_new [] -> i64
+intern func pbw_free [ i64 ]
+intern func pbw_int [ i64, i64, i64 ]
+intern func pbw_str [ i64, i64, cstr ]
+intern func pbw_begin [ i64, i64 ]
+intern func pbw_end [ i64 ]
+intern func pbw_data [ i64 ] -> @u8
+intern func pbw_len [ i64 ] -> i64
+intern func pbr_open [ cstr ] -> i64
+intern func pbr_close [ i64 ]
+intern func pbr_str [ i64, cstr, cstr, i64 ] -> i64
+intern func pbr_int [ i64, cstr, i64 ] -> i64
+intern func pbr_count [ i64, cstr ] -> i64
+intern func url_enc [ cstr, cstr, i64 ] -> i64
+intern func kv_value [ cstr, cstr, cstr, i64 ] -> i64
+intern func hex64 [ i64, cstr ]
+intern func play_nonce [ cstr ]
+intern func pic_kind [ cstr ] -> i64
+intern func dyn_readonly_dir [ cstr, cstr ] -> i64
+intern func tzdata_write [ cstr, cstr ] -> i64
+
+# a shell script of a { } block
+func script [ body: string ] -> string
+    return '#!/bin/sh\n{body.trim[]}\n'
+
+# install/bin/android-run: ATL with its library maps (bionic cfg.d,
+# in install/share) found, the data folder it writes made, and no
+# title bar: orbiter's system bar holds its back and title
+export func install_android []
+    ip : path.path_install[]
+    ins : string '{ip.absolute[]}'
+    run : string {
+        d=${{XDG_DATA_DIRS:-/usr/local/share:/usr/share}}
+        export XDG_DATA_DIRS={ins}/share:$d
+        a="$HOME/.local/share/android_translation_layer"
+        mkdir -p "$a/_installed_apks_"
+        # the Google account file: its email, token and user id
+        if [ "$1" = --account ]; then
+          if [ -r "$2" ]; then
+            e=$(sed -n 1p "$2"); t=$(sed -n 2p "$2"); g=$(sed -n 3p "$2")
+            d="$a/accounts/com.google/$e"
+            mkdir -p "$d" && chmod 700 "$a/accounts"
+            : > "$d/account"
+            printf %s "$t" > "$d/password"
+            [ -n "$g" ] && printf %s "$g" > "$d/userdata:GoogleUserId"
+            chmod 600 "$d"/*
+          fi
+          shift 2
+        fi
+        for p in com.google.android.gms com.android.vending; do
+          [ -f {ins}/share/microg/$p.apk ] || continue
+          ln -sfn {ins}/share/microg/$p.apk "$a/_installed_apks_/$p.apk"
+          [ -d {ins}/share/microg/${{p}}_ ] || continue
+          mkdir -p "$a/${{p}}_"
+          ln -sfn {ins}/share/microg/${{p}}_/lib "$a/${{p}}_/lib"
+        done
+        export ATL_DISABLE_WINDOW_DECORATIONS=1
+        # all it prints, kept: the app's package names the log
+        for x in "$@"; do case $x in *.apk) first=$x; break;; esac; done
+        n=$(basename "${{first:-$1}}" .apk)
+        [ "$n" = base ] && n=$(basename "$(dirname "$first")")
+        # in the home: a view's own /tmp goes when its window does
+        log="$HOME/.cache/android/$n.log"
+        mkdir -p "$HOME/.cache/android"
+        {ins}/bin/android-translation-layer "$@" 2>&1 | tee "$log"
+    }
+    rf : path '{ins}/bin/android-run'
+    rf.save[ script[ run ], null ]
+    ch : command { chmod +x {rf} }
+    ch.exec[ false ]
+    # the libraries an app's native code links, as Android loads them
+    lib : string '{ins}/lib'
+    n : i64 [ dyn_readonly_dir[ '{lib}/art'.chars, ''.chars ] ]
+    n += dyn_readonly_dir[ lib.chars,
+        'libc_bio,libdl_bio,libpthread_bio,libstdc++_bio,libandroid,libOpenSLES,libz.'.chars ]
+    log 'android: {n} dynamic sections as Android loads them'
+    # libcore's time zones (ZoneInfoDB): Android's tzdata, built
+    # from this machine's zoneinfo, where ANDROID_DATA names it
+    tzd : string '{ins}/lib/java/dex/art/misc/zoneinfo/current'
+    md : command { mkdir -p {tzd} }
+    md.exec[ false ]
+    zones : i64 [ tzdata_write[ '/usr/share/zoneinfo'.chars,
+        '{tzd}/tzdata'.chars ] ]
+    log 'android: tzdata of {zones} zones'
+
+# ---- the device Google Play is told it serves -----------------------
+# the machine this runs on: an x86_64 PC, or the Fairphone 6 (arm64)
+# orbiter-os runs on; Google sends the native code for that one. The
+# build id is a stand-in: Fairphone's own is not published
+
+# this machine's processor: true on an x86_64 PC
+func dev_pc [] -> bool
+    ap : path [ '/proc/sys/kernel/arch' ]
+    w : string ap.load[ typeid[ string ], null ]
+    return !w || w.index_of[ 'aarch64' ] < 0
+
+# the device's name for every field that names it
+func dev_name [] -> string
+    return (dev_pc[]) ? 'orbiter-x64' : 'FP6'
+
+func dev_maker [] -> string
+    return (dev_pc[]) ? 'orbiter' : 'Fairphone'
+
+func dev_hardware [] -> string
+    return (dev_pc[]) ? 'x86_64' : 'qcom'
+
+func dev_abis [] -> vec string
+    if [ dev_pc[] ] return vec string [] [ 'x86_64' ]
+    return vec string [] [ 'arm64-v8a', 'armeabi-v7a', 'armeabi' ]
+
+func dev_build_id [] -> string
+    return 'AQ3A.250129.001'
+
+func dev_fingerprint [] -> string
+    n : string dev_name[]
+    return '{dev_maker[]}/{n}/{n}:15/{dev_build_id[]}/1:user/release-keys'
+
+func dev_sdk [] -> i64
+    return 35
+
+# Google Play's and Play services' own versions, as the store says
+func vending_code [] -> i64
+    return 82201710
+
+func vending_name [] -> string
+    return '22.0.17-21 [0] [PR] 332555730'
+
+func gsf_version [] -> i64
+    return 203615037
+
+func ua_play [] -> string
+    v : string vending_name[]
+    n : string dev_name[]
+    ab : string ''
+    for [ s: string ] in dev_abis[]
+        ab = (ab.count > 0) ? '{ab};{s}' : s
+    return 'Android-Finsky/{v} (api=3,versionCode={vending_code[]},sdk=35,device={n},hardware={dev_hardware[]},product={n},platformVersionRelease=15,model={n},buildId={dev_build_id[]},isWideScreen=0,supportedAbis={ab})'
+
+func ua_auth [] -> string
+    return 'GoogleAuth/1.4 ({dev_name[]} {dev_build_id[]})'
+
+# the sign-in page's agent: a phone's browser
+func ua_phone [] -> string
+    return 'Mozilla/5.0 (Linux; Android 15; FP6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36'
+
+func dev_features [] -> vec string
+    return vec string [] [
+        'android.hardware.audio.low_latency',
+        'android.hardware.audio.output', 'android.hardware.bluetooth',
+        'android.hardware.bluetooth_le', 'android.hardware.camera',
+        'android.hardware.camera.any',
+        'android.hardware.camera.autofocus',
+        'android.hardware.camera.flash',
+        'android.hardware.camera.front',
+        'android.hardware.faketouch', 'android.hardware.location',
+        'android.hardware.location.gps',
+        'android.hardware.location.network',
+        'android.hardware.microphone', 'android.hardware.nfc',
+        'android.hardware.opengles.aep', 'android.hardware.ram.normal',
+        'android.hardware.screen.landscape',
+        'android.hardware.screen.portrait',
+        'android.hardware.sensor.accelerometer',
+        'android.hardware.sensor.compass',
+        'android.hardware.sensor.gyroscope',
+        'android.hardware.sensor.light',
+        'android.hardware.sensor.proximity',
+        'android.hardware.telephony', 'android.hardware.telephony.gsm',
+        'android.hardware.touchscreen',
+        'android.hardware.touchscreen.multitouch',
+        'android.hardware.touchscreen.multitouch.distinct',
+        'android.hardware.touchscreen.multitouch.jazzhand',
+        'android.hardware.usb.accessory', 'android.hardware.usb.host',
+        'android.hardware.vulkan.level',
+        'android.hardware.vulkan.version', 'android.hardware.wifi',
+        'android.hardware.wifi.direct',
+        'android.software.app_widgets', 'android.software.backup',
+        'android.software.device_admin',
+        'android.software.home_screen',
+        'android.software.input_methods',
+        'android.software.live_wallpaper', 'android.software.midi',
+        'android.software.print', 'android.software.webview' ]
+
+func dev_libraries [] -> vec string
+    return vec string [] [
+        'android.test.base', 'android.test.mock', 'android.test.runner',
+        'com.android.location.provider',
+        'com.android.media.remotedisplay',
+        'com.android.mediadrm.signer', 'javax.obex',
+        'org.apache.http.legacy' ]
+
+func dev_gl_extensions [] -> vec string
+    return vec string [] [
+        'GL_EXT_color_buffer_float',
+        'GL_EXT_texture_filter_anisotropic',
+        'GL_KHR_texture_compression_astc_ldr', 'GL_OES_EGL_image',
+        'GL_OES_EGL_image_external',
+        'GL_OES_compressed_ETC1_RGB8_texture',
+        'GL_OES_depth24', 'GL_OES_packed_depth_stencil',
+        'GL_OES_rgb8_rgba8', 'GL_OES_texture_float',
+        'GL_OES_texture_half_float', 'GL_OES_vertex_array_object' ]
+
+func dev_locales [] -> vec string
+    return vec string [] [
+        'en', 'en_US', 'en_GB', 'de', 'de_DE', 'es', 'es_ES', 'fr',
+        'fr_FR', 'it', 'it_IT', 'ja', 'ja_JP', 'ko', 'ko_KR', 'nl',
+        'nl_NL', 'pt', 'pt_BR', 'ru', 'ru_RU', 'zh', 'zh_CN', 'zh_TW' ]
+
+# DeviceConfigurationProto's fields, inside a message already open
+func put_device_config [ w: i64 ]
+    pbw_int[ w, 1, 3 ]
+    pbw_int[ w, 2, 1 ]
+    pbw_int[ w, 3, 1 ]
+    pbw_int[ w, 4, 2 ]
+    pbw_int[ w, 5, 0 ]
+    pbw_int[ w, 6, 0 ]
+    pbw_int[ w, 7, 420 ]
+    pbw_int[ w, 8, 196610 ]
+    for [ s: string ] in dev_libraries[]
+        pbw_str[ w, 9, s.chars ]
+    for [ s: string ] in dev_features[]
+        pbw_str[ w, 10, s.chars ]
+    for [ s: string ] in dev_abis[]
+        pbw_str[ w, 11, s.chars ]
+    pbw_int[ w, 12, (dev_pc[]) ? 1920 : 1116 ]
+    pbw_int[ w, 13, (dev_pc[]) ? 1080 : 2484 ]
+    for [ s: string ] in dev_locales[]
+        pbw_str[ w, 14, s.chars ]
+    for [ s: string ] in dev_gl_extensions[]
+        pbw_str[ w, 15, s.chars ]
+    pbw_int[ w, 16, 0 ]
+    pbw_int[ w, 19, 0 ]
+    pbw_int[ w, 20, 8589934592 ]
+    pbw_int[ w, 21, 8 ]
+    for [ s: string ] in dev_features[]
+        pbw_begin[ w, 26 ]
+        pbw_str[ w, 1, s.chars ]
+        pbw_int[ w, 2, 0 ]
+        pbw_end[ w ]
+
+# ---- small helpers ---------------------------------------------------
+
+func enc [ s: string ] -> string
+    b : local i8 [ 16384 ]
+    url_enc[ s.chars, @b[0], 16384 ]
+    return string [ @b[0] ]
+
+# a query string of key, value pairs
+func query_of [ kv: vec string ] -> string
+    q : string ''
+    for [ i: i32 0, i + 1 < kv.count, i += 2 ]
+        p : string '{kv[ i ]}={enc[ kv[ i + 1 ] ]}'
+        q = (q.count > 0) ? '{q}&{p}' : p
+    return q
+
+func pb_str [ h: i64, at: string ] -> string
+    b : local i8 [ 16384 ]
+    if [ pbr_str[ h, at.chars, @b[0], 16384 ] < 0 ] return ''
+    return string [ @b[0] ]
+
+func kv_of [ file: string, key: string ] -> string
+    b : local i8 [ 8192 ]
+    if [ kv_value[ file.chars, key.chars, @b[0], 8192 ] < 0 ] return ''
+    return string [ @b[0] ]
+
+# a value of a 'name TAB value' line in a cookie file
+func cookie_of [ file: string, name: string ] -> string
+    f : path [ file ]
+    if [ !f.exists[] ] return ''
+    text : string f.load[ typeid[string], null ]
+    if [ !text ] return ''
+    for [ ln: string ] in text.split[ "\n" ]
+        tab : i32 [ ln.index_of[ "\t" ] ]
+        if [ tab <= 0 ] continue
+        if [ ln.mid[ 0, tab ] == name ]
+            return ln.mid[ tab + 1, ln.count - tab - 1 ]
+    return ''
+
+# a store name of an app's title: lower case, words joined by _
+func store_name [ title: string ] -> string
+    out : string ''
+    for [ part: string ] in title.lcase[].split[ " " ]
+        word : string ''
+        for [ i: i32 0, i < part.count, i += 1 ]
+            c : string part.mid[ i, 1 ]
+            if [ (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ]
+                word = '{word}{c}'
+        if [ word.count == 0 ] continue
+        out = (out.count > 0) ? '{out}_{word}' : word
+    return out
+
+# the signed-in account for Play services: email, token, id
+func account_file [] -> string
+    home : string getenv[ 'HOME' ]
+    return '{home}/.local/share/android-play/account'
+
+# written as the user signs in, readable by the user alone
+func save_account [ email: string, aas: string, gaia: string ]
+    f : path [ account_file[] ]
+    f.save[ '{email}\n{aas}\n{gaia}\n', null ]
+    ch : command { chmod 600 {f} }
+    ch.exec[ false ]
+
+# where this machine keeps the apps it fetched, one folder each
+func apps_dir [] -> string
+    home : string getenv[ 'HOME' ]
+    return '{home}/.local/share/android-play/apps'
+
+# ---- one app of the account's library --------------------------------
+
+class PlayApp
+    public pkg     : string
+    public title   : string
+    public version : i64
+    public offer   : i64
+    public icon    : string
+    # '' fetched, 'here' on this machine, else its last word
+    public state   : string
+
+# ---- the session: sign-in tokens and Google Play's calls -------------
+
+class PlaySession
+    public email : string
+    public aas   : string
+    # the account's Google user id (the /auth answer's accountId)
+    public gaia  : string
+    public gsf   : string
+    public ctok  : string
+    public dtok  : string
+    public auth  : string
+    # the last refusal, in Google's words
+    public why   : string
+    public tmp   : string
+
+    func file [ name: string ] -> string
+        return '{tmp}/{name}'
+
+    # the fields every /auth asks
+    func auth_base [] -> vec string
+        kv : vec string [] [
+            'sdk_version', '{dev_sdk[]}',
+            'Email', email,
+            'google_play_services_version', '{gsf_version[]}',
+            'device_country', 'us', 'lang', 'en',
+            'callerSig', '38918a453d07199354f8b19af05ec6562ced5788' ]
+        if [ gsf && gsf.count > 0 ]
+            kv.push[ 'androidId' ]
+            kv.push[ gsf ]
+        return kv
+
+    func auth_post [ kv: vec string, app: string, out: string ] -> bool
+        hd : string 'app: {app}'
+        if [ gsf && gsf.count > 0 ] hd = 'app: {app}\ndevice: {gsf}'
+        url : string 'https://android.clients.google.com/auth?{query_of[ kv ]}'
+        got : i64 Http.request_as[ 'POST', url, path [ out ], null, 0,
+                                   '', hd, ua_auth[] ]
+        if [ got < 0 ]
+            why = kv_of[ '{out}.error', 'Error' ]
+            if [ why.count == 0 ] why = 'sign-in refused ({got})'
+            return false
+        return true
+
+    # the sign-in page's oauth_token for the account's own token
+    func take_oauth [ oauth: string ] -> bool
+        kv : vec string auth_base[]
+        for [ s: string ] in vec string [] [
+                'service', 'ac2dm', 'add_account', '1',
+                'get_accountid', '1', 'ACCESS_TOKEN', '1',
+                'callerPkg', 'com.google.android.gms', 'Token', oauth,
+                'droidguard_results', 'null' ]
+            kv.push[ s ]
+        out : string file[ 'aas.txt' ]
+        if [ !auth_post[ kv, 'com.android.vending', out ] ] return false
+        aas = kv_of[ out, 'Token' ]
+        gaia = kv_of[ out, 'accountId' ]
+        mail : string kv_of[ out, 'Email' ]
+        if [ mail.count > 0 ] email = mail
+        if [ aas.count == 0 ]
+            why = 'no account token in the answer'
+            return false
+        return true
+
+    # registers this "phone": Google's device id for it
+    func checkin [] -> bool
+        w : i64 pbw_new[]
+        pbw_int[ w, 2, 0 ]
+        pbw_begin[ w, 4 ]
+        pbw_begin[ w, 1 ]
+        pbw_str[ w, 1, dev_fingerprint[].chars ]
+        pbw_str[ w, 2, dev_hardware[] ]
+        pbw_str[ w, 3, dev_maker[] ]
+        pbw_str[ w, 4, '' ]
+        pbw_str[ w, 5, 'unknown' ]
+        pbw_str[ w, 6, 'android-google' ]
+        pbw_int[ w, 7, i64[ time[ null ] ] ]
+        pbw_int[ w, 8, gsf_version[] ]
+        pbw_str[ w, 9, dev_name[] ]
+        pbw_int[ w, 10, dev_sdk[] ]
+        pbw_str[ w, 11, dev_name[] ]
+        pbw_str[ w, 12, dev_maker[] ]
+        pbw_str[ w, 13, dev_name[] ]
+        pbw_int[ w, 14, 0 ]
+        pbw_end[ w ]
+        pbw_int[ w, 2, 0 ]
+        pbw_str[ w, 6, '310260' ]
+        pbw_str[ w, 7, '310260' ]
+        pbw_str[ w, 8, 'mobile-notroaming' ]
+        pbw_int[ w, 9, 0 ]
+        pbw_end[ w ]
+        pbw_str[ w, 6, 'en_US' ]
+        pbw_str[ w, 12, 'America/Los_Angeles' ]
+        pbw_int[ w, 14, 3 ]
+        pbw_begin[ w, 18 ]
+        put_device_config[ w ]
+        pbw_end[ w ]
+        pbw_int[ w, 20, 0 ]
+        out : string file[ 'checkin.pb' ]
+        got : i64 Http.request_as[ 'POST',
+            'https://android.clients.google.com/checkin', path [ out ],
+            pbw_data[ w ], pbw_len[ w ], 'application/x-protobuffer',
+            'app: com.google.android.gms', ua_auth[] ]
+        pbw_free[ w ]
+        if [ got < 0 ]
+            why = 'device checkin refused ({got})'
+            return false
+        r : i64 pbr_open[ out.chars ]
+        id : i64 pbr_int[ r, '7', 0 ]
+        ctok = pb_str[ r, '12' ]
+        pbr_close[ r ]
+        if [ id == 0 ]
+            why = 'no device id in the checkin answer'
+            return false
+        hb : local i8 [ 32 ]
+        hex64[ id, @hb[0] ]
+        gsf = string [ @hb[0] ]
+        return true
+
+    # the headers of every /fdfe call
+    func dfe_headers [] -> string
+        h : string {
+            Authorization: Bearer {auth}
+            X-DFE-Device-Id: {gsf}
+            Accept-Language: en-US
+            X-DFE-Client-Id: am-android-google
+            X-DFE-Network-Type: 4
+            X-DFE-Content-Filters:
+            X-Limit-Ad-Tracking-Enabled: false
+            X-Ad-Id:
+            X-DFE-UserLanguages: en_US
+            X-DFE-Request-Params: timeoutMs=4000
+            X-DFE-MCCMNC: 310260
+            X-DFE-Device-Checkin-Consistency-Token: {ctok}
+            X-DFE-Device-Config-Token: {dtok}
+        }
+        return h
+
+    func dfe [ method: string, call: string, body: @u8, n: i64,
+               out: string ] -> bool
+        url : string 'https://android.clients.google.com/fdfe/{call}'
+        got : i64 Http.request_as[ method, url, path [ out ], body, n,
+            'application/x-protobuf', dfe_headers[], ua_play[] ]
+        if [ got < 0 ]
+            why = 'Google Play refused {call} ({got})'
+            return false
+        return true
+
+    func upload_config [] -> bool
+        w : i64 pbw_new[]
+        pbw_begin[ w, 1 ]
+        put_device_config[ w ]
+        pbw_end[ w ]
+        out : string file[ 'config.pb' ]
+        ok : bool dfe[ 'POST', 'uploadDeviceConfig', pbw_data[ w ],
+                       pbw_len[ w ], out ]
+        pbw_free[ w ]
+        if [ !ok ] return false
+        r : i64 pbr_open[ out.chars ]
+        dtok = pb_str[ r, '1.28.1' ]
+        pbr_close[ r ]
+        return true
+
+    # the account's Google Play token from its own token
+    func play_token [] -> bool
+        kv : vec string auth_base[]
+        for [ s: string ] in vec string [] [
+                'app', 'com.android.vending',
+                'client_sig',
+                '38918a453d07199354f8b19af05ec6562ced5788',
+                'callerPkg', 'com.google.android.gms', 'Token', aas,
+                'oauth2_foreground', '1',
+                'token_request_options', 'CAA4AVAB',
+                'check_email', '1', 'system_partition', '1',
+                'droidguard_results', 'null',
+                'service', 'oauth2:https://www.googleapis.com/auth/googleplay' ]
+            kv.push[ s ]
+        out : string file[ 'auth.txt' ]
+        if [ !auth_post[ kv, 'com.google.android.gms', out ] ]
+            return false
+        auth = kv_of[ out, 'Auth' ]
+        if [ auth.count == 0 ]
+            why = 'no Google Play token in the answer'
+            return false
+        return true
+
+    # the user id of an account signed in before the id was kept
+    func fetch_gaia [] -> bool
+        kv : vec string auth_base[]
+        for [ s: string ] in vec string [] [
+                'app', 'com.android.vending',
+                'client_sig',
+                '38918a453d07199354f8b19af05ec6562ced5788',
+                'callerPkg', 'com.google.android.gms', 'Token', aas,
+                'get_accountid', '1',
+                'service', 'oauth2:https://www.googleapis.com/auth/googleplay' ]
+            kv.push[ s ]
+        out : string file[ 'gaia.txt' ]
+        if [ !auth_post[ kv, 'com.google.android.gms', out ] ]
+            return false
+        gaia = kv_of[ out, 'accountId' ]
+        return gaia.count > 0
+
+    # every app the account has (bought, or got free), page by page
+    func library [] -> vec PlayApp
+        apps : vec PlayApp []
+        seen : map string [string] []
+        o : i32 [ 0 ]
+        for [ page: i32 0, page < 40, page += 1 ]
+            out : string file[ 'history.pb' ]
+            if [ !dfe[ 'GET', 'purchaseHistory?o={o}', null, 0, out ] ]
+                break
+            r : i64 pbr_open[ out.chars ]
+            got : i32 [ 0 ]
+            groups : i64 pbr_count[ r, '1.1.2.11' ]
+            for [ g: i64 0, g < groups, g += 1 ]
+                items : i64 pbr_count[ r, '1.1.2.11[{g}].11' ]
+                for [ j: i64 0, j < items, j += 1 ]
+                    at : string '1.1.2.11[{g}].11[{j}]'
+                    got += 1
+                    if [ pbr_int[ r, '{at}.3', 0 ] != 1 ] continue
+                    pk : string pb_str[ r, '{at}.1' ]
+                    if [ pk.count == 0 || seen.contains[ pk ] ] continue
+                    seen[ pk ] = pk
+                    icon : string ''
+                    ni : i64 pbr_count[ r, '{at}.10' ]
+                    for [ k: i64 0, k < ni, k += 1 ]
+                        if [ pbr_int[ r, '{at}.10[{k}].1', 0 ] == 4 ]
+                            icon = pb_str[ r, '{at}.10[{k}].5' ]
+                            break
+                    apps.push[ PlayApp [ pkg: pk,
+                        title: pb_str[ r, '{at}.5' ],
+                        version: pbr_int[ r, '{at}.13.1.3', 0 ],
+                        offer: pbr_int[ r, '{at}.8.8', 1 ],
+                        icon: icon, state: '' ] ]
+            pbr_close[ r ]
+            if [ got == 0 ] break
+            o += got
+        return apps
+
+    # an app's files into dir: base.apk and its pieces; '' or why
+    # the app's version and offer now: the library's are often 0
+    func details [ app: PlayApp ] -> string
+        out : string file[ 'details.pb' ]
+        if [ !dfe[ 'GET', 'details?doc={enc[ app.pkg ]}', null, 0, out ] ]
+            return why
+        r : i64 pbr_open[ out.chars ]
+        vc : i64 pbr_int[ r, '1.2.4.13.1.3', 0 ]
+        ot : i64 pbr_int[ r, '1.2.4.8.8', 0 ]
+        tt : string pb_str[ r, '1.2.4.5' ]
+        if [ tt.count > 0 ] app.title = tt
+        if [ app.icon.count == 0 ]
+            ni : i64 pbr_count[ r, '1.2.4.10' ]
+            for [ k: i64 0, k < ni, k += 1 ]
+                if [ pbr_int[ r, '1.2.4.10[{k}].1', 0 ] == 4 ]
+                    app.icon = pb_str[ r, '1.2.4.10[{k}].5' ]
+                    break
+        pbr_close[ r ]
+        if [ vc == 0 ] return 'Google Play gave no version for this phone'
+        app.version = vc
+        if [ ot != 0 ] app.offer = ot
+        return ''
+
+    func fetch [ app: PlayApp, dir: string ] -> string
+        dw : string details[ app ]
+        if [ dw.count > 0 ] return dw
+        # a free app is got first (it joins the library), as the
+        # store does; a bought one is already there
+        w : i64 pbw_new[]
+        pbw_begin[ w, 1 ]
+        pbw_begin[ w, 1 ]
+        pbw_str[ w, 1, app.pkg.chars ]
+        pbw_int[ w, 2, 1 ]
+        pbw_int[ w, 3, 3 ]
+        pbw_end[ w ]
+        pbw_int[ w, 2, 1 ]
+        pbw_end[ w ]
+        pbw_begin[ w, 12 ]
+        pbw_int[ w, 1, app.version ]
+        pbw_int[ w, 3, 0 ]
+        pbw_end[ w ]
+        pbw_int[ w, 13, app.offer ]
+        pbw_int[ w, 15, 0 ]
+        nb : local i8 [ 512 ]
+        play_nonce[ @nb[0] ]
+        pbw_str[ w, 22, @nb[0] ]
+        pbw_int[ w, 25, 2 ]
+        pbw_begin[ w, 30 ]
+        pbw_int[ w, 1, 2 ]
+        pbw_int[ w, 2, 0 ]
+        pbw_end[ w ]
+        dfe[ 'POST', 'acquire', pbw_data[ w ], pbw_len[ w ],
+             file[ 'acquire.pb' ] ]
+        pbw_free[ w ]
+        pk : string enc[ app.pkg ]
+        q : string 'ot={app.offer}&doc={pk}&vc={app.version}'
+        dt : string ''
+        if [ dfe[ 'POST', 'purchase?{q}', null, 0, file[ 'buy.pb' ] ] ]
+            b : i64 pbr_open[ file[ 'buy.pb' ].chars ]
+            dt = pb_str[ b, '1.4.55' ]
+            pbr_close[ b ]
+        dq : string q
+        if [ dt.count > 0 ] dq = '{q}&dtok={enc[ dt ]}'
+        out : string file[ 'delivery.pb' ]
+        if [ !dfe[ 'GET', 'delivery?{dq}', null, 0, out ] ] return why
+        r : i64 pbr_open[ out.chars ]
+        status : i64 pbr_int[ r, '1.21.1', 1 ]
+        base : string pb_str[ r, '1.21.2.3' ]
+        ck : string ''
+        cn : string pb_str[ r, '1.21.2.5.1' ]
+        if [ cn.count > 0 ]
+            ck = 'Cookie: {cn}={pb_str[ r, '1.21.2.5.2' ]}'
+        names : vec string []
+        urls : vec string []
+        ns : i64 pbr_count[ r, '1.21.2.15' ]
+        for [ i: i64 0, i < ns, i += 1 ]
+            names.push[ pb_str[ r, '1.21.2.15[{i}].1' ] ]
+            urls.push[ pb_str[ r, '1.21.2.15[{i}].5' ] ]
+        pbr_close[ r ]
+        if [ status != 1 || base.count == 0 ]
+            if [ status == 3 ] return 'not bought on this account'
+            if [ status == 2 || status == 9 ]
+                return 'Google Play says this phone is not supported'
+            return 'no download offered (status {status})'
+        # another device's pieces go: the card runs every .apk here
+        mk : command { mkdir -p '{dir}' && rm -f '{dir}'/*.apk }
+        mk.exec[ false ]
+        if [ Http.request_as[ 'GET', base, path [ '{dir}/base.apk' ], null,
+                              0, '', ck, ua_play[] ] < 0 ]
+            return 'the download failed'
+        for [ i: i32 0, i < names.count, i += 1 ]
+            if [ Http.request_as[ 'GET', urls[ i ],
+                     path [ '{dir}/{names[ i ]}.apk' ], null, 0, '', ck,
+                     ua_play[] ] < 0 ]
+                return 'a piece ({names[ i ]}) failed'
+        # its picture: the card's icon
+        if [ app.icon.count > 0 ]
+            Http.request_as[ 'GET', app.icon, path [ '{dir}/icon.png' ],
+                             null, 0, '', '', ua_play[] ]
+        about : path '{dir}/app.txt'
+        about.save[ '{app.title}\n{app.pkg}\n{app.version}\n{dev_name[]}\n',
+                    null ]
+        return ''
+
+# ---- the store: each fetched app a module of install/stores/android --
+
+# every app folder becomes a card in the android folder of orbiter's
+# apps screen, run by android-run on its base and pieces; one gone goes
+export func android_store []
+    ip : path.path_install[]
+    ins : string '{ip.absolute[]}'
+    store : string '{ins}/stores/android'
+    sd : path [ store ]
+    sd.make_dir[]
+    made : map string [string] []
+    # the app runs in its view, whose home is install/home/android
+    dirs : vec string [] [ apps_dir[],
+        '{ins}/home/android/.local/share/android-play/apps' ]
+    watch : string ''
+    for [ dn: string ] in dirs
+        watch = '{watch}{dn}\n'
+        ad : path [ dn ]
+        # the account sits beside the apps folder
+        ap : path '{dn.mid[ 0, dn.count - 4 ]}account'
+        acct : string (ap.exists[]) ? ' --account {ap}' : ''
+        have : ad.ls[ null, false ]
+        if [ !have ] continue
+        for [ d: path ] in have
+            if [ !d.is_dir[] ] continue
+            dir : string '{d.absolute[]}'
+            bp : path '{dir}/base.apk'
+            if [ !bp.exists[] ] continue
+            about : path '{dir}/app.txt'
+            title : string d.filename[]
+            if [ about.exists[] ]
+                txt : string about.load[ typeid[string], null ]
+                if [ txt ] title = txt.split[ "\n" ][ 0 ]
+            name : store_name[ title ]
+            if [ name.count == 0 || made.get[ name ] ] continue
+            made[ name ] = name
+            # the base first, then every piece
+            run : string 'android-run{acct} {dir}/base.apk'
+            fs : d.ls[ null, false ]
+            if [ fs ]
+                for [ f: path ] in fs
+                    fn : string f.filename[]
+                    if [ fn.ends_with[ '.apk' ] && fn != 'base.apk' ]
+                        run = '{run} {dir}/{fn}'
+            body : string {
+                export 1.0.0
+                export software ['everyday']
+                export launch ['{run}']
+                export share ['{dir}']
+                export build none
+            }
+            by : 'an Android app from Google Play; android wrote this'
+            src : string '# {title}: {by}\n{body.trim[]}\n'
+            mdir : string '{store}/{name}'
+            md : path [ mdir ]
+            md.make_dir[]
+            # Play sends png or jpeg: the card's file says which
+            ic : path '{dir}/icon.png'
+            kind : i64 [ pic_kind[ ic.chars ] ]
+            if [ kind > 0 ]
+                ext : string (kind == 1) ? 'png' : 'jpg'
+                other : string (kind == 1) ? 'jpg' : 'png'
+                mi : path '{mdir}/images/icon.{ext}'
+                wrong : path '{mdir}/images/icon.{other}'
+                if [ wrong.exists[] ] wrong.remove[]
+                if [ !mi.exists[] ]
+                    ims : path '{mdir}/images'
+                    ims.make_dir[]
+                    ic.cp[ mi, false, false ]
+            out : path '{mdir}/{name}.ag'
+            was : string (out.exists[])
+                ? out.load[ typeid[string], null ] : ''
+            if [ was == src ] continue
+            out.save[ src, null ]
+            log 'android store: {title}'
+    # orbiter runs this export again when a folder here changes
+    wf : path '{store}/.watch'
+    wtxt : string (wf.exists[]) ? wf.load[ typeid[string], null ] : ''
+    if [ wtxt != watch ] wf.save[ watch, null ]
+    mods : sd.ls[ null, false ]
+    if [ !mods ] return
+    for [ d: path ] in mods
+        if [ !d.is_dir[] || made.get[ d.filename[] ] ] continue
+        rm : command { rm -rf '{d}' }
+        rm.exec[ false ]
+
+# ---- the app: sign in on Google's page, then the account's apps ------
+
+element PlayApps : trinity
+    public  width  : i32    [ 520 ]
+    public  height : i32    [ 820 ]
+    public  title  : string [ 'Google Play' ]
+    # a store page's address: that app is got once signed in
+    default [ Launch, Live ] src : string
+    mutable src_done : string
+    # the account, kept: its token is what signs every call
+    intern [ StatePersist ] email : string
+    intern [ StatePersist ] aas   : string
+    intern [ StatePersist ] gaia  : string
+    intern [ StatePersist ] gsf   : string
+    intern [ StatePersist ] ctok  : string
+    intern [ StatePersist ] dtok  : string
+    # the device the id above was made for (dev_name)
+    intern [ StatePersist ] gsf_dev : string
+    mutable loaded  : bool
+    # what the view says: signin, connecting, list, error
+    mutable phase   : string
+    mutable note    : string
+    mutable apps    : vec PlayApp
+    mutable ses     : PlaySession
+    # the work on its own thread: connect, or fetch app i
+    intern  task    : async
+    mutable busy    : bool
+    mutable done    : bool
+    mutable job     : string
+    mutable pick    : i32 [ -1 ]
+    mutable result  : string
+    mutable list_y  : f32
+    mutable row_h   : f32
+    mutable scroll_y : f32
+
+    func tmp_dir [] -> string
+        d : path.path_cache[ 'android-play' ]
+        return '{d}'
+
+    func cookie_file [] -> string
+        return '{tmp_dir[]}/signin-cookies.txt'
+
+    func render [] -> Elements
+        t : Elements []
+        if [ phase == 'signin' ]
+            t['signin'] = aura [ src: 'https://accounts.google.com/EmbeddedSetup',
+                agent: ua_phone[], cookie_file: cookie_file[],
+                area: Region { l0 t0 r0 b0 } ]
+        return t
+
+    func session [] -> PlaySession
+        if [ !ses ]
+            # kept tokens are null before the first sign-in
+            ses = PlaySession [ email: (email) ?? '', aas: (aas) ?? '',
+                                gsf: (gsf) ?? '', ctok: (ctok) ?? '',
+                                dtok: (dtok) ?? '', auth: '', why: '',
+                                tmp: tmp_dir[] ]
+            m : command { mkdir -p '{tmp_dir[]}' }
+            m.exec[ false ]
+        return ses
+
+    # on the work thread
+    func work_bg [ arg: object :: v: PlayApps ]
+        s : PlaySession v.session[]
+        if [ v.job == 'connect' ]
+            ok : bool [ true ]
+            if [ s.aas.count == 0 ]
+                cf : string v.cookie_file[]
+                oauth : string cookie_of[ cf, 'oauth_token' ]
+                ok = s.take_oauth[ oauth ]
+            if [ ok && s.gsf.count == 0 ] ok = s.checkin[]
+            if [ ok && (!s.gaia || s.gaia.count == 0) ] ok = s.fetch_gaia[]
+            if [ ok && s.dtok.count == 0 ] ok = s.upload_config[]
+            if [ ok ] ok = s.play_token[]
+            if [ ok ] v.apps = s.library[]
+            v.result = (ok) ? '' : s.why
+        el
+            app : PlayApp v.apps[ v.pick ]
+            dir : string '{apps_dir[]}/{app.pkg}'
+            v.result = s.fetch[ app, dir ]
+        v.done = true
+
+    func start [ what: string ]
+        if [ busy ] return
+        job = what
+        busy = true
+        done = false
+        work : vec Au []
+        work.push[ a ]
+        task = async [ target: a, work_fn: lambda work_bg[ a ],
+                       work: work ]
+
+    # a finished job taken, the next step started
+    func poll []
+        if [ !loaded ]
+            loaded = true
+            load-persistent[ a ]
+            # an id made for another device: checked in again as this
+            if [ !gsf_dev || gsf_dev != dev_name[] ]
+                gsf  = ''
+                ctok = ''
+                dtok = ''
+            phase = (aas && aas.count > 0) ? 'connecting' : 'signin'
+            if [ phase == 'connecting' ] start[ 'connect' ]
+            if [ ux ] ux.restyle = true
+        if [ phase == 'signin' && !busy ]
+            if [ cookie_of[ cookie_file[], 'oauth_token' ].count > 0 ]
+                phase = 'connecting'
+                note = 'signing in to Google Play'
+                start[ 'connect' ]
+                if [ ux ] ux.restyle = true
+        if [ phase == 'list' && !busy ] get_page[]
+        if [ !busy || !done ] return
+        busy = false
+        s : PlaySession session[]
+        if [ job == 'connect' ]
+            if [ result.count > 0 ]
+                note = result
+                # a token Google no longer takes: sign in again
+                s.aas = ''
+                phase = 'signin'
+                remove[ cookie_file[].chars ]
+            el
+                email = s.email
+                aas = s.aas
+                gaia = s.gaia
+                gsf = s.gsf
+                ctok = s.ctok
+                dtok = s.dtok
+                gsf_dev = dev_name[]
+                save-persistent[ a ]
+                save_account[ email, aas, gaia ]
+                phase = 'list'
+                note = '{apps.count} apps on this account'
+                mark_here[]
+        el
+            app : PlayApp apps[ pick ]
+            app.state = (result.count > 0) ? result : 'here'
+            note = (result.count > 0) ? '{app.title}: {result}'
+                : '{app.title} is on this machine'
+        if [ ux ] ux.restyle = true
+
+    # forgets the account; the apps already fetched stay
+    action func sign_out []
+        if [ busy ] return
+        email = ''
+        aas   = ''
+        gsf   = ''
+        ctok  = ''
+        dtok  = ''
+        save-persistent[ a ]
+        ses  = null
+        apps = null
+        remove[ cookie_file[].chars ]
+        remove[ account_file[].chars ]
+        phase = 'signin'
+        note  = ''
+        if [ ux ] ux.restyle = true
+
+    # the app a store page names (?id=), got as a row's Get is
+    func get_page []
+        if [ !src || src.count == 0 || src == src_done ] return
+        src_done = src
+        ix : i32 [ src.index_of[ 'id=' ] ]
+        if [ ix < 0 ] return
+        pk : string src.mid[ ix + 3, src.count - ix - 3 ]
+        e9 : i32 [ pk.index_of[ '&' ] ]
+        if [ e9 >= 0 ] pk = pk.mid[ 0, e9 ]
+        if [ pk.count == 0 ] return
+        if [ !apps ] apps = vec PlayApp []
+        at : i32 [ -1 ]
+        for [ i: i32 0, i < apps.count, i += 1 ]
+            if [ apps[ i ].pkg == pk ] at = i
+        if [ at < 0 ]
+            apps.push[ PlayApp [ pkg: pk, title: pk, version: 0,
+                                 offer: 1, icon: '', state: '' ] ]
+            at = apps.count - 1
+        if [ got_here[ pk ] ]
+            note = '{apps[ at ].title} is on this machine'
+            if [ ux ] ux.restyle = true
+            return
+        pick = at
+        start[ 'get' ]
+        if [ ux ] ux.restyle = true
+
+    # the apps already fetched read 'here'
+    func mark_here []
+        for [ app: PlayApp ] in apps
+            if [ got_here[ app.pkg ] ] app.state = 'here'
+
+    # fetched for this device (app.txt's fourth line names it)
+    func got_here [ pkg: string ] -> bool
+        ab : path '{apps_dir[]}/{pkg}/app.txt'
+        bp : path '{apps_dir[]}/{pkg}/base.apk'
+        if [ !bp.exists[] || !ab.exists[] ] return false
+        txt : string ab.load[ typeid[string], null ]
+        if [ !txt ] return false
+        ls : vec string txt.split[ "\n" ]
+        return ls.count > 3 && ls[ 3 ] == dev_name[]
+
+    public func on_frame [ w: Window ]
+        poll[]
+        if [ busy && ux ] ux.will_animate = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ phase == 'signin' ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        pad : f32 [ round[ 18.0 * un ] ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0b0e1a' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, 0.0, bw, bh ]
+        cv.paint[]
+        cv.restore[]
+        chart_font[ cv, 'Bold', 22.0 * un ]
+        chart_text[ cv, 'Google Play', pad, pad, bw - pad * 2.0,
+                    28.0 * un, 0.0, '#ffffff' ]
+        chart_font[ cv, 'Regular', 15.0 * un ]
+        who : string (email && email.count > 0) ? email : ''
+        chart_text[ cv, who, pad, pad + 30.0 * un, bw - pad * 2.0,
+                    20.0 * un, 0.0, '#8b93a7' ]
+        line : string (busy && job != 'connect')
+            ? 'downloading {apps[ pick ].title}' : note
+        if [ phase == 'connecting' ] line = note
+        chart_text[ cv, line, pad, pad + 54.0 * un, bw - pad * 2.0,
+                    20.0 * un, 0.0, '#c4b5fd' ]
+        row_h = round[ 52.0 * un ]
+        list_y = pad + 88.0 * un
+        if [ phase != 'list' || !apps ] return
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, list_y, bw, bh - list_y, 0.0, 0.0,
+                              0.0, 0.0 ]
+        for [ i: i32 0, i < apps.count, i += 1 ]
+            y : f32 [ list_y + f32[ i ] * row_h - scroll_y ]
+            if [ y + row_h < list_y || y > bh ] continue
+            app : PlayApp apps[ i ]
+            ground : string (i == pick && busy)
+                ? '#4d3dbc66' : '#ffffff08'
+            cv.save[]
+            cv.fill_color[ rgba [ ground ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ pad, y + 2.0, bw - pad * 2.0, row_h - 4.0 ]
+            cv.paint[]
+            cv.restore[]
+            chart_font[ cv, 'Regular', 17.0 * un ]
+            chart_text[ cv, app.title, pad + 12.0 * un, y,
+                        bw - pad * 2.0 - 140.0 * un, row_h, 0.0,
+                        '#ffffff' ]
+            word : string 'Get'
+            col : string '#806bff'
+            if [ app.state == 'here' ]
+                word = 'Here'
+                col = '#34d399'
+            el [ busy && i == pick ]
+                word = 'Getting'
+            el [ app.state.count > 0 ]
+                word = 'Failed'
+                col = '#fb7185'
+            chart_font[ cv, 'Bold', 16.0 * un ]
+            chart_text[ cv, word, bw - pad - 120.0 * un, y, 108.0 * un,
+                        row_h, 1.0, col ]
+        cv.restore[]
+
+    public func on_wheel [ ev: Event ]
+        if [ phase != 'list' || !apps ] return
+        most : f32 [ maxf[ 0.0, f32[ apps.count ] * row_h
+            - (bounds.h - list_y) ] ]
+        scroll_y = clamp[ scroll_y - ev.mouse.wheel_delta.y * 60.0, 0.0,
+                          most ]
+        if [ ux ] ux.restyle = true
+        ev.stop[]
+
+    # a row's Get: one download at a time
+    public func on_press [ ev: Event ]
+        if [ phase != 'list' || !apps || busy || row_h <= 0.0 ] return
+        p : vec2f ev.mouse.pos
+        if [ p.y < list_y ] return
+        i : i32 [ i32[ (p.y - list_y + scroll_y) / row_h ] ]
+        if [ i < 0 || i >= apps.count ] return
+        ev.no_default = true
+        if [ apps[ i ].state == 'here' ] return
+        pick = i
+        start[ 'fetch' ]
+        if [ ux ] ux.restyle = true

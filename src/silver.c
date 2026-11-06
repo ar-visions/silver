@@ -1199,7 +1199,7 @@ static bool module_build_none(path f) {
     bool none = false;
     while (fgets(ln, sizeof(ln), fp)) {
         char* p = ln;
-        while (*p == ' ' || *p == '\t') p++;
+        // a module's own export starts its line; indented is text
         if (strncmp(p, "export", 6) != 0) continue;
         p += 6;
         while (*p == ' ' || *p == '\t') p++;
@@ -4549,11 +4549,20 @@ static enode read_keywords(silver a, etype mdl_expect) {
         num prev_line = open ? open->line : 0;
         // a command's lines are one line to the shell
         bool one_line = inherits(target, typeid(command));
+        // the indent its lines share is the source's, not the text's
+        num shared = -1, at_line = prev_line;
+        for (int i = 0; i < len(toks); i++) {
+            token ft = (token)chunks->origin[i];
+            if (ft->line != at_line && (shared < 0 || ft->indent < shared))
+                shared = ft->indent;
+            at_line = ft->line;
+        }
+        if (shared < 0) shared = 0;
         for (int i = 0; i < len(toks); i++) {
             token ft = (token)chunks->origin[i];
             if (ft->line != prev_line && !one_line) {
                 push(joined, '\n');
-                for (num k = 0; k < ft->indent; k++)
+                for (num k = shared; k < ft->indent; k++)
                     push(joined, ' ');
             } else if (i && (!ft->neighbor || ft->line != prev_line))
                 push(joined, ' ');
@@ -10080,6 +10089,13 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // a checked-in configure is the entry (qemu wraps meson in one)
     bool is_meson   = file_exists("%o", meson_f) && !file_exists("%o/configure", project_f);
     bool is_cmake   = file_exists("%o", cmake_f);
+    // > lines that run its own configure are its build (wolfssl's
+    // cmake port lacks options its autotools have)
+    bool own_conf   = false;
+    if (prebuild)
+        each(prebuild, string, cmd)
+            if (strstr(cmd->chars, "./configure")) own_conf = true;
+    if (own_conf) { is_meson = false; is_cmake = false; }
     bool is_gn      = file_exists("%o", gn_f);
     bool is_silver  = file_exists("%o", silver_f);
     validate(!mod_sel || is_silver,
@@ -15772,6 +15788,10 @@ int main(int argc, cstrs argv) {
     signal(SIGTERM, silver_stopped);
     // as root (the phone) an import's tar would keep its packer's uids
     setenv("TAR_OPTIONS", "--no-same-owner", 0);
+    // a build run by an app is never that app's supervised child
+    unsetenv("SILVER_ISOLATE_CHILD");
+    unsetenv("SILVER_SUPERVISOR");
+    unsetenv("SILVER_SHM_FD");
 #endif
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies

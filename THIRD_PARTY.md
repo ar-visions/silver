@@ -86,6 +86,9 @@ Keep it in step with the imports.
 | libclc (from LLVM bd7db75) | bd7db75 | os-bootstrap (build tool: anv's built-in GPU programs) | https://github.com/llvm/llvm-project/tree/main/libclc | Apache-2.0 WITH LLVM-exception | The LLVM project |
 | libuev | v2.4.1 | features | https://github.com/troglobit/libuev | MIT | Flemming Madsen, Joachim Wiberg |
 | PCSX-Redux (OpenBIOS) | 20b63161065d9198bbb6a2543cd4163548e8da6d | psx (the BIOS, built from source) | https://github.com/grumpycoders/pcsx-redux | MIT | Nicolas "Pixel" Noble and the PCSX-Redux authors |
+| Android Translation Layer | bbb4d469405cdaea585475b17daef13202bc7e23 | featured/android (runs Android apps; our changes in featured/android/android_translation_layer, under its GPL-3.0) | https://gitlab.com/android_translation_layer/android_translation_layer | GPL-3.0 | The Android Translation Layer contributors |
+| art_standalone (ART, libcore) | 7ead96be8423b3789457b920336149f3f35a61d0 | featured/android (the runtime under ATL; our changes in featured/android/art_standalone) | https://gitlab.com/android_translation_layer/art_standalone | Apache-2.0 (libcore's OpenJDK parts GPL-2.0 with Classpath exception) | The Android Open Source Project, Oracle and the ATL contributors |
+| bionic_translation | 6253dec7f24a57a94039a088cb436d880e92e3be | featured/android (loads an apk's native libraries on glibc) | https://gitlab.com/android_translation_layer/bionic_translation | Apache-2.0 (linker and libc from android2gnulinux; AOSP's libstdc++) | The Android Open Source Project, Jari Vetoniemi and the ATL contributors |
 
 ## Code ported by hand
 
@@ -191,6 +194,8 @@ Keep it in step with the imports.
 | libXext 1.3.6 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXext-1.3.6.tar.xz | MIT-style | The X.Org Foundation |
 | libXrender 0.9.12 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXrender-0.9.12.tar.xz | MIT-style | The X.Org Foundation |
 | libXrandr 1.5.4 | featured/wine (the Vulkan loader's X11 display) | https://www.x.org/releases/individual/lib/libXrandr-1.5.4.tar.xz | MIT-style | The X.Org Foundation |
+| microG GmsCore 0.3.17.252432 (com.google.android.gms-252432034.apk) | featured/android (Play services for the apps ATL runs, loaded beside them) | https://github.com/microg/GmsCore/releases/tag/v0.3.17.252432 (sha256 e5e6cba078bdec812b5450599350e5c1a12c8b7438da5bf77123af170f8c1a35) | Apache-2.0 | The microG team |
+| microG Companion 0.3.17.252432 (com.android.vending-84022634.apk) | featured/android (the Play Store's package name for apps that ask for it) | https://github.com/microg/GmsCore/releases/tag/v0.3.17.252432 (sha256 9b8616011cc8f026bcbbe094df850794abb9d6d9f23214d7a8f8c4d1033ea012) | Apache-2.0 | The microG team |
 
 ## Scene assets (fetched at `silver --export scenes`, never committed)
 

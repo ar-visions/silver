@@ -3750,6 +3750,8 @@ Control Editor
     intern static export_protocol : map string[string]
     # a program module's run line by module (featured/blender: blender)
     intern static export_run      : map string[string]
+    # an address start a module acts on (pages: ['https://..'])
+    intern static export_pages    : map string[string]
     intern static bin_view_cached : string
     mutable lines         : list string
     mutable close_icon    : SVGModel
@@ -5469,6 +5471,7 @@ Control Editor
         export_lib      = map string[string] []
         export_protocol = map string[string] []
         export_run      = map string[string] []
+        export_pages    = map string[string] []
         root : path.path_startup[]
         if [ !root ] return
         d : path '{install_root[]}/export'
@@ -5484,6 +5487,8 @@ Control Editor
             if [ !ftext ] continue
             for [ pr: string ] in export_names[ ftext, 'protocols:' ]
                 export_protocol[ pr ] = mod
+            for [ pg: string ] in export_names[ ftext, 'pages:' ]
+                export_pages[ pg ] = mod
             # a program's module: how its files run (the program, then
             # the file)
             rl : string ''
@@ -5559,6 +5564,8 @@ Control Editor
         while [ nm && nm.count > 0 ]
             src9 : path '{root}/{nm}/{nm}.ag'
             if [ src9.exists[] ] return nm
+            ft9 : path '{root}/featured/{nm}/{nm}.ag'
+            if [ ft9.exists[] ] return nm
             dash : i32 [ nm.index_of[ '-' ] ]
             if [ dash < 0 ] break
             nm = nm.mid[ dash + 1, nm.count - dash - 1 ]
@@ -5679,6 +5686,19 @@ Control Editor
         ensure_export_registry[]
         return export_protocol.contains[ s ]
 
+    # the module that acts on this address ('' none)
+    public func page_module [ url: string ] -> string
+        if [ !url ] return ''
+        ensure_export_registry[]
+        # pages are named without their scheme
+        u : string url
+        s9 : i32 [ u.index_of[ '://' ] ]
+        if [ s9 >= 0 ] u = u.mid[ s9 + 3, u.count - s9 - 3 ]
+        if [ u.starts_with[ 'www.' ] ] u = u.mid[ 4, u.count - 4 ]
+        for [ m: string, pg: string ] in export_pages
+            if [ u.starts_with[ pg ] ] return m
+        return ''
+
     # an address whose scheme a module exports: it hosts the address
     public func open_url [ url: string ] -> bool
         ix : url.index_of[ '://' ]
@@ -5709,6 +5729,9 @@ Control Editor
         if [ !root ] return
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
+        # a featured module lives a folder down
+        fs9 : path '{root}/featured/{mod}/{mod}.ag'
+        if [ !nv.src.exists[] && fs9.exists[] ] nv.src = fs9
         nv.doc = p
         orb : cast orbiter [ ux.app_object ]
         # a folder argument opened by a file in it: the folder, so

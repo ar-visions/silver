@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <xcb/xcb.h>
 #include <xcb/res.h>
@@ -31,6 +32,8 @@
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/render/allocator.h>
 #include <wlr/render/dmabuf.h>
+#include <wlr/render/pass.h>
+#include <drm_fourcc.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_subcompositor.h>
@@ -157,6 +160,10 @@ struct toplevel {
     bool                     assoc;
     // it was shown before: shown again (out of its tray), it asks
     bool                     shown_once;
+    // its app sits in sub-surfaces of a fixed display (Android's):
+    // never resized, centred; fw, fh the app's box, its own units
+    bool                     fixed;
+    int                      fw, fh;
     struct wl_list           link;
 };
 
@@ -244,12 +251,97 @@ static double mono_now(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+struct box_acc { struct wlr_surface *root; int x0, y0, x1, y1; bool any; };
+
+static void box_add(struct wlr_surface *s, int sx, int sy, void *data) {
+    struct box_acc *b = data;
+    if (s == b->root || !wlr_surface_has_buffer(s)) return;
+    int x1 = sx + s->current.width, y1 = sy + s->current.height;
+    if (!b->any) { b->x0 = sx; b->y0 = sy; b->x1 = x1; b->y1 = y1; }
+    if (sx < b->x0) b->x0 = sx;
+    if (sy < b->y0) b->y0 = sy;
+    if (x1 > b->x1) b->x1 = x1;
+    if (y1 > b->y1) b->y1 = y1;
+    b->any = true;
+}
+
+// a window whose own surface takes no input (Android's: a whole
+// display, its app in sub-surfaces) is centred on what they hold
+static void centre_content(struct toplevel *t) {
+    struct wlr_surface *root = top_surface(t);
+    if (!t->xdg || t->sheet || !root) return;
+    int px = t->x, py = 0;
+    struct box_acc b = { .root = root };
+    if (!pixman_region32_not_empty(&root->input_region))
+        wlr_surface_for_each_surface(root, box_add, &b);
+    t->fixed = b.any;
+    if (b.any) {
+        t->fw = b.x1 - b.x0; t->fh = b.y1 - b.y0;
+        int ow = lg(t, t->w), oh = lg(t, t->h);
+        int bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+        px += (bw < ow ? (ow - bw) / 2 : 0) - b.x0;
+        py += (bh < oh ? (oh - bh) / 2 : 0) - b.y0;
+    }
+    if (t->tree->node.x != px || t->tree->node.y != py)
+        wlr_scene_node_set_position(&t->tree->node, px, py);
+}
+
+// a dialog's pixels with their alpha: wlroots' own render fills
+// what no surface covers with opaque black, so a dialog's clear
+// parts (Android's sheets: all but the sheet) came out black
+struct sheet_draw { struct wlr_render_pass *pass; double scale; int ox, oy;
+                    struct wlr_texture *tex[16]; int n; };
+
+static void sheet_buffer(struct wlr_scene_buffer *sb, int sx, int sy,
+                         void *data) {
+    struct sheet_draw *d = data;
+    if (!sb->buffer) return;
+    struct wlr_texture *tex = wlr_texture_from_buffer(g_renderer, sb->buffer);
+    if (!tex) return;
+    // the pass reads it at its submit
+    if (d->n == 16) { wlr_texture_destroy(tex); return; }
+    d->tex[d->n++] = tex;
+    int w = sb->dst_width  ? sb->dst_width  : (int)(tex->width  / d->scale);
+    int h = sb->dst_height ? sb->dst_height : (int)(tex->height / d->scale);
+    wlr_render_pass_add_texture(d->pass, &(struct wlr_render_texture_options){
+        .texture   = tex,
+        .src_box   = sb->src_box,
+        .dst_box   = { .x = (int)((sx - d->ox) * d->scale),
+                       .y = (int)((sy - d->oy) * d->scale),
+                       .width  = (int)(w * d->scale),
+                       .height = (int)(h * d->scale) },
+        .alpha     = &sb->opacity,
+        .transform = sb->transform,
+        .filter_mode = sb->filter_mode,
+    });
+}
+
+static bool sheet_render(struct toplevel *t, struct wlr_output_state *st) {
+    wlr_output_state_set_render_format(st, DRM_FORMAT_ARGB8888);
+    struct wlr_render_pass *pass =
+        wlr_output_begin_render_pass(t->out, st, NULL, NULL);
+    if (!pass) return false;
+    wlr_render_pass_add_rect(pass, &(struct wlr_render_rect_options){
+        .box   = { .width = t->out->width, .height = t->out->height },
+        .color = { 0, 0, 0, 0 },
+        .blend_mode = WLR_RENDER_BLEND_MODE_NONE,
+    });
+    // the walk gives the scene's places; the output's own is taken off
+    struct sheet_draw d = { pass, t->out->scale > 0 ? t->out->scale : 1.0,
+                            t->sout->x, t->sout->y };
+    wlr_scene_output_for_each_buffer(t->sout, sheet_buffer, &d);
+    bool ok = wlr_render_pass_submit(pass);
+    for (int i = 0; i < d.n; i++) wlr_texture_destroy(d.tex[i]);
+    return ok;
+}
+
 static void on_top_frame(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, frame_l);
+    centre_content(t);
     // asked a new size and not drawn at it yet: no frame of ours (it
     // would show its old picture in the new size, the rest black);
     // it may still draw. after 300 ms frames go on (a size it refused)
-    bool behind = !t->sheet && t->w > 0
+    bool behind = !t->sheet && !t->fixed && t->w > 0
         && (t->cw != lg(t, t->w) || t->ch != lg(t, t->h))
         && mono_now() - t->asked_at < 0.3;
     if (!behind) {
@@ -262,8 +354,9 @@ static void on_top_frame(struct wl_listener *l, void *data) {
         t->framing = true;
         // new buffers come at the new size, maybe at old addresses:
         // the shell's imports start over then, not at the ask
-        if (wlr_scene_output_build_state(t->sout, &st, NULL)
-            && wlr_output_commit_state(t->out, &st) && t->mode_w > 0) {
+        bool built = t->sheet ? sheet_render(t, &st)
+                   : wlr_scene_output_build_state(t->sout, &st, NULL);
+        if (built && wlr_output_commit_state(t->out, &st) && t->mode_w > 0) {
             t->mode_w = t->mode_h = 0;
             t->epoch += 1;
         }
@@ -674,8 +767,9 @@ static void gs_dbus(struct wl_client *c, struct wl_resource *r, const char *app_
         const char *app_menu, const char *menubar, const char *win_path,
         const char *app_path, const char *bus) {
     struct menu_ref *m = wl_resource_get_user_data(r);
-    if (!m || !menubar || !*menubar) return;
-    m->kind = 2;
+    if (!m || !bus || !*bus) return;
+    // 2: a menu bar; 3: actions only (a back the bar can show)
+    m->kind = (menubar && *menubar) ? 2 : 3;
     COPY(m->bus, bus); COPY(m->path, menubar);
     COPY(m->app_path, app_path); COPY(m->win_path, win_path);
 }
@@ -760,7 +854,8 @@ static int u_wlc_window_pid(uint64_t id);
 // its own process that is no dialog; 0 when none
 static uint64_t u_wlc_window_parent(uint64_t id) {
     struct toplevel *t = top_of(id), *p;
-    if (!t || !t->sheet) return 0;
+    if (!t) return 0;
+    // a parent named after its first commit counts too
     if (t->xdg && t->xdg->parent) {
         wl_list_for_each(p, &g_tops, link) if (p->xdg == t->xdg->parent) return p->id;
         return 0;
@@ -769,6 +864,7 @@ static uint64_t u_wlc_window_parent(uint64_t id) {
         wl_list_for_each(p, &g_tops, link) if (p->xw == t->xw->parent) return p->id;
         return 0;
     }
+    if (!t->sheet) return 0;
     int pid = u_wlc_window_pid(id);
     wl_list_for_each(p, &g_tops, link)
         if (p != t && !p->sheet && p->mapped && u_wlc_window_pid(p->id) == pid)
@@ -861,8 +957,9 @@ static void apply_sizes(void) {
         if (t->sheet) continue;
         if (t->want_w > 0 && (t->want_w != t->w || t->want_h != t->h)) {
             t->w = t->want_w; t->h = t->want_h;
-            t->asked_at = mono_now();
             t->mode_w = t->w; t->mode_h = t->h;
+            if (t->fixed) { centre_content(t); wlr_output_schedule_frame(t->out); continue; }
+            t->asked_at = mono_now();
             top_size(t, lg(t, t->w), lg(t, t->h));
         }
     }
@@ -1057,6 +1154,18 @@ WLC_API int wlc_create(int w, int h) {
     }
     if (!g_socket) { fprintf(stderr, "wayland: no socket\n"); return 0; }
     setenv("WAYLAND_DISPLAY", g_socket, 1);
+    // one path that outlives us (a hard link to the socket): a
+    // container bound to its folder finds each new orbiter there
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (rt) {
+        char dir[512], at[600], to[600];
+        snprintf(dir, sizeof dir, "%s/orbiter-wl", rt);
+        snprintf(at, sizeof at, "%s/%s", rt, g_socket);
+        snprintf(to, sizeof to, "%s/wayland-0", dir);
+        mkdir(dir, 0700);
+        unlink(to);
+        if (link(at, to) != 0) fprintf(stderr, "wayland: no link %s\n", to);
+    }
     if (!wlr_backend_start(g_backend)) { fprintf(stderr, "wayland: backend would not start\n"); return 0; }
     fprintf(stderr, "wayland: display %s, windows open at %dx%d\n", g_socket, w, h);
     pthread_create(&g_thread, NULL, loop_thread, NULL);
@@ -1479,10 +1588,13 @@ WLC_API uint64_t wlc_window_epoch(uint64_t id) { pthread_mutex_lock(&g_lock); ui
 WLC_API int wlc_window_drawn(uint64_t id) {
     pthread_mutex_lock(&g_lock);
     struct toplevel *t = top_of(id);
-    int r = t && t->cw == lg(t, t->w) && t->ch == lg(t, t->h);
+    int r = t && (t->fixed || (t->cw == lg(t, t->w) && t->ch == lg(t, t->h)));
     pthread_mutex_unlock(&g_lock);
     return r;
 }
+// an app of a fixed size (0 when it sizes to its pane), in pixels
+WLC_API int wlc_window_fixed_w(uint64_t id) { pthread_mutex_lock(&g_lock); struct toplevel *t = top_of(id); int r = (t && t->fixed) ? (int)lround(t->fw * ts(t)) : 0; pthread_mutex_unlock(&g_lock); return r; }
+WLC_API int wlc_window_fixed_h(uint64_t id) { pthread_mutex_lock(&g_lock); struct toplevel *t = top_of(id); int r = (t && t->fixed) ? (int)lround(t->fh * ts(t)) : 0; pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_w(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_w(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_h(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_h(id); pthread_mutex_unlock(&g_lock); return r; }
 WLC_API int wlc_window_csd(uint64_t id) { pthread_mutex_lock(&g_lock); int r = u_wlc_window_csd(id); pthread_mutex_unlock(&g_lock); return r; }

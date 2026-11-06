@@ -188,11 +188,17 @@ element aura : trinity
     persist engine_shm : string              # its frame file
     # where it was last: the start page when no src is given
     intern [ StatePersist ] last_src : string
+    # the page's own title, as it last said it
+    mutable page_title : string
     # --stats: page frames shown each second
     public  stats      : bool
     # page frames taken this second
     mutable shown      : i32
     mutable shown_at   : i64
+    # a host's own agent for the page (a sign-in that wants a phone)
+    public  agent      : string
+    # a host's file the helper writes the page's cookies into
+    public  cookie_file : string
 
     func init []
         animated  = true
@@ -242,6 +248,11 @@ element aura : trinity
         # the screen's refresh: the page's video ticks at it
         hz : string '{(ux) ? ux.refresh_hz[] : 60}'
         setenv[ 'TRINITY_VIDEO_HZ', hz.chars, 1 ]
+        unsetenv[ 'TRINITY_BROWSER_AGENT' ]
+        unsetenv[ 'TRINITY_BROWSER_COOKIES' ]
+        if [ agent ] setenv[ 'TRINITY_BROWSER_AGENT', agent.chars, 1 ]
+        if [ cookie_file ]
+            setenv[ 'TRINITY_BROWSER_COOKIES', cookie_file.chars, 1 ]
         # no death signal: a reload forks on a thread that soon ends.
         # the helper quits when its stdin closes, as it does if we die
         pid = fork[]
@@ -319,6 +330,7 @@ element aura : trinity
             if [ kind == 3 ]
                 t9 : string[ @tt[0] ]
                 log 'aura: title {t9}'
+                page_title = t9
                 set_title[ t9 ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
                                         @st, @off, @fd, @tt[0], 256 ]
@@ -422,6 +434,27 @@ element aura : trinity
             'mouse {kind} {x} {y} {ev.mouse.button} {held} {mods[ ev ]}' ]
 
     # the host's history arrows walk the page's history
+    # the page shown, kept as a card in aura's folder
+    action func bookmark_page []
+        if [ !last_src || last_src.count == 0 ] return
+        t : string (page_title && page_title.count > 0) ? page_title
+            : last_src
+        out : string ''
+        for [ ln: string ] in bookmark_lines[]
+            if [ !ln.starts_with[ '{last_src}\t' ] ] out = '{out}{ln}\n'
+        out = '{out}{last_src}\t{t}\n'
+        bookmark_save[ out ]
+        log 'aura: bookmarked {last_src}'
+
+    # the page shown, its card taken away
+    action func remove_bookmark []
+        if [ !last_src ] return
+        out : string ''
+        for [ ln: string ] in bookmark_lines[]
+            if [ !ln.starts_with[ '{last_src}\t' ] ] out = '{out}{ln}\n'
+        bookmark_save[ out ]
+        log 'aura: bookmark removed {last_src}'
+
     public func navigate [ dir: i32 ] -> bool
         post[ (dir < 0) ? 'nav back' : 'nav forward' ]
         return true
@@ -608,3 +641,92 @@ element AuraBar
         if [ !pg ] return
         pass[ ev ]
         pg.on_wheel[ ev ]
+
+# ---- bookmarks: 'address TAB title' a line ---------------------------
+
+func bookmarks_file [] -> string
+    home : string getenv[ 'HOME' ]
+    return '{home}/.local/share/aura/bookmarks.txt'
+
+func bookmark_lines [] -> vec string
+    res : vec string []
+    f : path [ bookmarks_file[] ]
+    if [ !f.exists[] ] return res
+    txt : string f.load[ typeid[string], null ]
+    if [ !txt ] return res
+    for [ ln: string ] in txt.split[ "\n" ]
+        if [ ln.index_of[ "\t" ] > 0 ] res.push[ ln ]
+    return res
+
+func bookmark_save [ txt: string ]
+    d : path [ '{getenv[ 'HOME' ]}/.local/share/aura' ]
+    d.make_dir[]
+    f : path [ bookmarks_file[] ]
+    f.save[ txt, null ]
+
+# a card name: the title's letters and digits, words joined by _
+func card_name [ title: string ] -> string
+    out : string ''
+    for [ part: string ] in title.lcase[].split[ " " ]
+        word : string ''
+        for [ i: i32 0, i < part.count, i += 1 ]
+            c : string part.mid[ i, 1 ]
+            if [ (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ]
+                word = '{word}{c}'
+        if [ word.count == 0 ] continue
+        out = (out.count > 0) ? '{out}_{word}' : word
+    return out
+
+# every bookmark a card in aura's folder of the apps screen; the
+# folder is made with none too (it keeps files out of it)
+export func aura_store []
+    ip : path.path_install[]
+    ins : string '{ip.absolute[]}'
+    store : string '{ins}/stores/aura'
+    sd : path [ store ]
+    sd.make_dir[]
+    made : map string [string] []
+    # the app runs in its view, whose home is install/home/aura
+    files : vec string [] [ bookmarks_file[],
+        '{ins}/home/aura/.local/share/aura/bookmarks.txt' ]
+    watch : string ''
+    for [ fn: string ] in files
+        watch = '{watch}{fn.mid[ 0, fn.count - 14 ]}\n'
+        f : path [ fn ]
+        if [ !f.exists[] ] continue
+        txt : string f.load[ typeid[string], null ]
+        if [ !txt ] continue
+        for [ ln: string ] in txt.split[ "\n" ]
+            tab : i32 [ ln.index_of[ "\t" ] ]
+            if [ tab <= 0 ] continue
+            url : string ln.mid[ 0, tab ]
+            title : string ln.mid[ tab + 1, ln.count - tab - 1 ]
+            name : card_name[ title ]
+            if [ name.count == 0 || made.get[ name ] ] continue
+            made[ name ] = name
+            body : string {
+                export 1.0.0
+                export software ['everyday']
+                export launch ['{url}']
+                export build none
+            }
+            by : 'a page aura keeps; aura wrote this'
+            src : string '# {title}: {by}\n{body.trim[]}\n'
+            mdir : string '{store}/{name}'
+            md : path [ mdir ]
+            md.make_dir[]
+            out : path '{mdir}/{name}.ag'
+            was : string (out.exists[])
+                ? out.load[ typeid[string], null ] : ''
+            if [ was == src ] continue
+            out.save[ src, null ]
+            log 'aura store: {title}'
+    wf : path '{store}/.watch'
+    wtxt : string (wf.exists[]) ? wf.load[ typeid[string], null ] : ''
+    if [ wtxt != watch ] wf.save[ watch, null ]
+    mods : sd.ls[ null, false ]
+    if [ !mods ] return
+    for [ d: path ] in mods
+        if [ !d.is_dir[] || made.get[ d.filename[] ] ] continue
+        rm : command { rm -rf '{d}' }
+        rm.exec[ false ]

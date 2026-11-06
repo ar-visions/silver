@@ -64,7 +64,11 @@ func wlc_window_epoch  [ id: u64 ] -> u64
 func wlc_window_w      [ id: u64 ] -> i32
 func wlc_window_drawn  [ id: u64 ] -> i32
 func wlc_window_h      [ id: u64 ] -> i32
-# its menu: 0 none, 1 dbusmenu, 2 GTK; then where it lives on D-Bus
+# an app of a fixed size (Android's), 0 when it fits its pane
+func wlc_window_fixed_w [ id: u64 ] -> i32
+func wlc_window_fixed_h [ id: u64 ] -> i32
+# its menu: 0 none, 1 dbusmenu, 2 GTK, 3 GTK actions alone (no
+# menu bar); then where it lives on D-Bus
 func wlc_window_menu_kind [ id: u64 ] -> i32
 func wlc_window_menu_bus  [ id: u64 ] -> cstr
 func wlc_window_menu_path [ id: u64 ] -> cstr
@@ -412,12 +416,8 @@ element WaylandView
                               a: 0.25 * sheet_at ] ]
         cv.rect_to[ vp.x, vp.y, vp.w, vp.h ]
         cv.paint[]
-        cv.box_shadow[ rgba [ '#000000aa' ], 0.0, 6.0, 24.0, 0.0,
-                       false ]
-        cv.fill_color[ rgba [ '#000000ff' ] ]
-        cv.rect_to[ sheet_x, sheet_y, sheet_w, sheet_h ]
-        cv.paint[]
-        cv.no_shadows[]
+        # its own clear parts show the window under it (an Android
+        # sheet is all clear but the sheet), so no box goes behind it
         cv.draw_image_crop[ t, rect [ x: sheet_x, y: sheet_y,
                                       w: sheet_w, h: sheet_h ],
             0.0, 0.0, sheet_w * k / tw, sheet_h * k / th ]

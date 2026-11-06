@@ -375,6 +375,13 @@ static void shm_create(void) {
 
 // place the channel memfd at the fixed child fd number and name it in env.
 // call inside a spawn's file-actions + env build.
+// a child's own values: an inherited copy would come first to getenv
+static int env_set_here(const char* e) {
+    return strncmp(e, "SILVER_SUPERVISOR=", 18) == 0
+        || strncmp(e, "SILVER_SHM_FD=", 14) == 0
+        || strncmp(e, "SILVER_APP_SLOT=", 16) == 0;
+}
+
 static void shm_inherit(posix_spawn_file_actions_t* fa, char* fdenv, size_t cap) {
     if (g_shm_fd >= 0)
         posix_spawn_file_actions_adddup2(fa, g_shm_fd, SILVER_SHM_CHILD_FD);
@@ -429,14 +436,16 @@ static pid_t isolate_spawn(void) {
     int n = 0;
     while (environ[n]) n++;
     char** cenv = malloc((n + 4) * sizeof(char*));
-    memcpy(cenv, environ, n * sizeof(char*));
+    int ce = 0;
+    for (int i = 0; i < n; i++)
+        if (!env_set_here(environ[i])) cenv[ce++] = environ[i];
     // the supervisor: the app dies with it (its death signal, main)
     static char supenv[32];
     snprintf(supenv, sizeof(supenv), "SILVER_SUPERVISOR=%d", (int)getpid());
-    cenv[n]     = ISOLATE_CHILD_ENV "=1";
-    cenv[n + 1] = fdenv;
-    cenv[n + 2] = supenv;
-    cenv[n + 3] = NULL;
+    cenv[ce++] = ISOLATE_CHILD_ENV "=1";
+    cenv[ce++] = fdenv;
+    cenv[ce++] = supenv;
+    cenv[ce]   = NULL;
     pid_t pid = 0;
     // /proc is linux only: the same binary is what main resolved
     int sp = posix_spawn(&pid, g_exe_path[0] ? g_exe_path : "/proc/self/exe", &fa, NULL, cargv, cenv);
@@ -551,7 +560,8 @@ static void spawn_slot_app(int k, const char* bindir) {
     // skips its own supervision and never reports to us
     int ce = 0;
     for (int i = 0; i < n; i++)
-        if (strncmp(environ[i], "SILVER_ISOLATE", 14) != 0) cenv[ce++] = environ[i];
+        if (strncmp(environ[i], "SILVER_ISOLATE", 14) != 0
+            && !env_set_here(environ[i])) cenv[ce++] = environ[i];
     // an instance is ours: no supervisor of its own
     cenv[ce++] = (char*)"SILVER_ISOLATE=0";
     cenv[ce++] = fdenv;
@@ -1543,6 +1553,28 @@ static int view_tmpfs(const char* dst, const char* mode) {
     return mount("tmpfs", at, "tmpfs", MS_NOSUID | MS_NODEV, mode);
 }
 
+// the covers over every app's home and tmp, under root
+static void view_covers(const char* root, int ro) {
+    const char* own[] = { "/install/home", "/install/tmp" };
+    struct mount_attr ma = { 0 };
+    if (ro) ma.attr_set = MOUNT_ATTR_RDONLY;
+    else ma.attr_clr = MOUNT_ATTR_RDONLY;
+    char q[4600];
+    for (size_t i = 0; i < sizeof(own) / sizeof(*own); i++) {
+        snprintf(q, sizeof(q), "%s%s%s", root, SILVER_ROOT, own[i]);
+        mount_setattr(AT_FDCWD, q, 0, &ma, sizeof(ma));
+    }
+}
+
+// its mount point, in a cover too (read only but for this)
+static void view_point(const char* at, int dir, const char* root) {
+    view_covers(root, 0);
+    unlink(at);
+    rmdir(at);
+    if (dir) view_mkdirs(at, 0755); else view_touch(at);
+    view_covers(root, 1);
+}
+
 // a share, made read only before it reaches the view
 static int view_graft(const char* src, const char* at, int dir, int rw) {
     unsigned fl = OPEN_TREE_CLONE | OPEN_TREE_CLOEXEC |
@@ -1556,9 +1588,10 @@ static int view_graft(const char* src, const char* at, int dir, int rw) {
         .attr_set = (rw ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID };
     mount_setattr(fd, "", AT_EMPTY_PATH | (dir ? AT_RECURSIVE : 0), &ma,
         sizeof(ma));
-    unlink(at);
-    rmdir(at);
-    if (dir) view_mkdirs(at, 0755); else view_touch(at);
+    // at is under VIEW_ROOT before the view's pivot, else at its path
+    size_t vr = strlen(VIEW_ROOT);
+    view_point(at, dir, strncmp(at, VIEW_ROOT "/", vr + 1) == 0 ?
+        VIEW_ROOT : "");
     int r = move_mount(fd, "", AT_FDCWD, at, MOVE_MOUNT_F_EMPTY_PATH);
     if (r != 0)
         fprintf(stderr, "view: share %s: %s\n", src, strerror(errno));
@@ -1592,6 +1625,39 @@ static void view_home(const char* app, const char* home) {
                     to);
         }
     }
+}
+
+// a host path into a running view from outside it (a joiner):
+// a copy of the host's mounts its user space owns gives the clone
+static int view_graft_into(pid_t keep, const char* src) {
+    struct stat st;
+    if (stat(src, &st) != 0) return -1;
+    pid_t c = fork();
+    if (c < 0) return -1;
+    if (c == 0) {
+        char ns[64];
+        snprintf(ns, sizeof(ns), "/proc/%d/ns/user", (int)keep);
+        int u = open(ns, O_RDONLY | O_CLOEXEC);
+        snprintf(ns, sizeof(ns), "/proc/%d/ns/mnt", (int)keep);
+        int m = open(ns, O_RDONLY | O_CLOEXEC);
+        if (u < 0 || m < 0 || setns(u, CLONE_NEWUSER) != 0 ||
+            unshare(CLONE_NEWNS) != 0) _exit(1);
+        int dir = S_ISDIR(st.st_mode);
+        int fd = open_tree(AT_FDCWD, src, OPEN_TREE_CLONE |
+            OPEN_TREE_CLOEXEC | (dir ? AT_RECURSIVE : 0));
+        if (fd < 0 || setns(m, CLONE_NEWNS) != 0) _exit(1);
+        struct mount_attr ma = {
+            .attr_set = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID };
+        mount_setattr(fd, "", AT_EMPTY_PATH | (dir ? AT_RECURSIVE : 0),
+            &ma, sizeof(ma));
+        umount2(src, MNT_DETACH);
+        view_point(src, dir, "");
+        _exit(move_mount(fd, "", AT_FDCWD, src,
+            MOVE_MOUNT_F_EMPTY_PATH) != 0);
+    }
+    int ws = 0;
+    while (waitpid(c, &ws, 0) < 0 && errno == EINTR) {}
+    return WIFEXITED(ws) && WEXITSTATUS(ws) == 0 ? 0 : -1;
 }
 
 // the holder makes the process space its children live in
@@ -1677,10 +1743,12 @@ static int bound_under(const char* p, const char* dir) {
 // the view shows it as it is on the host
 static int bound_reaches(const char* p) {
     const char* own[] = { "/install/home", "/install/tmp" };
-    char d[4300];
+    char d[4300], r[4096];
     for (size_t i = 0; i < sizeof(own) / sizeof(*own); i++) {
         snprintf(d, sizeof(d), "%s%s", SILVER_ROOT, own[i]);
-        if (bound_under(p, d)) return 0;
+        // install is a link: p is resolved, so the cover is too
+        if (bound_under(p, d) ||
+            (realpath(d, r) && bound_under(p, r))) return 0;
     }
     const char* seen[] = { SILVER_ROOT, "/usr", "/etc", "/opt" };
     for (size_t i = 0; i < sizeof(seen) / sizeof(*seen); i++)
@@ -2153,7 +2221,23 @@ static void bound_lock(const char* app, int argc, char** argv) {
     const int fwd[] = { SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1,
                         SIGUSR2 };
     int bp[2], sp[2];
+    // the launch line's paths, found while the host's tree is seen
+    char** found = calloc(argc, sizeof(char*));
+    char real[4096];
+    for (int i = 1; i < argc; i++)
+        if (argv[i][0] == '/' && realpath(argv[i], real) &&
+            strcmp(real, "/") != 0 && !bound_reaches(real))
+            found[i] = strdup(real);
     if (keep) {
+        // a joiner's paths go into the view it joins
+        for (int i = 1; i < argc; i++) {
+            if (!found[i]) continue;
+            if (view_graft_into(keep, found[i]) == 0)
+                fprintf(stderr, "silver-host: %s shared into %s's view\n",
+                    found[i], app);
+            free(found[i]);
+        }
+        free(found);
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
             pipe2(sp, O_CLOEXEC) != 0) exit(1);
         // before the fork: the app's first message (pid) carries its
@@ -2174,13 +2258,6 @@ static void bound_lock(const char* app, int argc, char** argv) {
         close(sp[0]);
         view_join(keep, sp[1], bp[1]);
     } else {
-        // the launch line's paths, found while the host's tree is seen
-        char** found = calloc(argc, sizeof(char*));
-        char real[4096];
-        for (int i = 1; i < argc; i++)
-            if (argv[i][0] == '/' && realpath(argv[i], real) &&
-                strcmp(real, "/") != 0 && !bound_reaches(real))
-                found[i] = strdup(real);
         if (unshare(CLONE_NEWUSER | CLONE_NEWNS) != 0) {
             fprintf(stderr, "silver-host: no private view for %s: %s\n", app,
                 strerror(errno));

@@ -6,6 +6,7 @@ export software ['games']
 
 import trinity
 import vec
+import cpu65
 import spectra
 import <stdio.h>
 import <stdlib.h>
@@ -16,17 +17,16 @@ import <unistd.h>
 import <pthread.h>
 import <math.h>
 
-class cpu6502_state
-	a              : u8
-	x              : u8
-	y              : u8
-	# The CPU brought snacks: 8-bit chips.
-	sp             : u8
-	p              : u8                # NV-BDIZC
-	pc             : u16
-	cycles         : i64
-	nmi_pending    : bool
+# the NES's 2A03: the shared 6502 on the NES's bus
+Cpu65 NesCpu
+	manual nes     : knes
 	ram            : new u8 [ 0x800 ]  # 2 KB, mirrored to $1FFF
+
+	func rd [ addr: u32 ] -> u8
+		return nes.bus_rd[ addr ]
+
+	func wr [ addr: u32, v: u8 ] -> none
+		nes.bus_wr[ addr, v ]
 
 class nes_ppu
 	# 2 KB nametable RAM (mirrored via cart)
@@ -125,7 +125,7 @@ element knes : trinity
 	public  se_2d        : bool
 	# sharp-bilinear hard squares
 	public  blocky       : bool
-	mutable cpu          : cpu6502_state
+	mutable cpu          : NesCpu
 	mutable ppu          : nes_ppu
 	mutable apu          : nes_apu
 	mutable audio        : AudioOut
@@ -205,8 +205,6 @@ element knes : trinity
 	mutable icount       : i64
 	mutable mclk_carry   : i64
 	mutable sample_frac  : i64
-	# page-cross penalty from addr helpers
-	mutable xtra         : i32
 	mutable save_req     : bool
 	mutable load_req     : bool
 	mutable st_hdr       : new u32 [ 16 ]
@@ -380,7 +378,7 @@ element knes : trinity
 		lh : f32 [ cv.get_line_height[] ]
 		y : f32 [ vp.y + 6.0 ]
 		cv.fill_color[ '#8fd0ff' ]
-		regs : 'PC={hex4[ u32[ cpu.pc ] ]}  A={hex2[ u32[ cpu.a ] ]} X={hex2[ u32[ cpu.x ] ]} Y={hex2[ u32[ cpu.y ] ]} SP={hex2[ u32[ cpu.sp ] ]} P={hex2[ u32[ cpu.p ] ]}'
+		regs : 'PC={hex4[ u32[ cpu.pc ] ]}  A={hex2[ u32[ cpu.acc ] ]} X={hex2[ u32[ cpu.x ] ]} Y={hex2[ u32[ cpu.y ] ]} SP={hex2[ u32[ cpu.sp ] ]} P={hex2[ u32[ cpu.p ] ]}'
 		cv.draw_text[ regs, rect [ x: vp.x + 10.0, y: y, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
 		y = y + lh * 1.4
 		addr : u32 [ cpu.pc ]
@@ -864,434 +862,6 @@ element knes : trinity
 			m1_shift = 0
 			m1_count = 0
 
-	func rd16 [ a2: u32 ] -> u32
-		return u32[ bus_rd[ a2 ] ] | (u32[ bus_rd[ a2 + 1 ] ] << 8)
-
-	func push8 [ v: u8 ] -> none
-		bus_wr[ 0x100 + u32[ cpu.sp ], v ]
-		cpu.sp = cpu.sp - 1
-
-	func pull8 [] -> u8
-		cpu.sp = cpu.sp + 1
-		return bus_rd[ 0x100 + u32[ cpu.sp ] ]
-
-	func set_zn [ v: u32 ] -> none
-		p : u8 [ cpu.p & 0x7D ]
-		if [ (v & 0xFF) == 0 ] p = p | 0x02
-		if [ (v & 0x80) != 0 ] p = p | 0x80
-		cpu.p = p
-
-	func fetch8 [] -> u32
-		v : u32 [ bus_rd[ u32[ cpu.pc ] ] ]
-		cpu.pc = cpu.pc + 1
-		return v
-
-	func fetch16 [] -> u32
-		lo : u32 [ fetch8[] ]
-		return lo | (fetch8[] << 8)
-
-	# addressing helpers; set xtra=1 on page cross for +1 modes
-	func a_zp  [] -> u32
-		return fetch8[]
-	func a_zpx [] -> u32
-		return (fetch8[] + u32[ cpu.x ]) & 0xFF
-	func a_zpy [] -> u32
-		return (fetch8[] + u32[ cpu.y ]) & 0xFF
-	func a_abs [] -> u32
-		return fetch16[]
-	func a_abx [] -> u32
-		b : u32 [ fetch16[] ]
-		r : u32 [ (b + u32[ cpu.x ]) & 0xFFFF ]
-		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
-		return r
-	func a_aby [] -> u32
-		b : u32 [ fetch16[] ]
-		r : u32 [ (b + u32[ cpu.y ]) & 0xFFFF ]
-		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
-		return r
-	func a_izx [] -> u32
-		z : u32 [ (fetch8[] + u32[ cpu.x ]) & 0xFF ]
-		return u32[ bus_rd[ z ] ] | (u32[ bus_rd[ (z + 1) & 0xFF ] ] << 8)
-	func a_izy [] -> u32
-		z : u32 [ fetch8[] ]
-		b : u32 [ u32[ bus_rd[ z ] ] | (u32[ bus_rd[ (z + 1) & 0xFF ] ] << 8) ]
-		r : u32 [ (b + u32[ cpu.y ]) & 0xFFFF ]
-		if [ (b & 0xFF00) != (r & 0xFF00) ] xtra = 1
-		return r
-
-	func op_adc [ v: u32 ] -> none
-		aa : u32 [ cpu.a ]
-		c : u32 [ u32[ cpu.p ] & 1 ]
-		r : u32 [ aa + v + c ]
-		p : u8 [ cpu.p & 0x3C ]
-		if [ (r & 0x100) != 0 ] p = p | 0x01
-		if [ (((aa ^ r) & (v ^ r)) & 0x80) != 0 ] p = p | 0x40
-		if [ (r & 0xFF) == 0 ] p = p | 0x02
-		if [ (r & 0x80) != 0 ] p = p | 0x80
-		cpu.p = p
-		cpu.a = u8[ r & 0xFF ]
-
-	func op_cmp [ reg: u32, v: u32 ] -> none
-		r : u32 [ (reg - v) & 0x1FF ]
-		p : u8 [ cpu.p & 0x7C ]
-		if [ reg >= v ] p = p | 0x01
-		if [ (r & 0xFF) == 0 ] p = p | 0x02
-		if [ (r & 0x80) != 0 ] p = p | 0x80
-		cpu.p = p
-
-	func op_branch [ cond: bool ] -> i32
-		d : i32 [ i8[ u8[ fetch8[] ] ] ]
-		if [ ! cond ] return 2
-		np : u32 [ (u32[ cpu.pc ] + u32[ d ]) & 0xFFFF ]
-		c : i32 [ ((np & 0xFF00) != (u32[ cpu.pc ] & 0xFF00)) ? 4 : 3 ]
-		cpu.pc = u16[ np ]
-		return c
-
-	func nmi_take [] -> i32
-		push8[ u8[ (cpu.pc >> 8) & 0xFF ] ]
-		push8[ u8[ cpu.pc & 0xFF ] ]
-		push8[ (cpu.p & 0xEF) | 0x20 ]
-		cpu.p = cpu.p | 0x04
-		cpu.pc = u16[ rd16[ 0xFFFA ] ]
-		return 7
-
-	func cpu_reset [] -> none
-		cpu.sp = 0xFD
-		cpu.p  = 0x24
-		cpu.pc = u16[ rd16[ 0xFFFC ] ]
-		log 'knes: reset pc={cpu.pc}'
-
-	# one instruction; returns CPU cycles
-	func cpu_step [] -> i32
-		if [ cpu.nmi_pending ]
-			cpu.nmi_pending = false
-			return nmi_take[]
-		op : u32 [ fetch8[] ]
-		xtra = 0
-		# ---- singles ----
-		if [ op == 0xEA ] return 2                 # NOP
-		if [ op == 0x4C ]                          # JMP abs
-			cpu.pc = u16[ fetch16[] ]
-			return 3
-		# JMP (ind) — 6502 page bug
-		if [ op == 0x6C ]
-			pa : u32 [ fetch16[] ]
-			lo : u32 [ bus_rd[ pa ] ]
-			hi : u32 [ bus_rd[ (pa & 0xFF00) | ((pa + 1) & 0xFF) ] ]
-			cpu.pc = u16[ lo | (hi << 8) ]
-			return 5
-		if [ op == 0x20 ]                          # JSR
-			t : u32 [ fetch16[] ]
-			ra : u32 [ (u32[ cpu.pc ] - 1) & 0xFFFF ]
-			push8[ u8[ (ra >> 8) & 0xFF ] ]
-			push8[ u8[ ra & 0xFF ] ]
-			cpu.pc = u16[ t ]
-			return 6
-		if [ op == 0x60 ]                          # RTS
-			lo2 : u32 [ pull8[] ]
-			hi2 : u32 [ pull8[] ]
-			cpu.pc = u16[ ((lo2 | (hi2 << 8)) + 1) & 0xFFFF ]
-			return 6
-		if [ op == 0x40 ]                          # RTI
-			cpu.p = (pull8[] & 0xEF) | 0x20
-			lo3 : u32 [ pull8[] ]
-			hi3 : u32 [ pull8[] ]
-			cpu.pc = u16[ lo3 | (hi3 << 8) ]
-			return 6
-		if [ op == 0x00 ]                          # BRK
-			cpu.pc = cpu.pc + 1
-			push8[ u8[ (cpu.pc >> 8) & 0xFF ] ]
-			push8[ u8[ cpu.pc & 0xFF ] ]
-			push8[ cpu.p | 0x30 ]
-			cpu.p = cpu.p | 0x04
-			cpu.pc = u16[ rd16[ 0xFFFE ] ]
-			return 7
-		if [ op == 0x08 ]                          # PHP
-			push8[ cpu.p | 0x30 ]
-			return 3
-		if [ op == 0x28 ]                          # PLP
-			cpu.p = (pull8[] & 0xEF) | 0x20
-			return 4
-		if [ op == 0x48 ]                          # PHA
-			push8[ cpu.a ]
-			return 3
-		if [ op == 0x68 ]                          # PLA
-			cpu.a = pull8[]
-			set_zn[ u32[ cpu.a ] ]
-			return 4
-		if [ op == 0x18 ]
-			cpu.p = cpu.p & 0xFE
-			return 2                               # CLC
-		if [ op == 0x38 ]
-			cpu.p = cpu.p | 0x01
-			return 2                               # SEC
-		if [ op == 0x58 ]
-			cpu.p = cpu.p & 0xFB
-			return 2                               # CLI
-		if [ op == 0x78 ]
-			cpu.p = cpu.p | 0x04
-			return 2                               # SEI
-		if [ op == 0xB8 ]
-			cpu.p = cpu.p & 0xBF
-			return 2                               # CLV
-		if [ op == 0xD8 ]
-			cpu.p = cpu.p & 0xF7
-			return 2                               # CLD
-		if [ op == 0xF8 ]
-			cpu.p = cpu.p | 0x08
-			return 2                               # SED
-		if [ op == 0xAA ]
-			cpu.x = cpu.a
-			set_zn[ u32[ cpu.x ] ]
-			return 2                               # TAX
-		if [ op == 0x8A ]
-			cpu.a = cpu.x
-			set_zn[ u32[ cpu.a ] ]
-			return 2                               # TXA
-		if [ op == 0xA8 ]
-			cpu.y = cpu.a
-			set_zn[ u32[ cpu.y ] ]
-			return 2                               # TAY
-		if [ op == 0x98 ]
-			cpu.a = cpu.y
-			set_zn[ u32[ cpu.a ] ]
-			return 2                               # TYA
-		if [ op == 0xBA ]
-			cpu.x = cpu.sp
-			set_zn[ u32[ cpu.x ] ]
-			return 2                               # TSX
-		if [ op == 0x9A ]
-			cpu.sp = cpu.x
-			return 2                               # TXS
-		if [ op == 0xE8 ]
-			cpu.x = cpu.x + 1
-			set_zn[ u32[ cpu.x ] ]
-			return 2                               # INX
-		if [ op == 0xC8 ]
-			cpu.y = cpu.y + 1
-			set_zn[ u32[ cpu.y ] ]
-			return 2                               # INY
-		if [ op == 0xCA ]
-			cpu.x = cpu.x - 1
-			set_zn[ u32[ cpu.x ] ]
-			return 2                               # DEX
-		if [ op == 0x88 ]
-			cpu.y = cpu.y - 1
-			set_zn[ u32[ cpu.y ] ]
-			return 2                               # DEY
-		# BPL
-		if [ op == 0x10 ] return op_branch[ (cpu.p & 0x80) == 0 ]
-		# BMI
-		if [ op == 0x30 ] return op_branch[ (cpu.p & 0x80) != 0 ]
-		# BVC
-		if [ op == 0x50 ] return op_branch[ (cpu.p & 0x40) == 0 ]
-		# BVS
-		if [ op == 0x70 ] return op_branch[ (cpu.p & 0x40) != 0 ]
-		# BCC
-		if [ op == 0x90 ] return op_branch[ (cpu.p & 0x01) == 0 ]
-		# BCS
-		if [ op == 0xB0 ] return op_branch[ (cpu.p & 0x01) != 0 ]
-		# BNE
-		if [ op == 0xD0 ] return op_branch[ (cpu.p & 0x02) == 0 ]
-		# BEQ
-		if [ op == 0xF0 ] return op_branch[ (cpu.p & 0x02) != 0 ]
-		if [ op == 0x24 || op == 0x2C ]            # BIT zp/abs
-			ba : u32 [ (op == 0x24) ? a_zp[] : a_abs[] ]
-			bv : u32 [ bus_rd[ ba ] ]
-			p2 : u8 [ cpu.p & 0x3D ]
-			if [ (bv & u32[ cpu.a ]) == 0 ] p2 = p2 | 0x02
-			p2 = p2 | u8[ bv & 0xC0 ]
-			cpu.p = p2
-			return (op == 0x24) ? 3 : 4
-		# LDY/STY/CPY/CPX
-		if [ op == 0xA0 ]
-			cpu.y = u8[ fetch8[] ]
-			set_zn[ u32[ cpu.y ] ]
-			return 2
-		if [ op == 0xA4 || op == 0xB4 || op == 0xAC || op == 0xBC ]
-			la : u32 [ 0 ]
-			lc : i32 [ 0 ]
-			if [ op == 0xA4 ]
-				la = a_zp[]
-				lc = 3
-			el [ op == 0xB4 ]
-				la = a_zpx[]
-				lc = 4
-			el [ op == 0xAC ]
-				la = a_abs[]
-				lc = 4
-			el
-				la = a_abx[]
-				lc = 4 + xtra
-			cpu.y = bus_rd[ la ]
-			set_zn[ u32[ cpu.y ] ]
-			return lc
-		if [ op == 0x84 || op == 0x94 || op == 0x8C ]
-			sa : u32 [ 0 ]
-			if [ op == 0x84 ] sa = a_zp[]
-			el [ op == 0x94 ] sa = a_zpx[]
-			el sa = a_abs[]
-			bus_wr[ sa, cpu.y ]
-			return (op == 0x84) ? 3 : 4
-		if [ op == 0xC0 || op == 0xC4 || op == 0xCC ]
-			cv : u32 [ 0 ]
-			cc2 : i32 [ 2 ]
-			if [ op == 0xC0 ] cv = fetch8[]
-			el [ op == 0xC4 ]
-				cv = u32[ bus_rd[ a_zp[] ] ]
-				cc2 = 3
-			el
-				cv = u32[ bus_rd[ a_abs[] ] ]
-				cc2 = 4
-			op_cmp[ u32[ cpu.y ], cv ]
-			return cc2
-		if [ op == 0xE0 || op == 0xE4 || op == 0xEC ]
-			xv : u32 [ 0 ]
-			xc : i32 [ 2 ]
-			if [ op == 0xE0 ] xv = fetch8[]
-			el [ op == 0xE4 ]
-				xv = u32[ bus_rd[ a_zp[] ] ]
-				xc = 3
-			el
-				xv = u32[ bus_rd[ a_abs[] ] ]
-				xc = 4
-			op_cmp[ u32[ cpu.x ], xv ]
-			return xc
-		# ---- cc=01 ALU block ----
-		cc : u32 [ op & 3 ]
-		aaa : u32 [ (op >> 5) & 7 ]
-		bbb : u32 [ (op >> 2) & 7 ]
-		if [ cc == 1 ]
-			ea : u32 [ 0 ]
-			cyc : i32 [ 0 ]
-			imm : bool [ false ]
-			iv : u32 [ 0 ]
-			if [ bbb == 0 ]
-				ea = a_izx[]
-				cyc = 6
-			el [ bbb == 1 ]
-				ea = a_zp[]
-				cyc = 3
-			el [ bbb == 2 ]
-				imm = true
-				iv = fetch8[]
-				cyc = 2
-			el [ bbb == 3 ]
-				ea = a_abs[]
-				cyc = 4
-			el [ bbb == 4 ]
-				ea = a_izy[]
-				cyc = 5 + xtra
-			el [ bbb == 5 ]
-				ea = a_zpx[]
-				cyc = 4
-			el [ bbb == 6 ]
-				ea = a_aby[]
-				cyc = 4 + xtra
-			el
-				ea = a_abx[]
-				cyc = 4 + xtra
-			# STA (no page-cross bonus)
-			if [ aaa == 4 ]
-				if [ bbb == 4 ] cyc = 6
-				if [ bbb == 6 || bbb == 7 ] cyc = 5
-				bus_wr[ ea, cpu.a ]
-				return cyc
-			v : u32 [ (imm) ? iv : u32[ bus_rd[ ea ] ] ]
-			if [ aaa == 0 ]
-				cpu.a = cpu.a | u8[ v ]
-				set_zn[ u32[ cpu.a ] ]
-			el [ aaa == 1 ]
-				cpu.a = cpu.a & u8[ v ]
-				set_zn[ u32[ cpu.a ] ]
-			el [ aaa == 2 ]
-				cpu.a = cpu.a ^ u8[ v ]
-				set_zn[ u32[ cpu.a ] ]
-			el [ aaa == 3 ] op_adc[ v ]
-			el [ aaa == 5 ]
-				cpu.a = u8[ v ]
-				set_zn[ v ]
-			el [ aaa == 6 ] op_cmp[ u32[ cpu.a ], v ]
-			el op_adc[ v ^ 0xFF ]                  # SBC = ADC ~v
-			return cyc
-		# ---- cc=10: shifts / LDX / STX / INC / DEC ----
-		if [ cc == 2 ]
-			if [ aaa == 5 ]                        # LDX
-				la2 : u32 [ 0 ]
-				lc2 : i32 [ 0 ]
-				if [ bbb == 0 ]
-					cpu.x = u8[ fetch8[] ]
-					set_zn[ u32[ cpu.x ] ]
-					return 2
-				if [ bbb == 1 ]
-					la2 = a_zp[]
-					lc2 = 3
-				el [ bbb == 3 ]
-					la2 = a_abs[]
-					lc2 = 4
-				el [ bbb == 5 ]
-					la2 = a_zpy[]
-					lc2 = 4
-				el
-					la2 = a_aby[]
-					lc2 = 4 + xtra
-				cpu.x = bus_rd[ la2 ]
-				set_zn[ u32[ cpu.x ] ]
-				return lc2
-			if [ aaa == 4 ]                        # STX
-				sa2 : u32 [ 0 ]
-				if [ bbb == 1 ] sa2 = a_zp[]
-				el [ bbb == 5 ] sa2 = a_zpy[]
-				el sa2 = a_abs[]
-				bus_wr[ sa2, cpu.x ]
-				return (bbb == 1) ? 3 : 4
-			# RMW: ASL ROL LSR ROR DEC INC (+ accumulator forms)
-			acc : bool [ bbb == 2 ]
-			ea2 : u32 [ 0 ]
-			rc : i32 [ 2 ]
-			if [ ! acc ]
-				if [ bbb == 1 ]
-					ea2 = a_zp[]
-					rc = 5
-				el [ bbb == 3 ]
-					ea2 = a_abs[]
-					rc = 6
-				el [ bbb == 5 ]
-					ea2 = a_zpx[]
-					rc = 6
-				el
-					ea2 = a_abx[]
-					rc = 7
-			v2 : u32 [ (acc) ? u32[ cpu.a ] : u32[ bus_rd[ ea2 ] ] ]
-			c : u32 [ u32[ cpu.p ] & 1 ]
-			nc : u32 [ 0 ]
-			if [ aaa == 0 ]                        # ASL
-				nc = (v2 >> 7) & 1
-				v2 = (v2 << 1) & 0xFF
-			el [ aaa == 1 ]                        # ROL
-				nc = (v2 >> 7) & 1
-				v2 = ((v2 << 1) | c) & 0xFF
-			el [ aaa == 2 ]                        # LSR
-				nc = v2 & 1
-				v2 = v2 >> 1
-			el [ aaa == 3 ]                        # ROR
-				nc = v2 & 1
-				v2 = (v2 >> 1) | (c << 7)
-			el [ aaa == 6 ]                        # DEC
-				v2 = (v2 - 1) & 0xFF
-				nc = c
-			el [ aaa == 7 ]                        # INC
-				v2 = (v2 + 1) & 0xFF
-				nc = c
-			el return 2                            # unhandled slot
-			cpu.p = (cpu.p & 0xFE) | u8[ nc ]
-			set_zn[ v2 ]
-			if [ acc ] cpu.a = u8[ v2 ]
-			el bus_wr[ ea2, u8[ v2 ] ]
-			return rc
-		if [ trace ] log 'knes 6502: unhandled opcode {op}'
-		return 2
-
 	func apu_wr [ a2: u32, v: u8 ] -> none
 		r : u32 [ a2 & 0x1F ]
 		if [ r <= 7 ]                              # pulse 1/2
@@ -1578,7 +1148,7 @@ element knes : trinity
 			budget : i64 [ 1364 + mclk_carry ]     # 341 dots * 4 master
 			spent  : i64 [ 0 ]
 			while [ spent < budget ]
-				cyc : i32 [ cpu_step[] ]
+				cyc : i32 [ cpu.step[] ]
 				spent += i64[ cyc * 12 ]
 			mclk_carry = budget - spent
 		# render from this frame's snapshots
@@ -1607,7 +1177,7 @@ element knes : trinity
 		spx : rom.change_ext[ 'state' ]
 		f : @FILE [ fopen[ spx, 'wb' ] ]
 		if [ ! f ] return
-		st_hdr[ 0 ] = u32[ cpu.a ]
+		st_hdr[ 0 ] = u32[ cpu.acc ]
 		st_hdr[ 1 ] = u32[ cpu.x ]
 		st_hdr[ 2 ] = u32[ cpu.y ]
 		st_hdr[ 3 ] = u32[ cpu.sp ]
@@ -1639,7 +1209,7 @@ element knes : trinity
 			log 'knes: no state file'
 			return
 		fread[ st_hdr, 4, 16, f ]
-		cpu.a = u8[ st_hdr[ 0 ] ]
+		cpu.acc = u8[ st_hdr[ 0 ] ]
 		cpu.x = u8[ st_hdr[ 1 ] ]
 		cpu.y = u8[ st_hdr[ 2 ] ]
 		cpu.sp = u8[ st_hdr[ 3 ] ]
@@ -1860,7 +1430,7 @@ element knes : trinity
 		dis_prepare[]
 		s : string 'NES emulator paused ({rom}) — machine context\n'
 		s = s + 'frame {frames}, cpu cycles {cpu.cycles}\n'
-		s = s + '6502: PC=${hex4[ u32[ cpu.pc ] ]} A=${hex2[ u32[ cpu.a ] ]} X=${hex2[ u32[ cpu.x ] ]} Y=${hex2[ u32[ cpu.y ] ]} SP=${hex2[ u32[ cpu.sp ] ]} P=${hex2[ u32[ cpu.p ] ]} (NV-BDIZC)\n'
+		s = s + '6502: PC=${hex4[ u32[ cpu.pc ] ]} A=${hex2[ u32[ cpu.acc ] ]} X=${hex2[ u32[ cpu.x ] ]} Y=${hex2[ u32[ cpu.y ] ]} SP=${hex2[ u32[ cpu.sp ] ]} P=${hex2[ u32[ cpu.p ] ]} (NV-BDIZC)\n'
 		s = s + 'PPU: ctrl=${hex2[ u32[ ppu.ctrl ] ]} mask=${hex2[ u32[ ppu.mask ] ]} status=${hex2[ u32[ ppu.status ] ]}  pad=${hex2[ pad_st ]}\n'
 		s = s + 'disassembly from PC:\n'
 		daddr : u32 [ cpu.pc ]
@@ -1871,7 +1441,8 @@ element knes : trinity
 		return s
 
 	func boot [] -> none
-		cpu = cpu6502_state []
+		cpu = NesCpu []
+		cpu.nes = a
 		ppu = nes_ppu []
 		apu = nes_apu []
 		audio = AudioOut [ sample_rate: 53267, channels: 2, buffer_size: 1024 ]
@@ -1943,7 +1514,8 @@ element knes : trinity
 		if [ rom ]
 			load_cart[]
 			if [ prg ]
-				cpu_reset[]
+				cpu.reset[]
+				log 'knes: reset pc={cpu.pc}'
 				if [ resume ] state_read[]
 		booted = true
 
