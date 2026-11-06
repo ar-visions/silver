@@ -62,6 +62,7 @@ const char* platform_surface_extension(void) { return "VK_KHR_win32_surface"; }
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
 int platform_kms_open(int minor) { return -1; }
+float platform_kms_density(int minor) { return 0.0f; }
 int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
 void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
@@ -663,6 +664,7 @@ const char* platform_surface_extension(void) { return "VK_KHR_android_surface"; 
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
 int platform_kms_open(int minor) { return -1; }
+float platform_kms_density(int minor) { return 0.0f; }
 int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
 void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
@@ -3208,6 +3210,7 @@ HOST_API void host_app_resume(int s)                             { }
 #define HOST_API
 #include <unistd.h>
 #include <signal.h>
+#include <pthread.h>
 // ===========================================================================
 // the app hosting channel. ONE anonymous memfd (RAM-backed, no filesystem
 // name, no socket, no file — EVER) created by silver-host and inherited by

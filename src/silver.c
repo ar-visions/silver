@@ -9862,15 +9862,29 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     bool native_host = !a->platform || !len(a->platform) || cmp(a->platform, "native") == 0;
     if (a->isysroot && native_host)
         cenv = f(string, "SDKROOT=%o %o", a->isysroot, cenv);
+    // macOS links the system libc++: its headers must be the sdk's
+    string cxx_inc = string("");
 #ifndef _WIN32
     // every import compiles with our clang and links with our lld
     bool our_cc = native_host && !a->sysroot;
+#ifdef __APPLE__
+    if (a->isysroot)
+        cxx_inc = f(string, " -stdlib++-isystem %o/usr/include/c++/v1",
+            a->isysroot);
+#endif
     if (our_cc)
         // -Q: a compile-only step never uses the linker flag, and a
         // -Werror build (mbedtls) refuses an unused argument
         cenv = f(string, "CC='%o/bin/clang -fuse-ld=lld -Qunused-arguments' "
-            "CXX='%o/bin/clang++ -fuse-ld=lld -Qunused-arguments' %o",
-            a->install, a->install, cenv);
+            "CXX='%o/bin/clang++ -fuse-ld=lld -Qunused-arguments%o' %o",
+            a->install, a->install, cxx_inc, cenv);
+#ifdef __APPLE__
+    // cmake compiles .m and .mm by OBJC / OBJCXX, not CC / CXX
+    if (our_cc)
+        cenv = f(string, "OBJC='%o/bin/clang -fuse-ld=lld -Qunused-arguments' "
+            "OBJCXX='%o/bin/clang++ -fuse-ld=lld -Qunused-arguments%o' %o",
+            a->install, a->install, cxx_inc, cenv);
+#endif
 #else
     bool our_cc = false;
 #endif
@@ -10106,7 +10120,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // env lines change the build too (LDFLAGS, PATH): part of the key
     string cache_key = (env && len(env)) ? f(string, "%o env:%o", config, env) : config;
     // built by gcc before: a new key, so it builds again with clang
-    if (our_cc) cache_key = f(string, "%o cc:clang-lld", cache_key);
+    if (our_cc)
+        cache_key = f(string, "%o cc:clang-lld%o", cache_key, cxx_inc);
+#ifdef __APPLE__
+    if (our_cc) cache_key = f(string, "%o objc", cache_key);
+#endif
     path token = is_silver
         ? f(path, "%o/build/.%o-%o.silver-token", install,
             owner ? owner : string("git"), name)

@@ -7274,7 +7274,8 @@ intern func handle_key [ win: @platform_window, key: i32,
 func wheel_scale [] -> f64
     ifdef [ apple ]
         return 1.0
-    return 4.0
+    el
+        return 4.0
 
 # the pointer's easing and the keys' repeat, where the screen is
 # ours (orbiter-os): a desktop keeps its own

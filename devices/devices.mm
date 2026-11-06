@@ -63,6 +63,7 @@ const char* platform_surface_extension(void) { return "VK_EXT_metal_surface"; }
 int platform_is_kms(void) { return 0; }
 int platform_kms_scanout_buffer(int* w, int* h, int* stride) { return -1; }
 int platform_kms_open(int minor) { return -1; }
+float platform_kms_density(int minor) { return 0.0f; }
 int platform_kms_add_fb(int fd, int w, int h, int pitch) { return -1; }
 void platform_kms_clear_fbs(void) {}
 int platform_kms_back(void) { return -1; }
@@ -601,7 +602,7 @@ const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
     NSData* d = [[NSPasteboard generalPasteboard] dataForType:NSPasteboardTypePNG];
     free(g_mac_png); g_mac_png = NULL; *n = 0;
     if (!d) return NULL;
-    g_mac_png = malloc(d.length ? d.length : 1);
+    g_mac_png = (uint8_t*)malloc(d.length ? d.length : 1);
     memcpy(g_mac_png, d.bytes, d.length);
     *n = (int)d.length;
     return g_mac_png;

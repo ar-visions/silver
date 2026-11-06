@@ -2376,6 +2376,16 @@ element SkyView
     public func over_code [] -> f32
         return 15.8728
 
+    # this frame's march: the sky's picture before the history
+    public func march_color [] -> Texture
+        if [ !vrender ] return null
+        return vrender.color
+
+    # its cloud depth, coded as over_depth
+    public func march_depth [] -> Texture
+        if [ !vrender ] return null
+        return vrender.depth
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         ux.will_animate = true
