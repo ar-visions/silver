@@ -2372,12 +2372,6 @@ func stat_detail [] -> StatDetail
     return stat_d
 
 # one off its capture and runs it once
-# the backdrop's blurs: at a half, a quarter, a sixteenth of its size
-enum BlurStage
-    soft: 0
-    blur: 1
-    frost: 2
-
 class ReduceBlur
     # the reduces in order, then the two blur passes
     public renders : vec Render
@@ -7711,6 +7705,11 @@ Display Window
                                        -b.y + pad * 0.5 ]
                     blur_redraw = true
 
+            # background_lens: the backdrop's blur under the layer
+            if [ layer.background_lens != BlurStage.none
+                 && stage == CanvasType.screen && !blur_redraw ]
+                lens_draw[ draw_cv, e, layer.background_lens, b,
+                           vec4f [ r_tl, r_tr, r_br, r_bl ] ]
             if [ (!needs_blur || blur_redraw) && ((layer.fill_color
                  && layer.fill_color.a > 0.0) || (layer.stroke_color
                  && layer.stroke_color.a > 0.0) || layer.box_shadow) ]
@@ -8222,7 +8221,8 @@ Display Window
     # a blur of the backdrop for an element's ground, whatever the
     # stage shows; the first ask builds it (null until it has drawn)
     public func blur_image [ stage: BlurStage ] -> Texture
-        if [ frost_eff[] == 3 || !backdrop ] return null
+        if [ stage == BlurStage.none || frost_eff[] == 3 || !backdrop ]
+            return null
         if [ !chain ]
             if [ is_setup && !resizing ] build_frost_chain[]
             return null
@@ -8230,18 +8230,41 @@ Display Window
         if [ stage == BlurStage.blur ] return rb_blur.color[]
         return rb_frost.color[]
 
+    # e's origin in the window: its parents' scroll taken off
+    func win_origin [ e: element ] -> vec2f
+        o : vec2f [ 0.0, 0.0 ]
+        for [ p: element* e, p, p = p.parent ]
+            if [ !p.bounds ] continue
+            o.x += p.bounds.x
+            o.y += p.bounds.y
+            pp : element p.parent
+            if [ !pp || p.no_scroll || !p.area ] continue
+            if [ p.area.l.relative ] o.x -= pp.scroll.x
+            if [ p.area.t.relative ] o.y -= pp.scroll.y
+        return o
+
     # a blur of the backdrop on e's canvas, lined up with the window
     public func draw_blur [ cv: Canvas, e: element, stage: BlurStage ]
         bt : Texture blur_image[ stage ]
         if [ !bt || !root || !root.bounds ] return
-        ox : f32 [ 0.0 ]
-        oy : f32 [ 0.0 ]
-        for [ p: element* e, p, p = p.parent ]
-            if [ p.bounds ]
-                ox += p.bounds.x
-                oy += p.bounds.y
-        cv.draw_image[ bt, rect [ x: -ox, y: -oy,
+        o : vec2f win_origin[ e ]
+        cv.draw_image[ bt, rect [ x: -o.x, y: -o.y,
             w: root.bounds.w, h: root.bounds.h ] ]
+
+    # a layer's background_lens: the blur in its box, at its corners;
+    # its element then draws each frame, as the backdrop moves
+    func lens_draw [ cv: Canvas, e: element, stage: BlurStage, b: rect,
+                     r: vec4f ]
+        if [ !e.animated ]
+            e.animated = true
+            for [ p: element* e.parent, p, p = p.parent ]
+                p.pristine = false
+        half : f32 [ min[ b.w, b.h ] * 0.5 ]
+        cv.save[]
+        cv.clip_rounded_rect[ b.x, b.y, b.w, b.h, min[ r.x, half ],
+            min[ r.y, half ], min[ r.z, half ], min[ r.w, half ] ]
+        draw_blur[ cv, e, stage ]
+        cv.restore[]
 
 class offscreen
     context vk    : vk_context
