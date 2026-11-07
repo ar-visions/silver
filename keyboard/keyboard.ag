@@ -405,6 +405,138 @@ func language_added [ name: string ] -> bool
         if [ o == name ] return true
     return false
 
+# a language added or removed, and kept for the next start
+func language_keep [ name: string, on: bool ]
+    kept : vec string []
+    for [ o: string ] in added_languages[]
+        if [ o != name ] kept.push[ o ]
+    if [ on ] kept.push[ name ]
+    lang_slots = kept
+    save_languages[]
+
+# the list's own words
+element LangText
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+        label_font: 'fonts/BarlowCondensed-Bold.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# what can be done with the chosen language
+Button LangButton
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff14
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff33
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+        :hovered
+            layers.body:
+                fill_color: #ffffff22
+                stroke_color: #ffffff55
+                near_inset: 4.0
+    }
+
+# a language: its name, and how it stands at the right
+Button LangRow
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff1a
+            box_shadow: inset 0 0 12px #ff84ff14
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #ff84ffaa
+        layers.face:
+            label_color: #e4e4ea
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
+        :hovered
+            layers.body:
+                fill_color: #ffffff18
+                stroke_color: #ffffff40
+                near_inset: 4.0
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+    }
+    public name : string
+    public note : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        if [ note.count == 0 ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 16.0 ] ] ]
+        cv.font_size[ 16 ]
+        cv.fill_color[ rgba [ '#ffffff99' ] ]
+        cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: bounds.w - 14.0,
+            h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.clip, null ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# every language: a press chooses one, and types in it if it is
+# added; what can be done with it opens under it
+element LanguageList
+    intern chosen : string
+
+    public func render [] -> Elements
+        t : Elements []
+        t[ 'lang_title' ] = LangText [ label: 'Languages',
+            area: Region { l0.7 t0.2 r0.7 h1.2 } ]
+        y : f32 [ 1.5 ]
+        all : vec string [] [ 'english' ]
+        for [ n: string ] in second_languages[]
+            all.push[ n ]
+        for [ n: string ] in all
+            on : bool [ n == 'english' || language_added[ n ] ]
+            typing : bool [ ux && ux.input_language == Language [ n ] ]
+            note : string [ (typing) ? 'typing'
+                : ((on) ? 'added' : 'not added') ]
+            t[ 'lang_{n}' ] = LangRow [ label: language_title[ n ],
+                name: n, note: note, selected: n == chosen,
+                area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
+            y += 1.35
+            if [ n == chosen && n != 'english' ]
+                t[ 'lang_act' ] = LangButton [
+                    label: (on) ? 'Remove' : 'Add',
+                    area: Region [ 'l0.7 t{y} w4.5 h1.05' ] ]
+                y += 1.35
+        return t
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id ] return
+        if [ e inherits LangRow ]
+            row : cast LangRow [ e ]
+            chosen = row.name
+            if [ ux && (chosen == 'english'
+                        || language_added[ chosen ]) ]
+                ux.input_language = Language [ chosen ]
+        el [ e.id == 'lang_act' && chosen ]
+            on : bool [ language_added[ chosen ] ]
+            language_keep[ chosen, !on ]
+            # its language removed while typed in: English
+            if [ ux && on && ux.input_language == Language [ chosen ] ]
+                ux.input_language = Language.english
+        if [ ux ] ux.restyle = true
+
 # romaji to kana, a hardware keyboard's Japanese ('ka:か')
 func romaji [] -> vec string
     return vec string [] [
@@ -1831,13 +1963,7 @@ InputDevice FlickKeys
     # the j-th language we support added, or removed if it was
     public func toggle_language [ j: i32 ]
         n : string second_languages[][ j ]
-        ss : vec string slots[]
-        kept : vec string []
-        for [ o: string ] in ss
-            if [ o != n ] kept.push[ o ]
-        if [ kept.count == ss.count ] kept.push[ n ]
-        lang_slots = kept
-        save_languages[]
+        language_keep[ n, !language_added[ n ] ]
         # its language removed while typed in: English
         if [ !language_added[ n ] && Language [ n ] == lang[] ]
             ux.input_language = Language.english

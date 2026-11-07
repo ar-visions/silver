@@ -27,7 +27,7 @@ ModelViewProject WormholeShader
     # x the tunnel's radius, y exposure, z the walls' roughness,
     # w the waves' height
     mutable shape : vec4f
-    # x, y the march's size in pixels
+    # x, y the march's size in pixels, w the rings' clock
     mutable res   : vec4f
 
     attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
@@ -226,7 +226,9 @@ ModelViewProject WormholeShader
                 // where the veins gather: wide patches, empty between
                 float patch_n = w_noise(sp * 0.09 + vec3(3.0, 0.0, t * 0.04))
                               + 0.5 * w_noise(sp * 0.23 + vec3(0.0, 9.0, 0.0));
-                float gather = smoothstep(-0.1, 0.6, patch_n);
+                // soft, and never all out
+                float gather = mix(0.05, 1.0,
+                                   smoothstep(-0.2, 0.5, patch_n));
                 // the ripples: a spiral of rings round the tunnel, the
                 // sine bent by noise, gathering the veins into bands
                 float ang = atan(sa, ca);
@@ -245,9 +247,40 @@ ModelViewProject WormholeShader
                 float close = 0.25 + 0.75 * smoothstep(3.0, 14.0, sc);
                 float fade = exp(-sc * 0.009);
                 float e = v * gather * ring * lift * side * close * fade;
+                // rings of light, whole, coming up the tunnel to us
+                float bolt = 0.0;
+                vec2 aim = vec2(ca, sa);
+                {{
+                    // a slot twice its flight: a pause after each
+                    float go = ubo.res.w * 0.5;
+                    float beat = floor(go);
+                    float age = (go - beat) * 2.0;
+                    float seed = beat * 7.0 + 31.0;
+                    // not every beat: they come unevenly
+                    vec3 fate = w_grad(vec3(seed, 3.0, 5.0));
+                    float zr = z0 + 2.0 + (1.0 - age) * 170.0;
+                    float dz = pc.z - zr;
+                    if (fate.x > -0.5 && age < 1.0 && abs(dz) < 60.0) {{
+                    // its edge bent and flickering
+                    float flick = ubo.res.w * 9.0;
+                    dz += 2.2 * w_noise(vec3(aim * 1.6,
+                                             seed + flick * 0.3))
+                        + 0.7 * w_noise(vec3(aim * 5.0, seed + flick));
+                    // a thick band, wider with distance
+                    float wide = max(1.6 + sc * 0.192, reach * 0.8);
+                    // none for its first third; gone as it passes us
+                    float live = smoothstep(0.333, 0.75, age)
+                               * (1.0 - smoothstep(0.93, 1.0, age));
+                    bolt += exp(-dz * dz / (wide * wide)) * live;
+                    }}
+                }}
+                // the strands show under it, gathered or not
+                e += v * bolt * 0.125 * side * close * fade;
                 // veins run white where they are brightest
                 vec3 lit = hue * e * 7.0 + vec3(0.8, 0.9, 1.0) * e * e * 5.0;
                 lit += hue * gather * ring * 0.006 * side * fade * close;
+                // no light of its own: it brightens what is there
+                lit *= 1.0 + 3.5 * bolt;
                 col += T * lit;
                 T *= 1.0 - clamp(e * 0.3, 0.0, 0.6);
             }}
@@ -410,6 +443,8 @@ Backdrop Wormhole
     mutable steady  : f32
     # the clock of everything that moves on its own in the march
     mutable drift   : f32
+    # the rings run on real seconds: fast at any step
+    public  rings   : f32
 
     func create_target []
         if [ target ] return
@@ -462,8 +497,11 @@ Backdrop Wormhole
         th : f32 [ (vantage == OrbitView.low) ? 0.55 :
                    (vantage == OrbitView.high) ? 0.75 : 1.0 ]
         shader.clock = vec4f [ drift, flown, aspect, th ]
+        rings += steady
+            * ((speed == BackdropSpeed.fast) ? 0.1665 : 0.1165)
+        if [ rings > 3000.0 ] rings -= 3000.0
         shader.res = vec4f [ f32[ ux.width ] * 0.75, f32[ ux.height ] * 0.75,
-                             0.0, 0.0 ]
+                             0.0, rings ]
         lens.clock = vec4f [ seconds, fly, aspect,
                              0.025 + 0.012 * fly ]
         lens.look = vec4f [ 1.0, flown / 30.0, 0.0, 0.0 ]
@@ -498,11 +536,19 @@ expect func t_wormhole_frames [] -> bool
     e.vk = w.vk
     e.speed = BackdropSpeed.medium
     at : vec f32 [] [ 0.0, 37.0, 120.0, 410.0, 900.0, 1500.0 ]
+    # WORMHOLE_RING: one place, one ring's flight, then none
+    one_ring : getenv[ 'WORMHOLE_RING' ]
+    ring_at : vec f32 [] [ 0.6, 0.7, 0.8, 0.9, 0.95, 1.5 ]
     for [ k: i32 0, k < at.count, k += 1 ]
         e.last_us = 0
         e.flown = at[ k ]
         e.seconds = at[ k ] / 30.0
         e.drift = e.seconds
+        if [ one_ring ]
+            e.flown = 410.0
+            e.seconds = 13.0
+            e.drift = 13.0
+            e.rings = 2.0 + ring_at[ k ]
         began : i64 [ Au.epoch_millis[] ]
         e.draw[ w ]
         r : w.element_targets[ 'Wormhole' ]

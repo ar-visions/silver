@@ -1494,7 +1494,7 @@ element AgentHead
                 labels: vec string [] [ 'end' ],
                 icons: false, manual: true, label_px: 15.0 * un,
                 label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                seg_radius: 12.0 * un, use_spacing: false,
+                seg_radius: 16.0 * un, use_spacing: false,
                 rest_fill: rgba [ '#0000' ],
                 outline: rgba [ '#0000' ],
                 area: Region [ 'r0 t0 w{ew}px b0' ] ]
@@ -1535,11 +1535,15 @@ element AgentHead
         el o.home_open = (o.home_open == agent) ? '' : agent
         ux.restyle = true
     style : CSS {
+        layers.back:
+            fill_color: #0000
         layers.face:
             fill_color: #ffffff0a
             radius: 8
             stroke_width: 1
             stroke_color: #ffffff14
+        layers.edge:
+            fill_color: #0000
     :hovered
         layers.face:
             fill_color: #ffffff14
@@ -1552,9 +1556,32 @@ element AgentHead
         layers.face:
             radius: 0
             stroke_width: 0
+    # the desktop's: the look of the row of agents above it, its fill
+    # under the same edge layer
     :desk
+        layers.back:
+            fill_color: #00000080
+            radius: 16
         layers.face:
-            radius: 12
+            fill_color: #0000
+            stroke_width: 0
+        layers.edge:
+            fill_color: #0000
+            radius: 16
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff2
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+    :desk&hovered
+        layers.face:
+            fill_color: #0000
+    # the theme's selection colour, as the editor's text selection
+    :desk&selected
+        layers.back:
+            fill_color: #425
     }
 
 # the open agent's console frame, joined to its title above,
@@ -1577,7 +1604,7 @@ element AgentBody
 element DeskAgentPane
     style : CSS {
         layers.face:
-            fill_color: #0b0b14ee
+            fill_color: #00000080
             radius: 14
             stroke_width: 1
             stroke_color: #fff2
@@ -3475,6 +3502,14 @@ AltTab RoundTab
             layers.edge:
                 box_shadow: inset 0 0 13px #ffd84a66
                 near_inset_color: #ffd84aff
+    }
+
+# the desktop's row of agents: rounded as their titles below it
+RoundTab AgentKinds
+    style : CSS {
+        layers.edge:
+            fill_color: #00000080
+            radius: 16
     }
 
 # on the status bar: a faint border the pointer's light brings up
@@ -9026,11 +9061,11 @@ element orbiter : trinity # implements compiler
                 ids.push[ 'dagent_add_{an}' ]
                 ics.push[ '_text' ]
             tp : string [ (beside) ? 't{y}px' : 't{pad}px+' ]
-            t['dagent_tabs'] = RoundTab [ buttons: ids, icon_ids: ics,
+            t['dagent_tabs'] = AgentKinds [ buttons: ids, icon_ids: ics,
                 labels: kinds, manual: true, use_spacing: false,
                 label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                label_px: 17.0 * un, seg_radius: ah * 0.5,
-                rest_fill: rgba [ '#0000' ],
+                label_px: 17.0 * un, seg_radius: 16.0 * un,
+                rest_fill: rgba [ '#0000' ], outline: rgba [ '#fff2' ],
                 area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
             y += ah + gap
         # why one did not start, in red
@@ -19501,8 +19536,9 @@ element orbiter : trinity # implements compiler
                                 '800 ms' ] ] ]
             ps.push[ setting[ 'rate', '{set_rate}/s',
                 vec string [] [ '15/s', '25/s', '35/s', '50/s' ] ] ]
-            ps.push[ setting[ 'haptics', set_haptic,
-                vec string [] [ 'off', 'light', 'medium', 'strong' ] ] ]
+            if [ use_mobile ]
+                ps.push[ setting[ 'haptics', set_haptic,
+                    vec string [] [ 'off', 'light', 'medium', 'strong' ] ] ]
             ps.push[ setting[ 'layout', set_layout,
                 vec string [] [ 'us', 'gb', 'de', 'fr', 'es', 'it',
                                 'se', 'us dvorak' ] ] ]
@@ -19784,6 +19820,14 @@ element orbiter : trinity # implements compiler
         el [ tab == 'sound' ]
             t['set_body'] = element [ area: Region [ body ],
                 elements: sound_body[] ]
+        el [ tab == 'keyboard' ]
+            # its settings, then the languages to pick and remove
+            kb : Elements chip_grid[ panel_settings[ tab ], set_open,
+                                     'x' ]
+            kb['lang_list'] = LanguageList [
+                area: Region [ 'l0 t{chips_h}px r0 b0' ] ]
+            t['set_body'] = element [ area: Region [ body ],
+                elements: kb ]
         el
             # any other panel with settings: its chips
             ps : vec Prop panel_settings[ tab ]

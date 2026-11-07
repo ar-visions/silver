@@ -15317,6 +15317,68 @@ runs on its own clock (drift): full, half, an eighth by step; the
 lens grain stays on real time. Stars fly by
 distance flown. Measured offscreen; `WORMHOLE_W`, `_H`, `_RUN` in
 the test. OPEN: a little beading left on near lines.
+Then (his: try a picture as the walls' basis): the panel's skin (picture,
+the default; veins as before). images/walls.png is his generated map;
+bake_walls fills its empty pixels (alpha under 6) and pure blue rims from
+round them, blurs the fill, fades the edges to repeat (baked/worm-walls.png;
+most of its part clear pixels are good colour). Two copies, strands along
+the tunnel: 56 units a map, 2 maps round; 23 units, 3 round, each drifting;
+read by textureGrad (a crossing has no derivatives).
+Then (his: the colour was not changing; the same masking on a greyscale of
+it, sparser): grey only (^3, ^3.5) takes the veins' place in v; the tunnel's
+hue regions, gather patches, ripples and waves do the rest. Lit (over 25
+of 255) 10-38% of a frame at 6 places; 9-11 ms at 1672 x 941.
+Then (his: rings of lightning as in Contact, whole round the ring, fast;
+then: the other way, fading at distance, twice as long, more spaced): one
+ring a slot, the slot twice its flight, 3 in 4 fire. On real seconds
+(0.1165 a second, fast step 0.1665): about 8.6 s of flight toward us from 172
+units out; nothing for its first third, full by 3/4, gone as it passes
+(his: faded out completely at distance; a third the speed). Edge bent by
+two octaves of perlin, flickering; a white core and a halo that lights the strands, even outside the gather patches. The
+lens's fringes show on a near ring.
+Then (his: perlin less of the walls away, not 50% but like 30%): the
+picture's gather smoothstep(-0.22, 0.05, patch noise), about 30% of the wall
+under a tenth, by the noise's distribution (it had been 54%); veins as were.
+Then (his: the electric fades completely out at distance, by 2x): the
+picture's light exp(-0.018 x distance), to nothing from 35 to 80 units; a
+ring shows only from then on, whatever its own fade. Middle 80 px of the
+frame: 20-55 of 255 before, 1-13 after.
+Then (his: half as bright on the rings; 2x the length still): core light
+4 -> 1, the halo's a quarter; core width 1.6 + 0.192 x distance (his: way
+way wider). Then (his: not a fuzz, a brightener of the wall's colours): no
+light or colour of its own: the wall's lit x (1 + 7 band).
+Then (his: the wall textures rolling, 2 layers each a different way, the
+result them multiplied; then a third as fast): 0.0333 and -0.08 maps a drift
+second round the tunnel (one turn 60 and 37.5 drift seconds; one is a real second at the
+fast step, 2 at medium, 8 at slow); greys less 0.15, each ^1.5, x 3.
+WORMHOLE_ROLL=1 in the test: one place, no ring, drift a second a frame.
+Then (his: blue and coral-purple, not blue and green): the picture's second
+region colour coral (0.85, 0.27, 0.62); veins keep teal.
+Then (his: less perlin masking, too many dark regions): the picture's gather
+smoothstep(-0.5, -0.2, patch noise), about 10% of the wall under a tenth.
+Then (his: less perlin gaps, darker down the tunnel): gather smoothstep(-0.85,
+-0.45, patch noise), about 1% under a tenth; the light full to 8 units, then
+exp(-0.06 x past 8), to nothing from 20 to 50.
+Then (his: no perlin masking at all): the picture has no gather and no ripple
+bands; lift (a brightening 1 to 1.9) and the colour regions stay; veins as were.
+Then (his: darker at the mid point, brighter at the distance, a longer fade):
+past 6 units 0.72 exp(-0.14 x) + 0.28 exp(-0.016 x), to nothing from 60 to 130.
+Then (his: no more 2 layer multiply): the greys added again (^3, 0.45 x ^3.5);
+they keep their roll.
+Then (his: back to about 35% perlin masked, soft, not fully out): gather from
+smoothstep(-0.55, 0.25, patch noise) (middle at the 35th percentile), its floor
+0.35, down to 0.08 where a slower noise is lowest.
+Then (his: the plasma stretched on x, a stream, 3x more): strands 168 and 69
+units a map along the tunnel (56 and 23), their drift the same in units.
+Then (his: two of the textures together, denser; fade down the tunnel again):
+a second pair (127 units, 5 round; 91 units, 4 round; 0.8 and 0.45), the rolls
+unequal, all x 0.55; the fade past 6 units 0.55 exp(-0.09 x) + 0.45 exp(-0.03 x),
+gone from 25 to 110.
+Then (his: a permanent ring always at the end): the rings' brightener and bent
+edge also at 30 units ahead, always on, 3.5 units wide.
+WORMHOLE_RING=1 in the test: one
+place, one ring's flight, the last frame no ring.
+NOT seen moving or in orbiter.
 
 ## Neptune upper-atmosphere orbit — live list (Nov 6 2026)
 
