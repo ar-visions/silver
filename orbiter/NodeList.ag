@@ -871,8 +871,6 @@ Control AppsGrid
     mutable grab      : vec2f
     # each card's and heading's place as drawn, easing to its own
     mutable ease_x : map f32 [string]
-    # each card's hover, eased: 0 at rest, 1 under the pointer
-    mutable hov_e  : map f32 [string]
     mutable ease_y : map f32 [string]
     mutable head_e : map f32 [string]
     # each shown card's own key: its module file (names repeat), a
@@ -1417,7 +1415,6 @@ Control AppsGrid
         # each card and heading eases to its place; a dragged card
         # is at the pointer, a dragged section's cards move with it
         if [ !ease_x ] ease_x = map f32 [string] []
-        if [ !hov_e ] hov_e = map f32 [string] []
         if [ !ease_y ] ease_y = map f32 [string] []
         if [ !head_e ] head_e = map f32 [string] []
         dsec : i32 [ -1 ]
@@ -1456,14 +1453,6 @@ Control AppsGrid
                     moving = true
             ease_x[ ky ] = ex
             ease_y[ ky ] = ey
-            was : f32 [ (hov_e.contains[ ky ]) ? hov_e[ ky ] : 0.0 ]
-            want : f32 [ (i == hov) ? 1.0 : 0.0 ]
-            lift : f32 [ filter_n[ was, want, 0.25, ux.frame_factor ] ]
-            if [ abs[ lift - want ] < 0.01 ]
-                lift = want
-            el
-                moving = true
-            hov_e[ ky ] = lift
             px.push[ ex ]
             py.push[ ey ]
         for [ h: i32 0, h < heads.count, h += 1 ]
@@ -1513,7 +1502,9 @@ Control AppsGrid
                             0.0 ] ]
             dy : f32 [ max[ max[ cy - pty, pty - cy - ch9 ], 0.0 ] ]
             far : bool [ dx * dx + dy * dy > reach * reach ]
-            if [ moving && far && hov_e[ keys[ i ] ] == 0.0 ]
+            card_frost[ cv, w, px[ i ] + round[ (cw9 - tile) * 0.5 ],
+                        cy, cr ]
+            if [ moving && far ]
                 pic : card_picture[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
                                     un ]
                 cv.draw_canvas[ pic, round[ px[ i ] * sc ] / sc,
@@ -1624,6 +1615,14 @@ Control AppsGrid
                 Overflow.ellipsis, null ]
             cv.set_font[ null ]
 
+    # the backdrop's blur in a card's tile, fixed to the window: never
+    # in the card's picture
+    func card_frost [ cv: Canvas, w: Window, x: f32, y: f32, cr: f32 ]
+        cv.save[]
+        cv.clip_rounded_rect[ x, y, tile, tile, cr, cr, cr, cr ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.restore[]
+
     # the icon's rounded tile: glass when here, an outline when
     # not; the chosen one takes the selected border
     func draw_tile [ cv: Canvas, w: Window, i: i32, x: f32, y: f32,
@@ -1633,32 +1632,23 @@ Control AppsGrid
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         if [ here ]
-            cv.fill_color[ rgba [ '#0008' ] ]
-            cv.stroke_color[ rgba [ '#0000' ] ]
-            cv.rect_to[ x, y, tile, tile ]
-            cv.paint[]
             # 180 px: the cards are larger than the buttons
             w.near_light_reach[ cv, a, light_off.x, light_off.y,
                                 1.125 ]
-            k : f32 [ hov_e[ keys[ i ] ] ]
-            cv.near_style[ 1.0 + k, 3.0, rgba [ '#d298ffff' ],
+            cv.near_style[ 0.0, 1.5, rgba [ '#d298ffff' ],
                            w.near_y_fade ]
-            cv.box_shadow[ rgba [ '#c890ffff' ], 0.0, 0.0,
-                           9.6 + 8.4 * k, 0.0, true ]
-            # a dark tint behind the glass: bright scenes stay back
-            cv.fill_color[ rgba [ r: 0.165 + 0.11 * k,
-                g: 0.102 + 0.086 * k, b: 0.29 + 0.21 * k,
-                a: 0.345 + 0.125 * k ] ]
-            cv.stroke_color[ rgba [ r: 1.0, g: 1.0, b: 1.0,
-                a: 0.14 + 0.49 * k ] ]
+            cv.box_shadow[ rgba [ '#c890ff80' ], 0.0, 0.0, 9.6, 0.0,
+                           true ]
+            # a slight tint over the frost
+            cv.fill_color[ rgba [ '#2a1a4a33' ] ]
+            cv.stroke_color[ rgba [ '#0000' ] ]
         el [ chosen ]
             cv.fill_color[ rgba [ '#4d3dbc55' ] ]
             cv.stroke_color[ rgba [ '#806bff' ] ]
         el
             cv.fill_color[ rgba [ (i == hov) ? '#1c103650'
                 : '#140a2a3c' ] ]
-            cv.stroke_color[ rgba [ (i == hov) ? '#ffffff30'
-                : '#ffffff16' ] ]
+            cv.stroke_color[ rgba [ '#0000' ] ]
         # arranging: a brighter purple inner glow, breathing
         if [ arranging ]
             ph : f32 [ f32[ epoch_millis[] % 1200 ] / 1200.0 ]

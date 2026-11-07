@@ -5,13 +5,14 @@ extend orbiter
 Group SystemBar
     # painted onto the screen: a resized cache flashed red
     no_cache : true
+    blur : BlurGround []
     # its menus from orbiter, read as it renders (after the panes)
     public func render [] -> Elements
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         return (orb) ? orb.system_els[] : null
     style : CSS {
         layers.sys:
-            fill_color: #000a
+            fill_color: #0004
             # a very slight inner glow by the pointer's nearness
             # 1/255 alpha: unseen at rest; a zero shadow is skipped
             box_shadow: inset 0 0 13px #88aaff01
@@ -49,9 +50,12 @@ element UpdBar
 # the system menu's dock: the navigator's dock column in a colour
 # of its own (the system's)
 Group SysDock
+    # the backdrop moves under it
+    animated : true
+    blur : BlurGround []
     style : CSS {
         layers.dock:
-            fill_color: #1a1440
+            fill_color: #0004
             box_shadow: inset 0 0 13px #86f2
             stroke_width: 1
             stroke_color: #fff1
@@ -676,9 +680,11 @@ Layer DrawerGround
         cv.save[]
         cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
         # the main menu: the ground chosen (the scene, as the screen
-        # paints it under the ui), not a blur of what is under it
+        # paints it under the ui), not a blur of what is under it;
+        # the navigator in it: the backdrop's frost
         if [ dr inherits SystemDrawer ]
-            gi : Texture w.ground_image[]
+            gi : Texture (orb && orb.menu_nav[])
+                ? w.blur_image[ BlurStage.frost ] : w.ground_image[]
             if [ gi ]
                 cv.draw_image[ gi, rect [ x: -ox, y: -oy,
                     w: w.root.bounds.w, h: w.root.bounds.h ] ]
@@ -787,9 +793,12 @@ element SysStrip
     intern moved : bool
     # the press's x in the strip
     intern tap_x : f32
+    # the backdrop moves under it
+    animated : true
+    blur : BlurGround []
     style : CSS {
         layers.dock:
-            fill_color: #1a1440
+            fill_color: #0004
             box_shadow: inset 0 0 13px #86f2
             stroke_width: 1
             stroke_color: #fff1

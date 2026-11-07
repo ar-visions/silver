@@ -101,6 +101,34 @@ func editor_under [ spl: element ] -> Editor
         if [ te && te inherits Editor ] return Editor te
     return null
  
+# an element's ground: the backdrop's blur, as the app cards
+Layer BlurGround
+    public round : f32
+    # the foot's corners, if not square
+    public foot  : f32
+    public stage : BlurStage [ BlurStage.blur ]
+    func draw [ cv: Canvas ]
+        if [ !parent || !parent.ux ] return
+        w : Window parent.ux
+        cv.save[]
+        cv.clip_rounded_rect[ bounds.x, bounds.y, bounds.w, bounds.h,
+                              round, round, foot, foot ]
+        w.draw_blur[ cv, parent, stage ]
+        cv.restore[]
+
+# a code window's: not a console's or a new tab's; a free one rounds.
+# the navigator over any of them: the frost
+BlurGround CodeBlur
+    func draw [ cv: Canvas ]
+        ev : cast EditorView [ parent ]
+        if [ !ev ] return
+        nav : bool [ ev.browse_active[] ]
+        if [ !nav && (ev.is_console || ev.is_empty) ] return
+        stage = (nav) ? BlurStage.frost : BlurStage.blur
+        round = (ev.free) ? 8.0 : 0.0
+        foot = round
+        super.draw[ cv ]
+
 # This is the EditorView
 element EditorView
     public selected   : bool
@@ -111,11 +139,14 @@ element EditorView
     # pulled free: a window, its corners round (all it holds is
     # masked to them: its ground's clip)
     public free       : bool
+    # the backdrop moves under it
+    animated : true
+    blur : CodeBlur []
 
     style : CSS {
         area: l0 t0 r0 b0
         layers.bg:
-            fill_color: #140a2acc
+            fill_color: #2a1a4a33
             radius: 0
             clip: false
         :is_console
@@ -1058,11 +1089,14 @@ element EditorTitle
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ orb ] orb.on_key[ ev ]
         ev.no_default = true
+    # the backdrop moves under it
+    animated : true
+    blur : BlurGround []
     style : CSS {
         area: l0 t0 r0 h1.3
         layers.tbar:
-            # the status bar's dark; the active pane's is the selection
-            fill_color: #000c
+            # a faint tint; the active pane's is the selection
+            fill_color: #0004
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
             stroke_color: #fff1
@@ -1246,12 +1280,15 @@ element WinStrip
     intern sx      : f32
     intern sy      : f32
 
+    # the backdrop moves under it
+    animated : true
+    blur : BlurGround [ round: 8.0 ]
     style : CSS {
         area: l0 t0 r0 h0.91
-        # another window's: lighter; the selected one's black, as
-        # the system bar it took with it
+        # a faint tint; the selected one's the selection, as a
+        # docked title's
         layers.tbar:
-            fill_color: #00000066
+            fill_color: #0004
             radius: 8 8 0 0
             box_shadow: inset 0 0 13px #8af2
             stroke_width: 1
@@ -1265,7 +1302,7 @@ element WinStrip
             label_align: 0.5 0.5
         :current
             layers.tbar:
-                fill_color: #000
+                fill_color: #66225539
         layers.tdiv:
             fill_color: #fff2
             area: l0 b0 r0 h1px
@@ -3260,9 +3297,18 @@ Group StatusBar
 
 # the bottom bar: its task buttons flush on it, the bar's height
 StatusBar TasksBar
+    # the backdrop moves under it
+    animated : true
+    blur : BlurGround []
     style : CSS {
         spacing_x: 0px
         spacing_y: 0px
+        layers.sbar:
+            fill_color: #0004
+            box_shadow: none
+            stroke_width: 1 0 0 0
+            stroke_color: #fff2
+            near_inset: 0.0
     }
 
 # the side panel's toolbar: no ground of its own, the panel's shows
