@@ -1,0 +1,1166 @@
+export 0.1.0
+export scenes ['Neptune_sky']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+
+func nep_flow_sample [ field: @f32, width: i32, height: i32,
+                       px: f32, py: f32 ] -> f32
+    x : f32 [ px ]
+    y : f32 [ py ]
+    if [ x < 0.0 ] x += f32[ width ]
+    if [ x >= f32[ width ] ] x -= f32[ width ]
+    if [ y < 0.0 ] y = 0.0
+    if [ y > f32[ height - 1 ] ] y = f32[ height - 1 ]
+    left : i32 [ x ]
+    top : i32 [ y ]
+    right : i32 [ left + 1 ]
+    bottom : i32 [ top + 1 ]
+    if [ right >= width ] right = 0
+    if [ bottom >= height ] bottom = height - 1
+    fx : f32 [ x - f32[ left ] ]
+    fy : f32 [ y - f32[ top ] ]
+    tl : f32 [ field[ top * width + left ] ]
+    tr : f32 [ field[ top * width + right ] ]
+    bl : f32 [ field[ bottom * width + left ] ]
+    br : f32 [ field[ bottom * width + right ] ]
+    upper : f32 [ tl + (tr - tl) * fx ]
+    lower : f32 [ bl + (br - bl) * fx ]
+    return upper + (lower - upper) * fy
+
+func nep_stream [ angle: f32, lat: f32 ] -> f32
+    cx : f32 [ cos[ angle ] ]
+    cz : f32 [ sin[ angle ] ]
+    broad : f32 [
+        eu_gnoise[ cx * 1.35 + 5.0, cz * 1.35 + 5.0,
+                   lat * 3.5 + 2.0 ] ]
+    small : f32 [
+        eu_gnoise[ cx * 2.8 + 13.0, cz * 2.8 + 13.0,
+                   lat * 7.0 + 7.0 ] ]
+    return broad * 0.72 + small * 0.28
+
+func neptune_flow_bake [ out: path, sw: i32, sh: i32,
+                         ow: i32, oh: i32,
+                         steps: i32 ] -> bool
+    count : i32 [ sw * sh ]
+    density : new f32 [ count ]
+    work : new f32 [ count ]
+    flow_x : new f32 [ count ]
+    flow_y : new f32 [ count ]
+    turn : f32 [ 6.28318530718 ]
+    eps : f32 [ 0.004 ]
+    for [ y: i32 0, y < sh, y += 1 ]
+        vertical : f32 [ (f32[ y ] + 0.5) / f32[ sh ] ]
+        lat : f32 [ vertical * 2.0 - 1.0 ]
+        for [ x: i32 0, x < sw, x += 1 ]
+            horizontal : f32 [ (f32[ x ] + 0.5) / f32[ sw ] ]
+            angle : f32 [ horizontal * turn ]
+            east : f32 [ nep_stream[ angle + eps, lat ] ]
+            west : f32 [ nep_stream[ angle - eps, lat ] ]
+            north : f32 [ nep_stream[ angle, lat + eps ] ]
+            south : f32 [ nep_stream[ angle, lat - eps ] ]
+            curl_x : f32 [ (north - south) / (2.0 * eps) ]
+            curl_y : f32 [ (west - east) / (2.0 * eps) ]
+            jet : f32 [ sin[ lat * 18.8495559 ] * 1.30
+                        + sin[ lat * 43.9822972 ] * 0.52 ]
+            at : i32 [ y * sw + x ]
+            flow_x[ at ] = 1.15 + jet + curl_x * 0.055
+            flow_y[ at ] = curl_y * 0.080
+            circle_x : f32 [ cos[ angle ] ]
+            circle_y : f32 [ sin[ angle ] ]
+            base : f32 [
+                eu_gnoise[ circle_x * 10.0 + 11.0,
+                           circle_y * 10.0 + 11.0,
+                           lat * 180.0 + 3.0 ] ]
+            detail : f32 [
+                eu_gnoise[ circle_x * 34.0 + 23.0,
+                           circle_y * 34.0 + 23.0,
+                           lat * 600.0 + 17.0 ] ]
+            bands : f32 [ 0.5 + 0.5 * sin[
+                lat * 1884.96 + base * 8.0 + detail * 3.0 ] ]
+            seed : f32 [ base * 0.40 + detail * 0.35
+                         + bands * 0.25 ]
+            density[ at ] = eu_sstep[ 0.46, 0.64, seed ]
+    source : @f32 density
+    target : @f32 work
+    for [ pass: i32 0, pass < steps, pass += 1 ]
+        for [ y: i32 0, y < sh, y += 1 ]
+            for [ x: i32 0, x < sw, x += 1 ]
+                at : i32 [ y * sw + x ]
+                bx : f32 [ f32[ x ] - flow_x[ at ] ]
+                by : f32 [ f32[ y ] - flow_y[ at ] ]
+                moved : f32 [
+                    nep_flow_sample[ source, sw, sh, bx, by ] ]
+                moved = (moved - 0.5) * 1.004 + 0.5
+                if [ moved < 0.0 ] moved = 0.0
+                if [ moved > 1.0 ] moved = 1.0
+                target[ at ] = moved * 0.9994
+        swap : @f32 source
+        source = target
+        target = swap
+    image : Image [ width: ow, height: oh, format: Pixel.rgba8,
+                    linear: true, wrap_u: true ]
+    pixels : @u8 [ image.vdata[] ]
+    for [ y: i32 0, y < oh, y += 1 ]
+        sy : f32 [ (f32[ y ] + 0.5) * f32[ sh ]
+                   / f32[ oh ] - 0.5 ]
+        for [ x: i32 0, x < ow, x += 1 ]
+            sx : f32 [ (f32[ x ] + 0.5) * f32[ sw ]
+                       / f32[ ow ] - 0.5 ]
+            raw : f32 [
+                nep_flow_sample[ source, sw, sh, sx, sy ] ]
+            broad : f32 [ raw ]
+            broad += nep_flow_sample[
+                source, sw, sh, sx - 9.0, sy ]
+            broad += nep_flow_sample[
+                source, sw, sh, sx + 9.0, sy ]
+            broad += nep_flow_sample[
+                source, sw, sh, sx, sy - 5.0 ]
+            broad += nep_flow_sample[
+                source, sw, sh, sx, sy + 5.0 ]
+            broad *= 0.2
+            high : f32 [ raw * raw ]
+            thick : f32 [
+                eu_sstep[ 0.56, 0.84, raw + broad * 0.10 ] ]
+            low : f32 [ broad * broad * 0.84 + raw * raw * 0.16 ]
+            deep : f32 [ eu_sstep[ 0.31, 0.69, broad ] ]
+            at : i32 [ (y * ow + x) * 4 ]
+            pixels[ at ] = u8[ high * 255.0 ]
+            pixels[ at + 1 ] = u8[ thick * 255.0 ]
+            pixels[ at + 2 ] = u8[ low * 255.0 ]
+            pixels[ at + 3 ] = u8[ deep * 255.0 ]
+    image.png[ out ]
+    log 'neptune: flow cloud map {ow}x{oh} written'
+    return true
+
+func neptune_clouds [] -> bool
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    out : path '../{share_name}/baked/neptune-cloud.png'
+    return neptune_flow_bake[
+        out,
+        4096, 2048, 8192, 4096, 96 ]
+
+func nep_air_mass [ mu: f32, height: f32,
+                    scale: f32 ] -> f32
+    rise : f32 [ mu ]
+    if [ rise < 0.0 ] rise = 0.0
+    curve : f32 [ 2.0 * scale / (1.0 + height) ]
+    denom : f32 [ rise + sqrt[ rise * rise + curve ] ]
+    return exp[ 0.0 - height / scale ] * 2.0 * scale / denom
+
+func nep_mie_phase [ angle: f32 ] -> f32
+    asymmetry : f32 [ 0.76 ]
+    base : f32 [ 1.0 + asymmetry * asymmetry
+                 - 2.0 * asymmetry * angle ]
+    return (1.0 - asymmetry * asymmetry)
+        / (12.5663706 * pow[ base, 1.5 ])
+
+func neptune_scatter_bake [ out: path, width: i32,
+                            height: i32 ] -> bool
+    image : Image [ width: width, height: height,
+                    format: Pixel.rgba8, linear: true ]
+    data : @u8 [ image.vdata[] ]
+    top : f32 [ 0.045 ]
+    ray_scale : f32 [ 0.0080 ]
+    haze_scale : f32 [ 0.0022 ]
+    samples : i32 [ 64 ]
+    for [ y: i32 0, y < height, y += 1 ]
+        view_mu : f32 [ (f32[ y ] + 0.5) / f32[ height ] ]
+        root : f32 [ sqrt[
+            1.0 + top * (2.0 + top)
+            - (1.0 - view_mu * view_mu) ] ]
+        ray_length : f32 [ root - view_mu ]
+        step : f32 [ ray_length / f32[ samples ] ]
+        for [ x: i32 0, x < width, x += 1 ]
+            sun_mu : f32 [
+                (f32[ x ] + 0.5) / f32[ width ] * 2.0 - 1.0 ]
+            side : f32 [ sqrt[
+                (1.0 - sun_mu * sun_mu)
+                * (1.0 - view_mu * view_mu) ] ]
+            angle : f32 [ sun_mu * view_mu + side ]
+            ray_phase : f32 [
+                0.0596831 * (1.0 + angle * angle) ]
+            haze_phase : f32 [ nep_mie_phase[ angle ] ]
+            trans_r : f32 [ 1.0 ]
+            trans_g : f32 [ 1.0 ]
+            trans_b : f32 [ 1.0 ]
+            light_r : f32 [ 0.0 ]
+            light_g : f32 [ 0.0 ]
+            light_b : f32 [ 0.0 ]
+            optical : f32 [ 0.0 ]
+            for [ i: i32 0, i < samples, i += 1 ]
+                distance : f32 [ (f32[ i ] + 0.5) * step ]
+                radius : f32 [ sqrt[
+                    1.0 + distance * distance
+                    + 2.0 * distance * view_mu ] ]
+                altitude : f32 [ radius - 1.0 ]
+                air : f32 [ exp[ 0.0 - altitude / ray_scale ] ]
+                haze : f32 [ exp[ 0.0 - altitude / haze_scale ] ]
+                ozone_delta : f32 [ (altitude - 0.018) / 0.007 ]
+                ozone : f32 [ exp[
+                    0.0 - ozone_delta * ozone_delta ] ]
+                sun_air : f32 [ nep_air_mass[
+                    sun_mu, altitude, ray_scale ] ]
+                sun_haze : f32 [ nep_air_mass[
+                    sun_mu, altitude, haze_scale ] ]
+                sun_open : f32 [ eu_sstep[
+                    -0.055 - altitude * 2.0,
+                    0.018 - altitude, sun_mu ] ]
+                sun_r : f32 [ exp[
+                    0.0 - sun_air * 6.0 - sun_haze * 3.0 ]
+                    * sun_open ]
+                sun_g : f32 [ exp[
+                    0.0 - sun_air * 14.0 - sun_haze * 3.2
+                    - ozone * 0.010 ] * sun_open ]
+                sun_b : f32 [ exp[
+                    0.0 - sun_air * 33.0 - sun_haze * 3.5
+                    - ozone * 0.002 ] * sun_open ]
+                scatter_r : f32 [ air * 6.0 * ray_phase
+                                  + haze * 3.0 * haze_phase ]
+                scatter_g : f32 [ air * 14.0 * ray_phase
+                                  + haze * 3.2 * haze_phase ]
+                scatter_b : f32 [ air * 33.0 * ray_phase
+                                  + haze * 3.5 * haze_phase ]
+                light_r += trans_r * sun_r * scatter_r * step
+                light_g += trans_g * sun_g * scatter_g * step
+                light_b += trans_b * sun_b * scatter_b * step
+                ext_r : f32 [ air * 6.0 + haze * 3.0 ]
+                ext_g : f32 [ air * 14.0 + haze * 3.2
+                              + ozone * 0.7 ]
+                ext_b : f32 [ air * 33.0 + haze * 3.5
+                              + ozone * 0.15 ]
+                trans_r *= exp[ 0.0 - ext_r * step ]
+                trans_g *= exp[ 0.0 - ext_g * step ]
+                trans_b *= exp[ 0.0 - ext_b * step ]
+                optical += (ext_r + ext_g + ext_b) * step / 3.0
+            multiple : f32 [ 0.16 * (1.0 - exp[ 0.0 - optical ]) ]
+            light_r += multiple * 0.18
+            light_g += multiple * 0.46
+            light_b += multiple * 1.00
+            alpha : f32 [ 1.0 - (trans_r + trans_g + trans_b) / 3.0 ]
+            light_r *= 3.4
+            light_g *= 3.4
+            light_b *= 3.4
+            alpha *= 1.4
+            if [ light_r > 1.0 ] light_r = 1.0
+            if [ light_g > 1.0 ] light_g = 1.0
+            if [ light_b > 1.0 ] light_b = 1.0
+            if [ alpha > 1.0 ] alpha = 1.0
+            at : i32 [ (y * width + x) * 4 ]
+            data[ at ] = u8[ light_r * 255.0 ]
+            data[ at + 1 ] = u8[ light_g * 255.0 ]
+            data[ at + 2 ] = u8[ light_b * 255.0 ]
+            data[ at + 3 ] = u8[ alpha * 255.0 ]
+    image.png[ out ]
+    log 'neptune: atmosphere lookup {width}x{height} written'
+    return true
+
+func neptune_scatter [] -> bool
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    out : path '../{share_name}/baked/neptune-scatter.png'
+    return neptune_scatter_bake[ out, 512, 256 ]
+
+func nep_clone_stamp [ target: @f32, width: i32, height: i32,
+                       source: @f32, source_width: i32,
+                       source_height: i32, center_x: f32,
+                       center_y: f32, along: f32, across: f32,
+                       angle: f32, source_u: f32,
+                       source_v: f32, weight: f32,
+                       tone: i32 ]
+    if [ weight <= 0.001 ] return
+    cosine : f32 [ cos[ angle ] ]
+    sine : f32 [ sin[ angle ] ]
+    radius : i32 [ ceil[ along ] ]
+    top : i32 [ i32[ center_y ] - radius ]
+    bottom : i32 [ i32[ center_y ] + radius ]
+    if [ top < 0 ] top = 0
+    if [ bottom >= height ] bottom = height - 1
+    for [ y: i32 top, y <= bottom, y += 1 ]
+        delta_y : f32 [ f32[ y ] - center_y ]
+        for [ offset_x: i32 0 - radius,
+              offset_x <= radius, offset_x += 1 ]
+            delta_x : f32 [ f32[ offset_x ] ]
+            long_axis : f32 [
+                (delta_x * cosine + delta_y * sine) / along ]
+            side_axis : f32 [
+                (delta_y * cosine - delta_x * sine) / across ]
+            distance : f32 [ long_axis * long_axis
+                             + side_axis * side_axis ]
+            if [ distance >= 1.0 ] continue
+            feather : f32 [ 1.0 - eu_sstep[
+                0.0, 1.0, sqrt[ distance ] ] ]
+            source_along : f32 [ 0.22 ]
+            source_across : f32 [ 0.22 ]
+            if [ tone == 0 ]
+                source_along = 0.36
+                source_across = 0.13
+            el [ tone == 2 ]
+                source_along = 0.30
+                source_across = 0.28
+            sample : f32 [ eu_bilin[
+                source, source_width, source_height,
+                source_u + long_axis * source_along
+                    + side_axis * 0.035,
+                source_v + side_axis * source_across ] ]
+            feature : f32 [ 0.0 ]
+            if [ tone == 0 ]
+                feature = eu_sstep[ 0.12, 0.52, sample ]
+            el [ tone == 1 ]
+                feature = 0.22 + eu_sstep[
+                    0.08, 0.54, sample ] * 0.78
+            el
+                feature = 1.0 - eu_sstep[ 0.10, 0.38, sample ]
+            opacity : f32 [ feather * weight * feature ]
+            x : i32 [ i32[ center_x ] + offset_x ]
+            x = (x % width + width) % width
+            at : i32 [ y * width + x ]
+            target[ at ] += (1.0 - target[ at ]) * opacity
+
+func neptune_clone_bake [ color_out: path, clone_out: path,
+                          width: i32, height: i32 ] -> bool
+    fi : Image [
+        uri: path '../{share_name}/baked/neptune-cloud.png' ]
+    if [ fi.width == 0 ]
+        log 'neptune: flow cloud map missing'
+        return false
+    white_path : path [
+        '../{share_name}/textures/neptune-white.png' ]
+    mid_path : path [
+        '../{share_name}/textures/neptune-mid.png' ]
+    dark_path : path [
+        '../{share_name}/textures/neptune-dark.png' ]
+    white_image : Image [ uri: white_path ]
+    mid_image : Image [ uri: mid_path ]
+    dark_image : Image [ uri: dark_path ]
+    if [ white_image.width == 0 || mid_image.width == 0
+         || dark_image.width == 0 ]
+        log 'neptune: clone reference texture missing'
+        return false
+    white_luma : new f32 [
+        white_image.width * white_image.height ]
+    mid_luma : new f32 [ mid_image.width * mid_image.height ]
+    dark_luma : new f32 [ dark_image.width * dark_image.height ]
+    eu_lum[ white_image, white_luma ]
+    eu_lum[ mid_image, mid_luma ]
+    eu_lum[ dark_image, dark_luma ]
+    fp : i32 [ fi.pixel_size ]
+    fdat : @u8 [ fi.vdata[] ]
+    count : i32 [ width * height ]
+    white_mask : new f32 [ count ]
+    mid_mask : new f32 [ count ]
+    dark_mask : new f32 [ count ]
+    step_x : i32 [ width / 24 ]
+    step_y : i32 [ height / 28 ]
+    if [ step_x < 24 ] step_x = 24
+    if [ step_y < 12 ] step_y = 12
+    columns : i32 [ width / step_x + 2 ]
+    rows : i32 [ height / step_y + 2 ]
+    turn : f32 [ 6.28318530718 ]
+    eps : f32 [ 0.004 ]
+    for [ row: i32 0 - 1, row < rows, row += 1 ]
+        for [ column: i32 0 - 1,
+              column < columns, column += 1 ]
+            grid_x : f32 [ f32[ column ] ]
+            grid_y : f32 [ f32[ row ] ]
+            jitter_x : f32 [ eu_hash2[
+                grid_x, grid_y, 11.0 ] - 0.5 ]
+            jitter_y : f32 [ eu_hash2[
+                grid_x, grid_y, 13.0 ] - 0.5 ]
+            center_x : f32 [
+                (grid_x + 0.5 + jitter_x * 0.72) * step_x ]
+            center_y : f32 [
+                (grid_y + 0.5 + jitter_y * 0.72) * step_y ]
+            if [ center_y < 0.0 || center_y >= f32[ height ] ]
+                continue
+            horizontal : f32 [ center_x / f32[ width ] ]
+            horizontal -= floor[ horizontal ]
+            vertical : f32 [ center_y / f32[ height ] ]
+            latitude : f32 [ vertical * 2.0 - 1.0 ]
+            world_angle : f32 [ horizontal * turn ]
+            east : f32 [
+                nep_stream[ world_angle + eps, latitude ] ]
+            west : f32 [
+                nep_stream[ world_angle - eps, latitude ] ]
+            north : f32 [
+                nep_stream[ world_angle, latitude + eps ] ]
+            south : f32 [
+                nep_stream[ world_angle, latitude - eps ] ]
+            curl_x : f32 [ (north - south) / (2.0 * eps) ]
+            curl_y : f32 [ (west - east) / (2.0 * eps) ]
+            jet : f32 [ sin[ latitude * 18.8495559 ] * 1.30
+                        + sin[ latitude * 43.9822972 ] * 0.52 ]
+            velocity_x : f32 [ 1.15 + jet + curl_x * 0.055 ]
+            velocity_y : f32 [ curl_y * 0.080 ]
+            brush_angle : f32 [ atan2[
+                velocity_y * 1.8, abs[ velocity_x ] + 0.42 ] ]
+            brush_angle += (eu_hash2[
+                grid_x, grid_y, 17.0 ] - 0.5) * 0.16
+            flow_x : i32 [ i32[ horizontal * fi.width ] ]
+            flow_y : i32 [ i32[ vertical * fi.height ] ]
+            flow_at : i32 [ (flow_y * fi.width + flow_x) * fp ]
+            high : f32 [ f32[ fdat[ flow_at ] ] / 255.0 ]
+            thick : f32 [ f32[ fdat[ flow_at + 1 ] ] / 255.0 ]
+            low : f32 [ f32[ fdat[ flow_at + 2 ] ] / 255.0 ]
+            deep : f32 [ f32[ fdat[ flow_at + 3 ] ] / 255.0 ]
+            white_weight : f32 [ 0.18 + eu_sstep[
+                0.15, 0.82, high * 0.72 + thick * 0.42 ] * 0.78 ]
+            mid_weight : f32 [ 0.18 + low * 0.72 ]
+            dark_weight : f32 [ 0.12 + deep * 0.68 ]
+            random_size : f32 [ eu_hash2[
+                grid_x, grid_y, 19.0 ] ]
+            along : f32 [ f32[ step_x ]
+                * (0.78 + random_size * 0.64) ]
+            across : f32 [ f32[ step_y ]
+                * (0.46 + random_size * 0.34) ]
+            source_u : f32 [ eu_hash2[
+                grid_x, grid_y, 23.0 ] ]
+            source_v : f32 [ eu_hash2[
+                grid_x, grid_y, 29.0 ] ]
+            nep_clone_stamp[
+                white_mask, width, height, white_luma,
+                white_image.width, white_image.height,
+                center_x, center_y, along * 3.10,
+                across * 0.82, brush_angle,
+                source_u, source_v, white_weight * 0.92, 0 ]
+            nep_clone_stamp[
+                mid_mask, width, height, mid_luma,
+                mid_image.width, mid_image.height,
+                center_x, center_y, along * 2.00,
+                across * 1.62, brush_angle,
+                source_u + 0.19, source_v + 0.31,
+                mid_weight * 0.62, 1 ]
+            nep_clone_stamp[
+                dark_mask, width, height, dark_luma,
+                dark_image.width, dark_image.height,
+                center_x, center_y, along * 2.45,
+                across * 2.05, brush_angle,
+                source_u + 0.43, source_v + 0.17,
+                dark_weight * 0.52, 2 ]
+    color_image : Image [
+        width: width, height: height, format: Pixel.rgba8,
+        linear: true, wrap_u: true ]
+    clone_image : Image [
+        width: width, height: height, format: Pixel.rgba8,
+        linear: true, wrap_u: true ]
+    color_data : @u8 [ color_image.vdata[] ]
+    clone_data : @u8 [ clone_image.vdata[] ]
+    for [ y: i32 0, y < height, y += 1 ]
+        vertical : f32 [ (f32[ y ] + 0.5) / f32[ height ] ]
+        glow : f32 [ 0.5 + 0.5 * cos[
+            (vertical - 0.46) * 3.14159265 ] ]
+        for [ x: i32 0, x < width, x += 1 ]
+            pixel : i32 [ y * width + x ]
+            white : f32 [ white_mask[ pixel ] ]
+            middle : f32 [ mid_mask[ pixel ] ]
+            dark : f32 [ dark_mask[ pixel ] ]
+            red : f32 [ 0.012 + glow * 0.012 ]
+            green : f32 [ 0.042 + glow * 0.052 ]
+            blue : f32 [ 0.145 + glow * 0.125 ]
+            red += middle * 0.050
+            green += middle * 0.205
+            blue += middle * 0.535
+            red += white * (0.58 - red)
+            green += white * (0.80 - green)
+            blue += white * (1.00 - blue)
+            red *= 1.0 - dark * 0.64
+            green *= 1.0 - dark * 0.52
+            blue *= 1.0 - dark * 0.34
+            if [ blue > 1.0 ] blue = 1.0
+            at : i32 [ pixel * 4 ]
+            color_data[ at ] = u8[ red * 255.0 ]
+            color_data[ at + 1 ] = u8[ green * 255.0 ]
+            color_data[ at + 2 ] = u8[ blue * 255.0 ]
+            color_data[ at + 3 ] = 255
+            clone_data[ at ] = u8[ white * 255.0 ]
+            thickness : f32 [ white * 0.72 + middle * 0.56 ]
+            if [ thickness > 1.0 ] thickness = 1.0
+            clone_data[ at + 1 ] = u8[ thickness * 255.0 ]
+            clone_data[ at + 2 ] = u8[ middle * 255.0 ]
+            clone_data[ at + 3 ] = u8[ dark * 255.0 ]
+    color_image.png[ color_out ]
+    clone_image.png[ clone_out ]
+    log 'neptune: weighted clone maps {width}x{height} written'
+    return true
+
+func neptune_bake [] -> bool
+    color_out : path '../{share_name}/baked/neptune-color.png'
+    clone_out : path '../{share_name}/baked/neptune-clone.png'
+    return neptune_clone_bake[
+        color_out, clone_out, 4096, 2048 ]
+
+func neptune_storm [] -> bool
+    ci : Image [ uri: path '../{share_name}/baked/neptune-color.png' ]
+    if [ ci.width == 0 ] return false
+    width : i32 [ ci.width ]
+    height : i32 [ ci.height ]
+    count : i32 [ width * height ]
+    luminance : new f32 [ count ]
+    eu_lum[ ci, luminance ]
+    edges : new f32 [ count ]
+    for [ y: i32 0, y < height, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : 0 ]
+        yp : i32 [ (y < height - 1) ? y + 1 : height - 1 ]
+        for [ x: i32 0, x < width, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : width - 1 ]
+            xp : i32 [ (x < width - 1) ? x + 1 : 0 ]
+            gx : f32 [ luminance[ y * width + xp ]
+                       - luminance[ y * width + xm ] ]
+            gy : f32 [ luminance[ yp * width + x ]
+                       - luminance[ ym * width + x ] ]
+            mg : f32 [ sqrt[ gx * gx + gy * gy ] * 30.0 ]
+            if [ mg > 1.0 ] mg = 1.0
+            edges[ y * width + x ] = mg
+    blurred : new f32 [ count ]
+    eu_blur[ edges, blurred, width, height, 4 ]
+    im : Image [ width: width, height: height, format: Pixel.rgba8,
+                 linear: true, wrap_u: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < count, i += 1 ]
+        value : f32 [ blurred[ i ] ]
+        if [ value < 0.0 ] value = 0.0
+        if [ value > 1.0 ] value = 1.0
+        pixel_at : i32 [ i * 4 ]
+        od[ pixel_at ]     = u8[ value * 255.0 ]
+        od[ pixel_at + 1 ] = 0
+        od[ pixel_at + 2 ] = 0
+        od[ pixel_at + 3 ] = 255
+    im.png[ path '../{share_name}/baked/neptune-storm.png' ]
+    log 'neptune: storm map written'
+    return true
+
+func nep_ring_inner [] -> f32
+    return 40900.0
+func nep_ring_outer [] -> f32
+    return 64500.0
+
+func neptune_rings [] -> bool
+    width : i32 [ 2048 ]
+    height : i32 [ 4 ]
+    inner_radius : f32 [ nep_ring_inner[] ]
+    outer_radius : f32 [ nep_ring_outer[] ]
+    im : Image [ width: width, height: height, format: Pixel.rgba8,
+                 linear: true ]
+    od : @u8 [ im.vdata[] ]
+    for [ x: i32 0, x < width, x += 1 ]
+        share : f32 [ (f32[ x ] + 0.5) / f32[ width ] ]
+        km : f32 [
+            inner_radius + share * (outer_radius - inner_radius) ]
+        opacity : f32 [ 0.0 ]
+        opacity += nep_band[ km, 41900.0, 1000.0, 1800.0 ] * 0.10
+        opacity += nep_band[ km, 53200.0,   60.0,  420.0 ] * 0.55
+        opacity += nep_band[ km, 55200.0, 2000.0,  900.0 ] * 0.06
+        opacity += nep_band[ km, 57200.0,   50.0,  380.0 ] * 0.18
+        opacity += nep_band[ km, 61953.0,   40.0,  350.0 ] * 0.05
+        opacity += nep_band[ km, 62933.0,   25.0,  340.0 ] * 0.85
+        opacity += nep_band[ km, 52150.0,    0.0,  620.0 ] * 0.11
+        opacity += nep_band[ km, 54300.0,    0.0,  680.0 ] * 0.09
+        opacity += nep_band[ km, 61750.0,    0.0,  700.0 ] * 0.12
+        opacity += nep_band[ km, 63950.0,    0.0,  640.0 ] * 0.10
+        if [ opacity > 1.0 ] opacity = 1.0
+        cr : f32 [ 0.66 ]
+        cg : f32 [ 0.63 ]
+        cb : f32 [ 0.61 ]
+        for [ y: i32 0, y < height, y += 1 ]
+            pixel_at : i32 [ (y * width + x) * 4 ]
+            od[ pixel_at ]     = u8[ cr * 255.0 ]
+            od[ pixel_at + 1 ] = u8[ cg * 255.0 ]
+            od[ pixel_at + 2 ] = u8[ cb * 255.0 ]
+            od[ pixel_at + 3 ] = u8[ opacity * 255.0 ]
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    im.png[ path '../{share_name}/baked/neptune-ring.png' ]
+    log 'neptune: ring strip written'
+    return true
+
+func neptune_maps []
+    cloud_hash : u64 [ @neptune_clouds ]
+    scatter_hash : u64 [ @neptune_scatter ]
+    deck_hash : u64 [ @neptune_bake ]
+    storm_hash : u64 [ @neptune_storm ]
+    ring_hash : u64 [ @neptune_rings ]
+    white_ref : path [
+        '../{share_name}/textures/neptune-white.png' ]
+    mid_ref : path [
+        '../{share_name}/textures/neptune-mid.png' ]
+    dark_ref : path [
+        '../{share_name}/textures/neptune-dark.png' ]
+    stamp : string {
+        {cloud_hash}-{scatter_hash}-{deck_hash}-{storm_hash}-{ring_hash}
+        {white_ref.modified_time[]}-{mid_ref.modified_time[]}
+        {dark_ref.modified_time[]}
+    }
+    sp : path '../{share_name}/baked/neptune.hash'
+    clp : path '../{share_name}/baked/neptune-cloud.png'
+    cnp : path '../{share_name}/baked/neptune-clone.png'
+    atp : path '../{share_name}/baked/neptune-scatter.png'
+    cp : path '../{share_name}/baked/neptune-color.png'
+    stp : path '../{share_name}/baked/neptune-storm.png'
+    rgp : path '../{share_name}/baked/neptune-ring.png'
+    if [ white_ref.exists[] && mid_ref.exists[]
+         && dark_ref.exists[] && sp.exists[]
+         && clp.exists[] && cnp.exists[]
+         && atp.exists[] && cp.exists[]
+         && stp.exists[] && rgp.exists[] ]
+        old : string [ sp.load[ typeid[string], null ] ]
+        if [ old && old == stamp ]
+            log 'neptune: colour map current ({stamp})'
+            return
+    if [ neptune_clouds[] && neptune_scatter[] && neptune_bake[]
+         && neptune_storm[] && neptune_rings[] ]
+        sp.save[ stamp, null ]
+export func neptune_sky_export []
+    neptune_maps[]
+
+ModelViewProject NeptuneAirShader
+    mutable cam_pos : vec4f
+    mutable layer   : vec4f
+
+    attrib cloud : LayoutBinding [ type:typeid[ TitanSurface ],
+                                   id:TitanSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib scatter : LayoutBinding [ type:typeid[ TitanSurface ],
+                                     id:TitanSurface.height, count:1,
+                                     format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_uv     : VertexInput [ type:typeid[ vec2f ] ]
+
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_uv        : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec4f ] ]
+
+    attrib fragColor : FragmentOutput[ type:typeid[ vec4f ] ]
+
+    func init[]
+        eye    : vec3f [0.0f, 0.0f, 1.1f]
+        target : vec3f [0.0f, 0.0f, 0.0f]
+        up     : vec3f [0.0f, -1.0f, 0.0f]
+        model   = mat4f.identity[]
+        proj = mat4f.perspective[
+            radians[55.0f], 1.0f, 0.001f, 100.0f]
+        view = mat4f.look_at[eye, target, up]
+
+    func vertex[] -> GLSL none {
+        v_uv = vec2(1.0 - a_uv.x, a_uv.y);
+        mat3 nm = transpose(inverse(mat3(ubo.model)));
+        v_normal = normalize(nm * a_normal);
+        vec4 wpos = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wpos;
+        gl_Position = ubo.proj * ubo.view * wpos;
+    }
+
+    func fragment[] -> GLSL none {
+        vec3 normal = normalize(v_normal);
+        vec3 view_dir = normalize(
+            ubo.cam_pos.xyz - v_world_pos.xyz);
+        vec3 sun = normalize(vec3(0.85, -0.10, 0.15));
+        float mu = clamp(dot(normal, view_dir), 0.0, 1.0);
+        float ndl = dot(normal, sun);
+        vec2 uv = vec2(fract(v_uv.x + ubo.time * 0.000002),
+                       v_uv.y);
+        vec4 flow = textureLod(cloud, uv, 1.0);
+        vec2 scatter_uv = vec2(ndl * 0.5 + 0.5, mu);
+        vec4 atmosphere = texture(scatter, scatter_uv);
+        float high_wisp = smoothstep(0.04, 0.38, flow.r);
+        float low_wisp = smoothstep(0.06, 0.44, flow.b);
+        float wisps = high_wisp * ubo.layer.x
+                    + low_wisp * ubo.layer.y;
+        float thick = smoothstep(0.03, 0.62, flow.g)
+                    * (ubo.layer.x + ubo.layer.y * 0.62);
+        float day = 0.10 + 0.90 * smoothstep(-0.08, 0.28, ndl);
+        day *= 1.0 - flow.r * ubo.layer.y * 0.38;
+        float limb = pow(1.0 - mu, 3.0);
+        float phase = pow(max(dot(view_dir, -sun), 0.0), 12.0);
+        vec3 ice = mix(vec3(0.25, 0.48, 0.82),
+                       vec3(0.72, 0.85, 1.00), day * 0.55);
+        ice += vec3(1.00, 0.94, 0.84)
+             * phase * ubo.layer.x * thick * 1.7;
+        float top_light = pow(thick, 4.0)
+                        * smoothstep(0.18, 0.55, ndl);
+        ice += vec3(1.00, 0.96, 0.88)
+             * top_light * ubo.layer.y * 1.25;
+        vec3 haze = vec3(0.16, 0.38, 0.92);
+        vec3 col = ice * (0.46 + 0.68 * day + thick * 0.48);
+        col = mix(col, haze, limb * 0.75);
+        float air_weight = atmosphere.a * ubo.layer.w
+                         * mix(0.08, 1.0, limb);
+        vec3 air_blue = atmosphere.rgb * vec3(0.60, 0.92, 1.42);
+        col = mix(col, air_blue, air_weight * 0.90);
+        float cloud_alpha = 0.24 + ubo.layer.x * 0.42;
+        float alpha = wisps * cloud_alpha
+                    + air_weight * 0.72;
+        fragColor = vec4(col, clamp(alpha, 0.0, 0.84));
+    }
+
+ModelViewProject NeptuneLens
+    mutable look : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ TitanSurface ],
+                                   id:TitanSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib pos       : VertexInput [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init[]
+        model = mat4f.identity[]
+        view = mat4f.identity[]
+        proj = mat4f.identity[]
+
+    func vertex[] -> GLSL none {
+        v_uv = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    func lens_hash [ point: @vec2f ] -> GLSL f32 {
+        uvec2 state = uvec2(ivec2(point) + 65536);
+        state = state * 1664525u + 1013904223u;
+        state.x += state.y * 1664525u;
+        state.y += state.x * 1664525u;
+        state ^= state >> 16u;
+        return float(state.x) / 4294967295.0;
+    }
+
+    func fragment[] -> GLSL none {
+        vec2 pixel = vec2(1.0 / ubo.look.x,
+                          1.0 / ubo.look.y);
+        vec3 col = texture(color, v_uv).rgb * 0.60;
+        col += texture(color, v_uv + pixel * vec2(1.2, 1.2)).rgb
+             * 0.10;
+        col += texture(color, v_uv + pixel * vec2(-1.2, 1.2)).rgb
+             * 0.10;
+        col += texture(color, v_uv + pixel * vec2(1.2, -1.2)).rgb
+             * 0.10;
+        col += texture(color, v_uv - pixel * 1.2).rgb * 0.10;
+        vec3 glow = texture(color, v_uv + pixel * vec2(8.0, 0.0)).rgb;
+        glow += texture(color, v_uv - pixel * vec2(8.0, 0.0)).rgb;
+        glow += texture(color, v_uv + pixel * vec2(0.0, 8.0)).rgb;
+        glow += texture(color, v_uv - pixel * vec2(0.0, 8.0)).rgb;
+        col += max(glow * 0.25 - vec3(0.58), vec3(0.0)) * 0.20;
+        float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(vec3(luma), col, 1.18) * ubo.look.w;
+        vec2 centered = v_uv - vec2(0.5);
+        float aspect = ubo.look.x / ubo.look.y;
+        float edge = length(centered * vec2(aspect, 1.0));
+        col *= 1.0 - 0.30 * smoothstep(0.36, 0.94, edge);
+        col = clamp((col * (2.51 * col + 0.03))
+                  / (col * (2.43 * col + 0.59) + 0.14),
+                    0.0, 1.0);
+        float grain = lens_hash(
+            v_uv * 4096.0 + vec2(ubo.look.z * 61.0,
+                                  ubo.look.z * 37.0)) - 0.5;
+        col += grain * 0.018;
+        fragColor = vec4(col, 1.0);
+    }
+
+func nep_orbit_point [ distance: f32, pitch: f32,
+                       degrees: f32 ] -> vec3f
+    angle : f32 [ radians[ degrees ] ]
+    radius : f32 [ sqrt[ 1.0 + pitch * pitch ] ]
+    return vec3f [ sin[ angle ] * distance / radius,
+                   pitch * distance / radius,
+                   cos[ angle ] * distance / radius ]
+
+func nep_orbit_look [ distance: f32, pitch: f32,
+                      degrees: f32 ] -> vec3f
+    eye : vec3f nep_orbit_point[ distance, pitch, degrees ]
+    radial : vec3f [ eye.x / distance, eye.y / distance,
+                     eye.z / distance ]
+    angle : f32 [ radians[ degrees ] ]
+    east : vec3f [ cos[ angle ], 0.0,
+                   0.0 - sin[ angle ] ]
+    north : vec3f [
+        0.0 - radial.y * sin[ angle ],
+        1.0 / sqrt[ 1.0 + pitch * pitch ],
+        0.0 - radial.y * cos[ angle ] ]
+    tangent : vec3f [
+        east.x * 0.82 + north.x * 0.57,
+        east.y * 0.82 + north.y * 0.57,
+        east.z * 0.82 + north.z * 0.57 ]
+    dip : f32 [ acos[ 1.0 / distance ] + 0.22 ]
+    return vec3f [
+        tangent.x * cos[ dip ] - radial.x * sin[ dip ],
+        tangent.y * cos[ dip ] - radial.y * sin[ dip ],
+        tangent.z * cos[ dip ] - radial.z * sin[ dip ] ]
+
+Backdrop Neptune_sky
+    frost : true
+    public func bg_color [ ] -> rgba
+        return color
+    frost_sharp : true
+    intern e_cur  : f32
+    intern p_cur  : f32
+    intern p_set  : bool
+    intern nept   : JupiterShader
+    intern air    : NeptuneAirShader
+    intern low_air : NeptuneAirShader
+    intern haze    : NeptuneAirShader
+    intern sky    : GaiaShader
+    intern lens   : NeptuneLens
+    intern lens_model : Model
+    intern models : vec Model
+    intern scene  : Render
+    intern target : Render
+    intern built  : bool
+    intern ready     : bool
+    intern loading   : bool
+    intern load_task : async
+    intern last_w    : i32
+    intern last_h    : i32
+    public color  : rgba [ r:0.001, g:0.002, b:0.006, a:1.0 ]
+
+    func build_models[]
+        built     = true
+        gltf      : build_globe[]
+        cl : path '../{share_name}/baked/neptune-clone.png'
+        at : path '../{share_name}/baked/neptune-scatter.png'
+        cp : path '../{share_name}/baked/neptune-color.png'
+        st : path '../{share_name}/baked/neptune-storm.png'
+        if [ !cl.exists[] || !at.exists[]
+             || !cp.exists[] || !st.exists[] ]
+            log 'neptune: no baked maps — composing live'
+            neptune_clouds[]
+            neptune_scatter[]
+            neptune_bake[]
+            neptune_storm[]
+        nept = JupiterShader [ vk: vk ]
+        n_samplers : map Image [string] [
+            'color':  Image [ uri: cp, surface: TitanSurface.color,
+                              linear: true, wrap_u: true ],
+            'height': Image [ uri: st, surface: TitanSurface.height,
+                              linear: true, wrap_u: true ]
+        ]
+        nept_model : Model [ vk: vk, w: ux, id: gltf, s: nept,
+                             samplers: n_samplers,
+            straight_alpha: true ]
+        air = NeptuneAirShader [ vk: vk, transparent: true ]
+        low_air = NeptuneAirShader [ vk: vk, transparent: true ]
+        haze = NeptuneAirShader [ vk: vk, transparent: true ]
+        air_samplers : map Image [string] [
+            'color': Image [ uri: cl, surface:TitanSurface.color,
+                             linear: true, wrap_u: true ],
+            'height': Image [ uri: at,
+                               surface:TitanSurface.height,
+                               linear: true ]
+        ]
+        air_model : Model [ vk: vk, w: ux, id: gltf, s: air,
+                            samplers: air_samplers,
+                            straight_alpha: true ]
+        low_model : Model [ vk: vk, w: ux, id: gltf, s: low_air,
+                            samplers: air_samplers,
+                            straight_alpha: true ]
+        haze_model : Model [ vk: vk, w: ux, id: gltf, s: haze,
+                             samplers: air_samplers,
+                             straight_alpha: true ]
+        sky = GaiaShader [ vk: vk ]
+        sky_samplers : map Image [string] [
+            'color': Image [
+                uri: path '{scenes_share[]}/textures/gaia.png',
+                surface: GaiaSurface.color ]
+        ]
+        sky_model : Model [ vk: vk, w: ux, id: gltf, s: sky,
+                            samplers: sky_samplers,
+            straight_alpha: true, cull_none: true ]
+        models = vec Model [] [ sky_model, nept_model, low_model,
+                                air_model, haze_model ]
+
+    func create_target[]
+        if [ target || !models || models.count == 0 ] return
+        scene = Render [
+            vk:          vk,
+            w:           ux,
+            wscale:      (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            use_depth:   true,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models:      models ]
+        lens = NeptuneLens [ vk: vk ]
+        lens_model = Model [ vk: vk, w: ux, s: lens,
+            samplers: map Au[string] [ 'color': scene.color ] ]
+        target = Render [ vk: vk, w: ux, wscale: 1.0,
+            clear_color: vec4f [ color.r, color.g, color.b, 1.0 ],
+            models: [ lens_model ] ]
+        target.owner  = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func load_bg [ arg: object :: entry: Neptune_sky ]
+        entry.build_models[]
+        entry.ready = true
+
+    func draw [ window: Window ]
+        animated = true
+        if [ !built && !loading ]
+            loading = true
+            work_items : vec Au []
+            work_items.push[ a ]
+            load_task = async [ target: a, work_fn: lambda load_bg[ a ],
+                                work: work_items ]
+        if [ !ready ] return
+        if [ load_task ] load_task = null
+        create_target[]
+        orbit[]
+        lens.look = vec4f [ f32[ ux.width ], f32[ ux.height ],
+                            ux.time, 1.08 ]
+        scene.update[]
+        if [ ux.width != last_w || ux.height != last_h ]
+            last_w = ux.width
+            last_h = ux.height
+            lens_model.samplers[ 'color' ] = scene.color
+            lens_model.rebind_model[]
+        scene.draw[]
+        scene.sync_fence[]
+
+    func orbit[]
+        aspect : f32 [
+            (ux.height > 0) ? f32[ ux.width ] / f32[ ux.height ]
+            : 1.7778 ]
+        e_t    : f32 [ (vantage == OrbitView.low)  ? 1.035 :
+                       (vantage == OrbitView.high) ? 1.080 :
+                       (vantage == OrbitView.far)  ? 1.180 : 1.380 ]
+        if [ e_cur == 0.0 ] e_cur = e_t
+        e_cur = filter_n[ e_cur, e_t, 0.08, ux.frame_factor ]
+        p_t    : f32 [ (angle == ViewAngle.flat)   ? 0.03 :
+            (angle == ViewAngle.angled) ? 0.12 : 0.24 ]
+        if [ p_cur == 0.0 && p_t != 0.0 && !p_set ] p_cur = p_t
+        p_set  = true
+        p_cur  = filter_n[ p_cur, p_t, 0.08, ux.frame_factor ]
+        ux.orbit_moving = abs[ e_cur - e_t ] > 0.002 || abs[
+            p_cur - p_t ] > 0.001
+
+        e_d    : f32 [ e_cur ]
+        orbit_d : f32 [ ux.time * 1200.0 ]
+        _eye : vec3f nep_orbit_point[ e_d, p_cur, orbit_d ]
+        look : vec3f nep_orbit_look[ e_d, p_cur, orbit_d ]
+        _tgt   : vec3f [ _eye.x + look.x, _eye.y + look.y,
+                         _eye.z + look.z ]
+        _up    : vec3f [ 0.0 - _eye.x / e_d,
+                         0.0 - _eye.y / e_d,
+                         0.0 - _eye.z / e_d ]
+        _proj  : mat4f.perspective[ radians[ 30.0 ], aspect, 0.001,
+                                    90.0 ]
+        _view  : mat4f.look_at    [ _eye, _tgt, _up ]
+
+        spin_d : f32 [ ux.time * 9000.0 ]
+        q_spin : quatf [ vec4f [ 0.0, 1.0, 0.0, radians[ spin_d ] ] ]
+        q_tilt : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 28.0 ] ] ]
+        mm : mat4f.identity[]
+        mm = mm.rotate[ q_tilt ]
+        mm = mm.rotate[ q_spin ]
+        nept.model   = mm
+        nept.view    = _view
+        nept.proj    = _proj
+        nept.gain    = 0.66
+        nept.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        nept.pc_a = vec4f [ 1.00, 1.00, 1.00, 0.0 ]
+        nept.pc_b = vec4f [ 1.00, 1.00, 1.00, 0.00015 ]
+        nept.pstr = vec4f [ 1.0, 1.0, 0.0, 0.50 ]
+        nept.pctl = vec4f [ 0.69, 0.00325, 1.0, 0.0 ]
+        nept.wctl  = vec4f [ 0.34, 0.012, 43.98, 0.46 ]
+        nept.wctl2 = vec4f [ 0.60, 1.1, 0.0125, 18.0 ]
+        nept.tint  = vec4f [ 1.0, 1.0, 1.0, 0.0 ]
+        nept.pfire = vec4f [ 1.0, 0.6, 0.2, 0.0 ]
+        nept.pfire2 = vec4f [ 1.0, 0.9, 0.7, 0.0 ]
+        nept.time = ux.time * 60000.0
+
+        am : mat4f mm
+        am = am.scale[ vec3f [ 1.00041, 1.00041, 1.00041 ] ]
+        air.model   = am
+        air.view    = _view
+        air.proj    = _proj
+        air.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        air.time    = ux.time * 60000.0
+        air.layer   = vec4f [ 1.0, 0.0, 1.0, 0.0 ]
+
+        lm : mat4f mm
+        lm = lm.scale[ vec3f [ 1.00008, 1.00008, 1.00008 ] ]
+        low_air.model   = lm
+        low_air.view    = _view
+        low_air.proj    = _proj
+        low_air.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        low_air.time    = ux.time * 52000.0
+        low_air.layer   = vec4f [ 0.0, 1.0, 0.0, 0.0 ]
+
+        hm : mat4f mm
+        hm = hm.scale[ vec3f [ 1.004, 1.004, 1.004 ] ]
+        haze.model   = hm
+        haze.view    = _view
+        haze.proj    = _proj
+        haze.cam_pos = vec4f [ _eye.x, _eye.y, _eye.z, 1.0 ]
+        haze.time    = ux.time * 60000.0
+        haze.layer   = vec4f [ 0.0, 0.0, 0.0, 1.0 ]
+
+        skq : quatf [ vec4f [ 1.0, 0.0, 0.0, radians[ -9.0 ] ] ]
+        skr : quatf [ vec4f [ 0.0, 0.0, 1.0, radians[ 15.0 ] ] ]
+        sks : quatf [
+            vec4f [ 0.0, 1.0, 0.0, radians[ ux.time * 900.0 ] ] ]
+        skm : mat4f.identity[]
+        skm = skm.rotate[ skq ]
+        skm = skm.rotate[ skr ]
+        skm = skm.rotate[ sks ]
+        skm = skm.scale [ vec3f [ 30.0, 30.0, 30.0 ] ]
+        sky.model = skm
+        sky.view  = _view
+        sky.proj  = _proj
+        sky.gain  = 0.07
+        sky.time  = ux.time * 60000.0
+
+expect func t_neptune_sky_scatter_bake [] -> bool
+    name : getenv[ 'NEPTUNE_SKY_SCATTER_TEST' ]
+    if [ !name ] return true
+    out : path '{name}'
+    if [ !neptune_scatter_bake[ out, 128, 64 ] ] return false
+    image : Image [ uri: out ]
+    if [ image.width != 128 || image.height != 64 ] return false
+    data : @u8 [ image.vdata[] ]
+    blue_high : i32 [ 0 ]
+    alpha_low : i32 [ 255 ]
+    alpha_high : i32 [ 0 ]
+    count : i32 [ image.width * image.height ]
+    for [ i: i32 0, i < count, i += 1 ]
+        at : i32 [ i * image.pixel_size ]
+        if [ data[ at + 2 ] > blue_high ]
+            blue_high = data[ at + 2 ]
+        if [ data[ at + 3 ] < alpha_low ]
+            alpha_low = data[ at + 3 ]
+        if [ data[ at + 3 ] > alpha_high ]
+            alpha_high = data[ at + 3 ]
+    return blue_high > 80 && alpha_high - alpha_low > 80
+
+expect func t_neptune_sky_cloud_bake [] -> bool
+    name : getenv[ 'NEPTUNE_SKY_CLOUD_TEST' ]
+    if [ !name ] return true
+    out : path '{name}'
+    if [ !neptune_flow_bake[
+        out, 1024, 512, 1024, 512, 48 ] ] return false
+    image : Image [ uri: out ]
+    if [ image.width != 1024 || image.height != 512 ]
+        return false
+    data : @u8 [ image.vdata[] ]
+    low : i32 [ 255 ]
+    high : i32 [ 0 ]
+    deep_low : i32 [ 255 ]
+    deep_high : i32 [ 0 ]
+    count : i32 [ image.width * image.height ]
+    for [ i: i32 0, i < count, i += 1 ]
+        at : i32 [ i * image.pixel_size ]
+        if [ data[ at ] < low ] low = data[ at ]
+        if [ data[ at ] > high ] high = data[ at ]
+        if [ data[ at + 3 ] < deep_low ]
+            deep_low = data[ at + 3 ]
+        if [ data[ at + 3 ] > deep_high ]
+            deep_high = data[ at + 3 ]
+    return high - low > 96 && deep_high - deep_low > 96
+
+expect func t_neptune_sky_clone_bake [] -> bool
+    name : getenv[ 'NEPTUNE_SKY_CLONE_TEST' ]
+    if [ !name ] return true
+    color_out : path '{name}'
+    clone_out : path '{name}.mask.png'
+    if [ !neptune_clone_bake[
+        color_out, clone_out, 768, 384 ] ] return false
+    color_image : Image [ uri: color_out ]
+    clone_image : Image [ uri: clone_out ]
+    if [ color_image.width != 768 || color_image.height != 384 ]
+        return false
+    if [ clone_image.width != 768 || clone_image.height != 384 ]
+        return false
+    data : @u8 [ clone_image.vdata[] ]
+    lows : vec i32 [] [ 255, 255, 255, 255 ]
+    highs : vec i32 [] [ 0, 0, 0, 0 ]
+    count : i32 [ clone_image.width * clone_image.height ]
+    for [ i: i32 0, i < count, i += 1 ]
+        at : i32 [ i * clone_image.pixel_size ]
+        for [ channel: i32 0, channel < 4, channel += 1 ]
+            value : i32 [ data[ at + channel ] ]
+            if [ value < lows[ channel ] ]
+                lows[ channel ] = value
+            if [ value > highs[ channel ] ]
+                highs[ channel ] = value
+    white_range : i32 [ highs[ 0 ] - lows[ 0 ] ]
+    mid_range : i32 [ highs[ 2 ] - lows[ 2 ] ]
+    dark_range : i32 [ highs[ 3 ] - lows[ 3 ] ]
+    return white_range > 96 && mid_range > 96
+        && dark_range > 96
+
+expect func t_neptune_sky_full_bake [] -> bool
+    if [ !getenv[ 'NEPTUNE_SKY_FULL_BAKE' ] ] return true
+    return neptune_clouds[] && neptune_scatter[]
+        && neptune_bake[] && neptune_storm[]
+
+expect func t_neptune_sky_orbit [] -> bool
+    distance : f32 [ 1.08 ]
+    pitch : f32 [ 0.03 ]
+    near : vec3f nep_orbit_point[ distance, pitch, 0.0 ]
+    quarter : vec3f nep_orbit_point[ distance, pitch, 90.0 ]
+    look : vec3f nep_orbit_look[ distance, pitch, 0.0 ]
+    radius : f32 [ sqrt[ near.x * near.x + near.y * near.y
+                         + near.z * near.z ] ]
+    radial_dot : f32 [ near.x * look.x + near.y * look.y
+                       + near.z * look.z ]
+    moved : bool [ abs[ near.x - quarter.x ] > 1.0 ]
+    close : bool [ abs[ radius - distance ] < 0.0001 ]
+    hits : bool [ radial_dot < 0.0 ]
+    return moved && close && hits && distance > 1.012
+
+expect func t_neptune_sky_frames [] -> bool
+    dir : getenv[ 'NEPTUNE_SKY_SHOTS' ]
+    if [ !dir ] return true
+    vk : vk_context []
+    vk.hold[]
+    window : Window [ vk: vk, format: Pixel.rgba8,
+                      backbuffer: true, width: 1280, height: 720 ]
+    window.hold[]
+    if [ !window.element_targets ]
+        window.element_targets = map Render [string] []
+    scene_entry : Neptune_sky []
+    scene_entry.hold[]
+    scene_entry.id = 'Neptune_sky'
+    scene_entry.ux = window
+    scene_entry.vk = window.vk
+    scene_entry.color = rgba [
+        r:0.001, g:0.002, b:0.006, a:1.0 ]
+    scene_entry.vantage = OrbitView.high
+    scene_entry.angle = ViewAngle.flat
+    render : Render [ null ]
+    for [ i: i32 0, i < 6000, i += 1 ]
+        scene_entry.draw[ window ]
+        if [ window.element_targets.contains[ 'Neptune_sky' ] ]
+            render = window.element_targets[ 'Neptune_sky' ]
+            if [ render && render.models
+                 && render.models.count > 0 ] break
+            render = null
+        usleep[ 10000 ]
+    if [ !render ] return false
+    times : vec f64 [] [ 0.0, 0.03, 0.06, 0.09 ]
+    for [ i: i32 0, i < times.count, i += 1 ]
+        window.time = times[ i ]
+        scene_entry.draw[ window ]
+        render.draw[]
+        render.sync_fence[]
+        im : Image [ render.color ]
+        im.png[ path '{string[ dir ]}/orbit{i}.png' ]
+    return true
+
+export func neptune_sky_thumbs []
+    names : vec string [] [ 'Neptune_sky' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

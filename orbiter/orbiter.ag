@@ -1,3 +1,6 @@
+# orbiter has no friends; it keeps them at arm's apogee.
+# orbiter skipped lunch; it was waiting for launch.
+# why did orbiter reload? it needed some space.
 # orbiter never crashes; it just finds a lower orbit.
 export 1.0.0
 export views ['git': FileType.ascii, 'b16': FileType.agnostic]
@@ -78,6 +81,17 @@ func install_root [] -> path
     i : path path.path_install[]
     if [ i ] return i
     return path '{path.path_startup[]}/install'
+
+func scene_exports_stamp [ entries: vec path ] -> i64
+    stamp : i64 [ 1469598103934665603 ]
+    if [ !entries ] return stamp
+    for [ entry: path ] in entries
+        ext : entry.ext[]
+        if [ !ext || ext != 'agi' ] continue
+        name : string entry.filename[]
+        stamp = stamp * 1099511 + i64[ name.hash[] ]
+        stamp = stamp * 1099511 + entry.modified_time[]
+    return stamp
 
 func editor_under [ spl: element ] -> Editor 
     te : element [ spl ]
@@ -1449,6 +1463,8 @@ element HomeLabel
 element AgentHead
     # a narrow menu's: edge to edge, square, no border
     public flush : bool
+    # the desktop's: thin, its words its own; opens the desktop's pane
+    public desk : bool
     # its agent; a phone's drag leftward on it (from the right, where
     # the end sits) shows its end
     public agent : string
@@ -1456,7 +1472,40 @@ element AgentHead
     intern grab_y : f32
     intern swiped : bool
 
+    func render [] -> Elements
+        t : Elements []
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !desk || !o || !bounds ] return t
+        un : f32 ux_unit[ ux ]
+        ew : f32 [ round[ 44.0 * un ] ]
+        ins : f32 [ round[ 10.0 * un ] ]
+        md : string o.home_model_of[ agent ]
+        nl : string [ (md.count > 0) ? '{agent}  {md}' : agent ]
+        nw : f32 [ round[ bounds.w * 0.4 ] ]
+        t['dagent_l'] = HomeLabel [ label: nl,
+            area: Region [ 'l{ins}px t0 w{nw}px b0' ] ]
+        if [ o.home_session[ agent ] ]
+            t['dagent_s'] = HomeState [ label: o.home_state_of[ agent ],
+                selected: o.home_waiting[ agent ],
+                area: Region [ 'l{ins + nw}px t0 r{ew}px b0' ] ]
+        if [ !use_mobile || o.end_shown == agent ]
+            t['dagent_e'] = BarIcon [
+                buttons: vec string [] [ 'ahome_end_{agent}' ],
+                labels: vec string [] [ 'end' ],
+                icons: false, manual: true, label_px: 15.0 * un,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                seg_radius: 12.0 * un, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                outline: rgba [ '#0000' ],
+                area: Region [ 'r0 t0 w{ew}px b0' ] ]
+        return t
+
     func on_press [ ev: Event ]
+        if [ desk && !use_mobile ]
+            o : orbiter [ cast orbiter [ ux.app_object ] ]
+            if [ o ] o.desk_agent_pick[ agent ]
+            ev.no_default = true
+            return
         if [ !use_mobile ] return
         grab_x = f32[ ux.mouse.x ]
         grab_y = f32[ ux.mouse.y ]
@@ -1482,6 +1531,7 @@ element AgentHead
         o : orbiter [ cast orbiter [ ux.app_object ] ]
         if [ !o ] return
         if [ o.end_shown.count > 0 ] o.end_shown = ''
+        el [ desk ] o.desk_agent_pick[ agent ]
         el o.home_open = (o.home_open == agent) ? '' : agent
         ux.restyle = true
     style : CSS {
@@ -1502,6 +1552,9 @@ element AgentHead
         layers.face:
             radius: 0
             stroke_width: 0
+    :desk
+        layers.face:
+            radius: 12
     }
 
 # the open agent's console frame, joined to its title above,
@@ -1518,6 +1571,16 @@ element AgentBody
         layers.face:
             radius: 0
             stroke_width: 0
+    }
+
+# an agent on the desktop: its console's frame, over the icons
+element DeskAgentPane
+    style : CSS {
+        layers.face:
+            fill_color: #0b0b14ee
+            radius: 14
+            stroke_width: 1
+            stroke_color: #fff2
     }
 
 # an agent's state on its title: running, or waiting (blue)
@@ -1560,8 +1623,46 @@ element HomeView
         el
             # the widgets are the grid's children (widget_els): a
             # wheel or a press they leave reaches the desktop
+            # the avatars, lower right: up with an agent's pane, over
+            # the background, under the icons and widgets. always
+            # mounted: paint order is the order keys first came
+            if [ bounds && (pane < 0 || pane == orb.active_pane) ]
+                ps : f32 [ round[ min[ bounds.w * 0.72, bounds.h * 1.2 ] ] ]
+                # its foot runs off under the bottom bar
+                py : f32 [ round[ bounds.h - ps * 0.85 ] ]
+                pl : element orb.platform_of[ ps ]
+                pv : PlatformView pl
+                pv.top_down = true
+                pv.shown = orb.desk_agent_on[]
+                    && orb.desk_side[ bounds.w ] > 0.0
+                # it paints every frame: its siblings must come after
+                animated = pv.shown || pl.opacity > 0.0
+                px : f32 [ round[ bounds.w - ps * 0.92 ] ]
+                pl.area = Region [ 'l{px}px t{py}px w{ps}px h{ps}px' ]
+                t['plat'] = pl
             t['apps'] = AppsGrid [ pane: pane, scroll_fade: 24.0,
                 area: Region { l0 t0 r0 b0 } ]
+            t['desk_clock'] = DeskClock [ label: clock_text[],
+                area: Region { r0.6 b1.4 w14 h1 } ]
+            if [ orb.desk_agent_on[] && bounds ]
+                un : f32 ux_unit[ ux ]
+                pad : f32 [ round[ 24.0 * un ] ]
+                gap : f32 [ round[ 10.0 * un ] ]
+                side : f32 orb.desk_side[ bounds.w ]
+                pt : f32 [ pad + orb.desk_top ]
+                pr : f32 [ (side > 0.0) ? side + gap : pad ]
+                t['dagent_pane'] = DeskAgentPane [ area: Region [
+                    'l{pad}px t{pt}px r{pr}px b{pad}px' ] ]
+                ins : f32 [ round[ 8.0 * un ] ]
+                an : string orb.desk_agent
+                one : map ConsoleSession [ string ] []
+                cs : ConsoleSession orb.home_session[ an ]
+                one[ an ] = cs
+                t['dagent_t_{an}'] = Console [ focusable: true,
+                    sessions: one, session_id: an, cwd: cs.cwd,
+                    cbase: Layer [ fill_color: rgba [ '#0000' ] ],
+                    area: Region [ orb.desk_pane_at[ pad + ins, pt + ins,
+                                                     pr + ins ] ] ]
         return t
 
 # a desktop cell's side: an app card's and its gap
@@ -1649,7 +1750,8 @@ element DeskWidget
         cv.fill_color[ rgba [ '#0000' ] ]
         cv.stroke_color[ rgba [ '#c890ffcc' ] ]
         cv.stroke_width[ 1.0 ]
-        cv.rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
         cv.paint[]
         cv.fill_color[ rgba [ '#1a1440ee' ] ]
         cv.stroke_width[ 0.0 ]
@@ -1676,7 +1778,8 @@ element DeskWidget
         cv.fill_color[ rgba [ '#ffffff0d' ] ]
         cv.stroke_color[ rgba [ '#ffffff26' ] ]
         cv.stroke_width[ 1.0 ]
-        cv.rounded_rect[ ox, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.rounded_rect[ ox, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
         cv.paint[]
         cv.restore[]
         fp : i32 [ i32[ round[ 15.0 * un ] ] ]
@@ -2762,37 +2865,23 @@ element AgentHome
         if [ !orb || !bounds ] return t
         un : f32 ux_unit[ ux ]
         # the platform behind; the list at the right, beside it.
-        # stacked (the menu): large at the lower right, under the list
-        # never past the menu's left edge (the icons): a phone's
-        # width keeps it smaller
-        ps : f32 [ round[ min[ min[ bounds.w, bounds.h * 0.38 ] * 3.4,
-                               bounds.w / 0.8 ] ] ]
+        # the menu has the list alone: the avatars are the desktop's
         lx : f32 [ (stacked) ? round[ 8.0 * un ]
                              : round[ bounds.w * 0.42 ] ]
-        # too narrow for the list beside the avatar (under 300 units):
-        # the avatar in the middle, the groups flush edge to edge
-        narrow : bool [ stacked
-            && bounds.w * 0.55 - 8.0 * un < 300.0 * un ]
+        # too narrow for its margins (under 300 units): the groups
+        # flush edge to edge
+        narrow : bool [ stacked && bounds.w - 16.0 * un < 300.0 * un ]
         if [ narrow ] lx = 0.0
-        pl : element orb.platform_of[ (stacked) ? ps : lx ]
-        pv : PlatformView pl
-        pv.top_down = stacked
-        # upper right: its middle 0.3 of its size in from the right,
-        # 0.42 down from the top
-        px : f32 [ round[ bounds.w - ps * 0.8 ] ]
-        py : f32 [ round[ ps * -0.08 ] ]
-        if [ narrow ]
-            px = round[ (bounds.w - ps) * 0.5 ]
-            py = round[ (bounds.h - ps) * 0.5 ]
-        pl.area = (stacked)
-            ? Region [ 'l{px}px t{py}px w{ps}px h{ps}px' ]
-            : Region { l0 t0 r0 b0 }
-        t['plat'] = pl
+        if [ !stacked ]
+            pl : element orb.platform_of[ lx ]
+            pv : PlatformView pl
+            pv.top_down = false
+            pv.shown = true
+            pl.area = Region { l0 t0 r0 b0 }
+            t['plat'] = pl
         rh : f32 [ round[ 30.0 * un ] ]
         ed : f32 [ (stacked) ? round[ 8.0 * un ] : round[ 24.0 * un ] ]
-        # stacked, the list keeps off the avatar's half
-        rr : f32 [ (narrow) ? 0.0
-            : (stacked) ? round[ bounds.w * 0.45 ] : ed ]
+        rr : f32 [ (narrow) ? 0.0 : ed ]
         top : f32 [ round[ ((stacked) ? 8.0 : 12.0) * un ] ]
         y : f32 [ top ]
         if [ orb.home_why && orb.home_why.count > 0 ]
@@ -2826,16 +2915,8 @@ element AgentHome
                 area: Region [
                     'l{lx + round[ 14.0 * un ]}px t{y}px w{round[ 200.0 * un ]}px h{hh}px' ] ]
             if [ cs ]
-                # waiting, else what it says it does, else running
-                dg : string orb.home_doing_of[ an ]
-                st : string [ (orb.home_waiting[ an ]) ? 'waiting'
-                              : (dg == 'build') ? 'building'
-                              : (dg == 'research') ? 'researching'
-                              : (dg.count > 0) ? dg : 'running' ]
-                if [ dg.count > 0 && orb.home_words.contains[ an ] ]
-                    hw : string orb.home_words[ an ]
-                    if [ hw.count > 0 ] st = '{st}: {hw}'
-                t['ahome_s_{an}'] = HomeState [ label: st,
+                t['ahome_s_{an}'] = HomeState [
+                    label: orb.home_state_of[ an ],
                     selected: orb.home_waiting[ an ],
                     area: Region [
                         'l{lx + round[ 220.0 * un ]}px t{y}px w{round[ 330.0 * un ]}px h{hh}px' ] ]
@@ -4366,6 +4447,8 @@ element orbiter : trinity # implements compiler
     persist home_runs  : map AgentRun [ string ]
     persist home_ran   : map string [ string ]
     persist home_open  : string
+    # the agent the desktop shows in its pane, in place of the icons
+    persist desk_agent : string
     # the instances, in the order added, and each one's agent
     persist home_order : vec string
     persist home_agent : map string [ string ]
@@ -4763,6 +4846,8 @@ element orbiter : trinity # implements compiler
     # the bottom bar's sound: the selected task's app, or with none
     # selected the machine's level, and its mute
     public master_vol    : f32 [ 1.0 ]
+    intern mic_vol       : f32
+    intern mic_read_ms   : i64
     public master_mute   : bool
     intern master_read_ms : i64
     # the sound playing now, as levels per band (0..1), low to high:
@@ -5207,7 +5292,10 @@ element orbiter : trinity # implements compiler
     intern scene_texs    : map Texture [string]
     intern scene_names   : vec string
     # which exported module carries each scene class
-    intern scene_mods      : map string [string]
+    intern scene_mods    : map string [string]
+    intern scene_stamp   : i64
+    intern scene_check   : i64
+    intern scene_revision : i64
     # lldb attach runs on a worker; it hands the finished dbg back here
     # and the main thread publishes it into debuggers on the next frame
     # kept in a list: reassigning one async drops it, and drop joins the
@@ -8701,11 +8789,47 @@ element orbiter : trinity # implements compiler
     # the desktop's widget side, px from the right edge (0 while they
     # sit above the apps, are hidden, or are none)
     func desk_side [ w: f32 ] -> f32
-        if [ !desk_widgets || desk_widgets.count == 0
-             || (desk_hide && !use_mobile)
+        if [ !desk_any[] || (desk_hide && !use_mobile)
              || !desk_beside[ w ] ]
             return 0.0
         return round[ w * 0.3 ]
+
+    # anything for the desktop's column: agents, then widgets
+    func desk_any [] -> bool
+        if [ desk_widgets && desk_widgets.count > 0 ] return true
+        if [ agent_installed[].count > 0 ] return true
+        return home_names[].count > 0
+
+    # the desktop shows an agent, not its icons
+    public func desk_agent_on [] -> bool
+        if [ !desk_agent || desk_agent.count == 0 ] return false
+        if [ desk_hide && !use_mobile ] return false
+        return home_session[ desk_agent ] != null
+
+    # one avatar for every agent (one each is too much for the GPU)
+    public func plat_names [] -> vec string
+        n : vec string []
+        if [ home_names[].count > 0 ] n.push[ 'avatar' ]
+        return n
+
+    # the agent whose state it shows: the one on the desktop, else
+    # the first running ('' none)
+    public func plat_agent [] -> string
+        if [ desk_agent_on[] ] return desk_agent
+        for [ nm: string ] in home_names[]
+            if [ home_session[ nm ] ] return nm
+        return ''
+
+    # the place of a console in the desktop's pane
+    public func desk_pane_at [ l: f32, top: f32, r: f32 ] -> string
+        return 'l{l}px t{top}px r{r}px b{l}px'
+
+    # a desktop title's press: its pane, again the icons
+    public func desk_agent_pick [ nm: string ]
+        desk_agent = (desk_agent == nm) ? '' : nm
+        if [ ux ]
+            if [ desk_agent.count > 0 ] ux.focus_id = 'dagent_t_{nm}'
+            ux.restyle = true
 
     # a widget's height over its width: its app's picture's shape,
     # else its export's (widget ['WxH']), else 4:3
@@ -8843,20 +8967,6 @@ element orbiter : trinity # implements compiler
         menu_own = 'sys'
         menu_top = -1
         menu_items = vec TrayEntry []
-        menu_items.push[ own_entry[ 'Agents', '', 0 ] ]
-        menu_items.push[ own_entry[ 'Add Agent', '', 1 ] ]
-        picks : vec string home_choices[]
-        for [ k: i32 0, k < picks.count, k += 1 ]
-            an : string home_pick_agent[ picks[ k ] ]
-            md : string home_pick_model[ picks[ k ] ]
-            # a model named after its agent: the agent said once
-            if [ md.starts_with[ '{an}-' ] ]
-                md = md.mid[ an.count + 1, md.count - an.count - 1 ]
-            menu_items.push[ own_entry[ (md.count > 0) ? '{an} {md}'
-                : an, 'orb.agent_add:{k}', 2 ] ]
-        if [ picks.count == 0 ]
-            menu_items.push[ own_entry[ 'No agent installed',
-                'orb.pnone', 2 ] ]
         return true
 
     # the widgets on the desktop, each as tall as its app's shape:
@@ -8894,36 +9004,76 @@ element orbiter : trinity # implements compiler
     func widget_els [ gw: f32 ] -> Elements
         t : Elements []
         desk_top = 0.0
-        if [ !ux || gw <= 0.0 || !desk_widgets
+        if [ !ux || gw <= 0.0 || !desk_any[]
              || (desk_hide && !use_mobile) ]
             return t
         un : f32 ux_unit[ ux ]
         pad : f32 [ round[ 24.0 * un ] ]
         gap : f32 [ round[ 10.0 * un ] ]
         beside : bool desk_beside[ gw ]
-        widget_place[ !beside ]
+        wn : i32 [ (desk_widgets) ? desk_widgets.count : 0 ]
+        if [ wn > 0 ] widget_place[ !beside ]
         w : f32 [ (beside) ? round[ gw * 0.3 ] - pad : gw - pad * 2.0 ]
         x : f32 [ (beside) ? gw - pad - w : pad ]
         y : f32 [ pad ]
+        # first a tab an agent: a press starts a new one of it
+        ah : f32 [ round[ 39.0 * un ] ]
+        kinds : vec string agent_installed[]
+        if [ kinds.count > 0 ]
+            ids : vec string []
+            ics : vec string []
+            for [ an: string ] in kinds
+                ids.push[ 'dagent_add_{an}' ]
+                ics.push[ '_text' ]
+            tp : string [ (beside) ? 't{y}px' : 't{pad}px+' ]
+            t['dagent_tabs'] = RoundTab [ buttons: ids, icon_ids: ics,
+                labels: kinds, manual: true, use_spacing: false,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                label_px: 17.0 * un, seg_radius: ah * 0.5,
+                rest_fill: rgba [ '#0000' ],
+                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
+            y += ah + gap
+        # why one did not start, in red
+        if [ home_why && home_why.count > 0 ]
+            tp : string [ (beside) ? 't{y}px' : 't{gap}px+' ]
+            t['dagent_why'] = HomeError [ label: home_why,
+                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
+            y += ah + gap
+        # then the agents, a title each
+        names : vec string home_names[]
+        for [ an: string ] in names
+            tp : string [ (beside) ? 't{y}px'
+                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
+            t['dagent_h_{an}'] = AgentHead [ desk: true, agent: an,
+                selected: desk_agent == an && desk_agent_on[],
+                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
+            y += ah + gap
+        # an agent up on the desktop: its titles alone, no widgets
+        if [ desk_agent_on[] ]
+            if [ !beside ] desk_top = y - pad
+            return t
         if [ !beside ]
-            if [ desk_widgets.count == 0 ] return t
-            desk_tab = clamp[ desk_tab, 0, desk_widgets.count - 1 ]
+            top : f32 [ y - pad ]
+            desk_top = top
+            if [ wn == 0 ] return t
+            desk_tab = clamp[ desk_tab, 0, wn - 1 ]
             # the tab shown hides with its widget: the first that shows
             if [ !widget_shown[ desk_tab ] ]
-                for [ k: i32 0, k < desk_widgets.count, k += 1 ]
+                for [ k: i32 0, k < wn, k += 1 ]
                     if [ widget_shown[ k ] ]
                         desk_tab = k
                         break
             if [ !widget_shown[ desk_tab ] ] return t
             th : f32 [ round[ 30.0 * un ] ]
             h : f32 [ round[ w * widget_ratio[ desk_tab ] ] ]
+            tp : f32 [ (top > 0.0) ? gap : pad ]
             t['widget_tabs'] = DeskTabs [
-                area: Region [ 'l{x}px t{pad}px+ w{w}px h{th}px' ] ]
+                area: Region [ 'l{x}px t{tp}px+ w{w}px h{th}px' ] ]
             t['widget_{desk_tab}'] = DeskWidget [ index: desk_tab,
                 top: true, area: Region [ 'l{x}px t{gap}px+ w{w}px h{h}px' ] ]
-            desk_top = th + gap + h
+            desk_top = top + th + gap + h
             return t
-        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        for [ i: i32 0, i < wn, i += 1 ]
             if [ !widget_shown[ i ] ] continue
             h : f32 [ round[ w * widget_ratio[ i ] ] ]
             t['widget_{i}'] = DeskWidget [ index: i,
@@ -9052,15 +9202,6 @@ element orbiter : trinity # implements compiler
         if [ e.action.starts_with[ 'orb.agent:' ] ]
             home_in_pane[ e.action.mid[ 10, e.action.count - 10 ],
                           active_pane ]
-            return
-        # the main menu's Add Agent: an agent at one of its models
-        if [ e.action.starts_with[ 'orb.agent_add:' ] ]
-            picks : vec string home_choices[]
-            k : i32 [ i32[ e.action.mid[ 14,
-                                        e.action.count - 14 ] ] ]
-            if [ k >= 0 && k < picks.count ]
-                home_start[ home_pick_agent[ picks[ k ] ],
-                            home_pick_model[ picks[ k ] ] ]
             return
         # a new instance of the agent, shown here
         if [ e.action.starts_with[ 'orb.agent_new:' ] ]
@@ -10985,17 +11126,24 @@ element orbiter : trinity # implements compiler
 
     # scene classes modules register in install/export/*.agi
     func ensure_scenes []
-        if [ scene_names ] return
-        scene_names = vec string []
-        scene_mods  = map string [string] []
-        # first entry is always 'none' -- with no scenes exported the
-        # selector drew an empty label, which reads as a broken widget
-        scene_names.push[ string 'none' ]
+        now : i64 Au.epoch_millis[]
+        if [ scene_names && now - scene_check < 1000 ] return
+        scene_check = now
         root : path.path_startup[]
         if [ !root ] return
         d : path '{install_root[]}/export'
         entries : d.ls[ null, false ]
         if [ !entries ] return
+        stamp : i64 scene_exports_stamp[ entries ]
+        if [ scene_names && stamp == scene_stamp ]
+            return
+        scene_stamp = stamp
+        scene_revision += 1
+        scene_names = vec string []
+        scene_mods  = map string [string] []
+        # first entry is always 'none' -- with no scenes exported the
+        # selector drew an empty label, which reads as a broken widget
+        scene_names.push[ string 'none' ]
         for [ e: path ] in entries
             ax : e.ext[]
             if [ !ax || !(ax == 'agi') ] continue
@@ -11029,6 +11177,10 @@ element orbiter : trinity # implements compiler
     func scene_list [] -> vec string
         ensure_scenes[]
         return scene_names
+
+    public func scene_catalog_revision [] -> i64
+        ensure_scenes[]
+        return scene_revision
 
     # the chosen scene, 'none' included
     func scene_name [] -> string
@@ -13877,10 +14029,9 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        # the bar's right end (the clock, a phone's signal): the main
+        # the bar's right end (a phone's signal): the main
         # menu
-        if [ ev.target.id == 'bar_title' || ev.target.id == 'bar_clock'
-             || ev.target.id == 'bar_signal' ]
+        if [ ev.target.id == 'bar_title' || ev.target.id == 'bar_signal' ]
             # lit while the main menu shows: a press shuts it all
             if [ sys_up[] ]
                 sys_under = false
@@ -14083,6 +14234,16 @@ element orbiter : trinity # implements compiler
         # pip shrinks the app into the editor; its instruments stay open
         # the agent view: a choice adds an instance, a title opens
         # its console (again folds it), end ends it
+        # the desktop's tab: a new instance of that agent, shown
+        if [ ev.target.id.starts_with[ 'dagent_add_' ] ]
+            nn : string home_new[ ev.target.id.mid[ 11,
+                                  ev.target.id.count - 11 ] ]
+            if [ nn.count > 0 ]
+                desk_agent = ''
+                desk_agent_pick[ nn ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         if [ ev.target.id.starts_with[ 'ahome_end_' ] ]
             home_end[ ev.target.id.mid[ 10, ev.target.id.count - 10 ] ]
             if [ ux ] ux.restyle = true
@@ -15432,6 +15593,7 @@ element orbiter : trinity # implements compiler
             save_session[]
         sync_volume[]
         light_sync[]
+        sound_sync[]
         batt_sync[]
         # the global log: every instance's log in one session, retailed
         # as the set changes
@@ -16709,10 +16871,6 @@ element orbiter : trinity # implements compiler
             t['bar_signal'] = BarSignal [ bars: mo.bars[],
                 label: mo.network[], off: mo.state < 8,
                 area: Region [ 'l{bounds.w - sw}px t0 w{sw}px b0' ] ]
-        el [ bounds ]
-            t['bar_clock'] = BarClock [ label: clock_text[],
-                selected: sys_up[],
-                area: Region [ 'l{bounds.w - sw}px t0 w{sw}px b0' ] ]
         # last: drawn over every menu on the bar
         if [ rec_iid != -2 ]
             t['rec_bar'] = RecBar [ area: Region { l0 b2px r0 b0 } ]
@@ -16915,10 +17073,10 @@ element orbiter : trinity # implements compiler
     func right_w [] -> f32
         return batt_w[] + end_w[]
 
-    # the signal or the date alone, right of the battery
+    # the signal, right of the battery; no room without one
     func end_w [] -> f32
         if [ !phone_here[] || !modem_shared[].ready ]
-            return 4.6 * unit_px[]
+            return 0.0
         return (sig_w > 0.0) ? sig_w : 7.0 * unit_px[]
 
     # the bar shows a mobile network at its right end
@@ -18273,6 +18431,18 @@ element orbiter : trinity # implements compiler
         return p.mid[ at + 1, p.count - at - 1 ]
 
     # an agent's session, else null
+    # waiting, else what it says it does, else running
+    public func home_state_of [ an: string ] -> string
+        dg : string home_doing_of[ an ]
+        st : string [ (home_waiting[ an ]) ? 'waiting'
+                      : (dg == 'build') ? 'building'
+                      : (dg == 'research') ? 'researching'
+                      : (dg.count > 0) ? dg : 'running' ]
+        if [ dg.count > 0 && home_words.contains[ an ] ]
+            hw : string home_words[ an ]
+            if [ hw.count > 0 ] st = '{st}: {hw}'
+        return st
+
     func home_session [ nm: string ] -> ConsoleSession
         if [ !home_sess || !home_sess.contains[ nm ] ] return null
         return home_sess[ nm ]
@@ -18318,6 +18488,7 @@ element orbiter : trinity # implements compiler
             k : i32 [ home_order.index_of[ nm ] ]
             if [ k >= 0 ] home_order.remove[ k ]
         if [ home_open == nm ] home_open = ''
+        if [ desk_agent == nm ] desk_agent = ''
         home_keep[]
 
     # a new instance of an agent at a model: its own terminal, in
@@ -19133,6 +19304,57 @@ element orbiter : trinity # implements compiler
             vec string [] [ 'on', 'off' ] ] ]
         return ps
 
+    # the sound panel: the two levels as sliders, its chips under
+    func sound_body [] -> Elements
+        t : Elements []
+        un : f32 unit_px[]
+        ch : f32 [ round[ 1.1 * un ] ]
+        gap : f32 [ round[ 0.35 * un ] ]
+        pad : f32 [ round[ 1.4 * un ] ]
+        t['snd_out'] = BarLevel [ icon: 'volume_up', pad_l: pad,
+            area: Region [ 'l{gap}px t{gap}px r{gap}px h{ch}px' ] ]
+        y : f32 [ gap * 2.0 + ch ]
+        t['snd_mic'] = BarLevel [ icon: 'mic', pad_l: pad,
+            area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+        y += ch + gap
+        rows : Elements chip_grid[ panel_settings[ 'sound' ], set_open,
+                                   'x' ]
+        t['snd_rest'] = element [ elements: rows,
+            area: Region [ 'l0 t{y}px r0 h{chips_h}px' ] ]
+        return t
+
+    # the sound sliders: a move sets the level, else they follow it
+    func sound_sync []
+        so : element find_el[ a, 'snd_out' ]
+        if [ !so || !(so inherits BarLevel) ] return
+        bo : BarLevel so
+        if [ bo.changed ]
+            bo.changed = false
+            master_vol = bo.value
+            host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+        el [ bo.value != master_vol ]
+            bo.value    = master_vol
+            bo.pristine = false
+        sm : element find_el[ a, 'snd_mic' ]
+        if [ !sm || !(sm inherits BarLevel) ] return
+        bm : BarLevel sm
+        now : i64 [ epoch_millis[] ]
+        if [ bm.changed ]
+            bm.changed = false
+            mic_vol = bm.value
+            mv : f32 [ 0.0 ]
+            mm : i32 [ 0 ]
+            host_capture_get[ @mv, @mm ]
+            host_capture_set[ mic_vol, mm ]
+            mic_read_ms = now
+        el [ now - mic_read_ms > 1000 ]
+            mic_read_ms = now
+            mm : i32 [ 0 ]
+            host_capture_get[ @mic_vol, @mm ]
+        if [ !bm.changed && bm.value != mic_vol ]
+            bm.value    = mic_vol
+            bm.pristine = false
+
     # the display panel: its settings, then the recording as a group
     # of its own (choices, start or stop with the clock, the take)
     func display_body [] -> Elements
@@ -19340,11 +19562,6 @@ element orbiter : trinity # implements compiler
             mv : f32 [ 0.0 ]
             mm : i32 [ 0 ]
             host_capture_get[ @mv, @mm ]
-            levels : vec string [] [ '0%', '25%', '50%', '75%', '100%' ]
-            ps.push[ setting[ 'output',
-                '{i32[ round[ master_vol * 4.0 ] * 25.0 ]}%', levels ] ]
-            ps.push[ setting[ 'microphone',
-                '{i32[ round[ mv * 4.0 ] * 25.0 ]}%', levels ] ]
             ps.push[ setting[ 'mic', (mm != 0) ? 'muted' : 'on',
                 vec string [] [ 'on', 'muted' ] ] ]
             # the devices: each by its description
@@ -19382,9 +19599,6 @@ element orbiter : trinity # implements compiler
             set_size = i32[ round[ n / 100.0 * 22.0 ] ]
             if [ ux && ux.vk ] ux.vk.font_unit = set_size
             if [ ux && ux.root ] ux.dirty_tree[ ux.root ]
-        el [ name == 'output' ]
-            master_vol = n / 100.0
-            host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
         el [ name == 'speakers' || name == 'input' ]
             inp : bool [ name == 'input' ]
             for [ d: string ] in sound_devices[ inp ]
@@ -19405,12 +19619,11 @@ element orbiter : trinity # implements compiler
                 screen_set_mode[ mode_was ]
             mode_until = 0
             mode_was = -1
-        el [ name == 'microphone' || name == 'mic' ]
+        el [ name == 'mic' ]
             mv : f32 [ 0.0 ]
             mm : i32 [ 0 ]
             host_capture_get[ @mv, @mm ]
-            if [ name == 'mic' ] mm = (v == 'muted') ? 1 : 0
-            el mv = n / 100.0
+            mm = (v == 'muted') ? 1 : 0
             host_capture_set[ mv, mm ]
         session_dirty = true
         apply_settings[ ux ]
@@ -19568,6 +19781,9 @@ element orbiter : trinity # implements compiler
         el [ tab == 'display' ]
             t['set_body'] = element [ area: Region [ body ],
                 elements: display_body[] ]
+        el [ tab == 'sound' ]
+            t['set_body'] = element [ area: Region [ body ],
+                elements: sound_body[] ]
         el
             # any other panel with settings: its chips
             ps : vec Prop panel_settings[ tab ]
@@ -19661,9 +19877,6 @@ element orbiter : trinity # implements compiler
                     'l0.3 t{lt + 0.7} r0.3 b{dw / un + 0.3}' ]
                 for [ ve: element, vk: string ] in sv
                     t[ vk ] = ve
-            el
-                t['sys_agents'] = AgentHome [ stacked: true,
-                    area: Region [ 'l0 t{lt} r0 b{foot}' ] ]
             # last: over the avatar where it reaches past its box
             if [ kb ]
                 t['sys_keys'] = FlickKeys [
@@ -19734,9 +19947,6 @@ element orbiter : trinity # implements compiler
                 'l{rx - 0.3} t{y} r0.3 b0.3' ]
             for [ ve: element, vk: string ] in sv
                 t[ vk ] = ve
-        el
-            t['sys_agents'] = AgentHome [ stacked: true,
-                area: Region [ 'l{dw}px t{lt} r0 b0' ] ]
         return t
 
     # a system menu cell chosen: its view (the lit one again puts it
@@ -20116,7 +20326,7 @@ element orbiter : trinity # implements compiler
         build_poll[]
         dock_drag_frame[]
         filter_focus_take[ w ]
-        # the clock (bottom bar): a new minute redraws it
+        # the clock: a new minute redraws it
         now : clock_text[]
         if [ now != clock_was ]
             clock_was = now
@@ -20460,3 +20670,22 @@ export func orbiter_icon []
         log 'orbiter: icon written {out}'
     el
         log 'orbiter: icon current'
+
+expect func t_scene_exports_refresh [] -> bool
+    root : path '/tmp/orbiter-scenes-{getpid[]}'
+    root.make_dir[]
+    first : path '{root}/first.agi'
+    note : path '{root}/note.txt'
+    second : path '{root}/second.agi'
+    first.save[ "scenes: ['First']\n", null ]
+    before : i64 scene_exports_stamp[ root.ls[ null, false ] ]
+    note.save[ 'ignored\n', null ]
+    with_note : i64 scene_exports_stamp[
+        root.ls[ null, false ] ]
+    second.save[ "scenes: ['Second']\n", null ]
+    after : i64 scene_exports_stamp[ root.ls[ null, false ] ]
+    first.remove[]
+    note.remove[]
+    second.remove[]
+    root.remove_dir[]
+    return before == with_note && before != after

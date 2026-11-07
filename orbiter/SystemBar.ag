@@ -209,6 +209,18 @@ Button BarClock
                 fill_color: #4d3dbcaa
     }
 
+# the time painted on the desktop, its lower right
+Button DeskClock
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+        layers.face:
+            label_color: #e8e8ee
+            label_size: 22
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 1.0 1.0
+    }
+
 # the mobile network at the bar's right end: four rising bars, lit
 # by the signal, and the carrier's name; a press opens the phone
 Button BarSignal

@@ -302,12 +302,14 @@ OrbiterAvatar PlatAvatar
     func on_state [ m: i32 ]
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ orb ]
-            on : bool [ orb.home_session[ agent ] != null ]
-            dg : string orb.home_doing_of[ agent ]
-            work_on   = on && !orb.home_waiting[ agent ]
+            # the one avatar: the state of the agent it stands for
+            who : string orb.plat_agent[]
+            on : bool [ who.count > 0 ]
+            dg : string orb.home_doing_of[ who ]
+            work_on   = on && !orb.home_waiting[ who ]
             # thinking turns it; writing lights its spokes' lines
             edits_in  = work_on && (dg == 'writing'
-                                    || orb.home_writing[ agent ])
+                                    || orb.home_writing[ who ])
             work_done = false
             # a build burns its beam
             swap_on   = work_on && dg == 'build'
@@ -357,6 +359,14 @@ OrbiterAvatar PlatAvatar
 # which it leaves room for (frame_w: the free width at the left)
 element PlatformView
     animated : true
+    ghost : true
+    style : CSS {
+        opacity: 0.0, 600ms cubic outward
+    :shown
+        opacity: 1.0, 600ms cubic inward
+    }
+    # faded in while its agent is up on the desktop
+    public shown : bool
     public frame_w : f32
     # seen from right above: the agents' pads and one ring round
     public top_down : bool
@@ -632,14 +642,15 @@ element PlatformView
         t : Elements []
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ !orb ] return t
-        for [ nm: string ] in orb.home_names[]
-            t[ 'pav_{nm}' ] = PlatAvatar [ agent: nm, topmost: false ]
+        for [ nm: string ] in orb.plat_names[]
+            t[ 'pav_{nm}' ] = PlatAvatar [ agent: nm, topmost: false,
+                                           ghost: true ]
         return t
 
     func draw [ w: Window ]
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ !orb || !bounds || bounds.w < 2.0 ] return
-        now : vec string orb.home_names[]
+        now : vec string orb.plat_names[]
         # the agents changed: their opens kept by name
         same : bool [ names && names.count == now.count ]
         if [ same ]
@@ -661,7 +672,7 @@ element PlatformView
                     if [ was_n[ j ] == nm ] o = was_o[ j ]
                 # risen before (this platform made again): up already
                 if [ orb.home_risen && orb.home_risen.index_of[ nm ] >= 0
-                     && orb.home_session[ nm ] ]
+                     && orb.plat_agent[].count > 0 ]
                     o = 1.0
                 opens.push[ o ]
             build[ w ]
@@ -694,7 +705,7 @@ element PlatformView
         n : i32 [ i32[ names.count ] ]
         pick : i32 [ -1 ]
         for [ i: i32 0, i < n, i += 1 ]
-            on : bool [ orb.home_session[ names[ i ] ] != null ]
+            on : bool [ orb.plat_agent[].count > 0 ]
             # 1.8 s to open: the tile sinks, the avatar rises; as
             # long to close
             st : f32 [ dt / 1.8 ]
@@ -707,7 +718,7 @@ element PlatformView
                 orb.home_risen.push[ names[ i ] ]
             el [ !on && rk >= 0 ]
                 orb.home_risen.remove[ rk ]
-            sel : bool [ on && orb.home_open == names[ i ] ]
+            sel : bool [ on && orb.desk_agent_on[] ]
             if [ sel ] pick = i
         # the floor's reach from its middle
         rb : f32 [ 1.0 ]
@@ -740,7 +751,7 @@ element PlatformView
         # an open agent tilts the view, more while it works; it
         # stays on the whole platform (no close up)
         if [ pick >= 0 ]
-            te = (orb.home_waiting[ names[ pick ] ]) ? 0.85 : 1.25
+            te = (orb.home_waiting[ orb.plat_agent[] ]) ? 0.85 : 1.25
         if [ cam_d <= 0.0 ]
             cam_x = tx
             cam_z = tz

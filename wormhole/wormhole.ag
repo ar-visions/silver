@@ -1,0 +1,535 @@
+# wormhole: a flight down a tunnel of light, every part of it from
+# gradient noise: its path, its walls, the waves that run through
+# it, and the ripples on its walls (sines bent by the noise)
+export 0.1.0
+export scenes ['Wormhole']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+
+# the whole picture from one pass over the screen
+ModelViewProject WormholeShader
+    # x seconds, y the distance flown, z aspect, w tan(half fov)
+    mutable clock : vec4f
+    # x the tunnel's radius, y exposure, z the walls' roughness,
+    # w the waves' height
+    mutable shape : vec4f
+    # x, y the march's size in pixels
+    mutable res   : vec4f
+
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        res   = vec4f [ 640.0, 360.0, 0.0, 0.0 ]
+        shape = vec4f [ 6.0, 1.6, 0.22, 0.06 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # an integer hash (pcg3d) to a gradient: a sin hash rounds
+    # differently when one corner is reached from two cells
+    func w_grad [ c: @vec3f ] -> GLSL vec3f {
+        uvec3 v = uvec3(ivec3(c) + 1048576);
+        v = v * 1664525u + 1013904223u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        v ^= v >> 16u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        return vec3(v) / 2147483647.5 - 1.0;
+    }
+
+    # Perlin's gradient noise, about -1 .. 1
+    func w_noise [ p: @vec3f ] -> GLSL f32 {
+        vec3 i = floor(p);
+        vec3 f = p - i;
+        vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+        float n000 = dot(w_grad(i), f);
+        float n100 = dot(w_grad(i + vec3(1, 0, 0)), f - vec3(1, 0, 0));
+        float n010 = dot(w_grad(i + vec3(0, 1, 0)), f - vec3(0, 1, 0));
+        float n110 = dot(w_grad(i + vec3(1, 1, 0)), f - vec3(1, 1, 0));
+        float n001 = dot(w_grad(i + vec3(0, 0, 1)), f - vec3(0, 0, 1));
+        float n101 = dot(w_grad(i + vec3(1, 0, 1)), f - vec3(1, 0, 1));
+        float n011 = dot(w_grad(i + vec3(0, 1, 1)), f - vec3(0, 1, 1));
+        float n111 = dot(w_grad(i + vec3(1, 1, 1)), f - vec3(1, 1, 1));
+        float x0 = mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y);
+        float x1 = mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y);
+        return mix(x0, x1, u.z) * 1.6;
+    }
+
+    func w_fbm [ p: @vec3f ] -> GLSL f32 {
+        return w_noise(p) * 0.7 + w_noise(p * 2.03) * 0.3;
+    }
+
+    # the tunnel's middle at a distance along it: two octaves of
+    # noise each way, wide slow bends and smaller quick ones
+    func w_path [ z: @f32 ] -> GLSL vec2f {
+        return vec2(w_noise(vec3(z * 0.009, 3.1, 0.7)) * 16.0,
+                    w_noise(vec3(z * 0.010, 17.2, 4.1)) * 16.0);
+    }
+
+    # the wall's distance from the middle round the tunnel and along
+    # it: noise on a circle (no seam), and small waves running through
+    # it, never the whole ring at once: that reads as a change of speed
+    func w_wall [ ca: @f32, sa: @f32, z: @f32 ] -> GLSL f32 {
+        float t = ubo.clock.x;
+        float rough = w_fbm(vec3(ca * 1.4, sa * 1.4, z * 0.07));
+        float wave = w_noise(vec3(z * 0.06 + t * 1.7, ca * 2.0, sa * 2.0));
+        return ubo.shape.x * (1.0 + ubo.shape.z * rough)
+                           * (1.0 + ubo.shape.w * wave);
+    }
+
+    # how far inside the wall a point is (negative: past it)
+    func w_field [ p: @vec3f ] -> GLSL f32 {
+        vec2  q = p.xy - w_path(p.z);
+        float r = length(q) + 1e-4;
+        return w_wall(q.x / r, q.y / r, p.z) - r;
+    }
+
+    # the slow warp that bends the veins, shared by a pixel's taps
+    func w_warp [ p: @vec3f ] -> GLSL vec3f {
+        return vec3(w_noise(p * 0.31 + vec3(11.0, 0.0, 0.0)),
+                    w_noise(p * 0.31 + vec3(0.0, 23.0, 0.0)),
+                    w_noise(p * 0.31 + vec3(0.0, 0.0, 37.0)));
+    }
+
+    # the veins on the skin: noise's zero lines, warped, thin with a
+    # soft halo; each finer set grows off the set before it. width is
+    # never under the footprint (fp), its light thinned to match
+    func w_veins [ p: @vec3f, wp: @vec3f, fp: @f32 ] -> GLSL f32 {
+        vec3 q = p + wp * 2.4;
+        float sum = 0.0;
+        float f = 0.5;
+        float amp = 1.0;
+        for (int o = 0; o < 4; o++) {{
+            vec3  at = q * f + vec3(float(o) * 17.0);
+            float n = abs(w_noise(at));
+            float dist = n / (f * 1.4);
+            float base = 0.016;
+            float wid = max(base, fp * 0.8);
+            float line = wid / (dist + wid);
+            line = pow(line, 2.4) * sqrt(base / wid);
+            // a line runs only part of its way: open ends, no rings
+            float run = smoothstep(-0.3, 0.2, w_noise(at * 0.35 + vec3(31.0)));
+            // a set finer than the footprint fades out: it would speckle
+            float seen = clamp(1.5 - 5.0 * f * fp, 0.0, 1.0);
+            sum += amp * line * run * seen;
+            // the next set only near this one: it branches
+            amp *= 0.35 + 0.65 * clamp(1.0 - dist * 1.6, 0.0, 1.0);
+            q += wp * 0.5;
+            f *= 2.13;
+        }}
+        return sum;
+    }
+
+    func fragment [] -> GLSL none {
+        float t  = ubo.clock.x;
+        float z0 = ubo.clock.y;
+        vec2  ndc = vec2(v_uv.x * 2.0 - 1.0, 1.0 - v_uv.y * 2.0);
+        // the camera rides the path, looking along it, rolling slowly
+        vec3 o = vec3(w_path(z0), z0);
+        vec3 a = vec3(w_path(z0 + 30.0), z0 + 30.0);
+        vec3 fwd = normalize(a - o);
+        float roll = w_noise(vec3(z0 * 0.004, 41.0, 0.0)) * 2.5 + t * 0.12;
+        vec3 up0 = vec3(sin(roll), cos(roll), 0.0);
+        vec3 rgt = normalize(cross(fwd, up0));
+        vec3 up  = cross(rgt, fwd);
+        vec3 d = normalize(fwd + rgt * (ndc.x * ubo.clock.z * ubo.clock.w)
+                         + up * (ndc.y * ubo.clock.w));
+        vec3 blue  = vec3(0.16, 0.42, 1.00);
+        vec3 teal  = vec3(0.20, 0.85, 0.50);
+        vec3 lilac = vec3(0.50, 0.36, 1.00);
+        vec3 deep  = vec3(0.001, 0.002, 0.008);
+        vec3  col = vec3(0.0);
+        float T   = 1.0;
+        float s   = 0.3;
+        float was = w_field(o + d * s);
+        for (int i = 0; i < 64; i++) {{
+            // the wall is at least about |was| away: stride by that
+            float dt = max(0.15 + s * 0.03, abs(was) * 0.7);
+            float next = s + dt;
+            vec3  p = o + d * next;
+            float now = w_field(p);
+            if ((was > 0.0) != (now > 0.0)) {{
+                // the crossing, by halving
+                float lo = s;
+                float hi = next;
+                float flo = was;
+                float fhi = now;
+                for (int b = 0; b < 3; b++) {{
+                    float mid = (lo + hi) * 0.5;
+                    float fm = w_field(o + d * mid);
+                    if ((fm > 0.0) == (flo > 0.0)) {{
+                        lo = mid;
+                        flo = fm;
+                    }} else {{
+                        hi = mid;
+                        fhi = fm;
+                    }}
+                }}
+                // the last stretch by its straight line: the place
+                // holds still from pixel to pixel, frame to frame
+                float sc = lo + (hi - lo) * flo / (flo - fhi);
+                vec3  pc = o + d * sc;
+                vec2  qc = pc.xy - w_path(pc.z);
+                float rc = length(qc) + 1e-4;
+                // the skin's place, turning slowly as it goes
+                float tw = pc.z * 0.012 + t * 0.03;
+                float ct = cos(tw);
+                float st = sin(tw);
+                float ca = (qc.x * ct - qc.y * st) / rc;
+                float sa = (qc.x * st + qc.y * ct) / rc;
+                float rw = ubo.shape.x;
+                vec3  sp = vec3(ca * rw, sa * rw, pc.z - t * 0.15);
+                // the pixel's patch of skin: one pixel wide, and long
+                // where the ray grazes the wall; taps along its length
+                float fp = sc * 2.0 * ubo.clock.w / ubo.res.y;
+                vec3  nrm = vec3(qc / rc, 0.0);
+                float cosn = dot(d, nrm);
+                vec3  run = d - nrm * cosn;
+                run /= length(run) + 1e-4;
+                float reach = fp / max(abs(cosn), 0.05);
+                int   taps = int(clamp(reach / fp, 1.0, 8.0));
+                float gap = reach / float(taps);
+                vec3  way = vec3(run.x * ct - run.y * st,
+                                 run.x * st + run.y * ct, run.z) * gap;
+                vec3  wp = w_warp(sp);
+                float v = 0.0;
+                for (int n = 0; n < taps; n++) {{
+                    vec3 tp = sp + way * (float(n) + 0.5 - float(taps) * 0.5);
+                    v += w_veins(tp, wp, max(fp, gap));
+                }}
+                v /= float(taps);
+                // where the veins gather: wide patches, empty between
+                float patch_n = w_noise(sp * 0.09 + vec3(3.0, 0.0, t * 0.04))
+                              + 0.5 * w_noise(sp * 0.23 + vec3(0.0, 9.0, 0.0));
+                float gather = smoothstep(-0.1, 0.6, patch_n);
+                // the ripples: a spiral of rings round the tunnel, the
+                // sine bent by noise, gathering the veins into bands
+                float ang = atan(sa, ca);
+                float bend = w_noise(sp * 0.16 + vec3(0.0, 0.0, t * 0.2));
+                float ring = 0.5 + 0.5 * sin(pc.z * 0.5 + ang + bend * 3.5 - t * 0.8);
+                ring = 0.25 + 0.75 * ring * ring;
+                // the waves: light that runs through the skin to us
+                float pulse = w_noise(vec3(pc.z * 0.025 + t * 0.9, 7.0, 1.0));
+                float lift = 1.0 + 0.9 * smoothstep(0.1, 0.6, pulse);
+                // colour by region; the skin's outer face deeper
+                float cr = w_noise(sp * 0.05 + vec3(5.0, 1.0, t * 0.03));
+                vec3 hue = mix(blue, teal, smoothstep(0.05, 0.45, cr));
+                bool inner = was > 0.0;
+                if (!inner) hue = mix(hue, lilac, 0.6);
+                float side = inner ? 1.0 : 0.6;
+                float close = 0.25 + 0.75 * smoothstep(3.0, 14.0, sc);
+                float fade = exp(-sc * 0.009);
+                float e = v * gather * ring * lift * side * close * fade;
+                // veins run white where they are brightest
+                vec3 lit = hue * e * 7.0 + vec3(0.8, 0.9, 1.0) * e * e * 5.0;
+                lit += hue * gather * ring * 0.006 * side * fade * close;
+                col += T * lit;
+                T *= 1.0 - clamp(e * 0.3, 0.0, 0.6);
+            }}
+            was = now;
+            s = next;
+            if (T < 0.02 || s > 140.0) break;
+        }}
+        col += T * deep;
+        // the light's range kept in 8 bits: the root of x / (1 + x),
+        // the root for the darks' steps
+        fragColor = vec4(sqrt(col / (1.0 + col)), 1.0);
+    }
+
+enum WormSurface
+    color : 0
+
+# the march's picture made into film: a zoom blur out from the
+# hole (none at it, long at the edges), the light's glow, colour
+# fringes at the edges, dust flying past, grain, a filmic curve
+ModelViewProject WormholeLens
+    # x seconds, y speed, z aspect, w the blur's length
+    mutable clock : vec4f
+    # x exposure, y the distance flown in seconds of medium
+    mutable look  : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ WormSurface ],
+                                   id: WormSurface.color, count:1,
+                                   format: typeid[ rgba8 ] ]
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        look  = vec4f [ 1.0, 0.0, 0.0, 0.0 ]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # the march's light back from the root of x / (1 + x)
+    func lens_light [ at: @vec2f ] -> GLSL vec3f {
+        vec3 c = texture(color, at).rgb;
+        c = c * c;
+        return c / max(vec3(1.0) - c, vec3(0.004));
+    }
+
+    func lens_hash [ p: @vec2f ] -> GLSL f32 {
+        uvec2 v = uvec2(ivec2(p) + 65536);
+        v = v * 1664525u + 1013904223u;
+        v.x += v.y * 1664525u;
+        v.y += v.x * 1664525u;
+        v ^= v >> 16u;
+        v.x += v.y * 1664525u;
+        return float(v.x) / 4294967295.0;
+    }
+
+    func fragment [] -> GLSL none {
+        float t = ubo.clock.x;
+        float aspect = ubo.clock.z;
+        vec2  c = vec2(0.5);
+        vec2  v = v_uv - c;
+        float r = length(v * vec2(aspect, 1.0));
+        // the zoom blur: taps toward the hole, longer further out
+        float len = ubo.clock.w * smoothstep(0.12, 0.9, r);
+        vec3 acc = vec3(0.0);
+        float wsum = 0.0;
+        for (int i = 0; i < 28; i++) {{
+            float f = float(i) / 27.0;
+            float w = 1.0 - 0.7 * f;
+            float k = 1.0 - len * f;
+            // red reaches a little further, blue a little less
+            vec3 sm = vec3(lens_light(c + v * k * (1.0 + 0.010 * r)).r,
+                           lens_light(c + v * k).g,
+                           lens_light(c + v * k * (1.0 - 0.010 * r)).b);
+            acc += sm * w;
+            wsum += w;
+        }}
+        vec3 col = acc / wsum;
+        // the glow round bright light: rings of taps, turned a scattered
+        // angle each pixel and clamped, so no point prints its pattern
+        float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy,
+                          vec2(0.06711056, 0.00583715))));
+        vec3 halo = vec3(0.0);
+        for (int j = 0; j < 12; j++) {{
+            float a = (float(j) + ign) * 0.5236;
+            vec2 o = vec2(cos(a) / aspect, sin(a)) * 0.012;
+            halo += min(lens_light(v_uv + o), vec3(4.0))
+                  + min(lens_light(v_uv + o * 3.2), vec3(4.0));
+        }}
+        col += halo / 24.0 * 0.55;
+        // stars: round points in cells of a log-polar grid, so they fly
+        // out from the hole; many small, few large with a soft glow
+        float ang = atan(v.y, v.x * aspect) + 3.14159265;
+        for (int l = 0; l < 2; l++) {{
+            float n = (l == 0) ? 150.0 : 40.0;
+            float m = n / 6.2831853;
+            vec2  g = vec2(ang * m,
+                (log(r + 0.002) - ubo.look.y * (0.012 + 0.01 * float(l))) * m);
+            vec2  cell = floor(g);
+            cell.x = mod(cell.x, n);
+            vec2  sd = cell + vec2(float(l) * 91.0, 0.0);
+            float pick = lens_hash(sd);
+            float hx = lens_hash(sd + vec2(3.0, 7.0));
+            float hy = lens_hash(sd + vec2(11.0, 2.0));
+            float hb = lens_hash(sd + vec2(5.0, 19.0));
+            vec2  off = fract(g) - vec2(0.2 + 0.6 * hx, 0.2 + 0.6 * hy);
+            float dist = length(off) / m * r;
+            // a cell's chance by its area on screen: stars even over the
+            // frame; each fades in as its cell grows, and stays in its cell
+            float chance = ((l == 0) ? 0.5 : 0.09) * r * r;
+            float show = clamp((chance - pick) / (0.3 * chance + 0.0001), 0.0, 1.0);
+            float keep = smoothstep(0.25, 0.12, length(off)) * show;
+            float small = min(1.0, r / 0.35);
+            if (l == 0) {{
+                float size = (0.0009 + 0.0009 * hb) * small;
+                col += vec3(0.78, 0.84, 1.0) * exp(-dist * dist / (size * size))
+                     * (0.5 + 1.6 * hb) * keep;
+            }}
+            if (l == 1) {{
+                float size = (0.002 + 0.002 * hb) * small;
+                vec3 tint = mix(vec3(1.0, 0.92, 0.62), vec3(0.8, 0.9, 1.0), hx);
+                col += tint * (exp(-dist * dist / (size * size)) * 9.0
+                             + exp(-dist / (size * 3.0)) * 0.5) * keep;
+            }}
+        }}
+        // the frame darker toward its edges
+        col *= 1.0 - 0.45 * smoothstep(0.35, 1.0, r);
+        col *= ubo.look.x;
+        // a filmic curve (ACES, fitted)
+        col = clamp((col * (2.51 * col + 0.03))
+                  / (col * (2.43 * col + 0.59) + 0.14), 0.0, 1.0);
+        // grain
+        float g = lens_hash(v_uv * 4096.0 + vec2(t * 61.0, t * 37.0)) - 0.5;
+        col += g * 0.035;
+        fragColor = vec4(col, 1.0);
+    }
+
+Backdrop Wormhole
+    frost : true
+    public func bg_color [ ] -> rgba
+        return rgba [ r: 0.002, g: 0.004, b: 0.016, a: 1.0 ]
+    frost_sharp : true
+    mutable shader  : WormholeShader
+    mutable lens    : WormholeLens
+    mutable lens_m  : Model
+    mutable march   : Render
+    mutable target  : Render
+    mutable last_w  : i32
+    mutable last_h  : i32
+    mutable last_us : i64
+    mutable seconds : f32
+    # the distance flown, in the tunnel's units
+    mutable flown   : f32
+    # the frame's time, smoothed: an uneven frame moves us evenly
+    mutable steady  : f32
+    # the clock of everything that moves on its own in the march
+    mutable drift   : f32
+
+    func create_target []
+        if [ target ] return
+        shader = WormholeShader [ vk: vk, name: 'wormhole' ]
+        shader.hold[]
+        m : Model [ vk: vk, w: ux, s: shader ]
+        # a march a pixel: three quarters of the window's, thin veins
+        march = Render [ vk: vk, w: ux, wscale: 0.75, tag: 'wormhole-march',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ m ] ]
+        march.hold[]
+        lens = WormholeLens [ vk: vk, name: 'wormhole-lens' ]
+        lens.hold[]
+        lens_m = Model [ vk: vk, w: ux, s: lens,
+                         samplers: map Au[string] [
+                             'color': march.color ] ]
+        lens_m.hold[]
+        target = Render [ vk: vk, w: ux, wscale: 1.0, tag: 'wormhole',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ lens_m ] ]
+        target.owner = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func draw [ w: Window ]
+        animated = true
+        create_target[]
+        now : i64 [ epoch_micros[] ]
+        dt : f32 [ 0.0 ]
+        if [ last_us > 0 ] dt = f32[ now - last_us ] / 1000000.0
+        if [ dt > 0.1 ] dt = 0.1
+        last_us = now
+        seconds += dt
+        # the distance a second by speed step: high 7.5, medium 3.75,
+        # slow 0.9375
+        # slow draws at medium's rate: only its distance is less
+        if [ speed == BackdropSpeed.slow ] ux.background_hz = 30.0
+        fly : f32 [ (speed == BackdropSpeed.fast) ? 0.25
+                  : (speed == BackdropSpeed.medium) ? 0.125 : 0.03125 ]
+        steady = (steady > 0.0) ? steady * 0.9 + dt * 0.1 : dt
+        flown += steady * 30.0 * fly
+        # the walls' own motion by speed step: full, half, an eighth
+        wiggle : f32 [ (speed == BackdropSpeed.fast) ? 1.0
+                     : (speed == BackdropSpeed.medium) ? 0.5 : 0.125 ]
+        drift += steady * wiggle
+        aspect : f32 [ (ux.height > 0)
+                       ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        th : f32 [ (vantage == OrbitView.low) ? 0.55 :
+                   (vantage == OrbitView.high) ? 0.75 : 1.0 ]
+        shader.clock = vec4f [ drift, flown, aspect, th ]
+        shader.res = vec4f [ f32[ ux.width ] * 0.75, f32[ ux.height ] * 0.75,
+                             0.0, 0.0 ]
+        lens.clock = vec4f [ seconds, fly, aspect,
+                             0.025 + 0.012 * fly ]
+        lens.look = vec4f [ 1.0, flown / 30.0, 0.0, 0.0 ]
+        march.update[]
+        if [ ux.width != last_w || ux.height != last_h ]
+            last_w = ux.width
+            last_h = ux.height
+            lens_m.samplers[ 'color' ] = march.color
+            lens_m.rebind_model[]
+        march.draw[]
+        march.sync_fence[]
+
+# frames at chosen distances flown, into WORMHOLE_SHOTS (a folder),
+# for judging the look; nothing without it
+expect func t_wormhole_frames [] -> bool
+    dir : getenv[ 'WORMHOLE_SHOTS' ]
+    if [ !dir ] return true
+    vk : vk_context []
+    vk.hold[]
+    wide : getenv[ 'WORMHOLE_W' ]
+    tall : getenv[ 'WORMHOLE_H' ]
+    w  : Window [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+        width: (wide) ? atoi[ wide ] : 1280,
+        height: (tall) ? atoi[ tall ] : 536 ]
+    w.hold[]
+    if [ !w.element_targets ]
+        w.element_targets = map Render [string] []
+    e : Wormhole [ ]
+    e.hold[]
+    e.id = 'Wormhole'
+    e.ux = w
+    e.vk = w.vk
+    e.speed = BackdropSpeed.medium
+    at : vec f32 [] [ 0.0, 37.0, 120.0, 410.0, 900.0, 1500.0 ]
+    for [ k: i32 0, k < at.count, k += 1 ]
+        e.last_us = 0
+        e.flown = at[ k ]
+        e.seconds = at[ k ] / 30.0
+        e.drift = e.seconds
+        began : i64 [ Au.epoch_millis[] ]
+        e.draw[ w ]
+        r : w.element_targets[ 'Wormhole' ]
+        r.draw[]
+        r.sync_fence[]
+        took : i64 [ Au.epoch_millis[] - began ]
+        log 'wormhole: frame {k} {took} ms'
+        im : Image [ r.color ]
+        im.png[ path '{string[ dir ]}/frame{k}.png' ]
+        mi : Image [ e.march.color ]
+        mi.png[ path '{string[ dir ]}/march{k}.png' ]
+    # a run of march pictures a 30th of a second apart, for the flow
+    run : getenv[ 'WORMHOLE_RUN' ]
+    count : i32 [ (run) ? atoi[ run ] : 0 ]
+    for [ k: i32 0, k < count, k += 1 ]
+        e.last_us = 0
+        e.flown = 400.0 + f32[ k ] * 4.0
+        e.seconds = 400.0 / 30.0 + f32[ k ] / 30.0
+        e.drift = e.seconds
+        e.draw[ w ]
+        mi : Image [ e.march.color ]
+        mi.png[ path '{string[ dir ]}/run{k}.png' ]
+    log 'wormhole: {at.count} frames in {string[ dir ]}'
+    return true
+
+# the picture for orbiter's scene picker; last
+export func wormhole_thumbs []
+    names : vec string [] [ 'Wormhole' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

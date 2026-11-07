@@ -664,26 +664,6 @@ HOST_API void host_log_setup(const char* name) {
     g_log_file = open(path, lflags, 0644);
     if (g_log_file < 0) return;
 
-    // DIAG: the whole environment this process actually runs with, written
-    // straight to the log before any redirection. run it the way that works
-    // and the way that does not, then diff these blocks
-    {
-        char line[2048];
-        int  n = snprintf(line, sizeof(line), "ENVDUMP begin\n");
-        (void)write(g_log_file, line, (size_t)n);
-        for (char** e = environ; e && *e; e++) {
-            n = snprintf(line, sizeof(line), "ENV %s\n", *e);
-            (void)write(g_log_file, line, (size_t)n);
-        }
-        char cw[1024];
-        if (getcwd(cw, sizeof(cw))) {
-            n = snprintf(line, sizeof(line), "ENV_CWD %s\n", cw);
-            (void)write(g_log_file, line, (size_t)n);
-        }
-        n = snprintf(line, sizeof(line), "ENVDUMP end\n");
-        (void)write(g_log_file, line, (size_t)n);
-    }
-
     // a windows GUI app can start with no usable stdout at all. there is then
     // nothing to tee TO, and a pipe would only swallow the output: point the
     // standard streams straight at the log instead, so prints survive. dup on

@@ -7211,6 +7211,7 @@ Display Window
         # the em comes from the default font, never from whatever size
         # the last draw left on the canvas (a hex or git view's) -- that
         # shrank every em-sized area, the title first
+        cv.set_font[ null ]
         cv.font_size[ 0 ]
         cv.ensure_font[]
         e.fc = 22.0

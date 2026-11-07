@@ -703,6 +703,7 @@ Control SceneGrid
     }
     mutable hov    : i32 [ -1 ]
     mutable cards  : vec FindHit
+    mutable cards_revision : i64 [ -1 ]
 
     # a card, as the navigator's: 152 x 148 at rest, with the font
     # scale
@@ -763,7 +764,11 @@ Control SceneGrid
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return
-        if [ !cards ] cards = orb.scene_cards[]
+        animated = true
+        revision : i64 orb.scene_catalog_revision[]
+        if [ !cards || revision != cards_revision ]
+            cards = orb.scene_cards[]
+            cards_revision = revision
         # trinity scrolls it (the wheel, the bar, scroll_fade's mask)
         rows : i32 [ (cards.count + per_row[] - 1) / per_row[] ]
         content_h = f32[ rows ] * cell_h[]
@@ -797,8 +802,15 @@ Control AppsGrid
     func render [] -> Elements
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ !orb || !bounds ] return Elements []
+        # the icons go or come back with an agent's pane
+        off : bool orb.desk_agent_on[]
+        if [ off != cards_off ]
+            cards_off = off
+            pristine = false
         return orb.widget_els[ bounds.w ]
     mutable hov   : i32 [ -1 ]
+    # an agent's pane is over the desktop: no icons
+    mutable cards_off : bool
     # each card's rect in content space, ours first, as last drawn
     mutable rx    : vec f32
     mutable ry    : vec f32
@@ -1309,6 +1321,17 @@ Control AppsGrid
             gather[ orb ]
             hov = -1
             sel = -1
+        if [ orb.desk_agent_on[] ]
+            rx = vec f32 []
+            ry = vec f32 []
+            head_ys = vec f32 []
+            hov = -1
+            sel = -1
+            band_h = 0.0
+            content_h = 0.0
+            scroll.y = 0.0
+            scroll_goal = 0.0
+            return
         # a focus lost (a press elsewhere) puts the name back
         if [ !focused && sel >= 0 ]
             sel    = -1

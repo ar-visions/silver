@@ -1102,6 +1102,8 @@ class Mission
             if [ !handed && upper == 3 && parked ]
                 crew.take_tanker[ orbiter ]
                 handed = true
+                # its step for this moment: the crew's flight has had it
+                orbiter.step[ h ]
                 note[ 'the top booster is the crew ship\'s tanker now' ]
         if [ met < 0.0 ]
             if [ met >= -3.0 && !stack.engines[ 0 ].lit ]
@@ -1283,9 +1285,8 @@ class Mission
     # the orbit the climb ends in (m up): the whole ship arcs
     # straight to the tanker's; the upper stage parks under it
     func park_height [] -> f64
-        # the crew ship 10 km under the tanker: it gains on it
-        # there, then rises to it in one arc
-        if [ tanker_shared ] return tanker_alt - 10000.0
+        # the crew ship 60 km under: it gains 104 m/s on the tanker
+        if [ tanker_shared ] return tanker_alt - 60000.0
         return (whole) ? tanker_alt : park_alt
 
     # the pitch plan's axis now, along the pad's east
@@ -1820,6 +1821,8 @@ class Mission
         # the whole ship cuts off beside the tanker, in its
         # orbit: straight on to the approach
         if [ whole && upper == 3 ] upper = 7
+        # the crew ship transfers from low: no lap to round it
+        if [ tanker_shared ] parked = true
         if [ (whole || tanker_shared) && upper >= 7 ]
             approach[]
             return
@@ -1866,12 +1869,6 @@ class Mission
             return
         # the crew's tanker still on its way up
         if [ upper == 3 && !tanker ] return
-        # round at its height: on to the close approach
-        if [ upper == 3 && tanker_shared ]
-            upper = 7
-            gap : f64 [ dv_len[ dv_sub[ tanker.state.r, r ] ] ]
-            note[ 'round under the tanker, {gap / 1000.0} km from it' ]
-            return
         if [ upper == 3 ]
             ph : f64 [ tanker_phase[ r, v ] ]
             if [ ph > 0.0 && ph <= transfer_phase[ rr ] ]
@@ -2231,8 +2228,6 @@ class Mission
             if [ slide_t >= 0.0 && dist < 1.0 && still ]
                 stand = max[ 0.0, stand - pace * (met - slide_t) ]
             slide_t = met
-            if [ i32[ met * 400.0 ] % 12000 == 0 ]
-                log 'TRACE slide {met} stand {stand} dist {dist} relv {dv_len[ relv ]} ours {dv_len[ nv.rate ]} its {dv_len[ link_w ]}'
         # at the mark: onto it over about 10 s
         if [ dist < 5.0 ]
             speed = dist * 0.1
@@ -2379,7 +2374,6 @@ class Mission
             return
         nb : q_unrotate[ tk.state.q, gap ]
         bb : q_unrotate[ tk.state.q, rel_p ]
-        log 'TRACE strike truth {nb.x} {nb.y} {nb.z} believed {bb.x} {bb.y} {bb.z} tk port {tk.port_at.x} {tk.port_at.y} {tk.port_at.z} dir {tk.port_dir.x} {tk.port_dir.y} {tk.port_dir.z} ob port {ob.port_at.x} {ob.port_at.z} cg {tk.cg} {ob.cg} tk w {dv_len[ tk.state.w ]} ob w {dv_len[ ob.state.w ]} cm closing {0.0 - dv_dot[ dv_sub[ ob.state.v, tk.state.v ], toward ]} noses {noses} face {face}'
         upper = 11
         stand = 20.0
         held_t = -1.0
@@ -3417,7 +3411,7 @@ expect func t_crew_top [] -> bool
 expect func t_tanker_flight [] -> bool
     ms : Mission [ tanker_flight: true ]
     ms.hold[]
-    for [ i: i32 0, i < 3200000, i += 1 ]
+    for [ i: i32 0, i < 4000000, i += 1 ]
         ms.step[ 0.0025 ]
         if [ i % 7 == 0 ] Au.auto_free[]
         cw : ms.crew
@@ -3425,7 +3419,7 @@ expect func t_tanker_flight [] -> bool
                          && cw.lower >= 7 ]
         if [ ms.upper >= 3 && ms.parked && ms.lower >= 7 && crew_up ]
             break
-        if [ ms.met > 7200.0 ] break
+        if [ ms.met > 9600.0 ] break
     up : ms.orbiter
     if [ !up ] return false
     log 'tanker flight: upper {ms.upper} at T{ms.met}, booster phase {ms.lower}, {up.propellant[] / 1000.0} t aboard the top stage'

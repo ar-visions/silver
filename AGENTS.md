@@ -2452,6 +2452,107 @@ times; /tmp/claude-1000/kv/cyber.sh): 247 -> 305-337 fps.
    out quads kept per font, size, text and width; colour in the
    vertices so strings merge into one draw.
 
+## launch: the crew ship reaches the tanker (Nov 6 2026)
+
+DONE, t_tanker_flight passes (plain `launch`): off deck, transfer
+T2033, in its orbit T4803 (14 km), held at 20 m T7886, soft capture
+T8500, hard dock T8515, 75 t moved, clear T8623. Four faults: parked
+10 km under (gained 17 m/s, 60 km now, 104 m/s); a lap to round its
+orbit, then jets alone for the rise (250 t: the main engine transfer
+now, phases 4 to 6); the top booster had no jets along the hull (fore,
+aft added in tanker_ship); the handed tanker ran a step behind (19 m at
+the capture check). Test limit 9,600 s.
+OPEN: it passes the tanker's level very near (hulls can't collide in
+the physics); the tanker ends empty; its middle booster topples on
+deck in these runs (was marginal).
+OPEN tests: t_crew_home, t_to_tanker fail (as before); t_dock_approach
+and t_whole_ascent build `Mission [ ]` and want `whole: true` (stale:
+the second crashes, so the suite stops there; later tests unseen).
+
+## Neptune storm scene (Nov 6 2026)
+
+BUILT, seen offscreen only (his: replace the guide): neptune_storm/,
+scene NeptuneStorm, from three repeating maps he made (images/ swirls,
+haze, wisps; 1774 x 887), their edges faded together at the export into
+baked/storm-*.png. The guide is gone from the module; its framing and
+his arrows stay, in frame pixels of 1672 x 941.
+Camera (fit to the guide's limb): 1.0108 radii from the middle, lens 30
+degrees tall, 18.5 degrees below level, rolled 0.8 degrees. Shells: deck
+1.0 (swirls), 1.0004 (haze), 1.001 (wisps). Far ground is held wider than
+true (s_at: x / far^0.7, z as a log), or the maps read as water ripples.
+The swirl map's own vortex sits on the storm (1110, 630), map x mirrored
+to spin his way; that part returns each cycle so it stays.
+Then (his: upper and lower going opposite ways; white marks appeared
+at random): outside the storm the deck and haze are two solid sheets each,
+upper left and away, lower right and near, meeting midway between the
+bands. No turns or fades there. Ground per second: deck 0.00006, haze
+0.00009 radii. Only the storm follows storm-flow.png (r g), in 14 s turns.
+Then (his: the white moves only in the upper and lower light gray blue
+areas, a trend of the trade winds; then: not clouds made into bands, the
+clouds as rendered before, in weighted regions): two regions fixed in the
+frame, middles s_upper 258 + 0.000061 x^2 and s_lower 520 + 0.17 x +
+0.00045 max(x - 700, 0)^2, half widths 60 + 0.02 x and 150 - 0.07 x (at
+least 60), a gaussian across. They are only a weight: a smooth pale gray
+blue tint (no map in it), the clouds' banks open wider and show stronger
+inside; 0.22 of them outside. Regions read the map along their slope was
+tried: rejected, it made the band clouds out of the wisps.
+Then (his: the white as a mask on the blue, brightening it, from a
+precomputed gaussian of the clouds; only the blur is used): bake_blur
+writes storm-wisps.png as three wrapping box blurs (radius 5 map px, about
+sigma 5.5), its middle at 0 and its top 0.2% at 1. No sharp white is drawn:
+lit = blur x banks x (0.65 + 0.55 region); col x (1 + 1.3 lit), then a
+screen of (0.34, 0.33, 0.3) lit^2. Any fine line is the blue's own. Sheets
+as before (k2 30, -24; upper left, lower right; 0.00015 radii a second).
+Measured at 1672 x 941 over 16 s: bright (over 170 of 255) 114,963 px in or
+near the regions, 0 elsewhere; 6 spots, all 15 steps the right way, upper
+4-6 px a second left, lower 3-4 right (the still deck weighs in that
+measure); match 0.97-1.00. Mean colour 34.7, 59.9, 117.5 (his picture
+41.8, 65.8, 126.4); the lower half runs darker than his.
+Then (his: more rotation; flashes of lightning, not a blue plasma glow
+(tried and removed); the perlin map only as their basis; masked by the
+storm's own detail): deck_px 5 -> 13. Ring 4-8 px a second, inner 5 (were 1
+to 4; measured before the lightning, which leaves the turn alone). Lightning on real seconds:
+Backdrop spark, clock.z.
+Then (his: less spread, one source, globs phasing in and out, and the
+darker the colour the more comes through): one stream, 0.62 beats a real
+second, about 3 in 4 fire; each a single gaussian round a random point in
+the storm (radius 0.3-0.7 of its mask), its edge nudged by perlin, in over
+a twentieth of a beat, out by 0.55 of it, flickered by perlin. Mask: 1 -
+smoothstep(0.08, 0.24, deck tone), the deck's tone running 0.12-0.34.
+OPEN: not seen moving or in orbiter; the maps are soft at 2560 wide.
+neptune_sky/ (GPT's, uncommitted) stays until he says.
+
+## orbiter desktop: agents and clock (Nov 6 2026)
+
+1. BUILT, seen in an isolated test copy: the clock is off the system
+   bar, painted lower right on the desktop (DeskClock, 22); the bar's
+   right end holds only a phone's signal. On a PC the main menu is the
+   `orbiter` name, on the desktop alone.
+2. BUILT, seen the same way: the agents head the widget column
+   (AgentHead desk: 39 units tall), its press shows the
+   agent in a rounded pane in place of the icons (desk_agent, kept
+   across a reload; DeskAgentPane, a Console on the same session), again
+   the icons; end ends it. Not seen: a narrow desktop, a phone.
+   Then: the avatars left the orbiter menu (its list takes the width)
+   for the desktop's lower right: PlatformView faded in over 600 ms
+   while a pane is up (:shown), its camera on that agent (plat_pick);
+   measured both ways. Not on a narrow desktop (the pane covers it).
+   Then: twice the size (0.6 of the width or the height), behind the
+   icons, widgets, titles and clock: always mounted so its key stays
+   first, HomeView animated while it shows. With a pane up the column
+   has the titles alone, no widgets. Hidden: 28 fps with it up.
+   Then: the orbiter menu holds no agents and the bar no Agents menu;
+   the column's top is a RoundTab of the installed agents, a press
+   starts a new instance at its first model, shown (dagent_add_).
+   Then: one avatar for every agent (plat_names, too much GPU a
+   piece), showing the shown agent's state (plat_agent).
+   The sound panel's output and microphone are sliders (BarLevel,
+   sound_body, sound_sync); dragged on a null ALSA device only.
+3. OPEN seen with it: a console's focus on a PC brings a bar with an
+   EN key at the window's foot (already noted under orbiter's docs).
+Test copy over his run: fp6-box -r -m binds a scratch folder on
+platform/native/tmp, then fp6-box --map-user=1000 --map-group=1000 -U.
+
 ## Status everywhere — live list (Nov 1 2026)
 
 the user: far more status everywhere; leaving the user not knowing
@@ -4667,6 +4768,19 @@ without it if wanted.
    oapps2.sh (MilkyWay) launch hidden; q.py drives; kill_os.sh
    kills only test processes; agent add = click(40,882) then
    click(785,61).
+11. BUILT, seen in a test copy (Nov 6: the spokes went solid while
+   the agent writes, solid stops and fills apart from the inner
+   glow) the grooves' base was step(0.5, paint blue) mixed flat over
+   the metal: hard edges, a hard stop part way down each groove. A
+   feathered base lit the whole spoke white instead (his next word:
+   the normal colour, only the streaming lights). While writing there
+   is no base now: the grooves stay as at rest and only the pulse
+   travels (avatar calculatePBR bs_m takes ubo.done alone); building
+   is as it was. Seen at 2400 x 1400, each state held by ctrl + 1 2
+   3: between pulses as at rest, the pulse near the core and near
+   the rim. NOT seen on the user's screen: his running
+   orbiter holds the old avatar library. Test copy: a home with
+   home_saved set, the head pressed; bounds dagent_h_claude.
 
 ## orbiter-os shell design — live list (Oct 1 2026)
 
@@ -15163,3 +15277,81 @@ GRAD_GOLD=<dir> silver --test ai reads them).
    checkpoints, grouped by author) as a second training signal;
    the "unattributed" outcome; a validated allocation rule from
    scores to shares.
+
+## Reference: Contact's wormhole look (Nov 6 2026)
+
+the user's frames (~/Pictures/Screenshots, Nov 6 11:16, the film at
+1:10-1:22), kept as a look to build from, our own, not the film's:
+- a tunnel seen down its axis: the far end a dark, deep blue hole
+  near the middle, wandering off centre frame to frame.
+- radial streaks from the hole to the edges, smeared by motion (a
+  zoom blur), torn and wispy like plasma filaments, not smooth.
+- colour in large regions that swap as it flies: violet-blue, teal
+  green, and near-white pink-lavender blown out at the edges.
+- a fine moire weave (interference lines) over the blue core,
+  ripple-like, a woven mesh close to the hole.
+- glowing bright bursts that flare and pass, white cores.
+- the machine's frame (dark struts, a grid) at the edges at times.
+- no hard edges anywhere: soft, layered, high contrast near the
+  core, everything moving toward the viewer.
+BUILT, seen in offscreen frames only (Nov 6): wormhole/wormhole.ag,
+scene Wormhole. The march finds each ray's crossings of the wall
+(noise path, noise walls, noise waves) and draws veins there, both
+faces; the lens pass adds blur, glow, stars, curve, grain. the user's
+later frame (Nov 6 11:30) is the target for the skin: thin branching
+veins, black between, round stars. `WORMHOLE_SHOTS=<dir> silver
+--test wormhole` writes frames. 8 ms a frame at 1280 x 536. NOT run
+in orbiter's picker. OPEN: veins squigglier than the reference's
+long threads; the nearest skin smears into cloud.
+Then (Nov 6: aliased, uneven speed, too much breathing): a ray's
+hit on the skin by its straight line (was halving alone: it moved
+pixel to pixel), the veins filtered over the pixel's patch of skin
+(taps along it where a ray grazes), a set fewer, no haze or start
+jitter, strides by the wall's distance. The ring-wide radius wave
+is gone (it read as a change of speed), the rest 0.2 -> 0.06. A
+frame's time is smoothed for the flight. Velocity per step, this
+scene only: high 7.5, medium 3.75, slow 0.9375 units a second; the
+draw rates are the steps' own, but slow takes medium's 30 Hz (not
+16), the distance alone slower (his call). The walls' own motion
+runs on its own clock (drift): full, half, an eighth by step; the
+lens grain stays on real time. Stars fly by
+distance flown. Measured offscreen; `WORMHOLE_W`, `_H`, `_RUN` in
+the test. OPEN: a little beading left on near lines.
+
+## Neptune upper-atmosphere orbit — live list (Nov 6 2026)
+
+Goal: turn the Neptune backdrop into a close orbit through its upper
+atmosphere, matching the dramatic reference rather than strict colour.
+1. DONE the camera orbits at 1.035 to 1.38 planet radii. Its vertical
+   field of view is 30 degrees; the image center points 12.6 degrees
+   below the geometric horizon and 35 degrees across the wind. In a
+   1280 x 720 frame, the horizon center is 45 pixels down the y axis.
+2. DONE a 4096 x 2048 fluid grid carries cloud density through shear
+   and vortices for 96 steps, then writes an 8192 x 4096 RGBA map.
+   Red is the 10 km cloud, blue is the 2 km cloud, green is thickness,
+   and alpha darkens the deep deck under the same wind.
+3. DONE a 512 x 256 atmosphere lookup integrates air molecules, haze
+   and ozone through 64 curved-ray samples and adds multiple-scattered
+   light. The shader reads it once per pixel and does no volume march.
+4. DONE separate cloud shells sit 2 km and 10 km above the deck and
+   move at different speeds. The 10 km layer shadows the 2 km layer.
+   A third haze shell reaches 98 km above the deck.
+5. DONE the deliberate grade has saturated blue, crushed blacks, hot
+   cloud tops and a thin bright horizon. A final screen pass adds mild
+   softness, bloom, vignette, a fitted film curve and light grain. It
+   does not sharpen.
+6. DONE `t_neptune_sky_cloud_bake` and
+   `t_neptune_sky_scatter_bake` validate the two bakes.
+   `NEPTUNE_SKY_SHOTS` writes four 1280 x 720 orbit frames. The focused
+   tests and the frame render pass.
+7. DONE the earlier `Neptune` is restored as the distant globe with
+   rings. The upper-atmosphere orbit is the separate `Neptune_sky`
+   module and panel scene. Both modules build and both scenes were
+   rendered at 1280 x 720. The release tag step cannot write to the
+   read-only git folder after a changed module links successfully.
+8. DONE the live scenes panel now rescans the export files once a
+   second and replaces its card list when their names or times change.
+   `Neptune_sky` appears beside `Neptune`, and selecting it loads the
+   separate scene. Its 320 x 200 panel thumbnail is exported.
+   `t_scene_exports_refresh` covers an export added after the first
+   scan. Verified in Orbiter through its Trinity socket.

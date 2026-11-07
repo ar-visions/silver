@@ -2757,6 +2757,19 @@ func tanker_ship [] -> Craft
         g.out = false
         g.frac = 0.0
     join_booster[ c, top, 'two' ]
+    # along the hull, four each way: for closing on another ship
+    kin : top.jets[ 0 ]
+    for [ i: i32 0, i < 4, i += 1 ]
+        roll : f64 [ f64[ i ] * 1.5707963267949
+                     + 0.785398163397448 ]
+        at : Dvec [ kin.at.x, 1.83 * kr * cos[ roll ],
+                    1.83 * kr * sin[ roll ] ]
+        c.jets.push[ Jet [ name: 'fore', group: 'two', at: at,
+                           dir: Dvec [ 1.0, 0.0, 0.0 ],
+                           thrust: kin.thrust ] ]
+        c.jets.push[ Jet [ name: 'aft', group: 'two', at: at,
+                           dir: Dvec [ -1.0, 0.0, 0.0 ],
+                           thrust: kin.thrust ] ]
     # its silver nose: an ogive the hull's width, 13.1 m
     ogive : vec f64 [] [ 77.2, 1.83, 83.2, 1.83, 85.2, 1.72,
                          87.6, 1.37, 89.4, 0.85, 90.1, 0.25, 90.3, 0.0 ]

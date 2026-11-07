@@ -1883,6 +1883,8 @@ element PlanetView
     public hop       : bool
     # our ship flies, not the tanker
     public ship      : bool
+    # the flight starts 2 km behind the tanker, already flying
+    public dock_start : bool
     # a new random wind each flight; its jet between (km/h)
     public rwind     : bool
     public wind_min  : f64 [ 36.0 ]
@@ -2391,7 +2393,7 @@ element PlanetView
             return base
         # our ship's own flight: 4 its port, 6 it, 7 its booster
         cm : Mission [ (f.crew) ? f.crew : f ]
-        if [ camera == 4 || camera == 6 ]
+        if [ camera == 4 || camera == 6 || camera == 8 ]
             return (cm.lower == 0) ? cm.stack : cm.orbiter
         if [ camera == 7 ]
             return (cm.lower == 0) ? cm.stack : cm.booster
@@ -2410,7 +2412,7 @@ element PlanetView
     # where the camera stands and what it looks at, this frame
     func aim [] -> vec3f
         c : followed[]
-        if [ camera == 4 ]
+        if [ camera == 4 || camera == 8 ]
             # a port's camera: 0.2 m out of it, up its line
             eye : dv_add[ port_of[ c, port_pick ],
                           dv_scale[ c.port_dir, 0.2 ] ]
@@ -2481,6 +2483,177 @@ element PlanetView
         pad_n = enu_north[ m.pad_lat, m.pad_lon ]
         pad_u = enu_up[ m.pad_lat, m.pad_lon ]
 
+    # a point in the net's frame (right, up, out from between our
+    # ports) on the scope camera's picture, in pixels
+    func scope_xy [ r: f64, u: f64, o: f64 ] -> vec2f
+        c : followed[]
+        d : dv_sub[ port_of[ c, port_pick ], c.port_at ]
+        rb : dv_cross[ c.port_dir, Dvec [ 1.0, 0.0, 0.0 ] ]
+        rc : f64 [ r - dv_dot[ d, rb ] ]
+        uc : f64 [ u - d.x ]
+        oc : f64 [ o - dv_dot[ d, c.port_dir ] ]
+        if [ oc < 0.1 ] oc = 0.1
+        hx : f32 [ bounds.w * 0.5 ]
+        hy : f32 [ bounds.h * 0.5 ]
+        asp : f32 [ bounds.w / bounds.h ]
+        return vec2f [ hx + f32[ rc / oc ] / (port_th * asp) * hx,
+                       hy - f32[ uc / oc ] / port_th * hy ]
+
+    func scope_line [ cv: Canvas, x0: f32, y0: f32, x1: f32,
+                      y1: f32, col: string, wd: f32 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ col ] ]
+        cv.stroke_width[ wd ]
+        cv.move_to[ x0, y0 ]
+        cv.line_to[ x1, y1 ]
+        cv.paint[]
+        cv.restore[]
+
+    func scope_ring [ cv: Canvas, x: f32, y: f32, rad: f32,
+                      col: string, wd: f32 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ col ] ]
+        cv.stroke_width[ wd ]
+        cv.arc[ x, y, rad, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.restore[]
+
+    func scope_text [ cv: Canvas, t: string, x: f32, y: f32,
+                      col: string ]
+        cv.fill_color[ rgba [ col ] ]
+        cv.draw_text[ t, rect [ x: x, y: y, w: 600.0, h: 18.0 ],
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null ]
+        cv.paint[]
+
+    # one reading of the minute kept, the net's against the truth,
+    # as two traces in a box; the box's middle is lo + hi over 2
+    func scope_trace [ cv: Canvas, de: DockEye, k: i32, name: string,
+                       x: f32, y: f32, w: f32, h: f32 ]
+        n : i32 [ i32[ de.times.count ] ]
+        cv.fill_color[ rgba [ '#000a' ] ]
+        cv.rect_to[ x, y, w, h ]
+        cv.paint[]
+        lo : f64 [ 0.0 ]
+        hi : f64 [ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            a : f64 [ de.saw[ i * 6 + k ] ]
+            b : f64 [ de.knew[ i * 6 + k ] ]
+            lo = min[ lo, min[ a, b ] ]
+            hi = max[ hi, max[ a, b ] ]
+        # whole metres either side, at least one
+        span : f64 [ max[ 1.0, ceil[ max[ hi, 0.0 - lo ] ] ] ]
+        if [ k == 2 ]
+            lo = 0.0
+            hi = max[ 2.0, ceil[ hi ] ]
+        el
+            lo = 0.0 - span
+            hi = span
+        zy : f32 [ y + h - f32[ (0.0 - lo) / (hi - lo) ] * h ]
+        scope_line[ cv, x, zy, x + w, zy, '#ffffff30', 1.0 ]
+        if [ n >= 2 ]
+            for [ pass: i32 0, pass < 2, pass += 1 ]
+                cv.save[]
+                cv.fill_color[ rgba [ '#0000' ] ]
+                cv.stroke_color[ rgba [ (pass == 0) ? '#7dffb0'
+                                                    : '#5fd7ff' ] ]
+                cv.stroke_width[ (pass == 0) ? 1.5 : 2.0 ]
+                for [ i: i32 0, i < n, i += 1 ]
+                    v : f64 [ (pass == 0) ? de.knew[ i * 6 + k ]
+                                          : de.saw[ i * 6 + k ] ]
+                    px : f32 [ x + w * f32[ i ] / 119.0 ]
+                    py : f32 [ y + h - f32[ (v - lo) / (hi - lo) ] * h ]
+                    if [ i == 0 ] cv.move_to[ px, py ]
+                    el cv.line_to[ px, py ]
+                cv.paint[]
+                cv.restore[]
+        g : f64 [ de.saw[ (n - 1) * 6 + k ] ]
+        t : f64 [ de.knew[ (n - 1) * 6 + k ] ]
+        scope_text[ cv, '{name}  net {g}  true {t}  +-{hi} m', x + 6.0,
+                    y + 2.0, '#e8eef4' ]
+
+    # the dock scope over the port camera's picture: where the net
+    # sees the tanker's port, where it truly is, the two pictures
+    # it was given and a minute of its readings; live from 20 m
+    # under the tanker to contact (the net steers there)
+    public func draw_scope [ cv: Canvas ]
+        f : flight
+        if [ !f ] return
+        cm : Mission [ (f.crew) ? f.crew : f ]
+        de : dock_eye
+        sw : f32 [ bounds.w ]
+        sh : f32 [ bounds.h ]
+        mx : f32 [ sw * 0.5 ]
+        my : f32 [ sh * 0.5 ]
+        read : bool [ de && de.guess && de.guess.count == 7 ]
+        near : bool [ cm.upper >= 10 && cm.upper <= 12 ]
+        live : bool [ cm.approaching && near && read
+                      && de.guess[ 6 ] >= 0.5 ]
+        line : string [ (live) ? '#7dffb0cc' : '#7dffb040' ]
+        # the port camera's line: a cross and rings at 1, 3, 6 deg
+        scope_line[ cv, mx - 60.0, my, mx - 8.0, my, line, 1.0 ]
+        scope_line[ cv, mx + 8.0, my, mx + 60.0, my, line, 1.0 ]
+        scope_line[ cv, mx, my - 60.0, mx, my - 8.0, line, 1.0 ]
+        scope_line[ cv, mx, my + 8.0, mx, my + 60.0, line, 1.0 ]
+        rings : vec f32 [] [ 0.0175, 0.0524, 0.105 ]
+        for [ t: f32 ] in rings
+            scope_ring[ cv, mx, my, t / port_th * my, line, 1.0 ]
+        state : string [ 'dock scope: standby' ]
+        if [ !cm.approaching ]
+            state = 'dock scope: standby, not closing on the tanker'
+        el [ !de || !de.ready ]
+            state = 'dock scope: no net weights (run silver dock)'
+        el [ !read ]
+            state = 'dock scope: waiting for the first pair'
+        el [ !near ]
+            state = 'dock scope: standby until 20 m under the tanker'
+        el [ de.guess[ 6 ] < 0.5 ]
+            state = 'dock scope: ports not in view ({i32[ de.guess[ 6 ] * 100.0 ]}%)'
+        el
+            state = 'dock scope: LIVE, ports in view {i32[ de.guess[ 6 ] * 100.0 ]}%'
+        scope_text[ cv, state, 14.0, sh - 300.0,
+                    (live) ? '#7dffb0' : '#ffd27d' ]
+        if [ !read ] return
+        gs : de.guess
+        tr : de.truth
+        # the truth: a green ring; the net's: a blue diamond; the
+        # miss between them
+        tp : vec2f scope_xy[ tr[ 0 ], tr[ 1 ], tr[ 2 ] ]
+        gp : vec2f scope_xy[ gs[ 0 ], gs[ 1 ], gs[ 2 ] ]
+        scope_line[ cv, tp.x, tp.y, gp.x, gp.y, '#ffffff60', 1.0 ]
+        scope_ring[ cv, tp.x, tp.y, 14.0, '#7dffb0', 2.0 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ (live) ? '#5fd7ff' : '#5fd7ff80' ] ]
+        cv.stroke_width[ 2.0 ]
+        cv.move_to[ gp.x, gp.y - 16.0 ]
+        cv.line_to[ gp.x + 16.0, gp.y ]
+        cv.line_to[ gp.x, gp.y + 16.0 ]
+        cv.line_to[ gp.x - 16.0, gp.y ]
+        cv.close_path[]
+        cv.paint[]
+        cv.restore[]
+        scope_text[ cv, 'net {gs[ 2 ]} m', gp.x + 20.0, gp.y - 9.0,
+                    '#5fd7ff' ]
+        # what the net was given: both cameras, 32 x 32, grey
+        if [ de.seen ]
+            sz : f32 [ 128.0 ]
+            for [ k: i32 0, k < 2, k += 1 ]
+                px : f32 [ sw - 2.0 * (sz + 10.0) + f32[ k ] * (sz + 10.0) ]
+                cv.draw_image[ de.seen[ k ],
+                               rect [ x: px, y: 10.0, w: sz, h: sz ] ]
+            scope_text[ cv, 'net input: oxygen port, fuel port',
+                        sw - 2.0 * (sz + 10.0), sz + 22.0, '#e8eef4' ]
+        scope_text[ cv, 'turn  net roll {gs[ 3 ]} pitch {gs[ 4 ]} yaw {gs[ 5 ]}  true roll {tr[ 3 ]} pitch {tr[ 4 ]} yaw {tr[ 5 ]} deg',
+                    14.0, sh - 276.0, '#e8eef4' ]
+        # a minute of readings: green the truth, blue the net
+        names : vec string [] [ 'right', 'up', 'out' ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            scope_trace[ cv, de, k, names[ k ], 14.0,
+                         sh - 250.0 + f32[ k ] * 80.0, 520.0, 72.0 ]
+
     # the frame's last pass waited on (the frame drew them all)
     public func draw_targets []
         craft.sync_fence[]
@@ -2502,6 +2675,9 @@ element PlanetView
         if [ dt > 0.1 ] dt = 0.1
         last_us = now
         seconds += dt
+        if [ !flight && dock_start ]
+            flight = dock_flight[]
+            flying = true
         if [ !flight ]
             flight = Mission [ landing: landing, crew_home: hop,
                                tanker_flight: !ship && !hop ]
@@ -2543,12 +2719,13 @@ element PlanetView
                 if [ epoch_micros[] - began > budget ] break
             pace = f32[ done ] * 0.0025 / dt
         # twice a second the port cameras and the net, closing in
-        if [ flying && flight.approaching && !silent ]
+        closing : Mission [ (flight.crew) ? flight.crew : flight ]
+        if [ flying && closing.approaching && !silent ]
             if [ !dock_eye ] dock_eye = DockEye [ vk: vk ]
             de : dock_eye
-            if [ de.ready && flight.met >= de.next ]
-                de.next = flight.met + 0.5
-                de.look[ flight, sun_el, sun_az ]
+            if [ de.ready && closing.met >= de.next ]
+                de.next = closing.met + 0.5
+                de.look[ closing, sun_el, sun_az ]
         if [ !sky ]
             sky = SkyView [ cur: cur ]
             sky.id = '{id}-sky'
@@ -2574,7 +2751,7 @@ element PlanetView
         right = vec3f [ right.x / rl, right.y / rl, right.z / rl ]
         cu : cross3[ right, fwd ]
         # the port camera's picture keeps our nose at its top
-        if [ camera == 4 ]
+        if [ camera == 4 || camera == 8 ]
             pc : followed[]
             nose : dir_of[ q_rotate[ pc.state.q, Dvec [ 1.0, 0.0, 0.0 ] ],
                            pc.time ]
@@ -3215,6 +3392,8 @@ element launch : trinity
     public hop       : bool
     # --ship: our ship flies (else the tanker goes first)
     public ship      : bool
+    # --dock: start 2 km behind the tanker, the dock scope on
+    public dock      : bool
     mutable view_mode : i32
     mutable warp     : f32    [ 1.0 ]
     mutable camera   : i32
@@ -3228,6 +3407,7 @@ element launch : trinity
         states = sky_states[]
         if [ preset < 0 || preset >= states.count ] preset = 1
         cur = states[ preset ]
+        if [ dock ] camera = 8
         log 'launch: space launch  r restart  p save  l load  c camera  , . warp  1-5 weather  t/g sun  e/d exposure  q quality  v view  drag, wheel, pgup/pgdn: camera distance'
 
     public func on_key [ ev: Event ]
@@ -3243,7 +3423,7 @@ element launch : trinity
         if [ k >= 49 && k <= 53 ]
             preset = k - 49
             cur = states[ preset ]
-        if [ k == 67 ] camera = (camera + 1) % 8
+        if [ k == 67 ] camera = (camera + 1) % 9
         # P: the flight to a file; L: the last one saved, back
         saves : path.path_cache[ 'launch' ]
         dir : path '{saves}/saves'
@@ -3329,7 +3509,7 @@ element launch : trinity
         third : string [ (f.tanker) ? 'tanker' : 'left booster' ]
         cams : vec string [] [ 'platform', 'orbiter', 'booster', third,
                                'our port', 'right booster', 'crew ship',
-                               'crew booster' ]
+                               'crew booster', 'dock scope' ]
         cam : cams[ camera ]
         wp : '{i32[ warp ]}x'
         if [ quick ]
@@ -3365,6 +3545,7 @@ element launch : trinity
                 Overflow.visible, null ]
             cv.paint[]
             y += 22.0
+        if [ camera == 8 ] v.draw_scope[ cv ]
 
     public func render [] -> Elements
         now : i64 [ epoch_micros[] ]
@@ -3378,6 +3559,7 @@ element launch : trinity
             warp: warp, cur: cur, camera: camera, landing: landing,
             quick: quick, rwind: rwind, wind_min: wind_min,
             wind_max: wind_max, load_from: load, hop: hop, ship: ship,
+            dock_start: dock,
             animated: true ]
         load = null
         return e
@@ -3844,6 +4026,12 @@ class DockEye
     public truth : vec f64
     public next  : f64
     public ready : bool
+    # the two pictures the net was given, for the scope
+    public seen  : vec Texture
+    # each reading's time, its six guesses and six truths
+    public times : vec f64
+    public saw   : vec f64
+    public knew  : vec f64
 
     # the running app's device: a bare one has no command pool
     func init []
@@ -3865,6 +4053,71 @@ class DockEye
         m.net_fix[ guess ]
         ours : (m.lower == 0) ? m.stack : m.orbiter
         truth = dock_truth[ ours, m.tanker ]
+        if [ !seen ]
+            seen = vec Texture []
+            for [ k: i32 0, k < 2, k += 1 ]
+                seen.push[ Texture [ vk: vk, w: w, width: 32,
+                                     height: 32, linear: true,
+                                     nearest: true ] ]
+            times = vec f64 []
+            saw = vec f64 []
+            knew = vec f64 []
+        for [ k: i32 0, k < 2, k += 1 ]
+            im : pair[ k ]
+            seen[ k ].upload[ im.pixels, 32 * 32 * 4 ]
+        # a minute of readings, the oldest let go
+        if [ times.count >= 120 ]
+            times.shift[]
+            for [ k: i32 0, k < 6, k += 1 ]
+                saw.shift[]
+                knew.shift[]
+        times.push[ m.met ]
+        for [ k: i32 0, k < 6, k += 1 ]
+            saw.push[ guess[ k ] ]
+            knew.push[ truth[ k ] ]
+
+# a flight already in orbit 2 km behind the tanker, stage two
+# alone with a fiftieth of its propellant, its ports turning to
+# the tanker's (as mission's t_dock_approach, nearer)
+func dock_flight [] -> Mission
+    ms : Mission [ ]
+    ms.hold[]
+    ob : falcon_nine[ ms.payload ]
+    for [ i: i32 0, i < ob.tanks.count, i += 1 ]
+        t : ob.tanks[ i ]
+        ob.state.prop[ i ] = (t.group == 'one') ? 0.0 : t.mass / 50.0
+    ob.mass_properties[ ob.state.prop ]
+    # every booster engine fed from stage two's tanks
+    for [ e: Engine ] in ob.engines
+        if [ e.group != 'one' ] continue
+        e.oxidiser = 'lox two'
+        e.fuel = 'rp1 two'
+    tk : ms.tanker
+    ob.time = tk.time
+    n : dv_norm[ dv_cross[ tk.state.r, tk.state.v ] ]
+    b : dv_norm[ tk.state.r ]
+    ahead : dv_cross[ n, b ]
+    rr : f64 [ dv_len[ tk.state.r ] ]
+    behind : f64 [ 2000.0 / rr ]
+    dir : dv_sub[ dv_scale[ b, cos[ behind ] ],
+                  dv_scale[ ahead, sin[ behind ] ] ]
+    ob.state.r = dv_scale[ dir, rr ]
+    fwd : dv_cross[ n, dir ]
+    ob.state.v = dv_scale[ fwd, dv_len[ tk.state.v ] ]
+    ob.state.q = q_between[ Dvec [ 1.0, 0.0, 0.0 ], fwd ]
+    ob.state.w = Dvec [ 0.0, 0.0, 0.0 ]
+    for [ g: Leg ] in ob.legs
+        g.out = false
+        g.frac = 0.0
+    ms.stack = ob
+    ms.orbiter = ob
+    ms.met = 600.0
+    ms.upper = 7
+    ms.low.align[ ob ]
+    ms.high.align[ ob ]
+    ms.low.steers = false
+    ms.high.steers = true
+    return ms
 
 # the CNN's pictures, from both port cameras at once, of the
 # tanker's two ports. In range: inside the approach cone (1 to
