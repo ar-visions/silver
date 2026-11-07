@@ -418,7 +418,8 @@ func language_keep [ name: string, on: bool ]
 element LangText
     face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
-        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+        label_align: vec2f [ x: 0.0, y: 0.5 ],
+        text_shadow: BoxShadow [ '0 1px 3px #000c' ] ]
 
 # what can be done with the chosen language
 Button LangButton
@@ -494,7 +495,21 @@ Button LangRow
 # every language: a press chooses one, and types in it if it is
 # added; what can be done with it opens under it
 element LanguageList
+    # the backdrop moves under the rows
+    animated : true
     intern chosen : string
+
+    # the backdrop's blur under each row and button
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        for [ ee: element, id: string ] in elements
+            if [ !ee.bounds || !(ee inherits Button) ] continue
+            cv.save[]
+            cv.clip_rounded_rect[ ee.bounds.x, ee.bounds.y, ee.bounds.w,
+                                  ee.bounds.h, 8.0, 8.0, 8.0, 8.0 ]
+            w.draw_blur[ cv, a, BlurStage.blur ]
+            cv.restore[]
 
     public func render [] -> Elements
         t : Elements []

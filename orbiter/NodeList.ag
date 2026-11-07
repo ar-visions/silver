@@ -1410,6 +1410,7 @@ Control AppsGrid
             scroll.y    = mx
             scroll_goal = mx
         sy : f32 [ scroll.y ]
+        side_frost[ cv, w, sy ]
         if [ band_h > 0.0 ] draw_band[ cv, band_y - sy, band_h ]
         n : i32 [ rx.count ]
         # each card and heading eases to its place; a dragged card
@@ -1617,6 +1618,28 @@ Control AppsGrid
 
     # the backdrop's blur in a card's tile, fixed to the window: never
     # in the card's picture
+    # the agents' tabs and titles and the widgets: the backdrop's blur
+    # under each, as the cards'
+    func side_frost [ cv: Canvas, w: Window, sy: f32 ]
+        if [ !elements ] return
+        un : f32 ux_unit[ w ]
+        for [ ee: element, id: string ] in elements
+            if [ !ee.bounds ] continue
+            cr : f32 [ 16.0 * un ]
+            dy : f32 [ (ee.area && ee.area.t.relative) ? sy : 0.0 ]
+            if [ ee inherits DeskWidget ]
+                dw : cast DeskWidget [ ee ]
+                cr = 14.0
+                if [ dw.drag ] dy -= dw.went.y
+            el [ !(ee inherits AgentKinds) && !(ee inherits AgentHead) ]
+                continue
+            cv.save[]
+            cv.clip_rounded_rect[ ee.bounds.x, ee.bounds.y - dy,
+                                  ee.bounds.w, ee.bounds.h,
+                                  cr, cr, cr, cr ]
+            w.draw_blur[ cv, a, BlurStage.frost ]
+            cv.restore[]
+
     func card_frost [ cv: Canvas, w: Window, x: f32, y: f32, cr: f32 ]
         cv.save[]
         cv.clip_rounded_rect[ x, y, tile, tile, cr, cr, cr, cr ]
@@ -1789,6 +1812,8 @@ element StatusLabel
 
 # a panel's group: a faint frame, its title centred at the top
 element SetGroup
+    # the backdrop moves under it
+    animated : true
     public title  : string
     # the heading band's height, px: the chips' row height
     public head_h : f32 [ 33.0 ]
@@ -1797,6 +1822,11 @@ element SetGroup
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
         rr : f32 [ 20.0 ]
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h,
+                              rr, rr, rr, rr ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.restore[]
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
         cv.fill_color[ rgba [ '#ffffff08' ] ]
@@ -1819,6 +1849,8 @@ element SetGroup
 # a scene setting as one pill: its name, a colon, its value in the
 # accent; a press opens its choices in the row under it
 element PropChip
+    # the backdrop moves under it
+    animated : true
     public name  : string
     public value : string
     public open  : bool
@@ -1832,6 +1864,11 @@ element PropChip
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
         rr : f32 [ bounds.h * 0.5 ]
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h,
+                              rr, rr, rr, rr ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.restore[]
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
         cv.fill_color[ rgba [ (open) ? '#4d3dbc77'

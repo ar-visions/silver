@@ -3574,6 +3574,8 @@ StatusTab StatusButton
 # the left to the thumb. pad_l / pad_r set the track so the thumb
 # sits inside the pill at both ends; an icon in pad_l
 VolumeSlider BarLevel
+    # the backdrop moves under it
+    animated : true
     # images/<icon>.svg, drawn in pad_l
     public icon : string
     mutable icon_svg : SVGModel
@@ -3587,6 +3589,11 @@ VolumeSlider BarLevel
         ty : f32 [ round[ (h - th) * 0.5 ] ]
         tr : f32 [ th * 0.5 ]
         cv.save[ ]
+        cv.save[ ]
+        cv.clip_rounded_rect[ pad_l, ty, bounds.w - pad_l - pad_r, th,
+                              tr, tr, tr, tr ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.restore[ ]
         # the track's border: the round buttons' edge, lit by the
         # pointer as theirs
         cv.save[ ]
