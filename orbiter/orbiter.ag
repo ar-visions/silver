@@ -116,6 +116,15 @@ Layer BlurGround
         w.draw_blur[ cv, parent, stage ]
         cv.restore[]
 
+# the desktop's agent title's ground: a free window's
+BlurGround HeadBlur
+    func draw [ cv: Canvas ]
+        ah : cast AgentHead [ parent ]
+        if [ !ah || !ah.desk ] return
+        round = 8.0
+        foot  = 8.0
+        super.draw[ cv ]
+
 # a code window's: not a console's or a new tab's; a free one rounds.
 # the navigator over any of them: the frost
 BlurGround CodeBlur
@@ -146,7 +155,9 @@ element EditorView
     style : CSS {
         area: l0 t0 r0 b0
         layers.bg:
-            fill_color: #2a1a4a33
+            # the theme's editor ground (each scene maps #140a2acc), a
+            # tint as the console's
+            fill_color: #140a2acc
             radius: 0
             clip: false
         :is_console
@@ -564,7 +575,7 @@ element EditorView
         tb : f32 [ 1.06 * o.unit_px[] ]
         t['ctools'] = ConsoleBar [ elements: o.console_tool_els[],
             area: Region [ 'l0 t0 r0 h{tb}px' ] ]
-        sid : string o.console_sid[]
+        sid : string o.console_sid[ pane_index ]
         # its input, a line across its foot, edge to edge: the app's
         # standard input, or the debugger's (lldb's) in its console;
         # the log ends above it
@@ -603,8 +614,9 @@ element EditorView
         t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
             inner: text_els[], deflt: 280.0, min_size: 100.0,
             snap_close: true ]
-        # the run band + console, INSIDE this tab. pip keeps the band:
-        # the app shrinks into the editor and its instruments stay open
+        # its console, under it in the same split, while it is up
+        if [ o.con_up[ pane_index ] && !use_mobile ]
+            t['band'] = RunBand [ elements: band_els[] ]
         return t
 
     # reconciliation runs on the frame hook, never in render
@@ -1196,7 +1208,8 @@ element ConsoleLine
         if [ !ev.key.state || ev.key.unicode != 257 ] return
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         # sent before the field empties: the line is the field's text
-        if [ orb && edit ] orb.console_input[ edit ]
+        if [ orb && edit ]
+            orb.console_input[ edit, orb.pane_index_of[ a ] ]
         edit     = ''
         pristine = false
         ev.no_default = true
@@ -1253,17 +1266,22 @@ element WinShade
                 radius: 0
     }
 
-# a free window's outline: over its own edge, so the mask's soft
-# corner pixels take the line, not the dark under them
+# a free window's edge: an inner glow over it, no line (nothing in
+# nature is a border)
 element WinEdge
     ghost : true
-    public square : bool
+    public square   : bool
+    public selected : bool
     style : CSS {
         layers.edge:
             fill_color: #0000
-            stroke_width: 1
-            stroke_color: #ffffff26
+            stroke_width: 0
+            # a third of it while another window is the selected one
+            box_shadow: inset 0 0 8px #ffffff11 curve 2
             radius: 8
+        :selected
+            layers.edge:
+                box_shadow: inset 0 0 8px #ffffff22 curve 2
         :square
             layers.edge:
                 radius: 0
@@ -1511,6 +1529,7 @@ element AgentHead
     intern grab_x : f32 [ -1.0 ]
     intern grab_y : f32
     intern swiped : bool
+    blur : HeadBlur []
 
     func render [] -> Elements
         t : Elements []
@@ -1596,21 +1615,20 @@ element AgentHead
         layers.face:
             radius: 0
             stroke_width: 0
-    # the desktop's: the look of the row of agents above it, its fill
-    # under the same edge layer
+    # the desktop's: a free window's look (its blur, tint and
+    # outline), as the row of agents above it
     :desk
         layers.back:
-            fill_color: #00000080
-            radius: 16
+            fill_color: #2a1a4a33
+            radius: 8
         layers.face:
             fill_color: #0000
             stroke_width: 0
         layers.edge:
             fill_color: #0000
-            radius: 16
-            box_shadow: inset 0 0 13px #8af2
-            stroke_width: 1
-            stroke_color: #fff2
+            radius: 8
+            box_shadow: inset 0 0 8px #ffffff33 curve 2
+            stroke_width: 0
             near_border: true
             near_reach: 0.5
             near_inset: 4.0
@@ -1785,6 +1803,15 @@ element DeskWidget
         oy : f32 [ (drag) ? went.y : 0.0 ]
         bw : f32 [ bounds.w ]
         bh : f32 [ bounds.h ]
+        # a free window's ground: the scene's blur, its tint
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.fill_color[ rgba [ '#2a1a4a33' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, oy, bw, bh ]
+        cv.paint[]
+        cv.restore[]
         av : AppView o.widget_view[ index ]
         if [ av ]
             av.vx  = 0.0
@@ -1795,22 +1822,22 @@ element DeskWidget
             av.vsy = 0.0
             av.service[ cv ]
             cv.save[]
-            cv.clip_rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0,
-                                  14.0 ]
+            cv.clip_rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
             av.draw_frame[ cv, rect [ x: 0.0, y: oy, w: bw, h: bh ] ]
-            cv.restore[]
-            # every widget's border: the app cards' (NodeList draw_tile)
-            cv.save[]
-            cv.fill_color[ rgba [ '#0000' ] ]
-            cv.stroke_color[ rgba [ (hovered) ? '#ffffff30'
-                : '#ffffff16' ] ]
-            cv.stroke_width[ 1.0 ]
-            cv.stroke_offset[ -0.5 ]
-            cv.rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
-            cv.paint[]
             cv.restore[]
         el
             draw_chooser[ cv, o, 0.0, oy, bw, bh ]
+        # its edge: an 8 px inner glow, bright at the edge, no border
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.box_shadow[ rgba [ (hovered) ? '#ffffff4d' : '#ffffff33' ],
+                       0.0, 0.0, 8.0, 0.0, true ]
+        cv.shadow_curve[ 0, 2.0 ]
+        cv.rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
         if [ !editing[] ] return
         # edit mode: its outline and the x that takes it off
         cv.save[]
@@ -1818,7 +1845,7 @@ element DeskWidget
         cv.stroke_color[ rgba [ '#c890ffcc' ] ]
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
-        cv.rounded_rect[ 0.0, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
+        cv.rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
         cv.paint[]
         cv.fill_color[ rgba [ '#1a1440ee' ] ]
         cv.stroke_width[ 0.0 ]
@@ -1837,18 +1864,10 @@ element DeskWidget
         cv.paint[]
         cv.restore[]
 
-    # an empty widget: a glass box, the modules it can be as cards
+    # an empty widget: the modules it can be as cards
     func draw_chooser [ cv: Canvas, o: orbiter, ox: f32, oy: f32,
                         bw: f32, bh: f32 ]
         un : f32 ux_unit[ ux ]
-        cv.save[]
-        cv.fill_color[ rgba [ '#ffffff0d' ] ]
-        cv.stroke_color[ rgba [ '#ffffff26' ] ]
-        cv.stroke_width[ 1.0 ]
-        cv.stroke_offset[ -0.5 ]
-        cv.rounded_rect[ ox, oy, bw, bh, 14.0, 14.0, 14.0, 14.0 ]
-        cv.paint[]
-        cv.restore[]
         fp : i32 [ i32[ round[ 15.0 * un ] ] ]
         ff : string 'fonts/BarlowCondensed-Regular.ttf'
         cv.set_font[ shared_font[ cv, ff, fp ] ]
@@ -3553,12 +3572,16 @@ AltTab RoundTab
                 near_inset_color: #ffd84aff
     }
 
-# the desktop's row of agents: rounded as their titles below it
+# the desktop's row of agents: a free window's look, as the titles
+# below it
 RoundTab AgentKinds
+    blur : BlurGround [ round: 8.0, foot: 8.0 ]
     style : CSS {
         layers.edge:
-            fill_color: #00000080
-            radius: 16
+            fill_color: #2a1a4a33
+            radius: 8
+            stroke_width: 0
+            box_shadow: inset 0 0 8px #ffffff33 curve 2
     }
 
 # on the status bar: a faint border the pointer's light brings up
@@ -4293,10 +4316,6 @@ Button PillButton
 element RunBand
     style : CSS {
         area: l0 t0 r0 b0
-        # the line over the console's top edge, parting it from the editor
-        layers.topline:
-            fill_color: #fff2
-            area: l0 t0 r0 h1px
     }
 
 # the console's ground, under it: its fade masks the text alone
@@ -4794,10 +4813,10 @@ element orbiter : trinity # implements compiler
     intern pane_free        : vec f32
     # the free panes, bottom to top
     intern free_order       : vec i32
-    # the console's toolbar: the debugger's console up; every app's
-    # log (System) or the selected app's
+    # the console's toolbar: the debugger's console up
     intern con_dbg          : bool
-    intern con_global       : bool
+    # the windows (pane numbers) whose own console is up
+    intern con_panes        : vec i32
     # the console's call stack column, at its right (its bar's switch)
     intern con_stack        : bool
     # the debugger steps by instruction and shows machine code
@@ -5156,6 +5175,11 @@ element orbiter : trinity # implements compiler
     mutable end_shown      : string [ '' ]
     # a menu was up when the current press began
     mutable press_menu     : bool
+    # the last press on_press saw, the last seen by the frame, and
+    # the drawer's state the frame before
+    mutable press_seen     : i64
+    mutable click_seen     : i64
+    mutable menu_was       : bool
     mutable screen_dark    : bool
     # the keyboard by the bar's button: 1 shown, -1 put away, 0 as
     # the focus wants; and the focus's want last frame
@@ -5243,7 +5267,6 @@ element orbiter : trinity # implements compiler
     public show_instr_col : bool
     # launch panel over the console
     public show_launch    : bool
-    public show_console   : bool
     mutable shift_down    : bool
     mutable cmd_down      : bool
     # recording from a shift-click on orbiter's button: a click on it
@@ -9120,8 +9143,10 @@ element orbiter : trinity # implements compiler
             t['dagent_tabs'] = AgentKinds [ buttons: ids, icon_ids: ics,
                 labels: kinds, manual: true, use_spacing: false,
                 label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                label_px: 17.0 * un, seg_radius: 16.0 * un,
-                rest_fill: rgba [ '#0000' ], outline: rgba [ '#fff2' ],
+                label_px: 17.0 * un, seg_radius: 8.0,
+                rest_fill: rgba [ '#0000' ],
+                # its edge layer draws the border, as the titles'
+                outline: rgba [ '#0000' ],
                 area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
             y += ah + gap
         # why one did not start, in red
@@ -13602,9 +13627,19 @@ element orbiter : trinity # implements compiler
             return true
         return false
 
+    # a press in the drawer, or on what opens one, keeps it up
+    func drawer_keeps [ t: element ] -> bool
+        if [ t inherits MenuTop || t.id == 'bar_title'
+             || t inherits BarCrumb || t inherits TrayMark ]
+            return true
+        for [ e: element* t, e, e = e.parent ]
+            if [ e inherits MenuDrawer ] return true
+        return false
+
     func on_press [ ev: Event ]
         # a menu up as this press began (it may shut it below)
         press_menu = drawer_open
+        if [ ux ] press_seen = ux.last_click_us
         # a press is no Alt tap, and lets the bar's keys go
         alt_tap = false
         if [ bar_hl.count > 0 ]
@@ -13646,14 +13681,8 @@ element orbiter : trinity # implements compiler
             ev.no_default = true
             return
         if [ drawer_open && menu_kind != 'exchange'
-             && !(ev.target inherits MenuTop)
-             && ev.target.id != 'bar_title'
-             && !(ev.target inherits BarCrumb)
-             && !(ev.target inherits TrayMark) ]
-            inside : false
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits MenuDrawer ] inside = true
-            if [ !inside ] drawer_shut[]
+             && !drawer_keeps[ ev.target ] ]
+            drawer_shut[]
         # a press in a free window brings it up and selects it
         fpi : i32 pane_index_of[ ev.target ]
         if [ pane_floats[ fpi ] ] raise_pane[ fpi ]
@@ -14265,17 +14294,15 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        if [ ev.target.id == 'con_dbg' || ev.target.id == 'con_app'
-             || ev.target.id == 'con_global' ]
-            con_dbg    = ev.target.id == 'con_dbg' && !con_dbg
-            if [ ev.target.id != 'con_dbg' ]
-                con_global = ev.target.id == 'con_global'
+        if [ ev.target.id == 'con_dbg' ]
+            con_dbg = !con_dbg
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id == 'con_clear' ]
             cc : ConsoleSession (ed_sessions)
-                ? ed_sessions[ console_sid[] ] : null
+                ? ed_sessions[ console_sid[ pane_index_of[ ev.target ] ] ]
+                : null
             if [ cc ] cc.clear_log[]
             if [ con_dbg ] dbg_lines = list string []
             if [ ux ] dirty_consoles[ ux.root ]
@@ -14289,16 +14316,12 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        if [ ev.target.id == 'console_tab' ]
-            # showing clear: the console's log is emptied
-            if [ console_clearing[] ]
-                cs : ConsoleSession (ed_sessions)
-                    ? ed_sessions[ console_sid[] ] : null
-                if [ cs ] cs.clear_log[]
-                dirty_consoles[ ux.root ]
-            el
-                show_console = !show_console
-            if [ ev.target ] ev.target.ux.restyle = true
+        # a window's console button: its console up or down
+        if [ ev.target.id.starts_with[ 'pcon_' ] ]
+            cp : i32 [ ev.target.id.mid[ 5,
+                ev.target.id.count - 5 ].integer_value[] ]
+            con_flip[ cp ]
+            if [ ux ] ux.restyle = true
             ev.no_default = true
             return
         if [ ev.target.id == 'new_instance' ]
@@ -15925,12 +15948,6 @@ element orbiter : trinity # implements compiler
         stack['panes'] = Splitter [ area: Region { l0 t0 r0 b0 },
             inner: pane_views[], deflt: 0.0, even: true,
             snap_close: true, loose: free_ids[] ]
-        pv : element pane_view[ active_pane ]
-        # a phone has no task bar to shut it from: never shown
-        if [ show_console && !use_mobile && pv
-            && pv inherits EditorView ]
-            ev9 : EditorView pv
-            stack['band'] = RunBand [ elements: ev9.band_els[] ]
         # a phone has the top bar alone: the panes to the bottom
         # its keyboard under them while the focus takes words; a PC
         # has the keyboard's bar alone, once a language is added
@@ -16277,7 +16294,7 @@ element orbiter : trinity # implements compiler
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
                 t['pane{i}'] = ev
                 t['edge{i}'] = WinEdge [ topmost: true, hide: away,
-                    opacity: seen, square: sq,
+                    opacity: seen, square: sq, selected: ev.selected,
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
                 if [ nav_fade <= 0.0 && !agents && !fixed_win[ i ] ]
                     grips_of[ t, i, fx, fy, fw, fh ]
@@ -16945,7 +16962,8 @@ element orbiter : trinity # implements compiler
         el [ pv && bounds && !pane_empty[ pi ] ]
             # the close at the right end, the arrows left of it
             rx : f32 pane_close_el[ t, pi, re, 0.0, 0.0 ]
-            vx : f32 nav_arrows_el[ t, pi, rx ]
+            vx : f32 pane_console_el[ t, pi,
+                nav_arrows_el[ t, pi, rx ] ]
             # a URL app's address: up to the arrows; a press edits
             url : bool [ pi == active_pane && bar_url_on[] ]
             if [ url ]
@@ -17254,7 +17272,7 @@ element orbiter : trinity # implements compiler
             ? pane_shown[ pi * 4 + 1 ] : 0.0 ]
         top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
         rx : f32 pane_close_el[ t, pi, w, sx, sy + top ]
-        vx : f32 nav_arrows_el[ t, pi, rx ]
+        vx : f32 pane_console_el[ t, pi, nav_arrows_el[ t, pi, rx ] ]
         x = pane_outline_el[ t, pi, x, 's{pi}_' ]
         # the load mark left of the arrows, as on the bar
         lw : f32 [ 1.33 * unit_px[] ]
@@ -17350,6 +17368,20 @@ element orbiter : trinity # implements compiler
                     area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
                 x += mw
                 lead = false
+        # no menu read for it (a window not selected, nothing running):
+        # its name, always
+        if [ (!items || items.count == 0) && !sys ]
+            pv : element pane_view[ mp ]
+            nm : string [ (named.count > 0) ? named
+                : ((pv && pv inherits EditorView)
+                   ? (cast EditorView [ pv ]).title_text[] : '') ]
+            if [ nm.count > 0 ]
+                nw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * uu ]
+                t['{pre}menu_0'] = MenuTop [ label: nm, at: 0,
+                    pane: mp, selected: false, tab_on: true,
+                    progress: pane_build[ mp ],
+                    area: Region [ 'l{x}px t0 w{nw}px b0' ] ]
+                x += nw
         return x
 
     # a pane's running app by name: the module it came from (its apps
@@ -17977,24 +18009,62 @@ element orbiter : trinity # implements compiler
         ed.sel_col  = find_from_col - 1
         find_file_next[]
 
-    # the gear shows clear: shift over it, or ctrl / cmd anywhere
-    func console_clearing [] -> bool
-        if [ !ux ] return false
-        if [ ux.cmd ] return true
-        dc : element find_el[ a, 'dock_console' ]
-        return ux.shift && dc && dc.hovered
+    # a window's console is up
+    func con_up [ pi: i32 ] -> bool
+        if [ !con_panes ] return false
+        for [ c: i32 ] in con_panes
+            if [ c == pi ] return true
+        return false
 
-    # the session the console shows: the debugger's; else the selected
-    # instance's (all, by the toolbar's System), else all
-    func console_sid [] -> string
+    # a window's console up, or down
+    func con_flip [ pi: i32 ]
+        was : vec i32 [ con_panes ]
+        con_panes = vec i32 []
+        for [ c: i32 ] in was
+            if [ c != pi ] con_panes.push[ c ]
+        if [ con_panes.count == was.count ] con_panes.push[ pi ]
+
+    # a window's console up (its band's link to what the app said)
+    func console_show [ pi: i32 ]
+        if [ !con_up[ pi ] ] con_flip[ pi ]
+        con_dbg = false
+        if [ ux ] ux.restyle = true
+
+    # the app a window runs (or ran): its editor's, else the one whose
+    # program's window it shows
+    func pane_inst [ pi: i32 ] -> AppView
+        ed : Editor pane_at[ pi ]
+        if [ ed && ed.run_view ] return ed.run_view
+        wid : u64 [ pane_window[ pi ] ]
+        if [ wid == 0 ] return null
+        for [ av: AppView ] in instances
+            if [ av.wl_window == wid ] return av
+        return null
+
+    # every app run in a window has a console: its button, left of
+    # xr; the x it ends at
+    func pane_console_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+        if [ use_mobile || !pane_inst[ pi ] ] return xr
+        cw : f32 [ 1.33 * unit_px[] ]
+        t['pcon_{pi}'] = AltTab [ buttons: vec string [] [ 'pcon_{pi}' ],
+            icon_ids: vec string [] [ 'bottom_panel' ], icon_scale: 0.6,
+            manual: true, seg_radius: 0.0, use_spacing: false,
+            rest_fill: rgba [ '#0000' ],
+            sel_mask: (con_up[ pi ]) ? 1 : 0,
+            area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+        return xr - cw
+
+    # the session a window's console shows: the debugger's; else its
+    # instance's, else every app's
+    func console_sid [ pi: i32 ] -> string
         if [ con_dbg ]
             dbg_log[]
             return 'dbg:log'
-        if [ !con_global ]
-            ed : Editor pane_at[ active_pane ]
-            isid : string inst_sid[ (ed) ? ed.run_view : null ]
-            if [ isid && ed_sessions && ed_sessions.contains[ isid ] ]
-                return isid
+        # its app's log, ended too: what it said before it went
+        v : AppView pane_inst[ pi ]
+        if [ v && v.slot > 0 && ed_sessions ]
+            isid : string 'ed:i{v.iid}s{v.slot}'
+            if [ ed_sessions.contains[ isid ] ] return isid
         all_log[]
         return 'ed:all'
 
@@ -18040,12 +18110,11 @@ element orbiter : trinity # implements compiler
 
     # a line typed at the console's foot: lldb's in the debugger's
     # console, else the selected app's standard input
-    func console_input [ line: string ]
+    func console_input [ line: string, pi: i32 ]
         if [ con_dbg ]
             dbg_run[ line ]
             return
-        ed : Editor pane_at[ active_pane ]
-        av : AppView (ed) ? ed.run_view : null
+        av : AppView pane_inst[ pi ]
         if [ !av || av.ended || av.slot <= 0 || !av.app_mod ] return
         at : string '{install_root[]}/tmp/{av.app_mod}.{av.slot}'
         ip : string '{at}.in'
@@ -18074,11 +18143,12 @@ element orbiter : trinity # implements compiler
         for [ ln: string ] in out.split[ '\n' ]
             if [ ln.count > 0 ] dbg_say[ ln ]
 
-    # the console's toolbar: the debugger's console, clear, and the
-    # selected app's log or every app's
+    # the console's toolbar: the debugger's console, clear, the call
+    # stack and the machine code
     func console_tool_els [] -> Elements
         t : Elements []
         bw : f32 [ 1.33 * unit_px[] ]
+        sw : f32 [ 2.6 * unit_px[] ]
         t['con_dbg'] = AltTab [ buttons: vec string [] [ 'con_dbg' ],
             icon_ids: vec string [] [ 'debug' ], icon_scale: 0.5,
             manual: true, seg_radius: 0.0, use_spacing: false,
@@ -18090,19 +18160,6 @@ element orbiter : trinity # implements compiler
             manual: true, seg_radius: 0.0, use_spacing: false,
             rest_fill: rgba [ '#0000' ],
             area: Region [ 'l{bw}px t0 w{bw}px b1px' ] ]
-        # the selected app's or every app's: beside the debugger's, a
-        # log of the same level
-        sw : f32 [ 2.6 * unit_px[] ]
-        x : f32 [ bw * 2.0 ]
-        t['con_scope'] = AltTab [
-            buttons: vec string [] [ 'con_app', 'con_global' ],
-            icon_ids: vec string [] [ '_text', '_text' ],
-            labels: vec string [] [ 'App', 'System' ],
-            label_font: 'fonts/BarlowCondensed-Regular.ttf',
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (con_dbg) ? 0 : ((con_global) ? 2 : 1),
-            area: Region [ 'l{x}px t0 w{sw * 2.0}px b1px' ] ]
         # at the right: the call stack column's switch
         t['con_stack'] = AltTab [
             buttons: vec string [] [ 'con_stack' ],
@@ -18752,6 +18809,25 @@ element orbiter : trinity # implements compiler
         return !w || !w.focus || w.focus inherits AppsGrid
             || w.focus.id == 'apps_filter'
 
+    # an app's module source, null when it has none here
+    func code_of [ ae: AppEntry ] -> path
+        if [ !ae || !ae.module || !ae.file ] return null
+        mf : path '{ae.file}/{ae.name}.ag'
+        return (mf.exists[]) ? mf : null
+
+    # an app's code in a window, not run
+    func apps_code [ pi: i32, ae: AppEntry ]
+        mf : path code_of[ ae ]
+        if [ !mf ] return
+        if [ apps_filter.count > 0 ] filter_done[ 'apps_filter' ]
+        if [ pi < 0 ]
+            open_new_tab[ mf ]
+            return
+        active_pane = pi
+        set_active[ pi ]
+        open_in_pane[ mf, pi ]
+        if [ ux ] ux.restyle = true
+
     func apps_pick [ pi: i32, ae: AppEntry ]
         if [ !ae ] return
         # a pick by click, as by Enter: the filter that found it goes
@@ -18880,8 +18956,6 @@ element orbiter : trinity # implements compiler
             inst_pct[ at ]  = -1.0
             inst_word[ at ] = 'starting'
         log 'install: {nm} in console {sid}, log {lg}'
-        # its output in the system console, shown
-        show_console = true
         if [ ux ] ux.restyle = true
 
     # stop an install: ctrl+C to its console reaches the whole build
@@ -20254,19 +20328,9 @@ element orbiter : trinity # implements compiler
         edv : Editor pane_at[ active_pane ]
         t : Elements []
         sys : bool system_on[]
-        # first, at the left: the console, global to the window (in
-        # the dock's corner with the system bar)
-        if [ !sys ]
-            t['console_tab'] = StatusTab [
-                buttons: vec string [] [ 'console_tab' ],
-                icon_ids: vec string [] [ 'gear' ], icon_scale: 0.5,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                sel_mask: (show_console) ? 1 : 0,
-                area: Region { l0 t0 w1.66 b0 } ]
         # every running instance (the bar is for tasks alone); a
         # drag onto the dock pins it. orbiter's view is the bar's menu
-        x0 : f32 [ (sys) ? 0.0 : 1.66 * 22.0 ]
+        x0 : f32 [ 0.0 ]
         sb : element find_el[ a, 'status' ]
         # with the system bar its right end is the console, the menu
         # and the date
@@ -20359,22 +20423,13 @@ element orbiter : trinity # implements compiler
                 area: Region { r0 t0 w1.66 b0 } ]
         return t
 
-    # the bottom bar's right end: the console, then the date (the
-    # system menu is the desktop's, orbiter's, in the top bar)
-    # Rule #12: shift over the console, or ctrl / cmd, shows clear
+    # the bottom bar's right end: the date (the system menu is the
+    # desktop's, orbiter's, in the top bar)
     func sys_right [ t: Elements ] -> Elements
         # the clock only as the OS: a window has the desktop's
-        cr : string [ (system_os) ? 'r4.6' : 'r0' ]
         if [ system_os ]
             t['sys_clock'] = BarClock [ label: clock_text[],
                 area: Region { r0 t0 w4.6 b0 } ]
-        t['dock_console'] = StatusTab [
-            buttons: vec string [] [ 'console_tab' ],
-            icon_ids: vec string [] [ 'bottom_panel' ], icon_scale: 0.6,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (show_console) ? 1 : 0,
-            area: Region [ '{cr} t0 w1.33 b0' ] ]
         return t
 
     # scene: built once per scene — a fresh element each frame churns
@@ -20387,6 +20442,20 @@ element orbiter : trinity # implements compiler
     # the state the last instance left: it lands before the window
     # composes, so the first frame holds the exchange as it was
     public func on_frame [ w: Window ]
+        # a press an element kept from on_press: away from an open
+        # drawer and the bar, it shuts the drawer
+        if [ w.last_click_us != click_seen ]
+            click_seen = w.last_click_us
+            t : element [ w.hold_el ]
+            bar : bool [ false ]
+            for [ e: element* t, e, e = e.parent ]
+                if [ e inherits SystemBar ] bar = true
+            if [ click_seen != press_seen && menu_was && drawer_open
+                 && menu_kind != 'exchange' && t && !bar
+                 && !drawer_keeps[ t ] ]
+                drawer_shut[]
+                w.restyle = true
+        menu_was = drawer_open
         # a console shown in the active pane types plainly
         pe : Editor pane_at[ active_pane ]
         w.plain_app = pe && pe.types_plain[]

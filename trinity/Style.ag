@@ -1481,13 +1481,24 @@ Mixable BoxShadow
     public blur     : f32
     public spread   : f32
     public inset    : bool
+    # an inset glow's falloff ('curve 2'): 0 the Gaussian; else its
+    # edge at full strength, over 1 falling off faster
+    public curve    : f32
 
     construct [ s: string ]
         lengths : vec f32 []
+        to_curve : bool [ false ]
         for [ word: string ] in s.trim[].split[ ' ' ]
             if [ word.count == 0 || word == 'none' ] continue
             if [ word == 'inset' ]
                 inset = true
+                continue
+            if [ word == 'curve' ]
+                to_curve = true
+                continue
+            if [ to_curve ]
+                to_curve = false
+                curve = parse_css_px[ word ]
                 continue
             # a length starts with a digit, a sign or a point
             ch : i32 [ i32 word.chars[0] ]
@@ -1505,12 +1516,14 @@ Mixable BoxShadow
         if [ color ]
             cv.shadow[ i, color, offset.x, offset.y, blur, spread,
                        inset ]
+            if [ curve > 0.0 ] cv.shadow_curve[ i, curve ]
 
     # the same, its lengths times k (the near light's, by the font)
     public func apply_by [ cv: Canvas, i: i32, k: f32 ]
         if [ color ]
             cv.shadow[ i, color, offset.x * k, offset.y * k, blur * k,
                        spread * k, inset ]
+            if [ curve > 0.0 ] cv.shadow_curve[ i, curve ]
 
     # a transition calls mix[]: without it the shadow snaps
     public func mix [ b: Mixable, f: f64 ] -> Mixable
@@ -1525,6 +1538,7 @@ Mixable BoxShadow
             blur:   blur + (o.blur - blur) * t,
             spread: spread + (o.spread - spread) * t,
             inset:  (t < 0.5) ? inset : o.inset,
+            curve:  curve + (o.curve - curve) * t,
             color:  rgba [
                 r: from_color.r + (to_color.r - from_color.r) * t,
                 g: from_color.g + (to_color.g - from_color.g) * t,

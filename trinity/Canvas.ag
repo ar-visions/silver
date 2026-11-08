@@ -337,6 +337,15 @@ shader CanvasUI
         return 0.5 - 0.5 * erf_approx(d / (sigma * 1.41421356));
     }
 
+    # an inset shadow's strength at d; flag over 1 is a curve: the
+    # edge at full strength, the glow to that power less one
+    func inset_glow [ d: @f32, blur: @f32, flag: @f32 ] -> GLSL float {
+        float g = 1.0 - shadow_edge(d, blur);
+        float c = flag - 1.0;
+        if (c > 0.0) g = pow(min(g * 2.0, 1.0), c);
+        return g;
+    }
+
     func shadow_color_at [ i: @i32 ] -> GLSL vec4f {
         return (i == 0) ? ubo.shadow_color0 : (i == 1) ? ubo.shadow_color1 : (i == 2) ? ubo.shadow_color2 : ubo.shadow_color3;
     }
@@ -362,6 +371,12 @@ shader CanvasUI
         float w = near_weight(p) * ubo.near_opts.x;
         return vec4(mix(c.rgb, vec3(1.0), w * 0.5),
                     c.a + (1.0 - c.a) * w * 0.5);
+    }
+
+    # an inner glow's width by the pointer's light: times 1 + k by
+    # nearness (k near_opts.w, 0 none)
+    func near_grow_blur [ blur: @f32, p: @vec2f ] -> GLSL float {
+        return blur * (1.0 + near_weight(p) * ubo.near_opts.w);
     }
 
     # an inner glow blends toward its near colour by nearness
@@ -1117,8 +1132,9 @@ shader CanvasUI
                 float ds = path_distance(lpos - sg.xy);
                 if (ubo.shadow_inset[i] > 0.5) {{
                     sc = near_inset_mix(sc, v_pos);
-                    float sa = (1.0 - shadow_edge(ds + sg.w,
-                            sg.z)) * sc.a * fill_cov;
+                    float sa = inset_glow(ds + sg.w,
+                            near_grow_blur(sg.z, v_pos),
+                            ubo.shadow_inset[i]) * sc.a * fill_cov;
                     inset_p = vec4(sc.rgb * sa,
                                    sa) + inset_p * (1.0 - sa);
                 }} else {{
@@ -1289,8 +1305,8 @@ shader CanvasUI
                             vec2(0.0)), max(ubo.radii - vec4(sg.w),
                                     vec4(0.0)));
                 sc = near_inset_mix(sc, v_pos);
-                float sa = (1.0 - shadow_edge(di,
-                        sg.z)) * sc.a * fill_cov;
+                float sa = inset_glow(di, near_grow_blur(sg.z, v_pos),
+                        ubo.shadow_inset[i]) * sc.a * fill_cov;
                 inset_p = vec4(sc.rgb * sa, sa) + inset_p * (1.0 - sa);
             }} else {{
                 float d0 = sdf_rounded_rect(sp, center, half_size + vec2(sg.w), max(ubo.radii + vec4(sg.w), vec4(0.0)));
@@ -2808,6 +2824,11 @@ Render Canvas
         states[state_depth - 1].near_inset = (inset_color) ? sk_color[
             inset_color ] : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
 
+    # the inner glow's width grows by the pointer's light, up to
+    # 1 + k times (after near_style, which sets it 0)
+    func near_grow [ k: f32 ]
+        states[state_depth - 1].near_opts.w = k
+
     func stroke_grad_radial [ r: bool ]
         states[state_depth - 1].stroke_grad_radial = r
 
@@ -2874,6 +2895,25 @@ Render Canvas
                       spread: f32, inset: bool ]
         no_shadows[]
         shadow[ 0, color, x, y, blur, spread, inset ]
+
+    # an inset shadow's falloff, slot i: 0 the Gaussian; else its edge
+    # at full strength and the glow to the power c (over 1: faster)
+    func shadow_curve [ i: i32, c: f32 ]
+        k : i32 [ state_depth - 1 ]
+        v : f32 [ 1.0 + maxf[ c, 0.0 ] ]
+        switch [ i ]
+            case 0
+                if [ states[k].shadow_inset.x > 0.5 ]
+                    states[k].shadow_inset.x = v
+            case 1
+                if [ states[k].shadow_inset.y > 0.5 ]
+                    states[k].shadow_inset.y = v
+            case 2
+                if [ states[k].shadow_inset.z > 0.5 ]
+                    states[k].shadow_inset.z = v
+            case 3
+                if [ states[k].shadow_inset.w > 0.5 ]
+                    states[k].shadow_inset.w = v
 
     func no_shadows []
         k : i32 [ state_depth - 1 ]

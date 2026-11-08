@@ -294,17 +294,18 @@ element StockView
         up : string '#34d399'
         down : string '#fb7185'
         mute : string '#8b93a7'
-        # a widget is a rounded card, its border the host's
+        # a widget is a rounded card on the host's ground (its blur,
+        # tint and border): nothing of its own under it
         ap : element [ (ux) ? cast element [ ux.app_object ] : null ]
         wid : bool [ ap != null && ap.widget ]
-        rc : f32 [ (wid) ? 14.0 : 0.0 ]
-        cv.save[]
-        # a widget lets the desktop's blur through
-        cv.fill_color[ rgba [ (wid) ? '#0b0e1a66' : '#0b0e1acc' ] ]
-        cv.stroke_width[ 0.0 ]
-        cv.rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
-        cv.paint[]
-        cv.restore[]
+        rc : f32 [ (wid) ? 8.0 : 0.0 ]
+        if [ !wid ]
+            cv.save[]
+            cv.fill_color[ rgba [ '#0b0e1acc' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
+            cv.paint[]
+            cv.restore[]
         cv.save[]
         cv.clip_rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
         se : Series series[ range ]

@@ -6997,6 +6997,9 @@ Control Editor
                     ux.set_clipboard[
                         '{src}:{err_band_line[]}: {err_band_text[]}' ]
                 el [ o9 && err_band_line[] > 0 ] o9.goto_error[]
+                # no line in the code: the window's console, where the
+                # app said it
+                el [ o9 ] o9.console_show[ pane_index ]
                 ev.no_default = true
                 return
         # the scrollbar's thumb and the git rails beside it come first:

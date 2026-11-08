@@ -1243,6 +1243,11 @@ Control AppsGrid
             if [ pane >= 0 ] orb.open_in_pane[ ae.opens, pane ]
             el orb.open_new_tab[ ae.opens ]
             return
+        # Rule #12: ctrl / cmd, or shift over it: its code, not run
+        if [ !busy && (ux.cmd || ux.shift) && orb.code_of[ ae ] ]
+            sel = -1
+            orb.apps_code[ pane, ae ]
+            return
         # a store with apps, or an app with files it opens, opens as a
         # folder; again, it shuts (its own card inside runs it)
         in_band : bool [ i >= band_at && i < band_at + band_n ]
@@ -1584,9 +1589,13 @@ Control AppsGrid
         ny : f32 [ cy + tile + round[ 6.0 * un ] ]
         # Rule #12: shift over it, or ctrl / cmd for all, shows
         # its Cancel in place of the progress
-        cxl : bool [ busy && (ux.cmd || (ux.shift && i == hov)) ]
-        if [ cxl ]
-            draw_cancel[ cv, fp, x, ny, nh ]
+        mod : bool [ ux.cmd || (ux.shift && i == hov) ]
+        if [ busy && mod ]
+            draw_pill[ cv, fp, x, ny, nh, 'Cancel', '#a0303099',
+                       '#ff7a7a99' ]
+        el [ mod && orb.code_of[ ae ] ]
+            draw_pill[ cv, fp, x, ny, nh, 'Code', '#4d3dbccc',
+                       '#806bffcc' ]
         el [ chosen ]
             draw_button[ cv, fp, x, ny, nh, ae.module, failed ]
         el
@@ -1663,15 +1672,26 @@ Control AppsGrid
                                 1.125 ]
             cv.near_style[ 0.0, 1.5, rgba [ '#d298ffff' ],
                            w.near_y_fade ]
-            cv.box_shadow[ rgba [ '#c890ff80' ], 0.0, 0.0, 9.6, 0.0,
+            # the pointer casts more glow too: twice as wide by it
+            cv.near_grow[ 1.0 ]
+            # a free window's edge: an 8 px inner glow, bright at
+            # the edge, no border
+            cv.box_shadow[ rgba [ '#ffffff33' ], 0.0, 0.0, 8.0, 0.0,
                            true ]
+            cv.shadow_curve[ 0, 2.0 ]
             # a slight tint over the frost
             cv.fill_color[ rgba [ '#2a1a4a33' ] ]
             cv.stroke_color[ rgba [ '#0000' ] ]
         el [ chosen ]
+            cv.box_shadow[ rgba [ '#806bffcc' ], 0.0, 0.0, 8.0, 0.0,
+                           true ]
+            cv.shadow_curve[ 0, 2.0 ]
             cv.fill_color[ rgba [ '#4d3dbc55' ] ]
-            cv.stroke_color[ rgba [ '#806bff' ] ]
+            cv.stroke_color[ rgba [ '#0000' ] ]
         el
+            cv.box_shadow[ rgba [ '#ffffff33' ], 0.0, 0.0, 8.0, 0.0,
+                           true ]
+            cv.shadow_curve[ 0, 2.0 ]
             cv.fill_color[ rgba [ (i == hov) ? '#1c103650'
                 : '#140a2a3c' ] ]
             cv.stroke_color[ rgba [ '#0000' ] ]
@@ -1715,8 +1735,10 @@ Control AppsGrid
             null ]
         cv.set_font[ null ]
 
-    # an install's Cancel where its progress was: red
-    func draw_cancel [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32 ]
+    # a pill under the tile in the name's place: an install's Cancel
+    # (red), or Code
+    func draw_pill [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32,
+                     word: string, fill: string, edge: string ]
         bw : f32 [ round[ cw9 * 0.86 ] ]
         bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
         r : f32 [ h * 0.5 ]
@@ -1724,8 +1746,8 @@ Control AppsGrid
         cv.rounded[ r, r, r, r ]
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
-        cv.fill_color[ rgba [ '#a0303099' ] ]
-        cv.stroke_color[ rgba [ '#ff7a7a99' ] ]
+        cv.fill_color[ rgba [ fill ] ]
+        cv.stroke_color[ rgba [ edge ] ]
         cv.rect_to[ bx, y, bw, h ]
         cv.paint[]
         cv.restore[]
@@ -1733,7 +1755,7 @@ Control AppsGrid
             'fonts/BarlowCondensed-Regular.ttf', fp ] ]
         cv.font_size[ f32[ fp ] ]
         cv.fill_color[ rgba [ '#ffffff' ] ]
-        cv.draw_text[ 'Cancel', rect [ x: bx, y: y, w: bw, h: h ],
+        cv.draw_text[ word, rect [ x: bx, y: y, w: bw, h: h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
             null ]
         cv.set_font[ null ]

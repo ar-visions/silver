@@ -746,17 +746,14 @@ element PlatformView
         tx : f32 [ mp.x ]
         tz : f32 [ mp.z ]
         td : f32 [ fit * 0.55 ]
-        te : f32 [ 0.60 ]
+        # always the working angle: more face on
+        te : f32 [ 1.25 ]
         # from right above at rest; an open agent keeps its angle
         down : bool [ top_down && pick < 0 ]
         # from right above: the plates fill the box, a margin round
         if [ down ]
             td = rb * fl / 0.9 * max[ 1.0, bounds.h / fw ]
             te = 1.5707
-        # an open agent tilts the view, more while it works; it
-        # stays on the whole platform (no close up)
-        if [ pick >= 0 ]
-            te = (orb.home_waiting[ orb.plat_agent[] ]) ? 0.85 : 1.25
         if [ cam_d <= 0.0 ]
             cam_x = tx
             cam_z = tz
