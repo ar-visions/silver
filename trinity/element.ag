@@ -67,7 +67,6 @@ enum Fill : f32
 # the backdrop's blurs: at a half, a quarter, a sixteenth of its size
 enum BlurStage
     none: 0
-    soft: 1
     blur: 2
     frost: 3
 

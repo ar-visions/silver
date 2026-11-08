@@ -6,8 +6,30 @@ import trinity
 import <time.h>
 ifdef [ windows ]
     import <dbus-win.h>
+ifdef [ apple ]
+    import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+        > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+    import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+        PATH={install}/bin:$PATH
+        PKG_CONFIG_PATH={install}/lib/pkgconfig
+        LDFLAGS=-Wl,-rpath,{install}/lib
+        -Dmessage_bus=false
+        -Dtools=false
+        -Dmodular_tests=disabled
+        -Ddoxygen_docs=disabled
+        -Dxml_docs=disabled
+        -Dducktype_docs=disabled
+        -Dqt_help=disabled
+        -Dsystemd=disabled
+        -Dx11_autolaunch=disabled
+        -Dselinux=disabled
+        -Dapparmor=disabled
+        -Dlibaudit=disabled
+        -Dsystem_socket=/run/dbus/system_bus_socket
 ifndef [ windows ]
     import <dbus/dbus.h>
+        -I{install}/include/dbus-1.0
+        -I{install}/lib/dbus-1.0/include
         -I=/usr/include/dbus-1.0
         -I/usr/include/dbus-1.0
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
@@ -767,50 +789,52 @@ func bt_until [ b: Bluetooth, what: string ] -> bool
         bt_nap[]
     return false
 
-expect func t_bt_pair [] -> bool
-    fake : BtStandIn []
-    if [ !fake.start[] ] return false
-    b : Bluetooth [ address: fake.bus ]
-    ok : bool [ b.open[] ]
-    if [ ok ] ok = b.ready && b.powered && b.devices.count == 3
-    # the paired, connected one first; then paired; then the rest
-    if [ ok ]
-        ok = b.devices[ 0 ].name == 'Car' && b.devices[ 0 ].connected
-        log 'devices: {b.devices[ 0 ].name} {b.devices[ 1 ].name} {b.devices[ 2 ].name}'
-    if [ ok ] ok = b.devices[ 1 ].name == 'Keyboard'
-    phones : BtDevice [ (ok) ? b.devices[ 2 ] : null ]
-    if [ ok ] ok = phones.name == 'Headphones' && !phones.paired
-    # a wrong code: refused, not paired
-    if [ ok ]
-        b.join[ phones ]
-        ok = bt_until[ b, 'ask' ] && b.code == 123456
-    if [ ok ]
-        b.answer_code[ false ]
-        ok = bt_until[ b, 'idle' ] && b.problem.count > 0
-        log 'refused: {b.problem}'
-    # the right one: paired, then connected
-    if [ ok ]
-        b.problem = ''
-        b.join[ b.find[ phones.path ] ]
-        ok = bt_until[ b, 'ask' ]
-    if [ ok ]
-        b.answer_code[ true ]
-        ok = bt_until[ b, 'idle' ] && b.problem.count == 0
-    if [ ok ]
-        d : BtDevice b.find[ phones.path ]
-        ok = d && d.paired && d.connected
-        log 'paired: {ok} mark {b.mark[]}'
-    # forgotten: gone from the paired ones
-    if [ ok ]
-        b.forget[ b.find[ phones.path ] ]
-        b.poll[]
-        d2 : BtDevice b.find[ phones.path ]
-        ok = !d2 || !d2.paired
-    # off: the mark says so
-    if [ ok ]
-        b.power[ false ]
-        b.poll[]
-        ok = !b.powered && b.mark[] == 'bluetooth_disabled'
-    b.close[]
-    fake.stop[]
-    return ok
+ifdef [ linux ]
+    expect func t_bt_pair [] -> bool
+        fake : BtStandIn []
+        if [ !fake.start[] ] return false
+        b : Bluetooth [ address: fake.bus ]
+        ok : bool [ b.open[] ]
+        if [ ok ] ok = b.ready && b.powered && b.devices.count == 3
+        # the paired, connected one first; then paired; then the rest
+        if [ ok ]
+            ok = b.devices[ 0 ].name == 'Car'
+                 && b.devices[ 0 ].connected
+            log 'devices: {b.devices[ 0 ].name} {b.devices[ 1 ].name} {b.devices[ 2 ].name}'
+        if [ ok ] ok = b.devices[ 1 ].name == 'Keyboard'
+        phones : BtDevice [ (ok) ? b.devices[ 2 ] : null ]
+        if [ ok ] ok = phones.name == 'Headphones' && !phones.paired
+        # a wrong code: refused, not paired
+        if [ ok ]
+            b.join[ phones ]
+            ok = bt_until[ b, 'ask' ] && b.code == 123456
+        if [ ok ]
+            b.answer_code[ false ]
+            ok = bt_until[ b, 'idle' ] && b.problem.count > 0
+            log 'refused: {b.problem}'
+        # the right one: paired, then connected
+        if [ ok ]
+            b.problem = ''
+            b.join[ b.find[ phones.path ] ]
+            ok = bt_until[ b, 'ask' ]
+        if [ ok ]
+            b.answer_code[ true ]
+            ok = bt_until[ b, 'idle' ] && b.problem.count == 0
+        if [ ok ]
+            d : BtDevice b.find[ phones.path ]
+            ok = d && d.paired && d.connected
+            log 'paired: {ok} mark {b.mark[]}'
+        # forgotten: gone from the paired ones
+        if [ ok ]
+            b.forget[ b.find[ phones.path ] ]
+            b.poll[]
+            d2 : BtDevice b.find[ phones.path ]
+            ok = !d2 || !d2.paired
+        # off: the mark says so
+        if [ ok ]
+            b.power[ false ]
+            b.poll[]
+            ok = !b.powered && b.mark[] == 'bluetooth_disabled'
+        b.close[]
+        fake.stop[]
+        return ok

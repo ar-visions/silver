@@ -11,7 +11,9 @@ ifndef [ windows ]
 ifndef [ windows ]
     import <unistd.h>
         +_DEFAULT_SOURCE
-ifndef [ windows ]
+ifdef [ apple ]
+    import <string.h>
+ifdef [ linux ]
     import <string.h>
         -I=/usr/include/pixman-1
         -I/usr/include/pixman-1

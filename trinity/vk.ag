@@ -5379,7 +5379,11 @@ class Texture
         # prior-draw-read.
         src_stage : i32 [
             src.stage | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ]
-        vkCmdPipelineBarrier[ cmd, src_stage, dst.stage, 0, 0, null, 0,
+        # a storage image's next user is a compute shader: it waits too
+        dst_stage : i32 [ dst.stage ]
+        if [ new_layout == VK_IMAGE_LAYOUT_GENERAL ]
+            dst_stage = dst_stage | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+        vkCmdPipelineBarrier[ cmd, src_stage, dst_stage, 0, 0, null, 0,
                               null, 1, @barrier ]
         vk_layout = new_layout
 
@@ -6604,6 +6608,8 @@ Texture Display
         bd : Render [ (win) ? win.backdrop : null ]
         for [ r: Render ] in list
             if [ !r.due[ now_ms ] && !repaint_once ] continue
+            # a blur unit no one read last frame
+            if [ win && win.blur_idle[ r ] ] continue
             # covered by a pane: only the screen compose (last) draws
             # (a target remade since its last draw still draws once)
             if [ hold && r != list.last[] && r.has_drawn ] continue
@@ -6627,6 +6633,7 @@ Texture Display
         at_list : i64 [ epoch_micros[] ]
         on_screen*[]
         at_screen : i64 [ epoch_micros[] ]
+        if [ win ] win.blur_turn[]
 
         # a hidden window presents nothing: its drawable acquire would
         # stall every frame while the app shows in orbiter's pane

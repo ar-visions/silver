@@ -457,8 +457,8 @@ class Stage
         fw : f32 [ f32[ pw ] * sc ]
         fh : f32 [ f32[ ph ] * sc ]
         top : f32 [ (fw > fh) ? fw : fh ]
-        # in a host's scene: at its full size
-        if [ !host && p.most > 0 && top > f32[ p.most ] ]
+        # never past its most, in a host's scene too
+        if [ p.most > 0 && top > f32[ p.most ] ]
             fw = fw * f32[ p.most ] / top
             fh = fh * f32[ p.most ] / top
         # a target is never empty: one pixel a side at least

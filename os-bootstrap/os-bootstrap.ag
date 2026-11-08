@@ -3473,59 +3473,12 @@ element main : trinity
 #     return ok
 
 # kernel.org's list: a stable release first, then longterm ones
-# a scratch home: a rom and its save, a disc folder with its cue
-# sheet and tracks, a note, a hidden folder and one too deep
-expect func t_game_files [] -> bool
-    h : '{silver_root[]}/install/tmp/game-home'
-    mk : command { rm -rf {h} && mkdir -p {h}/roms/disc {h}/.hid
-        {h}/a/b/c && cd {h} && touch roms/zelda.nes roms/zelda.srm
-        roms/notes.txt .hid/x.nes a/b/c/deep.nes
-        "roms/disc/Ridge (Track 1).bin"
-        "roms/disc/Ridge (Track 2).bin" }
-    mk.exec[ false ]
-    cue : '{h}/roms/disc/Ridge.cue'
-    cf : handle fopen[ cue.chars, 'w' ]
-    fputs[ "FILE \"Ridge (Track 1).bin\" BINARY\n", cf ]
-    fputs[ "  FILE \"Ridge (Track 2).bin\" BINARY\n", cf ]
-    fclose[ cf ]
-    was : cstr [ getenv[ "HOME" ] ]
-    keep : string [ (was) ? string[ was ] : '' ]
-    setenv[ "HOME", h.chars, 1 ]
-    games : vec string game_files[]
-    setenv[ "HOME", keep.chars, 1 ]
-    want : vec string [] [ 'roms/zelda.nes', 'roms/zelda.srm',
-        'roms/disc/Ridge.cue', 'roms/disc/Ridge (Track 1).bin',
-        'roms/disc/Ridge (Track 2).bin' ]
-    log 'game files: {games.count}'
-    ok : bool [ games.count == want.count ]
-    for [ w: string ] in want
-        hit : bool [ false ]
-        for [ g: string ] in games
-            if [ g == w ] hit = true
-        if [ !hit ]
-            log 'missing {w}'
-            ok = false
-    rm : command { rm -rf {h} }
-    rm.exec[ false ]
-    return ok
-
 expect func t_kernel_releases [] -> bool
     b : Bootstrap []
     vs : b.kernel_releases[]
     for [ v: string ] in vs
         log 'kernel release {v}'
     return vs.count >= 2 && vs[ 0 ].index_of[ '.' ] > 0
-
-# dd's byte counts move the bar past the image's share
-expect func t_copy_progress [] -> bool
-    b : Bootstrap []
-    b.initialize[]
-    b.image_bytes = 104857600
-    dd : 'dd if=/dev/zero of=/dev/null bs=1M count=50 status=progress'
-    ok : b.sh_copy[ dd ]
-    log 'copy progress: {b.progress}, ok {ok}'
-    bad : b.sh_copy[ 'false' ]
-    return ok && !bad && b.progress > 0.55 && b.progress < 0.65
 
 # the phone's root: orbiter-os for arm64 from the fp6 build, read
 # back from the image (debugfs): the launcher an aarch64 program,

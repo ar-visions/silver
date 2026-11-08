@@ -4565,6 +4565,8 @@ Control Editor
     func grid_text [ cv: Canvas, s: string, x: f32, y: f32, w: f32,
                      h: f32 ]
         cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
+        # a slight shadow: the code reads over a light scene
+        sh   : BoxShadow [ '0 1px 3px #000c' ]
         i    : i32 [ 0 ]
         cell : i32 [ 0 ]
         while [ i < s.count ]
@@ -4575,7 +4577,7 @@ Control Editor
                 cv.draw_text[ s.mid[ i, j - i ],
                     rect [ x: x + f32[ cell ] * cw, y: y, w: w, h: h ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, sh ]
                 cell += j - i
                 i = j
                 continue
@@ -4587,7 +4589,7 @@ Control Editor
                 + (f32[ k ] * cw - gw) / 2.0 ]
             cv.draw_text[ ch, rect [ x: cx, y: y, w: w, h: h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, sh ]
             cell += k
             i = nx
 

@@ -1,7 +1,7 @@
 // wlroots, wayland-server and xcb exist only on linux. windows
-// takes wayland-win.c, which answers the same surface with
-// nothing -- included here because only <module>.c is compiled
-#ifdef _WIN32
+// and macos take wayland-win.c, which answers the same surface
+// with nothing -- included here because only <module>.c is compiled
+#ifndef __linux__
 #include "wayland-win.c"
 #else
 // a Wayland compositor on wlroots for silver: each window has its own

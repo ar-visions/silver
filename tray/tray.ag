@@ -5,8 +5,30 @@ import trinity
 # windows has no session bus; dbus-win.h is that surface, inert
 ifdef [ windows ]
     import <dbus-win.h>
+ifdef [ apple ]
+    import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+        > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+    import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+        PATH={install}/bin:$PATH
+        PKG_CONFIG_PATH={install}/lib/pkgconfig
+        LDFLAGS=-Wl,-rpath,{install}/lib
+        -Dmessage_bus=false
+        -Dtools=false
+        -Dmodular_tests=disabled
+        -Ddoxygen_docs=disabled
+        -Dxml_docs=disabled
+        -Dducktype_docs=disabled
+        -Dqt_help=disabled
+        -Dsystemd=disabled
+        -Dx11_autolaunch=disabled
+        -Dselinux=disabled
+        -Dapparmor=disabled
+        -Dlibaudit=disabled
+        -Dsystem_socket=/run/dbus/system_bus_socket
 ifndef [ windows ]
     import <dbus/dbus.h>
+        -I{install}/include/dbus-1.0
+        -I{install}/lib/dbus-1.0/include
         -I=/usr/include/dbus-1.0
         -I/usr/include/dbus-1.0
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include

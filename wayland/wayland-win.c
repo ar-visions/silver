@@ -2,16 +2,20 @@
 // wayland. windows has none -- no wlroots, no xcb, no dma-buf -- so
 // every call reports nothing: no socket, no windows, no frames. the
 // panes that would show guest windows simply stay empty
-#ifdef _WIN32
+#ifndef __linux__
 
 #include <stdint.h>
 #include <stdbool.h>
 
 // a dll exports nothing unnamed; wayland owns these, others import
+#ifdef _WIN32
 #ifndef AU_LINK_wayland
 #define AU_LINK_wayland __attribute__((dllimport))
 #endif
 #define WLC_API AU_LINK_wayland
+#else
+#define WLC_API
+#endif
 
 WLC_API int32_t wlc_create(int32_t w, int32_t h) { (void)w; (void)h; return 0; }
 WLC_API const char* wlc_socket(void) { return ""; }
@@ -69,5 +73,8 @@ WLC_API void wlc_key_repeat(int32_t rate, int32_t delay_ms) { (void)rate; (void)
 WLC_API void wlc_set_scale(double sc) { (void)sc; }
 WLC_API void wlc_keys_release(void) {  }
 WLC_API int32_t wlc_spawn(const char* cmd) { (void)cmd; return 0; }
+WLC_API double wlc_scale(void) { return 1.0; }
+WLC_API int32_t wlc_window_fixed_w(uint64_t id) { (void)id; return 0; }
+WLC_API int32_t wlc_window_fixed_h(uint64_t id) { (void)id; return 0; }
 
 #endif

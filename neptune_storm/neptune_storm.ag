@@ -519,7 +519,9 @@ Backdrop NeptuneStorm
                                  'wisps': tile_tex[ 'storm-wisps' ],
                                  'flow': baked_tex[ 'storm-flow' ] ]
         m : Model [ vk: vk, w: ux, s: shader, samplers: samp ]
-        target = Render [ vk: vk, w: ux, wscale: 1.0,
+        # a pixel a point on retina, as the other scenes
+        target = Render [ vk: vk, w: ux,
+            wscale: (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
             tag: 'neptune-storm',
             clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
             models: [ m ] ]

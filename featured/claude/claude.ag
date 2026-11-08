@@ -5,18 +5,35 @@
 export 1.0.0
 export agent ['ClaudeAgent']
 export software ['developer']
-export platforms ['x64']
+export platforms ['x64', 'arm64']
 export icon ['claude']
 
 import trinity
 import <stdlib.h>
 import <stdio.h>
 
-# the version taken, and its linux-x64 binary's sha256 as its
-# release manifest gives it
+# the version taken, and each binary's sha256 as its release
+# manifest gives it
 func claude_ver [] -> string
     return '2.1.304'
-func claude_sum [] -> string
+
+# this machine's platform, as the release names it
+func claude_plat [] -> string
+    os  : string 'linux'
+    cpu : string 'x64'
+    ifdef [ apple ]
+        os = 'darwin'
+    ifdef [ arm64 ]
+        cpu = 'arm64'
+    return '{os}-{cpu}'
+
+func claude_sum [ plat: string ] -> string
+    if [ plat == 'darwin-arm64' ]
+        return 'b9ac5374839f14abf3f1f45610637c332b5daee5ce0d1634726cef87aab78e6a'
+    if [ plat == 'darwin-x64' ]
+        return 'f2ae409b46b1bdc1dec7afa12c6a094ff64e7d4ca272ca09f69dd0080c846703'
+    if [ plat == 'linux-arm64' ]
+        return 'c487117526509ab6d2ee6013e14f181faf68d6d6afe6bb0d4b2b4a9feca5ecb3'
     return 'ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912'
 
 AgentRun ClaudeAgent
@@ -239,10 +256,12 @@ export func install_claude []
     dir : '{ins}/lib/claude/{ver}'
     exe : path '{dir}/claude'
     if [ !exe.exists[] ]
-        url : 'https://downloads.claude.ai/claude-code-releases/{ver}/linux-x64/claude'
+        plat : claude_plat[]
+        url : 'https://downloads.claude.ai/claude-code-releases/{ver}/{plat}/claude'
         part : '{dir}/claude.part'
         get : command { mkdir -p {dir} && curl -fsSL {url} -o {part}
-            && echo "{claude_sum[]}  {part}" | sha256sum -c --quiet
+            && echo "{claude_sum[ plat ]}  {part}"
+            | shasum -a 256 -c --quiet
             && chmod 755 {part} && mv {part} {exe} }
         if [ get.exec[ false ] != 0 ]
             log 'claude: {ver} failed'

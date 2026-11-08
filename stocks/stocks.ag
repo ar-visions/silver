@@ -299,7 +299,8 @@ element StockView
         wid : bool [ ap != null && ap.widget ]
         rc : f32 [ (wid) ? 14.0 : 0.0 ]
         cv.save[]
-        cv.fill_color[ rgba [ '#0b0e1acc' ] ]
+        # a widget lets the desktop's blur through
+        cv.fill_color[ rgba [ (wid) ? '#0b0e1a66' : '#0b0e1acc' ] ]
         cv.stroke_width[ 0.0 ]
         cv.rounded_rect[ 0.0, 0.0, bw, bh, rc, rc, rc, rc ]
         cv.paint[]

@@ -1627,9 +1627,12 @@ Control AppsGrid
             if [ !ee.bounds ] continue
             cr : f32 [ 16.0 * un ]
             dy : f32 [ (ee.area && ee.area.t.relative) ? sy : 0.0 ]
+            # widgets over the blur, as the cards; the agents frost
+            st : BlurStage [ BlurStage.frost ]
             if [ ee inherits DeskWidget ]
                 dw : cast DeskWidget [ ee ]
                 cr = 14.0
+                st = BlurStage.blur
                 if [ dw.drag ] dy -= dw.went.y
             el [ !(ee inherits AgentKinds) && !(ee inherits AgentHead) ]
                 continue
@@ -1637,7 +1640,7 @@ Control AppsGrid
             cv.clip_rounded_rect[ ee.bounds.x, ee.bounds.y - dy,
                                   ee.bounds.w, ee.bounds.h,
                                   cr, cr, cr, cr ]
-            w.draw_blur[ cv, a, BlurStage.frost ]
+            w.draw_blur[ cv, a, st ]
             cv.restore[]
 
     func card_frost [ cv: Canvas, w: Window, x: f32, y: f32, cr: f32 ]

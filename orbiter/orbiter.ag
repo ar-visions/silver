@@ -1094,6 +1094,9 @@ element EditorTitle
     blur : BlurGround []
     style : CSS {
         area: l0 t0 r0 h1.3
+        # named first: the ground draws under the bar and its text
+        layers.blur:
+            fill_color: #0000
         layers.tbar:
             # a faint tint; the active pane's is the selection
             fill_color: #0004
@@ -11359,7 +11362,17 @@ element orbiter : trinity # implements compiler
     # built once per scene: new_object is pool-managed, so hold it
     func scene_element [] -> element
         nm : scene_loaded[]
-        if [ !nm || nm.count == 0 ] return null
+        if [ !nm || nm.count == 0 ]
+            # none: the scene comes off the window, kept for a re-pick
+            if [ scene_el && scene_el.id && ux && ux.element_targets
+                 && ux.element_targets.contains[ scene_el.id ] ]
+                if [ !scene_rts ] scene_rts = map Render [ string ] []
+                rt : Render ux.element_targets[ scene_el.id ]
+                scene_rts[ scene_el_nm ] = rt
+                ux.element_targets.rm[ scene_el.id ]
+            scene_el    = null
+            scene_el_nm = null
+            return null
         if [ scene_el && scene_el_nm && scene_el_nm.compare[ nm ] == 0 ]
             return scene_el
         if [ !scene_kept ]
@@ -15884,8 +15897,11 @@ element orbiter : trinity # implements compiler
                 ux.apply_solid[]
         if [ ux ]
             sl9 : string scene_loaded[]
+            # a scene whose module is missing never draws: no wait
+            gone : bool [ scene_miss && sl9
+                          && scene_miss.compare[ sl9 ] == 0 ]
             ux.expect_backdrop = sl9 && sl9.count > 0 && sl9.compare[
-                'none' ] != 0
+                'none' ] != 0 && !gone
         if [ ux ] ux.stats = stats
         if [ ux ] ux.show_fps = show_fps
         if [ benchmark ] force_animate = true
@@ -16681,6 +16697,11 @@ element orbiter : trinity # implements compiler
     func dock_w [] -> f32
         return 2.39 * unit_px[]
 
+    # the orbiter menu's width, px: its bar name, and the system
+    # menu's column under it
+    func menu_w [] -> f32
+        return (7.0 * 9.5 + 22.0) * ux_unit[ ux ]
+
     # a pane's globe: the dock's width, fixed
     func globe_w [ pi: i32 ] -> f32
         return dock_w[]
@@ -17279,7 +17300,7 @@ element orbiter : trinity # implements compiler
         ob : f32 build_frac[ 'orbiter' ]
         bld : bool [ ob > -2.0 ]
         if [ pre.count == 0 && (home || sys || up || bld) ]
-            ow : f32 [ (7.0 * 9.5 + 22.0) * uu ]
+            ow : f32 menu_w[]
             t['menu_orbiter'] = MenuTop [ label: 'orbiter', at: -2,
                 pane: mp, selected: sys, tab_on: true,
                 area: Region [ 'l{x}px t0 w{ow}px b0' ] ]
@@ -18831,7 +18852,9 @@ element orbiter : trinity # implements compiler
         # compiler) streams as it runs, not only on failure
         cl : string [ (clean) ? ' --clean' : '' ]
         bd : string '\'{sv}\' --verbose{cl} --build \'{md}\''
-        sh9 : string 'cd \'{root}\' && SILVER_EVENTS=\'{ev}\' script -qefc "{bd}" \'{lg}\'; echo end $? >> \'{ev}\''
+        # macOS's script takes the log then the command
+        rec : string 'case $(uname) in Darwin) script -qeF \'{lg}\' sh -c "{bd}";; *) script -qefc "{bd}" \'{lg}\';; esac'
+        sh9 : string 'cd \'{root}\' && export SILVER_EVENTS=\'{ev}\' && {{ {rec}; }}; echo end $? >> \'{ev}\''
         sid : string 'install:{nm}'
         if [ !ed_sessions ]
             ed_sessions = map ConsoleSession [string] [ ]
@@ -19616,9 +19639,6 @@ element orbiter : trinity # implements compiler
                 cm : i32 screen_mode[]
                 ps.push[ setting[ 'resolution',
                     (cm >= 0 && cm < ms.count) ? ms[ cm ] : '', ms ] ]
-            el
-                ps.push[ setting[ 'resolution', 'set by your desktop',
-                    vec string [] ] ]
             # a new mode waits on keep; untouched, it goes back
             if [ mode_until > 0 ]
                 left : i64 [ (mode_until - epoch_millis[] + 999) / 1000 ]
@@ -19982,14 +20002,22 @@ element orbiter : trinity # implements compiler
                 t['sys_strip'] = SysStrip [
                     area: Region [ 'l0 b{dw}px r0 h{dw}px' ] ]
             return t
+        # the column as wide as the orbiter menu over it
+        cw : f32 menu_w[]
         cells : Elements []
         # the views' cells scroll, masked, over what the fixed foot
         # (power, a ready reload) leaves of the column
         views : Elements []
         keys : vec string []
-        rows : vec string [] [ 'navigator', 'scenes', 'widgets',
-            'wifi', 'bluetooth', 'mouse', 'keyboard', 'display',
-            'sound' ]
+        # Wi-Fi, Bluetooth and the mouse only on orbiter-os
+        rows : vec string [] [ 'navigator', 'scenes', 'widgets' ]
+        if [ system_os ]
+            rows.push[ 'wifi' ]
+            rows.push[ 'bluetooth' ]
+            rows.push[ 'mouse' ]
+        rows.push[ 'keyboard' ]
+        rows.push[ 'display' ]
+        rows.push[ 'sound' ]
         batt_sync[]
         if [ batt_have == 1 ] rows.push[ 'battery' ]
         for [ pn: string ] in rows
@@ -20009,28 +20037,20 @@ element orbiter : trinity # implements compiler
             views[ ky ] = DockRow [ icon_id: ic, label: nm,
                 selected: pn.count > 0 && sys_view == pn,
                 first: k == 0, last: k == keys.count - 1,
-                area: Region [ 'l0 t0px+ w{dw}px h{dw}px' ] ]
-        # power at the column's foot; ctrl / cmd held (or shift over
-        # it): restart
-        cur : element find_el[ a, 'sys_power' ]
-        again : bool [ cmd_down || (shift_down && cur && cur.hovered) ]
-        cells[ (again) ? 'sys_restart' : 'sys_power' ] = DockRow [
-            icon_id: (again) ? 'restart' : 'power',
-            label: (again) ? 'Restart' : 'Power', second: again,
-            first: !ready, last: true,
-            area: Region [ 'l0 b{dw}px w{dw}px h{dw}px' ] ]
-        # a reload ready: just above power
+                area: Region [ 'l0 t0px+ w{cw}px h{dw}px' ] ]
+        # no power here: only a phone's menu has it (its strip)
+        # a reload ready: at the column's foot
         if [ ready ]
             cells['reload_ready'] = DockRow [ icon_id: 'recycle',
-                label: 'Reload', first: true, last: false,
-                area: Region [ 'l0 b{dw * 2.0}px w{dw}px h{dw}px' ] ]
-        foot : f32 [ dw * ((ready) ? 2.0 : 1.0) ]
+                label: 'Reload', first: true, last: true,
+                area: Region [ 'l0 b{dw}px w{cw}px h{dw}px' ] ]
+        foot : f32 [ (ready) ? dw : 0.0 ]
         cells['sys_views'] = SysDockRows [ elements: views,
             area: Region [ 'l0 t0 r0 b{foot}px' ] ]
         t['sys_dock'] = SysDock [ elements: cells,
-            area: Region [ 'l0 t0 w{dw}px b0' ] ]
+            area: Region [ 'l0 t0 w{cw}px b0' ] ]
         # the right: the agents (the sound is its icon's view)
-        rx : f32 [ dw / un + 0.4 ]
+        rx : f32 [ cw / un + 0.4 ]
         lt : f32 light_row[ t, '{rx}' ]
         y : f32 [ lt + 0.7 ]
         # the view a row chose, right of the dock, under the rest;
@@ -20038,7 +20058,7 @@ element orbiter : trinity # implements compiler
         if [ sys_view == 'navigator' ]
             t['sys_nav'] = CommitView [ focusable: true,
                 scroll_fade: 24.0,
-                area: Region [ 'l{dw}px t{lt} r0 b0' ] ]
+                area: Region [ 'l{cw}px t{lt} r0 b0' ] ]
         el [ sys_view.count > 0 ]
             sv : Elements side_view[ sys_view,
                 'l{rx - 0.3} t{y} r0.3 b0.3' ]
@@ -20226,7 +20246,8 @@ element orbiter : trinity # implements compiler
             return
         log 'system bar: {what}'
         sync[]
-        reboot[ (again) ? RB_AUTOBOOT : RB_POWER_OFF ]
+        ifdef [ linux ]
+            reboot[ (again) ? RB_AUTOBOOT : RB_POWER_OFF ]
 
     # the status bar: the four debug steps, one button each, at left
     func status_els [] -> Elements

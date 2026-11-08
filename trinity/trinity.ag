@@ -2545,19 +2545,17 @@ Display Window
     mutable rebind_frost         : bool
     mutable m_reduce             : Model
     mutable r_reduce             : Render
-    # the three reduce-then-blur units off the entry copy: blur at 1/4,
-    # soft at 1/2, frost at 1/16
+    # the two strengths off the entry copy, shared by every reader:
+    # blur at 1/4 (frost at 1/16 below)
     mutable rb_blur              : ReduceBlur
-    # which stage feeds the panels: 0 frost, 1 blur, 2 soft, 3 raw
+    # which stage feeds the panels: 0 frost, 1 blur, 2 clear, 3 solid
     # -1 = follow the scene; the status bar sets it explicitly
-    # 0 frost, 1 blur, 2 soft, 3 raw
     public  frost_mode           : i32 [ 0 ]
     # a pane covers the ui (Full app view): the backdrop scene and its
     # frost chain do not draw; the panels keep their last frost
     public  backdrop_bypass      : bool
     mutable frost_bound          : i32 [ -2 ]
-    # half-size blur; the sharp frost path uses it for the mid stage
-    mutable rb_soft              : ReduceBlur
+    # the heavier of the two strengths, off the blur's quarter copy
     mutable rb_frost             : ReduceBlur
 
     # points at a tree element, does not own it
@@ -5799,17 +5797,35 @@ Display Window
     public func frost_step [ d: i32 ]
         frost_mode = (frost_eff[] + d + 4) % 4
 
-    func frost_src [ ] -> Render
-        e : i32 [ frost_eff[] ]
-        if [ e == 1 ] return rb_blur.last[]
-        if [ e == 2 ] return r_reduce
-        return rb_frost.last[]
-
+    # the screen's ground: frost, blur, or the scene itself
     func blur_src [ ] -> Render
         e : i32 [ frost_eff[] ]
-        if [ e == 1 ] return rb_soft.last[]
         if [ e >= 2 ] return r_reduce
-        return rb_blur.last[]
+        if [ e == 1 ]
+            blur_ask = blur_ask | 1
+            return rb_blur.last[]
+        blur_ask = blur_ask | 2
+        return rb_frost.last[]
+
+    # a strength no one read last frame: its passes not drawn
+    public func blur_idle [ r: Render ] -> bool
+        if [ !chain ] return false
+        # no scene: nothing for the chain to read
+        if [ !backdrop ] return chain.contains[ r ]
+        rd : i32 [ blur_read ]
+        if [ (rd & 2) == 0 && rb_frost.renders.contains[ r ] ]
+            return true
+        if [ rb_blur.renders.contains[ r ] ]
+            # its halving feeds frost too
+            at : i32 [ rb_blur.renders.index_of[ r ] ]
+            if [ at < 1 ] return rd == 0
+            return (rd & 1) == 0
+        return false
+
+    # the frame's reads become the next frame's
+    public func blur_turn []
+        blur_read = blur_ask
+        blur_ask  = 0
 
     # resize REPLACES render color attachments: every stage's sampler
     # map still points at the dead texture, and rebind_model faithfully
@@ -5821,14 +5837,12 @@ Display Window
             'color': backdrop.color ]
         m_reduce.rebind_model[]
         rb_blur.rewire[ r_reduce.color ]
-        rb_soft.rewire[ rb_blur.stage[ 0 ] ]
-        rb_frost.rewire[ rb_blur.stage[ 1 ] ]
+        rb_frost.rewire[ rb_blur.stage[ 0 ] ]
         frost_bound = frost_eff[]
 
-    # the blur/frost passes are built ONLY when an element actually
-    # declares frost. a game window never has one, so they are never
-    # created, never allocated and never drawn -- 11 passes, 6 of them
-    # full-resolution
+    # the blur passes are built ONLY when an element actually declares
+    # frost. a game window never has one, so they are never created,
+    # never allocated and never drawn
     func build_frost_chain [ ]
         if [ chain ] return
         ctx: vk_context[ a.vk ]
@@ -5842,20 +5856,17 @@ Display Window
         r_reduce  = Render [ vk: ctx, w: a, wscale: bs,
                              models: [m_reduce ] ]
 
-        # the reduce-then-blur units: blur halves the copy twice and
-        # blurs at 1/4; soft blurs the first half at 1/2; frost halves
-        # the quarter twice more and blurs at 1/16
+        # two strengths, each shared by every reader: blur halves the
+        # copy once and blurs at 1/2; frost halves that half twice
+        # more and blurs at 1/8
         rb_blur  = ReduceBlur []
-        rb_blur.build[ ctx, a, r_reduce.color, bs, 2 ]
-        rb_soft  = ReduceBlur []
-        rb_soft.build[ ctx, a, rb_blur.stage[ 0 ], bs * 0.5, 0 ]
+        rb_blur.build[ ctx, a, r_reduce.color, bs, 1 ]
         rb_frost = ReduceBlur []
-        rb_frost.build[ ctx, a, rb_blur.stage[ 1 ], bs * 0.25, 2 ]
+        rb_frost.build[ ctx, a, rb_blur.stage[ 0 ], bs * 0.5, 2 ]
 
         chain = vec Render []
         chain.push[ r_reduce ]
         rb_blur.append[ chain ]
-        rb_soft.append[ chain ]
         rb_frost.append[ chain ]
         rewire_frost[]
         list = chain
@@ -5886,7 +5897,12 @@ Display Window
                 if [ r && !r.skip && !r.owner ]
                     found = r
                     break
-        if [ !found ] return
+        if [ !found ]
+            # the scene went (none): the ground is the flat colour
+            if [ backdrop ]
+                backdrop = null
+                log 'BACKDROP -> none'
+            return
         # a resize replaced every attachment: rewire the WHOLE chain
         # from current colors
         rb : bool [ rebind_frost ]
@@ -6131,6 +6147,10 @@ Display Window
     mutable touch_els           : vec element
     # an event from such a finger is being dispatched
     public touching             : bool
+    # the strengths read this frame and the last (1 blur, 2 frost):
+    # an unread one is skipped
+    mutable blur_ask            : i32
+    mutable blur_read           : i32 [ 3 ]
 
     # a finger past the first (the first is the mouse): the element
     # under it that takes touches gets its press, moves and release,
@@ -8226,9 +8246,12 @@ Display Window
         if [ !chain ]
             if [ is_setup && !resizing ] build_frost_chain[]
             return null
-        if [ stage == BlurStage.soft ] return rb_soft.color[]
-        if [ stage == BlurStage.blur ] return rb_blur.color[]
-        return rb_frost.color[]
+        # two strengths for every reader: frost, else blur
+        if [ stage == BlurStage.frost ]
+            blur_ask = blur_ask | 2
+            return rb_frost.color[]
+        blur_ask = blur_ask | 1
+        return rb_blur.color[]
 
     # e's origin in the window: its parents' scroll taken off
     func win_origin [ e: element ] -> vec2f
@@ -11567,6 +11590,48 @@ func fade_band [ cv: Canvas, x: f32, y: f32, bw: f32, bh: f32, px: f32,
     cv.clear_fill_gradient[]
 
 # a shallow 1 px line: a pixel's worth in every column
+# lines in one batch each keep their own shape: rows rise, fall,
+# rise, fall; each row's ink is high where it should be
+expect func t_lines_batch [ vk: vk_context ] -> bool
+    w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+                 width: 200, height: 240 ]
+    c: Canvas [ vk: vk, w: w, width: 200, height: 240 ]
+    c.update[]
+    c.reset[ vec4f[ 0.0, 0.0, 0.0, 1.0 ] ]
+    for [ r: i32 0, r < 4, r += 1 ]
+        vs : vec f64 []
+        for [ i: i32 0, i < 60, i += 1 ]
+            k : f64 [ f64[ i ] + f64[ (i * 7) % 5 ] * 0.6 ]
+            m : f64 [ (i < 30) ? k * 2.0 : 120.0 - k * 2.0 ]
+            if [ r == 0 ] vs.push[ k ]
+            el [ r == 1 ] vs.push[ 60.0 - k ]
+            el [ r == 2 ] vs.push[ m ]
+            el vs.push[ 60.0 - m ]
+        sparkline_paint[ c, vs, 0.0, 10.0, f32[ r * 60 ] + 5.0, 180.0,
+                         50.0, '#fff', 1.25 ]
+    c.sync_fence[]
+    img: Image[ c.color ]
+    data: @u8 img.vdata[]
+    ok : bool [ true ]
+    for [ r: i32 0, r < 4, r += 1 ]
+        ends : vec f32 []
+        for [ x: i32 15, x <= 185, x += 85 ]
+            sum : f32 [ 0.0 ]
+            ys  : f32 [ 0.0 ]
+            for [ y: i32 r * 60, y < r * 60 + 60, y += 1 ]
+                v : f32 [ data[ (y * img.width + x) * 4 ] ]
+                sum += v
+                ys  += v * f32[ y - r * 60 ]
+            ends.push[ (sum > 0.0) ? ys / sum : -1.0 ]
+        log 'lines batch row {r}: ink at {ends[0]} {ends[1]} {ends[2]}'
+        if [ ends[0] < 0.0 || ends[1] < 0.0 || ends[2] < 0.0 ] ok = false
+        # y grows down: a rise is high ink on the right
+        el [ r == 0 && ends[0] < ends[2] ] ok = false
+        el [ r == 1 && ends[0] > ends[2] ] ok = false
+        el [ r == 2 && ends[1] > ends[0] ] ok = false
+        el [ r == 3 && ends[1] < ends[0] ] ok = false
+    return ok
+
 expect func t_line_aa [ vk: vk_context ] -> bool
     w: Display [ vk: vk, format: Pixel.rgba8, backbuffer: true,
                  width: 200, height: 60 ]

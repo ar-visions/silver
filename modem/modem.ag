@@ -4,8 +4,30 @@ import trinity
 import <time.h>
 ifdef [ windows ]
     import <dbus-win.h>
+ifdef [ apple ]
+    import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+        > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+    import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+        PATH={install}/bin:$PATH
+        PKG_CONFIG_PATH={install}/lib/pkgconfig
+        LDFLAGS=-Wl,-rpath,{install}/lib
+        -Dmessage_bus=false
+        -Dtools=false
+        -Dmodular_tests=disabled
+        -Ddoxygen_docs=disabled
+        -Dxml_docs=disabled
+        -Dducktype_docs=disabled
+        -Dqt_help=disabled
+        -Dsystemd=disabled
+        -Dx11_autolaunch=disabled
+        -Dselinux=disabled
+        -Dapparmor=disabled
+        -Dlibaudit=disabled
+        -Dsystem_socket=/run/dbus/system_bus_socket
 ifndef [ windows ]
     import <dbus/dbus.h>
+        -I{install}/include/dbus-1.0
+        -I{install}/lib/dbus-1.0/include
         -I=/usr/include/dbus-1.0
         -I/usr/include/dbus-1.0
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
@@ -1133,171 +1155,177 @@ func modem_settle [ m: Modem ]
         m.poll[]
         modem_nap[]
 
-expect func t_modem_status [] -> bool
-    fake : ModemStandIn []
-    if [ !fake.start[] ] return false
-    m : Modem [ address: fake.bus ]
-    ok : bool [ m.open[] ]
-    log 'modem: {m.state} {m.signal} {m.carrier} {m.number}'
-    if [ ok ] ok = m.carrier == 'Mobile' && m.signal == 62
-    if [ ok ] ok = m.bars[] == 3 && m.mark[] == 'cell_3'
-    if [ ok ] ok = m.number == '+15551230000'
-    m.close[]
-    fake.stop[]
-    return ok
+ifdef [ linux ]
+    expect func t_modem_status [] -> bool
+        fake : ModemStandIn []
+        if [ !fake.start[] ] return false
+        m : Modem [ address: fake.bus ]
+        ok : bool [ m.open[] ]
+        log 'modem: {m.state} {m.signal} {m.carrier} {m.number}'
+        if [ ok ] ok = m.carrier == 'Mobile' && m.signal == 62
+        if [ ok ] ok = m.bars[] == 3 && m.mark[] == 'cell_3'
+        if [ ok ] ok = m.number == '+15551230000'
+        m.close[]
+        fake.stop[]
+        return ok
 
-expect func t_modem_call [] -> bool
-    fake : ModemStandIn []
-    if [ !fake.start[] ] return false
-    m : Modem [ address: fake.bus ]
-    ok : bool [ m.open[] ]
-    c : MmCall [ (ok) ? m.dial[ '5551234' ] : null ]
-    if [ ok ] ok = c != null && !c.incoming
-    if [ ok ]
-        modem_settle[ m ]
-        c = m.current[]
-        ok = c != null && c.state == 4 && c.since > 0
-        log 'dialed: {(c) ? c.state : -1}'
-    if [ ok ]
-        ok = m.tones[ c, '12#' ] && m.hang_up[ c ]
-        modem_settle[ m ]
-        ok = ok && m.current[] == null
-    # a call comes in, is answered and hung up
-    if [ ok ]
-        m.call_s[ '/org/orbiter/Fake', '', 'Ring',
-                  vec string [] [ '+15559870000' ] ]
-        modem_settle[ m ]
-        r : m.ringing[]
-        ok = r != null && r.number == '+15559870000'
+ifdef [ linux ]
+    expect func t_modem_call [] -> bool
+        fake : ModemStandIn []
+        if [ !fake.start[] ] return false
+        m : Modem [ address: fake.bus ]
+        ok : bool [ m.open[] ]
+        c : MmCall [ (ok) ? m.dial[ '5551234' ] : null ]
+        if [ ok ] ok = c != null && !c.incoming
         if [ ok ]
-            ok = m.answer[ r ]
             modem_settle[ m ]
-            a : m.current[]
-            ok = ok && a != null && a.state == 4
-            if [ ok ] m.hang_up[ a ]
-    m.close[]
-    fake.stop[]
-    return ok
+            c = m.current[]
+            ok = c != null && c.state == 4 && c.since > 0
+            log 'dialed: {(c) ? c.state : -1}'
+        if [ ok ]
+            ok = m.tones[ c, '12#' ] && m.hang_up[ c ]
+            modem_settle[ m ]
+            ok = ok && m.current[] == null
+        # a call comes in, is answered and hung up
+        if [ ok ]
+            m.call_s[ '/org/orbiter/Fake', '', 'Ring',
+                      vec string [] [ '+15559870000' ] ]
+            modem_settle[ m ]
+            r : m.ringing[]
+            ok = r != null && r.number == '+15559870000'
+            if [ ok ]
+                ok = m.answer[ r ]
+                modem_settle[ m ]
+                a : m.current[]
+                ok = ok && a != null && a.state == 4
+                if [ ok ] m.hang_up[ a ]
+        m.close[]
+        fake.stop[]
+        return ok
 
-expect func t_modem_text [] -> bool
-    fake : ModemStandIn []
-    if [ !fake.start[] ] return false
-    m : Modem [ address: fake.bus ]
-    ok : bool [ m.open[] ]
-    if [ ok ] ok = m.send_text[ '5551234', 'on my way' ]
-    if [ ok ]
-        m.call_s[ '/org/orbiter/Fake', '', 'Text',
-                  vec string [] [ '+15559870000', 'see you' ] ]
-        modem_settle[ m ]
-        sent : i32 [ 0 ]
-        got : i32 [ 0 ]
-        for [ t: MmText ] in m.texts
-            if [ !t.incoming && t.state == 5 && t.text == 'on my way' ]
-                sent += 1
-            if [ t.incoming && t.text == 'see you' ] got += 1
-        log 'texts: {m.texts.count} sent {sent} got {got}'
-        ok = sent == 1 && got == 1
-    if [ ok ]
-        ok = m.delete_text[ m.texts[ 0 ] ]
-        modem_settle[ m ]
-        ok = ok && m.texts.count == 1
-    m.close[]
-    fake.stop[]
-    return ok
+ifdef [ linux ]
+    expect func t_modem_text [] -> bool
+        fake : ModemStandIn []
+        if [ !fake.start[] ] return false
+        m : Modem [ address: fake.bus ]
+        ok : bool [ m.open[] ]
+        if [ ok ] ok = m.send_text[ '5551234', 'on my way' ]
+        if [ ok ]
+            m.call_s[ '/org/orbiter/Fake', '', 'Text',
+                      vec string [] [ '+15559870000', 'see you' ] ]
+            modem_settle[ m ]
+            sent : i32 [ 0 ]
+            got : i32 [ 0 ]
+            for [ t: MmText ] in m.texts
+                if [ !t.incoming && t.state == 5
+                     && t.text == 'on my way' ]
+                    sent += 1
+                if [ t.incoming && t.text == 'see you' ] got += 1
+            log 'texts: {m.texts.count} sent {sent} got {got}'
+            ok = sent == 1 && got == 1
+        if [ ok ]
+            ok = m.delete_text[ m.texts[ 0 ] ]
+            modem_settle[ m ]
+            ok = ok && m.texts.count == 1
+        m.close[]
+        fake.stop[]
+        return ok
 
 # the Fi SIM's APN asked for, the link given its addresses (kept,
 # not run), and the bearer's APN read back
-expect func t_modem_data [] -> bool
-    fake : ModemStandIn []
-    if [ !fake.start[] ] return false
-    m : Modem [ address: fake.bus, data_on: true, dry: true ]
-    ok : bool [ m.open[] ]
-    if [ ok ] ok = m.sim_name == 'Google Fi'
-    if [ ok ]
-        apns : m.data_apns[]
-        ok = apns.count == 2 && apns[ 0 ] == 'h2g2'
-            && apns[ 1 ] == 'fast.t-mobile.com'
-    if [ ok ]
-        modem_settle[ m ]
-        log 'data: {m.link} {m.data_apn}: {m.link_sh}'
-        ok = m.link == 'qmapmux0.0' && m.data_apn == 'h2g2'
-        if [ ok ] ok = m.link_sh.index_of[ 'rmnet_ipa0 up' ] >= 0
-        if [ ok ] ok = m.link_sh.index_of[ '192.0.0.2/29' ] >= 0
-        if [ ok ] ok = m.link_sh.index_of[ '2607:fb90::5/64' ] >= 0
-        if [ ok ] ok = m.link_sh.index_of[ 'metric 700' ] >= 0
-    m.close[]
-    fake.stop[]
-    return ok
+ifdef [ linux ]
+    expect func t_modem_data [] -> bool
+        fake : ModemStandIn []
+        if [ !fake.start[] ] return false
+        m : Modem [ address: fake.bus, data_on: true, dry: true ]
+        ok : bool [ m.open[] ]
+        if [ ok ] ok = m.sim_name == 'Google Fi'
+        if [ ok ]
+            apns : m.data_apns[]
+            ok = apns.count == 2 && apns[ 0 ] == 'h2g2'
+                && apns[ 1 ] == 'fast.t-mobile.com'
+        if [ ok ]
+            modem_settle[ m ]
+            log 'data: {m.link} {m.data_apn}: {m.link_sh}'
+            ok = m.link == 'qmapmux0.0' && m.data_apn == 'h2g2'
+            if [ ok ] ok = m.link_sh.index_of[ 'rmnet_ipa0 up' ] >= 0
+            if [ ok ] ok = m.link_sh.index_of[ '192.0.0.2/29' ] >= 0
+            if [ ok ] ok = m.link_sh.index_of[ '2607:fb90::5/64' ] >= 0
+            if [ ok ] ok = m.link_sh.index_of[ 'metric 700' ] >= 0
+        m.close[]
+        fake.stop[]
+        return ok
 
 # a picture message sent with words, one coming in, the
 # carrier's settings given, and one taken out
-expect func t_mms [] -> bool
-    fake : ModemStandIn []
-    if [ !fake.start[] ] return false
-    x : Mms [ address: fake.bus ]
-    ok : bool [ x.open[] ]
-    if [ !ok ] log 'mms: {x.problem}'
-    txt : path '/tmp/fake-mms-words.txt'
-    pic : path '/tmp/fake-mms-picture.png'
-    if [ ok ]
-        txt.save[ 'look at this', null ]
-        pic.save[ 'not really a png', null ]
-        to : vec string [] [ '5551234', '5559876' ]
-        files : vec string [] [ '{txt}', '{pic}' ]
-        sent : x.send_mms[ to, files ]
-        ok = sent.count > 0
-    if [ ok ]
-        for [ i: i32 0, i < 50, i += 1 ]
-            x.poll[]
-            modem_nap[]
-        ok = x.messages.count == 1
+ifdef [ linux ]
+    expect func t_mms [] -> bool
+        fake : ModemStandIn []
+        if [ !fake.start[] ] return false
+        x : Mms [ address: fake.bus ]
+        ok : bool [ x.open[] ]
+        if [ !ok ] log 'mms: {x.problem}'
+        txt : path '/tmp/fake-mms-words.txt'
+        pic : path '/tmp/fake-mms-picture.png'
         if [ ok ]
-            m : MmsMessage x.messages[ 0 ]
-            log 'mms sent: {m.status} {m.parts.count} {m.words[]}'
-            ok = m.status == 'sent' && m.words[] == 'look at this'
-                && m.recipients.count == 2
-    if [ ok ]
-        x.configure[ 'h2g2', 'http://m.fi.goog/mms/wapenc' ]
-        mf : x.method_of[ '/org/ofono/mms', 'org.ofono.mms.Fake',
-                          'Picture' ]
-        it : DBusMessageIter
-        dbus_message_iter_init_append[ mf, @it ]
-        sc : cstr [ '+15559870000'.chars ]
-        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @sc ]
-        r : DBusMessageIter
-        rs : string [ "s" ]
-        dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
-                                          rs.chars, @r ]
-        oc : cstr [ '+15551230000'.chars ]
-        dbus_message_iter_append_basic[ @r, DBUS_TYPE_STRING, @oc ]
-        dbus_message_iter_close_container[ @it, @r ]
-        wc : cstr [ 'hello'.chars ]
-        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @wc ]
-        no : cstr [ ''.chars ]
-        dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @no ]
-        rep : x.send_wait[ mf, 2000 ]
-        if [ rep ] dbus_message_unref[ rep ]
-        for [ i: i32 0, i < 50, i += 1 ]
-            x.poll[]
-            modem_nap[]
-        got : MmsMessage [ null ]
-        for [ m: MmsMessage ] in x.messages
-            if [ m.incoming[] ] got = m
-        ok = got != null
+            txt.save[ 'look at this', null ]
+            pic.save[ 'not really a png', null ]
+            to : vec string [] [ '5551234', '5559876' ]
+            files : vec string [] [ '{txt}', '{pic}' ]
+            sent : x.send_mms[ to, files ]
+            ok = sent.count > 0
         if [ ok ]
-            out : path '/tmp/fake-mms-got.png'
-            pp : MmsPart [ null ]
-            for [ p: MmsPart ] in got.parts
-                if [ p.picture[] ] pp = p
-            ok = got.words[] == 'hello' && pp != null
-                && pp.copy_to[ out ] && out.exists[]
-            log 'mms got: {got.sender} {(got) ? got.words[] : ''}'
-            if [ ok ] ok = x.remove_message[ got ]
-        if [ ok ]
-            for [ i: i32 0, i < 20, i += 1 ]
+            for [ i: i32 0, i < 50, i += 1 ]
                 x.poll[]
                 modem_nap[]
             ok = x.messages.count == 1
-    x.close[]
-    fake.stop[]
-    return ok
+            if [ ok ]
+                m : MmsMessage x.messages[ 0 ]
+                log 'mms sent: {m.status} {m.parts.count} {m.words[]}'
+                ok = m.status == 'sent' && m.words[] == 'look at this'
+                    && m.recipients.count == 2
+        if [ ok ]
+            x.configure[ 'h2g2', 'http://m.fi.goog/mms/wapenc' ]
+            mf : x.method_of[ '/org/ofono/mms', 'org.ofono.mms.Fake',
+                              'Picture' ]
+            it : DBusMessageIter
+            dbus_message_iter_init_append[ mf, @it ]
+            sc : cstr [ '+15559870000'.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @sc ]
+            r : DBusMessageIter
+            rs : string [ "s" ]
+            dbus_message_iter_open_container[ @it, DBUS_TYPE_ARRAY,
+                                              rs.chars, @r ]
+            oc : cstr [ '+15551230000'.chars ]
+            dbus_message_iter_append_basic[ @r, DBUS_TYPE_STRING, @oc ]
+            dbus_message_iter_close_container[ @it, @r ]
+            wc : cstr [ 'hello'.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @wc ]
+            no : cstr [ ''.chars ]
+            dbus_message_iter_append_basic[ @it, DBUS_TYPE_STRING, @no ]
+            rep : x.send_wait[ mf, 2000 ]
+            if [ rep ] dbus_message_unref[ rep ]
+            for [ i: i32 0, i < 50, i += 1 ]
+                x.poll[]
+                modem_nap[]
+            got : MmsMessage [ null ]
+            for [ m: MmsMessage ] in x.messages
+                if [ m.incoming[] ] got = m
+            ok = got != null
+            if [ ok ]
+                out : path '/tmp/fake-mms-got.png'
+                pp : MmsPart [ null ]
+                for [ p: MmsPart ] in got.parts
+                    if [ p.picture[] ] pp = p
+                ok = got.words[] == 'hello' && pp != null
+                    && pp.copy_to[ out ] && out.exists[]
+                log 'mms got: {got.sender} {(got) ? got.words[] : ''}'
+                if [ ok ] ok = x.remove_message[ got ]
+            if [ ok ]
+                for [ i: i32 0, i < 20, i += 1 ]
+                    x.poll[]
+                    modem_nap[]
+                ok = x.messages.count == 1
+        x.close[]
+        fake.stop[]
+        return ok

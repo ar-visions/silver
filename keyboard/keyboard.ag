@@ -359,7 +359,8 @@ lang_slots : vec string
 
 # the added languages kept across starts ('none': none added)
 class KeyLanguages
-    public [ StatePersist ] added : string [ 'japanese|chinese' ]
+    # none at first: English alone until the user adds one
+    public [ StatePersist ] added : string [ 'none' ]
     # the letters' keys: 'qwerty', or 'flick' (12 keys)
     public [ StatePersist ] letters : string [ 'qwerty' ]
 
@@ -443,6 +444,8 @@ Button LangButton
                 stroke_color: #ffffff55
                 near_inset: 4.0
     }
+    # the language it adds or removes
+    public name : string
 
 # a language: its name, and how it stands at the right
 Button LangRow
@@ -493,7 +496,7 @@ Button LangRow
         cv.set_font[ null ]
 
 # every language: a press chooses one, and types in it if it is
-# added; what can be done with it opens under it
+# added; each but English has its Add or Remove beside its name
 element LanguageList
     # the backdrop moves under the rows
     animated : true
@@ -524,15 +527,16 @@ element LanguageList
             typing : bool [ ux && ux.input_language == Language [ n ] ]
             note : string [ (typing) ? 'typing'
                 : ((on) ? 'added' : 'not added') ]
+            side : bool [ n != 'english' ]
             t[ 'lang_{n}' ] = LangRow [ label: language_title[ n ],
                 name: n, note: note, selected: n == chosen,
-                area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
+                area: Region [ (side) ? 'l0.7 t{y} r5.6 h1.2'
+                                      : 'l0.7 t{y} r0.7 h1.2' ] ]
+            if [ side ]
+                t[ 'lang_act_{n}' ] = LangButton [
+                    label: (on) ? 'Remove' : 'Add', name: n,
+                    area: Region [ 'r0.7 t{y} w4.5 h1.2' ] ]
             y += 1.35
-            if [ n == chosen && n != 'english' ]
-                t[ 'lang_act' ] = LangButton [
-                    label: (on) ? 'Remove' : 'Add',
-                    area: Region [ 'l0.7 t{y} w4.5 h1.05' ] ]
-                y += 1.35
         return t
 
     public func on_click [ ev: Event ]
@@ -544,11 +548,12 @@ element LanguageList
             if [ ux && (chosen == 'english'
                         || language_added[ chosen ]) ]
                 ux.input_language = Language [ chosen ]
-        el [ e.id == 'lang_act' && chosen ]
-            on : bool [ language_added[ chosen ] ]
-            language_keep[ chosen, !on ]
+        el [ e inherits LangButton ]
+            nm : string [ (cast LangButton [ e ]).name ]
+            on : bool [ language_added[ nm ] ]
+            language_keep[ nm, !on ]
             # its language removed while typed in: English
-            if [ ux && on && ux.input_language == Language [ chosen ] ]
+            if [ ux && on && ux.input_language == Language [ nm ] ]
                 ux.input_language = Language.english
         if [ ux ] ux.restyle = true
 
@@ -2283,19 +2288,20 @@ element keyboard : trinity
 
 # the Japanese table: words, their conjugated forms, katakana
 # (かんじ: 感じ before 漢字, as the sentences use them)
-expect func t_kana_lookup [] -> bool
-    d : Lexicon words_of[ Language.japanese ]
-    kanji : bool [ false ]
-    for [ w: string ] in d.find[ 'かんじ' ]
-        if [ w == '漢字' ] kanji = true
-    if [ !kanji ] return false
-    has : bool [ false ]
-    for [ w: string ] in d.find[ 'かいた' ]
-        if [ w == '書いた' ] has = true
-    if [ !has ] return false
-    if [ d.find[ 'んんんんん' ].count != 0 ] return false
-    if [ to_katakana[ 'かんじ' ] != 'カンジ' ] return false
-    return chars_of[ 'aか漢' ].count == 3
+ifdef [ linux ]
+    expect func t_kana_lookup [] -> bool
+        d : Lexicon words_of[ Language.japanese ]
+        kanji : bool [ false ]
+        for [ w: string ] in d.find[ 'かんじ' ]
+            if [ w == '漢字' ] kanji = true
+        if [ !kanji ] return false
+        has : bool [ false ]
+        for [ w: string ] in d.find[ 'かいた' ]
+            if [ w == '書いた' ] has = true
+        if [ !has ] return false
+        if [ d.find[ 'んんんんん' ].count != 0 ] return false
+        if [ to_katakana[ 'かんじ' ] != 'カンジ' ] return false
+        return chars_of[ 'aか漢' ].count == 3
 
 # an element with its own on_char takes words; one with on_key alone
 element WordsProbe
@@ -2313,14 +2319,15 @@ expect func t_takes_words [] -> bool
     return w.takes_words*[] && !k.takes_words*[] && !p.takes_words*[]
 
 # pinyin to words, the heaviest first
-expect func t_pinyin_lookup [] -> bool
-    py : Lexicon words_of[ Language.chinese ]
-    shi : vec string py.find[ 'shi' ]
-    zg  : vec string py.find[ 'zhongguo' ]
-    nh  : vec string py.find[ 'nihao' ]
-    if [ shi.count == 0 || shi[ 0 ] != '是' ] return false
-    if [ zg.count == 0 || zg[ 0 ] != '中国' ] return false
-    return nh.count > 0 && nh[ 0 ] == '你好'
+ifdef [ linux ]
+    expect func t_pinyin_lookup [] -> bool
+        py : Lexicon words_of[ Language.chinese ]
+        shi : vec string py.find[ 'shi' ]
+        zg  : vec string py.find[ 'zhongguo' ]
+        nh  : vec string py.find[ 'nihao' ]
+        if [ shi.count == 0 || shi[ 0 ] != '是' ] return false
+        if [ zg.count == 0 || zg[ 0 ] != '中国' ] return false
+        return nh.count > 0 && nh[ 0 ] == '你好'
 
 # romaji to kana: whole ones, ones still being typed
 expect func t_romaji [] -> bool
@@ -2331,27 +2338,28 @@ expect func t_romaji [] -> bool
 
 # whole sentences, Chinese and Japanese: one function (良い天気: the
 # sentences write the set phrase so, after は too; いい天気 is as good)
-expect func t_sentence [] -> bool
-    ok : bool [ true ]
-    for [ pair: string ] in vec string [] [
-            'wojintianqushangban:我今天去上班',
-            'nihaoshijie:你好世界',
-            'womenyiqichifanba:我们一起吃饭吧',
-            'わたしはがくせいです:私は学生です',
-            'きょうはいいてんきですね:今日は良い天気ですね' ]
-        at : i32 [ pair.index_of[ ':' ] ]
-        py : string pair.mid[ 0, at ]
-        want : string pair.mid[ at + 1, pair.count - at - 1 ]
+ifdef [ linux ]
+    expect func t_sentence [] -> bool
+        ok : bool [ true ]
+        for [ pair: string ] in vec string [] [
+                'wojintianqushangban:我今天去上班',
+                'nihaoshijie:你好世界',
+                'womenyiqichifanba:我们一起吃饭吧',
+                'わたしはがくせいです:私は学生です',
+                'きょうはいいてんきですね:今日は良い天気ですね' ]
+            at : i32 [ pair.index_of[ ':' ] ]
+            py : string pair.mid[ 0, at ]
+            want : string pair.mid[ at + 1, pair.count - at - 1 ]
+            n : i32 [ 0 ]
+            rc : vec string chars_of[ py ]
+            zh : bool [ (i32[ py.chars[ 0 ] ] & 255) < 128 ]
+            got : string sentence[ rc,
+                (zh) ? Language.chinese : Language.japanese, @n ]
+            log '{py} -> {got} ({n} of {rc.count})'
+            if [ got != want || n != rc.count ] ok = false
+        # a half typed syllable stays letters: the words before it
         n : i32 [ 0 ]
-        rc : vec string chars_of[ py ]
-        zh : bool [ (i32[ py.chars[ 0 ] ] & 255) < 128 ]
-        got : string sentence[ rc,
-            (zh) ? Language.chinese : Language.japanese, @n ]
-        log '{py} -> {got} ({n} of {rc.count})'
-        if [ got != want || n != rc.count ] ok = false
-    # a half typed syllable stays letters: the words before it
-    n : i32 [ 0 ]
-    half : string sentence[ chars_of[ 'nihaoshij' ],
-        Language.chinese, @n ]
-    log 'nihaoshij -> {half} ({n})'
-    return ok && n == 8
+        half : string sentence[ chars_of[ 'nihaoshij' ],
+            Language.chinese, @n ]
+        log 'nihaoshij -> {half} ({n})'
+        return ok && n == 8

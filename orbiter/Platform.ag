@@ -609,10 +609,15 @@ element PlatformView
 
     # twice its own pixels each way: drawn at its size, each pixel
     # resamples four
+    # picture pixels a screen pixel: a hidpi screen is drawn 1x
+    func sample [ w: Window ] -> i32
+        return (w.scale > 1.0) ? 1 : 2
+
     func picture_size [ w: Window ] -> vec2f
         ds : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
-        return vec2f [ f32[ max[ i32[ bounds.w * ds ], 1 ] * 2 ],
-                       f32[ max[ i32[ bounds.h * ds ], 1 ] * 2 ] ]
+        k  : i32 [ sample[ w ] ]
+        return vec2f [ f32[ max[ i32[ bounds.w * ds ], 1 ] * k ],
+                       f32[ max[ i32[ bounds.h * ds ], 1 ] * k ] ]
 
     # the picture an avatar draws its body in: the chosen one's
     # own box at 4x, the rest the platform's at 2x
@@ -795,8 +800,8 @@ element PlatformView
         # rows flipped about the horizon (the shader reads it so)
         w.mirror_turn = mat4f.identity[]
         w.mirror_proj = proj_m
-        w.mirror_w    = target.width / 2
-        w.mirror_h    = target.height / 2
+        w.mirror_w    = target.width / sample[ w ]
+        w.mirror_h    = target.height / sample[ w ]
         w.mirror_ask  = true
         # this element in the window: its bounds summed up the tree
         ax : f32 [ 0.0 ]
@@ -893,9 +898,10 @@ element PlatformView
         # picture keeps its size while the box moves within it
         dscale = sc
         pick_nm = null
-        mw : f32 [ f32[ target.width / 2 ] ]
-        mh : f32 [ f32[ target.height / 2 ] ]
-        if [ pick >= 0 ]
+        mw : f32 [ f32[ target.width / sample[ w ] ] ]
+        mh : f32 [ f32[ target.height / sample[ w ] ] ]
+        # the chosen one's own 4x box: only on a 1x screen
+        if [ pick >= 0 && sample[ w ] > 1 ]
             pl : vec4f place[ names[ pick ] ]
             if [ pl.z > 0.0 ]
                 nw : i32 [ i32[ ceil[ pl.z * sc ] ] + 2 ]

@@ -1350,13 +1350,16 @@ shader CanvasText
     ]
     attrib  a_pos    : VertexInput    [ type:typeid[ vec2f ] ]
     attrib  a_uv     : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib  a_box    : VertexInput    [ type:typeid[ vec4f ] ]
     attrib  v_uv     : VertexOutput   [ type:typeid[ vec2f ] ]
     attrib  v_pos    : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib  v_box    : VertexOutput   [ type:typeid[ vec4f ] ]
     attrib  o_color  : FragmentOutput [ type:typeid[ vec4f ] ]
 
     func vertex [] -> GLSL none {
         v_uv  = a_uv;
         v_pos = a_pos;
+        v_box = a_box;
         vec2 ndc = (a_pos / ubo.viewport) * 2.0 - 1.0;
         gl_Position = vec4(ndc.x, ndc.y, 0.0, 1.0);
     }
@@ -1368,6 +1371,21 @@ shader CanvasText
         // result composes as rgb*a + dst*(1-a). this looked best in
         // testing.
         float a = texture(atlas, v_uv).r;
+        // a blurred shadow: 5 x 5 taps in the letter's own box
+        if (ubo.grad_params.y > 0.0) {{
+            vec2  tx = ubo.grad_params.y / vec2(textureSize(atlas, 0));
+            float w5[5] = float[](1.0, 4.0, 6.0, 4.0, 1.0);
+            float sum = 0.0;
+            for (int j = 0; j < 5; j++)
+                for (int i = 0; i < 5; i++) {{
+                    vec2 q = v_uv + vec2(float(i - 2), float(j - 2))
+                        * 0.5 * tx;
+                    float inb = step(v_box.x, q.x) * step(q.x, v_box.z)
+                        * step(v_box.y, q.y) * step(q.y, v_box.w);
+                    sum += w5[i] * w5[j] * inb * texture(atlas, q).r;
+                }}
+            a = sum / 256.0;
+        }}
 
         // crop rect clip: x0 y0 x1 y1 world-space pixels. x1 > x0 =
         // active.
@@ -2191,6 +2209,8 @@ Render Canvas
     # drawn in the canvas's own batch
     intern  text_models      : vec Model
     intern  text_max_verts   : i32 [ 4096 ]
+    # points a glyph's quad grows by: a blurred shadow's reach
+    intern  text_spread      : f32
     intern  text_vbo_ring    : vec Gpu
     intern  text_vbo_idx     : i32 [ 0 ]
     # a wrap fences the GPU: 8 slots fenced every few text runs on a
@@ -2438,22 +2458,6 @@ Render Canvas
 
     # ---- text measurement ----
 
-    # a character the font has not: an installed font's that has it
-    # (fontconfig), at the same size; null when none has it
-    func fallback_of [ cp: u32 ] -> CanvasFont
-        if [ cp < 128 || font.glyph_index[ cp ] != 0 ] return null
-        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        fk : string 'fallback:{cp}'
-        file : string ''
-        if [ vk.font_cache.contains[ fk ] ]
-            file = string [ vk.font_cache[ fk ] ]
-        el
-            m : FontMatch font_match[ null, 400, 5, 0, cp, false ]
-            if [ m.found ] file = m.file
-            vk.font_cache[ fk ] = file
-        if [ file.count == 0 ] return null
-        return shared_font[ a, file, font.size_px ]
-
     func measure_text [ text: string ] -> TextMetrics
         ensure_font[]
         st  : CanvasState states[state_depth - 1]
@@ -2480,9 +2484,7 @@ Render Canvas
             el
                 cp = u32[ b ]
                 i += 1
-            fb : CanvasFont fallback_of[ cp ]
-            g  : GlyphEntry [ (fb) ? fb.get_glyph[ cp ]
-                                   : font.get_glyph[ cp ] ]
+            g  : GlyphEntry font.get_glyph[ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
         scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
@@ -3023,17 +3025,20 @@ Render Canvas
             return
         path.add_arc [ cx, cy, radius, start_angle, end_angle ]
 
-    # one ring slot: text_max_verts of vec2 pos and vec2 uv
+    # one ring slot: text_max_verts of pos, uv and the atlas box
     func text_ring_add []
-        tm : vec vertex_member_t [ 2 ]
+        tm : vec vertex_member_t [ 3 ]
         tm[0].src    = typeid[ vec2f ]
         tm[0].size   = 8
         tm[0].offset = 0
         tm[1].src    = typeid[ vec2f ]
         tm[1].size   = 8
         tm[1].offset = 8
-        g : Gpu [ vk: vk, name: 'text', members: tm, member_count: 2,
-            vertex_size: 16, vertex_count: text_max_verts ]
+        tm[2].src    = typeid[ vec4f ]
+        tm[2].size   = 16
+        tm[2].offset = 16
+        g : Gpu [ vk: vk, name: 'text', members: tm, member_count: 3,
+            vertex_size: 32, vertex_count: text_max_verts ]
         g.sync[ w ]
         text_vbo_ring.push[ g ]
 
@@ -3053,44 +3058,42 @@ Render Canvas
         text_vbo_idx += 1
         return text_vbo.vertex_data
 
-    # six vertices (pos, uv) for slot with its pen at x, y
+    # six vertices (pos, uv, atlas box) for slot, pen at x, y;
+    # grown by text_spread points for a blurred shadow
     func glyph_quad [ verts: @f32, vi: i32, slot: GlyphAtlasSlot,
                       x: f32, y: f32 ]
         inv : f32 [ (w.scale > 0) ? 1.0 / w.scale : 1.0 ]
         atlas_size : f32 [ f32 glyph_atlas.size ]
-        left : f32 [ x + f32 slot.bearing_x * inv ]
-        right : f32 [ left + f32 slot.atlas_w * inv ]
-        top : f32 [ y - f32 slot.bearing_y * inv ]
-        bottom : f32 [ top + f32 slot.atlas_h * inv ]
-        u_left : f32 [ f32 slot.atlas_x                  / atlas_size ]
-        v_top : f32 [ f32 slot.atlas_y                  / atlas_size ]
-        u_right : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
-        v_bottom : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
-        base : i32 [ vi * 4 ]
-        verts[ base +  0 ] = left
-        verts[ base +  1 ] = top
-        verts[ base +  2 ] = u_left
-        verts[ base +  3 ] = v_top
-        verts[ base +  4 ] = right
-        verts[ base +  5 ] = top
-        verts[ base +  6 ] = u_right
-        verts[ base +  7 ] = v_top
-        verts[ base +  8 ] = left
-        verts[ base +  9 ] = bottom
-        verts[ base + 10 ] = u_left
-        verts[ base + 11 ] = v_bottom
-        verts[ base + 12 ] = right
-        verts[ base + 13 ] = top
-        verts[ base + 14 ] = u_right
-        verts[ base + 15 ] = v_top
-        verts[ base + 16 ] = right
-        verts[ base + 17 ] = bottom
-        verts[ base + 18 ] = u_right
-        verts[ base + 19 ] = v_bottom
-        verts[ base + 20 ] = left
-        verts[ base + 21 ] = bottom
-        verts[ base + 22 ] = u_left
-        verts[ base + 23 ] = v_bottom
+        gp : f32 [ text_spread ]
+        gu : f32 [ text_spread / inv / atlas_size ]
+        left : f32 [ x + f32[ slot.bearing_x ] * inv - gp ]
+        right : f32 [ x + f32[ slot.bearing_x + slot.atlas_w ] * inv
+            + gp ]
+        top : f32 [ y - f32[ slot.bearing_y ] * inv - gp ]
+        bottom : f32 [ y - f32[ slot.bearing_y ] * inv
+            + f32[ slot.atlas_h ] * inv + gp ]
+        u0 : f32 [ f32 slot.atlas_x / atlas_size ]
+        v0 : f32 [ f32 slot.atlas_y / atlas_size ]
+        u1 : f32 [ f32 (slot.atlas_x + slot.atlas_w) / atlas_size ]
+        v1 : f32 [ f32 (slot.atlas_y + slot.atlas_h) / atlas_size ]
+        xs : local f32 [ 6 ] [ left, right, left, right, right, left ]
+        ys : local f32 [ 6 ] [ top, top, bottom, top, bottom, bottom ]
+        ul : f32 [ u0 - gu ]
+        ur : f32 [ u1 + gu ]
+        vt : f32 [ v0 - gu ]
+        vb : f32 [ v1 + gu ]
+        us : local f32 [ 6 ] [ ul, ur, ul, ur, ur, ul ]
+        vs : local f32 [ 6 ] [ vt, vt, vb, vt, vb, vb ]
+        for [ k: i32 0, k < 6, k += 1 ]
+            base : i32 [ (vi + k) * 8 ]
+            verts[ base + 0 ] = xs[ k ]
+            verts[ base + 1 ] = ys[ k ]
+            verts[ base + 2 ] = us[ k ]
+            verts[ base + 3 ] = vs[ k ]
+            verts[ base + 4 ] = u0
+            verts[ base + 5 ] = v0
+            verts[ base + 6 ] = u1
+            verts[ base + 7 ] = v1
 
     func text_end [ fnt: CanvasFont, vi: i32 ]
         text_vbo.vertex_count = vi
@@ -3102,10 +3105,10 @@ Render Canvas
             hx : f32 [ -1e30 ]
             hy : f32 [ -1e30 ]
             for [ q: i32 0, q < vi, q += 1 ]
-                lx = minf[ lx, vd[ q * 4 ] ]
-                hx = maxf[ hx, vd[ q * 4 ] ]
-                ly = minf[ ly, vd[ q * 4 + 1 ] ]
-                hy = maxf[ hy, vd[ q * 4 + 1 ] ]
+                lx = minf[ lx, vd[ q * 8 ] ]
+                hx = maxf[ hx, vd[ q * 8 ] ]
+                ly = minf[ ly, vd[ q * 8 + 1 ] ]
+                hy = maxf[ hy, vd[ q * 8 + 1 ] ]
             # the quads are in canvas space: the pen took the transform
             pad : f32 [ 2.0 + shadow_reach[] ]
             ink_x0 = minf[ ink_x0, lx - pad ]
@@ -3114,7 +3117,7 @@ Render Canvas
             ink_y1 = maxf[ ink_y1, hy + pad ]
             ink_noted = true
             text_vbo.vertex.update_part[ text_vbo.vertex_data,
-                    i64[ vi ] * 16 ]
+                    i64[ vi ] * 32 ]
             fnt.atlas.flush[]
             text_pipeline.ensure_bound[]
             text_pipeline.rebind_atlas[ fnt.atlas.texture ]
@@ -3133,8 +3136,6 @@ Render Canvas
         crop_left : f32 [ st.crop.x ]
         crop_right : f32 [ st.crop.z ]
         # characters the font has not, drawn after from fonts that do
-        miss_cp : vec u32 []
-        miss_x  : vec f32 []
 
         i : i32 [ 0 ]
         while [ i < display.count ]
@@ -3157,13 +3158,6 @@ Render Canvas
             el
                 cp = u32[ b ]
                 i += 1
-            fb : CanvasFont fallback_of[ cp ]
-            if [ fb ]
-                miss_cp.push[ cp ]
-                miss_x.push[ pen_x ]
-                fg : GlyphEntry fb.get_glyph[ cp ]
-                pen_x += f32 fg.advance * inv
-                continue
             slot : glyph_atlas.get[ font, cp ]
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]
@@ -3178,14 +3172,6 @@ Render Canvas
                 vi += 6
             pen_x += f32 slot.advance * inv
         text_end[ font, vi ]
-        for [ k: i32 0, k < miss_cp.count, k += 1 ]
-            mf : CanvasFont fallback_of[ miss_cp[ k ] ]
-            mv : text_begin[ mf ]
-            ms : glyph_atlas.get[ mf, miss_cp[ k ] ]
-            if [ !ms.cached || ms.atlas_w == 0 || ms.atlas_h == 0 ]
-                continue
-            glyph_quad[ mv, 0, ms, miss_x[ k ], pen_y ]
-            text_end[ mf, 6 ]
 
     # shaped text: glyph numbers with baseline pens, canvas px
     func draw_glyphs [ fnt: CanvasFont, ids: @u32, xs: @f32, ys: @f32,
@@ -3299,14 +3285,21 @@ Render Canvas
         has_shadow : bool [ shadow && shadow.color
                             && shadow.color.a > 0.0 ]
         if [ has_shadow ]
-            text_shader.text_color     = sk_color[ shadow.color ]
+            sc : rgba shadow.color
             text_shader.text_grad      = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
             text_shader.text_color_pos = vec2f [ 0.0, 0.0 ]
             text_shader.text_grad_pos  = vec2f [ 0.0, 0.0 ]
             text_shader.grad_params    = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
-            sx : f32 [ shadow.offset.x ]
-            sy : f32 [ shadow.offset.y ]
-            draw_text_pass[ display, metrics, pen_x + sx, pen_y + sy ]
+            sx : f32 [ pen_x + shadow.offset.x ]
+            sy : f32 [ pen_y + shadow.offset.y ]
+            # the blur in the shader: quads grown, taps in the atlas
+            text_shader.text_color  = sk_color[ sc ]
+            text_spread             = maxf[ shadow.blur, 0.0 ]
+            text_shader.grad_params = vec4f [ 0.0,
+                text_spread * f32[ (w.scale > 0) ? w.scale : 1 ],
+                0.0, 0.0 ]
+            draw_text_pass[ display, metrics, sx, sy ]
+            text_spread = 0.0
 
         # main pass: full text_color + optional gradient.
         text_shader.text_color     = st.fill_color
@@ -4796,7 +4789,6 @@ class CanvasFont
     public atlas      : GlyphAtlas
     # 0: sized in points; else the display scale it was opened at
     public pixel_scale : f32
-
     func loaded [] -> bool
         return ft_face != null
 

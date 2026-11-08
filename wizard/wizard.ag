@@ -22,6 +22,8 @@ ifndef [ windows ]
     import <pthread.h>
     import <sys/mount.h>
     import <sys/reboot.h>
+# macOS has crypt in unistd.h and its libc
+ifdef [ linux ]
     import <crypt.h>
         -lcrypt
 import <errno.h>
@@ -32,6 +34,9 @@ ifdef [ linux ]
 ifdef [ windows ]
     import <vulkan/vulkan.h>
         +VK_USE_PLATFORM_WIN32_KHR
+        -lvulkan
+ifdef [ apple ]
+    import <vulkan/vulkan.h>
         -lvulkan
 
 # the first line of a small file, trimmed; '' when unreadable
@@ -683,13 +688,24 @@ func inspect [ p: Part ]
     if [ dir.count == 0 ]
         lp : path [ look ]
         lp.make_dir[]
-        if [ mount[ dev.chars, look.chars, p.fs.chars, MS_RDONLY,
-                    null ] == 0 ]
+        if [ mount_fs[ dev, look, p.fs, true ] == 0 ]
             dir = look
     if [ dir.count == 0 ] return
     p.free = free_at[ dir ]
     p.what = contents[ dir, p.fs ]
-    if [ dir == look ] umount2[ look.chars, 0 ]
+    if [ dir == look ] unmount_at[ look ]
+
+# a file system mounted at a place (Linux): 0 when it worked
+func mount_fs [ dev: string, at: string, fs: string, ro: bool ] -> i32
+    ifdef [ linux ]
+        flags : u64 [ (ro) ? MS_RDONLY : 0 ]
+        return mount[ dev.chars, at.chars, fs.chars, flags, null ]
+    el
+        return -1
+
+func unmount_at [ at: string ]
+    ifdef [ linux ]
+        umount2[ at.chars, 0 ]
 
 MIB : i64 [ 1048576 ]
 GIB : i64 [ 1073741824 ]
@@ -1764,8 +1780,7 @@ element InstallWizard
         if [ m.count > 0 ] return m
         mp : path [ at ]
         mp.make_dir[]
-        if [ mount[ dev.chars, at.chars, fs.chars, MS_RDONLY,
-                    null ] == 0 ]
+        if [ mount_fs[ dev, at, fs, true ] == 0 ]
             return at
         return ''
 
@@ -1773,7 +1788,7 @@ element InstallWizard
     func find_boot [ espd: string, rootd: string ] -> BootKind
         efv : path '/sys/firmware/efi/efivars'
         if [ efv.is_empty[] ]
-            mount[ 'efivarfs', efv.chars, 'efivarfs', 0, null ]
+            mount_fs[ 'efivarfs', '{efv}', 'efivarfs', false ]
         ld : default_loader[ capture[ 'efibootmgr' ] ]
         es : look_at[ espd, 'vfat', '/run/wizard/look-efi' ]
         rs : look_at[ rootd, 'ext4', '/run/wizard/look-root' ]
@@ -1781,7 +1796,7 @@ element InstallWizard
         log 'wizard: default loader {ld}, efi {es}, root {rs}'
         for [ d: string ] in vec string [] [ '/run/wizard/look-efi',
                 '/run/wizard/look-root' ]
-            if [ es == d || rs == d ] umount2[ d.chars, 0 ]
+            if [ es == d || rs == d ] unmount_at[ d ]
         return k
 
     # a partition made smaller to free its end: its file system
@@ -2806,49 +2821,51 @@ element InstallWizard
 
 # the install's script on a scratch tree, run as this user (no
 # mounts): copy, write, one file
-expect func t_install_steps [] -> bool
-    root : '/tmp/wizard-test-{getpid[]}'
-    src  : '{root}/src'
-    mk : command { mkdir -p {src}/boot {src}/bin {src}/proc/1
-        && echo kernel > {src}/boot/vmlinuz
-        && echo tool > {src}/bin/tool
-        && chmod 755 {src}/bin/tool && echo x > {src}/proc/1/status
-        && ln -s boot {src}/lib }
-    mk.exec[ false ]
-    w : InstallWizard [ source: src ]
-    if [ !w.lock ] w.lock = mutex []
-    if [ !w.lines ] w.lines = vec string []
-    if [ !w.swap_word ] w.swap_word = ''
-    if [ !w.ruuid ] w.ruuid = ''
-    w.plan = vec Step []
-    s : w.step[ StepKind.copy, 'Copy the tree' ]
-    s.src = src
-    s.dst = '{root}/dst'
-    s = w.step[ StepKind.write, 'Write the settings' ]
-    s.dst  = '{root}/dst/var/lib/orbiter/install.agi'
-    s.text = 'user: it\'s a test\n'
-    s = w.step[ StepKind.file, 'Copy the kernel' ]
-    s.src = '{src}/boot/vmlinuz'
-    s.dst = '{root}/efi/EFI/orbiter/vmlinuz.efi'
-    f : w.write_script[ w.plan ]
-    w.run_script[ f, 'sh' ]
-    unlink[ f.chars ]
-    dst : '{root}/dst'
-    tool_copy : '{dst}/bin/tool'
-    proc_dir  : path '{dst}/proc'
-    proc_kid  : path '{dst}/proc/1'
-    ok : bool [ !w.failed && w.step_at == 2
-        && read_line[ '{dst}/boot/vmlinuz' ] == 'kernel'
-        && link_text[ '{dst}/lib' ] == 'boot'
-        && access[ tool_copy.chars, X_OK ] == 0
-        && proc_dir.exists[] && !proc_kid.exists[]
-        && read_line[ '{root}/efi/EFI/orbiter/vmlinuz.efi' ] == 'kernel'
-        && read_line[ '{dst}/var/lib/orbiter/install.agi' ]
-            == 'user: it\'s a test' ]
-    log 'wizard test: script steps ok {ok}, failed {w.failed}'
-    rm_cmd : command { rm -rf {root} }
-    rm_cmd.exec[ false ]
-    return ok
+ifdef [ linux ]
+    expect func t_install_steps [] -> bool
+        root : '/tmp/wizard-test-{getpid[]}'
+        src  : '{root}/src'
+        mk : command { mkdir -p {src}/boot {src}/bin {src}/proc/1
+            && echo kernel > {src}/boot/vmlinuz
+            && echo tool > {src}/bin/tool
+            && chmod 755 {src}/bin/tool && echo x > {src}/proc/1/status
+            && ln -s boot {src}/lib }
+        mk.exec[ false ]
+        w : InstallWizard [ source: src ]
+        if [ !w.lock ] w.lock = mutex []
+        if [ !w.lines ] w.lines = vec string []
+        if [ !w.swap_word ] w.swap_word = ''
+        if [ !w.ruuid ] w.ruuid = ''
+        w.plan = vec Step []
+        s : w.step[ StepKind.copy, 'Copy the tree' ]
+        s.src = src
+        s.dst = '{root}/dst'
+        s = w.step[ StepKind.write, 'Write the settings' ]
+        s.dst  = '{root}/dst/var/lib/orbiter/install.agi'
+        s.text = 'user: it\'s a test\n'
+        s = w.step[ StepKind.file, 'Copy the kernel' ]
+        s.src = '{src}/boot/vmlinuz'
+        s.dst = '{root}/efi/EFI/orbiter/vmlinuz.efi'
+        f : w.write_script[ w.plan ]
+        w.run_script[ f, 'sh' ]
+        unlink[ f.chars ]
+        dst : '{root}/dst'
+        tool_copy : '{dst}/bin/tool'
+        proc_dir  : path '{dst}/proc'
+        proc_kid  : path '{dst}/proc/1'
+        ok : bool [ !w.failed && w.step_at == 2
+            && read_line[ '{dst}/boot/vmlinuz' ] == 'kernel'
+            && link_text[ '{dst}/lib' ] == 'boot'
+            && access[ tool_copy.chars, X_OK ] == 0
+            && proc_dir.exists[] && !proc_kid.exists[]
+            && read_line[ '{root}/efi/EFI/orbiter/vmlinuz.efi' ]
+                == 'kernel'
+            && read_line[ '{dst}/var/lib/orbiter/install.agi' ]
+                == 'user: it\'s a test' ]
+        log 'wizard test: script steps ok {ok}, failed {w.failed}'
+        rm_cmd : command { rm -rf {root} }
+        rm_cmd.exec[ false ]
+        return ok
 
 # boot_second against a made-up efibootmgr with europa's entries:
 # the new one goes second, Ubuntu stays first
@@ -2933,23 +2950,24 @@ expect func t_boot_detect [] -> bool
     return ok
 
 # free space read as df reads it; contents of the running root
-expect func t_free_space [] -> bool
-    mine : free_at[ '/' ]
-    fh_cmd : command [ 'df -B1 --output=avail /' ]
-    fh : handle fh_cmd.stream[]
-    b : local i8 [ 256 ]
-    df : i64 [ -1 ]
-    while [ fh && fgets[ @b[0], 256, fh ] ]
-        ln0 : string [ @b[0] ]
-        ln : ln0.trim[]
-        if [ ln.is_numeric[] ] df = ln.integer_value[]
-    if [ fh ] pclose[ fh ]
-    gap : i64 [ (mine > df) ? mine - df : df - mine ]
-    root : contents[ '/', 'ext4' ]
-    log 'wizard test: free {mine} df {df}, root: {root}'
-    # a write between the two reads moves it a little
-    return df > 0 && gap < 64 * 1048576
-        && root.index_of[ 'running' ] >= 0
+ifdef [ linux ]
+    expect func t_free_space [] -> bool
+        mine : free_at[ '/' ]
+        fh_cmd : command [ 'df -B1 --output=avail /' ]
+        fh : handle fh_cmd.stream[]
+        b : local i8 [ 256 ]
+        df : i64 [ -1 ]
+        while [ fh && fgets[ @b[0], 256, fh ] ]
+            ln0 : string [ @b[0] ]
+            ln : ln0.trim[]
+            if [ ln.is_numeric[] ] df = ln.integer_value[]
+        if [ fh ] pclose[ fh ]
+        gap : i64 [ (mine > df) ? mine - df : df - mine ]
+        root : contents[ '/', 'ext4' ]
+        log 'wizard test: free {mine} df {df}, root: {root}'
+        # a write between the two reads moves it a little
+        return df > 0 && gap < 64 * 1048576
+            && root.index_of[ 'running' ] >= 0
 
 # the copy's measure from the tree, and the rows it rules out
 expect func t_copy_need [] -> bool
@@ -3014,19 +3032,20 @@ expect func t_ssh_keys [] -> bool
     return ok
 
 # a device id against the drive's drivers, and its pci.ids name
-expect func t_hardware_match [] -> bool
-    al : vec string [] [ 'e1000e',
-        'pci:v00008086d000015B8sv*sd*bc*sc*i*', 'r8169',
-        'pci:v000010ECd00008125sv*sd*bc*sc*i*' ]
-    lan : 'pci:v000010ECd00008125sv00001458sd0000E000bc02sc00i00'
-    wifi : 'pci:v000010ECd0000C852sv000010ECsd0000C852bc02sc80i00'
-    nm : pci_name[ '/usr/share/misc/pci.ids', 0x10ec, 0x8125 ]
-    gpu : pci_name[ '/usr/share/misc/pci.ids', 0x10de, 0x2504 ]
-    log 'wizard test: {nm}, {gpu}'
-    return driver_for[ al, lan ] == 'r8169'
-        && driver_for[ al, wifi ] == ''
-        && nm == 'Realtek RTL8125 2.5GbE Controller'
-        && gpu.starts_with[ 'NVIDIA GeForce RTX 3060' ]
+ifdef [ linux ]
+    expect func t_hardware_match [] -> bool
+        al : vec string [] [ 'e1000e',
+            'pci:v00008086d000015B8sv*sd*bc*sc*i*', 'r8169',
+            'pci:v000010ECd00008125sv*sd*bc*sc*i*' ]
+        lan : 'pci:v000010ECd00008125sv00001458sd0000E000bc02sc00i00'
+        wifi : 'pci:v000010ECd0000C852sv000010ECsd0000C852bc02sc80i00'
+        nm : pci_name[ '/usr/share/misc/pci.ids', 0x10ec, 0x8125 ]
+        gpu : pci_name[ '/usr/share/misc/pci.ids', 0x10de, 0x2504 ]
+        log 'wizard test: {nm}, {gpu}'
+        return driver_for[ al, lan ] == 'r8169'
+            && driver_for[ al, wifi ] == ''
+            && nm == 'Realtek RTL8125 2.5GbE Controller'
+            && gpu.starts_with[ 'NVIDIA GeForce RTX 3060' ]
 
 # a made-up disk: EFI, ext4, NTFS, and room between and after
 func test_disk [] -> Disk

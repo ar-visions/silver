@@ -871,7 +871,7 @@ is `wizard`; it uses whatever supported card is in the machine.
    builds in its own install/tmp/installer-<pid> (the user's write
    and my hidden test shared one folder and broke each other).
    Back in the drive row is Write installer's width (4.5 units).
-   t_copy_progress passes; the real stick write is not run here
+   t_copy_progress was removed (Nov 7); the real stick write is not run here
    (pkexec would ask on the user's desktop).
    Kernel choices (add 7.x) are kernel.org's releases.json
    read on open: stable, then the two newest longterm (7.2.9,
@@ -1038,10 +1038,10 @@ is `wizard`; it uses whatever supported card is in the machine.
    tracks) and those its cue sheet lists. add_games puts them in
    the drive tree at root/<their place in the home> (HOME=/root;
    the USB stick and an install copy the tree); phone_rootfs copies
-   the same list into the phone's /root. t_game_files (a scratch
-   home) passes. On europa: ~/roms (563 MB) and 18 roms plus 174
-   .spc in ~/Downloads (39 MB). NOT run: a tree write, a phone
-   image. OPEN: the phone's Update sends no games.
+   the same list into the phone's /root. t_game_files was removed
+   (Nov 7: it should not be tested). On europa: ~/roms (563 MB)
+   and 18 roms plus 174 .spc in ~/Downloads (39 MB). NOT run: a tree
+   write, a phone image. OPEN: the phone's Update sends no games.
 
 ## orbiter-os in a Windows partition — live list (Oct 23 2026)
 

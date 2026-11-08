@@ -401,15 +401,15 @@ class shader
             make_spv : !spv_ok ||
                 input.modified_time[] > spv_file.modified_time[]
             if [ make_spv ]
-                log 'hader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
+                log 'shader: {spv_file.filename[]} stale (valid={spv_ok}) — compiling'
 
             if [ make_spv ]
-                log 'ompiling shader: {shader_file}'
+                log 'compiling shader: {shader_file}'
                 # in process through glslang: no tool on disk, no shell
                 result: i32 [ trinity_glsl_to_spv[ shader_file.chars,
                         spv_file.chars ] ]
                 if [ result != 0 ]
-                    log 'hader compilation failed for: {shader_file}'
+                    log 'shader compilation failed for: {shader_file}'
                     exit[ 1 ]
                 recompiled = true
             el
@@ -417,7 +417,7 @@ class shader
                     continue
             fp: fopen[ spv_file.chars, "rb" ]
             if [ !fp ]
-                log 'ailed to open SPIR-V file: {spv_file}'
+                log 'failed to open SPIR-V file: {spv_file}'
                 exit[ 1 ]
             fseek[ fp, 0, SEEK_END ]
             length: ftell[ fp ]
@@ -425,7 +425,7 @@ class shader
             spirv: malloc[ length ]
             if [ !spirv ]
                 fclose[ fp ]
-                log 'ailed to allocate memory for SPIR-V'
+                log 'failed to allocate memory for SPIR-V'
                 exit[ 1 ]
             fread[ spirv, 1, length, fp ]
             fclose[ fp ]
@@ -438,7 +438,7 @@ class shader
             vkResult: vkCreateShaderModule[ vk.device, createInfo,
                     null, @mod ]
             if [ vkResult != VK_SUCCESS ]
-                log 'ailed to create vulkan shader module: {spv_file} length={length} result={i32[ vkResult ]}'
+                log 'failed to create vulkan shader module: {spv_file} length={length} result={i32[ vkResult ]}'
                 free[ spirv ]
                 exit[ 1 ]
             values[i] = mod
@@ -1594,7 +1594,7 @@ func mat_tex [ m: Model, mdl: GltfModel, ti: TextureInfo, name: string,
     tx : Texture m.tex_cache[ key ]
     if [ !tx ]
         if [ !p.exists[] ]
-            log 'ltf: material texture missing: {p}'
+            log 'gltf: material texture missing: {p}'
             return
         im : Image [ uri: p ]
         mx : i32 [ (im.width > im.height) ? im.width : im.height ]

@@ -6,8 +6,30 @@ import <time.h>
 # windows has no session bus; dbus-win.h is that surface, inert
 ifdef [ windows ]
     import <dbus-win.h>
+ifdef [ apple ]
+    import meson/1.8.3 from https://github.com/mesonbuild/meson/releases/download/1.8.3/meson-1.8.3.tar.gz
+        > python3 packaging/create_zipapp.py --outfile {install}/bin/meson .
+    import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.tar.xz
+        PATH={install}/bin:$PATH
+        PKG_CONFIG_PATH={install}/lib/pkgconfig
+        LDFLAGS=-Wl,-rpath,{install}/lib
+        -Dmessage_bus=false
+        -Dtools=false
+        -Dmodular_tests=disabled
+        -Ddoxygen_docs=disabled
+        -Dxml_docs=disabled
+        -Dducktype_docs=disabled
+        -Dqt_help=disabled
+        -Dsystemd=disabled
+        -Dx11_autolaunch=disabled
+        -Dselinux=disabled
+        -Dapparmor=disabled
+        -Dlibaudit=disabled
+        -Dsystem_socket=/run/dbus/system_bus_socket
 ifndef [ windows ]
     import <dbus/dbus.h>
+        -I{install}/include/dbus-1.0
+        -I{install}/lib/dbus-1.0/include
         -I=/usr/include/dbus-1.0
         -I/usr/include/dbus-1.0
         -I=/usr/lib/x86_64-linux-gnu/dbus-1.0/include
@@ -21,7 +43,7 @@ import <signal.h>
 
 # the daemon that joins networks (scan, WPA, DHCP); orbiter-os
 # runs it, orbiter drives it
-ifndef [ windows ]
+ifdef [ linux ]
     import iwd/3.12 from https://mirrors.edge.kernel.org/pub/linux/network/wireless/iwd-3.12.tar.xz
         --disable-client
         --disable-monitor
@@ -745,36 +767,37 @@ func wifi_settle [ w: Wifi ] -> bool
         wifi_nap[]
     return false
 
-expect func t_wifi_join [] -> bool
-    fake : WifiStandIn []
-    if [ !fake.start[] ] return false
-    w : Wifi [ address: fake.bus ]
-    ok : bool [ w.open[] ]
-    if [ ok ] ok = w.nets.count == 3
-    best : WifiNet [ (ok) ? w.nets[ 0 ] : null ]
-    last : WifiNet [ (ok) ? w.nets[ 2 ] : null ]
-    if [ ok ] ok = best.name == 'Home' && best.known
-    if [ ok ] ok = best.signal == -4500 && best.bars[] == 4
-    if [ ok ] ok = last.name == 'Neighbor' && last.bars[] == 0
-    # a wrong password comes back as a problem
-    if [ ok ]
-        w.join[ w.nets[ 2 ], 'nope' ]
-        ok = wifi_settle[ w ] && w.problem.count > 0
-        log 'wrong password: {w.problem} ({w.state})'
-    if [ ok ] ok = w.state != 'connected'
-    # the right one joins
-    if [ ok ]
-        w.join[ w.nets[ 2 ], 'secret123' ]
-        ok = wifi_settle[ w ] && w.problem.count == 0
-    if [ ok ]
-        for [ i: i32 0, i < 20, i += 1 ]
-            w.poll[]
-            wifi_nap[]
-        joined : string ''
-        for [ n: WifiNet ] in w.nets
-            if [ n.joined ] joined = n.name
-        log 'joined: {joined} state {w.state}'
-        ok = w.state == 'connected' && joined == 'Neighbor'
-    w.close[]
-    fake.stop[]
-    return ok
+ifdef [ linux ]
+    expect func t_wifi_join [] -> bool
+        fake : WifiStandIn []
+        if [ !fake.start[] ] return false
+        w : Wifi [ address: fake.bus ]
+        ok : bool [ w.open[] ]
+        if [ ok ] ok = w.nets.count == 3
+        best : WifiNet [ (ok) ? w.nets[ 0 ] : null ]
+        last : WifiNet [ (ok) ? w.nets[ 2 ] : null ]
+        if [ ok ] ok = best.name == 'Home' && best.known
+        if [ ok ] ok = best.signal == -4500 && best.bars[] == 4
+        if [ ok ] ok = last.name == 'Neighbor' && last.bars[] == 0
+        # a wrong password comes back as a problem
+        if [ ok ]
+            w.join[ w.nets[ 2 ], 'nope' ]
+            ok = wifi_settle[ w ] && w.problem.count > 0
+            log 'wrong password: {w.problem} ({w.state})'
+        if [ ok ] ok = w.state != 'connected'
+        # the right one joins
+        if [ ok ]
+            w.join[ w.nets[ 2 ], 'secret123' ]
+            ok = wifi_settle[ w ] && w.problem.count == 0
+        if [ ok ]
+            for [ i: i32 0, i < 20, i += 1 ]
+                w.poll[]
+                wifi_nap[]
+            joined : string ''
+            for [ n: WifiNet ] in w.nets
+                if [ n.joined ] joined = n.name
+            log 'joined: {joined} state {w.state}'
+            ok = w.state == 'connected' && joined == 'Neighbor'
+        w.close[]
+        fake.stop[]
+        return ok

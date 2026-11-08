@@ -138,7 +138,7 @@ class ConsoleSession
                 execl[ '/bin/bash', 'bash', norc.chars, null ]
             _exit[ 1 ]
         el [ pid < 0 ]
-            log 'onsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
+            log 'ConsoleSession.start[{name}]: forkpty FAILED (pid={pid})'
         el
             fcntl[ pty_fd, F_SETFL, O_NONBLOCK ]
 

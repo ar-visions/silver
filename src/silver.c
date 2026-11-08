@@ -2618,6 +2618,18 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
             // an exe is the host: it records its launch cwd as the startup
             // and cd's to the share itself, so only a library is cd'd here
             chdir(cwd->chars);
+#ifdef __APPLE__
+            // metal dies in a forked child: a fresh silver loads it
+            {
+                path   self  = f(path, "%o/build/silver", a->install);
+                string entry = late_entry_name(a);
+                setenv("SILVER_LATE_DEFER", "1", 1);
+                char* av[5] = { (char*)self->chars, "--load-product",
+                    (char*)bin->chars, (char*)entry->chars, NULL };
+                execv(av[0], av);
+                _exit(1);
+            }
+#endif
             // an import the compiler already mapped comes back as the same
             // handle and its init never runs again: load a fresh copy
             path load = bin;
@@ -15811,6 +15823,10 @@ int main(int argc, cstrs argv) {
     unsetenv("SILVER_SUPERVISOR");
     unsetenv("SILVER_SHM_FD");
 #endif
+#ifdef __APPLE__
+    // exports and tests fork after Cocoa loads; objc kills the child
+    setenv("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES", 0);
+#endif
 #ifdef _WIN32
     // there is no rpath here: a module we dlopen finds its own dependencies
     // (opencv, OpenEXR, ...) through PATH, so put our directories first
@@ -15823,8 +15839,9 @@ int main(int argc, cstrs argv) {
     }
 #endif
     engage(argv);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     // spawn_product's child: the late entry runs outside DllMain
+    // (windows), in a process that never forked (apple: metal)
     if (argc == 4 && strcmp(argv[1], "--load-product") == 0) {
         void* h = dlopen(argv[2], RTLD_NOW);
         if (!h) fprintf(stderr, "cannot load %s: %s\n", argv[2], dlerror());
