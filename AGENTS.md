@@ -15447,3 +15447,37 @@ atmosphere, matching the dramatic reference rather than strict colour.
    separate scene. Its 320 x 200 panel thumbnail is exported.
    `t_scene_exports_refresh` covers an export added after the first
    scan. Verified in Orbiter through its Trinity socket.
+
+## clint: self-hosted team chat and calls — live list (Nov 10 2026)
+
+The user's notes, in his words where given:
+- "a teams destroyer": Teams is "that awful app that used up 100%
+  of your cpu all the time". clint draws nothing at rest.
+- "we want people to be able to run their own servers. it makes no
+  sense at all to have a central server."
+- Protocol: our own (Matrix was offered and declined).
+- Servers: one per group (a company or team runs its own); a user
+  can sign in to several servers at once. No federation.
+- Encryption: TLS to the server only (no end-to-end; it is the
+  group's own server).
+- First version: all four of chat and channels, voice and video
+  calls, screen sharing, files.
+- Name: "this will be clint". A station-like name was asked about
+  (Nov 10); offered dock, hub, mir, salyut, harbor, relay, airlock,
+  beacon, berth (mir for the app, relay for the server suggested);
+  not decided: clint stands until he says.
+- The old IRC client: "the existing clint can be irc", "move it out
+  of silver": now /Users/kalen/src/irc/irc/irc.ag (renamed irc,
+  silver's clint/ removed). "i dont need it to build": it does not
+  build on the Mac (silver cannot read <arpa/inet.h>'s htons there);
+  left so.
+In order:
+1. OPEN server and protocol: a silver module anyone runs; accounts,
+   channels, direct messages, history kept on the server, search.
+2. OPEN the client: trinity app, several servers at once, nothing
+   drawn at rest.
+3. OPEN files: sent into a channel, kept on the server.
+4. OPEN voice calls: the server passes each stream on (no mixing);
+   spectra in and out, rnnoise.
+5. OPEN video calls: trinity's H.264 / H.265 encode and decode.
+6. OPEN screen sharing: trinity's recorder as the source.
