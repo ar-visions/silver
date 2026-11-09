@@ -1721,8 +1721,26 @@ element aeon : trinity
 
     # a pick in that dialog: an .svg, a .blend, or a folder with its
     # own design (<name>/<name>.agi) opens here; else not ours
+    # the chosen text's font, from trinity's font dialog
+    action func choose_font []
+        if [ !doc || !ux || !doc.is_text[ doc.chosen ] ] return
+        nd : doc.model.shapes[ doc.chosen ].node
+        ux.nav_font_pick[ nd.attr[ 'font-family' ], false, false ]
+
     public func nav_open [ p: path ] -> bool
         txt : string '{p}'
+        # the font dialog's pick: the chosen text's family
+        if [ ux && ux.nav_fonts ]
+            if [ !doc || !scene || !doc.is_text[ doc.chosen ] ]
+                return false
+            nd : doc.model.shapes[ doc.chosen ].node
+            was : string nd.attr[ 'font-family' ]
+            scene.apply_row[ PropRow [ name: 'font-family',
+                value: (was) ? was : '', full: (was) ? was : '',
+                kind: 5, owner: doc.model.shapes[ doc.chosen ],
+                pass: '{doc.chosen}', blocks: vec string [] ],
+                ux.font_chosen ]
+            return true
         # the dialog asked where to save: the drawing saved there
         if [ ux && ux.nav_saving ]
             if [ !doc ] return false

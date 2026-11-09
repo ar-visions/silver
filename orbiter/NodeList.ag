@@ -839,6 +839,19 @@ Control AppsGrid
     mutable gathered : string
     # the store whose folder is open: its apps follow its card
     mutable open : string
+    # a card let go past the line: it flies on and fades, then it goes
+    mutable fly_key : string
+    mutable fly_ae  : AppEntry
+    mutable fly_ms  : i64
+    mutable fly_x   : f32
+    mutable fly_y   : f32
+    mutable fly_dir : f32
+    # the card being pulled off (-1 none), and how far from its press
+    mutable pull_i : i32 [ -1 ]
+    mutable pull_y : f32
+    # how many were on home at the gathering, and when last looked
+    mutable home_seen : i32
+    mutable home_ms   : i64
     # orbiter's apps_gen when the cards were gathered
     mutable gen_seen : i32
     # each card's picture and the look it was drawn with, by key
@@ -983,6 +996,8 @@ Control AppsGrid
             for [ k: i32 0, k < shown.count, k += 1 ]
                 if [ keys[ k ] == drag_name ] i = k
             if [ i < 0 || i >= rx.count ] return
+            # clear of its section it is on its way out: no reorder
+            if [ gone_of[ i ] >= 1.0 ] return
             h  : i32 section_of[ i ]
             s0 : i32 [ head_at[ h ] ]
             s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
@@ -1053,6 +1068,11 @@ Control AppsGrid
         names.push[ 'other' ]
         names = ordered[ names, orb.group_order ]
         ours : vec AppEntry ranked[ orb.app_entries[], orb.app_order ]
+        built : vec AppEntry []
+        for [ ae: AppEntry ] in ours
+            if [ orb.on_home[ ae ] ] built.push[ ae ]
+        ours = built
+        home_seen = orb.home_count[]
         gathered = orb.apps_filter
         # an open folder: the filter finds within it, the apps stay
         folder : bool [ open && open.count > 0 ]
@@ -1144,6 +1164,51 @@ Control AppsGrid
                 return i
         return -1
 
+    # how far a card is dragged up or down to delete it
+    func pull_far [] -> f32
+        return round[ tile * 0.9 ]
+
+    # let go past the line: on the way it was going, from where it is
+    func fly_off [ i: i32 ]
+        ky : string keys[ i ]
+        fly_key = ky
+        fly_ae  = entry[ i ]
+        fly_ms  = epoch_millis[]
+        fly_x   = (ease_x.contains[ ky ]) ? ease_x[ ky ] : rx[ i ]
+        fly_y   = (ease_y.contains[ ky ]) ? ease_y[ ky ] : ry[ i ]
+        fly_dir = (fly_y < ry[ i ]) ? -1.0 : 1.0
+
+    # 0 as it starts, 1 as it is gone
+    func fly_t [] -> f32
+        t : f32 [ f32[ epoch_millis[] - fly_ms ] / 180.0 ]
+        return (t > 1.0) ? 1.0 : t
+
+    # how far a lifted card i is clear of its own section's rows
+    func lift_out [ i: i32 ] -> f32
+        if [ drag_kind != 1 || !rx || i < 0 || i >= rx.count
+             || keys[ i ] != drag_name ] return 0.0
+        h : i32 section_of[ i ]
+        s0 : i32 [ head_at[ h ] ]
+        s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
+            : shown.count ]
+        top : f32 [ ry[ s0 ] ]
+        low : f32 [ ry[ s0 ] ]
+        for [ k: i32 s0, k < s1 && k < rx.count, k += 1 ]
+            if [ ry[ k ] < top ] top = ry[ k ]
+            if [ ry[ k ] > low ] low = ry[ k ]
+        y : f32 [ drag_pt.y - grab.y ]
+        return (y < top) ? top - y : ((y > low) ? y - low : 0.0)
+
+    # the share of the way to deleting card i, 0 to 1
+    func gone_of [ i: i32 ] -> f32
+        far : f32 [ (i == pull_i) ? abs[ pull_y ] : lift_out[ i ] ]
+        v : f32 [ far / pull_far[] ]
+        return (v > 1.0) ? 1.0 : v
+
+    # the drag's way, this far down; a card needed elsewhere resists
+    func pulled_at [ ae: AppEntry, orb: orbiter ] -> f32
+        return (orb.can_delete[ ae ]) ? pull_y : pull_y * 0.2
+
     # the point is on card i's name row, under its tile
     func in_name [ i: i32, x: f32, y: f32 ] -> bool
         return i >= 0 && rx && i < rx.count && y >= ry[ i ] + tile
@@ -1155,6 +1220,27 @@ Control AppsGrid
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
         orb : cast orbiter [ ux.app_object ]
+        if [ pull_i >= 0 ]
+            pull_y = my - press_at.y
+            ev.no_default = true
+            pristine = false
+            ux.will_animate = true
+            return
+        # a card moved up or down at once: it is being pulled off (a
+        # phone's drag scrolls)
+        if [ orb && drag_kind == 0 && press_i >= 0 && !arranging
+             && !use_mobile
+             && epoch_micros[] - press_us < 1000000 ]
+            pdx : f32 [ abs[ mx - press_at.x ] ]
+            pdy : f32 [ abs[ my - press_at.y ] ]
+            if [ pdy > 8.0 && pdy > pdx && orb.can_pull[ entry[ press_i ] ] ]
+                pull_i = press_i
+                pull_y = my - press_at.y
+                ux.set_capture[ a ]
+                ev.no_default = true
+                pristine = false
+                ux.will_animate = true
+                return
         # a press held a second, or any while arranging, then moved:
         # it reorders
         if [ orb && drag_kind == 0 && (press_i >= 0 || press_h >= 0)
@@ -1203,11 +1289,34 @@ Control AppsGrid
         was : i32 [ press_i ]
         press_i = -1
         press_h = -1
+        # a card dragged far enough up or down: deleted; else it eases
+        # back to its place
+        if [ pull_i >= 0 ]
+            ux.release_capture[ a ]
+            at_i : i32 [ pull_i ]
+            far_up : bool [ abs[ pull_y ] >= pull_far[] ]
+            del_orb : cast orbiter [ ux.app_object ]
+            del_ok : bool [ del_orb && del_orb.can_delete[ entry[ at_i ] ] ]
+            pull_i = -1
+            pull_y = 0.0
+            sel = -1
+            pristine = false
+            ux.will_animate = true
+            if [ far_up && del_ok ] fly_off[ at_i ]
+            return
         # a reorder ends where it was let go: saved, no click
         if [ drag_kind != 0 ]
+            dorb : cast orbiter [ ux.app_object ]
+            # lifted clear of its section: deleted
+            del_at : i32 [ -1 ]
+            if [ drag_kind == 1 && shown && dorb ]
+                for [ k: i32 0, k < shown.count, k += 1 ]
+                    if [ keys[ k ] == drag_name && gone_of[ k ] >= 1.0
+                         && dorb.can_delete[ shown[ k ] ] ]
+                        del_at = k
             drag_kind = 0
             drag_name = null
-            dorb : cast orbiter [ ux.app_object ]
+            if [ del_at >= 0 ] fly_off[ del_at ]
             if [ dorb ] dorb.save_session[]
             pristine = false
             ux.will_animate = true
@@ -1232,7 +1341,7 @@ Control AppsGrid
         if [ !orb || !ae ]
             sel = -1
             return
-        here : bool [ ae.module && (!ae.built || ae.built.exists[]) ]
+        here : bool [ ae.module && orb.built_now[ ae ] ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
         # a file in an app's folder: the app opens it
@@ -1321,6 +1430,16 @@ Control AppsGrid
         if [ !orb ] return
         cv : Canvas w.screen
         un : f32 ux_unit[ w ]
+        # a second apart: something built, or a build begun, elsewhere
+        now_ms : i64 epoch_millis[]
+        if [ fly_key && fly_t[] >= 1.0 ]
+            orb.app_delete[ fly_ae ]
+            fly_key = null
+            fly_ae  = null
+            shown   = null
+        if [ !fly_key && now_ms - home_ms > 1000 ]
+            home_ms = now_ms
+            if [ orb.home_count[] != home_seen ] shown = null
         if [ !shown || gathered != orb.apps_filter
              || gen_seen != orb.apps_gen ]
             gather[ orb ]
@@ -1445,6 +1564,13 @@ Control AppsGrid
             if [ lifted ]
                 ex = drag_pt.x - grab.x
                 ey = drag_pt.y - grab.y
+            el [ i == pull_i ]
+                ey = gy + pulled_at[ entry[ i ], orb ]
+            el [ fly_key && ky == fly_key ]
+                ft : f32 fly_t[]
+                ex = fly_x
+                ey = fly_y + fly_dir * pull_far[] * ft * (1.0 + ft) * 0.5
+                moving = true
             el [ ease_x.contains[ ky ] ]
                 ex = filter_n[ ease_x[ ky ], gx, 0.3, ux.frame_factor ]
                 ey = filter_n[ ease_y[ ky ], gy, 0.3, ux.frame_factor ]
@@ -1486,7 +1612,8 @@ Control AppsGrid
         drawn : vec i32 []
         last : i32 [ -1 ]
         for [ i: i32 0, i < n, i += 1 ]
-            if [ drag_kind == 1 && keys[ i ] == drag_name ]
+            if [ i == pull_i || (fly_key && keys[ i ] == fly_key)
+                 || (drag_kind == 1 && keys[ i ] == drag_name) ]
                 last = i
             el
                 drawn.push[ i ]
@@ -1508,8 +1635,9 @@ Control AppsGrid
                             0.0 ] ]
             dy : f32 [ max[ max[ cy - pty, pty - cy - ch9 ], 0.0 ] ]
             far : bool [ dx * dx + dy * dy > reach * reach ]
-            card_frost[ cv, w, px[ i ] + round[ (cw9 - tile) * 0.5 ],
-                        cy, cr ]
+            if [ !fly_key || keys[ i ] != fly_key ]
+                card_frost[ cv, w, px[ i ] + round[ (cw9 - tile) * 0.5 ],
+                            cy, cr ]
             if [ moving && far ]
                 pic : card_picture[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
                                     un ]
@@ -1525,7 +1653,7 @@ Control AppsGrid
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
         fr : f32 [ (busy) ? orb.install_frac[ ae ] : 0.0 ]
-        return '{ae.name}|{iw}|{fr}|{i == sel}|{i == band_of}|{i == hov}|{ux.cmd}|{ux.shift}|{fp}|{cw9}|{ch9}|{tile}|{on_btn}'
+        return '{ae.name}|{iw}|{fr}|{i == sel}|{i == band_of}|{i == hov}|{ux.cmd}|{ux.shift}|{orb.built_now[ ae ]}|{fp}|{cw9}|{ch9}|{tile}|{on_btn}'
 
     # the card's picture: drawn again when its look changes
     func card_picture [ cv: Canvas, w: Window, orb: orbiter, i: i32,
@@ -1566,9 +1694,20 @@ Control AppsGrid
                       un: f32 ]
         ae : AppEntry entry[ i ]
         tx : f32 [ x + round[ (cw9 - tile) * 0.5 ] ]
+        # on its way out: its tile and icon fading, no name
+        if [ fly_key && keys[ i ] == fly_key ]
+            fade : f32 [ 1.0 - fly_t[] ]
+            cv.save[]
+            cv.set_opacity[ fade * 0.6 ]
+            draw_tile[ cv, w, i, tx, cy, cr, true, false ]
+            fic : AppIcon icons[ i ]
+            fsz : f32 [ round[ tile * 0.72 ] ]
+            fic.paint[ cv, round[ tx + (tile - fsz) * 0.5 ],
+                       round[ cy + (tile - fsz) * 0.5 ], fsz ]
+            cv.restore[]
+            return
         # here: runs or opens; else it is imported first
-        here : bool [ ae.module
-            && (!ae.built || ae.built.exists[]) ]
+        here : bool [ ae.module && orb.built_now[ ae ] ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
         failed : bool [ iw == 'failed' ]
@@ -1579,8 +1718,12 @@ Control AppsGrid
         # the icon fills the tile, dim until it is here
         ic : AppIcon icons[ i ]
         isz : f32 [ round[ tile * 0.72 ] ]
+        gone : f32 gone_of[ i ]
+        pulling : bool [ i == pull_i || gone > 0.0 ]
         cv.save[]
         if [ !here ] cv.set_opacity[ (busy) ? 0.4 : 0.55 ]
+        if [ pulling && orb.can_delete[ ae ] ]
+            cv.set_opacity[ 1.0 - 0.6 * gone ]
         ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
                   round[ cy + (tile - isz) * 0.5 ], isz ]
         cv.restore[]
@@ -1593,6 +1736,12 @@ Control AppsGrid
         if [ busy && mod ]
             draw_pill[ cv, fp, x, ny, nh, 'Cancel', '#a0303099',
                        '#ff7a7a99' ]
+        el [ pulling && !orb.can_delete[ ae ] ]
+            draw_pill[ cv, fp, x, ny, nh, 'used by {ae.needed}',
+                       '#33333399', '#ffffff33' ]
+        el [ pulling && gone >= 1.0 ]
+            draw_pill[ cv, fp, x, ny, nh, 'Delete', '#a03030e6',
+                       '#ff7a7acc' ]
         el [ mod && orb.code_of[ ae ] ]
             draw_pill[ cv, fp, x, ny, nh, 'Code', '#4d3dbccc',
                        '#806bffcc' ]
@@ -1622,7 +1771,7 @@ Control AppsGrid
             cv.draw_text[ nm, rect [ x: x + 2.0, y: ny,
                 w: cw9 - 4.0, h: th ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ] ]
             cv.set_font[ null ]
 
     # the backdrop's blur in a card's tile, fixed to the window: never

@@ -1708,6 +1708,21 @@ class vk_context
     # each pass's CPU wait on its own fence, the same time (us)
     mutable wait_names : vec string
     mutable wait_us    : vec f32
+    # a bundled font's file, and the one the user chose over it
+    mutable font_sub   : map string [ string ]
+
+    # text in the bundled from draws in the file to; '' puts it back
+    public func font_swap [ from: string, to: string ]
+        if [ !font_sub ] font_sub = map string [ string ] []
+        if [ to && to.count > 0 ] font_sub[ from ] = to
+        el [ font_sub.contains[ from ] ] font_sub.rm[ from ]
+
+    # the file to load for a font asked for by uri
+    public func font_uri [ uri: string ] -> string
+        if [ font_sub && font_sub.contains[ uri ] ]
+            return font_sub[ uri ]
+        return uri
+
 
     func init [ ]
         hold[]
@@ -3723,7 +3738,8 @@ class Pipeline
         # (advanced by paints) while binding slot 0 → the shader read
         # zero dims → wrote nothing (the whisper [Music] bug).
         cslot : i32 [ 0 ]
-        if [ !r ] shader_uniforms.force_slot = cslot
+        # vk.cur_ring is shared: a reload's two instances race it
+        shader_uniforms.force_slot = (r) ? r.draw_slot : cslot
         shader_uniforms.update[ ]
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_COMPUTE,
                            vk_compute ]
@@ -3782,6 +3798,8 @@ class Pipeline
                 g.tx.transition[
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ]
         frame: VkCommandBuffer [ f ]
+        # the slot bound below, whichever instance drew last
+        shader_uniforms.force_slot = r.draw_slot
         shader_uniforms.update[ ]
 
         vkCmdBindPipeline[ frame, VK_PIPELINE_BIND_POINT_GRAPHICS,

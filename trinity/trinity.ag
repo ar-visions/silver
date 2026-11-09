@@ -2202,6 +2202,7 @@ class CursorPos
 # declared Layer/shader members become the instance's layers/shaders
 func bind_members [ instance: element ]
     ltys : vec Au_t []
+    own : map i32 [string] []
     for [ lty : typeid[ instance ], lty != typeid[ Au ],
           lty = lty.context ]
         ltys.push[ lty ]
@@ -2223,6 +2224,7 @@ func bind_members [ instance: element ]
                 if [ !instance.layers ]
                     instance.layers = map Layer[string] []
                 instance.layers[ string[ lmem.ident ] ] = lvl
+                own[ string[ lmem.ident ] ] = 1
             el [ Au.inherits[ lmem.src, typeid[ shader ] ] ]
                 shv : cast shader [ lv ]
                 shv.set_context_from[ instance ]
@@ -2233,10 +2235,35 @@ func bind_members [ instance: element ]
                 instance.shaders[ string[ lmem.ident ] ] = shv
     # the icon layer paints last: re-insert to move it to the end
     if [ instance.layers ]
+        # a class's later instances got style layers first
+        late : vec Layer []
+        names : vec string []
+        for [ l: Layer, n: string ] in instance.layers
+            if [ own.contains[ n ] ] continue
+            late.push[ l ]
+            names.push[ n ]
+        for [ i: i32 0, i < late.count, i += 1 ]
+            instance.layers.rm[ names[ i ] ]
+            instance.layers[ names[ i ] ] = late[ i ]
         bic : Layer instance.layers[ 'iconl' ]
         if [ bic ]
             instance.layers.rm[ 'iconl' ]
             instance.layers[ string[ 'iconl' ] ] = bic
+
+element LayerOrder
+    ground : Layer []
+
+expect func t_layer_order [] -> bool
+    e : LayerOrder []
+    e.initialize[]
+    e.layers = map Layer[string] []
+    e.layers[ string[ 'edge' ] ] = Layer []
+    bind_members[ e ]
+    keys : vec string []
+    for [ l: Layer, n: string ] in e.layers
+        keys.push[ n ]
+    return keys.count >= 2 && keys[ keys.count - 2 ] == 'ground'
+        && keys[ keys.count - 1 ] == 'edge'
 
 # the pipeline's reduce-then-blur, one unit: `source` (already at
 # from_scale of the window) halved `steps` times, then the vertical and
@@ -4266,9 +4293,11 @@ Display Window
             e[ 'hostedshell' ] = IDEOverlay [ topmost: true ]
         # the orbiter bar's dialog: everything under the bar, as
         # orbiter's takes a pane under its title
-        if [ nav_open && host_slot[] <= 0 ]
+        if [ nav_open && (host_slot[] <= 0 || nav_fonts) ]
             e[ 'navigation' ] = NavigationView [ topmost: true,
-                focusable: true, area: Region { l0 t1.3 r0 b0 } ]
+                focusable: true,
+                area: Region [ (host_slot[] > 0) ? 'l0 t0 r0 b0'
+                                                 : 'l0 t1.3 r0 b0' ] ]
         if [ shot_ask && !agent_min ]
             # in a host's slideout the host's own ground is behind it
             if [ !exchange_region || exchange_region.count == 0 ]
@@ -4302,8 +4331,7 @@ Display Window
             # button, puts it away
             if [ !boxed ]
                 e[ 'shot_close' ] = ShotClose [ topmost: true,
-                    fading: swap_fade, icon: 'close', icon_fit: 0.6,
-                    manual_mode: true,
+                    fading: swap_fade,
                     area: ux_area[ 'r16px t16px w36px h36px', ux_scale ] ]
             # the picker last: over the blur and the boxes
             ag : string [ (ix < nm.count) ? nm[ ix ] : '' ]
@@ -4564,7 +4592,26 @@ Display Window
             release_focus[ focus ]
         nav_open   = false
         nav_saving = false
+        nav_fonts  = false
         restyle    = true
+
+    # the dialog choosing a font, any app's: the families listed, each
+    # in its own face, cur lit; a pick reaches element.nav_open
+    public func nav_font_pick [ cur: string, fixed: bool, plain: bool ]
+        font_chosen = cur
+        font_fixed  = fixed
+        font_plain  = plain
+        nav_filter  = ''
+        nav_fonts   = true
+        nav_open    = true
+        restyle     = true
+
+    # a font picked: the app takes font_chosen, the dialog closes
+    public func nav_font_take [ family: string, file: path ]
+        font_chosen = family
+        ae : cast element [ app_object ]
+        if [ ae ] ae.nav_open*[ file ]
+        nav_close[]
 
     # the dialog asking where to save, on the app's folder with the
     # name typed in; enter saves there (element.nav_open with
@@ -6151,6 +6198,13 @@ Display Window
     # an unread one is skipped
     mutable blur_ask            : i32
     mutable blur_read           : i32 [ 3 ]
+    # the dialog choosing a font: the family shown as current, then
+    # the one picked, read by element.nav_open with nav_fonts set
+    public nav_fonts            : bool
+    public font_chosen          : string
+    # the list holds fixed width families only; a Default row heads it
+    public font_fixed           : bool
+    public font_plain           : bool
 
     # a finger past the first (the first is the mouse): the element
     # under it that takes touches gets its press, moves and release,
@@ -7233,11 +7287,7 @@ Display Window
         # shrank every em-sized area, the title first
         cv.set_font[ null ]
         cv.font_size[ 0 ]
-        cv.ensure_font[]
-        e.fc = 22.0
-        if [ cv.font ]
-            cs : f32 [ (cv.w && cv.w.scale > 0.0) ? cv.w.scale : 1.0 ]
-            e.fc = cv.font.line_height / cs
+        e.fc = cv.unit_px[]
 
         # compute element bounds from its area
         if [ !e.area ]
@@ -7901,7 +7951,9 @@ Display Window
                     # its size rides the text size, as the default's
                     lpx : i32 label_px[ draw_cv, layer.label_size ]
                     if [ !layer.label_font_cache
-                         || layer.label_font_cache.size_px != lpx ]
+                         || layer.label_font_cache.size_px != lpx
+                         || layer.label_font_cache.uri
+                            != vk.font_uri[ layer.label_font ] ]
                         layer.label_font_cache = shared_font[ draw_cv,
                             layer.label_font, lpx ]
                     draw_cv.set_font[ layer.label_font_cache ]
@@ -9731,7 +9783,7 @@ element OrbiterBar
         out : Elements []
         if [ !ux ] return out
         # what it shows changed (the title, the filter): painted anew
-        typed : string '{ux.nav_filter}|{ux.nav_saving}'
+        typed : string '{ux.nav_filter}|{ux.nav_saving}|{ux.nav_fonts}'
         shows : string '{ux.nav_title}|{ux.nav_open}|{typed}'
         now : string '{shows}|{ux.bar_view}'
         if [ !shown || shown.compare[ now ] != 0 ]
@@ -9791,7 +9843,7 @@ element OrbiterBar
                 sc.font_size[ 17 ]
                 fx += sc.measure_text[ 'save as  ' ].w
             out[ 'nav_field' ] = NavField [ edit: ux.nav_filter,
-                label: '{ux.nav_dir}',
+                label: (ux.nav_fonts) ? 'fonts' : '{ux.nav_dir}',
                 area: Region [ 'l{fx}px t0 r1.8 b0' ] ]
         # the app's panel: its toggle at the bar's right end, lit open
         if [ ae && ae.has_panel*[] ]
@@ -10218,18 +10270,87 @@ UXMenuButton UXMenuRight
 
 # the exchange's close: top right, over everything in it. the same as
 # Esc with nothing sent, or putting it away: the exchange ends
-UXMenuButton ShotClose
+# a window's close: a classic box, no icon. a recessed chamber (its
+# shade falling from the top, light on its lower lip), a raised face
+# in it lit by a subtle radial that just reaches its corners; pressed,
+# the face sinks and the radial dims. mini: minimize, a soft bar
+element CloseBox
+    public mini : bool
+
+    # let go over it: what this close does
+    public func closed []
+        return
+
+    func on_press [ ev: Event ]
+        ev.no_default = true
+
+    # it acts when let go inside it, pressed on it first: a press
+    # dragged off and let go elsewhere is no click
+    func on_release [ ev: Event ]
+        if [ ev.mouse.button != 0 || !ux || !bounds
+             || ux.action_pressed != a ] return
+        wo : vec2f ux.win_origin[ a ]
+        mx : f32 [ f32[ ux.mouse.x ] - wo.x ]
+        my : f32 [ f32[ ux.mouse.y ] - wo.y ]
+        if [ mx < 0.0 || my < 0.0 || mx >= bounds.w || my >= bounds.h ]
+            return
+        closed*[]
+        ev.no_default = true
+    style : CSS {
+        layers.chamber:
+            area: l50%-11px t50%-10px w21px h21px
+            fill_color: #00000050
+            radius: 5
+            box_shadow: inset 0 2px 3px #000000cc
+        layers.lip:
+            area: l50%-11px t50%-10px w21px h21px
+            fill_color: #0000
+            radius: 5
+            box_shadow: inset 0 -1px 2px #ffffff30
+        layers.face:
+            area: l50%-7px t50%-6px w13px h13px
+            radius: 2.5
+            fill_color: #ffffff2a
+            fill_color_pos: 0.5 0.5
+            fill_gradient: radial
+            fill_gradient_color: #ffffff06
+            fill_gradient_radius: 11.9
+            box_shadow: 0 1px 2px #000000aa
+        # the pointer over it: the face goes red and bright, the
+        # chamber warms a little
+        :hovered
+            layers.chamber:
+                fill_color: #50101860
+            layers.lip:
+                box_shadow: inset 0 -1px 2px #ff707050
+            layers.face:
+                fill_color: #ff4a4ae6
+                fill_gradient_color: #b0182080
+                box_shadow: 0 1px 3px #000000aa
+        :pressed
+            layers.face:
+                fill_color: #c8282899
+                fill_gradient_color: #50080c80
+                box_shadow: inset 0 1px 2px #000000aa
+        :mini
+            layers.bar:
+                area: l50%-4px t50%-1px w7px h2px
+                fill_color: #ffffffaa
+                radius: 1
+                box_shadow: 0 0 2px #ffffff55
+    }
+
+CloseBox ShotClose
     area : Region { r16px t16px w36px h36px }
     style : CSS {
     :fading
         opacity: 0.0, 3000ms cubic outward
     }
-    # cached, unlike a button: uncached, it painted into root's cache
-    # and the cached backdrop was drawn over it
-    no_cache : false
     func on_press [ ev: Event ]
-        if [ ux ] ux.shot_close[]
+        ev.no_default = true
         ev.stop[]
+    func closed []
+        if [ ux ] ux.shot_close[]
 
 UXMenuButton ShotMic
     # cached, as ShotClose: uncached it painted under root's cached

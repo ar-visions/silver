@@ -445,8 +445,7 @@ element EditorView
             t.rm[ 'histnav' ]
         # a phone shows no close (x) anywhere
         if [ newfile && !use_mobile ]
-            t['newfile_cancel'] = BarClose [ icon: 'close',
-                                             manual_mode: true,
+            t['newfile_cancel'] = PaneBox [
                 area: Region [ 'r0+ t0 w1.66 b0' ] ]
         return t
  
@@ -1650,12 +1649,9 @@ element AgentBody
         layers.face:
             fill_color: #202a
             radius: 0 0 8 8
-            stroke_width: 1
-            stroke_color: #806bff55
     :flush
         layers.face:
             radius: 0
-            stroke_width: 0
     }
 
 # an agent on the desktop: its console's frame, over the icons
@@ -1663,9 +1659,7 @@ element DeskAgentPane
     style : CSS {
         layers.face:
             fill_color: #00000080
-            radius: 14
-            stroke_width: 1
-            stroke_color: #fff2
+            radius: 8
     }
 
 # an agent's state on its title: running, or waiting (blue)
@@ -1748,6 +1742,9 @@ element HomeView
                     cbase: Layer [ fill_color: rgba [ '#0000' ] ],
                     area: Region [ orb.desk_pane_at[ pad + ins, pt + ins,
                                                      pr + ins ] ] ]
+                t['dagent_edge'] = WinEdge [ selected: true,
+                    area: Region [
+                        'l{pad}px t{pt}px r{pr}px b{pad}px' ] ]
         return t
 
 # a desktop cell's side: an app card's and its gap
@@ -3033,6 +3030,10 @@ element AgentHome
                     cbase: Layer [ fill_color: rgba [ '#0000' ] ],
                     area: Region [
                         'l{lx}px t{y}px r{rr}px h{ch + gap}px' ] ]
+                eh : f32 [ ch + gap + 1.0 ]
+                t['ahome_g_{an}'] = WinEdge [ selected: true,
+                    square: narrow, area: Region [
+                        'l{lx}px t{y - 1.0}px r{rr}px h{eh}px' ] ]
                 y += ch + gap
             y += gap
         return t
@@ -3151,6 +3152,12 @@ Option ReloadButton
                 fill_color: #c8641e55
                 box_shadow: inset 0 0 8px #ffae5ecc
     }
+
+# a close that orbiter acts on, by its id
+CloseBox PaneBox
+    func closed []
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ o ] o.close_box[ a ]
 
 # center of the status bar: hides everything above it but the scene
 # find bar switch: search the docked remote checkouts too
@@ -3747,6 +3754,10 @@ class AppEntry
     public group   : string
     # a module that builds a program: the program it installs
     public built   : path
+    # a hosted app: its library; gone, it is not built
+    public lib     : path
+    # the module whose build links this one: it cannot be deleted
+    public needed  : string
     # a store's apps (install/stores/<name>), shown as its folder
     public apps    : vec AppEntry
     # a store app: the line it runs with, its program in install/bin
@@ -4021,17 +4032,6 @@ Option GitButton
 
 NavButton LButton
     area : Region { l0+ t0 w1.15 h0.9 }
-
-# a title bar's close: the bar's full height, no gap, square corners
-LButton BarClose
-    area : Region { l0+ t0 w1.66 b0 }
-    use_spacing : false
-    # the X at the dots chip's glyph share of the box
-    icon_fit : f32 [ 0.55 ]
-    style : CSS {
-        layers.body:
-            radius: 0
-    }
 
 NavButton OrbiterButton
     area : Region { r0.6 b1.6 w1.2 h1.2 }
@@ -4708,6 +4708,7 @@ element orbiter : trinity # implements compiler
         ui_carry += f32[ keys_force ]
         ui_carry += f32[ switch_sel ]
         ui_carry += (switch_con) ? 1.0 : 0.0
+        ui_carry += (desk_adding) ? 1.0 : 0.0
         ui_view = sys_view
         ui_build = switch_build
 
@@ -4733,6 +4734,7 @@ element orbiter : trinity # implements compiler
         if [ ui_carry.count > 6 ] keys_force = i32[ ui_carry[ 6 ] ]
         if [ ui_carry.count > 7 ] switch_sel = i32[ ui_carry[ 7 ] ]
         if [ ui_carry.count > 8 ] switch_con = ui_carry[ 8 ] > 0.5
+        if [ ui_carry.count > 9 ] desk_adding = ui_carry[ 9 ] > 0.5
         switch_build = (ui_build) ? ui_build : ''
         if [ ui_carry[ 2 ] > 0.5 ]
             drawer_toggle[ 'system', false ]
@@ -5059,6 +5061,8 @@ element orbiter : trinity # implements compiler
     intern tabs_seen  : string
     # the height the widgets take above the apps (a narrow desktop)
     intern desk_top   : f32
+    # the agents' + pressed: the kinds to start, until a press
+    intern desk_adding : bool
     # the widget a narrow desktop's tab bar shows
     intern desk_tab   : i32
     # the chooser's icons, by module
@@ -5326,6 +5330,13 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] set_rate     : i32 [ 25 ]
     intern [ StatePersist ] set_layout   : string [ 'us' ]
     intern [ StatePersist ] set_size     : i32 [ rest_unit[] ]
+    # the families chosen ('' the bundled ones): code and consoles,
+    # the bars and menus
+    intern [ StatePersist ] set_mono     : string
+    intern [ StatePersist ] set_tool     : string
+    # the chip the font dialog is open for; what was last applied
+    intern font_for      : string
+    intern fonts_on      : string
     # a key's tick on the phone's motor: off, light, medium, strong
     intern [ StatePersist ] set_haptic   : string [ 'light' ]
     # the screen's light, 0..1 (-1: as the system set it)
@@ -8045,8 +8056,7 @@ element orbiter : trinity # implements compiler
         if [ dc && !use_mobile ]
             # the dialog's own close, furthest right: the arrows keep
             # the left
-            els['panel_close'] = BarClose [ icon: 'close',
-                                            manual_mode: true,
+            els['panel_close'] = PaneBox [
                 area: Region [ 'r0+ t0 w1.66 b0' ] ]
         # a module: its run button; any other file: its type's icon
         # it stays in navigation: the app can start at any time
@@ -8096,9 +8106,8 @@ element orbiter : trinity # implements compiler
                     area: Region [ 'r0+ t0 w12 b0' ] ]
         el [ wid != 0 ]
             if [ !use_mobile ]
-                els['modicon'] = alt_tab[ pane_ix, 'modicon',
-                    'win_close', 'close', 'win_close', 'close', false,
-                    false, false, Region [ 'l-1px+ t0 w1.35 b0' ] ]
+                els['win_close'] = PaneBox [
+                    area: Region [ 'l-1px+ t0 w1.35 b0' ] ]
         # a module's run button sits at the right, by find
         el [ !mi && edp && edp.src ]
             # a module's folder wears its module's icon
@@ -8126,12 +8135,7 @@ element orbiter : trinity # implements compiler
         # the navigator change what a pane holds
         sysb : bool system_on[]
         if [ !engaged && (hx || closable) && !sysb && !use_mobile ]
-            els['tabclose'] = BarTab [
-                buttons: vec string [] [
-                    (hx) ? 'view_close' : 'pane_close' ],
-                icon_ids: vec string [] [ 'close' ], manual: true,
-                rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false,
+            els[ (hx) ? 'view_close' : 'tab_close' ] = PaneBox [
                 area: Region [ 'r-1px+ t0 w{bwd}px b0' ] ]
         # pause while the app runs; stopped, its steps, one group: an
         # app run for debugging only (its launch's debug, or a
@@ -8233,14 +8237,7 @@ element orbiter : trinity # implements compiler
         # or the globe again)
         if [ engaged && !is_resource && !fb_on && !title_finds[]
              && !system_on[] ]
-            ncls : vec string [] [ 'finder_close' ]
-            nclo : vec string [] [ 'close' ]
-            els['finder_x'] = TButtons [ buttons: ncls, icon_ids: nclo,
-                                         manual: true,
-                disable_mask: 0,
-                icon_scale: 0.55, rest_glow: rgba [ '#ccf2' ],
-                rest_px: 8.0,
-                seg_radius: 0.0, use_spacing: false,
+            els['finder_close'] = PaneBox [
                 area: Region [ 'r0+ t0 w{bwd}px b0' ] ]
         if [ fb_on ]
             # right-flow: first inserted lands furthest right
@@ -9130,28 +9127,11 @@ element orbiter : trinity # implements compiler
         w : f32 [ (beside) ? round[ gw * 0.3 ] - pad : gw - pad * 2.0 ]
         x : f32 [ (beside) ? gw - pad - w : pad ]
         y : f32 [ pad ]
-        # first a tab an agent: a press starts a new one of it
         ah : f32 [ round[ 39.0 * un ] ]
-        kinds : vec string agent_installed[]
-        if [ kinds.count > 0 ]
-            ids : vec string []
-            ics : vec string []
-            for [ an: string ] in kinds
-                ids.push[ 'dagent_add_{an}' ]
-                ics.push[ '_text' ]
-            tp : string [ (beside) ? 't{y}px' : 't{pad}px+' ]
-            t['dagent_tabs'] = AgentKinds [ buttons: ids, icon_ids: ics,
-                labels: kinds, manual: true, use_spacing: false,
-                label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                label_px: 17.0 * un, seg_radius: 8.0,
-                rest_fill: rgba [ '#0000' ],
-                # its edge layer draws the border, as the titles'
-                outline: rgba [ '#0000' ],
-                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
-            y += ah + gap
         # why one did not start, in red
         if [ home_why && home_why.count > 0 ]
-            tp : string [ (beside) ? 't{y}px' : 't{gap}px+' ]
+            tp : string [ (beside) ? 't{y}px'
+                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
             t['dagent_why'] = HomeError [ label: home_why,
                 area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
             y += ah + gap
@@ -9162,6 +9142,37 @@ element orbiter : trinity # implements compiler
                 : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
             t['dagent_h_{an}'] = AgentHead [ desk: true, agent: an,
                 selected: desk_agent == an && desk_agent_on[],
+                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
+            y += ah + gap
+        # last a + : a press shows a tab an agent, each starts one
+        kinds : vec string agent_installed[]
+        if [ kinds.count > 0 && !desk_adding ]
+            tp : string [ (beside) ? 't{y}px'
+                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
+            t['dagent_new'] = AgentKinds [
+                buttons: vec string [] [ 'dagent_new' ],
+                icon_ids: vec string [] [ 'plus' ], icon_scale: 0.4,
+                manual: true, use_spacing: false, seg_radius: 8.0,
+                rest_fill: rgba [ '#0000' ],
+                outline: rgba [ '#0000' ],
+                area: Region [
+                    'l{x + w - ah}px {tp} w{ah}px h{ah}px' ] ]
+            y += ah + gap
+        el [ kinds.count > 0 ]
+            ids : vec string []
+            ics : vec string []
+            for [ an: string ] in kinds
+                ids.push[ 'dagent_add_{an}' ]
+                ics.push[ '_text' ]
+            tp : string [ (beside) ? 't{y}px'
+                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
+            t['dagent_tabs'] = AgentKinds [ buttons: ids, icon_ids: ics,
+                labels: kinds, manual: true, use_spacing: false,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                label_px: 17.0 * un, seg_radius: 8.0,
+                rest_fill: rgba [ '#0000' ],
+                # its edge layer draws the border, as the titles'
+                outline: rgba [ '#0000' ],
                 area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
             y += ah + gap
         # an agent up on the desktop: its titles alone, no widgets
@@ -9324,6 +9335,11 @@ element orbiter : trinity # implements compiler
             nn : string home_new[ e.action.mid[ 14,
                                               e.action.count - 14 ] ]
             if [ nn.count > 0 ] home_in_pane[ nn, active_pane ]
+            return
+        # the window's console up or down
+        if [ e.action == 'orb.con' ]
+            con_flip[ active_pane ]
+            if [ ux ] ux.restyle = true
             return
         # a shell in the app's own folder, in this pane; an agent's
         # terminal it covers runs on
@@ -9559,6 +9575,8 @@ element orbiter : trinity # implements compiler
         # a menu opened over the main menu: it stays under
         if [ kind == 'system' ] sys_under = false
         el [ drawer_open && menu_kind == 'system' ] sys_under = true
+        # the main menu opens fresh, no view left chosen
+        if [ kind == 'system' && !drawer_open ] sys_view = ''
         # a menu and the switcher never show together
         switcher     = false
         drawer_open  = true
@@ -13630,6 +13648,9 @@ element orbiter : trinity # implements compiler
     # a press in the drawer, or on what opens one, keeps it up
     func drawer_keeps [ t: element ] -> bool
         if [ t inherits MenuTop || t.id == 'bar_title'
+             || t.id == 'sys_close'
+             || t inherits NavRows || t inherits NavigationView
+             || t inherits NavField
              || t inherits BarCrumb || t inherits TrayMark ]
             return true
         for [ e: element* t, e, e = e.parent ]
@@ -13647,6 +13668,11 @@ element orbiter : trinity # implements compiler
             if [ ux ] ux.restyle = true
         if [ stats ]
             log 'PRESS target={(ev.target && ev.target.id) ? ev.target.id : "(noid)"} pick={(pick_field) ? pick_field : ""} nav={nav_showing} find={find_showing} finder_off={finder_off}'
+        # a press off the agents' kinds puts them away
+        if [ desk_adding && (!ev.target || !ev.target.id
+             || !ev.target.id.starts_with[ 'dagent_add_' ]) ]
+            desk_adding = false
+            if [ ux ] ux.restyle = true
         if [ !ev.target ] return
         log 'on_press: target={ev.target.id}'
         # in the path's drawer: the navigator under it keeps its
@@ -13924,20 +13950,6 @@ element orbiter : trinity # implements compiler
             if [ nav_root ] portal_deliver[ nav_root ]
             ev.no_default = true
             return
-        # a window's close: the program is asked, as its own X would
-        if [ ev.target.id == 'win_close' ]
-            pw : i32 [ active_pane ]
-            for [ e: element* ev.target, e, e = e.parent ]
-                if [ e inherits EditorView ]
-                    ev9 : EditorView e
-                    pw = ev9.pane_index
-                    break
-            # a dialog up over it closes first
-            wv : u64 pane_sheet_of[ pw ]
-            if [ wv == 0 ] wv = pane_window[ pw ]
-            if [ wv != 0 ] close_window[ wv ]
-            ev.no_default = true
-            return
         # the title's run: shift or cmd adds an instance, else a running
         # one stops
         if [ ev.target.id == 'app_run' ]
@@ -14031,6 +14043,17 @@ element orbiter : trinity # implements compiler
         # it; again, away. a choice: taken
         if [ ev.target.id && ev.target.id.starts_with[ 'xchip_' ] ]
             nm : ev.target.id.mid[ 6, ev.target.id.count - 6 ]
+            # a font: the generic dialog, not choices under the chip
+            if [ nm == 'fixed width' || nm == 'tool font' ]
+                set_open = ''
+                font_for = nm
+                fx : bool [ nm == 'fixed width' ]
+                cur : string [ (fx) ? set_mono : set_tool ]
+                now : string [ (cur && cur.count > 0) ? cur
+                    : 'Default' ]
+                if [ ux ] ux.nav_font_pick[ now, fx, true ]
+                ev.no_default = true
+                return
             set_open = (set_open == nm) ? '' : nm
             if [ ux ] ux.restyle = true
             ev.no_default = true
@@ -14193,23 +14216,8 @@ element orbiter : trinity # implements compiler
             return
         # a tab's close: that pane closes
         # minimize: the pane goes, its app runs on (the menu's Hide)
-        if [ ev.target.id.starts_with[ 'pmin_' ] ]
-            mp : i32 [ ev.target.id.mid[ 5,
-                ev.target.id.count - 5 ].integer_value[] ]
-            if [ mp >= 0 && mp < editor_slots.count ] minimize[ mp ]
-            if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
-        if [ ev.target.id.starts_with[ 'pclose_' ] ]
-            cp : i32 [ ev.target.id.mid[ 7,
-                ev.target.id.count - 7 ].integer_value[] ]
-            # its running instance ends with it, not hidden
-            if [ cp >= 0 && cp < editor_slots.count ]
-                # a window gives its pane back once it has closed
-                owned : bool [ pane_window[ cp ] != 0 ]
-                quit_app_in[ cp ]
-                if [ !owned ] close_pane[ cp ]
-            if [ ux ] ux.restyle = true
+        # the close and minimize boxes act at their release (CloseBox)
+        if [ ev.target inherits CloseBox ]
             ev.no_default = true
             return
         # another pane's group in the bar: that pane becomes active
@@ -14308,19 +14316,10 @@ element orbiter : trinity # implements compiler
             if [ ux ] dirty_consoles[ ux.root ]
             ev.no_default = true
             return
-        # the desktop's bar: a new widget (shown), the widgets shown
-        # or hidden
+        # the desktop's bar: its agents and widgets, shown or hidden
         if [ ev.target.id == 'desk_side' ]
             desk_hide = !desk_hide
             save_session[]
-            if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
-        # a window's console button: its console up or down
-        if [ ev.target.id.starts_with[ 'pcon_' ] ]
-            cp : i32 [ ev.target.id.mid[ 5,
-                ev.target.id.count - 5 ].integer_value[] ]
-            con_flip[ cp ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
@@ -14358,8 +14357,14 @@ element orbiter : trinity # implements compiler
         # pip shrinks the app into the editor; its instruments stay open
         # the agent view: a choice adds an instance, a title opens
         # its console (again folds it), end ends it
+        if [ ev.target.id == 'dagent_new' ]
+            desk_adding = true
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
         # the desktop's tab: a new instance of that agent, shown
         if [ ev.target.id.starts_with[ 'dagent_add_' ] ]
+            desk_adding = false
             nn : string home_new[ ev.target.id.mid[ 11,
                                   ev.target.id.count - 11 ] ]
             if [ nn.count > 0 ]
@@ -14469,14 +14474,6 @@ element orbiter : trinity # implements compiler
                 sync_tabs[]
                 return
         
-        if [ ev.target.id == 'view_close' ]
-            edc : Editor pane_of[ ev.target ]
-            if [ !edc ] edc = pane_at[ active_pane ]
-            if [ edc ]
-                if [ edc.view_name == 'git' ] edc.git_on = false
-                set_pane_view[ edc, '' ]
-                force_update[]
-            return
 
         if [ ev.target.id.starts_with[ 'view_' ] ]
             edv : Editor pane_of[ ev.target ]
@@ -14505,28 +14502,9 @@ element orbiter : trinity # implements compiler
             return
 
 
-        if [ ev.target.id == 'newfile_cancel' ]
-            for [ e9: element* ev.target, e9, e9 = e9.parent ]
-                if [ e9 inherits EditorView ]
-                    ev9 : EditorView e9
-                    ev9.newfile_exit[]
-                    break
-            ev.no_default = true
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
 
         # [x] left of the title: leave the chosen view and any diff.
         # a running app stops and lands on its source, never relaunches
-        if [ ev.target.id == 'panel_close' ]
-            edx : Editor pane_of[ ev.target ]
-            if [ edx ] edx.diff_commit = null
-            if [ edx && edx.run_view ]
-                edx.toggle_app_run[ false ]
-            el
-                set_pane_view[ edx, '' ]
-            ev.no_default = true
-            if [ ev.target ] ev.target.ux.restyle = true
-            return
         
         if [ ev.target.id == 'back' ]
             exit_finder[]
@@ -14668,12 +14646,6 @@ element orbiter : trinity # implements compiler
             force_update[]
             return
 
-        if [ ev.target.id == 'finder_close' ]
-            exit_find_mode[]
-            ev.no_default = true
-            if [ ev.target ] ev.target.ux.restyle = true
-            force_update[]
-            return
 
         if [
             ev.target.id == 'finder_back'
@@ -15683,13 +15655,16 @@ element orbiter : trinity # implements compiler
                     if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
                     av8.service[ w.screen ]
         desk_service[ w ]
-        # a Full pane covers the ui: the backdrop scene and frost chain
-        # skip
-        cover9 : bool [ false ]
+        # docked windows filling the area hide the scene: it holds
+        cover9 : bool [ !hide_ui && any_docked[] ]
         for [ pc9: i32 0, pc9 < editor_slots.count, pc9 += 1 ]
+            if [ pane_floats[ pc9 ] ] continue
             ec : Editor pane_at[ pc9 ]
-            if [ ec && ec.app_view && ec.run_view && !ec.run_view.held && !ec.run_view.ended ]
-                cover9 = true
+            app9 : bool [ ec && ec.app_view && ec.run_view
+                          && !ec.run_view.held && !ec.run_view.ended ]
+            if [ pane_browsing[ pc9 ]
+                 || (!app9 && pane_window[ pc9 ] == 0) ]
+                cover9 = false
         if [ ux ] ux.backdrop_bypass = cover9
         attach_publish[]
         # a restored free window: shown once its pane has an editor
@@ -16462,25 +16437,23 @@ element orbiter : trinity # implements compiler
                 if [ pane_win[ q ] == wvd ]
                     hide_window[ wvd ]
                     return
-        shown : bool [ avd && ((wvd != 0
-            && pane_window[ active_pane ] == wvd)
-            || (wvd == 0 && edd && edd.run_view == avd
-                && edd.app_view)) ]
-        # an app in the pane: its Code (the menu's), as that does
-        if [ shown && wvd == 0 ]
-            edd.app_view = false
-            edd.pristine = false
-        el [ shown ]
-            if [ pane_win && active_pane < pane_win.count ]
-                pane_win[ active_pane ] = u64[ 0 ]
-            toggled_out = active_pane
-        el
-            # back in view means embedded (a file's viewer says PIP)
-            if [ avd && avd.display == 0 ]
-                avd.display = 1
-                avd.pip     = false
-                tell_display[ avd ]
-            show_instance[ iid, active_pane ]
+        # shown in a window: the chip minimizes it, the app runs on
+        # (its code is the window's own toggle, pcode)
+        if [ avd ]
+            for [ q: i32 0, q < editor_slots.count, q += 1 ]
+                edq : Editor pane_at[ q ]
+                if [ (wvd != 0 && pane_window[ q ] == wvd)
+                     || (wvd == 0 && edq && edq.run_view == avd
+                         && edq.app_view) ]
+                    minimize[ q ]
+                    if [ ux ] ux.restyle = true
+                    return
+        # back in view means embedded (a file's viewer says PIP)
+        if [ avd && avd.display == 0 ]
+            avd.display = 1
+            avd.pip     = false
+            tell_display[ avd ]
+        show_instance[ iid, active_pane ]
         if [ ux ] ux.restyle = true
 
     # a pinned program: its running instance, else a new one
@@ -16918,52 +16891,47 @@ element orbiter : trinity # implements compiler
         # the right end, short of the bar's own: the window's close
         # and its arrows, or the navigator's views
         re : f32 [ (bounds) ? bounds.w - right_w[] : 0.0 ]
-        # the desktop: the panel hides or shows the widgets (a phone
-        # always shows them; the menu's Widgets adds them)
+        # the orbiter menu up: the close there is the menu's
+        up : bool [ sys_up[] && !use_mobile ]
+        if [ up ]
+            ub : f32 [ bar_units[] * unit_px[] ]
+            t['sys_close'] = PaneBox [
+                area: Region [ 'l{re - ub}px t0 w{ub}px b0' ] ]
+        # the desktop: shows or hides its agents and widgets
         if [ pi >= 0 && !switcher && pane_empty[ pi ] && !sys_up[]
              && !use_mobile ]
             dw : f32 [ 1.33 * unit_px[] ]
-            t['desk_bar'] = AltTab [
-                buttons: vec string [] [ 'desk_side' ],
-                icon_ids: vec string [] [ 'right_panel' ],
-                icon_scale: 0.55, manual: true, seg_radius: 0.0,
-                use_spacing: false, rest_fill: rgba [ '#0000' ],
-                sel_mask: (desk_hide) ? 0 : 1,
-                area: Region [ 'l{re - dw}px t0 w{dw}px b0' ] ]
+            t['desk_side'] = bar_icon[ 'orbiter4', 0.605, !desk_hide,
+                false, re - dw, dw ]
         if [ pv && pane_browsing[ pi ] ]
             # the navigator's own back and forward, over the folders
             # it has been in, by its close; the views left of them
             cw : f32 [ 1.33 * unit_px[] ]
             if [ !use_mobile ]
-                t['snav_close'] = AltTab [
-                    buttons: vec string [] [ 'finder_close' ],
-                    icon_ids: vec string [] [ 'close' ],
-                    icon_scale: 0.6, manual: true, seg_radius: 0.0,
-                    use_spacing: false, rest_fill: rgba [ '#0000' ],
-                    area: Region [ 'l{re - cw}px t0 w{cw}px b0' ] ]
+                # a square slot, as a window's close
+                ch : f32 [ bar_units[] * unit_px[] ]
+                if [ !up ]
+                    t['finder_close'] = PaneBox [
+                        area: Region [ 'l{re - ch}px t0 w{ch}px b0' ] ]
                 re -= cw
             # a phone shows no back / forward arrows
             aw : f32 [ (use_mobile) ? 0.0 : 2.39 * unit_px[] ]
             dm : i32 [ ((nav_can[ -1 ]) ? 0 : 1)
                        | ((nav_can[ 1 ]) ? 0 : 2) ]
             if [ !use_mobile ]
-                t['snav_finder'] = AltTab [
-                    buttons: vec string [] [ 'finder_back',
-                        'finder_fwd' ],
-                    icon_ids: vec string [] [ 'left', 'right' ],
-                    icon_scale: 0.30, manual: true, seg_radius: 0.0,
-                    use_spacing: false, rest_fill: rgba [ '#0000' ],
-                    disable_mask: dm, seg_reach: 0.5,
-                    area: Region [ 'l{re - aw}px t0 w{aw}px b0' ] ]
+                t['finder_back'] = bar_icon[ 'left', 0.30, false,
+                    (dm & 1) != 0, re - aw, aw * 0.5 ]
+                t['finder_fwd'] = bar_icon[ 'right', 0.30, false,
+                    (dm & 2) != 0, re - aw * 0.5, aw * 0.5 ]
             vx : f32 pane_views_el[ t, pi, re - aw ]
             crumbs_el[ t, (nav_root) ? '{nav_root.absolute[]}' : '',
                        '', -1, false, x + 8.0 * uu, vx - 8.0 * uu,
                        uu ]
         el [ pv && bounds && !pane_empty[ pi ] ]
             # the close at the right end, the arrows left of it
-            rx : f32 pane_close_el[ t, pi, re, 0.0, 0.0 ]
-            vx : f32 pane_console_el[ t, pi,
-                nav_arrows_el[ t, pi, rx ] ]
+            rx : f32 [ re - 1.33 * unit_px[] ]
+            if [ !up ] rx = pane_close_el[ t, pi, re, 0.0, 0.0 ]
+            vx : f32 nav_arrows_el[ t, pi, rx ]
             # a URL app's address: up to the arrows; a press edits
             url : bool [ pi == active_pane && bar_url_on[] ]
             if [ url ]
@@ -17015,22 +16983,24 @@ element orbiter : trinity # implements compiler
         if [ !ed || ed.app_view ] return xr
         vs : vec string file_views[ ed ]
         if [ vs.count == 0 ] return xr
-        ids : vec string []
-        ics : vec string []
         cur : string ed.resolve_view[]
-        lit : i32 [ 0 ]
+        vw : f32 [ 1.33 * unit_px[] ]
+        bw : f32 [ vw * f32[ vs.count ] ]
         for [ i: i32 0, i < vs.count, i += 1 ]
             v : string vs[ i ]
-            ids.push[ 'pview:{pi}:{v}' ]
             ci : string console_icon[ v ]
-            ics.push[ (ci) ? ci : v ]
-            if [ (v == 'git') ? ed.git_on : v == cur ] lit |= (1 << i)
-        bw : f32 [ 1.33 * unit_px[] * f32[ vs.count ] ]
-        t['sview_{pi}'] = AltTab [ buttons: ids, icon_ids: ics,
-            icon_scale: 0.5, manual: true, seg_radius: 0.0,
-            use_spacing: false, rest_fill: rgba [ '#0000' ],
-            sel_mask: lit, seg_reach: 0.5,
-            area: Region [ 'l{xr - bw}px t0 w{bw}px b0' ] ]
+            ic : string [ (ci) ? ci : v ]
+            lit : bool [ (v == 'git') ? ed.git_on : v == cur ]
+            vx : f32 [ xr - bw + vw * f32[ i ] ]
+            svg : path 'images/{ic}.svg'
+            # a view with no icon file shows its name
+            if [ svg.exists[] ]
+                t['pview:{pi}:{v}'] = bar_icon[ ic, 0.5, lit, false,
+                    vx, vw ]
+            el
+                t['pview:{pi}:{v}'] = BarButton [ label: v,
+                    selected: lit, use_spacing: false,
+                    area: Region [ 'l{vx}px t0 w{vw}px b0' ] ]
         return xr - bw
 
     # the navigator's folder as its path, from x0 up to xr: home is ~,
@@ -17272,17 +17242,13 @@ element orbiter : trinity # implements compiler
             ? pane_shown[ pi * 4 + 1 ] : 0.0 ]
         top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
         rx : f32 pane_close_el[ t, pi, w, sx, sy + top ]
-        vx : f32 pane_console_el[ t, pi, nav_arrows_el[ t, pi, rx ] ]
+        vx : f32 nav_arrows_el[ t, pi, rx ]
         x = pane_outline_el[ t, pi, x, 's{pi}_' ]
         # the load mark left of the arrows, as on the bar
         lw : f32 [ 1.33 * unit_px[] ]
         if [ pane_app_on[ pi ] && pane_loads[ pi ] && vx - lw > x ]
-            t['bar_load_{pi}'] = AltTab [
-                buttons: vec string [] [ 'bar_load_{pi}' ],
-                icon_ids: vec string [] [ 'eject' ], icon_scale: 0.5,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                area: Region [ 'l{vx - lw}px t0 w{lw}px b0' ] ]
+            t['bar_load_{pi}'] = bar_icon[ 'eject', 0.5, false, false,
+                vx - lw, lw ]
             vx -= lw
         pad : f32 [ 10.0 * uu ]
         # code in it: its file's path as pieces, as on the bar
@@ -17384,6 +17350,62 @@ element orbiter : trinity # implements compiler
                 x += nw
         return x
 
+    # a close box let go over: its id says what it closes
+    func close_box [ box: element ]
+        id : string box.id
+        if [ id.starts_with[ 'pmin_' ] ]
+            mp : i32 [ id.mid[ 5, id.count - 5 ].integer_value[] ]
+            if [ mp >= 0 && mp < editor_slots.count ] minimize[ mp ]
+        el [ id.starts_with[ 'pclose_' ] ]
+            cp : i32 [ id.mid[ 7, id.count - 7 ].integer_value[] ]
+            # its running instance ends with it, not hidden
+            if [ cp >= 0 && cp < editor_slots.count ]
+                # a window gives its pane back once it has closed
+                owned : bool [ pane_window[ cp ] != 0 ]
+                quit_app_in[ cp ]
+                if [ !owned ] close_pane[ cp ]
+        # a window's: the program is asked, as its own X would
+        el [ id == 'win_close' ]
+            pw : i32 [ active_pane ]
+            for [ e: element* box, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    wv : EditorView e
+                    pw = wv.pane_index
+                    break
+            # a dialog up over it closes first
+            sw : u64 pane_sheet_of[ pw ]
+            if [ sw == 0 ] sw = pane_window[ pw ]
+            if [ sw != 0 ] close_window[ sw ]
+        el [ id == 'view_close' ]
+            edc : Editor pane_of[ box ]
+            if [ !edc ] edc = pane_at[ active_pane ]
+            if [ edc ]
+                if [ edc.view_name == 'git' ] edc.git_on = false
+                set_pane_view[ edc, '' ]
+                force_update[]
+        el [ id == 'tab_close' ]
+            edu : Editor pane_of[ box ]
+            if [ edu ] close_pane[ edu.pane_index ]
+        el [ id == 'panel_close' ]
+            edx : Editor pane_of[ box ]
+            if [ edx ] edx.diff_commit = null
+            if [ edx && edx.run_view ]
+                edx.toggle_app_run[ false ]
+            el
+                set_pane_view[ edx, '' ]
+        el [ id == 'newfile_cancel' ]
+            for [ e: element* box, e, e = e.parent ]
+                if [ e inherits EditorView ]
+                    nv : EditorView e
+                    nv.newfile_exit[]
+                    break
+        el [ id == 'finder_close' ]
+            exit_find_mode[]
+            force_update[]
+        el [ id == 'sys_close' ]
+            drawer_shut[]
+        if [ ux ] ux.restyle = true
+
     # a pane's running app by name: the module it came from (its apps
     # view card), else its own module
     func app_name_of [ pi: i32 ] -> string
@@ -17434,34 +17456,23 @@ element orbiter : trinity # implements compiler
         mini : bool [ cmd_down || over ]
         # a phone: no close (x); its switcher ends an app
         xc : f32 [ (use_mobile) ? 0.0 : cw ]
+        # a square slot: the box's right gap equals its top gap
+        bh : f32 [ bar_units[] * unit_px[] ]
         if [ use_mobile ] mini = false
         el [ mini ]
-            # minimize: the close's ringed minus; the app runs on
-            t['pmin_{pi}'] = AltTab [
-                buttons: vec string [] [ 'pmin_{pi}' ],
-                icon_ids: vec string [] [ 'minus' ], icon_scale: 0.6,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ], second: true,
-                area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+            # minimize: the close's box with a bar; the app runs on
+            t['pmin_{pi}'] = PaneBox [ mini: true,
+                area: Region [ 'l{xr - bh}px t0 w{bh}px b0' ] ]
         el [ !use_mobile ]
-            t['pclose_{pi}'] = AltTab [
-                buttons: vec string [] [ 'pclose_{pi}' ],
-                icon_ids: vec string [] [ 'close' ], icon_scale: 0.6,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
+            t['pclose_{pi}'] = PaneBox [
+                area: Region [ 'l{xr - bh}px t0 w{bh}px b0' ] ]
         # the app's panel: its toggle beside the close, lit open (the
         # app keeps it open until it is pressed again)
         ed : Editor pane_at[ pi ]
         av : AppView (ed && ed.app_view) ? ed.run_view : null
         if [ !av || av.ended || !av.has_panel ] return xr - xc
-        t['ppanel_{pi}'] = AltTab [
-            buttons: vec string [] [ 'ppanel_{pi}' ],
-            icon_ids: vec string [] [ 'panel' ], icon_scale: 0.575,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (av.panel_on) ? 1 : 0,
-            area: Region [ 'l{xr - xc - cw}px t0 w{cw}px b0' ] ]
+        t['ppanel_{pi}'] = bar_icon[ 'panel', 0.575, av.panel_on,
+            false, xr - xc - cw, cw ]
         return xr - xc - cw
 
     # the app's outline: its toggle at x, lit open (the title after
@@ -17472,13 +17483,8 @@ element orbiter : trinity # implements compiler
         av : AppView (ed && ed.app_view) ? ed.run_view : null
         if [ !av || av.ended || !av.has_outline ] return x
         cw : f32 [ 1.33 * unit_px[] ]
-        t['{pre}poutline_{pi}'] = AltTab [
-            buttons: vec string [] [ '{pre}poutline_{pi}' ],
-            icon_ids: vec string [] [ 'outline' ], icon_scale: 0.575,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (av.outline_on) ? 1 : 0,
-            area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
+        t['{pre}poutline_{pi}'] = bar_icon[ 'outline', 0.575,
+            av.outline_on, false, x, cw ]
         return x + cw
 
     # a pane's left edge in the window, from this frame's layout (the
@@ -17499,7 +17505,7 @@ element orbiter : trinity # implements compiler
             || act == 'orb.git' || act == 'orb.prule'
             || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
             || act == 'orb.build' || act == 'orb.clean'
-            || act == 'orb.console'
+            || act == 'orb.console' || act == 'orb.con'
 
     # the pane's controls under the app's own menu (its first): a
     # pane added, this one closed, git, its views
@@ -17574,9 +17580,14 @@ element orbiter : trinity # implements compiler
                 at = (q > f + 1 && menu_items[ q - 1 ].rule) ? q - 1 : q
                 break
         add : vec TrayEntry []
+        # the window's console up or down
+        if [ !use_mobile && pane_inst[ active_pane ] ]
+            ce : TrayEntry own_entry[ 'Console', 'orb.con', 1 ]
+            ce.check = (con_up[ active_pane ]) ? 1 : 0
+            add.push[ ce ]
         # with the app's own entries: a shell where its files really are
         if [ app_place[] ]
-            add.push[ own_entry[ 'Console', 'orb.console', 1 ] ]
+            add.push[ own_entry[ 'New console', 'orb.console', 1 ] ]
         # a line before them, unless one is there already
         if [ add.count > 0
              || (at > f + 1 && !menu_items[ at - 1 ].rule) ]
@@ -17691,12 +17702,8 @@ element orbiter : trinity # implements compiler
         pm : string (ed && rv) ? ed.page_module[ rv.app_address ] : ''
         gw : f32 [ (pm.count > 0) ? round[ 56.0 * uu ] : 0.0 ]
         if [ gw > 0.0 && bw - dw - gw > 4.0 * pad ]
-            t['bar_page'] = AltTab [
-                buttons: vec string [] [ 'bar_page' ],
-                labels: vec string [] [ 'Get' ],
-                icons: false, manual: true, label_px: 16.0 * uu,
-                label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                seg_radius: 0.0, use_spacing: false,
+            t['bar_page'] = BarButton [ label: 'Get',
+                use_spacing: false,
                 area: Region [ 'l{xr - dw - gw}px t0 w{gw}px b0' ] ]
             dw += gw
         tw : f32 [ bt.site_w ]
@@ -17722,12 +17729,8 @@ element orbiter : trinity # implements compiler
         lw : f32 [ 1.33 * unit_px[] ]
         xe : f32 [ xr ]
         if [ xr - lw > x && pane_loads[ pi ] ]
-            t['bar_load{key}'] = AltTab [
-                buttons: vec string [] [ 'bar_load{key}' ],
-                icon_ids: vec string [] [ 'eject' ], icon_scale: 0.5,
-                manual: true, seg_radius: 0.0, use_spacing: false,
-                rest_fill: rgba [ '#0000' ],
-                area: Region [ 'l{xr - lw}px t0 w{lw}px b0' ] ]
+            t['bar_load{key}'] = bar_icon[ 'eject', 0.5, false, false,
+                xr - lw, lw ]
             xe = xr - lw
         t['bar_name{key}'] = BarTitle [ label: '', site: tt,
             area: Region [ 'l{x}px t0 w{xe - x}px b0' ] ]
@@ -17839,14 +17842,19 @@ element orbiter : trinity # implements compiler
         # a phone shows no back / forward arrows
         if [ dm == 3 || use_mobile ] return xr
         aw : f32 [ 2.39 * unit_px[] ]
-        t['snav_{pi}'] = AltTab [
-            buttons: vec string [] [ 'nav_back:{pi}', 'nav_fwd:{pi}' ],
-            icon_ids: vec string [] [ 'left', 'right' ],
-            icon_scale: 0.30, manual: true, seg_radius: 0.0,
-            use_spacing: false, rest_fill: rgba [ '#0000' ],
-            disable_mask: dm, seg_reach: 0.5,
-            area: Region [ 'l{xr - aw}px t0 w{aw}px b0' ] ]
+        hw : f32 [ aw * 0.5 ]
+        t['nav_back:{pi}'] = bar_icon[ 'left', 0.30, false,
+            (dm & 1) != 0, xr - aw, hw ]
+        t['nav_fwd:{pi}'] = bar_icon[ 'right', 0.30, false,
+            (dm & 2) != 0, xr - hw, hw ]
         return xr - aw
+
+    # a bar button with an icon in place of a name
+    func bar_icon [ icon: string, fit: f32, lit: bool, off: bool,
+                    x: f32, w: f32 ] -> BarButton
+        return BarButton [ icon: icon, icon_fit: fit, selected: lit,
+            disable: off, use_spacing: false,
+            area: Region [ 'l{x}px t0 w{w}px b0' ] ]
 
     func nav_mask [ pi: i32 ] -> i32
         edp : Editor pane_at[ pi ]
@@ -18041,19 +18049,6 @@ element orbiter : trinity # implements compiler
             if [ av.wl_window == wid ] return av
         return null
 
-    # every app run in a window has a console: its button, left of
-    # xr; the x it ends at
-    func pane_console_el [ t: Elements, pi: i32, xr: f32 ] -> f32
-        if [ use_mobile || !pane_inst[ pi ] ] return xr
-        cw : f32 [ 1.33 * unit_px[] ]
-        t['pcon_{pi}'] = AltTab [ buttons: vec string [] [ 'pcon_{pi}' ],
-            icon_ids: vec string [] [ 'bottom_panel' ], icon_scale: 0.6,
-            manual: true, seg_radius: 0.0, use_spacing: false,
-            rest_fill: rgba [ '#0000' ],
-            sel_mask: (con_up[ pi ]) ? 1 : 0,
-            area: Region [ 'l{xr - cw}px t0 w{cw}px b0' ] ]
-        return xr - cw
-
     # the session a window's console shows: the debugger's; else its
     # instance's, else every app's
     func console_sid [ pi: i32 ] -> string
@@ -18225,6 +18220,8 @@ element orbiter : trinity # implements compiler
             # once it is in install/bin
             if [ tx.index_of[ '\nprops:' ] < 0 ]
                 ae.built = path '{install_root[]}/bin/{mn}'
+            el
+                ae.lib = path '{install_root[]}/build/lib{f.stem[]}.so'
             ae.apps = store_apps[ mn, gr ]
             ae.store = store_has[ mn ]
             ae.widget = agi_word[ tx, 'widget' ]
@@ -18245,7 +18242,8 @@ element orbiter : trinity # implements compiler
             if [ g.count == 0 || !runs_here[ m ] ] continue
             lib : path '{install_root[]}/build/libsilver-{n}.so'
             if [ mobile_on[] && !lib.exists[] ] continue
-            oe : AppEntry [ name: n, file: d, module: true, group: g ]
+            oe : AppEntry [ name: n, file: d, module: true, group: g,
+                lib: lib ]
             oe.apps = store_apps[ n, g ]
             oe.store = store_has[ n ]
             oe.widget = source_word[ src, 'export widget' ]
@@ -18271,8 +18269,88 @@ element orbiter : trinity # implements compiler
             fe.host = source_word[ src, 'export host' ]
             fe.service = source_word[ src, 'export service' ]
             app_list.push[ fe ]
+        # what each build links, read once: who needs each module
+        lists : vec string []
+        users : vec string []
+        bd : path '{install_root[]}/build'
+        for [ lf: path ] in bd.ls[ null, false ]
+            if [ lf.ext[] != 'artifacts' ] continue
+            lt : string lf.load[ typeid[ string ], null ]
+            if [ !lt ] continue
+            lists.push[ lt ]
+            users.push[ lf.stem[] ]
+        for [ e9: AppEntry ] in app_list
+            e9.needed = linked_by[ e9.name, lists, users ]
         apps_gen += 1
         return app_list
+
+    # the module whose build lists this one's library, else ''
+    func linked_by [ n: string, lists: vec string, users: vec string ]
+            -> string
+        want : string '/libsilver-{n}.so'
+        own : string 'silver-{n}'
+        for [ i: i32 0, i < lists.count, i += 1 ]
+            st : string users[ i ]
+            if [ st == own || lists[ i ].index_of[ want ] < 0 ] continue
+            return (st.index_of[ 'silver-' ] == 0)
+                ? st.mid[ 7, st.count - 7 ] : st
+        return ''
+
+    # built, and nothing else's build needs it
+    func can_delete [ ae: AppEntry ] -> bool
+        return can_pull[ ae ] && (!ae.needed || ae.needed.count == 0)
+            && built_now[ ae ]
+
+    # an app of ours, not a file or a store's app
+    func can_pull [ ae: AppEntry ] -> bool
+        return ae && ae.module && !ae.opens && ae.file
+            && (!ae.launch || ae.launch.count == 0)
+            && '{ae.file}'.index_of[ '/stores/' ] < 0
+
+    func built_now [ ae: AppEntry ] -> bool
+        if [ ae.built ] return ae.built.exists[]
+        return !ae.lib || ae.lib.exists[]
+
+    # home holds what is built; a build under way or failed shows too
+    func on_home [ ae: AppEntry ] -> bool
+        if [ built_now[ ae ] ] return true
+        iw : string install_word[ ae ]
+        return iw == 'starting' || iw == 'building' || iw == 'failed'
+
+    # how many are on home: a change means gather the cards again
+    func home_count [] -> i32
+        c : i32 [ 0 ]
+        for [ ae: AppEntry ] in app_entries[]
+            if [ on_home[ ae ] ] c += 1
+        return c
+
+    # its binaries and share go; its source and saved state stay
+    func app_delete [ ae: AppEntry ]
+        if [ !can_delete[ ae ] ] return
+        n : string ae.name
+        if [ instances ]
+            ending : vec AppView []
+            for [ av: AppView ] in instances
+                if [ av.app_mod == n ] ending.push[ av ]
+            for [ av: AppView ] in ending
+                close_task[ av ]
+        ins : string '{install_root[]}'
+        rm : command { rm -rf "{ins}/build/libsilver-{n}.so"
+            "{ins}/build/{n}" "{ins}/bin/{n}"
+            "{ins}/build/{n}".o "{ins}/build/{n}".o.core*.o
+            "{ins}/build/{n}".bc "{ins}/build/{n}".ll
+            "{ins}/build/silver-{n}".artifacts
+            "{ins}/build/silver-{n}".product
+            "{ins}/build/silver-{n}".source
+            "{ins}/share/silver-{n}" "{ins}/share/{n}"
+            "{ins}/export/silver-{n}".agi
+            "{ins}/tmp/exports/silver-{n}".* }
+        rm.exec[ false ]
+        log 'orbiter: deleted the build of {n}'
+        at : i32 install_at[ n ]
+        if [ at >= 0 ] inst_word[ at ] = 'cancelled'
+        app_list = null
+        if [ ux ] ux.restyle = true
 
     # what a store wrote into its folder, install/stores/<store>:
     # each <name>/<name>.ag, named by its first comment line
@@ -19549,6 +19627,16 @@ element orbiter : trinity # implements compiler
         un : f32 unit_px[]
         ch : f32 [ round[ 1.1 * un ] ]
         gap : f32 [ round[ 0.3 * un ] ]
+        tx : Elements []
+        tx['text_choices'] = element [
+            elements: chip_grid[ text_settings[], set_open, 'x' ],
+            area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+        th : f32 [ ch + chips_h ]
+        t['text_group'] = SetGroup [ title: 'text', head_h: ch,
+            elements: tx,
+            area: Region [
+                'l{gap}px t{top + gap}px r{gap}px h{th}px' ] ]
+        top += gap + th
         rec : Elements []
         rec['rec_choices'] = element [
             elements: chip_grid[ rec_settings[], set_open, 'x' ],
@@ -19581,10 +19669,60 @@ element orbiter : trinity # implements compiler
                 'l{gap}px t{top + gap}px r{gap}px h{y}px' ] ]
         return t
 
-    # a panel's settings, the display's recording choices with them
+    # the display's text group: its size, and a font each way
+    func text_settings [] -> vec Prop
+        ps : vec Prop []
+        st : vec string []
+        ru : i32 rest_unit[]
+        for [ fu: i32 ru - 4, fu <= ru + 8, fu += 2 ]
+            st.push[ '{i32[ round[ f32[ fu ] / 22.0 * 100.0 ] ]}%' ]
+        ps.push[ setting[ 'size',
+            '{i32[ round[ f32[ set_size ] / 22.0 * 100.0 ] ]}%', st ] ]
+        ps.push[ setting[ 'fixed width',
+            (set_mono && set_mono.count > 0) ? set_mono : 'Default',
+            vec string [] ] ]
+        ps.push[ setting[ 'tool font',
+            (set_tool && set_tool.count > 0) ? set_tool : 'Default',
+            vec string [] ] ]
+        return ps
+
+    # a family's file at a weight; '' none, or not on this machine
+    func font_file [ family: string, weight: i32 ] -> string
+        if [ !family || family.count == 0 ] return ''
+        m : FontMatch font_match[ family, weight, 5, 0, 0, false ]
+        return (m.found) ? m.file : ''
+
+    # the chosen fonts over the bundled ones, when they changed
+    func fonts_apply [ w: Window ]
+        if [ !w || !w.vk ] return
+        now : string '{set_mono}|{set_tool}'
+        if [ fonts_on && fonts_on == now ] return
+        fonts_on = now
+        w.vk.font_swap[ 'fonts/SpaceMono-Combined.ttf',
+                        font_file[ set_mono, 400 ] ]
+        w.vk.font_swap[ 'fonts/BarlowCondensed-Regular.ttf',
+                        font_file[ set_tool, 400 ] ]
+        w.vk.font_swap[ 'fonts/BarlowCondensed-Bold.ttf',
+                        font_file[ set_tool, 700 ] ]
+        w.restyle = true
+        if [ w.root ] w.dirty_tree[ w.root ]
+
+    # the font dialog's pick: the chip it was opened for takes it
+    public func nav_open [ p: path ] -> bool
+        if [ !ux || !ux.nav_fonts ] return false
+        fam : string [ (ux.font_chosen == 'Default') ? ''
+                                                     : ux.font_chosen ]
+        if [ font_for == 'fixed width' ] set_mono = fam
+        el [ font_for == 'tool font' ] set_tool = fam
+        session_dirty = true
+        fonts_apply[ ux ]
+        return true
+
+    # a panel's settings, the display's own groups' with them
     func setting_props [ tab: string ] -> vec Prop
         ps : vec Prop panel_settings[ tab ]
         if [ tab == 'display' ]
+            for [ p: Prop ] in text_settings[] ps.push[ p ]
             for [ p: Prop ] in rec_settings[] ps.push[ p ]
         return ps
 
@@ -19701,12 +19839,6 @@ element orbiter : trinity # implements compiler
                 ps.push[ setting[ 'sleep', set_sleep,
                     vec string [] [ 'at once', 'after 15 s',
                         'after 1 min', 'after 5 min', 'never' ] ] ]
-            st : vec string []
-            ru : i32 rest_unit[]
-            for [ fu: i32 ru - 4, fu <= ru + 8, fu += 2 ]
-                st.push[ '{i32[ round[ f32[ fu ] / 22.0 * 100.0 ] ]}%' ]
-            ps.push[ setting[ 'text',
-                '{i32[ round[ f32[ set_size ] / 22.0 * 100.0 ] ]}%', st ] ]
             # the screen's mode: only where the screen is ours
             if [ screen_owned[] ]
                 ms : vec string screen_modes[]
@@ -19778,7 +19910,7 @@ element orbiter : trinity # implements compiler
             haptic_tap[]
             session_dirty = true
             return
-        el [ name == 'text' ]
+        el [ name == 'size' ]
             set_size = i32[ round[ n / 100.0 * 22.0 ] ]
             if [ ux && ux.vk ] ux.vk.font_unit = set_size
             if [ ux && ux.root ] ux.dirty_tree[ ux.root ]
@@ -19815,6 +19947,7 @@ element orbiter : trinity # implements compiler
     # keyboards (orbiter-os's own, and programs' windows), text size
     func apply_settings [ w: Window ]
         if [ w ]
+            fonts_apply[ w ]
             # one speed: trinity's steps and a window's clicks
             w.wheel_mul    = wheel_scale[] * set_scroll
             w.window_wheel = set_scroll

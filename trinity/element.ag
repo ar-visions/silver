@@ -972,7 +972,9 @@ class Layer
         cv.font_size[ i32[label_size] ]
         if [ label_font && label_font.count > 0 ]
             lpx : i32 label_px[ cv, label_size ]
-            if [ !label_font_cache || label_font_cache.size_px != lpx ]
+            if [ !label_font_cache || label_font_cache.size_px != lpx
+                 || label_font_cache.uri
+                    != cv.vk.font_uri[ label_font ] ]
                 label_font_cache = shared_font[ cv, label_font, lpx ]
             cv.set_font[ label_font_cache ]
         el

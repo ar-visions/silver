@@ -123,6 +123,82 @@ class FileIcons
 # holding it
 # a folder's entries in the list's order: by name, any case; files
 # by their type (extension) first, then by name
+# every scalable family on this machine once, by name: text the
+# family, file its regular face (no colour bitmaps)
+func font_families [ fixed: bool ] -> vec FindHit
+    out : vec FindHit []
+    ifdef [ linux ]
+        FcInit[]
+        pat : FcPatternCreate[]
+        FcPatternAddBool[ pat, 'scalable', 1 ]
+        ask : FcObjectSetCreate[]
+        FcObjectSetAdd[ ask, 'family' ]
+        FcObjectSetAdd[ ask, 'file' ]
+        FcObjectSetAdd[ ask, 'weight' ]
+        FcObjectSetAdd[ ask, 'slant' ]
+        FcObjectSetAdd[ ask, 'color' ]
+        FcObjectSetAdd[ ask, 'spacing' ]
+        faces : FcFontList[ null, pat, ask ]
+        best : map FindHit [string] []
+        names : vec string []
+        n : i32 [ (faces) ? faces.nfont : 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            fp : faces.fonts[ i ]
+            fam : cstr [ null ]
+            fs  : cstr [ null ]
+            wt  : i32 [ 80 ]
+            sl  : i32 [ 0 ]
+            col : i32 [ 0 ]
+            FcPatternGetString[ fp, 'family', 0, @fam ]
+            FcPatternGetString[ fp, 'file', 0, @fs ]
+            FcPatternGetInteger[ fp, 'weight', 0, @wt ]
+            FcPatternGetInteger[ fp, 'slant', 0, @sl ]
+            FcPatternGetBool[ fp, 'color', 0, @col ]
+            if [ fam == null || fs == null || col != 0 ] continue
+            # fontconfig's dual, mono and charcell
+            sp : i32 [ 0 ]
+            FcPatternGetInteger[ fp, 'spacing', 0, @sp ]
+            if [ fixed && sp < 90 ] continue
+            name : string [ fam ]
+            if [ name.count == 0 || name.starts_with[ '.' ] ] continue
+            # nearest a plain regular face; line holds how near
+            off : i32 [ abs[ wt - 80 ] + sl ]
+            h : FindHit (best.contains[ name ]) ? best[ name ] : null
+            if [ !h ]
+                h = FindHit [ text: name, line: off, file: path [ fs ] ]
+                best[ name ] = h
+                names.push[ name ]
+            el [ off < h.line ]
+                h.line = off
+                h.file = path [ fs ]
+        if [ faces ] FcFontSetDestroy[ faces ]
+        FcObjectSetDestroy[ ask ]
+        FcPatternDestroy[ pat ]
+        # by name, any case
+        for [ i: i32 0, i < names.count, i += 1 ]
+            nm : string names[ i ]
+            k : i32 [ 0 ]
+            lc : string nm.lcase[]
+            while [ k < out.count
+                    && out[ k ].text.lcase[].compare[ lc ] < 0 ]
+                k += 1
+            out.insert[ best[ nm ], k ]
+    return out
+
+expect func t_font_families [] -> bool
+    list : vec FindHit font_families[ false ]
+    mono : vec FindHit font_families[ true ]
+    if [ list.count == 0 || mono.count == 0
+         || mono.count >= list.count ] return false
+    for [ i: i32 1, i < list.count, i += 1 ]
+        if [ list[ i - 1 ].text.lcase[].compare[
+                 list[ i ].text.lcase[] ] > 0 ]
+            return false
+    for [ h: FindHit ] in list
+        if [ !h.file.exists[] ] return false
+    log 'font families: {list.count}, fixed width {mono.count}'
+    return true
+
 func nav_sorted [ entries: vec path ] -> vec path
     out : vec path []
     if [ !entries ] return out
@@ -356,15 +432,41 @@ element NavigationView
     # the rows as last listed, and what they were listed from
     intern rows   : vec FindHit
     intern listed : string
+    # choosing a font: every family, listed once
+    intern fonts  : vec FindHit
+    # the current family's row, brought into view once drawn
+    public show_at : bool
+
+    # the families holding the typed text, any case
+    func font_rows [] -> vec FindHit
+        if [ !fonts ] fonts = font_families[ ux.font_fixed ]
+        typed : string ux.nav_filter.lcase[]
+        out : vec FindHit []
+        # no file: the app's own font
+        if [ ux.font_plain && typed.count == 0 ]
+            out.push[ FindHit [ text: 'Default' ] ]
+        for [ h: FindHit ] in fonts
+            if [ typed.count == 0
+                 || h.text.lcase[].index_of[ typed ] >= 0 ]
+                out.push[ h ]
+        return out
 
     # the rows of the folder in view, listed again when it or the
     # typed text changes
     func hits [] -> vec FindHit
-        key : '{ux.nav_dir}|{ux.nav_filter}'
+        key : (ux.nav_fonts) ? 'fonts|{ux.nav_filter}'
+            : '{ux.nav_dir}|{ux.nav_filter}'
         if [ !rows || !listed || listed.compare[ key ] != 0 ]
-            rows   = nav_listing[ ux.nav_dir, ux.nav_filter ]
+            rows   = (ux.nav_fonts) ? font_rows[]
+                : nav_listing[ ux.nav_dir, ux.nav_filter ]
             listed = key
             at     = 0
+            if [ ux.nav_fonts && ux.font_chosen ]
+                for [ i: i32 0, i < rows.count, i += 1 ]
+                    if [ rows[ i ].text == ux.font_chosen ]
+                        at = i
+                        show_at = true
+                        break
             nr : list_el[]
             if [ nr ]
                 nr.scroll.y    = 0.0
@@ -387,7 +489,7 @@ element NavigationView
         own : bool [ ux && !bar_in[ ux.root ] ]
         if [ own ]
             out[ 'nav_field' ] = NavField [ edit: ux.nav_filter,
-                label: '{ux.nav_dir}',
+                label: (ux.nav_fonts) ? 'fonts' : '{ux.nav_dir}',
                 area: Region { l0.6 t0 r0.6 h1.3 } ]
         out[ 'rows' ] = NavRows [ scroll_fade: 24.0,
             area: Region [ (own) ? 'l0 t1.3 r0 b0' : 'l0 t0 r0 b0' ] ]
@@ -403,6 +505,9 @@ element NavigationView
         return false
 
     func pick [ h: FindHit ]
+        if [ h && ux.nav_fonts ]
+            ux.nav_font_take[ h.text, h.file ]
+            return
         if [ h && h.file ] ux.nav_pick[ h.file ]
 
     # the bar's keys: up and down choose, enter opens; the Window
@@ -456,7 +561,7 @@ element NavRows
     intern  pressed : i32 [ -1 ]
 
     func row_h [] -> f32
-        return 30.0
+        return (ux && ux.nav_fonts) ? 40.0 : 30.0
 
     # a module folder's own icon (images/icon.png, else its export's
     # icon: install/export/<owner>-<name>.agi); null: the cube
@@ -570,12 +675,35 @@ element NavRows
         cv.save[]
         cv.translate[ 0.0, 0.0 - scroll.y ]
         rh : row_h[]
+        if [ view.show_at ]
+            view.show_at = false
+            show_row[ view.at ]
         x0 : f32 [ 12.0 ]
         right : f32 [ bounds.w - 24.0 ]
         for [ i: i32 0, i < list.count, i += 1 ]
             h : list[ i ]
             ry : f32 [ 8.0 + f32[ i ] * rh ]
             if [ ry + rh < scroll.y || ry > scroll.y + bounds.h ]
+                continue
+            # a font's row: its name in its own face, the current lit
+            if [ w.nav_fonts ]
+                if [ i == view.at ]
+                    nav_hover_paint[ cv, a, x0, ry + 1.0, right - x0,
+                        rh - 2.0, nav_hover_fill, nav_hover_edge,
+                        0.0 - scroll.y ]
+                # a symbol font: its name in the plain face, readable
+                if [ h.file ]
+                    face : CanvasFont shared_font[ cv, '{h.file}', 22 ]
+                    if [ face.glyph_index[ 97 ] != 0 ]
+                        cv.set_font[ face ]
+                cv.font_size[ 22 ]
+                cv.fill_color[ (h.text == w.font_chosen) ? '#6cb6ff'
+                                                         : '#fff' ]
+                cv.draw_text[ h.text, rect [ x: x0 + 12.0, y: ry,
+                        w: right - x0 - 24.0, h: rh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null ]
+                cv.set_font[ null ]
                 continue
             if [ i == view.at ]
                 nav_hover_paint[ cv, a, x0 + 32.0, ry + 1.0,

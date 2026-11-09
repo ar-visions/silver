@@ -1,0 +1,563 @@
+# uranus's trade winds from a still orbit: three repeating maps on
+# shells under the limb, lit from the side
+export 0.1.0
+export scenes ['UranusStorm']
+export dependencies ['orbiter']
+import vec
+import img
+import gltf
+import trinity
+import tls
+import scenes
+
+import <stdio.h>
+import <stdlib.h>
+ifdef [ windows ]
+    import <posix.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+
+enum UranusSurface
+    swirls : 0
+    haze   : 1
+    wisps  : 2
+
+func ur_to_unit [ v: f32 ] -> u8
+    s : f32 [ v * 255.0 + 0.5 ]
+    if [ s < 0.0 ] s = 0.0
+    if [ s > 255.0 ] s = 255.0
+    return u8[ i32[ s ] ]
+
+# a map's edges faded into each other, so it repeats unseen
+func ur_bake_tile [ src: path, out: path ]
+    g : Image [ uri: src ]
+    w : i32 [ g.width ]
+    h : i32 [ g.height ]
+    c : i32 [ (g.channels > 0) ? g.channels : 4 ]
+    px : @u8 [ g.vdata[] ]
+    band : i32 [ 48 ]
+    ow : i32 [ w - band ]
+    oh : i32 [ h - band ]
+    im : Image [ width: ow, height: oh, format: Pixel.rgba8,
+                 surface: Surface.color ]
+    d : @u8 [ im.vdata[] ]
+    for [ y: i32 0, y < oh, y += 1 ]
+        yw : f32 [ (y < band) ? f32[ y ] / f32[ band ] : 1.0 ]
+        oy : i32 [ (y < band) ? oh + y : y ]
+        for [ x: i32 0, x < ow, x += 1 ]
+            xw : f32 [ (x < band) ? f32[ x ] / f32[ band ] : 1.0 ]
+            ox : i32 [ (x < band) ? ow + x : x ]
+            at : i32 [ (y * ow + x) * 4 ]
+            for [ k: i32 0, k < 3, k += 1 ]
+                near : f32 [ px[ (y * w + x) * c + k ] ]
+                sx : f32 [ px[ (y * w + ox) * c + k ] ]
+                sy : f32 [ px[ (oy * w + x) * c + k ] ]
+                sd : f32 [ px[ (oy * w + ox) * c + k ] ]
+                top : f32 [ near * xw + sx * (1.0 - xw) ]
+                low : f32 [ sy * xw + sd * (1.0 - xw) ]
+                d[ at + k ] =
+                    ur_to_unit[ (top * yw + low * (1.0 - yw)) / 255.0 ]
+            d[ at + 3 ] = 255
+    im.png[ out ]
+
+# a map brought to the brightness and contrast the look expects
+func ur_bake_level [ src: path, out: path, from_m: vec3f, from_s: vec3f,
+                     to_m: vec3f, to_s: vec3f ]
+    g : Image [ uri: src ]
+    px : @u8 [ g.vdata[] ]
+    c : i32 [ (g.channels > 0) ? g.channels : 4 ]
+    im : Image [ width: g.width, height: g.height, format: Pixel.rgba8,
+                 surface: Surface.color ]
+    d : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < g.width * g.height, i += 1 ]
+        r : f32 [ f32[ px[ i * c ] ] / 255.0 ]
+        gr : f32 [ f32[ px[ i * c + 1 ] ] / 255.0 ]
+        b : f32 [ f32[ px[ i * c + 2 ] ] / 255.0 ]
+        d[ i * 4 ] = ur_to_unit[
+            to_m.x + (r - from_m.x) / from_s.x * to_s.x ]
+        d[ i * 4 + 1 ] = ur_to_unit[
+            to_m.y + (gr - from_m.y) / from_s.y * to_s.y ]
+        d[ i * 4 + 2 ] = ur_to_unit[
+            to_m.z + (b - from_m.z) / from_s.z * to_s.z ]
+        d[ i * 4 + 3 ] = 255
+    im.png[ out ]
+
+# the clouds' map as a mask: a gaussian (three box blurs, wrapping),
+# its middle at 0 and its brightest at 1
+func ur_bake_blur [ src: path, out: path, r: i32 ]
+    g : Image [ uri: src ]
+    w : i32 [ g.width ]
+    h : i32 [ g.height ]
+    c : i32 [ (g.channels > 0) ? g.channels : 4 ]
+    px : @u8 [ g.vdata[] ]
+    n : i32 [ w * h ]
+    v : new f32 [ n ]
+    tmp : new f32 [ n ]
+    for [ i: i32 0, i < n, i += 1 ]
+        v[ i ] = f32[ px[ i * c ] ] / 255.0
+    wide : f32 [ 2 * r + 1 ]
+    for [ pass: i32 0, pass < 3, pass += 1 ]
+        for [ y: i32 0, y < h, y += 1 ]
+            sum : f32 [ 0.0 ]
+            for [ i: i32 -r, i <= r, i += 1 ]
+                sum += v[ y * w + (i + w) % w ]
+            for [ x: i32 0, x < w, x += 1 ]
+                tmp[ y * w + x ] = sum / wide
+                sum += v[ y * w + (x + r + 1) % w ]
+                sum -= v[ y * w + (x - r + w) % w ]
+        for [ x: i32 0, x < w, x += 1 ]
+            sum : f32 [ 0.0 ]
+            for [ i: i32 -r, i <= r, i += 1 ]
+                sum += tmp[ (i + h) % h * w + x ]
+            for [ y: i32 0, y < h, y += 1 ]
+                v[ y * w + x ] = sum / wide
+                sum += tmp[ (y + r + 1) % h * w + x ]
+                sum -= tmp[ (y - r + h) % h * w + x ]
+    bins : new i32 [ 2048 ]
+    for [ i: i32 0, i < n, i += 1 ]
+        bins[ i32[ v[ i ] * 2047.0 ] ] += 1
+    low : f32 [ 0.0 ]
+    top : f32 [ 1.0 ]
+    seen : i32 [ 0 ]
+    for [ b: i32 0, b < 2048, b += 1 ]
+        before : i32 [ seen ]
+        seen += bins[ b ]
+        if [ before < n / 2 && seen >= n / 2 ] low = f32[ b ] / 2047.0
+        if [ before < n - n / 500 && seen >= n - n / 500 ]
+            top = f32[ b ] / 2047.0
+    log 'storm: blur middle {low} top {top}'
+    im : Image [ width: w, height: h, format: Pixel.rgba8,
+                 surface: Surface.color ]
+    d : @u8 [ im.vdata[] ]
+    for [ i: i32 0, i < n, i += 1 ]
+        m : f32 [ (v[ i ] - low) / (top - low) ]
+        d[ i * 4 ] = ur_to_unit[ m ]
+        d[ i * 4 + 1 ] = d[ i * 4 ]
+        d[ i * 4 + 2 ] = d[ i * 4 ]
+        d[ i * 4 + 3 ] = 255
+    im.png[ out ]
+
+ModelViewProject UranusShader
+    # x flow time, y aspect, z real seconds
+    mutable clock : vec4f
+    attrib swirls : LayoutBinding [ type:typeid[ UranusSurface ],
+                                    id: UranusSurface.swirls, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib haze   : LayoutBinding [ type:typeid[ UranusSurface ],
+                                    id: UranusSurface.haze, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib wisps  : LayoutBinding [ type:typeid[ UranusSurface ],
+                                    id: UranusSurface.wisps, count:1,
+                                    format: typeid[ rgba8 ] ]
+    attrib pos       : VertexInput    [ type:typeid[ vec3f ] ]
+    attrib uv        : VertexInput    [ type:typeid[ vec2f ] ]
+    attrib v_uv      : VertexOutput   [ type:typeid[ vec2f ] ]
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init []
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+
+    func vertex [] -> GLSL none {
+        v_uv        = uv;
+        gl_Position = vec4(pos.x, pos.y, 0.0, 1.0);
+    }
+
+    # frame place to view ray: 1672 x 941 pixels, a 30 degree lens
+    func s_ray [ q: @vec2f ] -> GLSL vec3f {
+        const float cr = 0.99990, sr = -0.0138;
+        float px = q.x * 1672.0 - 836.0;
+        float py = 470.5 - q.y * 941.0;
+        float rx = px * cr - py * sr;
+        float ry = px * sr + py * cr;
+        const float ca = 0.9483, sa = 0.3173;
+        vec3 v = vec3(rx, ry * ca - 1756.0 * sa,
+                      ry * sa + 1756.0 * ca);
+        return normalize(v);
+    }
+
+    # where a ray meets the shell of radius r, as a place on the ground
+    func s_at [ q: @vec2f, r: @f32 ] -> GLSL vec2f {
+        const float high = 1.0108;
+        vec3 d = s_ray(q);
+        float b = high * d.y;
+        float e = b * b - high * high + r * r;
+        float t = -b - sqrt(max(e, 0.0));
+        vec3 p = vec3(0.0, high, 0.0) + d * t;
+        // far ground held wider than true: long bands, no ripples
+        float far = max(p.z / r, 0.005) / 0.0252;
+        return vec2(p.x / r * pow(far, -0.7), 0.0252 * log(far));
+    }
+
+    func s_grad [ c: @vec3f ] -> GLSL vec3f {
+        uvec3 v = uvec3(ivec3(c) + 1048576);
+        v = v * 1664525u + 1013904223u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        v ^= v >> 16u;
+        v.x += v.y * v.z;
+        v.y += v.z * v.x;
+        v.z += v.x * v.y;
+        return vec3(v) / 2147483647.5 - 1.0;
+    }
+
+    # perlin's gradient noise, about -1 to 1
+    func s_perlin [ p: @vec3f ] -> GLSL f32 {
+        vec3 i = floor(p);
+        vec3 f = p - i;
+        vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+        float n000 = dot(s_grad(i), f);
+        float n100 = dot(s_grad(i + vec3(1, 0, 0)), f - vec3(1, 0, 0));
+        float n010 = dot(s_grad(i + vec3(0, 1, 0)), f - vec3(0, 1, 0));
+        float n110 = dot(s_grad(i + vec3(1, 1, 0)), f - vec3(1, 1, 0));
+        float n001 = dot(s_grad(i + vec3(0, 0, 1)), f - vec3(0, 0, 1));
+        float n101 = dot(s_grad(i + vec3(1, 0, 1)), f - vec3(1, 0, 1));
+        float n011 = dot(s_grad(i + vec3(0, 1, 1)), f - vec3(0, 1, 1));
+        float n111 = dot(s_grad(i + vec3(1, 1, 1)), f - vec3(1, 1, 1));
+        float x0 = mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y);
+        float x1 = mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y);
+        return mix(x0, x1, u.z) * 1.6;
+    }
+
+    # how far out from under us, so bands run with the limb
+    func s_ring [ q: @vec2f ] -> GLSL f32 {
+        const float high = 1.0108;
+        vec3 d = s_ray(q);
+        float b = high * d.y;
+        float e = b * b - high * high + 1.0;
+        float t = -b - sqrt(max(e, 0.0));
+        vec3 p = vec3(0.0, high, 0.0) + d * t;
+        return log(max(atan(length(p.xz), p.y), 0.002));
+    }
+
+    # the clouds' mask, either sheet, at a place in each
+    func s_cloud [ up: @vec2f, down: @vec2f, lower: @f32 ] -> GLSL f32 {
+        float one = mix(texture(wisps, up).r,
+                        texture(wisps, down).r, lower);
+        vec2 long_up = up * vec2(0.6, 1.25) + vec2(0.17, 0.31);
+        vec2 long_down = down * vec2(0.6, 1.25) + vec2(0.61, 0.09);
+        float two = mix(texture(wisps, long_up).r,
+                        texture(wisps, long_down).r, lower);
+        return max(one, two * 0.85);
+    }
+
+    func fragment [] -> GLSL none {
+        float t = ubo.clock.x;
+        // the frame fills the window, its middle kept
+        const vec2 size = vec2(1672.0, 941.0);
+        vec2 q = v_uv;
+        float want = size.x / size.y;
+        if (ubo.clock.y > want) q.y = 0.5 + (q.y - 0.5) * want
+                                      / ubo.clock.y;
+        else q.x = 0.5 + (q.x - 0.5) * ubo.clock.y / want;
+        // the ray against the deck and the top of the air, radii
+        const float high = 1.0108;
+        const float air = 0.002;
+        vec3 ray = s_ray(q);
+        float rb = high * ray.y;
+        float reach = sqrt(max(high * high - rb * rb, 0.0));
+        float over = reach - 1.0;
+        float sd = rb * rb - high * high + 1.0;
+        float se = rb * rb - high * high + (1.0 + air) * (1.0 + air);
+        float path = 2.0 * sqrt(max(se, 0.0));
+        if (sd > 0.0) path = sqrt(se) - sqrt(sd);
+        path /= air;
+        const float r0 = 1.0;
+        const float r1 = 1.0004;
+        const float r2 = 1.001;
+        vec2 eye = vec2(1110.0, 630.0) / size;
+        vec2 cen = s_at(eye, r0);
+        vec2 g0 = s_at(q, r0);
+        vec2 g1 = s_at(q, r1);
+        vec2 g2 = s_at(q, r2);
+        const vec2 k0 = vec2(-24.0, -21.0);
+        const vec2 k1 = vec2(16.0, -15.0);
+        const vec2 k2 = vec2(24.0, -24.0);
+        vec2 m0 = (g0 - cen) * k0 + vec2(0.778, 0.564);
+        vec2 m1 = (g1 - cen) * k1 + vec2(0.31, 0.17);
+        vec2 m2 = (g2 - cen) * k2 + vec2(0.64, 0.88);
+        // the pale area: about a quarter, lower left; no trade winds
+        float edge_at = mix(0.5, 0.88, q.x);
+        vec2 edge_wob = vec2(q.x * 0.9 + 0.13, q.y * 0.5);
+        edge_at += 0.2 * (texture(haze, edge_wob, 5.0).b - 0.69);
+        float pale = smoothstep(edge_at - 0.17, edge_at + 0.2, q.y);
+        // the trade winds: bands round the planet, wandering a little
+        float fx = q.x * 1672.0;
+        float fy = q.y * 941.0;
+        float ring = s_ring(q);
+        // the same pale air far off, in patches: limb to a third down
+        vec2 far_at = vec2(q.x * 0.8 - 0.0012 * t, q.y * 2.6 + 0.2);
+        float far_on = textureLod(swirls, far_at, 5.5).b
+                     + 0.5 * textureLod(swirls, far_at * 2.1, 4.5).b;
+        far_on = smoothstep(0.37, 0.47, far_on);
+        far_on *= 1.0 - smoothstep(0.26, 0.42, q.y);
+        pale = max(pale, far_on);
+        vec2 wander_at = vec2(q.x * 0.6, ring * 0.3);
+        float wander = texture(haze, wander_at, 5.0).b;
+        float wave = ring * 3.4 + wander * 5.0;
+        float zone = 0.5 + 0.36 * sin(wave)
+                   + 0.14 * sin(wave * 2.3 + 1.9);
+        zone = smoothstep(0.12, 0.88, zone);
+        // bands are strong in places, faint in others, gone in the pale
+        vec2 vary_at = vec2(q.x * 0.5 + 0.41, ring * 0.2 + 0.27);
+        float vary = texture(swirls, vary_at, 6.0).b;
+        float band_on = smoothstep(0.2, 0.36, vary) * (1.0 - pale);
+        zone = mix(0.55, zone, band_on);
+        // the two sheets meet between the bands
+        float meet = fy - (0.42 * 941.0 + 0.09 * fx)
+                   + 22.0 * sin(q.x * 9.0 + 0.7);
+        float lower = max(smoothstep(-70.0, 70.0, meet), pale);
+        // the distance all goes one way, with the green: no sheet
+        // runs against it
+        lower = max(lower, 1.0 - smoothstep(0.34, 0.5, q.y));
+        // ground a second: upper left and away, lower right and near
+        const vec2 way_up = vec2(-1.0, 0.3);
+        const vec2 way_low = vec2(1.0, -0.7);
+        const float deck_v = 0.00006;
+        const float haze_v = 0.00009;
+        const float high_v = 0.00015;
+        // a map moves one way when read from the other
+        vec2 d_up = m0 - fract(way_up * k0 * deck_v * t);
+        vec2 d_low = m0 + vec2(0.37, 0.21)
+                   - fract(way_low * k0 * deck_v * t);
+        vec2 h_up = m1 - fract(way_up * k1 * haze_v * t);
+        vec2 h_low = m1 + vec2(0.53, 0.41)
+                   - fract(way_low * k1 * haze_v * t);
+        vec2 w_up = m2 - fract(way_up * k2 * high_v * t);
+        vec2 w_low = m2 + vec2(0.29, 0.67)
+                   - fract(way_low * k2 * high_v * t);
+        // the blue currents drift lightly down, then up, by perlin
+        // noise; the green only slides
+        vec3 drift_at = vec3(q.x * 3.2, q.y * 4.5, t * 0.01375);
+        float drift = s_perlin(drift_at)
+                    + 0.4 * s_perlin(drift_at * vec3(2.3, 2.3, 1.6));
+        float along = s_perlin(drift_at.yxz + vec3(7.0, 3.0, 11.0));
+        vec2 bend = vec2(0.003 * along, 0.02 * drift) * (1.0 - pale);
+        w_up += bend;
+        w_low += bend;
+        d_up += bend * 0.6;
+        d_low += bend * 0.6;
+        h_up += bend * 0.8;
+        h_low += bend * 0.8;
+        vec3 open = mix(texture(swirls, d_up).rgb,
+                        texture(swirls, d_low).rgb, lower) * 1.05;
+        vec3 col = open;
+        vec3 veil = mix(texture(haze, h_up).rgb,
+                        texture(haze, h_low).rgb, lower);
+        float thick = 1.0 - exp(-0.085 * path);
+        float patchy = 0.7 + 1.65 * dot(veil, vec3(0.3, 0.6, 0.1));
+        float al = clamp(thick * patchy, 0.0, 1.0);
+        vec3 lift = veil * 0.9 + vec3(0.3, 0.22, 0.12) * thick
+                  + vec3(0.18, 0.18, 0.12) * pow(thick, 6.0);
+        col = mix(col, lift, al);
+        // a trough between bands is deep water, a band is pale
+        col *= mix(0.78, 1.06, zone);
+        col = mix(col, vec3(0.36, 0.5, 0.74), zone * 0.14);
+        float region = zone;
+        // only the clouds' blur: a mask that brightens the blue below
+        float cloud = s_cloud(w_up, w_low, lower);
+        // the pale area's wisps are not drawn out along bands
+        vec2 w_free = w_low * vec2(1.5, 0.8) + vec2(0.23, 0.57);
+        cloud = mix(cloud, texture(wisps, w_free).r, pale);
+        // the sun low on the right: what stands in its way
+        const vec2 sun_way = vec2(0.005, -0.004);
+        float toward = s_cloud(w_up + sun_way, w_low + sun_way, lower);
+        vec2 cast_way = sun_way * 3.5;
+        float caster = s_cloud(w_up + cast_way, w_low + cast_way,
+                               lower);
+        // banks ride with their sheet: white never comes from nowhere
+        vec2 bu = w_up * vec2(0.733, -0.583);
+        vec2 bl = w_low * vec2(0.733, -0.583);
+        float banks = mix(texture(haze, bu, 5.0).b
+                          + 0.6 * texture(swirls, bu.yx * 1.7, 4.0).b,
+                          texture(haze, bl, 5.0).b
+                          + 0.6 * texture(swirls, bl.yx * 1.7, 4.0).b,
+                          lower);
+        // more of the banks open up inside the regions
+        float open_at = 0.76 - 0.14 * region;
+        float keep = smoothstep(open_at, open_at + 0.12, banks);
+        keep = max(keep, thick * thick * 0.7);
+        keep *= 0.5 + 0.5 * region;
+        // shadows fall on the layers below, away from the sun
+        float cast_on = caster * max(keep, 0.35) * (1.0 - cloud);
+        col *= 1.0 - 0.38 * cast_on;
+        float lit = cloud * keep * (0.65 + 0.55 * region);
+        // the side to the sun takes the light, the far side loses it
+        float edge = (cloud - toward) * keep;
+        col *= 1.0 + 0.8 * lit + 1.2 * max(edge, 0.0)
+             - 0.6 * max(-edge, 0.0);
+        // light held inside the thick of a band
+        float thick_in = textureLod(wisps, w_up * (1.0 - lower)
+                                    + w_low * lower, 3.0).r;
+        col += vec3(0.02, 0.06, 0.11) * smoothstep(0.15, 0.7, thick_in)
+             * zone;
+        col = 1.0 - (1.0 - col)
+                  * (1.0 - vec3(0.34, 0.33, 0.3) * lit * lit);
+        // the sun low on the right, the far left falling away
+        float sun = 0.68 + 0.22 * smoothstep(0.0, 0.55, q.x)
+                  + 0.4 * smoothstep(0.85, 0.3, q.y);
+        // the limb: off the planet, thin air thinning with height
+        float sky_x = 0.45 + 0.55 * smoothstep(0.0, 0.62, q.x);
+        float up = max(over, 0.0);
+        vec3 sky = vec3(0.0, 0.46, 0.6) * exp(-up / 0.0016)
+                 + vec3(0.2, 0.46, 0.56) * exp(-up / 0.0003);
+        col *= sun;
+        // by brightness: deep water, ocean blue, aqua, cyan
+        float tone = dot(col, vec3(0.2, 0.3, 0.5));
+        vec3 teal = mix(vec3(0.01, 0.05, 0.16), vec3(0.04, 0.22, 0.42),
+                        smoothstep(0.0, 0.26, tone));
+        teal = mix(teal, vec3(0.12, 0.44, 0.6),
+                   smoothstep(0.22, 0.42, tone));
+        teal = mix(teal, vec3(0.26, 0.66, 0.76),
+                   smoothstep(0.38, 0.68, tone));
+        col = mix(teal, vec3(0.55, 0.88, 0.93),
+                  smoothstep(0.62, 1.15, tone));
+        // the pale green white air: soft clumps, its own fine wisps
+        vec2 clump_at = h_low * vec2(0.3, 0.26) + vec2(0.11, 0.37);
+        float clump = textureLod(haze, clump_at, 3.0).g;
+        clump += 0.5 * textureLod(haze, clump_at * 2.3, 2.0).g;
+        clump = smoothstep(0.42, 0.5, clump);
+        vec3 pale_low = vec3(0.3, 0.5, 0.53);
+        vec3 pale_top = vec3(0.56, 0.72, 0.69);
+        vec3 pale_col = mix(pale_low, pale_top, clump);
+        // its wisps soft: the mask a little out of focus
+        float wisp = textureLod(wisps, w_free, 1.6).r;
+        pale_col += vec3(0.12, 0.13, 0.11) * wisp * (0.4 + 0.6 * clump);
+        // far off it is thinner and greener, the blue showing through
+        pale_col = mix(pale_col, vec3(0.3, 0.62, 0.6) + 0.5
+                       * (pale_col - pale_low), far_on);
+        col = mix(col, pale_col, pale * 0.92);
+        vec3 line = vec3(0.14, 0.34, 0.4)
+                  * exp(min(over, 0.0) / 0.0006);
+        col += line * sky_x;
+        float land = smoothstep(0.00008, -0.00008, over);
+        col = mix(sky * sky_x, col, land);
+        float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy,
+                          vec2(0.06711056, 0.00583715))));
+        col += (ign - 0.5) / 255.0;
+        fragColor = vec4(col, 1.0);
+    }
+
+Backdrop UranusStorm
+    frost : true
+    public func bg_color [ ] -> rgba
+        return rgba [ r: 0.0, g: 0.004, b: 0.008, a: 1.0 ]
+    frost_sharp : true
+    mutable shader  : UranusShader
+    mutable target  : Render
+    mutable last_us : i64
+    # the flow's own clock
+    public  flow    : f32
+    mutable steady  : f32
+
+    # a repeating map: read at a slant, so filtered along it
+    func tile_tex [ name: string ] -> Texture
+        im : Image [ uri: path '../{share_name}/baked/{name}.png' ]
+        return Texture [ w: ux, vk: vk, linear: true, sampler: im,
+                         mip_levels: 11, anisotropy: 16,
+                         wrap_u: true, wrap_v: true ]
+
+    func create_target []
+        if [ target ] return
+        shader = UranusShader [ vk: vk, name: 'uranus-storm' ]
+        shader.hold[]
+        samp : map Au [string] [ 'swirls': tile_tex[ 'storm-swirls' ],
+                                 'haze': tile_tex[ 'storm-haze' ],
+                                 'wisps': tile_tex[ 'storm-wisps' ] ]
+        m : Model [ vk: vk, w: ux, s: shader, samplers: samp ]
+        # a pixel a point on retina, as the other scenes
+        target = Render [ vk: vk, w: ux,
+            wscale: (ux.scale > 1.0) ? 1.0 / ux.scale : 1.0,
+            tag: 'uranus-storm',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 1.0 ],
+            models: [ m ] ]
+        target.owner = a
+        ux.element_targets[ id ] = target
+
+    public func on_unload [ ]
+        if [ ux && ux.element_targets ] ux.element_targets.rm[ id ]
+
+    func draw [ w: Window ]
+        animated = true
+        create_target[]
+        now : i64 [ epoch_micros[] ]
+        dt : f32 [ 0.0 ]
+        if [ last_us > 0 ] dt = f32[ now - last_us ] / 1000000.0
+        if [ dt > 0.1 ] dt = 0.1
+        last_us = now
+        steady = (steady > 0.0) ? steady * 0.9 + dt * 0.1 : dt
+        # the steps: how fast the weather runs
+        rate : f32 [ (speed == BackdropSpeed.fast) ? 4.0
+                   : (speed == BackdropSpeed.medium) ? 1.0 : 0.25 ]
+        flow += steady * rate
+        aspect : f32 [ (ux.height > 0)
+                       ? f32[ ux.width ] / f32[ ux.height ] : 1.7778 ]
+        shader.clock = vec4f [ flow, aspect, 0.0, 0.0 ]
+
+# frames at chosen flow times, into STORM_SHOTS (a folder)
+expect func ur_t_storm_frames [] -> bool
+    dir : getenv[ 'STORM_SHOTS' ]
+    if [ !dir ] return true
+    vk : vk_context []
+    vk.hold[]
+    wide : getenv[ 'STORM_W' ]
+    tall : getenv[ 'STORM_H' ]
+    w  : Window [ vk: vk, format: Pixel.rgba8, backbuffer: true,
+        width: (wide) ? atoi[ wide ] : 1280,
+        height: (tall) ? atoi[ tall ] : 720 ]
+    w.hold[]
+    if [ !w.element_targets ]
+        w.element_targets = map Render [string] []
+    e : UranusStorm [ ]
+    e.hold[]
+    e.id = 'UranusStorm'
+    e.ux = w
+    e.vk = w.vk
+    at : vec f32 [] [ 400.0, 401.0, 402.0, 403.0, 404.0, 405.0, 406.0,
+                      407.0, 408.0, 409.0, 410.0, 411.0, 412.0, 413.0,
+                      414.0, 415.0 ]
+    for [ k: i32 0, k < at.count, k += 1 ]
+        e.last_us = 0
+        e.flow = at[ k ]
+        began : i64 [ Au.epoch_millis[] ]
+        e.draw[ w ]
+        r : w.element_targets[ 'UranusStorm' ]
+        r.draw[]
+        r.sync_fence[]
+        took : i64 [ Au.epoch_millis[] - began ]
+        log 'storm: frame {k} {took} ms'
+        im : Image [ r.color ]
+        im.png[ path '{string[ dir ]}/frame{k}.png' ]
+    return true
+
+# the maps and currents; the picker's picture last
+export func ur_storm_export []
+    bd : path '../{share_name}/baked'
+    bd.make_dir[]
+    deck_in : path '../{share_name}/images/swirls.png'
+    deck_mid : path '../{share_name}/baked/level-swirls.png'
+    deck_out : path '../{share_name}/baked/storm-swirls.png'
+    ur_bake_level[ deck_in, deck_mid,
+        vec3f [ 0.28, 0.547, 0.56 ], vec3f [ 0.054, 0.049, 0.044 ],
+        vec3f [ 0.044, 0.116, 0.288 ], vec3f [ 0.029, 0.04, 0.063 ] ]
+    ur_bake_tile[ deck_mid, deck_out ]
+    haze_in : path '../{share_name}/images/haze.png'
+    haze_mid : path '../{share_name}/baked/level-haze.png'
+    haze_out : path '../{share_name}/baked/storm-haze.png'
+    ur_bake_level[ haze_in, haze_mid,
+        vec3f [ 0.451, 0.692, 0.71 ], vec3f [ 0.082, 0.059, 0.056 ],
+        vec3f [ 0.088, 0.306, 0.691 ], vec3f [ 0.051, 0.06, 0.053 ] ]
+    ur_bake_tile[ haze_mid, haze_out ]
+    # the haze's own bright veins are the clouds' mask
+    wisp : path '../{share_name}/baked/storm-wisps.png'
+    ur_bake_tile[ haze_in, wisp ]
+    tile : path '../{share_name}/baked/storm-wisps.png'
+    blurred : path '../{share_name}/baked/storm-wisps.png'
+    ur_bake_blur[ tile, blurred, 0 ]
+    names : vec string [] [ 'UranusStorm' ]
+    dir   : path '../{share_name}/thumbs'
+    scene_thumbs_for[ names, dir ]

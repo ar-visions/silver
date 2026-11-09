@@ -15066,6 +15066,25 @@ windowing, mobile, agents, silver-host and its debugging / reload.
 4. OPEN every flightsim build's export run ends in SIGSEGV after
    "export: complete" (install/tmp/flightsim.log, several builds).
 
+## Forest trees view (Nov 8 2026)
+
+1. BUILT, seen hidden (Nov 8: a camera beside the trees)
+   `flightsim --trees true`, or Trees in the Esc menu: a still
+   camera at world x 13300, height 130 m, z 46400, about 35 m over
+   the ground at a forest's edge, facing north, no jet, no flight;
+   a drag looks round, the wheel zooms. Seen: leaving for the
+   catapult and coming back.
+2. DONE, seen hidden (Nov 9: every part samples wrong) three
+   causes, each found by painting the shader's inputs. The streaks
+   on ground and cones: Terrain brush_tile set repeat on the Image;
+   the sampler reads the Texture's wrap_u / wrap_v, so tiles clamped.
+   Square blocks in snow and rectangles on hills: the rule noise's
+   hash2 was fract(sin), which tears at cell edges; integers now.
+   Tile edges: only rock was seamless; all twelve are now (a forced
+   export rebakes them). Also: cones unrolled flat so the tile keeps
+   its scale (6 side rings, seam at the ring's end).
+   Tried and removed: slope rules measured over a fixed 50 m.
+
 ## Alaska terrain textures — live list (Oct 31 2026)
 
 1. DONE three 1024 x 1024 textures: dark rock, sparse forest,

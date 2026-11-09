@@ -2748,15 +2748,28 @@ Render Canvas
         dsz : i32 [ sz * ds ]
         if [ dsz <= 0 ] dsz = sz
         if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
-        key : string 'SpaceMono-Combined@{dsz}'
+        font = face_at[ vk.font_uri[ 'fonts/SpaceMono-Combined.ttf' ],
+                        dsz ]
+
+    func face_at [ uri: string, dsz: i32 ] -> CanvasFont
+        key : string '{uri}@{dsz}'
         cf  : CanvasFont vk.font_cache[ key ]
         if [ !cf ]
-            cf = CanvasFont [ ft_lib: ft_lib,
-                              uri: 'fonts/SpaceMono-Combined.ttf',
-                              size_px: dsz,
+            cf = CanvasFont [ ft_lib: ft_lib, uri: uri, size_px: dsz,
                               pixel_scale: (w.scale > 0) ? w.scale : 1.0 ]
             vk.font_cache[ key ] = cf
-        font = cf
+        return cf
+
+    # the layout's unit, px: the bundled font's line, never a chosen
+    # font's, so a font choice moves no element
+    public func unit_px [] -> f32
+        ensure_font[]
+        if [ !font ] return 22.0
+        cs : f32 [ (w.scale > 0) ? w.scale : 1.0 ]
+        base : string 'fonts/SpaceMono-Combined.ttf'
+        if [ vk.font_uri[ base ] == base ]
+            return font.line_height / cs
+        return face_at[ base, font.size_px ].line_height / cs
 
     # ---- state setters ----
 
@@ -5967,9 +5980,10 @@ func label_px [ cv: Canvas, size: f32 ] -> i32
 
 func shared_font [ cv: Canvas, uri: string, px: i32 ] -> CanvasFont
     if [ !cv.vk.font_cache ] cv.vk.font_cache = map Au [ string ] []
-    key : string '{uri}@{px}'
+    file : string cv.vk.font_uri[ uri ]
+    key : string '{file}@{px}'
     cf  : CanvasFont cv.vk.font_cache[ key ]
     if [ !cf ]
-        cf = CanvasFont [ ft_lib: cv.ft_lib, uri: uri, size_px: px ]
+        cf = CanvasFont [ ft_lib: cv.ft_lib, uri: file, size_px: px ]
         cv.vk.font_cache[ key ] = cf
     return cf
