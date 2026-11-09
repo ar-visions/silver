@@ -1,0 +1,24 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Delete"
+msgstr "削除"
+
+msgid "loading…"
+msgstr "読込中…"
+
+msgid "today"
+msgstr "今日"
+
+msgid "view"
+msgstr "表示"
+
+msgid "Volume"
+msgstr "出来高"
+
+msgid "Day range"
+msgstr "日中値幅"
+
+msgid "52 weeks"
+msgstr "52週"

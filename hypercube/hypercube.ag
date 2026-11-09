@@ -198,7 +198,8 @@ element hypercube : trinity
             cv.fill_color[ ( lok ) ? '#9ab' : '#f66' ]
             cv.draw_text[ '{nm8}  {st8}  scale {sp8}%  obscure {op8}%',
                 rect [ x: vbx + 4.0, y: vby + vbh + 2.0, w: vbw, h: 18.0 ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+                false ]
             cv.paint[]
 
     public func render [] -> Elements

@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "Connect"
+msgstr "接続"
+
+msgid "Connected"
+msgstr "接続済み"
+
+msgid "connected"
+msgstr "接続済み"
+
+msgid "Disconnect"
+msgstr "切断"
+
+msgid "disconnected"
+msgstr "切断済み"
+
+msgid "Forget"
+msgstr "削除"
+
+msgid "Home"
+msgstr "ホーム"
+
+msgid "Join"
+msgstr "接続"
+
+msgid "joining"
+msgstr "接続中"
+
+msgid "Name"
+msgstr "名前"
+
+msgid "no password given"
+msgstr "パスワード未入力"
+
+msgid "No Wi-Fi adapter found"
+msgstr "Wi-Fi機器なし"
+
+msgid "none"
+msgstr "なし"
+
+msgid "open"
+msgstr "開く"
+
+msgid "saved"
+msgstr "保存済み"
+
+msgid "Scan"
+msgstr "検索"
+
+msgid "Scanning"
+msgstr "検索中"

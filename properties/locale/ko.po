@@ -1,0 +1,36 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "clear"
+msgstr "지우기"
+
+msgid "Color"
+msgstr "색상"
+
+msgid "coverage"
+msgstr "커버리지"
+
+msgid "delete"
+msgstr "삭제"
+
+msgid "display"
+msgstr "화면"
+
+msgid "no properties available"
+msgstr "속성 없음"
+
+msgid "none"
+msgstr "없음"
+
+msgid "Range"
+msgstr "범위"
+
+msgid "solid"
+msgstr "단색"
+
+msgid "linear"
+msgstr "선형"
+
+msgid "radial"
+msgstr "방사형"

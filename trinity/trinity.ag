@@ -250,6 +250,11 @@ enum HM
     # app -> ide: its keyboard's class name, three bytes a message as
     # the title's ('' none); the ide's keyboard makes it
     keys    : 27
+    # app -> ide: a wheel notch nothing scrolled, a b its deltas as
+    # hundredths: the host's own view takes it
+    wheel_left : 28
+    # ide -> app: a = the display language (Language's value)
+    language : 29
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -1381,7 +1386,7 @@ abstract live_app media_app
             cv.draw_text[ '{rss} MB  peak {peak}  low {low}',
                 rect [ x: gx, y: r.y + 3.0, w: gw, h: 13.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                        0.0 ], Overflow.clip, null ]
+                        0.0 ], Overflow.clip, null, true ]
             cv.paint[]
             virt : i64 [ au_mem_virt[] ]
             vmb  : i64 [ virt / 1048576 ]
@@ -1389,7 +1394,7 @@ abstract live_app media_app
             cv.draw_text[ 'virt {vmb}  n {mem_hist.count}',
                 rect [ x: gx, y: r.y + 16.0, w: gw, h: 13.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                        0.0 ], Overflow.clip, null ]
+                        0.0 ], Overflow.clip, null, true ]
             cv.paint[]
 
         # instruments are inspectors, not the game: they sample at 8hz,
@@ -1551,6 +1556,11 @@ abstract live_app media_app
                     el
                         wn.panel_open = !wn.panel_open
                     wn.restyle    = true
+                # the host's language: every label in it
+                el [ t == i32[ HM.language ] ]
+                    display_language = Language [ host_pa[] ]
+                    wn.restyle = true
+                    if [ wn.root ] wn.dirty_tree[ wn.root ]
                 # the host's chip: a view of the app, or its source
                 el [ t == i32[ HM.view ] ]
                     vae : cast element [ wn.app_object ]
@@ -1614,6 +1624,10 @@ abstract live_app media_app
                     wn.ev.key.alt   = (mods & 4) != 0
                     wn.ev.key.meta  = (mods & 8) != 0
                     wn.wheel_event[ wn.ev ]
+                    # at its end: the host's view scrolls instead
+                    if [ !wn.wheel_spent ]
+                        host_post[ 0, i32[ HM.wheel_left ],
+                            host_pa[], host_pb[], 0 ]
                 el [ t == i32[ HM.resize ] ]
                     rw : i32 [ host_pa[] ]
                     rh : i32 [ host_pb[] ]
@@ -3314,7 +3328,7 @@ Display Window
         screen.draw_text[ 'Drag to crop  Enter captures  Esc cancels',
             rect [ x: 28.0, y: 25.0, w: 366.0, h: 20.0 ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, true ]
 
 
     func attempt_instance_write [ src: element, dst: element ]
@@ -5560,6 +5574,7 @@ Display Window
                 ev, null ] ]
         ev.origin = target_el
         consumed_w : bool [ false ]
+        wheel_spent = false
         # the app element is served by the fallback below, with the hit
         # element as target; calling it here too would double every
         # event
@@ -5857,6 +5872,8 @@ Display Window
     # a strength no one read last frame: its passes not drawn
     public func blur_idle [ r: Render ] -> bool
         if [ !chain ] return false
+        # never painted: it paints, read or not
+        if [ !r.has_drawn ] return false
         # no scene: nothing for the chain to read
         if [ !backdrop ] return chain.contains[ r ]
         rd : i32 [ blur_read ]
@@ -6205,6 +6222,8 @@ Display Window
     # the list holds fixed width families only; a Default row heads it
     public font_fixed           : bool
     public font_plain           : bool
+    # the last wheel notch moved some element's scroll
+    public wheel_spent          : bool
 
     # a finger past the first (the first is the mouse): the element
     # under it that takes touches gets its press, moves and release,
@@ -6511,13 +6530,15 @@ Display Window
                             rect [ x: 17.0, y: y + 1.0,
                                    w: f32[ width ] - 32.0, h: 20.0 ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                                    0.0 ], Overflow.visible, null ]
+                                    0.0 ], Overflow.visible, null,
+                                    true ]
                         screen.fill_color[ ttx ]
                         screen.draw_text[ so_lines[ i ],
                             rect [ x: 16.0, y: y,
                                    w: f32[ width ] - 32.0, h: 20.0 ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                                    0.0 ], Overflow.visible, null ]
+                                    0.0 ], Overflow.visible, null,
+                                    true ]
                     screen.paint[]
 
         ##
@@ -6531,7 +6552,7 @@ Display Window
                    y: 64.0 + 32.0 - 32.0 - 0.5, w: 64.0, h: 32.0 ],
             vec2f [ 0.5, 0.5 ],
             vec2f [ 0.0, 0.0 ],
-            false ]
+            false, true ]
         ##
         flush_start : i64 [ epoch_micros[] ]
         if [ vk.time_until > 0 ] vk.paint_who = 'flush'
@@ -7991,7 +8012,7 @@ Display Window
                 draw_cv.draw_text    [ (label || element_text), b,
                                        align,
                                        offset, layer.label_overflow,
-                                       layer.text_shadow ]
+                                       layer.text_shadow, true ]
                 draw_cv.clear_crop[]
                 if [ layer.label_font && layer.label_font.count > 0 ]
                     draw_cv.set_font[ (prev_fs) ? prev_font : null ]
@@ -8298,15 +8319,16 @@ Display Window
         if [ !chain ]
             if [ is_setup && !resizing ] build_frost_chain[]
             return null
-        # two strengths for every reader: frost, else blur
+        # two strengths for every reader: frost, else blur; one not
+        # drawn last frame holds nothing yet
         if [ stage == BlurStage.frost ]
             blur_ask = blur_ask | 2
-            return rb_frost.color[]
+            return ((blur_read & 2) != 0) ? rb_frost.color[] : null
         blur_ask = blur_ask | 1
-        return rb_blur.color[]
+        return ((blur_read & 1) != 0) ? rb_blur.color[] : null
 
     # e's origin in the window: its parents' scroll taken off
-    func win_origin [ e: element ] -> vec2f
+    public func win_origin [ e: element ] -> vec2f
         o : vec2f [ 0.0, 0.0 ]
         for [ p: element* e, p, p = p.parent ]
             if [ !p.bounds ] continue
@@ -9257,7 +9279,7 @@ element TButtons
                               rect [ x: x + 6.0, y: 0.0,
                                      w: sw - 12.0 - cw, h: bounds.h ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0,
-                            0.0 ], Overflow.ellipsis, null ]
+                            0.0 ], Overflow.ellipsis, null, true ]
                 if [ lf ] cv.set_font[ null ]
             if [ (close_mask & (1 << i)) != 0 && w.shift ]
                 cr : f32 [ close_r[] ]
@@ -9916,7 +9938,7 @@ element OrbiterBar
         cv.draw_text[ t, rect [ x: x, y: 0.0, w: bounds.w - x,
                                 h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, true ]
         cv.paint[]
         cv.restore[]
 
@@ -10084,7 +10106,7 @@ Control VolumeSlider
                           rect [ x: bounds.w - pad_r, y: 0.0,
                                  w: pad_r - 6.0, h: bounds.h ],
                 vec2f [ 1.0, 0.5 ], vec2f [ 0.0,
-                        0.0 ], Overflow.clip, null ]
+                        0.0 ], Overflow.clip, null, true ]
 
 element Toolbar
     func render[] -> Elements
@@ -10619,7 +10641,7 @@ func shine_text [ cv: Canvas, text: string, b: rect, size: i32,
     cv.text_grad_pos   [ cx, ay ]
     cv.text_grad_mirror[ true ]
     cv.draw_text[ text, b, vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                  Overflow.clip, null ]
+                  Overflow.clip, null, true ]
     cv.paint[]
     cv.text_grad[ rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
 
@@ -10665,7 +10687,8 @@ Layer ShineLayer
             cv.font_size[ sz ]
             cv.fill_color[ bc ]
             cv.draw_text[ txt, bounds, vec2f [ 0.0, 0.5 ],
-                          vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                          vec2f [ 0.0, 0.0 ], Overflow.clip, null,
+                          true ]
             cv.paint[]
 
 # the blurred capture as the ground of the exchange: under the field,
@@ -10858,7 +10881,7 @@ func draw_marked [ cv: Canvas, ln: string, row: rect, base: rgba,
                           rect [ x: x, y: row.y, w: row.x + row.w - x,
                                  h: row.h ], vec2f [ 0.0, 0.5 ],
                                  vec2f [ 0.0, 0.0 ], Overflow.clip,
-                                 null ]
+                                 null, true ]
             cv.paint[]
             x += cv.measure_text[ seg ].w
         if [ ix < 0 ] break
@@ -10956,7 +10979,8 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
             el
                 cv.fill_color[ lc ]
                 cv.draw_text[ ln, row, vec2f [ 0.0, 0.5 ],
-                              vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                              vec2f [ 0.0, 0.0 ], Overflow.clip, null,
+                              true ]
                 cv.paint[]
             y += lh
         en.title_y1 = y
@@ -10973,7 +10997,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
                                      w: maxw - ind, h: lh ],
                                      vec2f [ 0.0, 0.5 ],
                                      vec2f [ 0.0, 0.0 ], Overflow.clip,
-                                     null ]
+                                     null, true ]
                 cv.paint[]
                 y += lh
         if [ en.diff && en.open ]
@@ -10996,7 +11020,7 @@ func draw_notes [ cv: Canvas, notes: vec ShotEntry, b: rect,
                                      w: maxw - ind, h: dlh ],
                                      vec2f [ 0.0, 0.5 ],
                                      vec2f [ 0.0, 0.0 ], Overflow.clip,
-                                     null ]
+                                     null, true ]
                 cv.paint[]
                 y += dlh
             cv.font_size[ 18 ]
@@ -11684,6 +11708,43 @@ expect func t_near_border_glow [ vk: vk_context ] -> bool
     log 'near-border red at half glow: {half_r}'
     return half_r > 51 && half_r < 128
 
+
+# the interface's words: each module's own locale/<code>.po (as
+# gettext keeps them), gathered from every module's share
+ui_table    : map string [string]
+ui_table_of : Language
+# the language every label shows in (the Languages list's pick)
+display_language : Language
+
+# a language's code: the name of its .po files
+func language_code [ lang: Language ] -> string
+    if [ lang == Language.japanese ] return 'ja'
+    if [ lang == Language.chinese ] return 'zh'
+    return 'en'
+
+# one .po file's entries into the table
+func ui_read_po [ lp: path ]
+    txt : string [ lp.load[ typeid[ string ], null ] ]
+    if [ !txt ] return
+    id : string [ '' ]
+    for [ ln: string ] in txt.split[ '\n' ]
+        if [ ln.starts_with[ 'msgid "' ] ]
+            id = ln.mid[ 7, ln.count - 8 ]
+        el [ ln.starts_with[ 'msgstr "' ] && id.count > 0 ]
+            ui_table[ id ] = ln.mid[ 8, ln.count - 9 ]
+
+# s in the language lang, or s as written
+func ui_word [ s: string, lang: Language ] -> string
+    if [ !s || lang == Language.english ] return s
+    if [ !ui_table || ui_table_of != lang ]
+        ui_table_of = lang
+        ui_table = map string [string] []
+        code : string language_code[ lang ]
+        sh : path '{path.path_install[]}/share'
+        for [ d: path ] in sh.ls[ null, false ]
+            lp : path '{d}/locale/{code}.po'
+            if [ lp.exists[] ] ui_read_po[ lp ]
+    return (ui_table.contains[ s ]) ? ui_table[ s ] : s
 
 # a mask edge of box x y bw bh fading black to clear over px
 # inward; side 0 top, 1 right, 2 bottom, 3 left

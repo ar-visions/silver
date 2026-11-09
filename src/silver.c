@@ -3967,6 +3967,7 @@ AU_EXPORT void silver_init(silver a) {
         // the loop below skips. reading it made newest always 0, so a changed
         // dependency source never invalidated this product
         if (file_exists("%o", a->source_path) && modified_time(a->source_path) > 0) {
+            string own_dir = f(string, "%o/", parent_dir(a->module_file));
             FILE *f = fopen(a->source_path->chars, "r");
             u64 newest = 0;
             if (f) {
@@ -3981,6 +3982,9 @@ AU_EXPORT void silver_init(silver a) {
                     int bl = (int)strlen(buf);
                     if ((bl > 3 && strcmp(buf + bl - 3, ".so") == 0) ||
                         (bl > 2 && strcmp(buf + bl - 2, ".a")  == 0)) continue;
+                    // an import's sources are its own: only ours decide
+                    if (strncmp(buf, own_dir->chars, len(own_dir)) != 0)
+                        continue;
                     path artifact = path(buf);
                     u64 m = modified_time(artifact);
                     if (m > newest) newest = m;

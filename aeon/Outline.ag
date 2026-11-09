@@ -920,7 +920,7 @@ element Outliner
                 cv.fill_color[ rgba [ '#7a7a90' ] ]
                 cv.draw_text[ ln.text, rect [ x: x, y: y,
                     w: bounds.w - x, h: 24.0 ], vec2f [ 0.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.visible, null, false ]
                 cv.paint[]
                 continue
             if [ lit[ ln ] ]
@@ -942,7 +942,7 @@ element Outliner
             cv.fill_color[ rgba [ (ln.on) ? '#e8e8f0' : '#7a7a86' ] ]
             cv.draw_text[ ln.text, rect [ x: tx, y: y,
                 w: bounds.w - tx - 8.0, h: 24.0 ], vec2f [ 0.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null, false ]
             cv.paint[]
             # −: a square rounded 4 px, a minus inside
             if [ minus_on[ ln, i ] ]
@@ -973,7 +973,7 @@ element Outliner
                 rect [ x: 12.0, y: bounds.h - 30.0,
                        w: bounds.w - 24.0, h: 24.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, false ]
             cv.paint[]
         el [ (scene.edits && scene.edits.pending[])
              || (scene.doc && scene.doc.unsaved[]) ]
@@ -983,7 +983,7 @@ element Outliner
                 rect [ x: 12.0, y: bounds.h - 30.0,
                        w: bounds.w - 24.0, h: 24.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, false ]
             cv.paint[]
         cv.restore[]
 
@@ -1033,7 +1033,7 @@ element PropsSide
         cv.draw_text[ (nm.count > 0) ? nm : 'nothing chosen',
             rect [ x: 14.0, y: 6.0, w: bounds.w - 28.0, h: 28.0 ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, false ]
         cv.paint[]
         cv.restore[]
 
@@ -1191,7 +1191,7 @@ element PropsBody
             cv.fill_color[ rgba [ '#9a9ab0' ] ]
             cv.draw_text[ 'modifiers', rect [ x: 10.0, y: mods_y,
                 w: bounds.w - 20.0, h: 24.0 ], vec2f [ 0.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null, false ]
             cv.paint[]
             cv.fill_color[ rgba [ '#ffffff1a' ] ]
             cv.rect_to[ 10.0, mods_y + 26.0, bounds.w - 20.0, 1.0 ]
@@ -1236,7 +1236,7 @@ element PropsBody
                     cv.draw_text[ list[ i ].lcase[], rect [ x: 14.0,
                         y: ky, w: bounds.w - 28.0, h: 28.0 ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.visible, null ]
+                        Overflow.visible, null, false ]
                     cv.paint[]
         if [ shown ]
             cv.font_size[ 13 ]
@@ -1276,7 +1276,7 @@ element PropsBody
                 cv.draw_text[ b.label, rect [ x: tx, y: hy,
                     w: bounds.w - tx - 8.0, h: 24.0 ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, null, false ]
                 cv.paint[]
                 cv.set_font[ null ]
                 cv.font_size[ 13 ]

@@ -203,12 +203,13 @@ element intro : trinity
         cv.font_size[ 34 ]
         cv.draw_text[ 'silver', rect [ x: 24.0, y: 18.0, w: 400.0,
             h: 44.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.clip, null ]
+            Overflow.clip, null, false ]
         cv.fill_color[ rgba [ '#9a90b8' ] ]
         cv.font_size[ 15 ]
         cv.draw_text[ 'native code, one object model from C to the GPU',
             rect [ x: 150.0, y: 26.0, w: 700.0, h: 32.0 ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null,
+            false ]
         pw : f32 [ panel_w[] ]
         top : f32 [ 152.0 ]
         ph : f32 [ h9 - top - 24.0 ]
@@ -227,18 +228,19 @@ element intro : trinity
                 rgba [ '#6f8a6a' ] : rgba [ '#cdbcff' ] ]
             cv.draw_text[ cl, rect [ x: 44.0, y: top + 20.0 + f32[ i ] * 30.0,
                 w: pw - 40.0, h: 28.0 ], vec2f [ 0.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
         cv.fill_color[ rgba [ '#9a90b8' ] ]
         cv.draw_text[ (result) ? 'result' : 'press run',
             rect [ x: rx + 20.0, y: top + 20.0, w: rw - 140.0, h: 36.0 ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip, null,
+            false ]
         if [ result ]
             cv.fill_color[ rgba [ '#8fe3b0' ] ]
             for [ i: i32 0, i < result.count, i += 1 ]
                 cv.draw_text[ result[ i ], rect [ x: rx + 20.0,
                     y: top + 76.0 + f32[ i ] * 30.0, w: rw - 40.0,
                     h: 28.0 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, false ]
         cv.paint[]
 
     public func render [] -> Elements

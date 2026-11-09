@@ -11774,7 +11774,8 @@ void aether_import_Au(aether a, string ident, Au lib) {
         path   tested = libp ? f(path, "%o.tested", libp) : null;
         bool   passed = tested && file_exists("%o", tested) &&
             modified_time(tested) >= modified_time(libp);
-        if (lib_instance && !passed) {
+        // an import's tests run for a release build only
+        if (lib_instance && !passed && a->release) {
             // its tests read their files from its share, as --test does
             char was[4096];
             bool back = getcwd(was, sizeof was) != NULL;

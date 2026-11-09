@@ -403,7 +403,7 @@ ResourceView B16
                 rect [ x: x_off, y: yb + f32[ row ] * lh, w: cw * 8.0,
                        h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
         cv.paint [ ]
         # pass 3: hex bytes
         cv.fill_color [ rgba['#d4d4d4'] ]
@@ -427,7 +427,7 @@ ResourceView B16
                 rect [ x: x_hex, y: yb + f32[ row ] * lh, w: cw * 49.0,
                        h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
         cv.paint [ ]
         # pass 4: ascii column (unprintable → '.')
         cv.fill_color [ rgba['#b5cea8'] ]
@@ -446,7 +446,7 @@ ResourceView B16
                 rect [ x: x_asc, y: yb + f32[ row ] * lh, w: cw * 16.0,
                        h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
         cv.paint [ ]
 
 ResourceView ImageView
@@ -510,6 +510,10 @@ ResourceView AppView
     public  outline_on  : bool
     # the app's focus takes words (a phone's keyboard comes up)
     public  app_words   : bool
+    # wheel the app left unused (its ends), for the host's view
+    public  wheel_back  : f32
+    # the display language last told to the app (-1 none yet)
+    intern  lang_told   : i32 [ -1 ]
     # the app's focus types plainly (a console): nothing composed
     public  app_plain   : bool
     # the app asked for a file pick (its + or open button)
@@ -704,6 +708,11 @@ ResourceView AppView
             if [ oa && oa.ask_default[ a ] ] return
             start[]
         if [ slot < 0 ] return
+        # the display language: told once, again on a change
+        lv : i32 [ i32[ display_language ] ]
+        if [ ready && lang_told != lv ]
+            host_post2[ slot, 1, i32[ HM.language ], lv, 0, 0 ]
+            lang_told = lv
         for [ i: i32 0, i < 16, i += 1 ]
             t : i32 [ host_poll2[ slot, 0 ] ]
             if [ t == 0 ] break
@@ -739,6 +748,8 @@ ResourceView AppView
                 pick_ask = true
                 wk : cast Window [ cv.w ]
                 if [ wk ] wk.restyle = true
+            el [ t == i32[ HM.wheel_left ] ]
+                wheel_back += f32[ host_pb[] ] / 100.0
             el [ t == i32[ HM.words ] ]
                 app_words = host_pa[] != 0
                 app_plain = host_pa[] == 2
@@ -1417,7 +1428,7 @@ ResourceView AppView
                       rect [ x: bounds.x, y: bounds.y + 16.0,
                              w: bounds.w, h: 24.0 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, false ]
         cv.paint[]
         if [ !ended && !paused && app_mod ]
             lp9 : string '/tmp/{app_mod}.log'
@@ -1451,7 +1462,7 @@ ResourceView AppView
                                                  w: bounds.w - 32.0,
                                                  h: lh ],
                                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                                Overflow.clip, null ]
+                                Overflow.clip, null, false ]
                         y9 += lh
                     cv.paint[]
 
@@ -1462,6 +1473,7 @@ ResourceView AppView
 
     func start []
         started = true
+        lang_told = -1
         mod : string module_name[]
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the
         # app for the debugger, a debug launch only (a plain run is
@@ -1944,7 +1956,7 @@ Layer EditorLayer
         tr : rect [ x: wx + 10.0, y: wy, w: ww - 20.0, h: th ]
         cv.draw_text[ (editor.peek_title) ? editor.peek_title : '', tr,
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, false ]
         cv.fill_color[ rgba [ '#ffffff14' ] ]
         cv.rect_to[ wx + 1.0, wy + th, ww - 2.0, 1.0 ]
         cv.paint[ ]
@@ -1971,7 +1983,7 @@ Layer EditorLayer
                             w: ww - 16.0, h: lh ]
                 cv.draw_text[ editor.peek_old[ k ], lr,
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, false ]
         el
             mb : EdLineCache code_band[ cv, editor, r0, rows, cmt, lh,
                 cw, code_fs, 0, iw ]
@@ -2523,7 +2535,7 @@ Layer EditorLayer
                               rect [ x: cx + gm, y: ty,
                                      w: grid_cw - gm * 2.0, h: 16.0 ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, false ]
             cv.clear_crop[ ]
             return
 
@@ -2704,7 +2716,7 @@ Layer EditorLayer
                 cv.draw_text[ '{rnum}',
                     rect [ x: bounds.x, y: yg, w: gut_w - 6.0, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, null, false ]
 
         # diff fills go down BEFORE the text, unmasked, as a real
         # background. the finder swaps `lines` for its results and
@@ -2874,7 +2886,7 @@ Layer EditorLayer
                 cv.draw_text[ '{pn}',
                     rect [ x: bounds.x, y: py, w: gut_w - 6.0, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, null, false ]
                 slc : code_slot[ cv, editor, editor.row_src[ pr ],
                                  editor.draw_line[ pr ], cmt_p, lh,
                                  cw_tm.w, code_fs ]
@@ -2967,7 +2979,7 @@ Layer EditorLayer
                         rect [ x: x0 + 8.0, y: y,
                                w: bounds.w - rin - 16.0, h: rh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, false ]
                     continue
                 fis_dir : bool [ fhh->is_dir ]
                 if [ !editor.file_icon ]
@@ -3006,7 +3018,7 @@ Layer EditorLayer
                                          w: bounds.w - rin - tx0,
                                          h: rh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, false ]
                     if [ fdr->count > 0 ]
                         fnw : f32 [ cv.measure_text[ fnm ].w ]
                         col : f32 [ bounds.x + bounds.w * 0.5 ]
@@ -3018,7 +3030,7 @@ Layer EditorLayer
                                              w: bounds.x + bounds.w
                                              - rin - dx, h: rh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.clip, null ]
+                            Overflow.clip, null, false ]
                 el
                     hfs : i32 [
                         (editor.header_size > 0) ? editor.header_size
@@ -3032,7 +3044,7 @@ Layer EditorLayer
                                          w: bounds.w - rin - tx0,
                                          h: nmh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, false ]
                     if [ fdr->count > 0 ]
                         dfs : i32 [
                             (editor.dir_size > 0) ? editor.dir_size
@@ -3044,7 +3056,7 @@ Layer EditorLayer
                                              w: bounds.w - rin - tx0,
                                              h: lh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.clip, null ]
+                            Overflow.clip, null, false ]
                 cv.font_size[ code_fs ]
                 hov : bool [
                     !editor.nav_list && editor.hover_gutter
@@ -3076,7 +3088,7 @@ Layer EditorLayer
                     rect [ x: dpx, y: y,
                            w: bounds.x + bounds.w - rin - dpx, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, false ]
                 continue
             if [ editor.band_rows == 1 ]
                 cmt_c : rgba['#7a8290']
@@ -3145,7 +3157,7 @@ Layer EditorLayer
                     rect [ x: ax, y: ya,
                            w: bounds.x + bounds.w - rin - ax, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, false ]
             cv.paint[ ]
 
         if [ editor.find_query && editor.find_query.count > 0 ]
@@ -3544,14 +3556,14 @@ Layer EditorLayer
                 cv.draw_text[ '{ebn}',
                     rect [ x: bounds.x, y: ey, w: gut_w - 6.0, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, null, false ]
             cv.font_size[ code_fs ]
             cv.fill_color[ (cpy) ? rgba['#b8dcff'] : rgba['#ffb0b0'] ]
             cv.draw_text[ et,
                 rect [ x: bounds.x + lin + gut_w, y: ey,
                        w: bounds.w - lin - gut_w - rin - 8.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, false ]
             cv.flush_text[ ]
             cv.restore[ ]
 
@@ -3624,7 +3636,7 @@ element ToolRail : Toolbar
                           rect [ x: dxx, y: tyy + 44.0, w: 60.0,
                                  h: 16.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, false ]
 
 Control Editor
     style : CSS {
@@ -4577,7 +4589,7 @@ Control Editor
                 cv.draw_text[ s.mid[ i, j - i ],
                     rect [ x: x + f32[ cell ] * cw, y: y, w: w, h: h ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, sh ]
+                    Overflow.visible, sh, false ]
                 cell += j - i
                 i = j
                 continue
@@ -4589,7 +4601,7 @@ Control Editor
                 + (f32[ k ] * cw - gw) / 2.0 ]
             cv.draw_text[ ch, rect [ x: cx, y: y, w: w, h: h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, sh ]
+                Overflow.visible, sh, false ]
             cell += k
             i = nx
 

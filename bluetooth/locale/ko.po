@@ -1,0 +1,96 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Keyboard"
+msgstr "키보드"
+
+msgid "Bluetooth"
+msgstr "블루투스"
+
+msgid "Address"
+msgstr "주소"
+
+msgid "Cancel"
+msgstr "취소"
+
+msgid "Connect"
+msgstr "연결"
+
+msgid "Connected"
+msgstr "연결됨"
+
+msgid "connected"
+msgstr "연결됨"
+
+msgid "connecting"
+msgstr "연결 중"
+
+msgid "Disconnect"
+msgstr "연결 해제"
+
+msgid "Discovering"
+msgstr "찾는 중"
+
+msgid "empty"
+msgstr "비어 있음"
+
+msgid "Forget"
+msgstr "지우기"
+
+msgid "Headphones"
+msgstr "헤드폰"
+
+msgid "idle"
+msgstr "대기"
+
+msgid "Looking for devices"
+msgstr "기기 찾는 중"
+
+msgid "no"
+msgstr "아니요"
+
+msgid "No Bluetooth adapter found"
+msgstr "블루투스 어댑터 없음"
+
+msgid "No devices: press Scan"
+msgstr "기기 없음: 검색을 누르세요"
+
+msgid "none"
+msgstr "없음"
+
+msgid "Off"
+msgstr "끔"
+
+msgid "off"
+msgstr "끔"
+
+msgid "On"
+msgstr "켬"
+
+msgid "Pair"
+msgstr "페어링"
+
+msgid "paired"
+msgstr "페어링됨"
+
+msgid "Paired"
+msgstr "페어링됨"
+
+msgid "power"
+msgstr "전원"
+
+msgid "Scan"
+msgstr "검색"
+
+msgid "Set"
+msgstr "설정"
+
+msgid "Stop"
+msgstr "중지"
+
+msgid "the codes did not match"
+msgstr "코드가 일치하지 않음"
+
+msgid "yes"
+msgstr "예"

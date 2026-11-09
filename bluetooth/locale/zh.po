@@ -1,0 +1,96 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Keyboard"
+msgstr "键盘"
+
+msgid "Bluetooth"
+msgstr "蓝牙"
+
+msgid "Address"
+msgstr "地址"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "connected"
+msgstr "已连接"
+
+msgid "connecting"
+msgstr "连接中"
+
+msgid "Disconnect"
+msgstr "断开"
+
+msgid "Discovering"
+msgstr "搜索中"
+
+msgid "empty"
+msgstr "空"
+
+msgid "Forget"
+msgstr "忘记"
+
+msgid "Headphones"
+msgstr "耳机"
+
+msgid "idle"
+msgstr "空闲"
+
+msgid "Looking for devices"
+msgstr "正在查找设备"
+
+msgid "no"
+msgstr "否"
+
+msgid "No Bluetooth adapter found"
+msgstr "未找到蓝牙适配器"
+
+msgid "No devices: press Scan"
+msgstr "没有设备: 按扫描"
+
+msgid "none"
+msgstr "无"
+
+msgid "Off"
+msgstr "关"
+
+msgid "off"
+msgstr "关"
+
+msgid "On"
+msgstr "开"
+
+msgid "Pair"
+msgstr "配对"
+
+msgid "paired"
+msgstr "已配对"
+
+msgid "Paired"
+msgstr "已配对"
+
+msgid "power"
+msgstr "电源"
+
+msgid "Scan"
+msgstr "扫描"
+
+msgid "Set"
+msgstr "设置"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "the codes did not match"
+msgstr "代码不匹配"
+
+msgid "yes"
+msgstr "是"

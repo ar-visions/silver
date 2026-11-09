@@ -952,7 +952,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 cv.draw_text[ ln,
                     rect [ x: left, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                            0.0 ], Overflow.visible, null ]
+                            0.0 ], Overflow.visible, null, false ]
             cv.paint[]
             return f32[n] * lh
 
@@ -990,7 +990,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                               rect [ x: left, y: y, w: bounds.w,
                                      h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                            0.0 ], Overflow.visible, null ]
+                            0.0 ], Overflow.visible, null, false ]
             for [ r: i32 0, r < s.rows, r += 1 ]
                 ln : string s.row_to_string[ r ]
                 if [ ln.index_of[ flt ] < 0 ] continue
@@ -1004,7 +1004,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                               rect [ x: left, y: y, w: bounds.w,
                                      h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                            0.0 ], Overflow.visible, null ]
+                            0.0 ], Overflow.visible, null, false ]
             cv.paint[]
             return f32[dr] * lh
 
@@ -1342,7 +1342,8 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
                                              w: f32[ci - seg] * cw + cw,
                                              h: lh ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                                    0.0 ], Overflow.visible, null ]
+                                    0.0 ], Overflow.visible, null,
+                                    false ]
                     if [ blk ]
                         draw_block[ cv, code, left + f32[ci] * cw, y,
                                     cw,
@@ -1924,7 +1925,7 @@ Layer CompileLayer
             cv.draw_text[ con.log.value_by_index[i],
                 rect [ x:left, y:y, w:bounds.w, h:lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
-                        0.0 ], Overflow.visible, null ]
+                        0.0 ], Overflow.visible, null, false ]
         cv.paint[]
 
 

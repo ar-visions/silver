@@ -1,0 +1,555 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Navigator"
+msgstr "导航"
+
+msgid "Scenes"
+msgstr "场景"
+
+msgid "Widgets"
+msgstr "小组件"
+
+msgid "Display"
+msgstr "显示"
+
+msgid "Sound"
+msgstr "声音"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "Mouse"
+msgstr "鼠标"
+
+msgid "Reload"
+msgstr "重新载入"
+
+msgid "delay"
+msgstr "延迟"
+
+msgid "rate"
+msgstr "速率"
+
+msgid "layout"
+msgstr "布局"
+
+msgid "haptics"
+msgstr "触感"
+
+msgid "scroll"
+msgstr "滚动"
+
+msgid "easing"
+msgstr "缓动"
+
+msgid "text"
+msgstr "文字"
+
+msgid "size"
+msgstr "大小"
+
+msgid "tool font"
+msgstr "字体"
+
+msgid "recording"
+msgstr "录制"
+
+msgid "source"
+msgstr "来源"
+
+msgid "with mic"
+msgstr "含麦克风"
+
+msgid "start"
+msgstr "开始"
+
+msgid "mic"
+msgstr "麦克风"
+
+msgid "speakers"
+msgstr "扬声器"
+
+msgid "input"
+msgstr "输入"
+
+msgid "All"
+msgstr "全部"
+
+msgid "all"
+msgstr "全部"
+
+msgid "add"
+msgstr "添加"
+
+msgid "apps"
+msgstr "应用"
+
+msgid "back"
+msgstr "返回"
+
+msgid "Background"
+msgstr "背景"
+
+msgid "battery"
+msgstr "电池"
+
+msgid "building"
+msgstr "构建中"
+
+msgid "built"
+msgstr "已构建"
+
+msgid "build failed"
+msgstr "构建失败"
+
+msgid "busy"
+msgstr "忙碌"
+
+msgid "Callstack"
+msgstr "调用栈"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "cancelled"
+msgstr "已取消"
+
+msgid "charge"
+msgstr "电量"
+
+msgid "charging"
+msgstr "充电中"
+
+msgid "Choose a widget"
+msgstr "选择小组件"
+
+msgid "Clean build"
+msgstr "完整构建"
+
+msgid "clear"
+msgstr "清除"
+
+msgid "Code"
+msgstr "代码"
+
+msgid "commit & push"
+msgstr "提交并推送"
+
+msgid "compiling"
+msgstr "编译中"
+
+msgid "Console"
+msgstr "终端"
+
+msgid "console"
+msgstr "终端"
+
+msgid "context"
+msgstr "上下文"
+
+msgid "continue"
+msgstr "继续"
+
+msgid "coverage"
+msgstr "覆盖率"
+
+msgid "current"
+msgstr "当前"
+
+msgid "dark"
+msgstr "深色"
+
+msgid "debug"
+msgstr "调试"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Default"
+msgstr "默认"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "delete"
+msgstr "删除"
+
+msgid "desktop"
+msgstr "桌面"
+
+msgid "display"
+msgstr "显示"
+
+msgid "done"
+msgstr "完成"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Embed"
+msgstr "嵌入"
+
+msgid "ended"
+msgstr "已结束"
+
+msgid "Enter: open this folder"
+msgstr "Enter: 打开此文件夹"
+
+msgid "error"
+msgstr "错误"
+
+msgid "exited"
+msgstr "已退出"
+
+msgid "app exited"
+msgstr "应用已退出"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "files"
+msgstr "文件"
+
+msgid "filter"
+msgstr "筛选"
+
+msgid "Find"
+msgstr "查找"
+
+msgid "find"
+msgstr "查找"
+
+msgid "fixed width"
+msgstr "等宽"
+
+msgid "folder"
+msgstr "文件夹"
+
+msgid "Get"
+msgstr "获取"
+
+msgid "go back"
+msgstr "恢复"
+
+msgid "heavy"
+msgstr "重"
+
+msgid "high"
+msgstr "高"
+
+msgid "home"
+msgstr "主页"
+
+msgid "idle"
+msgstr "空闲"
+
+msgid "install"
+msgstr "安装"
+
+msgid "installed"
+msgstr "已安装"
+
+msgid "instances"
+msgstr "实例"
+
+msgid "instruments"
+msgstr "仪表"
+
+msgid "keep it"
+msgstr "保留"
+
+msgid "keyboard"
+msgstr "键盘"
+
+msgid "light"
+msgstr "轻"
+
+msgid "linking"
+msgstr "链接中"
+
+msgid "loading"
+msgstr "载入中"
+
+msgid "loading more"
+msgstr "载入更多"
+
+msgid "lossless"
+msgstr "无损"
+
+msgid "medium"
+msgstr "中"
+
+msgid "menu"
+msgstr "菜单"
+
+msgid "mute"
+msgstr "静音"
+
+msgid "muted"
+msgstr "已静音"
+
+msgid "name new file"
+msgstr "新文件名"
+
+msgid "name new folder"
+msgstr "新文件夹名"
+
+msgid "Navigate"
+msgstr "导航"
+
+msgid "navigator"
+msgstr "导航"
+
+msgid "never"
+msgstr "永不"
+
+msgid "new branch"
+msgstr "新分支"
+
+msgid "New console"
+msgstr "新终端"
+
+msgid "new file"
+msgstr "新文件"
+
+msgid "new folder"
+msgstr "新文件夹"
+
+msgid "New instance"
+msgstr "新实例"
+
+msgid "No agent installed: install one from the apps"
+msgstr "未安装代理: 从应用中安装"
+
+msgid "No apps running"
+msgstr "没有运行的应用"
+
+msgid "no file chosen"
+msgstr "未选择文件"
+
+msgid "no files chosen"
+msgstr "未选择文件"
+
+msgid "No menu"
+msgstr "无菜单"
+
+msgid "none"
+msgstr "无"
+
+msgid "not running"
+msgstr "未运行"
+
+msgid "off"
+msgstr "关"
+
+msgid "on"
+msgstr "开"
+
+msgid "on battery"
+msgstr "使用电池"
+
+msgid "Open"
+msgstr "打开"
+
+msgid "outline"
+msgstr "大纲"
+
+msgid "Pane"
+msgstr "窗格"
+
+msgid "password"
+msgstr "密码"
+
+msgid "pause"
+msgstr "暂停"
+
+msgid "paused"
+msgstr "已暂停"
+
+msgid "paused — F8 or click to resume"
+msgstr "已暂停 — 按 F8 或点击继续"
+
+msgid "pinned"
+msgstr "已固定"
+
+msgid "play"
+msgstr "播放"
+
+msgid "power"
+msgstr "电源"
+
+msgid "Power"
+msgstr "电源"
+
+msgid "power off"
+msgstr "关机"
+
+msgid "Power off"
+msgstr "关机"
+
+msgid "projects"
+msgstr "项目"
+
+msgid "properties"
+msgstr "属性"
+
+msgid "propose"
+msgstr "提议"
+
+msgid "quality"
+msgstr "质量"
+
+msgid "Quit"
+msgstr "退出"
+
+msgid "Receiving"
+msgstr "接收中"
+
+msgid "record"
+msgstr "录制"
+
+msgid "remotes"
+msgstr "远程"
+
+msgid "replace"
+msgstr "替换"
+
+msgid "Replace"
+msgstr "替换"
+
+msgid "replace with"
+msgstr "替换为"
+
+msgid "research"
+msgstr "研究"
+
+msgid "researching"
+msgstr "研究中"
+
+msgid "resolution"
+msgstr "分辨率"
+
+msgid "restart"
+msgstr "重新启动"
+
+msgid "Restart"
+msgstr "重新启动"
+
+msgid "Retry"
+msgstr "重试"
+
+msgid "Run"
+msgstr "运行"
+
+msgid "running"
+msgstr "运行中"
+
+msgid "scenes"
+msgstr "场景"
+
+msgid "Screen"
+msgstr "屏幕"
+
+msgid "screen"
+msgstr "屏幕"
+
+msgid "screen off"
+msgstr "关闭屏幕"
+
+msgid "Screenshot"
+msgstr "截屏"
+
+msgid "sent"
+msgstr "已发送"
+
+msgid "shift-click to copy"
+msgstr "Shift 点击复制"
+
+msgid "show unknown source"
+msgstr "显示未知来源"
+
+msgid "sleep"
+msgstr "睡眠"
+
+msgid "slide for power"
+msgstr "滑动以关机"
+
+msgid "software"
+msgstr "软件"
+
+msgid "sound"
+msgstr "声音"
+
+msgid "starting"
+msgstr "启动中"
+
+msgid "stop"
+msgstr "停止"
+
+msgid "stopped"
+msgstr "已停止"
+
+msgid "strong"
+msgstr "强"
+
+msgid "system"
+msgstr "系统"
+
+msgid "tasks"
+msgstr "任务"
+
+msgid "tests"
+msgstr "测试"
+
+msgid "That password is not right"
+msgstr "密码不正确"
+
+msgid "today"
+msgstr "今天"
+
+msgid "users"
+msgstr "用户"
+
+msgid "view"
+msgstr "视图"
+
+msgid "waiting"
+msgstr "等待中"
+
+msgid "widgets"
+msgstr "小组件"
+
+msgid "Window"
+msgstr "窗口"
+
+msgid "working"
+msgstr "工作中"
+
+msgid "writing"
+msgstr "写入中"
+
+msgid "you"
+msgstr "你"
+
+msgid "after 1 min"
+msgstr "1分钟后"
+
+msgid "after 15 s"
+msgstr "15秒后"
+
+msgid "after 5 min"
+msgstr "5分钟后"
+
+msgid "at once"
+msgstr "立即"
+
+msgid "end"
+msgstr "结束"
+
+msgid "Keyboard"
+msgstr "键盘"
+
+msgid "Bluetooth"
+msgstr "蓝牙"

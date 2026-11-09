@@ -11,7 +11,7 @@ ifdef [ apple ]
             -framework UIKit -framework QuartzCore -framework GameController -framework Foundation -framework AudioToolbox
     ifndef [ ios ]
         import <host.h>
-            -framework Cocoa -framework QuartzCore -framework GameController -framework AudioToolbox
+            -framework Cocoa -framework QuartzCore -framework GameController -framework AudioToolbox -framework CoreAudio
 
 ifdef [ linux ]
     import <host.h>
@@ -78,6 +78,10 @@ func host_backlight_set [ level: f32 ] -> i32
 func host_battery_get [ level: ref f32, charging: ref i32 ] -> i32
 func host_capture_get [ vol: ref f32, muted: ref i32 ] -> i32
 func host_capture_set [ vol: f32, muted: i32 ] -> i32
+# sound devices: lines 'uid|name', the default's uid, a choice
+func host_sound_list    [ inputs: i32, out: @i8, cap: i32 ] -> i32
+func host_sound_default [ inputs: i32, out: @i8, cap: i32 ] -> i32
+func host_sound_choose  [ inputs: i32, uid: cstr ] -> i32
 func host_app_request [ nm: cstr, flags: i32 ] -> i32
 func host_app_flags   [ slot: i32 ] -> i32
 func host_app_state   [ slot: i32 ] -> i32

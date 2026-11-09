@@ -363,6 +363,8 @@ class KeyLanguages
     public [ StatePersist ] added : string [ 'none' ]
     # the letters' keys: 'qwerty', or 'flick' (12 keys)
     public [ StatePersist ] letters : string [ 'qwerty' ]
+    # the language every label shows in
+    public [ StatePersist ] shown : string [ 'english' ]
 
 lang_kept : KeyLanguages
 
@@ -426,7 +428,7 @@ element LangText
 Button LangButton
     style : CSS {
         layers.body:
-            fill_color: #ffffff14
+            fill_color: #0000
             radius: 8
             stroke_width: 1
             stroke_color: #ffffff33
@@ -438,6 +440,7 @@ Button LangButton
             label_color: #e4e4ea
             label_size: 17
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            text_shadow: 0 1px 2px #000b
         :hovered
             layers.body:
                 fill_color: #ffffff22
@@ -451,7 +454,7 @@ Button LangButton
 Button LangRow
     style : CSS {
         layers.body:
-            fill_color: #ffffff0a
+            fill_color: #0000
             radius: 8
             stroke_width: 1
             stroke_color: #ffffff1a
@@ -465,6 +468,7 @@ Button LangRow
             label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.0 0.5
             label_offset: 14.0 0.0
+            text_shadow: 0 1px 2px #000b
         :hovered
             layers.body:
                 fill_color: #ffffff18
@@ -478,22 +482,6 @@ Button LangRow
                 label_color: #ffffff
     }
     public name : string
-    public note : string
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        if [ note.count == 0 ] return
-        cv : Canvas [ w.screen ]
-        cv.set_font[ shared_font[ cv,
-            'fonts/BarlowCondensed-Regular.ttf',
-            label_px[ cv, 16.0 ] ] ]
-        cv.font_size[ 16 ]
-        cv.fill_color[ rgba [ '#ffffff99' ] ]
-        cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: bounds.w - 14.0,
-            h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.clip, null ]
-        cv.paint[]
-        cv.set_font[ null ]
 
 # every language: a press chooses one, and types in it if it is
 # added; each but English has its Add or Remove beside its name
@@ -516,20 +504,16 @@ element LanguageList
 
     public func render [] -> Elements
         t : Elements []
-        t[ 'lang_title' ] = LangText [ label: 'Languages',
-            area: Region { l0.7 t0.2 r0.7 h1.2 } ]
-        y : f32 [ 1.5 ]
+        if [ !chosen ] chosen = kept_prefs[].shown
+        y : f32 [ 0.15 ]
         all : vec string [] [ 'english' ]
         for [ n: string ] in second_languages[]
             all.push[ n ]
         for [ n: string ] in all
             on : bool [ n == 'english' || language_added[ n ] ]
-            typing : bool [ ux && ux.input_language == Language [ n ] ]
-            note : string [ (typing) ? 'typing'
-                : ((on) ? 'added' : 'not added') ]
             side : bool [ n != 'english' ]
             t[ 'lang_{n}' ] = LangRow [ label: language_title[ n ],
-                name: n, note: note, selected: n == chosen,
+                name: n, selected: n == chosen,
                 area: Region [ (side) ? 'l0.7 t{y} r5.6 h1.2'
                                       : 'l0.7 t{y} r0.7 h1.2' ] ]
             if [ side ]
@@ -545,9 +529,17 @@ element LanguageList
         if [ e inherits LangRow ]
             row : cast LangRow [ e ]
             chosen = row.name
+            kl : KeyLanguages kept_prefs[]
+            kl.shown = chosen
+            state_persist_store[ kl ]
+            display_language = Language [ chosen ]
             if [ ux && (chosen == 'english'
                         || language_added[ chosen ]) ]
                 ux.input_language = Language [ chosen ]
+            # every label in the new language
+            if [ ux && ux.root ]
+                ux.restyle = true
+                ux.dirty_tree[ ux.root ]
         el [ e inherits LangButton ]
             nm : string [ (cast LangButton [ e ]).name ]
             on : bool [ language_added[ nm ] ]

@@ -1537,7 +1537,7 @@ element DesignView
                 rect [ x: 16.0, y: bounds.h - 40.0,
                        w: bounds.w - 32.0, h: 28.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, false ]
             cv.paint[]
 
 # an object's top-level values as its .agi writes them, by key

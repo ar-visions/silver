@@ -125,6 +125,17 @@ is not done. When several items are named, every one lands in
 the same pass. The aurora took six builds and the land specular
 eight asks: an unmeasured first pass costs more than doing it.
 
+## Rule #5c — A style ask is a style change
+
+A look asked for (a shadow, a colour, a size, a fade) is a line
+in the element's existing style (CSS) or draw: nothing more. No
+new members, mechanisms, inheritance or trinity changes for it,
+unless the user asks for them. Never bloat the code to answer a
+small ask (Nov 9: a text shadow became a trinity mechanism).
+Style itself is defined once: set a look in the one shared base
+style its elements inherit, and consolidate repeats into it when
+seen; never copy the same lines into style after style.
+
 ## Rule #6 — Get details first
 
 Do not infer work, scope, history, or a report from incomplete information. Before inspecting files, running commands, editing, or reporting, get the concrete details needed from the user. If the user has not asked for a specific action, take no action. When told to stop, stop without adding analysis or proposals.

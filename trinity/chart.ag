@@ -52,7 +52,8 @@ func chart_text [ cv: Canvas, s: string, x: f32, y: f32, w: f32,
                   h: f32, ax: f32, col: string ]
     cv.fill_color[ rgba [ col ] ]
     cv.draw_text[ s, rect [ x: x, y: y, w: w, h: h ],
-        vec2f [ ax, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+        vec2f [ ax, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null,
+        false ]
 
 # values' low and high, the base among them, a margin each way
 func chart_span [ vs: vec f64, base: f64, margin: f64 ] -> vec2f

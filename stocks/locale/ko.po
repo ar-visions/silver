@@ -1,0 +1,24 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Delete"
+msgstr "삭제"
+
+msgid "loading…"
+msgstr "불러오는 중…"
+
+msgid "today"
+msgstr "오늘"
+
+msgid "view"
+msgstr "보기"
+
+msgid "Volume"
+msgstr "거래량"
+
+msgid "Day range"
+msgstr "일일 범위"
+
+msgid "52 weeks"
+msgstr "52주"

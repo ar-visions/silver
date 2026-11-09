@@ -1,0 +1,555 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Navigator"
+msgstr "案内"
+
+msgid "Scenes"
+msgstr "場面"
+
+msgid "Widgets"
+msgstr "部品"
+
+msgid "Display"
+msgstr "画面"
+
+msgid "Sound"
+msgstr "音"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "Mouse"
+msgstr "マウス"
+
+msgid "Reload"
+msgstr "再読込"
+
+msgid "delay"
+msgstr "遅延"
+
+msgid "rate"
+msgstr "速度"
+
+msgid "layout"
+msgstr "配列"
+
+msgid "haptics"
+msgstr "触覚"
+
+msgid "scroll"
+msgstr "スクロール"
+
+msgid "easing"
+msgstr "緩和"
+
+msgid "text"
+msgstr "文字"
+
+msgid "size"
+msgstr "大きさ"
+
+msgid "tool font"
+msgstr "書体"
+
+msgid "recording"
+msgstr "録画"
+
+msgid "source"
+msgstr "入力元"
+
+msgid "with mic"
+msgstr "マイク付き"
+
+msgid "start"
+msgstr "開始"
+
+msgid "mic"
+msgstr "マイク"
+
+msgid "speakers"
+msgstr "スピーカー"
+
+msgid "input"
+msgstr "入力"
+
+msgid "All"
+msgstr "すべて"
+
+msgid "all"
+msgstr "すべて"
+
+msgid "add"
+msgstr "追加"
+
+msgid "apps"
+msgstr "アプリ"
+
+msgid "back"
+msgstr "戻る"
+
+msgid "Background"
+msgstr "背景"
+
+msgid "battery"
+msgstr "電池"
+
+msgid "building"
+msgstr "構築中"
+
+msgid "built"
+msgstr "構築済み"
+
+msgid "build failed"
+msgstr "構築失敗"
+
+msgid "busy"
+msgstr "処理中"
+
+msgid "Callstack"
+msgstr "呼出履歴"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "cancelled"
+msgstr "取消済み"
+
+msgid "charge"
+msgstr "充電量"
+
+msgid "charging"
+msgstr "充電中"
+
+msgid "Choose a widget"
+msgstr "部品を選択"
+
+msgid "Clean build"
+msgstr "完全構築"
+
+msgid "clear"
+msgstr "消去"
+
+msgid "Code"
+msgstr "コード"
+
+msgid "commit & push"
+msgstr "記録して送信"
+
+msgid "compiling"
+msgstr "翻訳中"
+
+msgid "Console"
+msgstr "端末"
+
+msgid "console"
+msgstr "端末"
+
+msgid "context"
+msgstr "文脈"
+
+msgid "continue"
+msgstr "続行"
+
+msgid "coverage"
+msgstr "網羅率"
+
+msgid "current"
+msgstr "現在"
+
+msgid "dark"
+msgstr "暗"
+
+msgid "debug"
+msgstr "デバッグ"
+
+msgid "Debug"
+msgstr "デバッグ"
+
+msgid "Default"
+msgstr "既定"
+
+msgid "Delete"
+msgstr "削除"
+
+msgid "delete"
+msgstr "削除"
+
+msgid "desktop"
+msgstr "卓上"
+
+msgid "display"
+msgstr "画面"
+
+msgid "done"
+msgstr "完了"
+
+msgid "Download"
+msgstr "入手"
+
+msgid "Embed"
+msgstr "埋込"
+
+msgid "ended"
+msgstr "終了"
+
+msgid "Enter: open this folder"
+msgstr "Enter: このフォルダを開く"
+
+msgid "error"
+msgstr "誤り"
+
+msgid "exited"
+msgstr "終了"
+
+msgid "app exited"
+msgstr "アプリ終了"
+
+msgid "failed"
+msgstr "失敗"
+
+msgid "files"
+msgstr "ファイル"
+
+msgid "filter"
+msgstr "絞込"
+
+msgid "Find"
+msgstr "検索"
+
+msgid "find"
+msgstr "検索"
+
+msgid "fixed width"
+msgstr "等幅"
+
+msgid "folder"
+msgstr "フォルダ"
+
+msgid "Get"
+msgstr "入手"
+
+msgid "go back"
+msgstr "戻す"
+
+msgid "heavy"
+msgstr "強"
+
+msgid "high"
+msgstr "高"
+
+msgid "home"
+msgstr "ホーム"
+
+msgid "idle"
+msgstr "待機"
+
+msgid "install"
+msgstr "導入"
+
+msgid "installed"
+msgstr "導入済み"
+
+msgid "instances"
+msgstr "実体"
+
+msgid "instruments"
+msgstr "計測"
+
+msgid "keep it"
+msgstr "維持"
+
+msgid "keyboard"
+msgstr "鍵盤"
+
+msgid "light"
+msgstr "弱"
+
+msgid "linking"
+msgstr "結合中"
+
+msgid "loading"
+msgstr "読込中"
+
+msgid "loading more"
+msgstr "続きを読込中"
+
+msgid "lossless"
+msgstr "可逆"
+
+msgid "medium"
+msgstr "中"
+
+msgid "menu"
+msgstr "メニュー"
+
+msgid "mute"
+msgstr "消音"
+
+msgid "muted"
+msgstr "消音中"
+
+msgid "name new file"
+msgstr "新規ファイル名"
+
+msgid "name new folder"
+msgstr "新規フォルダ名"
+
+msgid "Navigate"
+msgstr "移動"
+
+msgid "navigator"
+msgstr "案内"
+
+msgid "never"
+msgstr "しない"
+
+msgid "new branch"
+msgstr "新しい枝"
+
+msgid "New console"
+msgstr "新しい端末"
+
+msgid "new file"
+msgstr "新規ファイル"
+
+msgid "new folder"
+msgstr "新規フォルダ"
+
+msgid "New instance"
+msgstr "新しい実体"
+
+msgid "No agent installed: install one from the apps"
+msgstr "代理がありません: アプリから導入"
+
+msgid "No apps running"
+msgstr "実行中のアプリなし"
+
+msgid "no file chosen"
+msgstr "ファイル未選択"
+
+msgid "no files chosen"
+msgstr "ファイル未選択"
+
+msgid "No menu"
+msgstr "メニューなし"
+
+msgid "none"
+msgstr "なし"
+
+msgid "not running"
+msgstr "停止中"
+
+msgid "off"
+msgstr "切"
+
+msgid "on"
+msgstr "入"
+
+msgid "on battery"
+msgstr "電池駆動"
+
+msgid "Open"
+msgstr "開く"
+
+msgid "outline"
+msgstr "概要"
+
+msgid "Pane"
+msgstr "枠"
+
+msgid "password"
+msgstr "パスワード"
+
+msgid "pause"
+msgstr "一時停止"
+
+msgid "paused"
+msgstr "一時停止中"
+
+msgid "paused — F8 or click to resume"
+msgstr "一時停止中 — F8 かクリックで再開"
+
+msgid "pinned"
+msgstr "固定"
+
+msgid "play"
+msgstr "再生"
+
+msgid "power"
+msgstr "電源"
+
+msgid "Power"
+msgstr "電源"
+
+msgid "power off"
+msgstr "電源を切る"
+
+msgid "Power off"
+msgstr "電源を切る"
+
+msgid "projects"
+msgstr "計画"
+
+msgid "properties"
+msgstr "属性"
+
+msgid "propose"
+msgstr "提案"
+
+msgid "quality"
+msgstr "品質"
+
+msgid "Quit"
+msgstr "終了"
+
+msgid "Receiving"
+msgstr "受信中"
+
+msgid "record"
+msgstr "録画"
+
+msgid "remotes"
+msgstr "遠隔"
+
+msgid "replace"
+msgstr "置換"
+
+msgid "Replace"
+msgstr "置換"
+
+msgid "replace with"
+msgstr "置換後"
+
+msgid "research"
+msgstr "調査"
+
+msgid "researching"
+msgstr "調査中"
+
+msgid "resolution"
+msgstr "解像度"
+
+msgid "restart"
+msgstr "再起動"
+
+msgid "Restart"
+msgstr "再起動"
+
+msgid "Retry"
+msgstr "再試行"
+
+msgid "Run"
+msgstr "実行"
+
+msgid "running"
+msgstr "実行中"
+
+msgid "scenes"
+msgstr "場面"
+
+msgid "Screen"
+msgstr "画面"
+
+msgid "screen"
+msgstr "画面"
+
+msgid "screen off"
+msgstr "画面消灯"
+
+msgid "Screenshot"
+msgstr "画面撮影"
+
+msgid "sent"
+msgstr "送信済み"
+
+msgid "shift-click to copy"
+msgstr "Shiftクリックで複製"
+
+msgid "show unknown source"
+msgstr "不明な元を表示"
+
+msgid "sleep"
+msgstr "休止"
+
+msgid "slide for power"
+msgstr "滑らせて電源"
+
+msgid "software"
+msgstr "ソフト"
+
+msgid "sound"
+msgstr "音"
+
+msgid "starting"
+msgstr "起動中"
+
+msgid "stop"
+msgstr "停止"
+
+msgid "stopped"
+msgstr "停止済み"
+
+msgid "strong"
+msgstr "強"
+
+msgid "system"
+msgstr "システム"
+
+msgid "tasks"
+msgstr "作業"
+
+msgid "tests"
+msgstr "試験"
+
+msgid "That password is not right"
+msgstr "パスワードが違います"
+
+msgid "today"
+msgstr "今日"
+
+msgid "users"
+msgstr "利用者"
+
+msgid "view"
+msgstr "表示"
+
+msgid "waiting"
+msgstr "待機中"
+
+msgid "widgets"
+msgstr "部品"
+
+msgid "Window"
+msgstr "窓"
+
+msgid "working"
+msgstr "作業中"
+
+msgid "writing"
+msgstr "書込中"
+
+msgid "you"
+msgstr "あなた"
+
+msgid "after 1 min"
+msgstr "1分後"
+
+msgid "after 15 s"
+msgstr "15秒後"
+
+msgid "after 5 min"
+msgstr "5分後"
+
+msgid "at once"
+msgstr "すぐに"
+
+msgid "end"
+msgstr "終了"
+
+msgid "Keyboard"
+msgstr "鍵盤"
+
+msgid "Bluetooth"
+msgstr "Bluetooth"

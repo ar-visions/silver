@@ -1,0 +1,132 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "text"
+msgstr "글자"
+
+msgid "games"
+msgstr "게임"
+
+msgid "creative"
+msgstr "창작"
+
+msgid "everyday"
+msgstr "일상"
+
+msgid "simulation"
+msgstr "시뮬레이션"
+
+msgid "developer"
+msgstr "개발"
+
+msgid "communication"
+msgstr "소통"
+
+msgid "other"
+msgstr "기타"
+
+msgid "agents"
+msgstr "에이전트"
+
+msgid "clear"
+msgstr "지우기"
+
+msgid "continue"
+msgstr "계속"
+
+msgid "Default"
+msgstr "기본"
+
+msgid "display"
+msgstr "화면"
+
+msgid "Drag to crop  Enter captures  Esc cancels"
+msgstr "드래그로 자르기  Enter 캡처  Esc 취소"
+
+msgid "Embed"
+msgstr "포함"
+
+msgid "filter"
+msgstr "필터"
+
+msgid "Full"
+msgstr "전체"
+
+msgid "hidden"
+msgstr "숨김"
+
+msgid "high"
+msgstr "높음"
+
+msgid "home"
+msgstr "홈"
+
+msgid "instruments"
+msgstr "계측"
+
+msgid "menu"
+msgstr "메뉴"
+
+msgid "needs"
+msgstr "필요"
+
+msgid "new"
+msgstr "새로"
+
+msgid "No agent shell installed: install one from the apps view"
+msgstr "에이전트 없음: 앱에서 설치"
+
+msgid "none"
+msgstr "없음"
+
+msgid "Nothing to undo"
+msgstr "실행 취소할 항목 없음"
+
+msgid "Options"
+msgstr "옵션"
+
+msgid "outline"
+msgstr "개요"
+
+msgid "play"
+msgstr "재생"
+
+msgid "record"
+msgstr "녹화"
+
+msgid "save as"
+msgstr "다른 이름으로 저장"
+
+msgid "Screen"
+msgstr "화면"
+
+msgid "screen"
+msgstr "화면"
+
+msgid "Send failed"
+msgstr "전송 실패"
+
+msgid "solid"
+msgstr "단색"
+
+msgid "stop"
+msgstr "중지"
+
+msgid "system"
+msgstr "시스템"
+
+msgid "the agent failed"
+msgstr "에이전트 실패"
+
+msgid "views"
+msgstr "보기"
+
+msgid "volume"
+msgstr "음량"
+
+msgid "Window"
+msgstr "창"
+
+msgid "end"
+msgstr "종료"

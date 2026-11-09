@@ -169,20 +169,20 @@ Layer NodeLayer
                 cv.draw_text[ nl.row_col0*[ i ],
                     rect [ x: x0 + 8.0, y: y, w: col_w - 6.0, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
                 dx : f32 [ x0 + 8.0 + col_w ]
                 cv.fill_color[ tc ]
                 cv.draw_text[ nl.row_col1*[ i ],
                     rect [ x: dx + 10.0, y: y,
                            w: bounds.w - (col_w + 26.0), h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
             el
                 cv.draw_text[ nl.row_label*[ i ],
                     rect [ x: x0 + 8.0, y: y, w: bounds.w - 16.0,
                            h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
         # one solid divider down the whole column, not a dash per row
         if [ col_w > 0.0 ]
             cv.fill_color[ (div_color) ? div_color : '#ffffff26' ]
@@ -644,7 +644,7 @@ element InstrView
                           rect [ x: 8.0, y: y9, w: bounds.w - 12.0,
                                  h: 15.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             y9 += 15.0
 
 # ONE column, right of the editor, holding every live instrument. the
@@ -850,13 +850,9 @@ Control AppsGrid
     mutable pull_i : i32 [ -1 ]
     mutable pull_y : f32
     # how many were on home at the gathering, and when last looked
-    mutable home_seen : i32
-    mutable home_ms   : i64
     # orbiter's apps_gen when the cards were gathered
     mutable gen_seen : i32
     # each card's picture and the look it was drawn with, by key
-    intern card_pics : map Canvas [string]
-    intern card_sigs : map string [string]
     # where a card picture's own space is on the grid
     intern light_off : vec2f
     # the open store's card and its apps' run in shown (-1 none); its
@@ -1048,11 +1044,6 @@ Control AppsGrid
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
 
     func gather [ orb: orbiter ]
-        # pictures of cards long gone: let them go
-        if [ card_pics && card_pics.count > 96 ]
-            card_pics.clear[]
-            card_sigs.clear[]
-        # pictures of cards long gone: let them go
         band_of = -1
         band_at = -1
         band_n  = 0
@@ -1072,7 +1063,6 @@ Control AppsGrid
         for [ ae: AppEntry ] in ours
             if [ orb.on_home[ ae ] ] built.push[ ae ]
         ours = built
-        home_seen = orb.home_count[]
         gathered = orb.apps_filter
         # an open folder: the filter finds within it, the apps stay
         folder : bool [ open && open.count > 0 ]
@@ -1421,7 +1411,7 @@ Control AppsGrid
         cv.draw_text[ t, rect [ x: x, y: y, w: 400.0 * un,
                                 h: 24.0 * un ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
     public func draw [ w: Window ]
@@ -1437,9 +1427,6 @@ Control AppsGrid
             fly_key = null
             fly_ae  = null
             shown   = null
-        if [ !fly_key && now_ms - home_ms > 1000 ]
-            home_ms = now_ms
-            if [ orb.home_count[] != home_seen ] shown = null
         if [ !shown || gathered != orb.apps_filter
              || gen_seen != orb.apps_gen ]
             gather[ orb ]
@@ -1621,72 +1608,14 @@ Control AppsGrid
         # the tile's corners: an ios icon's share of its side
         cr : f32 [ round[ tile * 0.225 ] ]
         fp : i32 [ i32[ round[ 18.0 * un ] ] ]
-        # moving, a card the pointer's light cannot reach is its
-        # picture, made once; at rest each is drawn live
-        reach : f32 [ w.near_reach * un * 1.125 + 2.0 ]
-        ptx : f32 [ w.mouse.x - win_pos.x ]
-        pty : f32 [ w.mouse.y - win_pos.y ]
-        sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
         for [ i: i32 ] in drawn
             cy : f32 [ py[ i ] - sy ]
             if [ cy + ch9 < 0.0 || cy > bounds.h ] continue
             if [ !entry[ i ] ] continue
-            dx : f32 [ max[ max[ px[ i ] - ptx, ptx - px[ i ] - cw9 ],
-                            0.0 ] ]
-            dy : f32 [ max[ max[ cy - pty, pty - cy - ch9 ], 0.0 ] ]
-            far : bool [ dx * dx + dy * dy > reach * reach ]
             if [ !fly_key || keys[ i ] != fly_key ]
                 card_frost[ cv, w, px[ i ] + round[ (cw9 - tile) * 0.5 ],
                             cy, cr ]
-            if [ moving && far ]
-                pic : card_picture[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
-                                    un ]
-                cv.draw_canvas[ pic, round[ px[ i ] * sc ] / sc,
-                                round[ cy * sc ] / sc, cw9, ch9 ]
-            el
-                card_paint[ cv, w, orb, i, px[ i ], cy, cr, fp, nh,
-                            un ]
-
-    # a card's look: what its picture depends on
-    func card_sig [ orb: orbiter, i: i32, fp: i32 ] -> string
-        ae : AppEntry entry[ i ]
-        iw : string orb.install_word[ ae ]
-        busy : bool [ iw == 'starting' || iw == 'building' ]
-        fr : f32 [ (busy) ? orb.install_frac[ ae ] : 0.0 ]
-        return '{ae.name}|{iw}|{fr}|{i == sel}|{i == band_of}|{i == hov}|{ux.cmd}|{ux.shift}|{orb.built_now[ ae ]}|{fp}|{cw9}|{ch9}|{tile}|{on_btn}'
-
-    # the card's picture: drawn again when its look changes
-    func card_picture [ cv: Canvas, w: Window, orb: orbiter, i: i32,
-                        gx: f32, gy: f32, cr: f32, fp: i32, nh: f32,
-                        un: f32 ] -> Canvas
-        if [ !card_pics ]
-            card_pics = map Canvas [string] []
-            card_sigs = map string [string] []
-        ky : string keys[ i ]
-        sg : string card_sig[ orb, i, fp ]
-        pic : Canvas [ (card_pics.contains[ ky ]) ? card_pics[ ky ]
-            : null ]
-        if [ pic && card_sigs[ ky ] == sg
-             && pic.content_w == i32[ ceil[ cw9 ] ]
-             && pic.content_h == i32[ ceil[ ch9 ] ] ]
-            return pic
-        pw : i32 [ i32[ ceil[ cw9 ] ] ]
-        ph : i32 [ i32[ ceil[ ch9 ] ] ]
-        if [ !pic ]
-            pic = Canvas [ vk: cv.vk, w: cv.w, format: Pixel.rgba8,
-                           width: pw, height: ph,
-                           load_existing: true, tag: 'card' ]
-            pic.update[]
-            card_pics[ ky ] = pic
-        el [ pic.content_w != pw || pic.content_h != ph ]
-            pic.resize[ pw, ph ]
-        pic.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
-        # the pointer's light where it is over the grid
-        light_off = vec2f [ -gx, -gy ]
-        card_paint[ pic, w, orb, i, 0.0, 0.0, cr, fp, nh, un ]
-        light_off = vec2f [ 0.0, 0.0 ]
-        card_sigs[ ky ] = sg
-        return pic
+            card_paint[ cv, w, orb, i, px[ i ], cy, cr, fp, nh, un ]
 
     # one card at x, y: its tile, icon and name
     func card_paint [ cv: Canvas, w: Window, orb: orbiter, i: i32,
@@ -1714,14 +1643,13 @@ Control AppsGrid
         chosen : bool [ i == sel && !here && !busy ]
         # an open store's card stays lit
         folder : bool [ i == band_of ]
-        draw_tile[ cv, w, i, tx, cy, cr, here, chosen || folder ]
-        # the icon fills the tile, dim until it is here
+        draw_tile[ cv, w, i, tx, cy, cr, true, chosen || folder ]
+        # the icon fills the tile
         ic : AppIcon icons[ i ]
         isz : f32 [ round[ tile * 0.72 ] ]
         gone : f32 gone_of[ i ]
         pulling : bool [ i == pull_i || gone > 0.0 ]
         cv.save[]
-        if [ !here ] cv.set_opacity[ (busy) ? 0.4 : 0.55 ]
         if [ pulling && orb.can_delete[ ae ] ]
             cv.set_opacity[ 1.0 - 0.6 * gone ]
         ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
@@ -1761,8 +1689,7 @@ Control AppsGrid
                 ? 'fonts/BarlowCondensed-Bold.ttf'
                 : 'fonts/BarlowCondensed-Regular.ttf', fp ] ]
             cv.font_size[ f32[ fp ] ]
-            tc : '#ffffff99'
-            if [ here ] tc = '#ffffffdd'
+            tc : '#ffffffdd'
             nm : string ae.name
             if [ failed ]
                 tc = '#ff7a7add'
@@ -1771,7 +1698,8 @@ Control AppsGrid
             cv.draw_text[ nm, rect [ x: x + 2.0, y: ny,
                 w: cw9 - 4.0, h: th ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ] ]
+                Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ],
+                true ]
             cv.set_font[ null ]
 
     # the backdrop's blur in a card's tile, fixed to the window: never
@@ -1881,7 +1809,7 @@ Control AppsGrid
         word : (failed) ? 'Retry' : 'Download'
         cv.draw_text[ word, rect [ x: bx, y: y, w: bw, h: h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
     # a pill under the tile in the name's place: an install's Cancel
@@ -1906,7 +1834,7 @@ Control AppsGrid
         cv.fill_color[ rgba [ '#ffffff' ] ]
         cv.draw_text[ word, rect [ x: bx, y: y, w: bw, h: h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
     # the build's progress under the name; -1 not known yet
@@ -1981,7 +1909,7 @@ element StatusLabel
         cv.draw_text[ tx, rect [ x: ins, y: 0.0, w: bw,
                                  h: bounds.h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
 # a panel's group: a faint frame, its title centred at the top
@@ -2003,7 +1931,7 @@ element SetGroup
         cv.restore[]
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
-        cv.fill_color[ rgba [ '#ffffff08' ] ]
+        cv.fill_color[ rgba [ '#4d3dbc2e' ] ]
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         cv.stroke_color[ rgba [ '#ffffff24' ] ]
@@ -2018,7 +1946,7 @@ element SetGroup
         cv.draw_text[ title, rect [ x: 0.0, y: 0.0, w: bounds.w,
                                     h: head_h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            BoxShadow [ '0 1px 2px #000b' ], true ]
 
 # a scene setting as one pill: its name, a colon, its value in the
 # accent; a press opens its choices in the row under it
@@ -2046,7 +1974,7 @@ element PropChip
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
         cv.fill_color[ rgba [ (open) ? '#4d3dbc77'
-            : ((hovered) ? '#ffffff1c' : '#ffffff10') ] ]
+            : ((hovered) ? '#ffffff1c' : '#0000') ] ]
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         cv.stroke_color[ rgba [ (open) ? '#c890ffaa' : '#ffffff1c' ] ]
@@ -2057,7 +1985,7 @@ element PropChip
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf', px ] ]
         cv.font_size[ f32[ px ] ]
-        nt : '{name}: '
+        nt : '{ui_word[ name, display_language ]}: '
         nw : f32 [ cv.measure_text[ nt ].w ]
         vw : f32 [ cv.measure_text[ value ].w ]
         x : f32 [ round[ (bounds.w - nw - vw) * 0.5 ] ]
@@ -2066,13 +1994,13 @@ element PropChip
         cv.draw_text[ nt, rect [ x: x, y: 0.0, w: nw + 2.0,
                                  h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            BoxShadow [ '0 1px 2px #000b' ], true ]
         cv.fill_color[ rgba [ '#e3c4ff' ] ]
         cv.draw_text[ value, rect [ x: x + nw, y: 0.0,
                                     w: bounds.w - x - nw - rr * 0.5,
                                     h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            BoxShadow [ '0 1px 2px #000b' ], true ]
         cv.set_font[ null ]
 
 Control InstancePanel
@@ -2290,7 +2218,7 @@ Control InstancePanel
         cv.fill_color[ rgba [ '#e8e2f5' ] ]
         tr9 : rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ]
         cv.draw_text[ text, tr9, vec2f [ 0.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
 
     # the export lists the module's properties; a props answer (live or
     # the last one kept) gives their current values, and anything it
@@ -2531,7 +2459,7 @@ Control InstancePanel
             cv.fill_color[ fg9 ]
             cr : rect [ x: chip_x, y: cy, w: chip_wd, h: rh ]
             cv.draw_text[ nm, cr, vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
         return -1
 
     # instrument off — they are ALL shown, always
@@ -2815,7 +2743,7 @@ Control TaskBar
             lead : f32 [ (chips) ? 12.0 : rh ]
             nr : rect [ x: x8 + lead, y: 0.0, w: tw - lead - rh, h: rh ]
             cv.draw_text[ task_label[ av9 ], nr, vec2f [ 0.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             # the close: a 16px ring the pointer lights, an x inside
             cx9 : f32 [ x8 + tw - round[ rh * 0.5 ] ]
             cy9 : f32 [ round[ rh * 0.5 ] ]
@@ -3002,13 +2930,13 @@ Layer PropsLayer
             cv.draw_text[ pl.row_key[ i ],
                 rect [ x: x0 + 6.0, y: y, w: colx - x0 - 10.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             cv.fill_color[ (text_color) ? text_color : '#e8cfe0' ]
             cv.draw_text[ pl.row_val[ i ],
                 rect [ x: colx + 6.0, y: y,
                        w: bounds.x + bounds.w - colx - 10.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
         cv.restore[]
         cv.clear_crop[]
 
@@ -3060,12 +2988,12 @@ Layer FieldsLayer
             cv.draw_text[ (v) ? v.name : '',
                 rect [ x: x0 + 8.0, y: y, w: colx - x0 - 12.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             # value in the right column
             cv.fill_color[ (text_color) ? text_color : '#cfe6ff' ]
             cv.draw_text[ (v) ? v.value : '',
                 rect [ x: colx + 8.0, y: y,
                        w: bounds.x + bounds.w - colx - 12.0, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
         cv.clear_crop[]

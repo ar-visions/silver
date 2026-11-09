@@ -446,11 +446,11 @@ element markdown : trinity
                     (i.clip) ? Overflow.clip : Overflow.visible ]
                 r  : rect [ x: i.x, y: i.y, w: i.w, h: i.h ]
                 tc.draw_text[ i.text, r, vec2f [ 0.0, 0.5 ],
-                              vec2f [ 0.0, 0.0 ], ov, null ]
+                              vec2f [ 0.0, 0.0 ], ov, null, false ]
                 if [ i.bold ]
                     r2 : rect [ x: i.x + 0.6, y: i.y, w: i.w, h: i.h ]
                     tc.draw_text[ i.text, r2, vec2f [ 0.0, 0.5 ],
-                                  vec2f [ 0.0, 0.0 ], ov, null ]
+                                  vec2f [ 0.0, 0.0 ], ov, null, false ]
             el [ i.kind == 1 ]
                 tc.rect_to[ i.x, i.y, i.w, i.h ]
                 tc.paint[]
@@ -491,7 +491,7 @@ element markdown : trinity
                 (src) ? 'empty file: {src}'
                 : 'no file — silver markdown <file.md>', r0,
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
             return
         # measured once per width: scrolling only moves the same tiles
         if [ !rows || cw != laid_w ] layout_doc[ cv, cw ]

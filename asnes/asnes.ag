@@ -4032,7 +4032,8 @@ element asnes : trinity
 	func vtext [ cv: Canvas, s: string, x: f32, y: f32, col: string ]
 		cv.fill_color[ col ]
 		cv.draw_text[ s, rect [ x: x, y: y, w: 1200.0, h: 16.0 ],
-			vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+			false ]
 
 	func hex2 [ v: i32 ] -> string
 		d : '0123456789ABCDEF'
@@ -4287,17 +4288,20 @@ element asnes : trinity
 		cv.fill_color[ '#7fb2ff' ]
 		cv.draw_text[ 'press the button you want for',
 			rect [ x: vp.x, y: vp.y + vp.h * 0.30, w: vp.w, h: 30.0 ],
-			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+			false ]
 		cv.font_size[ 72 ]
 		cv.fill_color[ '#ffffff' ]
 		cv.draw_text[ nm,
 			rect [ x: vp.x, y: vp.y + vp.h * 0.42, w: vp.w, h: 90.0 ],
-			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+			false ]
 		cv.font_size[ 15 ]
 		cv.fill_color[ '#8a8a8a' ]
 		cv.draw_text[ '{bind_ix + 1} of {bnames.count}    controller or keyboard    esc to stop',
 			rect [ x: vp.x, y: vp.y + vp.h * 0.62, w: vp.w, h: 24.0 ],
-			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+			false ]
 		cv.paint[]
 
 	func m7_setup [ cv: Canvas ]

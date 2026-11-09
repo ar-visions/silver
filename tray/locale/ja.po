@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Activate"
+msgstr "起動"
+
+msgid "apps"
+msgstr "アプリ"
+
+msgid "categories"
+msgstr "分類"
+
+msgid "Close"
+msgstr "閉じる"
+
+msgid "enabled"
+msgstr "有効"
+
+msgid "filter"
+msgstr "絞込"
+
+msgid "Get"
+msgstr "入手"
+
+msgid "Menu"
+msgstr "メニュー"
+
+msgid "No app has a tray icon"
+msgstr "トレイにアプリなし"
+
+msgid "none"
+msgstr "なし"
+
+msgid "Open"
+msgstr "開く"
+
+msgid "open"
+msgstr "開く"
+
+msgid "Read"
+msgstr "読込"
+
+msgid "Start"
+msgstr "開始"
+
+msgid "Status"
+msgstr "状態"
+
+msgid "Title"
+msgstr "題名"
+
+msgid "Tray"
+msgstr "トレイ"
+
+msgid "version"
+msgstr "版"

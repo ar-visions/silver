@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Activate"
+msgstr "激活"
+
+msgid "apps"
+msgstr "应用"
+
+msgid "categories"
+msgstr "分类"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "enabled"
+msgstr "已启用"
+
+msgid "filter"
+msgstr "筛选"
+
+msgid "Get"
+msgstr "获取"
+
+msgid "Menu"
+msgstr "菜单"
+
+msgid "No app has a tray icon"
+msgstr "托盘中没有应用"
+
+msgid "none"
+msgstr "无"
+
+msgid "Open"
+msgstr "打开"
+
+msgid "open"
+msgstr "打开"
+
+msgid "Read"
+msgstr "读取"
+
+msgid "Start"
+msgstr "开始"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Title"
+msgstr "标题"
+
+msgid "Tray"
+msgstr "托盘"
+
+msgid "version"
+msgstr "版本"

@@ -352,7 +352,7 @@ element PadWord
         cv.fill_color[ colour ]
         cv.draw_text[ word, rect [ x: 0.0, y: 0.0, w: bounds.w,
             h: bounds.h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, true ]
         cv.restore[]
 
 # the controller's place in its box: the shape asked (w by h) as

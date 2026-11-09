@@ -1449,7 +1449,7 @@ element main : trinity
                            y: ry + rh + 8.0,
                            w: (x15 - x05) / cols * ann_rw, h: 20.0 ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.visible, null ]
+                    Overflow.visible, null, false ]
                 cv.paint[]
         el
             cv.fill_color[ '#9ab' ]
@@ -1457,14 +1457,14 @@ element main : trinity
                 rect [ x: ann_rx, y: ry + rh + 8.0, w: ann_rw,
                        h: 20.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
             cv.paint[]
         cv.fill_color[ '#678' ]
         cv.draw_text[
             '{split}_{ann_id}  marks {ann_nm}/{need}  click between words - click a mark to finish - U undo - N skip - space replay',
             rect [ x: ann_rx, y: bounds.h - 32.0, w: ann_rw, h: 20.0 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, false ]
         cv.paint[]
 
     public func on_click [ ev: Event ]
@@ -1683,7 +1683,7 @@ element main : trinity
                           rect [ x: 16.0, y: y0 - 42.0,
                                  w: bounds.w - 32.0, h: 32.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
             cv.paint[]
         cv.paint[]
         # activity ticks: bright marks over the columns fit to read
@@ -1714,5 +1714,5 @@ element main : trinity
             cv.draw_text[ '{sw2.text}',
                 rect [ x: wx0, y: y0 + 6.0, w: wx1 - wx0, h: 18.0 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-                null ]
+                null, false ]
             cv.paint[]

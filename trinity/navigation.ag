@@ -125,64 +125,46 @@ class FileIcons
 # by their type (extension) first, then by name
 # every scalable family on this machine once, by name: text the
 # family, file its regular face (no colour bitmaps)
+# the project's own fonts (trinity/fonts, in its share), never the
+# system's: every platform offers the same; each family's face
+# nearest a plain regular one
 func font_families [ fixed: bool ] -> vec FindHit
     out : vec FindHit []
-    ifdef [ linux ]
-        FcInit[]
-        pat : FcPatternCreate[]
-        FcPatternAddBool[ pat, 'scalable', 1 ]
-        ask : FcObjectSetCreate[]
-        FcObjectSetAdd[ ask, 'family' ]
-        FcObjectSetAdd[ ask, 'file' ]
-        FcObjectSetAdd[ ask, 'weight' ]
-        FcObjectSetAdd[ ask, 'slant' ]
-        FcObjectSetAdd[ ask, 'color' ]
-        FcObjectSetAdd[ ask, 'spacing' ]
-        faces : FcFontList[ null, pat, ask ]
-        best : map FindHit [string] []
-        names : vec string []
-        n : i32 [ (faces) ? faces.nfont : 0 ]
-        for [ i: i32 0, i < n, i += 1 ]
-            fp : faces.fonts[ i ]
-            fam : cstr [ null ]
-            fs  : cstr [ null ]
-            wt  : i32 [ 80 ]
-            sl  : i32 [ 0 ]
-            col : i32 [ 0 ]
-            FcPatternGetString[ fp, 'family', 0, @fam ]
-            FcPatternGetString[ fp, 'file', 0, @fs ]
-            FcPatternGetInteger[ fp, 'weight', 0, @wt ]
-            FcPatternGetInteger[ fp, 'slant', 0, @sl ]
-            FcPatternGetBool[ fp, 'color', 0, @col ]
-            if [ fam == null || fs == null || col != 0 ] continue
-            # fontconfig's dual, mono and charcell
-            sp : i32 [ 0 ]
-            FcPatternGetInteger[ fp, 'spacing', 0, @sp ]
-            if [ fixed && sp < 90 ] continue
-            name : string [ fam ]
-            if [ name.count == 0 || name.starts_with[ '.' ] ] continue
-            # nearest a plain regular face; line holds how near
-            off : i32 [ abs[ wt - 80 ] + sl ]
-            h : FindHit (best.contains[ name ]) ? best[ name ] : null
-            if [ !h ]
-                h = FindHit [ text: name, line: off, file: path [ fs ] ]
-                best[ name ] = h
-                names.push[ name ]
-            el [ off < h.line ]
-                h.line = off
-                h.file = path [ fs ]
-        if [ faces ] FcFontSetDestroy[ faces ]
-        FcObjectSetDestroy[ ask ]
-        FcPatternDestroy[ pat ]
-        # by name, any case
-        for [ i: i32 0, i < names.count, i += 1 ]
-            nm : string names[ i ]
-            k : i32 [ 0 ]
-            lc : string nm.lcase[]
-            while [ k < out.count
-                    && out[ k ].text.lcase[].compare[ lc ] < 0 ]
-                k += 1
-            out.insert[ best[ nm ], k ]
+    dp : path '{path.path_install[]}/share/silver-trinity/fonts'
+    if [ !dp.exists[] ] return out
+    ft : handle ft_init[]
+    best : map FindHit [string] []
+    names : vec string []
+    for [ f: path ] in dp.ls[ null, true ]
+        e : string f.ext[].lcase[]
+        if [ e != 'ttf' && e != 'otf' && e != 'ttc' ] continue
+        fs : string '{f}'
+        face : FT_Face [ null ]
+        if [ FT_New_Face[ ft, fs.chars, 0, @face ] != 0 ] continue
+        fam : cstr [ face.family_name ]
+        # FT_FACE_FLAG_FIXED_WIDTH; style bits: italic 1, bold 2
+        mono : bool [ (face.face_flags & 4) != 0 ]
+        off  : i32 [ i32[ face.style_flags & 3 ] ]
+        name : string [ (fam) ? string [ fam ] : '' ]
+        FT_Done_Face[ face ]
+        if [ name.count == 0 || (fixed && !mono) ] continue
+        h : FindHit (best.contains[ name ]) ? best[ name ] : null
+        if [ !h ]
+            h = FindHit [ text: name, line: off, file: path [ fs ] ]
+            best[ name ] = h
+            names.push[ name ]
+        el [ off < h.line ]
+            h.line = off
+            h.file = path [ fs ]
+    # by name, any case
+    for [ i: i32 0, i < names.count, i += 1 ]
+        nm : string names[ i ]
+        k : i32 [ 0 ]
+        lc : string nm.lcase[]
+        while [ k < out.count
+                && out[ k ].text.lcase[].compare[ lc ] < 0 ]
+            k += 1
+        out.insert[ best[ nm ], k ]
     return out
 
 expect func t_font_families [] -> bool
@@ -702,7 +684,7 @@ element NavRows
                 cv.draw_text[ h.text, rect [ x: x0 + 12.0, y: ry,
                         w: right - x0 - 24.0, h: rh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
                 cv.set_font[ null ]
                 continue
             if [ i == view.at ]
@@ -722,7 +704,7 @@ element NavRows
             cv.draw_text[ h.text, rect [ x: tx, y: ry,
                                          w: right - tx, h: rh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, true ]
         cv.restore[]
 
 # what is typed to filter the dialog, in the orbiter bar: the folder

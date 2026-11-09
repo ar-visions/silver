@@ -1,0 +1,33 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Languages"
+msgstr "言語"
+
+msgid "Add"
+msgstr "追加"
+
+msgid "Remove"
+msgstr "削除"
+
+msgid "mic"
+msgstr "マイク"
+
+msgid "back"
+msgstr "戻る"
+
+msgid "Background"
+msgstr "背景"
+
+msgid "keyboard"
+msgstr "鍵盤"
+
+msgid "manage languages"
+msgstr "言語の管理"
+
+msgid "none"
+msgstr "なし"
+
+msgid "12 keys"
+msgstr "12キー"

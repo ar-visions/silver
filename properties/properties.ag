@@ -248,18 +248,18 @@ element StepField
         cv.fill_color[ '#fff6' ]
         cv.draw_text[ '-', rect [ x: 0.0, y: 0.0, w: bw, h: bounds.h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, true ]
         cv.draw_text[ '+',
                       rect [ x: bounds.w - bw, y: 0.0, w: bw,
                              h: bounds.h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, true ]
         cv.fill_color[ '#e8e8ec' ]
         cv.draw_text[ text[],
                       rect [ x: bw, y: 0.0, w: bounds.w - bw * 2.0,
                              h: bounds.h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, true ]
         cv.paint[]
         cv.set_font[ null ]
 
@@ -493,7 +493,7 @@ LaunchField DragField
             cv.draw_text[ '%', rect [ x: bounds.w - 22.0, y: 0.0,
                                       w: 16.0, h: bounds.h ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, true ]
             cv.paint[]
             cv.set_font[ null ]
         cv.restore[]

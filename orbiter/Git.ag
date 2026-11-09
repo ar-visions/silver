@@ -213,19 +213,19 @@ Layer GitLayer
                     rect [ x: x0 + 12.0, y: y, w: bounds.w * 0.62,
                            h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
                 cv.fill_color[ (tag_color) ? tag_color : '#77708a' ]
                 cv.draw_text[ 'branch',
                     rect [ x: x0 + bounds.w - tag_w - 12.0, y: y,
                            w: tag_w, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
             el
                 cv.fill_color[ (hash_color) ? hash_color : '#8f86a8' ]
                 cv.draw_text[ r.hash,
                     rect [ x: x0 + 12.0, y: y, w: hash_w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
                 cv.fill_color[
                     (hot) ? sel_text
                     : ((text_color) ? text_color : '#d8d4e8') ]
@@ -233,13 +233,13 @@ Layer GitLayer
                     rect [ x: x0 + 12.0 + hash_w, y: y,
                            w: bounds.w - hash_w - tag_w - 36.0, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
                 cv.fill_color[ (tag_color) ? tag_color : '#77708a' ]
                 cv.draw_text[ r.when,
                     rect [ x: x0 + bounds.w - tag_w - 12.0, y: y,
                            w: tag_w, h: lh ],
                     vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
         cv.clear_crop[]
 
 NodeList GitList
@@ -440,13 +440,13 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx9: f32, ry: f32,
         rect [ x: cx9 - 4.0 * u, y: ry + 104.0 * u, w: cdw - 8.0 * u,
                h: 20.0 * u ],
         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-        null ]
+        null, true ]
     cv.fill_color[ rgba['#6cb6ff'] ]
     cv.draw_text[ st9,
         rect [ x: cx9 - 4.0 * u, y: ry + 124.0 * u, w: cdw - 8.0 * u,
                h: 20.0 * u ],
         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-        null ]
+        null, true ]
 
 
 # the navigation column (users, projects, the drives, the pinned
@@ -517,7 +517,7 @@ Layer NavSideLayer
                 rect [ x: sx9 + 4.0 * u, y: sy9, w: sw9 - 12.0 * u,
                        h: srh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             if [ sec == 0 ]
                 # the + that adds a user: gray, lit under the pointer
                 cb.plus_y = sy9 - bounds.y
@@ -528,7 +528,7 @@ Layer NavSideLayer
                     rect [ x: sx9 + sw9 - 30.0 * u, y: sy9, w: 20.0 * u,
                            h: srh ],
                     vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
             sy9 += srh
             if [ sec == 0 && cb.add_user ]
                 # the row being typed: a box with the name so far and a
@@ -549,7 +549,7 @@ Layer NavSideLayer
                     rect [ x: sx9 + 8.0 * u, y: sy9, w: sw9 - 20.0 * u,
                            h: srh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.clip, null ]
+                    Overflow.clip, null, true ]
                 atw : f32 [ cv.measure_text[ at9 ].w ]
                 cv.stroke_width[ 0.0 ]
                 cv.rect_to[ sx9 + 8.0 * u + atw + 1.0, sy9 + 5.0 * u,
@@ -629,7 +629,7 @@ Layer NavSideLayer
                                w: sw9 - 36.0 * u,
                                h: srh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.ellipsis, null ]
+                        Overflow.ellipsis, null, true ]
                     # shift held: a - next to every added user (never
                     # you) removes it
                     if [
@@ -643,7 +643,7 @@ Layer NavSideLayer
                                    w: 20.0 * u,
                                    h: srh ],
                             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.clip, null ]
+                            Overflow.clip, null, true ]
                     # the dock toggle at the row's right: lit when the
                     # checkout is in the search set
                     if [ sec == 1 ]
@@ -810,7 +810,7 @@ Layer CommitLayer
             cv.draw_text[ nm,
                 rect [ x: tx + 22.0 * u, y: ty, w: 118.0 * u, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, true ]
             if [ dirty ] nav_font[ cv, fs ]
         # control row: reveal-all pill left, totals + make commit right
         cy : f32 [ yb + f32[ trs ] * lh ]
@@ -833,7 +833,7 @@ Layer CommitLayer
             cv.draw_text[ rvl,
                 rect [ x: x0, y: cy, w: rvw, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             cb.lx0 = x0 - bounds.x
             cb.lx1 = x0 + rvw - bounds.x
             # totals after the count pill; make commit is a centered
@@ -868,12 +868,12 @@ Layer CommitLayer
             cv.draw_text[ as9,
                 rect [ x: asx, y: cy, w: asw + 4.0 * u, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             cv.fill_color[ rgba['#e06c75'] ]
             cv.draw_text[ ds,
                 rect [ x: dsx, y: cy, w: dsw + 4.0 * u, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             # the last send's result, after the totals, while closed
             ct8 : Contrib (open9) ? null : orb.contrib
             nt8 : string [ (ct8 && ct8.state && ct8.state.note)
@@ -884,14 +884,14 @@ Layer CommitLayer
                     rect [ x: mnx, y: cy, w: bx9 - mnx - 12.0 * u,
                            h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
             cv.fill_color[
                 (open9) ? rgba['#ffd9d2']
                 : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
             cv.draw_text[ lbl,
                 rect [ x: bx9, y: cy, w: bw, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             # divider under the whole band, 4px clear of the button
             cv.fill_color[ rgba['#fff2'] ]
             cv.stroke_width[ 0.0 ]
@@ -928,7 +928,7 @@ Layer CommitLayer
                         rect [ x: x0 + 8.0 * u, y: by + f32[ i ] * lh,
                                w: bounds.w - 116.0 * u, h: lh ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
             if [ parent.focused ]
                 ccx : f32 [ x0 + 8.0 * u + f32[ cb.cc ] * ctm.w ]
                 ccy : f32 [ by + f32[ cb.cl ] * lh ]
@@ -981,7 +981,7 @@ Layer CommitLayer
             cv.draw_text[ sline,
                 rect [ x: x0, y: gy, w: gx - x0 - 12.0 * u, h: lh ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, true ]
             cv.save[ ]
             cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
             cv.fill_color[ (ghov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
@@ -997,7 +997,7 @@ Layer CommitLayer
             cv.draw_text[ gl,
                 rect [ x: gx, y: gy, w: gw, h: lh ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
         # the browse list rides the same scroll, below the band; a
         # 4px breath keeps the hover clear of the divider
         nav_font[ cv, 21 ]
@@ -1075,7 +1075,7 @@ Layer CommitLayer
                     cv.draw_text[ nfl9,
                         rect [ x: nbx, y: ry, w: nfw, h: 30.0 * u ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                     cv.save[ ]
                     cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
                     cv.fill_color[
@@ -1094,7 +1094,7 @@ Layer CommitLayer
                         rect [ x: nbx + nfw + 12.0 * u, y: ry, w: ndw,
                                h: 30.0 * u ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                     nav_font[ cv, 21 ]
                     continue
                 # the icon view's cell: drawn whole below
@@ -1150,14 +1150,14 @@ Layer CommitLayer
                         rect [ x: xr0 + 8.0 * u, y: ry, w: 56.0 * u,
                                h: 30.0 * u ],
                         vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                     cv.fill_color[ rgba['#d4d4d4'] ]
                     cv.draw_text[ h.text,
                         rect [ x: xr0 + 76.0 * u, y: ry,
                                w: xe - xr0 - 100.0 * u,
                                h: 30.0 * u ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                     continue
                 nm : string [ h.text ]
                 ico : SVGModel [ null ]
@@ -1211,7 +1211,7 @@ Layer CommitLayer
                         rect [ x: cx9 + 6.0 * u, y: ry + 48.0 * u,
                                w: cw9 - 12.0 * u, h: 26.0 * u ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.ellipsis, null ]
+                        Overflow.ellipsis, null, true ]
                     nav_font[ cv, 21 ]
                     continue
                 # shift: a red-outlined delete at the row's right end,
@@ -1250,7 +1250,7 @@ Layer CommitLayer
                         rect [ x: dbx, y: ry, w: 64.0 * u,
                                h: 30.0 * u ],
                         vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                 # shift: the left slot's + pins the entry, − unpins it
                 # (a pin, wherever it is listed)
                 if [ drs > 0.0 ]
@@ -1327,7 +1327,7 @@ Layer CommitLayer
                 cv.draw_text[ nm,
                     rect [ x: tx0, y: ry, w: nmw, h: 30.0 * u ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                    Overflow.ellipsis, null ]
+                    Overflow.ellipsis, null, true ]
                 if [ rcl ]
                     # the clone's bar in the description column: a 2px
                     # white outline and an offset white fill inside it,
@@ -1361,7 +1361,7 @@ Layer CommitLayer
                                w: xe - 24.0 * u - bx9 - bw
                                - 12.0 * u, h: 30.0 * u ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                 el [ h.dir && h.dir.count > 0 ]
                     fnw : f32 [ cv.measure_text[ nm ].w ]
                     col : f32 [ (xr0 + (xe - 24.0 * u - xr0) * 0.5) ]
@@ -1404,7 +1404,7 @@ Layer CommitLayer
                             rect [ x: dx, y: ry, w: re - dx,
                                    h: 30.0 * u ],
                             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.clip, null ]
+                            Overflow.clip, null, true ]
                     cv.fill_color[ hc ]
                     # the hint fades out over its last 48px at the right
                     # edge, as code does at a pane's edge (the ramp's
@@ -1420,7 +1420,7 @@ Layer CommitLayer
                         rect [ x: dx + pw9, y: ry, w: re - dx - pw9,
                                h: 30.0 * u ],
                         vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                        Overflow.clip, null ]
+                        Overflow.clip, null, true ]
                     cv.paint[]
                     cv.text_grad[
                         rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]

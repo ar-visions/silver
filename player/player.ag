@@ -840,7 +840,7 @@ element player : trinity
             cv.draw_text[ failed, rect [ x: 20.0, y: 20.0,
                                          w: bounds.w - 40.0, h: 24.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, false ]
             cv.paint[]
             return
         if [ wave ]
@@ -899,7 +899,7 @@ element player : trinity
         cv.fill_color[ rgba[ col ] ]
         cv.draw_text[ s, rect [ x: x, y: y, w: w, h: 14.0 ],
             vec2f [ ax, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, false ]
 
     # a panel: its ground, rounded, a hairline round it
     func panel [ cv: Canvas, x: f32, y: f32, w: f32, h: f32 ]

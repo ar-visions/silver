@@ -1451,7 +1451,7 @@ element TrayMark
             cv.fill_color[ rgba [ '#e8e8ee' ] ]
             cv.draw_text[ nm, rect [ x: 0.0, y: 0.0, w: bounds.w,
                 h: bounds.h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.clip, null ]
+                Overflow.clip, null, true ]
             cv.paint[]
             return
         if [ !tex || tex_gen != item.icon_gen ]
@@ -1632,7 +1632,7 @@ Button TrayRow
             kc.draw_text[ keys, rect [ x: 0.0, y: 0.0,
                 w: bounds.w - 12.0 * u, h: bounds.h ],
                 vec2f [ 1.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
             kc.paint[]
             kc.restore[]
             kc.set_font[ was ]

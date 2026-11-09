@@ -3977,3 +3977,139 @@ HOST_API void host_app_resume(int slot) {
 HOST_API void host_dictate_set(int v) { host_post(0, HM_DICTATE, v, 0, 0); }
 HOST_API void host_live_set(int v)    { host_post(1, HM_LIVE, v, 0, 0); }
 #endif
+
+// sound devices, each line "id|name"; the default by its id
+#if defined(_WIN32)
+#include <propsys.h>
+
+// PKEY_Device_FriendlyName
+static const PROPERTYKEY sound_name_key = {
+    { 0xa45c254e, 0xdf1c, 0x4efd,
+      { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+
+// the default is set through this undocumented interface
+DEFINE_GUID(CLSID_PolicyConfigClient, 0x870af99c, 0x171d, 0x4f9e,
+    0xaf,0x0d, 0xe6,0x3d,0xf4,0x0c,0x2b,0xc9);
+DEFINE_GUID(IID_IPolicyConfig, 0xf8679f50, 0x850a, 0x41cf,
+    0x9c,0x72, 0x43,0x0f,0x29,0x02,0x90,0xc8);
+
+typedef struct PolicyConfig PolicyConfig;
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(PolicyConfig*, REFIID,
+        void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(PolicyConfig*);
+    ULONG   (STDMETHODCALLTYPE *Release)(PolicyConfig*);
+    // GetMixFormat .. SetPropertyValue: unused, kept for the order
+    void*   unused[10];
+    HRESULT (STDMETHODCALLTYPE *SetDefaultEndpoint)(PolicyConfig*,
+        LPCWSTR, ERole);
+} PolicyConfigVtbl;
+struct PolicyConfig { const PolicyConfigVtbl* lpVtbl; };
+
+static IMMDeviceEnumerator* sound_enum(void) {
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator* en = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL,
+            CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&en)))
+        return NULL;
+    return en;
+}
+
+static int sound_utf8(LPCWSTR w, char* out, int cap) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap, NULL, NULL);
+    if (n <= 0) out[0] = 0;
+    return n;
+}
+
+HOST_API int host_sound_list(int inputs, char* out, int cap) {
+    if (cap > 0) out[0] = 0;
+    IMMDeviceEnumerator* en = sound_enum();
+    if (!en) return 0;
+    IMMDeviceCollection* all = NULL;
+    int got = 0, len = 0;
+    if (SUCCEEDED(en->lpVtbl->EnumAudioEndpoints(en,
+            inputs ? eCapture : eRender, DEVICE_STATE_ACTIVE, &all))) {
+        UINT n = 0;
+        all->lpVtbl->GetCount(all, &n);
+        for (UINT i = 0; i < n; i++) {
+            IMMDevice* d = NULL;
+            if (FAILED(all->lpVtbl->Item(all, i, &d))) continue;
+            LPWSTR wid = NULL;
+            char id[512] = "", name[256] = "";
+            if (SUCCEEDED(d->lpVtbl->GetId(d, &wid))) {
+                sound_utf8(wid, id, sizeof(id));
+                CoTaskMemFree(wid);
+            }
+            IPropertyStore* ps = NULL;
+            if (SUCCEEDED(d->lpVtbl->OpenPropertyStore(d, STGM_READ,
+                    &ps))) {
+                PROPVARIANT v;
+                PropVariantInit(&v);
+                if (SUCCEEDED(ps->lpVtbl->GetValue(ps, &sound_name_key,
+                        &v)) && v.vt == VT_LPWSTR)
+                    sound_utf8(v.pwszVal, name, sizeof(name));
+                PropVariantClear(&v);
+                ps->lpVtbl->Release(ps);
+            }
+            d->lpVtbl->Release(d);
+            int w = snprintf(out + len, cap - len, "%s|%s\n", id, name);
+            if (w < 0 || len + w >= cap) break;
+            len += w;
+            got++;
+        }
+        all->lpVtbl->Release(all);
+    }
+    en->lpVtbl->Release(en);
+    return got;
+}
+
+HOST_API int host_sound_default(int inputs, char* out, int cap) {
+    if (cap > 0) out[0] = 0;
+    IMMDeviceEnumerator* en = sound_enum();
+    if (!en) return 0;
+    IMMDevice* d = NULL;
+    if (SUCCEEDED(en->lpVtbl->GetDefaultAudioEndpoint(en,
+            inputs ? eCapture : eRender, eConsole, &d))) {
+        LPWSTR wid = NULL;
+        if (SUCCEEDED(d->lpVtbl->GetId(d, &wid))) {
+            sound_utf8(wid, out, cap);
+            CoTaskMemFree(wid);
+        }
+        d->lpVtbl->Release(d);
+    }
+    en->lpVtbl->Release(en);
+    return (int)strlen(out);
+}
+
+HOST_API int host_sound_choose(int inputs, const char* id) {
+    (void)inputs;
+    CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    WCHAR wid[512];
+    if (MultiByteToWideChar(CP_UTF8, 0, id, -1, wid, 512) <= 0) return 0;
+    PolicyConfig* pc = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_PolicyConfigClient, NULL,
+            CLSCTX_ALL, &IID_IPolicyConfig, (void**)&pc)))
+        return 0;
+    // every role, as the system's own sound settings do
+    int ok = SUCCEEDED(pc->lpVtbl->SetDefaultEndpoint(pc, wid, eConsole))
+          && SUCCEEDED(pc->lpVtbl->SetDefaultEndpoint(pc, wid,
+                eMultimedia))
+          && SUCCEEDED(pc->lpVtbl->SetDefaultEndpoint(pc, wid,
+                eCommunications));
+    pc->lpVtbl->Release(pc);
+    return ok;
+}
+#elif !defined(__APPLE__)
+// elsewhere the app asks the sound server itself
+HOST_API int host_sound_list(int inputs, char* out, int cap) {
+    if (cap > 0) out[0] = 0;
+    return 0;
+}
+HOST_API int host_sound_default(int inputs, char* out, int cap) {
+    if (cap > 0) out[0] = 0;
+    return 0;
+}
+HOST_API int host_sound_choose(int inputs, const char* id) {
+    return 0;
+}
+#endif

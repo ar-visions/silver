@@ -3298,14 +3298,19 @@ Render Canvas
             last : bool [ i == lines.count - 1 && rest ]
             draw_text[ lines[ i ], rect [ x: bounds.x, y: y,
                 w: bounds.w, h: lh ], vec2f [ align.x, 0.5 ], offset,
-                (last) ? Overflow.ellipsis : Overflow.clip, shadow ]
+                (last) ? Overflow.ellipsis : Overflow.clip, shadow,
+                false ]
             y += lh
         return rect [ x: bounds.x, y: bounds.y, w: bounds.w,
                       h: y - bounds.y ]
 
-    func draw_text [ text: string, bounds: rect, align: vec2f,
+    # translate: the text is an interface word (lang/interface.agi)
+    func draw_text [ text_in: string, bounds: rect, align: vec2f,
                      offset: vec2f, overflow: Overflow,
-                     shadow: BoxShadow ] -> rect
+                     shadow: BoxShadow, translate: bool ] -> rect
+        text : string [ (translate) ? ui_word[ text_in,
+                                               display_language ]
+                                    : text_in ]
         if [ !text ] return bounds
         ensure_font[]
         if [ !font ] return bounds

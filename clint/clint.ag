@@ -349,7 +349,7 @@ element BufferList
         cv.fill_color[ col ]
         cv.draw_text[ t, rect [ x: x, y: y, w: bounds.w - x - 40.0,
             h: h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.ellipsis, null ]
+            Overflow.ellipsis, null, false ]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds || !bufs ]
@@ -380,12 +380,12 @@ element BufferList
                 cv.fill_color[ rgba [ '#ffffff66' ] ]
                 cv.draw_text[ '{b.unread}', rect [ x: 0.0, y: y,
                     w: bounds.w - 12.0, h: h ], vec2f [ 1.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
             el [ b.channel[] && b.users.count > 0 ]
                 cv.fill_color[ rgba [ '#ffffff44' ] ]
                 cv.draw_text[ '{b.users.count}', rect [ x: 0.0, y: y,
                     w: bounds.w - 12.0, h: h ], vec2f [ 1.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
             row_buf.push[ i ]
             row_who.push[ '' ]
             row_y.push[ y + top ]
@@ -601,13 +601,13 @@ element ChatLog
                 cv.fill_color[ rgba [ '#ffffff44' ] ]
                 cv.draw_text[ ln.at, rect [ x: 12.0, y: ry,
                     w: stamp_w, h: lh ], vec2f [ 0.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
                 who : string [ (ln.kind == 1) ? '* {ln.who}' : ln.who ]
                 cv.fill_color[ (ln.kind >= 2 && ln.kind <= 3)
                     ? rgba [ '#ffffff55' ] : nick_color[ ln.who ] ]
                 cv.draw_text[ who, rect [ x: 12.0 + stamp_w, y: ry,
                     w: who_w - 8.0, h: lh ], vec2f [ 1.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
             col : string [ '#e6e1ff' ]
             if [ ln.kind == 2 ] col = '#ffffff77'
             if [ ln.kind == 3 ] col = '#ff8080'
@@ -618,7 +618,7 @@ element ChatLog
             cv.fill_color[ rgba [ col ] ]
             cv.draw_text[ row_text[ k ], rect [ x: tx, y: ry, w: tw,
                 h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.clip, null ]
+                Overflow.clip, null, false ]
         cv.paint[]
         cv.set_font[ null ]
 
@@ -684,7 +684,7 @@ element TopicBar
         cv.fill_color[ rgba [ '#ffffffbb' ] ]
         cv.draw_text[ (topic) ? topic : '', rect [ x: 14.0, y: 0.0,
             w: bounds.w - 28.0, h: bounds.h ], vec2f [ 0.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
         cv.paint[]
         cv.set_font[ null ]
 

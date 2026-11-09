@@ -1338,7 +1338,7 @@ TextInput WizSecret
         cv.draw_text[ dots, rect [ x: 14.0, y: 0.0,
             w: bounds.w - 28.0, h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, false ]
         cv.paint[]
 
 # orbiter-os setup: the install's settings, then the install

@@ -124,7 +124,7 @@ element NodeCard
         cv.draw_text[ text, rect [ x: x, y: y - 11.0, w: wide,
                                    h: 22.0 ],
             vec2f [ (right) ? 1.0 : 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, false ]
         cv.paint[]
 
     public func draw [ w: Window ]
@@ -543,7 +543,7 @@ element NodeGraph
                         cv.draw_text[ src, rect [ x: mx - 40.0,
                                 y: my - 9.0, w: 80.0, h: 18.0 ],
                             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                            Overflow.visible, null ]
+                            Overflow.visible, null, false ]
                         cv.paint[]
         if [ scene && scene.edits && scene.edits.pending[] ]
             cv.font_size[ 14 ]
@@ -551,7 +551,7 @@ element NodeGraph
             cv.draw_text[ 'unsaved: ctrl/cmd + s to save',
                 rect [ x: bounds.w - 360.0, y: 8.0, w: 348.0,
                        h: 24.0 ], vec2f [ 1.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.visible, null, false ]
             cv.paint[]
         cv.restore[]
 

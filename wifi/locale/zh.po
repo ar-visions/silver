@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "connected"
+msgstr "已连接"
+
+msgid "Disconnect"
+msgstr "断开"
+
+msgid "disconnected"
+msgstr "已断开"
+
+msgid "Forget"
+msgstr "忘记"
+
+msgid "Home"
+msgstr "主页"
+
+msgid "Join"
+msgstr "加入"
+
+msgid "joining"
+msgstr "加入中"
+
+msgid "Name"
+msgstr "名称"
+
+msgid "no password given"
+msgstr "未输入密码"
+
+msgid "No Wi-Fi adapter found"
+msgstr "未找到 Wi-Fi 适配器"
+
+msgid "none"
+msgstr "无"
+
+msgid "open"
+msgstr "打开"
+
+msgid "saved"
+msgstr "已保存"
+
+msgid "Scan"
+msgstr "扫描"
+
+msgid "Scanning"
+msgstr "扫描中"

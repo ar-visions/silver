@@ -147,7 +147,7 @@ element DockRow
             rect [ x: 4.0, y: iy + isz + 4.0 * un,
                    w: bounds.w - 8.0, h: 16.0 * un ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
 # the clock's words, in the bar's middle
@@ -281,7 +281,7 @@ Button BarSignal
         cv.fill_color[ rgba [ '#e8e8ee' ] ]
         cv.draw_text[ label, rect [ x: x + 8.0, y: 0.0, w: tw + 2.0,
             h: bounds.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.ellipsis, null ]
+            Overflow.ellipsis, null, true ]
         cv.set_font[ null ]
         o : cast orbiter [ w.app_object ]
         if [ o && abs[ o.sig_w - want ] > 0.5 ]
@@ -362,7 +362,7 @@ Button BarBattery
         cv.fill_color[ rgba [ '#e8e8ee' ] ]
         cv.draw_text[ '{pc}%', rect [ x: tx, y: 0.0,
             w: bounds.w - tx, h: bounds.h ], vec2f [ 0.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
         cv.set_font[ null ]
 
 # every button on the bar: a name, or an icon in its place

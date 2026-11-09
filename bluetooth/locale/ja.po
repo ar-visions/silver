@@ -1,0 +1,96 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Keyboard"
+msgstr "鍵盤"
+
+msgid "Bluetooth"
+msgstr "Bluetooth"
+
+msgid "Address"
+msgstr "アドレス"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Connect"
+msgstr "接続"
+
+msgid "Connected"
+msgstr "接続済み"
+
+msgid "connected"
+msgstr "接続済み"
+
+msgid "connecting"
+msgstr "接続中"
+
+msgid "Disconnect"
+msgstr "切断"
+
+msgid "Discovering"
+msgstr "検索中"
+
+msgid "empty"
+msgstr "空"
+
+msgid "Forget"
+msgstr "削除"
+
+msgid "Headphones"
+msgstr "ヘッドホン"
+
+msgid "idle"
+msgstr "待機"
+
+msgid "Looking for devices"
+msgstr "機器を検索中"
+
+msgid "no"
+msgstr "いいえ"
+
+msgid "No Bluetooth adapter found"
+msgstr "Bluetooth機器なし"
+
+msgid "No devices: press Scan"
+msgstr "機器なし: 検索を押す"
+
+msgid "none"
+msgstr "なし"
+
+msgid "Off"
+msgstr "切"
+
+msgid "off"
+msgstr "切"
+
+msgid "On"
+msgstr "入"
+
+msgid "Pair"
+msgstr "ペアリング"
+
+msgid "paired"
+msgstr "ペアリング済み"
+
+msgid "Paired"
+msgstr "ペアリング済み"
+
+msgid "power"
+msgstr "電源"
+
+msgid "Scan"
+msgstr "検索"
+
+msgid "Set"
+msgstr "設定"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "the codes did not match"
+msgstr "番号が一致しません"
+
+msgid "yes"
+msgstr "はい"

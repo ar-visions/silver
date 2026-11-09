@@ -145,7 +145,7 @@ Control Login
         cv.fill_color[ rgba [ c ] ]
         cv.draw_text[ t, rect [ x: x, y: y, w: wd, h: h ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         cv.set_font[ null ]
 
 # the password as dots in a pill; empty: its word, dim. the field

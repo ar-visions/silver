@@ -5987,7 +5987,8 @@ element hyperspace : trinity
                 cv.fill_color[ '#9ab' ]
                 cv.draw_text[ 'eyes off screen center ({tb_ox}, {tb_oy}, {tb_oz})m  dist {od5}m',
                     rect [ x: sw * 0.5 - 300.0, y: sh - 40.0, w: 600.0, h: 20.0 ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+                    false ]
                 cv.paint[]
             for [ c8: i32 0, c8 < 2, c8 += 1 ]
                 # member ternary yields the slot, not the value: assign
@@ -6035,7 +6036,8 @@ element hyperspace : trinity
                 cv.fill_color[ '#9ab' ]
                 cv.draw_text[ 'head ({tb_hx}, {tb_hy})  gaze ({tb_gx}, {tb_gy})',
                     rect [ x: sw * 0.5 - 300.0, y: sh - 64.0, w: 600.0, h: 20.0 ],
-                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+                    false ]
                 cv.paint[]
             return
         if [ rec_mode == 'bench' ]
@@ -6130,7 +6132,8 @@ element hyperspace : trinity
             cv.fill_color[ '#9ab' ]
             cv.draw_text[ 'plot {lbl0}  {cam0}  #{fid0}  ({ann_i + 1}/{ann_files.count})  x = hidden (any eye covered)  n = noise',
                 rect [ x: 16.0, y: 12.0, w: sw - 32.0, h: 28.0 ],
-                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+                false ]
             cv.paint[]
             ann_mark[ cv, ann_m0, '#f80' ]
             ann_mark[ cv, ann_m1, '#08f' ]

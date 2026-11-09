@@ -29,5 +29,6 @@ element texttest : trinity
         cv.fill_color[ rgba['#d77757'] ]
         cv.font_size[ 16 ]
         cv.draw_text[ 'blocks above should be orange with black cutouts', rect [ x: 20.0, y: 90.0, w: 600.0, h: 24.0 ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+            false ]
         cv.paint[]

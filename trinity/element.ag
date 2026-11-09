@@ -295,11 +295,13 @@ ielement element
         fling = 0.0
         speed  : f32 [ (scroll_speed > 0.0) ? scroll_speed : 26.0 ]
         if [ !scroll_anim ] scroll_goal = scroll.y
+        was : f32 [ scroll_goal ]
         scroll_goal += f32[ ev.mouse.wheel_delta.y ] * speed * -1.0
         max_sc : f32 [ content_h - bounds.h ]
         if [ max_sc <= 0.0 ] max_sc = 0.0
         if [ scroll_goal < 0.0 ] scroll_goal = 0.0
         if [ scroll_goal > max_sc ] scroll_goal = max_sc
+        if [ scroll_goal != was && ux ] ux.wheel_spent = true
         scroll_anim = true
         pristine = false
         ux.will_animate = true
@@ -1070,7 +1072,7 @@ class Layer
             ? Overflow.visible : label_overflow ]
         cv.fill_color[ label_color ]
         cv.draw_text[ disp, bounds, vec2f [ ax, ay ],
-                      vec2f [ ox - shift, oy ], ov, null ]
+                      vec2f [ ox - shift, oy ], ov, null, true ]
         cv.paint[]
 
         if [ parent.focused && parent.sel_col >= 0 ]

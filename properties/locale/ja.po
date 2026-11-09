@@ -1,0 +1,36 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "clear"
+msgstr "消去"
+
+msgid "Color"
+msgstr "色"
+
+msgid "coverage"
+msgstr "網羅率"
+
+msgid "delete"
+msgstr "削除"
+
+msgid "display"
+msgstr "画面"
+
+msgid "no properties available"
+msgstr "設定項目なし"
+
+msgid "none"
+msgstr "なし"
+
+msgid "Range"
+msgstr "範囲"
+
+msgid "solid"
+msgstr "単色"
+
+msgid "linear"
+msgstr "線形"
+
+msgid "radial"
+msgstr "放射"

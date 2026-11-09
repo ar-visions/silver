@@ -379,7 +379,8 @@ element knes : trinity
 		y : f32 [ vp.y + 6.0 ]
 		cv.fill_color[ '#8fd0ff' ]
 		regs : 'PC={hex4[ u32[ cpu.pc ] ]}  A={hex2[ u32[ cpu.acc ] ]} X={hex2[ u32[ cpu.x ] ]} Y={hex2[ u32[ cpu.y ] ]} SP={hex2[ u32[ cpu.sp ] ]} P={hex2[ u32[ cpu.p ] ]}'
-		cv.draw_text[ regs, rect [ x: vp.x + 10.0, y: y, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+		cv.draw_text[ regs, rect [ x: vp.x + 10.0, y: y, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+		false ]
 		y = y + lh * 1.4
 		addr : u32 [ cpu.pc ]
 		n : i32 [ (vp.y + vp.h - y) / lh ]
@@ -414,7 +415,8 @@ element knes : trinity
 				cv.paint[]
 			cv.fill_color[ (addr == u32[ cpu.pc ]) ? '#ffffff' : '#b9aecb' ]
 			line2 : '{hex4[ addr ]}:  {dis_mn.mid[ i32[ op ] * 3, 3 ]}{opnd}'
-			cv.draw_text[ line2, rect [ x: vp.x + 10.0, y: y - lh * 0.5, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null ]
+			cv.draw_text[ line2, rect [ x: vp.x + 10.0, y: y - lh * 0.5, w: vp.w - 20.0, h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+			false ]
 			addr = addr + u32[ il ]
 			y = y + lh
 			if [ y > vp.y + vp.h - lh ] return

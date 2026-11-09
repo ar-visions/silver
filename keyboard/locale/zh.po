@@ -1,0 +1,33 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Languages"
+msgstr "语言"
+
+msgid "Add"
+msgstr "添加"
+
+msgid "Remove"
+msgstr "移除"
+
+msgid "mic"
+msgstr "麦克风"
+
+msgid "back"
+msgstr "返回"
+
+msgid "Background"
+msgstr "背景"
+
+msgid "keyboard"
+msgstr "键盘"
+
+msgid "manage languages"
+msgstr "管理语言"
+
+msgid "none"
+msgstr "无"
+
+msgid "12 keys"
+msgstr "12键"

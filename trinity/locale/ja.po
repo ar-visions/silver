@@ -1,0 +1,132 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "text"
+msgstr "文字"
+
+msgid "games"
+msgstr "ゲーム"
+
+msgid "creative"
+msgstr "制作"
+
+msgid "everyday"
+msgstr "日常"
+
+msgid "simulation"
+msgstr "模擬"
+
+msgid "developer"
+msgstr "開発"
+
+msgid "communication"
+msgstr "通信"
+
+msgid "other"
+msgstr "その他"
+
+msgid "agents"
+msgstr "代理"
+
+msgid "clear"
+msgstr "消去"
+
+msgid "continue"
+msgstr "続行"
+
+msgid "Default"
+msgstr "既定"
+
+msgid "display"
+msgstr "画面"
+
+msgid "Drag to crop  Enter captures  Esc cancels"
+msgstr "ドラッグで範囲  Enterで撮影  Escで取消"
+
+msgid "Embed"
+msgstr "埋込"
+
+msgid "filter"
+msgstr "絞込"
+
+msgid "Full"
+msgstr "全体"
+
+msgid "hidden"
+msgstr "非表示"
+
+msgid "high"
+msgstr "高"
+
+msgid "home"
+msgstr "ホーム"
+
+msgid "instruments"
+msgstr "計測"
+
+msgid "menu"
+msgstr "メニュー"
+
+msgid "needs"
+msgstr "要対応"
+
+msgid "new"
+msgstr "新規"
+
+msgid "No agent shell installed: install one from the apps view"
+msgstr "代理がありません: アプリから導入"
+
+msgid "none"
+msgstr "なし"
+
+msgid "Nothing to undo"
+msgstr "取消す操作なし"
+
+msgid "Options"
+msgstr "設定"
+
+msgid "outline"
+msgstr "概要"
+
+msgid "play"
+msgstr "再生"
+
+msgid "record"
+msgstr "録画"
+
+msgid "save as"
+msgstr "別名で保存"
+
+msgid "Screen"
+msgstr "画面"
+
+msgid "screen"
+msgstr "画面"
+
+msgid "Send failed"
+msgstr "送信失敗"
+
+msgid "solid"
+msgstr "単色"
+
+msgid "stop"
+msgstr "停止"
+
+msgid "system"
+msgstr "システム"
+
+msgid "the agent failed"
+msgstr "代理が失敗"
+
+msgid "views"
+msgstr "表示"
+
+msgid "volume"
+msgstr "音量"
+
+msgid "Window"
+msgstr "窓"
+
+msgid "end"
+msgstr "終了"

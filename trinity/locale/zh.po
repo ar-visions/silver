@@ -1,0 +1,132 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "text"
+msgstr "文字"
+
+msgid "games"
+msgstr "游戏"
+
+msgid "creative"
+msgstr "创作"
+
+msgid "everyday"
+msgstr "日常"
+
+msgid "simulation"
+msgstr "模拟"
+
+msgid "developer"
+msgstr "开发"
+
+msgid "communication"
+msgstr "通讯"
+
+msgid "other"
+msgstr "其他"
+
+msgid "agents"
+msgstr "代理"
+
+msgid "clear"
+msgstr "清除"
+
+msgid "continue"
+msgstr "继续"
+
+msgid "Default"
+msgstr "默认"
+
+msgid "display"
+msgstr "显示"
+
+msgid "Drag to crop  Enter captures  Esc cancels"
+msgstr "拖动裁剪  Enter 截取  Esc 取消"
+
+msgid "Embed"
+msgstr "嵌入"
+
+msgid "filter"
+msgstr "筛选"
+
+msgid "Full"
+msgstr "全屏"
+
+msgid "hidden"
+msgstr "隐藏"
+
+msgid "high"
+msgstr "高"
+
+msgid "home"
+msgstr "主页"
+
+msgid "instruments"
+msgstr "仪表"
+
+msgid "menu"
+msgstr "菜单"
+
+msgid "needs"
+msgstr "需处理"
+
+msgid "new"
+msgstr "新建"
+
+msgid "No agent shell installed: install one from the apps view"
+msgstr "未安装代理: 从应用中安装"
+
+msgid "none"
+msgstr "无"
+
+msgid "Nothing to undo"
+msgstr "没有可撤销的操作"
+
+msgid "Options"
+msgstr "选项"
+
+msgid "outline"
+msgstr "大纲"
+
+msgid "play"
+msgstr "播放"
+
+msgid "record"
+msgstr "录制"
+
+msgid "save as"
+msgstr "另存为"
+
+msgid "Screen"
+msgstr "屏幕"
+
+msgid "screen"
+msgstr "屏幕"
+
+msgid "Send failed"
+msgstr "发送失败"
+
+msgid "solid"
+msgstr "纯色"
+
+msgid "stop"
+msgstr "停止"
+
+msgid "system"
+msgstr "系统"
+
+msgid "the agent failed"
+msgstr "代理失败"
+
+msgid "views"
+msgstr "视图"
+
+msgid "volume"
+msgstr "音量"
+
+msgid "Window"
+msgstr "窗口"
+
+msgid "end"
+msgstr "结束"

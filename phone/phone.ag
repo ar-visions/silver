@@ -328,7 +328,7 @@ Button PhoneKey
         cv.fill_color[ rgba [ '#ffffff88' ] ]
         cv.draw_text[ sub, rect [ x: 0.0, y: bounds.h * 0.58,
             w: bounds.w, h: bounds.h * 0.3 ], vec2f [ 0.5, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
         cv.paint[]
         cv.set_font[ null ]
 
@@ -416,7 +416,7 @@ Button PhoneRow
         cv.draw_text[ note, rect [ x: bounds.w * 0.45, y: 0.0,
             w: bounds.w * 0.55 - 14.0, h: bounds.h ],
             vec2f [ 1.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
         cv.paint[]
         cv.set_font[ null ]
 
@@ -461,12 +461,12 @@ element PhoneBubble
         cv.draw_text[ label, rect [ x: x + 12.0, y: top, w: bw - 24.0,
             h: bounds.h - 22.0 - top ], vec2f [ 0.0, 0.0 ],
             vec2f [ 0.0, 0.0 ],
-            Overflow.wrap, null ]
+            Overflow.wrap, null, false ]
         cv.font_size[ 13 ]
         cv.fill_color[ rgba [ '#ffffff77' ] ]
         cv.draw_text[ when, rect [ x: x, y: bounds.h - 16.0, w: bw,
             h: 16.0 ], vec2f [ (mine) ? 1.0 : 0.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.clip, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
         cv.paint[]
         cv.set_font[ null ]
 

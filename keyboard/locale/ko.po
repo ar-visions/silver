@@ -1,0 +1,33 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Languages"
+msgstr "언어"
+
+msgid "Add"
+msgstr "추가"
+
+msgid "Remove"
+msgstr "제거"
+
+msgid "mic"
+msgstr "마이크"
+
+msgid "back"
+msgstr "뒤로"
+
+msgid "Background"
+msgstr "배경"
+
+msgid "keyboard"
+msgstr "키보드"
+
+msgid "manage languages"
+msgstr "언어 관리"
+
+msgid "none"
+msgstr "없음"
+
+msgid "12 keys"
+msgstr "12키"

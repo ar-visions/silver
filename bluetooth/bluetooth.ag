@@ -613,7 +613,7 @@ Button BtRow
         cv.fill_color[ rgba [ '#ffffff99' ] ]
         cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: bounds.w - 14.0,
             h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.clip, null ]
+            Overflow.clip, null, true ]
         cv.paint[]
         cv.set_font[ null ]
 

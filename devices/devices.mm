@@ -1105,3 +1105,132 @@ void platform_mic_close(void) {
     AudioQueueDispose(g_mic, true);
     g_mic = NULL;
 }
+
+// sound devices, each line "uid|name"; the default by uid
+#if !TARGET_OS_IPHONE
+#import <CoreAudio/CoreAudio.h>
+
+static AudioObjectPropertyAddress sound_addr(AudioObjectPropertySelector s,
+        AudioObjectPropertyScope sc) {
+    AudioObjectPropertyAddress a = { s, sc, kAudioObjectPropertyElementMain };
+    return a;
+}
+
+static void sound_cf(CFStringRef s, char* out, int cap) {
+    out[0] = 0;
+    if (s) CFStringGetCString(s, out, cap, kCFStringEncodingUTF8);
+}
+
+static int sound_has(AudioDeviceID d, int inputs) {
+    AudioObjectPropertyAddress a = sound_addr(
+        kAudioDevicePropertyStreamConfiguration,
+        inputs ? kAudioDevicePropertyScopeInput
+               : kAudioDevicePropertyScopeOutput);
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(d, &a, 0, NULL, &sz) || !sz) return 0;
+    AudioBufferList* bl = (AudioBufferList*)malloc(sz);
+    int ch = 0;
+    if (!AudioObjectGetPropertyData(d, &a, 0, NULL, &sz, bl))
+        for (UInt32 i = 0; i < bl->mNumberBuffers; i++)
+            ch += bl->mBuffers[i].mNumberChannels;
+    free(bl);
+    return ch > 0;
+}
+
+static void sound_uid(AudioDeviceID d, char* out, int cap) {
+    AudioObjectPropertyAddress a = sound_addr(kAudioDevicePropertyDeviceUID,
+        kAudioObjectPropertyScopeGlobal);
+    CFStringRef s = NULL;
+    UInt32 sz = sizeof(s);
+    out[0] = 0;
+    if (!AudioObjectGetPropertyData(d, &a, 0, NULL, &sz, &s) && s) {
+        sound_cf(s, out, cap);
+        CFRelease(s);
+    }
+}
+
+extern "C" int host_sound_list(int inputs, char* out, int cap) {
+    AudioObjectPropertyAddress a = sound_addr(kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal);
+    UInt32 sz = 0;
+    out[0] = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0,
+            NULL, &sz)) return 0;
+    int n = (int)(sz / sizeof(AudioDeviceID));
+    AudioDeviceID* ids = (AudioDeviceID*)malloc(sz);
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, &sz,
+        ids);
+    int len = 0, got = 0;
+    for (int i = 0; i < n; i++) {
+        if (!sound_has(ids[i], inputs)) continue;
+        char uid[256], name[256];
+        sound_uid(ids[i], uid, sizeof(uid));
+        AudioObjectPropertyAddress na = sound_addr(
+            kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal);
+        CFStringRef s = NULL;
+        UInt32 ns = sizeof(s);
+        name[0] = 0;
+        if (!AudioObjectGetPropertyData(ids[i], &na, 0, NULL, &ns, &s) && s) {
+            sound_cf(s, name, sizeof(name));
+            CFRelease(s);
+        }
+        int w = snprintf(out + len, cap - len, "%s|%s\n", uid, name);
+        if (w < 0 || len + w >= cap) break;
+        len += w;
+        got++;
+    }
+    free(ids);
+    return got;
+}
+
+static AudioObjectPropertySelector sound_def(int inputs) {
+    return inputs ? kAudioHardwarePropertyDefaultInputDevice
+                  : kAudioHardwarePropertyDefaultOutputDevice;
+}
+
+extern "C" int host_sound_default(int inputs, char* out, int cap) {
+    AudioObjectPropertyAddress a = sound_addr(sound_def(inputs),
+        kAudioObjectPropertyScopeGlobal);
+    AudioDeviceID d = 0;
+    UInt32 sz = sizeof(d);
+    out[0] = 0;
+    if (AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL,
+            &sz, &d) || !d) return 0;
+    sound_uid(d, out, cap);
+    return (int)strlen(out);
+}
+
+extern "C" int host_sound_choose(int inputs, const char* uid) {
+    AudioObjectPropertyAddress a = sound_addr(kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyScopeGlobal);
+    UInt32 sz = 0;
+    if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &a, 0,
+            NULL, &sz)) return 0;
+    int n = (int)(sz / sizeof(AudioDeviceID));
+    AudioDeviceID* ids = (AudioDeviceID*)malloc(sz);
+    AudioObjectGetPropertyData(kAudioObjectSystemObject, &a, 0, NULL, &sz,
+        ids);
+    int ok = 0;
+    for (int i = 0; i < n && !ok; i++) {
+        char u[256];
+        sound_uid(ids[i], u, sizeof(u));
+        if (strcmp(u, uid)) continue;
+        AudioObjectPropertyAddress da = sound_addr(sound_def(inputs),
+            kAudioObjectPropertyScopeGlobal);
+        ok = !AudioObjectSetPropertyData(kAudioObjectSystemObject, &da, 0,
+            NULL, sizeof(ids[i]), &ids[i]);
+    }
+    free(ids);
+    return ok;
+}
+#else
+extern "C" int host_sound_list(int inputs, char* out, int cap) {
+    out[0] = 0;
+    return 0;
+}
+extern "C" int host_sound_default(int inputs, char* out, int cap) {
+    out[0] = 0;
+    return 0;
+}
+extern "C" int host_sound_choose(int inputs, const char* uid) { return 0; }
+#endif

@@ -995,7 +995,7 @@ element BuildCard
         cv.fill_color[ rgba [ '#f0f0f4' ] ]
         cv.draw_text[ nm, rect [ x: x + isz + 16.0, y: top, w: nw + 4.0,
             h: isz ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, true ]
         cv.paint[]
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf', 20 ] ]
@@ -1026,7 +1026,7 @@ element BuildCard
         cv.fill_color[ rgba [ '#e8e0ff' ] ]
         cv.draw_text[ st, rect [ x: 0.0, y: py, w: bounds.w, h: 30.0 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
-            null ]
+            null, true ]
         cv.paint[]
         cv.restore[]
         cv.set_font[ was ]
@@ -1167,7 +1167,7 @@ element EditorTitle
             cv.draw_text[ hint,
                 rect [ x: trail, y: 0.0, w: bounds.w, h: bounds.h ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-                null ]
+                null, true ]
             cv.paint[]
 
 
@@ -1792,6 +1792,31 @@ element DeskWidget
                 if [ c.bounds.y + c.bounds.h * 0.5 < mid ] k += 1
         return k
 
+    # the desktop's clock always shows: the widget fades out over
+    # 32 px above it, and nothing of it is left from there down
+    func clock_fade [ cv: Canvas, w: Window, oy: f32, bw: f32,
+                      bh: f32 ]
+        hv : element (parent) ? parent.parent : null
+        ck : element (hv && hv.elements) ? hv.elements[ 'desk_clock' ]
+                                          : null
+        if [ !ck || !ck.bounds ] return
+        me : vec2f w.win_origin[ a ]
+        at : vec2f w.win_origin[ ck ]
+        top : f32 [ at.y - me.y - 8.0 ]
+        fd  : f32 [ 32.0 ]
+        if [ top - fd >= oy + bh ] return
+        cv.save[]
+        cv.set_composite[ Composite.destination_out ]
+        g : Gradient linear_gradient[ 0.0, top - fd, 0.0, top ]
+        g.add_stop[ 0.0, 0x00000000 ]
+        g.add_stop[ 1.0, 0xff000000 ]
+        cv.set_fill_gradient[ g ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, top - fd, bw, oy + bh - (top - fd) ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.restore[]
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         o : orbiter orb[]
@@ -1835,6 +1860,7 @@ element DeskWidget
         cv.paint[]
         cv.no_shadows[]
         cv.restore[]
+        clock_fade[ cv, w, oy, bw, bh ]
         if [ !editing[] ] return
         # edit mode: its outline and the x that takes it off
         cv.save[]
@@ -1872,7 +1898,7 @@ element DeskWidget
         cv.fill_color[ rgba [ '#ffffffaa' ] ]
         cv.draw_text[ 'Choose a widget', rect [ x: ox + 14.0,
             y: oy + 8.0, w: bw - 28.0, h: 22.0 * un ], vec2f [ 0.0, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
         side : f32 [ round[ 64.0 * un ] ]
         cw : f32 [ side + round[ 24.0 * un ] ]
         ch : f32 [ side + round[ 26.0 * un ] ]
@@ -1894,7 +1920,7 @@ element DeskWidget
             cv.fill_color[ rgba [ '#ffffffdd' ] ]
             cv.draw_text[ ae.name, rect [ x: cx, y: cy + side + 2.0,
                 w: cw, h: 22.0 * un ], vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             k += 1
         cv.set_font[ null ]
 
@@ -1952,8 +1978,11 @@ element DeskWidget
 
     public func on_wheel [ ev: Event ]
         o : orbiter orb[]
-        av : AppView (o) ? o.widget_view[ index ] : null
-        if [ av && !editing[] ] av.view_wheel[ ev ]
+        if [ !o || editing[] ] return
+        av : AppView o.widget_view[ index ]
+        # an app not up to take it: the column or desktop does
+        if [ !av || !av.view_wheel[ ev ] ]
+            o.desk_wheel[ f32[ ev.mouse.wheel_delta.y ] ]
 
     func on_key [ ev: Event ]
         o : orbiter orb[]
@@ -2258,7 +2287,7 @@ element BuildScreen
                 cv.fill_color[ rgba [ (bad) ? '#ff9090' : '#ffffffcc' ] ]
                 cv.draw_text[ it, rect [ x: pd, y: y, w: bw,
                     h: lh * rows ], vec2f [ 0.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.wrap, null ]
+                    vec2f [ 0.0, 0.0 ], Overflow.wrap, null, true ]
                 y += lh * rows
             return
         # each block: its name and count, then its latest items
@@ -2480,7 +2509,7 @@ element WinRow
             : '#ffffff' ] ]
         cv.draw_text[ tx, rect [ x: x, y: y, w: cw, h: ch * 0.6 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
         cv.fill_color[ rgba [ '#ffffff99' ] ]
         sub : string [ (wd == 'building') ? 'building'
@@ -2488,7 +2517,7 @@ element WinRow
         cv.draw_text[ sub,
             rect [ x: x, y: y + ch * 0.45, w: cw, h: ch * 0.2 ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         fp : i32 [ i32[ round[ 16.0 * un ] ] ]
         cv.set_font[ shared_font[ cv,
             'fonts/BarlowCondensed-Regular.ttf', fp ] ]
@@ -2517,7 +2546,7 @@ element WinRow
             cv.fill_color[ rgba [ '#ffffff88' ] ]
             cv.draw_text[ 'No apps running', rect [ x: 0.0, y: 0.0,
                 w: bounds.w, h: ch ], vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             cv.set_font[ null ]
             return
         rd : f32 [ 10.0 * un ]
@@ -2537,7 +2566,7 @@ element WinRow
             cv.fill_color[ rgba [ '#ffffffdd' ] ]
             cv.draw_text[ bn, rect [ x: x, y: y + ch,
                 w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             x += cw + gap[]
             k += 1
         for [ av: AppView ] in runs
@@ -2574,7 +2603,7 @@ element WinRow
             cv.fill_color[ rgba [ '#ffffffdd' ] ]
             cv.draw_text[ o.task_title[ av ], rect [ x: x, y: y + ch,
                 w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             cv.set_opacity[ 1.0 ]
             x += cw + gap[]
             k += 1
@@ -2732,10 +2761,10 @@ element PowerSlide
             cv.fill_color[ rgba [ '#fff' ] ]
             cv.draw_text[ 'Power off', rect [ x: 0.0, y: 0.0, w: hw,
                 h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, true ]
             cv.draw_text[ 'Restart', rect [ x: bounds.w - hw, y: 0.0,
                 w: hw, h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.ellipsis, null ]
+                Overflow.ellipsis, null, true ]
             cv.set_font[ null ]
             return
         cv.fill_color[ rgba [ '#ffffff10' ] ]
@@ -2753,7 +2782,7 @@ element PowerSlide
         # centred in the whole track, the knob not counted
         cv.draw_text[ 'slide for power', rect [ x: 0.0, y: 0.0,
             w: bounds.w, h: h ], vec2f [ 0.5, 0.5 ],
-            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
         cv.set_opacity[ 1.0 ]
         cv.set_font[ null ]
         cv.save[]
@@ -2861,7 +2890,7 @@ element WidgetPick
             cv.fill_color[ rgba [ '#ffffffdd' ] ]
             cv.draw_text[ ae.name, rect [ x: cx, y: cy + side + 4.0,
                 w: cw, h: 22.0 * un ], vec2f [ 0.5, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null ]
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             k += 1
         cv.set_font[ null ]
 
@@ -2913,7 +2942,7 @@ element DeskTabs
             cv.fill_color[ rgba [ (on) ? '#ffffffff' : '#ffffff99' ] ]
             cv.draw_text[ nm, rect [ x: x, y: 0.0, w: tw + 4.0,
                 h: bounds.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.clip, null ]
+                Overflow.clip, null, true ]
             tab_x.push[ x ]
             x += tw + gap
         tab_x.push[ x ]
@@ -3860,7 +3889,7 @@ element DockIcon
         cv.draw_text[ nm, rect [ x: 4.0, y: iy + isz + 1.0,
                                  w: bounds.w - 8.0, h: 16.0 * un ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         cv.paint[]
         cv.set_font[ null ]
         if [ count > 0 ]
@@ -3955,7 +3984,7 @@ element TaskChip
             rect [ x: tx, y: 0.0, w: max[ bounds.w - tx - 14.0, 0.0 ],
                    h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
-            null ]
+            null, true ]
         cv.set_font[ null ]
         # its state (starting or paused, failed, an agent waiting for
         # the user): a 3px bar at the foot
@@ -4692,7 +4721,9 @@ element orbiter : trinity # implements compiler
     # wants words
     func keys_up [] -> bool
         if [ keys_force != 0 ] return keys_force > 0
-        return ux && ux.words_wanted
+        on : bool [ set_keys == 'on'
+                    || (set_keys == 'auto' && use_mobile) ]
+        return on && ux && ux.words_wanted
 
     # the phone's dialogs as they stand, for the next instance
     func ui_carry_out []
@@ -4991,6 +5022,9 @@ element orbiter : trinity # implements compiler
     intern crumb_dx      : f32
     intern crumb_x       : f32
     intern crumb_items   : vec TrayEntry
+    # an anonymous menu: its rows, and the setting a pick sets
+    intern popup_items   : vec TrayEntry
+    intern popup_for     : string
     # the navigator's module icons by folder, and folders without one
     intern mod_icons     : map AppIcon [string]
     intern mod_noicon    : vec string
@@ -5061,6 +5095,9 @@ element orbiter : trinity # implements compiler
     intern tabs_seen  : string
     # the height the widgets take above the apps (a narrow desktop)
     intern desk_top   : f32
+    # the side column scrolled (px), and its whole height
+    intern desk_col_y : f32
+    intern desk_col_h : f32
     # the agents' + pressed: the kinds to start, until a press
     intern desk_adding : bool
     # the widget a narrow desktop's tab bar shows
@@ -5329,6 +5366,8 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] set_delay    : i32 [ 600 ]
     intern [ StatePersist ] set_rate     : i32 [ 25 ]
     intern [ StatePersist ] set_layout   : string [ 'us' ]
+    # the time zone ('Asia/Tokyo'); '' the system's own
+    intern [ StatePersist ] set_zone     : string
     intern [ StatePersist ] set_size     : i32 [ rest_unit[] ]
     # the families chosen ('' the bundled ones): code and consoles,
     # the bars and menus
@@ -5339,6 +5378,10 @@ element orbiter : trinity # implements compiler
     intern fonts_on      : string
     # a key's tick on the phone's motor: off, light, medium, strong
     intern [ StatePersist ] set_haptic   : string [ 'light' ]
+    # the on-screen keyboard: auto (a phone's), on, off
+    intern [ StatePersist ] set_keys     : string [ 'auto' ]
+    # the system menu's panel width, px; 0 not yet laid out
+    mutable panel_w : f32
     # the screen's light, 0..1 (-1: as the system set it)
     intern [ StatePersist ] set_light    : f32 [ -1.0 ]
     # the screen goes dark untouched this long; dark this long, the
@@ -9016,6 +9059,10 @@ element orbiter : trinity # implements compiler
             av : AppView desk_views[ desk_widgets[ i ] ]
             if [ !av ] continue
             av.service[ w.screen ]
+            # past the widget's end: the desktop scrolls on
+            if [ av.wheel_back != 0.0 ]
+                desk_wheel[ av.wheel_back ]
+                av.wheel_back = 0.0
             fr : i32 [ (av.slot >= 0) ? host_tex_front[ av.slot, 0 ]
                 : -1 ]
             ky : string desk_widgets[ i ]
@@ -9126,7 +9173,8 @@ element orbiter : trinity # implements compiler
         if [ wn > 0 ] widget_place[ !beside ]
         w : f32 [ (beside) ? round[ gw * 0.3 ] - pad : gw - pad * 2.0 ]
         x : f32 [ (beside) ? gw - pad - w : pad ]
-        y : f32 [ pad ]
+        # the side column scrolls as one
+        y : f32 [ (beside) ? pad - desk_col_y : pad ]
         ah : f32 [ round[ 39.0 * un ] ]
         # why one did not start, in red
         if [ home_why && home_why.count > 0 ]
@@ -9206,7 +9254,32 @@ element orbiter : trinity # implements compiler
             t['widget_{i}'] = DeskWidget [ index: i,
                 area: Region [ 'l{x}px t{y}px w{w}px h{h}px' ] ]
             y += h + gap
+        desk_col_h = y + desk_col_y
         return t
+
+    # a widget's wheel it did not use: beside the icons the column
+    # scrolls first, then the desktop
+    func desk_wheel [ dy: f32 ]
+        ag : element find_el[ a, 'apps' ]
+        if [ !ag ] return
+        if [ ag.bounds && desk_beside[ ag.bounds.w ]
+             && desk_col_scroll[ dy ] ] return
+        we : Event []
+        we.mouse.wheel_delta = [ 0.0, dy ]
+        ag.on_wheel*[ we ]
+
+    # the side column by a wheel notch, until its foot is at the
+    # clock; false when it is at that end already
+    func desk_col_scroll [ dy: f32 ] -> bool
+        ck : element find_el[ a, 'desk_clock' ]
+        room : f32 [ (ck && ck.bounds) ? ck.bounds.y - 8.0 : 0.0 ]
+        mx : f32 [ max[ 0.0, desk_col_h - room ] ]
+        was : f32 [ desk_col_y ]
+        desk_col_y = clamp[ desk_col_y - dy * 26.0 * ux_unit[ ux ],
+                            0.0, mx ]
+        if [ desk_col_y == was ] return false
+        ux.restyle = true
+        return true
 
     func own_entry [ label: string, act: string, depth: i32 ]
                      -> TrayEntry
@@ -9680,6 +9753,87 @@ element orbiter : trinity # implements compiler
     func drawer_on [] -> bool
         return drawer_open || epoch_millis[] - menu_shut_ms < 400
 
+    # an anonymous menu from the bar: a title, then rows; a pick
+    # sets the setting named, to the row's value
+    func popup [ title: string, setting: string, rows: vec string,
+                 values: vec string ]
+        popup_items = vec TrayEntry []
+        popup_items.push[ TrayEntry [ label: title, depth: 0,
+            enabled: true, check: -1 ] ]
+        for [ i: i32 0, i < rows.count, i += 1 ]
+            heading : bool [ values[ i ].count == 0 ]
+            popup_items.push[ TrayEntry [ label: rows[ i ], depth: 1,
+                enabled: !heading, check: -1, target: values[ i ] ] ]
+        popup_for = setting
+        drawer_toggle[ 'popup', false ]
+
+    # the zone in use: the chosen one, else the system's
+    func zone_now [] -> string
+        if [ set_zone && set_zone.count > 0 ] return set_zone
+        lk : path '/etc/localtime'
+        tg : string '{lk.resolve[]}'
+        at : i32 [ i32[ tg.index_of[ 'zoneinfo/' ] ] ]
+        return (at >= 0) ? tg.mid[ at + 9, tg.count - at - 9 ] : 'UTC'
+
+    # 'Tokyo  UTC+9': the city, and its offset from UTC now
+    func zone_label [ zone: string ] -> string
+        sl : i32 [ i32[ zone.rindex_of[ '/' ] ] ]
+        city : string [ (sl >= 0) ? zone.mid[ sl + 1,
+                                              zone.count - sl - 1 ]
+                                  : zone ]
+        # New_York: New York
+        words : vec string city.split[ '_' ]
+        city = ''
+        for [ wd: string ] in words
+            city = (city.count > 0) ? '{city} {wd}' : wd
+        was : cstr getenv[ 'TZ' ]
+        keep : string [ (was) ? string [ was ] : '' ]
+        setenv[ 'TZ', zone.chars, 1 ]
+        tzset[]
+        now : i64 [ time[ null ] ]
+        tm : struct tm
+        localtime_r[ @now, @tm ]
+        # local time read as utc: the gap is the offset
+        mins : i64 [ (i64[ timegm[ @tm ] ] - now) / 60 ]
+        if [ keep.count > 0 ] setenv[ 'TZ', keep.chars, 1 ]
+        el unsetenv[ 'TZ' ]
+        tzset[]
+        sg : string [ (mins < 0) ? '-' : '+' ]
+        am : i64 [ (mins < 0) ? 0 - mins : mins ]
+        hr : string [ (am % 60 == 0) ? '{am / 60}'
+                                     : '{am / 60}:{am % 60}' ]
+        return '{city}  UTC{sg}{hr}'
+
+    # every zone, by region, each region a heading
+    func zone_popup []
+        zd : path '/usr/share/zoneinfo'
+        rows : vec string []
+        vals : vec string []
+        regions : vec string [] [ 'Africa', 'America', 'Antarctica',
+            'Asia', 'Atlantic', 'Australia', 'Europe', 'Indian',
+            'Pacific' ]
+        for [ rg: string ] in regions
+            rd : path '{zd}/{rg}'
+            if [ !rd.exists[] ] continue
+            # by name: a region's zones, its own files
+            names : vec string []
+            for [ e: path ] in rd.ls[ null, false ]
+                if [ e.is_dir[] ] continue
+                zn : '{rg}/{e.filename[]}'
+                at : i32 [ names.count ]
+                for [ j: i32 0, j < names.count, j += 1 ]
+                    if [ zn.compare[ names[ j ] ] < 0 ]
+                        at = j
+                        break
+                names.insert[ zn, at ]
+            if [ names.count == 0 ] continue
+            rows.push[ rg ]
+            vals.push[ '' ]
+            for [ zn: string ] in names
+                rows.push[ zone_label[ zn ] ]
+                vals.push[ zn ]
+        popup[ 'time zone', 'time zone', rows, vals ]
+
     func drawer_els [] -> Elements
         t : Elements []
         if [ menu_kind == 'tray' ]
@@ -9687,6 +9841,10 @@ element orbiter : trinity # implements compiler
                 lit: menu_lit, area: Region { l0 t0 r0 b0 } ]
         el [ menu_kind == 'crumb' ]
             t['menu_panel'] = MenuPanel [ items: crumb_items, top: 0,
+                filter: menu_filter, lit: menu_lit,
+                area: Region { l0 t0 r0 b0 } ]
+        el [ menu_kind == 'popup' ]
+            t['menu_panel'] = MenuPanel [ items: popup_items, top: 0,
                 filter: menu_filter, lit: menu_lit,
                 area: Region { l0 t0 r0 b0 } ]
         el
@@ -9708,10 +9866,12 @@ element orbiter : trinity # implements compiler
                      && entry_matches[ e, menu_filter ] ]
                     out.push[ i ]
             return out
-        if [ menu_kind == 'crumb' ]
-            if [ !crumb_items ] return out
-            for [ i: i32 1, i < crumb_items.count, i += 1 ]
-                ce : TrayEntry crumb_items[ i ]
+        if [ menu_kind == 'crumb' || menu_kind == 'popup' ]
+            its : vec TrayEntry [ (menu_kind == 'crumb') ? crumb_items
+                                                         : popup_items ]
+            if [ !its ] return out
+            for [ i: i32 1, i < its.count, i += 1 ]
+                ce : TrayEntry its[ i ]
                 if [ ce.enabled && !ce.rule
                      && entry_matches[ ce, menu_filter ] ]
                     out.push[ i ]
@@ -9901,11 +10061,14 @@ element orbiter : trinity # implements compiler
                     drawer_shut[]
                     return
             return
-        # the path's drawer: the first folder the filter shows
-        if [ menu_kind == 'crumb' ]
-            if [ !crumb_items ] return
-            for [ i: i32 1, i < crumb_items.count, i += 1 ]
-                if [ entry_matches[ crumb_items[ i ], menu_filter ] ]
+        # the path's drawer or a popup: the first entry shown
+        if [ menu_kind == 'crumb' || menu_kind == 'popup' ]
+            its : vec TrayEntry [ (menu_kind == 'crumb') ? crumb_items
+                                                         : popup_items ]
+            if [ !its ] return
+            for [ i: i32 1, i < its.count, i += 1 ]
+                if [ its[ i ].enabled
+                     && entry_matches[ its[ i ], menu_filter ] ]
                     menu_pick[ i ]
                     return
             return
@@ -9964,6 +10127,13 @@ element orbiter : trinity # implements compiler
         if [ ux ] ux.restyle = true
 
     func menu_pick [ i: i32 ]
+        # an anonymous menu: its setting takes the row's value
+        if [ menu_kind == 'popup' ]
+            if [ popup_items && i > 0 && i < popup_items.count ]
+                setting_set[ popup_for, popup_items[ i ].target ]
+            drawer_shut[]
+            if [ ux ] ux.restyle = true
+            return
         # the path's drawer: a folder chosen is browsed
         if [ menu_kind == 'crumb' ]
             if [ !crumb_items || i <= 0 || i >= crumb_items.count ]
@@ -14044,6 +14214,11 @@ element orbiter : trinity # implements compiler
         if [ ev.target.id && ev.target.id.starts_with[ 'xchip_' ] ]
             nm : ev.target.id.mid[ 6, ev.target.id.count - 6 ]
             # a font: the generic dialog, not choices under the chip
+            if [ nm == 'time zone' ]
+                set_open = ''
+                zone_popup[]
+                ev.no_default = true
+                return
             if [ nm == 'fixed width' || nm == 'tool font' ]
                 set_open = ''
                 font_for = nm
@@ -15929,9 +16104,9 @@ element orbiter : trinity # implements compiler
         # the system menu up: its own keyboard, over this
         # the shown app's own keyboard takes the letters' place
         pad : element [ (use_mobile && !sys_up[]) ? app_pad[] : null ]
-        keys : bool [ use_mobile && !sys_up[]
+        keys : bool [ !sys_up[]
             && ((pad) ? !ux.app_keys_hidden : keys_up[]) ]
-        bar : bool [ !use_mobile && ux.words_wanted
+        bar : bool [ !use_mobile && !keys && ux.words_wanted
             && languages_added[] ]
         foot : string [ (keys) ? 'l0 t0 r0 b41%'
             : ((use_mobile) ? 'l0 t0 r0 b0'
@@ -15941,7 +16116,10 @@ element orbiter : trinity # implements compiler
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         if [ !use_mobile ]
             left['status'] = TasksBar [ elements: status_els[] ]
-            if [ bar ]
+            if [ keys ]
+                left['keys'] = FlickKeys [
+                    area: Region { l0 b41% r0 b1.06 } ]
+            el [ bar ]
                 left['keys'] = FlickKeys [ bar_only: true,
                     area: Region { l0 b2.4 r0 b1.06 } ]
         el [ keys ]
@@ -18317,13 +18495,6 @@ element orbiter : trinity # implements compiler
         iw : string install_word[ ae ]
         return iw == 'starting' || iw == 'building' || iw == 'failed'
 
-    # how many are on home: a change means gather the cards again
-    func home_count [] -> i32
-        c : i32 [ 0 ]
-        for [ ae: AppEntry ] in app_entries[]
-            if [ on_home[ ae ] ] c += 1
-        return c
-
     # its binaries and share go; its source and saved state stay
     func app_delete [ ae: AppEntry ]
         if [ !can_delete[ ae ] ] return
@@ -19461,6 +19632,13 @@ element orbiter : trinity # implements compiler
     # ALSA's cards as 'card N|name'
     func sound_devices [ inputs: bool ] -> vec string
         out : vec string []
+        # the platform's own list first (CoreAudio, WASAPI)
+        hl : local i8 [ 8192 ]
+        if [ host_sound_list[ (inputs) ? 1 : 0, @hl[0], 8192 ] > 0 ]
+            tx : string [ @hl[0] ]
+            for [ ln: string ] in tx.split[ '\n' ]
+                if [ ln.count > 0 ] out.push[ ln ]
+            return named_apart[ out ]
         kind : string [ (inputs) ? 'sources' : 'sinks' ]
         nm : string ''
         for [ ln: string ] in cmd_lines[ 'pactl list {kind} 2>/dev/null' ]
@@ -19496,6 +19674,9 @@ element orbiter : trinity # implements compiler
 
     # the device in use: the server's default, else ours in .asoundrc
     func sound_default [ inputs: bool ] -> string
+        hd : local i8 [ 256 ]
+        if [ host_sound_default[ (inputs) ? 1 : 0, @hd[0], 256 ] > 0 ]
+            return string [ @hd[0] ]
         what : string [ (inputs) ? 'source' : 'sink' ]
         ls : vec string cmd_lines[ 'pactl get-default-{what} 2>/dev/null' ]
         if [ ls.count > 0 && ls[ 0 ].count > 0 ] return ls[ 0 ]
@@ -19517,6 +19698,8 @@ element orbiter : trinity # implements compiler
     # a device chosen: the server's default; with ALSA alone, the
     # default pcm's playback or capture side in .asoundrc
     func sound_choose [ inputs: bool, name: string ]
+        if [ host_sound_choose[ (inputs) ? 1 : 0, name.chars ] != 0 ]
+            return
         if [ !name.starts_with[ 'card ' ] ]
             what : string [ (inputs) ? 'source' : 'sink' ]
             set : command { pactl set-default-{what} {name} }
@@ -19574,16 +19757,21 @@ element orbiter : trinity # implements compiler
         ch : f32 [ round[ 1.1 * un ] ]
         gap : f32 [ round[ 0.35 * un ] ]
         pad : f32 [ round[ 1.4 * un ] ]
-        t['snd_out'] = BarLevel [ icon: 'volume_up', pad_l: pad,
-            area: Region [ 'l{gap}px t{gap}px r{gap}px h{ch}px' ] ]
-        y : f32 [ gap * 2.0 + ch ]
-        t['snd_mic'] = BarLevel [ icon: 'mic', pad_l: pad,
+        # one group: the sliders, then the mic and the devices
+        sg : Elements []
+        sg['snd_out'] = BarLevel [ icon: 'volume_up', pad_l: pad,
+            area: Region [ 'l{gap}px t{ch}px r{gap}px h{ch}px' ] ]
+        y : f32 [ ch * 2.0 + gap ]
+        sg['snd_mic'] = BarLevel [ icon: 'mic', pad_l: pad,
             area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
         y += ch + gap
         rows : Elements chip_grid[ panel_settings[ 'sound' ], set_open,
                                    'x' ]
-        t['snd_rest'] = element [ elements: rows,
+        sg['snd_rest'] = element [ elements: rows,
             area: Region [ 'l0 t{y}px r0 h{chips_h}px' ] ]
+        t['snd_group'] = SetGroup [ title: 'sound', head_h: ch,
+            elements: sg,
+            area: Region [ 'l{gap}px t0 r{gap}px h{y + chips_h}px' ] ]
         return t
 
     # the sound sliders: a move sets the level, else they follow it
@@ -19669,6 +19857,58 @@ element orbiter : trinity # implements compiler
                 'l{gap}px t{top + gap}px r{gap}px h{y}px' ] ]
         return t
 
+    # the widgets panel: each widget's card in a group, as many
+    # rows as the panel's width needs
+    func widgets_body [] -> Elements
+        t : Elements []
+        un : f32 unit_px[]
+        uu : f32 ux_unit[ ux ]
+        ch : f32 [ round[ 1.1 * un ] ]
+        gap : f32 [ round[ 0.3 * un ] ]
+        sd : f32 [ round[ 64.0 * uu ] ]
+        cw : f32 [ sd + round[ 24.0 * uu ] ]
+        rh : f32 [ sd + round[ 30.0 * uu ] ]
+        n : i32 [ 0 ]
+        for [ ae: AppEntry ] in app_entries[]
+            if [ ae.widget && ae.widget.count > 0 ] n += 1
+        pw : f32 [ (panel_w > 0.0) ? panel_w : 24.0 * un ]
+        cols : i32 [ max[ 1, i32[ (pw - 4.0 * gap) / cw ] ] ]
+        rows : i32 [ max[ 1, (n + cols - 1) / cols ] ]
+        gh : f32 [ ch + f32[ rows ] * rh + gap ]
+        ws : Elements []
+        ws['widget_pick'] = WidgetPick [
+            area: Region [ 'l{gap}px t{ch}px r{gap}px b{gap}px' ] ]
+        t['widget_group'] = SetGroup [ title: 'widgets', head_h: ch,
+            elements: ws,
+            area: Region [ 'l{gap}px t0 r{gap}px h{gh}px' ] ]
+        return t
+
+    # the keyboard panel: its keys, then the languages to pick and
+    # remove, a group each
+    func keyboard_body [] -> Elements
+        t : Elements []
+        un : f32 unit_px[]
+        ch : f32 [ round[ 1.1 * un ] ]
+        gap : f32 [ round[ 0.3 * un ] ]
+        ks : Elements []
+        ks['key_choices'] = element [
+            elements: chip_grid[ panel_settings[ 'keyboard' ], set_open,
+                                 'x' ],
+            area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+        kh : f32 [ ch + chips_h ]
+        t['key_group'] = SetGroup [ title: 'keys', head_h: ch,
+            elements: ks,
+            area: Region [ 'l{gap}px t0 r{gap}px h{kh}px' ] ]
+        rows : f32 [ 1.0 + second_languages[].count ]
+        lh : f32 [ ch + (rows * 1.35 + 0.15) * un ]
+        ls : Elements []
+        ls['lang_list'] = LanguageList [
+            area: Region [ 'l0 t{ch}px r0 b0' ] ]
+        t['lang_group'] = SetGroup [ title: 'languages', head_h: ch,
+            elements: ls,
+            area: Region [ 'l{gap}px t{kh + gap}px r{gap}px h{lh}px' ] ]
+        return t
+
     # the display's text group: its size, and a font each way
     func text_settings [] -> vec Prop
         ps : vec Prop []
@@ -19686,11 +19926,12 @@ element orbiter : trinity # implements compiler
             vec string [] ] ]
         return ps
 
-    # a family's file at a weight; '' none, or not on this machine
+    # a family's file from our own fonts; '' none
     func font_file [ family: string, weight: i32 ] -> string
         if [ !family || family.count == 0 ] return ''
-        m : FontMatch font_match[ family, weight, 5, 0, 0, false ]
-        return (m.found) ? m.file : ''
+        for [ h: FindHit ] in font_families[ false ]
+            if [ h.text == family ] return '{h.file}'
+        return ''
 
     # the chosen fonts over the bundled ones, when they changed
     func fonts_apply [ w: Window ]
@@ -19824,6 +20065,8 @@ element orbiter : trinity # implements compiler
                                 '800 ms' ] ] ]
             ps.push[ setting[ 'rate', '{set_rate}/s',
                 vec string [] [ '15/s', '25/s', '35/s', '50/s' ] ] ]
+            ps.push[ setting[ 'on-screen', set_keys,
+                vec string [] [ 'auto', 'on', 'off' ] ] ]
             if [ use_mobile ]
                 ps.push[ setting[ 'haptics', set_haptic,
                     vec string [] [ 'off', 'light', 'medium', 'strong' ] ] ]
@@ -19831,6 +20074,8 @@ element orbiter : trinity # implements compiler
                 vec string [] [ 'us', 'gb', 'de', 'fr', 'es', 'it',
                                 'se', 'us dvorak' ] ] ]
         el [ tab == 'display' ]
+            ps.push[ setting[ 'time zone', zone_label[ zone_now[] ],
+                vec string [] ] ]
             # the phone's power: dark when untouched, then asleep
             if [ phone_here[] ]
                 ps.push[ setting[ 'screen off', set_screen_off,
@@ -19901,8 +20146,13 @@ element orbiter : trinity # implements compiler
         el [ name == 'delay' ]         set_delay = i32[ n ]
         el [ name == 'rate' ]          set_rate = i32[ n ]
         el [ name == 'layout' ]        set_layout = v
+        el [ name == 'time zone' ]     set_zone = v
         el [ name == 'screen off' ]    set_screen_off = v
         el [ name == 'sleep' ]         set_sleep = v
+        el [ name == 'on-screen' ]
+            set_keys = v
+            keys_force = 0
+            if [ ux ] ux.restyle = true
         el [ name == 'haptics' ]
             set_haptic = v
             apply_settings[ ux ]
@@ -19946,6 +20196,11 @@ element orbiter : trinity # implements compiler
     # the settings put to work: trinity's wheel, the pointer, the
     # keyboards (orbiter-os's own, and programs' windows), text size
     func apply_settings [ w: Window ]
+        display_language = Language [ kept_prefs[].shown ]
+        # the chosen zone for our clock and every program started
+        if [ set_zone && set_zone.count > 0 ]
+            setenv[ 'TZ', set_zone.chars, 1 ]
+            tzset[]
         if [ w ]
             fonts_apply[ w ]
             # one speed: trinity's steps and a window's clicks
@@ -20089,7 +20344,8 @@ element orbiter : trinity # implements compiler
             t['scene_body'] = element [
                 area: Region [ body ], elements: grid ]
         el [ tab == 'widgets' ]
-            t['widget_pick'] = WidgetPick [ area: Region [ body ] ]
+            t['set_body'] = element [ area: Region [ body ],
+                elements: widgets_body[] ]
         el [ tab == 'wifi' ]
             t['wifi_panel'] = WifiPanel [ area: Region [ body ] ]
         el [ tab == 'bluetooth' ]
@@ -20101,13 +20357,8 @@ element orbiter : trinity # implements compiler
             t['set_body'] = element [ area: Region [ body ],
                 elements: sound_body[] ]
         el [ tab == 'keyboard' ]
-            # its settings, then the languages to pick and remove
-            kb : Elements chip_grid[ panel_settings[ tab ], set_open,
-                                     'x' ]
-            kb['lang_list'] = LanguageList [
-                area: Region [ 'l0 t{chips_h}px r0 b0' ] ]
             t['set_body'] = element [ area: Region [ body ],
-                elements: kb ]
+                elements: keyboard_body[] ]
         el
             # any other panel with settings: its chips
             ps : vec Prop panel_settings[ tab ]
@@ -20267,8 +20518,12 @@ element orbiter : trinity # implements compiler
                 scroll_fade: 24.0,
                 area: Region [ 'l{cw}px t{lt} r0 b0' ] ]
         el [ sys_view.count > 0 ]
+            # at most 24 units wide, centred right of the dock
+            room : f32 [ (ux) ? ux.width / un - rx : 0.0 ]
+            side : f32 [ max[ 0.3, (room - 24.0) / 2.0 ] ]
+            panel_w = (room + 0.3 - 2.0 * side) * un
             sv : Elements side_view[ sys_view,
-                'l{rx - 0.3} t{y} r0.3 b0.3' ]
+                'l{rx - 0.3 + side} t{y} r{side} b0.3' ]
             for [ ve: element, vk: string ] in sv
                 t[ vk ] = ve
         return t

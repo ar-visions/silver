@@ -1,0 +1,57 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Activate"
+msgstr "활성화"
+
+msgid "apps"
+msgstr "앱"
+
+msgid "categories"
+msgstr "분류"
+
+msgid "Close"
+msgstr "닫기"
+
+msgid "enabled"
+msgstr "사용"
+
+msgid "filter"
+msgstr "필터"
+
+msgid "Get"
+msgstr "받기"
+
+msgid "Menu"
+msgstr "메뉴"
+
+msgid "No app has a tray icon"
+msgstr "트레이에 앱 없음"
+
+msgid "none"
+msgstr "없음"
+
+msgid "Open"
+msgstr "열기"
+
+msgid "open"
+msgstr "열기"
+
+msgid "Read"
+msgstr "읽기"
+
+msgid "Start"
+msgstr "시작"
+
+msgid "Status"
+msgstr "상태"
+
+msgid "Title"
+msgstr "제목"
+
+msgid "Tray"
+msgstr "트레이"
+
+msgid "version"
+msgstr "버전"

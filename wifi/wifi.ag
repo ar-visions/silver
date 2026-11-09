@@ -579,7 +579,7 @@ Button WifiRow
             cv.fill_color[ rgba [ '#ffffff99' ] ]
             cv.draw_text[ note, rect [ x: 0.0, y: 0.0, w: x - 10.0,
                 h: bounds.h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.clip, null ]
+                Overflow.clip, null, true ]
             cv.paint[]
             cv.set_font[ null ]
 
@@ -607,7 +607,7 @@ TextInput WifiSecret
         cv.draw_text[ dots, rect [ x: 14.0, y: 0.0,
             w: bounds.w - 28.0, h: bounds.h ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null ]
+            null, true ]
         cv.paint[]
 
 # the networks, strongest first; a click on one opens what can

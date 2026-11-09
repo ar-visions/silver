@@ -2525,7 +2525,7 @@ element PlanetView
         cv.fill_color[ rgba [ col ] ]
         cv.draw_text[ t, rect [ x: x, y: y, w: 600.0, h: 18.0 ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.visible, null ]
+            Overflow.visible, null, false ]
         cv.paint[]
 
     # one reading of the minute kept, the net's against the truth,
@@ -3542,7 +3542,7 @@ element launch : trinity
             cv.fill_color[ '#e8eef4' ]
             cv.draw_text[ s, rect [ x: 14.0, y: y, w: 980.0, h: 18.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
-                Overflow.visible, null ]
+                Overflow.visible, null, false ]
             cv.paint[]
             y += 22.0
         if [ camera == 8 ] v.draw_scope[ cv ]
