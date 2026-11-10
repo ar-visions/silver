@@ -1865,32 +1865,6 @@ static path project_of(path module_file) {
     return gp ? gp : (md ? parent_dir(md) : null);
 }
 
-// a registry's blocks other writers own (trinity's props:): every
-// top-level key but version and the export's own areas, kept whole
-static string registry_foreign(path efile, exports exp) {
-    string kept = string(alloc, 256);
-    FILE* fp = fopen(efile->chars, "r");
-    if (!fp) return kept;
-    char line[4096];
-    bool keep = false;
-    while (fgets(line, sizeof(line), fp)) {
-        if (line[0] != ' ' && line[0] != '\t' && line[0] != '\n') {
-            char* col = strchr(line, ':');
-            int   n   = col ? (int)(col - line) : 0;
-            keep = n > 0 && !(n == 7 && strncmp(line, "version", 7) == 0);
-            if (keep && exp->areas)
-                pairs(exp->areas, j) {
-                    string k = (string)j->key;
-                    if ((int)len(k) == n && strncmp(line, k->chars, n) == 0)
-                        keep = false;
-                }
-        }
-        if (keep) append(kept, line);
-    }
-    fclose(fp);
-    return kept;
-}
-
 static void exporter(silver a) {
     if (a->is_external || !len(a->exports))
         return;
@@ -1931,7 +1905,6 @@ static void exporter(silver a) {
                 snprintf(line + off, sizeof(line) - off, "]\n");
                 append(body, line);
             }
-        concat(body, registry_foreign(efile, exp));
         save(efile, (Au)body, null);
     }
 
@@ -3437,6 +3410,212 @@ static void silver_run_tests(silver a) {
         "release: expect tests failed for %o", a->name);
 }
 
+// the ABI of what silver emits: bump it when object layouts, method
+// slots, calls or the runtime calls change. a fix that leaves the
+// emitted code as it was keeps it, and nothing rebuilds for it
+#define SILVER_ABI 1
+
+// the stamp a product is built under: the number above, and a hash
+// of Au's own headers (its object layout), so that never goes unseen
+static string silver_abi(path install) {
+    static string stamp;
+    if (stamp) return stamp;
+    symbol names[] = { "Au", "object.h", "macros.h", "intern", "init",
+                       "methods", "public" };
+    u64 h = 0xcbf29ce484222325ull;
+    for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
+        path   hp = f(path, "%o/include/Au/%s", install, names[i]);
+        string tx = file_exists("%o", hp)
+            ? (string)load(hp, typeid(string), null) : null;
+        if (tx) h = fnv1a_hash(tx->chars, len(tx), h);
+    }
+    stamp = hold(f(string, "%i-%llx", SILVER_ABI,
+                   (unsigned long long)h));
+    return stamp;
+}
+
+// the stamp beside a product: <product>.abi
+static path abi_path(path product) {
+    return f(path, "%o.abi", product);
+}
+
+// built under the ABI this silver emits
+static bool abi_current(path install, path product) {
+    path p = abi_path(product);
+    if (!file_exists("%o", p)) return false;
+    string s = (string)load(p, typeid(string), null);
+    return s && eq(s, silver_abi(install)->chars);
+}
+
+extern void aether_overlay(path install, path base);
+
+// a line's indent, tabs as 4
+static int line_indent(cstr s) {
+    int n = 0;
+    for (; *s == ' ' || *s == '\t'; s++) n += (*s == '\t') ? 4 : 1;
+    return n;
+}
+
+// a func's header: words before 'func' are its modifiers only
+static bool line_is_func(cstr s) {
+    while (*s == ' ' || *s == '\t') s++;
+    cstr fn = strstr(s, "func ");
+    if (!fn) return false;
+    cstr br = strchr(s, '[');
+    if (br && br < fn) return false;
+    for (cstr c = s; c < fn; c++)
+        if (!isalpha((u8)*c) && *c != ' ') return false;
+    return fn == s || fn[-1] == ' ';
+}
+
+// what another module sees of a source: its lines but comments,
+// blank lines and the bodies of its funcs (a signature is kept
+// whole, across its lines)
+static u64 shape_hash(path p, u64 h) {
+    string tx = file_exists("%o", p)
+        ? (string)load(p, typeid(string), null) : null;
+    if (!tx) return h ^ 0x9e3779b97f4a7c15ull;
+    cstr s = tx->chars;
+    int  body = -1;
+    int  open = 0;
+    while (*s) {
+        cstr e = strchr(s, '\n');
+        int  n = e ? (int)(e - s) : (int)strlen(s);
+        char ln[4096];
+        int  m = n < 4095 ? n : 4095;
+        memcpy(ln, s, m);
+        ln[m] = 0;
+        while (m > 0 && (ln[m - 1] == ' ' || ln[m - 1] == '\t' ||
+                         ln[m - 1] == '\r'))
+            ln[--m] = 0;
+        s = e ? e + 1 : s + n;
+        int in = line_indent(ln);
+        cstr t = ln + strspn(ln, " \t");
+        if (!*t || *t == '#') continue;
+        if (open > 0) {
+            for (cstr c = t; *c; c++) open += (*c == '[') - (*c == ']');
+            h = fnv1a_hash(t, strlen(t), h);
+            continue;
+        }
+        if (body >= 0 && in > body) continue;
+        body = -1;
+        h = fnv1a_hash(t, strlen(t), h);
+        if (line_is_func(ln)) {
+            body = in;
+            for (cstr c = t; *c; c++) open += (*c == '[') - (*c == ']');
+            if (open < 0) open = 0;
+        }
+    }
+    return h;
+}
+
+// an import's sources from its tree, its own imports' too
+static void tree_files(map tree, array out) {
+    if (!tree) return;
+    pairs(tree, i) {
+        push(out, i->key);
+        if (instanceof(i->value, map))
+            tree_files((map)i->value, out);
+    }
+}
+
+// a silver source: its shape counts; a native one only its time
+static bool is_ag(cstr s) {
+    int n = (int)strlen(s);
+    return n > 3 && strcmp(s + n - 3, ".ag") == 0;
+}
+
+// <product>.deps: each silver import, its shape, then its files:
+//   M <module file> <shape>
+//   F <source>
+static path deps_path(path product) {
+    return f(path, "%o.deps", product);
+}
+
+static void deps_write(silver a) {
+    path dp = deps_path(a->product_link);
+    if (a->deps_partial || !a->tree) { unlink(dp->chars); return; }
+    FILE* fp = fopen(dp->chars, "w");
+    if (!fp) return;
+    pairs(a->tree, i) {
+        map sub = instanceof(i->value, map);
+        if (!sub || !len(sub)) continue;
+        array files = array(alloc, 64);
+        tree_files(sub, files);
+        u64 h = 0xcbf29ce484222325ull;
+        each(files, string, fl)
+            if (is_ag(fl->chars)) h = shape_hash(path(fl->chars), h);
+        fprintf(fp, "M %s %llx\n", ((string)i->key)->chars,
+            (unsigned long long)h);
+        each(files, string, fl) fprintf(fp, "F %s\n", fl->chars);
+    }
+    fclose(fp);
+}
+
+// every import's shape as the product was built against: the same,
+// those whose sources are newer are rebuilt here and the product
+// stands; changed, or nothing recorded, false
+static bool deps_shapes_hold(silver a, silver og, u64 product_m) {
+    path dp = deps_path(a->product_link);
+    if (!file_exists("%o", dp)) return false;
+    FILE* fp = fopen(dp->chars, "r");
+    if (!fp) return false;
+    array mods  = array(alloc, 16);
+    array stale = array(alloc, 16);
+    char  buf[4096];
+    string mod = null;
+    u64 want = 0, h = 0, newest = 0;
+    bool ok = true;
+    for (;;) {
+        bool more = fgets(buf, sizeof(buf), fp) != null;
+        if (more) buf[strcspn(buf, "\n")] = 0;
+        // a module's lines end: its shape compared
+        if (mod && (!more || buf[0] == 'M')) {
+            if (h != want) { ok = false; break; }
+            if (newest > product_m) push(stale, (Au)mod);
+            mod = null;
+        }
+        if (!more) break;
+        if (buf[0] == 'M') {
+            char mf[4000];
+            unsigned long long w = 0;
+            if (sscanf(buf + 2, "%3999s %llx", mf, &w) != 2) {
+                ok = false; break;
+            }
+            mod = string(mf);
+            push(mods, (Au)mod);
+            want = w;
+            h = 0xcbf29ce484222325ull;
+            newest = 0;
+        } else if (buf[0] == 'F' && mod) {
+            path fl = path(buf + 2);
+            if (!file_exists("%o", fl)) { ok = false; break; }
+            if (is_ag(buf + 2)) h = shape_hash(fl, h);
+            u64 m = modified_time(fl);
+            if (m > newest) newest = m;
+        }
+    }
+    fclose(fp);
+    if (!ok) return false;
+    // body edits only: those imports are built now, ours stands
+    each(stale, string, sm) {
+        if (a->base_install) aether_overlay(a->install, a->base_install);
+        silver(module, path(sm->chars), breakpoint, a->breakpoint,
+            verbose, a->verbose, is_external, og, is_child, a,
+            release, a->release, clean, false, format, og->format,
+            defs, null, debug_type, a->debug_type,
+            debugmember, a->debugmember);
+    }
+    return true;
+}
+
+static void abi_write(path install, path product) {
+    FILE* fp = fopen(abi_path(product)->chars, "w");
+    if (!fp) return;
+    fputs(silver_abi(install)->chars, fp);
+    fclose(fp);
+}
+
 AU_EXPORT void silver_init(silver a) {
     au_print_prelude     = progress_clear_line;
     au_print_after       = progress_render;
@@ -3817,6 +3996,7 @@ AU_EXPORT void silver_init(silver a) {
         path silver_root = absolute(path(SILVER));
         path search_paths[] = {
             silver_root,
+            f(path, "%o/featured", silver_root),
             NULL
         };
         string m_stem = stem(a->module_file);
@@ -3912,6 +4092,10 @@ AU_EXPORT void silver_init(silver a) {
     }
 
     // check all sources from previous build (stored in .source) — if any import's .ag is newer, bust cache
+    // ours and our imports' apart: an import's own edit may leave
+    // what we see of it as it was (deps_shapes_hold)
+    u64    own_m   = module_file_m;
+    string own_src = f(string, "%o/", parent_dir(a->module_file));
     if (file_exists("%o", a->source_path)) {
         FILE *sf = fopen(a->source_path->chars, "r");
         if (sf) {
@@ -3924,6 +4108,9 @@ AU_EXPORT void silver_init(silver a) {
                 u64  m   = file_exists("%o", src) ?
                     source_mtime(a, src) : (u64)current_time();
                 if (m > module_file_m) module_file_m = m;
+                if (strncmp(buf, own_src->chars, len(own_src)) == 0
+                        && m > own_m)
+                    own_m = m;
                 // also check sibling .ag files in the same dir (extension modules)
                 path src_dir = parent_dir(src);
                 if (src_dir) {
@@ -3949,18 +4136,27 @@ AU_EXPORT void silver_init(silver a) {
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true; //!a->is_external;
 
-    verify(module_file_m, "module file not found: %o", a->module_file);
+    // its own file, never one of the last build's sources standing in
+    verify(modified_time(a->module_file), "module file not found: %o",
+        a->module_file);
     push(a->include_paths, (Au)a->module); // add include folder just for our module (this was in aether's init, interfering with our filter logic)
 
     bool product_exists = file_exists("%o", a->product_link);
     u64  product_m      = product_exists ? modified_time(a->product_link) : 0;
 
-    // epoch: a product older than the compiler that built it is stale —
-    // this catches a config switch and any other compiler rebuild
-    path compiler   = f(path, "%o/build/silver", a->install);
-    u64  compiler_m = file_exists("%o", compiler) ? modified_time(compiler) : 0;
-
-    if (product_exists && product_m > module_file_m && product_m > compiler_m) {
+    // a product built under another ABI (silver_abi) is stale; a
+    // compiler rebuilt with the same one leaves it be
+    bool abi_ok = product_exists && abi_current(a->install, a->product_link);
+    // only imports newer: their shapes as built against, it stands
+    bool shapes = false;
+    if (abi_ok && !a->clean && product_m > own_m && product_m <= module_file_m) {
+        silver og = a;
+        while (og->is_external &&
+               compare(((silver)og->is_external)->install, og->install) == 0)
+            og = (silver)og->is_external;
+        shapes = deps_shapes_hold(a, og, product_m);
+    }
+    if (abi_ok && (product_m > module_file_m || shapes)) {
 
         // .source, not .artifacts: the writer sends .ag/.c/.cc to .source and
         // everything else to .artifacts, so .artifacts holds ONLY .so/.a — which
@@ -4014,7 +4210,9 @@ AU_EXPORT void silver_init(silver a) {
     if (!a->is_external && a->format && len(a->format) &&
         file_exists("%o", a->format)) {
         u64 fmt_m = modified_time(a->format);
-        if (fmt_m < module_file_m) update_product = true;
+        // imports whose shapes held change nothing it shows
+        if (fmt_m < ((shapes) ? own_m : module_file_m))
+            update_product = true;
     }
     // --release --test builds are measurement artifacts: always rebuilt,
     // never cached — the shipping release product must stay expect-free
@@ -10138,6 +10336,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     // built by gcc before: a new key, so it builds again with clang
     if (our_cc)
         cache_key = f(string, "%o cc:clang-lld%o", cache_key, cxx_inc);
+    // > lines are the build too: a changed one builds it again
+    string legacy_key = cache_key;
+    if (prebuild)
+        each(prebuild, string, cmd)
+            cache_key = f(string, "%o pre:%o", cache_key, cmd);
 #ifdef __APPLE__
     if (our_cc) cache_key = f(string, "%o objc", cache_key);
 #endif
@@ -10153,10 +10356,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     path product_token = product_key
         ? f(path, "%o/build/%o.product", install, product_key)
         : null;
-    path compiler_token = f(path, "%o/build/silver", install);
     bool product_current = !product_token ||
         (file_exists("%o", product_token) &&
-         modified_time(product_token) > modified_time(compiler_token));
+         abi_current(install, product_token));
 
     // an overlay file newer than the token: build in place, no wipe
     bool overlay_fresh = false;
@@ -10170,6 +10372,11 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (file_exists("%o", token) &&
         product_current) {
         string s = (string)load(token, typeid(string), null);
+        // a token from before > lines were keyed: taken, rewritten
+        if (s && legacy_key != cache_key && eq(s, legacy_key->chars)) {
+            save(token, (Au)cache_key, null);
+            s = cache_key;
+        }
         if (s && eq(s, cache_key->chars)) {
             if (overlay_fresh) {
                 // > lines are the build of an import that has them
@@ -10967,6 +11174,8 @@ none silver_build_product(silver a) {
             unlink(a->product_link->chars);
             verify(create_symlink(a->product, a->product_link),
                 "could not create product symlink from %o -> %o", a->product_link, a->product);
+            abi_write(a->install, a->product_link);
+            deps_write(a);
             link_import_lib(a);
         }
         // the root phone app ships as a bundle; libraries stay bare
@@ -11133,6 +11342,8 @@ none silver_build_product(silver a) {
 
     verify(create_symlink(a->product, a->product_link),
         "could not create product symlink from %o -> %o", a->product_link, a->product);
+    abi_write(a->install, a->product_link);
+    deps_write(a);
     link_import_lib(a);
 
     }
@@ -12859,6 +13070,10 @@ enode parse_import(silver a) {
                 // any file of it (trinity's vk.ag) rebuilds what imports it
                 if (external && external->module_file && external->tree && a->tree)
                     set(a->tree, (Au)external->module_file, (Au)external->tree);
+                // its own settings: the shape check (.deps) cannot build it
+                if (with_exts || (defs && len(defs)) || (a->device && len(a->device))
+                        || a->base_install)
+                    a->deps_partial = true;
                 Au_t f2 = find_module("vulkan2");
                 // these should be the only two objects remaining.
                 external_name    = silver_install_name(external);

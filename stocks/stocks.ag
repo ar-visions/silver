@@ -46,6 +46,12 @@ class Series
     public volume : f64
     public ts    : vec i64
     public close : vec f64
+    # the regular session (unix seconds), the exchange's utc offset
+    public reg_start : i64
+    public reg_end   : i64
+    public gmtoff    : i64
+    # when to ask Yahoo again (unix ms)
+    public next_ms   : i64
 
 # a range's name and its query
 func range_names [] -> vec string
@@ -76,12 +82,13 @@ element StockView
     mutable sel     : i32
     mutable range   : i32
     mutable data    : map Series [string]
+    # jobs that never answered: only their retry time is used
+    mutable waits   : map Series [string]
     # the fetch on its own thread: its jobs ('SYM|range'), files only
     intern  task    : async
     mutable jobs    : vec string
     mutable busy    : bool
     mutable fetched : bool
-    mutable last_ms : i64
     # where the parts were last drawn: the ranges, the rows
     mutable tab_x   : vec f32
     mutable tab_w   : f32
@@ -146,6 +153,7 @@ element StockView
             : ((range <= 1) ? '%a %H:%M'
             : ((range == 5) ? '%b %Y' : '%e %b')) ]
         t['chart'] = LineChart [ values: se.close, times: se.ts,
+            slots: (range == 0) ? i32[ se.ts.count ] : 0,
             base: (range == 0) ? se.prev : 0.0,
             accent: (last >= base) ? '#34d399' : '#fb7185',
             time_fmt: fmt,
@@ -166,22 +174,45 @@ element StockView
             Http.download[ url, v.file_of[ job ] ]
         v.fetched = true
 
-    # the list's day and the chosen range, a minute apart, or when the
-    # chosen range has nothing yet
+    # a job is due at its series' own time; never asked, at once
+    func due_of [ key: string, now: i64 ] -> bool
+        if [ data && data.contains[ key ] ]
+            return now >= data[ key ].next_ms
+        if [ waits && waits.contains[ key ] ]
+            return now >= waits[ key ].next_ms
+        return true
+
+    # a minute apart while the session trades (five for long
+    # ranges); once closed, nothing until the next weekday's open
+    func next_of [ se: Series, r: i32, now: i64 ] -> i64
+        step : i64 [ (r <= 2) ? 60000 : 300000 ]
+        if [ se.reg_end <= se.reg_start ] return now + step
+        s : i64 [ now / 1000 ]
+        if [ s < se.reg_start - 60 ] return (se.reg_start - 60) * 1000
+        if [ s <= se.reg_end + 120 ] return now + step
+        t : i64 [ se.reg_start + 86400 ]
+        while [ t <= s || weekend[ t + se.gmtoff ] ]
+            t += 86400
+        return (t - 60) * 1000
+
+    # Saturday or Sunday at the exchange (seconds, local)
+    func weekend [ t: i64 ] -> bool
+        wd : i64 [ (t / 86400 + 4) % 7 ]
+        return wd == 0 || wd == 6
+
+    # the chosen range first, then each row's day, each when due
     func fetch_due []
         if [ busy || !syms || syms.count == 0 ] return
         now : i64 [ epoch_millis[] ]
         key : string '{syms[ sel ]}|{range}'
-        if [ now - last_ms < 60000 && data && data.contains[ key ] ]
-            return
         jobs = vec string []
-        jobs.push[ key ]
+        if [ due_of[ key, now ] ] jobs.push[ key ]
         for [ s: string ] in syms
             k : string '{s}|0'
-            if [ k != key ] jobs.push[ k ]
+            if [ k != key && due_of[ k, now ] ] jobs.push[ k ]
+        if [ jobs.count == 0 ] return
         busy = true
         fetched = false
-        last_ms = now
         work : vec Au []
         work.push[ a ]
         task = async [ target: a, work_fn: lambda fetch_bg[ a ],
@@ -230,7 +261,11 @@ element StockView
             year_lo: num_of[ mt, 'fiftyTwoWeekLow' ],
             year_hi: num_of[ mt, 'fiftyTwoWeekHigh' ],
             volume: num_of[ mt, 'regularMarketVolume' ],
+            gmtoff: i64[ num_of[ mt, 'gmtoffset' ] ],
             ts: vec i64 [], close: vec f64 [] ]
+        rp : map obj[ obj[ mt, 'currentTradingPeriod' ], 'regular' ]
+        se.reg_start = i64[ num_of[ rp, 'start' ] ]
+        se.reg_end = i64[ num_of[ rp, 'end' ] ]
         n : i32 [ min[ i32[ tl.count ], i32[ cl.count ] ] ]
         for [ i: i32 0, i < n, i += 1 ]
             c : Au cl[ i ]
@@ -245,12 +280,44 @@ element StockView
         if [ se.close.count == 0 ] return null
         return se
 
+    # the day on the whole session's 5 minute grid: the times run
+    # to the close, the closes only as far as traded (gaps held)
+    func day_grid [ se: Series ]
+        if [ se.reg_end <= se.reg_start ] return
+        n : i64 [ (se.reg_end - se.reg_start) / 300 ]
+        st : i64 [ min[ se.reg_start, se.ts[ 0 ] ] ]
+        gt : vec i64 []
+        for [ i: i64 0, i < n, i += 1 ]
+            gt.push[ st + i * 300 ]
+        gv : vec f64 []
+        for [ k: i32 0, k < i32[ se.ts.count ], k += 1 ]
+            at : i64 [ (se.ts[ k ] - st) / 300 ]
+            if [ at >= n ] break
+            hold : f64 [ (gv.count > 0) ? gv[ gv.count - 1 ]
+                         : se.close[ k ] ]
+            while [ i64[ gv.count ] < at ]
+                gv.push[ hold ]
+            if [ i64[ gv.count ] == at ] gv.push[ se.close[ k ] ]
+        if [ gv.count < 2 ] return
+        se.ts = gt
+        se.close = gv
+
     func take_fetched []
         if [ !busy || !fetched ] return
         if [ !data ] data = map Series [string] []
+        if [ !waits ] waits = map Series [string] []
+        now : i64 [ epoch_millis[] ]
         for [ job: string ] in jobs
             se : Series read_series[ job ]
-            if [ se ] data[ job ] = se
+            r : i32 [ i32[ job.split[ "|" ][ 1 ] ] ]
+            if [ se ]
+                if [ r == 0 ] day_grid[ se ]
+                se.next_ms = next_of[ se, r, now ]
+                data[ job ] = se
+            el [ data.contains[ job ] ]
+                data[ job ].next_ms = now + 60000
+            el
+                waits[ job ] = Series [ next_ms: now + 60000 ]
         busy = false
         if [ ux ] ux.restyle = true
         task = null

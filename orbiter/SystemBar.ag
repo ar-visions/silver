@@ -699,7 +699,8 @@ element MenuDrawer
     public background_lens : bool [ true ]
     ground : DrawerGround []
     style : CSS {
-        area: l0 t0 w10.91 b1.06
+        # to the foot: the task bar draws over it
+        area: l0 t0 w10.91 b0
         opacity: 0.0, 240ms cubic outward
     :open
         opacity: 1.0, 260ms cubic inward

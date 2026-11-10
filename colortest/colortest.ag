@@ -1,6 +1,5 @@
 # colortest — one solid color: proves a display path end to end
 export 1.0.0
-export software ['developer']
 
 import vec
 import img

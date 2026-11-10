@@ -1135,9 +1135,12 @@ ModelViewProject NubisSky
         const float dcode = 15.8728;
 
         // sky behind everything
-        vec4 sky = atmosphere(o, d, t_ground);
+        // over a host's ground the sky behind is not drawn here
+        vec4 sky = (over) ? vec4(0.0, 0.0, 0.0, 1.0)
+                          : atmosphere(o, d, t_ground);
         vec3 bg  = sky.rgb;
-        if (!ground) {{
+        if (over) {{
+        }} else if (!ground) {{
             float sd = smoothstep(0.99985, 0.99995, mu);
             bg += vec3(1.0, 0.96, 0.9) * sd * sky.a * ubo.sun_dir.w * 0.5;
             // stars sit behind the air, so the haze thins them out
@@ -1346,6 +1349,15 @@ ModelViewProject NubisSky
             vec3  sun_c   = vec3(-1.0);
             vec3  amb_top = vec3(0.0);
             vec3  amb_bot = vec3(0.0);
+            // the phase of each scattering octave: by mu alone
+            float ph3[3];
+            float pc = 1.0;
+            for (int k = 0; k < 3; k++) {{
+                float ph = mix(hg(mu, ga * pc), hg(mu, -0.25 * pc), 0.3);
+                ph3[k] = max(ph, ubo.light_a.y
+                             * hg(mu, (0.99 - ubo.light_a.z) * pc));
+                pc *= ubo.light_b.z;
+            }}
             for (int i = 0; i < 512; i++) {{
                 if (t > t_end || T < 0.004) break;
                 vec3  p = o + d * t;
@@ -1458,14 +1470,10 @@ ModelViewProject NubisSky
                 vec3  direct = vec3(0.0);
                 float oa = 1.0;
                 float ob = 1.0;
-                float oc = 1.0;
                 for (int k = 0; k < 3; k++) {{
-                    float ph = mix(hg(mu, ga * oc), hg(mu, -0.25 * oc), 0.3);
-                    ph = max(ph, ubo.light_a.y * hg(mu, (0.99 - ubo.light_a.z) * oc));
-                    direct += exp(-od * ob) * ph * oa;
+                    direct += exp(-od * ob) * ph3[k] * oa;
                     oa *= ubo.light_b.x;
                     ob *= ubo.light_b.y;
-                    oc *= ubo.light_b.z;
                 }}
                 direct *= sun_c * inscat;
                 // the strike lights the cloud from the inside

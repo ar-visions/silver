@@ -493,8 +493,8 @@ func props_of [ top_type: Au_t, target: Au, acc: LaunchProps ] -> none
             acc.props.push[ p ]
 
 # at build (SILVER_EXPORT, cwd install/share/<owner>-<module>): the app
-# type's Launch members, as declared, into the module's export agi as
-# `props:`. a host reads them before the app ever runs. trinity's
+# type's Launch members, as declared, into <name>.props.agi beside
+# its export agi. a host reads them before the app ever runs. trinity's
 # exports run when its library loads, before the app module registers
 # its types: the write waits for the process's exit, after everything
 # has
@@ -530,24 +530,9 @@ func launch_props_write [] -> none
     lp : LaunchProps []
     props_of[ ty, null, lp ]
     if [ !lp.props || lp.props.count == 0 ] return
-    agi : path '{inst}/export/{name}.agi'
-    txt : string [ (agi.exists[]) ? agi.load[ typeid[string],
-            null ] : '' ]
-    if [ !txt ] txt = ''
-    # an older props block goes: from its line to the next top-level key
-    out : string ''
-    skip : bool [ false ]
-    lines : txt.split[ '\n' ]
-    for [ ln: string ] in lines
-        # the module line is this block's too
-        if [ ln.starts_with[ 'module:' ] ] continue
-        if [ ln.starts_with[ 'props:' ] ]
-            skip = true
-        el
-            if [ skip && ln.count > 0 && ln.chars[0] != 9 ] skip = false
-            if [ !skip && ln.count > 0 ] out = '{out}{ln}\n'
-    out = '{out}{Au.string_agi[ lp ]}'
-    agi.save[ out, null ]
+    # its own file beside silver's record, written whole each time
+    agi : path '{inst}/export/{name}.props.agi'
+    agi.save[ Au.string_agi[ lp ], null ]
     log '{name}: launch props {lp.props.count}'
 
 
@@ -5887,8 +5872,13 @@ Display Window
         return false
 
     # the frame's reads become the next frame's
+    # each strength drawn for 30 frames after its last ask
     public func blur_turn []
+        if [ (blur_ask & 1) != 0 ] blur_at1 = frames_ever
+        if [ (blur_ask & 2) != 0 ] blur_at2 = frames_ever
         blur_read = blur_ask
+        if [ frames_ever - blur_at1 < 30 ] blur_read = blur_read | 1
+        if [ frames_ever - blur_at2 < 30 ] blur_read = blur_read | 2
         blur_ask  = 0
 
     # resize REPLACES render color attachments: every stage's sampler
@@ -6224,6 +6214,28 @@ Display Window
     public font_plain           : bool
     # the last wheel notch moved some element's scroll
     public wheel_spent          : bool
+    # elements that drew the blur since its last redraw, and the
+    # strengths they read: a moving backdrop redraws them every 10th
+    mutable blur_users          : vec element
+    mutable blur_bits           : i32
+    # the frame each strength was last asked for
+    mutable blur_at1            : i64 [ -1000 ]
+    mutable blur_at2            : i64 [ -1000 ]
+
+    # a moving backdrop: the blur asked a frame early, then the
+    # elements over it drawn again with it (every 10th frame)
+    public func blur_redraw [ n: i64 ]
+        if [ !blur_users || blur_users.count == 0 ] return
+        moving : bool [ backdrop && backdrop.owner
+            && backdrop.owner.animated && !backdrop_bypass
+            && !mobile_on[] ]
+        if [ moving && n % 10 == 9 ] blur_ask = blur_ask | blur_bits
+        if [ n % 10 != 0 ] return
+        if [ moving ]
+            for [ e: element ] in blur_users
+                repaint_held[ e, false ]
+        blur_users.clear[]
+        blur_bits = 0
 
     # a finger past the first (the first is the mouse): the element
     # under it that takes touches gets its press, moves and release,
@@ -8319,8 +8331,9 @@ Display Window
         if [ !chain ]
             if [ is_setup && !resizing ] build_frost_chain[]
             return null
-        # two strengths for every reader: frost, else blur; one not
-        # drawn last frame holds nothing yet
+        # two strengths for every reader: frost, else blur; only one
+        # drawn this frame is given (an old one is a stale picture),
+        # else nothing: asked now, it is drawn from the next frame
         if [ stage == BlurStage.frost ]
             blur_ask = blur_ask | 2
             return ((blur_read & 2) != 0) ? rb_frost.color[] : null
@@ -8344,6 +8357,9 @@ Display Window
     public func draw_blur [ cv: Canvas, e: element, stage: BlurStage ]
         bt : Texture blur_image[ stage ]
         if [ !bt || !root || !root.bounds ] return
+        if [ !blur_users ] blur_users = vec element []
+        if [ blur_users.index_of[ e ] < 0 ] blur_users.push[ e ]
+        blur_bits = blur_bits | ((stage == BlurStage.frost) ? 2 : 1)
         o : vec2f win_origin[ e ]
         cv.draw_image[ bt, rect [ x: -o.x, y: -o.y,
             w: root.bounds.w, h: root.bounds.h ] ]
@@ -8678,6 +8694,7 @@ abstract media_app trinity
         # the host unsets PARALLEL at the switch: the surface is ours
         if [ window.defer_swap && !getenv[ 'SILVER_RELOAD_PARALLEL' ] ]
             window.take_swapchain[]
+        window.blur_redraw[ frames_ever ]
         window.draw[]
         # loaded hidden; shown once the scene has drawn (--hidden stays
         # hidden)

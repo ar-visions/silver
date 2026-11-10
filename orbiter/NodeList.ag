@@ -846,9 +846,6 @@ Control AppsGrid
     mutable fly_x   : f32
     mutable fly_y   : f32
     mutable fly_dir : f32
-    # the card being pulled off (-1 none), and how far from its press
-    mutable pull_i : i32 [ -1 ]
-    mutable pull_y : f32
     # how many were on home at the gathering, and when last looked
     # orbiter's apps_gen when the cards were gathered
     mutable gen_seen : i32
@@ -1191,13 +1188,8 @@ Control AppsGrid
 
     # the share of the way to deleting card i, 0 to 1
     func gone_of [ i: i32 ] -> f32
-        far : f32 [ (i == pull_i) ? abs[ pull_y ] : lift_out[ i ] ]
-        v : f32 [ far / pull_far[] ]
+        v : f32 [ lift_out[ i ] / pull_far[] ]
         return (v > 1.0) ? 1.0 : v
-
-    # the drag's way, this far down; a card needed elsewhere resists
-    func pulled_at [ ae: AppEntry, orb: orbiter ] -> f32
-        return (orb.can_delete[ ae ]) ? pull_y : pull_y * 0.2
 
     # the point is on card i's name row, under its tile
     func in_name [ i: i32, x: f32, y: f32 ] -> bool
@@ -1210,27 +1202,6 @@ Control AppsGrid
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
         orb : cast orbiter [ ux.app_object ]
-        if [ pull_i >= 0 ]
-            pull_y = my - press_at.y
-            ev.no_default = true
-            pristine = false
-            ux.will_animate = true
-            return
-        # a card moved up or down at once: it is being pulled off (a
-        # phone's drag scrolls)
-        if [ orb && drag_kind == 0 && press_i >= 0 && !arranging
-             && !use_mobile
-             && epoch_micros[] - press_us < 1000000 ]
-            pdx : f32 [ abs[ mx - press_at.x ] ]
-            pdy : f32 [ abs[ my - press_at.y ] ]
-            if [ pdy > 8.0 && pdy > pdx && orb.can_pull[ entry[ press_i ] ] ]
-                pull_i = press_i
-                pull_y = my - press_at.y
-                ux.set_capture[ a ]
-                ev.no_default = true
-                pristine = false
-                ux.will_animate = true
-                return
         # a press held a second, or any while arranging, then moved:
         # it reorders
         if [ orb && drag_kind == 0 && (press_i >= 0 || press_h >= 0)
@@ -1279,21 +1250,6 @@ Control AppsGrid
         was : i32 [ press_i ]
         press_i = -1
         press_h = -1
-        # a card dragged far enough up or down: deleted; else it eases
-        # back to its place
-        if [ pull_i >= 0 ]
-            ux.release_capture[ a ]
-            at_i : i32 [ pull_i ]
-            far_up : bool [ abs[ pull_y ] >= pull_far[] ]
-            del_orb : cast orbiter [ ux.app_object ]
-            del_ok : bool [ del_orb && del_orb.can_delete[ entry[ at_i ] ] ]
-            pull_i = -1
-            pull_y = 0.0
-            sel = -1
-            pristine = false
-            ux.will_animate = true
-            if [ far_up && del_ok ] fly_off[ at_i ]
-            return
         # a reorder ends where it was let go: saved, no click
         if [ drag_kind != 0 ]
             dorb : cast orbiter [ ux.app_object ]
@@ -1551,8 +1507,6 @@ Control AppsGrid
             if [ lifted ]
                 ex = drag_pt.x - grab.x
                 ey = drag_pt.y - grab.y
-            el [ i == pull_i ]
-                ey = gy + pulled_at[ entry[ i ], orb ]
             el [ fly_key && ky == fly_key ]
                 ft : f32 fly_t[]
                 ex = fly_x
@@ -1599,7 +1553,7 @@ Control AppsGrid
         drawn : vec i32 []
         last : i32 [ -1 ]
         for [ i: i32 0, i < n, i += 1 ]
-            if [ i == pull_i || (fly_key && keys[ i ] == fly_key)
+            if [ (fly_key && keys[ i ] == fly_key)
                  || (drag_kind == 1 && keys[ i ] == drag_name) ]
                 last = i
             el
@@ -1648,7 +1602,7 @@ Control AppsGrid
         ic : AppIcon icons[ i ]
         isz : f32 [ round[ tile * 0.72 ] ]
         gone : f32 gone_of[ i ]
-        pulling : bool [ i == pull_i || gone > 0.0 ]
+        pulling : bool [ gone > 0.0 ]
         cv.save[]
         if [ pulling && orb.can_delete[ ae ] ]
             cv.set_opacity[ 1.0 - 0.6 * gone ]
@@ -1974,7 +1928,7 @@ element PropChip
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
         cv.fill_color[ rgba [ (open) ? '#4d3dbc77'
-            : ((hovered) ? '#ffffff1c' : '#0000') ] ]
+            : ((hovered) ? '#ffffff1c' : '#00000026') ] ]
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         cv.stroke_color[ rgba [ (open) ? '#c890ffaa' : '#ffffff1c' ] ]

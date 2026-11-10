@@ -3922,7 +3922,11 @@ element TaskChip
     public file  : path
     public agi   : path
     public icon_file : path
+    # the app's name, and its window's or its own title under it
     public label : string
+    public title : string
+    # a running agent's task: its name ('' an app's)
+    public agent : string
     # 0 up, 1 busy (starting, compiling, paused), 2 failed, 3 an
     # agent waiting for the user
     public light : i32
@@ -3936,8 +3940,9 @@ element TaskChip
     mutable close_svg  : SVGModel
     mutable icon : AppIcon
     mutable pause_svg : SVGModel
-    # the bar's lettering, as the menus'
+    # the bar's lettering, as the menus': the name bold
     mutable font9 : CanvasFont
+    mutable font_b : CanvasFont
     style : CSS {
         layers.edge:
             fill_color: #0000
@@ -3962,29 +3967,50 @@ element TaskChip
              || '{icon.icon_file}' != '{icon_file}' ]
             icon = AppIcon [ file: file, module: true, agi: agi,
                 icon_file: icon_file ]
-        side : f32 [ round[ bounds.h * 0.6 ] ]
+        uu : f32 ux_unit[ w ]
+        # a 48 px icon at rest, rounded, centred in the bar's height
+        side : f32 [ min[ round[ 48.0 * uu ], bounds.h - 4.0 ] ]
         pad  : f32 [ round[ (bounds.h - side) * 0.5 ] ]
         if [ paused ]
             if [ !pause_svg ] pause_svg = SVGModel [ 'images/pause.svg' ]
-            ps : f32 [ round[ side * 0.7 ] ]
-            po : f32 [ round[ pad + (side - ps) * 0.5 ] ]
-            cv.draw_svg[ pause_svg, po, po, ps, ps ]
+            ps : f32 [ round[ side * 0.6 ] ]
+            po : f32 [ round[ (side - ps) * 0.5 ] ]
+            cv.draw_svg[ pause_svg, pad + po, pad + po, ps, ps ]
         el [ !no_icon ]
+            ir : f32 [ round[ side * 0.22 ] ]
+            cv.save[]
+            cv.clip_rounded_rect[ pad, pad, side, side, ir, ir, ir, ir ]
             icon.paint[ cv, pad, pad, side ]
+            cv.restore[]
         tx : f32 [ (no_icon && !paused) ? 12.0 : pad * 2.0 + side ]
-        # 17 px at rest, with the font scale
-        fpx : i32 [ i32[ round[ 17.0 * ux_unit[ w ] ] ] ]
-        if [ !font9 || font9.size_px != fpx ]
+        tw : f32 [ max[ bounds.w - tx - 14.0, 0.0 ] ]
+        # the name over the title, 17 and 15 px at rest
+        fpx : i32 [ i32[ round[ 17.0 * uu ] ] ]
+        spx : i32 [ i32[ round[ 15.0 * uu ] ] ]
+        if [ !font_b || font_b.size_px != fpx ]
+            font_b = CanvasFont [ ft_lib: cv.ft_lib,
+                uri: 'fonts/BarlowCondensed-Bold.ttf', size_px: fpx ]
+        if [ !font9 || font9.size_px != spx ]
             font9 = CanvasFont [ ft_lib: cv.ft_lib,
-                uri: 'fonts/BarlowCondensed-Regular.ttf', size_px: fpx ]
-        cv.set_font[ font9 ]
+                uri: 'fonts/BarlowCondensed-Regular.ttf', size_px: spx ]
+        two : bool [ title && title.count > 0 && title != label ]
+        lh : f32 [ round[ f32[ fpx ] * 1.2 ] ]
+        mid : f32 [ round[ bounds.h * 0.5 ] ]
+        cv.set_font[ font_b ]
         cv.font_size[ fpx ]
-        cv.fill_color[ rgba [ '#ffffffcc' ] ]
+        cv.fill_color[ rgba [ '#ffffffee' ] ]
         cv.draw_text[ label,
-            rect [ x: tx, y: 0.0, w: max[ bounds.w - tx - 14.0, 0.0 ],
-                   h: bounds.h ],
+            rect [ x: tx, y: (two) ? mid - lh : mid - lh * 0.5, w: tw,
+                   h: lh ],
             vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
             null, true ]
+        if [ two ]
+            cv.set_font[ font9 ]
+            cv.font_size[ spx ]
+            cv.fill_color[ rgba [ '#ffffff99' ] ]
+            cv.draw_text[ title, rect [ x: tx, y: mid, w: tw, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
         cv.set_font[ null ]
         # its state (starting or paused, failed, an agent waiting for
         # the user): a 3px bar at the foot
@@ -4739,7 +4765,6 @@ element orbiter : trinity # implements compiler
         ui_carry += f32[ keys_force ]
         ui_carry += f32[ switch_sel ]
         ui_carry += (switch_con) ? 1.0 : 0.0
-        ui_carry += (desk_adding) ? 1.0 : 0.0
         ui_view = sys_view
         ui_build = switch_build
 
@@ -4765,7 +4790,6 @@ element orbiter : trinity # implements compiler
         if [ ui_carry.count > 6 ] keys_force = i32[ ui_carry[ 6 ] ]
         if [ ui_carry.count > 7 ] switch_sel = i32[ ui_carry[ 7 ] ]
         if [ ui_carry.count > 8 ] switch_con = ui_carry[ 8 ] > 0.5
-        if [ ui_carry.count > 9 ] desk_adding = ui_carry[ 9 ] > 0.5
         switch_build = (ui_build) ? ui_build : ''
         if [ ui_carry[ 2 ] > 0.5 ]
             drawer_toggle[ 'system', false ]
@@ -5025,6 +5049,8 @@ element orbiter : trinity # implements compiler
     # an anonymous menu: its rows, and the setting a pick sets
     intern popup_items   : vec TrayEntry
     intern popup_for     : string
+    # the anonymous menu at the window's right edge (the task bar's)
+    intern popup_right   : bool
     # the navigator's module icons by folder, and folders without one
     intern mod_icons     : map AppIcon [string]
     intern mod_noicon    : vec string
@@ -5098,8 +5124,6 @@ element orbiter : trinity # implements compiler
     # the side column scrolled (px), and its whole height
     intern desk_col_y : f32
     intern desk_col_h : f32
-    # the agents' + pressed: the kinds to start, until a press
-    intern desk_adding : bool
     # the widget a narrow desktop's tab bar shows
     intern desk_tab   : i32
     # the chooser's icons, by module
@@ -5337,6 +5361,9 @@ element orbiter : trinity # implements compiler
     mutable rec_dir       : path
     # minimized free windows: each one's instance and x y w h px
     mutable mini_iids     : vec i32
+    # panes put out of view by their task button: kept whole (editor,
+    # app, place), only not drawn; across a reload too
+    persist pane_hid : vec bool
     mutable mini_rect     : vec f32
     # a restored one waits for its new pane's editor
     mutable mini_wait     : i32 [ -1 ]
@@ -5373,13 +5400,17 @@ element orbiter : trinity # implements compiler
     # the bars and menus
     intern [ StatePersist ] set_mono     : string
     intern [ StatePersist ] set_tool     : string
-    # the chip the font dialog is open for; what was last applied
-    intern font_for      : string
+    # the fonts last applied
     intern fonts_on      : string
     # a key's tick on the phone's motor: off, light, medium, strong
     intern [ StatePersist ] set_haptic   : string [ 'light' ]
     # the on-screen keyboard: auto (a phone's), on, off
     intern [ StatePersist ] set_keys     : string [ 'auto' ]
+    # the task bar: auto (out while the pointer is at the foot), always
+    intern [ StatePersist ] set_bar_hide : string [ 'auto' ]
+    # how far the task bar is out: 0 away, 1 all of it; where to
+    intern bar_out  : f32
+    intern bar_goal : f32
     # the system menu's panel width, px; 0 not yet laid out
     mutable panel_w : f32
     # the screen's light, 0..1 (-1: as the system set it)
@@ -7445,6 +7476,12 @@ element orbiter : trinity # implements compiler
                                           req.count - mod.count - 1 ]
             ir : path install_root[]
             nv.cmd      = 'tail -n +1 -F {ir}/tmp/{mod}.{s}.log'
+            # a widget's instance: back to its widget, never a task
+            if [ nv.module_args
+                 && nv.module_args.index_of[ '--trinity.widget true' ]
+                    >= 0 ]
+                adopt_widget[ nv, mod ]
+                continue
             # a restored instance of this module still held: it IS this
             # one
             took : bool [ false ]
@@ -7680,7 +7717,7 @@ element orbiter : trinity # implements compiler
     func module_spec [ mod: string ] -> string
         if [ !mod || mod.count == 0 ] return null
         if [ !startup_path ] startup_path = path.path_startup[]
-        agi : path '{install_root[]}/export/{install_name_of[ mod ]}.agi'
+        agi : path '{install_root[]}/export/{install_name_of[ mod ]}.props.agi'
         if [ !agi.exists[] ] return null
         return agi.load[ typeid[string], null ]
 
@@ -7839,16 +7876,13 @@ element orbiter : trinity # implements compiler
         av : AppView instance_by[ iid ]
         ed : Editor pane_at[ pi ]
         if [ !av || !ed ] return
-        # the instance's own source comes into the pane first; the show
-        # waits a frame for the load, which would otherwise clear the
-        # app view again
+        # the instance's own source comes into the pane under it; the
+        # app shows now and that load keeps it (no frame of code)
         if [ av.src && !av.viewer ]
             bs9 : path ed.src
             if [ !bs9 || '{bs9.absolute[]}' != '{av.src.absolute[]}' ]
                 open_in_pane[ av.src, pi ]
-                pending_show      = iid
-                pending_show_pane = pi
-                return
+                ed.keep_app = av.display == 1
         ed.run_view  = av
         # one pane shows it: another showing it goes to its code
         for [ op: i32 0, op < editor_slots.count, op += 1 ]
@@ -8950,14 +8984,11 @@ element orbiter : trinity # implements compiler
 
     # anything for the desktop's column: agents, then widgets
     func desk_any [] -> bool
-        if [ desk_widgets && desk_widgets.count > 0 ] return true
-        if [ agent_installed[].count > 0 ] return true
-        return home_names[].count > 0
+        return desk_widgets && desk_widgets.count > 0
 
     # the desktop shows an agent, not its icons
     public func desk_agent_on [] -> bool
         if [ !desk_agent || desk_agent.count == 0 ] return false
-        if [ desk_hide && !use_mobile ] return false
         return home_session[ desk_agent ] != null
 
     # one avatar for every agent (one each is too much for the GPU)
@@ -9015,6 +9046,21 @@ element orbiter : trinity # implements compiler
     func widget_mod [ i: i32 ] -> string
         ws : vec string desk_widgets[ i ].split[ ' ' ]
         return (ws.count > 0) ? ws[ 0 ] : ''
+
+    # a reload's live widget instance: the first widget of its
+    # module with none takes it; no widget left, it ends
+    func adopt_widget [ av: AppView, mod: string ]
+        if [ !desk_views ] desk_views = map AppView [string] []
+        av.display = 1
+        av.host_hz = (ux) ? ux.refresh_hz[] : 60
+        if [ desk_widgets ]
+            for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+                key : string desk_widgets[ i ]
+                if [ widget_mod[ i ] != mod
+                     || desk_views.contains[ key ] ] continue
+                desk_views[ key ] = av
+                return
+        av.release[]
 
     # a widget taken off the desktop: its instance ends
     func widget_remove [ i: i32 ]
@@ -9183,46 +9229,7 @@ element orbiter : trinity # implements compiler
             t['dagent_why'] = HomeError [ label: home_why,
                 area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
             y += ah + gap
-        # then the agents, a title each
-        names : vec string home_names[]
-        for [ an: string ] in names
-            tp : string [ (beside) ? 't{y}px'
-                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
-            t['dagent_h_{an}'] = AgentHead [ desk: true, agent: an,
-                selected: desk_agent == an && desk_agent_on[],
-                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
-            y += ah + gap
-        # last a + : a press shows a tab an agent, each starts one
-        kinds : vec string agent_installed[]
-        if [ kinds.count > 0 && !desk_adding ]
-            tp : string [ (beside) ? 't{y}px'
-                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
-            t['dagent_new'] = AgentKinds [
-                buttons: vec string [] [ 'dagent_new' ],
-                icon_ids: vec string [] [ 'plus' ], icon_scale: 0.4,
-                manual: true, use_spacing: false, seg_radius: 8.0,
-                rest_fill: rgba [ '#0000' ],
-                outline: rgba [ '#0000' ],
-                area: Region [
-                    'l{x + w - ah}px {tp} w{ah}px h{ah}px' ] ]
-            y += ah + gap
-        el [ kinds.count > 0 ]
-            ids : vec string []
-            ics : vec string []
-            for [ an: string ] in kinds
-                ids.push[ 'dagent_add_{an}' ]
-                ics.push[ '_text' ]
-            tp : string [ (beside) ? 't{y}px'
-                : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
-            t['dagent_tabs'] = AgentKinds [ buttons: ids, icon_ids: ics,
-                labels: kinds, manual: true, use_spacing: false,
-                label_font: 'fonts/BarlowCondensed-Regular.ttf',
-                label_px: 17.0 * un, seg_radius: 8.0,
-                rest_fill: rgba [ '#0000' ],
-                # its edge layer draws the border, as the titles'
-                outline: rgba [ '#0000' ],
-                area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
-            y += ah + gap
+        # the running agents, and a new one, are on the task bar
         # an agent up on the desktop: its titles alone, no widgets
         if [ desk_agent_on[] ]
             if [ !beside ] desk_top = y - pad
@@ -9765,6 +9772,7 @@ element orbiter : trinity # implements compiler
             popup_items.push[ TrayEntry [ label: rows[ i ], depth: 1,
                 enabled: !heading, check: -1, target: values[ i ] ] ]
         popup_for = setting
+        popup_right = false
         drawer_toggle[ 'popup', false ]
 
     # the zone in use: the chosen one, else the system's
@@ -9793,8 +9801,14 @@ element orbiter : trinity # implements compiler
         now : i64 [ time[ null ] ]
         tm : struct tm
         localtime_r[ @now, @tm ]
-        # local time read as utc: the gap is the offset
-        mins : i64 [ (i64[ timegm[ @tm ] ] - now) / 60 ]
+        utc : struct tm
+        gmtime_r[ @now, @utc ]
+        # local less utc: the offset (timegm is not posix)
+        days : i64 [ tm.tm_yday - utc.tm_yday ]
+        if [ tm.tm_year != utc.tm_year ]
+            days = (tm.tm_year > utc.tm_year) ? 1 : -1
+        mins : i64 [ days * 1440 + (tm.tm_hour - utc.tm_hour) * 60 +
+                     tm.tm_min - utc.tm_min ]
         if [ keep.count > 0 ] setenv[ 'TZ', keep.chars, 1 ]
         el unsetenv[ 'TZ' ]
         tzset[]
@@ -9833,6 +9847,15 @@ element orbiter : trinity # implements compiler
                 rows.push[ zone_label[ zn ] ]
                 vals.push[ zn ]
         popup[ 'time zone', 'time zone', rows, vals ]
+
+    # a font chip's choices: Default, then each family we ship
+    func font_popup [ setting: string ]
+        rows : vec string [] [ 'Default' ]
+        vals : vec string [] [ 'Default' ]
+        for [ h: FindHit ] in font_families[ setting == 'fixed width' ]
+            rows.push[ h.text ]
+            vals.push[ h.text ]
+        popup[ setting, setting, rows, vals ]
 
     func drawer_els [] -> Elements
         t : Elements []
@@ -11867,6 +11890,7 @@ element orbiter : trinity # implements compiler
             return
         free_drop[ pi ]
         pane_lists_drop[ pi ]
+        if [ pane_hid && pi < pane_hid.count ] pane_hid.remove[ pi ]
         editor_slots.remove[ pi ]
         if [ pi < pane_console.count ] pane_console.remove[ pi ]
         # ids re-key by index next frame: extents follow their content
@@ -13839,10 +13863,6 @@ element orbiter : trinity # implements compiler
         if [ stats ]
             log 'PRESS target={(ev.target && ev.target.id) ? ev.target.id : "(noid)"} pick={(pick_field) ? pick_field : ""} nav={nav_showing} find={find_showing} finder_off={finder_off}'
         # a press off the agents' kinds puts them away
-        if [ desk_adding && (!ev.target || !ev.target.id
-             || !ev.target.id.starts_with[ 'dagent_add_' ]) ]
-            desk_adding = false
-            if [ ux ] ux.restyle = true
         if [ !ev.target ] return
         log 'on_press: target={ev.target.id}'
         # in the path's drawer: the navigator under it keeps its
@@ -14213,7 +14233,7 @@ element orbiter : trinity # implements compiler
         # it; again, away. a choice: taken
         if [ ev.target.id && ev.target.id.starts_with[ 'xchip_' ] ]
             nm : ev.target.id.mid[ 6, ev.target.id.count - 6 ]
-            # a font: the generic dialog, not choices under the chip
+            # a zone or a font: an anonymous menu, not chips under it
             if [ nm == 'time zone' ]
                 set_open = ''
                 zone_popup[]
@@ -14221,12 +14241,7 @@ element orbiter : trinity # implements compiler
                 return
             if [ nm == 'fixed width' || nm == 'tool font' ]
                 set_open = ''
-                font_for = nm
-                fx : bool [ nm == 'fixed width' ]
-                cur : string [ (fx) ? set_mono : set_tool ]
-                now : string [ (cur && cur.count > 0) ? cur
-                    : 'Default' ]
-                if [ ux ] ux.nav_font_pick[ now, fx, true ]
+                font_popup[ nm ]
                 ev.no_default = true
                 return
             set_open = (set_open == nm) ? '' : nm
@@ -14491,7 +14506,7 @@ element orbiter : trinity # implements compiler
             if [ ux ] dirty_consoles[ ux.root ]
             ev.no_default = true
             return
-        # the desktop's bar: its agents and widgets, shown or hidden
+        # the desktop's bar: its widgets, shown or hidden
         if [ ev.target.id == 'desk_side' ]
             desk_hide = !desk_hide
             save_session[]
@@ -14508,6 +14523,20 @@ element orbiter : trinity # implements compiler
         # a running app: a click at the release, or a drag to pin it
         if [ ev.target inherits TaskChip ]
             tc : TaskChip ev.target
+            # an agent's: its console on the desktop, again away; its
+            # close ends the agent
+            if [ tc.agent && tc.agent.count > 0 ]
+                if [ tc.on_close[ f32[ ux.mouse.x ], f32[ ux.mouse.y ] ] ]
+                    home_end[ tc.agent ]
+                el [ desk_agent == tc.agent && desk_agent_on[] ]
+                    desk_agent_pick[ tc.agent ]
+                el
+                    go_home[ active_pane ]
+                    desk_agent = ''
+                    desk_agent_pick[ tc.agent ]
+                if [ ux ] ux.restyle = true
+                ev.no_default = true
+                return
             # its close (shown by shift or ctrl/cmd): the task ends
             if [ tc.on_close[ f32[ ux.mouse.x ], f32[ ux.mouse.y ] ] ]
                 close_task[ instance_by[ tc.inst ] ]
@@ -14532,20 +14561,11 @@ element orbiter : trinity # implements compiler
         # pip shrinks the app into the editor; its instruments stay open
         # the agent view: a choice adds an instance, a title opens
         # its console (again folds it), end ends it
-        if [ ev.target.id == 'dagent_new' ]
-            desk_adding = true
-            if [ ux ] ux.restyle = true
-            ev.no_default = true
-            return
         # the desktop's tab: a new instance of that agent, shown
-        if [ ev.target.id.starts_with[ 'dagent_add_' ] ]
-            desk_adding = false
-            nn : string home_new[ ev.target.id.mid[ 11,
-                                  ev.target.id.count - 11 ] ]
-            if [ nn.count > 0 ]
-                desk_agent = ''
-                desk_agent_pick[ nn ]
-            if [ ux ] ux.restyle = true
+        if [ ev.target.id == 'task_add_agent' ]
+            kinds : vec string agent_installed[]
+            popup[ 'new agent', 'new agent', kinds, kinds ]
+            popup_right = true
             ev.no_default = true
             return
         if [ ev.target.id.starts_with[ 'ahome_end_' ] ]
@@ -15821,7 +15841,7 @@ element orbiter : trinity # implements compiler
                     e8 : Editor pane_at[ pi8 ]
                     # hide_ui hides every pane: their apps run on here
                     if [ e8 && e8.run_view == av8 && !e8.hide &&
-                         !hide_ui ]
+                         !hide_ui && !pane_hidden[ pi8 ] ]
                         shown8 = true
                 if [ !shown8 ]
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
@@ -15833,7 +15853,7 @@ element orbiter : trinity # implements compiler
         # docked windows filling the area hide the scene: it holds
         cover9 : bool [ !hide_ui && any_docked[] ]
         for [ pc9: i32 0, pc9 < editor_slots.count, pc9 += 1 ]
-            if [ pane_floats[ pc9 ] ] continue
+            if [ pane_floats[ pc9 ] || pane_hidden[ pc9 ] ] continue
             ec : Editor pane_at[ pc9 ]
             app9 : bool [ ec && ec.app_view && ec.run_view
                           && !ec.run_view.held && !ec.run_view.ended ]
@@ -16108,20 +16128,22 @@ element orbiter : trinity # implements compiler
             && ((pad) ? !ux.app_keys_hidden : keys_up[]) ]
         bar : bool [ !use_mobile && !keys && ux.words_wanted
             && languages_added[] ]
+        # the task bar's room: none while it hides (it slides over)
+        kb : f32 [ (set_bar_hide == 'auto') ? 0.0 : task_h[] ]
+        kt : f32 [ kb + round[ 1.34 * unit_px[] ] ]
         foot : string [ (keys) ? 'l0 t0 r0 b41%'
             : ((use_mobile) ? 'l0 t0 r0 b0'
-            : ((bar) ? 'l0 t0 r0 b2.4' : 'l0 t0 r0 b1.06')) ]
+            : ((bar) ? 'l0 t0 r0 b{kt}px' : 'l0 t0 r0 b{kb}px')) ]
         left['stack'] = Splitter [ area: Region [ foot ],
                                    vertical: true, hide: hide_ui,
             inner: stack, deflt: 180.0, min_size: 44.0 ]
         if [ !use_mobile ]
-            left['status'] = TasksBar [ elements: status_els[] ]
             if [ keys ]
                 left['keys'] = FlickKeys [
-                    area: Region { l0 b41% r0 b1.06 } ]
+                    area: Region [ 'l0 b41% r0 b{kb}px' ] ]
             el [ bar ]
                 left['keys'] = FlickKeys [ bar_only: true,
-                    area: Region { l0 b2.4 r0 b1.06 } ]
+                    area: Region [ 'l0 b{kt}px r0 b{kb}px' ] ]
         el [ keys ]
             left['keys'] = FlickKeys [ pad: pad,
                 area: Region { l0 b41% r0 b0 } ]
@@ -16163,7 +16185,7 @@ element orbiter : trinity # implements compiler
     # a pane is docked (in the split)
     func any_docked [] -> bool
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
-            if [ !pane_floats[ i ] ] return true
+            if [ !pane_floats[ i ] && !pane_hidden[ i ] ] return true
         return false
 
     # the free panes' keys, bottom to top, each with its ring; the
@@ -16171,6 +16193,8 @@ element orbiter : trinity # implements compiler
     func free_ids [] -> vec string
         ids : vec string []
         if [ !any_docked[] ] ids.push[ 'desk' ]
+        for [ hi: i32 0, hi < editor_slots.count, hi += 1 ]
+            if [ pane_hidden[ hi ] ] ids.push[ 'pane{hi}' ]
         if [ free_order ]
             for [ fi: i32 ] in free_order
                 if [ !pane_floats[ fi ] ] continue
@@ -16322,9 +16346,12 @@ element orbiter : trinity # implements compiler
         if [ !free_order ] return
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             if [ !pane_floats[ i ] || !pane_empty[ i ] ] continue
+            if [ pane_hidden[ i ] ] continue
             if [ pane_browsing[ i ] || pending_finder == i ] continue
-            # a minimized window coming back into it
+            # a minimized window coming back into it, or an app whose
+            # file loads first (shown a frame later)
             if [ mini_wait >= 0 && i == mini_pane ] continue
+            if [ pending_show > 0 && i == pending_show_pane ] continue
             if [ editor_slots.count == 1 ]
                 dock_pane[ i ]
             el
@@ -16411,6 +16438,12 @@ element orbiter : trinity # implements compiler
             # kept a window's rounded mask
             ev : EditorView [ pane_index: i, free: false,
                 selected: (search_pane[] == 'pane{i}') ]
+            # said every render, shown or not: a mounted pane keeps a
+            # hide it is not told again
+            ev.hide = pane_hidden[ i ]
+            if [ pane_hidden[ i ] ]
+                t['pane{i}'] = ev
+                continue
             if [ nav_fade < 1.0 && !pane_floats[ i ]
                  && pane_browsing[ i ] ]
                 ev.opacity = nav_fade
@@ -16494,19 +16527,32 @@ element orbiter : trinity # implements compiler
 
     # the pane goes, its app runs on; a free window's place is kept
     # for its return
+    # out of view, its state kept: a free one's place, a docked one
+    # (maximized) as an empty place
+    # out of view, all kept (its editor, its app, its place): the
+    # task button shows it again as it was
     func minimize [ pi: i32 ]
-        av : AppView pane_instance[ pi ]
-        if [ av && pane_floats[ pi ] ]
-            mini_forget[ av.iid ]
-            mini_iids.push[ av.iid ]
-            for [ r: i32 0, r < 4, r += 1 ]
-                mini_rect.push[ pane_free[ pi * 4 + r ] ]
-        # the last pane stays, emptied: its window and free place go
-        if [ editor_slots.count == 1 ]
-            free_drop[ pi ]
-            if [ pane_win && pi < pane_win.count ]
-                pane_win[ pi ] = u64[ 0 ]
-        close_pane[ pi ]
+        if [ pi < 0 || pi >= editor_slots.count ] return
+        if [ !pane_hid ] pane_hid = vec bool []
+        while [ pane_hid.count < editor_slots.count ] pane_hid.push[ false ]
+        pane_hid[ pi ] = true
+        if [ active_pane == pi ]
+            for [ q: i32 0, q < editor_slots.count, q += 1 ]
+                if [ !pane_hidden[ q ] ]
+                    active_pane = q
+                    break
+        force_update[]
+
+    # put out of view by minimize
+    public func pane_hidden [ pi: i32 ] -> bool
+        return pane_hid && pi >= 0 && pi < pane_hid.count && pane_hid[ pi ]
+
+    # back in view as it was, and selected
+    func unhide [ pi: i32 ]
+        if [ !pane_hidden[ pi ] ] return
+        pane_hid[ pi ] = false
+        raise_pane[ pi ]
+        force_update[]
 
     func minimized_iid [ iid: i32 ] -> bool
         if [ !mini_iids ] return false
@@ -16524,8 +16570,9 @@ element orbiter : trinity # implements compiler
                     mini_rect.remove[ j * 4 ]
                 return
 
-    # a minimized free window comes back free, where it was, in a
-    # pane of its own; false when it was not one
+    # a minimized window comes back as it was: free where it was, or
+    # docked (the emptied last pane, else a docked pane of its own);
+    # false when it was not one
     func mini_restore [ iid: i32 ] -> bool
         if [ !mini_iids ] return false
         j : i32 [ -1 ]
@@ -16542,8 +16589,12 @@ element orbiter : trinity # implements compiler
         # shown in a pane since: it stays as it is
         for [ q: i32 0, q < editor_slots.count, q += 1 ]
             if [ pane_instance[ q ] == av ] return false
-        pane_add[]
-        pending_finder = -1
+        # docked: the last pane, emptied when it went, takes it back
+        lone : bool [ w <= 0.0 && editor_slots.count == 1
+            && !pane_instance[ 0 ] && pane_window[ 0 ] == 0 ]
+        if [ !lone ]
+            pane_add[]
+            pending_finder = -1
         pi : i32 [ editor_slots.count - 1 ]
         if [ !pane_free ] pane_free = vec f32 []
         if [ !pane_shown ] pane_shown = vec f32 []
@@ -16551,6 +16602,13 @@ element orbiter : trinity # implements compiler
         while [ pane_free.count < (pi + 1) * 4 ] pane_free.push[ 0.0 ]
         while [ pane_shown.count < (pi + 1) * 4 ] pane_shown.push[ 0.0 ]
         k : i32 [ pi * 4 ]
+        if [ w <= 0.0 ]
+            for [ r: i32 0, r < 4, r += 1 ]
+                pane_free[ k + r ] = 0.0
+            mini_wait = iid
+            mini_pane = pi
+            force_update[]
+            return true
         pane_free[ k ]      = x
         pane_free[ k + 1 ]  = y
         pane_free[ k + 2 ]  = w
@@ -16607,23 +16665,18 @@ element orbiter : trinity # implements compiler
     func dock_run_click [ iid: i32 ]
         if [ mini_restore[ iid ] ] return
         avd : AppView instance_by[ iid ]
-        edd : Editor pane_at[ active_pane ]
         wvd : u64 window_of[ avd ]
-        # its window in another pane (a free one): put away from there
-        if [ wvd != 0 && pane_window[ active_pane ] != wvd && pane_win ]
-            for [ q: i32 0, q < pane_win.count, q += 1 ]
-                if [ pane_win[ q ] == wvd ]
-                    hide_window[ wvd ]
-                    return
-        # shown in a window: the chip minimizes it, the app runs on
-        # (its code is the window's own toggle, pcode)
+        # in a pane: the chip hides it, or shows it again as it was
+        # (its state kept, the app running all the while; its code is
+        # the window's own toggle, pcode)
         if [ avd ]
             for [ q: i32 0, q < editor_slots.count, q += 1 ]
                 edq : Editor pane_at[ q ]
                 if [ (wvd != 0 && pane_window[ q ] == wvd)
                      || (wvd == 0 && edq && edq.run_view == avd
                          && edq.app_view) ]
-                    minimize[ q ]
+                    if [ pane_hidden[ q ] ] unhide[ q ]
+                    el minimize[ q ]
                     if [ ux ] ux.restyle = true
                     return
         # back in view means embedded (a file's viewer says PIP)
@@ -16644,6 +16697,45 @@ element orbiter : trinity # implements compiler
                     dock_run_click[ av.iid ]
                     return
         run_program[ p, active_pane ]
+
+    # the task bar's place: under the panes (the main split's first
+    # part, its right side panel left out), at the window's foot
+    func tasks_area [] -> string
+        th : f32 task_h[]
+        x  : f32 [ 0.0 ]
+        w  : f32 [ 0.0 ]
+        mn : element find_el[ a, 'main' ]
+        le : element find_el[ a, 'left' ]
+        if [ mn && mn.bounds ] x = mn.bounds.x
+        if [ le && le.bounds ]
+            x += le.bounds.x
+            w = le.bounds.w
+        if [ w <= 0.0 ] return 'l0 b{th * bar_out}px r0 h{th}px'
+        return 'l{x}px b{th * bar_out}px w{w}px h{th}px'
+
+    # the task bar's height: a 48 px icon and its margin, scaled
+    func task_h [] -> f32
+        return round[ 64.0 * ux_unit[ ux ] ]
+
+    # the task bar out while the pointer is at the window's foot, or
+    # always; eased each frame
+    func bar_ease [ w: Window ]
+        if [ use_mobile || !w.root || !w.root.bounds ] return
+        # off the window (trinity parks the point far away): it goes
+        # on the way it was going until the pointer is back in
+        out : bool [ w.mouse.x < -50000.0 ]
+        if [ !out || set_bar_hide != 'auto' ]
+            # it comes up a little before the edge
+            reach : f32 [ (bar_out > 0.5) ? task_h[]
+                : round[ 24.0 * ux_unit[ w ] ] ]
+            want : bool [ set_bar_hide != 'auto'
+                || f32[ w.mouse.y ] >= w.root.bounds.h - reach ]
+            bar_goal = (want) ? 1.0 : 0.0
+        if [ bar_out == bar_goal ] return
+        bar_out = filter_n[ bar_out, bar_goal, 0.3, w.frame_factor ]
+        if [ abs[ bar_out - bar_goal ] < 0.01 ] bar_out = bar_goal
+        w.restyle = true
+        w.will_animate = true
 
     # a bar chip's name: the window's or the app's own title, else
     # its argument, else the instance's name
@@ -17075,11 +17167,11 @@ element orbiter : trinity # implements compiler
             ub : f32 [ bar_units[] * unit_px[] ]
             t['sys_close'] = PaneBox [
                 area: Region [ 'l{re - ub}px t0 w{ub}px b0' ] ]
-        # the desktop: shows or hides its agents and widgets
+        # the desktop: shows or hides its widgets
         if [ pi >= 0 && !switcher && pane_empty[ pi ] && !sys_up[]
              && !use_mobile ]
             dw : f32 [ 1.33 * unit_px[] ]
-            t['desk_side'] = bar_icon[ 'orbiter4', 0.605, !desk_hide,
+            t['desk_side'] = bar_icon[ 'right_panel', 0.605, !desk_hide,
                 false, re - dw, dw ]
         if [ pv && pane_browsing[ pi ] ]
             # the navigator's own back and forward, over the folders
@@ -17400,9 +17492,10 @@ element orbiter : trinity # implements compiler
     # the pane the system bar is the title of: the selected one
     # docked, else the first docked one (-1: every window is free)
     func bar_pane [] -> i32
-        if [ !pane_floats[ active_pane ] ] return active_pane
+        if [ !pane_floats[ active_pane ] && !pane_hidden[ active_pane ] ]
+            return active_pane
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
-            if [ !pane_floats[ i ] ] return i
+            if [ !pane_floats[ i ] && !pane_hidden[ i ] ] return i
         return -1
 
     # a free window's strip: the system bar it took with it (its
@@ -18361,15 +18454,21 @@ element orbiter : trinity # implements compiler
         root : path path.path_startup[]
         ex : path '{install_root[]}/export'
         for [ f: path ] in ex.ls[ null, false ]
-            if [ f.ext[] != 'agi' ] continue
+            if [ f.ext[] != 'agi' || f.stem[].ends_with[ '.props' ] ]
+                continue
             tx : string f.load[ typeid[ string ], null ]
             if [ !tx ] continue
             gr : string agi_word[ tx, 'software' ]
             if [ gr.count == 0 ] continue
+            # a trinity app's props, in its own file beside this one
+            pf : path '{ex}/{f.stem[]}.props.agi'
+            pt : string [ (pf.exists[]) ? pf.load[ typeid[ string ],
+                null ] : '' ]
+            if [ !pt ] pt = ''
             # its name: module:, which only a trinity app writes; else
             # the file's (<owner>-<name>.agi), owner parts dropped one
             # at a time till a module folder answers
-            mn : string agi_word[ tx, 'module' ]
+            mn : string agi_word[ pt, 'module' ]
             md : path null
             mf : path null
             cands : vec string []
@@ -18396,7 +18495,7 @@ element orbiter : trinity # implements compiler
                 group: gr ]
             # not a trinity app (no props): it builds a program, ours
             # once it is in install/bin
-            if [ tx.index_of[ '\nprops:' ] < 0 ]
+            if [ pt.count == 0 ]
                 ae.built = path '{install_root[]}/bin/{mn}'
             el
                 ae.lib = path '{install_root[]}/build/lib{f.stem[]}.so'
@@ -18515,6 +18614,7 @@ element orbiter : trinity # implements compiler
             "{ins}/build/silver-{n}".source
             "{ins}/share/silver-{n}" "{ins}/share/{n}"
             "{ins}/export/silver-{n}".agi
+            "{ins}/export/silver-{n}".props.agi
             "{ins}/tmp/exports/silver-{n}".* }
         rm.exec[ false ]
         log 'orbiter: deleted the build of {n}'
@@ -19825,6 +19925,16 @@ element orbiter : trinity # implements compiler
             area: Region [
                 'l{gap}px t{top + gap}px r{gap}px h{th}px' ] ]
         top += gap + th
+        tb : Elements []
+        tb['bar_choices'] = element [
+            elements: chip_grid[ bar_settings[], set_open, 'x' ],
+            area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+        bh : f32 [ ch + chips_h ]
+        t['bar_group'] = SetGroup [ title: 'task bar', head_h: ch,
+            elements: tb,
+            area: Region [
+                'l{gap}px t{top + gap}px r{gap}px h{bh}px' ] ]
+        top += gap + bh
         rec : Elements []
         rec['rec_choices'] = element [
             elements: chip_grid[ rec_settings[], set_open, 'x' ],
@@ -19842,7 +19952,7 @@ element orbiter : trinity # implements compiler
             label_font: 'fonts/BarlowCondensed-Regular.ttf',
             label_px: 0.5 * ch, manual: true,
             seg_radius: ch * 0.5, use_spacing: false,
-            rest_fill: rgba [ (on) ? '#c2185b88' : '#0000' ],
+            rest_fill: rgba [ (on) ? '#c2185b88' : '#00000026' ],
             sel_mask: (on) ? 1 : 0,
             area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
         y += ch + gap
@@ -19900,7 +20010,7 @@ element orbiter : trinity # implements compiler
             elements: ks,
             area: Region [ 'l{gap}px t0 r{gap}px h{kh}px' ] ]
         rows : f32 [ 1.0 + second_languages[].count ]
-        lh : f32 [ ch + (rows * 1.35 + 0.15) * un ]
+        lh : f32 [ ch + (rows * 1.35 + 0.45) * un ]
         ls : Elements []
         ls['lang_list'] = LanguageList [
             area: Region [ 'l0 t{ch}px r0 b0' ] ]
@@ -19908,6 +20018,13 @@ element orbiter : trinity # implements compiler
             elements: ls,
             area: Region [ 'l{gap}px t{kh + gap}px r{gap}px h{lh}px' ] ]
         return t
+
+    # the task bar's group: hidden until the pointer is at the foot
+    func bar_settings [] -> vec Prop
+        ps : vec Prop []
+        ps.push[ setting[ 'hide', set_bar_hide,
+            vec string [] [ 'auto', 'never' ] ] ]
+        return ps
 
     # the display's text group: its size, and a font each way
     func text_settings [] -> vec Prop
@@ -19948,22 +20065,12 @@ element orbiter : trinity # implements compiler
         w.restyle = true
         if [ w.root ] w.dirty_tree[ w.root ]
 
-    # the font dialog's pick: the chip it was opened for takes it
-    public func nav_open [ p: path ] -> bool
-        if [ !ux || !ux.nav_fonts ] return false
-        fam : string [ (ux.font_chosen == 'Default') ? ''
-                                                     : ux.font_chosen ]
-        if [ font_for == 'fixed width' ] set_mono = fam
-        el [ font_for == 'tool font' ] set_tool = fam
-        session_dirty = true
-        fonts_apply[ ux ]
-        return true
-
     # a panel's settings, the display's own groups' with them
     func setting_props [ tab: string ] -> vec Prop
         ps : vec Prop panel_settings[ tab ]
         if [ tab == 'display' ]
             for [ p: Prop ] in text_settings[] ps.push[ p ]
+            for [ p: Prop ] in bar_settings[] ps.push[ p ]
             for [ p: Prop ] in rec_settings[] ps.push[ p ]
         return ps
 
@@ -20147,6 +20254,20 @@ element orbiter : trinity # implements compiler
         el [ name == 'rate' ]          set_rate = i32[ n ]
         el [ name == 'layout' ]        set_layout = v
         el [ name == 'time zone' ]     set_zone = v
+        el [ name == 'new agent' ]
+            nn : string home_new[ v ]
+            if [ nn.count > 0 ]
+                go_home[ active_pane ]
+                desk_agent = ''
+                desk_agent_pick[ nn ]
+        el [ name == 'hide' ]
+            set_bar_hide = v
+            if [ ux ] ux.restyle = true
+        el [ name == 'fixed width' || name == 'tool font' ]
+            fam : string [ (v == 'Default') ? '' : v ]
+            if [ name == 'fixed width' ] set_mono = fam
+            el set_tool = fam
+            fonts_apply[ ux ]
         el [ name == 'screen off' ]    set_screen_off = v
         el [ name == 'sleep' ]         set_sleep = v
         el [ name == 'on-screen' ]
@@ -20719,7 +20840,7 @@ element orbiter : trinity # implements compiler
         # every running instance (the bar is for tasks alone); a
         # drag onto the dock pins it. orbiter's view is the bar's menu
         x0 : f32 [ 0.0 ]
-        sb : element find_el[ a, 'status' ]
+        sb : element find_el[ a, 'taskbar' ]
         # with the system bar its right end is the console, the menu
         # and the date
         rw : f32 [ (sys) ? ((system_os) ? 7.26 : 2.66) * unit_px[]
@@ -20752,8 +20873,13 @@ element orbiter : trinity # implements compiler
         db : f32 [ 1.2 * un ]
         for [ av: AppView ] in runs
             room -= db * f32[ debug_acts[ av ].count ]
-        cw : f32 [ (runs.count > 0)
-            ? min[ 4.36 * un, (room - gaps) / f32[ runs.count ] ]
+        # the running agents after the apps, a task each
+        agents : vec string []
+        for [ an: string ] in home_names[]
+            if [ home_session[ an ] ] agents.push[ an ]
+        nt : i32 [ i32[ runs.count + agents.count ] ]
+        cw : f32 [ (nt > 0)
+            ? min[ 6.0 * un, (room - gaps) / f32[ nt ] ]
             : 0.0 ]
         # from the bar's left, after a gap
         x : f32 [ x0 + gap ]
@@ -20765,9 +20891,10 @@ element orbiter : trinity # implements compiler
             was = kind
             ag : path (fo) ? path '{install_root[]}/export/{install_name_of[ fo.filename[] ]}.agi' : null
             wv : u64 window_of[ av ]
-            lit : bool [ (wv != 0 && pane_window[ active_pane ] == wv)
+            lit : bool [ !pane_hidden[ active_pane ]
+                && ((wv != 0 && pane_window[ active_pane ] == wv)
                 || (wv == 0 && edv && edv.run_view == av
-                    && edv.app_view) ]
+                    && edv.app_view)) ]
             # a program whose window is up is not starting
             waits : bool [ wv == 0 && av.status_word[].count > 0 ]
             lt : i32 [ (run_failed[ av ]) ? 2 : ((waits) ? 1 : 0) ]
@@ -20782,7 +20909,8 @@ element orbiter : trinity # implements compiler
             t[ 'task_{av.iid}' ] = TaskChip [ inst: av.iid, file: fo,
                 close_all: cmd_down, close_hover: shift_down,
                 agi: ag, icon_file: program_icon[ av ], paused: hal,
-                label: task_title[ av ], light: lt, selected: lit,
+                label: app_name[ av ], title: task_title[ av ],
+                light: lt, selected: lit,
                 area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
             x += cw
             # debugging: the button goes on as its debug bar
@@ -20798,6 +20926,38 @@ element orbiter : trinity # implements compiler
                     seg_reach: 0.5, icon_scale: 0.4125,
                     area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
                 x += gw
+        # the agents and their + at the right end, before its own
+        # buttons
+        ab : f32 [ (agent_installed[].count > 0)
+            ? round[ 1.66 * un ] : 0.0 ]
+        # the right edge, less what is drawn there: the folded side
+        # panel's button, or the clock on orbiter-os
+        rb : f32 [ (sys) ? ((system_os) ? 4.6 * unit_px[] : 0.0)
+            : ((inst_hidden) ? 1.66 * unit_px[] : 0.0) ]
+        xr : f32 [ (sb && sb.bounds) ? sb.bounds.w - rb : 800.0 ]
+        x = max[ x + gap, xr - ab - cw * f32[ agents.count ] ]
+        ai : path '{path.path_startup[]}/orbiter/images/icon.png'
+        for [ an: string ] in agents
+            md : string home_model_of[ an ]
+            t[ 'task_agent_{an}' ] = TaskChip [ agent: an, inst: -1,
+                close_all: cmd_down, close_hover: shift_down,
+                icon_file: ai,
+                label: (md.count > 0) ? '{an}  {md}' : an,
+                title: home_state_of[ an ],
+                light: (home_waiting[ an ]) ? 3 : 0,
+                selected: desk_agent == an && desk_agent_on[],
+                area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
+            x += cw
+        # a new agent (the agent's icon): its kinds in a menu, the
+        # one picked starts
+        if [ ab > 0.0 ]
+            t['task_add_agent'] = StatusButton [
+                buttons: vec string [] [ 'task_add_agent' ],
+                icon_ids: vec string [] [ 'orbiter4' ], icon_scale: 0.4,
+                manual: true, seg_radius: 0.0, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                area: Region [ 'l{x}px t0 w{ab}px b0' ] ]
+            x += ab
         if [ sys ] return sys_right[ t ]
         # the right, while the side panel is folded: its tab, which
         # opens it; open, the panel's own lit tab folds it
@@ -20855,6 +21015,7 @@ element orbiter : trinity # implements compiler
             keys_force  = 0
         # a new switcher's slide starts shut
         if [ !switcher ] slide_open = false
+        bar_ease[ w ]
         # the power button held 0.6 s: the switcher
         if [ power_down_us > 0 ]
             if [ epoch_micros[] - power_down_us >= 600000 ]
@@ -21069,6 +21230,11 @@ element orbiter : trinity # implements compiler
                 # its ground once, not live: the exchange blurs its own
                 ? ExchangeDrawer [ open: drawer_open,
                                    background_lens: false ] : null,
+            # the task bar over the menus: one run to the window's foot
+            # meets it, and shows no gap as it slides away
+            'taskbar' : (use_mobile) ? null : TasksBar [ id: 'status',
+                elements: status_els[], hide: bar_out <= 0.0 || hide_ui,
+                area: Region [ tasks_area[] ] ],
             'dock'   : (top > 0.0) ? null
                 : Dock [ elements: dock_els[], hide: hide_ui,
                 area: Region [ 'l0 t{top}px w2.39 b0' ] ],
@@ -21089,6 +21255,9 @@ element orbiter : trinity # implements compiler
         if [ menu_kind == 'crumb' ]
             return (crumb_win) ? win_x[ active_pane ] + crumb_dx
                 : crumb_x
+        if [ menu_kind == 'popup' && popup_right && ux && ux.root
+             && ux.root.bounds ]
+            return ux.root.bounds.w - round[ 10.91 * unit_px[] ]
         if [ menu_kind != 'menu' ] return 0.0
         # over the main menu: in its area, past the icon column
         if [ sys_under ] return dock_w[]

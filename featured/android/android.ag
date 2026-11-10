@@ -174,34 +174,42 @@ import fontconfig/2.15.0 from https://www.freedesktop.org/software/fontconfig/re
     --disable-nls
     --disable-cache-build
 
-# GTK 4 and what it draws with
+# GTK 4 and what it draws with: Android's alone, in its own prefix
+# (install/android), so no program finds them in place of the
+# system's (gedit on Ubuntu's GTK 3 took this cairo, no X11 in it)
 import fribidi/1.0.16 from https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz
     PATH={install}/bin:$PATH
 import harfbuzz/10.1.0 from https://github.com/harfbuzz/harfbuzz/releases/download/10.1.0/harfbuzz-10.1.0.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    -DCMAKE_INSTALL_PREFIX={install}/android
     -DBUILD_SHARED_LIBS=ON
-    -DCMAKE_INSTALL_RPATH={install}/lib
+    "-DCMAKE_INSTALL_RPATH={install}/android/lib;{install}/lib"
     -DHB_HAVE_FREETYPE=ON
     -DHB_HAVE_GLIB=ON
     -DHB_BUILD_UTILS=OFF
 import pixman/0.44.2 from https://www.cairographics.org/releases/pixman-0.44.2.tar.gz
     PATH={install}/bin:$PATH
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dtests=disabled
     -Ddemos=disabled
     -Dgtk=disabled
 import cairo/1.18.2 from https://www.cairographics.org/releases/cairo-1.18.2.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dtests=disabled
     -Dxlib=disabled
     -Dxcb=disabled
     -Dspectre=disabled
 import pango/1.54.0 from https://download.gnome.org/sources/pango/1.54/pango-1.54.0.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dintrospection=disabled
     -Dbuild-testsuite=false
     -Dbuild-examples=false
@@ -211,8 +219,9 @@ import pango/1.54.0 from https://download.gnome.org/sources/pango/1.54/pango-1.5
     -Dlibthai=disabled
 import gdk-pixbuf/2.42.12 from https://download.gnome.org/sources/gdk-pixbuf/2.42/gdk-pixbuf-2.42.12.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dpng=enabled
     -Djpeg=disabled
     -Dtiff=disabled
@@ -225,21 +234,25 @@ import gdk-pixbuf/2.42.12 from https://download.gnome.org/sources/gdk-pixbuf/2.4
     -Dgio_sniffing=false
 import libepoxy/1.5.10 from https://download.gnome.org/sources/libepoxy/1.5/libepoxy-1.5.10.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dtests=false
     -Dx11=false
     -Degl=yes
 import graphene/1.10.8 from https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dtests=false
     -Dinstalled_tests=false
     -Dintrospection=disabled
 import gtk/4.16.12 from https://download.gnome.org/sources/gtk/4.16/gtk-4.16.12.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig:{install}/android/share/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dx11-backend=false
     -Dwayland-backend=true
     -Dbroadway-backend=false
@@ -263,8 +276,9 @@ import gtk/4.16.12 from https://download.gnome.org/sources/gtk/4.16/gtk-4.16.12.
 # ATL's other services: the portal (files, open with), its database
 import libportal/0.8.1 from https://github.com/flatpak/libportal/releases/download/0.8.1/libportal-0.8.1.tar.xz
     PATH={install}/bin:$PATH
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig:{install}/android/share/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib
+    --prefix={install}/android
     -Dbackend-gtk4=enabled
     -Dbackend-gtk3=disabled
     -Dbackend-qt5=disabled
@@ -275,7 +289,7 @@ import libportal/0.8.1 from https://github.com/flatpak/libportal/releases/downlo
     -Dtests=false
 import sqlite/3.47.2 from https://www.sqlite.org/2024/sqlite-autoconf-3470200.tar.gz
     PATH={install}/bin:$PATH
-    > ./configure --prefix={install} --disable-static
+    > ./configure --prefix={install}/android --disable-static
     > make -j16 install
 import libdrm/2.4.134 from https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz
     PATH={install}/bin:$PATH
@@ -309,11 +323,11 @@ import tls
 import android_translation_layer/bbb4d469405cdaea585475b17daef13202bc7e23 from https://gitlab.com/android_translation_layer/android_translation_layer
     PATH={install}/lib/jdk17/bin:{install}/bin:$PATH
     JAVA_HOME={install}/lib/jdk17
-    LIBRARY_PATH={install}/lib:{install}/build
-    LD_LIBRARY_PATH={install}/lib:{install}/build
-    CPATH={install}/include
-    PKG_CONFIG_PATH={install}/lib/pkgconfig:{install}/share/pkgconfig
-    LDFLAGS=-Wl,-rpath,{install}/lib:{install}/lib/art:{install}/build
+    LIBRARY_PATH={install}/android/lib:{install}/lib:{install}/build
+    LD_LIBRARY_PATH={install}/android/lib:{install}/lib:{install}/build
+    CPATH={install}/android/include:{install}/include
+    PKG_CONFIG_PATH={install}/android/lib/pkgconfig:{install}/lib/pkgconfig:{install}/android/share/pkgconfig:{install}/share/pkgconfig
+    LDFLAGS=-Wl,-rpath,{install}/android/lib:{install}/lib:{install}/lib/art:{install}/build
     > mkdir -p {install}/lib/atl-jars
     > curl -fsSL -o {install}/lib/atl-jars/asm.jar https://repo1.maven.org/maven2/org/ow2/asm/asm/9.7.1/asm-9.7.1.jar
     > curl -fsSL -o {install}/lib/atl-jars/asm-tree.jar https://repo1.maven.org/maven2/org/ow2/asm/asm-tree/9.7.1/asm-tree-9.7.1.jar
@@ -375,7 +389,7 @@ export func install_android []
     ins : string '{ip.absolute[]}'
     run : string {
         d=${{XDG_DATA_DIRS:-/usr/local/share:/usr/share}}
-        export XDG_DATA_DIRS={ins}/share:$d
+        export XDG_DATA_DIRS={ins}/android/share:{ins}/share:$d
         a="$HOME/.local/share/android_translation_layer"
         mkdir -p "$a/_installed_apks_"
         # the Google account file: its email, token and user id

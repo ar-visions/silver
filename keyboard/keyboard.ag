@@ -1,6 +1,5 @@
 # keyboard: on-screen input devices; trinity sees only what they type
 export 0.1.0
-export software ['everyday']
 
 import vec
 import img
@@ -428,8 +427,8 @@ element LangText
 Button LangButton
     style : CSS {
         layers.body:
-            fill_color: #0000
-            radius: 8
+            fill_color: #00000026
+            radius: 999
             stroke_width: 1
             stroke_color: #ffffff33
             box_shadow: inset 0 0 12px #ff84ff14
@@ -454,8 +453,8 @@ Button LangButton
 Button LangRow
     style : CSS {
         layers.body:
-            fill_color: #0000
-            radius: 8
+            fill_color: #00000026
+            radius: 999
             stroke_width: 1
             stroke_color: #ffffff1a
             box_shadow: inset 0 0 12px #ff84ff14
@@ -497,8 +496,9 @@ element LanguageList
         for [ ee: element, id: string ] in elements
             if [ !ee.bounds || !(ee inherits Button) ] continue
             cv.save[]
+            rr : f32 [ ee.bounds.h * 0.5 ]
             cv.clip_rounded_rect[ ee.bounds.x, ee.bounds.y, ee.bounds.w,
-                                  ee.bounds.h, 8.0, 8.0, 8.0, 8.0 ]
+                                  ee.bounds.h, rr, rr, rr, rr ]
             w.draw_blur[ cv, a, BlurStage.blur ]
             cv.restore[]
 

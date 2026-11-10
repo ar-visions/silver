@@ -1826,7 +1826,9 @@ element Bootstrap
         # it) and what its view needs (system_bus, mms)
         steps.push[ command { cd {fp}/build
             && for p in silver-*.product; do m=$(basename $p .product);
-                test -f {install}/export/$m.agi && echo $m.agi; done
+                test -f {install}/export/$m.agi && echo $m.agi;
+                test -f {install}/export/$m.props.agi
+                && echo $m.props.agi; done
             | (cd {install}/export && tar -rf {tb} -T -
                 --transform "s,^,{rt}/install/export/,") } ]
         # every app's build stamp, else the phone builds it again

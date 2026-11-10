@@ -1616,6 +1616,15 @@ Button TrayRow
     public keys : string
     mutable icon_svg : SVGModel
 
+    # text cut at its start to fit: '…' and as much of its end as fits
+    func start_cut [ cv: Canvas, text: string, room: f32 ] -> string
+        if [ cv.measure_text[ text ].w <= room ] return text
+        n : i32 [ i32[ text.count ] ]
+        for [ k: i32 1, k < n, k += 1 ]
+            t : '…{text.mid[ k, n - k ]}'
+            if [ cv.measure_text[ t ].w <= room ] return t
+        return '…'
+
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         # the icon column in the menus' unit, as the text's offset
@@ -1626,11 +1635,17 @@ Button TrayRow
             was : CanvasFont kc.font
             kc.save[]
             fnt : 'fonts/BarlowCondensed-Regular.ttf'
+            # its room: right of the name; a long one loses its start
+            kc.set_font[ shared_font[ kc, fnt, label_px[ kc, 19.0 ] ] ]
+            nw : f32 [ (label) ? kc.measure_text[ label ].w : 0.0 ]
             kc.set_font[ shared_font[ kc, fnt, label_px[ kc, 15.0 ] ] ]
+            x0 : f32 [ 40.0 * u + nw + 16.0 * u ]
+            room : f32 [ bounds.w - 12.0 * u - x0 ]
+            shown : start_cut[ kc, keys, room ]
             kc.fill_color[ rgba [
                 (disable) ? '#ffffff33' : '#ffffff70' ] ]
-            kc.draw_text[ keys, rect [ x: 0.0, y: 0.0,
-                w: bounds.w - 12.0 * u, h: bounds.h ],
+            kc.draw_text[ shown, rect [ x: x0, y: 0.0,
+                w: max[ room, 0.0 ], h: bounds.h ],
                 vec2f [ 1.0, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
             kc.paint[]

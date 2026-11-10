@@ -9675,8 +9675,9 @@ none etype_implement(etype t, bool w) { sequencer
                 (au->is_c && au->is_static));
             bool set_init = !a->is_Au_import && !au->is_imported &&
                 !(au->is_c && au->is_static);
+            // set up twice (an enum-typed global): one llvm global
             ll_global(a, n, mdl, llvm_id(a, (symbol)au->ident),
-                is_external, false, set_init);
+                is_external, true, set_init);
             n->loaded = false;
             if (!is_external)
                 emit_debug_global(a, au, _llvalue(n));

@@ -3829,6 +3829,8 @@ Control Editor
     mutable caret_touch   : i64
     # a navigation opened this file: its arrival is a nav point
     mutable arrive_pending : bool
+    # the app shown before its own file loads: that load keeps it
+    public keep_app : bool
     mutable stop_pending_col : i32
     public  debug_running : bool
     public  debugger      : dbg
@@ -6119,7 +6121,7 @@ Control Editor
                     && !(src && owns_src[ run_view, src ]) ]
         if [ want.compare[ 'editor' ] == 0 ]
             if [ dv ] close_app[]
-            app_view = false
+            app_view = keep_app && run_view != null
             load_text[]
             view_name = 'editor'
             return
@@ -6356,7 +6358,7 @@ Control Editor
             if [ !run_view && src && orb ]
                 for [ v7: AppView ] in orb.instances_of[ src ]
                     if [ !v7.viewer ] run_view = v7
-            app_view    = false
+            app_view    = keep_app && run_view != null
             sel_line    = -1
             anchor_line = -1
             anchor_col  = 0
@@ -6374,6 +6376,7 @@ Control Editor
             lines.push[ '' ]
             return
         mount[ resolve_view[] ]
+        keep_app = false
         # a stop that arrived before this file was in: land on it now
         if [ stop_pending > 0 ]
             apply_stop[ stop_pending, stop_pending_col ]

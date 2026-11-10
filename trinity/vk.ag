@@ -3839,7 +3839,8 @@ class Pipeline
         # many samplers (the PBR avatar has 9) makes wcount = 64*10 =
         # 640 — the old [512] overran here once the ring grew to 64.
         buffer_infos:      local VkDescriptorBufferInfo       [512]
-        descriptor_writes: local VkWriteDescriptorSet         [1024]
+        # 64 slots of 1 uniform + up to 32 bindings
+        descriptor_writes: local VkWriteDescriptorSet         [2112]
         # made in init (bind_resources is its delegate); a rebind
         # nulled them, and a store here after construction owns them
         if [ !resources ]        resources        = vec Gpu []
