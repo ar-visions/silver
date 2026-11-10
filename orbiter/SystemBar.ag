@@ -698,6 +698,12 @@ element MenuDrawer
     # once as it opens, and again on a new window size
     public background_lens : bool [ true ]
     ground : DrawerGround []
+
+    # a move in the menu is the menu's: no default action (the task
+    # bar does not come up under it)
+    func on_move [ ev: Event ]
+        ev.no_default = true
+
     style : CSS {
         # to the foot: the task bar draws over it
         area: l0 t0 w10.91 b0

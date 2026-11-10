@@ -7463,6 +7463,8 @@ Control Editor
             ux.will_animate = true
 
     func on_wheel [ ev: Event ]
+        # the wheel is the pane's (its text, or its app): no default
+        ev.no_default = true
         # the app takes the wheel only while the pane shows it
         if [ run_view && app_view && run_view.view_wheel*[ ev ] ] return
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]

@@ -2501,6 +2501,8 @@ Render Canvas
                 cp = u32[ b ]
                 i += 1
             g  : GlyphEntry font.get_glyph[ cp ]
+            fb : CanvasFont fallback_font[ font, cp ]
+            if [ fb ] g = fb.get_glyph[ cp ]
             if [ g.cached ]
                 tw += f32 g.advance
         scale : f32 [ (st.line_height > 0.0) ? st.line_height : 1.0 ]
@@ -2668,6 +2670,27 @@ Render Canvas
         el
             tot : f32 [ vk.big_px[ at ] + area ]
             vk.big_px[ at ] = tot
+
+    # a font with cp when fnt has none (fontconfig's pick, kept by
+    # code point), at fnt's size; null when fnt has it or none does
+    func fallback_font [ fnt: CanvasFont, cp: u32 ] -> CanvasFont
+        if [ cp < 128 || !fnt || fnt.glyph_index[ cp ] != 0 ]
+            return null
+        if [ !vk.font_cache ] vk.font_cache = map Au [ string ] []
+        mk : string 'fc:{cp}'
+        fm : FontMatch vk.font_cache[ mk ]
+        if [ !fm ]
+            fm = font_match[ null, 400, 5, 0, cp, false ]
+            vk.font_cache[ mk ] = fm
+        if [ !fm.found ] return null
+        key : string '{fm.file}#{fm.index}@{fnt.size_px}x{fnt.pixel_scale}'
+        cf : CanvasFont vk.font_cache[ key ]
+        if [ !cf ]
+            cf = CanvasFont [ ft_lib: ft_lib, uri: fm.file,
+                face_index: fm.index, size_px: fnt.size_px,
+                pixel_scale: fnt.pixel_scale ]
+            vk.font_cache[ key ] = cf
+        return cf
 
     func set_font [ fnt: CanvasFont ]
         font = pixel_font[ fnt ]
@@ -3188,8 +3211,6 @@ Render Canvas
         crop_active : bool [ st.crop.z > st.crop.x ]
         crop_left : f32 [ st.crop.x ]
         crop_right : f32 [ st.crop.z ]
-        # characters the font has not, drawn after from fonts that do
-
         i : i32 [ 0 ]
         while [ i < display.count ]
             b  : i32 [ display[i] & 255 ]
@@ -3211,6 +3232,22 @@ Render Canvas
             el
                 cp = u32[ b ]
                 i += 1
+            # letters the font has not: a run of their own, from a
+            # font that has them (each font its own atlas)
+            fb : CanvasFont fallback_font[ font, cp ]
+            if [ fb ]
+                text_end[ font, vi ]
+                verts = text_begin[ fb ]
+                vi = 0
+                fs : glyph_atlas.get[ fb, cp ]
+                if [ fs.cached && fs.atlas_w > 0 && fs.atlas_h > 0 ]
+                    glyph_quad[ verts, vi, fs, pen_x, pen_y ]
+                    vi += 6
+                pen_x += f32 fs.advance * inv
+                text_end[ fb, vi ]
+                verts = text_begin[ font ]
+                vi = 0
+                continue
             slot : glyph_atlas.get[ font, cp ]
             if [ slot.cached && slot.atlas_w > 0 && slot.atlas_h > 0 ]
                 if [ vi + 6 > text_max_verts ]

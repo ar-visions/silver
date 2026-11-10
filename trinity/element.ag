@@ -286,6 +286,8 @@ ielement element
 
     public func on_move    [ ev: Event ]
         if [ !sb_drag ] return
+        # dragging its thumb: the move is the scroll's
+        ev.no_default = true
         sbl : ScrollLayer (layers) ? cast ScrollLayer [
             layers['scrollbar'] ] : null
         # the app element's events come in its parent's space
@@ -301,7 +303,10 @@ ielement element
         if [ max_sc <= 0.0 ] max_sc = 0.0
         if [ scroll_goal < 0.0 ] scroll_goal = 0.0
         if [ scroll_goal > max_sc ] scroll_goal = max_sc
-        if [ scroll_goal != was && ux ] ux.wheel_spent = true
+        # it scrolled: the wheel was its (no default action after)
+        if [ scroll_goal != was ]
+            ev.no_default = true
+            if [ ux ] ux.wheel_spent = true
         scroll_anim = true
         pristine = false
         ux.will_animate = true
@@ -403,6 +408,13 @@ ielement element
     # a finger past the first presses it too (a game pad's keys): it
     # takes on_press, on_move and on_release from each finger alone
     public multi_touch : bool
+    # a gaussian over all it paints (its children too), px; 0 none
+    public blur_px : f32
+    # the layer a blur draws it into; set while it draws there
+    intern blur_layer : Canvas
+    intern blurring : bool
+    # the layer holds it flattened: the blur reuses it each frame
+    intern blur_snap : bool
 
     func init []
         use_mobile = mobile_on[]
@@ -557,6 +569,10 @@ ielement element
 
     func release_tree [ ]
         unbind_home[]
+        # out of the tree: the window's blur redraw lets it go
+        if [ ux && ux.blur_users ]
+            bi : i32 [ i32[ ux.blur_users.index_of[ a ] ] ]
+            if [ bi >= 0 ] ux.blur_users.remove[ bi ]
         for [ ee: element, k: string ] in elements
             ee.release_tree[]
 

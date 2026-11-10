@@ -1979,6 +1979,8 @@ element DeskWidget
     public func on_wheel [ ev: Event ]
         o : orbiter orb[]
         if [ !o || editing[] ] return
+        # the widget's, or the desktop's under it: no default
+        ev.no_default = true
         av : AppView o.widget_view[ index ]
         # an app not up to take it: the column or desktop does
         if [ !av || !av.view_wheel[ ev ] ]
@@ -3927,6 +3929,8 @@ element TaskChip
     public title : string
     # a running agent's task: its name ('' an app's)
     public agent : string
+    # a code window's task: its pane (-1 an app's or an agent's)
+    public pane : i32 [ -1 ]
     # 0 up, 1 busy (starting, compiling, paused), 2 failed, 3 an
     # agent waiting for the user
     public light : i32
@@ -5364,6 +5368,14 @@ element orbiter : trinity # implements compiler
     # panes put out of view by their task button: kept whole (editor,
     # app, place), only not drawn; across a reload too
     persist pane_hid : vec bool
+    # each pane's fade: 0 shown, 1 gone (eased to its hide); and its
+    # place while it fades over the desktop (x y w h)
+    persist pane_fade : vec f32
+    persist pane_rect : vec f32
+    # the pointer's height from the last move no element took, and
+    # when a wheel last scrolled something
+    intern bar_y        : f32
+    intern bar_quiet_ms : i64
     mutable mini_rect     : vec f32
     # a restored one waits for its new pane's editor
     mutable mini_wait     : i32 [ -1 ]
@@ -14523,6 +14535,18 @@ element orbiter : trinity # implements compiler
         # a running app: a click at the release, or a drag to pin it
         if [ ev.target inherits TaskChip ]
             tc : TaskChip ev.target
+            # a code window's: hidden or shown, as an app's; its close
+            # closes the pane
+            if [ tc.pane >= 0 && tc.pane < editor_slots.count ]
+                if [ tc.on_close[ f32[ ux.mouse.x ], f32[ ux.mouse.y ] ] ]
+                    close_pane[ tc.pane ]
+                el [ pane_hidden[ tc.pane ] ]
+                    unhide[ tc.pane ]
+                el
+                    minimize[ tc.pane ]
+                if [ ux ] ux.restyle = true
+                ev.no_default = true
+                return
             # an agent's: its console on the desktop, again away; its
             # close ends the agent
             if [ tc.agent && tc.agent.count > 0 ]
@@ -15841,7 +15865,7 @@ element orbiter : trinity # implements compiler
                     e8 : Editor pane_at[ pi8 ]
                     # hide_ui hides every pane: their apps run on here
                     if [ e8 && e8.run_view == av8 && !e8.hide &&
-                         !hide_ui && !pane_hidden[ pi8 ] ]
+                         !hide_ui && !pane_gone[ pi8 ] ]
                         shown8 = true
                 if [ !shown8 ]
                     av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
@@ -15853,7 +15877,7 @@ element orbiter : trinity # implements compiler
         # docked windows filling the area hide the scene: it holds
         cover9 : bool [ !hide_ui && any_docked[] ]
         for [ pc9: i32 0, pc9 < editor_slots.count, pc9 += 1 ]
-            if [ pane_floats[ pc9 ] || pane_hidden[ pc9 ] ] continue
+            if [ pane_floats[ pc9 ] || pane_out[ pc9 ] ] continue
             ec : Editor pane_at[ pc9 ]
             app9 : bool [ ec && ec.app_view && ec.run_view
                           && !ec.run_view.held && !ec.run_view.ended ]
@@ -16185,7 +16209,7 @@ element orbiter : trinity # implements compiler
     # a pane is docked (in the split)
     func any_docked [] -> bool
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
-            if [ !pane_floats[ i ] && !pane_hidden[ i ] ] return true
+            if [ !pane_floats[ i ] && !pane_out[ i ] ] return true
         return false
 
     # the free panes' keys, bottom to top, each with its ring; the
@@ -16194,7 +16218,8 @@ element orbiter : trinity # implements compiler
         ids : vec string []
         if [ !any_docked[] ] ids.push[ 'desk' ]
         for [ hi: i32 0, hi < editor_slots.count, hi += 1 ]
-            if [ pane_hidden[ hi ] ] ids.push[ 'pane{hi}' ]
+            if [ pane_out[ hi ] && !pane_floats[ hi ] ]
+                ids.push[ 'pane{hi}' ]
         if [ free_order ]
             for [ fi: i32 ] in free_order
                 if [ !pane_floats[ fi ] ] continue
@@ -16346,7 +16371,7 @@ element orbiter : trinity # implements compiler
         if [ !free_order ] return
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             if [ !pane_floats[ i ] || !pane_empty[ i ] ] continue
-            if [ pane_hidden[ i ] ] continue
+            if [ pane_out[ i ] ] continue
             if [ pane_browsing[ i ] || pending_finder == i ] continue
             # a minimized window coming back into it, or an app whose
             # file loads first (shown a frame later)
@@ -16440,10 +16465,31 @@ element orbiter : trinity # implements compiler
                 selected: (search_pane[] == 'pane{i}') ]
             # said every render, shown or not: a mounted pane keeps a
             # hide it is not told again
-            ev.hide = pane_hidden[ i ]
-            if [ pane_hidden[ i ] ]
+            ev.hide = pane_gone[ i ]
+            if [ pane_out[ i ] && !pane_floats[ i ] ]
+                # docked, fading over the desktop at its place:
+                # see-through and blurred as it goes
+                fd : f32 fade_of[ i ]
+                k : i32 [ i * 4 ]
+                rx : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                    ? pane_rect[ k ] : 0.0 ]
+                ry : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                    ? pane_rect[ k + 1 ] : 0.0 ]
+                rw : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                    ? pane_rect[ k + 2 ] : 0.0 ]
+                rh : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                    ? pane_rect[ k + 3 ] : 0.0 ]
+                ev.topmost = true
+                ev.opacity = (1.0 - fd) * (1.0 - fd)
+                ev.blur_px = fd * (2.0 - fd) * 36.0
+                ev.area = Region [ 'l{rx}px t{ry}px w{rw}px h{rh}px' ]
                 t['pane{i}'] = ev
                 continue
+            # a window fades and blurs whole: it, its shadow, ground
+            # and edge (none of it drawn once gone)
+            fo : f32 fade_of[ i ]
+            out : bool [ away || pane_gone[ i ] ]
+            ev.blur_px = fo * (2.0 - fo) * 36.0
             if [ nav_fade < 1.0 && !pane_floats[ i ]
                  && pane_browsing[ i ] ]
                 ev.opacity = nav_fade
@@ -16457,10 +16503,11 @@ element orbiter : trinity # implements compiler
                 # the navigator in it is square: no window corners
                 sq : bool pane_browsing[ i ]
                 ev.free    = !sq
-                ev.hide    = away
-                ev.opacity = seen
+                ev.hide    = out
+                ev.opacity = seen * (1.0 - fo) * (1.0 - fo)
                 # fading or gone: presses pass it by
                 ev.user_events = nav_fade <= 0.0 && !agents
+                    && !pane_out[ i ]
                 ev.area = Region [
                     'l{fx}px t{fy}px w{fw}px h{fh}px' ]
                 # its shadow and outline, under it
@@ -16469,20 +16516,24 @@ element orbiter : trinity # implements compiler
                 sy : f32 [ fy - sh ]
                 sw : f32 [ fw + sh * 2.0 ]
                 shh : f32 [ fh + sh * 2.0 ]
-                t['shade{i}'] = WinShade [ topmost: true, hide: away,
-                    opacity: seen, square: sq,
+                t['shade{i}'] = WinShade [ topmost: true, hide: out,
+                    opacity: seen * (1.0 - fo) * (1.0 - fo), square: sq,
+                    blur_px: fo * (2.0 - fo) * 36.0,
                     area: Region [
                         'l{sx}px t{sy}px w{sw}px h{shh}px' ] ]
                 # its piece of the screen's ground, as a docked pane
                 # has under it
-                t['ground{i}'] = WinGround [ topmost: true, hide: away,
-                    opacity: seen, square: sq,
+                t['ground{i}'] = WinGround [ topmost: true, hide: out,
+                    opacity: seen * (1.0 - fo) * (1.0 - fo), square: sq,
+                    blur_px: fo * (2.0 - fo) * 36.0,
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
                 t['pane{i}'] = ev
-                t['edge{i}'] = WinEdge [ topmost: true, hide: away,
-                    opacity: seen, square: sq, selected: ev.selected,
+                t['edge{i}'] = WinEdge [ topmost: true, hide: out,
+                    opacity: seen * (1.0 - fo) * (1.0 - fo), square: sq,
+                    blur_px: fo * (2.0 - fo) * 36.0, selected: ev.selected,
                     area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
-                if [ nav_fade <= 0.0 && !agents && !fixed_win[ i ] ]
+                if [ nav_fade <= 0.0 && !agents && !fixed_win[ i ]
+                     && !pane_out[ i ] ]
                     grips_of[ t, i, fx, fy, fw, fh ]
                 continue
             t['pane{i}'] = ev
@@ -16536,6 +16587,16 @@ element orbiter : trinity # implements compiler
         if [ !pane_hid ] pane_hid = vec bool []
         while [ pane_hid.count < editor_slots.count ] pane_hid.push[ false ]
         pane_hid[ pi ] = true
+        # where it is, to fade out there over the desktop
+        if [ !pane_rect ] pane_rect = vec f32 []
+        while [ pane_rect.count < editor_slots.count * 4 ]
+            pane_rect.push[ 0.0 ]
+        pv : element find_el[ a, 'pane{pi}' ]
+        if [ pv && pv.bounds ]
+            pane_rect[ pi * 4 ]     = pv.bounds.x
+            pane_rect[ pi * 4 + 1 ] = pv.bounds.y
+            pane_rect[ pi * 4 + 2 ] = pv.bounds.w
+            pane_rect[ pi * 4 + 3 ] = pv.bounds.h
         if [ active_pane == pi ]
             for [ q: i32 0, q < editor_slots.count, q += 1 ]
                 if [ !pane_hidden[ q ] ]
@@ -16546,6 +16607,36 @@ element orbiter : trinity # implements compiler
     # put out of view by minimize
     public func pane_hidden [ pi: i32 ] -> bool
         return pane_hid && pi >= 0 && pi < pane_hid.count && pane_hid[ pi ]
+
+    # the fade's look: one curve of its time, so a show is a hide
+    # played backwards (each ends on the same step)
+    func fade_of [ pi: i32 ] -> f32
+        p : f32 [ (pane_fade && pi >= 0 && pi < pane_fade.count)
+            ? pane_fade[ pi ] : 0.0 ]
+        return p * p
+
+    # out of the split: hidden, or fading out or in over the desktop
+    func pane_out [ pi: i32 ] -> bool
+        return pane_hidden[ pi ] || fade_of[ pi ] > 0.0
+
+    # hidden and faded wholly: not drawn
+    func pane_gone [ pi: i32 ] -> bool
+        return pane_hidden[ pi ] && fade_of[ pi ] >= 1.0
+
+    # each pane's fade in time, straight to its hide over 0.42 s
+    func ease_fade [ w: Window ]
+        if [ !pane_fade ] pane_fade = vec f32 []
+        while [ pane_fade.count < editor_slots.count ]
+            pane_fade.push[ 0.0 ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            goal : f32 [ (pane_hidden[ i ]) ? 1.0 : 0.0 ]
+            f : f32 pane_fade[ i ]
+            if [ f == goal ] continue
+            step : f32 [ w.frame_factor / 25.2 ]
+            f = (goal > f) ? min[ f + step, goal ] : max[ f - step, goal ]
+            pane_fade[ i ] = f
+            w.will_animate = true
+            force_update[]
 
     # back in view as it was, and selected
     func unhide [ pi: i32 ]
@@ -16673,8 +16764,7 @@ element orbiter : trinity # implements compiler
             for [ q: i32 0, q < editor_slots.count, q += 1 ]
                 edq : Editor pane_at[ q ]
                 if [ (wvd != 0 && pane_window[ q ] == wvd)
-                     || (wvd == 0 && edq && edq.run_view == avd
-                         && edq.app_view) ]
+                     || (wvd == 0 && edq && edq.run_view == avd) ]
                     if [ pane_hidden[ q ] ] unhide[ q ]
                     el minimize[ q ]
                     if [ ux ] ux.restyle = true
@@ -16719,6 +16809,15 @@ element orbiter : trinity # implements compiler
 
     # the task bar out while the pointer is at the window's foot, or
     # always; eased each frame
+    # a move no element took (a menu's, a scroll's): its height is
+    # what brings the task bar up
+    public func on_move [ ev: Event ]
+        if [ !ev.no_default ] bar_y = ev.mouse.pos.y
+
+    # a wheel that scrolled something: no task bar for a moment
+    public func on_wheel [ ev: Event ]
+        if [ ev.no_default ] bar_quiet_ms = epoch_millis[]
+
     func bar_ease [ w: Window ]
         if [ use_mobile || !w.root || !w.root.bounds ] return
         # off the window (trinity parks the point far away): it goes
@@ -16728,8 +16827,11 @@ element orbiter : trinity # implements compiler
             # it comes up a little before the edge
             reach : f32 [ (bar_out > 0.5) ? task_h[]
                 : round[ 24.0 * ux_unit[ w ] ] ]
+            # not under a menu, nor while something scrolls
+            calm : bool [ !drawer_open
+                && epoch_millis[] - bar_quiet_ms > 600 ]
             want : bool [ set_bar_hide != 'auto'
-                || f32[ w.mouse.y ] >= w.root.bounds.h - reach ]
+                || (calm && bar_y >= w.root.bounds.h - reach) ]
             bar_goal = (want) ? 1.0 : 0.0
         if [ bar_out == bar_goal ] return
         bar_out = filter_n[ bar_out, bar_goal, 0.3, w.frame_factor ]
@@ -20877,7 +20979,16 @@ element orbiter : trinity # implements compiler
         agents : vec string []
         for [ an: string ] in home_names[]
             if [ home_session[ an ] ] agents.push[ an ]
-        nt : i32 [ i32[ runs.count + agents.count ] ]
+        # a pane showing a file (not an app, the navigator or the
+        # desktop): a code window, a task too
+        codes : vec i32 []
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            edc : Editor pane_at[ q ]
+            if [ !edc || !edc.src || pane_browsing[ q ] ] continue
+            # its app's button is the pane's, app or code shown
+            if [ edc.run_view ] continue
+            codes.push[ q ]
+        nt : i32 [ i32[ runs.count + agents.count + codes.count ] ]
         cw : f32 [ (nt > 0)
             ? min[ 6.0 * un, (room - gaps) / f32[ nt ] ]
             : 0.0 ]
@@ -20893,8 +21004,7 @@ element orbiter : trinity # implements compiler
             wv : u64 window_of[ av ]
             lit : bool [ !pane_hidden[ active_pane ]
                 && ((wv != 0 && pane_window[ active_pane ] == wv)
-                || (wv == 0 && edv && edv.run_view == av
-                    && edv.app_view)) ]
+                || (wv == 0 && edv && edv.run_view == av)) ]
             # a program whose window is up is not starting
             waits : bool [ wv == 0 && av.status_word[].count > 0 ]
             lt : i32 [ (run_failed[ av ]) ? 2 : ((waits) ? 1 : 0) ]
@@ -20926,6 +21036,19 @@ element orbiter : trinity # implements compiler
                     seg_reach: 0.5, icon_scale: 0.4125,
                     area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
                 x += gw
+        # the code windows after the apps
+        if [ codes.count > 0 ] x += gap
+        for [ q: i32 ] in codes
+            edc : Editor pane_at[ q ]
+            fc : path edc.src.directory[]
+            ac : path '{install_root[]}/export/{install_name_of[ fc.filename[] ]}.agi'
+            t[ 'task_pane_{q}' ] = TaskChip [ pane: q, inst: -1,
+                file: fc, agi: ac,
+                close_all: cmd_down, close_hover: shift_down,
+                label: edc.src.filename[], title: '{fc}',
+                selected: q == active_pane && !pane_hidden[ q ],
+                area: Region [ 'l{x}px t0 w{cw}px b0' ] ]
+            x += cw
         # the agents and their + at the right end, before its own
         # buttons
         ab : f32 [ (agent_installed[].count > 0)
@@ -21051,6 +21174,7 @@ element orbiter : trinity # implements compiler
             win_ds = w.scale
             wlc_set_scale[ win_scale[] ]
         ease_free[ w ]
+        ease_fade[ w ]
         free_empty_close[]
         if [ desk_pick && pane_at[ active_pane ] ]
             pick : AppEntry desk_pick

@@ -1885,6 +1885,8 @@ element Console
     func on_wheel [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
+        # its text scrolls: no default
+        ev.no_default = true
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
         # sideways: shift + wheel, or the wheel's own x
         dx : f32 [ ev.mouse.wheel_delta.x ]

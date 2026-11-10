@@ -176,9 +176,9 @@ import svg
 import vk
 import shader
 import Style
+import FontMatch
 import Canvas
 import Console
-import FontMatch
 import video
 import screen
 import mux
@@ -7533,10 +7533,47 @@ Display Window
         a.screen = prev
         drop[ prev ]
 
+    # e flattened once into a copy with a clear margin round it (three
+    # widths of a 36 px blur, so its edges blur out into it); each
+    # frame that copy put down blurred by e.blur_px at e's opacity
+    func draw_blurred [ e: element*, stage: CanvasType, last: element ]
+        m  : f32 [ 108.0 ]
+        lw : i32 [ i32[ ceilf[ e.bounds.w + m * 2.0 ] ] ]
+        lh : i32 [ i32[ ceilf[ e.bounds.h + m * 2.0 ] ] ]
+        if [ !e.blur_layer ]
+            e.blur_layer = Canvas [ vk: vk, w: a, width: lw, height: lh,
+                                    load_existing: true, quantize: true ]
+            e.blur_layer.update[]
+            e.blur_snap = false
+        lay : e.blur_layer
+        if [ !e.blur_snap ]
+            lay.resize[ lw, lh ]
+            lay.fresh_state[]
+            lay.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+            prev : hold[ screen ]
+            screen = lay
+            lay.save[]
+            lay.translate[ m, m ]
+            e.blurring = true
+            draw_element[ e, stage, last ]
+            e.blurring = false
+            lay.restore[]
+            screen = prev
+            drop[ prev ]
+            e.blur_snap = true
+        # its opacity once, on the flat copy: text and all fade as one
+        screen.save[]
+        screen.set_opacity[ screen.get_opacity[] * e.opacity ]
+        screen.filter_blur[ lay, e.blur_px, e.blur_px, 0.0 - m, 0.0 - m,
+                            0.0, 0.0, 0.0, 0.0 ]
+        screen.restore[]
+
     public func draw_element [ e: element*, stage: CanvasType,
                                last:element ]
         draw_stage = stage
         expect e inherits element, 'e is not an element'
+        # out of sight or sharp: a blur flattens it afresh next time
+        if [ e.hide || e.blur_px <= 0.05 ] e.blur_snap = false
         if [ e.hide ] return
         if [ e.animated && (frame_skip & 8) != 0 ] return
         # a held backdrop (a phone's, or a covered one) draws nothing
@@ -7567,9 +7604,16 @@ Display Window
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ]
             return
         if [ e.opacity <= 0.0 ] return
-        # opacity scales everything the element paints
+        # a blur: all it paints, children too, drawn into its own layer
+        # and put down through a gaussian
+        if [ e.blur_px > 0.05 && !e.blurring
+             && stage == CanvasType.screen ]
+            draw_blurred[ e, stage, last ]
+            return
+        # opacity scales everything the element paints; in a blur's
+        # layer the layer takes it (text takes no canvas opacity)
         cv.save[]
-        if [ e.opacity < 1.0 ]
+        if [ e.opacity < 1.0 && !e.blurring ]
             cv.set_opacity[ cv.get_opacity[] * e.opacity ]
         # a layer with clip: all the element paints and holds is masked
         # to that layer's rounded box
