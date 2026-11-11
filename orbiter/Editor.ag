@@ -528,6 +528,9 @@ ResourceView AppView
     # the class of the app's own keyboard ('' none), its bytes
     public  app_keys    : string
     mutable keys_buf    : vec u8
+    # an address the app asked to open (orbiter takes it), its bytes
+    public  open_asked  : string
+    mutable open_buf    : vec u8
     # the app's views (its orbiter bar's chips), the one it shows
     # (-1 its source), and their names' bytes as they arrive
     public  app_views   : vec string
@@ -689,6 +692,8 @@ ResourceView AppView
     mutable dbg_ah     : i32
     # the pane's draw posted this frame's request itself
     mutable req_drawn  : bool
+    # a program run for debugging: pause attaches lldb to it
+    mutable prog_debug : bool
 
     func extensions [] -> vec string
         return vec string []
@@ -807,6 +812,20 @@ ResourceView AppView
                     addr_buf = vec u8 []
                     wa9 : cast Window [ cv.w ]
                     if [ wa9 ] wa9.restyle = true
+                    break
+            # an address the app asks opened, as its keyboard comes
+            el [ t == i32[ HM.open ] ]
+                if [ !open_buf ] open_buf = vec u8 []
+                ob : local i32 [ 3 ]
+                ob[0] = host_pa[]
+                ob[1] = host_pb[]
+                ob[2] = host_pc[]
+                for [ k9: i32 0, k9 < 3, k9 += 1 ]
+                    if [ ob[k9] != 0 ]
+                        open_buf.push[ u8 ob[k9] ]
+                        continue
+                    open_asked = bytes_text[ open_buf ]
+                    open_buf = vec u8 []
                     break
             # the app's keyboard class, as its address comes
             el [ t == i32[ HM.keys ] ]
@@ -4963,15 +4982,8 @@ Control Editor
         if [ !ux || !src ] return null
         o9 : cast orbiter [ ux.app_object ]
         if [ !o9 ] return null
-        et : string o9.err_text_for[ src ]
-        if [ et ] return et
-        # its build under way: what it is doing (the band's info look)
-        if [ run_view && run_view.building[] ]
-            return '{o9.instance_name[ run_view ]}: {run_view.build_step[]}'
-        # no line: the instance's own failure, as it said it
-        if [ o9.run_failed[ run_view ] ]
-            return '{o9.instance_name[ run_view ]}: {run_view.note}'
-        return null
+        # a build's progress and an app's failure are the console's
+        return o9.err_text_for[ src ]
 
     # its line, 0 when the error has none
     public func err_band_line [] -> i32
@@ -7988,6 +8000,36 @@ Control Editor
 
 # bytes from the host as text (string[ @v[0] ] is a pointer cast)
 # a program's console line: its display, X11, fonts, bus and opener
+# a shell line's words: quotes taken off, a quoted word kept whole
+func line_words [ line: string ] -> vec string
+    out : vec string []
+    w : ''
+    has : false
+    q : i32 [ 0 ]
+    for [ i: i32 0, i < line.count, i += 1 ]
+        # 34 ", 39 ', 32 space
+        c : i32 [ i32[ line.chars[ i ] ] & 255 ]
+        if [ q != 0 ]
+            if [ c == q ] q = 0
+            el w = '{w}{line.mid[ i, 1 ]}'
+        el [ c == 34 || c == 39 ]
+            q = c
+            has = true
+        el [ c == 32 ]
+            if [ has || w.count > 0 ] out.push[ w ]
+            w = ''
+            has = false
+        el
+            w = '{w}{line.mid[ i, 1 ]}'
+    if [ has || w.count > 0 ] out.push[ w ]
+    return out
+
+# a path's last part
+func base_name [ p: string ] -> string
+    at : i32 [ p.rindex_of[ '/' ] ]
+    if [ at < 0 ] return p
+    return p.mid[ at + 1, p.count - at - 1 ]
+
 func program_args [ prog: string, display: string, fonts: string,
                     bus: string ] -> string
     fl : (fonts.count > 0) ? '--fonts {fonts} ' : ''

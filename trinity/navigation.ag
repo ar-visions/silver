@@ -354,6 +354,11 @@ class AppIcon
             png : path '{file}/images/icon.png'
             jpg : path '{file}/images/icon.jpg'
             if [ !png.exists[] && jpg.exists[] ] png = jpg
+            # neither: an svg there (a GNOME app's own, as a store
+            # writes it)
+            vec_icon : path '{file}/images/icon.svg'
+            if [ !icon_file && !png.exists[] && vec_icon.exists[] ]
+                icon_file = vec_icon
             if [ icon_file && icon_file.ext[] == 'svg' ]
                 svg = SVGModel [ icon_file ]
                 png = path '/nonexistent'

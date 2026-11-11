@@ -4,6 +4,7 @@ export 51.0
 export software ['everyday']
 export platforms ['x64']
 export icon ['gedit']
+export run ['gedit']
 export build none
 
 # glib's introspection tools: gedit writes its plugin API as GIR

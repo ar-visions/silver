@@ -58,6 +58,13 @@ element console : trinity
                 setenv[ 'FONTCONFIG_FILE', fonts.chars, 1 ]
             if [ opener && opener.count > 0 ]
                 setenv[ 'ORBITER_SOCKET', opener.chars, 1 ]
+                # orbiter's xdg-open before the system's (winebrowser)
+                bin : string '{path.path_install[]}/bin'
+                pt : cstr getenv[ 'PATH' ]
+                pl : string [ (pt) ? '{bin}:{string [ pt ]}' : bin ]
+                setenv[ 'PATH', pl.chars, 1 ]
+                br : string '{bin}/xdg-open'
+                setenv[ 'BROWSER', br.chars, 1 ]
             # ours after the system's: our schemas hid the user's fonts
             share : string '{path.path_startup[]}/install/share'
             was : string '/usr/local/share:/usr/share'

@@ -358,7 +358,9 @@ DBG_API Au dbg_poll(dbg debug) {
                 continue;   // running stays true; poll catches the step
             }
             if (is_step && has_src) is_ag = true;
-            if ((is_step || is_sig) && !is_ag) {
+            // a SIGSTOP never surfaces (lldb-server's own, unrecognised
+            // across the app's pid namespace); a step under way goes on
+            if (is_sig || (is_step && !is_ag)) {
                 S(debug)->process.Continue();   // running stays true; poll catches next stop
                 continue;
             }
@@ -513,6 +515,10 @@ DBG_API none dbg_attach(dbg debug, i32 pid) {
         debug->active = false;   // session never began — caller checks this
     } else {
         printf("dbg: attached pid=%i\n", (i32)pid);
+        // a SIGSTOP handed back on continue stops the thread again
+        lldb::SBCommandReturnObject hr;
+        S(debug)->debugger.GetCommandInterpreter().HandleCommand(
+            "process handle SIGSTOP -p false", hr);
         // swallow the attach's own stop — it must not surface as a break
         lldb::SBEvent ev;
         for (int i = 0; i < 20; i++) {

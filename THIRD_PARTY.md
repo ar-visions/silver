@@ -9,7 +9,7 @@ Keep it in step with the imports.
 
 | dependency | pinned | used by | source | license | authors |
 |---|---|---|---|---|---|
-| Node.js | 24.18.0 | featured/vscode, quark, gemini (runs its CLI) | https://github.com/nodejs/node | MIT (bundled parts under their own licenses) | OpenJS Foundation and contributors |
+| Node.js | 24.18.0 | featured/vscode, quark, gemini (runs its CLI), player (runs yt-dlp) | https://github.com/nodejs/node | MIT (bundled parts under their own licenses) | OpenJS Foundation and contributors |
 | Gemini CLI (its bundle) | 0.64.0 | gemini (install/bin/gemini, on our Node) | https://github.com/google-gemini/gemini-cli | Apache-2.0 | Google LLC |
 | Codex CLI (release package: codex, rg, bwrap) | 0.163.0 | codex (install/bin/codex) | https://github.com/openai/codex | Apache-2.0 (rg: MIT or Unlicense; bwrap: LGPL-2.0-or-later) | OpenAI |
 | GIMP (its official AppImage, unpacked; not redistributed) | 3.2.6 | featured/gimp (install/bin/gimp) | https://download.gimp.org/gimp/v3.2/linux | GPL-3.0-or-later (its bundled libraries under their own licenses) | The GIMP Team |
@@ -116,6 +116,7 @@ Keep it in step with the imports.
 
 | file | used by | source | license | authors |
 |---|---|---|---|---|
+| yt-dlp 2026.10.26 (its release zipapp, with yt-dlp-ejs, its YouTube challenge solver) | player (a YouTube address: its H.264 and AAC streams; run on the Node above) | https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp | Unlicense (public domain); yt-dlp-ejs Unlicense | yt-dlp contributors |
 | Unicode Character Database 15.0.0 (canonical decompositions, combining classes, composition exclusions; tables in src/nfc.h, made by support/nfc_table.py) | Au (au_nfc: silver reads every name in NFC) | https://www.unicode.org/ucd/ (through Python 3.12's unicodedata) | Unicode License v3 | Unicode, Inc. |
 | JMdict (Japanese words, readings, word classes, frequency marks) | keyboard (Tables.ag ja_table: install/share/keyboard/ja.txt with conjugated forms) | http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz | CC BY-SA 4.0 (EDRDG licence) | the Electronic Dictionary Research and Development Group, Jim Breen and contributors |
 | Tanaka corpus word indices (Japanese sentences as JMdict words, as written) | keyboard (ja_table: how often each word is used and written, which word follows which) | https://downloads.tatoeba.org/exports/jpn_indices.tar.bz2 | CC BY 2.0 FR (Tatoeba); the corpus public domain (Yasuhito Tanaka) | Yasuhito Tanaka; Jim Breen; Tatoeba contributors |

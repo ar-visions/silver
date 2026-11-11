@@ -1,0 +1,257 @@
+# windows: the apps of the Windows on this computer's disks. its
+# partition is mounted read-only (the drawer asks your password), its
+# Start Menu's shortcuts become cards, each run by our Wine
+export 1.0.0
+export software ['everyday']
+export platforms ['x64']
+export login ['WindowsLogin']
+
+import <stdio.h>
+import <stdlib.h>
+import vec
+import img
+import osdrive
+
+# a little-endian u16 and u32 in a shortcut's bytes
+func lnk16 [ b: ref u8, at: i64 ] -> i64
+    return i64[ b[ at ] ] | (i64[ b[ at + 1 ] ] << 8)
+
+func lnk32 [ b: ref u8, at: i64 ] -> i64
+    return lnk16[ b, at ] | (lnk16[ b, at + 2 ] << 16)
+
+# a shortcut's target (a Windows path, C:\...), from its LinkInfo:
+# the local base path and its common suffix; '' none there
+func lnk_target [ file: string ] -> string
+    fh : handle fopen[ file.chars, "rb" ]
+    if [ !fh ] return ''
+    buf : new u8 [ 65536 ]
+    n : i64 [ i64[ fread[ @buf[0], 1, 65535, fh ] ] ]
+    fclose[ fh ]
+    b : ref u8 [ @buf[0] ]
+    if [ n < 76 || lnk32[ b, 0 ] != 76 ] return ''
+    flags : i64 [ lnk32[ b, 20 ] ]
+    at : i64 [ 76 ]
+    # its item id list first, when it has one
+    if [ (flags & 1) != 0 ] at = at + 2 + lnk16[ b, at ]
+    if [ (flags & 2) == 0 || at + 28 > n ] return ''
+    # the volume and local base path are there (1)
+    if [ (lnk32[ b, at + 8 ] & 1) == 0 ] return ''
+    base : i64 [ at + lnk32[ b, at + 16 ] ]
+    tail : i64 [ at + lnk32[ b, at + 24 ] ]
+    if [ base >= n || tail >= n ] return ''
+    buf[ n ] = u8[ 0 ]
+    head : string [ @buf[ base ] ]
+    rest : string [ @buf[ tail ] ]
+    return '{head}{rest}'
+
+# n bytes of a file from an offset: '' none
+func read_at [ fh: handle, at: i64, n: i64, buf: ref u8 ] -> bool
+    if [ at < 0 || n <= 0 ] return false
+    if [ fseek[ fh, at, 0 ] != 0 ] return false
+    return i64[ fread[ buf, 1, n, fh ] ] == n
+
+# the file offset of an address in the program's image (its section)
+func rva_at [ fh: handle, secs: i64, nsec: i64, rva: i64 ] -> i64
+    sh : new u8 [ 40 ]
+    b : ref u8 [ @sh[0] ]
+    for [ i: i64 0, i < nsec, i += 1 ]
+        if [ !read_at[ fh, secs + i * 40, 40, b ] ] return -1
+        va : i64 [ lnk32[ b, 12 ] ]
+        size : i64 [ max[ lnk32[ b, 8 ], lnk32[ b, 16 ] ] ]
+        if [ rva >= va && rva < va + size ]
+            return lnk32[ b, 20 ] + (rva - va)
+    return -1
+
+# a resource directory's entry by id (the first when id is -1): its
+# offset, past the subdirectory bit; -1 none
+func res_entry [ fh: handle, base: i64, dir: i64, id: i64 ] -> i64
+    hd : new u8 [ 16 ]
+    b : ref u8 [ @hd[0] ]
+    if [ !read_at[ fh, base + dir, 16, b ] ] return -1
+    n : i64 [ lnk16[ b, 12 ] + lnk16[ b, 14 ] ]
+    en : new u8 [ 8 ]
+    e : ref u8 [ @en[0] ]
+    for [ i: i64 0, i < n, i += 1 ]
+        if [ !read_at[ fh, base + dir + 16 + i * 8, 8, e ] ] return -1
+        name : i64 [ lnk32[ e, 0 ] ]
+        if [ id < 0 || name == id ]
+            return lnk32[ e, 4 ] & 0x7fffffff
+    return -1
+
+# a resource's data by type and id (-1: the first), down its three
+# levels (type, name, language); its file offset and size in out
+func res_data [ fh: handle, base: i64, secs: i64, nsec: i64,
+                kind: i64, id: i64, out: ref i64 ] -> bool
+    a1 : i64 res_entry[ fh, base, 0, kind ]
+    if [ a1 < 0 ] return false
+    a2 : i64 res_entry[ fh, base, a1, id ]
+    if [ a2 < 0 ] return false
+    a3 : i64 res_entry[ fh, base, a2, -1 ]
+    if [ a3 < 0 ] return false
+    de : new u8 [ 8 ]
+    b : ref u8 [ @de[0] ]
+    if [ !read_at[ fh, base + a3, 8, b ] ] return false
+    off : i64 rva_at[ fh, secs, nsec, lnk32[ b, 0 ] ]
+    if [ off < 0 ] return false
+    out[ 0 ] = off
+    out[ 1 ] = lnk32[ b, 4 ]
+    return true
+
+# a program's icon (its largest in its first icon group) as a png:
+# a png kept as it is, a 32-bit bitmap made one; false none
+func exe_icon [ exe: string, png: string ] -> bool
+    fh : handle fopen[ exe.chars, "rb" ]
+    if [ !fh ] return false
+    ok : bool icon_from[ fh, png ]
+    fclose[ fh ]
+    return ok
+
+func icon_from [ fh: handle, png: string ] -> bool
+    hd : new u8 [ 512 ]
+    b : ref u8 [ @hd[0] ]
+    if [ !read_at[ fh, 0, 64, b ] ] return false
+    pe : i64 [ lnk32[ b, 60 ] ]
+    if [ !read_at[ fh, pe, 264, b ] || lnk32[ b, 0 ] != 0x4550 ]
+        return false
+    nsec : i64 [ lnk16[ b, 6 ] ]
+    opt : i64 [ lnk16[ b, 20 ] ]
+    # the resource table: data directory 2, PE32+ (0x20b) or PE32
+    dd : i64 [ (lnk16[ b, 24 ] == 0x20b) ? 24 + 112 : 24 + 96 ]
+    rrva : i64 [ lnk32[ b, dd + 16 ] ]
+    if [ rrva == 0 ] return false
+    secs : i64 [ pe + 24 + opt ]
+    base : i64 rva_at[ fh, secs, nsec, rrva ]
+    if [ base < 0 ] return false
+    at : new i64 [ 2 ]
+    # 14: an icon group; its entries name the images (3: an icon)
+    if [ !res_data[ fh, base, secs, nsec, 14, -1, @at[0] ] ] return false
+    gn : i64 [ min[ at[ 1 ], 6 + 14 * 64 ] ]
+    grp : new u8 [ 6 + 14 * 64 ]
+    g : ref u8 [ @grp[0] ]
+    if [ !read_at[ fh, at[ 0 ], gn, g ] ] return false
+    count : i64 [ min[ lnk16[ g, 4 ], 64 ] ]
+    best : i64 [ -1 ]
+    best_side : i64 [ 0 ]
+    best_bits : i64 [ 0 ]
+    for [ i: i64 0, i < count, i += 1 ]
+        o : i64 [ 6 + i * 14 ]
+        side : i64 [ (i64[ g[ o ] ] == 0) ? 256 : i64[ g[ o ] ] ]
+        bits : i64 [ lnk16[ g, o + 6 ] ]
+        if [ side > best_side || (side == best_side && bits > best_bits) ]
+            best = lnk16[ g, o + 12 ]
+            best_side = side
+            best_bits = bits
+    if [ best < 0 ] return false
+    if [ !res_data[ fh, base, secs, nsec, 3, best, @at[0] ] ] return false
+    size : i64 [ at[ 1 ] ]
+    if [ size < 40 || size > 16777216 ] return false
+    data : new u8 [ size ]
+    d : ref u8 [ @data[0] ]
+    if [ !read_at[ fh, at[ 0 ], size, d ] ] return false
+    # a png already (0x89 'PNG'): written as it is
+    if [ i64[ d[ 0 ] ] == 0x89 && i64[ d[ 1 ] ] == 0x50 ]
+        out : handle fopen[ png.chars, "wb" ]
+        if [ !out ] return false
+        fwrite[ d, 1, size, out ]
+        fclose[ out ]
+        return true
+    return dib_png[ d, size, png ]
+
+# a 32-bit icon bitmap (BGRA, bottom up, its height twice for the
+# mask under it) as a png
+func dib_png [ d: ref u8, size: i64, png: string ] -> bool
+    hs : i64 [ lnk32[ d, 0 ] ]
+    w : i64 [ lnk32[ d, 4 ] ]
+    h : i64 [ lnk32[ d, 8 ] / 2 ]
+    if [ lnk16[ d, 14 ] != 32 || w <= 0 || h <= 0 || w > 1024 ]
+        return false
+    if [ hs + w * h * 4 > size ] return false
+    out : Image [ width: i32[ w ], height: i32[ h ],
+                  format: Pixel.rgba8, channels: 4 ]
+    px : @u8 out.vdata[]
+    for [ y: i64 0, y < h, y += 1 ]
+        src : i64 [ hs + (h - 1 - y) * w * 4 ]
+        for [ x: i64 0, x < w, x += 1 ]
+            o : i64 [ (y * w + x) * 4 ]
+            s : i64 [ src + x * 4 ]
+            px[ o ]     = d[ s + 2 ]
+            px[ o + 1 ] = d[ s + 1 ]
+            px[ o + 2 ] = d[ s ]
+            px[ o + 3 ] = d[ s + 3 ]
+    return out.png[ path [ png ] ] != 0
+
+# a Windows path in the mount: C:\a\b -> <root>/a/b
+func on_mount [ root: string, win: string ] -> string
+    if [ win.count < 3 ] return ''
+    out : string root
+    for [ i: i32 2, i < win.count, i += 1 ]
+        c : string win.mid[ i, 1 ]
+        out = (c == '\\') ? '{out}/' : '{out}{c}'
+    return out
+
+# a 64-bit Windows program: its PE header names the x86-64 machine
+func win_pe64 [ file: string ] -> bool
+    fh : handle fopen[ file.chars, "rb" ]
+    if [ !fh ] return false
+    head : new u8 [ 4096 ]
+    got : i64 [ i64[ fread[ @head[0], 1, 4096, fh ] ] ]
+    fclose[ fh ]
+    b : ref u8 [ @head[0] ]
+    if [ got < 64 ] return false
+    pe : i64 [ lnk32[ b, 60 ] ]
+    if [ pe + 6 > got || lnk32[ b, pe ] != 0x4550 ] return false
+    return i64[ b[ pe + 4 ] ] == 0x64 && i64[ b[ pe + 5 ] ] == 0x86
+
+# the Start Menus: everyone's, then each user's
+func start_menus [ root: string ] -> vec string
+    out : vec string []
+    out.push[ '{root}/ProgramData/Microsoft/Windows/Start Menu/Programs' ]
+    users : path '{root}/Users'
+    if [ !users.exists[] ] return out
+    for [ u: path ] in users.ls[ null, false ]
+        if [ !u.is_dir[] ] continue
+        out.push[ '{u}/AppData/Roaming/Microsoft/Windows/Start Menu/Programs' ]
+    return out
+
+# every shortcut to a 64-bit program, a card each (our Wine runs
+# 64-bit programs alone); uninstallers left out
+func windows_list [ root: string ]
+    dir : string os_store[ 'windows' ]
+    pfx : string '$HOME/.local/share/windows-wine'
+    seen : vec string []
+    made : vec string []
+    for [ sm: string ] in start_menus[ root ]
+        sp : path [ sm ]
+        if [ !sp.exists[] ] continue
+        for [ f: path ] in sp.ls[ null, true ]
+            if [ f.ext[].lcase[] != 'lnk' ] continue
+            title : string f.stem[]
+            low : string title.lcase[]
+            if [ low.index_of[ 'uninstall' ] >= 0 ] continue
+            exe : string on_mount[ root, lnk_target[ '{f}' ] ]
+            if [ exe.count == 0 || seen.index_of[ exe ] >= 0 ] continue
+            ep : path [ exe ]
+            if [ !ep.exists[] || ep.ext[].lcase[] != 'exe' ] continue
+            if [ !win_pe64[ exe ] ] continue
+            seen.push[ exe ]
+            cd : string exe.mid[ 0, i32[ exe.rindex_of[ '/' ] ] ]
+            run : string 'env -C "{cd}" WINEPREFIX="{pfx}" wine "{exe}"'
+            name : string os_card[ dir, made, title, run, root, '' ]
+            # its own icon, read from the program once; kept after
+            if [ name.count > 0 && !os_has_icon[ dir, name ] ]
+                exe_icon[ exe, '{dir}/{name}/images/icon.png' ]
+    os_prune[ dir, made ]
+
+# the drawer's dialog: the largest NTFS partition, Windows' own
+OsLogin WindowsLogin
+    store : 'windows'
+    title : 'Windows'
+
+    func pick [] -> OsPart
+        return os_largest[ 'ntfs' ]
+
+    func list_apps [ root: string ]
+        windows_list[ root ]
+
+    func need_of [ root: string ] -> string
+        return '{root}/Windows'

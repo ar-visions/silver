@@ -255,6 +255,9 @@ enum HM
     wheel_left : 28
     # ide -> app: a = the display language (Language's value)
     language : 29
+    # app -> ide: an address to open in its browser (aura), three
+    # bytes a message as the title's
+    open    : 30
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -4751,6 +4754,17 @@ Display Window
         if [ host_slot[] > 0 ] host_text[ i32[ HM.address ], t ]
 
     # text to the host, three bytes a message; a 0 byte ends it
+    # an address in the browser: hosted, the host opens it beside
+    # the app; alone, aura starts on it
+    public func open_address [ url: string ]
+        if [ !url || url.count == 0 ] return
+        if [ hosted[] ]
+            host_text[ i32[ HM.open ], url ]
+            return
+        aura : string '{path.path_install[].absolute[]}/bin/aura'
+        run : command { setsid "{aura}" "{url}" > /dev/null 2>&1 & }
+        run.exec[ false ]
+
     func host_text [ kind: i32, t: string ]
         n  : i32 [ (t) ? i32 t.count : 0 ]
         for [ i: i32 0, i < n, i += 3 ]
@@ -9062,6 +9076,12 @@ element TButtons
     public  seg_reach  : f32 [ 1.0 ]
     # a text segment's font file ('' the canvas's own)
     public  label_font : string
+    # the strip's own corners (tl tr br bl), in place of seg_radius
+    # when any is set: a bar's end meeting a window's round corner
+    public  corners    : vec4f
+
+    func corner_set [] -> bool
+        return corners.x + corners.y + corners.z + corners.w > 0.0
 
     func seg_width [] -> f32
         n : i32 [ (buttons) ? buttons.count : 1 ]
@@ -9214,6 +9234,11 @@ element TButtons
             bl : f32 [ (i == 0)     ? seg_radius : 0.0 ]
             tr : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
             br : f32 [ (i == n - 1) ? seg_radius : 0.0 ]
+            if [ corner_set[] ]
+                tl = (i == 0)     ? corners.x : 0.0
+                tr = (i == n - 1) ? corners.y : 0.0
+                br = (i == n - 1) ? corners.z : 0.0
+                bl = (i == 0)     ? corners.w : 0.0
             # near-clear at rest, NO glow — only hover/lit draw a glow,
             # so nothing lingers when the cursor leaves
             fcol : rgba [
@@ -9425,8 +9450,10 @@ element TButtons
         cv.stroke_sides[ 1.0, 1.0, 1.0, 1.0 ]
         cv.stroke_offset[ -0.5 ]
         cv.stroke_color[ outline ]
-        cv.rounded_rect[ 0.0, 0.0, dw, dh, seg_radius, seg_radius,
-                         seg_radius, seg_radius ]
+        ok : bool corner_set[]
+        cv.rounded_rect[ 0.0, 0.0, dw, dh,
+            (ok) ? corners.x : seg_radius, (ok) ? corners.y : seg_radius,
+            (ok) ? corners.z : seg_radius, (ok) ? corners.w : seg_radius ]
         cv.paint[ ]
         cv.set_stroke_size[ 0.0 ]
         cv.stroke_sides[ 0.0, 0.0, 0.0, 0.0 ]
@@ -9709,30 +9736,35 @@ element Splitter
             pristine        = false
             ux.will_animate = true
 
-    # NOTHING is painted in the seam: the gap between panes is a window
-    # onto whatever sits behind them, the backdrop scene included. a
-    # line here covered it, and a stale one left the seam reading two px
-    # wide
-
-    # near_seam: a clear line the pointer's light alone brings up
+    # near_seam: the gap filled with the theme's ground, its inner
+    # glow lit toward the theme's accent by the pointer's light, twice
+    # the window's reach (without it nothing is painted there: the
+    # scene shows through)
     public func draw [ w: Window ]
         if [ !near_seam || w.draw_stage != CanvasType.screen ] return
         if [ !bounds || !dseam ] return
         cv : Canvas [ w.screen ]
+        st : Style (ux) ? ux.st : null
+        ground : rgba [ (st) ? st.theme_color[ '#1d0f3f' ]
+            : rgba [ '#1d0f3f' ] ]
+        lit : rgba [ (st) ? st.theme_color[ '#ff7aa480' ]
+            : rgba [ '#ff7aa480' ] ]
+        lit.a = 1.0
         cv.save[ ]
-        w.near_light_on[ cv, a, 0.0, 0.0 ]
-        cv.near_style[ 1.3, 0.0, rgba [ '#c890ffff' ], w.near_y_fade ]
-        cv.fill_color[ rgba [ '#0000' ] ]
-        # near_border leaves alpha 0 alone: 1/255 is unseen, yet lit
-        cv.stroke_color[ rgba [ '#ffffff01' ] ]
-        cv.stroke_width[ 1.0 ]
-        cv.stroke_offset[ 0.0 ]
+        w.near_light_reach[ cv, a, 0.0, 0.0, 2.0 ]
+        cv.near_style[ 0.0, 1.0, lit, w.near_y_fade ]
+        # the light leaves alpha 0 alone: 1/255 is unseen, yet lit
+        cv.box_shadow[ rgba [ r: lit.r, g: lit.g, b: lit.b,
+            a: 1.0 / 255.0 ], 0.0, 0.0, 2.0, 1.0, true ]
+        cv.fill_color[ ground ]
+        cv.stroke_color[ rgba [ '#0000' ] ]
         for [ d: f32 ] in dseam
             if [ vertical ]
-                cv.rect_to[ 0.0, d, bounds.w, 0.0 ]
+                cv.rect_to[ 0.0, d - 0.5, bounds.w, 1.0 ]
             el
-                cv.rect_to[ d, 0.0, 0.0, bounds.h ]
+                cv.rect_to[ d - 0.5, 0.0, 1.0, bounds.h ]
             cv.paint[ ]
+        cv.no_shadows[ ]
         cv.restore[ ]
 
     # the seam before a pane locked shut takes no grab
@@ -9800,6 +9832,15 @@ element Splitter
         if [ sz < min_size ]
             closed = snap_close && sz < min_size * 0.5
             sz = (closed) ? 0.0 : min_size
+        # the flexible pane squeezed past half its floor: it lets go
+        fl : i32 flex_at[ n ]
+        if [ snap_close && fl >= 0 && fl < n ]
+            rest : f32 [ span - sz - f32[ n - 1 ] * gap ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ i != fl && i != drag_ix ]
+                    rest -= target_of[ kid[ ids[ i ] ], span, n ]
+            fch : element kid[ ids[ fl ] ]
+            if [ fch && rest < min_size * 0.5 ] fch.extent = -1.0
         if [ sz > span - 60.0 ] sz = span - 60.0
         dch : element kid[ ids[ drag_ix ] ]
         if [ dch ]

@@ -1776,6 +1776,51 @@ static int view_wants(const char* app, const char* key) {
     return 0;
 }
 
+// signins: aura's cookies for each site the module names (and
+// its subdomains), read only, at their own paths
+static void view_signins(const char* app) {
+    char f[4300], buf[65536];
+    snprintf(f, sizeof(f), "%s/install/export/silver-%s.agi",
+             SILVER_ROOT, app);
+    FILE* fh = fopen(f, "r");
+    if (!fh) return;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fh);
+    fclose(fh);
+    buf[n] = 0;
+    char* l = strstr(buf, "\nsignins:");
+    if (!l && strncmp(buf, "signins:", 8) == 0) l = buf - 1;
+    if (!l) return;
+    char* end = strchr(l + 1, '\n');
+    if (end) *end = 0;
+    char jar[4300];
+    snprintf(jar, sizeof(jar),
+             "%s/install/home/aura/.cache/aura/data/cookies", SILVER_ROOT);
+    DIR* d = opendir(jar);
+    if (!d) return;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        size_t dl = strlen(e->d_name);
+        // each quoted site: the folder is it, or ends in .site
+        for (char* q = strchr(l, '\''); q; q = strchr(q + 1, '\'')) {
+            char* qe = strchr(q + 1, '\'');
+            if (!qe) break;
+            size_t sl = (size_t)(qe - q - 1);
+            int ok = sl > 0 && dl >= sl
+                && strncmp(e->d_name + dl - sl, q + 1, sl) == 0
+                && (dl == sl || e->d_name[dl - sl - 1] == '.');
+            if (ok) {
+                char src[4600];
+                snprintf(src, sizeof(src), "%s/%s", jar, e->d_name);
+                view_put(src, src, 0);
+                break;
+            }
+            q = qe;
+        }
+    }
+    closedir(d);
+}
+
 // the app's root: read only but its own folders
 static int view_build(const char* home, const char* run,
                       const char* tmp, const char* log) {
@@ -1839,6 +1884,7 @@ static int view_build(const char* home, const char* run,
         view_touch(q);
         view_put(q, q, 1);
     }
+    view_signins(view_app_name);
     // the covers themselves take no files
     struct mount_attr ro = { .attr_set = MOUNT_ATTR_RDONLY };
     snprintf(q, sizeof(q), VIEW_ROOT "%s/install/tmp", SILVER_ROOT);
@@ -2651,15 +2697,17 @@ int main(int argc, char** argv) {
     frame_fn   do_frame   = dlsym(handle, FRAME_SYM);
     destroy_fn do_destroy = dlsym(handle, DESTROY_SYM);
     stash_args(handle, argc, argv);
-    // debug launch: park HERE, before any app code, so orbiter can attach lldb and
-    // arm breakpoints (including in init) before continuing us (SIGCONT).
+    // debug launch: orbiter may attach. on Linux it attaches once the app
+    // is up (lldb attached during its start loops on SIGSTOP); elsewhere
+    // the app parks here until orbiter continues it (SIGCONT)
     if (getenv("SILVER_DEBUG")) {
         // orbiter is a sibling, not our ancestor — yama scope 1 blocks it
 #ifdef __linux__
         prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0);
-#endif
+#else
         fprintf(stderr, "silver-host: SILVER_DEBUG — pid %d stopped before init for attach\n", (int)getpid());
         raise(SIGSTOP);
+#endif
     }
     if (do_init) do_init();
     {

@@ -1,0 +1,361 @@
+# osdrive: another system on this computer's disks. its partition
+# is found, mounted read-only (sudo reads the password typed) and
+# its apps become a store's cards (install/stores/<store>)
+export 1.0.0
+import vec
+import img
+import trinity
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+
+# a partition: its device, filesystem, label, mount and size
+class OsPart
+    public dev   : string
+    public fs    : string
+    public label : string
+    public mount : string
+    public size  : i64
+
+# a value in a KEY=value file (a uevent, udev's E:KEY=value)
+func file_value [ text: string, key: string ] -> string
+    t : string '\n{text}'
+    k : string '\n{key}='
+    at : i32 [ i32[ t.index_of[ k ] ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + i32[ k.count ] ]
+    e : i32 [ from ]
+    # 10: the line's end
+    while [ e < t.count && (i32[ t.chars[ e ] ] & 255) != 10 ]
+        e += 1
+    return t.mid[ from, e - from ]
+
+# a text file's text, '' when it cannot be read
+# read to its end: /sys files say 4096 bytes and hold fewer
+func text_of [ file: string ] -> string
+    fh : handle fopen[ file.chars, "rb" ]
+    if [ !fh ] return ''
+    out : string ''
+    b : local i8 [ 4097 ]
+    n : i64 [ i64[ fread[ @b[0], 1, 4096, fh ] ] ]
+    while [ n > 0 ]
+        b[ n ] = i8[ 0 ]
+        got : string [ @b[0] ]
+        out = '{out}{got}'
+        n = i64[ fread[ @b[0], 1, 4096, fh ] ]
+    fclose[ fh ]
+    return out
+
+# every partition of a filesystem kind (ntfs, ext4), from what any
+# user reads: the kernel's list, udev's record of each, the mounts.
+# no udev record: the kernel's "Basic data partition" is ntfs
+func os_parts [ fs: string ] -> vec OsPart
+    out : vec OsPart []
+    mounts : string '\n{text_of[ '/proc/self/mounts' ]}'
+    sb : path '/sys/class/block'
+    for [ d: path ] in sb.ls[ null, false ]
+        pf : path '{d}/partition'
+        if [ !pf.exists[] ] continue
+        ut : string text_of[ '{d}/uevent' ]
+        maj : string file_value[ ut, 'MAJOR' ]
+        mn : string file_value[ ut, 'MINOR' ]
+        uv : string text_of[ '/run/udev/data/b{maj}:{mn}' ]
+        kind : string file_value[ uv, 'E:ID_FS_TYPE' ]
+        if [ kind.count == 0
+             && file_value[ ut, 'PARTNAME' ] == 'Basic data partition' ]
+            kind = 'ntfs'
+        if [ kind != fs ] continue
+        dev : string '/dev/{d.filename[]}'
+        # its mount: the second word of its line in the mounts
+        at : i32 [ i32[ mounts.index_of[ '\n{dev} ' ] ] ]
+        mnt : string ''
+        if [ at >= 0 ]
+            from : i32 [ at + i32[ dev.count ] + 2 ]
+            e : i32 [ from ]
+            # 32: the word's end
+            while [ e < mounts.count
+                    && (i32[ mounts.chars[ e ] ] & 255) != 32 ]
+                e += 1
+            mnt = mounts.mid[ from, e - from ]
+        blocks : string text_of[ '{d}/size' ].trim[]
+        out.push[ OsPart [ dev: dev, fs: kind,
+            label: file_value[ uv, 'E:ID_FS_LABEL' ], mount: mnt,
+            size: blocks.integer_value[] * 512 ] ]
+    return out
+
+# the largest of a kind, none at /
+func os_largest [ fs: string ] -> OsPart
+    best : OsPart null
+    for [ p: OsPart ] in os_parts[ fs ]
+        if [ p.mount == '/' ] continue
+        if [ !best || p.size > best.size ] best = p
+    return best
+
+# mounted read-only at /media/<user>/<name>, sudo given the
+# password on its input; the folder, or '' when it would not
+func os_mount [ p: OsPart, name: string, password: string ] -> string
+    user : string [ getenv[ 'USER' ] ]
+    dir : string '/media/{user}/{name}'
+    opt : string 'ro'
+    if [ p.fs == 'ntfs' ] opt = 'ro,uid={getuid[]},gid={getgid[]}'
+    # ntfs3 first (the kernel's), else ntfs-3g
+    alt : string [ (p.fs == 'ntfs')
+        ? ' || mount -t ntfs-3g -o {opt} {p.dev} {dir}' : '' ]
+    t : string [ (p.fs == 'ntfs') ? 'ntfs3' : p.fs ]
+    sh : string 'mkdir -p {dir} && (mount -t {t} -o {opt} {p.dev} {dir}{alt})'
+    line : string 'sudo -S -p "" sh -c \'{sh}\' >/dev/null 2>&1'
+    fh : handle popen[ line.chars, "w" ]
+    if [ !fh ] return ''
+    fputs[ '{password}\n'.chars, fh ]
+    st : i32 [ i32[ pclose[ fh ] ] ]
+    return (st == 0) ? dir : ''
+
+# a line inside an .ag string: its quotes escaped
+func os_quoted [ line: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < line.count, i += 1 ]
+        c : string line.mid[ i, 1 ]
+        out = (c == '\'' || c == '\\') ? '{out}\\{c}' : '{out}{c}'
+    return out
+
+# a card's folder name from its title: lower case words, _ between
+func os_name [ title: string ] -> string
+    low : string title.lcase[]
+    out : string ''
+    gap : bool [ false ]
+    for [ i: i32 0, i < low.count, i += 1 ]
+        c : i32 [ (i32 low.chars[ i ]) & 255 ]
+        word : bool [ (c >= 97 && c <= 122) || (c >= 48 && c <= 57) ]
+        if [ !word ]
+            gap = out.count > 0
+            continue
+        if [ gap ] out = '{out}_'
+        gap = false
+        out = '{out}{low.mid[ i, 1 ]}'
+    return out
+
+# a store's folder: its cards are kept between listings (their
+# icons with them), os_prune takes the gone ones
+func os_store [ store: string ] -> string
+    dir : string '{path.path_install[].absolute[]}/stores/{store}'
+    sd : path [ dir ]
+    sd.make_dir[]
+    return dir
+
+# the cards a listing did not make: their programs are gone
+func os_prune [ dir: string, made: vec string ]
+    sd : path [ dir ]
+    for [ d: path ] in sd.ls[ null, false ]
+        if [ !d.is_dir[] || made.index_of[ d.filename[] ] >= 0 ] continue
+        rm : command { rm -rf "{d}" }
+        rm.exec[ false ]
+
+# a card has its icon already (made once, kept)
+func os_has_icon [ dir: string, name: string ] -> bool
+    png : path '{dir}/{name}/images/icon.png'
+    svg : path '{dir}/{name}/images/icon.svg'
+    return png.exists[] || svg.exists[]
+
+# what the store needs to run its cards: a path there while its
+# system is mounted (orbiter asks again when it is gone)
+func os_needs [ store: string, need: string ]
+    nf : path '{path.path_install[].absolute[]}/stores/{store}/.needs'
+    nf.save[ need, null ]
+
+# one card: its module (the line it runs, a folder shared into the
+# view it runs in), and its icon when it has none yet; its folder's
+# name, '' when none or made already this listing
+func os_card [ dir: string, made: vec string, title: string,
+               run: string, share: string, icon: string ] -> string
+    name : string os_name[ title ]
+    if [ name.count == 0 || made.index_of[ name ] >= 0 ] return ''
+    made.push[ name ]
+    cd : path '{dir}/{name}'
+    img : path '{cd}/images'
+    img.make_dir[]
+    # the card's name is its title up to a colon: none in it
+    tt : string ''
+    for [ i: i32 0, i < title.count, i += 1 ]
+        c : string title.mid[ i, 1 ]
+        tt = (c == ':') ? '{tt} ' : '{tt}{c}'
+    src : string '# {tt}: from a system on this computer\n'
+    src = '{src}export 1.0.0\n'
+    # a snap starts only outside a view: orbiter runs it itself
+    kind : string [ (run.index_of[ '/snap/bin/' ] >= 0) ? 'host'
+        : 'launch' ]
+    src = '{src}export {kind} [\'{os_quoted[ run ]}\']\n'
+    if [ share.count > 0 ]
+        src = '{src}export share [\'{os_quoted[ share ]}\']\n'
+    src = '{src}export build none\n'
+    mf : path '{cd}/{name}.ag'
+    mf.save[ src, null ]
+    ip : path [ icon ]
+    if [ icon.count > 0 && ip.exists[] && !os_has_icon[ dir, name ] ]
+        ext : string [ (ip.ext[] == 'svg') ? 'svg' : 'png' ]
+        cp : command { cp "{icon}" "{img}/icon.{ext}" }
+        cp.exec[ false ]
+    return name
+
+# the password: dots in a pill; Enter mounts
+element OsPass
+    focusable : true
+    style : CSS {
+        layers.body:
+            fill_color: #00000066
+            radius: 999
+            stroke_width: 1
+            stroke_offset: -0.5
+            stroke_color: #806bff
+        layers.face:
+            label_color: #ffffffdd
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            editable: true
+            secret: true
+            label_align: 0.5 0.5
+    }
+
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        k : i32 [ ev.key.unicode ]
+        # 257, 335: Enter, the keypad's
+        if [ ev.key.state && (k == 257 || k == 335) && parent ]
+            lg : cast OsLogin [ parent ]
+            if [ lg ] lg.mount_now[]
+        ev.no_default = true
+
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        ev.no_default = true
+
+# the dialog's button: Mount, or its apps when mounted already
+element OsGo
+    public label : string
+    style : CSS {
+        layers.body:
+            fill_color: #4d3dbc
+            radius: 999
+            stroke_width: 1
+            stroke_offset: -0.5
+            stroke_color: #806bff
+            near_border: true
+    }
+
+    func on_press [ ev: Event ]
+        lg : cast OsLogin [ parent ]
+        if [ lg ] lg.mount_now[]
+        ev.no_default = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        px : i32 [ i32[ round[ 17.0 * ux_unit[ w ] ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Bold.ttf', px ] ]
+        cv.font_size[ px ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ label, rect [ x: 0.0, y: 0.0, w: bounds.w,
+            h: bounds.h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, true ]
+        cv.set_font[ null ]
+
+# the drawer's dialog for a store behind a mount: its partition, a
+# password (sudo's, for the mount) and Mount; mounted, the system's
+# apps become the store's cards. a system's module says which
+# partition (pick) and how its apps are listed (list_apps)
+element OsLogin
+    # the store, and the system's name as it is shown
+    public store : string
+    public title : string
+    intern part  : OsPart
+    intern note  : string
+    intern looked : bool
+
+    # its partition: the largest of its kind (subclasses choose)
+    func pick [] -> OsPart
+        return null
+
+    # its apps into the store's folder, from where it is mounted
+    func list_apps [ root: string ]
+        return
+
+    # what the store needs while it runs: a path in the mount
+    func need_of [ root: string ] -> string
+        return root
+
+    func render [] -> Elements
+        if [ !looked ]
+            looked = true
+            part = a.pick*[]
+        t : Elements []
+        on : bool [ part && part.mount.count > 0 ]
+        if [ part && !on ]
+            t['os_pass'] = OsPass [ area: Region { l1 t4.4 r1 h1.4 } ]
+        t['os_go'] = OsGo [ label: (on) ? 'Show its apps' : 'Mount',
+            area: Region { l1 t6.2 r1 h1.4 } ]
+        return t
+
+    # its folder opened: mounted, its apps listed anew (a program
+    # installed since gets its card; the icons made are kept)
+    action func relist []
+        if [ !part ] part = a.pick*[]
+        if [ !part || part.mount.count == 0 ] return
+        a.list_apps*[ part.mount ]
+        os_needs[ store, a.need_of*[ part.mount ] ]
+
+    # mounted (or found mounted), its apps listed: orbiter then
+    # opens the store's folder
+    func mount_now []
+        if [ !part ]
+            note = 'no partition found for it'
+            pristine = false
+            return
+        root : string part.mount
+        if [ root.count == 0 ]
+            pe : element (elements) ? elements[ 'os_pass' ] : null
+            pw : string [ (pe && pe.edit) ? pe.edit : '' ]
+            root = os_mount[ part, title, pw ]
+            if [ root.count == 0 ]
+                note = 'it did not mount: the password, or the disk'
+                pristine = false
+                return
+            part.mount = root
+        a.list_apps*[ root ]
+        os_needs[ store, a.need_of*[ root ] ]
+        note = 'mounted at {root}'
+        pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        uu : f32 ux_unit[ w ]
+        tp : i32 [ i32[ round[ 24.0 * uu ] ] ]
+        sp : i32 [ i32[ round[ 16.0 * uu ] ] ]
+        # a unit: the font's line height, 33 px at rest
+        un : f32 [ 33.0 * uu ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Bold.ttf', tp ] ]
+        cv.font_size[ tp ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ title, rect [ x: un, y: un, w: bounds.w - un * 2.0,
+            h: un * 1.2 ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, true ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', sp ] ]
+        cv.font_size[ sp ]
+        cv.fill_color[ rgba [ '#ffffffaa' ] ]
+        gb : f32 [ (part) ? f32[ part.size ] / 1073741824.0 : 0.0 ]
+        what : string [ (part)
+            ? '{part.dev}  {i32[ gb ]} GB {part.fs.ucase[]}'
+            : 'not found on this computer' ]
+        cv.draw_text[ what, rect [ x: un, y: un * 2.3,
+            w: bounds.w - un * 2.0, h: un ], vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+        why : string [ (part && part.mount.count > 0)
+            ? 'mounted at {part.mount}'
+            : 'your password mounts it, read-only' ]
+        if [ note && note.count > 0 ] why = note
+        cv.draw_text[ why, rect [ x: un, y: un * 3.2,
+            w: bounds.w - un * 2.0, h: un ], vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+        cv.set_font[ null ]

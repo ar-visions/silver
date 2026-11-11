@@ -755,14 +755,12 @@ MenuDrawer ExchangeDrawer
 # bar, the whole screen; the view buttons and power on top, the
 # sound, Wi-Fi, the tray's apps
 MenuDrawer SystemDrawer
+    # its holder starts under the bar (orbiter sys_area)
     style : CSS {
-        area: l0%+0 t0.91 r0%+0 b0
+        area: l0%+0 t0 r0%+0 b0
         opacity: 0.0, 240ms cubic outward
     :open
         opacity: 1.0, 260ms cubic inward
-    # a phone's too: the bar stays over it
-    :use_mobile
-        area: l0%+0 t1.05 r0%+0 b0
     }
 
 # a phone's system menu cells in one row along its foot: a drag or

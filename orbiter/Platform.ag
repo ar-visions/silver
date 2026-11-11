@@ -690,7 +690,8 @@ element PlatformView
             target.height = i32[ psz.y ]
         # the scene from the mirrored camera (trinity draws it once
         # the platform asks)
-        mirror_tx = w.mirror
+        mon : bool [ orb && orb.mirrors_on[] ]
+        mirror_tx = (mon) ? w.mirror : null
         # what the mirrors read: the reflection, else the scene's
         # picture by place; bound again when it moves
         want : Texture [ (mirror_tx) ? mirror_tx
@@ -799,7 +800,7 @@ element PlatformView
         w.mirror_proj = proj_m
         w.mirror_w    = target.width / sample[ w ]
         w.mirror_h    = target.height / sample[ w ]
-        w.mirror_ask  = true
+        w.mirror_ask  = mon
         # this element in the window: its bounds summed up the tree
         ax : f32 [ 0.0 ]
         ay : f32 [ 0.0 ]
@@ -874,7 +875,9 @@ element PlatformView
             sink : f32 [ (i < n) ? 2.5 * smooth[ 0.2, 0.5, opens[ i ] ]
                                  : 0.0 ]
             m1 = m1.translate[ vec3f [ p.x, 0.0 - sink, p.z ] ]
-            m1 = m1.scale[ vec3f [ 1.0, 0.08, 1.0 ] ]
+            # mirrors off: no tile but the agents' (nothing drawn)
+            vis : f32 [ (mon || i < n) ? 1.0 : 0.0 ]
+            m1 = m1.scale[ vec3f [ vis, 0.08 * vis, vis ] ]
             pd.model   = m1
             pd.view    = view_m
             pd.proj    = proj_m

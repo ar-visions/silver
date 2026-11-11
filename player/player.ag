@@ -1,7 +1,11 @@
-# player: a video file on the gpu decoder: mp4 mov m4v, raw h264 h265
+# player: a video file on the gpu decoder: mp4 mov m4v, raw h264 h265;
+# a YouTube address streams its H.264 and AAC through yt-dlp
 export 0.1.0
+export software ['everyday']
 export extensions ['.mp4', '.mov', '.m4v', '.h264', '.264', '.h265',
                    '.265', '.hevc', '.wav']
+# aura's sign-ins it may use (yt-dlp's cookies): these sites only
+export signins ['youtube.com', 'google.com']
 
 import vec
 import img
@@ -14,7 +18,18 @@ import <string.h>
 import <stdio.h>
 import <stdlib.h>
 
+# yt-dlp runs on this Node (YouTube's checks need 22 on)
+import node/24.18.0 from https://nodejs.org/dist/v24.18.0/node-v24.18.0.tar.xz
+    > test -x {install}/node/bin/node || ./configure --prefix={install}/node
+    > test -x {install}/node/bin/node || make -j32
+    > test -x {install}/node/bin/node || make install
+
+# yt-dlp's release: a python zipapp with its solver
+import https://github.com/yt-dlp/yt-dlp/releases/download/2026.10.26/yt-dlp
+    > install -m 755 {import_file} {install}/bin/yt-dlp
+
 import Wave
+import Tube
 
 func file_bytes [ p: path ] -> vec u8
     fd : i32 [ open[ p.chars, O_RDONLY, 0 ] ]
@@ -327,6 +342,13 @@ element player : trinity
     mutable panel_w : f32
     mutable drag_x  : f32
     mutable picking : bool
+    # a YouTube video streaming in; stalled: the picture caught up
+    # with what has come
+    mutable tube    : Tube
+    mutable stalled : bool
+    # waiting on a sign-in in aura: its cookies' time when asked
+    mutable signin_at : i64
+    mutable signin_look : i64
 
     func init []
         animated  = true
@@ -334,6 +356,11 @@ element player : trinity
 
     # a video in place of the one playing; false when unreadable
     func open_file [ p: path ] -> bool
+        txt : string '{p}'
+        # an address: a path puts the start folder before it
+        hs : i64 [ txt.index_of[ 'https:/' ] ]
+        if [ hs < 0 ] hs = txt.index_of[ 'http:/' ]
+        if [ hs >= 0 ] return open_tube[ txt.mid[ hs, txt.count - hs ] ]
         if [ !p.exists[] || p.is_dir[] ]
             failed = 'no file: {p}'
             return false
@@ -373,6 +400,113 @@ element player : trinity
         set_title[ title ]
         sound_at[ 0.0 ]
         return true
+
+    # a YouTube address: its streams fetched, played as they come
+    func open_tube [ txt: string ] -> bool
+        url : string [ txt ]
+        # a path folds // to /
+        if [ url.index_of[ '://' ] < 0 ]
+            sc : i64 [ url.index_of[ ':/' ] ]
+            head : string url.mid[ 0, sc ]
+            url = '{head}://{url.mid[ sc + 2, url.count - sc - 2 ]}'
+        if [ tube ] tube.stop[]
+        if [ mixer && voice > 0 ] mixer.voice_stop[ voice ]
+        voice  = 0
+        wave   = null
+        clip   = null
+        dec    = null
+        failed = null
+        cache : string '{path.path_cache[ 'player' ]}'
+        tube = Tube [ url: url, dir: '{cache}/tube-{getpid[]}' ]
+        tube.start[]
+        title = 'loading {url}'
+        set_title[ title ]
+        return true
+
+    # its streams read as they grow: it starts once the sound is in
+    # and a second of picture; a stall goes on as more comes
+    func tube_pump []
+        if [ !tube ] return
+        # a sign-in done in aura: the same address again, signed in
+        if [ signin_at > 0 && epoch_millis[] - signin_look > 1000 ]
+            signin_look = epoch_millis[]
+            if [ tube.signin_time[] > signin_at ] signin_at = -1
+        if [ signin_at < 0 ]
+            signin_at = 0
+            open_tube[ tube.url ]
+            return
+        if [ signin_at > 0 ] return
+        if [ tube.failed[] ]
+            # YouTube asks a sign-in: aura comes up for it, unless
+            # signed in already (then why it failed)
+            if [ tube.wants_signin[] && !tube.signed ]
+                signin_at = max[ tube.signin_time[], 1 ]
+                ask : string 'YouTube asks you to sign in'
+                failed = '{ask}: in aura, then the video starts'
+                tube.stop[]
+                if [ ux ] ux.open_address[ signin_url[ tube.url ] ]
+                return
+            failed = tube.why[]
+            tube.stop[]
+            tube = null
+            return
+        tube.pump[]
+        vt : DemuxTrack tube.track[]
+        if [ !clip ]
+            if [ !vt || !tube.has[ 'a.m4a.done' ] ] return
+            if [ tube.fresh.count == 0 ] return
+            lastp : i64 [ tube.fresh[ tube.fresh.count - 1 ].pts ]
+            if [ f64[ lastp ] / f64[ vt.timescale ] < 1.0
+                 && !tube.video_done[] ]
+                return
+            mv : Movie []
+            mv.config  = vt.config
+            mv.hevc    = is_hevc[ vt.codec ]
+            mv.scale   = vt.timescale
+            mv.samples = vec DemuxSample []
+            mv.sound   = tube.sound[]
+            clip    = mv
+            next    = 0
+            out_n   = 0
+            at      = 0.0
+            paused  = false
+            stalled = false
+            shown   = false
+            from_ms = epoch_millis[]
+            title   = tube.name[]
+            set_title[ title ]
+        for [ ds: DemuxSample ] in tube.fresh
+            clip.samples.push[ ds ]
+            if [ secs[ ds.pts ] > clip.length ]
+                clip.length = secs[ ds.pts ]
+        first : bool [ tube.fresh.count > 0 && voice == 0 && !stalled ]
+        tube.fresh.clear[]
+        if [ first && !paused ] sound_at[ now[] ]
+        # caught up: on again with two seconds ahead, or at the end
+        if [ stalled && (clip.length > at + 2.0 || tube.video_done[]) ]
+            stalled = false
+            toggle[]
+
+    # YouTube's sign-in, back to the video after
+    func signin_url [ url: string ] -> string
+        digits : string '0123456789ABCDEF'
+        back : string ''
+        for [ i: i32 0, i < url.count, i += 1 ]
+            b : i32 [ (i32 url.chars[ i ]) & 255 ]
+            # letters, digits, . - _ as they are; the rest %XX
+            ok : bool [ (b >= 97 && b <= 122) || (b >= 65 && b <= 90)
+                        || (b >= 48 && b <= 57) || b == 46 || b == 45
+                        || b == 95 ]
+            if [ ok ] back = '{back}{url.mid[ i, 1 ]}'
+            el
+                hi : string digits.mid[ b / 16, 1 ]
+                lo : string digits.mid[ b % 16, 1 ]
+                back = '{back}%{hi}{lo}'
+        login : string 'https://accounts.google.com/ServiceLogin'
+        return '{login}?service=youtube&continue={back}'
+
+    func growing [] -> bool
+        return tube && !tube.video_done[]
 
     func open_wave [ p: path ] -> bool
         wv : Wave []
@@ -710,7 +844,7 @@ element player : trinity
         before : i64 [ dec.frames.count ]
         dec.decode[ @ds.data[ 0 ], i32[ ds.data.count ], ds.pts ]
         next += 1
-        if [ next == clip.samples.count ] dec.finish[]
+        if [ next == clip.samples.count && !growing[] ] dec.finish[]
         if [ clip.raw ]
             for [ i: i64 before, i < dec.frames.count, i += 1 ]
                 f : VideoFrame dec.frames[ i ]
@@ -834,6 +968,16 @@ element player : trinity
             tried  = '{file}'
             failed = null
             open_file[ file ]
+        tube_pump[]
+        if [ tube && !clip && !failed ]
+            cv.fill_color[ rgba['#ffffff99'] ]
+            cv.font_size[ 16 ]
+            cv.draw_text[ title, rect [ x: 20.0, y: 20.0,
+                                        w: bounds.w - 40.0, h: 24.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null, false ]
+            cv.paint[]
+            return
         if [ failed ]
             cv.fill_color[ rgba['#ffffff'] ]
             cv.font_size[ 16 ]
@@ -853,6 +997,8 @@ element player : trinity
             paused = true
             sound_at[ at ]
             t = at
+            # still coming: it waits, then goes on
+            if [ growing[] ] stalled = true
         advance[ cv, t ]
         if [ failed || !planes || !planes.y ] return
         bw : f32 [ bounds.w ]

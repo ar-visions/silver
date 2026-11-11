@@ -823,6 +823,10 @@ Control AppsGrid
     mutable sel   : i32 [ -1 ]
     # the pointer over that card's button
     mutable on_btn : bool
+    # the row under the name for a hovered card's edit pill (none on
+    # a phone), and the pointer on it (its label then full)
+    mutable edit_h  : f32
+    mutable on_edit : bool
     # the card a press went down on, -1 none
     mutable press_i : i32 [ -1 ]
 
@@ -879,6 +883,9 @@ Control AppsGrid
     mutable ease_x : map f32 [string]
     mutable ease_y : map f32 [string]
     mutable head_e : map f32 [string]
+    # each card's edit pill and its label, 0 to 1, fading in time
+    mutable edit_a   : map f32 [string]
+    mutable edit_lab : map f32 [string]
     # each shown card's own key: its module file (names repeat), a
     # second of the same (an open store's own card) numbered
     mutable keys : vec string
@@ -1196,6 +1203,13 @@ Control AppsGrid
         return i >= 0 && rx && i < rx.count && y >= ry[ i ] + tile
             && x >= rx[ i ] && x < rx[ i ] + cw9
 
+    # the point is on card i's edit row, under its name
+    func in_edit [ i: i32, x: f32, y: f32 ] -> bool
+        if [ i < 0 || !rx || i >= rx.count || edit_h <= 0.0 ]
+            return false
+        return y >= ry[ i ] + ch9 - edit_h && y < ry[ i ] + ch9
+            && x >= rx[ i ] && x < rx[ i ] + cw9
+
     func on_move [ ev: Event ]
         super.on_move[ ev ]
         if [ sb_drag ] return
@@ -1216,15 +1230,18 @@ Control AppsGrid
             return
         over : i32 [ card_at[ mx, my ] ]
         ob : bool [ over == sel && in_name[ over, mx, my ] ]
-        if [ over != hov || ob != on_btn ]
+        oe : bool in_edit[ over, mx, my ]
+        if [ over != hov || ob != on_btn || oe != on_edit ]
             hov      = over
             on_btn   = ob
+            on_edit  = oe
             pristine = false
 
     func on_leave [ ev: Event ]
         if [ hov >= 0 || on_btn ]
             hov      = -1
             on_btn   = false
+            on_edit  = false
             pristine = false
 
     # a press runs what is here; on one not installed the first
@@ -1290,6 +1307,24 @@ Control AppsGrid
         here : bool [ ae.module && orb.built_now[ ae ] ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
+        # a store behind a login (built): its dialog in a drawer
+        # until what it needs is there, then its folder
+        if [ ae.login && ae.login.count > 0 && !in_edit[ i, mx, my ]
+             && orb.module_lib[ 'silver-{ae.name}' ].exists[] ]
+            sel = -1
+            if [ orb.store_needs[ ae ] ] orb.store_login[ ae ]
+            el
+                opening : bool [ open != ae.name ]
+                open  = (opening) ? ae.name : ''
+                shown = null
+                # opening: its apps listed anew
+                if [ opening ] orb.store_relist[ ae ]
+            return
+        # its edit pill: the code in a window, not run
+        if [ !busy && in_edit[ i, mx, my ] && orb.code_of[ ae ] ]
+            sel = -1
+            orb.apps_code[ pane, ae ]
+            return
         # a file in an app's folder: the app opens it
         if [ ae.opens ]
             sel = -1
@@ -1297,11 +1332,6 @@ Control AppsGrid
                 orb.filter_done[ 'apps_filter' ]
             if [ pane >= 0 ] orb.open_in_pane[ ae.opens, pane ]
             el orb.open_new_tab[ ae.opens ]
-            return
-        # Rule #12: ctrl / cmd, or shift over it: its code, not run
-        if [ !busy && (ux.cmd || ux.shift) && orb.code_of[ ae ] ]
-            sel = -1
-            orb.apps_code[ pane, ae ]
             return
         # a store with apps, or an app with files it opens, opens as a
         # folder; again, it shuts (its own card inside runs it)
@@ -1407,7 +1437,8 @@ Control AppsGrid
         tile = round[ 99.0 * un ]
         nh : f32 [ round[ 26.0 * un ] ]
         cw9 = round[ 125.0 * un ]
-        ch9 = tile + round[ 6.0 * un ] + nh
+        edit_h = (use_mobile) ? 0.0 : round[ 22.0 * un ]
+        ch9 = tile + round[ 6.0 * un ] + nh + edit_h
         gap : f32 [ round[ 14.0 * un ] ]
         pad : f32 [ round[ 24.0 * un ] ]
         hh  : f32 [ round[ 30.0 * un ] ]
@@ -1423,7 +1454,7 @@ Control AppsGrid
             pr   = max[ 5, i32[ ceil[ full / (96.0 * un) ] ] ]
             cw9  = round[ full / f32[ pr ] - gap ]
             tile = cw9
-            ch9  = tile + round[ 6.0 * un ] + nh
+            ch9  = tile + round[ 6.0 * un ] + nh + edit_h
         if [ pr < 1 ] pr = 1
         # held at the left: a width change only moves the row's end
         x0 : f32 [ pad ]
@@ -1483,6 +1514,8 @@ Control AppsGrid
         # each card and heading eases to its place; a dragged card
         # is at the pointer, a dragged section's cards move with it
         if [ !ease_x ] ease_x = map f32 [string] []
+        if [ !edit_a ] edit_a = map f32 [string] []
+        if [ !edit_lab ] edit_lab = map f32 [string] []
         if [ !ease_y ] ease_y = map f32 [string] []
         if [ !head_e ] head_e = map f32 [string] []
         dsec : i32 [ -1 ]
@@ -1528,6 +1561,10 @@ Control AppsGrid
             ease_y[ ky ] = ey
             px.push[ ex ]
             py.push[ ey ]
+            # its edit pill and label, in over 0.6 s, out over 0.3 s
+            if [ fade_to[ edit_a, ky, i == hov ] ] moving = true
+            if [ fade_to[ edit_lab, ky, i == hov && on_edit ] ]
+                moving = true
         for [ h: i32 0, h < heads.count, h += 1 ]
             gh : f32 [ head_ys[ h ] + ((h == dsec) ? dd : 0.0) ]
             eh : f32 [ gh ]
@@ -1624,9 +1661,6 @@ Control AppsGrid
         el [ pulling && gone >= 1.0 ]
             draw_pill[ cv, fp, x, ny, nh, 'Delete', '#a03030e6',
                        '#ff7a7acc' ]
-        el [ mod && orb.code_of[ ae ] ]
-            draw_pill[ cv, fp, x, ny, nh, 'Code', '#4d3dbccc',
-                       '#806bffcc' ]
         el [ chosen ]
             draw_button[ cv, fp, x, ny, nh, ae.module, failed ]
         el
@@ -1655,6 +1689,66 @@ Control AppsGrid
                 Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ],
                 true ]
             cv.set_font[ null ]
+        # hovered, from source: its edit pill under the name
+        ky : string keys[ i ]
+        fa : f32 [ (edit_a && edit_a.contains[ ky ])
+            ? edit_a[ ky ] : 0.0 ]
+        fl : f32 [ (edit_lab && edit_lab.contains[ ky ])
+            ? edit_lab[ ky ] : 0.0 ]
+        if [ fa > 0.0 && edit_h > 0.0 && !busy && !pulling
+             && !arranging && orb.code_of[ ae ] ]
+            draw_edit[ cv, w, fp, x, ny + nh, edit_h, fa, fl ]
+
+    # k's value in m a straight step toward on (1) or off (0): in
+    # over 0.6 s, out over 0.3 s; gone at 0; true while it moves
+    func fade_to [ m: map f32 [string], k: string, on: bool ] -> bool
+        v : f32 [ (m.contains[ k ]) ? m[ k ] : 0.0 ]
+        goal : f32 [ (on) ? 1.0 : 0.0 ]
+        if [ v == goal ]
+            if [ !on && m.contains[ k ] ] m.rm[ k ]
+            return false
+        st : f32 [ ux.frame_factor / ((on) ? 36.0 : 18.0) ]
+        v = (goal > v) ? min[ v + st, goal ] : max[ v - st, goal ]
+        m[ k ] = v
+        return true
+
+    # the edit pill under a hovered card's name: its code, not run
+    # at fa of its strength; its label from half to full by fl
+    func draw_edit [ cv: Canvas, w: Window, fp: i32, x: f32, y: f32,
+                     h: f32, fa: f32, fl: f32 ]
+        bw : f32 [ round[ cw9 * 0.5 ] ]
+        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        ph : f32 [ round[ h * 0.82 ] ]
+        py : f32 [ y + round[ (h - ph) * 0.5 ] ]
+        r  : f32 [ ph * 0.42 ]
+        cv.save[]
+        cv.set_opacity[ cv.get_opacity[] * fa ]
+        cv.rounded[ r, r, r, r ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        # the pointer's near light, per pixel, a short reach so it
+        # falls off across the pill: its edge and a bright inner glow
+        w.near_light_reach[ cv, a, light_off.x, light_off.y, 0.35 ]
+        cv.near_style[ 3.0, 6.0, rgba [ '#d298ffff' ], w.near_y_fade ]
+        cv.near_grow[ 1.0 ]
+        cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 8.0, 0.0, true ]
+        # never a fill: grey, then lit by the light alone
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffff40' ] ]
+        cv.rect_to[ bx, py, bw, ph ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        # text takes no canvas opacity: the fade is in its colour
+        cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0,
+            a: fa * (0.5 + 0.5 * fl) ] ]
+        cv.draw_text[ 'edit', rect [ x: bx, y: py, w: bw, h: ph ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+            null, true ]
+        cv.set_font[ null ]
 
     # the backdrop's blur in a card's tile, fixed to the window: never
     # in the card's picture
@@ -1843,8 +1937,8 @@ element StatusLabel
             cv.fill_color[ rgba [ '#23446699' ] ]
             cv.rect_to[ ins, ins, bw, bh ]
             cv.paint[]
-        el [ frac > 0.0 || failed ]
-            fw : f32 [ (failed) ? bw : max[ bh, bw * min[ frac, 1.0 ] ] ]
+        el [ failed || word == 'installed' ]
+            fw : f32 bw
             cv.stroke_width[ 0.0 ]
             cv.fill_color[ rgba [ (failed) ? '#a0303088'
                 : ((word == 'installed') ? '#3a8a5a99' : '#4d3dbc99') ] ]
@@ -1852,8 +1946,6 @@ element StatusLabel
             cv.paint[]
         cv.restore[]
         tx : string word
-        if [ word == 'building' && frac >= 0.0 ]
-            tx = 'building {i32[ frac * 100.0 ]}%'
         # the bar's own 17 px words, as the system bar's
         px : i32 [ i32[ round[ 17.0 * ux_unit[ w ] ] ] ]
         cv.set_font[ shared_font[ cv,

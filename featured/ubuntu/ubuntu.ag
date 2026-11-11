@@ -1,0 +1,149 @@
+# ubuntu: the apps of the Ubuntu on this computer's disks, as GNOME
+# lists them (their .desktop files): this running one, or another's
+# partition mounted read-only (the drawer asks your password)
+export 1.0.0
+export software ['everyday']
+export login ['UbuntuLogin']
+
+import <stdio.h>
+import <stdlib.h>
+import osdrive
+
+# a value of a .desktop entry's [Desktop Entry]: Key=value
+func desk_value [ text: string, key: string ] -> string
+    k : string '\n{key}='
+    at : i32 [ i32[ text.index_of[ k ] ] ]
+    if [ at < 0 ] return ''
+    from : i32 [ at + i32[ k.count ] ]
+    e : i32 [ from ]
+    # 10: the line's end
+    while [ e < text.count && (i32[ text.chars[ e ] ] & 255) != 10 ]
+        e += 1
+    return text.mid[ from, e - from ].trim[]
+
+# its Exec line run as a shell line: the field codes (%U, %f ...)
+# left out
+func desk_exec [ ex: string ] -> string
+    out : string ''
+    i : i32 [ 0 ]
+    while [ i < ex.count ]
+        c : string ex.mid[ i, 1 ]
+        if [ c == '%' && i + 1 < ex.count ]
+            i += 2
+            continue
+        out = '{out}{c}'
+        i += 1
+    return out.trim[]
+
+# its icon: a path, else the theme's largest png, its svg, pixmaps
+func desk_icon [ root: string, name: string ] -> string
+    if [ name.count == 0 ] return ''
+    if [ name.starts_with[ '/' ] ]
+        ap : path '{root}{name}'
+        return (ap.exists[]) ? '{ap}' : ''
+    # the themes: the users' own (games' icons), hicolor, Yaru
+    themes : vec string []
+    home : path '{root}/home'
+    if [ home.exists[] ]
+        for [ u: path ] in home.ls[ null, false ]
+            themes.push[ '{u}/.local/share/icons/hicolor' ]
+    themes.push[ '{root}/usr/share/icons/hicolor' ]
+    themes.push[ '{root}/usr/share/icons/Yaru' ]
+    for [ th: string ] in themes
+        for [ sz: string ] in vec string [] [ '512x512', '256x256',
+                '128x128', '96x96', '64x64', '48x48' ]
+            p : path '{th}/{sz}/apps/{name}.png'
+            if [ p.exists[] ] return '{p}'
+        sv : path '{th}/scalable/apps/{name}.svg'
+        if [ sv.exists[] ] return '{sv}'
+    px : path '{root}/usr/share/pixmaps/{name}.png'
+    if [ px.exists[] ] return '{px}'
+    pv : path '{root}/usr/share/pixmaps/{name}.svg'
+    if [ pv.exists[] ] return '{pv}'
+    return ''
+
+# a Mozilla snap beside the desktop's: a profile of its own, or it
+# hands its window to the one running there
+func snap_line [ run: string ] -> string
+    for [ app: string ] in vec string [] [ 'firefox', 'thunderbird' ]
+        if [ run == '/snap/bin/{app}' ]
+            home : cstr getenv[ 'HOME' ]
+            if [ !home ] return run
+            # Firefox does not make a missing profile folder
+            pf : path '{string [ home ]}/snap/{app}/common/orbiter'
+            pf.make_dir[]
+            return '{run} --new-instance --profile {pf}'
+    return run
+
+# the folders GNOME reads its apps from
+func app_dirs [ root: string ] -> vec string
+    out : vec string []
+    out.push[ '{root}/usr/share/applications' ]
+    out.push[ '{root}/usr/local/share/applications' ]
+    out.push[ '{root}/var/lib/snapd/desktop/applications' ]
+    out.push[ '{root}/var/lib/flatpak/exports/share/applications' ]
+    home : path '{root}/home'
+    if [ home.exists[] ]
+        for [ u: path ] in home.ls[ null, false ]
+            if [ u.is_dir[] ]
+                out.push[ '{u}/.local/share/applications' ]
+    return out
+
+# every app GNOME would show, a card each: run as its Exec says
+func ubuntu_list [ root: string ]
+    dir : string os_store[ 'ubuntu' ]
+    made : vec string []
+    for [ ad: string ] in app_dirs[ root ]
+        dp : path [ ad ]
+        if [ !dp.exists[] ] continue
+        for [ f: path ] in dp.ls[ null, false ]
+            if [ f.ext[] != 'desktop' ] continue
+            tx : string f.load[ typeid[ string ], null ]
+            if [ !tx ] continue
+            text : string '\n{tx}'
+            if [ desk_value[ text, 'Type' ] != 'Application' ] continue
+            if [ desk_value[ text, 'NoDisplay' ] == 'true' ] continue
+            if [ desk_value[ text, 'Hidden' ] == 'true' ] continue
+            if [ desk_value[ text, 'Terminal' ] == 'true' ] continue
+            only : string desk_value[ text, 'OnlyShowIn' ]
+            if [ only.count > 0 && only.index_of[ 'GNOME' ] < 0 ]
+                continue
+            if [ desk_value[ text, 'NotShowIn' ].index_of[ 'GNOME' ] >= 0 ]
+                continue
+            title : string desk_value[ text, 'Name' ]
+            run : string desk_exec[ desk_value[ text, 'Exec' ] ]
+            if [ title.count == 0 || run.count == 0 ] continue
+            icon : string desk_icon[ root,
+                desk_value[ text, 'Icon' ] ]
+            os_card[ dir, made, title, snap_line[ run ], '', icon ]
+    os_prune[ dir, made ]
+
+# the running system an Ubuntu: its root
+func ubuntu_here [] -> bool
+    rel : path '/etc/os-release'
+    tx : string rel.load[ typeid[ string ], null ]
+    return tx && tx.index_of[ 'ID=ubuntu' ] >= 0
+
+# at the build: the running Ubuntu's apps, so its card opens on them
+export func ubuntu_store []
+    if [ !ubuntu_here[] ] return
+    ubuntu_list[ '' ]
+    os_needs[ 'ubuntu', '/usr/share/applications' ]
+
+# the drawer's dialog: this running Ubuntu, else the largest ext4
+OsLogin UbuntuLogin
+    store : 'ubuntu'
+    title : 'Ubuntu'
+
+    func pick [] -> OsPart
+        if [ ubuntu_here[] ]
+            for [ p: OsPart ] in os_parts[ 'ext4' ]
+                if [ p.mount == '/' ] return p
+        return os_largest[ 'ext4' ]
+
+    func list_apps [ root: string ]
+        ubuntu_list[ (root == '/') ? '' : root ]
+
+    func need_of [ root: string ] -> string
+        r : string [ (root == '/') ? '' : root ]
+        return '{r}/usr/share/applications'

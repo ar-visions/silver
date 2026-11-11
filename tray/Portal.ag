@@ -32,6 +32,8 @@ class PortalSetting
 # are given: their open and save dialogs become the navigator
 class Portal
     public asks     : vec PortalAsk
+    # addresses programs asked opened (OpenURI), for orbiter to show
+    public opens    : vec string
     public problem  : string
     # the bus address a launched program is handed
     public address  : string
@@ -45,6 +47,7 @@ class Portal
 
     func init []
         asks     = vec PortalAsk []
+        opens    = vec string []
         problem  = ''
         address  = ''
         settings = vec PortalSetting []
@@ -160,6 +163,12 @@ class Portal
         all : 'GetAll'
         look : 'Introspect'
         st : 'org.freedesktop.portal.Settings'
+        ou : 'org.freedesktop.portal.OpenURI'
+        uri : 'OpenURI'
+        if [ dbus_message_is_method_call[ m, ou.chars,
+             uri.chars ] != 0 ]
+            open_uri[ m ]
+            return false
         if [ dbus_message_get_interface[ m ] != null ]
             ifc : string[ dbus_message_get_interface[ m ] ]
             if [ ifc == st ]
@@ -213,7 +222,7 @@ class Portal
             reply[ rep ]
             return false
         en : 'org.freedesktop.DBus.Error.UnknownMethod'
-        why : 'orbiter answers only the file chooser'
+        why : 'orbiter answers files, links and settings'
         reply[ dbus_message_new_error[ m, en.chars, why.chars ] ]
         return false
 
@@ -236,23 +245,66 @@ class Portal
             x = '{x}<arg type="o" name="handle" direction="out"/>'
             x = '{x}</method>'
         x = '{x}<property name="version" type="u" access="read"/>'
-        return '{x}</interface></node>'
+        ou : string {
+            </interface>
+            <interface name="org.freedesktop.portal.OpenURI">
+            <method name="OpenURI"><arg type="s" direction="in"/>
+            <arg type="s" direction="in"/>
+            <arg type="a{{sv}}" direction="in"/>
+            <arg type="o" direction="out"/></method>
+            <property name="version" type="u" access="read"/>
+        }
+        return '{x}{ou.trim[]}</interface></node>'
+
+    # the request object a call answers on (':1.42' as '1_42')
+    func handle_of [ sender: string, token: string ] -> string
+        t : string [ token ]
+        if [ t.count == 0 ]
+            counter += 1
+            t = 'orbiter{counter}'
+        who : ''
+        for [ i: i32 1, i < sender.count, i += 1 ]
+            c : string sender.mid[ i, 1 ]
+            who = (c == '.') ? '{who}_' : '{who}{c}'
+        return '/org/freedesktop/portal/desktop/request/{who}/{t}'
+
+    # an address a program opens (Steam's links): orbiter shows it
+    func open_uri [ m: @DBusMessage ]
+        sender : string[ dbus_message_get_sender[ m ] ]
+        uri : tray_arg[ m, 1 ]
+        k : PortalAsk [ sender: sender, folder: '', name: '' ]
+        h : handle_of[ sender, read_options[ m, k ] ]
+        rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
+        it : DBusMessageIter
+        dbus_message_iter_init_append[ rep, @it ]
+        hc : cstr [ h.chars ]
+        dbus_message_iter_append_basic[ @it, DBUS_TYPE_OBJECT_PATH,
+            @hc ]
+        reply[ rep ]
+        if [ uri.count > 0 ] opens.push[ uri ]
+        log 'portal: open {uri} for {sender}'
+        # done at once: the address is orbiter's to show
+        rq : 'org.freedesktop.portal.Request'
+        rs : 'Response'
+        s : @DBusMessage [ dbus_message_new_signal[ h.chars, rq.chars,
+            rs.chars ] ]
+        dbus_message_set_destination[ s, sender.chars ]
+        si : DBusMessageIter
+        dbus_message_iter_init_append[ s, @si ]
+        code : u32 [ (uri.count > 0) ? 0 : 2 ]
+        dbus_message_iter_append_basic[ @si, DBUS_TYPE_UINT32, @code ]
+        d : DBusMessageIter
+        dbus_message_iter_open_container[ @si, DBUS_TYPE_ARRAY, "{sv}",
+            @d ]
+        dbus_message_iter_close_container[ @si, @d ]
+        reply[ s ]
 
     # a request: its handle back now, its answer when picked
     func ask [ m: @DBusMessage, save: bool ] -> bool
         sender : string[ dbus_message_get_sender[ m ] ]
         k : PortalAsk [ sender: sender, save: save,
             title: tray_arg[ m, 1 ], folder: '', name: '' ]
-        token : read_options[ m, k ]
-        if [ token.count == 0 ]
-            counter += 1
-            token = 'orbiter{counter}'
-        # the sender's unique name, ':1.42' as '1_42'
-        who : ''
-        for [ i: i32 1, i < sender.count, i += 1 ]
-            c : string sender.mid[ i, 1 ]
-            who = (c == '.') ? '{who}_' : '{who}{c}'
-        k.handle = '/org/freedesktop/portal/desktop/request/{who}/{token}'
+        k.handle = handle_of[ sender, read_options[ m, k ] ]
         rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
         it : DBusMessageIter
         dbus_message_iter_init_append[ rep, @it ]

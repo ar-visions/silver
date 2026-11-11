@@ -769,7 +769,13 @@ shader CanvasUI
         if (mode == 5.0) {{
             vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
             uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
-            vec4 texel = texture(image, uv) * ubo.image_tint;
+            // shrunk with no mips: every texel under the pixel
+            vec2 mpt   = uv * vec2(textureSize(image, 0));
+            vec2 fp    = vec2(fwidth(mpt.x), fwidth(mpt.y));
+            bool shr   = textureQueryLevels(image) == 1
+                && min(fp.x, fp.y) > 1.0 && max(fp.x, fp.y) > 1.25;
+            vec4 texel = ((shr) ? cv_minify(uv, fp)
+                                : texture(image, uv)) * ubo.image_tint;
             float aa   = (max_rr <= 0.0) ? step(0.5, rect_cov)
                                          : 1.0 - smoothstep(-0.5, 0.5,
                                                  dist);
@@ -2105,7 +2111,13 @@ CanvasLean CanvasImageLean
         vec2 lpos  = lean_pos(v_pos);
         vec2 uv    = (lpos - ubo.rect.xy) / ubo.rect.zw;
         uv         = mix(ubo.grad0.xy, ubo.grad0.zw, uv);
-        vec4 texel = texture(image, uv) * ubo.image_tint;
+        // shrunk with no mips: every texel under the pixel
+        vec2 mpt   = uv * vec2(textureSize(image, 0));
+        vec2 fp    = vec2(fwidth(mpt.x), fwidth(mpt.y));
+        bool shr   = textureQueryLevels(image) == 1
+            && min(fp.x, fp.y) > 1.0 && max(fp.x, fp.y) > 1.25;
+        vec4 texel = ((shr) ? cv_minify(uv, fp)
+                            : texture(image, uv)) * ubo.image_tint;
         float aa   = step(0.5, lean_cover(lpos));
         o_color    = texel * aa * ubo.params.y;
     }

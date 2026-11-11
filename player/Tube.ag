@@ -1,0 +1,222 @@
+extend player
+
+# a YouTube video streaming in: yt-dlp fetches its H.264 picture and
+# its AAC sound into files of their own, read as they grow
+class Tube
+    public  url   : string
+    public  dir   : string
+    public  title : string
+    # the picture's file: its boxes read so far, its track
+    intern  dm    : Demux
+    intern  taken : i64
+    intern  vt    : DemuxTrack
+    # samples taken from the picture's file, not yet given
+    public  fresh : vec DemuxSample
+    # aura's sign-in given to yt-dlp (its cookies, Netscape's form)
+    public  signed : bool
+
+    func init []
+        fresh = vec DemuxSample []
+
+    # the line that fetches one stream into its file, in the
+    # background (its own process group, its pid in <name>.pid)
+    func fetch [ name: string, fmt: string ]
+        yt   : string '{path.path_install[].absolute[]}/bin/yt-dlp'
+        node : string '{path.path_install[].absolute[]}/node/bin/node'
+        out  : string '{dir}/{name}'
+        me   : i32 getpid[]
+        # the player gone, its group (this script, yt-dlp) stops
+        jf  : string '{dir}/{name}.cookies'
+        jar : string [ (signed) ? '--cookies "{jf}"' : '' ]
+        if [ signed ]
+            cp : command { cp "{dir}/cookies.txt" "{out}.cookies" }
+            cp.exec[ false ]
+        sh : string {
+            echo $$ > "{out}.pid"
+            ( while kill -0 {me} 2>/dev/null; do sleep 1; done
+              kill -TERM -$$ ) &
+            "{yt}" --js-runtimes "node:{node}" --no-part --fixup never \
+              {jar} \
+              --no-progress --no-playlist -f "{fmt}" \
+              --print-to-file "%(title)s" "{out}.title" --no-simulate \
+              -o "{out}" "{url}" > "{out}.log" 2>&1 \
+              && touch "{out}.done" || touch "{out}.fail"
+        }
+        sp : path '{out}.sh'
+        sp.save[ sh.trim[], null ]
+        run : command { setsid sh "{out}.sh" > /dev/null 2>&1 & }
+        run.exec[ false ]
+
+    # both streams asked for; a folder of its own, emptied first
+    func start [] -> bool
+        rm : command { rm -rf "{dir}" }
+        rm.exec[ false ]
+        dp : path [ dir ]
+        dp.make_dir[]
+        signed = sign_in[]
+        fetch[ 'v.mp4',
+            'bv*[vcodec^=avc1][height<=1080][protocol=https]' ]
+        fetch[ 'a.m4a', '140/ba[acodec^=mp4a][protocol=https]' ]
+        return true
+
+    # both fetches ended, their processes too
+    func stop []
+        for [ n: string ] in vec string [] [ 'v.mp4', 'a.m4a' ]
+            pf : path '{dir}/{n}.pid'
+            if [ !pf.exists[] ] continue
+            k : command { kill -TERM -$(cat "{pf}") }
+            k.exec[ false ]
+
+    # aura's cookie folders: orbiter's aura (granted by the
+    # module's signins), then one run alone
+    func jars [] -> vec string
+        out : vec string []
+        ins : string '{path.path_install[].absolute[]}'
+        out.push[ '{ins}/home/aura/.cache/aura/data/cookies' ]
+        home : cstr getenv[ "HOME" ]
+        if [ home ] out.push[ '{home}/.cache/aura/data/cookies' ]
+        return out
+
+    # a site folder of YouTube's or Google's
+    func ours [ site: string ] -> bool
+        for [ d: string ] in vec string [] [ 'youtube.com',
+                                             'google.com' ]
+            if [ site == d || site.ends_with[ '.{d}' ] ] return true
+        return false
+
+    # each cookie file of theirs, with its time, newest last read
+    func signin_time [] -> i64
+        t : i64 [ 0 ]
+        for [ jd: string ] in jars[]
+            jp : path [ jd ]
+            if [ !jp.exists[] ] continue
+            for [ sd: path ] in jp.ls[ null, false ]
+                if [ !ours[ sd.filename[] ] ] continue
+                cf : path '{sd}/cookies.txt'
+                if [ cf.exists[] ] t = max[ t, cf.modified_time[] ]
+        return t
+
+    # aura's cookies for YouTube and Google as Netscape's cookie
+    # file (yt-dlp's); false when there are none
+    func sign_in [] -> bool
+        rows : string '# Netscape HTTP Cookie File\n'
+        n : i32 [ 0 ]
+        for [ jd: string ] in jars[]
+            jp : path [ jd ]
+            if [ !jp.exists[] ] continue
+            for [ sd: path ] in jp.ls[ null, false ]
+                site : string sd.filename[]
+                if [ !ours[ site ] ] continue
+                cf : path '{sd}/cookies.txt'
+                tx : string cf.load[ typeid[ string ], null ]
+                if [ !tx ] continue
+                for [ ln: string ] in tx.split[ '\n' ]
+                    rw : string cookie_row[ site, ln ]
+                    if [ rw.count == 0 ] continue
+                    rows = '{rows}{rw}\n'
+                    n += 1
+        if [ n == 0 ] return false
+        cp : path '{dir}/cookies.txt'
+        cp.save[ rows, null ]
+        return true
+
+    # one cookie (name TAB value TAB attributes) as Netscape's row:
+    # domain, its subdomains, path, secure, expiry, name, value
+    func cookie_row [ site: string, ln: string ] -> string
+        ws : vec string ln.split[ '\t' ]
+        if [ ws.count < 3 ] return ''
+        dom  : '.{site}'
+        at   : string '/'
+        sec  : string 'FALSE'
+        ends : string '0'
+        for [ part: string ] in ws[ 2 ].split[ ';' ]
+            kv : string part.trim[]
+            if [ kv.starts_with[ 'domain=' ] ]
+                dom = kv.mid[ 7, kv.count - 7 ]
+            el [ kv.starts_with[ 'path=' ] ]
+                at = kv.mid[ 5, kv.count - 5 ]
+            el [ kv.starts_with[ 'expires=' ] ]
+                ends = kv.mid[ 8, kv.count - 8 ]
+            el [ kv == 'secure' ] sec = 'TRUE'
+        subs : string [ (dom.starts_with[ '.' ]) ? 'TRUE' : 'FALSE' ]
+        nm : string ws[ 0 ]
+        val : string ws[ 1 ]
+        return '{dom}\t{subs}\t{at}\t{sec}\t{ends}\t{nm}\t{val}'
+
+    # yt-dlp said YouTube wants a sign-in
+    func wants_signin [] -> bool
+        for [ n: string ] in vec string [] [ 'v.mp4', 'a.m4a' ]
+            lp : path '{dir}/{n}.log'
+            tx : string lp.load[ typeid[ string ], null ]
+            if [ !tx ] continue
+            if [ tx.index_of[ 'Sign in' ] >= 0
+                 || tx.index_of[ '--cookies' ] >= 0
+                 || tx.index_of[ 'members' ] >= 0
+                 || tx.index_of[ 'Private video' ] >= 0 ] return true
+        return false
+
+    func has [ name: string ] -> bool
+        p : path '{dir}/{name}'
+        return p.exists[]
+
+    # why a fetch failed: its log's last error line
+    func why [] -> string
+        for [ n: string ] in vec string [] [ 'v.mp4', 'a.m4a' ]
+            if [ !has[ '{n}.fail' ] ] continue
+            lp : path '{dir}/{n}.log'
+            tx : string lp.load[ typeid[ string ], null ]
+            if [ !tx ] return 'yt-dlp failed'
+            last : string ''
+            for [ ln: string ] in tx.split[ '\n' ]
+                if [ ln.starts_with[ 'ERROR' ] ] last = ln
+            return (last.count > 0) ? last : 'yt-dlp failed'
+        return null
+
+    func failed [] -> bool
+        return has[ 'v.mp4.fail' ] || has[ 'a.m4a.fail' ]
+
+    func video_done [] -> bool
+        return has[ 'v.mp4.done' ]
+
+    # the picture's new bytes read; its new samples into fresh;
+    # true when any came
+    func pump [] -> bool
+        if [ !dm ] dm = Demux []
+        vp : path '{dir}/v.mp4'
+        if [ !vp.exists[] ] return false
+        fh : handle fopen[ '{vp}'.chars, "rb" ]
+        if [ !fh ] return false
+        fseek[ fh, taken, 0 ]
+        buf : vec u8 [ 8388608 ]
+        n : i64 [ i64[ fread[ @buf[ 0 ], 1, 8388608, fh ] ] ]
+        fclose[ fh ]
+        if [ n <= 0 ] return false
+        taken += n
+        dm.append[ @buf[ 0 ], n ]
+        if [ !vt ] vt = video_of[ dm ]
+        got : bool [ false ]
+        for [ ds: DemuxSample ] in dm.ready
+            if [ vt && ds.track == vt.id ]
+                fresh.push[ ds ]
+                got = true
+        dm.ready.clear[]
+        return got
+
+    func track [] -> DemuxTrack
+        return vt
+
+    # the sound, whole (it is small and comes first)
+    func sound [] -> AudioClip
+        ap : path '{dir}/a.m4a'
+        bytes : vec u8 file_bytes[ ap ]
+        if [ !bytes || bytes.count == 0 ] return null
+        adm : Demux []
+        adm.append[ @bytes[ 0 ], bytes.count ]
+        for [ t: DemuxTrack ] in adm.tracks
+            if [ t.kind == 2 ] return clip_of[ t, adm.ready ]
+        return null
+
+    func name [] -> string
+        tp : path '{dir}/v.mp4.title'
+        tx : string tp.load[ typeid[ string ], null ]
+        return (tx) ? tx.trim[] : url
