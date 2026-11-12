@@ -37,7 +37,7 @@ element RecBar
             fill_color: #ffd400ff
     }
 
-# an update coming in: a red line along the orbiter name's foot,
+# an update coming in: a red line along the orbiter icon's foot,
 # as long as the share received
 element UpdBar
     no_cache    : true
@@ -46,40 +46,6 @@ element UpdBar
         layers.line:
             fill_color: #ff3040ff
     }
-
-# the system menu's dock: the navigator's dock column in a colour
-# of its own (the system's)
-Group SysDock
-    # the backdrop moves under it
-    animated : true
-    blur : BlurGround []
-    style : CSS {
-        layers.dock:
-            fill_color: #0004
-            box_shadow: inset 0 0 13px #86f2
-            stroke_width: 1
-            stroke_color: #fff1
-            near_border: true
-            near_inset: 1.0
-            near_inset_color: #c890ffaa
-        layers.ddiv:
-            fill_color: #ffffff11
-            area: r0 t0 w1px b0
-    }
-
-# the system menu's views down its dock: they scroll, faded at
-# the ends, in the room the fixed cells under them leave
-element SysDockRows
-    scroll_fade : 24.0
-    no_thumb    : true
-
-    public func tick [ w: Window ]
-        tall : f32 [ 0.0 ]
-        if [ elements ]
-            for [ c: element, k: string ] in elements
-                if [ c && c.bounds && c.bounds.y + c.bounds.h > tall ]
-                    tall = c.bounds.y + c.bounds.h
-        content_h = tall
 
 # a cell of the system menu's dock, shaped as the navigator's: its
 # icon high, its name under it; lit while its view shows, yellow for
@@ -396,6 +362,32 @@ Button BarButton
             layers.iconl:
                 opacity: 0.35
     }
+    # what it does: its bar's TipLine shows it while it is hovered
+    public tip : string
+
+# a bar's free space: the tip of the bar's button the pointer is on,
+# in place (no floating box over the work)
+element TipLine
+    style : CSS {
+        layers.face:
+            label_color: #e4e4eab0
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+            label_offset: 10.0 0.0
+    }
+
+    public func tick [ w: Window ]
+        t : string [ '' ]
+        for [ e: element* w.hovered, e && e != parent, e = e.parent ]
+            if [ e.parent == parent && e inherits BarButton ]
+                bb : BarButton e
+                if [ bb.tip ] t = bb.tip
+        cur : string (label) ? label : ''
+        if [ cur == t ] return
+        label    = t
+        pristine = false
+        w.restyle = true
 
 # a top menu of the active window's menu bar, at the bar's left
 BarButton MenuTop
@@ -765,6 +757,26 @@ MenuDrawer SystemDrawer
 
 # a phone's system menu cells in one row along its foot: a drag or
 # the wheel scrolls them sideways, eased; a tap picks the cell
+# the agents at the strip's right end: a tab each, and the add;
+# they stay put while the strip scrolls
+element SysAgents
+    animated : true
+    blur : BlurGround []
+    style : CSS {
+        layers.dock:
+            fill_color: #0004
+            box_shadow: inset 0 0 13px #86f2
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.ddiv:
+            fill_color: #ffffff11
+            area: l0 t0 r0 h1px
+    }
+
+    public func render [] -> Elements
+        o : orbiter [ (ux) ? ux.app_object : null ]
+        return (o) ? o.sys_agent_els[] : null
+
 element SysStrip
     # px scrolled, and where it eases to
     intern shift : f32

@@ -5855,17 +5855,24 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
                 // the argument is taken ONCE: a retry after growing the
                 // buffer must not pull the next one and shift the rest
                 char   conv = formatter[symbol_len - 1];
-                double dv = 0; int iv = 0; none* pv = null;
-                int    kind = strchr("fFgG", conv) ? 0 : strchr("diouxXc", conv) ? 1 : 2;
+                double dv = 0; int iv = 0; long long lv = 0; none* pv = null;
+                int    kind = strchr("fFgGeEaA", conv) ? 0 :
+                              strchr("diouxXc", conv)  ? 1 :
+                              conv == '%'              ? 4 : 2;
+                // l, ll, j, z, t: a 64 bit integer, as printf takes it
+                if (kind == 1 && strpbrk(formatter, "ljzt")) kind = 3;
                 if      (kind == 0) dv = va_arg(args, double);
                 else if (kind == 1) iv = va_arg(args, int);
-                else                pv = va_arg(args, none*);
+                else if (kind == 3) lv = va_arg(args, long long);
+                else if (kind == 2) pv = va_arg(args, none*);
                 for (;;) {
                     num f_len = 0;
                     num avail = res->alloc - res->count;
                     cstr  end = (cstr)&res->chars[res->count];
                     if      (kind == 0) f_len = snprintf(end, avail, formatter, dv);
                     else if (kind == 1) f_len = snprintf(end, avail, formatter, iv);
+                    else if (kind == 3) f_len = snprintf(end, avail, formatter, lv);
+                    else if (kind == 4) f_len = snprintf(end, avail, "%%");
                     else                f_len = snprintf(end, avail, formatter, pv);
                     // snprintf counts the text; the terminator needs one more
                     if (f_len >= avail) {

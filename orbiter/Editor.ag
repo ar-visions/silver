@@ -644,6 +644,14 @@ ResourceView AppView
     # it was in view while it ran: only then does a resume bring it
     mutable in_view    : bool
     mutable seen_us    : i64
+    # picture in picture: its box from the pane's right and bottom
+    mutable pip_r      : f32 [ 16.0 ]
+    mutable pip_b      : f32 [ 16.0 ]
+    # its width asked (0: the default), and the box as now shown
+    mutable pip_w      : f32
+    mutable pip_sr     : f32
+    mutable pip_sb     : f32
+    mutable pip_sw     : f32
     mutable fitx       : f32
     mutable fity       : f32
     mutable fitw       : f32
@@ -1301,6 +1309,14 @@ ResourceView AppView
         # no frame yet: say what it is doing instead of drawing nothing
         if [ ended || halted[] || !have_frame ]
             overlay[ cv, bounds ]
+
+    # its picture scaled whole into a box (picture in picture)
+    func draw_fitted [ cv: Canvas, box: rect ]
+        ft : front[]
+        if [ !ft || !have_frame || aw <= 0 || ah <= 0 ] return
+        request_frame[ cv ]
+        req_drawn = true
+        cv.draw_image[ ft, box ]
 
     # a paned app draws one frame per frame we draw. the request goes
     # out as the pane reads the last one, after the tick's work, so the
@@ -3102,6 +3118,9 @@ Layer EditorLayer
                 vtg : string [
                     (editor.var_expandable[ rvd ])
                     ? ((rvd.expanded) ? '  [-]' : '  [+]') : '' ]
+                rcols : i32 [
+                    i32[ (bounds.x + bounds.w - rin - dpx) / cw_tm.w ] ]
+                ln = editor.row_fit[ ln, vtg, rcols ]
                 cv.fill_color[ rgba['#6a9955cc'] ]
                 cv.draw_text[ '{ln}{vtg}',
                     rect [ x: dpx, y: y,
@@ -3172,7 +3191,10 @@ Layer EditorLayer
                     cv.paint[ ]
                     cv.restore[ ]
                     cv.fill_color[ rgba['#6a9955cc'] ]
-                cv.draw_text[ '# {summ}{tog}',
+                acols : i32 [
+                    i32[ (bounds.x + bounds.w - rin - ax) / cw_tm.w ] ]
+                atext : string editor.row_fit[ '# {summ}', tog, acols ]
+                cv.draw_text[ '{atext}{tog}',
                     rect [ x: ax, y: ya,
                            w: bounds.x + bounds.w - rin - ax, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
@@ -4260,6 +4282,13 @@ Control Editor
     func row_indent [ vr: i32 ] -> f32
         if [ row_var[ vr ] ] return 12.0 + f32[ row_depth[ vr ] ] * 16.0
         return 0.0
+
+    # a variable row cut to its columns, so its [+] stays in view
+    func row_fit [ ln: string, tog: string, cols: i32 ] -> string
+        if [ !ln || tog.count == 0 ] return ln
+        room : i32 [ cols - tog.count - 1 ]
+        if [ room < 8 || cells[ display_of[ ln ] ] <= room ] return ln
+        return ln.mid[ 0, room ] + "…"
 
     func vis_row [ bli: i32 ] -> i32
         if [ bli < 0 ] return bli
@@ -6774,7 +6803,8 @@ Control Editor
         li : vec AppView instances[]
         if [ !li || i < 0 || i >= li.count ] return
         run_view  = li[ i ]
-        app_view  = run_view.display == 1
+        # a file's viewer is always the app: its file is not source
+        app_view  = run_view.display == 1 || run_view.viewer
         pristine  = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -7198,10 +7228,17 @@ Control Editor
                 if [ rv ]
                     # the [+]/[-] sits right after the row's text; the
                     # text itself selects like a comment
+                    tog : string [
+                        (var_expandable[ rv ])
+                        ? ((rv.expanded) ? '  [-]' : '  [+]') : '' ]
+                    cols : i32 [
+                        (ele) ? i32[
+                            (ele.bounds.w - gutter_w - row_indent[ cln ])
+                            / cwp ] : 4096 ]
+                    fit : string row_fit[ line_get[ cln ], tog, cols ]
                     tgx : f32 [
                         gutter_w + row_indent[ cln ]
-                        + f32[ cells[ display_of[ line_get[ cln ] ] ] ]
-                        * cwp ]
+                        + f32[ cells[ display_of[ fit ] ] ] * cwp ]
                     if [ var_expandable[ rv ] && rel_x >= tgx ]
                         if [ rv.expanded ] collapse_from[ rv ]
                         el                 expand_only[ rv ]

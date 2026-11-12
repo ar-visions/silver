@@ -866,7 +866,10 @@ static void crash_handler(int sig, siginfo_t* si, void* ucv) {
     char lp[256];
     app_log_path(lp, sizeof(lp), g_app_name, g_log_slot);
     int lf = open(lp, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    // red in the console, as the app's own stderr (host_log_err)
+    static const char red[] = "\033[38;2;255;140;140m", plain[] = "\033[0m";
     if (lf >= 0) {
+        (void)write(lf, red, sizeof(red) - 1);
         (void)write(lf, hdr, (size_t)hl);
         // module-relative addresses for the supervisor's addr2line
         // pass (return addrs -1 so lines point AT the call site)
@@ -886,6 +889,7 @@ static void crash_handler(int sig, siginfo_t* si, void* ucv) {
                 if (fn > 0) (void)write(lf, fl, (size_t)fn);
             }
         }
+        (void)write(lf, plain, sizeof(plain) - 1);
         fsync(lf);
         close(lf);
     }
@@ -2129,8 +2133,9 @@ static void view_env(void) {
     }
 }
 
-// pid 1: enters the root, waits on the app, reports
-static void view_init(int status_fd, int broker_fd) {
+// pid 1: enters the root, waits on the app, reports; flat (a debug
+// launch) shares the host's pids: lldb's stops come back as its own
+static void view_init(int status_fd, int broker_fd, int flat) {
     prctl(PR_SET_PDEATHSIG, SIGKILL);
     if (unshare(CLONE_NEWNS) != 0 ||
         mount(NULL, "/", NULL, MS_REC | MS_SLAVE, NULL) != 0 ||
@@ -2143,9 +2148,11 @@ static void view_init(int status_fd, int broker_fd) {
         fprintf(stderr, "view: pivot: %s\n", strerror(errno));
         _exit(127);
     }
-    if (chdir("/") != 0 ||
-        mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC,
-              NULL) != 0) {
+    int pm = flat
+        ? mount("/.old/proc", "/proc", NULL, MS_BIND | MS_REC, NULL)
+        : mount("proc", "/proc", "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC,
+                NULL);
+    if (chdir("/") != 0 || pm != 0) {
         fprintf(stderr, "view: proc: %s\n", strerror(errno));
         _exit(127);
     }
@@ -2169,10 +2176,10 @@ static void view_init(int status_fd, int broker_fd) {
         if (w == a) { st = ws; break; }
     }
     // later instances still in it: the view stays for them
-    if (view_others()) prctl(PR_SET_PDEATHSIG, 0);
+    if (!flat && view_others()) prctl(PR_SET_PDEATHSIG, 0);
     (void)!write(status_fd, &st, sizeof(st));
     close(status_fd);
-    while (view_others()) {
+    while (!flat && view_others()) {
         while (waitpid(-1, NULL, WNOHANG) > 0) {}
         usleep(200000);
     }
@@ -2235,16 +2242,20 @@ static void bound_lock(const char* app, int argc, char** argv) {
     char rtd[512];
     snprintf(rtd, sizeof(rtd), "/run/user/%u", uid);
     if (!rt || !*rt) rt = rtd;
+    // a debug launch: a view of its own, in the host's pid space
+    int flat = getenv("SILVER_DEBUG") != NULL;
+    char key[300];
+    snprintf(key, sizeof(key), flat ? "%s-debug" : "%s", app);
     char vf[4400];
-    snprintf(vf, sizeof(vf), "%s/silver-view/%s.view", rt, app);
-    pid_t keep = view_running(vf);
+    snprintf(vf, sizeof(vf), "%s/silver-view/%s.view", rt, key);
+    pid_t keep = flat ? 0 : view_running(vf);
     snprintf(home, sizeof(home), "%s/install/home/%s", SILVER_ROOT, app);
     view_home(app, home);
     // a view's /tmp: its first holder's, empty as a boot leaves one;
     // those of views gone are let go
     snprintf(tmp, sizeof(tmp), "%s/install/tmp/view/%s-%d", SILVER_ROOT,
         app, (int)getpid());
-    snprintf(run, sizeof(run), "%s/silver-view/%s", rt, app);
+    snprintf(run, sizeof(run), "%s/silver-view/%s", rt, key);
     if (!keep) {
         snprintf(sock, sizeof(sock), "rm -rf '%s'", run);
         (void)system(sock);
@@ -2261,7 +2272,7 @@ static void bound_lock(const char* app, int argc, char** argv) {
     snprintf(sock, sizeof(sock), "%s/trinity-%s-%d.sock", rt, app, slot);
     unlink(sock);
     char rel[600];
-    snprintf(rel, sizeof(rel), "silver-view/%s/trinity-%s-%d.sock", app,
+    snprintf(rel, sizeof(rel), "silver-view/%s/trinity-%s-%d.sock", key,
         app, slot);
     (void)!symlink(rel, sock);
     const int fwd[] = { SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1,
@@ -2338,7 +2349,8 @@ static void bound_lock(const char* app, int argc, char** argv) {
         // orbiter's later shares reach the app through this
         mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
-            pipe2(sp, O_CLOEXEC) != 0 || unshare(CLONE_NEWPID) != 0) {
+            pipe2(sp, O_CLOEXEC) != 0 ||
+            (!flat && unshare(CLONE_NEWPID) != 0)) {
             fprintf(stderr, "silver-host: %s's process space: %s\n", app,
                 strerror(errno));
             exit(1);
@@ -2359,7 +2371,8 @@ static void bound_lock(const char* app, int argc, char** argv) {
             char ns[64];
             struct stat pst;
             snprintf(ns, sizeof(ns), "/proc/%d/ns/pid", (int)init);
-            FILE* vw = stat(ns, &pst) == 0 ? fopen(vf, "wb") : NULL;
+            FILE* vw = !flat && stat(ns, &pst) == 0 ? fopen(vf, "wb")
+                                                    : NULL;
             if (vw) {
                 fprintf(vw, "%d %lu\n", (int)init, (unsigned long)pst.st_ino);
                 fclose(vw);
@@ -2369,7 +2382,7 @@ static void bound_lock(const char* app, int argc, char** argv) {
         }
         close(bp[0]);
         close(sp[0]);
-        view_init(sp[1], bp[1]);
+        view_init(sp[1], bp[1], flat);
     }
     // the app
     for (size_t i = 0; i < sizeof(fwd) / sizeof(*fwd); i++)

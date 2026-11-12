@@ -2,132 +2,131 @@
 
 ![silver-lang](silver-icon.png "silver-lang")
 
-silver is a native build language. One file is a module. An import line is a git
-repository, silver-module or a C header. The output is a native binary with full LLDB debug
-information, on Linux, macOS, and Windows.
+silver began on December 16, 2017 (first commit
+`088d76a3f7ccb579c66c5c3b106dea2a0a6bac0d`).
+
+silver is a programming language that is also its own build system. A
+program is a folder with one source file of the same name
+(`myapp/myapp.ag`). That file holds the code and everything needed to
+build it: its dependencies, how to build them, and what to link. There
+is no CMakeLists.txt, Makefile or package file.
+
+silver compiles through LLVM to native code, with full debug
+information for LLDB. It runs on Linux, macOS and Windows, and builds
+for iOS and Android.
+
+## a first module
 
 ```
-import KhronosGroup:Vulkan-Headers/29184b9
-import glfw:glfw/fdd14e6 <GLFW/glfw3.h>
-    +GLFW_INCLUDE_VULKAN2
-```
-
-An import clones the repository at that commit, detects its build system,
-builds it with that system's tools, and links the result. A C header import
-is read by libclang; its types, functions, and macros become available to the
-module. No binding code is written or generated.
-
-```python
 class greeter
     public name : string
 
     func hello []
         log 'hello, {name}'
 
-g : greeter [ name: 'world' ]
-g.hello
+expect func greets [] -> bool
+    g : greeter [ name: 'world' ]
+    g.hello[]
+    return g.name == 'world'
 ```
 
+- `:` declares, `=` assigns.
+- Blocks are set by indentation.
+- Arguments and constructors use `[ ]`.
+- `'{name}'` puts a value into a string.
+- `expect func` is a test (see below).
 
-```silver
-a:1
+The full language is in [LANGUAGE.md](LANGUAGE.md).
+
+## dependencies
+
+An import names what the module needs. silver fetches it, builds it with
+that project's own build system (cmake, meson, autotools, cargo or make),
+and links it.
+
+```
+# another silver module in this repository
+import trinity
+
+# a git repository at a fixed commit, and the header to read from it
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
+
+# a release, by version and address
+import libtiff/v4.7.2 from https://gitlab.com/libtiff/libtiff
+
+# options for the dependency's build go on the lines under it
+import Mbed-TLS:mbedtls/ec4044008d2d069da38288bc76b0fee34ec78646 <mbedtls/ssl.h>
+    -DENABLE_TESTING=0
+
+# a system C header
+import <stdio.h>
 ```
 
-test
+C headers are read by clang. Their functions, types, structs, enums and
+macros can be used directly; no bindings are written or generated.
 
-Objects run on **Au**, a C runtime: reference counting, reflection, single
-inheritance. C, C++, and silver use the same object model. A method declared
-in silver without a body is implemented in a `.c` or `.cc` file beside the
-module; it compiles and links with the module and reads the same fields.
+## C and C++ together
 
-Method calls are direct. Dynamic dispatch is written `method*[ ]` at the call
-site.
-
-## foundry
-
-`foundry/` is software written in silver, developed in this repository:
-
-- **trinity** — GPU interface engine: Vulkan, an SDF compute canvas, element
-  trees styled with CSS. An app is one declaration: `element myapp : trinity`.
-- **orbiter** — the IDE, a trinity app. It edits, builds, and runs silver
-  modules, and hosts running apps in its panes — each app is its own process,
-  sharing frames over a unix socket.
-- **ai** — tensors, layers, training, with Vulkan compute.
-- **spectra** — audio: decoding, mixing, spectrographs.
-- **asnes / knes / rgen** — game console emulator elements, runnable on their own or within orbiter by means of enumeration of extensions (**export** keyword)
-
-Language changes are validated against these apps.
-
-A trinity app registers its presence as a socket named after the app. Any app
-can broadcast to the others. Ctrl+click on an element in a running app emits
-the style rule location that produced it; orbiter receives this and opens the
-file at that line.
-
-A module can also export keyed metadata at build time — `export extensions
-['.gen', '.smd']` writes `export/rgen.agi` under the silver root. Any program
-can iterate that folder, one readable file per module. Orbiter uses it to
-open files: a `.gen` finds rgen by its own declaration and runs it in its own
-process, in a pane. Modules built years apart associate this way without ever
-being compiled together.
+Objects live on **Au**, a small C runtime: reference counting,
+reflection and single inheritance. C, C++ and silver share it. A
+`myapp.c` or `myapp.cc` file next to `myapp.ag` is compiled into the
+same module and sees the same types and fields.
 
 ## tests
 
-`expect func` at module level declares a test — a function returning `bool`:
+A module-level `expect func` returning `bool` is a test. Its arguments
+are made by the test runner, so a test can ask for a real Vulkan context
+and draw with it:
 
-```python
-expect func check_math [] -> bool
-    return 2 + 2 == 4
-
-expect func test [ vk: vk_context ] -> bool
+```
+expect func renders [ vk: vk_context ] -> bool
     w : Display [ vk: vk, backbuffer: true, width: 1024, height: 1024 ]
-    c : Canvas  [ vk: vk, w: w, width: 1024, height: 1024 ]
-    # draw, fence, read the pixels back, average them
+    # draw a frame, read the pixels back, check them
     ...
-    return avg_a > 10
 ```
 
-Arguments are default-constructed by the test runner — the second test above
-receives a real, live Vulkan context. A test whose arguments cannot be
-constructed is reported as skipped, not silently dropped.
+`expect` inside a function is an assertion:
 
-`expect` is also a statement inside any function — an assertion that prints
-its message and halts under the debugger when false:
-
-```python
+```
 expect result == VK_SUCCESS, 'swapchain creation failed'
 ```
 
-`silver --test myapp` runs every module-level expect across the module and
-all of its imports, in each module's own initializer. Each test prints its
-name, then `passed` or `failed`; a failure aborts with the test named, a full
-pass prints `expect: complete` and exits 0 before the app itself ever starts.
-The same run happens for any app by setting `SILVER_EXPECT` in its
-environment — the flag is only silver setting that variable for the launch.
+`silver --test myapp` runs the tests of the module and of everything it
+imports, prints each result and the count passed, and exits 1 if any
+failed. A release build runs the tests first and stops if one fails;
+release binaries contain no test code.
 
-The working pattern for a graphics app: render one frame the way the app
-normally does, fence, read the pixels back, and pin the average color at the
-app's default size — four integers, measured once from a build you approved.
-A change anywhere in the render path moves the number and the test names
-itself when it breaks.
-
-Two build rules follow from this. A release build runs the debug tests first
-and refuses to build if they fail. And release binaries contain none of the
-test code at all — no bodies, no runner, no `SILVER_EXPECT` check.
-
-## build
+## build and run
 
 ```bash
-./bootstrap.sh        # SDK: llvm, runtimes, dependencies
-make                  # the silver compiler
-silver orbiter        # build and run the IDE
-silver --test myapp   # run a module's expect tests
+./bootstrap.sh            # the toolchain: LLVM, clang, lld, runtimes
+make                      # the silver compiler
+silver myapp              # build myapp and run it
+silver --build myapp      # build only
+silver --test myapp       # run its tests
+silver --release myapp    # test, then package (.deb, .rpm, .app, ...)
 ```
 
-A module is a directory with a matching source file — `myapp/myapp.ag`.
-`silver myapp` builds and runs it; silver's flags come before the module
-name, and everything after the module name is passed to the app.
+silver's own flags go before the module name. Everything after the
+module name is passed to the program.
 
-Language reference: [LANGUAGE.md](LANGUAGE.md)
+## in this repository
+
+The folders at the top level are silver modules. Among them:
+
+- **trinity**: a GPU interface engine on Vulkan. Elements are styled
+  with CSS and drawn by its own canvas. An app is declared as
+  `element myapp : trinity`.
+- **orbiter**: an editor and desktop shell built on trinity. It edits,
+  builds, runs and debugs modules; each app runs in its own process and
+  shows in a pane.
+- **ai**: tensors, training and inference on the GPU.
+- **spectra** and **speech**: audio, and speech to text.
+- **knes**, **asnes**, **rgen**, **n64**, **psx**, **tg16**: game
+  console emulators.
+- **features**: one test for each language feature.
+
+Changes to the language are checked against these programs.
 
 *for Audrey and Rebecca — succinct code, inspiring more to enjoy the craft.*
 

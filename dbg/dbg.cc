@@ -5,6 +5,9 @@
 //#include <features.h>
 #include <lldb/API/LLDB.h>
 #include <mutex>
+#include <map>
+#include <string>
+#include <vector>
 #include <dlfcn.h>
 #include <import>
 #undef   read
@@ -57,6 +60,13 @@ struct dbg_state {
     // steps taken on their own to get a step back into .ag code
     int              auto_steps  = 0;
     std::mutex       deliver;
+    // Au's object header and type record, from the app's debug info
+    bool             au_looked   = false;
+    lldb::SBType     au_hdr;
+    lldb::SBType     au_type;
+    std::map<std::string, lldb::SBType> classes;
+    // a child row's path names its type by place here
+    std::vector<lldb::SBType> path_types;
 };
 #define S(d)  ((dbg_state*)(d)->impl)
 #define BP(b) ((lldb::SBBreakpoint*)(b)->lldb_bp)
@@ -737,110 +747,483 @@ DBG_API none dbg_cont(dbg debug) {
     S(debug)->process.Continue();
 }
 
-// best human-readable rendering of a value. lldb's GetValue() on a silver object (a
-// `string`, an array, any class) is just the bare object pointer — useless in the
-// preview. so: prefer GetSummary() (gives the quoted text for char*/cstr); and for a
-// silver `string` specifically, dig out its first member `chars` (a cstr) and use that
-// buffer's summary as the value. falls back to the raw scalar/pointer otherwise.
-static string render_value(lldb::SBValue v) {
-    const char* sm = v.GetSummary();
-    if (sm && sm[0]) return hold(f(string, "%s", sm));
-    // silver string object: chars is the const char* text buffer (string_schema's
-    // first prop). GetChildMemberWithName auto-derefs the object pointer.
-    lldb::SBValue chars = v.GetChildMemberWithName("chars");
-    if (chars.IsValid()) {
-        const char* cs = chars.GetSummary();
-        if (cs && cs[0]) return hold(f(string, "%s", cs));
-    }
-    const char* vl = v.GetValue();
-    return hold(f(string, "%s", vl ? vl : ""));
-}
+// values as silver sees them: every object pointer is read through
+// its Au header (112 bytes before it) for its real class, so an
+// `element` that is a ClickButton shows as one; strings show their
+// text, vecs their elements, maps their pairs. read from the app's
+// memory alone: nothing runs in the app
+static const int ROW_MAX     = 512;   // children listed at most
+static const int PREVIEW_MAX = 120;   // characters in a one line preview
 
-// the deepest tree we read eagerly. lldb's value tree is effectively infinite (a
-// pointer's child is its pointee; Au objects cycle through type/vtable pointers), so
-// the depth cap is what stops the recursion from looping. levels beyond this come back
-// empty (the user can't expand past them — acceptable for the inline preview).
-// a child's own lldb path, so its children can be read later on demand
-static string child_path(const char* ppath, string name, bool parent_is_ptr) {
-    if (!ppath || !*ppath) return hold(f(string, "%s", name->chars));
-    if (name->chars[0] == '[') return hold(f(string, "%s%s", ppath, name->chars));
-    // lldb paths follow C: a member of a pointer is reached with ->
-    return hold(f(string, parent_is_ptr ? "%s->%s" : "%s.%s", ppath, name->chars));
-}
-
-// one level of a value's children. __-prefixed header fields (the af-bit struct
-// __fbits, the vtable pointer, etc.) are skipped — not user data.
-Au read_children_depth(dbg debug, lldb::SBValue value, int depth, const char* ppath) {
-    Au result = (Au)vector_of(typeid(Au));
-
-    for (int i = 0, n = (int)value.GetNumChildren(); i < n; ++i) {
-        lldb::SBValue child = value.GetChildAtIndex(i);
-        const char*   nm    = child.GetName();
-        if (nm && nm[0] == '_' && nm[1] == '_') continue;
-        const char*   tp    = child.GetTypeName();
-        // hold: setting a member outside init does not retain the value.
-        string        name  = hold(f(string, "%s", nm ? nm : ""));
-        string        type  = hold(f(string, "%s", tp ? tp : ""));
-        string        val   = render_value(child);
-        char          name_buf[256];
-        if (!name->count) {
-            snprintf(name_buf, sizeof(name_buf), "[%u]", i);
-            name = hold(f(string, "%s", name_buf));
+static void au_lookup(dbg_state* s) {
+    if (s->au_looked) return;
+    s->au_looked = true;
+    lldb::SBTypeList hs = s->target.FindTypes("_Au");
+    // two layouts carry the name: Au's own begins with its type, au
+    for (uint32_t i = 0; i < hs.GetSize(); i++) {
+        lldb::SBType t = hs.GetTypeAtIndex(i);
+        if (t.GetNumberOfFields() &&
+            strcmp(t.GetFieldAtIndex(0).GetName() ?: "", "au") == 0) {
+            s->au_hdr = t;
+            break;
         }
-        // a node lldb already summarizes (char*/cstr → quoted text) is a formatted
-        // leaf: don't recurse into it (a char* has one child per byte — slow + noisy).
-        const char* csm  = child.GetSummary();
-        bool        leaf = (csm && csm[0]);
-        // a null pointer still reports the pointee's fields; reading them
-        // gives garbage and the row expands into nonsense
-        bool        nul  = child.TypeIsPointerType() &&
-                           child.GetValueAsUnsigned(0) == 0;
-        bool        kids = !leaf && !nul && child.GetNumChildren() > 0;
-        string      path = child_path(ppath, name, value.TypeIsPointerType());
-        Au ar = (depth > 0 && kids)
-            ? hold(read_children_depth(debug, child, depth - 1, path->chars))
-            : hold((Au)vector_of(typeid(Au)));
-        variable v = new0(variable,
-            debug,      debug,
-            name,       name,
-            type,       type,
-            value,      val,
-            children,   (vector)ar);
-        v->path     = path;
-        v->has_kids = kids;
-
-        vector_push((vector)result, (Au)v);
     }
+    lldb::SBTypeList ts = s->target.FindTypes("_Au_t");
+    for (uint32_t i = 0; i < ts.GetSize(); i++)
+        if (ts.GetTypeAtIndex(i).GetNumberOfFields()) {
+            s->au_type = ts.GetTypeAtIndex(i);
+            break;
+        }
+}
 
+static lldb::SBValue at_addr(dbg_state* s, const char* nm,
+                             lldb::addr_t a, lldb::SBType t) {
+    return s->target.CreateValueFromAddress(nm, lldb::SBAddress(a, s->target),
+                                            t);
+}
+
+static lldb::addr_t read_ptr(dbg_state* s, lldb::addr_t a) {
+    lldb::SBError e;
+    lldb::addr_t  v = s->process.ReadPointerFromMemory(a, e);
+    return e.Success() ? v : 0;
+}
+
+static std::string read_text(dbg_state* s, lldb::addr_t a, size_t max) {
+    if (!a) return "";
+    std::string b(max + 1, '\0');
+    lldb::SBError e;
+    size_t n = s->process.ReadCStringFromMemory(a, &b[0], max + 1, e);
+    if (!e.Success()) return "";
+    b.resize(n);
+    return b;
+}
+
+// a type record's facts, as Au_t holds them
+struct au_info {
+    std::string  ident;
+    bool         is_class  = false, is_struct  = false, is_prim = false;
+    bool         is_real   = false, is_signed  = false;
+    uint64_t     size      = 0;
+};
+
+static bool au_record(dbg_state* s, lldb::addr_t t, au_info& in) {
+    au_lookup(s);
+    if (!t || !s->au_type.IsValid()) return false;
+    lldb::SBValue r = at_addr(s, "t", t, s->au_type);
+    in.ident = read_text(s,
+        r.GetChildMemberWithName("ident").GetValueAsUnsigned(0), 96);
+    if (in.ident.empty()) return false;
+    for (unsigned char c : in.ident)
+        if (!(isalnum(c) || c == '_' || c >= 0x80)) return false;
+    auto bit = [&](const char* n) {
+        return r.GetChildMemberWithName(n).GetValueAsUnsigned(0) != 0;
+    };
+    in.is_class  = bit("is_class");
+    in.is_struct = bit("is_struct");
+    in.is_prim   = bit("is_primitive");
+    in.is_real   = bit("is_realistic");
+    in.is_signed = bit("is_signed");
+    in.size      = r.GetChildMemberWithName("typesize").GetValueAsUnsigned(0);
+    return true;
+}
+
+static lldb::addr_t hdr_field(dbg_state* s, lldb::addr_t obj, const char* f) {
+    au_lookup(s);
+    if (!s->au_hdr.IsValid()) return 0;
+    uint64_t hs = s->au_hdr.GetByteSize();
+    lldb::SBValue h = at_addr(s, "h", obj - hs, s->au_hdr);
+    return h.GetChildMemberWithName(f).GetValueAsUnsigned(0);
+}
+
+// the type an Au object pointer holds, else false (not an Au object)
+static bool au_object(dbg_state* s, lldb::addr_t obj, au_info& in) {
+    if (!obj || obj < 0x10000) return false;
+    return au_record(s, hdr_field(s, obj, "au"), in);
+}
+
+// the struct lldb knows by a class's name: complete ones only
+static lldb::SBType class_type(dbg_state* s, const std::string& nm) {
+    auto it = s->classes.find(nm);
+    if (it != s->classes.end()) return it->second;
+    lldb::SBType   got;
+    lldb::SBTypeList ts = s->target.FindTypes(nm.c_str());
+    for (uint32_t i = 0; i < ts.GetSize(); i++) {
+        lldb::SBType t = ts.GetTypeAtIndex(i).GetCanonicalType();
+        if (t.GetTypeClass() == lldb::eTypeClassStruct &&
+            t.GetNumberOfFields() > 0) { got = t; break; }
+    }
+    s->classes[nm] = got;
+    return got;
+}
+
+// an element's lldb type from its Au_t: a struct, else a number
+static lldb::SBType elem_type(dbg_state* s, const au_info& in) {
+    lldb::SBType t = class_type(s, in.ident);
+    if (t.IsValid() && t.GetByteSize() == in.size) return t;
+    lldb::SBTypeList ts = s->target.FindTypes(in.ident.c_str());
+    for (uint32_t i = 0; i < ts.GetSize(); i++)
+        if (ts.GetTypeAtIndex(i).GetByteSize() == in.size)
+            return ts.GetTypeAtIndex(i);
+    lldb::BasicType b = lldb::eBasicTypeUnsignedChar;
+    if (in.is_real) b = in.size == 4 ? lldb::eBasicTypeFloat
+                                     : lldb::eBasicTypeDouble;
+    else switch (in.size) {
+        case 2: b = in.is_signed ? lldb::eBasicTypeShort
+                                 : lldb::eBasicTypeUnsignedShort; break;
+        case 4: b = in.is_signed ? lldb::eBasicTypeInt
+                                 : lldb::eBasicTypeUnsignedInt; break;
+        case 8: b = in.is_signed ? lldb::eBasicTypeLongLong
+                                 : lldb::eBasicTypeUnsignedLongLong; break;
+        default: break;
+    }
+    return s->target.GetBasicType(b);
+}
+
+static lldb::SBType void_ptr(dbg_state* s) {
+    return s->target.GetBasicType(lldb::eBasicTypeVoid).GetPointerType();
+}
+
+// what a value is, for the views below
+enum shape_kind { k_plain, k_null, k_text, k_vec, k_map, k_object,
+                  k_record, k_pointer, k_boxed };
+
+struct shaped {
+    shape_kind    kind = k_plain;
+    lldb::addr_t  obj  = 0;      // the object, for the Au kinds
+    au_info       cls;
+    lldb::SBValue body;          // the object's struct, as its class
+};
+
+static bool is_pointer(lldb::SBValue v) {
+    return v.GetType().GetCanonicalType().IsPointerType();
+}
+
+static shaped shape_of(dbg_state* s, lldb::SBValue v) {
+    shaped r;
+    lldb::SBType ct = v.GetType().GetCanonicalType();
+    if (ct.IsPointerType()) {
+        lldb::SBType pt = ct.GetPointeeType().GetCanonicalType();
+        lldb::addr_t a  = v.GetValueAsUnsigned(0);
+        if (!a) { r.kind = k_null; return r; }
+        lldb::TypeClass tc = pt.GetTypeClass();
+        bool rec = tc == lldb::eTypeClassStruct ||
+                   tc == lldb::eTypeClassClass;
+        bool vd  = pt.GetBasicType() == lldb::eBasicTypeVoid;
+        // a number or struct boxed as an object (a map's i32 values)
+        if ((rec || vd) && au_object(s, a, r.cls) && !r.cls.is_class) {
+            if (!(r.cls.is_prim || r.cls.is_struct) || !r.cls.size ||
+                r.cls.size > 4096) return r;
+            r.obj  = a;
+            r.kind = k_boxed;
+            r.body = at_addr(s, r.cls.ident.c_str(), a, elem_type(s, r.cls));
+            return r;
+        }
+        if ((rec || vd) && r.cls.is_class) {
+            r.obj = a;
+            if (r.cls.ident == "string")      r.kind = k_text;
+            else if (r.cls.ident == "vector") r.kind = k_vec;
+            else if (r.cls.ident == "map")    r.kind = k_map;
+            else                              r.kind = k_object;
+            lldb::SBType body = class_type(s, r.cls.ident);
+            if (body.IsValid())
+                r.body = at_addr(s, r.cls.ident.c_str(), a, body);
+            else if (r.kind == k_object && rec)
+                r.body = v.Dereference();
+            return r;
+        }
+        if (rec && pt.GetNumberOfFields() > 0) r.kind = k_pointer;
+        return r;
+    }
+    lldb::TypeClass tc = ct.GetTypeClass();
+    if ((tc == lldb::eTypeClassStruct || tc == lldb::eTypeClassClass ||
+         tc == lldb::eTypeClassUnion) && v.GetNumChildren() > 0)
+        r.kind = k_record;
+    return r;
+}
+
+static bool hidden_member(const char* nm) {
+    return nm && nm[0] == '_' && nm[1] == '_';
+}
+
+static void clip(std::string& t) {
+    if (t.size() > PREVIEW_MAX) t = t.substr(0, PREVIEW_MAX - 1) + "…";
+}
+
+// a vec's element count, elements, their type and stride
+struct vec_view {
+    int64_t       count = 0;
+    lldb::addr_t  origin = 0;
+    bool          objects = true;
+    lldb::SBType  type;
+    uint64_t      stride = 8;
+};
+
+static vec_view vec_of(dbg_state* s, shaped& sh) {
+    vec_view w;
+    if (!sh.body.IsValid()) return w;
+    w.count  = sh.body.GetChildMemberWithName("count").GetValueAsSigned(0);
+    w.origin = sh.body.GetChildMemberWithName("origin").GetValueAsUnsigned(0);
+    if (w.count < 0) w.count = 0;
+    // the element type: the instance's, as Au's vector_elem_type has it
+    au_info et;
+    lldb::addr_t t = hdr_field(s, sh.obj, "scalar");
+    if (!t) t = hdr_field(s, sh.obj, "meta_a");
+    w.type = void_ptr(s);
+    if (t && au_record(s, t, et) && !(et.is_class && et.size == 0)) {
+        if (!et.is_class && et.size > 0) {
+            w.objects = false;
+            w.type    = elem_type(s, et);
+            w.stride  = et.size;
+        }
+    }
+    return w;
+}
+
+static lldb::SBValue vec_elem(dbg_state* s, const vec_view& w, int64_t i) {
+    char nm[32];
+    snprintf(nm, sizeof(nm), "[%lld]", (long long)i);
+    return at_addr(s, nm, w.origin + (lldb::addr_t)i * w.stride, w.type);
+}
+
+// a map's items in order: key and value, each an Au pointer
+static std::vector<std::pair<lldb::SBValue, lldb::SBValue>>
+map_items(dbg_state* s, shaped& sh, int most) {
+    std::vector<std::pair<lldb::SBValue, lldb::SBValue>> r;
+    if (!sh.body.IsValid()) return r;
+    lldb::SBType it = class_type(s, "item");
+    if (!it.IsValid()) return r;
+    lldb::addr_t a = sh.body.GetChildMemberWithName("first")
+                         .GetValueAsUnsigned(0);
+    while (a && (int)r.size() < most) {
+        lldb::SBValue iv = at_addr(s, "item", a, it);
+        r.push_back({ iv.GetChildMemberWithName("key"),
+                      iv.GetChildMemberWithName("value") });
+        a = iv.GetChildMemberWithName("next").GetValueAsUnsigned(0);
+    }
+    return r;
+}
+
+static std::string preview(dbg_state* s, lldb::SBValue v, int depth);
+
+// a value inside another's preview: short, never opened further
+static std::string brief(dbg_state* s, lldb::SBValue v) {
+    return preview(s, v, 1);
+}
+
+static std::string preview(dbg_state* s, lldb::SBValue v, int depth) {
+    shaped sh = shape_of(s, v);
+    std::string t;
+    switch (sh.kind) {
+    case k_null: return "null";
+    case k_boxed: return preview(s, sh.body, depth);
+    case k_text: {
+        lldb::addr_t c = sh.body.IsValid()
+            ? sh.body.GetChildMemberWithName("chars").GetValueAsUnsigned(0)
+            : 0;
+        t = "\"" + read_text(s, c, PREVIEW_MAX) + "\"";
+        break;
+    }
+    case k_vec: {
+        vec_view w = vec_of(s, sh);
+        t = "[" + std::to_string(w.count) + "]";
+        if (depth > 0 || !w.count) break;
+        t += " { ";
+        for (int64_t i = 0; i < w.count && i < 6; i++) {
+            if (i) t += ", ";
+            t += brief(s, vec_elem(s, w, i));
+        }
+        t += w.count > 6 ? ", … }" : " }";
+        break;
+    }
+    case k_map: {
+        int64_t n = sh.body.IsValid()
+            ? sh.body.GetChildMemberWithName("count").GetValueAsSigned(0) : 0;
+        t = "map [" + std::to_string(n) + "]";
+        if (depth > 0 || !n) break;
+        t += " { ";
+        auto items = map_items(s, sh, 4);
+        for (size_t i = 0; i < items.size(); i++) {
+            if (i) t += ", ";
+            t += brief(s, items[i].first) + ": " + brief(s, items[i].second);
+        }
+        t += n > 4 ? ", … }" : " }";
+        break;
+    }
+    case k_object: {
+        t = sh.cls.ident;
+        if (depth > 0 || !sh.body.IsValid()) break;
+        // the members set: numbers and text, a few
+        std::string in;
+        int shown = 0;
+        for (uint32_t i = 0; i < sh.body.GetNumChildren() && shown < 4; i++) {
+            lldb::SBValue m = sh.body.GetChildAtIndex(i);
+            if (hidden_member(m.GetName())) continue;
+            shaped ms = shape_of(s, m);
+            if (ms.kind == k_null || ms.kind == k_object ||
+                ms.kind == k_pointer || ms.kind == k_record) continue;
+            if (ms.kind == k_plain && is_pointer(m)) continue;
+            if (ms.kind == k_plain && m.GetValueAsUnsigned(0) == 0) continue;
+            in += (shown ? ", " : "") + std::string(m.GetName() ?: "") +
+                  ": " + brief(s, m);
+            shown++;
+        }
+        if (shown) t += " { " + in + " }";
+        break;
+    }
+    case k_pointer: {
+        char b[40];
+        snprintf(b, sizeof(b), "0x%llx",
+                 (unsigned long long)v.GetValueAsUnsigned(0));
+        t = b;
+        break;
+    }
+    case k_record: {
+        if (depth > 1) { t = "{…}"; break; }
+        t = "{ ";
+        uint32_t n = v.GetNumChildren();
+        for (uint32_t i = 0, k = 0; i < n && k < 4; i++) {
+            lldb::SBValue m = v.GetChildAtIndex(i);
+            if (hidden_member(m.GetName())) continue;
+            t += (k++ ? ", " : "") + std::string(m.GetName() ?: "") + ": " +
+                 preview(s, m, depth + 1);
+        }
+        t += n > 4 ? ", … }" : " }";
+        break;
+    }
+    default: {
+        const char* sm = v.GetSummary();
+        const char* vl = v.GetValue();
+        t = (sm && sm[0]) ? sm : (vl ? vl : "");
+    }
+    }
+    clip(t);
+    return t;
+}
+
+// the type as written in silver: a vec's elements, an object's class
+static std::string type_text(dbg_state* s, lldb::SBValue v,
+                             shaped& sh) {
+    switch (sh.kind) {
+    case k_text: return "string";
+    case k_map:  return "map";
+    case k_boxed: return sh.cls.ident;
+    case k_vec: {
+        au_info et;
+        lldb::addr_t t = hdr_field(s, sh.obj, "scalar");
+        if (!t) t = hdr_field(s, sh.obj, "meta_a");
+        return (t && au_record(s, t, et)) ? "vec " + et.ident : "vec";
+    }
+    case k_object: return sh.cls.ident;
+    default: {
+        const char* tp = v.GetTypeName();
+        return tp ? tp : "";
+    }
+    }
+}
+
+static bool has_kids(dbg_state* s, lldb::SBValue v, shaped& sh) {
+    switch (sh.kind) {
+    case k_vec:     return vec_of(s, sh).count > 0;
+    case k_map:     return sh.body.IsValid() &&
+        sh.body.GetChildMemberWithName("count").GetValueAsSigned(0) > 0;
+    case k_object:  return sh.body.IsValid() && sh.body.GetNumChildren() > 0;
+    case k_boxed:   return shape_of(s, sh.body).kind == k_record;
+    case k_pointer:
+    case k_record:  return true;
+    case k_plain: {
+        lldb::TypeClass tc = v.GetType().GetCanonicalType().GetTypeClass();
+        return tc == lldb::eTypeClassArray && v.GetNumChildren() > 0;
+    }
+    default:        return false;
+    }
+}
+
+// a row's path: where its value sits and its type, so its children
+// are read again on a click (only within this stop)
+static string path_of(dbg_state* s, lldb::SBValue v, const char* fallback) {
+    lldb::addr_t a = v.GetLoadAddress();
+    if (a == LLDB_INVALID_ADDRESS)
+        return hold(f(string, "%s", fallback ? fallback : ""));
+    lldb::SBType t  = v.GetType();
+    size_t       ix = 0;
+    while (ix < s->path_types.size() && s->path_types[ix] != t) ix++;
+    if (ix == s->path_types.size()) s->path_types.push_back(t);
+    return hold(f(string, "@%llx#%zu", (unsigned long long)a, ix));
+}
+
+static variable row_of(dbg debug, const char* nm, lldb::SBValue v,
+                       const char* fallback) {
+    dbg_state* s  = S(debug);
+    shaped     sh = shape_of(s, v);
+    std::string pv = preview(s, v, 0);
+    std::string tt = type_text(s, v, sh);
+    // hold: setting a member outside init does not retain the value.
+    string name = hold(f(string, "%s", nm ? nm : ""));
+    string type = hold(f(string, "%s", tt.c_str()));
+    string val  = hold(f(string, "%s", pv.c_str()));
+    variable r  = new0(variable,
+        debug,      debug,
+        name,       name,
+        type,       type,
+        value,      val,
+        children,   (vector)hold((Au)vector_of(typeid(Au))));
+    r->path     = path_of(s, v, fallback);
+    r->has_kids = has_kids(s, v, sh);
+    return r;
+}
+
+// the rows under a value, as its kind lays them out
+static Au rows_under(dbg debug, lldb::SBValue v) {
+    dbg_state* s = S(debug);
+    Au result = (Au)vector_of(typeid(Au));
+    shaped sh = shape_of(s, v);
+    auto add = [&](const char* nm, lldb::SBValue c) {
+        vector_push((vector)result, (Au)row_of(debug, nm, c, null));
+    };
+    lldb::SBValue walk = v;
+    switch (sh.kind) {
+    case k_vec: {
+        vec_view w = vec_of(s, sh);
+        for (int64_t i = 0; i < w.count && i < ROW_MAX; i++) {
+            lldb::SBValue e = vec_elem(s, w, i);
+            add(e.GetName(), e);
+        }
+        return result;
+    }
+    case k_map: {
+        for (auto& kv : map_items(s, sh, ROW_MAX)) {
+            std::string k = brief(s, kv.first);
+            add(k.c_str(), kv.second);
+        }
+        return result;
+    }
+    case k_text:
+    case k_null:    return result;
+    case k_object:
+    case k_boxed:   walk = sh.body;           break;
+    case k_pointer: walk = v.Dereference();   break;
+    default:        break;
+    }
+    uint32_t n = walk.GetNumChildren();
+    for (uint32_t i = 0; i < n && i < ROW_MAX; i++) {
+        lldb::SBValue c  = walk.GetChildAtIndex(i);
+        const char*   nm = c.GetName();
+        if (hidden_member(nm)) continue;
+        char ix[32];
+        if (!nm || !nm[0]) { snprintf(ix, sizeof(ix), "[%u]", i); nm = ix; }
+        add(nm, c);
+    }
     return result;
 }
 
 DBG_API Au dbg_read_vars(dbg debug, Au result, lldb::SBValueList vars) {
     for (uint32_t i = 0; i < vars.GetSize(); ++i) {
         lldb::SBValue value = vars.GetValueAtIndex(i);
-        const char* nm = value.GetName();
-        const char* tp = value.GetTypeName();
-        // hold: setting a member outside init does not retain the value.
-        string name = hold(f(string, "%s", nm ? nm : ""));
-        string type = hold(f(string, "%s", tp ? tp : ""));
-        string val  = render_value(value);
-        bool   nul  = value.TypeIsPointerType() &&
-                      value.GetValueAsUnsigned(0) == 0;
-        // top level only: walking every member three deep took a second per stop.
-        // the [+] reads a variable's children through read_children when clicked
-        const char* vsm  = value.GetSummary();
-        bool        leaf = (vsm && vsm[0]);
-        Au     kids = (Au)vector_of(typeid(Au));
-        variable v  = new0(variable,
-            debug,      debug,
-            name,       name,
-            type,       type,
-            value,      val,
-            children,   (vector)hold(kids)
-        );
-        v->path     = hold(f(string, "%s", nm ? nm : ""));
-        v->has_kids = !leaf && !nul && value.GetNumChildren() > 0;
-        vector_push((vector)result, (Au)v);
+        const char*   nm    = value.GetName();
+        const char*   tp    = value.GetTypeName();
+        // the object's header (a_au): silver's own, not the user's
+        if (tp && tp[0] == '_' && tp[1] == '_') continue;
+        vector_push((vector)result, (Au)row_of(debug, nm, value, nm));
     }
     return result;
 }
@@ -857,10 +1240,20 @@ DBG_API string dbg_command(dbg debug, string line) {
 DBG_API vector dbg_read_children(dbg debug, string path) {
     Au result = (Au)vector_of(typeid(Au));
     if (!dbg_at_stop(debug) || !path || !path->count) return (vector)result;
-    lldb::SBFrame frame = S(debug)->process.GetSelectedThread().GetSelectedFrame();
-    lldb::SBValue value = frame.GetValueForVariablePath(path->chars);
+    dbg_state*    s = S(debug);
+    lldb::SBValue value;
+    unsigned long long a = 0;
+    size_t ix = 0;
+    if (sscanf(path->chars, "@%llx#%zu", &a, &ix) == 2) {
+        if (ix < s->path_types.size())
+            value = at_addr(s, "v", (lldb::addr_t)a, s->path_types[ix]);
+    } else {
+        lldb::SBFrame frame =
+            s->process.GetSelectedThread().GetSelectedFrame();
+        value = frame.GetValueForVariablePath(path->chars);
+    }
     if (!value.IsValid()) return (vector)result;
-    return (vector)read_children_depth(debug, value, 0, path->chars);
+    return (vector)rows_under(debug, value);
 }
 
 DBG_API vector dbg_read_arguments(dbg debug) {

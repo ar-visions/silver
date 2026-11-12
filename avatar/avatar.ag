@@ -1662,6 +1662,7 @@ element Avatar
         if [ stage && stage.host != scene_host ]
             stage.unhost[]
             stage = null
+        made : bool [ !stage ]
         create_target[]
         if [ !stage ] return
 
@@ -1785,9 +1786,12 @@ element Avatar
             scene_depth  = stage.object_depth[]
             return
         b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
-        for [ tx: Texture ] in stage.frame[ stage_w, stage_h ]
-            w.screen.draw_image[ tx, b ]
+        outs : stage.frame[ stage_w, stage_h ]
         needs_frame = true
+        # a stage's first frame has lines at its edges: not shown
+        if [ made ] return
+        for [ tx: Texture ] in outs
+            w.screen.draw_image[ tx, b ]
 
     # its glow and haze over the host's picture, once the host
     # has drawn: the picture with them on it
