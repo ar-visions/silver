@@ -990,7 +990,10 @@ element player : trinity
         if [ wave ]
             draw_wave[ cv ]
             return
-        if [ !clip ] return
+        if [ !clip ]
+            own_icon_paint[ cv,
+                rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+            return
         t : f64 now[]
         if [ !paused && t >= clip.length ]
             at = clip.length

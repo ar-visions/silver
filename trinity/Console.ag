@@ -1512,7 +1512,7 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
             s.send_esc[ '[Z' ]
         el
             s.write_input[ '\t' ]
-    el [ k == 256 ]                       # Escape
+    el [ k == 256 ]                       # escape
         s.send_esc[ '' ]
     # Backspace (Ctrl → ^H, else DEL)
     el [ k == 259 ]
@@ -1525,11 +1525,11 @@ func term_key [ s: ConsoleSession, ev: Event, vh: f32 ] -> bool
         send_cursor[ s, ev, 'C' ]
     el [ k == 263 ]                       # Left
         send_cursor[ s, ev, 'D' ]
-    el [ k == 268 ]                       # Home
+    el [ k == 268 ]                       # home
         send_cursor[ s, ev, 'H' ]
-    el [ k == 269 ]                       # End
+    el [ k == 269 ]                       # end
         send_cursor[ s, ev, 'F' ]
-    el [ k == 260 ]                       # Insert
+    el [ k == 260 ]                       # insert
         send_tilde[ s, ev, 2 ]
     el [ k == 261 ]                       # Delete
         send_tilde[ s, ev, 3 ]

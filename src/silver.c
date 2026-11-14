@@ -221,7 +221,12 @@ static void deploy_module_resources(silver a) {
         silver_install_name(a));
     make_dir(share);
     if (!len(a->resources)) return;
+    // imports first, the module's own last: its file wins a shared name
+    for (int own = 0; own < 2; own++)
     each(a->resources, path, res) {
+        bool mine = a->module_path &&
+            starts_with(res, a->module_path->chars);
+        if (mine != (own == 1)) continue;
         path dst = f(path, "%o/%o", share, stem(res));
         // a stale directory symlink must go before the real dir is made
         struct stat dsts;
@@ -1784,7 +1789,7 @@ none aether_test_write(aether a);
 // who throws away a Perfectly Good Watch?
 #ifdef __linux__
 i64 silver_watch(silver mod, path a, i64 last_mod, i64 millis) {
-    int    fd = inotify_init1(IN_NONBLOCK);
+    int    fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
     char   buf[4096];
     struct stat st;
@@ -2614,7 +2619,8 @@ static int silver_spawn_product(silver a, path bin, bool lib, path cwd,
             }
             setenv("SILVER_LATE_DEFER", "1", 1);
             void* h = dlopen(load->chars, RTLD_NOW);
-            if (!h) fprintf(stderr, "%s: dlopen %s: %s\n", env, load->chars, dlerror());
+            if (!h) fprintf(stderr, "\x1b[38;2;255;140;140m%s: dlopen %s: %s\x1b[0m\n",
+                env, load->chars, dlerror());
             // its tests and exports, outside the loader lock
             string entry = late_entry_name(a);
             void (*late)(void) = h ? (void(*)(void))dlsym(h, entry->chars) : null;
@@ -3387,6 +3393,9 @@ static void silver_run_exports(silver a) {
     print("[%o] export: running %o", a->name, bin);
     int st = silver_spawn_product(a, bin, lib, share, "SILVER_EXPORT",
         a->export ? "SILVER_EXPORT_FORCE" : null);
+    // killed: say by what (a kill for memory prints no stack)
+    verify(!WIFSIGNALED(st), "export funcs for %o died: signal %i (%s)",
+        a->name, WTERMSIG(st), strsignal(WTERMSIG(st)));
     verify(WIFEXITED(st) && WEXITSTATUS(st) == 0,
         "export funcs failed for %o", a->name);
 }
@@ -7109,24 +7118,6 @@ enode silver_read_enode(silver a, etype mdl_expect, bool from_ref, bool load) { 
         }
         a->parens_depth++;
         enode expr = parse_expression(a, null, false, true); // Parse the expression
-        /*
-        // (expr to Type) — inline cast within parens
-        if (read_if(a, "to")) {
-            etype target = read_etype(a, null);
-            if (target) {
-                validate(read_if(a, ")"), "expected ) after (expr to Type)");
-                a->parens_depth--;
-                return e_convert_or_cast((aether)a, canonical(target), expr);
-            }
-            // runtime to — fall back to parse_expression for typeid[...]
-            enode target_type = parse_expression(a, etypeid(Au_t), false, true);
-            verify(target_type, "expected type or type expression after 'to'");
-            Au_t f_convert = find_member(typeid(Au), "__convert", AU_MEMBER_FUNC, 0, false);
-            verify(f_convert, "Au.__convert not found for runtime 'to' conversion");
-            validate(read_if(a, ")"), "expected ) after (expr to typeid[...])");
-            a->parens_depth--;
-            return e_fn_call(a, u(efunc, f_convert), a(target_type, expr), false, false);
-        } */
         validate(read_if(a, ")"), "expected ) after expression, found %o", peek(a));
         a->parens_depth--;
         // C binds ?: to the whole expression, not to this parenthesis
@@ -16033,6 +16024,9 @@ int main(int argc, cstrs argv) {
 #ifndef _WIN32
     signal(SIGSEGV, silver_crash);
     signal(SIGBUS,  silver_crash);
+    signal(SIGABRT, silver_crash);
+    signal(SIGILL,  silver_crash);
+    signal(SIGFPE,  silver_crash);
     signal(SIGINT,  silver_stopped);
     signal(SIGTERM, silver_stopped);
     // as root (the phone) an import's tar would keep its packer's uids

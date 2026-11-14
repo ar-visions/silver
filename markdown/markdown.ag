@@ -435,13 +435,13 @@ element markdown : trinity
         tc : use.canvas
         tc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
         tc.stroke_width[ 0.0 ]
-        fs9 : i32 [ 0 ]
+        fs_ : i32 [ 0 ]
         for [ i: MdItem ] in row.items
             tc.fill_color[ i.color ]
             if [ i.kind == 0 ]
-                if [ i.fs != fs9 ]
-                    fs9 = i.fs
-                    tc.font_size[ fs9 ]
+                if [ i.fs != fs_ ]
+                    fs_ = i.fs
+                    tc.font_size[ fs_ ]
                 ov : Overflow [
                     (i.clip) ? Overflow.clip : Overflow.visible ]
                 r  : rect [ x: i.x, y: i.y, w: i.w, h: i.h ]

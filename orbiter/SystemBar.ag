@@ -729,6 +729,48 @@ element WinMenuArea
             clip: true
     }
 
+# the drawer's rows and the page slid over them, clipped to the
+# drawer: the page coming in from the right shows nothing outside
+element MenuSlide
+    animated : true
+    style : CSS {
+        layers.mask:
+            fill_color: #0000
+            clip: true
+    }
+
+# the app menu's page over its rows: a back row at its top (the
+# page's name), its content under it
+element MenuPage
+    animated : true
+    # the key of the property panel in it
+    public panel : string [ 'menu_props' ]
+    # a card's info menu: its rows act, none goes back
+    public info  : bool
+
+    # the panel's rows edge to edge: a line over them (its own last
+    # rule is the line under them)
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds
+             || !elements || !elements.contains[ panel ] ]
+            return
+        lp : LaunchPanel elements[ panel ]
+        if [ !lp.bounds || lp.rows_h <= 0.0 ] return
+        cv : Canvas w.screen
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#ffffff1a' ] ]
+        cv.rect_to[ lp.bounds.x, lp.bounds.y - 1.0, lp.bounds.w, 1.0 ]
+        cv.paint[]
+
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !e || !orb || !(e inherits TrayRow) ] return
+        if [ info ]
+            row : cast TrayRow [ e ]
+            orb.app_info_pick[ row.entry ]
+        el orb.menu_page_back[]
+
 # the exchange's ground: the menus' slideout, the window's width
 # less the dock; the
 # exchange (trinity's) sits over it in the same place

@@ -376,7 +376,7 @@ class Cdrom
         audio_i = 0
         return true
 
-    # Report mode: INT1 every 10 sectors, absolute or track time
+    # report mode: INT1 every 10 sectors, absolute or track time
     func report [ ti: i32 ]
         t : disc.tracks[ ti ]
         ab : i32 [ pos + 150 ]

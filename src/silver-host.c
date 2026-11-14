@@ -96,6 +96,7 @@ typedef struct {
 #define HOST_APP_DISPLAY_SHIFT 3 // bits 3-4: trinity's Display (0 pip, 1 full, 2 window, 3 screen)
 #define HOST_APP_HZ_SHIFT      8 // bits 8-15: the host display's refresh rate
 #define HOST_APP_COVERAGE (1 << 16) // silver --coverage; the run writes coverage.lcov
+#define HOST_APP_VERBOSE  (1 << 17) // silver --verbose: the whole build in the log
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
     HostApp app[HOST_APPS];
@@ -481,14 +482,22 @@ static void spawn_slot_app(int k, const char* bindir) {
     for (char* p = arg; p && *p && n_app_args < MAX_APP_ARGS; ) {
         while (*p == ' ') p++;
         if (!*p) break;
-        app_args[n_app_args++] = p;
-        while (*p && *p != ' ') p++;
-        if (*p) *p++ = 0;
+        // "a b" is one arg, its quotes dropped; "" is an empty arg
+        char* w = p;
+        int   q = 0;
+        app_args[n_app_args++] = w;
+        while (*p && (q || *p != ' ')) {
+            if (*p == '"') { q = !q; p++; continue; }
+            *w++ = *p++;
+        }
+        if (*p) p++;
+        *w = 0;
     }
     int   dbg   = (ap->flags & HOST_APP_DEBUG)       != 0;
     int   clean = (ap->flags & HOST_APP_CLEAN)       != 0;
     int   dbgb  = (ap->flags & HOST_APP_DEBUG_BUILD) != 0;
     int   cov   = (ap->flags & HOST_APP_COVERAGE)    != 0;
+    int   verb  = (ap->flags & HOST_APP_VERBOSE)     != 0;
     int   disp  = (ap->flags >> HOST_APP_DISPLAY_SHIFT) & 3;
     static const char* dnames[] = { "PIP", "Embed", "Window", "Screen" };
     char* nm    = name;
@@ -499,6 +508,8 @@ static void spawn_slot_app(int k, const char* bindir) {
     // rebuilds when its sources change, all read it
     if (dbgb) setenv("SILVER_DEBUG_BUILD", "1", 1);
     else      unsetenv("SILVER_DEBUG_BUILD");
+    if (verb) setenv("SILVER_VERBOSE_BUILD", "1", 1);
+    else      unsetenv("SILVER_VERBOSE_BUILD");
     // one coverage map: the last run's, cleared as this one starts
     static char covenv[4200];
     snprintf(covenv, sizeof(covenv), "SILVER_COVERAGE_LCOV=%s/install/tmp/coverage.lcov", SILVER_ROOT);
@@ -577,6 +588,7 @@ static void spawn_slot_app(int k, const char* bindir) {
     cenv[ce++] = hzenv;
     if (dbg)  cenv[ce++] = (char*)"SILVER_DEBUG=1";
     if (dbgb) cenv[ce++] = (char*)"SILVER_DEBUG_BUILD=1";
+    if (verb) cenv[ce++] = (char*)"SILVER_VERBOSE_BUILD=1";
     if (cov)  cenv[ce++] = covenv;
     cenv[ce] = NULL;
     pid_t pid = 0;
@@ -737,12 +749,17 @@ static int supervise_wait(int argc, char** argv, const char* appname,
                 ? -WTERMSIG(st) : (WEXITSTATUS(st) + 1);
             g_shm->app[0].state   = 3;
         }
+        // a crash or a failed exit reads red in the console
         if (WIFSIGNALED(st)) {
-            fprintf(stderr, "silver-host: app ended: signal %d (%s)\n",
+            fprintf(stderr, "\x1b[38;2;255;140;140msilver-host: app ended: "
+                "signal %d (%s)\x1b[0m\n",
                 WTERMSIG(st), strsignal(WTERMSIG(st)));
             symbolize_crash_log(appname);
-        } else
-            fprintf(stderr, "silver-host: app ended: exit %d\n", WEXITSTATUS(st));
+        } else if (WEXITSTATUS(st) != 0)
+            fprintf(stderr, "\x1b[38;2;255;140;140msilver-host: app ended: "
+                "exit %d\x1b[0m\n", WEXITSTATUS(st));
+        else
+            fprintf(stderr, "silver-host: app ended: exit 0\n");
         // the peer process is gone — the shared window went with it, so the
         // session ends. (stop in the IDE never lands here: it stops the
         // peer's WORLD in place, the process and window live on.)
@@ -1160,6 +1177,7 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // a debug build (-O0 -g) when the launch asked for one: per build, nothing sticky
     const char* dbgb = getenv("SILVER_DEBUG_BUILD") ? " --debug" : "";
     const char* covb = getenv("SILVER_COVERAGE_BUILD") ? " --coverage" : "";
+    const char* verb = getenv("SILVER_VERBOSE_BUILD") ? " --verbose" : "";
 #if defined(__linux__)
     // a bound app cannot write silver's folder: its holder builds
     if (g_broker >= 0) {
@@ -1183,14 +1201,14 @@ static pid_t rebuild_spawn(const char* name, int clean) {
     // handed to the app, so a trailing --build would launch instead of compile
     // SILVER_DEBUG would stop the build's export run for good
     snprintf(cmd, sizeof(cmd),
-        "set \"SILVER_DEBUG=\" && cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s %s",
-        root, root, clean ? " --clean" : "", dbgb, covb, what);
+        "set \"SILVER_DEBUG=\" && cd /d \"%s\" && \"%s\\install\\build\\silver.exe\" --build%s%s%s%s %s",
+        root, root, clean ? " --clean" : "", dbgb, covb, verb, what);
 #else
     // silver's flags before the module: after it they are the app's,
     // and silver would launch it with them instead of building
     snprintf(cmd, sizeof(cmd),
-        "unset SILVER_DEBUG; cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" --build%s%s%s %s",
-        clean ? " --clean" : "", dbgb, covb, what);
+        "unset SILVER_DEBUG; cd \"" SILVER_ROOT "\" && \"" SILVER_ROOT "/install/bin/silver\" --build%s%s%s%s %s",
+        clean ? " --clean" : "", dbgb, covb, verb, what);
 #endif
     // send the compile output to the app's OWN log so orbiter's console (which tails
     // /tmp/<app>.log) shows the compilation. spawn_slot_app truncated it beforehand,
@@ -2699,7 +2717,11 @@ int main(int argc, char** argv) {
 #else
     void* handle = try_dlopen(lib);
 #endif
-    if (!handle) { fprintf(stderr, "%s: dlopen %s: %s\n", name, lib, dlerror()); return 1; }
+    if (!handle) {
+        fprintf(stderr, "\x1b[38;2;255;140;140m%s: dlopen %s: %s\x1b[0m\n",
+            name, lib, dlerror());
+        return 1;
+    }
 
     // the recording's mic is the host's, so a reload keeps it
     au_live_mic_hooks_fn mic_hooks = (au_live_mic_hooks_fn)dlsym(RTLD_DEFAULT, "au_live_mic_hooks");

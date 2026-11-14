@@ -1892,7 +1892,7 @@ element Bootstrap
         # said so before the next (a stall stops at one piece); each
         # said on the phone's bar (orbiter-note.sh). The port becomes
         # this shell's terminal: grep reads it from the foreground.
-        # Written, orbiter-apply.sh (in the same tar) unpacks it: live
+        # written, orbiter-apply.sh (in the same tar) unpacks it: live
         # when no library under orbiter changed, else the phone
         # restarts (orbiter is pid 1); reboot(2) by perl, arm64's 142
         pd : '{work}/pieces'
@@ -3248,8 +3248,8 @@ element Bootstrap
     func copy_file [ src: string, dst: string ]
         sp : path [ src ]
         dp : path [ dst ]
-        st9 : i64 [ sp.modified_time[] / 1000 ]
-        if [ dp.exists[] && dp.modified_time[] / 1000 == st9 ] return
+        st_ : i64 [ sp.modified_time[] / 1000 ]
+        if [ dp.exists[] && dp.modified_time[] / 1000 == st_ ] return
         fi : handle fopen[ src.chars, 'rb' ]
         if [ !fi ] return
         fo : handle fopen[ dst.chars, 'wb' ]
@@ -3266,7 +3266,7 @@ element Bootstrap
         fclose[ fo ]
         chmod[ dst.chars, 0x1ED ]
         # the launcher compares product and source times
-        ub : utimbuf [ actime: st9, modtime: st9 ]
+        ub : utimbuf [ actime: st_, modtime: st_ ]
         utime[ dst.chars, @ub ]
 
     # the guest as a folder, copied to /orbiter-os to boot

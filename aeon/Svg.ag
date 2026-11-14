@@ -2819,7 +2819,7 @@ element SvgView
 
     # the handle under the pointer (10 px), the fill's or the
     # stroke's, nearest (g_key set to it): 1 start, 2 end, 0 none.
-    # On one spot the one not held last wins: a press again
+    # on one spot the one not held last wins: a press again
     # takes the other
     func grad_hit [ px: f32, py: f32 ] -> i32
         best : f32 [ 100.0 ]

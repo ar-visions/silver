@@ -115,7 +115,9 @@ func ubuntu_list [ root: string ]
             if [ title.count == 0 || run.count == 0 ] continue
             icon : string desk_icon[ root,
                 desk_value[ text, 'Icon' ] ]
-            os_card[ dir, made, title, snap_line[ run ], '', icon ]
+            # GTK on orbiter's Wayland: its menus reach the bar
+            line : string 'env GDK_BACKEND=wayland,x11 {snap_line[ run ]}'
+            os_card[ dir, made, title, line, '', icon ]
     os_prune[ dir, made ]
 
 # the running system an Ubuntu: its root

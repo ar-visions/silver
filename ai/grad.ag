@@ -444,7 +444,7 @@ GKern KGemm
         int m0 = int(gl_WorkGroupID.y) * 64; int c0 = int(gl_WorkGroupID.x) * 64;
         int lx = int(gl_LocalInvocationID.x); int ly = int(gl_LocalInvocationID.y);
         int tid = ly * 16 + lx;
-        uint za = z * uint(p.n9); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
+        uint za = z * uint(p.n_); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
         float acc[4][4];
         float cmp[4][4];
         for (int i = 0; i < 4; i++) for (int j = 0; j < 4; j++) {{ acc[i][j] = 0.0; cmp[i][j] = 0.0; }}
@@ -501,7 +501,7 @@ GKern KGemm2
         int m0 = int(gl_WorkGroupID.y) * 128; int c0 = int(gl_WorkGroupID.x) * 64;
         int lx = int(gl_LocalInvocationID.x); int ly = int(gl_LocalInvocationID.y);
         int tid = ly * 16 + lx;
-        uint za = z * uint(p.n9); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
+        uint za = z * uint(p.n_); uint zb = z * uint(p.n10); uint zc = z * uint(p.n11);
         float acc[8][4];
         float cmp[8][4];
         for (int i = 0; i < 8; i++) for (int j = 0; j < 4; j++) {{ acc[i][j] = 0.0; cmp[i][j] = 0.0; }}
@@ -671,7 +671,7 @@ GKern KIm2col2d
     func compute [] -> GLSL none {
         uint i = gl_GlobalInvocationID.x;
         uint B = uint(p.n0); uint Ci = uint(p.n1); uint H = uint(p.n2); uint W = uint(p.n3); uint KH = uint(p.n4); uint KW = uint(p.n5);
-        int ph = p.n6; int pw = p.n7; uint OH = uint(p.n8); uint OW = uint(p.n9);
+        int ph = p.n6; int pw = p.n7; uint OH = uint(p.n8); uint OW = uint(p.n_);
         uint N = B * OH * OW;
         if (i >= Ci * KH * KW * N) return;
         uint row = i / N; uint col = i - row * N;
@@ -1341,7 +1341,7 @@ GOp GLogOp
 
 # [b, c, t] to [b*p, c, t/p]: each period an item
 GOp GFoldOp
-    public fx9 : GTensor
+    public fx_ : GTensor
     public per : i64
 
 # a mean loss: 0 least squares to a target, 1 l1 between two
@@ -2859,13 +2859,13 @@ class Grad
         fold_run[ x, y, nb, nc, nt, per, 0 ]
         if [ keeps[ x ] ]
             y.need = true
-            tape.push[ GFoldOp [ kind: 21, out: y, fx9: x, per: per ] ]
+            tape.push[ GFoldOp [ kind: 21, out: y, fx_: x, per: per ] ]
         return y
 
     func fold_back [ rec: GFoldOp ]
         dy : GTensor rec.out.gr
-        if [ !dy || !rec.fx9.need ] return
-        x : GTensor rec.fx9
+        if [ !dy || !rec.fx_.need ] return
+        x : GTensor rec.fx_
         fold_run[ dy, grad_of[ x ], x.dims[ 0 ], x.dims[ 1 ],
                   x.dims[ 2 ], rec.per, 1 ]
 
@@ -3001,12 +3001,12 @@ class Grad
         rn.dispatch[ k, g, groups[ n ], 1, 1 ]
         ins : vec GTensor [] [ rec.zp, rec.lq, rec.mp, rec.lp ]
         for [ q: i64 0, q < 4, q += 1 ]
-            t9 : GTensor ins[ q ]
-            if [ !t9.need ] continue
+            t_ : GTensor ins[ q ]
+            if [ !t_.need ] continue
             part : GTensor GTensor [ ar: four.ar,
                                      off: four.off + q * n * 4, count: n,
-                                     dims: t9.dims ]
-            axpby[ part, grad_of[ t9 ], 1.0, 1.0 ]
+                                     dims: t_.dims ]
+            axpby[ part, grad_of[ t_ ], 1.0, 1.0 ]
 
     # every loss seeded with its weight, then the tape
     func backward_all [ losses: vec GTensor, weights: vec f32 ]
@@ -3265,13 +3265,13 @@ expect func t_grad_gemm [] -> bool
     for [ z: i64 0, z < nb, z += 1 ]
         for [ r: i64 0, r < m, r += 1 ]
             for [ c: i64 0, c < n, c += 1 ]
-                s9 : f64 [ 0.0 ]
+                s_ : f64 [ 0.0 ]
                 for [ q: i64 0, q < k, q += 1 ]
                     ia : i64 [ z * k * m + q * m + r ]
                     ib : i64 [ z * k * n + q * n + c ]
-                    s9 += f64[ av[ ia ] ] * f64[ bv[ ib ] ]
+                    s_ += f64[ av[ ia ] ] * f64[ bv[ ib ] ]
                 ic : i64 [ z * m * n + r * n + c ]
-                want : f64 [ 1.5 * s9 + 0.5 * f64[ cv[ ic ] ] ]
+                want : f64 [ 1.5 * s_ + 0.5 * f64[ cv[ ic ] ] ]
                 d : f64 [ fabs[ want - f64[ got[ ic ] ] ] ]
                 if [ d > worst ] worst = d
     log 'grad gemm: {nb} x {m}x{k} . {k}x{n}, worst error {worst}'

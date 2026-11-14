@@ -721,10 +721,10 @@ Backdrop EarthPrev
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null
@@ -3101,10 +3101,10 @@ Backdrop Moon
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null
@@ -3540,17 +3540,17 @@ Backdrop Moon
 expect func t_moon_view [] -> bool
     out : getenv[ 'MOON_VIEW' ]
     if [ !out ] return true
-    vk9 : vk_context []
-    vk9.hold[]
-    w9  : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+    vk_ : vk_context []
+    vk_.hold[]
+    w_  : Window [ vk: vk_, format: Pixel.rgba8, backbuffer: true,
         width: 1280, height: 720 ]
-    w9.hold[]
-    if [ !w9.element_targets ]
-        w9.element_targets = map Render [string] []
+    w_.hold[]
+    if [ !w_.element_targets ]
+        w_.element_targets = map Render [string] []
     # the default view: low, angled to the horizon
-    w9.orbit_mode = OrbitView.low
-    w9.angle_mode = ViewAngle.angled
-    scene_thumb[ w9, 'Moon', path '{out}' ]
+    w_.orbit_mode = OrbitView.low
+    w_.angle_mode = ViewAngle.angled
+    scene_thumb[ w_, 'Moon', path '{out}' ]
     return true
 
 # the pictures for orbiter's scene picker; last, after the bakes

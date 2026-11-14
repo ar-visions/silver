@@ -1,0 +1,2001 @@
+# the navigator view: the side column (users, projects, the
+# drives, the pins), the git band and its commit form, the browse
+# list; the model it reads is handed in (CommitView.nav)
+extend navigator
+
+func nav_font [ cv: Canvas, px: i32 ]
+    sz : i32 [ i32[ round[ f32[ px ] * nav_unit[ cv ] ] ] ]
+    cv.set_font[ shared_font[ cv, 'fonts/BarlowCondensed-Regular.ttf',
+                              sz ] ]
+    cv.font_size[ sz ]
+
+func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx_: f32, ry: f32,
+                 cdw: f32, rh: f32, hov: bool ]
+    u : f32 nav_unit[ cv ]
+    # the model class is declared after this signature: cast here
+    nav : cast Navigator [ oa ]
+    if [ hov ]
+        cv.save[ ]
+        cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+        cv.fill_color[ rgba['#ff6a2e2a'] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba['#ff8a3a99'] ]
+        cv.box_shadow[ rgba['#ff8a3a99'], 0.0, 0.0, 6.0 * u, 0.0, true ]
+        cv.rect_to[ cx_ - 4.0 * u, ry + 1.0, cdw - 8.0 * u,
+                    rh - 2.0 * u ]
+        cv.paint[ ]
+        cv.restore[ ]
+    host : NavHost nav.host
+    # an instance's picture (a program's window, else its frame)
+    ft : Texture (h.inst > 0) ? host.instance_tex*[ h.inst ] : null
+    sc_ : bool [ h.card[] && h.inst == 0 ]
+    if [ sc_ ] ft = nav.scene_tex[ h ]
+    tw : f32 [ cdw - 24.0 * u ]
+    if [ ft && ft.width > 0 && ft.height > 0 ]
+        tw = 96.0 * u * f32[ ft.width ] / f32[ ft.height ]
+        if [ tw > cdw - 24.0 * u ] tw = cdw - 24.0 * u
+    # the picture sits centered in the card box, which starts 4px
+    # left of the content and is 8px narrower than the cell
+    tx_ : f32 [ round[ cx_ - 4.0 * u + (cdw - 8.0 * u - tw) * 0.5 ] ]
+    # the picture with 6px corners and a thin border around it
+    cv.save[ ]
+    cv.rounded[ 6.0 * u, 6.0 * u, 6.0 * u, 6.0 * u ]
+    cv.stroke_width[ 0.0 ]
+    if [ ft && ft.width > 0 && ft.height > 0 ]
+        cv.draw_image[ ft,
+                       rect [ x: tx_, y: round[ ry + 6.0 * u ],
+                              w: round[ tw ], h: 96.0 * u ] ]
+    el
+        cv.fill_color[ rgba['#000000'] ]
+        cv.rect_to[ tx_, round[ ry + 6.0 * u ], tw, 96.0 * u ]
+        cv.paint[ ]
+    cv.fill_color[ rgba['#0000'] ]
+    cv.stroke_width[ 1.0 ]
+    cv.stroke_offset[ -0.5 ]
+    cv.stroke_color[ rgba['#ffffff40'] ]
+    cv.rect_to[ tx_, round[ ry + 6.0 * u ], round[ tw ], 96.0 * u ]
+    cv.paint[ ]
+    cv.restore[ ]
+    # two lines: the instance's name, and its state in blue under it
+    st_ : string (h.inst > 0) ? host.instance_status*[ h.inst ] : ''
+    if [ h.inst > 0 && (!st_ || st_.count == 0) ] st_ = 'running'
+    if [ sc_ ]
+        if [ host.scene_current*[].compare[ h.scene ] == 0 ]
+            st_ = 'current'
+    nav_font[ cv, 21 ]
+    cv.fill_color[ rgba['#fff'] ]
+    cv.draw_text[ (h.inst > 0) ? host.instance_name*[ h.inst ] : h.text,
+        rect [ x: cx_ - 4.0 * u, y: ry + 104.0 * u, w: cdw - 8.0 * u,
+               h: 20.0 * u ],
+        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+        null, true ]
+    cv.fill_color[ rgba['#6cb6ff'] ]
+    cv.draw_text[ st_,
+        rect [ x: cx_ - 4.0 * u, y: ry + 124.0 * u, w: cdw - 8.0 * u,
+               h: 20.0 * u ],
+        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+        null, true ]
+
+
+# the navigation column (users, projects, the drives, the pinned
+# folders): its own element, so its scroll fades at its ends
+element NavSide
+    content : NavSideLayer []
+
+Layer NavSideLayer
+    func draw [ cv: Canvas ]
+        u : f32 nav_unit[ cv ]
+        sd : element parent
+        cb : CommitView [ (sd) ? sd.parent : null ]
+        if [ !cb ] return
+        nav : Navigator cb.nav
+        if [ !nav ] return
+        cv.stroke_width[ 0.0 ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        # the navigation column, fixed, right of the rail: users and
+        # projects
+        cb.side_w = cb.side_fit[ u ]
+        if [ cb.side_w <= 0.0 ] return
+        sw_ : f32 [ cb.side_w ]
+        sx_ : f32 [ bounds.x + 6.0 * u ]
+        cv.set_crop[ wtx + sx_, wty + bounds.y, wtx + sx_ + sw_,
+                     wty + bounds.y + bounds.h ]
+        cb.side_keys = vec string []
+        cb.side_ys   = vec f32 []
+        nav_font[ cv, 16 ]
+        # the column's own eased scroll, kept within what it holds
+        smax_ : f32 [ cb.side_h - bounds.h ]
+        if [ smax_ < 0.0 ] smax_ = 0.0
+        if [ sd.scroll.y > smax_ ] sd.scroll.y = smax_
+        if [ sd.scroll_goal > smax_ ] sd.scroll_goal = smax_
+        sy_ : f32 [ bounds.y + 10.0 * u - sd.scroll.y ]
+        srh : f32 [ 24.0 * u ]
+        # users, projects, then the computer's drives and the pinned
+        # folders
+        for [ sec: i32 0, sec < 4, sec += 1 ]
+            names_ : vec string nav.repo_users
+            if [ sec == 0 ]
+                # you first, always there and never removable: the login
+                # the key answers to, then everyone added
+                me_ : string nav.self_user_of[]
+                users_ : vec string []
+                if [ me_ && me_.count > 0 ] users_.push[ me_ ]
+                if [ nav.repo_users ]
+                    for [ u_: string ] in nav.repo_users
+                        if [
+                            me_ && me_.count > 0
+                            && u_.compare[ me_ ] == 0 ]
+                            continue
+                        users_.push[ u_ ]
+                names_ = users_
+            el [ sec == 1 ]
+                names_ = nav.side_projects_of[]
+            el [ sec == 2 ]
+                names_ = nav.side_drives[]
+            el
+                names_ = nav.side_pinned[]
+            # nothing pinned: no heading either
+            if [ sec == 3 && names_.count == 0 ] continue
+            hd_ : string (sec == 0) ? 'users'
+                : ((sec == 1) ? 'projects'
+                : ((sec == 2) ? 'system' : 'pinned'))
+            cv.fill_color[ rgba['#ffffff55'] ]
+            cv.draw_text[ hd_,
+                rect [ x: sx_ + 4.0 * u, y: sy_, w: sw_ - 12.0 * u,
+                       h: srh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            if [ sec == 0 ]
+                # the + that adds a user: gray, lit under the pointer
+                cb.plus_y = sy_ - bounds.y
+                cv.fill_color[
+                    (cb.hov_plus) ? rgba['#8fd0ff']
+                    : rgba['#ffffff55'] ]
+                cv.draw_text[ '+',
+                    rect [ x: sx_ + sw_ - 30.0 * u, y: sy_, w: 20.0 * u,
+                           h: srh ],
+                    vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.clip, null, true ]
+            sy_ += srh
+            if [ sec == 0 && cb.add_user ]
+                # the row being typed: a box with the name so far and a
+                # caret
+                cv.save[ ]
+                cv.rounded[ 6.0 * u, 6.0 * u, 6.0 * u, 6.0 * u ]
+                cv.fill_color[ rgba['#ffffff10'] ]
+                cv.stroke_width[ 1.0 ]
+                cv.stroke_offset[ -0.5 ]
+                cv.stroke_color[ rgba['#8fd0ff88'] ]
+                cv.rect_to[ sx_, sy_ + 1.0, sw_ - 8.0 * u,
+                            srh - 2.0 * u ]
+                cv.paint[ ]
+                cv.restore[ ]
+                at_ : string (cb.add_text) ? cb.add_text : ''
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.draw_text[ at_,
+                    rect [ x: sx_ + 8.0 * u, y: sy_, w: sw_ - 20.0 * u,
+                           h: srh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.clip, null, true ]
+                atw : f32 [ cv.measure_text[ at_ ].w ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ sx_ + 8.0 * u + atw + 1.0, sy_ + 5.0 * u,
+                            1.5,
+                            srh - 10.0 * u ]
+                cv.paint[ ]
+                cb.side_keys.push[ 'e:' ]
+                oye : f32 [ sy_ - bounds.y ]
+                cb.side_ys.push[ oye ]
+                sy_ += srh
+            # a selected user narrows the projects to that user's
+            # checkouts
+            # (yours are the plain names); none selected shows them all
+            su : string (sec == 1) ? nav.side_user : null
+            me8 : string (sec == 1) ? nav.self_user_of[] : null
+            if [ names_ ]
+                for [ nm_: string ] in names_
+                    if [ su && su.count > 0 ]
+                        own_ : bool [ nm_.index_of[ '/' ] < 0 ]
+                        if [
+                            me8 && me8.count > 0
+                            && su.compare[ me8 ] == 0 ]
+                            if [ !own_ ] continue
+                        el
+                            if [ !nm_.starts_with[ '{su}/' ] ] continue
+                    key_ : string (sec == 0) ? 'u:{nm_}'
+                        : ((sec == 1) ? 'p:{nm_}'
+                        : ((sec == 2) ? 'd:{nm_}' : 'f:{nm_}'))
+                    on_ : bool [ false ]
+                    if [ sec == 0 ]
+                        on_ = nav.side_user && nav.side_user.compare[
+                            nm_ ] == 0
+                    el [ sec == 1 ]
+                        on_ = nav.side_lit[ nm_ ]
+                    el
+                        on_ = nav.nav_root && '{nav.nav_root}' == nm_
+                    hov_ : bool [ cb.hov_side == cb.side_keys.count ]
+                    if [ on_ || hov_ ]
+                        cv.save[ ]
+                        cv.rounded[ 6.0 * u, 6.0 * u, 6.0 * u, 6.0 * u ]
+                        cv.fill_color[
+                            (on_) ? rgba['#6cb6ff22']
+                            : rgba['#ffffff10'] ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.rect_to[ sx_, sy_ + 1.0, sw_ - 8.0 * u,
+                                    srh - 2.0 * u ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    dk : bool [ sec == 1 && nav.repo_docked[ nm_ ] ]
+                    # another user's checkout reads user:repository (the
+                    # disk path stays user/repository)
+                    # ...unless that user is the one selected: then the
+                    # list is already theirs and the name alone fits
+                    lbl_ : string nm_
+                    # a drive or folder by its last name; / is the
+                    # system
+                    if [ sec >= 2 ]
+                        lbl_ = (nm_ == '/') ? 'system'
+                            : (path nm_).filename[]
+                    sl_ : i32 [ nm_.index_of[ '/' ] ]
+                    if [ sec == 1 && sl_ > 0 ]
+                        own8 : string nm_.mid[ 0, sl_ ]
+                        if [
+                            su && su.count > 0
+                            && su.compare[ own8 ] == 0 ]
+                            lbl_ = nm_.mid[ sl_ + 1,
+                                            nm_.count - sl_ - 1 ]
+                        el
+                            lbl_ = own8 + ':' + nm_.mid[ sl_ + 1,
+                                                         nm_.count - sl_
+                                                         - 1 ]
+                    cv.fill_color[
+                        (on_) ? rgba['#ffffff']
+                        : ((dk) ? rgba['#9fd0ff'] : rgba['#c8c2d8']) ]
+                    cv.draw_text[ lbl_,
+                        rect [ x: sx_ + 8.0 * u, y: sy_,
+                               w: sw_ - 36.0 * u,
+                               h: srh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.ellipsis, null, true ]
+                    # shift held: a - next to every added user (never
+                    # you) removes it
+                    if [
+                        ((sec == 0 && cb.side_keys.count > 0)
+                         || sec == 3) && cb.ux.shift ]
+                        cv.fill_color[
+                            (hov_) ? rgba['#ff8a8a']
+                            : rgba['#ffffff55'] ]
+                        cv.draw_text[ '-',
+                            rect [ x: sx_ + sw_ - 30.0 * u, y: sy_,
+                                   w: 20.0 * u,
+                                   h: srh ],
+                            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                            Overflow.clip, null, true ]
+                    # the dock toggle at the row's right: lit when the
+                    # checkout is in the search set
+                    if [ sec == 1 ]
+                        cv.save[ ]
+                        cv.rounded[ 4.0 * u, 4.0 * u, 4.0 * u, 4.0 * u ]
+                        cv.fill_color[
+                            (dk) ? rgba['#6cb6ff'] : rgba['#0000'] ]
+                        cv.stroke_width[ 1.0 ]
+                        cv.stroke_offset[ -0.5 ]
+                        cv.stroke_color[
+                            (dk) ? rgba['#6cb6ff'] : rgba['#ffffff33'] ]
+                        cv.rect_to[ sx_ + sw_ - 24.0 * u, sy_ + 8.0 * u,
+                                    8.0 * u,
+                                    8.0 * u ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    oy : f32 [ sy_ - bounds.y ]
+                    cb.side_keys.push[ key_ ]
+                    cb.side_ys.push[ oy ]
+                    sy_ += srh
+            sy_ += 10.0 * u
+        cb.side_h = sy_ + sd.scroll.y - bounds.y
+        sd.content_h = cb.side_h
+        # a hairline between the column and the content
+        cv.fill_color[ rgba['#ffffff14'] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ sx_ + sw_ - 1.0, bounds.y + 8.0 * u, 1.0,
+                    bounds.h - 16.0 * u ]
+        cv.paint[ ]
+
+# the navigator's right column: the file's views (its git
+# reference, b16 ...) as buttons, icon over name; the one on is
+# outlined; a press shows it
+Layer CommitLayer
+    func draw [ cv: Canvas ]
+        u : f32 nav_unit[ cv ]
+        cb : CommitView [ parent ]
+        if [ !cb ] return
+        nav : Navigator cb.nav
+        if [ !nav ] return
+        host : NavHost nav.host
+        # no ground of its own: the host's background is ours
+        cv.stroke_width[ 0.0 ]
+        wtx : f32 [ cv.transform_tx[] ]
+        wty : f32 [ cv.transform_ty[] ]
+        # the navigation column is its own child (NavSide): it fades
+        # by its own scroll
+        cb.side_w = cb.side_fit[ u ]
+        sw_ : f32 [ cb.side_w ]
+        # content right of the column; everything below rides one scroll
+        x0  : f32 [ bounds.x + 14.0 * u + sw_ ]
+        cw : f32 [ bounds.w - 14.0 * u - sw_ - cb.rail_w ]
+        cv.set_crop[ wtx + x0, wty + bounds.y,
+                     wtx + bounds.x + bounds.w,
+                     wty + bounds.y + bounds.h ]
+        # picking a path for a launch field: files only, no git tabs or
+        # summary
+        picking : bool [ nav.pick_on ]
+        files : vec string (nav.git_snap && !picking) ? nav.git_snap.files : null
+        nfl : i32 [ (files) ? files.count : 0 ]
+        cap : i32 [ nav.commit_cap[ cw ] ]
+        trs : i32 [
+            (nfl > 0) ? nav.commit_tab_rows[ cw, cb.reveal_all ] : 0 ]
+        open_ : bool [ cb.commit_open && trs > 0 ]
+        band_ : i32 [ (trs > 0) ? trs + 1 + ((open_) ? 4 : 0) : 0 ]
+        lh  : f32 [ 36.0 * u ]
+        fs  : i32 [ 17 ]
+        nav_font[ cv, fs ]
+        mtm : cv.measure_text[ 'x' ]
+        cb.cap_st  = cap
+        cb.cw_st   = mtm.w
+        cb.band_st = band_
+        # content tops at +4 so the first tab row meets the chips
+        yb : f32 [ bounds.y + 4.0 * u - cb.scroll.y ]
+        # tabs: 144px pills on a 150 stride
+        rep_ : string [ (nav.git_snap) ? nav.git_snap.repo : '' ]
+        shown : i32 [ trs * cap ]
+        if [ shown > nfl ] shown = nfl
+        for [ i: i32 0, i < shown, i += 1 ]
+            rp : string files[i]
+            fx : i32 [ rp.rindex_of[ '/' ] ]
+            nm : string [
+                (fx >= 0) ? rp.mid[ fx + 1, rp.count - fx - 1 ] : rp ]
+            rw : i32 [ i / cap ]
+            cl_ : i32 [ i % cap ]
+            tx : f32 [ x0 + f32[ cl_ ] * (150.0 * u) ]
+            ty : f32 [ yb + f32[ rw ] * lh ]
+            if [ ty + lh < bounds.y || ty > bounds.y + bounds.h ]
+                continue
+            if [ tx + 144.0 * u > bounds.x + bounds.w - 12.0 * u ]
+                continue
+            thov : bool [ cb.hov_row == rw && cb.hov_tab == cl_ ]
+            # bold + white border when the host holds unsaved edits
+            dirty : bool [ host.file_dirty*[ path '{rp}' ] ]
+            # the row-highlight look, pinkish red — theme-bound
+            cv.save[ ]
+            cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+            # every tab at half alpha: fill, border and glow alike
+            ft : cb.theme_rgba['#22002280']
+            # the hovered tab stands apart: twice the fill
+            cv.fill_color[
+                rgba [ r: ft.r, g: ft.g, b: ft.b,
+                       a: (thov) ? min[ ft.a * 2.0, 1.0 ] : ft.a ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            # the border rests at a quarter; the pointer's near light
+            # brings it and the inner glow up, 30% past the tabs' amount
+            # theme colours are shared objects: copies, never edits
+            bt : (dirty) ? cb.theme_rgba['#ffffff80'] : ((thov) ? cb.theme_rgba['#ff7aa480'] : cb.theme_rgba['#ff5a8a80'])
+            cv.stroke_color[
+                rgba [ r: bt.r, g: bt.g, b: bt.b,
+                       a: (dirty || thov) ? min[ bt.a * 2.0, 1.0 ]
+                       : bt.a * 0.5 ] ]
+            ht : cb.theme_rgba['#ff7aa480']
+            cv.box_shadow[
+                rgba [ r: ht.r, g: ht.g, b: ht.b,
+                       a: (thov) ? min[ ht.a * 2.0, 1.0 ]
+                       : ht.a * 0.25 ], 0.0, 0.0,
+                       (thov) ? 14.0 * u : 9.0 * u,
+                       0.0, true ]
+            nc : rgba [ r: ht.r, g: ht.g, b: ht.b, a: 1.0 ]
+            cb.ux.near_light_on[ cv, cb, 0.0, 0.0 ]
+            cv.near_style[ 1.3, (thov) ? 3.9 * u : 1.95, nc,
+                           cb.ux.near_y_fade ]
+            cv.rect_to[ tx, ty + 3.0 * u, 144.0 * u, lh - 6.0 * u ]
+            cv.paint[ ]
+            cv.restore[ ]
+            if [ dirty ]
+                if [ !cb.bold_font ]
+                    bfp : path 'fonts/BarlowCondensed-Bold.ttf'
+                    if [ bfp.exists[] ]
+                        # match ensure_font's display scaling
+                        bsc : f32 [
+                            (cv.w && cv.w.scale > 0.0) ? cv.w.scale
+                            : 1.0 ]
+                        cb.bold_font = CanvasFont [ ft_lib: cv.ft_lib,
+                            uri: 'fonts/BarlowCondensed-Bold.ttf',
+                            size_px: i32[ f32[ fs ] * bsc ] ]
+                if [ cb.bold_font ] cv.set_font[ cb.bold_font ]
+            # its ring: filled while in the next commit
+            out_ : bool nav.commit_skips[ rp ]
+            cv.save[ ]
+            rr_ : f32 [ 5.0 * u ]
+            cv.rounded[ rr_, rr_, rr_, rr_ ]
+            cv.fill_color[ (out_) ? rgba['#0000'] : rgba['#ff7aa4cc'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.stroke_color[ rgba['#ff9ab9cc'] ]
+            cv.rect_to[ tx + 9.0 * u, ty + lh * 0.5 - rr_,
+                        rr_ * 2.0, rr_ * 2.0 ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (out_) ? rgba['#9a8a95']
+                : ((thov) ? rgba['#ffffff'] : rgba['#ffd9e4']) ]
+            cv.draw_text[ nm,
+                rect [ x: tx + 22.0 * u, y: ty, w: 118.0 * u, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
+            if [ dirty ] nav_font[ cv, fs ]
+        # control row: reveal-all pill left, totals + make commit right
+        cy : f32 [ yb + f32[ trs ] * lh ]
+        if [ trs > 0 ]
+            # what the commit takes: chosen files and their lines
+            tot_ : vec i32 nav.commit_totals[]
+            rvl : string '{tot_[ 0 ]} files changed'
+            # every width here is its words measured: the font is
+            # proportional
+            rvw : f32 [ cv.measure_text[ rvl ].w + 16.0 * u ]
+            lhov : bool [ cb.hov_ctl == 0 ]
+            cv.save[ ]
+            cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+            cv.fill_color[ (lhov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0, cy + 5.0 * u, rvw, 26.0 * u ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (lhov) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+            cv.draw_text[ rvl,
+                rect [ x: x0, y: cy, w: rvw, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            cb.lx0 = x0 - bounds.x
+            cb.lx1 = x0 + rvw - bounds.x
+            # totals after the count pill; make commit is a centered
+            # button that dodges anything sequenced before it
+            rhov : bool [ cb.hov_ctl == 1 ]
+            lbl : string [ (open_) ? 'cancel' : 'make commit' ]
+            lw_ : f32 [ cv.measure_text[ lbl ].w ]
+            as_ : string '+{tot_[ 1 ]}'
+            ds : string '-{tot_[ 2 ]}'
+            asw : f32 [ cv.measure_text[ as_ ].w ]
+            dsw : f32 [ cv.measure_text[ ds ].w ]
+            asx : f32 [ x0 + rvw + 16.0 * u ]
+            dsx : f32 [ asx + asw + mtm.w ]
+            bw : f32 [ lw_ + 22.0 * u ]
+            cxc : f32 [
+                x0 + (bounds.x + bounds.w - 24.0 * u - x0 - bw) * 0.5 ]
+            mnx : f32 [ dsx + dsw + 16.0 * u ]
+            bx_ : f32 [ (cxc > mnx) ? cxc : mnx ]
+            cb.rx0 = bx_ - bounds.x
+            cb.rx1 = bx_ + bw - bounds.x
+            # borderless, same 26px height as the create buttons
+            cv.save[ ]
+            cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+            cv.fill_color[
+                (open_) ? rgba['#7a2f2fcc']
+                : ((rhov) ? rgba['#6cb6ff22'] : rgba['#0000']) ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ bx_, cy + 5.0 * u, bw, 26.0 * u ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ rgba['#6a9955'] ]
+            cv.draw_text[ as_,
+                rect [ x: asx, y: cy, w: asw + 4.0 * u, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            cv.fill_color[ rgba['#e06c75'] ]
+            cv.draw_text[ ds,
+                rect [ x: dsx, y: cy, w: dsw + 4.0 * u, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            # the last send's result, after the totals, while closed
+            ct8 : Contrib (open_) ? null : nav.contrib
+            nt8 : string [ (ct8 && ct8.state && ct8.state.note)
+                ? ct8.state.note : '' ]
+            if [ nt8.count > 0 && bx_ - mnx > 40.0 * u ]
+                cv.fill_color[ rgba['#6a9955'] ]
+                cv.draw_text[ nt8,
+                    rect [ x: mnx, y: cy, w: bx_ - mnx - 12.0 * u,
+                           h: lh ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null, true ]
+            cv.fill_color[
+                (open_) ? rgba['#ffd9d2']
+                : ((rhov) ? rgba['#ffffff'] : rgba['#9a94b0']) ]
+            cv.draw_text[ lbl,
+                rect [ x: bx_, y: cy, w: bw, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            # divider under the whole band, 4px clear of the button
+            cv.fill_color[ rgba['#fff2'] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x0, round[ yb + f32[ band_ ] * lh + 3.0 * u ],
+                        bounds.x + bounds.w - x0 - 24.0 * u, 1.0 ]
+            cv.paint[ ]
+        if [ open_ ]
+            # the message box: three lines of the app's commit text
+            by : f32 [ yb + f32[ trs + 1 ] * lh ]
+            cv.save[ ]
+            cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+            cv.fill_color[ cb.theme_rgba['#220022aa'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.stroke_color[ rgba['#6cb6ff55'] ]
+            cv.rect_to[ x0, by + 3.0 * u,
+                        bounds.x + bounds.w - x0 - 24.0 * u,
+                        lh * 3.0 - 6.0 * u ]
+            cv.paint[ ]
+            cv.restore[ ]
+            # the message keeps the canvas's own lettering (monospace):
+            # its caret and clicks go by that letter width
+            cv.set_font[ null ]
+            cv.font_size[ i32[ round[ 15.0 * u ] ] ]
+            ctm : cv.measure_text[ 'x' ]
+            cb.cw_st = ctm.w
+            if [ cb.commit_text ]
+                for [ i: i32 0, i < 3 && i < cb.commit_text.count,
+                      i += 1 ]
+                    ml : string cb.commit_text[i]
+                    if [ !ml ] continue
+                    cv.fill_color[ rgba['#e6e2f5'] ]
+                    cv.draw_text[ ml,
+                        rect [ x: x0 + 8.0 * u, y: by + f32[ i ] * lh,
+                               w: bounds.w - 116.0 * u, h: lh ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+            if [ parent.focused ]
+                ccx : f32 [ x0 + 8.0 * u + f32[ cb.cc ] * ctm.w ]
+                ccy : f32 [ by + f32[ cb.cl ] * lh ]
+                cv.fill_color[ rgba['#ffffff'] ]
+                cv.stroke_width[ 0.0 ]
+                cv.rect_to[ ccx, ccy + 4.0 * u, 2.0 * u, lh - 8.0 * u ]
+                cv.paint[ ]
+            nav_font[ cv, fs ]
+            # the commit row: where the commit goes, then the button
+            # named for what it does there, at the right
+            gy : f32 [ yb + f32[ trs + 4 ] * lh ]
+            ct : Contrib nav.contrib_of[]
+            st : RepoState (ct) ? ct.state : null
+            md : i32 [ (st) ? st.mode[] : 1 ]
+            gl : string [ (md == 2) ? 'propose'
+                : ((md == 3) ? 'update proposal'
+                : ((cb.ux.shift) ? 'commit' : 'commit & push')) ]
+            gw : f32 [ f32[ gl.count ] * mtm.w + 22.0 * u ]
+            gx : f32 [ bounds.x + bounds.w - 24.0 * u - gw ]
+            # no file chosen: nothing to commit, the button dim
+            none_ : bool [ nav.commit_chosen[] == 0 ]
+            ghov : bool [ cb.hov_ctl == 2 && !none_ ]
+            cb.gx0 = gx - bounds.x
+            cb.gx1 = gx + gw - bounds.x
+            steps : vec string [] [ 'reading the repository',
+                'committing', 'forking', 'pushing',
+                'opening the pull request' ]
+            sline : string ''
+            scol : rgba['#9a94b0']
+            if [ ct && ct.busy ]
+                sline = '{steps[ clamp[ ct.step, 0, 4 ] ]}…'
+            el [ st && st.error && st.error.count > 0 ]
+                sline = st.error
+                scol = rgba['#e06c75']
+            el [ none_ ]
+                sline = 'no files chosen'
+            el [ st ]
+                rp_ : path '{st.repo}'
+                nm_ : string [ (st.full && st.full.count > 0) ? st.full
+                    : rp_.filename[] ]
+                sline = '{nm_} · {st.branch} → {st.remote}'
+                if [ md == 2 ]
+                    sline = '{sline}  ·  will fork'
+                if [ st.pr_num > 0 ]
+                    sline = '{sline}  ·  pull request #{st.pr_num}'
+                if [ st.note && st.note.count > 0 ]
+                    sline = '{st.note}  ·  {sline}'
+                    scol = rgba['#6a9955']
+            cv.fill_color[ scol ]
+            cv.draw_text[ sline,
+                rect [ x: x0, y: gy, w: gx - x0 - 12.0 * u, h: lh ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
+            cv.save[ ]
+            cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+            cv.fill_color[ (ghov) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.stroke_color[ (ghov) ? rgba['#8fd0ff']
+                : ((none_) ? rgba['#fff1'] : rgba['#fff3']) ]
+            cv.rect_to[ gx, gy + 5.0 * u, gw, 26.0 * u ]
+            cv.paint[ ]
+            cv.restore[ ]
+            cv.fill_color[ (ghov) ? rgba['#ffffff']
+                : ((none_) ? rgba['#9a94b055'] : rgba['#9a94b0']) ]
+            cv.draw_text[ gl,
+                rect [ x: gx, y: gy, w: gw, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+        # the browse list rides the same scroll, below the band; a
+        # 4px breath keeps the hover clear of the divider
+        nav_font[ cv, 21 ]
+        ltm : cv.measure_text[ 'x' ]
+        ly : f32 [
+            yb + f32[ band_ ] * lh + ((band_ > 0) ? 8.0 * u : 0.0) ]
+        nls : i32 [ 0 ]
+        # each row's place: plain entries in columns of 300px or more,
+        # cards flowing across, the rest full width (list_layout)
+        lh_ : f32 cb.list_layout[ bounds.w ]
+        ry_ : f32 [ ly + lh_ ]
+        # a card's width, as list_layout spaces them
+        cdw : f32 [ 152.0 * u ]
+        # this pass finds the hint under the pointer afresh
+        cb.hint_cut = null
+        cb.hint_row = -1
+        if [ nav.find_hits ]
+            for [ hi: i32 0, hi < nav.find_hits.count, hi += 1 ]
+                h : FindHit nav.find_hits[hi]
+                if [ !h ] continue
+                # continuation rows of double-height headers: not ours
+                if [
+                    h.is_header && !h.is_spacer && !h.is_newfile
+                    && h.text.count == 0 ]
+                    continue
+                if [ nls >= i32[ cb.lay_x.count ] ] break
+                rh  : f32 [ cb.lay_h[ nls ] ]
+                ry  : f32 [ ly + cb.lay_y[ nls ] ]
+                cx_ : f32 [ bounds.x + cb.lay_x[ nls ] ]
+                # the row's own column: its left, and its right as the
+                # full width's was (24px in from it)
+                xr0 : f32 [ (h.card[]) ? x0 : cx_ ]
+                xe  : f32 [ xr0 + cb.lay_w[ nls ] + 24.0 * u ]
+                nls += 1
+                if [ ry + rh < bounds.y || ry > bounds.y + bounds.h ]
+                    continue
+                if [ h.is_spacer ]
+                    # same pixel break as the band divider
+                    cv.fill_color[ rgba['#fff2'] ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ xr0, round[ ry + 15.0 * u ],
+                                xe - xr0 - 24.0 * u, 1.0 ]
+                    cv.paint[ ]
+                    continue
+                if [ h.is_newfile ]
+                    # two make-commit-style buttons, side by side,
+                    # centered, at the band controls' font size
+                    nav_font[ cv, fs ]
+                    nfl_ : string 'new file'
+                    ndl : string 'new folder'
+                    nfw : f32 [ f32[ nfl_.count ] * mtm.w + 22.0 * u ]
+                    ndw : f32 [ f32[ ndl.count ] * mtm.w + 22.0 * u ]
+                    nbx : f32 [
+                        xr0
+                        + (xe - 24.0 * u - xr0 - nfw - 12.0 * u - ndw) * 0.5 ]
+                    cb.nfx0 = nbx - bounds.x
+                    cb.nfx1 = nbx + nfw - bounds.x
+                    cb.ndx0 = nbx + nfw + 12.0 * u - bounds.x
+                    cb.ndx1 = nbx + nfw + 12.0 * u + ndw - bounds.x
+                    nfh : bool [ cb.hov_ctl == 3 ]
+                    ndh : bool [ cb.hov_ctl == 4 ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+                    cv.fill_color[
+                        (nfh) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[
+                        (nfh) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+                    cv.rect_to[ nbx, ry + 2.0 * u, nfw, 26.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[
+                        (nfh) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+                    cv.draw_text[ nfl_,
+                        rect [ x: nbx, y: ry, w: nfw, h: 30.0 * u ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+                    cv.fill_color[
+                        (ndh) ? rgba['#6cb6ff22'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[
+                        (ndh) ? rgba['#8fd0ff'] : rgba['#fff3'] ]
+                    cv.rect_to[ nbx + nfw + 12.0 * u, ry + 2.0 * u, ndw,
+                                26.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[
+                        (ndh) ? rgba['#ffffff'] : rgba['#9a94b0'] ]
+                    cv.draw_text[ ndl,
+                        rect [ x: nbx + nfw + 12.0 * u, y: ry, w: ndw,
+                               h: 30.0 * u ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                    nav_font[ cv, 21 ]
+                    continue
+                # the icon view's cell: drawn whole below
+                cell_ : bool [ nav.icons && h.file && !h.card[]
+                               && !(!h.is_header && h.line > 0) ]
+                if [ nls - 1 == cb.hov_list && !h.card[] && !cell_ ]
+                    # an entry's highlight starts at its icon: the 30px
+                    # before it is the delete mark's, never painted
+                    hl_ : f32 [ 2.0 * u ]
+                    if [ h.file && h.line <= 0 ] hl_ = 32.0 * u
+                    nav_hover_paint[ cv, cb, xr0 + hl_, ry + 1.0,
+                        xe - xr0 - 20.0 * u - hl_, rh - 2.0 * u,
+                        cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
+                el [ !h.card[] && cb.hov_in && !cell_ ]
+                    # an unselected row: its border unseen at rest, the
+                    # near light (the distance field) bringing up the
+                    # part by the pointer, faintly; clear inside
+                    nl_ : f32 [
+                        (h.file && h.line <= 0) ? 32.0 * u : 2.0 * u ]
+                    cv.save[ ]
+                    cv.rounded[ 8.0 * u, 8.0 * u, 8.0 * u, 8.0 * u ]
+                    cv.fill_color[ rgba [ '#0000' ] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba [ '#ffffff01' ] ]
+                    # the near inner glow needs an inset shadow to
+                    # blend;
+                    # 1/255, unseen at rest (an alpha of 0 is no
+                    # shadow); by the pointer it comes up toward #fff8
+                    cv.box_shadow[ rgba [ '#ffffff01' ], 0.0, 0.0,
+                                   13.0 * u,
+                                   0.0, true ]
+                    # a short reach: only the rows right by the pointer
+                    cb.ux.near_light_reach[ cv, cb, 0.0, 0.0, 0.9 ]
+                    cv.near_style[ 0.6, 1.0, rgba [ '#ffffff88' ],
+                                   cb.ux.near_y_fade ]
+                    cv.rect_to[ xr0 + nl_, ry + 1.0,
+                                xe - xr0 - 20.0 * u - nl_,
+                                rh - 2.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                # an instance: its live frame as a 96px thumbnail, the
+                # name and status under it, and the module in blue under
+                # that; a scene: its exported picture
+                if [ h.card[] ]
+                    draw_card[ cv, nav, h, cx_, ry, cdw, rh,
+                               nls - 1 == cb.hov_list ]
+                    continue
+                # find-result line: the matching source text, indented
+                if [ !h.is_header && h.line > 0 ]
+                    cv.fill_color[ rgba['#7a8290'] ]
+                    cv.draw_text[ '{h.line}',
+                        rect [ x: xr0 + 8.0 * u, y: ry, w: 56.0 * u,
+                               h: 30.0 * u ],
+                        vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                    cv.fill_color[ rgba['#d4d4d4'] ]
+                    cv.draw_text[ h.text,
+                        rect [ x: xr0 + 76.0 * u, y: ry,
+                               w: xe - xr0 - 100.0 * u,
+                               h: 30.0 * u ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                    continue
+                nm : string [ h.text ]
+                ico : SVGModel [ null ]
+                if [ h.file ]
+                    cb.load_icons[]
+                    ico = (h.is_dir) ? ((h.is_module) ? cb.module_icon
+                        : cb.folder_icon) : cb.file_icon
+                    # a resource's folder (<stem>.agi): the yellow cube
+                    if [ h.is_dir && h.is_resource && cb.resource_icon ]
+                        ico = cb.resource_icon
+                    if [ !h.is_dir && nm.count > 0 ]
+                        mim : SVGModel cb.ficons.icon[ nm, 21 ]
+                        if [ mim ] ico = mim
+                if [ cell_ ]
+                    cw_ : f32 [ cb.lay_w[ nls - 1 ] ]
+                    if [ nls - 1 == cb.hov_list ]
+                        nav_hover_paint[ cv, cb, cx_ + 4.0 * u,
+                            ry + 2.0 * u, cw_ - 8.0 * u, rh - 4.0 * u,
+                            cb.nav_hover_fill, cb.nav_hover_edge, 0.0 ]
+                    isz : f32 [ round[ 32.0 * u ] ]
+                    mg_ : AppIcon (h.is_dir && h.is_module && h.file)
+                        ? nav.nav_mod_icon[ h.file ] : null
+                    if [ mg_ ]
+                        mg_.paint[ cv, round[ cx_ + (cw_ - isz) * 0.5 ],
+                                   round[ ry + 10.0 * u ], isz ]
+                    el [ ico ]
+                        cv.fill_color[ rgba [ '#ffffff' ] ]
+                        cv.stroke_color[ rgba [ '#ffffff' ] ]
+                        ix_ : f32 [ round[ cx_ + (cw_ - isz) * 0.5 ] ]
+                        cv.draw_svg[ ico, ix_, round[ ry + 10.0 * u ],
+                                     isz, isz ]
+                    nav_font[ cv, 16 ]
+                    cv.fill_color[
+                        (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                    cv.draw_text[ nm,
+                        rect [ x: cx_ + 6.0 * u, y: ry + 48.0 * u,
+                               w: cw_ - 12.0 * u, h: 26.0 * u ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.ellipsis, null, true ]
+                    nav_font[ cv, 21 ]
+                    continue
+                # shift: a red-outlined delete at the row's right end,
+                # on the row under the pointer (or the one held); held
+                # down it fills left to right over 2 s. the 30px before
+                # the icon is pin's
+                fl  : f32 [ nav.delete_fill[ h.file ] ]
+                drs : f32 [ 0.0 ]
+                if [
+                    cb.ux && cb.ux.shift && cb.deletable[ h ]
+                    && (nls - 1 == cb.hov_list || fl > 0.0) ]
+                    drs = 72.0 * u
+                    dbx : f32 [ xe - 24.0 * u - 64.0 * u ]
+                    if [ fl > 0.0 ]
+                        cv.save[ ]
+                        cv.rounded[ 5.0 * u, 5.0 * u, 5.0 * u, 5.0 * u ]
+                        cv.fill_color[ rgba['#d94343cc'] ]
+                        cv.stroke_width[ 0.0 ]
+                        cv.rect_to[ dbx, ry + 4.0 * u, 64.0 * u * fl,
+                                    22.0 * u ]
+                        cv.paint[ ]
+                        cv.restore[ ]
+                    cv.save[ ]
+                    cv.rounded[ 5.0 * u, 5.0 * u, 5.0 * u, 5.0 * u ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba['#ff6b6bcc'] ]
+                    cv.rect_to[ dbx, ry + 4.0 * u, 64.0 * u, 22.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    nav_font[ cv, 16 ]
+                    cv.fill_color[
+                        (fl >= 1.0) ? rgba['#fff'] : rgba['#ff8a8a'] ]
+                    cv.draw_text[ 'delete',
+                        rect [ x: dbx, y: ry, w: 64.0 * u,
+                               h: 30.0 * u ],
+                        vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                # shift: the left slot's + pins the entry, − unpins it
+                # (a pin, wherever it is listed)
+                if [ drs > 0.0 ]
+                    pn_ : bool [ h.pinned || nav.is_pinned[ h.file ] ]
+                    cv.save[ ]
+                    cv.rounded[ 4.0 * u, 4.0 * u, 4.0 * u, 4.0 * u ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba['#8fd0ffaa'] ]
+                    cv.rect_to[ xr0 + 9.0 * u, round[ ry + 5.5 * u ],
+                                19.0 * u,
+                                19.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    cv.fill_color[ rgba['#8fd0ff'] ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.rect_to[ xr0 + 13.0 * u, round[ ry + 14.25 * u ],
+                                11.0 * u,
+                                1.5 ]
+                    cv.paint[ ]
+                    if [ !pn_ ]
+                        cv.rect_to[ xr0 + 17.75 * u,
+                                    round[ ry + 9.5 * u ], 1.5,
+                                    11.0 * u ]
+                        cv.paint[ ]
+                # a module's row under the pointer, no shift: its edit
+                # mark in the pin's slot (opens its source, not its app)
+                if [
+                    drs <= 0.0 && h.is_dir && h.is_module
+                    && nls - 1 == cb.hov_list && cb.ux && !cb.ux.shift ]
+                    if [ !cb.edit_svg ]
+                        cb.edit_svg = SVGModel [ path 'images/edit.svg' ]
+                    cv.save[ ]
+                    cv.rounded[ 4.0 * u, 4.0 * u, 4.0 * u, 4.0 * u ]
+                    cv.fill_color[
+                        (cb.hov_edit) ? rgba['#8fd0ff33'] : rgba['#0000'] ]
+                    cv.stroke_width[ 1.0 ]
+                    cv.stroke_offset[ -0.5 ]
+                    cv.stroke_color[ rgba['#8fd0ffaa'] ]
+                    cv.rect_to[ xr0 + 9.0 * u, round[ ry + 5.5 * u ],
+                                19.0 * u, 19.0 * u ]
+                    cv.paint[ ]
+                    cv.restore[ ]
+                    es : f32 [ round[ 13.0 * u ] ]
+                    cv.draw_svg[ cb.edit_svg,
+                        round[ xr0 + 18.5 * u - es * 0.5 ],
+                        round[ ry + 15.0 * u - es * 0.5 ], es, es ]
+                # a module with an icon of its own shows it
+                mi_ : AppIcon (h.is_dir && h.is_module && h.file)
+                    ? nav.nav_mod_icon[ h.file ] : null
+                tx0 : f32 [ xr0 + 67.0 * u ]
+                if [ mi_ ]
+                    mi_.paint[ cv, xr0 + 38.0 * u,
+                               round[ ry + 4.5 * u ], round[ 21.0 * u ] ]
+                el
+                    tx0 = nav_icon_paint[ cv, ico, xr0, ry, u ]
+                nmw : f32 [ xe - tx0 - 24.0 * u - drs ]
+                nav_font[ cv, 21 ]
+                # a repository row: light blue when checked out, faint
+                # when not, amber while it clones
+                rcl : RepoClone (h.repo && h.repo.count > 0 && nav.repo_clones) ? nav.repo_clones[ h.repo ] : null
+                if [
+                    rcl && rcl.fd < 0
+                    && rcl.phase.compare[ 'failed' ] != 0 ]
+                    rcl = null
+                if [ h.repo && h.repo.count > 0 ]
+                    cv.fill_color[
+                        (rcl) ? rgba['#ffb070']
+                        : ((h.checked) ? rgba['#8fd0ff'] : rgba['#6a6580']) ]
+                el
+                    cv.fill_color[
+                        (h.is_dir) ? rgba['#6cb6ff'] : rgba['#fff'] ]
+                cv.draw_text[ nm,
+                    rect [ x: tx0, y: ry, w: nmw, h: 30.0 * u ],
+                    vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null, true ]
+                if [ rcl ]
+                    # the clone's bar in the description column: a 2px
+                    # white outline and an offset white fill inside it,
+                    # then the phase
+                    bx_ : f32 [ (xr0 + (xe - 24.0 * u - xr0) * 0.5) ]
+                    bw : f32 [ 160.0 * u ]
+                    cv.save[ ]
+                    cv.fill_color[ rgba['#0000'] ]
+                    cv.stroke_width[ 2.0 * u ]
+                    cv.stroke_offset[ -1.0 ]
+                    cv.stroke_color[ rgba['#ffffff'] ]
+                    cv.rect_to[ bx_, ry + 9.0 * u, bw, 12.0 * u ]
+                    cv.paint[ ]
+                    cv.stroke_width[ 0.0 ]
+                    cv.stroke_offset[ 0.0 ]
+                    cv.fill_color[ rgba['#ffffff'] ]
+                    fw : f32 [
+                        (bw - 8.0) * ((rcl.pct > 1.0) ? 1.0 : rcl.pct) ]
+                    if [ fw > 0.0 ]
+                        cv.rect_to[ bx_ + 4.0 * u, ry + 13.0 * u, fw,
+                                    4.0 * u ]
+                        cv.paint[ ]
+                    cv.restore[ ]
+                    pc_ : i32 [ rcl.pct * 100.0 ]
+                    lbl_ : string (rcl.phase.compare[ 'cloning' ] == 0) ? 'cloning {pc_}%' : rcl.phase
+                    cv.fill_color[
+                        (rcl.phase.compare[ 'failed' ] == 0)
+                        ? rgba['#ff6a6a'] : rgba['#ffffffaa'] ]
+                    cv.draw_text[ lbl_,
+                        rect [ x: bx_ + bw + 12.0 * u, y: ry,
+                               w: xe - 24.0 * u - bx_ - bw
+                               - 12.0 * u, h: 30.0 * u ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                el [ h.dir && h.dir.count > 0 ]
+                    fnw : f32 [ cv.measure_text[ nm ].w ]
+                    col : f32 [ (xr0 + (xe - 24.0 * u - xr0) * 0.5) ]
+                    end : f32 [ tx0 + fnw + ltm.w * 2.0 ]
+                    dx  : f32 [ (end > col) ? end : col ]
+                    hc : rgba [
+                        (h.repo && h.repo.count > 0 && !h.checked)
+                        ? rgba['#ffffff2e'] : rgba['#ffffff66'] ]
+                    re : f32 [ xe - 24.0 * u - drs ]
+                    # shift over this row's hint: the path up to the end
+                    # of the segment under the pointer is blue, and a
+                    # press goes there
+                    cut : i32 [ 0 ]
+                    mx_  : f32 [ bounds.x + cb.hov_mx ]
+                    if [
+                        !h.repo && cb.ux && cb.ux.shift
+                        && nls - 1 == cb.hov_list && mx_ >= dx
+                        && mx_ < re && h.dir.count > 1 ]
+                        cut = h.dir.count
+                        for [ ci: i32 1, ci <= h.dir.count, ci += 1 ]
+                            if [
+                                dx
+                                + cv.measure_text[ h.dir.mid[ 0, ci ] ].w >= mx_ ]
+                                cut = ci
+                                break
+                        while [
+                            cut < h.dir.count
+                            && h.dir.chars[ cut ] != 47 ]
+                            cut += 1
+                        cb.hint_cut = h.dir.mid[ 0, cut ]
+                        cb.hint_row = nls - 1
+                    pw_ : f32 [ 0.0 ]
+                    rest : string h.dir
+                    if [ cut > 0 ]
+                        pre : string h.dir.mid[ 0, cut ]
+                        pw_   = cv.measure_text[ pre ].w
+                        rest = h.dir.mid[ cut, h.dir.count - cut ]
+                        cv.fill_color[ rgba['#6cb6ff'] ]
+                        cv.draw_text[ pre,
+                            rect [ x: dx, y: ry, w: re - dx,
+                                   h: 30.0 * u ],
+                            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                            Overflow.clip, null, true ]
+                    cv.fill_color[ hc ]
+                    # the hint fades out over its last 48px at the right
+                    # edge, as code does at a pane's edge (the ramp's
+                    # far color must keep a trace of alpha: none at all
+                    # turns the ramp off)
+                    gx_ : f32 [ cv.transform_tx[] ]
+                    cv.text_grad       [
+                        rgba [ r: 1.0, g: 1.0, b: 1.0, a: 0.004 ] ]
+                    cv.text_color_pos  [ gx_ + re - 48.0 * u, 0.0 ]
+                    cv.text_grad_pos   [ gx_ + re, 0.0 ]
+                    cv.text_grad_mirror[ false ]
+                    cv.draw_text[ rest,
+                        rect [ x: dx + pw_, y: ry, w: re - dx - pw_,
+                               h: 30.0 * u ],
+                        vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                        Overflow.clip, null, true ]
+                    cv.paint[]
+                    cv.text_grad[
+                        rgba [ r: 0.0, g: 0.0, b: 0.0, a: 0.0 ] ]
+        cb.list_st = nls
+        # 16px of air after the last row (the create buttons)
+        cb.content_h = f32[
+            band_ ] * lh + (ry_ - ly) + 16.0 * u + ((band_ > 0) ? 8.0 * u : 0.0)
+        cv.clear_crop[ ]
+        # the canvas's own lettering for whatever draws after
+        cv.set_font[ null ]
+
+element CommitView
+    # the model it shows: the host hands it in
+    public  nav : Navigator
+    # the row icons: a file, a folder, a module, a resource
+    mutable file_icon     : SVGModel
+    mutable folder_icon   : SVGModel
+    mutable module_icon   : SVGModel
+    mutable resource_icon : SVGModel
+    mutable ficons        : FileIcons
+    mutable hov_row : i32 [ -1 ]
+    # a press waiting for its release on the same spot
+    mutable down_on : bool
+    mutable down_x  : f32
+    mutable down_y  : f32
+    mutable hov_tab : i32 [ -1 ]
+    # 0 = reveal-all, 1 = make commit / cancel, 2 = commit
+    mutable hov_ctl : i32 [ -1 ]
+    # hovered browse-list display row
+    mutable hov_list : i32 [ -1 ]
+    mutable chip_hov : i32 [ -1 ]
+    # the search text the list last showed: a new one starts it at
+    # its top, at once
+    mutable seen_find : string
+    # THIS view's commit form: no tab ever sees another's state
+    mutable commit_open : bool
+    mutable commit_text : vec string
+    mutable reveal_all  : bool
+    # caret line/col inside the message box
+    mutable cl      : i32 [ 0 ]
+    mutable cc      : i32 [ 0 ]
+    # bold face for tabs whose buffer holds unsaved edits
+    mutable bold_font : CanvasFont
+    # metrics stamped by the draw so hits match pixels exactly
+    mutable band_st : i32 [ 0 ]
+    mutable list_st : i32 [ 0 ]
+    # each list row's place, from the list's top: plain entries flow
+    # into columns of 300px or more; cards and the rest as before
+    mutable lay_x   : vec f32
+    mutable lay_y   : vec f32
+    mutable lay_w   : vec f32
+    mutable lay_h   : vec f32
+    mutable cap_st  : i32 [ 1 ]
+    mutable cw_st   : f32 [ 8.0 ]
+    mutable lx0 : f32 [ 0.0 ]
+    mutable lx1 : f32 [ 0.0 ]
+    mutable rx0 : f32 [ 0.0 ]
+    mutable rx1 : f32 [ 0.0 ]
+    mutable gx0 : f32 [ 0.0 ]
+    mutable gx1 : f32 [ 0.0 ]
+    mutable nfx0 : f32 [ 0.0 ]
+    mutable nfx1 : f32 [ 0.0 ]
+    mutable ndx0 : f32 [ 0.0 ]
+    mutable ndx1 : f32 [ 0.0 ]
+    # the navigation column between the rail and the list: its rows as
+    # drawn (u:<user>, p:<project>) with their tops, for the hit test
+    mutable side_w    : f32 [ 168.0 ]
+    mutable side_keys : vec string
+    # the nav list's row under the pointer: a purply pink wash and edge
+    public  nav_hover_fill : rgba [ '#d25cc826' ]
+    public  nav_hover_edge : rgba [ '#e07ad899' ]
+    # the pointer's x in the layer, for the path hint
+    intern  hov_mx    : f32
+    # the pointer's y and whether it is over the view: the rows near
+    # it show a faint border
+    intern  hov_my    : f32
+    intern  hov_in    : bool
+    # shift over a row's path hint: the folder up to the segment under
+    # the pointer (drawn blue); a press goes there
+    intern  hint_cut  : string
+    intern  hint_row  : i32 [ -1 ]
+    intern  del_path  : path      # the entry whose delete is held down
+    intern  del_dir   : bool
+    mutable side_ys   : vec f32
+    mutable hov_side  : i32 [ -1 ]
+    # the + on the users header opens an editing row: enter adds, esc
+    # drops
+    mutable hov_plus  : bool
+    # the edit mark of a module row: its icon, and the pointer on it
+    mutable edit_svg  : SVGModel
+    mutable hov_edit  : bool
+    mutable add_user  : bool
+    mutable add_text  : string
+    mutable plus_y    : f32 [ 0.0 ]
+    # the column scrolls on its own (NavSide's scroll); its height as
+    # drawn
+    mutable side_h      : f32 [ 0.0 ]
+    # the views column at the right: its width (none: 0)
+    mutable rail_w      : f32 [ 0.0 ]
+    # what the status bar's tip shows for the row under the pointer: a
+    # column row's or a repository row's full name
+    mutable side_tip    : string
+
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.content: CommitLayer
+            area: l0 t0 r0 b0
+        layers.scrollbar: ScrollLayer
+            overlay: true
+            area: 8px
+            thumb_color: #fff4
+            thumb_w: 6.0 * u
+            thumb_min_h: 32.0 * u
+            thumb_radius: 4.0 * u
+    }
+
+    # a module dir holds <stem>/<stem>.ag and friends. return the ones
+    # that actually exist so the row can offer them as one-click chips.
+    # cached by dir: this is asked for every visible module row, every
+    # frame a plain file or folder row: shift gives it a delete at its
+    # right end
+    func deletable [ h: FindHit ] -> bool
+        # a listing's entries are header rows; their continuation and
+        # spacer rows carry no name
+        if [
+            !h || !h.file || h.is_spacer || h.is_newfile || h.more
+            || h.card[] || h.line > 0 ]
+            return false
+        if [ !h.text || h.text.count == 0 ] return false
+        # the way up is not an entry of this folder
+        if [ h.text.compare[ '..' ] == 0 || h.text.compare[ '.' ] == 0 ]
+            return false
+        return !(h.repo && h.repo.count > 0)
+
+    # the row whose delete is under the pointer (shift held), or null:
+    # the press starts the hold on it, the release deletes only over it
+    func delete_hit [ ev: Event ] -> FindHit
+        u : f32 ux_unit[ ux ]
+        ly : lay[]
+        if [ !ly ] return null
+        # the row's right end: its column's
+        return shift_hit[ ev, -64.0 * u, 0.0, true ]
+
+    # the row whose pin mark (the slot before its icon) is under the
+    # pointer
+    func pin_hit [ ev: Event ] -> FindHit
+        u : f32 ux_unit[ ux ]
+        return shift_hit[ ev, 8.0 * u, 38.0 * u, false ]
+
+    # a module's row, no shift: its edit mark in the pin's slot; the
+    # press opens its source, not its app
+    func edit_hit [ ev: Event ] -> FindHit
+        u : f32 ux_unit[ ux ]
+        if [ !ux || ux.shift ] return null
+        h : FindHit row_hit[ ev, 8.0 * u, 38.0 * u, false ]
+        return (h && h.is_dir && h.is_module) ? h : null
+
+    # shift held, the pointer between x0 and x1 of an entry row (from
+    # its column's left, or its right with from_right): that entry
+    func shift_hit [ ev: Event, x0: f32, x1: f32, from_right: bool ]
+                     -> FindHit
+        if [ !ux || !ux.shift ] return null
+        h : FindHit row_hit[ ev, x0, x1, from_right ]
+        return (h && deletable[ h ]) ? h : null
+
+    # the pointer between x0 and x1 of an entry row: that entry
+    func row_hit [ ev: Event, x0: f32, x1: f32, from_right: bool ]
+                   -> FindHit
+        u : f32 ux_unit[ ux ]
+        ly : lay[]
+        o  : Navigator nav
+        if [ !ly || !o || !ux || !o.find_hits ] return null
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        trs : i32 [
+            (o.pick_on) ? 0
+            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
+                                 reveal_all ] ]
+        r : i32 [ row_at[ ry, rx, trs ] ]
+        if [ r < band_st ] return null
+        dr : i32 [ r - band_st ]
+        if [ !lay_x || dr >= i32[ lay_x.count ] ] return null
+        if [ o.icons ] return null
+        ox : f32 [ (from_right) ? lay_x[ dr ] + lay_w[ dr ]
+            : lay_x[ dr ] ]
+        if [ rx < ox + x0 || rx >= ox + x1 ] return null
+        hi : i32 [ list_hit[ dr ] ]
+        if [ hi < 0 || hi >= o.find_hits.count ] return null
+        return o.find_hits[ hi ]
+
+    func lay [] -> CommitLayer
+        return (layers) ? cast CommitLayer [ layers['content'] ] : null
+
+    # frame hook: ALL state settles here — the layer draw only projects
+    public func draw [ w: Window ]
+        u : f32 ux_unit[ ux ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ scroll_speed <= 0.0 ] scroll_speed = 72.0 * u
+        # the column repaints with the view (hover, its scroll, picks)
+        sd_ : element (elements) ? elements['side'] : null
+        if [ sd_ && !pristine ] sd_.pristine = false
+        o : Navigator nav
+        # the form cannot stay open with nothing to commit
+        if [ commit_open ]
+            n_ : i32 [
+                (o && o.git_snap && o.git_snap.files)
+                ? o.git_snap.files.count : 0 ]
+            if [ n_ == 0 ] commit_open = false
+        # scroll clamps to the content the last projection measured
+        if [ content_h > 0.0 && bounds ]
+            mx_ : f32 [ content_h - bounds.h ]
+            if [ mx_ < 0.0 ] mx_ = 0.0
+            if [ scroll.y > mx_ ]
+                scroll.y    = mx_
+                scroll_goal = mx_
+
+    # the row icons: a file, a folder, a module, a resource, by type
+    func load_icons []
+        if [ !file_icon ]
+            ffp : path 'images/file.svg'
+            if [ ffp.exists[] ] file_icon = SVGModel [ ffp ]
+        if [ !module_icon ]
+            cfp : path 'images/material/3d.svg'
+            if [ cfp.exists[] ] module_icon = SVGModel [ cfp ]
+        if [ !folder_icon ]
+            dfp : path 'images/material/folder.svg'
+            if [ dfp.exists[] ] folder_icon = SVGModel [ dfp ]
+        if [ !resource_icon ]
+            rfp : path 'images/resource.svg'
+            if [ rfp.exists[] ] resource_icon = SVGModel [ rfp ]
+        if [ !ficons ] ficons = FileIcons []
+
+    # scene themes retint drawn colors, same as styled ones
+    func theme_rgba [ s: string ] -> rgba
+        if [ ux && ux.st ] return ux.st.theme_color[ s ]
+        return rgba [ s ]
+
+    func commit_toggle []
+        commit_open = !commit_open
+        if [ commit_open ]
+            commit_text = vec string [] [ '', '', '' ]
+            cl = 0
+            cc = 0
+            o : Navigator nav
+            ct : Contrib (o) ? o.contrib_of[] : null
+            if [ ct ] ct.start_read[]
+        pristine = false
+        ux.will_animate = true
+
+    func commit_send []
+        o : Navigator nav
+        if [ !o || !commit_text ] return
+        msg : string ''
+        for [ i: i32 0, i < commit_text.count, i += 1 ]
+            l_ : string commit_text[i]
+            if [ !l_ || l_.trim[].count == 0 ] continue
+            msg = (msg.count > 0) ? msg + '\n' + l_ : l_
+        if [ msg.count == 0 ] return
+        ct : Contrib o.contrib_of[]
+        if [ !ct || !ct.state || ct.busy || !o.git_snap ] return
+        # the lit files under this repo, relative to it
+        pre : string '{ct.repo}/'
+        fs : vec string []
+        if [ o.git_snap.files ]
+            for [ f: string ] in o.git_snap.files
+                if [ f.starts_with[ pre ] && !o.commit_skips[ f ] ]
+                    fs.push[ f.mid[ pre.count, f.count - pre.count ] ]
+        # no file chosen: the button is dim and does nothing
+        if [ fs.count == 0 ] return
+        ct.start_send[ msg, fs, !ux.shift ]
+        pristine = false
+
+    func render [] -> Elements
+        u : f32 ux_unit[ ux ]
+        fq : string [ (nav && nav.find_text) ? nav.find_text : '' ]
+        if [ !seen_find || seen_find != fq ]
+            seen_find   = fq
+            scroll.y    = 0.0
+            scroll_goal = 0.0
+            scroll_anim = false
+            hov_list    = -1
+        # the file's views are the system bar's
+        rail_w = 0.0
+        if [ side_w <= 0.0 ] return null
+        return Elements [
+            # the column: presses and the wheel are the view's
+            'side' : NavSide [ no_scroll: true, ghost: true,
+                scroll_fade: 24.0,
+                area: Region [ 'l0 t0 w{6.0 * u + side_w}px b0' ] ] ]
+
+    # the display row under y (band rows then list rows), -1 outside.
+    # event y already includes the element's own scroll offset
+    # a run of plain rows into columns, top to bottom then across
+    func lay_run [ run: vec i32, y: f32, left: f32, colw: f32,
+                   cols: i32, rh: f32, least: i32 ] -> f32
+        n : i32 [ i32[ run.count ] ]
+        if [ n == 0 ] return y
+        per : i32 [ (n + cols - 1) / cols ]
+        # a column holds a few rows at least before the next one starts
+        if [ per < least ] per = least
+        # whole column and row numbers: down a column, then the next
+        for [ k: i32 0, k < n, k += 1 ]
+            ri  : i32 [ run[ k ] ]
+            col : i32 [ k / per ]
+            row : i32 [ k - col * per ]
+            lay_x[ ri ] = left + colw * f32[ col ]
+            lay_y[ ri ] = y + rh * f32[ row ]
+            lay_w[ ri ] = colw
+            lay_h[ ri ] = rh
+        return y + rh * f32[ per ]
+
+    # every display row's place (x and width in the view, y from the
+    # list's top); the list's height back
+    func list_layout [ ww: f32 ] -> f32
+        u : f32 ux_unit[ ux ]
+        # the side column's room as it is now (a draw may not have
+        # set it yet this frame): its absence moves nothing
+        side_w = side_fit[ u ]
+        lay_x = vec f32 []
+        lay_y = vec f32 []
+        lay_w = vec f32 []
+        lay_h = vec f32 []
+        o : Navigator nav
+        if [ !o || !o.find_hits ] return 0.0
+        left  : f32 [ 14.0 * u + side_w ]
+        right : f32 [ ww - 24.0 * u ]
+        cdw   : f32 [ 152.0 * u ]
+        per_  : i32 [ (ww - 100.0 * u - side_w) / cdw ]
+        if [ per_ < 1 ] per_ = 1
+        # the icon view: a 32 px icon over its name in each cell
+        icons : bool [ o.icons ]
+        cellw : f32 [ (icons) ? 104.0 * u : 300.0 * u ]
+        rh    : f32 [ (icons) ? 84.0 * u : 30.0 * u ]
+        least : i32 [ (icons) ? 3 : 8 ]
+        cols  : i32 [ i32[ (right - left) / cellw ] ]
+        if [ cols < 1 ] cols = 1
+        colw  : f32 [ (right - left) / f32[ cols ] ]
+        y   : f32 [ 0.0 ]
+        lyc : f32 [ 0.0 ]
+        ci  : i32 [ 0 ]
+        run : vec i32 []
+        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
+            h : FindHit o.find_hits[hi]
+            if [ !h ] continue
+            if [
+                h.is_header && !h.is_spacer && !h.is_newfile
+                && h.text.count == 0 ]
+                continue
+            plain : bool [ !h.card[] && !h.is_spacer && !h.is_newfile
+                && !(!h.is_header && h.line > 0) ]
+            # a row naming no file keeps its line in the icon view
+            if [ icons && !h.file ] plain = false
+            if [ !plain ]
+                y = lay_run[ run, y, left, colw, cols, rh, least ]
+                run = vec i32 []
+            ri : i32 [ i32[ lay_x.count ] ]
+            lay_x.push[ left ]
+            lay_y.push[ y ]
+            lay_w.push[ right - left ]
+            lay_h.push[ 30.0 * u ]
+            if [ h.card[] ]
+                cy : f32 [ y ]
+                if [ ci > 0 && ci < per_ ]
+                    cy = lyc
+                el
+                    ci  = 0
+                    lyc = y
+                    y += 148.0 * u
+                lay_x[ ri ] = left + 8.0 * u + f32[ ci ] * cdw
+                lay_y[ ri ] = cy
+                lay_w[ ri ] = cdw
+                lay_h[ ri ] = 148.0 * u
+                ci += 1
+            el
+                ci = 0
+                if [ plain ] run.push[ ri ]
+                el y += 30.0 * u
+        y = lay_run[ run, y, left, colw, cols, rh, least ]
+        return y
+
+    func row_at [ ry: f32, rx: f32, trs: i32 ] -> i32
+        u : f32 ux_unit[ ux ]
+        band : i32 [ band_st ]
+        # move_event already delivers scroll-adjusted local coords
+        # (find_target sets local + scroll), so do NOT add scroll again
+        # — that double-counts
+        ry_ : f32 [ ry - 4.0 * u ]
+        if [ ry_ < 0.0 ] return -1
+        if [ ry_ < f32[ band ] * (36.0 * u) ]
+            return i32[ ry_ / (36.0 * u) ]
+        ly_ : f32 [
+            ry_ - f32[ band ] * (36.0 * u)
+            - ((band > 0) ? 8.0 * u : 0.0) ]
+        if [ ly_ < 0.0 ] return -1
+        # the rows' places, as the draw laid them out
+        o : Navigator nav
+        if [ !o || !o.find_hits || !lay_x ] return -1
+        for [ dr: i32 0, dr < i32[ lay_x.count ], dr += 1 ]
+            lx : f32 [ lay_x[ dr ] ]
+            ly8 : f32 [ lay_y[ dr ] ]
+            if [ ly_ < ly8 || ly_ >= ly8 + lay_h[ dr ] ] continue
+            if [ rx < lx - 4.0 * u || rx >= lx + lay_w[ dr ] ] continue
+            hi : i32 [ list_hit[ dr ] ]
+            if [ hi >= 0 ]
+                h : FindHit o.find_hits[ hi ]
+                if [ h && !h.card[] && h.note[] ] return -1
+            return band + dr
+        return -1
+
+    # lines that actually exist in the box: text, plus the line the
+    # caret has opened. an empty box is exactly one line
+    func box_lines [] -> i32
+        n_ : i32 [ 1 ]
+        if [ commit_text ]
+            for [ i: i32 0, i < commit_text.count && i < 3, i += 1 ]
+                ml : string commit_text[i]
+                if [ ml && ml.count > 0 ] n_ = i + 1
+        if [ cl + 1 > n_ ] n_ = cl + 1
+        if [ n_ > 3 ] n_ = 3
+        return n_
+
+    # the FindHit index for a list display row, -1 when none
+    func list_hit [ dr: i32 ] -> i32
+        o : Navigator nav
+        if [ !o || !o.find_hits || dr < 0 ] return -1
+        n_ : i32 [ 0 ]
+        for [ hi: i32 0, hi < o.find_hits.count, hi += 1 ]
+            h : FindHit o.find_hits[hi]
+            if [ !h ] continue
+            if [
+                h.is_header && !h.is_spacer && !h.is_newfile
+                && h.text.count == 0 ]
+                continue
+            if [ n_ == dr ] return hi
+            n_ += 1
+        return -1
+
+    func on_leave [ ev: Event ]
+        if [
+            hov_row != -1 || hov_tab != -1 || hov_ctl != -1
+            || hov_list != -1 || chip_hov != -1 ]
+            hov_row  = -1
+            hov_tab  = -1
+            hov_ctl  = -1
+            hov_list = -1
+            chip_hov = -1
+            pristine = false
+        if [ hov_in ]
+            hov_in   = false
+            pristine = false
+
+    func on_move [ ev: Event ]
+        u : f32 ux_unit[ ux ]
+        ly : lay[]
+        o  : Navigator nav
+        if [ !ly || !o ] return
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        # shift held: the path hint follows the pointer along its
+        # segments
+        if [ ux && ux.shift && rx != hov_mx ] pristine = false
+        # the near borders follow the pointer
+        if [ rx != hov_mx || ry != hov_my || !hov_in ] pristine = false
+        hov_mx = rx
+        hov_my = ry
+        hov_in = true
+        if [ sb_drag ]
+            sbl : ScrollLayer (layers) ? cast ScrollLayer [
+                layers['scrollbar'] ] : null
+            if [ sbl ]
+                sy : f32 [ sbl.drag_to[ ry - scroll.y ] ]
+                # the element's ease takes it there, a frame at a time
+                if [ sy >= 0.0 ]
+                    scroll_goal = sy
+                    scroll_anim = true
+                    pristine    = false
+                    ux.will_animate = true
+            return
+        nrow : i32 [ -1 ]
+        ntab : i32 [ -1 ]
+        nctl : i32 [ -1 ]
+        nlst : i32 [ -1 ]
+        nchp : i32 [ -1 ]
+        nsid : i32 [
+            (rx < 6.0 * u + side_w) ? side_row_at[ ry - scroll.y ]
+            : -1 ]
+        ryp : f32 [ ry - scroll.y ]
+        nplus : bool [
+            rx >= 6.0 * u + side_w - 30.0 * u
+            && rx < 6.0 * u + side_w - 10.0 * u
+            && ryp >= plus_y && ryp < plus_y + 24.0 * u ]
+        if [ nplus != hov_plus ]
+            hov_plus = nplus
+            pristine = false
+            ux.will_animate = true
+        nedit : bool [ edit_hit[ ev ] != null ]
+        if [ nedit != hov_edit ]
+            hov_edit = nedit
+            pristine = false
+            ux.will_animate = true
+        if [ nsid >= 0 ]
+            nsid = nsid
+        el [ rx < 14.0 * u + side_w ]
+            nsid = -1
+        el
+            # picking: files only, no git tabs (as draw lays it out)
+            trs : i32 [
+                (o.pick_on) ? 0
+                : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
+                                     reveal_all ] ]
+            r : i32 [ row_at[ ry, rx, trs ] ]
+            cx0 : f32 [ 14.0 * u + side_w ]
+            if [ r >= 0 && r < trs ]
+                cx : i32 [ (rx - cx0) / (150.0 * u) ]
+                if [
+                    rx >= cx0 && cx >= 0 && cx < cap_st
+                    && (rx - cx0) - f32[ cx ] * (150.0 * u) <= 144.0 * u ]
+                    nrow = r
+                    ntab = cx
+            el [ trs > 0 && r == trs ]
+                if [ rx >= lx0 && rx <= lx1 ] nctl = 0
+                el [ rx >= rx0 && rx <= rx1 ] nctl = 1
+            el [ commit_open && band_st > 0 && r == trs + 4 ]
+                if [ rx >= gx0 && rx <= gx1 ] nctl = 2
+            el [ r >= band_st && r - band_st < list_st ]
+                hi_ : i32 [ list_hit[ r - band_st ] ]
+                hf : FindHit [ (hi_ >= 0) ? o.find_hits[hi_] : null ]
+                if [ hf && hf.is_newfile ]
+                    # 3 = new file, 4 = new folder
+                    if [ rx >= nfx0 && rx <= nfx1 ] nctl = 3
+                    el [ rx >= ndx0 && rx <= ndx1 ] nctl = 4
+                el
+                    nlst = r - band_st
+        # the tip: the full name of the column row or repository row
+        # hovered
+        tip_ : string ''
+        if [ nsid >= 0 && side_keys && nsid < side_keys.count ]
+            tk : string side_keys[ nsid ]
+            tv : string tk.mid[ 2, tk.count - 2 ]
+            ts_ : i32 [ tv.index_of[ '/' ] ]
+            # a drive or a pinned folder: its whole path
+            dfk : bool [
+                tk.starts_with[ 'd:' ] || tk.starts_with[ 'f:' ] ]
+            if [ dfk ]
+                tip_ = tv
+            el
+                tip_ = (ts_ > 0) ? tv.mid[ 0, ts_ ] + ':' + tv.mid[
+                    ts_ + 1,
+                                                                tv.count
+                                                                - ts_
+                                                                - 1 ] : tv
+        el [ nlst >= 0 && o.find_hits ]
+            th : i32 [ list_hit[ nlst ] ]
+            if [ th >= 0 && th < o.find_hits.count ]
+                hh : FindHit o.find_hits[ th ]
+                if [ hh && hh.repo && hh.repo.count > 0 ]
+                    rs_ : i32 [ hh.repo.index_of[ '/' ] ]
+                    tip_ = (rs_ > 0) ? hh.repo.mid[ 0,
+                        rs_ ] + ':' + hh.repo.mid[ rs_ + 1,
+                                                   hh.repo.count - rs_
+                                                   - 1 ] : hh.repo
+        if [ !side_tip || side_tip.compare[ tip_ ] != 0 ]
+            side_tip = tip_
+        if [
+            nrow != hov_row || ntab != hov_tab || nctl != hov_ctl
+            || nlst != hov_list || nchp != chip_hov
+            || nsid != hov_side ]
+            hov_row  = nrow
+            hov_tab  = ntab
+            hov_ctl  = nctl
+            hov_list = nlst
+            chip_hov = nchp
+            hov_side = nsid
+            pristine = false
+            ux.will_animate = true
+
+    # the wheel over the column scrolls the column, nothing else
+    func on_wheel [ ev: Event ]
+        u : f32 ux_unit[ ux ]
+        ly : lay[]
+        if [ ly ]
+            rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+            sd : element (elements) ? elements[ 'side' ] : null
+            if [ sd && rx < 6.0 * u + side_w ]
+                # the standard eased wheel scroll, as every list
+                sd.scroll_speed = 52.0 * u
+                sd.on_wheel[ ev ]
+                return
+        super.on_wheel[ ev ]
+
+    # the navigation column row under a fixed (unscrolled) y, -1 outside
+    # the column's width: none when it would leave the list under
+    # 300 units
+    func side_fit [ u: f32 ] -> f32
+        if [ bounds && bounds.w - 182.0 * u < 300.0 * u ] return 0.0
+        return 168.0 * u
+
+    func side_row_at [ ryf: f32 ] -> i32
+        u : f32 ux_unit[ ux ]
+        if [ !side_ys || side_w <= 0.0 ] return -1
+        for [ i: i32 0, i < side_ys.count, i += 1 ]
+            if [ ryf >= side_ys[i] && ryf < side_ys[i] + 24.0 * u ]
+                return i
+        return -1
+
+    func on_release [ ev: Event ]
+        # a row acts at the release, where it was pressed
+        if [ down_on ]
+            down_on = false
+            dx : f32 [ ev.mouse.pos.x - down_x ]
+            dy : f32 [ ev.mouse.pos.y - down_y ]
+            if [ !del_path && !sb_drag && dx * dx + dy * dy <= 36.0 ]
+                press_act[ ev ]
+        # a held delete: released over it once full, the entry goes;
+        # anywhere else, or early, it is a cancel
+        if [ del_path ]
+            o_ : Navigator nav
+            h_ : FindHit delete_hit[ ev ]
+            if [ o_ && h_ ]
+                hs : string '{h_.file}'
+                ds : string '{del_path}'
+                if [
+                    hs.compare[ ds ] == 0
+                    && o_.delete_fill[ del_path ] >= 1.0 ]
+                    o_.path_delete[ del_path, del_dir ]
+            if [ o_ ] o_.delete_hold[ null ]
+            del_path = null
+            animated = false
+            pristine = false
+        sb_drag = false
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
+        if [ sbl ]
+            sbl.active = false
+            ux.will_animate = true
+
+    # the scrollbar and a held delete take the press; the rest waits
+    # for the release
+    func on_press [ ev: Event ]
+        ev.no_default = true
+        if [ press_now[ ev ] ]
+            press_act[ ev ]
+            return
+        down_on = true
+        down_x  = ev.mouse.pos.x
+        down_y  = ev.mouse.pos.y
+
+    func press_now [ ev: Event ] -> bool
+        if [ delete_hit[ ev ] ] return true
+        ly : lay[]
+        if [ !ly ] return false
+        u : f32 ux_unit[ ux ]
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
+        grab : f32 [
+            (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 * u
+            : 16.0 * u ]
+        return sbl && sbl.scroll_max > 0.0 && rx > ly.bounds.w - grab
+
+    func press_act [ ev: Event ]
+        u : f32 ux_unit[ ux ]
+        ly : lay[]
+        o  : Navigator nav
+        if [ !ly || !o ] return
+        host : NavHost o.host
+        rx : f32 [ ev.mouse.pos.x - ly.bounds.x ]
+        ry : f32 [ ev.mouse.pos.y - ly.bounds.y ]
+        ev.no_default = true
+        # the standard scrollbar: same grab/drag as every element
+        sbl : ScrollLayer (layers) ? cast ScrollLayer [
+            layers['scrollbar'] ] : null
+        grab : f32 [
+            (sbl && sbl.thumb_w > 0.0) ? sbl.thumb_w * 2.0 + 8.0 * u
+            : 16.0 * u ]
+        if [ sbl && sbl.scroll_max > 0.0 && rx > ly.bounds.w - grab ]
+            my : f32 [ ry - scroll.y ]
+            sbl.grab_at[ my ]
+            sy : f32 [ sbl.drag_to[ my ] ]
+            if [ sy >= 0.0 ]
+                scroll_goal = sy
+                scroll_anim = true
+                sb_drag     = true
+                sbl.active  = true
+                pristine    = false
+                ux.will_animate = true
+            return
+        # the navigation column first, at the far left, fixed
+        if [ side_w > 0.0 && rx < 6.0 * u + side_w ]
+            ryp : f32 [ ry - scroll.y ]
+            if [
+                rx >= 6.0 * u + side_w - 30.0 * u && ryp >= plus_y
+                && ryp < plus_y + 24.0 * u ]
+                add_user = true
+                add_text = ''
+                if [ ux ] ux.set_focus[ a ]
+                pristine = false
+                return
+            si : i32 [ side_row_at[ ry - scroll.y ] ]
+            if [ si >= 0 && side_keys && si < side_keys.count ]
+                key_ : string side_keys[ si ]
+                val : string key_.mid[ 2, key_.count - 2 ]
+                if [ key_.starts_with[ 'e:' ] ]
+                    if [ ux ] ux.set_focus[ a ]
+                el [
+                    key_.starts_with[ 'u:' ] && ux.shift && si > 0
+                    && rx >= 6.0 * u + side_w - 32.0 * u ]
+                    o.repo_forget[ val ]
+                el [ key_.starts_with[ 'u:' ] ] o.side_pick_user[ val ]
+                # a pinned folder's - (shift) unpins it
+                el [
+                    key_.starts_with[ 'f:' ] && ux.shift
+                    && rx >= 6.0 * u + side_w - 32.0 * u ]
+                    o.pin_toggle[ path val ]
+                el [
+                    key_.starts_with[ 'd:' ]
+                    || key_.starts_with[ 'f:' ] ]
+                    o.side_pick_folder[ val ]
+                el [ rx >= 6.0 * u + side_w - 32.0 * u ]
+                    o.repo_dock_toggle[ val ]
+                el
+                    o.side_pick_project[ val ]
+                pristine = false
+                return
+        # picking: files only, no git tabs (as draw lays it out)
+        if [ rx < 14.0 * u + side_w ] return
+        trs : i32 [
+            (o.pick_on) ? 0
+            : o.commit_tab_rows[ ly.bounds.w - 14.0 * u - side_w - rail_w,
+                                 reveal_all ] ]
+        r : i32 [ row_at[ ry, rx, trs ] ]
+        cx0 : f32 [ 14.0 * u + side_w ]
+        if [ r >= 0 && r < trs && o.git_snap && o.git_snap.files ]
+            cx : i32 [ (rx - cx0) / (150.0 * u) ]
+            if [
+                rx >= cx0 && cx >= 0 && cx < cap_st
+                && (rx - cx0) - f32[ cx ] * (150.0 * u) <= 144.0 * u ]
+                idx : i32 [ r * cap_st + cx ]
+                # the ring's end of the chip: in or out of the commit
+                ring : bool [
+                    (rx - cx0) - f32[ cx ] * (150.0 * u) <= 22.0 * u ]
+                if [ ring && idx < o.git_snap.files.count ]
+                    o.commit_skip_flip[ o.git_snap.files[idx] ]
+                    pristine = false
+                    return
+                if [ idx < o.git_snap.files.count ]
+                    fp_ : string o.git_snap.files[idx]
+                    host.open_file*[ path '{fp_}' ]
+                    host.exit_finder*[]
+            return
+        if [ trs > 0 && r == trs ]
+            if [ rx >= lx0 && rx <= lx1 ]
+                reveal_all = !reveal_all
+                pristine = false
+                if [ ux ] ux.will_animate = true
+            el [ rx >= rx0 && rx <= rx1 ]
+                commit_toggle[]
+            return
+        if [ commit_open && band_st > 0 && r > trs && r <= trs + 3 ]
+            # only lines that exist take the caret; below-last snaps up
+            bl_ : i32 [ box_lines[] ]
+            nl : i32 [ r - trs - 1 ]
+            if [ nl >= bl_ ]
+                cl = bl_ - 1
+                el_ : string [
+                    (commit_text && cl < commit_text.count)
+                    ? commit_text[cl] : null ]
+                cc = (el_) ? el_.count : 0
+            el
+                cl = nl
+                if [ commit_text && cl < commit_text.count ]
+                    ml : string commit_text[cl]
+                    mc : i32 [ (rx - cx0 - 8.0 * u) / cw_st ]
+                    cc = clamp[ mc, 0, (ml) ? ml.count : 0 ]
+            if [ ux ] ux.set_focus[ a ]
+            pristine = false
+            return
+        if [ commit_open && band_st > 0 && r == trs + 4 ]
+            if [ rx >= gx0 && rx <= gx1 ] commit_send[]
+            el [ rx < gx0 ]
+                ct : Contrib o.contrib_of[]
+                pu : string [ (ct && ct.state) ? ct.state.pr_url : '' ]
+                if [ pu && pu.count > 0 ] host.open_url*[ pu ]
+            return
+        # the browse list below the band
+        if [ r >= band_st ]
+            hi : i32 [ list_hit[ r - band_st ] ]
+            if [ hi < 0 ] return
+            h : FindHit o.find_hits[hi]
+            # shift: the entry's delete at the row's right end. the
+            # press starts the hold; the release decides
+            ph_ : FindHit pin_hit[ ev ]
+            if [ ph_ ]
+                o.pin_toggle[ ph_.file ]
+                pristine = false
+                return
+            eh_ : FindHit edit_hit[ ev ]
+            if [ eh_ ]
+                mp : path '{eh_.file}/{eh_.file.filename[]}.ag'
+                host.open_file*[ mp ]
+                host.exit_finder*[]
+                pristine = false
+                return
+            dh_ : FindHit delete_hit[ ev ]
+            # shift over a path hint: to the folder drawn blue, as a
+            # folder row's press goes to its folder
+            if [
+                ux && ux.shift && hint_cut && hint_cut.count > 0
+                && hint_row == r - band_st ]
+                scroll.y    = 0.0
+                scroll_goal = 0.0
+                scroll_anim = false
+                hov_list    = -1
+                o.nav_go[ path hint_cut ]
+                pristine = false
+                return
+            if [ dh_ ]
+                del_path = dh_.file
+                del_dir  = dh_.is_dir
+                o.delete_hold[ dh_.file ]
+                # the fill runs on the clock: this view repaints itself
+                # every frame until the release
+                animated = true
+                pristine = false
+                return
+            if [ h.is_newfile ]
+                if [ rx >= nfx0 && rx <= nfx1 ]
+                    host.new_file*[ o.nav_root, false ]
+                    if [ ux ] ux.restyle = true
+                el [ rx >= ndx0 && rx <= ndx1 ]
+                    host.new_file*[ o.nav_root, true ]
+                    if [ ux ] ux.restyle = true
+                return
+            if [ h.inst > 0 ]
+                host.pick_instance*[ h.inst ]
+                host.exit_finder*[]
+                return
+            if [ h.card[] ]
+                host.scene_choose*[ h.scene ]
+                return
+            # the listing's last row: the next page
+            if [ h.more ]
+                o.repo_more_fetch[]
+                pristine = false
+                return
+            # a repository row: a checkout opens in this pane; a missing
+            # one starts cloning and stays in the list, its progress on
+            # the row
+            if [ h.repo && h.repo.count > 0 ]
+                o.repo_checkout[ h.repo ]
+                pristine = false
+                return
+            # an app's module runs in the pane (its running instance,
+            # else a new one); any other module opens its source; shift,
+            # its source in a new tab (the edit mark: its source here)
+            if [
+                h.is_dir && h.file && h.is_module && h.text.count > 0
+                && h.text != '..' ]
+                mp_ : path '{h.file}/{h.text}.ag'
+                if [ ux.shift ]
+                    if [ !host.open_file_tab*[ mp_ ] ]
+                        host.open_file*[ mp_ ]
+                el
+                    host.open_module*[ mp_ ]
+                host.exit_finder*[]
+                return
+            if [ h.is_dir && h.file ]
+                o.nav_root = h.file
+                scroll.y    = 0.0
+                scroll_goal = 0.0
+                scroll_anim = false
+                hov_list = -1
+                host.research*[]
+                host.focus_title*[ o.find_text ]
+                pristine = false
+                return
+            # find-result line: jump straight to it
+            if [ !h.is_header && h.line > 0 && h.file ]
+                host.open_line*[ h.file, h.line ]
+                host.exit_finder*[]
+                return
+            # a program runs; a window it opens takes the pane
+            if [ h.file && o.is_program[ h.file ] ]
+                host.run_program*[ h.file ]
+                host.exit_finder*[]
+                return
+            if [ h.file ]
+                # shift opens it in a new editor tab
+                if [ !(ux.shift && host.open_file_tab*[ h.file ]) ]
+                    host.open_file*[ h.file ]
+                host.exit_finder*[]
+
+    func on_char [ ev: Event ]
+        if [ add_user ]
+            ch_ : string [ ev.key.text ]
+            if [ ch_.count == 0 || (ch_[0] >= 0 && ch_[0] < 32) ] return
+            add_text = ((add_text) ? add_text : '') + ch_
+            pristine = false
+            return
+        if [ !commit_open || !commit_text ] return
+        ch : string [ ev.key.text ]
+        if [ ch.count == 0 || (ch[0] >= 0 && ch[0] < 32) ] return
+        if [ cl < 0 || cl >= commit_text.count ] return
+        ml : string commit_text[cl]
+        if [ !ml ] ml = ''
+        cc = clamp[ cc, 0, ml.count ]
+        commit_text[cl] = ml.mid[ 0, cc ] + ch + ml.mid[ cc,
+                                                         ml.count - cc ]
+        cc += 1
+        pristine = false
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        if [ add_user ]
+            ka : i32 [ i32 ev.key.unicode ]
+            if [ ka == 256 ]           # esc: the row goes
+                add_user = false
+                add_text = ''
+            # enter: the user is added and listed
+            el [ ka == 257 ]
+                nm : string (add_text) ? add_text.trim[] : ''
+                add_user = false
+                add_text = ''
+                if [ nm.count > 0 ]
+                    o_ : Navigator nav
+                    if [ o_ ]
+                        o_.repo_remember[ nm ]
+                        o_.side_pick_user[ nm ]
+            el [ ka == 259 ]           # backspace
+                if [ add_text && add_text.count > 0 ]
+                    add_text = add_text.mid[ 0, add_text.count - 1 ]
+            pristine = false
+            return
+        if [ !commit_open || !commit_text ] return
+        k : i32 [ i32 ev.key.unicode ]
+        ml : string [
+            (cl >= 0 && cl < commit_text.count) ? commit_text[cl]
+            : null ]
+        if [ !ml ] ml = ''
+        if [ k == 259 ]    # Key.Backspace
+            if [ cc > 0 && cc <= ml.count ]
+                commit_text[cl] = ml.mid[ 0, cc - 1 ] + ml.mid[ cc,
+                                                                ml.count
+                                                                - cc ]
+                cc -= 1
+            el [ cl > 0 ]
+                cl -= 1
+                pl : string commit_text[cl]
+                cc = (pl) ? pl.count : 0
+        el [ k == 257 ]    # Key.Enter — next message line
+            if [ cl < 2 ]
+                cl += 1
+                nl : string commit_text[cl]
+                cc = clamp[ cc, 0, (nl) ? nl.count : 0 ]
+        el [ k == 256 ]    # Key.Escape — collapse the form
+            commit_toggle[]
+            return
+        el [ k == 263 ]    # Key.Left
+            if [ cc > 0 ] cc -= 1
+        el [ k == 262 ]    # Key.Right
+            if [ cc < ml.count ] cc += 1
+        el [ k == 265 ]    # Key.Up
+            if [ cl > 0 ] cl -= 1
+            ul : string commit_text[cl]
+            cc = clamp[ cc, 0, (ul) ? ul.count : 0 ]
+        el [ k == 264 ]    # Key.Down — only onto lines that exist
+            if [ cl < box_lines[] - 1 ] cl += 1
+            dl : string commit_text[cl]
+            cc = clamp[ cc, 0, (dl) ? dl.count : 0 ]
+        el
+            return
+        ev.no_default = true
+        pristine = false

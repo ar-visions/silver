@@ -5922,8 +5922,9 @@ AU_EXPORT Au vformatter(Au_t type, bool print_info, handle ff, Au opt, int seq, 
 
     bool term = f == stdout || f == stderr;
     if (term && !symbolic_logging && au_print_prelude) au_print_prelude();
+    // only errors reach stderr here: red
     if (f == stderr)
-        fwrite("\033[1;33m", 7, 1, f);
+        fputs("\033[38;2;255;140;140m", f);
 
     if (f) {
         // based on the number of columns left, we need to isue multiple prints starting at 30
@@ -8391,7 +8392,8 @@ AU_EXPORT i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
 #else
 
 AU_EXPORT i64 path_wait_for_change(path a, i64 last_mod, i64 millis) {
-    int    fd = inotify_init1(IN_NONBLOCK);
+    // closed on exec: a child (a bus daemon) kept every watch alive
+    int    fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     int    wd = inotify_add_watch(fd, a->chars, IN_MODIFY | IN_CLOSE_WRITE);
     char   buf[4096];
     struct stat st;
@@ -10728,7 +10730,7 @@ static void au_watch_wake_remove(watch a) {
 // no hold/drop here: pause()/dealloc join this thread before any free.
 static void* watch_runner(void* arg) {
     watch a  = (watch)arg;
-    int   fd = inotify_init1(IN_NONBLOCK);
+    int   fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (fd < 0) return null;
     a->fd = fd;
     if (a->res) watch_add_tree(fd, a->res->chars, 0);

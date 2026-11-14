@@ -4367,7 +4367,7 @@ class Pipeline
         result: vkCreatePipelineLayout[ vk.device, pipeline_layout_info,
                                         null, @layout ]
         expect result == VK_SUCCESS, "Failed to create pipeline layout"
-        # If the shader is compute-only (has vk_comp but no
+        # if the shader is compute-only (has vk_comp but no
         # vk_vert/vk_frag), always create a compute pipeline regardless
         # of whether the Model framework saddled us with a default-quad
         # vbo. Without this, the compute model goes through the el[id]

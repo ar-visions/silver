@@ -612,7 +612,7 @@ TextInput WifiSecret
 
 # the networks, strongest first; a click on one opens what can
 # be done with it under it (a password and Join, Disconnect,
-# Forget); orbiter's side panel and the installer show it
+# forget); orbiter's side panel and the installer show it
 element WifiPanel
     public wifi    : Wifi
     intern chosen  : string

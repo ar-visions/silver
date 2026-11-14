@@ -7449,10 +7449,6 @@ search, compare, copy from, or modify `/src/orion`.
 - `-I` paths stripped of prefix when added to include_paths (was storing `-I/path` instead of `/path`).
 - Module search: if module not found locally, searches `SILVER/name/name.ag`.
 
-### Cast Syntax
-- `(expr) to Type` — parsed in `parse_ternary` after `(expr)` closes.
-- Shares the `(expr)` prefix with ternary `?` and null-coalesce `??`.
-
 ### `local` Keyword
 - Stack-allocated arrays: `local VkClearValue [2]`.
 - Optional inline initializer: `local VkDynamicState [2] [ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR ]`.
@@ -15481,3 +15477,345 @@ In order:
    spectra in and out, rnnoise.
 5. OPEN video calls: trinity's H.264 / H.265 encode and decode.
 6. OPEN screen sharing: trinity's recorder as the source.
+
+## Pluto, remade — live list (Nov 12 2026)
+
+the user: Pluto is the mission. Target: pluto/reference/pluto-reference.png
+(1672 x 941; black sky, a small sun, a thin blue haze line on a curved
+limb; red cratered tholin near at the bottom left, white mountains
+left and centre, the pale nitrogen plain with polygon cells to the
+right). The layout is textures/pluto-equirectangular/..._brush_ids
+(4096 x 2048, longitude east across from -180, +90 at the top: the
+actual placement of every terrain, never changed); the materials are
+textures/pluto-tiles (the imagery: six 1024 tiles, colour with their
+own light) and textures/pluto-patches-2048 (16-bit elevation and
+normal per terrain; its colour maps are saturated palettes, never
+the colour). Never deviate from the reference's look.
+1. DELETED (Nov 13, his: "delete your scene mesh here. its
+   inadequate. the haze effect is fine but thats all"). The ground
+   built Nov 12-13 is gone from pluto/pluto.ag: the carpet and globe
+   meshes, the plate strips laid in turned windows per cell, the
+   one-hot layout weights, the per-texel brush pick with noise lobes
+   and islands, the mottling transition, the hill lighting, and the
+   trace of the reference's classes and colour onto the ground. His
+   words on it: a gradient between zones, then blobbing, mountains
+   like a coral reef with a binary foothill base, vertices shifting
+   like a PlayStation (the carpet slid under the heights as the
+   craft drifted), "the most unprofessional scene". Lesson: plate
+   windows plus picked blobs can never trace a picture; the next
+   ground starts from the reference's shapes, not from noise.
+2. KEPT: PlutoSky on scenes' globe mesh as a 1.5 radius shell: black
+   sky, the sun's disk (sun_see 1.0 up, 10.5 right of the look;
+   radius 0.25 degrees) and the haze (scale height 0.0008 radii,
+   haze_k 12, marched in 16 steps only inside the shell of eight
+   scale heights; a cyan lobe and a white lobe round the disk; lit
+   by the sun over the ground under each sample), over black where
+   the ground would be. The camera from the reference: 11 km up, fov
+   40, the limb 6.45 degrees above the centre, rolled 6.1 degrees,
+   the projection's x negated; the craft at map x 1740, y 702 (27.1
+   W, 28.3 N) looking east, still. The render target is plain UNORM:
+   the shader encodes to sRGB itself. The frame: the sun at (1120,
+   144) vs (1122, 145); the haze's top rows 203..371 vs 197..373.
+3. KEPT tools: PLUTO_SHOTS=<dir> silver --test pluto writes pluto.png
+   at the reference's size; pluto/tools/compare_reference.py <render>
+   [side.png] prints the sun, the limb rows, the band's peaks and a
+   grid of mean colours against the reference; pluto/tools/
+   trace_reference.py classifies the reference's pixels and projects
+   the box of ground round the craft (u 0.4265..0.4500, v
+   0.3195..0.3675) through the scene's camera (checked: the sun lands
+   at 1121, 145) into textures/pluto-trace.png (classes) and
+   pluto-trace-color.png (the picture's own pixels on the ground).
+4. REJECTED (Nov 13): the first replacement put the reference colour
+   on the smooth globe. It was world anchored but had no terrain
+   relief. Calling that a scene was deceptive; never do it again.
+5. REJECTED (Nov 13): the fixed 768 x 768 terrain grid was real 3D,
+   but its albedo still came from the reference image. The user called
+   that bogus. A target image is never a terrain input: no colour,
+   height, normal, mask or placement data may come from it.
+6. BUILT, awaiting the user's view (Nov 13): the same 591,361-vertex,
+   1,179,648-triangle local grid now uses only independent terrain
+   data. tools/make_local_terrain.py composes rust, fractured nitrogen,
+   eroded ridges and ancient nitrogen mountain elevation. It writes a
+   2048 x 2048 albedo map without shadows, a height map up to 3.12 km,
+   and a normal map. Large mountain blocks come from selected regions
+   of the independent ancient-mountain elevation asset; a continuous
+   ridge field fills their boundary. The target image is comparison
+   only. The startup camera points straight at this area. The measured
+   Sun is at (1120, 144) versus (1122, 145); the limb differs by at
+   most 7 pixels. Do not generate ground outside this area until the
+   user accepts this view.
+7. OPEN live Orbiter view: its socket was present but refused the
+   connection, and this sandbox has no headless display device.
+   thumbs/Pluto.png is still from the old module.
+8. DONE (Nov 13): a full 2048 x 2048 OpenGL cube map from the fixed
+   equirectangular terrain layout: six texture faces, six 16-bit
+   height faces and six tangent-space normal faces. The target picture
+   is a visual reference only; no pixels come from it. Height spans
+   0.0301 to 3.1470 km. Across the 12 cube edges, the average one-pixel
+   difference is 0.0138 km in height and 1.79 degrees in reconstructed
+   surface direction. tools/make_cubemap.py rebuilds the set.
+
+## navigator, its own module — live list (Nov 13 2026)
+
+the user: the navigator is a proper module (`navigator/`), one
+copy of the code, "not a double hack": orbiter imports it (as it
+imports properties and wizard) and the same module is the app the
+bar's globe starts, shown over the window; it looks exactly like the
+standard navigator view (the pane's and the main menu's), git band
+and all, "using the same git stuff". `export software` on it; the
+icon (images/icon.png) is his, made elsewhere. `nav/` is the Kalman
+filter: the module is `navigator`.
+1. DONE the module. navigator/navigator.ag: `Navigator` (the model:
+   the file index and its watches, build_rows (the listing, the
+   search, a pick, a user's repositories), the git snapshot thread,
+   the commit form's Contrib, repositories (GitHub, clones), projects,
+   drives, pins, the history, programs, scenes through the host;
+   start / pump / stop), `NavHost` (what a host does with a pick:
+   open_file, open_file_tab, open_line, open_module, open_url,
+   run_program, pick_instance, scene_choose, new_file, exit_finder,
+   list_off, focus_title, research, changed, saved, file_dirty,
+   instance_tex / name / status, scene_names / thumb / current,
+   is_protocol, index_pass; every call `host.x*[]`), the moved free
+   functions and classes (git_capture, nav_unit, repo_*, RepoInfo,
+   RepoClone, RepoHost, FileSet, FileChg, GitSnap), the app
+   `navigator : trinity` (a NavField over a CommitView; `--opener
+   <socket path>` sends picks to orbiter as `app nav <word> ...`;
+   its own StatePersist lists); navigator/View.ag: CommitView,
+   NavSide, their layers and draw_card as they were (`CommitView
+   [ nav: .. ]`, host calls for the picks; the dead rail chips
+   gone); navigator/Contrib.ag; navigator/navigator.c (a line to a
+   socket by its path). Found: glibc hides usleep under -std=c11:
+   `import <unistd.h>` takes `+_DEFAULT_SOURCE +_XOPEN_SOURCE=500`
+   as orbiter's does. Seen hidden (`navigator --hidden true` on
+   /src/silver): the side column (users, projects, system), the git
+   band (64 files changed, +4233 -9015, make commit, the chips), the
+   module list with icons, a module row's edit mark under the pointer.
+2. DONE orbiter on it: `import navigator`; orbiter/Nav.ag holds
+   OrbNavHost (the host over orbiter's panes, instances, scenes,
+   session) and NavOverlay; orbiter's `nav : Navigator` made after the
+   session (its pins, repo_users, docked_repos, self_user handed in,
+   kept by orbiter's StatePersist), started where the index began,
+   pumped in tick, stopped in on_unload; run_search keeps the pane's
+   part and calls nav.build_rows; every other reader says nav.<x>.
+   Gone from orbiter: Contrib.ag, Git.ag's helpers and view (GitList
+   stays), Editor.ag's repo classes, NodeList's nav_unit, ~1,700
+   lines of orbiter.ag. Builds; the pane and menu views take
+   `nav: ..`. NOT seen in orbiter (his was running: the build
+   reloaded it).
+3. DONE the bar's globe starts the app: nav_app_toggle makes one
+   hosted instance (viewer, display 1, `--opener <rt>/trinity-
+   orbiter.sock <project>`), NavOverlay over everything under the bar
+   draws its frame and passes input; Escape, the globe again or a
+   pick hides it (the instance kept); `app nav <word> ...` lines
+   (open, line, module, url, run, instance, scene, newfile, newdir,
+   hide) go through OrbNavHost. A pick in a pane (a launch field's)
+   still uses the pane's own view. NOT seen.
+4. BUILT, not seen in orbiter (Nov 13, his: one navigation, the bar's
+   menus, "i dont want 2 of these"): the app has no field of its own.
+   Its `folder` and `find` are Live props the host sets; with the
+   overlay up, orbiter's bar shows the app what it shows the pane's
+   navigator (the path's pieces as drawers, back and forward, the
+   close), a crumb pick or typing (NavOverlay on_char / Backspace)
+   changes orbiter's own nav.nav_root / nav.find_text, and
+   nav_app_sync sends each change as `set folder` / `set find`
+   (nav_sent_root, nav_sent_find; a fresh send at each show). Seen
+   hidden, the app alone: `set folder /src/silver/trinity` listed
+   that folder, `set find vk` searched. Standalone the app has no
+   typing of its own now. OPEN: a navigator hosted in a pane (its
+   card) gets no bar drive; the typed text shows nowhere on the bar.
+5. DONE images/edit.svg moved to navigator/images (orbiter's only
+   user was the view). The share rule (silver.c collect_resource_dirs):
+   an import's resource folders link under the ROOT's share only when
+   the import compiles inside the root's build; a cached import leaves
+   none. So after a new resource in an imported module: touch its .ag
+   and build the root (`touch navigator/navigator.ag; silver --build
+   orbiter` put install/share/silver-orbiter/images/edit.svg there).
+   Found with it: an import's file replaced the root's own of the
+   same name (navigator's images/icon.png over orbiter's).
+   deploy_module_resources links imports' folders first, the
+   module's own last, so its file wins. The icon is in:
+   navigator/images/icon.png (his rover, 512 px).
+6. DONE (Nov 13: the card's instance sat at 'starting' for good)
+   self_user_of ran `ssh -T git@github.com` on the main thread before
+   the first frame; in the app's view there is no ~/.ssh, so ssh asked
+   for the host key on /dev/tty and waited forever (his orbiter had the
+   login saved, so it never asked). Now ssh runs with BatchMode=yes (no
+   prompt: it fails), and the ask is the git thread's (self_want in
+   git_entry, self_found taken by pump, saved with the session).
+   Seen hidden with a home holding no .ssh: the view drawn in 6 s.
+7. BUILT, not seen in orbiter (Nov 13: no frost ground; a pick opened
+   nothing) the card's launch carried no --opener, so every pick was
+   only logged. AppView.start now puts `--opener <rt>/trinity-orbiter
+   .sock` on the line of any module whose props file declares an
+   opener launch prop (takes_opener, opener_sock in Editor.ag). The
+   app's screen_ground is true (hosted, its window starts clear) and
+   NavOverlay draws the frost (draw_blur, BlurStage.frost) under its
+   frame; in a pane the pane's own blur ground shows through.
+8. BUILT, not seen (Nov 13, his: ubuntu.ag open from the session,
+   n64 pressed in the dock: the edit and its dock entry were replaced)
+   dock_icon_click launched into the active pane whatever it held.
+   Then (his: no split either): launch_pane picks the pane already
+   running that app, else an empty docked one, else the active pane;
+   show_instance brings the instance's source in only into an EMPTY
+   pane: a pane with a file keeps it, the app a state shown over it
+   (the file back when the app is toggled out; its code is the Code
+   toggle's). Then (his: the ubuntu.ag editor still left the dock):
+   dock_els listed a pane's code window only with no app running in
+   it. A file that is not the app's own source (owns_src) keeps its
+   entry while the app shows over it, lit only with the edit in view;
+   its press steps the app aside (app_view off, the app running); the
+   app's own entry (dock_run_click) puts it over the edit again
+   (embed_app) instead of minimizing the pane. Then (his: live it
+   turns ubuntu.ag into n64.ag; after a reload it closes ubuntu.ag):
+   his log had the dock press and NO launch, which is the shift-click
+   branch (the module's source opened in the pane). trinity's shift /
+   cmd flags were set by key events alone, so a shift release taken
+   elsewhere (a hosted app's focus) left them stale; a real click
+   reads the live keys, so Window.press_event now syncs the flags
+   from the press. And the dock no longer drops a pane's code window
+   while a pick (the navigator) shows over it. NOT reproduced here:
+   hidden runs with ubuntu.ag open and the n64 pin (no host, and
+   through silver-host) kept the entry and launched n64; my hidden
+   runs overwrote his install/tmp/silver-orbiter.log before the
+   reload case was read: OPEN, needs his log from a fresh try.
+9. BUILT, not seen (Nov 13, his: a pane's navigator app showed no
+   path in the bar) nav_driven[]: the overlay's instance, else the
+   active pane's when it shows a navigator; the bar's crumbs, arrows
+   and close, the typed text (Editor.on_key / on_char hand it to
+   orbiter's nav_type_key / nav_type_char first) and nav_app_sync
+   (set folder / set find, afresh per instance) all follow it; the
+   close steps a pane's one aside.
+10. BUILT, not seen (Nov 13, his: n64's open dialog was the ubuntu.ag
+   pane's; hiding ubuntu.ag hid the dialog; it belongs to n64) an
+   instance asking for its argument is a task: running_apps lists
+   it (slot -1, asking), its dock entry lit while its pick shows;
+   its press puts the pick aside (pick_hide: pick_launch let go, so
+   exit_find_mode cancels nothing, the instance keeps asking and
+   its service waits) or brings it back (pick_show: pick_default in
+   the pane holding it); the edit's entry pressed under the pick
+   puts the pick aside instead of minimizing the pane, and is unlit
+   while the pick shows. Seen in his log on the
+   way: n64 started on
+   /src/silver/navigator/navigator.ag, its saved arg (file_states):
+   a stale pick, not chased.
+   Then (his: ubuntu.ag's entry took two presses, n64 back was
+   blank with a debug bar) n64's press is its dock PIN, which never
+   reached the toggle: the pin now finds an instance asking and
+   toggles its pick; the edit's entry under the pick also steps the
+   app aside; a delivered pick embeds the app over the edit again;
+   the pane's debug foot bar needs the instance to be the file's own
+   app (owns_src). Then (his: >600 ms a toggle) each show walked the
+   tree for the pick's kinds again: pick_hide keeps the files
+   (pick_keep, by the kinds' key), pick_default takes them back.
+   Then (his: icon.png opened by the navigator kept the debug bar;
+   its play ran `silver icon`, a module named by the file's stem)
+   the pane's foot bar shows only for a .ag file (or a program
+   module's file, run_of), else for the file's own live app.
+   Then (his: aura pinned and run from the dock had the bar: the
+   dock launch opens the app's source under it in an empty pane)
+   the live app's bar needs the instance started from its editor
+   (AppView.edited, set by Editor.start_instance: the foot's play);
+   a dock or home launch shows none.
+   Then (his: fzero.smc had a dock entry; it is an asnes instance)
+   a pane whose running app is the file's viewer (rv.viewer) gets
+   no code-window entry, and a pin's instance dots count viewer
+   instances too.
+   Then (his: the notches as a phone's: on the edge, no margin,
+   round only inward) the dots' group sits on the button's left
+   edge, its left corners square (a px past the edge hides that
+   side's stroke), its right corners round.
+   Then (his: a right press on a home icon: an info menu with its
+   size on disk, source, lines of code, GitHub page in aura, its
+   properties to set, and Launch with them) menu kind 'appinfo'
+   (orbiter app_info_open from AppsGrid's right press; the rows in a
+   MenuPage [ info ] with a LaunchPanel 'info_props' under them,
+   beside the dock): size (stat over the folder, .git left out),
+   source, lines (newlines of its .ag files), GitHub (the remote's
+   owner/project, the branch and the folder: opens in aura), Launch
+   (apps_pick). The panel edits the module's own file config
+   (fstate of its .ag: the args sync and the TButtons handler take
+   the info panel's by key), which a launch takes. Found: the app's
+   own press handler shut a drawer any element's press had just
+   opened (menu_open_us: the opening press never shuts it). Seen
+   boxed: the rows (aura: 3 MB, /src/silver/aura, 732 lines,
+   ar-visions/silver), the panel with its values.
+   Then (his: the head clipped its last chip) the head's height is
+   the chips' own measure (0.15 first, 1.05 a row, 0.5 a rule) plus
+   0.4; the panel 0.5 under it. Seen boxed: Launch whole.
+   Then (his: no methods there) the info panel's spec keeps the
+   props alone (the func entries taken out before the panel).
+   Then (his: aura's address could not be edited in window mode) a
+   free window's strip showed the title as a plain label; the
+   selected window's strip now holds the bar's address field and
+   the grab under it (a click edits, a drag moves), as the docked
+   bar does. Built, not seen (needs a free window with aura).
+   Then (his: Edit above Launch in the info menu) the Edit row opens
+   the module's code (apps_code, the card's pill).
+   Then (his: the foot bar stayed round on a docked window) the
+   PaneFoot's base style names radius 0: the :free state's 8 px
+   stayed once the window docked.
+   Then (his: the bar's build pill covered the menus, and a phone's
+   notch) the pill is gone; the desktop's clock reads 'building
+   <module>  45%' in the date's place while a build runs
+   (bar_build, restyled on each change as before).
+   Then (his: steam's card showed a progress bar on an interval,
+   shoving its name up) store_poll reruns a store's export every 10
+   s while its program runs, which writes build events, so the card
+   read 'building'; a rerun within 30 s (store_rerun_ms) is no
+   build of the card. A card's progress draws in the row under its
+   name (the pill's), the name's row untouched.
+   Then (his: no typing into the pane's console with nothing to
+   take it) the console's input line mounts only with a debugger
+   session or the pane's app running (console_takes); else the log
+   runs to the foot.
+   Then (his: no second entry for stocks.ag under the stocks pin;
+   the pin hides or shows the code editor with the app) a pane
+   editing a file of a pinned module's folder gets no code-window
+   entry; the pin's press hides or shows that pane whole (its code,
+   its app over it); with no such pane it launches as before.
+   Then (his: the border glows far more inward, the inner glow
+   wider for the near effect; the resting and near glows apart)
+   the tile's inset shadow stays 8 px at rest; the near light grows
+   it to four times (near_grow 3, was 1), its inset factor 1.5 -> 6.
+   Then (his: too much influence, the neighbours lit; then: back)
+   the reach stays 1.125 (180 px).
+   Then (his: the near glow 30% larger) near_grow 3 -> 4.2 (the
+   glow 5.2 times its resting width under the pointer).
+   Then (his: a free window's path drawers offset again) drawer_x
+   for a crumb in a free window gave win_x (the stack's space); the
+   drawer element is in the root's (a dock's width further right):
+   crumb_press keeps the window's root x (crumb_wx) and drawer_x
+   returns it.
+   Then (his: the home card's edit pill not while on the app icon)
+   the pill fades in only with the pointer under the icon (the
+   name and the pill's row: AppsGrid on_lab), not over the icon.
+   Then (his: drag a home icon to the dock; then: a drag to the
+   dock reads as the arranging delete, so instead the card's pill
+   in arranging mode is a dock button) arranging (the held press),
+   a card's pill reads dock, or undock when pinned; its press pins
+   the module at the dock's end or lets it go (orbiter pin_dock;
+   the navigator's pins are set to the same list). The card drag to
+   the dock is gone.
+   Then (his: no dock button showed while arranging) the pill's
+   draw had !arranging: removed. A boxed trace shows the branch
+   runs (fade 1) while arranging; the hidden shot there still
+   shows no pill while the plain edit pill does: OPEN, needs his
+   screen.
+   Then (his: the icon zooms as the mouse nears the card's middle;
+   tried as an eased per-card zoom about the pointer, up to half
+   again) BACKED OUT at his word: no zoom; AppIcon.paint as it was.
+   Then (his: the app menu's property pairs only on a page a row
+   slides over; every value changeable) the app menu has one row,
+   Properties (orb.props); its page (MenuPage: a back row, then the
+   side panel's LaunchPanel for the pane's instance, keyed
+   menu_props) slides over the rows (menu_page, menu_slide eased in
+   on_frame by ease_menu; MenuSlide clips to the drawer); the back
+   row slides them back (menu_page_back). The panel's edits take
+   the paths the side panel's take (pane_of: a MenuDrawer acts for
+   the selected editor; on_overlay scans both panels). prop_rows
+   and the menu's own pcov / set branches are gone. Seen in a boxed
+   test copy: the row, the page with its controls, a rec_qp pick,
+   back. A boxed hidden run's shot never shows a mid-slide frame.
+   Then (his: edge to edge, top and bottom border) the page's panel
+   spans the drawer (l0 r0); MenuPage.draw puts a 1 px line over it,
+   its own last rule is the line under. Seen boxed.

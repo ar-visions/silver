@@ -1,11 +1,4 @@
-extend orbiter
-import <stdio.h>
-# posix.h carries these where the headers do not exist
-ifdef [ windows ]
-    import <posix.h>
-ifndef [ windows ]
-    import <unistd.h>
-    import <pthread.h>
+extend navigator
 
 # a shell line's output (stderr with it) into out; its exit status
 func sh_run [ cmd: string, out: vec string ] -> i32
@@ -136,6 +129,8 @@ class Contrib
     public sent  : bool
     # a dry run: not ours, and a send only shows its steps
     public dry   : bool
+    # the storage folder the message and request bodies go through
+    public storage : string [ 'navigator' ]
     # a read or send's result, handed to the main thread by take
     intern staged : RepoState
     intern live   : bool
@@ -206,7 +201,7 @@ class Contrib
         acc : string '-H "Accept: application/vnd.github+json"'
         cmd : string 'curl -s {host.auth[]}{acc}'
         if [ body ]
-            sd : path path.path_storage[ 'orbiter' ]
+            sd : path path.path_storage[ storage ]
             bf : path '{sd}/github-body.json'
             bf.save[ body, null ]
             ct : string '-H "Content-Type: application/json"'
@@ -320,7 +315,7 @@ class Contrib
         fl : string ''
         for [ f: string ] in files
             fl = '{fl} {sh_word[ f ]}'
-        sd : path path.path_storage[ 'orbiter' ]
+        sd : path path.path_storage[ storage ]
         mf : path '{sd}/commit-msg.txt'
         mf.save[ msg, null ]
         if [ git[ 'add -A --{fl}', o ] != 0 ]

@@ -460,7 +460,7 @@ func author_random_corpus [ na: i64, commits: i64, nt: i64,
 # exchanges: the user's query (nq tokens), then the model's
 # response (nr tokens) mixed from 1 to 3 authors in shares drawn
 # at random, each token by one of them; the column keeps who.
-# The query's words come from the same mix (the user asks in the
+# the query's words come from the same mix (the user asks in the
 # topic's words) and belong to no author
 func author_exchanges [ na: i64, count: i64, nq: i64, nr: i64,
                         vocab: i64, bias: f64 ] -> Corpus

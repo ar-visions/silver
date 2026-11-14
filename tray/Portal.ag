@@ -541,7 +541,7 @@ class Portal
                 rep : @DBusMessage [ dbus_message_new_method_return[ m ] ]
                 it : DBusMessageIter
                 dbus_message_iter_init_append[ rep, @it ]
-                # Read (the old form) wraps the value once more
+                # read (the old form) wraps the value once more
                 if [ mn == 'Read' ]
                     outer : DBusMessageIter
                     dbus_message_iter_open_container[ @it,

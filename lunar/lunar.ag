@@ -28,7 +28,7 @@ import <math.h>
 import <unistd.h>
 import <sys/statvfs.h>
 
-# The map, built once at export into the app cache (lunar/):
+# the map, built once at export into the app cache (lunar/):
 # - 60S to 60N: SLDEM2015, LOLA laser heights joined with
 #   Kaguya Terrain Camera stereo, 512 pixels a degree
 #   (Barker et al. 2016, Icarus 273).
@@ -37,7 +37,7 @@ import <sys/statvfs.h>
 #   south pole the 5 m level is Barker et al. 2021's mosaic of
 #   orbit-adjusted tracks (Planetary & Space Science 203).
 # - LOLA's 100 m maps from 45 degrees join the two at 60.
-# Each finer level is moved to its coarser one's broad height
+# each finer level is moved to its coarser one's broad height
 # at its edge; each coarser level takes the finer one's area
 # average inside it. Heights are steps of 0.5 m above a sphere
 # of 1737.4 km, as 16-bit integers (32-bit floats do not fit).

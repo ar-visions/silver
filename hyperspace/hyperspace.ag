@@ -55,32 +55,32 @@ class CamRig
         cams = map Cam[string] [ ]
         cams.hold[]
         ents : cameras.split[ ';' ]
-        for [ i9: i32 0, i9 < i32[ ents.count ], i9 += 1 ]
-            e9 : ents[ i9 ]
+        for [ i_: i32 0, i_ < i32[ ents.count ], i_ += 1 ]
+            e_ : ents[ i_ ]
             # optional name= prefix; unnamed entries fall back to their index
-            nm9 : '{i9}'
-            nv9 : e9.split[ '=' ]
-            if [ nv9.count > 1 ]
-                nm9 = nv9[ 0 ]
-                e9 = nv9[ 1 ]
-            f9 : e9.split[ ',' ]
-            nf9 : i32 [ i32[ f9.count ] ]
-            c9 : Cam [ name: nm9, dev: f9[ 0 ] ]
-            if [ nf9 > 1 ] c9.x    = f32[ atof[ f9[ 1 ].chars ] ]
-            if [ nf9 > 2 ] c9.y    = f32[ atof[ f9[ 2 ].chars ] ]
-            if [ nf9 > 3 ] c9.z    = f32[ atof[ f9[ 3 ].chars ] ]
-            if [ nf9 > 4 ] c9.tilt = f32[ atof[ f9[ 4 ].chars ] ]
-            if [ nf9 > 5 ] c9.fov  = f32[ atof[ f9[ 5 ].chars ] ]
-            cams[ nm9 ] = c9
+            nm_ : '{i_}'
+            nv_ : e_.split[ '=' ]
+            if [ nv_.count > 1 ]
+                nm_ = nv_[ 0 ]
+                e_ = nv_[ 1 ]
+            f_ : e_.split[ ',' ]
+            nf_ : i32 [ i32[ f_.count ] ]
+            c_ : Cam [ name: nm_, dev: f_[ 0 ] ]
+            if [ nf_ > 1 ] c_.x    = f32[ atof[ f_[ 1 ].chars ] ]
+            if [ nf_ > 2 ] c_.y    = f32[ atof[ f_[ 2 ].chars ] ]
+            if [ nf_ > 3 ] c_.z    = f32[ atof[ f_[ 3 ].chars ] ]
+            if [ nf_ > 4 ] c_.tilt = f32[ atof[ f_[ 4 ].chars ] ]
+            if [ nf_ > 5 ] c_.fov  = f32[ atof[ f_[ 5 ].chars ] ]
+            cams[ nm_ ] = c_
 
     func count [] -> i32
         sync[]
         return i32[ cams.count ]
 
-    func at [ i9: i32 ] -> Cam
+    func at [ i_: i32 ] -> Cam
         sync[]
-        if [ i9 < 0 || i9 >= i32[ cams.count ] ] return null
-        return cast Cam [ cams.value_by_index[ i9 ] ]
+        if [ i_ < 0 || i_ >= i32[ cams.count ] ] return null
+        return cast Cam [ cams.value_by_index[ i_ ] ]
 
     func by_name [ nm: string ] -> Cam
         sync[]
@@ -88,9 +88,9 @@ class CamRig
 
     func index [ nm: string ] -> i32
         sync[]
-        for [ i9: i32 0, i9 < i32[ cams.count ], i9 += 1 ]
-            c9 : at[ i9 ]
-            if [ c9 && c9.name.compare[ nm ] == 0 ] return i9
+        for [ i_: i32 0, i_ < i32[ cams.count ], i_ += 1 ]
+            c_ : at[ i_ ]
+            if [ c_ && c_.name.compare[ nm ] == 0 ] return i_
         return -1
 
 
@@ -128,7 +128,7 @@ class Observer
     intern m_target : ts_model
     intern m_look   : ts_model
     intern o5 : tensor
-    intern o9 : tensor
+    intern o_ : tensor
     intern o8 : tensor
     intern ax : tensor
 
@@ -144,8 +144,8 @@ class Observer
         m_look.hold[]
         o5 = tensor [ tensor_shape: 1x4 ]
         o5.hold[]
-        o9 = tensor [ tensor_shape: 1x6 ]
-        o9.hold[]
+        o_ = tensor [ tensor_shape: 1x6 ]
+        o_.hold[]
         o8 = tensor [ tensor_shape: 1x9 ]
         o8.hold[]
         ax = tensor [ tensor_shape: 1x18 ]
@@ -193,8 +193,8 @@ class Observer
         return t
 
     # one view's find/target pass; crops and aux are stashed per view
-    public func feed [ i9: i32, gray: Image ]
-        if [ i9 < 0 || i9 >= 8 ] return
+    public func feed [ i_: i32, gray: Image ]
+        if [ i_ < 0 || i_ >= 8 ] return
         # find runs every frame, then target, then look
         # find canvas: sensor centered in a 1.35x black pad
         ftt : crop_n[ gray, 0.5, 0.5, 1.35 ]
@@ -213,7 +213,7 @@ class Observer
         if [ ob5 < 0.0 ] ob5 = 0.0
         if [ ob5 > 1.0 ] ob5 = 1.0
         have = sc > 0.05 && sc < 0.6
-        obsv[ i9 ] = ob5
+        obsv[ i_ ] = ob5
         if [ have ]
             # target refines find's plot from a sensor-clamped window
             wmx : f32 [ hx8 ]
@@ -232,29 +232,29 @@ class Observer
             wx0 : f32 [ wmx - ws8 * 0.5 ]
             wy0 : f32 [ wmy - ws8 * 0.5 ]
             wtt : crop_n[ gray, wmx, wmy, ws8 ]
-            m_target.forward1[ wtt, o9, 32 ]
-            lx = wx0 + o9.floats[0] * ws8
-            ly = wy0 + o9.floats[1] * ws8
-            rx = wx0 + o9.floats[2] * ws8
-            ry = wy0 + o9.floats[3] * ws8
-            sc = o9.floats[4] * ws8
-            ob9 : f32 [ o9.floats[5] ]
-            if [ ob9 < 0.0 ] ob9 = 0.0
-            if [ ob9 > 1.0 ] ob9 = 1.0
-            obsv[ i9 ] = ob9
+            m_target.forward1[ wtt, o_, 32 ]
+            lx = wx0 + o_.floats[0] * ws8
+            ly = wy0 + o_.floats[1] * ws8
+            rx = wx0 + o_.floats[2] * ws8
+            ry = wy0 + o_.floats[3] * ws8
+            sc = o_.floats[4] * ws8
+            ob_ : f32 [ o_.floats[5] ]
+            if [ ob_ < 0.0 ] ob_ = 0.0
+            if [ ob_ > 1.0 ] ob_ = 1.0
+            obsv[ i_ ] = ob_
             if [ sc < 0.04 || sc > 0.65 ] have = false
-        havev[ i9 ] = ( have ) ? 1 : 0
-        lxv[ i9 ] = lx
-        lyv[ i9 ] = ly
-        rxv[ i9 ] = rx
-        ryv[ i9 ] = ry
-        scv[ i9 ] = sc
+        havev[ i_ ] = ( have ) ? 1 : 0
+        lxv[ i_ ] = lx
+        lyv[ i_ ] = ly
+        rxv[ i_ ] = rx
+        ryv[ i_ ] = ry
+        scv[ i_ ] = sc
         if [ !have ]
-            obsv[ i9 ] = 1.0
-            if [ i9 < 2 ]
-                ct[ i9 * 3 + 0 ] = zt
-                ct[ i9 * 3 + 1 ] = zt
-                ct[ i9 * 3 + 2 ] = zt
+            obsv[ i_ ] = 1.0
+            if [ i_ < 2 ]
+                ct[ i_ * 3 + 0 ] = zt
+                ct[ i_ * 3 + 1 ] = zt
+                ct[ i_ * 3 + 2 ] = zt
             return
         es8 : f32 [ sc / 3.0 * 1.25 ]
         fs8 : f32 [ sc * 1.15 ]
@@ -289,15 +289,15 @@ class Observer
         ax.floats[16] = fmy - 0.5
         ax.floats[17] = fs8
         # obscure comes from the nets: find estimates, target confirms
-        od8 : f32 [ obsv[ i9 ] ]
+        od8 : f32 [ obsv[ i_ ] ]
         # fully obscured: this camera has nothing for look
-        if [ od8 >= 1.0 ] havev[ i9 ] = 0
-        if [ i9 < 2 ]
-            ct[ i9 * 3 + 0 ] = lt8
-            ct[ i9 * 3 + 1 ] = rt8
-            ct[ i9 * 3 + 2 ] = ft8
+        if [ od8 >= 1.0 ] havev[ i_ ] = 0
+        if [ i_ < 2 ]
+            ct[ i_ * 3 + 0 ] = lt8
+            ct[ i_ * 3 + 1 ] = rt8
+            ct[ i_ * 3 + 2 ] = ft8
             for [ q8: i32 0, q8 < 18, q8 += 1 ]
-                ax2.floats[ i9 * 18 + q8 ] = ax.floats[ q8 ]
+                ax2.floats[ i_ * 18 + q8 ] = ax.floats[ q8 ]
 
     # every view fed: one look call over both, weighted by obscure
     public func track_rig []
@@ -867,10 +867,10 @@ element ModelView
     mutable skin_idx   : i32 [ -1 ]
     mutable hinge_node : i32 [ -1 ]           # the node we rotate (the joint)
     mutable hinge_ang  : f32                  # joint angle, radians
-    mutable ebl        : i32 [ -1 ]           # Eyeball.L node index
-    mutable ebr        : i32 [ -1 ]           # Eyeball.R
-    mutable dgl        : i32 [ -1 ]           # Eyelids Drag.L
-    mutable dgr        : i32 [ -1 ]           # Eyelids Drag.R
+    mutable ebl        : i32 [ -1 ]           # eyeball.L node index
+    mutable ebr        : i32 [ -1 ]           # eyeball.R
+    mutable dgl        : i32 [ -1 ]           # eyelids Drag.L
+    mutable dgr        : i32 [ -1 ]           # eyelids Drag.R
     mutable crl        : i32 [ -1 ]           # Caruncle.L
     mutable crr        : i32 [ -1 ]           # Caruncle.R
     mutable ebl_rest   : quatf
@@ -879,10 +879,10 @@ element ModelView
     mutable dgr_rest   : quatf
     mutable crl_rest   : quatf
     mutable crr_rest   : quatf
-    mutable gbl        : i32 [ -1 ]           # Eyeball.L node (globe bone)
-    mutable gbr        : i32 [ -1 ]           # Eyeball.R node (globe bone)
-    mutable gbl_rest   : vec3f                # Eyeball.L rest translation
-    mutable gbr_rest   : vec3f                # Eyeball.R rest translation
+    mutable gbl        : i32 [ -1 ]           # eyeball.L node (globe bone)
+    mutable gbr        : i32 [ -1 ]           # eyeball.R node (globe bone)
+    mutable gbl_rest   : vec3f                # eyeball.L rest translation
+    mutable gbr_rest   : vec3f                # eyeball.R rest translation
     mutable eye_spacing : f32 [ 0.0 ]         # per-eye outward shift, metres (derived)
     mutable span_mm    : f32 [ 91.0 ]         # outer-corner to outer-corner, mm
     mutable ir_on      : bool [ true ]        # near-IR look vs textured color
@@ -1042,8 +1042,8 @@ element ModelView
     mutable edn_set  : bool
     mutable edn_n    : i32 [ 0 ]              # driven head-cage verts
     mutable edn_v    : @i32                # cage vert indices
-    mutable edn_dl   : @f32                # Eyes Down L deltas
-    mutable edn_dr   : @f32                # Eyes Down R deltas
+    mutable edn_dl   : @f32                # eyes Down L deltas
+    mutable edn_dr   : @f32                # eyes Down R deltas
     mutable edn_wl   : f32 [ 0.0 ]            # currently applied weights —
     mutable edn_wr   : f32 [ 0.0 ]            # morph is RELATIVE to the cage
     mutable eyes_down_full : f32 [ 0.5 ]      # radians down = full morph
@@ -1317,23 +1317,23 @@ element ModelView
             if [ hcn && hcn.base ]
                 ny7 : f32 [  1e30 ]
                 nY7 : f32 [ -1e30 ]
-                for [ v9: i32 0, v9 < hcn.nv, v9 += 1 ]
-                    if [ nose_w[ v9 ] <= 0.0 ] continue
-                    vy9 : f32 [ hcn.base[ v9 * 3 + 1 ] ]
-                    if [ vy9 < ny7 ] ny7 = vy9
-                    if [ vy9 > nY7 ] nY7 = vy9
+                for [ v_: i32 0, v_ < hcn.nv, v_ += 1 ]
+                    if [ nose_w[ v_ ] <= 0.0 ] continue
+                    vy_ : f32 [ hcn.base[ v_ * 3 + 1 ] ]
+                    if [ vy_ < ny7 ] ny7 = vy_
+                    if [ vy_ > nY7 ] nY7 = vy_
                 # bottom fifth of the nose, centered on the eye-mid x
                 yb7 : f32 [ ny7 + (nY7 - ny7) * 0.2 ]
                 mxc : f32 [ (eyec_lx + eyec_rx) * 0.5 ]
                 bdx : f32 [ 1e30 ]
-                for [ v9: i32 0, v9 < hcn.nv, v9 += 1 ]
-                    if [ nose_w[ v9 ] <= 0.0 ] continue
-                    if [ hcn.base[ v9 * 3 + 1 ] > yb7 ] continue
-                    dx9 : f32 [ hcn.base[ v9 * 3 + 0 ] - mxc ]
-                    if [ dx9 < 0.0 ] dx9 = 0.0 - dx9
-                    if [ dx9 < bdx ]
-                        bdx = dx9
-                        nose_ci = v9
+                for [ v_: i32 0, v_ < hcn.nv, v_ += 1 ]
+                    if [ nose_w[ v_ ] <= 0.0 ] continue
+                    if [ hcn.base[ v_ * 3 + 1 ] > yb7 ] continue
+                    dx_ : f32 [ hcn.base[ v_ * 3 + 0 ] - mxc ]
+                    if [ dx_ < 0.0 ] dx_ = 0.0 - dx_
+                    if [ dx_ < bdx ]
+                        bdx = dx_
+                        nose_ci = v_
         setup_eyes_down[]
 
     func region_weights [ rname: string ] -> @f32
@@ -1671,17 +1671,17 @@ element ModelView
         mkdir[ '/src/hyperspace-sessions', 493 ]
         sdir : '/src/hyperspace-sessions/{fp.session}'
         mkdir[ sdir.chars, 493 ]
-        clipped9 : bool [ false ]
+        clipped_ : bool [ false ]
         exlo : f32 [ f32[ fx ] + emrg ]
         exhi : f32 [ f32[ fx + fw2 ] - emrg ]
         eylo : f32 [ f32[ fy ] + emrg ]
         eyhi : f32 [ f32[ fy + fh2 ] - emrg ]
         for [ k: i32 0, k < 2, k += 1 ]
-            if [ pxs[ k ] < exlo || pxs[ k ] > exhi ] clipped9 = true
-            if [ pys[ k ] < eylo || pys[ k ] > eyhi ] clipped9 = true
+            if [ pxs[ k ] < exlo || pxs[ k ] > exhi ] clipped_ = true
+            if [ pys[ k ] < eylo || pys[ k ] > eyhi ] clipped_ = true
         # a clipped eye clears the visible flag, nothing else:
         # true labels still get written, off-frame values included
-        if [ clipped9 ] cap_vis[ cam ] = 0
+        if [ clipped_ ] cap_vis[ cam ] = 0
         cap : Image [ vrender.color ]
         cimg : cap.crop[ fx, fy, fw2, fh2 ]
         # a real camera faces the user: image x runs against rig x.
@@ -1749,11 +1749,11 @@ element ModelView
         rcy : f32 [ rmy * f32[ rih ] ]
         # turn the photo by mask-angle minus annotated-angle, so the
         # render can roll to any angle and still sit on his own face
-        ra9 : f32 [ fp.recs_ang[ cap_rec * 2 + cam ] ]
-        rot9 : f32 [ 0.0 ]
-        if [ ra9 > -900.0 ] rot9 = atan2[ cly - cry, clx - crx ] - ra9
-        cs9 : f32 [ cos[ rot9 ] ]
-        sn9 : f32 [ sin[ rot9 ] ]
+        ra_ : f32 [ fp.recs_ang[ cap_rec * 2 + cam ] ]
+        rot_ : f32 [ 0.0 ]
+        if [ ra_ > -900.0 ] rot_ = atan2[ cly - cry, clx - crx ] - ra_
+        cs_ : f32 [ cos[ rot_ ] ]
+        sn_ : f32 [ sin[ rot_ ] ]
         nw6 : i32 [ 0 ]
         nh6 : i32 [ 0 ]
         nn6 : i32 [ 0 ]
@@ -1792,8 +1792,8 @@ element ModelView
                 a8 : f32 [ 1.0 ]
                 if [ snch == 4 ] a8 = f32[ sp8[ so5 + 3 ] ] / 255.0
                 dx5 : f32 [ (f32[ ox5 ] - smx) / s5 ]
-                rpx : f32 [ dx5 * cs9 + dy5 * sn9 + rcx ]
-                rpy : f32 [ dy5 * cs9 - dx5 * sn9 + rcy ]
+                rpx : f32 [ dx5 * cs_ + dy5 * sn_ + rcx ]
+                rpy : f32 [ dy5 * cs_ - dx5 * sn_ + rcy ]
                 # the scene extends to the frame edge: a black surround
                 # is a tell that only synthetic frames carry, and find
                 # is the one net that sees the whole frame
@@ -1812,8 +1812,8 @@ element ModelView
                     vi5 : i32 [ i32[ uv5 ] ]
                     hrend[ vi5 ] += 1
                     ub5 : f32 [ (rg > 255.0) ? 255.0 : rg ]
-                    bi9 : i32 [ i32[ ub5 ] ]
-                    hbase[ bi9 ] += 1
+                    bi_ : i32 [ i32[ ub5 ] ]
+                    hbase[ bi_ ] += 1
         # rank-for-rank LUT: render value -> photo value at the
         # same quantile of the covered region
         cumb : local i32 [ 256 ]
@@ -1910,23 +1910,23 @@ element ModelView
         if [ cdot >  1.0 ] cdot =  1.0
         if [ cdot < -1.0 ] cdot = -1.0
         crel : f32 [ acos[ cdot ] * 57.29578 ]
-        c9 : i32 [ cam * 16 ]
-        cap_pl[ c9 + 0 ] = flx
-        cap_pl[ c9 + 1 ] = fly
-        cap_pl[ c9 + 2 ] = frx
-        cap_pl[ c9 + 3 ] = fry
-        cap_pl[ c9 + 4 ] = fscale
-        cap_pl[ c9 + 5 ] = clx
-        cap_pl[ c9 + 6 ] = cly
-        cap_pl[ c9 + 7 ] = crx
-        cap_pl[ c9 + 8 ] = cry
-        cap_pl[ c9 + 9 ] = crel
-        cap_pl[ c9 + 10 ] = plx
-        cap_pl[ c9 + 11 ] = ply
-        cap_pl[ c9 + 12 ] = prx
-        cap_pl[ c9 + 13 ] = pry
-        cap_pl[ c9 + 14 ] = nbx
-        cap_pl[ c9 + 15 ] = nby
+        c_ : i32 [ cam * 16 ]
+        cap_pl[ c_ + 0 ] = flx
+        cap_pl[ c_ + 1 ] = fly
+        cap_pl[ c_ + 2 ] = frx
+        cap_pl[ c_ + 3 ] = fry
+        cap_pl[ c_ + 4 ] = fscale
+        cap_pl[ c_ + 5 ] = clx
+        cap_pl[ c_ + 6 ] = cly
+        cap_pl[ c_ + 7 ] = crx
+        cap_pl[ c_ + 8 ] = cry
+        cap_pl[ c_ + 9 ] = crel
+        cap_pl[ c_ + 10 ] = plx
+        cap_pl[ c_ + 11 ] = ply
+        cap_pl[ c_ + 12 ] = prx
+        cap_pl[ c_ + 13 ] = pry
+        cap_pl[ c_ + 14 ] = nbx
+        cap_pl[ c_ + 15 ] = nby
         return true
 
     # written once per pose, after every camera has been saved
@@ -1995,13 +1995,13 @@ element ModelView
         pradn : f32 [ 0.0046 * 0.44 / ied ]
         if [ cshader ] pradn = cshader.iris_radius * cshader.pupil_r / ied
         cl2 : i32 [ (cap_clean) ? 1 : 0 ]
-        w9 : i32 [ (cap_rec >= 0) ? fp.recs_fid[ cap_rec ] : -1 ]
+        w_ : i32 [ (cap_rec >= 0) ? fp.recs_fid[ cap_rec ] : -1 ]
         # head from screen center: rig-space vector and its length
         # x runs against rig x, same as every plotted label
         hcx : f32 [ scx - mxm ]
         hcy : f32 [ mym - scy ]
         hcz : f32 [ mzm - scz ]
-        s2 : string 'labels:\n    head: {hu} {hv}\n    look: {plot_u} {plot_v}\n    head_rot: {cap_hy} {cap_hp} {cap_hr}\n    head_rot_scr: {hys} {hps} {hrs}\n    face_off: {ofx} {ofy} {ofz}\n    eye_off: {eox} {eoy} {eoz}\n    head_center: {hcx} {hcy} {hcz}\n    head_dist: {sdl}\n    pupil_rad: {pradn}\n    clean: {cl2}\n    wear: {w9}\nrig:\n    screen: {fp.screen_w} {fp.screen_h}\n    cameras: {fp.cam_n}\n'
+        s2 : string 'labels:\n    head: {hu} {hv}\n    look: {plot_u} {plot_v}\n    head_rot: {cap_hy} {cap_hp} {cap_hr}\n    head_rot_scr: {hys} {hps} {hrs}\n    face_off: {ofx} {ofy} {ofz}\n    eye_off: {eox} {eoy} {eoz}\n    head_center: {hcx} {hcy} {hcz}\n    head_dist: {sdl}\n    pupil_rad: {pradn}\n    clean: {cl2}\n    wear: {w_}\nrig:\n    screen: {fp.screen_w} {fp.screen_h}\n    cameras: {fp.cam_n}\n'
         for [ c2: i32 0, c2 < fp.cam_n, c2 += 1 ]
             g5 : i32 [ c2 * 5 ]
             gx5 : f32 [ fp.cam_cfg[ g5 + 0 ] ]
@@ -2010,30 +2010,30 @@ element ModelView
             gt5 : f32 [ fp.cam_cfg[ g5 + 3 ] ]
             gf5 : f32 [ fp.cam_cfg[ g5 + 4 ] ]
             s2 = '{s2}cam{c2}: {gx5} {gy5} {gz5} {gt5} {gf5}\n'
-            b9 : i32 [ c2 * 16 ]
-            bflx : f32 [ cap_pl[ b9 + 0 ] ]
-            bfly : f32 [ cap_pl[ b9 + 1 ] ]
-            bfrx : f32 [ cap_pl[ b9 + 2 ] ]
-            bfry : f32 [ cap_pl[ b9 + 3 ] ]
-            bfsc : f32 [ cap_pl[ b9 + 4 ] ]
-            bclx : f32 [ cap_pl[ b9 + 5 ] ]
-            bcly : f32 [ cap_pl[ b9 + 6 ] ]
-            bcrx : f32 [ cap_pl[ b9 + 7 ] ]
-            bcry : f32 [ cap_pl[ b9 + 8 ] ]
-            brel : f32 [ cap_pl[ b9 + 9 ] ]
-            bplx : f32 [ cap_pl[ b9 + 10 ] ]
-            bply : f32 [ cap_pl[ b9 + 11 ] ]
-            bprx : f32 [ cap_pl[ b9 + 12 ] ]
-            bpry : f32 [ cap_pl[ b9 + 13 ] ]
-            bnbx : f32 [ cap_pl[ b9 + 14 ] ]
-            bnby : f32 [ cap_pl[ b9 + 15 ] ]
+            b_ : i32 [ c2 * 16 ]
+            bflx : f32 [ cap_pl[ b_ + 0 ] ]
+            bfly : f32 [ cap_pl[ b_ + 1 ] ]
+            bfrx : f32 [ cap_pl[ b_ + 2 ] ]
+            bfry : f32 [ cap_pl[ b_ + 3 ] ]
+            bfsc : f32 [ cap_pl[ b_ + 4 ] ]
+            bclx : f32 [ cap_pl[ b_ + 5 ] ]
+            bcly : f32 [ cap_pl[ b_ + 6 ] ]
+            bcrx : f32 [ cap_pl[ b_ + 7 ] ]
+            bcry : f32 [ cap_pl[ b_ + 8 ] ]
+            brel : f32 [ cap_pl[ b_ + 9 ] ]
+            bplx : f32 [ cap_pl[ b_ + 10 ] ]
+            bply : f32 [ cap_pl[ b_ + 11 ] ]
+            bprx : f32 [ cap_pl[ b_ + 12 ] ]
+            bpry : f32 [ cap_pl[ b_ + 13 ] ]
+            bnbx : f32 [ cap_pl[ b_ + 14 ] ]
+            bnby : f32 [ cap_pl[ b_ + 15 ] ]
             # visible{c}: does this camera actually have the face in frame.
             # a signal INTO the net — attend to the camera that sees you,
             # ignore the one that does not — not a filter on the sample
-            fcx9 : f32 [ (bflx + bfrx) * 0.5 ]
-            fcy9 : f32 [ (bfly + bfry) * 0.5 ]
-            vis9 : i32 [ (cap_vis[ c2 ] != 0 && bfsc > 0.0) ? 1 : 0 ]
-            s2 = '{s2}visible{c2}: {vis9}\n'
+            fcx_ : f32 [ (bflx + bfrx) * 0.5 ]
+            fcy_ : f32 [ (bfly + bfry) * 0.5 ]
+            vis_ : i32 [ (cap_vis[ c2 ] != 0 && bfsc > 0.0) ? 1 : 0 ]
+            s2 = '{s2}visible{c2}: {vis_}\n'
             s2 = '{s2}image{c2}: {cap_idx}-face{c2}.png\nface_left{c2}: {bflx} {bfly}\nface_right{c2}: {bfrx} {bfry}\nface_scale{c2}: {bfsc}\nface_left_oc{c2}: {bclx} {bcly}\nface_right_oc{c2}: {bcrx} {bcry}\nnose_base{c2}: {bnbx} {bnby}\ncam_rel{c2}: {brel}\npupil_left{c2}: {bplx} {bply}\npupil_right{c2}: {bprx} {bpry}\n'
         ag : path '{sdir}/{cap_idx}.agi'
         ag.save[ s2, null ]
@@ -2553,67 +2553,67 @@ element ModelView
         edn_wr = wr
         if [ cap_zamt > 0.0 && hc.base ]
             if [ !cap_zf ] cap_zf = new f32 [ edn_n ]
-            gl9 : f32 [ gaze_ly / eyes_down_full ]
-            gr9 : f32 [ gaze_ry / eyes_down_full ]
-            if [ gl9 >  1.0 ] gl9 =  1.0
-            if [ gl9 < -1.0 ] gl9 = -1.0
-            if [ gr9 >  1.0 ] gr9 =  1.0
-            if [ gr9 < -1.0 ] gr9 = -1.0
+            gl_ : f32 [ gaze_ly / eyes_down_full ]
+            gr_ : f32 [ gaze_ry / eyes_down_full ]
+            if [ gl_ >  1.0 ] gl_ =  1.0
+            if [ gl_ < -1.0 ] gl_ = -1.0
+            if [ gr_ >  1.0 ] gr_ =  1.0
+            if [ gr_ < -1.0 ] gr_ = -1.0
             for [ k: i32 0, k < edn_n, k += 1 ]
                 v3 : i32 [ edn_v[ k ] * 3 ]
-                vx9 : f32 [ hc.base[ v3 ] ]
-                vy9 : f32 [ hc.base[ v3 + 1 ] ]
-                gz9 : f32 [ (vx9 * eyec_lx >= 0.0) ? gl9 : gr9 ]
-                ecy9 : f32 [ (vx9 * eyec_lx >= 0.0) ? eyec_ly : eyec_ry ]
-                fz9 : f32 [ 0.0 ]
-                if [ vy9 >= ecy9 && gz9 > 0.0 ] fz9 = gz9
-                if [ vy9 < ecy9 && gz9 < 0.0 ] fz9 = 0.0 - gz9
+                vx_ : f32 [ hc.base[ v3 ] ]
+                vy_ : f32 [ hc.base[ v3 + 1 ] ]
+                gz_ : f32 [ (vx_ * eyec_lx >= 0.0) ? gl_ : gr_ ]
+                ecy_ : f32 [ (vx_ * eyec_lx >= 0.0) ? eyec_ly : eyec_ry ]
+                fz_ : f32 [ 0.0 ]
+                if [ vy_ >= ecy_ && gz_ > 0.0 ] fz_ = gz_
+                if [ vy_ < ecy_ && gz_ < 0.0 ] fz_ = 0.0 - gz_
                 # pinned corner verts never ride the follow
-                if [ hc.pin ] fz9 = fz9 * (1.0 - hc.pin[ edn_v[ k ] ])
-                nz9 : f32 [ cap_zamt * fz9 ]
-                bp[ v3 + 2 ] = bp[ v3 + 2 ] + nz9 - cap_zf[ k ]
-                cap_zf[ k ] = nz9
+                if [ hc.pin ] fz_ = fz_ * (1.0 - hc.pin[ edn_v[ k ] ])
+                nz_ : f32 [ cap_zamt * fz_ ]
+                bp[ v3 + 2 ] = bp[ v3 + 2 ] + nz_ - cap_zf[ k ]
+                cap_zf[ k ] = nz_
         if [ (cap_lnamt > 0.0 || cap_lnf) && hc.base ]
             if [ !cap_lnf ]
                 n39 : i32 [ edn_n * 3 ]
                 cap_lnf = new f32 [ n39 ]
-            inv9 : f32 [ 1.0 / globe_rad ]
-            rad9 : f32 [ (cap_lnrad > 1.4) ? cap_lnrad : 2.2 ]
+            inv_ : f32 [ 1.0 / globe_rad ]
+            rad_ : f32 [ (cap_lnrad > 1.4) ? cap_lnrad : 2.2 ]
             for [ k: i32 0, k < edn_n, k += 1 ]
-                vi9 : i32 [ edn_v[ k ] ]
-                v3 : i32 [ vi9 * 3 ]
+                vi_ : i32 [ edn_v[ k ] ]
+                v3 : i32 [ vi_ * 3 ]
                 k3 : i32 [ k * 3 ]
-                vx9 : f32 [ hc.base[ v3 ] ]
-                vy9 : f32 [ hc.base[ v3 + 1 ] ]
-                lft : bool [ vx9 * eyec_lx >= 0.0 ]
-                ex9 : f32 [ (lft) ? eyec_lx : eyec_rx ]
-                ey9 : f32 [ (lft) ? eyec_ly : eyec_ry ]
-                gx9 : f32 [ (lft) ? gaze_lx : gaze_rx ]
-                gy9 : f32 [ (lft) ? gaze_ly : gaze_ry ]
+                vx_ : f32 [ hc.base[ v3 ] ]
+                vy_ : f32 [ hc.base[ v3 + 1 ] ]
+                lft : bool [ vx_ * eyec_lx >= 0.0 ]
+                ex_ : f32 [ (lft) ? eyec_lx : eyec_rx ]
+                ey_ : f32 [ (lft) ? eyec_ly : eyec_ry ]
+                gx_ : f32 [ (lft) ? gaze_lx : gaze_rx ]
+                gy_ : f32 [ (lft) ? gaze_ly : gaze_ry ]
                 # pupil xy = globe centre tilted by the gaze angles
-                px9 : f32 [ ex9 + gx9 * globe_rad ]
-                py9 : f32 [ ey9 + gy9 * globe_rad ]
-                dx9 : f32 [ (vx9 - px9) * inv9 ]
-                dy9 : f32 [ (vy9 - py9) * inv9 ]
-                dd9 : f32 [ sqrt[ dx9 * dx9 + dy9 * dy9 ] ]
-                # full inside 1.2 globe radii, fading out at rad9
-                fal9 : f32 [ 1.0 - (dd9 - 1.2) / (rad9 - 1.2) ]
-                if [ fal9 > 1.0 ] fal9 = 1.0
-                if [ fal9 < 0.0 ] fal9 = 0.0
-                if [ hc.pin ] fal9 = fal9 * (1.0 - hc.pin[ vi9 ])
-                nn9 : f32 [ vnoise2[ cap_lnsd, vx9 * inv9 * 0.9, vy9 * inv9 * 0.9 ] ]
-                am9 : f32 [ cap_lnamt * nn9 * fal9 ]
+                px_ : f32 [ ex_ + gx_ * globe_rad ]
+                py_ : f32 [ ey_ + gy_ * globe_rad ]
+                dx_ : f32 [ (vx_ - px_) * inv_ ]
+                dy_ : f32 [ (vy_ - py_) * inv_ ]
+                dd_ : f32 [ sqrt[ dx_ * dx_ + dy_ * dy_ ] ]
+                # full inside 1.2 globe radii, fading out at rad_
+                fal_ : f32 [ 1.0 - (dd_ - 1.2) / (rad_ - 1.2) ]
+                if [ fal_ > 1.0 ] fal_ = 1.0
+                if [ fal_ < 0.0 ] fal_ = 0.0
+                if [ hc.pin ] fal_ = fal_ * (1.0 - hc.pin[ vi_ ])
+                nn_ : f32 [ vnoise2[ cap_lnsd, vx_ * inv_ * 0.9, vy_ * inv_ * 0.9 ] ]
+                am_ : f32 [ cap_lnamt * nn_ * fal_ ]
                 # push IN the look direction: unit gaze ray (gx, gy, out)
-                ln9 : f32 [ sqrt[ gx9 * gx9 + gy9 * gy9 + 1.0 ] ]
-                lx9 : f32 [ am9 * gx9 / ln9 ]
-                ly9 : f32 [ am9 * gy9 / ln9 ]
-                lz9 : f32 [ am9 / ln9 ]
-                bp[ v3 ]     = bp[ v3 ]     + lx9 - cap_lnf[ k3 ]
-                bp[ v3 + 1 ] = bp[ v3 + 1 ] + ly9 - cap_lnf[ k3 + 1 ]
-                bp[ v3 + 2 ] = bp[ v3 + 2 ] + lz9 - cap_lnf[ k3 + 2 ]
-                cap_lnf[ k3 ]     = lx9
-                cap_lnf[ k3 + 1 ] = ly9
-                cap_lnf[ k3 + 2 ] = lz9
+                ln_ : f32 [ sqrt[ gx_ * gx_ + gy_ * gy_ + 1.0 ] ]
+                lx_ : f32 [ am_ * gx_ / ln_ ]
+                ly_ : f32 [ am_ * gy_ / ln_ ]
+                lz_ : f32 [ am_ / ln_ ]
+                bp[ v3 ]     = bp[ v3 ]     + lx_ - cap_lnf[ k3 ]
+                bp[ v3 + 1 ] = bp[ v3 + 1 ] + ly_ - cap_lnf[ k3 + 1 ]
+                bp[ v3 + 2 ] = bp[ v3 + 2 ] + lz_ - cap_lnf[ k3 + 2 ]
+                cap_lnf[ k3 ]     = lx_
+                cap_lnf[ k3 + 1 ] = ly_
+                cap_lnf[ k3 + 2 ] = lz_
 
     func bake_nose []
         if [ !gmodel ] return
@@ -3698,9 +3698,9 @@ element ModelView
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cap_rec = i32[ (cap_seed % i64[ fpc.recs_n ] + i64[ fpc.recs_n ]) % i64[ fpc.recs_n ] ]
                     # anchor on the camera the record was annotated on
-                    an9 : i32 [ 0 ]
-                    if [ cap_rec >= 0 && fpc.recs_dat[ cap_rec * 9 + 3 ] < -900.0 ] an9 = 1
-                    ao9 : i32 [ an9 * 5 ]
+                    an_ : i32 [ 0 ]
+                    if [ cap_rec >= 0 && fpc.recs_dat[ cap_rec * 9 + 3 ] < -900.0 ] an_ = 1
+                    ao_ : i32 [ an_ * 5 ]
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                     r1 : f32 [ f32[ cap_seed % 1000 ] / 1000.0 ]
                     cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -3714,15 +3714,15 @@ element ModelView
                     ia : f32 [ 1.0 / fpc.dist_min ]
                     ib : f32 [ 1.0 / fpc.dist_max ]
                     rng : f32 [ 1.0 / (ib + u3 * (ia - ib)) ]
-                    hfov : f32 [ radians[ fpc.cam_cfg[ ao9 + 4 ] ] * 0.5 ]
+                    hfov : f32 [ radians[ fpc.cam_cfg[ ao_ + 4 ] ] * 0.5 ]
                     # distance pins to the worn record's oc span,
                     # jittered inside the 25% donor gate
                     if [ cap_rec >= 0 ]
-                        sp9 : f32 [ fpc.recs_dat[ cap_rec * 9 + 5 + an9 * 3 ] ]
-                        if [ sp9 > 0.02 && anch_span > 0.0 ]
+                        sp_ : f32 [ fpc.recs_dat[ cap_rec * 9 + 5 + an_ * 3 ] ]
+                        if [ sp_ > 0.02 && anch_span > 0.0 ]
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
-                            j9 : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.24 ]
-                            rng = anch_span / (sp9 * 2.0 * tan[ hfov ]) * (1.0 + j9)
+                            j_ : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.24 ]
+                            rng = anch_span / (sp_ * 2.0 * tan[ hfov ]) * (1.0 + j_)
                             if [ rng < fpc.dist_min ] rng = fpc.dist_min
                             if [ rng > fpc.dist_max ] rng = fpc.dist_max
                     axm : f32 [ hfov * 0.6 ]
@@ -3731,23 +3731,23 @@ element ModelView
                     cy2 : f32 [ atan2[ fpc.move_y, rng ] ]
                     if [ axm > cx2 ] axm = cx2
                     if [ aym > cy2 ] aym = cy2
-                    tilt : f32 [ radians[ fpc.cam_cfg[ ao9 + 3 ] ] ]
+                    tilt : f32 [ radians[ fpc.cam_cfg[ ao_ + 3 ] ] ]
                     tnx : f32 [ tan[ r1 * axm ] ]
                     tny : f32 [ tan[ r2 * aym ] ]
                     # frame position pins to the worn record's
                     # annotated eye-mid, jittered inside the gate
                     if [ cap_rec >= 0 ]
-                        rmx9 : f32 [ fpc.recs_dat[ cap_rec * 9 + 3 + an9 * 3 ] ]
-                        rmy9 : f32 [ fpc.recs_dat[ cap_rec * 9 + 4 + an9 * 3 ] ]
+                        rmx_ : f32 [ fpc.recs_dat[ cap_rec * 9 + 3 + an_ * 3 ] ]
+                        rmy_ : f32 [ fpc.recs_dat[ cap_rec * 9 + 4 + an_ * 3 ] ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         # the photo slides with the mask, so placement roams
                         # wide — but off-sensor placements teach target and
                         # look nothing, so most of them must stay on frame
-                        ju9 : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.36 ]
+                        ju_ : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.36 ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
-                        jv9 : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.36 ]
-                        tnx = (0.5 - rmx9 + ju9) * 2.0 * tan[ hfov ]
-                        tny = (rmy9 - 0.5 + jv9) * 2.0 * tan[ hfov ]
+                        jv_ : f32 [ (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.36 ]
+                        tnx = (0.5 - rmx_ + ju_) * 2.0 * tan[ hfov ]
+                        tny = (rmy_ - 0.5 + jv_) * 2.0 * tan[ hfov ]
                     dx2 : f32 [ tnx ]
                     dy2 : f32 [ 0.0 - sin[ tilt ] - tny * cos[ tilt ] ]
                     dz2 : f32 [ 0.0 - cos[ tilt ] + tny * sin[ tilt ] ]
@@ -3759,9 +3759,9 @@ element ModelView
                     ccy : f32 [ myc - rng * dy2 ]
                     ccz : f32 [ mzc - rng * dz2 ]
                     # screen center = the anchor camera minus its rig offset
-                    cap_scx = ccx - fpc.cam_cfg[ ao9 + 0 ]
-                    cap_scy = ccy - fpc.cam_cfg[ ao9 + 1 ]
-                    cap_scz = ccz - fpc.cam_cfg[ ao9 + 2 ]
+                    cap_scx = ccx - fpc.cam_cfg[ ao_ + 0 ]
+                    cap_scy = ccy - fpc.cam_cfg[ ao_ + 1 ]
+                    cap_scz = ccz - fpc.cam_cfg[ ao_ + 2 ]
                     # a triangulated record fixes the head in space: seat
                     # the rig so both cameras see it where they really did
                     if [ cap_rec >= 0 && fpc.recs_pos[ cap_rec * 3 ] > -900.0 ]
@@ -3769,11 +3769,11 @@ element ModelView
                         cap_scy = myc - fpc.recs_pos[ cap_rec * 3 + 1 ]
                         cap_scz = mzc - fpc.recs_pos[ cap_rec * 3 + 2 ]
                     # sanity range is the OTHER camera's seat distance
-                    so9 : i32 [ (1 - an9) * 5 ]
-                    if [ fpc.cam_n < 2 ] so9 = ao9
-                    b1x : f32 [ cap_scx + fpc.cam_cfg[ so9 + 0 ] - mxc ]
-                    b1y : f32 [ cap_scy + fpc.cam_cfg[ so9 + 1 ] - myc ]
-                    b1z : f32 [ cap_scz + fpc.cam_cfg[ so9 + 2 ] - mzc ]
+                    so_ : i32 [ (1 - an_) * 5 ]
+                    if [ fpc.cam_n < 2 ] so_ = ao_
+                    b1x : f32 [ cap_scx + fpc.cam_cfg[ so_ + 0 ] - mxc ]
+                    b1y : f32 [ cap_scy + fpc.cam_cfg[ so_ + 1 ] - myc ]
+                    b1z : f32 [ cap_scz + fpc.cam_cfg[ so_ + 2 ] - mzc ]
                     bd1 : f32 [ sqrt[ b1x*b1x + b1y*b1y + b1z*b1z ] ]
                     # the render always starts on camera 0 and walks the
                     # rig, whichever camera anchored the seating
@@ -3808,15 +3808,15 @@ element ModelView
                             hux : f32 [ fpc.recs_head[ cap_rec * 2 + 0 ] + (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.1 ]
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             hvy : f32 [ fpc.recs_head[ cap_rec * 2 + 1 ] + (f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 0.1 ]
-                            hix9 : f32 [ cap_scx - hux * fpc.screen_w ]
-                            hiy9 : f32 [ cap_scy - hvy * fpc.screen_h ]
-                            fdx : f32 [ hix9 - mxc ]
-                            fdy : f32 [ hiy9 - myc ]
+                            hix_ : f32 [ cap_scx - hux * fpc.screen_w ]
+                            hiy_ : f32 [ cap_scy - hvy * fpc.screen_h ]
+                            fdx : f32 [ hix_ - mxc ]
+                            fdy : f32 [ hiy_ - myc ]
                             fdz : f32 [ cap_scz - mzc ]
-                            fl9 : f32 [ sqrt[ fdx*fdx + fdy*fdy + fdz*fdz ] ]
-                            if [ fl9 > 0.0001 ]
-                                cap_hy = atan2[ fdx / fl9, fdz / fl9 ]
-                                cap_hp = 0.0 - asin[ fdy / fl9 ]
+                            fl_ : f32 [ sqrt[ fdx*fdx + fdy*fdy + fdz*fdz ] ]
+                            if [ fl_ > 0.0001 ]
+                                cap_hy = atan2[ fdx / fl_, fdz / fl_ ]
+                                cap_hp = 0.0 - asin[ fdy / fl_ ]
                     if [ cshader ]
                         cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                         cell5 : i32 [ i32[ (cap_seed % 1024 + 1024) % 1024 ] ]
@@ -3936,53 +3936,53 @@ element ModelView
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             vshader.shadow_amt = 0.5 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.5
                     if [ anch_set && head_ci >= 0 ]
-                        hc9 : vmodel.cages[ head_ci ]
-                        if [ hc9 && hc9.cage_buf && hc9.base ]
+                        hc_ : vmodel.cages[ head_ci ]
+                        if [ hc_ && hc_.cage_buf && hc_.base ]
                             if [ cap_gn == 0 ]
                                 cap_gn = -1
-                                cap_gw = new f32 [ hc9.nv * 21 ]
-                                cap_gd = new f32 [ hc9.nv * 63 ]
-                                for [ g9: i32 0, g9 < 21, g9 += 1 ]
-                                    gnm : string '_V_LID{g9}'
-                                    if [ g9 > 4 && g9 < 8 ]
-                                        gn2 : i32 [ g9 - 4 ]
+                                cap_gw = new f32 [ hc_.nv * 21 ]
+                                cap_gd = new f32 [ hc_.nv * 63 ]
+                                for [ g_: i32 0, g_ < 21, g_ += 1 ]
+                                    gnm : string '_V_LID{g_}'
+                                    if [ g_ > 4 && g_ < 8 ]
+                                        gn2 : i32 [ g_ - 4 ]
                                         gnm = string '_V_LIDN{gn2}'
-                                    if [ g9 >= 8 ]
-                                        gn3 : i32 [ g9 - 8 ]
+                                    if [ g_ >= 8 ]
+                                        gn3 : i32 [ g_ - 8 ]
                                         gnm = string '_V_LIDSHAPE_{gn3}'
-                                    gw9 : lid_weights[ gnm ]
-                                    if [ !gw9 ] continue
+                                    gw_ : lid_weights[ gnm ]
+                                    if [ !gw_ ] continue
                                     cap_gn = 1
-                                    for [ q9: i32 0, q9 < hc9.nv, q9 += 1 ]
-                                        cap_gw[ g9 * hc9.nv + q9 ] = gw9[ q9 ]
+                                    for [ q_: i32 0, q_ < hc_.nv, q_ += 1 ]
+                                        cap_gw[ g_ * hc_.nv + q_ ] = gw_[ q_ ]
                                 cap_gc = new f32 [ 126 ]
-                                for [ g9: i32 0, g9 < 21, g9 += 1 ]
-                                    for [ sd9: i32 0, sd9 < 2, sd9 += 1 ]
-                                        sx9 : f32 [ 0.0 ]
-                                        sy9 : f32 [ 0.0 ]
-                                        sz9 : f32 [ 0.0 ]
-                                        sn9 : f32 [ 0.0 ]
-                                        for [ q9: i32 0, q9 < hc9.nv, q9 += 1 ]
-                                            if [ cap_gw[ g9 * hc9.nv + q9 ] <= 0.0 ] continue
-                                            bq3 : i32 [ q9 * 3 ]
-                                            onl : bool [ hc9.base[ bq3 ] >= 0.0 ]
-                                            if [ (sd9 == 0) != onl ] continue
-                                            sx9 += hc9.base[ bq3 ]
-                                            sy9 += hc9.base[ bq3 + 1 ]
-                                            sz9 += hc9.base[ bq3 + 2 ]
-                                            sn9 += 1.0
-                                        gb9 : i32 [ (g9 * 2 + sd9) * 3 ]
-                                        if [ sn9 > 0.0 ]
-                                            cap_gc[ gb9 ]     = sx9 / sn9
-                                            cap_gc[ gb9 + 1 ] = sy9 / sn9
-                                            cap_gc[ gb9 + 2 ] = sz9 / sn9
+                                for [ g_: i32 0, g_ < 21, g_ += 1 ]
+                                    for [ sd_: i32 0, sd_ < 2, sd_ += 1 ]
+                                        sx_ : f32 [ 0.0 ]
+                                        sy_ : f32 [ 0.0 ]
+                                        sz_ : f32 [ 0.0 ]
+                                        sn_ : f32 [ 0.0 ]
+                                        for [ q_: i32 0, q_ < hc_.nv, q_ += 1 ]
+                                            if [ cap_gw[ g_ * hc_.nv + q_ ] <= 0.0 ] continue
+                                            bq3 : i32 [ q_ * 3 ]
+                                            onl : bool [ hc_.base[ bq3 ] >= 0.0 ]
+                                            if [ (sd_ == 0) != onl ] continue
+                                            sx_ += hc_.base[ bq3 ]
+                                            sy_ += hc_.base[ bq3 + 1 ]
+                                            sz_ += hc_.base[ bq3 + 2 ]
+                                            sn_ += 1.0
+                                        gb_ : i32 [ (g_ * 2 + sd_) * 3 ]
+                                        if [ sn_ > 0.0 ]
+                                            cap_gc[ gb_ ]     = sx_ / sn_
+                                            cap_gc[ gb_ + 1 ] = sy_ / sn_
+                                            cap_gc[ gb_ + 2 ] = sz_ / sn_
                                         el
-                                            cap_gc[ gb9 ] = 1000000.0
+                                            cap_gc[ gb_ ] = 1000000.0
                                 if [ cap_gn < 0 ] log 'lid groups: none painted (_V_LID*, _V_LIDSHAPE_*)'
-                            bp9 : @f32 [ hc9.cage_buf.data ]
+                            bp_ : @f32 [ hc_.cage_buf.data ]
                             if [ cap_gn > 0 ]
                                 gsc : local f32 [ 21 ] [ 0.25, 0.20, 0.18, 0.12, 0.06, 0.28, 0.30, 0.34, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18, 0.18 ]
-                                kf9 : f32 [ 1.0 / (globe_rad * 1.2) ]
+                                kf_ : f32 [ 1.0 / (globe_rad * 1.2) ]
                                 # PHASE 1: roll every sector independently
                                 sec_nd : local f32 [ 39 ]
                                 sec_fl : local f32 [ 13 ]
@@ -3992,24 +3992,24 @@ element ModelView
                                 for [ si: i32 0, si < 13, si += 1 ]
                                     g8i : i32 [ si + 8 ]
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                    um9 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
-                                    gm9 : f32 [ um9 * um9 * um9 * globe_rad * gsc[ g8i ] ]
-                                    for [ x9: i32 0, x9 < 3, x9 += 1 ]
+                                    um_ : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
+                                    gm_ : f32 [ um_ * um_ * um_ * globe_rad * gsc[ g8i ] ]
+                                    for [ x_: i32 0, x_ < 3, x_ += 1 ]
                                         cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                        sec_nd[ si * 3 + x9 ] = (f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 2.0 * gm9
+                                        sec_nd[ si * 3 + x_ ] = (f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5) * 2.0 * gm_
                                         cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                        sec_ps[ si * 3 + x9 ] = cap_pseed
+                                        sec_ps[ si * 3 + x_ ] = cap_pseed
                                     # vertical bias: opening amounts
                                     sec_nd[ si * 3 + 1 ] = sec_nd[ si * 3 + 1 ] * 1.6
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                    uf9 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
-                                    sec_fl[ si ] = uf9 * uf9 * uf9
+                                    uf_ : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
+                                    sec_fl[ si ] = uf_ * uf_ * uf_
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                    ur9 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5 ]
-                                    sec_ra[ si ] = ur9 * ur9 * ur9 * 8.0 * globe_rad * 0.22
+                                    ur_ : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5 ]
+                                    sec_ra[ si ] = ur_ * ur_ * ur_ * 8.0 * globe_rad * 0.22
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
-                                    ut9 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5 ]
-                                    sec_ta[ si ] = ut9 * ut9 * ut9 * 8.0 * globe_rad * 0.22
+                                    ut_ : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 - 0.5 ]
+                                    sec_ta[ si ] = ut_ * ut_ * ut_ * 8.0 * globe_rad * 0.22
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 avon : bool [ ((cap_pseed % 2 + 2) % 2) == 0 ]
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
@@ -4018,22 +4018,22 @@ element ModelView
                                     mn3 : local f32 [ 3 ]
                                     mra : f32 [ 0.0 ]
                                     mta : f32 [ 0.0 ]
-                                    for [ x9: i32 0, x9 < 3, x9 += 1 ] mn3[ x9 ] = 0.0
+                                    for [ x_: i32 0, x_ < 3, x_ += 1 ] mn3[ x_ ] = 0.0
                                     for [ si: i32 0, si < 13, si += 1 ]
-                                        for [ x9: i32 0, x9 < 3, x9 += 1 ]
-                                            mn3[ x9 ] += sec_nd[ si * 3 + x9 ] / 13.0
+                                        for [ x_: i32 0, x_ < 3, x_ += 1 ]
+                                            mn3[ x_ ] += sec_nd[ si * 3 + x_ ] / 13.0
                                         mra += sec_ra[ si ] / 13.0
                                         mta += sec_ta[ si ] / 13.0
                                     for [ si: i32 0, si < 13, si += 1 ]
-                                        tp9 : f32 [ 1.0 - f32[ si ] / 12.0 ]
-                                        bf9 : f32 [ avdg * (0.5 + 0.5 * tp9) ]
-                                        if [ bf9 > 1.0 ] bf9 = 1.0
-                                        for [ x9: i32 0, x9 < 3, x9 += 1 ]
-                                            sec_nd[ si * 3 + x9 ] += (mn3[ x9 ] - sec_nd[ si * 3 + x9 ]) * bf9
-                                        sec_ra[ si ] += (mra - sec_ra[ si ]) * bf9
-                                        sec_ta[ si ] += (mta - sec_ta[ si ]) * bf9
+                                        tp_ : f32 [ 1.0 - f32[ si ] / 12.0 ]
+                                        bf_ : f32 [ avdg * (0.5 + 0.5 * tp_) ]
+                                        if [ bf_ > 1.0 ] bf_ = 1.0
+                                        for [ x_: i32 0, x_ < 3, x_ += 1 ]
+                                            sec_nd[ si * 3 + x_ ] += (mn3[ x_ ] - sec_nd[ si * 3 + x_ ]) * bf_
+                                        sec_ra[ si ] += (mra - sec_ra[ si ]) * bf_
+                                        sec_ta[ si ] += (mta - sec_ta[ si ]) * bf_
                                         # top sectors also straighten harder
-                                        fl2 : f32 [ sec_fl[ si ] + avdg * tp9 * 0.5 ]
+                                        fl2 : f32 [ sec_fl[ si ] + avdg * tp_ * 0.5 ]
                                         if [ fl2 > 1.0 ] fl2 = 1.0
                                         sec_fl[ si ] = fl2
                                 for [ si: i32 8, si < 13, si += 1 ]
@@ -4045,80 +4045,80 @@ element ModelView
                                         sec_ra[ si ] = 0.0
                                         sec_ta[ si ] = 0.0
                                         sec_fl[ si ] = 0.0
-                                        for [ x9: i32 0, x9 < 3, x9 += 1 ] sec_nd[ si * 3 + x9 ] = 0.0
+                                        for [ x_: i32 0, x_ < 3, x_ += 1 ] sec_nd[ si * 3 + x_ ] = 0.0
                                 # PHASE 3: apply — sectors only (rims parked)
-                                for [ g9: i32 8, g9 < 21, g9 += 1 ]
-                                    si9 : i32 [ g9 - 8 ]
+                                for [ g_: i32 8, g_ < 21, g_ += 1 ]
+                                    si_ : i32 [ g_ - 8 ]
                                     nd3 : local f32 [ 3 ]
                                     ps3 : local i64 [ 3 ]
-                                    for [ x9: i32 0, x9 < 3, x9 += 1 ]
-                                        nd3[ x9 ] = sec_nd[ si9 * 3 + x9 ]
-                                        ps3[ x9 ] = sec_ps[ si9 * 3 + x9 ]
-                                    pm9 : f32 [ 0.0 ]
-                                    fl9 : f32 [ sec_fl[ si9 ] ]
-                                    ra9 : f32 [ sec_ra[ si9 ] ]
-                                    ta9 : f32 [ sec_ta[ si9 ] ]
-                                    for [ q9: i32 0, q9 < hc9.nv, q9 += 1 ]
-                                        wg9 : f32 [ cap_gw[ g9 * hc9.nv + q9 ] ]
-                                        if [ wg9 <= 0.0 ] continue
-                                        q93 : i32 [ q9 * 3 ]
-                                        bx9 : f32 [ hc9.base[ q93 ] * kf9 ]
-                                        by9 : f32 [ hc9.base[ q93 + 1 ] * kf9 ]
-                                        d93 : i32 [ (g9 * hc9.nv + q9) * 3 ]
+                                    for [ x_: i32 0, x_ < 3, x_ += 1 ]
+                                        nd3[ x_ ] = sec_nd[ si_ * 3 + x_ ]
+                                        ps3[ x_ ] = sec_ps[ si_ * 3 + x_ ]
+                                    pm_ : f32 [ 0.0 ]
+                                    fl_ : f32 [ sec_fl[ si_ ] ]
+                                    ra_ : f32 [ sec_ra[ si_ ] ]
+                                    ta_ : f32 [ sec_ta[ si_ ] ]
+                                    for [ q_: i32 0, q_ < hc_.nv, q_ += 1 ]
+                                        wg_ : f32 [ cap_gw[ g_ * hc_.nv + q_ ] ]
+                                        if [ wg_ <= 0.0 ] continue
+                                        q93 : i32 [ q_ * 3 ]
+                                        bx_ : f32 [ hc_.base[ q93 ] * kf_ ]
+                                        by_ : f32 [ hc_.base[ q93 + 1 ] * kf_ ]
+                                        d93 : i32 [ (g_ * hc_.nv + q_) * 3 ]
                                         # structured sector displacement
                                         sx3 : f32 [ 0.0 ]
                                         sy3 : f32 [ 0.0 ]
                                         sz3 : f32 [ 0.0 ]
-                                        if [ g9 >= 8 ]
-                                            onl9 : bool [ hc9.base[ q93 ] >= 0.0 ]
-                                            sd9 : i32 [ (onl9) ? 0 : 1 ]
-                                            gb9 : i32 [ (g9 * 2 + sd9) * 3 ]
-                                            if [ cap_gc[ gb9 ] < 999999.0 ]
-                                                ecx9 : f32 [ (onl9) ? eyec_lx : eyec_rx ]
-                                                ecy9 : f32 [ (onl9) ? eyec_ly : eyec_ry ]
+                                        if [ g_ >= 8 ]
+                                            onl_ : bool [ hc_.base[ q93 ] >= 0.0 ]
+                                            sd_ : i32 [ (onl_) ? 0 : 1 ]
+                                            gb_ : i32 [ (g_ * 2 + sd_) * 3 ]
+                                            if [ cap_gc[ gb_ ] < 999999.0 ]
+                                                ecx_ : f32 [ (onl_) ? eyec_lx : eyec_rx ]
+                                                ecy_ : f32 [ (onl_) ? eyec_ly : eyec_ry ]
                                                 if [ eyec_lx < 0.0 ]
-                                                    ecx9 = (onl9) ? eyec_rx : eyec_lx
-                                                    ecy9 = (onl9) ? eyec_ry : eyec_ly
-                                                rrx : f32 [ hc9.base[ q93 ] - ecx9 ]
-                                                rry : f32 [ hc9.base[ q93 + 1 ] - ecy9 ]
-                                                rl9 : f32 [ sqrt[ rrx*rrx + rry*rry ] ]
-                                                if [ rl9 < 0.0001 ] rl9 = 0.0001
-                                                rrx = rrx / rl9
-                                                rry = rry / rl9
-                                                ss9 : f32 [ (onl9) ? 1.0 : -1.0 ]
+                                                    ecx_ = (onl_) ? eyec_rx : eyec_lx
+                                                    ecy_ = (onl_) ? eyec_ry : eyec_ly
+                                                rrx : f32 [ hc_.base[ q93 ] - ecx_ ]
+                                                rry : f32 [ hc_.base[ q93 + 1 ] - ecy_ ]
+                                                rl_ : f32 [ sqrt[ rrx*rrx + rry*rry ] ]
+                                                if [ rl_ < 0.0001 ] rl_ = 0.0001
+                                                rrx = rrx / rl_
+                                                rry = rry / rl_
+                                                ss_ : f32 [ (onl_) ? 1.0 : -1.0 ]
                                                 # radial in/out + shuffle along the edge
-                                                sx3 = rrx * ra9 + (0.0 - rry) * ta9 * ss9
-                                                sy3 = rry * ra9 + rrx * ta9 * ss9
-                                                sy3 += (cap_gc[ gb9 + 1 ] - hc9.base[ q93 + 1 ]) * fl9
-                                                sz3 = (cap_gc[ gb9 + 2 ] - hc9.base[ q93 + 2 ]) * fl9
-                                        for [ x9: i32 0, x9 < 3, x9 += 1 ]
-                                            pn9 : f32 [ (vnoise2[ ps3[ x9 ], bx9, by9 ] - 0.5) * 2.0 * pm9 ]
-                                            st9 : f32 [ (x9 == 0) ? sx3 : ((x9 == 1) ? sy3 : sz3) ]
-                                            tt9 : f32 [ (nd3[ x9 ] + pn9 + st9) * wg9 ]
-                                            bp9[ q93 + x9 ] += tt9 - cap_gd[ d93 + x9 ]
-                                            cap_gd[ d93 + x9 ] = tt9
+                                                sx3 = rrx * ra_ + (0.0 - rry) * ta_ * ss_
+                                                sy3 = rry * ra_ + rrx * ta_ * ss_
+                                                sy3 += (cap_gc[ gb_ + 1 ] - hc_.base[ q93 + 1 ]) * fl_
+                                                sz3 = (cap_gc[ gb_ + 2 ] - hc_.base[ q93 + 2 ]) * fl_
+                                        for [ x_: i32 0, x_ < 3, x_ += 1 ]
+                                            pn_ : f32 [ (vnoise2[ ps3[ x_ ], bx_, by_ ] - 0.5) * 2.0 * pm_ ]
+                                            st_ : f32 [ (x_ == 0) ? sx3 : ((x_ == 1) ? sy3 : sz3) ]
+                                            tt_ : f32 [ (nd3[ x_ ] + pn_ + st_) * wg_ ]
+                                            bp_[ q93 + x_ ] += tt_ - cap_gd[ d93 + x_ ]
+                                            cap_gd[ d93 + x_ ] = tt_
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
-                            cm9 : f32 [ caruncle ]
-                            for [ s9: i32 0, s9 < 2, s9 += 1 ]
-                                ecx : f32 [ (s9 == 0) ? eyec_lx : eyec_rx ]
-                                ecy : f32 [ (s9 == 0) ? eyec_ly : eyec_ry ]
-                                ecz : f32 [ (s9 == 0) ? eyec_lz : eyec_rz ]
-                                oax : f32 [ (s9 == 0) ? anch_lx : anch_rx ]
+                            cm_ : f32 [ caruncle ]
+                            for [ s_: i32 0, s_ < 2, s_ += 1 ]
+                                ecx : f32 [ (s_ == 0) ? eyec_lx : eyec_rx ]
+                                ecy : f32 [ (s_ == 0) ? eyec_ly : eyec_ry ]
+                                ecz : f32 [ (s_ == 0) ? eyec_lz : eyec_rz ]
+                                oax : f32 [ (s_ == 0) ? anch_lx : anch_rx ]
                                 inx : f32 [ ecx + (ecx - oax) ]
-                                for [ q8: i32 0, q8 < hc9.nv, q8 += 1 ]
+                                for [ q8: i32 0, q8 < hc_.nv, q8 += 1 ]
                                     q83 : i32 [ q8 * 3 ]
-                                    ddx : f32 [ hc9.base[ q83 ] - inx ]
-                                    ddy : f32 [ hc9.base[ q83 + 1 ] - ecy ]
-                                    ddz : f32 [ hc9.base[ q83 + 2 ] - ecz ]
+                                    ddx : f32 [ hc_.base[ q83 ] - inx ]
+                                    ddy : f32 [ hc_.base[ q83 + 1 ] - ecy ]
+                                    ddz : f32 [ hc_.base[ q83 + 2 ] - ecz ]
                                     dd8 : f32 [ sqrt[ ddx*ddx + ddy*ddy + ddz*ddz ] / globe_rad ]
                                     if [ dd8 > 1.1 ] continue
                                     wc8 : f32 [ 1.0 - dd8 / 1.1 ]
-                                    if [ hc9.pin ] wc8 = wc8 * (1.0 - hc9.pin[ q8 ])
-                                    fo8 : f32 [ (1.0 + (cm9 - 1.0) * wc8) / (1.0 + (cap_carm - 1.0) * wc8) ]
-                                    bp9[ q83 ]     = inx + (bp9[ q83 ] - inx) * fo8
-                                    bp9[ q83 + 1 ] = ecy + (bp9[ q83 + 1 ] - ecy) * fo8
-                                    bp9[ q83 + 2 ] = ecz + (bp9[ q83 + 2 ] - ecz) * fo8
-                            cap_carm = cm9
+                                    if [ hc_.pin ] wc8 = wc8 * (1.0 - hc_.pin[ q8 ])
+                                    fo8 : f32 [ (1.0 + (cm_ - 1.0) * wc8) / (1.0 + (cap_carm - 1.0) * wc8) ]
+                                    bp_[ q83 ]     = inx + (bp_[ q83 ] - inx) * fo8
+                                    bp_[ q83 + 1 ] = ecy + (bp_[ q83 + 1 ] - ecy) * fo8
+                                    bp_[ q83 + 2 ] = ecz + (bp_[ q83 + 2 ] - ecz) * fo8
+                            cap_carm = cm_
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
                             cap_zamt = globe_rad * (0.06 + f32[ (cap_seed % 1000 + 1000) % 1000 ] / 1000.0 * 0.26)
                             cap_seed = cap_seed * 6364136223846793005 + 1442695040888963407
@@ -4134,7 +4134,7 @@ element ModelView
                             cap_lnsd = cap_seed
                             if [ nose_w ]
                                 if [ !cap_nd ]
-                                    cap_nd = new f32 [ hc9.nv * 3 ]
+                                    cap_nd = new f32 [ hc_.nv * 3 ]
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 una : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
                                 nam : f32 [ una * globe_rad * 0.42 ]
@@ -4147,26 +4147,26 @@ element ModelView
                                     cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                     ns3[ x8 ] = cap_pseed
                                 kn8 : f32 [ 1.0 / (globe_rad * 1.1) ]
-                                for [ q8: i32 0, q8 < hc9.nv, q8 += 1 ]
+                                for [ q8: i32 0, q8 < hc_.nv, q8 += 1 ]
                                     wn8 : f32 [ nose_w[ q8 ] ]
                                     if [ wn8 <= 0.0 ] continue
                                     q83 : i32 [ q8 * 3 ]
-                                    nx8 : f32 [ hc9.base[ q83 ] * kn8 ]
-                                    ny8 : f32 [ hc9.base[ q83 + 1 ] * kn8 ]
+                                    nx8 : f32 [ hc_.base[ q83 ] * kn8 ]
+                                    ny8 : f32 [ hc_.base[ q83 + 1 ] * kn8 ]
                                     for [ x8: i32 0, x8 < 3, x8 += 1 ]
                                         nd8 : f32 [ (vnoise2[ ns3[ x8 ], nx8, ny8 ] - 0.5) * 2.0 * nam * wn8 ]
-                                        bp9[ q83 + x8 ] += nd8 - cap_nd[ q83 + x8 ]
+                                        bp_[ q83 + x8 ] += nd8 - cap_nd[ q83 + x8 ]
                                         cap_nd[ q83 + x8 ] = nd8
                             if [ !cap_maw ]
-                                cap_maw = new f32 [ hc9.nv ]
-                                cap_mp = new f32 [ hc9.nv * 3 ]
+                                cap_maw = new f32 [ hc_.nv ]
+                                cap_mp = new f32 [ hc_.nv * 3 ]
                                 ilx : f32 [ eyec_lx + (eyec_lx - anch_lx) ]
                                 irx : f32 [ eyec_rx + (eyec_rx - anch_rx) ]
-                                for [ q7: i32 0, q7 < hc9.nv, q7 += 1 ]
+                                for [ q7: i32 0, q7 < hc_.nv, q7 += 1 ]
                                     q73 : i32 [ q7 * 3 ]
-                                    bx7 : f32 [ hc9.base[ q73 ] ]
-                                    by7 : f32 [ hc9.base[ q73 + 1 ] ]
-                                    bz7 : f32 [ hc9.base[ q73 + 2 ] ]
+                                    bx7 : f32 [ hc_.base[ q73 ] ]
+                                    by7 : f32 [ hc_.base[ q73 + 1 ] ]
+                                    bz7 : f32 [ hc_.base[ q73 + 2 ] ]
                                     dm7 : f32 [ 1e30 ]
                                     for [ p7: i32 0, p7 < 4, p7 += 1 ]
                                         px7 : f32 [ anch_lx ]
@@ -4192,7 +4192,7 @@ element ModelView
                                     wa7 : f32 [ (dm7 / globe_rad - 0.5) / 0.9 ]
                                     if [ wa7 < 0.0 ] wa7 = 0.0
                                     if [ wa7 > 1.0 ] wa7 = 1.0
-                                    if [ hc9.pin ] wa7 = wa7 * (1.0 - hc9.pin[ q7 ])
+                                    if [ hc_.pin ] wa7 = wa7 * (1.0 - hc_.pin[ q7 ])
                                     cap_maw[ q7 ] = wa7
                             cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                             umm : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
@@ -4204,38 +4204,38 @@ element ModelView
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 ms3[ x7 ] = cap_pseed
                             kw7 : f32 [ 1.0 / (globe_rad * (0.9 + umm * 2.6)) ]
-                            for [ q7: i32 0, q7 < hc9.nv, q7 += 1 ]
+                            for [ q7: i32 0, q7 < hc_.nv, q7 += 1 ]
                                 wa7 : f32 [ cap_maw[ q7 ] ]
                                 q73 : i32 [ q7 * 3 ]
-                                bx7 : f32 [ hc9.base[ q73 ] * kw7 ]
-                                by7 : f32 [ hc9.base[ q73 + 1 ] * kw7 ]
+                                bx7 : f32 [ hc_.base[ q73 ] * kw7 ]
+                                by7 : f32 [ hc_.base[ q73 + 1 ] * kw7 ]
                                 for [ x7: i32 0, x7 < 3, x7 += 1 ]
                                     mn7 : f32 [ (vnoise2[ ms3[ x7 ], bx7, by7 ] - 0.5) * 2.0 * mam * wa7 ]
-                                    bp9[ q73 + x7 ] += mn7 - cap_mp[ q73 + x7 ]
+                                    bp_[ q73 + x7 ] += mn7 - cap_mp[ q73 + x7 ]
                                     cap_mp[ q73 + x7 ] = mn7
                             if [ !cap_faw ]
-                                cap_faw = new f32 [ hc9.nv ]
+                                cap_faw = new f32 [ hc_.nv ]
                                 mly : f32 [ (anch_ly + eyec_ly) * 0.5 ]
                                 mlz : f32 [ (anch_lz + eyec_lz) * 0.5 ]
                                 mry : f32 [ (anch_ry + eyec_ry) * 0.5 ]
                                 mrz : f32 [ (anch_rz + eyec_rz) * 0.5 ]
-                                for [ q5: i32 0, q5 < hc9.nv, q5 += 1 ]
+                                for [ q5: i32 0, q5 < hc_.nv, q5 += 1 ]
                                     q53 : i32 [ q5 * 3 ]
-                                    lx5 : f32 [ hc9.base[ q53 ] - eyec_lx ]
-                                    ly5 : f32 [ hc9.base[ q53 + 1 ] - mly ]
-                                    lz5 : f32 [ hc9.base[ q53 + 2 ] - mlz ]
-                                    rx5 : f32 [ hc9.base[ q53 ] - eyec_rx ]
-                                    ry5 : f32 [ hc9.base[ q53 + 1 ] - mry ]
-                                    rz5 : f32 [ hc9.base[ q53 + 2 ] - mrz ]
+                                    lx5 : f32 [ hc_.base[ q53 ] - eyec_lx ]
+                                    ly5 : f32 [ hc_.base[ q53 + 1 ] - mly ]
+                                    lz5 : f32 [ hc_.base[ q53 + 2 ] - mlz ]
+                                    rx5 : f32 [ hc_.base[ q53 ] - eyec_rx ]
+                                    ry5 : f32 [ hc_.base[ q53 + 1 ] - mry ]
+                                    rz5 : f32 [ hc_.base[ q53 + 2 ] - mrz ]
                                     dl5 : f32 [ sqrt[ lx5*lx5 + ly5*ly5 + lz5*lz5 ] ]
                                     dr5 : f32 [ sqrt[ rx5*rx5 + ry5*ry5 + rz5*rz5 ] ]
                                     dm5 : f32 [ (dl5 < dr5) ? dl5 : dr5 ]
                                     wf5 : f32 [ dm5 / (globe_rad * 0.6) ]
                                     if [ wf5 > 1.0 ] wf5 = 1.0
-                                    if [ hc9.pin ] wf5 = wf5 * (1.0 - hc9.pin[ q5 ])
+                                    if [ hc_.pin ] wf5 = wf5 * (1.0 - hc_.pin[ q5 ])
                                     cap_faw[ q5 ] = wf5
                             if [ !cap_fd ]
-                                cap_fd = new f32 [ hc9.nv * 3 ]
+                                cap_fd = new f32 [ hc_.nv * 3 ]
                             cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                             unf : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
                             fam : f32 [ unf * globe_rad * 0.20 ]
@@ -4248,19 +4248,19 @@ element ModelView
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 fs3[ x6 ] = cap_pseed
                             kf6 : f32 [ 1.0 / (globe_rad * 3.4) ]
-                            for [ q6: i32 0, q6 < hc9.nv, q6 += 1 ]
+                            for [ q6: i32 0, q6 < hc_.nv, q6 += 1 ]
                                 wf6 : f32 [ cap_faw[ q6 ] ]
                                 if [ nose_w ] wf6 = wf6 * (1.0 - nose_w[ q6 ])
                                 q63 : i32 [ q6 * 3 ]
-                                fx6 : f32 [ hc9.base[ q63 ] * kf6 ]
-                                fy6 : f32 [ hc9.base[ q63 + 1 ] * kf6 ]
+                                fx6 : f32 [ hc_.base[ q63 ] * kf6 ]
+                                fy6 : f32 [ hc_.base[ q63 + 1 ] * kf6 ]
                                 for [ x6: i32 0, x6 < 3, x6 += 1 ]
                                     fd6 : f32 [ (vnoise2[ fs3[ x6 ], fx6, fy6 ] - 0.5) * 2.0 * fam * wf6 ]
-                                    bp9[ q63 + x6 ] += fd6 - cap_fd[ q63 + x6 ]
+                                    bp_[ q63 + x6 ] += fd6 - cap_fd[ q63 + x6 ]
                                     cap_fd[ q63 + x6 ] = fd6
                             if [ eye_w ]
                                 if [ !cap_ed ]
-                                    cap_ed = new f32 [ hc9.nv * 3 ]
+                                    cap_ed = new f32 [ hc_.nv * 3 ]
                                 cap_pseed = cap_pseed * 6364136223846793005 + 1442695040888963407
                                 ue4 : f32 [ f32[ (cap_pseed % 1000 + 1000) % 1000 ] / 1000.0 ]
                                 ed4 : f32 [ ue4 * 0.26 ]
@@ -4268,22 +4268,22 @@ element ModelView
                                 if [ (cap_pseed % 1000 + 1000) % 1000 < 250 ] ed4 = 0.0 - ue4 * 0.05
                                 if [ cap_clean ] ed4 = 0.0
                                 mpx4 : f32 [ 0.0 - anch_lx ]
-                                for [ q4: i32 0, q4 < hc9.nv, q4 += 1 ]
+                                for [ q4: i32 0, q4 < hc_.nv, q4 += 1 ]
                                     q43 : i32 [ q4 * 3 ]
                                     w4 : f32 [ eye_w[ q4 ] ]
-                                    if [ hc9.pin ] w4 = w4 * (1.0 - hc9.pin[ q4 ])
-                                    dx4 : f32 [ hc9.base[ q43 ] - anch_lx ]
-                                    mx4 : f32 [ hc9.base[ q43 ] - mpx4 ]
+                                    if [ hc_.pin ] w4 = w4 * (1.0 - hc_.pin[ q4 ])
+                                    dx4 : f32 [ hc_.base[ q43 ] - anch_lx ]
+                                    mx4 : f32 [ hc_.base[ q43 ] - mpx4 ]
                                     ox4 : f32 [ (dx4*dx4 < mx4*mx4) ? dx4 : mx4 ]
-                                    dy4 : f32 [ hc9.base[ q43 + 1 ] - anch_ly ]
-                                    dz4 : f32 [ hc9.base[ q43 + 2 ] - anch_lz ]
+                                    dy4 : f32 [ hc_.base[ q43 + 1 ] - anch_ly ]
+                                    dz4 : f32 [ hc_.base[ q43 + 2 ] - anch_lz ]
                                     s4  : f32 [ ed4 * w4 ]
                                     tx4 : f32 [ ox4 * s4 ]
                                     ty4 : f32 [ dy4 * s4 ]
                                     tz4 : f32 [ dz4 * s4 ]
-                                    bp9[ q43 ]     += tx4 - cap_ed[ q43 ]
-                                    bp9[ q43 + 1 ] += ty4 - cap_ed[ q43 + 1 ]
-                                    bp9[ q43 + 2 ] += tz4 - cap_ed[ q43 + 2 ]
+                                    bp_[ q43 ]     += tx4 - cap_ed[ q43 ]
+                                    bp_[ q43 + 1 ] += ty4 - cap_ed[ q43 + 1 ]
+                                    bp_[ q43 + 2 ] += tz4 - cap_ed[ q43 + 2 ]
                                     cap_ed[ q43 ]     = tx4
                                     cap_ed[ q43 + 1 ] = ty4
                                     cap_ed[ q43 + 2 ] = tz4
@@ -4335,7 +4335,7 @@ element ModelView
                     if [ aimed && bd1 >= fpc.dist_min ]
                         apply_eyes_down[]
                         cap_seen = 0
-                        for [ vi9: i32 0, vi9 < 8, vi9 += 1 ] cap_vis[ vi9 ] = 1
+                        for [ vi_: i32 0, vi_ < 8, vi_ += 1 ] cap_vis[ vi_ ] = 1
                         capture_state = 1
                     el
                         cap_look_i = 0
@@ -4376,8 +4376,8 @@ element ModelView
                                 capture_left -= 1
                                 cap_look_i += 1
                                 if [ cap_look_i >= fpc.looks ] cap_look_i = 0
-                                wi9 : i32 [ cap_idx - 1 ]
-                                log 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
+                                wi_ : i32 [ cap_idx - 1 ]
+                                log 'gen: {wi_}-face0.png + {wi_}.agi, {capture_left} left'
                                 if [ capture_left == 0 ]
                                     log 'plot capture complete: {cap_idx} samples'
                                     if [ fpc.gen > 0 ] exit[ 0 ]
@@ -4408,8 +4408,8 @@ element ModelView
                     capture_left -= 1
                     cap_look_i += 1
                     if [ cap_look_i >= fpc.looks ] cap_look_i = 0
-                    wi9 : i32 [ cap_idx - 1 ]
-                    log 'gen: {wi9}-face0.png + {wi9}.agi, {capture_left} left'
+                    wi_ : i32 [ cap_idx - 1 ]
+                    log 'gen: {wi_}-face0.png + {wi_}.agi, {capture_left} left'
                     if [ capture_left == 0 ]
                         log 'plot capture complete: {cap_idx} samples'
                         if [ fpc.gen > 0 ] exit[ 0 ]
@@ -4796,56 +4796,56 @@ element hyperspace : trinity
         if [ !cam_rig ]
             cam_rig = CamRig [ cameras: cameras ]
             cam_rig.hold[]
-        n9 : i32 [ cam_rig.count[] ]
+        n_ : i32 [ cam_rig.count[] ]
         cam_name = vec string []
         cam_name.hold[]
         cam_dev = vec string []
         cam_dev.hold[]
-        sz9 : i32 [ n9 * 5 ]
-        cam_cfg = new f32 [ sz9 ]
-        for [ i9: i32 0, i9 < n9, i9 += 1 ]
-            c9 : cam_rig.at[ i9 ]
-            cam_name += c9.name
-            cam_dev  += c9.dev
-            cam_cfg[ i9 * 5 + 0 ] = c9.x
-            cam_cfg[ i9 * 5 + 1 ] = c9.y
-            cam_cfg[ i9 * 5 + 2 ] = c9.z
-            cam_cfg[ i9 * 5 + 3 ] = c9.tilt
-            cam_cfg[ i9 * 5 + 4 ] = c9.fov
-        cam_n = n9
+        sz_ : i32 [ n_ * 5 ]
+        cam_cfg = new f32 [ sz_ ]
+        for [ i_: i32 0, i_ < n_, i_ += 1 ]
+            c_ : cam_rig.at[ i_ ]
+            cam_name += c_.name
+            cam_dev  += c_.dev
+            cam_cfg[ i_ * 5 + 0 ] = c_.x
+            cam_cfg[ i_ * 5 + 1 ] = c_.y
+            cam_cfg[ i_ * 5 + 2 ] = c_.z
+            cam_cfg[ i_ * 5 + 3 ] = c_.tilt
+            cam_cfg[ i_ * 5 + 4 ] = c_.fov
+        cam_n = n_
 
     # index of a named camera (tl, tr); -1 when there is no such name
     func cam_index [ nm: string ] -> i32
         sync_cams[]
-        for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
-            if [ cam_name[ i9 ].compare[ nm ] == 0 ] return i9
+        for [ i_: i32 0, i_ < cam_n, i_ += 1 ]
+            if [ cam_name[ i_ ].compare[ nm ] == 0 ] return i_
         return -1
 
     # /dev path of a named camera; null when unknown
     func cam_by_name [ nm: string ] -> string
-        i9 : i32 [ cam_index[ nm ] ]
-        if [ i9 < 0 ] return null
-        return cam_dev[ i9 ]
+        i_ : i32 [ cam_index[ nm ] ]
+        if [ i_ < 0 ] return null
+        return cam_dev[ i_ ]
 
     # role prefix for camera i: the configured name (tl, tr), so
     # filenames and .agi keys carry the rig's identities
-    func cam_role [ i9: i32 ] -> string
+    func cam_role [ i_: i32 ] -> string
         sync_cams[]
-        if [ i9 >= 0 && i9 < cam_n ] return cam_name[ i9 ]
-        return '{i9}'
+        if [ i_ >= 0 && i_ < cam_n ] return cam_name[ i_ ]
+        return '{i_}'
 
     # live view for a camera name; resolved through elements so it is never
     # a stale instance, and cached in camera_views for callers that iterate
     func camera_view [ nm: string ] -> CameraView
         if [ !elements ] return null
-        v9 : cast CameraView [ elements[ nm ] ]
-        if [ v9 ]
+        v_ : cast CameraView [ elements[ nm ] ]
+        if [ v_ ]
             if [ !camera_views ] camera_views = map CameraView[string] [ ]
-            camera_views[ nm ] = v9
-        return v9
+            camera_views[ nm ] = v_
+        return v_
 
-    func cam_view [ i9: i32 ] -> CameraView
-        return camera_view[ cam_role[ i9 ] ]
+    func cam_view [ i_: i32 ] -> CameraView
+        return camera_view[ cam_role[ i_ ] ]
 
     func rec_dir [] -> path
         mkdir[ '/src/hyperspace-sessions', 493 ]
@@ -4862,10 +4862,10 @@ element hyperspace : trinity
         # every listed camera must exist or recording is a lie
         sync_cams[]
         for [ cd: i32 0, cd < cam_n, cd += 1 ]
-            dv9 : cam_dev[ cd ]
-            dp9 : path '{dv9}'
-            if [ !dp9.exists[] ]
-                log 'record ERROR: camera missing — {dv9}'
+            dv_ : cam_dev[ cd ]
+            dp_ : path '{dv_}'
+            if [ !dp_.exists[] ]
+                log 'record ERROR: camera missing — {dv_}'
                 return
         rd : rec_dir[]
         rec_i = 0
@@ -4911,10 +4911,10 @@ element hyperspace : trinity
         # the dot: a new random spot AROUND the circle, quick glide
         au_sx = au_dx
         au_sy = au_dy
-        ang9 : f32 [ rec_frand[] * 6.2831853 ]
-        rad9 : f32 [ 0.06 + rec_frand[] * 0.16 ]
-        au_tx = au_hx + cos[ ang9 ] * rad9
-        au_ty = au_hy + sin[ ang9 ] * rad9
+        ang_ : f32 [ rec_frand[] * 6.2831853 ]
+        rad_ : f32 [ 0.06 + rec_frand[] * 0.16 ]
+        au_tx = au_hx + cos[ ang_ ] * rad_
+        au_ty = au_hy + sin[ ang_ ] * rad_
         if [ au_tx < 0.03 ] au_tx = 0.03
         if [ au_tx > 0.97 ] au_tx = 0.97
         if [ au_ty < 0.03 ] au_ty = 0.03
@@ -5095,14 +5095,14 @@ element hyperspace : trinity
                 ann_lc = -1
                 log 'annotate: all pairs plotted'
                 return
-            fid9 : ann_files[ ann_i ]
-            cs9 : cam_role[ ann_cam ]
-            ip9 : path '{rec_dir[]}/{fid9}-{cs9}.png'
-            if [ !ip9.exists[] ]
+            fid_ : ann_files[ ann_i ]
+            cs_ : cam_role[ ann_cam ]
+            ip_ : path '{rec_dir[]}/{fid_}-{cs_}.png'
+            if [ !ip_.exists[] ]
                 ann_sub += 1
                 continue
             if [ redo_oc ] break
-            if [ !ann_have[ fid9, ann_cam, ann_sub ] ] break
+            if [ !ann_have[ fid_, ann_cam, ann_sub ] ] break
             ann_sub += 1
         ann_load2[]
 
@@ -5330,17 +5330,17 @@ element hyperspace : trinity
         ax.floats[15] = fmx - 0.5
         ax.floats[16] = fmy - 0.5
         ax.floats[17] = sc5 * 1.75
-        fd9 : tb_f0
-        ld9 : tb_l0
-        rd9 : tb_r0
+        fd_ : tb_f0
+        ld_ : tb_l0
+        rd_ : tb_r0
         if [ c == 1 ]
-            fd9 = tb_f1
-            ld9 = tb_l1
-            rd9 = tb_r1
-        for [ q9: i32 0, q9 < 1024, q9 += 1 ]
-            fd9.floats[ q9 ] = fc5.floats[ q9 ]
-            ld9.floats[ q9 ] = lc.floats[ q9 ]
-            rd9.floats[ q9 ] = rc.floats[ q9 ]
+            fd_ = tb_f1
+            ld_ = tb_l1
+            rd_ = tb_r1
+        for [ q_: i32 0, q_ < 1024, q_ += 1 ]
+            fd_.floats[ q_ ] = fc5.floats[ q_ ]
+            ld_.floats[ q_ ] = lc.floats[ q_ ]
+            rd_.floats[ q_ ] = rc.floats[ q_ ]
         for [ q8: i32 0, q8 < 18, q8 += 1 ]
             tb_a36[ c * 18 + q8 ] = ax.floats[ q8 ]
         return true
@@ -5397,10 +5397,10 @@ element hyperspace : trinity
     public func start_bench []
         sync_cams[]
         for [ cd: i32 0, cd < cam_n, cd += 1 ]
-            dv9 : cam_dev[ cd ]
-            dp9 : path '{dv9}'
-            if [ !dp9.exists[] ]
-                log 'benchmark ERROR: camera missing — {dv9}'
+            dv_ : cam_dev[ cd ]
+            dp_ : path '{dv_}'
+            if [ !dp_.exists[] ]
+                log 'benchmark ERROR: camera missing — {dv_}'
                 return
         bd : bench_dir[]
         bench_i = 0
@@ -5457,10 +5457,10 @@ element hyperspace : trinity
     # a camera is usable when its three anchor points carry real values.
     # hidden cameras read -999, which ann_have cannot distinguish from a
     # plotted point — it only knows the key exists
-    func rec_cam_ok [ fid: string, c9: i32 ] -> bool
-        for [ s9: i32 0, s9 < 3, s9 += 1 ]
-            v9 : rec_read[ fid, c9, s9 ]
-            if [ v9.x < -100.0 ] return false
+    func rec_cam_ok [ fid: string, c_: i32 ] -> bool
+        for [ s_: i32 0, s_ < 3, s_ += 1 ]
+            v_ : rec_read[ fid, c_, s_ ]
+            if [ v_.x < -100.0 ] return false
         return true
 
     # which camera saw the face: 0 = tl only, 1 = tr only, 2 = both,
@@ -5480,42 +5480,42 @@ element hyperspace : trinity
     func calib_nose []
         if [ nose_k_done ] return
         nose_k_done = true
-        for [ c9: i32 0, c9 < cam_n && c9 < 8, c9 += 1 ]
-            acc9 : f32 [ 0.0 ]
-            cnt9 : i32 [ 0 ]
-            k9 : i32 [ 0 ]
-            miss9 : i32 [ 0 ]
-            while [ miss9 < 500 ]
-                fid9 : string '{k9}'
-                fp9 : path '{rec_dir[]}/{k9}.agi'
-                if [ !fp9.exists[] ]
-                    k9 += 1
-                    miss9 += 1
+        for [ c_: i32 0, c_ < cam_n && c_ < 8, c_ += 1 ]
+            acc_ : f32 [ 0.0 ]
+            cnt_ : i32 [ 0 ]
+            k_ : i32 [ 0 ]
+            miss_ : i32 [ 0 ]
+            while [ miss_ < 500 ]
+                fid_ : string '{k_}'
+                fp_ : path '{rec_dir[]}/{k_}.agi'
+                if [ !fp_.exists[] ]
+                    k_ += 1
+                    miss_ += 1
                     continue
-                miss9 = 0
-                if [ rec_cam_ok[ fid9, c9 ] ]
-                    l9 : rec_read[ fid9, c9, 0 ]
-                    r9 : rec_read[ fid9, c9, 1 ]
-                    n9 : rec_read[ fid9, c9, 2 ]
-                    sxq : f32 [ l9.x - r9.x ]
-                    syq : f32 [ l9.y - r9.y ]
+                miss_ = 0
+                if [ rec_cam_ok[ fid_, c_ ] ]
+                    l_ : rec_read[ fid_, c_, 0 ]
+                    r_ : rec_read[ fid_, c_, 1 ]
+                    n_ : rec_read[ fid_, c_, 2 ]
+                    sxq : f32 [ l_.x - r_.x ]
+                    syq : f32 [ l_.y - r_.y ]
                     spq : f32 [ sqrt[ sxq*sxq + syq*syq ] ]
                     if [ spq > 0.01 ]
-                        myq : f32 [ (l9.y + r9.y) * 0.5 ]
-                        acc9 += (n9.y - myq) / spq
-                        cnt9 += 1
-                k9 += 1
-            nose_k[ c9 ] = (cnt9 > 0) ? acc9 / f32[ cnt9 ] : 0.55
-            log 'calib: {cam_role[ c9 ]} nose drop {nose_k[ c9 ]} from {cnt9} records'
+                        myq : f32 [ (l_.y + r_.y) * 0.5 ]
+                        acc_ += (n_.y - myq) / spq
+                        cnt_ += 1
+                k_ += 1
+            nose_k[ c_ ] = (cnt_ > 0) ? acc_ / f32[ cnt_ ] : 0.55
+            log 'calib: {cam_role[ c_ ]} nose drop {nose_k[ c_ ]} from {cnt_} records'
 
-    func rec_solve [ fid: string, out9: @f32 ] -> bool
-        vis9 : i32 [ rec_vis[ fid ] ]
-        if [ vis9 < 0 ] return false
-        if [ vis9 < 2 ]
+    func rec_solve [ fid: string, out_: @f32 ] -> bool
+        vis_ : i32 [ rec_vis[ fid ] ]
+        if [ vis_ < 0 ] return false
+        if [ vis_ < 2 ]
             # one camera has the shot — solve from that one, whichever it is
-            l5 : rec_read[ fid, vis9, 0 ]
-            r5 : rec_read[ fid, vis9, 1 ]
-            n5 : rec_read[ fid, vis9, 2 ]
+            l5 : rec_read[ fid, vis_, 0 ]
+            r5 : rec_read[ fid, vis_, 1 ]
+            n5 : rec_read[ fid, vis_, 2 ]
             mx5 : f32 [ (l5.x + r5.x) * 0.5 ]
             my5 : f32 [ (l5.y + r5.y) * 0.5 ]
             sx5 : f32 [ l5.x - r5.x ]
@@ -5527,32 +5527,32 @@ element hyperspace : trinity
             ya5 : f32 [ 2.0 * (n5.x - mx5) / sp5 ]
             if [ ya5 > 1.0 ] ya5 = 1.0
             if [ ya5 < -1.0 ] ya5 = -1.0
-            out9[0] = asin[ ya5 ] * 0.7
-            pa5 : f32 [ ((n5.y - my5) / sp5 - nose_k[ vis9 ]) * 1.4 ]
+            out_[0] = asin[ ya5 ] * 0.7
+            pa5 : f32 [ ((n5.y - my5) / sp5 - nose_k[ vis_ ]) * 1.4 ]
             if [ pa5 > 1.0 ] pa5 = 1.0
             if [ pa5 < -1.0 ] pa5 = -1.0
-            out9[1] = asin[ pa5 ]
+            out_[1] = asin[ pa5 ]
             rr5 : f32 [ atan2[ sy5, sx5 ] ]
             if [ rr5 > 1.5707963 ] rr5 = rr5 - 3.1415926
             if [ rr5 < -1.5707963 ] rr5 = rr5 + 3.1415926
-            out9[2] = rr5
+            out_[2] = rr5
             # only the camera that saw it gets a plot; the sibling
             # is unknown, never a copy of the one that did
             for [ q5: i32 3, q5 < 9, q5 += 1 ]
-                out9[ q5 ] = -999.0
-            b5 : i32 [ 3 + vis9 * 3 ]
-            out9[ b5 + 0 ] = mx5
-            out9[ b5 + 1 ] = my5
-            out9[ b5 + 2 ] = sp5
+                out_[ q5 ] = -999.0
+            b5 : i32 [ 3 + vis_ * 3 ]
+            out_[ b5 + 0 ] = mx5
+            out_[ b5 + 1 ] = my5
+            out_[ b5 + 2 ] = sp5
             # one camera cannot fix a point in space, only a ray
-            out9[9]  = -999.0
-            out9[10] = -999.0
-            out9[11] = -999.0
+            out_[9]  = -999.0
+            out_[10] = -999.0
+            out_[11] = -999.0
             return true
         pw : local f32 [ 9 ]
-        for [ s9: i32 0, s9 < 3, s9 += 1 ]
-            pt : rec_read[ fid, 0, s9 ]
-            pb : rec_read[ fid, 1, s9 ]
+        for [ s_: i32 0, s_ < 3, s_ += 1 ]
+            pt : rec_read[ fid, 0, s_ ]
+            pb : rec_read[ fid, 1, s_ ]
             o1 : local f32 [ 3 ]
             d1 : local f32 [ 3 ]
             o2 : local f32 [ 3 ]
@@ -5562,16 +5562,16 @@ element hyperspace : trinity
             w0x : f32 [ o1[0] - o2[0] ]
             w0y : f32 [ o1[1] - o2[1] ]
             w0z : f32 [ o1[2] - o2[2] ]
-            b9 : f32 [ d1[0]*d2[0] + d1[1]*d2[1] + d1[2]*d2[2] ]
+            b_ : f32 [ d1[0]*d2[0] + d1[1]*d2[1] + d1[2]*d2[2] ]
             dd : f32 [ d1[0]*w0x + d1[1]*w0y + d1[2]*w0z ]
             ee : f32 [ d2[0]*w0x + d2[1]*w0y + d2[2]*w0z ]
-            den : f32 [ 1.0 - b9 * b9 ]
+            den : f32 [ 1.0 - b_ * b_ ]
             if [ den < 0.000001 ] den = 0.000001
-            t1 : f32 [ (b9 * ee - dd) / den ]
-            t2 : f32 [ (ee - b9 * dd) / den ]
-            pw[ s9*3 + 0 ] = (o1[0] + d1[0]*t1 + o2[0] + d2[0]*t2) * 0.5
-            pw[ s9*3 + 1 ] = (o1[1] + d1[1]*t1 + o2[1] + d2[1]*t2) * 0.5
-            pw[ s9*3 + 2 ] = (o1[2] + d1[2]*t1 + o2[2] + d2[2]*t2) * 0.5
+            t1 : f32 [ (b_ * ee - dd) / den ]
+            t2 : f32 [ (ee - b_ * dd) / den ]
+            pw[ s_*3 + 0 ] = (o1[0] + d1[0]*t1 + o2[0] + d2[0]*t2) * 0.5
+            pw[ s_*3 + 1 ] = (o1[1] + d1[1]*t1 + o2[1] + d2[1]*t2) * 0.5
+            pw[ s_*3 + 2 ] = (o1[2] + d1[2]*t1 + o2[2] + d2[2]*t2) * 0.5
         xax : local f32 [ 3 ]
         xax[0] = 0.0 - (pw[0] - pw[3])
         xax[1] = pw[1] - pw[4]
@@ -5600,38 +5600,38 @@ element hyperspace : trinity
         yx : f32 [ zy*xax[2] - zz*xax[1] ]
         yy : f32 [ zz*xax[0] - zx*xax[2] ]
         yz : f32 [ zx*xax[1] - zy*xax[0] ]
-        hy9 : f32 [ atan2[ zx, zz ] ]
-        sp9 : f32 [ 0.0 - zy ]
-        if [ sp9 > 1.0 ] sp9 = 1.0
-        if [ sp9 < -1.0 ] sp9 = -1.0
-        hp9 : f32 [ asin[ sp9 ] ]
-        cy9 : f32 [ cos[ hy9 ] ]
-        sy9 : f32 [ sin[ hy9 ] ]
-        cp9 : f32 [ cos[ hp9 ] ]
-        sp10 : f32 [ sin[ hp9 ] ]
+        hy_ : f32 [ atan2[ zx, zz ] ]
+        sp_ : f32 [ 0.0 - zy ]
+        if [ sp_ > 1.0 ] sp_ = 1.0
+        if [ sp_ < -1.0 ] sp_ = -1.0
+        hp_ : f32 [ asin[ sp_ ] ]
+        cy_ : f32 [ cos[ hy_ ] ]
+        sy_ : f32 [ sin[ hy_ ] ]
+        cp_ : f32 [ cos[ hp_ ] ]
+        sp10 : f32 [ sin[ hp_ ] ]
         # R_yp x-hat and y-hat columns (Ry*Rx applied to unit axes)
-        ax1 : f32 [ cy9 ]
+        ax1 : f32 [ cy_ ]
         ay1 : f32 [ 0.0 ]
-        az1 : f32 [ 0.0 - sy9 ]
-        bx1 : f32 [ sy9 * sp10 ]
-        by1 : f32 [ cp9 ]
-        bz1 : f32 [ cy9 * sp10 ]
-        hr9 : f32 [ atan2[ yx*ax1 + yy*ay1 + yz*az1, yx*bx1 + yy*by1 + yz*bz1 ] ]
-        out9[0] = hy9
-        out9[1] = hp9
-        out9[2] = hr9
-        for [ c9: i32 0, c9 < 2, c9 += 1 ]
-            l2 : rec_read[ fid, c9, 0 ]
-            r2 : rec_read[ fid, c9, 1 ]
+        az1 : f32 [ 0.0 - sy_ ]
+        bx1 : f32 [ sy_ * sp10 ]
+        by1 : f32 [ cp_ ]
+        bz1 : f32 [ cy_ * sp10 ]
+        hr_ : f32 [ atan2[ yx*ax1 + yy*ay1 + yz*az1, yx*bx1 + yy*by1 + yz*bz1 ] ]
+        out_[0] = hy_
+        out_[1] = hp_
+        out_[2] = hr_
+        for [ c_: i32 0, c_ < 2, c_ += 1 ]
+            l2 : rec_read[ fid, c_, 0 ]
+            r2 : rec_read[ fid, c_, 1 ]
             sx2 : f32 [ l2.x - r2.x ]
             sy2 : f32 [ l2.y - r2.y ]
-            out9[ 3 + c9*3 + 0 ] = (l2.x + r2.x) * 0.5
-            out9[ 3 + c9*3 + 1 ] = (l2.y + r2.y) * 0.5
-            out9[ 3 + c9*3 + 2 ] = sqrt[ sx2*sx2 + sy2*sy2 ]
+            out_[ 3 + c_*3 + 0 ] = (l2.x + r2.x) * 0.5
+            out_[ 3 + c_*3 + 1 ] = (l2.y + r2.y) * 0.5
+            out_[ 3 + c_*3 + 2 ] = sqrt[ sx2*sx2 + sy2*sy2 ]
         # eye midpoint in space, mapped to the gen frame like xax
-        out9[9]  = 0.0 - (pw[0] + pw[3]) * 0.5
-        out9[10] = (pw[1] + pw[4]) * 0.5
-        out9[11] = 0.0 - (pw[2] + pw[5]) * 0.5
+        out_[9]  = 0.0 - (pw[0] + pw[3]) * 0.5
+        out_[10] = (pw[1] + pw[4]) * 0.5
+        out_[11] = 0.0 - (pw[2] + pw[5]) * 0.5
         return true
 
     # load every solvable record for generation
@@ -5658,8 +5658,8 @@ element hyperspace : trinity
         k : i32 [ 0 ]
         miss7 : i32 [ 0 ]
         while [ miss7 < 500 ]
-            fp9 : path '{rd}/{k}.agi'
-            if [ !fp9.exists[] ]
+            fp_ : path '{rd}/{k}.agi'
+            if [ !fp_.exists[] ]
                 k += 1
                 miss7 += 1
                 continue
@@ -5668,57 +5668,57 @@ element hyperspace : trinity
             k += 1
             if [ tn >= 4096 ] break
             # noise pairs (no face) become composite background patches
-            ns9 : cast string [ fp9.load[ typeid[ string ], null ] ]
-            if [ ns9 && ns9.index_of[ 'noise: true' ] >= 0 ]
+            ns_ : cast string [ fp_.load[ typeid[ string ], null ] ]
+            if [ ns_ && ns_.index_of[ 'noise: true' ] >= 0 ]
                 if [ recs_noise_n < 512 ]
                     recs_noise[ recs_noise_n ] = k - 1
                     recs_noise_n += 1
                 continue
-            for [ hc9: i32 0, hc9 < 2, hc9 += 1 ]
+            for [ hc_: i32 0, hc_ < 2, hc_ += 1 ]
                 if [ hair_n >= 256 ] break
-                hv9 : rec_read[ fid, hc9, 7 ]
-                if [ hv9.x < -100.0 ] continue
-                hnm : cam_role[ hc9 ]
+                hv_ : rec_read[ fid, hc_, 7 ]
+                if [ hv_.x < -100.0 ] continue
+                hnm : cam_role[ hc_ ]
                 him : Image [ uri: path '{rd}/{k - 1}-{hnm}.png' ]
                 if [ him.width <= 0 ] continue
                 hp8 : @u8 [ him.pixels ]
                 hnc : i32 [ him.channels ]
-                hs9 : f32 [ f32[ him.width ] * 0.16 ]
-                hx9 : f32 [ hv9.x * f32[ him.width ] ]
-                hy9 : f32 [ hv9.y * f32[ him.height ] ]
-                for [ py9: i32 0, py9 < 32, py9 += 1 ]
-                    sy9 : i32 [ i32[ hy9 + (f32[ py9 ] / 31.0 - 0.5) * hs9 ] ]
-                    if [ sy9 < 0 ] sy9 = 0
-                    if [ sy9 > him.height - 1 ] sy9 = him.height - 1
-                    for [ px9: i32 0, px9 < 32, px9 += 1 ]
-                        sx9 : i32 [ i32[ hx9 + (f32[ px9 ] / 31.0 - 0.5) * hs9 ] ]
-                        if [ sx9 < 0 ] sx9 = 0
-                        if [ sx9 > him.width - 1 ] sx9 = him.width - 1
-                        ho9 : i64 [ (i64[ sy9 ] * i64[ him.width ] + i64[ sx9 ]) * i64[ hnc ] ]
-                        hd9 : i64 [ i64[ hair_n ] * 1024 + i64[ py9 ] * 32 + i64[ px9 ] ]
-                        hair_pat[ hd9 ] = hp8[ ho9 ]
+                hs_ : f32 [ f32[ him.width ] * 0.16 ]
+                hx_ : f32 [ hv_.x * f32[ him.width ] ]
+                hy_ : f32 [ hv_.y * f32[ him.height ] ]
+                for [ py_: i32 0, py_ < 32, py_ += 1 ]
+                    sy_ : i32 [ i32[ hy_ + (f32[ py_ ] / 31.0 - 0.5) * hs_ ] ]
+                    if [ sy_ < 0 ] sy_ = 0
+                    if [ sy_ > him.height - 1 ] sy_ = him.height - 1
+                    for [ px_: i32 0, px_ < 32, px_ += 1 ]
+                        sx_ : i32 [ i32[ hx_ + (f32[ px_ ] / 31.0 - 0.5) * hs_ ] ]
+                        if [ sx_ < 0 ] sx_ = 0
+                        if [ sx_ > him.width - 1 ] sx_ = him.width - 1
+                        ho_ : i64 [ (i64[ sy_ ] * i64[ him.width ] + i64[ sx_ ]) * i64[ hnc ] ]
+                        hd_ : i64 [ i64[ hair_n ] * 1024 + i64[ py_ ] * 32 + i64[ px_ ] ]
+                        hair_pat[ hd_ ] = hp8[ ho_ ]
                 hair_n += 1
-            o9 : local f32 [ 12 ]
-            if [ !rec_solve[ fid, o9 ] ] continue
-            for [ q9: i32 0, q9 < 9, q9 += 1 ]
-                tmp_dat[ tn * 9 + q9 ] = o9[ q9 ]
+            o_ : local f32 [ 12 ]
+            if [ !rec_solve[ fid, o_ ] ] continue
+            for [ q_: i32 0, q_ < 9, q_ += 1 ]
+                tmp_dat[ tn * 9 + q_ ] = o_[ q_ ]
             for [ q8: i32 0, q8 < 3, q8 += 1 ]
-                tmp_pos[ tn * 3 + q8 ] = o9[ 9 + q8 ]
-            lk9 : rec_read[ fid, 0, 8 ]
-            tmp_look[ tn * 2 + 0 ] = lk9.x
-            tmp_look[ tn * 2 + 1 ] = lk9.y
-            hd9 : rec_read[ fid, 0, 9 ]
-            tmp_head[ tn * 2 + 0 ] = hd9.x
-            tmp_head[ tn * 2 + 1 ] = hd9.y
+                tmp_pos[ tn * 3 + q8 ] = o_[ 9 + q8 ]
+            lk_ : rec_read[ fid, 0, 8 ]
+            tmp_look[ tn * 2 + 0 ] = lk_.x
+            tmp_look[ tn * 2 + 1 ] = lk_.y
+            hd_ : rec_read[ fid, 0, 9 ]
+            tmp_head[ tn * 2 + 0 ] = hd_.x
+            tmp_head[ tn * 2 + 1 ] = hd_.y
             # the annotated corner line per camera: the photo rotates by
             # it so the mask can roll freely and stay registered
-            for [ ca9: i32 0, ca9 < 2, ca9 += 1 ]
-                tmp_ang[ tn * 2 + ca9 ] = -999.0
-                if [ tmp_dat[ tn * 9 + 5 + ca9 * 3 ] < 0.02 ] continue
-                al9 : rec_read[ fid, ca9, 0 ]
-                ar9 : rec_read[ fid, ca9, 1 ]
-                if [ al9.x < -900.0 || ar9.x < -900.0 ] continue
-                tmp_ang[ tn * 2 + ca9 ] = atan2[ al9.y - ar9.y, al9.x - ar9.x ]
+            for [ ca_: i32 0, ca_ < 2, ca_ += 1 ]
+                tmp_ang[ tn * 2 + ca_ ] = -999.0
+                if [ tmp_dat[ tn * 9 + 5 + ca_ * 3 ] < 0.02 ] continue
+                al_ : rec_read[ fid, ca_, 0 ]
+                ar_ : rec_read[ fid, ca_, 1 ]
+                if [ al_.x < -900.0 || ar_.x < -900.0 ] continue
+                tmp_ang[ tn * 2 + ca_ ] = atan2[ al_.y - ar_.y, al_.x - ar_.x ]
             tmp_fid[ tn ] = k - 1
             tn += 1
         recs_n = 0
@@ -5743,21 +5743,21 @@ element hyperspace : trinity
         my6 : f32 [ sya[ tn / 2 ] ]
         mp6 : f32 [ spa[ tn / 2 ] ]
         for [ i6: i32 0, i6 < tn, i6 += 1 ]
-            dy9 : f32 [ (tmp_dat[ i6 * 9 + 0 ] - my6) * 57.29578 ]
-            dp9 : f32 [ (tmp_dat[ i6 * 9 + 1 ] - mp6) * 57.29578 ]
-            dr9 : f32 [ tmp_dat[ i6 * 9 + 2 ] * 57.29578 ]
-            bad9 : bool [ false ]
-            if [ dy9 > 60.0 || dy9 < -60.0 ] bad9 = true
-            if [ dp9 > 40.0 || dp9 < -40.0 ] bad9 = true
-            if [ dr9 > 40.0 || dr9 < -40.0 ] bad9 = true
+            dy_ : f32 [ (tmp_dat[ i6 * 9 + 0 ] - my6) * 57.29578 ]
+            dp_ : f32 [ (tmp_dat[ i6 * 9 + 1 ] - mp6) * 57.29578 ]
+            dr_ : f32 [ tmp_dat[ i6 * 9 + 2 ] * 57.29578 ]
+            bad_ : bool [ false ]
+            if [ dy_ > 60.0 || dy_ < -60.0 ] bad_ = true
+            if [ dp_ > 40.0 || dp_ < -40.0 ] bad_ = true
+            if [ dr_ > 40.0 || dr_ < -40.0 ] bad_ = true
             fid6 : i32 [ tmp_fid[ i6 ] ]
-            if [ bad9 ]
-                log 'rec {fid6}: REJECTED yaw={dy9} pitch={dp9} roll={dr9}'
+            if [ bad_ ]
+                log 'rec {fid6}: REJECTED yaw={dy_} pitch={dp_} roll={dr_}'
                 continue
-            recs_dat[ recs_n * 9 + 0 ] = dy9 / 57.29578
-            recs_dat[ recs_n * 9 + 1 ] = dp9 / 57.29578
-            for [ q9: i32 2, q9 < 9, q9 += 1 ]
-                recs_dat[ recs_n * 9 + q9 ] = tmp_dat[ i6 * 9 + q9 ]
+            recs_dat[ recs_n * 9 + 0 ] = dy_ / 57.29578
+            recs_dat[ recs_n * 9 + 1 ] = dp_ / 57.29578
+            for [ q_: i32 2, q_ < 9, q_ += 1 ]
+                recs_dat[ recs_n * 9 + q_ ] = tmp_dat[ i6 * 9 + q_ ]
             for [ q8: i32 0, q8 < 3, q8 += 1 ]
                 recs_pos[ recs_n * 3 + q8 ] = tmp_pos[ i6 * 3 + q8 ]
             recs_ang[ recs_n * 2 + 0 ] = tmp_ang[ i6 * 2 + 0 ]
@@ -5771,10 +5771,10 @@ element hyperspace : trinity
         mydeg : f32 [ my6 * 57.29578 ]
         mpdeg : f32 [ mp6 * 57.29578 ]
         log 'records: {recs_n} of {tn} poses usable, {recs_noise_n} noise frames, {hair_n} hair patches (bias removed: yaw={mydeg} pitch={mpdeg})'
-        np9 : i32 [ 0 ]
-        for [ i9: i32 0, i9 < recs_n, i9 += 1 ]
-            if [ recs_pos[ i9 * 3 ] > -900.0 ] np9 += 1
-        log 'records: {np9} of {recs_n} fix the head in space (both cameras annotated)'
+        np_ : i32 [ 0 ]
+        for [ i_: i32 0, i_ < recs_n, i_ += 1 ]
+            if [ recs_pos[ i_ * 3 ] > -900.0 ] np_ += 1
+        log 'records: {np_} of {recs_n} fix the head in space (both cameras annotated)'
 
     public func on_click [ ev: Event ]
         # batch generation is non-interactive: stray input on the gen
@@ -5910,9 +5910,9 @@ element hyperspace : trinity
             if [ !tb_pv ]
                 tb_pv = vec Texture []
                 tb_pv.hold[]
-                for [ p9: i32 0, p9 < 6, p9 += 1 ]
-                    tp9 : Texture [ vk: cv.vk, w: ux, width: 32, height: 32, linear: true ]
-                    tb_pv += tp9
+                for [ p_: i32 0, p_ < 6, p_ += 1 ]
+                    tp_ : Texture [ vk: cv.vk, w: ux, width: 32, height: 32, linear: true ]
+                    tb_pv += tp_
             n7 : i32 [ 0 ]
             for [ c7: i32 0, c7 < 2, c7 += 1 ]
                 v7 : cam_view[ c7 ]
@@ -5939,14 +5939,14 @@ element hyperspace : trinity
                     tb_ox = tb_ox * 0.7 + ox5 * 0.3
                     tb_oy = tb_oy * 0.7 + oy5 * 0.3
                     tb_oz = tb_oz * 0.7 + oz5 * 0.3
-                ax9 : tensor [ tensor_shape: 1x39 ]
+                ax_ : tensor [ tensor_shape: 1x39 ]
                 for [ q6: i32 0, q6 < 36, q6 += 1 ]
-                    ax9.floats[ q6 ] = tb_a36[ q6 ]
-                ax9.floats[36] = ox5
-                ax9.floats[37] = oy5
-                ax9.floats[38] = oz5
+                    ax_.floats[ q6 ] = tb_a36[ q6 ]
+                ax_.floats[36] = ox5
+                ax_.floats[37] = oy5
+                ax_.floats[38] = oz5
                 o6 : tensor [ tensor_shape: 1x4 ]
-                ts_look.forward6i[ tb_l0, tb_r0, tb_f0, tb_l1, tb_r1, tb_f1, ax9, o6, 32, 39 ]
+                ts_look.forward6i[ tb_l0, tb_r0, tb_f0, tb_l1, tb_r1, tb_f1, ax_, o6, 32, 39 ]
                 h7x : f32 [ o6.floats[0] ]
                 h7y : f32 [ o6.floats[1] ]
                 g7x : f32 [ o6.floats[2] ]
@@ -6009,8 +6009,8 @@ element hyperspace : trinity
                     cv.stroke_color[ '#ff0' ]
                     cv.stroke_width[ 2.0 ]
                     cv.paint[]
-                    b9 : i32 [ (c8 * 2 + e8) * 2 ]
-                    cv.arc[ vbx + tb_oc[ b9 + 0 ] * vbw, vby + tb_oc[ b9 + 1 ] * vbh, 3.0, 0.0, 6.2831853 ]
+                    b_ : i32 [ (c8 * 2 + e8) * 2 ]
+                    cv.arc[ vbx + tb_oc[ b_ + 0 ] * vbw, vby + tb_oc[ b_ + 1 ] * vbh, 3.0, 0.0, 6.2831853 ]
                     cv.fill_color[ '#f80' ]
                     cv.stroke_width[ 0.0 ]
                     cv.paint[]
@@ -6486,28 +6486,28 @@ element hyperspace : trinity
             e['rec-toolbar'] = HsToolbar [ elements: Elements [
                 'record':  HsButton [ label: 'stop' ] ] ]
             # animated: live feeds must repaint every frame, never cache
-            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
-                nm9 : cam_role[ i9 ]
+            for [ i_: i32 0, i_ < cam_n, i_ += 1 ]
+                nm_ : cam_role[ i_ ]
                 if [ cam_n < 2 ]
-                    e[ nm9 ] = RecFull [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
-                el [ i9 == 0 ]
-                    e[ nm9 ] = RecTop [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
+                    e[ nm_ ] = RecFull [ device: cam_dev[ i_ ], animated: true, paint_off: !rec_noise ]
+                el [ i_ == 0 ]
+                    e[ nm_ ] = RecTop [ device: cam_dev[ i_ ], animated: true, paint_off: !rec_noise ]
                 el
-                    e[ nm9 ] = RecBot [ device: cam_dev[ i9 ], animated: true, paint_off: !rec_noise ]
+                    e[ nm_ ] = RecBot [ device: cam_dev[ i_ ], animated: true, paint_off: !rec_noise ]
             return e
         if [ rec_mode == 'test' ]
             # small live feeds; the cascade + gaze dot draw in on_canvas
-            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
-                nm9 : cam_role[ i9 ]
-                if [ i9 == 0 ] e[ nm9 ] = CamTop [ device: cam_dev[ i9 ], animated: true ]
-                el             e[ nm9 ] = CamBot [ device: cam_dev[ i9 ], animated: true ]
+            for [ i_: i32 0, i_ < cam_n, i_ += 1 ]
+                nm_ : cam_role[ i_ ]
+                if [ i_ == 0 ] e[ nm_ ] = CamTop [ device: cam_dev[ i_ ], animated: true ]
+                el             e[ nm_ ] = CamBot [ device: cam_dev[ i_ ], animated: true ]
             return e
         if [ rec_mode == 'bench' ]
             # cameras pump invisibly; ONLY the spiral mark shows
-            for [ i9: i32 0, i9 < cam_n, i9 += 1 ]
-                nm9 : cam_role[ i9 ]
-                if [ i9 == 0 ] e[ nm9 ] = CamTop [ device: cam_dev[ i9 ], animated: true, paint_off: true ]
-                el             e[ nm9 ] = CamBot [ device: cam_dev[ i9 ], animated: true, paint_off: true ]
+            for [ i_: i32 0, i_ < cam_n, i_ += 1 ]
+                nm_ : cam_role[ i_ ]
+                if [ i_ == 0 ] e[ nm_ ] = CamTop [ device: cam_dev[ i_ ], animated: true, paint_off: true ]
+                el             e[ nm_ ] = CamBot [ device: cam_dev[ i_ ], animated: true, paint_off: true ]
             return e
         e['face_main'] = FaceMain [ model_path: model, face_idx: 0,
             yaw: yaw, pitch: pitch, dist: dist, look_x: look_x, look_y: look_y, look_z: look_z ]

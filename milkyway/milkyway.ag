@@ -141,10 +141,10 @@ Backdrop MilkyWay
         create_plain[]
         if [ !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null

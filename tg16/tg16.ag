@@ -184,7 +184,7 @@ element tg16 : trinity
         bit : i32 [ -1 ]
         if   [ code == 47 ]  bit = 0     # /  I (right, as the pad)
         el [ code == 46 ]  bit = 1     # .  II
-        el [ code == 340 || code == 344 ] bit = 2   # Shift  Select
+        el [ code == 340 || code == 344 ] bit = 2   # shift  Select
         el [ code == 257 ] bit = 3     # Enter  Run
         el [ code == 87 || code == 265 ] bit = 4   # W, Up
         el [ code == 68 || code == 262 ] bit = 5   # D, Right
@@ -197,7 +197,7 @@ element tg16 : trinity
         if [ down ]
             if [ code == 80 ] save_req = true   # P save
             if [ code == 76 ] load_req = true   # L load
-            if [ code == 32 ] paused = !paused  # Space pause
+            if [ code == 32 ] paused = !paused  # space pause
         return
 
     # ---- the cart ----
@@ -864,7 +864,9 @@ element tg16 : trinity
     # the planes as textures, then VectorLayers (knes's shader)
     public func paint [ cv: Canvas, vp: rect ]
         if [ !booted ] boot[]
-        if [ !rom_data ] return
+        if [ !rom_data ]
+            own_icon_paint[ cv, vp ]
+            return
         if [ !emu_started ]
             emu_started = true
             pub_lock = mutex [ cond: false ]

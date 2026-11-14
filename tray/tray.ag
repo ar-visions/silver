@@ -721,10 +721,10 @@ func menu_icon_file [ nm: string ] -> string
             if [ found.count > 0 ] break
             for [ ct: string ] in cats
                 if [ found.count > 0 ] break
-                for [ n9: string ] in names
-                    f9 : path '{th}/{sb}/{ct}/{n9}.svg'
-                    if [ f9.exists[] ]
-                        found = '{f9}'
+                for [ n_: string ] in names
+                    f_ : path '{th}/{sb}/{ct}/{n_}.svg'
+                    if [ f_.exists[] ]
+                        found = '{f_}'
                         break
     menu_icons[ nm ] = found
     return found

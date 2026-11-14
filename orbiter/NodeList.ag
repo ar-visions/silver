@@ -100,11 +100,6 @@ Option NodeList
     func render [] -> Elements
         return null
 
-# the font scale (ctrl +/-): 1 at rest
-func nav_unit [ cv: Canvas ] -> f32
-    return (cv && cv.vk && cv.vk.font_unit > 0)
-        ? f32[ cv.vk.font_unit ] / 22.0 : 1.0
-
 Layer NodeLayer
     public label_size  : f32
     public row_spacing : f32
@@ -264,8 +259,8 @@ NodeList Callstack
         pi : i32 [ orb.active_pane ]
         for [ e: element* a, e, e = e.parent ]
             if [ e inherits EditorView ]
-                ev9 : EditorView e
-                pi = ev9.pane_index
+                ev_ : EditorView e
+                pi = ev_.pane_index
                 break
         orb.open_at_line[ f.file, pi, f.line ]
         ed : Editor orb.pane_at[ pi ]
@@ -357,9 +352,9 @@ element TypeMembers
     # a new filter: the rows narrow from the top
     public func tick [ w: Window ]
         fe : element filter_field[]
-        f9 : string (fe && fe.edit) ? fe.edit : ''
-        if [ !filter_text || filter_text != f9 ]
-            filter_text = f9
+        f_ : string (fe && fe.edit) ? fe.edit : ''
+        if [ !filter_text || filter_text != f_ ]
+            filter_text = f_
             rw : element (elements) ? elements[ 'rows' ] : null
             if [ rw ]
                 rw.scroll.y = 0.0
@@ -373,12 +368,12 @@ element TypeMembers
             lines: lines, area: Region { l0 t0.91 r0 b1.06 } ]
         # focused, the field holds its own text: no edit overwrites it
         fe : element filter_field[]
-        ff9 : FilterField [ label: 'filter', focusable: true,
+        ff_ : FilterField [ label: 'filter', focusable: true,
             area: Region { l4px t4px r4px b4px } ]
         if [ !(fe && ux && ux.focus == fe) ]
-            ff9.edit = (filter_text) ? filter_text : ''
+            ff_.edit = (filter_text) ? filter_text : ''
         t['footer'] = element [ area: Region { l0 b1.06 r0 h1.06 },
-            elements: Elements [ 'list_filter': ff9 ] ]
+            elements: Elements [ 'list_filter': ff_ ] ]
         return t
 
 # the member rows; a row goes to its line
@@ -400,8 +395,8 @@ NodeList TypeRows
 
     # the filter is the footer's, beside the rows
     func flt [] -> string
-        tm9 : TypeMembers (parent && parent inherits TypeMembers) ? TypeMembers[ parent ] : null
-        return (tm9) ? tm9.filter_text : null
+        tm_ : TypeMembers (parent && parent inherits TypeMembers) ? TypeMembers[ parent ] : null
+        return (tm_) ? tm_.filter_text : null
 
     func row_count [] -> i32
         return (names) ? names.count : 0
@@ -605,9 +600,9 @@ element InstrView
         return null
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        av9 : AppView av[]
-        if [ !av9 ] return
-        act : string av9.instr_active[]
+        av_ : AppView av[]
+        if [ !av_ ] return
+        act : string av_.instr_active[]
         if [ !act ] return
         cv : Canvas w.screen
         now : i64 [ epoch_millis[] ]
@@ -618,13 +613,13 @@ element InstrView
         if [ !sizing && (ask_ms == 0 || now - ask_ms > 500) ]
             ask_ms = now
             if [ !rows ] rows = map Au [string] []
-            rows[ act ] = av9.instr_entries[ act ]
+            rows[ act ] = av_.instr_entries[ act ]
         # mid-drag: nothing. asking for a new width here would rebuild
         # the canvas in the app on every frame
         if [ sizing ] return
         # we give the width, the app gives the height: its own size
-        av9.instr_width[ act, i32[ bounds.w ] ]
-        ft : av9.instr_front[ act ]
+        av_.instr_width[ act, i32[ bounds.w ] ]
+        ft : av_.instr_front[ act ]
         if [ ft ]
             th : f32 [ ft.height ]
             if [ th > bounds.h ] th = bounds.h
@@ -637,15 +632,15 @@ element InstrView
         if [ !rw ] return
         cv.font_size[ 12 ]
         cv.fill_color[ rgba [ '#cfd6e4' ] ]
-        y9 : f32 [ 0.0 ]
+        y_ : f32 [ 0.0 ]
         for [ k: i32 0, k < rw.count, k += 1 ]
-            if [ y9 > bounds.h - 12.0 ] break
+            if [ y_ > bounds.h - 12.0 ] break
             cv.draw_text[ '{rw[k]}',
-                          rect [ x: 8.0, y: y9, w: bounds.w - 12.0,
+                          rect [ x: 8.0, y: y_, w: bounds.w - 12.0,
                                  h: 15.0 ],
                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
                 null, true ]
-            y9 += 15.0
+            y_ += 15.0
 
 # ONE column, right of the editor, holding every live instrument. the
 # stack at the top selects which one shows; only that one is drawn.
@@ -738,9 +733,9 @@ Control SceneGrid
         # the scrollbar's drag is trinity's
         super.on_move[ ev ]
         if [ sb_drag ] return
-        h9 : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        if [ h9 != hov ]
-            hov      = h9
+        h_ : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ h_ != hov ]
+            hov      = h_
             pristine = false
 
     func on_leave [ ev: Event ]
@@ -767,7 +762,7 @@ Control SceneGrid
         animated = true
         revision : i64 orb.scene_catalog_revision[]
         if [ !cards || revision != cards_revision ]
-            cards = orb.scene_cards[]
+            cards = orb.nav.scene_cards[]
             cards_revision = revision
         # trinity scrolls it (the wheel, the bar, scroll_fade's mask)
         rows : i32 [ (cards.count + per_row[] - 1) / per_row[] ]
@@ -814,8 +809,8 @@ Control AppsGrid
     # each card's rect in content space, ours first, as last drawn
     mutable rx    : vec f32
     mutable ry    : vec f32
-    mutable cw9   : f32
-    mutable ch9   : f32
+    mutable cw_   : f32
+    mutable ch_   : f32
     # the icon tile's side; the name or its button sits under it
     mutable tile  : f32
     # the card clicked once: its name shows as Download while the
@@ -827,6 +822,8 @@ Control AppsGrid
     # a phone), and the pointer on it (its label then full)
     mutable edit_h  : f32
     mutable on_edit : bool
+    # the pointer under the hovered card's icon: its pill shows
+    mutable on_lab  : bool
     # the card a press went down on, -1 none
     mutable press_i : i32 [ -1 ]
 
@@ -866,7 +863,7 @@ Control AppsGrid
     mutable band_h  : f32
     # each heading's top in content space, as last laid out
     mutable head_ys : vec f32
-    mutable hh9     : f32
+    mutable hh_     : f32
     # a press on a heading (-1 none), when and where any press was
     mutable press_h  : i32 [ -1 ]
     mutable press_us : i64
@@ -897,7 +894,7 @@ Control AppsGrid
     # the files an app module opens, as the navigator finds them
     func files_of [ orb: orbiter, ae: AppEntry ] -> vec string
         if [ !ae.module || ae.store || ae.opens ] return vec string []
-        return orb.files_ending[ orb.opens_exts[ ae.name ] ]
+        return orb.nav.files_ending[ orb.opens_exts[ ae.name ] ]
 
     # a name in a list
     func has [ list: vec string, nm: string ] -> bool
@@ -957,7 +954,7 @@ Control AppsGrid
     func head_hit [ x: f32, y: f32 ] -> i32
         if [ !head_ys ] return -1
         for [ h: i32 0, h < head_ys.count, h += 1 ]
-            if [ y >= head_ys[ h ] && y < head_ys[ h ] + hh9 ] return h
+            if [ y >= head_ys[ h ] && y < head_ys[ h ] + hh_ ] return h
         return -1
 
     # the press held a second: its card or section lifts; the orders
@@ -1002,13 +999,13 @@ Control AppsGrid
             s0 : i32 [ head_at[ h ] ]
             s1 : i32 [ (h + 1 < heads.count) ? head_at[ h + 1 ]
                 : shown.count ]
-            cx : f32 [ drag_pt.x - grab.x + cw9 * 0.5 ]
-            cy : f32 [ drag_pt.y - grab.y + ch9 * 0.5 ]
+            cx : f32 [ drag_pt.x - grab.x + cw_ * 0.5 ]
+            cy : f32 [ drag_pt.y - grab.y + ch_ * 0.5 ]
             best : i32 [ i ]
             bd   : f32 [ 0.0 ]
             for [ k: i32 s0, k < s1 && k < rx.count, k += 1 ]
-                ddx : f32 [ rx[ k ] + cw9 * 0.5 - cx ]
-                ddy : f32 [ ry[ k ] + ch9 * 0.5 - cy ]
+                ddx : f32 [ rx[ k ] + cw_ * 0.5 - cx ]
+                ddy : f32 [ ry[ k ] + ch_ * 0.5 - cy ]
                 d : f32 [ ddx * ddx + ddy * ddy ]
                 if [ k == s0 || d < bd ]
                     bd   = d
@@ -1022,7 +1019,7 @@ Control AppsGrid
             for [ k: i32 0, k < heads.count, k += 1 ]
                 if [ heads[ k ] == drag_name ] h = k
             if [ h < 0 || h >= head_ys.count ] return
-            mid : f32 [ drag_pt.y - grab.y + hh9 * 0.5 ]
+            mid : f32 [ drag_pt.y - grab.y + hh_ * 0.5 ]
             n : i32 [ i32[ head_ys.count ] ]
             if [ h + 1 < n ]
                 nb : f32 [ (h + 2 < n) ? head_ys[ h + 2 ] : content_h ]
@@ -1046,6 +1043,24 @@ Control AppsGrid
 
     func entry [ i: i32 ] -> AppEntry
         return (shown && i >= 0 && i < shown.count) ? shown[ i ] : null
+
+    # an app's store apps and files whose names hold the text
+    func inner_hits [ orb: orbiter, ae: AppEntry, fl: string ]
+                     -> vec AppEntry
+        out : vec AppEntry []
+        if [ ae.store && ae.apps ]
+            for [ sa: AppEntry ] in ae.apps
+                if [ sa.name.lcase[].index_of[ fl ] >= 0 ]
+                    out.push[ sa ]
+            return out
+        for [ f: string ] in files_of[ orb, ae ]
+            fp : path '{f}'
+            fn : string fp.filename[]
+            if [ fn.lcase[].index_of[ fl ] < 0 ] continue
+            out.push[ AppEntry [ name: fn, file: ae.file, module: true,
+                agi: ae.agi, group: ae.group, built: ae.built,
+                opens: fp ] ]
+        return out
 
     func gather [ orb: orbiter ]
         band_of = -1
@@ -1071,11 +1086,16 @@ Control AppsGrid
         # an open folder: the filter finds within it, the apps stay
         folder : bool [ open && open.count > 0 ]
         inner : string [ (folder) ? gathered.lcase[] : '' ]
-        if [ gathered.count > 0 && !folder ]
-            fl : string gathered.lcase[]
+        # typed with no folder open: an app by its name or anything
+        # in its store, those after it
+        hunt : string [ (gathered.count > 0 && !folder)
+            ? gathered.lcase[] : '' ]
+        if [ hunt.count > 0 ]
             kept : vec AppEntry []
             for [ ae: AppEntry ] in ours
-                if [ ae.name.lcase[].index_of[ fl ] >= 0 ] kept.push[ ae ]
+                if [ ae.name.lcase[].index_of[ hunt ] >= 0
+                     || inner_hits[ orb, ae, hunt ].count > 0 ]
+                    kept.push[ ae ]
             ours = kept
         for [ gn: string ] in names
             start : i32 [ shown.count ]
@@ -1125,6 +1145,11 @@ Control AppsGrid
                                     group: ae.group, built: ae.built,
                                     opens: fp ] ]
                             band_n = shown.count - band_at
+                    # typed: what in its store matched, after it
+                    el [ hunt.count > 0 ]
+                        for [ sa: AppEntry ] in inner_hits[ orb, ae,
+                                                            hunt ]
+                            shown.push[ sa ]
             if [ shown.count > start ]
                 heads.push[ gn ]
                 head_at.push[ start ]
@@ -1153,8 +1178,8 @@ Control AppsGrid
     func card_at [ x: f32, y: f32 ] -> i32
         if [ !rx ] return -1
         for [ i: i32 0, i < rx.count, i += 1 ]
-            if [ x >= rx[ i ] && x < rx[ i ] + cw9 && y >= ry[ i ]
-                 && y < ry[ i ] + ch9 ]
+            if [ x >= rx[ i ] && x < rx[ i ] + cw_ && y >= ry[ i ]
+                 && y < ry[ i ] + ch_ ]
                 return i
         return -1
 
@@ -1201,14 +1226,14 @@ Control AppsGrid
     # the point is on card i's name row, under its tile
     func in_name [ i: i32, x: f32, y: f32 ] -> bool
         return i >= 0 && rx && i < rx.count && y >= ry[ i ] + tile
-            && x >= rx[ i ] && x < rx[ i ] + cw9
+            && x >= rx[ i ] && x < rx[ i ] + cw_
 
     # the point is on card i's edit row, under its name
     func in_edit [ i: i32, x: f32, y: f32 ] -> bool
         if [ i < 0 || !rx || i >= rx.count || edit_h <= 0.0 ]
             return false
-        return y >= ry[ i ] + ch9 - edit_h && y < ry[ i ] + ch9
-            && x >= rx[ i ] && x < rx[ i ] + cw9
+        return y >= ry[ i ] + ch_ - edit_h && y < ry[ i ] + ch_
+            && x >= rx[ i ] && x < rx[ i ] + cw_
 
     func on_move [ ev: Event ]
         super.on_move[ ev ]
@@ -1231,10 +1256,14 @@ Control AppsGrid
         over : i32 [ card_at[ mx, my ] ]
         ob : bool [ over == sel && in_name[ over, mx, my ] ]
         oe : bool in_edit[ over, mx, my ]
-        if [ over != hov || ob != on_btn || oe != on_edit ]
+        # under the icon (the name, the pill's row): the pill shows
+        ol : bool in_name[ over, mx, my ]
+        if [ over != hov || ob != on_btn || oe != on_edit
+             || ol != on_lab ]
             hov      = over
             on_btn   = ob
             on_edit  = oe
+            on_lab   = ol
             pristine = false
 
     func on_leave [ ev: Event ]
@@ -1253,6 +1282,13 @@ Control AppsGrid
             press_i = -1
             return
         ev.no_default = true
+        # a right press on a card: its info menu
+        if [ ev.mouse.button == 1 ]
+            ri : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+            iorb : cast orbiter [ ux.app_object ]
+            if [ ri >= 0 && iorb ] iorb.app_info_open[ entry[ ri ] ]
+            press_i = -1
+            return
         press_i  = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
         press_h  = (press_i < 0)
             ? head_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] : -1
@@ -1288,7 +1324,15 @@ Control AppsGrid
         if [ sb_drag ]
             super.on_release[ ev ]
             return
-        # arranging, or a press held to start it: no app opens
+        # arranging: the pill under a card is its dock button (the
+        # module pinned, or let go); nothing else opens
+        if [ arranging && was >= 0 ]
+            dorb_ : cast orbiter [ ux.app_object ]
+            if [ dorb_ && in_edit[ was, ev.mouse.pos.x, ev.mouse.pos.y ] ]
+                dorb_.pin_dock[ entry[ was ] ]
+                pristine = false
+            return
+        # a press held to start arranging: no app opens
         if [ arranging || epoch_micros[] - press_us >= 1000000 ] return
         # a launch is a press and its release here: another press
         # since (a control's, over the grid) opens nothing
@@ -1436,25 +1480,25 @@ Control AppsGrid
         # the icons 30% over the 76 px they were, the card with them
         tile = round[ 99.0 * un ]
         nh : f32 [ round[ 26.0 * un ] ]
-        cw9 = round[ 125.0 * un ]
+        cw_ = round[ 125.0 * un ]
         edit_h = (use_mobile) ? 0.0 : round[ 22.0 * un ]
-        ch9 = tile + round[ 6.0 * un ] + nh + edit_h
+        ch_ = tile + round[ 6.0 * un ] + nh + edit_h
         gap : f32 [ round[ 14.0 * un ] ]
         pad : f32 [ round[ 24.0 * un ] ]
         hh  : f32 [ round[ 30.0 * un ] ]
         # the rows end where the widget side begins (30% of a wide
         # desktop while it has widgets): no icon behind one
         room : f32 [ bounds.w - orb.desk_side[ bounds.w ] ]
-        pr : i32 [ i32[ (room - pad * 2.0 + gap) / (cw9 + gap) ] ]
+        pr : i32 [ i32[ (room - pad * 2.0 + gap) / (cw_ + gap) ] ]
         # a phone's row holds five icons, close, the width filled;
         # wider, one more each time a card would grow by half
         if [ use_mobile ]
             gap  = round[ 6.0 * un ]
             full : f32 [ room - pad * 2.0 + gap ]
             pr   = max[ 5, i32[ ceil[ full / (96.0 * un) ] ] ]
-            cw9  = round[ full / f32[ pr ] - gap ]
-            tile = cw9
-            ch9  = tile + round[ 6.0 * un ] + nh + edit_h
+            cw_  = round[ full / f32[ pr ] - gap ]
+            tile = cw_
+            ch_  = tile + round[ 6.0 * un ] + nh + edit_h
         if [ pr < 1 ] pr = 1
         # held at the left: a width change only moves the row's end
         x0 : f32 [ pad ]
@@ -1462,7 +1506,7 @@ Control AppsGrid
         ry = vec f32 []
         band_h = 0.0
         head_ys = vec f32 []
-        hh9 = hh
+        hh_ = hh
         # a narrow desktop's widgets sit above the apps
         y : f32 [ pad + orb.desk_top ]
         for [ h: i32 0, h < heads.count, h += 1 ]
@@ -1484,23 +1528,23 @@ Control AppsGrid
             by : f32 [ 0.0 ]
             if [ rs >= 0 ]
                 lines : i32 [ (band_n + pr - 1) / pr ]
-                bh = gap * 2.0 + f32[ lines ] * (ch9 + gap) - gap
-                by = y + f32[ rs + 1 ] * (ch9 + gap) - gap * 0.5
+                bh = gap * 2.0 + f32[ lines ] * (ch_ + gap) - gap
+                by = y + f32[ rs + 1 ] * (ch_ + gap) - gap * 0.5
                 band_y = by
                 band_h = bh
             j = 0
             for [ i: i32 s0, i < s1, i += 1 ]
                 if [ rs >= 0 && i >= band_at && i < band_at + band_n ]
                     b : i32 [ i - band_at ]
-                    rx.push[ x0 + f32[ b % pr ] * (cw9 + gap) ]
-                    ry.push[ by + gap + f32[ b / pr ] * (ch9 + gap) ]
+                    rx.push[ x0 + f32[ b % pr ] * (cw_ + gap) ]
+                    ry.push[ by + gap + f32[ b / pr ] * (ch_ + gap) ]
                     continue
                 r : i32 [ j / pr ]
-                rx.push[ x0 + f32[ j % pr ] * (cw9 + gap) ]
-                ry.push[ y + f32[ r ] * (ch9 + gap)
+                rx.push[ x0 + f32[ j % pr ] * (cw_ + gap) ]
+                ry.push[ y + f32[ r ] * (ch_ + gap)
                     + ((rs >= 0 && r > rs) ? bh : 0.0) ]
                 j += 1
-            y += f32[ (j + pr - 1) / pr ] * (ch9 + gap) + bh
+            y += f32[ (j + pr - 1) / pr ] * (ch_ + gap) + bh
         content_h = y + pad
         mx : f32 [ content_h - bounds.h ]
         if [ mx < 0.0 ] mx = 0.0
@@ -1526,7 +1570,7 @@ Control AppsGrid
             : 0.0 ]
         moving : bool [ false ]
         # unseen where it is and where it goes: it lands at once
-        hy : f32 [ (hh9 > ch9) ? hh9 : ch9 ]
+        hy : f32 [ (hh_ > ch_) ? hh_ : ch_ ]
         px : vec f32 []
         py : vec f32 []
         for [ i: i32 0, i < n && i < keys.count, i += 1 ]
@@ -1549,7 +1593,7 @@ Control AppsGrid
                 ex = filter_n[ ease_x[ ky ], gx, 0.3, ux.frame_factor ]
                 ey = filter_n[ ease_y[ ky ], gy, 0.3, ux.frame_factor ]
                 seen : bool [
-                    !(ey - sy + ch9 < 0.0 && gy - sy + ch9 < 0.0)
+                    !(ey - sy + ch_ < 0.0 && gy - sy + ch_ < 0.0)
                     && !(ey - sy > bounds.h && gy - sy > bounds.h) ]
                 if [ !seen || (abs[ ex - gx ] < 0.5
                                && abs[ ey - gy ] < 0.5) ]
@@ -1562,7 +1606,8 @@ Control AppsGrid
             px.push[ ex ]
             py.push[ ey ]
             # its edit pill and label, in over 0.6 s, out over 0.3 s
-            if [ fade_to[ edit_a, ky, i == hov ] ] moving = true
+            if [ fade_to[ edit_a, ky, i == hov && on_lab ] ]
+                moving = true
             if [ fade_to[ edit_lab, ky, i == hov && on_edit ] ]
                 moving = true
         for [ h: i32 0, h < heads.count, h += 1 ]
@@ -1601,10 +1646,10 @@ Control AppsGrid
         fp : i32 [ i32[ round[ 18.0 * un ] ] ]
         for [ i: i32 ] in drawn
             cy : f32 [ py[ i ] - sy ]
-            if [ cy + ch9 < 0.0 || cy > bounds.h ] continue
+            if [ cy + ch_ < 0.0 || cy > bounds.h ] continue
             if [ !entry[ i ] ] continue
             if [ !fly_key || keys[ i ] != fly_key ]
-                card_frost[ cv, w, px[ i ] + round[ (cw9 - tile) * 0.5 ],
+                card_frost[ cv, w, px[ i ] + round[ (cw_ - tile) * 0.5 ],
                             cy, cr ]
             card_paint[ cv, w, orb, i, px[ i ], cy, cr, fp, nh, un ]
 
@@ -1613,7 +1658,7 @@ Control AppsGrid
                       x: f32, cy: f32, cr: f32, fp: i32, nh: f32,
                       un: f32 ]
         ae : AppEntry entry[ i ]
-        tx : f32 [ x + round[ (cw9 - tile) * 0.5 ] ]
+        tx : f32 [ x + round[ (cw_ - tile) * 0.5 ] ]
         # on its way out: its tile and icon fading, no name
         if [ fly_key && keys[ i ] == fly_key ]
             fade : f32 [ 1.0 - fly_t[] ]
@@ -1649,7 +1694,7 @@ Control AppsGrid
         # under the tile: the name (a build's progress under it),
         # or its Download button
         ny : f32 [ cy + tile + round[ 6.0 * un ] ]
-        # Rule #12: shift over it, or ctrl / cmd for all, shows
+        # rule #12: shift over it, or ctrl / cmd for all, shows
         # its Cancel in place of the progress
         mod : bool [ ux.cmd || (ux.shift && i == hov) ]
         if [ busy && mod ]
@@ -1664,13 +1709,12 @@ Control AppsGrid
         el [ chosen ]
             draw_button[ cv, fp, x, ny, nh, ae.module, failed ]
         el
-            # building: the name stays, its progress under it in the
-            # row's last part (the card's picture ends with the row)
+            # building: the name stays where it is, its progress in
+            # the row under it (the pill's; a phone's has none)
             th : f32 [ nh ]
             if [ busy ]
-                bb : f32 [ round[ 9.0 * un ] ]
-                th = nh - bb
-                draw_progress[ cv, un, x, ny + th, bb,
+                bb : f32 [ (edit_h > 0.0) ? edit_h : round[ 9.0 * un ] ]
+                draw_progress[ cv, un, x, ny + nh, bb,
                                orb.install_frac[ ae ] ]
             # an expanded card's name is bold
             cv.set_font[ shared_font[ cv, (folder)
@@ -1684,7 +1728,7 @@ Control AppsGrid
                 nm = '{ae.name} failed'
             cv.fill_color[ rgba [ tc ] ]
             cv.draw_text[ nm, rect [ x: x + 2.0, y: ny,
-                w: cw9 - 4.0, h: th ],
+                w: cw_ - 4.0, h: th ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ],
                 true ]
@@ -1696,8 +1740,11 @@ Control AppsGrid
         fl : f32 [ (edit_lab && edit_lab.contains[ ky ])
             ? edit_lab[ ky ] : 0.0 ]
         if [ fa > 0.0 && edit_h > 0.0 && !busy && !pulling
-             && !arranging && orb.code_of[ ae ] ]
-            draw_edit[ cv, w, fp, x, ny + nh, edit_h, fa, fl ]
+             && (arranging || orb.code_of[ ae ]) ]
+            # arranging: the pill docks the module, or undocks it
+            wd : string [ (!arranging) ? 'edit'
+                : ((orb.nav.is_pinned[ ae.file ]) ? 'undock' : 'dock') ]
+            draw_edit[ cv, w, fp, x, ny + nh, edit_h, fa, fl, wd ]
 
     # k's value in m a straight step toward on (1) or off (0): in
     # over 0.6 s, out over 0.3 s; gone at 0; true while it moves
@@ -1715,9 +1762,9 @@ Control AppsGrid
     # the edit pill under a hovered card's name: its code, not run
     # at fa of its strength; its label from half to full by fl
     func draw_edit [ cv: Canvas, w: Window, fp: i32, x: f32, y: f32,
-                     h: f32, fa: f32, fl: f32 ]
-        bw : f32 [ round[ cw9 * 0.5 ] ]
-        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+                     h: f32, fa: f32, fl: f32, word: string ]
+        bw : f32 [ round[ cw_ * 0.5 ] ]
+        bx : f32 [ x + round[ (cw_ - bw) * 0.5 ] ]
         ph : f32 [ round[ h * 0.82 ] ]
         py : f32 [ y + round[ (h - ph) * 0.5 ] ]
         r  : f32 [ ph * 0.42 ]
@@ -1745,7 +1792,7 @@ Control AppsGrid
         # text takes no canvas opacity: the fade is in its colour
         cv.fill_color[ rgba [ r: 1.0, g: 1.0, b: 1.0,
             a: fa * (0.5 + 0.5 * fl) ] ]
-        cv.draw_text[ 'edit', rect [ x: bx, y: py, w: bw, h: ph ],
+        cv.draw_text[ word, rect [ x: bx, y: py, w: bw, h: ph ],
             vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
             null, true ]
         cv.set_font[ null ]
@@ -1795,12 +1842,12 @@ Control AppsGrid
             # 180 px: the cards are larger than the buttons
             w.near_light_reach[ cv, a, light_off.x, light_off.y,
                                 1.125 ]
-            cv.near_style[ 0.0, 1.5, rgba [ '#d298ffff' ],
+            cv.near_style[ 0.0, 6.0, rgba [ '#d298ffff' ],
                            w.near_y_fade ]
-            # the pointer casts more glow too: twice as wide by it
-            cv.near_grow[ 1.0 ]
-            # a free window's edge: an 8 px inner glow, bright at
-            # the edge, no border
+            # the pointer casts a far wider glow: 5.2 times the
+            # resting width by it
+            cv.near_grow[ 4.2 ]
+            # at rest an 8 px inner glow, bright at the edge, no border
             cv.box_shadow[ rgba [ '#ffffff33' ], 0.0, 0.0, 8.0, 0.0,
                            true ]
             cv.shadow_curve[ 0, 2.0 ]
@@ -1836,8 +1883,8 @@ Control AppsGrid
     # failure); a name with no module yet cannot be imported
     func draw_button [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32,
                        can: bool, failed: bool ]
-        bw : f32 [ round[ cw9 * 0.86 ] ]
-        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        bw : f32 [ round[ cw_ * 0.86 ] ]
+        bx : f32 [ x + round[ (cw_ - bw) * 0.5 ] ]
         r : f32 [ h * 0.5 ]
         fill : '#ffffff10'
         if [ can ] fill = (on_btn) ? '#6a58e0' : '#4d3dbc'
@@ -1864,8 +1911,8 @@ Control AppsGrid
     # (red), or Code
     func draw_pill [ cv: Canvas, fp: i32, x: f32, y: f32, h: f32,
                      word: string, fill: string, edge: string ]
-        bw : f32 [ round[ cw9 * 0.86 ] ]
-        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        bw : f32 [ round[ cw_ * 0.86 ] ]
+        bx : f32 [ x + round[ (cw_ - bw) * 0.5 ] ]
         r : f32 [ h * 0.5 ]
         cv.save[]
         cv.rounded[ r, r, r, r ]
@@ -1888,9 +1935,9 @@ Control AppsGrid
     # the build's progress under the name; -1 not known yet
     func draw_progress [ cv: Canvas, un: f32, x: f32, y: f32,
                          h: f32, frac: f32 ]
-        bw : f32 [ round[ cw9 * 0.78 ] ]
+        bw : f32 [ round[ cw_ * 0.78 ] ]
         bh : f32 [ round[ 5.0 * un ] ]
-        bx : f32 [ x + round[ (cw9 - bw) * 0.5 ] ]
+        bx : f32 [ x + round[ (cw_ - bw) * 0.5 ] ]
         by : f32 [ y + round[ (h - bh) * 0.5 ] ]
         r : f32 [ bh * 0.5 ]
         cv.save[]
@@ -1920,6 +1967,8 @@ element StatusLabel
         if [ w.draw_stage != CanvasType.screen || !bounds ] return
         cv : Canvas w.screen
         ins : f32 [ round[ bounds.h * 0.12 ] ]
+        # the pill sits higher than the text's middle by this
+        top : f32 [ ins - round[ 1.5 * ux_unit[ w ] ] ]
         bh : f32 [ bounds.h - ins * 2.0 ]
         br : f32 [ bh * 0.5 ]
         bw : f32 [ bounds.w - ins * 2.0 ]
@@ -1929,20 +1978,20 @@ element StatusLabel
         cv.stroke_width[ 1.0 ]
         cv.stroke_offset[ -0.5 ]
         cv.stroke_color[ rgba [ '#ffffff1c' ] ]
-        cv.rect_to[ ins, ins, bw, bh ]
+        cv.rect_to[ ins, top, bw, bh ]
         cv.paint[]
         failed : bool [ word == 'failed' ]
         if [ info ]
             cv.stroke_width[ 0.0 ]
             cv.fill_color[ rgba [ '#23446699' ] ]
-            cv.rect_to[ ins, ins, bw, bh ]
+            cv.rect_to[ ins, top, bw, bh ]
             cv.paint[]
         el [ failed || word == 'installed' ]
             fw : f32 bw
             cv.stroke_width[ 0.0 ]
             cv.fill_color[ rgba [ (failed) ? '#a0303088'
                 : ((word == 'installed') ? '#3a8a5a99' : '#4d3dbc99') ] ]
-            cv.rect_to[ ins, ins, fw, bh ]
+            cv.rect_to[ ins, top, fw, bh ]
             cv.paint[]
         cv.restore[]
         tx : string word
@@ -2076,27 +2125,27 @@ Control InstancePanel
         orb : cast orbiter [ ux.app_object ]
         sig : string ''
         if [ li ]
-            for [ av9: AppView ] in li
-                sel9 : bool [ ed && ed.run_view == av9 ]
-                off9 : bool [ av9.ended || av9.held ]
-                sw9  : string av9.status_word[]
-                s9 : i32 [ (sel9) ? 1 : 0 ]
-                o9 : i32 [ (off9) ? 1 : 0 ]
-                sig = '{sig}|{av9.iid}:{sw9}:{s9}:{o9}'
-        h9 : i32 [ (orb && orb.shift_down) ? 1 : 0 ]
-        ct9 : string caret_type[]
-        sig = '{sig}|{h9}|{ct9}'
-        pn9 : i32 [ (orb) ? orb.active_pane : -1 ]
-        if [ !row_sig || row_sig != sig || pn9 != last_pane ]
+            for [ av_: AppView ] in li
+                sel_ : bool [ ed && ed.run_view == av_ ]
+                off_ : bool [ av_.ended || av_.held ]
+                sw_  : string av_.status_word[]
+                s_ : i32 [ (sel_) ? 1 : 0 ]
+                o_ : i32 [ (off_) ? 1 : 0 ]
+                sig = '{sig}|{av_.iid}:{sw_}:{s_}:{o_}'
+        h_ : i32 [ (orb && orb.shift_down) ? 1 : 0 ]
+        ct_ : string caret_type[]
+        sig = '{sig}|{h_}|{ct_}'
+        pn_ : i32 [ (orb) ? orb.active_pane : -1 ]
+        if [ !row_sig || row_sig != sig || pn_ != last_pane ]
             # a new type at the caret: its list mounts on a restyle
-            if [ ux && (!type_key || type_key != ct9) ]
+            if [ ux && (!type_key || type_key != ct_) ]
                 ux.restyle = true
             row_sig = sig
             row_sig.hold[]
             pristine = false
             # another editor selected: its instances, rebuilt
-            if [ pn9 != last_pane && ux ] ux.restyle = true
-            last_pane = pn9
+            if [ pn_ != last_pane && ux ] ux.restyle = true
+            last_pane = pn_
 
     func icon [ nm: string ] -> SVGModel
         if [ !icons ] icons = map SVGModel [string] []
@@ -2135,47 +2184,47 @@ Control InstancePanel
     # Au's own); only the user's own press or key moves it; a name with
     # no type, or a jump, keeps the last one
     func caret_type [] -> string
-        e9 : Editor editor[]
+        e_ : Editor editor[]
         if [ !caret_key ] caret_key = ''
-        if [ !e9 || e9.caret_touch == seen_touch ] return caret_key
-        seen_touch = e9.caret_touch
-        if [ e9.sel_line < 0 || e9.sel_line >= e9.line_count[] ]
+        if [ !e_ || e_.caret_touch == seen_touch ] return caret_key
+        seen_touch = e_.caret_touch
+        if [ e_.sel_line < 0 || e_.sel_line >= e_.line_count[] ]
             return caret_key
-        ml : i32 [ e9.row_src[ e9.sel_line ] ]
-        ln : string e9.line_get[ e9.sel_line ]
-        sc9 : i32 [ e9.sel_col ]
+        ml : i32 [ e_.row_src[ e_.sel_line ] ]
+        ln : string e_.line_get[ e_.sel_line ]
+        sc_ : i32 [ e_.sel_col ]
         # the word the caret ends, then the one it starts; just past a
-        # dot (rv9.|) it is the name before the dot
-        dot9 : bool [
-            sc9 > 0 && ln && sc9 - 1 < ln.count && ln[ sc9 - 1 ] == 46 ]
-        c0 : i32 [ (dot9) ? sc9 - 2 : sc9 - 1 ]
-        c1 : i32 [ (dot9) ? sc9 - 2 : sc9 ]
-        for [ c9: i32 c0, c9 <= c1, c9 += 1 ]
-            if [ c9 < 0 ] continue
-            cr : ColorRegion e9.region_at[ ml, c9 ]
+        # dot (rv_.|) it is the name before the dot
+        dot_ : bool [
+            sc_ > 0 && ln && sc_ - 1 < ln.count && ln[ sc_ - 1 ] == 46 ]
+        c0 : i32 [ (dot_) ? sc_ - 2 : sc_ - 1 ]
+        c1 : i32 [ (dot_) ? sc_ - 2 : sc_ ]
+        for [ c_: i32 c0, c_ <= c1, c_ += 1 ]
+            if [ c_ < 0 ] continue
+            cr : ColorRegion e_.region_at[ ml, c_ ]
             if [ cr && cr.tname ]
-                ts9 : string (cr.tsrc) ? cr.tsrc : ''
-                caret_key = '{cr.tname}|{ts9}|{cr.tline}'
+                ts_ : string (cr.tsrc) ? cr.tsrc : ''
+                caret_key = '{cr.tname}|{ts_}|{cr.tline}'
                 break
         return caret_key
 
     # the line of the caret type's declaration
     func type_line [] -> i32
         if [ !type_key ] return 0
-        cx9 : i32 [ type_key.rindex_of[ '|' ] ]
-        return i32[ type_key.mid[ cx9 + 1, type_key.count - cx9 - 1 ] ]
+        cx_ : i32 [ type_key.rindex_of[ '|' ] ]
+        return i32[ type_key.mid[ cx_ + 1, type_key.count - cx_ - 1 ] ]
 
     # the members of the caret's type, read once per type
     func caret_info [] -> TypeInfo
-        k9 : string caret_type[]
-        if [ k9.count == 0 ] return null
-        if [ type_key && type_key == k9 ] return type_info
-        pt9 : vec string k9.split[ '|' ]
-        fl : string (pt9.count > 1) ? pt9[ 1 ] : ''
-        ti : TypeInfo [ name: pt9[ 0 ] ]
+        k_ : string caret_type[]
+        if [ k_.count == 0 ] return null
+        if [ type_key && type_key == k_ ] return type_info
+        pt_ : vec string k_.split[ '|' ]
+        fl : string (pt_.count > 1) ? pt_[ 1 ] : ''
+        ti : TypeInfo [ name: pt_[ 0 ] ]
         if [ fl.count > 0 ] ti.file = path fl
-        ti.load[ (pt9.count > 2) ? i32[ pt9[ 2 ] ] : 0 ]
-        type_key  = k9
+        ti.load[ (pt_.count > 2) ? i32[ pt_[ 2 ] ] : 0 ]
+        type_key  = k_
         type_info = ti
         return ti
 
@@ -2213,9 +2262,9 @@ Control InstancePanel
 
     # the tabs' row as laid out (h1.3, the title bar's height)
     func tabs_h [] -> f32
-        se9 : element (elements) ? elements[ 'sections' ] : null
-        if [ se9 && se9.bounds && se9.bounds.h > 0.0 ]
-            return se9.bounds.h
+        se_ : element (elements) ? elements[ 'sections' ] : null
+        if [ se_ && se_.bounds && se_.bounds.h > 0.0 ]
+            return se_.bounds.h
         fu : f32 [
             (ux && ux.vk && ux.vk.font_unit > 0)
             ? f32[ ux.vk.font_unit ] : 22.0 ]
@@ -2262,53 +2311,53 @@ Control InstancePanel
             cv.paint[]
         cv.font_size[ 13 ]
         cv.fill_color[ rgba [ '#e8e2f5' ] ]
-        tr9 : rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ]
-        cv.draw_text[ text, tr9, vec2f [ 0.0, 0.5 ],
+        tr_ : rect [ x: tx, y: y, w: bounds.w - tx - 8.0, h: rh ]
+        cv.draw_text[ text, tr_, vec2f [ 0.0, 0.5 ],
             vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
 
     # the export lists the module's properties; a props answer (live or
     # the last one kept) gives their current values, and anything it
     # adds goes after
     func render [] -> Elements
-        ev9 : EditorView view[]
+        ev_ : EditorView view[]
         orb : cast orbiter [ ux.app_object ]
-        if [ !ev9 || !orb ] return null
+        if [ !ev_ || !orb ] return null
         t  : Elements []
         # the running instance's own props; else what the module
         # answered last; else its export
-        av9 : AppView app[]
-        lv : bool [ av9 && av9.props && av9.props.count > 0 ]
+        av_ : AppView app[]
+        lv : bool [ av_ && av_.props && av_.props.count > 0 ]
         # the spec is the INSTANCE's module, which need not be the
         # pane's file the INSTANCE's module, which need not be the
         # pane's file
-        mod : string ev9.band_mod[]
-        if [ av9 ]
-            am9 : string av9.app_mod
-            mod = (am9 && am9.count > 0) ? am9 : av9.src.stem[]
-        sp9 : string (lv) ? av9.props : orb.module_spec[ mod ]
+        mod : string ev_.band_mod[]
+        if [ av_ ]
+            am_ : string av_.app_mod
+            mod = (am_ && am_.count > 0) ? am_ : av_.src.stem[]
+        sp_ : string (lv) ? av_.props : orb.module_spec[ mod ]
         # trinity's display is a live prop of the running app; before it
         # runs the row still has to exist, holding what the instance
         # will launch as
-        if [ av9 && !(sp9 && sp9.count > 0) ]
-            dp9 : Prop [ ident: 'display', module: 'trinity',
+        if [ av_ && !(sp_ && sp_.count > 0) ]
+            dp_ : Prop [ ident: 'display', module: 'trinity',
                          type: 'DisplayMode', access: 'public' ]
-            dp9.meta  = vec string [] [ 'Live' ]
-            dp9.stops = vec string [] [ 'PIP', 'Embed', 'Window',
+            dp_.meta  = vec string [] [ 'Live' ]
+            dp_.stops = vec string [] [ 'PIP', 'Embed', 'Window',
                                         'Screen' ]
-            dp9.value = (av9.display >= 0 && av9.display < 4) ? dp9.stops[ av9.display ] : 'PIP'
-            ps9 : LaunchProps [ module: mod ]
-            ps9.props = vec Prop []
-            ps9.props.push[ dp9 ]
-            sp9 = Au.string_agi[ ps9 ]
+            dp_.value = (av_.display >= 0 && av_.display < 4) ? dp_.stops[ av_.display ] : 'PIP'
+            ps_ : LaunchProps [ module: mod ]
+            ps_.props = vec Prop []
+            ps_.props.push[ dp_ ]
+            sp_ = Au.string_agi[ ps_ ]
         # the selected instance edits ITS args; with none selected there
         # is no list one row of tabs for properties, instruments and
         # callstack: the lit one is open and its content fills the panel
         # beneath
         # a module with no instance yet shows its properties too
-        pm : bool [ av9 || orb.module_src_of[ editor[] ] ]
+        pm : bool [ av_ || orb.module_src_of[ editor[] ] ]
         # the tabs stay for any file: a section may simply be empty
         if [ editor[] ]
-            ok9 : i32 [ open_ix[] ]
+            ok_ : i32 [ open_ix[] ]
             t['sections'] = SectionTabs [
                 icons: false, seg_radius: 0.0, manual: true,
                 rest_hover: true,
@@ -2317,29 +2366,29 @@ Control InstancePanel
                 buttons: vec string [] [
                     'properties', 'instruments', 'callstack',
                     'record' ],
-                sel_mask: (ok9 >= 0) ? (1 << ok9) : 0,
+                sel_mask: (ok_ >= 0) ? (1 << ok_) : 0,
                 label_px: (row_h[] * 0.5 - 2.0) * 1.6,
                 label_font: 'fonts/BarlowCondensed-Regular.ttf',
                 area: Region [ 'l0 t{tab_y[]}px r0 h1.3' ] ]
         if [ orb.props_open ]
             # no instance: the args its next start takes
-            fs9 : file_state (av9) ? null : orb.args_state_of[
+            fs_ : file_state (av_) ? null : orb.args_state_of[
                 editor[] ]
-            ar9 : string (av9) ? av9.module_args : ((fs9) ? fs9.args : null)
-            if [ !ar9 ] ar9 = ''
-            py9 : f32 [ tab_y[] + tabs_h[] ]
+            ar_ : string (av_) ? av_.module_args : ((fs_) ? fs_.args : null)
+            if [ !ar_ ] ar_ = ''
+            py_ : f32 [ tab_y[] + tabs_h[] ]
             # cached like any container: a control repaints only when it
             # changes
-            up9 : bool [
-                av9 && av9.slot >= 0 && !av9.ended && !av9.held ]
-            pd9 : i32 [ (up9) ? host_app_pid[ av9.slot ] : 0 ]
+            up_ : bool [
+                av_ && av_.slot >= 0 && !av_.ended && !av_.held ]
+            pd_ : i32 [ (up_) ? host_app_pid[ av_.slot ] : 0 ]
             # the clicked name's type, docked under the fields
             ti : TypeInfo caret_info[]
             mh : f32 [ 0.0 ]
             if [ ti && ti.names && ti.names.count > 0 ]
                 # the row the list last drew, else a 15px line at 1.2
-                me9 : element (elements) ? elements[ 'members' ] : null
-                mr : NodeList (me9 && me9.elements) ? me9.elements[
+                me_ : element (elements) ? elements[ 'members' ] : null
+                mr : NodeList (me_ && me_.elements) ? me_.elements[
                     'rows' ] : null
                 rw : f32 [
                     (mr && mr.row_height > 20.0) ? mr.row_height
@@ -2357,18 +2406,18 @@ Control InstancePanel
             # the fields only for a module or an instance
             if [ pm ]
                 t['launch_panel'] = LaunchPanel [
-                    spec: sp9, args: ar9, inst: (av9) ? av9.iid : -1,
-                    live_vals: lv, dbg_row: av9 != null,
-                    cov_on: av9 && av9.cov_build, pid_val: pd9,
-                    area: Region [ 'l0 t{py9}px r0 b{mh}px' ] ]
-        in9 : bool [ av9 && orb.instr_open && av9.instr_names ]
-        if [ in9 && av9.instr_active[] && bounds ]
-            iy9 : f32 [
-                tab_y[] + tabs_h[] + chips_h[ av9.instr_names ] ]
+                    spec: sp_, args: ar_, inst: (av_) ? av_.iid : -1,
+                    live_vals: lv, dbg_row: av_ != null,
+                    cov_on: av_ && av_.cov_build, pid_val: pd_,
+                    area: Region [ 'l0 t{py_}px r0 b{mh}px' ] ]
+        in_ : bool [ av_ && orb.instr_open && av_.instr_names ]
+        if [ in_ && av_.instr_active[] && bounds ]
+            iy_ : f32 [
+                tab_y[] + tabs_h[] + chips_h[ av_.instr_names ] ]
             t['instr'] = InstrView [
-                area: Region [ 'l0 t{iy9}px r0 b0' ] ]
-        if [ av9 && orb.stack_open && stack_rows[] > 0 ]
-            cy9 : f32 [ tab_y[] + tabs_h[] ]
+                area: Region [ 'l0 t{iy_}px r0 b0' ] ]
+        if [ av_ && orb.stack_open && stack_rows[] > 0 ]
+            cy_ : f32 [ tab_y[] + tabs_h[] ]
             # one toggle over the list: frames with no known source,
             # listed or not
             t['stack_unknown'] = TButtons [
@@ -2376,23 +2425,23 @@ Control InstancePanel
                 buttons: vec string [] [ 'show unknown source' ],
                 sel_mask: (orb.stack_unknown) ? 1 : 0,
                 label_px: row_h[] * 0.5 - 2.0,
-                area: Region [ 'l0 t{cy9}px r0 h{row_h[]}px' ] ]
-            ly9 : f32 [ cy9 + row_h[] ]
+                area: Region [ 'l0 t{cy_}px r0 h{row_h[]}px' ] ]
+            ly_ : f32 [ cy_ + row_h[] ]
             t['callstack'] = Callstack [
                 frames: orb.stack_frames[],
-                area: Region [ 'l0 t{ly9}px r0 b0' ] ]
+                area: Region [ 'l0 t{ly_}px r0 b0' ] ]
         if [ orb.rec_open ]
-            rec_els[ t, orb, av9 ]
+            rec_els[ t, orb, av_ ]
         return t
 
     # the record tab: what records (orbiter's whole window, or the
     # selected app), the button that starts and stops it, the take
-    func rec_els [ t: Elements, orb: orbiter, av9: AppView ]
+    func rec_els [ t: Elements, orb: orbiter, av_: AppView ]
         rh : f32 row_h[]
         y  : f32 [ tab_y[] + tabs_h[] + 8.0 ]
-        up : bool [ av9 && av9.slot >= 0 && !av9.ended && !av9.held ]
+        up : bool [ av_ && av_.slot >= 0 && !av_.ended && !av_.held ]
         on : bool [ orb.rec_iid != -2 ]
-        anm : string (up) ? orb.instance_name[ av9 ] : 'no app'
+        anm : string (up) ? orb.instance_name[ av_ ] : 'no app'
         # the running take's own source stays lit
         pk : i32 [ (on) ? ((orb.rec_iid == -1) ? 0 : 1)
             : ((up) ? orb.rec_pick : 0) ]
@@ -2406,9 +2455,9 @@ Control InstancePanel
             disable_mask: (on) ? 3 : ((up) ? 0 : 2),
             area: Region [ 'l8px t{y}px r8px h{rh}px' ] ]
         y += rh + 8.0
-        el9 : i64 [ (on) ? (epoch_millis[] - orb.rec_from) / 1000 : 0 ]
-        ss : i64 [ el9 % 60 ]
-        mn : i64 [ el9 / 60 ]
+        el_ : i64 [ (on) ? (epoch_millis[] - orb.rec_from) / 1000 : 0 ]
+        ss : i64 [ el_ % 60 ]
+        mn : i64 [ el_ / 60 ]
         tm : string [ (ss < 10) ? '{mn}:0{ss}' : '{mn}:{ss}' ]
         t['rec_go'] = TButtons [
             buttons: vec string [] [ 'rec_go' ],
@@ -2452,9 +2501,9 @@ Control InstancePanel
                 if [ r1 > r0 && sum + w > bounds.w ] break
                 sum += w
                 r1 += 1
-            n9    : i32 [ r1 - r0 ]
-            gap9  : f32 [ (bounds.w - sum) / f32[ n9 ] ]
-            extra : f32 [ (bounds.w > sum) ? gap9 : 0.0 ]
+            n_    : i32 [ r1 - r0 ]
+            gap_  : f32 [ (bounds.w - sum) / f32[ n_ ] ]
+            extra : f32 [ (bounds.w > sum) ? gap_ : 0.0 ]
             if [ ix < r1 ]
                 x : f32 [ 0.0 ]
                 for [ i: i32 r0, i < ix, i += 1 ]
@@ -2489,10 +2538,10 @@ Control InstancePanel
                 continue
             # a pixel grid like the other controls: flat cells, 1px
             # rules, no rounding
-            on9 : bool [ lit && lit.compare[ nm ] == 0 ]
+            on_ : bool [ lit && lit.compare[ nm ] == 0 ]
             cv.stroke_width[ 0.0 ]
-            bg9 : rgba [ (on9) ? '#6cb6ff' : '#2a2340' ]
-            cv.fill_color[ bg9 ]
+            bg_ : rgba [ (on_) ? '#6cb6ff' : '#2a2340' ]
+            cv.fill_color[ bg_ ]
             cv.rect_to[ chip_x, cy, chip_wd, rh ]
             cv.paint[]
             cv.fill_color[ rgba [ '#ffffff1a' ] ]
@@ -2501,8 +2550,8 @@ Control InstancePanel
             cv.rect_to[ chip_x, cy + rh - 1.0, chip_wd, 1.0 ]
             cv.paint[]
             cv.font_size[ 12 ]
-            fg9 : rgba [ (on9) ? '#0f1220' : '#e8e2f5' ]
-            cv.fill_color[ fg9 ]
+            fg_ : rgba [ (on_) ? '#0f1220' : '#e8e2f5' ]
+            cv.fill_color[ fg_ ]
             cr : rect [ x: chip_x, y: cy, w: chip_wd, h: rh ]
             cv.draw_text[ nm, cr, vec2f [ 0.5, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.clip, null, true ]
@@ -2565,14 +2614,14 @@ Control TaskBar
         orb : cast orbiter [ ux.app_object ]
         sig : string ''
         if [ li ]
-            for [ av9: AppView ] in li
-                s9 : i32 [ (ed && ed.run_view == av9) ? 1 : 0 ]
-                o9 : i32 [
-                    (av9.ended || av9.held) ? 1
-                    : ((av9.paused) ? 2 : 0) ]
-                sig = '{sig}|{av9.iid}:{av9.app_title}:{s9}:{o9}'
-        p9 : i32 [ (orb) ? orb.active_pane : -1 ]
-        sig = '{sig}|{p9}'
+            for [ av_: AppView ] in li
+                s_ : i32 [ (ed && ed.run_view == av_) ? 1 : 0 ]
+                o_ : i32 [
+                    (av_.ended || av_.held) ? 1
+                    : ((av_.paused) ? 2 : 0) ]
+                sig = '{sig}|{av_.iid}:{av_.app_title}:{s_}:{o_}'
+        p_ : i32 [ (orb) ? orb.active_pane : -1 ]
+        sig = '{sig}|{p_}'
         if [ !task_sig || task_sig != sig ]
             task_sig = sig
             task_sig.hold[]
@@ -2591,8 +2640,8 @@ Control TaskBar
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
         for [ i: i32 0, i < orb.editor_slots.count, i += 1 ]
-            e9 : Editor orb.pane_at[ i ]
-            if [ e9 && e9.run_view == av ] return e9
+            e_ : Editor orb.pane_at[ i ]
+            if [ e_ && e_.run_view == av ] return e_
         return null
 
     # the instances started here: never a held one or a viewer
@@ -2600,8 +2649,8 @@ Control TaskBar
         li : vec AppView inst_list[]
         r  : vec AppView []
         if [ !li ] return r
-        for [ av9: AppView ] in li
-            if [ !av9.viewer && !av9.held && av9.started ] r.push[ av9 ]
+        for [ av_: AppView ] in li
+            if [ !av_.viewer && !av_.held && av_.started ] r.push[ av_ ]
         return r
 
     # the app's own title, else its module and its argument's stem
@@ -2609,11 +2658,11 @@ Control TaskBar
         if [ av.app_title && av.app_title.count > 0 ]
             return av.app_title
         orb : cast orbiter [ ux.app_object ]
-        md9 : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : '')
+        md_ : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod : ((av.src) ? av.src.stem[] : '')
         da : string (orb) ? orb.default_arg_of[ av.module_args ] : ''
-        if [ da.count == 0 ] return md9
-        dp9 : path da
-        return '{md9}  {dp9.stem[]}'
+        if [ da.count == 0 ] return md_
+        dp_ : path da
+        return '{md_}  {dp_.stem[]}'
 
     # six bar heights a task
     func task_w [] -> f32
@@ -2643,9 +2692,9 @@ Control TaskBar
         return (dx * dx + dy * dy <= 100.0) ? i : -1
 
     func on_move [ ev: Event ]
-        h9 : i32 [ close_at[ ev.mouse.pos ] ]
-        if [ h9 != close_hov ]
-            close_hov = h9
+        h_ : i32 [ close_at[ ev.mouse.pos ] ]
+        if [ h_ != close_hov ]
+            close_hov = h_
             pristine  = false
 
     func on_leave [ ev: Event ]
@@ -2655,21 +2704,21 @@ Control TaskBar
 
     # the close acts on release, still over the ring it went down on
     func on_release [ ev: Event ]
-        d9 : i32 [ close_down ]
-        if [ d9 < 0 ] return
+        d_ : i32 [ close_down ]
+        if [ d_ < 0 ] return
         close_down = -1
         pristine   = false
         tk  : vec AppView tasks[]
         orb : cast orbiter [ ux.app_object ]
-        if [ !orb || close_at[ ev.mouse.pos ] != d9 || d9 >= tk.count ]
+        if [ !orb || close_at[ ev.mouse.pos ] != d_ || d_ >= tk.count ]
             return
-        av9 : AppView tk[ d9 ]
-        sp9 : Editor shown_in[ av9 ]
-        if [ sp9 ]
-            sp9.toggle_app_run[ false ]
+        av_ : AppView tk[ d_ ]
+        sp_ : Editor shown_in[ av_ ]
+        if [ sp_ ]
+            sp_.toggle_app_run[ false ]
         el
-            av9.release*[]
-            orb.remove_instance[ av9 ]
+            av_.release*[]
+            orb.remove_instance[ av_ ]
         if [ ux ] ux.restyle = true
 
     # shift makes a new instance in this tab; the close ring at the
@@ -2686,19 +2735,19 @@ Control TaskBar
         if [ mx < 0.0 ] return
         i : i32 [ mx / task_step[] ]
         if [ i >= tk.count ] return
-        av9 : AppView tk[ i ]
-        tx9 : f32 [ mx - f32[ i ] * task_step[] ]
+        av_ : AppView tk[ i ]
+        tx_ : f32 [ mx - f32[ i ] * task_step[] ]
         if [ ev.key.shift ]
-            orb.show_app[ ed, av9.src, true ]
+            orb.show_app[ ed, av_.src, true ]
         el [ close_at[ ev.mouse.pos ] == i ]
             close_down = i
-        el [ ed.run_view == av9 ]
+        el [ ed.run_view == av_ ]
             ed.run_view = null
             ed.app_view = false
             ed.load_file[]
             orb.session_dirty = true
         el
-            orb.embed_app[ ed, av9 ]
+            orb.embed_app[ ed, av_ ]
         pristine = false
         ev.no_default = true
         if [ ux ] ux.restyle = true
@@ -2711,17 +2760,17 @@ Control TaskBar
 
     # two strokes, 4.5px out from the centre, 1.6px thick
     func draw_x [ cv: Canvas, cx: f32, cy: f32, col: rgba ]
-        d9 : f32 [ 4.5 * 0.7071 ]
+        d_ : f32 [ 4.5 * 0.7071 ]
         cv.save[]
         cv.fill_color[ rgba [ '#0000' ] ]
         cv.stroke_color[ col ]
         cv.stroke_width[ 1.6 ]
         cv.stroke_offset[ 0.0 ]
         cv.set_stroke_cap[ Cap.round ]
-        cv.move_to[ cx - d9, cy - d9 ]
-        cv.line_to[ cx + d9, cy + d9 ]
-        cv.move_to[ cx + d9, cy - d9 ]
-        cv.line_to[ cx - d9, cy + d9 ]
+        cv.move_to[ cx - d_, cy - d_ ]
+        cv.line_to[ cx + d_, cy + d_ ]
+        cv.move_to[ cx + d_, cy - d_ ]
+        cv.line_to[ cx - d_, cy + d_ ]
         cv.paint[]
         cv.restore[]
 
@@ -2735,14 +2784,14 @@ Control TaskBar
         rh : f32 [ bounds.h ]
         tw : f32 [ task_w[] ]
         for [ i: i32 0, i < li.count, i += 1 ]
-            av9 : AppView li[ i ]
+            av_ : AppView li[ i ]
             x8  : f32 [ task_x[] + f32[ i ] * task_step[] ]
-            sel9 : bool [ ed && ed.run_view == av9 ]
+            sel_ : bool [ ed && ed.run_view == av_ ]
             cv.save[]
             if [ chips ]
                 # the argument chip's body: dark, its border the light's
                 cv.fill_color[
-                    (sel9) ? rgba [ '#c890ff40' ] : rgba [ '#0000004d' ] ]
+                    (sel_) ? rgba [ '#c890ff40' ] : rgba [ '#0000004d' ] ]
                 cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 8.0, 0.0,
                                true ]
                 cv.stroke_width[ 1.0 ]
@@ -2756,7 +2805,7 @@ Control TaskBar
                                  10.0 ]
             el
                 cv.fill_color[
-                    (sel9) ? rgba [ '#8826668c' ] : rgba [ '#0000' ] ]
+                    (sel_) ? rgba [ '#8826668c' ] : rgba [ '#0000' ] ]
                 cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0,
                                0.0, true ]
                 cv.stroke_width[ 1.0 ]
@@ -2773,50 +2822,50 @@ Control TaskBar
             cv.stroke_offset[ 0.0 ]
             cv.restore[]
             # its module's app icon, as the dock shows it; none on a chip
-            md9 : path (av9.src && !chips) ? av9.src.parent_dir[] : null
-            if [ md9 ]
+            md_ : path (av_.src && !chips) ? av_.src.parent_dir[] : null
+            if [ md_ ]
                 if [ !app_icons ] app_icons = map AppIcon [string] []
-                mk : string '{md9}'
+                mk : string '{md_}'
                 if [ !app_icons.contains[ mk ] ]
-                    app_icons[ mk ] = AppIcon [ file: md9, module: true,
-                        agi: path '{install_root[]}/export/{orb.install_name_of[ md9.filename[] ]}.agi' ]
-                is9 : f32 [ round[ rh * 0.5 ] ]
-                im9 : f32 [ round[ (rh - is9) * 0.5 ] ]
+                    app_icons[ mk ] = AppIcon [ file: md_, module: true,
+                        agi: path '{install_root[]}/export/{orb.install_name_of[ md_.filename[] ]}.agi' ]
+                is_ : f32 [ round[ rh * 0.5 ] ]
+                im_ : f32 [ round[ (rh - is_) * 0.5 ] ]
                 ai : AppIcon app_icons[ mk ]
-                ai.paint[ cv, x8 + im9, im9, is9 ]
+                ai.paint[ cv, x8 + im_, im_, is_ ]
             cv.font_size[ 13 ]
             cv.fill_color[ rgba [ '#e8e2f5' ] ]
             lead : f32 [ (chips) ? 12.0 : rh ]
             nr : rect [ x: x8 + lead, y: 0.0, w: tw - lead - rh, h: rh ]
-            cv.draw_text[ task_label[ av9 ], nr, vec2f [ 0.0, 0.5 ],
+            cv.draw_text[ task_label[ av_ ], nr, vec2f [ 0.0, 0.5 ],
                 vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
             # the close: a 16px ring the pointer lights, an x inside
-            cx9 : f32 [ x8 + tw - round[ rh * 0.5 ] ]
-            cy9 : f32 [ round[ rh * 0.5 ] ]
+            cx_ : f32 [ x8 + tw - round[ rh * 0.5 ] ]
+            cy_ : f32 [ round[ rh * 0.5 ] ]
             cv.save[]
             w.near_light_on[ cv, a, 0.0, 0.0 ]
             # the ring's own reach: 32px, round, so no y fade
             if [ near_glow > 0.0 ]
-                sc9 : f32 [ cv.transform_scale[] ]
-                if [ sc9 <= 0.0 ] sc9 = 1.0
-                lx9 : f32 [
-                    cv.transform_tx[] + (w.mouse.x - win_pos.x) * sc9 ]
-                ly9 : f32 [
-                    cv.transform_ty[] + (w.mouse.y - win_pos.y) * sc9 ]
-                cv.near_light[ lx9, ly9, 32.0 * sc9, near_glow ]
+                sc_ : f32 [ cv.transform_scale[] ]
+                if [ sc_ <= 0.0 ] sc_ = 1.0
+                lx_ : f32 [
+                    cv.transform_tx[] + (w.mouse.x - win_pos.x) * sc_ ]
+                ly_ : f32 [
+                    cv.transform_ty[] + (w.mouse.y - win_pos.y) * sc_ ]
+                cv.near_light[ lx_, ly_, 32.0 * sc_, near_glow ]
             cv.near_style[ 1.3, 0.0, rgba [ '#c890ffff' ], 1.0 ]
             # black inside while the pointer is on it, or it is held
-            hb9 : bool [ close_hov == i || close_down == i ]
+            hb_ : bool [ close_hov == i || close_down == i ]
             cv.fill_color[
-                (hb9) ? rgba [ '#00000080' ] : rgba [ '#0000' ] ]
+                (hb_) ? rgba [ '#00000080' ] : rgba [ '#0000' ] ]
             cv.stroke_color[ rgba [ '#fff2' ] ]
             cv.stroke_width[ 1.0 ]
             cv.stroke_offset[ 0.0 ]
-            cv.rounded_rect[ cx9 - 8.0, cy9 - 8.0, 16.0, 16.0, 8.0, 8.0,
+            cv.rounded_rect[ cx_ - 8.0, cy_ - 8.0, 16.0, 16.0, 8.0, 8.0,
                              8.0, 8.0 ]
             cv.paint[]
             cv.restore[]
-            draw_x[ cv, cx9, cy9, x_color[ i ] ]
+            draw_x[ cv, cx_, cy_, x_color[ i ] ]
         # a dark line just past each white right edge
         cv.fill_color[ rgba [ '#00000040' ] ]
         for [ i: i32 0, i < li.count, i += 1 ]

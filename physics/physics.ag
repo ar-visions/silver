@@ -1938,7 +1938,7 @@ class Craft
 
     # everything nearer an axis across the craft (y, z) than
     # its own takes group grp: a booster beside it, to detach.
-    # The joints stay with the middle one
+    # the joints stay with the middle one
     public func mark_side [ at: Dvec, grp: string ]
         for [ p: Part ] in parts
             if [ p.name != 'joint' && nearer[ p.off.y, p.off.z, at ] ]
@@ -2471,7 +2471,7 @@ func near [ got: f64, want: f64, rel: f64 ] -> bool
 
 # the 1976 table: pressure Pa and density kg/m3 at layer edges
 # the Moon against Meeus's worked example (Astronomical
-# Algorithms 47.a, 1992 April 12 0h TD): 133.162655 deg,
+# algorithms 47.a, 1992 April 12 0h TD): 133.162655 deg,
 # -3.229126 deg, 368,409.7 km; the series is good to a few
 # arcminutes and a few hundred km
 expect func t_moon_place [] -> bool
@@ -2693,7 +2693,7 @@ func faces_one [ dy: f64, dz: f64, at: Dvec, axes: vec Dvec ] -> bool
 # the tanker: three of our boosters side by side, face to face
 # on strong joints, the bottom stage; a fourth on the middle one
 # under a silver nose, the top stage, its ports on its side.
-# Seven Lugh each. The three leave and land together
+# seven Lugh each. The three leave and land together
 func tanker_ship [] -> Craft
     kl : f64 [ SHIP_LONG ]
     kr : f64 [ SHIP_WIDE ]
@@ -2722,7 +2722,7 @@ func tanker_ship [] -> Craft
                              profile: sn, off: axes[ k + 1 ] ] ]
     # the middle one's legs out off the joined faces; a side
     # one's only where they point away from the row: none cross.
-    # The rest stay folded on their faces
+    # the rest stay folded on their faces
     for [ g: Leg ] in c.legs
         dy : f64 [ g.foot_out.y - g.axis.y ]
         dz : f64 [ g.foot_out.z - g.axis.z ]

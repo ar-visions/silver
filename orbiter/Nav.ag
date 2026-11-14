@@ -1,0 +1,196 @@
+# orbiter as the navigator's host: a pick opens in the active pane,
+# runs the app or program, loads the scene; the instances' pictures
+# and the scenes come from here; the saved lists are the session's
+extend orbiter
+
+NavHost OrbNavHost
+    public orb : orbiter
+
+    func open_file [ p: path ]
+        orb.open_in_pane[ p, orb.active_pane ]
+
+    func open_file_tab [ p: path ] -> bool
+        return orb.open_new_tab[ p ]
+
+    func open_line [ p: path, line: i32 ]
+        orb.open_at_line[ p, orb.active_pane, line ]
+
+    # a module's source: its app runs when built, else its source
+    func open_module [ mp: path ]
+        ed : Editor orb.pane_at[ orb.active_pane ]
+        bin : path '{install_root[]}/build/{mp.stem[]}'
+        if [ ed && bin.exists[] ]
+            orb.show_app[ ed, mp, false ]
+        el
+            orb.open_in_pane[ mp, orb.active_pane ]
+
+    func open_url [ url: string ]
+        ed : Editor orb.pane_at[ orb.active_pane ]
+        if [ ed ] ed.open_url[ url ]
+
+    func run_program [ p: path ]
+        orb.run_program[ p, orb.active_pane ]
+
+    func pick_instance [ iid: i32 ]
+        orb.pick_instance[ iid, orb.active_pane ]
+
+    func scene_choose [ nm: string ]
+        orb.scene_choose[ nm ]
+
+    # the pane's own create mode, on its file
+    func new_file [ dir: path, folder: bool ]
+        pv : element orb.pane_view[ orb.active_pane ]
+        if [ !pv || !(pv inherits EditorView) ] return
+        ev : EditorView pv
+        ed : Editor ev.text_of[]
+        src : path (ed) ? ed.src : null
+        if [ folder ] ev.newdir_enter[ src ]
+        el ev.newfile_enter[ src ]
+        orb.pending_finder = orb.active_pane
+
+    func exit_finder []
+        orb.exit_finder[]
+
+    func list_off []
+        orb.nav_showing  = false
+        orb.find_showing = false
+
+    func focus_title [ text: string ]
+        orb.finder_off = false
+        te : element orb.title_at[ orb.active_pane ]
+        if [ te ]
+            te.edit = text
+            te.pristine = false
+            te.set_focus[]
+
+    func research []
+        orb.run_search[]
+
+    func changed []
+        cv : element orb.find_el[ orb, 'commit' ]
+        if [ cv ] cv.pristine = false
+        orb.force_update[]
+
+    func saved []
+        orb.self_user = orb.nav.self_user
+        orb.save_session[]
+
+    # the aggregate's files are absolute
+    func file_dirty [ p: path ] -> bool
+        if [ !orb.file_cache ] return false
+        fb : FileBuf orb.file_cache[ '{p.absolute[]}' ]
+        return fb && fb.hist_i != fb.sync_i
+
+    # an instance's picture: its program's window, else its frame
+    func instance_tex [ iid: i32 ] -> Texture
+        av : AppView orb.instance_by[ iid ]
+        if [ !av ] return null
+        wv : u64 orb.window_of[ av ]
+        if [ wv != 0 && orb.ux ]
+            return window_texture[ orb.ux.screen, wv ]
+        return (av.have_frame) ? av.front[] : null
+
+    func instance_name [ iid: i32 ] -> string
+        av : AppView orb.instance_by[ iid ]
+        return (av) ? orb.instance_name[ av ] : ''
+
+    # its program's window is up: that is running
+    func instance_status [ iid: i32 ] -> string
+        av : AppView orb.instance_by[ iid ]
+        if [ !av ] return ''
+        if [ orb.window_of[ av ] != 0 ] return 'running'
+        return av.status_word[]
+
+    func scene_names [] -> vec string
+        return orb.scene_list[]
+
+    func scene_thumb [ nm: string ] -> path
+        mod : string (orb.scene_mods && orb.scene_mods.contains[ nm ])
+            ? orb.scene_mods[ nm ] : null
+        if [ !mod || mod.count == 0 ] return null
+        inm : string orb.install_name_of[ mod ]
+        return path '{install_root[]}/share/{inm}/thumbs/{nm}.png'
+
+    func scene_current [] -> string
+        return orb.scene_name[]
+
+    func is_protocol [ s: string ] -> bool
+        ed : Editor orb.pane_at[ orb.active_pane ]
+        return ed && ed.is_protocol[ s ]
+
+    # the word index for find in files, on the index's thread
+    func index_pass []
+        orb.tok_warm[]
+
+# the navigator app over the window: its frame drawn full size,
+# every press and key passed to it; Escape puts it away
+element NavOverlay
+    focusable : true
+    animated  : true
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func view [] -> AppView
+        o : orbiter orb[]
+        return (o) ? o.nav_view : null
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        av : AppView view[]
+        if [ !av ] return
+        cv : Canvas w.screen
+        av.vx  = 0.0
+        av.vy  = 0.0
+        av.vw  = bounds.w
+        av.vh  = bounds.h
+        av.vsx = 0.0
+        av.vsy = 0.0
+        # the frost under it: the app's window starts clear
+        w.draw_blur[ cv, a, BlurStage.frost ]
+        av.service[ cv ]
+        av.draw_frame[ cv, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                  h: bounds.h ] ]
+
+    func on_press [ ev: Event ]
+        av : AppView view[]
+        if [ av && av.view_press[ ev ] ] ev.no_default = true
+        set_focus[]
+
+    func on_move [ ev: Event ]
+        av : AppView view[]
+        if [ av ] av.view_move[ ev ]
+
+    func on_release [ ev: Event ]
+        av : AppView view[]
+        if [ av ] av.view_release[ ev ]
+
+    public func on_wheel [ ev: Event ]
+        ev.no_default = true
+        av : AppView view[]
+        if [ av ] av.view_wheel[ ev ]
+
+    # Escape puts the app away; Backspace edits the typed text; the
+    # rest (arrows, Enter) are the app's
+    func on_key [ ev: Event ]
+        o : orbiter orb[]
+        k : i32 [ ev.key.unicode ]
+        if [ ev.key.state && k == 256 ]
+            if [ o ] o.nav_app_hide[]
+            ev.no_default = true
+            return
+        if [ o && o.nav_type_key[ ev ] ]
+            ev.no_default = true
+            return
+        av : AppView view[]
+        if [ av ] av.on_key*[ ev ]
+
+    # typed text is the bar's filter: orbiter's model, sent to the app
+    func on_char [ ev: Event ]
+        o : orbiter orb[]
+        if [ o && o.nav_type_char[ ev ] ] ev.no_default = true
+
+    # the app's own focus says whether it wants words (a phone's keys)
+    public func takes_words [] -> bool
+        av : AppView view[]
+        return av != null && av.app_words

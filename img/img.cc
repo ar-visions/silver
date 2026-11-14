@@ -124,6 +124,33 @@ none Image_init(Image a) {
         png_byte bit_depth  = png_get_bit_depth    (png, png_info);
         png_byte color_type = png_get_color_type   (png, png_info);
 
+        // 16-bit gray (a height map): every level kept, as one f32 0..1
+        if (bit_depth == 16 && color_type == PNG_COLOR_TYPE_GRAY) {
+            size_t     n    = (size_t)a->width * a->height;
+            u8*        raw  = (u8*)malloc(n * 2);
+            png_bytep* rows = (png_bytep*)malloc(sizeof(png_bytep) * a->height);
+            for (int y = 0; y < a->height; y++)
+                rows[y] = raw + (size_t)y * a->width * 2;
+            png_read_image(png, rows);
+            free(rows);
+            png_destroy_read_struct(&png, &png_info, NULL);
+            fclose(file);
+            f32* data = (f32*)alloc((Au_t)_typeid(f32), n,
+                null, null, null, __FILE__, __LINE__, 0);
+            // png samples are big-endian
+            for (size_t i = 0; i < n; i++)
+                data[i] = (f32)((raw[i * 2] << 8) | raw[i * 2 + 1]) / 65535.0f;
+            free(raw);
+            a->format     = Pixel_f32;
+            a->channels   = 1;
+            a->pixel_size = sizeof(f32);
+            info->count   = n;
+            info->scalar  = (Au_t)_typeid(f32);
+            info->data    = Au_hold((Au)data);
+            a->pixels     = (u8*)data;
+            return;
+        }
+
         // normalize EVERY png to 8-bit RGBA so the packed bytes match the declared
         // format (Pixel_rgba8 = 4 bytes/px). without this an RGB (3ch) or palette png
         // stays <4 bytes/px and a texture upload reads it with a 4-byte stride → the

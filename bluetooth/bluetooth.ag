@@ -618,7 +618,7 @@ Button BtRow
         cv.set_font[ null ]
 
 # Bluetooth on or off, the devices (connected and paired first),
-# Scan; a click on one opens what can be done with it under it;
+# scan; a click on one opens what can be done with it under it;
 # a pairing's code is asked here (no box over the screen)
 element BluetoothPanel
     public bt     : Bluetooth

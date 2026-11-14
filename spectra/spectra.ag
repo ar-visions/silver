@@ -1,5 +1,5 @@
-# Why did the thread nap? It was waiting for a callback.
-# The thread never got the callback: it was a weak reference, and nobody
+# why did the thread nap? It was waiting for a callback.
+# the thread never got the callback: it was a weak reference, and nobody
 # held it.
 import <time.h>
 import <stdio.h>
@@ -717,10 +717,10 @@ func esds_asc [ b: @u8, s: i32, e: i32 ] -> i64
         q += 1
         ln : i32 [ 0 ]
         while [ true ]
-            b9 : i32 [ b[ q ] ]
+            b_ : i32 [ b[ q ] ]
             q += 1
-            ln = ln * 128 + (b9 & 127)
-            if [ (b9 & 128) == 0 ] break
+            ln = ln * 128 + (b_ & 127)
+            if [ (b_ & 128) == 0 ] break
         if [ tag == 5 ]
             return i64[ q ] * 65536 + i64[ ln ]
         el [ tag == 3 ]
@@ -770,10 +770,10 @@ func caf_parse [ buf: @u8, fsz: i32 ] -> AacStream
     for [ k: i32 0, k < np, k += 1 ]
         psz : i32 [ 0 ]
         while [ true ]
-            b9 : i32 [ buf[ po ] ]
+            b_ : i32 [ buf[ po ] ]
             po += 1
-            psz = psz * 128 + (b9 & 127)
-            if [ (b9 & 128) == 0 ] break
+            psz = psz * 128 + (b_ & 127)
+            if [ (b_ & 128) == 0 ] break
         st.sizes[ k ] = psz
         st.offs[ k ]  = doff
         doff += psz
@@ -959,15 +959,15 @@ func caf_load [ p: path ] -> AudioClip
     conf.outputFormat = FAAD_FMT_16BIT
     NeAACDecSetConfiguration[ h, conf ]
     sr : u64 [ 0 ]
-    ch9 : u8 [ 0 ]
+    ch_ : u8 [ 0 ]
     ir : i64 [
         NeAACDecInit2[ h, @buf[ st.asc_o ], u64[ st.asc_n ], @sr,
-                       @ch9 ] ]
+                       @ch_ ] ]
     if [ ir != 0 ]
         log 'caf: faad init failed on {p}'
         NeAACDecClose[ h ]
         return null
-    ch : i32 [ ch9 ]
+    ch : i32 [ ch_ ]
     rate : i32 [ sr ]
     cap : i64 [ (st.npkts + 2) * 2048 * ch ]
     pcm : new i16 [ cap ]
@@ -1012,12 +1012,12 @@ func aac_clip [ asc: @u8, asc_n: i32, data: @u8, offsets: vec i64,
     conf.outputFormat = FAAD_FMT_16BIT
     NeAACDecSetConfiguration[ h, conf ]
     sr : u64 [ 0 ]
-    ch9 : u8 [ 0 ]
-    if [ NeAACDecInit2[ h, asc, u64[ asc_n ], @sr, @ch9 ] != 0 ]
+    ch_ : u8 [ 0 ]
+    if [ NeAACDecInit2[ h, asc, u64[ asc_n ], @sr, @ch_ ] != 0 ]
         log 'aac: faad init failed'
         NeAACDecClose[ h ]
         return null
-    ch   : i32 [ ch9 ]
+    ch   : i32 [ ch_ ]
     rate : i32 [ sr ]
     np   : i64 [ sizes.count ]
     cap  : i64 [ (np + 2) * 2048 * ch ]
@@ -1584,8 +1584,8 @@ func spectrograph [ c: AudioClip, out: path, w2: i32, h2: i32, fmin: f32,
         s0 : i64 [ i64[ x ] * hop ]
         for [ c2: i32 0, c2 < ch, c2 += 1 ]
             for [ i: i32 0, i < wn, i += 1 ]
-                b9 : i64 [ (s0 + i64[ i ]) * ch + c2 ]
-                re[ i ] = f32[ c.pcm[ b9 ] ] / 32768.0 * win[ i ]
+                b_ : i64 [ (s0 + i64[ i ]) * ch + c2 ]
+                re[ i ] = f32[ c.pcm[ b_ ] ] / 32768.0 * win[ i ]
                 im[ i ] = 0.0
             for [ i: i32 wn, i < n, i += 1 ]
                 re[ i ] = 0.0

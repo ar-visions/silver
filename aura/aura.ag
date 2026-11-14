@@ -278,9 +278,9 @@ element aura : trinity
     # after a live reload the page stays: the helper is the one running
     func adopt [] -> bool
         if [ !engine || engine.count < 2 ] return false
-        p9 : i32 [ i32 engine[0] ]
-        if [ kill[ p9, 0 ] != 0 ] return false
-        pid      = p9
+        p_ : i32 [ i32 engine[0] ]
+        if [ kill[ p_, 0 ] != 0 ] return false
+        pid      = p_
         ctl      = i32 engine[1]
         shm_path = engine_shm
         started  = true
@@ -328,10 +328,10 @@ element aura : trinity
                                         @st, @off, @fd, @tt[0], 256 ]
                 continue
             if [ kind == 3 ]
-                t9 : string[ @tt[0] ]
-                log 'aura: title {t9}'
-                page_title = t9
-                set_title[ t9 ]
+                t_ : string[ @tt[0] ]
+                log 'aura: title {t_}'
+                page_title = t_
+                set_title[ t_ ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
                                         @st, @off, @fd, @tt[0], 256 ]
                 continue
@@ -343,10 +343,10 @@ element aura : trinity
                                         @st, @off, @fd, @tt[0], 256 ]
                 continue
             if [ kind == 4 ]
-                a9 : string[ @tt[0] ]
-                if [ a9 && a9 != 'about:blank' ]
-                    last_src = a9
-                    set_address[ a9 ]
+                a_ : string[ @tt[0] ]
+                if [ a_ && a_ != 'about:blank' ]
+                    last_src = a_
+                    set_address[ a_ ]
                     save-persistent[ a ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
                                         @st, @off, @fd, @tt[0], 256 ]

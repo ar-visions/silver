@@ -1,0 +1,2216 @@
+# the navigator: the browse list and its search over a file index,
+# the git band and its commit form, repositories, projects, drives
+# and pins. one module: orbiter imports it for its panes and menu,
+# and the same module is the app the bar starts over the window
+export 0.1.0
+export software ['developer']
+
+import vec
+import img
+import trinity
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <fcntl.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+    import <pthread.h>
+
+import Contrib
+import View
+
+# navigator.c: a line to a socket by its path (orbiter's, shared
+# into a bound view by that path); 1 sent
+func nav_sock_send [ sock: cstr, line: cstr ] -> i32
+
+# the font scale (ctrl +/-): 1 at rest
+func nav_unit [ cv: Canvas ] -> f32
+    return (cv && cv.vk && cv.vk.font_unit > 0)
+        ? f32[ cv.vk.font_unit ] / 22.0 : 1.0
+
+# silver's install: the exports, shares and built apps
+func nav_install [] -> path
+    i : path path.path_install[]
+    if [ i ] return i
+    return path '{path.path_startup[]}/install'
+
+# a module's export file (install/export/<owner>-<name>.agi), by the
+# name's tail; null when none was written
+func export_agi_of [ name: string ] -> path
+    ex : path '{nav_install[]}/export'
+    if [ !ex.exists[] ] return null
+    tail : string '-{name}.agi'
+    for [ f: path ] in ex.ls[ null, false ]
+        if [ f.filename[].ends_with[ tail ] ] return f
+    return null
+
+# keep_ws keeps leading whitespace and blank lines (diff bodies)
+func git_capture [ root: path, args: string,
+                   keep_ws: bool ] -> vec string
+    out : vec string []
+    cmd : string 'git -C {root} {args} 2>/dev/null'
+    run : command [ cmd ]
+    fh  : handle run.stream[]
+    if [ !fh ] return out
+    b : local i8 [ 1024 ]
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln0 : string[ @b[0] ]
+        if [ keep_ws ]
+            n_ : i32 [ ln0.count ]
+            while [ n_ > 0 ]
+                lc : i32 [ ln0.chars[ n_ - 1 ] ]
+                if [ lc != 10 && lc != 13 ] break
+                n_ -= 1
+            out.push[ ln0.mid[ 0, n_ ] ]
+        el
+            ln : ln0.trim[]
+            if [ ln.count > 0 ] out.push[ ln ]
+    pclose[ fh ]
+    return out
+
+# the string value of one pretty-printed json line ("key": "value",); ''
+# for null
+func json_line_value [ ln: string ] -> string
+    ci : i32 [ ln.index_of[ ':' ] ]
+    if [ ci < 0 ] return ''
+    raw_ : string ln.mid[ ci + 1, ln.count - ci - 1 ]
+    rest : string raw_.trim[]
+    if [ rest.count < 2 || rest.chars[ 0 ] != 34 ] return ''
+    q1 : i32 [ rest.rindex_of[ '"' ] ]
+    if [ q1 <= 0 ] return ''
+    return rest.mid[ 1, q1 - 1 ]
+
+# a repository a host lists for a user
+class RepoInfo
+    public full : string        # owner/name
+    public name : string
+    public desc : string
+
+# a checkout in flight: git's progress read off its own pipe, no
+# console. phase: cloning, building, done, failed
+class RepoClone
+    public full  : string
+    public name  : string
+    public dir   : string
+    public fh    : handle
+    public fd    : i32 [ -1 ]
+    public pct   : f32
+    public phase : string
+    public tail  : string
+
+# where repositories live: how a user's are listed and how one is
+# cloned. github for now; a second host is a second instance of this,
+# not a path
+class RepoHost
+    public name  : string [ 'github' ]
+    # a personal access token: 5000 requests an hour, private repos, who
+    # we are
+    public token : string
+    public me    : string           # the token's login, once known
+    func auth [] -> string
+        return (token && token.count > 0) ? '-H "Authorization: Bearer {token}" ' : ''
+    # our own listing goes through /user/repos (private ones included).
+    # 100 a page is the host's most; page 2, 3.. continue the list
+    func list_cmd [ user: string, page: i32 ] -> string
+        own : bool [
+            token && token.count > 0 && me && me.count > 0
+            && me.compare[ user ] == 0 ]
+        url : string (own) ? 'https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner&page={page}' : 'https://api.github.com/users/{user}/repos?per_page=100&sort=updated&page={page}'
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "{url}"'
+    # one repository by owner/name (any case): its canonical name and
+    # description
+    func repo_cmd [ full: string ] -> string
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/repos/{full}"'
+    func user_cmd [] -> string
+        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/user"'
+    # over ssh: the key is the credential we have, and it reaches
+    # private repos
+    func clone_url [ full: string ] -> string [ 'git@github.com:{full}.git' ]
+    # who the key says we are: "Hi <login>! You've successfully
+    # authenticated"
+    # batch: no prompt for a passphrase or an unknown host, it fails
+    func whoami_cmd [] -> string
+        return 'ssh -T -o BatchMode=yes git@github.com 2>&1'
+
+# the login the host greets our key with; '' when it does not know us
+func repo_whoami [ host: RepoHost ] -> string
+    cmd : string host.whoami_cmd[]
+    run : command [ cmd ]
+    fh  : handle run.stream[]
+    if [ !fh ] return ''
+    b : local i8 [ 1024 ]
+    who : string ''
+    while [ fgets[ @b[0], 1024, fh ] ]
+        ln : string[ @b[0] ]
+        hi : i32 [ ln.index_of[ 'Hi ' ] ]
+        ex : i32 [ ln.index_of[ '!' ] ]
+        if [ hi >= 0 && ex > hi + 3 ]
+            who = ln.mid[ hi + 3, ex - hi - 3 ]
+    pclose[ fh ]
+    return who
+
+# the token's login from the host; '' without a token or on any failure
+func repo_token_login [ host: RepoHost ] -> string
+    if [ !host.token || host.token.count == 0 ] return ''
+    cmd : string host.user_cmd[]
+    run : command [ cmd ]
+    fh  : handle run.stream[]
+    if [ !fh ] return ''
+    b : local i8 [ 4096 ]
+    who : string ''
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln0 : string[ @b[0] ]
+        ln  : string ln0.trim[]
+        if [ ln.starts_with[ '"login":' ] && who.count == 0 ]
+            who = json_line_value[ ln ]
+    pclose[ fh ]
+    return who
+
+# a listing reply (pretty json, one field per line) as repositories
+func repo_parse [ text: string ] -> vec RepoInfo
+    items : vec RepoInfo []
+    if [ !text ] return items
+    lines : text.split[ '\n' ]
+    cur : RepoInfo null
+    for [ ln0: string ] in lines
+        ln : string ln0.trim[]
+        if [ ln.starts_with[ '"full_name":' ] ]
+            cur = RepoInfo []
+            cur.full = json_line_value[ ln ]
+            sl : i32 [ cur.full.rindex_of[ '/' ] ]
+            cur.name = (sl >= 0) ? cur.full.mid[ sl + 1,
+                                                 cur.full.count - sl
+                                                 - 1 ] : cur.full
+            cur.desc = ''
+            items.push[ cur ]
+        el [ cur && ln.starts_with[ '"description":' ] ]
+            cur.desc = json_line_value[ ln ]
+    return items
+
+# the on-disk listing: first line the fetch time (ms), pages fetched and
+# whether more remain, then full<tab>desc
+func repo_cache_write [ p: path, items: vec RepoInfo, page: i32,
+                        more: bool ]
+    ps : string '{p}'
+    fh : handle fopen[ ps.chars, "w" ]
+    if [ !fh ] return
+    now : i64 [ Au.epoch_millis[] ]
+    fprintf[ fh, "%lld %d %d\n", now, page, (more) ? 1 : 0 ]
+    for [ it: RepoInfo ] in items
+        fprintf[ fh, "%s\t%s\n", it.full.chars, it.desc.chars ]
+    fclose[ fh ]
+
+func repo_cache_read [ p: path, at: @i64, page: @i32,
+                       more: @i32 ] -> vec RepoInfo
+    items : vec RepoInfo []
+    ps : string '{p}'
+    fh : handle fopen[ ps.chars, "r" ]
+    if [ !fh ] return null
+    b : local i8 [ 4096 ]
+    first : bool [ true ]
+    oldfmt : bool [ false ]
+    while [ fgets[ @b[0], 4096, fh ] ]
+        ln0 : string[ @b[0] ]
+        ln  : string ln0.trim[]
+        if [ first ]
+            first = false
+            hp : vec string ln.split[ ' ' ]
+            at[0]   = (hp.count > 0) ? i64[ hp[0].integer_value[] ] : 0
+            page[0] = (hp.count > 1) ? i32[ hp[1].integer_value[] ] : 1
+            more[0] = (hp.count > 2) ? i32[ hp[2].integer_value[] ] : 0
+            oldfmt  = hp.count < 3
+            continue
+        tb : i32 [ ln.index_of[ '\t' ] ]
+        it : RepoInfo []
+        it.full = (tb >= 0) ? ln.mid[ 0, tb ] : ln
+        it.desc = (tb >= 0) ? ln.mid[ tb + 1, ln.count - tb - 1 ] : ''
+        sl : i32 [ it.full.rindex_of[ '/' ] ]
+        it.name = (sl >= 0) ? it.full.mid[ sl + 1,
+                                           it.full.count - sl
+                                           - 1 ] : it.full
+        items.push[ it ]
+    fclose[ fh ]
+    # a cache written before paging: a full page means there may be more
+    if [ oldfmt && items.count >= 100 ] more[0] = 1
+    return items
+
+# the index's files under the project by extension (at most 200 each)
+class FileSet
+    # its map's key: held here, as the map does not hold keys
+    public ext   : string
+    public files : vec string
+
+class FileChg
+    public adds : i32
+    public dels : i32
+
+# one threaded git fetch: the view only ever reads a finished snapshot
+class GitSnap
+    public base  : string
+    public repo  : string
+    public files : vec string
+    public adds  : i32
+    public dels  : i32
+    public chg   : map FileChg [string]
+
+# what the host does with the navigator's picks and words: orbiter
+# opens panes and runs apps; the app alone sends them to orbiter's
+# socket. every call is a no-op here; a host overrides what it has
+class NavHost
+    # a file opens where the host shows files
+    func open_file [ p: path ] return
+    # in a new tab; false when the host has none
+    func open_file_tab [ p: path ] -> bool [ false ]
+    func open_line [ p: path, line: i32 ] return
+    # a module's source: its app runs when built, else the source
+    func open_module [ mp: path ] return
+    func open_url [ url: string ] return
+    func run_program [ p: path ] return
+    func pick_instance [ iid: i32 ] return
+    func scene_choose [ nm: string ] return
+    # the new file / new folder buttons, in the folder in view
+    func new_file [ dir: path, folder: bool ] return
+    # the list closes
+    func exit_finder [] return
+    # the list's history reached its start: the list goes
+    func list_off [] return
+    # the typed text shown and focused where the host types it
+    func focus_title [ text: string ] return
+    # the host builds the rows again (its own search, then build_rows)
+    func research [] return
+    # the view repaints
+    func changed [] return
+    # the saved lists (pins, users, docked) changed
+    func saved [] return
+    # the host holds unsaved edits of the file
+    func file_dirty [ p: path ] -> bool [ false ]
+    # a running instance's picture, name and state (its card)
+    func instance_tex [ iid: i32 ] -> Texture [ null ]
+    func instance_name [ iid: i32 ] -> string [ '' ]
+    func instance_status [ iid: i32 ] -> string [ '' ]
+    # the scenes: their names, each one's picture, the one shown
+    func scene_names [] -> vec string
+        return null
+    func scene_thumb [ nm: string ] -> path [ null ]
+    func scene_current [] -> string [ '' ]
+    # a scheme some module exports (http:): never a user's name
+    func is_protocol [ s: string ] -> bool [ false ]
+    # on the index's thread, once its files are listed
+    func index_pass [] return
+
+# the navigator's model: the index and its watches, the rows, the
+# git snapshot, the commit form's work, repositories and the lists.
+# the host sets host, ux and project before start
+class Navigator
+    public host    : NavHost
+    public ux      : Window
+    # the project: where the search roots and git reads
+    public project : path
+    # the storage folder the token and the repository caches live in
+    public storage : string [ 'navigator' ]
+    # the icon view (a phone's)
+    public icons   : bool
+    # a browse row is one line (else its folder under it)
+    public browse_single : bool
+    public grid_mode     : bool
+    # the programs on PATH are listed (orbiter-os)
+    public programs_on   : bool
+    # --test_propose: every repo reads as not ours
+    public test_propose  : bool
+    public find_text     : string
+    public find_hits     : vec FindHit
+    public find_results  : list string
+    public nav_root      : path
+    public nav_dock_rows : i32
+    # a pick for the host's launch field: files of these kinds only;
+    # pick_dir takes a folder; the files found once, filtered by keys
+    public pick_on    : bool
+    public pick_dir   : bool
+    # the pick may make a file (a save, a take's folder)
+    public pick_creates : bool
+    public pick_exts  : vec string
+    public pick_cache : vec path
+    # the saved lists: the host hands them in and keeps them
+    public pins         : vec string
+    public repo_users   : vec string
+    public docked_repos : vec string
+    public self_user    : string
+    public self_asked   : bool
+    # the login asked for on the git thread, taken by pump
+    public self_want    : bool
+    public self_found   : string
+    public self_fresh   : bool
+    # a send went through: the view closes its form
+    public commit_done  : bool
+    # git snapshot: fetched by a thread, swapped in on the main thread
+    public git_snap  : GitSnap
+    public git_stage : GitSnap
+    public git_busy  : bool
+    public git_tid   : pthread_t
+    public git_live  : bool
+    public git_fresh : bool
+    public git_last  : i64
+    # the watcher saw a source change since the last fetch
+    public git_dirty : bool
+    # the repo the scan reads, set before its thread starts
+    public git_want  : string
+    # the reference each repository's changes are read against, by
+    # its root: HEAD until a commit is picked
+    public git_refs  : map string [string]
+    # each folder's repo top ('' none), looked up once
+    public repo_tops : map string [string]
+    # the commit band's repo work (state, sends) for the browsed repo
+    public contrib     : Contrib
+    # changed files left out of the next commit, absolute
+    public commit_skip : vec string
+    # the finder's repository listing: user: lists a host user's repos
+    public repo_host     : RepoHost
+    public repo_user     : string
+    public repo_items    : vec RepoInfo
+    # what the header says instead of a count
+    public repo_note     : string
+    # a listing in flight, on its own pipe
+    public repo_fetch_user : string
+    public repo_fetch_fh : handle
+    public repo_fetch_fd : i32
+    public repo_fetch_buf : string
+    # an old cache: shown only if the host refuses a refresh
+    public repo_stale    : vec RepoInfo
+    # an exact owner:name typed: looked up on its own (debounced)
+    public one_want      : string
+    public one_want_ms   : i64
+    public one_full      : string
+    public one_fh        : handle
+    public one_fd        : i32
+    public one_buf       : string
+    # lowercase owner/name -> hit (full set) or miss (full empty)
+    public one_cache     : map RepoInfo [string]
+    # pages of the listing held (100 each); the last was full
+    public repo_page     : i32
+    public repo_more     : bool
+    public repo_fetch_page : i32
+    # checkouts in flight, by owner/name
+    public repo_clones   : map RepoClone [string]
+    public side_projects : vec string
+    public side_scan_ms  : i64
+    # the selected user: narrows the projects; browsing keeps it
+    public side_user     : string
+    # the project last unselected: its row stays unlit
+    public side_off      : string
+    # the view's folders, in the order it went
+    public nav_hist      : vec string
+    public nav_hist_ix   : i32 [ -1 ]
+    # the entry whose delete is held down, and when the hold began
+    public delete_armed    : string
+    public delete_armed_ms : i64
+    public delete_hold_ms  : i64 [ 2000 ]
+    # the rows' module icons by folder, and folders without one
+    public mod_icons  : map AppIcon [string]
+    public mod_noicon : vec string
+    # the programs on PATH by name, and the folders' times when read
+    public programs    : map string [string]
+    public programs_at : i64
+    public scene_texs  : map Texture [string]
+    # the index: what it searches, its files, its limit
+    public search_dirs     : vec path
+    public file_index      : list string
+    public max_search      : i32 [ 400000 ]
+    public search_external : bool [ true ]
+    # finds search docked checkouts only while this is lit
+    public search_remotes  : bool
+    public index_dirty     : bool
+    public index_research  : bool
+    public index_task      : async
+    # guards file_index: search reads while the worker fills
+    public index_lock      : mutex
+    # main thread raises this to stop a running worker early
+    public index_cancel    : bool
+    public index_building  : bool
+    # the index's files under the project by extension, sorted on
+    # the index's thread as a pass ends
+    public by_ext      : map FileSet [string]
+    public by_ext_next : map FileSet [string]
+    public index_watches : vec watch
+
+    # the index and the git snapshot begin: host, ux and project set
+    public func start []
+        if [ !nav_root ] nav_root = project
+        if [ !find_hits ] find_hits = vec FindHit []
+        if [ !pins ] pins = vec string []
+        if [ !repo_users ] repo_users = vec string []
+        if [ !docked_repos ] docked_repos = vec string []
+        search_dirs   = vec path []
+        file_index    = list string []
+        find_results  = list string []
+        index_watches = vec watch []
+        index_lock    = mutex []
+        root_search[]
+        start_watching[]
+        start_index[]
+        git_summarize[]
+
+    # each frame: the pipes, a finished git fetch, a search the index
+    # owed
+    public func pump [ w: Window ]
+        repo_pump[ w ]
+        repo_fetch_pump[ w ]
+        repo_one_pump[ w ]
+        contrib_pump[]
+        if [ index_research && !index_building ]
+            index_research = false
+            host.research*[]
+        # the login the git thread found: kept with the session
+        if [ self_fresh ]
+            self_fresh = false
+            if [ self_found && self_found.count > 0 ]
+                self_user = self_found
+                host.saved*[]
+                host.research*[]
+        if [ self_want && !self_asked && !git_busy ]
+            self_asked = true
+            git_summarize[]
+        # a finished git fetch swaps in on THIS thread, then repaints
+        if [ git_fresh ]
+            git_fresh = false
+            git_snap  = git_stage
+            git_stage = null
+            host.research*[]
+            if [ ux ] ux.restyle = true
+        # the watches mark the snapshot dirty on a real change; the
+        # scan reruns on its own thread, at most once a second
+        now : i64 [ Au.epoch_millis[] ]
+        if [ git_dirty && !git_busy && now - git_last >= 1000 ]
+            git_summarize[]
+
+    # the threads end before the code goes (a quit or a reload)
+    public func stop [ reload: bool ]
+        if [ index_watches ]
+            for [ iw: watch ] in index_watches
+                iw.pause[ ]
+                # the callback's context is this model: a paused
+                # watch kept it alive
+                iw.callback = null
+        index_cancel = true
+        # the worker owns file_index until it exits: join first
+        while [ index_building ]
+            usleep[ 1000 ]
+        index_task = null
+        if [ git_live ]
+            pthread_join[ git_tid, null ]
+            git_live = false
+        if [ contrib ] contrib.join[]
+        # a quit leaves the lists to the process's end; a reload frees
+        if [ reload ]
+            index_lock.lock[]
+            file_index   = list string []
+            index_lock.unlock[]
+            find_results = list string []
+
+    func start_index []
+        if [ index_building ]
+            index_cancel = true
+            index_dirty  = true
+            return
+        file_index   = list string []
+        index_dirty  = false
+        dirs : vec path []
+        for [ d: path ] in search_dirs
+            if [ d ] dirs.push[ d ]
+        if [ dirs.count == 0 ] return
+        index_cancel   = false
+        index_building = true
+        work : vec Au []
+        work.push[ dirs ]
+        index_task     = async [ target: a,
+                                 work_fn: lambda index_work[ a ],
+                                 work: work ]
+
+    # a git repo indexes by ls-files: everything gitignored stays out
+    func index_repo [ rp: path, cap: i32 ] -> bool
+        ls : git_capture[ rp,
+                          'ls-files --cached --others --exclude-standard', false ]
+        index_lock.lock[]
+        for [ i: i32 0, i < ls.count, i += 1 ]
+            if [ index_cancel || file_index.count >= cap ] break
+            file_index.push[ path '{rp}/{ls[i]}' ]
+        over : bool [ file_index.count >= cap ]
+        index_lock.unlock[]
+        return over
+
+    func start_watching []
+        for [ d: path ] in search_dirs
+            iw : watch [ res: d, callback: lambda on_index_change[ a ] ]
+            iw.start[]
+            index_watches += iw
+        # the startup directory is part of the changed-files aggregate
+        # even when the finder searches docked checkouts only: watch it
+        # too
+        pr_ : path project
+        seen_ : bool [ false ]
+        for [ d: path ] in search_dirs
+            if [ '{d}' == '{pr_}' ] seen_ = true
+        if [ !seen_ ]
+            gw : watch [ res: pr_,
+                         callback: lambda on_index_change[ a ] ]
+            gw.start[]
+            index_watches += gw
+
+    # what the finder searches: every docked checkout, else this
+    # project. fills search_dirs in place (the paths must be held by the
+    # member, and this is the shape that holds them)
+    func root_search []
+        r0 : path project
+        rs0 : string '{r0}'
+        if [ r0 ] search_dirs += r0
+        if [ docked_repos ]
+            for [ nm: string ] in docked_repos
+                if [ !repo_local[ nm ] ] continue
+                r : path repo_dir[ nm ]
+                if [ !r ] continue
+                rs_ : string '{r}'
+                if [ rs_.compare[ rs0 ] == 0 ] continue
+                search_dirs += r
+
+    # the roots the finder would search now, as strings, to tell a
+    # change
+    func root_names [] -> string
+        out : string ''
+        n_ : i32 [ 0 ]
+        if [ docked_repos ]
+            for [ nm: string ] in docked_repos
+                if [ !repo_local[ nm ] ] continue
+                r : path repo_dir[ nm ]
+                out = '{out}|{r}'
+                n_ += 1
+        if [ n_ == 0 ]
+            r0 : path project
+            out = '|{r0}'
+        return out
+
+    func repo_docked [ name: string ] -> bool
+        if [ !docked_repos ] return false
+        for [ nm: string ] in docked_repos
+            if [ nm.compare[ name ] == 0 ] return true
+        return false
+
+    # dock or undock a checkout: the search re-roots over the set
+    func repo_dock_toggle [ name: string ]
+        if [ !docked_repos ] docked_repos = vec string []
+        found : bool false
+        for [ i: i32 0, i < docked_repos.count, i += 1 ]
+            if [ docked_repos[i].compare[ name ] == 0 ]
+                docked_repos.remove[ i ]
+                found = true
+                break
+        if [ !found ] docked_repos.push[ name ]
+        host.saved*[]
+        reroot_index[]
+        # the changed-files aggregate follows the selection now: scan at
+        # once, or on the first frame the running scan leaves free (the
+        # frame loop takes a dirty mark with no wait when git_last is 0)
+        git_dirty = true
+        git_last  = 0
+        git_summarize[]
+        if [ ux ] ux.restyle = true
+
+    func reroot_index []
+        # already rooted there → nothing to do
+        want : string root_names[]
+        have : string ''
+        if [ search_dirs ]
+            for [ i: i32 0, i < search_dirs.count, i += 1 ]
+                have = '{have}|{search_dirs[i]}'
+        if [ want.compare[ have ] == 0 ] return
+        # the old watches stay in the list, paused: dropping a watch
+        # object corrupts the heap (its callback and resource go with it
+        # while the runner may still hold them), so the few leaked are
+        # the safe choice
+        if [ index_watches ]
+            for [ iw: watch ] in index_watches
+                iw.pause[]
+        if [ !index_watches ] index_watches = vec watch []
+        search_dirs   = vec path []
+        root_search[]
+        start_index[]
+        start_watching[]
+        if [ find_text && find_text.count > 0 ] index_research = true
+
+    func on_index_change [ changed: Au :: o: Navigator ] -> none
+        o.index_dirty = true
+        # the changed-files scan reruns on a real change, not on a timer
+        o.git_dirty   = true
+
+    # the programs the search lists: orbiter-os's PATH, read once
+    func program_list [] -> map string [string]
+        if [ !programs_on ]
+            if [ !programs ] programs = map string [string] []
+            return programs
+        pc : cstr [ getenv[ "PATH" ] ]
+        all : string [ (pc == null) ? '' : string[ pc ] ]
+        at : i64 [ 0 ]
+        for [ dir: string ] in all.split[ ':' ]
+            if [ dir.count == 0 ] continue
+            dp : path [ dir ]
+            if [ dp.exists[] ] at += dp.modified_time[]
+        if [ programs && at == programs_at ] return programs
+        programs_at = at
+        programs = map string [string] []
+        for [ dir: string ] in all.split[ ':' ]
+            if [ dir.count == 0 ] continue
+            d : path [ dir ]
+            entries : d.ls[ null, false ]
+            if [ !entries ] continue
+            for [ e: path ] in entries
+                nm : string e.filename[]
+                if [ programs.contains[ nm ] || e.is_dir[] ] continue
+                full : '{e}'
+                if [ access[ full.chars, X_OK ] == 0 ]
+                    programs[ nm ] = full
+        return programs
+
+    # a program's row in the list: run, never edited
+    func is_program [ p: path ] -> bool
+        # the list as the search read it: no folder checks per row
+        if [ !p || !programs ] return false
+        ps : string '{p}'
+        nm : string p.filename[]
+        return programs.contains[ nm ] && programs[ nm ] == ps
+
+    public func index_search [ query: string ] -> list string
+        out : list string []
+        if [ index_dirty && !index_building ]
+            start_index[]
+        # a search during the build re-runs once the index lands
+        if [ index_building ] index_research = true
+        tiers   : i32 [ 32 ]
+        matches : vec string []
+        dists   : vec i32 []
+        if [ query && query.count > 0 ]
+            ql : i32 [ query.count ]
+            rp : string (search_remotes) ? '' : '{project}'
+            # the checkouts sit under the root but are not ours:
+            # [remotes] only
+            ck : string (search_remotes) ? '' : '{project}/checkout/'
+            index_lock.lock[]
+            for [ s: string ] in file_index
+                if [ rp.count > 0 && s.index_of[ rp ] != 0 ] continue
+                if [ ck.count > 0 && s.index_of[ ck ] == 0 ] continue
+                ridx : i32 [ s.rindex_of[ query ] ]
+                # the file's name only, never its folders
+                if [ ridx <= s.rindex_of[ '/' ] ] continue
+                if [ ridx >= 0 ]
+                    d : i32 [ s.count - (ridx + ql) ]
+                    # a name that starts with the query ranks first
+                    if [ ridx > 0 && s.chars[ ridx - 1 ] == '/' ] d -= 1
+                    if [ d < 0 ] d = 0
+                    if [ d > tiers ] d = tiers
+                    matches.push[ s ]
+                    dists.push[ d ]
+            index_lock.unlock[]
+            # the system's programs on PATH are not listed: our apps are
+            # built from silver (they also slowed every search)
+            # every match is ranked; only the best 500 are listed
+            for [ d: i32 0, d <= tiers && out.count < 500, d += 1 ]
+                for [ i: i32 0, i < matches.count, i += 1 ]
+                    if [ dists[i] == d && out.count < 500 ]
+                        out.push[ matches[i] ]
+        return out
+
+    # the folders whose own name holds the query (from the index's
+    # paths, under the project root; each once, 50 at most)
+    func index_dirs [ query: string ] -> vec string
+        out : vec string []
+        if [ !query || query.count == 0 ] return out
+        rp : string '{project}'
+        ck : string (search_remotes) ? '' : '{rp}/checkout/'
+        seen : map bool [ string ] []
+        index_lock.lock[]
+        for [ s: string ] in file_index
+            if [ out.count >= 50 ] break
+            if [ s.index_of[ rp ] != 0 ] continue
+            if [ ck.count > 0 && s.index_of[ ck ] == 0 ] continue
+            last : i32 [ s.rindex_of[ '/' ] ]
+            at : i32 [ s.mid[ rp.count, last - rp.count ].index_of[
+                query ] ]
+            if [ at < 0 ] continue
+            at += rp.count
+            # cut at the end of the folder name it is in
+            tail : string s.mid[ at, last - at + 1 ]
+            cut : i32 [ at + tail.index_of[ '/' ] ]
+            d : string s.mid[ 0, cut ]
+            if [ seen.contains[ d ] ] continue
+            seen[ d ] = true
+            out.push[ d ]
+        index_lock.unlock[]
+        return out
+
+    # the files the navigator's search sees with one of these
+    # extensions, by name (at most 200)
+    func files_ending [ exts: vec string ] -> vec string
+        out : vec string []
+        if [ !exts || exts.count == 0 || !file_index ] return out
+        if [ index_dirty && !index_building ] start_index[]
+        index_lock.lock[]
+        for [ ext: string ] in exts
+            dot : string [ (ext.starts_with[ '.' ]) ? ext : '.{ext}' ]
+            fs : FileSet (by_ext) ? by_ext[ dot ] : null
+            if [ !fs ] continue
+            for [ f: string ] in fs.files
+                if [ out.count >= 200 ] break
+                out.push[ f ]
+        index_lock.unlock[]
+        # the user's folder, two folders down (not the hidden ones):
+        # ~/roms and its discs' folders
+        hs : string getenv[ 'HOME' ]
+        if [ hs && hs.count > 0 ] home_ending[ path '{hs}', exts, out, 2 ]
+        return out
+
+    # on the index's thread: its files under silver's folder (not the
+    # checkouts) by extension, into by_ext_next
+    func sort_by_ext []
+        by_ext_next = map FileSet [string] []
+        rp : string '{project}'
+        ck : string '{project}/checkout/'
+        i : i32 [ 0 ]
+        # this thread's pool: the cuts go every 20000 files, the
+        # objects before the mark stay
+        mark : i32 [ Au.auto_mark[] ]
+        for [ f: string ] in file_index
+            i += 1
+            if [ i % 20000 == 0 ] Au.auto_free_to[ mark ]
+            if [ !f.starts_with[ rp ] || f.starts_with[ ck ] ] continue
+            dot : i32 [ f.rindex_of[ "." ] ]
+            if [ dot <= f.rindex_of[ "/" ] ] continue
+            ext : string f.mid[ dot, f.count - dot ]
+            fs : FileSet by_ext_next[ ext ]
+            if [ !fs ]
+                fs = FileSet [ ext: ext, files: vec string [] ]
+                by_ext_next[ fs.ext ] = fs
+            if [ fs.files.count < 200 ] fs.files.push[ f ]
+
+    # files in d ending in one of exts, then its folders to depth
+    func home_ending [ d: path, exts: vec string, out: vec string,
+                       depth: i32 ]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            if [ out.count >= 200 ] return
+            nm : string e.filename[]
+            if [ nm.starts_with[ '.' ] ] continue
+            if [ e.is_dir[] ]
+                if [ depth > 0 ] home_ending[ e, exts, out, depth - 1 ]
+                continue
+            fs : string '{e}'
+            for [ ext: string ] in exts
+                x : string [ (ext.starts_with[ '.' ]) ? ext : '.{ext}' ]
+                if [ fs.ends_with[ x ] ]
+                    out.push[ fs ]
+                    break
+
+    # resource pick: collect files whose extension the module exports,
+    # from the real tree (ignoring gitignore) into pick_cache; heavy
+    # build/vendor trees are skipped so the scan is fast
+    func walk_resource [ dir: path ]
+        entries : dir.ls[ null, false ]
+        if [ !entries ] return
+        for [ i: i32 0, i < entries.count, i += 1 ]
+            e : path entries[i]
+            if [ e.is_dir[] ]
+                dn : string e.filename[]
+                if [ dn == '.git' || dn == 'checkout' || dn == 'build' ]
+                    continue
+                if [ dn == 'platform' || dn == 'install' || dn == 'packages' ]
+                    continue
+                if [ dn.count > 0 && dn.chars[0] == 46 ] continue
+                walk_resource[ e ]
+            el
+                fx : string '.{e.ext[]}'
+                for [ px: string ] in pick_exts
+                    if [ px == fx ]
+                        pick_cache.push[ e ]
+                        break
+
+    # thread body: every git call lives here, never on the view.
+    # the changed files are one aggregate over every checkout marked [o]
+    # in the projects list, plus the directory orbiter ran in when that
+    # is a repo; with neither, the repo of the pane's root as before.
+    # files are absolute paths
+    func git_entry [] -> none
+        # who our key is: a network ask, never on the view's thread
+        if [ self_want ]
+            self_want = false
+            rh : RepoHost repo_host_of[]
+            who : string repo_token_login[ rh ]
+            if [ who.count == 0 ] who = repo_whoami[ rh ]
+            self_found = who
+            self_fresh = true
+        # git_stage's store owns it; the pool drains after that store
+        sn : GitSnap []
+        sn.base = git_want
+        # the repo of the folder in view, alone (the main thread's)
+        tops : vec string []
+        if [ git_want && git_want.count > 0 ] tops.push[ git_want ]
+        if [ tops.count > 0 ]
+            sn.repo  = tops[0]
+            sn.files = vec string []
+            sn.chg   = map FileChg [string] []
+            ins : i32 [ 0 ]
+            del : i32 [ 0 ]
+            for [ top: string ] in tops
+                rp : path '{top}'
+                ref_ : string git_ref_of[ rp ]
+                ch : repo_changed[ rp, ref_ ]
+                # closest to the repo root first: fewest separators
+                srt : vec string []
+                for [ i: i32 0, i < ch.count, i += 1 ]
+                    d_  : i32 [ path_depth[ ch[i] ] ]
+                    at_ : i32 [ srt.count ]
+                    for [ j: i32 0, j < srt.count, j += 1 ]
+                        dj : i32 [ path_depth[ srt[j] ] ]
+                        if [
+                            d_ < dj
+                            || (d_ == dj && ch[i].compare[ srt[j] ] < 0) ]
+                            at_ = j
+                            break
+                    srt.insert[ ch[i], at_ ]
+                for [ f_: string ] in srt
+                    sn.files.push[ '{top}/{f_}' ]
+                ss : git_capture[ rp, 'diff --shortstat {ref_}', false ]
+                if [ ss.count > 0 ]
+                    pr_ : ss[0].split[ ',' ]
+                    for [ i: i32 0, i < pr_.count, i += 1 ]
+                        p_ : string pr_[i].trim[]
+                        if [ p_.index_of[ 'insertion' ] >= 0 ]
+                            ins += i32[ p_.real_value[] ]
+                        el [ p_.index_of[ 'deletion' ] >= 0 ]
+                            del += i32[ p_.real_value[] ]
+                # each changed file's lines, in one read: the band
+                # totals only the files the commit takes
+                for [ nl_: string ] in git_capture[ rp,
+                        'diff --numstat {ref_}', false ]
+                    f_ : nl_.split[ '\t' ]
+                    if [ f_.count < 3 ] continue
+                    sn.chg[ '{top}/{f_[2]}' ] = FileChg [
+                        adds: i32[ f_[0].real_value[] ],
+                        dels: i32[ f_[1].real_value[] ] ]
+            sn.adds = ins
+            sn.dels = del
+        git_stage = sn
+        git_fresh = true
+        git_busy  = false
+        # this thread's pool: git's output lines, held only by sn
+        Au.auto_free[]
+
+    func git_summarize []
+        if [ git_busy ] return
+        git_want  = git_sel_key[]
+        git_busy  = true
+        git_dirty = false
+        git_last  = Au.epoch_millis[]
+        pthread_create[ @git_tid, null, @git_entry, a ]
+        git_live  = true
+
+    func path_depth [ s: string ] -> i32
+        n_ : i32 [ 0 ]
+        for [ i: i32 0, i < s.count, i += 1 ]
+            if [ s.chars[i] == 47 ] n_ += 1
+        return n_
+
+    func git_ref_of [ root: path ] -> string
+        if [ !root || !git_refs ] return 'HEAD'
+        r : string git_refs[ '{root.absolute[]}' ]
+        return (r && r.count > 0) ? r : 'HEAD'
+
+    # a new reference: the tabs and every pane's marks re-read against
+    # it
+    func set_git_ref [ root: path, rf: string ]
+        if [ !root ] return
+        if [ !git_refs ] git_refs = map string [string] []
+        git_refs[
+            '{root.absolute[]}' ] = (rf && rf.count > 0) ? rf : 'HEAD'
+        git_dirty = true
+        git_summarize[]
+        host.changed*[]
+
+    # a module folder's own icon for the navigator's rows (its
+    # images/icon.png, else its export's icon); null: the cube
+    func nav_mod_icon [ dir: path ] -> AppIcon
+        k : string '{dir}'
+        if [ !mod_icons ] mod_icons = map AppIcon [string] []
+        if [ !mod_noicon ] mod_noicon = vec string []
+        if [ mod_icons.contains[ k ] ] return mod_icons[ k ]
+        if [ vec_has[ mod_noicon, k ] ] return null
+        ai : AppIcon [ file: dir, module: true,
+                       agi: export_agi_of[ dir.filename[] ] ]
+        png : path '{dir}/images/icon.png'
+        jpg : path '{dir}/images/icon.jpg'
+        if [ !png.exists[] && !jpg.exists[] && !ai.export_icon[] ]
+            mod_noicon.push[ k ]
+            return null
+        mod_icons[ k ] = ai
+        return ai
+
+    # the browsed repo's contributor state; a new repo, a new one
+    func contrib_of [] -> Contrib
+        r : path repo_root[]
+        if [ !r ] return null
+        rs : string '{r}'
+        if [ contrib && contrib.repo == rs ] return contrib
+        if [ contrib && contrib.busy ] return contrib
+        if [ contrib ] contrib.join[]
+        contrib = Contrib [ host: repo_host_of[], repo: rs,
+                            dry: test_propose, storage: storage ]
+        return contrib
+
+    # the band's file chip: in the next commit or left out
+    func commit_skips [ f: string ] -> bool
+        return commit_skip && vec_has[ commit_skip, f ]
+
+    # the files the next commit takes: lit, in the browsed repo
+    func commit_chosen [] -> i32
+        ct : Contrib contrib_of[]
+        if [ !ct || !git_snap || !git_snap.files ] return 0
+        pre : string '{ct.repo}/'
+        n : i32 [ 0 ]
+        for [ f: string ] in git_snap.files
+            if [ f.starts_with[ pre ] && !commit_skips[ f ] ] n += 1
+        return n
+
+    # the band's totals over the chosen files: count, +lines, -lines
+    func commit_totals [] -> vec i32
+        r : vec i32 [] [ 0, 0, 0 ]
+        if [ !git_snap || !git_snap.files ] return r
+        for [ f: string ] in git_snap.files
+            if [ commit_skips[ f ] ] continue
+            r[ 0 ] += 1
+            c : FileChg (git_snap.chg) ? git_snap.chg[ f ] : null
+            if [ c ]
+                r[ 1 ] += c.adds
+                r[ 2 ] += c.dels
+        return r
+
+    func commit_skip_flip [ f: string ]
+        if [ !commit_skip ] commit_skip = vec string []
+        for [ i: i32 0, i < commit_skip.count, i += 1 ]
+            if [ commit_skip[ i ] == f ]
+                commit_skip.remove[ i ]
+                return
+        commit_skip.push[ f ]
+
+    # a finished read or send: its state shown, the tabs read again;
+    # while one runs the band repaints for its step
+    func contrib_pump []
+        if [ !contrib ] return
+        if [ contrib.take[] ]
+            git_summarize[]
+            # a send that went through closes the form; a failed one
+            # keeps the message, its error beside the button
+            st : RepoState contrib.state
+            ok : bool [ !st || !st.error || st.error.count == 0 ]
+            if [ contrib.sent && ok ] commit_done = true
+            host.changed*[]
+            if [ ux ] ux.restyle = true
+        el [ contrib.busy ]
+            host.changed*[]
+            if [ ux ] ux.will_animate = true
+
+    # the browsed folder's home repo — arbitrary per location
+    func repo_root [] -> path
+        base : path [ (nav_root) ? nav_root : project ]
+        rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
+        if [ rl.count == 0 ] return null
+        return path rl[0]
+
+    # fixed 144px tabs on a 150px stride, 12px insets
+    func commit_cap [ w: f32 ] -> i32
+        su : f32 ux_unit[ ux ]
+        c : i32 [ (w - 24.0 * su) / (150.0 * su) ]
+        return (c < 1) ? 1 : c
+
+    # reveal belongs to the asking view: never app state
+    func commit_tab_rows [ w: f32, reveal: bool ] -> i32
+        if [ !git_snap || !git_snap.files || git_snap.files.count == 0 ]
+            return 0
+        c : i32 [ commit_cap[ w ] ]
+        r : i32 [ (git_snap.files.count + c - 1) / c ]
+        if [ !reveal && r > 3 ] r = 3
+        return r
+
+    # the files that differ from a reference in the browsed repo, paths
+    # relative to its root: the tracked differences, then what is
+    # untracked
+    # (a whole untracked directory lists as 'dir/': keep the dir name)
+    # what the changed-files scan covers: the repo of the folder in
+    # view; a change of this string is the only thing that rescans
+    func git_sel_key [] -> string
+        base : path [ (nav_root) ? nav_root : project ]
+        k : string '{base}'
+        if [ !repo_tops ] repo_tops = map string [string] []
+        if [ !repo_tops.contains[ k ] ]
+            rl : git_capture[ base, 'rev-parse --show-toplevel', false ]
+            repo_tops[ k ] = (rl.count > 0) ? rl[0] : ''
+        return repo_tops[ k ]
+
+    func vec_has [ v: vec string, x: string ] -> bool
+        for [ e: string ] in v
+            if [ e.compare[ x ] == 0 ] return true
+        return false
+
+    func repo_changed [ repo: path, rf: string ] -> vec string
+        out : vec string []
+        df : git_capture[ repo, 'diff --name-only {rf}', false ]
+        for [ i: i32 0, i < df.count, i += 1 ]
+            fp_ : string df[i].trim[]
+            if [ fp_.count > 0 ] out += fp_
+        un : git_capture[ repo,
+                          'ls-files --others --exclude-standard --directory', false ]
+        for [ i: i32 0, i < un.count, i += 1 ]
+            fp_ : string un[i].trim[]
+            # a new folder comes back whole (a trailing /): not a file
+            if [ fp_.count == 0 || fp_.chars[ fp_.count - 1 ] == 47 ]
+                continue
+            out += fp_
+        return out
+
+    # the user before the colon in user:name; null unless a plain host
+    # name
+    func repo_user_of [ t: string ] -> string
+        if [ !t ] return null
+        ci : i32 [ t.index_of[ ':' ] ]
+        if [ ci <= 0 ] return null
+        u : string t.mid[ 0, ci ]
+        for [ i: i32 0, i < u.count, i += 1 ]
+            c : i32 [ u.chars[ i ] ]
+            ok : bool [
+                (c >= 48 && c <= 57) || (c >= 65 && c <= 90)
+                || (c >= 97 && c <= 122) || c == 45 ]
+            if [ !ok ] return null
+        # a registered protocol (http:, https: ...) is no user
+        if [ host.is_protocol*[ u ] ] return null
+        return u
+
+    # the host with its token: GITHUB_TOKEN, else the github_token file
+    # in orbiter's state directory; the token's login is who we are
+    func repo_host_of [] -> RepoHost
+        if [ repo_host ] return repo_host
+        repo_host = RepoHost []
+        tk : cstr getenv[ 'GITHUB_TOKEN' ]
+        if [ tk ]
+            repo_host.token = string[ tk ]
+        el
+            sd : path path.path_storage[ storage ]
+            tf : path '{sd}/github_token'
+            if [ tf.exists[] ]
+                lines : array tf.load[ typeid[ array ], null ]
+                if [ lines && lines.count > 0 ]
+                    l0 : string lines[0]
+                    repo_host.token = l0.trim[]
+        return repo_host
+
+    func repo_cache_path [ user: string ] -> path
+        sd : path path.path_storage[ storage ]
+        return path '{sd}/repos-{user}.txt'
+
+    # a user's repositories: what memory has, else the hour-old disk
+    # copy, else a fetch on its own pipe (the list fills in when it
+    # lands; the header says loading, or that the host refused)
+    func repo_list [ user: string ] -> vec RepoInfo
+        if [ repo_items && repo_user && repo_user.compare[ user ] == 0 && (!repo_fetch_user || repo_fetch_user.compare[ user ] != 0) ]
+            return repo_items
+        if [ !repo_user || repo_user.compare[ user ] != 0 ]
+            repo_user  = user
+            repo_items = null
+            repo_note  = ''
+            # the cache serves while it is under an hour old; older, it
+            # is not used (a fresh fetch runs), kept aside only for a
+            # refused refresh
+            cp : path repo_cache_path[ user ]
+            at : local i64 [ 1 ] [ 0 ]
+            pg : local i32 [ 1 ] [ 1 ]
+            mr : local i32 [ 1 ] [ 0 ]
+            repo_stale = null
+            repo_page  = 0
+            repo_more  = false
+            if [ cp.exists[] ]
+                cached : vec RepoInfo repo_cache_read[ cp, @at[0],
+                                                       @pg[0], @mr[0] ]
+                if [ cached && epoch_millis[] - at[0] < 3600000 ]
+                    repo_items = cached
+                    repo_page  = pg[0]
+                    repo_more  = mr[0] != 0
+                    return repo_items
+                repo_stale = cached
+            repo_fetch_start[ user, 1 ]
+        if [ !repo_items ] repo_items = vec RepoInfo []
+        return repo_items
+
+    # the repository owner/name names, from memory when looked up
+    # before; else asked for once the text has rested (a request per
+    # keystroke would burn the hour's allowance), and shown when the
+    # answer lands
+    func repo_one [ owner: string, name: string ] -> RepoInfo
+        full : string '{owner}/{name}'
+        key  : string full.lcase[]
+        if [ !one_cache ] one_cache = map RepoInfo [string] []
+        if [ one_cache.contains[ key ] ]
+            hit : RepoInfo one_cache[ key ]
+            return (hit && hit.full && hit.full.count > 0) ? hit : null
+        if [ !one_want || one_want.compare[ full ] != 0 ]
+            one_want    = full
+            one_want_ms = epoch_millis[]
+            if [ ux ] ux.will_animate = true
+        return null
+
+    func repo_one_pump [ w: Window ]
+        # a rested query starts its lookup
+        if [
+            one_want && one_want.count > 0 && one_fd <= 0
+            && epoch_millis[] - one_want_ms > 600 ]
+            key : string one_want.lcase[]
+            if [ !one_cache ] one_cache = map RepoInfo [string] []
+            if [ !one_cache.contains[ key ] ]
+                rh : RepoHost repo_host_of[]
+                cmd : string rh.repo_cmd[ one_want ]
+                one_fh_cmd : command [ cmd ]
+                one_fh = one_fh_cmd.stream[]
+                if [ one_fh ]
+                    one_fd  = fileno[ one_fh ]
+                    fcntl[ one_fd, F_SETFL, O_NONBLOCK ]
+                    one_full = one_want
+                    one_buf  = ''
+            one_want = ''
+        if [ one_fd <= 0 ] return
+        w.will_animate = true
+        buf : local i8 [ 8193 ]
+        n_ : i32 [ read[ one_fd, @buf[0], 8192 ] ]
+        if [ n_ > 0 ]
+            buf[ n_ ] = 0
+            got : string[ @buf[0] ]
+            one_buf = one_buf + got
+            return
+        if [ n_ != 0 ] return
+        pclose[ one_fh ]
+        one_fh = null
+        one_fd = -1
+        key : string one_full.lcase[]
+        items : vec RepoInfo repo_parse[ one_buf ]
+        hit : RepoInfo (items.count > 0) ? items[0] : RepoInfo [
+            full: '', name: '', desc: '' ]
+        one_cache[ key ] = hit
+        one_full = ''
+        one_buf  = ''
+        if [ find_text && find_text.count > 0 ] host.research*[]
+        host.changed*[]
+
+    # the next page of the listing being shown
+    func repo_more_fetch []
+        if [ !repo_user || repo_user.count == 0 || repo_fetch_fd > 0 ]
+            return
+        repo_fetch_start[ repo_user, repo_page + 1 ]
+        host.research*[]
+
+    func repo_fetch_start [ user: string, page: i32 ]
+        if [ repo_fetch_fd > 0 && repo_fetch_user && repo_fetch_user.compare[ user ] == 0 ]
+            return
+        if [ repo_fetch_fd > 0 ]
+            pclose[ repo_fetch_fh ]
+            repo_fetch_fh = null
+            repo_fetch_fd = -1
+        rh : RepoHost repo_host_of[]
+        if [
+            rh.token && rh.token.count > 0
+            && (!rh.me || rh.me.count == 0) ]
+            rh.me = repo_token_login[ rh ]
+            if [
+                rh.me.count > 0
+                && (!self_user || self_user.compare[ rh.me ] != 0) ]
+                self_user = rh.me
+                host.saved*[]
+        cmd : string rh.list_cmd[ user, page ]
+        repo_fetch_page = page
+        repo_fetch_fh_cmd : command [ cmd ]
+        repo_fetch_fh = repo_fetch_fh_cmd.stream[]
+        if [ !repo_fetch_fh ]
+            repo_note = 'no curl'
+            return
+        repo_fetch_fd   = fileno[ repo_fetch_fh ]
+        fcntl[ repo_fetch_fd, F_SETFL, O_NONBLOCK ]
+        repo_fetch_user = user
+        repo_fetch_buf  = ''
+        repo_note = (page > 1) ? 'loading more' : 'loading'
+        if [ ux ] ux.will_animate = true
+
+    # the listing pipe: read what is there; at its end parse, cache,
+    # show
+    func repo_fetch_pump [ w: Window ]
+        if [ repo_fetch_fd <= 0 ] return
+        w.will_animate = true
+        buf : local i8 [ 8193 ]
+        n_ : i32 [ read[ repo_fetch_fd, @buf[0], 8192 ] ]
+        if [ n_ > 0 ]
+            buf[ n_ ] = 0
+            got : string[ @buf[0] ]
+            repo_fetch_buf = repo_fetch_buf + got
+            return
+        if [ n_ != 0 ] return
+        pclose[ repo_fetch_fh ]
+        repo_fetch_fh = null
+        repo_fetch_fd = -1
+        user : string repo_fetch_user
+        repo_fetch_user = ''
+        if [ repo_fetch_buf.index_of[ 'rate limit' ] >= 0 ]
+            repo_note = (repo_stale) ? 'github rate limit (add a token); showing an older list' : 'github rate limit (add a token)'
+            if [ repo_stale && repo_user && repo_user.compare[ user ] == 0 ]
+                repo_items = repo_stale
+        el [ repo_fetch_buf.index_of[ 'Bad credentials' ] >= 0 ]
+            repo_note = 'github rejected the token'
+        el
+            items : vec RepoInfo repo_parse[ repo_fetch_buf ]
+            if [
+                items.count > 0 || repo_fetch_buf.index_of[ '[' ] >= 0 ]
+                if [ repo_user && repo_user.compare[ user ] == 0 ]
+                    # page 1 replaces the list; a later page extends it
+                    if [ repo_fetch_page <= 1 || !repo_items ]
+                        repo_items = items
+                    el
+                        for [ it: RepoInfo ] in items
+                            repo_items.push[ it ]
+                    repo_page = repo_fetch_page
+                    repo_more = items.count >= 100
+                    repo_note = ''
+                    cp : path repo_cache_path[ user ]
+                    repo_cache_write[ cp, repo_items, repo_page,
+                                      repo_more ]
+            el
+                repo_note = 'no answer from github'
+        repo_fetch_buf = ''
+        if [ find_text && find_text.count > 0 ] host.research*[]
+        host.changed*[]
+
+    # an added user leaves the column (shift shows the - that does it);
+    # the login the key answers to is never in this list, so it never
+    # leaves
+    func repo_forget [ user: string ]
+        if [ !repo_users ] return
+        for [ i: i32 0, i < repo_users.count, i += 1 ]
+            if [ repo_users[i].compare[ user ] == 0 ]
+                repo_users.remove[ i ]
+                host.saved*[]
+                return
+
+    public func is_pinned [ p: path ] -> bool
+        if [ !p || !pins ] return false
+        ps_ : string '{p}'
+        for [ s_: string ] in pins
+            if [ s_.compare[ ps_ ] == 0 ] return true
+        return false
+
+    # shift's + pins an entry (last in the list), its − unpins it
+    public func pin_toggle [ p: path ]
+        if [ !p ] return
+        ps_ : string '{p}'
+        if [ !pins ] pins = vec string []
+        for [ i: i32 0, i < pins.count, i += 1 ]
+            if [ pins[i].compare[ ps_ ] == 0 ]
+                pins.remove[ i ]
+                host.saved*[]
+                host.research*[]
+                return
+        pins.push[ ps_ ]
+        host.saved*[]
+        host.research*[]
+
+    # a nav list entry's delete (shift held) is pressed and held: it
+    # fills red over delete_hold_ms, and a release over it once full
+    # deletes the file, or the folder and all it holds. never the
+    # project orbiter was launched in, nor what holds it
+    public func delete_hold [ p: path ]
+        delete_armed    = (p) ? '{p}' : null
+        delete_armed_ms = epoch_millis[]
+
+    # 0..1: how full the entry's held delete is (0 when it is not the
+    # one held)
+    public func delete_fill [ p: path ] -> f32
+        if [ !p || !delete_armed ] return 0.0
+        ds : string '{p}'
+        if [ delete_armed.compare[ ds ] != 0 ] return 0.0
+        return clamp[
+            f32[ epoch_millis[] - delete_armed_ms ]
+            / f32[ delete_hold_ms ], 0.0, 1.0 ]
+
+    public func path_delete [ p: path, is_dir: bool ]
+        if [ !p ] return
+        ds : string '{p}'
+        pr_ : path project
+        ps_ : string '{pr_}'
+        if [ ds.compare[ ps_ ] == 0 || ps_.starts_with[ '{ds}/' ] ]
+            log 'delete: {ds} holds the project orbiter runs in; not deleted'
+            return
+        ok_ : bool [ (is_dir) ? p.remove_dir[] : p.remove[] ]
+        log 'delete: {ds} removed={ok_}'
+        side_projects = null
+        host.research*[]
+
+    # a user listed once stays in the navigation column
+    func repo_remember [ user: string ]
+        if [ !repo_users ] repo_users = vec string []
+        for [ u: string ] in repo_users
+            if [ u.compare[ user ] == 0 ] return
+        repo_users.push[ user ]
+        host.saved*[]
+
+    # the checkouts under the source root, by key: ours flat (name),
+    # other users' one level down (user/name). rescanned a few times a
+    # minute
+    func side_projects_of [] -> vec string
+        now : i64 [ epoch_millis[] ]
+        if [ side_projects && now - side_scan_ms < 5000 ]
+            return side_projects
+        side_scan_ms = now
+        out : vec string []
+        base : path src_root_of[]
+        entries : base.ls[ null, false ]
+        if [ entries ]
+            for [ i: i32 0, i < entries.count, i += 1 ]
+                e : path entries[i]
+                if [ !e.is_dir[] ] continue
+                ix_ : path '{e}/.git/index'
+                if [ ix_.exists[] ]
+                    fn_ : string e.filename[]
+                    out.push[ fn_ ]
+                    continue
+                # a user folder: its checkouts, as user/name
+                un : string e.filename[]
+                if [ un.count > 0 && un.chars[0] == 46 ] continue
+                subs : e.ls[ null, false ]
+                if [ !subs ] continue
+                for [ j: i32 0, j < subs.count, j += 1 ]
+                    se : path subs[j]
+                    if [ !se.is_dir[] ] continue
+                    sx_ : path '{se}/.git/index'
+                    if [ !sx_.exists[] ] continue
+                    sn_ : string se.filename[]
+                    key_ : string '{un}/{sn_}'
+                    out.push[ key_ ]
+        # by name: a directory listing comes in no order (selection into
+        # a fresh list; the names are few)
+        n_ : i32 [ out.count ]
+        used : vec i32 []
+        for [ i: i32 0, i < n_, i += 1 ] used.push[ 0 ]
+        sorted : vec string []
+        for [ k: i32 0, k < n_, k += 1 ]
+            best : i32 [ -1 ]
+            for [ i: i32 0, i < n_, i += 1 ]
+                if [ used[i] != 0 ] continue
+                if [ best < 0 ]
+                    best = i
+                el
+                    a_ : string out[i]
+                    b_ : string out[best]
+                    if [ a_.compare[ b_ ] < 0 ] best = i
+            used[best] = 1
+            nm : string out[best]
+            sorted.push[ nm ]
+        side_projects = sorted
+        return sorted
+
+    # the navigation column's picks: a user lists its repositories in
+    # the finder; a project roots the navigator at its checkout a user:
+    # selected and listed; picked again while listed, unselected. picked
+    # while a project is being browsed under it, listed again
+    func side_pick_user [ user: string ]
+        q_ : string '{user}:'
+        listed : bool [ find_text && find_text.compare[ q_ ] == 0 ]
+        if [ side_user && side_user.compare[ user ] == 0 && listed ]
+            side_user = ''
+            find_text = ''
+        el
+            side_user = user
+            find_text = q_
+        host.focus_title*[ find_text ]
+        host.research*[]
+
+    # a project row is lit while the navigator is in its checkout (or
+    # below it) with its files showing, unless it was unselected
+    func side_lit [ key: string ] -> bool
+        if [ find_text && find_text.count > 0 ] return false
+        if [ side_off && side_off.compare[ key ] == 0 ] return false
+        nrs : string (nav_root) ? '{nav_root}' : ''
+        dir : path repo_dir[ key ]
+        rds : string '{dir}'
+        rdp : string '{dir}/'
+        return nrs.compare[ rds ] == 0 || nrs.starts_with[ rdp ]
+
+    # the finder stays up (the title keeps focus) so the column is still
+    # there a project shows its files; the selected one again unselects
+    # it, and with a user still selected that means the user's
+    # repositories again, else this project. one state each way:
+    # user+project = files, user alone = repositories, neither = this
+    # project
+    func side_pick_project [ key: string ]
+        rd_ : path repo_dir[ key ]
+        if [ side_lit[ key ] ]
+            side_off  = key
+            nav_root  = project
+            find_text = (side_user && side_user.count > 0) ? '{side_user}:' : ''
+        el
+            side_off  = ''
+            nav_root  = rd_
+            find_text = ''
+        host.focus_title*[ find_text ]
+        host.research*[]
+
+    # a drive or a pinned folder from the column: the list goes there
+    func side_pick_folder [ dir: string ]
+        side_off   = ''
+        nav_root   = path dir
+        find_text  = ''
+        host.focus_title*[ find_text ]
+        host.research*[]
+
+    # 'my computer': home, then the drives mounted where a user's are
+    # (/, /home, /media, /run/media, /mnt); never snaps or loops
+    func side_drives [] -> vec string
+        out : vec string []
+        hm : string getenv[ 'HOME' ]
+        if [ hm && hm.count > 0 ] out.push[ hm ]
+        mt : path '/proc/mounts'
+        txt : string mt.load[ typeid[string], null ]
+        if [ !txt ] return out
+        for [ row: string ] in txt.split[ '\n' ]
+            ws : vec string row.split[ ' ' ]
+            if [ ws.count < 2 ] continue
+            dv : string ws[ 0 ]
+            mp : string ws[ 1 ]
+            if [ !dv.starts_with[ '/dev/' ] || dv.starts_with[ '/dev/loop' ] ]
+                continue
+            ok : bool [ mp == '/' || mp == '/home'
+                || mp.starts_with[ '/media/' ]
+                || mp.starts_with[ '/run/media/' ]
+                || mp.starts_with[ '/mnt/' ] ]
+            if [ !ok ] continue
+            seen : bool [ false ]
+            for [ o_: string ] in out
+                if [ o_ == mp ] seen = true
+            if [ !seen ] out.push[ mp ]
+        return out
+
+    # the pinned folders the column lists (the dock has the rest)
+    func side_pinned [] -> vec string
+        out : vec string []
+        if [ pins ]
+            for [ ps: string ] in pins
+                pp : path ps
+                if [ pp.exists[] && plain_folder[ pp ] ] out.push[ ps ]
+        return out
+
+    # the source root every checkout lives under: beside the one orbiter
+    # was launched in, never a setting shared between launches. ours sit
+    # flat there (<src>/<name>); other users' under <src>/<user>/<name>
+    func src_root_of [] -> path
+        pr_ : path project
+        return pr_.directory[]
+
+    # the login our key answers to, kept with the session; unknown,
+    # the git thread asks once and pump takes the answer
+    func self_user_of [] -> string
+        if [ self_user && self_user.count > 0 ] return self_user
+        if [ !self_asked ] self_want = true
+        return ''
+
+    # a repository's key in the column and on disk: our own by name, any
+    # other user's as user/name (a path, so it works everywhere)
+    func repo_key [ full: string ] -> string
+        sl : i32 [ full.rindex_of[ '/' ] ]
+        if [ sl < 0 ] return full
+        owner : string full.mid[ 0, sl ]
+        name  : string full.mid[ sl + 1, full.count - sl - 1 ]
+        me : string self_user_of[]
+        if [ me && me.count > 0 && owner.compare[ me ] == 0 ]
+            return name
+        return full
+
+    # the checkout a path sits in (the nearest ancestor with a git
+    # index), null outside any
+    func checkout_root [ p: path ] -> path
+        cur : path p
+        for [ i: i32 0, cur && i < 12, i += 1 ]
+            ix_ : path '{cur}/.git/index'
+            if [ ix_.exists[] ] return cur
+            up : path cur.directory[]
+            if [ !up ] return null
+            us : string '{up}'
+            cs : string '{cur}'
+            if [ us.compare[ cs ] == 0 ] return null
+            cur = up
+        return null
+
+    # repositories check out under the source root by key: <src>/<key>
+    func repo_dir [ key: string ] -> path
+        base : path src_root_of[]
+        return path '{base}/{key}'
+
+    func repo_local [ key: string ] -> bool
+        d_ : path repo_dir[ key ]
+        i_ : path '{d_}/.git/index'
+        return i_.exists[]
+
+    # an existing checkout opens in the pane; a missing one starts
+    # cloning
+    # (then building) on its own pipe, its progress shown on its row;
+    # one already cloning is left alone
+    func repo_checkout [ full: string ]
+        sl   : i32 [ full.rindex_of[ '/' ] ]
+        name : string (sl >= 0) ? full.mid[ sl + 1, full.count - sl - 1 ] : full
+        key  : string repo_key[ full ]
+        dir  : path repo_dir[ key ]
+        # checked out: the same as its row in the column, selected and
+        # browsed
+        if [ repo_local[ key ] ]
+            side_pick_project[ key ]
+            return
+        if [ !repo_clones ] repo_clones = map RepoClone [string] []
+        rc0 : RepoClone repo_clones[ full ]
+        if [ rc0 && rc0.fd >= 0 ] return
+        rh : RepoHost repo_host_of[]
+        url : string rh.clone_url[ full ]
+        cmd : string 'bash -c "git clone --progress {url} {dir} 2>&1 && cd {dir} && silver --build {name} 2>&1"'
+        rc  : RepoClone [ full: full, name: key, dir: '{dir}',
+                          phase: 'cloning', tail: '' ]
+        fh_cmd : command [ cmd ]
+        rc.fh = fh_cmd.stream[]
+        if [ !rc.fh ]
+            rc.phase = 'failed'
+        el
+            rc.fd = fileno[ rc.fh ]
+            fcntl[ rc.fd, F_SETFL, O_NONBLOCK ]
+        repo_clones[ full ] = rc
+        if [ ux ] ux.will_animate = true
+
+    # one git progress line -> the clone's overall fraction: the
+    # remote's counting and compressing are the first tenth, receiving
+    # the bulk, resolving the last tenth
+    func repo_progress [ rc: RepoClone, seg: string ]
+        pi : i32 [ seg.index_of[ '%' ] ]
+        if [ pi <= 0 ] return
+        v_ : i32 [ 0 ]
+        m_ : i32 [ 1 ]
+        for [ i: i32 pi - 1, i >= 0, i -= 1 ]
+            c : i32 [ seg.chars[ i ] ]
+            if [ c < 48 || c > 57 ] break
+            v_ += (c - 48) * m_
+            m_ *= 10
+        f_ : f32 [ f32[ v_ ] / 100.0 ]
+        if [ seg.index_of[ 'Receiving' ] >= 0 ]
+            rc.pct = 0.1 + f_ * 0.8
+        el [ seg.index_of[ 'Resolving' ] >= 0 ]
+            rc.pct = 0.9 + f_ * 0.1
+        el                                            rc.pct = f_ * 0.1
+
+    # drain every clone's pipe: progress lines end in \r, the rest in
+    # \n; the pipe closing ends it, checked out or not
+    func repo_pump [ w: Window ]
+        if [ !repo_clones ] return
+        buf : local i8 [ 4097 ]
+        act_ : bool [ false ]
+        for [ rc: RepoClone, k: string ] in repo_clones
+            if [ !rc || rc.fd < 0 ] continue
+            act_ = true
+            n_ : i32 [ read[ rc.fd, @buf[0], 4096 ] ]
+            if [ n_ > 0 ]
+                buf[ n_ ] = 0
+                got : string[ @buf[0] ]
+                rc.tail = rc.tail + got
+                seg : string ''
+                rest : string ''
+                for [ i: i32 0, i < rc.tail.count, i += 1 ]
+                    c : i32 [ rc.tail.chars[ i ] ]
+                    if [ c == 13 || c == 10 ]
+                        if [ seg.count > 0 ] repo_progress[ rc, seg ]
+                        seg = ''
+                    el
+                        seg = seg + rc.tail.mid[ i, 1 ]
+                rc.tail = seg
+                if [
+                    rc.phase.compare[ 'cloning' ] == 0
+                    && repo_local[ rc.name ] ]
+                    rc.phase = 'building'
+                    rc.pct   = 1.0
+            el [ n_ == 0 ]
+                pclose[ rc.fh ]
+                rc.fh = null
+                rc.fd = -1
+                rc.phase = (repo_local[ rc.name ]) ? 'done' : 'failed'
+                host.research*[]
+        if [ act_ ]
+            w.will_animate = true
+            host.changed*[]
+
+    # browse a checkout: its module source in the pane when it has one
+    func repo_open [ dir: path, name: string ]
+        nav_root = dir
+        mp : path '{dir}/{name}/{name}.ag'
+        rd : path '{dir}/README.md'
+        if [ mp.exists[] ]      host.open_file*[ mp ]
+        el [ rd.exists[] ]      host.open_file*[ rd ]
+        host.research*[]
+
+    func push_dir_hit [ p: path, label: string ]
+        dh : nav_dir_hit[ p, label ]
+        find_hits.push[ dh ]
+        if [ !browse_single ]
+            find_hits.push[
+                FindHit [ is_header: true, is_dir: true,
+                          is_module: dh.is_module, text: '', file: p ] ]
+
+    func push_file_hit [ p: path, show_dir: bool ]
+        fn  : string p.filename[]
+        drs : string ''
+        if [ show_dir ]
+            drs = '{p.directory[]}'
+        find_hits.push[
+            FindHit [ is_header: true, text: fn, dir: drs, file: p ] ]
+        if [ !browse_single ]
+            find_hits.push[
+                FindHit [ is_header: true, text: '', file: p ] ]
+
+    # the nav view's own back and forward: every folder it lands in, in
+    # order. the history arrows show it while the view is up; the
+    # editor's places are a separate list
+    func nav_note []
+        if [ !nav_root ] return
+        s_ : string '{nav_root}'
+        # a fresh context each time the list opens: the editor ('')
+        # is its first point, so back leaves the list
+        if [ !nav_hist ]
+            nav_hist    = vec string [] [ '' ]
+            nav_hist_ix = 0
+        if [ nav_hist_ix >= 0 && nav_hist_ix < nav_hist.count ]
+            cur_ : string nav_hist[ nav_hist_ix ]
+            if [ cur_.compare[ s_ ] == 0 ] return
+        while [ nav_hist.count > nav_hist_ix + 1 ]
+            nav_hist.pop[]
+        nav_hist.push[ s_ ]
+        nav_hist_ix = nav_hist.count - 1
+
+    public func nav_can [ d: i32 ] -> bool
+        if [ !nav_hist ] return false
+        n_ : i32 [ nav_hist_ix + d ]
+        return n_ >= 0 && n_ < nav_hist.count
+
+    public func nav_step [ d: i32 ] -> bool
+        if [ !nav_can[ d ] ] return false
+        nav_hist_ix = nav_hist_ix + d
+        # the editor's point: the list closes, the arrows walk code
+        # again
+        if [ nav_hist[ nav_hist_ix ].count == 0 ]
+            nav_hist = null
+            host.exit_finder*[]
+            host.list_off*[]
+            if [ ux ]
+                ux.will_animate = true
+                ux.restyle      = true
+            return true
+        nav_go[ path nav_hist[ nav_hist_ix ] ]
+        return true
+
+    # the navigator into a folder: any search text goes and the folder's
+    # entries show (shift + a path hint's press)
+    public func nav_go [ p: path ]
+        if [ !p ] return
+        nav_root   = p
+        find_text  = ''
+        host.focus_title*[ '' ]
+        host.research*[]
+
+    # a scene card's picture, from the scenes export
+    public func scene_tex [ h: FindHit ] -> Texture
+        if [ !h.thumb || !ux ] return null
+        if [ !scene_texs ] scene_texs = map Texture [string] []
+        k_ : string '{h.thumb}'
+        if [ scene_texs.contains[ k_ ] ] return scene_texs[ k_ ]
+        if [ !h.thumb.exists[] ] return null
+        im : Image [ uri: h.thumb ]
+        if [ !im || im.width <= 0 || im.height <= 0 ] return null
+        tx : Texture [ vk: ux.vk, w: ux, sampler: im, linear: true ]
+        scene_texs[ k_ ] = tx
+        return tx
+
+    # the scene cards, with the export's pictures
+    public func scene_cards [] -> vec FindHit
+        res : vec FindHit []
+        sl : vec string host.scene_names*[]
+        if [ !sl ] return res
+        for [ nm: string ] in sl
+            res.push[
+                FindHit [ is_header: true, text: nm.lcase[], dir: '',
+                          scene: nm, thumb: host.scene_thumb*[ nm ] ] ]
+        return res
+
+    # the rows of the list, from the typed text, the folder in view,
+    # a pick in progress or a user's repositories
+    public func build_rows []
+        combined : list string []
+        find_hits = vec FindHit []
+        nav_dock_rows = 0
+        pickx : bool [ pick_on && pick_exts && pick_exts.count > 0 ]
+        if [ pickx ]
+            # a resource pick: walk the tree ONCE (NOT the gitignore
+            # index) for the module's extensions, then keystrokes
+            # filter the cache
+            if [ !pick_cache ]
+                pick_cache = vec path []
+                # a resource lives anywhere in the project's search
+                # path, not the current folder: always walk from the
+                # project root
+                walk_resource[ project ]
+                # and the user's folder, two down, as the apps
+                # screen finds an app's files (~/roms)
+                hs : string getenv[ 'HOME' ]
+                hf : vec string []
+                if [ hs && hs.count > 0 ]
+                    home_ending[ path '{hs}', pick_exts, hf, 2 ]
+                for [ h: string ] in hf
+                    pick_cache.push[ path h ]
+            typing : bool [ find_text && find_text.count > 0 ]
+            # nothing typed: every file of the module's kinds at
+            # once, by name; a folder pick browses its folder
+            every : bool [ !typing && !pick_dir
+                && pick_cache.count > 0 ]
+            if [ every ]
+                byn : vec path []
+                for [ p8: path ] in pick_cache
+                    nm8 : string p8.filename[]
+                    at8 : i32 [ byn.count ]
+                    for [ k8: i32 0, k8 < byn.count, k8 += 1 ]
+                        o8 : string byn[ k8 ].filename[]
+                        if [ o8.compare[ nm8 ] > 0 ]
+                            at8 = k8
+                            break
+                    byn.insert[ p8, at8 ]
+                for [ p8: path ] in byn
+                    push_file_hit[ p8, true ]
+                    combined.push[ '{p8}' ]
+            if [ !typing && !every ]
+                if [ !nav_root ] nav_root = project
+                up : path nav_root.directory[]
+                if [ up ]
+                    push_dir_hit[ up, '..' ]
+                    combined.push[ '{up}' ]
+                for [ row: FindHit ] in nav_listing[ nav_root, '' ]
+                    if [ row.text == '..' ] continue
+                    fx : string (row.is_dir) ? ''
+                        : '.{row.file.ext[]}'
+                    if [ !row.is_dir && !pick_exts.contains[ fx ] ]
+                        continue
+                    if [ row.is_dir ]
+                        push_dir_hit[ row.file, row.text ]
+                    el push_file_hit[ row.file, true ]
+                    combined.push[ '{row.file}' ]
+            # typed: the folders named so first, to go into (those
+            # holding its kinds of file, then the project's)
+            if [ typing ]
+                pseen : map bool [ string ] []
+                rt : string '{project}'
+                for [ pf: path ] in pick_cache
+                    for [ d: path pf.directory[], d,
+                          d = d.directory[] ]
+                        ds : string '{d}'
+                        if [ ds.count <= rt.count ] break
+                        if [ pseen.contains[ ds ] ] continue
+                        pseen[ ds ] = true
+                        if [ d.filename[].index_of[ find_text ] < 0 ]
+                            continue
+                        push_dir_hit[ d, d.filename[] ]
+                        combined.push[ ds ]
+                for [ ds: string ] in index_dirs[ find_text ]
+                    if [ pseen.contains[ ds ] ] continue
+                    pseen[ ds ] = true
+                    dp : path ds
+                    push_dir_hit[ dp, dp.filename[] ]
+                    combined.push[ ds ]
+            for [ p_: path ] in pick_cache
+                if [ !typing ] break
+                if [ p_.filename[].index_of[ find_text ] < 0 ]
+                    continue
+                push_file_hit[ p_, true ]
+                combined.push[ '{p_}' ]
+            if [ combined.count == 0 ]
+                xs : string ''
+                for [ x_: string ] in pick_exts
+                    xs = (xs.count > 0) ? '{xs} {x_}' : x_
+                nf_ : string (find_text && find_text.count > 0) ? 'no {xs} files matching {find_text}' : 'no {xs} files found'
+                find_hits.push[
+                    FindHit [ is_header: true, text: nf_, dir: '',
+                              file: null ] ]
+        el [ repo_user_of[ find_text ] ]
+            # user:name lists the host user's repositories, filtered
+            # by name
+            ru : string repo_user_of[ find_text ]
+            rf : string find_text.mid[ ru.count + 1, find_text.count - ru.count - 1 ]
+            items : vec RepoInfo repo_list[ ru ]
+            repo_remember[ ru ]
+            side_user = ru
+            # a header only when there is something to say (loading,
+            # refused)
+            if [ repo_note && repo_note.count > 0 ]
+                find_hits.push[
+                    FindHit [ is_header: true,
+                              text: '{ru}: {repo_note}', dir: '' ] ]
+            # the exact repository named, if the host knows it,
+            # first
+            ex : RepoInfo (rf.count > 0) ? repo_one[ ru, rf ] : null
+            exl : string (ex) ? ex.full.lcase[] : ''
+            if [ ex ]
+                rk8 : string repo_key[ ex.full ]
+                find_hits.push[
+                    FindHit [ text: ex.name, dir: ex.desc,
+                              repo: ex.full,
+                              checked: repo_local[ rk8 ] ] ]
+                combined.push[ ex.full ]
+            for [ it: RepoInfo ] in items
+                if [ rf.count > 0 && it.name.index_of[ rf ] < 0 ]
+                    continue
+                itl : string it.full.lcase[]
+                if [ ex && itl.compare[ exl ] == 0 ] continue
+                rk_ : string repo_key[ it.full ]
+                find_hits.push[
+                    FindHit [ text: it.name, dir: it.desc,
+                              repo: it.full,
+                              checked: repo_local[ rk_ ] ] ]
+                combined.push[ it.full ]
+            # a full last page: the row that fetches the next (the
+            # whole listing only; a name typed after the colon is a
+            # lookup)
+            if [ repo_more && repo_fetch_fd <= 0 && rf.count == 0 ]
+                find_hits.push[
+                    FindHit [ text: 'more...', dir: '',
+                              more: true ] ]
+        el [ find_text && find_text.count > 0 ]
+            # folders named so first: the index lists files only
+            dseen : map bool [ string ] []
+            for [ ds: string ] in index_dirs[ find_text ]
+                dp : path ds
+                push_dir_hit[ dp, dp.filename[] ]
+                combined.push[ ds ]
+                dseen[ ds ] = true
+            matches : list string [ index_search[ find_text ] ]
+            for [ i: i32 0, i < matches.count, i += 1 ]
+                p : path '{matches.value_by_index[ i ]}'
+                # <name>/<name>.ag is a silver module: its folder,
+                # as browsing shows it, opens the module
+                md : path p.directory[]
+                ism : bool [ md && p.ext[] == 'ag'
+                    && p.stem[] == md.filename[] ]
+                if [ ism ]
+                    # a module's folder already listed by its name
+                    if [ dseen.contains[ '{md}' ] ] continue
+                    push_dir_hit[ md, md.filename[] ]
+                    combined.push[ '{md}' ]
+                el [ is_program[ p ] ]
+                    find_hits.push[ FindHit [ is_header: true,
+                        text: p.filename[], dir: 'program',
+                        file: p ] ]
+                    combined.push[ '{p}' ]
+                el
+                    push_file_hit[ p, true ]
+                    combined.push[ '{p}' ]
+            if [ matches.count == 0 && combined.count == 0 ]
+                find_hits.push[
+                    FindHit [ is_header: true,
+                              text: 'no results for {find_text}',
+                              dir: '', file: null ] ]
+        el
+            # the commit surface is its own element (CommitView);
+            # the list only keeps the snapshot fresh for it: the
+            # scan is keyed on the repo of the folder in view, and
+            # runs again when that repo changes
+            nb : string git_sel_key[]
+            # picking a path for a launch field: plain files, no git
+            picking : bool [ pick_on ]
+            if [ !picking && !git_busy && (!git_snap || git_snap.base.compare[ nb ] != 0) ]
+                git_summarize[]
+            # consoles are not files and do not belong in this list
+            d0 : i32 [ find_hits.count ]
+            # the root first: the cards below depend on it, and a
+            # first pass without it drew every instance for one
+            # frame
+            if [ !nav_root ] nav_root = project
+            # an empty instance section owns no divider and no
+            # spacer
+            if [ find_hits.count > d0 ]
+                nav_dock_rows = find_hits.count
+                if [ browse_single ]
+                    find_hits.push[
+                        FindHit [ is_header: true, is_spacer: true,
+                                  text: '' ] ]
+            if [ !nav_root ] nav_root = project
+            if [ nav_root ]
+                pr  : path   project
+                nrs : string '{nav_root}'
+                prs : string '{pr}'
+                if [ pr && nrs.compare[ prs ] != 0 ]
+                    up : path nav_root.directory[]
+                    if [ up ]
+                        push_dir_hit[ up, '..' ]
+                        combined.push[ '{up}' ]
+                # modules, folders, then files: each by name, files
+                # by type then name
+                entries : nav_sorted[ nav_root.ls[ null, false ] ]
+                if [ entries ]
+                    # folders first, silver modules leading them
+                    for [ pass_: i32 0, pass_ < 2, pass_ += 1 ]
+                        for [ i: i32 0, i < entries.count, i += 1 ]
+                            e : path entries[i]
+                            if [ !e.is_dir[] ] continue
+                            dn : string e.filename[]
+                            if [ dn == '.git' || dn == 'checkout' ]
+                                continue
+                            em : path '{e}/{dn}.ag'
+                            if [ em.exists[] != (pass_ == 0) ]
+                                continue
+                            push_dir_hit[ e, dn ]
+                            combined.push[ '{e}' ]
+                    for [ i: i32 0, i < entries.count, i += 1 ]
+                        e : path entries[i]
+                        if [ !e.is_dir[] ]
+                            push_file_hit[ e, grid_mode ]
+                            combined.push[ '{e}' ]
+                # bottom of the results: a break, then the create
+                # buttons
+                if [ !picking || pick_creates ]
+                    find_hits.push[
+                        FindHit [ is_header: true, is_spacer: true,
+                                  text: '' ] ]
+                    find_hits.push[
+                        FindHit [ is_header: true, is_newfile: true,
+                                  text: 'new file' ] ]
+        find_results = combined
+    # a folder that is not a module: a place, never an app
+    func plain_folder [ p: path ] -> bool
+        if [ !p.is_dir[] ] return false
+        mm : path '{p}/{p.filename[]}.ag'
+        return !mm.exists[]
+
+    func index_work [ dirs: vec path :: o: Navigator ] -> none
+        stack : vec path []
+        repos : vec path []
+        later : vec path []
+        # auto_free drains this thread's pool per directory: hold them
+        hold[ stack ]
+        hold[ repos ]
+        hold[ later ]
+        cap : i32 [ (o.max_search > 0) ? o.max_search : 400000 ]
+        for [ r: path ] in dirs
+            g0 : path '{r}/.git'
+            if [ g0.exists[] ]
+                o.index_repo[ r, cap ]
+            el
+                stack.push[ r ]
+            # the checkouts beside the sources (the imports' clones):
+            # git ignores them, so they are listed here, after
+            # everything of ours; a search reaches them only with
+            # [remotes] lit
+            ck : path '{r}/checkout'
+            ckl : ck.ls[ null, false ]
+            if [ ckl ]
+                for [ j: i32 0, j < ckl.count, j += 1 ]
+                    ce : path ckl[j]
+                    if [ !ce.is_dir[] || ce.is_symlink[] ] continue
+                    cg : path '{ce}/.git'
+                    if [ cg.exists[] ] repos.push[ ce ]
+                    el                  later.push[ ce ]
+        while [ !o.index_cancel ]
+            if [ stack.count == 0 ]
+                # main tree exhausted → deferred repositories, by
+                # ls-files, then the checkouts that are plain folders
+                if [ repos.count == 0 ]
+                    if [ later.count == 0 ] break
+                    for [ lp: path ] in later
+                        stack.push[ lp ]
+                    later.clear[]
+                    continue
+                for [ rp: path ] in repos
+                    if [ !o.index_cancel ] o.index_repo[ rp, cap ]
+                repos.clear[]
+                continue
+            n : i32 [ stack.count - 1 ]
+            d : path hold[ stack[n] ]
+            stack.remove[ n ]
+            entries : d.ls[ null, false ]
+            drop[ d ]
+            if [ entries ]
+                found : vec path []
+                for [ i: i32 0, i < entries.count, i += 1 ]
+                    e : path entries[i]
+                    if [ e.is_dir[] ]
+                        dn : string e.filename[]
+                        if [ dn == 'checkout' || dn == '.git' ]
+                            continue
+                        gp : path '{e}/.git'
+                        if [ gp.exists[] ]
+                            # a repository inside the checkouts is one
+                            # of them
+                            es : string '{e}'
+                            if [
+                                o.search_external
+                                || es.index_of[ '/checkout/' ] >= 0 ]
+                                repos.push[ e ]
+                        el
+                            stack.push[ e ]
+                    el
+                        found.push[ e ]
+                if [ found.count > 0 ]
+                    o.index_lock.lock[]
+                    for [ f: path ] in found
+                        o.file_index.push[ f ]
+                    over : bool [ o.file_index.count >= cap ]
+                    o.index_lock.unlock[]
+                    if [ over ] break
+            # this thread's pool: the walk's temporaries, per directory
+            Au.auto_free[]
+        drop[ stack ]
+        drop[ repos ]
+        drop[ later ]
+        o.host.index_pass*[]
+        o.sort_by_ext[]
+        Au.auto_free[]
+        o.index_lock.lock[]
+        o.by_ext = o.by_ext_next
+        o.by_ext_next = null
+        o.index_building = false
+        o.index_lock.unlock[]
+
+# the app's host: a pick goes to orbiter over its socket as an
+# `app nav` line when the app was given one; alone, it is logged
+NavHost NavApp
+    public opener : string
+    public nav    : Navigator
+    # the app, whose own state keeps the saved lists
+    public app    : navigator
+    # the list, to repaint
+    public list   : element
+
+    func post [ line: string ]
+        if [ opener && opener.count > 0 ]
+            msg : string 'app nav {line}\n'
+            nav_sock_send[ opener.chars, msg.chars ]
+        el log 'navigator: {line}'
+
+    func open_file [ p: path ]
+        post[ 'open {p}' ]
+    func open_line [ p: path, line: i32 ]
+        post[ 'line {line} {p}' ]
+    func open_module [ mp: path ]
+        post[ 'module {mp}' ]
+    func open_url [ url: string ]
+        post[ 'url {url}' ]
+    func run_program [ p: path ]
+        post[ 'run {p}' ]
+    func pick_instance [ iid: i32 ]
+        post[ 'instance {iid}' ]
+    func scene_choose [ nm: string ]
+        post[ 'scene {nm}' ]
+    func new_file [ dir: path, folder: bool ]
+        post[ (folder) ? 'newdir {dir}' : 'newfile {dir}' ]
+    func exit_finder []
+        post[ 'hide' ]
+    func list_off []
+        post[ 'hide' ]
+    func focus_title [ text: string ]
+        if [ nav ] nav.find_text = text
+    func research []
+        if [ nav ] nav.build_rows[]
+        changed[]
+    func changed []
+        if [ list ]
+            list.pristine = false
+            if [ list.ux ] list.ux.will_animate = true
+    func saved []
+        if [ app ] app.saved[]
+
+# the navigator alone: the list over the whole window, the typed
+# text in a field at its top. started by orbiter from the bar, its
+# picks reach orbiter through opener
+element navigator : trinity
+    public  width  : i32    [ 1100 ]
+    public  height : i32    [ 760 ]
+    public  title  : string [ 'navigator' ]
+    # the project folder; empty: where it was started. the host's
+    # bar sets it (its path pieces), as it sets find
+    default [ Launch, Live ] folder : string
+    # orbiter's socket path: a pick goes there as 'app nav ...'
+    public  [ Launch ] opener : string
+    # the typed filter, set by the host from its own bar
+    public  [ Live ] find : string
+    public  [ StatePersist ] pins         : vec string
+    public  [ StatePersist ] repo_users   : vec string
+    public  [ StatePersist ] docked_repos : vec string
+    public  [ StatePersist ] self_user    : string
+    intern  nav  : Navigator
+    intern  host : NavApp
+    # the host's find and folder as last taken
+    intern  find_seen   : string
+    intern  folder_seen : string
+
+    # hosted, the window starts clear: orbiter's frost shows through
+    public func screen_ground [] -> bool
+        return true
+
+    func init []
+        load-persistent[ a ]
+        if [ !pins ] pins = vec string []
+        if [ !repo_users ] repo_users = vec string []
+        if [ !docked_repos ] docked_repos = vec string []
+
+    # the model, once the window is there
+    func model [] -> Navigator
+        if [ nav ] return nav
+        if [ !ux ] return null
+        host = NavApp [ opener: opener, app: a ]
+        rt : path (folder && folder.count > 0) ? path folder
+            : path.path_startup[]
+        nav = Navigator [ host: host, ux: ux, storage: 'navigator',
+            project: rt, pins: pins, repo_users: repo_users,
+            docked_repos: docked_repos, self_user: self_user ]
+        host.nav = nav
+        nav.start[]
+        nav.build_rows[]
+        return nav
+
+    func render [] -> Elements
+        n : Navigator model[]
+        if [ !n ] return null
+        t : Elements []
+        t['list'] = CommitView [ nav: n, focusable: true,
+            scroll_fade: 24.0, area: Region { l0 t0 r0 b0 } ]
+        return t
+
+    public func on_frame [ w: Window ]
+        n : Navigator model[]
+        if [ !n ] return
+        host.list   = (elements) ? elements[ 'list' ] : null
+        host.opener = opener
+        n.pump[ w ]
+        # the host's folder and text: its bar is the navigation
+        fo : string (folder) ? folder : ''
+        if [ fo.count > 0 && (!folder_seen || fo != folder_seen) ]
+            folder_seen = fo
+            n.nav_root  = path fo
+            host.research[]
+        fi : string (find) ? find : ''
+        if [ !find_seen || fi != find_seen ]
+            find_seen   = fi
+            n.find_text = fi
+            host.research[]
+
+    # the saved lists go with the app's own state
+    func saved []
+        self_user = nav.self_user
+        save-persistent[ a ]
+
+    public func on_unload []
+        if [ nav ] nav.stop[ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
+        super.on_unload[]

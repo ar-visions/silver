@@ -700,10 +700,10 @@ Orbiter Aura
 						bm_pn         = mix(0.5, bm_pn, bm_bk);
 						// the core is dimmer (half), and turns with the twist too
 						float bm_core = 0.5 * exp(-cyl_t * cyl_t * 14.0) * (1.0 - 0.85 * bm_bk) * (0.6 + 0.8 * bm_sw);
-						// the glow is diffuse, a little steeper at the base so it
-						// stays off the walls; the twist runs up the whole beam, strong
-						// a longer tail out from the axis (0.6 of the old falloff)
-						float bm_glow = 0.4 * exp(-cyl_t * cyl_t * 0.6 * mix(1.2, 2.0, bm_bk));
+						// the glow falls off exponentially from the axis (a gaussian
+						// held a wide shoulder to the edge), steeper at the base so
+						// it stays off the walls; the twist runs up the whole beam
+						float bm_glow = 0.4 * exp(-cyl_t * mix(2.0, 2.8, bm_bk));
 						bm_glow      *= 0.1 + 1.6 * bm_sw;
 						// the outer blue is more see through
 						bm_glow      *= mix(1.0, 0.4, smoothstep(0.5, 1.6, cyl_t));
@@ -1543,9 +1543,9 @@ element Avatar
     # dismount: retire our render targets while they are still valid —
     # a stale map entry double-frees on the next summon's map set
     public func on_unload [ ]
-        wr9 : Window ux
-        if [ wr9 && wr9.element_targets ]
-            wr9.element_targets[ id ] = null
+        wr_ : Window ux
+        if [ wr_ && wr_.element_targets ]
+            wr_.element_targets[ id ] = null
         if [ stage ] stage.unhost[]
         stage = null
         super.on_unload[ ]
@@ -1582,9 +1582,9 @@ element Avatar
             cur_h  = bounds.h
             want_w = cur_w
             want_h = cur_h
-        f9 : f32 [ (ev.mouse.wheel_delta.y > 0.0) ? 1.15 : 0.87 ]
-        want_w = want_w * f9
-        want_h = want_h * f9
+        f_ : f32 [ (ev.mouse.wheel_delta.y > 0.0) ? 1.15 : 0.87 ]
+        want_w = want_w * f_
+        want_h = want_h * f_
         if [ want_w < 60.0 ]
             want_h = want_h * (60.0 / want_w)
             want_w = 60.0
@@ -1695,13 +1695,13 @@ element Avatar
         # the shaders' clock is wall-clock seconds from the avatar's
         # first frame; it runs only while clock_run (face on, the
         # exchange avatar's core holds still)
-        now9 : i64 [ epoch_millis[] ]
+        now_ : i64 [ epoch_millis[] ]
         if [ clock0 == 0 ]
-            clock0     = now9
-            clock_last = now9
+            clock0     = now_
+            clock_last = now_
         if [ clock_run ]
-            clock_s += f64[ now9 - clock_last ] / 1000.0
-        clock_last = now9
+            clock_s += f64[ now_ - clock_last ] / 1000.0
+        clock_last = now_
         body.spoke_r0    = 0.10
         body.spoke_r1    = 0.55
         body.blend_rings = blend_rings
@@ -1722,16 +1722,16 @@ element Avatar
 
         easing : bool [ false ]
         if [ want_w > 0.0 ]
-            st9 : f32 [ 1.0 - pow[ 0.82, w.frame_factor ] ]
-            dw : f32 [ (want_w - cur_w) * st9 ]
-            dh9 : f32 [ (want_h - cur_h) * st9 ]
-            if [ dw > 0.01 || dw < -0.01 || dh9 > 0.01 || dh9 < -0.01 ]
+            st_ : f32 [ 1.0 - pow[ 0.82, w.frame_factor ] ]
+            dw : f32 [ (want_w - cur_w) * st_ ]
+            dh_ : f32 [ (want_h - cur_h) * st_ ]
+            if [ dw > 0.01 || dw < -0.01 || dh_ > 0.01 || dh_ < -0.01 ]
                 nl : f32 [ bounds.x - dw * (anchor_x / bounds.w) ]
-                nt9 : f32 [ bounds.y - dh9 * (anchor_y / bounds.h) ]
+                nt_ : f32 [ bounds.y - dh_ * (anchor_y / bounds.h) ]
                 cur_w += dw
-                cur_h += dh9
+                cur_h += dh_
                 area = Region [
-                    'l{nl}px t{nt9}px w{cur_w}px h{cur_h}px' ]
+                    'l{nl}px t{nt_}px w{cur_w}px h{cur_h}px' ]
                 pristine = false
                 easing = true
 
@@ -2046,15 +2046,15 @@ Avatar OrbiterAvatar
             was_done = rl
             fw : f32 [ 1.0 ]
             if [ rl && ignite_us > 0 ]
-                it9 : f32 [
+                it_ : f32 [
                     f32[ epoch_micros[] - ignite_us ] / 1000000.0 ]
-                ip : f32 [ min[ it9 / ignite_s, 1.0 ] ]
+                ip : f32 [ min[ it_ / ignite_s, 1.0 ] ]
                 beam_cur = max[ beam_cur, ip * ip * (3.0 - 2.0 * ip) ]
                 aura.beam = beam_cur * 0.75
-                if [ it9 < ignite_s ]
+                if [ it_ < ignite_s ]
                     dk : f32 [ 1.0 - ip ]
                     fw = 1.0 + ignite_amp * cos[
-                        6.2831853 * ignite_hz * it9 ] * dk * dk
+                        6.2831853 * ignite_hz * it_ ] * dk * dk
             aura.beam_w       = fw
             heat              = heat_base + (1.0 - heat_base) * beam_cur
             # the flower's grooves light while it writes and stay
@@ -2090,8 +2090,8 @@ Avatar OrbiterAvatar
             if [ undo_us > 0 && ut >= 1.0 ]
                 undo_turn = undo_turn + undo_deg
                 undo_us   = 0
-            way9 : f32 [ (ut < 1.0) ? cos[ 6.2831853 * ut ] : 1.0 ]
-            spin_phase = spin_phase + spin_rate * dt * way9
+            way_ : f32 [ (ut < 1.0) ? cos[ 6.2831853 * ut ] : 1.0 ]
+            spin_phase = spin_phase + spin_rate * dt * way_
             if [ spin_phase > 6.2831853 ]
                 spin_phase = spin_phase - 6.2831853
             if [ spin_phase < 0.0 ] spin_phase = spin_phase + 6.2831853
@@ -2135,10 +2135,10 @@ Avatar OrbiterAvatar
         ep : f32 [
             (tn < 0.5) ? 4.0 * tn * tn * tn
             : 1.0 - pow[ -2.0 * tn + 2.0, 3.0 ] / 2.0 ]
-        yaw9 : f32 [
+        yaw_ : f32 [
             clock_deg + undo_turn
             + ((undo_us > 0) ? undo_deg * ep : 0.0) ]
-        rotate[0] = Rotation [ '0 1 0 {yaw9}deg' ]
+        rotate[0] = Rotation [ '0 1 0 {yaw_}deg' ]
         # in a host's scene it lies level in its place
         tl : f32 [ (scene_on) ? 0.0 : tilt_cur ]
         rotate[1] = Rotation [ '1 0 0 {tl}deg' ]

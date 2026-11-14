@@ -1330,9 +1330,9 @@ expect func t_filter_blur_wide [] -> bool
     log 'filter blur wide: middle {mid} left edge {le} right edge {re} far {far}'
     webgfx_canvas_free[ src ]
     webgfx_canvas_free[ dst ]
-    d9 : i32 [ i32[ le ] - i32[ re ] ]
-    return mid > 180 && mid < 235 && le > 70 && le < 160 && d9 < 20 &&
-        d9 > -20 && far < 3
+    d_ : i32 [ i32[ le ] - i32[ re ] ]
+    return mid > 180 && mid < 235 && le > 70 && le < 160 && d_ < 20 &&
+        d_ > -20 && far < 3
 
 # the drop shadow's tint: red wherever the blurred alpha is
 expect func t_filter_shadow_tint [] -> bool
@@ -1887,7 +1887,7 @@ expect func t_hevc_decode [] -> bool
     he : cstr [ getenv[ 'WEBGFX_HEVC' ] ]
     ho : cstr [ getenv[ 'WEBGFX_HEVC_OUT' ] ]
     if [ !he || !ho ] return true
-    d9 : gfx_display[]
+    d_ : gfx_display[]
     n : i64 [ 0 ]
     bytes : @u8 [ read_file[ he, @n ] ]
     if [ !bytes ] return false
@@ -1914,7 +1914,7 @@ expect func t_hevc_decode [] -> bool
     return dec.frames.count == samples && samples > 0
 
 expect func t_video_decode [] -> bool
-    d9   : gfx_display[]
+    d_   : gfx_display[]
     root : path.path_startup[]
     src  : path '{root}/webgfx/media/clip.mp4'
     n    : i64 [ 0 ]
@@ -1988,7 +1988,7 @@ expect func t_demux_fragments [] -> bool
 # fragments decoded ahead, shown on a 60 Hz clock, then a seek
 # a time between two pictures gives their byte mix, on the gpu
 expect func t_video_blend [] -> bool
-    d9   : gfx_display[]
+    d_   : gfx_display[]
     root : path.path_startup[]
     frag : path '{root}/webgfx/media/clip.frag.mp4'
     fn : i64 [ 0 ]
@@ -1998,7 +1998,7 @@ expect func t_video_blend [] -> bool
     mp.append[ fb, fn ]
     free[ fb ]
     tr : DemuxTrack mp.tracks[ 0 ]
-    st : VideoStream [ vk: gfx.vk, w: d9 ]
+    st : VideoStream [ vk: gfx.vk, w: d_ ]
     st.config[ @tr.config[ 0 ], i32[ tr.config.count ] ]
     for [ s: DemuxSample ] in mp.ready
         st.push[ @s.data[ 0 ], s.data.count,
@@ -2047,7 +2047,7 @@ expect func t_video_blend [] -> bool
     return off == 0
 
 expect func t_video_stream [] -> bool
-    d9   : gfx_display[]
+    d_   : gfx_display[]
     root : path.path_startup[]
     frag : path '{root}/webgfx/media/clip.frag.mp4'
     fn : i64 [ 0 ]
@@ -2057,7 +2057,7 @@ expect func t_video_stream [] -> bool
     mp.append[ fb, fn ]
     free[ fb ]
     tr : DemuxTrack mp.tracks[ 0 ]
-    st : VideoStream [ vk: gfx.vk, w: d9, smooth: false ]
+    st : VideoStream [ vk: gfx.vk, w: d_, smooth: false ]
     st.config[ @tr.config[ 0 ], i32[ tr.config.count ] ]
     for [ s: DemuxSample ] in mp.ready
         st.push[ @s.data[ 0 ], s.data.count,
@@ -2143,7 +2143,7 @@ func video_of [ id: i32 ] -> WebVideo
 # a decoder for Wine's media transforms: samples in decode order,
 # pictures out in display order; kind 1 h.264 (avcC), 2 h.265 (hvcC)
 func webgfx_decoder_new [ kind: i32, config: @u8, n: i32 ] -> i32
-    d9 : gfx_display[]
+    d_ : gfx_display[]
     v : WebVideo []
     v.dec = Decoder [ vk: gfx.vk ]
     ok : bool [ (kind == 2) ? v.dec.config_hevc[ config, n ]
@@ -2214,7 +2214,7 @@ func webgfx_aac_decode [ id: i32, data: @u8, n: i64, out: @f32,
 
 # a whole media file: its h.264 track ready to decode; 0 if unplayable
 func webgfx_video_new [ bytes: @u8, n: i64 ] -> i32
-    d9 : gfx_display[]
+    d_ : gfx_display[]
     v : WebVideo [ size: n ]
     v.bytes = malloc[ n ]
     memcpy[ v.bytes, bytes, n ]
@@ -2341,11 +2341,11 @@ func webgfx_video_advance [ id: i32, t: f64 ] -> i32
         pick = f
         v.dec.frames.shift[]
     if [ !pick || pick.pts == v.shown ] return 0
-    w9 : i32 [ v.dec.width ]
-    h9 : i32 [ v.dec.height ]
-    webgfx_plane_update[ v.planes[0], @pick.y[ 0 ], w9, h9 ]
-    webgfx_plane_update[ v.planes[1], @pick.u[ 0 ], w9 / 2, h9 / 2 ]
-    webgfx_plane_update[ v.planes[2], @pick.v[ 0 ], w9 / 2, h9 / 2 ]
+    w_ : i32 [ v.dec.width ]
+    h_ : i32 [ v.dec.height ]
+    webgfx_plane_update[ v.planes[0], @pick.y[ 0 ], w_, h_ ]
+    webgfx_plane_update[ v.planes[1], @pick.u[ 0 ], w_ / 2, h_ / 2 ]
+    webgfx_plane_update[ v.planes[2], @pick.v[ 0 ], w_ / 2, h_ / 2 ]
     v.shown = pick.pts
     return 1
 
@@ -2472,10 +2472,10 @@ func webgfx_demux_clear [ id: i32 ]
 
 # a media source player: samples pushed, the clock from its sound
 func webgfx_stream_new [] -> i32
-    d9 : gfx_display[]
+    d_ : gfx_display[]
     v : WebVideo []
     v.planes = vec i32 []
-    v.stream = VideoStream [ vk: gfx.vk, w: d9 ]
+    v.stream = VideoStream [ vk: gfx.vk, w: d_ ]
     v.sound  = AudioStream []
     return video_put[ v ]
 
@@ -2733,23 +2733,23 @@ expect func t_stroke_caps [] -> bool
     ln : webgfx_path_new[]
     webgfx_path_move_to[ ln, 16.0, 16.0 ]
     webgfx_path_line_to[ ln, 48.0, 16.0 ]
-    on9    : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 16 ] ]
-    off9   : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 19 ] ]
-    butt9  : i32 [ stroke_alpha[ ln, 4.0, 0, 14, 16 ] ]
-    round9 : i32 [ stroke_alpha[ ln, 4.0, 1, 14, 16 ] ]
+    on_    : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 16 ] ]
+    off_   : i32 [ stroke_alpha[ ln, 4.0, 0, 32, 19 ] ]
+    butt_  : i32 [ stroke_alpha[ ln, 4.0, 0, 14, 16 ] ]
+    round_ : i32 [ stroke_alpha[ ln, 4.0, 1, 14, 16 ] ]
     sq    : i32 [ stroke_alpha[ ln, 4.0, 2, 14, 17 ] ]
     # an open v: nothing across its top where a fill would close it
     vee : webgfx_path_new[]
     webgfx_path_move_to[ vee, 8.0, 4.0 ]
     webgfx_path_line_to[ vee, 32.0, 28.0 ]
     webgfx_path_line_to[ vee, 56.0, 4.0 ]
-    top9  : i32 [ stroke_alpha[ vee, 2.0, 1, 32, 4 ] ]
-    side9 : i32 [ stroke_alpha[ vee, 2.0, 1, 20, 16 ] ]
-    log 'stroke: on {on9} off {off9}; past the end butt {butt9} round {round9} square {sq}; v top {top9} side {side9}'
+    top_  : i32 [ stroke_alpha[ vee, 2.0, 1, 32, 4 ] ]
+    side_ : i32 [ stroke_alpha[ vee, 2.0, 1, 20, 16 ] ]
+    log 'stroke: on {on_} off {off_}; past the end butt {butt_} round {round_} square {sq}; v top {top_} side {side_}'
     webgfx_path_free[ ln ]
     webgfx_path_free[ vee ]
-    return on9 > 200 && off9 < 30 && butt9 < 30 && round9 > 100 &&
-        sq > 100 && top9 < 30 && side9 > 100
+    return on_ > 200 && off_ < 30 && butt_ < 30 && round_ > 100 &&
+        sq > 100 && top_ < 30 && side_ > 100
 
 # the ui's inside border: offset in by half the width
 expect func t_stroke_inside [] -> bool
@@ -2832,8 +2832,8 @@ expect func t_result_image_keeps_aa [] -> bool
     for [ x: i32 4, x < 12, x += 1 ]
         at : i32 [ (8 * 60 + x) * 4 ]
         bt : i32 [ (8 * 60 + x + 28) * 4 ]
-        d9 : i32 [ i32 pp[at] - i32 pp[bt] ]
-        if [ d9 > 8 || d9 < -8 ] ok = false
+        d_ : i32 [ i32 pp[at] - i32 pp[bt] ]
+        if [ d_ > 8 || d_ < -8 ] ok = false
     webgfx_path_free[ c ]
     webgfx_image_free[ img ]
     webgfx_canvas_free[ src ]
@@ -2900,12 +2900,12 @@ expect func t_blur_kernel [] -> bool
         at : i32 [ (y * 26 + 13) * 4 ]
         log 'kernel col y {y}: a {px[at + 3]}'
     mid  : alpha_at[ px, 26, 13, 13 ]
-    one9 : alpha_at[ px, 26, 14, 13 ]
+    one_ : alpha_at[ px, 26, 14, 13 ]
     two : alpha_at[ px, 26, 15, 13 ]
     webgfx_canvas_free[ src ]
     webgfx_canvas_free[ res ]
     # a sigma 1 gaussian: 0.159, 0.097, 0.022 of the pixel
-    return mid >= 38 && mid <= 44 && one9 >= 22 && one9 <= 28 &&
+    return mid >= 38 && mid <= 44 && one_ >= 22 && one_ <= 28 &&
         two >= 4 && two <= 9
 
 # the icon through a drop shadow as WebKit applies it: the box's

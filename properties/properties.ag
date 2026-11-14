@@ -566,7 +566,7 @@ LaunchField ColorHex
 # a saturation and brightness square, a hue bar, an alpha bar;
 # right of them a paint's kinds, the #rrggbbaa (typed when
 # clicked) and clear. Picked in display (sRGB) space.
-# The value: 'r, g, b, a', '' none, or 'linear | 0: r, g, b, a
+# the value: 'r, g, b, a', '' none, or 'linear | 0: r, g, b, a
 # | 1: r, g, b, a' (radial the same)
 element ColorPick
     mutable hue     : f32
@@ -1458,9 +1458,9 @@ element LaunchPanel
         # px rows do not follow the element's scroll on their own: the
         # offset goes into their areas, and the same offset serves the
         # hit test
-        vh9 : f32 [ (bounds) ? bounds.h : 0.0 ]
-        if [ vh9 > 0.0 && scroll.y > content_h - vh9 ]
-            scroll.y = (content_h > vh9) ? content_h - vh9 : 0.0
+        vh_ : f32 [ (bounds) ? bounds.h : 0.0 ]
+        if [ vh_ > 0.0 && scroll.y > content_h - vh_ ]
+            scroll.y = (content_h > vh_) ? content_h - vh_ : 0.0
         if [ scroll.y < 0.0 ] scroll.y = 0.0
         y  : f32 [ 0.0 - scroll.y ]
         # another instance, or a new spec: every control takes its value
@@ -1552,7 +1552,7 @@ element LaunchPanel
             vals : cur.split[ ',' ]
             if [ (reseed || (owed && owed == nm)) && vn == 0 ]
                 reseed_text[ nm, cur ]
-            ar9 : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
+            ar_ : Region [ 'l{cx}px t{y}px r0 h{rhx}px' ]
             if [ vn > 0 ]
                 # one cell, a dragged number a part
                 cw : f32 [ (pw - cx) / vn ]
@@ -1584,15 +1584,15 @@ element LaunchPanel
             el [ ty == 'func' ]
                 t['lp_{nm}'] = LaunchAction [ label: nm,
                                               manual_mode: true,
-                                              area: ar9 ]
+                                              area: ar_ ]
             el [ ty == 'bool' ]
-                ck9 : Region [ 'l{cx}px t{y}px w{rh}px h{rh}px' ]
+                ck_ : Region [ 'l{cx}px t{y}px w{rh}px h{rh}px' ]
                 if [ ex ]
-                    t['lp_{nm}'] = LaunchCheck [ label: '', area: ck9 ]
+                    t['lp_{nm}'] = LaunchCheck [ label: '', area: ck_ ]
                 el
                     t['lp_{nm}'] = LaunchCheck [ label: '',
                                                  selected: cur == 'true',
-                                                 area: ck9 ]
+                                                 area: ck_ ]
             el [ isp ]
                 # a path is picked from the nav list: a button, not an
                 # editable field
@@ -1623,29 +1623,29 @@ element LaunchPanel
                     t['lp_{nm}'] = KeyField [ label: kfx.label,
                                               code: kfx.code,
                                               manual_mode: true,
-                                              area: ar9 ]
+                                              area: ar_ ]
                 el
                     kc : i32 [ cur.integer_value[] ]
                     t['lp_{nm}'] = KeyField [ label: key_name[ kc ],
                                               code: kc,
                                               manual_mode: true,
-                                              area: ar9 ]
+                                              area: ar_ ]
             el [ ck == 'PadBind' ]
                 if [ ex && ex inherits PadField ]
                     pfx : PadField ex
                     t['lp_{nm}'] = PadField [ label: pfx.label,
                                               code: pfx.code,
                                               manual_mode: true,
-                                              area: ar9 ]
+                                              area: ar_ ]
                 el
-                    pc9 : i32 [ cur.integer_value[] ]
-                    t['lp_{nm}'] = PadField [ label: pad_name[ pc9 ],
-                                              code: pc9,
+                    pc_ : i32 [ cur.integer_value[] ]
+                    t['lp_{nm}'] = PadField [ label: pad_name[ pc_ ],
+                                              code: pc_,
                                               manual_mode: true,
-                                              area: ar9 ]
+                                              area: ar_ ]
             el [ ck == 'Stepper' ]
                 if [ ex ]
-                    t['lp_{nm}'] = StepField [ area: ar9 ]
+                    t['lp_{nm}'] = StepField [ area: ar_ ]
                 el
                     sr : vec f32 stepper_of[ p ]
                     t['lp_{nm}'] = StepField [ value: cur.real_value[],
@@ -1653,17 +1653,17 @@ element LaunchPanel
                                                max: sr[ 1 ],
                                                step: sr[ 2 ],
                         whole: !(ty == 'f32' || ty == 'f64'),
-                        area: ar9 ]
+                        area: ar_ ]
             el [ ck == 'Color' ]
                 if [ ex ]
                     t['lp_{nm}'] = LaunchColor [ label: '',
                                                  focusable: true,
-                                                 area: ar9 ]
+                                                 area: ar_ ]
                 el
                     t['lp_{nm}'] = LaunchColor [ label: '', edit: cur,
                                                  sel_col: cur.count,
                                                  anchor_col: cur.count,
-                        focusable: true, area: ar9 ]
+                        focusable: true, area: ar_ ]
             el [ en ]
                 names : p.stops
                 if [ ex ]
@@ -1671,18 +1671,18 @@ element LaunchPanel
                                               icons: false,
                                               manual: false,
                                               seg_radius: 0.0,
-                        label_px: rh * 0.5 - 2.0, area: ar9 ]
+                        label_px: rh * 0.5 - 2.0, area: ar_ ]
                 el
-                    idx9 : i32 [ enum_index[ p, cur ] ]
+                    idx_ : i32 [ enum_index[ p, cur ] ]
                     t['lp_{nm}'] = TButtons [ buttons: names,
                                               icons: false,
                                               manual: false,
                                               seg_radius: 0.0,
-                        selected: idx9, label_px: rh * 0.5 - 2.0,
-                        area: ar9 ]
+                        selected: idx_, label_px: rh * 0.5 - 2.0,
+                        area: ar_ ]
             el [ sl ]
                 if [ ex ]
-                    t['lp_{nm}'] = LaunchSlider [ label: '', area: ar9 ]
+                    t['lp_{nm}'] = LaunchSlider [ label: '', area: ar_ ]
                 el
                     rg : vec2f [ range_of[ p ] ]
                     cv : f32 [ cur.real_value[] ]
@@ -1690,18 +1690,18 @@ element LaunchPanel
                         (rg.y > rg.x) ? (cv - rg.x) / (rg.y - rg.x)
                         : 0.0 ]
                     t['lp_{nm}'] = LaunchSlider [ label: '', value: fr,
-                                                  area: ar9 ]
+                                                  area: ar_ ]
             # a paint (an svg's fill) can be cleared to none
             el [ colour ]
                 cl : bool [ ty == 'paint' || ty == 'tint' ]
                 one : bool [ ty == 'tint' ]
-                ar9 = Region [ 'l0 t{y + 18.0}px r0 h{rhx - 18.0}px' ]
+                ar_ = Region [ 'l0 t{y + 18.0}px r0 h{rhx - 18.0}px' ]
                 if [ ex ]
                     t['lp_{nm}'] = ColorPick [ paint: cl, solid: one,
-                                               area: ar9 ]
+                                               area: ar_ ]
                 el
                     t['lp_{nm}'] = ColorPick [ edit: cur,
-                        paint: cl, solid: one, area: ar9 ]
+                        paint: cl, solid: one, area: ar_ ]
             # a unit (0..1, an opacity) drags with its bar
             el [ ck == '' && (ty == 'f32' || ty == 'f64'
                                || ty == 'i32' || ty == 'i64'
@@ -1713,14 +1713,14 @@ element LaunchPanel
                     t['lp_{nm}'] = DragField [ label: '', whole: wh,
                                                bar: un, top: tp,
                                                focusable: true,
-                                               area: ar9 ]
+                                               area: ar_ ]
                 el
                     t['lp_{nm}'] = DragField [ label: '', edit: cur,
                                                whole: wh, bar: un,
                                                top: tp,
                                                sel_col: cur.count,
                                                anchor_col: cur.count,
-                        focusable: true, area: ar9 ]
+                        focusable: true, area: ar_ ]
             el
                 # a mounted field keeps its text, unless it is empty and
                 # the value has arrived since (the export lists no
@@ -1731,12 +1731,12 @@ element LaunchPanel
                     && !(cur.count > 0 && (!fe.edit || fe.edit.count == 0)) ]
                     t['lp_{nm}'] = LaunchField [ label: '',
                                                  focusable: true,
-                                                 area: ar9 ]
+                                                 area: ar_ ]
                 el
                     t['lp_{nm}'] = LaunchField [ label: '', edit: cur,
                                                  sel_col: cur.count,
                                                  anchor_col: cur.count,
-                        focusable: true, area: ar9 ]
+                        focusable: true, area: ar_ ]
             y += rhx
             rule_ys.push[ y ]
         content_h = y + scroll.y
@@ -1765,8 +1765,8 @@ element LaunchPanel
             return
         cv.fill_color[ rgba [ '#ffffff1a' ] ]
         if [ rule_ys ]
-            for [ y9: f32 ] in rule_ys
-                cv.rect_to[ 0.0, y9 - 1.0, bounds.w, 1.0 ]
+            for [ y_: f32 ] in rule_ys
+                cv.rect_to[ 0.0, y_ - 1.0, bounds.w, 1.0 ]
                 cv.paint[]
         # the column rule, broken where a row spans both cells
         at : f32 [ 0.0 - scroll.y ]

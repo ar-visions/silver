@@ -385,6 +385,10 @@ element psx : trinity
         shown : bus.gpu.present[]
         cv.fill_color[ '#000' ]
         cv.fill_rect_fast[ 0.0, 0.0, bounds.w, bounds.h ]
+        if [ !bus.cd.disc ]
+            own_icon_paint[ cv,
+                rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
+            return
         if [ !shown || bus.gpu.disp_off ] return
         # 4:3, as large as the window holds
         sw : f32 [ bounds.w ]

@@ -65,16 +65,16 @@ class FileIcons
         mm : map jp.load[ typeid[ map ], null ]
         if [ !mm ] return
         fe : map mm[ 'fileExtensions' ]
-        fn9 : map mm[ 'fileNames' ]
+        fn_ : map mm[ 'fileNames' ]
         # own copies: the parsed json is freed later, and a child map
         # went with it while the nav list was still drawing icons
         if [ fe ]
             mi_exts = map string [string] []
-            for [ v9: string, k9: string ] in fe
-                mi_exts[ k9 ] = v9
-        if [ fn9 ]
+            for [ v_: string, k_: string ] in fe
+                mi_exts[ k_ ] = v_
+        if [ fn_ ]
             mi_names = map string [string] []
-            for [ v8: string, k8: string ] in fn9
+            for [ v8: string, k8: string ] in fn_
                 mi_names[ k8 ] = v8
         mi_models = map SVGModel [string] []
 
@@ -296,8 +296,8 @@ class AppIcon
         dh : i32 [ (sh >= sw) ? ps : max[ 1, ps * sh / sw ] ]
         out : Image [ width: dw, height: dh, format: Pixel.rgba8,
                       channels: 4 ]
-        sp9 : @u8 src.vdata[]
-        dp9 : @u8 out.vdata[]
+        sp_ : @u8 src.vdata[]
+        dp_ : @u8 out.vdata[]
         fx : f32 [ f32[ sw ] / f32[ dw ] ]
         fy : f32 [ f32[ sh ] / f32[ dh ] ]
         for [ dy: i32 0, dy < dh, dy += 1 ]
@@ -313,17 +313,17 @@ class AppIcon
                         min[ f32[ sy + 1 ], y1 ]
                         - max[ f32[ sy ], y0 ] ]
                     for [ sx: i32 i32[ x0 ], f32[ sx ] < x1 && sx < sw, sx += 1 ]
-                        w9 : f32 [
+                        w_ : f32 [
                             wy
                             * (min[ f32[ sx + 1 ], x1 ] - max[ f32[ sx ], x0 ]) ]
-                        o9 : i64 [
+                        o_ : i64 [
                             (i64[ sy ] * i64[ sw ] + i64[ sx ]) * 4 ]
                         for [ c: i32 0, c < 4, c += 1 ]
-                            acc[ c ] += f32[ sp9[ o9 + c ] ] * w9
-                        wt += w9
-                d9 : i64 [ (i64[ dy ] * i64[ dw ] + i64[ dx ]) * 4 ]
+                            acc[ c ] += f32[ sp_[ o_ + c ] ] * w_
+                        wt += w_
+                d_ : i64 [ (i64[ dy ] * i64[ dw ] + i64[ dx ]) * 4 ]
                 for [ c: i32 0, c < 4, c += 1 ]
-                    dp9[ d9 + c ] = u8[
+                    dp_[ d_ + c ] = u8[
                         min[ acc[ c ] / wt + 0.5, 255.0 ] ]
         return out
 
@@ -370,16 +370,16 @@ class AppIcon
                 if [
                     im.width > 0 && im.height > 0
                     && im.format == Pixel.rgba8 ]
-                    px9 : @u8 im.vdata[]
-                    n9  : i64 [ i64[ im.width ] * i64[ im.height ] * 4 ]
-                    for [ k: i64 0, k < n9, k += 4 ]
-                        al : u32 [ px9[ k + 3 ] ]
-                        px9[ k ]     = u8[
-                            (u32[ px9[ k ] ] * al + 127) / 255 ]
-                        px9[ k + 1 ] = u8[
-                            (u32[ px9[ k + 1 ] ] * al + 127) / 255 ]
-                        px9[ k + 2 ] = u8[
-                            (u32[ px9[ k + 2 ] ] * al + 127) / 255 ]
+                    px_ : @u8 im.vdata[]
+                    n_  : i64 [ i64[ im.width ] * i64[ im.height ] * 4 ]
+                    for [ k: i64 0, k < n_, k += 4 ]
+                        al : u32 [ px_[ k + 3 ] ]
+                        px_[ k ]     = u8[
+                            (u32[ px_[ k ] ] * al + 127) / 255 ]
+                        px_[ k + 1 ] = u8[
+                            (u32[ px_[ k + 1 ] ] * al + 127) / 255 ]
+                        px_[ k + 2 ] = u8[
+                            (u32[ px_[ k + 2 ] ] * al + 127) / 255 ]
                     src = im
             nm : string export_icon[]
             if [ !src && nm ]
@@ -395,12 +395,12 @@ class AppIcon
                 fi : FileIcons []
                 svg = fi.icon[ file.filename[], 64 ]
         # drawn one texel a pixel: made at the size it is drawn
-        ps9 : i32 [ round[ side ] ]
-        if [ src && ps9 > 0 && (!tex || tex_side != ps9) ]
-            sm : Image shrink[ ps9 ]
+        ps_ : i32 [ round[ side ] ]
+        if [ src && ps_ > 0 && (!tex || tex_side != ps_) ]
+            sm : Image shrink[ ps_ ]
             tex = Texture [ vk: cv.vk, w: cv.w, sampler: sm,
                 width: sm.width, height: sm.height, linear: true ]
-            tex_side = ps9
+            tex_side = ps_
         if [ tex ]
             tw : f32 [ tex.width ]
             th : f32 [ tex.height ]
@@ -410,6 +410,28 @@ class AppIcon
         el [ svg ]
             cv.fill_color[ rgba [ '#fff' ] ]
             cv.draw_svg[ svg, x, y, side, side ]
+
+# the running app's own icon: its share's images/icon.png
+own_icon : AppIcon
+# when the app last had nothing to show, and since when (ms)
+own_icon_last  : i64
+own_icon_since : i64
+
+# an app with nothing to show (no file): its icon in vp's middle;
+# a file's first frames loading (under 250 ms) never show it
+func own_icon_paint [ cv: Canvas, vp: rect ]
+    now : i64 Au.epoch_millis[]
+    if [ now - own_icon_last > 100 ] own_icon_since = now
+    own_icon_last = now
+    if [ now - own_icon_since < 250 ]
+        # a frame after the wait, for apps that draw on change only
+        ow : cast Window [ cv.w ]
+        if [ ow ] ow.will_animate = true
+        return
+    if [ !own_icon ] own_icon = AppIcon [ file: path '.' ]
+    side : f32 [ round[ min[ vp.w, vp.h ] * 0.3 ] ]
+    own_icon.paint[ cv, round[ vp.x + (vp.w - side) * 0.5 ],
+        round[ vp.y + (vp.h - side) * 0.5 ], side ]
 
 # the dialog: under the orbiter bar over the app, a solid ground
 # with its rows over it (NavRows); keys reach it from the Window

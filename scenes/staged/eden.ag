@@ -738,13 +738,13 @@ element Eden
 
 # the scene at 1280x720, drawn offscreen into /tmp/eden-view.png
 expect func t_eden_view [] -> bool
-    vk9 : vk_context []
-    vk9.hold[]
-    w9  : Window [ vk: vk9, format: Pixel.rgba8, backbuffer: true,
+    vk_ : vk_context []
+    vk_.hold[]
+    w_  : Window [ vk: vk_, format: Pixel.rgba8, backbuffer: true,
         width: 1280, height: 720 ]
-    w9.hold[]
-    if [ !w9.element_targets ]
-        w9.element_targets = map Render [string] []
+    w_.hold[]
+    if [ !w_.element_targets ]
+        w_.element_targets = map Render [string] []
     out : path '/tmp/eden-view.png'
-    scene_thumb[ w9, 'Eden', out ]
+    scene_thumb[ w_, 'Eden', out ]
     return out.exists[]

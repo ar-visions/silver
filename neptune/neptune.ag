@@ -28,16 +28,16 @@ func neptune_bake [] -> bool
     if [ ji.width == 0 ]
         log 'neptune: jupiter plate missing'
         return false
-    w9 : i32 [ si.width ]
-    h9 : i32 [ si.height ]
+    w_ : i32 [ si.width ]
+    h_ : i32 [ si.height ]
     jw : i32 [ ji.width ]
     jh : i32 [ ji.height ]
-    log 'neptune: composing {w9}x{h9} saturn with {jw}x{jh} jupiter patches'
+    log 'neptune: composing {w_}x{h_} saturn with {jw}x{jh} jupiter patches'
     sp : i32 [ si.pixel_size ]
     sdat : @u8 [ si.vdata[] ]
     jp : i32 [ ji.pixel_size ]
     jdat : @u8 [ ji.vdata[] ]
-    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    im : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     od : @u8 [ im.vdata[] ]
     # THE GREAT DARK SPOT, ours rather than jupiter's borrowed one: an
@@ -46,16 +46,16 @@ func neptune_bake [] -> bool
     # painted oval. wide and shallow, the way a banded planet holds one
     du : f32 [ 0.34 ]
     dv : f32 [ 0.385 ]
-    for [ y: i32 0, y < h9, y += 1 ]
-        v : f32 [ (f32[ y ] + 0.5) / f32[ h9 ] ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            u : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
-            sb : i32 [ (y * w9 + x) * sp ]
-            r9 : f32 [ f32[ sdat[ sb ] ] / 255.0 ]
-            g9 : f32 [ f32[ sdat[ sb + 1 ] ] / 255.0 ]
-            b9 : f32 [ f32[ sdat[ sb + 2 ] ] / 255.0 ]
-            l9 : f32 [ r9 * 0.299 + g9 * 0.587 + b9 * 0.114 ]
-            cv : f32 [ (r9 - b9) * 0.5 ]
+    for [ y: i32 0, y < h_, y += 1 ]
+        v : f32 [ (f32[ y ] + 0.5) / f32[ h_ ] ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            u : f32 [ (f32[ x ] + 0.5) / f32[ w_ ] ]
+            sb : i32 [ (y * w_ + x) * sp ]
+            r_ : f32 [ f32[ sdat[ sb ] ] / 255.0 ]
+            g_ : f32 [ f32[ sdat[ sb + 1 ] ] / 255.0 ]
+            b_ : f32 [ f32[ sdat[ sb + 2 ] ] / 255.0 ]
+            l_ : f32 [ r_ * 0.299 + g_ * 0.587 + b_ * 0.114 ]
+            cv : f32 [ (r_ - b_) * 0.5 ]
 
             # the spot: distance in an ellipse three times wider than
             # tall, with the boundary pushed in and out by two octaves
@@ -77,7 +77,7 @@ func neptune_bake [] -> bool
             coll : f32 [
                 eu_sstep[ 0.62, 0.86, rr ]
                 * (1.0 - eu_sstep[ 0.86, 1.10, rr ]) ]
-            l9 = l9 * (1.0 - spot * 0.62) + coll * 0.16
+            l_ = l_ * (1.0 - spot * 0.62) + coll * 0.16
 
             # JUPITER PATCHES. saturn's deck is smooth to the point of
             # being featureless; jupiter's is the turbulence we want.
@@ -95,8 +95,8 @@ func neptune_bake [] -> bool
             # frays the patch into ribbons instead of vertical fingers
             pm2 : f32 [
                 eu_gnoise[ mx * 2.6 + 19.0, my * 2.6 + 7.0, v * 34.0 ] ]
-            pm9 : f32 [ pm1 + (pm2 - 0.5) * 0.18 ]
-            patch : f32 [ eu_sstep[ 0.44, 0.64, pm9 ] ]
+            pm_ : f32 [ pm1 + (pm2 - 0.5) * 0.18 ]
+            patch : f32 [ eu_sstep[ 0.44, 0.64, pm_ ] ]
             # FLIPPED in latitude and MIRRORED in longitude, so the
             # borrowed bands do not line up with anything jupiter reads
             # as. both plates are 4096x2048, so this is a direct index
@@ -116,17 +116,17 @@ func neptune_bake [] -> bool
             jl = (jl - 0.5) * 1.35 + 0.5
             if [ jl < 0.0 ] jl = 0.0
             if [ jl > 1.0 ] jl = 1.0
-            l9 = l9 + (jl - l9) * patch * 0.80
+            l_ = l_ + (jl - l_) * patch * 0.80
 
             # DEEP BLUE: structure as luminance, hue carried in code --
             # tinting saturn's ochre would leave it fighting through
-            nr : f32 [ l9 * 0.20 + cv * 0.10 ]
-            ng : f32 [ l9 * 0.46 + cv * 0.06 ]
-            nb : f32 [ l9 * 0.92 + 0.06 ]
+            nr : f32 [ l_ * 0.20 + cv * 0.10 ]
+            ng : f32 [ l_ * 0.46 + cv * 0.06 ]
+            nb : f32 [ l_ * 0.92 + 0.06 ]
             if [ nr < 0.0 ] nr = 0.0
             if [ ng < 0.0 ] ng = 0.0
             if [ nb > 1.0 ] nb = 1.0
-            ob : i32 [ (y * w9 + x) * 4 ]
+            ob : i32 [ (y * w_ + x) * 4 ]
             od[ ob ]     = u8[ nr * 255.0 ]
             od[ ob + 1 ] = u8[ ng * 255.0 ]
             od[ ob + 2 ] = u8[ nb * 255.0 ]
@@ -184,25 +184,25 @@ func nep_box [ S: @f32, T: @f32, w: i32, h: i32, rx: i32, ry: i32 ]
 func neptune_storm [] -> bool
     ci : Image [ uri: path '../{share_name}/baked/neptune-color.png' ]
     if [ ci.width == 0 ] return false
-    w9 : i32 [ ci.width ]
-    h9 : i32 [ ci.height ]
-    n9 : i32 [ w9 * h9 ]
-    L : new f32 [ n9 ]
+    w_ : i32 [ ci.width ]
+    h_ : i32 [ ci.height ]
+    n_ : i32 [ w_ * h_ ]
+    L : new f32 [ n_ ]
     eu_lum[ ci, L ]
     # JUPITER'S BAKE, line for line: an isotropic sobel MAX'd with a
     # tone term, then one light gaussian. the structure has to come
     # off the plate itself -- perlin alone gives smears, not cloud.
     # 14, not jupiter's 4: the blue mapping packs this plate into
     # luminance 0.16-0.44, so its gradients are a third of jupiter's
-    S : new f32 [ n9 ]
-    for [ y: i32 0, y < h9, y += 1 ]
+    S : new f32 [ n_ ]
+    for [ y: i32 0, y < h_, y += 1 ]
         ym : i32 [ (y > 0) ? y - 1 : 0 ]
-        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
-            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
-            gx : f32 [ L[ y * w9 + xp ] - L[ y * w9 + xm ] ]
-            gy : f32 [ L[ yp * w9 + x ] - L[ ym * w9 + x ] ]
+        yp : i32 [ (y < h_ - 1) ? y + 1 : h_ - 1 ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w_ - 1 ]
+            xp : i32 [ (x < w_ - 1) ? x + 1 : 0 ]
+            gx : f32 [ L[ y * w_ + xp ] - L[ y * w_ + xm ] ]
+            gy : f32 [ L[ yp * w_ + x ] - L[ ym * w_ + x ] ]
             # 30, not 14. MEASURED: sobel alone peaked at 0.69 of a
             # map the shader reads through smoothstep[0.10, 0.72], so
             # only 0.3% of it ever cleared half. 30 saturates the
@@ -214,18 +214,18 @@ func neptune_storm [] -> bool
             # blobs while the edges stand alone as closed loops --
             # fingerprints. edges alone confine every flash to a shear
             # line, so what draws is a streak running with the band
-            S[ y * w9 + x ] = mg
-    T : new f32 [ n9 ]
-    eu_blur[ S, T, w9, h9, 4 ]
-    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+            S[ y * w_ + x ] = mg
+    T : new f32 [ n_ ]
+    eu_blur[ S, T, w_, h_, 4 ]
+    im : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     od : @u8 [ im.vdata[] ]
-    for [ i: i32 0, i < n9, i += 1 ]
-        v9 : f32 [ T[ i ] ]
-        if [ v9 < 0.0 ] v9 = 0.0
-        if [ v9 > 1.0 ] v9 = 1.0
+    for [ i: i32 0, i < n_, i += 1 ]
+        v_ : f32 [ T[ i ] ]
+        if [ v_ < 0.0 ] v_ = 0.0
+        if [ v_ > 1.0 ] v_ = 1.0
         b4 : i32 [ i * 4 ]
-        od[ b4 ]     = u8[ v9 * 255.0 ]
+        od[ b4 ]     = u8[ v_ * 255.0 ]
         od[ b4 + 1 ] = 0
         od[ b4 + 2 ] = 0
         od[ b4 + 3 ] = 255
@@ -252,45 +252,45 @@ func nep_ring_r1 [] -> f32
     return 64500.0
 
 func neptune_rings [] -> bool
-    w9 : i32 [ 2048 ]
-    h9 : i32 [ 4 ]
+    w_ : i32 [ 2048 ]
+    h_ : i32 [ 4 ]
     r0 : f32 [ nep_ring_r0[] ]
     r1 : f32 [ nep_ring_r1[] ]
-    im : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    im : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true ]
     od : @u8 [ im.vdata[] ]
-    for [ x: i32 0, x < w9, x += 1 ]
-        t  : f32 [ (f32[ x ] + 0.5) / f32[ w9 ] ]
+    for [ x: i32 0, x < w_, x += 1 ]
+        t  : f32 [ (f32[ x ] + 0.5) / f32[ w_ ] ]
         km : f32 [ r0 + t * (r1 - r0) ]
         # each ring's optical depth, scaled so the faint ones survive
         # the 8-bit strip. voyager measured Adams and Le Verrier as
         # the only two that read at all; the rest are dust
-        a9 : f32 [ 0.0 ]
+        a_ : f32 [ 0.0 ]
         # the named rings, every shoulder ~3x softer than a hard edge
-        a9 += nep_band[ km, 41900.0, 1000.0, 1800.0 ] * 0.10
-        a9 += nep_band[ km, 53200.0,   60.0,  420.0 ] * 0.55
-        a9 += nep_band[ km, 55200.0, 2000.0,  900.0 ] * 0.06
-        a9 += nep_band[ km, 57200.0,   50.0,  380.0 ] * 0.18
-        a9 += nep_band[ km, 61953.0,   40.0,  350.0 ] * 0.05
-        a9 += nep_band[ km, 62933.0,   25.0,  340.0 ] * 0.85
+        a_ += nep_band[ km, 41900.0, 1000.0, 1800.0 ] * 0.10
+        a_ += nep_band[ km, 53200.0,   60.0,  420.0 ] * 0.55
+        a_ += nep_band[ km, 55200.0, 2000.0,  900.0 ] * 0.06
+        a_ += nep_band[ km, 57200.0,   50.0,  380.0 ] * 0.18
+        a_ += nep_band[ km, 61953.0,   40.0,  350.0 ] * 0.05
+        a_ += nep_band[ km, 62933.0,   25.0,  340.0 ] * 0.85
         # minor threads flanking the two bright ones, softer again --
         # no hard width at all, just a wide gaussian either side
-        a9 += nep_band[ km, 52150.0,    0.0,  620.0 ] * 0.11
-        a9 += nep_band[ km, 54300.0,    0.0,  680.0 ] * 0.09
-        a9 += nep_band[ km, 61750.0,    0.0,  700.0 ] * 0.12
-        a9 += nep_band[ km, 63950.0,    0.0,  640.0 ] * 0.10
-        if [ a9 > 1.0 ] a9 = 1.0
+        a_ += nep_band[ km, 52150.0,    0.0,  620.0 ] * 0.11
+        a_ += nep_band[ km, 54300.0,    0.0,  680.0 ] * 0.09
+        a_ += nep_band[ km, 61750.0,    0.0,  700.0 ] * 0.12
+        a_ += nep_band[ km, 63950.0,    0.0,  640.0 ] * 0.10
+        if [ a_ > 1.0 ] a_ = 1.0
         # dark and near neutral, a touch warm -- voyager saw grey dust,
         # not saturn's bright ice
         cr : f32 [ 0.66 ]
         cg : f32 [ 0.63 ]
         cb : f32 [ 0.61 ]
-        for [ y: i32 0, y < h9, y += 1 ]
-            b4 : i32 [ (y * w9 + x) * 4 ]
+        for [ y: i32 0, y < h_, y += 1 ]
+            b4 : i32 [ (y * w_ + x) * 4 ]
             od[ b4 ]     = u8[ cr * 255.0 ]
             od[ b4 + 1 ] = u8[ cg * 255.0 ]
             od[ b4 + 2 ] = u8[ cb * 255.0 ]
-            od[ b4 + 3 ] = u8[ a9 * 255.0 ]
+            od[ b4 + 3 ] = u8[ a_ * 255.0 ]
     bd : path '../{share_name}/baked'
     bd.make_dir[]
     im.png[ path '../{share_name}/baked/neptune-ring.png' ]
@@ -401,10 +401,10 @@ Backdrop Neptune
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null

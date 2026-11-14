@@ -259,20 +259,20 @@ element WaylandView
     # the output follows the pane's size
     func frame_out [ cv: Canvas, vp: rect ]
         # the window draws the pane's real pixels, never a stretch
-        w9 : i32 [ round[ vp.w * ds[] ] ]
-        h9 : i32 [ i32[ round[ vp.h * ds[] ] ]
+        w_ : i32 [ round[ vp.w * ds[] ] ]
+        h_ : i32 [ i32[ round[ vp.h * ds[] ] ]
             + ((crop_top > 0) ? crop_top : 0) ]
-        if [ w9 < 16 || h9 < 16 ] return
-        ensure[ w9, h9 ]
+        if [ w_ < 16 || h_ < 16 ] return
+        ensure[ w_, h_ ]
         if [ !up ] return
-        if [ w9 != last_w || h9 != last_h ]
-            last_w = w9
-            last_h = h9
-            wlc_resize[ w9, h9 ]
+        if [ w_ != last_w || h_ != last_h ]
+            last_w = w_
+            last_h = h_
+            wlc_resize[ w_, h_ ]
         if [ !spawned && run && run.count > 0 ]
             spawned = true
-            pid9 : i32 [ wlc_spawn[ run.chars ] ]
-            log 'wayland: started {run} (pid {pid9})'
+            pid_ : i32 [ wlc_spawn[ run.chars ] ]
+            log 'wayland: started {run} (pid {pid_})'
         wlc_pump[]
         wn : u64 [ (window > 0) ? window : wlc_window_newest[] ]
         if [ wn != win ]
@@ -287,7 +287,7 @@ element WaylandView
             present_start[ cv ]
             ux.pause_for = a
             return
-        settle[ w9, h9 ]
+        settle[ w_, h_ ]
         retire[]
         if [ !frames ] frames = map Texture [string] []
         t : Texture frame_of[ cv, win, frames ]
@@ -433,9 +433,9 @@ element WaylandView
     # the pane's size reaches the window as fast as it draws: the
     # next goes once it has a frame at the last (or 250 ms passed);
     # one every frame left it no time to draw (black)
-    func settle [ w9: i32, h9: i32 ]
-        want_w = w9
-        want_h = h9
+    func settle [ w_: i32, h_: i32 ]
+        want_w = w_
+        want_h = h_
         if [ want_w == sent_w && want_h == sent_h ] return
         now : i64 [ epoch_millis[] ]
         drawn : bool [ wlc_window_drawn[ win ] != 0 ]

@@ -1,6 +1,4 @@
-# agi seed: tokenizer and request / response pairs from the
-# authored books in ~/.cache/agi; each pair's authors are kept
-# beside it (provenance), never trained on
+# agi seed: tokenizer and request / response pairs
 import os, re, struct, random, json, collections
 from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
 
@@ -31,8 +29,7 @@ for d in docs:
 authors = sorted({a for b in books for a in b['who']})
 col = {a: i for i, a in enumerate(authors)}
 
-# names particular to a book: capitalised words used often in it
-# and in few other books
+# a book's own names: often in it, rare elsewhere
 word = re.compile(r'(?<![.!?"\'\n] )\b([A-Z][a-z]{2,})\b')
 seen = collections.Counter()
 per = []
@@ -44,15 +41,15 @@ for b, c in zip(books, per):
     b['names'] = [w for w, n in c.most_common(400)
                   if n >= 6 and seen[w] <= 3][:30]
 
-# the tokenizer: byte level BPE on the books, then the markers
+# byte level BPE on the books, then the markers
 specials = ['<pad>', '<req>', '<resp>', '<end>']
 tok = Tokenizer(models.BPE())
 tok.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
 tok.decoder = decoders.ByteLevel()
 tr = trainers.BpeTrainer(vocab_size=VOCAB, special_tokens=specials,
                          initial_alphabet=pre_tokenizers.ByteLevel.alphabet())
-sample = [b['text'][:200000] for b in books]
-tok.train_from_iterator(sample, tr)
+heads = [b['text'][:200000] for b in books]
+tok.train_from_iterator(heads, tr)
 tok.save(os.path.join(OUT, 'tokenizer.json'))
 
 
@@ -67,8 +64,7 @@ def clean(p):
     return re.sub(r'\s+', ' ', p).strip()
 
 
-# a small transcript from book b: what happened so far, then
-# the next few sentences
+# book b's story so far, then the next sentences
 def scene(b, before, after):
     t = b['text']
     at = start_at(t, rnd.randint(before + 1000, len(t) - after - 1000))
@@ -84,9 +80,7 @@ def scene(b, before, after):
     return past, nxt, seen[:3]
 
 
-# a request is the story so far and who is in it; the response
-# is what happens next; mixed: two books' scenes joined, the
-# next part from both
+# one or two books' scenes; authors kept, never trained on
 def pair():
     k = rnd.choices([1, 2], [2, 1])[0]
     picks = rnd.sample(range(len(books)), k)
@@ -127,8 +121,7 @@ def make(n, path):
                 made += 1
 
 
-# training pairs (line n is training example n), and requests
-# to try
+# training pairs, and requests to try
 make(300000, os.path.join(OUT, 'train.jsonl'))
 make(2000, os.path.join(OUT, 'requests.jsonl'))
 json.dump({'authors': [[a, names[a]] for a in authors],

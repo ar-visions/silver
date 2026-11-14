@@ -23,56 +23,6 @@ class FileBuf
     public line_last   : vec i32
     public tree_dirty  : bool [ true ]
 
-# a repository a host lists for a user
-class RepoInfo
-    public full : string        # owner/name
-    public name : string
-    public desc : string
-
-# a checkout in flight: git's progress read off its own pipe, no
-# console. phase: cloning, building, done, failed
-class RepoClone
-    public full  : string
-    public name  : string
-    public dir   : string
-    public fh    : handle
-    public fd    : i32 [ -1 ]
-    public pct   : f32
-    public phase : string
-    public tail  : string
-
-# where repositories live: how a user's are listed and how one is
-# cloned. github for now; a second host is a second instance of this,
-# not a path
-class RepoHost
-    public name  : string [ 'github' ]
-    # a personal access token: 5000 requests an hour, private repos, who
-    # we are
-    public token : string
-    public me    : string           # the token's login, once known
-    func auth [] -> string
-        return (token && token.count > 0) ? '-H "Authorization: Bearer {token}" ' : ''
-    # our own listing goes through /user/repos (private ones included).
-    # 100 a page is the host's most; page 2, 3.. continue the list
-    func list_cmd [ user: string, page: i32 ] -> string
-        own : bool [
-            token && token.count > 0 && me && me.count > 0
-            && me.compare[ user ] == 0 ]
-        url : string (own) ? 'https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner&page={page}' : 'https://api.github.com/users/{user}/repos?per_page=100&sort=updated&page={page}'
-        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "{url}"'
-    # one repository by owner/name (any case): its canonical name and
-    # description
-    func repo_cmd [ full: string ] -> string
-        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/repos/{full}"'
-    func user_cmd [] -> string
-        return 'curl -s {auth[]}-H "Accept: application/vnd.github+json" "https://api.github.com/user"'
-    # over ssh: the key is the credential we have, and it reaches
-    # private repos
-    func clone_url [ full: string ] -> string [ 'git@github.com:{full}.git' ]
-    # who the key says we are: "Hi <login>! You've successfully
-    # authenticated"
-    func whoami_cmd [] -> string [ 'ssh -T git@github.com 2>&1' ]
-
 # a file's words as 64 bit hashes, held in a bloom: a search asks this
 # before it reads the file again, and a miss is certain (no false
 # negative)
@@ -595,6 +545,8 @@ ResourceView AppView
     public  debug_build : bool
     # silver --coverage: the run writes coverage.lcov
     public  cov_build   : bool
+    # silver --verbose: the whole build in the console
+    public  verbose_build : bool
     # a file handler: hosted to view, never under the debugger
     public  viewer      : bool
     mutable doc        : path
@@ -605,6 +557,8 @@ ResourceView AppView
     mutable pend_us    : i64
     mutable started    : bool
     mutable asking     : bool        # its bare argument is being picked
+    mutable did_build  : bool        # its log shows a module compiled
+    mutable build_ms   : i64         # when the log was last read for it
     mutable ready      : bool
     # mouse lock asked by the app (HM.lock): 1 lock, 2 release; centre
     # in app px; carried fractions
@@ -702,6 +656,9 @@ ResourceView AppView
     mutable req_drawn  : bool
     # a program run for debugging: pause attaches lldb to it
     mutable prog_debug : bool
+    # started from its code's editor (play): the pane keeps its
+    # debug bar; a dock or home launch shows none
+    mutable edited     : bool
 
     func extensions [] -> vec string
         return vec string []
@@ -716,8 +673,8 @@ ResourceView AppView
         if [ held ] return
         if [ !started ]
             if [ asking ] return
-            wa9 : cast Window [ cv.w ]
-            oa : cast orbiter [ (wa9) ? wa9.app_object : null ]
+            wa_ : cast Window [ cv.w ]
+            oa : cast orbiter [ (wa_) ? wa_.app_object : null ]
             if [ oa && oa.ask_default[ a ] ] return
             start[]
         if [ slot < 0 ] return
@@ -776,35 +733,35 @@ ResourceView AppView
             # the app's views, '|' between, three bytes a message
             el [ t == i32[ HM.views ] ]
                 if [ !views_buf ] views_buf = vec u8 []
-                vb9 : local i32 [ 3 ]
-                vb9[0] = host_pa[]
-                vb9[1] = host_pb[]
-                vb9[2] = host_pc[]
-                for [ k9: i32 0, k9 < 3, k9 += 1 ]
-                    if [ vb9[k9] != 0 ]
-                        views_buf.push[ u8 vb9[k9] ]
+                vb_ : local i32 [ 3 ]
+                vb_[0] = host_pa[]
+                vb_[1] = host_pb[]
+                vb_[2] = host_pc[]
+                for [ k_: i32 0, k_ < 3, k_ += 1 ]
+                    if [ vb_[k_] != 0 ]
+                        views_buf.push[ u8 vb_[k_] ]
                         continue
                     vt : local i8 [ 1024 ]
-                    vn9 : i32 [
+                    vn_ : i32 [
                         (views_buf.count < 1023)
                         ? i32[ views_buf.count ] : 1023 ]
-                    for [ j9: i32 0, j9 < vn9, j9 += 1 ]
-                        vt[ j9 ] = i8[ views_buf[ j9 ] ]
-                    vt[ vn9 ] = 0
+                    for [ j_: i32 0, j_ < vn_, j_ += 1 ]
+                        vt[ j_ ] = i8[ views_buf[ j_ ] ]
+                    vt[ vn_ ] = 0
                     joined : string [ @vt[0] ]
                     app_views = vec string []
                     if [ joined.count > 0 ]
                         for [ vw: string ] in joined.split[ '|' ]
                             app_views.push[ vw ]
                     views_buf = vec u8 []
-                    wv9 : cast Window [ cv.w ]
-                    if [ wv9 ] wv9.restyle = true
+                    wv_ : cast Window [ cv.w ]
+                    if [ wv_ ] wv_.restyle = true
                     break
             # the view the app shows (-1 its source)
             el [ t == i32[ HM.view_state ] ]
                 app_view_on = host_pa[]
-                ws9 : cast Window [ cv.w ]
-                if [ ws9 ] ws9.restyle = true
+                ws_ : cast Window [ cv.w ]
+                if [ ws_ ] ws_.restyle = true
             # the app's address, as its title
             el [ t == i32[ HM.address ] ]
                 if [ !addr_buf ] addr_buf = vec u8 []
@@ -812,14 +769,14 @@ ResourceView AppView
                 ab[0] = host_pa[]
                 ab[1] = host_pb[]
                 ab[2] = host_pc[]
-                for [ k9: i32 0, k9 < 3, k9 += 1 ]
-                    if [ ab[k9] != 0 ]
-                        addr_buf.push[ u8 ab[k9] ]
+                for [ k_: i32 0, k_ < 3, k_ += 1 ]
+                    if [ ab[k_] != 0 ]
+                        addr_buf.push[ u8 ab[k_] ]
                         continue
                     app_address = bytes_text[ addr_buf ]
                     addr_buf = vec u8 []
-                    wa9 : cast Window [ cv.w ]
-                    if [ wa9 ] wa9.restyle = true
+                    wa_ : cast Window [ cv.w ]
+                    if [ wa_ ] wa_.restyle = true
                     break
             # an address the app asks opened, as its keyboard comes
             el [ t == i32[ HM.open ] ]
@@ -828,9 +785,9 @@ ResourceView AppView
                 ob[0] = host_pa[]
                 ob[1] = host_pb[]
                 ob[2] = host_pc[]
-                for [ k9: i32 0, k9 < 3, k9 += 1 ]
-                    if [ ob[k9] != 0 ]
-                        open_buf.push[ u8 ob[k9] ]
+                for [ k_: i32 0, k_ < 3, k_ += 1 ]
+                    if [ ob[k_] != 0 ]
+                        open_buf.push[ u8 ob[k_] ]
                         continue
                     open_asked = bytes_text[ open_buf ]
                     open_buf = vec u8 []
@@ -842,25 +799,25 @@ ResourceView AppView
                 kb[0] = host_pa[]
                 kb[1] = host_pb[]
                 kb[2] = host_pc[]
-                for [ k9: i32 0, k9 < 3, k9 += 1 ]
-                    if [ kb[k9] != 0 ]
-                        keys_buf.push[ u8 kb[k9] ]
+                for [ k_: i32 0, k_ < 3, k_ += 1 ]
+                    if [ kb[k_] != 0 ]
+                        keys_buf.push[ u8 kb[k_] ]
                         continue
                     app_keys = bytes_text[ keys_buf ]
                     keys_buf = vec u8 []
-                    wk9 : cast Window [ cv.w ]
-                    if [ wk9 ] wk9.restyle = true
+                    wk_ : cast Window [ cv.w ]
+                    if [ wk_ ] wk_.restyle = true
                     break
             # the app's title, three bytes a message; a 0 byte ends it
             el [ t == i32[ HM.title ] ]
                 if [ !title_buf ] title_buf = vec u8 []
-                bs9 : local i32 [ 3 ]
-                bs9[0] = host_pa[]
-                bs9[1] = host_pb[]
-                bs9[2] = host_pc[]
-                for [ k9: i32 0, k9 < 3, k9 += 1 ]
-                    if [ bs9[k9] != 0 ]
-                        title_buf.push[ u8 bs9[k9] ]
+                bs_ : local i32 [ 3 ]
+                bs_[0] = host_pa[]
+                bs_[1] = host_pb[]
+                bs_[2] = host_pc[]
+                for [ k_: i32 0, k_ < 3, k_ += 1 ]
+                    if [ bs_[k_] != 0 ]
+                        title_buf.push[ u8 bs_[k_] ]
                         continue
                     # string[ @vec[0] ] is a pointer cast: copy to a
                     # local
@@ -868,13 +825,13 @@ ResourceView AppView
                     tn : i32 [
                         (title_buf.count < 1023)
                         ? i32[ title_buf.count ] : 1023 ]
-                    for [ j9: i32 0, j9 < tn, j9 += 1 ]
-                        tb[ j9 ] = i8[ title_buf[ j9 ] ]
+                    for [ j_: i32 0, j_ < tn, j_ += 1 ]
+                        tb[ j_ ] = i8[ title_buf[ j_ ] ]
                     tb[ tn ] = 0
                     app_title = string[ @tb[0] ]
                     title_buf = vec u8 []
-                    wt9 : cast Window [ cv.w ]
-                    if [ wt9 ] wt9.restyle = true
+                    wt_ : cast Window [ cv.w ]
+                    if [ wt_ ] wt_.restyle = true
                     break
         st : i32 [ host_app_state[ slot ] ]
         if [ st == 4 && !paused ]
@@ -891,39 +848,39 @@ ResourceView AppView
             fitw = 0.0
             fith = 0.0
             instr_clear[]
-            v9 : i32 [ host_app_verdict[ slot ] ]
-            if [ v9 <= -1000 ]
+            v_ : i32 [ host_app_verdict[ slot ] ]
+            if [ v_ <= -1000 ]
                 note = 'build failed'
                 # the first error in the app's own log names file and
                 # line
-                wv9 : cast Window [ cv.w ]
-                ob : cast orbiter [ (wv9) ? wv9.app_object : null ]
+                wv_ : cast Window [ cv.w ]
+                ob : cast orbiter [ (wv_) ? wv_.app_object : null ]
                 if [ ob && app_mod ]
                     bl : string ob.app_build_error[ app_mod,
                         '{install_root[]}/tmp/{app_mod}.{slot}.log' ]
                     if [ bl.count > 0 ] note = bl
-            el [ v9 < 0 ]
-                sig : i32 [ 0 - v9 ]
+            el [ v_ < 0 ]
+                sig : i32 [ 0 - v_ ]
                 note = 'crashed — signal {sig}'
-            el [ v9 > 1 ]
-                ec : i32 [ v9 - 1 ]
+            el [ v_ > 1 ]
+                ec : i32 [ v_ - 1 ]
                 note = 'exited — code {ec}'
             el
                 note = 'app exited'
         if [ ended ] return
-        g9 : i32 [ host_tex_gen[ slot, 0 ] ]
-        if [ g9 != gen && g9 > 0 ]
-            w9 : i32
-            h9 : i32
-            f9 : i32
-            fd0 : i32 [ host_tex_pull[ slot, 0, 0, @w9, @h9, @f9 ] ]
-            fd1 : i32 [ host_tex_pull[ slot, 0, 1, @w9, @h9, @f9 ] ]
+        g_ : i32 [ host_tex_gen[ slot, 0 ] ]
+        if [ g_ != gen && g_ > 0 ]
+            w_ : i32
+            h_ : i32
+            f_ : i32
+            fd0 : i32 [ host_tex_pull[ slot, 0, 0, @w_, @h_, @f_ ] ]
+            fd1 : i32 [ host_tex_pull[ slot, 0, 1, @w_, @h_, @f_ ] ]
             if [ fd0 < 0 || fd1 < 0 ]
                 fq : fopen[ '/tmp/orbiter-resz.log', 'a' ]
                 if [ fq ]
                     fprintf[ fq,
                              "PULL FAIL gen=%d->%d fd0=%d fd1=%d %dx%d slot=%d\n",
-                        gen, g9, fd0, fd1, w9, h9, slot ]
+                        gen, g_, fd0, fd1, w_, h_, slot ]
                     fclose[ fq ]
             if [ fd0 >= 0 && fd1 >= 0 ]
                 # a pair that never showed a whole frame is not kept:
@@ -941,21 +898,21 @@ ResourceView AppView
                     tex1.drop[]
                 flips_in = 0
                 last_fr  = -1
-                tex0 = cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
-                tex1 = cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
+                tex0 = cv.vk.import_shared_tex[ fd0, w_, h_, f_, cv.w ]
+                tex1 = cv.vk.import_shared_tex[ fd1, w_, h_, f_, cv.w ]
                 tex0.hold[]
                 tex1.hold[]
-                aw  = w9
-                ah  = h9
-                gen = g9
+                aw  = w_
+                ah  = h_
+                gen = g_
                 ready      = true
                 have_frame = true
                 if [ seen_us == 0 ] seen_us = epoch_micros[]
                 dw : i32 [ i32[ vw ] - i32[ awp[] ] ]
-                dh9 : i32 [ i32[ vh ] - i32[ ahp[] ] ]
+                dh_ : i32 [ i32[ vh ] - i32[ ahp[] ] ]
                 if [ dw < 0 ] dw = 0 - dw
-                if [ dh9 < 0 ] dh9 = 0 - dh9
-                if [ fade_us == 0 && dw <= 2 && dh9 <= 2 ]
+                if [ dh_ < 0 ] dh_ = 0 - dh_
+                if [ fade_us == 0 && dw <= 2 && dh_ <= 2 ]
                     fade_us = epoch_micros[]
 
         # ask what it offers. KEEP asking until it answers — the app
@@ -982,7 +939,12 @@ ResourceView AppView
                                             'aspect\n', @vb[0],
                                             512 ] > 0 ]
                             la : string [ @vb[0] ]
-                            locked = la.trim[] == '1'
+                            lw : vec string la.trim[].split[ ' ' ]
+                            locked = lw.count > 0 && lw[ 0 ] == '1'
+                            # its locked shape, unless it sent its own
+                            if [ locked && lw.count >= 3 && pic_w <= 0 ]
+                                pic_w = i32[ lw[ 1 ].integer_value[] ]
+                                pic_h = i32[ lw[ 2 ].integer_value[] ]
                         # the app enumerates its own Launch/Live members
                         pb8 : local i8 [ 16384 ]
                         if [
@@ -1005,8 +967,8 @@ ResourceView AppView
         # the app's sound rides its slot's ring: into the recording, if
         # one is on
         if [ started && slot >= 0 && !held && !ended ]
-            pa9 : Window [ cv.w ]
-            if [ pa9 ] pa9.record_pull[ slot ]
+            pa_ : Window [ cv.w ]
+            if [ pa_ ] pa_.record_pull[ slot ]
         # the app's live props, re-read twice a second: a value the app
         # changed itself (esc leaving full-screen) shows here without a
         # round trip. gated on the process, not on a frame: a windowed
@@ -1018,13 +980,13 @@ ResourceView AppView
             pk : i64 [ epoch_millis[] ]
             if [ props_ak == 0 || pk - props_ak > 500 ]
                 props_ak = pk
-                pb9 : local i8 [ 16384 ]
+                pb_ : local i8 [ 16384 ]
                 if [
                     agent_sock_ask_block[ sock_name[].chars, 'props\n',
-                                          @pb9[0], 16384 ] > 0 ]
-                    ps9 : string [ @pb9[0] ]
-                    pt9 : string ps9.trim[]
-                    if [ pt9 && pt9.count > 0 ] props = pt9
+                                          @pb_[0], 16384 ] > 0 ]
+                    ps_ : string [ @pb_[0] ]
+                    pt_ : string ps_.trim[]
+                    if [ pt_ && pt_.count > 0 ] props = pt_
                     # the app's display is the truth: a change it made
                     # (esc, its own code) is followed here, unless the
                     # user's pick is in flight
@@ -1058,14 +1020,14 @@ ResourceView AppView
             dbg_nh = nh
             dbg_aw = aw
             dbg_ah = ah
-            fz9 : fopen[ '/tmp/orbiter-resz.log', 'a' ]
-            if [ fz9 ]
-                fprintf[ fz9,
+            fz_ : fopen[ '/tmp/orbiter-resz.log', 'a' ]
+            if [ fz_ ]
+                fprintf[ fz_,
                          "RESZ view=%dx%d actual=%dx%d req=%dx%d pend=%dx%d ready=%d slot=%d gen=%d shared=%d\n",
                     nw, nh, aw, ah, req_w, req_h, pend_w, pend_h,
                     (ready) ? 1 : 0, slot,
                     gen, host_tex_gen[ slot, 0 ] ]
-                fclose[ fz9 ]
+                fclose[ fz_ ]
         # embed (and a file viewer, which always fills its pane) gives
         # the app the editor's whole area: pip, window and screen never
         # resize
@@ -1116,16 +1078,16 @@ ResourceView AppView
         if [ !instr_side ] instr_side = map i32 [string] []
         if [ !instr_logs ] instr_logs = map i32 [string] []
         if [ !s ] return
-        t9 : string s.trim[]
-        if [ t9.count == 0 ] return
-        ps : t9.split[ ' ' ]
+        t_ : string s.trim[]
+        if [ t_.count == 0 ] return
+        ps : t_.split[ ' ' ]
         for [ i: i32 0, i < ps.count, i += 1 ]
-            f9 : ps[i].split[ ':' ]
-            if [ f9.count < 3 ] continue
-            nm : string f9[0]
+            f_ : ps[i].split[ ':' ]
+            if [ f_.count < 3 ] continue
+            nm : string f_[0]
             instr_live.push[ nm ]
-            instr_side[ nm ] = i32[ f9[1].integer_value[] ]
-            instr_logs[ nm ] = i32[ f9[2].integer_value[] ]
+            instr_side[ nm ] = i32[ f_[1].integer_value[] ]
+            instr_logs[ nm ] = i32[ f_[2].integer_value[] ]
 
     # a missing key is not a zero: reading one dereferences null
     func instr_num [ m: map i32 [string], nm: string, dflt: i32 ] -> i32
@@ -1197,28 +1159,28 @@ ResourceView AppView
             nm : string instr_live[i]
             sd : i32 [ instr_num[ instr_side, nm, -1 ] ]
             if [ sd < 2 ] continue
-            g9 : i32 [ host_tex_gen[ slot, sd ] ]
-            if [ g9 == instr_num[ instr_gen, nm, -1 ] ] continue
-            if [ g9 <= 0 ]
+            g_ : i32 [ host_tex_gen[ slot, sd ] ]
+            if [ g_ == instr_num[ instr_gen, nm, -1 ] ] continue
+            if [ g_ <= 0 ]
                 instr_gen[ nm ] = 0
                 continue
-            w9 : i32
-            h9 : i32
-            f9 : i32
-            fd0 : i32 [ host_tex_pull[ slot, sd, 0, @w9, @h9, @f9 ] ]
-            fd1 : i32 [ host_tex_pull[ slot, sd, 1, @w9, @h9, @f9 ] ]
+            w_ : i32
+            h_ : i32
+            f_ : i32
+            fd0 : i32 [ host_tex_pull[ slot, sd, 0, @w_, @h_, @f_ ] ]
+            fd1 : i32 [ host_tex_pull[ slot, sd, 1, @w_, @h_, @f_ ] ]
             if [ fd0 < 0 || fd1 < 0 ] continue
             e0 : itex0[ nm ]
             if [ e0 ]
                 e0.drop[]
                 itex1[ nm ].drop[]
-            t0 : cv.vk.import_shared_tex[ fd0, w9, h9, f9, cv.w ]
-            t1 : cv.vk.import_shared_tex[ fd1, w9, h9, f9, cv.w ]
+            t0 : cv.vk.import_shared_tex[ fd0, w_, h_, f_, cv.w ]
+            t1 : cv.vk.import_shared_tex[ fd1, w_, h_, f_, cv.w ]
             t0.hold[]
             t1.hold[]
             itex0[ nm ] = t0
             itex1[ nm ] = t1
-            instr_gen[ nm ] = g9
+            instr_gen[ nm ] = g_
 
     # the completed frame of one instrument, or null when it has no view
     func instr_front [ nm: string ] -> Texture
@@ -1336,20 +1298,20 @@ ResourceView AppView
         if [ fr != pane_seen ]
             pane_seen  = fr
             pane_flip += 1
-        ps9 : i64 [ epoch_millis[] / 1000 ]
-        if [ ps9 != pane_sec ]
-            pw9 : Window [ cv.w ]
-            if [ pane_sec != 0 && pw9 && pw9.stats ]
+        ps_ : i64 [ epoch_millis[] / 1000 ]
+        if [ ps_ != pane_sec ]
+            pw_ : Window [ cv.w ]
+            if [ pane_sec != 0 && pw_ && pw_.stats ]
                 log 'PANE slot={slot} req={pane_req} flips={pane_flip}'
                 # the app's own counters beside ours: a leak shows in
                 # either
-                sb9 : local i8 [ 8192 ]
+                sb_ : local i8 [ 8192 ]
                 if [
                     agent_sock_ask[ sock_name[].chars, 'stats\n',
-                                    @sb9[0], 8192 ] > 0 ]
-                    sl9 : string [ @sb9[0] ]
-                    log 'APP {app_mod}-{slot}: {sl9.trim[]}'
-            pane_sec  = ps9
+                                    @sb_[0], 8192 ] > 0 ]
+                    sl_ : string [ @sb_[0] ]
+                    log 'APP {app_mod}-{slot}: {sl_.trim[]}'
+            pane_sec  = ps_
             pane_req  = 0
             pane_flip = 0
 
@@ -1370,6 +1332,20 @@ ResourceView AppView
 
     func building [] -> bool
         return slot >= 0 && host_app_state[ slot ] == 1
+
+    # a module really compiled, not only found up to date
+    func compiled [] -> bool
+        if [ did_build ] return true
+        ms : i64 epoch_millis[]
+        if [ ms - build_ms < 250 ] return false
+        build_ms = ms
+        lp : path '{install_root[]}/tmp/{app_mod}.{slot}.log'
+        if [ !lp.exists[] ] return false
+        body : string lp.load[ typeid[string], null ]
+        if [ !body ] return false
+        did_build = body.index_of[ '] compiling ' ] >= 0
+            || body.index_of[ '] linking ' ] >= 0
+        return did_build
 
     func build_step [] -> string
         ms : i64 epoch_millis[]
@@ -1446,9 +1422,9 @@ ResourceView AppView
         return ''
 
     func overlay [ cv: Canvas, bounds: rect ]
-        st9 : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
+        st_ : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
         msg : string [
-            (st9 == 1) ? '{build_step[]}…'
+            (st_ == 1) ? '{build_step[]}…'
             : 'starting {app_mod}…' ]
         if [ ended ]
             msg = (failed[]) ? '{note} — F5 or play to run again'
@@ -1466,39 +1442,39 @@ ResourceView AppView
             null, false ]
         cv.paint[]
         if [ !ended && !paused && app_mod ]
-            lp9 : string '/tmp/{app_mod}.log'
-            fp9 : fopen[ lp9.chars, 'rb' ]
-            if [ fp9 ]
-                fseek[ fp9, 0, SEEK_END ]
-                sz : i32 [ ftell[ fp9 ] ]
+            lp_ : string '/tmp/{app_mod}.log'
+            fp_ : fopen[ lp_.chars, 'rb' ]
+            if [ fp_ ]
+                fseek[ fp_, 0, SEEK_END ]
+                sz : i32 [ ftell[ fp_ ] ]
                 back : i32 [ (sz < 4000) ? sz : 4000 ]
-                fseek[ fp9, sz - back, SEEK_SET ]
-                b9 : local i8 [ 4096 ]
-                n9 : i32 [ fread[ @b9[0], 1, back, fp9 ] ]
-                fclose[ fp9 ]
-                if [ n9 > 0 ]
-                    b9[n9] = 0
-                    txt9   : string [ @b9[0] ]
-                    lines9 : txt9.split[ '\n' ]
+                fseek[ fp_, sz - back, SEEK_SET ]
+                b_ : local i8 [ 4096 ]
+                n_ : i32 [ fread[ @b_[0], 1, back, fp_ ] ]
+                fclose[ fp_ ]
+                if [ n_ > 0 ]
+                    b_[n_] = 0
+                    txt_   : string [ @b_[0] ]
+                    lines_ : txt_.split[ '\n' ]
                     lh  : f32 [ 16.0 ]
                     maxn : i32 [ (bounds.h - 56.0) / lh ]
                     st0  : i32 [
-                        (lines9.count > maxn) ? lines9.count - maxn
+                        (lines_.count > maxn) ? lines_.count - maxn
                         : 0 ]
                     cv.font_size[ 12 ]
                     cv.fill_color[ '#8899aa' ]
-                    y9 : f32 [ bounds.y + 44.0 ]
-                    for [ i: i32 st0, i < lines9.count, i += 1 ]
-                        ln : string lines9[ i ]
+                    y_ : f32 [ bounds.y + 44.0 ]
+                    for [ i: i32 st0, i < lines_.count, i += 1 ]
+                        ln : string lines_[ i ]
                         if [ ln && ln.count > 0 ]
                             cv.draw_text[ ln,
                                           rect [ x: bounds.x + 16.0,
-                                                 y: y9,
+                                                 y: y_,
                                                  w: bounds.w - 32.0,
                                                  h: lh ],
                                 vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
                                 Overflow.clip, null, false ]
-                        y9 += lh
+                        y_ += lh
                     cv.paint[]
 
     func module_name [] -> string
@@ -1509,6 +1485,8 @@ ResourceView AppView
     func start []
         started = true
         lang_told = -1
+        did_build = false
+        build_ms  = 0
         mod : string module_name[]
         # the host's launch flags (silver-host HOST_APP_*): 1 stops the
         # app for the debugger, a debug launch only (a plain run is
@@ -1518,21 +1496,26 @@ ResourceView AppView
         hz : i32 [ (host_hz > 0) ? host_hz : 60 ]
         fl : i32 [
             ((debug_build) ? 1 : 0) | ((clean_build) ? 2 : 0) | ((debug_build) ? 4 : 0) |
-            ((display & 3) << 3) | ((hz & 255) << 8) | ((cov_build) ? (1 << 16) : 0) ]
+            ((display & 3) << 3) | ((hz & 255) << 8) | ((cov_build) ? (1 << 16) : 0)
+            | ((verbose_build) ? (1 << 17) : 0) ]
         # flags BEFORE the doc: Au_with_cstrs stops parsing at the first
         # positional, so a trailing flag would never reach the app's
         # schema
-        ma9 : string [
+        ma_ : string [
             (module_args && module_args.count > 0) ? ' {module_args}'
             : '' ]
         # no size of ours: the app starts at its own, the shape it keeps
         # a module outside silver's folder goes by its folder's path
-        rt9 : path.path_startup[]
-        dir9 : path src.directory[]
-        bm9 : string mod
-        if [ '{dir9.filename[]}' == mod && '{dir9}' != '{rt9}/{mod}' ]
-            bm9 = '{dir9}'
-        req : string [ (doc) ? '{bm9}{ma9} {doc}' : '{bm9}{ma9}' ]
+        rt_ : path.path_startup[]
+        dir_ : path src.directory[]
+        bm_ : string mod
+        if [ '{dir_.filename[]}' == mod && '{dir_}' != '{rt_}/{mod}' ]
+            bm_ = '{dir_}'
+        # an app with an opener launch prop takes orbiter's socket:
+        # its picks come back as `app nav` lines
+        if [ ma_.index_of[ '--opener' ] < 0 && takes_opener[ mod ] ]
+            ma_ = ' --opener {opener_sock[]}{ma_}'
+        req : string [ (doc) ? '{bm_}{ma_} {doc}' : '{bm_}{ma_}' ]
         # a fresh process knows nothing of the last one's resize
         req_w  = 0
         req_h  = 0
@@ -1550,6 +1533,24 @@ ResourceView AppView
         ir : path install_root[]
         cmd = 'tail -n +1 -F {ir}/tmp/{mod}.{slot}.log'
 
+    # the module declares an opener launch prop of its own
+    func takes_opener [ mod: string ] -> bool
+        agi : path '{install_root[]}/export/silver-{mod}.props.agi'
+        if [ !agi.exists[] ] return false
+        sp : string agi.load[ typeid[string], null ]
+        if [ !sp || sp.count == 0 ] return false
+        lp : LaunchProps []
+        Au.parse_agi[ null, sp.chars, lp ]
+        if [ !lp.props ] return false
+        for [ p: Prop ] in lp.props
+            if [ p.ident == 'opener' && p.module == mod ] return true
+        return false
+
+    # orbiter's own socket by its path: the app's view shares it
+    func opener_sock [] -> string
+        rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+        return (rt) ? '{string [ rt ]}/trinity-orbiter.sock' : ''
+
     # hosted apps open one socket per instance:
     # trinity-<mod>-<slot>.sock
     func sock_name [] -> string
@@ -1559,11 +1560,11 @@ ResourceView AppView
         return 'ed:{app_mod}'
 
     func on_key [ ev: Event ]
-        k9 : i32 [ ev.key.unicode ]
-        if [ ev.key.state && k9 == 294 ]
+        k_ : i32 [ ev.key.unicode ]
+        if [ ev.key.state && k_ == 294 ]
             restart[ ev.key.shift ]
             return
-        if [ ev.key.state && k9 == 297 ]
+        if [ ev.key.state && k_ == 297 ]
             pause_toggle[]
             return
         if [ ended || paused || slot < 0 ] return
@@ -1617,10 +1618,10 @@ ResourceView AppView
         if [ !ready || slot < 0 ] return false
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        r9 : view_rect_at[ px, py ]
-        if [ r9.w <= 0.0 ] return false
-        bx : f32 [ (px - r9.x) / r9.w * awp[] ]
-        by : f32 [ (py - r9.y) / r9.h * ahp[] ]
+        r_ : view_rect_at[ px, py ]
+        if [ r_.w <= 0.0 ] return false
+        bx : f32 [ (px - r_.x) / r_.w * awp[] ]
+        by : f32 [ (py - r_.y) / r_.h * ahp[] ]
         if [ bx < 0.0 || by < 0.0 || bx >= awp[] || by >= ahp[] ]
             return false
         host_post2[ slot, 1, i32[ HM.press ], i32[ bx ], i32[ by ],
@@ -1633,10 +1634,10 @@ ResourceView AppView
         if [ ended || !ready || slot < 0 ] return
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        r9 : view_rect_at[ px, py ]
-        if [ r9.w <= 0.0 ] return
-        bx : f32 [ (px - r9.x) / r9.w * awp[] ]
-        by : f32 [ (py - r9.y) / r9.h * ahp[] ]
+        r_ : view_rect_at[ px, py ]
+        if [ r_.w <= 0.0 ] return
+        bx : f32 [ (px - r_.x) / r_.w * awp[] ]
+        by : f32 [ (py - r_.y) / r_.h * ahp[] ]
         host_post2[ slot, 1, i32[ HM.release ], i32[ bx ], i32[ by ],
                     ev.mouse.button ]
 
@@ -1644,10 +1645,10 @@ ResourceView AppView
         if [ ended || !ready || slot < 0 ] return false
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        r9 : view_rect_at[ px, py ]
-        if [ r9.w <= 0.0 ] return false
-        bx : f32 [ (px - r9.x) / r9.w * awp[] ]
-        by : f32 [ (py - r9.y) / r9.h * ahp[] ]
+        r_ : view_rect_at[ px, py ]
+        if [ r_.w <= 0.0 ] return false
+        bx : f32 [ (px - r_.x) / r_.w * awp[] ]
+        by : f32 [ (py - r_.y) / r_.h * ahp[] ]
         if [ bx < 0.0 || by < 0.0 || bx >= awp[] || by >= ahp[] ]
             return false
         host_post2[ slot, 1, i32[ HM.move ], i32[ bx ], i32[ by ], 0 ]
@@ -1657,10 +1658,10 @@ ResourceView AppView
     # the app's lock centre
     func view_lock_move [ ev: Event ]
         if [ ended || !ready || slot < 0 ] return
-        r9 : view_rect[]
-        if [ r9.w <= 0.0 ] return
-        lock_ax += ev.mouse.delta.x * awp[] / r9.w
-        lock_ay += ev.mouse.delta.y * ahp[] / r9.h
+        r_ : view_rect[]
+        if [ r_.w <= 0.0 ] return
+        lock_ax += ev.mouse.delta.x * awp[] / r_.w
+        lock_ay += ev.mouse.delta.y * ahp[] / r_.h
         dx : i32 [ lock_ax ]
         dy : i32 [ lock_ay ]
         if [ dx == 0 && dy == 0 ] return
@@ -1673,10 +1674,10 @@ ResourceView AppView
         if [ ended || !ready || slot < 0 ] return false
         px : f32 [ ev.mouse.pos.x - vsx ]
         py : f32 [ ev.mouse.pos.y - vsy ]
-        r9 : view_rect_at[ px, py ]
-        if [ r9.w <= 0.0 ] return false
-        bx : f32 [ (px - r9.x) / r9.w * awp[] ]
-        by : f32 [ (py - r9.y) / r9.h * ahp[] ]
+        r_ : view_rect_at[ px, py ]
+        if [ r_.w <= 0.0 ] return false
+        bx : f32 [ (px - r_.x) / r_.w * awp[] ]
+        by : f32 [ (py - r_.y) / r_.h * ahp[] ]
         if [ bx < 0.0 || by < 0.0 || bx >= awp[] || by >= ahp[] ]
             return false
         mods : i32 [ 0 ]
@@ -1739,10 +1740,10 @@ ResourceView AppView
             if [ slot > 0 ]
                 host_post2[ slot, 1, i32[ HM.close ], 0, 0, 0 ]
             if [ dbg && slot > 0 ]
-                pd9 : i32 [ host_app_pid[ slot ] ]
-                for [ i9: i32 0,
-                      i9 < 100 && pd9 > 0 && host_pid_alive[ pd9 ] != 0,
-                      i9 += 1 ]
+                pd_ : i32 [ host_app_pid[ slot ] ]
+                for [ i_: i32 0,
+                      i_ < 100 && pd_ > 0 && host_pid_alive[ pd_ ] != 0,
+                      i_ += 1 ]
                     usleep[ 10000 ]
             el
                 host_app_stop[ slot ]
@@ -2168,17 +2169,17 @@ Layer EditorLayer
         for [ ri: i32 0, ri < nrg, ri += 1 ]
             cr : ColorRegion editor.line_reg[ msl, ri ]
             c09 : i32 [ cr.col ]
-            sl9 : i32 [ cr.len ]
-            if [ c09 < 0 || sl9 <= 0 ] continue
-            if [ c09 + sl9 > ln.count ] continue
-            w9 : ln.mid[ c09, sl9 ]
+            sl_ : i32 [ cr.len ]
+            if [ c09 < 0 || sl_ <= 0 ] continue
+            if [ c09 + sl_ > ln.count ] continue
+            w_ : ln.mid[ c09, sl_ ]
             # the map already resolved this token. a module
             # name is the one case it cannot -- that is a file
-            ok9 : bool [ cr.dsrc && cr.dline > 0 ]
-            if [ cr.kind == 14 ] ok9 = editor.module_path[ w9 ] != null
-            if [ !ok9 ] continue
-            tx9 : f32 [ editor.col_x[ ln, c09 ] ]
-            ww : f32 [ editor.col_x[ ln, c09 + sl9 ] - tx9 ]
+            ok_ : bool [ cr.dsrc && cr.dline > 0 ]
+            if [ cr.kind == 14 ] ok_ = editor.module_path[ w_ ] != null
+            if [ !ok_ ] continue
+            tx_ : f32 [ editor.col_x[ ln, c09 ] ]
+            ww : f32 [ editor.col_x[ ln, c09 + sl_ ] - tx_ ]
             cv.save[ ]
             cv.rounded[ 3.0, 3.0, 3.0, 3.0 ]
             # faint at rest; the pointer's light brings the border and
@@ -2191,7 +2192,7 @@ Layer EditorLayer
             editor.ux.near_light_on[ cv, editor, 0.0, 0.0 ]
             cv.near_style[ 1.0, 3.0, rgba['#8cf'],
                            editor.ux.near_y_fade ]
-            cv.rect_to[ x0 + tx9 - 1.0, y + 1.0, ww + 2.0, lh - 2.0 ]
+            cv.rect_to[ x0 + tx_ - 1.0, y + 1.0, ww + 2.0, lh - 2.0 ]
             cv.paint[ ]
             cv.restore[ ]
 
@@ -2673,16 +2674,16 @@ Layer EditorLayer
                         lh - 2.0 ]
             cv.paint[ ]
             # coverage: a gutter dot (git owns the fill); missed tints
-            ch9 : i64 [
+            ch_ : i64 [
                 (!showing && editor.cov_hits && bsl >= 0 && bsl < editor.cov_hits.count) ? editor.cov_hits[ bsl ] : -1 ]
-            if [ ch9 >= 0 ]
-                if [ ch9 == 0 ]
+            if [ ch_ >= 0 ]
+                if [ ch_ == 0 ]
                     cv.fill_color[ rgba['#f8514914'] ]
                     cv.rect_to[ bounds.x + gut_w, yg,
                                 bounds.w - rin - gut_w - 1.0, lh ]
                     cv.paint[ ]
                 cv.fill_color[
-                    (ch9 > 0) ? rgba['#56d364'] : rgba['#f85149'] ]
+                    (ch_ > 0) ? rgba['#56d364'] : rgba['#f85149'] ]
                 cv.arc[ bounds.x + 9.0, yg + lh * 0.5, 3.0, 0.0,
                         6.2832 ]
                 cv.paint[ ]
@@ -2694,18 +2695,18 @@ Layer EditorLayer
                 && editor.hunks && rnum > 0 ]
                 hk : i32 [ editor.hunk_at[ rnum - 1 ] ]
                 if [ hk >= 0 ]
-                    kd9 : i32 [ editor.hunks[ hk * 3 + 2 ] ]
+                    kd_ : i32 [ editor.hunks[ hk * 3 + 2 ] ]
                     # three colours, one shade each: added green,
                     # changed blue, removed red (the rails and ghost
                     # rows use the same) the removal edge brightens
                     # under the pointer on either row it straddles: a
                     # press there shows the removed lines
-                    hvr : bool [ kd9 == 3 && editor.hover_edge
+                    hvr : bool [ kd_ == 3 && editor.hover_edge
                         && (editor.hover_line == li || editor.hover_line == li - 1) ]
                     cv.fill_color[
-                        (kd9 == 1) ? rgba['#7fd18b66']
-                        : ((kd9 == 2) ? rgba['#6cb6ff66'] : ((hvr) ? rgba['#ffb4b4'] : rgba['#ff6a6a'])) ]
-                    if [ kd9 == 3 ]
+                        (kd_ == 1) ? rgba['#7fd18b66']
+                        : ((kd_ == 2) ? rgba['#6cb6ff66'] : ((hvr) ? rgba['#ffb4b4'] : rgba['#ff6a6a'])) ]
+                    if [ kd_ == 3 ]
                         cv.rect_to[ bounds.x + 2.0,
                                     yg - ((hvr) ? 1.5 : 1.0),
                                     gut_w - 4.0, (hvr) ? 3.0 : 2.0 ]
@@ -3493,13 +3494,13 @@ Layer EditorLayer
         # pointer, and fading out as the thumb nears
         # (gone 8px from its edge, full 16px away). the thumb paints
         # over
-        sb9 : ScrollLayer (editor.layers) ? cast ScrollLayer [
+        sb_ : ScrollLayer (editor.layers) ? cast ScrollLayer [
             editor.layers['scrollbar'] ] : null
         if [
-            sb9 && sb9.bounds && !showing
+            sb_ && sb_.bounds && !showing
             && !editor.no_scroll && editor.content_h > bounds.h ]
-            top9 : f32 [ bounds.y + 8.0 ]
-            vis : f32 [ sb9.bounds.y + sb9.bounds.h - top9 ]
+            top_ : f32 [ bounds.y + 8.0 ]
+            vis : f32 [ sb_.bounds.y + sb_.bounds.h - top_ ]
             tot : f32 [ editor.content_h ]
             if [
                 vis >= 32.0 && tot > 0.0 && !editor.diff_kinds
@@ -3508,61 +3509,61 @@ Layer EditorLayer
                 # does
                 prox : f32 [ 0.0 ]
                 if [ editor.hovered ]
-                    fr9 : f32 [
+                    fr_ : f32 [
                         (1.0 - editor.cursor_pos.x) * editor.bounds.w ]
-                    prox = clamp[ 1.0 - fr9 / 90.0, 0.0, 1.0 ]
-                if [ sb9.active ] prox = 1.0
-                effw : f32 [ sb9.thumb_w * (1.0 + prox) ]
-                cx9   : f32 [
-                    sb9.bounds.x + sb9.bounds.w - sb9.thumb_w ]
-                thy  : f32 [ top9 + sb9.thumb_y_px ]
-                thb  : f32 [ thy + sb9.thumb_h_px ]
+                    prox = clamp[ 1.0 - fr_ / 90.0, 0.0, 1.0 ]
+                if [ sb_.active ] prox = 1.0
+                effw : f32 [ sb_.thumb_w * (1.0 + prox) ]
+                cx_   : f32 [
+                    sb_.bounds.x + sb_.bounds.w - sb_.thumb_w ]
+                thy  : f32 [ top_ + sb_.thumb_y_px ]
+                thb  : f32 [ thy + sb_.thumb_h_px ]
                 cv.save[ ]
                 cv.stroke_width[ 0.0 ]
-                nh9 : i32 [ i32[ editor.hunks.count ] / 3 ]
-                for [ i9: i32 0, i9 < nh9, i9 += 1 ]
-                    r09 : i32 [ editor.hunk_view_row[ i9 ] ]
-                    rn9 : i32 [ editor.hunks[ i9 * 3 + 1 ] ]
-                    kd8 : i32 [ editor.hunks[ i9 * 3 + 2 ] ]
+                nh_ : i32 [ i32[ editor.hunks.count ] / 3 ]
+                for [ i_: i32 0, i_ < nh_, i_ += 1 ]
+                    r09 : i32 [ editor.hunk_view_row[ i_ ] ]
+                    rn_ : i32 [ editor.hunks[ i_ * 3 + 1 ] ]
+                    kd8 : i32 [ editor.hunks[ i_ * 3 + 2 ] ]
                     # the run shown as ghost rows spans them
-                    if [ i9 == editor.ghost_hunk && editor.ghost_lines ]
-                        rn9 = i32[ editor.ghost_lines.count ]
-                    ry9 : f32 [ top9 + f32[ r09 ] * lh / tot * vis ]
-                    rh9 : f32 [ f32[ rn9 ] * lh / tot * vis ]
-                    if [ rh9 < 6.0 ] rh9 = 6.0
+                    if [ i_ == editor.ghost_hunk && editor.ghost_lines ]
+                        rn_ = i32[ editor.ghost_lines.count ]
+                    ry_ : f32 [ top_ + f32[ r09 ] * lh / tot * vis ]
+                    rh_ : f32 [ f32[ rn_ ] * lh / tot * vis ]
+                    if [ rh_ < 6.0 ] rh_ = 6.0
                     # distance to the thumb's nearest edge, 0 when under
                     # it
-                    d9 : f32 [ 0.0 ]
-                    if [ ry9 + rh9 <= thy ] d9 = thy - (ry9 + rh9)
-                    el [ ry9 >= thb ]      d9 = ry9 - thb
-                    fa : f32 [ clamp[ (d9 - 8.0) / 8.0, 0.0, 1.0 ] ]
+                    d_ : f32 [ 0.0 ]
+                    if [ ry_ + rh_ <= thy ] d_ = thy - (ry_ + rh_)
+                    el [ ry_ >= thb ]      d_ = ry_ - thb
+                    fa : f32 [ clamp[ (d_ - 8.0) / 8.0, 0.0, 1.0 ] ]
                     if [ fa <= 0.0 ] continue
-                    hv : bool [ editor.rail_hover1 == i9 + 1 ]
-                    al9 : f32 [ ((hv) ? 1.0 : 0.5) * fa ]
+                    hv : bool [ editor.rail_hover1 == i_ + 1 ]
+                    al_ : f32 [ ((hv) ? 1.0 : 0.5) * fa ]
                     # the rail keeps the thumb's rest width until the
                     # pointer is on it; then it fills the track. the hit
                     # box is the track's width throughout
-                    rw9 : f32 [ ((hv) ? effw : sb9.thumb_w) - 2.0 ]
-                    rx9 : f32 [ cx9 - rw9 * 0.5 ]
+                    rw_ : f32 [ ((hv) ? effw : sb_.thumb_w) - 2.0 ]
+                    rx_ : f32 [ cx_ - rw_ * 0.5 ]
                     # square under the pointer, as the thumb goes
-                    rr9 : f32 [ (hv) ? 0.0 : 4.0 ]
+                    rr_ : f32 [ (hv) ? 0.0 : 4.0 ]
                     if [ kd8 == 1 ]
                         cv.fill_color[
                             rgba[ r: 0.498, g: 0.820, b: 0.545,
-                                  a: al9 ] ]
+                                  a: al_ ] ]
                     el [ kd8 == 2 ]
                         cv.fill_color[
                             rgba[ r: 0.424, g: 0.714, b: 1.0,
-                                  a: al9 ] ]
+                                  a: al_ ] ]
                     el
                         cv.fill_color[
                             rgba[ r: 1.0,   g: 0.416, b: 0.416,
-                                  a: al9 ] ]
-                    cv.rounded_rect[ rx9, ry9, rw9, rh9, rr9, rr9, rr9,
-                                     rr9 ]
+                                  a: al_ ] ]
+                    cv.rounded_rect[ rx_, ry_, rw_, rh_, rr_, rr_, rr_,
+                                     rr_ ]
                     cv.paint[ ]
                 cv.restore[ ]
-                peek_draw[ cv, editor, cx9 - sb9.thumb_w - 8.0, lh,
+                peek_draw[ cv, editor, cx_ - sb_.thumb_w - 8.0, lh,
                            cw_tm.w, code_fs ]
         # this file's compile error, pinned along the foot as the scope
         # headers are along the top: its line in the gutter, a click
@@ -3636,9 +3637,9 @@ element ToolRail : Toolbar
             tnm : string (bas == 1 && ti == 0) ? editor.nav_default : editor.nav_tools[ ti - bas ]
             tyy : f32 [ top + editor.tool_y[ ti, bounds.h ] ]
             # the view you are IN reads as a border, not a hover tint
-            act9 : bool [ editor.view_name && editor.view_name.count > 0
+            act_ : bool [ editor.view_name && editor.view_name.count > 0
                           && editor.view_name == tnm ]
-            if [ act9 ]
+            if [ act_ ]
                 cv.fill_color  [ rgba['#6cb6ff33'] ]
                 cv.stroke_color[ rgba['#8fd0ff'] ]
             el [ ti == hov ]
@@ -3647,7 +3648,7 @@ element ToolRail : Toolbar
             el
                 cv.fill_color  [ rgba['#10142088'] ]
                 cv.stroke_color[ rgba['#fff3'] ]
-            cv.stroke_width[ (act9) ? 2.0 : 1.0 ]
+            cv.stroke_width[ (act_) ? 2.0 : 1.0 ]
             cv.rounded_rect[ dxx, tyy, 60.0, 64.0, 8.0, 8.0, 8.0, 8.0 ]
             cv.paint       [ ]
             cv.stroke_width[ 0.0 ]
@@ -3663,7 +3664,7 @@ element ToolRail : Toolbar
             if [ tico ]
                 # selected = orangish white; resting = off purple white
                 cv.svg_override[
-                    (act9) ? rgba['#ffe6d2']
+                    (act_) ? rgba['#ffe6d2']
                     : ((ti == hov) ? rgba['#ffffff'] : rgba['#cfc6e8']) ]
                 cv.draw_svg[ tico, dxx + 12.0, tyy + 6.0, 36.0, 36.0 ]
                 cv.svg_override_off[]
@@ -3956,8 +3957,8 @@ Control Editor
             if [ sv.name[0] != 97 ] continue
             if [ !sv.children ] continue
             for [ ci: i32 0, ci < sv.children.count, ci += 1 ]
-                cv9 : variable sv.children[ci]
-                if [ line_declares[ line, bli, cv9 ] ] return cv9
+                cv_ : variable sv.children[ci]
+                if [ line_declares[ line, bli, cv_ ] ] return cv_
         return null
 
     # the name a source line declares: a function's after `func`, a
@@ -4038,40 +4039,40 @@ Control Editor
             if [
                 sv.has_kids
                 && (!sv.children || sv.children.count == 0) ]
-                d9 : dbg active_dbg[]
-                if [ d9 ] sv.children = d9.read_children[ sv.path ]
+                d_ : dbg active_dbg[]
+                if [ d_ ] sv.children = d_.read_children[ sv.path ]
             if [ !sv.children ] continue
             for [ ci: i32 0, ci < sv.children.count, ci += 1 ]
-                cv9 : variable sv.children[ci]
-                if [ cv9 && cv9.name && cv9.name.count == nm.count && cv9.name == nm ]
-                    return cv9
+                cv_ : variable sv.children[ci]
+                if [ cv_ && cv_.name && cv_.name.count == nm.count && cv_.name == nm ]
+                    return cv_
         return null
 
     # one expansion open at a time, unless it nests inside the open one.
     # the chain is outermost-first; esc collapses the innermost
-    func expand_only [ v9: variable ]
-        if [ !v9 ] return
+    func expand_only [ v_: variable ]
+        if [ !v_ ] return
         # children are read from lldb only now, on the click
-        if [ v9.has_kids && (!v9.children || v9.children.count == 0) ]
-            d9 : dbg active_dbg[]
-            if [ d9 ] v9.children = d9.read_children[ v9.path ]
-        log 'expand {v9.path} kids={v9.has_kids} children={(v9.children) ? v9.children.count : 0}'
+        if [ v_.has_kids && (!v_.children || v_.children.count == 0) ]
+            d_ : dbg active_dbg[]
+            if [ d_ ] v_.children = d_.read_children[ v_.path ]
+        log 'expand {v_.path} kids={v_.has_kids} children={(v_.children) ? v_.children.count : 0}'
         if [ !open_chain ] open_chain = vec Au []
         # the chain stays open down to the ancestor that owns the
         # clicked row; only what hangs below that ancestor closes (a
         # sibling swaps in)
         keep : i32 [ -1 ]
-        for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
-            ov : variable open_chain[i9]
+        for [ i_: i32 0, i_ < open_chain.count, i_ += 1 ]
+            ov : variable open_chain[i_]
             if [ !ov || !ov.children ] continue
             for [ ci: i32 0, ci < ov.children.count, ci += 1 ]
-                if [ ov.children[ci] == v9 ] keep = i9
-        for [ i9: i32 open_chain.count - 1, i9 > keep, i9 -= 1 ]
-            ov : variable open_chain[i9]
+                if [ ov.children[ci] == v_ ] keep = i_
+        for [ i_: i32 open_chain.count - 1, i_ > keep, i_ -= 1 ]
+            ov : variable open_chain[i_]
             if [ ov ] ov.expanded = false
-            open_chain.remove[ i9 ]
-        v9.expanded = true
-        open_chain.push[ v9 ]
+            open_chain.remove[ i_ ]
+        v_.expanded = true
+        open_chain.push[ v_ ]
 
     func collapse_last [] -> bool
         if [ !open_chain || open_chain.count == 0 ] return false
@@ -4081,16 +4082,16 @@ Control Editor
         return true
 
     # collapse v and anything the chain opened under it
-    func collapse_from [ v9: variable ]
+    func collapse_from [ v_: variable ]
         if [ !open_chain ] return
-        for [ i9: i32 0, i9 < open_chain.count, i9 += 1 ]
-            if [ open_chain[i9] == v9 ]
-                while [ open_chain.count > i9 ]
+        for [ i_: i32 0, i_ < open_chain.count, i_ += 1 ]
+            if [ open_chain[i_] == v_ ]
+                while [ open_chain.count > i_ ]
                     ov : variable open_chain[ open_chain.count - 1 ]
                     if [ ov ] ov.expanded = false
                     open_chain.remove[ open_chain.count - 1 ]
                 return
-        v9.expanded = false
+        v_.expanded = false
 
     # the line AS DRAWN: a debug annotation takes the comment's place,
     # so the comment is never rendered. hash, measure and draw must all
@@ -4158,9 +4159,9 @@ Control Editor
             if [ outline && !outline_line[ bli ] ] continue
             flat_rows.push[ VRow [ src: bli ] ]
             if [ debug_vars ]
-                bv9 : variable base_var_of[ bli ]
-                if [ bv9 && bli == open_src ]
-                    splice_var[ bv9, 1 ]
+                bv_ : variable base_var_of[ bli ]
+                if [ bv_ && bli == open_src ]
+                    splice_var[ bv_, 1 ]
         flat_active = outline || flat_rows.count > base
 
     # a non-blank line with no parent: indentation alone, any language
@@ -4369,19 +4370,19 @@ Control Editor
     # to. the caret already sits there (cursor_token reads it). true
     # when it went
     func jump_to_def [ ln: i32, cl: i32 ] -> bool
-        w9  : cursor_token[]
+        w_  : cursor_token[]
         ob : cast orbiter [ ux.app_object ]
-        if [ !ob || !w9 || w9.count == 0 ] return false
+        if [ !ob || !w_ || w_.count == 0 ] return false
         cr : region_at[ row_src[ ln ], cl ]
         # a module name navigates to the module itself -- that is
         # a FILE, the one thing the map cannot resolve for us
         if [ cr && cr.kind == 14 ]
-            mp9 : module_path[ w9 ]
-            if [ mp9 ]
+            mp_ : module_path[ w_ ]
+            if [ mp_ ]
                 if [ nav && src ]
                     nav.record[ pane_index, '{src.absolute[]}', ln, cl,
                                 scroll.y ]
-                ob.open_at_line[ mp9, pane_index, 1 ]
+                ob.open_at_line[ mp_, pane_index, 1 ]
                 return true
         # everything else the compiler already resolved: a type,
         # a silver function, or a C function out of a header
@@ -4415,19 +4416,19 @@ Control Editor
     # mouse moves carry live modifier state and keep arriving, so the
     # flag corrects itself instead of sticking on
     func note_mod [ ev: Event ]
-        md9 : bool [ ev.key.ctrl || ev.key.meta ]
+        md_ : bool [ ev.key.ctrl || ev.key.meta ]
         # GLFW reports mods as they stood BEFORE the event, so pressing
         # ctrl/cmd itself arrives with its own bit still clear. take the
         # keycode's own state for those, or the outline waits for the
         # next event that happens to carry the flag
-        k9 : i32 [ ev.key.unicode ]
-        if [ k9 == 341 || k9 == 345 || k9 == 343 || k9 == 347 ]
-            md9 = ev.key.state != 0
+        k_ : i32 [ ev.key.unicode ]
+        if [ k_ == 341 || k_ == 345 || k_ == 343 || k_ == 347 ]
+            md_ = ev.key.state != 0
         # shift held: a gutter press takes the outline
         sd : bool [ ev.key.shift ]
-        if [ k9 == 340 || k9 == 344 ] sd = ev.key.state != 0
-        if [ md9 == mod_down && sd == shift_down ] return
-        mod_down   = md9
+        if [ k_ == 340 || k_ == 344 ] sd = ev.key.state != 0
+        if [ md_ == mod_down && sd == shift_down ] return
+        mod_down   = md_
         shift_down = sd
         pristine = false
         if [ ux ] ux.will_animate = true
@@ -4438,8 +4439,8 @@ Control Editor
     # format map, so this carries the compiler's own classification AND
     # the declaration site it resolved to
     func region_at [ ml: i32, col: i32 ] -> ColorRegion
-        n9 : i32 [ line_reg_count[ ml ] ]
-        for [ ri: i32 0, ri < n9, ri += 1 ]
+        n_ : i32 [ line_reg_count[ ml ] ]
+        for [ ri: i32 0, ri < n_, ri += 1 ]
             cr : ColorRegion line_reg[ ml, ri ]
             if [ col >= cr.col && col < cr.col + cr.len ] return cr
         return null
@@ -4524,10 +4525,10 @@ Control Editor
         hover_line = r
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         top : f32 [ f32[ r ] * lh ]
-        vh9 : f32 [ (bounds) ? bounds.h : 600.0 ]
+        vh_ : f32 [ (bounds) ? bounds.h : 600.0 ]
         if [ top < scroll_goal ] scroll_goal = top
-        el [ top + lh > scroll_goal + vh9 ]
-            scroll_goal = top + lh - vh9
+        el [ top + lh > scroll_goal + vh_ ]
+            scroll_goal = top + lh - vh_
         pristine = false
         if [ ux ] ux.will_animate = true
 
@@ -4927,8 +4928,8 @@ Control Editor
         # a section older than its file describes text that is gone:
         # every span lands on the wrong columns. it never colours,
         # whichever map it came in
-        sp9 : path [ ff.source.chars ]
-        if [ ff.mtime > 0 && sp9.exists[] && ff.mtime < sp9.modified_time[] ]
+        sp_ : path [ ff.source.chars ]
+        if [ ff.mtime > 0 && sp_.exists[] && ff.mtime < sp_.modified_time[] ]
             return
         fcm : map FileBuf [string] buffers[]
         buf : FileBuf fcm[ key ]
@@ -5009,16 +5010,16 @@ Control Editor
     # foot
     public func err_band_text [] -> string
         if [ !ux || !src ] return null
-        o9 : cast orbiter [ ux.app_object ]
-        if [ !o9 ] return null
+        o_ : cast orbiter [ ux.app_object ]
+        if [ !o_ ] return null
         # a build's progress and an app's failure are the console's
-        return o9.err_text_for[ src ]
+        return o_.err_text_for[ src ]
 
     # its line, 0 when the error has none
     public func err_band_line [] -> i32
-        o9 : cast orbiter [ ux.app_object ]
-        if [ !o9 || !src || !o9.err_text_for[ src ] ] return 0
-        return o9.err_line_no[]
+        o_ : cast orbiter [ ux.app_object ]
+        if [ !o_ || !src || !o_.err_text_for[ src ] ] return 0
+        return o_.err_line_no[]
 
     public func pinned_rows [] -> vec i32
         rows : vec i32 []
@@ -5479,10 +5480,10 @@ Control Editor
         # selected repo) stamp the cache or our own save reads as an
         # external change
         fcm : map FileBuf [string] buffers[]
-        buf9 : FileBuf fcm[ '{src.absolute[]}' ]
-        if [ buf9 ]
-            buf9.mtime  = src.modified_time[]
-            buf9.sync_i = hist_i
+        buf_ : FileBuf fcm[ '{src.absolute[]}' ]
+        if [ buf_ ]
+            buf_.mtime  = src.modified_time[]
+            buf_.sync_i = hist_i
 
     func file_ext [ p: path ] -> string
         fn  : string p.filename[]
@@ -5619,10 +5620,10 @@ Control Editor
     func module_of_export [ root: path, stem: string ] -> string
         nm : string [ stem ]
         while [ nm && nm.count > 0 ]
-            src9 : path '{root}/{nm}/{nm}.ag'
-            if [ src9.exists[] ] return nm
-            ft9 : path '{root}/featured/{nm}/{nm}.ag'
-            if [ ft9.exists[] ] return nm
+            src_ : path '{root}/{nm}/{nm}.ag'
+            if [ src_.exists[] ] return nm
+            ft_ : path '{root}/featured/{nm}/{nm}.ag'
+            if [ ft_.exists[] ] return nm
             dash : i32 [ nm.index_of[ '-' ] ]
             if [ dash < 0 ] break
             nm = nm.mid[ dash + 1, nm.count - dash - 1 ]
@@ -5749,8 +5750,8 @@ Control Editor
         ensure_export_registry[]
         # pages are named without their scheme
         u : string url
-        s9 : i32 [ u.index_of[ '://' ] ]
-        if [ s9 >= 0 ] u = u.mid[ s9 + 3, u.count - s9 - 3 ]
+        s_ : i32 [ u.index_of[ '://' ] ]
+        if [ s_ >= 0 ] u = u.mid[ s_ + 3, u.count - s_ - 3 ]
         if [ u.starts_with[ 'www.' ] ] u = u.mid[ 4, u.count - 4 ]
         for [ m: string, pg: string ] in export_pages
             if [ u.starts_with[ pg ] ] return m
@@ -5787,8 +5788,8 @@ Control Editor
         nv : AppView [ ]
         nv.src = path '{root}/{mod}/{mod}.ag'
         # a featured module lives a folder down
-        fs9 : path '{root}/featured/{mod}/{mod}.ag'
-        if [ !nv.src.exists[] && fs9.exists[] ] nv.src = fs9
+        fs_ : path '{root}/featured/{mod}/{mod}.ag'
+        if [ !nv.src.exists[] && fs_.exists[] ] nv.src = fs_
         nv.doc = p
         orb : cast orbiter [ ux.app_object ]
         # a folder argument opened by a file in it: the folder, so
@@ -5800,6 +5801,7 @@ Control Editor
         nv.host_hz = (ux) ? ux.refresh_hz[] : 60
         # the menu's Debug: in debug mode from its start
         if [ orb && orb.inst_debug_next ] nv.debug_build = true
+        if [ orb ] nv.verbose_build = orb.run_verbose
         nv.start[]
         if [ orb ] orb.add_instance[ nv ]
         run_view  = nv
@@ -5892,28 +5894,28 @@ Control Editor
     func diff_against [ base: vec string, cur: vec string,
                         out_k: vec i32 ] -> list string
         out : list string []
-        nb9 : i32 [ base.count ]
+        nb_ : i32 [ base.count ]
         nc : i32 [ cur.count ]
-        p9  : i32 [ 0 ]
-        while [ p9 < nb9 && p9 < nc && base[ p9 ] == cur[ p9 ] ]
-            out.push[ base[ p9 ] ]
+        p_  : i32 [ 0 ]
+        while [ p_ < nb_ && p_ < nc && base[ p_ ] == cur[ p_ ] ]
+            out.push[ base[ p_ ] ]
             out_k.push[ 0 ]
-            p9 += 1
-        s9 : i32 [ 0 ]
+            p_ += 1
+        s_ : i32 [ 0 ]
         while [
-            s9 < nb9 - p9 && s9 < nc - p9
-            && base[ nb9 - 1 - s9 ] == cur[ nc - 1 - s9 ] ]
-            s9 += 1
-        wa  : i32 [ nb9 - p9 - s9 ]
-        wb  : i32 [ nc - p9 - s9 ]
+            s_ < nb_ - p_ && s_ < nc - p_
+            && base[ nb_ - 1 - s_ ] == cur[ nc - 1 - s_ ] ]
+            s_ += 1
+        wa  : i32 [ nb_ - p_ - s_ ]
+        wb  : i32 [ nc - p_ - s_ ]
         big : i64 [ i64[wa] * i64[wb] ]
         if [ big > 25000000 ]
             # window too large for the table: whole middle is a replace
             for [ i: i32 0, i < wa, i += 1 ]
-                out.push[ base[ p9 + i ] ]
+                out.push[ base[ p_ + i ] ]
                 out_k.push[ 1 ]
             for [ j: i32 0, j < wb, j += 1 ]
-                out.push[ cur[ p9 + j ] ]
+                out.push[ cur[ p_ + j ] ]
                 out_k.push[ 2 ]
         el [ wa > 0 || wb > 0 ]
             st   : i32 [ wb + 1 ]
@@ -5921,48 +5923,48 @@ Control Editor
             dp   : new i32 [ n_dp ]
             for [ i: i32 wa, i >= 0, i -= 1 ]
                 for [ j: i32 wb, j >= 0, j -= 1 ]
-                    v9 : i32 [ 0 ]
+                    v_ : i32 [ 0 ]
                     if [ i < wa && j < wb ]
-                        if [ base[ p9 + i ] == cur[ p9 + j ] ]
-                            v9 = dp[ (i + 1) * st + j + 1 ] + 1
+                        if [ base[ p_ + i ] == cur[ p_ + j ] ]
+                            v_ = dp[ (i + 1) * st + j + 1 ] + 1
                         el
-                            d9 : i32 [ dp[ (i + 1) * st + j ] ]
-                            r9 : i32 [ dp[ i * st + j + 1 ] ]
-                            v9 = (d9 > r9) ? d9 : r9
-                    dp[ i * st + j ] = v9
-            i9 : i32 [ 0 ]
-            j9 : i32 [ 0 ]
-            while [ i9 < wa || j9 < wb ]
+                            d_ : i32 [ dp[ (i + 1) * st + j ] ]
+                            r_ : i32 [ dp[ i * st + j + 1 ] ]
+                            v_ = (d_ > r_) ? d_ : r_
+                    dp[ i * st + j ] = v_
+            i_ : i32 [ 0 ]
+            j_ : i32 [ 0 ]
+            while [ i_ < wa || j_ < wb ]
                 if [
-                    i9 < wa && j9 < wb
-                    && base[ p9 + i9 ] == cur[ p9 + j9 ] ]
-                    out.push[ base[ p9 + i9 ] ]
+                    i_ < wa && j_ < wb
+                    && base[ p_ + i_ ] == cur[ p_ + j_ ] ]
+                    out.push[ base[ p_ + i_ ] ]
                     out_k.push[ 0 ]
-                    i9 += 1
-                    j9 += 1
+                    i_ += 1
+                    j_ += 1
                 el [
-                    i9 < wa
-                    && (j9 >= wb || dp[ (i9 + 1) * st + j9 ] >= dp[ i9 * st + j9 + 1 ]) ]
-                    out.push[ base[ p9 + i9 ] ]
+                    i_ < wa
+                    && (j_ >= wb || dp[ (i_ + 1) * st + j_ ] >= dp[ i_ * st + j_ + 1 ]) ]
+                    out.push[ base[ p_ + i_ ] ]
                     out_k.push[ 1 ]
-                    i9 += 1
+                    i_ += 1
                 el
-                    out.push[ cur[ p9 + j9 ] ]
+                    out.push[ cur[ p_ + j_ ] ]
                     out_k.push[ 2 ]
-                    j9 += 1
-        for [ t9: i32 0, t9 < s9, t9 += 1 ]
-            out.push[ base[ nb9 - s9 + t9 ] ]
+                    j_ += 1
+        for [ t_: i32 0, t_ < s_, t_ += 1 ]
+            out.push[ base[ nb_ - s_ + t_ ] ]
             out_k.push[ 0 ]
         return out
 
     # project the merged view back to the live buffer (rows the commit
     # doesn't own), then re-diff — edits merge before your eyes
     func diff_rebuild [ project: bool ]
-        key9 : '{src.absolute[]}'
+        key_ : '{src.absolute[]}'
         fcm : map FileBuf [string] buffers[]
-        fb9  : FileBuf fcm[key9]
-        if [ !fb9 ]
-            fb9 = FileBuf []
+        fb_  : FileBuf fcm[key_]
+        if [ !fb_ ]
+            fb_ = FileBuf []
             nl : list string []
             ft : string src.load[ typeid[string], null ]
             if [ ft ]
@@ -5971,26 +5973,26 @@ Control Editor
                     nl.push[ pp[i] ]
                 if [ ft.count > 0 && ft[ ft.count - 1 ] == 10 ]
                     nl.push[ '' ]
-            fb9.lines = nl
-            fb9.mtime = src.modified_time[]
-            fcm[key9] = fb9
+            fb_.lines = nl
+            fb_.mtime = src.modified_time[]
+            fcm[key_] = fb_
         if [ project && diff_kinds && lines ]
-            pj9 : list string []
+            pj_ : list string []
             n7  : i32 [ lines.count ]
             for [ i: i32 0, i < n7, i += 1 ]
                 k7 : i32 [ (i < diff_kinds.count) ? diff_kinds[i] : 0 ]
                 if [ k7 != 1 ]
                     s7 : string lines.value_by_index[ i ]
-                    pj9.push[ (s7) ? s7 : '' ]
-            fb9.lines = pj9
-            fb9.hist  = null
-        cur9 : vec string []
-        nb7  : i32 [ fb9.lines.count ]
+                    pj_.push[ (s7) ? s7 : '' ]
+            fb_.lines = pj_
+            fb_.hist  = null
+        cur_ : vec string []
+        nb7  : i32 [ fb_.lines.count ]
         for [ i: i32 0, i < nb7, i += 1 ]
-            cs8 : string fb9.lines.value_by_index[ i ]
-            cur9.push[ (cs8) ? cs8 : '' ]
+            cs8 : string fb_.lines.value_by_index[ i ]
+            cur_.push[ (cs8) ? cs8 : '' ]
         dk : vec i32 []
-        ml : list string diff_against[ diff_base, cur9, dk ]
+        ml : list string diff_against[ diff_base, cur_, dk ]
         if [ ml.count == 0 ]
             ml.push[ '' ]
             dk.push[ 0 ]
@@ -6077,16 +6079,16 @@ Control Editor
             run_view.stopped = stopped[]
             # not drawn yet: the launch takes the pane's content area as
             # its size
-            cl9 : Layer (layers) ? layers[ 'content' ] : null
+            cl_ : Layer (layers) ? layers[ 'content' ] : null
             if [
-                run_view.vw <= 0.0 && cl9 && cl9.bounds
-                && cl9.bounds.w > 0.0 ]
-                run_view.vw = cl9.bounds.w
-                run_view.vh = cl9.bounds.h
+                run_view.vw <= 0.0 && cl_ && cl_.bounds
+                && cl_.bounds.w > 0.0 ]
+                run_view.vw = cl_.bounds.w
+                run_view.vh = cl_.bounds.h
                 bot : element (elements) ? elements[ 'bottom' ] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
-                    lim : f32 [ bot.bounds.y - cl9.bounds.y ]
-                    if [ lim > 0.0 && lim < cl9.bounds.h ]
+                    lim : f32 [ bot.bounds.y - cl_.bounds.y ]
+                    if [ lim > 0.0 && lim < cl_.bounds.h ]
                         run_view.vh = lim
             run_view.service[ w.screen ]
             if [ run_view.lock_req != 0 ]
@@ -6135,8 +6137,8 @@ Control Editor
     func instances [] -> vec AppView
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
-        src9 : path (run_view && run_view.src) ? run_view.src : band_src[]
-        return orb.instances_of[ src9 ]
+        src_ : path (run_view && run_view.src) ? run_view.src : band_src[]
+        return orb.instances_of[ src_ ]
 
     # which view this pane should show: the user's pick, else the
     # default
@@ -6149,9 +6151,9 @@ Control Editor
 
     # the only place a view is torn down or constructed
     func mount [ want: string ]
-        sp9 : string [ (src) ? '{src}' : '' ]
+        sp_ : string [ (src) ? '{src}' : '' ]
         dc : string [ (diff_commit) ? diff_commit : '' ]
-        key : string '{want}|{sp9}|{dc}'
+        key : string '{want}|{sp_}|{dc}'
         if [ mounted && mounted.compare[ key ] == 0 ] return
         mounted = key
         close_view[]
@@ -6177,7 +6179,7 @@ Control Editor
                 # the folder in view is what the process gets, not a
                 # file
                 fold : path [
-                    (orbc.nav_root) ? orbc.nav_root
+                    (orbc.nav.nav_root) ? orbc.nav.nav_root
                     : orbc.project_root[] ]
                 rview = ConsoleView [ session: want,
                                       sessions: orbc.ed_sessions,
@@ -6212,12 +6214,12 @@ Control Editor
         # want is either a registered view name or the module's own name
         # (the default action). only a real view travels as --view
         ow  : string [ (orbv) ? orbv.view_module[ want ] : null ]
-        m9   : string [ (ow && ow.count > 0) ? ow : want ]
+        m_   : string [ (ow && ow.count > 0) ? ow : want ]
         # one instance for any given viewer, always new: picking a view
         # closes whatever was running and launches with it
         if [ run_view && run_view.viewer ] close_app[]
-        if [ m9 ]
-            launch_handler[ m9, src, (ow && ow.count > 0) ? want : '' ]
+        if [ m_ ]
+            launch_handler[ m_, src, (ow && ow.count > 0) ? want : '' ]
 
     # a disk change (agents editing) becomes ONE undo item: the buffer
     # swaps to disk content; cmd+Z restores what was here before
@@ -6233,29 +6235,29 @@ Control Editor
         buf.mtime = mt
         ftext : string src.load[ typeid[string], null ]
         if [ !ftext ] return
-        before9 : list string []
+        before_ : list string []
         for [ s: string ] in lines
-            before9.push[ s ]
-        after9 : list string []
+            before_.push[ s ]
+        after_ : list string []
         parts : ftext.split["\n"]
         for [ i: i32 0, i < parts.count, i += 1 ]
-            after9.push[ parts[i] ]
+            after_.push[ parts[i] ]
         g : EditAction []
-        g.full_before = before9
-        g.full_after  = after9
+        g.full_before = before_
+        g.full_after  = after_
         g.sl0 = sel_line
         g.sc0 = sel_col
-        g.sl1 = clamp[ sel_line, 0, after9.count - 1 ]
+        g.sl1 = clamp[ sel_line, 0, after_.count - 1 ]
         g.sc1 = sel_col
         # unsaved groups since the last sync replay on top afterwards
-        sy9  : i32 [ (buf.sync_i >= 0) ? buf.sync_i : 0 ]
-        rep9 : vec EditAction []
-        if [ hist_i - sy9 <= 64 ]
-            for [ k9: i32 sy9, k9 < hist_i, k9 += 1 ]
-                gg : EditAction hist.value_by_index[ k9 ]
+        sy_  : i32 [ (buf.sync_i >= 0) ? buf.sync_i : 0 ]
+        rep_ : vec EditAction []
+        if [ hist_i - sy_ <= 64 ]
+            for [ k_: i32 sy_, k_ < hist_i, k_ += 1 ]
+                gg : EditAction hist.value_by_index[ k_ ]
                 if [
                     gg && !gg.full_after && gg.ops && gg.ops.count > 0 ]
-                    rep9.push[ gg ]
+                    rep_.push[ gg ]
         while [ hist.count > hist_i ]
             hist.pop[]
         hist.push[ g ]
@@ -6264,22 +6266,22 @@ Control Editor
         touch_hist[]
         cur_group = null
         edit_kind = -1
-        swap_lines[ after9 ]
+        swap_lines[ after_ ]
         if [ sel_line >= lines.count ]    sel_line    = lines.count - 1
         if [ anchor_line >= lines.count ] anchor_line = lines.count - 1
         # walk oldest-first; the first group that fails to anchor stops
         # it
-        t9 : vec i32 []
-        for [ gg: EditAction ] in rep9
+        t_ : vec i32 []
+        for [ gg: EditAction ] in rep_
             for [ op: LineOp ] in gg.ops
-                t9.push[ op.at ]
+                t_.push[ op.at ]
         lastl : i32 [ -1 ]
         lastc : i32 [ 0 ]
-        for [ gg: EditAction ] in rep9
-            d9 : i32 [ replay_offset[ gg, before9, t9 ] ]
-            if [ d9 == -100000 ] break
-            replay_group[ gg, d9 ]
-            lastl = gg.sl1 + d9
+        for [ gg: EditAction ] in rep_
+            d_ : i32 [ replay_offset[ gg, before_, t_ ] ]
+            if [ d_ == -100000 ] break
+            replay_group[ gg, d_ ]
+            lastl = gg.sl1 + d_
             lastc = gg.sc1
         if [ lastl >= 0 ]
             sel_line    = clamp[ lastl, 0, lines.count - 1 ]
@@ -6295,63 +6297,63 @@ Control Editor
         disk_ms = now
         reload_from_disk[]
 
-    func op_touched [ t9: vec i32, ln: i32 ] -> bool
-        for [ v9: i32 ] in t9
-            if [ v9 == ln ] return true
+    func op_touched [ t_: vec i32, ln: i32 ] -> bool
+        for [ v_: i32 ] in t_
+            if [ v_ == ln ] return true
         return false
 
     # every set/remove 'before' must match the buffer verbatim at d;
     # untouched neighbor lines must match too (wider fingerprint)
     func op_anchors [ g: EditAction, d: i32, old: list string,
-                      t9: vec i32 ] -> bool
-        n9    : i32 [ lines.count ]
-        no9   : i32 [ old.count ]
-        seen9 : bool [ false ]
+                      t_: vec i32 ] -> bool
+        n_    : i32 [ lines.count ]
+        no_   : i32 [ old.count ]
+        seen_ : bool [ false ]
         for [ op: LineOp ] in g.ops
             if [ op.kind == 1 ]
-                if [ op.at + d < 0 || op.at + d > n9 ] return false
+                if [ op.at + d < 0 || op.at + d > n_ ] return false
                 continue
-            seen9 = true
-            at9 : i32 [ op.at + d ]
-            if [ at9 < 0 || at9 >= n9 ] return false
-            ln  : string lines.value_by_index[ at9 ]
+            seen_ = true
+            at_ : i32 [ op.at + d ]
+            if [ at_ < 0 || at_ >= n_ ] return false
+            ln  : string lines.value_by_index[ at_ ]
             cmp : string [ (op.before) ? op.before : '' ]
             if [ !ln ] ln = ''
             if [ ln.compare[ cmp ] != 0 ] return false
-            up9 : i32 [ op.at - 1 ]
-            au : i32 [ at9 - 1 ]
-            if [ up9 >= 0 && up9 < no9 && !op_touched[ t9, up9 ] ]
+            up_ : i32 [ op.at - 1 ]
+            au : i32 [ at_ - 1 ]
+            if [ up_ >= 0 && up_ < no_ && !op_touched[ t_, up_ ] ]
                 if [ au < 0 ] return false
-                a9 : string lines.value_by_index[ au ]
-                b9 : string old.value_by_index[ up9 ]
-                if [ !a9 ] a9 = ''
-                if [ !b9 ] b9 = ''
-                if [ a9.compare[ b9 ] != 0 ] return false
+                a_ : string lines.value_by_index[ au ]
+                b_ : string old.value_by_index[ up_ ]
+                if [ !a_ ] a_ = ''
+                if [ !b_ ] b_ = ''
+                if [ a_.compare[ b_ ] != 0 ] return false
             dn : i32 [ op.at + 1 ]
-            ad9 : i32 [ at9 + 1 ]
-            if [ dn >= 0 && dn < no9 && !op_touched[ t9, dn ] ]
-                if [ ad9 >= n9 ] return false
-                c9 : string lines.value_by_index[ ad9 ]
-                e9 : string old.value_by_index[ dn ]
-                if [ !c9 ] c9 = ''
-                if [ !e9 ] e9 = ''
-                if [ c9.compare[ e9 ] != 0 ] return false
+            ad_ : i32 [ at_ + 1 ]
+            if [ dn >= 0 && dn < no_ && !op_touched[ t_, dn ] ]
+                if [ ad_ >= n_ ] return false
+                c_ : string lines.value_by_index[ ad_ ]
+                e_ : string old.value_by_index[ dn ]
+                if [ !c_ ] c_ = ''
+                if [ !e_ ] e_ = ''
+                if [ c_.compare[ e_ ] != 0 ] return false
         # insert-only groups carry no context: trust position 0 only
-        if [ !seen9 && d != 0 ] return false
+        if [ !seen_ && d != 0 ] return false
         return true
 
     # the offset must be UNIQUE in the window; two candidates means
     # the file is locally self-similar — the reload stands, undo has it
     func replay_offset [ g: EditAction, old: list string,
-                         t9: vec i32 ] -> i32
-        found9 : i32 [ -100000 ]
-        nf9    : i32 [ 0 ]
-        for [ d9: i32 0 - 64, d9 <= 64, d9 += 1 ]
-            if [ op_anchors[ g, d9, old, t9 ] ]
-                nf9 += 1
-                if [ nf9 > 1 ] return -100000
-                found9 = d9
-        return found9
+                         t_: vec i32 ] -> i32
+        found_ : i32 [ -100000 ]
+        nf_    : i32 [ 0 ]
+        for [ d_: i32 0 - 64, d_ <= 64, d_ += 1 ]
+            if [ op_anchors[ g, d_, old, t_ ] ]
+                nf_ += 1
+                if [ nf_ > 1 ] return -100000
+                found_ = d_
+        return found_
 
     # re-record the group's ops at offset d as a fresh history item
     func replay_group [ g: EditAction, d: i32 ]
@@ -6373,11 +6375,11 @@ Control Editor
         edit_kind  = -1
 
     func load_file []
-        ns9 : string [ (src) ? '{src}' : '' ]
+        ns_ : string [ (src) ? '{src}' : '' ]
         ls : string [ (loaded_src) ? '{loaded_src}' : '' ]
         # a new file returns to the default view and drops the old
         # file's app
-        if [ ns9.compare[ ls ] != 0 ]
+        if [ ns_.compare[ ls ] != 0 ]
             view_name = ''
             # a debugger stepping into another module moves the pane;
             # the app stays. a document's viewer goes with its document
@@ -6443,12 +6445,12 @@ Control Editor
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return
         sa : string '{src.absolute[]}'
-        fb9 : FileBuf (orb.file_cache) ? orb.file_cache[ sa ] : null
-        ch9 : FileChg orb.file_changes[ src ]
+        fb_ : FileBuf (orb.file_cache) ? orb.file_cache[ sa ] : null
+        ch_ : FileChg orb.file_changes[ src ]
         sd  : path src.directory[]
-        root : path orb.checkout_root[ sd ]
-        ref8 : string [ (root) ? orb.git_ref_of[ root ] : 'HEAD' ]
-        sig : string '{sa}|{ref8}|{(fb9) ? fb9.sync_i : 0}|{(ch9) ? ch9.adds : 0}|{(ch9) ? ch9.dels : 0}'
+        root : path orb.nav.checkout_root[ sd ]
+        ref8 : string [ (root) ? orb.nav.git_ref_of[ root ] : 'HEAD' ]
+        sig : string '{sa}|{ref8}|{(fb_) ? fb_.sync_i : 0}|{(ch_) ? ch_.adds : 0}|{(ch_) ? ch_.dels : 0}'
         if [ hunk_sig && hunk_sig.compare[ sig ] == 0 ] return
         hunk_sig = sig
         hunks    = vec i32 []
@@ -6471,45 +6473,45 @@ Control Editor
             pl : i32 [ ln.index_of[ '+' ] ]
             if [ pl < 0 ] continue
             rest : string ln.mid[ pl + 1, ln.count - pl - 1 ]
-            sp9  : i32 [ rest.index_of[ ' ' ] ]
-            if [ sp9 > 0 ] rest = rest.mid[ 0, sp9 ]
+            sp_  : i32 [ rest.index_of[ ' ' ] ]
+            if [ sp_ > 0 ] rest = rest.mid[ 0, sp_ ]
             cm  : i32 [ rest.index_of[ ',' ] ]
-            cs9  : string (cm >= 0) ? rest.mid[ 0, cm ] : rest
+            cs_  : string (cm >= 0) ? rest.mid[ 0, cm ] : rest
             ds  : string (cm >= 0) ? rest.mid[ cm + 1, rest.count - cm - 1 ] : '1'
-            c9 : i32 [ cs9.integer_value[] ]
-            d9 : i32 [ ds.integer_value[] ]
+            c_ : i32 [ cs_.integer_value[] ]
+            d_ : i32 [ ds.integer_value[] ]
             # the old side: -a,b
             ml : i32 [ ln.index_of[ '-' ] ]
-            a9 : i32 [ 0 ]
-            b9 : i32 [ 1 ]
+            a_ : i32 [ 0 ]
+            b_ : i32 [ 1 ]
             if [ ml >= 0 && ml < pl ]
                 orest : string ln.mid[ ml + 1, pl - ml - 1 ]
                 osp : i32 [ orest.index_of[ ' ' ] ]
                 if [ osp > 0 ] orest = orest.mid[ 0, osp ]
                 ocm : i32 [ orest.index_of[ ',' ] ]
                 as : string (ocm >= 0) ? orest.mid[ 0, ocm ] : orest
-                a9 = i32[ as.integer_value[] ]
-                b9 = (ocm >= 0) ? i32[
+                a_ = i32[ as.integer_value[] ]
+                b_ = (ocm >= 0) ? i32[
                     orest.mid[ ocm + 1,
                                orest.count - ocm
                                - 1 ].integer_value[] ] : 1
             # removed after line c: the mark above row c (0-based); else
             # the rows from c-1, added when nothing was there before,
             # changed otherwise
-            hr : i32 [ (d9 == 0) ? c9 : c9 - 1 ]
-            hrn : i32 [ d9 ]
-            hkd : i32 [ (d9 == 0) ? 3 : ((b9 == 0) ? 1 : 2) ]
+            hr : i32 [ (d_ == 0) ? c_ : c_ - 1 ]
+            hrn : i32 [ d_ ]
+            hkd : i32 [ (d_ == 0) ? 3 : ((b_ == 0) ? 1 : 2) ]
             hunks.push[ hr ]
             hunks.push[ hrn ]
             hunks.push[ hkd ]
-            hunk_old.push[ a9 ]
-            hunk_old.push[ b9 ]
+            hunk_old.push[ a_ ]
+            hunk_old.push[ b_ ]
 
     # the hunk holding row, -1 when none (a removal counts on its row)
     func hunk_at [ row: i32 ] -> i32
         if [ !hunks ] return -1
-        n9 : i32 [ i32[ hunks.count ] / 3 ]
-        for [ i: i32 0, i < n9, i += 1 ]
+        n_ : i32 [ i32[ hunks.count ] / 3 ]
+        for [ i: i32 0, i < n_, i += 1 ]
             r0 : i32 [ hunks[ i * 3 ] ]
             rn : i32 [ hunks[ i * 3 + 1 ] ]
             if [ rn == 0 ]
@@ -6705,8 +6707,8 @@ Control Editor
             lines = buf.lines
             # restore this file's own undo/redo (or seed it)
             swap_history[ buf ]
-            n9 : i32 [ (lines) ? lines.count : 0 ]
-            log 'load_text: cached {key} lines={n9}'
+            n_ : i32 [ (lines) ? lines.count : 0 ]
+            log 'load_text: cached {key} lines={n_}'
             return
         ftext : string src.load[ typeid[string], null ]
         if [ !ftext ]
@@ -6764,6 +6766,7 @@ Control Editor
         nv : AppView [ ]
         nv.src   = src
         nv.clean_build = clean
+        nv.edited = true
         orb : cast orbiter [ ux.app_object ]
         if [ orb ]
             fa : string orb.file_args[ src ]
@@ -6848,8 +6851,8 @@ Control Editor
         # the pane's own instance says whether it is parked: another
         # instance of the same module at a stop must not hide this one
         if [ run_view ]
-            d9 : dbg run_view.debugger
-            return (d9 && d9.active && !d9.running) ? true : false
+            d_ : dbg run_view.debugger
+            return (d_ && d_.active && !d_.running) ? true : false
         d : dbg active_dbg[]
         return (d && !d.running) ? true : false
 
@@ -6860,8 +6863,8 @@ Control Editor
         if [ !rv || rv.ended || rv.held ] return
         # with a debugger its running state is the word (a continue
         # leaves paused set), else the host's pause
-        d9   : dbg rv.debugger
-        halt : bool [ (d9 && d9.active) ? !d9.running : rv.paused ]
+        d_   : dbg rv.debugger
+        halt : bool [ (d_ && d_.active) ? !d_.running : rv.paused ]
         now  : i64 [ epoch_millis[] ]
         if [ halt ]
             rv.resume_ms  = 0
@@ -7048,15 +7051,15 @@ Control Editor
             # VIEW
             erel : f32 [ ev.mouse.pos.y - ebl.bounds.y - scroll.y ]
             if [ erel >= ebl.bounds.h - elh && erel < ebl.bounds.h ]
-                o9 : cast orbiter [ ux.app_object ]
+                o_ : cast orbiter [ ux.app_object ]
                 # shift copies the error with its file and line
                 if [ shift_down ]
                     ux.set_clipboard[
                         '{src}:{err_band_line[]}: {err_band_text[]}' ]
-                el [ o9 && err_band_line[] > 0 ] o9.goto_error[]
+                el [ o_ && err_band_line[] > 0 ] o_.goto_error[]
                 # no line in the code: the window's console, where the
                 # app said it
-                el [ o9 ] o9.console_show[ pane_index ]
+                el [ o_ ] o_.console_show[ pane_index ]
                 ev.no_default = true
                 return
         # the scrollbar's thumb and the git rails beside it come first:
@@ -7160,10 +7163,10 @@ Control Editor
                 ev.no_propagation = true
                 return
         # the rail is first in line: nothing else may eat its press
-        rail9 : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        log 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail9} hits={(show_hits) ? 1 : 0}'
-        if [ rail9 >= 0 ]
-            press_tool[ rail9 ]
+        rail_ : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        log 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail_} hits={(show_hits) ? 1 : 0}'
+        if [ rail_ >= 0 ]
+            press_tool[ rail_ ]
             ev.no_default = true
             return
         if [ run_view && !stopped[] && app_view ]
@@ -7261,18 +7264,18 @@ Control Editor
                             axp : f32 [
                                 gutter_w + f32[ ann_col[ cln ] ] * cwp ]
                             if [ rel_x > axp ]
-                                src9 : i32 [ row_src[ cln ] ]
-                                if [ bv.expanded && open_src == src9 ]
+                                src_ : i32 [ row_src[ cln ] ]
+                                if [ bv.expanded && open_src == src_ ]
                                     collapse_from[ bv ]
                                 el
-                                    open_src = src9
+                                    open_src = src_
                                     expand_only[ bv ]
                                 # rows above may have opened or closed:
                                 # keep the clicked line where it was
                                 flat_lines = -1
                                 rebuild_flat[]
                                 scroll.y += f32[
-                                    vis_row[ src9 ] - cln ] * lhp
+                                    vis_row[ src_ ] - cln ] * lhp
                                 if [ scroll.y < 0.0 ] scroll.y = 0.0
                                 scroll_goal = scroll.y
                                 scroll_anim   = false
@@ -7560,6 +7563,10 @@ Control Editor
 
     func on_char [ ev: Event ]
         if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ]
+            orb_ : cast orbiter [ ux.app_object ]
+            if [ orb_ && orb_.nav_driven[] == run_view
+                 && orb_.nav_type_char[ ev ] ]
+                return
             run_view.on_text*[ ev ]
             return
         if [ flat_active && !ghost_only[] ] return
@@ -7705,8 +7712,8 @@ Control Editor
 
     func view_can [ dir: i32 ] -> bool
         if [ !view_hist || view_key[].count == 0 ] return false
-        n9 : i32 [ view_ix + dir ]
-        return n9 >= 0 && n9 < view_hist.count
+        n_ : i32 [ view_ix + dir ]
+        return n_ >= 0 && n_ < view_hist.count
 
     func nav_walk [ dir: i32 ]
         # a hosted app walks its own history
@@ -7763,6 +7770,11 @@ Control Editor
         if [
             run_view && app_view && !run_view.held && !run_view.ended
             && !ui_keys && !own_run ]
+            # a navigator app the bar drives: its text is orbiter's
+            orb_ : cast orbiter [ ux.app_object ]
+            if [ orb_ && orb_.nav_driven[] == run_view
+                 && orb_.nav_type_key[ ev ] ]
+                return
             run_view.on_key*[ ev ]
             return
         if [ rview && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
@@ -7859,7 +7871,7 @@ Control Editor
             # the nav view up: its folders, not this file's places
             ob : cast orbiter [ ux.app_object ]
             if [ ob && ob.nav_showing ]
-                ob.nav_step[ (ev.key.unicode == 263) ? -1 : 1 ]
+                ob.nav.nav_step[ (ev.key.unicode == 263) ? -1 : 1 ]
             el
                 nav_walk[ (ev.key.unicode == 263) ? -1 : 1 ]
             return

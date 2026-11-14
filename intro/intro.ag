@@ -21,7 +21,7 @@ class Shape                         # heap, reference counted
     func describe [] -> string
         return 'a shape'
 
-Shape Square                        # Square inherits Shape
+Shape Square                        # square inherits Shape
     func init []
         sides = 4
 
@@ -193,11 +193,11 @@ element intro : trinity
 
     public func on_canvas [ cv: Canvas ]
         if [ !cv || !bounds ] return
-        w9 : f32 [ bounds.w ]
-        h9 : f32 [ bounds.h ]
+        w_ : f32 [ bounds.w ]
+        h_ : f32 [ bounds.h ]
         cv.stroke_width[ 0.0 ]
         cv.fill_color[ rgba [ '#0d0b16' ] ]
-        cv.rect_to[ 0.0, 0.0, w9, h9 ]
+        cv.rect_to[ 0.0, 0.0, w_, h_ ]
         cv.paint[]
         cv.fill_color[ rgba [ '#f2ecff' ] ]
         cv.font_size[ 34 ]
@@ -212,9 +212,9 @@ element intro : trinity
             false ]
         pw : f32 [ panel_w[] ]
         top : f32 [ 152.0 ]
-        ph : f32 [ h9 - top - 24.0 ]
+        ph : f32 [ h_ - top - 24.0 ]
         rx : f32 [ 40.0 + pw ]
-        rw : f32 [ w9 - rx - 24.0 ]
+        rw : f32 [ w_ - rx - 24.0 ]
         cv.fill_color[ rgba [ '#ffffff0a' ] ]
         cv.rounded_rect[ 24.0, top, pw, ph, 12.0, 12.0, 12.0, 12.0 ]
         cv.paint[]

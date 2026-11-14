@@ -2687,7 +2687,7 @@ element clouds : trinity
         ms_i : i32 [ ms1 / 10 ]
         ms_f : i32 [ ms1 % 10 ]
         sel : i32 [ cur.sun_el * 57.3 ]
-        cv9 : i32 [ cur.coverage * 100.0 ]
+        cv_ : i32 [ cur.coverage * 100.0 ]
         wnd : i32 [ cur.wind ]
         pn : i32 [ preset + 1 ]
         nm : string [ cur.name ]
@@ -2701,7 +2701,7 @@ element clouds : trinity
         g_i : i32 [ g10 / 100 ]
         g_f : i32 [ g10 % 100 ]
         lines : vec string [] [
-            'nubis clouds  {pn} {nm}  coverage {cv9}%  sun {sel} deg  wind {wnd} m/s',
+            'nubis clouds  {pn} {nm}  coverage {cv_}%  sun {sel} deg  wind {wnd} m/s',
             '{fps} fps  frame {ms_i}.{ms_f} ms  gpu pass {g_i}.{g_f} ms  quality x{quality}  view {vm}  alt {alt} m  speed {spd} m/s' ]
         y : f32 [ 10.0 ]
         for [ s: string ] in lines

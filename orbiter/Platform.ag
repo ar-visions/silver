@@ -804,12 +804,12 @@ element PlatformView
         # this element in the window: its bounds summed up the tree
         ax : f32 [ 0.0 ]
         ay : f32 [ 0.0 ]
-        up9 : element [ a ]
-        while [ up9 ]
-            if [ up9.bounds ]
-                ax += up9.bounds.x
-                ay += up9.bounds.y
-            up9 = up9.parent
+        up_ : element [ a ]
+        while [ up_ ]
+            if [ up_.bounds ]
+                ax += up_.bounds.x
+                ay += up_.bounds.y
+            up_ = up_.parent
         sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
         ww : f32 [ f32[ w.width ] / sc ]
         wh : f32 [ f32[ w.height ] / sc ]

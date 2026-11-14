@@ -1538,9 +1538,9 @@ element asnes : trinity
 		nsel  : u32 [ (u32[obsel] >> 3) & 3 ]
 		bsize : u32 [ (u32[obsel] >> 5) & 7 ]
 		fs : i32 [ (ppu.oam_rot) ? (i32[ppu.oamadd_reload >> 2] & 127) : 0 ]
-		k9 : i32 [ 127 ]
-		while [ k9 >= 0 ]
-			n     : i32 [ (fs + k9) & 127 ]
+		k_ : i32 [ 127 ]
+		while [ k_ >= 0 ]
+			n     : i32 [ (fs + k_) & 127 ]
 			o     : i32 [ n * 4 ]
 			b0    : u8  [ ppu_ob[o] ]
 			b1    : u8  [ ppu_ob[o + 1] ]
@@ -1587,7 +1587,7 @@ element asnes : trinity
 					ppu.obj_bgr[di]   = ocol
 					ppu.obj_prio[di]  = u8[oprio]
 					ppu.obj_idx[di]   = u8[n]
-			k9 -= 1
+			k_ -= 1
 
 	func ppu_obj_line [ y: i32, want_prio: u32, bright: u32 ]
 		base : i32 [ y * 256 ]
@@ -3645,7 +3645,14 @@ element asnes : trinity
 		env_fstart  = (getenv['ASNES_FSTART']) ? true : false
 		env_joylog  = (getenv['ASNES_JOYLOG']) ? true : false
 		env_wdump   = (getenv['ASNES_WDUMP']) ? atoi[ getenv['ASNES_WDUMP'] ] : -1
-		expect f : @FILE [ fopen[ rom, 'rb' ] ], 'could not open ROM file: {rom}'
+		f : @FILE [ fopen[ rom, 'rb' ] ]
+		# no rom: it runs on, its icon up; said once, in red
+		if [ !f ]
+			fprintf[ stderr,
+				"\x1b[38;2;255;140;140mcould not open ROM file: %s\x1b[0m\n",
+				'{rom}'.chars ]
+			rom = null
+			return false
 		fseek[ f, 0, SEEK_END ]
 		size : sz [ ftell[ f ] ]
 		rewind[ f ]
@@ -4011,11 +4018,11 @@ element asnes : trinity
 						vhave   = false
 			if [ code == 80 ] save_req = true              # 'P' -> save savestate
 			if [ code == 79 ] load_req = true              # 'O' -> load savestate
-			if [ code == 32 ] paused = !paused             # Space pause/resume
+			if [ code == 32 ] paused = !paused             # space pause/resume
 
-	func dump_layer [ buf: @u32, w9: i32, h9: i32, nm: string ]
-		im : Image [ width: w9, height: h9, format: Pixel.rgba8, surface: Surface.color ]
-		memcpy[ im.vdata[], buf, w9 * h9 * 4 ]
+	func dump_layer [ buf: @u32, w_: i32, h_: i32, nm: string ]
+		im : Image [ width: w_, height: h_, format: Pixel.rgba8, surface: Surface.color ]
+		memcpy[ im.vdata[], buf, w_ * h_ * 4 ]
 		im.png[ path '/tmp/asnes-{nm}.png' ]
 
 	func dump_layers []
@@ -4134,12 +4141,12 @@ element asnes : trinity
 	# fit the whole sheet in the pane, keeping tiles square
 	func chr_draw [ cv: Canvas, vp: rect, th: i32 ]
 		if [ !chr_tex ] return
-		aw9 : f32 [ vp.w - 40.0 ]
-		ah9 : f32 [ vp.h - 60.0 ]
-		sc9 : f32 [ aw9 / 256.0 ]
-		if [ f32[ th ] * sc9 > ah9 ] sc9 = ah9 / f32[ th ]
+		aw_ : f32 [ vp.w - 40.0 ]
+		ah_ : f32 [ vp.h - 60.0 ]
+		sc_ : f32 [ aw_ / 256.0 ]
+		if [ f32[ th ] * sc_ > ah_ ] sc_ = ah_ / f32[ th ]
 		cv.draw_image[ chr_tex, rect [ x: vp.x + 20.0, y: vp.y + 44.0,
-			w: 256.0 * sc9, h: f32[ th ] * sc9 ] ]
+			w: 256.0 * sc_, h: f32[ th ] * sc_ ] ]
 
 	# the 128 OAM entries as the PPU sees them
 	func build_obj []
@@ -4264,17 +4271,17 @@ element asnes : trinity
 			|| vn == 'hdr' || vn == 'regs') ] return false
 		if [ !vcache ] vcache = map Au [string] []
 		if [ !vheads ] vheads = map string [string] []
-		rows9 : vec string vcache[ vn ]
-		if [ !rows9 ]
+		rows_ : vec string vcache[ vn ]
+		if [ !rows_ ]
 			view_build[ vn ]
 			vcache[ vn ] = vrows
 			vheads[ vn ] = vhead
-			rows9 = vrows
+			rows_ = vrows
 		view_header[ cv, vp, vheads[ vn ] ]
-		for [ i: i32 0, i < rows9.count, i += 1 ]
-			ry9 : f32 [ vp.y + 50.0 + f32[i] * 15.0 ]
-			if [ ry9 > vp.y + vp.h - 6.0 ] break
-			vtext[ cv, rows9[i], vp.x + 20.0, ry9, '#cfd6e4' ]
+		for [ i: i32 0, i < rows_.count, i += 1 ]
+			ry_ : f32 [ vp.y + 50.0 + f32[i] * 15.0 ]
+			if [ ry_ > vp.y + vp.h - 6.0 ] break
+			vtext[ cv, rows_[i], vp.x + 20.0, ry_, '#cfd6e4' ]
 		cv.paint[]
 		return true
 
@@ -4375,13 +4382,13 @@ element asnes : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
-		ar9 : f32 [ 256.0 / 224.0 ]
-		fw9 : f32 [ vp.w ]
-		fh9 : f32 [ fw9 / ar9 ]
-		if [ fh9 > vp.h ]
-			fh9 = vp.h
-			fw9 = fh9 * ar9
-		box : rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
+		ar_ : f32 [ 256.0 / 224.0 ]
+		fw_ : f32 [ vp.w ]
+		fh_ : f32 [ fw_ / ar_ ]
+		if [ fh_ > vp.h ]
+			fh_ = vp.h
+			fw_ = fh_ * ar_
+		box : rect [ x: vp.x + (vp.w - fw_) * 0.5, y: vp.y + (vp.h - fh_) * 0.5, w: fw_, h: fh_ ]
 		bounds = box                                # size basis for every scale below
 		if [ bind ]
 			paint_bind[ cv, box ]
@@ -4398,6 +4405,9 @@ element asnes : trinity
 			generate_audio[ true ]
 			return
 		if [ rom && !cpu && !putest ] load[]
+		if [ !cpu && !putest ]
+			own_icon_paint[ cv, vp ]
+			return
 		if [ cpu && !emu_started ]
 			emu_started = true
 			pub_lock = mutex [ cond: false ]
@@ -5484,9 +5494,9 @@ element asnes : trinity
 	func emu_tick []
 		now_e : i64 [ wall_ms[] ]
 		if [ last_entry != 0 ]
-			d9 : i64 [ now_e - last_entry ]
-			itv_ms30 += d9
-			if [ d9 > itv_max30 ] itv_max30 = d9
+			d_ : i64 [ now_e - last_entry ]
+			itv_ms30 += d_
+			if [ d_ > itv_max30 ] itv_max30 = d_
 		last_entry = now_e
 		df : symbol [ getenv[ 'ASNES_DUMP_FRAME' ] ]
 		if [ df && dbg_frames == atoi[ df ] ]
@@ -5596,9 +5606,9 @@ element asnes : trinity
 			run_rom_frame_boot[]
 		el
 			run_rom_frame[]
-		e9 : i64 [ wall_ms[] - t_emu ]
-		emu_ms30 += e9
-		if [ e9 > emu_max30 ] emu_max30 = e9
+		e_ : i64 [ wall_ms[] - t_emu ]
+		emu_ms30 += e_
+		if [ e_ > emu_max30 ] emu_max30 = e_
 		dbg_frames += 1
 		# an in-game save: its file a second after the last write
 		if [ sram_dirty && dbg_frames - sram_frame > 60 ] sram_flush[]
@@ -5665,25 +5675,25 @@ element asnes : trinity
 		if [ getenv[ 'ASNES_GLIDE' ] && lay_frame && (dbg_frames % 15) == 0 ]
 			printf[ "BGLIDE f%u d1=%d,%d d2=%d,%d d3=%d,%d b3hi=%d\n",
 				dbg_frames, rdh[0], rdv[0], rdh[1], rdv[1], rdh[2], rdv[2], (frame_b3) ? 1 : 0 ]
-		t_c9 : i64 [ wall_us[] ]
+		t_c_ : i64 [ wall_us[] ]
 		classify_sprites[ rdh[0], rdv[0], rdh[1], rdv[1] ]
-		t_u9 : i64 [ wall_us[] ]
+		t_u_ : i64 [ wall_us[] ]
 		# planes rebuild only when their inputs changed; a still
 		# screen keeps the cached planes and skips the whole build
 		lay_build : bool [ false ]
 		if [ lay_frame ]
-			h9 : u32 [ lay_inputs_hash[] ]
-			lay_build = h9 != lay_hash || lay_gen == 0
-			lay_hash  = h9
+			h_ : u32 [ lay_inputs_hash[] ]
+			lay_build = h_ != lay_hash || lay_gen == 0
+			lay_hash  = h_
 		if [ lay_build ] union_sprites[]
-		t_l9 : i64 [ wall_us[] ]
+		t_l_ : i64 [ wall_us[] ]
 		if [ lay_build ]
 			ppu_render_layers[ frame_b3 ]
 			lay_gen += 1
-		t_p9 : i64 [ wall_us[] ]
-		cls_us30 += t_u9 - t_c9
-		uni_us30 += t_l9 - t_u9
-		lay_us30 += t_p9 - t_l9
+		t_p_ : i64 [ wall_us[] ]
+		cls_us30 += t_u_ - t_c_
+		uni_us30 += t_l_ - t_u_
+		lay_us30 += t_p_ - t_l_
 		pub_lock.lock[]
 		if [ lay_build ]
 			memcpy[ pub_layb, lay_bd,  294912 ]
@@ -5721,7 +5731,7 @@ element asnes : trinity
 		pub_m7x     = frame_m7x
 		pub_m7y     = frame_m7y
 		pub_valid   = true
-		pub_us30 += wall_us[] - t_p9
+		pub_us30 += wall_us[] - t_p_
 		g_hc : i32 [ sx13[ i32[ pub_m7x ] ] ]
 		g_vc : i32 [ sx13[ i32[ pub_m7y ] ] ]
 		g_ho : i32 [ sx13[ i32[ pub_m7hofs ] ] ]

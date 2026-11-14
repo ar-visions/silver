@@ -145,8 +145,8 @@ func mars_build_height [ H: @f32, w: i32, h: i32 ]
     imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path '{scenes_share[]}/textures/{names[i]}.png'
-        im : Image [ uri: p9 ]
+        p_ : path '{scenes_share[]}/textures/{names[i]}.png'
+        im : Image [ uri: p_ ]
         imgs.push[ im ]
         sw[i] = im.width
         sh[i] = im.height
@@ -225,18 +225,18 @@ func mars_build_height [ H: @f32, w: i32, h: i32 ]
             H[ y * w + x ] = b * disp + sp * detl * amp
 
 func mars_bake []
-    w9 : i32 [ 8192 ]
-    h9 : i32 [ 4096 ]
-    n9 : i32 [ w9 * h9 ]
-    H : new f32 [ n9 ]
-    mars_build_height[ H, w9, h9 ]
+    w_ : i32 [ 8192 ]
+    h_ : i32 [ 4096 ]
+    n_ : i32 [ w_ * h_ ]
+    H : new f32 [ n_ ]
+    mars_build_height[ H, w_, h_ ]
     hmx : f32 [ mars_hmax[] ]
     # height packed 16-bit across R and A: 8 bits of 0.0104 radii is a
     # 40m stair, and the terminator finds every one of them
-    pk : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    pk : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     pd : @u8 [ pk.vdata[] ]
-    for [ i: i32 0, i < n9, i += 1 ]
+    for [ i: i32 0, i < n_, i += 1 ]
         t : f32 [ H[ i ] / hmx ]
         if [ t < 0.0 ] t = 0.0
         if [ t > 1.0 ] t = 1.0
@@ -249,33 +249,33 @@ func mars_bake []
     # normals as real surface SLOPE, not a fudge: dH over the world
     # distance between texels, so the shading matches the displacement
     smx : f32 [ mars_smax[] ]
-    du : f32 [ 6.2831853 / f32[ w9 ] ]
-    dv : f32 [ 3.1415927 / f32[ h9 ] ]
-    nk : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    du : f32 [ 6.2831853 / f32[ w_ ] ]
+    dv : f32 [ 3.1415927 / f32[ h_ ] ]
+    nk : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     nd : @u8 [ nk.vdata[] ]
-    for [ y: i32 0, y < h9, y += 1 ]
+    for [ y: i32 0, y < h_, y += 1 ]
         ym : i32 [ (y > 0) ? y - 1 : 0 ]
-        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
+        yp : i32 [ (y < h_ - 1) ? y + 1 : h_ - 1 ]
         # meridians converge: a degree of longitude is cos(lat) as wide
-        lat9 : f32 [ (0.5 - (f32[ y ] + 0.5) / f32[ h9 ]) * 3.1415927 ]
-        cl : f32 [ cos[ lat9 ] ]
+        lat_ : f32 [ (0.5 - (f32[ y ] + 0.5) / f32[ h_ ]) * 3.1415927 ]
+        cl : f32 [ cos[ lat_ ] ]
         if [ cl < 0.02 ] cl = 0.02
-        for [ x: i32 0, x < w9, x += 1 ]
-            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
-            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w_ - 1 ]
+            xp : i32 [ (x < w_ - 1) ? x + 1 : 0 ]
             su : f32 [
-                (H[ y * w9 + xp ] - H[ y * w9 + xm ])
+                (H[ y * w_ + xp ] - H[ y * w_ + xm ])
                 / (2.0 * du * cl) ]
             sv : f32 [
-                (H[ yp * w9 + x ] - H[ ym * w9 + x ]) / (2.0 * dv) ]
+                (H[ yp * w_ + x ] - H[ ym * w_ + x ]) / (2.0 * dv) ]
             su = su / smx
             sv = sv / smx
             if [ su < -1.0 ] su = -1.0
             if [ su >  1.0 ] su = 1.0
             if [ sv < -1.0 ] sv = -1.0
             if [ sv >  1.0 ] sv = 1.0
-            b3 : i32 [ (y * w9 + x) * 4 ]
+            b3 : i32 [ (y * w_ + x) * 4 ]
             nd[ b3 ]     = u8[ su * 127.0 + 128.0 ]
             nd[ b3 + 1 ] = u8[ sv * 127.0 + 128.0 ]
             nd[ b3 + 2 ] = 0
@@ -363,8 +363,8 @@ func mars_bake_mola [] -> bool
     isx : i32 [ fsx ]
     isy : i32 [ fsy ]
     for [ y: i32 0, y < dh, y += 1 ]
-        lat9 : f32 [ (0.5 - (f32[ y ] + 0.5) / f32[ dh ]) * 3.1415927 ]
-        cl : f32 [ cos[ lat9 ] ]
+        lat_ : f32 [ (0.5 - (f32[ y ] + 0.5) / f32[ dh ]) * 3.1415927 ]
+        cl : f32 [ cos[ lat_ ] ]
         if [ cl < 0.004 ] cl = 0.004
         for [ x: i32 0, x < dw, x += 1 ]
             cx : i32 [ (f32[ x ] + 0.5) * fsx ]
@@ -402,8 +402,8 @@ func mars_bake_mola [] -> bool
     vvd : @u8 [ vsv.vdata[] ]
     for [ y: i32 0, y < vh, y += 1 ]
         gy : i32 [ vy + y ]
-        lat9 : f32 [ (0.5 - (f32[ gy ] + 0.5) / f32[ oh ]) * 3.1415927 ]
-        cl : f32 [ cos[ lat9 ] ]
+        lat_ : f32 [ (0.5 - (f32[ gy ] + 0.5) / f32[ oh ]) * 3.1415927 ]
+        cl : f32 [ cos[ lat_ ] ]
         if [ cl < 0.004 ] cl = 0.004
         for [ x: i32 0, x < vw, x += 1 ]
             gx : i32 [ vx + x ]
@@ -544,8 +544,8 @@ func mars_bake_detail [] -> bool
     imgs : vec Image []
     total : i32 [ 0 ]
     for [ i: i32 0, i < ns, i += 1 ]
-        p9 : path names[ i ]
-        im : Image [ uri: p9 ]
+        p_ : path names[ i ]
+        im : Image [ uri: p_ ]
         if [ im.width == 0 ]
             log 'mars: detail source {names[i]} missing'
             return false
@@ -584,15 +584,15 @@ func mars_bake_detail [] -> bool
     g5 : @f32 [ @SB[ so[5] ] ]
     g6 : @f32 [ @SB[ so[6] ] ]
 
-    w9 : i32 [ 2048 ]
-    h9 : i32 [ 2048 ]
-    n9 : i32 [ w9 * h9 ]
-    D : new f32 [ n9 ]
-    log 'mars: patching rock detail over {w9}x{h9}'
-    for [ y: i32 0, y < h9, y += 1 ]
-        v : f32 [ f32[ y ] / f32[ h9 ] ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            u : f32 [ f32[ x ] / f32[ w9 ] ]
+    w_ : i32 [ 2048 ]
+    h_ : i32 [ 2048 ]
+    n_ : i32 [ w_ * h_ ]
+    D : new f32 [ n_ ]
+    log 'mars: patching rock detail over {w_}x{h_}'
+    for [ y: i32 0, y < h_, y += 1 ]
+        v : f32 [ f32[ y ] / f32[ h_ ] ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            u : f32 [ f32[ x ] / f32[ w_ ] ]
             # THREE selector fields, each an even scale on its own axis
             # order, so the provinces they cut never line up with each
             # other or with the tile grid
@@ -648,61 +648,61 @@ func mars_bake_detail [] -> bool
                 cc : f32 [ p_sa + (st - p_sa) * f_st ]
                 cc = cc + (rk - cc) * f_rk
                 acc += (cc - 0.5) * wt
-            D[ y * w9 + x ] = acc
+            D[ y * w_ + x ] = acc
 
     # the blurred twin is the local datum: where the surface sits under
     # it the ground is a crevice, and how far it strays is the grain
-    T : new f32 [ n9 ]
-    tmp : new f32 [ n9 ]
-    for [ i: i32 0, i < n9, i += 1 ] T[ i ] = D[ i ]
-    eu_blur[ T, tmp, w9, h9, 3 ]
+    T : new f32 [ n_ ]
+    tmp : new f32 [ n_ ]
+    for [ i: i32 0, i < n_, i += 1 ] T[ i ] = D[ i ]
+    eu_blur[ T, tmp, w_, h_, 3 ]
 
     # the field's own spread, so B spends its 8 bits on the range the
     # material occupies rather than on outliers
     dsum : f32 [ 0.0 ]
-    for [ i: i32 0, i < n9, i += 1 ] dsum += D[ i ]
-    dmean : f32 [ dsum / f32[ n9 ] ]
+    for [ i: i32 0, i < n_, i += 1 ] dsum += D[ i ]
+    dmean : f32 [ dsum / f32[ n_ ] ]
     dvar : f32 [ 0.0 ]
-    for [ i: i32 0, i < n9, i += 1 ]
-        dd9 : f32 [ D[ i ] - dmean ]
-        dvar += dd9 * dd9
-    dsig : f32 [ sqrt[ dvar / f32[ n9 ] ] ]
+    for [ i: i32 0, i < n_, i += 1 ]
+        dd_ : f32 [ D[ i ] - dmean ]
+        dvar += dd_ * dd_
+    dsig : f32 [ sqrt[ dvar / f32[ n_ ] ] ]
     if [ dsig < 0.000001 ] dsig = 0.000001
     log 'mars: detail height mean {dmean} sigma {dsig}'
 
     # scale the packed slope by the field's own gradient RMS, so the
     # 8 bits are spent on the range the material actually occupies
     acc2 : f32 [ 0.0 ]
-    for [ y: i32 0, y < h9, y += 1 ]
-        ym : i32 [ (y > 0) ? y - 1 : h9 - 1 ]
-        yp : i32 [ (y < h9 - 1) ? y + 1 : 0 ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
-            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
-            gx : f32 [ D[ y * w9 + xp ] - D[ y * w9 + xm ] ]
-            gy : f32 [ D[ yp * w9 + x ] - D[ ym * w9 + x ] ]
+    for [ y: i32 0, y < h_, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : h_ - 1 ]
+        yp : i32 [ (y < h_ - 1) ? y + 1 : 0 ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w_ - 1 ]
+            xp : i32 [ (x < w_ - 1) ? x + 1 : 0 ]
+            gx : f32 [ D[ y * w_ + xp ] - D[ y * w_ + xm ] ]
+            gy : f32 [ D[ yp * w_ + x ] - D[ ym * w_ + x ] ]
             acc2 += gx * gx + gy * gy
-    rms : f32 [ sqrt[ acc2 / f32[ n9 ] ] ]
+    rms : f32 [ sqrt[ acc2 / f32[ n_ ] ] ]
     if [ rms < 0.000001 ] rms = 0.000001
     gsc : f32 [ 1.0 / (rms * 3.0) ]
     log 'mars: detail gradient rms {rms}'
 
-    dn : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    dn : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true, wrap_v: true ]
     dd : @u8 [ dn.vdata[] ]
-    for [ y: i32 0, y < h9, y += 1 ]
-        ym : i32 [ (y > 0) ? y - 1 : h9 - 1 ]
-        yp : i32 [ (y < h9 - 1) ? y + 1 : 0 ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
-            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
-            gx : f32 [ (D[ y * w9 + xp ] - D[ y * w9 + xm ]) * gsc ]
-            gy : f32 [ (D[ yp * w9 + x ] - D[ ym * w9 + x ]) * gsc ]
+    for [ y: i32 0, y < h_, y += 1 ]
+        ym : i32 [ (y > 0) ? y - 1 : h_ - 1 ]
+        yp : i32 [ (y < h_ - 1) ? y + 1 : 0 ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            xm : i32 [ (x > 0) ? x - 1 : w_ - 1 ]
+            xp : i32 [ (x < w_ - 1) ? x + 1 : 0 ]
+            gx : f32 [ (D[ y * w_ + xp ] - D[ y * w_ + xm ]) * gsc ]
+            gy : f32 [ (D[ yp * w_ + x ] - D[ ym * w_ + x ]) * gsc ]
             if [ gx < -1.0 ] gx = -1.0
             if [ gx >  1.0 ] gx =  1.0
             if [ gy < -1.0 ] gy = -1.0
             if [ gy >  1.0 ] gy =  1.0
-            o : i32 [ y * w9 + x ]
+            o : i32 [ y * w_ + x ]
             # B is the detail HEIGHT, centred on 128 -- the mesh
             # displaces by it, and RG is exactly its own gradient, so
             # the shading can never disagree with the geometry
@@ -720,7 +720,7 @@ func mars_bake_detail [] -> bool
     bd : path '../{share_name}/baked'
     bd.make_dir[]
     dn.png[ path '../{share_name}/baked/mars-dn.png' ]
-    log 'mars: rock detail written ({w9}x{h9})'
+    log 'mars: rock detail written ({w_}x{h_})'
     return true
 
 # WHERE to augment. the colour map is useless as albedo -- it has
@@ -739,47 +739,47 @@ func mars_bake_edge [] -> bool
     if [ cim.width == 0 ]
         log 'mars: colour map missing — cannot build the edge map'
         return false
-    w9 : i32 [ cim.width ]
-    h9 : i32 [ cim.height ]
-    n9 : i32 [ w9 * h9 ]
-    log 'mars: sobel over {w9}x{h9}'
-    L : new f32 [ n9 ]
+    w_ : i32 [ cim.width ]
+    h_ : i32 [ cim.height ]
+    n_ : i32 [ w_ * h_ ]
+    log 'mars: sobel over {w_}x{h_}'
+    L : new f32 [ n_ ]
     eu_lum[ cim, L ]
 
-    S : new f32 [ n9 ]
-    for [ y: i32 0, y < h9, y += 1 ]
+    S : new f32 [ n_ ]
+    for [ y: i32 0, y < h_, y += 1 ]
         ym : i32 [ (y > 0) ? y - 1 : 0 ]
-        yp : i32 [ (y < h9 - 1) ? y + 1 : h9 - 1 ]
-        for [ x: i32 0, x < w9, x += 1 ]
+        yp : i32 [ (y < h_ - 1) ? y + 1 : h_ - 1 ]
+        for [ x: i32 0, x < w_, x += 1 ]
             # longitude wraps; latitude clamps at the caps
-            xm : i32 [ (x > 0) ? x - 1 : w9 - 1 ]
-            xp : i32 [ (x < w9 - 1) ? x + 1 : 0 ]
-            a1 : f32 [ L[ ym * w9 + xm ] ]
-            a2 : f32 [ L[ ym * w9 + x  ] ]
-            a3 : f32 [ L[ ym * w9 + xp ] ]
-            b1 : f32 [ L[ y  * w9 + xm ] ]
-            b3 : f32 [ L[ y  * w9 + xp ] ]
-            c1 : f32 [ L[ yp * w9 + xm ] ]
-            c2 : f32 [ L[ yp * w9 + x  ] ]
-            c3 : f32 [ L[ yp * w9 + xp ] ]
+            xm : i32 [ (x > 0) ? x - 1 : w_ - 1 ]
+            xp : i32 [ (x < w_ - 1) ? x + 1 : 0 ]
+            a1 : f32 [ L[ ym * w_ + xm ] ]
+            a2 : f32 [ L[ ym * w_ + x  ] ]
+            a3 : f32 [ L[ ym * w_ + xp ] ]
+            b1 : f32 [ L[ y  * w_ + xm ] ]
+            b3 : f32 [ L[ y  * w_ + xp ] ]
+            c1 : f32 [ L[ yp * w_ + xm ] ]
+            c2 : f32 [ L[ yp * w_ + x  ] ]
+            c3 : f32 [ L[ yp * w_ + xp ] ]
             gx : f32 [ (a3 + 2.0 * b3 + c3) - (a1 + 2.0 * b1 + c1) ]
             gy : f32 [ (c1 + 2.0 * c2 + c3) - (a1 + 2.0 * a2 + a3) ]
-            S[ y * w9 + x ] = sqrt[ gx * gx + gy * gy ]
+            S[ y * w_ + x ] = sqrt[ gx * gx + gy * gy ]
 
     # the integral image, one row of padding on each leading edge so a
     # box query never has to special-case the border. f64: an f32
     # accumulator runs out of mantissa a third of the way down 33M
     # texels
-    iw : i32 [ w9 + 1 ]
-    I : new f64 [ iw * (h9 + 1) ]
-    log 'mars: integral image {iw}x{h9 + 1}'
-    for [ y: i32 0, y < h9, y += 1 ]
+    iw : i32 [ w_ + 1 ]
+    I : new f64 [ iw * (h_ + 1) ]
+    log 'mars: integral image {iw}x{h_ + 1}'
+    for [ y: i32 0, y < h_, y += 1 ]
         rs : f64 [ 0.0 ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            rs += f64[ S[ y * w9 + x ] ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            rs += f64[ S[ y * w_ + x ] ]
             I[ (y + 1) * iw + (x + 1) ] = I[ y * iw + (x + 1) ] + rs
 
-    ek : Image [ width: w9, height: h9, format: Pixel.rgba8,
+    ek : Image [ width: w_, height: h_, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     ed : @u8 [ ek.vdata[] ]
     r1 : i32 [ 4 ]
@@ -790,12 +790,12 @@ func mars_bake_edge [] -> bool
     m1 : f64 [ 0.0 ]
     m2 : f64 [ 0.0 ]
     m3 : f64 [ 0.0 ]
-    for [ y: i32 0, y < h9, y += 1 ]
-        for [ x: i32 0, x < w9, x += 1 ]
-            m1 += f64[ mars_box[ I, iw, w9, h9, x, y, r1 ] ]
-            m2 += f64[ mars_box[ I, iw, w9, h9, x, y, r2 ] ]
-            m3 += f64[ mars_box[ I, iw, w9, h9, x, y, r3 ] ]
-    fn : f64 [ n9 ]
+    for [ y: i32 0, y < h_, y += 1 ]
+        for [ x: i32 0, x < w_, x += 1 ]
+            m1 += f64[ mars_box[ I, iw, w_, h_, x, y, r1 ] ]
+            m2 += f64[ mars_box[ I, iw, w_, h_, x, y, r2 ] ]
+            m3 += f64[ mars_box[ I, iw, w_, h_, x, y, r3 ] ]
+    fn : f64 [ n_ ]
     a1m : f32 [ m1 / fn ]
     a2m : f32 [ m2 / fn ]
     a3m : f32 [ m3 / fn ]
@@ -804,23 +804,23 @@ func mars_bake_edge [] -> bool
     if [ a3m < 0.000001 ] a3m = 0.000001
     log 'mars: edge means {a1m} {a2m} {a3m}'
     smx : f32 [ 0.0 ]
-    for [ i: i32 0, i < n9, i += 1 ]
+    for [ i: i32 0, i < n_, i += 1 ]
         if [ S[i] > smx ] smx = S[i]
     if [ smx < 0.000001 ] smx = 0.000001
-    for [ y: i32 0, y < h9, y += 1 ]
-        for [ x: i32 0, x < w9, x += 1 ]
+    for [ y: i32 0, y < h_, y += 1 ]
+        for [ x: i32 0, x < w_, x += 1 ]
             e1 : f32 [
-                mars_box[ I, iw, w9, h9, x, y, r1 ] / (a1m * 2.5) ]
+                mars_box[ I, iw, w_, h_, x, y, r1 ] / (a1m * 2.5) ]
             e2 : f32 [
-                mars_box[ I, iw, w9, h9, x, y, r2 ] / (a2m * 2.5) ]
+                mars_box[ I, iw, w_, h_, x, y, r2 ] / (a2m * 2.5) ]
             e3 : f32 [
-                mars_box[ I, iw, w9, h9, x, y, r3 ] / (a3m * 2.5) ]
+                mars_box[ I, iw, w_, h_, x, y, r3 ] / (a3m * 2.5) ]
             if [ e1 > 1.0 ] e1 = 1.0
             if [ e2 > 1.0 ] e2 = 1.0
             if [ e3 > 1.0 ] e3 = 1.0
-            e4 : f32 [ S[ y * w9 + x ] / smx ]
+            e4 : f32 [ S[ y * w_ + x ] / smx ]
             if [ e4 > 1.0 ] e4 = 1.0
-            b4 : i32 [ (y * w9 + x) * 4 ]
+            b4 : i32 [ (y * w_ + x) * 4 ]
             ed[ b4 ]     = u8[ e1 * 255.0 ]
             ed[ b4 + 1 ] = u8[ e2 * 255.0 ]
             ed[ b4 + 2 ] = u8[ e3 * 255.0 ]
@@ -828,12 +828,12 @@ func mars_bake_edge [] -> bool
     bd : path '../{share_name}/baked'
     bd.make_dir[]
     ek.png[ path '../{share_name}/baked/mars-ek.png' ]
-    log 'mars: edge map written ({w9}x{h9})'
+    log 'mars: edge map written ({w_}x{h_})'
     return true
 
 # mean of the sobel field over a box, from the integral image: four
 # lookups, whatever the radius
-func mars_box [ I: @f64, iw: i32, w9: i32, h9: i32, x: i32, y: i32,
+func mars_box [ I: @f64, iw: i32, w_: i32, h_: i32, x: i32, y: i32,
                 r: i32 ] -> f32
     x0 : i32 [ x - r ]
     y0 : i32 [ y - r ]
@@ -841,14 +841,14 @@ func mars_box [ I: @f64, iw: i32, w9: i32, h9: i32, x: i32, y: i32,
     y1 : i32 [ y + r ]
     if [ x0 < 0 ] x0 = 0
     if [ y0 < 0 ] y0 = 0
-    if [ x1 > w9 - 1 ] x1 = w9 - 1
-    if [ y1 > h9 - 1 ] y1 = h9 - 1
-    s9 : f64 [ I[ (y1 + 1) * iw + (x1 + 1) ]
+    if [ x1 > w_ - 1 ] x1 = w_ - 1
+    if [ y1 > h_ - 1 ] y1 = h_ - 1
+    s_ : f64 [ I[ (y1 + 1) * iw + (x1 + 1) ]
              - I[ y0 * iw + (x1 + 1) ]
              - I[ (y1 + 1) * iw + x0 ]
              + I[ y0 * iw + x0 ] ]
     cnt : f32 [ (x1 - x0 + 1) * (y1 - y0 + 1) ]
-    return f32[ s9 ] / cnt
+    return f32[ s_ ] / cnt
 
 func mars_edge_map []
     h1 : u64 [ @mars_bake_edge ]
@@ -951,41 +951,41 @@ func mars_bake_river [] -> bool
     ls : f32 [ log[ amx ] - lt ]
     if [ ls < 0.5 ] ls = 0.5
     for [ i: i32 0, i < nb, i += 1 ]
-        r9 : f32 [ 0.0 ]
+        r_ : f32 [ 0.0 ]
         # only inside the canyon: above the rim the water leaves the box
         if [ acc[ i ] > thr && T[ i ] < hi ]
-            r9 = (log[ acc[ i ] ] - lt) / ls
-            if [ r9 < 0.0 ] r9 = 0.0
-            if [ r9 > 1.0 ] r9 = 1.0
-        riv[ i ] = r9
+            r_ = (log[ acc[ i ] ] - lt) / ls
+            if [ r_ < 0.0 ] r_ = 0.0
+            if [ r_ > 1.0 ] r_ = 1.0
+        riv[ i ] = r_
 
     # banks: how close the sand reaches. spread the water outward a few
     # times, keeping the largest -- a cheap distance field
     bank : new f32 [ nb ]
     tmp : new f32 [ nb ]
     for [ i: i32 0, i < nb, i += 1 ] bank[ i ] = riv[ i ]
-    for [ p9: i32 0, p9 < 7, p9 += 1 ]
+    for [ p_: i32 0, p_ < 7, p_ += 1 ]
         for [ y: i32 0, y < bh, y += 1 ]
             for [ x: i32 0, x < bw, x += 1 ]
                 i : i32 [ y * bw + x ]
-                m9 : f32 [ bank[ i ] ]
+                m_ : f32 [ bank[ i ] ]
                 xm : i32 [ (x > 0) ? x - 1 : 0 ]
                 xp : i32 [ (x < bw - 1) ? x + 1 : bw - 1 ]
                 ym : i32 [ (y > 0) ? y - 1 : 0 ]
                 yp : i32 [ (y < bh - 1) ? y + 1 : bh - 1 ]
-                if [ bank[ y * bw + xm ] > m9 ] m9 = bank[ y * bw + xm ]
-                if [ bank[ y * bw + xp ] > m9 ] m9 = bank[ y * bw + xp ]
-                if [ bank[ ym * bw + x ] > m9 ] m9 = bank[ ym * bw + x ]
-                if [ bank[ yp * bw + x ] > m9 ] m9 = bank[ yp * bw + x ]
-                tmp[ i ] = m9 * 0.86
+                if [ bank[ y * bw + xm ] > m_ ] m_ = bank[ y * bw + xm ]
+                if [ bank[ y * bw + xp ] > m_ ] m_ = bank[ y * bw + xp ]
+                if [ bank[ ym * bw + x ] > m_ ] m_ = bank[ ym * bw + x ]
+                if [ bank[ yp * bw + x ] > m_ ] m_ = bank[ yp * bw + x ]
+                tmp[ i ] = m_ * 0.86
         for [ i: i32 0, i < nb, i += 1 ]
             bank[ i ] = (riv[i] > tmp[i]) ? riv[i] : tmp[i]
 
     rv : Image [ width: W9, height: H9, format: Pixel.rgba8,
                  linear: true, wrap_u: true ]
     rd : @u8 [ rv.vdata[] ]
-    n9 : i32 [ W9 * H9 ]
-    for [ i: i32 0, i < n9, i += 1 ]
+    n_ : i32 [ W9 * H9 ]
+    for [ i: i32 0, i < n_, i += 1 ]
         b4 : i32 [ i * 4 ]
         rd[ b4 ] = 0
         rd[ b4 + 1 ] = 0
@@ -1133,11 +1133,11 @@ export func mars_maps []
     h6 : u64 [ @mars_hmax ]
     h7 : u64 [ @mars_smax ]
     h8 : u64 [ @mars_exag ]
-    h9 : u64 [ @mars_vu0 ]
+    h_ : u64 [ @mars_vu0 ]
     ha : u64 [ @mars_vu1 ]
     hb : u64 [ @mars_vv0 ]
     hc : u64 [ @mars_vv1 ]
-    stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}-{h7}-{h8}-{h9}-{ha}-{hb}-{hc}'
+    stamp : string '{h1}-{h2}-{h3}-{h4}-{h5}-{h6}-{h7}-{h8}-{h_}-{ha}-{hb}-{hc}'
     sp : path '../{share_name}/baked/mars.hash'
     pkp : path '../{share_name}/baked/mars-pk.png'
     nkp : path '../{share_name}/baked/mars-nk.png'
@@ -1321,11 +1321,11 @@ ModelViewProject TerraShader
         float rn = length(a_pos.xz);
         vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
         vec3  up_m = normalize(ubo.eye_m.xyz);
-        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  ax_  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax_, up_m));
         vec3  t_n  = cross(up_m, t_e);
-        float s9   = rn * ubo.hdist;
-        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float s_   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s_) + (t_e * pd.x + t_n * pd.y) * sin(s_));
 
         // longitude measured FROM the craft, never absolute: that is
         // what keeps the +/-pi meridian from splitting a triangle.
@@ -1480,7 +1480,7 @@ ModelViewProject TerraShader
         // it so the real channels sit wettest inside each patch.
         // sp * 1.5 is a very large patch: whole reaches of valley, not
         // a stipple
-        vec4  rv9   = texture(river, v_uv);
+        vec4  rv_   = texture(river, v_uv);
         // VERY soft: sp * 0.62 makes one patch span a large part of
         // the whole canyon system, so the wet ground arrives as broad
         // washes instead of a stipple you have to look for
@@ -1508,7 +1508,7 @@ ModelViewProject TerraShader
         // left water with no sand around it. folded into wetf instead,
         // every pool is automatically rimmed by sand, because sand and
         // water are two thresholds on the SAME field
-        float chan  = smoothstep(0.05, 0.30, rv9.r) * basin;
+        float chan  = smoothstep(0.05, 0.30, rv_.r) * basin;
         wetf = clamp(wetf + chan * 0.40, 0.0, 1.0);
         // THREE bands on one field, in order, with real width each:
         // green below 0.28, sand from 0.28 to 0.56, water above 0.60.
@@ -1879,16 +1879,16 @@ ModelViewProject TerraSkyShader
         float rn = length(a_pos.xz);
         vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
         vec3  up_m = normalize(ubo.eye_m.xyz);
-        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  ax_  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax_, up_m));
         vec3  t_n  = cross(up_m, t_e);
         // THE WHOLE SPHERE, not a cap. the carpet is a polar grid, so
         // mapping its radius across a half-turn wraps it into a closed
         // shell with NO mesh boundary anywhere. a cap ends somewhere,
         // and wherever it ended the alpha was still 0.06 -- that was
         // the hard line straight across the sky
-        float s9   = (rn / 1.35) * 3.14159265;
-        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float s_   = (rn / 1.35) * 3.14159265;
+        vec3  dir  = normalize(up_m * cos(s_) + (t_e * pd.x + t_n * pd.y) * sin(s_));
         v_uv     = a_uv;
         v_sp     = dir;
         v_normal = dir;
@@ -2245,11 +2245,11 @@ ModelViewProject TerraWaterShader
         float rn = length(a_pos.xz);
         vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
         vec3  up_m = normalize(ubo.eye_m.xyz);
-        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  ax_  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax_, up_m));
         vec3  t_n  = cross(up_m, t_e);
-        float s9   = rn * ubo.hdist;
-        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float s_   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s_) + (t_e * pd.x + t_n * pd.y) * sin(s_));
 
         float lon0 = atan(ubo.eye_m.z, ubo.eye_m.x);
         float dl   = atan(dir.z, dir.x) - lon0;
@@ -2486,10 +2486,10 @@ Backdrop TerraMars
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null
@@ -2815,11 +2815,11 @@ ModelViewProject MarsShader
         float rn = length(a_pos.xz);
         vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
         vec3  up_m = normalize(ubo.eye_m.xyz);
-        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  ax_  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax_, up_m));
         vec3  t_n  = cross(up_m, t_e);
-        float s9   = rn * ubo.hdist;
-        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float s_   = rn * ubo.hdist;
+        vec3  dir  = normalize(up_m * cos(s_) + (t_e * pd.x + t_n * pd.y) * sin(s_));
 
         // longitude measured FROM the craft, never absolute: that is
         // what keeps the +/-pi meridian from splitting a triangle
@@ -3028,14 +3028,14 @@ ModelViewProject MarsSkyShader
         float rn = length(a_pos.xz);
         vec2  pd = rn > 0.0 ? a_pos.xz / rn : vec2(1.0, 0.0);
         vec3  up_m = normalize(ubo.eye_m.xyz);
-        vec3  ax9  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
-        vec3  t_e  = normalize(cross(ax9, up_m));
+        vec3  ax_  = abs(up_m.y) > 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+        vec3  t_e  = normalize(cross(ax_, up_m));
         vec3  t_n  = cross(up_m, t_e);
         // THE WHOLE SPHERE, not a cap. the carpet is a polar grid, so
         // mapping its radius across a half-turn wraps it into a closed
         // shell with NO mesh boundary anywhere
-        float s9   = (rn / 1.35) * 3.14159265;
-        vec3  dir  = normalize(up_m * cos(s9) + (t_e * pd.x + t_n * pd.y) * sin(s9));
+        float s_   = (rn / 1.35) * 3.14159265;
+        vec3  dir  = normalize(up_m * cos(s_) + (t_e * pd.x + t_n * pd.y) * sin(s_));
         v_uv     = a_uv;
         v_sp     = dir;
         v_normal = dir;
@@ -3222,10 +3222,10 @@ Backdrop Mars
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null

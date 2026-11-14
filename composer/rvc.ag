@@ -31,8 +31,8 @@ func resample_sinc [ pcm: vec f32, from: i32, to: i32 ] -> vec f32
             wv = wv * wv
             tv = tv * 3.14159265358979323846
             sv : f64 [ (tv == 0.0) ? 1.0 : sin[ tv ] / tv ]
-            ix9 : i64 [ i64[ j ] * kn + k ]
-            ker[ ix9 ] = f32[ sv * wv * base / f64[ orig ] ]
+            ix_ : i64 [ i64[ j ] * kn + k ]
+            ker[ ix_ ] = f32[ sv * wv * base / f64[ orig ] ]
     n : i64 [ pcm.count ]
     target : i64 [ (i64[ nw ] * n + i64[ orig ] - 1) / i64[ orig ] ]
     frames : i64 [
@@ -44,9 +44,9 @@ func resample_sinc [ pcm: vec f32, from: i32, to: i32 ] -> vec f32
             if [ o >= target ] break
             s : f32 [ 0.0 ]
             for [ k: i32 0, k < kn, k += 1 ]
-                src9 : i64 [ i * orig + k - width ]
-                if [ src9 >= 0 && src9 < n ]
-                    s += ker[ i64[ j ] * kn + k ] * pcm[ src9 ]
+                src_ : i64 [ i * orig + k - width ]
+                if [ src_ >= 0 && src_ < n ]
+                    s += ker[ i64[ j ] * kn + k ] * pcm[ src_ ]
             out[ o ] = s
     return out
 
@@ -60,11 +60,11 @@ func rvc_save_tensors [ gd: Grad, keys: vec string, ts: vec GTensor,
         k : string keys[ i ]
         dm : string ''
         for [ j: i64 0, j < t.dims.count, j += 1 ]
-            d9 : i64 [ t.dims[ j ] ]
-            dm = (j == 0) ? '{d9}' : '{dm},{d9}'
-        e9 : i64 [ off + t.count * 4 ]
-        hdr = (i == 0) ? '{hdr}"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e9}]}}' : '{hdr},"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e9}]}}'
-        off = e9
+            d_ : i64 [ t.dims[ j ] ]
+            dm = (j == 0) ? '{d_}' : '{dm},{d_}'
+        e_ : i64 [ off + t.count * 4 ]
+        hdr = (i == 0) ? '{hdr}"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e_}]}}' : '{hdr},"{k}":{{"dtype":"F32","shape":[{dm}],"data_offsets":[{off},{e_}]}}'
+        off = e_
     hdr = '{hdr}}}'
     # the data starts 8-aligned: spaces pad the header
     while [ hdr.count % 8 != 0 ]
@@ -96,10 +96,10 @@ func rvc_sine [ f0: vec f32, noise: vec f32 ] -> vec f32
         for [ j: i64 0, j < upp, j += 1 ]
             rad : f32 [ step * f32[ j + 1 ] + acc ]
             uv : bool [ f0[ t ] > 0.0 ]
-            s9 : f32 [ sinf[ 6.283185307179586 * rad ] * 0.1 ]
+            s_ : f32 [ sinf[ 6.283185307179586 * rad ] * 0.1 ]
             amp : f32 [ (uv) ? 0.003 : 0.1 / 3.0 ]
             nz : f32 [ (noise) ? noise[ t * upp + j ] * amp : 0.0 ]
-            out[ t * upp + j ] = ((uv) ? s9 : 0.0) + nz
+            out[ t * upp + j ] = ((uv) ? s_ : 0.0) + nz
         last : f32 [ step * f32[ upp ] ]
         r2 : f32 [ fmodf[ last + 0.5, 1.0 ] - 0.5 ]
         # fmod keeps the sign of its argument, as torch.fmod
@@ -541,8 +541,8 @@ class RvcPitch
         n : i64 [ d0 * d1 * kk ]
         wv : vec f32 [ n ]
         for [ i: i64 0, i < n, i += 1 ]
-            c9 : i64 [ (tr) ? (i / kk) % d1 : i / (d1 * kk) ]
-            wv[ i ] = w.floats[ i ] * sc[ c9 ]
+            c_ : i64 [ (tr) ? (i / kk) % d1 : i / (d1 * kk) ]
+            wv[ i ] = w.floats[ i ] * sc[ c_ ]
         k0 : i64 [ w.tensor_shape[ 2 ] ]
         k1 : i64 [ w.tensor_shape[ 3 ] ]
         gw : GTensor gd.param[ vec i64 [] [ d0, d1, k0, k1 ] ]
@@ -603,13 +603,13 @@ class RvcPitch
         v : vec f32 [ 1026 * 1024 ]
         for [ k: i64 0, k < 513, k += 1 ]
             for [ n: i64 0, n < 1024, n += 1 ]
-                w9 : f64 [
+                w_ : f64 [
                     0.5
                     - 0.5 * cos[ 6.283185307179586 * f64[ n ] / 1024.0 ] ]
                 an : f64 [
                     6.283185307179586 * f64[ k * n % 1024 ] / 1024.0 ]
-                v[ k * 1024 + n ] = f32[ w9 * cos[ an ] ]
-                v[ (513 + k) * 1024 + n ] = f32[ 0.0 - w9 * sin[ an ] ]
+                v[ k * 1024 + n ] = f32[ w_ * cos[ an ] ]
+                v[ (513 + k) * 1024 + n ] = f32[ 0.0 - w_ * sin[ an ] ]
         t : GTensor gd.param[ vec i64 [] [ 1026, 1, 1024 ] ]
         gd.upload[ t, v ]
         return t
@@ -632,11 +632,11 @@ class RvcPitch
             en : f64 [ 2.0 / (mf[ m + 2 ] - mf[ m ]) ]
             for [ k: i64 0, k < 513, k += 1 ]
                 fk : f64 [ f64[ k ] * 16000.0 / 1024.0 ]
-                lw9 : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
-                up9 : f64 [
+                lw_ : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
+                up_ : f64 [
                     (mf[ m + 2 ] - fk) / (mf[ m + 2 ] - mf[ m + 1 ]) ]
-                w9 : f64 [ (lw9 < up9) ? lw9 : up9 ]
-                v[ m * 513 + k ] = f32[ ((w9 > 0.0) ? w9 : 0.0) * en ]
+                w_ : f64 [ (lw_ < up_) ? lw_ : up_ ]
+                v[ m * 513 + k ] = f32[ ((w_ > 0.0) ? w_ : 0.0) * en ]
         t : GTensor gd.param[ vec i64 [] [ 128, 513, 1 ] ]
         gd.upload[ t, v ]
         return t
@@ -683,16 +683,16 @@ class RvcPitch
         win : i64 [ 2000 ]
         ctx : i64 [ 256 ]
         for [ s0: i64 0, s0 < nt, s0 += win ]
-            a9 : i64 [ (s0 > ctx) ? s0 - ctx : 0 ]
-            e9 : i64 [ (s0 + win + ctx < nt) ? s0 + win + ctx : nt ]
-            n9 : i64 [ e9 - a9 ]
-            part : vec f32 [ 128 * n9 ]
+            a_ : i64 [ (s0 > ctx) ? s0 - ctx : 0 ]
+            e_ : i64 [ (s0 + win + ctx < nt) ? s0 + win + ctx : nt ]
+            n_ : i64 [ e_ - a_ ]
+            part : vec f32 [ 128 * n_ ]
             for [ m: i64 0, m < 128, m += 1 ]
-                memcpy[ @part[ m * n9 ], @mv[ m * nt + a9 ], n9 * 4 ]
-            sp : vec f32 salience_mel[ part, n9 ]
-            k9 : i64 [ (s0 + win < nt) ? win : nt - s0 ]
-            memcpy[ @out[ s0 * 360 ], @sp[ (s0 - a9) * 360 ],
-                    k9 * 1440 ]
+                memcpy[ @part[ m * n_ ], @mv[ m * nt + a_ ], n_ * 4 ]
+            sp : vec f32 salience_mel[ part, n_ ]
+            k_ : i64 [ (s0 + win < nt) ? win : nt - s0 ]
+            memcpy[ @out[ s0 * 360 ], @sp[ (s0 - a_) * 360 ],
+                    k_ * 1440 ]
         return out
 
     # the salience of mel frames [128][nt]: [nt, 360]
@@ -770,14 +770,14 @@ class RvcPitch
                 if [ sal[ t * 360 + k ] > mx ]
                     mx = sal[ t * 360 + k ]
                     c = k
-            ps9 : f64 [ 0.0 ]
+            ps_ : f64 [ 0.0 ]
             ws : f64 [ 0.0 ]
             for [ k: i64 c - 4, k <= c + 4, k += 1 ]
                 if [ k < 0 || k >= 360 ] continue
-                s9 : f64 [ sal[ t * 360 + k ] ]
-                ps9 += s9 * (20.0 * f64[ k ] + 1997.3794084376191)
-                ws += s9
-            cents : f64 [ (mx > thred) ? ps9 / ws : 0.0 ]
+                s_ : f64 [ sal[ t * 360 + k ] ]
+                ps_ += s_ * (20.0 * f64[ k ] + 1997.3794084376191)
+                ws += s_
+            cents : f64 [ (mx > thred) ? ps_ / ws : 0.0 ]
             hz : f64 [ 10.0 * pow[ 2.0, cents / 1200.0 ] ]
             out[ t ] = f32[ (hz == 10.0) ? 0.0 : hz ]
         return out
@@ -798,8 +798,8 @@ func rvc_fill_unvoiced [ f0: vec f32 ] -> bool
                 f0[ j ] = f0[ i ]
         el [ i - prev > 1 ]
             for [ j: i64 prev + 1, j < i, j += 1 ]
-                f9 : f32 [ f32[ j - prev ] / f32[ i - prev ] ]
-                f0[ j ] = f0[ prev ] + (f0[ i ] - f0[ prev ]) * f9
+                f_ : f32 [ f32[ j - prev ] / f32[ i - prev ] ]
+                f0[ j ] = f0[ prev ] + (f0[ i ] - f0[ prev ]) * f_
         prev = i
     for [ j: i64 prev + 1, j < n, j += 1 ]
         f0[ j ] = f0[ prev ]
@@ -994,13 +994,13 @@ func rvc_stft_basis [ gd: Grad ] -> GTensor
     v : vec f32 [ 2050 * 2048 ]
     for [ k: i64 0, k < 1025, k += 1 ]
         for [ n: i64 0, n < 2048, n += 1 ]
-            w9 : f64 [
+            w_ : f64 [
                 0.5
                 - 0.5 * cos[ 6.283185307179586 * f64[ n ] / 2048.0 ] ]
             an : f64 [
                 6.283185307179586 * f64[ k * n % 2048 ] / 2048.0 ]
-            v[ k * 2048 + n ] = f32[ w9 * cos[ an ] ]
-            v[ (1025 + k) * 2048 + n ] = f32[ 0.0 - w9 * sin[ an ] ]
+            v[ k * 2048 + n ] = f32[ w_ * cos[ an ] ]
+            v[ (1025 + k) * 2048 + n ] = f32[ 0.0 - w_ * sin[ an ] ]
     t : GTensor gd.param[ vec i64 [] [ 2050, 1, 2048 ] ]
     gd.upload[ t, v ]
     return t
@@ -1017,11 +1017,11 @@ func rvc_mel_weights [ gd: Grad ] -> GTensor
         en : f64 [ 2.0 / (mf[ m + 2 ] - mf[ m ]) ]
         for [ k: i64 0, k < 1025, k += 1 ]
             fk : f64 [ f64[ k ] * 40000.0 / 2048.0 ]
-            lw9 : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
-            up9 : f64 [
+            lw_ : f64 [ (fk - mf[ m ]) / (mf[ m + 1 ] - mf[ m ]) ]
+            up_ : f64 [
                 (mf[ m + 2 ] - fk) / (mf[ m + 2 ] - mf[ m + 1 ]) ]
-            w9 : f64 [ (lw9 < up9) ? lw9 : up9 ]
-            v[ m * 1025 + k ] = f32[ ((w9 > 0.0) ? w9 : 0.0) * en ]
+            w_ : f64 [ (lw_ < up_) ? lw_ : up_ ]
+            v[ m * 1025 + k ] = f32[ ((w_ > 0.0) ? w_ : 0.0) * en ]
     t : GTensor gd.param[ vec i64 [] [ 125, 1025, 1 ] ]
     gd.upload[ t, v ]
     return t
@@ -1071,10 +1071,10 @@ class RvcPrep
         if [ !ac || ac.frames <= 0 ] return out
         mono : vec f32 [ ac.frames ]
         for [ i: i64 0, i < ac.frames, i += 1 ]
-            s9 : f64 [ 0.0 ]
+            s_ : f64 [ 0.0 ]
             for [ c: i32 0, c < ac.channels, c += 1 ]
-                s9 += f64[ ac.pcm[ i * ac.channels + c ] ]
-            mono[ i ] = f32[ s9 / f64[ ac.channels ] / 32768.0 ]
+                s_ += f64[ ac.pcm[ i * ac.channels + c ] ]
+            mono[ i ] = f32[ s_ / f64[ ac.channels ] / 32768.0 ]
         a40 : vec f32 rvc_highpass[ resample_sinc[ mono, ac.rate, 40000 ] ]
         sl : vec i64 rvc_slices[ a40 ]
         per : i64 [ 148000 ]
@@ -1105,8 +1105,8 @@ class RvcPrep
     func norm_piece [ pc: vec f32, out: vec RvcItem ]
         mx : f32 [ 0.0 ]
         for [ i: i64 0, i < pc.count, i += 1 ]
-            a9 : f32 [ fabsf[ pc[ i ] ] ]
-            if [ a9 > mx ] mx = a9
+            a_ : f32 [ fabsf[ pc[ i ] ] ]
+            if [ a_ > mx ] mx = a_
         if [ mx <= 0.0 || mx > 2.5 ] return
         for [ i: i64 0, i < pc.count, i += 1 ]
             pc[ i ] = pc[ i ] / mx * 0.675 + 0.25 * pc[ i ]
@@ -1116,12 +1116,12 @@ class RvcPrep
     # frames, rmvpe pitch (gaps filled between voiced frames), bins
     func prepare [ clip: path ] -> vec RvcItem
         items : vec RvcItem []
-        ps9 : vec RvcItem pieces[ clip ]
+        ps_ : vec RvcItem pieces[ clip ]
         if [ !valid ] return items
         pg : Grad gd
         mel_min : f64 [ 1127.0 * log[ 1.0 + 50.0 / 700.0 ] ]
         mel_max : f64 [ 1127.0 * log[ 1.0 + 1100.0 / 700.0 ] ]
-        for [ pi: RvcItem ] in ps9
+        for [ pi: RvcItem ] in ps_
             pc : vec f32 pi.wave
             w16 : vec f32 resample_sinc[ pc, 40000, 16000 ]
             pg.reset_work[]
@@ -1129,16 +1129,16 @@ class RvcPrep
             pg.rn.finish[]
             hv : vec f32 pg.download[ ht ]
             t50 : i64 [ ht.dims[ 2 ] ]
-            rows9 : vec f32 [ t50 * 768 ]
+            rows_ : vec f32 [ t50 * 768 ]
             for [ t: i64 0, t < t50, t += 1 ]
                 for [ c: i64 0, c < 768, c += 1 ]
-                    rows9[ t * 768 + c ] = hv[ c * t50 + t ]
+                    rows_[ t * 768 + c ] = hv[ c * t50 + t ]
             if [ !feats ] feats = vec f32 [ 0 ]
-            grown : vec f32 [ feats.count + rows9.count ]
+            grown : vec f32 [ feats.count + rows_.count ]
             if [ feats.count > 0 ]
                 memcpy[ @grown[ 0 ], @feats[ 0 ], feats.count * 4 ]
-            memcpy[ @grown[ feats.count ], @rows9[ 0 ],
-                    rows9.count * 4 ]
+            memcpy[ @grown[ feats.count ], @rows_[ 0 ],
+                    rows_.count * 4 ]
             feats = grown
             pg.reset_work[]
             f0 : vec f32 pn.f0[ w16, 0.03 ]
@@ -1300,24 +1300,24 @@ class RvcTrain
             for [ i: i64 0, i < nbk, i += 1 ]
                 bo[ i ] = i
             for [ i: i64 nbk - 1, i > 0, i -= 1 ]
-                r9 : i64 [ i64[ rand[] ] % (i + 1) ]
+                r_ : i64 [ i64[ rand[] ] % (i + 1) ]
                 tv : i64 [ bo[ i ] ]
-                bo[ i ] = bo[ r9 ]
-                bo[ r9 ] = tv
+                bo[ i ] = bo[ r_ ]
+                bo[ r_ ] = tv
             sums : vec f64 [ 5 ]
             t0 : i64 [ Au.epoch_millis[] ]
             for [ q: i64 0, q < nbk, q += 1 ]
-                a9 : i64 [ bo[ q ] * i64[ batch ] ]
-                e9 : i64 [
-                    (a9 + i64[ batch ] < n) ? a9 + i64[ batch ] : n ]
+                a_ : i64 [ bo[ q ] * i64[ batch ] ]
+                e_ : i64 [
+                    (a_ + i64[ batch ] < n) ? a_ + i64[ batch ] : n ]
                 stm : i32 [ Au.auto_mark[] ]
-                ls : vec f32 step[ batch_of[ items, order, a9, e9 ], lr ]
+                ls : vec f32 step[ batch_of[ items, order, a_, e_ ], lr ]
                 for [ k: i64 0, k < 5, k += 1 ]
                     sums[ k ] = sums[ k ] + f64[ ls[ k ] ]
                 Au.auto_free_to[ stm ]
             ms : i64 [ Au.epoch_millis[] - t0 ]
-            d9 : f64 [ nbk ]
-            log 'rvc train: epoch {ep}/{epochs} ({ms} ms): disc {sums[ 0 ] / d9} gen {sums[ 1 ] / d9} fm {sums[ 2 ] / d9} mel {sums[ 3 ] / d9} kl {sums[ 4 ] / d9}'
+            d_ : f64 [ nbk ]
+            log 'rvc train: epoch {ep}/{epochs} ({ms} ms): disc {sums[ 0 ] / d_} gen {sums[ 1 ] / d_} fm {sums[ 2 ] / d_} mel {sums[ 3 ] / d_} kl {sums[ 4 ] / d_}'
             if [ ep % every == 0 || ep == epochs ]
                 checkpoint[ save_to, ep ]
             done = ep
@@ -1325,11 +1325,11 @@ class RvcTrain
         return true
 
     # items order[a .. e) as one batch, cropped to the shortest
-    func batch_of [ items: vec RvcItem, order: vec i64, a9: i64,
-                    e9: i64 ] -> RvcBatch
-        nb : i64 [ e9 - a9 ]
-        nt : i64 [ items[ order[ a9 ] ].nt ]
-        for [ i: i64 a9, i < e9, i += 1 ]
+    func batch_of [ items: vec RvcItem, order: vec i64, a_: i64,
+                    e_: i64 ] -> RvcBatch
+        nb : i64 [ e_ - a_ ]
+        nt : i64 [ items[ order[ a_ ] ].nt ]
+        for [ i: i64 a_, i < e_, i += 1 ]
             if [ items[ order[ i ] ].nt < nt ]
                 nt = items[ order[ i ] ].nt
         bt : RvcBatch [ nb: nb, nt: nt, phone: vec f32 [ nb * nt * 768 ],
@@ -1339,7 +1339,7 @@ class RvcTrain
                         wave: vec f32 [ nb * nt * 400 ],
                         sid: vec f32 [ nb ] ]
         for [ b: i64 0, b < nb, b += 1 ]
-            it : RvcItem items[ order[ a9 + b ] ]
+            it : RvcItem items[ order[ a_ + b ] ]
             memcpy[ @bt.phone[ b * nt * 768 ], @it.phone[ 0 ],
                     nt * 768 * 4 ]
             memcpy[ @bt.pitch[ b * nt ], @it.pitch[ 0 ], nt * 4 ]
@@ -1405,11 +1405,11 @@ class RvcTrain
                        0, 1, 1 ], 0.000002 ]
         # the discriminator on the real wave and a detached copy
         gmark : i64 [ gd.tape.count ]
-        od9 : GTensor gd.detached[ o ]
+        od_ : GTensor gd.detached[ o ]
         dsc.logits = vec GTensor []
         dsc.fmaps = vec GTensor []
         dsc.run[ wave ]
-        dsc.run[ od9 ]
+        dsc.run[ od_ ]
         nd : i64 [ 9 ]
         w1 : f32 [ 1.0 ]
         w2 : f32 [ 2.0 ]
@@ -1454,14 +1454,14 @@ class RvcTrain
         # the losses as rvc logs them: disc, gen, fm, mel, kl
         out : vec f32 [ 5 ]
         for [ i: i64 0, i < dls.count, i += 1 ]
-            v9 : vec f32 gd.download[ dls[ i ] ]
-            out[ 0 ] = out[ 0 ] + v9[ 0 ]
+            v_ : vec f32 gd.download[ dls[ i ] ]
+            out[ 0 ] = out[ 0 ] + v_[ 0 ]
         for [ i: i64 0, i < nd, i += 1 ]
-            v9 : vec f32 gd.download[ gls[ i ] ]
-            out[ 1 ] = out[ 1 ] + v9[ 0 ]
+            v_ : vec f32 gd.download[ gls[ i ] ]
+            out[ 1 ] = out[ 1 ] + v_[ 0 ]
         for [ i: i64 0, i < nf, i += 1 ]
-            v9 : vec f32 gd.download[ gls[ nd + i ] ]
-            out[ 2 ] = out[ 2 ] + 2.0 * v9[ 0 ]
+            v_ : vec f32 gd.download[ gls[ nd + i ] ]
+            out[ 2 ] = out[ 2 ] + 2.0 * v_[ 0 ]
         mv : vec f32 gd.download[ mel ]
         out[ 3 ] = mv[ 0 ]
         kv : vec f32 gd.download[ klv ]
@@ -1479,8 +1479,8 @@ func rvc_highpass_fs [ x: vec f32, fs: f64 ] -> vec f32
     # the poles' z positions (re, im): two pairs and one real
     zr : vec f64 [ 3 ]
     zi : vec f64 [ 3 ]
-    for [ s9: i64 0, s9 < 3, s9 += 1 ]
-        an : f64 [ 3.141592653589793 * f64[ 2 * s9 + 6 ] / 10.0 ]
+    for [ s_: i64 0, s_ < 3, s_ += 1 ]
+        an : f64 [ 3.141592653589793 * f64[ 2 * s_ + 6 ] / 10.0 ]
         pr : f64 [ cos[ an ] ]
         pim : f64 [ sin[ an ] ]
         # the high-pass pole wc / p
@@ -1492,21 +1492,21 @@ func rvc_highpass_fs [ x: vec f32, fs: f64 ] -> vec f32
         dr : f64 [ 2.0 * fs - hr ]
         di : f64 [ 0.0 - hi ]
         dd : f64 [ dr * dr + di * di ]
-        zr[ s9 ] = (nr * dr + hi * di) / dd
-        zi[ s9 ] = (hi * dr - nr * di) / dd
+        zr[ s_ ] = (nr * dr + hi * di) / dd
+        zi[ s_ ] = (hi * dr - nr * di) / dd
     # unit gain at nyquist (z = -1)
     gain : f64 [ 1.0 ]
-    for [ s9: i64 0, s9 < 2, s9 += 1 ]
-        gain = gain * (1.0 + 2.0 * zr[ s9 ] + zr[ s9 ] * zr[ s9 ] + zi[ s9 ] * zi[ s9 ]) / 4.0
+    for [ s_: i64 0, s_ < 2, s_ += 1 ]
+        gain = gain * (1.0 + 2.0 * zr[ s_ ] + zr[ s_ ] * zr[ s_ ] + zi[ s_ ] * zi[ s_ ]) / 4.0
     gain = gain * (1.0 + zr[ 2 ]) / 2.0
     n : i64 [ x.count ]
     y : vec f64 [ n ]
     for [ i: i64 0, i < n, i += 1 ]
         y[ i ] = f64[ x[ i ] ]
-    for [ s9: i64 0, s9 < 3, s9 += 1 ]
-        a1 : f64 [ (s9 < 2) ? -2.0 * zr[ s9 ] : 0.0 - zr[ s9 ] ]
+    for [ s_: i64 0, s_ < 3, s_ += 1 ]
+        a1 : f64 [ (s_ < 2) ? -2.0 * zr[ s_ ] : 0.0 - zr[ s_ ] ]
         a2 : f64 [
-            (s9 < 2) ? zr[ s9 ] * zr[ s9 ] + zi[ s9 ] * zi[ s9 ] : 0.0 ]
+            (s_ < 2) ? zr[ s_ ] * zr[ s_ ] + zi[ s_ ] * zi[ s_ ] : 0.0 ]
         x1 : f64 [ 0.0 ]
         x2 : f64 [ 0.0 ]
         y1 : f64 [ 0.0 ]
@@ -1514,7 +1514,7 @@ func rvc_highpass_fs [ x: vec f32, fs: f64 ] -> vec f32
         for [ i: i64 0, i < n, i += 1 ]
             xi : f64 [ y[ i ] ]
             yo : f64 [ 0.0 ]
-            if [ s9 < 2 ]
+            if [ s_ < 2 ]
                 yo = xi - 2.0 * x1 + x2 - a1 * y1 - a2 * y2
             el
                 yo = xi - x1 - a1 * y1
@@ -1558,13 +1558,13 @@ func rvc_slices [ x: vec f32 ] -> vec i64
     nf : i64 [ 1 + n / hop ]
     rms : vec f64 [ nf ]
     for [ f: i64 0, f < nf, f += 1 ]
-        s9 : f64 [ 0.0 ]
+        s_ : f64 [ 0.0 ]
         for [ j: i64 0, j < win, j += 1 ]
             t : i64 [ f * hop + j - win / 2 ]
             if [ t >= 0 && t < n ]
                 v : f64 [ x[ t ] ]
-                s9 += v * v
-        rms[ f ] = sqrt[ s9 / f64[ win ] ]
+                s_ += v * v
+        rms[ f ] = sqrt[ s_ / f64[ win ] ]
     tags : vec i64 []
     sil : i64 [ -1 ]
     cst : i64 [ 0 ]
@@ -1611,9 +1611,9 @@ func rvc_slices [ x: vec f32 ] -> vec i64
     if [ t0 > 0 ]
         rvc_pair[ out, 0, t0 * hop ]
     for [ i: i64 0, i < nt - 1, i += 1 ]
-        a9 : i64 [ tags[ i * 2 + 1 ] * hop ]
-        b9 : i64 [ tags[ i * 2 + 2 ] * hop ]
-        rvc_pair[ out, a9, (b9 < n) ? b9 : n ]
+        a_ : i64 [ tags[ i * 2 + 1 ] * hop ]
+        b_ : i64 [ tags[ i * 2 + 2 ] * hop ]
+        rvc_pair[ out, a_, (b_ < n) ? b_ : n ]
     tl : i64 [ tags[ nt * 2 - 1 ] ]
     if [ tl < nf ]
         rvc_pair[ out, tl * hop, n ]
@@ -1637,11 +1637,11 @@ class RvcIndex
         host = v
         nv : vec f32 [ n ]
         for [ i: i64 0, i < n, i += 1 ]
-            s9 : f64 [ 0.0 ]
+            s_ : f64 [ 0.0 ]
             for [ c: i64 0, c < 768, c += 1 ]
                 e : f64 [ v[ i * 768 + c ] ]
-                s9 += e * e
-            nv[ i ] = f32[ s9 ]
+                s_ += e * e
+            nv[ i ] = f32[ s_ ]
         norms = gd.param[ vec i64 [] [ n ] ]
         gd.upload[ norms, nv ]
         valid = true
@@ -1683,12 +1683,12 @@ class RvcIndex
                 ws[ j ] = 1.0 / (sc * sc)
                 wsum += ws[ j ]
             for [ c: i64 0, c < 768, c += 1 ]
-                a9 : f64 [ 0.0 ]
+                a_ : f64 [ 0.0 ]
                 for [ j: i64 0, j < 8, j += 1 ]
                     ix : i64 [ iv[ r * 8 + j ] ]
-                    a9 += ws[ j ] / wsum * f64[ rv[ ix * 768 + c ] ]
+                    a_ += ws[ j ] / wsum * f64[ rv[ ix * 768 + c ] ]
                 out[ r * 768 + c ] = f32[
-                    a9 * f64[ rate ]
+                    a_ * f64[ rate ]
                     + f64[ q[ r * 768 + c ] ] * (1.0 - f64[ rate ]) ]
         return out
 
@@ -1761,11 +1761,11 @@ class RvcVoice
         if [ pitch.count < pl ] pl = pitch.count
         ph : vec f32 [ pl * 768 ]
         for [ t: i64 0, t < pl, t += 1 ]
-            k9 : f32 [ (pitchf[ t ] < 1.0) ? protect : 1.0 ]
+            k_ : f32 [ (pitchf[ t ] < 1.0) ? protect : 1.0 ]
             for [ c: i64 0, c < 768, c += 1 ]
-                a9 : i64 [ (t / 2) * 768 + c ]
-                ph[ t * 768 + c ] = fb[ a9 ] * k9 + f0r[
-                    a9 ] * (1.0 - k9)
+                a_ : i64 [ (t / 2) * 768 + c ]
+                ph[ t * 768 + c ] = fb[ a_ ] * k_ + f0r[
+                    a_ ] * (1.0 - k_)
         pt : vec f32 [ pl ]
         pf : vec f32 [ pl ]
         memcpy[ @pt[ 0 ], @pitch[ 0 ], pl * 4 ]
@@ -1794,9 +1794,9 @@ class RvcVoice
                 acc += fabs[ f64[ ap[ i + win ] ] ] - fabs[
                     f64[ ap[ i ] ] ]
             for [ t: i64 tc, t < n, t += tc ]
-                a9 : i64 [ t - tq ]
-                e9 : i64 [ (t + tq < n) ? t + tq : n ]
-                cuts.push[ rvc_argmin[ sm, a9, e9 - 1 ] ]
+                a_ : i64 [ t - tq ]
+                e_ : i64 [ (t + tq < n) ? t + tq : n ]
+                cuts.push[ rvc_argmin[ sm, a_, e_ - 1 ] ]
         ap2 : vec f32 rvc_reflect[ audio, tpad ]
         plen : i64 [ ap2.count / win ]
         f0 : vec f32 pn.f0[ ap2, 0.03 ]
@@ -1821,26 +1821,26 @@ class RvcVoice
         s0 : i64 [ 0 ]
         for [ q: i64 0, q <= cuts.count, q += 1 ]
             last : bool [ q == cuts.count ]
-            tq9 : i64 [ (last) ? 0 : cuts[ q ] / win * win ]
-            e9 : i64 [ (last) ? ap2.count : tq9 + tpad * 2 + win ]
-            f9 : i64 [ s0 / win ]
-            g9 : i64 [ (last) ? np : (tq9 + tpad * 2) / win ]
-            if [ g9 > np ] g9 = np
-            seg : vec f32 [ e9 - s0 ]
-            memcpy[ @seg[ 0 ], @ap2[ s0 ], (e9 - s0) * 4 ]
-            pt : vec f32 [ g9 - f9 ]
-            pf : vec f32 [ g9 - f9 ]
-            memcpy[ @pt[ 0 ], @pitch[ f9 ], (g9 - f9) * 4 ]
-            memcpy[ @pf[ 0 ], @pitchf[ f9 ], (g9 - f9) * 4 ]
+            tq_ : i64 [ (last) ? 0 : cuts[ q ] / win * win ]
+            e_ : i64 [ (last) ? ap2.count : tq_ + tpad * 2 + win ]
+            f_ : i64 [ s0 / win ]
+            g_ : i64 [ (last) ? np : (tq_ + tpad * 2) / win ]
+            if [ g_ > np ] g_ = np
+            seg : vec f32 [ e_ - s0 ]
+            memcpy[ @seg[ 0 ], @ap2[ s0 ], (e_ - s0) * 4 ]
+            pt : vec f32 [ g_ - f_ ]
+            pf : vec f32 [ g_ - f_ ]
+            memcpy[ @pt[ 0 ], @pitch[ f_ ], (g_ - f_) * 4 ]
+            memcpy[ @pf[ 0 ], @pitchf[ f_ ], (g_ - f_) * 4 ]
             y : vec f32 vc[ seg, pt, pf ]
-            keep9 : i64 [ y.count - 2 * trim ]
-            if [ keep9 > 0 ]
-                grown : vec f32 [ out.count + keep9 ]
+            keep_ : i64 [ y.count - 2 * trim ]
+            if [ keep_ > 0 ]
+                grown : vec f32 [ out.count + keep_ ]
                 if [ out.count > 0 ]
                     memcpy[ @grown[ 0 ], @out[ 0 ], out.count * 4 ]
-                memcpy[ @grown[ out.count ], @y[ trim ], keep9 * 4 ]
+                memcpy[ @grown[ out.count ], @y[ trim ], keep_ * 4 ]
                 out = grown
-            if [ !last ] s0 = tq9
+            if [ !last ] s0 = tq_
         return (rate == 40000) ? out : resample_sinc[ out, 40000, rate ]
 
 # x with n samples reflected onto each end (numpy's reflect)

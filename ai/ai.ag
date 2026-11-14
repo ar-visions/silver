@@ -247,12 +247,12 @@ class pth
         nd : i32 [ pthf_ndim[ pf, i ] ]
         dv : new i64 [ 4 ]
         # a 0-d value is one number; past 4 dims the tail folds in
-        n9 : i32 [ (nd < 1) ? 1 : ((nd > 4) ? 4 : nd) ]
-        for [ k: i32 0, k < n9, k += 1 ]
+        n_ : i32 [ (nd < 1) ? 1 : ((nd > 4) ? 4 : nd) ]
+        for [ k: i32 0, k < n_, k += 1 ]
             dv[ k ] = (nd < 1) ? 1 : pthf_dim[ pf, i, k ]
         for [ k: i32 4, k < nd, k += 1 ]
             dv[ 3 ] = dv[ 3 ] * pthf_dim[ pf, i, k ]
-        t : tensor [ tensor_shape: shape.shape_from[ n9, dv ] ]
+        t : tensor [ tensor_shape: shape.shape_from[ n_, dv ] ]
         if [ pthf_read_f32[ pf, i, t.floats ] == 0 ]
             log 'pth: cannot read {name}'
             return null
@@ -3456,12 +3456,12 @@ class whisper
             res.push[ last ]
             rc : i32 [ res.count ]
             p_hit : i32 [ 0 ]
-            for [ p9: i32 1, p9 <= 8, p9 += 1 ]
-                if [ p_hit > 0 || rc < p9 * 2 ] continue
+            for [ p_: i32 1, p_ <= 8, p_ += 1 ]
+                if [ p_hit > 0 || rc < p_ * 2 ] continue
                 eq : bool [ true ]
-                for [ g: i32 1, g <= p9, g += 1 ]
-                    if [ res[rc - g] != res[rc - g - p9] ] eq = false
-                if [ eq ] p_hit = p9
+                for [ g: i32 1, g <= p_, g += 1 ]
+                    if [ res[rc - g] != res[rc - g - p_] ] eq = false
+                if [ eq ] p_hit = p_
             if [ p_hit > 0 ]
                 trimmed : vec i32 [ ]
                 for [ ti: i32 0, ti < rc - p_hit, ti += 1 ]
@@ -3863,9 +3863,9 @@ shader WgAttn
             for (uint e = lid; e < 2048u; e += 256u) {{
                 uint kj = j0 + e / 64u;
                 uint kc = e % 64u;
-                bool in9 = kj < TKV;
-                tk[e] = in9 ? k_in[kj * D + ho + kc] : 0.0;
-                tv[e] = in9 ? v_in[kj * D + ho + kc] : 0.0;
+                bool in_ = kj < TKV;
+                tk[e] = in_ ? k_in[kj * D + ho + kc] : 0.0;
+                tv[e] = in_ ? v_in[kj * D + ho + kc] : 0.0;
             }}
             barrier();
             if (live) {{

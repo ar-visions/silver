@@ -602,8 +602,8 @@ expect func t_struct_arg_to_member [] -> bool
     return a == 4.0 && b == 8.0
 
 # ==== Classes: Polymorphism you opt into.
-# Calls are direct by default; * asks for dynamic dispatch.
-# Members carry their access, meta and change blocks.
+# calls are direct by default; * asks for dynamic dispatch.
+# members carry their access, meta and change blocks.
 
 class Counter                       # class is heap, ref-counted
     public  count  : i64            # readable outside, written in
@@ -738,7 +738,7 @@ expect func t_class [] -> bool
     t6: c | 2
     t7: c & 4
     t8: c ^ 1
-    t9: c << 1
+    t_: c << 1
     t10: c >> 1
     t11: 20 / c                     # reverse slot: operator left
     t12: 1 << c
@@ -746,7 +746,7 @@ expect func t_class [] -> bool
     n1: c.tally[]                   # static: shared across instances
     o: Counter [ count: 0 ]
     n2: o.tally[]
-    return c.value[] == 5 && c.peek_hidden[] == 7 && t1 == 10 && t2 == 4 && t3 == 10 && t4 == 1 && t5 == 2 && t6 == 7 && t7 == 4 && t8 == 4 && t9 == 10 && t10 == 2 && t11 == 4 && t12 == 32 && t13 == 5 && c.label == 'main' && n2 == n1 + 1
+    return c.value[] == 5 && c.peek_hidden[] == 7 && t1 == 10 && t2 == 4 && t3 == 10 && t4 == 1 && t5 == 2 && t6 == 7 && t7 == 4 && t8 == 4 && t_ == 10 && t10 == 2 && t11 == 4 && t12 == 32 && t13 == 5 && c.label == 'main' && n2 == n1 + 1
 
 expect func t_inherit [] -> bool
     d: Doubler [ count: 0 ]
@@ -1183,7 +1183,7 @@ expect func t_override_number_type [] -> bool
     return b.fade == 24.0 && f.fade == 24.0
 
 # ==== Expressions: Operators, literals and casts.
-# Precedence, ranges, comparisons and numeric forms, each checked
+# precedence, ranges, comparisons and numeric forms, each checked
 # against the value it must produce.
 
 expect func t_assign_ops [] -> bool
@@ -1245,7 +1245,7 @@ expect func t_math [] -> bool
     r6: pow[ 2.0, 10.0 ]
     r7: mix[ 0.0, 10.0, 0.5 ]       # from * (1 - t) + to * t
     r8: floor[ 3.7 ]
-    r9: ceil[ 3.2 ]
+    r_: ceil[ 3.2 ]
     r10: round[ 3.5 ]
     r11: exp[ 0.0 ]
     r12: log[ 1.0 ]
@@ -1256,7 +1256,7 @@ expect func t_math [] -> bool
     r17: asin[ 0.0 ]
     r18: acos[ 1.0 ]
     r19: atan[ 0.0 ]
-    return r1 == 4.0 && r2 == 3 && r3 == 9 && r4 == 10 && r5 == 6 && r6 == 1024.0 && r7 == 5.0 && r8 == 3.0 && r9 == 4.0 && r10 == 4.0 && r11 == 1.0 && r12 == 0.0 && r13 == 0.0 && r14 == 0.0 && r15 == 1.0 && r16 == 0.0 && r17 == 0.0 && r18 == 0.0 && r19 == 0.0
+    return r1 == 4.0 && r2 == 3 && r3 == 9 && r4 == 10 && r5 == 6 && r6 == 1024.0 && r7 == 5.0 && r8 == 3.0 && r_ == 4.0 && r10 == 4.0 && r11 == 1.0 && r12 == 0.0 && r13 == 0.0 && r14 == 0.0 && r15 == 1.0 && r16 == 0.0 && r17 == 0.0 && r18 == 0.0 && r19 == 0.0
 
 expect func t_origin [] -> bool
     ln: i32 [ __LINE__ ]            # source position of the stmt
@@ -1800,17 +1800,17 @@ expect func t_switch_i64_default [] -> bool
     return r == 2 && r2 == 3
 
 # ==== Functions and lambdas: Arguments by type, lambdas with context.
-# Without commas, arguments match parameters by type. :: opens
+# without commas, arguments match parameters by type. :: opens
 # the contextual arguments a lambda carries with it.
 
-# Type-first arguments support unnamed C-style declarations.
+# type-first arguments support unnamed C-style declarations.
 func type_only_arg [ i32 ] -> i32
     return 7
 
 func type_void [] -> void
     no-op
 
-# Names may be any letters Unicode counts as letters: they stay
+# names may be any letters Unicode counts as letters: they stay
 # UTF-8 bytes from the source to the object file's symbols.
 func 加 [ 甲: i32, 乙: i32 ] -> i32
     return 甲 + 乙
@@ -2928,7 +2928,7 @@ expect func t_vec_object_cond [] -> bool
     return hits == 10 && pick == 200
 
 # ==== References and memory: Counted, with the cost visible.
-# Objects are reference counted; ref, @ and lambda contexts show
+# objects are reference counted; ref, @ and lambda contexts show
 # where a hold is taken and where it is given back.
 
 # 10MB rides in the lambda's context; it must go when the lambda does
@@ -3021,15 +3021,15 @@ expect func t_vec_borrow [] -> bool
     total : i32 [ 0 ]
     while [ k < v.count ]
         cl : v[k]
-        c9 : cl.content
+        c_ : cl.content
         total += cl.line
-        if [ c9 == 'bb' ] total += 10
+        if [ c_ == 'bb' ] total += 10
         k += 1
     w : vec LineLike []
     w.push[ v[0] ]
     w.push[ v[1] ]
-    m9 : w[0]
-    return total == 13 && m9.line == 1 && w[1].content == 'bb'
+    m_ : w[0]
+    return total == 13 && m_.line == 1 && w[1].content == 'bb'
 
 expect func t_memop_bare [] -> bool
     src: local i32 [ 2 ] [ 1, 2 ]
@@ -3387,7 +3387,7 @@ expect func t_agi_roundtrip [] -> bool
            back.note == null && back.flag == 5
 
 expect func t_export_registry [] -> bool
-    # The owner-qualified registry was written during build.
+    # the owner-qualified registry was written during build.
     p: path '{path.path_install[]}/export/silver-features.agi'
     if [ !p.exists[] ] return false
     s: string p.load[ typeid[string], null ]

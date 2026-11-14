@@ -324,7 +324,7 @@ element knes : trinity
 		bit : i32 [ -1 ]
 		if   [ code == 47 ]  bit = 0     # /  A (right, like the pad)
 		el [ code == 46 ]  bit = 1     # .  B (left)
-		el [ code == 340 || code == 344 ] bit = 2   # Shift  Select
+		el [ code == 340 || code == 344 ] bit = 2   # shift  Select
 		el [ code == 257 ] bit = 3     # Enter  Start
 		el [ code == 87 ]  bit = 4     # W  Up
 		el [ code == 83 ]  bit = 5     # S  Down
@@ -344,7 +344,7 @@ element knes : trinity
 		if [ down ]
 			if [ code == 80 ] save_req = true   # P save
 			if [ code == 76 ] load_req = true   # L load
-			if [ code == 32 ] paused = !paused  # Space pause/resume
+			if [ code == 32 ] paused = !paused  # space pause/resume
 		if [ getenv[ 'KNES_KEYLOG' ] ]
 			printf[ "KNESKEY code=%d st=%d pad=%02x\n", code, (down) ? 1 : 0, pad_st ]
 		return
@@ -1529,13 +1529,13 @@ element knes : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: gh ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
-		ar9 : f32 [ 8.0 / 7.0 ]
+		ar_ : f32 [ 8.0 / 7.0 ]
 		fw : f32 [ vp.w ]
-		fh9 : f32 [ fw / ar9 ]
-		if [ fh9 > vp.h ]
-			fh9 = vp.h
-			fw = fh9 * ar9
-		vp = rect [ x: vp.x + (vp.w - fw) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw, h: fh9 ]
+		fh_ : f32 [ fw / ar_ ]
+		if [ fh_ > vp.h ]
+			fh_ = vp.h
+			fw = fh_ * ar_
+		vp = rect [ x: vp.x + (vp.w - fw) * 0.5, y: vp.y + (vp.h - fh_) * 0.5, w: fw, h: fh_ ]
 		bounds = vp
 		if [ ! booted ] boot[]
 		if [ ! screen_tex ]
@@ -1583,11 +1583,8 @@ element knes : trinity
 					if [ ay < 0.0 ] ay = 0.0
 					oy = f32[ sdy ] * (1.0 - ay) * (oh / 240.0)
 		el
-			for [ y: i32 0, y < 240, y += 1 ]
-				for [ x: i32 0, x < 256, x += 1 ]
-					ppu.framebuf[ y * 256 + x ] = 0xFF000000 | (u32[ (x + y + i32[ frames ]) & 0xFF ] << 8)
-			frames += 1
-			screen_tex.upload[ ppu.framebuf, 256 * 240 * 4 ]
+			own_icon_paint[ cv, vp ]
+			return
 		out : rect [ x: vp.x - bl + ox, y: vp.y - bl + oy, w: ow, h: oh ]
 		out_spr : rect [ x: vp.x - bl, y: vp.y - bl, w: ow, h: oh ]
 		if [ vscale || se_2d || blocky ]

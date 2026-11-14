@@ -1985,7 +1985,9 @@ abstract live_app media_app
                 # the shell letterboxes only an app that locked its
                 # aspect
                 el [ cmd == 'aspect' ]
-                    agent_sock_reply[ (lock_aspect) ? '1\n' : '0\n' ]
+                    # its shape too: the shell fits a window to it
+                    agent_sock_reply[ (lock_aspect)
+                        ? '1 {aspect_w} {aspect_h}\n' : '0\n' ]
                     continue
                 # the shell's WIDTH for one instrument, in pixels
                 el [ cmd == 'instr-width' && parts.count >= 3 ]
@@ -5598,6 +5600,13 @@ Display Window
             return
         # world coords before find_target mangles it
         world_m : vec2f [ ev.mouse.pos ]
+        # the press carries the live modifiers: the flags only key
+        # events set stay stale when a release went elsewhere
+        held : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ shift != ev.key.shift || cmd != held ]
+            shift = ev.key.shift
+            cmd   = held
+            if [ root ] dirty_tree[ root ]
         # a phone: a press within 20 px of a side may become a swipe
         edge_dir  = 0
         edge_done = false

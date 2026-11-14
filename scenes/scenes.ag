@@ -149,12 +149,12 @@ ModelViewProject GaiaShader
         // six octaves, each on its own offset domain and drifting at
         // its own rate, so no two share a cell boundary. the top one
         // stops near 450 -- past that a cell is a pixel and it shimmers
-        float t9 = ubo.time * 0.03;
-        float d1 = g_vnoise(vec3(v_uv *  29.0, t9));
-        float d2 = g_vnoise(vec3(v_uv *  61.0 + vec2( 7.0,  3.0), t9 * 1.7));
-        float d3 = g_vnoise(vec3(v_uv * 127.0 + vec2(23.0, 11.0), t9 * 2.3));
-        float d4 = g_vnoise(vec3(v_uv * 251.0 + vec2( 5.0, 29.0), t9 * 3.1));
-        float d5 = g_vnoise(vec3(v_uv * 449.0 + vec2(31.0, 17.0), t9 * 4.3));
+        float t_ = ubo.time * 0.03;
+        float d1 = g_vnoise(vec3(v_uv *  29.0, t_));
+        float d2 = g_vnoise(vec3(v_uv *  61.0 + vec2( 7.0,  3.0), t_ * 1.7));
+        float d3 = g_vnoise(vec3(v_uv * 127.0 + vec2(23.0, 11.0), t_ * 2.3));
+        float d4 = g_vnoise(vec3(v_uv * 251.0 + vec2( 5.0, 29.0), t_ * 3.1));
+        float d5 = g_vnoise(vec3(v_uv * 449.0 + vec2(31.0, 17.0), t_ * 4.3));
         float dn = 0.30 * d1 + 0.24 * d2 + 0.19 * d3
                  + 0.15 * d4 + 0.12 * d5;
         // a third of the previous bite: 0.62 took 38% out of the field,
@@ -218,9 +218,9 @@ func eu_perm [ x: f32 ] -> f32
     return p - floor[ p / 289.0 ] * 289.0
 
 # gradient dot for one lattice corner, glsl e_gnoise rules
-func eu_grad [ h9: f32, x: f32, y: f32, z: f32 ] -> f32
-    h7 : f32 [ floor[ h9 / 7.0 ] ]
-    gx : f32 [ (h9 / 7.0 - h7) * 2.0 - 1.0 ]
+func eu_grad [ h_: f32, x: f32, y: f32, z: f32 ] -> f32
+    h7 : f32 [ floor[ h_ / 7.0 ] ]
+    gx : f32 [ (h_ / 7.0 - h7) * 2.0 - 1.0 ]
     gy : f32 [ (h7 / 7.0 - floor[ h7 / 7.0 ]) * 2.0 - 1.0 ]
     gz : f32 [ 1.0 - abs[ gx ] - abs[ gy ] ]
     if [ gz < 0.0 ]
@@ -232,8 +232,8 @@ func eu_grad [ h9: f32, x: f32, y: f32, z: f32 ] -> f32
             gy = gy - 0.5
         el
             gy = gy + 0.5
-    r9 : f32 [ gx * gx + gy * gy + gz * gz ]
-    nm : f32 [ 1.79284291400159 - 0.85373472095314 * r9 ]
+    r_ : f32 [ gx * gx + gy * gy + gz * gz ]
+    nm : f32 [ 1.79284291400159 - 0.85373472095314 * r_ ]
     return (gx * x + gy * y + gz * z) * nm
 
 func eu_fade [ t: f32 ] -> f32
@@ -286,9 +286,9 @@ func eu_gnoise [ px: f32, py: f32, pz: f32 ] -> f32
     ny1  : f32 [ nx01 + (nx11 - nx01) * uy ]
     return (ny0 + (ny1 - ny0) * uz) * 0.5 + 0.5
 
-func eu_hash2 [ x: f32, y: f32, s9: f32 ] -> f32
+func eu_hash2 [ x: f32, y: f32, s_: f32 ] -> f32
     v : f32 [
-        sin[ x * 12.9898 + y * 78.233 + s9 * 37.719 ] * 43758.5453 ]
+        sin[ x * 12.9898 + y * 78.233 + s_ * 37.719 ] * 43758.5453 ]
     return v - floor[ v ]
 
 # fold a tile coordinate into mirrored repeat: edges continue
@@ -311,11 +311,11 @@ func eu_bilin [ S: @f32, w: i32, h: i32, u: f32, v: f32 ] -> f32
     if [ y0 >= h - 1 ] y0 = h - 2
     x1 : i32 [ x0 + 1 ]
     y1 : i32 [ y0 + 1 ]
-    a9 : f32 [ S[ y0 * w + x0 ] ]
-    b9 : f32 [ S[ y0 * w + x1 ] ]
-    c9 : f32 [ S[ y1 * w + x0 ] ]
-    d9 : f32 [ S[ y1 * w + x1 ] ]
-    return (a9 * (1.0 - tx) + b9 * tx) * (1.0 - ty) + (c9 * (1.0 - tx) + d9 * tx) * ty
+    a_ : f32 [ S[ y0 * w + x0 ] ]
+    b_ : f32 [ S[ y0 * w + x1 ] ]
+    c_ : f32 [ S[ y1 * w + x0 ] ]
+    d_ : f32 [ S[ y1 * w + x1 ] ]
+    return (a_ * (1.0 - tx) + b_ * tx) * (1.0 - ty) + (c_ * (1.0 - tx) + d_ * tx) * ty
 
 # mirror-blended rotated sample of one source across the u seam;
 # sx != sy stretches the pattern into elongated grain
@@ -352,7 +352,7 @@ func eu_lum [ im: Image, L: @f32 ]
 
 # 3x3 box blur passes, wrap x clamp y
 func eu_blur [ H: @f32, T: @f32, w: i32, h: i32, passes: i32 ]
-    for [ p9: i32 0, p9 < passes, p9 += 1 ]
+    for [ p_: i32 0, p_ < passes, p_ += 1 ]
         for [ y: i32 0, y < h, y += 1 ]
             ym : i32 [ (y > 0) ? y - 1 : 0 ]
             yp : i32 [ (y < h - 1) ? y + 1 : h - 1 ]
@@ -532,9 +532,9 @@ ModelViewProject SaturnShader
                  + 0.22 * cos(la * 43.98) * exp(-abs(la) * 1.8);
         // flow ping-pong: two half-cycle phases crossfaded, so shear
         // stays bounded and the bands slide forever without smearing
-        float t9 = ubo.time * 0.05;
-        float p0 = fract(t9);
-        float p1 = fract(t9 + 0.5);
+        float t_ = ubo.time * 0.05;
+        float p0 = fract(t_);
+        float p1 = fract(t_ + 0.5);
         float s0 = w * (p0 - 0.5) * 0.16;
         float s1 = w * (p1 - 0.5) * 0.16;
         float bl = abs(2.0 * p0 - 1.0);
@@ -546,8 +546,8 @@ ModelViewProject SaturnShader
         vec3  alb = mix(texture(color, bu0).rgb,
                         texture(color, bu1).rgb, bl);
         // wrapped like the moon, or opposite phases read as broken
-        float wr9      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
-        float ndl      = wr9 * wr9 * shad;
+        float wr_      = clamp(dot(n, sun) * 0.5 + 0.5, 0.0, 1.0);
+        float ndl      = wr_ * wr_ * shad;
         float mu       = clamp(dot(n, view_dir), 0.0, 1.0);
         vec3  col      = alb * (0.08 + 0.92 * ndl) * ubo.gain;
         // slight edge softening at this distance
@@ -720,9 +720,9 @@ ModelViewProject JupiterShader
                  + ubo.wctl.w * cos(la * ubo.wctl.z) * exp(-abs(la) * ubo.wctl2.y);
         // flow ping-pong: two half-cycle phases crossfaded, so shear
         // stays bounded and the bands slide forever without smearing
-        float t9 = ubo.time * ubo.wctl2.z;
-        float p0 = fract(t9);
-        float p1 = fract(t9 + 0.5);
+        float t_ = ubo.time * ubo.wctl2.z;
+        float p0 = fract(t_);
+        float p1 = fract(t_ + 0.5);
         float s0 = w * (p0 - 0.5) * ubo.wctl.x;
         float s1 = w * (p1 - 0.5) * ubo.wctl.x;
         float bl = abs(2.0 * p0 - 1.0);
@@ -799,7 +799,7 @@ ModelViewProject JupiterShader
         // apart and every feature is one pixel tall
         // GRADIENT noise clusters hard around 0.5, so a raw 0.8 cut
         // fires on almost nothing -- stretch first, then threshold
-        vec2  ps9 = ubo.pstr.xy;
+        vec2  ps_ = ubo.pstr.xy;
         // THE UV SEAM. gradient noise on raw u is discontinuous at the
         // wrap: x runs 0 to 18 across the map and those are different
         // lattice cells, so the field does not meet itself. sampled
@@ -811,23 +811,23 @@ ModelViewProject JupiterShader
         // moves along. the time term used to sit on the third axis
         // instead, which carries LATITUDE, so the whole field crept
         // down the map
-        float dx9 = ubo.time * ubo.pc_b.w;
-        float a90 = (ju0.x + dx9) * 6.28318530718;
-        float a91 = (ju1.x + dx9) * 6.28318530718;
-        float r90 = 2.8648 * ps9.x;
-        float r91 = 6.5254 * ps9.x;
-        float sy9 = 18.0 * ps9.y;
-        float sy8 = 41.0 * ps9.y;
+        float dx_ = ubo.time * ubo.pc_b.w;
+        float a90 = (ju0.x + dx_) * 6.28318530718;
+        float a91 = (ju1.x + dx_) * 6.28318530718;
+        float r90 = 2.8648 * ps_.x;
+        float r91 = 6.5254 * ps_.x;
+        float sy_ = 18.0 * ps_.y;
+        float sy8 = 41.0 * ps_.y;
         // the third axis keeps only a slow BOIL -- a fifth of what it
         // carried. it is the latitude axis, so anything fast on it
         // reads as the field sinking rather than evolving
-        float st9 = mix(jp_gnoise(vec3(cos(a90) * r90, sin(a90) * r90, ju0.y * sy9 + ubo.time * 0.006)),
-                        jp_gnoise(vec3(cos(a91) * r90, sin(a91) * r90, ju1.y * sy9 + ubo.time * 0.006)), bl);
+        float st_ = mix(jp_gnoise(vec3(cos(a90) * r90, sin(a90) * r90, ju0.y * sy_ + ubo.time * 0.006)),
+                        jp_gnoise(vec3(cos(a91) * r90, sin(a91) * r90, ju1.y * sy_ + ubo.time * 0.006)), bl);
         float st2 = mix(jp_gnoise(vec3(cos(a90) * r91 + 7.0, sin(a90) * r91 + 7.0, ju0.y * sy8 + ubo.time * 0.010)),
                         jp_gnoise(vec3(cos(a91) * r91 + 7.0, sin(a91) * r91 + 7.0, ju1.y * sy8 + ubo.time * 0.010)), bl);
-        st9 = clamp((st9 - 0.5) * 3.4 + 0.5, 0.0, 1.0);
+        st_ = clamp((st_ - 0.5) * 3.4 + 0.5, 0.0, 1.0);
         st2 = clamp((st2 - 0.5) * 3.0 + 0.5, 0.0, 1.0);
-        float flash = smoothstep(ubo.pctl.x, ubo.pctl.x + 0.32, st9)
+        float flash = smoothstep(ubo.pctl.x, ubo.pctl.x + 0.32, st_)
                     * (0.45 + 0.55 * st2);
 
         // cells pulse on their own clocks, and a wave runs the bands so
@@ -883,10 +883,10 @@ ModelViewProject JupiterShader
         // THIN. 0.030 was 5.4 degrees of latitude, a zone broad
         // enough for the noise to mottle across -- 0.013 is 2.3, a
         // line, but a soft-shouldered one rather than a wire
-        float pd9 = (pv9 - 0.094) / 0.013;
+        float pd_ = (pv9 - 0.094) / 0.013;
         // and a HOLE: nothing at all inside 10.8 degrees, so the pole
         // carries none of this and it can only ever read as a ring
-        float prg = exp(-pd9 * pd9) * smoothstep(0.060, 0.080, pv9);
+        float prg = exp(-pd_ * pd_) * smoothstep(0.060, 0.080, pv9);
         if (prg > 0.002 && ubo.pfire.w > 0.0) {{
             // the clock rides LONGITUDE. the third axis here is
             // colatitude, and a time term on it would drag the fire

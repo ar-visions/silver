@@ -20,7 +20,7 @@ ifndef [ windows ]
         +_XOPEN_SOURCE=500
 
 # titan: NASA/JPL-Caltech/SSI Cassini ISS mosaic PIA22770 "Titan Mosaic:
-# The Surface Under the Haze"
+# the Surface Under the Haze"
 # (https://www.jpl.nasa.gov/images/pia22770-titan-mosaic-the-surface-under-the-haze/),
 # 5760x2880, kept at its own size
 export func bake_titan []
@@ -228,10 +228,10 @@ Backdrop Titan
         animated = true
         if [ !built && !loading ]
             loading = true
-            w9 : vec Au []
-            w9.push[ a ]
+            w_ : vec Au []
+            w_.push[ a ]
             load_task = async [ target: a, work_fn: lambda load_bg[ a ],
-                                work: w9 ]
+                                work: w_ ]
         if [ !ready ] return
         # the done job held this element: let it go
         if [ load_task ] load_task = null

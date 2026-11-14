@@ -271,7 +271,7 @@ element rgen : trinity
 		if [ down ]
 			if [ code == 80 ] save_req = true   # P
 			if [ code == 79 ] load_req = true   # O
-			if [ code == 32 ] paused = !paused  # Space pause/resume
+			if [ code == 32 ] paused = !paused  # space pause/resume
 		return
 
 	func save_state [] -> none
@@ -595,15 +595,18 @@ element rgen : trinity
 		paint[ w.screen, rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ] ]
 
 	public func paint [ cv: Canvas, vp: rect ]
-		ar9 : f32 [ 10.0 / 7.0 ]
-		fw9 : f32 [ vp.w ]
-		fh9 : f32 [ fw9 / ar9 ]
-		if [ fh9 > vp.h ]
-			fh9 = vp.h
-			fw9 = fh9 * ar9
-		vp = rect [ x: vp.x + (vp.w - fw9) * 0.5, y: vp.y + (vp.h - fh9) * 0.5, w: fw9, h: fh9 ]
+		ar_ : f32 [ 10.0 / 7.0 ]
+		fw_ : f32 [ vp.w ]
+		fh_ : f32 [ fw_ / ar_ ]
+		if [ fh_ > vp.h ]
+			fh_ = vp.h
+			fw_ = fh_ * ar_
+		vp = rect [ x: vp.x + (vp.w - fw_) * 0.5, y: vp.y + (vp.h - fh_) * 0.5, w: fw_, h: fh_ ]
 		bounds = vp
 		if [ ! booted ] boot[]
+		if [ ! cart ]
+			own_icon_paint[ cv, vp ]
+			return
 
 		if [ ! screen_tex ]
 			screen_tex = Texture [ vk: cv.vk, w: cv.w, width: 320, height: 224, linear: true ]
@@ -1037,9 +1040,9 @@ element rgen : trinity
 			blk : i32 [ (i32[ fh ] >> 3) & 7 ]
 			f11 : i32 [ (fnum >> 10) & 1 ]
 			f10 : i32 [ (fnum >> 9) & 1 ]
-			f9  : i32 [ (fnum >> 8) & 1 ]
+			f_  : i32 [ (fnum >> 8) & 1 ]
 			f8  : i32 [ (fnum >> 7) & 1 ]
-			nt : i32 [ (f11 << 1) | ((f11 & (f10 | f9 | f8)) | ((1 - f11) & f10 & f9 & f8)) ]
+			nt : i32 [ (f11 << 1) | ((f11 & (f10 | f_ | f8)) | ((1 - f11) & f10 & f_ & f8)) ]
 			kc : i32 [ blk * 4 + nt ]
 			fb : i32 [ (i32[ alg ] >> 3) & 7 ]
 			algo : i32 [ i32[ alg ] & 7 ]
