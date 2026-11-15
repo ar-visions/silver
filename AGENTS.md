@@ -15786,6 +15786,24 @@ filter: the module is `navigator`.
    drawer element is in the root's (a dock's width further right):
    crumb_press keeps the window's root x (crumb_wx) and drawer_x
    returns it.
+   Then (his: orbiter crashed with the navigator app's pane pulled
+   free) every window free, bar_pane is -1 and the bar's nav-driven
+   branch asked pane_empty[ -1 ], which read pane_console[ -1 ]:
+   pane_empty says true for a negative index.
+   Then (his: the list / icons toggle did not change the view until
+   the next folder) the rows are built for a view only in run_search;
+   the toggle sets nav.icons and builds the rows again itself.
+   Then (his: the navigator out of the orbiter menu) the menu's
+   navigator cell, its view (sys_nav), menu_nav and the frost ground
+   it took are gone; the navigator is the bar's globe (the app over
+   the window) or a pane's.
+   Then (his: a setting's popup over the main menu covered its icon
+   column) drawer_x puts a popup over the main menu past the column
+   (dock_w), as its menus.
+   Then (his: the main menu's panels lost their max width) the strip
+   layout (ba8a5d4) dropped the desktop branch's cap: a view is at
+   most 24 units wide again, centred (sys_room: the menu's width),
+   panel_w set from it; a phone keeps the full width.
    Then (his: the home card's edit pill not while on the app icon)
    the pill fades in only with the pointer under the icon (the
    name and the pill's row: AppsGrid on_lab), not over the icon.

@@ -650,11 +650,9 @@ Layer DrawerGround
         cv.save[]
         cv.clip_rect[ bounds.x, bounds.y, bounds.w, bounds.h, 0.0, 0.0 ]
         # the main menu: the ground chosen (the scene, as the screen
-        # paints it under the ui), not a blur of what is under it;
-        # the navigator in it: the backdrop's frost
+        # paints it under the ui), not a blur of what is under it
         if [ dr inherits SystemDrawer ]
-            gi : Texture (orb && orb.menu_nav[])
-                ? w.blur_image[ BlurStage.frost ] : w.ground_image[]
+            gi : Texture w.ground_image[]
             if [ gi ]
                 cv.draw_image[ gi, rect [ x: -ox, y: -oy,
                     w: w.root.bounds.w, h: w.root.bounds.h ] ]

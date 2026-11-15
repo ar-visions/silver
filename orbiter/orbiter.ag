@@ -302,7 +302,7 @@ element EditorView
     func menu_open [] -> bool
         o : orb[]
         if [ !o || !searchable[] ] return false
-        return (o.find_showing || o.nav_showing) && !o.menu_nav[]
+        return o.find_showing || o.nav_showing
 
     # .ag files and anything with a registered handler keep the run band
     func run_ok [] -> bool
@@ -859,7 +859,7 @@ element EditorView
     func browse_active [] -> bool
         o : orb[]
         if [ !o || !searchable[] ] return false
-        return (o.nav_showing || o.find_showing) && !o.menu_nav[]
+        return o.nav_showing || o.find_showing
 
     public func render [] -> Elements
         if [ !orb[] ] return null
@@ -9565,6 +9565,14 @@ element orbiter : trinity # implements compiler
 
     # the orbiter menu's place: the selected docked half under the
     # bar; a phone's, or with none docked, the whole window
+    # the main menu's width: its pane's, else the window's
+    func sys_room [] -> f32
+        pv : element pane_view[ active_pane ]
+        if [ mobile_on[] || !pv || !pv.bounds
+             || pane_floats[ active_pane ] ]
+            return (ux) ? ux.width : 0.0
+        return pv.bounds.w
+
     func sys_area [ top: f32 ] -> string
         pv : element pane_view[ active_pane ]
         if [ mobile_on[] || !pv || !pv.bounds
@@ -9697,10 +9705,6 @@ element orbiter : trinity # implements compiler
             filter_done[ 'filter' ]
             if [ ux ] ux.restyle = true
             return
-        # its navigator goes with it (never left up in a pane)
-        if [ menu_kind == 'system' && sys_view == 'navigator' ]
-            nav_showing = false
-            nav.nav_hist    = null
         drawer_open    = false
         filter_done[ 'filter' ]
         menu_shut_ms = epoch_millis[]
@@ -12107,10 +12111,6 @@ element orbiter : trinity # implements compiler
  
     # arrowing into the list moves focus off the title; the menu stays.
     # the commit form's focus keeps it open the same way
-    # the navigator shown in the main menu (not in a pane)
-    func menu_nav [] -> bool
-        return sys_up[] && sys_view == 'navigator'
-
     # the main menu up (alone, or under a menu opened over it)
     func sys_up [] -> bool
         return drawer_open && (menu_kind == 'system' || sys_under)
@@ -12152,9 +12152,8 @@ element orbiter : trinity # implements compiler
         # focus: a press on its rows must never fall through to the tabs
         # beneath
         picking_ : bool [ picking[] ]
-        active : bool [ menu_nav[] || (
-            !finder_off
-            && (picking_ || title_focus || typed || list_focused[])) ]
+        active : bool [ !finder_off
+            && (picking_ || title_focus || typed || list_focused[]) ]
         # a find-in-files scan and its results own these rows until the
         # nav itself is engaged again: its own field typed into, or a
         # pick
@@ -12404,10 +12403,6 @@ element orbiter : trinity # implements compiler
 
     func open_in_pane [ p: path, pi: i32 ]
         if [ pick_deliver[ p ] ] return
-        # opened from the main menu's navigator: the menu closes
-        if [ menu_nav[] ]
-            sys_under = false
-            drawer_shut[]
         # a file in the pane: its window steps back (the dock has it)
         if [ pane_win && pi >= 0 && pi < pane_win.count ]
             pane_win[ pi ] = u64[ 0 ]
@@ -13514,6 +13509,9 @@ element orbiter : trinity # implements compiler
         # the navigator's two views
         if [ ev.target.id == 'nav_list' || ev.target.id == 'nav_icons' ]
             nav_icons = ev.target.id == 'nav_icons'
+            # the rows are built for a view: build them again for this
+            nav.icons = nav_thumbs[]
+            if [ nav_showing ] nav.build_rows[]
             if [ ux ] ux.restyle = true
             force_update[]
             ev.no_default = true
@@ -15750,7 +15748,7 @@ element orbiter : trinity # implements compiler
                              && pane_console[ i ].count > 0)
                 && !(file_slot >= 0 && file_slot < open_files.count
                      && open_files[ file_slot ])
-                && !(pane_browsing[ i ] && !menu_nav[]) ]
+                && !pane_browsing[ i ] ]
             ev : EditorView [ pane_index: i, free: false,
                 selected: (search_pane[] == 'pane{i}'), is_empty: empty ]
             # said every render, shown or not: a mounted pane keeps a
@@ -17220,6 +17218,8 @@ element orbiter : trinity # implements compiler
 
     # a pane on its Open page: no file, no app running in it
     func pane_empty [ pi: i32 ] -> bool
+        # no pane (every window free): nothing in it
+        if [ pi < 0 ] return true
         # a window's pane has no editor
         if [ pane_window[ pi ] != 0 ] return false
         # a terminal in it (an agent's, a console): not empty
@@ -20171,12 +20171,8 @@ element orbiter : trinity # implements compiler
         kb : bool [ use_mobile && ux && ux.words_wanted ]
         foot : string [ (kb) ? '41%' : '{dw}px' ]
         lt : f32 light_row[ t, '0.6' ]
-        if [ sys_view == 'navigator' ]
-            t['sys_nav'] = CommitView [ nav: nav, focusable: true,
-                scroll_fade: 24.0,
-                area: Region [ 'l0 t{lt} r0 b{foot}' ] ]
         # an agent's tab: its console in the view's place
-        el [ sys_view.starts_with[ 'agent:' ] ]
+        if [ sys_view.starts_with[ 'agent:' ] ]
             an : string sys_view.mid[ 6, sys_view.count - 6 ]
             cs : ConsoleSession home_session[ an ]
             if [ cs ]
@@ -20193,8 +20189,13 @@ element orbiter : trinity # implements compiler
                 t['sys_agent_edge'] = WinEdge [ selected: true,
                     area: Region [ ar ] ]
         el [ sys_view.count > 0 ]
+            # a desktop's view at most 24 units wide, centred
+            room : f32 [ sys_room[] / un ]
+            side : f32 [ (use_mobile) ? 0.3
+                : max[ 0.3, (room - 24.0) / 2.0 ] ]
+            panel_w = (room - 2.0 * side) * un
             sv : Elements side_view[ sys_view,
-                'l0.3 t{lt + 0.7} r0.3 b{dw / un + 0.3}' ]
+                'l{side} t{lt + 0.7} r{side} b{dw / un + 0.3}' ]
             for [ ve: element, vk: string ] in sv
                 t[ vk ] = ve
         # last: over the avatar where it reaches past its box
@@ -20388,7 +20389,6 @@ element orbiter : trinity # implements compiler
         if [ !id.starts_with[ 'sv_' ] ] return false
         vw : id.mid[ 3, id.count - 3 ]
         sys_view = (sys_view == vw) ? '' : vw
-        if [ vw == 'navigator' ] run_search[]
         if [ ux ] ux.restyle = true
         return true
 
@@ -20436,8 +20436,7 @@ element orbiter : trinity # implements compiler
 
     # the strip's cells in order, by id
     public func sys_strip_ids [] -> vec string
-        ids : vec string [] [ 'sv_navigator', 'sv_scenes',
-            'sv_widgets' ]
+        ids : vec string [] [ 'sv_scenes', 'sv_widgets' ]
         # Wi-Fi, Bluetooth, the mouse and power only on orbiter-os
         os : bool [ system_os || use_mobile ]
         if [ os ]
@@ -20804,6 +20803,8 @@ element orbiter : trinity # implements compiler
             return ux.root.bounds.w - round[ 10.91 * unit_px[] ]
         # a card's info menu: beside the dock, over the cards
         if [ menu_kind == 'appinfo' ] return dock_w[]
+        # a popup over the main menu: past its icon column
+        if [ menu_kind == 'popup' ] return (sys_under) ? dock_w[] : 0.0
         # a path's drawer is a standard menu: the same places
         if [ menu_kind != 'menu' && menu_kind != 'crumb' ] return 0.0
         # over the main menu: in its area, past the icon column
