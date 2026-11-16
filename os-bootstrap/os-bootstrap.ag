@@ -3325,6 +3325,10 @@ element Bootstrap
         add_dir[ 'tmp' ]
         add_dir[ 'root' ]
         add_dir[ 'run' ]
+        # mnt: the holder's view root (silver-host VIEW_ROOT)
+        add_dir[ 'mnt' ]
+        add_dir[ 'home' ]
+        add_dir[ 'media' ]
         # the base's var/run and var/lock are links to /run (iwd's
         # bus library dials /var/run); the services log in var/log
         add_file[ '/var/run' ]

@@ -1009,6 +1009,19 @@ it is built on. Today the tree is the host Ubuntu's own files.
       repos (/src/commune, /src/chess) and the Nov 14 records in
       install/build still name /src/silver/<m>/<m>.ag. Left out is
       right (not silver's modules); the stale records are harmless.
+   r. DONE (Nov 16 15:14 boot, his: "it doesnt run the apps", seven
+      boots) the drive's boot.log said it at once: every app's holder
+      stopped at "view: root: No such file or directory", then
+      "silver-host: console's view failed": the holder mounts each
+      app's view root on /mnt (VIEW_ROOT), and the tree had no /mnt
+      (the box over the tree had one from its overlay, so every
+      hidden check passed). The tree's top folders gain mnt, home,
+      media (add_dir, beside dev proc sys tmp root run). Tree
+      written (132,678 entries, 9.16 GB) with them. NOT booted.
+      Also seen: that boot went through the Sep 25 40_custom GRUB
+      entry (LD_DEBUG=libs, VK_LOADER_DEBUG=all on its line: the
+      logs flooded), not the wizard's 41_orbiter-os. His: Install
+      (folder beside on /), boot the 41_orbiter-os entry.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/
