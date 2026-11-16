@@ -962,6 +962,25 @@ static void work_folder(const char* init) {
     }
 }
 
+// a kernel built away from Linux (a Mac has no depmod) ships
+// no module map: it is made once, here, before any modprobe
+static void module_map(void) {
+    char rel[128] = {0};
+    int f = open("/proc/sys/kernel/osrelease", O_RDONLY);
+    if (f < 0) return;
+    int n = read(f, rel, sizeof rel - 1);
+    close(f);
+    while (n > 0 && (rel[n - 1] == '\n' || rel[n - 1] == ' '))
+        rel[--n] = 0;
+    if (n <= 0) return;
+    char dep[256];
+    snprintf(dep, sizeof dep, "/lib/modules/%s/modules.dep", rel);
+    if (access(dep, R_OK) == 0) return;
+    fprintf(stderr, "orbiter-os init: making the module map\n");
+    char* dm[] = { "/usr/sbin/depmod", "-a", rel, NULL };
+    run(dm);
+}
+
 // orbiter.modules=a,b:k=v: modprobe a, then b with k=v
 static void load_modules(void) {
     char list[1024];
@@ -1100,6 +1119,7 @@ int main(void) {
     boot_cube(init);
     phone_find();
     phone_early();
+    module_map();
     hotplug(uevents());
     load_hardware();
     // devices made by the first pass's drivers (usb hid devices)

@@ -10391,7 +10391,8 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     bool own_conf   = false;
     if (prebuild)
         each(prebuild, string, cmd)
-            if (strstr(cmd->chars, "./configure")) own_conf = true;
+            if (strstr(cmd->chars, "./configure")
+                    || strstr(cmd->chars, "./Configure")) own_conf = true;
     if (own_conf) { is_meson = false; is_cmake = false; }
     bool is_gn      = file_exists("%o", gn_f);
     bool is_silver  = file_exists("%o", silver_f);
@@ -10670,7 +10671,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
                                     install, tb, tb, tb, tb, tb, tb);
             }
 #endif
-            if (file_exists("%o/%o", project_f, configure)) {
+            if (!own_conf && file_exists("%o/%o", project_f, configure)) {
                 checkout_verify(a, label, "configure", "configure",
                     f(command, "(cd %o && %o %o%s --prefix=%o %o%o)",
                       project_f, cenv, configure,

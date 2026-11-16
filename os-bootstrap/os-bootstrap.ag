@@ -109,6 +109,38 @@ import https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi
     > mkdir -p {install}/share/silver-os-bootstrap/efifs
     > cp {import_file} {install}/share/silver-os-bootstrap/efifs/ntfs_x64.efi
 
+# a kernel built on a Mac: GNU make, coreutils, sed and find in
+# their own folder (first on the kernel's PATH alone), OpenSSL for
+# its certificate tool, musl's elf.h for its host programs
+ifdef [ apple ]
+    import make/4.4.1 from https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz
+        --prefix={install}/kernel-host
+        --disable-nls
+    import coreutils/9.5 from https://ftp.gnu.org/gnu/coreutils/coreutils-9.5.tar.xz
+        --prefix={install}/kernel-host
+        --disable-nls
+    import sed/4.9 from https://ftp.gnu.org/gnu/sed/sed-4.9.tar.xz
+        --prefix={install}/kernel-host
+        --disable-nls
+    import findutils/4.10.0 from https://ftp.gnu.org/gnu/findutils/findutils-4.10.0.tar.xz
+        --prefix={install}/kernel-host
+        --disable-nls
+    import openssl/3.5.4 from https://github.com/openssl/openssl/releases/download/openssl-3.5.4/openssl-3.5.4.tar.gz
+        > ./Configure --prefix={install}/kernel-host no-tests no-docs
+        > make -j8
+        > make install_sw
+    import https://raw.githubusercontent.com/kraj/musl/v1.2.5/include/elf.h
+        > mkdir -p {install}/kernel-host/include
+        > cp {import_file} {install}/kernel-host/include/elf.h
+    # the installer stick: its FAT (the x86 line) and its ext4
+    import mtools/4.0.48 from https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz
+        --disable-floppyd
+    import e2fsprogs/1.47.1 from https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.1/e2fsprogs-1.47.1.tar.xz
+        --prefix={install}/kernel-host
+        --disable-nls
+        --disable-fuse2fs
+        --disable-e2initrd-helper
+
 # the same lines as img's and wine's: one key for the shared build
 import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5
@@ -136,6 +168,7 @@ import <time.h>
 import <sys/stat.h>
 import <fcntl.h>
 import <signal.h>
+import <disk_gpt.h>
 import Base
 
 # one entry of the guest file system
@@ -553,13 +586,21 @@ element Bootstrap
     func init []
         setup[]
 
+    # this machine's own line: a Mac on Apple silicon is Apple
+    func own_hardware [] -> string
+        hw : string [ 'x64' ]
+        ifdef [ apple ]
+            ifdef [ arm64 ]
+                hw = 'Apple'
+        return hw
+
     public func setup []
         install = path.path_install[].normalize[]
         root    = silver_root[]
         out_dir = path [ tree_home[] ]
         if [ !lock ] lock = mutex []
         if [ !lines ] lines = vec string []
-        if [ !want_hardware ] want_hardware = 'x64'
+        if [ !want_hardware ] want_hardware = own_hardware[]
         if [ !want_version ] want_version = offered[][ 0 ]
         if [ !want_nvidia ] want_nvidia = nvidias[][ 0 ]
         if [ !want_amd ] want_amd = amds[][ 0 ]
@@ -923,12 +964,20 @@ element Bootstrap
     func pid_file [] -> string
         return '{install}/tmp/os-bootstrap-build.pid'
 
+    # a shell in a process group of its own: macOS has no setsid
+    func grouped [ q: string ] -> string
+        ifdef [ apple ]
+            ps : '\'POSIX::setsid(); exec @ARGV\''
+            return 'perl -MPOSIX -e {ps} sh -c {q}'
+        ifndef [ apple ]
+            return 'setsid sh -c {q}'
+
     func sh [ cmd: string ] -> bool
         if [ cancelled ] return false
         # its own group, its id kept: Cancel Build stops all of it
         pf : pid_file[]
         q : quoted[ 'echo $$ > {pf}; {cmd}' ]
-        full : 'setsid sh -c {q} 2>&1'
+        full : '{grouped[ q ]} 2>&1'
         fh_cmd : command [ full ]
         fh : handle fh_cmd.stream[]
         if [ !fh ] return false
@@ -945,7 +994,7 @@ element Bootstrap
         pf : pid_file[]
         run : '({cmd}; echo "status $?") 2>&1'
         q : quoted[ 'echo $$ > {pf}; {run}' ]
-        full : 'setsid sh -c {q}'
+        full : grouped[ q ]
         fh_cmd : command [ full ]
         fh : handle fh_cmd.stream[]
         if [ !fh ] return false
@@ -1007,12 +1056,12 @@ element Bootstrap
         return fetch[ '{pre}{sha}.tar.gz', cl ]
 
     # a kept tarball's folder in install/build, unpacked once
-    func unpacked [ tar: string, pre: string ] -> string
+    func unpacked [ tar: string, pre: string, into: string ] -> string
         if [ tar.count == 0 ] return ''
         t : path [ tar ]
         nm : t.filename[]
         sha : nm.mid[ pre.count, nm.count - pre.count - 7 ]
-        dir : '{install}/build/{pre}{sha}'
+        dir : '{into}/{pre}{sha}'
         un : 'tar xzf {tar} -C {dir} --strip-components=1'
         un = 'mkdir -p {dir} && {un}'
         mark : '{dir}/.unpacked'
@@ -1025,7 +1074,7 @@ element Bootstrap
         pre : 'linux-surface-'
         repo : 'linux-surface/linux-surface'
         tar : github_tarball[ repo, 'master', pre ]
-        return unpacked[ tar, pre ]
+        return unpacked[ tar, pre, '{install}/build' ]
 
     # a download kept in install/imports, fetched when missing
     func fetch [ stem: string, url: string ] -> string
@@ -1399,7 +1448,7 @@ element Bootstrap
                 say[ 'orbiter did not build for the phone' ]
                 return false
             # the root's uuid: the boot line finds userdata by it
-            uuid : first_line[ '/proc/sys/kernel/random/uuid' ].trim[]
+            uuid : new_uuid[]
             img : phone_image[ kb, uuid ]
             if [ img.count == 0 ] return false
             fs : phone_rootfs[ kb, uuid ]
@@ -2049,12 +2098,34 @@ element Bootstrap
         kpath : string [ (arm) ? 'arch/arm64/boot/Image'
                                : 'arch/x86/boot/bzImage' ]
         out : '{share[]}/kernels/{nm}'
-        bd : '{install}/build/linux-{base}'
+        kroot : '{install}/build'
         steps : vec string []
+        # each step's shell first runs this (a Mac's tools)
+        kenv : string ''
+        ifdef [ apple ]
+            if [ !arm ]
+                say[ 'An x64 kernel is built on Linux for now' ]
+                return false
+            # the tree needs case: a case-sensitive volume, made once
+            kroot = '{install}/build/kernels'
+            img : '{kroot}.sparseimage'
+            fs : '-fs "Case-sensitive APFS" -volname orbiter-kernels'
+            made : 'hdiutil create -size 200g -type SPARSE {fs} {kroot}'
+            att : 'hdiutil attach -nobrowse -mountpoint {kroot} {img}'
+            on : 'mount | grep -q " on {kroot} "'
+            # now: the Asahi tree is unpacked onto it before the steps
+            if [ !sh[ '{on} || ((test -f {img} || {made}) && {att})' ] ]
+                return false
+            # GNU's tools first, OpenSSL, the SDK for our clang
+            kh : '{install}/kernel-host'
+            kenv = 'export PATH={kh}/bin:$HOME/.cargo/bin:$PATH'
+            kenv = '{kenv} PKG_CONFIG_PATH={kh}/lib/pkgconfig'
+            kenv = '{kenv} SDKROOT=$(xcrun --show-sdk-path); '
+        bd : '{kroot}/linux-{base}'
         if [ apple ]
             # Asahi's tree, its asahi branch at its newest commit
             bd = unpacked[ github_tarball[ 'AsahiLinux/linux', 'asahi',
-                'asahi-linux-' ], 'asahi-linux-' ]
+                'asahi-linux-' ], 'asahi-linux-', kroot ]
             if [ bd.count == 0 ] return false
             steps.push[ '{cargo} rustup component add rust-src' ]
             bg : 'cargo install --locked --root {install} bindgen-cli'
@@ -2069,6 +2140,15 @@ element Bootstrap
             unpack : 'tar xf {tarball} -C {bd} --strip-components=1'
             made : 'mkdir -p {bd} && {unpack}'
             steps.push[ 'test -f {bd}/Makefile || ({made})' ]
+        ifdef [ apple ]
+            # Linux headers the host programs take: ours, musl's,
+            # and last the tree's own (a Linux host's /usr/include)
+            mh : '{root}/os-bootstrap/mac-host'
+            hc : '-I{kh}/include -I{mh} -D_UUID_T -D__GETHOSTUUID_H'
+            hc = '{hc} -include {mh}/linux-host.h'
+            hc = '{hc} -idirafter {bd}/include/uapi'
+            kl : 'HOSTLDFLAGS=-Wl,-rpath,{kh}/lib'
+            mk = '{mk} "HOSTCFLAGS={hc}" {kl}'
         # its series, x.y
         d1 : i32 [ i32[ ver.index_of[ '.' ] ] ]
         tail : ver.mid[ d1 + 1, ver.count - d1 - 1 ]
@@ -2132,7 +2212,7 @@ element Bootstrap
             steps.push[ 'mkdir -p {part}/dtbs && {dc}' ]
         for [ st: string ] in steps
             say[ '$ {st}' ]
-            if [ !sh[ st ] ] return false
+            if [ !sh[ '{kenv}{st}' ] ] return false
         if [ gpu != 'none' ]
             gh : 'https://github.com/NVIDIA/open-gpu-kernel-modules'
             rels : '{gh}/archive/refs/tags'
@@ -2191,7 +2271,7 @@ element Bootstrap
         tree : '{out_dir}/root'
         bin  : '{install}/bin'
         img  : '{work}/disk.img'
-        uuid : first_line[ '/proc/sys/kernel/random/uuid' ].trim[]
+        uuid : new_uuid[]
         # 512 MB of EFI at 1 MB; the tree after it, room to spare
         tb : i64 [ first_line[ '{tree}/boot/tree-bytes' ].trim[]
             .integer_value[] ]
@@ -2201,7 +2281,7 @@ element Bootstrap
         # the work folders of runs that are gone (3 GB or more each)
         old : 'for d in {install}/tmp/installer-*; do '
         old = '{old}p=$(echo "$d" | sed "s/.*-//"); '
-        old = '{old}[ -d /proc/$p ] || rm -rf "$d"; done'
+        old = '{old}kill -0 $p 2>/dev/null || rm -rf "$d"; done'
         old_cmd : command [ old ]
         old_cmd.exec[ false ]
         if [ !sh[ 'rm -rf {work} && mkdir -p {work}/stage' ] ] return ''
@@ -2218,11 +2298,8 @@ element Bootstrap
         line = '{line} orbiter.args=--install,true'
         nv : bool [ kb.nvidia != 'none' ]
         line = '{line} {os_words[ arm, nv ]}'
-        lay : 'label: gpt\nstart=2048, size=1048576, type=U, '
-        lay = '{lay}name=orbiter-efi\nstart=1050624, type=L, '
-        lay = '{lay}name=orbiter\n'
-        if [ !write_file[ '{work}/cmdline.txt', '{line}\n' ]
-             || !write_file[ '{work}/layout', lay ] ] return ''
+        if [ !write_file[ '{work}/cmdline.txt', '{line}\n' ] ]
+            return ''
         # the stick's initramfs: the drive's /init, or arm64's
         init : string [ (arm) ? ai : '{out_dir}/init' ]
         rd : path '{work}/initramfs'
@@ -2248,6 +2325,7 @@ element Bootstrap
         if [ stick_keys && ssh_keys[] > 0 ]
             carry = ssh_copy_sh[ quoted[ ssh_dir[] ],
                                  quoted[ '{work}/stage/root/.ssh' ] ]
+        # the disk, then its table (disk_gpt), then what is on it
         steps : vec string [] [
             '{cc} -c {root}/os-bootstrap/efistub.c -o {work}/stub.o',
             '{ld} -nodefaultlib -out:{work}/{efi} {work}/stub.o',
@@ -2257,8 +2335,8 @@ element Bootstrap
             'ln {kb.dir}/{kimg} {work}/stage/boot/vmlinuz',
             'ln {work}/initramfs {work}/stage/boot/initramfs',
             carry,
-            'truncate -s {total}M {img}',
-            'sfdisk -q {img} < {work}/layout',
+            'truncate -s {total}M {img}' ]
+        fill : vec string [] [
             '{mt} {bin}/mformat {at} {fat} ::',
             '{mt} {bin}/mmd {at} ::EFI ::EFI/BOOT ::EFI/orbiter',
             '{mt} {bin}/mcopy {at} {work}/{efi} ::EFI/BOOT/',
@@ -2268,15 +2346,38 @@ element Bootstrap
             'mke2fs -q -t ext4 -F -U {uuid} -L orbiter-usb ' +
                 '-E offset={off} -d {work}/stage {img} {mb}M',
             'rm -rf {work}/stage' ]
-        for [ i: i32 0, i < steps.count, i += 1 ]
-            st : steps[ i ]
+        # a Mac: GNU's cp and truncate, e2fsprogs' mke2fs
+        tools : string ''
+        ifdef [ apple ]
+            kh : '{install}/kernel-host'
+            tools = 'export PATH={kh}/bin:{kh}/sbin:$PATH; '
+        n : i32 [ steps.count + fill.count ]
+        for [ i: i32 0, i < n, i += 1 ]
+            st : string [ (i < steps.count) ? steps[ i ]
+                : fill[ i - steps.count ] ]
             say[ '$ {st}' ]
-            if [ !sh[ st ] ]
+            if [ !sh[ '{tools}{st}' ] ]
                 wipe[ work ]
                 return ''
-            progress = image_share * f32[ i + 1 ] / f32[ steps.count ]
+            if [ i == steps.count - 1 ]
+                if [ disk_gpt[ img.chars, total * 2048, 1048576 ] == 0 ]
+                    say[ 'The partition table could not be written' ]
+                    wipe[ work ]
+                    return ''
+            progress = image_share * f32[ i + 1 ] / f32[ n ]
         say[ 'Image ready: {total} MB, boot line in EFI/orbiter' ]
         return img
+
+    # a fresh uuid, lower case: the kernel's, else uuidgen's
+    func new_uuid [] -> string
+        u : first_line[ '/proc/sys/kernel/random/uuid' ].trim[]
+        if [ u.count > 0 ] return u
+        q : command { uuidgen | tr A-Z a-z }
+        fh : handle q.stream[]
+        b : local i8 [ 64 ]
+        if [ fh && fgets[ @b[0], 64, fh ] ] u = string [ @b[0] ]
+        if [ fh ] pclose[ fh ]
+        return u.trim[]
 
     # this process's own image folder: two writes never share one
     public func image_work [] -> string
@@ -2323,21 +2424,49 @@ element Bootstrap
         # straight to the stick, so the count is what it holds
         dd : 'dd if={img} of=/dev/{dv} bs=4M oflag=direct'
         dd = '{dd} conv=fsync status=progress'
+        ifdef [ apple ]
+            # the raw device skips the buffer cache (oflag's work)
+            un = 'diskutil unmountDisk /dev/{dv}'
+            dd = 'dd if={img} of=/dev/r{dv} bs=4m status=progress'
         # dd runs as root, out of Cancel's reach: the root shell
         # stops it when the cancel file appears, or this app is gone
         cf : cancel_file[]
-        me : '/proc/{getpid[]}'
         wt : 'while kill -0 $p 2>/dev/null; do '
-        wt = '{wt}( [ -e {cf} ] || [ ! -d {me} ] ) && '
+        wt = '{wt}( [ -e {cf} ] || ! kill -0 {getpid[]} ) && '
         wt = '{wt}kill $p; sleep 0.5; done; wait $p'
         as_root : '{un}; {dd} & p=$!; {wt} && sync'
-        ok : sh_copy[ 'pkexec sh -c {quoted[ as_root ]}' ]
+        ok : bool [ false ]
+        ifdef [ apple ]
+            ok = sh_copy[ mac_root[ as_root ] ]
+        ifndef [ apple ]
+            ok = sh_copy[ 'pkexec sh -c {quoted[ as_root ]}' ]
         if [ ok ] progress = 1.0
         wipe[ image_work[] ]
         wipe[ cf ]
         if [ ok ] say[ 'The installer is on /dev/{dv}.' ]
         if [ cancelled ] say[ 'The stick is only partly written.' ]
         return ok
+
+    # a Mac's root: macOS's password prompt runs the script, its
+    # dd counts (written to a file there) read back once a second
+    func mac_root [ as_root: string ] -> string
+        work : image_work[]
+        lg : '{work}/dd.log'
+        ap : 'do shell script "sh {work}/root.sh 2> {lg}"'
+        ap = '{ap} with administrator privileges'
+        rd : string {
+            osascript {work}/root.scpt & o=$!
+            while kill -0 $o 2>/dev/null; do
+              tail -c 300 {lg} 2>/dev/null | tr '\r' '\n' | tail -1
+              sleep 1
+            done
+            wait $o
+        }
+        if [ !write_file[ '{work}/root.sh', '{as_root}\n' ]
+             || !write_file[ '{work}/root.scpt', '{ap}\n' ]
+             || !write_file[ '{work}/root-run.sh', '{rd.trim[]}\n' ] ]
+            return 'false'
+        return 'sh {work}/root-run.sh'
 
     # the build, on its own thread: a new kernel, or the tree
     mutable job : string
@@ -2530,6 +2659,40 @@ element Bootstrap
         tree : first_line[ '{out_dir}/root/boot/tree-bytes' ].trim[]
         efi : i64 [ 512 * 1024 * 1024 ]
         need : i64 [ tree.integer_value[] + efi ]
+        ifdef [ apple ]
+            mac_drives[ need ]
+        ifndef [ apple ]
+            sys_drives[ here, need ]
+        if [ want_drive ]
+            kept : bool [ false ]
+            for [ dv: UsbDrive ] in drives
+                if [ dv.name == want_drive && dv.ok ] kept = true
+            if [ !kept ] want_drive = ''
+
+    # a Mac's: every external physical disk, from diskutil
+    func mac_drives [ need: i64 ]
+        q : string {
+            for d in $(diskutil list external physical |
+              awk '$1 ~ "^/dev/disk" {{ sub("/dev/", "", $1); print $1 }}');
+            do diskutil info $d | awk -v d=$d -F': *' '/Disk Size/ {{ b = $2; sub(/.*[(]/, "", b); sub(/ Bytes.*/, "", b) }} /Media Name/ {{ m = $2 }} END {{ print d "|" b "|" m }}';
+            done
+        }
+        run : command [ q ]
+        fh : handle run.stream[]
+        b : local i8 [ 512 ]
+        while [ fh && fgets[ @b[0], 512, fh ] ]
+            ln : string [ @b[0] ]
+            f : ln.trim[].split[ "|" ]
+            if [ f.count < 3 ] continue
+            n : i64 [ f[ 1 ].integer_value[] ]
+            if [ n == 0 ] continue
+            dv : UsbDrive [ name: f[ 0 ], bytes: n, model: f[ 2 ] ]
+            dv.ok = dv.bytes >= need
+            drives.push[ dv ]
+        if [ fh ] pclose[ fh ]
+
+    # Linux's: usb and removable block devices
+    func sys_drives [ here: string, need: i64 ]
         d : path '/sys/block'
         entries : d.ls[ null, false ]
         if [ !entries ] return
@@ -2546,11 +2709,6 @@ element Bootstrap
                 model: first_line[ '{e}/device/model' ].trim[] ]
             dv.ok = nm != here && dv.bytes >= need
             drives.push[ dv ]
-        if [ want_drive ]
-            kept : bool [ false ]
-            for [ dv: UsbDrive ] in drives
-                if [ dv.name == want_drive && dv.ok ] kept = true
-            if [ !kept ] want_drive = ''
 
     func link_of [ f: string ] -> string
         b : local i8 [ 4096 ]
@@ -4017,9 +4175,16 @@ element Bootstrap
         # the same file by its exact time: a source and its product
         # a second apart must keep their order (silver's rebuild test)
         dt : struct stat
-        if [ stat[ dst.chars, @dt ] == 0
-                && dt.st_mtim.tv_sec == st.st_mtim.tv_sec
-                && dt.st_mtim.tv_nsec == st.st_mtim.tv_nsec ] return
+        # macOS names the time st_mtimespec, Linux st_mtim
+        if [ stat[ dst.chars, @dt ] == 0 ]
+            ifdef [ apple ]
+                if [ dt.st_mtimespec.tv_sec == st.st_mtimespec.tv_sec
+                     && dt.st_mtimespec.tv_nsec
+                        == st.st_mtimespec.tv_nsec ] return
+            ifndef [ apple ]
+                if [ dt.st_mtim.tv_sec == st.st_mtim.tv_sec
+                     && dt.st_mtim.tv_nsec == st.st_mtim.tv_nsec ]
+                    return
         fi : handle fopen[ src.chars, 'rb' ]
         if [ !fi ] return
         # an older copy may be read only: a fresh file each time
@@ -4040,8 +4205,12 @@ element Bootstrap
         chmod[ dst.chars, 0x1ED ]
         # the launcher compares product and source times
         ts : local timespec [ 2 ]
-        ts[ 0 ] = st.st_atim
-        ts[ 1 ] = st.st_mtim
+        ifdef [ apple ]
+            ts[ 0 ] = st.st_atimespec
+            ts[ 1 ] = st.st_mtimespec
+        ifndef [ apple ]
+            ts[ 0 ] = st.st_atim
+            ts[ 1 ] = st.st_mtim
         utimensat[ AT_FDCWD, dst.chars, @ts[ 0 ], 0 ]
 
     # the guest as a folder, copied to /orbiter-os to boot

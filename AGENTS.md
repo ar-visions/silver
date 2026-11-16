@@ -16320,3 +16320,59 @@ on a board, against an open source engine, with undo.
    the start; shots of each.
 OPEN: under-promotion, the engine playing white or both, a legal-move
 hint on the squares, the clocks, a saved game across restarts.
+
+## orbiter-os installed from and onto macOS — live list (Nov 16 2026)
+
+The user's note: "would like to get orbiter-os installing on macOS
+with our install feature". His pick: both: the wizard runs on a Mac
+(as on Linux: build kernels, write the USB stick), and the Mac is a
+target. The point (Nov 16): "on any OS, we can install orbiter
+from, and into a partition or our own when permitted": the wizard
+runs on Linux, macOS and Windows, and installs into a partition
+beside that system, or takes the disk whole when allowed. This Mac: Apple M2 MacBook Air (t8112), macOS 26.6, one
+251 GB disk (macOS's APFS container, its recovery after).
+In order:
+1. DONE (Nov 16) the wizard and os-bootstrap build and run on
+   macOS: copy_file read Linux's st_mtim / st_atim (macOS:
+   st_mtimespec / st_atimespec). Seen hidden (orbiter --install
+   --dry_run): the Build orbiter-os page, its kernel list empty.
+2. IN PROGRESS kernels built on macOS. Proved by a scratch build
+   (Asahi 7.2.15, defconfig + asahi.config: Image, 1,685 modules
+   with asahi.ko, 110 Apple device trees). In os-bootstrap: GNU
+   make 4.4.1, coreutils 9.5, sed 4.9, findutils 4.10.0, OpenSSL
+   3.5.4 and musl's elf.h (kraj's mirror: bminor/musl is gone)
+   imported into install/kernel-host, first on the kernel steps'
+   PATH alone; os-bootstrap/mac-host: byteswap.h, endian.h,
+   linux-host.h (O_LARGEFILE, copy_file_range as ENOSYS); host
+   flags -D_UUID_T -D__GETHOSTUUID_H and the tree's own
+   include/uapi last (sign-file wanted asm-generic/int-ll64.h);
+   the tree on a case-sensitive sparse APFS image
+   (install/build/kernels.sparseimage, 200 GB cap, mounted at
+   install/build/kernels before the tree is unpacked); perl's
+   POSIX::setsid in place of setsid (Cancel's group kill kept).
+   An x64 kernel is refused on a Mac for now (objtool needs
+   libelf). The hardware choice starts at this machine's own line
+   (own_hardware: Apple on Apple silicon). Running: the Apple line
+   (Ubuntu's arm64 config) through os-bootstrap itself.
+   init.c: module_map runs depmod at boot when the kernel came with
+   no modules.dep (a Mac has no depmod); compiled for arm64 on
+   nolibc. Not booted.
+3. IN PROGRESS the USB stick written from macOS. Written, not
+   built (the kernel build runs the module): disk_gpt
+   (os-bootstrap/os-bootstrap.c, disk_gpt.h: the table by the UEFI
+   spec, zlib's crc32; sfdisk gone on every system) checked alone:
+   hdiutil and gpt read EFI 512 MB at 1 MB and Linux after it, both
+   headers and entry tables pass their checksums. mtools and
+   e2fsprogs 1.47.1 imported on a Mac; new_uuid (uuidgen there);
+   the stale work folders by kill -0 (no /proc); the drive list
+   from diskutil (external physical disks: name, bytes, model);
+   the write: diskutil unmountDisk, dd to /dev/rdiskN, root by
+   osascript's administrator prompt (root.sh, root.scpt), dd's
+   counts read back from a log once a second. NOT run: a real
+   stick (his password, his stick); the tree itself (item 4).
+4. OPEN orbiter-os's arm64 userland for Apple (from fp6's arm64
+   sysroot), with Asahi's Mesa (the Apple GPU's Vulkan driver).
+5. OPEN onto this Mac beside macOS, the Asahi way: macOS's
+   container shrunk, a boot stub with m1n1 and U-Boot, an EFI
+   partition, our root; the user's own step: a restart into
+   recovery to allow the third-party kernel.
