@@ -1,0 +1,372 @@
+# the drive's own system: Ubuntu 24.04's x64 packages from one
+# dated snapshot, unpacked into a folder; never the computer's
+extend os-bootstrap
+
+# one package of an archive index
+class DebPkg
+    public name  : string [ '' ]
+    public ver   : string [ '' ]
+    public arch  : string [ '' ]
+    public file  : string [ '' ]
+    public deps  : string [ '' ]
+    public multi : string [ '' ]
+
+# dpkg's order of two version parts: ~ first, letters, then marks
+func deb_rank [ c: i32 ] -> i32
+    if [ c == 126 ] return -1
+    if [ c == 0 ] return 0
+    if [ (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ] return c
+    return c + 256
+
+func deb_digit [ c: i32 ] -> bool
+    return c >= 48 && c <= 57
+
+func deb_at [ s: string, i: i32 ] -> i32
+    if [ i >= s.count ] return 0
+    return i32[ s.chars[ i ] ] & 255
+
+# one part of a version (upstream or revision), as dpkg compares
+func deb_part [ a: string, b: string ] -> i32
+    i : i32 [ 0 ]
+    j : i32 [ 0 ]
+    while [ i < a.count || j < b.count ]
+        while [ (i < a.count && !deb_digit[ deb_at[ a, i ] ])
+                || (j < b.count && !deb_digit[ deb_at[ b, j ] ]) ]
+            xa : deb_at[ a, i ]
+            xb : deb_at[ b, j ]
+            ca : i32 [ (deb_digit[ xa ]) ? 0 : xa ]
+            cb : i32 [ (deb_digit[ xb ]) ? 0 : xb ]
+            ra : i32 [ deb_rank[ ca ] ]
+            rb : i32 [ deb_rank[ cb ] ]
+            if [ ra != rb ] return (ra < rb) ? -1 : 1
+            if [ ca != 0 ] i += 1
+            if [ cb != 0 ] j += 1
+        while [ deb_at[ a, i ] == 48 ]
+            i += 1
+        while [ deb_at[ b, j ] == 48 ]
+            j += 1
+        first : i32 [ 0 ]
+        while [ deb_digit[ deb_at[ a, i ] ]
+                && deb_digit[ deb_at[ b, j ] ] ]
+            if [ first == 0 ] first = deb_at[ a, i ] - deb_at[ b, j ]
+            i += 1
+            j += 1
+        if [ deb_digit[ deb_at[ a, i ] ] ] return 1
+        if [ deb_digit[ deb_at[ b, j ] ] ] return -1
+        if [ first != 0 ] return (first < 0) ? -1 : 1
+    return 0
+
+# dpkg's order of two whole versions: epoch, upstream, revision
+func deb_order [ a: string, b: string ] -> i32
+    ea : i32 [ a.index_of[ ':' ] ]
+    eb : i32 [ b.index_of[ ':' ] ]
+    na : i32 [ (ea >= 0) ? atoi[ a.mid[ 0, ea ].chars ] : 0 ]
+    nb : i32 [ (eb >= 0) ? atoi[ b.mid[ 0, eb ].chars ] : 0 ]
+    if [ na != nb ] return (na < nb) ? -1 : 1
+    ra : a.mid[ ea + 1, a.count - ea - 1 ]
+    rb : b.mid[ eb + 1, b.count - eb - 1 ]
+    da : i32 [ ra.rindex_of[ '-' ] ]
+    db : i32 [ rb.rindex_of[ '-' ] ]
+    ua : string [ (da >= 0) ? ra.mid[ 0, da ] : ra ]
+    ub : string [ (db >= 0) ? rb.mid[ 0, db ] : rb ]
+    va : string [ (da >= 0) ? ra.mid[ da + 1, ra.count - da - 1 ] : '' ]
+    vb : string [ (db >= 0) ? rb.mid[ db + 1, rb.count - db - 1 ] : '' ]
+    u : i32 [ deb_part[ ua, ub ] ]
+    if [ u != 0 ] return u
+    return deb_part[ va, vb ]
+
+# Ubuntu 24.04 for x64 PCs: its base, then the packages the drive
+# carries and all they depend on, every one from the same snapshot
+class UbuntuBase
+    public dir   : string [ '' ]
+    public tools : string [ '' ]
+    # the archive as it was on that day: the same files forever
+    public snap  : string [
+        'https://snapshot.ubuntu.com/ubuntu/20261115T000000Z' ]
+    public cd    : string [
+        'https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release' ]
+    public tar   : string [ 'ubuntu-base-24.04.3-base-amd64.tar.gz' ]
+    public sum   : string [
+        '6bc2cde3930ad088b3bb46fa45279e96d25bc3810f209850ecbe4722711874f9' ]
+    mutable pkgs : map DebPkg [ string ]
+    mutable prov : map string [ string ]
+    mutable want : vec string
+    mutable seen : map bool [ string ]
+
+    # the folder the drive's system files are read from
+    public func root [] -> string
+        return '{dir}/root'
+
+    # what the drive carries: its programs, the headers and link
+    # files silver builds with, the libraries silver's own programs
+    # load, and Steam's 32-bit half
+    func wanted [] -> vec string
+        out : vec string []
+        for [ p: string ] in vec string [] [
+                'bash', 'coreutils', 'grep', 'sed', 'findutils',
+                'diffutils', 'tar', 'gzip', 'xz-utils', 'zstd', 'less',
+                'procps', 'debianutils', 'mawk', 'curl', 'ncurses-bin',
+                'ncurses-base', 'nano', 'vim-tiny', 'git',
+                'openssh-client', 'e2fsprogs', 'fdisk', 'dosfstools',
+                'efibootmgr', 'ntfs-3g', 'util-linux', 'kmod',
+                'dbus-daemon', 'pci.ids', 'ca-certificates',
+                'linux-firmware', 'wireless-regdb', 'make', 'python3',
+                'libc6-dev', 'libgcc-13-dev', 'libstdc++-13-dev',
+                'libcrypt-dev', 'linux-libc-dev', 'libxcb1-dev',
+                'libxcb-randr0-dev', 'libxcb-sync-dev',
+                'libxcb-res0-dev', 'libx11-dev', 'libx11-xcb-dev',
+                'libxrandr-dev', 'libdrm-dev', 'libasound2-dev',
+                'libwayland-dev', 'libwlroots-dev', 'libxkbcommon-dev',
+                'libpixman-1-dev', 'libdbus-1-dev', 'libfontconfig-dev',
+                'libvulkan1', 'libgles2', 'libegl1', 'libgbm1',
+                'libglib2.0-0t64', 'libgudev-1.0-0', 'libicu74',
+                'libxml2', 'libgcrypt20', 'libcap2', 'libbsd0',
+                'libdeflate0', 'libsystemd0', 'libncurses6', 'libnss3',
+                'libxcb-composite0', 'libxcb-ewmh2', 'libxcb-icccm4',
+                'libxcb-present0', 'libxcb-render-util0',
+                'libxcb-xinput0', 'libxcb-dri3-0', 'libxcb-xfixes0',
+                'libxcb-shm0', 'libxinerama1',
+                'libepoxy0', 'libjpeg-turbo8', 'libwebp7',
+                'libwebpdemux2', 'libharfbuzz0b', 'libharfbuzz-icu0',
+                'xwayland' ]
+            out.push[ p ]
+        for [ p: string ] in vec string [] [ 'libc6', 'libcrypt1',
+                'libgcc-s1', 'libstdc++6', 'libgl1', 'libglx0',
+                'libegl1', 'libgbm1', 'libx11-6', 'libxcb1',
+                'libxcb-dri3-0', 'libxinerama1', 'libudev1',
+                'libgpg-error0', 'libdbus-1-3' ]
+            out.push[ '{p}:i386' ]
+        return out
+
+    # the stamp: the snapshot, the base and the list, in one line
+    func stamp_text [] -> string
+        list : string ''
+        for [ p: string ] in wanted[]
+            list = '{list} {p}'
+        return '{snap} {tar}{list}'
+
+    func run [ cmd: string ] -> bool
+        c : command [ cmd ]
+        return c.exec[ false ] == 0
+
+    # made once; again when the snapshot, base or list change
+    public func make [] -> bool
+        sp : '{dir}/stamp'
+        fh : handle fopen[ sp.chars, 'r' ]
+        if [ fh ]
+            b : local i8 [ 65536 ]
+            had : string ''
+            if [ fgets[ @b[0], 65536, fh ] ] had = string [ @b[0] ]
+            fclose[ fh ]
+            if [ had.trim[] == stamp_text[] ] return true
+        log 'os-bootstrap: the x64 base, from {snap}'
+        dp : path [ dir ]
+        dp.make_dir[]
+        if [ !fetch_base[] ] return false
+        if [ !read_indexes[] ] return false
+        files : resolve[]
+        if [ files.count == 0 ] return false
+        if [ !unpack[ files ] ] return false
+        finish[]
+        out : handle fopen[ sp.chars, 'w' ]
+        if [ out ]
+            fputs[ stamp_text[].chars, out ]
+            fputs[ '\n', out ]
+            fclose[ out ]
+        log 'os-bootstrap: the x64 base is ready, {files.count} packages'
+        return true
+
+    # ubuntu-base, checked against its published sum, unpacked fresh
+    func fetch_base [] -> bool
+        got : '{dir}/{tar}'
+        p : path [ got ]
+        if [ !p.exists[] ]
+            get : 'curl -fL -o {got}.part {cd}/{tar}'
+            if [ !run[ get ] ] return false
+            if [ !run[ 'mv {got}.part {got}' ] ] return false
+        if [ !run[ 'echo "{sum}  {got}" | sha256sum -c --quiet' ] ]
+            log 'os-bootstrap: {tar} does not match its sum'
+            return false
+        r : root[]
+        un : 'rm -rf {r} && mkdir -p {r} && tar -xzf {got} -C {r}'
+        return run[ un ]
+
+    # every pocket's index for both arches; a later version wins
+    func read_indexes [] -> bool
+        pkgs = map DebPkg [ string ] []
+        prov = map string [ string ] []
+        for [ arch: string ] in vec string [] [ 'amd64', 'i386' ]
+            for [ pocket: string ] in vec string [] [ 'noble',
+                    'noble-security', 'noble-updates' ]
+                for [ part: string ] in vec string [] [ 'main',
+                        'universe' ]
+                    nm : '{dir}/index/{pocket}-{part}-{arch}.gz'
+                    ip : path [ nm ]
+                    if [ !ip.exists[] ]
+                        dist : '{snap}/dists/{pocket}/{part}'
+                        url : '{dist}/binary-{arch}/Packages.gz'
+                        ixd : path '{dir}/index'
+                        ixd.make_dir[]
+                        get : 'curl -fsL -o {nm}.part {url}'
+                        if [ !run[ get ] ] return false
+                        if [ !run[ 'mv {nm}.part {nm}' ] ] return false
+                    read_index[ nm, arch ]
+        log 'os-bootstrap: {pkgs.count} packages in the indexes'
+        return pkgs.count > 0
+
+    # one Packages.gz: name, version, file, its dependencies
+    func read_index [ nm: string, arch: string ]
+        gz : handle gzopen[ nm.chars, 'rb' ]
+        if [ !gz ] return
+        b : local i8 [ 65536 ]
+        cur : DebPkg [ arch: arch ]
+        while [ true ]
+            got : handle gzgets[ gz, @b[0], 65536 ]
+            ln : string ''
+            if [ got ] ln = string [ @b[0] ]
+            ln = ln.trim[]
+            if [ ln.count == 0 ]
+                if [ cur.name.count > 0 ] keep[ cur ]
+                cur = DebPkg [ arch: arch ]
+                if [ !got ] break
+                continue
+            c : i32 [ ln.index_of[ ': ' ] ]
+            if [ c <= 0 ] continue
+            k : ln.mid[ 0, c ]
+            v : ln.mid[ c + 2, ln.count - c - 2 ]
+            if [ k == 'Package' ] cur.name = v
+            el [ k == 'Version' ] cur.ver = v
+            el [ k == 'Filename' ] cur.file = v
+            el [ k == 'Multi-Arch' ] cur.multi = v
+            el [ k == 'Architecture' ] cur.arch = v
+            el [ k == 'Depends' || k == 'Pre-Depends' ]
+                cur.deps = '{cur.deps},{v}'
+            el [ k == 'Provides' ]
+                for [ pv: string ] in v.split[ ',' ]
+                    pn : bare[ pv ]
+                    key : '{pn}:{arch}'
+                    if [ pn.count > 0 && !prov.contains[ key ] ]
+                        prov[ key ] = cur.name
+        gzclose[ gz ]
+
+    # a package under its index's arch; arch all ones under both
+    func keep [ p: DebPkg ]
+        side : string [ (p.arch == 'all') ? 'amd64' : p.arch ]
+        for [ a: string ] in vec string [] [ 'amd64', 'i386' ]
+            if [ p.arch != 'all' && a != side ] continue
+            key : '{p.name}:{a}'
+            if [ pkgs.contains[ key ] ]
+                had : pkgs[ key ]
+                if [ deb_order[ had.ver, p.ver ] >= 0 ] continue
+            pkgs[ key ] = p
+
+    # a dependency's name: no version, no arch qualifier
+    func bare [ s: string ] -> string
+        t : s.trim[]
+        sp : i32 [ t.index_of[ ' ' ] ]
+        if [ sp >= 0 ] t = t.mid[ 0, sp ]
+        pa : i32 [ t.index_of[ '(' ] ]
+        if [ pa >= 0 ] t = t.mid[ 0, pa ]
+        co : i32 [ t.index_of[ ':' ] ]
+        if [ co >= 0 ] t = t.mid[ 0, co ]
+        return t.trim[]
+
+    # the package a name means under an arch, or null
+    func find [ nm: string, arch: string ] -> DebPkg
+        key : '{nm}:{arch}'
+        if [ pkgs.contains[ key ] ] return pkgs[ key ]
+        if [ prov.contains[ key ] ]
+            pn : prov[ key ]
+            real : '{pn}:{arch}'
+            if [ pkgs.contains[ real ] ] return pkgs[ real ]
+        return null
+
+    # every package wanted and all it depends on, by file
+    func resolve [] -> vec string
+        files : vec string []
+        seen = map bool [ string ] []
+        missing : i32 [ 0 ]
+        for [ w: string ] in wanted[]
+            co : i32 [ w.index_of[ ':' ] ]
+            nm : string [ (co >= 0) ? w.mid[ 0, co ] : w ]
+            arch : 'amd64'
+            if [ co >= 0 ] arch = w.mid[ co + 1, w.count - co - 1 ]
+            missing += add[ nm, arch, files ]
+        if [ missing > 0 ]
+            log 'os-bootstrap: {missing} wanted packages are not in the snapshot'
+            return vec string []
+        return files
+
+    # one package and its dependencies; the count not found
+    func add [ nm: string, arch: string, files: vec string ] -> i32
+        p : find[ nm, arch ]
+        if [ !p ]
+            log 'os-bootstrap: no package {nm} for {arch}'
+            return 1
+        key : '{p.name}:{arch}'
+        if [ seen.contains[ key ] ] return 0
+        seen[ key ] = true
+        files.push[ p.file ]
+        missing : i32 [ 0 ]
+        for [ dep: string ] in p.deps.split[ ',' ]
+            if [ dep.trim[].count == 0 ] continue
+            # the first of a | b this archive has
+            took : bool [ false ]
+            for [ alt: string ] in dep.split[ '|' ]
+                an : bare[ alt ]
+                if [ an.count == 0 ] continue
+                da : string [ arch ]
+                # an i386 package's tools come from the PC's own arch
+                if [ arch == 'i386' ]
+                    other : find[ an, 'amd64' ]
+                    if [ other && other.multi == 'foreign' ]
+                        da = 'amd64'
+                if [ find[ an, da ] ]
+                    missing += add[ an, da, files ]
+                    took = true
+                    break
+            if [ !took ]
+                log 'os-bootstrap: {p.name} needs {dep.trim[]}: not found'
+                missing += 1
+        return missing
+
+    # each .deb fetched once, its data unpacked over the base
+    func unpack [ files: vec string ] -> bool
+        debs : '{dir}/debs'
+        dd : path [ debs ]
+        dd.make_dir[]
+        r : root[]
+        ar : '{tools}/llvm-ar'
+        tmp : '{dir}/unpack'
+        n : i32 [ 0 ]
+        for [ f: string ] in files
+            sl : i32 [ f.rindex_of[ '/' ] ]
+            nm : f.mid[ sl + 1, f.count - sl - 1 ]
+            got : '{debs}/{nm}'
+            gp : path [ got ]
+            if [ !gp.exists[] ]
+                if [ !run[ 'curl -fsL --retry 5 --retry-all-errors -o {got}.part {snap}/{f}' ] ]
+                    log 'os-bootstrap: {f} did not download'
+                    return false
+                if [ !run[ 'mv {got}.part {got}' ] ] return false
+            x : 'rm -rf {tmp} && mkdir -p {tmp} && cd {tmp}'
+            x = '{x} && {ar} x {got} && tar --keep-directory-symlink'
+            x = '{x} -xf data.tar* -C {r}'
+            if [ !run[ x ] ]
+                log 'os-bootstrap: {nm} did not unpack'
+                return false
+            n += 1
+            if [ (n % 100) == 0 ]
+                log 'os-bootstrap: {n} of {files.count} packages'
+        run[ 'rm -rf {tmp}' ]
+        return true
+
+    # what the packages' own scripts would have made: the CA bundle
+    # and vi, from the files the packages carry
+    func finish []
+        r : root[]
+        ca : '{r}/etc/ssl/certs'
+        mz : '{r}/usr/share/ca-certificates/mozilla'
+        crt : '{ca}/ca-certificates.crt'
+        run[ 'mkdir -p {ca} && cat {mz}/*.crt > {crt}' ]
+        run[ 'ln -sf vim.tiny {r}/usr/bin/vi' ]

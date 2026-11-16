@@ -163,6 +163,27 @@ func contents [ dir: string, fs: string ] -> string
         out = (out.count > 0) ? '{out}, has orbiter-os' : 'orbiter-os'
     return out
 
+# the bytes of a folder's files (links not followed)
+func folder_bytes [ dir: string ] -> i64
+    d : path [ dir ]
+    entries : d.ls[ null, false ]
+    total : i64 [ 0 ]
+    if [ !entries ] return 0
+    for [ e: path ] in entries
+        if [ e.is_symlink[] ] continue
+        if [ e.is_dir[] ] total += folder_bytes[ '{e}' ]
+        el
+            st : struct stat
+            if [ stat[ '{e}'.chars, @st ] == 0 ] total += i64[ st.st_size ]
+    return total
+
+# an orbiter-os folder on the partition: the install writes over
+# it, so its bytes are room (a link's target lies elsewhere)
+func held_at [ dir: string ] -> i64
+    oo : path '{dir}/orbiter-os'
+    if [ oo.is_symlink[] || !oo.is_dir[] ] return 0
+    return folder_bytes[ '{oo}' ]
+
 # a system's name: PRETTY_NAME from os-release
 func read_os [ f: string ] -> string
     fh : handle fopen[ f.chars, 'r' ]
@@ -229,9 +250,26 @@ func fs_type [ dev: string ] -> string
         return 'swap'
     return ''
 
-# a partition's uuid as udev keeps it (readable by anyone)
+# a partition's uuid as udev keeps it (readable by anyone).
+# orbiter's library path puts wine's udev-less libudev under
+# lsblk (an empty answer): the links udev keeps come first,
+# then lsblk on the system's own libraries
 func part_uuid [ dev: string ] -> string
-    cmd : command [ 'lsblk -dno UUID {dev} 2>/dev/null' ]
+    at : i64 [ dev.rindex_of[ '/' ] ]
+    nm : string [ (at >= 0)
+        ? dev.mid[ i32[ at ] + 1, i32[ dev.count ] - i32[ at ] - 1 ]
+        : dev ]
+    d : path '/dev/disk/by-uuid'
+    links : d.ls[ null, false ]
+    if [ links ]
+        for [ l: path ] in links
+            b : local i8 [ 256 ]
+            n : i64 [ readlink[ l.chars, @b[0], 255 ] ]
+            if [ n <= 0 ] continue
+            b[ n ] = 0
+            t : string [ @b[0] ]
+            if [ t.ends_with[ '/{nm}' ] ] return l.filename[]
+    cmd : command [ 'env -u LD_LIBRARY_PATH lsblk -dno UUID {dev} 2>/dev/null' ]
     fh : handle cmd.stream[]
     if [ !fh ] return ''
     b : local i8 [ 128 ]
@@ -534,6 +572,8 @@ class Part
     # -1: not known (not mounted, not root)
     public free   : i64 [ -1 ]
     public what   : string [ '' ]
+    # what an install takes back: its orbiter-os folder overwritten
+    public held   : i64
     # in use: never shrunk
     public mounted : bool
     # the least it can shrink to, -1 when it cannot
@@ -693,6 +733,7 @@ func inspect [ p: Part ]
     if [ dir.count == 0 ] return
     p.free = free_at[ dir ]
     p.what = contents[ dir, p.fs ]
+    p.held = held_at[ dir ]
     if [ dir == look ] unmount_at[ look ]
 
 # a file system mounted at a place (Linux): 0 when it worked
@@ -928,110 +969,103 @@ OrbiterAvatar SetupAvatar
     rest_spin : f32 [ 1.0 ]
 
 element WizPanel
-    body : Layer [ fill_color: rgba [ '#0e1116ee' ], stroke_width: 1.0,
-        stroke_color: rgba [ '#ffffff1f' ], radius: Radius [ '14' ] ]
+    # a free window's look: frost under, an inner glow, no line
+    body : Layer [ fill_color: rgba [ '#140a2a88' ], stroke_width: 0.0,
+        radius: Radius [ '8' ], background_lens: BlurStage.frost,
+        box_shadow: BoxShadow [ 'inset 0 0 8px #ffffff22 curve 2' ] ]
 
 element WizTitle
-    face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 26,
+    face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 28,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 15,
+    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 15,
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizSmall
+    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_align: vec2f [ x: 0.0, y: 0.5 ] ]
+
+# the install's log: the code font, as the lines came
+WizSmall WizLog
     face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 13,
+        label_font: 'fonts/SpaceMono-Combined.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizGood
-    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 13,
+    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 13,
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizWarn
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 14,
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
-# a row to pick: a disk, a partition, a way to install
-Button WizPick
+# the wizard's buttons: the system menu's look (RoundTab): a pill
+# lit by the pointer's near light, an inner glow, no line at rest
+Button WizButton
     style : CSS {
         layers.body:
             fill_color: #ffffff0a
-            radius: 8
+            radius: 999
             stroke_width: 1
-            stroke_color: #ffffff1a
-            box_shadow: inset 0 0 12px #ff84ff14
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 13px #8af2
             near_border: true
-            near_inset: 2.0
-            near_inset_color: #ff84ffaa
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
         layers.face:
-            label_color: #e4e4ea
-            label_size: 15
-            label_align: 0.0 0.5
-            label_offset: 14.0 0.0
+            label_color: #f2f2f6
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.5 0.5
         :hovered
             layers.body:
                 fill_color: #ffffff18
-                stroke_color: #ffffff40
-                near_inset: 4.0
+                near_inset: 6.0
+    }
+
+# a row to pick: a disk, a partition, a way to install
+WizButton WizPick
+    style : CSS {
+        layers.face:
+            label_color: #e4e4ea
+            label_align: 0.0 0.5
+            label_offset: 14.0 0.0
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
-                stroke_color: #806bff
+                box_shadow: inset 0 0 13px #806bff88
             layers.face:
                 label_color: #ffffff
     }
 
-Button WizButton
-    style : CSS {
-        layers.body:
-            fill_color: #ffffff14
-            radius: 8
-            stroke_width: 1
-            stroke_color: #ffffff33
-            box_shadow: inset 0 0 12px #ff84ff14
-            near_border: true
-            near_inset: 2.0
-            near_inset_color: #ff84ffaa
-        layers.face:
-            label_color: #f2f2f6
-            label_size: 16
-            label_align: 0.5 0.5
-        :hovered
-            layers.body:
-                fill_color: #ffffff26
-                stroke_color: #ffffff66
-                near_inset: 4.0
-    }
-
 # the button that goes on: lit blue
-Button WizGo
+WizButton WizGo
     style : CSS {
         layers.body:
             fill_color: #4d3dbc
-            radius: 8
-            stroke_width: 1
-            stroke_color: #a898ff
-            box_shadow: inset 0 0 12px #ff84ff14
-            near_border: true
-            near_inset: 2.0
-            near_inset_color: #ff84ffaa
         layers.face:
             label_color: #ffffff
-            label_size: 16
-            label_align: 0.5 0.5
         :hovered
             layers.body:
                 fill_color: #5a48d0
-                stroke_color: #c4b8ff
-                near_inset: 4.0
     }
 
 # the disk map's pieces: a partition (linux, other), free space,
@@ -1574,7 +1608,7 @@ element InstallWizard
 
     # a partition the folder will not fit on
     func too_small [ p: Part ] -> bool
-        return need > 0 && p.free >= 0 && p.free < need
+        return need > 0 && p.free >= 0 && p.free + p.held < need
 
     func disk [] -> Disk
         if [ disk_at < 0 || disk_at >= disks.count ] return null
@@ -1881,6 +1915,7 @@ element InstallWizard
         root : string ''
         # where an existing Linux keeps its boot menu, mounted
         lmnt : string [ mnt ]
+        grub_ran : bool [ false ]
         if [ fresh ]
             es : esp[]
             espn = es.number
@@ -1928,7 +1963,7 @@ element InstallWizard
             espn = es.number
             rdev = '/dev/{pt.name}'
             in_win = true
-            ser : vec string capture[ 'lsblk -no UUID {rdev}' ]
+            ser : vec string capture[ 'env -u LD_LIBRARY_PATH lsblk -no UUID {rdev}' ]
             if [ ser.count > 0 ] win_ser = ser[ 0 ]
             if [ win_ser.count != 16 ]
                 problems.push[ 'No NTFS serial for {rdev}.' ]
@@ -2063,6 +2098,11 @@ element InstallWizard
             s.dst  = mt
             s.menu = boot
             s.exec = boot == BootKind.grub_debian
+            # the running system's own menu: its grub.cfg remade
+            if [ boot == BootKind.grub_debian && mt.starts_with[ '/etc/' ] ]
+                s = step[ StepKind.run, 'Update GRUB\'s menu' ]
+                s.cmd = 'update-grub'
+                grub_ran = true
             if [ fresh && lp ]
                 s = step[ StepKind.unmount, 'Unmount /dev/{lp.name}' ]
                 s.dst = lmnt
@@ -2144,7 +2184,7 @@ element InstallWizard
             s.cmd = '{s.cmd} --loader \'\\EFI\\orbiter\\vmlinuz.efi\''
         s = step[ StepKind.unmount, 'Unmount {rdev}' ]
         s.dst = mnt
-        if [ boot == BootKind.grub_debian ]
+        if [ boot == BootKind.grub_debian && !grub_ran ]
             notes.push[ 'GRUB lists it after: sudo update-grub' ]
         el [ win ]
             st : 'From Windows: orbiter-os\\Start orbiter-os.cmd'
@@ -2251,8 +2291,16 @@ element InstallWizard
                 ex = '{ex} {sh_word[ '--exclude=./{d}/*' ]}'
             bad : '/run/wizard/copy.bad'
             pr : sh_word[ '--checkpoint-action=echo=@copied %u' ]
+            # an older install's real folder where the tree has a link
+            tops : command { for n in bin sbin lib lib32 lib64; do
+                [ -L {src}/$n ] && [ -d {dst}/$n ] && [ ! -L {dst}/$n ]
+                && rm -rf {dst}/$n; done;
+                [ -d {src}/src/silver ] && rm -rf
+                {dst}/src/silver/checkout
+                {dst}/src/silver/platform/native/tmp
+                {dst}/src/silver/platform/native/*.checkout-lock; true }
             c : command {
-                ( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} )
+                ( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} ) && {tops}
                 && rm -f {bad} && ( tar -C {src}{ex} --checkpoint=100 {pr}
                 -cf - . || touch {bad} )
                 | tar -C {dst} --no-same-owner -xpf - }
@@ -2745,7 +2793,7 @@ element InstallWizard
             lock.unlock[]
             y : f32 [ top + 4.2 ]
             for [ i: i32 0, i < shown.count, i += 1 ]
-                t[ 'line_{i}' ] = WizSmall [ label: shown[ i ],
+                t[ 'line_{i}' ] = WizLog [ label: shown[ i ],
                     area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
                 y += 0.78
         t[ 'title' ] = WizTitle [ label: title,

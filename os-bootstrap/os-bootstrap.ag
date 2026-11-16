@@ -109,6 +109,10 @@ import https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi
     > mkdir -p {install}/share/silver-os-bootstrap/efifs
     > cp {import_file} {install}/share/silver-os-bootstrap/efifs/ntfs_x64.efi
 
+# the same lines as img's and wine's: one key for the shared build
+import madler:zlib/51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf <zlib.h>
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+    -lz
 import vec
 import img
 import trinity
@@ -130,7 +134,9 @@ ifndef [ windows ]
     import <pthread.h>
 import <time.h>
 import <sys/stat.h>
+import <fcntl.h>
 import <signal.h>
+import Base
 
 # one entry of the guest file system
 class OsFile
@@ -306,48 +312,57 @@ class Built
     public note : string [ '' ]
 
 element BootText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 15,
+    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootGood
-    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 13,
+    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 13,
+    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootLog
     no_cache : true
-    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 12,
+    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 14,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
+# the system menu's look (RoundTab): a pill lit by the near light
 Button BootButton
     style : CSS {
         layers.body:
-            fill_color: #ffffff14
-            radius: 8
+            fill_color: #ffffff0a
+            radius: 999
             stroke_width: 1
-            stroke_color: #ffffff33
-            box_shadow: inset 0 0 12px #ff84ff14
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 13px #8af2
             near_border: true
-            near_inset: 2.0
-            near_inset_color: #ff84ffaa
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
         layers.face:
             label_color: #f2f2f6
-            label_size: 13
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
         :hovered
             layers.body:
-                fill_color: #ffffff26
-                stroke_color: #ffffff66
-                near_inset: 4.0
+                fill_color: #ffffff18
+                near_inset: 6.0
     }
 
 # a list in a framed box: the header, then rows that scroll
 element ListBox
-    frame : Layer [ fill_color: rgba [ '#ffffff08' ], stroke_width: 1.0,
-        stroke_color: rgba [ '#ffffff1f' ], radius: Radius [ '8' ] ]
+    # the panel's own look: the high blur under, an inner glow
+    frame : Layer [ fill_color: rgba [ '#140a2a66' ], stroke_width: 0.0,
+        radius: Radius [ '8' ], background_lens: BlurStage.frost,
+        box_shadow: BoxShadow [ 'inset 0 0 6px #0000005f curve 2' ] ]
 
 # the column names, above the rows; never scrolls
 element ListHead
@@ -364,16 +379,19 @@ element ListRows
 # a column's text; the row underneath takes the click
 element ListCell
     ghost : true
-    face  : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 14,
+    face  : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # a cell of a row that cannot be picked
 ListCell ListDimCell
-    face  : Layer [ label_color: rgba [ '#ffffff48' ], label_size: 14,
+    face  : Layer [ label_color: rgba [ '#ffffff48' ], label_size: 16,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 ListCell ListHeadCell
-    face  : Layer [ label_color: rgba [ '#ffffff80' ], label_size: 12,
+    face  : Layer [ label_color: rgba [ '#ffffff80' ], label_size: 14,
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # one row: the whole row picks it
@@ -410,21 +428,24 @@ Button Choice
     style : CSS {
         layers.body:
             fill_color: #ffffff0a
-            radius: 8
+            radius: 999
             stroke_width: 1
-            stroke_color: #ffffff1a
-            box_shadow: inset 0 0 12px #ff84ff14
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 13px #8af2
             near_border: true
-            near_inset: 2.0
-            near_inset_color: #ff84ffaa
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
         layers.face:
             label_color: #e4e4ea
-            label_size: 14
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
             label_align: 0.5 0.5
         :hovered
             layers.body:
                 fill_color: #ffffff18
-                near_inset: 4.0
+                near_inset: 6.0
         :selected
             layers.body:
                 fill_color: #4d3dbcaa
@@ -468,6 +489,13 @@ element Bootstrap
     mutable kernel     : path
     mutable files      : vec OsFile
     mutable seen       : map bool [ string ]
+    # folders kept out of the tree (a driver the kernel lacks)
+    mutable left       : map bool [ string ]
+    # the drive's own system files: the pinned base, never /
+    mutable sys        : UbuntuBase
+    mutable sysr       : string
+    mutable deps_done  : map bool [ string ]
+    mutable mapped     : map string [ string ]
     mutable kernels    : vec KernelBuild
     mutable chosen     : string
     # the installer stick's kernel: the chosen one, or an ARM one
@@ -699,11 +727,38 @@ element Bootstrap
             return vec string [] [ '7.2', '6.18', '6.12' ]
         return out
 
-    # the host's nvidia release: its libraries ride in the tree
+    # nvidia's releases: the modules and libraries share one
     public func nvidias [] -> vec string
-        host : first_line[ '/sys/module/nvidia/version' ].trim[]
-        if [ host.count == 0 ] return vec string [] [ 'none' ]
-        return vec string [] [ host, 'none' ]
+        return vec string [] [ '610.57.04', '615.71.09', 'none' ]
+
+    # nvidia's own installer for a release, unpacked once
+    func nvidia_user [ v: string ] -> string
+        dir : '{share[]}/nvidia-user/{v}'
+        dp : path [ dir ]
+        if [ dp.exists[] ] return dir
+        run : 'NVIDIA-Linux-x86_64-{v}.run'
+        site : 'https://download.nvidia.com/XFree86/Linux-x86_64'
+        got : fetch[ run, '{site}/{v}/{run}' ]
+        if [ got.count == 0 ] return ''
+        ex : 'sh {got} --extract-only --target {dir}.all'
+        if [ !sh[ 'rm -rf {dir}.all {dir}.part && {ex}' ] ] return ''
+        # only what the drive takes: the 1.7 GB rest stays out
+        keep : vec string [] [ 'libGLX_nvidia', 'libEGL_nvidia',
+            'libnvidia-glcore', 'libnvidia-glvkspirv',
+            'libnvidia-gpucomp', 'libnvidia-tls', 'libnvidia-glsi',
+            'libnvidia-rtcore', 'libnvidia-eglcore',
+            'libnvidia-allocator', 'libnvidia-egl-gbm',
+            'libEGL.so.1.1.0', 'libGLdispatch.so.0' ]
+        cp : 'mkdir -p {dir}.part/32 {dir}.part/firmware'
+        for [ k: string ] in keep
+            cp = '{cp} && cp -P {dir}.all/{k}* {dir}.part/'
+            small : 'cp -P {dir}.all/32/{k}* {dir}.part/32/'
+            cp = '{cp} && ({small} || true)'
+        cp = '{cp} && cp {dir}.all/*.json {dir}.part/'
+        cp = '{cp} && cp {dir}.all/firmware/gsp_* {dir}.part/firmware/'
+        cp = '{cp} && rm -rf {dir}.all && mv {dir}.part {dir}'
+        if [ !sh[ cp ] ] return ''
+        return dir
 
     # the kernels in kernels/, and the one the drive takes
     public func scan []
@@ -2788,7 +2843,7 @@ element Bootstrap
         strftime[ @b[0], 64, '%b %d %H:%M', localtime[ @t ] ]
         return string [ @b[0] ]
 
-    # guest path of a host path: same absolute path, no leading slash
+    # guest path of a path: the same absolute path, no leading slash
     func guest [ p: string ] -> string
         if [ p.starts_with[ '/' ] ] return p.mid[ 1, i32[ p.count ] - 1 ]
         return p
@@ -2808,15 +2863,93 @@ element Bootstrap
         fclose[ f ]
         return n
 
-    func add_file [ src: string ]
-        dst : guest[ src ]
-        if [ seen.contains[ dst ] ] return
+    # silver's own files: the repository, the install, the tree
+    func is_ours [ p: string ] -> bool
+        o : '{out_dir}'
+        return p.starts_with[ '{root}/' ] || p == '{root}'
+            || p.starts_with[ '{install}' ] || p.starts_with[ o ]
+
+    # a path with its . and .. parts taken out
+    func norm [ p: string ] -> string
+        out : vec string []
+        for [ part: string ] in p.split[ '/' ]
+            if [ part.count == 0 || part == '.' ] continue
+            if [ part == '..' ]
+                if [ out.count > 0 ] out.pop[]
+                continue
+            out.push[ part ]
+        r : string ''
+        for [ part: string ] in out
+            r = '{r}/{part}'
+        return (r.count > 0) ? r : '/'
+
+    # a path as the drive sees it: a base file loses the base
+    func logical [ p: string ] -> string
+        if [ sysr.count > 0 && p.starts_with[ '{sysr}/' ] ]
+            return p.mid[ sysr.count, p.count - sysr.count ]
+        return p
+
+    # a system path under merged /usr: /bin/x is /usr/bin/x
+    func canon [ p: string ] -> string
+        for [ top: string ] in vec string [] [ 'bin', 'sbin', 'lib',
+                'lib32', 'lib64' ]
+            if [ !mapped.contains[ top ] ] continue
+            if [ p == '/{top}' || p.starts_with[ '/{top}/' ] ]
+                to : mapped[ top ]
+                rest : p.mid[ top.count + 1, p.count - top.count - 1 ]
+                return '/{to}{rest}'
+        return p
+
+    # the file a path is read from: ours as it is, a system one
+    # from the base
+    func src_of [ p: string ] -> string
+        lp : logical[ p ]
+        if [ is_ours[ lp ] ] return lp
+        return '{sysr}{canon[ lp ]}'
+
+    # the pinned x64 base, made the first time a tree needs it
+    func use_base [] -> bool
+        if [ !sys ]
+            bd : '{share[]}/x64-base'
+            sys = UbuntuBase [ dir: bd, tools: '{install}/bin' ]
+        if [ !sys.make[] ]
+            say[ 'The x64 base could not be made' ]
+            return false
+        sysr = sys.root[]
+        return true
+
+    # the base's top links (bin to usr/bin ...), as the tree's own
+    func add_tops []
+        mapped = map string [ string ] []
+        for [ top: string ] in vec string [] [ 'bin', 'sbin', 'lib',
+                'lib32', 'lib64' ]
+            tp : path '{sysr}/{top}'
+            if [ !tp.is_symlink[] ] continue
+            buf : local i8 [ 4096 ]
+            tn : '{sysr}/{top}'
+            len : i64 [ readlink[ tn.chars, @buf[0], 4095 ] ]
+            if [ len <= 0 ] continue
+            buf[len] = 0
+            to : string [ @buf[0] ]
+            mapped[ top ] = to
+            seen[ top ] = true
+            files.push[ OsFile [ dst: top, link: to ] ]
+
+    func add_file [ given: string ]
+        lp : logical[ given ]
+        ours : bool [ is_ours[ lp ] ]
+        if [ !ours ] lp = canon[ lp ]
+        src : string [ (ours) ? lp : '{sysr}{lp}' ]
+        dst : guest[ lp ]
+        if [ left.contains[ dst ] ] return
         p : path [ src ]
         if [ !p.exists[] && !p.is_symlink[] ] return
+        # a folder seen as a parent is still walked for its files
         if [ !p.is_symlink[] && p.is_dir[] ]
             add_dir[ dst ]           # the directory entry itself, then its files
             add_tree[ src ]
             return
+        if [ seen.contains[ dst ] ] return
         seen[ dst ] = true
         n : i64 [ dst.rindex_of[ '/' ] ]
         if [ n > 0 ] add_dir[ dst.mid[ 0, i32[ n ] ] ]
@@ -2827,11 +2960,14 @@ element Bootstrap
             buf[len] = 0
             target : string [ @buf[0] ]
             files.push[ OsFile [ dst: dst, link: target ] ]
-            # a linked file must exist in the guest too; a linked
+            # a linked file must be in the tree too; a linked
             # directory (install) is walked by what is asked for
-            sp : p.parent_dir[]
-            full : (target.starts_with[ '/' ]) ? target : '{sp}/{target}'
-            tp : path [ full ]
+            sl : i32 [ lp.rindex_of[ '/' ] ]
+            sp : lp.mid[ 0, sl ]
+            full : string [ (target.starts_with[ '/' ]) ? target
+                            : '{sp}/{target}' ]
+            full = norm[ full ]
+            tp : path [ src_of[ full ] ]
             if [ !tp.is_dir[] ] add_file[ full ]
         el
             files.push[ OsFile [ src: src, dst: dst ] ]
@@ -2857,21 +2993,90 @@ element Bootstrap
             add_file[ '{e}' ]
 
     # every shared library the loader will pull for this binary
+    # the libraries the loader pulls, read from the file itself:
+    # its interpreter, its needed names by its run paths, silver's
+    # install, then the base; never the computer's own loader
     func add_deps [ bin: string ]
-        cmd : 'ldd "{bin}"'
-        fp_cmd : command [ cmd ]
-        fp : handle fp_cmd.stream[]
+        lp : logical[ bin ]
+        if [ !deps_done || deps_done.contains[ lp ] ] return
+        deps_done[ lp ] = true
+        file : src_of[ lp ]
+        fpath : path [ file ]
+        real : '{fpath.absolute[]}'
+        if [ real.count == 0 ] return
+        rl : logical[ real ]
+        sl : i32 [ rl.rindex_of[ '/' ] ]
+        origin : rl.mid[ 0, sl ]
+        rd : '{install}/bin/llvm-readelf'
+        cmd : command [ '{rd} -h -d -l --wide "{real}" 2>/dev/null' ]
+        fp : handle cmd.stream[]
         if [ !fp ] return
+        elf32 : bool [ false ]
+        needs : vec string []
+        dirs : vec string []
+        interp : string ''
         line : local i8 [ 4096 ]
         while [ fgets[ @line[0], 4096, fp ] ]
-            s : string [ @line[0] ]
-            s = s.trim[]
-            at : i64 [ s.index_of[ '=> ' ] ]
-            if [ at >= 0 ] s = s.mid[ i32[ at ] + 3, i32[ s.count ] - i32[ at ] - 3 ]
-            sp : i64 [ s.index_of[ ' ' ] ]
-            if [ sp > 0 ] s = s.mid[ 0, i32[ sp ] ]
-            if [ s.starts_with[ '/' ] ] add_file[ s ]
+            ln : string [ @line[0] ]
+            if [ ln.index_of[ 'Class:' ] >= 0
+                    && ln.index_of[ 'ELF32' ] >= 0 ]
+                elf32 = true
+            v : bracket[ ln, 'Shared library: [' ]
+            if [ v.count > 0 ] needs.push[ v ]
+            rp : bracket[ ln, 'runpath: [' ]
+            if [ rp.count == 0 ] rp = bracket[ ln, 'rpath: [' ]
+            if [ rp.count > 0 ]
+                for [ d: string ] in rp.split[ ':' ]
+                    dd : string [ d ]
+                    o : i32 [ d.index_of[ '$ORIGIN' ] ]
+                    if [ o >= 0 ]
+                        tail : d.mid[ o + 7, d.count - o - 7 ]
+                        dd = '{origin}{tail}'
+                    dirs.push[ norm[ dd ] ]
+            ip : i32 [ ln.index_of[ 'program interpreter: ' ] ]
+            if [ ip >= 0 ]
+                rest : ln.mid[ ip + 21, ln.count - ip - 21 ]
+                e : i32 [ rest.index_of[ ']' ] ]
+                if [ e > 0 ] interp = rest.mid[ 0, e ]
         pclose[ fp ]
+        # a base program never takes our install's libraries
+        if [ !elf32 && is_ours[ lp ] ]
+            dirs.push[ '{install}/lib' ]
+            dirs.push[ '{install}/build' ]
+        multi : 'x86_64-linux-gnu'
+        if [ elf32 ] multi = 'i386-linux-gnu'
+        dirs.push[ '/usr/lib/{multi}' ]
+        dirs.push[ (elf32) ? '/usr/lib32' : '/usr/lib64' ]
+        dirs.push[ '/usr/lib' ]
+        if [ interp.count > 0 ] add_file[ interp ]
+        for [ n: string ] in needs
+            got : string ''
+            have : bool [ false ]
+            for [ d: string ] in dirs
+                cand : '{d}/{n}'
+                # one the tree already holds (nvidia's own)
+                if [ seen.contains[ guest[ canon[ cand ] ] ] ]
+                    have = true
+                    break
+                cp : path [ src_of[ cand ] ]
+                if [ cp.exists[] ]
+                    got = cand
+                    break
+            if [ have ] continue
+            if [ got.count == 0 ]
+                log 'os-bootstrap: {n} (for {lp}) is in no library folder'
+                continue
+            add_file[ got ]
+            add_deps[ got ]
+
+    # the text between a word and its closing ]
+    func bracket [ ln: string, word: string ] -> string
+        at : i32 [ ln.index_of[ word ] ]
+        if [ at < 0 ] return ''
+        rest : ln.mid[ at + word.count, ln.count - at - word.count ]
+        e : i32 [ rest.index_of[ ']' ] ]
+        if [ e < 0 ] return ''
+        return rest.mid[ 0, e ]
 
     func tree_size [ src: string ] -> i64
         d : path [ src ]
@@ -2884,24 +3089,98 @@ element Bootstrap
             el total += file_size[ '{e}' ]
         return total
 
-    func assemble []
+    func assemble [] -> bool
+        if [ !build_apps[] ] return false
+        if [ !gather[] ] return false
+        write_tree[]
+        write_boot[]
+        return true
+
+    # every module the drive carries is built here first: a stale
+    # product on the drive is a build at its launch, and the drive
+    # cannot fetch what a build needs
+    func build_apps [] -> bool
+        ex : path '{install}/export'
+        regs : ex.ls[ null, false ]
+        names : vec string [] [ app ]
+        if [ regs ]
+            for [ r: path ] in regs
+                nm : r.filename[]
+                if [ !nm.ends_with[ '.agi' ] || nm.ends_with[ '.props.agi' ] ]
+                    continue
+                stem : nm.mid[ 0, nm.count - 4 ]
+                if [ !stem.starts_with[ 'silver-' ] ] continue
+                mod : stem.mid[ 7, stem.count - 7 ]
+                srcf : first_line[ '{install}/build/{stem}.source' ].trim[]
+                if [ srcf.count == 0 ] continue
+                sp : path [ srcf ]
+                if [ !sp.exists[] ] continue
+                t : string r.load[ typeid[ string ], null ]
+                if [ !t ] continue
+                t = '\n{t}'
+                if [ t.index_of[ '\nsoftware:' ] < 0
+                        && t.index_of[ '\nscenes:' ] < 0 ] continue
+                names.push[ mod ]
+        for [ mod: string ] in names
+            # the launcher's rule: a listed source newer than the
+            # product builds at launch; the installer builds it clean
+            clean : (host_stale[ mod ]) ? ' --clean' : ''
+            say[ 'Building {mod}{clean}' ]
+            sv : '{install}/bin/silver'
+            b : command [ 'cd {root} && {sv} --build{clean} {mod}' ]
+            if [ b.exec[ false ] != 0 ]
+                say[ '{mod} did not build: the tree is not written' ]
+                return false
+        return true
+
+    # silver-host's staleness: a source in the record newer than the
+    # product (an import's .ag counts there, not in silver's own rule)
+    func host_stale [ mod: string ] -> bool
+        prod : path '{install}/build/libsilver-{mod}.so'
+        if [ !prod.exists[] ] return true
+        pt : prod.modified_time[]
+        src : path '{install}/build/silver-{mod}.source'
+        t : string src.load[ typeid[ string ], null ]
+        if [ !t ] return false
+        for [ line: string ] in t.split[ '\n' ]
+            f : line.trim[]
+            if [ f.count == 0 ] continue
+            sp : path [ f ]
+            if [ sp.exists[] && sp.modified_time[] > pt ] return true
+        return false
+
+    # every file the drive tree takes, and where each comes from
+    func gather [] -> bool
         # no app: its path would be the build folder, all of it
         if [ !app || app.count == 0 ]
             log 'os-bootstrap: no app to assemble'
-            return
+            return false
         files = vec OsFile []
         seen  = map bool [ string ] []
+        left  = map bool [ string ] []
+        deps_done = map bool [ string ] []
+        if [ !use_base[] ] return false
+        add_tops[]
         add_dir[ 'dev' ]
         add_dir[ 'proc' ]
         add_dir[ 'sys' ]
         add_dir[ 'tmp' ]
         add_dir[ 'root' ]
         add_dir[ 'run' ]
+        # the base's var/run and var/lock are links to /run (iwd's
+        # bus library dials /var/run); the services log in var/log
+        add_file[ '/var/run' ]
+        add_file[ '/var/lock' ]
+        add_dir[ 'run/lock' ]
+        add_dir[ 'var/log' ]
+        # the export stamps: a build on the drive reruns no export
+        add_file[ '{install}/tmp/exports' ]
         files.push[ OsFile [ dst: 'dev/console', dev: true ] ]
         # the install symlink, orbiter's launcher and every module product
         add_file[ '{root}/install' ]
         add_file[ '{install}/build/{app}' ]
         add_deps[ '{install}/build/{app}' ]
+        add_file[ '{install}/build/{app}.cmd' ]
         add_file[ '{install}/build/libsilver-{app}.so' ]
         add_deps[ '{install}/build/libsilver-{app}.so' ]
         # the launcher loads the product this link names
@@ -2916,12 +3195,23 @@ element Bootstrap
             if [ nm.starts_with[ 'libsilver-' ] && nm.ends_with[ '.so' ] ]
                 mods.push[ nm.mid[ 10, i32[ nm.count ] - 13 ] ]
         for [ mod: string ] in mods
+            # its product link and records: built, never compiled again
+            for [ ext: string ] in vec string [] [ '', '.abi', '.deps' ]
+                add_file[ '{install}/build/silver-{mod}.product{ext}' ]
+            add_file[ '{install}/build/silver-{mod}.source' ]
             sh : '{install}/share/silver-{mod}'
             shp : path [ sh ]
-            if [ shp.exists[] && tree_size[ sh ] <= share_max ]
-                log 'os-bootstrap: share silver-{mod}'
-                add_file[ sh ]
+            if [ !shp.exists[] ] continue
+            # the app's own share always: its images are its startup
+            if [ mod != app && tree_size[ sh ] > share_max ]
+                log 'os-bootstrap: share silver-{mod} left out: too big'
+                continue
+            log 'os-bootstrap: share silver-{mod}'
+            add_file[ sh ]
+        add_import_stamps[]
         add_file[ '{install}/share/orbiter' ]
+        # libxkbcommon's keyboard maps and compose files
+        add_file[ '{install}/share/X11' ]
         log 'os-bootstrap: products done, {files.count} entries'
         # our mesa's vulkan drivers: venus, radv (amd), anv (intel)
         # radv and anv only with the kernel's own drivers
@@ -2951,8 +3241,164 @@ element Bootstrap
         add_tray[]
         add_toolchain[]
         add_games[]
-        write_tree[]
-        write_boot[]
+        add_apps[]
+        add_lib_links[]
+        add_link_archives[]
+        add_records[]
+        return true
+
+    # a test: the whole tree gathered, each file from silver's
+    # folder, the base or nvidia's installer, never the system
+    public func tree_check [] -> bool
+        if [ !gather[] ] return false
+        home : string [ getenv[ 'HOME' ] ]
+        bad : i32 [ 0 ]
+        for [ f: OsFile ] in files
+            src : f.src
+            if [ !src || src.count == 0 ] continue
+            if [ is_ours[ src ] || src.starts_with[ '{sysr}/' ] ]
+                continue
+            # the user's own games from their home: taken on purpose
+            if [ src.starts_with[ '{home}/' ] ] continue
+            if [ bad < 20 ] log 'from the system: {src} -> {f.dst}'
+            bad += 1
+        total : i64 [ 0 ]
+        for [ f: OsFile ] in files
+            if [ f.src && f.src.count > 0 ] total += file_bytes[ f.src ]
+        mb : i64 [ total / 1048576 ]
+        # a link whose target the tree lacks dangles on the drive
+        have : map bool [ string ] []
+        links : map string [ string ] []
+        for [ f: OsFile ] in files
+            have[ f.dst ] = true
+            if [ f.link && f.link.count > 0 ] links[ f.dst ] = f.link
+        dangle : i32 [ 0 ]
+        for [ f: OsFile ] in files
+            if [ !f.link || f.link.count == 0 ] continue
+            t : tree_target[ f.dst, f.link, links ]
+            if [ t.count == 0 || have.contains[ t ] ] continue
+            if [ dangle < 20 ] log 'dangling link: {f.dst} -> {f.link}'
+            dangle += 1
+        log 'tree check: {files.count} entries, {mb} MB, {bad} from the system, {dangle} dangling links'
+        return bad == 0 && dangle == 0
+
+    # a link line names a library unversioned (-ltiff): every
+    # install/lib link whose target is in the tree rides along
+    func add_lib_links []
+        have : map bool [ string ] []
+        for [ f: OsFile ] in files
+            have[ f.dst ] = true
+        n : i32 [ 0 ]
+        # ours, then the base's (-lcrypt, -lasound, -lxcb ...)
+        for [ dir: string ] in vec string [] [ '{install}/lib',
+                '{sysr}/usr/lib/x86_64-linux-gnu' ]
+            d : path [ dir ]
+            entries : d.ls[ null, false ]
+            if [ !entries ] continue
+            for [ e: path ] in entries
+                if [ !e.is_symlink[] ] continue
+                ep : '{e}'
+                if [ !ep.ends_with[ '.so' ] ] continue
+                dst : guest[ logical[ ep ] ]
+                if [ have.contains[ dst ] ] continue
+                # the link's final file, resolved inside its tree
+                t : guest[ logical[ link_end[ ep ] ] ]
+                if [ !have.contains[ t ] ] continue
+                add_file[ ep ]
+                n += 1
+        log 'os-bootstrap: library links: {n}'
+
+    # the archives a carried module's link lines name (-lmbedtls):
+    # a link on the drive finds them
+    func add_link_archives []
+        mods : vec string []
+        for [ e: OsFile ] in files
+            nm : e.dst
+            at : i64 [ nm.rindex_of[ '/' ] ]
+            if [ at >= 0 ]
+                nm = nm.mid[ i32[ at ] + 1, i32[ nm.count ] - i32[ at ] - 1 ]
+            if [ nm.starts_with[ 'libsilver-' ]
+                    && nm.ends_with[ '.so' ] ]
+                mods.push[ nm.mid[ 10, i32[ nm.count ] - 13 ] ]
+        names : map bool [ string ] []
+        for [ mod: string ] in mods
+            sf : path [ '{install}/build/silver-{mod}.source' ]
+            if [ !sf.exists[] ] continue
+            list : string sf.load[ typeid[ string ], null ]
+            if [ !list ] continue
+            for [ src: string ] in list.split[ '\n' ]
+                if [ !src.ends_with[ '.ag' ] ] continue
+                ap : path [ src ]
+                if [ !ap.exists[] ] continue
+                text : string ap.load[ typeid[ string ], null ]
+                if [ !text ] continue
+                for [ line: string ] in text.split[ '\n' ]
+                    for [ word: string ] in line.trim[].split[ ' ' ]
+                        if [ !word.starts_with[ '-l' ] || word.count < 3 ]
+                            continue
+                        lib : word.mid[ 2, word.count - 2 ]
+                        names[ lib ] = true
+        n : i32 [ 0 ]
+        for [ on: bool, name: string ] in names
+            so : path [ '{install}/lib/lib{name}.so' ]
+            bso : path [ '{install}/build/lib{name}.so' ]
+            if [ so.exists[] || so.is_symlink[] || bso.exists[] ]
+                continue
+            ar : '{install}/lib/lib{name}.a'
+            arp : path [ ar ]
+            if [ !arp.exists[] ] continue
+            add_file[ ar ]
+            n += 1
+        log 'os-bootstrap: link archives: {n}'
+
+    # where a chain of links ends, each step inside its own tree
+    func link_end [ p: string ] -> string
+        cur : p
+        for [ i: i32 0, i < 16, i += 1 ]
+            cp : path [ cur ]
+            if [ !cp.is_symlink[] ] return cur
+            target : link_of[ cur ]
+            if [ target.count == 0 ] return cur
+            if [ target.starts_with[ '/' ] ]
+                base : bool [ cur.starts_with[ '{sysr}/' ] ]
+                cur = target
+                if [ base ] cur = '{sysr}{target}'
+            el
+                sl : i32 [ cur.rindex_of[ '/' ] ]
+                cur = norm[ '{cur.mid[ 0, sl ]}/{target}' ]
+        return cur
+
+    # a link's target as a tree path (no leading slash)
+    func link_path [ dst: string, target: string ] -> string
+        if [ target.starts_with[ '/' ] ] return guest[ norm[ target ] ]
+        n : i64 [ dst.rindex_of[ '/' ] ]
+        d : string ''
+        if [ n > 0 ] d = dst.mid[ 0, i32[ n ] ]
+        return guest[ norm[ '/{d}/{target}' ] ]
+
+    # the target resolved through the tree's own links
+    func tree_target [ dst: string, target: string,
+            links: map string [ string ] ] -> string
+        t : link_path[ dst, target ]
+        for [ pass: i32 0, pass < 16, pass += 1 ]
+            parts : t.split[ '/' ]
+            pre : string ''
+            found : bool [ false ]
+            for [ k: i32 0, k < parts.count && !found, k += 1 ]
+                pk : parts[ k ]
+                if [ k == 0 ] pre = pk
+                el pre = '{pre}/{pk}'
+                if [ !links.contains[ pre ] ] continue
+                rest : string ''
+                for [ j: i32 k + 1, j < parts.count, j += 1 ]
+                    pj : parts[ j ]
+                    rest = '{rest}/{pj}'
+                lt : links[ pre ]
+                lp : link_path[ pre, lt ]
+                t = '{lp}{rest}'
+                found = true
+            if [ !found ] return t
+        return t
 
     # orbiter-os builds itself: silver, its clang and lld, every
     # header they read, the C library's link files and gcc's start
@@ -2984,10 +3430,15 @@ element Bootstrap
             add_deps[ t ]
         add_deps[ '{install}/bin/clang-22' ]
         add_file[ '{install}/include' ]
+        # include/Au, aether, silver, net are links into build/src
+        add_file[ '{install}/build/src' ]
         add_file[ '{install}/lib/clang/22/include' ]
         add_file[ '/usr/include' ]
         add_file[ '/usr/lib/gcc/x86_64-linux-gnu' ]
         add_file[ '/usr/lib/git-core' ]
+        # git over https: the helper's own libraries, the templates
+        add_deps[ '/usr/lib/git-core/git-remote-https' ]
+        add_file[ '/usr/share/git-core/templates' ]
         # git over ssh: the client's settings
         add_file[ '/etc/ssh/ssh_config' ]
         add_file[ '/etc/ssh/ssh_config.d' ]
@@ -3001,7 +3452,8 @@ element Bootstrap
         for [ f: string ] in vec string [] [ 'libc.so.6', 'libm.so.6',
                 'libmvec.so.1' ]
             add_file[ '/lib/x86_64-linux-gnu/{f}' ]
-        cmd : command [ 'git -C {root} ls-files' ]
+        # tracked and new files alike (a build record names them)
+        cmd : command [ 'git -C {root} ls-files -co --exclude-standard' ]
         fh : handle cmd.stream[]
         if [ fh ]
             b : local i8 [ 4096 ]
@@ -3012,24 +3464,133 @@ element Bootstrap
         add_file[ '{root}/.git' ]
         log 'os-bootstrap: toolchain done, {files.count} entries'
 
-    # the drive's gpu: modules, firmware, the host's vulkan driver
+    # a file of nvidia's installer into the tree at dst
+    func add_as [ src: string, dst: string ]
+        if [ seen.contains[ dst ] ] return
+        p : path [ src ]
+        if [ !p.exists[] ] return
+        seen[ dst ] = true
+        n : i64 [ dst.rindex_of[ '/' ] ]
+        if [ n > 0 ] add_dir[ dst.mid[ 0, i32[ n ] ] ]
+        files.push[ OsFile [ src: src, dst: dst ] ]
+
+    func add_link [ dst: string, target: string ]
+        if [ seen.contains[ dst ] ] return
+        seen[ dst ] = true
+        files.push[ OsFile [ dst: dst, link: target ] ]
+
+    # the file in d whose name starts so (egl-gbm's own version)
+    func named_in [ d: string, start: string ] -> string
+        dp : path [ d ]
+        entries : dp.ls[ null, false ]
+        if [ entries ]
+            for [ e: path ] in entries
+                nm : e.filename[]
+                if [ nm.starts_with[ start ] ] return nm
+        return ''
+
+    # nvidia's libraries from d into lib: each file, its soname
+    func add_nvlibs [ d: string, lib: string, libs: vec string ]
+        for [ i: i32 0, i + 1 < libs.count, i += 2 ]
+            f : libs[ i ]
+            so : libs[ i + 1 ]
+            if [ f.count == 0 ] continue
+            add_as[ '{d}/{f}', '{lib}/{f}' ]
+            if [ so != f ] add_link[ '{lib}/{so}', f ]
+        for [ i: i32 0, i < libs.count, i += 2 ]
+            f : libs[ i ]
+            if [ f.count > 0 ] add_deps[ '{d}/{f}' ]
+
+    # a test: one kernel's nvidia files, none from the system
+    public func nvidia_check [ kname: string ] -> bool
+        chosen = kname
+        files = vec OsFile []
+        seen  = map bool [ string ] []
+        left  = map bool [ string ] []
+        deps_done = map bool [ string ] []
+        if [ !use_base[] ] return false
+        add_tops[]
+        add_nvidia[]
+        lib : 'usr/lib/x86_64-linux-gnu'
+        want : vec string [] [ '{lib}/libGLX_nvidia.so.0',
+            '{lib}/libnvidia-glcore.so.610.57.04',
+            '{lib}/libnvidia-egl-gbm.so.1',
+            '{lib}/gbm/nvidia-drm_gbm.so',
+            'usr/lib/i386-linux-gnu/libGLX_nvidia.so.0',
+            'usr/share/vulkan/icd.d/nvidia_icd.json',
+            'usr/lib/firmware/nvidia/610.57.04/gsp_ga10x.bin' ]
+        for [ w: string ] in want
+            if [ !seen.contains[ w ] ]
+                log 'missing {w}'
+                return false
+        for [ f: OsFile ] in files
+            src : f.src
+            if [ src && src.starts_with[ '/usr/lib' ]
+                     && src.index_of[ 'nvidia' ] >= 0 ]
+                log 'from the system: {src}'
+                return false
+        log 'nvidia files: {files.count} entries'
+        return true
+
+    # the drive's gpu: the release the kernel was built with,
+    # from nvidia's own installer, never the running system's
     func add_nvidia []
-        lib : '/usr/lib/x86_64-linux-gnu'
-        add_file[ '/usr/share/vulkan/icd.d/nvidia_icd.json' ]
-        # vkCreateInstance opens glvnd's EGL and nvidia's vendor
-        add_file[ '/usr/share/glvnd/egl_vendor.d/10_nvidia.json' ]
-        add_file[ '/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json' ]
-        add_file[ '{lib}/gbm/nvidia-drm_gbm.so' ]
+        kb : selected[]
+        if [ !kb ] return
+        v : kb.nvidia
+        if [ v.count == 0 || v == 'none' ] return
+        d : nvidia_user[ v ]
+        if [ d.count == 0 ]
+            say[ 'NVIDIA {v}: its installer did not download' ]
+            return
+        lib : 'usr/lib/x86_64-linux-gnu'
+        gbm : named_in[ d, 'libnvidia-egl-gbm.so.1.' ]
         # the icd and the libraries it opens at run time
-        v : nvidias[][ 0 ]
-        libs : vec string [] [ 'libGLX_nvidia.so.0', 'libnvidia-glcore.so.{v}',
-            'libnvidia-glvkspirv.so.{v}', 'libnvidia-gpucomp.so.{v}', 'libnvidia-tls.so.{v}',
-            'libnvidia-glsi.so.{v}', 'libnvidia-rtcore.so.{v}', 'libnvidia-allocator.so.1',
-            'libEGL.so.1', 'libGLdispatch.so.0', 'libEGL_nvidia.so.0',
-            'libnvidia-eglcore.so.{v}', 'libnvidia-egl-gbm.so.1' ]
-        for [ l: string ] in libs
-            add_file[ '{lib}/{l}' ]
-            add_deps[ '{lib}/{l}' ]
+        libs : vec string [] [
+            'libGLX_nvidia.so.{v}', 'libGLX_nvidia.so.0',
+            'libEGL_nvidia.so.{v}', 'libEGL_nvidia.so.0',
+            'libnvidia-allocator.so.{v}', 'libnvidia-allocator.so.1',
+            gbm, 'libnvidia-egl-gbm.so.1',
+            'libEGL.so.1.1.0', 'libEGL.so.1',
+            'libGLdispatch.so.0', 'libGLdispatch.so.0' ]
+        for [ nm: string ] in vec string [] [ 'glcore', 'glvkspirv',
+                'gpucomp', 'tls', 'glsi', 'rtcore', 'eglcore' ]
+            libs.push[ 'libnvidia-{nm}.so.{v}' ]
+            libs.push[ 'libnvidia-{nm}.so.{v}' ]
+        add_nvlibs[ d, lib, libs ]
+        add_dir[ '{lib}/gbm' ]
+        alloc : '../libnvidia-allocator.so.1'
+        add_link[ '{lib}/gbm/nvidia-drm_gbm.so', alloc ]
+        # vkCreateInstance opens glvnd's EGL and nvidia's vendor
+        add_as[ '{d}/nvidia_icd.json',
+                'usr/share/vulkan/icd.d/nvidia_icd.json' ]
+        add_as[ '{d}/10_nvidia.json',
+                'usr/share/glvnd/egl_vendor.d/10_nvidia.json' ]
+        add_as[ '{d}/15_nvidia_gbm.json',
+                'usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json' ]
+        # the gpu's own 32-bit half, for Steam
+        l32 : vec string [] [
+            'libGLX_nvidia.so.{v}', 'libGLX_nvidia.so.0',
+            'libEGL_nvidia.so.{v}', 'libEGL_nvidia.so.0',
+            'libGLdispatch.so.0', 'libGLdispatch.so.0' ]
+        for [ nm: string ] in vec string [] [ 'glcore', 'tls', 'glsi',
+                'glvkspirv', 'gpucomp', 'eglcore' ]
+            l32.push[ 'libnvidia-{nm}.so.{v}' ]
+            l32.push[ 'libnvidia-{nm}.so.{v}' ]
+        add_nvlibs[ '{d}/32', 'usr/lib/i386-linux-gnu', l32 ]
+        # the gsp firmware of this release; the system's others stay
+        fw : 'usr/lib/firmware/nvidia'
+        for [ nm: string ] in vec string [] [ 'gsp_ga10x.bin',
+                'gsp_tu10x.bin' ]
+            add_as[ '{d}/firmware/{nm}', '{fw}/{v}/{nm}' ]
+        digits : '0123456789'
+        hp : path '{sysr}/{fw}'
+        had : hp.ls[ null, false ]
+        if [ had ]
+            for [ e: path ] in had
+                nm : e.filename[]
+                if [ digits.index_of[ nm.mid[ 0, 1 ] ] >= 0 ]
+                    left[ '{fw}/{nm}' ] = true
 
     # Steam: its launcher, and what its own runtime leaves to the
     # system (Valve's steam-libs-i386 and -amd64), 32-bit and 64
@@ -3050,19 +3611,210 @@ element Bootstrap
                 add_deps[ '{d}/{l}' ]
         add_file[ '{l64}/libnss3.so' ]
         add_deps[ '{l64}/libnss3.so' ]
-        # the gpu's own 32-bit half
-        v : nvidias[][ 0 ]
-        nv : vec string [] [ 'libGLX_nvidia.so.0', 'libEGL_nvidia.so.0',
-            'libGLdispatch.so.0', 'libnvidia-glcore.so.{v}',
-            'libnvidia-tls.so.{v}', 'libnvidia-glsi.so.{v}',
-            'libnvidia-glvkspirv.so.{v}', 'libnvidia-gpucomp.so.{v}',
-            'libnvidia-eglcore.so.{v}' ]
-        for [ l: string ] in nv
-            add_file[ '{l32}/{l}' ]
-            add_deps[ '{l32}/{l}' ]
         log 'os-bootstrap: steam done, {files.count} entries'
 
     # a module orbiter hosts at run time (not in its link closure)
+    # the imports' build stamps: silver reads them as built and
+    # installed, so no checkout is cloned on the drive
+    func add_import_stamps []
+        bd : path '{install}/build'
+        tops : bd.ls[ null, false ]
+        if [ !tops ] return
+        for [ d: path ] in tops
+            nm : d.filename[]
+            # a build-none module's proof that its imports are built
+            if [ nm.ends_with[ '.silver-token' ]
+                    || nm.ends_with[ '.imported' ] ]
+                add_file[ '{d}' ]
+                continue
+            if [ !d.is_dir[] ] continue
+            # a token at the top and one a level down (freetype's
+            # own folder holds another freetype): both ride
+            tok : path '{d}/silver-token'
+            if [ tok.exists[] ] add_file[ '{tok}' ]
+            subs : d.ls[ null, false ]
+            if [ !subs ] continue
+            for [ e: path ] in subs
+                st : path '{e}/silver-token'
+                if [ st.exists[] ] add_file[ '{st}' ]
+
+    # every program in a folder, each with its libraries
+    func add_programs [ dir: string ]
+        d : path [ dir ]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return
+        for [ e: path ] in entries
+            if [ e.is_symlink[] ] continue
+            if [ e.is_dir[] ]
+                add_programs[ '{e}' ]
+                continue
+            add_file[ '{e}' ]
+            add_deps[ '{e}' ]
+
+    # the word of an export line: run: ['blender'] gives blender
+    func export_word [ t: string, key: string ] -> string
+        at : i32 [ t.index_of[ '\n{key}: [' ] ]
+        if [ at < 0 ] return ''
+        tail : t.mid[ at, t.count - at ]
+        q : i32 [ tail.index_of[ "'" ] ]
+        if [ q < 0 ] return ''
+        word : tail.mid[ q + 1, tail.count - q - 1 ]
+        e : i32 [ word.index_of[ "'" ] ]
+        if [ e <= 0 ] return ''
+        return word.mid[ 0, e ]
+
+    # every built app and scene module (the export registry's
+    # software: and scenes: lines) with all it needs to run
+    func add_apps []
+        ex : path '{install}/export'
+        regs : ex.ls[ null, false ]
+        if [ !regs ] return
+        n : i32 [ 0 ]
+        for [ r: path ] in regs
+            nm : r.filename[]
+            if [ !nm.ends_with[ '.agi' ] ] continue
+            t : string r.load[ typeid[ string ], null ]
+            if [ !t ] continue
+            t = '\n{t}'
+            app : bool [ t.index_of[ '\nsoftware:' ] >= 0 ]
+            scene : bool [ t.index_of[ '\nscenes:' ] >= 0 ]
+            if [ !app && !scene ] continue
+            stem : nm.mid[ 0, nm.count - 4 ]
+            # a module whose source is gone left a stale record
+            srcf : first_line[ '{install}/build/{stem}.source' ].trim[]
+            if [ srcf.count > 0 ]
+                sp : path [ srcf ]
+                if [ !sp.exists[] ]
+                    log 'os-bootstrap: {stem}: its source is gone, left out'
+                    continue
+            # a program module (build none) has no product
+            prod : '{install}/build/{stem}.product'
+            lib : link_of[ prod ]
+            if [ lib.count > 0 ]
+                add_file[ lib ]
+                add_deps[ lib ]
+                for [ e: string ] in vec string [] [ '', '.abi', '.deps' ]
+                    add_file[ '{prod}{e}' ]
+                add_file[ '{install}/build/{stem}.source' ]
+            mod : stem
+            if [ stem.starts_with[ 'silver-' ] ]
+                mod = stem.mid[ 7, stem.count - 7 ]
+            for [ f: string ] in vec string [] [ '{install}/build/{mod}',
+                    '{install}/bin/{mod}' ]
+                fp : path [ f ]
+                if [ fp.exists[] ]
+                    add_file[ f ]
+                    add_deps[ f ]
+            # its link record: without it the drive relinks it
+            add_file[ '{install}/build/{mod}.cmd' ]
+            add_file[ '{install}/share/{stem}' ]
+            add_file[ '{install}/share/{mod}' ]
+            # the module folder's data git does not track (maps, models)
+            src : first_line[ '{install}/build/{stem}.source' ].trim[]
+            sl : i32 [ src.rindex_of[ '/' ] ]
+            if [ lib.count > 0 && sl > 0 ]
+                dir : src.mid[ 0, sl ]
+                for [ d: string ] in vec string [] [ 'textures', 'models' ]
+                    add_file[ '{dir}/{d}' ]
+            add_run_program[ export_word[ t, 'run' ] ]
+            n += 1
+        # what the apps spawn: WebKit's helpers and the like
+        add_programs[ '{install}/libexec' ]
+        # a module's -I folders under install/lib (dbus-1.0/include)
+        lib : path '{install}/lib'
+        libs : lib.ls[ null, false ]
+        if [ libs ]
+            for [ d: path ] in libs
+                inc : path '{d}/include'
+                if [ d.is_dir[] && inc.is_dir[] ] add_file[ '{inc}' ]
+        # the page process loads WebKit's bundle by its own path
+        add_file[ '{install}/lib/wpe-webkit-2.0' ]
+        add_programs[ '{install}/lib/wpe-webkit-2.0/injected-bundle' ]
+        # fontconfig: its rules and the base's fonts (WebKit's text)
+        add_file[ '/etc/fonts' ]
+        add_file[ '/usr/share/fontconfig' ]
+        add_file[ '/usr/share/fonts' ]
+        log 'os-bootstrap: apps done, {n} modules, {files.count} entries'
+
+    # orbiter reads install/export: the record and props of every
+    # module whose product, launcher or program is in the tree
+    func add_records []
+        ex : path '{install}/export'
+        # a library that came in as another's dependency (webgfx under
+        # aura) after add_apps scanned: its records ride too, else the
+        # drive takes it for never built and compiles it
+        late : vec string []
+        for [ e: OsFile ] in files
+            nm : e.dst
+            at : i64 [ nm.rindex_of[ '/' ] ]
+            if [ at >= 0 ] nm = nm.mid[ i32[ at ] + 1, i32[ nm.count ] - i32[ at ] - 1 ]
+            if [ nm.starts_with[ 'libsilver-' ] && nm.ends_with[ '.so' ] ]
+                late.push[ nm.mid[ 10, i32[ nm.count ] - 13 ] ]
+        for [ mod: string ] in late
+            for [ ext: string ] in vec string [] [ '', '.abi', '.deps' ]
+                add_file[ '{install}/build/silver-{mod}.product{ext}' ]
+            add_file[ '{install}/build/silver-{mod}.source' ]
+            add_file[ '{install}/build/silver-{mod}.artifacts' ]
+        regs : ex.ls[ null, false ]
+        if [ !regs ] return
+        n : i32 [ 0 ]
+        for [ r: path ] in regs
+            nm : r.filename[]
+            if [ !nm.ends_with[ '.agi' ] || nm.ends_with[ '.props.agi' ] ]
+                continue
+            stem : nm.mid[ 0, nm.count - 4 ]
+            mod : stem
+            if [ stem.starts_with[ 'silver-' ] ]
+                mod = stem.mid[ 7, stem.count - 7 ]
+            t : string r.load[ typeid[ string ], null ]
+            if [ !t ] continue
+            srcf : first_line[ '{install}/build/{stem}.source' ].trim[]
+            if [ srcf.count > 0 ]
+                sp : path [ srcf ]
+                if [ !sp.exists[] ] continue
+            t = '\n{t}'
+            run : bool [ t.index_of[ '\nrun:' ] >= 0
+                || t.index_of[ '\nlaunch:' ] >= 0 ]
+            here : bool [ run ]
+            for [ f: string ] in vec string [] [
+                    '{install}/build/{stem}.product',
+                    '{install}/build/{mod}', '{install}/bin/{mod}' ]
+                if [ seen.contains[ guest[ f ] ] ] here = true
+            if [ !here ] continue
+            add_file[ '{r}' ]
+            add_file[ '{install}/export/{stem}.props.agi' ]
+            add_file[ '{install}/build/{stem}.artifacts' ]
+            n += 1
+        log 'os-bootstrap: export records: {n}'
+
+    # a program module's program (export run) and the tree it
+    # links into: install/blender whole, install/lib/<name> whole
+    func add_run_program [ prog: string ]
+        if [ prog.count == 0 ] return
+        bin : '{install}/bin/{prog}'
+        bp : path [ bin ]
+        if [ !bp.exists[] && !bp.is_symlink[] ] return
+        add_file[ bin ]
+        add_deps[ bin ]
+        to : link_of[ bin ]
+        if [ to.count == 0 ] return
+        full : to
+        if [ !to.starts_with[ '/' ] ] full = '{install}/bin/{to}'
+        full = norm[ full ]
+        pre : '{install}/'
+        if [ !full.starts_with[ pre ] ] return
+        rest : full.mid[ pre.count, full.count - pre.count ]
+        parts : rest.split[ '/' ]
+        if [ parts.count < 2 ] return
+        top : parts[ 0 ]
+        if [ top == 'bin' || top == 'build' ] return
+        tree : '{pre}{top}'
+        if [ top == 'lib' || top == 'share' ]
+            second : parts[ 1 ]
+            tree = '{pre}{top}/{second}'
+        add_file[ tree ]
+        add_programs[ tree ]
+
     func add_module [ mod: string ]
         for [ f: string ] in vec string [] [ '{install}/build/{mod}',
                 '{install}/build/libsilver-{mod}.so' ]
@@ -3094,6 +3846,19 @@ element Bootstrap
             add_deps[ t ]
         # terminal descriptions: less, clear, nano, bash's line edits
         add_file[ '/usr/share/terminfo' ]
+        # alsa's own configuration: every sound device open reads it
+        add_file[ '/usr/share/alsa' ]
+        # python: build scripts and tools on the drive
+        add_file[ '/usr/bin/python3' ]
+        add_file[ '/usr/bin/python3.12' ]
+        add_deps[ '/usr/bin/python3.12' ]
+        add_file[ '/usr/lib/python3.12' ]
+        add_file[ '/usr/lib/python3' ]
+        # X11 programs in orbiter's compositor run on Xwayland
+        add_file[ '/usr/bin/Xwayland' ]
+        add_deps[ '/usr/bin/Xwayland' ]
+        add_file[ '/usr/lib/xorg' ]
+        add_file[ '/usr/share/X11' ]
 
     # xdg-open: an address goes to orbiter, which hosts aura on it
     func add_open []
@@ -3188,18 +3953,19 @@ element Bootstrap
             add_file[ t ]
             add_deps[ t ]
         # the kernel's modules (nvidia's in extra/) and firmware
-        add_tree_at[ '{kdir}/kmods/lib/modules', 'lib/modules' ]
+        add_tree_at[ '{kdir}/kmods/lib/modules', 'usr/lib/modules' ]
         # firmware of drivers the kernel left out stays behind
         kb : selected[]
         if [ kb && kb.amd == 'none' ]
-            seen[ 'lib/firmware/amdgpu' ] = true
-            seen[ 'lib/firmware/radeon' ] = true
+            left[ 'usr/lib/firmware/amdgpu' ] = true
+            left[ 'usr/lib/firmware/radeon' ] = true
         if [ kb && kb.intel == 'none' ]
-            seen[ 'lib/firmware/i915' ] = true
-            seen[ 'lib/firmware/xe' ] = true
+            left[ 'usr/lib/firmware/i915' ] = true
+            left[ 'usr/lib/firmware/xe' ] = true
         add_file[ '/lib/firmware' ]
         # modprobe's blocklist and options: nvidiafb never loads
-        add_file[ '/etc/modprobe.d' ]
+        add_tree_at[ '{root}/os-bootstrap/modprobe.d',
+            'etc/modprobe.d' ]
 
     # the drive's initramfs: only /init, which enters /orbiter-os
     func write_boot []
@@ -3246,14 +4012,21 @@ element Bootstrap
 
     # a host file into the tree: mode 0755, source time kept
     func copy_file [ src: string, dst: string ]
-        sp : path [ src ]
-        dp : path [ dst ]
-        st_ : i64 [ sp.modified_time[] / 1000 ]
-        if [ dp.exists[] && dp.modified_time[] / 1000 == st_ ] return
+        st : struct stat
+        if [ stat[ src.chars, @st ] != 0 ] return
+        # the same file by its exact time: a source and its product
+        # a second apart must keep their order (silver's rebuild test)
+        dt : struct stat
+        if [ stat[ dst.chars, @dt ] == 0
+                && dt.st_mtim.tv_sec == st.st_mtim.tv_sec
+                && dt.st_mtim.tv_nsec == st.st_mtim.tv_nsec ] return
         fi : handle fopen[ src.chars, 'rb' ]
         if [ !fi ] return
+        # an older copy may be read only: a fresh file each time
+        unlink[ dst.chars ]
         fo : handle fopen[ dst.chars, 'wb' ]
         if [ !fo ]
+            log 'os-bootstrap: cannot write {dst}'
             fclose[ fi ]
             return
         buf : @u8 [ malloc[ 1 << 20 ] ]
@@ -3266,12 +4039,17 @@ element Bootstrap
         fclose[ fo ]
         chmod[ dst.chars, 0x1ED ]
         # the launcher compares product and source times
-        ub : utimbuf [ actime: st_, modtime: st_ ]
-        utime[ dst.chars, @ub ]
+        ts : local timespec [ 2 ]
+        ts[ 0 ] = st.st_atim
+        ts[ 1 ] = st.st_mtim
+        utimensat[ AT_FDCWD, dst.chars, @ts[ 0 ], 0 ]
 
     # the guest as a folder, copied to /orbiter-os to boot
     func write_tree []
         base : '{out_dir}/root'
+        # the top links come first: their folder must be there
+        bp : path [ base ]
+        bp.make_dir[]
         for [ e: OsFile ] in files
             if [ cancelled ] return
             # devtmpfs makes /dev/console on the drive
@@ -3281,10 +4059,15 @@ element Bootstrap
                 tp : path [ t ]
                 tp.make_dir[]
             el [ e.link ]
+                # an older tree's real folder where a link now goes
+                lt : path [ t ]
+                if [ lt.is_dir[] && !lt.is_symlink[] ]
+                    sh[ 'rm -rf "{t}"' ]
                 unlink[ t.chars ]
                 symlink[ e.link.chars, t.chars ]
             el
                 copy_file[ e.src, t ]
+        prune_tree[ base ]
         bd : path '{base}/boot'
         bd.make_dir[]
         copy_file[ '{kernel}', '{base}/boot/vmlinuz' ]
@@ -3295,7 +4078,37 @@ element Bootstrap
         if [ f ]
             fprintf[ f, "%lld\n", bytes ]
             fclose[ f ]
-        log 'os-bootstrap: {files.count} entries, {bytes} bytes -> {base}'
+        say[ 'Wrote the tree: {files.count} entries, {bytes} bytes' ]
+
+    # what an earlier write put in the install's build, export and
+    # share folders and this list no longer names: gone (a deleted
+    # module's product and record stayed on the drive)
+    func prune_tree [ base: string ]
+        tops : vec string [] [ 'build', 'export', 'share' ]
+        for [ top: string ] in tops
+            keep : map bool [ string ] []
+            marks : vec string [] [ '/platform/native/{top}/',
+                '/install/{top}/' ]
+            for [ e: OsFile ] in files
+                for [ mark: string ] in marks
+                    at : i32 [ e.dst.index_of[ mark ] ]
+                    if [ at < 0 ] continue
+                    rest : e.dst.mid[ at + mark.count,
+                        e.dst.count - at - mark.count ]
+                    sl : i32 [ rest.index_of[ '/' ] ]
+                    if [ sl > 0 ] rest = rest.mid[ 0, sl ]
+                    keep[ rest ] = true
+            if [ keep.count == 0 ] continue
+            d : path '{base}/src/silver/platform/native/{top}'
+            entries : d.ls[ null, false ]
+            if [ !entries ] continue
+            n : i32 [ 0 ]
+            for [ e: path ] in entries
+                nm : e.filename[]
+                if [ keep.contains[ nm ] ] continue
+                sh[ 'rm -rf "{e}"' ]
+                n += 1
+            if [ n > 0 ] log 'os-bootstrap: {top}: {n} stale entries removed'
 
     func cpio_pad [ f: @FILE, n: i64 ]
         k : i64 [ n ]
@@ -3366,11 +4179,14 @@ element main : trinity
     # for the root whose uuid is boot_uuid
     public  boot_image : string
     public  boot_uuid  : string
+    # the tree's folder, in place of orbiter-os (a scratch write)
+    public  out        : string
 
     func init []
         # outside a window: initialize gives it its defaults
         b : Bootstrap []
         b.initialize[]
+        if [ out && out.count > 0 ] b.out_dir = path [ out ]
         if [ update ]
             if [ !b.phone_update[] ] log 'os-bootstrap: no update'
             Au.quit_request[]
@@ -3518,3 +4334,14 @@ expect func t_kernel_releases [] -> bool
 #         && said.index_of[ want ] >= 0
 #         && said.index_of[ kb.release ] >= 0
 #
+# the drive's nvidia files come from nvidia's installer alone
+expect func t_nvidia_files [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    return b.nvidia_check[ '7.2.11-nvidia610.57.04-noamd-nointel' ]
+
+# the whole drive tree: nothing from the computer's own system
+expect func t_tree_sources [] -> bool
+    b : Bootstrap []
+    b.initialize[]
+    return b.tree_check[]

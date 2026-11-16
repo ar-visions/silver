@@ -998,11 +998,20 @@ static void kb_keymap(void) {
     if (g_kb_layout[0])  rn.layout  = g_kb_layout;
     if (g_kb_variant[0]) rn.variant = g_kb_variant;
     struct xkb_context *xctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    // no xkb data folder: xkb makes no context, and says so on stderr
+    if (!xctx) {
+        fprintf(stderr, "[wayland] no keyboard map: no xkb context\n");
+        return;
+    }
     struct xkb_keymap  *kmap = xkb_keymap_new_from_names(xctx, &rn, XKB_KEYMAP_COMPILE_NO_FLAGS);
     // a name xkb does not know: its default map
     if (!kmap) kmap = xkb_keymap_new_from_names(xctx, NULL, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    wlr_keyboard_set_keymap(&g_kb, kmap);
-    xkb_keymap_unref(kmap);
+    // no xkb data at all: wlroots would deref the null map
+    if (!kmap) fprintf(stderr, "[wayland] no keyboard map: xkb data missing\n");
+    else {
+        wlr_keyboard_set_keymap(&g_kb, kmap);
+        xkb_keymap_unref(kmap);
+    }
     xkb_context_unref(xctx);
 }
 

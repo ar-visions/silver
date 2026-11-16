@@ -128,6 +128,7 @@ Keep it in step with the imports.
 | Linux kernel source (6.18, 6.12: the build page's choices) | os-bootstrap (fetched by its build page) | https://cdn.kernel.org/pub/linux/kernel/v6.x/ | GPL-2.0-only WITH Linux-syscall-note | Linus Torvalds and the kernel community |
 | Kernel configuration (os-bootstrap/linux.config, begun from Ubuntu's 6.17 config) | os-bootstrap | /boot/config-6.17.0-40-generic (Ubuntu 24.04) | GPL-2.0-only (part of the kernel build) | Canonical and the Ubuntu kernel team |
 | NVIDIA open GPU kernel modules 610.57.04 | os-bootstrap (fetched by its build page) | https://github.com/NVIDIA/open-gpu-kernel-modules | MIT OR GPL-2.0-only | NVIDIA Corporation |
+| NVIDIA Linux driver user-space (.run installer) 610.57.04, 615.71.09 | os-bootstrap (the drive tree's libraries, json files, gsp firmware) | https://download.nvidia.com/XFree86/Linux-x86_64/ | NVIDIA Software License (proprietary, redistribution as its terms allow) | NVIDIA Corporation |
 | Linux firmware (the build host's /lib/firmware, copied into the drive tree) | os-bootstrap | https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git | per file (see its WHENCE) | the hardware vendors, gathered by the linux-firmware project |
 | mtools 4.0.48 (build tool) | os-bootstrap (the installer stick's EFI partition) | https://ftp.gnu.org/gnu/mtools/mtools-4.0.48.tar.gz | GPL-3.0-or-later | Alain Knaff, David Niemi and contributors |
 | EfiFs NTFS driver (ntfs_x64.efi) v1.13 | os-bootstrap (the boot program reads the kernel from an orbiter-os folder on a Windows partition) | https://github.com/pbatard/EfiFs/releases/download/v1.13/ntfs_x64.efi (sha256 202aeb2cc078693e9c03f3c0a64e8c6c44f2c75eded8a32ada5e1589753b3317) | GPL-3.0-or-later (built on GRUB's file system code) | Pete Batard and the GRUB contributors |
@@ -235,3 +236,15 @@ WebKit, GLib, libsoup, glib-networking and the gcrypt libraries are LGPL and
 linked dynamically by the aura module. aura/ holds our changes to them as
 overlays (wpewebkit/, libsoup/, glib-networking/ with its mbedtls backend); those
 changes are under the same LGPL terms as the files they change.
+
+## Chess set
+
+| model | used as | source | credit | license |
+|---|---|---|---|---|
+| CHESS COINS (glb, 6 pieces, colours only) | chess/models/chess-set.glb: the set the chess app draws | https://www.blendswap.com/blends/view/92407 | Blend Swap #92407 "CHESS COINS" (author's name to add) | CC BY 3.0 |
+
+## Chess engine
+
+| program | used as | source | license |
+|---|---|---|---|
+| Stockfish 17.1 (built from source; its NNUE nets fetched by its own build) | install/bin/stockfish: the chess app's opponent, run as a separate process and spoken to over UCI pipes, never linked | https://github.com/official-stockfish/Stockfish | GPL-3.0 |

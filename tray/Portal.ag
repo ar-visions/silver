@@ -82,7 +82,9 @@ class Portal
             <allow receive_sender="*"/></policy></busconfig> }
         conf.save[ x, null ]
         unlink[ sock.chars ]
-        run : command [ 'dbus-daemon --config-file={conf} --fork' ]
+        # the system's daemon takes its own libdbus, never ours
+        run : command [ 'env -u LD_LIBRARY_PATH dbus-daemon'
+                        + ' --config-file={conf} --fork' ]
         run.exec[ false ]
 
     func open [] -> bool

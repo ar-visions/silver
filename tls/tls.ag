@@ -18,6 +18,17 @@ import <psa/crypto.h>
 import <stdio.h>
 import <stdlib.h>
 import <string.h>
+import <time.h>
+
+# tls.c: a server's identity. tls_cert_make writes an ECDSA key
+# and a self-signed certificate once (1 there); tls_identity_load
+# puts them in an ssl config as its own (null failed); the
+# certificate's DER bytes for a fingerprint; free when done
+func tls_cert_make [ key: cstr, crt: cstr, name: cstr ] -> i32
+func tls_identity_load [ key: cstr, crt: cstr,
+                         conf: @mbedtls_ssl_config ] -> handle
+func tls_identity_der [ id: handle, n: @sz ] -> @u8
+func tls_identity_free [ id: handle ]
 
 class TLSClient
     public host      : string
@@ -225,6 +236,25 @@ class TLSClient
             p = p.next
         return p
 
+    # the server's certificate as a sha256 hex ('' none)
+    func peer_fingerprint [] -> string
+        p : ref mbedtls_x509_crt [ mbedtls_ssl_get_peer_cert[ @ssl ] ]
+        if [ !p ] return ''
+        return tls_sha256_hex[ p.raw.p, p.raw.len ]
+
+    # bytes in within read_ms: > 0 bytes, 0 none yet, -1 closed
+    func recv_some [ data: @u8, n: i64 ] -> i64
+        r : i64 recv[ data, n ]
+        if [ r == MBEDTLS_ERR_SSL_TIMEOUT ] return 0
+        if [ r <= 0 ] return -1
+        return r
+
+    # the last send stopped short for a wait, not a failure
+    func stalled [] -> bool
+        if [ failure != MBEDTLS_ERR_SSL_TIMEOUT ] return false
+        failure = 0
+        return true
+
     func close []
         if [ connected ]
             lk.lock[]
@@ -237,6 +267,162 @@ class TLSClient
         mbedtls_ssl_config_free [ @conf ]
         mbedtls_x509_crt_free   [ @cacert ]
         connected = false
+
+# sha256 of bytes as 64 hex letters
+func tls_sha256_hex [ data: @u8, n: i64 ] -> string
+    out : local u8 [ 32 ]
+    got : sz [ 0 ]
+    psa_crypto_init[]
+    if [ psa_hash_compute[ PSA_ALG_SHA_256, data, n, @out[ 0 ], 32,
+                           @got ] != PSA_SUCCESS ]
+        return ''
+    hex : local i8 [ 65 ]
+    digits : '0123456789abcdef'
+    for [ i: i32 0, i < 32, i += 1 ]
+        hex[ i * 2 ]     = digits.chars[ out[ i ] >> 4 ]
+        hex[ i * 2 + 1 ] = digits.chars[ out[ i ] & 15 ]
+    hex[ 64 ] = 0
+    return string [ @hex[ 0 ] ]
+
+# one connection a server accepted: its handshake and bytes, all
+# without waiting (the owner polls fd)
+class TLSPeer
+    public  fd      : i32 [ -1 ]
+    # 1 shaking hands, 2 up, 0 dead
+    public  stage   : i32
+    public  since   : i64
+    intern  net     : mbedtls_net_context
+    intern  ssl     : mbedtls_ssl_context
+    intern  made    : bool
+
+    func setup [ conf: @mbedtls_ssl_config ] -> bool
+        mbedtls_net_init[ @net ]
+        mbedtls_ssl_init[ @ssl ]
+        made = true
+        if [ mbedtls_ssl_setup[ @ssl, conf ] != 0 ] return false
+        net.fd = fd
+        mbedtls_ssl_set_bio[ @ssl, @net, @mbedtls_net_send,
+                             @mbedtls_net_recv, null ]
+        stage = 1
+        return true
+
+    # one step of the handshake; up after 20 s or it is dead
+    func shake []
+        hs : i32 [ mbedtls_ssl_handshake[ @ssl ] ]
+        if [ hs == 0 ]
+            stage = 2
+            return
+        if [ hs == MBEDTLS_ERR_SSL_WANT_READ
+             || hs == MBEDTLS_ERR_SSL_WANT_WRITE ]
+            if [ time[ null ] - since > 20 ] stage = 0
+            return
+        stage = 0
+
+    # bytes in: > 0 bytes, 0 none now, -1 closed
+    func recv [ data: @u8, n: i64 ] -> i64
+        r : i32 [ mbedtls_ssl_read[ @ssl, data, n ] ]
+        if [ r == MBEDTLS_ERR_SSL_WANT_READ
+             || r == MBEDTLS_ERR_SSL_WANT_WRITE
+             || r == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET ]
+            return 0
+        if [ r <= 0 ] return -1
+        return r
+
+    # bytes out: > 0 written, 0 none now, -1 closed
+    func send [ data: @u8, n: i64 ] -> i64
+        r : i32 [ mbedtls_ssl_write[ @ssl, data, n ] ]
+        if [ r == MBEDTLS_ERR_SSL_WANT_READ
+             || r == MBEDTLS_ERR_SSL_WANT_WRITE ]
+            return 0
+        if [ r <= 0 ] return -1
+        return r
+
+    func close []
+        if [ made ]
+            if [ stage == 2 ] mbedtls_ssl_close_notify[ @ssl ]
+            mbedtls_ssl_free[ @ssl ]
+            mbedtls_net_free[ @net ]
+            made = false
+        fd    = -1
+        stage = 0
+
+# a server's end: its identity made once under a folder (key and
+# self-signed certificate, pinned by clients), a listening socket
+# that never waits, and each connection as a TLSPeer
+class TLSServer
+    public  port        : i32
+    public  problem     : string
+    public  fingerprint : string
+    public  fd          : i32 [ -1 ]
+    intern  conf        : mbedtls_ssl_config
+    intern  ident       : handle
+    intern  made        : bool
+
+    func init []
+        problem     = ''
+        fingerprint = ''
+
+    func start [ dir: string, name: string ] -> bool
+        key : string '{dir}/server.key'
+        crt : string '{dir}/server.crt'
+        if [ tls_cert_make[ key.chars, crt.chars, name.chars ] == 0 ]
+            problem = 'Could not make the server certificate'
+            return false
+        psa_crypto_init[]
+        mbedtls_ssl_config_init[ @conf ]
+        made = true
+        rc : i32 [ mbedtls_ssl_config_defaults[ @conf,
+            MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
+            MBEDTLS_SSL_PRESET_DEFAULT ] ]
+        if [ rc != 0 ]
+            problem = 'TLS would not start ({rc})'
+            return false
+        mbedtls_ssl_conf_authmode[ @conf, MBEDTLS_SSL_VERIFY_NONE ]
+        ident = tls_identity_load[ key.chars, crt.chars, @conf ]
+        if [ !ident ]
+            problem = 'Could not read the server certificate'
+            return false
+        dn : sz [ 0 ]
+        der : @u8 [ tls_identity_der[ ident, @dn ] ]
+        fingerprint = tls_sha256_hex[ der, dn ]
+        ps : string '{port}'
+        net : mbedtls_net_context
+        mbedtls_net_init[ @net ]
+        if [ mbedtls_net_bind[ @net, null, ps.chars,
+                               MBEDTLS_NET_PROTO_TCP ] != 0 ]
+            problem = 'Port {port} is taken'
+            return false
+        mbedtls_net_set_nonblock[ @net ]
+        fd = net.fd
+        return true
+
+    # a connection waiting on the socket, else null
+    func accept_one [] -> TLSPeer
+        if [ fd < 0 ] return null
+        lis : mbedtls_net_context
+        lis.fd = fd
+        cli : mbedtls_net_context
+        mbedtls_net_init[ @cli ]
+        if [ mbedtls_net_accept[ @lis, @cli, null, 0, null ] != 0 ]
+            return null
+        mbedtls_net_set_nonblock[ @cli ]
+        p : TLSPeer [ fd: cli.fd, since: time[ null ] ]
+        if [ !p.setup[ @conf ] ]
+            p.close[]
+            return null
+        return p
+
+    func stop []
+        if [ fd >= 0 ]
+            lis : mbedtls_net_context
+            lis.fd = fd
+            mbedtls_net_free[ @lis ]
+        fd = -1
+        if [ made ]
+            mbedtls_ssl_config_free[ @conf ]
+            made = false
+        if [ ident ] tls_identity_free[ ident ]
+        ident = null
 
 class UrlParts
     public host  : string

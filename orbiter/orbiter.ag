@@ -20189,10 +20189,10 @@ element orbiter : trinity # implements compiler
                 t['sys_agent_edge'] = WinEdge [ selected: true,
                     area: Region [ ar ] ]
         el [ sys_view.count > 0 ]
-            # a desktop's view at most 24 units wide, centred
+            # a desktop's view at most 19.2 units wide, centred
             room : f32 [ sys_room[] / un ]
             side : f32 [ (use_mobile) ? 0.3
-                : max[ 0.3, (room - 24.0) / 2.0 ] ]
+                : max[ 0.3, (room - 19.2) / 2.0 ] ]
             panel_w = (room - 2.0 * side) * un
             sv : Elements side_view[ sys_view,
                 'l{side} t{lt + 0.7} r{side} b{dw / un + 0.3}' ]

@@ -532,6 +532,406 @@ SUSE is gone: only its EFI loader is left (its btrfs root
    the listener (16 MB buffer) started before the pass, a second
    pass after it. Tree written 05:05; not booted.
 
+## orbiter-os from any computer — live list (Nov 15 2026)
+
+the user: the orbiter-os install must build and write from Ubuntu,
+Windows or a Mac; nothing in the drive may come from the system
+it is built on. Today the tree is the host Ubuntu's own files.
+1. DONE NVIDIA: nvidias[] is a pinned list (610.57.04, 615.71.09,
+   none), never /sys/module/nvidia/version. add_nvidia takes the
+   selected kernel's release and copies the libraries (64 and
+   32 bit), sonames, gbm link, the icd / egl json files and the
+   gsp firmware from NVIDIA's own .run (download.nvidia.com),
+   unpacked once into share/silver-os-bootstrap/nvidia-user/<v>;
+   the system's other lib/firmware/nvidia/<v> folders are left
+   out. add_steam no longer copies the system's nvidia libraries.
+   t_nvidia_files passes (610 kernel: 106 entries, none from
+   /usr/lib). Found: Ubuntu moved the host to 615.71.09 (Nov 13).
+2. DONE /etc/modprobe.d: os-bootstrap/modprobe.d (Ubuntu's generic
+   blocklists, copied once; no dkms or nvidia package files).
+3. BUILT, checked, not written to a drive (Nov 15) the userland
+   from a pinned base: os-bootstrap/Base.ag UbuntuBase makes
+   share/silver-os-bootstrap/x64-base/root (1.6 GB) from
+   ubuntu-base-24.04.3 amd64 (sha256 checked) and 420 packages
+   from snapshot.ubuntu.com 20261115T000000Z (noble, -security,
+   -updates; main, universe; amd64 and Steam's i386), resolved by
+   its own index reader (Packages.gz by zlib, dpkg version order,
+   Provides, a | b), each .deb unpacked by llvm-ar + tar; the CA
+   bundle and vi made as the packages' scripts would. A stamp
+   remakes it when the snapshot, base or list change.
+   os-bootstrap.ag: a system path (/usr/bin/git, /bin/bash,
+   /lib/firmware ...) is read from the base (src_of, canon: merged
+   /usr, bin lib sbin lib64 as links), add_deps reads NEEDED,
+   RUNPATH and the interpreter with our llvm-readelf (no ldd);
+   kernel modules and firmware at usr/lib/...; assemble = gather +
+   write. Tests 3/3: t_nvidia_files, t_tree_sources (72,816
+   entries, none from the system but the user's own games).
+   Checked: bash, git, ssh, mke2fs, sfdisk, kmod, curl, python3.12
+   run on the base's loader and libraries alone; orbiter's
+   libraries all resolve there.
+   Worked Nov 15 (evening), in order:
+   a. DONE the tree written to a scratch folder (`os-bootstrap
+      --out <folder>`, a new prop of main): 72,865 entries,
+      4.25 GB. Found and fixed: a fresh write lost the four top
+      links (bin, sbin, lib, lib64 -> usr/...): they are the first
+      entries and root/ did not exist yet, so symlink failed;
+      write_tree makes the folder first. orbiter's launcher run
+      inside that tree (a chroot in a user namespace through
+      platform/native/build/fp6-box): silver-host up, devices in
+      kms mode, every library resolves (the malloc_hook lines are
+      the harmless ones), then vkCreateInstance -9: the tree's
+      NVIDIA 610.57.04 user libraries against this host's 615.71.09
+      module. Only a boot (its own module) goes further. NOT booted.
+   b. DONE the live tree rewritten in place: bin, sbin, lib, lib64
+      are links now, 72,865 entries, 4.4 GB, the same kernel,
+      /orbiter-os untouched; the root-owned files are boot-made
+      state only (root/.cache, root/.local). copy_file unlinks a
+      stale copy first (a dangling etc/modprobe.d link refused the
+      write) and logs a file it cannot write.
+      Then (20:29, his install stopped at the copy): /orbiter-os is
+      a real folder (the Oct 15 install), with Ubuntu's real bin,
+      lib, lib64 where the tree has links: tar refused. The wizard's
+      copy step removes such a folder first (bin sbin lib lib32
+      lib64, only where the tree has a link). And the tree had no
+      firmware (usr/lib/firmware held nvidia alone): the nvidia step
+      marked the folder seen and add_file returned on a seen path
+      before walking a folder; a folder is walked now. Tree: 79,180
+      entries, 5.0 GB, 560 firmware folders. INSTALLED (20:42, the
+      wizard, folder beside): /orbiter-os has the links and the
+      firmware. NOT booted since.
+   c. DONE wizard and orbiter built --clean.
+   d. NOT REPRODUCED: the base made under the supervised debug
+      launcher from the cached debs and from a full download, and
+      from a full download inside the expect runner (release):
+      all clean. The one trace on disk (install/tmp/
+      os-bootstrap.log, 18:59): map_contains from t_nvidia_files
+      in that hour's release product. Open until seen again.
+   e. DONE 72 columns, but URLs, the hash and log strings.
+   f. OPEN (phone side, left).
+   g. DONE: no NEEDED miss logged in three tree writes.
+   h. FIRST BOOT of this tree (Nov 15 21:02, his): orbiter SIGSEGV
+      in libxkbcommon from the compositor's kb_keymap: the tree had
+      no install/share/X11 (xkb's maps), the keymap came back null
+      and wlroots dereferenced it. Fixed: the tree takes
+      install/share/X11 (xkb, locale, 5.8 MB); wayland.c logs and
+      skips a null keymap. The same log: init's system and session
+      buses never came up (/usr/bin/dbus-daemon: libexpat.so.1 not
+      found: add_deps had taken our install/lib expat for a base
+      program, so the base's copy was left out); a base program's
+      libraries come from the base now (install/lib only for our
+      own files). And the tray's portal bus ran the base's
+      dbus-daemon under orbiter's LD_LIBRARY_PATH (our libdbus 1.16
+      against its 1.14): it runs `env -u LD_LIBRARY_PATH` now.
+      Harmless there: `gsettings: not found` (the portal reads the
+      desktop's settings). Found in the write's log: the 834 files
+      of the firmware folders the kernel left out (amdgpu, radeon,
+      i915, xe, other nvidia releases) were listed and failed to
+      write, since the morning's fix walks a seen folder; a left-out
+      folder has its own mark now (Bootstrap.left, checked first in
+      add_file). Tree rewritten (78,714 entries, 5.02 GB, no write
+      failures).
+   i. SECOND BOOT (Nov 15 22:05, his): orbiter up; navigator and
+      console would not run. Their logs (install/tmp/<app>.1.log,
+      builds/<app>.log): the host built each at launch, the build
+      reached img, img's imports were not in the tree and silver
+      cloned them (git fetch zlib, libpng, clone libtiff): the base's
+      git-remote-https lacked libcurl-gnutls there, and templates.
+      Two causes. The tree carried every module's libsilver-<m>.so
+      but no silver-<m>.product (console's alone, by add_module),
+      so img and navigator counted as never built; and silver
+      cloned an import's checkout before reading its build stamp.
+      Fixed: silver.c (import_key, import_build_dir factored) skips
+      the clone and the build when the import's stamp (install/
+      build/<owner>/<name>/silver-token) matches and no checkout
+      exists (a plain import only, never a module selector);
+      checked with a scratch cJSON import: its checkout moved
+      aside, the second build cloned nothing and linked. os-
+      bootstrap: every carried module's .product, .product.abi,
+      .product.deps and .source ride along; add_import_stamps
+      takes every silver-token under install/build (174); git's
+      https helper gets its libraries and /usr/share/git-core/
+      templates. Tree rewritten; NOT booted since.
+   j. BUILT, not written (Nov 15, his: the OS packaged with the
+      compiled apps; aura was not in it) os-bootstrap add_apps:
+      every module whose export record says software: or scenes:
+      and has a product here (41 today) rides along: its library
+      with its closure, its records, its launcher and install/bin
+      program, share/<stem> and share/<m> whole (no share_max),
+      the module folder's textures/ and models/ (git-ignored
+      data), and the program an `export run` names with the tree
+      it links into (install/blender whole; install/lib/<name> for
+      a lib link; add_run_program); install/libexec whole with
+      each helper's closure (WebKit's three). The base gains what
+      WebKit loads from the system: libepoxy0, libjpeg-turbo8,
+      libwebp7, libwebpdemux2, libharfbuzz0b, libharfbuzz-icu0
+      (428 packages). tree_check (and the scratch treecheck test)
+      reports the size: 131,944 entries, 7.26 GB, none from the
+      system. DISK (Nov 15 23:50, his sudo, my two scripts):
+      Windows could not shrink (0 MB: unmovable files), so he
+      deleted it: p4 msr, p5 ntfs, p6 recovery gone, the Windows
+      firmware entry and EFI\Microsoft removed; one ext4 (label
+      orbiter, nvme0n1p4, 911 GB) over the space, mounted at
+      /orbiter (fstab); the drive tree moved there: /src/silver/
+      orbiter-os is a link to /orbiter/tree. Windows runs in a VM
+      when the Windows port needs it. Write 5 had no blender:
+      add_apps skipped a module with no product, and a program
+      module (blender, hot_lava: build none) has none; the product
+      is optional now (add_run_program rewritten plain: a ternary
+      of strings and parts[ 1 ] in an interpolation crashed).
+      TREE WRITTEN (write 6, Nov 16 00:40): 137,113 entries, 8.94
+      GB, 0 write failures; aura's product, libWPEWebKit, its
+      three helpers, install/blender whole, earth/textures in it.
+      Then (Nov 16 00:50, his: orbiter-os in the same ext4 as /)
+      ONE DISK: swap (2) and EFI (3) moved to the disk's end with
+      their GUIDs, numbers, sizes and filesystem ids (mkswap -U,
+      mkfs.vfat -i), the 911 GB partition gone, / grown online to
+      1.78 TB (one-disk.sh). MY FAULT: the script's rerun (the
+      first run stopped on a GUID in capitals) removed the EFI
+      copy and copied the unmounted mount point: the EFI files
+      (910 MB) were lost, the old region already overwritten by
+      ext4. Ubuntu's loader reinstalled (grub-install, update-
+      grub: EFI/ubuntu shim + grub, EFI/BOOT); the other EFI
+      folders (arch, opensuse, Linux, systemd, GRUB, orbiter) are
+      gone; the firmware entries opensuse (0001) and GRUB (0003)
+      are dead, orbiter-os (0005) points at EFI/orbiter/
+      vmlinuz.efi, which the wizard's Install writes again.
+      TREE WRITTEN (write 7, on /): 137,113 entries, 8.79 GB,
+      /src/silver/orbiter-os a real folder again.
+   k. BUILT, tree written (Nov 16 01:30, his: no Wi-Fi on the
+      drive, a bus error in the panel). The second boot's logs:
+      rtw89 loaded with its firmware, the radio on; init started
+      the system bus (it ran: checked here on the tree's own
+      binaries); iwd 3.12 then died "Failed to initialize D-Bus".
+      Two paths: iwd's ell dials /var/run/dbus/system_bus_socket
+      and the tree had no /var/run (the base's link to /run was
+      never carried); orbiter's own libdbus was built by CMake
+      (the archive has a CMakeLists, so the meson -Dsystem_socket
+      line meant nothing) with its socket under install/var/run,
+      so Wifi's dbus_bus_get said "No system bus". Fixed: the
+      tree carries var/run and var/lock (links) and var/log;
+      init hands DBUS_SYSTEM_BUS_ADDRESS to iwd and to orbiter's
+      environment (bus_start, env_add); wifi.ag and wine.ag give
+      dbus -DDBUS_SYSTEM_BUS_DEFAULT_ADDRESS=unix:path=/run/dbus/
+      system_bus_socket (CMake's name; the library reconfigured and
+      reinstalled by hand, dbus's silver-token gone: the next wine
+      or wifi build makes it afresh); the base gains wireless-regdb
+      (the kernel asked for regulatory.db; 429 packages). Write 8:
+      137,119 entries, 8.79 GB; checked in it: var/run -> /run,
+      regulatory.db, libdbus's /run address, init with the address.
+      NOT installed or booted since: Install (folder beside on /),
+      sudo update-grub, boot, Wi-Fi tile, open aura.
+      OPEN silver: an import's -D lines are passed to whichever
+      build system it picks; a meson option given to a CMake
+      archive is silently ignored.
+   l. DONE (Nov 16: the console's build card sat at 1%; nothing
+      builds) his boot's logs (console.1.log, builds/console.log):
+      silver rebuilt console, then img, and img.cc died on
+      'Au/public' file not found. The tree carried install/include's
+      links (Au, aether, silver, net, silver2 -> install/build/src/
+      <name>) but never build/src itself: on the drive the Au headers
+      were gone. silver_abi hashes include/Au's files, so every
+      product's .abi mismatched and EVERYTHING was stale (one cause,
+      both symptoms). Fixed: add_toolchain takes install/build/src;
+      the tree takes install/tmp/exports (a build on the drive reruns
+      no export func); tree_check resolves every link through the
+      tree's own links and fails on a dangling one (it found this one,
+      then var/lock -> /run/lock: run/lock is in the tree and init
+      makes it); init.c mounts a tmpfs on /dev/shm (wlroots had
+      "Failed to allocate shm file" for its keymap and dmabuf table).
+      Write 9: 137,301 entries, 8.79 GB, 0 from the system, 0
+      dangling. CHECKED inside the written tree (an overlay in a
+      user namespace, scratchpad ovl/run.sh): the tree's own silver
+      built console (img and trinity up to date, libsilver-console.so
+      linked). install/syntax (739 MB) is left out on purpose.
+      BOOT 4 (his, write 9 installed): the console STILL built, and
+      its link died on -ltiff -lpng -lz. Two more causes, both in
+      the tree: (1) add_toolchain listed silver's files by `git
+      ls-files` (tracked only), so the untracked tls/tls.c was
+      left out, and console's build record names it: silver takes
+      a recorded source that is gone as a rebuild (the host has it,
+      so here console reads up to date); now ls-files -co
+      --exclude-standard (new files ride, ignored ones not). (2) the
+      tree carried libraries by their versioned names alone
+      (libtiff.so.6), never the plain links a link line names
+      (-ltiff): add_lib_links takes every install/lib link whose
+      real file is in the tree (52). Then a rebuild inside the tree
+      cloned zlib again: img imports zlib with
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 and os-bootstrap (and the
+      scratch test over it) without, so the SHARED token flipped to
+      the other key and img's stamp never matched on the drive;
+      os-bootstrap's line is img's and wine's text now (one key).
+      OPEN silver: two modules importing one checkout with
+      different config lines rewrite its token in turn and rebuild
+      it each time; the token should hold a key per line, or the
+      config that does not change the product stay out of it.
+      Write 12: 137,364 entries, 8.79 GB. CHECKED inside the
+      written tree (the overlay box): console and trinity up to
+      date (no build at a launch); img.cc touched, img compiled
+      and linked (libtiff, libpng, libz found), console up to date
+      after. NOT installed or booted: Install (folder beside on /),
+      sudo update-grub, boot, open the console, Wi-Fi tile, aura.
+   m. DONE (Nov 16: four boots, the console never opened; "it
+      doesnt run the apps; it doesnt compile the apps; they arent
+      PACKAGED"; verify they run without booting) the apps run
+      INSIDE the written tree now, before any boot: the overlay
+      box (scratchpad ovl/run.sh: fp6-box -rmpf --mount-proc, an
+      overlayfs over orbiter-os/root, pivot_root (a chroot may make
+      no user namespace, so the hosted apps got no view), the boot
+      line's environment, the host's 615 NVIDIA user libraries over
+      the tree's 610 in the upper only). Checked in write 19's
+      tree: orbiter with its supervisor (60 fps, its socket
+      answers); `app run bash` hosted the console in its view (its
+      own socket answers, a shot shows bash's prompt); `app open`
+      hosted aura in its view (WPE's page process up, the page
+      drawn: a name-resolution error, the box has no DNS); every
+      module with a record reads up to date in the tree (chk.sh:
+      `silver --build` of each). Found and fixed, in order:
+      - no install/export in the tree: orbiter had no app records
+        (no apps screen, no handlers, no props). add_records carries
+        each record whose product, launcher or run line rides.
+      - share/silver-orbiter was over share_max (a 38 MB crash
+        dump in it): orbiter died at start. The app's own share
+        always rides; a skipped share is logged.
+      - aura's page process: libWPEInjectedBundle.so, fontconfig's
+        rules and the base's fonts carried. Xwayland (base gains
+        xwayland), python3, /usr/share/alsa carried.
+      - the base's link libraries (libcrypt.so ...) and every .so
+        link under install/lib: add_lib_links (112).
+      - a library carried only as another's dependency (webgfx
+        under aura) had no .product / .abi / .deps / .source in
+        the tree: the drive took it for never built and compiled
+        it. add_records carries the records of every libsilver.
+      - a build-none module's proof (featured-wine.imported) never
+        rode: steam compiled wine.ag in the tree. add_import_stamps
+        carries *.imported and a token a level down (freetype's).
+      - import tokens: silver.c token_has / token_add: a token
+        holds a key per line (every config the installed build has
+        served), so trinity's and wine's freetype lines no longer
+        flip it and the drive clones nothing. Checked: `silver
+        --build steam` on the host builds nothing; in the tree it
+        walks wine's imports in 0 s.
+      - records and products of deleted modules (kelly, polyrhythm,
+        atl, cjsontest) and a git-ignored one (a bare `europa` rule
+        in .gitignore: now europa/textures/) made `silver --build`
+        trap (SIGTRAP, "module file not found"). add_apps and
+        add_records skip a record whose .source's first file is
+        gone; prune_tree removes what an earlier write left in the
+        tree's build, export and share folders that this write
+        does not name (18 + 7 + 6 entries).
+      - stale products: every module the drive carries is built on
+        the host BEFORE the tree is gathered (assemble -> build_apps:
+        `silver --build` of the app and of every module with a
+        software: or scenes: record; a failure stops the write).
+        Editing a module after the write left its product older
+        than its source on the drive: a build at launch, which the
+        drive cannot do (no network, no -I folders).
+      - copy_file keeps nanosecond times (utimensat; it truncated
+        to seconds, so a source and its product built within the
+        same second lost their order: wifi rebuilt on the drive,
+        then failed on dbus-arch-deps.h). install/lib/*/include
+        folders ride too.
+      - the wizard's GRUB entry had EMPTY uuids (his /etc/grub.d/
+        41_orbiter-os: `--set=root ` and `orbiter.uuid=`): orbiter's
+        LD_LIBRARY_PATH put wine's libudev-zero under lsblk, which
+        then prints no UUID. part_uuid reads /dev/disk/by-uuid's
+        links first, else lsblk with LD_LIBRARY_PATH unset. The
+        boots so far went through the Sep 25 40_custom entry.
+      - the installer runs update-grub itself when the entry lands
+        in the running system's /etc (grub_ran; the "sudo
+        update-grub" note only otherwise). `silver --test wizard`
+        exit 0; the update-grub step not driven (needs his Install).
+      OPEN: FONTCONFIG_FILE in a hosted app's view names a file not
+      there ("Cannot load default config file"; text still draws);
+      the box has no DNS (aura's page cannot resolve there).
+      NEXT, his: Install (folder beside on /), boot, open the console
+      and the apps.
+   n. BUILT, write 20 running (Nov 16 02:30 boot, his: "it shall not
+      build one damn thing when booting"). His boot's remains: silver
+      compiled tls (tls.o 02:30:12) and its link died "unable to find
+      library -lmbedtls" (the drive carries NO .a: 0 of install/lib's
+      288, libmbedtls.a among them), then orbiter crashed twice at
+      02:30:12.245 (below). The build's own output is gone: the host
+      sends it to install/tmp/orbiter.log, which holds only the crash
+      traces (4,096 bytes, the rest never reached the disk before his
+      power-off). In the box over /orbiter-os, with its /root and
+      install/tmp copied in, his boot line's environment and the
+      session restored (console hosted, slot 1), nothing compiles:
+      every module reads up to date (--build tls, trinity, console,
+      /src/silver/console, console/console.ag). So what made silver
+      compile tls at boot is NOT reproduced; what IS certain:
+      - the host built at every launch by design: a slot app ALWAYS
+        ran `silver --build` before running (spawn_slot_app: "the host
+        has no staleness view"), and the main app when a source was
+        newer. Now silver-host os_booted (orbiter.init= on
+        /proc/cmdline): neither builds at a launch; a stale main
+        product is logged ("the installer builds, a launch never
+        does") and loaded as it is. A source edited while it runs
+        (the watch, apply) still rebuilds: the IDE.
+      - the drive carried no <mod>.cmd (the launcher's link record), so
+        every `silver --build` there relinked the launcher (seen in the
+        box: install/build/orbiter and orbiter.cmd written). add_apps
+        carries the .cmd of every launcher.
+      - a relink on the drive could never find -lmbedtls: new
+        add_link_archives reads every carried module's .ag sources for
+        -l<name> words and carries install/lib/lib<name>.a when no
+        lib<name>.so exists; add_records carries .artifacts too.
+      - an older install's leftovers stay under /orbiter-os (the
+        folder-beside copy adds, never removes): src/silver/checkout
+        (glennrp, libtiff, madler from the Nov 15 boots' clones, an
+        empty Mbed-TLS from the 01:27 one), platform/native/tmp (every
+        boot's logs, root-owned), *.checkout-lock. The wizard's copy
+        step removes those three before the tar.
+      The crashes (libsilver-orbiter frames, both at 02:30:12.245):
+      - kb_keymap (wayland.c) -> xkb_keymap_new_from_names ->
+        xkb_context_ref on a NULL context: libxkbcommon 1.6 returns
+        null when its default include path cannot be added (the
+        library's compiled root is /src/silver/platform/native/share/
+        X11/xkb; the drive has it, root 755, and the box's orbiter
+        makes its keymap there). Its own stderr line names the path
+        (lost with the log). kb_keymap now logs and returns on a null
+        context (as it did on a null keymap).
+      - vk_context_defer_tick -> drop -> vector_dealloc -> Au_free ->
+        libnvidia-eglcore 610.57.04 -> strlen: a deferred GPU object's
+        free inside the 610 user driver (the drive's; this host runs
+        615, so the box cannot show it). OPEN.
+      FOUND (the box over write 20's tree): what built tls at his boot.
+      silver-host calls an app stale when ANY file of its .source record
+      is newer than its product, imports' .ag files included; silver's
+      own rule does not. tls/tls.ag (Nov 14 22:26) was newer than
+      console's product (Nov 14 22:08), so every console launch ran
+      `silver --build console`, which on the drive went on to compile
+      tls and died on -lmbedtls. On this PC it said "up to date" each
+      time, unseen. Four tree products were stale so: console, stocks,
+      steam, webgfx. os-bootstrap build_apps now builds a module whose
+      product is older than a listed source with --clean (host_stale:
+      the launcher's rule), so the drive finds nothing stale.
+      Write 21 (console, steam, stocks, orbiter clean): 136,608
+      entries, 8.84 GB, 10 link archives, 58 export records, 0 stale by
+      the host's rule. CHECKED in the box over it (/proc/cmdline with
+      orbiter.init= bound in; his session with the console pane):
+      orbiter up, its socket answers, the console hosted in its view,
+      not one "compiling" line in any log, no silver / clang / lld
+      process, nothing written into the tree's build folder; a plain
+      launch of a stale product logs "the installer builds, a launch
+      never does" and loads it. A box limit: a hosted app's view mounts
+      a fresh /proc, where the box's kernel line has no orbiter.init=;
+      a real boot's line is the kernel's everywhere.
+      NEXT, his: Install (folder beside on /), boot, open the console
+      and the apps.
+4. OPEN the build tools that run on the host, each a TODO:
+   a. the x86 kernel by the system's gcc: our LLVM=1.
+   b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/
+      pkgconfig: our own deps or the base's .pc files.
+   c. add_claude runs Anthropic's install.sh with the host's bash.
+   d. add_toolchain lists files by the host's git (ls-files).
+   e. the stick: mke2fs -d, sfdisk, mtools, pkexec, dd.
+   f. the base itself: curl, tar with zstd, sha256sum, sh.
+5. OPEN running os-bootstrap on Windows and macOS:
+   a. NTFS keeps no symlinks: unpack the base into the image
+      writer (or a tar stream), not the host's folders.
+   b. macOS / Windows tar (bsdtar): no --keep-directory-symlink.
+   c. silver building x86-64 Linux products there (cross, as fp6).
+
 ## orbiter-os installer — live list (Oct 10 2026)
 
 the install is orbiter itself, started with an argument,
@@ -3623,10 +4023,10 @@ over D-Bus, so orbiter-os gains a system bus. In order:
    may be wrong", the right one connects. Icons: Material
    Symbols wifi bars (Apache 2.0), to go in wifi/images.
    OPEN: the network list element (with item 4).
-2. OPEN drive tree: iwd, dbus-daemon and their config (bus
-   policy, /etc/iwd/main.conf with iwd's DHCP on, DNS written to
-   /etc/resolv.conf), /var/lib/iwd for remembered networks.
-3. OPEN init.c: start the system bus, then iwd, before orbiter.
+2. DONE (seen Nov 15: os-bootstrap add_wifi puts iwd, dbus-daemon
+   and their config in the tree).
+3. DONE (seen Nov 15: init.c starts the system bus, then iwd,
+   before orbiter). Neither booted.
 4. DONE (Oct 15) orbiter: the Wi-Fi mark in the system bar
    (Wifi.mark: off, not joined, or the joined network's bars); a
    click opens the side panel on Wi-Fi (side_tab 'wifi'), again
@@ -15444,39 +15844,88 @@ atmosphere, matching the dramatic reference rather than strict colour.
    `t_scene_exports_refresh` covers an export added after the first
    scan. Verified in Orbiter through its Trinity socket.
 
-## clint: self-hosted team chat and calls — live list (Nov 10 2026)
+## commune: the group's own chat, calls and workspaces (Nov 14 2026)
 
-The user's notes, in his words where given:
-- "a teams destroyer": Teams is "that awful app that used up 100%
-  of your cpu all the time". clint draws nothing at rest.
-- "we want people to be able to run their own servers. it makes no
-  sense at all to have a central server."
-- Protocol: our own (Matrix was offered and declined).
-- Servers: one per group (a company or team runs its own); a user
-  can sign in to several servers at once. No federation.
-- Encryption: TLS to the server only (no end-to-end; it is the
-  group's own server).
-- First version: all four of chat and channels, voice and video
-  calls, screen sharing, files.
-- Name: "this will be clint". A station-like name was asked about
-  (Nov 10); offered dock, hub, mir, salyut, harbor, relay, airlock,
-  beacon, berth (mir for the app, relay for the server suggested);
-  not decided: clint stands until he says.
-- The old IRC client: "the existing clint can be irc", "move it out
-  of silver": now /Users/kalen/src/irc/irc/irc.ag (renamed irc,
-  silver's clint/ removed). "i dont need it to build": it does not
-  build on the Mac (silver cannot read <arpa/inet.h>'s htons there);
-  left so.
-In order:
-1. OPEN server and protocol: a silver module anyone runs; accounts,
-   channels, direct messages, history kept on the server, search.
-2. OPEN the client: trinity app, several servers at once, nothing
-   drawn at rest.
-3. OPEN files: sent into a channel, kept on the server.
-4. OPEN voice calls: the server passes each stream on (no mixing);
-   spectra in and out, rnnoise.
-5. OPEN video calls: trinity's H.264 / H.265 encode and decode.
-6. OPEN screen sharing: trinity's recorder as the source.
+the user's words: "a teams destroyer" (Teams "used up 100% of your
+cpu all the time"); "it makes no sense at all to have a central
+server": every group runs its own, from orbiter; our own protocol;
+TLS to the server only; several servers at once; "it will connect
+agents, too"; "our pc will connect an agent to services"; "it
+would have a directory that syncs with a remote workspace". The
+old IRC client is /src/irc (not built); the name is commune.
+Module `commune/` (`export software ['communication']`):
+commune.ag (the app, its commands), Server.ag (the server),
+Link.ag (a connection to a server), Sync.ag (the workspace
+folders), Helper.ag (the agent member), View.ag (the list, the
+log, the field). No mbedtls in it: tls does TLS.
+1. DONE tls: TLSServer (a server's identity made once by tls.c:
+   an ECDSA P-256 key and a self-signed certificate under its
+   folder; the listening socket; accept_one), TLSPeer (a
+   connection: shake, send, recv, never waiting), TLSClient
+   gained peer_fingerprint, recv_some, stalled; tls_sha256_hex.
+   A server is pinned: the client keeps the certificate's sha256
+   the first time it sees it (persist `pins`) and refuses a
+   change. tls.c is new; mbedtls 4's key setters are inline C.
+2. DONE the server (`/host 7788`, Launch --serve, kept in
+   serve_port): accounts (the first sign-in with a name sets its
+   password; a password's salted sha256 in users.txt; an agent
+   signs in as name/claude on its person's password), channels
+   (#name; a folder each with history.txt, topic.txt, files/),
+   direct messages (dm/<a>+<b>), history (`old` lines newest
+   first, /more), search (/search), topic, who, channels, the
+   workspace files (list with size, mtime, sha256; get and put in
+   64 KB pieces; changed and removed told to the channel). All in
+   ~/.local/state/commune/server. Frames: 4 bytes of length, a
+   tab-fielded header line, then bytes.
+3. DONE the client: /connect host[:port] name password (kept in
+   `accounts`, reconnected at start), /join /leave /msg /topic
+   /search /who /channels /more /send /files /agent /close
+   /disconnect; the list (servers as headings, channels and talks
+   under them, people under the shown channel), the log, the
+   field: clint's view, moved. Nothing drawn at rest: the threads
+   move bytes only; the app parses frames in tick.
+4. DONE workspaces: a joined channel is ~/commune/<host>_<port>/
+   <channel>; the server's list against the folder (the newer
+   side wins, equal hashes skipped), every 2 s the folder is
+   looked over (a new or changed file sent, a gone one removed
+   for all), a `changed` notice fetched unless it is our own
+   bytes, `removed` deleted. /send <path> copies a file in and
+   sends it. Seen hidden: alice's two files reached bob with
+   their mtimes, bob's edit reached alice, alice's delete reached
+   bob and the server.
+5. DONE the agent member (Helper): `/agent on` in a channel signs
+   the user's agent in beside them (alice/claude, its own link),
+   joined there; a line naming @claude or @agent starts claude
+   (trinity agent_start) in the channel's folder with the recent
+   lines; its notes are said in the channel as alice/claude, the
+   files it edits are named, and the sync carries them. Seen
+   hidden: bob asked, alice/claude answered (under the scratch
+   home claude was not logged in, so its answer was that notice).
+6. OPEN calls: voice (spectra capture, Aac, the server passing
+   each stream on, AudioStream into the mixer, rnnoise), video
+   (trinity's Encoder with a Muxer subclass handing frames to the
+   link; Decoder; draw_yuv), screen sharing (the recorder as the
+   source). Not started.
+7. OPEN: an icon (his); orbiter's own commune server as a service
+   (today the app hosts it while it runs); the properties of a
+   channel's folder in the agent's project (no git).
+Lessons, this module: objects made on a thread that the main
+thread then uses are a crash (Au's pools are per thread; a string
+built by `log` on a second thread died in string_concat): the
+threads here make no objects. A map frees a key and a value when
+their refs reach 0 on remove: a caller's temporary stored in a
+record that the map owns is freed under the caller (`takes[ dest
+]`, Taking.path): records take copies (`'{s}'`). After tls gains
+methods every module over it needs a --clean build (commune ran
+against the old table: frames stopped at random points). Never
+wrap a test script that backgrounds apps in `timeout`: the apps
+outlive it and the next test joins the old server on the port.
+OPEN silver: the compiler crashed (signal 11 in etype_canonical
+from parse_return) on one of these returns, since rewritten as
+if / return: `(at < 0) ? -1 : at + from`, `(u) ? string [ u ] :
+'someone'`, `(i < f.count) ? f[ i ] : ''`, `(l && l.me) ? l.me :
+''`, `(st.st_mode & S_IFMT) == S_IFDIR`; `st.st_mtime` (a glibc
+macro) as a member read.
 
 ## Pluto, remade — live list (Nov 12 2026)
 
@@ -15803,7 +16252,8 @@ filter: the module is `navigator`.
    Then (his: the main menu's panels lost their max width) the strip
    layout (ba8a5d4) dropped the desktop branch's cap: a view is at
    most 24 units wide again, centred (sys_room: the menu's width),
-   panel_w set from it; a phone keeps the full width.
+   panel_w set from it; a phone keeps the full width. Then (his:
+   fine at 20% less): the cap is 19.2 units.
    Then (his: the home card's edit pill not while on the app icon)
    the pill fades in only with the pointer under the icon (the
    name and the pill's row: AppsGrid on_lab), not over the icon.
@@ -15837,3 +16287,36 @@ filter: the module is `navigator`.
    Then (his: edge to edge, top and bottom border) the page's panel
    spans the drawer (l0 r0); MenuPage.draw puts a 1 px line over it,
    its own last rule is the line under. Seen boxed.
+
+## chess — live list (Nov 14 2026)
+
+the user: the chess set (Blend Swap #92407, chess/models, git-ignored)
+on a board, against an open source engine, with undo.
+1. DONE chess/chess.ag: ChessLit (two lights, the material's 1x1
+   colour times a tint: ivory, ebony, the board), the board built in
+   code into the loaded GltfModel (three primitives: light, dark,
+   rim; a1 dark), 32 piece nodes plus two spare queens a side over
+   the file's six meshes (a vertex buffer per node: 36 copies, OPEN
+   to share), three Models by shader groups. A click picks a white
+   piece (lifted), the next its square (the ray through the pointer
+   meets the board's top); pieces ease to their squares, captures
+   stand in rows beside the board (sync_pieces assigns nodes to the
+   position each change: moves, captures, castling, promotion to a
+   spare queen, undo all one path). A drag orbits, the wheel zooms.
+2. DONE chess/Rules.ag: Position (squares, side, castling bits, en
+   passant, clocks), legal moves (pseudo then the king's safety),
+   make, UCI move text both ways. Promotion from a click is a queen.
+3. DONE Stockfish 17.1 imported from its tag tarball, built by our
+   clang (lld; `make net` its own line: under the import's run its
+   net fetch wrote empty files and the build went on without them),
+   install/bin/stockfish; GPL-3.0 in THIRD_PARTY.md, a process of
+   its own over pipes (UciEngine: fork, nonblocking read, bestmove).
+   --think_ms (800). Black's reply after each white move.
+4. DONE undo: ctrl / cmd + z (action func undo: two plies when the
+   engine answered, one while it thinks, which is stopped and its
+   answer dropped); ctrl / cmd + n new_game. Checkmate, stalemate and
+   the fifty-move draw end the game in the status line.
+   Seen hidden over the socket: e2e4, Stockfish e7e5, ctrl+z back to
+   the start; shots of each.
+OPEN: under-promotion, the engine playing white or both, a legal-move
+hint on the squares, the clocks, a saved game across restarts.

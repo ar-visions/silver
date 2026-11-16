@@ -28,6 +28,50 @@ Cpu65 NesCpu
 	func wr [ addr: u32, v: u8 ] -> none
 		nes.bus_wr[ addr, v ]
 
+# a save, one routine for both ways: each field listed once is
+# written on a save and read back on a load
+# 'KNS2'
+KNES_TAG : u32 [ 0x32534E4B ]
+KNES_MAX : i64 [ 65536 ]
+
+class KnesState
+    # true: fields go into buf; false: they come out of it
+    public saving : bool
+    public buf    : new u8
+    public pos    : i64
+    # a read past the end, or a write with no room
+    public bad    : bool
+
+    func init []
+        buf = new u8 [ KNES_MAX ]
+
+    func move [ p: handle, n: i64 ]
+        if [ bad || pos + n > KNES_MAX ]
+            bad = true
+            return
+        if [ saving ] memcpy[ @buf[ pos ], p, n ]
+        el            memcpy[ p, @buf[ pos ], n ]
+        pos += n
+
+    public func bytes [ p: @u8, n: i32 ]
+        move[ handle[ p ], i64[ n ] ]
+    public func n16s [ p: @u16, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 2 ]
+    public func s32s [ p: @i32, n: i32 ]
+        move[ handle[ p ], i64[ n ] * 4 ]
+    public func n8 [ p: @u8 ]
+        move[ handle[ p ], 1 ]
+    public func n16 [ p: @u16 ]
+        move[ handle[ p ], 2 ]
+    public func n32 [ p: @u32 ]
+        move[ handle[ p ], 4 ]
+    public func s32 [ p: @i32 ]
+        move[ handle[ p ], 4 ]
+    public func s64 [ p: @i64 ]
+        move[ handle[ p ], 8 ]
+    public func flag [ p: @bool ]
+        move[ handle[ p ], 1 ]
+
 class nes_ppu
 	# 2 KB nametable RAM (mirrored via cart)
 	vram           : new u8 [ 0x800 ]
@@ -110,6 +154,18 @@ element knes : trinity
 		prg    = null
 		booted = false
 	public  frames_exit  : i32
+	# no frame limit: run as fast as the machine can, muted
+	public [ Live ] fast : bool
+	# a key for a pad button, over the default: one character (',')
+	# or enter, space, shift, up, down, left, right
+	public  key_a        : string
+	public  key_b        : string
+	public  key_select   : string
+	public  key_start    : string
+	public  key_up       : string
+	public  key_down     : string
+	public  key_left     : string
+	public  key_right    : string
 	public  resume       : bool
 	public  save_at      : i32
 	# hold Up for N frames from frame 5 (repro rig)
@@ -189,6 +245,8 @@ element knes : trinity
 	mutable m1_prg       : u32
 	# A B Sel St U D L R (bits 0-7)
 	mutable pad_st       : u32
+	# keys as pressed; taken into pad_st at a frame's start
+	mutable pad_in       : u32
 	mutable pad_shift    : u32
 	mutable pad_strobe   : u8
 	# --record name / --playback name: one pad byte per emulated frame,
@@ -198,6 +256,8 @@ element knes : trinity
 	# @FILE; silver cannot null-test a @FILE member yet
 	mutable rec_f        : handle
 	mutable play_f       : handle
+	# frames in the movie; a save keeps it, a load cuts back to it
+	mutable rec_n        : i64
 	mutable screen_tex   : Texture
 	mutable booted       : bool
 	mutable frames       : u32
@@ -207,7 +267,6 @@ element knes : trinity
 	mutable sample_frac  : i64
 	mutable save_req     : bool
 	mutable load_req     : bool
-	mutable st_hdr       : new u32 [ 16 ]
 	mutable nes_pal      : new u32 [ 64 ]    # master palette -> ABGR
 	mutable emu_started  : bool
 	mutable emu_stop     : bool
@@ -321,6 +380,22 @@ element knes : trinity
 	public func on_key [ ev: Event ]
 		code : i32  [ ev.key.unicode ]
 		down : bool [ ev.key.state ]
+		bit : i32 [ bound_bit[ code ] ]
+		if [ bit < 0 ] bit = default_bit[ code ]
+		if [ bit >= 0 ]
+			m : u32 [ u32[ 1 ] << bit ]
+			if [ down ] pad_in = pad_in | m
+			el pad_in = pad_in & (~m)
+		if [ down ]
+			if [ code == 80 ] save_req = true   # P save
+			if [ code == 76 ] load_req = true   # L load
+			if [ code == 32 ] paused = !paused  # space pause/resume
+		if [ getenv[ 'KNES_KEYLOG' ] ]
+			printf[ "KNESKEY code=%d st=%d pad=%02x\n", code, (down) ? 1 : 0, pad_st ]
+		return
+
+	# the pad bit of a key by the default layout
+	func default_bit [ code: i32 ] -> i32
 		bit : i32 [ -1 ]
 		if   [ code == 47 ]  bit = 0     # /  A (right, like the pad)
 		el [ code == 46 ]  bit = 1     # .  B (left)
@@ -337,17 +412,36 @@ element knes : trinity
 		# Left arrow dodge WASD+button keyboard
 		el [ code == 263 ] bit = 6
 		el [ code == 262 ] bit = 7     # Right arrow  ghosting)
-		if [ bit >= 0 ]
-			m : u32 [ u32[ 1 ] << bit ]
-			if [ down ] pad_st = pad_st | m
-			el pad_st = pad_st & (~m)
-		if [ down ]
-			if [ code == 80 ] save_req = true   # P save
-			if [ code == 76 ] load_req = true   # L load
-			if [ code == 32 ] paused = !paused  # space pause/resume
-		if [ getenv[ 'KNES_KEYLOG' ] ]
-			printf[ "KNESKEY code=%d st=%d pad=%02x\n", code, (down) ? 1 : 0, pad_st ]
-		return
+		return bit
+
+	# a key named on the command line: its key code, else -1
+	func key_code [ s: string ] -> i32
+		if [ !s || s.count == 0 ] return -1
+		if [ s.count == 1 ]
+			c : i32 [ s.chars[ 0 ] & 255 ]
+			if [ c >= 97 && c <= 122 ] c -= 32
+			return c
+		if [ s == 'enter' ] return 257
+		if [ s == 'space' ] return 32
+		if [ s == 'shift' ] return 340
+		if [ s == 'up' ]    return 265
+		if [ s == 'down' ]  return 264
+		if [ s == 'left' ]  return 263
+		if [ s == 'right' ] return 262
+		log 'knes: no key named {s}'
+		return -1
+
+	# the pad bit a bound key presses; -1: the defaults decide
+	func bound_bit [ code: i32 ] -> i32
+		if [ code == key_code[ key_a ] ]      return 0
+		if [ code == key_code[ key_b ] ]      return 1
+		if [ code == key_code[ key_select ] ] return 2
+		if [ code == key_code[ key_start ] ]  return 3
+		if [ code == key_code[ key_up ] ]     return 4
+		if [ code == key_code[ key_down ] ]   return 5
+		if [ code == key_code[ key_left ] ]   return 6
+		if [ code == key_code[ key_right ] ]  return 7
+		return -1
 
 	# hex helpers for the assembly view
 	func hex2 [ v: u32 ] -> string
@@ -1106,6 +1200,8 @@ element knes : trinity
 		cur_chr1 = m1_chr1
 
 	func run_frame [] -> none
+		# the whole frame reads one pad, as the movie keeps it
+		pad_st = pad_in
 		if [ playback ]
 			if [ !play_f ] play_f = handle[ fopen[ playback, 'rb' ] ]
 			if [ play_f ]
@@ -1113,12 +1209,15 @@ element knes : trinity
 				b  : u8 [ 0 ]
 				if [ fread[ @b, 1, 1, pf ] == 1 ] pad_st = u32[ b ]
 		if [ record ]
-			if [ !rec_f ] rec_f = handle[ fopen[ record, 'wb' ] ]
+			if [ !rec_f ]
+				rec_f = handle[ fopen[ record, 'wb' ] ]
+				rec_n = 0
 			if [ rec_f ]
 				rf : @FILE [ cast @FILE [ rec_f ] ]
 				b  : u8 [ pad_st ]
 				fwrite[ @b, 1, 1, rf ]
 				fflush[ rf ]
+				rec_n += 1
 		for [ line: i32 0, line < 262, line += 1 ]
 			# pre-render v reload: vertical from t
 			if [ line == 0 ]
@@ -1157,12 +1256,14 @@ element knes : trinity
 		ppu_render[]
 
 	func generate_audio [] -> none
-		if [ ! audio || ! audio.active ]
-			usleep[ 15000 ]
-			return
 		sample_frac += i64[ 53267 ] * 357368
 		n : i32 [ sample_frac / 21477272 ]
 		sample_frac -= i64[ n ] * 21477272
+		# the APU runs muted too: a game reads its counters
+		if [ fast || ! audio || ! audio.active ]
+			for [ k: i32 0, k < n, k += 1 ] apu_sample[]
+			if [ ! fast ] usleep[ 15000 ]
+			return
 		while [ n > 0 ]
 			c : i32 [ (n > 1024) ? 1024 : n ]
 			for [ i: i32 0, i < c, i += 1 ]
@@ -1175,34 +1276,99 @@ element knes : trinity
 			audio.write[ c ]
 			n -= c
 
+	# every field the machine runs on, in one order both ways
+	func state_io [ st: KnesState ] -> none
+		st.n8[ @cpu.acc ]
+		st.n8[ @cpu.x ]
+		st.n8[ @cpu.y ]
+		st.n8[ @cpu.sp ]
+		st.n8[ @cpu.p ]
+		st.n16[ @cpu.pc ]
+		st.s64[ @cpu.cycles ]
+		st.flag[ @cpu.nmi_pending ]
+		st.s32[ @cpu.xtra ]
+		st.bytes[ cpu.ram, 0x800 ]
+		st.n8[ @ppu.ctrl ]
+		st.n8[ @ppu.mask ]
+		st.n8[ @ppu.status ]
+		st.n8[ @ppu.oam_addr ]
+		st.n8[ @ppu.scroll_x ]
+		st.n8[ @ppu.scroll_y ]
+		st.n16[ @ppu.addr ]
+		st.n16[ @ppu.t_reg ]
+		st.n8[ @ppu.fine_x ]
+		st.flag[ @ppu.latch ]
+		st.n8[ @ppu.rbuf ]
+		st.flag[ @ppu.t_dirty ]
+		st.n8[ @ppu.eff_sy ]
+		st.n8[ @ppu.eff_nty ]
+		st.flag[ @ppu.in_vblank ]
+		st.s32[ @ppu.s0_line ]
+		st.bytes[ ppu.vram, 0x800 ]
+		st.bytes[ ppu.palette, 32 ]
+		st.bytes[ ppu.oam, 256 ]
+		st.bytes[ ppu.chr_ram, 0x2000 ]
+		st.bytes[ apu.p_duty, 2 ]
+		st.bytes[ apu.p_vol, 2 ]
+		st.bytes[ apu.p_sweep, 2 ]
+		st.n16s[ apu.p_timer, 2 ]
+		st.s32s[ apu.p_len, 2 ]
+		st.s32s[ apu.p_seq, 2 ]
+		st.s32s[ apu.p_ctr, 2 ]
+		st.s32s[ apu.p_env, 2 ]
+		st.s32s[ apu.p_envctr, 2 ]
+		st.bytes[ apu.p_start, 2 ]
+		st.s32s[ apu.p_sweepctr, 2 ]
+		st.n16[ @apu.t_timer ]
+		st.s32[ @apu.t_len ]
+		st.s32[ @apu.t_lin ]
+		st.n8[ @apu.t_linload ]
+		st.n8[ @apu.t_start ]
+		st.s32[ @apu.t_step ]
+		st.s32[ @apu.t_ctr ]
+		st.n8[ @apu.n_vol ]
+		st.n8[ @apu.n_mode ]
+		st.n8[ @apu.n_per ]
+		st.s32[ @apu.n_len ]
+		st.n16[ @apu.n_lfsr ]
+		st.s32[ @apu.n_ctr ]
+		st.s32[ @apu.n_env ]
+		st.s32[ @apu.n_envctr ]
+		st.n8[ @apu.n_start ]
+		st.n8[ @apu.enable ]
+		st.n8[ @apu.fc_mode ]
+		st.s64[ @apu.fc_acc ]
+		st.s32[ @apu.fc_step ]
+		st.s32[ @mir_mode ]
+		st.n32[ @m1_shift ]
+		st.s32[ @m1_count ]
+		st.n32[ @m1_ctrl ]
+		st.n32[ @m1_chr0 ]
+		st.n32[ @m1_chr1 ]
+		st.n32[ @m1_prg ]
+		st.n32[ @cur_chr0 ]
+		st.n32[ @cur_chr1 ]
+		st.bytes[ prg_ram, 0x2000 ]
+		st.n32[ @pad_st ]
+		st.n32[ @pad_shift ]
+		st.n8[ @pad_strobe ]
+		st.n32[ @frames ]
+		st.s64[ @mclk_carry ]
+		st.s64[ @sample_frac ]
+		st.s64[ @rec_n ]
+
 	func state_write [] -> none
 		spx : rom.change_ext[ 'state' ]
+		st : KnesState [ saving: true ]
+		tag : u32 [ KNES_TAG ]
+		st.n32[ @tag ]
+		state_io[ st ]
 		f : @FILE [ fopen[ spx, 'wb' ] ]
 		if [ ! f ] return
-		st_hdr[ 0 ] = u32[ cpu.acc ]
-		st_hdr[ 1 ] = u32[ cpu.x ]
-		st_hdr[ 2 ] = u32[ cpu.y ]
-		st_hdr[ 3 ] = u32[ cpu.sp ]
-		st_hdr[ 4 ] = u32[ cpu.p ]
-		st_hdr[ 5 ] = u32[ cpu.pc ]
-		st_hdr[ 6 ] = u32[ ppu.ctrl ]
-		st_hdr[ 7 ] = u32[ ppu.mask ]
-		st_hdr[ 8 ] = u32[ ppu.status ]
-		st_hdr[ 9 ] = u32[ ppu.scroll_x ]
-		st_hdr[ 10 ] = u32[ ppu.scroll_y ]
-		st_hdr[ 11 ] = u32[ ppu.addr ]
-		st_hdr[ 12 ] = frames
-		st_hdr[ 13 ] = m1_ctrl | (m1_chr0 << 8) | (m1_chr1 << 16) | (m1_prg << 24)
-		st_hdr[ 14 ] = u32[ mir_mode ]
-		fwrite[ st_hdr, 4, 16, f ]
-		fwrite[ cpu.ram, 1, 0x800, f ]
-		fwrite[ ppu.vram, 1, 0x800, f ]
-		fwrite[ ppu.palette, 1, 32, f ]
-		fwrite[ ppu.oam, 1, 256, f ]
-		fwrite[ ppu.chr_ram, 1, 0x2000, f ]
-		fwrite[ prg_ram, 1, 0x2000, f ]
+		fwrite[ st.buf, 1, st.pos, f ]
 		fclose[ f ]
-		log 'knes: state saved at frame {frames}'
+		if [ record ] log 'knes: state saved at frame {frames}, movie {rec_n}'
+		el log 'knes: state saved at frame {frames}'
 
 	func state_read [] -> none
 		spx : rom.change_ext[ 'state' ]
@@ -1210,35 +1376,38 @@ element knes : trinity
 		if [ ! f ]
 			log 'knes: no state file'
 			return
-		fread[ st_hdr, 4, 16, f ]
-		cpu.acc = u8[ st_hdr[ 0 ] ]
-		cpu.x = u8[ st_hdr[ 1 ] ]
-		cpu.y = u8[ st_hdr[ 2 ] ]
-		cpu.sp = u8[ st_hdr[ 3 ] ]
-		cpu.p = u8[ st_hdr[ 4 ] ]
-		cpu.pc = u16[ st_hdr[ 5 ] ]
-		ppu.ctrl = u8[ st_hdr[ 6 ] ]
-		ppu.mask = u8[ st_hdr[ 7 ] ]
-		ppu.status = u8[ st_hdr[ 8 ] ]
-		ppu.scroll_x = u8[ st_hdr[ 9 ] ]
-		ppu.scroll_y = u8[ st_hdr[ 10 ] ]
-		ppu.addr = u16[ st_hdr[ 11 ] ]
-		frames = st_hdr[ 12 ]
-		m1_ctrl = st_hdr[ 13 ] & 0xFF
-		m1_chr0 = (st_hdr[ 13 ] >> 8) & 0xFF
-		m1_chr1 = (st_hdr[ 13 ] >> 16) & 0xFF
-		m1_prg  = (st_hdr[ 13 ] >> 24) & 0xFF
-		cur_chr0 = m1_chr0
-		cur_chr1 = m1_chr1
-		mir_mode = i32[ st_hdr[ 14 ] ]
-		fread[ cpu.ram, 1, 0x800, f ]
-		fread[ ppu.vram, 1, 0x800, f ]
-		fread[ ppu.palette, 1, 32, f ]
-		fread[ ppu.oam, 1, 256, f ]
-		fread[ ppu.chr_ram, 1, 0x2000, f ]
-		fread[ prg_ram, 1, 0x2000, f ]
+		st : KnesState [ saving: false ]
+		got : i64 [ fread[ st.buf, 1, KNES_MAX, f ] ]
 		fclose[ f ]
+		# its size and tag first: nothing is changed by a bad file
+		want : KnesState [ saving: true ]
+		tag : u32 [ KNES_TAG ]
+		want.n32[ @tag ]
+		state_io[ want ]
+		st.n32[ @tag ]
+		if [ tag != KNES_TAG || got != want.pos ]
+			log 'knes: {spx} is an older or broken save; not loaded'
+			return
+		at : i64 [ rec_n ]
+		state_io[ st ]
 		log 'knes: state loaded, frame {frames} pc={cpu.pc}'
+		if [ record ] movie_cut[ rec_n ]
+		el rec_n = at
+
+	# the movie goes on from the loaded save: what came after it is gone
+	func movie_cut [ at: i64 ] -> none
+		if [ !rec_f ]
+			rec_f = handle[ fopen[ record, 'r+b' ] ]
+			if [ !rec_f ] rec_f = handle[ fopen[ record, 'wb' ] ]
+		if [ !rec_f ] return
+		rf : @FILE [ cast @FILE [ rec_f ] ]
+		fflush[ rf ]
+		ftruncate[ fileno[ rf ], at ]
+		fseek[ rf, at, SEEK_SET ]
+		rec_n = at
+		if [ at == 0 ]
+			log 'knes: the save has no movie place; the movie starts here'
+		el log 'knes: movie goes on from frame {at}'
 
 	func wall_us [] -> i64
 		tsp : local i64 [ 2 ]
@@ -1265,8 +1434,8 @@ element knes : trinity
 		ticks += 1
 		if [ autowalk > 0 ]
 			if [ ticks >= 5 && ticks < i64[ 5 + autowalk ] ]
-				pad_st = pad_st | 0x10
-			el pad_st = pad_st & 0xFFFFFFEF
+				pad_in = pad_in | 0x10
+			el pad_in = pad_in & 0xFFFFFFEF
 		run_frame[]
 		if [ seq_to > 0 && ticks >= i64[ seq_from ] && ticks < i64[ seq_to ] ]
 			sf : @FILE [ fopen[ '/tmp/knes_seq_{ticks}.ppm', 'wb' ] ]

@@ -197,7 +197,7 @@ import dbus/1.16.2 from https://dbus.freedesktop.org/releases/dbus/dbus-1.16.2.t
     -Dselinux=disabled
     -Dapparmor=disabled
     -Dlibaudit=disabled
-    -Dsystem_socket=/run/dbus/system_bus_socket
+    -DDBUS_SYSTEM_BUS_DEFAULT_ADDRESS=unix:path=/run/dbus/system_bus_socket
 import libudev-zero/1.0.3 from https://github.com/illiliti/libudev-zero/archive/refs/tags/1.0.3.tar.gz
     PATH={install}/bin:$PATH
     > make -j16 PREFIX={install} install

@@ -52,7 +52,6 @@ hires
 *.cpio
 */packages/*
 packages/*
-europa
 /models
 /shaders
 flightsim
@@ -85,6 +84,7 @@ install-sh
 scenes/textures/
 earth/textures/
 enceladus/textures/
+europa/textures/
 mars/textures/
 milkyway/textures/
 pluto/textures/
@@ -105,3 +105,4 @@ scenes/textures/titan-color.png
 
 # screenshots for the agent (orbiter snap_window)
 /tmp/
+chess/models

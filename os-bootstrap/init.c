@@ -649,6 +649,9 @@ static void bus_start(void) {
                     "--nofork", "--nopidfile", NULL };
     spawn(bus, env);
     for (int i = 0; i < 200 && access(sock, F_OK); i++) usleep(10000);
+    // orbiter's libdbus and its services take the bus by name
+    static char at[] = "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket";
+    env_add(at);
 }
 
 // /dev/disk/by-partlabel/<name>: rmtfs finds the modem's
@@ -878,7 +881,9 @@ static void net_start(const char* init) {
                        "cmac", "md4", "pkcs8_key_parser", NULL };
     run(crypto);
     bus_start();
-    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+                    "DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket",
+                    NULL };
     // remembered networks: <install>/var/lib/iwd
     snprintf(lib, sizeof lib, "%.*s/var", (int)(b - init), init);
     mkdir(lib, 0755);
@@ -1078,12 +1083,16 @@ int main(void) {
     // scratch stays in memory, not in the project tree
     mount("tmpfs", "/newroot/tmp", "tmpfs", 0, NULL);
     mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+    mkdir("/newroot/run/lock", 01777);
 
     // the switch_root move: rootfs cannot be pivoted
     if (chdir("/newroot")) die("cannot enter", real);
     if (mount(".", "/", NULL, MS_MOVE, NULL)) die("cannot move root", real);
     if (chroot(".") || chdir("/")) die("cannot chroot", real);
     save_logs();
+    // wayland's keymaps and buffers are files in /dev/shm
+    mkdir("/dev/shm", 01777);
+    mount("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
     // after the switch: firmware loads from the folder
     // the kernel's own driver requests: our modprobe's place
     int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);

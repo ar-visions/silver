@@ -10016,6 +10016,82 @@ static none run_prebuild(silver a, string label, array prebuild,
     cd(cw);
 }
 
+// an import's build stamp: its config, env, compiler and > lines
+// a token holds a key per line: each config the installed build
+// of this checkout has served (two modules may share one checkout)
+static bool token_has(path token, string key) {
+    if (!key || !file_exists("%o", token)) return false;
+    string s = (string)load(token, typeid(string), null);
+    if (!s) return false;
+    cstr  t = s->chars;
+    while (*t) {
+        cstr e = strchr(t, '\n');
+        size_t n = e ? (size_t)(e - t) : strlen(t);
+        if (n == (size_t)len(key) && strncmp(t, key->chars, n) == 0)
+            return true;
+        if (!e) break;
+        t = e + 1;
+    }
+    return false;
+}
+
+// the key written after a build, with the keys a wiped token held
+static none token_add(path token, string key, string kept) {
+    string out = key;
+    if (kept && len(kept)) {
+        string body = kept;
+        if (body->chars[len(body) - 1] == '\n')
+            body = f(string, "%.*s", (int)len(body) - 1, body->chars);
+        bool had = false;
+        cstr t = body->chars;
+        while (*t) {
+            cstr e = strchr(t, '\n');
+            size_t n = e ? (size_t)(e - t) : strlen(t);
+            if (n == (size_t)len(key) && strncmp(t, key->chars, n) == 0)
+                had = true;
+            if (!e) break;
+            t = e + 1;
+        }
+        out = had ? body : f(string, "%o\n%o", body, key);
+    }
+    save(token, (Au)out, null);
+}
+
+static string import_key(string config, string env, bool our_cc,
+                         string cxx_inc, array prebuild, string* legacy) {
+    string key = (env && len(env)) ? f(string, "%o env:%o", config, env) : config;
+    // built by gcc before: a new key, so it builds again with clang
+    if (our_cc)
+        key = f(string, "%o cc:clang-lld%o", key, cxx_inc);
+    // > lines are the build too: a changed one builds it again
+    if (legacy) *legacy = key;
+    if (prebuild)
+        each(prebuild, string, cmd)
+            key = f(string, "%o pre:%o", key, cmd);
+#ifdef __APPLE__
+    if (our_cc) key = f(string, "%o objc", key);
+#endif
+    return key;
+}
+
+// where an import builds: install/build/<owner>/<name>, never inside
+// the source. a module product owns install/build/<module> (the qemu
+// launcher); a dep whose owner is that same name (qemu:qemu) would
+// collide, so such a dep goes under .<owner>
+static path import_build_dir(path install, string owner, string name,
+                             string mod_name) {
+    path build_f   = (owner && len(owner))
+                   ? f(path, "%o/build/%o/%o", install, owner, name)
+                   : f(path, "%o/build/%o", install, name);
+    path build_top = (owner && len(owner)) ? parent_dir(build_f) : build_f;
+    bool clash = owner && len(owner) && mod_name && eq(owner, mod_name->chars);
+    if (clash || (file_exists("%o", build_top) && !dir_exists("%o", build_top)))
+        build_f = (owner && len(owner))
+                ? f(path, "%o/build/.%o/%o", install, owner, name)
+                : f(path, "%o/build/.%o", install, name);
+    return build_f;
+}
+
 static none checkout(silver a, path uri, string commit, array prebuild, array postbuild, string conf, string env, string mod_sel, string import_name) {
     // a dependency built for a device belongs to THAT platform: sharing the
     // native prefix would install a windows glfw over the linux one. the
@@ -10146,6 +10222,19 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     // checkout or symlink to src
     if (!dir_exists("%o", project_f)) {
+        // built and installed elsewhere (the drive tree carries the
+        // stamps, no checkouts): nothing to clone or build here
+        if (!mod_sel) {
+            path   stamp  = f(path, "%o/silver-token",
+                import_build_dir(install, owner, name, a->name));
+            string legacy = null;
+            string key    = import_key(config, env, our_cc, cxx_inc,
+                                       prebuild, &legacy);
+            if (token_has(stamp, key) || token_has(stamp, legacy)) {
+                if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
+                return;
+            }
+        }
         path src_path = f(path, "%o/%o", a->src_loc, name);
         path self_dir = a->module ? absolute(a->module) : null;
         // a module is never its own dependency (qemu imports qemu)
@@ -10245,18 +10334,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     // we build to another folder, not inside the source, or checkout.
     // imports build ONCE to install/build — never per-config, never debug
-    path build_f    = (owner && len(owner))
-                    ? f(path, "%o/build/%o/%o", install, owner, name)
-                    : f(path, "%o/build/%o", install, name);
-    // a module product owns install/build/<module> (the qemu launcher);
-    // a dep whose owner is that same name (qemu:qemu) would build into
-    // install/build/qemu/ and collide. namespace such a dep under .<owner>.
-    path build_top  = (owner && len(owner)) ? parent_dir(build_f) : build_f;
-    bool name_clash = owner && len(owner) && a->name && eq(owner, a->name->chars);
-    if (name_clash || (file_exists("%o", build_top) && !dir_exists("%o", build_top)))
-        build_f = (owner && len(owner))
-                ? f(path, "%o/build/.%o/%o", install, owner, name)
-                : f(path, "%o/build/.%o", install, name);
+    path build_f    = import_build_dir(install, owner, name, a->name);
     path rust_f     = f(path, "%o/Cargo.toml", project_f);
     path meson_f    = f(path, "%o/meson.build", project_f);
     // --uninstall: cmake's install_manifest.txt is the ledger of what this
@@ -10323,18 +10401,9 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
     if (mod_sel)
         config = f(string, "%o mod:%o", config, mod_sel);
     // env lines change the build too (LDFLAGS, PATH): part of the key
-    string cache_key = (env && len(env)) ? f(string, "%o env:%o", config, env) : config;
-    // built by gcc before: a new key, so it builds again with clang
-    if (our_cc)
-        cache_key = f(string, "%o cc:clang-lld%o", cache_key, cxx_inc);
-    // > lines are the build too: a changed one builds it again
-    string legacy_key = cache_key;
-    if (prebuild)
-        each(prebuild, string, cmd)
-            cache_key = f(string, "%o pre:%o", cache_key, cmd);
-#ifdef __APPLE__
-    if (our_cc) cache_key = f(string, "%o objc", cache_key);
-#endif
+    string legacy_key = null;
+    string cache_key  = import_key(config, env, our_cc, cxx_inc, prebuild,
+                                   &legacy_key);
     path token = is_silver
         ? f(path, "%o/build/.%o-%o.silver-token", install,
             owner ? owner : string("git"), name)
@@ -10360,22 +10429,25 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             if (modified_time(p9) > built) { overlay_fresh = true; break; }
     }
 
+    // the keys this checkout's build has served: kept past a wipe
+    string old_keys = file_exists("%o", token)
+                    ? (string)load(token, typeid(string), null) : null;
     if (file_exists("%o", token) &&
         product_current) {
-        string s = (string)load(token, typeid(string), null);
         // a token from before > lines were keyed: taken, rewritten
-        if (s && legacy_key != cache_key && eq(s, legacy_key->chars)) {
-            save(token, (Au)cache_key, null);
-            s = cache_key;
+        bool hit = token_has(token, cache_key);
+        if (!hit && legacy_key != cache_key && token_has(token, legacy_key)) {
+            token_add(token, cache_key, old_keys);
+            hit = true;
         }
-        if (s && eq(s, cache_key->chars)) {
+        if (hit) {
             if (overlay_fresh) {
                 // > lines are the build of an import that has them
                 if (prebuild && len(prebuild) && !is_cmake && !is_meson)
                     run_prebuild(a, label, prebuild, project_f, cenv);
                 else
                     import_build(a, label, cenv, build_f, is_cmake, is_meson);
-                save(token, (Au)cache_key, null);
+                token_add(token, cache_key, old_keys);
             }
             run_import_commands(a, label, postbuild,
                 is_silver ? install : build_f);
@@ -10621,7 +10693,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
 
     // a failed silver child must not cache as built
     if (!is_silver || child_ok)
-        save(token, (Au)cache_key, null);
+        token_add(token, cache_key, old_keys);
     if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); (close)(lock_fd); }
 }
 
