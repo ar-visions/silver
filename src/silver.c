@@ -2405,7 +2405,7 @@ static void build_dependents(silver a) {
         if (!dir_exists("%o", mdir)) continue;
         silver dep = silver(module, mdir, breakpoint, a->breakpoint,
             verbose, a->verbose, is_external, a, is_child, a, release, a->release,
-            clean, a->clean, format, a->format,
+            clean, false, format, a->format,
             debug_type, a->debug_type, debugmember, a->debugmember);
         if (dep && dep->error) a->error = true;
     }
@@ -5849,11 +5849,13 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             bool    cont_numeric    = (is_sep && seps <= 1) || (v >= '0' && v <= '9');
             char    sval[2]         = {v, 0};
             bool    is_dash         = v == '-';
-            // a quote glued to a word stays its apostrophe (Euclid's)
-            // before a letter; before anything else it opens a string
-            if ((v == '\'' || v == '"') &&
-                !(index + 1 < length && isalnum(idx(input_string, index + 1))))
-                break;
+            // a quote glued to a word is its apostrophe (Euclid's,
+            // the fins' tops) before a letter, a space or the line's
+            // end; before anything else (-F': *') it opens a string
+            if (v == '\'' || v == '"') {
+                char nx = (index + 1 < length) ? idx(input_string, index + 1) : 0;
+                if (!(nx == 0 || isalnum(nx) || isspace(nx))) break;
+            }
             // R-hand types, L is for members only
             int imatch = index_of(special, sval);
             if (!start_numeric || !cont_numeric)
@@ -10642,7 +10644,7 @@ static none checkout(silver a, path uri, string commit, array prebuild, array po
             print("cbindgen not found — rust import %o builds without a header", name);
     } else if (is_silver) { // build for Au-type projects
         silver sf = silver(debug_type, a->debug_type, debugmember, a->debugmember, module, silver_f, breakpoint, a->breakpoint, release, a->release,
-            clean, a->clean, verbose, a->verbose, format, a->format, jobs, a->jobs, is_external, a->is_external ? a->is_external : a, is_child, a);
+            clean, false, verbose, a->verbose, format, a->format, jobs, a->jobs, is_external, a->is_external ? a->is_external : a, is_child, a);
         validate(sf, "silver module compilation failed: %o", silver_f);
         // nest the imported module's node under THIS (its direct parent), keyed by the
         // child's source-file path → its node map; a->tree holds the reference so the
@@ -12646,7 +12648,7 @@ static void* bg_build_run(void* arg) {
         aether_overlay(b->a->install, b->a->base_install);
     b->result = silver(module, b->module, breakpoint, b->a->breakpoint,
         verbose, b->a->verbose, is_external, b->og, is_child, b->a,
-        release, b->a->release, clean, b->a->clean, format, b->og->format,
+        release, b->a->release, clean, false, format, b->og->format,
         defs, b->defs, debug_type, b->a->debug_type, debugmember, b->a->debugmember);
     return null;
 }
@@ -13193,7 +13195,7 @@ enode parse_import(silver a) {
                     g_host_build = true;
                     if (a->base_install) aether_overlay(a->install, a->base_install);
                     silver host  = silver(module, module, breakpoint, a->breakpoint,
-                        verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
+                        verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, false,
                         format, og->format,
                         defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                     g_host_build = false;
@@ -13207,7 +13209,7 @@ enode parse_import(silver a) {
                 if (!external) {
                     if (a->base_install) aether_overlay(a->install, a->base_install);
                     external = silver(module, module, breakpoint, a->breakpoint,
-                        verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, a->clean,
+                        verbose, a->verbose, is_external, og, is_child, a, release, a->release, clean, false,
                         format, og->format,
                         defs, defs, debug_type, a->debug_type, debugmember, a->debugmember);
                 }

@@ -1545,6 +1545,44 @@ is `wizard`; it uses whatever supported card is in the machine.
    and 18 roms plus 174 .spc in ~/Downloads (39 MB). NOT run: a tree
    write, a phone image. OPEN: the phone's Update sends no games.
 
+24. DONE (Nov 16, his shot: the account page's fields not of the
+   theme; Tab generic) wizard: TextInput WizField, the buttons'
+   look (the pill, #ffffff0a, the near light and inset glow, Barlow
+   18; focused #4d3dbcaa with the #806bff edge and glow); WizSecret
+   is a WizField with its text clear (the dots drawn). trinity:
+   Tab in a field (a focus with an editable layer) moves the focus
+   to the next shown focusable element in tree order, shift+Tab
+   back, round the ends; the field reached has its text chosen
+   whole (Window.focus_step, focus_list). A console or an editor
+   has no editable layer, so its own Tab is untouched. Window
+   gained two methods mid-class: every module over trinity
+   rebuilt (design avatar properties navigator os-bootstrap wizard
+   orbiter). Seen in a boxed hidden wizard driven to the account
+   page (scratchpad wizdrive.py: the build page's Continue, a
+   shift+click through the hardware page, nvme0n1, a folder
+   beside, a partition): the pills, kalen typed, Tab to the
+   password (lit), a password, Tab to Again, shift+Tab back with
+   the dots chosen. The socket's key word takes its modifier bits
+   as a fourth number (`key 258 1 1` is shift+Tab).
+   Found on the way, OPEN silver: `silver --test features` on an
+   up-to-date product fails "dlopen .../build/features: cannot
+   dynamically load position-independent executable" (the cached
+   path hands silver-host the program instead of running it); a
+   touch of features.ag runs the tests (274/275 as before).
+   Then (his: --clean rebuilt trinity on every go, 80x the time)
+   silver passed its clean flag down to every import's compiler
+   (five sites in silver.c: the import, a cross build's host copy,
+   a prescanned background import, a silver project imported by
+   path, the dependents rebuilt after a change). An import takes
+   clean false now: --clean is the named module's alone; an import
+   rebuilds only when its own sources are newer. Checked: `silver
+   --clean --build avatar` compiles avatar alone, img, gltf,
+   trinity and design "up to date".
+   Found: a build of a module while his orbiter's reload builds it
+   too (its watch saw trinity change) can leave a stub library
+   (avatar: 138 KB, no OrbiterAvatar): both links write one file.
+   `--clean --build avatar` alone mended it.
+
 ## orbiter-os in a Windows partition — live list (Oct 23 2026)
 
 an orbiter-os folder on the Windows (NTFS) partition holds

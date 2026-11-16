@@ -1350,31 +1350,43 @@ element WizBar
         cv.restore[]
 
 # a password: the text is drawn as dots
-TextInput WizSecret
+# a field in the wizard's look: the buttons' pill, the near light,
+# the lit blue when typed in
+TextInput WizField
     style : CSS {
+        layers.body:
+            fill_color: #ffffff0a
+            radius: 999
+            stroke_width: 1
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 13px #8af2
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
         layers.face:
-            label_color: #0000
+            label_color: #e4e4ea
+            label_size: 18
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_offset: 18.0 0.0
         :focused
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+                box_shadow: inset 0 0 13px #806bff88
             layers.face:
-                label_color: #0000
+                label_color: #ffffff
         :has_value
             layers.face:
-                label_color: #0000
+                label_color: #ffffff
     }
 
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        if [ !edit || edit.count == 0 ] return
-        dots : string ''
-        for [ i: i32 0, i < edit.count, i += 1 ] dots = '{dots}•'
-        cv : Canvas [ w.screen ]
-        cv.font_size[ 18 ]
-        cv.fill_color[ rgba [ '#ffffff' ] ]
-        cv.draw_text[ dots, rect [ x: 14.0, y: 0.0,
-            w: bounds.w - 28.0, h: bounds.h ],
-            vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
-            null, false ]
-        cv.paint[]
+# the layer draws a dot a character and measures the caret on them
+WizField WizSecret
+    style : CSS {
+        layers.face:
+            secret: true
+    }
 
 # orbiter-os setup: the install's settings, then the install
 element InstallWizard
@@ -2575,9 +2587,9 @@ element InstallWizard
                 : WizSecret [ area: ar, edit: cur, sel_col: cur.count,
                               anchor_col: cur.count ]
         el
-            t[ id ] = (mounted) ? TextInput [ area: ar ]
-                : TextInput [ area: ar, edit: cur, sel_col: cur.count,
-                              anchor_col: cur.count ]
+            t[ id ] = (mounted) ? WizField [ area: ar ]
+                : WizField [ area: ar, edit: cur, sel_col: cur.count,
+                             anchor_col: cur.count ]
 
     # the table's header and its scrolled rows
     func part_els [ panel: element ] -> Elements

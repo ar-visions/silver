@@ -4793,6 +4793,35 @@ Display Window
                     focus.anchor_col = focus.sel_col
                 focus.pristine = false
 
+    # the focusable elements shown, in tree order
+    func focus_list [ e: element, out: vec element ]
+        if [ !e || !e.elements ] return
+        for [ c: element, id: string ] in e.elements
+            if [ !c || c.hide || c.ghost || c.disable
+                 || c.opacity <= 0.0 ] continue
+            if [ c.focusable && c.bounds && c.bounds.w > 0.0
+                 && c.bounds.h > 0.0 ] out.push[ c ]
+            focus_list[ c, out ]
+
+    # the focus moved dir places along the shown focusable elements,
+    # round the ends; a field's text is chosen whole
+    public func focus_step [ dir: i32 ] -> bool
+        all : vec element []
+        focus_list[ root, all ]
+        if [ all.count == 0 ] return false
+        at : i32 [ -1 ]
+        for [ i: i32 0, i < all.count, i += 1 ]
+            if [ all[ i ] == focus ] at = i
+        nx : i32 [ (at < 0) ? 0 : (at + dir + all.count) % all.count ]
+        e : element all[ nx ]
+        set_focus[ e ]
+        if [ focus != e ] return false
+        e.anchor_col = 0
+        e.sel_col    = (e.edit) ? e.edit.count : 0
+        restyle = true
+        will_animate = true
+        return true
+
     public func release_focus [ e: element ]
         if [ focus && focus == e ]
             focus.focused = false
@@ -5358,6 +5387,11 @@ Display Window
                 sh.show_console = false
                 restyle = true
                 return
+        # tab in a field moves the focus along the focusable elements
+        # (shift: back); a console or an editor keeps its own tab
+        if [ ev.key.state && ev.key.unicode == 258 && !cmd_down
+             && editing_layer[] ]
+            if [ focus_step[ (ev.key.shift) ? -1 : 1 ] ] return
         # an edit element being typed in: its keys go nowhere else
         # (ctrl/cmd with anything but its own a c v x z y goes on)
         ed : editing_layer[]
