@@ -6097,13 +6097,21 @@ element orbiter : trinity # implements compiler
             if [ av.status_word[] == 'compiling' ] return true
         return false
 
+    # the map exists and is no older than its source
+    func fmt_current [ fw: FmtWatch ] -> bool
+        if [ !fw.map || !fw.file ] return false
+        mp : path [ fw.map ]
+        if [ !mp.exists[] ] return false
+        return mp.modified_time[] >= fw.file.modified_time[]
+
     func fmt_spawn [ fw: FmtWatch ]
         if [ !fw ] return
         if [ !startup_path ] startup_path = path.path_startup[]
         if [ fw.fd >= 0 ]
             close[ fw.fd ]
             fw.fd = -1
-        cmd : 'cd {startup_path} && unset IMPORT && exec ./install/bin/silver --build {fw.file} > /tmp/orbiter-fmt-{fw.proj}.log 2>&1'
+        cmd : 'cd {startup_path} && unset IMPORT && exec ./install/bin/silver --build {fw.file} > {install_root[]}/tmp/orbiter-fmt-{fw.proj}.log 2>&1'
+        log 'syntax: {fw.file}: running silver --build {fw.file}'
         fd  : i32 [ -1 ]
         pid : i32 [ forkpty[ @fd, null, null, null ] ]
         if [ pid == 0 ]
@@ -6321,7 +6329,7 @@ element orbiter : trinity # implements compiler
                 el [ fw.src_mtime == 0 ]
                     fw.src_mtime = sm
         for [ fw: FmtWatch, name: string ] in fmt_watch
-            if [ !fw.announced ]
+            if [ !fw.announced && fw.pid > 0 ]
                 log 'syntax: {name} language service starting...'
                 fw.announced = true
             if [ fw.fd >= 0 ]
@@ -6338,7 +6346,7 @@ element orbiter : trinity # implements compiler
                     if [ sig != 0 ]
                         log 'syntax: {name} CRASHED (signal {sig}) — see /tmp/orbiter-fmt-{fw.proj}.log'
                     el [ code != 0 ]
-                        log 'syntax: {name} build FAILED (code {code}) — see /tmp/orbiter-fmt-{fw.proj}.log'
+                        log 'syntax: {name} build FAILED (code {code}) — see {install_root[]}/tmp/orbiter-fmt-{fw.proj}.log'
                         # jump the editor to silver's first emitted
                         # error location
                         err_mod = name
@@ -6385,8 +6393,16 @@ element orbiter : trinity # implements compiler
                             fw.mtime = m
             if [ !fw.kicked && epoch_micros[] - fw.start_us >= 1000000
                  && !module_building[ fw.file ] ]
-                fmt_spawn[ fw ]
                 fw.kicked = true
+                # a map current with its file: the installer built it
+                if [ fmt_current[ fw ] ]
+                    log 'syntax: {fw.file}: map {fw.map} is current, no build'
+                el
+                    mp : path [ fw.map ]
+                    w  : string [ 'missing' ]
+                    if [ mp.exists[] ] w = 'older than its source'
+                    log 'syntax: {fw.file}: map {fw.map} {w}: a build'
+                    fmt_spawn[ fw ]
 
     # the callstack is read from lldb once per stop; every render reads
     # the cache

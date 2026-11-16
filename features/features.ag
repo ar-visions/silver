@@ -1403,6 +1403,13 @@ expect func t_keyword_interpolate [] -> bool
     log 'keyword: [{c}] [{s}]'
     return c == 'rm -rf /tmp/x 2>&1' && s == 'a/tmp/xb ${{HOME}}'
 
+# a quote glued to a name (awk -F': *') starts a string, not a
+# longer name; the next string's {{ }} then stays text
+expect func t_keyword_glued_quote [] -> bool
+    s : string { x -F': *' 'b {{ c }}' }
+    log 'glued: [{s}]'
+    return s == "x -F': *' 'b { c }'"
+
 # a string block drops the indent its lines share
 expect func t_keyword_dedent [] -> bool
     s : string {

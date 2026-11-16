@@ -546,6 +546,9 @@ static void spawn_slot_app(int k, const char* bindir) {
     // always build before a run: the host has no staleness view of a slot
     // app's sources, and silver's own cache no-ops when nothing changed
     g_log_slot = k;
+    fprintf(stderr, "silver-host: %s slot %d: %s\n", nm, k, os_booted()
+        ? "a booted system: no build at a launch"
+        : "building before the run (the host has no staleness view)");
     int built = os_booted() ? 0 : rebuild_blocking(nm, clean);
     g_log_slot = -1;
     g_build_path = NULL;
@@ -1166,8 +1169,11 @@ static int load_sources(const char* artifacts_path,
 
 // true if the built product is missing or any watched source/artifact is newer
 // than it — i.e. the loaded module would be stale.
-static int sources_newer(const char* product, source_watch* srcs, int nsr) {
+// which names the source found newer (or the product, when none exists)
+static int sources_newer(const char* product, source_watch* srcs, int nsr,
+                         const char** which) {
     time_t prod = file_mtime(product);       // follows the symlink to the .so
+    if (which) *which = "no product";
     if (!prod) return 1;                      // no product -> must build
     // a source dated far in the future (a wrong system clock stamped it) would
     // be newer than every product forever -> endless rebuild. over 20 min ahead
@@ -1176,7 +1182,10 @@ static int sources_newer(const char* product, source_watch* srcs, int nsr) {
     for (int i = 0; i < nsr; i++) {
         time_t sm = file_mtime(srcs[i].path);
         if (sm > horizon) continue;
-        if (sm > prod) return 1;
+        if (sm > prod) {
+            if (which) *which = srcs[i].path;
+            return 1;
+        }
     }
     return 0;
 }
@@ -2698,11 +2707,17 @@ int main(int argc, char** argv) {
     source_watch srcs[MAX_SOURCES];
     int nsr = 0;
     load_sources(artifacts, srcs, &nsr);
+    const char* which = "";
     if (os_booted()) {
-        if (sources_newer(product, srcs, nsr))
-            fprintf(stderr, "%s: a source is newer than the product; "
-                "the installer builds, a launch never does\n", name);
-    } else if (sources_newer(product, srcs, nsr)) {
+        if (sources_newer(product, srcs, nsr, &which))
+            fprintf(stderr, "%s: %s is newer than the product %s; "
+                "the installer builds, a launch never does\n", name, which, product);
+        else
+            fprintf(stderr, "%s: product %s current, no build at a launch\n",
+                name, product);
+    } else if (sources_newer(product, srcs, nsr, &which)) {
+        fprintf(stderr, "%s: %s is newer than the product %s: building\n",
+            name, which, product);
         if (rebuild_blocking(name, 0) != 0) {
             fprintf(stderr, "%s: fix the build errors above and relaunch.\n", name);
             return 1;
@@ -2934,12 +2949,14 @@ int main(int argc, char** argv) {
         // the ready block's to take, not a new apply
         if (defer && host_pending && reload_job.state == 0 && take_apply && take_apply()) {
             host_pending = 0;
-            if (!sources_newer(product, srcs, nsr)) {
+            const char* which = "";
+            if (!sources_newer(product, srcs, nsr, &which)) {
                 if (set_pending) set_pending(0);
                 fprintf(stderr, "[%s] apply requested — product fresh, reloading\n", name);
                 force = 1;
             } else if (!compile_pid) {
-                fprintf(stderr, "[%s] apply requested — recompiling\n", name);
+                fprintf(stderr, "[%s] apply requested — recompiling (%s is newer)\n",
+                    name, which);
                 if (set_pending) set_pending(2);
                 apply_compile = 1;
                 compile_pid = rebuild_spawn(name, 0);

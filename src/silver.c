@@ -445,6 +445,22 @@ static symbol crt_libs = " -Wl,/DEFAULTLIB:msvcrt -Wl,/DEFAULTLIB:ucrt"
 // nothing is drawing the progress line (stderr not a tty); never over it
 #define build_status(a, ...) do { if ((a)->verbose || !isatty(2)) { print(__VA_ARGS__); fflush(stdout); } } while (0)
 
+// the process that ran this build, by its command line (linux)
+static void build_asker(char* out, size_t n) {
+    out[0] = 0;
+#if defined(__linux__)
+    char pf[64];
+    snprintf(pf, sizeof(pf), "/proc/%d/cmdline", (int)getppid());
+    FILE* f = fopen(pf, "r");
+    if (!f) return;
+    size_t r = fread(out, 1, n - 1, f);
+    fclose(f);
+    if (r > 160) r = 160;
+    for (size_t i = 0; i < r; i++) if (!out[i]) out[i] = ' ';
+    out[r] = 0;
+#endif
+}
+
 #define next_is(a, ...) silver_next_is_eq(a, __VA_ARGS__, null)
 
 static bool target_is_apple(silver a);
@@ -1382,8 +1398,12 @@ static void progress_event(const char* fmt, ...) {
     fflush(ef);
 }
 
-// the build's last event: its exit code
+// the build's last event: its exit code (written once: a fault's
+// exit and the crash handlers end the same build)
 AU_EXPORT void silver_build_end(int rc) {
+    static bool ended = false;
+    if (ended) return;
+    ended = true;
     progress_event("end %d", rc);
 }
 
@@ -4026,10 +4046,19 @@ AU_EXPORT void silver_init(silver a) {
     a->project_path = is_git_project(a);
     path af = a->module ? directory(a->module) : path_cwd();
     // no repository: the folder holding the module's own
-    if (a->project_path)
+    if (a->project_path) {
         git_remote_info(af, &a->git_service, &a->git_owner,
             &a->git_project);
-    else
+        // a repository git refuses (another user's files, as root
+        // at a boot) must not build under another product name
+        if (!a->git_owner) {
+            command chk = (command)f(string,
+                "git -C %o rev-parse --git-dir", a->project_path);
+            verify(command_exec(chk, false) == 0,
+                "git cannot read the repository %o: a product is "
+                "never named without it", a->project_path);
+        }
+    } else
         a->project_path = parent_dir(a->module_path);
     string install_name = silver_install_name(a);
     drop(((aether)a)->share_name);
@@ -4076,6 +4105,8 @@ AU_EXPORT void silver_init(silver a) {
         deploy_module_resources(og);
     }
 
+    // the newest own file, named in the build's reason
+    path newer = null;
     // check extension modules (.ag files in same dir) — if any are newer, bust the cache
     // gen/ holds generated bodies: an edit there rebuilds too
     path ext_dirs[2] = { a->module_path, f(path, "%o/gen", a->module_path) };
@@ -4094,7 +4125,7 @@ AU_EXPORT void silver_init(silver a) {
                 if (nl <= 3 || strcmp(n + nl - 3, ".ag") != 0) continue;
                 path ag = form(path, "%o/%s", ext_dirs[di], n);
                 u64  m  = source_mtime(a, ag);
-                if (m > module_file_m) module_file_m = m;
+                if (m > module_file_m) { module_file_m = m; newer = ag; }
             }
             closedir(dir);
         }
@@ -4144,6 +4175,8 @@ AU_EXPORT void silver_init(silver a) {
 
     // 1ms resolution time comparison (it could be nano-second based)
     bool update_product = true; //!a->is_external;
+    string why       = null;   // the build's reason, said in the log
+    path   rec_newer = null;   // a recorded source newer than the product
 
     // its own file, never one of the last build's sources standing in
     verify(modified_time(a->module_file), "module file not found: %o",
@@ -4192,7 +4225,7 @@ AU_EXPORT void silver_init(silver a) {
                         continue;
                     path artifact = path(buf);
                     u64 m = modified_time(artifact);
-                    if (m > newest) newest = m;
+                    if (m > newest) { newest = m; rec_newer = artifact; }
                 }
                 fclose(f);
             }
@@ -4206,13 +4239,39 @@ AU_EXPORT void silver_init(silver a) {
             update_product = false;
     }
 
+    // the reason so far: the product itself, or a source past it
+    if (update_product) {
+        if (!product_exists)
+            why = f(string, "no product at %o", a->product_link);
+        else if (!abi_ok)
+            why = string("the product was built against another compiler (abi)");
+        else if (product_m <= module_file_m)
+            why = f(string, "%o (%llu) is newer than the product (%llu)",
+                newer ? newer : a->module_file,
+                (unsigned long long)module_file_m,
+                (unsigned long long)product_m);
+        else if (rec_newer)
+            why = f(string, "a recorded source %o is newer than the product",
+                rec_newer);
+        else
+            why = string("its sources changed");
+    }
     // an uninstall walks the imports for their ledgers: that is a parse
-    if (a->clean || a->uninstall) update_product = true;
+    if (a->clean || a->uninstall) {
+        update_product = true;
+        why = string(a->clean ? "--clean" : "--uninstall");
+    }
     // export build none: always walk the imports (each is cached by its
     // own token); no product of ours decides it
-    if (module_build_none(a->module_file)) update_product = true;
+    if (module_build_none(a->module_file)) {
+        if (!update_product) why = string("export build none: its imports are walked");
+        update_product = true;
+    }
     // instrumented code is not the cached product: a timing run rebuilds
-    if (((aether)a)->timing || ((aether)a)->coverage) update_product = true;
+    if (((aether)a)->timing || ((aether)a)->coverage) {
+        if (!update_product) why = string("an instrumented build (timing or coverage)");
+        update_product = true;
+    }
     // the syntax map is a product too: cached runs must not leave a map
     // older than the source (the editor withholds stale coloring)
     // none at all is no stale map: a shipped build (a phone) has none
@@ -4220,12 +4279,18 @@ AU_EXPORT void silver_init(silver a) {
         file_exists("%o", a->format)) {
         u64 fmt_m = modified_time(a->format);
         // imports whose shapes held change nothing it shows
-        if (fmt_m < ((shapes) ? own_m : module_file_m))
+        if (fmt_m < ((shapes) ? own_m : module_file_m)) {
+            if (!update_product)
+                why = f(string, "the syntax map %o is older than the source", a->format);
             update_product = true;
+        }
     }
     // --release --test builds are measurement artifacts: always rebuilt,
     // never cached — the shipping release product must stay expect-free
-    if (a->release && a->test) update_product = true;
+    if (a->release && a->test) {
+        if (!update_product) why = string("--release --test is never cached");
+        update_product = true;
+    }
     // (removed) root no longer force-rebuilt on --run: the dependency tree's transitive
     // .source now busts the root's cache precisely when any inner source changed, so the
     // blanket force is redundant — a no-change --run relinks/relaunches from cache.
@@ -4259,8 +4324,19 @@ AU_EXPORT void silver_init(silver a) {
     }
     pthread_mutex_unlock(&compiled_lock);
 
+    // the root build says who asked for it and what it is named
+    if (!a->is_external) {
+        char asker[1024];
+        build_asker(asker, sizeof(asker));
+        build_status(a, "[%o] build asked by pid %d (%s) uid %d in %o; "
+            "project %o, owner %s, product %o",
+            a->name, (int)getppid(), asker, (int)getuid(), path_cwd(),
+            a->project_path, a->git_owner ? a->git_owner->chars : "none",
+            a->product_link);
+    }
+    if (update_product && !why) why = string("its sources changed");
     if (!update_product) {
-        build_status(a, "[%o] up to date", a->name);
+        build_status(a, "[%o] up to date: %o", a->name, a->product_link);
         // a cached module still owns its dependency tree: the parent flattens
         // it into ITS .source, and an empty subtree here was why a module
         // built while its imports were current (spectra, speech) never saw
@@ -4301,7 +4377,8 @@ AU_EXPORT void silver_init(silver a) {
         return;
     }
 
-    build_status(a, "[%o] compiling %o", a->name, path_filename(a->module_file));
+    build_status(a, "[%o] compiling %o: %o", a->name,
+        path_filename(a->module_file), why);
     verify(dir_exists("%o", a->install), "silver-import location not found");
     verify(len(a->module), "no source given");
     verify(file_exists("%o", a->module_file), "module-source not found: %o", a->module_file);
@@ -5772,6 +5849,11 @@ static array parse_tokens(silver a, Au input, array output) { sequencer
             bool    cont_numeric    = (is_sep && seps <= 1) || (v >= '0' && v <= '9');
             char    sval[2]         = {v, 0};
             bool    is_dash         = v == '-';
+            // a quote glued to a word stays its apostrophe (Euclid's)
+            // before a letter; before anything else it opens a string
+            if ((v == '\'' || v == '"') &&
+                !(index + 1 < length && isalnum(idx(input_string, index + 1))))
+                break;
             // R-hand types, L is for members only
             int imatch = index_of(special, sval);
             if (!start_numeric || !cont_numeric)
@@ -16073,6 +16155,9 @@ etype silver_read_def(silver a, interface access) {
 // main calls this too, so it is declared outside the guard
 void silver_build_end(int rc);
 
+// an exit from inside the build (a fault) ends its events too
+static void silver_build_end_atexit(void) { silver_build_end(1); }
+
 #ifndef _WIN32
 #include <signal.h>
 
@@ -16102,6 +16187,7 @@ int main(int argc, cstrs argv) {
     signal(SIGFPE,  silver_crash);
     signal(SIGINT,  silver_stopped);
     signal(SIGTERM, silver_stopped);
+    atexit(silver_build_end_atexit);
     // as root (the phone) an import's tar would keep its packer's uids
     setenv("TAR_OPTIONS", "--no-same-owner", 0);
     // a build run by an app is never that app's supervised child

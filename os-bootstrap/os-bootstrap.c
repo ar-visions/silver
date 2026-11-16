@@ -1,5 +1,8 @@
 #ifdef _WIN32
 #define _CRT_RAND_S
+#else
+// glibc declares fseeko only past -std=c11's strict set
+#define _DEFAULT_SOURCE
 #endif
 #include <stdio.h>
 #include <stdlib.h>

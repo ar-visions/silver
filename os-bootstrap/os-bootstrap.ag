@@ -3913,6 +3913,9 @@ element Bootstrap
                 add_file[ '{install}/build/silver-{mod}.product{ext}' ]
             add_file[ '{install}/build/silver-{mod}.source' ]
             add_file[ '{install}/build/silver-{mod}.artifacts' ]
+            # the editor's colouring: a build's byproduct, so the
+            # installer carries it (a launch never builds one)
+            add_file[ '{install}/syntax/{mod}.f' ]
         regs : ex.ls[ null, false ]
         if [ !regs ] return
         n : i32 [ 0 ]
@@ -4216,6 +4219,7 @@ element Bootstrap
     # the guest as a folder, copied to /orbiter-os to boot
     func write_tree []
         base : '{out_dir}/root'
+        say[ 'Writing the tree' ]
         # the top links come first: their folder must be there
         bp : path [ base ]
         bp.make_dir[]

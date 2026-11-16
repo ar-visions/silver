@@ -943,6 +943,7 @@ enum StepKind
     write:   6
     boot:    7
     menu:    8
+    build:   9
 
 # one step of the install; the review lists each title
 class Step
@@ -1906,6 +1907,10 @@ element InstallWizard
         for [ f: string ] in vec string [] [ kern, rd ]
             fp : path [ f ]
             if [ !fp.exists[] ] problems.push[ 'Missing {f}' ]
+        # from another system the apps are built first (os-bootstrap
+        # assemble: the worker runs it before the script's steps)
+        if [ source == drive_tree[] ]
+            step[ StepKind.build, 'Build the apps, update the tree' ]
         mnt  : '/run/wizard/root'
         efi  : '/run/wizard/efi'
         dev  : '/dev/{dk.name}'
@@ -2270,6 +2275,8 @@ element InstallWizard
     # one step as sh lines (no braces: they would interpolate)
     func step_sh [ s: Step ] -> string
         if [ s.kind == StepKind.run ] return s.cmd
+        # the build ran on the worker before the script
+        if [ s.kind == StepKind.build ] return 'true'
         src : sh_word[ s.src ]
         dst : sh_word[ s.dst ]
         if [ s.kind == StepKind.wait ]
@@ -2299,12 +2306,16 @@ element InstallWizard
                 {dst}/src/silver/checkout
                 {dst}/src/silver/platform/native/tmp
                 {dst}/src/silver/platform/native/*.checkout-lock; true }
+            # an older install's folders keep their owner: as root
+            # git refuses a repository another user owns
+            own : command { [ "$(id -u)" = 0 ] && chown -R 0:0 {dst};
+                true }
             c : command {
                 ( [ -L {dst} ] && rm -f {dst}; mkdir -p {dst} ) && {tops}
                 && rm -f {bad} && ( tar -C {src}{ex} --checkpoint=100 {pr}
                 -cf - . || touch {bad} )
                 | tar -C {dst} --no-same-owner -xpf - }
-            return '{c} && [ ! -e {bad} ]'
+            return '{c} && [ ! -e {bad} ] && ( {own} )'
         made : 'mkdir -p "$(dirname {dst})"'
         if [ s.kind == StepKind.file ]
             return '{made} && cp --preserve=mode,timestamps {src} {dst}'
@@ -2358,6 +2369,7 @@ element InstallWizard
     func script_text [ steps: vec Step ] -> string
         t : sh_head[]
         for [ i: i32 0, i < steps.count, i += 1 ]
+            if [ steps[ i ].kind == StepKind.build ] continue
             one : step_sh[ steps[ i ] ]
             t = '{t}echo @step {i}\nif ! ( {one} ); then '
             t = '{t}echo @fail {i}; exit 1; fi\n'
@@ -2414,14 +2426,22 @@ element InstallWizard
     # stick) the script runs as it is; as a user, through pkexec,
     # which asks for the password once
     func work [] -> none
-        # from another system the copy is the drive tree: bring it
-        # up to the last build first (only newer files are copied)
-        if [ source == drive_tree[] ]
-            say[ 'Updating the drive tree from the build' ]
+        # the build step: the apps built, the drive tree updated
+        # (only newer files are copied); its lines are ours
+        if [ plan.count > 0 && plan[ 0 ].kind == StepKind.build ]
+            step_at = 0
             b : Bootstrap []
             b.initialize[]
             b.out_dir.make_dir[]
-            b.assemble[]
+            b.lock  = lock
+            b.lines = lines
+            if [ !b.assemble[] ]
+                failed = true
+                say[ 'Stopped at: {plan[ 0 ].title}' ]
+                finished = true
+                running  = false
+                Au.auto_free[]
+                return
         for [ st: Step ] in plan
             if [ st.kind == StepKind.copy ] total = tree_bytes[ st.src ]
         copied = 0
@@ -2763,10 +2783,24 @@ element InstallWizard
                 : 'Installing')
             note = (finished && !failed)
                 ? 'Restart to start orbiter-os.' : ''
+            shown : vec string []
+            lock.lock[]
+            oldest : i32 [ lines.count - 7 ]
+            if [ oldest < 0 ] oldest = 0
+            for [ i: i32 oldest, i < lines.count, i += 1 ]
+                shown.push[ '{lines[ i ]}' ]
+            lock.unlock[]
             cur : string ''
             if [ done < plan.count ]
                 st : Step plan[ done ]
                 cur = st.title
+                # the build step says what it is on
+                if [ st.kind == StepKind.build ]
+                    for [ ln: string ] in shown
+                        if [ ln.starts_with[ 'Building ' ]
+                             || ln.starts_with[ 'Writing ' ]
+                             || ln.starts_with[ 'Wrote ' ] ]
+                            cur = ln
             t[ 'now' ] = WizText [ area: row[ top ],
                 label: (cur.count > 0)
                     ? 'Step {done + 1} of {plan.count}: {cur}' : '' ]
@@ -2784,13 +2818,6 @@ element InstallWizard
                                          label: cl ]
                 t[ 'cbar' ] = WizBar [ frac: cp, done: whole,
                     area: Region [ 'l1.4 t{top + 3.3} r1.4 h0.3' ] ]
-            shown : vec string []
-            lock.lock[]
-            oldest : i32 [ lines.count - 7 ]
-            if [ oldest < 0 ] oldest = 0
-            for [ i: i32 oldest, i < lines.count, i += 1 ]
-                shown.push[ '{lines[ i ]}' ]
-            lock.unlock[]
             y : f32 [ top + 4.2 ]
             for [ i: i32 0, i < shown.count, i += 1 ]
                 t[ 'line_{i}' ] = WizLog [ label: shown[ i ],
@@ -3213,3 +3240,30 @@ expect func t_free_plan [] -> bool
             log 'wizard free plan: missing {x}'
             ok = false
     return ok && w.swap_word == 'orbiter.swap=/swapfile'
+
+# from another system the plan's first step is the build; the
+# script skips it and numbers the rest as the plan does
+expect func t_build_step [] -> bool
+    dk : test_disk[]
+    w : InstallWizard [ dry_run: true, source: '/' ]
+    if [ !w.lines ] w.lines = vec string []
+    if [ !w.swap_word ] w.swap_word = ''
+    w.source = drive_tree[]
+    w.user = 'test'
+    w.pass = 'test'
+    w.host = 'test'
+    w.keys = 'us'
+    w.zone = 'UTC'
+    w.disks = vec Disk [] [ dk ]
+    w.disk_at = 0
+    w.beside = true
+    w.fresh = false
+    w.make_plan[]
+    if [ w.plan.count < 2 ] return false
+    first : Step w.plan[ 0 ]
+    if [ first.kind != StepKind.build ] return false
+    if [ w.step_sh[ first ] != 'true' ] return false
+    sh : w.script_text[ w.plan ]
+    log 'wizard build step: {first.title}'
+    return sh.index_of[ 'echo @step 0\n' ] < 0
+        && sh.index_of[ 'echo @step 1\n' ] >= 0

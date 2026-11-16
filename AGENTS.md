@@ -918,6 +918,97 @@ it is built on. Today the tree is the host Ubuntu's own files.
       a real boot's line is the kernel's everywhere.
       NEXT, his: Install (folder beside on /), boot, open the console
       and the apps.
+   o. DONE (Nov 16, his: step 1 of 13 said "Mount /dev/nvme..." while
+      it compiled all sorts of things; the real step 1 is the build)
+      the wizard ran os-bootstrap's assemble before its script with
+      one line said, and build_apps logged alone. Now the plan's first
+      step from another system is StepKind.build ('Build the apps,
+      update the tree'): the worker runs it as step 1 with the
+      Bootstrap's lock and lines as its own, so every line it says
+      (Building console --clean, Writing the tree, Wrote the tree: n
+      entries) shows, and the status reads the latest of them; a
+      failed build stops there. The script skips the step and keeps
+      the plan's numbering; step_sh gives it 'true'. assemble returns
+      whether it finished. wizard t_build_step; `silver --test wizard`
+      exit 0. NOT seen on his screen: his next Install.
+   p. DONE (Nov 16 12:14 boot, his: the same result, every app's card
+      sitting at building; "are you just randomly iterating?"). The
+      drive's own logs said it: builds/console.log "[console]
+      compiling console.ag ... [trinity] compiling ... link failed",
+      the orbiter log "syntax: console.ag language service starting"
+      then "build FAILED (code 1)", and the files it wrote: libtls.so,
+      tls.product, libdevices.so (no silver- prefix). The chain:
+      - /orbiter-os and 1,091 entries under its src/silver (its folders,
+        .git) were owned by kalen from the Oct 15 install (the folder
+        beside copy keeps old folders); at boot silver runs as root and
+        git refuses a repository another user owns ("dubious
+        ownership"), so git_remote_info found no owner, the product name
+        lost its silver- prefix (libtls.so, not libsilver-tls.so), no
+        such product existed, and EVERY module was stale: a full build,
+        failing at trinity's link. The box never showed it: in a user
+        namespace the files are the box's own.
+      - who asked: orbiter's language service (fmt_spawn), one
+        `silver --build <file>` per .ag opened in a pane, unconditional
+        (kicked a second after the open); his restored console pane
+        opened console.ag. The host's launch build (item n) was never
+        the only path.
+      - the failed build wrote no `end` to its events (a fault's exit
+        skips main's end), so every card stayed at building.
+      Fixed, each in its owner: silver (git cannot read the repository:
+      "a product is never named without it", a loud stop, nothing
+      compiles; silver_build_end once, and atexit, so a fault's exit
+      writes end 1); the wizard's copy step chowns the copied tree to
+      root as root (the test runs as a user: skipped there); orbiter's
+      open-time kick spawns only for a map missing or older than its
+      file (fmt_current), and says "starting" only when it spawned;
+      os-bootstrap add_records carries install/syntax/<m>.f for every
+      carried library (67 maps, 464 MB: the editor's colouring on the
+      drive, and no map missing). Checked: GIT_DIR=/nonexistent build
+      stops on the line; a bad module's events end with `end 1`; a boxed
+      hidden orbiter on console.ag (map current) spawned nothing, on
+      imod.ag (no map) spawned and finished; wizard tests exit 0.
+      Left on the drive by that boot: libtls.so, tls.product and
+      devices.* strays in its build folder (harmless: the owner names
+      silver-*). NEXT, his: Install (folder beside on /), boot.
+   q. DONE (Nov 16: his pull of 5f6f9c7, the Mac kernel work) two
+      things in it did not build on Linux, both fixed:
+      - silver's tokenizer read a quote glued to a word as part of the
+        word, so os-bootstrap's new `awk -F': *' '... {{ }} ...'` line
+        in a string { } block swallowed the rest of its function and
+        the error landed 1,600 lines on ("expected member, found #" at
+        an unchanged `el`). Now (silver.c, the name reader): a glued
+        quote before a letter stays an apostrophe (Euclid's, the
+        codegen prompts), before anything else it opens a string.
+        features t_keyword_glued_quote; features 274/275
+        (t_codegen_resource as before). Found by cutting the line
+        down in a scratch module, piece by piece.
+      - os-bootstrap.c calls fseeko, which glibc hides under -std=c11:
+        _DEFAULT_SOURCE on every system but Windows.
+      os-bootstrap, wizard, orbiter build on the merged tree.
+      Then (his: "you need to log way more here during operation"):
+      every build decision says its reason, in the logs the drive
+      keeps. silver: the root build's first line names who asked
+      (the parent's pid and command line, uid, cwd), the project, the
+      git owner (or none) and the product; each module says
+      "up to date: <product>" or "compiling <file>: <why>" (no
+      product at <path>; built against another compiler; <file>
+      (<time>) newer than the product (<time>); a recorded source
+      newer; --clean; build none; the syntax map older; an
+      instrumented build). silver-host: at a launch, which source is
+      newer than which product, or "product current, no build at a
+      launch"; a slot's launch says "a booted system: no build" or
+      "building before the run". orbiter's language service: "map
+      <path> is current, no build" or "map missing / older than its
+      source: a build", "running silver --build <file>", and its
+      output goes to install/tmp/orbiter-fmt-<proj>.log (was /tmp,
+      a tmpfs lost at power off). Seen: a touched console says
+      "console.ag (t) is newer than the product (t)"; a boxed orbiter
+      on console.ag says the map is current. wizard tests exit 0.
+      Seen in the tree write's log: silver-commune and silver-chess
+      "its source is gone, left out": both modules moved to their own
+      repos (/src/commune, /src/chess) and the Nov 14 records in
+      install/build still name /src/silver/<m>/<m>.ag. Left out is
+      right (not silver's modules); the stale records are harmless.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/
