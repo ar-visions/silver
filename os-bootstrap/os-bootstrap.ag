@@ -4217,10 +4217,11 @@ element Bootstrap
                 boot.push[ OsFile [ src: '{nt}', dst: 'lib/ntfs3.ko' ] ]
         return boot
 
-    # a host file into the tree: mode 0755, source time kept
+    # a host file into the tree: its own mode and time kept
     func copy_file [ src: string, dst: string ]
         st : struct stat
         if [ stat[ src.chars, @st ] != 0 ] return
+        mode : u32 [ st.st_mode & 0xFFF ]
         # the same file by its exact time: a source and its product
         # a second apart must keep their order (silver's rebuild test)
         dt : struct stat
@@ -4229,10 +4230,16 @@ element Bootstrap
             ifdef [ apple ]
                 if [ dt.st_mtimespec.tv_sec == st.st_mtimespec.tv_sec
                      && dt.st_mtimespec.tv_nsec
-                        == st.st_mtimespec.tv_nsec ] return
+                        == st.st_mtimespec.tv_nsec ]
+                    # an older write made it 0755: its own mode back
+                    if [ (dt.st_mode & 0xFFF) != mode ]
+                        chmod[ dst.chars, mode ]
+                    return
             ifndef [ apple ]
                 if [ dt.st_mtim.tv_sec == st.st_mtim.tv_sec
                      && dt.st_mtim.tv_nsec == st.st_mtim.tv_nsec ]
+                    if [ (dt.st_mode & 0xFFF) != mode ]
+                        chmod[ dst.chars, mode ]
                     return
         fi : handle fopen[ src.chars, 'rb' ]
         if [ !fi ] return
@@ -4251,7 +4258,7 @@ element Bootstrap
         free[ buf ]
         fclose[ fi ]
         fclose[ fo ]
-        chmod[ dst.chars, 0x1ED ]
+        chmod[ dst.chars, mode ]
         # the launcher compares product and source times
         ts : local timespec [ 2 ]
         ifdef [ apple ]
