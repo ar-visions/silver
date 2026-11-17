@@ -561,6 +561,13 @@ static void handleLine(char* line)
         return;
     }
     // nav back|forward: the host's history arrows
+    // cleardata: every cookie and the sites' stored data gone
+    if (!strcmp(command, "cleardata")) {
+        WebKitWebsiteDataManager* data = webkit_network_session_get_website_data_manager(
+            webkit_web_view_get_network_session(webView));
+        webkit_website_data_manager_clear(data, WEBKIT_WEBSITE_DATA_ALL, 0, NULL, NULL, NULL);
+        return;
+    }
     if (!strcmp(command, "nav")) {
         if (!strcmp(line, "nav back"))
             webkit_web_view_go_back(webView);

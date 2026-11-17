@@ -492,6 +492,12 @@ element WifiBad
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
+# the chosen network and its controls in one box
+element WifiCard
+    body : Layer [ fill_color: rgba [ '#ffffff10' ],
+        radius: Radius [ '8' ],
+        stroke_width: 1.0, stroke_color: rgba [ '#806bff' ] ]
+
 Button WifiButton
     style : CSS {
         layers.body:
@@ -540,8 +546,9 @@ Button WifiRow
                 near_inset: 4.0
         :selected
             layers.body:
-                fill_color: #4d3dbcaa
-                stroke_color: #806bff
+                fill_color: #0000
+                stroke_color: #0000
+                box_shadow: none
             layers.face:
                 label_color: #ffffff
     }
@@ -616,6 +623,10 @@ TextInput WifiSecret
 element WifiPanel
     public wifi    : Wifi
     intern chosen  : string
+    # the chosen network as last seen, and its place: a scan
+    # can drop it for a moment while its password is typed
+    intern held    : WifiNet
+    intern held_at : i32
 
     public func tick [ w: Window ]
         if [ !wifi ] wifi = wifi_shared[]
@@ -638,15 +649,19 @@ element WifiPanel
             t[ 'none' ] = WifiNote [ label: why,
                 area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
             return t
-        for [ i: i32 0, i < wifi.nets.count, i += 1 ]
-            n : WifiNet wifi.nets[ i ]
+        shown : vec WifiNet shown_nets[]
+        for [ i: i32 0, i < shown.count, i += 1 ]
+            n : WifiNet shown[ i ]
+            if [ n.path == chosen ]
+                t[ 'card' ] = WifiCard [
+                    area: Region [ 'l0.7 t{y} r0.7 h2.65' ] ]
             note : (n.joined) ? 'connected' : ((n.known) ? 'saved' : '')
             t[ 'net_{i}' ] = WifiRow [ label: n.name, path: n.path,
                 bars: n.bars[], secured: n.secured[], note: note,
                 selected: n.path == chosen,
                 area: Region [ 'l0.7 t{y} r0.7 h1.2' ] ]
             y += 1.35
-            if [ n.path == chosen ] y = actions[ t, n, y ]
+            if [ n.path == chosen ] y = actions[ t, n, y ] + 0.15
         if [ wifi.joining.count > 0 ]
             t[ 'joining' ] = WifiNote [ label: 'Joining {wifi.joining}',
                 area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
@@ -655,29 +670,46 @@ element WifiPanel
                 area: Region [ 'l0.7 t{y} r0.7 h1' ] ]
         return t
 
+    # the networks, the chosen one kept in its place when gone
+    func shown_nets [] -> vec WifiNet
+        out : vec WifiNet []
+        found : bool [ false ]
+        for [ i: i32 0, i < wifi.nets.count, i += 1 ]
+            n : WifiNet wifi.nets[ i ]
+            if [ chosen && n.path == chosen ]
+                found   = true
+                held    = n
+                held_at = i
+            out.push[ n ]
+        if [ !chosen || chosen.count == 0 ] held = null
+        if [ !found && held ]
+            at : i32 [ (held_at < out.count) ? held_at : out.count ]
+            out.insert[ held, at ]
+        return out
+
     # under the chosen network: its buttons, and the password
     # field when it is secured and not yet known
     func actions [ t: Elements, n: WifiNet, y: f32 ] -> f32
         if [ n.joined ]
             t[ 'leave' ] = WifiButton [ label: 'Disconnect',
-                area: Region [ 'l0.7 t{y} w6 h1.05' ] ]
+                area: Region [ 'l1.0 t{y} w6 h1.05' ] ]
             if [ n.known ]
                 t[ 'forget' ] = WifiButton [ label: 'Forget',
-                    area: Region [ 'l7 t{y} w4.5 h1.05' ] ]
+                    area: Region [ 'l7.3 t{y} w4.5 h1.05' ] ]
             return y + 1.35
         if [ n.secured[] && !n.known ]
-            ar : Region [ 'l0.7 t{y} r6 h1.05' ]
+            ar : Region [ 'l1.0 t{y} r6.1 h1.05' ]
             mounted : bool [ elements && elements.contains[ 'pass' ] ]
             t[ 'pass' ] = (mounted) ? WifiSecret [ area: ar ]
                 : WifiSecret [ area: ar, edit: '' ]
             t[ 'join' ] = WifiButton [ label: 'Join',
-                area: Region [ 'r0.7 t{y} w4.5 h1.05' ] ]
+                area: Region [ 'r1.0 t{y} w4.5 h1.05' ] ]
             return y + 1.35
         t[ 'join' ] = WifiButton [ label: 'Join',
-            area: Region [ 'l0.7 t{y} w4.5 h1.05' ] ]
+            area: Region [ 'l1.0 t{y} w4.5 h1.05' ] ]
         if [ n.known ]
             t[ 'forget' ] = WifiButton [ label: 'Forget',
-                area: Region [ 'l5.6 t{y} w4.5 h1.05' ] ]
+                area: Region [ 'l5.9 t{y} w4.5 h1.05' ] ]
         return y + 1.35
 
     # the password as typed in its field
@@ -691,6 +723,7 @@ element WifiPanel
         if [ !e || !e.id ] return
         key : e.id
         n : WifiNet wifi.find[ chosen ]
+        if [ !n ] n = held
         if [ key == 'scan' ]
             wifi.scan[]
         el [ e inherits WifiRow ]
@@ -801,3 +834,19 @@ ifdef [ linux ]
         w.close[]
         fake.stop[]
         return ok
+
+    # the chosen network dropped by a scan keeps its row and place
+    expect func t_wifi_chosen_kept [] -> bool
+        w : Wifi []
+        w.nets = vec WifiNet []
+        w.nets.push[ WifiNet [ path: '/a', name: 'A' ] ]
+        w.nets.push[ WifiNet [ path: '/b', name: 'B' ] ]
+        w.nets.push[ WifiNet [ path: '/c', name: 'C' ] ]
+        p : WifiPanel [ wifi: w ]
+        p.chosen = '/b'
+        first : vec WifiNet p.shown_nets[]
+        w.nets.remove[ 1 ]
+        later : vec WifiNet p.shown_nets[]
+        log 'chosen kept: {later.count} {later[ 1 ].name}'
+        return first.count == 3 && later.count == 3
+            && later[ 1 ].path == '/b'

@@ -447,6 +447,11 @@ element aura : trinity
         log 'aura: bookmarked {last_src}'
 
     # the page shown, its card taken away
+    # sign every site out: cookies and the sites' stored data
+    action func clear_cookies []
+        post[ 'cleardata' ]
+        log 'aura: cookies and site data cleared'
+
     action func remove_bookmark []
         if [ !last_src ] return
         out : string ''
