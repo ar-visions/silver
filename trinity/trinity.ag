@@ -284,6 +284,7 @@ func Au_call_changed  [ a: Au, name: cstr ] -> i32
 func Au_call_named    [ a: Au, name: cstr ] -> i32
 func Au_call_words    [ a: Au, name: cstr, words: cstr ] -> i32
 func au_live_set_reload [ on: i32 ]
+func au_live_set_defer  [ on: i32 ]
 func au_live_get_pending   [] -> i32
 func au_live_request_apply [] -> none
 func au_mem_fraction  [] -> f32
@@ -1927,6 +1928,17 @@ abstract live_app media_app
                     agent_sock_reply[ 'ok\n' ]
                     continue
                 # quit: the orderly close, as the window's close button
+                # reload auto | manual: the host's watch applies a
+                # build itself, or stages it; reload alone applies
+                el [ cmd == 'reload' ]
+                    if [ parts.count >= 2 && parts[1] == 'auto' ]
+                        au_live_set_defer[ 0 ]
+                    el [ parts.count >= 2 && parts[1] == 'manual' ]
+                        au_live_set_defer[ 1 ]
+                    el [ au_live_get_pending[] == 1 ]
+                        au_live_request_apply[]
+                    agent_sock_reply[ 'ok\n' ]
+                    continue
                 el [ cmd == 'quit' ]
                     Au.quit_request[]
                     agent_sock_reply[ 'ok\n' ]
@@ -5276,9 +5288,10 @@ Display Window
              && (ev.key.ctrl || ev.key.meta) ]
             if [ app_object ] app_object.on_key*[ ev ]
             return
-        # ctrl / cmd + shift + 3: the app's (orbiter's screenshot),
-        # before any field takes it
-        if [ ev.key.unicode == 51 && ev.key.shift
+        # ctrl / cmd + shift + 3 or 4: the app's (orbiter's
+        # screenshot), before any field takes it
+        if [ (ev.key.unicode == 51 || ev.key.unicode == 52)
+             && ev.key.shift
              && (ev.key.ctrl || ev.key.meta) ]
             if [ app_object ] app_object.on_key*[ ev ]
             return

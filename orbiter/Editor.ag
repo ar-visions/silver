@@ -659,6 +659,9 @@ ResourceView AppView
     # started from its code's editor (play): the pane keeps its
     # debug bar; a dock or home launch shows none
     mutable edited     : bool
+    # its builds applied as they land (the app's own default), or
+    # held until Reload
+    mutable manual_reload : bool
 
     func extensions [] -> vec string
         return vec string []

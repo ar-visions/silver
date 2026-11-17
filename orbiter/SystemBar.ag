@@ -401,6 +401,9 @@ BarButton MenuTop
         :close_part
             layers.face:
                 label_size: 20
+        :other
+            layers.face:
+                label_color: #ffffff80
     }
     public at : i32
     # a pane not active: its menu name (a press selects the pane)
@@ -411,12 +414,46 @@ BarButton MenuTop
     public close_part : bool
     # its app updating: how far, 0..1 (-1 not yet known); -2 not
     public progress : f32 [ -2.0 ]
+    # a group's other member: a press shows it (-1 not one)
+    public member : i32 [ -1 ]
+    # that member's name, dim beside the one shown
+    public other : bool
     build : TabProgress []
+    # the app's tab pressed: past 8 px it is carried off the bar
+    intern held  : bool
+    intern went  : f32
+    intern drags : bool
+
+    func on_press [ ev: Event ]
+        held  = tab_on && pane >= 0 && ev.mouse.button == 0
+        went  = 0.0
+        drags = false
+        if [ held ] ux.set_capture[ a ]
 
     # a menu open: moving onto this name opens its menu
     public func on_move [ ev: Event ]
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
-        if [ orb ] orb.menu_hover[ a ]
+        if [ held && orb ]
+            dx : f32 [ ev.mouse.delta.x ]
+            dy : f32 [ ev.mouse.delta.y ]
+            went += max[ dx, -dx ] + max[ dy, -dy ]
+            if [ !drags && went > 8.0 ]
+                drags = true
+                orb.drawer_shut[]
+                orb.tab_drag = pane
+                ux.restyle = true
+            if [ drags ] ux.will_animate = true
+            return
+        if [ orb && member < 0 ] orb.menu_hover[ a ]
+
+    func on_release [ ev: Event ]
+        if [ !held ] return
+        held = false
+        ux.release_capture[ a ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ drags && orb ] orb.tab_drop[ pane ]
+        el [ orb && member >= 0 ] orb.grp_show[ member ]
+        drags = false
 
 # an app updating: a line along its tab's foot, filled so far
 Layer TabProgress

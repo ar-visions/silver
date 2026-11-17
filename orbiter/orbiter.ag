@@ -2457,7 +2457,7 @@ element ShotPick
         cell_y = vec f32 []
         if [ shots.count == 0 ]
             cv.fill_color[ rgba [ '#ffffff88' ] ]
-            cv.draw_text[ 'no screenshots yet: ctrl + shift + 3',
+            cv.draw_text[ 'no screenshots yet: ctrl + shift + 4',
                 rect [ x: 0.0, y: 0.0, w: bounds.w, h: cell_h * 0.5 ],
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, null, true ]
@@ -2547,6 +2547,39 @@ element ShotGhost
         cv.save[]
         cv.set_opacity[ 0.85 ]
         icon.paint[ cv, m.x - side * 0.5, m.y - side * 0.5, side ]
+        cv.restore[]
+
+# a window's tab being dragged: its name under the pointer
+element TabGhost
+    animated    : true
+    user_events : false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !o || o.tab_drag < 0 ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        nm : string o.pane_label[ o.tab_drag ]
+        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        tw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * un ]
+        th : f32 [ round[ 30.0 * un ] ]
+        m : vec2f w.last_move
+        cv.save[]
+        cv.fill_color[ rgba [ '#4d3dbccc' ] ]
+        cv.stroke_color[ rgba [ '#806bff' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ m.x - tw * 0.5, m.y - th * 0.5, tw, th,
+                         6.0, 6.0, 6.0, 6.0 ]
+        cv.paint[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Bold.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ nm, rect [ x: m.x - tw * 0.5, y: m.y - th * 0.5,
+            w: tw, h: th ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, true ]
+        cv.set_font[ null ]
         cv.restore[]
 
 # the menu's widgets: each module that is one, as a card; lit while
@@ -4895,8 +4928,6 @@ Option  ProjectTab
 
 func au_space_clear[] -> none
 
-func au_live_set_defer[ on: i32 ] -> none
-
 func au_capture_stdout[] -> i32
 func au_stdout_orig[] -> i32
 
@@ -5697,6 +5728,11 @@ element orbiter : trinity # implements compiler
     # place while it fades over the desktop (x y w h)
     persist pane_fade : vec f32
     persist pane_rect : vec f32
+    # each pane's group (-1 none): the members share one place, one
+    # shown; across a reload too
+    persist pane_grp : vec i32
+    # a window's tab carried off its bar (-1 none)
+    mutable tab_drag  : i32 [ -1 ]
     # the screen as drawn this frame, and each pane's view in small
     # cut from it (a hidden pane keeps its last)
     intern view_snap   : Texture
@@ -9587,7 +9623,15 @@ element orbiter : trinity # implements compiler
         live : bool [ !av.ended && !av.held && av.slot >= 0 ]
         m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
         if [ !live ] m.push[ own_entry[ 'Run', 'orb.run', 1 ] ]
-        el m.push[ own_entry[ 'Quit', 'orb.quit', 1 ] ]
+        el
+            # one row: Reload applies a build waiting; Auto, lit, has
+            # each build applied as it lands
+            re : TrayEntry own_entry[ 'Reload', 'orb.reload', 1 ]
+            re.side = 'Auto'
+            re.side_action = 'orb.reload_auto'
+            re.side_check = !av.manual_reload
+            m.push[ re ]
+            m.push[ own_entry[ 'Quit', 'orb.quit', 1 ] ]
         return m
 
     # a member's name as a menu says it: save_state -> Save state
@@ -9710,6 +9754,23 @@ element orbiter : trinity # implements compiler
         av : AppView (ed) ? ed.run_view : null
         if [ !av ] return
         # the app ends, as the switcher's flick ends it
+        # its ready reload applied: the app's own ctrl + shift + R
+        if [ e.action == 'orb.reload' ]
+            if [ av && av.slot >= 0 && !av.ended ]
+                host_post2[ av.slot, 1, i32[ HM.key ], 82, 1, 3 ]
+                host_post2[ av.slot, 1, i32[ HM.key ], 82, 0, 3 ]
+            return
+        # applied as built, or held for Reload: the app's host told
+        if [ e.action == 'orb.reload_auto' ]
+            if [ av && av.slot >= 0 && !av.ended ]
+                av.manual_reload = !av.manual_reload
+                rb : local i8 [ 64 ]
+                agent_sock_ask[ av.sock_name[].chars,
+                    (av.manual_reload) ? 'reload manual\n'
+                                       : 'reload auto\n', @rb[0], 64 ]
+                pane_menus = null
+                menu_sync[]
+            return
         if [ e.action == 'orb.quit' ]
             close_task[ av ]
             force_update[]
@@ -12228,6 +12289,8 @@ element orbiter : trinity # implements compiler
             save_session[]
             return
         if [ pi < 0 || pi >= editor_slots.count ] return
+        # a group's member: another takes its place first
+        if [ grp_of[ pi ] >= 0 ] grp_leave[ pi, false ]
         pe : Editor pane_at[ pi ]
         if [ pe && pe.rview ]
             pe.rview.release*[]
@@ -12256,6 +12319,7 @@ element orbiter : trinity # implements compiler
         free_drop[ pi ]
         pane_lists_drop[ pi ]
         if [ pane_hid && pi < pane_hid.count ] pane_hid.remove[ pi ]
+        if [ pane_grp && pi < pane_grp.count ] pane_grp.remove[ pi ]
         # the order keeps the rest, renumbered
         if [ pane_seq ]
             sq : vec i32 []
@@ -13742,15 +13806,24 @@ element orbiter : trinity # implements compiler
         if [ bar_typing ] bar_typing_end[]
         if [ ev.target inherits MenuTop ]
             mt : cast MenuTop [ ev.target ]
+            # a group's other member: its release shows it
+            if [ mt.member >= 0 ]
+                ev.no_default = true
+                return
             # the desktop's own menu, whatever window is selected
             if [ mt.at == -2 ]
                 desk_menu_at[ mt ]
                 ev.no_default = true
                 return
-            # another window's menu: that window first, then its menu
+            # another window's menu: that window first, then its menu;
+            # its title selects it alone, pressed again its menu
             if [ mt.pane >= 0 && mt.pane != active_pane ]
                 raise_pane[ mt.pane ]
                 menu_sync[]
+                if [ mt.tab_on ]
+                    if [ ux ] ux.restyle = true
+                    ev.no_default = true
+                    return
             menu_open_at[ mt, menu_top == mt.at ]
             ev.no_default = true
             return
@@ -14455,8 +14528,9 @@ element orbiter : trinity # implements compiler
                 if [ ux ] ux.restyle = true
             ev.no_default = true
             return
-        # ctrl / cmd + shift + 3: a screenshot of the whole screen
-        if [ ev.key.unicode == 51 && ev.key.shift
+        # ctrl / cmd + shift + 3 or 4: a screenshot of the screen
+        if [ (ev.key.unicode == 51 || ev.key.unicode == 52)
+             && ev.key.shift
              && (ev.key.ctrl || ev.key.meta) ]
             if [ ev.key.state == 1 ] shot_take[ false ]
             ev.no_default = true
@@ -16198,9 +16272,190 @@ element orbiter : trinity # implements compiler
             w.will_animate = true
             force_update[]
 
+    # a pane's group, -1 none
+    public func grp_of [ pi: i32 ] -> i32
+        if [ !pane_grp || pi < 0 || pi >= pane_grp.count ] return -1
+        return pane_grp[ pi ]
+
+    func grp_set [ pi: i32, g: i32 ]
+        if [ !pane_grp ] pane_grp = vec i32 []
+        while [ pane_grp.count < editor_slots.count ] pane_grp.push[ -1 ]
+        if [ pi >= 0 && pi < pane_grp.count ] pane_grp[ pi ] = g
+
+    # a group's panes, in pane order
+    public func grp_members [ g: i32 ] -> vec i32
+        out : vec i32 []
+        if [ g < 0 ] return out
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ grp_of[ q ] == g ] out.push[ q ]
+        return out
+
+    # a pane out of view at once (no fade): a group's other member
+    func hide_now [ pi: i32 ]
+        minimize[ pi ]
+        if [ !pane_fade ] pane_fade = vec f32 []
+        while [ pane_fade.count < editor_slots.count ]
+            pane_fade.push[ 0.0 ]
+        pane_fade[ pi ] = 1.0
+
+    func show_now [ pi: i32 ]
+        if [ pane_hid && pi < pane_hid.count ] pane_hid[ pi ] = false
+        if [ pane_fade && pi < pane_fade.count ] pane_fade[ pi ] = 0.0
+
+    # nw in old's place: its free rectangle, or its place docked
+    func take_place [ nw: i32, old: i32 ]
+        n : i32 [ i32[ editor_slots.count ] ]
+        if [ !pane_free ] pane_free = vec f32 []
+        while [ pane_free.count < n * 4 ] pane_free.push[ 0.0 ]
+        if [ !pane_shown ] pane_shown = vec f32 []
+        while [ pane_shown.count < n * 4 ] pane_shown.push[ 0.0 ]
+        if [ !free_order ] free_order = vec i32 []
+        fb : i32 free_at[ nw ]
+        if [ fb >= 0 ] free_order.remove[ fb ]
+        if [ pane_floats[ old ] ]
+            for [ r: i32 0, r < 4, r += 1 ]
+                pane_free[ nw * 4 + r ]  = pane_free[ old * 4 + r ]
+                pane_shown[ nw * 4 + r ] = pane_shown[ old * 4 + r ]
+            fa : i32 free_at[ old ]
+            if [ fa >= 0 ] free_order[ fa ] = nw
+            el free_order.push[ nw ]
+            return
+        # docked: nw docked, where old is in the order
+        pane_free[ nw * 4 + 2 ] = 0.0
+        sq : vec i32 pane_order[]
+        ia : i32 [ i32[ sq.index_of[ old ] ] ]
+        ib : i32 [ i32[ sq.index_of[ nw ] ] ]
+        if [ ia < 0 || ib < 0 ] return
+        sw : vec i32 []
+        for [ k: i32 0, k < sq.count, k += 1 ]
+            sw.push[ (k == ia) ? nw : ((k == ib) ? old : sq[ k ]) ]
+        pane_seq = sw
+
+    # a group's member shown in the place of the one shown now
+    public func grp_show [ b: i32 ]
+        g : i32 grp_of[ b ]
+        if [ g < 0 ] return
+        for [ q: i32 ] in grp_members[ g ]
+            if [ q != b && !pane_hidden[ q ] ]
+                take_place[ b, q ]
+                hide_now[ q ]
+        show_now[ b ]
+        raise_pane[ b ]
+        if [ ux ] ux.restyle = true
+        force_update[]
+
+    # mv's window put in onto's group (a new one when it has none),
+    # shown there in onto's place
+    public func grp_join [ mv: i32, onto: i32 ]
+        if [ mv == onto || mv < 0 || onto < 0 ] return
+        if [ grp_of[ mv ] >= 0 ] grp_leave[ mv, false ]
+        g : i32 grp_of[ onto ]
+        if [ g < 0 ]
+            g = 0
+            for [ q: i32 0, q < editor_slots.count, q += 1 ]
+                if [ grp_of[ q ] >= g ] g = grp_of[ q ] + 1
+            grp_set[ onto, g ]
+        grp_set[ mv, g ]
+        grp_show[ mv ]
+        log 'groups: window {mv} joined window {onto} (group {g})'
+
+    # a member out of its group: another member takes its place; it
+    # stays where it is (free at the pointer when it was dragged out)
+    public func grp_leave [ gone: i32, free_at_pointer: bool ]
+        g : i32 grp_of[ gone ]
+        if [ g < 0 ] return
+        rest : vec i32 []
+        for [ q: i32 ] in grp_members[ g ]
+            if [ q != gone ] rest.push[ q ]
+        grp_set[ gone, -1 ]
+        if [ rest.count > 0 && !pane_hidden[ gone ] ]
+            nx : i32 rest[ 0 ]
+            take_place[ nx, gone ]
+            show_now[ nx ]
+        if [ rest.count > 0 ]
+            if [ free_at_pointer && ux ]
+                # the left member free, under the pointer
+                w0 : f32 [ (ux.root && ux.root.bounds)
+                    ? ux.root.bounds.w : 1280.0 ]
+                h0 : f32 [ (ux.root && ux.root.bounds)
+                    ? ux.root.bounds.h : 800.0 ]
+                fw : f32 [ round[ w0 * 0.42 ] ]
+                fh : f32 [ round[ h0 * 0.62 ] ]
+                m : vec2f ux.last_move
+                pane_free[ gone * 4 ]     = m.x - fw * 0.5
+                pane_free[ gone * 4 + 1 ] = m.y - 12.0
+                pane_free[ gone * 4 + 2 ] = fw
+                pane_free[ gone * 4 + 3 ] = fh
+                for [ r: i32 0, r < 4, r += 1 ]
+                    pane_shown[ gone * 4 + r ] = pane_free[ gone * 4 + r ]
+                if [ free_at[ gone ] < 0 ] free_order.push[ gone ]
+        if [ rest.count == 1 ] grp_set[ rest[ 0 ], -1 ]
+        show_now[ gone ]
+        raise_pane[ gone ]
+        if [ ux ] ux.restyle = true
+        force_update[]
+
+    # the tab let go: over another window, the two grouped; elsewhere,
+    # out of its group, free there
+    public func tab_drop [ pi: i32 ]
+        tab_drag = -1
+        if [ !ux ] return
+        m : vec2f ux.last_move
+        hit : i32 [ -1 ]
+        # free windows from the top, then the docked ones
+        if [ free_order ]
+            for [ j: i32 free_order.count - 1, j >= 0 && hit < 0,
+                  j -= 1 ]
+                q : i32 free_order[ j ]
+                if [ q != pi && !pane_out[ q ] && pane_hit[ q, m ] ]
+                    hit = q
+        if [ hit < 0 ]
+            for [ q: i32 0, q < editor_slots.count, q += 1 ]
+                if [ q != pi && !pane_floats[ q ] && !pane_out[ q ]
+                     && pane_hit[ q, m ] ]
+                    hit = q
+                    break
+        same : bool [ hit >= 0 && grp_of[ hit ] >= 0
+            && grp_of[ hit ] == grp_of[ pi ] ]
+        if [ same ] return
+        if [ hit >= 0 ]
+            grp_join[ pi, hit ]
+        el [ grp_of[ pi ] >= 0 ]
+            grp_leave[ pi, true ]
+        if [ ux ] ux.restyle = true
+
+    func pane_hit [ q: i32, m: vec2f ] -> bool
+        pv : element pane_view[ q ]
+        if [ !pv || !pv.bounds ] return false
+        r : rect world_rect[ pv ]
+        return m.x >= r.x && m.x < r.x + r.w
+            && m.y >= r.y && m.y < r.y + r.h
+
+    # a pane's name on a tab: its app, its window's program, its title
+    public func pane_label [ pi: i32 ] -> string
+        nm : string tab_title[ pi ]
+        if [ nm.count > 0 ] return nm
+        pv : element pane_view[ pi ]
+        if [ pv && pv inherits EditorView ]
+            return (cast EditorView [ pv ]).title_text[]
+        return 'window'
+
+    # a running app's or window's tab: its title, else its name
+    # ('' when neither runs in the pane)
+    func tab_title [ pi: i32 ] -> string
+        nm : string [ (pane_window[ pi ] == 0) ? app_name_of[ pi ]
+            : window_program[ pi ] ]
+        if [ nm.count == 0 ] return ''
+        tt : string bar_title_of[ pi ]
+        return (tt.count > 0) ? tt : nm
+
     # back in view as it was, and selected
     func unhide [ pi: i32 ]
         if [ !pane_hidden[ pi ] ] return
+        # a group's member comes back in the group's place
+        if [ grp_of[ pi ] >= 0 ]
+            grp_show[ pi ]
+            return
         pane_hid[ pi ] = false
         raise_pane[ pi ]
         force_update[]
@@ -16435,6 +16690,9 @@ element orbiter : trinity # implements compiler
             dock_program_click[ di.file ]
             return
         md_ : path (di.module) ? path '{di.file}/{di.file.filename[]}.ag' : di.file
+        # its instances where they are (a group's hidden member too):
+        # each press the next one, brought into view in its place
+        if [ !shift_down && di.module && app_step[ md_ ] ] return
         # a pane holding the module (its code, its app over it): the
         # pin hides or shows that pane whole
         if [ !shift_down && di.module ]
@@ -16479,6 +16737,29 @@ element orbiter : trinity # implements compiler
             embed_app[ edd, runs[ 0 ] ]
         el
             show_app[ edd, md_, false ]
+
+    # the panes running an app's instances, in pane order; the next
+    # after the active one shown (a group's member in the group's
+    # place); false when there is nothing to step through
+    func app_step [ src: path ] -> bool
+        key : '{src}'
+        ps : vec i32 []
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            eq : Editor pane_at[ q ]
+            rv : AppView (eq) ? eq.run_view : null
+            if [ rv && !rv.ended && rv.src && '{rv.src}' == key ]
+                ps.push[ q ]
+        if [ ps.count == 0 ] return false
+        at : i32 [ i32[ ps.index_of[ active_pane ] ] ]
+        # one, in view and selected: the pin's own toggle
+        if [ ps.count == 1 && at == 0 && !pane_hidden[ active_pane ] ]
+            return false
+        nx : i32 [ (at >= 0) ? ps[ (at + 1) % ps.count ] : ps[ 0 ] ]
+        if [ grp_of[ nx ] >= 0 ] grp_show[ nx ]
+        el [ pane_hidden[ nx ] ] unhide[ nx ]
+        el raise_pane[ nx ]
+        if [ ux ] ux.restyle = true
+        return true
 
     # where a dock launch shows: the pane already running that app,
     # else an empty docked one; -1 for none
@@ -16976,7 +17257,7 @@ element orbiter : trinity # implements compiler
                 bar_title_el[ t, bar_title[], x, vx ]
             el [ pane_app_on[ pi ] ]
                 x = pane_outline_el[ t, pi, x, '' ]
-                bar_name_el[ t, bar_title_of[ pi ], x, vx, '', pi ]
+                bar_load_el[ t, x, vx, '', pi ]
             # a pane showing code (an app's own, a debugger's stop in
             # another file, any file): the file after the menu's name
             el [ pane_code_file[ pi ].count > 0 ]
@@ -17323,10 +17604,6 @@ element orbiter : trinity # implements compiler
                 t['bar_grab'] = BarGrab [ pane: pi, url: true,
                     area: Region [ 'l{x}px t0 w{vx - x}px b0' ] ]
             bar_title_el[ t, bar_title[], x, vx ]
-        el [ vx - x > pad * 2.0 ]
-            t['s{pi}_title'] = BarText [ label: bar_title_of[ pi ],
-                area: Region [
-                    'l{x + pad}px t0 w{vx - x - pad * 2.0}px b0' ] ]
         return t
 
     # a pane's menus from x0, its ids led by pre ('' the bar's)
@@ -17359,10 +17636,9 @@ element orbiter : trinity # implements compiler
         items : vec TrayEntry menus_of[ mp ]
         # a window's own menus (File ...) are all plain
         lead : bool [ !sys && pane_window[ mp ] == 0 ]
-        # the first menu reads as its app: a window's program (gedit,
-        # not File), else the app's own name (vscode, not File)
-        named : string [ (sys) ? ''
-            : (lead) ? app_name_of[ mp ] : window_program[ mp ] ]
+        # the first menu reads as its title: the window's or the
+        # app's own (a site's name), not File
+        named : string [ (sys) ? '' : tab_title[ mp ] ]
         if [ items ]
             for [ i: i32 0, i < items.count, i += 1 ]
                 e : TrayEntry items[ i ]
@@ -17372,7 +17648,8 @@ element orbiter : trinity # implements compiler
                 # the program's name takes the app tab's look, bold
                 if [ named.count > 0 ] lead = true
                 named = ''
-                mw : f32 [ (f32[ label.count ] * 9.5 + 22.0) * uu ]
+                mw : f32 [ min[ (f32[ label.count ] * 9.5 + 22.0) * uu,
+                                360.0 * uu ] ]
                 lit : bool [ (drawer_open && menu_kind == 'menu'
                              && menu_top == i && mp == active_pane)
                              || bar_hl == '{pre}menu_{i}' ]
@@ -17383,6 +17660,7 @@ element orbiter : trinity # implements compiler
                     progress: (lead) ? pane_build[ mp ] : -2.0,
                     area: Region [ 'l{x}px t0 w{mw}px b0' ] ]
                 x += mw
+                if [ lead ] x = group_tabs[ t, pre, mp, x, uu ]
                 lead = false
         # no menu read for it (a window not selected, nothing running):
         # its name, always
@@ -17392,12 +17670,32 @@ element orbiter : trinity # implements compiler
                 : ((pv && pv inherits EditorView)
                    ? (cast EditorView [ pv ]).title_text[] : '') ]
             if [ nm.count > 0 ]
-                nw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * uu ]
+                nw : f32 [ min[ (f32[ nm.count ] * 9.5 + 22.0) * uu,
+                                360.0 * uu ] ]
                 t['{pre}menu_0'] = MenuTop [ label: nm, at: 0,
                     pane: mp, selected: false, tab_on: true,
                     progress: pane_build[ mp ],
                     area: Region [ 'l{x}px t0 w{nw}px b0' ] ]
                 x += nw
+                x = group_tabs[ t, pre, mp, x, uu ]
+        return x
+
+    # a group's other members beside the shown one's name, each its
+    # own app name: a press shows it, a drag takes it out
+    func group_tabs [ t: Elements, pre: string, mp: i32, x0: f32,
+                      uu: f32 ] -> f32
+        x : f32 x0
+        g : i32 grp_of[ mp ]
+        if [ g < 0 ] return x
+        for [ q: i32 ] in grp_members[ g ]
+            if [ q == mp ] continue
+            gl : string pane_label[ q ]
+            gw : f32 [ min[ (f32[ gl.count ] * 9.5 + 22.0) * uu,
+                            360.0 * uu ] ]
+            t['{pre}gtab_{q}'] = MenuTop [ label: gl, at: -3,
+                pane: q, member: q, tab_on: true, other: true,
+                area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
+            x += gw
         return x
 
     # a close box let go over: its id says what it closes
@@ -17667,7 +17965,8 @@ element orbiter : trinity # implements compiler
         # the apps view installs: featured/ wraps others' software)
         am : path app_module[]
         fd : string '{path.path_startup[]}/featured/'
-        if [ am && !'{am}'.starts_with[ fd ] ]
+        # only while its code shows: the edit mode
+        if [ am && !'{am}'.starts_with[ fd ] && ed && !ed.app_view ]
             add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
                 action: 'orb.prule' ] ]
             add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
@@ -17790,12 +18089,6 @@ element orbiter : trinity # implements compiler
                 use_spacing: false,
                 area: Region [ 'l{xr - dw - gw}px t0 w{gw}px b0' ] ]
             dw += gw
-        tw : f32 [ bt.site_w ]
-        sx : f32 [ pad ]
-        room : f32 [ bw - dw - sx ]
-        t['bar_site'] = BarText [ label: tt,
-            mask_glow: vec4f [ 0.0, (tw > room) ? 24.0 : 0.0, 0.0, 0.0 ],
-            area: Region [ 'l{x + sx}px t0 w{room}px b0' ] ]
         if [ dw > 0.0 ]
             t['bar_domain'] = BarDomain [ label: dm,
                 secure: rv && rv.app_address
@@ -17803,28 +18096,14 @@ element orbiter : trinity # implements compiler
                 area: Region [
                     'l{xr - dw + pad}px t0 w{dw - 2.0 * pad}px b0' ] ]
 
-    # a running app's own title after its menus, cut with a fade;
-    # a press browses for what it loads
-    func bar_name_el [ t: Elements, tt: string, x: f32, xr: f32,
-                       key: string, pi: i32 ]
-        if [ xr <= x || tt.count == 0 ] return
-        # the load mark at its right: browse for what it loads, for
-        # an app whose argument is a resource it takes live
+    # the load mark at the right: browse for what the app loads, for
+    # one whose argument is a resource it takes live
+    func bar_load_el [ t: Elements, x: f32, xr: f32, key: string,
+                       pi: i32 ]
         lw : f32 [ 1.33 * unit_px[] ]
-        xe : f32 [ xr ]
         if [ xr - lw > x && pane_loads[ pi ] ]
             t['bar_load{key}'] = bar_icon[ 'eject', 0.5, false, false,
                 xr - lw, lw ]
-            xe = xr - lw
-        t['bar_name{key}'] = BarTitle [ label: '', site: tt,
-            area: Region [ 'l{x}px t0 w{xe - x}px b0' ] ]
-        bt : cast BarTitle [ find_el[ a, 'bar_name{key}' ] ]
-        pad : f32 [ 10.0 * ux_unit[ ux ] ]
-        room : f32 [ xe - x - pad ]
-        tw : f32 [ (bt) ? bt.site_w : 0.0 ]
-        t['bar_site{key}'] = BarText [ label: tt,
-            mask_glow: vec4f [ 0.0, (tw > room) ? 24.0 : 0.0, 0.0, 0.0 ],
-            area: Region [ 'l{x + pad}px t0 w{room}px b0' ] ]
 
     # the active pane shows a running app (not a window's)
     func bar_app_on [] -> bool
@@ -21095,6 +21374,9 @@ element orbiter : trinity # implements compiler
             'navapp' : (nav_app) ? NavOverlay [
                 area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
             # the phone's button: its switcher, and its dark screen
+            # a window's tab carried off its bar
+            'tab_ghost' : (tab_drag >= 0) ? TabGhost [ topmost: true,
+                area: Region { l0 t0 r0 b0 } ] : null,
             # a screenshot carried out of its drawer
             'shot_ghost' : (shot_drag) ? ShotGhost [ topmost: true,
                 area: Region { l0 t0 r0 b0 } ] : null,

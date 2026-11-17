@@ -16738,12 +16738,22 @@ in its app storage; its recent shots show in orbiter's standard
 drawer, newest first; a shot dragged from the drawer onto the
 console is a file drop (the console already types the path the
 way claude reads an image). Order:
-1. OPEN the module: `export startup`, its storage, the list.
-2. OPEN a key a service claims: orbiter sends it that key before
-   any focus; the capture through orbiter's own drag-a-box.
-3. OPEN its drawer of recent shots.
-4. OPEN a drag out of the drawer onto another app's pane (the
-   existing HM.drop path).
+Then (Nov 17, his: built as the video recording is): no service.
+BUILT, built, not run (needs orbiter's restart: trinity changed):
+the orbiter menu's Screenshots cell (sv_screenshots, trinity/images/
+screenshots.svg): take screen / take pane, ctrl / cmd + shift + 3
+or 4 (trinity hands the chord to the app first); shot_take shuts
+the drawer, 450 ms on the screen canvas (or the pane's part) to
+path_storage screenshots/<date time>.png, the drawer opens on it.
+ShotPick lists the folder newest first (AppIcon thumbnails); a
+drag past 6 px carries one (ShotGhost), let go over a pane it is a
+drop there (shot_drop: the console types the path); a click opens
+it in the active pane.
+Also, found on the way: trinity and orbiter linked -lutil on linux,
+which the drive tree lacks (glibc 2.34 on has forkpty in libc): the
+linux -lutil lines are gone (dbg.ag keeps one).
+OPEN: the keyboard module's export (Tables.ag ja_table) dies with
+SIGSEGV in every build here since trinity changed; products build.
 OPEN, asked: what opens the drawer (a menu tile, a bar icon, or
 a capture itself; a Mac shows the new shot as a thumbnail in a
 corner, dragged from there).
@@ -16757,8 +16767,41 @@ together. Switching inside a group keeps no size per app: every
 member takes the group's area. A dock icon's press toggles through
 that app's instances wherever they are (in a group, the one shown
 becomes that instance). Order:
-1. OPEN the handle: a drag from the bar's app name off the window.
-2. OPEN the drop: over another window, the two grouped.
-3. OPEN switching inside a group (how it shows: asked).
-4. OPEN the dock press cycles an app's instances across windows.
-OPEN, asked: how a group shows its members, and how one leaves it.
+BUILT, not run (Nov 17; needs orbiter's restart): orbiter
+pane_grp (persist, a group number a pane), grp_join, grp_leave,
+grp_show (take_place: the member shown takes the other's free
+rectangle, or its place in pane_seq; the rest hide_now: minimize
+with no fade), tab_drop.
+1. BUILT the handle: MenuTop (the app tab, tab_on) captures its
+   press; past 8 px the menu shuts and TabGhost follows the pointer.
+2. BUILT the drop: over another window (free ones from the top,
+   then docked) the two grouped, the dragged one shown; elsewhere
+   it leaves its group, free under the pointer.
+3. BUILT the other members' names after the shown one's menus
+   (MenuTop member: q); a press shows it. close_pane: another
+   member takes a closed one's place.
+4. BUILT the dock: app_step, each press the next pane running the
+   app (a group's member shown in the group's place); one in view
+   keeps the pin's own toggle.
+OPEN: a session restart does not keep groups (pane_grp persists
+across a reload only).
+
+## orbiter-os on itself — fixes (Nov 17 2026)
+
+1. BUILT, not run (needs orbiter's restart) the shared clipboard:
+   HostShared ends with clip_seq, clip_kind, clip_n, clip[8 MB]
+   (silver-host.c and devices.c alike); a copy writes it, on KMS a
+   paste reads it (text or png), whoever copied. A block from an
+   older supervisor (smaller) is not touched (g_hs_clip).
+   OPEN: Wayland programs' own clipboard (wlroots selection).
+2. DONE, tested in a hidden console: claude 2.1 draws on the
+   alternate screen and asks for the mouse (1000 1002 1003, 1006):
+   Console keeps mouse_report and mouse_sgr; the wheel goes to the
+   program as button 64 / 65 at the pointer's cell, one a notch.
+   Clicks still select text in the console.
+3. BUILT, not written: os-bootstrap copy_file keeps the source's
+   mode (it set 0755 on every file: the installed silver showed
+   3,045 files changed); a file skipped by time gets its mode back.
+4. OPEN orbiter draws 165 frames a second at rest: ToolRail is
+   animated: true in every pane (asked before changing).
+5. OPEN no app can keep the screen on (video, gamepad): asked.
