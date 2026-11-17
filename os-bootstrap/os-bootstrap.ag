@@ -3249,10 +3249,12 @@ element Bootstrap
         entries : d.ls[ null, false ]
         total : i64 [ 0 ]
         if [ !entries ] return 0
+        # as tar counts it: a 512 byte header an entry, data padded
         for [ e: path ] in entries
+            total += 512
             if [ e.is_symlink[] ] continue
             if [ e.is_dir[] ] total += tree_size[ '{e}' ]
-            el total += file_size[ '{e}' ]
+            el total += (file_size[ '{e}' ] + 511) / 512 * 512
         return total
 
     func assemble [] -> bool
@@ -4024,6 +4026,13 @@ element Bootstrap
             t : '/usr/bin/{nm}'
             add_file[ t ]
             add_deps[ t ]
+        # and every other program the base's packages hold
+        for [ dir: string ] in vec string [] [ 'bin', 'sbin' ]
+            d : path [ '{sysr}/usr/{dir}' ]
+            for [ f: path ] in d.ls[ null, false ]
+                t : '/usr/{dir}/{f.filename[]}'
+                add_file[ t ]
+                add_deps[ t ]
         # terminal descriptions: less, clear, nano, bash's line edits
         add_file[ '/usr/share/terminfo' ]
         # alsa's own configuration: every sound device open reads it

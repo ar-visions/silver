@@ -112,6 +112,11 @@ class UbuntuBase
                 'dbus-daemon', 'pci.ids', 'ca-certificates',
                 'linux-firmware', 'wireless-regdb', 'dhcpcd-base',
                 'make', 'python3',
+                'htop', 'lsof', 'strace', 'file', 'tree', 'rsync',
+                'wget', 'iputils-ping', 'iproute2', 'net-tools', 'zip',
+                'unzip', 'bc', 'jq', 'tmux', 'screen', 'bind9-dnsutils',
+                'netcat-openbsd', 'psmisc', 'man-db', 'traceroute',
+                'pciutils', 'usbutils', 'patch', 'bzip2', 'p7zip-full',
                 'libc6-dev', 'libgcc-13-dev', 'libstdc++-13-dev',
                 'libcrypt-dev', 'linux-libc-dev', 'libxcb1-dev',
                 'libxcb-randr0-dev', 'libxcb-sync-dev',
@@ -362,8 +367,8 @@ class UbuntuBase
         run[ 'rm -rf {tmp}' ]
         return true
 
-    # what the packages' own scripts would have made: the CA bundle
-    # and vi, from the files the packages carry
+    # what the packages' own scripts would have made: the CA bundle,
+    # vi, nc and traceroute, from the files the packages carry
     func finish []
         r : root[]
         ca : '{r}/etc/ssl/certs'
@@ -371,3 +376,5 @@ class UbuntuBase
         crt : '{ca}/ca-certificates.crt'
         run[ 'mkdir -p {ca} && cat {mz}/*.crt > {crt}' ]
         run[ 'ln -sf vim.tiny {r}/usr/bin/vi' ]
+        run[ 'ln -sf nc.openbsd {r}/usr/bin/nc' ]
+        run[ 'ln -sf traceroute.db {r}/usr/bin/traceroute' ]

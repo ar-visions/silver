@@ -8577,7 +8577,7 @@ AU_EXPORT string path_ext(path a) {
 AU_EXPORT string path_stem(path a) {
     cstr cs  = (cstr)a->chars; /// this can be a bunch of folders we need to make in a row
     sz   len = strlen(cs);
-    string res = new(string, alloc, 256);
+    string res = new(string, alloc, len + 1);
     sz     dot = 0;
     for (num i = len - 1; i >= 0; i--) {
         if (cs[i] == '.')
@@ -8597,7 +8597,7 @@ AU_EXPORT string path_stem(path a) {
 AU_EXPORT string path_filename(path a) {
     cstr cs  = (cstr)a->chars;
     sz   len = strlen(cs);
-    string res = new(string, alloc, 256);
+    string res = new(string, alloc, len + 1);
     for (num i = len - 1; i >= 0; i--) {
         if (cs[i] == '/' || i == 0) {
             cstr start = &cs[i + (cs[i] == '/')];

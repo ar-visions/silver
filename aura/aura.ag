@@ -316,16 +316,16 @@ element aura : trinity
         st  : u32
         off : u32
         fd  : i32
-        tt  : local i8 [ 256 ]
+        tt  : local i8 [ 8192 ]
         kind : i32 [
             aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st, @off,
-                             @fd, @tt[0], 256 ] ]
+                             @fd, @tt[0], 8192 ] ]
         while [ kind > 0 ]
             if [ kind == 2 ]
                 log 'aura: history back {fw != 0} forward {fh != 0}'
                 nav_state[ fw != 0, fh != 0 ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
-                                        @st, @off, @fd, @tt[0], 256 ]
+                                        @st, @off, @fd, @tt[0], 8192 ]
                 continue
             if [ kind == 3 ]
                 t_ : string[ @tt[0] ]
@@ -333,14 +333,14 @@ element aura : trinity
                 page_title = t_
                 set_title[ t_ ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
-                                        @st, @off, @fd, @tt[0], 256 ]
+                                        @st, @off, @fd, @tt[0], 8192 ]
                 continue
             if [ kind == 5 ]
                 page_y  = fw
                 page_h  = fh
                 page_vh = i32[ fmt ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
-                                        @st, @off, @fd, @tt[0], 256 ]
+                                        @st, @off, @fd, @tt[0], 8192 ]
                 continue
             if [ kind == 4 ]
                 a_ : string[ @tt[0] ]
@@ -349,7 +349,7 @@ element aura : trinity
                     set_address[ a_ ]
                     save-persistent[ a ]
                 kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod,
-                                        @st, @off, @fd, @tt[0], 256 ]
+                                        @st, @off, @fd, @tt[0], 8192 ]
                 continue
             key : string '{bid}'
             # a new size, or a pool long since replaced: start over
@@ -379,7 +379,7 @@ element aura : trinity
             tex = frames[ key ]
             got = true
             kind = aura_recv_frame[ ctl, @bid, @fw, @fh, @fmt, @mod, @st,
-                                    @off, @fd, @tt[0], 256 ]
+                                    @off, @fd, @tt[0], 8192 ]
         if [ got ]
             dma    = true
             shown += 1

@@ -1208,6 +1208,16 @@ it is built on. Today the tree is the host Ubuntu's own files.
       refuses the unlink, so a restarted orbiter never signals an old
       pid. devices built, init compiled (PC and arm64), tree written
       (134,081 entries). NOT booted.
+      Then (his: most unix tools, not only top): add_shell carries
+      every program of the base's usr/bin and usr/sbin with its
+      libraries (571 in usr/bin, was 111), and the base gains htop
+      lsof strace file tree rsync wget iputils-ping iproute2
+      net-tools zip unzip bc jq tmux screen bind9-dnsutils
+      netcat-openbsd psmisc man-db traceroute pciutils usbutils patch
+      bzip2 p7zip-full; Base.finish links nc and traceroute (Debian's
+      postinst names). init sets ping_group_range (ping as a user).
+      Checked: htop, strace, rsync run on the tree's libraries. Tree
+      written (134,850 entries, 9.28 GB). NOT booted.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/

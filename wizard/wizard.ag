@@ -2139,7 +2139,11 @@ element InstallWizard
                 s = step[ StepKind.run, 'Remove older orbiter-os entries' ]
                 s.cmd = grub_prune[ mt ]
             # the running system's own menu: its grub.cfg remade
-            if [ boot == BootKind.grub_debian && mt.starts_with[ '/etc/' ] ]
+            # the running root, even mounted again elsewhere
+            own_root : bool [ mt.starts_with[ '/etc/' ]
+                || (!fresh && rdev.count > 0
+                    && mounted_at[ rdev ] == '/') ]
+            if [ boot == BootKind.grub_debian && own_root ]
                 s = step[ StepKind.run, 'Update GRUB\'s menu' ]
                 s.cmd = 'update-grub'
                 grub_ran = true
@@ -2292,11 +2296,14 @@ element InstallWizard
         entries : d.ls[ null, false ]
         n : i64 [ 0 ]
         if [ !entries ] return 0
+        # as tar counts it: a 512 byte header an entry, data padded
         for [ e: path ] in entries
             s : '{e}'
-            if [ outside[ s ] || e.is_symlink[] ] continue
+            if [ outside[ s ] ] continue
+            n += 512
+            if [ e.is_symlink[] ] continue
             if [ e.is_dir[] ] n += tree_bytes[ s ]
-            el n += file_size[ s ]
+            el n += (file_size[ s ] + 511) / 512 * 512
         return n
 
     # a word for sh: in '', each ' as '\''
@@ -2799,21 +2806,29 @@ element InstallWizard
             if [ dry_run ]
                 note = 'Dry run: these steps would run. Nothing is '
                 note = '{note}written.'
-            y : f32 [ top ]
+            # the steps scroll in their box, clear of the buttons
+            rows : Elements []
+            y : f32 [ 0.0 ]
             for [ i: i32 0, i < plan.count, i += 1 ]
                 st : Step plan[ i ]
-                t[ 'plan_{i}' ] = WizSmall [
+                rows[ 'plan_{i}' ] = WizSmall [
                     label: '{i + 1}.  {st.title}',
-                    area: Region [ 'l1.4 t{y} r1.4 h0.75' ] ]
+                    area: Region { l0 t0.03+ r0 h0.75 } ]
                 y += 0.78
             for [ i: i32 0, i < notes.count, i += 1 ]
-                t[ 'notice_{i}' ] = WizNote [ label: notes[ i ],
-                    area: Region [ 'l1.4 t{y} r1.4 h0.8' ] ]
+                rows[ 'notice_{i}' ] = WizNote [ label: notes[ i ],
+                    area: Region { l0 t0+ r0 h0.8 } ]
                 y += 0.8
             for [ i: i32 0, i < problems.count, i += 1 ]
-                t[ 'problem_{i}' ] = WizWarn [ label: problems[ i ],
-                    area: Region [ 'l1.4 t{y} r1.4 h0.8' ] ]
+                rows[ 'problem_{i}' ] = WizWarn [ label: problems[ i ],
+                    area: Region { l0 t0+ r0 h0.8 } ]
                 y += 0.8
+            pb : element (panel && panel.elements)
+                ? panel.elements[ 'plan' ] : null
+            pu : f32 [ (pb && pb.fc > 0.0) ? pb.fc : 22.0 ]
+            t[ 'plan' ] = ListRows [ content_h: y * pu,
+                area: Region [ 'l1.4 t{top} r1.4 b3.3' ],
+                elements: rows ]
         el
             done : i32 [ step_at ]
             title = (failed) ? 'The install stopped'
@@ -2850,7 +2865,8 @@ element InstallWizard
             if [ total > 0 ]
                 cp : f32 [ f32[ copied ] / f32[ total ] ]
                 if [ cp > 1.0 ] cp = 1.0
-                cl : 'Copied {size_text[ copied ]}'
+                shown_c : i64 [ (copied < total) ? copied : total ]
+                cl : 'Copied {size_text[ shown_c ]}'
                 cl = '{cl} of {size_text[ total ]}'
                 t[ 'copy' ] = WizSmall [ area: row[ top + 2.0 ],
                                          label: cl ]

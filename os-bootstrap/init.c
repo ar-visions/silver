@@ -1394,6 +1394,9 @@ int main(void) {
     // the kernel's own driver requests: our modprobe's place
     int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);
     if (kp >= 0) { write(kp, MODPROBE, strlen(MODPROBE)); close(kp); }
+    // ping as the user: any group may open an echo socket
+    int pg = open("/proc/sys/net/ipv4/ping_group_range", O_WRONLY);
+    if (pg >= 0) { write(pg, "0 2147483647", 12); close(pg); }
     user_read();
     phone_find();
     phone_early();

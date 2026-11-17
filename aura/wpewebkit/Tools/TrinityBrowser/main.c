@@ -21,11 +21,9 @@
 #include <wpe/webkit.h>
 
 #define FRAME_MAGIC 0x57425254u
-// sites challenge WPE's own agent; pose as Safari on a Mac
-#define SAFARI_AGENT "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " \
+// what it is: WebKit on Linux, as Epiphany says it
+#define SAFARI_AGENT "Mozilla/5.0 (X11; Linux x86_64) " \
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Safari/605.1.15"
-#define MAC_PLATFORM_SCRIPT "Object.defineProperty(Navigator.prototype, " \
-    "'platform', { get: () => 'MacIntel' });"
 // the page's scroll place, height and view height, CSS px, on each
 // change: the element draws trinity's own bar from them
 #define SCROLL_SCRIPT "(function(){var p=-1,q=-1,r=-1;function s(){" \
@@ -226,8 +224,9 @@ static void publishText(uint32_t magic, const char* text)
     if (!text)
         text = "";
     size_t len = strlen(text);
-    if (len > 200)
-        len = 200;
+    // the element reads at most 8191 bytes
+    if (len > 8191)
+        len = 8191;
     FrameRecord rec = { magic, ++frameSeq, (uint32_t)len, 0, 0, 0, 0, 0, 0, 0 };
     if (send(STDIN_FILENO, &rec, sizeof rec, MSG_NOSIGNAL) == (ssize_t)sizeof rec && len)
         (void)!send(STDIN_FILENO, text, len, MSG_NOSIGNAL);
@@ -787,13 +786,7 @@ int main(int argc, char** argv)
     webkit_settings_set_user_agent(webkit_web_view_get_settings(webView), agent ? agent : SAFARI_AGENT);
     if (consoleOut)
         webkit_settings_set_enable_write_console_messages_to_stdout(webkit_web_view_get_settings(webView), TRUE);
-    // the agent says Mac: navigator.platform must agree
-    WebKitUserScript* platform = webkit_user_script_new(MAC_PLATFORM_SCRIPT,
-        WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     WebKitUserContentManager* content = webkit_web_view_get_user_content_manager(webView);
-    if (!agent)
-        webkit_user_content_manager_add_script(content, platform);
-    webkit_user_script_unref(platform);
     WebKitUserScript* scrolls = webkit_user_script_new(SCROLL_SCRIPT,
         WEBKIT_USER_CONTENT_INJECT_TOP_FRAME, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START, NULL, NULL);
     webkit_user_content_manager_add_script(content, scrolls);
