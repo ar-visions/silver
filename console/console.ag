@@ -1,6 +1,8 @@
 export 0.1.0
 export software ['everyday']
 export widget ['6x3']
+# it runs as the user, not as silver: it is their shell
+export as_user: true
 
 import vec
 import img

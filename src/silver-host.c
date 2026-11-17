@@ -1824,6 +1824,28 @@ static int view_wants(const char* app, const char* key) {
     return 0;
 }
 
+// the module's export line `key: [ ... ]` names this word
+static int view_says(const char* app, const char* key, const char* word) {
+    char f[4300], buf[65536];
+    snprintf(f, sizeof(f), "%s/install/export/silver-%s.agi",
+             SILVER_ROOT, app);
+    FILE* fh = fopen(f, "r");
+    if (!fh) return 0;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fh);
+    fclose(fh);
+    buf[n] = 0;
+    size_t kl = strlen(key);
+    for (char* l = buf; l && *l;) {
+        char* end = strchr(l, '\n');
+        if (strncmp(l, key, kl) == 0 && l[kl] == ':') {
+            if (end) *end = 0;
+            return strstr(l + kl, word) != NULL;
+        }
+        l = end ? end + 1 : NULL;
+    }
+    return 0;
+}
+
 // signins: aura's cookies for each site the module names (and
 // its subdomains), read only, at their own paths
 static void view_signins(const char* app) {
@@ -2392,22 +2414,6 @@ static void bound_lock(const char* app, int argc, char** argv) {
             free(found[i]);
         }
         free(found);
-        // the console's git and ssh see the user's keys and settings,
-        // read only, at their own places in its home
-        const char* real = getenv("HOME");
-        if (strcmp(app, "console") == 0 && real && *real) {
-            const char* keys[] = { ".ssh", ".gitconfig" };
-            for (int i = 0; i < 2; i++) {
-                char src[4600], at[4600];
-                struct stat st;
-                snprintf(src, sizeof(src), "%s/%s", real, keys[i]);
-                snprintf(at, sizeof(at), VIEW_ROOT "%s", src);
-                if (stat(src, &st) == 0 &&
-                    view_graft(src, at, S_ISDIR(st.st_mode), 0) == 0)
-                    fprintf(stderr, "silver-host: %s into %s's view\n",
-                        src, app);
-            }
-        }
         // orbiter's later shares reach the app through this
         mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||
@@ -2714,7 +2720,10 @@ int main(int argc, char** argv) {
         prctl(PR_SET_PDEATHSIG, SIGKILL);
         const char* sv = getenv("SILVER_SUPERVISOR");
         if (sv && atoi(sv) > 0 && getppid() != atoi(sv)) _exit(0);
-        bound_lock(name, argc, argv);
+        // `export as_user true`: the user's own, no view;
+        // every other app runs as silver, in its view
+        if (!view_says(name, "as_user", "true"))
+            bound_lock(name, argc, argv);
     }
 #endif
     cd_share(bindir, name);

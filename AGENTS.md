@@ -1218,6 +1218,18 @@ it is built on. Today the tree is the host Ubuntu's own files.
       postinst names). init sets ping_group_range (ping as a user).
       Checked: htop, strace, rsync run on the tree's libraries. Tree
       written (134,850 entries, 9.28 GB). NOT booted.
+   x. BUILT, not booted (Nov 17, his boot): Google sign-in in aura
+      failed (window.open ignored: the helper now shows a popup in
+      aura's place until it closes; tested here to Google's page);
+      long addresses crashed orbiter (Au path_stem / path_filename
+      256 byte buffer) and were cut at 200 bytes (8 KB now); the
+      agent says Linux; aura's Clear cookies action; Wi-Fi keeps
+      the chosen network while a scan drops it, and its password
+      box sits in one card with it; the console runs unbound as
+      the user (silver-host skips the view; real HOME), bash keeps
+      history per command (PROMPT_COMMAND history -a); the wizard
+      runs update-grub on its own root, counts the copy as tar
+      does, scrolls the review's steps.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/

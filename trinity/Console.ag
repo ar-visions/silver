@@ -126,6 +126,8 @@ class ConsoleSession
             if [ cwd && cwd.count > 0 ] chdir[ cwd.chars ]
             setenv[ 'TERM', 'xterm-256color', 1 ]
             setenv[ 'COLORTERM', 'truecolor', 1 ]
+            # each command kept at once, not only at a clean exit
+            setenv[ 'PROMPT_COMMAND', 'history -a', 1 ]
             if [ launch_cmd && launch_cmd.count > 0 ]
                 dashc : string '-c'
                 ec    : string 'exec {launch_cmd}'
