@@ -1364,7 +1364,8 @@ static void kms_stop_boot_picture(void) {
     if (fscanf(f, "%d", &pid) != 1) pid = 0;
     fclose(f);
     if (pid <= 1 || pid == getpid()) return;
-    unlink("/run/bootcube.pid");
+    // as a user /run is not ours: the file (ours) is emptied instead
+    if (unlink("/run/bootcube.pid")) truncate("/run/bootcube.pid", 0);
     kill(pid, SIGTERM);
     char st[64];
     snprintf(st, sizeof st, "/proc/%d/stat", pid);
@@ -1392,10 +1393,13 @@ int platform_kms_open(int minor) {
         fprintf(stderr, "kms: %s: %s\n", path, strerror(errno));
         return -1;
     }
-    // a closing holder can keep the screen a moment longer
+    // a closing holder can keep the screen a moment longer; a user
+    // (not root) gets it only by an open made while it is free
     int held = drmSetMaster(fd);
     for (int i = 0; held && i < 40; i++) {
         usleep(50000);
+        int again = open(path, O_RDWR | O_CLOEXEC);
+        if (again >= 0) { close(fd); fd = again; }
         held = drmSetMaster(fd);
     }
     if (held) fprintf(stderr, "kms: not master of %s: %s\n", path, strerror(errno));

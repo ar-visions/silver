@@ -846,6 +846,8 @@ static void boot_cube(const char* init) {
     int k = snprintf(num, sizeof num, "%d\n", (int)p);
     int fd = open("/run/bootcube.pid", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { write(fd, num, k); close(fd); }
+    // the shell (the user) removes it when it takes the screen
+    chown("/run/bootcube.pid", g_uid, g_uid);
 }
 
 // start the modem stack in dependency order

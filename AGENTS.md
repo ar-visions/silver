@@ -1195,6 +1195,19 @@ it is built on. Today the tree is the host Ubuntu's own files.
       bound_lock, after the launch paths' shares; console alone), so
       git and ssh in the console use his keys. console and orbiter
       launchers rebuilt; tree written (134,067 entries). NOT seen.
+      Then (his boot, Nov 16 22:02: the avatar, then a still screen
+      with the cursor in the middle; the mouse moved in orbiter, its
+      log has presses all over its login page): boot.log said "kms:
+      not master of /dev/dri/card1: Permission denied", then
+      "SetCrtc ... Permission denied". As a user (not root) a card
+      opened while another process holds the screen never gets it:
+      drmSetMaster answers EACCES forever (root retried until bootcube
+      let go). devices platform_kms_open reopens the card on each
+      retry (a fresh open takes a free screen). /run/bootcube.pid is
+      the user's (init chowns it); devices empties it when /run (root's)
+      refuses the unlink, so a restarted orbiter never signals an old
+      pid. devices built, init compiled (PC and arm64), tree written
+      (134,081 entries). NOT booted.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/
