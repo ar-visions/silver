@@ -6562,6 +6562,15 @@ element orbiter : trinity # implements compiler
                 host_backlight_set[ (dim) ? set_light / 3.0 : set_light ]
             if [ off > 0 && idle >= off ] screen_set[ false ]
             return
+        # a PC wakes on any key, press or move of the mouse
+        if [ !use_mobile ]
+            moved : bool [ w.last_move.x != pointer_was.x
+                || w.last_move.y != pointer_was.y ]
+            if [ moved || w.user_us > dark_us ]
+                pointer_was = w.last_move
+                screen_set[ true ]
+            # NVIDIA refuses mem sleep from here: no sleep on a PC
+            return
         sl : i64 time_words[ set_sleep ]
         if [ sl < 0 || talk ] return
         # woken, a while to take what woke it (a text, a call)
