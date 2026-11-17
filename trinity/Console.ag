@@ -5,8 +5,7 @@ ifdef [ apple ]
     import <util.h>     # forkpty/openpty live in util.h on macOS
         -lutil
 ifdef [ linux ]
-    import <pty.h>
-        -lutil
+    import <pty.h>      # glibc 2.34 on: forkpty is in libc
 ifdef [ android ]
     import <pty.h>      # bionic carries forkpty in libc, no -lutil
 ifdef [ windows ]

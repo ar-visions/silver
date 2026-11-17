@@ -66,7 +66,6 @@ ifdef [ apple ]
         -lutil
 ifdef [ linux ]
     import <pty.h>
-        -lutil
     import <crypt.h>
         -lcrypt
 ifdef [ windows ]
@@ -2411,6 +2410,144 @@ element DeskWidget
         o : orbiter orb[]
         av : AppView (o) ? o.widget_view[ index ] : null
         return av != null && !editing[] && av.app_words
+
+# the screenshots panel's pictures, newest first, as many as fit; a
+# press and a drag past 6 px carries one out (a drop where it is let
+# go), a click opens it in the active pane
+element ShotPick
+    mutable shots  : vec path
+    mutable icons  : map AppIcon [ string ]
+    mutable cell_x : vec f32
+    mutable cell_y : vec f32
+    mutable cell_w : f32
+    mutable cell_h : f32
+    mutable from   : vec2f
+    mutable held   : i32 [ -1 ]
+    mutable moved  : bool
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func icon_of [ f: path ] -> AppIcon
+        if [ !icons ] icons = map AppIcon [ string ] []
+        k : string '{f}'
+        ic : AppIcon icons[ k ]
+        if [ !ic ]
+            ic = AppIcon [ file: f, icon_file: f ]
+            icons[ k ] = ic
+        return ic
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        side : f32 [ round[ 120.0 * un ] ]
+        cell_w = side + round[ 16.0 * un ]
+        cell_h = side + round[ 30.0 * un ]
+        cols : i32 [ max[ 1, i32[ bounds.w / cell_w ] ] ]
+        rows : i32 [ max[ 1, i32[ bounds.h / cell_h ] ] ]
+        fp : i32 [ i32[ round[ 14.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        shots  = o.shot_files[]
+        cell_x = vec f32 []
+        cell_y = vec f32 []
+        if [ shots.count == 0 ]
+            cv.fill_color[ rgba [ '#ffffff88' ] ]
+            cv.draw_text[ 'no screenshots yet: ctrl + shift + 3',
+                rect [ x: 0.0, y: 0.0, w: bounds.w, h: cell_h * 0.5 ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
+        n : i32 [ min[ i32[ shots.count ], cols * rows ] ]
+        for [ k: i32 0, k < n, k += 1 ]
+            cx : f32 [ f32[ k % cols ] * cell_w ]
+            cy : f32 [ f32[ k / cols ] * cell_h ]
+            cell_x.push[ cx ]
+            cell_y.push[ cy ]
+            f : path shots[ k ]
+            if [ k == held && moved ]
+                cv.fill_color[ rgba [ '#4d3dbc66' ] ]
+                cv.rounded_rect[ cx + 2.0, cy, cell_w - 4.0,
+                                 cell_h - 4.0, 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint[]
+            ic : AppIcon icon_of[ f ]
+            ic.paint[ cv, cx + (cell_w - side) * 0.5, cy + 4.0, side ]
+            nm : string f.stem[]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ nm, rect [ x: cx, y: cy + side + 6.0,
+                w: cell_w, h: 20.0 * un ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+        cv.set_font[ null ]
+
+    func at [ p: vec2f ] -> i32
+        if [ !cell_x ] return -1
+        for [ i: i32 0, i < cell_x.count, i += 1 ]
+            if [ p.x >= cell_x[ i ] && p.x < cell_x[ i ] + cell_w
+                 && p.y >= cell_y[ i ] && p.y < cell_y[ i ] + cell_h ]
+                return i
+        return -1
+
+    func on_press [ ev: Event ]
+        ev.no_default = true
+        held  = at[ ev.mouse.pos ]
+        moved = false
+        from  = ev.mouse.pos
+        if [ held >= 0 ] set_capture[]
+
+    func on_move [ ev: Event ]
+        if [ held < 0 ] return
+        o : orbiter orb[]
+        dx : f32 [ ev.mouse.pos.x - from.x ]
+        dy : f32 [ ev.mouse.pos.y - from.y ]
+        if [ !moved && dx * dx + dy * dy > 36.0 ]
+            moved = true
+            if [ o ] o.shot_drag = shots[ held ]
+            pristine = false
+        if [ ux ] ux.will_animate = true
+
+    func on_release [ ev: Event ]
+        o : orbiter orb[]
+        h : i32 [ held ]
+        held = -1
+        release_capture[]
+        if [ !o || h < 0 || !shots || h >= shots.count ] return
+        f : path shots[ h ]
+        o.shot_drag = null
+        pristine = false
+        if [ moved ]
+            moved = false
+            p : vec2f ev.mouse.pos
+            out : bool [ p.x < 0.0 || p.y < 0.0
+                || p.x >= bounds.w || p.y >= bounds.h ]
+            if [ out ] o.shot_drop[ f ]
+            return
+        o.drawer_shut[]
+        o.open_in_pane[ f, o.active_pane ]
+
+# a shot being dragged: its picture under the pointer, over all
+element ShotGhost
+    animated    : true
+    user_events : false
+    mutable icon : AppIcon
+    mutable for_ : path
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !o || !o.shot_drag ] return
+        if [ !icon || '{for_}' != '{o.shot_drag}' ]
+            for_ = o.shot_drag
+            icon = AppIcon [ file: for_, icon_file: for_ ]
+        cv : Canvas w.screen
+        side : f32 [ round[ 120.0 * ux_unit[ ux ] ] ]
+        m : vec2f w.last_move
+        cv.save[]
+        cv.set_opacity[ 0.85 ]
+        icon.paint[ cv, m.x - side * 0.5, m.y - side * 0.5, side ]
+        cv.restore[]
 
 # the menu's widgets: each module that is one, as a card; lit while
 # on the desktop; a tap puts it on or takes it off
@@ -5545,6 +5682,12 @@ element orbiter : trinity # implements compiler
     mutable rec_want      : i32 [ -1 ]
     # the folder the last take was saved in: the next one starts there
     mutable rec_dir       : path
+    # a screenshot due (epoch ms, 0 none) once the drawer is away;
+    # the pane it crops to (-1 the whole screen)
+    mutable shot_at       : i64
+    mutable shot_pane     : i32
+    # a shot dragged out of the drawer, and where the press began
+    mutable shot_drag     : path
     # minimized free windows: each one's instance and x y w h px
     mutable mini_iids     : vec i32
     # panes put out of view by their task button: kept whole (editor,
@@ -7641,6 +7784,93 @@ element orbiter : trinity # implements compiler
             if [ av && !av.ended && av.slot >= 0 ]
                 agent_sock_send[ av.sock_name[].chars, 'record stop\n' ]
         rec_iid = -2
+
+    # screenshots' own folder: its app storage
+    func shot_dir [] -> path
+        d : path path.path_storage[ 'screenshots' ]
+        d.make_dir[]
+        return d
+
+    # a shot asked: the drawer goes first, the picture a moment after
+    func shot_take [ pane: bool ]
+        shot_pane = (pane) ? active_pane : -1
+        shot_at   = epoch_millis[] + 450
+        if [ drawer_open ] drawer_shut[]
+        if [ ux ] ux.will_animate = true
+
+    # an element's place in the window, its parents' scrolls taken off
+    func world_rect [ e: element ] -> rect
+        r : rect [ x: 0.0, y: 0.0, w: (e.bounds) ? e.bounds.w : 0.0,
+                   h: (e.bounds) ? e.bounds.h : 0.0 ]
+        for [ c: element* e, c, c = c.parent ]
+            if [ c.bounds ]
+                r.x += c.bounds.x
+                r.y += c.bounds.y
+            if [ c.parent && !c.no_scroll ]
+                r.x -= c.parent.scroll.x
+                r.y -= c.parent.scroll.y
+        return r
+
+    # the shot when due: the screen as last drawn (or the pane's part)
+    # to a png, then the drawer open on the shots
+    func shot_tick []
+        if [ shot_at == 0 || !ux ] return
+        ux.will_animate = true
+        if [ epoch_millis[] < shot_at ] return
+        shot_at = 0
+        scv : Canvas [ ux.screen ]
+        if [ !scv || !scv.color || !scv.color.vk_image ] return
+        im : Image [ scv.color ]
+        if [ shot_pane >= 0 ]
+            pv : element pane_view[ shot_pane ]
+            if [ pv && pv.bounds ]
+                r : rect world_rect[ pv ]
+                sc : f32 [ (ux.scale > 0.0) ? ux.scale : 1.0 ]
+                im = im.crop[ i32[ r.x * sc ], i32[ r.y * sc ],
+                              i32[ r.w * sc ], i32[ r.h * sc ] ]
+        if [ !im ] return
+        now : i64 [ time[ null ] ]
+        tm : struct tm
+        localtime_r[ @now, @tm ]
+        b : local i8 [ 64 ]
+        fmt : '%Y-%m-%d %H.%M.%S'
+        strftime[ @b[0], 64, fmt.chars, @tm ]
+        stamp : string [ @b[0] ]
+        f : path '{shot_dir[]}/{stamp}.png'
+        im.png[ f ]
+        log 'screenshots: {f}'
+        sys_view = 'screenshots'
+        drawer_toggle[ 'system', false ]
+
+    # the folder's pictures, newest first
+    public func shot_files [] -> vec path
+        out : vec path []
+        tms : vec i64 []
+        d : path shot_dir[]
+        entries : d.ls[ null, false ]
+        if [ !entries ] return out
+        for [ j: i32 0, j < entries.count, j += 1 ]
+            f : path entries[ j ]
+            if [ f.ext[] != 'png' ] continue
+            t : i64 f.modified_time[]
+            i : i32 [ 0 ]
+            while [ i < tms.count && tms[ i ] >= t ] i += 1
+            out.insert[ f, i ]
+            tms.insert[ t, i ]
+        return out
+
+    # a shot let go over the window: the element under it takes it as
+    # a dropped file (a console types its path, read as an image)
+    public func shot_drop [ f: path ]
+        if [ !ux || !ux.root ] return
+        ev : Event []
+        ev.mouse.pos = ux.last_move
+        ev.key.text  = '{f}'
+        t : element ux.find_target[ ux.root, ev, null ]
+        for [ e: element* t, e, e = e.parent ]
+            ev.target = e
+            e.on_drop*[ ev ]
+            if [ ev.no_default ] return
 
     # the take's clock in the record tab, a second at a time; an app
     # that ended took its take with it
@@ -13296,6 +13526,11 @@ element orbiter : trinity # implements compiler
             open_in_pane[ path '{rec_path}', active_pane ]
             ev.no_default = true
             return
+        if [ ev.target.id == 'shot_screen'
+             || ev.target.id == 'shot_pane' ]
+            shot_take[ ev.target.id == 'shot_pane' ]
+            ev.no_default = true
+            return
         if [ ev.target.id == 'rec_toggle' ]
             rec_toggle[]
             if [ ux ] ux.restyle = true
@@ -14218,6 +14453,12 @@ element orbiter : trinity # implements compiler
             if [ ev.key.state == 1 ]
                 keys_force = (keys_up[]) ? -1 : 1
                 if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # ctrl / cmd + shift + 3: a screenshot of the whole screen
+        if [ ev.key.unicode == 51 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ ev.key.state == 1 ] shot_take[ false ]
             ev.no_default = true
             return
         # ctrl / cmd + shift + R: a ready reload, the session saved
@@ -19622,6 +19863,32 @@ element orbiter : trinity # implements compiler
                 'l{gap}px t{top + gap}px r{gap}px h{y}px' ] ]
         return t
 
+    # the screenshots panel: take one (the screen, or the active
+    # pane), then the folder's pictures, newest first, dragged out
+    # onto a pane as a dropped file
+    func shots_body [] -> Elements
+        t : Elements []
+        un : f32 unit_px[]
+        ch : f32 [ round[ 1.1 * un ] ]
+        gap : f32 [ round[ 0.3 * un ] ]
+        sg : Elements []
+        sg['shot_take'] = RoundTab [
+            buttons: vec string [] [ 'shot_screen', 'shot_pane' ],
+            icon_ids: vec string [] [ '_text', '_text' ],
+            labels: vec string [] [ 'take screen', 'take pane' ],
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            label_px: 0.5 * ch, manual: true,
+            seg_radius: ch * 0.5, use_spacing: false,
+            rest_fill: rgba [ '#00000026' ],
+            area: Region [ 'l{gap}px t{ch}px r{gap}px h{ch}px' ] ]
+        top : f32 [ ch * 2.0 + gap ]
+        sg['shot_pick'] = ShotPick [
+            area: Region [ 'l{gap}px t{top}px r{gap}px b{gap}px' ] ]
+        t['shot_group'] = SetGroup [ title: 'screenshots', head_h: ch,
+            elements: sg,
+            area: Region [ 'l{gap}px t0 r{gap}px b0' ] ]
+        return t
+
     # the widgets panel: each widget's card in a group, as many
     # rows as the panel's width needs
     func widgets_body [] -> Elements
@@ -20119,6 +20386,9 @@ element orbiter : trinity # implements compiler
         el [ tab == 'display' ]
             t['set_body'] = element [ area: Region [ body ],
                 elements: display_body[] ]
+        el [ tab == 'screenshots' ]
+            t['set_body'] = element [ area: Region [ body ],
+                elements: shots_body[] ]
         el [ tab == 'sound' ]
             t['set_body'] = element [ area: Region [ body ],
                 elements: sound_body[] ]
@@ -20479,6 +20749,7 @@ element orbiter : trinity # implements compiler
             ids.push[ 'sv_mouse' ]
         ids.push[ 'sv_keyboard' ]
         ids.push[ 'sv_display' ]
+        ids.push[ 'sv_screenshots' ]
         ids.push[ 'sv_sound' ]
         batt_sync[]
         if [ batt_have == 1 ] ids.push[ 'sv_battery' ]
@@ -20601,6 +20872,7 @@ element orbiter : trinity # implements compiler
                 w.will_animate = true
         mirror_source[ w ]
         rec_tick[]
+        shot_tick[]
         if [ !set_applied ]
             set_applied = true
             apply_settings[ w ]
@@ -20823,6 +21095,9 @@ element orbiter : trinity # implements compiler
             'navapp' : (nav_app) ? NavOverlay [
                 area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
             # the phone's button: its switcher, and its dark screen
+            # a screenshot carried out of its drawer
+            'shot_ghost' : (shot_drag) ? ShotGhost [ topmost: true,
+                area: Region { l0 t0 r0 b0 } ] : null,
             'switcher' : (switcher) ? Switcher [
                 area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
             'avatar' : CornerAvatar [ topmost: true,

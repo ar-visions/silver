@@ -16726,3 +16726,24 @@ In order:
    container shrunk, a boot stub with m1n1 and U-Boot, an EFI
    partition, our root; the user's own step: a restart into
    recovery to allow the third-party kernel.
+
+## screenshots service — live list (Nov 17 2026)
+
+the user, on orbiter-os: an app `screenshots`, a service that runs
+from orbiter's start; it registers its keys with orbiter as a
+Mac has them (cmd / ctrl + shift + 3 the whole screen, + 4 a
+region, + 5 the capture choices; the exchange keeps ctrl + shift
++ S); shots go
+in its app storage; its recent shots show in orbiter's standard
+drawer, newest first; a shot dragged from the drawer onto the
+console is a file drop (the console already types the path the
+way claude reads an image). Order:
+1. OPEN the module: `export startup`, its storage, the list.
+2. OPEN a key a service claims: orbiter sends it that key before
+   any focus; the capture through orbiter's own drag-a-box.
+3. OPEN its drawer of recent shots.
+4. OPEN a drag out of the drawer onto another app's pane (the
+   existing HM.drop path).
+OPEN, asked: what opens the drawer (a menu tile, a bar icon, or
+a capture itself; a Mac shows the new shot as a thumbnail in a
+corner, dragged from there).

@@ -5276,6 +5276,12 @@ Display Window
              && (ev.key.ctrl || ev.key.meta) ]
             if [ app_object ] app_object.on_key*[ ev ]
             return
+        # ctrl / cmd + shift + 3: the app's (orbiter's screenshot),
+        # before any field takes it
+        if [ ev.key.unicode == 51 && ev.key.shift
+             && (ev.key.ctrl || ev.key.meta) ]
+            if [ app_object ] app_object.on_key*[ ev ]
+            return
         # ctrl / cmd + shift + R: the app's hot reload, when one is
         # ready; the app first (it may keep its state), else the go
         if [ ev.key.unicode == 82 && ev.key.shift
