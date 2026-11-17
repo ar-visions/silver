@@ -16747,3 +16747,18 @@ way claude reads an image). Order:
 OPEN, asked: what opens the drawer (a menu tile, a bar icon, or
 a capture itself; a Mac shows the new shot as a thumbnail in a
 corner, dragged from there).
+
+## window groups — live list (Nov 17 2026)
+
+the user, on orbiter-os: each window's app menu name in its bar is a
+handle. Dragged off its window and let go over another window, the
+two become one group: one window area, one size, any kinds of app
+together. Switching inside a group keeps no size per app: every
+member takes the group's area. A dock icon's press toggles through
+that app's instances wherever they are (in a group, the one shown
+becomes that instance). Order:
+1. OPEN the handle: a drag from the bar's app name off the window.
+2. OPEN the drop: over another window, the two grouped.
+3. OPEN switching inside a group (how it shows: asked).
+4. OPEN the dock press cycles an app's instances across windows.
+OPEN, asked: how a group shows its members, and how one leaves it.

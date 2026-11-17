@@ -106,6 +106,10 @@ class ConsoleSession
     # its text's own background colours over what is behind
     # (1 solid; the agent view's consoles see the platform)
     public  cell_alpha  : f32 [ 1.0 ]
+    # the program asked for the mouse (1000 1002 1003), in the SGR
+    # form (1006): the wheel goes to it, as a terminal's does
+    mutable mouse_report : bool
+    mutable mouse_sgr    : bool
 
     func init []
         scrollback  = list string []
@@ -561,6 +565,10 @@ class ConsoleSession
                     leave_alt[]
             el [ m == 2004 ]
                 bracketed_paste = on
+            el [ m == 1000 || m == 1002 || m == 1003 ]
+                mouse_report = on
+            el [ m == 1006 ]
+                mouse_sgr = on
 
     # RIS — full reset to a clean main screen.
     func reset_all []
@@ -571,6 +579,8 @@ class ConsoleSession
         scroll_top = 0
         scroll_bot = rows - 1
         app_cursor = false
+        mouse_report = false
+        mouse_sgr    = false
         scrollback = list string []
         sb_cells   = vec TermCell []
         sb_off     = vec i32 []
@@ -1883,12 +1893,45 @@ element Console
     func scroll_by [ s: ConsoleSession, dy: f32 ]
         set_scroll[ s, s.scroll_goal + dy ]
 
+    # the wheel as mouse buttons 64 (up) and 65 (down), one a notch
+    # (a notch is 4 of the wheel's units), at the pointer's cell
+    func wheel_report [ s: ConsoleSession, ev: Event, lh: f32 ]
+        ele : Layer (layers) ? layers[ 'content' ] : null
+        cw : f32 [ (s.cw_cache > 0.0) ? s.cw_cache : 8.0 ]
+        col : i32 [ 1 ]
+        row : i32 [ 1 ]
+        if [ ele && ele.bounds ]
+            col = clamp[ i32[ (ev.mouse.pos.x - ele.bounds.x) / cw ] + 1,
+                         1, s.cols ]
+            row = clamp[ i32[ (ev.mouse.pos.y - ele.bounds.y) / lh ] + 1,
+                         1, s.rows ]
+        s.wheel_accum = s.wheel_accum + ev.mouse.wheel_delta.y / 4.0
+        while [ s.wheel_accum >= 1.0 || s.wheel_accum <= -1.0 ]
+            up : bool [ s.wheel_accum > 0.0 ]
+            s.wheel_accum = s.wheel_accum + ((up) ? -1.0 : 1.0)
+            b : i32 [ (up) ? 64 : 65 ]
+            if [ s.mouse_sgr ]
+                s.send_esc[ '[<{b};{col};{row}M' ]
+            el
+                bs : local i8 [ 4 ]
+                bs[0] = i8[ 32 + b ]
+                bs[1] = i8[ min[ 32 + col, 255 ] ]
+                bs[2] = i8[ min[ 32 + row, 255 ] ]
+                bs[3] = 0
+                ms : string [ @bs[0] ]
+                s.send_esc[ '[M{ms}' ]
+
     func on_wheel [ ev: Event ]
         s : ConsoleSession session[]
         if [ !s ] return
         # its text scrolls: no default
         ev.no_default = true
         lh : f32 [ (s.lh_cache > 0.0) ? s.lh_cache : 22.0 ]
+        # the program reads the mouse (claude's own scrolling view):
+        # a wheel event at the pointer's cell for each notch
+        if [ s.mouse_report ]
+            wheel_report[ s, ev, lh ]
+            return
         # sideways: shift + wheel, or the wheel's own x
         dx : f32 [ ev.mouse.wheel_delta.x ]
         if [ ev.key.shift || (ux && ux.shift) ]

@@ -7819,7 +7819,7 @@ element orbiter : trinity # implements compiler
         if [ epoch_millis[] < shot_at ] return
         shot_at = 0
         scv : Canvas [ ux.screen ]
-        if [ !scv || !scv.color || !scv.color.vk_image ] return
+        if [ !scv || !scv.color ] return
         im : Image [ scv.color ]
         if [ shot_pane >= 0 ]
             pv : element pane_view[ shot_pane ]

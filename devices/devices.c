@@ -2924,7 +2924,11 @@ void platform_mic_close(void) {
     g_mic = NULL;
 }
 
+static int   shared_clip_put(int kind, const void* data, int n);
+static char* shared_clip_get(int kind, int* n);
+
 void platform_set_clipboard(platform_window* w, const char* text) {
+    shared_clip_put(1, text ? text : "", text ? (int)strlen(text) : 0);
     free(w->clip_own);
     w->clip_own = strdup(text ? text : "");
     free(g_clip_png); g_clip_png = NULL; g_clip_png_n = 0;
@@ -2935,6 +2939,12 @@ void platform_set_clipboard(platform_window* w, const char* text) {
 
 const char* platform_get_clipboard(platform_window* w) {
     free(w->clip); w->clip = NULL;
+    // orbiter-os: the shared clipboard, whoever copied
+    if (g_kms) {
+        int n = 0;
+        w->clip = shared_clip_get(1, &n);
+        if (w->clip) return w->clip;
+    }
     if (w->clip_own) { w->clip = strdup(w->clip_own); return w->clip; }
     if (g_kms) return NULL;
     xcb_convert_selection(g_conn, w->win, A_CLIPBOARD, A_UTF8_STRING, A_PLATFORM_SEL, XCB_CURRENT_TIME);
@@ -2966,6 +2976,7 @@ const char* platform_get_clipboard(platform_window* w) {
 }
 
 void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) {
+    shared_clip_put(2, data, n);
     free(g_clip_png);
     g_clip_png = malloc(n > 0 ? n : 1);
     memcpy(g_clip_png, data, n);
@@ -2979,6 +2990,15 @@ void platform_set_clipboard_png(platform_window* w, const uint8_t* data, int n) 
 const uint8_t* platform_get_clipboard_png(platform_window* w, int* n) {
     *n = 0;
     free(g_png_got); g_png_got = NULL; g_png_got_n = 0;
+    if (g_kms) {
+        int sn = 0;
+        g_png_got = (uint8_t*)shared_clip_get(2, &sn);
+        if (g_png_got) { *n = g_png_got_n = sn; return g_png_got; }
+        // the shared clipboard holds text now: no picture
+        int tn = 0;
+        char* tx = shared_clip_get(1, &tn);
+        if (tx) { free(tx); return NULL; }
+    }
     if (g_clip_png) {
         g_png_got = malloc(g_clip_png_n);
         memcpy(g_png_got, g_clip_png, g_clip_png_n);
@@ -3231,6 +3251,7 @@ HOST_API void host_app_resume(int s)                             { }
 #include <fcntl.h>
 #include <stdio.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdint.h>
 #include <sys/syscall.h>
 #ifdef __linux__
@@ -3285,12 +3306,20 @@ typedef struct {
     volatile int32_t flags;     // launch flags (silver-host's HOST_APP_*); never in the name
     char name[1024];            // "module [flags] [default-arg]" silver-host spawns
 } HostApp;
+#define HOST_CLIP (8 << 20)     // the system clipboard's bytes
 typedef struct {
     volatile int32_t host_pid;  // supervising silver-host; spawn asks signal it
     HostApp app[HOST_APPS];
+    // the one clipboard every app shares (orbiter-os has no X server):
+    // seq odd while written; kind 1 text, 2 png; n its bytes
+    volatile uint32_t clip_seq;
+    volatile int32_t  clip_kind, clip_n;
+    char clip[HOST_CLIP];
 } HostShared;
 
 static HostShared* g_hs = 0;
+// an older supervisor's block ends before the clipboard: not touched
+static int g_hs_clip = 0;
 static HostShared* host_shared(void) {
     if (g_hs) return g_hs;
     // NO file. silver-host created an anonymous memfd, sized it, and handed
@@ -3302,6 +3331,9 @@ static HostShared* host_shared(void) {
     void* p = mmap(0, sizeof(HostShared), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (p == MAP_FAILED) return 0;
     g_hs = (HostShared*)p;
+    struct stat hst;
+    g_hs_clip = fstat(fd, &hst) == 0
+        && (size_t)hst.st_size >= sizeof(HostShared);
     // a bound app is pid 2 inside: the host uses its own pid
     const char* hp = getenv("SILVER_HOST_PID");
     const char* sl = getenv("SILVER_APP_SLOT");
@@ -3314,6 +3346,42 @@ static HostShared* host_shared(void) {
 static int host_self_pid(void) {
     const char* hp = getenv("SILVER_HOST_PID");
     return (hp && *hp) ? atoi(hp) : (int)getpid();
+}
+
+// the shared clipboard: written under an odd seq, read when even
+static int shared_clip_put(int kind, const void* data, int n) {
+    HostShared* h = host_shared();
+    if (!h || !g_hs_clip || n < 0 || n > HOST_CLIP) return 0;
+    uint32_t s0 = __atomic_load_n(&h->clip_seq, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&h->clip_seq, s0 | 1, __ATOMIC_RELEASE);
+    memcpy(h->clip, data, n);
+    h->clip_kind = kind;
+    h->clip_n    = n;
+    __atomic_store_n(&h->clip_seq, (s0 | 1) + 1, __ATOMIC_RELEASE);
+    return 1;
+}
+
+// its bytes when of that kind, malloc'd, else null
+static char* shared_clip_get(int kind, int* n) {
+    *n = 0;
+    HostShared* h = host_shared();
+    if (!h || !g_hs_clip) return NULL;
+    for (int tries = 0; tries < 100; tries++) {
+        uint32_t s0 = __atomic_load_n(&h->clip_seq, __ATOMIC_ACQUIRE);
+        if (s0 == 0) return NULL;
+        if (s0 & 1) { usleep(100); continue; }
+        int k = h->clip_kind, len = h->clip_n;
+        if (k != kind || len < 0 || len > HOST_CLIP) return NULL;
+        char* out = malloc(len + 1);
+        memcpy(out, h->clip, len);
+        out[len] = 0;
+        if (__atomic_load_n(&h->clip_seq, __ATOMIC_ACQUIRE) == s0) {
+            *n = len;
+            return out;
+        }
+        free(out);
+    }
+    return NULL;
 }
 
 // this process's own slot (SILVER_APP_SLOT, 0 when unset — the primary app)

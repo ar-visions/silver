@@ -114,9 +114,15 @@ typedef struct {
 #define HOST_APP_HZ_SHIFT      8 // bits 8-15: the host display's refresh rate
 #define HOST_APP_COVERAGE (1 << 16) // silver --coverage; the run writes coverage.lcov
 #define HOST_APP_VERBOSE  (1 << 17) // silver --verbose: the whole build in the log
+#define HOST_CLIP (8 << 20)     // the system clipboard's bytes
 typedef struct {
     volatile int32_t host_pid;  // this supervisor; spawn requests SIGUSR1 it
     HostApp app[HOST_APPS];
+    // the one clipboard every app shares (orbiter-os has no X server):
+    // seq odd while written; kind 1 text, 2 png; n its bytes
+    volatile uint32_t clip_seq;
+    volatile int32_t  clip_kind, clip_n;
+    char clip[HOST_CLIP];
 } HostShared;
 
 static int rebuild_blocking(const char* name, int clean);
