@@ -19914,7 +19914,7 @@ element orbiter : trinity # implements compiler
 
     # the sound server's (PulseAudio, PipeWire) outputs or inputs as
     # 'name|description', monitors left out; with none (orbiter-os),
-    # ALSA's cards as 'card N|name'
+    # ALSA's devices that play (or record) as 'hw:id,N|name - card'
     func sound_devices [ inputs: bool ] -> vec string
         out : vec string []
         # the platform's own list first (CoreAudio, WASAPI)
@@ -19933,13 +19933,29 @@ element orbiter : trinity # implements compiler
                     out.push[ '{nm}|{ln.mid[ 13, ln.count - 13 ]}' ]
                 nm = ''
         if [ out.count > 0 ] return named_apart[ out ]
-        # a /proc file's size reads 0: read through cat
+        # a /proc file's size reads 0: read through cat. A line:
+        # '03-00: ALC897 Analog : ALC897 Analog : playback 1 : capture 1'
+        way : string [ (inputs) ? ': capture' : ': playback' ]
+        for [ t: string ] in cmd_lines[ 'cat /proc/asound/pcm' ]
+            if [ t.index_of[ way ] < 0 || t.count < 7 ] continue
+            cn : i32 [ i32[ t.mid[ 0, 2 ].integer_value[] ] ]
+            dn : i32 [ i32[ t.mid[ 3, 2 ].integer_value[] ] ]
+            parts : vec string t.split[ ' : ' ]
+            nm : string parts[ 0 ].mid[ 7, parts[ 0 ].count - 7 ].trim[]
+            ids : vec string cmd_lines[ 'cat /proc/asound/card{cn}/id' ]
+            cid : string [ (ids.count > 0) ? ids[ 0 ] : '{cn}' ]
+            out.push[ 'hw:{cid},{dn}|{nm} - {card_name[ cn ]}' ]
+        return named_apart[ out ]
+
+    # a sound card's name as ALSA's list gives it
+    func card_name [ cn: i32 ] -> string
         for [ t: string ] in cmd_lines[ 'cat /proc/asound/cards' ]
             br : i32 [ t.index_of[ ']: ' ] ]
             if [ br < 0 ] continue
-            n : string t.mid[ 0, t.index_of[ ' ' ] ]
-            out.push[ 'card {n}|{t.mid[ br + 3, t.count - br - 3 ]}' ]
-        return named_apart[ out ]
+            if [ i32[ t.trim[].mid[ 0, 2 ].integer_value[] ] != cn ]
+                continue
+            return t.mid[ br + 3, t.count - br - 3 ]
+        return 'card {cn}'
 
     # two devices of one description: each takes its own name after
     # it, so a choice names one
@@ -19968,35 +19984,68 @@ element orbiter : trinity # implements compiler
         rc : path '{getenv[ 'HOME' ]}/.asoundrc'
         if [ !rc.exists[] ] return ''
         tx : string rc.load[ typeid[ string ], null ]
-        key : string [ (inputs) ? 'capture.pcm' : 'playback.pcm' ]
+        # ours: pcm.out's and pcm.mic's devices (sound_choose)
+        key : string [ (inputs) ? 'pcm.mic' : 'pcm.out' ]
         at : i32 [ tx.index_of[ key ] ]
         if [ at < 0 ] return ''
         rest : string tx.mid[ at, tx.count - at ]
-        hw : i32 [ rest.index_of[ 'hw:' ] ]
+        hw : i32 [ rest.index_of[ '"hw:' ] ]
         if [ hw < 0 ] return ''
-        e : i32 [ hw + 3 ]
-        while [ e < rest.count && i32[ rest.chars[ e ] ] >= 48
-                && i32[ rest.chars[ e ] ] <= 57 ]
+        e : i32 [ hw + 1 ]
+        while [ e < rest.count && i32[ rest.chars[ e ] ] != 34 ]
             e += 1
-        return 'card {rest.mid[ hw + 3, e - hw - 3 ]}'
+        return rest.mid[ hw + 1, e - hw - 1 ]
 
     # a device chosen: the server's default; with ALSA alone, the
     # default pcm's playback or capture side in .asoundrc
     func sound_choose [ inputs: bool, name: string ]
         if [ host_sound_choose[ (inputs) ? 1 : 0, name.chars ] != 0 ]
             return
-        if [ !name.starts_with[ 'card ' ] ]
+        if [ !name.starts_with[ 'hw:' ] ]
             what : string [ (inputs) ? 'source' : 'sink' ]
             set : command { pactl set-default-{what} {name} }
             set.exec[ false ]
             return
-        n : string name.mid[ 5, name.count - 5 ]
         po : string sound_default[ false ]
         pi : string sound_default[ true ]
-        pn : string [ (inputs) ? ((po.count > 5) ? po.mid[ 5, po.count - 5 ] : n) : n ]
-        cn : string [ (inputs) ? n : ((pi.count > 5) ? pi.mid[ 5, pi.count - 5 ] : n) ]
+        pn : string [ (inputs) ? po : name ]
+        # a mic chosen first: the first device that plays
+        if [ pn.count == 0 ]
+            outs : vec string sound_devices[ false ]
+            if [ outs.count > 0 ]
+                pn = outs[ 0 ].mid[ 0, outs[ 0 ].index_of[ '|' ] ]
+        cn : string [ (inputs) ? name : pi ]
+        # the output's card holds the volume
+        cc : string [ (pn.count > 3) ? pn.mid[ 3, pn.count - 3 ] : '0' ]
+        if [ cc.index_of[ ',' ] >= 0 ] cc = cc.mid[ 0, cc.index_of[ ',' ] ]
+        # every app plays and records at once through dmix / dsnoop;
+        # their own permissions, so no audio group is needed
+        rc_mic : string [ (cn.count > 0) ? cn : pn ]
+        rc_text : string {
+            pcm.out {{
+              type dmix
+              ipc_key 4242
+              ipc_perm 0600
+              slave {{ pcm "{pn}" rate 48000 }}
+            }}
+            pcm.mic {{
+              type dsnoop
+              ipc_key 4243
+              ipc_perm 0600
+              slave.pcm "{rc_mic}"
+            }}
+            pcm.!default {{
+              type asym
+              playback.pcm "plug:out"
+              capture.pcm "plug:mic"
+            }}
+            ctl.!default {{
+              type hw
+              card {cc}
+            }}
+        }
         rc : path '{getenv[ 'HOME' ]}/.asoundrc'
-        rc.save[ 'pcm.!default {{\n  type asym\n  playback.pcm "plughw:{pn}"\n  capture.pcm "plughw:{cn}"\n}}\nctl.!default {{\n  type hw\n  card {pn}\n}}\n', null ]
+        rc.save[ '{rc_text.trim[]}\n', null ]
 
     # a device's description, by its name
     func sound_label [ devs: vec string, name: string ] -> string

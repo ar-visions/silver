@@ -16805,3 +16805,12 @@ across a reload only).
 4. OPEN orbiter draws 165 frames a second at rest: ToolRail is
    animated: true in every pane (asked before changing).
 5. OPEN no app can keep the screen on (video, gamepad): asked.
+
+## orbiter reloads itself whole (Nov 17 2026)
+
+the user: the reload button must reload orbiter's running instance
+always ("orbiter already live reloaded before"). DONE, built, not
+run: silver-host's refusal when a library under the app was rebuilt
+since launch (added Oct 20) is gone; the reload goes ahead over the
+copy already loaded, and logs that the rebuilt library's new code
+waits for a restart. Takes the launcher's next start.

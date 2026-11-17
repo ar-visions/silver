@@ -3023,14 +3023,12 @@ int main(int argc, char** argv) {
         if (force || (!reload_off && !defer && !compile_pid && cur && cur != last_mtime
                       && reload_job.state == 0)) {   // one load at a time
             last_mtime = cur;
-            // a library under it rebuilt since launch: no swap, a restart
+            // a library under it rebuilt since launch: the app reloads
+            // over the copy already loaded; that one's new code waits
             const char* moved = host_libs_changed();
-            if (moved) {
-                fprintf(stderr, "[%s] reload refused: %s was rebuilt since "
-                        "launch; restart to load it\n", name, moved);
-                if (set_pending) set_pending(1);
-                continue;
-            }
+            if (moved)
+                fprintf(stderr, "[%s] %s was rebuilt since launch: the "
+                        "loaded copy stays\n", name, moved);
             char cwd_now[4096];
             if (!getcwd(cwd_now, sizeof(cwd_now))) cwd_now[0] = 0;
             fprintf(stderr, "[%s] reloading (cwd %s)\n", name, cwd_now);
