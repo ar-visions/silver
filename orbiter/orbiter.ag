@@ -9597,6 +9597,14 @@ element orbiter : trinity # implements compiler
         px : f32 pane_left[ active_pane ]
         return 'l{px}px t{top}px w{pv.bounds.w}px b0'
 
+    # the main menu's left edge: its docked pane's, else the window's
+    func sys_x [] -> f32
+        pv : element pane_view[ active_pane ]
+        if [ mobile_on[] || !pv || !pv.bounds
+             || pane_floats[ active_pane ] ]
+            return 0.0
+        return pane_left[ active_pane ]
+
     func menu_open_at [ mt: MenuTop, same: bool ]
         at : i32 [ mt.at ]
         menu_top = at
@@ -16621,7 +16629,8 @@ element orbiter : trinity # implements compiler
         t : Elements []
         # the active window's menu bar: its top menus, after it
         # after the dock by the task bar's group gap (0.24 units)
-        x0 : f32 [ 0.0 ]
+        # past the orbiter icon, which sits over the dock
+        x0 : f32 [ (use_mobile) ? 0.0 : dock_w[] ]
         x : f32 [ x0 ]
         uu : f32 ux_unit[ ux ]
         # the selected window's menu alone, from the left edge of its
@@ -20482,6 +20491,10 @@ element orbiter : trinity # implements compiler
         log 'system bar: {what}'
         sync[]
         ifdef [ linux ]
+            # the shell is the user's: init (pid 1) does it
+            if [ getuid[] != 0 ]
+                kill[ 1, (again) ? SIGINT : SIGUSR2 ]
+                return
             reboot[ (again) ? RB_AUTOBOOT : RB_POWER_OFF ]
 
     # the status bar: the four debug steps, one button each, at left
@@ -20819,12 +20832,12 @@ element orbiter : trinity # implements compiler
             return ux.root.bounds.w - round[ 10.91 * unit_px[] ]
         # a card's info menu: beside the dock, over the cards
         if [ menu_kind == 'appinfo' ] return dock_w[]
-        # a popup over the main menu: past its icon column
-        if [ menu_kind == 'popup' ] return (sys_under) ? dock_w[] : 0.0
+        # a popup over the main menu: at the menu's own left edge
+        if [ menu_kind == 'popup' ] return (sys_under) ? sys_x[] : 0.0
         # a path's drawer is a standard menu: the same places
         if [ menu_kind != 'menu' && menu_kind != 'crumb' ] return 0.0
-        # over the main menu: in its area, past the icon column
-        if [ sys_under ] return dock_w[]
+        # over the main menu: in its area, from its left edge
+        if [ sys_under ] return sys_x[]
         # a free window's: under its name in the strip; a path's at
         # the window's left edge
         if [ win_menu[] && menu_kind == 'menu' ]

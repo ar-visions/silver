@@ -351,6 +351,16 @@ save (save as, an untitled drawing's first save) go through it
 
 ---
 
+## Rule #14 — Never spawn agents
+
+Never start a subagent, workflow, team or any other agent process
+unless the user says so in the same message, by name. Each one
+starts by loading this file (1 MB) and the memory index: seven of
+them at once cost the user four days of his usage (Nov 16). Do the
+work yourself, one file at a time.
+
+---
+
 ## orbiter-os — live list (Sep 3 2026)
 
 Goal: orbiter-os (Linux + orbiter as init) running inside the `qemu`
@@ -1022,6 +1032,169 @@ it is built on. Today the tree is the host Ubuntu's own files.
       entry (LD_DEBUG=libs, VK_LOADER_DEBUG=all on its line: the
       logs flooded), not the wizard's 41_orbiter-os. His: Install
       (folder beside on /), boot the 41_orbiter-os entry.
+   s. BUILT, checked in a box, not booted (Nov 16 15:34 boot: the
+      console runs, aura does not; claude needs the browser to log
+      in). The boot log: aura's view came up and reached its Vulkan
+      start; the pane was closed 5 s in. The tree had no name
+      resolution: no /etc/nsswitch.conf, no libnss_files or
+      libnss_dns (glibc loads them by dlopen, not NEEDED, so
+      add_deps never carried them), no /etc/resolv.conf, and no DHCP
+      client for the wired adapter (iwd does Wi-Fi only). The
+      holder's view_env dropped BROWSER, so claude inside the
+      console's view never ran xdg-open. Fixed:
+      - os-bootstrap add_network: nsswitch.conf, hosts, host.conf,
+        services, protocols, libnss_files, libnss_dns with their
+        deps, dhcpcd and its hooks; Base.ag gains dhcpcd-base.
+      - wifi/root/etc/dhcpcd.conf: allowinterfaces en* eth*, no
+        wpa_supplicant hook; dhcpcd's resolv hook uses our
+        /usr/sbin/resolvconf.
+      - init.c dhcp_start (after iwd): the dhcpcd account appended to
+        /etc/passwd and /etc/group (no useradd in the tree),
+        /var/lib/dhcpcd, /run/dhcpcd, `dhcpcd --nobackground --quiet`.
+      - silver-host view_env keeps BROWSER.
+      Checked in a box over the written tree (scratchpad ovl/run.sh:
+      fp6-box -rmpf --mount-proc, an overlay with the host's 615
+      NVIDIA user libraries and resolv.conf in the upper, /dev and
+      /sys bound, DISPLAY unset so devices takes kms): example.com
+      resolves; a supervised orbiter given `app open
+      https://example.com` hosted aura; the tree's claude 2.1.301
+      runs. aura alone (unhosted) fails "no presentation queue
+      family" on kms: host it.
+      Boot silence (nothing printed at boot; the avatar later):
+      os_words gains `quiet loglevel=0 vt.global_cursor_default=0`;
+      init.c sends its own output to /dev/null until the switch (then
+      boot.log as before); die() alone opens the console. OPEN: the
+      avatar drawn during boot on a PC (a phone runs bootcube/ from
+      init's boot_cube; the PC needs the GPU driver loaded first,
+      then a boot app before orbiter takes the screen).
+      Tree written (132,703 entries, 9.20 GB); initramfs remade.
+   t. DONE, checked in the box, not booted (Nov 16 boot: aura shows,
+      "TLS not available"). glib loads its TLS backend by dlopen from
+      install/lib/gio/modules (libgiombedtls.so), not NEEDED, so the
+      tree carried none: every https page was the error page. The
+      box check in item s had read that error page as a load (its
+      title is the address; a real load titles the page). add_apps
+      carries install/lib/gio whole (add_programs, with deps). Tree
+      written (132,708 entries, 9.20 GB). Checked in the box: the
+      hosted aura on https://example.com titles "Example Domain".
+      Both GRUB entries are named orbiter-os; the Nov 16 boots took
+      the Sep 25 40_custom one (LD_DEBUG, VK_LOADER_DEBUG, no
+      quiet). Next: Install (folder beside on /), boot the
+      41_orbiter-os entry.
+   u. DONE (Nov 16, his: the main menus overlap when an app is
+      launched; the orbiter menu not reached reliably; the popups in
+      it in the wrong place; claude in there cannot open the browser).
+      Three causes, each seen in hidden runs at 2560 x 1440:
+      - the bar's menu names started at x 0 whenever no window was
+        docked (his window pulled free: bar_grab, grip0_8, s0_menu_0
+        in his log), so with the orbiter menu up they drew under the
+        orbiter icon and took its press. system_els starts them at
+        dock_w (the icon's width). Seen: menu_0 at 79 with the window
+        free, the icon opens and shuts the menu.
+      - a popup over the main menu (time zone) opened at dock_w, but
+        the menu sits over the active pane now: it opened over the
+        other pane (x 79 with the menu at 840). drawer_x gives sys_x:
+        the menu's own left edge (the pane's, or 0 with every window
+        free). Seen: the menu over the right half at 1320, the zone
+        list at 1320 inside it.
+      - claude could not open the browser. The console sets BROWSER
+        itself for what it runs (console.ag: install/bin/xdg-open,
+        orbiter's build of xdg-open.c), over the boot line's; the
+        tree had xdg-open at /usr/bin only, so BROWSER named a file
+        the drive does not have. os-bootstrap add_open puts its
+        static xdg-open at src/silver/install/bin/xdg-open too.
+        My first answer (the boot line's BROWSER) was wrong: the
+        console's own setting wins whatever the line says. Still
+        done: his 17:51 boot took the Sep 25 /etc/grub.d/40_custom
+        entry (kmsg's cmdline has LD_DEBUG=libs), both named
+        orbiter-os; the wizard's menu step gains 'Remove older
+        orbiter-os entries' (grub_prune: every other file of that
+        grub.d loses its menuentry 'orbiter-os' block, then
+        update-grub as before). Checked on copies of his 40_custom
+        and 41_orbiter-os: the block gone, the rest byte for byte.
+      Test note: the socket's `press` does not move the pointer, so
+      a drag's first delta ran from the last `move`: a window pulled
+      free landed off screen (x -154) in my runs, not a bug. `move`
+      to the press point first.
+   v. BUILT, tree written, not booted (Nov 16, his: claude refused
+      --dangerously-skip-permissions "with sudo/admin"; "no app should
+      be run as root. none. that was baked into the design"). The
+      installer list's item 5 (first boot: make the user from
+      install.agi) was never built: init ran orbiter as pid 1, root,
+      and every app a root silver-host spawned stayed root. Now:
+      - init.c user_read: /var/lib/orbiter/install.agi (user, the
+        password hash) read after the switch, before the hotplug
+        fork; user_make after the modules: the account in /etc/passwd,
+        /etc/group, /etc/shadow (uid and gid 1000, /home/<user>,
+        /bin/bash), /home/<user> and /run/user/1000 (0700, theirs);
+        HOME, USER, LOGNAME, XDG_RUNTIME_DIR set in place (env_set:
+        the boot line's HOME=/root no longer wins). user_devices hands
+        the user /dev/dri, /dev/input, /dev/snd, nvidia*, fb*, kfd,
+        uinput, /sys/power/state and wakeup_count, each backlight's
+        brightness; the hotplug child chowns a later input / dri /
+        snd node. run_shell: pid 1 stays init; orbiter runs as the
+        user (setgroups, setgid, setuid), started again 2 s after it
+        ends; SIGINT restarts the machine, SIGUSR2 powers off (busybox
+        init's signals). Also init's now: /dev/pts and the framebuffer
+        console unbind (silver-host did both only as pid 1). The
+        phone (no install.agi) runs as before; its account is OPEN.
+        nolibc builds the stubs (grp.h is glibc's).
+      - orbiter power: as a user, kill[ 1, SIGINT / SIGUSR2 ].
+      - wizard: the copy step gives src/silver and home to 1000:1000
+        after the 0:0 pass (git refuses a tree another user owns; the
+        user's builds, logs and homes write there); the key step is
+        'Copy your SSH keys and git settings': ~/.ssh and ~/.gitconfig
+        into {tree}/home/<user>, 0700, 1000:1000; keys_copy is on by
+        default (his: git with our keys from the installer). git and
+        ssh were already in the tree. os-bootstrap home_dir.
+      Checked: init.c compiles for the PC and for arm64 nolibc; the
+      agi reader gives user kalen and the 106-byte hash from the
+      drive's install.agi; `silver --test wizard` exit 0 (its script
+      shows the two chown passes); tree written with the new
+      initramfs (132,711 entries, 9.2 GB). NOT seen: a boot. OPEN:
+      the wizard's own test constructs the wizard, so keys_copy's
+      default is off there and the key step is not in its script.
+      NEXT, his: Install (folder beside on /), boot: the login is
+      the account; claude in the console as kalen.
+   w. BUILT, tree written, not booted (Nov 16, his: the console
+      takes ~12 s to load, most apps too; claude's login says
+      EADDRNOTAVAIL; no scrolling text at boot; the orbiter avatar
+      shown at native res as soon as the nvidia driver loads). The
+      drive's own logs (boot.log, kmsg.log) said:
+      - that boot ran the STALE grub.cfg (Nov 16 00:14): its line
+        was the Sep 25 one with LD_DEBUG=libs and no quiet. The
+        wizard had written 41_orbiter-os (21:00) and pruned
+        40_custom (20:25) but never ran update-grub: lmnt is '/'
+        on the running system, so mt was '//etc/grub.d/...' and the
+        test `starts_with '/etc/'` failed. Fixed (lm: '' for '/').
+        LD_DEBUG=libs on every process is the slow start: one
+        console launch printed 6,000 loader lines into boot.log;
+        node (claude) prints far more. The text at boot is the same
+        line's (no quiet, the loader's lines on the console).
+      - EADDRNOTAVAIL: init never brought the loopback interface up,
+        so nothing could bind 127.0.0.1 (claude's login listener).
+        init.c lo_up (SIOCSIFFLAGS IFF_UP on lo) at net_start.
+      - the boot picture: init loads orbiter.modules (nvidia) right
+        after module_map, before the hardware passes; then the
+        account, the device nodes, and bootcube as the user
+        (boot_cube on every machine now, drop_root in its child),
+        which devices stops when orbiter opens the screen
+        (kms_stop_boot_picture, /run/bootcube.pid). bootcube draws
+        OrbiterAvatar (BootAvatar, a 20-unit square in the middle,
+        the dark ground) instead of the cube; the tree carries it
+        (add_module bootcube). user_devices runs again after the
+        passes (input, snd). Seen hidden at 1280x800: the avatar.
+      Checked: init compiles for the PC and arm64 nolibc; wizard
+      tests exit 0; bootcube, wizard, os-bootstrap built; tree
+      written. NOT seen: a boot. NEXT, his: Install (update-grub
+      runs now), boot the one orbiter-os entry.
+      Then (his: no top): procps is in the base but add_shell never
+      named its tools: top, free, uptime, watch, vmstat, pidof, pmap,
+      w ride now. And the console's view takes the user's ~/.ssh and
+      ~/.gitconfig read only at their own places (silver-host
+      bound_lock, after the launch paths' shares; console alone), so
+      git and ssh in the console use his keys. console and orbiter
+      launchers rebuilt; tree written (134,067 entries). NOT seen.
 4. OPEN the build tools that run on the host, each a TODO:
    a. the x86 kernel by the system's gcc: our LLVM=1.
    b. mesa's and libdrm's imports name /usr/lib/x86_64-linux-gnu/

@@ -11,6 +11,11 @@
 #include <sys/sysmacros.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
+#include <signal.h>
+#include <time.h>
+#ifndef NOLIBC
+#include <grp.h>
+#endif
 #include <sys/ioctl.h>
 #include <sys/reboot.h>
 #include <linux/loop.h>
@@ -62,6 +67,29 @@ static char* realpath(const char* p, char* out) {
 
 extern char** environ;
 static char cmdline[4096];
+// the kernel's console on the framebuffer, bound or let go
+static void fbcon_bind(int on) {
+    for (int i = 0; i < 4; i++) {
+        char p[64], name[64] = { 0 };
+        snprintf(p, sizeof p, "/sys/class/vtconsole/vtcon%d/name", i);
+        int f = open(p, O_RDONLY);
+        if (f < 0) continue;
+        read(f, name, sizeof name - 1);
+        close(f);
+        if (!strstr(name, "frame buffer")) continue;
+        snprintf(p, sizeof p, "/sys/class/vtconsole/vtcon%d/bind", i);
+        f = open(p, O_WRONLY);
+        if (f < 0) continue;
+        write(f, on ? "1" : "0", 1);
+        close(f);
+    }
+}
+
+// the installed user (install.agi): the shell and every app are theirs
+static uid_t g_uid;
+static char g_user[64];
+static char g_hash[512];
+static int drop_root(void);
 
 // a name=value word into environ (nolibc has no setenv)
 static void env_add(char* kv) {
@@ -73,8 +101,10 @@ static void env_add(char* kv) {
     environ = env;
 }
 
-// pid 1 must never return: say why and wait
+// pid 1 never returns; the screen shows nothing but this
 static void die(const char* why, const char* what) {
+    int con = open("/dev/console", O_WRONLY);
+    if (con >= 0) dup2(con, 2);
     fprintf(stderr, "orbiter-os init: %s %s\n", why, what ? what : "");
     for (;;) pause();
 }
@@ -537,6 +567,7 @@ static void load_hardware(void) {
 #ifndef NOLIBC
 #include <sys/socket.h>
 #include <linux/netlink.h>
+#include <linux/if.h>
 
 // the kernel's device announcements (udev's own feed), opened
 // before the first scan so a device added between is kept
@@ -567,6 +598,13 @@ static void hotplug(int fd) {
                 argv[k++] = f + 9;
                 argv[k] = NULL;
                 run(argv);
+            } else if (!strncmp(f, "DEVNAME=", 8) && g_uid
+                       && (!strncmp(f + 8, "input/", 6)
+                           || !strncmp(f + 8, "dri/", 4)
+                           || !strncmp(f + 8, "snd/", 4))) {
+                char at[300];
+                snprintf(at, sizeof at, "/dev/%s", f + 8);
+                chown(at, g_uid, g_uid);
             }
     }
 }
@@ -782,8 +820,7 @@ static void mms_start(void) {
 // the moment the root is there until orbiter takes the screen
 // (devices stops it then, by /run/bootcube.pid)
 static void boot_cube(const char* init) {
-    char ph[64], cube[600];
-    if (!arg("orbiter.phone", ph, sizeof ph)) return;
+    char cube[600];
     size_t n = strlen(init);
     while (n > 0 && init[n - 1] != '/') n--;
     if (n == 0 || n + 9 > sizeof cube) return;
@@ -796,6 +833,7 @@ static void boot_cube(const char* init) {
         static char iso[] = "SILVER_ISOLATE=0";
         env_add(iso);
         setsid();
+        if (drop_root()) _exit(126);
         int log = open("/var/log/bootcube.log", O_WRONLY | O_CREAT | O_TRUNC,
                        0644);
         if (log >= 0) { dup2(log, 1); dup2(log, 2); close(log); }
@@ -868,9 +906,48 @@ static void bt_start(void) {
 }
 
 #ifndef NOLIBC
+static void append_line(const char* path, const char* line) {
+    int fd = open(path, O_WRONLY | O_APPEND);
+    if (fd < 0) return;
+    write(fd, line, strlen(line));
+    close(fd);
+}
+
+// a wired address: dhcpcd on the en* / eth* adapters (its config
+// leaves Wi-Fi to iwd); its privilege drop needs an account
+static void dhcp_start(void) {
+    if (access("/usr/sbin/dhcpcd", X_OK)) return;
+    if (!named_account("/etc/group", "dhcpcd"))
+        append_line("/etc/group", "dhcpcd:x:998:\n");
+    if (!named_account("/etc/passwd", "dhcpcd"))
+        append_line("/etc/passwd", "dhcpcd:x:998:998:dhcpcd privsep:"
+            "/var/lib/dhcpcd:/usr/sbin/nologin\n");
+    mkdir("/var/lib", 0755);
+    mkdir("/var/lib/dhcpcd", 0755);
+    mkdir("/run/dhcpcd", 0755);
+    char* env[] = { "PATH=/usr/sbin:/usr/bin:/sbin:/bin", NULL };
+    char* d[] = { "/usr/sbin/dhcpcd", "--nobackground", "--quiet", NULL };
+    spawn(d, env);
+    fprintf(stderr, "orbiter-os init: started dhcpcd\n");
+}
+
 // Wi-Fi: the system bus, then iwd on it (orbiter drives it);
 // install is the folder orbiter.init's binary is under
+// the loopback interface, else nothing binds 127.0.0.1
+static void lo_up(void) {
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) return;
+    struct ifreq r = { 0 };
+    strcpy(r.ifr_name, "lo");
+    if (ioctl(s, SIOCGIFFLAGS, &r) == 0) {
+        r.ifr_flags |= IFF_UP | IFF_RUNNING;
+        ioctl(s, SIOCSIFFLAGS, &r);
+    }
+    close(s);
+}
+
 static void net_start(const char* init) {
+    lo_up();
     const char* b = strstr(init, "/build/");
     char iwd[600], lib[600], state[640];
     if (!b) return;
@@ -894,6 +971,7 @@ static void net_start(const char* init) {
     char* w[] = { iwd, NULL };
     spawn(w, env);
     fprintf(stderr, "orbiter-os init: started the system bus and iwd\n");
+    dhcp_start();
 }
 
 // the session bus: apps' tray icons register with orbiter on it
@@ -1020,12 +1098,205 @@ static void load_modules(void) {
     }
 }
 
+#ifndef NOLIBC
+// name=value into environ, in place of the key when it is there
+static void env_set(char* kv) {
+    size_t n = strcspn(kv, "=");
+    for (int i = 0; environ && environ[i]; i++)
+        if (!strncmp(environ[i], kv, n) && environ[i][n] == '=') {
+            environ[i] = kv;
+            return;
+        }
+    env_add(kv);
+}
+
+// a 'key: value' line of an agi text, its quotes off
+static int agi_value(const char* text, const char* key, char* out,
+                     size_t cap) {
+    size_t n = strlen(key);
+    const char* p = text;
+    while (p && *p) {
+        if (!strncmp(p, key, n) && p[n] == ':') {
+            p += n + 1;
+            while (*p == ' ') p++;
+            char q = (*p == '\'' || *p == '"') ? *p++ : 0;
+            size_t m = 0;
+            while (p[m] && p[m] != '\n'
+                   && (q ? p[m] != q : p[m] != ' '))
+                m++;
+            if (m >= cap) m = cap - 1;
+            memcpy(out, p, m);
+            out[m] = 0;
+            return 1;
+        }
+        p = strchr(p, '\n');
+        if (p) p++;
+    }
+    return 0;
+}
+
+// the installer's settings: the user's name and password hash
+static void user_read(void) {
+    char text[4096];
+    int fd = open("/var/lib/orbiter/install.agi", O_RDONLY);
+    if (fd < 0) return;
+    ssize_t n = read(fd, text, sizeof text - 1);
+    close(fd);
+    if (n <= 0) return;
+    text[n] = 0;
+    if (!agi_value(text, "user", g_user, sizeof g_user)) return;
+    agi_value(text, "password", g_hash, sizeof g_hash);
+    g_uid = 1000;
+}
+
+// the account: passwd, group, shadow, a home, a runtime folder
+static void user_make(void) {
+    if (!g_uid) return;
+    char line[800];
+    if (!named_account("/etc/passwd", g_user)) {
+        snprintf(line, sizeof line,
+                 "%s:x:%u:%u:%s:/home/%s:/bin/bash\n",
+                 g_user, g_uid, g_uid, g_user, g_user);
+        append_line("/etc/passwd", line);
+    }
+    if (!named_account("/etc/group", g_user)) {
+        snprintf(line, sizeof line, "%s:x:%u:\n", g_user, g_uid);
+        append_line("/etc/group", line);
+    }
+    if (!named_account("/etc/shadow", g_user)) {
+        int fd = open("/etc/shadow", O_WRONLY | O_CREAT | O_APPEND,
+                      0640);
+        if (fd >= 0) {
+            long day = (long)(time(NULL) / 86400);
+            snprintf(line, sizeof line, "%s:%s:%ld:0:99999:7:::\n",
+                     g_user, g_hash[0] ? g_hash : "!", day);
+            write(fd, line, strlen(line));
+            close(fd);
+        }
+    }
+    static char home[80], user[80], logname[80], rt[80];
+    snprintf(home, sizeof home, "HOME=/home/%s", g_user);
+    mkdir("/home", 0755);
+    mkdir(home + 5, 0700);
+    chown(home + 5, g_uid, g_uid);
+    snprintf(rt, sizeof rt, "XDG_RUNTIME_DIR=/run/user/%u", g_uid);
+    mkdir("/run/user", 0755);
+    mkdir(rt + 16, 0700);
+    chown(rt + 16, g_uid, g_uid);
+    snprintf(user, sizeof user, "USER=%s", g_user);
+    snprintf(logname, sizeof logname, "LOGNAME=%s", g_user);
+    env_set(home);
+    env_set(user);
+    env_set(logname);
+    env_set(rt);
+    fprintf(stderr, "orbiter-os init: the user is %s (%u)\n", g_user,
+            g_uid);
+}
+
+// a folder's nodes handed to the user (devtmpfs makes them root's)
+static void chown_tree(const char* dir) {
+    chown(dir, g_uid, g_uid);
+    DIR* d = opendir(dir);
+    struct dirent* e;
+    char at[300];
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(at, sizeof at, "%s/%s", dir, e->d_name);
+        chown(at, g_uid, g_uid);
+    }
+    if (d) closedir(d);
+}
+
+// what the shell opens: the screen, input, sound, the gpu, power
+static void user_devices(void) {
+    if (!g_uid) return;
+    chown_tree("/dev/dri");
+    chown_tree("/dev/input");
+    chown_tree("/dev/snd");
+    DIR* d = opendir("/dev");
+    struct dirent* e;
+    char at[300];
+    while (d && (e = readdir(d))) {
+        if (strncmp(e->d_name, "nvidia", 6)
+            && strncmp(e->d_name, "fb", 2) && strcmp(e->d_name, "kfd")
+            && strcmp(e->d_name, "uinput"))
+            continue;
+        snprintf(at, sizeof at, "/dev/%s", e->d_name);
+        chown(at, g_uid, g_uid);
+    }
+    if (d) closedir(d);
+    chown("/sys/power/state", g_uid, g_uid);
+    chown("/sys/power/wakeup_count", g_uid, g_uid);
+    d = opendir("/sys/class/backlight");
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(at, sizeof at, "/sys/class/backlight/%s/brightness",
+                 e->d_name);
+        chown(at, g_uid, g_uid);
+    }
+    if (d) closedir(d);
+}
+
+// the process becomes the user (nothing after it is root's)
+static int drop_root(void) {
+    if (!g_uid) return 0;
+    setgroups(0, NULL);
+    return setgid(g_uid) || setuid(g_uid);
+}
+
+static volatile sig_atomic_t g_asked;
+static void on_power(int sig) { g_asked = sig; }
+
+// orbiter as the user; pid 1 stays: it reaps, SIGINT restarts the
+// machine and SIGUSR2 powers it off (busybox init's signals)
+static void run_shell(const char* init, char* const argv[]) {
+    if (!g_uid) {
+        execve(init, argv, environ);
+        die("cannot run", init);
+    }
+    struct sigaction sa = { .sa_handler = on_power };
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGUSR2, &sa, NULL);
+    for (;;) {
+        pid_t p = fork();
+        if (p == 0) {
+            if (drop_root()) _exit(126);
+            execve(init, argv, environ);
+            _exit(127);
+        }
+        int st = 0;
+        pid_t w = 0;
+        while (!g_asked && w != p) {
+            w = waitpid(-1, &st, 0);
+            if (w < 0 && errno == ECHILD) break;
+        }
+        if (g_asked) {
+            sync();
+            reboot(g_asked == SIGINT ? RB_AUTOBOOT : RB_POWER_OFF);
+        }
+        fprintf(stderr, "orbiter-os init: %s ended (%d); again in 2 s\n",
+            init, st);
+        sleep(2);
+    }
+}
+#else
+static void user_read(void) {}
+static void user_make(void) {}
+static void user_devices(void) {}
+static int drop_root(void) { return 0; }
+static void run_shell(const char* init, char* const argv[]) {
+    execve(init, argv, environ);
+    die("cannot run", init);
+}
+#endif
+
 int main(void) {
     mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
     mount("proc", "/proc", "proc", 0, NULL);
     mount("sysfs", "/sys", "sysfs", 0, NULL);
-    int con = open("/dev/console", O_RDWR);
-    if (con >= 0) { dup2(con, 0); dup2(con, 1); dup2(con, 2); }
+    // nothing on the screen: die() alone opens the console
+    int nul = open("/dev/null", O_RDWR);
+    if (nul >= 0) { dup2(nul, 0); dup2(nul, 1); dup2(nul, 2); }
 
     int cf = open("/proc/cmdline", O_RDONLY);
     if (cf >= 0) {
@@ -1112,14 +1383,25 @@ int main(void) {
     // wayland's keymaps and buffers are files in /dev/shm
     mkdir("/dev/shm", 01777);
     mount("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
+    // consoles are ptys; the framebuffer console leaves the screen
+    // (both were orbiter's as pid 1; it runs as the user now)
+    mkdir("/dev/pts", 0755);
+    mount("devpts", "/dev/pts", "devpts", 0, "mode=620,ptmxmode=666");
+    fbcon_bind(0);
     // after the switch: firmware loads from the folder
     // the kernel's own driver requests: our modprobe's place
     int kp = open("/proc/sys/kernel/modprobe", O_WRONLY);
     if (kp >= 0) { write(kp, MODPROBE, strlen(MODPROBE)); close(kp); }
-    boot_cube(init);
+    user_read();
     phone_find();
     phone_early();
     module_map();
+    // the gpu driver before everything else: the boot picture
+    // shows while the hardware passes run
+    load_modules();
+    user_make();
+    user_devices();
+    boot_cube(init);
     hotplug(uevents());
     load_hardware();
     // devices made by the first pass's drivers (usb hid devices)
@@ -1139,8 +1421,9 @@ int main(void) {
     }
     write_boot();
     phone_dim();
-    load_modules();
     swap_on();
+    // the input and sound nodes the passes made
+    user_devices();
     net_start(init);
     modem_start();
     bt_start();
@@ -1156,7 +1439,6 @@ int main(void) {
             argv[argc++] = w;
     argv[argc] = NULL;
     work_folder(init);
-    execve(init, argv, environ);
-    die("cannot run", init);
+    run_shell(init, argv);
     return 1;
 }

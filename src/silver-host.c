@@ -2155,7 +2155,9 @@ static void view_env(void) {
         "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME",
         "XDG_DATA_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_DIRS",
         // where it was started: an agent's shell, and its session
-        "AI_AGENT", "CLAUDE_CODE_SESSION_ID" };
+        "AI_AGENT", "CLAUDE_CODE_SESSION_ID",
+        // the opener claude runs for a login link (xdg-open)
+        "BROWSER" };
     for (int i = 0; environ[i];) {
         const char* e = environ[i];
         const char* eq = strchr(e, '=');
@@ -2390,6 +2392,22 @@ static void bound_lock(const char* app, int argc, char** argv) {
             free(found[i]);
         }
         free(found);
+        // the console's git and ssh see the user's keys and settings,
+        // read only, at their own places in its home
+        const char* real = getenv("HOME");
+        if (strcmp(app, "console") == 0 && real && *real) {
+            const char* keys[] = { ".ssh", ".gitconfig" };
+            for (int i = 0; i < 2; i++) {
+                char src[4600], at[4600];
+                struct stat st;
+                snprintf(src, sizeof(src), "%s/%s", real, keys[i]);
+                snprintf(at, sizeof(at), VIEW_ROOT "%s", src);
+                if (stat(src, &st) == 0 &&
+                    view_graft(src, at, S_ISDIR(st.st_mode), 0) == 0)
+                    fprintf(stderr, "silver-host: %s into %s's view\n",
+                        src, app);
+            }
+        }
         // orbiter's later shares reach the app through this
         mount(NULL, VIEW_ROOT, NULL, MS_REC | MS_SHARED, NULL);
         if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, bp) != 0 ||

@@ -1414,8 +1414,8 @@ element InstallWizard
     # swap: -2 not chosen (the default), -1 a file, else the
     # swap partition's place on the disk
     mutable swap_pick : i32 [ -2 ]
-    # the user's ssh keys go to orbiter-os's /root/.ssh
-    mutable keys_copy : bool
+    # the user's ssh keys and git settings go to their home
+    mutable keys_copy : bool [ true ]
     # the boot line's swap word, made with the plan
     mutable swap_word : string
     # orbiter-os's partition's uuid: read, or given to mkfs
@@ -1796,6 +1796,18 @@ element InstallWizard
     func tree_rel [] -> string
         return (beside) ? '/orbiter-os' : ''
 
+    # the shell that drops a menuentry 'orbiter-os' block from each
+    # other file of the folder holding mt (GRUB reads them all)
+    func grub_prune [ mt: string ] -> string
+        c : command {
+            d=$(dirname {mt}); for f in "$d"/*; do
+            [ "$f" = {mt} ] && continue;
+            grep -q "menuentry 'orbiter-os'" "$f" 2>/dev/null || continue;
+            awk '/^menuentry .orbiter-os. / {{ skip = 1 }}
+            !skip {{ print }} skip && /^}}/ {{ skip = 0 }}' "$f" > "$f.new"
+            && cat "$f.new" > "$f" && rm -f "$f.new"; done }
+        return '{c}'
+
     # the menu file a boot manager reads; tree: the folder
     func menu_text [ k: BootKind, uuid: string, root: string,
                      tree: string ] -> string
@@ -2091,10 +2103,14 @@ element InstallWizard
         s.dst  = '{tree}/etc/hostname'
         s.text = '{host}\n'
         if [ keys_copy && ssh_keys[] > 0 ]
-            s = step[ StepKind.run, 'Copy your SSH keys' ]
-            to : sh_word[ '{tree}/root/.ssh' ]
-            s.cmd = ssh_copy_sh[ sh_word[ ssh_dir[] ], to ]
-            s.cmd = '{s.cmd} && chown -R 0:0 {to}'
+            s = step[ StepKind.run, 'Copy your SSH keys and git settings' ]
+            hm : sh_word[ '{tree}/home/{user}' ]
+            to : sh_word[ '{tree}/home/{user}/.ssh' ]
+            gc : sh_word[ '{home_dir[]}/.gitconfig' ]
+            s.cmd = 'mkdir -p {hm} && {ssh_copy_sh[ sh_word[ ssh_dir[] ], to ]}'
+            s.cmd = '{s.cmd} && ( [ -f {gc} ] && cp -a {gc} {hm}/; true )'
+            # uid 1000: init makes the account so at boot
+            s.cmd = '{s.cmd} && chmod 700 {hm} && chown -R 1000:1000 {hm}'
         if [ boot == BootKind.grub_debian || boot == BootKind.grub_bls ]
             lp : Part linux_part[ dk ]
             if [ fresh && lp ]
@@ -2102,19 +2118,26 @@ element InstallWizard
                 s.src = '/dev/{lp.name}'
                 s.dst = lmnt
                 s.fs  = 'ext4'
+            # the running system's root is '/': no doubled slash
+            lm : string [ (lmnt == '/') ? '' : lmnt ]
             mt : string [ (boot == BootKind.grub_debian)
-                ? '{lmnt}/etc/grub.d/41_orbiter-os'
-                : '{lmnt}/loader/entries/orbiter-os.conf' ]
+                ? '{lm}/etc/grub.d/41_orbiter-os'
+                : '{lm}/loader/entries/orbiter-os.conf' ]
             if [ boot == BootKind.grub_bls ]
-                sub : path '{lmnt}/boot/loader/entries'
-                own : path '{lmnt}/loader/entries'
+                sub : path '{lm}/boot/loader/entries'
+                own : path '{lm}/loader/entries'
                 if [ !own.is_dir[] && sub.is_dir[] ]
-                    mt = '{lmnt}/boot/loader/entries/orbiter-os.conf'
+                    mt = '{lm}/boot/loader/entries/orbiter-os.conf'
             s = step[ StepKind.menu, 'Add orbiter-os to GRUB\'s menu' ]
             s.src  = rdev
             s.dst  = mt
             s.menu = boot
             s.exec = boot == BootKind.grub_debian
+            # an older install's entry of the same name in another
+            # file of that folder (40_custom) would boot an old line
+            if [ boot == BootKind.grub_debian ]
+                s = step[ StepKind.run, 'Remove older orbiter-os entries' ]
+                s.cmd = grub_prune[ mt ]
             # the running system's own menu: its grub.cfg remade
             if [ boot == BootKind.grub_debian && mt.starts_with[ '/etc/' ] ]
                 s = step[ StepKind.run, 'Update GRUB\'s menu' ]
@@ -2327,7 +2350,10 @@ element InstallWizard
                 && rm -f {bad} && ( tar -C {src}{ex} --checkpoint=100 {pr}
                 -cf - . || touch {bad} )
                 | tar -C {dst} --no-same-owner -xpf - }
-            return '{c} && [ ! -e {bad} ] && ( {own} )'
+            # the user's own: silver's tree and the homes (uid 1000)
+            mine : command { [ "$(id -u)" = 0 ] && chown -R 1000:1000
+                {dst}/src/silver {dst}/home; true }
+            return '{c} && [ ! -e {bad} ] && ( {own} ) && ( {mine} )'
         made : 'mkdir -p "$(dirname {dst})"'
         if [ s.kind == StepKind.file ]
             return '{made} && cp --preserve=mode,timestamps {src} {dst}'

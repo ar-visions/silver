@@ -212,10 +212,16 @@ func drive_tree [] -> string
 # orbiter-os's own boot words, after its uuid and root: its
 # init, the drivers it loads, its home and libraries
 # the user's ssh folder: keys, known hosts, config
-func ssh_dir [] -> string
+# the user's home on this computer
+func home_dir [] -> string
     hc : cstr [ getenv[ "HOME" ] ]
     if [ hc == null ] return ''
-    return '{string[ hc ]}/.ssh'
+    return string[ hc ]
+
+func ssh_dir [] -> string
+    h : home_dir[]
+    if [ h.count == 0 ] return ''
+    return '{h}/.ssh'
 
 # the keys there: each private file beside its .pub
 func ssh_keys [] -> i32
@@ -327,6 +333,8 @@ func os_words [ arm: bool, nvidia: bool ] -> string
     root : silver_root[]
     line : 'orbiter.init={root}/install/build/orbiter'
     if [ nvidia ] line = '{line} orbiter.modules=nvidia-drm:modeset=1'
+    # nothing printed on the screen at boot, no cursor
+    line = '{line} quiet loglevel=0 vt.global_cursor_default=0'
     lib : '{root}/install/lib:{root}/install/build'
     # claude and others open links only with BROWSER set
     line = '{line} HOME=/root BROWSER=/usr/bin/xdg-open'
@@ -3397,9 +3405,12 @@ element Bootstrap
         add_shell[]
         # programs run in the console module, hosted at run time
         add_module[ 'console' ]
+        # the boot picture init runs as the gpu driver loads
+        add_module[ 'bootcube' ]
         add_open[]
         add_claude[]
         add_wifi[]
+        add_network[]
         add_tray[]
         add_toolchain[]
         add_games[]
@@ -3882,6 +3893,8 @@ element Bootstrap
             n += 1
         # what the apps spawn: WebKit's helpers and the like
         add_programs[ '{install}/libexec' ]
+        # glib's TLS and proxy modules: dlopen, never a NEEDED
+        add_programs[ '{install}/lib/gio' ]
         # a module's -I folders under install/lib (dbus-1.0/include)
         lib : path '{install}/lib'
         libs : lib.ls[ null, false ]
@@ -4004,7 +4017,9 @@ element Bootstrap
             'sync', 'timeout', 'dd', 'grep', 'egrep', 'fgrep', 'sed',
             'find', 'xargs', 'diff', 'cmp', 'tar', 'gzip', 'gunzip',
             'zcat', 'xz', 'less', 'ps', 'kill', 'pgrep', 'pkill',
-            'which', 'awk', 'curl', 'clear', 'tput', 'nano', 'vi' ]
+            'which', 'awk', 'curl', 'clear', 'tput', 'nano', 'vi',
+            'top', 'free', 'uptime', 'watch', 'vmstat', 'pidof', 'pmap',
+            'w' ]
         for [ nm: string ] in names
             t : '/usr/bin/{nm}'
             add_file[ t ]
@@ -4038,6 +4053,12 @@ element Bootstrap
         seen[ dst ] = true
         add_dir[ 'usr/bin' ]
         files.push[ OsFile [ src: bin, dst: dst ] ]
+        # the console names install/bin/xdg-open as BROWSER
+        own : guest[ '{install}/bin/xdg-open' ]
+        if [ seen.contains[ own ] ] return
+        seen[ own ] = true
+        add_dir[ own.mid[ 0, i32[ own.rindex_of[ '/' ] ] ] ]
+        files.push[ OsFile [ src: bin, dst: own ] ]
 
     # claude by Anthropic's own installer, run here with a staging
     # home; its binary goes to /usr/local on orbiter-os
@@ -4096,6 +4117,18 @@ element Bootstrap
         add_file[ '{install}/share/dbus-1/system.d' ]
         add_tree_at[ '{root}/wifi/root/etc', 'etc' ]
         add_tree_at[ '{root}/wifi/root/usr/sbin', 'usr/sbin' ]
+
+    # names resolve (glibc loads nss by dlopen: never a NEEDED), and
+    # a wired address by dhcpcd (iwd does Wi-Fi's own)
+    func add_network []
+        lib : '/usr/lib/x86_64-linux-gnu'
+        for [ f: string ] in vec string [] [ '/etc/nsswitch.conf',
+                '/etc/hosts', '/etc/host.conf', '/etc/services',
+                '/etc/protocols', '{lib}/libnss_files.so.2',
+                '{lib}/libnss_dns.so.2', '/usr/sbin/dhcpcd',
+                '/usr/lib/dhcpcd' ]
+            add_file[ f ]
+            add_deps[ f ]
 
     # the install wizard's programs, and the shell popen runs
     func add_tools []
