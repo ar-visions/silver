@@ -62,6 +62,9 @@ static gboolean frameSocket;
 static uint32_t frameSeq;
 static WebKitWebView* webView;
 static WPEView* view;
+// the shown page: the first, or a popup it opened over it
+static GPtrArray* pages;
+static int viewWidth = 1280, viewHeight = 800;
 static GMainLoop* loop;
 static GString* pending;
 static EGLDisplay eglDisplay;
@@ -325,6 +328,8 @@ static void publishAddress(GObject* object, GParamSpec* spec, gpointer data)
 
 static void publishFrame(WPEView* source, WPEBuffer* buffer, gpointer data)
 {
+    if (source != view)
+        return;
     int width = wpe_buffer_get_width(buffer);
     int height = wpe_buffer_get_height(buffer);
     if (width <= 0 || height <= 0 || width > MAX_FRAME_SIDE || height > MAX_FRAME_SIDE)
@@ -644,8 +649,11 @@ static void handleLine(char* line)
     }
     if (!strcmp(command, "size")) {
         int width = 0, height = 0;
-        if (sscanf(line, "size %d %d", &width, &height) == 2 && width > 0 && height > 0)
+        if (sscanf(line, "size %d %d", &width, &height) == 2 && width > 0 && height > 0) {
+            viewWidth = width;
+            viewHeight = height;
             wpe_view_resized(view, width, height);
+        }
         return;
     }
     // mouse <down|up|move|wheel> x y button buttons mods [dx dy]
@@ -718,6 +726,61 @@ static gboolean readInput(GIOChannel* channel, GIOCondition condition, gpointer 
         g_string_erase(pending, 0, newline - pending->str + 1);
     }
     return G_SOURCE_CONTINUE;
+}
+
+static void watchPage(WebKitWebView* page);
+
+// the page on top of the stack is the one shown and driven
+static void showTop(void)
+{
+    webView = g_ptr_array_index(pages, pages->len - 1);
+    view = webkit_web_view_get_wpe_view(webView);
+    wpe_view_resized(view, viewWidth, viewHeight);
+    wpe_view_focus_in(view);
+    publishNav(NULL, NULL, NULL, NULL);
+    publishAddress(NULL, NULL, NULL);
+}
+
+static void popupShown(WebKitWebView* page, gpointer data)
+{
+    g_ptr_array_add(pages, page);
+    fprintf(stderr, "trinity browser: popup %s\n", webkit_web_view_get_uri(page));
+    showTop();
+}
+
+// the popup closed itself (a sign-in done): its opener again
+static void popupClosed(WebKitWebView* page, gpointer data)
+{
+    if (!g_ptr_array_remove(pages, page) || pages->len == 0)
+        return;
+    fprintf(stderr, "trinity browser: popup closed\n");
+    showTop();
+    g_object_unref(page);
+}
+
+// window.open: a page of its own, shown once it is ready
+static WebKitWebView* popupMade(WebKitWebView* opener, WebKitNavigationAction* action, gpointer data)
+{
+    WebKitWebView* page = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+        "related-view", opener, "settings", webkit_web_view_get_settings(opener),
+        "user-content-manager", webkit_web_view_get_user_content_manager(opener), NULL);
+    // ours, beside the one handed to WebKit
+    g_object_ref(page);
+    watchPage(page);
+    g_signal_connect(page, "ready-to-show", G_CALLBACK(popupShown), NULL);
+    g_signal_connect(page, "close", G_CALLBACK(popupClosed), NULL);
+    return page;
+}
+
+// every page's signals: the handlers act on the shown one
+static void watchPage(WebKitWebView* page)
+{
+    g_signal_connect(webkit_web_view_get_wpe_view(page), "buffer-rendered", G_CALLBACK(publishFrame), NULL);
+    g_signal_connect(webkit_web_view_get_back_forward_list(page), "changed", G_CALLBACK(publishNav), NULL);
+    g_signal_connect(page, "notify::title", G_CALLBACK(publishTitle), NULL);
+    g_signal_connect(page, "load-changed", G_CALLBACK(logLoad), NULL);
+    g_signal_connect(page, "notify::uri", G_CALLBACK(publishAddress), NULL);
+    g_signal_connect(page, "create", G_CALLBACK(popupMade), NULL);
 }
 
 static uint8_t* mapFrames(void)
@@ -803,12 +866,12 @@ int main(int argc, char** argv)
     schemeRequests = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_object_unref);
     view = webkit_web_view_get_wpe_view(webView);
     initReadBack(display);
-    g_signal_connect(view, "buffer-rendered", G_CALLBACK(publishFrame), NULL);
-    g_signal_connect(webkit_web_view_get_back_forward_list(webView), "changed", G_CALLBACK(publishNav), NULL);
-    g_signal_connect(webView, "notify::title", G_CALLBACK(publishTitle), NULL);
-    g_signal_connect(webView, "load-changed", G_CALLBACK(logLoad), NULL);
+    pages = g_ptr_array_new();
+    g_ptr_array_add(pages, webView);
+    watchPage(webView);
     g_signal_connect(webkit_network_session_get_cookie_manager(webkit_web_view_get_network_session(webView)), "changed", G_CALLBACK(cookiesChanged), webView);
-    g_signal_connect(webView, "notify::uri", G_CALLBACK(publishAddress), NULL);
+    viewWidth = width;
+    viewHeight = height;
     wpe_view_resized(view, width, height);
     wpe_view_focus_in(view);
     webkit_web_view_load_uri(webView, url);
