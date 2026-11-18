@@ -1,0 +1,2111 @@
+# writer: markdown written as it reads. every block is drawn but
+# the one being written, which shows its markdown to type in
+export 0.1.0
+export software ['creative']
+export extensions ['.md': FileType.ascii]
+# its view takes the file it opens writable
+export edits ['.md']
+
+import vec
+import img
+import trinity
+import <stdio.h>
+import <string.h>
+
+# ---- faces: Barlow for the words, Barlow Condensed for headings,
+# Google Sans Code for code and the block being written ----
+
+func face_uri [ id: i32 ] -> string
+    if [ id == 1 ] return 'fonts/Barlow-SemiBold.ttf'
+    if [ id == 2 ] return 'fonts/Barlow-Italic.ttf'
+    if [ id == 3 ] return 'fonts/Barlow-BoldItalic.ttf'
+    if [ id == 4 ] return 'fonts/GoogleSansCode-VariableFont_MONO.ttf'
+    if [ id >= 5 ] return 'fonts/BarlowCondensed-SemiBold.ttf'
+    return 'fonts/Barlow-Regular.ttf'
+
+# a face's size in the font unit's points (22 is one unit)
+func face_size [ id: i32 ] -> f32
+    sizes : vec f32 [] [ 19.0, 19.0, 19.0, 19.0, 15.5, 44.0, 33.0,
+                         26.0, 22.0, 20.0, 18.0 ]
+    return sizes[ id ]
+
+func face [ cv: Canvas, id: i32 ] -> CanvasFont
+    return shared_font[ cv, face_uri[ id ],
+                        label_px[ cv, face_size[ id ] ] ]
+
+# ---- the markdown's shapes ----
+
+# one run of a block's words in one look
+class WrSpan
+    public text   : string
+    public bold   : bool
+    public ital   : bool
+    public code   : bool
+    public link   : bool
+    public strike : bool
+
+# one paint of a laid out block, its place local to the block
+class WrItem
+    # 0 text 1 rect 2 rounded fill 3 rounded line 4 check 5 dot
+    public kind  : i32
+    public x     : f32
+    public y     : f32
+    public w     : f32
+    public h     : f32
+    public r     : f32
+    public face  : i32
+    public text  : string
+    public color : string
+    # the word's place among the block's words, -1 none
+    public word  : i32 [ -1 ]
+
+# one block of the file: its markdown as written, the blank lines
+# after it, what it reads as, and how it was laid out
+class WrBlock
+    public raw   : string
+    public gap   : i32
+    # 0 para, 1..6 heading, 7 code, 8 bullet, 9 numbered, 10 quote,
+    # 11 rule, 12 task, 13 table
+    public kind  : i32
+    public text  : string
+    public lang  : string
+    public depth : i32
+    public num   : i32
+    public done  : bool
+    public y     : f32
+    public h     : f32
+    public hash  : i64
+    public items : vec WrItem
+
+# a painted block, kept while its look is the same
+class WrTile
+    mutable canvas : Canvas
+    mutable hash   : i64 [ -1 ]
+    mutable frame  : i32 [ -1 ]
+
+# a list's strings with sep between
+func joined [ v: vec string, sep: string ] -> string
+    out : string ''
+    for [ i: i32 0, i < v.count, i += 1 ]
+        if [ i > 0 ] out += sep
+        out += v[ i ]
+    return out
+
+func blank [ s: string ] -> bool
+    return s.trim[].count == 0
+
+func is_fence [ t: string ] -> bool
+    return t.starts_with[ "```" ] || t.starts_with[ "~~~" ]
+
+# 1..6 for a heading line, else 0
+func heading_of [ t: string ] -> i32
+    n : i32 [ i32[ t.count ] ]
+    h : i32 [ 0 ]
+    while [ h < n && h < 7 && t.chars[ h ] == '#' ] h += 1
+    if [ h >= 1 && h <= 6 && (h == n || t.chars[ h ] == ' ') ]
+        return h
+    return 0
+
+# three or more of one of - * _ and nothing else
+func rule_of [ t: string ] -> bool
+    n : i32 [ i32[ t.count ] ]
+    if [ n < 3 ] return false
+    c : i32 [ t.chars[ 0 ] ]
+    if [ c != '-' && c != '*' && c != '_' ] return false
+    k : i32 [ 0 ]
+    for [ j: i32 0, j < n, j += 1 ]
+        if [ t.chars[ j ] == c ]
+            k += 1
+        el [ t.chars[ j ] != ' ' ]
+            return false
+    return k >= 3
+
+# a list marker's bytes with its space ('- ', '12. '), else 0
+func mark_of [ t: string ] -> i32
+    n : i32 [ i32[ t.count ] ]
+    if [ n >= 2 && (t.chars[ 0 ] == '-' || t.chars[ 0 ] == '*'
+         || t.chars[ 0 ] == '+') && t.chars[ 1 ] == ' ' ]
+        return 2
+    j : i32 [ 0 ]
+    while [ j < n && t.chars[ j ] >= '0' && t.chars[ j ] <= '9' ]
+        j += 1
+    if [ j > 0 && j + 1 < n
+         && (t.chars[ j ] == '.' || t.chars[ j ] == ')')
+         && t.chars[ j + 1 ] == ' ' ]
+        return j + 2
+    return 0
+
+# a line that starts a block of its own
+func starts_block [ t: string ] -> bool
+    return heading_of[ t ] > 0 || is_fence[ t ] || rule_of[ t ]
+        || mark_of[ t ] > 0 || t.starts_with[ ">" ]
+        || t.starts_with[ "|" ]
+
+# the spaces a line starts with
+func indent_of [ s: string ] -> i32
+    n : i32 [ i32[ s.count ] ]
+    i : i32 [ 0 ]
+    while [ i < n && s.chars[ i ] == ' ' ] i += 1
+    return i
+
+# ---- inline: ** * _ ~~ ` [label](url) into runs ----
+
+func span_at [ out: vec WrSpan, s: string, from: i32, to: i32,
+               bold: bool, ital: bool, code: bool, strike: bool ]
+    if [ to > from ]
+        out.push[ WrSpan [ text: s.mid[ from, to - from ], bold: bold,
+                           ital: ital, code: code, strike: strike ] ]
+
+func spans_of [ s: string ] -> vec WrSpan
+    out : vec WrSpan []
+    n   : i32 [ i32[ s.count ] ]
+    i   : i32 [ 0 ]
+    seg : i32 [ 0 ]
+    bold   : bool [ false ]
+    ital   : bool [ false ]
+    code   : bool [ false ]
+    strike : bool [ false ]
+    while [ i < n ]
+        c : i32 [ s.chars[ i ] ]
+        if [ c == '`' ]
+            span_at[ out, s, seg, i, bold, ital, code, strike ]
+            code = !code
+            i  += 1
+            seg = i
+            continue
+        if [ code ]
+            i += 1
+            continue
+        if [ c == '~' && i + 1 < n && s.chars[ i + 1 ] == '~' ]
+            span_at[ out, s, seg, i, bold, ital, code, strike ]
+            strike = !strike
+            i  += 2
+            seg = i
+            continue
+        if [ c == '*' || c == '_' ]
+            # a word's own _ stays: snake_case is not emphasis
+            inner : bool [ c == '_' && i > 0 && i + 1 < n
+                && s.chars[ i - 1 ] != ' ' && s.chars[ i + 1 ] != ' ' ]
+            if [ !inner ]
+                two : bool [ i + 1 < n && s.chars[ i + 1 ] == c ]
+                span_at[ out, s, seg, i, bold, ital, code, strike ]
+                if [ two ]
+                    bold = !bold
+                    i += 2
+                el
+                    ital = !ital
+                    i += 1
+                seg = i
+                continue
+        if [ c == '[' ]
+            cl : i32 [ i + 1 ]
+            while [ cl < n && s.chars[ cl ] != ']' ] cl += 1
+            if [ cl + 1 < n && s.chars[ cl + 1 ] == '(' ]
+                fin : i32 [ cl + 2 ]
+                while [ fin < n && s.chars[ fin ] != ')' ] fin += 1
+                if [ fin < n ]
+                    span_at[ out, s, seg, i, bold, ital, code, strike ]
+                    out.push[ WrSpan [ text: s.mid[ i + 1, cl - i - 1 ],
+                        bold: bold, ital: ital, link: true ] ]
+                    i   = fin + 1
+                    seg = i
+                    continue
+        i += 1
+    span_at[ out, s, seg, n, bold, ital, code, strike ]
+    return out
+
+# what a block's markdown reads as
+func read_block [ b: WrBlock ]
+    lines : vec string b.raw.split[ "\n" ]
+    f : string lines[ 0 ]
+    # a marker's own space kept: '- ' is an empty item
+    t : string f.ltrim[]
+    tn : i32 [ i32[ t.count ] ]
+    b.depth = indent_of[ f ] / 2
+    b.done  = false
+    b.num   = 0
+    b.lang  = ''
+    hl : i32 heading_of[ t ]
+    mk : i32 mark_of[ t ]
+    if [ is_fence[ t ] ]
+        b.kind = 7
+        b.lang = t.mid[ 3, tn - 3 ].trim[]
+        last : i32 [ i32[ lines.count ] ]
+        if [ last > 1 && is_fence[ lines[ last - 1 ].trim[] ] ]
+            last -= 1
+        body : vec string []
+        for [ k: i32 1, k < last, k += 1 ]
+            body.push[ lines[ k ] ]
+        b.text = joined[ body, "\n" ]
+    el [ hl > 0 ]
+        b.kind = hl
+        b.text = t.mid[ hl, tn - hl ].trim[]
+    el [ rule_of[ t ] ]
+        b.kind = 11
+        b.text = ''
+    el [ t.starts_with[ ">" ] ]
+        b.kind = 10
+        qs : vec string []
+        for [ ln: string ] in lines
+            q : string ln.trim[]
+            q = q.mid[ 1, q.count - 1 ].trim[]
+            qs.push[ q ]
+        b.text = joined[ qs, " " ]
+    el [ t.starts_with[ "|" ] ]
+        b.kind = 13
+        b.text = b.raw
+    el [ mk > 0 ]
+        rest : string t.mid[ mk, tn - mk ]
+        num  : bool [ t.chars[ 0 ] >= '0' && t.chars[ 0 ] <= '9' ]
+        b.kind = (num) ? 9 : 8
+        if [ num ] b.num = i32[ t.mid[ 0, mk - 2 ].integer_value[] ]
+        if [ !num && (rest.starts_with[ "[ ] " ]
+             || rest.starts_with[ "[x] " ]
+             || rest.starts_with[ "[X] " ]) ]
+            b.kind = 12
+            b.done = rest.chars[ 1 ] != ' '
+            rest = rest.mid[ 4, rest.count - 4 ]
+        ws : vec string []
+        ws.push[ rest ]
+        for [ k: i32 1, k < lines.count, k += 1 ]
+            ws.push[ lines[ k ].trim[] ]
+        b.text = joined[ ws, " " ]
+    el
+        b.kind = 0
+        ws : vec string []
+        for [ ln: string ] in lines
+            ws.push[ ln.trim[] ]
+        b.text = joined[ ws, " " ]
+
+# ---- the document: its blocks, the one being written, its caret ----
+
+class WrDoc
+    public file   : path
+    public blocks : vec WrBlock
+    # blank lines before the first block
+    public lead   : i32
+    # the file ended without a newline
+    public no_eol : bool
+    # the block being written, -1 none; the caret and its anchor are
+    # bytes of its markdown
+    public cur    : i32 [ -1 ]
+    public ci     : i32
+    public ai     : i32
+    # the text as last saved or read
+    public saved  : string [ '' ]
+    public dirty  : bool
+    # the last save was refused (a file it may only read)
+    public refused : bool
+    # undo: the text before each edit, and where its caret was
+    public undo_t : vec string
+    public undo_b : vec i32
+    public undo_c : vec i32
+    public redo_t : vec string
+    public redo_b : vec i32
+    public redo_c : vec i32
+    # what the last edit was (1 typing, 2 deleting) and when
+    public last_kind : i32
+    public last_us   : i64
+    # bumped on every change: the page lays out again
+    public gen    : i32
+
+    # a text cut into blocks
+    func load_text [ tx: string ]
+        blocks = vec WrBlock []
+        lead   = 0
+        no_eol = false
+        lines : vec string tx.split[ "\n" ]
+        n : i32 [ i32[ lines.count ] ]
+        # split may keep the empty piece after a last newline
+        if [ n > 0 && lines[ n - 1 ].count == 0 ] n -= 1
+        no_eol = tx.count > 0 && !tx.ends_with[ "\n" ]
+        i : i32 [ 0 ]
+        while [ i < n && blank[ lines[ i ] ] ]
+            lead += 1
+            i += 1
+        while [ i < n ]
+            t : string lines[ i ].ltrim[]
+            from : i32 [ i ]
+            if [ is_fence[ t ] ]
+                i += 1
+                while [ i < n && !is_fence[ lines[ i ].trim[] ] ]
+                    i += 1
+                if [ i < n ] i += 1
+            el [ heading_of[ t ] > 0 || rule_of[ t ] ]
+                i += 1
+            el [ t.starts_with[ ">" ] ]
+                while [ i < n && lines[ i ].trim[].starts_with[ ">" ] ]
+                    i += 1
+            el [ t.starts_with[ "|" ] ]
+                while [ i < n && lines[ i ].trim[].starts_with[ "|" ] ]
+                    i += 1
+            el [ mark_of[ t ] > 0 ]
+                i += 1
+                # its own indented lines that start nothing new
+                while [ i < n && !blank[ lines[ i ] ]
+                        && indent_of[ lines[ i ] ] > 0
+                        && !starts_block[ lines[ i ].trim[] ] ]
+                    i += 1
+            el
+                i += 1
+                while [ i < n && !blank[ lines[ i ] ]
+                        && !starts_block[ lines[ i ].trim[] ] ]
+                    i += 1
+            part : vec string []
+            for [ k: i32 from, k < i, k += 1 ]
+                part.push[ lines[ k ] ]
+            b : WrBlock [ raw: joined[ part, "\n" ] ]
+            while [ i < n && blank[ lines[ i ] ] ]
+                b.gap += 1
+                i += 1
+            read_block[ b ]
+            blocks.push[ b ]
+        gen += 1
+
+    # the blocks as markdown again
+    func text [] -> string
+        out : string ''
+        for [ k: i32 0, k < lead, k += 1 ]
+            out += "\n"
+        for [ b: WrBlock ] in blocks
+            out += b.raw
+            out += "\n"
+            for [ k: i32 0, k < b.gap, k += 1 ]
+                out += "\n"
+        if [ no_eol && out.ends_with[ "\n" ] ]
+            out = out.mid[ 0, out.count - 1 ]
+        return out
+
+    func open [ p: path ]
+        file = p
+        tx : string ''
+        if [ p && p.exists[] ]
+            got : cast string [ p.load[ typeid[ string ], null ] ]
+            if [ got ] tx = got
+        load_text[ tx ]
+        saved  = tx
+        dirty  = false
+        cur    = -1
+        undo_t = vec string []
+        undo_b = vec i32 []
+        undo_c = vec i32 []
+        redo_t = vec string []
+        redo_b = vec i32 []
+        redo_c = vec i32 []
+
+    func block [] -> WrBlock
+        if [ cur < 0 || cur >= blocks.count ] return null
+        return blocks[ cur ]
+
+    # the text before an edit, for undo: typing runs are one step
+    func mark [ kind: i32 ]
+        now : i64 epoch_micros[]
+        run : bool [ kind != 0 && kind == last_kind
+                     && now - last_us < 1500000 ]
+        last_kind = kind
+        last_us   = now
+        if [ run ] return
+        undo_t.push[ text[] ]
+        undo_b.push[ cur ]
+        undo_c.push[ ci ]
+        if [ undo_t.count > 200 ]
+            undo_t.remove[ 0 ]
+            undo_b.remove[ 0 ]
+            undo_c.remove[ 0 ]
+        redo_t = vec string []
+        redo_b = vec i32 []
+        redo_c = vec i32 []
+
+    # after an edit: read again, mark unsaved
+    func changed []
+        b : WrBlock block[]
+        if [ b ] read_block[ b ]
+        dirty = true
+        gen  += 1
+
+    func restore [ tx: string, at: i32, c: i32 ]
+        load_text[ tx ]
+        cur = (at < blocks.count) ? at : -1
+        b : WrBlock block[]
+        ci = (b) ? clamp[ c, 0, i32[ b.raw.count ] ] : 0
+        ai = ci
+        dirty = tx.compare[ saved ] != 0
+        last_kind = 0
+
+    func step_back [] -> bool
+        if [ undo_t.count == 0 ] return false
+        k : i32 [ i32[ undo_t.count ] - 1 ]
+        redo_t.push[ text[] ]
+        redo_b.push[ cur ]
+        redo_c.push[ ci ]
+        # restored before it leaves the list: the list holds it
+        restore[ undo_t[ k ], undo_b[ k ], undo_c[ k ] ]
+        undo_t.remove[ k ]
+        undo_b.remove[ k ]
+        undo_c.remove[ k ]
+        return true
+
+    func step_on [] -> bool
+        if [ redo_t.count == 0 ] return false
+        k : i32 [ i32[ redo_t.count ] - 1 ]
+        undo_t.push[ text[] ]
+        undo_b.push[ cur ]
+        undo_c.push[ ci ]
+        restore[ redo_t[ k ], redo_b[ k ], redo_c[ k ] ]
+        redo_t.remove[ k ]
+        redo_b.remove[ k ]
+        redo_c.remove[ k ]
+        return true
+
+    func save [] -> bool
+        if [ !file ] return false
+        tx : string text[]
+        refused = !file.save[ tx, null ]
+        if [ refused ] return false
+        saved = tx
+        dirty = false
+        return true
+
+    # the block left: read as markdown again, which may make it
+    # several blocks (a blank line typed in), or none (emptied)
+    func settle [ i: i32 ]
+        if [ i < 0 || i >= blocks.count ] return
+        b : WrBlock blocks[ i ]
+        if [ blank[ b.raw ] ]
+            if [ blocks.count == 1 ] return
+            if [ i > 0 ]
+                blocks[ i - 1 ].gap = max[ blocks[ i - 1 ].gap, b.gap ]
+            blocks.remove[ i ]
+            gen += 1
+            return
+        if [ b.raw.index_of[ "\n" ] < 0 ] return
+        part : WrDoc [ ]
+        part.load_text[ b.raw ]
+        if [ part.blocks.count <= 1 ] return
+        last : WrBlock part.blocks[ part.blocks.count - 1 ]
+        last.gap = b.gap
+        blocks.remove[ i ]
+        for [ k: i32 0, k < part.blocks.count, k += 1 ]
+            blocks.insert[ part.blocks[ k ], i + k ]
+        gen += 1
+
+    # write in block i, the caret at byte at (-1 its end)
+    func enter [ i: i32, at: i32 ]
+        if [ i == cur ]
+            b : WrBlock block[]
+            if [ b ] ci = (at < 0) ? i32[ b.raw.count ] : at
+            ai = ci
+            return
+        n : i32 [ i32[ blocks.count ] ]
+        was : i32 [ cur ]
+        cur = -1
+        settle[ was ]
+        # the settle may have taken or split blocks before i
+        moved : i32 [ i32[ blocks.count ] - n ]
+        to : i32 [ (was >= 0 && was < i) ? i + moved : i ]
+        if [ to < 0 || to >= blocks.count ] return
+        cur = to
+        b : WrBlock blocks[ cur ]
+        ci = (at < 0) ? i32[ b.raw.count ] : clamp[ at, 0,
+                                             i32[ b.raw.count ] ]
+        ai = ci
+        last_kind = 0
+
+    func leave []
+        was : i32 [ cur ]
+        cur = -1
+        settle[ was ]
+
+    # the selection's ends, in order
+    func sel_lo [] -> i32
+        return (ci < ai) ? ci : ai
+
+    func sel_hi [] -> i32
+        return (ci < ai) ? ai : ci
+
+    func put [ s: string ]
+        b : WrBlock block[]
+        if [ !b ] return
+        lo : i32 sel_lo[]
+        hi : i32 sel_hi[]
+        r  : string b.raw
+        b.raw = r.mid[ 0, lo ] + s + r.mid[ hi, r.count - hi ]
+        ci = lo + i32[ s.count ]
+        ai = ci
+        changed[]
+
+    func words [] -> i32
+        n : i32 [ 0 ]
+        for [ b: WrBlock ] in blocks
+            if [ b.kind == 7 || b.kind == 11 ] continue
+            for [ w: string ] in b.text.split[ " " ]
+                if [ w.count > 0 ] n += 1
+        return n
+
+# a word count passed down a layout
+class WrCount
+    public n : i32
+
+# ---- the page: the blocks laid out down a column ----
+
+element WriterPage
+    public doc : WrDoc
+    focusable : true
+    mutable tiles      : vec WrTile
+    mutable tile_frame : i32
+    mutable laid_w     : f32
+    mutable laid_gen   : i32 [ -1 ]
+    # the column's left, its width and the page's top, as drawn
+    mutable col_x  : f32
+    mutable col_w  : f32
+    mutable top_y  : f32
+    # the block being written: its rows (byte from, to), its line,
+    # its letters' width and each byte's look
+    mutable rows_s : vec i32
+    mutable rows_e : vec i32
+    mutable mono_lh : f32
+    mutable mono_cw : f32
+    mutable looks   : vec i32
+    mutable looks_of : string
+    # up and down keep the caret's column
+    mutable goal_col : i32 [ -1 ]
+    mutable show_caret : bool
+    mutable dragging   : bool
+    # what the bar shows: a change of it restyles the window
+    mutable bar_seen   : string
+    mutable seen_mt    : i64
+    mutable check_us   : i64
+
+    # ---- layout of a drawn block ----
+
+    func face_of [ s: WrSpan, base: i32 ] -> i32
+        if [ s.code ] return 4
+        if [ base >= 5 ] return base
+        if [ s.bold && s.ital ] return 3
+        if [ s.bold ] return 1
+        if [ s.ital || base == 2 ] return 2
+        return 0
+
+    func span_color [ s: WrSpan, body: string ] -> string
+        if [ s.link ] return '#a99bff'
+        if [ s.code ] return '#c9b8ff'
+        if [ s.bold ] return '#ffffff'
+        if [ s.ital ] return '#d9d2ff'
+        return body
+
+    # the runs wrapped from x0 to xmax; the height they take
+    func lay_spans [ cv: Canvas, out: vec WrItem, sp: vec WrSpan,
+                     base: i32, x0: f32, xmax: f32, body: string,
+                     word: WrCount ] -> f32
+        cv.set_font[ face[ cv, base ] ]
+        lh : f32 [ round[ cv.get_line_height[]
+            * ((base >= 5) ? 1.12 : 1.5) ] ]
+        x  : f32 [ x0 ]
+        y  : f32 [ 0.0 ]
+        for [ s: WrSpan ] in sp
+            fi : i32 face_of[ s, base ]
+            cv.set_font[ face[ cv, fi ] ]
+            sw : f32 [ cv.measure_text[ " " ].w ]
+            # a run's own spaces at its edges still part it from the
+            # runs beside it
+            if [ s.text.starts_with[ " " ] && x > x0 ] x += sw
+            ws : vec string s.text.split[ " " ]
+            for [ k: i32 0, k < ws.count, k += 1 ]
+                wt : string ws[ k ]
+                if [ wt.count == 0 ] continue
+                m : f32 [ cv.measure_text[ wt ].w ]
+                if [ x + m > xmax && x > x0 ]
+                    x = x0
+                    y += lh
+                col : string span_color[ s, body ]
+                if [ s.code ]
+                    out.push[ WrItem [ kind: 2, x: x - 4.0,
+                        y: y + lh * 0.16, w: m + 8.0, h: lh * 0.68,
+                        r: 5.0, color: '#2a2150' ] ]
+                out.push[ WrItem [ kind: 0, x: x, y: y, w: m + 6.0,
+                    h: lh, face: fi, text: wt, color: col,
+                    word: word.n ] ]
+                word.n += 1
+                if [ s.link ]
+                    out.push[ WrItem [ kind: 1, x: x,
+                        y: y + lh * 0.78, w: m, h: 1.0,
+                        color: '#806bffaa' ] ]
+                if [ s.strike ]
+                    out.push[ WrItem [ kind: 1, x: x, y: y + lh * 0.52,
+                        w: m, h: 1.5, color: col ] ]
+                x += m
+                if [ k + 1 < ws.count ] x += sw
+            if [ s.text.ends_with[ " " ] ] x += sw
+        cv.set_font[ null ]
+        return y + lh
+
+    # a table's rows, its columns as wide as their widest cell
+    func lay_table [ cv: Canvas, it: vec WrItem, b: WrBlock,
+                     cw: f32 ] -> f32
+        cells : vec string []
+        per   : vec i32 []
+        for [ ln: string ] in b.raw.split[ "\n" ]
+            t : string ln.trim[]
+            if [ t.starts_with[ "|" ] ] t = t.mid[ 1, t.count - 1 ]
+            if [ t.ends_with[ "|" ] ] t = t.mid[ 0, t.count - 1 ]
+            row : vec string []
+            sep : bool [ true ]
+            for [ c: string ] in t.split[ "|" ]
+                ct : string c.trim[]
+                row.push[ ct ]
+                for [ j: i32 0, j < ct.count, j += 1 ]
+                    if [ ct.chars[ j ] != '-' && ct.chars[ j ] != ':' ]
+                        sep = false
+            if [ sep ] continue
+            for [ c: string ] in row
+                cells.push[ c ]
+            per.push[ i32[ row.count ] ]
+        if [ per.count == 0 ] return 0.0
+        nc : i32 [ 0 ]
+        for [ k: i32 ] in per
+            if [ k > nc ] nc = k
+        wide : vec f32 []
+        for [ j: i32 0, j < nc, j += 1 ] wide.push[ 0.0 ]
+        at : i32 [ 0 ]
+        for [ ri: i32 0, ri < per.count, ri += 1 ]
+            hf : i32 [ (ri == 0) ? 1 : 0 ]
+            cv.set_font[ face[ cv, hf ] ]
+            for [ j: i32 0, j < per[ ri ], j += 1 ]
+                m : f32 [ cv.measure_text[ cells[ at + j ] ].w + 28.0 ]
+                if [ m > wide[ j ] ] wide[ j ] = m
+            at += per[ ri ]
+        cv.set_font[ face[ cv, 0 ] ]
+        lh : f32 [ round[ cv.get_line_height[] * 1.7 ] ]
+        tw : f32 [ 0.0 ]
+        for [ j: i32 0, j < nc, j += 1 ] tw += wide[ j ]
+        if [ tw > cw ] tw = cw
+        th : f32 [ lh * f32[ per.count ] ]
+        it.push[ WrItem [ kind: 2, x: 0.0, y: 0.0, w: tw, h: th,
+                          r: 8.0, color: '#ffffff06' ] ]
+        it.push[ WrItem [ kind: 2, x: 0.0, y: 0.0, w: tw, h: lh,
+                          r: 8.0, color: '#4d3dbc55' ] ]
+        it.push[ WrItem [ kind: 3, x: 0.0, y: 0.0, w: tw, h: th,
+                          r: 8.0, color: '#ffffff18' ] ]
+        wi : i32 [ 0 ]
+        at = 0
+        for [ ri: i32 0, ri < per.count, ri += 1 ]
+            y : f32 [ f32[ ri ] * lh ]
+            hf : i32 [ (ri == 0) ? 1 : 0 ]
+            tc : string [ (ri == 0) ? '#ffffff' : '#d6d6e8' ]
+            if [ ri > 1 ]
+                it.push[ WrItem [ kind: 1, x: 0.0, y: y, w: tw, h: 1.0,
+                                  color: '#ffffff10' ] ]
+            x : f32 [ 0.0 ]
+            for [ j: i32 0, j < per[ ri ], j += 1 ]
+                if [ j > 0 ]
+                    it.push[ WrItem [ kind: 1, x: x, y: y, w: 1.0,
+                                      h: lh, color: '#ffffff10' ] ]
+                it.push[ WrItem [ kind: 0, x: x + 14.0, y: y,
+                    w: wide[ j ], h: lh, face: hf,
+                    text: cells[ at + j ], color: tc, word: wi ] ]
+                wi += 1
+                x += wide[ j ]
+            at += per[ ri ]
+        cv.set_font[ null ]
+        return th
+
+    # a drawn block's paints and height, at the column's width
+    func lay_block [ cv: Canvas, b: WrBlock, cw: f32 ]
+        it : vec WrItem []
+        wc : WrCount [ ]
+        h  : f32 [ 0.0 ]
+        body : string '#d8d9e8'
+        if [ b.kind >= 1 && b.kind <= 6 ]
+            hf : i32 [ 4 + b.kind ]
+            hc : string [ (b.kind <= 3) ? '#f6f4ff' : '#cfc8f4' ]
+            h = lay_spans[ cv, it, spans_of[ b.text ], hf, 0.0, cw, hc,
+                           wc ]
+            if [ b.kind == 1 ]
+                it.push[ WrItem [ kind: 1, x: 0.0, y: h + 6.0, w: cw,
+                                  h: 1.0, color: '#ffffff14' ] ]
+                it.push[ WrItem [ kind: 2, x: 0.0, y: h + 5.0, w: 64.0,
+                                  h: 3.0, r: 1.5, color: '#806bff' ] ]
+                h += 10.0
+            el [ b.kind == 2 ]
+                it.push[ WrItem [ kind: 1, x: 0.0, y: h + 4.0, w: cw,
+                                  h: 1.0, color: '#ffffff10' ] ]
+                h += 6.0
+        el [ b.kind == 7 ]
+            cv.set_font[ face[ cv, 4 ] ]
+            lh : f32 [ round[ cv.get_line_height[] * 1.45 ] ]
+            ls : vec string b.text.split[ "\n" ]
+            h = f32[ ls.count ] * lh + 32.0
+            it.push[ WrItem [ kind: 2, x: -14.0, y: 0.0, w: cw + 28.0,
+                              h: h, r: 10.0, color: '#0a0812' ] ]
+            it.push[ WrItem [ kind: 3, x: -14.0, y: 0.0, w: cw + 28.0,
+                              h: h, r: 10.0, color: '#806bff33' ] ]
+            if [ b.lang.count > 0 ]
+                lm : f32 [ cv.measure_text[ b.lang ].w ]
+                it.push[ WrItem [ kind: 0, x: cw - lm - 2.0, y: 4.0,
+                    w: lm + 6.0, h: 20.0, face: 4, text: b.lang,
+                    color: '#806bffaa' ] ]
+            y : f32 [ 16.0 ]
+            for [ ln: string ] in ls
+                it.push[ WrItem [ kind: 0, x: 4.0, y: y, w: cw, h: lh,
+                    face: 4, text: ln, color: '#b9f2d6' ] ]
+                y += lh
+            cv.set_font[ null ]
+        el [ b.kind == 8 || b.kind == 9 || b.kind == 12 ]
+            ix : f32 [ 28.0 + f32[ b.depth ] * 26.0 ]
+            tc : string [ (b.done) ? '#8a86a6' : body ]
+            sp : vec WrSpan spans_of[ b.text ]
+            if [ b.done ]
+                for [ s: WrSpan ] in sp
+                    s.strike = true
+            h = lay_spans[ cv, it, sp, 0, ix, cw, tc, wc ]
+            lh : f32 [ h ]
+            cv.set_font[ face[ cv, 0 ] ]
+            l1 : f32 [ round[ cv.get_line_height[] * 1.5 ] ]
+            if [ l1 < lh ] lh = l1
+            if [ b.kind == 8 ]
+                it.push[ WrItem [ kind: 5, x: ix - 17.0,
+                    y: lh * 0.5 - 3.0, w: 6.0, h: 6.0, r: 3.0,
+                    color: (b.depth % 2 == 0) ? '#ff84ff'
+                        : '#806bff' ] ]
+            el [ b.kind == 9 ]
+                nt : string '{b.num}.'
+                cv.set_font[ face[ cv, 1 ] ]
+                nm : f32 [ cv.measure_text[ nt ].w ]
+                it.push[ WrItem [ kind: 0, x: ix - nm - 9.0, y: 0.0,
+                    w: nm + 6.0, h: lh, face: 1, text: nt,
+                    color: '#a99bff' ] ]
+            el
+                bx : f32 [ ix - 25.0 ]
+                by : f32 [ lh * 0.5 - 8.0 ]
+                if [ b.done ]
+                    it.push[ WrItem [ kind: 2, x: bx, y: by, w: 16.0,
+                        h: 16.0, r: 4.5, color: '#4d3dbc' ] ]
+                    it.push[ WrItem [ kind: 4, x: bx, y: by, w: 16.0,
+                        h: 16.0, color: '#ffffff' ] ]
+                it.push[ WrItem [ kind: 3, x: bx, y: by, w: 16.0,
+                    h: 16.0, r: 4.5, color: '#806bff' ] ]
+            cv.set_font[ null ]
+        el [ b.kind == 10 ]
+            h = lay_spans[ cv, it, spans_of[ b.text ], 2, 22.0,
+                           cw - 8.0, '#bdb8dc', wc ] + 8.0
+            it.insert[ WrItem [ kind: 2, x: -6.0, y: -4.0, w: cw + 12.0,
+                h: h, r: 8.0, color: '#806bff10' ], 0 ]
+            it.push[ WrItem [ kind: 2, x: -6.0, y: -4.0, w: 4.0, h: h,
+                              r: 2.0, color: '#806bff' ] ]
+            h -= 4.0
+        el [ b.kind == 11 ]
+            h = 24.0
+            it.push[ WrItem [ kind: 1, x: 0.0, y: 12.0, w: cw, h: 1.0,
+                              color: '#ffffff14' ] ]
+            it.push[ WrItem [ kind: 5, x: cw * 0.5 - 4.0, y: 8.0,
+                              w: 8.0, h: 8.0, r: 2.0,
+                              color: '#ff84ff' ] ]
+        el [ b.kind == 13 ]
+            h = lay_table[ cv, it, b, cw ]
+        el
+            h = lay_spans[ cv, it, spans_of[ b.text ], 0, 0.0, cw, body,
+                           wc ]
+        b.items = it
+        b.h     = h
+        b.hash  = look_hash[ b, cw ]
+
+    # a block's look: its markdown and the width it is laid at
+    func look_hash [ b: WrBlock, cw: f32 ] -> i64
+        h : i64 [ 1469598103934665603 ]
+        for [ i: i32 0, i < b.raw.count, i += 1 ]
+            h = (h ^ i64[ b.raw.chars[ i ] ]) * 1099511628211
+        h = (h ^ i64[ i32[ cw ] ]) * 1099511628211
+        return h
+
+    # the space over a block
+    func before [ b: WrBlock ] -> f32
+        if [ b.kind == 1 ] return 34.0
+        if [ b.kind == 2 ] return 28.0
+        if [ b.kind >= 3 && b.kind <= 6 ] return 20.0
+        if [ b.kind == 7 || b.kind == 10 || b.kind == 13 ] return 10.0
+        return 0.0
+
+    # the space under a block
+    func after [ b: WrBlock ] -> f32
+        if [ b.kind >= 1 && b.kind <= 6 ] return 12.0
+        if [ b.kind == 8 || b.kind == 9 || b.kind == 12 ] return 6.0
+        return 16.0
+
+    # ---- the block being written: its markdown on a grid ----
+
+    # each byte's look: 0 words, 1 marks, 2 code, 3 a link's place,
+    # 4 heading words
+    func look_bytes [ r: string ] -> vec i32
+        out : vec i32 []
+        n : i32 [ i32[ r.count ] ]
+        for [ i: i32 0, i < n, i += 1 ] out.push[ 0 ]
+        fence : bool [ is_fence[ r.trim[] ] ]
+        ls : i32 [ 0 ]
+        while [ ls <= n ]
+            le : i32 [ ls ]
+            while [ le < n && r.chars[ le ] != '\n' ] le += 1
+            ln : string r.mid[ ls, le - ls ]
+            t  : string ln.trim[]
+            ind : i32 indent_of[ ln ]
+            hl : i32 heading_of[ t ]
+            mk : i32 mark_of[ t ]
+            if [ fence ]
+                for [ i: i32 ls, i < le, i += 1 ]
+                    out[ i ] = (is_fence[ t ]) ? 1 : 2
+            el [ hl > 0 ]
+                for [ i: i32 ls, i < le, i += 1 ]
+                    out[ i ] = (i < ls + ind + hl) ? 1 : 4
+            el [ rule_of[ t ] || t.starts_with[ "|" ] ]
+                for [ i: i32 ls, i < le, i += 1 ]
+                    out[ i ] = (r.chars[ i ] == '|'
+                                || rule_of[ t ]) ? 1 : 0
+            el
+                st : i32 [ ls + ind ]
+                if [ t.starts_with[ ">" ] ]
+                    st += 1
+                    if [ st < le && r.chars[ st ] == ' ' ] st += 1
+                el [ mk > 0 ]
+                    st += mk
+                    if [ st + 3 < le && r.chars[ st ] == '['
+                         && r.chars[ st + 2 ] == ']' ]
+                        st += 4
+                for [ i: i32 ls, i < st && i < le, i += 1 ]
+                    out[ i ] = 1
+                code : bool [ false ]
+                i : i32 [ st ]
+                while [ i < le ]
+                    c : i32 [ r.chars[ i ] ]
+                    if [ c == '`' ]
+                        out[ i ] = 1
+                        code = !code
+                    el [ code ]
+                        out[ i ] = 2
+                    el [ c == '*' || c == '~' ]
+                        out[ i ] = 1
+                    el [ c == '_' && (i == st || r.chars[ i - 1 ] == ' '
+                         || i + 1 >= le || r.chars[ i + 1 ] == ' ') ]
+                        out[ i ] = 1
+                    el [ c == '[' || c == ']' ]
+                        out[ i ] = 1
+                    el [ c == '(' && i > st && r.chars[ i - 1 ] == ']' ]
+                        out[ i ] = 1
+                        i += 1
+                        while [ i < le && r.chars[ i ] != ')' ]
+                            out[ i ] = 3
+                            i += 1
+                        if [ i < le ] out[ i ] = 1
+                    i += 1
+            ls = le + 1
+        return out
+
+    func look_color [ k: i32 ] -> string
+        if [ k == 1 ] return '#806bff'
+        if [ k == 2 ] return '#b9f2d6'
+        if [ k == 3 ] return '#8a86b8'
+        if [ k == 4 ] return '#ffffff'
+        return '#ecebfa'
+
+    # the block's markdown cut into rows: at its line ends, and at a
+    # space before the column's edge
+    func wrap_rows [ r: string, cols: i32 ]
+        rows_s = vec i32 []
+        rows_e = vec i32 []
+        n : i32 [ i32[ r.count ] ]
+        ls : i32 [ 0 ]
+        while [ ls <= n ]
+            le : i32 [ ls ]
+            while [ le < n && r.chars[ le ] != '\n' ] le += 1
+            p : i32 [ ls ]
+            first : bool [ true ]
+            while [ first || p < le ]
+                first = false
+                q : i32 [ p ]
+                k : i32 [ 0 ]
+                sp : i32 [ -1 ]
+                while [ q < le && k < cols ]
+                    if [ r.chars[ q ] == ' ' ] sp = q
+                    q = utf8_next[ r, q ]
+                    k += 1
+                if [ q >= le ]
+                    rows_s.push[ p ]
+                    rows_e.push[ le ]
+                    p = le
+                el
+                    br : i32 [ (sp > p) ? sp + 1 : q ]
+                    rows_s.push[ p ]
+                    rows_e.push[ br ]
+                    p = br
+            ls = le + 1
+
+    # letters from a row's start to byte at
+    func col_of [ r: string, from: i32, at: i32 ] -> i32
+        k : i32 [ 0 ]
+        p : i32 [ from ]
+        while [ p < at ]
+            p = utf8_next[ r, p ]
+            k += 1
+        return k
+
+    # the byte k letters into a row
+    func byte_at [ r: string, row: i32, k: i32 ] -> i32
+        p : i32 [ rows_s[ row ] ]
+        e : i32 [ rows_e[ row ] ]
+        n : i32 [ 0 ]
+        while [ p < e && n < k ]
+            p = utf8_next[ r, p ]
+            n += 1
+        # a wrapped row's last space belongs to the next
+        if [ p == e && row + 1 < rows_s.count && rows_s[ row + 1 ] == e
+             && p > rows_s[ row ] ]
+            p = utf8_prev[ r, p ]
+        return p
+
+    # the row a byte is on
+    func row_of [ at: i32 ] -> i32
+        for [ i: i32 0, i < rows_s.count, i += 1 ]
+            nx : bool [ i + 1 < rows_s.count ]
+            if [ at < rows_e[ i ] || !nx ] return i
+            if [ at == rows_e[ i ] && rows_s[ i + 1 ] != at ] return i
+        return 0
+
+    # the writing block's rows at the column's width
+    func lay_active [ cv: Canvas, b: WrBlock, cw: f32 ]
+        cv.set_font[ face[ cv, 4 ] ]
+        mono_lh = round[ cv.get_line_height[] * 1.5 ]
+        mono_cw = cv.measure_text[ "MMMMMMMMMM" ].w / 10.0
+        cv.set_font[ null ]
+        cols : i32 [ i32[ floor[ cw / mono_cw ] ] ]
+        if [ cols < 8 ] cols = 8
+        wrap_rows[ b.raw, cols ]
+        b.h = f32[ rows_s.count ] * mono_lh
+        if [ !looks_of || looks_of.compare[ b.raw ] != 0 ]
+            looks    = look_bytes[ b.raw ]
+            looks_of = b.raw
+        b.hash = -1
+
+    # ---- painting ----
+
+    # a painted block, its tile kept while its look is the same
+    func tile_for [ cv: Canvas, b: WrBlock, cw: f32 ] -> WrTile
+        if [ !tiles ] tiles = vec WrTile []
+        for [ t: WrTile ] in tiles
+            if [ t.canvas && t.hash == b.hash ]
+                t.frame = tile_frame
+                return t
+        use : WrTile [ null ]
+        for [ t: WrTile ] in tiles
+            if [ t.frame != tile_frame ]
+                use = t
+                break
+        if [ !use ]
+            use = WrTile [ ]
+            tiles.push[ use ]
+        # room for the paints set out past the column (code, quotes)
+        wi : i32 [ i32[ ceil[ cw ] ] + 40 ]
+        hi : i32 [ i32[ ceil[ b.h ] ] + 12 ]
+        if [ !use.canvas ]
+            use.canvas = Canvas [ vk: cv.vk, w: cv.w,
+                format: Pixel.rgba8, width: wi, height: hi,
+                load_existing: true, quantize: true, tag: 'writer' ]
+            use.canvas.update[]
+        el [ use.canvas.content_w != wi || use.canvas.content_h != hi ]
+            use.canvas.resize[ wi, hi ]
+        tc : use.canvas
+        tc.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+        tc.stroke_width[ 0.0 ]
+        for [ i: WrItem ] in b.items
+            paint_item[ tc, i, 20.0, 6.0 ]
+        tc.set_font[ null ]
+        use.hash  = b.hash
+        use.frame = tile_frame
+        return use
+
+    func paint_item [ tc: Canvas, i: WrItem, ox: f32, oy: f32 ]
+        x : f32 [ i.x + ox ]
+        y : f32 [ i.y + oy ]
+        if [ i.kind == 0 ]
+            tc.set_font[ face[ tc, i.face ] ]
+            tc.fill_color[ i.color ]
+            r : rect [ x: x, y: y, w: i.w, h: i.h ]
+            tc.draw_text[ i.text, r, vec2f [ 0.0, 0.5 ],
+                          vec2f [ 0.0, 0.0 ], Overflow.visible, null,
+                          false ]
+        el [ i.kind == 1 ]
+            tc.fill_color[ i.color ]
+            tc.rect_to[ x, y, i.w, i.h ]
+            tc.paint[]
+        el [ i.kind == 2 || i.kind == 5 ]
+            tc.fill_color[ i.color ]
+            tc.rounded_rect[ x, y, i.w, i.h, i.r, i.r, i.r, i.r ]
+            tc.paint[]
+        el [ i.kind == 3 ]
+            tc.fill_color[ '#0000' ]
+            tc.stroke_color[ i.color ]
+            tc.stroke_width[ 1.5 ]
+            tc.rounded_rect[ x, y, i.w, i.h, i.r, i.r, i.r, i.r ]
+            tc.paint[]
+            tc.stroke_width[ 0.0 ]
+        el [ i.kind == 4 ]
+            s : f32 [ i.w ]
+            tc.fill_color[ i.color ]
+            tc.move_to[ x + s * 0.22, y + s * 0.52 ]
+            tc.line_to[ x + s * 0.42, y + s * 0.72 ]
+            tc.line_to[ x + s * 0.80, y + s * 0.30 ]
+            tc.line_to[ x + s * 0.70, y + s * 0.22 ]
+            tc.line_to[ x + s * 0.42, y + s * 0.52 ]
+            tc.line_to[ x + s * 0.31, y + s * 0.41 ]
+            tc.close_path[]
+            tc.paint[]
+
+    # the writing block: its ground, its markdown, the selection and
+    # the caret
+    func paint_active [ cv: Canvas, b: WrBlock, x0: f32, y0: f32,
+                        cw: f32 ]
+        d : WrDoc doc
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ '#4d3dbc24' ]
+        cv.rounded_rect[ x0 - 16.0, y0 - 10.0, cw + 32.0, b.h + 20.0,
+                         10.0, 10.0, 10.0, 10.0 ]
+        cv.paint[]
+        cv.fill_color[ '#806bff' ]
+        cv.rounded_rect[ x0 - 16.0, y0 - 10.0, 3.0, b.h + 20.0, 1.5,
+                         1.5, 1.5, 1.5 ]
+        cv.paint[]
+        r  : string b.raw
+        lo : i32 d.sel_lo[]
+        hi : i32 d.sel_hi[]
+        cv.set_font[ face[ cv, 4 ] ]
+        for [ ri: i32 0, ri < rows_s.count, ri += 1 ]
+            rs : i32 [ rows_s[ ri ] ]
+            re : i32 [ rows_e[ ri ] ]
+            ry : f32 [ y0 + f32[ ri ] * mono_lh ]
+            # the selection over this row
+            if [ hi > lo && lo <= re && hi > rs ]
+                a0 : i32 [ max[ lo, rs ] ]
+                a1 : i32 [ min[ hi, re ] ]
+                sx : f32 [ x0 + f32[ col_of[ r, rs, a0 ] ] * mono_cw ]
+                ex : f32 [ x0 + f32[ col_of[ r, rs, a1 ] ] * mono_cw ]
+                if [ hi > re && ri + 1 < rows_s.count ] ex += mono_cw
+                cv.fill_color[ '#806bff66' ]
+                cv.rect_to[ sx, ry + 2.0, ex - sx, mono_lh - 4.0 ]
+                cv.paint[]
+            # runs of one look
+            p : i32 [ rs ]
+            k : i32 [ 0 ]
+            while [ p < re ]
+                lk : i32 [ (p < looks.count) ? looks[ p ] : 0 ]
+                q : i32 [ p ]
+                kq : i32 [ k ]
+                while [ q < re && ((q < looks.count) ? looks[ q ] : 0)
+                        == lk ]
+                    q = utf8_next[ r, q ]
+                    kq += 1
+                cv.fill_color[ look_color[ lk ] ]
+                tr : rect [ x: x0 + f32[ k ] * mono_cw, y: ry,
+                            w: f32[ kq - k ] * mono_cw + 8.0,
+                            h: mono_lh ]
+                cv.draw_text[ r.mid[ p, q - p ], tr, vec2f [ 0.0, 0.5 ],
+                              vec2f [ 0.0, 0.0 ], Overflow.visible,
+                              null, false ]
+                p = q
+                k = kq
+        cv.set_font[ null ]
+        cv.paint[]
+        if [ show_caret ]
+            cr : i32 row_of[ d.ci ]
+            cx : f32 [ x0 + f32[ col_of[ r, rows_s[ cr ], d.ci ] ]
+                * mono_cw ]
+            cy : f32 [ y0 + f32[ cr ] * mono_lh ]
+            cv.fill_color[ '#ff84ff' ]
+            cv.rect_to[ cx - 1.0, cy + mono_lh * 0.15, 2.0,
+                        mono_lh * 0.7 ]
+            cv.paint[]
+
+    # every block placed down the page; the content's height
+    func place [ cv: Canvas, cw: f32 ] -> f32
+        d : WrDoc doc
+        y : f32 [ 24.0 ]
+        for [ i: i32 0, i < d.blocks.count, i += 1 ]
+            b : WrBlock d.blocks[ i ]
+            if [ i == d.cur ]
+                lay_active[ cv, b, cw ]
+            el [ b.hash != look_hash[ b, cw ] || !b.items ]
+                lay_block[ cv, b, cw ]
+            if [ i > 0 ] y += before[ b ]
+            b.y = y
+            y += b.h + after[ b ]
+        return y + 120.0
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        cv : Canvas w.screen
+        if [ !bounds || !doc ] return
+        d : WrDoc doc
+        un : f32 ux_unit[ w ]
+        cv.stroke_width[ 0.0 ]
+        # the screen is already moved to the page: its own places
+        cv.fill_color[ '#0c0a14' ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        pad : f32 [ round[ 40.0 * un ] ]
+        cw  : f32 [ bounds.w - pad * 2.0 ]
+        if [ cw > 760.0 * un ] cw = round[ 760.0 * un ]
+        x0 : f32 [ round[ (bounds.w - cw) * 0.5 ] ]
+        oy : f32 [ round[ -scroll.y ] ]
+        col_x = x0
+        col_w = cw
+        top_y = oy
+        if [ d.blocks.count == 0 ]
+            cv.set_font[ face[ cv, 2 ] ]
+            cv.fill_color[ '#6d6890' ]
+            say : string 'an empty page: start writing'
+            if [ !d.file ] say = 'no file: writer <file.md>'
+            cv.draw_text[ say,
+                rect [ x: x0, y: oy + 24.0, w: cw, h: 30.0 ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.visible, null, false ]
+            cv.set_font[ null ]
+            cv.paint[]
+            content_h = 0.0
+            return
+        content_h = place[ cv, cw ]
+        tile_frame += 1
+        vt : f32 [ 0.0 ]
+        vb : f32 [ bounds.h ]
+        for [ i: i32 0, i < d.blocks.count, i += 1 ]
+            b  : WrBlock d.blocks[ i ]
+            by : f32 [ oy + b.y ]
+            if [ by + b.h + 16.0 < vt || by - 16.0 > vb ] continue
+            if [ i == d.cur ]
+                paint_active[ cv, b, x0, by, cw ]
+                continue
+            t : WrTile tile_for[ cv, b, cw ]
+            if [ t && t.canvas ]
+                cv.draw_canvas[ t.canvas, x0 - 20.0, by - 6.0,
+                    f32[ t.canvas.content_w ],
+                    f32[ t.canvas.content_h ] ]
+        cv.paint[]
+
+    # ---- the caret kept in view ----
+
+    func caret_view []
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        if [ !b || !rows_s || rows_s.count == 0 || !bounds ] return
+        cr : i32 row_of[ d.ci ]
+        cy : f32 [ b.y + f32[ cr ] * mono_lh ]
+        if [ cy - 40.0 < scroll.y ]
+            scroll_to[ max[ cy - 80.0, 0.0 ] ]
+        el [ cy + mono_lh + 40.0 > scroll.y + bounds.h ]
+            scroll_to[ cy + mono_lh + 80.0 - bounds.h ]
+
+    # ---- pointer ----
+
+    # the block at a height on the page, -1 none
+    func block_at [ py: f32 ] -> i32
+        d : WrDoc doc
+        best : i32 [ -1 ]
+        for [ i: i32 0, i < d.blocks.count, i += 1 ]
+            b : WrBlock d.blocks[ i ]
+            if [ py >= b.y - 10.0 ] best = i
+        return best
+
+    # the byte of the writing block under a point
+    func hit_byte [ px: f32, py: f32 ] -> i32
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        if [ !b || rows_s.count == 0 ] return 0
+        ri : i32 [ i32[ floor[ (py - b.y) / mono_lh ] ] ]
+        ri = clamp[ ri, 0, i32[ rows_s.count ] - 1 ]
+        k : i32 [ i32[ round[ (px - col_x) / mono_cw ] ] ]
+        if [ k < 0 ] k = 0
+        return byte_at[ b.raw, ri, k ]
+
+    # a drawn block pressed: its word under the point found in its
+    # markdown, the caret there
+    func word_byte [ b: WrBlock, px: f32, py: f32 ] -> i32
+        best : WrItem [ null ]
+        near : f32 [ 1000000.0 ]
+        for [ it: WrItem ] in b.items
+            if [ it.kind != 0 || it.word < 0 ] continue
+            dx : f32 [ 0.0 ]
+            if [ px < it.x ] dx = it.x - px
+            el [ px > it.x + it.w ] dx = px - it.x - it.w
+            dy : f32 [ 0.0 ]
+            if [ py < it.y ] dy = it.y - py
+            el [ py > it.y + it.h ] dy = py - it.y - it.h
+            dd : f32 [ dx + dy * 4.0 ]
+            if [ dd < near ]
+                near = dd
+                best = it
+        if [ !best ] return -1
+        # the same word earlier in the block
+        nth : i32 [ 0 ]
+        for [ it: WrItem ] in b.items
+            if [ it == best ] break
+            if [ it.kind == 0 && it.word >= 0
+                 && it.text.compare[ best.text ] == 0 ] nth += 1
+        at : i32 [ -1 ]
+        from : i32 [ 0 ]
+        for [ k: i32 0, k <= nth, k += 1 ]
+            tail : string b.raw.mid[ from, b.raw.count - from ]
+            at = i32[ tail.index_of[ best.text.chars ] ]
+            if [ at < 0 ] return -1
+            at += from
+            from = at + i32[ best.text.count ]
+        # the side of the word nearer the point
+        return (px > best.x + best.w * 0.5)
+            ? at + i32[ best.text.count ] : at
+
+    public func on_press [ ev: Event ]
+        ev.no_default = true
+        set_focus[]
+        d : WrDoc doc
+        if [ !d ] return
+        # the press is in content space: trinity added the scroll
+        px : f32 [ ev.mouse.pos.x ]
+        py : f32 [ ev.mouse.pos.y ]
+        i : i32 block_at[ py ]
+        if [ d.blocks.count == 0 ]
+            d.mark[ 0 ]
+            d.blocks.push[ WrBlock [ raw: '' ] ]
+            d.enter[ 0, 0 ]
+            d.gen += 1
+        el [ i < 0 ]
+            d.enter[ 0, 0 ]
+        el [ i == d.cur ]
+            at : i32 hit_byte[ px, py ]
+            d.ci = at
+            if [ !ev.key.shift ] d.ai = at
+            dragging = true
+            set_capture[]
+        el
+            b : WrBlock d.blocks[ i ]
+            # a task's box: ticked or not, nothing else
+            if [ b.kind == 12 && px - col_x < 28.0 + f32[ b.depth ]
+                 * 26.0 ]
+                tick_task[ i ]
+            el
+                at : i32 word_byte[ b, px - col_x, py - b.y ]
+                d.enter[ i, at ]
+        goal_col   = -1
+        show_caret = true
+        pristine   = false
+        tell[]
+
+    public func on_move [ ev: Event ]
+        if [ !dragging || !doc ] return
+        # the press is in content space: trinity added the scroll
+        px : f32 [ ev.mouse.pos.x ]
+        py : f32 [ ev.mouse.pos.y ]
+        doc.ci = hit_byte[ px, py ]
+        pristine = false
+
+    public func on_release [ ev: Event ]
+        if [ dragging ]
+            dragging = false
+            release_capture[]
+
+    func tick_task [ i: i32 ]
+        d : WrDoc doc
+        b : WrBlock d.blocks[ i ]
+        at : i32 [ b.raw.index_of[ "[" ] ]
+        if [ at < 0 || at + 2 >= b.raw.count ] return
+        d.mark[ 0 ]
+        on : string [ (b.done) ? " " : "x" ]
+        b.raw = b.raw.mid[ 0, at + 1 ] + on
+            + b.raw.mid[ at + 2, b.raw.count - at - 2 ]
+        read_block[ b ]
+        d.dirty = true
+        d.gen += 1
+
+    # ---- keys ----
+
+    # the window's bar and title follow what changed
+    func tell []
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        k : i32 [ (b) ? b.kind : -1 ]
+        seen : string '{k}|{d.dirty}|{d.refused}|{d.cur}'
+        if [ !bar_seen || seen.compare[ bar_seen ] != 0 ]
+            bar_seen = seen
+            if [ ux ] ux.restyle = true
+        pristine = false
+
+    public func on_char [ ev: Event ]
+        d : WrDoc doc
+        if [ !d || !ev.key.text || ev.key.text.count == 0 ] return
+        ev.no_default = true
+        if [ d.cur < 0 ] start_writing[]
+        d.mark[ 1 ]
+        d.put[ ev.key.text ]
+        goal_col   = -1
+        show_caret = true
+        tell[]
+        caret_view[]
+
+    # no block being written: the last one, or a new one
+    func start_writing []
+        d : WrDoc doc
+        if [ d.blocks.count == 0 ]
+            d.blocks.push[ WrBlock [ raw: '' ] ]
+            d.gen += 1
+        d.enter[ i32[ d.blocks.count ] - 1, -1 ]
+
+    public func on_key [ ev: Event ]
+        d : WrDoc doc
+        if [ !d || !ev.key.state ] return
+        key : i32 [ ev.key.unicode ]
+        cmd : bool [ ev.key.ctrl || ev.key.meta ]
+        sh  : bool [ ev.key.shift ]
+        done : bool [ true ]
+        if [ cmd && key == 83 ]
+            act[ 'w_save' ]
+        el [ cmd && key == 90 && !sh ]
+            if [ d.step_back[] ] tiles_reset[]
+        el [ cmd && (key == 89 || (key == 90 && sh)) ]
+            if [ d.step_on[] ] tiles_reset[]
+        el [ cmd && key == 66 ]
+            act[ 'w_bold' ]
+        el [ cmd && key == 73 ]
+            act[ 'w_ital' ]
+        el [ cmd && key == 69 ]
+            act[ 'w_code' ]
+        el [ cmd && key == 75 ]
+            act[ 'w_link' ]
+        el [ cmd && key >= 48 && key <= 54 ]
+            hk : string 'w_h{key - 48}'
+            if [ key == 48 ] hk = 'w_p'
+            act[ hk ]
+        el [ key == 256 ]
+            d.leave[]
+        el [ d.cur < 0 ]
+            # nothing being written: the arrows and enter start it
+            if [ key == 257 || key == 264 || key == 265 ]
+                start_writing[]
+            el
+                done = false
+        el [ cmd && key == 65 ]
+            b : WrBlock d.block[]
+            d.ai = 0
+            d.ci = i32[ b.raw.count ]
+        el [ cmd && (key == 67 || key == 88) ]
+            copy_cut[ key == 88 ]
+        el [ cmd && key == 86 ]
+            clip : string (ux) ? ux.get_clipboard[] : null
+            if [ clip && clip.count > 0 ]
+                d.mark[ 0 ]
+                d.put[ clip ]
+        el [ key == 257 ]
+            if [ sh ]
+                d.mark[ 1 ]
+                d.put[ "\n" ]
+            el
+                enter_key[]
+        el [ key == 259 ]
+            back_key[ cmd ]
+        el [ key == 261 ]
+            del_key[]
+        el [ key == 258 ]
+            tab_key[ sh ]
+        el [ key == 263 || key == 262 ]
+            side_key[ key == 262, sh, cmd ]
+        el [ key == 265 || key == 264 ]
+            row_key[ key == 264, sh ]
+        el [ key == 268 || key == 269 ]
+            b : WrBlock d.block[]
+            if [ cmd ]
+                to : i32 [ (key == 268) ? 0
+                    : i32[ d.blocks.count ] - 1 ]
+                d.enter[ to, (key == 268) ? 0 : -1 ]
+            el
+                ri : i32 row_of[ d.ci ]
+                d.ci = (key == 268) ? rows_s[ ri ] : row_end[ b, ri ]
+                if [ !sh ] d.ai = d.ci
+        el
+            done = false
+        if [ !done ] return
+        ev.no_default = true
+        if [ key != 265 && key != 264 ] goal_col = -1
+        show_caret = true
+        tell[]
+        caret_view[]
+
+    func tiles_reset []
+        laid_gen = -1
+
+    # a row's end as a caret place (before the space it wraps at)
+    func row_end [ b: WrBlock, ri: i32 ] -> i32
+        e : i32 [ rows_e[ ri ] ]
+        if [ ri + 1 < rows_s.count && rows_s[ ri + 1 ] == e
+             && e > rows_s[ ri ] ]
+            return utf8_prev[ b.raw, e ]
+        return e
+
+    func copy_cut [ cut: bool ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        lo : i32 d.sel_lo[]
+        hi : i32 d.sel_hi[]
+        if [ hi <= lo || !ux ] return
+        ux.set_clipboard[ b.raw.mid[ lo, hi - lo ] ]
+        if [ cut ]
+            d.mark[ 0 ]
+            d.put[ '' ]
+
+    # enter: a new block after this one; a list goes on as a list,
+    # an empty item ends it; code and tables take a new line
+    func enter_key []
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        if [ b.kind == 7 || b.kind == 13 ]
+            d.mark[ 1 ]
+            d.put[ "\n" ]
+            return
+        d.mark[ 0 ]
+        r : string b.raw
+        t : string r.trim[]
+        mk : i32 mark_of[ t ]
+        if [ b.kind == 10 ]
+            # a quote: an empty line ends it, else a new quoted line
+            lt : i32 [ r.rindex_of[ "\n" ] + 1 ]
+            ll : string r.mid[ lt, r.count - lt ].trim[]
+            if [ ll.compare[ ">" ] != 0 ]
+                d.put[ "\n> " ]
+                return
+            b.raw = r.mid[ 0, (lt > 0) ? lt - 1 : 0 ]
+            d.changed[]
+            split_off[ '' ]
+            return
+        if [ (b.kind == 8 || b.kind == 9 || b.kind == 12)
+             && b.text.trim[].count == 0 ]
+            # an empty item: the list ends here, a plain line, a
+            # blank line after the list
+            b.raw = ''
+            if [ d.cur > 0 ] d.blocks[ d.cur - 1 ].gap = 1
+            d.ci = 0
+            d.ai = 0
+            d.changed[]
+            return
+        hi : i32 d.sel_hi[]
+        rest : string r.mid[ hi, r.count - hi ]
+        b.raw = r.mid[ 0, d.sel_lo[] ]
+        d.changed[]
+        lead : string ''
+        if [ b.kind == 8 || b.kind == 9 || b.kind == 12 ]
+            ind : i32 indent_of[ r ]
+            for [ k: i32 0, k < ind, k += 1 ] lead += " "
+            if [ b.kind == 9 ]
+                lead += '{b.num + 1}. '
+            el
+                lead += t.mid[ 0, mk ]
+                if [ b.kind == 12 ] lead += "[ ] "
+        split_off[ lead + rest.trim[] ]
+        d.ci = i32[ lead.count ]
+        d.ai = d.ci
+
+    # a new block after the writing one, written in next
+    func split_off [ raw: string ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        list : bool [ b.kind == 8 || b.kind == 9 || b.kind == 12 ]
+        nb : WrBlock [ raw: raw, gap: b.gap ]
+        b.gap = (list) ? 0 : 1
+        read_block[ nb ]
+        at : i32 [ d.cur + 1 ]
+        d.blocks.insert[ nb, at ]
+        d.cur = -1
+        d.cur = at
+        d.ci = 0
+        d.ai = 0
+        d.gen += 1
+
+    # backspace: a letter, or at the block's start, the block joined
+    # to the one before
+    func back_key [ word: bool ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        if [ d.sel_hi[] > d.sel_lo[] ]
+            d.mark[ 2 ]
+            d.put[ '' ]
+            return
+        if [ d.ci > 0 ]
+            d.mark[ 2 ]
+            p : i32 [ utf8_prev[ b.raw, d.ci ] ]
+            if [ word ]
+                while [ p > 0 && b.raw.chars[ p - 1 ] == ' ' ] p -= 1
+                while [ p > 0 && b.raw.chars[ p - 1 ] != ' '
+                        && b.raw.chars[ p - 1 ] != '\n' ] p -= 1
+            d.ai = p
+            d.put[ '' ]
+            return
+        if [ d.cur == 0 ] return
+        pv : WrBlock d.blocks[ d.cur - 1 ]
+        d.mark[ 0 ]
+        if [ pv.kind == 11 ]
+            d.blocks.remove[ d.cur - 1 ]
+            d.cur -= 1
+            d.gen += 1
+            return
+        if [ pv.kind == 7 || pv.kind == 13 ]
+            d.enter[ d.cur - 1, -1 ]
+            return
+        at : i32 [ i32[ pv.raw.count ] ]
+        pv.raw = pv.raw + b.raw
+        pv.gap = b.gap
+        d.blocks.remove[ d.cur ]
+        d.cur -= 1
+        d.ci = at
+        d.ai = at
+        d.changed[]
+
+    # delete: a letter, or at the block's end, the next joined on
+    func del_key []
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        if [ d.sel_hi[] > d.sel_lo[] ]
+            d.mark[ 2 ]
+            d.put[ '' ]
+            return
+        if [ d.ci < b.raw.count ]
+            d.mark[ 2 ]
+            d.ai = utf8_next[ b.raw, d.ci ]
+            d.put[ '' ]
+            return
+        if [ d.cur + 1 >= d.blocks.count ] return
+        nx : WrBlock d.blocks[ d.cur + 1 ]
+        if [ nx.kind == 7 || nx.kind == 13 ] return
+        d.mark[ 0 ]
+        if [ nx.kind != 11 ] b.raw = b.raw + nx.raw
+        b.gap = nx.gap
+        d.blocks.remove[ d.cur + 1 ]
+        d.changed[]
+
+    # tab: a list item in or out a step; in code, spaces
+    func tab_key [ out: bool ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        d.mark[ 0 ]
+        if [ b.kind == 8 || b.kind == 9 || b.kind == 12 ]
+            if [ out ]
+                if [ b.raw.starts_with[ "  " ] ]
+                    b.raw = b.raw.mid[ 2, b.raw.count - 2 ]
+                    d.ci = max[ d.ci - 2, 0 ]
+            el
+                b.raw = '  {b.raw}'
+                d.ci += 2
+            d.ai = d.ci
+            d.changed[]
+        el [ !out ]
+            d.put[ "    " ]
+
+    func side_key [ right: bool, sh: bool, word: bool ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        r : string b.raw
+        if [ !sh && d.sel_hi[] > d.sel_lo[] ]
+            d.ci = (right) ? d.sel_hi[] : d.sel_lo[]
+            d.ai = d.ci
+            return
+        if [ right && d.ci >= r.count && !sh ]
+            if [ d.cur + 1 < d.blocks.count ] d.enter[ d.cur + 1, 0 ]
+            return
+        if [ !right && d.ci == 0 && !sh ]
+            if [ d.cur > 0 ] d.enter[ d.cur - 1, -1 ]
+            return
+        p : i32 [ d.ci ]
+        if [ right && p < r.count ]
+            p = utf8_next[ r, p ]
+            if [ word ]
+                while [ p < r.count && r.chars[ p ] != ' ' ] p += 1
+        el [ !right && p > 0 ]
+            p = utf8_prev[ r, p ]
+            if [ word ]
+                while [ p > 0 && r.chars[ p - 1 ] != ' ' ] p -= 1
+        d.ci = p
+        if [ !sh ] d.ai = p
+
+    # up and down: a row, past the block's edge the next block
+    func row_key [ down: bool, sh: bool ]
+        d : WrDoc doc
+        b : WrBlock d.block[]
+        ri : i32 row_of[ d.ci ]
+        if [ goal_col < 0 ]
+            goal_col = col_of[ b.raw, rows_s[ ri ], d.ci ]
+        to : i32 [ (down) ? ri + 1 : ri - 1 ]
+        if [ to < 0 || to >= rows_s.count ]
+            if [ sh ] return
+            nb : i32 [ (down) ? d.cur + 1 : d.cur - 1 ]
+            if [ nb < 0 || nb >= d.blocks.count ] return
+            d.enter[ nb, (down) ? 0 : -1 ]
+            return
+        d.ci = byte_at[ b.raw, to, goal_col ]
+        if [ !sh ] d.ai = d.ci
+
+    # ---- the toolbar's acts ----
+
+    # the writing block made a kind: its first line's mark changed
+    func make_kind [ want: i32 ]
+        kind : i32 [ want ]
+        d : WrDoc doc
+        if [ d.cur < 0 ] start_writing[]
+        b : WrBlock d.block[]
+        d.mark[ 0 ]
+        was : i32 [ b.kind ]
+        r : string b.raw
+        # a code block made something else: its fences go
+        if [ was == 7 ]
+            b.raw = b.text
+            if [ kind == 7 ]
+                d.ci = 0
+                d.ai = 0
+                d.changed[]
+                return
+            r = b.raw
+        if [ kind == 7 ]
+            b.raw = '```\n{r}\n```'
+            d.ci = 4
+            d.ai = 4
+            d.changed[]
+            return
+        # the words without their mark (a heading's hashes, a list's
+        # marker, a quote's >)
+        t : string r.trim[]
+        bare : string [ t ]
+        hl : i32 heading_of[ t ]
+        mk : i32 mark_of[ t ]
+        if [ hl > 0 ]
+            bare = t.mid[ hl, t.count - hl ].trim[]
+        el [ t.starts_with[ ">" ] ]
+            qs : vec string []
+            for [ ln: string ] in r.split[ "\n" ]
+                q : string ln.trim[]
+                qs.push[ q.mid[ 1, q.count - 1 ].trim[] ]
+            bare = joined[ qs, " " ]
+        el [ mk > 0 ]
+            bare = t.mid[ mk, t.count - mk ]
+            if [ was == 12 ] bare = bare.mid[ 4, bare.count - 4 ]
+        # the same kind again: back to a plain line
+        if [ was == kind ] kind = 0
+        pre : string ''
+        if [ kind >= 1 && kind <= 6 ]
+            for [ k: i32 0, k < kind, k += 1 ] pre += "#"
+            pre += " "
+        el [ kind == 8 ] pre = "- "
+        el [ kind == 9 ] pre = "1. "
+        el [ kind == 12 ] pre = "- [ ] "
+        el [ kind == 10 ] pre = "> "
+        old_lead : i32 [ i32[ r.count - bare.count ] ]
+        b.raw = pre + bare
+        pl : i32 [ i32[ pre.count ] ]
+        d.ci = clamp[ d.ci - old_lead + pl, pl, i32[ b.raw.count ] ]
+        d.ai = d.ci
+        d.changed[]
+
+    # ** * ` ~~ round the selection, or taken off when there
+    func wrap_with [ m: string ]
+        d : WrDoc doc
+        if [ d.cur < 0 ] start_writing[]
+        b : WrBlock d.block[]
+        d.mark[ 0 ]
+        r  : string b.raw
+        lo : i32 d.sel_lo[]
+        hi : i32 d.sel_hi[]
+        ml : i32 [ i32[ m.count ] ]
+        if [ lo >= ml && hi + ml <= r.count
+             && r.mid[ lo - ml, ml ].compare[ m ] == 0
+             && r.mid[ hi, ml ].compare[ m ] == 0 ]
+            b.raw = r.mid[ 0, lo - ml ] + r.mid[ lo, hi - lo ]
+                + r.mid[ hi + ml, r.count - hi - ml ]
+            d.ai = lo - ml
+            d.ci = hi - ml
+        el
+            b.raw = r.mid[ 0, lo ] + m + r.mid[ lo, hi - lo ] + m
+                + r.mid[ hi, r.count - hi ]
+            d.ai = lo + ml
+            d.ci = hi + ml
+        d.changed[]
+
+    # [words](url): the url chosen to type over
+    func link []
+        d : WrDoc doc
+        if [ d.cur < 0 ] start_writing[]
+        b : WrBlock d.block[]
+        d.mark[ 0 ]
+        r  : string b.raw
+        lo : i32 d.sel_lo[]
+        hi : i32 d.sel_hi[]
+        words : string r.mid[ lo, hi - lo ]
+        if [ words.count == 0 ] words = "link"
+        b.raw = r.mid[ 0, lo ] + "[" + words + "](https://)"
+            + r.mid[ hi, r.count - hi ]
+        d.ai = lo + i32[ words.count ] + 3
+        d.ci = d.ai + 8
+        d.changed[]
+
+    # a rule after the writing block
+    func rule []
+        d : WrDoc doc
+        if [ d.cur < 0 ] start_writing[]
+        d.mark[ 0 ]
+        b : WrBlock d.block[]
+        nb : WrBlock [ raw: "---", gap: 1 ]
+        read_block[ nb ]
+        pb : WrBlock [ raw: '', gap: b.gap ]
+        read_block[ pb ]
+        b.gap = 1
+        d.blocks.insert[ nb, d.cur + 1 ]
+        d.blocks.insert[ pb, d.cur + 2 ]
+        d.cur = d.cur + 2
+        d.ci = 0
+        d.ai = 0
+        d.dirty = true
+        d.gen += 1
+
+    # a table to fill in
+    func table []
+        d : WrDoc doc
+        if [ d.cur < 0 ] start_writing[]
+        d.mark[ 0 ]
+        b : WrBlock d.block[]
+        nb : WrBlock [ raw: "| name | value |\n| --- | --- |\n|  |  |",
+                       gap: b.gap ]
+        read_block[ nb ]
+        b.gap = 1
+        d.blocks.insert[ nb, d.cur + 1 ]
+        d.cur = d.cur + 1
+        d.ci = 2
+        d.ai = 6
+        d.dirty = true
+        d.gen += 1
+
+    func act [ id: string ]
+        d : WrDoc doc
+        if [ !d ] return
+        if [ id.compare[ 'w_save' ] == 0 ]
+            if [ d.file ]
+                d.save[]
+            el [ ux ]
+                ux.nav_save_as[ 'untitled.md' ]
+        el [ id.compare[ 'w_p' ] == 0 ] make_kind[ 0 ]
+        el [ id.compare[ 'w_h1' ] == 0 ] make_kind[ 1 ]
+        el [ id.compare[ 'w_h2' ] == 0 ] make_kind[ 2 ]
+        el [ id.compare[ 'w_h3' ] == 0 ] make_kind[ 3 ]
+        el [ id.compare[ 'w_h4' ] == 0 ] make_kind[ 4 ]
+        el [ id.compare[ 'w_h5' ] == 0 ] make_kind[ 5 ]
+        el [ id.compare[ 'w_h6' ] == 0 ] make_kind[ 6 ]
+        el [ id.compare[ 'w_ul' ] == 0 ] make_kind[ 8 ]
+        el [ id.compare[ 'w_ol' ] == 0 ] make_kind[ 9 ]
+        el [ id.compare[ 'w_task' ] == 0 ] make_kind[ 12 ]
+        el [ id.compare[ 'w_quote' ] == 0 ] make_kind[ 10 ]
+        el [ id.compare[ 'w_fence' ] == 0 ] make_kind[ 7 ]
+        el [ id.compare[ 'w_bold' ] == 0 ] wrap_with[ "**" ]
+        el [ id.compare[ 'w_ital' ] == 0 ] wrap_with[ "*" ]
+        el [ id.compare[ 'w_strike' ] == 0 ] wrap_with[ "~~" ]
+        el [ id.compare[ 'w_code' ] == 0 ] wrap_with[ "`" ]
+        el [ id.compare[ 'w_link' ] == 0 ] link[]
+        el [ id.compare[ 'w_rule' ] == 0 ] rule[]
+        el [ id.compare[ 'w_table' ] == 0 ] table[]
+        el
+            return
+        set_focus[]
+        show_caret = true
+        tell[]
+        caret_view[]
+
+    # the file changed on disk, nothing unsaved here: read again
+    public func tick [ w: Window ]
+        d : WrDoc doc
+        if [ !d || !d.file || d.dirty ] return
+        now : i64 epoch_micros[]
+        if [ now - check_us < 500000 ] return
+        check_us = now
+        mt : i64 [ (d.file.exists[]) ? d.file.modified_time[] : 0 ]
+        if [ seen_mt == 0 ] seen_mt = mt
+        if [ mt == seen_mt ] return
+        seen_mt = mt
+        got : cast string [ d.file.load[ typeid[ string ], null ] ]
+        if [ !got || got.compare[ d.saved ] == 0 ] return
+        cur : i32 [ d.cur ]
+        d.load_text[ got ]
+        d.saved = got
+        d.cur = (cur < d.blocks.count) ? cur : -1
+        if [ d.cur >= 0 ]
+            d.ci = min[ d.ci, i32[ d.blocks[ d.cur ].raw.count ] ]
+            d.ai = d.ci
+        pristine = false
+
+# ---- the bar: the markdown each button writes, its file, its words
+
+element WriterBar
+    public doc : WrDoc
+    public wide : f32
+    style : CSS {
+        layers.body:
+            fill_color: #0e0b1a
+            box_shadow: inset 0 0 18px #806bff08
+            stroke_width: 1
+            stroke_color: #0000
+            near_border: true
+            near_inset: 0.6
+            near_inset_color: #c890ffff
+        layers.foot:
+            fill_color: #806bff30
+            area: l0 b1px r0 h1px
+    }
+
+    # a segment's share: one, more for a longer mark
+    func weight [ m: string ] -> f32
+        return max[ 1.0, f32[ m.count ] * 0.42 + 0.3 ]
+
+    # a group's width at seg a share
+    func marks_w [ marks: vec string, seg: f32 ] -> f32
+        n : f32 [ 0.0 ]
+        for [ m: string ] in marks
+            n += weight[ m ]
+        return round[ n * seg ]
+
+    func group [ ids: vec string, marks: vec string, lit: i32,
+                 x: f32, seg: f32, h: f32 ] -> TButtons
+        ty : f32 [ (wide - h) * 0.5 ]
+        w : f32 marks_w[ marks, seg ]
+        weights : vec f32 []
+        for [ m: string ] in marks
+            weights.push[ weight[ m ] ]
+        return TButtons [ buttons: ids, labels: marks, icons: false,
+            seg_weights: weights,
+            manual: true, sel_mask: lit, label_px: 14.0,
+            seg_radius: 7.0, rest_fill: rgba [ '#ffffff08' ],
+            lit_fill: rgba [ '#4d3dbcaa' ],
+            rest_glow: rgba [ '#806bff22' ], rest_px: 6.0,
+            seg_line: rgba [ '#ffffff10' ], rest_hover: true,
+            area: Region [ 'l{x}px t{ty}px w{w}px h{h}px' ] ]
+
+    public func render [] -> Elements
+        t : Elements []
+        if [ !doc || !ux ] return t
+        un : f32 ux_unit[ ux ]
+        h  : f32 [ round[ 30.0 * un ] ]
+        sw : f32 [ round[ 34.0 * un ] ]
+        gp : f32 [ round[ 14.0 * un ] ]
+        b  : WrBlock doc.block[]
+        k  : i32 [ (b) ? b.kind : -1 ]
+        x  : f32 [ round[ 16.0 * un ] ]
+        hl : i32 [ 0 ]
+        if [ k == 0 ] hl = 1
+        el [ k >= 1 && k <= 3 ] hl = 1 << k
+        km : vec string [] [ "¶", "#", "##", "###" ]
+        t['w_kinds'] = group[
+            vec string [] [ 'w_p', 'w_h1', 'w_h2', 'w_h3' ], km, hl, x,
+            sw, h ]
+        x += marks_w[ km, sw ] + gp
+        mm : vec string [] [ "**", "*", "~~", "`", "[]()" ]
+        t['w_marks'] = group[
+            vec string [] [ 'w_bold', 'w_ital', 'w_strike', 'w_code',
+                            'w_link' ], mm, 0, x, sw, h ]
+        x += marks_w[ mm, sw ] + gp
+        ll : i32 [ 0 ]
+        if [ k == 8 ] ll = 1
+        el [ k == 9 ] ll = 2
+        el [ k == 12 ] ll = 4
+        el [ k == 10 ] ll = 8
+        lm : vec string [] [ "-", "1.", "[ ]", ">" ]
+        t['w_lists'] = group[
+            vec string [] [ 'w_ul', 'w_ol', 'w_task', 'w_quote' ], lm,
+            ll, x, sw, h ]
+        x += marks_w[ lm, sw ] + gp
+        bm : vec string [] [ "```", "---", "|" ]
+        t['w_blocks'] = group[
+            vec string [] [ 'w_fence', 'w_rule', 'w_table' ], bm,
+            (k == 7) ? 1 : 0, x, sw, h ]
+        # save, lit while there is something to save
+        rx : f32 [ round[ 16.0 * un ] ]
+        sw2 : f32 [ round[ 76.0 * un ] ]
+        sy : f32 [ (wide - h) * 0.5 ]
+        st : string 'saved'
+        if [ doc.dirty ] st = 'save'
+        if [ doc.refused ] st = 'read only'
+        t['w_saves'] = TButtons [
+            buttons: vec string [] [ 'w_save' ],
+            labels: vec string [] [ st ],
+            icons: false, manual: true, sel_mask: (doc.dirty) ? 1 : 0,
+            label_px: 14.0, seg_radius: 7.0,
+            rest_fill: rgba [ '#ffffff08' ],
+            lit_fill: rgba [ '#ff84ff55' ],
+            rest_glow: rgba [ '#806bff22' ], rest_px: 6.0,
+            rest_hover: true,
+            area: Region [ 'r{rx}px t{sy}px w{sw2}px h{h}px' ] ]
+        return t
+
+    # the file's name and its words, right of the buttons
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !doc || !bounds ]
+            return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ w ]
+        nm : string 'untitled'
+        if [ doc.file ] nm = doc.file.filename[]
+        info : string '{nm}   {doc.words[]} words'
+        bf : string 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, bf, label_px[ cv, 17.0 ] ] ]
+        cv.fill_color[ '#9a94c4' ]
+        rw : f32 [ round[ 108.0 * un ] ]
+        cv.draw_text[ info,
+            rect [ x: 0.0, y: 0.0, w: bounds.w - rw,
+                   h: bounds.h ],
+            vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null, false ]
+        cv.set_font[ null ]
+        cv.paint[]
+
+# ---- the app ----
+
+element writer : trinity
+    public width  : i32 [ 1100 ]
+    public height : i32 [ 900 ]
+    public title  : string [ 'writer' ]
+    # the file being written
+    default [ Live ] src : resource
+        opened = false
+    mutable doc      : WrDoc
+    mutable opened   : bool
+    mutable click_us : i64
+
+    func render [] -> Elements
+        t : Elements []
+        if [ !doc ] doc = WrDoc [ ]
+        if [ !opened ]
+            opened = true
+            f : path [ null ]
+            if [ src ] f = path '{src}'
+            doc.open[ f ]
+        un : f32 [ (ux) ? ux_unit[ ux ] : 1.0 ]
+        bh : f32 [ round[ 54.0 * un ] ]
+        t['page'] = WriterPage [ doc: doc,
+            area: Region [ 'l0 t{bh}px r0 b0' ] ]
+        t['bar'] = WriterBar [ doc: doc, wide: bh,
+            area: Region [ 'l0 t0 r0 h{bh}px' ] ]
+        return t
+
+    func page [] -> WriterPage
+        if [ !elements || !elements.contains[ 'page' ] ] return null
+        return elements[ 'page' ] inherits WriterPage
+
+    # a toolbar button: its segment's name is the press's id
+    public func on_click [ ev: Event ]
+        e : cast element [ ev.origin ]
+        if [ !e || !e.id || !e.id.starts_with[ "w_" ] ] return
+        # a press's click comes twice (the window's and the app's)
+        now : i64 epoch_micros[]
+        if [ now - click_us < 100000 ] return
+        click_us = now
+        pg : WriterPage page[]
+        if [ pg ] pg.act[ e.id ]
+
+    # the page has the keys from the start
+    public func on_frame [ w: Window ]
+        pg : WriterPage page[]
+        if [ pg && !w.focus ] pg.set_focus[]
+        # the window's name shows what is unsaved
+        if [ doc ]
+            nm : string 'writer'
+            if [ doc.file ] nm = doc.file.filename[]
+            if [ doc.dirty ] nm = '{nm} •'
+            set_title[ nm ]
+
+    # save as: the place the navigator gave
+    public func nav_open [ p: path ] -> bool
+        if [ !ux || !ux.nav_saving || !doc ] return false
+        doc.file = p
+        doc.save[]
+        return true
+
+# ---- the editor's colours for a .md it shows as code ----
+
+func tok [ tk: vec fmt_token, col: i32, len: i32, kind: Syntax ]
+    if [ len > 0 ]
+        tk.push[ fmt_token [ column: col, length: len, syntax: kind ] ]
+
+# the index just past the closing run of ch, or -1
+func close_run [ s: string, from: i32, ch: i32, run: i32 ] -> i32
+    n : i32 [ i32[ s.count ] ]
+    j : i32 [ from ]
+    while [ j + run <= n ]
+        hit : bool [ true ]
+        for [ k: i32 0, k < run, k += 1 ]
+            if [ s[j + k] != ch ] hit = false
+        if [ hit ] return j + run
+        j += 1
+    return -1
+
+# code spans, emphasis, links and tags inside one line of prose
+func inline_tokens [ s: string, from: i32, tk: vec fmt_token ]
+    n : i32 [ i32[ s.count ] ]
+    j : i32 [ from ]
+    while [ j < n ]
+        c : i32 [ s[j] ]
+        if [ c == 96 ]
+            e : i32 [ close_run[ s, j + 1, 96, 1 ] ]
+            if [ e < 0 ] break
+            tok[ tk, j, e - j, Syntax._str ]
+            j = e
+        el [ c == 42 || c == 95 ]
+            run : i32 [ (j + 1 < n && s[j + 1] == c) ? 2 : 1 ]
+            e   : i32 [ close_run[ s, j + run, c, run ] ]
+            if [ e < 0 ]
+                j += run
+                continue
+            tok[ tk, j, e - j,
+                 (run == 2) ? Syntax._classname : Syntax._meta ]
+            j = e
+        el [ c == 91 ]
+            e : i32 [ close_run[ s, j + 1, 93, 1 ] ]
+            if [ e < 0 ]
+                j += 1
+                continue
+            tok[ tk, j, e - j, Syntax._usertoken ]
+            if [ e < n && s[e] == 40 ]
+                u : i32 [ close_run[ s, e + 1, 41, 1 ] ]
+                if [ u > 0 ]
+                    tok[ tk, e, u - e, Syntax._function ]
+                    e = u
+            j = e
+        el
+            j += 1
+
+# one token list per line, the shape the editor's .f map gives
+func syntax [ src: path ] -> fmt_file
+    lns  : vec Au []
+    text : cast string [ src.load[ typeid[ string ], null ] ]
+    if [ text ]
+        lines   : text.split[ "\n" ]
+        in_code : bool [ false ]
+        for [ li: i32 0, li < i32[ lines.count ], li += 1 ]
+            s  : string lines[ li ]
+            n  : i32 [ i32[ s.count ] ]
+            tk : vec fmt_token []
+            i  : i32 [ 0 ]
+            while [ i < n && s[i] == 32 ] i += 1
+            t : string s.trim[]
+            if [ is_fence[ t ] ]
+                tok[ tk, i, n - i, Syntax._punctuation ]
+                in_code = !in_code
+            el [ in_code ]
+                tok[ tk, i, n - i, Syntax._str ]
+            el [ heading_of[ t ] > 0 ]
+                j : i32 [ i ]
+                while [ j < n && s[j] == 35 ] j += 1
+                tok[ tk, i, j - i, Syntax._punctuation ]
+                tok[ tk, j, n - j, Syntax._keyword ]
+            el [ t.starts_with[ ">" ] ]
+                tok[ tk, i, 1, Syntax._punctuation ]
+                tok[ tk, i + 1, n - i - 1, Syntax._comment ]
+            el [ rule_of[ t ] ]
+                tok[ tk, i, n - i, Syntax._punctuation ]
+            el
+                m : i32 mark_of[ t ]
+                tok[ tk, i, m, Syntax._punctuation ]
+                inline_tokens[ s, i + m, tk ]
+            lns.push[ tk ]
+    return fmt_file [ source: '{src}', mtime: src.modified_time[],
+                      lines: lns ]

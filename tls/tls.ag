@@ -294,6 +294,8 @@ class TLSPeer
     intern  net     : mbedtls_net_context
     intern  ssl     : mbedtls_ssl_context
     intern  made    : bool
+    # the handshake's failing code (mbedtls), 0 none
+    public  fail    : i32
 
     func setup [ conf: @mbedtls_ssl_config ] -> bool
         mbedtls_net_init[ @net ]
@@ -316,6 +318,7 @@ class TLSPeer
              || hs == MBEDTLS_ERR_SSL_WANT_WRITE ]
             if [ time[ null ] - since > 20 ] stage = 0
             return
+        fail  = hs
         stage = 0
 
     # bytes in: > 0 bytes, 0 none now, -1 closed
@@ -357,6 +360,8 @@ class TLSServer
     intern  conf        : mbedtls_ssl_config
     intern  ident       : handle
     intern  made        : bool
+    # the address it listens on: '' every one
+    public  bind        : string
 
     func init []
         problem     = ''
@@ -388,7 +393,8 @@ class TLSServer
         ps : string '{port}'
         net : mbedtls_net_context
         mbedtls_net_init[ @net ]
-        if [ mbedtls_net_bind[ @net, null, ps.chars,
+        bc : cstr [ (bind && bind.count > 0) ? bind.chars : null ]
+        if [ mbedtls_net_bind[ @net, bc, ps.chars,
                                MBEDTLS_NET_PROTO_TCP ] != 0 ]
             problem = 'Port {port} is taken'
             return false

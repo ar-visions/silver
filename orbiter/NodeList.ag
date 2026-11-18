@@ -889,6 +889,7 @@ Control AppsGrid
 
     func app_key [ ae: AppEntry ] -> string
         if [ ae.opens ] return '{ae.opens}'
+        if [ ae.args ] return '{ae.file}#{ae.args}'
         return (ae.file) ? '{ae.file}' : ae.name
 
     # the files an app module opens, as the navigator finds them
@@ -1123,6 +1124,25 @@ Control AppsGrid
                                             inner ] >= 0 ]
                                         shown.push[ sa ]
                         band_n = shown.count - band_at
+                    # an open app with its own menus: a card each its
+                    # menus' class names (the app alone runs nothing)
+                    el [ open == ae.name && ae.menus
+                         && ae.menus.count > 0 ]
+                        band_of = shown.count - 1
+                        band_at = shown.count
+                        fs : MenuSource orb.fold_of[ ae.name ]
+                        if [ fs ]
+                            for [ ln: string ] in fs.launches*[]
+                                tb : i32 [ i32[ ln.index_of[ '\t' ] ] ]
+                                if [ tb <= 0 ] continue
+                                shown.push[ AppEntry [
+                                    name: ln.mid[ 0, tb ],
+                                    file: ae.file, module: true,
+                                    agi: ae.agi, group: ae.group,
+                                    built: ae.built,
+                                    args: ln.mid[ tb + 1,
+                                        ln.count - tb - 1 ] ] ]
+                        band_n  = shown.count - band_at
                     # an open app: itself, then the files it opens
                     el [ open == ae.name ]
                         fl : vec string files_of[ orb, ae ]
@@ -1351,6 +1371,16 @@ Control AppsGrid
         here : bool [ ae.module && orb.built_now[ ae ] ]
         iw : string orb.install_word[ ae ]
         busy : bool [ iw == 'starting' || iw == 'building' ]
+        # an app with its own menus (built): its folder opens, its
+        # card in it and its menus on the bar; again, it shuts
+        if [ ae.menus && ae.menus.count > 0 && here
+             && !in_edit[ i, mx, my ]
+             && !(i >= band_at && i < band_at + band_n) ]
+            sel   = -1
+            open  = (open == ae.name) ? '' : ae.name
+            shown = null
+            if [ ux ] ux.restyle = true
+            return
         # a store behind a login (built): its dialog in a drawer
         # until what it needs is there, then its folder
         if [ ae.login && ae.login.count > 0 && !in_edit[ i, mx, my ]
@@ -1368,6 +1398,11 @@ Control AppsGrid
         if [ !busy && in_edit[ i, mx, my ] && orb.code_of[ ae ] ]
             sel = -1
             orb.apps_code[ pane, ae ]
+            return
+        # a card its module's menus made: its app, with its arguments
+        if [ ae.args && ae.args.count > 0 ]
+            sel = -1
+            orb.launch_args[ pane, ae.file.filename[], ae.args ]
             return
         # a file in an app's folder: the app opens it
         if [ ae.opens ]
@@ -1554,6 +1589,7 @@ Control AppsGrid
         sy : f32 [ scroll.y ]
         side_frost[ cv, w, sy ]
         if [ band_h > 0.0 ] draw_band[ cv, band_y - sy, band_h ]
+
         n : i32 [ rx.count ]
         # each card and heading eases to its place; a dragged card
         # is at the pointer, a dragged section's cards move with it

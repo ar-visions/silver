@@ -866,12 +866,12 @@ class Layer
         parent.text_dragging = true
         parent.set_capture[]
         parent.set_focus[]
-        parent.pristine = false
+        repaint_held[ parent, false ]
 
     func on_move [ ev: Event ]
         if [ !parent.text_dragging ] return
         parent.sel_col = hit_col[ ev ]
-        parent.pristine = false
+        repaint_held[ parent, false ]
 
     func on_release [ ev: Event ]
         parent.text_dragging = false
@@ -901,7 +901,8 @@ class Layer
                 text.count - col ]
         parent.sel_col += ev.key.text.count
         parent.anchor_col = parent.sel_col
-        parent.pristine = false
+        # the field and the cached canvas it paints onto: this frame
+        repaint_held[ parent, false ]
 
     # the field's own text between the caret and its anchor
     func selected_text [ text: string ] -> string
@@ -983,7 +984,7 @@ class Layer
             parent.sel_col = 0
             parent.anchor_col = 0
             ev.prevent_default[]
-        parent.pristine = false
+        repaint_held[ parent, false ]
 
     func draw [ cv: Canvas ]
         if [ !editable || !cv ] return

@@ -7585,9 +7585,12 @@ Display Window
         last_ : element
         for [ ee: element, id: string ] in e.elements
             if [ ee.topmost || ee.hide ] continue
-            # an uncached child is in the picture already
+            # an uncached child is in the picture already; its change
+            # repaints the picture next frame, which must come
             if [ ee.no_cache && !ee.animated ]
-                if [ !ee.pristine ] e.pristine = false
+                if [ !ee.pristine ]
+                    e.pristine   = false
+                    will_animate = true
                 continue
             ml.save[]
             if [ ee.bounds ]
@@ -8385,9 +8388,12 @@ Display Window
             if [ ee.topmost ] continue
             # an uncached child lives in this cache: its change repaints
             # us. an animated one paints every frame onto the composed
-            # target
+            # target. the change is seen mid-frame: the next frame must
+            # come, or it waits for the quiet refresh (a quarter second)
             if [ is_cached && ee.no_cache && !ee.animated ]
-                if [ !ee.pristine ] e.pristine = false
+                if [ !ee.pristine ]
+                    e.pristine   = false
+                    will_animate = true
                 continue
             # drawn into the masking layer already
             if [ layered ] continue
@@ -8412,7 +8418,9 @@ Display Window
         for [ ee: element, id: string ] in e.elements
             if [ !ee.topmost ] continue
             if [ is_cached && ee.no_cache && !ee.animated ]
-                if [ !ee.pristine ] e.pristine = false
+                if [ !ee.pristine ]
+                    e.pristine   = false
+                    will_animate = true
                 continue
             cv.save[]
             if [ ee.bounds ]

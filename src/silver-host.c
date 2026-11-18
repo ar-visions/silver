@@ -1683,7 +1683,7 @@ static void view_home(const char* app, const char* home) {
 
 // a host path into a running view from outside it (a joiner):
 // a copy of the host's mounts its user space owns gives the clone
-static int view_graft_into(pid_t keep, const char* src) {
+static int view_graft_into(pid_t keep, const char* src, int rw) {
     struct stat st;
     if (stat(src, &st) != 0) return -1;
     pid_t c = fork();
@@ -1700,8 +1700,8 @@ static int view_graft_into(pid_t keep, const char* src) {
         int fd = open_tree(AT_FDCWD, src, OPEN_TREE_CLONE |
             OPEN_TREE_CLOEXEC | (dir ? AT_RECURSIVE : 0));
         if (fd < 0 || setns(m, CLONE_NEWNS) != 0) _exit(1);
-        struct mount_attr ma = {
-            .attr_set = MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID };
+        struct mount_attr ma = { .attr_set =
+            (rw && !dir ? 0 : MOUNT_ATTR_RDONLY) | MOUNT_ATTR_NOSUID };
         mount_setattr(fd, "", AT_EMPTY_PATH | (dir ? AT_RECURSIVE : 0),
             &ma, sizeof(ma));
         umount2(src, MNT_DETACH);
@@ -2352,18 +2352,24 @@ static void bound_lock(const char* app, int argc, char** argv) {
     const int fwd[] = { SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1,
                         SIGUSR2 };
     int bp[2], sp[2];
-    // the launch line's paths, found while the host's tree is seen
+    // the launch line's paths, found while the host's tree is seen; a
+    // module that edits its files (export edits) has its files writable
     char** found = calloc(argc, sizeof(char*));
     char real[4096];
-    for (int i = 1; i < argc; i++)
-        if (argv[i][0] == '/' && realpath(argv[i], real) &&
-            strcmp(real, "/") != 0 && !bound_reaches(real))
+    int edits = view_wants(app, "edits");
+    for (int i = 1; i < argc; i++) {
+        struct stat es;
+        if (argv[i][0] != '/' || !realpath(argv[i], real) ||
+            strcmp(real, "/") == 0) continue;
+        int file = stat(real, &es) == 0 && S_ISREG(es.st_mode);
+        if (!bound_reaches(real) || (edits && file))
             found[i] = strdup(real);
+    }
     if (keep) {
         // a joiner's paths go into the view it joins
         for (int i = 1; i < argc; i++) {
             if (!found[i]) continue;
-            if (view_graft_into(keep, found[i]) == 0)
+            if (view_graft_into(keep, found[i], edits) == 0)
                 fprintf(stderr, "silver-host: %s shared into %s's view\n",
                     found[i], app);
             free(found[i]);
@@ -2407,14 +2413,16 @@ static void bound_lock(const char* app, int argc, char** argv) {
                 strerror(errno));
             exit(1);
         }
-        // a launch path it cannot reach is shared there, read only
+        // a launch path it cannot reach is shared there, read only (a
+        // file of a module that edits, writable)
         for (int i = 1; i < argc; i++) {
             if (!found[i]) continue;
             struct stat st;
             char at[4600];
             snprintf(at, sizeof(at), VIEW_ROOT "%s", found[i]);
+            int dir = stat(found[i], &st) == 0 && S_ISDIR(st.st_mode);
             if (stat(found[i], &st) == 0 &&
-                view_graft(found[i], at, S_ISDIR(st.st_mode), 0) == 0)
+                view_graft(found[i], at, dir, edits && !dir) == 0)
                 fprintf(stderr, "silver-host: %s shared into %s's view\n",
                     found[i], app);
             free(found[i]);

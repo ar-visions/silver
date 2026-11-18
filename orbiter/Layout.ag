@@ -1,0 +1,118 @@
+# the docked windows' layout: splits of splits, a leaf a pane
+extend orbiter
+
+# a split's children (across, or top to bottom), or a leaf's pane
+class PaneNode
+    # a leaf's pane; -1 a split
+    public pane : i32 [ -1 ]
+    # a split's children top to bottom, else left to right
+    public down : bool
+    public kids : vec PaneNode
+
+    # its saved form: a leaf its pane; a split -1 (across) or -2
+    # (down), its count, then its children
+    func write [ out: vec i32 ]
+        if [ pane >= 0 ]
+            out.push[ pane ]
+            return
+        out.push[ (down) ? -2 : -1 ]
+        out.push[ i32[ kids.count ] ]
+        for [ k: PaneNode ] in kids
+            k.write[ out ]
+
+    # its panes, in order
+    func leaves [ out: vec i32 ]
+        if [ pane >= 0 ]
+            out.push[ pane ]
+            return
+        for [ k: PaneNode ] in kids
+            k.leaves[ out ]
+
+    # the leaves given the panes of order, in turn from at
+    func relabel [ order: vec i32, at: TreeAt ]
+        if [ pane >= 0 ]
+            if [ at.i < order.count ] pane = order[ at.i ]
+            at.i += 1
+            return
+        for [ k: PaneNode ] in kids
+            k.relabel[ order, at ]
+
+    # the leaf p taken out; true when it was here
+    func drop_leaf [ p: i32 ] -> bool
+        for [ j: i32 0, j < kids.count, j += 1 ]
+            k : PaneNode kids[ j ]
+            if [ k.pane == p ]
+                kids.remove[ j ]
+                return true
+            if [ k.pane < 0 && k.drop_leaf[ p ] ] return true
+        return false
+
+    # p put in beside the leaf nb (after it, or before); true when
+    # nb was here
+    func put_beside [ p: i32, nb: i32, after: bool ] -> bool
+        for [ j: i32 0, j < kids.count, j += 1 ]
+            k : PaneNode kids[ j ]
+            if [ k.pane == nb ]
+                kids.insert[ PaneNode [ pane: p ],
+                             (after) ? j + 1 : j ]
+                return true
+            if [ k.pane < 0 && k.put_beside[ p, nb, after ] ]
+                return true
+        return false
+
+    # the leaf from made the leaf to (to taken out first)
+    func swap_leaf [ from: i32, to: i32 ]
+        if [ pane == from ] pane = to
+        if [ pane >= 0 ] return
+        for [ k: PaneNode ] in kids
+            k.swap_leaf[ from, to ]
+
+    # every leaf over p one less (p closed)
+    func renumber [ p: i32 ]
+        if [ pane > p ] pane -= 1
+        if [ pane >= 0 ] return
+        for [ k: PaneNode ] in kids
+            k.renumber[ p ]
+
+    # empty splits gone, a split of one its child, a child split
+    # the same way as its parent folded into it
+    func tidy []
+        if [ pane >= 0 ] return
+        flat : vec PaneNode []
+        for [ k: PaneNode ] in kids
+            k.tidy[]
+            if [ k.pane < 0 && k.kids.count == 0 ] continue
+            if [ k.pane < 0 && k.kids.count == 1 ]
+                flat.push[ k.kids[ 0 ] ]
+                continue
+            if [ k.pane < 0 && k.down == down ]
+                for [ g: PaneNode ] in k.kids
+                    flat.push[ g ]
+                continue
+            flat.push[ k ]
+        kids = flat
+
+# a reading place, shared down a walk
+class TreeAt
+    public i : i32
+
+# a tree from its saved form, from at
+func tree_read [ v: vec i32, at: TreeAt ] -> PaneNode
+    if [ at.i >= v.count ] return null
+    x : i32 [ v[ at.i ] ]
+    at.i += 1
+    if [ x >= 0 ] return PaneNode [ pane: x ]
+    n : PaneNode [ down: x == -2, kids: vec PaneNode [] ]
+    k : i32 [ (at.i < v.count) ? v[ at.i ] : 0 ]
+    at.i += 1
+    for [ j: i32 0, j < k, j += 1 ]
+        c : PaneNode tree_read[ v, at ]
+        if [ c ] n.kids.push[ c ]
+    return n
+
+# panes in a row, in the order given
+func tree_row [ sq: vec i32 ] -> PaneNode
+    n : PaneNode [ kids: vec PaneNode [] ]
+    for [ q: i32 ] in sq
+        n.kids.push[ PaneNode [ pane: q ] ]
+    return n

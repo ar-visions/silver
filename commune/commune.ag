@@ -1,0 +1,1443 @@
+# commune: a group's own chat server and its client, over TLS;
+# channels are workspaces that sync to a folder, agents join too
+export 0.1.0
+export software ['communication']
+# orbiter's Services runs its server with these
+export serves ['--serve']
+# orbiter's bar, its folder open on the home: its menus
+export menus ['CommuneMenus']
+
+import vec
+import img
+import trinity
+import tls
+import tray
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <time.h>
+import <sys/time.h>
+import <unistd.h> +_DEFAULT_SOURCE +_XOPEN_SOURCE=500
+import <fcntl.h>
+import <poll.h>
+import <errno.h>
+import <netdb.h>
+import <pthread.h>
+import <sys/socket.h>
+import <sys/stat.h>
+import <netinet/in.h>
+import <netinet/tcp.h>
+import <arpa/inet.h>
+
+# a line of a conversation: when, who, what, and its kind
+class Line
+    public id   : i64
+    public at   : string
+    public who  : string
+    public text : string
+    # 0 said, 1 event, 2 problem, 3 our own, 4 a file
+    public kind : i32
+    # an agent's turn it belongs to ('' none), and its state there:
+    # say (its words), step (what it does), done
+    public turn  : string
+    public state : string
+
+# a conversation on one server: its own, a channel, or a person
+class Talk
+    public server : string
+    public name   : string
+    public lines  : vec Line
+    public users  : vec string
+    public topic  : string
+    public unread : i32
+    # someone said our name here since we last looked
+    public called : bool
+    public joined : bool
+    # its people hidden in the list
+    public folded : bool
+    # the oldest id loaded: history before it is asked for
+    public oldest : i64
+    # the agent answers in this channel
+    public agent  : bool
+    # a private channel (invite only), an archived one (read only)
+    public private  : bool
+    public archived : bool
+    # the server's own: the channels it may see, a row each (name,
+    # kind, archived, how many in it, topic, by tabs), and our role
+    public known : vec string
+    public role  : string
+
+    func init []
+        lines = vec Line []
+        users = vec string []
+        topic = ''
+        known = vec string []
+        role  = ''
+
+    # the server's own conversation
+    func home [] -> bool
+        return name.count == 0
+
+    # a channel, not a person
+    func channel [] -> bool
+        return name.count > 0 && name.chars[ 0 ] == '#'
+
+    func add_user [ u: string ]
+        for [ have: string ] in users
+            if [ have == u ] return
+        users.push[ u ]
+
+    func drop_user [ u: string ] -> bool
+        for [ i: i32 0, i < users.count, i += 1 ]
+            if [ users[ i ] == u ]
+                users.remove[ i ]
+                return true
+        return false
+
+# the clock as a line shows it, from unix seconds
+# commune.c: a line to orbiter's socket by its path; 1 sent
+func commune_sock_send [ sock: cstr, line: cstr ] -> i32
+
+# commune.c: 1 when something listens on this port here
+func commune_port_open [ port: i32 ] -> i32
+
+func clock_text [ t: i64 ] -> string
+    now : i64 [ t ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    b : local i8 [ 16 ]
+    fmt : '%H:%M'
+    strftime[ @b[0], 16, fmt.chars, @tm ]
+    return string [ @b[0] ]
+
+func unix_now [] -> i64
+    return time[ null ]
+
+# every `find` in s replaced by `to`
+func text_replace [ s: string, find: string, to: string ] -> string
+    if [ find.count == 0 ] return s
+    out : string [ '' ]
+    rest : s
+    at : i32 [ rest.index_of[ find ] ]
+    while [ at >= 0 ]
+        out = out + rest.mid[ 0, at ] + to
+        rest = rest.mid[ at + find.count, rest.count - at - find.count ]
+        at = rest.index_of[ find ]
+    return out + rest
+
+# the first `find` in s at or after `from`; -1 none
+func index_from [ s: string, find: string, from: i32 ] -> i32
+    if [ from >= s.count ] return -1
+    tail : string s.mid[ from, s.count - from ]
+    at : i32 [ tail.index_of[ find ] ]
+    if [ at < 0 ] return -1
+    return at + from
+
+import Server
+import Link
+import Sync
+import Helper
+import View
+import Menus
+
+# a server signed in to, as the app keeps it between runs
+class Account
+    public host     : string
+    public port     : i32 [ 7788 ]
+    public name     : string
+    public password : string
+
+# the app: several servers at once, and one it may host itself
+element commune : trinity
+    public width      : i32    [ 1100 ]
+    public height     : i32    [ 700 ]
+    public title      : string [ 'commune' ]
+    public background : string [ 'Background' ]
+    # run as a server only: every binding of ours that is on
+    public  [ Launch ] serve    : bool
+    # connect at start: host[:port], the name and password
+    public  [ Launch ] server  : string
+    public  [ Launch ] name    : string
+    public  [ Launch ] password : string
+    public  [ Launch ] channels : string
+    # orbiter's socket, given when orbiter hosts it
+    public  [ Launch ] opener : string
+    # one named server's own client: its address:port as listed;
+    # the app takes its name and signs in to it alone
+    public  [ Launch ] entry  : string
+    # the servers, one line each (host port name pw on|off), kept
+    # in servers.txt, where orbiter's drawer changes them too
+    intern  [ StatePersist ] accounts : vec string
+    intern servers_at : i64
+    intern states_was : string
+    intern  [ StatePersist ] agent_on : vec string
+    # the channels we are in: 'server channel' a line, joined again
+    # at each sign in
+    intern  [ StatePersist ] rooms : vec string
+    # the server we host listens; read once a second
+    intern here_ms   : i64
+    # each server's certificate hash, as first seen ('host:port hex')
+    intern  [ StatePersist ] pins : vec string
+    intern links   : vec Link
+    intern bufs    : vec Talk
+    intern cur     : i32
+    intern started : bool
+    intern focused : bool
+    # a server's channel rows coming in, before their end
+    intern pending_chans : vec string
+    # the panel a button slid out ('' none): its kind, what it is
+    # about, where it opens (window px), and its form's state
+    intern pop_kind  : string
+    intern pop_arg   : string
+    intern pop_x     : f32
+    intern pop_y     : f32
+    intern pop_priv  : bool
+    intern pop_fresh : bool
+    # what we sent, oldest first (kept across starts), and where Up
+    # and Down are in it (its count: the new line)
+    intern [ StatePersist ] sent : vec string
+    intern sent_at : i32
+    intern runs_seen : vec string
+    intern runs_ms : i64
+    intern pop_focused : bool
+    # each server's people, for an invite: names by commas, a star
+    # before an admin
+    intern people_of : map string [ string ]
+    # our servers running here, by 'address:port'
+    intern binds   : map Server [ string ]
+    # why a server refused us, by its item's key, until switched on
+    intern refusals : map string [ string ]
+    # a server whose password is asked for (its item's key) and why
+    intern ask_key : string
+    intern ask_why : string
+    intern sync    : Sync
+    intern agent   : Helper
+    intern rows_seen : string
+
+    style : CSS {
+        layers.ground:
+            fill_color: #0e0b1a
+    }
+
+    func key [] -> string
+        return 'commune'
+
+    # a conversation on a server, made when first named
+    func buf [ sk: string, nm: string ] -> Talk
+        for [ b: Talk ] in bufs
+            if [ b.server == sk && b.name.lcase[] == nm.lcase[] ]
+                return b
+        b : Talk [ server: sk, name: nm ]
+        # a sk's conversations stay together, after its own
+        at : i32 [ i32[ bufs.count ] ]
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            if [ bufs[ i ].server == sk ] at = i + 1
+        if [ at >= bufs.count ] bufs.push[ b ]
+        el bufs.insert[ b, at ]
+        pristine = false
+        return b
+
+    func has_buf [ sk: string, nm: string ] -> bool
+        for [ b: Talk ] in bufs
+            if [ b.server == sk && b.name.lcase[] == nm.lcase[] ]
+                return true
+        return false
+
+    func current [] -> Talk
+        if [ !bufs || bufs.count == 0 ] return null
+        if [ cur < 0 || cur >= bufs.count ] return bufs[ 0 ]
+        return bufs[ cur ]
+
+    # a person's link to a server (its agents' share the key)
+    func link_of [ sk: string ] -> Link
+        for [ l: Link ] in links
+            if [ l.key == sk && !l.silent ] return l
+        return null
+
+    # the link the shown conversation belongs to
+    func cur_link [] -> Link
+        b : Talk current[]
+        if [ !b ] return null
+        return link_of[ b.server ]
+
+    func note [ b: Talk, who: string, text: string, kind: i32 ]
+        note_at[ b, 0, unix_now[], who, text, kind ]
+
+    func note_at [ b: Talk, id: i64, t: i64, who: string,
+                   text: string, kind: i32 ]
+        ln : Line [ id: id, at: clock_text[ t ], who: who, text: text,
+                    kind: kind ]
+        b.lines.push[ ln ]
+        if [ id > 0 && (b.oldest == 0 || id < b.oldest) ] b.oldest = id
+        if [ b != current[] ]
+            if [ kind == 0 ] b.unread += 1
+            me : string me_on[ b.server ]
+            if [ kind == 0 && me.count > 0
+                 && text.lcase[].index_of[ me.lcase[] ] >= 0 ]
+                b.called = true
+        pristine = false
+
+    # older history, before the lines shown
+    func note_old [ b: Talk, id: i64, t: i64, who: string,
+                    text: string, kind: i32 ]
+        ln : Line [ id: id, at: clock_text[ t ], who: who, text: text,
+                    kind: kind ]
+        b.lines.insert[ ln, 0 ]
+        if [ b.oldest == 0 || id < b.oldest ] b.oldest = id
+        pristine = false
+
+    func status [ sk: string, text: string, kind: i32 ]
+        # one server's window lists no conversation of the server's
+        # own: its words go where the person is looking
+        b : Talk current[]
+        if [ entry && entry.count > 0 && b && b.server == sk ]
+            note[ b, '', text, kind ]
+            return
+        note[ buf[ sk, '' ], '', text, kind ]
+
+    func me_on [ sk: string ] -> string
+        l : Link link_of[ sk ]
+        if [ l && l.me ] return l.me
+        return ''
+
+    func talk_to [ sk: string, who: string ]
+        b : Talk buf[ sk, who ]
+        show[ index_of[ b ] ]
+
+    public func show [ i: i32 ]
+        if [ i < 0 || i >= bufs.count ] return
+        cur = i
+        bufs[ i ].unread = 0
+        bufs[ i ].called = false
+        pristine = false
+
+    func index_of [ b: Talk ] -> i32
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            if [ bufs[ i ] == b ] return i
+        return 0
+
+    # a server signed in to: its link opens, its account is kept
+    func connect [ host: string, port: i32, nm: string, pw: string,
+                   remember: bool ]
+        k : string '{host}:{port}'
+        if [ link_of[ k ] ]
+            status[ k, 'Already connected to {host}', 1 ]
+            return
+        l : Link [ key: k, host: host, port: port, me: nm,
+                   password: pw, pin: pin_of[ k ] ]
+        links.push[ l ]
+        buf[ k, '' ]
+        status[ k, 'Connecting to {host}:{port}', 1 ]
+        # one server's instance: its conversation is the app's own
+        if [ entry && entry.count > 0 ] show_server[ k ]
+        l.open[]
+        if [ remember ] remember_account[ host, port, nm, pw ]
+
+    func pin_of [ k: string ] -> string
+        if [ !pins ] return ''
+        for [ p: string ] in pins
+            if [ p.starts_with[ '{k} ' ] ]
+                return p.mid[ k.count + 1, p.count - k.count - 1 ]
+        return ''
+
+    # the server's identity, kept the first time it is seen
+    func remember_pin [ k: string, hex: string ]
+        if [ hex.count == 0 || pin_of[ k ] == hex ] return
+        if [ !pins ] pins = vec string []
+        pins.push[ '{k} {hex}' ]
+        save_state[]
+
+    func remember_account [ host: string, port: i32, nm: string,
+                            pw: string ]
+        if [ !accounts ] accounts = vec string []
+        line : string '{host} {port} {nm} {pw} on'
+        for [ i: i32 0, i < accounts.count, i += 1 ]
+            ws : vec string accounts[ i ].split[ ' ' ]
+            if [ ws.count > 1 && ws[ 0 ] == host
+                 && ws[ 1 ].integer_value[] == port ]
+                if [ ws.count > 4 ]
+                    line = '{host} {port} {nm} {pw} {ws[ 4 ]}'
+                if [ ws.count > 5 ] line = '{line} {ws[ 5 ]}'
+                accounts[ i ] = line
+                save_servers[]
+                return
+        accounts.push[ line ]
+        save_servers[]
+
+    func forget_account [ host: string, port: i32 ]
+        if [ !accounts ] return
+        for [ i: i32 0, i < accounts.count, i += 1 ]
+            ws : vec string accounts[ i ].split[ ' ' ]
+            if [ ws.count > 1 && ws[ 0 ] == host
+                 && ws[ 1 ].integer_value[] == port ]
+                accounts.remove[ i ]
+                save_servers[]
+                return
+
+    func save_state []
+        save-persistent[ a ]
+
+    # the servers' file, only when this app changed the list (the
+    # menus in orbiter change it too)
+    func save_servers []
+        f : path servers_file[ path.path_storage[ 'commune' ] ]
+        servers_write[ f, accounts ]
+        servers_at = f.modified_time[]
+
+    # each binding of ours that is on runs here; one left out or
+    # off stops (the service, or this app with no orbiter)
+    func binds_tick []
+        if [ !binds ] binds = map Server [ string ] []
+        # each binding's own account: an admin of it
+        owners : map string [ string ] []
+        want : vec string []
+        if [ accounts ]
+            for [ ln: string ] in accounts
+                ws : vec string ln.split[ ' ' ]
+                if [ ws.count < 2 || !line_here[ ws ]
+                     || !line_on[ ws ] ]
+                    continue
+                want.push[ '{ws[ 0 ]}:{ws[ 1 ]}' ]
+                if [ ws.count > 2 ]
+                    owners[ '{ws[ 0 ]}:{ws[ 1 ]}' ] = ws[ 2 ]
+        gone : vec string []
+        for [ sv: Server, k: string ] in binds
+            if [ !str_in[ want, k ] ] gone.push[ k ]
+        for [ k: string ] in gone
+            binds[ k ].stop[]
+            binds.rm[ k ]
+            log 'commune: stopped serving {k}'
+        for [ k: string ] in want
+            if [ binds.contains[ k ] ] continue
+            at : i32 [ i32[ k.rindex_of[ ':' ] ] ]
+            h : string k.mid[ 0, at ]
+            pt : i32 [ i32[ k.mid[ at + 1, k.count - at - 1 ]
+                            .integer_value[] ] ]
+            bh : string [ (h == '0.0.0.0') ? '' : h ]
+            ow : string [ (owners.contains[ k ]) ? owners[ k ] : '' ]
+            sv : Server [ port: pt, bind: bh, owner: ow ]
+            if [ !sv.start[] ]
+                log 'commune: no server on {k}: {sv.problem}'
+                continue
+            binds[ k ] = sv
+            log 'commune: serving on {k}'
+
+    func first_frame []
+        started = true
+        bufs = vec Talk []
+        links = vec Link []
+        pending_chans = vec string []
+        pop_kind = ''
+        pop_arg  = ''
+        load-persistent[ a ]
+        # the servers' file wins; the first time, it is made
+        f : path servers_file[ path.path_storage[ 'commune' ] ]
+        if [ f.exists[] ]
+            accounts = servers_read[ f ]
+            servers_at = f.modified_time[]
+        el [ accounts ] save_servers[]
+        sync  = Sync [ app: a ]
+        agent = Helper [ app: a ]
+        # the list of servers first, unless bound to one server
+        if [ !entry || entry.count == 0 ] buf[ 'commune', '' ]
+        cur = 0
+        # a service: it serves, and signs in nowhere
+        if [ serve ]
+            f : path servers_file[ path.path_storage[ 'commune' ] ]
+            accounts = (f.exists[]) ? servers_read[ f ] : vec string []
+            servers_at = (f.exists[]) ? f.modified_time[] : 0
+            binds_tick[]
+            return
+        # a named server's own client: its name for the app's
+        if [ entry && entry.count > 0 && accounts ]
+            for [ ln: string ] in accounts
+                ws : vec string ln.split[ ' ' ]
+                if [ ws.count > 1 && '{ws[ 0 ]}:{ws[ 1 ]}' == entry ]
+                    title = line_name[ ws ]
+                    set_title[ title ]
+        if [ server && server.count > 0 ]
+            hp : vec string server.split[ ':' ]
+            port : i32 [ (hp.count > 1)
+                ? i32[ hp[ 1 ].integer_value[] ] : 7788 ]
+            nm : string [ (name && name.count > 0) ? name
+                : user_name[] ]
+            connect[ hp[ 0 ], port, nm, (password) ? password : '',
+                     true ]
+        cur = 0
+
+    # each server item: key, name, how it is (off, starting,
+    # connecting, up, or its problem), here or away, tab between
+    func server_rows [] -> vec string
+        out : vec string []
+        if [ !accounts ] return out
+        for [ ln: string ] in accounts
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count < 4 ] continue
+            k : string '{ws[ 0 ]}:{ws[ 1 ]}'
+            on : bool line_on[ ws ]
+            here : bool line_here[ ws ]
+            pt : i32 [ i32[ ws[ 1 ].integer_value[] ] ]
+            lk : string [ (here) ? '{dial_host[ ws[ 0 ] ]}:{pt}' : k ]
+            l : Link link_of[ lk ]
+            st : string 'off'
+            if [ refusals && refusals.contains[ k ] ]
+                st = refusals[ k ]
+            el [ on && here && commune_port_open[ pt ] != 1 ]
+                st = 'starting'
+            el [ on && l && l.up ] st = 'up'
+            el [ on && l && l.problem && l.problem.count > 0 ]
+                st = l.problem
+            el [ on ] st = 'connecting'
+            kind : string [ (here) ? 'here' : 'away' ]
+            out.push[ '{k}\t{ws[ 2 ]}\t{st}\t{kind}' ]
+        return out
+
+    # a server's own conversation shown
+    func show_server [ k: string ]
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            if [ bufs[ i ].server == k && bufs[ i ].home[] ]
+                show[ i ]
+                return
+
+    # a server let go: signed out, forgotten, its conversations gone
+    func forget_server [ k: string ]
+        ps : vec string k.split[ ':' ]
+        if [ ps.count > 1 ]
+            forget_account[ ps[ 0 ], i32[ ps[ 1 ].integer_value[] ] ]
+        let_go[ k, true ]
+        tell_service[ any_here_on[ accounts ] ]
+
+    # a server that refused us: its item off, the reason kept for
+    # the menu's state
+    func refuse [ l: Link, why: string ]
+        if [ !refusals ] refusals = map string [ string ] []
+        if [ !accounts ] return
+        for [ i: i32 0, i < accounts.count, i += 1 ]
+            ws : vec string accounts[ i ].split[ ' ' ]
+            if [ ws.count < 4 ] continue
+            if [ i32[ ws[ 1 ].integer_value[] ] != l.port ] continue
+            h : string [ (line_here[ ws ]) ? dial_host[ ws[ 0 ] ]
+                : ws[ 0 ] ]
+            if [ h != l.host ] continue
+            k : string '{ws[ 0 ]}:{ws[ 1 ]}'
+            # not tried again until the servers' file changes or the
+            # password is given; ours keeps running
+            refusals[ k ] = 'password refused'
+            # its conversation stays, the field asks for the password
+            ask_key = k
+            ask_why = why
+            # the close that follows a refusal is no news of its own
+            l.problem = ''
+            # the field, made anew as a password's, takes the keys
+            focused = false
+            l.shut[]
+            keep : vec Link []
+            for [ x: Link ] in links
+                if [ x != l ] keep.push[ x ]
+            links = keep
+            show_server[ l.key ]
+            if [ ux ] ux.restyle = true
+            return
+
+    # the asked server's password, kept with it; signed in again
+    func give_password [ pw: string ]
+        # one the server would refuse is asked for again, unexplained
+        if [ pw.index_of[ ' ' ] >= 0 || pw.count < 4 ]
+            if [ ux ] ux.restyle = true
+            return
+        if [ accounts ]
+            for [ i: i32 0, i < accounts.count, i += 1 ]
+                ws : vec string accounts[ i ].split[ ' ' ]
+                if [ ws.count < 4 || '{ws[ 0 ]}:{ws[ 1 ]}' != ask_key ]
+                    continue
+                ln : string '{ws[ 0 ]} {ws[ 1 ]} {ws[ 2 ]} {pw}'
+                for [ j: i32 4, j < ws.count, j += 1 ]
+                    ln = '{ln} {ws[ j ]}'
+                accounts[ i ] = ln
+        save_servers[]
+        if [ refusals ] refusals.rm[ ask_key ]
+        ask_key = ''
+        ask_why = ''
+        focused = false
+        here_ms = 0
+        if [ ux ] ux.restyle = true
+
+    # what the field asks for, '' nothing: the password of a server
+    # that refused it
+    func ask_text [] -> string
+        if [ !ask_key || ask_key.count == 0 || !accounts ] return ''
+        for [ ln: string ] in accounts
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count < 4 || '{ws[ 0 ]}:{ws[ 1 ]}' != ask_key ]
+                continue
+            nm : string line_name[ ws ]
+            # the asking alone: no rule or reason hinted
+            return 'Password for {ws[ 2 ]} on {nm}'
+        return ''
+
+    # signed out; its account kept or forgotten
+    func let_go [ k: string, keep_account: bool ]
+        l : Link link_of[ k ]
+        if [ !l ] return
+        l.shut[]
+        if [ !keep_account ] forget_account[ l.host, l.port ]
+        keep : vec Link []
+        for [ x: Link ] in links
+            if [ x != l ] keep.push[ x ]
+        links = keep
+        tb : vec Talk []
+        for [ b: Talk ] in bufs
+            if [ b.server != k ] tb.push[ b ]
+        bufs = tb
+        cur = 0
+        if [ ux ] ux.restyle = true
+
+    # our servers on or off: orbiter's service when orbiter hosts
+    # us; else this app runs them itself (binds_tick)
+    func tell_service [ on: bool ]
+        if [ opener && opener.count > 0 ]
+            word : string [ (on) ? 'on' : 'off' ]
+            msg : string 'app service commune {word}\n'
+            commune_sock_send[ opener.chars, msg.chars ]
+
+    # once a second: the servers' file read again when changed,
+    # each item as it says (on: signed in, off: signed out), and
+    # how each one is written for the drawer
+    func here_watch []
+        now : i64 epoch_millis[]
+        if [ here_ms > 0 && now - here_ms < 1000 ] return
+        here_ms = now
+        dir : path path.path_storage[ 'commune' ]
+        f : path servers_file[ dir ]
+        if [ f.exists[] && f.modified_time[] != servers_at ]
+            servers_at = f.modified_time[]
+            accounts = servers_read[ f ]
+            refusals = null
+            if [ ux ] ux.restyle = true
+        if [ !accounts ] accounts = vec string []
+        # the service, or this app with no orbiter: our bindings
+        if [ serve || !opener || opener.count == 0 ] binds_tick[]
+        if [ serve ] return
+        keys : vec string []
+        for [ ln: string ] in accounts
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count < 4 ] continue
+            pt : i32 [ i32[ ws[ 1 ].integer_value[] ] ]
+            here : bool line_here[ ws ]
+            # ours is reached at this machine's own address
+            dh : string [ (here) ? dial_host[ ws[ 0 ] ] : ws[ 0 ] ]
+            k : string '{dh}:{pt}'
+            # a named client: its own server alone
+            if [ entry && entry.count > 0
+                 && entry != '{ws[ 0 ]}:{ws[ 1 ]}' ] continue
+            keys.push[ k ]
+            on : bool line_on[ ws ]
+            l : Link link_of[ k ]
+            ik : string '{ws[ 0 ]}:{ws[ 1 ]}'
+            if [ refusals && refusals.contains[ ik ] ] continue
+            # the line went: a fresh one a while after, its
+            # conversations kept
+            if [ on && l && l.redial[] && now - l.lost_ms > 5000 ]
+                l.shut[]
+                rest : vec Link []
+                for [ x: Link ] in links
+                    if [ x != l ] rest.push[ x ]
+                links = rest
+                l = null
+            # no password yet (-): the field asks for it first
+            if [ on && !l && (ws[ 3 ] == '-' || ws[ 3 ].count == 0) ]
+                if [ !ask_key || ask_key.count == 0 ]
+                    ask_key = ik
+                    ask_why = ''
+                    buf[ k, '' ]
+                    show_server[ k ]
+                    focused = false
+                    if [ ux ] ux.restyle = true
+                continue
+            if [ on && !l && (!here || commune_port_open[ pt ] == 1) ]
+                connect[ dh, pt, ws[ 2 ], ws[ 3 ], false ]
+            el [ !on && l ] let_go[ k, true ]
+        # an item the drawer removed: signed out
+        gone : vec string []
+        for [ l: Link ] in links
+            if [ !l.silent && !str_in[ keys, l.key ] ]
+                gone.push[ l.key ]
+        for [ g: string ] in gone
+            let_go[ g, true ]
+        st : string ''
+        for [ r: string ] in server_rows[]
+            ps : vec string r.split[ '\t' ]
+            st = '{st}{ps[ 0 ]}\t{ps[ 2 ]}\n'
+        if [ st != states_was ]
+            states_was = st
+            sp : path states_file[ dir ]
+            sp.save[ st, null ]
+
+    # the user's own name, when none is given
+    func user_name [] -> string
+        u : cstr [ getenv[ 'USER' ] ]
+        if [ u ] return string [ u ]
+        return 'someone'
+
+    func tick [ w: Window ]
+        if [ !started ] first_frame[]
+        for [ l: Link ] in links
+            l.pump_sends[]
+            for [ fr: WireFrame ] in l.take[]
+                if [ l.silent ] agent.agent_frame[ l, fr ]
+                el heard[ l, fr ]
+            if [ l.problem.count > 0 ]
+                status[ l.key, l.problem, 2 ]
+                l.problem = ''
+        here_watch[]
+        if [ binds ]
+            for [ sv: Server, k: string ] in binds
+                sv.service[]
+                # the service's words go to its log, the app's to it
+                for [ ln: string ] in sv.take_log[]
+                    if [ serve ] log 'commune {k}: {ln}'
+                    el status[ 'commune', ln, 1 ]
+        sync.tick[]
+        agent.tick[]
+
+    # a frame from a server
+    func heard [ l: Link, fr: WireFrame ]
+        f : vec string fr.fields
+        if [ f.count == 0 ] return
+        cmd : string f[ 0 ]
+        k : string l.key
+        if [ cmd == 'welcome' ]
+            l.me = field[ f, 1 ]
+            buf[ k, '' ].role = field[ f, 2 ]
+            remember_pin[ k, l.seen_pin ]
+            status[ k, 'Signed in as {l.me}', 1 ]
+            if [ channels && channels.count > 0 ]
+                for [ ch: string ] in channels.split[ ',' ]
+                    if [ ch.count > 0 ] l.emit[ 'join\t{ch}' ]
+            # signed in again: the channels it was in, joined again
+            asked : vec string []
+            for [ b: Talk ] in bufs
+                if [ b.server == k && b.channel[] && b.joined ]
+                    b.joined = false
+                    asked.push[ b.name ]
+            if [ rooms ]
+                for [ r: string ] in rooms
+                    ws : vec string r.split[ ' ' ]
+                    if [ ws.count == 2 && ws[ 0 ] == k ]
+                        if [ !str_in[ asked, ws[ 1 ] ] ]
+                            asked.push[ ws[ 1 ] ]
+            for [ ch: string ] in asked
+                l.emit[ 'join\t{ch}' ]
+            l.emit[ 'channels' ]
+            agent.signed_in[ l ]
+        # refused: kept, switched off, the reason shown with it
+        el [ cmd == 'refused' ]
+            refuse[ l, field[ f, 1 ] ]
+        el [ cmd == 'joined' ]
+            ch : string field[ f, 1 ]
+            who : string field[ f, 2 ]
+            b : Talk buf[ k, ch ]
+            b.add_user[ who ]
+            if [ who == l.me ]
+                # its history comes whole: none of it held twice
+                b.lines = vec Line []
+                b.oldest = 0
+                b.joined = true
+                keep_room[ k, ch, true ]
+                show[ index_of[ b ] ]
+                l.emit[ 'channels' ]
+                l.emit[ 'who\t{ch}' ]
+                l.emit[ 'history\t{ch}\t0\t50' ]
+                l.emit[ 'files\t{ch}' ]
+                sync.joined[ l, ch ]
+                b.agent = agent_wanted[ k, ch ]
+            el
+                note[ b, '', '{who} joined', 1 ]
+        el [ cmd == 'left' ]
+            ch : string field[ f, 1 ]
+            who : string field[ f, 2 ]
+            b : Talk buf[ k, ch ]
+            b.drop_user[ who ]
+            if [ who == l.me ]
+                b.joined = false
+                keep_room[ k, ch, false ]
+                l.emit[ 'channels' ]
+            el note[ b, '', '{who} left', 1 ]
+        el [ cmd == 'gone' ]
+            who : string field[ f, 1 ]
+            for [ b: Talk ] in bufs
+                if [ b.server == k && b.drop_user[ who ] ]
+                    note[ b, '', '{who} signed out', 1 ]
+        el [ cmd == 'msg' || cmd == 'old' ]
+            id : i64 [ field[ f, 1 ].integer_value[] ]
+            t  : i64 [ field[ f, 2 ].integer_value[] ]
+            place : string field[ f, 3 ]
+            who : string field[ f, 4 ]
+            text : string field[ f, 5 ]
+            # a group's line lands in the talk with all of them
+            if [ place.starts_with[ '@' ] && place.index_of[ ',' ] > 0 ]
+                place = place.mid[ 1, place.count - 1 ]
+            # a person's line lands in the talk with them
+            el [ place.count > 0 && place.chars[ 0 ] == '@' ]
+                other : string place.mid[ 1, place.count - 1 ]
+                place = (who == l.me) ? other : who
+            b : Talk buf[ k, place ]
+            kind : i32 [ (who == l.me) ? 3 : 0 ]
+            if [ cmd == 'old' ] note_old[ b, id, t, who, text, kind ]
+            el
+                note_at[ b, id, t, who, text, kind ]
+                # a step is the agent at work, never a question
+                if [ field[ f, 7 ] != 'step' ]
+                    agent.heard[ l, b, who, text ]
+            # an agent's turn: the line joins its box
+            tn : string field[ f, 6 ]
+            if [ tn.count > 0 ]
+                ln : Line [ (cmd == 'old') ? b.lines[ 0 ]
+                    : b.lines[ b.lines.count - 1 ] ]
+                ln.turn  = tn
+                ln.state = field[ f, 7 ]
+        el [ cmd == 'topic' ]
+            b : Talk buf[ k, field[ f, 1 ] ]
+            b.topic = field[ f, 3 ]
+            who : string field[ f, 2 ]
+            if [ who.count > 0 ]
+                note[ b, '', '{who} set the topic: {b.topic}', 1 ]
+            pristine = false
+        el [ cmd == 'who' ]
+            b : Talk buf[ k, field[ f, 1 ] ]
+            b.users = vec string []
+            for [ u: string ] in field[ f, 2 ].split[ ',' ]
+                if [ u.count > 0 ] b.add_user[ u ]
+            pristine = false
+        # the channels it may see, a row each, then their end
+        el [ cmd == 'chan' ]
+            pending_chans.push[ fr.text.mid[ 5, fr.text.count - 5 ] ]
+        el [ cmd == 'chans_end' ]
+            hb : Talk buf[ k, '' ]
+            hb.known = pending_chans
+            pending_chans = vec string []
+            for [ row: string ] in hb.known
+                ws : vec string row.split[ '\t' ]
+                if [ ws.count < 3 || !has_buf[ k, ws[ 0 ] ] ] continue
+                cb : Talk buf[ k, ws[ 0 ] ]
+                cb.private  = ws[ 1 ] == 'private'
+                cb.archived = ws[ 2 ] == '1'
+            if [ ux ] ux.restyle = true
+        el [ cmd == 'invited' ]
+            ch : string field[ f, 1 ]
+            by : string field[ f, 2 ]
+            status[ k, '{by} invited you to {ch}: /join {ch}', 1 ]
+            l.emit[ 'channels' ]
+        el [ cmd == 'note' ]
+            ch : string field[ f, 1 ]
+            note[ buf[ k, ch ], '', field[ f, 2 ], 1 ]
+        el [ cmd == 'archived' ]
+            b : Talk buf[ k, field[ f, 1 ] ]
+            b.archived = true
+            note[ b, '', '{field[ f, 2 ]} archived it: read only now',
+                  1 ]
+            l.emit[ 'channels' ]
+        el [ cmd == 'dropped' ]
+            ch : string field[ f, 1 ]
+            status[ k, '{field[ f, 2 ]} removed {ch}', 1 ]
+            keep_room[ k, ch, false ]
+            keep : vec Talk []
+            for [ x: Talk ] in bufs
+                if [ !(x.server == k && x.name == ch) ] keep.push[ x ]
+            bufs = keep
+            cur = 0
+            show_server[ k ]
+            l.emit[ 'channels' ]
+        el [ cmd == 'people' ]
+            if [ !people_of ] people_of = map string [ string ] []
+            people_of[ k ] = field[ f, 1 ]
+            if [ ux ] ux.restyle = true
+        el [ cmd == 'channels' ]
+            names : string field[ f, 1 ]
+            status[ k, (names.count > 0) ? 'Channels: {names}'
+                : 'No channels yet: /join #name makes one', 1 ]
+        el [ cmd == 'found' ]
+            t : i64 [ field[ f, 2 ].integer_value[] ]
+            at : string clock_text[ t ]
+            where : string field[ f, 3 ]
+            who : string field[ f, 4 ]
+            status[ k, '{at} {where} <{who}> {field[ f, 5 ]}', 1 ]
+        el [ cmd == 'file' || cmd == 'changed' || cmd == 'removed'
+             || cmd == 'piece' || cmd == 'files_end' ]
+            sync.heard[ l, fr ]
+            if [ cmd == 'changed' ]
+                b : Talk buf[ k, field[ f, 1 ] ]
+                who : string field[ f, 6 ]
+                if [ who.count > 0 && who != l.me ]
+                    note[ b, who, field[ f, 2 ], 4 ]
+        el [ cmd == 'error' ]
+            status[ k, field[ f, 1 ], 2 ]
+        el
+            status[ k, fr.text, 1 ]
+
+    func field [ f: vec string, i: i32 ] -> string
+        if [ i < f.count ] return f[ i ]
+        return ''
+
+    # agent_on: 'server channel agent' a line (an older line with
+    # no agent is claude's)
+    func agent_entry [ s: string ] -> vec string
+        ws : vec string s.split[ ' ' ]
+        if [ ws.count == 2 ] ws.push[ 'claude' ]
+        return ws
+
+    # this agent of ours is on in that channel
+    public func agent_in [ sk: string, ch: string, an: string ] -> bool
+        if [ !agent_on ] return false
+        for [ s: string ] in agent_on
+            ws : vec string agent_entry[ s ]
+            if [ ws.count == 3 && ws[ 0 ] == sk && ws[ 1 ] == ch
+                 && ws[ 2 ] == an ] return true
+        return false
+
+    # on in some channel of that server
+    public func agent_any [ sk: string, an: string ] -> bool
+        return agent_channels[ sk, an ].count > 0
+
+    public func agent_channels [ sk: string, an: string ]
+            -> vec string
+        out : vec string []
+        if [ !agent_on ] return out
+        for [ s: string ] in agent_on
+            ws : vec string agent_entry[ s ]
+            if [ ws.count == 3 && ws[ 0 ] == sk && ws[ 2 ] == an ]
+                out.push[ ws[ 1 ] ]
+        return out
+
+    # any agent of ours on in that channel (the list's mark)
+    func agent_wanted [ sk: string, ch: string ] -> bool
+        for [ an: string ] in agent.offered[]
+            if [ agent_in[ sk, ch, an ] ] return true
+        return false
+
+    public func set_agent [ b: Talk, an: string, on: bool ]
+        if [ !agent_on ] agent_on = vec string []
+        keep : vec string []
+        for [ s: string ] in agent_on
+            ws : vec string agent_entry[ s ]
+            if [ !(ws.count == 3 && ws[ 0 ] == b.server
+                   && ws[ 1 ] == b.name && ws[ 2 ] == an) ]
+                keep.push[ s ]
+        agent_on = keep
+        if [ on ] agent_on.push[ '{b.server} {b.name} {an}' ]
+        b.agent = agent_wanted[ b.server, b.name ]
+        save_state[]
+        agent.changed[ link_of[ b.server ], b, an, on ]
+
+    # our name on each server we are signed in to
+    func mine_names [] -> map string [ string ]
+        out : map string [ string ] []
+        for [ l: Link ] in links
+            if [ !l.silent && l.me ] out[ l.key ] = l.me
+        return out
+
+    func no_agents [] -> string
+        return 'No agents offered: the commune menu writes a contract'
+
+    func not_connected [] -> string
+        return 'Not connected: /connect host name password'
+
+    # what the user typed: a /command or words to the conversation
+    public func say [ text: string ]
+        # the field asks for a password: this is it (never kept)
+        if [ ask_key && ask_key.count > 0 ]
+            give_password[ text ]
+            return
+        if [ !sent ] sent = vec string []
+        if [ sent.count == 0 || sent[ sent.count - 1 ] != text ]
+            sent.push[ text ]
+            while [ sent.count > 200 ] sent.remove[ 0 ]
+            save_state[]
+        sent_at = i32[ sent.count ]
+        b : Talk current[]
+        if [ !b ] return
+        l : Link link_of[ b.server ]
+        if [ text.chars[ 0 ] != '/' || text.starts_with[ '//' ] ]
+            words : string [ (text.starts_with[ '//' ])
+                ? text.mid[ 1, text.count - 1 ] : text ]
+            if [ !l || !l.up ]
+                status[ b.server, not_connected[], 2 ]
+                return
+            if [ b.home[] ]
+                status[ b.server, 'Join a channel first: /join #name',
+                        2 ]
+                return
+            if [ b.channel[] ] l.emit[ 'say\t{b.name}\t{words}' ]
+            el l.emit[ 'dm\t{b.name}\t{words}' ]
+            return
+        sp : i32 [ text.index_of[ ' ' ] ]
+        verb : ((sp > 0) ? text.mid[ 1, sp - 1 ]
+            : text.mid[ 1, text.count - 1 ]).lcase[]
+        arg : string [ (sp > 0)
+            ? text.mid[ sp + 1, text.count - sp - 1 ] : '' ]
+        # a binding of ours on a port (every address), or all off
+        if [ verb == 'host' ]
+            port : i32 [ (arg.count > 0)
+                ? i32[ arg.integer_value[] ] : 7788 ]
+            if [ !accounts ] accounts = vec string []
+            me : string user_name[]
+            pw : string made_pass[ me ]
+            ln : string '0.0.0.0 {port} {me} {pw} on here'
+            accounts.push[ ln ]
+            save_servers[]
+            tell_service[ true ]
+        el [ verb == 'unhost' ]
+            if [ accounts ]
+                for [ i: i32 0, i < accounts.count, i += 1 ]
+                    ws : vec string accounts[ i ].split[ ' ' ]
+                    if [ ws.count > 3 && line_here[ ws ] ]
+                        accounts[ i ] = line_with[ ws, 'off' ]
+            save_servers[]
+            tell_service[ false ]
+        el [ verb == 'connect' ]
+            ws : vec string arg.split[ ' ' ]
+            if [ ws.count < 1 || ws[ 0 ].count == 0 ]
+                status[ b.server, '/connect host[:port] name password',
+                        2 ]
+                return
+            hp : vec string ws[ 0 ].split[ ':' ]
+            port : i32 [ (hp.count > 1)
+                ? i32[ hp[ 1 ].integer_value[] ] : 7788 ]
+            nm : string [ (ws.count > 1) ? ws[ 1 ] : user_name[] ]
+            pw : string [ (ws.count > 2) ? ws[ 2 ] : '' ]
+            connect[ hp[ 0 ], port, nm, pw, true ]
+        el [ verb == 'disconnect' ]
+            if [ l ]
+                l.shut[]
+                forget_account[ l.host, l.port ]
+                status[ b.server, 'Disconnected', 1 ]
+        el [ !l || !l.up ]
+            status[ b.server, not_connected[], 2 ]
+        el [ verb == 'join' || verb == 'j' ]
+            ch : string [ (arg.starts_with[ '#' ]) ? arg : '#{arg}' ]
+            l.emit[ 'join\t{ch}' ]
+        # a private channel, invite only: made, joined
+        el [ verb == 'private' ]
+            ch : string [ (arg.starts_with[ '#' ]) ? arg : '#{arg}' ]
+            l.emit[ 'private\t{ch}' ]
+        # someone asked in: here, or /invite #channel name
+        el [ verb == 'invite' ]
+            ws : vec string arg.trim[].split[ ' ' ]
+            if [ ws.count > 1 && ws[ 0 ].starts_with[ '#' ] ]
+                l.emit[ 'invite\t{ws[ 0 ]}\t{ws[ 1 ]}' ]
+            el [ ws.count == 1 && ws[ 0 ].count > 0 && b.channel[] ]
+                l.emit[ 'invite\t{b.name}\t{ws[ 0 ]}' ]
+            el status[ b.server, '/invite name, in a channel', 2 ]
+        el [ verb == 'archive' ]
+            ch : string [ (arg.count > 0) ? arg : b.name ]
+            l.emit[ 'archive\t{ch}' ]
+        el [ verb == 'remove' ]
+            ch : string [ (arg.count > 0) ? arg : b.name ]
+            l.emit[ 'drop\t{ch}' ]
+        el [ verb == 'admin' ]
+            l.emit[ 'admin\t{arg.trim[]}' ]
+        # who makes channels here: all, or admins
+        el [ verb == 'create' ]
+            l.emit[ 'setting\tcreate\t{arg.trim[]}' ]
+        el [ verb == 'leave' || verb == 'part' ]
+            ch : string [ (arg.count > 0) ? arg : b.name ]
+            l.emit[ 'leave\t{ch}' ]
+        el [ verb == 'msg' || verb == 'query' ]
+            ms : i32 [ arg.index_of[ ' ' ] ]
+            to : string [ (ms > 0) ? arg.mid[ 0, ms ] : arg ]
+            q : Talk buf[ b.server, to ]
+            show[ index_of[ q ] ]
+            if [ ms > 0 ]
+                words : string arg.mid[ ms + 1, arg.count - ms - 1 ]
+                l.emit[ 'dm\t{to}\t{words}' ]
+        el [ verb == 'topic' ]
+            l.emit[ 'topic\t{b.name}\t{arg}' ]
+        el [ verb == 'search' || verb == 'find' ]
+            l.emit[ 'search\t{arg}' ]
+        el [ verb == 'who' ]
+            l.emit[ 'who\t{b.name}' ]
+        el [ verb == 'channels' || verb == 'list' ]
+            l.emit[ 'channels' ]
+        el [ verb == 'more' ]
+            n : i32 [ (arg.count > 0) ? i32[ arg.integer_value[] ]
+                : 50 ]
+            l.emit[ 'history\t{b.name}\t{b.oldest}\t{n}' ]
+        el [ verb == 'send' ]
+            if [ !b.channel[] ]
+                status[ b.server, 'Files go to a channel', 2 ]
+                return
+            sync.send_in[ l, b.name, arg ]
+        el [ verb == 'files' ]
+            folder : path sync.folder[ l, b.name ]
+            status[ b.server, 'The workspace is {folder}', 1 ]
+            l.emit[ 'files\t{b.name}' ]
+        # /agent [name] [on|off]: an agent we offer, in this channel
+        el [ verb == 'agent' ]
+            if [ !b.channel[] ]
+                status[ b.server, 'Agents join a channel', 2 ]
+                return
+            have : vec string agent.offered[]
+            if [ have.count == 0 ]
+                status[ b.server, no_agents[], 2 ]
+                return
+            ws : vec string arg.trim[].split[ ' ' ]
+            off : bool [ str_in[ ws, 'off' ] ]
+            named : vec string []
+            for [ x: string ] in ws
+                if [ str_in[ have, x ] ] named.push[ x ]
+            if [ named.count == 0 ] named = have
+            for [ an: string ] in named
+                set_agent[ b, an, !off ]
+                word : string [ (off) ? 'off' : 'on' ]
+                said : string '{l.me}/{an} is {word} in {b.name}'
+                status[ b.server, said, 1 ]
+        el [ verb == 'close' ]
+            if [ !b.home[] ]
+                if [ b.joined ] l.emit[ 'leave\t{b.name}' ]
+                bufs.remove[ cur ]
+                show[ cur - 1 ]
+        el
+            status[ b.server, 'Unknown command /{verb}', 2 ]
+
+    func render [] -> Elements
+        e : Elements []
+        if [ !bufs || bufs.count == 0 ] return e
+        b : Talk current[]
+        # the list's contents as one number
+        sig : i64 [ bufs.count ]
+        for [ x: Talk ] in bufs
+            sig = sig * 31 + x.users.count * 7 + x.unread * 3
+                + ((x.called) ? 1 : 0) + ((x.folded) ? 2 : 0)
+                + ((x.agent) ? 5 : 0) + x.name.count
+        panes : map element [ string ] []
+        ar : string [ (b.topic.count > 0) ? 'archived · {b.topic}'
+            : 'archived' ]
+        tp : string [ (b.archived) ? ar : b.topic ]
+        # the channels to join, not joined: the browse rows
+        browse : vec string []
+        for [ x: Talk ] in bufs
+            if [ !x.home[] ] continue
+            if [ entry && entry.count > 0
+                 && link_of[ x.server ] == null ] continue
+            for [ row: string ] in x.known
+                ws : vec string row.split[ '\t' ]
+                if [ ws.count < 1 ] continue
+                if [ has_buf[ x.server, ws[ 0 ] ]
+                     && buf[ x.server, ws[ 0 ] ].joined ] continue
+                browse.push[ '{x.server}\t{row}' ]
+        sig = sig * 31 + browse.count
+        panes[ 'chat' ] = ChatPane [ topic: tp,
+            lines: b.lines, seen: b.lines.count,
+            me: me_on[ b.server ], ask: ask_text[] ]
+        # our agents at the list's foot, each on or off here
+        here : string [ (b.channel[] && b.joined)
+            ? '{b.server}\t{b.name}' : '' ]
+        on_here : vec string []
+        for [ an: string ] in agent.offered[]
+            if [ here.count > 0 && agent_in[ b.server, b.name, an ] ]
+                on_here.push[ an ]
+        runs : vec string agents_run[]
+        sig = sig * 31 + runs.count * 7 + on_here.count
+        panes[ 'list' ] = BufferList [ bufs: bufs, chosen: cur,
+            sig: sig, one: entry && entry.count > 0, browse: browse,
+            mine: mine_names[], offers: agent.offered[],
+            runs: runs, on_here: on_here, here: here ]
+        e[ 'split' ] = Splitter [ area: Region { l0 t0 r0 b0 },
+            inner: panes, flex: 0, min_size: 80.0, near_seam: true,
+            sizes: vec f32 [] [ 0.0, 240.0 ] ]
+        # a button's panel, slid out under it, inside the window
+        if [ pop_kind.count > 0 && bounds ]
+            rows : vec string pop_rows[]
+            ph : f32 [ 0.0 ]
+            for [ r: string ] in rows
+                ph += pop_row_h[ r ]
+            pw : f32 [ 270.0 ]
+            px : f32 [ pop_x - 20.0 ]
+            if [ px + pw > bounds.w - 6.0 ] px = bounds.w - 6.0 - pw
+            if [ px < 6.0 ] px = 6.0
+            py : f32 [ pop_y + 14.0 ]
+            if [ py + ph > bounds.h - 6.0 ] py = bounds.h - 6.0 - ph
+            e[ 'pop' ] = PopPanel [ area: Region [
+                'l{px}px t{py}px w{pw}px h{ph}px' ], rows: rows,
+                kind: pop_kind ]
+        return e
+
+    # a part of the chat pane, as mounted: log, say, topic
+    func part [ nm: string ] -> element
+        sp : element (elements) ? elements[ 'split' ] : null
+        if [ !sp || !sp.elements ] return null
+        ch : element sp.elements[ 'chat' ]
+        if [ !ch || !ch.elements ] return null
+        return ch.elements[ nm ]
+
+    # the field takes the keys again
+    func focus_say []
+        say : element part[ 'say' ]
+        if [ ux && say ] ux.set_focus[ say ]
+
+    # a button's panel, slid out at the pointer
+    public func pop_open [ kind: string, arg: string ]
+        pop_kind  = kind
+        pop_arg   = arg
+        pop_x     = f32[ ux.mouse.x ]
+        pop_y     = f32[ ux.mouse.y ]
+        pop_priv  = false
+        pop_fresh = true
+        pop_focused = false
+        if [ kind == 'invite' ]
+            l : Link link_of[ arg.split[ '\t' ][ 0 ] ]
+            if [ l && l.up ] l.emit[ 'people' ]
+        if [ ux ] ux.restyle = true
+
+    public func pop_close []
+        if [ pop_kind.count == 0 ] return
+        pop_kind = ''
+        if [ ux ] ux.restyle = true
+
+    # the panel's rows: 'icon\tlabel\taction' a row, 'field\thint'
+    # its text box, 'note\twords' a plain line
+    public func pop_rows [] -> vec string
+        out : vec string []
+        a : vec string pop_arg.split[ '\t' ]
+        sk : string a[ 0 ]
+        l : Link link_of[ sk ]
+        me : string [ (l && l.me) ? l.me : '' ]
+        admin : bool [ buf[ sk, '' ].role == 'admin' ]
+        if [ pop_kind == 'new' ]
+            out.push[ 'field\tchannel name\ttag' ]
+            # the row says what it will be, lit while private
+            if [ pop_priv ]
+                out.push[ 'lock\tPrivate: invite only\tpriv\ton' ]
+            el out.push[ 'group\tPublic: anyone can join\tpriv\toff' ]
+            out.push[ 'check\tCreate\tcreate' ]
+        el [ pop_kind == 'chan' ]
+            out.push[ 'title\tTopic…\ttopic' ]
+            out.push[ 'person_add\tInvite…\tinvite' ]
+            for [ an: string ] in agent.offered[]
+                on : bool agent_in[ sk, a[ 1 ], an ]
+                w : string [ (on) ? 'on' : 'off' ]
+                out.push[ 'smart_toy\t{an}: {w} here\tagent {an}' ]
+            out.push[ 'logout\tLeave\tleave' ]
+            out.push[ 'archive\tArchive\tarchive' ]
+            out.push[ 'delete\tRemove\tremove' ]
+        el [ pop_kind == 'topic' ]
+            out.push[ 'field\tthe topic\ttitle' ]
+            out.push[ 'check\tSet the topic\tsettopic' ]
+        el [ pop_kind == 'invite' ]
+            ps : string [ (people_of && people_of.contains[ sk ])
+                ? people_of[ sk ] : '' ]
+            b : Talk buf[ sk, a[ 1 ] ]
+            n : i32 [ 0 ]
+            for [ nm: string ] in ps.split[ ',' ]
+                bare : string [ (nm.starts_with[ '*' ])
+                    ? nm.mid[ 1, nm.count - 1 ] : nm ]
+                if [ bare.count == 0 || bare == me
+                     || str_in[ b.users, bare ] ] continue
+                out.push[ 'person_add\t{bare}\tinviteone {bare}' ]
+                n += 1
+            if [ n == 0 ]
+                why : string [ (ps.count > 0)
+                    ? 'everyone here is in it' : 'asking the server…' ]
+                out.push[ 'note\t{why}' ]
+        el [ pop_kind == 'person' ]
+            who : string a[ 1 ]
+            if [ who == me ]
+                out.push[ 'note\tthat is you' ]
+                return out
+            out.push[ 'chat\tMessage {who}\tmessage' ]
+            if [ admin ]
+                out.push[ 'shield_person\tMake {who} an admin\tadmin' ]
+        el [ pop_kind == 'agent' ]
+            an : string a[ 2 ]
+            on : bool agent_in[ sk, a[ 1 ], an ]
+            ic : string [ (on) ? 'toggle_on' : 'toggle_off' ]
+            wd : string [ (on) ? 'On' : 'Off' ]
+            out.push[ '{ic}\t{wd} in {a[ 1 ]}\tagent {an}' ]
+            out.push[ 'edit\tEdit its contract\tcontract {an}' ]
+        return out
+
+    # a row pressed
+    public func pop_act [ act: string ]
+        a : vec string pop_arg.split[ '\t' ]
+        sk : string a[ 0 ]
+        l : Link link_of[ sk ]
+        sp : i32 [ act.index_of[ ' ' ] ]
+        verb : string [ (sp > 0) ? act.mid[ 0, sp ] : act ]
+        rest : string [ (sp > 0) ? act.mid[ sp + 1, act.count - sp - 1 ]
+            : '' ]
+        if [ verb == 'priv' ]
+            pop_priv = !pop_priv
+            if [ ux ] ux.restyle = true
+            return
+        if [ verb == 'create' || verb == 'settopic' ]
+            pop_enter[ pop_text[] ]
+            return
+        if [ verb == 'topic' || verb == 'invite' ]
+            pop_open[ verb, pop_arg ]
+            return
+        if [ verb == 'agent' ]
+            b : Talk buf[ sk, a[ 1 ] ]
+            set_agent[ b, rest, !agent_in[ sk, a[ 1 ], rest ] ]
+            if [ ux ] ux.restyle = true
+            return
+        if [ verb == 'contract' ]
+            contract_edit[ rest ]
+        el [ !l || !l.up ]
+            status[ sk, not_connected[], 2 ]
+        el [ verb == 'leave' ] l.emit[ 'leave\t{a[ 1 ]}' ]
+        el [ verb == 'archive' ] l.emit[ 'archive\t{a[ 1 ]}' ]
+        el [ verb == 'remove' ] l.emit[ 'drop\t{a[ 1 ]}' ]
+        el [ verb == 'inviteone' ]
+            l.emit[ 'invite\t{a[ 1 ]}\t{rest}' ]
+            return
+        el [ verb == 'message' ] talk_to[ sk, a[ 1 ] ]
+        el [ verb == 'admin' ] l.emit[ 'admin\t{a[ 1 ]}' ]
+        pop_close[]
+
+    # the panel's field: Enter, or its button
+    public func pop_enter [ text: string ]
+        t : string text.trim[]
+        if [ t.count == 0 ] return
+        a : vec string pop_arg.split[ '\t' ]
+        l : Link link_of[ a[ 0 ] ]
+        if [ !l || !l.up ]
+            status[ a[ 0 ], not_connected[], 2 ]
+            return
+        if [ pop_kind == 'new' ]
+            nm : string [ (t.starts_with[ '#' ]) ? t : '#{t}' ]
+            l.emit[ '{(pop_priv) ? "private" : "join"}\t{nm}' ]
+        el [ pop_kind == 'topic' ]
+            l.emit[ 'topic\t{a[ 1 ]}\t{t}' ]
+        pop_close[]
+
+    # what the panel's field holds now
+    func pop_text [] -> string
+        pp : element [ (elements) ? elements[ 'pop' ] : null ]
+        if [ !pp || !pp.elements ] return ''
+        fe : element pp.elements[ 'field' ]
+        if [ fe && fe.edit ] return fe.edit
+        return ''
+
+    # an agent switched on or off in the shown channel
+    public func agent_here [ an: string ]
+        b : Talk current[]
+        if [ !b || !b.channel[] || !b.joined ] return
+        if [ !str_in[ agent.offered[], an ] ]
+            contract_edit[ an ]
+            return
+        set_agent[ b, an, !agent_in[ b.server, b.name, an ] ]
+        if [ ux ] ux.restyle = true
+
+    # an agent's contract in a pane of orbiter's (a sketch first)
+    public func contract_edit [ an: string ]
+        d : path path.path_storage[ 'commune' ]
+        f : path '{d}/agents/{an}.md'
+        if [ !f.exists[] ]
+            make_dirs[ '{d}/agents' ]
+            f.save[ contract_sketch[ an ], null ]
+        # orbiter reads it where commune's home really is
+        ins : path path.path_install[]
+        hm : string '{ins.absolute[]}/home/commune'
+        full : string '{hm}/.local/state/commune/agents/{an}.md'
+        if [ opener && opener.count > 0 ]
+            msg : string 'app nav open {full}\n'
+            commune_sock_send[ opener.chars, msg.chars ]
+        el status[ a_server[], 'The contract: {f}', 1 ]
+
+    func a_server [] -> string
+        b : Talk current[]
+        return [ (b) ? b.server : '' ]
+
+    # a press anywhere but the panel puts it away
+    public func on_press [ ev: Event ]
+        if [ pop_fresh ]
+            pop_fresh = false
+            return
+        if [ pop_kind.count == 0 ] return
+        for [ e: element* ev.origin, e, e = e.parent ]
+            if [ e inherits PopPanel ] return
+        pop_close[]
+
+    # Up (-1) and Down (1) through what we sent: the line, or '' past
+    # the newest; null with nothing there
+    public func sent_step [ dir: i32 ] -> string
+        if [ !sent || sent.count == 0 ] return null
+        if [ sent_at < 0 || sent_at > sent.count ] sent_at = sent.count
+        at : i32 [ sent_at + dir ]
+        if [ at < 0 ] return null
+        if [ at > sent.count ] return null
+        sent_at = at
+        if [ at == sent.count ] return ''
+        return sent[ at ]
+
+    # the agents installed here, read again at most every 3 s: the
+    # read opens every app's record, too slow for each render
+    func agents_run [] -> vec string
+        now : i64 epoch_millis[]
+        if [ !runs_seen || now - runs_ms > 3000 ]
+            runs_seen = agent_installed[]
+            runs_ms = now
+        return runs_seen
+
+    # a channel we are in, kept (or let go) for the next start
+    func keep_room [ sk: string, ch: string, on: bool ]
+        if [ !rooms ] rooms = vec string []
+        r : string '{sk} {ch}'
+        had : bool str_in[ rooms, r ]
+        if [ had == on ] return
+        if [ on ] rooms.push[ r ]
+        el
+            keep : vec string []
+            for [ x: string ] in rooms
+                if [ x != r ] keep.push[ x ]
+            rooms = keep
+        save_state[]
+
+    # a channel from the list's browse rows: joined, shown
+    public func join_channel [ sk: string, ch: string ]
+        l : Link link_of[ sk ]
+        if [ !l || !l.up ] return
+        if [ has_buf[ sk, ch ] && buf[ sk, ch ].joined ]
+            show[ index_of[ buf[ sk, ch ] ] ]
+            return
+        l.emit[ 'join\t{ch}' ]
+
+    # the agent's statuses: its words go to its channel
+    public func on_agent [ s: string ]
+        if [ agent ] agent.status[ s ]
+
+    func on_frame [ w: Window ]
+        # the links' states change under the list
+        b : Talk current[]
+        if [ b && b.server == 'commune' ]
+            sg : string ''
+            for [ r: string ] in server_rows[]
+                sg = sg + r
+            if [ !rows_seen || sg != rows_seen ]
+                rows_seen = sg
+                if [ ux ] ux.restyle = true
+        # the field as it stands now: a password's while one is asked
+        sy : element part[ 'say' ]
+        asks : bool [ ask_key && ask_key.count > 0 ]
+        pw : bool [ sy && sy inherits CommuneSecret ]
+        # a panel with a text box: its box has the keys, once; shut,
+        # the message field again
+        pp : element [ (elements) ? elements[ 'pop' ] : null ]
+        pf : element [ (pp && pp.elements) ? pp.elements[ 'field' ]
+            : null ]
+        if [ pf && !pop_focused ]
+            pop_focused = true
+            w.set_focus[ pf ]
+        el [ !pp && pop_focused ]
+            pop_focused = false
+            focused = false
+        if [ !focused && sy && pw == asks && !pf ]
+            focused = true
+            w.set_focus[ part[ 'say' ] ]
+
+    func on_unload []
+        if [ binds ]
+            for [ sv: Server, k: string ] in binds
+                sv.stop[]
+        for [ l: Link ] in links
+            l.shut[]

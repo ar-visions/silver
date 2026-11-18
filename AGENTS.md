@@ -16256,9 +16256,119 @@ log, the field). No mbedtls in it: tls does TLS.
    (trinity's Encoder with a Muxer subclass handing frames to the
    link; Decoder; draw_yuv), screen sharing (the recorder as the
    source). Not started.
-7. OPEN: an icon (his); orbiter's own commune server as a service
-   (today the app hosts it while it runs); the properties of a
+7. DONE (Nov 17, his: commune showing something; services run in
+   orbiter, on or off as the user last left them) commune opens on
+   its servers (ServerHome, View.ag): a card each (a dot: green up,
+   amber connecting, red its problem; a press shows it, forget lets
+   it go) and Add a server (host:port, name, password, connect). Its
+   `--serve <port>` run is a service: it serves and signs in nowhere;
+   the app no longer hosts by itself at start (/host still does).
+   orbiter Services (the menu's cell, trinity/images/services.svg,
+   Material Symbols dns): every module exporting `serves ['<args>']`
+   a switch; on, orbiter hosts the module in no pane with those args
+   (service_start: a background AppView, out of the task bar); the
+   choice is kept (StatePersist services_on) and every start runs
+   the ones left on. Seen hidden: commune on, serving 7788, saved;
+   off, stopped, the port closed; the form signed in to a served
+   commune. NOT seen: a start honouring the saved choice (a hidden
+   run starts none). OPEN: an icon (his); the properties of a
    channel's folder in the agent's project (no git).
+8. BUILT, checked in scratch runs, not in his orbiter (Nov 18:
+   rooms as Slack has them; "do the lot") the server keeps each
+   channel's settings in <channel>/meta.txt (owner, private,
+   members, archived), admins.txt and settings.txt (create: all or
+   admins) in its folder. The account on the hosting line of
+   servers.txt is always an admin; with none, the first account.
+   A client's list ends with Browse: every channel it may see and
+   is not in (private ones only to members and admins), a press
+   joins. Commands: /private #x (invite only, made and joined),
+   /invite name (or /invite #x name; members of a private one, or
+   an admin), /archive (owner or admin: read only, history kept),
+   /remove (owner or admin: moved to removed/), /create all|admins,
+   /admin name, /msg a,b words (a group: its own folder, each sees
+   the others as its name). A link dropped by the server, a lost
+   line or no answer is dialed again 5 s later, its conversations
+   kept and its channels joined again (it hung for good before).
+   Checked: alice owner, bob invited to #secret sees it and not
+   #hidden, #hidden refused, archive refuses lines, bob refused
+   channels and settings once admins-only, the group message both
+   ways, a server restart rejoined both clients.
+9. BUILT, checked in scratch runs, not in his orbiter (Nov 18, his:
+   people offer their agents to the rooms; each agent's contract is
+   a .md its person writes, opened from the menu) an agent is offered
+   while ~/.local/state/commune/agents/<agent>.md exists (commune's
+   home; orbiter's side install/home/commune/...). The bar's
+   `agents` menu lists each installed agent: write its contract
+   (a sketch made, opened in a pane), or × to withdraw it. Each
+   offered agent signs in as name/agent (its own link), on per
+   channel: /agent [name] [on|off], or a press on it in the list;
+   the list puts each person's agents under them with the agent
+   module's icon (share/silver-<agent>/images/icon.png), ours dim
+   when off. It answers its full name from anyone (@alice/claude),
+   its short name from its person (@claude); agents answering agents
+   stop after 4 turns until a person speaks. Its prompt carries the
+   contract. Joined channels are kept (StatePersist rooms) and
+   joined again at each sign in.
+   Fixed with it: the server's removal loop called say inside its
+   lock (say takes the lock): the main thread hung for good when a
+   TLS handshake failed (the reload hang seen in item 8).
+   Checked: alice/claude under alice with its icon in both clients,
+   bob's @claude ignored, his @alice/claude answered as alice/claude
+   (the scratch home has no claude login), a restart rejoined.
+   NOT seen: the agents menu in orbiter, a contract opened.
+10. BUILT, checked in scratch runs, not in his orbiter (Nov 18, his:
+   buttons bring open a menu-like panel; icons where possible) the
+   list's buttons slide a panel out where pressed (PopPanel, View.ag;
+   commune pop_open / pop_rows / pop_act / pop_enter), never a box in
+   the middle: + on the Channels heading (name, private switch,
+   Create); ⋯ on the chosen channel (Topic…, Invite…, each agent on
+   or off here, Leave, Archive, Remove); a person (Message, Make
+   admin for admins); our agent (on or off here, Edit its contract:
+   orbiter opens it in a pane). Invite lists the server's people not
+   in the channel (server `people`). A press outside shuts it;
+   Escape in its field too. The panel draws its own ground at the
+   screen stage (the list draws there too: a cached ground showed it
+   through). Icons: Material Symbols in commune/images (add,
+   more_horiz, person_add, chat, shield_person, smart_toy, title,
+   logout, archive, delete, edit, toggle_on/off, check), one flat
+   colour by svg_override (draw_svg's fill tint left them dark).
+   Checked: #design made private from the panel, bob invited from
+   Invite saw it in his Browse, claude switched on from its panel.
+   Then (his: the inner glow, not the border, as windows; near effects
+   on the items' inner glow fills): the panel has no line, a free
+   window's inner glow (inset 0 0 8px #ffffff22 curve 2) over its drop
+   shadow; each row an inset glow the pointer's near light brings up
+   (near_style 0 3 #c890ffaa, as the list's rows). Seen in a zoomed
+   shot: the glow strongest on the row under the pointer, fading on
+   its neighbours.
+11. BUILT, checked in a scratch run (Nov 18, his: our agents at the
+   bottom, enabled or disabled per channel) the list's foot holds
+   Agents: every agent we run (agent_installed), its icon, and for
+   the shown channel a switch (on lit, off dim); with no contract
+   "write its contract" (a press makes the sketch and opens it in
+   orbiter). A press on the switch turns it on or off here, on the
+   row its panel (on/off, edit its contract). The foot lies over the
+   list; a press there is the foot's. The panels: an icon column as
+   orbiter's menus (fade, upright line, a line between items), a text
+   box an item with its icon (# a channel's name, T a topic), items
+   edge to edge, rounded only at the panel's corners, a switch said
+   as what it will be (Public: anyone can join / Private: invite
+   only, lit).
+12. BUILT, run live on his 7788 server (Nov 18, his: my own agent in
+   #jensen; an agent's turn a box of lines streamed from its shell)
+   each agent turn has an id; Helper says its notes (state say), its
+   busy lines (step) and its end (done: edited x, done, needs you,
+   failed), each 'say ch text turn state'; the server keeps turn and
+   state as the history line's 5th and 6th fields and sends them on
+   msg and old; the chat log draws a turn's lines as one rounded box
+   with an inner glow (lilac while working, faint when done), the
+   agent named once at its top, steps dim, "working…" or "done" at
+   its top right. A step never starts an agent. Also fixed: the
+   server's who skipped a name held inside another (claude in
+   solar/claude). Running: my own client as account claude (scratch
+   home .../scratchpad/me, ~/.claude linked in: its turns use his
+   login) in #jensen with claude/claude on; a turn asked by me came
+   back as one box (its steps, two lines, done).
 Lessons, this module: objects made on a thread that the main
 thread then uses are a crash (Au's pools are per thread; a string
 built by `log` on a second thread died in string_concat): the
@@ -16805,6 +16915,273 @@ across a reload only).
 4. OPEN orbiter draws 165 frames a second at rest: ToolRail is
    animated: true in every pane (asked before changing).
 5. OPEN no app can keep the screen on (video, gamepad): asked.
+
+## window splits by the app tab — live list (Nov 17 2026)
+
+the user: drag a window's app-menu name to split. His picks: a tree of
+splits, the panes' left / right / bottom edges, the dock minimizes.
+1. DONE orbiter/Layout.ag PaneNode (a leaf a pane, a split across
+   or down), saved as persist pane_tree; pane_order is its leaves;
+   every pane_seq write goes through seq_set (keeps the splits).
+   pane_views lays docked panes out as nested Splitters (tree_els);
+   pane_view finds nested panes; split_rect / pane_spot give a
+   pane's place in the panes' split (minimize, pull_free, strips).
+2. DONE drop_kind: within 8% of the left or right edge, 12% of
+   the bottom (48 px at least) docks it there across the whole
+   layout (dock_edge); the dock minimizes it (tab_dock); a
+   window's middle groups, as before. TabGhost draws the target.
+3. DONE a pane docked under another (pane_below) has its own
+   strip (WinStrip :docked, square); the bar skips it.
+4. DONE (his: a drag onto the empty pane beside made an 'Open'
+   tab) a drop on an empty docked pane joined a group with it; it
+   takes that pane's place now (take_empty, PaneNode.swap_leaf),
+   the empty pane closed.
+5. DONE (his: the bottom split did nothing; once it moved left
+   it could not again) an edge drop closed every empty pane after
+   it (the desktop half), leaving one window and nothing to split
+   against. Edge drops keep the layout now; only a drop onto the
+   empty pane replaces it. An edge offers itself only with another
+   docked pane there (docked_beside).
+6. DONE (his: with one window no edge docked at all) an edge is
+   always offered (four panes at most); a window alone gets a
+   desktop pane made on the other side. The top edge docks too
+   (side 7, the band under the bar).
+   Seen boxed: one file alone to bottom, top, left, right, bottom.
+7. DONE (his: on the left, choosing the other side did not move
+   it) a drop on the desktop half replaced it (the window filled
+   the screen). A docked window dropped on an empty pane now trades
+   places with it; a free one still takes its place.
+   Seen boxed: left, onto the apps half, back, the right edge.
+8. DONE (his: docked at the bottom from the left, the running
+   console turned into its source) a pane moved into another split
+   is a new element, and its new Editor starts with the app off.
+   relay_keep (dock_edge, take_empty) keeps each pane's shown app
+   (pending_app, with the old editor in relay_old), caret and
+   scroll (pending_sel, pending_scroll); on_canvas gives them to
+   the new editor. Seen boxed: the console's starting card stays
+   through left, bottom, left, bottom.
+9. DONE (his shot: a docked strip's top right corner rounded)
+   the strip's blurred ground rounded 8 px whatever the window;
+   StripBlur is square for a docked strip. Seen boxed, zoomed.
+10. DONE (his: merge a left or right window back to full) the tab
+   let go on the system bar (drop kind 8, from a split or free):
+   the window takes the whole area (dock_full); empty panes close,
+   the other docked windows join its group behind it (its tabs on
+   the bar). The hint is the whole area. Seen boxed: beside the
+   desktop half to full; two files to full with the other a tab.
+11. DONE (his: one Ridge Racer moved about became 4+ instances)
+   a pane's new editor (item 8) mounted the rom's viewer view and
+   launched psx again before on_canvas gave the old one back.
+   Editor.mount takes the kept instance first (orbiter relay_take)
+   and launches only when none. Seen boxed: rr.cue, then left,
+   bottom, right, full, top: one start. The extra instances of his
+   run before this keep running until stopped.
+12. DONE (his: Ridge Racer heard, not seen, after moving it and
+   grouping it with the console; rr.cue in the dock; a close
+   started another) three causes:
+   - a pane shown again kept the opacity 0 its fade-out left
+     (same key, pane_views never set it back): pane_views says
+     opacity 1 and topmost false to every pane each render.
+   - only edge drops kept the shown app; a group's tab switch or a
+     close moves panes too: relay_keep runs in tree_set (every
+     layout change), fills only panes with an editor, and is good
+     for 2 s (relay_at).
+   - the dock skips any file an app opens (handler_module_for),
+     running or not: its app's entry alone.
+   Seen boxed (sound to a null device): rr.cue beside a file,
+   bottom, top, onto the file, tabs both ways, the file closed:
+   one psx start, the game in view, only psx in the dock.
+13. DONE (his: snapping Ridge Racer to fill restarted it) closing
+   the desktop half below renumbers Ridge Racer's pane (1 to 0): a
+   new editor. tree_set kept the shown apps before editor_slots lost
+   the closed pane, so the list was a place off and the new editor
+   launched psx. close_pane drops the closed pane's kept entries
+   after the renumber (relay_drop). Seen boxed (AU_QUARANTINE):
+   console below Ridge Racer, closed, the seam to the bottom: one
+   start, the game in place.
+   OPEN: his run froze, then SIGSEGV in malloc (heap damaged before:
+   orbiter_pane_at -> Au_cast_string -> calloc) after the same steps;
+   not reproduced in four boxed runs (with AU_QUARANTINE: no dead
+   use). Likely the second psx launched as the pane moved.
+14. DONE (his: the window goes missing while it plays; the psx
+   button started an empty psx) the console's dock press minimized
+   the pane above Ridge Racer, which moved Ridge Racer out of the
+   nested split (a new editor) without a layout change to keep its
+   app: it launched psx again. A pane's new editor now also takes a
+   running viewer of the same file (or its disc folder) that no
+   pane shows (orbiter viewer_unshown) before it launches one.
+   Seen boxed (AU_QUARANTINE), his whole log's sequence: top, full,
+   bottom, console closed and reopened, full, the tab, bottom,
+   console's and psx's dock buttons, psx's again: one psx start,
+   Ridge Racer back in view.
+15. DONE (his: after opening fzero.smc from the desktop's search
+   and closing it, the desktop took no typing) host_module gives the
+   app's editor the keyboard focus; the close (go_home) left it there,
+   and apps_typing wants no focus, the grid or the filter. go_home
+   lets the focus go when its pane's editor holds it. Seen boxed:
+   'fzero', open, close, 'fz' filters again.
+   Then (his: a click on the desktop with a window floating over it
+   should give the desktop the typing): desk_press (on_press) marks
+   desk_typing on a press inside the desktop under the free windows
+   (HomeView pane -1) and lets the window's focus go; any other
+   press clears it; apps_typing takes it when nothing is docked.
+   Seen boxed: a file pulled free, the desktop clicked, 'fz'
+   filtered; a click in the window, 'q' typed into it. The filter's
+   box sits at the desktop's foot, under a window there.
+   Then (his: still not, the desktop half beside a window) his
+   press was on an empty pane's desktop (HomeView pane >= 0), not the
+   one under free windows: desk_press takes any desktop, chooses its
+   pane, and a focus inside a desktop counts (in_desk). Seen boxed:
+   a file beside the desktop half, a click there, 'fz' filtered; the
+   floating case again too.
+16. DONE (his shot: free fzero windows merged into one group; the
+   desktop striped with seams) take_place takes a hidden member out
+   of free_order, but it still floats and pane_views still made its
+   shade, ground, edge and grips; free_ids (the split's loose list)
+   came from free_order alone, so the split laid them out as columns
+   and drew their seams. free_ids lists every floating pane (those
+   out of the order first, under the rest). Seen boxed: two free
+   windows grouped, the hidden member's pieces at the window's place,
+   no stripes.
+   Then (his: the app tabs reorder as he clicks through them; the
+   shown one was always first): a group's tabs keep the members'
+   order (by pane number), the shown one lit in its own place:
+   group_tabs draws those before it left of its name, the rest after
+   it, its menus (File ...) after them. Seen boxed: Nav.ag, Layout
+   in that order with either shown.
+   Then (his shot: a navigator in a free window, its path pieces on
+   the system bar): the bar takes the navigator's path only for the
+   overlay or a navigator in the bar's own pane (nav_on_bar); a free
+   or lower window's strip shows it after its app tabs (strip_els,
+   s<pane>_crumb_*). Seen boxed: navigator from its card, pulled
+   free: src / silver on its strip, the bar clear.
+   Then (his shot: the eject still there with the navigator's tab
+   shown): it was the navigator's own (its folder is a live
+   argument, so pane_loads is true); on the bar its path took that
+   place, on a strip both showed. A strip showing the navigator's
+   path draws no eject (navc). Seen boxed: navigator + Ridge Racer
+   grouped and free, tabbed both ways: eject with Ridge Racer only.
+   Then (his: in a console | navigator group a dock press on stocks
+   put stocks over the navigator, which ran on unseen) a dock launch
+   with no pane running it and no empty one went into the selected
+   pane over its app. Now, when the selected pane shows a running app
+   (and there is room: four panes), a new pane joins its group as a
+   tab (grp_join) and the launch waits a frame for its editor
+   (launch_wait, on_frame). Seen boxed (his pins): console, then
+   navigator, then stocks from the dock: one group of three tabs in
+   that order, the navigator back on its tab, one start each.
+   Then (his: stocks launched nothing and console got selected; his
+   log: 'window 2 joined window 1' 2,931 times) his group was free:
+   the new tab took the group's floating place while still empty, and
+   the free-window cleanup (an empty floating pane closes, in
+   on_frame) closed it each frame before its launch, so the waiting
+   press made it again, round and round. The cleanup spares the tab
+   while its launch waits (launch_wait / launch_tab), and launch_tab
+   stops a second tab being made. Seen boxed: console + navigator
+   grouped, pulled free, stocks from the dock: one join, one start,
+   stocks a third tab in the free window.
+   Then (his shots: an app's file dialog up, maximized its path on
+   the bar, free nothing after the tabs): a strip shows its window's
+   dialog path too (navc takes pane_browsing). Seen boxed: psx with
+   no game (its pick up), pulled free: psx / src / silver on the
+   strip.
+   Then (his shot: a free navigator's path menu opened under the
+   system bar; "consolidate our entire menu system") every drawer
+   opened from a bar's or a strip's piece now takes one anchor:
+   drawer_anchor sets drawer_pane (the window whose WinStrip holds
+   the piece, -1 the system bar) and drawer_dx (its x from that
+   window's left edge, win_left: root space); a key-opened menu takes
+   the selected window's strip. drawer_x / drawer_y / drawer_area /
+   win_menu read only those. Gone: crumb_win, crumb_dx, crumb_wx,
+   menu_dx and the pane_floats[ active_pane ] guesses (the navigator's
+   pieces carry no pane, so its drawer took the bar's place). Seen
+   boxed: the navigator's path, a free window's menu and path inside
+   that window under its strip; docked, both under the bar at the
+   window's left edge. Not changed: the drawer kinds themselves
+   (MenuDrawer / WinDrawer, the system menu, popups, the exchange).
+   Then (his: New instance on mission.ag built and went back to
+   source with no word; a library should offer no run or say so; no
+   instance list or switching in the app menu: apps hide) three
+   changes. The host spawns a library's missing program and reports
+   that as a failed build (-1000); the pane's AppView now says
+   '<m> is a library: it has no app to run' (no_app) for such a
+   module (no install/export/<name>.props.agi: orbiter is_app_src),
+   and '<m> ended before its first frame' for a quiet exit with no
+   frame; the editor's foot band shows a failed run's note (it showed
+   only compile errors). The app menu lists no instances (no rows, no
+   Code, no switching); New instance / Debug only for a module with
+   an app. Seen boxed: mission's play gives the library line; psx's
+   menu has New instance and no rows; mission's has no New instance.
+   Then, the same evening:
+   - the app menu has no New instance (with its Debug) either: an
+     instance made over another hid it. is_app_src stays (the
+     library note uses it).
+   - every red band links to a line: a run's reason is written red
+     into its log (AppView.log_reason), the band's press opens the
+     console and selects that line (console_reveal, retried each
+     frame until the log is read in, held a second while it lays
+     out).
+   - trinity Console: a line that reads as an error (error, fatal,
+     failed) draws its plain text reddish (err_line, line_fg into
+     draw_cells / draw_seen; the filtered and fed paths too); a
+     shrinking terminal scrolls its top rows into the scrollback
+     until the cursor's row fits (ConsoleSession.resize): it had
+     dropped the newest lines (the error line was lost at 24 -> 5).
+   - the orbiter menu up: the bar shows nothing of the pane under it
+     (no menus, no path).
+   - docked desktops side by side merge (desk_merge, each frame): the
+     extra empty halves close, the selected one kept.
+   - the clock's build text drops a share outside 0..100 ('-100%').
+   Seen boxed: mission's band opens the console on its red line; a
+   file closed beside the desktop leaves one desktop; psx's menu
+   starts at Properties.
+   OPEN: one boxed run SIGSEGV in Window_press_event (via
+   agent_pump) on a press on a free window's tab, three panes, just
+   after this; not reproduced in two more runs (AU_QUARANTINE clean).
+   Test note: a hidden orbiter writes install/tmp/silver-orbiter.log
+   (the host's fixed log folder): copy his before a test run and put
+   it back after.
+Seen in a boxed hidden run: bottom, left, dock, its dock entry
+back; a file beside the desktop half moved right, left, bottom,
+left, right, left, then onto the desktop half (it took its place). NOT seen: apps in split panes, a session restart with a
+tree (pane_tree is persist: a reload keeps it).
+
+## orbiter's next pieces — live list (Nov 17 2026)
+
+the user's picks, none started:
+1. OPEN the windowing test (proposed): a boxed hidden orbiter driven
+   through long random sequences of his moves (edges, dock, groups,
+   tabs, pull free, minimize, close, launches, dialogs, menus),
+   checking after each step: every running app reachable (shown, a
+   tab, or a dock entry that brings it back), no second launch, one
+   desktop docked, each window's bar its own, menus opening where
+   they were pressed, no per-frame loop, no crash or dead use.
+   Awaiting his go.
+2. BUILT, seen hidden and hosted in orbiter (Nov 17) writer/
+   (writer.ag): .md files written block by block (his pick): every
+   block drawn (Barlow, Barlow Condensed headings, Google Sans Code;
+   the orbiter purples), the one being written shows its markdown on
+   a mono grid, coloured by mark; the toolbar's buttons are the
+   markdown they write (# ## ### ¶, ** * ~~ ` []( ), - 1. [ ] >,
+   ``` --- |), lit by the block's kind; save lit while unsaved. Keys:
+   enter a new block (a list goes on, an empty item ends it), shift
+   enter a line, backspace and delete join blocks, tab indents a list,
+   ctrl b i e k, ctrl 0..6, ctrl z / y (snapshots), ctrl s (save as
+   from the navigator when untitled), escape. A task's box ticks.
+   Checked: an untouched save and a no-newline file come back byte
+   for byte, undo returns the original. writer takes .md from
+   markdown (one handler an extension) and its editor colours.
+   silver-host: `export edits` shares the launch's files writable in
+   the view (else read only); seen: writer in orbiter saved its file.
+   writer/fonts: Barlow (OFL, THIRD_PARTY.md). OPEN: an icon (his);
+   a trinity click arrives twice (writer takes one a 100 ms).
+3. OPEN files shown flat: what you work on, across projects, newest
+   first, folders kept on disk (the navigator's index and the
+   session's files).
+4. OPEN (offered, his call) hide a card from the desktop's list
+   (arranging mode), with a hidden heading to bring it back.
+His model: the desktop is the one list of every app (a start list,
+no desktop clutter); a new document is made by its app.
 
 ## orbiter reloads itself whole (Nov 17 2026)
 

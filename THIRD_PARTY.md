@@ -108,6 +108,7 @@ Keep it in step with the imports.
 | dependency | used by | source | license | authors |
 |---|---|---|---|---|
 | Barlow Condensed (Regular, Bold, SemiBold, Thin, MediumItalic) | trinity/fonts (BarlowCondensed-*.ttf) | https://github.com/jpt/barlow | OFL-1.1 | Jeremy Tribby |
+| Barlow (Regular, Italic, Medium, SemiBold, Bold, BoldItalic) | writer/fonts (Barlow-*.ttf, OFL.txt) | https://github.com/google/fonts/tree/main/ofl/barlow | OFL-1.1 | Jeremy Tribby |
 | Fontconfig | trinity (FontMatch, linux) | https://gitlab.freedesktop.org/fontconfig/fontconfig | MIT-style (HPND, see its COPYING) | Keith Packard and the Fontconfig contributors |
 | D-Bus (libdbus-1, dbus-daemon) | wifi (talks to iwd); tray (apps' tray icons, window menus); orbiter-os's system and session buses | https://gitlab.freedesktop.org/dbus/dbus | AFL-2.1 OR GPL-2.0-or-later | Red Hat, Havoc Pennington and the D-Bus contributors |
 | wlroots 0.17 | wayland (the compositor orbiter shows windows from) | https://gitlab.freedesktop.org/wlroots/wlroots | MIT | the wlroots contributors |

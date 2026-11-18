@@ -63,6 +63,23 @@ class TrayEntry
     # its shortcut as a person reads it (Ctrl+S), '' none
     public keys        : string
 
+# a module's own menus on orbiter's bar (export menus ['Class']):
+# its entries flat (a menu each at depth 0), a pick by its action
+class MenuSource
+    # what was wrong with the last pick ('' none): a page shows it
+    public problem : string
+
+    func entries [] -> vec TrayEntry
+        return vec TrayEntry []
+
+    func pick [ action: string ]
+        return
+
+    # its own cards in its home folder: a name, a tab, the
+    # arguments its app is launched with
+    func launches [] -> vec string
+        return vec string []
+
 # one app's icon as it registered
 class TrayItem
     # its bus name, the object path, and the name it registered as
@@ -831,7 +848,9 @@ class MenuBuild
                     if [ ry + rh < v0 || ry > v1 ] continue
                     e : TrayEntry ents[ i ]
                     # a second part takes the row's right end
-                    sw : f32 [ (e.side && e.side.count > 0) ? 2.6 : 0.0 ]
+                    # a one-letter mark (a delete) takes less
+                    sw : f32 [ (e.side && e.side.count > 0)
+                        ? ((e.side.count <= 2) ? 1.3 : 2.6) : 0.0 ]
                     cur[ keys[ i ] ] = TrayRow [ label: e.label,
                         entry: ats[ i ], chosen: ats[ i ] == lit,
                         disable: !e.enabled,

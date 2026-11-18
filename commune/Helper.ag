@@ -1,0 +1,273 @@
+extend commune
+
+# the agents a person offers (Helper): each one with a contract,
+# agents/<agent>.md in commune's folder, written by its person. It
+# signs in beside them as name/agent, joins the channels it is on
+# in, works in each one's workspace folder, and answers when named
+class Helper
+    public app    : commune
+    # each agent's own link: by '<server key>|<agent>'
+    intern links  : map Link [ string ]
+    # the running turn: 'server channel agent', and its id in the
+    # channel (each of its lines carries it: one box)
+    intern turn   : string
+    intern turn_id : string
+    # the last turn, kept past its done: work it left running (a
+    # shell in the background) goes on in it
+    intern last_turn : string
+    intern pending : vec string
+    intern edits  : vec string
+    # agents answering agents in a channel since a person spoke
+    intern hops   : map i32 [ string ]
+
+    func init []
+        links   = map Link [ string ] []
+        turn    = ''
+        pending = vec string []
+        edits   = vec string []
+        hops    = map i32 [ string ] []
+
+    # where the contracts are
+    func folder [] -> string
+        st : path path.path_storage[ 'commune' ]
+        return '{st}/agents'
+
+    # the agents offered: each with a contract
+    func offered [] -> vec string
+        out : vec string []
+        d : path folder[]
+        if [ !d.exists[] ] return out
+        for [ f: path ] in d.ls[ null, false ]
+            if [ f.ext[] == 'md' ] out.push[ f.stem[] ]
+        return out
+
+    func contract [ an: string ] -> string
+        return file_text[ '{folder[]}/{an}.md' ].trim[]
+
+    func agent_name [ l: Link, an: string ] -> string
+        return '{l.me}/{an}'
+
+    # the agent a link signs in as: after the slash
+    func agent_of [ al: Link ] -> string
+        sl : i32 [ al.me.rindex_of[ '/' ] ]
+        return al.me.mid[ sl + 1, al.me.count - sl - 1 ]
+
+    # the person signed in: each agent on somewhere there follows
+    func signed_in [ l: Link ]
+        if [ l.silent ] return
+        for [ an: string ] in offered[]
+            if [ app.agent_any[ l.key, an ] ] link_for[ l, an ]
+
+    func link_for [ l: Link, an: string ] -> Link
+        k : string '{l.key}|{an}'
+        if [ links.contains[ k ] ] return links[ k ]
+        al : Link [ key: l.key, host: l.host, port: l.port,
+            me: agent_name[ l, an ], password: l.password,
+            pin: l.seen_pin, silent: true ]
+        links[ k ] = al
+        app.links.push[ al ]
+        al.open[]
+        return al
+
+    # an agent switched on or off in a channel
+    func changed [ l: Link, b: Talk, an: string, on: bool ]
+        if [ !l ] return
+        al : Link link_for[ l, an ]
+        if [ !al.up ] return
+        if [ on ] al.emit[ 'join\t{b.name}' ]
+        el al.emit[ 'leave\t{b.name}' ]
+
+    # an agent link's own frames: its channels joined on welcome
+    func agent_frame [ al: Link, fr: WireFrame ]
+        f : vec string fr.fields
+        if [ f.count == 0 ] return
+        if [ f[ 0 ] == 'welcome' ]
+            an : string agent_of[ al ]
+            for [ ch: string ] in app.agent_channels[ al.key, an ]
+                al.emit[ 'join\t{ch}' ]
+        el [ f[ 0 ] == 'refused' ]
+            app.status[ al.key, '{al.me} was refused: {f[ 1 ]}', 2 ]
+
+    # a line in a channel: one that names an agent of ours starts
+    # its turn. Its full name from anyone (@alice/claude), its short
+    # name from its own person (@claude); agents answering agents
+    # stop after 4 turns until a person speaks
+    func heard [ l: Link, b: Talk, who: string, text: string ]
+        if [ !b.channel[] ] return
+        hk : string '{l.key} {b.name}'
+        by_agent : bool [ who.index_of[ '/' ] > 0 ]
+        if [ !by_agent ] hops[ hk ] = 0
+        el
+            n : i32 [ (hops.contains[ hk ]) ? hops[ hk ] : 0 ]
+            if [ n >= 4 ] return
+        t : string text.lcase[]
+        for [ an: string ] in offered[]
+            if [ !app.agent_in[ l.key, b.name, an ] ] continue
+            k : string '{l.key}|{an}'
+            al : Link [ (links.contains[ k ]) ? links[ k ] : null ]
+            if [ !al || who == al.me ] continue
+            full : bool named[ t, al.me.lcase[] ]
+            mine : bool [ who == l.me && named[ t, an ] ]
+            if [ !full && !mine ] continue
+            if [ by_agent ]
+                n : i32 [ (hops.contains[ hk ]) ? hops[ hk ] : 0 ]
+                hops[ hk ] = n + 1
+            pending.push[ '{l.key} {b.name} {an}\t{who}\t{text}' ]
+        start_next[]
+
+    # '@name' in the text as a whole name: @claude is not the start of
+    # @claude/claude, nor of @claudes
+    func named [ t: string, nm: string ] -> bool
+        want : string '@{nm}'
+        from : i32 [ 0 ]
+        for [ true ]
+            at : i32 index_from[ t, want, from ]
+            if [ at < 0 ] return false
+            end : i32 [ at + want.count ]
+            if [ end >= t.count ] return true
+            c : i32 [ i32[ t.chars[ end ] ] ]
+            word : bool [ (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+                || (c >= 48 && c <= 57) || c == 95 || c == 47
+                || c == 45 ]
+            if [ !word ] return true
+            from = end
+        return false
+
+    # the next question, once the agents are free
+    func start_next []
+        if [ turn.count > 0 || pending.count == 0 ] return
+        q : string pending.shift[]
+        ws : vec string q.split[ '\t' ]
+        if [ ws.count < 3 ] return
+        at : vec string ws[ 0 ].split[ ' ' ]
+        if [ at.count < 3 ] return
+        turn = ws[ 0 ]
+        last_turn = ''
+        edits = vec string []
+        turn_id = '{at[ 2 ]}-{epoch_millis[]}'
+        sk : string at[ 0 ]
+        ch : string at[ 1 ]
+        an : string at[ 2 ]
+        l : Link app.link_of[ sk ]
+        if [ !l ]
+            turn = ''
+            return
+        fd : string app.sync.folder[ l, ch ]
+        make_dirs[ fd ]
+        b : Talk app.buf[ sk, ch ]
+        recent : string ''
+        from : i32 [ i32[ b.lines.count ] - 12 ]
+        if [ from < 0 ] from = 0
+        for [ i: i32 from, i < b.lines.count, i += 1 ]
+            ln : Line b.lines[ i ]
+            if [ ln.kind != 0 && ln.kind != 3 ] continue
+            recent = '{recent}<{ln.who}> {ln.text}\n'
+        who : string agent_name[ l, an ]
+        terms : string contract[ an ]
+        prompt : string {
+            You are {who}: {l.me}'s agent in the channel {ch} on a
+            commune server, where people and their agents work
+            together. Your contract, written by {l.me}, says what you
+            do here and how:
+
+            {terms}
+
+            Your folder is the channel's shared workspace: every
+            member keeps a copy, and what you change here reaches
+            them. Answer in a few plain lines: your reply is posted
+            to the channel as you. To give work to another agent,
+            name it in full (@name/agent).
+
+            Recent lines:
+            {recent}
+            {ws[ 1 ]} wrote to you: {ws[ 2 ]}
+        }
+        if [ !agent_start[ an, fd, '', prompt.trim[] ] ]
+            why : string agent_error[]
+            app.status[ sk, '{who} did not start: {why}', 2 ]
+            turn = ''
+            start_next[]
+
+    # the agent's statuses: its words go to the channel
+    func status [ s: string ]
+        if [ !s.starts_with[ 'status ' ] ] return
+        # the agent speaks again after its done: that turn goes on
+        if [ turn.count == 0 && last_turn && last_turn.count > 0
+             && (s.starts_with[ 'status note ' ]
+                 || s.starts_with[ 'status busy ' ]
+                 || s.starts_with[ 'status diff ' ]) ]
+            turn = last_turn
+            edits = vec string []
+        if [ turn.count == 0 ] return
+        rest : string s.mid[ 7, s.count - 7 ]
+        sp : i32 [ rest.index_of[ ' ' ] ]
+        state : string [ (sp > 0) ? rest.mid[ 0, sp ] : rest ]
+        text : string [ (sp > 0)
+            ? rest.mid[ sp + 1, rest.count - sp - 1 ] : '' ]
+        at : vec string turn.split[ ' ' ]
+        sk : string at[ 0 ]
+        ch : string at[ 1 ]
+        k : string '{sk}|{at[ 2 ]}'
+        al : Link [ (links.contains[ k ]) ? links[ k ] : null ]
+        tid : string turn_id
+        if [ state == 'note' ]
+            if [ al && al.up ]
+                for [ ln: string ] in text.split[ '\n' ]
+                    if [ ln.trim[].count > 0 ]
+                        al.emit[ 'say\t{ch}\t{ln.trim[]}\t{tid}\tsay' ]
+        # what it is doing: a step in its box
+        el [ state == 'busy' ]
+            if [ al && al.up && text.trim[].count > 0 ]
+                al.emit[ 'say\t{ch}\t{text.trim[]}\t{tid}\tstep' ]
+        el [ state == 'diff' ]
+            if [ text.starts_with[ 'diff --git' ] ]
+                ws : vec string text.split[ ' ' ]
+                if [ ws.count > 3 ]
+                    nm : string ws[ 3 ].mid[ 2, ws[ 3 ].count - 2 ]
+                    edits.push[ nm ]
+        el [ state == 'done' || state == 'needs' || state == 'failed' ]
+            if [ al && al.up ]
+                names : string ''
+                for [ e: string ] in edits
+                    names = (names.count > 0) ? '{names}, {e}' : e
+                why : string [ (state == 'needs') ? 'needs you'
+                    : ((state == 'done') ? 'done' : 'failed') ]
+                end : string [ (edits.count > 0) ? 'edited {names}'
+                    : why ]
+                al.emit[ 'say\t{ch}\t{end}\t{tid}\tdone' ]
+            last_turn = turn
+            turn = ''
+            start_next[]
+
+    func tick []
+        redial[]
+        start_next[]
+
+    # an agent's line gone (its server restarted): a fresh one a
+    # while after, while its person is signed in there
+    func redial []
+        now : i64 epoch_millis[]
+        gone : vec string []
+        for [ al: Link, k: string ] in links
+            if [ al.redial[] && now - al.lost_ms > 5000 ] gone.push[ k ]
+        for [ k: string ] in gone
+            al : Link links[ k ]
+            al.shut[]
+            rest : vec Link []
+            for [ x: Link ] in app.links
+                if [ x != al ] rest.push[ x ]
+            app.links = rest
+            links.rm[ k ]
+            bar : i32 [ i32[ k.index_of[ '|' ] ] ]
+            l : Link app.link_of[ k.mid[ 0, bar ] ]
+            if [ l && l.up ]
+                link_for[ l, k.mid[ bar + 1, k.count - bar - 1 ] ]
+
+expect func t_agent_named [] -> bool
+    h : Helper []
+    return h.named[ '@claude/claude look', 'claude/claude' ]
+        && !h.named[ '@claude/claude look', 'claude' ]
+        && h.named[ 'hey @claude, look', 'claude' ]
+        && h.named[ '@claude', 'claude' ]
+        && !h.named[ '@claudes', 'claude' ]
+        && h.named[ '@claude/claude and @claude too', 'claude' ]

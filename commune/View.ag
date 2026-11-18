@@ -1,0 +1,1064 @@
+extend commune
+
+# a name's own colour, the same each time it is seen
+func name_color [ n: string ] -> rgba
+    h : u32 [ 5381 ]
+    for [ i: i32 0, i < n.count, i += 1 ]
+        h = h * 33 + u32[ n.chars[ i ] ]
+    tones : vec string [] [ '#8fb8ff', '#ff9ec7', '#9be5b0', '#ffd27a',
+        '#c3a6ff', '#7fe3e8', '#ffab85', '#d7f07a' ]
+    return rgba [ tones[ i32[ h % 8 ] ] ]
+
+# one list: each server a heading, under it its channels and
+# talks, under the shown channel its people; a press shows one
+element BufferList
+    public bufs   : vec Talk
+    public chosen : i32
+    # what it shows, as one number: a change draws it anew
+    public sig    : i64
+    # an instance for one server: its channels and talks alone, no
+    # server rows
+    public one    : bool
+    # channels to join: server, name, kind, archived, how many, topic
+    public browse : vec string
+    # our name on each server, and the agents we offer
+    public mine   : map string [ string ]
+    public offers : vec string
+    # the agents we run, those on in the shown channel, and that
+    # channel ('server\tchannel', '' none)
+    public runs    : vec string
+    public on_here : vec string
+    public here    : string
+    # agents' icons by agent name
+    intern icons  : map Texture [ string ]
+    # px scrolled down
+    intern top    : f32
+    # the rows as last drawn: buffer, person ('' none), top, height
+    intern row_buf : vec i32
+    intern row_who : vec string
+    intern row_y   : vec f32
+    intern row_hs  : vec f32
+    intern full_h  : f32
+
+    public func on_wheel [ ev: Event ]
+        top = top - ev.mouse.wheel_delta.y * 48.0
+        most : f32 [ full_h - bounds.h ]
+        if [ top > most ] top = most
+        if [ top < 0.0 ] top = 0.0
+        pristine = false
+        ev.no_default = true
+
+    # one row: edge to edge, a 1px border the pointer lights
+    func row [ cv: Canvas, w: Window, y: f32, h: f32, lit: bool ]
+        cv.save[]
+        cv.fill_color[ rgba [ (lit) ? '#4d3dbcaa' : '#0000' ] ]
+        cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0,
+            true ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#fff1' ] ]
+        w.near_light_on[ cv, a, 0.0, 0.0 ]
+        cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ], w.near_y_fade ]
+        cv.rect_to[ 0.0, y, bounds.w, h ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.restore[]
+
+    # the agents' place at the foot
+    func agents_h [] -> f32
+        if [ !runs || runs.count == 0 ] return 0.0
+        return 30.0 + 30.0 * f32[ runs.count ]
+
+    # a person's agents in the channel; ours all offered, on or off
+    func agents_of [ b: Talk, u: string, ours: bool ] -> vec string
+        out : vec string []
+        if [ ours && offers ]
+            for [ an: string ] in offers
+                out.push[ an ]
+        for [ x: string ] in b.users
+            if [ !x.starts_with[ '{u}/' ] ] continue
+            an : string x.mid[ u.count + 1, x.count - u.count - 1 ]
+            if [ !str_in[ out, an ] ] out.push[ an ]
+        return out
+
+    # an agent's icon: its module's picture, by its name
+    func agent_icon [ cv: Canvas, w: Window, an: string, x: f32, y: f32,
+                sz: f32, on: bool ]
+        if [ !icons ] icons = map Texture [ string ] []
+        if [ !icons.contains[ an ] ]
+            # the agent module's own share holds its picture
+            ins : path path.path_install[]
+            p : path '{ins}/share/silver-{an}/images/icon.png'
+            tx : Texture [ null ]
+            if [ p.exists[] ]
+                im : Image [ uri: p ]
+                if [ im && im.width > 0 ]
+                    tx = Texture [ vk: w.vk, w: w, sampler: im,
+                                   linear: true ]
+            icons[ an ] = tx
+        tx : Texture icons[ an ]
+        if [ !tx ] return
+        cv.save[]
+        cv.set_opacity[ (on) ? 1.0 : 0.35 ]
+        cv.draw_image[ tx, rect [ x: x, y: y, w: sz, h: sz ] ]
+        cv.restore[]
+
+    func label [ cv: Canvas, t: string, x: f32, y: f32, h: f32,
+                 col: rgba ]
+        cv.fill_color[ col ]
+        cv.draw_text[ t, rect [ x: x, y: y, w: bounds.w - x - 40.0,
+            h: h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, false ]
+
+    func right [ cv: Canvas, t: string, y: f32, h: f32, col: rgba ]
+        cv.fill_color[ col ]
+        cv.draw_text[ t, rect [ x: 0.0, y: y, w: bounds.w - 12.0,
+            h: h ], vec2f [ 1.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.clip, null, false ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !bufs ]
+            return
+        cv : Canvas [ w.screen ]
+        row_buf = vec i32 []
+        row_who = vec string []
+        row_y   = vec f32 []
+        row_hs  = vec f32 []
+        cv.save[]
+        cv.clip_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        y : f32 [ round[ -top ] ]
+        # one server's window: its heading, with + for a channel
+        if [ one && bufs.count > 0 ]
+            cv.font_size[ 15 ]
+            label[ cv, 'Channels', 12.0, y, 30.0, rgba [ '#ffffff66' ] ]
+            ui_icon[ cv, 'add', bounds.w - 30.0, y + 5.0, 20.0,
+                     rgba [ '#ffffffaa' ] ]
+            row_buf.push[ -4 ]
+            row_who.push[ bufs[ 0 ].server ]
+            row_y.push[ y + top ]
+            row_hs.push[ 30.0 ]
+            y += 30.0
+        for [ i: i32 0, i < bufs.count, i += 1 ]
+            b : Talk bufs[ i ]
+            head : bool b.home[]
+            if [ one && head ] continue
+            h : f32 [ (head) ? 34.0 : 30.0 ]
+            row[ cv, w, y, h, i == chosen ]
+            cv.font_size[ (head) ? 19 : 18 ]
+            col : string [ (b.called) ? '#ffd27a'
+                : ((i == chosen || head) ? '#ffffff' : '#ffffffaa') ]
+            nm : string [ (head) ? b.server : b.name ]
+            label[ cv, nm, (head || one) ? 12.0 : 26.0, y, h,
+                   rgba [ col ] ]
+            # the chosen channel's ⋯, a server's +: their panels
+            if [ i == chosen && b.channel[] ]
+                ui_icon[ cv, 'more_horiz', bounds.w - 30.0,
+                         y + (h - 20.0) / 2.0, 20.0,
+                         rgba [ '#ffffffcc' ] ]
+            el [ head ]
+                ui_icon[ cv, 'add', bounds.w - 30.0,
+                         y + (h - 20.0) / 2.0, 20.0,
+                         rgba [ '#ffffffaa' ] ]
+            el [ b.unread > 0 && i != chosen ]
+                right[ cv, '{b.unread}', y, h, rgba [ '#ffffff66' ] ]
+            el [ b.agent ]
+                right[ cv, 'agent', y, h, rgba [ '#c3a6ff99' ] ]
+            el [ b.archived ]
+                right[ cv, 'archived', y, h, rgba [ '#ffffff44' ] ]
+            el [ b.private && b.users.count == 0 ]
+                right[ cv, 'private', y, h, rgba [ '#ffffff44' ] ]
+            el [ b.channel[] && b.users.count > 0 ]
+                right[ cv, '{b.users.count}', y, h,
+                       rgba [ '#ffffff44' ] ]
+            row_buf.push[ i ]
+            row_who.push[ '' ]
+            row_y.push[ y + top ]
+            row_hs.push[ h ]
+            y += h
+            if [ b.folded || !b.channel[] || i != chosen ] continue
+            cv.font_size[ 17 ]
+            me : string [ (mine && mine.contains[ b.server ])
+                ? mine[ b.server ] : '' ]
+            # each person, then their agents under them
+            for [ u: string ] in b.users
+                if [ u.index_of[ '/' ] > 0 ] continue
+                if [ y + 24.0 > 0.0 && y < bounds.h ]
+                    row[ cv, w, y, 24.0, false ]
+                    label[ cv, u, 42.0, y, 24.0, name_color[ u ] ]
+                row_buf.push[ i ]
+                row_who.push[ u ]
+                row_y.push[ y + top ]
+                row_hs.push[ 24.0 ]
+                y += 24.0
+                for [ an: string ] in agents_of[ b, u, u == me ]
+                    on : bool [ str_in[ b.users, '{u}/{an}' ] ]
+                    if [ y + 24.0 > 0.0 && y < bounds.h ]
+                        row[ cv, w, y, 24.0, false ]
+                        agent_icon[ cv, w, an, 60.0, y + 4.0, 16.0, on ]
+                        col : rgba [ (on) ? name_color[ '{u}/{an}' ]
+                            : rgba [ '#ffffff44' ] ]
+                        label[ cv, an, 82.0, y, 24.0, col ]
+                        if [ u == me ]
+                            right[ cv, (on) ? 'on' : 'off', y, 24.0,
+                                   rgba [ '#ffffff44' ] ]
+                    # ours: a press switches it here
+                    row_buf.push[ (u == me) ? -3 : i ]
+                    row_who.push[ (u == me) ? '{i}\t{an}'
+                        : '{u}/{an}' ]
+                    row_y.push[ y + top ]
+                    row_hs.push[ 24.0 ]
+                    y += 24.0
+        # the channels not joined: a heading, then a row each (a
+        # press joins it)
+        if [ browse && browse.count > 0 ]
+            y += 10.0
+            cv.font_size[ 15 ]
+            label[ cv, 'Browse', 12.0, y, 24.0, rgba [ '#ffffff66' ] ]
+            y += 24.0
+            cv.font_size[ 18 ]
+            for [ bw: string ] in browse
+                ws : vec string bw.split[ '\t' ]
+                if [ ws.count < 5 ] continue
+                row[ cv, w, y, 30.0, false ]
+                label[ cv, ws[ 1 ], 12.0, y, 30.0,
+                       rgba [ '#ffffff88' ] ]
+                side : string [ (ws[ 3 ] == '1') ? 'archived'
+                    : ((ws[ 2 ] == 'private') ? 'private'
+                       : '{ws[ 4 ]}') ]
+                right[ cv, side, y, 30.0, rgba [ '#ffffff44' ] ]
+                row_buf.push[ -2 ]
+                row_who.push[ '{ws[ 0 ]}\t{ws[ 1 ]}' ]
+                row_y.push[ y + top ]
+                row_hs.push[ 30.0 ]
+                y += 30.0
+        full_h = y + top + agents_h[]
+        # our agents, fixed at the foot over the list
+        if [ runs && runs.count > 0 ]
+            ah : f32 agents_h[]
+            ay : f32 [ bounds.h - ah ]
+            cv.fill_color[ rgba [ '#0f0d1c' ] ]
+            cv.rect_to[ 0.0, ay, bounds.w, ah ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#ffffff14' ] ]
+            cv.rect_to[ 0.0, ay, bounds.w, 1.0 ]
+            cv.paint[]
+            cv.font_size[ 15 ]
+            label[ cv, 'Agents', 12.0, ay, 30.0, rgba [ '#ffffff66' ] ]
+            ay += 30.0
+            cv.font_size[ 18 ]
+            for [ an: string ] in runs
+                offered : bool [ offers && str_in[ offers, an ] ]
+                on : bool [ on_here && str_in[ on_here, an ] ]
+                row[ cv, w, ay, 30.0, false ]
+                agent_icon[ cv, w, an, 12.0, ay + 7.0, 16.0, offered ]
+                label[ cv, an, 36.0, ay, 30.0,
+                       rgba [ (on) ? '#ffffff' : '#ffffff99' ] ]
+                if [ !offered ]
+                    right[ cv, 'write its contract', ay, 30.0,
+                           rgba [ '#ffffff44' ] ]
+                el [ here && here.count > 0 ]
+                    ic : string [ (on) ? 'toggle_on' : 'toggle_off' ]
+                    ui_icon[ cv, ic, bounds.w - 34.0, ay + 5.0, 20.0,
+                        rgba [ (on) ? '#c3a6ff' : '#ffffff55' ] ]
+                row_buf.push[ -5 ]
+                row_who.push[ an ]
+                row_y.push[ ay + top ]
+                row_hs.push[ 30.0 ]
+                ay += 30.0
+        cv.paint[]
+        cv.set_font[ null ]
+        cv.restore[]
+
+    # a conversation shows; the shown one again folds its people;
+    # a person opens a talk with them
+    public func on_press [ ev: Event ]
+        ev.no_default = true
+        app : cast commune [ ux.app_object ]
+        if [ !app || !row_y ] return
+        py : f32 [ ev.mouse.pos.y + top ]
+        # the agents' foot lies over the list: a press there is its
+        foot : bool [ ev.mouse.pos.y >= bounds.h - agents_h[] ]
+        for [ k: i32 0, k < row_y.count, k += 1 ]
+            if [ py < row_y[ k ] || py >= row_y[ k ] + row_hs[ k ] ]
+                continue
+            if [ foot != (row_buf[ k ] == -5) ] continue
+            i : i32 [ row_buf[ k ] ]
+            who : string row_who[ k ]
+            # one of our agents at the foot: on or off here (its
+            # switch), else its panel; none offered, its contract
+            if [ i == -5 ]
+                offered : bool [ offers && str_in[ offers, who ] ]
+                if [ !offered ] app.contract_edit[ who ]
+                el [ ev.mouse.pos.x >= bounds.w - 44.0 ]
+                    app.agent_here[ who ]
+                el [ here && here.count > 0 ]
+                    app.pop_open[ 'agent', '{here}\t{who}' ]
+                el app.contract_edit[ who ]
+                return
+            # the heading's +: a new channel
+            if [ i == -4 ]
+                app.pop_open[ 'new', who ]
+                return
+            # one of our agents: its panel
+            if [ i == -3 ]
+                tb : i32 [ i32[ who.index_of[ '\t' ] ] ]
+                bi : i32 [ i32[ who.mid[ 0, tb ].integer_value[] ] ]
+                an : string who.mid[ tb + 1, who.count - tb - 1 ]
+                bt : Talk bufs[ bi ]
+                app.pop_open[ 'agent', '{bt.server}\t{bt.name}\t{an}' ]
+                return
+            # a browse row: that channel joined
+            if [ i == -2 ]
+                tb : i32 [ i32[ who.index_of[ '\t' ] ] ]
+                ch : string who.mid[ tb + 1, who.count - tb - 1 ]
+                app.join_channel[ who.mid[ 0, tb ], ch ]
+                return
+            # a button at the row's right end: its panel
+            at_end : bool [ ev.mouse.pos.x >= bounds.w - 36.0 ]
+            bi : Talk [ (i >= 0) ? bufs[ i ] : null ]
+            if [ who.count > 0 ]
+                app.pop_open[ 'person', '{bi.server}\t{who}' ]
+            el [ at_end && bi && bi.home[] ]
+                app.pop_open[ 'new', bi.server ]
+            el [ at_end && i == chosen && bi && bi.channel[] ]
+                app.pop_open[ 'chan', '{bi.server}\t{bi.name}' ]
+            el [ i == chosen ]
+                bufs[ i ].folded = !bufs[ i ].folded
+                pristine = false
+            el
+                app.show[ i ]
+            return
+
+# the conversation, newest at the foot; the wheel goes back
+element ChatLog
+    public lines : vec Line
+    # how many: a new line makes it a different element, so it draws
+    public seen  : i32
+    public me    : string
+    # lines scrolled back from the newest
+    intern back  : i32
+    # the rows as last drawn: line, first column, text, top
+    intern row_line : vec i32
+    intern row_off  : vec i32
+    intern row_text : vec string
+    intern row_y    : vec f32
+    intern text_x   : f32
+    intern char_w   : f32
+    intern row_h    : f32
+    # the selection: anchor and caret, a line and a column each
+    intern sel_of   : vec Line
+    intern a_line   : i32 [ -1 ]
+    intern a_col    : i32
+    intern c_line   : i32 [ -1 ]
+    intern c_col    : i32
+    intern dragging : bool
+    # each turn's own scroll (rows back from its foot), its rows, and
+    # how many lie above what shows
+    intern turn_back  : map i32 [ string ]
+    intern turn_rows  : map i32 [ string ]
+    intern turn_above : map i32 [ string ]
+
+    public func on_wheel [ ev: Event ]
+        # over a turn's box with more than shows: that box scrolls
+        tn : string turn_at[ ev.mouse.pos.y ]
+        if [ tn && turn_rows && turn_rows.contains[ tn ]
+             && turn_rows[ tn ] > turn_most[] ]
+            most : i32 [ turn_rows[ tn ] - turn_most[] ]
+            cur : i32 [ (turn_back.contains[ tn ]) ? turn_back[ tn ]
+                : 0 ]
+            cur = cur + i32[ ev.mouse.wheel_delta.y * 3.0 ]
+            if [ cur < 0 ] cur = 0
+            if [ cur > most ] cur = most
+            turn_back[ tn ] = cur
+            pristine = false
+            ev.no_default = true
+            return
+        back = back + i32[ ev.mouse.wheel_delta.y * 3.0 ]
+        if [ back < 0 ] back = 0
+        if [ lines && back > lines.count - 1 ] back = lines.count - 1
+        pristine = false
+        ev.no_default = true
+
+    # the line and column under a point, as last drawn
+    func hit [ p: vec2f ] -> vec i32
+        n : i32 [ i32[ row_line.count ] ]
+        if [ n == 0 ] return vec i32 [] [ -1, 0 ]
+        k : i32 [ 0 ]
+        while [ k < n - 1 && p.y >= row_y[ k ] + row_h ]
+            k += 1
+        t : string row_text[ k ]
+        c : i32 [ 0 ]
+        if [ p.y >= row_y[ 0 ] ]
+            c = i32[ round[ (p.x - text_x) / char_w ] ]
+        if [ c < 0 ] c = 0
+        if [ c > t.count ] c = t.count
+        if [ p.y >= row_y[ n - 1 ] + row_h ] c = t.count
+        return vec i32 [] [ row_line[ k ], row_off[ k ] + c ]
+
+    # the selection in order: first line, column, last line, column
+    func span [] -> vec i32
+        if [ a_line < 0 || c_line < 0 ]
+            return vec i32 [] [ -1, 0, -1, 0 ]
+        first : bool [ a_line < c_line
+            || (a_line == c_line && a_col <= c_col) ]
+        if [ first ] return vec i32 [] [ a_line, a_col, c_line, c_col ]
+        return vec i32 [] [ c_line, c_col, a_line, a_col ]
+
+    func has_selection [] -> bool
+        if [ !lines || sel_of != lines ] return false
+        return a_line >= 0 && (a_line != c_line || a_col != c_col)
+
+    # the selected words; whole lines carry their name
+    func selected [] -> string
+        if [ !has_selection[] ] return ''
+        sp : vec i32 span[]
+        out : string [ '' ]
+        for [ li: i32 sp[ 0 ], li <= sp[ 2 ], li += 1 ]
+            ln : Line lines[ li ]
+            c0 : i32 [ (li == sp[ 0 ]) ? sp[ 1 ] : 0 ]
+            c1 : i32 [ (li == sp[ 2 ]) ? sp[ 3 ] : ln.text.count ]
+            part : string ln.text.mid[ c0, c1 - c0 ]
+            if [ sp[ 0 ] != sp[ 2 ] && c0 == 0 && ln.who.count > 0 ]
+                part = '<{ln.who}> {part}'
+            if [ out.count > 0 ] out = out + '\n'
+            out = out + part
+        return out
+
+    # the word round a column: its first and last column
+    func word_at [ t: string, c: i32 ] -> vec i32
+        s0 : i32 [ c ]
+        s1 : i32 [ c ]
+        while [ s0 > 0 && t.chars[ s0 - 1 ] != 32 ]
+            s0 -= 1
+        while [ s1 < t.count && t.chars[ s1 ] != 32 ]
+            s1 += 1
+        return vec i32 [] [ s0, s1 ]
+
+    public func on_press [ ev: Event ]
+        at : vec i32 hit[ ev.mouse.pos ]
+        if [ at[ 0 ] < 0 ] return
+        if [ sel_of != lines ] a_line = -1
+        sel_of = lines
+        if [ ev.mouse.double_click ]
+            wd : vec i32 word_at[ lines[ at[ 0 ] ].text, at[ 1 ] ]
+            a_line = at[ 0 ]
+            a_col  = wd[ 0 ]
+            c_line = at[ 0 ]
+            c_col  = wd[ 1 ]
+        el [ ev.key.shift && a_line >= 0 ]
+            c_line = at[ 0 ]
+            c_col  = at[ 1 ]
+        el
+            a_line = at[ 0 ]
+            a_col  = at[ 1 ]
+            c_line = at[ 0 ]
+            c_col  = at[ 1 ]
+        dragging = true
+        set_capture[]
+        pristine = false
+        ev.no_default = true
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        at : vec i32 hit[ ev.mouse.pos ]
+        if [ at[ 0 ] < 0 ] return
+        c_line = at[ 0 ]
+        c_col  = at[ 1 ]
+        pristine = false
+
+    public func on_release [ ev: Event ]
+        dragging = false
+        release_capture[]
+        # typing still goes to the field
+        app : cast commune [ ux.app_object ]
+        if [ app ] app.focus_say[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !lines ]
+            return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv, 'fonts/SpaceMono-Regular.ttf',
+            label_px[ cv, 15.0 ] ] ]
+        cv.font_size[ 15 ]
+        lh : f32 [ 22.0 ]
+        stamp_w : f32 [ cv.measure_text[ '00:00 ' ].w ]
+        who_w : f32 [ cv.measure_text[ 'abcdefghijkl ' ].w ]
+        tx : f32 [ 12.0 + stamp_w + who_w ]
+        tw : f32 [ bounds.w - tx - 12.0 ]
+        text_x = tx
+        char_w = cv.measure_text[ '0000000000' ].w / 10.0
+        row_h  = lh
+        # the rows that show, newest at the foot
+        row_line = vec i32 []
+        row_off  = vec i32 []
+        row_text = vec string []
+        row_y    = vec f32 []
+        if [ !turn_back ] turn_back = map i32 [ string ] []
+        turn_rows  = map i32 [ string ] []
+        turn_above = map i32 [ string ] []
+        y : f32 [ bounds.h - 8.0 ]
+        i : i32 [ i32[ lines.count ] - 1 - back ]
+        # a turn's box shows at most turn_most[] rows: those its own
+        # scroll leaves (skip rows from its foot, then take)
+        skip : i32 [ 0 ]
+        take : i32 [ 0 ]
+        above : i32 [ 0 ]
+        while [ i >= 0 && y > 0.0 ]
+            ln : Line lines[ i ]
+            rows : vec string wrap[ cv, ln.text, tw - 14.0 ]
+            in_turn : bool [ ln.turn && ln.turn.count > 0 ]
+            # a turn's box: room inside it, under its last line
+            if [ in_turn && (i + 1 >= lines.count
+                 || !same_turn[ lines[ i + 1 ], ln ]) ]
+                y -= turn_pad[]
+                skip = (turn_back.contains[ ln.turn ])
+                    ? turn_back[ ln.turn ] : 0
+                take = turn_most[]
+                above = 0
+            # each row's place in the line (a selection's columns)
+            offs : vec i32 []
+            o : i32 [ 0 ]
+            for [ r: string ] in rows
+                offs.push[ o ]
+                o += r.count + 1
+            # the rows that show, from the line's foot up
+            show : vec i32 []
+            for [ j: i32 i32[ rows.count ] - 1, j >= 0, j -= 1 ]
+                if [ !in_turn ] show.insert[ j, 0 ]
+                el [ skip > 0 ] skip -= 1
+                el [ take > 0 ]
+                    show.insert[ j, 0 ]
+                    take -= 1
+                el above += 1
+            if [ in_turn ]
+                n : i32 [ (turn_rows.contains[ ln.turn ])
+                    ? turn_rows[ ln.turn ] : 0 ]
+                turn_rows[ ln.turn ] = n + i32[ rows.count ]
+            y -= lh * f32[ show.count ]
+            ry : f32 [ y ]
+            at : i32 [ 0 ]
+            for [ j: i32 ] in show
+                row_line.insert[ i, at ]
+                row_off.insert[ offs[ j ], at ]
+                row_text.insert[ rows[ j ], at ]
+                row_y.insert[ ry, at ]
+                at += 1
+                ry += lh
+            # and over its first
+            if [ in_turn && (i == 0
+                 || !same_turn[ lines[ i - 1 ], ln ]) ]
+                y -= turn_pad[]
+                turn_above[ ln.turn ] = above
+            i -= 1
+        draw_turns[ cv, w, tx, lh ]
+        if [ has_selection[] ] draw_selection[ cv, w ]
+        for [ k: i32 0, k < row_line.count, k += 1 ]
+            ln : Line lines[ row_line[ k ] ]
+            ry : f32 [ row_y[ k ] ]
+            # inside a turn's box the agent is named once, at its top
+            more : bool [ k > 0 && same_turn[
+                lines[ row_line[ k - 1 ] ], ln ] ]
+            if [ row_off[ k ] == 0 && !more ]
+                cv.fill_color[ rgba [ '#ffffff44' ] ]
+                cv.draw_text[ ln.at, rect [ x: 12.0, y: ry,
+                    w: stamp_w, h: lh ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
+                cv.fill_color[ (ln.kind == 1 || ln.kind == 2)
+                    ? rgba [ '#ffffff55' ] : name_color[ ln.who ] ]
+                cv.draw_text[ ln.who, rect [ x: 12.0 + stamp_w, y: ry,
+                    w: who_w - 8.0, h: lh ], vec2f [ 1.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
+            col : string [ '#e6e1ff' ]
+            if [ ln.state == 'step' ] col = '#ffffff66'
+            if [ ln.state == 'done' ] col = '#c3a6ffaa'
+            if [ ln.kind == 1 ] col = '#ffffff77'
+            if [ ln.kind == 2 ] col = '#ff8080'
+            if [ ln.kind == 4 ] col = '#9be5b0'
+            if [ ln.kind == 0 && me.count > 0
+                 && ln.text.lcase[].index_of[ me.lcase[] ] >= 0 ]
+                col = '#ffd27a'
+            cv.fill_color[ rgba [ col ] ]
+            # a turn's lines sit inside its box
+            ix : f32 [ (ln.turn && ln.turn.count > 0) ? 12.0 : 0.0 ]
+            cv.draw_text[ row_text[ k ], rect [ x: tx + ix, y: ry,
+                w: tw,
+                h: lh ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.clip, null, false ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+    # the most rows a turn's box shows before it scrolls inside
+    func turn_most [] -> i32
+        return 16
+
+    # the turn whose box holds this height ('' none)
+    func turn_at [ py: f32 ] -> string
+        if [ !row_y ] return null
+        for [ k: i32 0, k < row_y.count, k += 1 ]
+            ln : Line lines[ row_line[ k ] ]
+            if [ !ln.turn || ln.turn.count == 0 ] continue
+            pd : f32 turn_pad[]
+            if [ py >= row_y[ k ] - pd && py < row_y[ k ] + row_h + pd ]
+                return ln.turn
+        return null
+
+    # the room inside a turn's box, over and under its lines
+    func turn_pad [] -> f32
+        return 10.0
+
+    # two lines of one agent's turn
+    func same_turn [ x: Line, y: Line ] -> bool
+        return x.turn && y.turn && x.turn.count > 0 && x.turn == y.turn
+
+    # each agent's turn as one box behind its lines: rounded, an inner
+    # glow, its state at the top right (working, or done)
+    func draw_turns [ cv: Canvas, w: Window, tx: f32, lh: f32 ]
+        k : i32 [ 0 ]
+        while [ k < row_line.count ]
+            ln : Line lines[ row_line[ k ] ]
+            if [ !ln.turn || ln.turn.count == 0 ]
+                k += 1
+                continue
+            e : i32 [ k ]
+            while [ e + 1 < row_line.count
+                    && same_turn[ lines[ row_line[ e + 1 ] ], ln ] ]
+                e += 1
+            # done while its last line says so (it may go on past the
+            # rows shown, and work after a done reopens it)
+            last : i32 [ row_line[ e ] ]
+            while [ last + 1 < lines.count
+                    && same_turn[ lines[ last + 1 ], ln ] ]
+                last += 1
+            done : bool [ lines[ last ].state == 'done' ]
+            pd : f32 turn_pad[]
+            y0 : f32 [ row_y[ k ] - pd + 2.0 ]
+            y1 : f32 [ row_y[ e ] + lh + pd - 2.0 ]
+            x0 : f32 [ tx - 2.0 ]
+            # still in progress: its glow pulses (1.6 s a beat), a bar
+            # runs along its foot, and the window keeps drawing it
+            ms : i64 epoch_millis[]
+            ph : f32 [ f32[ ms % 1600 ] / 1600.0 ]
+            pulse : f32 [ 0.5 + 0.5 * sin[ ph * 6.2831853 ] ]
+            if [ !done ]
+                needs_frame = true
+                ux.will_animate = true
+            cv.save[]
+            cv.fill_color[ rgba [ '#ffffff06' ] ]
+            cv.stroke_width[ 0.0 ]
+            gl : rgba [ (done) ? rgba [ '#ffffff18' ]
+                : rgba [ r: 0.76, g: 0.65, b: 1.0,
+                         a: 0.18 + 0.32 * pulse ] ]
+            cv.box_shadow[ gl, 0.0, 0.0, 8.0, 0.0, true ]
+            cv.shadow_curve[ 0, 2.0 ]
+            cv.rounded_rect[ x0, y0, bounds.w - 8.0 - x0, y1 - y0, 6.0,
+                             6.0, 6.0, 6.0 ]
+            cv.paint[]
+            cv.no_shadows[]
+            if [ !done ]
+                bw : f32 [ bounds.w - 8.0 - x0 ]
+                seg : f32 [ 90.0 ]
+                bx : f32 [ x0 + 6.0 + (bw - 12.0 - seg) * ph ]
+                cv.fill_color[ rgba [ '#c3a6ffcc' ] ]
+                cv.rounded_rect[ bx, y1 - 5.0, seg, 2.0, 1.0, 1.0, 1.0,
+                                 1.0 ]
+                cv.paint[]
+            cv.restore[]
+            dots : i32 [ i32[ (ms / 400) % 4 ] ]
+            wk : string [ (dots == 0) ? 'working'
+                : ((dots == 1) ? 'working.'
+                   : ((dots == 2) ? 'working..' : 'working...')) ]
+            hid : i32 [ (turn_above.contains[ ln.turn ])
+                ? turn_above[ ln.turn ] : 0 ]
+            st0 : string [ (done) ? 'done' : wk ]
+            st : string [ (hid > 0) ? '↑ {hid} more · {st0}' : st0 ]
+            cv.fill_color[ rgba [ (done) ? '#ffffff44' : '#c3a6ffcc' ] ]
+            cv.draw_text[ st, rect [ x: x0, y: row_y[ k ],
+                w: bounds.w - 24.0 - x0, h: lh ], vec2f [ 1.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.clip, null, false ]
+            k = e + 1
+
+    # the selection: whole rows, a 1px border the pointer lights
+    func draw_selection [ cv: Canvas, w: Window ]
+        sp : vec i32 span[]
+        cv.save[]
+        cv.fill_color[ rgba [ '#425' ] ]
+        cv.box_shadow[ rgba [ '#c890ff04' ], 0.0, 0.0, 13.0, 0.0, true ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#fff1' ] ]
+        w.near_light_on[ cv, a, 0.0, 0.0 ]
+        cv.near_style[ 2.0, 3.0, rgba [ '#c890ffaa' ], w.near_y_fade ]
+        for [ k: i32 0, k < row_line.count, k += 1 ]
+            li : i32 [ row_line[ k ] ]
+            if [ li < sp[ 0 ] || li > sp[ 2 ] ] continue
+            r0 : i32 [ row_off[ k ] ]
+            r1 : i32 [ r0 + row_text[ k ].count ]
+            c0 : i32 [ (li == sp[ 0 ]) ? sp[ 1 ] : 0 ]
+            c1 : i32 [ (li == sp[ 2 ]) ? sp[ 3 ] : 1 << 30 ]
+            if [ c0 < r0 ] c0 = r0
+            # past the row's end: through its space, or the line's end
+            past : bool [ c1 > r1 ]
+            if [ c1 > r1 ] c1 = r1
+            if [ c1 < c0 || (c1 == c0 && !past) ] continue
+            x0 : f32 [ round[ text_x + f32[ c0 - r0 ] * char_w ] ]
+            x1 : f32 [ round[ text_x + f32[ c1 - r0 ] * char_w ] ]
+            if [ past ] x1 = round[ x1 + char_w ]
+            cv.rect_to[ x0, row_y[ k ], x1 - x0, row_h ]
+            cv.paint[]
+        cv.no_shadows[]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        cv.restore[]
+
+    # a line cut into rows at spaces, each no wider than wd
+    func wrap [ cv: Canvas, s: string, wd: f32 ] -> vec string
+        rows : vec string []
+        words : vec string s.split[ ' ' ]
+        cur : string [ '' ]
+        for [ word: string ] in words
+            tryit : string [ (cur.count > 0) ? '{cur} {word}' : word ]
+            if [ cur.count > 0 && cv.measure_text[ tryit ].w > wd ]
+                rows.push[ cur ]
+                cur = word
+            el
+                cur = tryit
+        rows.push[ cur ]
+        return rows
+
+# the topic over the conversation
+element TopicBar
+    public topic : string
+    # a question for the field under it: in the accent
+    public asks  : bool
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas [ w.screen ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        cv.font_size[ 18 ]
+        cv.fill_color[ rgba [ (asks) ? '#c3a6ff' : '#ffffffbb' ] ]
+        cv.draw_text[ (topic) ? topic : '', rect [ x: 14.0, y: 0.0,
+            w: bounds.w - 28.0, h: bounds.h ], vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
+        cv.paint[]
+        cv.set_font[ null ]
+
+# what is typed; Enter says it (or runs its /command)
+TextInput CommuneInput
+    # edge to edge, square, a 1px border the pointer lights
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            stroke_width: 1.0
+            stroke_color: #fff1
+            radius: 0
+            box_shadow: inset 0 0 13px #c890ff04
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        :focused
+            layers.body:
+                fill_color: #ffffff08
+                stroke_color: #fff1
+    }
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        mod : bool [ ev.key.ctrl || ev.key.meta ]
+        if [ mod && ev.key.unicode == 67 && sel_col == anchor_col ]
+            app : cast commune [ ux.app_object ]
+            log : cast ChatLog [ (app) ? app.part[ 'log' ] : null ]
+            if [ log && log.has_selection[] ]
+                ux.set_clipboard[ log.selected[] ]
+                ev.no_default = true
+                return
+        # Up and Down: what we sent before (none while a password is
+        # asked)
+        pwd : bool [ a inherits CommuneSecret ]
+        if [ (ev.key.unicode == 265 || ev.key.unicode == 264) && !pwd ]
+            ap : cast commune [ ux.app_object ]
+            got : string [ (ap) ? ap.sent_step[
+                (ev.key.unicode == 265) ? -1 : 1 ] : null ]
+            if [ got ]
+                edit       = got
+                sel_col    = i32[ got.count ]
+                anchor_col = i32[ got.count ]
+                pristine   = false
+            ev.stop[]
+            return
+        if [ ev.key.unicode != 257 ] return
+        text : string [ (edit) ? edit : '' ]
+        if [ text.count == 0 ] return
+        app : cast commune [ ux.app_object ]
+        if [ app ] app.say[ text ]
+        edit       = ''
+        sel_col    = 0
+        anchor_col = 0
+        pristine   = false
+        ev.stop[]
+
+# the field asking for a password: its letters as dots
+CommuneInput CommuneSecret
+    style : CSS {
+        layers.face:
+            secret: true
+    }
+
+# the form's fields, the field's look
+TextInput HomeField
+    style : CSS {
+        layers.body:
+            fill_color: #ffffff08
+            stroke_width: 1.0
+            stroke_color: #ffffff18
+            radius: 8
+            near_border: true
+            near_inset: 2.0
+            near_inset_color: #c890ffaa
+        layers.face:
+            label_color: #ffffff60
+            label_size: 17
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 12.0 0.0
+        :focused
+            layers.body:
+                fill_color: #4d3dbc33
+                stroke_color: #806bff
+            layers.face:
+                label_color: #ffffff
+        :has_value
+            layers.face:
+                label_color: #ffffff
+    }
+
+HomeField HomeSecret
+    style : CSS {
+        layers.face:
+            secret: true
+    }
+
+# the conversation: its topic, the log and the field
+element ChatPane
+    public topic : string
+    public lines : vec Line
+    public seen  : i32
+    public me    : string
+    # a password asked for: the line over the field, the field secret
+    public ask   : string
+
+    func render [] -> Elements
+        e : Elements []
+        e[ 'topic' ] = TopicBar [ topic: topic,
+            area: Region { l0 t0 r0 h1.2 } ]
+        if [ ask && ask.count > 0 ]
+            e[ 'log' ] = ChatLog [ lines: lines, seen: seen, me: me,
+                area: Region { l0 t1.2 r0 b2.6 } ]
+            e[ 'ask' ] = TopicBar [ topic: ask, asks: true,
+                area: Region { l0 b2.6 r0 b1.4 } ]
+            e[ 'say' ] = CommuneSecret [
+                area: Region { l0 b1.4 r0 b0 } ]
+            return e
+        e[ 'log' ] = ChatLog [ lines: lines, seen: seen, me: me,
+            area: Region { l0 t1.2 r0 b1.4 } ]
+        e[ 'say' ] = CommuneInput [ area: Region { l0 b1.4 r0 b0 } ]
+        return e
+
+# commune's icons (Material Symbols, images/<name>.svg), kept once
+# loaded
+class UiIcons
+    intern static models : map SVGModel [ string ]
+
+    func get [ nm: string ] -> SVGModel
+        if [ !models ] models = map SVGModel [ string ] []
+        if [ models.contains[ nm ] ] return models[ nm ]
+        p : path 'images/{nm}.svg'
+        m : SVGModel [ null ]
+        if [ p.exists[] ] m = SVGModel [ p ]
+        models[ nm ] = m
+        return m
+
+# an icon, one flat colour
+func ui_icon [ cv: Canvas, nm: string, x: f32, y: f32, sz: f32,
+               col: rgba ]
+    ic : UiIcons []
+    m : SVGModel ic.get[ nm ]
+    if [ !m ] return
+    cv.svg_override[ col ]
+    cv.draw_svg[ m, x, y, sz, sz ]
+    cv.svg_override_off[]
+
+# the panel a button slides out: its rows (an icon, words, what a
+# press does), a text box first when it asks for words
+element PopPanel
+    public rows : vec string
+    public kind : string
+    # the rows as last drawn: top and action
+    intern row_y   : vec f32
+    intern row_act : vec string
+
+    func render [] -> Elements
+        e : Elements []
+        for [ r: string ] in rows
+            if [ r.starts_with[ 'field\t' ] ]
+                e[ 'field' ] = PopField [
+                    area: Region { l50px t8px r8px h30px },
+                    hint: r.mid[ 6, r.count - 6 ] ]
+        return e
+
+    func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !rows ]
+            return
+        cv : Canvas [ w.screen ]
+        row_y   = vec f32 []
+        row_act = vec string []
+        cv.save[]
+        # its ground here (the list draws on the screen as well): a
+        # window's look, its shadow under it and an inner glow, no line
+        cv.fill_color[ rgba [ '#17142a' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.box_shadow[ rgba [ '#000a' ], 0.0, 8.0, 20.0, 0.0, false ]
+        cv.shadow[ 1, rgba [ '#ffffff22' ], 0.0, 0.0, 8.0, 0.0, true ]
+        cv.shadow_curve[ 1, 2.0 ]
+        cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 8.0, 8.0, 8.0,
+                         8.0 ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf',
+            label_px[ cv, 18.0 ] ] ]
+        # the icon strip, as orbiter's menus have it: its whole
+        # height, a fade to the right, an upright line at its edge,
+        # a line between items (a text box is an item too)
+        sw : f32 [ 40.0 ]
+        g : Gradient linear_gradient[ 0.0, 0.0, sw, 0.0 ]
+        g.add_stop[ 0.0, 0x14ffffff ]
+        g.add_stop[ 1.0, 0x00ffffff ]
+        cv.save[]
+        cv.rounded[ 8.0, 0.0, 0.0, 8.0 ]
+        cv.rect_to[ 0.0, 0.0, sw, bounds.h ]
+        cv.set_fill_gradient[ g ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.restore[]
+        cv.fill_color[ rgba [ '#ffffff14' ] ]
+        cv.rect_to[ sw, 0.0, 1.0, bounds.h ]
+        cv.paint[]
+        ly : f32 [ 0.0 ]
+        for [ i: i32 0, i < rows.count, i += 1 ]
+            if [ i > 0 ]
+                cv.rect_to[ sw, ly, bounds.w - sw, 1.0 ]
+                cv.paint[]
+            ly += pop_row_h[ rows[ i ] ]
+        y : f32 [ 0.0 ]
+        for [ r: string ] in rows
+            ws : vec string r.split[ '\t' ]
+            if [ ws[ 0 ] == 'field' ]
+                ic : string [ (ws.count > 2) ? ws[ 2 ] : 'tag' ]
+                ui_icon[ cv, ic, 10.0, y + 13.0, 20.0,
+                         rgba [ '#ffffffdd' ] ]
+                y += 46.0
+                continue
+            if [ ws[ 0 ] == 'note' ]
+                cv.fill_color[ rgba [ '#ffffff66' ] ]
+                cv.draw_text[ ws[ 1 ], rect [ x: 14.0, y: y,
+                    w: bounds.w - 28.0, h: 30.0 ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
+                y += 30.0
+                continue
+            row_y.push[ y ]
+            row_act.push[ (ws.count > 2) ? ws[ 2 ] : '' ]
+            # its inner glow, brought up by the pointer's near light
+            mx : f32 [ f32[ ux.mouse.x ] - win_pos.x ]
+            my : f32 [ f32[ ux.mouse.y ] - win_pos.y ]
+            over : bool [ mx >= 0.0 && mx < bounds.w && my >= y
+                          && my < y + 34.0 ]
+            cv.save[]
+            # a switch's row: lit while on
+            lit : bool [ ws.count > 3 && ws[ 3 ] == 'on' ]
+            fl : string [ (lit) ? '#4d3dbcaa'
+                : ((over) ? '#4d3dbc55' : '#0000') ]
+            cv.fill_color[ rgba [ fl ] ]
+            cv.box_shadow[ rgba [ '#c890ff06' ], 0.0, 0.0, 13.0, 0.0,
+                true ]
+            w.near_light_on[ cv, a, 0.0, 0.0 ]
+            cv.near_style[ 0.0, 3.0, rgba [ '#c890ffaa' ],
+                           w.near_y_fade ]
+            # edge to edge, square; round only at the panel's own
+            # corners, matching them
+            tr : f32 [ (y < 0.5) ? 8.0 : 0.0 ]
+            br : f32 [ (y + 34.0 > bounds.h - 0.5) ? 8.0 : 0.0 ]
+            cv.rounded_rect[ 0.0, y, bounds.w, 34.0, tr, tr, br, br ]
+            cv.paint[]
+            cv.no_shadows[]
+            cv.restore[]
+            danger : bool [ ws.count > 2 && (ws[ 2 ] == 'remove'
+                || ws[ 2 ] == 'archive') ]
+            col : rgba [ (danger) ? rgba [ '#ff9a9a' ]
+                : rgba [ '#ffffffdd' ] ]
+            ui_icon[ cv, ws[ 0 ], 10.0, y + 7.0, 20.0, col ]
+            cv.fill_color[ col ]
+            cv.draw_text[ ws[ 1 ], rect [ x: 52.0, y: y,
+                w: bounds.w - 62.0, h: 34.0 ], vec2f [ 0.0, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
+            y += 34.0
+        cv.paint[]
+        cv.set_font[ null ]
+        cv.restore[]
+
+    public func on_move [ ev: Event ]
+        pristine = false
+
+    public func on_press [ ev: Event ]
+        ev.no_default = true
+        ev.no_propagation = true
+        app : cast commune [ ux.app_object ]
+        if [ !app || !row_y ] return
+        py : f32 ev.mouse.pos.y
+        for [ k: i32 0, k < row_y.count, k += 1 ]
+            if [ py >= row_y[ k ] && py < row_y[ k ] + 34.0 ]
+                act : string row_act[ k ]
+                if [ act.count > 0 ] app.pop_act[ act ]
+                return
+
+# a panel row's height: a text box, a plain line, an item
+func pop_row_h [ r: string ] -> f32
+    if [ r.starts_with[ 'field\t' ] ] return 46.0
+    if [ r.starts_with[ 'note\t' ] ] return 30.0
+    return 34.0
+
+# the panel's text box: Enter gives it to the panel, Escape shuts it
+CommuneInput PopField
+    public hint : string
+
+    # rounded, inside the panel's corners; a 1px line all round,
+    # as the panel's own lines
+    style : CSS {
+        layers.body:
+            radius: 6
+            stroke_width: 1.0
+            stroke_color: #ffffff14
+        :focused
+            layers.body:
+                stroke_color: #ffffff14
+    }
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        app : cast commune [ ux.app_object ]
+        if [ !app ] return
+        if [ ev.key.unicode == 256 ]
+            app.pop_close[]
+            ev.stop[]
+            return
+        if [ ev.key.unicode != 257 ] return
+        text : string [ (edit) ? edit : '' ]
+        app.pop_enter[ text ]
+        ev.stop[]

@@ -1,0 +1,371 @@
+# commune's menus on orbiter's bar while its folder is open: the
+# servers as entries, each switched on or off or deleted; ours bound
+# here (as many as wanted), others where they are. Made in
+# orbiter's process: it shares the servers' file with commune's
+# view and asks orbiter for the service.
+extend commune
+
+# the servers, a line each: host port name password on|off
+func servers_file [ dir: path ] -> path
+    return path '{dir}/servers.txt'
+
+# how commune finds each one: key, tab, its state
+func states_file [ dir: path ] -> path
+    return path '{dir}/servers-state.txt'
+
+func servers_read [ f: path ] -> vec string
+    out : vec string []
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return out
+    for [ ln: string ] in tx.split[ "\n" ]
+        t : string ln.trim[]
+        if [ t.count > 0 ] out.push[ t ]
+    return out
+
+func servers_write [ f: path, v: vec string ]
+    tx : string ''
+    if [ v ]
+        for [ ln: string ] in v
+            tx = '{tx}{ln}\n'
+    f.save[ tx, null ]
+
+func str_in [ v: vec string, s: string ] -> bool
+    for [ x: string ] in v
+        if [ x == s ] return true
+    return false
+
+# a server line's words: host port user password on|off here|away,
+# then its name (spaces kept);
+# an older line without the last: ours when at this machine's address
+func line_here [ ws: vec string ] -> bool
+    if [ ws.count > 5 ] return ws[ 5 ] == 'here'
+    return ws.count > 0 && (ws[ 0 ] == '127.0.0.1'
+                            || ws[ 0 ] == 'localhost')
+
+func line_on [ ws: vec string ] -> bool
+    return ws.count < 5 || ws[ 4 ] != 'off'
+
+# the line again, switched on or off
+func line_with [ ws: vec string, word: string ] -> string
+    kind : string [ (line_here[ ws ]) ? 'here' : 'away' ]
+    ln : string '{ws[ 0 ]} {ws[ 1 ]} {ws[ 2 ]} {ws[ 3 ]} {word} {kind}'
+    return (ws.count > 6) ? '{ln} {line_name[ ws ]}' : ln
+
+# its name, given at Add; an older line's: its address
+func line_name [ ws: vec string ] -> string
+    if [ ws.count < 7 ] return '{ws[ 0 ]}:{ws[ 1 ]}'
+    nm : string ws[ 6 ]
+    for [ i: i32 7, i < ws.count, i += 1 ]
+        nm = '{nm} {ws[ i ]}'
+    return nm
+
+# a binding of ours, reached from this machine
+func dial_host [ host: string ] -> string
+    if [ host.count == 0 || host == '0.0.0.0' || host == '::' ]
+        return '127.0.0.1'
+    return host
+
+# any binding of ours on: the service runs
+func any_here_on [ v: vec string ] -> bool
+    if [ !v ] return false
+    for [ ln: string ] in v
+        ws : vec string ln.split[ ' ' ]
+        if [ ws.count > 1 && line_here[ ws ] && line_on[ ws ] ]
+            return true
+    return false
+
+# a password for a binding of ours, made once
+func made_pass [ nm: string ] -> string
+    seed : string '{Au.epoch_micros[]}{getpid[]}{nm}'
+    hx : string tls_sha256_hex[ cast @u8 [ seed.chars ], seed.count ]
+    return hx.mid[ 0, 24 ]
+
+# a new agent's contract: a sketch its person writes over
+func contract_sketch [ an: string ] -> string
+    # a # line in a block is a comment: the marks as values
+    h1 : string [ "#" ]
+    h2 : string [ "##" ]
+    sketch : string {
+        {h1} {an} in commune
+
+        What {an} does for the rooms it is in, and how.
+
+        {h2} It takes work from
+        - me
+        - anyone in the room who names it in full
+
+        {h2} It may
+        - answer questions
+        - read and change the files in the channel's folder
+
+        {h2} It does not
+        - delete files others made
+        - give work to other agents more than twice in a row
+    }
+    return '{sketch.trim[]}\n'
+
+MenuSource CommuneMenus
+    intern dir   : path
+    intern items : vec string
+    intern asked : bool
+
+    # commune's own storage, as its view has it
+    func folder [] -> path
+        if [ !dir ]
+            st : string '.local/state/commune'
+            dir = path '{path.path_install[]}/home/commune/{st}'
+            if [ !dir.exists[] ] dir.make_dir[]
+        return dir
+
+    func load []
+        f : path servers_file[ folder[] ]
+        items = (f.exists[]) ? servers_read[ f ] : vec string []
+
+    # the file written, and the service as the bindings want it
+    func save []
+        servers_write[ servers_file[ folder[] ], items ]
+        on : bool any_here_on[ items ]
+        tell[ 'service commune {(on) ? "on" : "off"}' ]
+
+    # how commune finds it, from its states file
+    func state_of [ k: string ] -> string
+        sp : path states_file[ folder[] ]
+        tx : string [ (sp.exists[])
+            ? sp.load[ typeid[ string ], null ] : '' ]
+        if [ !tx ] return ''
+        for [ ln: string ] in tx.split[ "\n" ]
+            if [ ln.starts_with[ '{k}\t' ] ]
+                return ln.mid[ k.count + 1, ln.count - k.count - 1 ]
+        return ''
+
+    # a line to orbiter: its own socket, in this process
+    func tell [ line: string ]
+        rt : cstr [ getenv[ 'XDG_RUNTIME_DIR' ] ]
+        d : string [ (rt) ? string [ rt ] : '/tmp' ]
+        sock : string '{d}/trinity-orbiter.sock'
+        msg : string 'app {line}\n'
+        commune_sock_send[ sock.chars, msg.chars ]
+
+    func at_key [ k: string ] -> i32
+        for [ i: i32 0, i < items.count, i += 1 ]
+            ws : vec string items[ i ].split[ ' ' ]
+            if [ ws.count > 1 && '{ws[ 0 ]}:{ws[ 1 ]}' == k ] return i
+        return -1
+
+    func row [ label: string, act: string, depth: i32 ] -> TrayEntry
+        return TrayEntry [ label: label, action: act, depth: depth,
+            enabled: true, check: -1 ]
+
+    # commune: each server by its name and state (a press its own
+    # client, a delete at its end), then Add server; commune alone,
+    # bound to no server, has nothing to open
+    func entries [] -> vec TrayEntry
+        load[]
+        m : vec TrayEntry []
+        m.push[ row[ 'commune', '', 0 ] ]
+        down : bool [ false ]
+        for [ ln: string ] in items
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count < 4 ] continue
+            k : string '{ws[ 0 ]}:{ws[ 1 ]}'
+            on : bool line_on[ ws ]
+            here : bool line_here[ ws ]
+            st : string ''
+            if [ !on ]
+                sv : string state_of[ k ]
+                st = (sv.index_of[ 'refused' ] >= 0) ? sv : 'off'
+            el [ here ]
+                pt : i32 [ i32[ ws[ 1 ].integer_value[] ] ]
+                up : bool [ commune_port_open[ pt ] == 1 ]
+                if [ !up ] down = true
+                st = (up) ? 'running' : 'starting'
+                # running, but it refused us: why, from commune
+                rs : string state_of[ k ]
+                if [ rs.index_of[ 'refused' ] >= 0 ] st = rs
+            el
+                st = state_of[ '{ws[ 0 ]}:{ws[ 1 ]}' ]
+                if [ st.count == 0 ] st = 'not open'
+            lb : string '{line_name[ ws ]} · {st}'
+            # its settings: the Add page, filled, saved over it
+            e : TrayEntry row[ lb, 'edit {k}', 1 ]
+            hv : string [ (here) ? 'on' : 'off' ]
+            ff : string form_fields[ line_name[ ws ], k, ws[ 2 ], hv ]
+            e.target = '{ff}#{form_note[]}#Save'
+            e.side = '×'
+            e.side_action = 'remove {k}'
+            m.push[ e ]
+        # a binding on with nothing listening: orbiter starts it
+        if [ down && !asked ] tell[ 'service commune on' ]
+        asked = down
+        if [ items.count > 0 ]
+            rl : TrayEntry row[ '', '', 1 ]
+            rl.rule = true
+            m.push[ rl ]
+        ad : TrayEntry row[ 'Add server', 'add', 1 ]
+        ff : string form_fields[ '', '', '', '' ]
+        ad.target = '{ff}#{form_note[]}'
+        m.push[ ad ]
+        # the agents we run: each offered to the rooms by a contract
+        m.push[ row[ 'agents', '', 0 ] ]
+        have : vec string agent_installed[]
+        for [ an: string ] in have
+            on : bool contract_file[ an ].exists[]
+            lb : string [ (on) ? '{an} · offered'
+                : '{an} · write its contract' ]
+            e : TrayEntry row[ lb, 'contract {an}', 1 ]
+            if [ on ]
+                e.side = '×'
+                e.side_action = 'withdraw {an}'
+            m.push[ e ]
+        if [ have.count == 0 ]
+            m.push[ row[ 'no agents installed', '', 1 ] ]
+        return m
+
+    # an agent's contract: what it does in the rooms, its person's
+    func contract_file [ an: string ] -> path
+        return path '{folder[]}/agents/{an}.md'
+
+    # the contract opened to write; a new one starts from a sketch
+    func contract_open [ an: string ]
+        f : path contract_file[ an ]
+        if [ !f.exists[] ]
+            make_dirs[ '{folder[]}/agents' ]
+            f.save[ contract_sketch[ an ], null ]
+        tell[ 'nav open {f}' ]
+
+    # an Add page's fields, checked, then the new line saved; else
+    # what is wrong with them
+    func check_add [ action: string, was: string ] -> string
+        fs : vec string action.split[ "\t" ]
+        sn : string [ (fs.count > 1) ? fs[ 1 ].trim[] : '' ]
+        hp : string [ (fs.count > 2) ? fs[ 2 ].trim[] : '' ]
+        nm : string [ (fs.count > 3) ? fs[ 3 ].trim[] : '' ]
+        here : bool [ fs.count > 4 && fs[ 4 ] == 'on' ]
+        at : i32 [ i32[ hp.rindex_of[ ':' ] ] ]
+        h : string [ (at >= 0) ? hp.mid[ 0, at ] : hp ]
+        ps : string [ (at >= 0) ? hp.mid[ at + 1, hp.count - at - 1 ]
+            : '' ]
+        # a port alone: ours, every address
+        if [ at < 0 && hp.count > 0 && digits[ hp ] ]
+            h  = ''
+            ps = hp
+        if [ sn.count == 0 ] return 'Give the server a name'
+        if [ !here && h.count == 0 ]
+            return 'Give the address of the server, as host:port'
+        if [ ps.count == 0 ] ps = '7788'
+        pt : i64 [ ps.integer_value[] ]
+        if [ !digits[ ps ] || pt < 1 || pt > 65535 ]
+            return 'The port is a number from 1 to 65535'
+        if [ h.index_of[ ' ' ] >= 0 ]
+            return 'An address has no spaces'
+        if [ h.count == 0 ] h = '0.0.0.0'
+        u : cstr [ getenv[ 'USER' ] ]
+        if [ nm.count == 0 ] nm = (u) ? string [ u ] : 'someone'
+        if [ nm.index_of[ ' ' ] >= 0 ] return 'A name has no spaces'
+        k : string '{h}:{pt}'
+        wi : i32 [ (was.count > 0) ? at_key[ was ] : -1 ]
+        if [ k != was && at_key[ k ] >= 0 ]
+            return '{k} is listed already'
+        # ours: the port free here, or one of ours on it
+        if [ here ]
+            for [ j: i32 0, j < items.count, j += 1 ]
+                if [ j == wi ] continue
+                ws : vec string items[ j ].split[ ' ' ]
+                if [ ws.count > 1 && line_here[ ws ]
+                     && ws[ 1 ].integer_value[] == pt ]
+                    return 'Port {pt} is ours already ({ws[ 0 ]})'
+            # ours already on it (this server, saved again): fine
+            same : bool [ wi >= 0 && was.ends_with[ ':{pt}' ] ]
+            if [ !same && commune_port_open[ i32[ pt ] ] == 1 ]
+                return 'Port {pt} is in use here'
+        kind : string [ (here) ? 'here' : 'away' ]
+        # its password: the one it has, kept; else - (none yet), its
+        # client asks for it at sign-in
+        pw : string [ (wi >= 0) ? items[ wi ].split[ ' ' ][ 3 ] : '-' ]
+        ln : string '{h} {pt} {nm} {pw} on {kind} {sn}'
+        if [ wi >= 0 ] items[ wi ] = ln
+        el items.push[ ln ]
+        save[]
+        return ''
+
+    func digits [ t: string ] -> bool
+        if [ t.count == 0 ] return false
+        for [ i: i32 0, i < t.count, i += 1 ]
+            c : i32 [ i32[ t.chars[ i ] ] ]
+            # 48..57: 0..9
+            if [ c < 48 || c > 57 ] return false
+        return true
+
+    # a card each in commune's folder: the server's own client
+    func launches [] -> vec string
+        load[]
+        out : vec string []
+        for [ ln: string ] in items
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count < 4 ] continue
+            out.push[ '{line_name[ ws ]}\t--entry {ws[ 0 ]}:{ws[ 1 ]}' ]
+        return out
+
+    # the server page's fields, each with its value after an =
+    func form_fields [ sn: string, hp: string, nm: string,
+                       hv: string ] -> string
+        a1 : string 'server name={sn}|address:port={hp}'
+        return '{a1}|your name={nm}|?Host it here={hv}'
+
+    func form_note [] -> string
+        h1 : string 'Host it here: we run the server, listening on'
+        h2 : string 'the port given (a port alone: every address);'
+        h3 : string 'your name becomes your account on it. Off: a'
+        h4 : string 'server somewhere else. Its client asks the'
+        h5 : string 'password as it signs in.'
+        return '{h1} {h2} {h3} {h4} {h5}'
+
+    func pick [ action: string ]
+        problem = ''
+        load[]
+        # a server's own client, named for it
+        if [ action.starts_with[ 'open ' ] ]
+            k : string action.mid[ 5, action.count - 5 ]
+            tell[ 'launch commune --entry {k}' ]
+            return
+        # Add server: an address and port (ours: where it listens),
+        # a name, a password, and whether we host it; what is wrong
+        # stays on the page as its problem
+        if [ action.starts_with[ 'add\t' ] ]
+            problem = check_add[ action, '' ]
+            return
+        # a server's page saved: its line made again from it
+        if [ action.starts_with[ 'edit ' ] ]
+            tb : i32 [ i32[ action.index_of[ '\t' ] ] ]
+            if [ tb < 0 ] return
+            was : string action.mid[ 5, tb - 5 ]
+            rest : string action.mid[ tb, action.count - tb ]
+            problem = check_add[ 'add{rest}', was ]
+            return
+        sp : i32 [ i32[ action.index_of[ ' ' ] ] ]
+        if [ sp < 0 ] return
+        verb : string action.mid[ 0, sp ]
+        k : string action.mid[ sp + 1, action.count - sp - 1 ]
+        if [ verb == 'contract' ]
+            contract_open[ k ]
+            return
+        # no longer offered: its contract goes
+        if [ verb == 'withdraw' ]
+            cf : path contract_file[ k ]
+            unlink[ cf.chars ]
+            return
+        i : i32 at_key[ k ]
+        if [ i < 0 ] return
+        ws : vec string items[ i ].split[ ' ' ]
+        if [ ws.count < 4 ] return
+        if [ verb == 'toggle' ]
+            items[ i ] = line_with[ ws, (line_on[ ws ]) ? 'off' : 'on' ]
+            save[]
+        el [ verb == 'remove' ]
+            items.remove[ i ]
+            save[]
+
+expect func t_menus_entries [] -> bool
+    m : CommuneMenus []
+    es : vec TrayEntry m.entries[]
+    return es.count > 2 && es[ 0 ].label == 'commune'

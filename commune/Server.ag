@@ -1,0 +1,1049 @@
+extend commune
+
+# a frame on the wire: 4 bytes of length, a header line of tab
+# fields, then bytes (a file piece)
+class WireFrame
+    public fields : vec string
+    public text   : string
+    public data   : vec u8
+    public n      : i64
+
+# a file's bytes, whole; null when it cannot be read
+func file_bytes [ p: string ] -> vec u8
+    f : fopen[ p.chars, 'rb' ]
+    if [ !f ] return null
+    fseek[ f, 0, SEEK_END ]
+    n : i64 [ ftell[ f ] ]
+    fseek[ f, 0, SEEK_SET ]
+    out : vec u8 [ n + 1 ]
+    got : i64 [ (n > 0) ? i64[ fread[ @out[ 0 ], 1, n, f ] ] : 0 ]
+    fclose[ f ]
+    out.resize[ got ]
+    return out
+
+func file_text [ p: string ] -> string
+    b : vec u8 file_bytes[ p ]
+    if [ !b ] return ''
+    b.push[ 0 ]
+    return string [ @b[ 0 ] ]
+
+func file_write [ p: string, data: @u8, n: i64 ] -> bool
+    f : fopen[ p.chars, 'wb' ]
+    if [ !f ] return false
+    ok : bool [ n == 0 || i64[ fwrite[ data, 1, n, f ] ] == n ]
+    fclose[ f ]
+    return ok
+
+func file_append [ p: string, ln: string ]
+    f : fopen[ p.chars, 'ab' ]
+    if [ !f ] return
+    fwrite[ ln.chars, 1, ln.count, f ]
+    fputc[ 10, f ]
+    fclose[ f ]
+
+func sha256_file [ p: string ] -> string
+    b : vec u8 file_bytes[ p ]
+    if [ !b ] return ''
+    if [ b.count == 0 ] return tls_sha256_hex[ null, 0 ]
+    return tls_sha256_hex[ @b[ 0 ], b.count ]
+
+func file_mtime [ p: string ] -> i64
+    st : struct stat
+    if [ stat[ p.chars, @st ] != 0 ] return 0
+    return st.st_mtim.tv_sec
+
+func file_size [ p: string ] -> i64
+    st : struct stat
+    if [ stat[ p.chars, @st ] != 0 ] return -1
+    return st.st_size
+
+func is_folder [ p: string ] -> bool
+    st : struct stat
+    if [ stat[ p.chars, @st ] != 0 ] return false
+    isd : bool [ (st.st_mode & S_IFMT) == S_IFDIR ]
+    return isd
+
+func set_mtime [ p: string, t: i64 ]
+    ts : local timespec [ 2 ]
+    ts[ 0 ].tv_sec  = t
+    ts[ 0 ].tv_nsec = 0
+    ts[ 1 ].tv_sec  = t
+    ts[ 1 ].tv_nsec = 0
+    utimensat[ AT_FDCWD, p.chars, @ts[ 0 ], 0 ]
+
+# every folder on the way to p
+func make_dirs [ p: string ]
+    at : i32 [ 1 ]
+    while [ at < p.count ]
+        nx : i32 [ index_from[ p, '/', at ] ]
+        part : string [ (nx < 0) ? p : p.mid[ 0, nx ] ]
+        mkdir[ part.chars, 493 ]
+        if [ nx < 0 ] break
+        at = nx + 1
+
+# a channel's name is '#' and letters, digits, - or _
+func channel_ok [ ch: string ] -> bool
+    if [ ch.count < 2 || ch.count > 40 || ch.chars[ 0 ] != '#' ]
+        return false
+    for [ i: i32 1, i < ch.count, i += 1 ]
+        c : i32 [ ch.chars[ i ] ]
+        ok : bool [ (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '-' || c == '_' ]
+        if [ !ok ] return false
+    return true
+
+# a name is letters, digits, - _ . and one / (an agent's)
+func name_ok [ nm: string ] -> bool
+    if [ nm.count < 1 || nm.count > 40 ] return false
+    slashes : i32 [ 0 ]
+    for [ i: i32 0, i < nm.count, i += 1 ]
+        c : i32 [ nm.chars[ i ] ]
+        if [ c == '/' ]
+            slashes += 1
+            continue
+        ok : bool [ (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '-' || c == '_'
+            || c == '.' ]
+        if [ !ok ] return false
+    return slashes <= 1 && nm.chars[ 0 ] != '/'
+
+# a path inside a workspace: relative, no hidden or .. parts
+func rel_ok [ rel: string ] -> bool
+    if [ rel.count == 0 || rel.count > 400 ] return false
+    if [ rel.chars[ 0 ] == '/' ] return false
+    for [ part: string ] in rel.split[ '/' ]
+        if [ part.count == 0 || part.chars[ 0 ] == '.' ] return false
+        if [ part.ends_with[ '.part' ] ] return false
+    return true
+
+# every file under a folder, as rel paths; hidden ones left out
+func walk_files [ base: string, rel: string, out: vec string ]
+    d : path [ (rel.count > 0) ? '{base}/{rel}' : base ]
+    if [ !d.exists[] ] return
+    for [ e: path ] in d.ls[ null, false ]
+        nm : string e.filename[]
+        if [ nm.count == 0 || nm.chars[ 0 ] == '.'
+             || nm.ends_with[ '.part' ] ]
+            continue
+        r : string [ (rel.count > 0) ? '{rel}/{nm}' : nm ]
+        if [ e.is_dir[] ] walk_files[ base, r, out ]
+        el out.push[ r ]
+
+# names in order, each once: a group's folder and its place
+func names_sorted [ v: vec string ] -> vec string
+    out : vec string []
+    for [ n: string ] in v
+        if [ n.count == 0 || str_in[ out, n ] ] continue
+        at : i32 [ 0 ]
+        while [ at < out.count && out[ at ].cmp[ n ] < 0 ]
+            at += 1
+        out.insert[ n, at ]
+    return out
+
+# the names joined by commas, one left out ('' none)
+func names_but [ v: vec string, but: string ] -> string
+    out : string ''
+    for [ n: string ] in v
+        if [ n == but ] continue
+        out = (out.count > 0) ? '{out},{n}' : n
+    return out
+
+# a password's record: salted sha256
+func pass_hash [ pw: string ] -> string
+    s : string 'commune:{pw}'
+    return tls_sha256_hex[ cast @u8 [ s.chars ], s.count ]
+
+# the frame's bytes: length, header, newline, data
+func frame_bytes [ header: string, data: @u8, n: i64 ] -> vec u8
+    total : i64 [ header.count + 1 + n ]
+    out : vec u8 [ total + 4 ]
+    out[ 0 ] = u8[ (total >> 24) & 255 ]
+    out[ 1 ] = u8[ (total >> 16) & 255 ]
+    out[ 2 ] = u8[ (total >> 8) & 255 ]
+    out[ 3 ] = u8[ total & 255 ]
+    memcpy[ @out[ 4 ], header.chars, header.count ]
+    out[ 4 + header.count ] = 10
+    if [ n > 0 ] memcpy[ @out[ 5 + header.count ], data, n ]
+    return out
+
+# the frame in buf (its length taken off already)
+func frame_parse [ buf: @u8, n: i64 ] -> WireFrame
+    nl : i64 [ 0 ]
+    while [ nl < n && buf[ nl ] != 10 ]
+        nl += 1
+    head : vec u8 [ nl + 1 ]
+    if [ nl > 0 ] memcpy[ @head[ 0 ], buf, nl ]
+    head[ nl ] = 0
+    text : string [ @head[ 0 ] ]
+    fr : WireFrame [ text: text, fields: text.split[ '\t' ] ]
+    rest : i64 [ (nl < n) ? n - nl - 1 : 0 ]
+    fr.n = rest
+    if [ rest > 0 ]
+        fr.data = vec u8 [ rest ]
+        memcpy[ @fr.data[ 0 ], @buf[ nl + 1 ], rest ]
+    return fr
+
+# a file piece's size on the wire
+func piece_size [] -> i64
+    return 65536
+
+# how many bytes a side keeps waiting to go out
+func out_cap [] -> i64
+    return 4 * 1024 * 1024
+
+# a file being sent, piece by piece as the line has room
+class Sending
+    public ch    : string
+    public rel   : string
+    public path  : string
+    public off   : i64
+    public total : i64
+    public mtime : i64
+
+# a piece's header line
+func piece_head [ s: Sending ] -> string
+    return 'piece\t{s.ch}\t{s.rel}\t{s.off}\t{s.total}\t{s.mtime}'
+
+# a file coming in, written beside its place until whole
+class Taking
+    public path  : string
+    public got   : i64
+    public total : i64
+
+# a connection to the server: its TLS end and what it waits on
+class Peer
+    public  tls     : TLSPeer
+    # the server's lock: the thread reads these buffers under it
+    public  lock    : mutex
+    public  name    : string
+    public  account : string
+    public  joined  : vec string
+    public  inbuf   : new u8
+    public  in_n    : i64
+    public  outbuf  : new u8
+    public  out_n   : i64
+    public  sends   : vec Sending
+    public  takes   : map Taking [ string ]
+
+    func init []
+        joined = vec string []
+        sends  = vec Sending []
+        takes  = map Taking [ string ] []
+        inbuf  = new u8 [ 262144 ]
+        outbuf = new u8 [ out_cap[] ]
+        name    = ''
+        account = ''
+
+    func stage [] -> i32
+        return (tls) ? tls.stage : 0
+
+    func dead []
+        if [ tls ] tls.stage = 0
+
+    # the thread's pass over this peer: bytes out, then in. false
+    # once the line is gone
+    func pump [ tmp: @u8 ] -> bool
+        while [ out_n > 0 ]
+            r : i64 tls.send[ outbuf, out_n ]
+            if [ r == 0 ] break
+            if [ r < 0 ] return false
+            memmove[ outbuf, @outbuf[ r ], out_n - r ]
+            out_n -= r
+        for [ true ]
+            room : i64 [ 262144 - in_n ]
+            if [ room <= 0 ] return true
+            r : i64 tls.recv[ @inbuf[ in_n ], room ]
+            if [ r == 0 ] return true
+            if [ r < 0 ] return false
+            in_n += r
+            if [ r < room ] return true
+        return true
+
+    func has_channel [ ch: string ] -> bool
+        for [ c: string ] in joined
+            if [ c == ch ] return true
+        return false
+
+    # bytes to go: false when the line is too far behind
+    func queue [ b: vec u8 ] -> bool
+        if [ !lock ] return false
+        lock.lock[]
+        ok : bool [ out_n + b.count <= out_cap[] ]
+        if [ ok ]
+            memcpy[ @outbuf[ out_n ], @b[ 0 ], b.count ]
+            out_n += b.count
+        lock.unlock[]
+        return ok
+
+    func tell [ header: string ] -> bool
+        return queue[ frame_bytes[ header, null, 0 ] ]
+
+    func tell_data [ header: string, data: @u8, n: i64 ] -> bool
+        return queue[ frame_bytes[ header, data, n ] ]
+
+    # the next pieces of the files on their way, while there is room
+    func pump_sends []
+        while [ sends.count > 0 && out_n < out_cap[] / 2 ]
+            s : Sending sends[ 0 ]
+            f : fopen[ s.path.chars, 'rb' ]
+            if [ !f ]
+                sends.remove[ 0 ]
+                continue
+            fseek[ f, s.off, SEEK_SET ]
+            want : i64 [ s.total - s.off ]
+            if [ want > piece_size[] ] want = piece_size[]
+            buf : vec u8 [ (want > 0) ? want : 1 ]
+            got : i64 [ 0 ]
+            if [ want > 0 ] got = fread[ @buf[ 0 ], 1, want, f ]
+            fclose[ f ]
+            tell_data[ piece_head[ s ], (got > 0) ? @buf[ 0 ] : null,
+                       got ]
+            s.off += got
+            if [ s.off >= s.total || got < want ] sends.remove[ 0 ]
+
+    # a piece of a file coming in; true once it is whole
+    func take_piece [ dest: string, off: i64, total: i64,
+                      data: @u8, n: i64 ] -> bool
+        part : string '{dest}.part'
+        tk : Taking [ (takes.contains[ dest ]) ? takes[ dest ] : null ]
+        if [ !tk || off == 0 ]
+            pp : path [ dest ]
+            pd : path pp.parent_dir[]
+            make_dirs[ '{pd}' ]
+            fresh : fopen[ part.chars, 'wb' ]
+            if [ fresh ] fclose[ fresh ]
+            tk = Taking [ path: '{dest}', got: 0, total: total ]
+            # the map's key is its own: a remove frees it
+            takes[ '{dest}' ] = tk
+        f : fopen[ part.chars, 'r+b' ]
+        if [ !f ] return false
+        fseek[ f, off, SEEK_SET ]
+        if [ n > 0 ] fwrite[ data, 1, n, f ]
+        fclose[ f ]
+        tk.got = off + n
+        if [ tk.got < total ] return false
+        takes.rm[ dest ]
+        rr : i32 [ rename[ part.chars, dest.chars ] ]
+        return true
+
+    func shut []
+        if [ tls ] tls.close[]
+
+# the server: accounts, channels, their history and workspace
+# files, on its own thread; everything it keeps is under its folder
+class Server
+    public  port        : i32 [ 7788 ]
+    # the address it listens on: '' every one
+    public  bind        : string
+    # the account of whoever hosts it: always an admin
+    public  owner       : string
+    public  problem     : string
+    public  fingerprint : string
+    public  root        : string
+    intern  tls         : TLSServer
+    intern  peers       : vec Peer
+    intern  running     : bool
+    intern  tid         : pthread_t
+    intern  lk          : mutex
+    intern  logs        : vec string
+    intern  users       : map string [ string ]
+    intern  next_id     : i64
+    intern  hashes      : map string [ string ]
+    intern  tmp         : new u8
+
+    func init []
+        problem     = ''
+        fingerprint = ''
+        peers = vec Peer []
+        logs  = vec string []
+        users = map string [ string ] []
+        hashes = map string [ string ] []
+        tmp = new u8 [ 65536 ]
+        lk = mutex [ ]
+
+    func say [ s: string ]
+        lk.lock[]
+        logs.push[ s ]
+        lk.unlock[]
+
+    # what the server said since the last call
+    func take_log [] -> vec string
+        out : vec string []
+        lk.lock[]
+        for [ ln: string ] in logs
+            out.push[ ln ]
+        logs.clear[]
+        lk.unlock[]
+        return out
+
+    func channel_dir [ ch: string ] -> string
+        return '{root}/channels/{ch.mid[ 1, ch.count - 1 ]}'
+
+    func dm_dir [ x: string, y: string ] -> string
+        first  : string [ (x.cmp[ y ] <= 0) ? x : y ]
+        second : string [ (x.cmp[ y ] <= 0) ? y : x ]
+        fa : string text_replace[ first, '/', '~' ]
+        fb : string text_replace[ second, '/', '~' ]
+        return '{root}/dm/{fa}+{fb}'
+
+    func load_users []
+        tx : string file_text[ '{root}/users.txt' ]
+        for [ ln: string ] in tx.split[ '\n' ]
+            tb : i32 [ ln.index_of[ '\t' ] ]
+            if [ tb <= 0 ] continue
+            nm : string ln.mid[ 0, tb ]
+            users[ nm ] = ln.mid[ tb + 1, ln.count - tb - 1 ]
+        nx : string file_text[ '{root}/next.txt' ]
+        next_id = nx.trim[].integer_value[]
+        if [ next_id < 1 ] next_id = 1
+
+    func save_users []
+        out : string [ '' ]
+        for [ h: string, nm: string ] in users
+            out = '{out}{nm}\t{h}\n'
+        file_write[ '{root}/users.txt', cast @u8 [ out.chars ],
+                    out.count ]
+
+    func take_id [] -> i64
+        id : i64 [ next_id ]
+        next_id += 1
+        nx : string '{next_id}'
+        file_write[ '{root}/next.txt', cast @u8 [ nx.chars ], nx.count ]
+        return id
+
+    # listening, with its identity in place; the loop on a thread
+    func start [] -> bool
+        st : path path.path_storage[ 'commune' ]
+        # each port its own server: its people, channels, files
+        root = (port == 7788) ? '{st}/server' : '{st}/server-{port}'
+        make_dirs[ '{root}/channels' ]
+        make_dirs[ '{root}/dm' ]
+        tls = TLSServer [ port: port, bind: (bind) ? bind : '' ]
+        if [ !tls.start[ root, 'commune' ] ]
+            problem = tls.problem
+            return false
+        fingerprint = tls.fingerprint
+        load_users[]
+        running = true
+        pthread_create[ @tid, null, @run_entry, a ]
+        return true
+
+    func stop []
+        if [ !running ] return
+        running = false
+        pthread_join[ tid, null ]
+        for [ p: Peer ] in peers
+            p.shut[]
+        peers = vec Peer []
+        tls.stop[]
+
+    # the thread: each peer's bytes in and out; it makes no objects
+    func run_entry [] -> none
+        while [ running ]
+            pfs : local pollfd [ 258 ]
+            n : i32 [ 0 ]
+            lk.lock[]
+            for [ p: Peer ] in peers
+                if [ n >= 256 ] break
+                pfs[ n ].fd     = p.tls.fd
+                pfs[ n ].events = POLLIN
+                if [ p.out_n > 0 || p.stage[] == 1 ]
+                    pfs[ n ].events = POLLIN | POLLOUT
+                pfs[ n ].revents = 0
+                n += 1
+            lk.unlock[]
+            if [ n == 0 ]
+                usleep[ 100000 ]
+                continue
+            poll[ @pfs[ 0 ], n, 100 ]
+            lk.lock[]
+            for [ p: Peer ] in peers
+                if [ p.stage[] == 1 ] p.tls.shake[]
+                if [ p.stage[] == 2 && !p.pump[ tmp ] ] p.dead[]
+            lk.unlock[]
+
+    # the app's part, each frame: new connections, each peer's
+    # frames handled, files on their way, the dead let go
+    func service []
+        if [ !running ] return
+        for [ true ]
+            tp : TLSPeer tls.accept_one[]
+            if [ !tp ] break
+            if [ peers.count >= 256 ]
+                tp.close[]
+                continue
+            lk.lock[]
+            peers.push[ Peer [ tls: tp, lock: lk ] ]
+            lk.unlock[]
+        for [ p: Peer ] in peers
+            if [ p.stage[] != 2 ] continue
+            for [ fr: WireFrame ] in frames_of[ p ]
+                take_frame[ p, fr ]
+                if [ p.stage[] != 2 ] break
+            if [ p.stage[] == 2 ] p.pump_sends[]
+        for [ p: Peer ] in peers
+            if [ p.stage[] == 0 && p.name.count > 0 ] lose[ p ]
+            if [ p.stage[] == 1 && unix_now[] - p.tls.since > 20 ]
+                p.dead[]
+        # said after the lock: say takes it too
+        failed : vec i32 []
+        lk.lock[]
+        for [ i: i32 i32[ peers.count ] - 1, i >= 0, i -= 1 ]
+            if [ peers[ i ].stage[] == 0 ]
+                fl : i32 [ peers[ i ].tls.fail ]
+                if [ fl != 0 ] failed.push[ fl ]
+                # what it was told last (a refusal) goes before it
+                el peers[ i ].pump[ tmp ]
+                peers[ i ].shut[]
+                peers.remove[ i ]
+        lk.unlock[]
+        for [ fl: i32 ] in failed
+            say[ 'a connection failed TLS ({fl})' ]
+
+    # the whole frames in a peer's buffer
+    func frames_of [ p: Peer ] -> vec WireFrame
+        out : vec WireFrame []
+        lk.lock[]
+        while [ p.in_n >= 4 ]
+            ln : i64 [ (i64[ p.inbuf[ 0 ] ] << 24)
+                | (i64[ p.inbuf[ 1 ] ] << 16)
+                | (i64[ p.inbuf[ 2 ] ] << 8) | i64[ p.inbuf[ 3 ] ] ]
+            if [ ln > 262144 - 4 ]
+                p.dead[]
+                break
+            if [ p.in_n < 4 + ln ] break
+            out.push[ frame_parse[ @p.inbuf[ 4 ], ln ] ]
+            memmove[ p.inbuf, @p.inbuf[ 4 + ln ], p.in_n - 4 - ln ]
+            p.in_n -= 4 + ln
+        lk.unlock[]
+        return out
+
+    # a named peer whose line went: the others told
+    func lose [ p: Peer ]
+        nm : string '{p.name}'
+        say[ '{nm} left' ]
+        p.name = ''
+        for [ ch: string ] in p.joined
+            tell_channel[ ch, 'left\t{ch}\t{nm}', p ]
+        if [ !online[ nm, p ] ] tell_all[ 'gone\t{nm}', p ]
+
+    func online [ nm: string, but: Peer ] -> bool
+        for [ q: Peer ] in peers
+            if [ q != but && q.stage[] == 2 && q.name == nm ]
+                return true
+        return false
+
+    func tell_all [ head: string, but: Peer ]
+        for [ q: Peer ] in peers
+            if [ q != but && q.stage[] == 2 && q.name.count > 0 ]
+                q.tell[ head ]
+
+    func tell_channel [ ch: string, head: string, but: Peer ]
+        for [ q: Peer ] in peers
+            if [ q != but && q.stage[] == 2 && q.has_channel[ ch ] ]
+                q.tell[ head ]
+
+    func tell_name [ nm: string, head: string ]
+        for [ q: Peer ] in peers
+            if [ q.stage[] == 2 && q.name == nm ] q.tell[ head ]
+
+    func f [ fr: WireFrame, i: i32 ] -> string
+        if [ i < fr.fields.count ] return fr.fields[ i ]
+        return ''
+
+    # one frame from a peer
+    func take_frame [ p: Peer, fr: WireFrame ]
+        cmd : string f[ fr, 0 ]
+        if [ cmd == 'hello' ]
+            hello[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+            return
+        if [ p.name.count == 0 ]
+            p.tell[ 'refused\tsay hello first' ]
+            p.dead[]
+            return
+        if [ cmd == 'join' ] join[ p, f[ fr, 1 ] ]
+        el [ cmd == 'leave' ] leave[ p, f[ fr, 1 ] ]
+        el [ cmd == 'say' ]
+            said[ p, f[ fr, 1 ], f[ fr, 2 ], f[ fr, 3 ], f[ fr, 4 ] ]
+        el [ cmd == 'dm' ] dm[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'history' ]
+            history[ p, f[ fr, 1 ], f[ fr, 2 ].integer_value[],
+                     i32[ f[ fr, 3 ].integer_value[] ] ]
+        el [ cmd == 'search' ] search[ p, f[ fr, 1 ] ]
+        el [ cmd == 'topic' ] topic[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'who' ] who[ p, f[ fr, 1 ] ]
+        el [ cmd == 'channels' ] channels[ p ]
+        el [ cmd == 'files' ] files[ p, f[ fr, 1 ] ]
+        el [ cmd == 'get' ] get_file[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'piece' ]
+            off   : i64 [ f[ fr, 3 ].integer_value[] ]
+            total : i64 [ f[ fr, 4 ].integer_value[] ]
+            mtime : i64 [ f[ fr, 5 ].integer_value[] ]
+            piece[ p, f[ fr, 1 ], f[ fr, 2 ], off, total, mtime, fr ]
+        el [ cmd == 'rm' ] remove_file[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'private' ] make_private[ p, f[ fr, 1 ] ]
+        el [ cmd == 'invite' ] invite[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'archive' ] archive[ p, f[ fr, 1 ] ]
+        el [ cmd == 'drop' ] drop_channel[ p, f[ fr, 1 ] ]
+        el [ cmd == 'setting' ] setting_set[ p, f[ fr, 1 ], f[ fr, 2 ] ]
+        el [ cmd == 'admin' ] make_admin[ p, f[ fr, 1 ] ]
+        el [ cmd == 'people' ] people[ p ]
+        el p.tell[ 'error\tunknown: {cmd}' ]
+
+    # a sign-in refused: told why, logged, the line closed
+    func refuse [ p: Peer, nm: string, why: string ]
+        p.tell[ 'refused\t{why}' ]
+        say[ '{nm} refused: {why}' ]
+        p.dead[]
+
+    # a name signs in: the first time sets its password; an agent
+    # (name/agent) signs in on its person's
+    func hello [ p: Peer, nm: string, pw: string ]
+        if [ !name_ok[ nm ] ]
+            refuse[ p, nm, 'that name will not do' ]
+            return
+        sl : i32 [ nm.index_of[ '/' ] ]
+        acct : string [ (sl > 0) ? nm.mid[ 0, sl ] : nm ]
+        h : string pass_hash[ pw ]
+        if [ users.contains[ acct ] ]
+            if [ users[ acct ] != h ]
+                refuse[ p, nm, 'wrong password for {acct}' ]
+                return
+        el
+            if [ sl > 0 ]
+                refuse[ p, nm, '{acct} has no account here yet' ]
+                return
+            if [ pw.count < 4 ]
+                refuse[ p, nm, 'a password needs 4 letters' ]
+                return
+            users[ acct ] = h
+            save_users[]
+            say[ '{acct} made an account' ]
+            # the first account owns the server: its first admin
+            if [ admins[].count == 0 && (!owner || owner.count == 0) ]
+                file_append[ '{root}/admins.txt', acct ]
+                say[ '{acct} owns this server' ]
+        p.name    = nm
+        p.account = acct
+        role : string [ (is_admin[ acct ]) ? 'admin' : 'member' ]
+        p.tell[ 'welcome\t{nm}\t{role}' ]
+        say[ '{nm} signed in' ]
+
+    func join [ p: Peer, ch: string ]
+        if [ !channel_ok[ ch ] ]
+            p.tell[ 'error\ta channel is #letters' ]
+            return
+        if [ p.has_channel[ ch ] ] return
+        d : string channel_dir[ ch ]
+        # a new one: made by whoever may make channels here
+        if [ !is_folder[ d ] ]
+            if [ !may_create[ p ] ]
+                p.tell[ 'error\tonly admins make channels here' ]
+                return
+            make_dirs[ '{d}/files' ]
+            meta_set[ ch, 'owner', p.account ]
+        el [ !may_see[ p, ch ] ]
+            p.tell[ 'error\t{ch} is private: a member invites you' ]
+            return
+        make_dirs[ '{d}/files' ]
+        p.joined.push[ ch ]
+        tell_channel[ ch, 'joined\t{ch}\t{p.name}', null ]
+        tp : string file_text[ '{d}/topic.txt' ].trim[]
+        if [ tp.count > 0 ] p.tell[ 'topic\t{ch}\t\t{tp}' ]
+
+    func leave [ p: Peer, ch: string ]
+        for [ i: i32 0, i < p.joined.count, i += 1 ]
+            if [ p.joined[ i ] == ch ]
+                p.joined.remove[ i ]
+                tell_channel[ ch, 'left\t{ch}\t{p.name}', null ]
+                p.tell[ 'left\t{ch}\t{p.name}' ]
+                return
+
+    func clean [ text: string ] -> string
+        flat : string text_replace[ text, '\t', ' ' ]
+        return text_replace[ flat, '\n', ' ' ]
+
+    # a line in a channel; an agent's carries its turn and its state
+    # in it (say, step, done): a client draws a turn as one box
+    func said [ p: Peer, ch: string, text: string, turn: string,
+                state: string ]
+        if [ !p.has_channel[ ch ] ]
+            p.tell[ 'error\tjoin {ch} first' ]
+            return
+        if [ archived[ ch ] ]
+            p.tell[ 'error\t{ch} is archived: read only' ]
+            return
+        t : string clean[ text ]
+        if [ t.count == 0 ] return
+        id : i64 take_id[]
+        now : i64 unix_now[]
+        tn : string clean[ turn ]
+        st : string clean[ state ]
+        rest : string [ (tn.count > 0) ? '\t{tn}\t{st}' : '' ]
+        file_append[ '{channel_dir[ ch ]}/history.txt',
+                     '{id}\t{now}\t{p.name}\t{t}{rest}' ]
+        tell_channel[ ch,
+            'msg\t{id}\t{now}\t{ch}\t{p.name}\t{t}{rest}', null ]
+
+    func dm [ p: Peer, to: string, text: string ]
+        # several: a group of them and us
+        if [ to.index_of[ ',' ] >= 0 ]
+            group_say[ p, to, text ]
+            return
+        if [ !name_ok[ to ] ]
+            p.tell[ 'error\tno such person' ]
+            return
+        t : string clean[ text ]
+        if [ t.count == 0 ] return
+        id : i64 take_id[]
+        now : i64 unix_now[]
+        d : string dm_dir[ p.name, to ]
+        make_dirs[ d ]
+        file_append[ '{d}/history.txt', '{id}\t{now}\t{p.name}\t{t}' ]
+        head : string 'msg\t{id}\t{now}\t@{to}\t{p.name}\t{t}'
+        tell_name[ to, head ]
+        if [ to != p.name ] tell_name[ p.name, head ]
+
+    # the lines of a history file, oldest first
+    func history_lines [ file: string ] -> vec string
+        out : vec string []
+        for [ ln: string ] in file_text[ file ].split[ '\n' ]
+            if [ ln.count > 0 ] out.push[ ln ]
+        return out
+
+    # up to n lines before the id given (0: the newest), newest first
+    func history [ p: Peer, place: string, before: i64, n: i32 ]
+        talk : bool [ !place.starts_with[ '#' ] ]
+        other : string [ (place.starts_with[ '@' ])
+            ? place.mid[ 1, place.count - 1 ] : place ]
+        d : string [ (!talk) ? channel_dir[ place ]
+            : ((other.index_of[ ',' ] >= 0)
+               ? group_dir[ group_of[ p, other ] ]
+               : dm_dir[ p.name, other ]) ]
+        file : string '{d}/history.txt'
+        if [ !talk && !p.has_channel[ place ] ] return
+        lines : vec string history_lines[ file ]
+        want : i32 [ (n <= 0 || n > 500) ? 50 : n ]
+        sent : i32 [ 0 ]
+        for [ i: i32 i32[ lines.count ] - 1, i >= 0 && sent < want,
+              i -= 1 ]
+            ln : string lines[ i ]
+            tb : i32 [ ln.index_of[ '\t' ] ]
+            id : i64 [ ln.mid[ 0, tb ].integer_value[] ]
+            if [ before > 0 && id >= before ] continue
+            ws : vec string ln.split[ '\t' ]
+            if [ ws.count < 4 ] continue
+            said : string '{ws[ 0 ]}\t{ws[ 1 ]}\t{place}\t{ws[ 2 ]}'
+            turn : string [ (ws.count > 5)
+                ? '\t{ws[ 4 ]}\t{ws[ 5 ]}' : '' ]
+            p.tell[ 'old\t{said}\t{ws[ 3 ]}{turn}' ]
+            sent += 1
+
+    # lines holding the text, in the channels the peer is in
+    func search [ p: Peer, text: string ]
+        q : string text.lcase[]
+        if [ q.count == 0 ] return
+        found : i32 [ 0 ]
+        for [ ch: string ] in p.joined
+            for [ ln: string ] in history_lines[
+                    '{channel_dir[ ch ]}/history.txt' ]
+                if [ found >= 50 ] break
+                if [ ln.lcase[].index_of[ q ] < 0 ] continue
+                ws : vec string ln.split[ '\t' ]
+                if [ ws.count < 4 ] continue
+                hit : string '{ws[ 0 ]}\t{ws[ 1 ]}\t{ch}\t{ws[ 2 ]}'
+                p.tell[ 'found\t{hit}\t{ws[ 3 ]}' ]
+                found += 1
+        if [ found == 0 ] p.tell[ 'error\tnothing holds "{text}"' ]
+
+    func topic [ p: Peer, ch: string, text: string ]
+        if [ !p.has_channel[ ch ] || archived[ ch ] ] return
+        t : string clean[ text ]
+        file_write[ '{channel_dir[ ch ]}/topic.txt',
+                    cast @u8 [ t.chars ], t.count ]
+        tell_channel[ ch, 'topic\t{ch}\t{p.name}\t{t}', null ]
+
+    func who [ p: Peer, ch: string ]
+        # each name once, whole (claude is not solar/claude)
+        seen : vec string []
+        for [ q: Peer ] in peers
+            if [ q.stage[] != 2 || !q.has_channel[ ch ] ] continue
+            if [ !str_in[ seen, q.name ] ] seen.push[ q.name ]
+        p.tell[ 'who\t{ch}\t{names_but[ seen, "" ]}' ]
+
+    # the channels this one may see: a row each (private or public,
+    # archived, how many are in it now, its topic), then the end
+    func channels [ p: Peer ]
+        d : path '{root}/channels'
+        for [ e: path ] in d.ls[ null, false ]
+            if [ !e.is_dir[] ] continue
+            ch : string '#{e.filename[]}'
+            if [ !may_see[ p, ch ] ] continue
+            kind : string [ (is_private[ ch ]) ? 'private' : 'public' ]
+            ar : string [ (archived[ ch ]) ? '1' : '0' ]
+            n : i32 [ 0 ]
+            for [ q: Peer ] in peers
+                if [ q.stage[] == 2 && q.has_channel[ ch ] ] n += 1
+            tp : string file_text[ '{channel_dir[ ch ]}/topic.txt' ]
+            row : string '{ch}\t{kind}\t{ar}\t{n}'
+            p.tell[ 'chan\t{row}\t{clean[ tp.trim[] ]}' ]
+        p.tell[ 'chans_end' ]
+
+    # a channel's settings, a line each: key, tab, value
+    func meta_get [ ch: string, key: string ] -> string
+        tx : string file_text[ '{channel_dir[ ch ]}/meta.txt' ]
+        for [ ln: string ] in tx.split[ "\n" ]
+            if [ ln.starts_with[ '{key}\t' ] ]
+                return ln.mid[ key.count + 1, ln.count - key.count - 1 ]
+        return ''
+
+    func meta_set [ ch: string, key: string, val: string ]
+        tx : string file_text[ '{channel_dir[ ch ]}/meta.txt' ]
+        out : string ''
+        for [ ln: string ] in tx.split[ "\n" ]
+            if [ ln.count == 0 || ln.starts_with[ '{key}\t' ] ] continue
+            out = '{out}{ln}\n'
+        out = '{out}{key}\t{val}\n'
+        file_write[ '{channel_dir[ ch ]}/meta.txt',
+                    cast @u8 [ out.chars ], out.count ]
+
+    func is_private [ ch: string ] -> bool
+        return meta_get[ ch, 'private' ] == '1'
+
+    func archived [ ch: string ] -> bool
+        return meta_get[ ch, 'archived' ] == '1'
+
+    func members [ ch: string ] -> vec string
+        out : vec string []
+        for [ m: string ] in meta_get[ ch, 'members' ].split[ ',' ]
+            if [ m.count > 0 ] out.push[ m ]
+        return out
+
+    # a public one, or a private one it is a member of (an admin
+    # sees them all)
+    func may_see [ p: Peer, ch: string ] -> bool
+        if [ !is_private[ ch ] || is_admin[ p.account ] ] return true
+        return str_in[ members[ ch ], p.account ]
+
+    # the channel's owner, or an admin
+    func may_run [ p: Peer, ch: string ] -> bool
+        return is_admin[ p.account ]
+            || meta_get[ ch, 'owner' ] == p.account
+
+    # the server's admins (the first account the first of them)
+    func admins [] -> vec string
+        out : vec string []
+        for [ ln: string ] in file_text[ '{root}/admins.txt' ]
+                .split[ "\n" ]
+            if [ ln.trim[].count > 0 ] out.push[ ln.trim[] ]
+        return out
+
+    func is_admin [ acct: string ] -> bool
+        if [ owner && owner.count > 0 && acct == owner ] return true
+        return str_in[ admins[], acct ]
+
+    # a server setting: key, tab, value a line (create: all, admins)
+    func setting [ key: string ] -> string
+        tx : string file_text[ '{root}/settings.txt' ]
+        for [ ln: string ] in tx.split[ "\n" ]
+            if [ ln.starts_with[ '{key}\t' ] ]
+                return ln.mid[ key.count + 1, ln.count - key.count - 1 ]
+        return ''
+
+    func may_create [ p: Peer ] -> bool
+        return setting[ 'create' ] != 'admins' || is_admin[ p.account ]
+
+    # a private channel, made with this one its first member
+    func make_private [ p: Peer, ch: string ]
+        if [ !channel_ok[ ch ] ]
+            p.tell[ 'error\ta channel is #letters' ]
+            return
+        if [ is_folder[ channel_dir[ ch ] ] ]
+            p.tell[ 'error\t{ch} is there already' ]
+            return
+        if [ !may_create[ p ] ]
+            p.tell[ 'error\tonly admins make channels here' ]
+            return
+        make_dirs[ '{channel_dir[ ch ]}/files' ]
+        meta_set[ ch, 'owner', p.account ]
+        meta_set[ ch, 'private', '1' ]
+        meta_set[ ch, 'members', p.account ]
+        say[ '{p.account} made {ch}, private' ]
+        join[ p, ch ]
+
+    # one asked into a private channel by a member (or an admin); a
+    # public one is open, they are only told
+    func invite [ p: Peer, ch: string, nm: string ]
+        if [ !channel_ok[ ch ] || !is_folder[ channel_dir[ ch ] ] ]
+            p.tell[ 'error\tno channel {ch}' ]
+            return
+        if [ !name_ok[ nm ] ]
+            p.tell[ 'error\tno such person' ]
+            return
+        if [ is_private[ ch ] ]
+            ms : vec string members[ ch ]
+            if [ !str_in[ ms, p.account ] && !is_admin[ p.account ] ]
+                p.tell[ 'error\tonly its members invite to {ch}' ]
+                return
+            if [ !str_in[ ms, nm ] ]
+                ms.push[ nm ]
+                all : string ''
+                for [ m: string ] in ms
+                    all = (all.count > 0) ? '{all},{m}' : m
+                meta_set[ ch, 'members', all ]
+        tell_name[ nm, 'invited\t{ch}\t{p.name}' ]
+        tell_channel[ ch, 'note\t{ch}\t{p.name} invited {nm}', null ]
+
+    # read only from now: its history and files stay
+    func archive [ p: Peer, ch: string ]
+        if [ !channel_ok[ ch ] || !is_folder[ channel_dir[ ch ] ] ]
+            return
+        if [ !may_run[ p, ch ] ]
+            p.tell[ 'error\tonly its owner or an admin archives {ch}' ]
+            return
+        meta_set[ ch, 'archived', '1' ]
+        say[ '{p.account} archived {ch}' ]
+        tell_channel[ ch, 'archived\t{ch}\t{p.name}', null ]
+
+    # gone for everyone: its folder moved aside under removed/
+    func drop_channel [ p: Peer, ch: string ]
+        d : string channel_dir[ ch ]
+        if [ !channel_ok[ ch ] || !is_folder[ d ] ] return
+        if [ !may_run[ p, ch ] ]
+            p.tell[ 'error\tonly its owner or an admin removes {ch}' ]
+            return
+        tell_channel[ ch, 'dropped\t{ch}\t{p.name}', null ]
+        for [ q: Peer ] in peers
+            for [ i: i32 0, i < q.joined.count, i += 1 ]
+                if [ q.joined[ i ] == ch ]
+                    q.joined.remove[ i ]
+                    break
+        make_dirs[ '{root}/removed' ]
+        bare : string ch.mid[ 1, ch.count - 1 ]
+        to : string '{root}/removed/{bare}-{unix_now[]}'
+        rename[ d.chars, to.chars ]
+        say[ '{p.account} removed {ch}' ]
+
+    # a server setting, by an admin
+    func setting_set [ p: Peer, key: string, val: string ]
+        if [ !is_admin[ p.account ] ]
+            p.tell[ 'error\tonly an admin changes settings' ]
+            return
+        if [ key != 'create' || (val != 'all' && val != 'admins') ]
+            p.tell[ 'error\tsettings: create all, create admins' ]
+            return
+        tx : string file_text[ '{root}/settings.txt' ]
+        out : string ''
+        for [ ln: string ] in tx.split[ "\n" ]
+            if [ ln.count == 0 || ln.starts_with[ '{key}\t' ] ] continue
+            out = '{out}{ln}\n'
+        out = '{out}{key}\t{val}\n'
+        file_write[ '{root}/settings.txt', cast @u8 [ out.chars ],
+                    out.count ]
+        p.tell[ 'note\t\tchannels are made by {val} now' ]
+
+    # the server's people (not their agents), for an invite; admins
+    # marked with a star
+    func people [ p: Peer ]
+        out : string ''
+        for [ h: string, nm: string ] in users
+            if [ nm.index_of[ '/' ] >= 0 ] continue
+            mk : string [ (is_admin[ nm ]) ? '*' : '' ]
+            out = (out.count > 0) ? '{out},{mk}{nm}' : '{mk}{nm}'
+        p.tell[ 'people\t{out}' ]
+
+    # another admin, by an admin
+    func make_admin [ p: Peer, nm: string ]
+        if [ !is_admin[ p.account ] ]
+            p.tell[ 'error\tonly an admin makes admins' ]
+            return
+        if [ !users.contains[ nm ] ]
+            p.tell[ 'error\t{nm} has no account here' ]
+            return
+        if [ !is_admin[ nm ] ] file_append[ '{root}/admins.txt', nm ]
+        tell_name[ nm, 'note\t\tyou are an admin here now' ]
+        p.tell[ 'note\t\t{nm} is an admin now' ]
+
+    # a group's people: this one and those named
+    func group_of [ p: Peer, to: string ] -> vec string
+        v : vec string []
+        v.push[ p.name ]
+        for [ n: string ] in to.split[ ',' ]
+            t : string n.trim[]
+            if [ t.count > 0 && name_ok[ t ] ] v.push[ t ]
+        return names_sorted[ v ]
+
+    func group_dir [ v: vec string ] -> string
+        out : string ''
+        for [ n: string ] in v
+            t : string text_replace[ n, '/', '~' ]
+            out = (out.count > 0) ? '{out}+{t}' : t
+        return '{root}/dm/{out}'
+
+    # a line to a group: kept with it, each told with the others as
+    # its place
+    func group_say [ p: Peer, to: string, text: string ]
+        g : vec string group_of[ p, to ]
+        if [ g.count < 3 ]
+            p.tell[ 'error\ta group is two people or more besides you' ]
+            return
+        t : string clean[ text ]
+        if [ t.count == 0 ] return
+        id : i64 take_id[]
+        now : i64 unix_now[]
+        d : string group_dir[ g ]
+        make_dirs[ d ]
+        file_append[ '{d}/history.txt', '{id}\t{now}\t{p.name}\t{t}' ]
+        for [ m: string ] in g
+            pl : string names_but[ g, m ]
+            tell_name[ m, 'msg\t{id}\t{now}\t@{pl}\t{p.name}\t{t}' ]
+
+    # a file's hash, kept by its time and size
+    func hash_of [ full: string, mtime: i64, size: i64 ] -> string
+        k : string '{full}|{mtime}|{size}'
+        if [ hashes.contains[ k ] ] return hashes[ k ]
+        h : string sha256_file[ full ]
+        hashes[ k ] = h
+        return h
+
+    func files [ p: Peer, ch: string ]
+        if [ !p.has_channel[ ch ] ] return
+        base : string '{channel_dir[ ch ]}/files'
+        rels : vec string []
+        walk_files[ base, '', rels ]
+        for [ r: string ] in rels
+            full : string '{base}/{r}'
+            mt : i64 file_mtime[ full ]
+            sz : i64 file_size[ full ]
+            h : string hash_of[ full, mt, sz ]
+            p.tell[ 'file\t{ch}\t{r}\t{sz}\t{mt}\t{h}' ]
+        p.tell[ 'files_end\t{ch}' ]
+
+    func get_file [ p: Peer, ch: string, rel: string ]
+        if [ !p.has_channel[ ch ] || !rel_ok[ rel ] ] return
+        full : string '{channel_dir[ ch ]}/files/{rel}'
+        sz : i64 file_size[ full ]
+        if [ sz < 0 ]
+            p.tell[ 'error\tno file {rel}' ]
+            return
+        p.sends.push[ Sending [ ch: ch, rel: rel, path: full, off: 0,
+            total: sz, mtime: file_mtime[ full ] ] ]
+
+    func piece [ p: Peer, ch: string, rel: string, off: i64,
+                 total: i64, mtime: i64, fr: WireFrame ]
+        if [ !p.has_channel[ ch ] || !rel_ok[ rel ] ] return
+        if [ archived[ ch ] ] return
+        full : string '{channel_dir[ ch ]}/files/{rel}'
+        data : @u8 [ (fr.n > 0) ? @fr.data[ 0 ] : null ]
+        if [ !p.take_piece[ full, off, total, data, fr.n ] ] return
+        set_mtime[ full, mtime ]
+        h : string hash_of[ full, mtime, total ]
+        what : string '{ch}\t{rel}\t{total}\t{mtime}\t{h}'
+        tell_channel[ ch, 'changed\t{what}\t{p.name}', null ]
+
+    func remove_file [ p: Peer, ch: string, rel: string ]
+        if [ !p.has_channel[ ch ] || !rel_ok[ rel ] ] return
+        if [ archived[ ch ] ] return
+        full : string '{channel_dir[ ch ]}/files/{rel}'
+        if [ unlink[ full.chars ] != 0 ] return
+        tell_channel[ ch, 'removed\t{ch}\t{rel}\t{p.name}', null ]

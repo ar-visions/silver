@@ -1,0 +1,192 @@
+extend commune
+
+# a file as the server lists it
+class Remote
+    public size  : i64
+    public mtime : i64
+    public hash  : string
+
+# one channel's workspace on this computer: the server's files
+# mirrored into a folder, changes going both ways
+class Space
+    public link    : Link
+    public ch      : string
+    public folder  : string
+    # the server's listing, by rel path
+    public remote  : map Remote [ string ]
+    # each local file as last seen: 'mtime|size'
+    public known   : map string [ string ]
+    # files asked for and not yet whole
+    public asked   : map string [ string ]
+    public listed  : bool
+    public scanned : i64
+
+    func init []
+        remote = map Remote [ string ] []
+        known  = map string [ string ] []
+        asked  = map string [ string ] []
+
+# every workspace, kept in step; its folders are the user's own
+class Sync
+    public app    : commune
+    intern spaces : vec Space
+    intern last   : i64
+
+    func init []
+        spaces = vec Space []
+
+    # ~/commune/<host>_<port>/<channel>
+    func folder [ l: Link, ch: string ] -> string
+        home : cstr [ getenv[ 'HOME' ] ]
+        base : string [ (home) ? string [ home ] : '.' ]
+        nm : string ch.mid[ 1, ch.count - 1 ]
+        return '{base}/commune/{l.host}_{l.port}/{nm}'
+
+    func space_of [ l: Link, ch: string ] -> Space
+        for [ s: Space ] in spaces
+            if [ s.link == l && s.ch == ch ] return s
+        return null
+
+    # a channel joined: its folder, scanned once the list is in
+    func joined [ l: Link, ch: string ]
+        s : Space space_of[ l, ch ]
+        if [ !s ]
+            s = Space [ link: l, ch: ch, folder: folder[ l, ch ] ]
+            spaces.push[ s ]
+        make_dirs[ s.folder ]
+        s.listed = false
+        s.remote = map Remote [ string ] []
+
+    func key_of [ full: string ] -> string
+        return '{file_mtime[ full ]}|{file_size[ full ]}'
+
+    # a frame about files, from a server
+    func heard [ l: Link, fr: WireFrame ]
+        f : vec string fr.fields
+        cmd : string f[ 0 ]
+        ch : string [ (f.count > 1) ? f[ 1 ] : '' ]
+        s : Space space_of[ l, ch ]
+        if [ !s ] return
+        if [ cmd == 'file' ]
+            if [ f.count < 6 ] return
+            s.remote[ f[ 2 ] ] = Remote [
+                size: f[ 3 ].integer_value[],
+                mtime: f[ 4 ].integer_value[], hash: f[ 5 ] ]
+        el [ cmd == 'files_end' ]
+            s.listed = true
+            reconcile[ s ]
+        el [ cmd == 'changed' ]
+            if [ f.count < 7 ] return
+            rel : string f[ 2 ]
+            r : Remote [ size: f[ 3 ].integer_value[],
+                mtime: f[ 4 ].integer_value[], hash: f[ 5 ] ]
+            s.remote[ rel ] = r
+            full : string '{s.folder}/{rel}'
+            sz : i64 file_size[ full ]
+            if [ sz == r.size && sha256_file[ full ] == r.hash ]
+                set_mtime[ full, r.mtime ]
+                s.known[ rel ] = key_of[ full ]
+                return
+            fetch[ s, rel ]
+        el [ cmd == 'removed' ]
+            rel : string f[ 2 ]
+            s.remote.rm[ rel ]
+            full : string '{s.folder}/{rel}'
+            if [ file_size[ full ] >= 0 ] unlink[ full.chars ]
+            s.known.rm[ rel ]
+        el [ cmd == 'piece' ]
+            if [ f.count < 6 ] return
+            rel : string f[ 2 ]
+            if [ !rel_ok[ rel ] ] return
+            full : string '{s.folder}/{rel}'
+            data : @u8 [ (fr.n > 0) ? @fr.data[ 0 ] : null ]
+            done : bool l.take_piece[ full, f[ 3 ].integer_value[],
+                f[ 4 ].integer_value[], data, fr.n ]
+            if [ !done ] return
+            set_mtime[ full, f[ 5 ].integer_value[] ]
+            s.known[ rel ] = key_of[ full ]
+            s.asked.rm[ rel ]
+
+    func fetch [ s: Space, rel: string ]
+        if [ s.asked.contains[ rel ] ] return
+        s.asked[ '{rel}' ] = rel
+        s.link.emit[ 'get\t{s.ch}\t{rel}' ]
+
+    func send_up [ s: Space, rel: string ]
+        full : string '{s.folder}/{rel}'
+        s.known[ rel ] = key_of[ full ]
+        s.link.send_file[ s.ch, rel, full ]
+
+    # the server's list against the folder: the newer side wins
+    func reconcile [ s: Space ]
+        rels : vec string []
+        walk_files[ s.folder, '', rels ]
+        for [ rel: string ] in rels
+            full : string '{s.folder}/{rel}'
+            if [ !s.remote.contains[ rel ] ]
+                send_up[ s, rel ]
+                continue
+            r : Remote s.remote[ rel ]
+            mt : i64 file_mtime[ full ]
+            if [ file_size[ full ] == r.size
+                 && sha256_file[ full ] == r.hash ]
+                if [ mt != r.mtime ] set_mtime[ full, r.mtime ]
+                s.known[ rel ] = key_of[ full ]
+                continue
+            if [ mt > r.mtime ] send_up[ s, rel ]
+            el fetch[ s, rel ]
+        for [ r: Remote, rel: string ] in s.remote
+            if [ file_size[ '{s.folder}/{rel}' ] < 0 ]
+                if [ s.known.contains[ rel ] ]
+                    # it was here and went: gone for everyone
+                    s.link.emit[ 'rm\t{s.ch}\t{rel}' ]
+                    s.known.rm[ rel ]
+                    s.remote.rm[ rel ]
+                el fetch[ s, rel ]
+        s.scanned = unix_now[]
+
+    # the folder looked over for changes since the last look
+    func scan [ s: Space ]
+        rels : vec string []
+        walk_files[ s.folder, '', rels ]
+        for [ rel: string ] in rels
+            full : string '{s.folder}/{rel}'
+            k : string key_of[ full ]
+            if [ s.known.contains[ rel ] && s.known[ rel ] == k ]
+                continue
+            if [ s.asked.contains[ rel ] ] continue
+            # a file still being written waits a moment
+            if [ unix_now[] - file_mtime[ full ] < 1 ] continue
+            send_up[ s, rel ]
+        gone : vec string []
+        for [ v: string, rel: string ] in s.known
+            if [ file_size[ '{s.folder}/{rel}' ] < 0 ] gone.push[ rel ]
+        for [ rel: string ] in gone
+            s.known.rm[ rel ]
+            s.remote.rm[ rel ]
+            s.link.emit[ 'rm\t{s.ch}\t{rel}' ]
+        s.scanned = unix_now[]
+
+    # a file the user names, copied into the workspace and sent
+    func send_in [ l: Link, ch: string, given: string ]
+        s : Space space_of[ l, ch ]
+        if [ !s ]
+            app.status[ l.key, 'Join {ch} first', 2 ]
+            return
+        src : path [ given ]
+        if [ !src.exists[] ]
+            app.status[ l.key, 'No file {given}', 2 ]
+            return
+        nm : string src.filename[]
+        dest : string '{s.folder}/{nm}'
+        if [ dest != '{src}' ] src.cp[ path [ dest ], false, false ]
+        send_up[ s, nm ]
+        app.status[ l.key, 'Sending {nm} to {ch}', 1 ]
+
+    # every two seconds each workspace is looked over
+    func tick []
+        now : i64 unix_now[]
+        if [ now - last < 2 ] return
+        last = now
+        for [ s: Space ] in spaces
+            if [ s.listed && s.link.up ] scan[ s ]

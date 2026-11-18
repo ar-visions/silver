@@ -1,0 +1,810 @@
+# chess: the set on its board, a game against Stockfish
+export 1.0.0
+export software ['games']
+
+import <string.h>
+import <stdio.h>
+import <stdlib.h>
+import <unistd.h>
+import <fcntl.h>
+import <signal.h>
+import <sys/wait.h>
+import vec
+import img
+import gltf
+import trinity
+
+# the engine: a program of its own, spoken to over pipes
+import stockfish/17.1 from https://github.com/official-stockfish/Stockfish/archive/refs/tags/sf_17.1.tar.gz
+    CXX={install}/bin/clang++
+    EXTRALDFLAGS=-fuse-ld=lld
+    > make -C src net
+    > make -C src -j build ARCH=x86-64-avx2 COMP=clang CXX=$CXX
+    > cp src/stockfish {install}/bin/stockfish
+
+import Rules
+
+# the pieces lit by a key light and a cool fill
+ModelViewProject ChessLit
+    mutable eye  : vec4f
+    # the material's colour times this: ivory, ebony, the board
+    mutable tint : vec4f
+
+    attrib color : LayoutBinding [ type:typeid[ Surface ],
+        id:Surface.color, count:1, format: typeid[ rgba8 ] ]
+
+    attrib a_pos    : VertexInput [ type:typeid[ vec3f ] ]
+    attrib a_normal : VertexInput [ type:typeid[ vec3f ] ]
+
+    attrib v_world_pos : VertexOutput [ type:typeid[ vec3f ] ]
+    attrib v_normal    : VertexOutput [ type:typeid[ vec3f ] ]
+
+    attrib fragColor : FragmentOutput [ type:typeid[ vec4f ] ]
+
+    func init [ ]
+        model = mat4f.identity[]
+        view  = mat4f.identity[]
+        proj  = mat4f.identity[]
+        tint  = vec4f [ 1.0, 1.0, 1.0, 1.0 ]
+
+    func pow5 [ x: float ] -> GLSL float {
+        float x2 = x * x;
+        return x2 * x2 * x;
+    }
+
+    func D_GGX [ r: float, NdotH: float ] -> GLSL float {
+        float a2 = r * r * r * r;
+        float d  = NdotH * NdotH * (a2 - 1.0) + 1.0;
+        return a2 / (3.14159265359 * d * d);
+    }
+
+    func G_Smith [ r: float, NdotV: float,
+                   NdotL: float ] -> GLSL float {
+        float k  = (r + 1.0) * (r + 1.0) / 8.0;
+        float gv = NdotV / max(NdotV * (1.0 - k) + k, 0.0001);
+        float gl = NdotL / max(NdotL * (1.0 - k) + k, 0.0001);
+        return gv * gl;
+    }
+
+    func BRDF [ L: vec3f, V: vec3f, N: vec3f, albedo: vec3f,
+                r: float ] -> GLSL vec3f {
+        vec3  H     = normalize(L + V);
+        float NdotL = max(dot(N, L), 0.0);
+        float NdotV = max(dot(N, V), 0.0);
+        float NdotH = max(dot(N, H), 0.0);
+        float HdotV = max(dot(H, V), 0.0);
+        vec3  F  = vec3(0.04) + vec3(0.96) * pow5(1.0 - HdotV);
+        float D  = D_GGX(r, NdotH);
+        float G  = G_Smith(r, NdotV, NdotL);
+        vec3  sp = (D * F * G) / max(4.0 * NdotV * NdotL, 0.0001);
+        vec3  df = (vec3(1.0) - F) * albedo / 3.14159265359;
+        return (df + sp) * NdotL;
+    }
+
+    func vertex [] -> GLSL none {
+        vec4 wp     = ubo.model * vec4(a_pos, 1.0);
+        v_world_pos = wp.xyz;
+        v_normal    = mat3(ubo.model) * a_normal;
+        gl_Position = ubo.proj * ubo.view * wp;
+    }
+
+    # the material has no picture: its colour is the 1x1 texel
+    func fragment [] -> GLSL none {
+        vec3  albedo = pow(texture(color, vec2(0.5)).rgb, vec3(2.2))
+                     * ubo.tint.rgb;
+        vec3  N  = normalize(v_normal);
+        vec3  V  = normalize(ubo.eye.xyz - v_world_pos);
+        vec3  L1 = normalize(vec3( 0.45, 0.85,  0.55));
+        vec3  L2 = normalize(vec3(-0.60, 0.25, -0.50));
+        vec3  c  = BRDF(L1, V, N, albedo, 0.35)
+                 * vec3(1.0, 0.97, 0.92) * 3.0
+                 + BRDF(L2, V, N, albedo, 0.35)
+                 * vec3(0.55, 0.65, 0.9) * 0.8
+                 + albedo * 0.10;
+        c = c / (c + vec3(1.0));
+        fragColor = vec4(pow(c, vec3(1.0 / 2.2)), 1.0);
+    }
+
+# the picture laid over the window, the game's words on it
+element ChessLayer
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public tex  : Texture
+    public note : string
+    public foot : string
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !tex ] return
+        cv : Canvas [ w.screen ]
+        cv.draw_image[ tex, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                   h: bounds.h ] ]
+        chart_font[ cv, 'SemiBold', 22.0 ]
+        if [ note ]
+            chart_text[ cv, note, 24.0, 16.0, bounds.w - 48.0, 32.0,
+                        0.0, '#f0ead8' ]
+        chart_font[ cv, 'Regular', 17.0 ]
+        if [ foot ]
+            chart_text[ cv, foot, 24.0, bounds.h - 44.0,
+                        bounds.w - 48.0, 28.0, 0.0, '#f0ead8a0' ]
+
+# Stockfish on two pipes, spoken to in UCI
+class UciEngine
+    public  pid     : i32
+    public  to_fd   : i32 [ -1 ]
+    public  from_fd : i32 [ -1 ]
+    mutable buf     : string [ '' ]
+    mutable best    : string
+
+    func start [ exe: path ] -> bool
+        pin  : local i32 [ 2 ]
+        pout : local i32 [ 2 ]
+        if [ pipe[ @pin[ 0 ] ] != 0 || pipe[ @pout[ 0 ] ] != 0 ]
+            return false
+        name : string 'stockfish'
+        p : i32 [ fork[] ]
+        if [ p == 0 ]
+            dup2[ pin[ 0 ], 0 ]
+            dup2[ pout[ 1 ], 1 ]
+            close[ pin[ 0 ] ]
+            close[ pin[ 1 ] ]
+            close[ pout[ 0 ] ]
+            close[ pout[ 1 ] ]
+            execl[ exe.chars, name.chars, null ]
+            _exit[ 1 ]
+        close[ pin[ 0 ] ]
+        close[ pout[ 1 ] ]
+        if [ p < 0 ]
+            close[ pin[ 1 ] ]
+            close[ pout[ 0 ] ]
+            return false
+        pid     = p
+        to_fd   = pin[ 1 ]
+        from_fd = pout[ 0 ]
+        fcntl[ from_fd, F_SETFL, O_NONBLOCK ]
+        post[ 'uci' ]
+        post[ 'isready' ]
+        return true
+
+    func post [ words: string ]
+        if [ to_fd < 0 ] return
+        s : string '{words}\n'
+        write[ to_fd, s.chars, s.count ]
+
+    # what the engine has said since: its best move is kept
+    func pump []
+        if [ from_fd < 0 ] return
+        b : local i8 [ 4096 ]
+        while [ true ]
+            n : i64 [ read[ from_fd, @b[ 0 ], 4095 ] ]
+            if [ n <= 0 ] break
+            b[ n ] = 0
+            got : string [ @b[ 0 ] ]
+            buf = '{buf}{got}'
+        while [ true ]
+            nl : i32 [ buf.index_of[ "\n" ] ]
+            if [ nl < 0 ] break
+            words : buf.mid[ 0, nl ]
+            buf = buf.mid[ nl + 1, buf.count - nl - 1 ]
+            if [ words.starts_with[ 'bestmove ' ] ]
+                rest : words.mid[ 9, words.count - 9 ]
+                sp : i32 [ rest.index_of[ " " ] ]
+                best = (sp > 0) ? rest.mid[ 0, sp ] : rest
+
+    func stop []
+        if [ pid > 0 ]
+            post[ 'quit' ]
+            kill[ pid, SIGTERM ]
+            waitpid[ pid, null, 0 ]
+        if [ to_fd >= 0 ] close[ to_fd ]
+        if [ from_fd >= 0 ] close[ from_fd ]
+        pid = 0
+        to_fd = -1
+        from_fd = -1
+
+    func dealloc []
+        stop[]
+
+# the set's node names in the file, by piece kind 1..6
+func set_node_name [ kind: i32 ] -> string
+    names : vec string [] [ '', 'Cube.028', 'Cube.024', 'Cube.018',
+                            'Cube.019', 'Cube.017', 'Cube.022' ]
+    return names[ kind ]
+
+func kind_word [ kind: i32 ] -> string
+    names : vec string [] [ '', 'pawn', 'knight', 'bishop', 'rook',
+                            'queen', 'king' ]
+    return names[ kind ]
+
+element chess : trinity
+    public  width      : i32    [ 1280 ]
+    public  height     : i32    [ 800 ]
+    public  title      : string [ 'chess' ]
+    public  model_path : path   [ 'models/chess-set.glb' ]
+    # the engine's time a move, in ms
+    public  think_ms   : i32    [ 800 ]
+    public  layer      : ChessLayer
+    mutable lit_w      : ChessLit
+    mutable lit_b      : ChessLit
+    mutable lit_board  : ChessLit
+    mutable gmodel     : GltfModel
+    mutable mdl_w      : Model
+    mutable mdl_b      : Model
+    mutable mdl_board  : Model
+    mutable target     : Render
+    mutable view_m     : mat4f
+    mutable proj_m     : mat4f
+    mutable yaw        : f32
+    mutable pitch      : f32    [ 0.78 ]
+    mutable dist       : f32    [ 27.0 ]
+    mutable yaw_to     : f32
+    mutable pitch_to   : f32    [ 0.78 ]
+    mutable dist_to    : f32    [ 27.0 ]
+    mutable dragging   : bool
+    mutable lastx      : f32
+    mutable lasty      : f32
+    mutable press_x    : f32
+    mutable press_y    : f32
+    # a square is this wide; the board's half width
+    mutable sq         : f32    [ 1.9 ]
+    mutable half_w     : f32
+    # the pieces: their nodes, colour, kind, square (-1 off), where
+    # each is drawn and where it goes
+    mutable pnode      : vec Node
+    mutable pwhite     : vec bool
+    mutable pkind      : vec i32
+    mutable pspare     : vec bool
+    mutable psq        : vec i32
+    mutable pbase      : vec f32
+    mutable pat        : vec vec3f
+    mutable pgoal      : vec vec3f
+    mutable pos        : Position
+    mutable history    : vec Position
+    mutable played     : vec string
+    mutable sel        : i32    [ -1 ]
+    mutable engine     : UciEngine
+    mutable thinking   : bool
+    mutable drop_best  : bool
+    mutable over       : string
+    mutable note       : string
+
+    func init []
+        animated = true
+        pos = Position []
+        pos.start[]
+        history = vec Position []
+        played  = vec string []
+
+    public func on_press [ ev: Event ]
+        dragging = true
+        lastx   = ev.mouse.pos.x
+        lasty   = ev.mouse.pos.y
+        press_x = ev.mouse.pos.x
+        press_y = ev.mouse.pos.y
+
+    # a release that did not drag picks a square
+    public func on_release [ ev: Event ]
+        dragging = false
+        mx : f32 [ ev.mouse.pos.x - press_x ]
+        my : f32 [ ev.mouse.pos.y - press_y ]
+        if [ mx * mx + my * my > 16.0 ] return
+        press_x = -1e9
+        s : i32 [ square_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
+        if [ s >= 0 ] pick[ s ]
+
+    public func on_move [ ev: Event ]
+        if [ !dragging ] return
+        if [ ev.mouse.state == 0 ]
+            dragging = false
+            return
+        dx : f32 [ ev.mouse.pos.x - lastx ]
+        dy : f32 [ ev.mouse.pos.y - lasty ]
+        lastx = ev.mouse.pos.x
+        lasty = ev.mouse.pos.y
+        yaw_to   += dx * 0.008
+        pitch_to  = clamp[ pitch_to + dy * 0.008, 0.15, 1.5 ]
+
+    public func on_wheel [ ev: Event ]
+        zf : f32 [ 1.0 - f32[ ev.mouse.wheel_delta.y ] * 0.05 ]
+        dist_to = clamp[ dist_to * zf, 6.0, 80.0 ]
+
+    # ctrl / cmd + z takes a move back, ctrl / cmd + n starts over
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state || !(ev.key.ctrl || ev.key.meta) ] return
+        if [ ev.key.unicode == 90 ] undo[]
+        if [ ev.key.unicode == 78 ] new_game[]
+
+    # the last move taken back; the engine's with it
+    action func undo []
+        if [ history.count == 0 ] return
+        if [ thinking ]
+            engine.post[ 'stop' ]
+            drop_best = true
+            thinking  = false
+        n : i32 [ (!pos.white || history.count < 2) ? 1 : 2 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            pos = history[ history.count - 1 ]
+            history.pop[]
+            played.pop[]
+        sel  = -1
+        over = null
+        sync_pieces[]
+        log 'chess: undo, {played.count} plies stand'
+
+    action func new_game []
+        if [ thinking ]
+            engine.post[ 'stop' ]
+            drop_best = true
+            thinking  = false
+        pos = Position []
+        pos.start[]
+        history.clear[]
+        played.clear[]
+        sel  = -1
+        over = null
+        sync_pieces[]
+
+    # the square under a window point: the ray through it meets
+    # the board's top
+    func square_at [ mx: f32, my: f32 ] -> i32
+        if [ !bounds || !target ] return -1
+        vp  : mat4f [ proj_m.mul[ view_m ] ]
+        inv : mat4f [ vp.inverse[] ]
+        nx  : f32 [ mx / bounds.w * 2.0 - 1.0 ]
+        ny  : f32 [ my / bounds.h * 2.0 - 1.0 ]
+        n4  : vec4f [ inv.mul_v4[ vec4f [ nx, ny, 0.0, 1.0 ] ] ]
+        f4  : vec4f [ inv.mul_v4[ vec4f [ nx, ny, 1.0, 1.0 ] ] ]
+        n3  : vec3f [ n4.x / n4.w, n4.y / n4.w, n4.z / n4.w ]
+        f3  : vec3f [ f4.x / f4.w, f4.y / f4.w, f4.z / f4.w ]
+        dy  : f32 [ f3.y - n3.y ]
+        if [ dy == 0.0 ] return -1
+        t   : f32 [ 0.0 - n3.y / dy ]
+        if [ t < 0.0 ] return -1
+        x   : f32 [ n3.x + (f3.x - n3.x) * t ]
+        z   : f32 [ n3.z + (f3.z - n3.z) * t ]
+        file : i32 [ i32[ floor[ x / sq + 4.0 ] ] ]
+        rank : i32 [ i32[ floor[ 4.0 - z / sq ] ] ]
+        if [ file < 0 || file > 7 || rank < 0 || rank > 7 ] return -1
+        return sq_of[ file, rank ]
+
+    # the first click chooses a white piece, the next its square
+    func pick [ s: i32 ]
+        if [ over || thinking ] return
+        p : i32 [ pos.at[ s ] ]
+        if [ sel < 0 ]
+            if [ p > 0 ] sel = s
+            return
+        if [ s == sel ]
+            sel = -1
+            return
+        ms : pos.moves[]
+        for [ m: Move ] in ms
+            if [ m.from == sel && m.to == s
+                 && (m.promo == 0 || m.promo == 5) ]
+                sel = -1
+                apply_move[ m ]
+                return
+        sel = (p > 0) ? s : -1
+
+    func apply_move [ m: Move ]
+        u : pos.uci[ m ]
+        history.push[ pos.clone[] ]
+        played.push[ u ]
+        pos.make[ m ]
+        sync_pieces[]
+        log 'chess: {u}'
+        ms : pos.moves[]
+        if [ ms.count == 0 ]
+            if [ pos.in_check[ pos.white ] ]
+                over = (pos.white) ? 'Checkmate. Black wins'
+                                   : 'Checkmate. White wins'
+            el
+                over = 'Stalemate'
+            return
+        if [ pos.half >= 100 ]
+            over = 'Draw: fifty moves without progress'
+            return
+        if [ !pos.white ] ask_engine[]
+
+    func ask_engine []
+        if [ !engine ]
+            engine = UciEngine []
+            exe : path '{path.path_startup[]}/install/bin/stockfish'
+            if [ !engine.start[ exe ] ]
+                log 'chess: no engine at {exe}'
+                engine = null
+                return
+        line : string 'position startpos'
+        if [ played.count > 0 ]
+            line = '{line} moves'
+            for [ u: string ] in played
+                line = '{line} {u}'
+        engine.post[ line ]
+        engine.post[ 'go movetime {think_ms}' ]
+        thinking = true
+
+    func engine_tick []
+        if [ !engine ] return
+        engine.pump[]
+        if [ !engine.best ] return
+        best : engine.best
+        engine.best = null
+        if [ drop_best ]
+            drop_best = false
+            return
+        if [ !thinking ] return
+        thinking = false
+        m : pos.from_uci[ best ]
+        if [ m.from < 0 ]
+            log 'chess: the engine named no legal move: {best}'
+            return
+        apply_move[ m ]
+
+    func square_place [ s: i32, base: f32 ] -> vec3f
+        return vec3f [ (f32[ file_of[ s ] ] - 3.5) * sq, base,
+                       (3.5 - f32[ rank_of[ s ] ]) * sq ]
+
+    # pieces off the board stand in rows beside it, each side's
+    # captures on that side; spare queens wait out of sight
+    func stash_place [ white: bool, slot: i32, base: f32 ] -> vec3f
+        side : f32 [ (white) ? 0.0 - 1.0 : 1.0 ]
+        col  : i32 [ slot / 8 ]
+        row  : i32 [ slot % 8 ]
+        x    : f32 [ side * (half_w + 2.2 + f32[ col ] * 1.7) ]
+        return vec3f [ x, base, (f32[ row ] - 3.5) * sq ]
+
+    # every node of a colour and kind takes a square holding that
+    # piece, the ones already there first; the rest leave the board
+    func sync_pieces []
+        if [ !pnode ] return
+        n : i32 [ pnode.count ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ psq[ i ] >= 0 ]
+                v : i32 [ pos.at[ psq[ i ] ] ]
+                want : i32 [ (pwhite[ i ]) ? pkind[ i ]
+                                         : 0 - pkind[ i ] ]
+                if [ v != want ] psq[ i ] = -1
+        for [ s: i32 0, s < 64, s += 1 ]
+            v : i32 [ pos.at[ s ] ]
+            if [ v == 0 ] continue
+            held : bool [ false ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ psq[ i ] == s ] held = true
+            if [ held ] continue
+            k : i32 [ piece_kind[ v ] ]
+            for [ i: i32 0, i < n, i += 1 ]
+                if [ psq[ i ] < 0 && pkind[ i ] == k
+                     && pwhite[ i ] == (v > 0) ]
+                    psq[ i ] = s
+                    break
+        slot_w : i32 [ 0 ]
+        slot_b : i32 [ 0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ psq[ i ] >= 0 ]
+                pgoal[ i ] = square_place[ psq[ i ], pbase[ i ] ]
+            el [ pspare[ i ] ]
+                pgoal[ i ] = vec3f [ 0.0, -40.0, 0.0 ]
+            el [ pwhite[ i ] ]
+                pgoal[ i ] = stash_place[ true, slot_w, pbase[ i ] ]
+                slot_w += 1
+            el
+                pgoal[ i ] = stash_place[ false, slot_b, pbase[ i ] ]
+                slot_b += 1
+
+    # each piece eases to its goal; the chosen one lifts
+    func place_pieces []
+        if [ !pnode ] return
+        n : i32 [ pnode.count ]
+        for [ i: i32 0, i < n, i += 1 ]
+            g : vec3f [ pgoal[ i ] ]
+            if [ psq[ i ] == sel ] g.y += 0.6
+            p : vec3f [ pat[ i ] ]
+            p.x += (g.x - p.x) * 0.2
+            p.y += (g.y - p.y) * 0.2
+            p.z += (g.z - p.z) * 0.2
+            pat[ i ] = p
+            nd : pnode[ i ]
+            nd.translation = p
+            nd.world = gmodel.node_local[ nd ]
+        mdl_w.update_animated[]
+        mdl_b.update_animated[]
+
+    # a piece node for each of the sixteen a side, two spare queens
+    # each for promotions after them
+    func add_pieces [ gm: GltfModel ]
+        order : vec i32 [] [ 4, 2, 3, 5, 6, 3, 2, 4, 1, 1, 1, 1, 1, 1,
+                             1, 1, 5, 5 ]
+        for [ side: i32 0, side < 2, side += 1 ]
+            white : bool [ side == 0 ]
+            for [ j: i32 0, j < order.count, j += 1 ]
+                k : i32 [ order[ j ] ]
+                src : node_named[ gm, set_node_name[ k ] ]
+                expect src, 'no node for the {kind_word[ k ]}'
+                nd : Node [ name: '{(white) ? "w" : "b"}{k}_{j}',
+                            mesh: src.mesh, scale: src.scale ]
+                # the file's knight looks along +x: turned to face
+                # the other side; every black piece turned about
+                if [ k == 2 ]
+                    hy : f32 [ (white) ? 0.70710678 : -0.70710678 ]
+                    nd.rotation = quatf [ 0.0, hy, 0.0, 0.70710678 ]
+                el [ !white ]
+                    nd.rotation = quatf [ 0.0, 1.0, 0.0, 0.0 ]
+                gm.nodes.push[ nd ]
+                pnode.push[ nd ]
+                pwhite.push[ white ]
+                pkind.push[ k ]
+                pspare.push[ j >= 16 ]
+                psq.push[ -1 ]
+                pbase.push[ base_of[ gm, src ] ]
+                pat.push[ vec3f [ 0.0, -40.0, 0.0 ] ]
+                pgoal.push[ vec3f [ 0.0, -40.0, 0.0 ] ]
+
+    func node_named [ gm: GltfModel, nm: string ] -> Node
+        for [ n: Node ] in gm.nodes
+            if [ n.name && n.name == nm ] return n
+        return null
+
+    # how far a piece's base sits under its node's origin
+    func base_of [ gm: GltfModel, n: Node ] -> f32
+        m : gm.meshes[ n.mesh ]
+        pr : m.primitives[ 0 ]
+        for [ value: @i64, a_name: string ] in pr.attributes
+            if [ a_name == 'POSITION' ]
+                ac : gm.accessors[ value[ 0 ] ]
+                return 0.0 - ac.min.y * n.scale.y
+        return 0.0
+
+    func group_names [ white: bool, spare: bool ] -> vec string
+        names : vec string []
+        n : i32 [ pnode.count ]
+        for [ i: i32 0, i < n, i += 1 ]
+            if [ pwhite[ i ] == white ]
+                nd : pnode[ i ]
+                names.push[ nd.name ]
+        if [ spare ] names.push[ 'board' ]
+        return names
+
+    func setup [ cv: Canvas, w: Window ]
+        expect model_path.exists[], 'model does not exist: {model_path}'
+        gm : GltfModel.open[ model_path ]
+        expect gm, 'model did not load: {model_path}'
+        gm.hold[]
+        gmodel = gm
+        half_w = sq * 4.0
+        pnode  = vec Node []
+        pwhite = vec bool []
+        pkind  = vec i32 []
+        pspare = vec bool []
+        psq    = vec i32 []
+        pbase  = vec f32 []
+        pat    = vec vec3f []
+        pgoal  = vec vec3f []
+        add_pieces[ gm ]
+        add_board[ gm ]
+        gm.compute_worlds[]
+        lit_w     = ChessLit [ vk: cv.vk, name: 'chess' ]
+        lit_b     = ChessLit [ vk: cv.vk, name: 'chess' ]
+        lit_board = ChessLit [ vk: cv.vk, name: 'chess' ]
+        lit_w.tint     = vec4f [ 0.92, 0.88, 0.76, 1.0 ]
+        lit_b.tint     = vec4f [ 0.10, 0.09, 0.085, 1.0 ]
+        lit_w.groups     = group_names[ true, false ]
+        lit_b.groups     = group_names[ false, false ]
+        lit_board.groups = vec string [] [ 'board' ]
+        mdl_w = Model [ vk: cv.vk, w: w, s: lit_w, cull_none: true ]
+        mdl_w.id = gm
+        mdl_b = Model [ vk: cv.vk, w: w, s: lit_b, cull_none: true ]
+        mdl_b.id = gm
+        mdl_board = Model [ vk: cv.vk, w: w, s: lit_board,
+                            cull_none: true ]
+        mdl_board.id = gm
+        gw : i32 [ i32[ bounds.w * 2.0 ] ]
+        gh : i32 [ i32[ bounds.h * 2.0 ] ]
+        target = Render [ vk: cv.vk, w: w, width: gw, height: gh,
+            use_depth: true,
+            clear_color: vec4f [ 0.08, 0.09, 0.11, 1.0 ],
+            models: array Model [ mdl_board, mdl_w, mdl_b ],
+            tag: 'chess' ]
+        target.owner  = a
+        target.wscale = 0.0
+        target.skip   = true
+        w.element_targets[ 'chess_{id}' ] = target
+        sync_pieces[]
+        n : i32 [ pnode.count ]
+        for [ i: i32 0, i < n, i += 1 ] pat[ i ] = pgoal[ i ]
+
+    # the board: light and dark squares on a dark frame, three
+    # primitives of one mesh with a colour each
+    func add_board [ gm: GltfModel ]
+        pos3 : vec f32 []
+        nrm  : vec f32 []
+        li   : vec u32 []
+        di   : vec u32 []
+        ri   : vec u32 []
+        top  : f32 [ 0.02 ]
+        for [ r: i32 0, r < 8, r += 1 ]
+            for [ f: i32 0, f < 8, f += 1 ]
+                x0 : f32 [ (f32[ f ] - 4.0) * sq ]
+                z0 : f32 [ (3.0 - f32[ r ]) * sq ]
+                b  : u32 [ u32[ pos3.count / 3 ] ]
+                quad_up[ pos3, nrm, x0, z0, x0 + sq, z0 + sq, top ]
+                dark : bool [ ((f + r) & 1) == 0 ]
+                quad_index[ (dark) ? di : li, b ]
+        rim : f32 [ half_w + 1.3 ]
+        box[ pos3, nrm, ri, 0.0 - rim, -0.7, 0.0 - rim, rim, 0.0, rim ]
+        nv  : i32 [ pos3.count / 3 ]
+        pb  : i32 [ nv * 12 ]
+        nl  : i32 [ li.count ]
+        ndk : i32 [ di.count ]
+        nr  : i32 [ ri.count ]
+        tsz : i32 [ pb + pb + (nl + ndk + nr) * 4 ]
+        data : new u8 [ tsz ]
+        pf : @f32 [ data ]
+        for [ i: i32 0, i < nv * 3, i += 1 ]
+            pv : f32 [ pos3[ i ] ]
+            nn : f32 [ nrm[ i ] ]
+            pf[ i ] = pv
+            pf[ nv * 3 + i ] = nn
+        iu : @u32 [ @data[ pb + pb ] ]
+        at : i32 [ 0 ]
+        for [ i: i32 0, i < nl, i += 1 ]
+            iv : u32 [ li[ i ] ]
+            iu[ at ] = iv
+            at += 1
+        for [ i: i32 0, i < ndk, i += 1 ]
+            iv : u32 [ di[ i ] ]
+            iu[ at ] = iv
+            at += 1
+        for [ i: i32 0, i < nr, i += 1 ]
+            iv : u32 [ ri[ i ] ]
+            iu[ at ] = iv
+            at += 1
+        bi : i64 [ gm.buffers.count ]
+        gm.buffers.push[ GltfBuffer [ byteLength: u64[ tsz ],
+                                      data: data ] ]
+        vi : i64 [ gm.bufferViews.count ]
+        gm.bufferViews.push[ BufferView [ buffer: bi, byteOffset: 0,
+                                          byteLength: pb ] ]
+        gm.bufferViews.push[ BufferView [ buffer: bi, byteOffset: pb,
+                                          byteLength: pb ] ]
+        gm.bufferViews.push[ BufferView [ buffer: bi,
+            byteOffset: pb + pb, byteLength: nl * 4 ] ]
+        gm.bufferViews.push[ BufferView [ buffer: bi,
+            byteOffset: pb + pb + nl * 4, byteLength: ndk * 4 ] ]
+        gm.bufferViews.push[ BufferView [ buffer: bi,
+            byteOffset: pb + pb + (nl + ndk) * 4,
+            byteLength: nr * 4 ] ]
+        ai : i64 [ gm.accessors.count ]
+        gm.accessors.push[ Accessor [ bufferView: vi,
+            componentType: ComponentType.FLOAT, type: CompoundType.VEC3,
+            count: nv ] ]
+        gm.accessors.push[ Accessor [ bufferView: vi + 1,
+            componentType: ComponentType.FLOAT, type: CompoundType.VEC3,
+            count: nv ] ]
+        for [ k: i32 0, k < 3, k += 1 ]
+            cnt : i32 [ (k == 0) ? nl : ((k == 1) ? ndk : nr) ]
+            gm.accessors.push[ Accessor [ bufferView: vi + 2 + k,
+                componentType: ComponentType.UNSIGNED_INT,
+                type: CompoundType.SCALAR, count: cnt ] ]
+        mi : i64 [ gm.materials.count ]
+        gm.materials.push[ board_material[ 'light',
+            vec4f [ 0.80, 0.70, 0.52, 1.0 ] ] ]
+        gm.materials.push[ board_material[ 'dark',
+            vec4f [ 0.24, 0.14, 0.08, 1.0 ] ] ]
+        gm.materials.push[ board_material[ 'rim',
+            vec4f [ 0.14, 0.08, 0.05, 1.0 ] ] ]
+        prs : vec Primitive []
+        for [ k: i32 0, k < 3, k += 1 ]
+            am : map i64 [ string ] [ ]
+            am[ 'POSITION' ] = ai
+            am[ 'NORMAL' ]   = ai + 1
+            prs.push[ Primitive [ name: 'board', attributes: am,
+                indices: u64[ ai + 2 + k ], material: mi + k,
+                mode: Mode.TRIANGLES ] ]
+        gm.meshes.push[ Mesh [ name: 'board', primitives: prs ] ]
+        gm.nodes.push[ Node [ name: 'board',
+                              mesh: gm.meshes.count - 1 ] ]
+
+    func board_material [ nm: string, col: vec4f ] -> Material
+        pbr : PbrMetallicRoughness [ baseColorFactor: col,
+                                     metallicFactor: 0.0,
+                                     roughnessFactor: 1.0 ]
+        return Material [ name: nm, pbrMetallicRoughness: pbr ]
+
+    func push3 [ v: vec f32, x: f32, y: f32, z: f32 ]
+        v.push[ x ]
+        v.push[ y ]
+        v.push[ z ]
+
+    # a level quad from x0 z0 to x1 z1, its normal up
+    func quad_up [ p: vec f32, n: vec f32, x0: f32, z0: f32,
+                   x1: f32, z1: f32, y: f32 ]
+        push3[ p, x0, y, z0 ]
+        push3[ p, x1, y, z0 ]
+        push3[ p, x1, y, z1 ]
+        push3[ p, x0, y, z1 ]
+        for [ i: i32 0, i < 4, i += 1 ] push3[ n, 0.0, 1.0, 0.0 ]
+
+    func quad_index [ idx: vec u32, b: u32 ]
+        idx.push[ b ]
+        idx.push[ b + 1 ]
+        idx.push[ b + 2 ]
+        idx.push[ b ]
+        idx.push[ b + 2 ]
+        idx.push[ b + 3 ]
+
+    # a box, each face its own four points and flat normal
+    func box [ p: vec f32, n: vec f32, idx: vec u32, x0: f32, y0: f32,
+               z0: f32, x1: f32, y1: f32, z1: f32 ]
+        for [ f: i32 0, f < 6, f += 1 ]
+            b : u32 [ u32[ p.count / 3 ] ]
+            ax : i32 [ f / 2 ]
+            hi : bool [ (f & 1) == 1 ]
+            for [ c: i32 0, c < 4, c += 1 ]
+                u : f32 [ (c == 1 || c == 2) ? 1.0 : 0.0 ]
+                v : f32 [ (c >= 2) ? 1.0 : 0.0 ]
+                h : f32 [ (hi) ? 1.0 : 0.0 ]
+                x : f32 [ (ax == 0) ? h : ((ax == 1) ? u : u) ]
+                y : f32 [ (ax == 0) ? u : ((ax == 1) ? h : v) ]
+                z : f32 [ (ax == 0) ? v : ((ax == 1) ? v : h) ]
+                push3[ p, x0 + (x1 - x0) * x, y0 + (y1 - y0) * y,
+                       z0 + (z1 - z0) * z ]
+                s : f32 [ (hi) ? 1.0 : -1.0 ]
+                push3[ n, (ax == 0) ? s : 0.0, (ax == 1) ? s : 0.0,
+                       (ax == 2) ? s : 0.0 ]
+            if [ hi == (ax == 1) ]
+                quad_index[ idx, b ]
+            el
+                idx.push[ b ]
+                idx.push[ b + 2 ]
+                idx.push[ b + 1 ]
+                idx.push[ b ]
+                idx.push[ b + 3 ]
+                idx.push[ b + 2 ]
+
+    func status [] -> string
+        if [ over ] return over
+        if [ thinking ] return 'Stockfish is thinking'
+        chk : string [ (pos.in_check[ pos.white ]) ? ', in check' : '' ]
+        if [ sel >= 0 ] return 'White to move: pick its square{chk}'
+        return (pos.white) ? 'White to move{chk}' : 'Black to move{chk}'
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        ux.will_animate = true
+        cv : Canvas [ w.screen ]
+        if [ !target ] setup[ cv, w ]
+        engine_tick[]
+        place_pieces[]
+        yaw   += (yaw_to   - yaw)   * 0.2
+        pitch += (pitch_to - pitch) * 0.2
+        dist  += (dist_to  - dist)  * 0.2
+        tgt : vec3f [ 0.0, 0.6, 0.0 ]
+        cp  : f32 [ cos[ pitch ] ]
+        eye : vec3f [ tgt.x + sin[ yaw ] * cp * dist,
+                      tgt.y + sin[ pitch ] * dist,
+                      tgt.z + cos[ yaw ] * cp * dist ]
+        up  : vec3f [ 0.0, 1.0, 0.0 ]
+        asp : f32 [ bounds.w / bounds.h ]
+        view_m = mat4f.look_at[ eye, tgt, up ]
+        prj : mat4f [ mat4f.perspective[ 0.6f, asp, 0.5f, 500.0f ] ]
+        prj.m[5] = 0.0 - prj.m[5]
+        proj_m = prj
+        e4 : vec4f [ eye.x, eye.y, eye.z, 1.0 ]
+        shs : vec ChessLit [] [ lit_board, lit_w, lit_b ]
+        for [ sh: ChessLit ] in shs
+            sh.model = mat4f.identity[]
+            sh.eye   = e4
+            sh.view  = view_m
+            sh.proj  = proj_m
+        target.draw[]
+        target.seal[]
+        if [ layer ]
+            layer.tex  = target.color
+            layer.note = status[]
+            layer.foot = 'click a piece, then its square  ·  ' +
+                'ctrl + z takes a move back  ·  ctrl + n starts over'
+
+    public func render [] -> Elements
+        e : Elements [ ]
+        e['layer'] = ChessLayer [ animated: true ]
+        return e

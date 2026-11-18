@@ -1,0 +1,292 @@
+# the rules of chess: a position, its legal moves, making one
+extend chess
+
+# white pieces 1..6 (P N B R Q K), black the same below zero
+struct Move
+    from  : i32
+    to    : i32
+    promo : i32
+
+func sq_of [ file: i32, rank: i32 ] -> i32
+    return rank * 8 + file
+
+func file_of [ sq: i32 ] -> i32
+    return sq & 7
+
+func rank_of [ sq: i32 ] -> i32
+    return sq >> 3
+
+func piece_kind [ p: i32 ] -> i32
+    return (p < 0) ? 0 - p : p
+
+# castling rights as bits: white king side 1, queen side 2,
+# black king side 4, queen side 8
+class Position
+    public squares : vec i32
+    public white   : bool [ true ]
+    public castle  : i32  [ 15 ]
+    public ep      : i32  [ -1 ]
+    public half    : i32
+    public full    : i32  [ 1 ]
+
+    func start []
+        squares = vec i32 [ 64 ]
+        for [ i: i32 0, i < 64, i += 1 ] squares[ i ] = 0
+        back : vec i32 [] [ 4, 2, 3, 5, 6, 3, 2, 4 ]
+        for [ f: i32 0, f < 8, f += 1 ]
+            squares[ sq_of[ f, 0 ] ] = back[ f ]
+            squares[ sq_of[ f, 1 ] ] = 1
+            squares[ sq_of[ f, 6 ] ] = -1
+            squares[ sq_of[ f, 7 ] ] = 0 - back[ f ]
+        white  = true
+        castle = 15
+        ep     = -1
+        half   = 0
+        full   = 1
+
+    func clone [] -> Position
+        c : Position [ white: white, castle: castle, ep: ep,
+                       half: half, full: full ]
+        c.squares = vec i32 [ 64 ]
+        for [ i: i32 0, i < 64, i += 1 ] c.squares[ i ] = squares[ i ]
+        return c
+
+    func at [ sq: i32 ] -> i32
+        return squares[ sq ]
+
+    # is sq attacked by the side given
+    func attacked [ sq: i32, by_white: bool ] -> bool
+        f  : i32 [ file_of[ sq ] ]
+        r  : i32 [ rank_of[ sq ] ]
+        s  : i32 [ (by_white) ? 1 : -1 ]
+        # pawns strike from the rank behind their way
+        pr : i32 [ (by_white) ? r - 1 : r + 1 ]
+        if [ pr >= 0 && pr < 8 ]
+            if [ f > 0 && squares[ sq_of[ f - 1, pr ] ] == s ]
+                return true
+            if [ f < 7 && squares[ sq_of[ f + 1, pr ] ] == s ]
+                return true
+        kdf : vec i32 [] [ 1, 2, 2, 1, -1, -2, -2, -1 ]
+        kdr : vec i32 [] [ 2, 1, -1, -2, -2, -1, 1, 2 ]
+        for [ i: i32 0, i < 8, i += 1 ]
+            nf : i32 [ f + kdf[ i ] ]
+            nr : i32 [ r + kdr[ i ] ]
+            if [ nf < 0 || nf > 7 || nr < 0 || nr > 7 ] continue
+            if [ squares[ sq_of[ nf, nr ] ] == s * 2 ] return true
+        # the king, one step any way
+        for [ df: i32 -1, df <= 1, df += 1 ]
+            for [ dr: i32 -1, dr <= 1, dr += 1 ]
+                if [ df == 0 && dr == 0 ] continue
+                nf : i32 [ f + df ]
+                nr : i32 [ r + dr ]
+                if [ nf < 0 || nf > 7 || nr < 0 || nr > 7 ] continue
+                if [ squares[ sq_of[ nf, nr ] ] == s * 6 ] return true
+        # sliders: the first piece met along each line
+        sdf : vec i32 [] [ 1, -1, 0, 0, 1, 1, -1, -1 ]
+        sdr : vec i32 [] [ 0, 0, 1, -1, 1, -1, 1, -1 ]
+        for [ d: i32 0, d < 8, d += 1 ]
+            nf : i32 [ f + sdf[ d ] ]
+            nr : i32 [ r + sdr[ d ] ]
+            while [ nf >= 0 && nf < 8 && nr >= 0 && nr < 8 ]
+                p : i32 [ squares[ sq_of[ nf, nr ] ] ]
+                if [ p != 0 ]
+                    k : i32 [ piece_kind[ p ] ]
+                    same : bool [ (p > 0) == by_white ]
+                    if [ same && k == 5 ] return true
+                    if [ same && d < 4 && k == 4 ] return true
+                    if [ same && d >= 4 && k == 3 ] return true
+                    break
+                nf += sdf[ d ]
+                nr += sdr[ d ]
+        return false
+
+    func king_sq [ is_white: bool ] -> i32
+        k : i32 [ (is_white) ? 6 : -6 ]
+        for [ i: i32 0, i < 64, i += 1 ]
+            if [ squares[ i ] == k ] return i
+        return -1
+
+    func in_check [ is_white: bool ] -> bool
+        k : i32 [ king_sq[ is_white ] ]
+        if [ k < 0 ] return false
+        return attacked[ k, !is_white ]
+
+    func push_move [ ms: vec Move, from: i32, to: i32, promo: i32 ]
+        ms.push[ Move [ from: from, to: to, promo: promo ] ]
+
+    # a pawn landing on the last rank becomes a queen, rook,
+    # bishop or knight
+    func push_pawn [ ms: vec Move, from: i32, to: i32 ]
+        r : i32 [ rank_of[ to ] ]
+        if [ r == 0 || r == 7 ]
+            push_move[ ms, from, to, 5 ]
+            push_move[ ms, from, to, 4 ]
+            push_move[ ms, from, to, 3 ]
+            push_move[ ms, from, to, 2 ]
+        el
+            push_move[ ms, from, to, 0 ]
+
+    func pseudo [] -> vec Move
+        ms : vec Move []
+        s  : i32 [ (white) ? 1 : -1 ]
+        for [ sq: i32 0, sq < 64, sq += 1 ]
+            p : i32 [ squares[ sq ] ]
+            if [ p == 0 || (p > 0) != white ] continue
+            k : i32 [ piece_kind[ p ] ]
+            f : i32 [ file_of[ sq ] ]
+            r : i32 [ rank_of[ sq ] ]
+            if [ k == 1 ]
+                dr    : i32 [ (white) ? 1 : -1 ]
+                home  : i32 [ (white) ? 1 : 6 ]
+                one   : i32 [ sq_of[ f, r + dr ] ]
+                if [ squares[ one ] == 0 ]
+                    push_pawn[ ms, sq, one ]
+                    two : i32 [ sq_of[ f, r + dr + dr ] ]
+                    if [ r == home && squares[ two ] == 0 ]
+                        push_move[ ms, sq, two, 0 ]
+                for [ df: i32 -1, df <= 1, df += 2 ]
+                    nf : i32 [ f + df ]
+                    if [ nf < 0 || nf > 7 ] continue
+                    t : i32 [ sq_of[ nf, r + dr ] ]
+                    q : i32 [ squares[ t ] ]
+                    if [ (q != 0 && (q > 0) != white) || t == ep ]
+                        push_pawn[ ms, sq, t ]
+            el [ k == 2 || k == 6 ]
+                ndf : vec i32 [] [ 1, 2, 2, 1, -1, -2, -2, -1 ]
+                ndr : vec i32 [] [ 2, 1, -1, -2, -2, -1, 1, 2 ]
+                kdf : vec i32 [] [ 1, 1, 1, 0, 0, -1, -1, -1 ]
+                kdr : vec i32 [] [ 1, 0, -1, 1, -1, 1, 0, -1 ]
+                for [ i: i32 0, i < 8, i += 1 ]
+                    nf : i32 [ f + ((k == 2) ? ndf[ i ] : kdf[ i ]) ]
+                    nr : i32 [ r + ((k == 2) ? ndr[ i ] : kdr[ i ]) ]
+                    if [ nf < 0 || nf > 7 || nr < 0 || nr > 7 ] continue
+                    t : i32 [ sq_of[ nf, nr ] ]
+                    q : i32 [ squares[ t ] ]
+                    if [ q == 0 || (q > 0) != white ]
+                        push_move[ ms, sq, t, 0 ]
+                if [ k == 6 ] castles[ ms, sq ]
+            el
+                sdf : vec i32 [] [ 1, -1, 0, 0, 1, 1, -1, -1 ]
+                sdr : vec i32 [] [ 0, 0, 1, -1, 1, -1, 1, -1 ]
+                d0  : i32 [ (k == 3) ? 4 : 0 ]
+                d1  : i32 [ (k == 4) ? 4 : 8 ]
+                for [ d: i32 d0, d < d1, d += 1 ]
+                    nf : i32 [ f + sdf[ d ] ]
+                    nr : i32 [ r + sdr[ d ] ]
+                    while [ nf >= 0 && nf < 8 && nr >= 0 && nr < 8 ]
+                        t : i32 [ sq_of[ nf, nr ] ]
+                        q : i32 [ squares[ t ] ]
+                        if [ q == 0 ]
+                            push_move[ ms, sq, t, 0 ]
+                        el
+                            if [ (q > 0) != white ]
+                                push_move[ ms, sq, t, 0 ]
+                            break
+                        nf += sdf[ d ]
+                        nr += sdr[ d ]
+        return ms
+
+    # the king two squares toward a rook: the rights kept, the
+    # squares between empty, none crossed under attack
+    func castles [ ms: vec Move, ksq: i32 ]
+        r    : i32 [ (white) ? 0 : 7 ]
+        if [ ksq != sq_of[ 4, r ] ] return
+        if [ attacked[ ksq, !white ] ] return
+        kbit : i32 [ (white) ? 1 : 4 ]
+        qbit : i32 [ (white) ? 2 : 8 ]
+        if [ (castle & kbit) != 0 && squares[ sq_of[ 5, r ] ] == 0
+             && squares[ sq_of[ 6, r ] ] == 0
+             && !attacked[ sq_of[ 5, r ], !white ]
+             && !attacked[ sq_of[ 6, r ], !white ] ]
+            push_move[ ms, ksq, sq_of[ 6, r ], 0 ]
+        if [ (castle & qbit) != 0 && squares[ sq_of[ 3, r ] ] == 0
+             && squares[ sq_of[ 2, r ] ] == 0
+             && squares[ sq_of[ 1, r ] ] == 0
+             && !attacked[ sq_of[ 3, r ], !white ]
+             && !attacked[ sq_of[ 2, r ], !white ] ]
+            push_move[ ms, ksq, sq_of[ 2, r ], 0 ]
+
+    # the moves that leave the mover's own king safe
+    func moves [] -> vec Move
+        legal : vec Move []
+        ps : pseudo[]
+        for [ m: Move ] in ps
+            c : clone[]
+            c.make[ m ]
+            if [ !c.in_check[ white ] ] legal.push[ m ]
+        return legal
+
+    func make [ m: Move ]
+        p  : i32 [ squares[ m.from ] ]
+        k  : i32 [ piece_kind[ p ] ]
+        q  : i32 [ squares[ m.to ] ]
+        s  : i32 [ (white) ? 1 : -1 ]
+        half += 1
+        if [ q != 0 || k == 1 ] half = 0
+        # a pawn taking on the passing square takes the pawn behind
+        if [ k == 1 && m.to == ep && q == 0 ]
+            squares[ sq_of[ file_of[ m.to ], rank_of[ m.from ] ] ] = 0
+        ep = -1
+        if [ k == 1 ]
+            d : i32 [ rank_of[ m.to ] - rank_of[ m.from ] ]
+            if [ d == 2 || d == -2 ]
+                ep = sq_of[ file_of[ m.from ],
+                            rank_of[ m.from ] + d / 2 ]
+        # the king two files over brings its rook across
+        if [ k == 6 ]
+            df : i32 [ file_of[ m.to ] - file_of[ m.from ] ]
+            r  : i32 [ rank_of[ m.from ] ]
+            if [ df == 2 ]
+                squares[ sq_of[ 5, r ] ] = squares[ sq_of[ 7, r ] ]
+                squares[ sq_of[ 7, r ] ] = 0
+            if [ df == -2 ]
+                squares[ sq_of[ 3, r ] ] = squares[ sq_of[ 0, r ] ]
+                squares[ sq_of[ 0, r ] ] = 0
+            castle = castle & ((white) ? 12 : 3)
+        # a rook moved or taken on its corner loses that side
+        corner_bits[ m.from ]
+        corner_bits[ m.to ]
+        squares[ m.to ] = (m.promo != 0) ? s * m.promo : p
+        squares[ m.from ] = 0
+        if [ !white ] full += 1
+        white = !white
+
+    func corner_bits [ sq: i32 ]
+        if [ sq == 7 ]  castle = castle & 14
+        if [ sq == 0 ]  castle = castle & 13
+        if [ sq == 63 ] castle = castle & 11
+        if [ sq == 56 ] castle = castle & 7
+
+    func uci [ m: Move ] -> string
+        b : local i8 [ 8 ]
+        b[ 0 ] = i8[ 97 + file_of[ m.from ] ]
+        b[ 1 ] = i8[ 49 + rank_of[ m.from ] ]
+        b[ 2 ] = i8[ 97 + file_of[ m.to ] ]
+        b[ 3 ] = i8[ 49 + rank_of[ m.to ] ]
+        n : i32 [ 4 ]
+        if [ m.promo != 0 ]
+            letters : vec i8 [] [ 0, 0, 110, 98, 114, 113 ]
+            b[ 4 ] = letters[ m.promo ]
+            n = 5
+        b[ n ] = 0
+        return string [ @b[ 0 ] ]
+
+    # a move named as the engine names it, among the legal ones
+    func from_uci [ s: string ] -> Move
+        none : Move [ from: -1, to: -1, promo: 0 ]
+        if [ !s || s.len[] < 4 ] return none
+        c : @i8 [ s.chars ]
+        from  : i32 [ sq_of[ i32[ c[ 0 ] ] - 97, i32[ c[ 1 ] ] - 49 ] ]
+        to    : i32 [ sq_of[ i32[ c[ 2 ] ] - 97, i32[ c[ 3 ] ] - 49 ] ]
+        promo : i32 [ 0 ]
+        if [ s.len[] >= 5 ]
+            pc : i32 [ c[ 4 ] ]
+            if [ pc == 113 ] promo = 5
+            if [ pc == 114 ] promo = 4
+            if [ pc == 98 ]  promo = 3
+            if [ pc == 110 ] promo = 2
+        ms : moves[]
+        for [ m: Move ] in ms
+            if [ m.from == from && m.to == to && m.promo == promo ]
+                return m
+        return none

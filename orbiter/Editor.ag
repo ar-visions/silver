@@ -536,6 +536,8 @@ ResourceView AppView
     mutable last_fr    : i32
     # generation of the imported surface
     mutable gen        : i32
+    # it ended as a library does: nothing there to run
+    mutable no_app     : bool
     # console command (streams the app's log)
     mutable cmd        : string
     # cmd handed to its console session (once per run)
@@ -852,7 +854,13 @@ ResourceView AppView
             fith = 0.0
             instr_clear[]
             v_ : i32 [ host_app_verdict[ slot ] ]
-            if [ v_ <= -1000 ]
+            # a library builds, then has no program to start (the host
+            # says it as a failed build)
+            no_app = v_ <= -1000 && app_mod
+                && !is_app_module[ app_mod, cv ]
+            if [ no_app ]
+                note = '{app_mod} is a library: it has no app to run'
+            el [ v_ <= -1000 ]
                 note = 'build failed'
                 # the first error in the app's own log names file and
                 # line
@@ -868,8 +876,18 @@ ResourceView AppView
             el [ v_ > 1 ]
                 ec : i32 [ v_ - 1 ]
                 note = 'exited — code {ec}'
+            # ended with no word and nothing drawn: say why it is not
+            # running (a library has no app to run)
+            el [ gen <= 0 ]
+                no_app = app_mod && !is_app_module[ app_mod, cv ]
+                note = (no_app)
+                    ? '{app_mod} is a library: it has no app to run'
+                    : '{app_mod} ended before its first frame'
             el
                 note = 'app exited'
+            # the console shows its log: the reason goes there too,
+            # unless the log already said it (a build's own error)
+            if [ failed[] && v_ > -1000 || no_app ] log_reason[]
         if [ ended ] return
         g_ : i32 [ host_tex_gen[ slot, 0 ] ]
         if [ g_ != gen && g_ > 0 ]
@@ -1423,6 +1441,23 @@ ResourceView AppView
         if [ display >= 2 ] return ''
         if [ !ready ]    return 'starting'
         return ''
+
+    # why it ended, as a red line at the foot of its log (its console)
+    func log_reason []
+        if [ !app_mod || slot < 0 ] return
+        lp : string '{install_root[]}/tmp/{app_mod}.{slot}.log'
+        f : fopen[ lp.chars, 'a' ]
+        if [ !f ] return
+        line : string '\x1b[31merror: {note}\x1b[0m\n'
+        fputs[ line.chars, f ]
+        fclose[ f ]
+
+    # a module with an app element: its export wrote a props record
+    func is_app_module [ m: string, cv: Canvas ] -> bool
+        wv_ : cast Window [ cv.w ]
+        ob : cast orbiter [ (wv_) ? wv_.app_object : null ]
+        if [ !ob ] return true
+        return ob.is_app_src[ path '{m}.ag' ]
 
     func overlay [ cv: Canvas, bounds: rect ]
         st_ : i32 [ (slot >= 0) ? host_app_state[ slot ] : 0 ]
@@ -5016,7 +5051,14 @@ Control Editor
         o_ : cast orbiter [ ux.app_object ]
         if [ !o_ ] return null
         # a build's progress and an app's failure are the console's
-        return o_.err_text_for[ src ]
+        et : string o_.err_text_for[ src ]
+        if [ et ] return et
+        # this file's app ended without running: why, and how to again
+        rv : AppView run_view
+        if [ rv && rv.ended && rv.failed[] && owns_src[ rv, src ] ]
+            return (rv.no_app) ? rv.note
+                : '{rv.note} — F5 or play to run again'
+        return null
 
     # its line, 0 when the error has none
     public func err_band_line [] -> i32
@@ -6218,6 +6260,16 @@ Control Editor
         # (the default action). only a real view travels as --view
         ow  : string [ (orbv) ? orbv.view_module[ want ] : null ]
         m_   : string [ (ow && ow.count > 0) ? ow : want ]
+        # a pane moved in the layout: the viewer it showed, not a new
+        rk : AppView [ (orbv && !run_view)
+            ? orbv.relay_take[ pane_index ] : null ]
+        if [ !rk && orbv && !run_view ] rk = orbv.viewer_unshown[ src ]
+        if [ rk ]
+            run_view  = rk
+            app_view  = true
+            pristine  = false
+            no_scroll = true
+            return
         # one instance for any given viewer, always new: picking a view
         # closes whatever was running and launches with it
         if [ run_view && run_view.viewer ] close_app[]
@@ -7060,9 +7112,13 @@ Control Editor
                     ux.set_clipboard[
                         '{src}:{err_band_line[]}: {err_band_text[]}' ]
                 el [ o_ && err_band_line[] > 0 ] o_.goto_error[]
-                # no line in the code: the window's console, where the
-                # app said it
-                el [ o_ ] o_.console_show[ pane_index ]
+                # no line in the code: the window's console, at the
+                # line where it is said
+                el [ o_ ]
+                    rv : AppView run_view
+                    key : string [ (rv && rv.ended && rv.failed[])
+                        ? rv.note : err_band_text[] ]
+                    o_.console_reveal[ pane_index, key ]
                 ev.no_default = true
                 return
         # the scrollbar's thumb and the git rails beside it come first:

@@ -1,0 +1,278 @@
+extend commune
+
+# a connection to one server, over TLS. a thread moves bytes
+# between the socket and two buffers and makes no objects; the
+# app parses frames and queues replies on its own thread. the
+# server's identity is pinned the first time it is seen
+class Link
+    public  key      : string
+    public  host     : string
+    public  port     : i32 [ 7788 ]
+    public  me       : string
+    public  password : string
+    public  up       : bool
+    public  problem  : string
+    # the server's certificate hash as known (''), and as seen
+    public  pin      : string
+    public  seen_pin : string
+    # an agent's link: its frames go to the agent, not the view
+    public  silent   : bool
+    # when the line went (ms): dialed again a while after
+    public  lost_ms  : i64
+    # files on their way to the server
+    public  sends    : vec Sending
+    public  takes    : map Taking [ string ]
+    intern  tls      : TLSClient
+    intern  fd       : i32 [ -1 ]
+    intern  running  : bool
+    intern  tid      : pthread_t
+    intern  lk       : mutex
+    # why the thread stopped: 1 no address, 2 no socket, 3 no
+    # reach, 4 TLS refused, 5 no certificate, 6 pin changed,
+    # 7 dropped, 8 closed by the server, 9 too much at once
+    intern  why      : i32
+    intern  told     : i32
+    intern  inbuf    : new u8
+    intern  in_n     : i64
+    intern  wire     : new u8
+    intern  wire_n   : i64
+    intern  tmp      : new u8
+
+    func init []
+        problem  = ''
+        pin      = ''
+        seen_pin = ''
+        lk    = mutex [ ]
+        sends = vec Sending []
+        takes = map Taking [ string ] []
+        inbuf = new u8 [ 262144 ]
+        wire  = new u8 [ out_cap[] ]
+        tmp   = new u8 [ 65536 ]
+
+    # the connection begins on a thread; hello goes once it is up
+    func open []
+        if [ running ] return
+        running = true
+        pthread_create[ @tid, null, @run_entry, a ]
+
+    # a header line to the server (fields with tabs between)
+    func emit [ head: string ]
+        emit_data[ head, null, 0 ]
+
+    func emit_data [ head: string, data: @u8, n: i64 ]
+        b : vec u8 frame_bytes[ head, data, n ]
+        lk.lock[]
+        if [ wire_n + b.count <= out_cap[] ]
+            memcpy[ @wire[ wire_n ], @b[ 0 ], b.count ]
+            wire_n += b.count
+        lk.unlock[]
+
+    # the frames that came in since the last call
+    func take [] -> vec WireFrame
+        out : vec WireFrame []
+        lk.lock[]
+        while [ in_n >= 4 ]
+            ln : i64 [ (i64[ inbuf[ 0 ] ] << 24)
+                | (i64[ inbuf[ 1 ] ] << 16)
+                | (i64[ inbuf[ 2 ] ] << 8) | i64[ inbuf[ 3 ] ] ]
+            if [ ln > 262144 - 4 ]
+                why  = 9
+                in_n = 0
+                break
+            if [ in_n < 4 + ln ] break
+            out.push[ frame_parse[ @inbuf[ 4 ], ln ] ]
+            memmove[ inbuf, @inbuf[ 4 + ln ], in_n - 4 - ln ]
+            in_n -= 4 + ln
+        lk.unlock[]
+        if [ why != 0 && told != why ]
+            told = why
+            problem = why_text[ why ]
+            up = false
+            lost_ms = epoch_millis[]
+        return out
+
+    # gone for a reason worth another try: no reach, its handshake
+    # refused (a server mid restart), dropped, or closed by the
+    # server (a changed pin is not)
+    func redial [] -> bool
+        return !up && lost_ms > 0
+            && (why == 3 || why == 4 || why == 7 || why == 8)
+
+    func why_text [ w: i32 ] -> string
+        if [ w == 1 ] return 'No address for {host}'
+        if [ w == 2 ] return 'No socket for {host}'
+        if [ w == 3 ] return 'Could not reach {host}:{port}'
+        if [ w == 4 ] return 'TLS refused by {host}'
+        if [ w == 5 ] return '{host} showed no certificate'
+        if [ w == 6 ]
+            return 'The identity of {host} has changed: refused'
+        if [ w == 7 ] return 'The connection to {host} dropped'
+        if [ w == 8 ] return 'The server closed the connection'
+        return 'The server sent too much at once'
+
+    # the host's first address reached, the handshake done
+    func dial [] -> bool
+        addrs : vec u32 []
+        addr : in_addr
+        if [ inet_pton[ AF_INET, host.chars, @addr ] == 1 ]
+            addrs.push[ addr.s_addr ]
+        el
+            h : gethostbyname[ host.chars ]
+            for [ i: i32 0, h && h.h_addr_list[ i ], i += 1 ]
+                ip : u32 [ 0 ]
+                memcpy[ @ip, h.h_addr_list[ i ], 4 ]
+                addrs.push[ ip ]
+        if [ addrs.count == 0 ]
+            why = 1
+            return false
+        fd = socket[ AF_INET, SOCK_STREAM, IPPROTO_TCP ]
+        if [ fd < 0 ]
+            why = 2
+            return false
+        tv : timeval
+        tv.tv_sec  = 10
+        tv.tv_usec = 0
+        tvn : i32 [ sizeof[ timeval ] ]
+        setsockopt[ fd, SOL_SOCKET, SO_RCVTIMEO, @tv, tvn ]
+        setsockopt[ fd, SOL_SOCKET, SO_SNDTIMEO, @tv, tvn ]
+        sa : sockaddr_in
+        memset[ @sa, 0, sizeof[ sockaddr_in ] ]
+        sa.sin_family      = AF_INET
+        sa.sin_addr.s_addr = addrs[ 0 ]
+        sa.sin_port        = htons[ port ]
+        if [ connect[ fd, cast @sockaddr [ @sa ],
+                      sizeof[ sockaddr_in ] ] != 0 ]
+            why = 3
+            return false
+        one : i32 [ 1 ]
+        setsockopt[ fd, IPPROTO_TCP, TCP_NODELAY, @one, sizeof[ i32 ] ]
+        fcntl[ fd, F_SETFL, fcntl[ fd, F_GETFL, 0 ] | O_NONBLOCK ]
+        # the server's own certificate: pinned, not a CA's word
+        tls = TLSClient [ fd: fd, host: host, port: port, verify: false,
+                          read_ms: 10000, write_ms: 10000 ]
+        if [ !tls.connected ]
+            why = 4
+            return false
+        tls.read_ms  = 50
+        tls.write_ms = 100
+        seen : string tls.peer_fingerprint[]
+        if [ seen.count == 0 ]
+            why = 5
+            return false
+        if [ pin.count > 0 && pin != seen ]
+            why = 6
+            return false
+        seen_pin = seen
+        up = true
+        return true
+
+    # the thread: the handshake, then bytes each way, no objects
+    func run_entry [] -> none
+        if [ dial[] ]
+            emit[ 'hello\t{me}\t{password}' ]
+            while [ running && up ]
+                pump[]
+        up = false
+        if [ tls ] tls.close[]
+        if [ fd >= 0 ] close[ fd ]
+        fd = -1
+        # what dial made (the TLS end, the pin) is held by members
+        Au.auto_free[]
+
+    # one pass: the wire's bytes out, the socket's bytes in
+    func pump []
+        lk.lock[]
+        n : i64 [ wire_n ]
+        if [ n > 65536 ] n = 65536
+        if [ n > 0 ] memcpy[ tmp, wire, n ]
+        lk.unlock[]
+        if [ n > 0 ]
+            sent : i64 tls.send[ tmp, n ]
+            if [ sent < n && !tls.stalled[] ]
+                why = 7
+                up  = false
+                return
+            lk.lock[]
+            memmove[ wire, @wire[ sent ], wire_n - sent ]
+            wire_n -= sent
+            lk.unlock[]
+        r : i64 tls.recv_some[ tmp, 65536 ]
+        if [ r < 0 ]
+            why = 8
+            up  = false
+            return
+        if [ r == 0 ] return
+        lk.lock[]
+        if [ in_n + r <= 262144 ]
+            memcpy[ @inbuf[ in_n ], tmp, r ]
+            in_n += r
+        el why = 9
+        lk.unlock[]
+
+    # the next pieces of files on their way, while the wire has room
+    func pump_sends []
+        while [ sends.count > 0 ]
+            lk.lock[]
+            room : bool [ wire_n < out_cap[] / 2 ]
+            lk.unlock[]
+            if [ !room ] return
+            s : Sending sends[ 0 ]
+            f : fopen[ s.path.chars, 'rb' ]
+            if [ !f ]
+                sends.remove[ 0 ]
+                continue
+            fseek[ f, s.off, SEEK_SET ]
+            want : i64 [ s.total - s.off ]
+            if [ want > piece_size[] ] want = piece_size[]
+            buf : vec u8 [ (want > 0) ? want : 1 ]
+            got : i64 [ 0 ]
+            if [ want > 0 ] got = fread[ @buf[ 0 ], 1, want, f ]
+            fclose[ f ]
+            emit_data[ piece_head[ s ], (got > 0) ? @buf[ 0 ] : null,
+                       got ]
+            s.off += got
+            if [ s.off >= s.total || got < want ] sends.remove[ 0 ]
+
+    # a file to the server: queued whole, sent as the line has room
+    func send_file [ ch: string, rel: string, full: string ]
+        sz : i64 file_size[ full ]
+        if [ sz < 0 ] return
+        for [ s: Sending ] in sends
+            if [ s.ch == ch && s.rel == rel ]
+                s.off   = 0
+                s.total = sz
+                s.mtime = file_mtime[ full ]
+                return
+        sends.push[ Sending [ ch: ch, rel: rel, path: full, off: 0,
+            total: sz, mtime: file_mtime[ full ] ] ]
+
+    # a piece from the server; true once the file is whole
+    func take_piece [ dest: string, off: i64, total: i64,
+                      data: @u8, n: i64 ] -> bool
+        part : string '{dest}.part'
+        tk : Taking [ (takes.contains[ dest ]) ? takes[ dest ] : null ]
+        if [ !tk || off == 0 ]
+            pp : path [ dest ]
+            pd : path pp.parent_dir[]
+            make_dirs[ '{pd}' ]
+            fresh : fopen[ part.chars, 'wb' ]
+            if [ fresh ] fclose[ fresh ]
+            tk = Taking [ path: '{dest}', got: 0, total: total ]
+            # the map's key is its own: a remove frees it
+            takes[ '{dest}' ] = tk
+        f : fopen[ part.chars, 'r+b' ]
+        if [ !f ] return false
+        fseek[ f, off, SEEK_SET ]
+        if [ n > 0 ] fwrite[ data, 1, n, f ]
+        fclose[ f ]
+        tk.got = off + n
+        if [ tk.got < total ] return false
+        takes.rm[ dest ]
+        rename[ part.chars, dest.chars ]
+        return true
+
+    func shut []
+        if [ !running ] return
+        running = false
+        pthread_join[ tid, null ]
+        up = false

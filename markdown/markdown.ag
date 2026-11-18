@@ -1,6 +1,5 @@
 # markdown — a canvas renderer for .md files, hosted by orbiter
 export 1.0.0
-export extensions ['.md': FileType.ascii]
 
 import vec
 import img

@@ -801,6 +801,15 @@ class ConsoleSession
         if [ nc > 2048 ] nc = 2048
         if [ nr == rows && nc == cols ] return
         last_resize_us = epoch_micros[]
+        # fewer rows: the top ones go to the scrollback until the
+        # cursor's row fits (a shrink never drops the newest lines)
+        if [ nr < rows && !in_alt && cy > nr - 1 ]
+            k : i32 [ cy - (nr - 1) ]
+            scroll_top = 0
+            scroll_bot = rows - 1
+            for [ i: i32 0, i < k, i += 1 ]
+                scroll_up[]
+            cy -= k
         orows : i32 [ rows ]
         ocols : i32 [ cols ]
         cols = nc
@@ -959,7 +968,7 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 dr += 1
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
-                cv.fill_color[ '#ccc' ]
+                cv.fill_color[ (err_line[ ln ]) ? '#ff8a80' : '#ccc' ]
                 cv.draw_text[ ln,
                     rect [ x: left, y: y, w: bounds.w, h: lh ],
                     vec2f [ 0.0, 0.5 ], vec2f [ 0.0,
@@ -996,7 +1005,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 mk : i32 [ con.line_mark*[ ln ] ]
-                cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
+                cv.fill_color[ (mk == 2) ? '#ffffff55'
+                    : ((err_line[ ln ]) ? '#ff8a80' : '#fff') ]
                 cv.draw_text[ ln,
                               rect [ x: left, y: y, w: bounds.w,
                                      h: lh ],
@@ -1010,7 +1020,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 if [ y + lh < bounds.y ] continue
                 if [ y > bounds.y + bounds.h ] break
                 mk : i32 [ con.line_mark*[ ln ] ]
-                cv.fill_color[ (mk == 2) ? '#ffffff55' : '#fff' ]
+                cv.fill_color[ (mk == 2) ? '#ffffff55'
+                    : ((err_line[ ln ]) ? '#ff8a80' : '#fff') ]
                 cv.draw_text[ ln,
                               rect [ x: left, y: y, w: bounds.w,
                                      h: lh ],
@@ -1122,7 +1133,9 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                     mark_line[ tc, mk, left, y, vb.w, lh ]
                     draw_seen[ tc, s, s.sb_line_buf[ li ],
                                s.sb_line_len[ li ], left, round[ y ],
-                               lh, cw, s.scroll_x, vb.w ]
+                               lh, cw, s.scroll_x, vb.w,
+                               line_fg[ s.scrollback.value_by_index[
+                                   li ] ] ]
                     if [ mk == 2 ] tc.set_opacity[ 1.0 ]
                     continue
                 slc : sb_slot[ tc, s, li, fs, lh, cw ]
@@ -1143,7 +1156,8 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
                 mark_line[ tc, mk, left, y, vb.w, lh ]
                 draw_seen[ tc, s, @s.screen[ r * s.cols ],
                            s.row_drawable[ r ], left, round[ y ], lh,
-                           cw, s.scroll_x, vb.w ]
+                           cw, s.scroll_x, vb.w,
+                           line_fg[ s.row_to_string[ r ] ] ]
                 if [ mk == 2 ] tc.set_opacity[ 1.0 ]
                 continue
             lvc : live_slot[ tc, s, r, fs, lh, cw ]
@@ -1181,13 +1195,13 @@ func paint_term [ cv: Canvas, con_el: object, s: ConsoleSession,
 # a line's columns that show in a view scrolled sx px across vw
 func draw_seen [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
                  n: i32, left: f32, y: f32, lh: f32, cw: f32,
-                 sx: f32, vw: f32 ]
+                 sx: f32, vw: f32, dfg: i32 ]
     if [ n <= 0 || cw <= 0.0 ] return
     c0 : i32 [ maxi[ i32[ sx / cw ] - 1, 0 ] ]
     c1 : i32 [ mini[ i32[ (sx + vw) / cw ] + 2, n ] ]
     if [ c1 <= c0 ] return
     draw_cells[ cv, s, cells, c0, c1 - c0, left + f32[ c0 ] * cw, y,
-                lh, cw ]
+                lh, cw, dfg ]
 
 # a nowrap session's view canvas, sized to the view and cleared
 func view_of [ cv: Canvas, s: ConsoleSession, w: f32, h: f32 ]
@@ -1203,6 +1217,20 @@ func view_of [ cv: Canvas, s: ConsoleSession, w: f32, h: f32 ]
         s.view.resize[ vw, vh ]
     s.view.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
     return s.view
+
+# a line that says an error: its words (a compiler's, a build's,
+# a failed run's) are read in any case
+func err_line [ ln: string ] -> bool
+    if [ !ln || ln.count == 0 ] return false
+    l : string ln.lcase[]
+    return l.index_of[ 'error:' ] >= 0 || l.index_of[ ' error ' ] >= 0
+        || l.starts_with[ 'error' ] || l.index_of[ 'fatal' ] >= 0
+        || l.index_of[ 'failed' ] >= 0
+
+# a line's plain text colour: reddish for an error, else the
+# console's grey (a cell's own colour wins over it)
+func line_fg [ ln: string ] -> i32
+    return (err_line[ ln ]) ? 0xff8a80 : 0xdddddd
 
 # 2 = another instance's line: faded. the selected one's lines stay
 # plain
@@ -1308,7 +1336,7 @@ func draw_braille [ cv: Canvas, ch: i32, x: f32, y: f32, cw: f32,
 
 func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
                   off: i32, n: i32, left: f32, y: f32, lh: f32,
-                  cw: f32 ]
+                  cw: f32, dfg: i32 ]
     if [ n <= 0 ] return
     c : i32 [ 0 ]
     while [ c < n ]
@@ -1323,8 +1351,8 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
         inv : bool [ (at & 4) != 0 ]
         rfg : i32 [
             (inv) ? ((bg < 0) ? 0x000000 : bg)
-            : ((fg < 0) ? 0xdddddd : fg) ]
-        rbg : i32 [ (inv) ? ((fg < 0) ? 0xdddddd : fg) : bg ]
+            : ((fg < 0) ? dfg : fg) ]
+        rbg : i32 [ (inv) ? ((fg < 0) ? dfg : fg) : bg ]
         rx : f32 [ left + f32[c] * cw ]
         rw : f32 [ f32[run_end - c] * cw ]
         if [ rbg >= 0 ]
@@ -1364,7 +1392,8 @@ func draw_cells [ cv: Canvas, s: ConsoleSession, cells: @TermCell,
 
 func draw_row [ cv: Canvas, s: ConsoleSession, r: i32, x: f32, y: f32,
                 lh: f32, cw: f32 ]
-    draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x, y, lh, cw ]
+    draw_cells[ cv, s, s.screen, r * s.cols, s.cols, x, y, lh, cw,
+                line_fg[ s.row_to_string[ r ] ] ]
 
 func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32,
                lh: f32, cw: f32 ] -> TermLineCache
@@ -1393,7 +1422,7 @@ func sb_slot [ cv: Canvas, s: ConsoleSession, li: i32, fs: i32,
     use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
     if [ fs > 0 ] use.canvas.font_size[ fs ]
     draw_cells[ use.canvas, s, s.sb_line_buf[ li ], 0, len, 0.0, 0.0,
-                lh, cw ]
+                lh, cw, line_fg[ s.scrollback.value_by_index[ li ] ] ]
     use.canvas.paint[]
     use.li = li
     return use
@@ -1439,7 +1468,7 @@ func live_slot [ cv: Canvas, s: ConsoleSession, r: i32, fs: i32,
     use.canvas.reset[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
     if [ fs > 0 ] use.canvas.font_size[ fs ]
     draw_cells[ use.canvas, s, s.screen, r * s.cols, dl, 0.0, 0.0, lh,
-                cw ]
+                cw, line_fg[ s.row_to_string[ r ] ] ]
     use.canvas.paint[]
     use.hash  = h
     use.frame = s.frame_id
