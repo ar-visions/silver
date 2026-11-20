@@ -1,0 +1,167 @@
+extend orbiter
+
+# backdrop scenes the bottom bar steps through
+func orbiter.scene_list [] -> vec string
+    ensure_scenes[]
+    return scene_names
+
+func orbiter.scene_catalog_revision [] -> i64
+    ensure_scenes[]
+    return scene_revision
+
+# the chosen scene, 'none' included
+func orbiter.scene_name [] -> string
+    if [ scene_load && scene_load.count > 0 ] return scene_load
+    return 'none'
+
+# scenes compile separately; load the lib only if it is available
+func orbiter.scene_module_ensure [ nm: string ]
+    ensure_scenes[]
+    mod : string (scene_mods) ? scene_mods[ nm ] : null
+    if [ !mod || mod.count == 0 ] return
+    module_load[ mod, nm ]
+
+# built once per scene: new_object is pool-managed, so hold it
+func orbiter.scene_element [] -> element
+    nm : scene_loaded[]
+    if [ !nm || nm.count == 0 ]
+        # none: the scene comes off the window, kept for a re-pick
+        if [ scene_el && scene_el.id && ux && ux.element_targets
+             && ux.element_targets.contains[ scene_el.id ] ]
+            if [ !scene_rts ] scene_rts = map Render [ string ] []
+            rt : Render ux.element_targets[ scene_el.id ]
+            scene_rts[ scene_el_nm ] = rt
+            ux.element_targets.rm[ scene_el.id ]
+        scene_el    = null
+        scene_el_nm = null
+        return null
+    if [ scene_el && scene_el_nm && scene_el_nm.compare[ nm ] == 0 ]
+        return scene_el
+    if [ !scene_kept ]
+        scene_kept = map element [ string ] []
+        scene_rts  = map Render [ string ] []
+    # unmount does not call on_unload: the outgoing target comes
+    # off the window, kept with its scene
+    if [ scene_el && scene_el.id && ux && ux.element_targets ]
+        if [ ux.element_targets.contains[ scene_el.id ] ]
+            scene_rts[ scene_el_nm ] = ux.element_targets[ scene_el.id ]
+        ux.element_targets.rm[ scene_el.id ]
+    # only the agent view's Milky Way and the chosen scene stay
+    gone : vec string []
+    for [ ke: element, kn: string ] in scene_kept
+        if [ kn.compare[ 'MilkyWay' ] != 0 && kn.compare[ nm ] != 0
+             && (!scene_load || kn.compare[ scene_load ] != 0) ]
+            gone.push[ kn ]
+    for [ kn: string ] in gone
+        scene_kept.rm[ kn ]
+        if [ scene_rts.contains[ kn ] ] scene_rts.rm[ kn ]
+    e : element
+    if [ scene_kept.contains[ nm ] ]
+        # kept: its picture back on the window, nothing rebuilt
+        e = scene_kept[ nm ]
+        if [ e.id && ux && scene_rts.contains[ nm ] ]
+            ux.element_targets[ e.id ] = scene_rts[ nm ]
+        scene_el    = e
+        scene_el_nm = string [ nm ]
+    el
+        st : Au.find_type[ nm.chars, null ]
+        if [ !st ]
+            scene_module_ensure[ nm ]
+            st = Au.find_type[ nm.chars, null ]
+        if [ !st ]
+            if [ !scene_miss || scene_miss.compare[ nm ] != 0 ]
+                scene_miss = string [ nm ]
+                md : string (scene_mods) ? scene_mods[ nm ] : null
+                lb : string [ (md) ? '{module_lib[ md ]}' : 'none' ]
+                log 'scene: no class for {nm} (module {md}, library {lb})'
+            return null
+        e = element [ Au.new_object[ st, null, null, true,
+            __FILE__, __LINE__, __SEQUENCE__ ] ]
+        if [ !e ] return null
+        e.area = Region [ 'l0 t0 r0 b0' ]
+        # the stores own the scene and its name
+        scene_el    = e
+        scene_el_nm = string [ nm ]
+        scene_kept[ nm ] = e
+        scene_props_restore[ e, nm ]
+        log 'scene: built {nm}'
+    # the scene retints the ui; null theme restores the authored
+    # values
+    if [ ux && ux.st ]
+        ux.st.set_theme[ e.theme*[] ]
+        # the solid stage fills the scene's OWN backdrop color, so
+        # the flat background is the mounted scene's color, not a
+        # fixed hex
+        bgc : e.bg_color*[]
+        if [ bgc && bgc.a > 0.0 ] ux.solid_color = bgc
+        ux.apply_solid[]
+        ux.restyle = true
+    return e
+
+# the mounted scene; the label click sets it from the browsed one
+func orbiter.scene_loaded [] -> string
+    if [ !show_scene ] return ''
+    # 'none' is a real selection, not a scene: nothing mounts for it
+    if [
+        scene_load && scene_load.count > 0
+        && scene_load.compare[ 'none' ] != 0 ]
+        return scene_load
+    return ''
+
+# a scene card picked in the side panel: load it
+func orbiter.scene_choose [ nm: string ]
+    scene_load = nm
+    scene_load.hold[]
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# the live scene's props as agi: the panel under the cards
+func orbiter.scene_spec [] -> string
+    e : element scene_el
+    if [ !e ] return ''
+    all : LaunchProps [ module: 'scenes' ]
+    props_of[ typeid[ e ], e, all ]
+    # the scene's own; the element base's (trinity) are not its
+    ps : LaunchProps [ module: 'scenes' ]
+    ps.props = vec Prop []
+    for [ p: Prop ] in all.props
+        if [ p.module && p.module == 'scenes' ] ps.props.push[ p ]
+    return Au.string_agi[ ps ]
+
+# one prop by name onto the live scene
+func orbiter.scene_prop_apply [ e: element, nm: string, v: string ]
+    member : find_member[ typeid[ e ], nm.chars,
+                          AU_MEMBER_VAR, 0, true ]
+    if [ !member ] return
+    # a saved enum name the enum no longer has is left alone
+    # AU_TRAIT_ENUM
+    if [ member.src && (member.src.traits & (1 << 5)) != 0 ]
+        found : bool [ false ]
+        for [ k: i32 0, k < member.src.members.count, k += 1 ]
+            ev : Au_t member.src.members.origin[k]
+            if [ !ev || ev.member_type != AU_MEMBER_ENUMV ]
+                continue
+            if [ v == ev.ident ] found = true
+        if [ !found ] return
+    val : Au.convert[ member.src, v ]
+    if [ val ] e.set_property[ nm, val ]
+
+func orbiter.scene_prop_set [ nm: string, v: string ]
+    if [ !scene_el || !scene_el_nm || !nm || !v ] return
+    scene_prop_apply[ scene_el, nm, v ]
+    if [ !scene_props ] scene_props = map string [string] []
+    scene_props[ scene_el_nm ] = scene_spec[]
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# the props the user chose for this scene last time
+func orbiter.scene_props_restore [ e: element, nm: string ]
+    if [ !scene_props || !scene_props.contains[ nm ] ] return
+    sp : string scene_props[ nm ]
+    if [ !sp || sp.count == 0 ] return
+    ps : LaunchProps []
+    Au.parse_agi[ null, sp.chars, ps ]
+    if [ !ps.props ] return
+    for [ p: Prop ] in ps.props
+        if [ p.ident && p.value ]
+            scene_prop_apply[ e, p.ident, p.value ]

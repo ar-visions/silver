@@ -1389,9 +1389,9 @@ shader Convolve
 
 
 ModelViewProject Basic
-    public proj  : mat4f
-    public model : mat4f
-    public view  : mat4f
+    proj  : mat4f
+    model : mat4f
+    view  : mat4f
     attrib color : LayoutBinding [ type:typeid[ Surface ],
                                    id:Surface.color, count:1,
                                    format: typeid[ rgbaf ] ]

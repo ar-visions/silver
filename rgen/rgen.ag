@@ -29,106 +29,106 @@ enum SysClock
 	active_lines : 224             # active display lines (NTSC, V28)
 
 class m68k_state
-	d              : new u32 [ 8 ]     # data registers D0-D7
-	a              : new u32 [ 8 ]     # address registers A0-A7 (A7 = active SP)
-	usp            : u32               # user stack pointer  (inactive when supervisor)
-	ssp            : u32               # supervisor stack pointer
-	pc             : u32               # program counter
-	sr             : u16               # status register (T-S--III ---XNZVC)
-	prefetch       : new u16 [ 2 ]     # 2-word prefetch queue (68000 pipelines 2 words)
-	cycles         : i64               # total 68000 cycles from reset
-	stopped        : bool              # halted by STOP until an interrupt
-	halted         : bool              # bus/address error double-fault
+	public d              : new u32 [ 8 ]     # data registers D0-D7
+	public a              : new u32 [ 8 ]     # address registers A0-A7 (A7 = active SP)
+	public usp            : u32               # user stack pointer  (inactive when supervisor)
+	public ssp            : u32               # supervisor stack pointer
+	public pc             : u32               # program counter
+	public sr             : u16               # status register (T-S--III ---XNZVC)
+	public prefetch       : new u16 [ 2 ]     # 2-word prefetch queue (68000 pipelines 2 words)
+	public cycles         : i64               # total 68000 cycles from reset
+	public stopped        : bool              # halted by STOP until an interrupt
+	public halted         : bool              # bus/address error double-fault
 
 class z80_state
-	af             : u16               # A + flags
-	bc             : u16
-	de             : u16
-	hl             : u16
-	af_            : u16               # shadow registers
-	bc_            : u16
-	de_            : u16
-	hl_            : u16
-	ix             : u16
-	iy             : u16
-	sp             : u16
-	pc             : u16
-	i              : u8                # interrupt vector base
-	r              : u8                # memory refresh counter
-	iff1           : u8               # interrupt enable flip-flops
-	iff2           : u8
-	im             : u8                # interrupt mode 0/1/2
-	bank           : u32               # $6000 banked 68k-window base (9 bits)
-	halted         : bool
-	cycles         : i64               # total Z80 T-states from reset
-	ram            : new u8 [ 0x2000 ] # 8 KB sound RAM
-	reset          : u8                # $A11200 reset line (held = held in reset)
-	busreq         : u8                # $A11100 68000 bus request (0 = 68000 owns bus)
+	public af             : u16               # A + flags
+	public bc             : u16
+	public de             : u16
+	public hl             : u16
+	public af_            : u16               # shadow registers
+	public bc_            : u16
+	public de_            : u16
+	public hl_            : u16
+	public ix             : u16
+	public iy             : u16
+	public sp             : u16
+	public pc             : u16
+	public i              : u8                # interrupt vector base
+	public r              : u8                # memory refresh counter
+	public iff1           : u8               # interrupt enable flip-flops
+	public iff2           : u8
+	public im             : u8                # interrupt mode 0/1/2
+	public bank           : u32               # $6000 banked 68k-window base (9 bits)
+	public halted         : bool
+	public cycles         : i64               # total Z80 T-states from reset
+	public ram            : new u8 [ 0x2000 ] # 8 KB sound RAM
+	public reset          : u8                # $A11200 reset line (held = held in reset)
+	public busreq         : u8                # $A11100 68000 bus request (0 = 68000 owns bus)
 
 class vdp_state
-	vram           : new u8  [ 0x10000 ]  # 64 KB tile/name/sprite data
-	cram           : new u16 [ 64 ]       # 64 colour entries (9-bit BGR, stored 16)
-	vsram          : new u16 [ 40 ]       # 40 vertical-scroll entries
-	regs           : new u8  [ 24 ]       # 24 VDP registers
-	code           : u8                   # command code (read/write target + DMA)
-	address        : u32                  # current VRAM/CRAM/VSRAM address
-	pending        : bool                 # first control-word half latched, awaiting second
+	public vram           : new u8  [ 0x10000 ]  # 64 KB tile/name/sprite data
+	public cram           : new u16 [ 64 ]       # 64 colour entries (9-bit BGR, stored 16)
+	public vsram          : new u16 [ 40 ]       # 40 vertical-scroll entries
+	public regs           : new u8  [ 24 ]       # 24 VDP registers
+	public code           : u8                   # command code (read/write target + DMA)
+	public address        : u32                  # current VRAM/CRAM/VSRAM address
+	public pending        : bool                 # first control-word half latched, awaiting second
 	# FIFO — 4-entry write queue  [VDP_TIMING §5]
-	fifo_addr      : new u32 [ 4 ]
-	fifo_data      : new u16 [ 4 ]
-	fifo_code      : new u8  [ 4 ]
-	fifo_head      : i32
-	fifo_tail      : i32
+	public fifo_addr      : new u32 [ 4 ]
+	public fifo_data      : new u16 [ 4 ]
+	public fifo_code      : new u8  [ 4 ]
+	public fifo_head      : i32
+	public fifo_tail      : i32
 	# raster position
-	hcounter       : u16
-	vcounter       : u16
-	hint_counter   : u8                   # reg 10 reload countdown for HINT   [VDP_TIMING §8, open]
+	public hcounter       : u16
+	public vcounter       : u16
+	public hint_counter   : u8                   # reg 10 reload countdown for HINT   [VDP_TIMING §8, open]
 	# status flags
-	vint_pending   : bool
-	hint_pending   : bool
-	in_vblank      : bool
-	in_hblank      : bool
-	dma_busy       : bool
-	dma_fill       : bool                  # DMA fill armed; next data write runs it
-	h40            : bool                  # true = 320px (RS1), false = 256px
-	framebuf       : new u32 [ 320 * 240 ] # ARGB output, max H40/V30 extent
+	public vint_pending   : bool
+	public hint_pending   : bool
+	public in_vblank      : bool
+	public in_hblank      : bool
+	public dma_busy       : bool
+	public dma_fill       : bool                  # DMA fill armed; next data write runs it
+	public h40            : bool                  # true = 320px (RS1), false = 256px
+	public framebuf       : new u32 [ 320 * 240 ] # ARGB output, max H40/V30 extent
 
 class ym2612_state
-	regs0          : new u8 [ 256 ]    # bank 0 registers (channels 1-3)
-	regs1          : new u8 [ 256 ]    # bank 1 registers (channels 4-6)
-	latch_addr     : u8                # last address written (per bank)
-	latch_bank     : u8
-	dac_enable     : bool              # $2B bit7: channel 6 -> 8-bit DAC
-	dac_data       : u8                # $2A DAC sample
-	timer_a        : u16               # 10-bit timer A
-	timer_b        : u8                # 8-bit timer B
-	timer_a_ct     : u16
-	timer_b_ct     : u16
-	status         : u8                # timer overflow flags (read via any port)
-	op_phase       : new u32 [ 24 ]    # 20-bit phase counters
-	op_att         : new i32 [ 24 ]    # envelope attenuation 0..0x3FF
-	op_st          : new u8  [ 24 ]    # 0 attack 1 decay 2 sustain 3 release
-	fb_o1          : new i32 [ 6 ]     # op1 previous outputs (feedback average)
-	fb_o2          : new i32 [ 6 ]
-	eg_tick        : i32               # EG clocks every 3rd sample
-	eg_cnt         : u32
+	public regs0          : new u8 [ 256 ]    # bank 0 registers (channels 1-3)
+	public regs1          : new u8 [ 256 ]    # bank 1 registers (channels 4-6)
+	public latch_addr     : u8                # last address written (per bank)
+	public latch_bank     : u8
+	public dac_enable     : bool              # $2B bit7: channel 6 -> 8-bit DAC
+	public dac_data       : u8                # $2A DAC sample
+	public timer_a        : u16               # 10-bit timer A
+	public timer_b        : u8                # 8-bit timer B
+	public timer_a_ct     : u16
+	public timer_b_ct     : u16
+	public status         : u8                # timer overflow flags (read via any port)
+	public op_phase       : new u32 [ 24 ]    # 20-bit phase counters
+	public op_att         : new i32 [ 24 ]    # envelope attenuation 0..0x3FF
+	public op_st          : new u8  [ 24 ]    # 0 attack 1 decay 2 sustain 3 release
+	public fb_o1          : new i32 [ 6 ]     # op1 previous outputs (feedback average)
+	public fb_o2          : new i32 [ 6 ]
+	public eg_tick        : i32               # EG clocks every 3rd sample
+	public eg_cnt         : u32
 
 class psg_state
-	tone           : new u16 [ 3 ]     # 10-bit period per tone channel
-	volume         : new u8  [ 4 ]     # 4-bit attenuation, 3 tones + noise
-	counter        : new u16 [ 4 ]     # period countdown per channel
-	output         : new u8  [ 4 ]     # current output level per channel
-	noise_ctrl     : u8                # noise mode + rate
-	noise_lfsr     : u16               # 16-bit shift register
-	latch          : u8                # last-latched register (channel + type)
+	public tone           : new u16 [ 3 ]     # 10-bit period per tone channel
+	public volume         : new u8  [ 4 ]     # 4-bit attenuation, 3 tones + noise
+	public counter        : new u16 [ 4 ]     # period countdown per channel
+	public output         : new u8  [ 4 ]     # current output level per channel
+	public noise_ctrl     : u8                # noise mode + rate
+	public noise_lfsr     : u16               # 16-bit shift register
+	public latch          : u8                # last-latched register (channel + type)
 
 class test22
-	var2 : i32 [ 2 ]
-	var4 : i64 [ 2 ]
+	public var2 : i32 [ 2 ]
+	public var4 : i64 [ 2 ]
 
 element rgen : trinity
-	public  width        : i32    [ 1280 ]   # 320 (H40) x4
-	public  height       : i32    [ 896 ]    # 224 x4
+	width        : i32    [ 1280 ]   # 320 (H40) x4
+	height       : i32    [ 896 ]    # 224 x4
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
 	expect default [ Live ] rom : resource          # cartridge image
@@ -197,7 +197,7 @@ element rgen : trinity
 	mutable sample_frac  : i64               # 53267/59.9227 fractional sample carry
 	mutable psg_volt     : new i32 [ 16 ]    # PSG 2dB attenuation steps -> amplitude
 	mutable psg_acc      : i64               # PSG clock/16 accumulator vs sample rate
-	public [ Live, VolumeRange ] volume : f32 [ 0.25 ]   # master volume 0..1, a slider on the host
+	volume : f32 [ 0.25 ]   # master volume 0..1, a slider on the host
 	mutable logsin       : new i32 [ 256 ]   # -log2(sin) quarter table (generated)
 	mutable expt         : new i32 [ 256 ]   # 2^-x/256 * 2048 table (generated)
 	mutable fm_l         : i32               # last FM sample, stereo

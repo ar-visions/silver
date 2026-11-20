@@ -1,0 +1,2838 @@
+extend orbiter
+
+# the desktop: the apps screen, widgets, the switcher, shots
+
+# a line of words on the home, no box
+element HomeLabel
+    ghost : true
+    style : CSS {
+        layers.face:
+            label_color: #ffffffcc
+            label_size: 17
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    }
+
+# an agent's state on its title: running, or waiting (blue)
+HomeLabel HomeState
+    style : CSS {
+        layers.face:
+            label_color: #ffffff77
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    :selected
+        layers.face:
+            label_color: #9d8cff
+    }
+
+# why an agent did not start, in red
+HomeLabel HomeError
+    style : CSS {
+        layers.face:
+            label_color: #ff7a7a
+            label_size: 16
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_align: 0.0 0.5
+    }
+
+# the home: the apps, or the agent view (the bottom bar's button)
+element HomeView
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+    public pane : i32
+
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb ] return t
+        if [ orb.home_tab == 'agent' ]
+            t['agent_home'] = AgentHome [
+                area: Region { l0 t0 r0 b0 } ]
+        el
+            # the widgets are the grid's children (widget_els): a
+            # wheel or a press they leave reaches the desktop
+            # the avatars, lower right: up with an agent's pane, over
+            # the background, under the icons and widgets. always
+            # mounted: paint order is the order keys first came
+            if [ bounds && (pane < 0 || pane == orb.active_pane) ]
+                ps : f32 [ round[ min[ bounds.w * 0.72, bounds.h * 1.2 ] ] ]
+                # its foot runs off under the bottom bar
+                py : f32 [ round[ bounds.h - ps * 0.85 ] ]
+                pl : element orb.platform_of[ ps ]
+                pv : PlatformView pl
+                pv.top_down = true
+                pv.shown = orb.desk_agent_on[]
+                    && orb.desk_side[ bounds.w ] > 0.0
+                # it paints every frame: its siblings must come after
+                animated = pv.shown || pl.opacity > 0.0
+                px : f32 [ round[ bounds.w - ps * 0.92 ] ]
+                pl.area = Region [ 'l{px}px t{py}px w{ps}px h{ps}px' ]
+                t['plat'] = pl
+            t['apps'] = AppsGrid [ pane: pane, scroll_fade: 24.0,
+                area: Region { l0 t0 r0 b0 } ]
+            # a build (orbiter's own, the window's app compiling)
+            # takes the clock's place while it runs
+            bn : string orb.bar_build[]
+            bp : i32 [ i32[ orb.bar_build_f * 100.0 ] ]
+            # no share told yet (or none): its name alone
+            bw : string [ (bp >= 0 && bp <= 100)
+                ? 'building {bn}  {bp}%' : 'building {bn}' ]
+            rs_ : i64 [ orb.rec_sec ]
+            sz : string [ (rs_ % 60 < 10) ? '0' : '' ]
+            rw : string [ (orb.sys_rec_by && orb.sys_rec_by.count > 0)
+                ? 'recording {rs_ / 60}:{sz}{rs_ % 60}' : '' ]
+            t['desk_clock'] = DeskClock [ label: (rw.count > 0) ? rw
+                : (bn.count > 0) ? bw : clock_text[],
+                area: Region { r0.6 b1.4 w14 h1 } ]
+            if [ orb.desk_agent_on[] && bounds ]
+                un : f32 ux_unit[ ux ]
+                pad : f32 [ round[ 24.0 * un ] ]
+                gap : f32 [ round[ 10.0 * un ] ]
+                side : f32 orb.desk_side[ bounds.w ]
+                pt : f32 [ pad + orb.desk_top ]
+                pr : f32 [ (side > 0.0) ? side + gap : pad ]
+                t['dagent_pane'] = DeskAgentPane [ area: Region [
+                    'l{pad}px t{pt}px r{pr}px b{pad}px' ] ]
+                ins : f32 [ round[ 8.0 * un ] ]
+                an : string orb.desk_agent
+                one : map ConsoleSession [ string ] []
+                cs : ConsoleSession orb.home_session[ an ]
+                one[ an ] = cs
+                t['dagent_t_{an}'] = Console [ focusable: true,
+                    sessions: one, session_id: an, cwd: cs.cwd,
+                    cbase: Layer [ fill_color: rgba [ '#0000' ] ],
+                    area: Region [ orb.desk_pane_at[ pad + ins, pt + ins,
+                                                     pr + ins ] ] ]
+                t['dagent_edge'] = WinEdge [ selected: true,
+                    area: Region [
+                        'l{pad}px t{pt}px r{pr}px b{pad}px' ] ]
+        return t
+
+# a desktop cell's side: an app card's and its gap
+func desk_cell [ w: Window ] -> f32
+    return round[ 139.0 * ux_unit[ w ] ]
+
+# a widget on the desktop: its module's hosted instance, drawn as it
+# paints (its ground is clear). an empty one shows the modules it can
+# be, as a store's folder does. in edit mode (a held press) a drag
+# takes it to another place in the stack; x takes it off
+element DeskWidget
+    focusable : true
+    # paints into the apps grid's canvas: one picture for both
+    no_cache  : true
+    public index : i32
+    # mounted over the apps (else at their side)
+    public top   : bool
+    # dragged in edit mode: where the press went down, how far it went
+    mutable drag : bool
+    mutable from : vec2f
+    mutable went : vec2f
+    # the chooser's cards as last laid out: one a widget module
+    mutable picks : vec string
+    mutable pick_x : vec f32
+    mutable pick_y : vec f32
+    mutable pick_s : f32
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # edit mode: a held press arranges the desktop (the grid holding
+    # it) or it
+    func editing [] -> bool
+        return arranging || (parent && parent.arranging)
+
+    # its place in the stack were it let go now: the widgets whose
+    # middle is above the pointer
+    func goal [] -> i32
+        mid : f32 [ bounds.y + from.y + went.y ]
+        k : i32 [ 0 ]
+        if [ parent && parent.elements ]
+            for [ c: element, id: string ] in parent.elements
+                if [ c == a || !(c inherits DeskWidget) || !c.bounds ]
+                    continue
+                if [ c.bounds.y + c.bounds.h * 0.5 < mid ] k += 1
+        return k
+
+    # the desktop's clock always shows: the widget fades out over
+    # 32 px above it, and nothing of it is left from there down
+    func clock_fade [ cv: Canvas, w: Window, oy: f32, bw: f32,
+                      bh: f32 ]
+        hv : element (parent) ? parent.parent : null
+        ck : element (hv && hv.elements) ? hv.elements[ 'desk_clock' ]
+                                          : null
+        if [ !ck || !ck.bounds ] return
+        me : vec2f w.win_origin[ a ]
+        at : vec2f w.win_origin[ ck ]
+        top : f32 [ at.y - me.y - 8.0 ]
+        fd  : f32 [ 32.0 ]
+        if [ top - fd >= oy + bh ] return
+        cv.save[]
+        cv.set_composite[ Composite.destination_out ]
+        g : Gradient linear_gradient[ 0.0, top - fd, 0.0, top ]
+        g.add_stop[ 0.0, 0x00000000 ]
+        g.add_stop[ 1.0, 0xff000000 ]
+        cv.set_fill_gradient[ g ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, top - fd, bw, oy + bh - (top - fd) ]
+        cv.paint[]
+        cv.clear_fill_gradient[]
+        cv.restore[]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        oy : f32 [ (drag) ? went.y : 0.0 ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        # a free window's ground: the scene's blur, its tint
+        cv.save[]
+        cv.clip_rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        w.draw_blur[ cv, a, BlurStage.blur ]
+        cv.fill_color[ rgba [ '#2a1a4a33' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, oy, bw, bh ]
+        cv.paint[]
+        cv.restore[]
+        av : AppView o.widget_view[ index ]
+        if [ av ]
+            av.vx  = 0.0
+            av.vy  = 0.0
+            av.vw  = bw
+            av.vh  = bh
+            av.vsx = 0.0
+            av.vsy = 0.0
+            av.service[ cv ]
+            cv.save[]
+            cv.clip_rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+            av.draw_frame[ cv, rect [ x: 0.0, y: oy, w: bw, h: bh ] ]
+            cv.restore[]
+        el
+            draw_chooser[ cv, o, 0.0, oy, bw, bh ]
+        # its edge: an 8 px inner glow, bright at the edge, no border
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.box_shadow[ rgba [ (hovered) ? '#ffffff4d' : '#ffffff33' ],
+                       0.0, 0.0, 8.0, 0.0, true ]
+        cv.shadow_curve[ 0, 2.0 ]
+        cv.rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        cv.paint[]
+        cv.no_shadows[]
+        cv.restore[]
+        clock_fade[ cv, w, oy, bw, bh ]
+        if [ !editing[] ] return
+        # edit mode: its outline and the x that takes it off
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#c890ffcc' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.rounded_rect[ 0.0, oy, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#1a1440ee' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ bw - 24.0, oy + 4.0, 20.0, 20.0,
+                         10.0, 10.0, 10.0, 10.0 ]
+        cv.paint[]
+        cv.restore[]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffffdd' ] ]
+        cv.stroke_width[ 1.5 ]
+        cv.move_to[ bw - 18.0, oy + 10.0 ]
+        cv.line_to[ bw - 10.0, oy + 18.0 ]
+        cv.move_to[ bw - 10.0, oy + 10.0 ]
+        cv.line_to[ bw - 18.0, oy + 18.0 ]
+        cv.paint[]
+        cv.restore[]
+
+    # an empty widget: the modules it can be as cards
+    func draw_chooser [ cv: Canvas, o: orbiter, ox: f32, oy: f32,
+                        bw: f32, bh: f32 ]
+        un : f32 ux_unit[ ux ]
+        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        ff : string 'fonts/BarlowCondensed-Regular.ttf'
+        cv.set_font[ shared_font[ cv, ff, fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#ffffffaa' ] ]
+        cv.draw_text[ 'Choose a widget', rect [ x: ox + 14.0,
+            y: oy + 8.0, w: bw - 28.0, h: 22.0 * un ], vec2f [ 0.0, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+        side : f32 [ round[ 64.0 * un ] ]
+        cw : f32 [ side + round[ 24.0 * un ] ]
+        ch : f32 [ side + round[ 26.0 * un ] ]
+        cols : i32 [ max[ 1, i32[ (bw - 20.0) / cw ] ] ]
+        picks  = vec string []
+        pick_x = vec f32 []
+        pick_y = vec f32 []
+        pick_s = cw
+        k : i32 [ 0 ]
+        for [ ae: AppEntry ] in o.app_entries[]
+            if [ !ae.widget || ae.widget.count == 0 ] continue
+            cx : f32 [ ox + 10.0 + f32[ k % cols ] * cw ]
+            cy : f32 [ oy + 36.0 * un + f32[ k / cols ] * ch ]
+            picks.push[ ae.name ]
+            pick_x.push[ cx ]
+            pick_y.push[ cy ]
+            ic : AppIcon o.widget_icon[ ae ]
+            if [ ic ] ic.paint[ cv, cx + (cw - side) * 0.5, cy, side ]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ ae.name, rect [ x: cx, y: cy + side + 2.0,
+                w: cw, h: 22.0 * un ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+            k += 1
+        cv.set_font[ null ]
+
+    func on_press [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o ] return
+        p : vec2f ev.mouse.pos
+        if [ editing[] ]
+            ev.no_default = true
+            if [ p.x > bounds.w - 26.0 && p.y < 26.0 ]
+                o.widget_remove[ index ]
+                return
+            drag = true
+            from = p
+            went = vec2f [ 0.0, 0.0 ]
+            set_capture[]
+            return
+        av : AppView o.widget_view[ index ]
+        if [ !av ]
+            # the chooser: a card makes it that widget
+            ev.no_default = true
+            if [ picks ]
+                for [ i: i32 0, i < picks.count, i += 1 ]
+                    if [ p.x >= pick_x[ i ]
+                         && p.x < pick_x[ i ] + pick_s
+                         && p.y >= pick_y[ i ]
+                         && p.y < pick_y[ i ] + pick_s ]
+                        o.widget_pick[ index, picks[ i ] ]
+                        return
+            return
+        if [ av.view_press[ ev ] ] ev.no_default = true
+        set_focus[]
+
+    func on_move [ ev: Event ]
+        if [ drag ]
+            went = vec2f [ 0.0, ev.mouse.pos.y - from.y ]
+            repaint_held[ a, false ]
+            return
+        o : orbiter orb[]
+        av : AppView (o) ? o.widget_view[ index ] : null
+        if [ av ] av.view_move[ ev ]
+
+    func on_release [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o ] return
+        if [ drag ]
+            k : i32 goal[]
+            drag = false
+            went = vec2f [ 0.0, 0.0 ]
+            release_capture[]
+            o.widget_reorder[ index, k ]
+            return
+        av : AppView o.widget_view[ index ]
+        if [ av ] av.view_release[ ev ]
+
+    public func on_wheel [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o || editing[] ] return
+        # the widget's, or the desktop's under it: no default
+        ev.no_default = true
+        av : AppView o.widget_view[ index ]
+        # an app not up to take it: the column or desktop does
+        if [ !av || !av.view_wheel[ ev ] ]
+            o.desk_wheel[ f32[ ev.mouse.wheel_delta.y ] ]
+
+    func on_key [ ev: Event ]
+        o : orbiter orb[]
+        av : AppView (o) ? o.widget_view[ index ] : null
+        if [ av && !editing[] ] av.on_key*[ ev ]
+
+    func on_char [ ev: Event ]
+        o : orbiter orb[]
+        av : AppView (o) ? o.widget_view[ index ] : null
+        if [ av && !editing[] ] av.on_text*[ ev ]
+
+    # the hosted app's own focus says, as a pane's
+    public func takes_words [] -> bool
+        o : orbiter orb[]
+        av : AppView (o) ? o.widget_view[ index ] : null
+        return av != null && !editing[] && av.app_words
+
+# the menu's widgets: each module that is one, as a card; lit while
+# on the desktop; a tap puts it on or takes it off
+# the phone's switcher (its power button held): the running windows
+# across the top, the power slide at its foot; a press on its ground
+# puts it away
+element Switcher
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # its ground: the background chosen (the scene, as the screen
+    # paints it under the ui), never the windows or dialogs behind
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !w.root
+             || !w.root.bounds ] return
+        cv : Canvas w.screen
+        ox : f32 [ 0.0 ]
+        oy : f32 [ 0.0 ]
+        for [ e: element* a, e, e = e.parent ]
+            if [ e.bounds ]
+                ox += e.bounds.x
+                oy += e.bounds.y
+        gi : Texture w.ground_image[]
+        cv.save[]
+        cv.clip_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0 ]
+        if [ gi ]
+            cv.draw_image[ gi, rect [ x: bounds.x - ox, y: bounds.y - oy,
+                w: w.root.bounds.w, h: w.root.bounds.h ] ]
+        el
+            cv.fill_color[ w.solid_color ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
+        cv.restore[]
+
+    public func render [] -> Elements
+        un : f32 ux_unit[ ux ]
+        pad : f32 [ round[ 24.0 * un ] ]
+        # the cards a third shorter than a phone's view: more of the
+        # log above them
+        rh : f32 [ round[ 231.0 * un ] ]
+        sh : f32 [ round[ 64.0 * un ] ]
+        o : orbiter orb[]
+        # a build chosen: its screen above the cards, console or not
+        bld : string [ (o) ? o.switch_build : '' ]
+        con : bool [ o && (o.switch_con || bld.count > 0) ]
+        lf : string (con) ? o.switch_log[] : ''
+        gp : f32 [ round[ 12.0 * un ] ]
+        # the console from the top (a keyboard comes up from the
+        # foot), the cards under it
+        bh : f32 [ (bounds) ? bounds.h : 0.0 ]
+        lh : f32 [ (con) ? round[ max[ bh - rh - sh * 2.0
+            - pad * 5.0, 0.0 ] ] : 0.0 ]
+        wy : f32 [ (con) ? pad * 2.0 + lh : pad ]
+        return Elements [
+            'wins'  : WinRow [ area: Region [ 'l0 t{wy}px r0 h{rh}px' ] ],
+            # the chosen build's screen
+            'build' : (bld.count > 0 && lh > 0.0) ? BuildScreen [
+                name: bld,
+                area: Region [ 'l{pad}px t{pad}px r{pad}px h{lh}px' ] ]
+                : null,
+            # the chosen app's log, else the system's, followed
+            'log'   : (bld.count == 0 && con && lf.count > 0
+                       && lh > 0.0) ? SwitchLog [
+                session_id: 'swlog:{lf}', sessions: o.ed_sessions,
+                feed: null, launch: 'tail -n 400 -F {lf}',
+                focusable: false, animated: true,
+                area: Region [ 'l{pad}px t{pad}px r{pad}px h{lh}px' ] ]
+                : null,
+            'slide' : PowerSlide [ area: Region [
+                'l{pad}px b{sh + pad}px r{pad + sh + gp}px h{sh}px' ] ],
+            # the console's toggle, beside the slide
+            'con'   : TButtons [ icons: true, manual: true,
+                buttons: vec string [] [ 'sw_console' ],
+                icon_ids: vec string [] [ 'console' ],
+                sel_mask: (con) ? 1 : 0, seg_radius: sh * 0.5,
+                area: Region [
+                    'r{pad}px b{sh + pad}px w{sh}px h{sh}px' ] ] ]
+
+    public func on_press [ ev: Event ]
+        # the log scrolls; a press in it puts nothing away
+        for [ e: element* ev.origin, e, e = e.parent ]
+            if [ e inherits Console ] return
+        ev.no_default = true
+        o : orbiter orb[]
+        if [ !o ] return
+        f : element ev.origin
+        if [ f && f inherits TButtons && f.id == 'sw_console' ]
+            ev.no_propagation = true
+            o.switch_con = !o.switch_con
+            if [ ux ] ux.restyle = true
+            return
+        o.switcher_shut[]
+
+# the switcher's console: its log in a rounded box
+Console SwitchLog
+    style : CSS {
+        layers.cbase: Layer
+            fill_color: #000c
+            radius: 12
+            clip: true
+        layers.content: TermLayer
+            area: l0.4 t0.3 r0.4 b0.3
+            label_height: 1.0
+            label_size: 12
+    }
+
+# a build at a glance: its name, word and share, then a block for
+# each part of it (compiling, tests, linking, exports, errors), its
+# count and latest lines; a tap opens a block's whole log, another
+# shuts it. read from silver's own copy of what the build printed
+element BuildScreen
+    animated : true
+    public name : string
+    # the open block ('' none)
+    intern drill : string [ '' ]
+    # the log as last read, by its time; its lines, plain
+    intern got   : i64 [ -1 ]
+    intern seen  : i64
+    intern lines : vec string
+    # the blocks' tops as drawn, and their kinds (for a tap)
+    intern tops  : vec f32
+    intern kinds : vec string
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func log_path [] -> string
+        return '{install_root[]}/tmp/builds/{name}.log'
+
+    # the log again when it changed (twice a second at most)
+    public func tick [ w: Window ]
+        now : i64 [ epoch_millis[] ]
+        if [ now - seen < 500 ] return
+        seen = now
+        f : path [ log_path[] ]
+        mt : i64 f.modified_time[]
+        if [ mt == got ] return
+        got = mt
+        lines = vec string []
+        tx : string f.load[ typeid[ string ], null ]
+        if [ tx ]
+            for [ ln: string ] in tx.split[ '\n' ]
+                pl : string plain_text[ ln ].trim[]
+                if [ pl.count > 0 ] lines.push[ pl ]
+        pristine = false
+        ux.will_animate = true
+
+    # a line without its terminal colours
+    func plain_text [ ln: string ] -> string
+        out : string ''
+        i : i32 [ 0 ]
+        while [ i < ln.count ]
+            if [ ln.mid[ i, 1 ] == '\x1b' ]
+                while [ i < ln.count && ln.mid[ i, 1 ] != 'm' ] i += 1
+                i += 1
+                continue
+            out = '{out}{ln.mid[ i, 1 ]}'
+            i += 1
+        return out
+
+    # which block a line is part of ('' none)
+    func kind_of [ ln: string ] -> string
+        if [ ln.index_of[ 'expect: ' ] >= 0 ] return 'tests'
+        if [ ln.index_of[ 'error' ] >= 0 || ln.index_of[ 'fault' ] >= 0
+             || ln.index_of[ 'failed' ] >= 0 ] return 'errors'
+        if [ ln.index_of[ '] compiling ' ] >= 0 ] return 'compiling'
+        if [ ln.index_of[ '] linking ' ] >= 0
+             || ln.index_of[ '] built ' ] >= 0 ] return 'linking'
+        if [ ln.index_of[ 'export' ] >= 0 ] return 'exports'
+        return ''
+
+    # a block's lines
+    func of_kind [ k: string ] -> vec string
+        out : vec string []
+        if [ !lines ] return out
+        for [ ln: string ] in lines
+            if [ k == 'all' || kind_of[ ln ] == k ] out.push[ ln ]
+        return out
+
+    # a block's word at a glance: its count, the tests' passes
+    func summary [ k: string, ls: vec string ] -> string
+        if [ k == 'tests' ]
+            bad : i32 [ 0 ]
+            for [ ln: string ] in ls
+                if [ ln.index_of[ 'failed' ] >= 0 ] bad += 1
+            ok : i32 [ ls.count - bad ]
+            if [ ls.count == 0 ] return 'none run'
+            if [ bad > 0 ] return '{ok} passed, {bad} failed'
+            return '{ok} passed'
+        if [ k == 'compiling' ] return '{ls.count} modules'
+        if [ k == 'linking' ] return '{ls.count} steps'
+        if [ k == 'errors' ] return '{ls.count}'
+        return '{ls.count}'
+
+    # an error as the file's name and place, then its words (the
+    # compiler's own place in between left out)
+    func error_text [ ln: string ] -> string
+        sp : i32 [ ln.index_of[ ' (' ] ]
+        cp : i32 [ ln.index_of[ ') ' ] ]
+        if [ sp < 0 || cp < sp ] return ln
+        at : string ln.mid[ 0, sp ]
+        sl : i32 [ at.rindex_of[ '/' ] ]
+        if [ sl >= 0 ] at = at.mid[ sl + 1, at.count - sl - 1 ]
+        return '{at}  {ln.mid[ cp + 2, ln.count - cp - 2 ]}'
+
+    # a line as an item: the test's name, the module's, else itself
+    func item_of [ k: string, ln: string ] -> string
+        if [ k == 'errors' ] return error_text[ ln ]
+        if [ k == 'tests' ]
+            at : i32 [ ln.index_of[ 'expect: ' ] ]
+            t : string ln.mid[ at + 8, ln.count - at - 8 ]
+            md : string ''
+            if [ ln.starts_with[ '[' ] ]
+                md = ln.mid[ 1, ln.index_of[ "]" ] - 1 ]
+                if [ md.starts_with[ 'import ' ] ]
+                    md = md.mid[ 7, md.count - 7 ]
+                if [ md.starts_with[ 'silver-' ] ]
+                    md = md.mid[ 7, md.count - 7 ]
+            return (md.count > 0) ? '{md}: {t}' : t
+        return ln
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        rd : f32 [ round[ 12.0 * un ] ]
+        cv.save[]
+        cv.rounded[ rd, rd, rd, rd ]
+        cv.fill_color[ rgba [ '#000000cc' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
+        cv.restore[]
+        pd : f32 [ round[ 16.0 * un ] ]
+        wd : string o.build_word[ name ]
+        # the head: the build's name, its word, a bar once it ends
+        hh : f32 [ round[ 34.0 * un ] ]
+        chart_font[ cv, 'Bold', round[ 22.0 * un ] ]
+        chart_text[ cv, name, pd, pd, bounds.w * 0.5, hh, 0.0,
+            '#ffffff' ]
+        chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+        chart_text[ cv, wd, bounds.w * 0.5, pd, bounds.w * 0.5 - pd, hh,
+            1.0, (wd == 'failed') ? '#ff8080'
+            : ((wd == 'built') ? '#7fe0a0' : '#c8b8ff') ]
+        bw : f32 [ bounds.w - pd * 2.0 ]
+        by : f32 [ pd + hh + round[ 4.0 * un ] ]
+        bh : f32 [ round[ 4.0 * un ] ]
+        cv.fill_color[ rgba [ '#ffffff18' ] ]
+        cv.rect_to[ pd, by, bw, bh ]
+        cv.paint[]
+        if [ wd != 'building' ]
+            cv.fill_color[ rgba [ (wd == 'failed') ? '#d04848'
+                : ((wd == 'built') ? '#48b070' : '#806bff') ] ]
+            cv.rect_to[ pd, by, bw, bh ]
+            cv.paint[]
+        y : f32 [ by + bh + pd ]
+        lh : f32 [ round[ 22.0 * un ] ]
+        tops  = vec f32 []
+        kinds = vec string []
+        # a block open: its whole log, the newest at the foot
+        if [ drill.count > 0 ]
+            ls : vec string of_kind[ (drill == 'compiling') ? 'all'
+                : drill ]
+            chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+            sm : string summary[ drill, of_kind[ drill ] ]
+            chart_text[ cv, '{drill}: {sm}', pd, y, bw, lh, 0.0,
+                '#ffffff' ]
+            tops.push[ y ]
+            kinds.push[ drill ]
+            y += lh + round[ 6.0 * un ]
+            n : i32 [ i32[ (bounds.h - y - pd) / lh ] ]
+            first : i32 [ (ls.count > n) ? ls.count - n : 0 ]
+            chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+            for [ i: i32 first, i < ls.count, i += 1 ]
+                ln : string ls[ i ]
+                bad : bool [ kind_of[ ln ] == 'errors' ]
+                it : string item_of[ (bad) ? 'errors' : drill, ln ]
+                # an error wraps to a second line
+                rows : f32 [ (bad && it.count > 40) ? 2.0 : 1.0 ]
+                if [ y + lh * rows > bounds.h - pd ] break
+                cv.fill_color[ rgba [ (bad) ? '#ff9090' : '#ffffffcc' ] ]
+                cv.draw_text[ it, rect [ x: pd, y: y, w: bw,
+                    h: lh * rows ], vec2f [ 0.0, 0.5 ],
+                    vec2f [ 0.0, 0.0 ], Overflow.wrap, null, true ]
+                y += lh * rows
+            return
+        # each block: its name and count, then its latest items
+        order : vec string [] [ 'errors', 'tests', 'compiling',
+            'linking', 'exports' ]
+        for [ k: string ] in order
+            ls : vec string of_kind[ k ]
+            if [ ls.count == 0 && k != 'compiling' && k != 'tests' ]
+                continue
+            if [ y + lh > bounds.h - pd ] break
+            tops.push[ y ]
+            kinds.push[ k ]
+            chart_font[ cv, 'SemiBold', round[ 18.0 * un ] ]
+            chart_text[ cv, k, pd, y, bw * 0.5, lh, 0.0,
+                (k == 'errors') ? '#ff8080' : '#ffffff' ]
+            chart_text[ cv, summary[ k, ls ], pd + bw * 0.5, y,
+                bw * 0.5, lh, 1.0, '#ffffffaa' ]
+            y += lh
+            # the latest three, under it
+            chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+            first : i32 [ (ls.count > 3) ? ls.count - 3 : 0 ]
+            for [ i: i32 first, i < ls.count, i += 1 ]
+                if [ y + lh > bounds.h - pd ] break
+                ln : string ls[ i ]
+                bad : bool [ ln.index_of[ 'failed' ] >= 0
+                    || kind_of[ ln ] == 'errors' ]
+                ind : f32 [ round[ 12.0 * un ] ]
+                chart_text[ cv, item_of[ k, ln ], pd + ind, y, bw - ind,
+                    lh, 0.0,
+                    (bad) ? '#ff9090' : '#ffffff88' ]
+                y += lh
+            y += round[ 8.0 * un ]
+
+    # a tap on a block opens its log; on the open one, shuts it
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ drill.count > 0 ]
+            drill = ''
+            pristine = false
+            return
+        if [ !tops ] return
+        k : i32 [ -1 ]
+        for [ i: i32 0, i < tops.count, i += 1 ]
+            if [ ev.mouse.pos.y >= tops[ i ] ] k = i
+        if [ k < 0 ] return
+        drill = kinds[ k ]
+        pristine = false
+
+# the switcher's windows: a card each, its picture and name, scrolled
+# sideways by a drag; a press shows it, a flick up ends it
+element WinRow
+    animated : true
+    # px scrolled, and where it eases to
+    intern shift : f32
+    intern goal  : f32
+    intern took  : bool
+    # the pointer's x at a press, -1 none; the scroll then
+    intern grab  : f32 [ -1.0 ]
+    intern grab_y : f32
+    intern from  : f32
+    intern moved : bool
+    intern tap   : vec2f
+    # the card pressed, how far it is lifted, and since when
+    intern lift_i : i32 [ -1 ]
+    intern lift   : f32
+    intern lifting : bool
+    intern lift_us : i64
+    # a flicked card flying off: the app it ends once it is out
+    intern going   : i32 [ -1 ]
+    # the chosen card it last eased to the middle ('-' none yet)
+    intern centred : string [ '-' ]
+    # its cards in order: 'b:<module>' a build, 'a:<iid>' an app
+    mutable keys : vec string
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func pad [] -> f32
+        return round[ 24.0 * ux_unit[ ux ] ]
+
+    func gap [] -> f32
+        return round[ 14.0 * ux_unit[ ux ] ]
+
+    # a card: the picture's height less the name under it
+    func card_h [] -> f32
+        return (bounds) ? bounds.h - round[ 30.0 * ux_unit[ ux ] ] : 0.0
+
+    func card_w [] -> f32
+        return round[ card_h[] * 0.56 ]
+
+    # the room left of the first card: it sits in the middle at rest
+    func lead [] -> f32
+        return (bounds) ? round[ (bounds.w - card_w[]) * 0.5 ] : 0.0
+
+    # the scroll that puts the last card in the middle
+    func most [] -> f32
+        if [ !bounds || !keys || keys.count < 2 ] return 0.0
+        return f32[ keys.count - 1 ] * (card_w[] + gap[])
+
+    # the scroll that puts card i in the middle
+    func middle_of [ i: i32 ] -> f32
+        return f32[ max[ i, 0 ] ] * (card_w[] + gap[])
+
+    # the card nearest the middle at a scroll
+    func nearest [ sx: f32 ] -> i32
+        if [ !keys || keys.count == 0 ] return -1
+        i : i32 [ i32[ round[ sx / (card_w[] + gap[]) ] ] ]
+        if [ i < 0 ] return 0
+        return (i >= keys.count) ? keys.count - 1 : i
+
+    # the chosen card's key: a build, else an app ('' none)
+    func sel_key [ o: orbiter ] -> string
+        if [ o.switch_build.count > 0 ] return 'b:{o.switch_build}'
+        return (o.switch_sel >= 0) ? 'a:{o.switch_sel}' : ''
+
+    # a card chosen by its key
+    func choose [ o: orbiter, k: string ]
+        if [ k.starts_with[ 'b:' ] ]
+            o.switch_build = k.mid[ 2, k.count - 2 ]
+            o.switch_sel   = -1
+        el
+            o.switch_build = ''
+            id : i64 k.mid[ 2, k.count - 2 ].integer_value[]
+            o.switch_sel   = i32[ id ]
+        if [ ux ] ux.restyle = true
+
+    # the card under x in the row, -1 none
+    func card_at [ x: f32 ] -> i32
+        if [ !keys ] return -1
+        st : f32 [ card_w[] + gap[] ]
+        rx : f32 [ x + shift - lead[] ]
+        i : i32 [ i32[ floor[ rx / st ] ] ]
+        if [ i < 0 || i >= keys.count || rx - f32[ i ] * st > card_w[] ]
+            return -1
+        return i
+
+    public func tick [ w: Window ]
+        # its scroll is orbiter's (it crosses a reload)
+        o : orbiter orb[]
+        if [ o && !took ]
+            took  = true
+            shift = o.switch_shift
+            goal  = shift
+        # the chosen card eases to the middle; let go past an end,
+        # the row springs back
+        # a chosen build gone from the row (it built): its screen goes
+        if [ o && keys && o.switch_build.count > 0 ]
+            here : bool [ false ]
+            for [ k: string ] in keys
+                if [ k == 'b:{o.switch_build}' ] here = true
+            if [ !here ]
+                o.switch_build = ''
+                ux.restyle = true
+        sk : string [ (o) ? sel_key[ o ] : '' ]
+        if [ o && keys && sk != centred && grab < 0.0 ]
+            centred = sk
+            for [ i: i32 0, i < keys.count, i += 1 ]
+                if [ keys[ i ] == centred ] goal = middle_of[ i ]
+        if [ grab < 0.0 ] goal = clamp[ goal, 0.0, most[] ]
+        if [ o ] o.switch_shift = goal
+        if [ shift != goal ]
+            shift = filter_n[ shift, goal, 0.14, ux.frame_factor ]
+            if [ abs[ goal - shift ] < 0.5 ] shift = goal
+            ux.will_animate = true
+        # a flicked card flies up and out; then its app ends (the
+        # close never holds a frame)
+        if [ going >= 0 ]
+            lift = filter_n[ lift, card_h[] * 1.6, 0.3, ux.frame_factor ]
+            ux.will_animate = true
+            if [ lift > card_h[] * 1.3 ]
+                host : orbiter orb[]
+                if [ host ] host.close_task[ host.instance_by[ going ] ]
+                going  = -1
+                lift   = 0.0
+                lift_i = -1
+            return
+        # a card let go short of the flick falls back
+        if [ !lifting && lift > 0.0 ]
+            lift = filter_n[ lift, 0.0, 0.25, ux.frame_factor ]
+            if [ lift < 0.5 ]
+                lift   = 0.0
+                lift_i = -1
+            ux.will_animate = true
+
+    # a build's card: its word large, its share as a fill along
+    # its foot, lit while chosen
+    func build_card [ cv: Canvas, o: orbiter, bn: string, x: f32,
+                      y: f32, cw: f32, ch: f32, rd: f32, on: bool,
+                      un: f32 ]
+        wd : string o.build_word[ bn ]
+        fr : f32 o.build_frac[ bn ]
+        cv.save[]
+        cv.rounded[ rd, rd, rd, rd ]
+        cv.fill_color[ rgba [ '#15121d' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rect_to[ x, y, cw, ch ]
+        cv.paint[]
+        # its share done: a fill up from the foot
+        done : f32 [ (wd == 'building') ? max[ fr, 0.0 ]
+            : ((wd == 'built' || wd == 'failed') ? 1.0 : 0.0) ]
+        if [ done > 0.0 ]
+            fh : f32 [ round[ ch * done ] ]
+            cv.fill_color[ rgba [ (wd == 'failed') ? '#a0303055'
+                : ((wd == 'built') ? '#3a8a5a44' : '#4d3dbc55') ] ]
+            cv.rect_to[ x, y + ch - fh, cw, fh ]
+            cv.paint[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_width[ (on) ? 2.0 : 1.0 ]
+        cv.stroke_offset[ (on) ? -1.0 : -0.5 ]
+        cv.stroke_color[ rgba [ (on) ? '#806bff' : '#ffffff33' ] ]
+        cv.rect_to[ x, y, cw, ch ]
+        cv.paint[]
+        cv.restore[]
+        tx : string [ (wd == 'building' && fr >= 0.0)
+            ? '{i32[ fr * 100.0 ]}%' : wd ]
+        chart_font[ cv, 'SemiBold', round[ 26.0 * un ] ]
+        cv.fill_color[ rgba [ (wd == 'failed') ? '#ff8080'
+            : '#ffffff' ] ]
+        cv.draw_text[ tx, rect [ x: x, y: y, w: cw, h: ch * 0.6 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null, true ]
+        chart_font[ cv, 'Regular', round[ 15.0 * un ] ]
+        cv.fill_color[ rgba [ '#ffffff99' ] ]
+        sub : string [ (wd == 'building') ? 'building'
+            : o.build_tests[ bn ] ]
+        cv.draw_text[ sub,
+            rect [ x: x, y: y + ch * 0.45, w: cw, h: ch * 0.2 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null, true ]
+        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        runs : vec AppView o.running_apps[]
+        bns : vec string o.switch_builds[]
+        keys = vec string []
+        for [ bn: string ] in bns
+            keys.push[ 'b:{bn}' ]
+        for [ av: AppView ] in runs
+            keys.push[ 'a:{av.iid}' ]
+        cw : f32 card_w[]
+        ch : f32 card_h[]
+        fp : i32 [ i32[ round[ 16.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        if [ keys.count == 0 ]
+            cv.fill_color[ rgba [ '#ffffff88' ] ]
+            cv.draw_text[ 'No apps running', rect [ x: 0.0, y: 0.0,
+                w: bounds.w, h: ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+            cv.set_font[ null ]
+            return
+        rd : f32 [ 10.0 * un ]
+        x : f32 [ lead[] - shift ]
+        k : i32 [ 0 ]
+        sk : string sel_key[ o ]
+        # a build is a task preparing: its card first
+        for [ bn: string ] in bns
+            y : f32 [ (k == lift_i) ? -round[ lift ] : 0.0 ]
+            fa : f32 [ (k == lift_i)
+                ? clamp[ 1.0 - lift / (ch * 0.8), 0.2, 1.0 ] : 1.0 ]
+            cv.set_opacity[ fa ]
+            bk : string 'b:{bn}'
+            bon : bool [ bk == sk ]
+            build_card[ cv, o, bn, x, y, cw, ch, rd, bon, un ]
+            cv.set_opacity[ 1.0 ]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ bn, rect [ x: x, y: y + ch,
+                w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+            x += cw + gap[]
+            k += 1
+        for [ av: AppView ] in runs
+            # the lifted card rides the finger, fading as it goes
+            y : f32 [ (k == lift_i) ? -round[ lift ] : 0.0 ]
+            fa : f32 [ (k == lift_i)
+                ? clamp[ 1.0 - lift / (ch * 0.8), 0.2, 1.0 ] : 1.0 ]
+            cv.set_opacity[ fa ]
+            ft : Texture (av.have_frame) ? av.front[] : null
+            wv : u64 o.window_of[ av ]
+            if [ wv != 0 ] ft = window_texture[ cv, wv ]
+            cv.save[]
+            cv.rounded[ rd, rd, rd, rd ]
+            cv.fill_color[ rgba [ '#000' ] ]
+            cv.stroke_width[ 0.0 ]
+            cv.rect_to[ x, y, cw, ch ]
+            cv.paint[]
+            if [ ft && ft.width > 0 && ft.height > 0 ]
+                sc : f32 [ min[ cw / f32[ ft.width ],
+                                ch / f32[ ft.height ] ] ]
+                dw : f32 [ round[ f32[ ft.width ] * sc ] ]
+                dh : f32 [ round[ f32[ ft.height ] * sc ] ]
+                cv.draw_image[ ft, rect [ x: x + round[ (cw - dw) * 0.5 ],
+                    y: y + round[ (ch - dh) * 0.5 ], w: dw, h: dh ] ]
+            ak : string 'a:{av.iid}'
+            on : bool [ ak == sk ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_width[ (on) ? 2.0 : 1.0 ]
+            cv.stroke_offset[ (on) ? -1.0 : -0.5 ]
+            cv.stroke_color[ rgba [ (on) ? '#806bff' : '#ffffff33' ] ]
+            cv.rect_to[ x, y, cw, ch ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ o.task_title[ av ], rect [ x: x, y: y + ch,
+                w: cw, h: bounds.h - ch ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+            cv.set_opacity[ 1.0 ]
+            x += cw + gap[]
+            k += 1
+        cv.set_font[ null ]
+        # both sides fade where cards run on past them
+        fw : f32 [ round[ 64.0 * un ] ]
+        ld : f32 lead[]
+        left  : f32 [ (shift + ld > 0.5) ? fw : 0.0 ]
+        right : f32 [ (most[] - shift + ld > 0.5) ? fw : 0.0 ]
+        if [ mask_glow.w != left || mask_glow.y != right ]
+            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+
+    public func on_wheel [ ev: Event ]
+        ev.no_propagation = true
+        goal -= f32[ ev.mouse.wheel_delta.y ] * 40.0
+        ux.will_animate = true
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        # a card still flying off: nothing new until it is gone
+        if [ going >= 0 ] return
+        grab    = f32[ ux.mouse.x ]
+        grab_y  = f32[ ux.mouse.y ]
+        tap     = ev.mouse.pos
+        from    = goal
+        moved   = false
+        lifting = false
+        lift    = 0.0
+        lift_i  = card_at[ tap.x ]
+        lift_us = epoch_micros[]
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        d  : f32 [ f32[ ux.mouse.x ] - grab ]
+        dy : f32 [ f32[ ux.mouse.y ] - grab_y ]
+        # the first 8 px decide: sideways scrolls, up lifts the card
+        if [ !moved && !lifting ]
+            if [ abs[ d ] > 8.0 && abs[ d ] >= abs[ dy ] ] moved = true
+            el [ dy < -8.0 && lift_i >= 0 ] lifting = true
+        if [ lifting ]
+            lift = max[ -dy, 0.0 ]
+            ux.will_animate = true
+            return
+        if [ !moved ] return
+        # the cards follow the finger; past an end, a third as far
+        g : f32 [ from - d ]
+        if [ g < 0.0 ] g = g * 0.35
+        el [ g > most[] ] g = most[] + (g - most[]) * 0.35
+        goal  = g
+        shift = g
+
+    public func on_release [ ev: Event ]
+        ux.release_capture[ a ]
+        held : bool [ grab >= 0.0 ]
+        grab = -1.0
+        if [ !held ] return
+        ev.no_default     = true
+        ev.no_propagation = true
+        o : orbiter orb[]
+        if [ !o || !keys ] return
+        # lifted: a fifth of its height, or a quick flick, ends it (a
+        # build: put away)
+        if [ lifting ]
+            lifting = false
+            quick : bool [ epoch_micros[] - lift_us < 300000
+                && lift > 40.0 * ux_unit[ ux ] ]
+            if [ lift_i >= 0 && lift_i < keys.count
+                 && (quick || lift > card_h[] * 0.2) ]
+                lk : string keys[ lift_i ]
+                if [ lk.starts_with[ 'b:' ] ]
+                    o.build_dismiss[ lk.mid[ 2, lk.count - 2 ] ]
+                    lift   = 0.0
+                    lift_i = -1
+                el
+                    gi : i64 lk.mid[ 2, lk.count - 2 ].integer_value[]
+                    going = i32[ gi ]
+            return
+        # a drag let go: the card nearest the middle is chosen
+        if [ moved ]
+            n : i32 nearest[ shift ]
+            if [ n >= 0 ]
+                choose[ o, keys[ n ] ]
+                centred = '-'
+            return
+        i : i32 card_at[ tap.x ]
+        # off the cards: back to the system's log
+        if [ i < 0 || tap.y > bounds.h ]
+            o.switch_sel   = -1
+            o.switch_build = ''
+            if [ ux ] ux.restyle = true
+            return
+        # a tap chooses a card (its log, or its build, shows); on the
+        # chosen app, opens it
+        ck : string keys[ i ]
+        if [ ck != sel_key[ o ] ]
+            choose[ o, ck ]
+            return
+        if [ ck.starts_with[ 'a:' ] ]
+            pi : i64 ck.mid[ 2, ck.count - 2 ].integer_value[]
+            o.switcher_pick[ i32[ pi ] ]
+
+# the switcher's foot: its knob dragged left to right shows power
+# off and restart; let go short of the end, it eases back
+element PowerSlide
+    animated : true
+    # px along the track, and where it eases to
+    intern knob : f32
+    intern goal : f32
+    intern grab : f32 [ -1.0 ]
+    intern from : f32
+    intern open : bool
+    mutable power_svg : SVGModel
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    # how far the knob travels
+    func span [] -> f32
+        return (bounds) ? max[ bounds.w - bounds.h, 0.0 ] : 0.0
+
+    public func tick [ w: Window ]
+        # opened is orbiter's (it crosses a reload)
+        o : orbiter orb[]
+        if [ o && o.slide_open ] open = true
+        if [ grab < 0.0 && knob != goal ]
+            knob = filter_n[ knob, goal, 0.2, ux.frame_factor ]
+            if [ abs[ goal - knob ] < 0.5 ] knob = goal
+            ux.will_animate = true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        h  : f32 [ bounds.h ]
+        r  : f32 [ h * 0.5 ]
+        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.save[]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.stroke_color[ rgba [ '#ffffff22' ] ]
+        if [ open ]
+            hw : f32 [ round[ (bounds.w - 10.0 * un) * 0.5 ] ]
+            cv.fill_color[ rgba [ '#b0304a99' ] ]
+            cv.rounded_rect[ 0.0, 0.0, hw, h, r, r, r, r ]
+            cv.paint[]
+            cv.fill_color[ rgba [ '#b0882a99' ] ]
+            cv.rounded_rect[ bounds.w - hw, 0.0, hw, h, r, r, r, r ]
+            cv.paint[]
+            cv.restore[]
+            cv.fill_color[ rgba [ '#fff' ] ]
+            cv.draw_text[ 'Power off', rect [ x: 0.0, y: 0.0, w: hw,
+                h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
+            cv.draw_text[ 'Restart', rect [ x: bounds.w - hw, y: 0.0,
+                w: hw, h: h ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.ellipsis, null, true ]
+            cv.set_font[ null ]
+            return
+        cv.fill_color[ rgba [ '#ffffff10' ] ]
+        cv.rounded_rect[ 0.0, 0.0, bounds.w, h, r, r, r, r ]
+        cv.paint[]
+        # the way the knob has come
+        cv.fill_color[ rgba [ '#4d3dbc88' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ 0.0, 0.0, knob + h, h, r, r, r, r ]
+        cv.paint[]
+        cv.restore[]
+        fd : f32 [ (span[] > 0.0) ? 1.0 - knob / span[] : 1.0 ]
+        cv.set_opacity[ 0.6 * fd ]
+        cv.fill_color[ rgba [ '#fff' ] ]
+        # centred in the whole track, the knob not counted
+        cv.draw_text[ 'slide for power', rect [ x: 0.0, y: 0.0,
+            w: bounds.w, h: h ], vec2f [ 0.5, 0.5 ],
+            vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+        cv.set_opacity[ 1.0 ]
+        cv.set_font[ null ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#806bff' ] ]
+        cv.stroke_width[ 0.0 ]
+        cv.rounded_rect[ knob, 0.0, h, h, r, r, r, r ]
+        cv.paint[]
+        cv.restore[]
+        if [ !power_svg ] power_svg = SVGModel [ 'images/power.svg' ]
+        ic : f32 [ round[ h * 0.5 ] ]
+        cv.fill_color[ rgba [ '#fff' ] ]
+        cv.draw_svg[ power_svg, round[ knob + (h - ic) * 0.5 ],
+            round[ (h - ic) * 0.5 ], ic, ic ]
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        p : vec2f ev.mouse.pos
+        if [ open ]
+            o : orbiter orb[]
+            act : string [ (p.x < bounds.w * 0.5) ? 'sys_power'
+                : 'sys_restart' ]
+            if [ o ] o.sys_pick[ act ]
+            return
+        if [ p.x < knob || p.x > knob + bounds.h ] return
+        grab = f32[ ux.mouse.x ]
+        from = knob
+        ux.set_capture[ a ]
+
+    public func on_move [ ev: Event ]
+        if [ grab < 0.0 ] return
+        knob = clamp[ from + f32[ ux.mouse.x ] - grab, 0.0, span[] ]
+        goal = knob
+
+    public func on_release [ ev: Event ]
+        if [ grab < 0.0 ] return
+        ux.release_capture[ a ]
+        grab = -1.0
+        # all the way: power off and restart; short of it, back
+        if [ knob >= span[] * 0.92 ]
+            open = true
+            o : orbiter orb[]
+            if [ o ] o.slide_open = true
+        el goal = 0.0
+
+# the phone's screen turned off by its button: black, and a touch
+# reaches nothing
+element ScreenDark
+    style : CSS {
+        layers.ground:
+            fill_color: #000
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+element WidgetPick
+    mutable picks  : vec string
+    mutable pick_x : vec f32
+    mutable pick_y : vec f32
+    mutable pick_s : f32
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        side : f32 [ round[ 64.0 * un ] ]
+        cw : f32 [ side + round[ 24.0 * un ] ]
+        ch : f32 [ side + round[ 30.0 * un ] ]
+        cols : i32 [ max[ 1, i32[ bounds.w / cw ] ] ]
+        fp : i32 [ i32[ round[ 15.0 * un ] ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        picks  = vec string []
+        pick_x = vec f32 []
+        pick_y = vec f32 []
+        pick_s = cw
+        k : i32 [ 0 ]
+        for [ ae: AppEntry ] in o.app_entries[]
+            if [ !ae.widget || ae.widget.count == 0 ] continue
+            cx : f32 [ f32[ k % cols ] * cw ]
+            cy : f32 [ f32[ k / cols ] * ch ]
+            picks.push[ ae.name ]
+            pick_x.push[ cx ]
+            pick_y.push[ cy ]
+            if [ o.widget_on[ ae.name ] ]
+                cv.save[]
+                cv.fill_color[ rgba [ '#4d3dbc66' ] ]
+                cv.stroke_color[ rgba [ '#806bffaa' ] ]
+                cv.stroke_width[ 1.0 ]
+                cv.rounded_rect[ cx + 2.0, cy, cw - 4.0, ch - 4.0,
+                                 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint[]
+                cv.restore[]
+            ic : AppIcon o.widget_icon[ ae ]
+            if [ ic ]
+                ic.paint[ cv, cx + (cw - side) * 0.5, cy + 4.0, side ]
+            cv.fill_color[ rgba [ '#ffffffdd' ] ]
+            cv.draw_text[ ae.name, rect [ x: cx, y: cy + side + 4.0,
+                w: cw, h: 22.0 * un ], vec2f [ 0.5, 0.5 ],
+                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, true ]
+            k += 1
+        cv.set_font[ null ]
+
+    func on_press [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o || !picks ] return
+        ev.no_default = true
+        p : vec2f ev.mouse.pos
+        for [ i: i32 0, i < picks.count, i += 1 ]
+            if [ p.x >= pick_x[ i ] && p.x < pick_x[ i ] + pick_s
+                 && p.y >= pick_y[ i ] && p.y < pick_y[ i ] + pick_s ]
+                o.widget_toggle[ picks[ i ] ]
+                pristine = false
+                return
+
+# a narrow desktop's widgets as tabs: their names, the shown one
+# bold; a press shows that one
+element DeskTabs
+    # paints into the apps grid's canvas: one picture for both
+    no_cache : true
+    mutable tab_x : vec f32
+    # the widget each tab is (hidden ones have none)
+    mutable tab_i : vec i32
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o || !o.desk_widgets ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        fp : i32 [ i32[ round[ 17.0 * un ] ] ]
+        gap : f32 [ round[ 18.0 * un ] ]
+        tab_x = vec f32 []
+        x : f32 [ 0.0 ]
+        tab_i = vec i32 []
+        for [ i: i32 0, i < o.desk_widgets.count, i += 1 ]
+            if [ !o.widget_shown[ i ] ] continue
+            tab_i.push[ i ]
+            on : bool [ i == o.desk_tab ]
+            ff : string [ (on) ? 'fonts/BarlowCondensed-Bold.ttf'
+                : 'fonts/BarlowCondensed-Regular.ttf' ]
+            cv.set_font[ shared_font[ cv, ff, fp ] ]
+            cv.font_size[ f32[ fp ] ]
+            nm : string o.widget_name[ i ]
+            tw : f32 [ cv.measure_text[ nm ].w ]
+            cv.fill_color[ rgba [ (on) ? '#ffffffff' : '#ffffff99' ] ]
+            cv.draw_text[ nm, rect [ x: x, y: 0.0, w: tw + 4.0,
+                h: bounds.h ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+                Overflow.clip, null, true ]
+            tab_x.push[ x ]
+            x += tw + gap
+        tab_x.push[ x ]
+        cv.set_font[ null ]
+
+    func on_press [ ev: Event ]
+        o : orbiter orb[]
+        if [ !o || !tab_x ] return
+        ev.no_default = true
+        p : vec2f ev.mouse.pos
+        for [ i: i32 0, i + 1 < tab_x.count, i += 1 ]
+            if [ p.x >= tab_x[ i ] && p.x < tab_x[ i + 1 ]
+                 && tab_i && i < tab_i.count ]
+                o.widget_show[ tab_i[ i ] ]
+                return
+
+# a module's icon: icon.png, its export's icon, else a cube
+# a card in the apps view: one of our app modules, or a featured one
+# (featured/<name>/<name>.ag)
+class AppEntry
+    public name    : string
+    # a card its module's menus made: the arguments its app runs
+    # with (the name is the card's, the module its folder's)
+    public args    : string
+    # its module's folder
+    public file    : path
+    public module  : bool
+    public agi     : path
+    # its section: a SoftwareGroup's name
+    public group   : string
+    # a module that builds a program: the program it installs
+    public built   : path
+    # a hosted app: its library; gone, it is not built
+    public lib     : path
+    # the module whose build links this one: it cannot be deleted
+    public needed  : string
+    # a store's apps (install/stores/<name>), shown as its folder
+    public apps    : vec AppEntry
+    # a store app: the line it runs with, its program in install/bin
+    public launch  : string
+    # a store app's folder outside silver, shared into its view
+    public share   : string
+    # a line orbiter runs itself, outside any view (export host)
+    public host    : string
+    # the service it needs up first (export service ['waydroid'])
+    public service : string
+    # a file its app opens (a rom, a disc): the card opens it
+    public opens   : path
+    # a widget's size in desktop cells, 'WxH' (export widget ['4x3'])
+    public widget  : string
+    # the args its service runs with (export serves ['--serve 7788'])
+    public serves  : string
+    # it has a store folder (install/stores/<name>), apps or none
+    public store   : bool
+    # its store's dialog (export login): the class the drawer shows
+    # while what the store needs is missing
+    public login   : string
+    # its menus on the bar, its folder open (export menus): a class
+    public menus   : string
+    # its chords (export chords): ctrl / cmd + shift + a key, 'k=word'
+    public chords  : string
+    # the folder of what it makes, under its home (export contains)
+    public contains : string
+    # a card that shows all of an app's contained files: the app
+    public more    : string
+    # the orbiter menu's drawer: the app's settings form, no card
+    public form    : bool
+    # words in a drawer (what keys make the app's things): no press
+    public note    : bool
+    # a second line under its name (an agent's session's model)
+    public sub     : string
+    # an agent's drawer: a model a new session starts on
+    # ('agent|model'), or a session shown
+    public agent_pick : string
+    public agent_run  : string
+
+# an app over everything: its frame over the screen as it was when
+# its chord was pressed; Escape puts it away
+element AppOverlay
+    focusable : true
+    animated  : true
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        o : orbiter orb[]
+        if [ !o ] return
+        if [ !focused ] set_focus[]
+        cv : Canvas w.screen
+        if [ o.over_tex ]
+            cv.draw_image[ o.over_tex, rect [ x: 0.0, y: 0.0,
+                w: bounds.w, h: bounds.h ] ]
+        av : AppView o.over_view
+        if [ !av ] return
+        av.vx  = 0.0
+        av.vy  = 0.0
+        av.vw  = bounds.w
+        av.vh  = bounds.h
+        av.vsx = 0.0
+        av.vsy = 0.0
+        av.service[ cv ]
+        av.draw_frame[ cv, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                  h: bounds.h ] ]
+
+    func on_press [ ev: Event ]
+        o : orbiter orb[]
+        ev.no_default = true
+        if [ o && o.over_view ] o.over_view.view_press[ ev ]
+        set_focus[]
+
+    func on_move [ ev: Event ]
+        o : orbiter orb[]
+        if [ o && o.over_view ] o.over_view.view_move[ ev ]
+
+    func on_release [ ev: Event ]
+        o : orbiter orb[]
+        if [ o && o.over_view ] o.over_view.view_release[ ev ]
+
+    func on_key [ ev: Event ]
+        o : orbiter orb[]
+        ev.no_default = true
+        if [ ev.key.state && i32[ ev.key.unicode ] == 256 && o ]
+            o.over_hide[ true ]
+            return
+        if [ o && o.over_view ] o.over_view.on_key*[ ev ]
+
+# an app's chords hold k (ctrl / cmd + k)
+func orbiter.over_chord_held [ k: string ] -> bool
+    for [ ae: AppEntry ] in app_entries[]
+        if [ !ae.chords || ae.chords.count == 0 ] continue
+        for [ cw: string ] in ae.chords.split[ ' ' ]
+            eq : i32 [ i32[ cw.index_of[ '=' ] ] ]
+            if [ eq > 0 && cw.mid[ 0, eq ] == k ] return true
+    return false
+
+# ctrl / cmd + k: the app whose chords hold it, handed its word
+func orbiter.over_chord [ k: string ] -> bool
+    for [ ae: AppEntry ] in app_entries[]
+        if [ !ae.chords || ae.chords.count == 0 ] continue
+        for [ cw: string ] in ae.chords.split[ ' ' ]
+            eq : i32 [ i32[ cw.index_of[ '=' ] ] ]
+            if [ eq <= 0 || cw.mid[ 0, eq ] != k ] continue
+            over_take[ ae.name, cw.mid[ eq + 1, cw.count - eq - 1 ] ]
+            return true
+    return false
+
+# the screen is captured once the drawers are away, then the app
+# shows over it; recording, the chord stops the take instead
+func orbiter.over_take [ mod: string, word: string ]
+    if [ sys_rec_by && sys_rec_by.count > 0 ]
+        system_line[ '{sys_rec_by} record stop' ]
+        return
+    if [ over_on ] return
+    over_mod  = mod
+    over_ask  = word
+    over_at   = epoch_millis[] + ((drawer_open) ? 450 : 0)
+    if [ drawer_open ] drawer_shut[]
+    if [ ux ] ux.will_animate = true
+
+# the screen as drawn now, as a picture
+func orbiter.screen_image [] -> Image
+    scv : Canvas [ (ux) ? ux.screen : null ]
+    if [ !scv || !scv.color ] return null
+    return Image [ scv.color ]
+
+# each frame: the capture when due, the app's word once it answers,
+# a take asked to start once the overlay is off the screen
+func orbiter.over_tick []
+    if [ !ux ] return
+    if [ over_view && over_view.ended ] over_view = null
+    if [ sys_rec_at > 0 ]
+        ux.will_animate = true
+        if [ epoch_millis[] >= sys_rec_at ]
+            sys_rec_at = 0
+            record_rect = sys_rec_rect
+            rec_start[ null, path sys_rec_file ]
+            if [ ux ] ux.restyle = true
+    if [ over_at > 0 ]
+        ux.will_animate = true
+        if [ epoch_millis[] < over_at ] return
+        over_at = 0
+        im : Image screen_image[]
+        if [ !im ] return
+        over_img = im
+        scv : Canvas [ ux.screen ]
+        over_tex = Texture [ vk: scv.vk, w: scv.w, sampler: im,
+            width: im.width, height: im.height, linear: true ]
+        if [ !over_view ]
+            av : AppView [ ]
+            rt : path path.path_startup[]
+            av.src = path '{rt}/{over_mod}/{over_mod}.ag'
+            av.viewer  = true
+            av.display = 1
+            av.host_hz = ux.refresh_hz[]
+            av.start[]
+            over_view = av
+        over_on = true
+        ux.restyle = true
+    if [ over_on && over_ask && over_view ]
+        ln : string 'call take {over_ask}\n'
+        if [ agent_sock_send[ over_view.sock_name[].chars,
+                              ln.chars ] == 1 ]
+            over_ask = null
+
+# the app put away: done, or Escape (cancel, told)
+func orbiter.over_hide [ cancel: bool ]
+    if [ cancel && over_view ]
+        ln : string 'call cancel\n'
+        agent_sock_send[ over_view.sock_name[].chars, ln.chars ]
+    over_on  = false
+    over_ask = null
+    over_tex = null
+    over_img = null
+    apps_gen += 1
+    if [ ux ] ux.restyle = true
+
+# the system's capture and recording, for any app: 'system <mod>
+# <slot> <verb> ...' on orbiter's socket (an app's --opener). Its
+# files go under its home, by the path it names there; the answer
+# comes back on its own socket as 'call system_done <path>'
+#   windows                      the shown windows, 'x y w h,...'
+#   hide                         the app over the screen goes
+#   shot screen <file>           the screen (as frozen, if shown)
+#   shot rect x y w h <file>     a part of it, in points
+#   record screen <file>         the screen into a video
+#   record rect x y w h <file>   a part of it
+#   record window x y <file>     the window under x y
+#   record stop                  the take ends
+func orbiter.system_line [ line: string ]
+    ws : vec string line.trim[].split[ ' ' ]
+    if [ ws.count < 3 ] return
+    mod  : string ws[ 0 ]
+    slot : string ws[ 1 ]
+    verb : string ws[ 2 ]
+    who  : string '{mod}-{slot}'
+    if [ verb == 'hide' ]
+        over_hide[ false ]
+        return
+    if [ verb == 'windows' ]
+        rs : string ''
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            pv : element pane_view[ i ]
+            if [ !pv || !pv.bounds || pane_hidden[ i ] ] continue
+            r : rect world_rect[ pv ]
+            nx : string '{i32[ r.x ]} {i32[ r.y ]} {i32[ r.w ]}'
+            nx = '{nx} {i32[ r.h ]}'
+            rs = (rs.count > 0) ? '{rs},{nx}' : nx
+        sys_reply[ who, 'set windows {rs}' ]
+        return
+    if [ verb == 'record' && ws.count >= 4 && ws[ 3 ] == 'stop' ]
+        if [ rec_iid != -2 ] rec_stop[]
+        record_rect = ''
+        f : string [ (sys_rec_rel) ? sys_rec_rel : '' ]
+        if [ sys_rec_by && sys_rec_by.count > 0 ]
+            sys_reply[ who, 'call system_done {f}' ]
+        sys_rec_by = ''
+        apps_gen += 1
+        if [ ux ] ux.restyle = true
+        return
+    if [ ws.count < 5 || (verb != 'shot' && verb != 'record') ] return
+    kind : string ws[ 3 ]
+    # the rest: the numbers the kind takes, then the file
+    nums : i32 [ (kind == 'rect') ? 4 : (kind == 'window') ? 2 : 0 ]
+    if [ ws.count < 5 + nums ] return
+    rel : string ws[ 4 + nums ]
+    for [ k: i32 5 + nums, k < ws.count, k += 1 ]
+        rel = '{rel} {ws[ k ]}'
+    if [ rel.index_of[ '..' ] >= 0 || rel.starts_with[ '/' ] ] return
+    fp : path '{install_root[]}/home/{mod}/{rel}'
+    pd : path fp.parent_dir[]
+    pd.make_dir[]
+    r : rect rect [ x: 0.0, y: 0.0, w: 0.0, h: 0.0 ]
+    if [ kind == 'rect' ]
+        r = rect [ x: f32[ ws[ 4 ].real_value[] ],
+                   y: f32[ ws[ 5 ].real_value[] ],
+                   w: f32[ ws[ 6 ].real_value[] ],
+                   h: f32[ ws[ 7 ].real_value[] ] ]
+    if [ kind == 'window' ]
+        px : f32 [ f32[ ws[ 4 ].real_value[] ] ]
+        py : f32 [ f32[ ws[ 5 ].real_value[] ] ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            pv : element pane_view[ i ]
+            if [ !pv || !pv.bounds || pane_hidden[ i ] ] continue
+            wr : rect world_rect[ pv ]
+            if [ px >= wr.x && py >= wr.y && px < wr.x + wr.w
+                 && py < wr.y + wr.h ]
+                r = wr
+    if [ verb == 'shot' ]
+        im : Image (over_img) ? over_img : screen_image[]
+        if [ !im || !ux || ux.width <= 0 ] return
+        if [ r.w > 0.0 ]
+            k : f32 [ f32[ im.width ] / f32[ ux.width ] ]
+            im = im.crop[ i32[ r.x * k ], i32[ r.y * k ],
+                          max[ 1, i32[ r.w * k ] ],
+                          max[ 1, i32[ r.h * k ] ] ]
+        if [ im ] im.png[ fp ]
+        log 'system: {who} shot {fp}'
+        over_hide[ false ]
+        sys_reply[ who, 'call system_done {rel}' ]
+        return
+    # a take: the overlay off the screen first, then orbiter's own
+    # recorder over that part
+    if [ rec_iid != -2 ] return
+    sys_rec_by   = '{mod} {slot}'
+    sys_rec_rel  = rel
+    sys_rec_file = '{fp}'
+    sys_rec_rect = (r.w > 0.0)
+        ? '{r.x} {r.y} {r.w} {r.h}' : ''
+    sys_rec_at   = epoch_millis[] + 120
+    log 'system: {who} records {fp}'
+    over_hide[ false ]
+
+# a line back to the app that asked, on its own socket
+func orbiter.sys_reply [ who: string, ln: string ]
+    l2 : string '{ln}\n'
+    agent_sock_send[ who.chars, l2.chars ]
+
+# a file let go over the window: the element under the pointer and
+# its parents take it as a drop (a console types its path)
+func orbiter.file_drop [ f: path ]
+    if [ !ux || !ux.root || !f ] return
+    ev : Event []
+    ev.mouse.pos = ux.last_move
+    ev.key.text  = '{f}'
+    t : element ux.find_target[ ux.root, ev, null ]
+    for [ e: element* t, e, e = e.parent ]
+        ev.target = e
+        e.on_drop*[ ev ]
+        if [ ev.no_default ] return
+
+# a file carried off the desktop: its picture under the pointer
+element FileGhost
+    animated    : true
+    user_events : false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !o || !o.file_drag || !o.file_drag_icon ] return
+        cv : Canvas w.screen
+        side : f32 [ round[ 96.0 * ux_unit[ ux ] ] ]
+        m : vec2f w.last_move
+        cv.save[]
+        cv.set_opacity[ 0.85 ]
+        o.file_drag_icon.paint[ cv, m.x - side * 0.5, m.y - side * 0.5,
+                                side ]
+        cv.restore[]
+
+# an agent's drawer: a card a model (a new session on it), then a
+# card a session it has, each with its model under its name
+func orbiter.agent_cards [ ae: AppEntry ] -> vec AppEntry
+    out : vec AppEntry []
+    for [ c: string ] in home_choices[]
+        if [ home_pick_agent[ c ] != ae.name ] continue
+        md : string home_pick_model[ c ]
+        out.push[ AppEntry [ name: 'new', sub: md, file: ae.file,
+            module: true, agi: ae.agi, group: ae.group,
+            built: ae.built, agent_pick: c ] ]
+    for [ nm: string ] in home_names[]
+        an : string [ (home_agent && home_agent.contains[ nm ])
+                      ? home_agent[ nm ] : nm ]
+        if [ an != ae.name || !home_session[ nm ] ] continue
+        out.push[ AppEntry [ name: home_title[ nm ],
+            sub: home_model_of[ nm ],
+            file: ae.file, module: true, agi: ae.agi,
+            group: ae.group, built: ae.built, agent_run: nm ] ]
+    return out
+
+# a session's name to show: its conversation's, as its agent keeps
+# it (claude's record); else the session's own name
+func orbiter.home_title [ nm: string ] -> string
+    run : AgentRun [ (home_runs && home_runs.contains[ nm ])
+                     ? home_runs[ nm ] : null ]
+    t : string [ (run) ? run.title*[] : '' ]
+    return (t && t.count > 0) ? t : nm
+
+# the sessions' titles changed (an agent named its conversation):
+# the drawer gathered again, the menus read again
+func orbiter.titles_tick []
+    if [ !home_order ] return
+    sig : string ''
+    for [ nm: string ] in home_order
+        sig = '{sig}|{home_title[ nm ]}'
+    if [ titles_seen && sig == titles_seen ] return
+    titles_seen = sig
+    apps_gen += 1
+    menu_own = ''
+    if [ ux ] ux.restyle = true
+
+# an agent's card pressed: a new session on its model, or the
+# session, in pane pi
+func orbiter.agent_card_pick [ ae: AppEntry, pi: i32 ]
+    p : i32 [ (pi >= 0) ? pi : active_pane ]
+    nm : string [ (ae.agent_run) ? ae.agent_run : '' ]
+    if [ ae.agent_pick ] nm = home_new[ ae.agent_pick ]
+    if [ nm.count > 0 ] home_in_pane[ nm, p ]
+    apps_gen += 1
+
+# a card's own menu, where the pointer is: Open, Delete (an app's
+# build, a file an app made, an agent's session), Properties (an
+# app's info menu); an agent's model starts a session
+func orbiter.card_pop_open [ ae: AppEntry, pi: i32 ]
+    card_pop   = ae
+    card_pop_new = true
+    card_pop_pane = pi
+    card_pop_x = (ux) ? ux.last_move.x : 0.0
+    card_pop_y = (ux) ? ux.last_move.y : 0.0
+    force_update[]
+
+# a file an app made (under its home, as its drawer lists it)
+func orbiter.made_file [ ae: AppEntry ] -> bool
+    if [ !ae.opens ] return false
+    hm : path '{install_root[]}/home'
+    return '{ae.opens}'.starts_with[ '{hm.absolute[]}/' ]
+
+func orbiter.card_pop_items [] -> vec PopItem
+    out : vec PopItem []
+    ae : AppEntry card_pop
+    if [ !ae ] return out
+    if [ ae.agent_pick ]
+        out.push[ PopItem [ icon: 'add_instance',
+            label: 'New session', act: 'new' ] ]
+        return out
+    # a drawer: Show; an app that runs on its own: Open too
+    mk : bool [ (ae.contains && ae.contains.count > 0)
+                || is_agent_app[ ae ] ]
+    if [ card_pop_drawer ]
+        out.push[ PopItem [ icon: 'expand', label: 'Show',
+                            act: 'show' ] ]
+    if [ !card_pop_drawer || !mk ]
+        out.push[ PopItem [ icon: 'app', label: 'Open', act: 'open' ] ]
+    # an app's running instances (one picked comes into view), and a
+    # new one beside them, as the dock's menu has them
+    if [ ae.module && ae.file && !ae.opens && !ae.agent_run ]
+        ed : Editor pane_at[ active_pane ]
+        for [ v: AppView ] in inst_reg[].live_app[ ae.file ]
+            it : PopItem [ icon: 'app', label: task_title[ v ],
+                           act: 'inst {v.iid}' ]
+            it.on = ed && ed.app_view && ed.run_view == v
+            out.push[ it ]
+        md : path '{ae.file}/{ae.name}.ag'
+        if [ is_app_src[ md ] ]
+            out.push[ PopItem [ icon: 'add_instance',
+                label: 'New instance', act: 'fresh' ] ]
+    if [ ae.agent_run ]
+        out.push[ PopItem [ icon: 'minus', label: 'Delete session',
+                            act: 'delete', danger: true ] ]
+    el [ ae.opens && made_file[ ae ] ]
+        out.push[ PopItem [ icon: 'minus', label: 'Delete',
+                            act: 'delete', danger: true ] ]
+    el [ !ae.opens && can_delete[ ae ] ]
+        out.push[ PopItem [ icon: 'minus', label: 'Delete',
+                            act: 'delete', danger: true ] ]
+    if [ !ae.opens && !ae.agent_run && ae.module && ae.file ]
+        out.push[ PopItem [ icon: 'gear', label: 'Properties',
+                            act: 'props' ] ]
+    return out
+
+func orbiter.card_pop_pick [ act: string :: o: orbiter ] -> none
+    o.card_act = '{act}'
+    o.force_update[]
+
+func orbiter.card_pop_quit [ :: o: orbiter ] -> none
+    o.card_pop = null
+    o.force_update[]
+
+# the pressed row's action (the frame after): the menu put away
+func orbiter.card_pop_do []
+    act : string card_act
+    card_act = null
+    ae : AppEntry card_pop
+    if [ !ae ] return
+    pi : i32 [ (card_pop_pane >= 0) ? card_pop_pane : active_pane ]
+    if [ (act == 'open' && ae.agent_run) || act == 'new' ]
+        agent_card_pick[ ae, pi ]
+    el [ act == 'open' && ae.opens ]
+        open_in_pane[ ae.opens, pi ]
+    el [ act == 'open' ]
+        apps_pick[ pi, ae ]
+    el [ act.starts_with[ 'inst ' ] ]
+        show_own[ i32[ act.mid[ 5, act.count - 5 ].integer_value[] ] ]
+    # a new one: the dock's New instance, the same path
+    el [ act == 'fresh' ]
+        dock_fresh = true
+        dock_icon_click[ DockIcon [ file: ae.file, module: true ] ]
+    el [ act == 'props' ]
+        app_info_open[ ae ]
+    el [ act == 'show' && card_pop_grid ]
+        (cast AppsGrid [ card_pop_grid ]).toggle_drawer[ ae ]
+    el [ act == 'delete' && ae.opens ]
+        rm : command { rm -f "{ae.opens}" }
+        rm.exec[ false ]
+        log 'orbiter: deleted {ae.opens}'
+        apps_gen += 1
+    el [ act == 'delete' && !ae.agent_run ]
+        app_delete[ ae ]
+        apps_gen += 1
+    el [ act == 'delete' && ae.agent_run ]
+        nm : string ae.agent_run
+        # a pane showing it goes back to the desktop
+        sid : string 'home:{nm}'
+        for [ i: i32 0, i < pane_console.count, i += 1 ]
+            if [ pane_console[ i ] == sid ] pane_console[ i ] = ''
+        home_end[ nm ]
+        log 'orbiter: session {nm} deleted'
+        apps_gen += 1
+    card_pop = null
+    card_pop_grid = null
+    force_update[]
+    if [ ux ] ux.restyle = true
+
+# an app is an agent the user has
+func orbiter.is_agent_app [ ae: AppEntry ] -> bool
+    if [ !ae || !ae.module || ae.opens ] return false
+    for [ an: string ] in agent_installed[]
+        if [ an == ae.name ] return true
+    return false
+
+# an app's contained files (export contains), newest first
+func orbiter.contained [ ae: AppEntry ] -> vec path
+    out : vec path []
+    if [ !ae.contains || ae.contains.count == 0 ] return out
+    d0 : path '{install_root[]}/home/{ae.name}/{ae.contains}'
+    if [ !d0.exists[] ] return out
+    # its real path: what a drop hands on reads plainly
+    d : path d0.absolute[]
+    tms : vec i64 []
+    entries : d.ls[ null, false ]
+    if [ !entries ] return out
+    for [ j: i32 0, j < entries.count, j += 1 ]
+        f : path entries[ j ]
+        x : string f.ext[]
+        if [ f.is_dir[] || (x != 'png' && x != 'jpg' && x != 'mp4') ]
+            continue
+        t : i64 f.modified_time[]
+        i : i32 [ 0 ]
+        while [ i < tms.count && tms[ i ] >= t ] i += 1
+        out.insert[ f, i ]
+        tms.insert[ t, i ]
+    return out
+
+# all of an app's contained files on the desktop, or one row
+func orbiter.shots_toggle [ mod: string ]
+    if [ !shots_all ] shots_all = vec string []
+    for [ i: i32 0, i < shots_all.count, i += 1 ]
+        if [ shots_all[ i ] == mod ]
+            shots_all.remove[ i ]
+            apps_gen += 1
+            return
+    shots_all.push[ mod ]
+    apps_gen += 1
+
+func orbiter.home_src [] -> path
+    if [ !home_mod || home_mod.count == 0 ] return null
+    r_ : path.path_startup[]
+    return path '{r_}/{home_mod}/{home_mod}.ag'
+
+# the menu's widgets: mod on the desktop (shown), or off it
+func orbiter.widget_toggle [ mod: string ]
+    if [ !desk_widgets ] desk_widgets = vec string []
+    for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        if [ widget_mod[ i ] == mod ]
+            widget_remove[ i ]
+            return
+    desk_hide = false
+    desk_widgets.push[ '{mod} {epoch_millis[]}' ]
+    desk_tab = desk_widgets.count - 1
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# mod on the desktop
+func orbiter.widget_on [ mod: string ] -> bool
+    if [ !desk_widgets ] return false
+    for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        if [ widget_mod[ i ] == mod ] return true
+    return false
+
+# the chooser's pick: the widget becomes mod, in its place
+func orbiter.widget_pick [ i: i32, mod: string ]
+    if [ !desk_widgets || i < 0 || i >= desk_widgets.count ] return
+    ws : vec string desk_widgets[ i ].split[ ' ' ]
+    id : string [ (ws.count > 1) ? ws[ 1 ] : '{epoch_millis[]}' ]
+    desk_widgets[ i ] = '{mod} {id}'
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# a widget taken to place k in the stack
+func orbiter.widget_reorder [ i: i32, k: i32 ]
+    if [ !desk_widgets || i < 0 || i >= desk_widgets.count ] return
+    to : i32 [ clamp[ k, 0, desk_widgets.count - 1 ] ]
+    if [ to == i ] return
+    ln : string desk_widgets[ i ]
+    desk_widgets.remove[ i ]
+    desk_widgets.insert[ ln, to ]
+    if [ desk_tab == i ] desk_tab = to
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# the widgets beside the apps while 30% of the desktop holds one
+# (260 units), else above them
+func orbiter.desk_beside [ w: f32 ] -> bool
+    # a phone holds them on top: its home never turns sideways
+    if [ use_mobile ] return false
+    return w * 0.3 >= round[ 260.0 * ux_unit[ ux ] ]
+
+# the desktop's widget side, px from the right edge (0 while they
+# sit above the apps, are hidden, or are none)
+func orbiter.desk_side [ w: f32 ] -> f32
+    if [ !desk_any[] || (desk_hide && !use_mobile)
+         || !desk_beside[ w ] ]
+        return 0.0
+    return round[ w * 0.3 ]
+
+# anything for the desktop's column: agents, then widgets
+func orbiter.desk_any [] -> bool
+    return desk_widgets && desk_widgets.count > 0
+
+# the desktop shows an agent, not its icons
+func orbiter.desk_agent_on [] -> bool
+    if [ !desk_agent || desk_agent.count == 0 ] return false
+    return home_session[ desk_agent ] != null
+
+# the place of a console in the desktop's pane
+func orbiter.desk_pane_at [ l: f32, top: f32, r: f32 ] -> string
+    return 'l{l}px t{top}px r{r}px b{l}px'
+
+# a desktop title's press: its pane, again the icons
+func orbiter.desk_agent_pick [ nm: string ]
+    desk_agent = (desk_agent == nm) ? '' : nm
+    if [ ux ]
+        if [ desk_agent.count > 0 ] ux.focus_id = 'dagent_t_{nm}'
+        ux.restyle = true
+
+# a widget's height over its width: its app's picture's shape,
+# else its export's (widget ['WxH']), else 4:3
+func orbiter.widget_ratio [ i: i32 ] -> f32
+    mod : string widget_mod[ i ]
+    if [ desk_views ]
+        av : AppView desk_views[ desk_widgets[ i ] ]
+        if [ av && av.pic_w > 0 && av.pic_h > 0 ]
+            return f32[ av.pic_h ] / f32[ av.pic_w ]
+    for [ ae: AppEntry ] in app_entries[]
+        if [ ae.name != mod || !ae.widget ] continue
+        xi : i32 [ ae.widget.index_of[ 'x' ] ]
+        if [ xi <= 0 ] continue
+        ww : f32 [ f32[ i32[ ae.widget.mid[ 0, xi ] ] ] ]
+        wh : f32 [ f32[ i32[ ae.widget.mid[ xi + 1,
+                            ae.widget.count - xi - 1 ] ] ] ]
+        if [ ww > 0.0 && wh > 0.0 ] return wh / ww
+    return 0.75
+
+# a widget module's icon for the chooser, made once
+func orbiter.widget_icon [ ae: AppEntry ] -> AppIcon
+    if [ !desk_icons ] desk_icons = map AppIcon [string] []
+    ic : AppIcon desk_icons[ ae.name ]
+    if [ !ic ]
+        ic = AppIcon [ module: true, file: ae.file, agi: ae.agi ]
+        desk_icons[ ae.name ] = ic
+    return ic
+
+func orbiter.widget_mod [ i: i32 ] -> string
+    ws : vec string desk_widgets[ i ].split[ ' ' ]
+    return (ws.count > 0) ? ws[ 0 ] : ''
+
+# a widget taken off the desktop: its instance ends
+func orbiter.widget_remove [ i: i32 ]
+    if [ !desk_widgets || i < 0 || i >= desk_widgets.count ] return
+    key : string desk_widgets[ i ]
+    if [ desk_views ]
+        av : AppView desk_views[ key ]
+        if [ av ] av.release[]
+        desk_views.rm[ key ]
+    desk_widgets.remove[ i ]
+    if [ desk_tab >= i && desk_tab > 0 ] desk_tab -= 1
+    save_session[]
+    if [ ux ] ux.restyle = true
+
+# a narrow desktop's tab bar: widget i shown
+func orbiter.widget_show [ i: i32 ]
+    if [ !desk_widgets || i < 0 || i >= desk_widgets.count ] return
+    desk_tab = i
+    if [ ux ] ux.restyle = true
+
+# a tab's name: its module, or the chooser's
+func orbiter.widget_name [ i: i32 ] -> string
+    mod : string widget_mod[ i ]
+    return (mod == '-') ? 'widget' : mod
+
+# a widget's hosted instance, started the first time it shows
+# the desktop's widgets: their apps run on each frame, and a
+# widget is drawn again only when its app shows a new picture
+func orbiter.desk_service [ w: Window ]
+    if [ !desk_widgets ] return
+    sig : '{desk_tab}'
+    for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        if [ widget_shown[ i ] ] sig = '{sig}|{widget_name[ i ]}'
+    if [ sig != tabs_seen ]
+        tabs_seen = sig
+        if [ w.root ] mark_tabs[ w.root ]
+        w.will_animate = true
+    if [ !desk_views ] return
+    if [ !desk_seen ] desk_seen = map i32 [string] []
+    for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        if [ !desk_views.contains[ desk_widgets[ i ] ] ] continue
+        av : AppView desk_views[ desk_widgets[ i ] ]
+        if [ !av ] continue
+        av.service[ w.screen ]
+        # past the widget's end: the desktop scrolls on
+        if [ av.wheel_back != 0.0 ]
+            desk_wheel[ av.wheel_back ]
+            av.wheel_back = 0.0
+        fr : i32 [ (av.slot >= 0) ? host_tex_front[ av.slot, 0 ]
+            : -1 ]
+        ky : string desk_widgets[ i ]
+        if [ desk_seen.contains[ ky ] && desk_seen[ ky ] == fr ]
+            continue
+        desk_seen[ ky ] = fr
+        if [ w.root ] mark_widget[ w.root, i ]
+        w.will_animate = true
+
+func orbiter.widget_view [ i: i32 ] -> AppView
+    if [ !desk_widgets || i < 0 || i >= desk_widgets.count ]
+        return null
+    key : string desk_widgets[ i ]
+    mod : string widget_mod[ i ]
+    # empty: the chooser, no instance
+    if [ mod == '-' ] return null
+    if [ !desk_views ] desk_views = map AppView [string] []
+    av : AppView desk_views[ key ]
+    if [ av ] return av
+    root : path.path_startup[]
+    av = AppView [ ]
+    av.src = path '{root}/{mod}/{mod}.ag'
+    if [ !av.src.exists[] ]
+        av.src = path '{root}/featured/{mod}/{mod}.ag'
+    # embedded: its frames come to us, its size is the box's
+    av.viewer  = true
+    av.display = 1
+    # its ground clear: the desktop shows through it
+    av.module_args = '--trinity.widget true'
+    av.host_hz = (ux) ? ux.refresh_hz[] : 60
+    desk_views[ key ] = av
+    return av
+
+# the widgets on the desktop, each as tall as its app's shape:
+# stacked beside the apps (fixed while they scroll) when the
+# desktop is wide, else one at a time under a tab bar above them
+# (they scroll together). the grid mounts them as its children
+# each widget told whether it sits over the apps: at its start,
+# and live when that changes
+func orbiter.widget_place [ top: bool ]
+    for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+        av : AppView widget_view[ i ]
+        if [ !av ] continue
+        # the home filter: each widget hides or shows its own
+        # elements by it
+        ft : string apps_filter
+        if [ av.slot > 0 && av.filter_sent != ft ]
+            av.filter_sent = ft
+            agent_sock_send[ av.sock_name[].chars,
+                'set widget_filter {ft}\n' ]
+        if [ av.top_sent == i32[ top ] ] continue
+        av.top_sent = i32[ top ]
+        tf : string '--trinity.widget_top {top}'
+        av.module_args = '--trinity.widget true {tf}'
+        # not started yet: its launch line carries it
+        if [ av.slot > 0 ]
+            agent_sock_send[ av.sock_name[].chars,
+                'set widget_top {top}\n' ]
+
+# a widget shows: no filter typed, or something in it matches
+func orbiter.widget_shown [ i: i32 ] -> bool
+    if [ apps_filter.count == 0 || !desk_views ] return true
+    av : AppView desk_views[ desk_widgets[ i ] ]
+    return !av || !av.no_match
+
+func orbiter.widget_els [ gw: f32 ] -> Elements
+    t : Elements []
+    desk_top = 0.0
+    if [ !ux || gw <= 0.0 || !desk_any[]
+         || (desk_hide && !use_mobile) ]
+        return t
+    un : f32 ux_unit[ ux ]
+    pad : f32 [ round[ 24.0 * un ] ]
+    gap : f32 [ round[ 10.0 * un ] ]
+    beside : bool desk_beside[ gw ]
+    wn : i32 [ (desk_widgets) ? desk_widgets.count : 0 ]
+    if [ wn > 0 ] widget_place[ !beside ]
+    w : f32 [ (beside) ? round[ gw * 0.3 ] - pad : gw - pad * 2.0 ]
+    x : f32 [ (beside) ? gw - pad - w : pad ]
+    # the side column scrolls as one
+    y : f32 [ (beside) ? pad - desk_col_y : pad ]
+    ah : f32 [ round[ 39.0 * un ] ]
+    # why one did not start, in red
+    if [ home_why && home_why.count > 0 ]
+        tp : string [ (beside) ? 't{y}px'
+            : (y == pad) ? 't{pad}px+' : 't{gap}px+' ]
+        t['dagent_why'] = HomeError [ label: home_why,
+            area: Region [ 'l{x}px {tp} w{w}px h{ah}px' ] ]
+        y += ah + gap
+    # the running agents, and a new one, are on the task bar
+    # an agent up on the desktop: its titles alone, no widgets
+    if [ desk_agent_on[] ]
+        if [ !beside ] desk_top = y - pad
+        return t
+    if [ !beside ]
+        top : f32 [ y - pad ]
+        desk_top = top
+        if [ wn == 0 ] return t
+        desk_tab = clamp[ desk_tab, 0, wn - 1 ]
+        # the tab shown hides with its widget: the first that shows
+        if [ !widget_shown[ desk_tab ] ]
+            for [ k: i32 0, k < wn, k += 1 ]
+                if [ widget_shown[ k ] ]
+                    desk_tab = k
+                    break
+        if [ !widget_shown[ desk_tab ] ] return t
+        th : f32 [ round[ 30.0 * un ] ]
+        h : f32 [ round[ w * widget_ratio[ desk_tab ] ] ]
+        tp : f32 [ (top > 0.0) ? gap : pad ]
+        t['widget_tabs'] = DeskTabs [
+            area: Region [ 'l{x}px t{tp}px+ w{w}px h{th}px' ] ]
+        t['widget_{desk_tab}'] = DeskWidget [ index: desk_tab,
+            top: true, area: Region [ 'l{x}px t{gap}px+ w{w}px h{h}px' ] ]
+        desk_top = top + th + gap + h
+        return t
+    for [ i: i32 0, i < wn, i += 1 ]
+        if [ !widget_shown[ i ] ] continue
+        h : f32 [ round[ w * widget_ratio[ i ] ] ]
+        t['widget_{i}'] = DeskWidget [ index: i,
+            area: Region [ 'l{x}px t{y}px w{w}px h{h}px' ] ]
+        y += h + gap
+    desk_col_h = y + desk_col_y
+    return t
+
+# a widget's wheel it did not use: beside the icons the column
+# scrolls first, then the desktop
+func orbiter.desk_wheel [ dy: f32 ]
+    ag : element find_el[ a, 'apps' ]
+    if [ !ag ] return
+    if [ ag.bounds && desk_beside[ ag.bounds.w ]
+         && desk_col_scroll[ dy ] ] return
+    we : Event []
+    we.mouse.wheel_delta = [ 0.0, dy ]
+    ag.on_wheel*[ we ]
+
+# the side column by a wheel notch, until its foot is at the
+# clock; false when it is at that end already
+func orbiter.desk_col_scroll [ dy: f32 ] -> bool
+    ck : element find_el[ a, 'desk_clock' ]
+    room : f32 [ (ck && ck.bounds) ? ck.bounds.y - 8.0 : 0.0 ]
+    mx : f32 [ max[ 0.0, desk_col_h - room ] ]
+    was : f32 [ desk_col_y ]
+    desk_col_y = clamp[ desk_col_y - dy * 26.0 * ux_unit[ ux ],
+                        0.0, mx ]
+    if [ desk_col_y == was ] return false
+    ux.restyle = true
+    return true
+
+# the drawer opens on a menu; the same one again shuts it
+# the bar's menu at: read fresh (enabled entries, check marks; no
+# window, our own menu for the app) with the pane's controls under
+# it; the same one again shuts it
+# the desktop's menu (orbiter, the welcome app): the system menu
+# (views, power, sound, Wi-Fi, the tray)
+# the orbiter menu up: the desktop arranges, and an app's drawer
+# holds its settings
+func orbiter.orb_mode [] -> bool
+    return drawer_open && menu_kind == 'system'
+
+func orbiter.desk_menu_open []
+    drawer_toggle[ 'system', drawer_open && menu_kind == 'system' ]
+
+# the orbiter name's menu: its half selected first, so the menu
+# opens there
+func orbiter.desk_menu_at [ mt: MenuTop ]
+    if [ mt.pane >= 0 && mt.pane < editor_slots.count ]
+        active_pane = mt.pane
+    desk_menu_open[]
+
+# docked desktops side by side (windows closed round them) are
+# one: the extra empty halves close, the selected one kept
+func orbiter.desk_merge []
+    keep : i32 [ -1 ]
+    if [ !pane_floats[ active_pane ] && !pane_out[ active_pane ]
+         && pane_empty[ active_pane ] ]
+        keep = active_pane
+    for [ i: i32 i32[ editor_slots.count ] - 1, i >= 0, i -= 1 ]
+        if [ pane_floats[ i ] || pane_out[ i ] || !pane_empty[ i ] ]
+            continue
+        if [ pane_browsing[ i ] || pending_finder == i ] continue
+        if [ mini_wait >= 0 && i == mini_pane ] continue
+        if [ pending_show > 0 && i == pending_show_pane ] continue
+        if [ launch_wait || launch_tab == i ] continue
+        if [ keep < 0 ]
+            keep = i
+            continue
+        if [ i == keep ] continue
+        close_pane[ i ]
+        if [ i < keep ] keep -= 1
+        force_update[]
+        return
+
+# orbiter's own button: the dock's foot, or the system bar's first
+func orbiter.home_button [ ar: Region, bar: bool ] -> element
+    # cmd anywhere, shift over it, or recording: its core red;
+    # the agent thinking: blue
+    dh : element find_el[ a, 'dock_orbiter' ]
+    if [ !dh ] dh = find_el[ a, 'sys_orbiter' ]
+    rec : bool [ mic_by_press || ux.dict_on || cmd_down
+        || (shift_down && dh && dh.hovered) ]
+    thinking : bool [ agent_state == 'busy' ]
+    # recording (or armed for it): a slight red over the dock's
+    # colour, so the state reads at a glance; thinking: blue
+    icon : string [ (rec) ? 'orbiter4_red'
+        : ((thinking) ? 'orbiter4_blue' : 'orbiter4') ]
+    # its slideout (the exchange) out, or the agent view shown:
+    # the menus' lit fill, as a menu name's
+    xup : bool [ (ux && ux.shot_ask && !ux.agent_min)
+        || (home_tab == 'agent' && home_seen[]) ]
+    tint : rgba [ (rec) ? '#ff3a3a33'
+        : ((thinking) ? '#3a8aff40'
+        : ((xup) ? '#4d3dbcaa' : '#0000')) ]
+    if [ bar ]
+        return BarHome [ buttons: vec string [] [ 'agent_note' ],
+            icon_ids: vec string [] [ icon ], manual: true,
+            rest_fill: tint, seg_radius: 0.0, use_spacing: false,
+            icon_scale: 0.605, area: ar ]
+    return DockHome [ buttons: vec string [] [ 'agent_note' ],
+        icon_ids: vec string [] [ icon ], manual: true,
+        rest_fill: tint, seg_radius: 0.0, use_spacing: false,
+        icon_scale: 0.605, area: ar ]
+
+# what a store wrote into its folder, install/stores/<store>:
+# each <name>/<name>.ag, named by its first comment line
+# a login store wants its dialog: the path its .needs names (its
+# system mounted) is not there
+func orbiter.store_needs [ ae: AppEntry ] -> bool
+    nf : path '{install_root[]}/stores/{ae.name}/.needs'
+    if [ !nf.exists[] ] return true
+    np : string nf.load[ typeid[ string ], null ]
+    if [ !np ] return true
+    p : path [ np.trim[] ]
+    return !p.exists[]
+
+# its dialog, made from its module's class here (orbiter's own
+# process: it may mount), in the drawer
+func orbiter.store_login [ ae: AppEntry ]
+    module_load[ 'silver-{ae.name}', ae.login ]
+    t : Au_t Au.find_type[ ae.login.chars, null ]
+    if [ !t ]
+        log 'orbiter: no class {ae.login} in {ae.name}'
+        return
+    login_el = keys_made[ t ]
+    login_ae = ae
+    drawer_toggle[ 'login', false ]
+    drawer_focus = true
+
+# a login store's folder opening: its module lists its apps
+# again (its dialog's relist, by name: orbiter imports no module
+# of a store), then the cards are read anew
+func orbiter.store_relist [ ae: AppEntry ]
+    module_load[ 'silver-{ae.name}', ae.login ]
+    t : Au_t Au.find_type[ ae.login.chars, null ]
+    if [ !t ] return
+    dlg : element keys_made[ t ]
+    nm : string 'relist'
+    wd : string ''
+    Au_call_words[ dlg, nm.chars, wd.chars ]
+    app_list = null
+
+func orbiter.store_has [ store: string ] -> bool
+    sd : path '{install_root[]}/stores/{store}'
+    return sd.exists[]
+
+func orbiter.store_apps [ store: string, group: string ] -> vec AppEntry
+    sd : path '{install_root[]}/stores/{store}'
+    if [ !sd.exists[] ] return null
+    res : vec AppEntry []
+    for [ d: path ] in sd.ls[ null, false ]
+        n : string d.filename[]
+        m : path '{d}/{n}.ag'
+        if [ !d.is_dir[] || !m.exists[] ] continue
+        src : string m.load[ typeid[ string ], null ]
+        if [ !src ] continue
+        title : string n
+        c : i32 [ src.index_of[ ':' ] ]
+        if [ src.starts_with[ '# ' ] && c > 2 ]
+            title = src.mid[ 2, c - 2 ]
+        sa : AppEntry [ name: title, file: d, module: true,
+            group: group, launch: source_word[ src, 'export launch' ],
+            share: source_word[ src, 'export share' ],
+            host: source_word[ src, 'export host' ],
+            service: source_word[ src, 'export service' ] ]
+        # by name: the folder's listing order is the disk's
+        at : i32 [ res.count ]
+        for [ k: i32 0, k < res.count, k += 1 ]
+            if [ at == res.count
+                 && title.lcase[].compare[ res[ k ].name.lcase[] ] < 0 ]
+                at = k
+        res.insert[ sa, at ]
+    return res
+
+# a store whose program runs: its exports again (it writes what
+# finished installing), and the cards anew when its folder moved
+func orbiter.store_poll []
+    if [ !store_seen ] store_seen = map string [string] []
+    root : string '{path.path_startup[]}'
+    # read here too: the apps view need not have been shown
+    for [ ae: AppEntry ] in app_entries[]
+        sd : path '{install_root[]}/stores/{ae.name}'
+        # a store's folder made since the list was read: read again
+        if [ !ae.store ]
+            if [ !ae.module || !sd.exists[] ] continue
+            app_list = null
+            apps_gen += 1
+            if [ ux ] ux.restyle = true
+            return
+        mt : i64 [ sd.modified_time[] ]
+        if [ store_seen.contains[ ae.name ]
+             && store_seen[ ae.name ] != '{mt}' ]
+            # noted first: the list (and ae) go with app_list
+            store_seen[ ae.name ] = '{mt}'
+            app_list = null
+            apps_gen += 1
+            if [ ux ] ux.restyle = true
+            return
+        store_seen[ ae.name ] = '{mt}'
+        on : bool [ false ]
+        if [ instances ]
+            for [ v: AppView ] in instances
+                if [ !v.ended && program_of[ v ] == ae.name ] on = true
+        # the folders its export read (.watch): one that moved, or
+        # never seen in this run, has news (a game added outside)
+        wf : path '{sd}/.watch'
+        wt : string (wf.exists[])
+            ? wf.load[ typeid[ string ], null ] : ''
+        if [ wt ]
+            for [ w: string ] in wt.split[ '\n' ]
+                if [ w.count == 0 ] continue
+                wk : string '{ae.name}|{w}'
+                # marked: an empty folder is not an empty string
+                wm : string '#{store_files[ w ]}'
+                was : string store_seen.get[ wk ]
+                if [ !was || was.compare[ wm ] != 0 ] on = true
+                store_seen[ wk ] = wm
+        if [ !on ] continue
+        if [ !store_rerun_ms ] store_rerun_ms = map i64 [string] []
+        store_rerun_ms[ ae.name ] = epoch_millis[]
+        sv : string '{install_root[]}/bin/silver'
+        md : string '{ae.file}'
+        ifdef [ windows ]
+            ex : command { start /b "" "{sv}" --export
+                --build "{md}" >NUL 2>&1 }
+            ex.exec[ false ]
+        el
+            ex : command { {sv} --export --build {md} >/dev/null 2>&1 & }
+            ex.exec[ false ]
+
+# the files in a folder and in its folders (one level), by name
+# and time: a folder's own modified_time walks everything under it
+func orbiter.store_files [ dir: string ] -> string
+    sig : string ''
+    dp : path [ dir ]
+    for [ f: path ] in dp.ls[ null, false ]
+        if [ f.is_dir[] ]
+            sig = '{sig}{f.filename[]}/\n'
+            for [ g: path ] in f.ls[ null, false ]
+                if [ g.is_dir[] ] continue
+                sig = '{sig} {g.filename[]} {g.modified_time[]}\n'
+            continue
+        sig = '{sig}{f.filename[]} {f.modified_time[]}\n'
+    return sig
+
+# each installed agent with each of its models, 'agent|model'
+# (one with no models listed: 'agent|')
+func orbiter.home_choices [] -> vec string
+    out : vec string []
+    for [ an: string ] in agent_installed[]
+        ms : vec string null
+        if [ agents ]
+            for [ g: Agent ] in agents
+                if [ g.name == an ] ms = g.models
+        if [ ms && ms.count > 0 ]
+            for [ m: string ] in ms
+                out.push[ '{an}|{m}' ]
+        el
+            out.push[ '{an}|' ]
+    return out
+
+# the instances, in the order added: a copy, so a holder sees
+# the list change
+func orbiter.home_names [] -> vec string
+    if [ !home_open ] home_open = ''
+    # a new run: the instances kept from the last, their
+    # sessions going on (a reload holds them already)
+    if [ !home_back ]
+        home_back = true
+        if [ !home_order && home_saved ]
+            for [ e: string ] in vec string [ home_saved ]
+                f : vec string e.split[ '|' ]
+                if [ f.count >= 4 ]
+                    home_launch[ f[ 0 ], f[ 1 ], f[ 2 ], f[ 3 ] ]
+            home_open = ''
+    if [ !home_order ] return vec string []
+    return vec string [ home_order ]
+
+func orbiter.home_pick_agent [ p: string ] -> string
+    at : i32 [ p.index_of[ '|' ] ]
+    return (at < 0) ? p : p.mid[ 0, at ]
+
+func orbiter.home_pick_model [ p: string ] -> string
+    at : i32 [ p.index_of[ '|' ] ]
+    if [ at < 0 ] return ''
+    return p.mid[ at + 1, p.count - at - 1 ]
+
+# an agent's session, else null
+# waiting, else what it says it does, else running
+func orbiter.home_state_of [ an: string ] -> string
+    dg : string home_doing_of[ an ]
+    st : string [ (home_waiting[ an ]) ? 'waiting'
+                  : (dg == 'build') ? 'building'
+                  : (dg == 'research') ? 'researching'
+                  : (dg.count > 0) ? dg : 'running' ]
+    if [ dg.count > 0 && home_words.contains[ an ] ]
+        hw : string home_words[ an ]
+        if [ hw.count > 0 ] st = '{st}: {hw}'
+    return st
+
+func orbiter.home_session [ nm: string ] -> ConsoleSession
+    if [ !home_sess || !home_sess.contains[ nm ] ] return null
+    return home_sess[ nm ]
+
+# the model an agent's session runs, '' none
+func orbiter.home_model_of [ nm: string ] -> string
+    if [ !home_ran || !home_ran.contains[ nm ] ] return ''
+    return home_ran[ nm ]
+
+# the agent waits for the user, by its terminal's title
+func orbiter.home_waiting [ nm: string ] -> bool
+    cs : ConsoleSession home_session[ nm ]
+    if [ !cs || !cs.title || !home_runs
+         || !home_runs.contains[ nm ] ]
+        return false
+    run : AgentRun home_runs[ nm ]
+    return run.waiting*[ cs.title ]
+
+# what the agent says it is doing while it works, '' none
+func orbiter.home_doing_of [ nm: string ] -> string
+    if [ home_waiting[ nm ] || !home_doing
+         || !home_doing.contains[ nm ] ]
+        return ''
+    d : string home_doing[ nm ]
+    return (d == 'done') ? '' : d
+
+# at work, the agent writes (its answer, an edit), by its run
+func orbiter.home_writing [ nm: string ] -> bool
+    cs : ConsoleSession home_session[ nm ]
+    if [ !cs || !cs.title || !home_runs
+         || !home_runs.contains[ nm ] ]
+        return false
+    run : AgentRun home_runs[ nm ]
+    return run.writing*[ cs.title ]
+
+# an instance ends: its terminal, its place in the stack
+func orbiter.home_end [ nm: string ]
+    cs : ConsoleSession home_session[ nm ]
+    if [ cs ]
+        cs.end[]
+        home_sess.rm[ nm ]
+    if [ home_order ]
+        k : i32 [ home_order.index_of[ nm ] ]
+        if [ k >= 0 ] home_order.remove[ k ]
+    if [ home_open == nm ] home_open = ''
+    if [ desk_agent == nm ] desk_agent = ''
+    home_keep[]
+
+# a new instance of an agent at a model: its own terminal, in
+# our folder, added to the stack and open; named by its agent,
+# a number after it from the second on
+func orbiter.home_start [ an: string, model: string ]
+    if [ !home_order ] home_order = vec string []
+    nm : string an
+    n : i32 [ 2 ]
+    while [ home_order.index_of[ nm ] >= 0 ]
+        nm = '{an}-{n}'
+        n += 1
+    home_launch[ nm, an, model, '' ]
+
+# an agent's first instance in the agents view ('' none)
+func orbiter.home_first [ an: string ] -> string
+    if [ !home_order ] return ''
+    for [ nm: string ] in home_order
+        ag : string [ (home_agent && home_agent.contains[ nm ])
+                      ? home_agent[ nm ] : nm ]
+        if [ ag == an && home_session[ nm ] ] return nm
+    return ''
+
+# a new instance of an agent at its first model; its name
+# a new instance: 'agent|model', else the agent's first model
+func orbiter.home_new [ pick: string ] -> string
+    an : string home_pick_agent[ pick ]
+    md : string home_pick_model[ pick ]
+    if [ md.count == 0 ]
+        for [ c: string ] in home_choices[]
+            if [ home_pick_agent[ c ] == an ]
+                md = home_pick_model[ c ]
+                break
+    had : i32 [ (home_order) ? i32[ home_order.count ] : 0 ]
+    home_start[ an, md ]
+    if [ !home_order || home_order.count == had ] return ''
+    return home_order.last[]
+
+# an instance's terminal in a pane: the same session the agents
+# view draws
+func orbiter.home_in_pane [ nm: string, pi: i32 ]
+    cs : ConsoleSession home_session[ nm ]
+    if [ !cs || pi < 0 ] return
+    ed : Editor pane_at[ pi ]
+    while [ pane_console.count <= pi ]
+        pane_console += ''
+    sid : string 'home:{nm}'
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    ed_sessions[ sid ] = cs
+    pane_console[ pi ] = sid
+    if [ ed ]
+        ed.app_view = false
+        ed.pristine = false
+    force_update[]
+    if [ ux ] ux.restyle = true
+
+# the instances, kept for the next run
+func orbiter.home_keep []
+    home_saved = vec string []
+    if [ home_order ]
+        for [ nm: string ] in home_order
+            an : string [ (home_agent.contains[ nm ])
+                          ? home_agent[ nm ] : nm ]
+            md : string home_model_of[ nm ]
+            se : string ''
+            if [ home_runs && home_runs.contains[ nm ] ]
+                run : AgentRun home_runs[ nm ]
+                if [ run.resume ] se = run.resume
+            home_saved.push[ '{nm}|{an}|{md}|{se}' ]
+    save_session[]
+
+# the home is on screen: the desktop, or the active pane empty
+func orbiter.home_seen [] -> bool
+    return !any_docked[] || pane_empty[ active_pane ]
+
+# orbiter's button: the home on its agent view (a new docked view
+# for it when the active pane shows something); again, the apps
+func orbiter.home_toggle []
+    if [ home_tab == 'agent' && home_seen[] ]
+        home_tab = 'home'
+    el
+        home_tab = 'agent'
+        if [ !home_seen[] ]
+            editor_slots += -1
+            pane_console += ''
+            active_pane = editor_slots.count - 1
+            force_update[]
+    if [ ux ] ux.restyle = true
+
+# the selected pane shows the apps and nothing takes the keys
+func orbiter.apps_typing [] -> bool
+    if [ drawer_open || nav_showing || find_showing || bar_typing ]
+        return false
+    if [ (!desk_typing && !pane_empty[ active_pane ])
+         || home_tab != 'home' ]
+        return false
+    w : Window ux
+    return !w || !w.focus || w.focus inherits AppsGrid
+        || w.focus.id == 'apps_filter'
+        || (desk_typing && in_desk[ w.focus ])
+
+# a press on a desktop: it takes the typing (its pane chosen, a
+# window's focus let go); a press elsewhere ends it
+func orbiter.desk_press [ t: element ]
+    hv : HomeView null
+    for [ e: element* t, e, e = e.parent ]
+        if [ e inherits HomeView ]
+            hv = cast HomeView [ e ]
+            break
+    desk_typing = hv != null
+    if [ !hv ] return
+    if [ hv.pane >= 0 && hv.pane < editor_slots.count ]
+        active_pane = hv.pane
+    if [ ux && ux.focus && !(ux.focus inherits AppsGrid)
+         && ux.focus.id != 'apps_filter' && !in_desk[ ux.focus ] ]
+        ux.release_focus[ ux.focus ]
+
+# an app's code in a window, not run
+func orbiter.apps_code [ pi: i32, ae: AppEntry ]
+    mf : path code_of[ ae ]
+    if [ !mf ] return
+    if [ apps_filter.count > 0 ] filter_done[ 'apps_filter' ]
+    if [ pi < 0 ]
+        open_new_tab[ mf ]
+        return
+    active_pane = pi
+    set_active[ pi ]
+    open_in_pane[ mf, pi ]
+    if [ ux ] ux.restyle = true
+
+func orbiter.apps_pick [ pi: i32, ae: AppEntry ]
+    if [ !ae ] return
+    # a pick by click, as by Enter: the filter that found it goes
+    if [ apps_filter.count > 0 ] filter_done[ 'apps_filter' ]
+    # a store's app: its line, run in a console as its store runs
+    if [ ae.launch && ae.launch.count > 0 && pi >= 0 ]
+        active_pane = pi
+        set_active[ pi ]
+        # an address (a bookmark): the module of its scheme
+        ued : Editor pane_at[ pi ]
+        if [ ued && ae.launch.index_of[ '://' ] > 0
+             && ued.open_url[ ae.launch ] ]
+            if [ ux ] ux.restyle = true
+            return
+        # the line may set its own environment before its program
+        bin : string '{install_root[]}/bin'
+        if [ ae.share && ae.share.count > 0 ] share_console[ ae.share ]
+        run_line[ 'env PATH={bin}:$PATH {ae.launch}', pi ]
+        if [ ux ] ux.restyle = true
+        return
+    # a host line: run by orbiter itself (its windows come to
+    # the active pane); a featured one once it is installed
+    if [ ae.host && ae.host.count > 0 && pi >= 0
+         && (!ae.built || ae.built.exists[]) ]
+        active_pane = pi
+        set_active[ pi ]
+        host_press[ ae ]
+        svc_wake[ ae ]
+        run_host[ ae.host ]
+        if [ ux ] ux.restyle = true
+        return
+    # the desktop behind free windows: the app opens maximized in a
+    # docked view of its own, made now, the pick its next frame
+    # (a new pane has no editor until it is drawn)
+    if [ pi < 0 ]
+        editor_slots += -1
+        pane_console += ''
+        active_pane = editor_slots.count - 1
+        desk_pick   = ae
+        force_update[]
+        return
+    active_pane = pi
+    set_active[ pi ]
+    # an agent's app: its first instance of the agents view here
+    # (one made when it has none)
+    if [ ae.module && ae.built && ae.built.exists[]
+         && agent_installed[].index_of[ ae.name ] >= 0 ]
+        nm : string home_first[ ae.name ]
+        if [ nm.count == 0 ] nm = home_new[ ae.name ]
+        if [ nm.count > 0 ] home_in_pane[ nm, pi ]
+        if [ ux ] ux.restyle = true
+        return
+    # a tray app (it starts with orbiter): never a pane of its own;
+    # run again, it shows its window
+    if [ ae.module && ae.built && ae.built.exists[]
+         && startup_of[ ae.name ].count > 0 ]
+        ap : vec AppView inst_reg[].live_app[ ae.file ]
+        # running: brought up (its window, or its tray item asked)
+        if [ ap.count > 0 ] dock_run_click[ ap[ 0 ].iid ]
+        el
+            mg : path '{ae.file}/{ae.name}.ag'
+            run_background[ startup_of[ ae.name ], mg ]
+        if [ ux ] ux.restyle = true
+        return
+    if [ ae.module && ae.built && ae.built.exists[] ]
+        run_program[ ae.built, pi ]
+        edr : Editor pane_at[ pi ]
+        mf : path '{ae.file}/{ae.name}.ag'
+        if [ edr && edr.run_view && mf.exists[] ]
+            edr.run_view.origin = mf
+            # an agent shell's module: it tells when it waits
+            for [ an: string ] in agent_installed[]
+                if [ an == ae.name ]
+                    edr.run_view.agent = agent_make[ an ]
+    el [ ae.module && ae.built ]
+        # not built: install it (its module's imports, built)
+        w_ : string install_word[ ae ]
+        if [ !w_ || w_ == 'failed' || w_ == 'cancelled' ]
+            install_start[ ae, false ]
+    el [ ae.module ]
+        di : DockIcon [ file: ae.file, module: true ]
+        dock_icon_click[ di ]
+    if [ ux ] ux.restyle = true
+
+# the store's export ran again within the last 30 s
+func orbiter.store_rerun [ ae: AppEntry ] -> bool
+    if [ !store_rerun_ms || !store_rerun_ms.contains[ ae.name ] ]
+        return false
+    return epoch_millis[] - store_rerun_ms[ ae.name ] < 30000
+
+# the builds the switcher shows, newest first: only an app
+# launched here (an instance of it), while it builds, or failed
+# (a failure stays until put away or built again; at most 8)
+func orbiter.switch_builds [] -> vec string
+    out : vec string []
+    if [ !instances ] return out
+    dir : path '{install_root[]}/tmp/builds'
+    ents : dir.ls[ null, false ]
+    if [ !ents ] return out
+    mts : vec i64 []
+    for [ f: path ] in ents
+        fnm : string f.filename[]
+        if [ !fnm.ends_with[ '.events' ] ] continue
+        nm : string fnm.mid[ 0, fnm.count - 7 ]
+        launched : bool [ false ]
+        for [ av: AppView ] in instances
+            if [ av.app_mod == nm ] launched = true
+        if [ !launched ] continue
+        wd : string build_word[ nm ]
+        if [ wd != 'building' && wd != 'failed' ] continue
+        mt : i64 f.modified_time[]
+        if [ build_gone && build_gone.contains[ nm ]
+             && build_gone[ nm ] == mt ] continue
+        at : i32 [ 0 ]
+        while [ at < mts.count && mts[ at ] >= mt ] at += 1
+        out.insert[ nm, at ]
+        mts.insert[ mt, at ]
+    if [ out.count <= 8 ] return out
+    top : vec string []
+    for [ i: i32 0, i < 8, i += 1 ]
+        top.push[ out[ i ] ]
+    return top
+
+# the switcher's log: the chosen app's, else the system's
+func orbiter.switch_log [] -> string
+    ir : path install_root[]
+    av : AppView (switch_sel >= 0)
+        ? instance_by[ switch_sel ] : null
+    if [ !av || av.ended ] return '{ir}/tmp/silver-orbiter.log'
+    return '{ir}/tmp/{av.app_mod}.{av.slot}.log'
+
+# a .desktop file's first line with this key, its value
+func orbiter.desktop_line [ df: path, key: string ] -> string
+    tx : string df.load[ typeid[string], null ]
+    if [ !tx ] return ''
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.starts_with[ key ] ]
+            return ln.mid[ key.count, ln.count - key.count ].trim[]
+    return ''
+
+# the featured: each module in featured/ (<name>/<name>.ag)
+func orbiter.featured_names [] -> vec string
+    res : vec string []
+    fd : path '{path.path_startup[]}/featured'
+    if [ !fd.exists[] ] return res
+    for [ d: path ] in fd.ls[ null, false ]
+        n : string d.filename[]
+        m : path '{d}/{n}.ag'
+        if [ d.is_dir[] && m.exists[] ] res.push[ n ]
+    return res
+
+# an instance's terminal, named nm, its session going on ('' a
+# new one)
+func orbiter.home_launch [ nm: string, an: string, model: string,
+                   session: string ]
+    if [ !home_sess ] home_sess = map ConsoleSession [ string ] []
+    if [ !home_runs ] home_runs = map AgentRun [ string ] []
+    if [ !home_ran ]  home_ran  = map string [ string ] []
+    if [ !home_order ] home_order = vec string []
+    if [ !home_agent ] home_agent = map string [ string ] []
+    if [ home_order.index_of[ nm ] >= 0 ] return
+    root : string '{startup_path}'
+    # past the instances held (a reload starts the count again)
+    home_made = max[ home_made, i32[ home_order.count ] ] + 1
+    sid : i32 [ 1000 + home_made ]
+    line : agent_term_line_in[ sid, an, root, model, session ]
+    if [ line.count == 0 ]
+        home_why = agent_error[]
+        return
+    home_why = ''
+    cs : ConsoleSession []
+    cs.name       = 'home_{nm}'
+    # its name, for what it tells orbiter
+    cs.launch_cmd = 'env ORBITER_AGENT={nm} {line}'
+    cs.cwd        = root
+    # its text's backgrounds faint over the platform
+    cs.cell_alpha = 0.2
+    cs.start[]
+    home_sess[ nm ]  = cs
+    home_ran[ nm ]   = model
+    home_agent[ nm ] = an
+    home_order.push[ nm ]
+    # the run its line was made by: it knows its session
+    run : AgentRun agent_term_run[ sid ]
+    if [ run ] home_runs[ nm ] = run
+    home_open = nm
+    home_keep[]
+
+# the widgets panel: each widget's card in a group, as many
+# rows as the panel's width needs
+func orbiter.widgets_body [] -> Elements
+    t : Elements []
+    un : f32 unit_px[]
+    uu : f32 ux_unit[ ux ]
+    ch : f32 [ round[ 1.1 * un ] ]
+    gap : f32 [ round[ 0.3 * un ] ]
+    sd : f32 [ round[ 64.0 * uu ] ]
+    cw : f32 [ sd + round[ 24.0 * uu ] ]
+    rh : f32 [ sd + round[ 30.0 * uu ] ]
+    n : i32 [ 0 ]
+    for [ ae: AppEntry ] in app_entries[]
+        if [ ae.widget && ae.widget.count > 0 ] n += 1
+    pw : f32 [ (panel_w > 0.0) ? panel_w : 24.0 * un ]
+    cols : i32 [ max[ 1, i32[ (pw - 4.0 * gap) / cw ] ] ]
+    rows : i32 [ max[ 1, (n + cols - 1) / cols ] ]
+    gh : f32 [ ch + f32[ rows ] * rh + gap ]
+    ws : Elements []
+    ws['widget_pick'] = WidgetPick [
+        area: Region [ 'l{gap}px t{ch}px r{gap}px b{gap}px' ] ]
+    t['widget_group'] = SetGroup [ title: 'widgets', head_h: ch,
+        elements: ws,
+        area: Region [ 'l{gap}px t0 r{gap}px h{gh}px' ] ]
+    return t
+
+# the switcher's pick: that window in the active pane
+func orbiter.switcher_pick [ iid: i32 ]
+    switcher = false
+    dock_run_click[ iid ]
+    if [ ux ] ux.restyle = true
+
+func orbiter.switcher_shut []
+    switcher = false
+    if [ ux ] ux.restyle = true

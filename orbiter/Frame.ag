@@ -1,0 +1,1060 @@
+extend orbiter
+
+# the phone's dialogs as they stand, for the next instance
+func orbiter.ui_carry_out []
+    if [ !ui_carry ] return
+    menu_up : bool [ drawer_open && menu_kind == 'system' ]
+    ui_carry.clear[]
+    ui_carry += (switcher) ? 1.0 : 0.0
+    ui_carry += (screen_dark) ? 1.0 : 0.0
+    ui_carry += (menu_up) ? 1.0 : 0.0
+    ui_carry += strip_shift
+    ui_carry += switch_shift
+    ui_carry += (slide_open) ? 1.0 : 0.0
+    ui_carry += f32[ keys_force ]
+    ui_carry += f32[ switch_sel ]
+    ui_carry += (switch_con) ? 1.0 : 0.0
+    ui_view = sys_view
+    ui_build = switch_build
+
+# the last instance's dialogs, open again where they were
+func orbiter.ui_carry_in []
+    if [ !ui_carry || ui_carry.count < 6 ] return
+    switcher     = ui_carry[ 0 ] > 0.5
+    screen_dark  = ui_carry[ 1 ] > 0.5
+    strip_shift  = ui_carry[ 3 ]
+    switch_shift = ui_carry[ 4 ]
+    slide_open   = ui_carry[ 5 ] > 0.5
+    if [ ui_carry.count > 6 ] keys_force = i32[ ui_carry[ 6 ] ]
+    if [ ui_carry.count > 7 ] switch_sel = i32[ ui_carry[ 7 ] ]
+    if [ ui_carry.count > 8 ] switch_con = ui_carry[ 8 ] > 0.5
+    switch_build = (ui_build) ? ui_build : ''
+    if [ ui_carry[ 2 ] > 0.5 ]
+        drawer_toggle[ 'system', false ]
+        sys_view = (ui_view) ? ui_view : ''
+    ui_carry.clear[]
+    if [ ux ] ux.restyle = true
+
+func orbiter.init [] 
+    # tick carries the per-frame work (session pump, run dispatch,
+    # pane close-outs); a paint happens only when something marks it
+    # dirty
+    breakpoints    = map string[string] []
+
+    target_names   = vec string []
+    target_roots   = vec path []
+    target_srcs    = vec path []
+    # what it starts opens addresses in aura: its xdg-open finds
+    # orbiter's socket here (trinity names it so)
+    rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+    run_dir : string [ (rt) ? string [ rt ] : '/tmp' ]
+    sock : string '{run_dir}/trinity-orbiter.sock'
+    setenv[ 'ORBITER_SOCKET', sock.chars, 1 ]
+    load_settings[]
+    # a source change is staged, never swapped on its own: the swap
+    # goes when the agent reports done with the exchange up
+    au_live_set_defer[ 1 ]
+    # the exchange avatar exists from load
+    # live reload test: this comment came through the exchange
+    # parallel swap test: the next instance loads beside this one
+    # carry test: the exchange and avatar cross the swap as they
+    # were carry test 2: the avatar keeps its settled place, the
+    # fade is 3 s
+    agent_av = AgentAvatar [ topmost: true, animate_always: true ]
+    file_cache     = map FileBuf [string] []
+    open_files     = vec path []
+    active_idx     = -1
+    # one editor pane to start, empty (the 'Open' finder)
+    editor_slots   = vec i32 [] [-1]
+    pane_console   = vec string [] ['']
+    active_pane    = 0
+    nav_panes      = vec Navigate []
+    for [ i: i32 0, i < 8, i += 1 ]
+        nav_panes += Navigate []
+    active_panel   = 'files'
+    active_target  = 'silver'
+    restore_session[]
+    # the phone's keyboard tables, at startup (never on a key)
+    if [ mobile_on[] ] keyboard_load[]
+    adopt_live_slots[]
+    # the navigator's model: its lists are the session's
+    if [ !pins ] pins = vec string []
+    if [ !repo_users ] repo_users = vec string []
+    if [ !docked_repos ] docked_repos = vec string []
+    nav = Navigator [ host: OrbNavHost [ orb: a ], ux: ux,
+        project: project_root[], storage: 'orbiter',
+        pins: pins, repo_users: repo_users,
+        docked_repos: docked_repos, self_user: self_user,
+        test_propose: test_propose ]
+    nav.nav_root = project_root[]
+    # first token is ours to open; everything after belongs to the
+    # module
+    if [ module_args && module_args.count > 0 ]
+        sp_ : i32 [ module_args.index_of[ ' ' ] ]
+        if [ sp_ > 0 ]
+            resource    = module_args.mid[ 0, sp_ ]
+            module_args = module_args.mid[ sp_ + 1,
+                                           module_args.count - sp_
+                                           - 1 ]
+        el
+            resource    = module_args
+            module_args = ''
+    dbg_start : bool [ false ]
+    if [ resource && resource.count > 0 ]
+        rp : path '{startup_path}/{resource}'
+        if [ resource.chars[0] == 47 ] rp = path '{resource}'
+        if [ rp.exists[] ]
+            if [ rp.is_dir[] ]
+                nav.nav_root = rp
+                # a module dir opens its main source: orbiter asnes
+                # -> asnes/asnes.ag
+                mp8 : path '{rp}/{rp.stem[]}.ag'
+                if [ mp8.exists[] ]
+                    mi : i32 [ file_slot[ mp8 ] ]
+                    if [ editor_slots.count == 0 ]
+                        editor_slots += -1
+                    editor_slots[0] = mi
+                    active_pane = 0
+                    active_idx  = mi
+                    # the tail after the module is that run's args,
+                    # over any saved
+                    if [ module_args && module_args.count > 0 ]
+                        fs7 : file_state fstate[ mp8 ]
+                        if [ fs7 ] fs7.args = module_args
+                    # an app switched to us (its host set this): its
+                    # source opens with a held instance of it,
+                    # stopped until started
+                    if [ getenv[ 'SILVER_START_HELD' ] ]
+                        pending_held = 0
+                        # this window came from that app: pin it in
+                        # the title
+                        home_mod = rp.stem[]
+                    el
+                        pending_run = 0
+            el
+                ri : i32 [ file_slot[ rp ] ]
+                if [ editor_slots.count == 0 ] editor_slots += -1
+                editor_slots[0] = ri
+                active_pane = 0
+                active_idx  = ri 
+                # the arg we were handed at startup is this file's
+                # arg
+                fs8 : file_state fstate[ rp ]
+                if [ fs8 ] fs8.args = '{rp}'
+        el
+            bp : path '{install_root[]}/build/{resource}'
+            if [ bp.exists[] ]
+                # open the module's SOURCE and host it in the pane.
+                # exec'ing the binary here gave it its own window
+                # instead of a texture
+                sp8 : path '{startup_path}/{resource}/{resource}.ag'
+                op8 : path [ (sp8.exists[]) ? sp8 : bp ]
+                bi : i32 [ file_slot[ op8 ] ]
+                if [ editor_slots.count == 0 ] editor_slots += -1
+                editor_slots[0] = bi
+                active_pane   = 0
+                active_idx    = bi
+                active_target = resource
+                # the tail after the module is that run's args, over
+                # any saved
+                if [ module_args && module_args.count > 0 ]
+                    fs_ : file_state fstate[ op8 ]
+                    if [ fs_ ] fs_.args = module_args
+                if [ sp8.exists[] ]
+                    pending_run = 0
+                el
+                    dbg_start = true
+            el
+                log 'orbiter: no such resource {resource}'
+    orbit_sid = agent_sid[]
+    orbit_sid.hold[]
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    nav.find_text  = ''
+    findbar_open   = false
+    findbar_text   = ''
+    replace_text   = ''
+    pattern_text   = ''
+    find_showing   = false
+    tok_lock       = mutex [ ]
+    tok_skip       = vec string [] [
+        'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'tga',
+        'exr',
+        'hdr', 'ktx', 'dds', 'psd', 'ttf', 'otf', 'woff', 'woff2',
+        'wav', 'mp3', 'ogg', 'flac', 'aiff', 'mp4', 'mov', 'avi',
+        'mkv',
+        'zip', 'gz', 'bz2', 'xz', 'tar', '7z', 'rar', 'pdf',
+        'o', 'a', 'so', 'dylib', 'dll', 'lib', 'exe', 'obj', 'pyc',
+        'bin', 'dat', 'db', 'sqlite', 'pack', 'idx', 'spv', 'bc',
+        'safetensors', 'pt', 'onnx', 'npy', 'npz', 'jar', 'class',
+        'icns', 'dmg', 'img', 'iso', 'nes', 'sfc', 'gba', 'rom',
+        'n64' ]
+    # the index on its worker thread, the git snapshot on its own
+    nav.start[]
+    compile_log    = list string []
+    ensure_user_config[] 
+    if [ dbg_start ] start_debug[ resource ]
+
+# an element's place in the window, its parents' scrolls taken off
+func orbiter.world_rect [ e: element ] -> rect
+    r : rect [ x: 0.0, y: 0.0, w: (e.bounds) ? e.bounds.w : 0.0,
+               h: (e.bounds) ? e.bounds.h : 0.0 ]
+    for [ c: element* e, c, c = c.parent ]
+        if [ c.bounds ]
+            r.x += c.bounds.x
+            r.y += c.bounds.y
+        if [ c.parent && !c.no_scroll ]
+            r.x -= c.parent.scroll.x
+            r.y -= c.parent.scroll.y
+    return r
+
+func orbiter.land_paused [ av: AppView ]
+    if [ !av || !av.paused || !av.debugger || av.debugger.running ]
+        return
+    active_target = dbg_key[ av ]
+    # its stack, though the stop is in system code
+    refresh_frames[]
+    # a program: its window out of the pane, its module's code in
+    if [ av.prog_debug && av.origin ]
+        wv : u64 window_of[ av ]
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ wv != 0 && pane_window[ q ] == wv ]
+                pane_win[ q ] = u64[ 0 ]
+                open_in_pane[ av.origin, q ]
+                # its editor mounts next frame: linked to it then
+                link_av   = av
+                link_pane = q
+        if [ ux ] ux.restyle = true
+    for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
+        ed : Editor pane_at[ pi ]
+        if [ ed && ed.run_view == av && ed.app_view ]
+            ed.toggle_app_view[]
+    for [ df: frame ] in av.debugger.read_frames[]
+        sp : string '{df.source}'
+        if [ df.line > 0 && sp.ends_with[ '.ag' ] ]
+            apply_break[ sp, i32[ df.line ], 0 ]
+            return
+
+# the slide eases toward the page, or back to the rows
+func orbiter.ease_menu [ w: Window ]
+    goal : f32 [ (menu_page && menu_page.count > 0) ? 1.0 : 0.0 ]
+    if [ menu_slide == goal ] return
+    menu_slide = filter_n[ menu_slide, goal, 0.3, w.frame_factor ]
+    if [ abs[ menu_slide - goal ] < 0.004 ] menu_slide = goal
+    w.will_animate = true
+    force_update[]
+
+func orbiter.alpha_end [ vl: string, j: i32 ] -> i32
+    ln : i32 [ vl.count ]
+    k  : i32 [ j ]
+    while [ k < ln ]
+        c : i32 [ (i32 vl.chars[k]) & 255 ]
+        if [ !((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) ]
+            break
+        k += 1
+    return k
+
+# the agent view's galaxy behind the platform, unless the chosen
+# scene is it already
+func orbiter.galaxy_element [] -> element
+    nm : scene_loaded[]
+    want : bool [ home_tab == 'agent' && home_seen[]
+                  && (!nm || nm.compare[ 'MilkyWay' ] != 0) ]
+    if [ !want ]
+        # off the window: its picture kept for the next visit
+        if [ galaxy_el && galaxy_el.id && ux && ux.element_targets
+             && ux.element_targets.contains[ galaxy_el.id ] ]
+            galaxy_rt = ux.element_targets[ galaxy_el.id ]
+            ux.element_targets.rm[ galaxy_el.id ]
+        return null
+    if [ !galaxy_el ]
+        st : Au.find_type[ 'MilkyWay', null ]
+        if [ !st ]
+            scene_module_ensure[ 'MilkyWay' ]
+            st = Au.find_type[ 'MilkyWay', null ]
+        if [ !st ] return null
+        galaxy_el = element [ Au.new_object[ st, null, null, true,
+            __FILE__, __LINE__, __SEQUENCE__ ] ]
+        if [ !galaxy_el ] return null
+        galaxy_el.area = Region [ 'l0 t0 r0 b0' ]
+        log 'scene: built MilkyWay for the agent view'
+    if [ galaxy_rt && galaxy_el.id && ux ]
+        ux.element_targets[ galaxy_el.id ] = galaxy_rt
+        galaxy_rt = null
+    return galaxy_el
+
+# per-frame servicing (host slots, release gate, debugger attach,
+# consoles, sessions) is state work in tick: nothing here paints, so
+# a live instance never repaints the whole app; it only keeps frames
+# coming
+func orbiter.tick [ w: Window ]
+    session_follow[]
+    if [ instances && instances.count > 0 ] w.will_animate = true
+    nav.pump[ w ]
+    nav_app_sync[]
+    if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
+    mic_frame[]
+    if [ findbar_open ] findbar_sync[]
+    find_step[]
+
+    if [ cycle ]
+        cycle_frame += 1
+        if [ cycle_frame % 30 == 0 ]
+            if [ cycle_adding ]
+                if [ editor_slots.count < 4 ]
+                    editor_slots += -1
+                    pane_console += ''
+                    active_pane = editor_slots.count - 1
+                    save_session[]
+                el
+                    cycle_adding = false
+            el
+                if [ editor_slots.count > 1 ]
+                    close_pane[ editor_slots.count - 1 ]
+                el
+                    cycle_adding = true
+                    cycle_count += 1
+                    log 'CYCLE {cycle_count}'
+
+    if [ au_mem_fraction[] > 0.20 ]
+        log 'orbiter: memory exceeded 20% of system RAM — quitting '
+        exit[ 1 ]
+
+    bpc : i32 [ breakpoints->count ]
+    if [ last_bp_count >= 0 && bpc != last_bp_count ]
+        save_session[]
+    last_bp_count = bpc
+    if [ pending_finder >= 0 ]
+        fte : element title_at[ pending_finder ]
+        if [ fte ]
+            fte.set_focus[]
+            pending_finder = -1
+    # an instance's orbiter button: select it here and bring this
+    # window forward (the app never becomes a second orbiter)
+    if [ instances ]
+        for [ dv: AppView ] in instances
+            if [ dv.dict_req < 0 ] continue
+            dr : i32 [ dv.dict_req ]
+            dv.dict_req = -1
+            dictate_to[ dv.slot, dr ]
+        for [ wv_: AppView ] in instances
+            if [ !wv_.wants_ide ] continue
+            wv_.wants_ide = false
+            wp : i32 [ active_pane ]
+            for [ pq: i32 0, pq < editor_slots.count, pq += 1 ]
+                eq : Editor pane_at[ pq ]
+                if [ eq && eq.run_view == wv_ ] wp = pq
+            show_instance[ wv_.iid, wp ]
+            if [ ux ] ux.set_shown[ true ]
+    if [ pending_held >= 0 ] 
+        hed : Editor pane_at[ pending_held ]
+        if [
+            hed && hed.src
+            && (!pending_held_src || '{hed.src.absolute[]}' == '{pending_held_src.absolute[]}') ]
+            # one held instance per coupled app: coming back to
+            # orbiter again finds the one already there (the newest)
+            hv : AppView [ null ]
+            if [ instances ]
+                for [ iv: AppView ] in instances
+                    if [ iv.held && iv.src && '{iv.src}' == '{hed.src}' ]
+                        hv = iv
+            if [ !hv ]
+                hed.start_instance[ false ]
+                hv = hed.run_view
+            # the instance we came from is the pane's selection; the
+            # source stays in the pane until it starts
+            hed.run_view = hv
+            hed.app_view = false
+            home_av      = hv
+            # its picture from before the switch fills the pip
+            shot : cstr [ getenv[ 'SILVER_SWITCH_SHOT' ] ]
+            if [ shot && hv && ux && ux.screen ]
+                im_ : Image [ '{shot}' ]
+                if [ im_.width > 0 && im_.height > 0 ]
+                    hv.still = Texture [ vk: ux.screen.vk,
+                                         w: ux.screen.w,
+                                         sampler: im_,
+                        width: im_.width, height: im_.height,
+                        linear: true ]
+                    hv.aw = im_.width
+                    hv.ah = im_.height
+            if [ ux ] ux.restyle = true
+            pending_held     = -1
+            pending_held_src = null
+    if [ console_pane >= 0 ]
+        ced : Editor pane_at[ console_pane ]
+        if [ ced ]
+            ced.host_module[ 'console', null,
+                             '--folder {console_dir}' ]
+            console_pane = -1
+            console_dir  = null
+    if [ page_pane >= 0 ]
+        ped : Editor pane_at[ page_pane ]
+        if [ ped ] ped.host_module[ page_mod, null, page_url ]
+        page_pane = -1
+    if [ pending_run >= 0 ]
+        red : Editor pane_at[ pending_run ]
+        if [ red ]
+            # one that ended (quit, failed) gives way to a new one
+            if [ red.run_view && red.run_view.ended ]
+                red.run_view = null
+            if [ !red.run_view ] red.toggle_app_run[ false ]
+            # launched on this app: its held instance takes the pane
+            # and runs
+            rv : AppView red.run_view
+            if [ rv ]
+                if [
+                    rv.held && rv.src && red.src
+                    && '{rv.src}' == '{red.src}' ]
+                    li_ : vec AppView red.instances[]
+                    for [ i_: i32 0, i_ < li_.count, i_ += 1 ]
+                        if [ li_[ i_ ] == rv ]
+                            red.select_instance[ i_ ]
+                    set_display[ red, rv, 1 ]
+                    instance_action[ red, rv, 'play' ]
+            pending_run = -1
+    if [ pending_findfocus ]
+        if [ !findbar_open ]
+            pending_findfocus = false
+        el [ findbar_pane && findbar_pane.count > 4 ]
+            fpi : i32 [
+                findbar_pane.mid[ 4,
+                                  findbar_pane.count
+                                  - 4 ].real_value[] ]
+            fte2 : element title_at[ fpi ]
+            if [ fte2 && fte2.elements ]
+                ffe : element fte2.elements['find']
+                if [ ffe ]
+                    ffe.set_focus[]
+                    pending_findfocus = false
+    fin_now : bool   [
+        (w.focus && w.focus.id == 'title')
+        || (nav.find_text && nav.find_text.count > 0) || list_focused[] ]
+    sp_now  : string search_pane[]
+    if [ fin_now != was_finder || sp_now != was_search_pane ]
+        # opened from a module: list its own folder (a pick keeps
+        # its own start)
+        picking : bool [ pick_field && pick_field.count > 0 ]
+        ms8 : path (fin_now && !was_finder && !picking)
+            ? module_src_of[ pane_at[ active_pane ] ] : null
+        if [ ms8 ] nav.nav_root = ms8.parent_dir[]
+        run_search[]
+    was_finder      = fin_now
+    was_search_pane = sp_now
+    now_ms : i64 [ Au.epoch_millis[] ]
+    if [ now_ms - settings_check_ms >= 1000 ]
+        settings_check_ms = now_ms
+        sp : agi_path[]
+        mt : i64 [ sp.modified_time[] ]
+        if [ mt != settings_mtime ]
+            load_settings[]
+        syntax_tick[]
+        cov_poll[]
+        if [ now_ms - store_check_ms >= 10000 ]
+            store_check_ms = now_ms
+            store_poll[]
+        # refresh policy: nothing on a timer. the watches (FSEvents
+        # on macOS) mark the snapshot dirty on a real change, and
+        # the scan reruns on its own thread, at most once a second,
+        # so the nav list reads a finished snapshot the instant it
+        # comes up and an idle app does no work; a selection change
+        # rescans at once
+
+    if [ instances ]
+        for [ av8: AppView ] in instances
+            # the app changed its own display: the pane and panel
+            # follow it
+            if [ av8.disp_pending >= 0 ]
+                dp8 : i32 [ av8.disp_pending ]
+                av8.disp_pending = -1
+                ed8 : Editor null
+                for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                    e8 : Editor pane_at[ i ]
+                    if [ e8 && e8.run_view == av8 ] ed8 = e8
+                set_display[ ed8, av8, dp8 ]
+            # a held one waits for its row; an unstarted one starts
+            # here even unshown
+            if [ av8.held || av8.ended ] continue
+            # a debug launch waits for the debugger before its init;
+            # attach shown or not. a plain run is never traced
+            if [ !av8.attached && av8.slot >= 0 ]
+                if [ !av8.debug_build ]
+                    av8.attached = true
+                el
+                    apid : i32 [ host_app_pid[ av8.slot ] ]
+                    if [ apid > 0 && app_up[ av8 ] ]
+                        log 'release: {av8.app_mod} slot {av8.slot} pid {apid}'
+                        attach_appview[ av8, apid ]
+            # a hidden pane (the nav list over it) never ticks: its
+            # instance is serviced here until it shows again
+            shown8 : bool [ false ]
+            for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
+                e8 : Editor pane_at[ pi8 ]
+                # hide_ui hides every pane: their apps run on here
+                if [ e8 && e8.run_view == av8 && !e8.hide &&
+                     !hide_ui && !pane_gone[ pi8 ] ]
+                    shown8 = true
+            if [ !shown8 ]
+                av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
+                # the pace of an app shown in the pane: this
+                # display's refresh
+                if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
+                av8.service[ w.screen ]
+    desk_service[ w ]
+    # docked windows filling the area hide the scene: it holds
+    cover_ : bool [ !hide_ui && any_docked[] ]
+    for [ pc_: i32 0, pc_ < editor_slots.count, pc_ += 1 ]
+        if [ pane_floats[ pc_ ] || pane_out[ pc_ ] ] continue
+        ec : Editor pane_at[ pc_ ]
+        app_ : bool [ ec && ec.app_view && ec.run_view
+                      && !ec.run_view.held && !ec.run_view.ended ]
+        if [ pane_browsing[ pc_ ]
+             || (!app_ && pane_window[ pc_ ] == 0) ]
+            cover_ = false
+    if [ ux ] ux.backdrop_bypass = cover_
+    attach_publish[]
+    # a restored free window: shown once its pane has an editor
+    if [ mini_wait >= 0 ] mini_show[]
+    reveal_tick[]
+    # a dock menu's row, pressed last frame
+    if [ dock_act ] dock_pop_do[]
+    # a desktop card's menu row, pressed last frame
+    if [ card_act ] card_pop_do[]
+    # the agents' sessions renamed by their terminals' titles
+    titles_tick[]
+    # a dock press's new tab: its launch once its editor is there
+    if [ launch_wait && pane_at[ active_pane ] ]
+        lw_ : DockIcon launch_wait
+        launch_wait = null
+        dock_icon_click[ lw_ ]
+        launch_tab = -1
+    # a dock menu's instance in its new tab, once its editor is there
+    if [ show_wait > 0 && pane_at[ active_pane ] ]
+        sw_ : i32 [ show_wait ]
+        show_wait = 0
+        pick_instance[ sw_, active_pane ]
+    if [ pending_show > 0 ]
+        edp_ : Editor pane_at[ pending_show_pane ]
+        avp : AppView instance_by[ pending_show ]
+        if [ !avp || !avp.src ]
+            pending_show = 0
+        el [ edp_ ]
+            # once the source has loaded: the load turns the app
+            # view off
+            ld : path edp_.loaded_src
+            if [
+                ld
+                && '{ld.absolute[]}' == '{avp.src.absolute[]}' ]
+                pending_show = 0
+                show_instance[ avp.iid, pending_show_pane ]
+                if [ pending_code ]
+                    pending_code = false
+                    edp_.app_view = false
+                    edp_.pristine = false
+    if [ session_dirty ]
+        session_dirty = false
+        save_session[]
+    sync_volume[]
+    light_sync[]
+    sound_sync[]
+    if [ batt.sync[] && ux ] ux.restyle = true
+    # the global log: every instance's log in one session, retailed
+    # as the set changes
+    gc_ : string console_cmd[ null ]
+    if [
+        gc_.count > 0 && (!all_cmd || all_cmd.compare[ gc_ ] != 0) ]
+        all_cmd = gc_
+        ga : ConsoleSession all_log[]
+        # the tails run as the session's program: no shell, no
+        # prompt; input is the console's line, never this
+        ga.launch_cmd = gc_
+        ga.restart[]
+        # a log: no cursor, nothing is typed into it
+        ga.cursor_visible = false
+    # the global console never wraps, however it was made
+    if [ ed_sessions ]
+        gw : ConsoleSession ed_sessions[ 'ed:all' ]
+        if [ gw ] gw.nowrap = true
+    # the selected instance's own console, made once per slot
+    epa : Editor pane_at[ active_pane ]
+    rva : AppView (epa) ? epa.run_view : null
+    isd : string inst_sid[ rva ]
+    if [ isd ]
+        if [ !ed_sessions ]
+            ed_sessions = map ConsoleSession [string] [ ]
+        if [ !ed_sessions.contains[ isd ] ]
+            is_ : ConsoleSession []
+            is_.name = isd
+            is_.nowrap = true
+            ed_sessions[ isd ] = is_
+            lg : string '{install_root[]}/tmp'
+            lf : string '{lg}/{rva.app_mod}.{rva.slot}.log'
+            # the tail is its program: no shell, no prompt
+            is_.launch_cmd = 'tail -n +1 -F {lf}'
+            is_.restart[]
+            is_.cursor_visible = false
+    for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
+        edp : Editor pane_at[ pi2 ]
+        if [ !edp || !edp.run_view ] continue
+        if [ !edp.run_view.cmd ] continue
+        if [ edp.run_view.dispatched ] continue
+        edp.run_view.dispatched = true
+        esid : string edp.run_view.console_id[]
+        if [ !ed_sessions ]
+            ed_sessions = map ConsoleSession [string] [ ]
+        es : ConsoleSession ed_sessions[esid]
+        if [ !es ]
+            es = ConsoleSession []
+            es.name = esid
+            es.nowrap = true
+            ed_sessions[esid] = es
+        cc : string console_cmd[ edp.run_view.app_mod ]
+        if [ cc.count == 0 ] cc = edp.run_view.cmd
+        log 'run: dispatch {esid}: {cc}'
+        es.launch_cmd = ''
+        es.restart[]
+        es.pending = cc
+    if [ ed_sessions ]
+        for [ s: ConsoleSession, k: string ] in ed_sessions
+            if [ s.pty_fd >= 0 ]
+                # the app wrote: the consoles showing it repaint,
+                # nothing else
+                if [ s.read_output[] ] dirty_consoles[ w.root ]
+    if [ ed_sessions ]
+        ags : ConsoleSession ed_sessions[ orbit_sid ]
+        if [ ags && ags.agent_busy[] ] busy_at = epoch_millis[]
+        busy = (epoch_millis[] - busy_at) < 500 ||
+            agent_state == 'busy'
+        # done with the exchange up: apply the staged reload; the
+        # flame and the final spin last until the swap has landed
+        # the flame lights first and burns on its own for a moment,
+        # then the apply goes: a fresh product (an outside build)
+        # swaps the instant it is asked, which left no frame for the
+        # flame at all
+        pend : i32 [ au_live_get_pending[] ]
+        now  : i64 [ epoch_millis[] ]
+        # the status bar's reload chips follow the host's state: a
+        # tree composed while the host compiled still says so after
+        # the switch
+        if [ pend != pend_last ]
+            pend_last  = pend
+            ux.restyle = true
+            # the side panel's reload button follows it too
+            if [ ux.root ] ux.dirty_tree[ ux.root ]
+        # done is read: the first hover tip erases the word
+        if [
+            agent_done && agent_note && agent_note.count > 0
+            && hover_tip[ ux.hovered ].count > 0 ]
+            agent_note = ''
+            ux.restyle = true
+        if [ !swap_carry ] swap_carry = ExchangeState [ ]
+        if [ !swap_view  ] swap_view  = vec f32 []
+        if [ !ui_carry   ] ui_carry   = vec f32 []
+        # the reloaded exchange stays open: the user closes it
+        if [ carry_landed && ux.loaded[] ]
+            carry_landed = false
+        # the next instance is ready (pending 3): the state crosses,
+        # then the go
+        if [ pend == 3 && !swap_fading ]
+            swap_fading = true
+            if [ ux ] ux.exchange_carry[ swap_carry ]
+            if [ agent_av ] agent_av.carry[ swap_carry ]
+            panes_carry[]
+            ui_carry_out[]
+            au_live_request_apply[]
+        if [ pend != 3 ] swap_fading = false
+        # the exchange holds until the avatar's second halo has
+        # settled back to the first: the close and the apply wait on
+        # it
+        hs : bool [ !agent_av || agent_av.halo_cur < 0.02 ]
+        if [
+            agent_done && !swap_live && ux && ux.shot_ask
+            && pend == 1 ]
+            swap_live = true
+            swap_hot  = false
+            swap_at   = now
+        if [ swap_live && !swap_hot && now - swap_at > 1400 && hs ]
+            request_swap[]
+            swap_hot    = true
+            swap_hot_at = now
+        # the swap replaces this instance (the flame ends with it).
+        # a build that failed puts pending back to staged: stand
+        # down, and never in the frames the host takes to start the
+        # build
+        el [
+            swap_live && swap_hot && pend == 1
+            && now - swap_hot_at > 1500 ]
+            log 'swap stand-down: the build failed, the exchange comes back'
+            swap_live  = false
+            swap_hot   = false
+            agent_done = false
+            ux.swap_fade = false
+            ux.restyle   = true
+    if [ debuggers && ed_sessions ]
+        for [ d: dbg, dn: string ] in debuggers
+            if [ !d || !d.active ] continue
+            ds : ConsoleSession ed_sessions[ dn ]
+            if [ !ds ] continue
+            ds.feed_fd[ d.fifo_fd_out ]
+            ds.feed_fd[ d.fifo_fd_err ]
+
+    if [ editor_slots.count == 0 ] editor_slots += -1
+    pane_total : i32 [ editor_slots.count + ((agent_open) ? 1 : 0) ]
+    # pane 0 too, while another stays
+    for [ ci: i32 pane_total - 1, ci >= 0, ci -= 1 ]
+        if [ (ci > 0 || editor_slots.count > 1)
+             && take_closed[ 'pane{ci}' ] ]
+            close_pane[ ci ]
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    for [ pc: i32 0, pc < pane_console.count, pc += 1 ]
+        if [ pane_console[pc] && pane_console[pc].count > 0 ]
+            ensure_console[ pane_console[pc] ]
+    if [ agent_open ] ensure_console[ orbit_sid ]
+    ap_ : i32 [ agent_pane[] ]
+    if [ ap_ > 0 ]
+        ape : element find_el[ a, 'pane{ap_}' ]
+        cw  : f32 [ (ape) ? ape.extent : 0.0 ]
+        if [ ape && cw <= 0.0 && console_w > 0 ]
+            half_ : f32 [ ((bounds) ? bounds.w : 1200.0) * 0.5 ]
+            use_  : f32 [ console_w ]
+            ape.extent = (use_ > half_) ? half_ : use_
+        el [ cw > 0.0 && i32[ cw ] != console_w ]
+            console_w      = i32[ cw ]
+            console_w_save = 30
+    if [ console_w_save > 0 ]
+        console_w_save -= 1
+        if [ console_w_save == 0 ] save_session[]
+    # a stopped program's code, its pane's editor now mounted
+    lk : Editor (link_av) ? pane_at[ link_pane ] : null
+    if [ lk ]
+        lk.run_view = link_av
+        link_av = null
+        if [ ux ] ux.restyle = true
+    for [ bi: i32 0, bi < editor_slots.count, bi += 1 ]
+        pe : element find_el[ a, 'pane{bi}' ]
+        if [ !pe ] continue
+        be : element find_el[ pe, 'band' ]
+        if [ !be ] continue
+        # dragged shut past half its floor: the console goes off,
+        # its last height kept for the next time
+        if [ be.extent < 0.0 ]
+            be.extent = 0.0
+            if [ con_up[ bi ] ] con_flip[ bi ]
+            if [ ux ] ux.restyle = true
+            continue
+        # the code above it never snaps shut: it takes the rest
+        te : element find_el[ pe, 'text' ]
+        if [ te && te.extent < 0.0 ] te.extent = 0.0
+        bh : f32 [ be.extent ]
+        if [ bh <= 0.0 && band_h > 0 ]
+            half8 : f32 [ ((bounds) ? bounds.h : 900.0) * 0.5 ]
+            use8  : f32 [ band_h ]
+            be.extent = (use8 > half8) ? half8 : use8
+        el [ bh > 0.0 && i32[ bh ] != band_h ]
+            band_h      = i32[ bh ]
+            band_h_save = 30
+    if [ band_h_save > 0 ]
+        band_h_save -= 1
+        if [ band_h_save == 0 ] save_session[]
+    if [ pending_stop ]
+        pending_stop = false
+        dbg_say[ 'stopped at {pending_src}:{pending_line}' ]
+        t0 : i64 [ Au.epoch_millis[] ]
+        apply_break[ pending_src, pending_line, pending_col ]
+        log 'applied break t={t0} took={Au.epoch_millis[] - t0}ms'
+    if [ pending_exit ]
+        ex : exited pending_exit
+        pending_exit = null
+        dbg_say[ 'process exited, code {ex.code}' ]
+        apply_exit[ ex ]
+    # the stage is the scene's prop: its tick sets ux.frost_mode
+    if [ ux && frost_dbg8 != ux.frost_mode ]
+        log 'FROST mode={ux.frost_mode} eff={ux.frost_eff[]}'
+        frost_dbg8 = ux.frost_mode
+        if [ scene_el ]
+            bgc : scene_el.bg_color*[]
+            if [ bgc && bgc.a > 0.0 ] ux.solid_color = bgc
+            ux.apply_solid[]
+    if [ ux ]
+        sl_ : string scene_loaded[]
+        # a scene whose module is missing never draws: no wait
+        gone : bool [ scene_miss && sl_
+                      && scene_miss.compare[ sl_ ] == 0 ]
+        ux.expect_backdrop = sl_ && sl_.count > 0 && sl_.compare[
+            'none' ] != 0 && !gone
+    if [ ux ] ux.stats = stats
+    if [ ux ] ux.show_fps = show_fps
+    if [ benchmark ] force_animate = true
+    if [ ux ] ux.prof_log = stats
+    if [ ux && ux.vk ] ux.vk.stats_log = stats
+    # push the flat color the instant the stage is set (retry until
+    # the shader exists), so load shows the solid color, never the
+    # gradient
+    if [ ux && frost_pushed != ux.frost_mode && ux.apply_solid[] ]
+        frost_pushed = ux.frost_mode
+
+# the panes, and the context panel of the selected one beside them
+func orbiter.main_els [] -> Elements
+    t : Elements []
+    # the editors with the status bar under them, down to the
+    # window's bottom
+    left : Elements []
+    # the editors over the one console, which is the selected
+    # editor's module's; hide_ui hides them, the bar stays
+    stack : Elements []
+    stack['panes'] = Splitter [ area: Region { l0 t0 r0 b0 },
+        inner: pane_views[], deflt: 0.0, even: true,
+        snap_close: true, near_seam: true, loose: free_ids[] ]
+    # a phone has the top bar alone: the panes to the bottom
+    # its keyboard under them while the focus takes words; a PC
+    # has the keyboard's bar alone, once a language is added
+    # the system menu up: its own keyboard, over this
+    # the shown app's own keyboard takes the letters' place
+    pad : element [ (use_mobile && !sys_up[]) ? app_pad[] : null ]
+    keys : bool [ !sys_up[]
+        && ((pad) ? !ux.app_keys_hidden : keys_up[]) ]
+    bar : bool [ !use_mobile && !keys && ux.words_wanted
+        && languages_added[] ]
+    # the task bar's room: none while it hides (it slides over)
+    # no task bar: the dock holds the tasks
+    kb : f32 [ 0.0 ]
+    kt : f32 [ kb + round[ 1.34 * unit_px[] ] ]
+    foot : string [ (keys) ? 'l0 t0 r0 b41%'
+        : ((use_mobile) ? 'l0 t0 r0 b0'
+        : ((bar) ? 'l0 t0 r0 b{kt}px' : 'l0 t0 r0 b{kb}px')) ]
+    left['stack'] = Splitter [ area: Region [ foot ],
+                               vertical: true, hide: hide_ui,
+        inner: stack, deflt: 180.0, min_size: 44.0 ]
+    if [ !use_mobile ]
+        if [ keys ]
+            left['keys'] = FlickKeys [
+                area: Region [ 'l0 b41% r0 b{kb}px' ] ]
+        el [ bar ]
+            left['keys'] = FlickKeys [ bar_only: true,
+                area: Region [ 'l0 b{kt}px r0 b{kb}px' ] ]
+    el [ keys ]
+        left['keys'] = FlickKeys [ pad: pad,
+            area: Region { l0 b41% r0 b0 } ]
+    el [ pad ]
+        left['keys_tab'] = AppKeysTab [
+            area: Region { r8px b8px w1.6 h1.6 } ]
+    # no right panel: the callstack is on the bottom bar now,
+    # and its seam shade had nothing left to shade
+    t['left'] = element [ elements: left ]
+    return t
+
+# a task's view fitted in bx: its pane's in small, else the
+# app's own picture
+func orbiter.draw_view [ w: Window, cv: Canvas, pi: i32, iid: i32,
+                 bx: rect ]
+    th : Canvas (pi >= 0 && pi < editor_slots.count)
+        ? view_thumb[ w, pi ] : null
+    pw : f32 [ 0.0 ]
+    ph : f32 [ 0.0 ]
+    ft : Texture null
+    # its content's size, not its texture's (rounded up)
+    if [ th ]
+        pw = f32[ th.content_w ]
+        ph = f32[ th.content_h ]
+    el
+        av : AppView instance_by[ iid ]
+        if [ !av ] return
+        ft = (av.have_frame) ? av.front[] : null
+        wv : u64 window_of[ av ]
+        if [ wv != 0 ] ft = window_texture[ cv, wv ]
+        if [ !ft ] return
+        pw = f32[ ft.width ]
+        ph = f32[ ft.height ]
+    if [ pw <= 0.0 || ph <= 0.0 ] return
+    # it fills the box: the view's top, cut to the box's shape
+    fit : f32 [ max[ bx.w / pw, bx.h / ph ] ]
+    uw : f32 [ min[ bx.w / (pw * fit), 1.0 ] ]
+    vh : f32 [ min[ bx.h / (ph * fit), 1.0 ] ]
+    u0 : f32 [ (1.0 - uw) * 0.5 ]
+    if [ th ] cv.draw_canvas_crop[ th, bx, u0, 0.0, u0 + uw, vh ]
+    el cv.draw_image_crop[ ft, bx, u0, 0.0, u0 + uw, vh ]
+
+# the full navigator's fade toward shown or gone, 150 ms whole
+func orbiter.fade_nav [ w: Window ]
+    now : i64 [ epoch_millis[] ]
+    dt : f32 [ (fade_ms > 0) ? f32[ now - fade_ms ] : 0.0 ]
+    fade_ms = now
+    goal : f32 [ (nav_full[]) ? 1.0 : 0.0 ]
+    if [ nav_fade == goal ] return
+    # a frame after a still spell counts as one frame, not the wait
+    step : f32 [ min[ dt, 34.0 ] / 150.0 ]
+    if [ goal > nav_fade ]
+        nav_fade = min[ nav_fade + step, goal ]
+    el
+        nav_fade = max[ nav_fade - step, goal ]
+    w.will_animate = true
+    force_update[]
+
+# every free pane's drawn place a share of the way to its own,
+# each frame (filter_n): moves and sizes ease
+func orbiter.ease_free [ w: Window ]
+    fade_nav[ w ]
+    if [ !free_order || !pane_shown ] return
+    moved : bool [ false ]
+    for [ i: i32 ] in free_order
+        if [ !pane_floats[ i ] ] continue
+        fit_free[ i, false ]
+        fit_fixed[ i ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            k : i32 [ i * 4 + r ]
+            cur : f32 [ pane_shown[ k ] ]
+            goal : f32 [ pane_free[ k ] ]
+            if [ cur == goal ] continue
+            nv : f32 [ filter_n[ cur, goal, 0.3, w.frame_factor ] ]
+            if [ nv - goal < 0.5 && goal - nv < 0.5 ] nv = goal
+            pane_shown[ k ] = nv
+            moved = true
+    # the next frame renders the new place: no restyle (that
+    # applies every element's style again, all redrawn)
+    if [ moved ] w.will_animate = true
+
+# the fade's look: one curve of its time, so a show is a hide
+# played backwards (each ends on the same step)
+func orbiter.fade_of [ pi: i32 ] -> f32
+    p : f32 [ (pane_fade && pi >= 0 && pi < pane_fade.count)
+        ? pane_fade[ pi ] : 0.0 ]
+    return p * p
+
+# each pane's fade in time, straight to its hide over 0.42 s
+func orbiter.ease_fade [ w: Window ]
+    if [ !pane_fade ] pane_fade = vec f32 []
+    while [ pane_fade.count < editor_slots.count ]
+        pane_fade.push[ 0.0 ]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        goal : f32 [ (pane_hidden[ i ]) ? 1.0 : 0.0 ]
+        f : f32 pane_fade[ i ]
+        if [ f == goal ] continue
+        step : f32 [ w.frame_factor / 25.2 ]
+        f = (goal > f) ? min[ f + step, goal ] : max[ f - step, goal ]
+        pane_fade[ i ] = f
+        w.will_animate = true
+        force_update[]
+
+# an import's place through its phases, 0..1: fetching to 0.2,
+# set up to 0.3, building to 0.9, installing to 1; pct -1 is
+# the phase's start
+func orbiter.phase_share [ ph: string, pct: f32 ] -> f32
+    a : f32 [ 0.9 ]
+    b : f32 [ 1.0 ]
+    if [ ph == 'clone' || ph == 'fetch' || ph == 'submodule'
+         || ph == 'checkout' || ph == 'unpack' || ph == 'patch'
+         || ph == 'overlay' ]
+        a = 0.0
+        b = 0.2
+    el [ ph == 'configure' || ph == 'setup' || ph == 'prebuild' ]
+        a = 0.2
+        b = 0.3
+    el [ ph == 'build' || ph == 'command' ]
+        a = 0.3
+        b = 0.9
+    f : f32 [ (pct < 0.0) ? 0.0 : min[ pct, 100.0 ] / 100.0 ]
+    return a + (b - a) * f
+
+func orbiter.render [] -> Elements
+    # windows renumbered: their apps back before the bar is made
+    relay_apply[]
+    # --install shows only the wizard, over the scene
+    if [ ux && install ]
+        return Elements [ 'scene': scene_element[],
+            'wizard': InstallWizard [ dry_run: dry_run ] ]
+    if [ ux && login_wait[] ]
+        return Elements [ 'scene': scene_element[],
+            'login': Login [], 'login_av': LoginAvatar [] ]
+    # the system bar takes the top; everything else is under it
+    top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
+    return (!ux) ? null : Elements [
+        'galaxy' : galaxy_element[],
+        'scene'  : scene_element[],
+        # the dock down the left (not on a phone): the panes after
+        # it
+        # the orbiter menu over all of it (slid in): the windows under
+        # it not drawn, hit or scrolled
+        'main'   : Splitter [ hide: menu_covers[],
+            area: (hide_ui || use_mobile)
+            ? Region [ 'l0 t{top}px r0 b0' ]
+            : Region [ 'l2.39 t{top}px r0 b0' ],
+                              inner: main_els[],
+            deflt: 360.0, min_size: 200.0, near_seam: true,
+            snap_close: true, shut_locked: true, gap: 0.0 ],
+        # after main: it forms its own menus in its render, once the
+        # split has laid the panes out this frame (their edges)
+        'system' : (top > 0.0) ? SystemBar [
+            area: Region [ 'l0 t0 r0 h{top}px' ] ] : null,
+        # the menu drawer, over the panes, out from under the dock
+        # a key each: a mounted drawer keeps its class, so the menus'
+        # and the exchange's (the menus' ground, all but the dock) are
+        # never the same element
+        # the main menu: first, so a menu opened over it is on top
+        # inside the half it was opened from, not the whole window
+        'sdrawer_at' : (drawer_on[] && (menu_kind == 'system'
+                                        || sys_under))
+            ? element [ animated: true,
+                area: Region [ sys_area[ top ] ],
+                elements: Elements [ 'sdrawer' : SystemDrawer [
+                    open: drawer_open, background_lens: false,
+                    elements: system_menu_els[] ] ] ] : null,
+        # a pane's menu slides out of that pane's left edge
+        'drawer_at' : (drawer_on[] && menu_kind != 'exchange'
+                       && menu_kind != 'system' && !win_menu[])
+            ? element [ animated: true,
+                # under the bar: over it, it took the bar's presses
+                area: Region [ drawer_area[ top ] ],
+                elements: Elements [ 'drawer' : MenuDrawer [
+                    open: drawer_open,
+                    elements: drawer_els[] ] ] ] : null,
+        # a free window's menu: inside it, down to its foot, masked
+        # to its round corner
+        'wdrawer_at' : (drawer_on[] && win_menu[])
+            ? WinMenuArea [ area: Region [ drawer_area[ top ] ],
+                elements: Elements [ 'drawer' : WinDrawer [
+                    open: drawer_open,
+                    elements: drawer_els[] ] ] ] : null,
+        'xdrawer' : (drawer_on[] && menu_kind == 'exchange')
+            # its ground once, not live: the exchange blurs its own
+            ? ExchangeDrawer [ open: drawer_open,
+                               background_lens: false ] : null,
+        # the task bar over the menus: one run to the window's foot
+        # meets it, and shows no gap as it slides away
+        # the main menu up: it is the whole window, the dock under it
+        'dock'   : (use_mobile) ? null
+            : Dock [ elements: dock_els[], hide: hide_ui || sys_up[],
+            area: Region [ 'l0 t{top}px w2.39 b0' ] ],
+        # the navigator app over everything under the bar
+        'navapp' : (nav_app) ? NavOverlay [
+            area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
+        # the phone's button: its switcher, and its dark screen
+        # a window's tab carried off its bar
+        'tab_ghost' : (tab_drag >= 0) ? TabGhost [ topmost: true,
+            area: Region { l0 t0 r0 b0 } ] : null,
+        # a file carried off the desktop, under the pointer
+        'file_ghost' : (file_drag) ? FileGhost [ topmost: true,
+            area: Region { l0 t0 r0 b0 } ] : null,
+        # an app over everything (screenshots, by its chord)
+        'over_app' : (over_on) ? AppOverlay [ topmost: true,
+            area: Region { l0 t0 r0 b0 } ] : null,
+        # a dock icon's menu, where it was pressed
+        'card_pop' : (card_pop && bounds) ? PopMenu [
+            items: card_pop_items[], area: pop_region[ card_pop_x,
+                card_pop_y, bounds.w, bounds.h, card_pop_items[] ],
+            pick: lambda card_pop_pick[ a ],
+            quit: lambda card_pop_quit[ a ] ] : null,
+        'dock_pop' : (dock_pop && bounds) ? PopMenu [
+            items: dock_pop_items[], area: pop_region[ dock_pop_x,
+                dock_pop_y, bounds.w, bounds.h, dock_pop_items[] ],
+            pick: lambda dock_pop_pick[ a ],
+            quit: lambda dock_pop_quit[ a ] ] : null,
+        'switcher' : (switcher) ? Switcher [
+            area: Region [ 'l0 t{top}px r0 b0' ] ] : null,
+        'avatar' : CornerAvatar [ topmost: true,
+                                  summoned: show_orbiter ],
+        'error'  : (!hide_ui && err_file && err_line > 0 && err_is_own[])
+        ? ErrorButton [ label: 'error {err_file.filename[]}:{err_line}',
+                topmost: true, manual_mode: true ] : null,
+        'dark'   : (screen_dark) ? ScreenDark [ topmost: true,
+            area: Region { l0 t0 r0 b0 } ] : null ]

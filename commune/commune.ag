@@ -149,8 +149,8 @@ class Account
 
 # the app: several servers at once, and one it may host itself
 element commune : trinity
-    public width      : i32    [ 1100 ]
-    public height     : i32    [ 700 ]
+    width      : i32    [ 1100 ]
+    height     : i32    [ 700 ]
     public title      : string [ 'commune' ]
     public background : string [ 'Background' ]
     # run as a server only: every binding of ours that is on
@@ -182,7 +182,7 @@ element commune : trinity
     intern bufs    : vec Talk
     intern cur     : i32
     intern started : bool
-    intern focused : bool
+    focused : bool
     # a server's channel rows coming in, before their end
     intern pending_chans : vec string
     # the panel a button slid out ('' none): its kind, what it is
@@ -1147,19 +1147,11 @@ element commune : trinity
             sizes: vec f32 [] [ 0.0, 240.0 ] ]
         # a button's panel, slid out under it, inside the window
         if [ pop_kind.count > 0 && bounds ]
-            rows : vec string pop_rows[]
-            ph : f32 [ 0.0 ]
-            for [ r: string ] in rows
-                ph += pop_row_h[ r ]
-            pw : f32 [ 270.0 ]
-            px : f32 [ pop_x - 20.0 ]
-            if [ px + pw > bounds.w - 6.0 ] px = bounds.w - 6.0 - pw
-            if [ px < 6.0 ] px = 6.0
-            py : f32 [ pop_y + 14.0 ]
-            if [ py + ph > bounds.h - 6.0 ] py = bounds.h - 6.0 - ph
-            e[ 'pop' ] = PopPanel [ area: Region [
-                'l{px}px t{py}px w{pw}px h{ph}px' ], rows: rows,
-                kind: pop_kind ]
+            its : vec PopItem pop_items[]
+            e[ 'pop' ] = PopMenu [
+                area: pop_region[ pop_x, pop_y, bounds.w, bounds.h, its ],
+                items: its, pick: lambda pop_pick[ a ],
+                enter: lambda pop_given[ a ], quit: lambda pop_quit[ a ] ]
         return e
 
     # a part of the chat pane, as mounted: log, say, topic
@@ -1253,8 +1245,38 @@ element commune : trinity
             ic : string [ (on) ? 'toggle_on' : 'toggle_off' ]
             wd : string [ (on) ? 'On' : 'Off' ]
             out.push[ '{ic}\t{wd} in {a[ 1 ]}\tagent {an}' ]
-            out.push[ 'edit\tEdit its contract\tcontract {an}' ]
+            out.push[ 'edit\tEdit the agents\' contract\tcontract' ]
         return out
+
+    # the rows as the shared popup's items
+    func pop_items [] -> vec PopItem
+        out : vec PopItem []
+        for [ r: string ] in pop_rows[]
+            ws : vec string r.split[ '\t' ]
+            it : PopItem []
+            if [ ws[ 0 ] == 'field' ]
+                it.field = true
+                it.label = ws[ 1 ]
+                it.icon  = (ws.count > 2) ? ws[ 2 ] : 'tag'
+            el [ ws[ 0 ] == 'note' ]
+                it.note  = true
+                it.label = ws[ 1 ]
+            el
+                it.icon  = ws[ 0 ]
+                it.label = ws[ 1 ]
+                it.act   = (ws.count > 2) ? ws[ 2 ] : ''
+                it.on    = ws.count > 3 && ws[ 3 ] == 'on'
+                it.danger = it.act == 'remove' || it.act == 'archive'
+            out.push[ it ]
+        return out
+
+    # the popup's hooks: a row, its box's words, an escape there
+    func pop_pick [ act: string :: c: commune ] -> none
+        c.pop_act[ act ]
+    func pop_given [ t: string :: c: commune ] -> none
+        c.pop_enter[ t ]
+    func pop_quit [ :: c: commune ] -> none
+        c.pop_close[]
 
     # a row pressed
     public func pop_act [ act: string ]
@@ -1281,7 +1303,7 @@ element commune : trinity
             if [ ux ] ux.restyle = true
             return
         if [ verb == 'contract' ]
-            contract_edit[ rest ]
+            contract_edit[]
         el [ !l || !l.up ]
             status[ sk, not_connected[], 2 ]
         el [ verb == 'leave' ] l.emit[ 'leave\t{a[ 1 ]}' ]
@@ -1313,32 +1335,29 @@ element commune : trinity
     # what the panel's field holds now
     func pop_text [] -> string
         pp : element [ (elements) ? elements[ 'pop' ] : null ]
-        if [ !pp || !pp.elements ] return ''
-        fe : element pp.elements[ 'field' ]
-        if [ fe && fe.edit ] return fe.edit
-        return ''
+        if [ !pp || !(pp inherits PopMenu) ] return ''
+        pm : PopMenu cast PopMenu [ pp ]
+        return pm.text[]
 
     # an agent switched on or off in the shown channel
     public func agent_here [ an: string ]
         b : Talk current[]
         if [ !b || !b.channel[] || !b.joined ] return
         if [ !str_in[ agent.offered[], an ] ]
-            contract_edit[ an ]
+            status[ a_server[],
+                '{an} is not offered: the commune menu offers it', 1 ]
             return
         set_agent[ b, an, !agent_in[ b.server, b.name, an ] ]
         if [ ux ] ux.restyle = true
 
-    # an agent's contract in a pane of orbiter's (a sketch first)
-    public func contract_edit [ an: string ]
+    # the agents' contract in a pane of orbiter's
+    public func contract_edit []
         d : path path.path_storage[ 'commune' ]
-        f : path '{d}/agents/{an}.md'
-        if [ !f.exists[] ]
-            make_dirs[ '{d}/agents' ]
-            f.save[ contract_sketch[ an ], null ]
+        f : path contract_made[ '{d}/agents' ]
         # orbiter reads it where commune's home really is
         ins : path path.path_install[]
         hm : string '{ins.absolute[]}/home/commune'
-        full : string '{hm}/.local/state/commune/agents/{an}.md'
+        full : string '{hm}/.local/state/commune/agents/contract.md'
         if [ opener && opener.count > 0 ]
             msg : string 'app nav open {full}\n'
             commune_sock_send[ opener.chars, msg.chars ]
@@ -1354,8 +1373,7 @@ element commune : trinity
             pop_fresh = false
             return
         if [ pop_kind.count == 0 ] return
-        for [ e: element* ev.origin, e, e = e.parent ]
-            if [ e inherits PopPanel ] return
+        if [ pop_holds[ ev.origin ] ] return
         pop_close[]
 
     # Up (-1) and Down (1) through what we sent: the line, or '' past

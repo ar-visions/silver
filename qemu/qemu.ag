@@ -43,8 +43,8 @@ import <sys/un.h>
 import <sys/wait.h>
 
 element qemu : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public  title      : string [ 'qemu' ]
     public  background : string [ 'Background' ]
     expect default src : path                # disk image or iso

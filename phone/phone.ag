@@ -205,29 +205,29 @@ class PhoneRing
             out.write[ 1024 ]
 
 element PhoneText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 20,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 20,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element PhoneNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # the number being dialed, large and centred
 element PhoneDial
-    face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 40,
+    public face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 40,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 # the call screen's name and state
 element PhoneBig
-    face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 34,
+    public face : Layer [ label_color: rgba [ '#ffffff' ], label_size: 34,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 element PhoneMid
-    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 20,
+    public face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 20,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
@@ -1156,8 +1156,8 @@ element PhoneView
         return true
 
 element phone : trinity
-    public width  : i32    [ 420 ]
-    public height : i32    [ 820 ]
+    width  : i32    [ 420 ]
+    height : i32    [ 820 ]
     public title  : string [ 'phone' ]
     # the bus ModemManager is on ('' : the system bus)
     public [ Launch ] bus : string

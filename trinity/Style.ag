@@ -1273,7 +1273,7 @@ class Translation
 
 
 class TimeCoord
-    millis : i64
+    public millis : i64
 
     construct [ s:string ]
         if [ s.ends_with['ns'] ]

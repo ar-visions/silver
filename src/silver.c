@@ -7951,10 +7951,18 @@ enode parse_statement(silver a)
         validate(!crec->user_built,
             "func %o.%o: the class body was already parsed", cname, mname);
 
-        // the header: the rest of its line; then the indented body beneath it
+        // the header: the rest of its line, and on while a [ is open or
+        // its last line goes on (a header over lines, as in its class);
+        // then the indented body beneath it
         array header = hold(array(alloc, 16));
-        while (peek(a) && peek(a)->line == mtok->line) {
-            push(header, (Au)peek(a));
+        int   depth  = 0;
+        int   last   = mtok->line;
+        while (peek(a) && (peek(a)->line == last || depth > 0)) {
+            token t = peek(a);
+            if (eq(t, "[")) depth++;
+            else if (eq(t, "]")) depth--;
+            last = t->line;
+            push(header, (Au)t);
             consume(a, Syntax__none);
         }
         array mbody = read_body(a);
@@ -8215,6 +8223,25 @@ enode parse_statement(silver a)
                         mem->autype->is_override = true;
                     }
                 }
+            }
+            // a class's member is declared with an access word; a bare
+            // line only sets a base's member. a typo or a shadow is
+            // never silent
+            if (rec_top && !is_struct(rec_top) && !is_static &&
+                    !(traits & AU_TRAIT_IS_PERSIST)) {
+                Au_t base = rec_top->autype->context ? find_member(
+                    rec_top->autype->context, (cstr)mem->autype->ident,
+                    AU_MEMBER_VAR, 0, true) : null;
+                bool in_base = base && base->context != typeid(Au);
+                bool marked  = has_access || !!(traits & AU_TRAIT_UNMANAGED);
+                validate(marked || in_base,
+                    "'%s' is no member of a base of %s: declare it public or intern",
+                    (cstr)mem->autype->ident, rec_top->autype->ident);
+                validate(!marked || !in_base,
+                    "'%s' is a member of %s already: set it without an access word",
+                    (cstr)mem->autype->ident,
+                    base->context && base->context->ident
+                        ? base->context->ident : "?");
             }
             if (access == interface_public && rec_top) {
                 Au_t src = mem->autype->src;

@@ -37,116 +37,116 @@ struct dsp_channel
 	output_r  		: f32
 
 class spc_state
-	pc             	: u16
-	a              	: u8
-	x              	: u8
-	y              	: u8
-	sp             	: u8
-	psw            	: u8
-	direct_page    	: u8
-	ports          	: vec u8 [ 4 ]              # SPC-visible APU input (committed)
-	in_stage       	: vec u8 [ 4 ]              # CPU writes here; committed to ports on CPU read (atomic)
-	oports         	: vec u8 [ 4 ]
-	oports_prev    	: vec u8 [ 4 ]      # value before the last write (returned if the write's clock is past the CPU read's clock)
-	oports_ts      	: vec i64 [ 4 ]     # SPC-clock (spc.pos) at which each port was last written
-	iports_ts      	: vec i64 [ 4 ]     # CPU-clock (spc.pos+cycle_accum) at which the CPU last wrote each input port; SPC read returns in_stage (pre-write) if this is in the SPC's future
-	pos            	: i64               # monotonic SPC position in accum units (advances per SPC opcode)
-	echo_pos       	: u16
-	echo_history_l 	: f32
-	echo_history_r 	: f32
-	fir_hist_l     	: vec f32 [ 8 ]
-	fir_hist_r     	: vec f32 [ 8 ]
-	fir_idx        	: i32
-	lp_l           	: f32              # output low-pass state (SNES soft rolloff)
-	lp_r           	: f32
-	channels       	: vec dsp_channel [ 8 ]
-	dsp            	: vec u8 [ 128 ]
-	audio_buffer   	: @i16
-	buffer_size    	: sz
-	sample_rate    	: i32
-	cycle_accum    	: i64               # SPC clock balance vs CPU, EXACT reference hardware ratio 128160:2684659 (=2050560:42954544; APU crystal is 24606720Hz = 32040*768, NOT nominal 24576000); i64 so big-DMA instr_master*128160 can't overflow
-	audio_done     	: i32               # samples emitted into audio_buffer this frame (shared by port-read drain + bulk pass)
-	audio_sub      	: i32               # SMP-cycle sub-counter toward the next 32-cycle sample
-	op_cyc         	: i32               # SMP cycles consumed by the current SPC instruction (base + branch-taken)
-	timer_on       	: u8                # $F1 bits 0-2: timer enables
-	timer_target   	: vec u8 [ 3 ]      # $FA-$FC dividers (0 => 256)
-	timer_count    	: vec u8 [ 3 ]      # $FD-$FF 4-bit output counters
-	timer_stage    	: vec i32 [ 3 ]     # internal pre-divider accumulators
-	tcyc           	: i32               # SPC cycle accumulator for timers
-	kon_latch      	: u8                # KON bits written since last DSP sample
-	koff_latch     	: u8                # KOFF bits written since last DSP sample
-	ram            	: vec u8 [ 0x10000 ]
+	public pc             	: u16
+	public a              	: u8
+	public x              	: u8
+	public y              	: u8
+	public sp             	: u8
+	public psw            	: u8
+	public direct_page    	: u8
+	public ports          	: vec u8 [ 4 ]              # SPC-visible APU input (committed)
+	public in_stage       	: vec u8 [ 4 ]              # CPU writes here; committed to ports on CPU read (atomic)
+	public oports         	: vec u8 [ 4 ]
+	public oports_prev    	: vec u8 [ 4 ]      # value before the last write (returned if the write's clock is past the CPU read's clock)
+	public oports_ts      	: vec i64 [ 4 ]     # SPC-clock (spc.pos) at which each port was last written
+	public iports_ts      	: vec i64 [ 4 ]     # CPU-clock (spc.pos+cycle_accum) at which the CPU last wrote each input port; SPC read returns in_stage (pre-write) if this is in the SPC's future
+	public pos            	: i64               # monotonic SPC position in accum units (advances per SPC opcode)
+	public echo_pos       	: u16
+	public echo_history_l 	: f32
+	public echo_history_r 	: f32
+	public fir_hist_l     	: vec f32 [ 8 ]
+	public fir_hist_r     	: vec f32 [ 8 ]
+	public fir_idx        	: i32
+	public lp_l           	: f32              # output low-pass state (SNES soft rolloff)
+	public lp_r           	: f32
+	public channels       	: vec dsp_channel [ 8 ]
+	public dsp            	: vec u8 [ 128 ]
+	public audio_buffer   	: @i16
+	public buffer_size    	: sz
+	public sample_rate    	: i32
+	public cycle_accum    	: i64               # SPC clock balance vs CPU, EXACT reference hardware ratio 128160:2684659 (=2050560:42954544; APU crystal is 24606720Hz = 32040*768, NOT nominal 24576000); i64 so big-DMA instr_master*128160 can't overflow
+	public audio_done     	: i32               # samples emitted into audio_buffer this frame (shared by port-read drain + bulk pass)
+	public audio_sub      	: i32               # SMP-cycle sub-counter toward the next 32-cycle sample
+	public op_cyc         	: i32               # SMP cycles consumed by the current SPC instruction (base + branch-taken)
+	public timer_on       	: u8                # $F1 bits 0-2: timer enables
+	public timer_target   	: vec u8 [ 3 ]      # $FA-$FC dividers (0 => 256)
+	public timer_count    	: vec u8 [ 3 ]      # $FD-$FF 4-bit output counters
+	public timer_stage    	: vec i32 [ 3 ]     # internal pre-divider accumulators
+	public tcyc           	: i32               # SPC cycle accumulator for timers
+	public kon_latch      	: u8                # KON bits written since last DSP sample
+	public koff_latch     	: u8                # KOFF bits written since last DSP sample
+	public ram            	: vec u8 [ 0x10000 ]
 
 class ppu_state
-	vram        	: vec u8 [ 0x10000 ]    # 32K words, byte-addressed as word*2 + sel
-	cgram       	: vec u8 [ 0x200 ]      # 256 colors x 2 bytes (BGR555)
-	oam         	: vec u8 [ 0x220 ]      # 512 main + 32 high
-	vram_shot   	: vec u8 [ 0x10000 ]    # VRAM latched at end of active display (games stream OBJ tiles in vblank)
-	cgram_shot  	: vec u8 [ 0x200 ]      # CGRAM latched at end of active display
-	oam_shot    	: vec u8 [ 0x220 ]      # OAM latched at end of active display
-	inidisp_shot	: u8                    # INIDISP (brightness/force-blank) latched at end of active display
-	framebuf    	: vec u32 [ 256 * 224 ] # RGBA8 output
-	obj_color   	: vec u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
-	obj_prio    	: vec u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
-	obj_bgr     	: vec u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
-	obj_idx     	: vec u8  [ 256 * 224 ] # sprite layer: OAM index of the winning sprite (world/screen split)
-	px_bgr      	: vec u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
-	px_src      	: vec u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
-	sub_bgr     	: vec u16 [ 256 * 224 ] # top SUB-screen pixel BGR555 (for color-math subscreen blend)
-	sub_src     	: vec u8  [ 256 * 224 ] # sub-screen source layer per pixel (8=COL/fixed backdrop)
-	inidisp     	: u8                    # $2100 brightness(0-3) + forced-blank(bit7)
-	obsel       	: u8                    # $2101 sprite size + name base
-	bgmode      	: u8                    # $2105 BG mode (bits0-2) + per-BG tile size
-	mosaic      	: u8                    # $2106
-	bg_sc       	: vec u8 [ 4 ]          # $2107-A tilemap base/size per BG
-	bg_nba      	: vec u8 [ 2 ]          # $210B/C char-data base nibbles (BG1/2, BG3/4)
-	bg_hofs     	: vec u16 [ 4 ]         # $210D.. H scroll per BG (10/13-bit)
-	bg_vofs     	: vec u16 [ 4 ]         # V scroll per BG
-	ofs_latch   	: u8                    # shared write-twice prev byte for scroll
-	ofs_hl      	: vec u8 [ 8 ]          # per-scroll-reg low/high toggle
-	vmain       	: u8                    # $2115 VRAM address increment control
-	vram_addr   	: u16                   # $2116/7 word address
-	vram_pre    	: u16                   # read prefetch latch
-	cgadd       	: u8                    # $2121 CGRAM word address
-	cg_latch    	: u8                    # CGRAM first-byte hold
-	cg_toggle   	: bool
-	oamadd      	: u16                   # $2102/3 OAM word address (internal byte ptr = *2)
-	oamadd_reload	: u16
-	oam_rot     	: bool                  # $2103 bit7: OAM priority rotation
-	oam_latch   	: u8
-	oam_toggle  	: bool
-	ophct       	: u16                   # $213C latched H counter (dot)
-	opvct       	: u16                   # $213D latched V counter (line)
-	ophct_tog   	: bool                  # OPHCT low/high read toggle
-	opvct_tog   	: bool                  # OPVCT low/high read toggle
-	hv_latched  	: bool                  # STAT78 bit6: counters latched via $2137
-	tm          	: u8                    # $212C main-screen layer enable
-	ts          	: u8                    # $212D sub-screen layer enable
-	w12sel      	: u8                    # $2123 BG1/2 window mask sel
-	w34sel      	: u8                    # $2124 BG3/4 window mask sel
-	wobjsel     	: u8                    # $2125 OBJ/color window sel
-	wh0         	: u8                    # $2126 window1 left
-	wh1         	: u8                    # $2127 window1 right
-	wh2         	: u8                    # $2128 window2 left
-	wh3         	: u8                    # $2129 window2 right
-	wbglog      	: u8                    # $212A BG window mask logic
-	wobjlog     	: u8                    # $212B OBJ window mask logic
-	tmw         	: u8                    # $212E window mask main-screen disable
-	tsw         	: u8                    # $212F window mask sub-screen disable
-	cgwsel      	: u8                    # $2130
-	cgadsub     	: u8                    # $2131
-	coldata     	: u16                   # $2132 fixed color (BGR555, built per channel)
-	setini      	: u8                    # $2133
-	m7a         	: i16                   # $211B Mode 7 matrix A (1.7.8 fixed)
-	m7b         	: i16                   # $211C matrix B
-	m7c         	: i16                   # $211D matrix C
-	m7d         	: i16                   # $211E matrix D
-	m7x         	: i16                   # $211F center X (13-bit)
-	m7y         	: i16                   # $2120 center Y
-	m7hofs      	: i16                   # $210D Mode 7 H scroll (13-bit)
-	m7vofs      	: i16                   # $210E Mode 7 V scroll
-	m7sel       	: u8                    # $211A flip(0,1) + repeat(6,7)
-	m7_latch    	: u8                    # shared write-twice latch for M7 regs
+	public vram        	: vec u8 [ 0x10000 ]    # 32K words, byte-addressed as word*2 + sel
+	public cgram       	: vec u8 [ 0x200 ]      # 256 colors x 2 bytes (BGR555)
+	public oam         	: vec u8 [ 0x220 ]      # 512 main + 32 high
+	public vram_shot   	: vec u8 [ 0x10000 ]    # VRAM latched at end of active display (games stream OBJ tiles in vblank)
+	public cgram_shot  	: vec u8 [ 0x200 ]      # CGRAM latched at end of active display
+	public oam_shot    	: vec u8 [ 0x220 ]      # OAM latched at end of active display
+	public inidisp_shot	: u8                    # INIDISP (brightness/force-blank) latched at end of active display
+	public framebuf    	: vec u32 [ 256 * 224 ] # RGBA8 output
+	public obj_color   	: vec u32 [ 256 * 224 ] # sprite layer: resolved color (0 = transparent)
+	public obj_prio    	: vec u8  [ 256 * 224 ] # sprite layer: per-pixel OBJ priority (0-3)
+	public obj_bgr     	: vec u16 [ 256 * 224 ] # sprite layer: BGR555 color (for color math)
+	public obj_idx     	: vec u8  [ 256 * 224 ] # sprite layer: OAM index of the winning sprite (world/screen split)
+	public px_bgr      	: vec u16 [ 256 * 224 ] # top main-screen pixel BGR555 (pre-brightness, for color math)
+	public px_src      	: vec u8  [ 256 * 224 ] # source layer per pixel: 0-3=BG1-4, 5=OBJ, 8=backdrop
+	public sub_bgr     	: vec u16 [ 256 * 224 ] # top SUB-screen pixel BGR555 (for color-math subscreen blend)
+	public sub_src     	: vec u8  [ 256 * 224 ] # sub-screen source layer per pixel (8=COL/fixed backdrop)
+	public inidisp     	: u8                    # $2100 brightness(0-3) + forced-blank(bit7)
+	public obsel       	: u8                    # $2101 sprite size + name base
+	public bgmode      	: u8                    # $2105 BG mode (bits0-2) + per-BG tile size
+	public mosaic      	: u8                    # $2106
+	public bg_sc       	: vec u8 [ 4 ]          # $2107-A tilemap base/size per BG
+	public bg_nba      	: vec u8 [ 2 ]          # $210B/C char-data base nibbles (BG1/2, BG3/4)
+	public bg_hofs     	: vec u16 [ 4 ]         # $210D.. H scroll per BG (10/13-bit)
+	public bg_vofs     	: vec u16 [ 4 ]         # V scroll per BG
+	public ofs_latch   	: u8                    # shared write-twice prev byte for scroll
+	public ofs_hl      	: vec u8 [ 8 ]          # per-scroll-reg low/high toggle
+	public vmain       	: u8                    # $2115 VRAM address increment control
+	public vram_addr   	: u16                   # $2116/7 word address
+	public vram_pre    	: u16                   # read prefetch latch
+	public cgadd       	: u8                    # $2121 CGRAM word address
+	public cg_latch    	: u8                    # CGRAM first-byte hold
+	public cg_toggle   	: bool
+	public oamadd      	: u16                   # $2102/3 OAM word address (internal byte ptr = *2)
+	public oamadd_reload	: u16
+	public oam_rot     	: bool                  # $2103 bit7: OAM priority rotation
+	public oam_latch   	: u8
+	public oam_toggle  	: bool
+	public ophct       	: u16                   # $213C latched H counter (dot)
+	public opvct       	: u16                   # $213D latched V counter (line)
+	public ophct_tog   	: bool                  # OPHCT low/high read toggle
+	public opvct_tog   	: bool                  # OPVCT low/high read toggle
+	public hv_latched  	: bool                  # STAT78 bit6: counters latched via $2137
+	public tm          	: u8                    # $212C main-screen layer enable
+	public ts          	: u8                    # $212D sub-screen layer enable
+	public w12sel      	: u8                    # $2123 BG1/2 window mask sel
+	public w34sel      	: u8                    # $2124 BG3/4 window mask sel
+	public wobjsel     	: u8                    # $2125 OBJ/color window sel
+	public wh0         	: u8                    # $2126 window1 left
+	public wh1         	: u8                    # $2127 window1 right
+	public wh2         	: u8                    # $2128 window2 left
+	public wh3         	: u8                    # $2129 window2 right
+	public wbglog      	: u8                    # $212A BG window mask logic
+	public wobjlog     	: u8                    # $212B OBJ window mask logic
+	public tmw         	: u8                    # $212E window mask main-screen disable
+	public tsw         	: u8                    # $212F window mask sub-screen disable
+	public cgwsel      	: u8                    # $2130
+	public cgadsub     	: u8                    # $2131
+	public coldata     	: u16                   # $2132 fixed color (BGR555, built per channel)
+	public setini      	: u8                    # $2133
+	public m7a         	: i16                   # $211B Mode 7 matrix A (1.7.8 fixed)
+	public m7b         	: i16                   # $211C matrix B
+	public m7c         	: i16                   # $211D matrix C
+	public m7d         	: i16                   # $211E matrix D
+	public m7x         	: i16                   # $211F center X (13-bit)
+	public m7y         	: i16                   # $2120 center Y
+	public m7hofs      	: i16                   # $210D Mode 7 H scroll (13-bit)
+	public m7vofs      	: i16                   # $210E Mode 7 V scroll
+	public m7sel       	: u8                    # $211A flip(0,1) + repeat(6,7)
+	public m7_latch    	: u8                    # shared write-twice latch for M7 regs
 
 
 class cpu_state
@@ -264,8 +264,8 @@ class snes_binds
 
 
 element asnes : trinity
-	public  width          	: i32    [ 1024 ]
-	public  height         	: i32    [ 896 ]
+	width          	: i32    [ 1024 ]
+	height         	: i32    [ 896 ]
 	public  lock_aspect    	: bool   [ true ]
 	mutable aspect_sent    	: bool
 	public  background     	: string [ 'Background' ]
@@ -286,7 +286,7 @@ element asnes : trinity
 	public  spcfile        	: path
 	public  spctest        	: bool
 	public  putest         	: bool             # display-pipeline test: CPU buffer -> Texture -> screen
-	public [ Live, VolumeRange ] volume : f32  # playback volume 0..1 (adjustable; default 0.22)
+	volume : f32  # playback volume 0..1 (adjustable; default 0.22)
 	public  bind           	: bool             # --bind: ask for each button, write binds.agi
 	# the keyboard, one key per SNES button: the host's panel reads 'press key' for each
 	public [ Live, KeyBind ] key_up     : i32 [ 87 ]

@@ -1005,6 +1005,11 @@ class Recorder
     public  paced   : bool [ true ]
     # the app's sound and the mic as tracks of their own (mp4)
     public  stems   : bool
+    # the part of the window taken, px; w 0 the whole window
+    public  crop_x  : i32
+    public  crop_y  : i32
+    public  crop_w  : i32
+    public  crop_h  : i32
     intern  aac_app : Aac
     intern  aac_mic : Aac
     intern  spcm    : new i16 [ 2048 ]
@@ -1090,6 +1095,12 @@ class Recorder
         if [ due <= sent ] return
         cmd.begin
         encoder.drain[]
+        sx : i32 [ (crop_w > 0) ? crop_x : 0 ]
+        sy : i32 [ (crop_w > 0) ? crop_y : 0 ]
+        ex : i32 [ (crop_w > 0) ? min[ crop_x + crop_w, tx.width ]
+            : tx.width ]
+        ey : i32 [ (crop_w > 0) ? min[ crop_y + crop_h, tx.height ]
+            : tx.height ]
         prev : VkImageLayout [ tx.vk_layout ]
         tx.transition_in    [ cmd.cmd,
                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL ]
@@ -1102,8 +1113,8 @@ class Recorder
                 srcSubresource: VkImageSubresourceLayers [
                     aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
                     baseArrayLayer: 0, layerCount: 1 ],
-                srcOffsets: [ VkOffset3D [ 0, 0, 0 ],
-                              VkOffset3D [ tx.width, tx.height, 1 ] ],
+                srcOffsets: [ VkOffset3D [ sx, sy, 0 ],
+                              VkOffset3D [ ex, ey, 1 ] ],
                 dstSubresource: VkImageSubresourceLayers [
                     aspectMask: VK_IMAGE_ASPECT_COLOR_BIT, mipLevel: 0,
                     baseArrayLayer: 0, layerCount: 1 ],

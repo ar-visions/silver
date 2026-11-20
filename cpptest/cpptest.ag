@@ -7,8 +7,8 @@ import <stdio.h>
 import <cpptest.hpp>
 
 element cpptest : trinity
-    public width  : i32    [ 480 ]
-    public height : i32    [ 200 ]
+    width  : i32    [ 480 ]
+    height : i32    [ 200 ]
     public title  : string [ 'cpptest' ]
 
     func init []

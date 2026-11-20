@@ -10,8 +10,8 @@ import <stdlib.h>
 
 element CrashConsole
     area  : Region { l0 t0 r0 b0 }
-    body  : Layer [ fill_color: rgba [ '#e8556d' ] ]
-    face  : Layer [ label_color: rgba [ '#ffe2e6' ], label_size: 14,
+    public body  : Layer [ fill_color: rgba [ '#e8556d' ] ]
+    public face  : Layer [ label_color: rgba [ '#ffe2e6' ], label_size: 14,
         label_align: vec2f [ x: 0.0, y: 0.0 ], label_offset: vec2f [ x: 8.0, y: 10.0 ] ]
 
 Console CrashAgent
@@ -24,10 +24,10 @@ Console CrashAgent
 element CrashBtn
     public kind    : string
     public enabled : bool [ true ]
-    body  : Layer [ stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ],
+    public body  : Layer [ stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ],
         radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
-    hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
+    public hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
         stroke_width: 1.0, stroke_color: rgba [ '#ffffff' ], radius: Radius [ '6' ],
         label_color: rgba [ '#ffffff' ], label_size: 13,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
@@ -54,14 +54,14 @@ CrashBtn ShotBtn
     area : Region [ 'r120px t8px w150px h22px' ]
 
 element crashman : trinity
-    public width       : i32    [ 960 ]
-    public height      : i32    [ 640 ]
+    width       : i32    [ 960 ]
+    height      : i32    [ 640 ]
     public background  : string [ 'Background' ]
     public title       : string [ 'crashman' ]
-    public ux_generics : bool  [ false ]
+    ux_generics : bool  [ false ]
     # the shell's own tint
     public tint        : rgba [ '#1c58e0' ]
-    bg : Layer [ fill_color: rgba [ '#b8324a' ] ]
+    public bg : Layer [ fill_color: rgba [ '#b8324a' ] ]
     intern cap_on      : bool
     # auto-binds to els['agent'] after the first tree
     mutable agent      : CrashAgent

@@ -1484,17 +1484,17 @@ element TrayMark
         cv.draw_image[ tex, rect [ x: x, y: y, w: sz, h: sz ] ]
 
 element TrayText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # a group's heading in a menu (a submenu's name): the bold lettering
 element MenuNote
-    face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 21,
+    public face : Layer [ label_color: rgba [ '#ffffffaa' ], label_size: 21,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element TrayNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 16,
+    public face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 16,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 Button TrayButton

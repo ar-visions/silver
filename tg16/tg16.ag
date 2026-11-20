@@ -41,8 +41,8 @@ Cpu65 PceCpu
         return 0
 
 element tg16 : trinity
-    public  width        : i32    [ 1024 ]
-    public  height       : i32    [ 896 ]
+    width        : i32    [ 1024 ]
+    height       : i32    [ 896 ]
     public  lock_aspect  : bool   [ true ]
     public  background   : string [ 'Background' ]
     expect default [ Live ] rom : resource
@@ -60,11 +60,11 @@ element tg16 : trinity
     public  us           : bool
     # hold a pad bit from frame 60 to 120 (test rig; 0 none)
     public  autopress    : i32
-    public [ Live, VolumeRange ] volume : f32 [ 0.3 ]
+    volume : f32 [ 0.3 ]
     # VectorScale: continuous edges, any zoom
     public [ Live ] vscale : bool [ true ]
     # --record name / --playback name: a pad byte a frame
-    public  record       : path
+    record       : path
     public  playback     : path
     # the sound as raw 44.1 kHz stereo s16, appended a frame at a time
     public  wav_out      : path

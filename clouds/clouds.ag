@@ -2600,8 +2600,8 @@ element SkyView
         cpu_ms = f32[ epoch_micros[] - t_in ] / 1000.0
 
 element clouds : trinity
-    public width      : i32    [ 1280 ]
-    public height     : i32    [ 720 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 720 ]
     public title      : string [ 'clouds' ]
     public preset     : i32    [ 2 ]
     public sun_el     : f32    [ 0.06 ]

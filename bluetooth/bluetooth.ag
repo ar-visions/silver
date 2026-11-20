@@ -528,17 +528,17 @@ func bt_shared [] -> Bluetooth
     return bt_now
 
 element BtText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BtNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BtBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 

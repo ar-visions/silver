@@ -431,8 +431,8 @@ GKern KFill
     }
 
 GKern KGemm
-    public lx : i32 [ 16 ]
-    public ly : i32 [ 16 ]
+    lx : i32 [ 16 ]
+    ly : i32 [ 16 ]
     func decl [] -> GLSL none {
         shared float ta[16][65];
         shared float tb[16][65];
@@ -488,8 +488,8 @@ GKern KGemm
 
 # 128 rows x 64 columns a group, 8 x 4 values a thread
 GKern KGemm2
-    public lx : i32 [ 16 ]
-    public ly : i32 [ 16 ]
+    lx : i32 [ 16 ]
+    ly : i32 [ 16 ]
     func decl [] -> GLSL none {
         shared float ta[16][132];
         shared float tb[16][68];

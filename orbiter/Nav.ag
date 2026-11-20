@@ -194,3 +194,516 @@ element NavOverlay
     public func takes_words [] -> bool
         av : AppView view[]
         return av != null && av.app_words
+
+func orbiter.resolve_local [ p: path ] -> path
+    if [ !startup_path ] startup_path = path.path_startup[]
+    if [ !p ] return path '{startup_path}'
+    s : string '{p}'
+    if [ s.count == 0 || s == '.' ] return path '{startup_path}'
+    if [ s[0] == '/' ] return p
+    return path '{startup_path}/{s}'
+
+func orbiter.file_args [ p: path ] -> string
+    if [ !p || !file_states ] return ''
+    fs : file_state file_states[ '{p}' ]
+    return (fs && fs.args) ? fs.args : ''
+
+func orbiter.file_slot [ p: path ] -> i32
+    for [ i: i32 0, i < open_files.count, i += 1 ]
+        if [ open_files[i] == p ] return i
+    open_files.push[ p ]
+    return open_files.count - 1
+
+# a launch's pick put aside: the list goes, the instance keeps
+# asking (its service waits); its dock entry brings the pick back
+func orbiter.pick_hide []
+    pick_keep     = pick_cache
+    pick_keep_for = pick_key[]
+    pick_launch   = null
+    exit_find_mode[]
+
+# the pick's kinds as one word: the same kinds reuse the walk
+func orbiter.pick_key [] -> string
+    k : ''
+    if [ pick_exts ]
+        for [ x: string ] in pick_exts
+            k = '{k} {x}'
+    return k
+
+# the pick of an instance still asking, in the pane holding it
+func orbiter.pick_show [ av: AppView ]
+    ed : Editor null
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        eq : Editor pane_at[ i ]
+        if [ eq && eq.run_view == av ] ed = eq
+    if [ !ed ] ed = pane_at[ active_pane ]
+    if [ !ed ] return
+    if [ pane_hidden[ ed.pane_index ] ] unhide[ ed.pane_index ]
+    pick_default[ ed, av, av.module_name[], '' ]
+
+# the resource pick for an app's bare argument; with launch,
+# the chosen file starts that instance
+func orbiter.pick_default [ pe: Editor, launch: AppView, mod: string,
+                    cur: string ]
+    pick_field  = 'arg_edit'
+    # an argument with the Directory control takes a folder (a
+    # control with no members arrives as its name)
+    pick_dir    = takes_dir[ mod ]
+    pick_editor = pe
+    pick_launch = launch
+    pick_exts   = vec string []
+    if [ pe ]
+        active_pane = pe.pane_index
+        pe.ensure_export_registry[]
+        if [ pe.export_registry ]
+            for [ mod_: string, ex_: string ] in pe.export_registry
+                if [ mod_ == mod ] pick_exts.push[ ex_ ]
+    same : bool [ pick_keep && pick_keep_for == pick_key[] ]
+    pick_cache = (same) ? pick_keep : null
+    pick_keep  = null
+    cp : path (cur && cur.count > 0) ? path cur : null
+    if [ cp && cp.exists[] ] nav.nav_root = cp.parent_dir[]
+    focus_finder[]
+    run_search[]
+
+# a picked instance comes into view, embedded (a chip's click)
+func orbiter.pick_instance [ iid: i32, pi: i32 ]
+    av : AppView instance_by[ iid ]
+    if [ av && av.display == 0 ]
+        av.display = 1
+        av.pip     = false
+        tell_display[ av ]
+    show_instance[ iid, pi ]
+
+# the module's source its launches are configured by
+func orbiter.info_src [] -> path
+    return (info_ae) ? path '{info_ae.file}/{info_ae.name}.ag' : null
+
+# a folder's bytes on disk, its .git left out
+func orbiter.folder_bytes [ dir: path ] -> i64
+    n : i64 [ 0 ]
+    entries : dir.ls[ null, false ]
+    if [ !entries ] return 0
+    for [ i: i32 0, i < entries.count, i += 1 ]
+        e : path entries[ i ]
+        if [ e.is_dir[] ]
+            if [ e.filename[] == '.git' ] continue
+            n += folder_bytes[ e ]
+        el
+            st : struct stat
+            if [ stat[ '{e}'.chars, @st ] == 0 ] n += st.st_size
+    return n
+
+# the navigator app over the window: started once, from the bar's
+# globe; the globe again, Escape or a pick puts it away, the
+# instance kept for the next time
+func orbiter.nav_app_toggle []
+    if [ nav_app ]
+        nav_app_hide[]
+        return
+    if [ !nav_view ]
+        root : path.path_startup[]
+        rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+        sock : string (rt) ? '{string [ rt ]}/trinity-orbiter.sock'
+            : ''
+        av : AppView [ ]
+        av.src = path '{root}/navigator/navigator.ag'
+        # embedded: its frames come to us, its size is the window's
+        av.viewer  = true
+        av.display = 1
+        av.module_args = '--opener {sock} {project_root[]}'
+        av.host_hz = (ux) ? ux.refresh_hz[] : 60
+        av.start[]
+        nav_view = av
+    nav_app = true
+    nav_sent_root = null
+    nav_sent_find = null
+    if [ ux ] ux.restyle = true
+
+func orbiter.nav_app_hide []
+    nav_app = false
+    if [ ux ] ux.restyle = true
+
+# the navigator app the bar drives: the overlay's, else the
+# active pane's when that shows one
+func orbiter.nav_driven [] -> AppView
+    if [ nav_app && nav_view ] return nav_view
+    ed : Editor pane_at[ active_pane ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ rv && !rv.ended && !rv.held && rv.app_mod == 'navigator' ]
+        return rv
+    return null
+
+# the bar holds the navigator's path: the one over the window, or
+# one shown in the bar's own pane (a free window's is on its strip)
+func orbiter.nav_on_bar [ pi: i32 ] -> bool
+    if [ nav_app && nav_view ] return true
+    return nav_driven[] && pi == active_pane
+        && !pane_floats[ pi ] && !pane_below[ pi ]
+
+# typed into a driven navigator: the bar's text; Backspace edits
+func orbiter.nav_type_key [ ev: Event ] -> bool
+    if [ !ev.key.state || i32[ ev.key.unicode ] != 259 ] return false
+    t : string (nav.find_text) ? nav.find_text : ''
+    if [ t.count == 0 ] return false
+    nav.find_text = t.mid[ 0, t.count - 1 ]
+    return true
+
+func orbiter.nav_type_char [ ev: Event ] -> bool
+    if [ !ev.key.text || ev.key.text.count == 0 ] return false
+    t : string (nav.find_text) ? nav.find_text : ''
+    nav.find_text = '{t}{ev.key.text}'
+    return true
+
+# the bar drives the app: its folder and typed text go over as
+# they change (the model's own, as the pane's navigator reads)
+func orbiter.nav_app_sync []
+    av : AppView nav_driven[]
+    if [ !av || av.slot < 0 ] return
+    # another instance driven: everything sent afresh
+    if [ av.iid != nav_sent_iid ]
+        nav_sent_iid  = av.iid
+        nav_sent_root = null
+        nav_sent_find = null
+    root : string (nav.nav_root) ? '{nav.nav_root.absolute[]}' : ''
+    if [ root.count > 0 && (!nav_sent_root || root != nav_sent_root) ]
+        nav_sent_root = root
+        agent_sock_send[ av.sock_name[].chars,
+                         'set folder {root}\n' ]
+    text : string (nav.find_text) ? nav.find_text : ''
+    if [ !nav_sent_find || text != nav_sent_find ]
+        nav_sent_find = text
+        agent_sock_send[ av.sock_name[].chars,
+                         'set find {text}\n' ]
+
+# a line from the navigator app: what its row's press asks, done
+# as the pane's navigator would; then the app goes away
+func orbiter.nav_app_line [ line: string ]
+    sp : i32 [ line.index_of[ ' ' ] ]
+    word : string (sp > 0) ? line.mid[ 0, sp ] : line
+    rest : string (sp > 0)
+        ? line.mid[ sp + 1, line.count - sp - 1 ].trim[] : ''
+    h : NavHost nav.host
+    if [ word == 'hide' ]
+        nav_app_hide[]
+        return
+    if [ word == 'open' ]          h.open_file*[ path rest ]
+    el [ word == 'module' ]        h.open_module*[ path rest ]
+    el [ word == 'url' ]           h.open_url*[ rest ]
+    el [ word == 'run' ]           h.run_program*[ path rest ]
+    el [ word == 'scene' ]         h.scene_choose*[ rest ]
+    el [ word == 'newfile' ]       h.new_file*[ path rest, false ]
+    el [ word == 'newdir' ]        h.new_file*[ path rest, true ]
+    el [ word == 'instance' ]
+        h.pick_instance*[ i32[ rest.integer_value[] ] ]
+    el [ word == 'line' ]
+        at : i32 [ rest.index_of[ ' ' ] ]
+        if [ at > 0 ]
+            ln : i32 [ rest.mid[ 0, at ].integer_value[] ]
+            fp : path rest.mid[ at + 1, rest.count - at - 1 ]
+            h.open_line*[ fp, ln ]
+    nav_app_hide[]
+
+# a path as one word of a launch line: quoted when it has spaces
+func orbiter.arg_word [ s: string ] -> string
+    if [ s.index_of[ ' ' ] >= 0 ] return '"{s}"'
+    return s
+
+# a nav pick in progress: a launch field's path
+func orbiter.picking [] -> bool
+    return pick_field && pick_field.count > 0
+
+func orbiter.project_root [] -> path
+    if [ !startup_path ] startup_path = path.path_startup[]
+    return path '{startup_path}'
+
+# the rail draws every frame: this only reads the finished snapshot
+func orbiter.file_changes [ p: path ] -> FileChg
+    if [ !p || !nav.git_snap || !nav.git_snap.chg ] return null
+    return nav.git_snap.chg[ '{p.absolute[]}' ]
+
+func orbiter.list_focused [] -> bool
+    win : ux
+    if [ !win || !win.focus ] return false
+    if [ win.focus inherits CommitView ] return true
+    if [ !(win.focus inherits Editor) ] return false
+    ed : Editor win.focus
+    return ed.show_hits || ed.finder_list
+
+# back (-1) or forward (1), from an edge swipe on a phone: the
+# navigator's history while it shows, else the active pane's (its
+# app, its file), as their arrows were
+func orbiter.navigate [ dir: i32 ] -> bool
+    if [ pane_browsing[ active_pane ] ]
+        return nav.nav_step[ dir ]
+    ed : Editor pane_at[ active_pane ]
+    if [ !ed ] return false
+    m : i32 nav_mask[ active_pane ]
+    if [ (dir < 0 && (m & 1) != 0) || (dir > 0 && (m & 2) != 0) ]
+        return false
+    ed.nav_walk[ dir ]
+    if [ ux ] ux.restyle = true
+    return true
+
+# the EditorView above a title target, when its create mode is
+# active
+func orbiter.newfile_view [ t: element ] -> EditorView
+    for [ e_: element* t, e_, e_ = e_.parent ]
+        if [ e_ inherits EditorView ]
+            ev_ : EditorView e_
+            if [ ev_.newfile ] return ev_
+            return null
+    return null
+
+# the nav list was up only to pick a path for a launch field: hand
+# it over and close, never view the file
+func orbiter.pick_deliver [ p0: path ] -> bool
+    if [ stats ] log 'PICK deliver {p0}'
+    if [ !pick_field || pick_field.count == 0 ] return false
+    if [ pick_field == 'portal' ] return portal_deliver[ p0 ]
+    if [ pick_field == 'rec' ] return rec_deliver[ p0 ]
+    # an app asked for a file: a folder is gone into, a file
+    # shared into its view and handed to it
+    if [ pick_field == 'app_pick' ]
+        if [ !p0 || p0.is_dir[] ] return false
+        ap : AppView (pick_editor) ? pick_editor.run_view : null
+        if [ ap && !ap.ended ]
+            given : string share_into[ ap, p0 ]
+            agent_sock_send[ ap.sock_name[].chars,
+                             'pick {given}\n' ]
+        pick_field = null
+        pick_exts  = null
+        pick_cache = null
+        exit_find_mode[]
+        if [ ux ] ux.restyle = true
+        return true
+    # a folder field given a file takes the file's folder
+    p : path (pick_dir && p0 && !p0.is_dir[]) ? p0.parent_dir[] : p0
+    fe : element (pick_field == 'arg_edit') ? null : find_el[ a,
+                                                              pick_field ]
+    # the title's argument: the running app takes it live
+    # a waiting instance takes it as its argument and starts
+    if [ pick_field == 'arg_edit' && pick_launch ]
+        pl_ : AppView pick_launch
+        ma_ : string (pl_.module_args) ? pl_.module_args : ''
+        pq_ : string arg_word[ '{p}' ]
+        pl_.module_args = (ma_.count > 0) ? '{ma_} {pq_}' : pq_
+        pl_.arg_text    = '{p}'
+        pl_.asking      = false
+        pick_launch     = null
+        session_dirty   = true
+        # it shows in the pane holding it, over the pane's edit
+        if [ pick_editor && pick_editor.run_view == pl_ ]
+            embed_app[ pick_editor, pl_ ]
+    el [ pick_field == 'arg_edit' ]
+        # the running instance takes it live: its own props name
+        # the default member (set on it, never a restart)
+        ra : AppView (pick_editor) ? pick_editor.run_view : null
+        pa_ : Prop (ra) ? live_arg_of[ ra ] : null
+        if [ ra && pa_ && !ra.ended ]
+            ra.arg_text = share_into[ ra, p ]
+            agent_sock_send[ ra.sock_name[].chars,
+                             'set {pa_.ident} {ra.arg_text}\n' ]
+        el [ ra && !ra.ended && !ra.held ]
+            log 'load: {ra.app_mod} has no live argument to set'
+        el [ pick_editor ]
+            # not running: the module's app starts on the file, its
+            # flags kept
+            ms_ : path module_src_of[ pick_editor ]
+            if [ ms_ ]
+                show_app[ pick_editor, ms_, false ]
+                sa_ : AppView pick_editor.run_view
+                if [ sa_ ]
+                    fl_ : string flags_of[ sa_.module_args ]
+                    pw_ : string arg_word[ '{p}' ]
+                    sa_.module_args = (fl_.count > 0) ? '{fl_} {pw_}'
+                        : pw_
+                    sa_.arg_text = '{p}'
+                    if [ sa_.ended ] sa_.restart[ false ]
+                    session_dirty = true
+    if [ fe ]
+        fe.edit    = '{p}'
+        if [ fe inherits LaunchPath ]
+            lp_ : LaunchPath fe
+            lp_.path_value = '{p}'
+        args_field  = fe
+        args_editor = pick_editor
+        args_sync   = true
+    pick_field = null
+    pick_dir   = false
+    pick_exts  = null
+    pick_cache = null
+    # the full close: nav/find flags drop NOW, or the frame between
+    # the pick and the next search paints the browse surface with
+    # its tabs
+    exit_find_mode[]
+    if [ ux ] ux.restyle = true
+    return true
+
+# the full navigator is up: in a docked view
+func orbiter.nav_full [] -> bool
+    if [ !nav_showing && !find_showing ] return false
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        if [ !pane_floats[ i ] && pane_browsing[ i ] ] return true
+    return false
+
+# a folder that is not a module: a place, never an app
+func orbiter.plain_folder [ p: path ] -> bool
+    if [ !p.is_dir[] ] return false
+    mm : path '{p}/{p.filename[]}.ag'
+    return !mm.exists[]
+
+# the navigator's folder as its path, from x0 up to xr: home is ~,
+# the folders before what fits fold into …
+# a path as pieces from x0 (the navigator's folder, or the file a
+# pane shows); the x where they end
+# pre leads its ids (a window's strip: s<pane>_); code: the file
+# a pane shows (its drawers list files too), from pane
+func orbiter.crumbs_el [ t: Elements, full: string, pre: string, pane: i32,
+                 code: bool, x0: f32, xr: f32, uu: f32 ] -> f32
+    crumb_paths : vec string []
+    if [ !full || full.count == 0 ] return x0
+    hm : string getenv[ 'HOME' ]
+    labels : vec string []
+    at : string ''
+    rest : string full
+    if [ hm && hm.count > 1 && (full == hm
+         || full.starts_with[ '{hm}/' ]) ]
+        labels.push[ '~' ]
+        crumb_paths.push[ hm ]
+        at = hm
+        rest = full.mid[ hm.count, full.count - hm.count ]
+    # the root goes unsaid, as in an address bar; alone it shows
+    el [ full == '/' ]
+        labels.push[ '/' ]
+        crumb_paths.push[ '/' ]
+    for [ w: string ] in rest.split[ '/' ]
+        if [ w.count == 0 ] continue
+        at = '{at}/{w}'
+        labels.push[ w ]
+        crumb_paths.push[ at ]
+    ws : vec f32 []
+    sum : f32 [ 0.0 ]
+    for [ l: string ] in labels
+        ws.push[ (f32[ l.count ] * 9.5 + 22.0) * uu ]
+        sum += ws[ ws.count - 1 ]
+    # the first folders shown: the rest fit, with … before them
+    first : i32 [ 0 ]
+    ew : f32 [ 26.0 * uu ]
+    while [ first < labels.count - 1
+            && sum + ((first > 0) ? ew : 0.0) > xr - x0 ]
+        sum -= ws[ first ]
+        first += 1
+    x : f32 [ x0 ]
+    if [ first > 0 ]
+        t['{pre}crumb_more'] = CrumbSep [ label: '…',
+            area: Region [ 'l{x}px t0 w{ew}px b0' ] ]
+        x += ew
+    for [ i: i32 first, i < labels.count, i += 1 ]
+        # the shown folder its own key: made anew, so its look is
+        lst : bool [ i == labels.count - 1 ]
+        ck : string [ (lst) ? '{pre}crumb_last' : '{pre}crumb_{i}' ]
+        t[ ck ] = BarCrumb [
+            label: labels[ i ], last: lst, dir: crumb_paths[ i ],
+            pane: pane, code: code,
+            selected: (drawer_open && menu_kind == 'crumb'
+                && crumb_at && crumb_at == crumb_paths[ i ])
+                || bar_hl == ck,
+            area: Region [ 'l{x}px t0 w{ws[ i ]}px b0' ] ]
+        x += ws[ i ]
+    return x
+
+# names by case, the hidden ones after
+func orbiter.name_sort [ ns: vec string ] -> vec string
+    srt : vec string []
+    for [ n: string ] in ns
+        at_ : i32 [ srt.count ]
+        hn : bool [ n.starts_with[ '.' ] ]
+        for [ j: i32 0, j < srt.count, j += 1 ]
+            hj : bool [ srt[ j ].starts_with[ '.' ] ]
+            lt : bool [ n.lcase[].compare[ srt[ j ].lcase[] ] < 0 ]
+            if [ (hn == hj && lt) || (!hn && hj) ]
+                at_ = j
+                break
+        srt.insert[ n, at_ ]
+    return srt
+
+# the views a pane's file offers (the navigator's right column):
+# its git reference when it is in a checkout, then the others
+func orbiter.file_views [ ed: Editor ] -> vec string
+    out : vec string []
+    if [ !ed || !ed.src ] return out
+    if [ nav.checkout_root[ ed.src.directory[] ] ] out.push[ 'git' ]
+    for [ v: string ] in views_for[ ed ]
+        if [ v != 'git' ] out.push[ v ]
+    return out
+
+# a URL's host, without its www.
+func orbiter.domain_of [ u: string ] -> string
+    if [ !u ] return ''
+    h : string u
+    s_ : i32 [ h.index_of[ '://' ] ]
+    if [ s_ >= 0 ] h = h.mid[ s_ + 3, h.count - s_ - 3 ]
+    e_ : i32 [ h.index_of[ '/' ] ]
+    if [ e_ >= 0 ] h = h.mid[ 0, e_ ]
+    if [ h.starts_with[ 'www.' ] ] h = h.mid[ 4, h.count - 4 ]
+    return h
+
+# back / forward unavailable: 1 back, 2 forward
+# a pane's back and forward ending at xr, only once its app has
+# somewhere to go (more than one point in its history); the x
+# where they start (xr when none)
+func orbiter.nav_arrows_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+    dm : i32 nav_mask[ pi ]
+    # a phone shows no back / forward arrows
+    if [ dm == 3 || use_mobile ] return xr
+    aw : f32 [ 2.39 * unit_px[] ]
+    hw : f32 [ aw * 0.5 ]
+    t['nav_back:{pi}'] = bar_icon[ 'left', 0.30, false,
+        (dm & 1) != 0, xr - aw, hw ]
+    t['nav_fwd:{pi}'] = bar_icon[ 'right', 0.30, false,
+        (dm & 2) != 0, xr - hw, hw ]
+    # an address app (aura): its refresh before back and forward
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ rv && !rv.ended && rv.slot >= 0 && pane_window[ pi ] == 0
+         && url_app[ rv ] ]
+        t['nav_reload:{pi}'] = bar_icon[ 'restart', 0.42, false, false,
+            xr - aw - hw, hw ]
+        return xr - aw - hw
+    return xr - aw
+
+func orbiter.nav_mask [ pi: i32 ] -> i32
+    edp : Editor pane_at[ pi ]
+    ndm : i32 [ 0 ]
+    if [ edp && edp.app_view && edp.run_view ]
+        if [ !edp.run_view.nav_back_on ] ndm |= 1
+        if [ !edp.run_view.nav_fwd_on ]  ndm |= 2
+    el [ edp && edp.view_key[].count > 0 ]
+        if [ !edp.view_can[ -1 ] ] ndm |= 1
+        if [ !edp.view_can[ 1 ] ]  ndm |= 2
+    el
+        if [ !edp || !edp.nav || !edp.nav.can_back[] ]    ndm |= 1
+        if [ !edp || !edp.nav || !edp.nav.can_forward[] ] ndm |= 2
+    return ndm
+
+func orbiter.source_word [ tx: string, key: string ] -> string
+    at : i32 [ -1 ]
+    k : '{key} '
+    if [ tx.starts_with[ k ] ] at = 0
+    el
+        n_ : i32 [ tx.index_of[ '\n{k}' ] ]
+        if [ n_ >= 0 ] at = n_ + 1
+    if [ at < 0 ] return ''
+    rest : tx.mid[ at + k.count, tx.count - at - k.count ]
+    e_ : i32 [ rest.index_of[ '\n' ] ]
+    v : string (e_ >= 0) ? rest.mid[ 0, e_ ] : rest
+    q : i32 [ v.index_of[ "'" ] ]
+    if [ q < 0 ] return ''
+    r2 : v.mid[ q + 1, v.count - q - 1 ]
+    q2 : i32 [ r2.index_of[ "'" ] ]
+    return (q2 >= 0) ? r2.mid[ 0, q2 ] : r2
+
+# the navigator as thumbnails: chosen, or always on a phone
+func orbiter.nav_thumbs [] -> bool
+    return nav_icons || use_mobile

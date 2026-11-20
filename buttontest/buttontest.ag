@@ -39,9 +39,9 @@ Button ClickButton
 
 element buttontest : trinity
     intern clicks     : i32    0
-    public ux_generics : bool  [ true ]
-    public width      : i32    [ 480 ]
-    public height     : i32    [ 560 ]
+    ux_generics : bool  [ true ]
+    width      : i32    [ 480 ]
+    height     : i32    [ 560 ]
     public background : string [ 'Background' ]
     public title      : string [ 'buttontest' ]
     public wireframe  : bool
@@ -52,7 +52,7 @@ element buttontest : trinity
     public theme      : Theme [ Theme.dark ]
     public tint       : rgba [ '#e0508c' ]
     # public f32 becomes a range slider (0..1)
-    public volume     : f32 [ 0.7 ]
+    volume     : f32 [ 0.7 ]
 
     # 'clicks' is entries only; 'bars' also carries a view
     public func instruments [] -> vec string

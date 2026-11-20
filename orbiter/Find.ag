@@ -1,0 +1,825 @@
+extend orbiter
+
+# the slider sits under EditorView > split > band > tools, not on
+# Editor
+func orbiter.find_volume [] -> VolumeSlider
+    ve_ : element find_el[ a, 'sys_vol' ]
+    if [ !ve_ ] return null
+    return VolumeSlider [ ve_ ]
+
+# the widget tabs: drawn again
+func orbiter.mark_tabs [ e: element ] -> bool
+    if [ !e || !e.elements ] return false
+    for [ c: element, id: string ] in e.elements
+        if [ c inherits DeskTabs ]
+            repaint_held[ c, false ]
+            return true
+        if [ mark_tabs[ c ] ] return true
+    return false
+
+# the widget showing desk_widgets[ i ]: drawn again
+func orbiter.mark_widget [ e: element, i: i32 ] -> bool
+    if [ !e || !e.elements ] return false
+    for [ c: element, id: string ] in e.elements
+        dw : DeskWidget [ c inherits DeskWidget ]
+        if [ dw && dw.index == i ]
+            repaint_held[ c, false ]
+            return true
+        if [ mark_widget[ c, i ] ] return true
+    return false
+
+# a filter's first key: its field, once up, takes the rest with
+# the caret after what was typed
+func orbiter.filter_focus_take [ w: Window ]
+    if [ filter_focus.count == 0 ] return
+    fe : element find_el[ a, filter_focus ]
+    if [ !fe ] return
+    ft : string [ (filter_focus == 'filter') ? menu_filter
+        : ((filter_focus == 'con_find') ? con_filter
+        : ((filter_focus == 'login_pass') ? login_pass
+        : apps_filter)) ]
+    fe.edit       = ft
+    fe.sel_col    = ft.count
+    fe.anchor_col = ft.count
+    filter_focus  = ''
+    w.set_focus[ fe ]
+
+# a filter's field emptied or left: its text and focus go
+func orbiter.filter_done [ id: string ]
+    fe : element find_el[ a, id ]
+    if [ fe && ux ] ux.release_focus[ fe ]
+    if [ id == 'filter' ]
+        menu_filter  = ''
+        menu_lit     = -1
+        drawer_focus = drawer_open
+    el apps_filter = ''
+    if [ filter_focus == id ] filter_focus = ''
+    if [ ux ] ux.restyle = true
+
+# a file pattern IS the switch: set means search all files
+func orbiter.find_in_file [] -> bool
+    return !pattern_text || pattern_text.count == 0
+
+# is there a real match row, or only the header rows
+func orbiter.find_has_hits [] -> bool
+    if [ !nav.find_hits ] return false
+    for [ i: i32 0, i < nav.find_hits.count, i += 1 ]
+        h : FindHit nav.find_hits[i]
+        if [ h && !h.is_header ] return true
+    return false
+
+# one slice of the scan, six milliseconds of it, then back to the
+# frame
+func orbiter.find_step []
+    if [ !find_busy ] return
+    # the nav listing builds into these same rows: if it took them,
+    # this scan has nothing left to fill
+    if [
+        !nav.find_hits || nav.find_hits.count == 0
+        || nav.find_hits[0] != find_head ]
+        find_busy = false
+        find_head = null
+        return
+    t0 : i64 [ epoch_micros[] ]
+    while [ find_busy && epoch_micros[] - t0 < 6000 ]
+        if [ find_dpos < find_dirs.count ]
+            d : path find_dirs[ find_dpos ]
+            find_dpos += 1
+            entries : d.ls[ null, false ]
+            if [ !entries ] continue
+            for [ i: i32 0, i < entries.count, i += 1 ]
+                e : path entries[i]
+                if [ e.is_dir[] ]
+                    dn : string e.filename[]
+                    if [ dn == '.git' ] continue
+                    # checkout holds other repos: walked only with
+                    # remotes lit
+                    if [ dn == 'checkout' && !nav.search_remotes ]
+                        continue
+                    find_dirs.push[ e ]
+                el
+                    find_seen += 1
+                    if [ glob_pass[ e ] ] find_files.push[ e ]
+            continue
+        if [ find_pos < find_files.count ]
+            f : path find_files[ find_pos ]
+            find_pos += 1
+            find_scanned += 1
+            mt : f.modified_time[]
+            if [ mt > find_scan_mt ] find_scan_mt = mt
+            # a one word query goes through the index: the file's
+            # bloom answers without reading it, and a miss is final
+            if [ find_q_word ]
+                key_ : string '{f}'
+                tok_lock.lock[]
+                tb  : TokBloom tok_cache[ key_ ]
+                tok_lock.unlock[]
+                if [ tb && tb.mt == mt ]
+                    if [ !tok_bits[ tb, find_q_hash ] ] continue
+                el
+                    if [ !f.exists[] ] continue
+                    c_ : string [ f.load[ typeid[string], null ] ]
+                    if [ !c_ ] continue
+                    if [ !tok_pass[ key_, mt, c_, find_q_hash ] ]
+                        continue
+            scan_file_hits[ f, find_q_run ]
+            continue
+        find_done[]
+    if [ find_busy && find_head ]
+        find_head.text = 'searching {find_scanned} files... {nav.find_hits.count - 1} lines'
+    if [ ux ]
+        ux.will_animate = true
+        # the rows only appear on a restyle: every few frames, not
+        # each
+        find_ticks += 1
+        if [ !find_busy || find_ticks % 6 == 0 ] ux.restyle = true
+
+func orbiter.find_done []
+    find_busy  = false
+    root : path project_root[]
+    log 'FIND walk: root={root} listed={(find_listed) ? 1 : 0} seen={find_seen} scanned={find_scanned} hits={nav.find_hits.count - 1} ms={Au.epoch_millis[] - find_t0} idx={tok_bytes} sp={search_pane[]} fbpane={findbar_pane}'
+    find_dirs  = vec path []
+    find_files = vec path []
+    if [ nav.find_hits.count <= 1 ]
+        if [ find_head ]
+            if [ find_scanned == 0 && find_seen > 0 ]
+                find_head.text = 'no file matches {pattern_text}'
+                find_head.dir  = 'of {find_seen} files within {root}'
+            el
+                find_head.text = 'No results in {find_scanned} files'
+                find_head.dir  = 'within {root}'
+        nav.find_hits.push[
+            FindHit [ is_header: true, text: '', file: null ] ]
+    el
+        # the counter row goes: the results stand on their own
+        nv_ : vec FindHit []
+        for [ i: i32 1, i < nav.find_hits.count, i += 1 ]
+            nv_.push[ nav.find_hits[i] ]
+        nav.find_hits = nv_
+    find_head = null
+    find_showing = true
+    sp : string search_pane[]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e : Editor pane_at[ i ]
+        if [ e && sp == 'pane{i}' ]
+            e.sel_line    = -1
+            e.anchor_line = -1
+
+func orbiter.replace_in_pane [ q: string,
+                       r: string ]                                                               
+    sp : string search_pane[]                                                                               
+    ed : Editor null                                                                                        
+    for [ i: i32 0, i < editor_slots.count,
+          i += 1 ]                                                        
+        e : Editor pane_at[
+            i ]                                                                             
+        if [ e && sp == 'pane{i}' ]
+            ed = e
+    if [ !ed ]
+        ed = pane_at[ active_pane ]
+    if [ !ed ]
+        return
+    n   : i32 [
+        ed.line_count[] ]                                                                           
+    cnt : i32 [
+        0 ]                                                                                         
+    for [ li: i32 0, li < n,
+          li += 1 ]                                                                      
+        ln : string ed.line_get[ li ]                                                                       
+        if [ !ln || ln.index_of[ q ] < 0 ]
+            continue
+        ed.ed_set[ li,
+                   str_replace_all[ ln, q,
+                                    r ] ]                                                        
+        cnt += 1                                                                                            
+    log 'REPLACE in-file: {cnt} lines'                                                                     
+    ed.pristine = false                                                                                     
+    if [ ux ]
+        ux.will_animate = true
+                                                                                                            #
+
+# walks the surviving hits only: struck-out rows never come back
+func orbiter.replace_in_hits [ q: string, r: string ]
+    if [ !nav.find_hits || nav.find_hits.count == 0 ] return
+    seen  : vec string []
+    files : i32 [ 0 ]
+    cnt   : i32 [ 0 ]
+    skip  : i32 [ 0 ]
+    for [ i: i32 0, i < nav.find_hits.count, i += 1 ]
+        h : FindHit nav.find_hits[i]
+        if [ !h || h.is_header || !h.file ] continue
+        key : string '{h.file}'
+        dup : bool [ false ]
+        for [ s: string ] in seen
+            if [ s == key ] dup = true
+        if [ dup ] continue
+        seen.push[ key ]
+        ftext : string [ h.file.load[ typeid[string], null ] ]
+        if [ !ftext ] continue
+        parts : ftext.split["\n"]
+        hitn  : i32 [ 0 ]
+        for [ j: i32 i, j < nav.find_hits.count, j += 1 ]
+            g : FindHit nav.find_hits[j]
+            if [ !g || g.is_header || !g.file ] continue
+            gk  : string '{g.file}'
+            if [ gk != key ] continue
+            idx : i32 [
+                g.line
+                - 1 ]                                                                        
+            if [
+                idx < 0
+                || idx >= parts.count ]                                                            
+                skip += 1                                                                                   
+                continue                                                                                    
+            # the scanned line must still be the file's line
+            if [
+                parts[idx] != g.text ]                                                                     
+                skip += 1                                                                                   
+                continue                                                                                    
+            nl : str_replace_all[ parts[idx], q, r ]
+            parts[idx] = nl
+            g.text     = nl
+            hitn += 1                                                                                       
+        if [ hitn == 0 ]
+            continue
+        out : string [
+            '' ]                                                                                 
+        for [ j: i32 0, j < parts.count,
+              j += 1 ]                                                           
+            if [ j > 0 ]
+                out = out + '\n'
+            out = out + parts[j]                                                                            
+        fp : path '{key}'                                                                                   
+        fp.save[ out, null ]
+        # our own writes are not staleness — keep curation intact
+        mt_ : fp.modified_time[]
+        if [ mt_ > find_scan_mt ]
+            find_scan_mt = mt_
+        files += 1                                                                                          
+        cnt   += hitn                                                                                       
+    log 'REPLACE: {cnt} lines in {files} files, {skip} stale skipped'                                      
+    if [ ux ] ux.will_animate = true 
+
+func orbiter.next_match []
+    sp : string search_pane[]
+    ed : Editor null
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e : Editor pane_at[ i ]
+        if [ e && sp == 'pane{i}' ] ed = e
+    if [ !ed ] ed = pane_at[ 0 ]
+    if [ !ed || !nav.find_hits || nav.find_hits.count == 0 ] return
+    q  : string findbar_text
+    qn : i32 [ q->count ]
+    if [ qn == 0 ] return
+    n  : i32 [ nav.find_hits.count ]
+    cl : i32 [ ed.sel_line ]
+    cc : i32 [ ed.sel_col ]
+    if [ cl >= 0 && cl < n && !nav.find_hits[ cl ].is_header ]
+        ln : string nav.find_hits[ cl ].text
+        st : i32 [ cc + 1 ]
+        if [ st < 0 ] st = 0
+        if [ st <= ln.count - qn ]
+            rem : string ln.mid[ st, ln.count - st ]
+            rel : i32 [ rem.index_of[ q ] ]
+            if [ rel >= 0 ]
+                reveal_match[ ed, cl, st + rel ]
+                return
+    r : i32 [ cl ]
+    for [ step: i32 0, step < n, step += 1 ]
+        r = r + 1
+        if [ r >= n ] r = 0
+        h : FindHit nav.find_hits[ r ]
+        if [ h && !h.is_header ]
+            ln  : string h.text
+            rel : i32 [ ln.index_of[ q ] ]
+            if [ rel >= 0 ]
+                reveal_match[ ed, r, rel ]
+                return
+
+func orbiter.find_file_next []
+    sp : string search_pane[]
+    ed : Editor null
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e : Editor pane_at[ i ]
+        if [ e && sp == 'pane{i}' ] ed = e
+    if [ !ed ] ed = pane_at[ active_pane ]
+    if [ !ed ] return
+    q : string findbar_text
+    qn : i32 [ q->count ]
+    if [ qn == 0 ] return
+    n : i32 [ ed.line_count[] ]
+    if [ n <= 0 ] return
+    sr : i32 [ (ed.sel_line >= 0) ? ed.sel_line : 0 ]
+    sc : i32 [ (ed.sel_col  >= 0) ? ed.sel_col  : -1 ]
+    for [ step: i32 0, step <= n, step += 1 ]
+        row   : i32 [ (sr + step) % n ]
+        ln    : string ed.line_get[ row ]
+        start : i32 [ (step == 0) ? (sc + 1) : 0 ]
+        if [ start < 0 ] start = 0
+        if [ start <= ln.count - qn ]
+            rem : string ln.mid[ start, ln.count - start ]
+            rel : i32 [ rem.index_of[ q ] ]
+            if [ rel >= 0 ]
+                reveal_match[ ed, row, start + rel ]
+                return
+
+func orbiter.reveal_match [ ed: Editor, row: i32, col: i32 ]
+    ed.sel_line    = row
+    ed.sel_col     = col
+    ed.anchor_line = row
+    ed.anchor_col  = col
+    lh : f32 [ (ed.lh_cache > 0.0) ? ed.lh_cache : 22.0 ]
+    vh : f32 [ (ed.bounds) ? ed.bounds.h : 600.0 ]
+    top : f32 [ f32[ row ] * lh ]
+    if [ top < ed.scroll.y || top + lh > ed.scroll.y + vh ]
+        ed.scroll.y = top - vh * 0.4
+        if [ ed.scroll.y < 0.0 ] ed.scroll.y = 0.0
+        ed.scroll_goal = ed.scroll.y
+    if [ row >= 0 && row < ed.line_count[] ]
+        ln  : string ed.line_get[ row ]
+        cw  : f32 [ (ed.cw_cache > 0.0) ? ed.cw_cache : 8.0 ]
+        qn  : i32 [ findbar_text->count ]
+        mex : f32 [ f32[ ed.vis_col[ ln, col + qn ] ] * cw ]
+        vw  : f32 [
+            ((ed.bounds) ? ed.bounds.w : 800.0) - ed.gutter_w ]
+        pad : f32 [ cw * 4.0 ]
+        if [ mex + pad > vw ]
+            ed.scroll.x = mex + pad - vw
+        el
+            ed.scroll.x = 0.0
+        if [ ed.scroll.x < 0.0 ] ed.scroll.x = 0.0
+    ed.pristine = false
+    win : ux
+    if [ win ] win.will_animate = true
+
+func orbiter.glob_at [ pat: string, pi0: i32, str: string,
+               si0: i32 ] -> bool
+    pi : i32 [ pi0 ]
+    si : i32 [ si0 ]
+    pn : i32 [ pat.count ]
+    sn : i32 [ str.count ]
+    while [ pi < pn ]
+        pc : i32 [ pat[ pi ] ]
+        if [ pc == 42 ]                              # '*'
+            # '**' — cross '/'
+            if [ pi + 1 < pn && pat[ pi + 1 ] == 42 ]
+                np : i32 [ pi + 2 ]
+                if [ np < pn && pat[ np ] == 47 ] np = np + 1
+                for [ k: i32 si, k <= sn, k += 1 ]
+                    if [ glob_at[ pat, np, str, k ] ] return true
+                return false
+            # single '*' — stop at '/'
+            el
+                np : i32 [ pi + 1 ]
+                for [ k: i32 si, k <= sn, k += 1 ]
+                    if [ glob_at[ pat, np, str, k ] ] return true
+                    if [ k < sn && str[ k ] == 47 ] return false
+                return false
+        el [ pc == 63 ]                             # '?'
+            if [ si >= sn || str[ si ] == 47 ] return false
+            pi = pi + 1
+            si = si + 1
+        el
+            if [ si >= sn || str[ si ] != pc ] return false
+            pi = pi + 1
+            si = si + 1
+    return si >= sn
+
+func orbiter.glob_match [ pat: string, str: string ] -> bool
+    return glob_at[ pat, 0, str, 0 ]
+
+func orbiter.glob_pass [ e: path ] -> bool
+    if [ !pattern_text || pattern_text.count == 0 ] return true
+    if [ pattern_text.index_of[ '/' ] < 0 ]
+        return glob_match[ pattern_text, e.filename[] ]
+    es : string '{e}'
+    sp : string '{startup_path}'
+    if [ sp.count > 0 && es.index_of[ sp ] == 0 ]
+        es = es.mid[ sp.count, es.count - sp.count ]
+        if [ es.count > 0 && es[0] == '/' ]
+            es = es.mid[ 1, es.count - 1 ]
+    return glob_match[ pattern_text, es ]
+
+func orbiter.scan_file_hits [ p: path, q: string ]
+    if [ !p || !p.exists[] ] return
+    content : string [ p.load[ typeid[string], null ] ]
+    if [ !content ] return
+    parts : content.split["\n"]
+    header_added : bool [ false ]
+    for [ i: i32 0, i < parts.count, i += 1 ]
+        ln : string parts[i]
+        if [ ln.index_of[ q ] >= 0 ]
+            if [ !header_added ]
+                if [ nav.find_hits.count > 1 ]
+                    nav.find_hits.push[
+                        FindHit [ is_header: true, is_spacer: true,
+                                  text: '' ] ]
+                fn  : string p.filename[]
+                drs : string '{p.directory[]}'
+                sp  : string '{startup_path}'
+                if [ sp.count > 0 && drs.index_of[ sp ] == 0 ]
+                    drs = drs.mid[ sp.count, drs.count - sp.count ]
+                    if [ drs.count > 0 && drs[0] == '/' ]
+                        drs = drs.mid[ 1, drs.count - 1 ]
+                nav.find_hits.push[
+                    FindHit [ is_header: true, text: fn, dir: drs,
+                              file: p ] ]
+                nav.find_hits.push[
+                    FindHit [ is_header: true, text: '', file: p ] ]
+                header_added = true
+            nav.find_hits.push[
+                FindHit [ is_header: false, text: ln, file: p,
+                          line: i + 1 ] ]
+
+func orbiter.search_pane [] -> string
+    win : ux
+    if [ !nav_showing && !find_showing ] nav_pane = null
+    if [ win && win.focus && win.focus.id == 'title' ]
+        for [ e: element* win.focus, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                nav_pane = e.id
+                return e.id
+    # a focused nav surface owns the search — NEVER pane0 fallback,
+    # which flashed the surface onto the other pane for a frame
+    if [ win && win.focus && win.focus inherits CommitView ]
+        for [ e: element* win.focus, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                nav_pane = e.id
+                return e.id
+    # a menu took the focus: the navigator stays where it was
+    if [ nav_pane ] return nav_pane
+    # an open findbar owns the search — results land in ITS pane
+    if [ findbar_open && findbar_pane && findbar_pane.count > 0 ]
+        return findbar_pane
+    return 'pane{active_pane}'
+
+# depth-first id lookup; the tree nests once sides land
+func orbiter.find_el [ e: element, id: string ] -> element
+    if [ !e || !e.elements || !id ] return null
+    d : element e.elements[ id ]
+    if [ d ] return d
+    for [ ce: element, ck: string ] in e.elements
+        r : element find_el[ ce, id ]
+        if [ r ] return r
+    return null
+
+func orbiter.jump_to_error [ logpath: string ]
+    lp : path '{logpath}'
+    if [ !lp.exists[] ] return
+    content : string lp.load[ typeid[string], null ]
+    if [ !content || content.count == 0 ] return
+    ai : i32 [ content.index_of[ '.ag:' ] ]
+    if [ ai < 0 ] return
+    ps : i32 [ ai ]
+    while [ ps > 0 ]
+        c : i32 [ (i32 content.chars[ ps - 1 ]) & 255 ]
+        if [ c == 32 || c == 10 || c == 13 || c == 27 || c == 40 || c == 41 || c == 91 ]
+            break
+        ps -= 1
+    fp : string content.mid[ ps, ai + 3 - ps ]
+    # line digits after '.ag:'
+    li : i32 [ ai + 4 ]
+    ls : ''
+    while [ li < content.count ]
+        c : i32 [ (i32 content.chars[ li ]) & 255 ]
+        if [ c < 48 || c > 57 ] break
+        ls = '{ls}{content.mid[ li, 1 ]}'
+        li += 1
+    if [ ls.count == 0 ] return
+    ln : i32 [ atoi[ ls.chars ] ]
+    # the sentence follows the compiler's (src:line) parens on the
+    # same row; older logs put it on the row underneath — take
+    # whichever is non-empty
+    me : i32 [ li ]
+    while [ me < content.count ]
+        if [ ((i32 content.chars[ me ]) & 255) == 10 ] break
+        me += 1
+    ms : i32 [ li ]
+    while [ ms < me && ((i32 content.chars[ ms ]) & 255) != 41 ]
+        ms += 1
+    msg : ''
+    if [ ms < me ] msg = content.mid[ ms + 1, me - ms - 1 ].trim[]
+    if [ msg.count == 0 ]
+        ms = me + 1
+        # the log carries ansi colour: skip any ESC [ ... m runs
+        # first
+        while [ ms < content.count && ((i32 content.chars[ ms ]) & 255) == 27 ]
+            while [ ms < content.count && ((i32 content.chars[ ms ]) & 255) != 109 ]
+                ms += 1
+            ms += 1
+        mend : i32 [ ms ]
+        while [ mend < content.count ]
+            c3 : i32 [ (i32 content.chars[ mend ]) & 255 ]
+            if [ c3 == 10 || c3 == 13 ] break
+            mend += 1
+        if [ ms < mend ] msg = content.mid[ ms, mend - ms ].trim[]
+    err_file = path '{fp}'
+    err_file.hold[]
+    err_line = ln
+    err_msg  = msg
+    err_msg.hold[]
+    open_at_line[ err_file, active_pane, ln ]
+
+func orbiter.goto_error []
+    if [ !err_file || err_line <= 0 ] return
+    open_at_line[ err_file, active_pane, err_line ]
+
+# activate a hits row: click and Return share this
+func orbiter.hit_activate [ ed: Editor, row: i32, dbl: bool ] -> bool
+    if [ !ed || row < 0 || row >= nav.find_hits.count ] return false
+    h : FindHit nav.find_hits[ row ]
+    if [ !h || h.is_spacer ] return true
+    if [ h.inst > 0 ]
+        pick_instance[ h.inst, ed.pane_index ]
+        exit_find_mode[]
+        return true
+    if [ h.card[] ]
+        scene_choose[ h.scene ]
+        return true
+    if [ h.session && h.session.count > 0 ]
+        cpi : i32 [ ed.pane_index ]
+        while [ pane_console.count <= cpi ]
+            pane_console += ''
+        console_seq += 1
+        sid : string '{h.session}#{console_seq}'
+        pane_console[cpi] = sid
+        active_pane = cpi
+        if [ !ed_sessions ]
+            ed_sessions = map ConsoleSession [string] [ ]
+        ns : ConsoleSession []
+        ns.name = sid
+        ns.launch_cmd = agent_cmd[ sid ]
+        ed_sessions[sid] = ns
+        ns.start[]
+        exit_find_mode[]
+        return true
+    if [ h.is_newfile ]
+        for [ e_: element* ed, e_, e_ = e_.parent ]
+            if [ e_ inherits EditorView ]
+                ev_ : EditorView e_
+                ev_.newfile_enter[ ed.src ]
+                # label swap drops focus; re-take it after restyle
+                pending_finder = ed.pane_index
+                break
+        return true
+    if [ h.more ]
+        nav.repo_more_fetch[]
+        return true
+    if [ h.repo && h.repo.count > 0 ]
+        # a clone starts and stays in view; a checkout is selected
+        # and browsed
+        nav.repo_checkout[ h.repo ]
+        return true
+    if [ h.is_dir && h.file ]
+        # a folder pick: double-click takes this one; a click still
+        # walks into it
+        if [ dbl && pick_dir && pick_field && pick_field.count > 0 && pick_deliver[ h.file ] ]
+            return true
+        nav.nav_root  = h.file
+        ed.sel_line      = -1
+        ed.anchor_line   = -1
+        ed.hover_line    = -1
+        ed.scroll.y      = 0.0
+        ed.scroll_goal = 0.0
+        run_search[]
+        te : element title_at[ ed.pane_index ]
+        if [ te ] te.set_focus[]
+        return true
+    if [ !h.is_header && h.line > 0 && h.file ]
+        if [ dbl ] open_at_line[ h.file, ed.pane_index, h.line ]
+        return true
+    if [ h.file && pick_deliver[ h.file ] ] return true
+    if [ h.file && nav.is_program[ h.file ] ]
+        run_program[ h.file, ed.pane_index ]
+        exit_finder[]
+        return true
+    if [ h.file ]
+        # browse file link / result filename header → open the file
+        open_in_pane[ h.file, ed.pane_index ]
+        exit_finder[]
+        return true
+    return false
+
+# the replacement as typed in the find line
+func orbiter.replace_with [] -> string
+    re : element find_el[ a, 'rep_text' ]
+    if [ re ] replace_text = (re.edit) ? re.edit : ''
+    return (replace_text) ? replace_text : ''
+
+# the match at the caret replaced, then on to the next one
+func orbiter.replace_one []
+    q : string findbar_text
+    ed : Editor pane_at[ active_pane ]
+    if [ !ed || !q || q.count == 0 ] return
+    r : string replace_with[]
+    row : i32 [ ed.sel_line ]
+    col : i32 [ ed.sel_col ]
+    if [ row >= 0 && row < ed.line_count[] && col >= 0 ]
+        ln : string ed.line_get[ row ]
+        if [ col + q.count <= ln.count
+             && ln.mid[ col, q.count ] == q ]
+            ed.ed_set[ row, ln.mid[ 0, col ] + r
+                + ln.mid[ col + q.count,
+                          ln.count - col - q.count ] ]
+            # past what was put in: never inside it
+            ed.sel_col    = col + r.count - 1
+            ed.anchor_col = ed.sel_col
+            ed.pristine = false
+    find_file_next[]
+
+# every match in the file, one undo step a line
+func orbiter.replace_every []
+    q : string findbar_text
+    if [ !q || q.count == 0 ] return
+    replace_in_pane[ q, replace_with[] ]
+
+# the find typed in the title: the first match from where it
+# began, lit in the file
+func orbiter.find_live []
+    ed : Editor pane_at[ active_pane ]
+    if [ !ed ] return
+    if [ !findbar_text || findbar_text.count == 0 ]
+        ed.sel_line = find_from_line
+        ed.sel_col  = find_from_col
+        return
+    ed.sel_line = find_from_line
+    ed.sel_col  = find_from_col - 1
+    find_file_next[]
+
+# found, it is held there a second more: the console lays out
+# (and clamps its scroll) a frame or two after it opens
+func orbiter.reveal_tick []
+    if [ !reveal_key ] return
+    now : i64 epoch_micros[]
+    if [ now - reveal_us > 3000000
+         || (reveal_at_us > 0 && now - reveal_at_us > 1000000) ]
+        reveal_key   = null
+        reveal_at_us = 0
+        return
+    if [ reveal_try[ reveal_pane, reveal_key ] && reveal_at_us == 0 ]
+        reveal_at_us = now
+
+func orbiter.reveal_try [ pi: i32, key: string ] -> bool
+    if [ !key || key.count == 0 || !ed_sessions ] return true
+    cs : ConsoleSession ed_sessions[ console_sid[ pi ] ]
+    if [ !cs ] return false
+    at : i32 [ -1 ]
+    for [ i: i32 cs.line_count[] - 1, i >= 0 && at < 0, i -= 1 ]
+        if [ cs.line_get[ i ].index_of[ key ] >= 0 ] at = i
+    if [ at < 0 ] return false
+    cs.anchor_line = at
+    cs.anchor_col  = 0
+    cs.sel_line    = at
+    cs.sel_col     = i32[ cs.line_get[ at ].count ]
+    lh : f32 [ (cs.lh_cache > 0.0) ? cs.lh_cache : 22.0 ]
+    cs.scroll = max[ f32[ at - 2 ] * lh, 0.0 ]
+    cs.scroll_goal = cs.scroll
+    cs.user_scrolled = true
+    if [ ux ] ux.restyle = true
+    return true
+
+# the binaries a checkout carries: images, fonts, audio, video,
+# archives, objects, models, roms. never read, never indexed
+func orbiter.tok_binary [ p: path ] -> bool
+    e : string p.ext[]
+    if [ !e || e.count == 0 ] return false
+    for [ b: string ] in tok_skip
+        if [ e.compare[ b ] == 0 ] return true
+    return false
+
+# the word index's limit: past it a search reads the file
+func orbiter.tok_most [] -> i64
+    return 48 * 1024 * 1024
+
+# a bloom's own objects and its key, beside its bits
+func orbiter.tok_each [] -> i64
+    return 640
+
+# every indexed text file hashed up front: a search — or the remotes
+# toggle — then reads no file at all. binaries and huge files are
+# left out; the worker stops as soon as the index is cancelled
+func orbiter.tok_warm []
+    if [ !nav.file_index ] return
+    if [ !tok_cache ] tok_cache = map TokBloom [string] [ ]
+    todo : vec string []
+    nav.index_lock.lock[]
+    for [ fs: string ] in nav.file_index
+        todo.push[ fs ]
+    nav.index_lock.unlock[]
+    # the pool drains per file: a file's text never outlives its
+    # pass
+    hold[ todo ]
+    for [ fs: string ] in todo
+        Au.auto_free[]
+        if [ nav.index_cancel || tok_bytes >= tok_most[] ] break
+        fp : path fs
+        if [ !fp || !fp.exists[] ] continue
+        if [ tok_binary[ fp ] ] continue
+        mt : fp.modified_time[]
+        tok_lock.lock[]
+        tb : TokBloom tok_cache[ fs ]
+        tok_lock.unlock[]
+        if [ tb && tb.mt == mt ] continue
+        c : string [ fp.load[ typeid[string], null ] ]
+        # 300k of text is a big source file: past that the search
+        # reads it, rather than the index carrying it
+        if [ !c || c.count == 0 || c.count > 307200 ] continue
+        # a nul byte in the head: binary that the extension missed
+        nb : bool [ false ]
+        lim : i32 [ (c.count < 1024) ? c.count : 1024 ]
+        for [ i_: i32 0, i_ < lim, i_ += 1 ]
+            if [ c[ i_ ] == 0 ] nb = true
+        if [ nb ] continue
+        tok_pass[ fs, mt, c, 0 ]
+    drop[ todo ]
+
+# a word char: the run that makes one token
+func orbiter.tok_is_word [ c: i32 ] -> bool
+    if [ c >= 97 && c <= 122 ] return true
+    if [ c >= 65 && c <= 90 ]  return true
+    if [ c >= 48 && c <= 57 ]  return true
+    return c == 95
+
+# FNV-1a over the word, eight bytes at a time: the bytes pack into a
+# u64 and one multiply folds the whole group in
+func orbiter.tok_hash [ s: string, i0: i32, i1: i32 ] -> u64
+    h : u64 [ 14695981039346656037 ]
+    i : i32 [ i0 ]
+    while [ i < i1 ]
+        g : u64 [ 0 ]
+        n : i32 [ 0 ]
+        while [ n < 8 && i < i1 ]
+            g = (g << 8) | u64[ u8[ s[ i ] ] ]
+            n += 1
+            i += 1
+        h = (h ^ g) * 1099511628211
+    return h
+
+func orbiter.tok_bits [ tb: TokBloom, hv: u64 ] -> bool
+    b1 : i32 [ (hv >> 3) & u64[ tb.mask ] ]
+    b2 : i32 [ (hv >> 33) & u64[ tb.mask ] ]
+    w1 : u64 [ tb.w[ b1 >> 6 ] ]
+    if [ (w1 & (u64[1] << u64[ b1 & 63 ])) == 0 ] return false
+    w2 : u64 [ tb.w[ b2 >> 6 ] ]
+    return (w2 & (u64[1] << u64[ b2 & 63 ])) != 0
+
+func orbiter.tok_mark [ tb: TokBloom, hv: u64 ]
+    b1 : i32 [ (hv >> 3) & u64[ tb.mask ] ]
+    b2 : i32 [ (hv >> 33) & u64[ tb.mask ] ]
+    tb.w[ b1 >> 6 ] = tb.w[ b1 >> 6 ] | (u64[1] << u64[ b1 & 63 ])
+    tb.w[ b2 >> 6 ] = tb.w[ b2 >> 6 ] | (u64[1] << u64[ b2 & 63 ])
+
+# one pass over the bytes: every word hashed, the query compared as
+# a number, and the file's bloom built for the next search. the
+# class test is inline here: a call per byte costs more than the
+# hashing does
+func orbiter.tok_pass [ key: string, mt: i64, content: string,
+                q: u64 ] -> bool
+    n    : i32 [ content.count ]
+    want : i32 [ 512 ]
+    est  : i32 [ n / 5 * 12 ]
+    while [ want < est && want < 65536 ] want = want * 2
+    tb : TokBloom [ ]
+    tb.mt   = mt
+    tb.mask = want - 1
+    tb.w    = vec u64 []
+    for [ i: i32 0, i < want / 64, i += 1 ] tb.w.push[ 0 ]
+    b   : ref u8 [ cast ref u8 [ content.chars ] ]
+    hit : bool [ false ]
+    i   : i32 [ 0 ]
+    while [ i < n ]
+        c : i32 [ b[ i ] ]
+        w : bool [
+            (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+            || (c >= 48 && c <= 57) || c == 95 ]
+        if [ !w ]
+            i += 1
+            continue
+        # the word, folded eight bytes at a time as it is read
+        h : u64 [ 14695981039346656037 ]
+        g : u64 [ 0 ]
+        k : i32 [ 0 ]
+        while [ w ]
+            g = (g << 8) | u64[ c ]
+            k += 1
+            if [ k == 8 ]
+                h = (h ^ g) * 1099511628211
+                g = 0
+                k = 0
+            i += 1
+            if [ i >= n ] break
+            c = i32[ b[ i ] ]
+            w = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) ||
+                (c >= 48 && c <= 57) || c == 95
+        if [ k > 0 ] h = (h ^ g) * 1099511628211
+        hv : u64 [ h ]
+        if [ hv == q ] hit = true
+        tok_mark[ tb, hv ]
+    # 48 MB of index is plenty for a source tree; past that, files
+    # are read on every search as before
+    tok_lock.lock[]
+    if [ n <= 307200 && tok_bytes < tok_most[] ]
+        tok_cache[ key ] = tb
+        tok_bytes += i64[ want / 8 ] + tok_each[]
+    tok_lock.unlock[]
+    return hit

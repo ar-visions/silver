@@ -1,0 +1,461 @@
+# screenshots: ctrl / cmd + 1, 2 or 3 shows its dialog over the
+# screen as it was: the screen, a window or an area (the key picks
+# which to start with), a screenshot or a video. Enter takes it (a
+# shutter or a projector sound), Escape cancels. Every pick goes to
+# the host's system api, which keeps the file under this app's home
+# and answers when it is there
+export 0.1.0
+export software ['everyday']
+# ctrl / cmd + the key: the word handed to take
+export chords ['1=screen 2=window 3=area']
+# the folder of what it makes, under its home: the desktop lists it
+export contains ['.local/state/screenshots']
+
+import vec
+import img
+import trinity
+import devices
+import spectra
+import <time.h>
+import <math.h>
+
+element screenshots : trinity
+    width  : i32    [ 1280 ]
+    height : i32    [ 800 ]
+    public title : string [ 'screenshots' ]
+    # the host's socket path: the system api
+    public [ Launch ] opener : string
+    # the host's windows: 'x y w h,...' in points
+    public [ Live ] windows : string
+    # '' nothing up, 'screen', 'window' or 'area'
+    intern mode    : string
+    # a screenshot ('shot') or a video ('record')
+    intern act     : string
+    intern held    : bool
+    intern from    : vec2f
+    intern to      : vec2f
+    intern at      : vec2f
+    # the choice, kept until Enter: an area, a window's point
+    intern chose   : bool
+    intern win_at  : vec2f
+    intern mixer   : AudioMixer
+    intern snap    : AudioClip
+    intern reel    : AudioClip
+    # the dialog's buttons: their left edges, labels, size and row
+    intern bx      : vec f32
+    intern bl      : vec string
+    intern bw      : f32
+    intern by      : f32
+    intern bh      : f32
+    # the take lens and the close, their middles and radii
+    intern lens    : vec2f
+    intern lens_r  : f32
+    intern shut    : vec2f
+    intern shut_r  : f32
+
+    # hosted, the window starts clear: the host's capture shows
+    # through; this app draws the dialog, the dim and the choice
+    public func screen_ground [] -> bool
+        return true
+
+    func init []
+        animated = true
+        mode = ''
+        act  = 'shot'
+
+    # a line to the host's system api, as this app
+    func ask [ words: string ]
+        ln : string 'app system screenshots {host_slot[]} {words}\n'
+        if [ opener && opener.count > 0 ]
+            agent_path_send[ opener.chars, ln.chars ]
+
+    # where a file goes, under this app's home
+    func file_of [] -> string
+        now : i64 [ time[ null ] ]
+        tm : struct tm
+        localtime_r[ @now, @tm ]
+        b : local i8 [ 64 ]
+        fmt : '%Y-%m-%d %H.%M.%S'
+        strftime[ @b[0], 64, fmt.chars, @tm ]
+        ext : string [ (act == 'record') ? 'mp4' : 'png' ]
+        return '.local/state/screenshots/{string [ @b[0] ]}.{ext}'
+
+    # the host's word: 'screen', 'window' or 'area'; a
+    # screenshot until the dialog says a video
+    action func take [ what: string ]
+        held  = false
+        chose = false
+        act   = 'shot'
+        mode  = what
+        ask[ 'windows' ]
+
+    # put away by the host (Escape): nothing kept
+    action func cancel []
+        mode = ''
+        held = false
+
+    # the host has the file
+    action func system_done [ f: string ]
+        mode = ''
+        held = false
+        log 'screenshots: {f}'
+
+    func pick_screen []
+        mode = ''
+        ask[ '{act} screen {file_of[]}' ]
+
+    func pick_rect [ r: rect ]
+        mode = ''
+        ask[ '{act} rect {r.x} {r.y} {r.w} {r.h} {file_of[]}' ]
+
+    func pick_window [ p: vec2f ]
+        r : rect window_at[ p ]
+        if [ !r ] return
+        if [ act == 'record' ]
+            mode = ''
+            ask[ 'record window {p.x} {p.y} {file_of[]}' ]
+        el
+            pick_rect[ r ]
+
+    # Enter: what is chosen is taken, with its sound
+    func go []
+        if [ mode == 'screen' ]
+            sound[]
+            pick_screen[]
+        # the window clicked, else the one lit under the pointer
+        el [ mode == 'window' ]
+            pt : vec2f [ (chose) ? win_at : at ]
+            if [ !window_at[ pt ] ] return
+            sound[]
+            pick_window[ pt ]
+        el [ mode == 'area' && chose ]
+            sound[]
+            pick_rect[ box[] ]
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state || mode == '' ] return
+        k : i32 [ i32[ ev.key.unicode ] ]
+        if [ k == 257 || k == 335 ]
+            ev.no_default = true
+            go[]
+
+    # a camera's shutter (a screenshot) or a projector's run (a
+    # video), made once as samples
+    func sound []
+        if [ !mixer ]
+            mixer = AudioMixer [ sample_rate: 48000 ]
+            if [ !mixer.start[] ]
+                mixer = null
+                return
+        if [ !snap ] snap = shutter[]
+        if [ !reel ] reel = projector[]
+        mixer.play[ (act == 'record') ? reel : snap, false, 0.8 ]
+
+    # a clip of n samples at 48 kHz, mono, silent
+    func clip_of [ n: i32 ] -> AudioClip
+        pcm : new i16 [ n ]
+        memset[ pcm, 0, i64[ n ] * 2 ]
+        c : AudioClip [ rate: 48000, channels: 1, frames: i64[ n ] ]
+        pcm.hold[]
+        c.pcm = pcm
+        return c
+
+    # noise into c from sample at, falling off over len samples
+    func burst [ c: AudioClip, from_: i32, len: i32, amp: f32,
+                 seed: u32 ]
+        r : u32 [ seed ]
+        for [ i: i32 0, i < len * 6, i += 1 ]
+            j : i32 [ from_ + i ]
+            if [ j >= i32[ c.frames ] ] break
+            r = r * 1664525 + 1013904223
+            nz : f32 [ f32[ i32[ (r >> 8) & 65535 ] - 32768 ]
+                / 32768.0 ]
+            e : f32 [ amp * expf[ 0.0 - f32[ i ] / f32[ len ] ] ]
+            v : i32 [ i32[ c.pcm[ j ] ] + i32[ nz * e * 32767.0 ] ]
+            c.pcm[ j ] = i16[ clamp[ v, -32767, 32767 ] ]
+
+    # two clicks 80 ms apart: the blades closing, then opening
+    func shutter [] -> AudioClip
+        c : AudioClip clip_of[ 9600 ]
+        burst[ c, 0, 140, 0.9, 7 ]
+        burst[ c, 3840, 220, 0.7, 11 ]
+        return c
+
+    # 0.9 s of sprocket clicks at 24 a second over a low hum
+    func projector [] -> AudioClip
+        n : i32 [ 43200 ]
+        c : AudioClip clip_of[ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            t : f32 [ f32[ i ] / 48000.0 ]
+            fade : f32 [ min[ 1.0, min[ t * 8.0, (0.9 - t) * 8.0 ] ] ]
+            hum : f32 [ 0.08 * sinf[ t * 2.0 * 3.14159 * 55.0 ]
+                + 0.04 * sinf[ t * 2.0 * 3.14159 * 110.0 ] ]
+            c.pcm[ i ] = i16[ hum * fade * 32767.0 ]
+        for [ f: i32 0, f < 22, f += 1 ]
+            burst[ c, 1000 + f * 2000, 60, 0.35, u32[ f + 3 ] ]
+        return c
+
+    # the host's window under p, null for none
+    func window_at [ p: vec2f ] -> rect
+        if [ !windows || windows.count == 0 ] return null
+        for [ wd: string ] in windows.split[ ',' ]
+            ns : vec string wd.trim[].split[ ' ' ]
+            if [ ns.count != 4 ] continue
+            r : rect [ x: f32[ ns[ 0 ].real_value[] ],
+                       y: f32[ ns[ 1 ].real_value[] ],
+                       w: f32[ ns[ 2 ].real_value[] ],
+                       h: f32[ ns[ 3 ].real_value[] ] ]
+            if [ p.x >= r.x && p.y >= r.y && p.x < r.x + r.w
+                 && p.y < r.y + r.h ]
+                return r
+        return null
+
+    func box [] -> rect
+        x0 : f32 [ min[ from.x, to.x ] ]
+        y0 : f32 [ min[ from.y, to.y ] ]
+        return rect [ x: x0, y: y0, w: max[ from.x, to.x ] - x0,
+                      h: max[ from.y, to.y ] - y0 ]
+
+    # the dialog's button under p ('' none): the row, the lens
+    # ('Take'), the close ('×')
+    func button_at [ p: vec2f ] -> string
+        if [ !bx ] return ''
+        lx : f32 [ p.x - lens.x ]
+        ly : f32 [ p.y - lens.y ]
+        if [ lx * lx + ly * ly <= lens_r * lens_r ] return 'Take'
+        sx : f32 [ p.x - shut.x ]
+        sy : f32 [ p.y - shut.y ]
+        if [ sx * sx + sy * sy <= (shut_r + 4.0) * (shut_r + 4.0) ]
+            return '×'
+        if [ p.y < by || p.y >= by + bh ] return ''
+        for [ i: i32 0, i < bx.count, i += 1 ]
+            if [ p.x >= bx[ i ] && p.x < bx[ i ] + bw ] return bl[ i ]
+        return ''
+
+    func on_press [ ev: Event ]
+        p : vec2f ev.mouse.pos
+        if [ mode == '' ] return
+        b : string button_at[ p ]
+        if [ b == 'Screen' || b == 'Window' || b == 'Area' ]
+            mode  = b.lcase[]
+            chose = false
+            held  = false
+            return
+        if [ b == 'Screenshot' ]
+            act = 'shot'
+            return
+        if [ b == 'Video' ]
+            act = 'record'
+            return
+        if [ b == 'Take' ]
+            go[]
+            return
+        if [ b == '×' ]
+            mode = ''
+            ask[ 'hide' ]
+            return
+        # on the dialog's ground: nothing
+        if [ on_dialog[ p ] ] return
+        # a window or an area is chosen here; Enter takes it
+        if [ mode == 'window' ]
+            if [ window_at[ p ] ]
+                win_at = p
+                chose  = true
+            return
+        if [ mode != 'area' ] return
+        held  = true
+        chose = false
+        from  = p
+        to    = p
+
+    # p is on the dialog (its buttons, the lens, a margin round them)
+    func on_dialog [ p: vec2f ] -> bool
+        return bx && p.y >= by - 14.0 && p.y < lens.y + lens_r + 14.0
+            && p.x >= bx[ 0 ] - 14.0
+            && p.x < bx[ bx.count - 1 ] + bw + 14.0
+
+    func on_move [ ev: Event ]
+        # the window lit stays as the pointer goes to the lens
+        if [ !on_dialog[ ev.mouse.pos ] ] at = ev.mouse.pos
+        if [ held ] to = ev.mouse.pos
+
+    func on_release [ ev: Event ]
+        if [ !held ] return
+        held = false
+        to = ev.mouse.pos
+        r : rect box[]
+        # a click alone picks nothing: drag again
+        chose = r.w >= 4.0 && r.h >= 4.0
+
+    # the screen dimmed but r (none: all of it), r edged
+    func dim_but [ cv: Canvas, r: rect ]
+        sw : f32 [ bounds.w ]
+        sh : f32 [ bounds.h ]
+        cv.fill_color[ rgba [ '#00000066' ] ]
+        if [ !r ]
+            cv.rect_to[ 0.0, 0.0, sw, sh ]
+            cv.paint[]
+            return
+        cv.rect_to[ 0.0, 0.0, sw, r.y ]
+        cv.paint[]
+        cv.rect_to[ 0.0, r.y + r.h, sw, sh - r.y - r.h ]
+        cv.paint[]
+        cv.rect_to[ 0.0, r.y, r.x, r.h ]
+        cv.paint[]
+        cv.rect_to[ r.x + r.w, r.y, sw - r.x - r.w, r.h ]
+        cv.paint[]
+        edge : string [ (act == 'record') ? '#ff6b6bdd' : '#ffffffcc' ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ edge ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rect_to[ r.x, r.y, r.w, r.h ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    func words [ cv: Canvas, s: string, r: rect, c: string ]
+        cv.fill_color[ rgba [ c ] ]
+        cv.draw_text[ s, r, vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, true ]
+
+    # a line on the canvas, stroked
+    func line [ cv: Canvas, x0: f32, y0: f32, x1: f32, y1: f32 ]
+        cv.move_to[ x0, y0 ]
+        cv.line_to[ x1, y1 ]
+        cv.paint[]
+
+    # a button's picture round its middle cx cy
+    func picture [ cv: Canvas, nm: string, cx: f32, cy: f32 ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffffdd' ] ]
+        cv.stroke_width[ 1.5 ]
+        if [ nm == 'Screen' ]
+            cv.rounded_rect[ cx - 13.0, cy - 9.0, 26.0, 18.0, 2.0, 2.0,
+                             2.0, 2.0 ]
+            cv.paint[]
+        el [ nm == 'Window' ]
+            cv.rounded_rect[ cx - 11.0, cy - 8.0, 22.0, 16.0, 2.0, 2.0,
+                             2.0, 2.0 ]
+            cv.paint[]
+            line[ cv, cx - 11.0, cy - 4.0, cx + 11.0, cy - 4.0 ]
+        el [ nm == 'Area' ]
+            ax : f32 [ cx - 12.0 ]
+            ay : f32 [ cy - 9.0 ]
+            line[ cv, ax, ay + 5.0, ax, ay ]
+            line[ cv, ax, ay, ax + 5.0, ay ]
+            line[ cv, ax + 19.0, ay, ax + 24.0, ay ]
+            line[ cv, ax + 24.0, ay, ax + 24.0, ay + 5.0 ]
+            line[ cv, ax + 24.0, ay + 13.0, ax + 24.0, ay + 18.0 ]
+            line[ cv, ax + 24.0, ay + 18.0, ax + 19.0, ay + 18.0 ]
+            line[ cv, ax + 5.0, ay + 18.0, ax, ay + 18.0 ]
+            line[ cv, ax, ay + 18.0, ax, ay + 13.0 ]
+        el [ nm == 'Screenshot' ]
+            cv.rounded_rect[ cx - 12.0, cy - 7.0, 24.0, 16.0, 3.0,
+                             3.0, 3.0, 3.0 ]
+            cv.paint[]
+            cv.rect_to[ cx - 5.0, cy - 10.0, 10.0, 3.0 ]
+            cv.paint[]
+            cv.arc[ cx, cy + 1.0, 4.5, 0.0, 6.2832 ]
+            cv.paint[]
+        el [ nm == 'Video' ]
+            cv.rounded_rect[ cx - 12.0, cy - 7.0, 16.0, 14.0, 3.0,
+                             3.0, 3.0, 3.0 ]
+            cv.paint[]
+            cv.move_to[ cx + 5.0, cy - 2.0 ]
+            cv.line_to[ cx + 12.0, cy - 6.0 ]
+            cv.line_to[ cx + 12.0, cy + 6.0 ]
+            cv.line_to[ cx + 5.0, cy + 2.0 ]
+            cv.close_path[]
+            cv.paint[]
+        cv.stroke_width[ 0.0 ]
+
+    # the dialog, low in the middle: what to take (Screen, Window,
+    # Area) and how (Screenshot, Video), each a picture over its
+    # word; the lens under them takes it; a small circled x closes
+    func dialog [ cv: Canvas ]
+        bl = vec string [] [ 'Screen', 'Window', 'Area', 'Screenshot',
+            'Video' ]
+        n : i32 [ i32[ bl.count ] ]
+        gap : f32 [ 4.0 ]
+        split : f32 [ 20.0 ]
+        bw = 76.0
+        bh = 58.0
+        lens_r = 22.0
+        tw : f32 [ f32[ n ] * bw + f32[ n - 1 ] * gap + split + 32.0 ]
+        th : f32 [ bh + lens_r * 2.0 + 44.0 ]
+        tx : f32 [ round[ (bounds.w - tw) * 0.5 ] ]
+        ty : f32 [ round[ bounds.h - th - 48.0 ] ]
+        by = ty + 16.0
+        lens = vec2f [ tx + tw * 0.5, by + bh + 12.0 + lens_r ]
+        shut_r = 8.0
+        shut = vec2f [ tx + tw - 14.0, ty + 14.0 ]
+        cv.fill_color[ rgba [ '#17142af0' ] ]
+        cv.rounded_rect[ tx, ty, tw, th, 14.0, 14.0, 14.0, 14.0 ]
+        cv.paint[]
+        bx = vec f32 []
+        for [ i: i32 0, i < n, i += 1 ]
+            gx : f32 [ (i >= 3) ? split : 0.0 ]
+            bx.push[ tx + 16.0 + f32[ i ] * (bw + gap) + gx ]
+        hv : string button_at[ at ]
+        fp : i32 [ 13 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            x : f32 [ bx[ i ] ]
+            nm : string bl[ i ]
+            on : bool [ (nm == 'Screenshot' && act == 'shot')
+                        || (nm == 'Video' && act == 'record')
+                        || nm.lcase[] == mode ]
+            if [ on || nm == hv ]
+                lit : string [ (on) ? '#4d3dbcdd' : '#4d3dbc66' ]
+                cv.fill_color[ rgba [ lit ] ]
+                cv.rounded_rect[ x, by, bw, bh, 8.0, 8.0, 8.0, 8.0 ]
+                cv.paint[]
+            picture[ cv, nm, x + bw * 0.5, by + 22.0 ]
+            words[ cv, nm, rect [ x: x, y: by + 38.0, w: bw, h: 16.0 ],
+                   '#ffffffcc' ]
+        cv.set_font[ null ]
+        # the lens: a ring, its glass (red for a video), lit under the
+        # pointer
+        ring : string [ (hv == 'Take') ? '#ffffffff' : '#ffffffcc' ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ ring ] ]
+        cv.stroke_width[ 2.5 ]
+        cv.arc[ lens.x, lens.y, lens_r, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+        glass : string [ (act == 'record') ? '#ff5a5aee' : '#ffffffdd' ]
+        cv.fill_color[ rgba [ glass ] ]
+        cv.arc[ lens.x, lens.y, lens_r - 5.0, 0.0, 6.2832 ]
+        cv.paint[]
+        # the close: a small x in a circle
+        disc : string [ (hv == '×') ? '#ffffff44' : '#ffffff22' ]
+        cv.fill_color[ rgba [ disc ] ]
+        cv.arc[ shut.x, shut.y, shut_r, 0.0, 6.2832 ]
+        cv.paint[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffffcc' ] ]
+        cv.stroke_width[ 1.4 ]
+        k : f32 [ 3.0 ]
+        line[ cv, shut.x - k, shut.y - k, shut.x + k, shut.y + k ]
+        line[ cv, shut.x + k, shut.y - k, shut.x - k, shut.y + k ]
+        cv.stroke_width[ 0.0 ]
+
+    public func on_canvas [ cv: Canvas ]
+        if [ !cv || !bounds || mode == '' ] return
+        cv.font_size[ 16 ]
+        if [ mode == 'screen' ]
+            dim_but[ cv, null ]
+        el [ mode == 'window' ]
+            dim_but[ cv, window_at[ (chose) ? win_at : at ] ]
+        el
+            r : rect (held || chose) ? box[] : null
+            dim_but[ cv, r ]
+            if [ r && r.w >= 1.0 ]
+                sc : f32 [ (ux && ux.scale > 0.0) ? ux.scale : 1.0 ]
+                sz : string '{i32[ r.w * sc ]} × {i32[ r.h * sc ]}'
+                ly : f32 [ r.y + r.h + 4.0 ]
+                if [ ly + 18.0 > bounds.h ] ly = r.y - 22.0
+                words[ cv, sz, rect [ x: r.x, y: ly,
+                    w: max[ r.w, 120.0 ], h: 18.0 ], '#ffffffee' ]
+        dialog[ cv ]

@@ -80,19 +80,19 @@ func made_pass [ nm: string ] -> string
     hx : string tls_sha256_hex[ cast @u8 [ seed.chars ], seed.count ]
     return hx.mid[ 0, 24 ]
 
-# a new agent's contract: a sketch its person writes over
-func contract_sketch [ an: string ] -> string
+# the agents' contract, at first: a sketch its person writes over
+func contract_sketch [] -> string
     # a # line in a block is a comment: the marks as values
     h1 : string [ "#" ]
     h2 : string [ "##" ]
     sketch : string {
-        {h1} {an} in commune
+        {h1} Our agents in commune
 
-        What {an} does for the rooms it is in, and how.
+        What our agents do for the rooms they are in, and how.
 
         {h2} It takes work from
         - me
-        - anyone in the room who names it in full
+        - anyone in the room who names one in full
 
         {h2} It may
         - answer questions
@@ -103,6 +103,39 @@ func contract_sketch [ an: string ] -> string
         - give work to other agents more than twice in a row
     }
     return '{sketch.trim[]}\n'
+
+# the agents offered: every one we run, once their contract is
+# written (agents/contract.md; before it, an agent's own .md)
+func offered_in [ dir: string ] -> vec string
+    out : vec string []
+    cf : path '{dir}/contract.md'
+    have : bool [ cf.exists[] ]
+    d : path dir
+    if [ !have && d.exists[] ]
+        for [ f: path ] in d.ls[ null, false ]
+            if [ f.ext[] == 'md' ] have = true
+    if [ !have ] return out
+    for [ an: string ] in agent_installed[]
+        out.push[ an ]
+    return out
+
+# the agents' one contract; before it, an agent's own
+func contract_text [ dir: string, an: string ] -> string
+    tx : string file_text[ '{dir}/contract.md' ]
+    if [ tx.count == 0 ] tx = file_text[ '{dir}/{an}.md' ]
+    return tx.trim[]
+
+# the contract's file, made when missing (from an older agent's
+# own contract, else the sketch)
+func contract_made [ dir: string ] -> path
+    f : path '{dir}/contract.md'
+    if [ f.exists[] ] return f
+    make_dirs[ dir ]
+    tx : string ''
+    for [ an: string ] in offered_in[ dir ]
+        if [ tx.count == 0 ] tx = file_text[ '{dir}/{an}.md' ]
+    f.save[ (tx.count > 0) ? tx : contract_sketch[], null ]
+    return f
 
 MenuSource CommuneMenus
     intern dir   : path
@@ -205,32 +238,19 @@ MenuSource CommuneMenus
         ff : string form_fields[ '', '', '', '' ]
         ad.target = '{ff}#{form_note[]}'
         m.push[ ad ]
-        # the agents we run: each offered to the rooms by a contract
-        m.push[ row[ 'agents', '', 0 ] ]
-        have : vec string agent_installed[]
-        for [ an: string ] in have
-            on : bool contract_file[ an ].exists[]
-            lb : string [ (on) ? '{an} · offered'
-                : '{an} · write its contract' ]
-            e : TrayEntry row[ lb, 'contract {an}', 1 ]
-            if [ on ]
-                e.side = '×'
-                e.side_action = 'withdraw {an}'
-            m.push[ e ]
-        if [ have.count == 0 ]
-            m.push[ row[ 'no agents installed', '', 1 ] ]
+        # the agents we run: one contract for them all
+        al : TrayEntry row[ '', '', 1 ]
+        al.rule = true
+        m.push[ al ]
+        m.push[ row[ 'Edit the agents\' contract', 'contract', 1 ] ]
         return m
 
-    # an agent's contract: what it does in the rooms, its person's
-    func contract_file [ an: string ] -> path
-        return path '{folder[]}/agents/{an}.md'
+    func agents_dir [] -> string
+        return '{folder[]}/agents'
 
-    # the contract opened to write; a new one starts from a sketch
-    func contract_open [ an: string ]
-        f : path contract_file[ an ]
-        if [ !f.exists[] ]
-            make_dirs[ '{folder[]}/agents' ]
-            f.save[ contract_sketch[ an ], null ]
+    # the agents' contract opened to write
+    func contract_open []
+        f : path contract_made[ agents_dir[] ]
         tell[ 'nav open {f}' ]
 
     # an Add page's fields, checked, then the new line saved; else
@@ -342,18 +362,13 @@ MenuSource CommuneMenus
             rest : string action.mid[ tb, action.count - tb ]
             problem = check_add[ 'add{rest}', was ]
             return
+        if [ action == 'contract' ]
+            contract_open[]
+            return
         sp : i32 [ i32[ action.index_of[ ' ' ] ] ]
         if [ sp < 0 ] return
         verb : string action.mid[ 0, sp ]
         k : string action.mid[ sp + 1, action.count - sp - 1 ]
-        if [ verb == 'contract' ]
-            contract_open[ k ]
-            return
-        # no longer offered: its contract goes
-        if [ verb == 'withdraw' ]
-            cf : path contract_file[ k ]
-            unlink[ cf.chars ]
-            return
         i : i32 at_key[ k ]
         if [ i < 0 ] return
         ws : vec string items[ i ].split[ ' ' ]

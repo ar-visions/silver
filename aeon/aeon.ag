@@ -1616,8 +1616,8 @@ func all_numbers [ text: string, n: i32 ] -> bool
     return words == n
 
 element aeon : trinity
-    public width  : i32    [ 1280 ]
-    public height : i32    [ 800 ]
+    width  : i32    [ 1280 ]
+    height : i32    [ 800 ]
     public title  : string [ 'aeon' ]
     # the project folder; the last one opened when none is given
     default [ Launch, Live ] project : string

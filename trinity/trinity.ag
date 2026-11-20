@@ -299,6 +299,7 @@ func host_keep        [ key: cstr, value: handle ]
 func au_live_switch   [ to: cstr ] -> none
 func host_kept        [ key: cstr ] -> handle
 func agent_sock_send  [ nm: cstr, txt: cstr ] -> i32
+func agent_path_send  [ sock: cstr, txt: cstr ] -> i32
 func agent_sock_ask   [ nm: cstr, txt: cstr, out: @i8, cap: i32 ] -> i32
 func agent_sock_ask_block [ nm: cstr, txt: cstr, out: @i8,
                             cap: i32 ] -> i32
@@ -763,11 +764,27 @@ abstract live_app media_app
                 full = false
             expect full || tx.width <= 4096,
                 'record: h.264 takes 4096 px at most, not {tx.width}'
+            # a part of the window ('x y w h' points): px, even sides
+            cr : vec i32 [] [ 0, 0, 0, 0 ]
+            ap_ : element [ wn.app_object ]
+            rr : string [ (ap_ && ap_.record_rect) ? ap_.record_rect
+                : '' ]
+            ws : vec string rr.trim[].split[ ' ' ]
+            if [ rr.count > 0 && ws.count == 4 && wn.width > 0 ]
+                k : f32 [ f32[ tx.width ] / f32[ wn.width ] ]
+                for [ i: i32 0, i < 4, i += 1 ]
+                    cr[ i ] = i32[ f32[ ws[ i ].real_value[] ] * k ]
+                cr[ 2 ] = min[ cr[ 2 ], tx.width - cr[ 0 ] ] & ~1
+                cr[ 3 ] = min[ cr[ 3 ], tx.height - cr[ 1 ] ] & ~1
+                if [ cr[ 2 ] < 16 || cr[ 3 ] < 16 ] cr[ 2 ] = 0
             fd : i32 [ Au.live_record_get[] ]
             if [ record_mic ] wn.mic_start[]
             if [ !fd ]
                 fd = record_spawn[ rpath, fmt ]
-                Au.live_record_set[ fd, tx.width, tx.height ]
+                if [ cr[ 2 ] > 0 ]
+                    Au.live_record_set[ fd, cr[ 2 ], cr[ 3 ] ]
+                el
+                    Au.live_record_set[ fd, tx.width, tx.height ]
             recorder = Recorder [ vk: vk, w: w, fd: fd,
                                   fps: record_fps, qp: rqp, format: fmt,
                                   chroma444: full,
@@ -778,6 +795,11 @@ abstract live_app media_app
                 width: Au.live_record_width[],
                 height: Au.live_record_height[],
                 notes: record_notes[ rpath, fmt ] ]
+            if [ cr[ 2 ] > 0 ]
+                recorder.crop_x = cr[ 0 ]
+                recorder.crop_y = cr[ 1 ]
+                recorder.crop_w = cr[ 2 ]
+                recorder.crop_h = cr[ 3 ]
             rec_live = recorder
             au_live_handoff_hook[ @record_handoff ]
             # the sound continues where the last instance left it
@@ -2121,7 +2143,6 @@ abstract live_app media_app
                     ok = false
                 agent_sock_reply[ (ok) ? 'ok\n' : 'err\n' ]
                 wn.will_animate = true
-                if [ wn.root ] wn.root.pristine = false
     func destroy [ ]
         if [ destroyed ] return
         destroyed = true
@@ -2267,7 +2288,7 @@ func bind_members [ instance: element ]
             instance.layers[ string[ 'iconl' ] ] = bic
 
 element LayerOrder
-    ground : Layer []
+    public ground : Layer []
 
 expect func t_layer_order [] -> bool
     e : LayerOrder []
@@ -2649,7 +2670,7 @@ Display Window
     mutable restyle             : bool
     mutable will_animate        : bool
     mutable draw_stage          : CanvasType
-    mutable mouse               : vec2f
+    mouse               : vec2f
     # how far the pointer's light reaches borders, px
     public  near_reach          : f32 [ 160.0 ]
     # the light's weight with the pointer inside, or outside
@@ -3417,8 +3438,7 @@ Display Window
                     # place the cached one there; a new size resizes
                     # the cache, which repaints it
                     if [ strcmp[ member.ident, "area" ] == 0 ]
-                        for [ p: element* inst.parent, p, p = p.parent ]
-                            p.pristine = false
+                        moved_up[ inst ]
                         will_animate = true
                     el [ !structural ] changed = true
                     if [ strcmp[ member.ident, "icon" ] == 0 ]
@@ -3919,6 +3939,14 @@ Display Window
                         if [ h == instance ]
                             input_device = null
                             break
+                    for [ h: element* hold_el, h, h = h.parent ]
+                        if [ h == instance ]
+                            hold_el = null
+                            break
+                    for [ h: element* arrange_of, h, h = h.parent ]
+                        if [ h == instance ]
+                            arrange_of = null
+                            break
                     instance.release_tree[]
                     if [ instance.ux ]
                         instance.ux.vk.defer_drop[ instance ]
@@ -4052,6 +4080,12 @@ Display Window
                         style_avails[ key ] = restyled
                         apply_style[ instance, restyled, home_object ]
                         stat_detail[].styled += 1
+                    # its own layers were bound after the first style:
+                    # they take it now (else they wait for a restyle)
+                    el [ avail ]
+                        apply_style[ instance, avail, home_object ]
+                    # new under a still pointer: lit before a move
+                    mounted_new = true
             inst    : typeid[ instance ]
             # a container renders from this frame's bounds, not the last
             # draw's: a nested splitter laid its panes out a frame late
@@ -4112,6 +4146,14 @@ Display Window
                     for [ h: element* input_device, h, h = h.parent ]
                         if [ h == e ]
                             input_device = null
+                            break
+                    for [ h: element* hold_el, h, h = h.parent ]
+                        if [ h == e ]
+                            hold_el = null
+                            break
+                    for [ h: element* arrange_of, h, h = h.parent ]
+                        if [ h == e ]
+                            arrange_of = null
                             break
                     e.release_tree[]
                     e.parent = null
@@ -4559,6 +4601,10 @@ Display Window
         if [ restyle ] stat_detail[].restyles += 1
         update_element[ root, render, restyle ]
         render.drop[]
+        # what mounted this frame takes the pointer's light now
+        if [ mounted_new ]
+            mounted_new = false
+            near_now[]
         update_end : i64 [ epoch_micros[] ]
         dt : i64 [ update_end - update_start ]
         restyle = false
@@ -4971,8 +5017,7 @@ Display Window
                             && my < cy + c.bounds.h + hh ]
                 if [ nr != c.near ]
                     c.near = nr
-                    for [ p: element* c, p, p = p.parent ]
-                        p.pristine = false
+                    repaint_up[ c ]
                     restyle = true
                 # borders in reach repaint as the light moves
                 c.win_pos = vec2f [ cx, cy ]
@@ -4982,14 +5027,33 @@ Display Window
                              && mx < cx + c.bounds.w + rc &&
                              my >= cy - rc
                              && my < cy + c.bounds.h + rc ]
+                # a splitter lights only its seams: away from them a
+                # move repaints nothing of it
+                if [ lit && c inherits Splitter ]
+                    lit = (cast Splitter [ c ]).seam_lit[ mx, my, cx, cy,
+                                                          rc ]
                 if [ c.near_used && (lit || c.near_lit) ]
-                    for [ p: element* c, p, p = p.parent ]
-                        p.pristine = false
+                    repaint_up[ c ]
                     will_animate = true
                 c.near_lit = lit
                 c.near_in  = !shut && mx >= cx && mx < cx + c.bounds.w
                     && my >= cy && my < cy + c.bounds.h
             near_walk[ c, cx, cy, cover ]
+
+    # the pointer's light over the tree as it stands, the pointer
+    # still: what is under it covers what it hides
+    func near_now []
+        if [ !root ] return
+        ne : Event []
+        ne.mouse.pos = vec2f [ f32[ mouse.x ], f32[ mouse.y ] ]
+        f : element find_target[ root, ne, null ]
+        cov : element [ null ]
+        held : element [ (capture) ? capture : f ]
+        for [ p: element* held, p, p = p.parent ]
+            if [ p.topmost ] cov = p
+        # a drag holds the pointer: nothing else takes its light
+        if [ capture && !cov ] cov = capture
+        near_walk[ root, 0.0, 0.0, cov ]
 
     # outer is inner or one of inner's parents
     func holds [ outer: element, inner: element ] -> bool
@@ -5288,13 +5352,13 @@ Display Window
              && (ev.key.ctrl || ev.key.meta) ]
             if [ app_object ] app_object.on_key*[ ev ]
             return
-        # ctrl / cmd + shift + 3 or 4: the app's (orbiter's
-        # screenshot), before any field takes it
-        if [ (ev.key.unicode == 51 || ev.key.unicode == 52)
-             && ev.key.shift
-             && (ev.key.ctrl || ev.key.meta) ]
-            if [ app_object ] app_object.on_key*[ ev ]
-            return
+        # ctrl / cmd + a digit: the app's first (orbiter's chords,
+        # screenshots'), before any field; one it leaves goes on
+        if [ ev.key.unicode >= 48 && ev.key.unicode <= 57
+             && !ev.key.shift && (ev.key.ctrl || ev.key.meta)
+             && app_object ]
+            app_object.on_key*[ ev ]
+            if [ ev.no_default ] return
         # ctrl / cmd + shift + R: the app's hot reload, when one is
         # ready; the app first (it may keep its state), else the go
         if [ ev.key.unicode == 82 && ev.key.shift
@@ -5547,6 +5611,8 @@ Display Window
         held : element [ (capture) ? capture : f ]
         for [ p: element* held, p, p = p.parent ]
             if [ p.topmost ] cov = p
+        # a drag holds the pointer: nothing else takes its light
+        if [ capture && !cov ] cov = capture
         near_walk[ root, 0.0, 0.0, cov ]
         ev.origin = f
         m : element [ f ]
@@ -7683,6 +7749,9 @@ Display Window
         if [ !e.bounds || e.bounds.w <= 0.0 || e.bounds.h <= 0.0 ]
             return
         if [ e.opacity <= 0.0 ] return
+        if [ paints_nothing[ e ] ]
+            e.pristine = true
+            return
         # a blur: all it paints, children too, drawn into its own layer
         # and put down through a gaussian
         if [ e.blur_px > 0.05 && !e.blurring
@@ -7731,8 +7800,14 @@ Display Window
         margin_b : i32 [ 0 ]
         for [ psc_au: Au, psc_k: string ] in e.layers
             psc_lay : cast Layer [ psc_au ]
-            if [ !psc_lay || !psc_lay.area ] continue
-            psc_b  : psc_lay.area.rectangle[ e.bounds, null, null,
+            if [ !psc_lay ] continue
+            psc_sh : BoxShadow psc_lay.box_shadow
+            psc_out : bool [ psc_sh && !psc_sh.inset && psc_sh.color
+                && psc_sh.color.a > 0.0 ]
+            if [ !psc_lay.area && !psc_out ] continue
+            psc_b  : e.bounds
+            if [ psc_lay.area ]
+                psc_b = psc_lay.area.rectangle[ e.bounds, null, null,
                     e.fc, false, 0.0, 0.0 ]
             psc_lx : f32  [ psc_b.x - e.bounds.x ]
             psc_ly : f32  [ psc_b.y - e.bounds.y ]
@@ -7740,6 +7815,14 @@ Display Window
                 psc_b.x + psc_b.w - e.bounds.x - e.bounds.w ]
             psc_by : f32  [
                 psc_b.y + psc_b.h - e.bounds.y - e.bounds.h ]
+            # an outer shadow paints past its box: keep room for it
+            if [ psc_out ]
+                rch : f32 [ psc_sh.blur * 1.5
+                    + maxf[ psc_sh.spread, 0.0 ] ]
+                psc_lx += psc_sh.offset.x - rch
+                psc_ly += psc_sh.offset.y - rch
+                psc_rx += psc_sh.offset.x + rch
+                psc_by += psc_sh.offset.y + rch
             if [ psc_lx < 0.0 ]
                 ol : i32 ceilf[ 0.0 - psc_lx ]
                 if [ ol > margin_l ] margin_l = ol
@@ -7840,6 +7923,8 @@ Display Window
 
         defer_scroll : bool [ e.cache_canvas && !e.animated && !nc
                               && stage == CanvasType.screen ]
+        # a cached paint: its live layers stay out of the picture
+        caching : bool [ defer_scroll ]
 
         e_mask : i32 [ 0 ]
         if [ e.hovered   ] e_mask += i32[ State.hovered ]
@@ -7869,6 +7954,9 @@ Display Window
             # the scrollbar has its own overlay pass, never the layer
             # loop
             if [ lkey == 'scrollbar' ]
+                continue
+            # a live layer is drawn on the screen, under the picture
+            if [ caching && layer.live*[] ]
                 continue
 
             layer.bounds = (layer.area) ? layer.area.rectangle[
@@ -8241,6 +8329,8 @@ Display Window
                 (round[ cv.transform_tx[] ] - cv.transform_tx[]) / bsc ]
             bsy : f32 [
                 (round[ cv.transform_ty[] ] - cv.transform_ty[]) / bsc ]
+            # its live layers first, every frame, under the picture
+            live_layers[ cv, e, stage ]
             if [ mask_on ]
                 glow_changed : bool [ e.mask_bg.x != e.mask_glow.x
                                       || e.mask_bg.y != e.mask_glow.y
@@ -8491,6 +8581,32 @@ Display Window
         o : vec2f win_origin[ e ]
         cv.draw_image[ bt, rect [ x: -o.x, y: -o.y,
             w: root.bounds.w, h: root.bounds.h ] ]
+
+    # a cached element's live layers, on the screen at its origin
+    func live_layers [ cv: Canvas, e: element, stage: CanvasType ]
+        if [ !e.layers ] return
+        for [ l_au: Au, l_k: string ] in e.layers
+            ly : cast Layer [ l_au ]
+            if [ !ly || ly.hide || ly.ctype != stage || !ly.live*[] ]
+                continue
+            ly.bounds = (ly.area) ? ly.area.rectangle[ e.bounds, null,
+                null, e.fc, false, 0.0, 0.0 ] : e.bounds.copy[]
+            ly.bounds.x -= e.bounds.x
+            ly.bounds.y -= e.bounds.y
+            cv.save[]
+            if [ ly.background_lens != BlurStage.none ]
+                rd : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+                if [ ly.radius ]
+                    rd = vec4f [ ly.radius.tl, ly.radius.tr,
+                                 ly.radius.br, ly.radius.bl ]
+                hf : f32 [ min[ ly.bounds.w, ly.bounds.h ] * 0.5 ]
+                cv.clip_rounded_rect[ ly.bounds.x, ly.bounds.y,
+                    ly.bounds.w, ly.bounds.h, min[ rd.x, hf ],
+                    min[ rd.y, hf ], min[ rd.z, hf ], min[ rd.w, hf ] ]
+                draw_blur[ cv, e, ly.background_lens ]
+            el
+                ly.draw*[ cv ]
+            cv.restore[]
 
     # a layer's background_lens: the blur in its box, at its corners;
     # its element then draws each frame, as the backdrop moves
@@ -8799,6 +8915,8 @@ abstract media_app trinity
         if [ !attach && frames_ever > 30 && !force_animate
              && !window.will_animate
              && !window.restyle && !window.anim_seen
+             && !tree_changed[ window.root ]
+             && host_fronts[] == fronts_seen
              && (!window.hidden || paned)
              && window.pending_w == 0 && now_us - drawn_us < 250000 ]
             window.quiet_frames += 1
@@ -8810,6 +8928,7 @@ abstract media_app trinity
             return
         drawn_us = now_us
         drew = true
+        fronts_seen = host_fronts[]
         window.will_animate = false
         window.anim_seen    = false
         update_start : i64 [ epoch_micros[] ]
@@ -8861,7 +8980,86 @@ force_animate : bool
 # frames drawn since the start; the stats' count resets each second
 frames_ever : i64
 
+# an element mounted this frame: the pointer's light is walked again
+mounted_new : bool
+
+# the hosted apps' published frames, as one number: a new picture from
+# any of them changes it, and the host draws it now
+func host_fronts [] -> i64
+    v : i64 [ 0 ]
+    for [ s: i32 1, s < 33, s += 1 ]
+        v = v * 3 + i64[ host_tex_front[ s, 0 ] + 1 ]
+    return v
+
+# the hosted apps' frames as last drawn
+fronts_seen : i64
+
+# an element whose picture is out of date (a field typed into, a line
+# come in): its frame is drawn now, not a quiet one later. an uncached
+# or animated one is never up to date by itself: its change marks the
+# cached picture holding it
+func tree_changed [ e: element ] -> bool
+    if [ !e || e.hide ] return false
+    if [ !e.pristine && !e.no_cache && !e.animated ] return true
+    if [ e.elements ]
+        for [ ce: element, ck: string ] in e.elements
+            if [ tree_changed[ ce ] ] return true
+    return false
+
 # e's picture again: e and the canvas holding it (above no_cache)
+# e changed: e repaints, and the canvas it paints into (up through
+# its uncached parents); a cached parent's own picture keeps (its
+# cached children compose apart), but one composing its children
+# (a faded scroller's mask, a blur) takes them again
+func repaint_up [ e: element ]
+    if [ !e ] return
+    repaint_held[ e, false ]
+    for [ p: element* e.parent, p, p = p.parent ]
+        if [ p.scroll_fade > 0.0 || p.blur_px > 0.05 ]
+            repaint_held[ p, false ]
+
+# each type's answer to: does it draw itself (asked once a type)
+draw_types : vec i64
+draw_own   : vec bool
+
+func draws_itself [ ty: Au_t ] -> bool
+    key : i64 [ cast i64 [ ty ] ]
+    if [ !draw_types ]
+        draw_types = vec i64 []
+        draw_own   = vec bool []
+    for [ i: i32 0, i < draw_types.count, i += 1 ]
+        if [ draw_types[ i ] == key ] return draw_own[ i ]
+    own : bool [ false ]
+    for [ t : ty, t && t != typeid[ element ], t = t.context ]
+        if [ Au.find_member[ t, "draw", AU_MEMBER_FUNC, 0, false ]
+             || Au.find_member[ t, "draw", AU_MEMBER_OVERRIDE, 0,
+                                false ] ]
+            own = true
+    draw_types.push[ key ]
+    draw_own.push[ own ]
+    return own
+
+# no layers, no children, no draw of its own: no picture (a grip,
+# a hit area); it still takes presses
+func paints_nothing [ e: element ] -> bool
+    if [ e.animated || (e.elements && e.elements.count > 0) ]
+        return false
+    # its scrollbar draws only with something to scroll
+    if [ e.layers ]
+        for [ l: Layer, n: string ] in e.layers
+            if [ n != 'scrollbar' || e.content_h > 0.0 ] return false
+    return !draws_itself[ typeid[ e ] ]
+
+# e moved: its own picture keeps (a cached one is placed anew); an
+# uncached one paints into its holder, which repaints
+func moved_up [ e: element ]
+    if [ !e ] return
+    if [ e.no_cache ] repaint_up[ e.parent ]
+    el
+        for [ p: element* e.parent, p, p = p.parent ]
+            if [ p.scroll_fade > 0.0 || p.blur_px > 0.05 ]
+                repaint_held[ p, false ]
+
 func repaint_held [ e: element, again: bool ]
     held : element [ e ]
     for [ p: element* e, p, p = p.parent ]
@@ -9088,7 +9286,7 @@ element TButtons
     public  labels    : vec string
     # actions, not toggles — no latched selection
     public  manual    : bool
-    public  selected  : i32 [ -1 ]
+    selected  : i32 [ -1 ]
     public  sel_mask  : i32
     # per-segment disable, same bits as sel_mask
     public  disable_mask : i32
@@ -9610,7 +9808,7 @@ element Splitter
     # unsaved-size fallback as a fraction of the span
     public share      : f32
     # count change resets to even shares
-    public even       : bool
+    even       : bool
     # drag floor for a sized pane, px
     public min_size   : f32 [ 40.0 ]
     public snap_close : bool
@@ -9929,6 +10127,16 @@ element Splitter
             ux.seam_cursor[ 0 ]
             cursor_on = false
 
+    # the pointer (px py, in the window; ox oy its top left there)
+    # within rc of a seam: only then does its light change
+    public func seam_lit [ px: f32, py: f32, ox: f32, oy: f32,
+                           rc: f32 ] -> bool
+        if [ !near_seam || !dseam ] return false
+        for [ d: f32 ] in dseam
+            if [ vertical && abs[ py - (oy + d) ] < rc ] return true
+            if [ !vertical && abs[ px - (ox + d) ] < rc ] return true
+        return false
+
 # the orbiter bar: an app's bar across its top when it runs on its
 # own: its history's arrows and its title, as orbiter's pane bar
 # shows them. hosted in a pane, orbiter's bar shows the same (the
@@ -10123,7 +10331,7 @@ Control Button
     # no canvas of its own: it paints onto its parent's, when it changes
     no_cache : true
     public icon  : string
-    iconl : Layer [ image_align: Align [ x: XAlign.middle,
+    public iconl : Layer [ image_align: Align [ x: XAlign.middle,
             y: YAlign.middle ], image_scale: 1.7 ]
     intern icon_cur : string
     public  icon_fit : f32
@@ -10177,7 +10385,7 @@ Button Option
 
 # utility: a horizontal 0..1 slider. click or drag anywhere on the track
 Control VolumeSlider
-    public value    : f32 [ 0.5 ]
+    value    : f32 [ 0.5 ]
     # px kept clear at the left for an embedded label
     public pad_l    : f32
     # px kept clear at the right for a value label
@@ -10286,7 +10494,7 @@ element Toolbar
 
 Control Tabs
     public  etype : Au_t
-    public  value : i32
+    value : i32
     mutable bound : @i32
 
     func member_value [ mem: Au_t ] -> i32
@@ -10427,14 +10635,14 @@ Option UXMenuButton
     area    : Region { r0.22+ t0.22 w1.0 h1.0 }
     public wait_state : bool
     public live_state : bool
-    outline : Layer [ radius: Radius [ '8' ], stroke_width: 0.0,
+    public outline : Layer [ radius: Radius [ '8' ], stroke_width: 0.0,
         stroke_color: rgba [ '#0000' ], fill_color: rgba [ '#0000' ] ]
     # whole-pixel strokes: a half-pixel band read as a broken faint line
-    hover   : Layer [ states: State.hovered, radius: Radius [ '8' ],
-        stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ],
+    public hover   : Layer [ states: State.hovered,
+        radius: Radius [ '8' ], stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ],
         fill_color: rgba [ '#ffffff14' ] ]
-    active  : Layer [ states: State.selected, radius: Radius [ '8' ],
-        stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ],
+    public active  : Layer [ states: State.selected,
+        radius: Radius [ '8' ], stroke_width: 1.0, stroke_color: rgba [ '#ffffff80' ],
         fill_color: rgba [ '#0000' ] ]
 
     func render [] -> Elements
@@ -10468,6 +10676,25 @@ UXMenuButton UXMenuRight
 # shade falling from the top, light on its lower lip), a raised face
 # in it lit by a subtle radial that just reaches its corners; pressed,
 # the face sinks and the radial dims. mini: minimize, a soft bar
+# the close's x, in the minimize bar's stroke (none on minimize)
+Layer CloseMark
+    func draw [ cv: Canvas ]
+        if [ !parent || !bounds ] return
+        if [ parent inherits CloseBox && (cast CloseBox [ parent ]).mini ]
+            return
+        cx : f32 [ bounds.x + bounds.w * 0.5 ]
+        cy : f32 [ bounds.y + bounds.h * 0.5 ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffffaa' ] ]
+        cv.stroke_width[ 2.0 ]
+        cv.move_to[ cx - 3.0, cy - 3.0 ]
+        cv.line_to[ cx + 3.0, cy + 3.0 ]
+        cv.move_to[ cx + 3.0, cy - 3.0 ]
+        cv.line_to[ cx - 3.0, cy + 3.0 ]
+        cv.paint[]
+        cv.restore[]
+
 element CloseBox
     public mini : bool
 
@@ -10510,6 +10737,14 @@ element CloseBox
             fill_gradient_color: #ffffff06
             fill_gradient_radius: 11.9
             box_shadow: 0 1px 2px #000000aa
+        # the close's x (CloseMark draws none for minimize)
+        layers.mark: CloseMark
+            area: l50%-7px t50%-6px w13px h13px
+        # minimize's bar: made here, shown by :mini
+        layers.bar:
+            area: l50%-4px t50%-1px w7px h2px
+            fill_color: #0000
+            radius: 1
         # the pointer over it: the face goes red and bright, the
         # chamber warms a little
         :hovered
@@ -10528,7 +10763,6 @@ element CloseBox
                 box_shadow: inset 0 1px 2px #000000aa
         :mini
             layers.bar:
-                area: l50%-4px t50%-1px w7px h2px
                 fill_color: #ffffffaa
                 radius: 1
                 box_shadow: 0 0 2px #ffffff55
@@ -10584,6 +10818,9 @@ element TextInput
                 label_color: #ffffff
     }
 
+
+# the shared popup: its rows are Buttons, its box a TextInput
+import popup
 
 # a keyboard, a voice, anything that types: trinity sees only
 # what it gives (text and keys), never how it was made; it
@@ -10730,33 +10967,33 @@ element IDEOverlay
 
 element UXShadeScrim
     area : Region { l0 t0 r0 b0 }
-    dim  : Layer [ fill_color: rgba [ '#0009' ] ]
+    public dim  : Layer [ fill_color: rgba [ '#0009' ] ]
 
 # the panel itself — fills the window over the scrim.
 element UXShadeSheet
     area  : Region { l0 t0 r0 b0 }
-    panel : Layer [ fill_color: rgba [ '#16161c' ], stroke_width: 1.0,
+    public panel : Layer [ fill_color: rgba [ '#16161c' ], stroke_width: 1.0,
         stroke_color: rgba [ '#fff1' ] ]
 
 element UXShadeTitle
     area : Region { l20px t16px r20px h30px }
-    face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 18,
+    public face : Layer [ label_color: rgba [ '#e8e8ec' ], label_size: 18,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element UXShadeClose
     area  : Region { r1.7 t0.4 r0.4 h1.3 }
-    body  : Layer [ fill_color: rgba [ '#fff1' ],
+    public body  : Layer [ fill_color: rgba [ '#fff1' ],
                     radius: Radius [ '6' ],
         label_color: rgba [ '#b8b8c0' ], label_size: 16,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
-    hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
+    public hover : Layer [ states: State.hovered, fill_color: rgba [ '#fff2' ],
         radius: Radius [ '6' ], label_color: rgba [ '#ffffff' ],
         label_size: 16,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
 
 element UXShadeList
     area      : Region { l14px t2.4 r14px b14px }
-    pane      : Layer [ fill_color: rgba [ '#101014' ],
+    public pane      : Layer [ fill_color: rgba [ '#101014' ],
                         stroke_width: 1.0,
         stroke_color: rgba [ '#fff1' ], radius: Radius [ '10' ] ]
     scrollbar : ScrollLayer [ overlay: true,
@@ -10766,20 +11003,20 @@ element UXShadeList
 
 element UXShadeName
     area : Region { l24px t0.4 r6 h1.1 }
-    face : Layer [ label_color: rgba [ '#e6e6ea' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#e6e6ea' ], label_size: 15,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element UXShadeDesc
     area : Region { l24px t1.5 r6 h0.9 }
-    face : Layer [ label_color: rgba [ '#86868e' ], label_size: 12,
+    public face : Layer [ label_color: rgba [ '#86868e' ], label_size: 12,
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 Control ShadeRow
     focusable : false
     area    : Region { l0 t0+ r0 h57px }
-    divider : Layer [ fill_color: rgba [ '#fff1' ],
+    public divider : Layer [ fill_color: rgba [ '#fff1' ],
                       area: Region { l16px b0 r16px h1px } ]
-    open    : Layer [ states: State.selected ]
+    public open    : Layer [ states: State.selected ]
 
     func render [] -> Elements
         return null
@@ -10885,7 +11122,7 @@ element ShotBackdrop
     # painted on the screen every frame: its ground is the live blur
     animated : true
     area   : Region { l0 t0 r0 b0 }
-    ground : ShotGround []
+    public ground : ShotGround []
     style : CSS {
     :fading
         opacity: 0.0, 3000ms cubic outward
@@ -11337,11 +11574,11 @@ element ShotUser
     area  : Region { l50%-220px b594px w440px h420px }
     # paints every frame, so the shine on the current line moves
     animated : true
-    frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ],
+    public frame : Layer [ area: Region [ 'l0 b52px w440px h52px' ],
                     fill_color: rgba [ '#0a0a12cc' ],
         stroke_width: 1.0, stroke_color: rgba [ '#ffffff66' ],
         radius: Radius [ '12' ] ]
-    lines : ShotUserLayer []
+    public lines : ShotUserLayer []
     style : CSS {
     :fading
         opacity: 0.0, 3000ms cubic outward
@@ -11391,7 +11628,7 @@ TButtons SessionTabs
 # why the last send failed: red, under the prompt, until a send goes
 element ShotError
     focusable : false
-    face : Layer [ label_color: rgba [ '#ff6b6b' ], label_size: 14,
+    public face : Layer [ label_color: rgba [ '#ff6b6b' ], label_size: 14,
         label_align: vec2f [ x: 0.0,
                              y: 0.5 ], label_offset: vec2f [ x: 14.0,
                                      y: 0.0 ] ]

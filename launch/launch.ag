@@ -431,6 +431,7 @@ ModelViewProject VehicleLit
 enum PlumeSurface
     fresh  : 0
     cdepth : 1
+    body   : 2
 
 # the exhaust: a ray-marched volume, light added over the scene
 ModelViewProject PlumeGlow
@@ -454,6 +455,9 @@ ModelViewProject PlumeGlow
     attrib cdepth : LayoutBinding [ type:typeid[ PlumeSurface ],
                                     id: PlumeSurface.cdepth, count:1,
                                     format: typeid[ f32 ] ]
+    attrib body : LayoutBinding [ type:typeid[ PlumeSurface ],
+                                  id: PlumeSurface.body, count:1,
+                                  format: typeid[ f32 ] ]
 
     attrib a_pos     : VertexInput    [ type:typeid[ vec3f ] ]
     attrib a_normal  : VertexInput    [ type:typeid[ vec3f ] ]
@@ -517,6 +521,12 @@ ModelViewProject PlumeGlow
         if (cr < 0.99999) {
             float cz = exp2(cr * 15.8728) - 1.0;
             t1 = min(t1, cz / max(dot(d, ubo.cam_fwd.xyz), 1e-4));
+        }
+        // and so does a hull in front: no flame seen through it
+        float bz = texture(body, gl_FragCoord.xy / ubo.screen.xy).r;
+        if (bz < 0.99999) {
+            float lz = ubo.proj[3][2] / (bz + ubo.proj[2][2]);
+            t1 = min(t1, lz / max(dot(d, ubo.cam_fwd.xyz), 1e-4));
         }
         if (t1 <= t0) discard;
         float air = ubo.tint.w;
@@ -1894,6 +1904,8 @@ element PlanetView
     # the camera's facing this frame (pad frame)
     mutable look_now : vec3f
     mutable craft    : Render
+    # the flames, apart: they read the craft's depth
+    mutable flames   : Render
     mutable lit_pad  : VehicleLit
     # the second platform, the crew stage's
     mutable lit_pad2 : VehicleLit
@@ -2073,7 +2085,8 @@ element PlanetView
         glow_up.hold[]
         sv : map Au[string] [ 'logo': logo, 'fresh': fresh,
                               'cdepth': cdepth ]
-        sp : map Au[string] [ 'fresh': fresh, 'cdepth': cdepth ]
+        sp : map Au[string] [ 'fresh': fresh, 'cdepth': cdepth,
+                              'body': cdepth ]
         m_pad = Model [ vk: vkc, w: w, s: lit_pad, samplers: sv,
                         cull_none: true ]
         m_pad.id = build_platform[]
@@ -2140,22 +2153,24 @@ element PlanetView
                             cull_none: true ]
         m_fins_up.id = build_fins[]
         m_fins_up.hold[]
-        adds : BlendState [ src: VK_BLEND_FACTOR_ONE,
+        brightest : BlendState [ src: VK_BLEND_FACTOR_ONE,
                             dst: VK_BLEND_FACTOR_ONE,
+                            op: VK_BLEND_OP_MAX,
                             src_a: VK_BLEND_FACTOR_ZERO,
                             dst_a: VK_BLEND_FACTOR_ONE ]
-        adds.hold[]
+        brightest.hold[]
         m_plumes = vec Model []
         for [ gk: PlumeGlow ] in glows
             # no depth test: the march itself stops at the scene
             mk : Model [ vk: vkc, w: w, s: gk, samplers: sp,
-                         cull_none: true, blend: adds,
+                         cull_none: true, blend: brightest,
                          depth_no_test: true ]
             mk.id = build_plume[]
             m_plumes.push[ mk ]
         m_plumes.hold[]
         m_plume_up = Model [ vk: vkc, w: w, s: glow_up, samplers: sp,
-                             cull_none: true, blend: adds ]
+                             cull_none: true, blend: brightest,
+                             depth_no_test: true ]
         m_plume_up.id = build_plume[]
         m_pad.hold[]
         m_one.hold[]
@@ -2189,9 +2204,6 @@ element PlanetView
             drawn.push[ dm ]
         for [ mm: Model ] in mark_models
             drawn.push[ mm ]
-        for [ mk: Model ] in m_plumes
-            drawn.push[ mk ]
-        drawn.push[ m_plume_up ]
         drawn.push[ m_puff_one ]
         drawn.push[ m_puff_up ]
         craft = Render [ vk: vkc, w: w, wscale: wscale * 2.0,
@@ -2204,6 +2216,17 @@ element PlanetView
         # drawn by the frame after the sky, not by the window
         craft.skip = true
         w.element_targets[ 'craft_{id}' ] = craft
+        fires : vec Model [] [ m_plume_up ]
+        for [ mk: Model ] in m_plumes
+            fires.push[ mk ]
+        flames = Render [ vk: vkc, w: w, wscale: wscale * 2.0,
+                          tag: 'flames',
+            clear_color: vec4f [ 0.0, 0.0, 0.0, 0.0 ],
+            models: fires ]
+        flames.hold[]
+        flames.owner = a
+        flames.skip = true
+        w.element_targets[ 'flames_{id}' ] = flames
 
     # one three-booster stack's models: the crew's under its own
     # nose with our ports, the tanker's silver with reflectors
@@ -2657,6 +2680,7 @@ element PlanetView
     # the frame's last pass waited on (the frame drew them all)
     public func draw_targets []
         craft.sync_fence[]
+        flames.sync_fence[]
 
     public func set_size [ wd: f32, ht: f32 ]
         bounds = rect [ x: 0.0, y: 0.0, w: wd, h: ht ]
@@ -2792,6 +2816,7 @@ element PlanetView
         cdepth : sky.march_depth[]
         if [ !craft ] build_craft[ cv.vk, w, fresh, cdepth ]
         craft.update[]
+        flames.update[]
         if [ m_pad.samplers[ 'fresh' ] != fresh
              || m_pad.samplers[ 'cdepth' ] != cdepth ]
             for [ m: Model ] in craft.models
@@ -2804,6 +2829,21 @@ element PlanetView
         craft.draw[]
         craft.seal[]
         cv.draw_image[ craft.color,
+                       rect [ x: 0.0, y: 0.0, w: bounds.w,
+                              h: bounds.h ] ]
+        # the flames after the hulls, whose depth ends their march
+        # one map for them all: a change rebinds every one
+        if [ m_plume_up.samplers[ 'fresh' ] != fresh
+             || m_plume_up.samplers[ 'cdepth' ] != cdepth
+             || m_plume_up.samplers[ 'body' ] != craft.depth ]
+            for [ m: Model ] in flames.models
+                m.samplers[ 'fresh' ] = fresh
+                m.samplers[ 'cdepth' ] = cdepth
+                m.samplers[ 'body' ] = craft.depth
+                m.rebind_model[]
+        flames.draw[]
+        flames.seal[]
+        cv.draw_image[ flames.color,
                        rect [ x: 0.0, y: 0.0, w: bounds.w,
                               h: bounds.h ] ]
 
@@ -3364,8 +3404,8 @@ element PlanetView
         lit_fins.twist_b = tb
 
 element launch : trinity
-    public width     : i32    [ 1280 ]
-    public height    : i32    [ 720 ]
+    width     : i32    [ 1280 ]
+    height    : i32    [ 720 ]
     public title     : string [ 'launch' ]
     public preset    : i32    [ 1 ]
     public exposure  : f32    [ 1.0 ]

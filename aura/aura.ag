@@ -146,8 +146,8 @@ func aura_recv_frame [ sock: i32, id: @u64, w: @i32, h: @i32,
     cap: i32 ] -> i32
 
 element aura : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public  title      : string [ 'aura' ]
     public  background : string [ 'Background' ]
     # a url, or a local file; a new one loads in the running page
@@ -460,7 +460,11 @@ element aura : trinity
         bookmark_save[ out ]
         log 'aura: bookmark removed {last_src}'
 
+    # back, forward; 0 is the page again (its address loaded anew)
     public func navigate [ dir: i32 ] -> bool
+        if [ dir == 0 ]
+            if [ last_src && last_src.count > 0 ] post[ 'load {last_src}' ]
+            return true
         post[ (dir < 0) ? 'nav back' : 'nav forward' ]
         return true
 

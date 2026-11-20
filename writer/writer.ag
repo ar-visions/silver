@@ -1961,8 +1961,8 @@ element WriterBar
 # ---- the app ----
 
 element writer : trinity
-    public width  : i32 [ 1100 ]
-    public height : i32 [ 900 ]
+    width  : i32 [ 1100 ]
+    height : i32 [ 900 ]
     public title  : string [ 'writer' ]
     # the file being written
     default [ Live ] src : resource

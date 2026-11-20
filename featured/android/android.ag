@@ -1106,8 +1106,8 @@ export func android_store []
 # ---- the app: sign in on Google's page, then the account's apps ------
 
 element PlayApps : trinity
-    public  width  : i32    [ 520 ]
-    public  height : i32    [ 820 ]
+    width  : i32    [ 520 ]
+    height : i32    [ 820 ]
     public  title  : string [ 'Google Play' ]
     # a store page's address: that app is got once signed in
     default [ Launch, Live ] src : string

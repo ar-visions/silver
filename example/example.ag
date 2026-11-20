@@ -1,5 +1,5 @@
 import trinity
 
 element Example : trinity
-	i: int
+	public i: int
 

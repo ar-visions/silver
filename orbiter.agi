@@ -7,7 +7,7 @@ agents:
 	claude:
 		models: [ fable, opus ]
 	codex:
-		models: [ gpt-5.5 ]
+		models: [ gpt-5.6-sol, gpt-6.1-sol, gpt-6.1-terra, gpt-6-sol ]
 	gemini:
 		models: [ gemini-3-pro-preview, gemini-2.5-pro ]
 

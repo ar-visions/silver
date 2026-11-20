@@ -1,0 +1,572 @@
+extend orbiter
+
+# the session on disk follows the panes (file, caret, scroll):
+# a change is saved at most once a minute
+func orbiter.session_follow []
+    sig : i64 [ 0 ]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e_ : Editor pane_at[ i ]
+        sig = sig * 131 + i64[ editor_slots[i] ]
+        if [ !e_ ] continue
+        sig = sig * 131 + i64[ e_.sel_line ]
+        sig = sig * 131 + i64[ e_.sel_col ]
+        sig = sig * 131 + i64[ e_.scroll.y ]
+    if [ sig == session_sig ] return
+    now : i64 [ epoch_millis[] ]
+    if [ now - session_saved_at < 60000 ] return
+    session_sig      = sig
+    session_saved_at = now
+    save_session[]
+
+func orbiter.cache_dir [] -> path
+    return path.path_storage[ 'orbiter' ]
+
+func orbiter.save_session []
+    # setup has no session of its own to keep
+    if [ install ] return
+    panes : vec pane_state []
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        slot : i32 [ editor_slots[i] ]
+        if [
+            slot >= 0 && slot < open_files.count
+            && open_files[slot] ]
+            e_ : Editor pane_at[ i ]
+            # a running app is not the session's: never relaunched
+            if [ e_ && e_.app_view && e_.run_view ] continue
+            sel_ : vec2i [ x: (e_) ? e_.sel_line : 0,
+                y: (e_) ? e_.sel_col : 0 ]
+            panes.push[ pane_state [
+                file: open_files[slot], selection: sel_,
+                scroll: (e_) ? e_.scroll.y : 0.0 ] ]
+    pane_states = panes
+    # instances do not persist: a session starts with none
+    inst_states = vec inst_state []
+    scene       = scene_loaded[]
+    save-persistent[ a ]
+
+func orbiter.restore_session []
+    load-persistent[ a ]
+    if [ pane_states && pane_states.count > 0 ]
+        editor_slots = vec i32 []
+        pending_sel = vec vec2i []
+        pending_scroll = vec f32 []
+        for [ i: i32 0, i < pane_states.count, i += 1 ]
+            ps_ : pane_state pane_states[i]
+            if [ ps_ && ps_.file ]
+                editor_slots += file_slot[ ps_.file ]
+                pending_sel += ps_.selection
+                pending_scroll += ps_.scroll
+        if [ editor_slots.count == 0 ] editor_slots += -1
+        active_pane = 0
+    # nothing saved yet: the first known file. a saved empty
+    # list is the empty pane (the last file was closed)
+    el [ !pane_states && open_files.count > 0
+         && editor_slots.count > 0 ]
+        editor_slots[0] = 0
+    if [ breakpoints ] last_bp_count = breakpoints.count
+    # an explicit --scene_load beats whatever the last session left
+    # behind
+    if [
+        scene && scene.count > 0
+        && (!scene_load || scene_load.count == 0) ]
+        scene_load = scene
+        scene_load.hold[]
+
+func orbiter.load_settings []
+    sp  : agi_path[]
+    log 'load_settings: startup_path={startup_path} -> agi={sp}'
+    txt : string [ sp.load[ typeid[string], null ] ]
+    if [ !txt || txt.count == 0 ]
+        log 'load_settings: no/empty file at {sp}'
+        return
+    settings_mtime = sp.modified_time[]
+    if [ projects ] projects.clear[]
+    Au.parse_agi[ null, txt.chars, a ]
+    if [ projects ]
+        for [ p: Project, name: string ] in projects
+            p.root = resolve_local[ p.root ]
+            if [ p.cwd ] p.cwd = resolve_local[ p.cwd ]
+    sync_targets[]
+    if [ projects ]
+        log 'loaded {projects.count} projects:'
+        for [ p: Project, name: string ] in projects
+            log '  {name}: root={p.root}'
+            if [ p.deps ]
+                for [ d: token ] in p.deps
+                    log '    dep: {d.chars}'
+    el
+        log 'loaded 0 projects (projects is null)'
+
+func orbiter.sync_targets []
+    target_names = vec string []
+    target_roots = vec path []
+    target_srcs  = vec path []
+    if [ !projects ]
+        return
+    for [ p: Project, name: string ] in projects
+        target_names += name
+        target_roots += p.root
+        target_srcs  += p.root
+
+func orbiter.refresh_frames []
+    fr : vec Au []
+    dv : dbg active_debugger[]
+    if [ dv ]
+        dfr : dv.read_frames[]
+        if [ dfr ]
+            for [ df: frame ] in dfr
+                fr.push[
+                    Frame [ func_name: df.func_name, file: df.source,
+                            line: i32[ df.line ] ] ]
+    frame_cache = fr
+
+func orbiter.last_editor_pane [] -> i32
+    return editor_slots.count - 1
+
+# a cached element repaints only when it is itself marked: every
+# console in the tree, since a session's bytes just moved
+func orbiter.dirty_consoles [ e: element ]
+    if [ !e ] return
+    if [ e inherits Console ] e.pristine = false
+    if [ e.elements ]
+        for [ ce: element, ck: string ] in e.elements
+            dirty_consoles[ ce ]
+
+func orbiter.snap_window [ w: Window ] -> string
+    if [ !w || !w.screen ] return null
+    tex : Texture w.screen.color
+    if [ !tex ] return null
+    sz : i32 [ tex.width * tex.height * 4 ]
+    b : Buffer [ vk: tex.vk, size: sz,
+        u_dst: true, m_host_visible: true, m_host_coherent: true ]
+    b.transfer[ tex ]
+    shot : Image [ width: tex.width, height: tex.height,
+                   format: Pixel.rgba8 ]
+    memcpy[ shot.vdata[], b.mmap[], sz ]
+    b.unmap[]
+    shot_n += 1
+    # in the silver folder's tmp/: the agent can open it there
+    sd : path '{path.path_startup[]}/tmp'
+    sd.make_dir[]
+    fn : string '{sd}/orbiter_shot_{getpid[]}_{shot_n}.png'
+    shot.png[ path fn ]
+    return fn
+
+# the worker never touches debuggers/active_target — the map is read
+# by the paint thread, so the finished debugger lands here instead
+# the app bar's slider is the truth; push it only when it moves
+func orbiter.sync_volume []
+    vol_spectrum[]
+    vs_ : VolumeSlider find_volume[]
+    av_ : AppView active_app[]
+    # the machine's level: read now and then (others change it)
+    now_ : i64 [ epoch_millis[] ]
+    if [ now_ - master_read_ms > 1000 ]
+        master_read_ms = now_
+        mvf : f32 [ 0.0 ]
+        mmu : i32 [ 0 ]
+        if [ host_master_get[ @mvf, @mmu ] != 0 ]
+            if [ mvf != master_vol || (mmu != 0) != master_mute ]
+                master_vol  = mvf
+                master_mute = mmu != 0
+                if [ !av_ && ux ] ux.restyle = true
+    if [ vs_ && vs_.changed ]
+        vs_.changed = false
+        if [ av_ ] av_.vol = vs_.value
+        el
+            master_vol = vs_.value
+            host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+    if [ !instances ] return
+    # each app at its own level; the machine's is the final stage
+    for [ v: AppView ] in instances
+        if [ v.slot < 0 || v.ended || v.held || !v.app_mod ] continue
+        # its own volume starts as the app answered it
+        if [ v.vol < 0.0 && v.app_vol >= 0.0 ] v.vol = v.app_vol
+        # never ours to change until something here is set
+        if [ v.vol < 0.0 && !v.vol_mute ] continue
+        out_ : f32 [ (v.vol_mute) ? 0.0
+            : ((v.vol >= 0.0) ? v.vol : 1.0) ]
+        if [ out_ == v.vol_sent ] continue
+        v.vol_sent = out_
+        agent_sock_send[ v.sock_name[].chars, 'volume {out_}\n' ]
+
+# mdir = the debugged module's own source directory. a breakpoint
+# from another module resolves to an unrelated address here and
+# parks the process forever (a hosted app then never pumps, resizes
+# or paints)
+func orbiter.sync_breakpoints [ d: dbg, mdir: string ]
+    if [ !breakpoints || !d ] return
+    for [ cond: string, key: string ] in breakpoints
+        idx : i32 [ key.rindex_of[ ':' ] ]
+        if [ idx <= 0 ] continue
+        bsrc : string key.mid[ 0, idx ]
+        blin : i32 [
+            key.mid[ idx + 1, key.count - idx - 1 ].real_value[] ]
+        if [ blin <= 0 ] continue
+        # an empty source (':1' in a stale state file) binds
+        # anywhere
+        if [ !bsrc || bsrc.count == 0 ] continue
+        if [ mdir && mdir.count > 0 ]
+            bpath : path [ bsrc.chars ]
+            bd    : bpath.parent_dir[]
+            if [ !bd ] continue
+            if [ '{bd}' != mdir ] continue
+        if [ !d.bps ] d.bps = vec breakpoint []
+        bp : d.set_breakpoint[ path [ bsrc ], u32[ blin ], 0 ]
+        if [ bp ] d.bps.push[ bp ]
+
+func orbiter.apply_break [ src_name: string, ln: i32, col: i32 ]
+    src : path [
+        (src_name && src_name.count > 0) ? path [ src_name.chars ]
+        : null ]
+    # a stop in system code (glibc etc.) has no openable source
+    if [ src && !src.exists[] ] src = null
+    if [ src ]
+        open_in_pane[ src, 0 ]
+        ed : Editor pane_at[ 0 ]
+        if [ ed ]
+            # the file is in already: land now; otherwise land once
+            # it loads
+            same : bool [
+                ed.loaded_src
+                && '{ed.loaded_src.absolute[]}' == '{src.absolute[]}' ]
+            if [ same ]
+                ed.apply_stop[ ln, col ]
+            el
+                ed.stop_pending     = ln
+                ed.stop_pending_col = col
+    dv : active_debugger[]
+    # args and locals are disjoint in lldb; the func line needs the
+    # args. locals go FIRST: base_var_at takes the first name that
+    # matches, and
+    # 'a' (self) is an argument that would otherwise shadow every
+    # line
+    if [ dv ]
+        lc : dv.read_locals[]
+        ag : dv.read_arguments[]
+        all : vec Au []
+        if [ lc ]
+            for [ v_: variable ] in lc
+                all.push[ v_ ]
+        if [ ag ]
+            for [ v_: variable ] in ag
+                all.push[ v_ ]
+        debug_vars = all
+        refresh_frames[]
+    win : ux
+    win.will_animate = true
+
+func orbiter.apply_exit [ e: exited ]
+    clear_stop_lines[]
+    es : ConsoleSession (ed_sessions) ? ed_sessions[
+        active_target ] : null
+    de : dbg (debuggers) ? debuggers[ active_target ] : null
+    if [ es ]
+        if [ de ]
+            es.feed_fd[ de.fifo_fd_out ]
+            es.feed_fd[ de.fifo_fd_err ]
+        code : e->code
+        es.print_text[ '\r\n[process exited, code {code}]\r\n' ]
+        win : ux
+        if [ win ] win.will_animate = true
+
+func orbiter.add_instance [ av: AppView ]
+    inst_reg[].add[ av ]
+    inst_made[ av ]
+
+# a new one from the registry: the menu's Debug and verbose taken
+func orbiter.inst_made [ av: AppView ]
+    if [ inst_debug_next ] av.debug_build = true
+    av.verbose_build = run_verbose
+    inst_debug_next = false
+    instances = insts.list
+    session_dirty = true
+    log 'instance {av.iid}: {(av.src) ? av.src.stem[] : ''} made'
+
+func orbiter.remove_instance [ av: AppView ]
+    inst_reg[].remove[ av ]
+    instances = insts.list
+    session_dirty = true
+
+func orbiter.default_arg_of [ args: string ] -> string
+    if [ !args ] return ''
+    ws : vec string args.trim[].split[ ' ' ]
+    i  : i32 [ 0 ]
+    while [ i < ws.count ]
+        w_ : string ws[ i ]
+        if [ w_.count > 2 && w_[ 0 ] == 45 && w_[ 1 ] == 45 ]
+            i += 2
+            continue
+        # "" is an empty argument
+        if [ w_.count > 0 && w_ != '""' ] break
+        i += 1
+    out : string ''
+    for [ j: i32 i, j < ws.count, j += 1 ]
+        out = (out.count > 0) ? '{out} {ws[ j ]}' : ws[ j ]
+    return out
+
+# the module's bare argument: a resource or default member
+func orbiter.default_prop [ mod: string ] -> Prop
+    sp_ : string module_spec[ mod ]
+    if [ !sp_ ] return null
+    lp_ : LaunchProps []
+    Au.parse_agi[ null, sp_.chars, lp_ ]
+    if [ !lp_.props ] return null
+    for [ p: Prop ] in lp_.props
+        if [ p.type == 'resource' || p.access == 'default' ]
+            return p
+    return null
+
+# a running instance's bare argument, from its own props, when
+# it may be set while it runs
+func orbiter.live_arg_of [ av: AppView ] -> Prop
+    if [ !av.props || av.props.count == 0 ]
+        return (av.app_mod) ? live_default[ av.app_mod ] : null
+    lp : LaunchProps []
+    Au.parse_agi[ null, av.props.chars, lp ]
+    if [ !lp.props ] return null
+    for [ q: Prop ] in lp.props
+        if [ q.type == 'resource' || q.access == 'default' ]
+            return (prop_live[ q ]) ? q : null
+    return null
+
+func orbiter.live_default [ mod: string ] -> Prop
+    p : Prop default_prop[ mod ]
+    if [ !p || !p.meta ] return null
+    for [ q: string ] in p.meta
+        if [ q == 'Live' ] return p
+    return null
+
+func orbiter.set_display [ ed: Editor, av: AppView, d: i32 ]
+    old : i32 [ av.display ]
+    if [ old == d ] return
+    av.display = d
+    av.pip     = d == 0
+    av.disp_ms = epoch_millis[]
+    session_dirty = true
+    if [ ed && ed.run_view == av ]
+        want : bool [ d == 1 || av.viewer ]
+        if [ ed.app_view != want ] ed.toggle_app_view[]
+        av.pip = d == 0
+    tell_display[ av ]
+
+# the programs' fontconfig: the system's, our fonts folder, and
+# Barlow Condensed for the interface families (monospace kept)
+func orbiter.write_fonts_conf [] -> string
+    out : '{install_root[]}/tmp/orbiter-fonts.conf'
+    fd : path 'fonts'
+    fa : string '{fd.absolute[]}'
+    fam : vec string [] [ 'sans-serif', 'sans', 'Ubuntu',
+        'Ubuntu Sans', 'Cantarell', 'DejaVu Sans', 'Noto Sans',
+        'system-ui' ]
+    tx : '<?xml version="1.0"?>\n'
+    tx = '{tx}<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+    tx = '{tx}<fontconfig>\n'
+    tx = '{tx}  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>\n'
+    tx = '{tx}  <dir>{fa}</dir>\n'
+    for [ f_: string ] in fam
+        tx = '{tx}  <match target="pattern">\n'
+        tx = '{tx}    <test name="family"><string>{f_}</string></test>\n'
+        tx = '{tx}    <edit name="family" mode="assign" binding="strong"><string>Barlow Condensed</string></edit>\n'
+        tx = '{tx}  </match>\n'
+    tx = '{tx}</fontconfig>\n'
+    fh : handle fopen[ out.chars, 'w' ]
+    if [ !fh ] return ''
+    fputs[ tx.chars, fh ]
+    fclose[ fh ]
+    return out
+
+# the app's own frame (its texture, not orbiter's screen), to a
+# png beside our cache and onto the clipboard
+func orbiter.copy_shot [ av: AppView ]
+    if [ !ux || !av ] return
+    tx : Texture av.front[]
+    if [ !tx ]
+        log 'screenshot: {instance_name[ av ]} has no frame yet'
+        return
+    im : Image [ tx ]
+    if [ !im ] return
+    dir : path '{path.path_cache[ 'orbiter' ]}/shots'
+    dir.make_dir[]
+    p : path '{dir}/{instance_name[ av ]}-{epoch_millis[]}.png'
+    im.png[ p ]
+    ok : bool ux.copy_picture[ p ]
+    log 'screenshot: {p} on the clipboard {ok}'
+
+func orbiter.apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
+    if [ !ed ] return
+    # browse AND find live in CommitView: the pane is never
+    # displaced
+    was_search : bool [ ed.finder_list ]
+    ed.finder_list = false
+    # code views only fit ascii files; binaries get b16 alone
+    ed.nav_tools   = null
+    ed.nav_default = null
+    # the file's alternate views (hex, git, the consoles) are not
+    # put on the rail for now: the rail renders every one of them
+    # over the nav list the frame it opens; they will be surfaced
+    # another way. nav_default alone names the file's own view and
+    # draws nothing
+    if [ is_search && ed.src ]
+        ed.nav_default = ed.default_view_for[ ed.src ]
+    if [ slot >= 0 && slot < open_files.count ]
+        # reload ONLY on real change: a blanket load_file remounts
+        # every pane's view and flashes the ones not involved
+        np : path open_files[slot]
+        same : bool [ ed.src && '{ed.src}' == '{np}' ]
+        if [ was_search || !same ]
+            ed.src = np
+            ed.load_file[]
+            if [ was_search ]
+                ed.scroll.y      = ed.saved_scroll
+                ed.scroll_goal = ed.saved_scroll
+            ed.pristine = false
+    el
+        if [ ed.lines && ed.lines.count > 0 ]
+            ed.lines = list string []
+            ed.pristine = false
+
+# the panel's change: set on the scene, kept for the scene
+# a live property's change goes to the running instance
+func orbiter.push_live [ lp: LaunchPanel, mod: string, only: element ]
+    if [ !mod || mod.count == 0 ] return
+    p : lp.live_prop[ only ]
+    if [ !p ] return
+    v : string lp.value_of[ p ]
+    if [ !v ] return
+    if [ lp.scene ]
+        scene_prop_set[ p.ident, v ]
+    el
+        agent_sock_send[ mod.chars, 'set {p.ident} {v}\n' ]
+
+func orbiter.rekeep_listing []
+    if [ !nav_showing ] return
+    sp : string search_pane[]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        if [ sp == 'pane{i}' ]
+            te : element title_at[ i ]
+            if [ te ] te.set_focus[]
+    run_search[]
+
+# an app sees silver's folder only: a file from elsewhere reaches
+# it through its view, shared read only by the navigator
+func orbiter.share_into [ av: AppView, p: path ] -> string
+    sv : string [ getenv[ 'SILVER' ] ]
+    fs : string '{p.absolute[]}'
+    if [ !sv || fs.starts_with[ '{sv}/' ] ] return fs
+    pid : i32 [ host_app_pid[ av.slot ] ]
+    mod : string av.app_mod
+    dbg : string (av.debug_build) ? '-dbg' : ''
+    host : string '{sv}/install/build/{mod}{dbg}'
+    cmd : command [ '{host} --view-share {pid} {mod} "{fs}"' ]
+    if [ cmd.exec[ false ] != 0 ]
+        log 'share: {fs} did not reach {mod}'
+        return fs
+    # the view shows it at its own path
+    return fs
+
+# a folder into the consoles' one view (its store runs there)
+func orbiter.share_console [ dir: string ]
+    for [ av: AppView ] in instances
+        if [ av.app_mod != 'console' || av.slot < 0 || av.ended ]
+            continue
+        if [ host_app_pid[ av.slot ] <= 0 ] continue
+        share_into[ av, path [ dir ] ]
+        return
+    log 'share: no console runs to take {dir}'
+
+# show a named view in a pane; '' returns it to the default
+func orbiter.set_pane_view [ ed: Editor, nm: string ]
+    if [ !ed ] return
+    ed.view_note[ nm ]
+    # one view at a time: another view ends git's diff
+    if [ nm && nm.count > 0 && nm != 'git' ] ed.git_on = false
+    ed.view_name = nm
+    ed.load_file[]
+    exit_find_mode[]
+
+func orbiter.set_active [ idx: i32 ]
+    active_idx = idx
+
+func orbiter.sync_tabs []
+    win : ux
+    tb  : element win.root.elements['toolbar']
+    if [ !tb ] return
+    nav : element tb.elements['source_nav']
+    if [ !nav ] return
+    for [ i: i32 0, i < target_names.count, i += 1 ]
+        name : string target_names[i]
+        op   : Option nav.elements[name]
+        if [ op ]
+            op.selected = active_target == name &&
+                active_panel != 'config'
+    sys : Option nav.elements['system']
+    if [ sys ]
+        sys.selected = active_target == 'system' &&
+            active_panel != 'config'
+    cfg : Option nav.elements['config']
+    if [ cfg ] cfg.selected = active_panel == 'config'
+    win.restyle = true
+
+func orbiter.sync_active []
+    win : ux
+    if [ win ] win.restyle = true
+
+# side by side, dragged toward its neighbour: the two swap places
+# (false with no docked neighbour that way)
+func orbiter.swap_side [ pi: i32, right: bool ] -> bool
+    if [ pane_floats[ pi ] || pane_out[ pi ] ] return false
+    sq : vec i32 pane_order[]
+    at : i32 [ i32[ sq.index_of[ pi ] ] ]
+    if [ at < 0 ] return false
+    st : i32 [ (right) ? 1 : -1 ]
+    for [ j: i32 at + st, j >= 0 && j < sq.count, j += st ]
+        q : i32 sq[ j ]
+        if [ pane_floats[ q ] || pane_out[ q ] ] continue
+        sw : vec i32 []
+        for [ k: i32 0, k < sq.count, k += 1 ]
+            sw.push[ (k == at) ? q : ((k == j) ? pi : sq[ k ]) ]
+        seq_set[ sw ]
+        active_pane = pi
+        save_session[]
+        force_update[]
+        if [ ux ] ux.restyle = true
+        return true
+    return false
+
+# the settings put to work: trinity's wheel, the pointer, the
+# keyboards (orbiter-os's own, and programs' windows), text size
+func orbiter.apply_settings [ w: Window ]
+    display_language = Language [ kept_prefs[].shown ]
+    # the chosen zone for our clock and every program started
+    if [ set_zone && set_zone.count > 0 ]
+        setenv[ 'TZ', set_zone.chars, 1 ]
+        tzset[]
+    if [ w ]
+        fonts_apply[ w ]
+        # trinity's steps; a window takes the desktop's notches
+        w.wheel_mul    = wheel_scale[] * set_scroll
+        w.window_wheel = 1.0
+        if [ w.vk && set_size > 0 && w.vk.font_unit != set_size ]
+            w.vk.font_unit = set_size
+            w.restyle = true
+            if [ w.root ] w.dirty_tree[ w.root ]
+    # a share of the way to the mouse a refresh
+    ea : f32 [ (set_easing == 'off') ? 1.0
+        : ((set_easing == 'light') ? 0.5
+        : ((set_easing == 'heavy') ? 0.15 : 0.3)) ]
+    pointer_easing[ ea ]
+    # the keys' and a game pad's ticks
+    # faint at its strongest: a tap, never a jolt
+    haptic_level = (set_haptic == 'off') ? -1.0
+        : ((set_haptic == 'medium') ? 0.35
+        : ((set_haptic == 'strong') ? 0.55 : 0.2))
+    key_repeat[ set_delay, set_rate ]
+    wlc_key_repeat[ set_rate, set_delay ]
+    sp : i32 [ set_layout.index_of[ ' ' ] ]
+    lay : string [ (sp > 0) ? set_layout.mid[ 0, sp ] : set_layout ]
+    var : string [ (sp > 0) ? set_layout.mid[ sp + 1,
+        set_layout.count - sp - 1 ] : '' ]
+    wlc_key_layout[ lay.chars, var.chars ]
+    if [ set_light >= 0.0 ] host_backlight_set[ set_light ]
+    wlc_set_scale[ win_scale[] ]

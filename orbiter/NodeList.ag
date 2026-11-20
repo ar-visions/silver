@@ -101,7 +101,7 @@ Option NodeList
         return null
 
 Layer NodeLayer
-    public label_size  : f32
+    label_size  : f32
     public row_spacing : f32
     public sel_color   : string
     public sel_radius  : f32
@@ -791,6 +791,21 @@ Control AppsGrid
         area: l0 t0 r0 b0
     }
     public pane : i32
+    # the orbiter menu's copy: no widgets, and it follows the mode
+    public menu : bool
+    # the orbiter menu's dashed outline, drawn once a size
+    intern dash_pic : Canvas
+    intern dash_sd  : f32
+    intern dash_r   : f32
+
+    # the open drawer's place in the window now (y, height; 0 none),
+    # at this frame's scroll: the menu's ground lights it in step
+    public func cab_now [] -> vec2f
+        if [ band_h <= 0.0 || !bounds ] return vec2f [ 0.0, 0.0 ]
+        gy : f32 [ 0.0 ]
+        for [ e: element* a, e, e = e.parent ]
+            if [ e.bounds ] gy += e.bounds.y
+        return vec2f [ gy + band_y - scroll.y, band_h ]
 
     # the desktop's widgets are its children: they scroll with it,
     # and a wheel or press one leaves is the desktop's
@@ -802,7 +817,22 @@ Control AppsGrid
         if [ off != cards_off ]
             cards_off = off
             pristine = false
-        return orb.widget_els[ bounds.w ]
+        t : Elements (menu) ? Elements [] : orb.widget_els[ bounds.w ]
+        # the open drawer's settings, over its band
+        if [ shown && band_at >= 0 && band_at < shown.count
+             && shown[ band_at ].form && band_h > 0.0 ]
+            # the card's own entry (its menus), not the slot's
+            fe : AppEntry [ (band_of >= 0 && band_of < shown.count)
+                ? shown[ band_of ] : shown[ band_at ] ]
+            ch : Elements orb.cfg_els[ fe ]
+            if [ i32[ orb.cfg_h ] != form_n ]
+                form_n   = i32[ orb.cfg_h ]
+                pristine = false
+            # edge to edge across the grid, flush with its top; flowed
+            # (+): trinity scrolls it with the cards, the same frame
+            t['cfg_form'] = element [ elements: ch,
+                area: Region [ 'l0 t{band_y}px+ r0 h{band_h}px' ] ]
+        return t
     mutable hov   : i32 [ -1 ]
     # an agent's pane is over the desktop: no icons
     mutable cards_off : bool
@@ -858,6 +888,10 @@ Control AppsGrid
     mutable band_of : i32 [ -1 ]
     mutable band_at : i32 [ -1 ]
     mutable band_n  : i32
+    # the orbiter menu was up at the last draw; its drawer's form's
+    # rows
+    mutable orb_on  : bool
+    mutable form_n  : i32
     # the band as laid out: top and height in content space
     mutable band_y  : f32
     mutable band_h  : f32
@@ -893,9 +927,61 @@ Control AppsGrid
         return (ae.file) ? '{ae.file}' : ae.name
 
     # the files an app module opens, as the navigator finds them
+    # a card that opens a drawer when pressed (a store, an app's
+    # files or what it makes, an agent, an app with its own menus)
+    func drawer_of [ orb: orbiter, ae: AppEntry ] -> bool
+        return ae.store || (ae.menus && ae.menus.count > 0)
+            || (ae.contains && ae.contains.count > 0)
+            || orb.is_agent_app[ ae ] || files_of[ orb, ae ].count > 0
+
+    # its drawer opened, or shut when it is the one open
+    public func toggle_drawer [ ae: AppEntry ]
+        open  = (open == ae.name) ? '' : ae.name
+        shown = null
+        pristine = false
+        if [ ux ] ux.restyle = true
+
     func files_of [ orb: orbiter, ae: AppEntry ] -> vec string
         if [ !ae.module || ae.store || ae.opens ] return vec string []
+        # what it makes (export contains): newest first
+        if [ ae.contains && ae.contains.count > 0 ]
+            cs : vec string []
+            for [ cp: path ] in orb.contained[ ae ]
+                cs.push[ '{cp}' ]
+            return cs
         return orb.nav.files_ending[ orb.opens_exts[ ae.name ] ]
+
+    # an app's chords as lines to read: 'ctrl + shift + 3   screen'
+    func chord_words [ ch: string ] -> string
+        out : string ''
+        if [ ch ]
+            for [ cw: string ] in ch.split[ ' ' ]
+                eq : i32 [ i32[ cw.index_of[ '=' ] ] ]
+                if [ eq <= 0 ] continue
+                k : string cw.mid[ 0, eq ]
+                wd : string cw.mid[ eq + 1, cw.count - eq - 1 ]
+                ln : string 'ctrl + {k}    {wd}'
+                out = (out.count > 0) ? '{out}\n{ln}' : ln
+        return out
+
+    # an empty drawer's instructions: its lines, large, centred
+    func draw_note [ cv: Canvas, w: Window, t: string, y: f32,
+                     h: f32 ]
+        un : f32 ux_unit[ w ]
+        fp : i32 [ i32[ round[ 24.0 * un ] ] ]
+        ls : vec string t.split[ '\n' ]
+        lh : f32 [ round[ 34.0 * un ] ]
+        y0 : f32 [ y + (h - lh * f32[ ls.count ]) * 0.5 ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#ffffffcc' ] ]
+        for [ i: i32 0, i < ls.count, i += 1 ]
+            cv.draw_text[ ls[ i ], rect [ x: 0.0,
+                y: y0 + f32[ i ] * lh, w: bounds.w, h: lh ],
+                vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+        cv.set_font[ null ]
 
     # a name in a list
     func has [ list: vec string, nm: string ] -> bool
@@ -1107,8 +1193,18 @@ Control AppsGrid
                     if [ nn == g ] known = true
                 if [ g == gn || (gn == 'other' && !known) ]
                     shown.push[ ae ]
+                    # the orbiter menu up: an app's settings form
+                    if [ open == ae.name && orb.orb_mode[]
+                         && ae.module && ae.file ]
+                        band_of = shown.count - 1
+                        band_at = shown.count
+                        shown.push[ AppEntry [ name: ae.name,
+                            file: ae.file, module: true, agi: ae.agi,
+                            group: ae.group, built: ae.built,
+                            note: true, form: true ] ]
+                        band_n = 1
                     # an open store: itself (it runs), then its apps
-                    if [ ae.store && open == ae.name ]
+                    el [ ae.store && open == ae.name ]
                         band_of = shown.count - 1
                         band_at = shown.count
                         shown.push[ AppEntry [ name: ae.name,
@@ -1143,27 +1239,60 @@ Control AppsGrid
                                     args: ln.mid[ tb + 1,
                                         ln.count - tb - 1 ] ] ]
                         band_n  = shown.count - band_at
+                    # an agent: its models (a new session) and the
+                    # sessions it has
+                    el [ open == ae.name && orb.is_agent_app[ ae ] ]
+                        band_of = shown.count - 1
+                        band_at = shown.count
+                        for [ ac: AppEntry ] in orb.agent_cards[ ae ]
+                            shown.push[ ac ]
+                        band_n = shown.count - band_at
                     # an open app: itself, then the files it opens
                     el [ open == ae.name ]
                         fl : vec string files_of[ orb, ae ]
-                        if [ fl.count > 0 ]
+                        # an app that makes things (export contains):
+                        # its drawer is what it made, never its run
+                        mk : bool [ ae.contains && ae.contains.count > 0 ]
+                        if [ fl.count > 0 || mk ]
                             band_of = shown.count - 1
                             band_at = shown.count
-                            shown.push[ AppEntry [ name: ae.name,
-                                file: ae.file, module: true,
-                                agi: ae.agi, group: ae.group,
-                                built: ae.built ] ]
+                            if [ !mk ]
+                                shown.push[ AppEntry [ name: ae.name,
+                                    file: ae.file, module: true,
+                                    agi: ae.agi, group: ae.group,
+                                    built: ae.built ] ]
+                            # nothing made yet: the keys that make it
+                            if [ mk && fl.count == 0 ]
+                                shown.push[ AppEntry [
+                                    name: chord_words[ ae.chords ],
+                                    file: ae.file, module: true,
+                                    agi: ae.agi, group: ae.group,
+                                    built: ae.built, note: true ] ]
+                            # what it makes: a row, all once asked
+                            lim : i32 [ i32[ fl.count ] ]
+                            if [ mk && inner.count == 0
+                                 && !has[ orb.shots_all, ae.name ] ]
+                                lim = max[ 1, orb.grid_row - 1 ]
+                            put : i32 [ 0 ]
                             for [ f: string ] in fl
                                 fp : path '{f}'
                                 fn : string fp.filename[]
                                 if [ inner.count > 0
                                      && fn.lcase[].index_of[ inner ] < 0 ]
                                     continue
+                                if [ put >= lim ] break
+                                put += 1
                                 shown.push[ AppEntry [
                                     name: fp.filename[], file: ae.file,
                                     module: true, agi: ae.agi,
                                     group: ae.group, built: ae.built,
                                     opens: fp ] ]
+                            if [ put < fl.count && inner.count == 0 ]
+                                shown.push[ AppEntry [
+                                    name: 'all {fl.count}',
+                                    file: ae.file, module: true,
+                                    agi: ae.agi, group: ae.group,
+                                    built: ae.built, more: ae.name ] ]
                             band_n = shown.count - band_at
                     # typed: what in its store matched, after it
                     el [ hunt.count > 0 ]
@@ -1186,10 +1315,16 @@ Control AppsGrid
         icons = vec AppIcon []
         for [ ae: AppEntry ] in shown
             ik : string '{ae.file} {ae.agi}'
+            # a picture it made: the picture itself
+            pic : bool [ ae.opens && (ae.opens.ext[] == 'png'
+                || ae.opens.ext[] == 'jpg') ]
+            if [ pic ] ik = '{ae.opens}'
             ic : AppIcon icon_of[ ik ]
             if [ !ic ]
-                ic = AppIcon [ module: true, file: ae.file,
-                               agi: ae.agi ]
+                ic = (pic) ? AppIcon [ file: ae.opens,
+                                       icon_file: ae.opens ]
+                    : AppIcon [ module: true, file: ae.file,
+                                agi: ae.agi ]
                 icon_of[ ik ] = ic
             icons.push[ ic ]
 
@@ -1261,10 +1396,32 @@ Control AppsGrid
         mx : f32 [ ev.mouse.pos.x ]
         my : f32 [ ev.mouse.pos.y ]
         orb : cast orbiter [ ux.app_object ]
-        # a press held a second, or any while arranging, then moved:
-        # it reorders
+        # a file card (a drawer's) moved off its place within its
+        # first second: carried, to be let go over another pane
+        if [ orb && orb.file_drag ]
+            ev.no_default = true
+            ux.will_animate = true
+            return
+        if [ orb && drag_kind == 0 && press_i >= 0 && !arranging
+             && epoch_micros[] - press_us < 1000000 ]
+            fe : AppEntry entry[ press_i ]
+            ddx : f32 [ mx - press_at.x ]
+            ddy : f32 [ my - press_at.y ]
+            if [ fe && fe.opens && ddx * ddx + ddy * ddy > 36.0 ]
+                orb.file_drag = fe.opens
+                orb.file_drag_icon = (icons && press_i < icons.count)
+                    ? icons[ press_i ] : null
+                set_capture[]
+                ev.no_default = true
+                ux.restyle = true
+                return
+        # a press held a second, or any while arranging, then moved
+        # past 6 px (less is a click): it reorders
+        lx : f32 [ mx - press_at.x ]
+        ly : f32 [ my - press_at.y ]
         if [ orb && drag_kind == 0 && (press_i >= 0 || press_h >= 0)
-             && (arranging || epoch_micros[] - press_us >= 1000000) ]
+             && (arranging || epoch_micros[] - press_us >= 1000000)
+             && lx * lx + ly * ly > 36.0 ]
             lift[ orb ]
         if [ orb && drag_kind != 0 ]
             drag_pt = vec2f [ mx, my ]
@@ -1297,6 +1454,12 @@ Control AppsGrid
     # press shows Download, a press on Download installs it
     # a press marks the card; the release over the same card acts
     func on_press [ ev: Event ]
+        # a press in the drawer's own rows and fields is theirs: no
+        # card under it is pressed (its release would shut the drawer)
+        if [ ev.origin && ev.origin != a ]
+            press_i = -1
+            press_h = -1
+            return
         if [ scroll_grab[ ev ] ]
             ev.no_default = true
             press_i = -1
@@ -1306,7 +1469,14 @@ Control AppsGrid
         if [ ev.mouse.button == 1 ]
             ri : i32 [ card_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
             iorb : cast orbiter [ ux.app_object ]
-            if [ ri >= 0 && iorb ] iorb.app_info_open[ entry[ ri ] ]
+            re_ : AppEntry entry[ ri ]
+            # a card's own menu: Open, Delete, Properties
+            if [ ri >= 0 && iorb && re_ && !re_.note && !re_.more ]
+                iorb.card_pop_open[ re_, pane ]
+                # one with a drawer: Show opens it (here, its grid)
+                iorb.card_pop_grid = a
+                iorb.card_pop_drawer = !re_.opens && !re_.agent_run
+                    && !re_.agent_pick && drawer_of[ iorb, re_ ]
             press_i = -1
             return
         press_i  = card_at[ ev.mouse.pos.x, ev.mouse.pos.y ]
@@ -1323,6 +1493,17 @@ Control AppsGrid
         was : i32 [ press_i ]
         press_i = -1
         press_h = -1
+        # a carried file: let go over a pane, it is dropped there
+        forb : cast orbiter [ ux.app_object ]
+        if [ forb && forb.file_drag ]
+            ff : path forb.file_drag
+            forb.file_drag = null
+            forb.file_drag_icon = null
+            release_capture[]
+            # what is under the pointer takes it (the grid takes none)
+            forb.file_drop[ ff ]
+            ux.restyle = true
+            return
         # a reorder ends where it was let go: saved, no click
         if [ drag_kind != 0 ]
             dorb : cast orbiter [ ux.app_object ]
@@ -1351,6 +1532,12 @@ Control AppsGrid
             if [ dorb_ && in_edit[ was, ev.mouse.pos.x, ev.mouse.pos.y ] ]
                 dorb_.pin_dock[ entry[ was ] ]
                 pristine = false
+            # the orbiter menu up: a press opens its settings
+            # (nothing to set: no drawer; it still shuffles)
+            el [ dorb_ && dorb_.orb_mode[] && entry[ was ]
+                 && entry[ was ].module && !entry[ was ].form
+                 && dorb_.cfg_any[ entry[ was ] ] ]
+                toggle_drawer[ entry[ was ] ]
             return
         # a press held to start arranging: no app opens
         if [ arranging || epoch_micros[] - press_us >= 1000000 ] return
@@ -1404,6 +1591,20 @@ Control AppsGrid
             sel = -1
             orb.launch_args[ pane, ae.file.filename[], ae.args ]
             return
+        # the 'all' card in a drawer of what an app makes
+        if [ ae.more ]
+            sel = -1
+            orb.shots_toggle[ ae.more ]
+            return
+        # words in a drawer: no press
+        if [ ae.note ]
+            sel = -1
+            return
+        # an agent's drawer: a new session on a model, or a session
+        if [ ae.agent_pick || ae.agent_run ]
+            sel = -1
+            orb.agent_card_pick[ ae, pane ]
+            return
         # a file in an app's folder: the app opens it
         if [ ae.opens ]
             sel = -1
@@ -1416,7 +1617,9 @@ Control AppsGrid
         # folder; again, it shuts (its own card inside runs it)
         in_band : bool [ i >= band_at && i < band_at + band_n ]
         folds : bool [ ae.store
-            || (!in_band && files_of[ orb, ae ].count > 0) ]
+            || (!in_band && (files_of[ orb, ae ].count > 0
+                || (ae.contains && ae.contains.count > 0)
+                || orb.is_agent_app[ ae ])) ]
         if [ here && folds ]
             sel   = -1
             open  = (open == ae.name) ? '' : ae.name
@@ -1443,7 +1646,8 @@ Control AppsGrid
     func draw_band [ cv: Canvas, y: f32, h: f32 ]
         bw : f32 [ bounds.w ]
         cv.save[]
-        cv.fill_color[ rgba [ '#0008' ] ]
+        # the orbiter menu's drawer: purple, half through
+        cv.fill_color[ rgba [ (orb_on) ? '#4a248c40' : '#0008' ] ]
         cv.rect_to[ 0.0, y, bw, h ]
         cv.paint[]
         for [ side: i32 0, side < 2, side += 1 ]
@@ -1492,6 +1696,20 @@ Control AppsGrid
             fly_key = null
             fly_ae  = null
             shown   = null
+        # the orbiter menu up: the cards arrange; down, as they were
+        om : bool [ menu && orb.orb_mode[] ]
+        if [ om != orb_on ]
+            orb_on = om
+            ux.arrange[ (om) ? a : null, om ]
+            open  = ''
+            shown = null
+            if [ !om ]
+                orb.info_ae = null
+                orb.cfg_menu_of = ''
+        # a press off the cards ends arranging: taken again, the
+        # drawer kept
+        el [ om && !arranging ]
+            ux.arrange[ a, true ]
         if [ !shown || gathered != orb.apps_filter
              || gen_seen != orb.apps_gen ]
             gather[ orb ]
@@ -1523,7 +1741,8 @@ Control AppsGrid
         hh  : f32 [ round[ 30.0 * un ] ]
         # the rows end where the widget side begins (30% of a wide
         # desktop while it has widgets): no icon behind one
-        room : f32 [ bounds.w - orb.desk_side[ bounds.w ] ]
+        room : f32 [ bounds.w
+            - ((menu) ? 0.0 : orb.desk_side[ bounds.w ]) ]
         pr : i32 [ i32[ (room - pad * 2.0 + gap) / (cw_ + gap) ] ]
         # a phone's row holds five icons, close, the width filled;
         # wider, one more each time a card would grow by half
@@ -1535,6 +1754,10 @@ Control AppsGrid
             tile = cw_
             ch_  = tile + round[ 6.0 * un ] + nh + edit_h
         if [ pr < 1 ] pr = 1
+        # a new row length: the contained files' row follows it
+        if [ orb.grid_row != pr ]
+            orb.grid_row = pr
+            orb.apps_gen += 1
         # held at the left: a width change only moves the row's end
         x0 : f32 [ pad ]
         rx = vec f32 []
@@ -1543,7 +1766,7 @@ Control AppsGrid
         head_ys = vec f32 []
         hh_ = hh
         # a narrow desktop's widgets sit above the apps
-        y : f32 [ pad + orb.desk_top ]
+        y : f32 [ pad + ((menu) ? 0.0 : orb.desk_top) ]
         for [ h: i32 0, h < heads.count, h += 1 ]
             if [ h > 0 ] y += gap
             head_ys.push[ y ]
@@ -1564,6 +1787,9 @@ Control AppsGrid
             if [ rs >= 0 ]
                 lines : i32 [ (band_n + pr - 1) / pr ]
                 bh = gap * 2.0 + f32[ lines ] * (ch_ + gap) - gap
+                # its settings: as tall as render made them
+                if [ shown[ band_at ].form ]
+                    bh = max[ f32[ form_n ], round[ orb.unit_px[] ] ]
                 by = y + f32[ rs + 1 ] * (ch_ + gap) - gap * 0.5
                 band_y = by
                 band_h = bh
@@ -1664,7 +1890,7 @@ Control AppsGrid
                 (use_mobile) ? x0 : x0 + 4.0, eh - sy ]
         # easing, or the glow breathing: drawn again next frame, and
         # each cached parent with it
-        if [ moving || arranging ]
+        if [ moving || (arranging && !orb_on) ]
             repaint_held[ a, true ]
             ux.will_animate = true
         # the dragged card last: over the others
@@ -1684,6 +1910,12 @@ Control AppsGrid
             cy : f32 [ py[ i ] - sy ]
             if [ cy + ch_ < 0.0 || cy > bounds.h ] continue
             if [ !entry[ i ] ] continue
+            # the form's slot: its panel, a child, draws it
+            if [ entry[ i ].form ] continue
+            # an empty drawer: its words across it, no card
+            if [ entry[ i ].note ]
+                draw_note[ cv, w, entry[ i ].name, band_y - sy, band_h ]
+                continue
             if [ !fly_key || keys[ i ] != fly_key ]
                 card_frost[ cv, w, px[ i ] + round[ (cw_ - tile) * 0.5 ],
                             cy, cr ]
@@ -1724,6 +1956,11 @@ Control AppsGrid
         cv.save[]
         if [ pulling && orb.can_delete[ ae ] ]
             cv.set_opacity[ 1.0 - 0.6 * gone ]
+        # the orbiter menu up: every icon in one blue, purple under
+        # the pointer or with its drawer open
+        if [ orb_on ]
+            lit : bool [ (i == hov && orb.cfg_any[ ae ]) || i == band_of ]
+            cv.colorize[ (lit) ? 275.0 : 225.0, 0.85, 1.1 ]
         ic.paint[ cv, round[ tx + (tile - isz) * 0.5 ],
                   round[ cy + (tile - isz) * 0.5 ], isz ]
         cv.restore[]
@@ -1768,6 +2005,18 @@ Control AppsGrid
                 vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
                 Overflow.ellipsis, BoxShadow [ '0 1px 2px #000b' ],
                 true ]
+            # its second line (an agent's model), smaller, dim
+            if [ ae.sub && ae.sub.count > 0 ]
+                sp : i32 [ i32[ round[ f32[ fp ] * 0.8 ] ] ]
+                cv.set_font[ shared_font[ cv,
+                    'fonts/BarlowCondensed-Regular.ttf', sp ] ]
+                cv.font_size[ f32[ sp ] ]
+                cv.fill_color[ rgba [ '#ffffff99' ] ]
+                sh : f32 [ (edit_h > 0.0) ? edit_h : th ]
+                cv.draw_text[ ae.sub, rect [ x: x + 2.0, y: ny + th,
+                    w: cw_ - 4.0, h: sh ],
+                    vec2f [ 0.5, 0.0 ], vec2f [ 0.0, 0.0 ],
+                    Overflow.ellipsis, null, true ]
             cv.set_font[ null ]
         # hovered, from source: its edit pill under the name
         ky : string keys[ i ]
@@ -1775,7 +2024,7 @@ Control AppsGrid
             ? edit_a[ ky ] : 0.0 ]
         fl : f32 [ (edit_lab && edit_lab.contains[ ky ])
             ? edit_lab[ ky ] : 0.0 ]
-        if [ fa > 0.0 && edit_h > 0.0 && !busy && !pulling
+        if [ fa > 0.0 && edit_h > 0.0 && !busy && !pulling && !ae.sub
              && (arranging || orb.code_of[ ae ]) ]
             # arranging: the pill docks the module, or undocks it
             wd : string [ (!arranging) ? 'edit'
@@ -1903,16 +2152,100 @@ Control AppsGrid
             cv.fill_color[ rgba [ (i == hov) ? '#1c103650'
                 : '#140a2a3c' ] ]
             cv.stroke_color[ rgba [ '#0000' ] ]
-        # arranging: a brighter purple inner glow, breathing
-        if [ arranging ]
+        # arranging: a brighter purple inner glow, breathing (not in
+        # the orbiter menu: its blue icons say it)
+        if [ arranging && !orb_on ]
             ph : f32 [ f32[ epoch_millis[] % 1200 ] / 1200.0 ]
             k  : f32 [ 0.5 + 0.5 * sin[ ph * 6.2831853 ] ]
             ga : f32 [ 0.35 + 0.5 * k ]
             cv.box_shadow[ rgba [ r: 0.72, g: 0.5, b: 1.0, a: ga ],
                            0.0, 0.0, 10.0 + 8.0 * k, 0.0, true ]
+        # the orbiter menu's: no glow, a dashed outline
+        if [ orb_on ] cv.no_shadows[]
         cv.rect_to[ x, y, tile, tile ]
         cv.paint[]
         cv.no_shadows[]
+        # the orbiter menu: an app with nothing to set, its ground
+        # darkened
+        dorb : cast orbiter [ ux.app_object ]
+        dae : AppEntry (orb_on) ? entry[ i ] : null
+        if [ dorb && dae && !dorb.cfg_any[ dae ] ]
+            cv.fill_color[ rgba [ '#000000aa' ] ]
+            cv.rect_to[ x, y, tile, tile ]
+            cv.paint[]
+        cv.restore[]
+        # the outline drawn once (every card is one size), laid down
+        if [ orb_on ]
+            dp : Canvas dash_picture[ cv, tile - 1.5, cr ]
+            ds : f32 [ ceil[ tile - 1.5 ] + 4.0 ]
+            cv.draw_canvas[ dp, x + 0.75 - 2.0, y + 0.75 - 2.0, ds, ds ]
+
+    # a point d along a rounded square's edge, clockwise from the
+    # top's start
+    func round_at [ x: f32, y: f32, sd: f32, r: f32, at: f32 ]
+            -> vec2f
+        ln : f32 [ sd - 2.0 * r ]
+        q  : f32 [ r * 1.5707963 ]
+        d  : f32 [ at ]
+        for [ k: i32 0, k < 4, k += 1 ]
+            # each side: its straight run, then its corner's arc
+            if [ d <= ln ]
+                if [ k == 0 ] return vec2f [ x + r + d, y ]
+                if [ k == 1 ] return vec2f [ x + sd, y + r + d ]
+                if [ k == 2 ] return vec2f [ x + sd - r - d, y + sd ]
+                return vec2f [ x, y + sd - r - d ]
+            d -= ln
+            if [ d <= q ]
+                an : f32 [ (f32[ k ] - 1.0) * 1.5707963 + d / max[ r,
+                    0.001 ] ]
+                cx : f32 [ (k == 0 || k == 1) ? x + sd - r : x + r ]
+                cy : f32 [ (k == 1 || k == 2) ? y + sd - r : y + r ]
+                return vec2f [ cx + r * cos[ an ], cy + r * sin[ an ] ]
+            d -= q
+        return vec2f [ x + r, y ]
+
+    # the dashed outline as a picture, 2 px of room round it, made
+    # again only for a new size
+    func dash_picture [ cv: Canvas, sd: f32, r: f32 ] -> Canvas
+        sz : i32 [ i32[ ceil[ sd ] ] + 4 ]
+        if [ !dash_pic ]
+            dash_pic = Canvas [ vk: cv.vk, w: cv.w, width: sz,
+                                height: sz, load_existing: true,
+                                quantize: true ]
+            dash_pic.update[]
+            dash_sd = -1.0
+        if [ dash_sd != sd || dash_r != r ]
+            dash_sd = sd
+            dash_r  = r
+            dash_pic.resize[ sz, sz ]
+            dash_pic.fresh_state[]
+            dash_pic.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 0.0 ] ]
+            dash_round[ dash_pic, 2.0, 2.0, sd, r, 6.0, 4.0 ]
+        return dash_pic
+
+    # a dashed outline round a rounded square: dash, gap, as lines
+    func dash_round [ cv: Canvas, x: f32, y: f32, sd: f32, r: f32,
+                      dash: f32, gap: f32 ]
+        per : f32 [ 4.0 * (sd - 2.0 * r) + 6.2831853 * r ]
+        # whole dashes round it: the step made to fit
+        n  : i32 [ max[ 4, i32[ round[ per / (dash + gap) ] ] ] ]
+        st : f32 [ per / f32[ n ] ]
+        dl : f32 [ st * dash / (dash + gap) ]
+        cv.save[]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#b47cffcc' ] ]
+        cv.stroke_width[ 1.5 ]
+        cv.stroke_offset[ 0.0 ]
+        for [ i: i32 0, i < n, i += 1 ]
+            d0 : f32 [ f32[ i ] * st ]
+            p0 : vec2f round_at[ x, y, sd, r, d0 ]
+            cv.move_to[ p0.x, p0.y ]
+            # a dash over a corner bends with it
+            for [ j: i32 1, j <= 3, j += 1 ]
+                pj : vec2f round_at[ x, y, sd, r,
+                    d0 + dl * f32[ j ] / 3.0 ]
+                cv.line_to[ pj.x, pj.y ]
+        cv.paint[]
         cv.restore[]
 
     # the name's place as a button: Download (Retry after a
@@ -2085,7 +2418,7 @@ element PropChip
     # the backdrop moves under it
     animated : true
     public name  : string
-    public value : string
+    value : string
     public open  : bool
 
     func on_enter [ ev: Event ]
@@ -2101,6 +2434,10 @@ element PropChip
         cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h,
                               rr, rr, rr, rr ]
         w.draw_blur[ cv, a, BlurStage.blur ]
+        # the menu's dark over it, half the ground's round it
+        cv.fill_color[ rgba [ '#00000055' ] ]
+        cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+        cv.paint[]
         cv.restore[]
         cv.save[]
         cv.rounded[ rr, rr, rr, rr ]
@@ -3003,7 +3340,7 @@ NodeList Props
         return null
 
 Layer PropsLayer
-    public label_size  : f32
+    label_size  : f32
     public row_spacing : f32
     public key_color   : string
     public text_color  : string
@@ -3072,7 +3409,7 @@ Layer PropsLayer
         cv.clear_crop[]
 
 Layer FieldsLayer
-    public label_size  : f32
+    label_size  : f32
     public row_spacing : f32
     public key_color   : string
     public text_color  : string

@@ -96,7 +96,7 @@ element Sparkline
     # drawn into the range when set (a day's last close)
     public base   : f64
     public color  : string [ '#34d399' ]
-    public width  : f32    [ 1.25 ]
+    width  : f32    [ 1.25 ]
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !bounds ] return

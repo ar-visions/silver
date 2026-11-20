@@ -22,6 +22,29 @@ import stockfish/17.1 from https://github.com/official-stockfish/Stockfish/archi
     > make -C src -j build ARCH=x86-64-avx2 COMP=clang CXX=$CXX
     > cp src/stockfish {install}/bin/stockfish
 
+# the music while it is open: Pachelbel's Canon in D, three violins
+# and continuo (Kevin MacLeod, CC BY 3.0, on Commons)
+import https://upload.wikimedia.org/wikipedia/commons/5/59/Kevin_MacLeod_-_Canon_in_D_Major.ogg
+    > mkdir -p {install}/share/music
+    > cp {import_file} {install}/share/music/pachelbel-canon.ogg
+
+# and Chopin's Nocturne in E-flat, Op. 9 No. 2 (public domain)
+import https://upload.wikimedia.org/wikipedia/commons/5/5c/Frederic_Chopin_-_Nocturne_Eb_major_Opus_9%2C_number_2.ogg
+    > mkdir -p {install}/share/music
+    > cp {import_file} {install}/share/music/chopin-nocturne-9-2.ogg
+
+# and Beethoven's Moonlight Sonata, its Adagio sostenuto (Paul
+# Pitman for Musopen, public domain)
+import https://upload.wikimedia.org/wikipedia/commons/4/48/Ludwig_van_Beethoven_-_sonata_no._14_in_c_sharp_minor_%27moonlight%27%2C_op._27_no._2_-_i._adagio_sostenuto.ogg
+    > mkdir -p {install}/share/music
+    > cp {import_file} {install}/share/music/beethoven-moonlight-1.ogg
+
+# and Debussy's Clair de lune (Laurens Goedhart, 2011, public domain)
+import https://upload.wikimedia.org/wikipedia/commons/b/be/Clair_de_lune_%28Claude_Debussy%29_Suite_bergamasque.ogg
+    > mkdir -p {install}/share/music
+    > cp {import_file} {install}/share/music/debussy-clair-de-lune.ogg
+
+import spectra
 import Rules
 
 # the pieces lit by a key light and a cool fill
@@ -113,6 +136,9 @@ element ChessLayer
     public tex  : Texture
     public note : string
     public foot : string
+    # the music's line at the foot: its name, paused or playing
+    public tune : string
+    public held : bool
 
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen || !tex ] return
@@ -125,8 +151,27 @@ element ChessLayer
                         0.0, '#f0ead8' ]
         chart_font[ cv, 'Regular', 17.0 ]
         if [ foot ]
-            chart_text[ cv, foot, 24.0, bounds.h - 44.0,
+            chart_text[ cv, foot, 24.0, bounds.h - 72.0,
                         bounds.w - 48.0, 28.0, 0.0, '#f0ead8a0' ]
+        if [ !tune || tune.count == 0 ] return
+        # one line, no ground: a play or pause mark, then the name
+        my : f32 [ bounds.h - 30.0 ]
+        cv.save[]
+        cv.stroke_width[ 0.0 ]
+        cv.fill_color[ rgba [ '#f0ead8c0' ] ]
+        if [ held ]
+            cv.move_to[ 26.0, my + 6.0 ]
+            cv.line_to[ 38.0, my + 12.0 ]
+            cv.line_to[ 26.0, my + 18.0 ]
+            cv.close_path[]
+            cv.paint[]
+        el
+            cv.rect_to[ 26.0, my + 6.0, 4.0, 12.0 ]
+            cv.rect_to[ 33.0, my + 6.0, 4.0, 12.0 ]
+            cv.paint[]
+        cv.restore[]
+        chart_text[ cv, tune, 50.0, my, bounds.w - 74.0, 24.0, 0.0,
+                    '#f0ead8c0' ]
 
 # Stockfish on two pipes, spoken to in UCI
 class UciEngine
@@ -217,12 +262,15 @@ func kind_word [ kind: i32 ] -> string
     return names[ kind ]
 
 element chess : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public  title      : string [ 'chess' ]
     public  model_path : path   [ 'models/chess-set.glb' ]
     # the engine's time a move, in ms
     public  think_ms   : i32    [ 800 ]
+    # the folder its music plays from: its .ogg and .wav files in
+    # name order (the imported ones by default)
+    public  [ Launch, Directory ] music : path [ '../music' ]
     public  layer      : ChessLayer
     mutable lit_w      : ChessLit
     mutable lit_b      : ChessLit
@@ -267,6 +315,15 @@ element chess : trinity
     mutable drop_best  : bool
     mutable over       : string
     mutable note       : string
+    # the music: one file looped, gone with the app; tunes the
+    # folder's files, read for tunes_of; at the one playing
+    mutable mixer      : AudioMixer
+    mutable tune       : AudioClip
+    mutable tune_v     : i32
+    mutable tunes      : vec path
+    mutable tunes_of   : string
+    mutable tune_at    : i32    [ -1 ]
+    mutable tune_held  : bool
 
     func init []
         animated = true
@@ -289,6 +346,12 @@ element chess : trinity
         my : f32 [ ev.mouse.pos.y - press_y ]
         if [ mx * mx + my * my > 16.0 ] return
         press_x = -1e9
+        # the music's line: its mark pauses, its name the next file
+        if [ ev.mouse.pos.y > bounds.h - 32.0 && tune ]
+            if [ ev.mouse.pos.x < 46.0 ] tune_pause[]
+            el [ ev.mouse.pos.x < 50.0 + tune_name[].count * 9.0 ]
+                tune_play[ tune_at + 1 ]
+            return
         s : i32 [ square_at[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
         if [ s >= 0 ] pick[ s ]
 
@@ -803,8 +866,72 @@ element chess : trinity
             layer.note = status[]
             layer.foot = 'click a piece, then its square  ·  ' +
                 'ctrl + z takes a move back  ·  ctrl + n starts over'
+            layer.tune = tune_name[]
+            layer.held = tune_held
+
+    # the folder's music files in name order
+    func tunes_read []
+        tunes_of = (music) ? '{music}' : ''
+        tunes = vec path []
+        if [ !music || !music.is_dir[] ] return
+        for [ f: path ] in music.ls[ null, false ]
+            ex : string f.ext[]
+            if [ ex != 'ogg' && ex != 'wav' ] continue
+            # into its place by name
+            at : i32 [ i32[ tunes.count ] ]
+            for [ i: i32 0, i < tunes.count, i += 1 ]
+                if [ '{f.filename[]}' < '{tunes[ i ].filename[]}' ]
+                    at = i
+                    break
+            tunes.insert[ f, at ]
+
+    # the music: its folder read again when it changes, the first
+    # time Clair de lune if there; no sound device, none
+    func music_start []
+        if [ tunes && tunes_of == ((music) ? '{music}' : '') ] return
+        tunes_read[]
+        tune_at = -1
+        for [ i: i32 0, i < tunes.count, i += 1 ]
+            if [ tunes[ i ].stem[].index_of[ 'clair-de-lune' ] >= 0 ]
+                tune_at = i
+        tune_play[ (tune_at >= 0) ? tune_at : 0 ]
+
+    # the folder's i-th file from its start, looped
+    func tune_play [ i: i32 ]
+        if [ !mixer ]
+            mixer = AudioMixer [ sample_rate: 48000 ]
+            if [ !mixer.start[] ] return
+        if [ tune_v > 0 ] mixer.voice_stop[ tune_v ]
+        tune_v = 0
+        tune = null
+        tune_held = false
+        if [ !tunes || tunes.count == 0 ] return
+        tune_at = i % i32[ tunes.count ]
+        f : path tunes[ tune_at ]
+        tune = (f.ext[] == 'wav') ? wav_load[ f ] : ogg_load[ f ]
+        if [ !tune ] return
+        log 'music: {f.stem[]}, {tune.frames / i64[ tune.rate ]} s'
+        tune_v = mixer.play_voice[ tune, true, 0.6, 1.0 ]
+
+    # paused where it is: still, and silent
+    func tune_pause []
+        if [ !mixer || tune_v <= 0 ] return
+        tune_held = !tune_held
+        mixer.voice_pitch[ tune_v, (tune_held) ? 0.0 : 1.0 ]
+        mixer.voice_gain[ tune_v, (tune_held) ? 0.0 : 0.6 ]
+
+    # its name to read: the file's, dashes as spaces
+    func tune_name [] -> string
+        if [ !tunes || tune_at < 0 || tune_at >= tunes.count ]
+            return ''
+        nm : string tunes[ tune_at ].stem[]
+        out : string ''
+        for [ w: string ] in nm.split[ '-' ]
+            out = (out.count > 0) ? '{out} {w}' : w
+        return out
 
     public func render [] -> Elements
+        music_start[]
         e : Elements [ ]
         e['layer'] = ChessLayer [ animated: true ]
         return e

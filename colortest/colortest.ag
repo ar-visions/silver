@@ -6,8 +6,8 @@ import img
 import trinity
 
 element colortest : trinity
-    public width      : i32    [ 1280 ]
-    public height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public title      : string [ 'colortest' ]
 
     func init []

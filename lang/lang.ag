@@ -1,0 +1,313 @@
+# lang: the language service. each open silver file's syntax map kept
+# current (silver builds it, in the background, as the file changes);
+# a file another module's handler colours (its exported syntax
+# function) asked again as it changes. the host applies what poll
+# hands back to its own views
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+    import <dlfcn.h>
+    import <sys/wait.h>
+import <fcntl.h>
+import <signal.h>
+ifdef [ apple ]
+    import <util.h>
+        -lutil
+ifdef [ linux ]
+    import <pty.h>
+ifdef [ windows ]
+    import <posix.h>    # declares forkpty, which always fails here
+
+# silver's install, wherever the host was started
+func lang_install [] -> path
+    i : path path.path_install[]
+    if [ i ] return i
+    return path '{path.path_startup[]}/install'
+
+# one file the service keeps: its map, or its handler's function
+class SyntaxWatch
+    public proj  : string
+    public file  : path
+    public pid   : i32 [ 0 ]
+    public fd    : i32 [ -1 ]
+    public map   : string
+    public mtime : i64 [ 0 ]
+    public src_mtime : i64 [ 0 ]
+    public announced : bool
+    public kicked    : bool
+    public start_us  : i64 [ 0 ]
+    # set when the file's handler module colours it in-process
+    public fn        : hook
+
+# what changed since the last poll, for the host to apply
+class SyntaxNews
+    # 1 a map to load (map, its time, fresh: no older than its
+    # source), 2 a handler's colouring (ff), 3 a build failed (log),
+    # 4 a build finished, 5 a source changed (a build begins)
+    public kind  : i32
+    public name  : string
+    public file  : path
+    public map   : string
+    public mtime : i64
+    public fresh : bool
+    public ff    : fmt_file
+    public log   : string
+
+class SyntaxService
+    # the silver folder its builds run in
+    public  root     : path
+    # the folders the host builds itself right now: a second build
+    # of one would race it
+    public  busy_dirs : vec string
+    intern  watch    : map SyntaxWatch [ string ]
+    intern  borrowed : map string [ string ]
+
+    func init []
+        watch    = map SyntaxWatch [ string ] []
+        borrowed = map string [ string ] []
+        if [ !root ] root = path.path_startup[]
+
+    # the silver files to keep, and the others with the module that
+    # colours each (file -> library); every other watch stops
+    public func want [ files: vec path, handled: map string [ string ] ]
+        live : vec string []
+        if [ files ]
+            for [ f: path ] in files
+                main : path main_of[ f ]
+                k : string '{main}'
+                if [ live.index_of[ k ] < 0 ] live.push[ k ]
+                if [ !watch.contains[ k ] ] start[ main ]
+        if [ handled ]
+            for [ lib: string, k: string ] in handled
+                if [ live.index_of[ k ] < 0 ] live.push[ k ]
+                if [ !watch.contains[ k ] ] start_fn[ path [ k ], lib ]
+        stale : vec string []
+        for [ sw: SyntaxWatch, k: string ] in watch
+            if [ live.index_of[ k ] < 0 ] stale.push[ k ]
+        for [ k: string ] in stale
+            stop[ k ]
+
+    public func stop_all []
+        for [ sw: SyntaxWatch, k: string ] in watch
+            if [ sw.fd >= 0 ] close[ sw.fd ]
+        watch = map SyntaxWatch [ string ] []
+
+    func at [ key: string ] -> SyntaxWatch
+        if [ watch.contains[ key ] ] return watch[ key ]
+        return null
+
+    func stop [ key: string ]
+        sw : SyntaxWatch at[ key ]
+        if [ !sw ] return
+        if [ sw.fd >= 0 ] close[ sw.fd ]
+        watch.rm[ key ]
+
+    # a module's file builds its whole module: its main file
+    func main_of [ f: path ] -> path
+        dir  : path f.parent_dir[]
+        modn : string dir.filename[]
+        m    : path '{dir}/{modn}.ag'
+        if [ m.exists[] ] return m
+        return f
+
+    # the map exists and is no older than its source
+    func current [ sw: SyntaxWatch ] -> bool
+        if [ !sw.map || !sw.file ] return false
+        mp : path [ sw.map ]
+        if [ !mp.exists[] ] return false
+        return mp.modified_time[] >= sw.file.modified_time[]
+
+    func busy [ f: path ] -> bool
+        if [ !busy_dirs || !f ] return false
+        return busy_dirs.index_of[ '{f.directory[]}' ] >= 0
+
+    func start [ f: path ]
+        fn   : string f.filename[]
+        stem : string fn
+        di   : i32 [ fn.rindex_of[ '.' ] ]
+        if [ di > 0 ] stem = fn.mid[ 0, di ]
+        sw : SyntaxWatch [ proj: stem, file: f,
+                           map: '{lang_install[]}/syntax/{stem}.f',
+                           start_us: epoch_micros[] ]
+        watch[ '{f}' ] = sw
+
+    # the handler module's library exports `syntax`: it colours the
+    # file in this process
+    func start_fn [ f: path, lib: string ]
+        # buffers key on the absolute path; the map's source must match
+        sw : SyntaxWatch [ proj: lib, file: f.absolute[], map: '',
+                           start_us: epoch_micros[], kicked: true,
+                           announced: true ]
+        watch[ '{f}' ] = sw
+        so : path lib_of[ lib ]
+        if [ !so.exists[] ] return
+        # local: only dlsym on this handle needs its symbols
+        h : dlopen[ so.chars, RTLD_NOW ]
+        if [ !h ]
+            log 'syntax: dlopen failed for {so}'
+            return
+        sym : string 'syntax'
+        sw.fn = cast hook [ dlsym[ h, sym.chars ] ]
+        if [ !sw.fn ] log 'syntax: {lib} exports no syntax function'
+        el log 'syntax: {lib} colours {sw.file}'
+
+    # a module's library: this build's, else the other build's
+    func lib_of [ ln: string ] -> path
+        b   : path '{lang_install[]}/build'
+        own : path '{b}/{path.path_library[ ln.chars ]}'
+        if [ own.exists[] ] return own
+        dn  : string '{ln}-dbg'
+        alt : path '{b}/{path.path_library[ dn.chars ]}'
+        return (alt.exists[]) ? alt : own
+
+    func spawn [ sw: SyntaxWatch ]
+        if [ sw.fd >= 0 ]
+            close[ sw.fd ]
+            sw.fd = -1
+        tmp  : string '{lang_install[]}/tmp'
+        logf : string '{tmp}/orbiter-fmt-{sw.proj}.log'
+        go  : string 'exec ./install/bin/silver --build {sw.file}'
+        cmd : string 'cd {root} && unset IMPORT && {go} > {logf} 2>&1'
+        log 'syntax: {sw.file}: running silver --build {sw.file}'
+        fd  : i32 [ -1 ]
+        pid : i32 [ forkpty[ @fd, null, null, null ] ]
+        if [ pid == 0 ]
+            dashc : string '-c'
+            execl[ '/bin/bash', 'bash', dashc.chars, cmd.chars, null ]
+            _exit[ 1 ]
+        el [ pid > 0 ]
+            sw.pid = pid
+            sw.fd  = fd
+            fcntl[ fd, F_SETFL, O_NONBLOCK ]
+
+    # what changed since the last call: maps to load, colourings,
+    # builds ended. a source changed since its map starts a build
+    public func poll [] -> vec SyntaxNews
+        out : vec SyntaxNews []
+        for [ sw: SyntaxWatch, name: string ] in watch
+            if [ sw.fn ]
+                poll_fn[ sw, out ]
+                continue
+            if [ sw.kicked && sw.pid == 0 && sw.file
+                 && !busy[ sw.file ] ]
+                sm : i64 [ sw.file.modified_time[] ]
+                if [ sw.src_mtime > 0 && sm > sw.src_mtime ]
+                    sw.src_mtime = sm
+                    spawn[ sw ]
+                    out.push[ SyntaxNews [ kind: 5, name: name,
+                        file: sw.file ] ]
+                el [ sw.src_mtime == 0 ]
+                    sw.src_mtime = sm
+        for [ sw: SyntaxWatch, name: string ] in watch
+            if [ !sw.announced && sw.pid > 0 ]
+                log 'syntax: {name} language service starting...'
+                sw.announced = true
+            if [ sw.fd >= 0 ]
+                dbuf : local i8 [256]
+                for [ j: i32 0, j < 64, j += 1 ]
+                    nr : i32 [ read[ sw.fd, @dbuf[0], 256 ] ]
+                    if [ nr <= 0 ] break
+            if [ sw.pid > 0 ]
+                st : i32 [ 0 ]
+                r  : i32 [ waitpid[ sw.pid, @st, WNOHANG ] ]
+                if [ r == sw.pid ]
+                    code : i32 [ (st >> 8) & 0xFF ]
+                    sig  : i32 [ st & 0x7F ]
+                    tmp  : string '{lang_install[]}/tmp'
+                    logf : string '{tmp}/orbiter-fmt-{sw.proj}.log'
+                    if [ sig != 0 ]
+                        log 'syntax: {name} CRASHED (signal {sig}) — see {logf}'
+                    el [ code != 0 ]
+                        log 'syntax: {name} build FAILED (code {code}) — see {logf}'
+                        out.push[ SyntaxNews [ kind: 3, name: name,
+                            file: sw.file, log: logf ] ]
+                    el
+                        log 'syntax: {name} language service finished'
+                        out.push[ SyntaxNews [ kind: 4, name: name,
+                            file: sw.file ] ]
+                    sw.pid = 0
+            if [ sw.map && sw.map.count > 0 ]
+                mp : path sw.map
+                if [ mp.exists[] ]
+                    m : i64 [ mp.modified_time[] ]
+                    # a map older than its source describes text that
+                    # is already gone: the host keeps its last good
+                    # colouring, but a view with none yet takes it
+                    fresh : bool [ true ]
+                    if [ sw.file ] fresh = m >= sw.file.modified_time[]
+                    if [ m > sw.mtime ]
+                        out.push[ SyntaxNews [ kind: 1, name: name,
+                            file: sw.file, map: sw.map, mtime: m,
+                            fresh: fresh ] ]
+            if [ !sw.kicked && epoch_micros[] - sw.start_us >= 1000000
+                 && !busy[ sw.file ] ]
+                sw.kicked = true
+                # a map current with its file: the installer built it
+                if [ current[ sw ] ]
+                    log 'syntax: {sw.file}: map {sw.map} is current, no build'
+                el
+                    mp : path [ sw.map ]
+                    w  : string [ 'missing' ]
+                    if [ mp.exists[] ] w = 'older than its source'
+                    log 'syntax: {sw.file}: map {sw.map} {w}: a build'
+                    spawn[ sw ]
+        return out
+
+    # a map the host loaded: the next poll tells of it only once newer
+    public func taken [ name: string, m: i64 ]
+        sw : SyntaxWatch at[ name ]
+        if [ sw && m > sw.mtime ] sw.mtime = m
+
+    # a colouring the host could not take yet (no view has the file):
+    # asked again at the next poll
+    public func again [ name: string ]
+        sw : SyntaxWatch at[ name ]
+        if [ sw ] sw.mtime = 0
+
+    # re-ask the handler whenever the file on disk changes
+    func poll_fn [ sw: SyntaxWatch, out: vec SyntaxNews ]
+        if [ !sw.file ] return
+        sm : i64 [ sw.file.modified_time[] ]
+        if [ sw.mtime > 0 && sm <= sw.mtime ] return
+        fn : hook sw.fn
+        ff : fmt_file fn[ sw.file ]
+        if [ !ff ] return
+        sw.mtime = sm
+        lns : vec Au ff.lines
+        log 'syntax: {sw.proj} mapped {lns.count} lines for {ff.source}'
+        out.push[ SyntaxNews [ kind: 2, name: '{sw.file}',
+            file: sw.file, ff: ff ] ]
+
+    # a silver file with no colouring takes its section from whichever
+    # map holds one: a module built as another's dependency writes its
+    # files into that root's map, never its own. tried once per file
+    # version; the newest section wins
+    public func borrow [ f: path ] -> fmt_file
+        fa : string '{f.absolute[]}'
+        if [ !fa.ends_with[ '.ag' ] ] return null
+        sm : string '{f.modified_time[]}'
+        if [ borrowed.contains[ fa ] && borrowed[ fa ] == sm ]
+            return null
+        borrowed[ fa ] = sm
+        sd : path '{lang_install[]}/syntax'
+        entries : sd.ls[ null, false ]
+        if [ !entries ] return null
+        best : fmt_file null
+        # this one file's section is all a map is read for
+        want : map string [ string ] []
+        want[ fa ] = fa
+        for [ e: path ] in entries
+            if [ e.ext[] != 'f' ] continue
+            files : vec Au e.read_format_of[ want ]
+            if [ !files ] continue
+            for [ fi: i32 0, fi < files.count, fi += 1 ]
+                ff : fmt_file files[ fi ]
+                if [ !ff || !ff.source || '{ff.source}' != fa ] continue
+                if [ !best || ff.mtime > best.mtime ] best = ff
+        if [ best ] log 'syntax: {fa} coloured from another module map'
+        return best

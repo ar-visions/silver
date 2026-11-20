@@ -55,8 +55,8 @@ Button RunButton
     }
 
 element intro : trinity
-    public width  : i32    [ 1100 ]
-    public height : i32    [ 640 ]
+    width  : i32    [ 1100 ]
+    height : i32    [ 640 ]
     public title  : string [ 'silver' ]
     intern topic  : i32
     intern result : vec string

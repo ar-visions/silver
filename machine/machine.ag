@@ -1,0 +1,291 @@
+# machine: the computer's own settings, read and set: sound devices,
+# the battery, the screen's light, the time zone, power off and
+# restart. No view: the host draws its own panels over these
+
+import devices
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <time.h>
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+ifdef [ linux ]
+    import <sys/reboot.h>
+    import <signal.h>
+
+# a command's output, a trimmed line each
+func machine_lines [ c: string ] -> vec string
+    out : vec string []
+    x : command [ c ]
+    fh : x.stream[]
+    if [ !fh ] return out
+    buf : local i8 [ 1024 ]
+    while [ fgets[ @buf[ 0 ], 1024, fh ] ]
+        ln : string [ cast cstr [ @buf[ 0 ] ] ]
+        out.push[ ln.trim[] ]
+    pclose[ fh ]
+    return out
+
+# a sound card's name by its number
+func card_name [ cn: i32 ] -> string
+    for [ t: string ] in machine_lines[ 'cat /proc/asound/cards' ]
+        br : i32 [ t.index_of[ ']: ' ] ]
+        if [ br < 0 ] continue
+        if [ i32[ t.trim[].mid[ 0, 2 ].integer_value[] ] != cn ]
+            continue
+        return t.mid[ br + 3, t.count - br - 3 ]
+    return 'card {cn}'
+
+# 'name|description' rows: a description two share takes its name
+func named_apart [ devs: vec string ] -> vec string
+    out : vec string []
+    for [ d: string ] in devs
+        bar : i32 [ d.index_of[ '|' ] ]
+        ds : string d.mid[ bar + 1, d.count - bar - 1 ]
+        twice : i32 [ 0 ]
+        for [ o: string ] in devs
+            if [ o.mid[ o.index_of[ '|' ] + 1,
+                   o.count - o.index_of[ '|' ] - 1 ] == ds ]
+                twice += 1
+        out.push[ (twice > 1)
+            ? '{d.mid[ 0, bar ]}|{ds} ({d.mid[ 0, bar ]})' : d ]
+    return out
+
+# the sound server's (PulseAudio, PipeWire) outputs or inputs as
+# 'name|description', monitors left out; with none (orbiter-os),
+# ALSA's devices that play (or record) as 'hw:id,N|name - card'
+func sound_devices [ inputs: bool ] -> vec string
+    out : vec string []
+    # the platform's own list first (CoreAudio, WASAPI)
+    hl : local i8 [ 8192 ]
+    if [ host_sound_list[ (inputs) ? 1 : 0, @hl[0], 8192 ] > 0 ]
+        tx : string [ @hl[0] ]
+        for [ ln: string ] in tx.split[ '\n' ]
+            if [ ln.count > 0 ] out.push[ ln ]
+        return named_apart[ out ]
+    kind : string [ (inputs) ? 'sources' : 'sinks' ]
+    nm : string ''
+    for [ ln: string ] in machine_lines[
+            'pactl list {kind} 2>/dev/null' ]
+        if [ ln.starts_with[ 'Name: ' ] ] nm = ln.mid[ 6, ln.count - 6 ]
+        el [ ln.starts_with[ 'Description: ' ] && nm.count > 0 ]
+            if [ !nm.ends_with[ '.monitor' ] ]
+                out.push[ '{nm}|{ln.mid[ 13, ln.count - 13 ]}' ]
+            nm = ''
+    if [ out.count > 0 ] return named_apart[ out ]
+    # a /proc file's size reads 0: read through cat. A line:
+    # '03-00: ALC897 Analog : ALC897 Analog : playback 1 : capture 1'
+    way : string [ (inputs) ? ': capture' : ': playback' ]
+    for [ t: string ] in machine_lines[ 'cat /proc/asound/pcm' ]
+        if [ t.index_of[ way ] < 0 || t.count < 7 ] continue
+        cn : i32 [ i32[ t.mid[ 0, 2 ].integer_value[] ] ]
+        dn : i32 [ i32[ t.mid[ 3, 2 ].integer_value[] ] ]
+        parts : vec string t.split[ ' : ' ]
+        nm : string parts[ 0 ].mid[ 7, parts[ 0 ].count - 7 ].trim[]
+        ids : vec string machine_lines[
+            'cat /proc/asound/card{cn}/id' ]
+        cid : string [ (ids.count > 0) ? ids[ 0 ] : '{cn}' ]
+        out.push[ 'hw:{cid},{dn}|{nm} - {card_name[ cn ]}' ]
+    return named_apart[ out ]
+
+# the device in use: the server's default, else ours in .asoundrc
+func sound_default [ inputs: bool ] -> string
+    hd : local i8 [ 256 ]
+    if [ host_sound_default[ (inputs) ? 1 : 0, @hd[0], 256 ] > 0 ]
+        return string [ @hd[0] ]
+    what : string [ (inputs) ? 'source' : 'sink' ]
+    ls : vec string machine_lines[
+        'pactl get-default-{what} 2>/dev/null' ]
+    if [ ls.count > 0 && ls[ 0 ].count > 0 ] return ls[ 0 ]
+    rc : path '{getenv[ 'HOME' ]}/.asoundrc'
+    if [ !rc.exists[] ] return ''
+    tx : string rc.load[ typeid[ string ], null ]
+    # ours: pcm.out's and pcm.mic's devices (sound_choose)
+    key : string [ (inputs) ? 'pcm.mic' : 'pcm.out' ]
+    at : i32 [ tx.index_of[ key ] ]
+    if [ at < 0 ] return ''
+    rest : string tx.mid[ at, tx.count - at ]
+    hw : i32 [ rest.index_of[ '"hw:' ] ]
+    if [ hw < 0 ] return ''
+    e : i32 [ hw + 1 ]
+    while [ e < rest.count && i32[ rest.chars[ e ] ] != 34 ]
+        e += 1
+    return rest.mid[ hw + 1, e - hw - 1 ]
+
+# a device chosen: the server's default; with ALSA alone, the
+# default pcm's playback or capture side in .asoundrc
+func sound_choose [ inputs: bool, name: string ]
+    if [ host_sound_choose[ (inputs) ? 1 : 0, name.chars ] != 0 ]
+        return
+    if [ !name.starts_with[ 'hw:' ] ]
+        what : string [ (inputs) ? 'source' : 'sink' ]
+        set : command { pactl set-default-{what} {name} }
+        set.exec[ false ]
+        return
+    po : string sound_default[ false ]
+    pi : string sound_default[ true ]
+    pn : string [ (inputs) ? po : name ]
+    # a mic chosen first: the first device that plays
+    if [ pn.count == 0 ]
+        outs : vec string sound_devices[ false ]
+        if [ outs.count > 0 ]
+            pn = outs[ 0 ].mid[ 0, outs[ 0 ].index_of[ '|' ] ]
+    cn : string [ (inputs) ? name : pi ]
+    # the output's card holds the volume
+    cc : string [ (pn.count > 3) ? pn.mid[ 3, pn.count - 3 ] : '0' ]
+    if [ cc.index_of[ ',' ] >= 0 ] cc = cc.mid[ 0, cc.index_of[ ',' ] ]
+    # every app plays and records at once through dmix / dsnoop;
+    # their own permissions, so no audio group is needed
+    rc_mic : string [ (cn.count > 0) ? cn : pn ]
+    rc_text : string {
+        pcm.out {{
+          type dmix
+          ipc_key 4242
+          ipc_perm 0600
+          slave {{ pcm "{pn}" rate 48000 }}
+        }}
+        pcm.mic {{
+          type dsnoop
+          ipc_key 4243
+          ipc_perm 0600
+          slave.pcm "{rc_mic}"
+        }}
+        pcm.!default {{
+          type asym
+          playback.pcm "plug:out"
+          capture.pcm "plug:mic"
+        }}
+        ctl.!default {{
+          type hw
+          card {cc}
+        }}
+    }
+    rc : path '{getenv[ 'HOME' ]}/.asoundrc'
+    rc.save[ '{rc_text.trim[]}\n', null ]
+
+# a device's description, by its name
+func sound_label [ devs: vec string, name: string ] -> string
+    for [ d: string ] in devs
+        bar : i32 [ d.index_of[ '|' ] ]
+        if [ d.mid[ 0, bar ] == name ]
+            return d.mid[ bar + 1, d.count - bar - 1 ]
+    return name
+
+# the system's own time zone (/etc/localtime's), else UTC
+func zone_system [] -> string
+    lk : path '/etc/localtime'
+    tg : string '{lk.resolve[]}'
+    at : i32 [ i32[ tg.index_of[ 'zoneinfo/' ] ] ]
+    return (at >= 0) ? tg.mid[ at + 9, tg.count - at - 9 ] : 'UTC'
+
+# 'Tokyo  UTC+9': the city, and its offset from UTC now
+func zone_label [ zone: string ] -> string
+    sl : i32 [ i32[ zone.rindex_of[ '/' ] ] ]
+    city : string [ (sl >= 0) ? zone.mid[ sl + 1,
+                                          zone.count - sl - 1 ]
+                              : zone ]
+    # New_York: New York
+    words : vec string city.split[ '_' ]
+    city = ''
+    for [ wd: string ] in words
+        city = (city.count > 0) ? '{city} {wd}' : wd
+    was : cstr getenv[ 'TZ' ]
+    keep : string [ (was) ? string [ was ] : '' ]
+    setenv[ 'TZ', zone.chars, 1 ]
+    tzset[]
+    now : i64 [ time[ null ] ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    utc : struct tm
+    gmtime_r[ @now, @utc ]
+    # local less utc: the offset (timegm is not posix)
+    days : i64 [ tm.tm_yday - utc.tm_yday ]
+    if [ tm.tm_year != utc.tm_year ]
+        days = (tm.tm_year > utc.tm_year) ? 1 : -1
+    mins : i64 [ days * 1440 + (tm.tm_hour - utc.tm_hour) * 60 +
+                 tm.tm_min - utc.tm_min ]
+    if [ keep.count > 0 ] setenv[ 'TZ', keep.chars, 1 ]
+    el unsetenv[ 'TZ' ]
+    tzset[]
+    sg : string [ (mins < 0) ? '-' : '+' ]
+    am : i64 [ (mins < 0) ? 0 - mins : mins ]
+    hr : string [ (am % 60 == 0) ? '{am / 60}'
+                                 : '{am / 60}:{am % 60}' ]
+    return '{city}  UTC{sg}{hr}'
+
+# a choice's words as seconds: 'never' -1, 'at once' 0
+func time_words [ s: string ] -> i64
+    if [ s == 'never' ] return -1
+    if [ s == 'at once' ] return 0
+    n : i64 [ 0 ]
+    for [ i: i32 0, i < s.count, i += 1 ]
+        c : i32 [ i32[ s.chars[ i ] ] ]
+        if [ c >= 48 && c <= 57 ] n = n * 10 + i64[ c - 48 ]
+    if [ s.index_of[ 'min' ] >= 0 ] n *= 60
+    return n
+
+# the machine off, or started again. Only the caller knows this is
+# orbiter-os (never the computer a window is trying the bar on)
+func machine_power [ again: bool ]
+    sync[]
+    ifdef [ linux ]
+        # the shell is the user's: init (pid 1) does it
+        if [ getuid[] != 0 ]
+            kill[ 1, (again) ? SIGINT : SIGUSR2 ]
+            return
+        reboot[ (again) ? RB_AUTOBOOT : RB_POWER_OFF ]
+
+# the battery, read every 10 s at most
+class Battery
+    public level    : f32
+    public charging : bool
+    # 0 not looked, 1 here, 2 none
+    public have     : i32
+    intern read_ms  : i64
+
+    public func here [] -> bool
+        return have == 1
+
+    # true when it changed since the last read
+    public func sync [] -> bool
+        if [ have == 2 ] return false
+        ms : i64 [ epoch_millis[] ]
+        if [ have == 1 && ms - read_ms < 10000 ] return false
+        read_ms = ms
+        lv : f32 [ 0.0 ]
+        ci : i32 [ 0 ]
+        if [ host_battery_get[ @lv, @ci ] == 0 ]
+            have = 2
+            return false
+        have = 1
+        if [ lv == level && (ci != 0) == charging ] return false
+        level    = lv
+        charging = ci != 0
+        return true
+
+# the screen's light: whether there is a panel to light, its level
+class Light
+    # 0 not looked, 1 here, 2 none
+    intern have : i32
+
+    public func here [] -> bool
+        if [ have == 0 ]
+            have = (host_backlight_get[] >= 0.0) ? 1 : 2
+        return have == 1
+
+    public func level [] -> f32
+        return host_backlight_get[]
+
+    public func set [ v: f32 ]
+        host_backlight_set[ v ]
+
+expect func t_time_words [] -> bool
+    return time_words[ 'never' ] == -1 && time_words[ 'at once' ] == 0
+        && time_words[ '15 s' ] == 15 && time_words[ '5 min' ] == 300
+
+expect func t_zone_label [] -> bool
+    lb : string zone_label[ 'Asia/Tokyo' ]
+    return lb == 'Tokyo  UTC+9'

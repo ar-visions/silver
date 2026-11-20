@@ -47,8 +47,8 @@ SOUND_AIM    : i64 [ 2940 ]
 SOUND_BLOCK  : i32 [ 512 ]
 
 element psx : trinity
-    public  width    : i32    [ 960 ]
-    public  height   : i32    [ 720 ]
+    width    : i32    [ 960 ]
+    height   : i32    [ 720 ]
     public  title    : string [ 'psx' ]
     # a disc is its folder: the .cue in it is found
     expect default [ Live, Directory ] disc : resource

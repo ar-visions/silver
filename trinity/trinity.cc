@@ -238,6 +238,27 @@ HOST_API int agent_sock_send(const char* name, const char* line) {
     return (w == (ssize_t)n) ? 1 : 0;
 }
 
+// client: one line to a socket by its full path (a host's, shared into
+// a bound view at its real path). 0 = nobody home
+HOST_API int agent_path_send(const char* path, const char* line) {
+    if (!path || !*path || !line || !*line) return 0;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    struct sockaddr_un su;
+    memset(&su, 0, sizeof(su));
+    su.sun_family = AF_UNIX;
+    strncpy(su.sun_path, path, sizeof(su.sun_path) - 1);
+    if (connect(fd, (struct sockaddr*)&su, sizeof(su)) != 0) {
+        close(fd);
+        return 0;
+    }
+    size_t  n = strlen(line);
+    ssize_t w = write(fd, line, n);
+    close(fd);
+    return (w == (ssize_t)n) ? 1 : 0;
+}
+
 // one complete line per call (newline stripped); 0 = nothing pending
 HOST_API int agent_sock_line(char* out, int cap) {
     if (g_agent_srv < 0 || !out || cap < 2) return 0;
@@ -522,6 +543,7 @@ HOST_API int  agent_sock_open(const char* name)                  { return 0; }
 HOST_API int  agent_sock_line(char* out, int cap)                { return 0; }
 HOST_API void agent_sock_reply(const char* s)                    { }
 HOST_API int  agent_sock_send(const char* nm, const char* ln)    { return 0; }
+HOST_API int  agent_path_send(const char* p, const char* ln)    { return 0; }
 HOST_API int  agent_sock_ask(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API int  agent_sock_ask_block(const char* nm, const char* ln, char* o, int c) { return 0; }
 HOST_API void agent_proc_stop() { }

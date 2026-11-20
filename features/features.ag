@@ -972,7 +972,7 @@ expect func t_abstract [] -> bool
     return b.sides == 9 && b.describe[] == 'shape-9'
 
 Shape Sq4
-    public sides : i32 [ 4 ]        # a subclass may re-declare a default
+    sides : i32 [ 4 ]               # a base's member: a new default
 
 expect func t_member_override [] -> bool
     s: Sq4 [ ]
@@ -1077,6 +1077,16 @@ class Split
 
 func Split.twice [] -> i32
     return v * 2
+
+# a header over two lines, outside its class as in it
+class SplitLong
+    public v : i32
+    func plus [ x: i32,
+                y: i32 ] -> i32
+
+func SplitLong.plus [ x: i32,
+                      y: i32 ] -> i32
+    return v + x + y
 
 # an abstract method: no body, a subclass supplies it
 class Area
@@ -3479,3 +3489,7 @@ expect func t_mem_last [] -> bool
 app features
     func init []
         log 'features module — run with silver --test features'
+
+expect func t_out_of_class_long_header [] -> bool
+    s : SplitLong [ v: 1 ]
+    return s.plus[ 2, 3 ] == 6

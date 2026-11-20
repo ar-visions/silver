@@ -81,7 +81,7 @@ func draw_card [ cv: Canvas, oa: Au, h: FindHit, cx_: f32, ry: f32,
 # the navigation column (users, projects, the drives, the pinned
 # folders): its own element, so its scroll fades at its ends
 element NavSide
-    content : NavSideLayer []
+    public content : NavSideLayer []
 
 Layer NavSideLayer
     func draw [ cv: Canvas ]

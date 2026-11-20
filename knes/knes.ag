@@ -20,7 +20,7 @@ import <math.h>
 # the NES's 2A03: the shared 6502 on the NES's bus
 Cpu65 NesCpu
 	manual nes     : knes
-	ram            : new u8 [ 0x800 ]  # 2 KB, mirrored to $1FFF
+	public ram            : new u8 [ 0x800 ]  # 2 KB, mirrored to $1FFF
 
 	func rd [ addr: u32 ] -> u8
 		return nes.bus_rd[ addr ]
@@ -74,72 +74,72 @@ class KnesState
 
 class nes_ppu
 	# 2 KB nametable RAM (mirrored via cart)
-	vram           : new u8 [ 0x800 ]
-	palette        : new u8 [ 32 ]
-	oam            : new u8 [ 256 ]
+	public vram           : new u8 [ 0x800 ]
+	public palette        : new u8 [ 32 ]
+	public oam            : new u8 [ 256 ]
 	# used when the cart has no CHR ROM
-	chr_ram        : new u8 [ 0x2000 ]
-	ctrl           : u8                # $2000
-	mask           : u8                # $2001
-	status         : u8                # $2002
-	oam_addr       : u8                # $2003
-	scroll_x       : u8
-	scroll_y       : u8
-	addr           : u16               # loopy v: current VRAM address
-	t_reg          : u16               # loopy t: staged address/scroll
-	fine_x         : u8                # fine X scroll (3 bits)
-	latch          : bool              # $2005/$2006 shared write toggle
-	rbuf           : u8                # $2007 buffered read
+	public chr_ram        : new u8 [ 0x2000 ]
+	public ctrl           : u8                # $2000
+	public mask           : u8                # $2001
+	public status         : u8                # $2002
+	public oam_addr       : u8                # $2003
+	public scroll_x       : u8
+	public scroll_y       : u8
+	public addr           : u16               # loopy v: current VRAM address
+	public t_reg          : u16               # loopy t: staged address/scroll
+	public fine_x         : u8                # fine X scroll (3 bits)
+	public latch          : bool              # $2005/$2006 shared write toggle
+	public rbuf           : u8                # $2007 buffered read
 	# t/v holds a VRAM address, not scroll intent
-	t_dirty        : bool
+	public t_dirty        : bool
 	# EFFECTIVE vertical scroll: loads from t only
-	eff_sy         : u8
+	public eff_sy         : u8
 	# at frame start or on $2006 completion —
-	eff_nty        : u8
+	public eff_nty        : u8
 	                                   # mid-frame $2005 Y-writes defer
 	                                   # (hardware)
-	in_vblank      : bool
+	public in_vblank      : bool
 	# sprite-0 hit line this frame (-1 none)
-	s0_line        : i32
-	framebuf       : new u32 [ 256 * 240 ]
+	public s0_line        : i32
+	public framebuf       : new u32 [ 256 * 240 ]
 
 class nes_apu
-	p_duty         : new u8  [ 2 ]
-	p_vol          : new u8  [ 2 ]     # $4000/$4004: DDLC VVVV
-	p_sweep        : new u8  [ 2 ]
-	p_timer        : new u16 [ 2 ]
-	p_len          : new i32 [ 2 ]
-	p_seq          : new i32 [ 2 ]
-	p_ctr          : new i32 [ 2 ]
-	p_env          : new i32 [ 2 ]     # envelope decay level
-	p_envctr       : new i32 [ 2 ]
-	p_start        : new u8  [ 2 ]
-	p_sweepctr     : new i32 [ 2 ]
-	t_timer        : u16               # triangle
-	t_len          : i32
-	t_lin          : i32               # linear counter
-	t_linload      : u8
-	t_start        : u8
-	t_step         : i32
-	t_ctr          : i32
-	n_vol          : u8                # noise
-	n_mode         : u8
-	n_per          : u8
-	n_len          : i32
-	n_lfsr         : u16
-	n_ctr          : i32
-	n_env          : i32
-	n_envctr       : i32
-	n_start        : u8
-	enable         : u8                # $4015
-	fc_mode        : u8                # $4017 bit7: 5-step
-	fc_acc         : i64
-	fc_step        : i32
+	public p_duty         : new u8  [ 2 ]
+	public p_vol          : new u8  [ 2 ]     # $4000/$4004: DDLC VVVV
+	public p_sweep        : new u8  [ 2 ]
+	public p_timer        : new u16 [ 2 ]
+	public p_len          : new i32 [ 2 ]
+	public p_seq          : new i32 [ 2 ]
+	public p_ctr          : new i32 [ 2 ]
+	public p_env          : new i32 [ 2 ]     # envelope decay level
+	public p_envctr       : new i32 [ 2 ]
+	public p_start        : new u8  [ 2 ]
+	public p_sweepctr     : new i32 [ 2 ]
+	public t_timer        : u16               # triangle
+	public t_len          : i32
+	public t_lin          : i32               # linear counter
+	public t_linload      : u8
+	public t_start        : u8
+	public t_step         : i32
+	public t_ctr          : i32
+	public n_vol          : u8                # noise
+	public n_mode         : u8
+	public n_per          : u8
+	public n_len          : i32
+	public n_lfsr         : u16
+	public n_ctr          : i32
+	public n_env          : i32
+	public n_envctr       : i32
+	public n_start        : u8
+	public enable         : u8                # $4015
+	public fc_mode        : u8                # $4017 bit7: 5-step
+	public fc_acc         : i64
+	public fc_step        : i32
 
 element knes : trinity
-	public  width        : i32    [ 1024 ]   # 256 x4
+	width        : i32    [ 1024 ]   # 256 x4
 	# 224 x4 (top/bottom 8 cropped)
-	public  height       : i32    [ 896 ]
+	height       : i32    [ 896 ]
 	public  lock_aspect  : bool   [ true ]
 	public  background   : string [ 'Background' ]
 	expect default [ Live ] rom : resource
@@ -171,7 +171,7 @@ element knes : trinity
 	# hold Up for N frames from frame 5 (repro rig)
 	public  autowalk     : i32
 	# playback volume 0..1, a slider on the host
-	public [ Live, VolumeRange ] volume : f32 [ 0.04 ]
+	volume : f32 [ 0.04 ]
 	# dump composited frames [from,to) as PPMs
 	public  seq_from     : i32
 	public  seq_to       : i32
@@ -251,7 +251,7 @@ element knes : trinity
 	mutable pad_strobe   : u8
 	# --record name / --playback name: one pad byte per emulated frame,
 	# so a session can be replayed without a hand on the keys
-	public  record       : path
+	record       : path
 	public  playback     : path
 	# @FILE; silver cannot null-test a @FILE member yet
 	mutable rec_f        : handle

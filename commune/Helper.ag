@@ -1,7 +1,7 @@
 extend commune
 
-# the agents a person offers (Helper): each one with a contract,
-# agents/<agent>.md in commune's folder, written by its person. It
+# the agents a person offers (Helper): every one they run, under
+# one contract (agents/contract.md), written by its person. Each
 # signs in beside them as name/agent, joins the channels it is on
 # in, works in each one's workspace folder, and answers when named
 class Helper
@@ -32,17 +32,11 @@ class Helper
         st : path path.path_storage[ 'commune' ]
         return '{st}/agents'
 
-    # the agents offered: each with a contract
     func offered [] -> vec string
-        out : vec string []
-        d : path folder[]
-        if [ !d.exists[] ] return out
-        for [ f: path ] in d.ls[ null, false ]
-            if [ f.ext[] == 'md' ] out.push[ f.stem[] ]
-        return out
+        return offered_in[ folder[] ]
 
     func contract [ an: string ] -> string
-        return file_text[ '{folder[]}/{an}.md' ].trim[]
+        return contract_text[ folder[], an ]
 
     func agent_name [ l: Link, an: string ] -> string
         return '{l.me}/{an}'
@@ -167,7 +161,7 @@ class Helper
         prompt : string {
             You are {who}: {l.me}'s agent in the channel {ch} on a
             commune server, where people and their agents work
-            together. Your contract, written by {l.me}, says what you
+            together. The contract, written by {l.me}, says what you
             do here and how:
 
             {terms}

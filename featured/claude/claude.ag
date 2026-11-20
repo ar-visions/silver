@@ -42,6 +42,9 @@ AgentRun ClaudeAgent
     # the record read at most every 300 ms
     intern seen_ms : i64
     intern seen_w  : bool
+    # its conversation's name, read from its record now and then
+    intern title_ms  : i64
+    intern title_got : string
 
     func program [] -> string
         return 'claude'
@@ -130,6 +133,29 @@ AgentRun ClaudeAgent
         seen_w = wa >= 0 && wa > wu
         return seen_w
 
+    # its conversation's name, as claude keeps it in its record: the
+    # user's own (/rename), else claude's; the last read is kept
+    func title [] -> string
+        now : i64 [ Au.epoch_millis[] ]
+        if [ now - title_ms < 2000 ] return (title_got) ? title_got : ''
+        title_ms = now
+        t : string record_tail[ 262144 ]
+        got : string title_in[ t, '"customTitle":"' ]
+        if [ got.count == 0 ] got = title_in[ t, '"aiTitle":"' ]
+        if [ got.count > 0 ] title_got = got
+        return (title_got) ? title_got : ''
+
+    # the last value of a record's key in t: to its closing quote
+    func title_in [ t: string, key: string ] -> string
+        if [ !t ] return ''
+        at : i32 [ i32[ t.rindex_of[ key ] ] ]
+        if [ at < 0 ] return ''
+        st : i32 [ at + i32[ key.count ] ]
+        rest : string t.mid[ st, t.count - st ]
+        e : i32 [ i32[ rest.index_of[ '","sessionId"' ] ] ]
+        if [ e < 0 ] e = i32[ rest.index_of[ '"' ] ]
+        return (e > 0) ? rest.mid[ 0, e ] : ''
+
     # a session id: a version 4 uuid
     func new_session [] -> string
         seed : u64 [ u64[ Au.epoch_micros[] ] ]
@@ -179,10 +205,12 @@ AgentRun ClaudeAgent
         free[ buf ]
         return s
 
-    # it keeps file checkpoints for the rewind only when asked
+    # it keeps file checkpoints for the rewind only when asked;
+    # its terminal in the main screen: scrollback, a scroll bar
     func env [] -> vec string
         kv : string 'CLAUDE_CODE_ENABLE_FILE_CHECKPOINTING=1'
-        return vec string [] [ kv ]
+        ns : string 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1'
+        return vec string [] [ kv, ns ]
 
     func message [ text: string ] -> string
         q : string quote[ text ]

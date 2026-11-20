@@ -1,0 +1,692 @@
+extend orbiter
+
+# the phone's one button (ctrl / cmd + space on a simulated
+# phone): let go before the switcher (held 0.6 s, on_frame) it
+# goes home; pressed again within 0.4 s of that, the screen goes
+# off; dark, a press only wakes it
+func orbiter.power_key [ ev: Event ] -> bool
+    ks : i32 [ ev.key.unicode ]
+    # space let go ends the hold, whether ctrl / cmd went up first
+    sim : bool [ ks == 32 && use_mobile && !system_os
+        && (ev.key.ctrl || ev.key.meta
+            || (ev.key.state == 0 && power_down_us > 0)) ]
+    if [ ks != 349 && !sim ] return false
+    if [ ev.key.state == 2 ] return true
+    now : i64 epoch_micros[]
+    if [ ux ] ux.restyle = true
+    # let go: home, unless the hold opened the switcher (it took
+    # the press) or the press woke or darkened the screen
+    if [ ev.key.state == 0 ]
+        if [ power_down_us > 0 ]
+            power_down_us = 0
+            power_last_us = now
+            # home and the switcher toggle: home showing (nothing
+            # over it) opens the switcher, the switcher goes back
+            # to home; from anywhere else, home
+            home : bool [ pane_empty[ active_pane ] && !drawer_open
+                && !pane_browsing[ active_pane ] ]
+            if [ switcher ] switcher = false
+            el [ home ]
+                if [ drawer_open ] drawer_shut[]
+                switcher = true
+            el go_home[ active_pane ]
+        return true
+    if [ screen_dark ]
+        power_last_us = 0
+        screen_set[ true ]
+        return true
+    if [ power_last_us > 0 && now - power_last_us < 400000 ]
+        power_last_us = 0
+        switcher      = false
+        screen_set[ false ]
+        return true
+    power_down_us = now
+    if [ ux ] ux.will_animate = true
+    return true
+
+# the panel lit or dark; the light it had comes back with it
+func orbiter.screen_set [ on: bool ]
+    if [ on == !screen_dark ] return
+    screen_dark = !on
+    now : i64 epoch_micros[]
+    if [ on ] lit_us = now
+    el dark_us = now
+    if [ dimmed ]
+        dimmed = false
+        if [ set_light >= 0.0 ] host_backlight_set[ set_light ]
+    platform_screen_power[ (on) ? 1 : 0 ]
+    if [ ux ] ux.restyle = true
+
+# orbiter-os's power: untouched, the light dims, then the screen
+# goes dark; dark a while, the whole phone sleeps until the power
+# key, a call or a text wakes it. A call keeps it awake
+func orbiter.power_tick [ w: Window ]
+    if [ !phone_here[] ] return
+    now : i64 epoch_micros[]
+    if [ lit_us == 0 ] lit_us = now
+    if [ screen_dark && dark_us == 0 ] dark_us = now
+    mo : Modem [ (phone_here[]) ? modem_shared[] : null ]
+    ring : bool [ mo && mo.ringing[] ]
+    talk : bool [ ring || (mo && mo.current[]) ]
+    if [ screen_dark && ring ] screen_set[ true ]
+    if [ !screen_dark ]
+        if [ w.last_move.x != pointer_was.x
+             || w.last_move.y != pointer_was.y ]
+            pointer_was = w.last_move
+            lit_us = now
+        off : i64 [ time_words[ set_screen_off ] * 1000000 ]
+        last : i64 [ max[ max[ w.user_us, lit_us ], awake_us ] ]
+        idle : i64 [ now - last ]
+        if [ off <= 0 || talk ] idle = 0
+        # the last 5 s: a third of the light, as a warning
+        dim : bool [ off > 0 && idle >= off - 5000000 ]
+        if [ dim != dimmed && set_light >= 0.0 ]
+            dimmed = dim
+            host_backlight_set[ (dim) ? set_light / 3.0 : set_light ]
+        if [ off > 0 && idle >= off ] screen_set[ false ]
+        return
+    # a PC wakes on any key, press or move of the mouse
+    if [ !use_mobile ]
+        moved : bool [ w.last_move.x != pointer_was.x
+            || w.last_move.y != pointer_was.y ]
+        if [ moved || w.user_us > dark_us ]
+            pointer_was = w.last_move
+            screen_set[ true ]
+        # NVIDIA refuses mem sleep from here: no sleep on a PC
+        return
+    sl : i64 time_words[ set_sleep ]
+    if [ sl < 0 || talk ] return
+    # woken, a while to take what woke it (a text, a call)
+    if [ now - dark_us < sl * 1000000 || now - awake_us < 20000000 ]
+        return
+    if [ platform_sleep[] != 0 ] slept_n += 1
+    awake_us = epoch_micros[]
+    w.will_animate = true
+
+func orbiter.mic_frame []
+    # the exchange open: the dictation model loads now, so the mic
+    # starts at once
+    if [ ux && ux.shot_ask ] dictation_preload[]
+    # a recording dictates the whole take: no button
+    rt : i64 [ record_time[] ]
+    if [
+        rt >= 0 && !orbit_cap_on && !orbit_flushing
+        && !dictation_streaming[] ]
+        dictation_preload[]
+        dictation_stream_start[]
+    if [ dictation_streaming[] ]
+        for [ ps_: i32 0, ps_ < 64, ps_ += 1 ]
+            if [ !dictation_poll[] ] break
+        st_ : string dictation_stream_take[]
+        if [ st_ && st_.count > 0 ]
+            at_ : i64 [
+                dictation_stream_at[] + rt - Au.epoch_micros[] ]
+            if [ at_ < 0 ] at_ = 0
+            ed : Editor pane_at[ active_pane ]
+            mf : string [ (ed && ed.src) ? '{ed.src}' : null ]
+            log 'orbiter: recording mark at {at_} us "{st_}"'
+            record_mark[ at_, dictation_stream_dur[], st_, mf ]
+        return
+    dict_test_step[]
+    # every block that came in since the last frame (orbiter's
+    # frames slow at rest, and one poll takes one block)
+    if [ orbit_cap_on ]
+        if [ mark_at < 0 ] mark_at = record_time[]
+        for [ pk: i32 0, pk < 64, pk += 1 ]
+            if [ !dictation_poll[] ] break
+    if [ !orbit_flushing ] return
+    if [ mark_end < 0 ] mark_end = record_time[]
+    if [ !dictation_flush[] ] return
+    orbit_flushing = false
+    dt : dictation_take[]
+    ds : i32 [ dict_slot ]
+    dict_slot = -1
+    # the take goes on the recording at the span it was spoken
+    if [ dt && dt.count > 0 && mark_at >= 0 ]
+        ed : Editor pane_at[ active_pane ]
+        mf : string [
+            (listen_file) ? '{listen_file}' : (ed && ed.src)
+            ? '{ed.src}' : null ]
+        record_mark[ mark_at, mark_end - mark_at, dt, mf ]
+    mark_at  = -1
+    mark_end = -1
+    if [ !dt || dt.count == 0 ] return
+    # an exchange's mic: the words are typed into its field, to
+    # review and send with enter
+    if [ ds > 0 ]
+        log 'orbiter: take into the exchange field of slot {ds} "{dt}"'
+        for [ i: i32 0, i < i32[ dt.count ], i += 1 ]
+            host_post2[ ds, 1, i32[ HM.text ], (i32 dt.chars[ i ]) & 255, 0, 0 ]
+        return
+    if [ ds == 0 ]
+        log 'orbiter: take into the exchange field "{dt}"'
+        if [ ux ]
+            # a fresh event: the window's own ev faulted in clear[]
+            # from here
+            tev : Event [ ]
+            tev.key.text = dt
+            ux.text_event[ tev ]
+        return
+    log 'orbiter: submitting take "{dt}"'
+    take_send[ dt ]
+    listen_file = null
+    listen_shot = null
+
+# 20 bands of what plays now, from the players' last 1024 samples:
+# a windowed DFT at log-spaced bins (2..400: ~86 Hz to 17 kHz at
+# 44.1 kHz), in dB over 60 dB; up at once, down slowly
+func orbiter.vol_spectrum []
+    n : i32 [ 1024 ]
+    nb : i32 [ 20 ]
+    if [ !vol_scope ]
+        vol_scope = vec f32 [ n ]
+        for [ i: i32 0, i < n, i += 1 ]
+            vol_scope.push[ 0.0 ]
+    if [ !vol_bands ]
+        vol_bands = vec f32 [ nb ]
+        for [ i: i32 0, i < nb, i += 1 ]
+            vol_bands.push[ 0.0 ]
+    wave : vec f32 [ n ]
+    for [ i: i32 0, i < n, i += 1 ]
+        wave.push[ 0.0 ]
+    heard : bool [ false ]
+    av0 : AppView active_app[]
+    if [ instances ]
+        for [ v: AppView ] in instances
+            if [ v.slot <= 0 || v.ended || v.held ] continue
+            if [ av0 && v != av0 ] continue
+            got : i32 [ host_audio_scope[ v.slot, @vol_scope[ 0 ],
+                                         n ] ]
+            if [ got < n ] continue
+            heard = true
+            for [ i: i32 0, i < n, i += 1 ]
+                sv : f32 [ vol_scope[ i ] ]
+                wave[ i ] += sv
+    for [ b: i32 0, b < nb, b += 1 ]
+        lv : f32 [ 0.0 ]
+        if [ heard ]
+            k : f32 [ 2.0 * pow[ 200.0, f32[ b ] / f32[ nb - 1 ] ] ]
+            re : f32 [ 0.0 ]
+            im : f32 [ 0.0 ]
+            for [ i: i32 0, i < n, i += 1 ]
+                hw : f32 [ 0.5 - 0.5 * cos[ 6.2832 * f32[ i ]
+                    / f32[ n ] ] ]
+                ph : f32 [ 6.2832 * k * f32[ i ] / f32[ n ] ]
+                smp : f32 [ wave[ i ] ]
+                x : f32 [ smp * hw ]
+                re += x * cos[ ph ]
+                im -= x * sin[ ph ]
+            mg : f32 [ sqrt[ re * re + im * im ] * 4.0 / f32[ n ] ]
+            # dB: 20 log10 = 8.6859 ln
+            db : f32 [ 8.6859 * log[ mg + 0.000001 ] ]
+            lv = clamp[ (db + 60.0) / 60.0, 0.0, 1.0 ]
+        was : f32 [ vol_bands[ b ] ]
+        vol_bands[ b ] = (lv > was) ? lv : was * 0.88
+
+# the zone in use: the chosen one, else the system's
+func orbiter.zone_now [] -> string
+    if [ set_zone && set_zone.count > 0 ] return set_zone
+    return zone_system[]
+
+# every zone, by region, each region a heading
+func orbiter.zone_popup []
+    zd : path '/usr/share/zoneinfo'
+    rows : vec string []
+    vals : vec string []
+    regions : vec string [] [ 'Africa', 'America', 'Antarctica',
+        'Asia', 'Atlantic', 'Australia', 'Europe', 'Indian',
+        'Pacific' ]
+    for [ rg: string ] in regions
+        rd : path '{zd}/{rg}'
+        if [ !rd.exists[] ] continue
+        # by name: a region's zones, its own files
+        names : vec string []
+        for [ e: path ] in rd.ls[ null, false ]
+            if [ e.is_dir[] ] continue
+            zn : '{rg}/{e.filename[]}'
+            at : i32 [ names.count ]
+            for [ j: i32 0, j < names.count, j += 1 ]
+                if [ zn.compare[ names[ j ] ] < 0 ]
+                    at = j
+                    break
+            names.insert[ zn, at ]
+        if [ names.count == 0 ] continue
+        rows.push[ rg ]
+        vals.push[ '' ]
+        for [ zn: string ] in names
+            rows.push[ zone_label[ zn ] ]
+            vals.push[ zn ]
+    popup[ 'time zone', 'time zone', rows, vals ]
+
+# a font chip's choices: Default, then each family we ship
+func orbiter.font_popup [ setting: string ]
+    rows : vec string [] [ 'Default' ]
+    vals : vec string [] [ 'Default' ]
+    for [ h: FindHit ] in font_families[ setting == 'fixed width' ]
+        rows.push[ h.text ]
+        vals.push[ h.text ]
+    popup[ setting, setting, rows, vals ]
+
+# the program's file: picked, or named in the new-file box
+func orbiter.portal_deliver [ p0: path ] -> bool
+    k : PortalAsk portal_ask
+    # a folder for a file: it is opened, never handed over
+    if [ k && !k.directory && p0 && p0.is_dir[] ]
+        nav.nav_root = p0
+        run_search[]
+        return true
+    # a file for a folder: a module's walks into its folder, as a
+    # folder's click does; any other is not an answer
+    if [ k && k.directory && p0 && !p0.is_dir[] ]
+        dir : path p0.parent_dir[]
+        if [ '{nav.nav_root}' != '{dir}' ]
+            nav.nav_root = dir
+            run_search[]
+        return true
+    portal_ask = null
+    pick_field = null
+    if [ k ]
+        portal_shared[].finish[ k, '{p0}' ]
+    # the navigator shut whole: its request too, or the pane keeps
+    # the window hidden behind a navigator that is gone
+    exit_finder[]
+    exit_find_mode[]
+    if [ ux ] ux.restyle = true
+    return true
+
+# the navigator opened for a program's waiting request
+func orbiter.portal_pick []
+    k : PortalAsk portal_shared[].waiting[]
+    if [ !k ] return
+    k.taken     = true
+    portal_ask  = k
+    pick_field  = 'portal'
+    pick_dir    = k.directory
+    pick_editor = pane_at[ active_pane ]
+    pick_launch = null
+    pick_exts   = vec string []
+    pick_cache  = null
+    if [ k.folder.count > 0 ] nav.nav_root = path k.folder
+    focus_finder[]
+    run_search[]
+    # a save names its file in the new-file box, as suggested
+    pv : element pane_view[ active_pane ]
+    if [ k.save && pv && pv inherits EditorView ]
+        ev : EditorView pv
+        ev.newfile_enter[ null ]
+        ev.newfile_text = k.name
+        pending_finder = active_pane
+
+# the navigator is up for a program's save
+func orbiter.portal_saving [] -> bool
+    return pick_field == 'portal' && portal_ask && portal_ask.save
+
+# a mobile network to show: orbiter-os, or the simulated phone
+func orbiter.phone_here [] -> bool
+    return system_os || getenv[ 'SILVER_PHONE_SIMULATE' ] != null
+
+# a card pressed in pane pi's apps view: ours opens there; a
+# recommendation runs if it is here (installing it: later)
+# the login stands before everything: on orbiter-os with an
+# account written, or asked for (--login); no account: none
+func orbiter.login_wait [] -> bool
+    if [ signed_in ] return false
+    if [ !login && !on_the_os[] ] return false
+    if [ !login_read ]
+        login_read = true
+        login_load[]
+    if [ login_users.count == 0 ] signed_in = true
+    return !signed_in
+
+# the accounts file's user and password lines (the wizard's)
+func orbiter.login_load []
+    login_users  = vec string []
+    login_hashes = vec string []
+    f : path [ accounts ]
+    if [ !f.exists[] ] return
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return
+    nm : string ''
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.starts_with[ 'user:' ] ]
+            nm = ln.mid[ 5, ln.count - 5 ].trim[]
+        el [ ln.starts_with[ 'password:' ] && nm.count > 0 ]
+            h : string ln.mid[ 9, ln.count - 9 ].trim[]
+            if [ h.starts_with[ "'" ] && h.count >= 2 ]
+                h = h.mid[ 1, h.count - 2 ]
+            login_users.push[ nm ]
+            login_hashes.push[ h ]
+            nm = ''
+
+# Enter checks the password against its hash; backspace and
+# escape edit it
+# the password field edited: Enter tries what it holds
+func orbiter.login_edit [ e: element, ev: Event ]
+    login_pass = (e.edit) ? e.edit : ''
+    k : i32 [ ev.key.unicode ]
+    if [ ev.key.state && (k == 257 || k == 335) ]
+        login_try[]
+        e.edit       = ''
+        e.sel_col    = 0
+        e.anchor_col = 0
+    el [ ev.key.text ]
+        login_note = ''
+    if [ ux ] ux.restyle = true
+
+func orbiter.login_try []
+    if [ login_sel < 0 || login_sel >= login_users.count ] return
+    h : string login_hashes[ login_sel ]
+    got : cstr [ crypt[ login_pass.chars, h.chars ] ]
+    if [ got && h.count > 0 && string [ got ] == h ]
+        signed_in = true
+        log 'login: {login_users[ login_sel ]}'
+    el
+        login_note = 'That password is not right'
+    login_pass = ''
+    if [ ux ] ux.restyle = true
+
+# the sound panel: the two levels as sliders, its chips under
+func orbiter.sound_body [] -> Elements
+    t : Elements []
+    un : f32 unit_px[]
+    ch : f32 [ round[ 1.1 * un ] ]
+    gap : f32 [ round[ 0.35 * un ] ]
+    pad : f32 [ round[ 1.4 * un ] ]
+    # one group: the sliders, then the mic and the devices
+    sg : Elements []
+    sg['snd_out'] = BarLevel [ icon: 'volume_up', pad_l: pad,
+        area: Region [ 'l{gap}px t{ch}px r{gap}px h{ch}px' ] ]
+    y : f32 [ ch * 2.0 + gap ]
+    sg['snd_mic'] = BarLevel [ icon: 'mic', pad_l: pad,
+        area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+    y += ch + gap
+    rows : Elements chip_grid[ panel_settings[ 'sound' ], set_open,
+                               'x' ]
+    sg['snd_rest'] = element [ elements: rows,
+        area: Region [ 'l0 t{y}px r0 h{chips_h}px' ] ]
+    t['snd_group'] = SetGroup [ title: 'sound', head_h: ch,
+        elements: sg,
+        area: Region [ 'l{gap}px t0 r{gap}px h{y + chips_h}px' ] ]
+    return t
+
+# the sound sliders: a move sets the level, else they follow it
+func orbiter.sound_sync []
+    so : element find_el[ a, 'snd_out' ]
+    if [ !so || !(so inherits BarLevel) ] return
+    bo : BarLevel so
+    if [ bo.changed ]
+        bo.changed = false
+        master_vol = bo.value
+        host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+    el [ bo.value != master_vol ]
+        bo.value    = master_vol
+        bo.pristine = false
+    sm : element find_el[ a, 'snd_mic' ]
+    if [ !sm || !(sm inherits BarLevel) ] return
+    bm : BarLevel sm
+    now : i64 [ epoch_millis[] ]
+    if [ bm.changed ]
+        bm.changed = false
+        mic_vol = bm.value
+        mv : f32 [ 0.0 ]
+        mm : i32 [ 0 ]
+        host_capture_get[ @mv, @mm ]
+        host_capture_set[ mic_vol, mm ]
+        mic_read_ms = now
+    el [ now - mic_read_ms > 1000 ]
+        mic_read_ms = now
+        mm : i32 [ 0 ]
+        host_capture_get[ @mic_vol, @mm ]
+    if [ !bm.changed && bm.value != mic_vol ]
+        bm.value    = mic_vol
+        bm.pristine = false
+
+# the display panel: its settings, then the recording as a group
+# of its own (choices, start or stop with the clock, the take)
+func orbiter.display_body [] -> Elements
+    t : Elements chip_grid[ panel_settings[ 'display' ], set_open,
+                            'x' ]
+    top : f32 [ chips_h ]
+    un : f32 unit_px[]
+    ch : f32 [ round[ 1.1 * un ] ]
+    gap : f32 [ round[ 0.3 * un ] ]
+    tx : Elements []
+    tx['text_choices'] = element [
+        elements: chip_grid[ text_settings[], set_open, 'x' ],
+        area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+    th : f32 [ ch + chips_h ]
+    t['text_group'] = SetGroup [ title: 'text', head_h: ch,
+        elements: tx,
+        area: Region [
+            'l{gap}px t{top + gap}px r{gap}px h{th}px' ] ]
+    top += gap + th
+    rec : Elements []
+    rec['rec_choices'] = element [
+        elements: chip_grid[ rec_settings[], set_open, 'x' ],
+        area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+    y : f32 [ ch + chips_h ]
+    on : bool [ rec_iid != -2 ]
+    secs : i64 [ (on) ? (epoch_millis[] - rec_from) / 1000 : 0 ]
+    ss : i64 [ secs % 60 ]
+    mn : i64 [ secs / 60 ]
+    tm : string [ (ss < 10) ? '{mn}:0{ss}' : '{mn}:{ss}' ]
+    rec['rec_toggle'] = RoundTab [
+        buttons: vec string [] [ 'rec_toggle' ],
+        icon_ids: vec string [] [ '_text' ],
+        labels: vec string [] [ (on) ? 'stop   {tm}' : 'start' ],
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        label_px: 0.5 * ch, manual: true,
+        seg_radius: ch * 0.5, use_spacing: false,
+        rest_fill: rgba [ (on) ? '#c2185b88' : '#00000026' ],
+        sel_mask: (on) ? 1 : 0,
+        area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+    y += ch + gap
+    if [ rec_path ]
+        rec['rec_saved'] = PropChip [ name: 'saved to',
+            value: '{rec_path}',
+            area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+        y += ch + gap
+    t['rec_group'] = SetGroup [ title: 'recording', head_h: ch,
+        elements: rec,
+        area: Region [
+            'l{gap}px t{top + gap}px r{gap}px h{y}px' ] ]
+    return t
+
+# the keyboard panel: its keys, then the languages to pick and
+# remove, a group each
+func orbiter.keyboard_body [] -> Elements
+    t : Elements []
+    un : f32 unit_px[]
+    ch : f32 [ round[ 1.1 * un ] ]
+    gap : f32 [ round[ 0.3 * un ] ]
+    ks : Elements []
+    ks['key_choices'] = element [
+        elements: chip_grid[ panel_settings[ 'keyboard' ], set_open,
+                             'x' ],
+        area: Region [ 'l0 t{ch}px r0 h{chips_h}px' ] ]
+    kh : f32 [ ch + chips_h ]
+    t['key_group'] = SetGroup [ title: 'keys', head_h: ch,
+        elements: ks,
+        area: Region [ 'l{gap}px t0 r{gap}px h{kh}px' ] ]
+    rows : f32 [ 1.0 + second_languages[].count ]
+    lh : f32 [ ch + (rows * 1.35 + 0.45) * un ]
+    ls : Elements []
+    ls['lang_list'] = LanguageList [
+        area: Region [ 'l0 t{ch}px r0 b0' ] ]
+    t['lang_group'] = SetGroup [ title: 'languages', head_h: ch,
+        elements: ls,
+        area: Region [ 'l{gap}px t{kh + gap}px r{gap}px h{lh}px' ] ]
+    return t
+
+# a family's file from our own fonts; '' none
+func orbiter.font_file [ family: string, weight: i32 ] -> string
+    if [ !family || family.count == 0 ] return ''
+    for [ h: FindHit ] in font_families[ false ]
+        if [ h.text == family ] return '{h.file}'
+    return ''
+
+# the chosen fonts over the bundled ones, when they changed
+func orbiter.fonts_apply [ w: Window ]
+    if [ !w || !w.vk ] return
+    now : string '{set_mono}|{set_tool}'
+    if [ fonts_on && fonts_on == now ] return
+    fonts_on = now
+    w.vk.font_swap[ 'fonts/SpaceMono-Combined.ttf',
+                    font_file[ set_mono, 400 ] ]
+    w.vk.font_swap[ 'fonts/BarlowCondensed-Regular.ttf',
+                    font_file[ set_tool, 400 ] ]
+    w.vk.font_swap[ 'fonts/BarlowCondensed-Bold.ttf',
+                    font_file[ set_tool, 700 ] ]
+    w.restyle = true
+    if [ w.root ] w.dirty_tree[ w.root ]
+
+# a panel's settings, the display's own groups' with them
+func orbiter.setting_props [ tab: string ] -> vec Prop
+    ps : vec Prop panel_settings[ tab ]
+    if [ tab == 'display' ]
+        for [ p: Prop ] in text_settings[] ps.push[ p ]
+        for [ p: Prop ] in rec_settings[] ps.push[ p ]
+    return ps
+
+# a choice taken: kept, and put to work
+func orbiter.setting_set [ name: string, v: string ]
+    n : f32 [ v.real_value[] ]
+    if [ rec_setting_set[ name, v ] ]
+        if [ ux ] ux.restyle = true
+        return
+    if [ name == 'scroll' ]        set_scroll = n
+    el [ name == 'easing' ]        set_easing = v
+    el [ name == 'delay' ]         set_delay = i32[ n ]
+    el [ name == 'rate' ]          set_rate = i32[ n ]
+    el [ name == 'layout' ]        set_layout = v
+    el [ name == 'time zone' ]     set_zone = v
+    el [ name == 'agent mirrors' ] set_mirrors = v
+    el [ name == 'dock names' ]
+        set_dock_names = v
+        if [ ux && ux.root ] ux.dirty_tree[ ux.root ]
+    el [ name == 'fixed width' || name == 'tool font' ]
+        fam : string [ (v == 'Default') ? '' : v ]
+        if [ name == 'fixed width' ] set_mono = fam
+        el set_tool = fam
+        fonts_apply[ ux ]
+    el [ name == 'screen off' ]    set_screen_off = v
+    el [ name == 'sleep' ]         set_sleep = v
+    el [ name == 'on-screen' ]
+        set_keys = v
+        keys_force = 0
+        if [ ux ] ux.restyle = true
+    el [ name == 'haptics' ]
+        set_haptic = v
+        apply_settings[ ux ]
+        # the new strength felt at once
+        haptic_tap[]
+        session_dirty = true
+        return
+    el [ name == 'size' ]
+        set_size = i32[ round[ n / 100.0 * 22.0 ] ]
+        if [ ux && ux.vk ] ux.vk.font_unit = set_size
+        if [ ux && ux.root ] ux.dirty_tree[ ux.root ]
+    el [ name == 'speakers' || name == 'input' ]
+        inp : bool [ name == 'input' ]
+        for [ d: string ] in sound_devices[ inp ]
+            bar : i32 [ d.index_of[ '|' ] ]
+            if [ d.mid[ bar + 1, d.count - bar - 1 ] == v ]
+                sound_choose[ inp, d.mid[ 0, bar ] ]
+                break
+    el [ name == 'resolution' ]
+        ms : vec string screen_modes[]
+        was : i32 screen_mode[]
+        for [ i: i32 0, i < ms.count, i += 1 ]
+            if [ ms[ i ] == v && i != was && screen_set_mode[ i ] ]
+                # the first change's mode is the one to go back to
+                if [ mode_until == 0 ] mode_was = was
+                mode_until = epoch_millis[] + 15000
+    el [ name == 'keep it' ]
+        if [ v == 'go back' && mode_was >= 0 ]
+            screen_set_mode[ mode_was ]
+        mode_until = 0
+        mode_was = -1
+    el [ name == 'mic' ]
+        mv : f32 [ 0.0 ]
+        mm : i32 [ 0 ]
+        host_capture_get[ @mv, @mm ]
+        mm = (v == 'muted') ? 1 : 0
+        host_capture_set[ mv, mm ]
+    session_dirty = true
+    apply_settings[ ux ]
+
+# the bar's battery: its width, 0 with none
+func orbiter.batt_w [] -> f32
+    return (batt.here[]) ? 2.6 * unit_px[] : 0.0
+
+# the system menu's light slider moved: the panel takes it, kept
+func orbiter.light_sync []
+    if [ !light.here[] ] return
+    sl : element find_el[ a, 'sys_light' ]
+    if [ !sl || !(sl inherits BarLevel) ] return
+    bl : BarLevel sl
+    # its value is ours until the user moves it
+    if [ !bl.changed ]
+        if [ bl.value != set_light ]
+            bl.value    = set_light
+            bl.pristine = false
+        return
+    bl.changed = false
+    set_light = bl.value
+    host_backlight_set[ set_light ]
+    session_dirty = true
+
+# the light slider across the system menu's top; the height it
+# takes in units (0 with no panel to light)
+func orbiter.light_row [ t: Elements, l: string ] -> f32
+    if [ !light.here[] ] return 0.0
+    un : f32 unit_px[]
+    if [ set_light < 0.0 ] set_light = host_backlight_get[]
+    t['sys_light'] = BarLevel [ icon: 'light_mode',
+        pad_l: round[ 1.4 * un ],
+        area: Region [ 'l{l} t0.4 r0.6 h1.1' ] ]
+    return 1.9
+
+# power off or restart: only orbiter-os itself, never the
+# computer a window is trying the bar on
+func orbiter.power [ again: bool ]
+    what : (again) ? 'restart' : 'power off'
+    if [ !system_os ]
+        log 'system bar: {what} (only on orbiter-os)'
+        return
+    log 'system bar: {what}'
+    machine_power[ again ]
+
+func orbiter.agi_path [] -> path
+    if [ !startup_path ] startup_path = path.path_startup[]
+    p : path '{startup_path}/orbiter.agi'
+    if [ p.exists[] ] return p
+    d : path startup_path
+    for [ i: i32 0, i < 6, i += 1 ]
+        d = d.parent_dir[]
+        if [ !d ] return p
+        p2 : path '{d}/orbiter.agi'
+        if [ p2.exists[] ]
+            startup_path = d
+            return p2
+    return p
+
+# a top-level key's first word in agi text: 'module: knes' gives
+# knes, "software: ['games']" gives games; '' when absent
+func orbiter.agi_word [ tx: string, key: string ] -> string
+    at : i32 [ -1 ]
+    k : '{key}: '
+    if [ tx.starts_with[ k ] ] at = 0
+    el
+        n_ : i32 [ tx.index_of[ '\n{k}' ] ]
+        if [ n_ >= 0 ] at = n_ + 1
+    if [ at < 0 ] return ''
+    rest : tx.mid[ at + k.count, tx.count - at - k.count ]
+    e_ : i32 [ rest.index_of[ '\n' ] ]
+    v : string ((e_ >= 0) ? rest.mid[ 0, e_ ] : rest).trim[]
+    q : i32 [ v.index_of[ "'" ] ]
+    if [ q >= 0 ]
+        r2 : v.mid[ q + 1, v.count - q - 1 ]
+        q2 : i32 [ r2.index_of[ "'" ] ]
+        return (q2 >= 0) ? r2.mid[ 0, q2 ] : r2
+    return v

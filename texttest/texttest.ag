@@ -6,8 +6,8 @@ import img
 import trinity
 
 element texttest : trinity
-    public width      : i32    [ 640 ]
-    public height     : i32    [ 200 ]
+    width      : i32    [ 640 ]
+    height     : i32    [ 200 ]
     public title      : string [ 'texttest' ]
 
     func init []

@@ -1,0 +1,655 @@
+extend orbiter
+
+# the agents: their heads, bodies, homes and avatars
+
+# orbiter's avatars: the app's state fed to the look each frame
+OrbiterAvatar AppAvatar
+    func on_state [ m: i32 ]
+        orb : orbiter [ ux.app_object ]
+        if [ orb ]
+            work_on   = orb.busy
+            edits_in  = orb.agent_changed
+            work_done = orb.agent_done
+            # done: no beam while a reload waits; it faces the user
+            swap_on   = orb.swap_live && !orb.agent_done
+            mic_on    = orb.listening[]
+        super.on_state[ m ]
+
+    # clicking the avatar dismisses it — same as the toggle off
+    func on_click [ ev: Event ]
+        if [ drag_moved ] return
+        orb : orbiter [ ux.app_object ]
+        if [ orb ]
+            #orb.show_orbiter = false
+            if [ orb.listening[] ] orb.toggle_listen[ null ]
+        ev.no_propagation = true
+
+# the corner avatar: off the edge until summoned, then slid in
+AppAvatar CornerAvatar
+    style : CSS {
+        area: r-14 b22 w12 h19, 700ms cubic outward
+        opacity: 0.0, 700ms cubic outward
+    :summoned
+        area: r-1 b22 w12 h19, 700ms cubic inward
+        opacity: 1.0, 700ms cubic inward
+    }
+
+# the login's avatar: large and face on over the user cards
+AppAvatar LoginAvatar
+    render_scale : f32 [ 4.0 ]
+    style : CSS {
+        area: l50%-170px t50%-330px w340px h340px
+    }
+
+# an agent's title in the agent view: a press opens its console
+# under it, again folds it
+element AgentHead
+    # a narrow menu's: edge to edge, square, no border
+    public flush : bool
+    # the desktop's: thin, its words its own; opens the desktop's pane
+    public desk : bool
+    # its agent; a phone's drag leftward on it (from the right, where
+    # the end sits) shows its end
+    public agent : string
+    intern grab_x : f32 [ -1.0 ]
+    intern grab_y : f32
+    intern swiped : bool
+    public blur : HeadBlur []
+
+    func render [] -> Elements
+        t : Elements []
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !desk || !o || !bounds ] return t
+        un : f32 ux_unit[ ux ]
+        ew : f32 [ round[ 44.0 * un ] ]
+        ins : f32 [ round[ 10.0 * un ] ]
+        md : string o.home_model_of[ agent ]
+        nl : string [ (md.count > 0) ? '{agent}  {md}' : agent ]
+        nw : f32 [ round[ bounds.w * 0.4 ] ]
+        t['dagent_l'] = HomeLabel [ label: nl,
+            area: Region [ 'l{ins}px t0 w{nw}px b0' ] ]
+        if [ o.home_session[ agent ] ]
+            t['dagent_s'] = HomeState [ label: o.home_state_of[ agent ],
+                selected: o.home_waiting[ agent ],
+                area: Region [ 'l{ins + nw}px t0 r{ew}px b0' ] ]
+        if [ !use_mobile || o.end_shown == agent ]
+            t['dagent_e'] = BarIcon [
+                buttons: vec string [] [ 'ahome_end_{agent}' ],
+                labels: vec string [] [ 'end' ],
+                icons: false, manual: true, label_px: 15.0 * un,
+                label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                seg_radius: 16.0 * un, use_spacing: false,
+                rest_fill: rgba [ '#0000' ],
+                outline: rgba [ '#0000' ],
+                area: Region [ 'r0 t0 w{ew}px b0' ] ]
+        return t
+
+    func on_press [ ev: Event ]
+        if [ desk && !use_mobile ]
+            o : orbiter [ cast orbiter [ ux.app_object ] ]
+            if [ o ] o.desk_agent_pick[ agent ]
+            ev.no_default = true
+            return
+        if [ !use_mobile ] return
+        grab_x = f32[ ux.mouse.x ]
+        grab_y = f32[ ux.mouse.y ]
+        swiped = false
+
+    func on_move [ ev: Event ]
+        if [ grab_x < 0.0 || swiped ] return
+        dx : f32 [ f32[ ux.mouse.x ] - grab_x ]
+        dy : f32 [ f32[ ux.mouse.y ] - grab_y ]
+        # dragged in from the right: leftward, more than up or down
+        if [ dx < -24.0 && -dx > abs[ dy ] ]
+            swiped = true
+            o : orbiter [ cast orbiter [ ux.app_object ] ]
+            if [ o ] o.end_shown = agent
+            ux.restyle = true
+
+    # a phone's tap (no swipe): a shown end goes, else it opens or
+    # shuts its console
+    func on_release [ ev: Event ]
+        held : bool [ grab_x >= 0.0 ]
+        grab_x = -1.0
+        if [ !held || swiped ] return
+        o : orbiter [ cast orbiter [ ux.app_object ] ]
+        if [ !o ] return
+        if [ o.end_shown.count > 0 ] o.end_shown = ''
+        el [ desk ] o.desk_agent_pick[ agent ]
+        el o.home_open = (o.home_open == agent) ? '' : agent
+        ux.restyle = true
+    style : CSS {
+        layers.back:
+            fill_color: #0000
+        layers.face:
+            fill_color: #ffffff0a
+            radius: 8
+            stroke_width: 1
+            stroke_color: #ffffff14
+        layers.edge:
+            fill_color: #0000
+    :hovered
+        layers.face:
+            fill_color: #ffffff14
+    :selected
+        layers.face:
+            fill_color: #4d3dbc39
+            stroke_color: #806bff55
+            radius: 8 8 0 0
+    :flush
+        layers.face:
+            radius: 0
+            stroke_width: 0
+    # the desktop's: a free window's look (its blur, tint and
+    # outline), as the row of agents above it
+    :desk
+        layers.back:
+            fill_color: #2a1a4a33
+            radius: 8
+        layers.face:
+            fill_color: #0000
+            stroke_width: 0
+        layers.edge:
+            fill_color: #0000
+            radius: 8
+            box_shadow: inset 0 0 8px #ffffff33 curve 2
+            stroke_width: 0
+            near_border: true
+            near_reach: 0.5
+            near_inset: 4.0
+            near_inset_color: #c890ffff
+    :desk&hovered
+        layers.face:
+            fill_color: #0000
+    # the theme's selection colour, as the editor's text selection
+    :desk&selected
+        layers.back:
+            fill_color: #425
+    }
+
+# the open agent's console frame, joined to its title above,
+# rounded at the bottom
+element AgentBody
+    public flush : bool
+    style : CSS {
+        layers.face:
+            fill_color: #202a
+            radius: 0 0 8 8
+    :flush
+        layers.face:
+            radius: 0
+    }
+
+# an agent's pane: its avatar behind its terminal, both cut
+# to the pane
+element AgentBox
+    public agent : string
+    # its terminal, over the avatar
+    public term  : element
+    # in a free window: its foot rounds as the window's
+    public free  : bool
+    style : CSS {
+        layers.face:
+            fill_color: #0000
+            radius: 0 0 0 0
+            clip: true
+        :free
+            layers.face:
+                radius: 0 0 8 8
+    }
+
+    # its avatar facing us in the box's lower right corner, 20% of it
+    # past the corner both ways, cut by the box; at most 483 px
+    # square (its passes are costly), less as the box shrinks
+    public func render [] -> Elements
+        t : Elements []
+        if [ !bounds ] return t
+        # the height never shrinks it: a short box cuts its top
+        side : f32 [ round[ min[ 483.0 * ux_unit[ ux ],
+                                 bounds.w * 0.45 ] ] ]
+        x : f32 [ round[ bounds.w - side * 0.8 ] ]
+        y : f32 [ round[ bounds.h - side * 0.8 ] ]
+        t['sys_agent_av'] = AgentBoxAvatar [ agent: agent,
+            area: Region [ 'l{x}px t{y}px w{side}px h{side}px' ] ]
+        # the box's tint over it, as over the scene behind
+        t['sys_agent_tint'] = AgentTint [ area: Region { l0 t0 r0 b0 } ]
+        if [ term ] t['term'] = term
+        return t
+
+# the agent box's avatar: its agent's state, as the platform's
+# avatar shows it (working, writing, building)
+OrbiterAvatar AgentBoxAvatar
+    public agent : string
+
+    func on_state [ m: i32 ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb && agent ]
+            dg : string orb.home_doing_of[ agent ]
+            work_on   = orb.home_session[ agent ] != null
+                && !orb.home_waiting[ agent ]
+            # thinking turns it; writing lights its spokes' lines
+            edits_in  = work_on && (dg == 'writing'
+                                    || orb.home_writing[ agent ])
+            work_done = false
+            # a build burns its beam
+            swap_on   = work_on && dg == 'build'
+            mic_on    = false
+            # held in one state to check it (ctrl / cmd + 1 2 3)
+            if [ orb.avatar_mode > 0 ]
+                work_on  = true
+                edits_in = orb.avatar_mode == 2
+                swap_on  = orb.avatar_mode == 3
+            # idle, it faces us again: the tilt follows the work
+            if [ !work_on ] settled = false
+        super.on_state[ m ]
+
+# the agent box's tint: the desktop pane's, laid over its avatar
+# the agent pane's purple: strong at its foot, gone at its top
+element AgentTint
+    user_events : false
+    style : CSS {
+        layers.face:
+            fill_color: #140a2ad0
+            fill_color_pos: 0.5 1.0
+            fill_gradient: linear
+            fill_gradient_color: #140a2a00
+            fill_gradient_angle: -90.0
+            stroke_width: 0
+    }
+
+element DeskAgentPane
+    style : CSS {
+        layers.face:
+            fill_color: #00000080
+            radius: 8
+    }
+
+# the agent view: the avatar at the left; at the right the agents
+# and their models to pick from, or the one picked, its terminal
+element AgentHome
+    # the platform paints every frame: the list must come after it
+    animated : true
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+
+    # in the main menu: the avatars on top, the agents under them
+    public stacked : bool
+
+    func render [] -> Elements
+        t : Elements []
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !orb || !bounds ] return t
+        un : f32 ux_unit[ ux ]
+        # the platform behind; the list at the right, beside it.
+        # the menu has the list alone: the avatars are the desktop's
+        lx : f32 [ (stacked) ? round[ 8.0 * un ]
+                             : round[ bounds.w * 0.42 ] ]
+        # too narrow for its margins (under 300 units): the groups
+        # flush edge to edge
+        narrow : bool [ stacked && bounds.w - 16.0 * un < 300.0 * un ]
+        if [ narrow ] lx = 0.0
+        if [ !stacked ]
+            pl : element orb.platform_of[ lx ]
+            pv : PlatformView pl
+            pv.top_down = false
+            pv.shown = true
+            pl.area = Region { l0 t0 r0 b0 }
+            t['plat'] = pl
+        rh : f32 [ round[ 30.0 * un ] ]
+        ed : f32 [ (stacked) ? round[ 8.0 * un ] : round[ 24.0 * un ] ]
+        rr : f32 [ (narrow) ? 0.0 : ed ]
+        top : f32 [ round[ ((stacked) ? 8.0 : 12.0) * un ] ]
+        y : f32 [ top ]
+        if [ orb.home_why && orb.home_why.count > 0 ]
+            t['ahome_why'] = HomeError [ label: orb.home_why,
+                area: Region [ 'l{lx}px t{y}px r{rr}px h{rh}px' ] ]
+            y += rh + round[ 8.0 * un ]
+        picks : vec string orb.home_choices[]
+        if [ picks.count == 0 ]
+            t['ahome_none'] = HomeLabel [
+                label: 'No agent installed: install one from the apps',
+                area: Region [ 'l{lx}px t{y}px r{rr}px h{rh}px' ] ]
+            return t
+        hh : f32 [ round[ 38.0 * un ] ]
+        gap : f32 [ round[ 6.0 * un ] ]
+        pad : f32 [ round[ 5.0 * un ] ]
+        # the instances, a title each, the open one's console under
+        names : vec string orb.home_names[]
+        ch : f32 [ bounds.h - y - ed
+                   - f32[ names.count ] * (hh + gap) - gap ]
+        for [ an: string ] in names
+            cs : ConsoleSession orb.home_session[ an ]
+            open : bool [ orb.home_open == an && cs != null ]
+            t['ahome_h_{an}'] = AgentHead [ selected: open,
+                flush: narrow, agent: an,
+                area: Region [ 'l{lx}px t{y}px r{rr}px h{hh}px' ] ]
+            mark : string [ (open) ? '▾' : '▸' ]
+            md : string orb.home_model_of[ an ]
+            nl : string [ (md.count > 0) ? '{mark}  {an}  {md}'
+                                         : '{mark}  {an}' ]
+            t['ahome_l_{an}'] = HomeLabel [ label: nl,
+                area: Region [
+                    'l{lx + round[ 14.0 * un ]}px t{y}px w{round[ 200.0 * un ]}px h{hh}px' ] ]
+            if [ cs ]
+                t['ahome_s_{an}'] = HomeState [
+                    label: orb.home_state_of[ an ],
+                    selected: orb.home_waiting[ an ],
+                    area: Region [
+                        'l{lx + round[ 220.0 * un ]}px t{y}px w{round[ 330.0 * un ]}px h{hh}px' ] ]
+            # end: flush at the title's right, square, no border; on a
+            # phone only once a swipe right on the title shows it
+            ew : f32 [ round[ 60.0 * un ] ]
+            if [ !use_mobile || orb.end_shown == an ]
+                t['ahome_e_{an}'] = AltTab [
+                    buttons: vec string [] [ 'ahome_end_{an}' ],
+                    labels: vec string [] [ 'end' ],
+                    icons: false, manual: true, label_px: 16.0 * un,
+                    label_font: 'fonts/BarlowCondensed-Regular.ttf',
+                    seg_radius: 0.0, use_spacing: false,
+                    rest_fill: rgba [ '#0000' ],
+                    area: Region [
+                        'r{rr}px t{y}px w{ew}px h{hh}px' ] ]
+            # open, its console joins its title: no gap between
+            y += hh
+            if [ open && ch > rh ]
+                one : map ConsoleSession [ string ] []
+                one[ an ] = cs
+                # its top edge on the title's bottom one: one line
+                t['ahome_b_{an}'] = AgentBody [ flush: narrow,
+                    area: Region [
+                        'l{lx}px t{y - 1.0}px r{rr}px h{ch + gap + 1.0}px' ] ]
+                t['ahome_t_{an}'] = Console [ focusable: true,
+                    sessions: one, session_id: an, cwd: cs.cwd,
+                    cbase: Layer [ fill_color: rgba [ '#0000' ] ],
+                    area: Region [
+                        'l{lx}px t{y}px r{rr}px h{ch + gap}px' ] ]
+                eh : f32 [ ch + gap + 1.0 ]
+                t['ahome_g_{an}'] = WinEdge [ selected: true,
+                    square: narrow, area: Region [
+                        'l{lx}px t{y - 1.0}px r{rr}px h{eh}px' ] ]
+                y += ch + gap
+            y += gap
+        return t
+
+# the avatar for the exchange under the screenshot prompt
+AppAvatar AgentAvatar
+    # under a narrow exchange's split (trinity's exch_stacked)
+    public stacked : bool
+    # shift-click steps the avatar through its states (face on, tilted,
+    # working, done with the flame): a look at each without an agent
+    public func on_press [ ev: Event ]
+        if [ !ev.key.shift ] return
+        # shift+meta: the exchange fade alone, no agent, no swap
+        if [ ev.key.meta && ux ]
+            ux.swap_fade = !ux.swap_fade
+            ux.restyle   = true
+            log 'swap_fade {ux.swap_fade}'
+            ev.no_default = true
+            return
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.avatar_debug[]
+        ev.no_default = true
+    # 2x at the top center, revealed by an alpha fade (no move: a moving
+    # target resizes and fuzzes); settled only tilts it. render_scale is
+    # in device pixels for the pbr pass: 4 is a 4x supersample on every
+    # display, drawn down 4:1 by the reduction pass
+    render_scale : f32 [ 4.0 ]
+    # a square element: the camera frames the hex at the element's
+    # vertical center, so a tall one would put it mid-screen
+    # centered in the window's top 70% until the first send; settled, it
+    # moves to the upper left and shrinks, leaving the right to the
+    # agent
+    style : CSS {
+        area: l50%-195px t40%-195px w390px h390px, 900ms cubic in_out
+        # out at once: the blur behind drops the same frame (Esc), and a
+        # fade would leave the avatar alone over the plain screen
+        opacity: 0.0
+    :shown
+        opacity: 1.0, 600ms cubic inward
+    :settled
+        # the same coordinate form as the start (a percent with a px
+        # offset): a transition mixes the two, and a percent mixed with a
+        # plain pixel value snaps
+        area: l0%+30px t25%+110px w408px h408px, 900ms cubic in_out
+    :stacked
+        # a narrow exchange: the box under the split, all of it
+        area: l0%+0px t0%+0px w100% h100%, 900ms cubic in_out
+    :fading
+        opacity: 0.0, 3000ms cubic outward
+    }
+
+# the agent's word in the bar: the debug value's place, with the shine
+element AgentNote
+    no_cache : true
+    # the avatar's status: a bordered button at the bar's left whose
+    # ground is the state (:agent while it works, :needs when it waits
+    # on you,
+    # :done when it finished); a click brings the exchange back
+    public agent : bool
+    public needs : bool
+    public done  : bool
+    style : CSS {
+        area: l8px t8px w300px h18px
+        layers.body:
+            fill_color: #ffffff10, 400ms cubic outward
+            radius: 6
+            stroke_width: 1
+            stroke_color: #fff2
+            box_shadow: none
+        layers.shine: ShineLayer
+            shine_color: #cfe6ff
+            shine_size: 14
+            area: l0.24 t0 r0.24 b0
+    :agent
+        layers.body:
+            fill_color: #1e5a6ecc, 400ms cubic inward
+    :needs
+        layers.body:
+            fill_color: #7a4a14cc, 400ms cubic inward
+    :done
+        layers.body:
+            fill_color: #1e6e3ecc, 400ms cubic inward
+    }
+
+# the desktop's row of agents: a free window's look, as the titles
+# below it
+RoundTab AgentKinds
+    public blur : BlurGround [ round: 8.0, foot: 8.0 ]
+    style : CSS {
+        layers.edge:
+            fill_color: #2a1a4a33
+            radius: 8
+            stroke_width: 0
+            box_shadow: inset 0 0 8px #ffffff33 curve 2
+    }
+
+func orbiter.agent_cmd [ sid: string ] -> string
+    base : string sid
+    hx : i32 [ (sid) ? sid.index_of[ '#' ] : -1 ]
+    if [ hx > 0 ] base = sid.mid[ 0, hx ]
+    ci : ConsoleInstance (consoles && base) ? consoles[base] : null
+    cmd_str : string ''
+    if [ ci && ci.run ]
+        for [ c: token ] in ci.run
+            cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
+    return cmd_str
+
+# the agent console named in orbiter.agi; shell is not one
+func orbiter.agent_sid [] -> string
+    if [ consoles ]
+        for [ ci: ConsoleInstance, cname: string ] in consoles
+            if [ ci.kind != 'shell' ] return cname
+    return 'claude'
+
+# the agent pane is derived: after all inline panes, when open
+func orbiter.agent_pane [] -> i32
+    return (agent_open) ? editor_slots.count : -1
+
+func orbiter.agent_avatar [] -> element
+    if [ !agent_av ]
+        agent_av = AgentAvatar [ topmost: true,
+                                 animate_always: true ]
+    if [ ux && !ux.agent_view ] agent_av.settled = false
+    agent_av.stacked = ux && ux.exch_stacked
+    # in the slideout: small, at its top
+    return agent_av
+
+# one avatar for every agent (one each is too much for the GPU)
+func orbiter.plat_names [] -> vec string
+    n : vec string []
+    if [ home_names[].count > 0 ] n.push[ 'avatar' ]
+    return n
+
+# the agent whose state it shows: the one on the desktop, else
+# the first running ('' none)
+func orbiter.plat_agent [] -> string
+    if [ desk_agent_on[] ] return desk_agent
+    for [ nm: string ] in home_names[]
+        if [ home_session[ nm ] ] return nm
+    return ''
+
+# a pane showing an agent's terminal: its menu, every instance
+# of the agents view and a new one of its agent
+func orbiter.agent_menu [ cur: string ] -> vec TrayEntry
+    m : vec TrayEntry []
+    an : string [ (home_agent && home_agent.contains[ cur ])
+                  ? home_agent[ cur ] : cur ]
+    # its tab: the conversation's title (else the session's name)
+    m.push[ own_entry[ home_title[ cur ], '', 0 ] ]
+    if [ home_order ]
+        for [ nm: string ] in home_order
+            if [ !home_session[ nm ] ] continue
+            md : string home_model_of[ nm ]
+            ie : TrayEntry own_entry[
+                (md.count > 0) ? '{home_title[ nm ]}  {md}'
+                : home_title[ nm ],
+                'orb.agent:{nm}', 1 ]
+            ie.check = (nm == cur) ? 1 : 0
+            m.push[ ie ]
+    m.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+    m.push[ own_entry[ 'New {an}', 'orb.agent_new:{an}', 1 ] ]
+    return m
+
+# the company that makes an agent's models
+func orbiter.agent_maker [ an: string ] -> string
+    if [ an == 'claude' ] return 'Anthropic'
+    if [ an == 'codex' ]  return 'OpenAI'
+    if [ an == 'gemini' ] return 'Google'
+    return an
+
+# the agents view's platform, kept; its free width set again
+func orbiter.platform_of [ fw: f32 ] -> element
+    if [ !plat_kept ]
+        plat_kept = PlatformView [ frame_w: fw,
+                                   area: Region { l0 t0 r0 b0 } ]
+    pv : PlatformView plat_kept
+    pv.frame_w = fw
+    return plat_kept
+
+func orbiter.avatar_debug [] -> none 
+    if [ !ux ] return
+    av_dbg_step = (av_dbg_step + 1) % 5
+    log 'avatar debug: state {av_dbg_step}'
+    agent_done    = false
+    agent_changed = av_dbg_step >= 3
+    ux.agent_busy = false
+    agent_state   = 'idle'
+    agent_note    = ''
+    if [ av_dbg_step == 0 ]
+        ux.agent_view = false
+        if [ agent_av ] agent_av.settled = false
+    el [ av_dbg_step == 1 ]
+        ux.agent_view = true
+    el [ av_dbg_step == 2 ]
+        ux.agent_view = true
+        agent_state   = 'busy'
+        agent_note    = 'working'
+        ux.agent_busy = true
+    el [ av_dbg_step == 3 ]
+        ux.agent_view = true
+        agent_state   = 'busy'
+        agent_note    = 'editing'
+        ux.agent_busy = true
+    el
+        ux.agent_view = true
+        agent_state   = 'done'
+        agent_note    = 'done'
+        agent_done    = true
+    ux.restyle = true
+
+# orbiter transcribes: its own exchange's mic needs no host
+func orbiter.dictates [] -> bool
+    return true
+
+# a dictate request for an exchange field: 3 start, 0 stop (the take
+# is typed into that field), 2 cancel. slot 0 is this window, >0 a
+# hosted app
+func orbiter.dictate_to [ slot: i32, s: i32 ]
+    log 'orbiter dictate_to slot={slot} s={s}'
+    if [ s == 3 ]
+        if [ orbit_cap_on ] return
+        rc : dictation_start[]
+        if [ rc == 0 ]
+            orbit_cap_on = true
+            dict_slot    = slot
+            if [ slot > 0 ]
+                host_post2[ slot, 1, i32[ HM.live ], 1, 0, 0 ]
+            el [ ux ]
+                ux.dict_live = true
+                ux.restyle   = true
+    el [ s == 2 ]
+        if [ dict_slot != slot ] return
+        dictation_cancel[]
+        orbit_cap_on   = false
+        orbit_flushing = false
+        dict_slot      = -1
+    el
+        if [ !orbit_cap_on || dict_slot != slot ] return
+        dictation_stop[]
+        orbit_cap_on   = false
+        orbit_flushing = true
+    if [ s != 3 ]
+        if [ slot > 0 ]
+            host_post2[ slot, 1, i32[ HM.live ], 0, 0, 0 ]
+        el [ ux ]
+            ux.dict_live = false
+            ux.restyle   = true
+
+func orbiter.listening [] -> bool
+    return orbit_cap_on
+
+func orbiter.dict_test_step []
+    if [ !getenv[ 'SILVER_DICT_FILE' ] ] return
+    dtest_n += 1
+    if [ dtest_n == 90 ]
+        log 'DICTTEST mic on'
+        dictate_to[ 0, 3 ]
+    el [
+        dtest_n > 90 && orbit_cap_on && dictation_feed_left[] == 0
+        && dictation_gpu_ready[] ]
+        log 'DICTTEST mic off'
+        dictate_to[ 0, 0 ]
+
+# the exchange's slideout: from the dock's edge under the system
+# bar, to the window's right edge
+func orbiter.exchange_box [] -> string
+    tp : string [ (system_on[]) ? 't{bar_units[]}' : 't0' ]
+    return 'l0 {tp} r0 b0'
+
+# the platform's floor reflects the scene: a setting, off at first
+func orbiter.mirrors_on [] -> bool
+    return set_mirrors == 'on'
+
+# the agent view: the chosen scene drawn for the mirrors alone,
+# the galaxy the backdrop
+func orbiter.mirror_source [ w: Window ]
+    if [ !w.element_targets ] return
+    gal : bool [ galaxy_el && galaxy_el.id
+                 && w.element_targets.contains[ galaxy_el.id ] ]
+    srt : Render [ null ]
+    if [ scene_el && scene_el.id
+         && w.element_targets.contains[ scene_el.id ] ]
+        srt = w.element_targets[ scene_el.id ]
+    if [ srt ] srt.skip = gal
+    w.mirror_src = (gal) ? srt : null

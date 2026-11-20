@@ -18,11 +18,11 @@ func vk_module_erased [ m: Au_t ] -> none
     vk.evict_module[ m ]
 
 class LayoutBinding
-    type    : Au_t
-    id      : int
-    count   : u32
-    format  : Au_t
-    volume  : bool           # sampler3D: a Texture with depth > 1
+    public type    : Au_t
+    public id      : int
+    public count   : u32
+    public format  : Au_t
+    public volume  : bool           # sampler3D: a Texture with depth > 1
 
 # storage image binding for compute shaders. emits
 # layout(<glsl_format>, set=1, binding=N) writeonly uniform image2D
@@ -30,27 +30,27 @@ class LayoutBinding
 # VK_IMAGE_USAGE_STORAGE_BIT) via the same name-to-instance map used for
 # sampler bindings.
 class StorageImage
-    type    : Au_t
-    id      : int
-    count   : u32
-    format  : Au_t
+    public type    : Au_t
+    public id      : int
+    public count   : u32
+    public format  : Au_t
 
 # storage buffer binding for compute shaders. emits
 # layout(std430, set=1, binding=N) readonly buffer <name>_t { vec4
 # <name>[]; }; host provides a Buffer (created with u_storage = true)
 # via the samplers map.
 class StorageBuffer
-    type     : Au_t
-    id       : int
-    count    : u32
-    format   : Au_t
-    writable : bool          # emit a writable (non-readonly) buffer
+    public type     : Au_t
+    public id       : int
+    public count    : u32
+    public format   : Au_t
+    public writable : bool          # emit a writable (non-readonly) buffer
 
 # workgroup-shared memory in a compute shader: `shared T name[count]`.
 # no descriptor: the pipeline binds nothing for it
 class SharedArray
-    count  : u32
-    format : Au_t
+    public count  : u32
+    public format : Au_t
 
 class VertexInput
     public type : Au_t

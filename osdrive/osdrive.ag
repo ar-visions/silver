@@ -230,7 +230,7 @@ element OsPass
 
 # the dialog's button: Mount, or its apps when mounted already
 element OsGo
-    public label : string
+    label : string
     style : CSS {
         layers.body:
             fill_color: #4d3dbc

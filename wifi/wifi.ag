@@ -478,23 +478,23 @@ func wifi_shared [] -> Wifi
     return wifi_now
 
 element WifiText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WifiNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WifiBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 # the chosen network and its controls in one box
 element WifiCard
-    body : Layer [ fill_color: rgba [ '#ffffff10' ],
+    public body : Layer [ fill_color: rgba [ '#ffffff10' ],
         radius: Radius [ '8' ],
         stroke_width: 1.0, stroke_color: rgba [ '#806bff' ] ]
 

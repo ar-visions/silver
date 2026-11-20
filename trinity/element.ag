@@ -158,7 +158,7 @@ ielement element
     mutable content_h       : f32
     public  scroll_speed    : f32
     # any element with a content height scrolls, and shows this bar
-    scrollbar : ScrollLayer [ overlay: true,
+    public scrollbar : ScrollLayer [ overlay: true,
                               area: Region { l8px t8px r8px b8px },
         thumb_color: '#fff4', thumb_w: 6.0, thumb_min_h: 32.0,
         thumb_radius: 4.0 ]
@@ -415,6 +415,8 @@ ielement element
     intern blurring : bool
     # the layer holds it flattened: the blur reuses it each frame
     intern blur_snap : bool
+    # a take of a part of the window: 'x y w h' in points; '' whole
+    public [ Live ] record_rect : string
 
     func init []
         use_mobile = mobile_on[]
@@ -638,12 +640,10 @@ ielement element
                 # a running transition must ask for the next frame; the
                 # values were easing while nothing redrew them
                 if [ ms < dur ]
-                    pristine = false
-                    # an uncached element paints onto a cached parent's
-                    # canvas: that canvas must repaint too, or the
-                    # frames the transition asks for show nothing new
-                    for [ p: element* parent, p, p = p.parent ]
-                        p.pristine = false
+                    # it, and the canvas it paints onto (an uncached
+                    # element's cached parent), or the frames the
+                    # transition asks for show nothing new
+                    repaint_up[ a ]
                     if [ ux ] ux.will_animate = true
                 if [ ct.type && ct.from && ct.to ]
                     from_t : typeid[ ct.from ]
@@ -1100,6 +1100,11 @@ class Layer
                         fh - 4.0 ]
             cv.paint[]
         cv.clear_crop[]
+
+    # drawn on the screen each frame under its element's cached
+    # picture (a ground of the moving backdrop), never into the cache
+    public func live [] -> bool
+        return background_lens != BlurStage.none
 
 
 class Event

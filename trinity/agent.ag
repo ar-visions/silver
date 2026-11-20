@@ -43,6 +43,10 @@ class AgentRun
     func writing [ title: string ] -> bool
         return false
 
+    # its conversation's name, as the agent keeps it; '' none yet
+    func title [] -> string
+        return ''
+
     # the program, by name: silver's install first, then PATH
     func program [] -> string
         return name
@@ -460,6 +464,13 @@ func agent_term_line_in [ sid: i32, nm: string, root: string,
         return ''
     agent_runs[ '{sid}' ] = run
     line : string shell_word[ exe ]
+    # its environment first, as for its exchange
+    kv : vec string run.env*[]
+    if [ kv.count > 0 ]
+        pre : string 'env'
+        for [ e: string ] in kv
+            pre = '{pre} {shell_word[ e ]}'
+        line = '{pre} {line}'
     for [ w: string ] in run.terminal*[ model ]
         line = '{line} {shell_word[ w ]}'
     return line

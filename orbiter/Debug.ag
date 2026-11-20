@@ -1,0 +1,561 @@
+extend orbiter
+
+func orbiter.cov_file [] -> path
+    return path '{install_root[]}/tmp/coverage.lcov'
+
+# the map follows the file: a run replaces it, clear removes it
+func orbiter.cov_poll []
+    cp : path cov_file[]
+    mt_ : i64 [ (cp.exists[]) ? cp.modified_time[] : 0 ]
+    if [ mt_ != cov_mtime ]
+        cov_mtime = mt_
+        cov_text  = null
+        if [ mt_ > 0 ]
+            cov_text = cp.load[ typeid[string], null ]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        ed : Editor pane_at[ i ]
+        if [ !ed ] continue
+        es : string [ (ed.src) ? '{ed.src}' : '' ]
+        if [
+            ed.cov_stamp != cov_mtime || !ed.cov_src
+            || ed.cov_src != es ]
+            cov_apply[ ed, es ]
+
+# this file's DA lines from the map, by 0-based line
+func orbiter.cov_apply [ ed: Editor, src: string ]
+    ed.cov_stamp = cov_mtime
+    ed.cov_src   = src
+    ed.cov_hits  = null
+    if [ ed.ux ] ed.ux.restyle = true
+    if [ !cov_text || src.count == 0 ] return
+    at_ : i32 [ cov_text.index_of[ 'SF:{src}\n' ] ]
+    if [ at_ < 0 ] return
+    rest : string cov_text.mid[ at_, cov_text.count - at_ ]
+    en : i32 [ rest.index_of[ 'end_of_record' ] ]
+    if [ en > 0 ] rest = rest.mid[ 0, en ]
+    rows_ : rest.split[ '\n' ]
+    hits_ : vec i64 []
+    for [ r: i32 0, r < rows_.count, r += 1 ]
+        ln : string rows_[ r ]
+        if [ !ln.starts_with[ 'DA:' ] ] continue
+        c_ : i32 [ ln.index_of[ ',' ] ]
+        if [ c_ < 4 ] continue
+        l_ : i32 [ ln.mid[ 3, c_ - 3 ].integer_value[] ]
+        h_ : i64 [
+            ln.mid[ c_ + 1, ln.count - c_ - 1 ].integer_value[] ]
+        if [ l_ < 1 ] continue
+        while [ hits_.count < l_ ]
+            hits_.push[ -1 ]
+        hits_[ l_ - 1 ] = h_
+    ed.cov_hits = hits_
+
+# an instance's debugger is keyed by the instance, not its module:
+# two instances of one module each keep their own
+func orbiter.dbg_key [ av: AppView ] -> string
+    return '{av.app_mod}#{av.iid}'
+
+func orbiter.dbg_on_stdout [ buf: iobuffer ] -> Au
+    return null
+
+func orbiter.dbg_on_stderr [ buf: iobuffer ] -> Au
+    return null
+
+func orbiter.dbg_on_break [ cur: cursor ] -> Au
+    if [ !cur ] return null
+    log 'dbg break {cur.source}:{cur.line} t={Au.epoch_millis[]}'
+    # the cursor's members die with the poll thread's pool: copy
+    # them out
+    pending_src  = '{cur.source}'
+    pending_line = i32[ cur.line ]
+    pending_col  = i32[ cur.column ]
+    pending_stop = true
+    # the frame applies it: wake the window now, not at the next
+    # mouse move
+    if [ ux ] ux.will_animate = true
+    return null
+
+func orbiter.dbg_on_exit [ e: exited ] -> Au
+    pending_exit = e
+    if [ ux ] ux.will_animate = true
+    return null
+
+func orbiter.dbg_on_crash [ cur: cursor ] -> Au
+    if [ !cur ] return null
+    log 'dbg crash {cur.source}:{cur.line}'
+    pending_src  = '{cur.source}'
+    pending_line = i32[ cur.line ]
+    pending_col  = i32[ cur.column ]
+    pending_stop = true
+    # the frame applies it: wake the window now, not at the next
+    # mouse move
+    if [ ux ] ux.will_animate = true
+    return null
+
+# a take from the record tab: orbiter's own window (its element's
+# record, which trinity watches) or an app's, asked over its
+# socket; each records itself, as --record does, into
+# ~/Videos/<name>-<date>/
+func orbiter.rec_start [ av: AppView, file: path ]
+    now : i64 [ time[ null ] ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    b : local i8 [ 64 ]
+    fmt : '%Y%m%d-%H%M%S'
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    stamp : string [ @b[0] ]
+    nm : string (av) ? app_name[ av ] : 'orbiter'
+    hm : string getenv[ 'HOME' ]
+    dir : path '{hm}/Videos/{nm}-{stamp}'
+    # a chosen file is the take itself, its notes beside it
+    if [ file ]
+        pd : path file.parent_dir[]
+        pd.make_dir[]
+        dir = file
+        rec_path = file
+    el
+        dir.make_dir[]
+        rec_path = '{dir}/{dir.filename[]}.mp4'
+    rec_from = epoch_millis[]
+    rec_sec  = 0
+    if [ av ]
+        rec_iid = av.iid
+        sk : string av.sock_name[]
+        mic : string [ (record_mic) ? 'true' : 'false' ]
+        agent_sock_send[ sk.chars, 'set rec_qp {rec_qp_name[]}\n' ]
+        agent_sock_send[ sk.chars, 'set record_mic {mic}\n' ]
+        agent_sock_send[ sk.chars, 'record {dir}\n' ]
+    el
+        rec_iid = -1
+        record = '{dir}'
+
+func orbiter.rec_stop []
+    if [ rec_iid == -1 ]
+        record = null
+    el [ rec_iid >= 0 ]
+        av : AppView instance_by[ rec_iid ]
+        if [ av && !av.ended && av.slot >= 0 ]
+            agent_sock_send[ av.sock_name[].chars, 'record stop\n' ]
+    rec_iid = -2
+
+# the take's clock in the record tab, a second at a time; an app
+# that ended took its take with it
+func orbiter.rec_tick []
+    if [ rec_iid == -2 ] return
+    if [ rec_iid >= 0 ]
+        av : AppView instance_by[ rec_iid ]
+        if [ !av || av.ended ]
+            rec_iid = -2
+            if [ ux ] ux.restyle = true
+            return
+    sec : i64 [ (epoch_millis[] - rec_from) / 1000 ]
+    if [ sec != rec_sec ]
+        rec_sec = sec
+        if [ (rec_open || sys_view == 'display'
+              || (sys_rec_by && sys_rec_by.count > 0)) && ux ]
+            ux.restyle = true
+
+# the debugger's console: its own log, no shell behind it; lines
+# are printed into it (its stops, exits, commands and answers)
+func orbiter.dbg_log [] -> ConsoleSession
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    dl : ConsoleSession ed_sessions[ 'dbg:log' ]
+    if [ !dl ]
+        dl = ConsoleSession []
+        dl.name   = 'dbg:log'
+        dl.nowrap = true
+        ed_sessions[ 'dbg:log' ] = dl
+    return dl
+
+# a line in the debugger's console (its feed: a session with no
+# shell draws the lines it is given)
+func orbiter.dbg_say [ line: string ]
+    dbg_log[]
+    if [ !dbg_lines ] dbg_lines = list string []
+    dbg_lines.push[ line ]
+    if [ ux ] dirty_consoles[ ux.root ]
+
+# the debugger's console's lines, made once
+func orbiter.dbg_feed [] -> list string
+    if [ !dbg_lines ] dbg_lines = list string []
+    return dbg_lines
+
+# a line typed in the debugger's console: lldb's own command
+func orbiter.dbg_run [ line: string ]
+    if [ !line || line.count == 0 ] return
+    dbg_say[ '(lldb) {line}' ]
+    d : dbg active_debugger[]
+    if [ !d ]
+        dbg_say[ 'no debugger: run the app with debug on' ]
+        return
+    out : string d.command[ line ]
+    for [ ln: string ] in out.split[ '\n' ]
+        if [ ln.count > 0 ] dbg_say[ ln ]
+
+# the instances a take can come from: running, not held
+func orbiter.rec_sources [] -> vec AppView
+    out : vec AppView []
+    if [ !instances ] return out
+    for [ v: AppView ] in instances
+        if [ v.slot >= 0 && !v.ended && !v.held ] out.push[ v ]
+    return out
+
+# the recording group's choices, kept for the next start: what
+# records, its quality, the mic
+func orbiter.rec_settings [] -> vec Prop
+    ps : vec Prop []
+    on : bool [ rec_iid != -2 ]
+    srcs : vec string [] [ 'orbiter' ]
+    what : string [ 'orbiter' ]
+    cur : i32 [ (on) ? rec_iid : rec_want ]
+    for [ v: AppView ] in rec_sources[]
+        nm : string instance_name[ v ]
+        srcs.push[ nm ]
+        if [ v.iid == cur ] what = nm
+    # the running take's source stays as it is
+    ps.push[ setting[ 'source', what,
+        (on) ? vec string [] [ what ] : srcs ] ]
+    ps.push[ setting[ 'quality', rec_qp_name[],
+        vec string [] [ 'stream', 'high', 'stage', 'lossless' ] ] ]
+    ps.push[ setting[ 'with mic', (record_mic) ? 'on' : 'off',
+        vec string [] [ 'on', 'off' ] ] ]
+    return ps
+
+# the recording group's button: the running take stops; else the
+# navigator asks where the take goes, and its answer starts it
+func orbiter.rec_toggle []
+    if [ rec_iid != -2 ]
+        rec_stop[]
+        return
+    av : AppView rec_source[]
+    now : i64 [ time[ null ] ]
+    tm : struct tm
+    localtime_r[ @now, @tm ]
+    b : local i8 [ 64 ]
+    fmt : '%Y%m%d-%H%M%S'
+    strftime[ @b[0], 64, fmt.chars, @tm ]
+    stamp : string [ @b[0] ]
+    nm : string (av) ? app_name[ av ] : 'orbiter'
+    hm : string getenv[ 'HOME' ]
+    dir : path (rec_dir) ? rec_dir : path '{hm}/Videos'
+    dir.make_dir[]
+    drawer_shut[]
+    pick_field  = 'rec'
+    pick_dir    = false
+    pick_editor = pane_at[ active_pane ]
+    pick_launch = null
+    pick_exts   = vec string []
+    pick_cache  = null
+    nav.nav_root    = dir
+    focus_finder[]
+    run_search[]
+    pv : element pane_view[ active_pane ]
+    if [ pv && pv inherits EditorView ]
+        ev : EditorView pv
+        ev.newfile_enter[ null ]
+        ev.newfile_text = '{nm}-{stamp}.mp4'
+        pending_finder = active_pane
+
+# the app the group records, else null: orbiter itself
+func orbiter.rec_source [] -> AppView
+    for [ s: AppView ] in rec_sources[]
+        if [ s.iid == rec_want ] return s
+    return null
+
+# the navigator's answer for a take: a folder is gone into, a
+# file named starts the take there (.mp4 when it has no kind)
+func orbiter.rec_deliver [ p0: path ] -> bool
+    if [ p0 && p0.is_dir[] ]
+        nav.nav_root = p0
+        run_search[]
+        return true
+    # an existing file is never written over
+    if [ !p0 || p0.exists[] ] return true
+    fs : string '{p0}'
+    ex : string p0.ext[]
+    if [ !ex || ex.count == 0 ] fs = '{fs}.mp4'
+    pick_field = null
+    exit_finder[]
+    exit_find_mode[]
+    rec_dir = path fs.mid[ 0, fs.rindex_of[ '/' ] ]
+    rec_start[ rec_source[], path fs ]
+    if [ ux ] ux.restyle = true
+    return true
+
+func orbiter.rec_qp_name [] -> string
+    if [ rec_qp == RecQuality.stream ] return 'stream'
+    if [ rec_qp == RecQuality.high ]   return 'high'
+    if [ rec_qp == RecQuality.stage ]  return 'stage'
+    return 'lossless'
+
+# a recording setting taken: true when the name was one
+func orbiter.rec_setting_set [ name: string, v: string ] -> bool
+    if [ name == 'source' ]
+        rec_want = -1
+        for [ s: AppView ] in rec_sources[]
+            if [ instance_name[ s ] == v ] rec_want = s.iid
+    el [ name == 'quality' ]
+        if [ v == 'stream' ]     rec_qp = RecQuality.stream
+        el [ v == 'high' ]       rec_qp = RecQuality.high
+        el [ v == 'stage' ]      rec_qp = RecQuality.stage
+        el                       rec_qp = RecQuality.lossless
+    el [ name == 'with mic' ]
+        record_mic = v == 'on'
+    el
+        return false
+    return true
+
+# the callstack is read from lldb once per stop; every render reads
+# the cache
+func orbiter.debug_frames [] -> vec Au
+    return (frame_cache) ? frame_cache : vec Au []
+
+# a console the project's agi declares: a view name of ours
+func orbiter.console_of [ nm: string ] -> bool
+    if [ !consoles || !nm || nm.count == 0 ] return false
+    ci : ConsoleInstance consoles[ nm ]
+    return (ci) ? true : false
+
+# the rail's mark for a console view: a shell wears the gear (the
+# material console svg does not draw), an agent the chat mark;
+# null for a name that is not a console
+func orbiter.console_icon [ nm: string ] -> string
+    if [ !console_of[ nm ] ] return null
+    ci : ConsoleInstance consoles[ nm ]
+    return (ci && ci.kind == 'shell') ? 'gear' : 'chatgpt'
+
+func orbiter.feed_agent [ text: string ] -> none
+    if [ !consoles ] return
+    s : ConsoleSession ensure_console[ agent_sid[] ]
+    if [ !s ] return
+    s.send_esc[ '[200~' ]
+    s.write_input[ text ]
+    s.send_esc[ '[201~' ]
+
+# a gutter toggle reaches every live debugger: drop its set, bind
+# the map again
+func orbiter.breakpoints_changed []
+    if [ !debuggers ] return
+    for [ d: dbg, name: string ] in debuggers
+        log 'breakpoints_changed {name} active={(d && d.active) ? 1 : 0}'
+        if [ !d || !d.active ] continue
+        if [ d.bps ]
+            for [ bp: breakpoint ] in d.bps
+                d.remove_breakpoint[ bp ]
+        d.bps = vec breakpoint []
+        sync_breakpoints[ d, '{startup_path}/{name}' ]
+
+func orbiter.clear_stop_lines []
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        ed : Editor pane_at[ i ]
+        if [ ed ]
+            # its place on screen: the next stop lands there
+            if [ ed.stop_line >= 0 && ed.lh_cache > 0.0 ]
+                ed.stop_y = f32[
+                    ed.vis_row[
+                        ed.stop_line ] ] * ed.lh_cache - ed.scroll.y
+            ed.stop_line  = -1
+            ed.stop_col   = -1
+            ed.pristine   = false
+    if [ ux ] ux.restyle = true
+    # no live frame anymore → drop the inspected variables.
+    debug_vars  = null
+    frame_cache = null
+
+func orbiter.console_cmd [ mod: string ] -> string
+    c : string ''
+    n : i32 [ 0 ]
+    # the global log: each featured install's import messages too
+    if [ !mod && inst_names ]
+        for [ nm: string ] in inst_names
+            il : string '{install_root[]}/tmp/install-{nm}.log'
+            one : string 'tail -n +1 -F {il} | sed -u "s/^/import {nm}: /"'
+            c = (n == 0) ? one : '{c} & {one}'
+            n += 1
+    if [ !instances ] return (n > 0) ? '{c} & wait' : c
+    for [ v: AppView ] in instances
+        if [ v.ended || v.slot <= 0 || !v.app_mod ] continue
+        if [ mod && v.app_mod.compare[ mod ] != 0 ] continue
+        one : string 'tail -n +1 -F {install_root[]}/tmp/{v.app_mod}.{v.slot}.log | sed -u "s/^/{v.iid}: /"'
+        c = (n == 0) ? one : '{c} & {one}'
+        n += 1
+    return (n > 0) ? '{c} & wait' : c
+
+# a task's buttons on the bottom bar: its log, then pause while
+# it runs (the debugger attaches), the steps once stopped
+func orbiter.debug_acts [ av: AppView ] -> vec string
+    out : vec string []
+    if [ !av || av.ended || av.held || !av.started ] return out
+    out.push[ 'console' ]
+    if [ stopped_at[ av ] ]
+        for [ ac: string ] in vec string [] [ 'continue',
+                'step_next', 'step_in', 'step_out' ]
+            out.push[ ac ]
+        return out
+    out.push[ 'pause' ]
+    return out
+
+# every debugger takes the console's assembly switch
+func orbiter.asm_sync []
+    if [ !debuggers ] return
+    for [ d: dbg, name: string ] in debuggers
+        if [ d && d.asm_view != con_asm ] d.asm_view = con_asm
+
+# the log's filter as its pill's field holds it; emptied, the
+# pill goes and the log takes the keys again
+func orbiter.con_find_edit [ e: element ]
+    con_filter = (e.edit) ? e.edit : ''
+    cn : element find_el[ a, 'console' ]
+    if [ con_filter.count == 0 && ux ]
+        ux.release_focus[ e ]
+        if [ cn ] ux.set_focus[ cn ]
+    if [ cn ] cn.pristine = false
+    force_update[]
+
+# is the current error from a module we are RUNNING in a pane?
+# the top tab is for code ORBITER ITSELF reloads. anything else --
+# a file merely open in a pane -- belongs to that app's run band
+func orbiter.err_is_own [] -> bool
+    if [ !err_mod ] return false
+    ot  : typeid[ a ]
+    own : string [ ot.ident ]
+    return err_mod == own
+
+# the compile error for a file: its message, else null
+func orbiter.err_text_for [ p: path ] -> string
+    if [ !p || !err_file || err_line <= 0 ] return null
+    if [ err_file.absolute[].compare[ p.absolute[] ] != 0 ]
+        return null
+    return (err_msg && err_msg.count > 0) ? err_msg : 'error'
+
+func orbiter.err_line_no [] -> i32
+    return err_line
+
+# a window's console is up
+func orbiter.con_up [ pi: i32 ] -> bool
+    if [ !con_panes ] return false
+    for [ c: i32 ] in con_panes
+        if [ c == pi ] return true
+    return false
+
+# a window's console up, or down
+func orbiter.con_flip [ pi: i32 ]
+    was : vec i32 [ con_panes ]
+    con_panes = vec i32 []
+    for [ c: i32 ] in was
+        if [ c != pi ] con_panes.push[ c ]
+    if [ con_panes.count == was.count ] con_panes.push[ pi ]
+
+# a window's console up (its band's link to what the app said)
+func orbiter.console_show [ pi: i32 ]
+    if [ !con_up[ pi ] ] con_flip[ pi ]
+    con_dbg = false
+    if [ ux ] ux.restyle = true
+
+# the window's console, the last line holding key chosen and in
+# view: where an error band's words are said (the console reads
+# its log after it opens: tried each frame, three seconds)
+func orbiter.console_reveal [ pi: i32, key: string ]
+    console_show[ pi ]
+    reveal_key   = key
+    reveal_pane  = pi
+    reveal_us    = epoch_micros[]
+    reveal_at_us = 0
+
+# the session a window's console shows: the debugger's; else its
+# instance's, else every app's
+func orbiter.console_sid [ pi: i32 ] -> string
+    if [ con_dbg ]
+        dbg_log[]
+        return 'dbg:log'
+    # its app's log, ended too: what it said before it went
+    v : AppView pane_inst[ pi ]
+    if [ v && v.slot > 0 && ed_sessions ]
+        isid : string 'ed:i{v.iid}s{v.slot}'
+        if [ ed_sessions.contains[ isid ] ] return isid
+    all_log[]
+    return 'ed:all'
+
+# a line typed at the console's foot: lldb's in the debugger's
+# console, else the selected app's standard input
+# a typed line has somewhere to go: the debugger, or the pane's
+# running app's standard input
+func orbiter.console_takes [ pi: i32 ] -> bool
+    if [ con_dbg ] return true
+    av : AppView pane_inst[ pi ]
+    return av && !av.ended && av.slot > 0 && av.app_mod
+
+func orbiter.console_input [ line: string, pi: i32 ]
+    if [ con_dbg ]
+        dbg_run[ line ]
+        return
+    av : AppView pane_inst[ pi ]
+    if [ !av || av.ended || av.slot <= 0 || !av.app_mod ] return
+    at : string '{install_root[]}/tmp/{av.app_mod}.{av.slot}'
+    ip : string '{at}.in'
+    fd : i32 open[ ip.chars, O_WRONLY | O_NONBLOCK ]
+    if [ fd < 0 ] return
+    ln : string '{line}\n'
+    write[ fd, ln.chars, ln.count ]
+    close[ fd ]
+    # it shows in the log, as typed
+    lp : string '{at}.log'
+    lf : i32 open[ lp.chars, O_WRONLY | O_APPEND ]
+    if [ lf < 0 ] return
+    echo : string '> {line}\n'
+    write[ lf, echo.chars, echo.count ]
+    close[ lf ]
+
+# the console's toolbar: the debugger's console, clear, the call
+# stack and the machine code
+func orbiter.console_tool_els [] -> Elements
+    t : Elements []
+    bw : f32 [ 1.33 * unit_px[] ]
+    sw : f32 [ 2.6 * unit_px[] ]
+    t['con_dbg'] = AltTab [ buttons: vec string [] [ 'con_dbg' ],
+        icon_ids: vec string [] [ '_text' ],
+        labels: vec string [] [ 'lldb' ],
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        manual: true, seg_radius: 0.0, use_spacing: false,
+        rest_fill: rgba [ '#0000' ], sel_mask: (con_dbg) ? 1 : 0,
+        area: Region [ 'l0 t0 w{bw}px b1px' ] ]
+    t['con_clear'] = AltTab [
+        buttons: vec string [] [ 'con_clear' ],
+        icon_ids: vec string [] [ 'clear_all' ], icon_scale: 0.6,
+        manual: true, seg_radius: 0.0, use_spacing: false,
+        rest_fill: rgba [ '#0000' ],
+        area: Region [ 'l{bw}px t0 w{bw}px b1px' ] ]
+    # at the right: the call stack column's switch
+    t['con_stack'] = AltTab [
+        buttons: vec string [] [ 'con_stack' ],
+        icon_ids: vec string [] [ '_text' ],
+        labels: vec string [] [ 'Callstack' ],
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        manual: true, seg_radius: 0.0, use_spacing: false,
+        rest_fill: rgba [ '#0000' ],
+        sel_mask: (con_stack_on) ? 1 : 0,
+        area: Region [ 'r0 t0 w{sw * 1.1}px b1px' ] ]
+    # left of it: the debugger's assembly view
+    t['con_asm'] = AltTab [
+        buttons: vec string [] [ 'con_asm' ],
+        icon_ids: vec string [] [ '_text' ],
+        labels: vec string [] [ 'ASM' ],
+        label_font: 'fonts/BarlowCondensed-Regular.ttf',
+        manual: true, seg_radius: 0.0, use_spacing: false,
+        rest_fill: rgba [ '#0000' ], sel_mask: (con_asm) ? 1 : 0,
+        area: Region [ 'r{sw * 1.1}px t0 w{sw * 0.8}px b1px' ] ]
+    return t
+
+# the last n bytes of a file, '' when there is none
+func orbiter.log_tail [ fp: string, n: i32 ] -> string
+    fh : handle fopen[ fp.chars, 'r' ]
+    if [ !fh ] return ''
+    fseek[ fh, 0, 2 ]
+    sz : i64 [ ftell[ fh ] ]
+    off : i64 [ (sz > i64[ n ]) ? sz - i64[ n ] : 0 ]
+    fseek[ fh, off, 0 ]
+    b : new u8 [ n + 1 ]
+    got : i64 [ fread[ @b[ 0 ], 1, n, fh ] ]
+    fclose[ fh ]
+    b[ got ] = 0
+    return string [ cast cstr [ @b[ 0 ] ] ]

@@ -13,8 +13,8 @@ import <time.h>
 # stock prices: one chart, its ranges, and a list to choose from;
 # Yahoo Finance's chart data, a minute apart
 element stocks : trinity
-    public  width   : i32    [ 440 ]
-    public  height  : i32    [ 720 ]
+    width   : i32    [ 440 ]
+    height  : i32    [ 720 ]
     public  title   : string [ 'stocks' ]
     # the list, comma between
     public  [ Launch ] symbols : string [

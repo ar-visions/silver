@@ -151,8 +151,8 @@ func window_texture [ cv: Canvas, id: u64 ] -> Texture
 # a Wayland display as one silver app: it shows one window (the
 # newest, or the one chosen); orbiter mounts WaylandView in its panes
 element wayland : trinity
-    public  width  : i32 [ 1280 ]
-    public  height : i32 [ 800 ]
+    width  : i32 [ 1280 ]
+    height : i32 [ 800 ]
     # a client to start on the display, e.g. 'firefox' or 'foot'
     public [ Launch ] run : string
     # the window shown; 0: the newest
@@ -163,7 +163,7 @@ element wayland : trinity
     public [ Live ] crop_top : i32 [ 46 ]
     # the shell passes every app its gain; the element must own the
     # member or the argument parser prints usage and drops the rest
-    public [ Live, VolumeRange ] volume : f32 [ 1.0 ]
+    volume : f32 [ 1.0 ]
 
     func render [] -> Elements
         return Elements [ 'view' : WaylandView [ run: run,

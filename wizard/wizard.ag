@@ -971,27 +971,27 @@ OrbiterAvatar SetupAvatar
 
 element WizPanel
     # a free window's look: frost under, an inner glow, no line
-    body : Layer [ fill_color: rgba [ '#140a2a88' ], stroke_width: 0.0,
+    public body : Layer [ fill_color: rgba [ '#140a2a88' ], stroke_width: 0.0,
         radius: Radius [ '8' ], background_lens: BlurStage.frost,
         box_shadow: BoxShadow [ 'inset 0 0 8px #ffffff22 curve 2' ] ]
 
 element WizTitle
-    face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 28,
+    public face : Layer [ label_color: rgba [ '#f2f2f6' ], label_size: 28,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizNote
-    face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#ffffff99' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizSmall
-    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
@@ -1002,17 +1002,17 @@ WizSmall WizLog
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizGood
-    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element WizWarn
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 16,
+    public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 16,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
@@ -1136,15 +1136,15 @@ Button WizFree
     }
 
 element WizUsed
-    body : Layer [ fill_color: rgba [ '#ffffff14' ],
+    public body : Layer [ fill_color: rgba [ '#ffffff14' ],
         radius: Radius [ '4' ] ]
 
 element WizFreed
-    body : Layer [ fill_color: rgba [ '#8fe0a830' ],
+    public body : Layer [ fill_color: rgba [ '#8fe0a830' ],
         radius: Radius [ '4' ] ]
 
 element WizEdge
-    body : Layer [ fill_color: rgba [ '#ff84ff' ],
+    public body : Layer [ fill_color: rgba [ '#ff84ff' ],
         radius: Radius [ '2' ] ]
 
 # a partition's or a gap's place on the map, 0..1 across it

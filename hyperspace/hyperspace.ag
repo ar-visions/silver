@@ -4687,7 +4687,7 @@ Toolbar HsToolbar
 
 Button HsButton
     area   : Region { l0+ t4px w88px h24px }
-    tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
+    public tlabel : Layer [ label_color: rgba [ '#fff' ], label_size: 14,
         label_align: vec2f [ x: 0.5, y: 0.5 ] ]
     style : CSS {
         layers.body:
@@ -4710,8 +4710,8 @@ HsButton VButton
 
 element hyperspace : trinity
     public model      : path   [ path 'models/uface.gltf' ]
-    public width      : i32    [ 1024 ]
-    public height     : i32    [ 1024 ]
+    width      : i32    [ 1024 ]
+    height     : i32    [ 1024 ]
     public title      : string [ 'hyperspace' ]
     public background : string [ 'Background' ]
     mutable seeded   : bool
@@ -6164,7 +6164,7 @@ element hyperspace : trinity
     public  plot_fy : f32 [ -999.0 ]
     public  cap_w      : i32 [ 2048 ]
     public  cap_h      : i32 [ 2048 ]
-    public  hidden     : bool
+    hidden     : bool
     public  gen        : i32
     public  looks      : i32 [ 10 ]
     public  test       : bool

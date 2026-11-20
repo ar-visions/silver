@@ -27,46 +27,46 @@ import <time.h>
 
 
 class cpu_vr4300
-	r         : new i64 [ 32 ]      # GPRs (64-bit)
-	fpr       : new u64 [ 32 ]      # FPU raw bits
-	hi        : i64
-	lo        : i64
-	pc        : u32
-	npc       : u32
-	fcr31     : u32
+	public r         : new i64 [ 32 ]      # GPRs (64-bit)
+	public fpr       : new u64 [ 32 ]      # FPU raw bits
+	public hi        : i64
+	public lo        : i64
+	public pc        : u32
+	public npc       : u32
+	public fcr31     : u32
 	# COP0
-	c_index   : u32
-	c_count   : u32
-	c_compare : u32
-	c_status  : u32
-	c_cause   : u32
-	c_epc     : u32
-	c_config  : u32
-	c_wired   : u32
-	c_entrylo0 : u32
-	c_entrylo1 : u32
-	c_entryhi  : u32
-	c_pagemask : u32
-	c_context  : u64
-	c_xcontext : u64
-	c_badvaddr : u32
-	c_lladdr   : u32
-	c_watchlo  : u32
-	c_watchhi  : u32
-	c_parity   : u32
-	c_taglo    : u32
-	c_errepc   : u32
-	c_latch    : u32                # last MTC0 value: reads of undefined CP0 regs
-	cp2_latch  : u64                # COP2 has no registers, only this latch
-	tlb_hi    : new u32 [ 32 ]      # raw EntryHi per TLB entry
-	tlb_pm    : new u32 [ 32 ]
-	tlb_lo0   : new u32 [ 32 ]
-	tlb_lo1   : new u32 [ 32 ]
-	tlb_used  : bool                # any tlbwi yet (fast-path gate)
-	tc_va     : new u32 [ 64 ]      # translation cache, 4K pages: virtual page | 1 valid
-	tc_pa     : new u32 [ 64 ]      # physical page
-	tc_fl     : new u32 [ 64 ]      # bit0 cached, bit1 dirty (writable)
-	ll_bit    : bool
+	public c_index   : u32
+	public c_count   : u32
+	public c_compare : u32
+	public c_status  : u32
+	public c_cause   : u32
+	public c_epc     : u32
+	public c_config  : u32
+	public c_wired   : u32
+	public c_entrylo0 : u32
+	public c_entrylo1 : u32
+	public c_entryhi  : u32
+	public c_pagemask : u32
+	public c_context  : u64
+	public c_xcontext : u64
+	public c_badvaddr : u32
+	public c_lladdr   : u32
+	public c_watchlo  : u32
+	public c_watchhi  : u32
+	public c_parity   : u32
+	public c_taglo    : u32
+	public c_errepc   : u32
+	public c_latch    : u32                # last MTC0 value: reads of undefined CP0 regs
+	public cp2_latch  : u64                # COP2 has no registers, only this latch
+	public tlb_hi    : new u32 [ 32 ]      # raw EntryHi per TLB entry
+	public tlb_pm    : new u32 [ 32 ]
+	public tlb_lo0   : new u32 [ 32 ]
+	public tlb_lo1   : new u32 [ 32 ]
+	public tlb_used  : bool                # any tlbwi yet (fast-path gate)
+	public tc_va     : new u32 [ 64 ]      # translation cache, 4K pages: virtual page | 1 valid
+	public tc_pa     : new u32 [ 64 ]      # physical page
+	public tc_fl     : new u32 [ 64 ]      # bit0 cached, bit1 dirty (writable)
+	public ll_bit    : bool
 
 enum N64Surface
 	atlas : 0
@@ -263,8 +263,8 @@ ModelViewProject N64GX
 
 
 element n64 : trinity
-	public  width        : i32    [ 960 ]
-	public  height       : i32    [ 720 ]
+	width        : i32    [ 960 ]
+	height       : i32    [ 720 ]
 	public  lock_aspect  : bool   [ true ]
 	public  title        : string [ 'n64' ]
 	public  background   : string [ 'Background' ]
@@ -282,7 +282,7 @@ element n64 : trinity
 	public  state        : path           # --state <file>: our n64.state or a gopher64 .stateN zip
 	mutable gs_buf       : @u8            # postcard cursor for gopher64 state parsing
 	mutable gs_pos       : i64
-	public  volume       : f32 [ 0.02 ]
+	volume       : f32 [ 0.02 ]
 	mutable cpu          : cpu_vr4300
 	mutable in_ds        : bool           # current instruction sits in a branch delay slot (Cause.BD)
 	mutable ds_pend      : bool           # this instruction makes the next one a delay slot

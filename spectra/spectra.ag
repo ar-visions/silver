@@ -24,6 +24,18 @@ import knik0:faad2/2.11.2 <neaacdec.h>
     -DBUILD_SHARED_LIBS=ON
     -DFAAD_BUILD_CLI=OFF
 
+# Ogg Vorbis (audacity's lines: one build serves both)
+import libogg/1.3.5 from https://downloads.xiph.org/releases/ogg/libogg-1.3.5.tar.xz
+    -DBUILD_SHARED_LIBS=ON
+    -DBUILD_TESTING=OFF
+import libvorbis/1.3.7 from https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz
+    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-rpath,{install}/lib"
+    -DBUILD_SHARED_LIBS=ON
+import <vorbis/vorbisfile.h>
+    -lvorbisfile
+    -lvorbis
+    -logg
+
 export extensions ['.wav': FileType.binary]
 
 
@@ -931,6 +943,38 @@ expect func t_wav_open_length [] -> bool
     log 'wav open length: {c.rate} Hz, {c.channels} ch, {c.frames} frames'
     return c.rate == 48000 && c.channels == 2 && c.frames == 100 &&
         c.pcm[ 0 ] == 11564
+
+# an Ogg Vorbis file, whole, as 16-bit samples
+func ogg_load [ p: path ] -> AudioClip
+    vf : OggVorbis_File
+    if [ ov_fopen[ '{p}', @vf ] != 0 ]
+        log 'ogg: cannot read {p}'
+        return null
+    vi : @vorbis_info ov_info[ @vf, -1 ]
+    ch : i32 [ vi.channels ]
+    rate : i32 [ vi.rate ]
+    nfr : i64 [ ov_pcm_total[ @vf, -1 ] ]
+    cnt : i32 [ i32[ nfr ] * ch ]
+    if [ ch < 1 || cnt < 1 ]
+        ov_clear[ @vf ]
+        log 'ogg: no samples in {p}'
+        return null
+    pcm : new i16 [ cnt ]
+    # bytes in: whole samples a read, 16-bit, little-endian, signed
+    got : i32 [ 0 ]
+    sec : i32 [ 0 ]
+    while [ got < cnt ]
+        want : i32 [ min[ cnt - got, 8192 ] * 2 ]
+        n : i64 [ ov_read[ @vf, cast cstr [ @pcm[ got ] ], want, 0, 2, 1,
+                           @sec ] ]
+        if [ n <= 0 ] break
+        got += i32[ n / 2 ]
+    ov_clear[ @vf ]
+    clip : AudioClip [ rate: rate, channels: ch,
+                       frames: i64[ got / ch ] ]
+    pcm.hold[]
+    clip.pcm = pcm
+    return clip
 
 # AAC in a CAF or M4A container via faad2; RIFF falls through to wav
 func caf_load [ p: path ] -> AudioClip

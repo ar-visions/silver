@@ -83,8 +83,8 @@ class QuarkView
     public title : string
 
 element Quark : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public  title      : string [ 'quark' ]
     public  background : string [ 'Background' ]
     # the Electron app's folder (its package.json names the main)

@@ -1,0 +1,4290 @@
+extend orbiter
+
+# the panes and windows: their views, titles, feet, strips, grips
+# and grounds; the console band in a pane; their kept states
+
+Layer BlurGround
+    public round : f32
+    # the foot's corners, if not square
+    public foot  : f32
+    public stage : BlurStage [ BlurStage.blur ]
+    func draw [ cv: Canvas ]
+        if [ !parent || !parent.ux ] return
+        w : Window parent.ux
+        cv.save[]
+        cv.clip_rounded_rect[ bounds.x, bounds.y, bounds.w, bounds.h,
+                              round, round, foot, foot ]
+        w.draw_blur[ cv, parent, stage ]
+        cv.restore[]
+
+    # the moving backdrop: drawn each frame under its element's
+    # cached picture, so the element itself is not animated
+    public func live [] -> bool
+        return true
+
+# the desktop's agent title's ground: a free window's
+BlurGround HeadBlur
+    func draw [ cv: Canvas ]
+        ah : cast AgentHead [ parent ]
+        if [ !ah || !ah.desk ] return
+        round = 8.0
+        foot  = 8.0
+        super.draw[ cv ]
+
+# a window strip's ground: square when the window is docked
+BlurGround StripBlur
+    func draw [ cv: Canvas ]
+        ws : cast WinStrip [ parent ]
+        round = (ws && ws.docked) ? 0.0 : 8.0
+        super.draw[ cv ]
+
+# a code window's foot: a free one rounds its foot corners
+BlurGround FootBlur
+    func draw [ cv: Canvas ]
+        pf : cast PaneFoot [ parent ]
+        if [ !pf ] return
+        foot = (pf.free) ? 8.0 : 0.0
+        super.draw[ cv ]
+
+# the navigator's bar at a free window's foot: its corners round
+BlurGround TitleBlur
+    func draw [ cv: Canvas ]
+        et : cast EditorTitle [ parent ]
+        if [ !et ] return
+        foot = (et.free) ? 8.0 : 0.0
+        super.draw[ cv ]
+
+# a code window's: not a console's or a new tab's; a free one rounds.
+# the navigator over any of them: the frost
+BlurGround CodeBlur
+    func draw [ cv: Canvas ]
+        ev : cast EditorView [ parent ]
+        if [ !ev ] return
+        nav : bool [ ev.browse_active[] ]
+        if [ !nav && (ev.is_console || ev.is_empty) ] return
+        stage = (nav) ? BlurStage.frost : BlurStage.blur
+        round = (ev.free) ? 8.0 : 0.0
+        foot = round
+        super.draw[ cv ]
+
+# this is the EditorView
+element EditorView
+    selected   : bool
+    public pane_index : i32
+    public is_console : bool
+    # an agent's session: its own tint fades into the blur
+    public is_agent   : bool
+    # a new tab, no file yet: no ground, the scene shows through
+    public is_empty   : bool
+    # pulled free: a window, its corners round (all it holds is
+    # masked to them: its ground's clip)
+    public free       : bool
+    # not animated: its ground is a tint, laid over the moving scene
+    # each frame as a cached picture (its blur is ground<n>'s)
+    public blur : CodeBlur []
+
+    style : CSS {
+        area: l0 t0 r0 b0
+        layers.bg:
+            # the theme's editor ground (each scene maps #140a2acc), a
+            # tint as the console's
+            fill_color: #140a2acc
+            radius: 0
+            clip: false
+        :is_console
+            layers.bg:
+                fill_color: #140a2a80
+        :is_agent
+            layers.bg:
+                fill_color: #0000
+        :is_empty
+            layers.bg:
+                fill_color: #0000
+        :free
+            layers.bg:
+                radius: 8
+                clip: true
+    }
+
+
+    func text_of [] -> Editor
+        if [ !elements ] return null
+        return editor_under[ elements[ 'split' ] ]
+
+    # file-create mode: state and behavior live on THIS view alone
+    mutable newfile      : bool
+    mutable newfile_text : string
+    mutable newfile_src  : path
+    # the typed name creates a folder instead of a file
+    mutable newfile_dir  : bool
+
+    func newfile_enter [ p: path ]
+        newfile      = true
+        newfile_text = ''
+        newfile_src  = p
+        newfile_dir  = false
+
+    func newdir_enter [ p: path ]
+        newfile_enter[ p ]
+        newfile_dir  = true
+
+    func newfile_exit []
+        newfile      = false
+        newfile_text = ''
+
+    func newfile_exists [] -> bool
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !orb.nav.nav_root ] return false
+        if [ !newfile_text || newfile_text.count == 0 ] return false
+        p_ : path '{orb.nav.nav_root}/{newfile_text}'
+        return p_.exists[]
+
+    func newfile_commit []
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb || !newfile_text || newfile_text.count == 0 ] return
+        if [ newfile_exists[] ] return    # red name: no action
+        p_ : path '{orb.nav.nav_root}/{newfile_text}'
+        if [ newfile_dir ]
+            p_.make_dir[]
+            newfile_exit[]
+            orb.nav.nav_root = p_
+            orb.run_search[]
+            return
+        # a take's file: named here, the recording starts there
+        if [ orb.pick_field == 'rec' ]
+            newfile_exit[]
+            orb.rec_deliver[ p_ ]
+            return
+        # a program's save: the name goes back to it, nothing made
+        if [ orb.pick_field == 'portal' ]
+            newfile_exit[]
+            orb.portal_deliver[ p_ ]
+            return
+        e_ : string ''
+        p_.save[ e_, null ]
+        newfile_exit[]
+        orb.exit_finder[]
+        orb.open_file[ p_ ]
+
+
+    func orb [] -> orbiter
+        return cast orbiter [ ux.app_object ]
+
+    # the console session this pane holds; '' when it holds a file
+    func psess [] -> string
+        o : orb[]
+        if [ !o ] return ''
+        if [ o.agent_open && pane_index == o.editor_slots.count ]
+            return o.orbit_sid
+        return (pane_index < o.pane_console.count) ? o.pane_console[pane_index] : ''
+
+    func file [] -> path
+        o : orb[]
+        if [ !o ] return null
+        s : i32 [
+            (pane_index < o.editor_slots.count)
+            ? o.editor_slots[pane_index] : -1 ]
+        return (s >= 0 && s < o.open_files.count) ? o.open_files[s] : null
+
+    func rview [] -> AppView
+        e : Editor text_of[]
+        return (e) ? e.run_view : null
+
+    func app_running [] -> bool
+        r : rview[]
+        return (r && !r.ended) ? true : false
+
+    func app_pip [] -> bool
+        e : Editor text_of[]
+        return (app_running[] && !e.app_view) ? true : false
+
+    func searchable [] -> bool
+        o : orb[]
+        return (o) ? (o.search_pane[] == id) : false
+
+    func findbar_on [] -> bool
+        o : orb[]
+        return (o) ? (o.findbar_open && o.findbar_pane == id) : false
+
+    func menu_open [] -> bool
+        o : orb[]
+        if [ !o || !searchable[] ] return false
+        return o.find_showing || o.nav_showing
+
+    # .ag files and anything with a registered handler keep the run band
+    func run_ok [] -> bool
+        if [ psess[].count > 0 ] return false
+        if [ app_running[] ] return true
+        p : file[]
+        if [ !p ] return false
+        f : p.filename[]
+        if [ f.count >= 3 && f.mid[ f.count - 3, 3 ].compare[ '.ag' ] == 0 ]
+            return true
+        e : Editor text_of[]
+        return (e && e.handler_module_for[ p ]) ? true : false
+
+    # a running app owns the band label; source navigation must not
+    # re-bind it
+    func band_mod [] -> string
+        r : rview[]
+        if [ r && r.app_mod ] return r.app_mod
+        p : file[]
+        if [ !p ] return 'app'
+        m : p.filename[]
+        d : i32 [ m.index_of[ '.' ] ]
+        return (d > 0) ? m.mid[ 0, d ] : m
+
+
+    # args belong to the DOC a handler opened, not the handler's own
+    # source
+    func args_src [] -> path
+        r : rview[]
+        if [ r && r.doc ] return r.doc
+        e : Editor text_of[]
+        return (e) ? e.band_src[] : file[]
+
+    func title_text [] -> string
+        if [ findbar_on[] ] return ''
+        # a program's window: its own title
+        o_ : orb[]
+        wn : u64 [ (o_) ? o_.pane_window[ pane_index ] : u64[ 0 ] ]
+        if [ wn != 0 ] return string[ wlc_window_title[ wn ] ]
+        s : psess[]
+        # an agent's terminal: its conversation's title
+        if [ s.starts_with[ 'home:' ] && o_ ]
+            return o_.home_title[ s.mid[ 5, s.count - 5 ] ]
+        if [ s.count > 0 ]
+            h : i32 [ s.index_of[ '#' ] ]
+            return (h > 0) ? s.mid[ 0, h ] : s
+        # a console view is not about the file: the title is its name
+        # alone
+        e : Editor text_of[]
+        o : orb[]
+        if [ e && o && e.view_name && o.console_of[ e.view_name ] ]
+            return e.view_name
+        # its app running in view: the app's own title, as its task
+        # button reads
+        rv : AppView (e && e.app_view) ? e.run_view : null
+        if [ o && rv && !rv.ended && !rv.held ]
+            return o.task_title[ rv ]
+        # a module: its name; its argument is a button beside it
+        m : path (e && o) ? o.module_src_of[ e ] : null
+        if [ m ] return m.stem[]
+        p : file[]
+        # the first frame has no editor yet: the same module rule on
+        # the file (<name>/<name>.ag), or it read knes.ag for a frame
+        if [ p && p.ext[] == 'ag'
+             && p.stem[] == p.parent_dir[].filename[] ]
+            return p.stem[]
+        return (p) ? p.filename[] : 'Open'
+
+    # the pane's app failed, or its file does not compile
+    func title_error [] -> string
+        o : orb[]
+        e : Editor text_of[]
+        if [ !o || !e ] return ''
+        # every error is the editor's band at the foot, line or not
+        return ''
+
+    func title_hint [] -> string
+        e : Editor text_of[]
+        o : orb[]
+        # a program's folder pick: how to answer it
+        if [ o && o.pick_field == 'portal' && o.pick_dir ]
+            return 'Enter: open this folder'
+        if [ !e || !e.view_name || e.view_name.count == 0 ] return ''
+        if [ o && o.console_of[ e.view_name ] ] return ''
+        return (e.view_name != 'editor') ? e.view_name : ''
+
+    func title_els [] -> Elements
+        o : orb[]
+        w : Window ux
+        e : Editor text_of[]
+        tfoc : bool [
+            (w && w.focus && w.focus.id == 'title' && w.focus.parent == a) ? true : false ]
+        # the editor is never locked while debugging; the run band steps
+        # a console view is not a resource view of the file: the
+        # finder's close and the nav arrows keep their places over it
+        isres : bool [
+            e && e.rview
+            && !(e.view_name && o.console_of[ e.view_name ]) ]
+        t : Elements o.title_nav[ file[], null, false, w, false,
+                                  e->dbg_open, menu_open[],
+            isres, e->rview, findbar_on[], tfoc, pane_index ]
+        if [ psess[].count > 0 ]
+            t['ctx_copy'] = LabelButton [ label: 'context',
+                                          manual_mode: true ]
+            t['ctx_shot'] = LabelButton [ label: 'screen',
+                                          manual_mode: true ]
+        # a running app's views (its orbiter bar's chips) after the
+        # name; its instances are in the bottom bar
+        rv : AppView (e) ? e.run_view : null
+        run_ : bool [ rv && !rv.ended && rv.app_mod && !tfoc && !newfile ]
+        if [ run_ && w && w.screen && rv.app_views
+             && rv.app_views.count > 0 ]
+            cv_ : Canvas w.screen
+            fu : f32 [
+                (w.vk && w.vk.font_unit > 0)
+                ? f32[ w.vk.font_unit ] / 22.0 : 1.0 ]
+            cv_.font_size[ 17 ]
+            nm : cv_.measure_text[ title_text[] ]
+            ax_ : f32 [ 62.7 * fu + nm.w + 12.0 * fu ]
+            te : element (elements) ? elements[ 'title' ] : null
+            ts : TaskStrip (te && te.elements) ? te.elements[
+                'tasks' ] : null
+            cv_.font_size[ 15 ]
+            vxs : vec f32 []
+            vws : vec f32 []
+            cx  : f32 [ ax_ ]
+            for [ vn: string ] in rv.app_views
+                vw_ : f32 [ min[ cv_.measure_text[ vn ].w + 40.6 * fu,
+                                 8.0 * 22.0 * fu ] ]
+                vxs.push[ cx ]
+                vws.push[ vw_ ]
+                cx += vw_ + 6.0 * fu
+            # the strip ends before the companions and the search
+            lim : f32 [ (te && te.bounds) ? te.bounds.w : 0.0 ]
+            if [ te && te.elements ]
+                for [ rk: string ] in vec string [] [ 'companions',
+                                                      'tabnav' ]
+                    re : element te.elements[ rk ]
+                    if [ re && re.bounds && re.bounds.x > ax_
+                         && re.bounds.x < lim ]
+                        lim = re.bounds.x
+            sw : f32 [ max[ lim - ax_ - 6.0 * fu, 0.0 ] ]
+            span : f32 [ max[ cx - 6.0 * fu - ax_, 0.0 ] ]
+            pad : f32 [ 3.0 * fu ]
+            vis : f32 [ (ts && ts.bounds) ? ts.bounds.w - pad * 2.0
+                : sw ]
+            shift : f32 [ (ts) ? clamp[ ts.shift, 0.0,
+                max[ span - vis, 0.0 ] ] : 0.0 ]
+            if [ ts ] ts.shift = shift
+            st : Elements []
+            # h0.9 in the title's cells
+            ch : f32 [ 0.9 * ((te && te.fc > 0.0) ? te.fc : 22.0 * fu) ]
+            k : i32 [ 0 ]
+            for [ vn: string ] in rv.app_views
+                vx : f32 [ vxs[ k ] - ax_ - shift + pad ]
+                vwd : f32 [ vws[ k ] ]
+                st[ 'view_{k}' ] = ArgButton [ label: vn,
+                    selected: e.app_view && rv.app_view_on == k,
+                    inst: rv,
+                    area: Region [ 'l{vx}px t{pad}px w{vwd}px h{ch}px' ] ]
+                k += 1
+            sa : string 'l{ax_ - pad}px t-{pad}px'
+            sz : string 'w{sw + pad * 2.0}px h{ch + pad * 2.0}px'
+            t['tasks'] = TaskStrip [ span: span, shift: shift,
+                shown: rv.iid, room: sw, pad: pad,
+                area: Region [ '{sa} {sz}' ],
+                elements: st ]
+        if [ newfile ]
+            # create mode has its own cancel: never two close buttons
+            t.rm[ 'histnav' ]
+        # a phone shows no close (x) anywhere
+        if [ newfile && !use_mobile ]
+            t['newfile_cancel'] = PaneBox [
+                area: Region [ 'r0+ t0 w1.66 b0' ] ]
+        return t
+ 
+    func text_els [] -> Elements
+        o : orb[]
+        e : Editor text_of[]
+        t : Elements [ ]
+        # a window a program opened here fills the pane, unless the
+        # navigator is open in it (the window comes back as it shuts)
+        wid : u64 o.pane_window[ pane_index ]
+        if [ wid != 0 && !browse_active[] ]
+            # a header it draws itself is cut off when its menu is in
+            # the system bar; one with no menu there keeps it (its tabs)
+            # 46 of the window's own units: its pixels are that times
+            # the windows' scale (wlc_set_scale)
+            ws : f32 [ (o.set_size > 0) ? f32[ o.win_scale[] ] : 1.0 ]
+            mk : i32 wlc_window_menu_kind[ wid ]
+            cut : i32 [ (wlc_window_csd[ wid ] != 0
+                         && (mk == 1 || mk == 2))
+                ? i32[ round[ 46.0 * ws ] ] : 0 ]
+            t['text'] = WaylandView [ window: wid, crop_top: cut,
+                sheet: o.pane_sheet_of[ pane_index ],
+                area: Region { l0 t0 r0 b0 } ]
+            return t
+        s : psess[]
+        if [ s.count > 0 ]
+            con : Console [ session_id: s, sessions: o.ed_sessions,
+                            feed: null,
+                launch: o.agent_cmd[ s ], animated: true ]
+            t['text'] = con
+            # an agent's terminal: its avatar behind it, lower right
+            if [ s.starts_with[ 'home:' ] ]
+                con.cbase = Layer [ fill_color: rgba [ '#0000' ] ]
+                con.area  = Region { l0 t0 r0 b0 }
+                # its scrolled edges fade, as the pane's console's:
+                # the mask needs its cached picture (not animated)
+                con.scroll_fade = 72.0
+                con.animated = false
+                t['text'] = AgentBox [ agent: s.mid[ 5, s.count - 5 ],
+                    term: con, free: free,
+                    area: Region { l0 t0 r0 b0 } ]
+        el
+            edels : Elements []
+            # a composed view fills the editor; its lines stay empty
+            if [ e && e.rview ]
+                vel : element e.rview.view_element*[]
+                if [ vel ] edels['view'] = vel
+            # a resumed app fading in over the source
+            fi_ : AppView (e) ? e.run_view : null
+            # an app building or starting (until its first frame): the
+            # build card, with its build's percent while it compiles
+            bw_ : string [ (fi_) ? fi_.status_word[] : '' ]
+            # only a real build: a built app's start shows nothing
+            if [ e && e.app_view && fi_ && fi_.display == 1
+                 && (bw_ == 'compiling' || bw_ == 'starting')
+                 && fi_.compiled[] ]
+                edels['build_card'] = BuildCard [ inst: fi_,
+                    area: Region { l0 t0 r0 b0 } ]
+            # picture in picture: the app in a corner over the source
+            if [ e && fi_ && !e.app_view && fi_.display == 0
+                 && !fi_.ended && !fi_.held && !fi_.viewer ]
+                edels['pip:{pane_index}'] = PipView [ inst: fi_,
+                    area: Region [ pip_at[ fi_ ] ] ]
+            if [ fi_ && fi_.fade_in_ms > 0 ]
+                edels['resume_fade'] = ResumeFade [ inst: fi_,
+                    area: Region { l0 t0 r0 b0 } ]
+            edels['rail'] = ToolRail [ no_scroll: true,
+                                       area: Region [
+                                           'l0 t1px w1.94 b0' ] ]
+            dbgr : dbg o.active_debugger[]
+            edx : Editor [
+                src: file[]
+                hide: browse_active[]
+                breakpoints: o.breakpoints,
+                code_font_size: o.code_font_size,
+                nav: o.nav_panes[ pane_index ], pane_index: pane_index,
+                debug_running: (dbgr) ? true : false, debugger: dbgr,
+                debug_vars: o.debug_vars,
+                expanded: findbar_on[], replacing: findbar_on[],
+                show_hits: false,
+                single_line: false,
+                header_size: o.browse_header_size,
+                dir_size: o.browse_dir_size,
+                nav_list: false, dock_rows: o.nav.nav_dock_rows,
+                grid_mode: false,
+                hits: o.nav.find_hits,
+                find_query: (searchable[]
+                    && (findbar_on[] || o.title_finding[]))
+                ? o.findbar_text : '',
+                elements: edels ]
+            # the editor and the run band share the column left of the
+            # instance panel: the console spans the editor only, never
+            # under the panel. the column is mounted always (a wrapper
+            # that comes and goes re-parents the editor)
+            cols : Elements []
+            cols['text'] = edx
+            t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
+                                   vertical: true,
+                inner: cols, deflt: 180.0, min_size: 44.0 ]
+        return t
+
+    # the error chip belongs to the file it names: only show it
+    # while that file is the one in view
+    func err_showing [] -> bool
+        o : orb[]
+        if [ !o.err_file || o.err_line <= 0 ] return false
+        e : Editor text_of[]
+        if [ !e || !e.src ] return false
+        es : string e.src.absolute[]
+        ef : string o.err_file.absolute[]
+        return es.compare[ ef ] == 0
+
+    # ONE middle slot: the error of the app WE ARE RUNNING, or what it
+    # is doing while we wait. an error wins the slot
+    func band_status [] -> string
+        o : orb[]
+        if [ err_showing[] ]
+            return (o.err_msg && o.err_msg.count > 0)
+                ? '{o.err_line}: {o.err_msg}'
+                : '{o.err_file.filename[]}:{o.err_line}'
+        r : rview[]
+        if [ !r ] return ''
+        s : r.status_text[]
+        return (s) ? s : ''
+
+    # the console alone: its filter box is the one control. pip, pause,
+    # the steps and volume all live in the instance panel
+    func band_els [] -> Elements
+        o : orb[]
+        e : Editor text_of[]
+        t : Elements []
+        cf : Elements []
+        cf['console_filter'] = element [
+            area: Region { r0.24 t0.12 w6 h0.97 },
+            label: band_mod[], focusable: true, no_scroll: true ]
+        # the log's filter, at its top right while it holds one
+        fl : string [ (o.con_filter) ? o.con_filter : '' ]
+        if [ fl.count > 0 ]
+            fw : f32 [ (f32[ fl.count ] * 8.0 + 30.0) * ux_unit[ ux ] ]
+            cf['con_find'] = ConFind [ edit: fl,
+                area: Region [ 'r0.24 t0.12 w{fw}px h0.97' ] ]
+        inner : Elements [ ]
+        # its toolbar across the top, the window strip's height: the
+        # debugger's console, clear, and the selected app or all
+        tb : f32 [ round[ title_px[] * 0.7 ] ]
+        t['ctools'] = ConsoleBar [ elements: o.console_tool_els[],
+            area: Region [ 'l0 t0 r0 h{tb}px' ] ]
+        sid : string o.console_sid[ pane_index ]
+        # its input, a line across its foot, edge to edge: the app's
+        # standard input, or the debugger's (lldb's) in its console;
+        # the log ends above it. nothing to take a line (no running
+        # app, no debugger): no line
+        takes : bool o.console_takes[ pane_index ]
+        lh : f32 [ (takes) ? 1.06 * o.unit_px[] : 0.0 ]
+        if [ takes ]
+            t['con_line'] = ConsoleLine [
+                area: Region [ 'l0 t100%-{lh}px r0 b0' ] ]
+        inner['console'] = RunConsole [ session_id: sid,
+            scroll_fade: 72.0,
+            sessions: o.ed_sessions,
+            feed: (o.con_dbg) ? o.dbg_feed[] : null,
+            run_line: (e && e.run_view) ? e.run_view.cmd : null,
+            elements: cf ]
+        # its call stack, the split's right pane: the frames the
+        # debugger stops in, a click goes to one
+        if [ o.con_stack_on ]
+            inner['con_stackcol'] = ConStack [
+                frames: o.stack_frames[] ]
+        sk : f32 [ round[ 16.0 * o.unit_px[] ] ]
+        t['ground'] = ConsoleGround [
+            area: Region [ 'l0 t{tb}px r0 b{lh}px' ] ]
+        t['split'] = Splitter [
+            area: Region [ 'l0 t{tb}px r0 b{lh}px' ],
+            inner: inner, deflt: 0.0, share: 0.375,
+            line_color: rgba [ '#fff1' ], min_size: 120.0,
+            sizes: vec f32 [] [ 0.0, sk ] ]
+        return t
+
+    # the foot's buttons, each its own: run or stop, pause or
+    # continue, the steps, the build's mode, the console
+    func foot_els [ e: Editor, fh: f32, rnd: f32 ] -> Elements
+        o : orb[]
+        t : Elements []
+        av : AppView (e) ? e.run_view : null
+        # a stop elsewhere (another pane's run, a program): its steps
+        if [ !o.stopped_at[ av ] ]
+            sv : AppView o.stopped_view[]
+            if [ sv ] av = sv
+        ids : vec string []
+        ics : vec string []
+        tps : vec string []
+        # the first: play starts it under the debugger; stop ends it
+        # while it runs. the second: pause, continue from a stop
+        acts : vec string o.debug_acts[ av ]
+        off : i32 [ 0 ]
+        # a program run as release: no pause, no steps, only run, stop
+        prog : bool [ e && o.run_of[ e.src ].count > 0
+            && ((av && !av.ended) ? !av.prog_debug : o.run_release) ]
+        if [ acts.count > 0 ]
+            ids.push[ 'tdbg:{av.iid}:stop' ]
+            ics.push[ 'stop' ]
+            tps.push[ 'stop' ]
+        el
+            ids.push[ 'pfoot_dbg:{pane_index}' ]
+            ics.push[ 'play' ]
+            tps.push[
+                (o.run_release) ? 'run' : 'run with the debugger' ]
+        if [ acts.index_of[ 'continue' ] >= 0 ]
+            ids.push[ 'tdbg:{av.iid}:continue' ]
+            ics.push[ 'continue' ]
+            tps.push[ 'continue' ]
+        el
+            if [ prog || acts.index_of[ 'pause' ] < 0 ]
+                off |= 1 << ids.count
+            ids.push[ (av) ? 'tdbg:{av.iid}:pause' : 'pfoot_off:pause' ]
+            ics.push[ 'pause' ]
+            tps.push[ 'pause' ]
+        # the steps always; dim while it is not stopped
+        for [ ac: string ] in vec string [] [ 'step_next', 'step_in',
+                'step_out' ]
+            if [ prog || acts.index_of[ ac ] < 0 ]
+                off |= 1 << ids.count
+            ids.push[ (av) ? 'tdbg:{av.iid}:{ac}' : 'pfoot_off:{ac}' ]
+            ics.push[ ac ]
+            tps.push[ (ac == 'step_next') ? 'step over'
+                : ((ac == 'step_in') ? 'step into' : 'step out') ]
+        bw : f32 [ fh * 1.224 ]
+        for [ i: i32 0, i < ids.count, i += 1 ]
+            # the step icons are drawn 15% smaller
+            fit : f32 [ 0.51 ]
+            if [ ics[ i ].starts_with[ 'step_' ] ] fit = 0.4335
+            b : BarButton o.bar_icon[ ics[ i ], fit, false,
+                (off & (1 << i)) != 0, bw * f32[ i ], bw ]
+            b.tip = tps[ i ]
+            t[ ids[ i ] ] = b
+        # right of them: play runs a debug build, else a release one
+        dx : f32 [ bw * f32[ ids.count ] ]
+        t['pfoot_mode'] = BarButton [ label: 'debug',
+            tip: 'build with debug information',
+            selected: !o.run_release, use_spacing: false,
+            area: Region [ 'l{dx}px t0 w{fh * 2.2}px b0' ] ]
+        t['pfoot_verbose'] = BarButton [ label: 'verbose',
+            tip: 'show the whole build in the console',
+            selected: o.run_verbose, use_spacing: false,
+            area: Region [ 'l{dx + fh * 2.2}px t0 w{fh * 2.8}px b0' ] ]
+        # the console's toggle at the right end
+        t['pfoot_con:{pane_index}'] = BarButton [ icon: 'console',
+            tip: 'console', icon_fit: 0.66,
+            selected: o.con_up[ pane_index ], use_spacing: false,
+            area: Region [ 'r0 t0 w{fh * 1.2}px b0' ] ]
+        # the app run from here: in the pane, or a picture in a corner
+        rv : AppView (e) ? e.run_view : null
+        rw : f32 [ fh * 1.2 ]
+        if [ rv && !rv.ended && !rv.held ]
+            t['pfoot_pip:{pane_index}'] = BarButton [ icon: 'pip',
+                tip: 'picture in picture', icon_fit: 0.6,
+                selected: rv.display == 0, use_spacing: false,
+                area: Region [ 'r{fh * 1.2}px t0 w{fh * 1.2}px b0' ] ]
+            rw = fh * 2.4
+        # between them: the tip of the button the pointer is on
+        t['foot_tip'] = TipLine [ area: Region [
+            'l{dx + fh * 5.0}px t0 r{rw}px b0' ] ]
+        return t
+
+    func pane_els [] -> Elements
+        o : orb[]
+        t : Elements [ ]
+        # the editor and the instruments column are the two sides of ONE
+        # split. it is mounted ALWAYS, even with the column hidden — a
+        # wrapper that comes and goes re-parents the editor, and a new
+        # editor loses run_view and unmounts the whole band
+        # 100px floor, and 0 snaps it off the way any other pane does
+        t['text'] = Splitter [ area: Region { l0 t0 r0 b0 },
+            inner: text_els[], deflt: 280.0, min_size: 100.0,
+            snap_close: true ]
+        # its console, under it in the same split, while it is up
+        if [ o.con_up[ pane_index ] && !use_mobile ]
+            t['band'] = RunBand [ elements: band_els[] ]
+        return t
+
+    # reconciliation runs on the frame hook, never in render
+    public func tick [ w: Window ]
+        settle[]
+
+    func settle []
+        o : orb[]
+        # a debugger made since the switch takes it too
+        o.asm_sync[]
+        # every app module has an implied default instance, held until
+        # it is started: the panel always has the app to run, and only
+        # the added ones (shift on the instance tab) carry a number
+        ed0 : Editor text_of[]
+        if [ ed0 && ed0.src && psess[].count == 0 ]
+            dir0 : string ed0.src.parent_dir[].filename[]
+            if [ ed0.src.stem[] == dir0 && ed0.src.ext[] == 'ag' ]
+                bin : path '{install_root[]}/build/{dir0}'
+                li0  : vec AppView o.instances_of[ ed0.src ]
+                if [
+                    bin.exists[] && li0.count == 0
+                    && !ed0.handler_module_for[ ed0.src ] ]
+                    ed0.start_instance[ false ]
+        is_con : bool [ psess[].count > 0 ]
+        if [ is_console != is_con ]
+            is_console = is_con
+            pristine   = false
+        is_ag : bool [ is_con && psess[].starts_with[ 'home:' ] ]
+        if [ is_agent != is_ag ]
+            is_agent = is_ag
+            pristine = false
+            if [ ux ] ux.restyle = true
+        # browsing keeps the ground: only a bare new tab is clear
+        emp : bool [ !is_con && !file[] && !browse_active[] ]
+        if [ is_empty != emp ]
+            is_empty = emp
+            pristine = false
+            if [ ux ] ux.restyle = true
+        if [ o.find_showing ]
+            log 'FIND show: pane={id} searchable={(searchable[]) ? 1 : 0} sp={o.search_pane[]} hits={o.nav.find_hits->count}'
+        e : Editor text_of[]
+        if [ e && e.rview ]
+            cfeed : e.rview.context_feed*[]
+            if [ cfeed ] o.feed_agent[ cfeed ]
+        # create mode self-heals when the pane's file changes under it
+        p : file[]
+        if [ newfile && newfile_src && p && '{newfile_src}' != '{p}' ]
+            newfile_exit[]
+        # the nav surface must track the split's text region; when the
+        # splitter moves it out from under us, a restyle re-fits it
+        cbv : element (elements) ? elements['commit'] : null
+        spl : element (elements) ? elements['split'] : null
+        if [ cbv && spl && spl.elements && spl.bounds ]
+            tx_ : element spl.elements['text']
+            ed_ : element (tx_ && tx_.elements) ? tx_.elements['text'] : null
+            if [ ed_ && ed_.bounds && tx_.bounds && cbv.bounds ]
+                # the view bar takes its width off the right (render)
+                vb : element elements['viewbar']
+                vw : f32 [ (vb && vb.bounds) ? vb.bounds.w : 0.0 ]
+                dx : f32 [ cbv.bounds.x
+                    - (spl.bounds.x + tx_.bounds.x + ed_.bounds.x) ]
+                dy : f32 [ cbv.bounds.y
+                    - (spl.bounds.y + tx_.bounds.y + ed_.bounds.y) ]
+                dw : f32 [ cbv.bounds.w - (ed_.bounds.w - vw) ]
+                dh : f32 [ cbv.bounds.h - ed_.bounds.h ]
+                same : bool [ dx * dx < 0.25 && dy * dy < 0.25
+                    && dw * dw < 0.25 && dh * dh < 0.25 ]
+                if [ !same ]
+                    if [ ux ] ux.restyle = true
+
+    # the pane's views as a column at the nav list's right: git, then
+    # the registered views, each the finder close's size, edge to edge
+    # row: a button's height in px; each overlaps the last by 1px,
+    # so two borders never sit side by side
+    func view_bar [ row: f32 ] -> Elements
+        o : orb[]
+        ed : Editor text_of[]
+        bar : Elements []
+        # first a pane added, this one closed; then the views
+        bar['pane_add'] = ViewTab [
+            buttons: vec string [] [ 'pane_add' ],
+            icon_ids: vec string [] [ 'plus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region [ 'l0 t0 r0 h{row}px' ] ]
+        bar['pane_close'] = ViewTab [
+            buttons: vec string [] [ 'pane_close' ],
+            icon_ids: vec string [] [ 'minus' ], manual: true,
+            rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+            seg_radius: 0.0, use_spacing: false,
+            area: Region [ 'l0 t{row - 1.0}px r0 h{row}px' ] ]
+        if [ o && ed && ed.src ]
+            cur : string ed.resolve_view[]
+            y : f32 [ row * 2.0 - 2.0 ]
+            if [ o.nav.checkout_root[ ed.src.directory[] ] ]
+                bar['git'] = ViewTab [ buttons: vec string [] [ 'git' ],
+                    icon_ids: vec string [] [ 'git' ], manual: true,
+                    sel_mask: (ed.git_on) ? 1 : 0,
+                    rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false,
+                    area: Region [ 'l0 t{y}px r0 h{row}px' ] ]
+                y += row - 1.0
+            for [ v: string ] in o.views_for[ ed ]
+                if [ v == 'git' ] continue
+                ci : string o.console_icon[ v ]
+                bar['view_{v}'] = ViewTab [
+                    buttons: vec string [] [ 'view_{v}' ],
+                    icon_ids: vec string [] [ (ci) ? ci : v ],
+                    manual: true, sel_mask: (v == cur) ? 1 : 0,
+                    rest_glow: rgba [ '#ccf2' ], rest_px: 8.0,
+                    seg_radius: 0.0, use_spacing: false,
+                    area: Region [ 'l0 t{y}px r0 h{row}px' ] ]
+                y += row - 1.0
+        return bar
+
+    # the pane's title bar height, px: 1.3 units; the one place it is
+    # said
+    func title_px [] -> f32
+        fu : f32 [ (fc > 0.0) ? fc : 22.0 ]
+        return round[ 1.3 * fu ]
+
+    # the nav/commit surface replaces the editor for browse AND find
+    func browse_active [] -> bool
+        o : orb[]
+        if [ !o || !searchable[] ] return false
+        return o.nav_showing || o.find_showing
+
+    public func render [] -> Elements
+        if [ !orb[] ] return null
+        t : Elements [ ]
+        # every file has its icon at the left: the name moves past it
+        to_ : Editor text_of[]
+        # a module's run button is at the right: its name stays left
+        sw_ : bool [ to_ && to_.src
+            && (orb[].system_on[] || !orb[].module_src_of[ to_ ]) ]
+        # a window shown: its close sits at the left, its title is ours
+        wn_ : bool [ orb[].pane_window[ pane_index ] != 0 ]
+        # an app or a window in view: no title bar, the system bar is
+        # its title; the editor and the navigator keep theirs (one
+        # asked for, as the bar's title press does, comes back)
+        rv_ : AppView (to_ && to_.app_view) ? to_.run_view : null
+        # the empty pane ('Open') too: it is the apps view alone
+        rn_ : bool [ to_ && to_.run_view && !to_.run_view.ended ]
+        # the empty pane: no file, app, window or terminal in it
+        open_ : bool [ !file[] && !rn_ && !wn_ && psess[].count == 0 ]
+        inapp : bool [ orb[].system_on[]
+            && ((rv_ && !rv_.ended && !rv_.held) || wn_ || open_
+                || psess[].count > 0)
+            && !browse_active[] && orb[].pending_finder != pane_index ]
+        # the editor's bar is for finding: up only while ctrl+f finds
+        # (or a new file is named)
+        fnd_ : bool [ orb[].title_find_on
+            && pane_index == orb[].active_pane ]
+        # the source shows: never live in view (a failed build too)
+        src_ : bool [ to_ && to_.src && (!to_.app_view || !rv_
+            || rv_.ended || rv_.held || orb[].stopped_at[ rv_ ]) ]
+        if [ orb[].system_on[] && src_
+             && !fnd_ && !newfile && !browse_active[]
+             && orb[].pending_finder != pane_index ]
+            inapp = true
+        # a running app's URL being typed: the bar comes up for it
+        url_ : bool [ orb[].url_entry_on
+            && pane_index == orb[].active_pane ]
+        if [ url_ ] inapp = false
+        # every offset under the title is its height: none when hidden
+        th_ : f32 [ (inapp) ? 0.0 : title_px[] ]
+        # a free window's strip across its top, and a docked one's
+        # under another; along the bar, its title is the bar's. the
+        # desktop (the empty pane) has none
+        dk_ : bool [ !orb[].pane_floats[ pane_index ] ]
+        fr_ : bool [ !open_
+            && (!dk_ || orb[].pane_below[ pane_index ]) ]
+        sp_ : f32 [ (fr_) ? round[ title_px[] * 0.7 ] : 0.0 ]
+        if [ fr_ ]
+            strip_w : f32 [ (bounds) ? bounds.w : 0.0 ]
+            t['strip'] = WinStrip [ pane: pane_index, docked: dk_,
+                current: pane_index == orb[].active_pane,
+                elements: orb[].strip_els[ pane_index, strip_w ],
+                area: Region [ 'l0 t0 r0 h{sp_}px' ] ]
+        # with the system bar the pane's bar is at its foot: find, the
+        # navigator, a URL
+        bot_ : bool orb[].system_on[]
+        cont_ : string [ (bot_) ? 'l0 t{sp_}px r0 b{th_}px'
+            : 'l0 t{th_ + sp_}px r0 b0' ]
+        # the code's own bar at its foot: the console, the debugger;
+        # it stays while the app run from it is in the pane
+        live_ : bool [ to_ && to_.src && rv_ && !rv_.ended
+            && !rv_.held && rv_.edited && to_.owns_src[ rv_, to_.src ] ]
+        # a file opened in its app (a rom from the shelf) is used,
+        # not edited: no debug bar
+        vw_ : bool [ to_ && to_.run_view && to_.run_view.viewer ]
+        # the bar is a silver source's (or a program module's file):
+        # a picture or any other file has nothing to run
+        code_ : bool [ to_ && to_.src && (to_.src.ext[] == 'ag'
+            || orb[].run_of[ to_.src ].count > 0) ]
+        if [ ((src_ && code_) || live_) && !vw_ && th_ == 0.0
+             && !browse_active[] && !use_mobile ]
+            fh_ : f32 round[ title_px[] * 0.7 ]
+            cont_ = 'l0 t{sp_}px r0 b{fh_}px'
+            t['foot'] = PaneFoot [ free: fr_,
+                elements: foot_els[ to_, fh_,
+                    (fr_) ? 8.0 : 0.0 ],
+                area: Region [ 'l0 b{fh_}px r0 h{fh_}px' ] ]
+        bar_ : string [ (bot_) ? 'l0 b{th_}px r0 h{th_}px'
+            : 'l0 t{sp_}px r0 h{th_}px' ]
+        if [ !inapp ]
+            t['title'] = EditorTitle [
+                area: Region [ bar_ ]
+                free: fr_ && bot_
+                # with the system bar its icon (find, find in files) leads
+                switched: sw_ || wn_ || bot_
+                wide: bot_ && fnd_
+                selected: !file[]
+                current: pane_index == orb[].active_pane
+                focusable: true
+                spacing_x: 0.2
+                spacing_y: 0.2
+                edit: (newfile) ? newfile_text
+                    : ((url_) ? orb[].bar_text
+                    : ((orb[].title_finding[]
+                        && pane_index == orb[].active_pane)
+                    ? orb[].findbar_text : orb[].nav.find_text))
+                label: (newfile)
+                ? ((newfile_dir) ? 'name new folder' : 'name new file')
+                # with the system bar the bar is for finding: blank
+                : ((url_ || bot_) ? ''
+                    : title_text[])
+                conflict: newfile && newfile_exists[]
+                no_scroll: true
+                hint: title_hint[]
+                elements: title_els[] ]
+        # only an error, centred in the title, as wide as its words
+        # the band floor grows by the open launch panel: it is a
+        # toolbar, never clipped
+        # the empty pane: the apps, glass over the clear space
+        # nothing in it: no file, and no app running in it
+        ap_ : Editor text_of[]
+        runs_ : bool [ ap_ && ap_.run_view && !ap_.run_view.ended ]
+        # nor a terminal (an agent's, a console)
+        home_ : bool [ !file[] && !runs_ && !browse_active[] && !wn_
+             && psess[].count == 0 ]
+        # under the home the empty editor draws nothing (its gutter)
+        t['split'] = Splitter [ area: Region [ cont_ ],
+                                vertical: true, hide: home_,
+            inner: pane_els[], deflt: 180.0,
+            # the console never less than its bar, its line and three
+            # rows of its log
+            min_size: round[ (1.06 * 2.0 + 3.0) * orb[].unit_px[] ],
+            snap_close: true ]
+        if [ home_ ]
+            # typing filters them: the box mounts at the foot, the
+            # cards scroll above it
+            af_ : string [ (pane_index == orb[].active_pane)
+                ? orb[].apps_filter : '' ]
+            up_ : f32 orb[].unit_px[]
+            ga_ : string [ cont_ ]
+            if [ af_.count > 0 ]
+                ga_ = 'l0 t{sp_}px r0 b{th_ + 2.2 * up_}px'
+                sd_ : f32 [ 0.7 * up_ ]
+                bt_ : f32 [ th_ + 1.8 * up_ ]
+                bh_ : f32 [ 1.2 * up_ ]
+                t['apps_filter'] = MenuFilter [ edit: af_,
+                    area: Region [
+                        'l{sd_}px b{bt_}px r{sd_}px h{bh_}px' ] ]
+            t['home'] = HomeView [ pane: pane_index,
+                area: Region [ ga_ ] ]
+        if [ browse_active[] ]
+            fu : f32 [ (fc > 0.0) ? fc : 22.0 ]
+            bar : Elements (bot_) ? Elements [] : view_bar[ th_ ]
+            # the bar is the finder close's width: 1.66 font units
+            bw : f32 [ (bar.count > 0) ? 1.66 * fu : 0.0 ]
+            # the surface is a peer of the editor pane: it takes the
+            # split's live text region, never the whole view
+            spl : element (elements) ? elements['split'] : null
+            tx8  : element (spl && spl.elements) ? spl.elements['text'] : null
+            # tx8 is the editor|panel split: the surface takes the
+            # EDITOR's slot inside it, never the instance panel beside
+            # it
+            ed  : element (tx8 && tx8.elements) ? tx8.elements['text'] : null
+            if [
+                ed && ed.bounds && tx8 && tx8.bounds && spl.bounds
+                && ed.bounds.h > 0.0 ]
+                # bounds are parent-relative: compose split + inner
+                # split + editor
+                cx8 : f32 [ spl.bounds.x + tx8.bounds.x + ed.bounds.x ]
+                cy8 : f32 [ spl.bounds.y + tx8.bounds.y + ed.bounds.y ]
+                ch8 : f32 [ ed.bounds.h ]
+                # never under the bottom bar
+                if [ bot_ && bounds && cy8 + ch8 > bounds.h - th_ ]
+                    ch8 = bounds.h - th_ - cy8
+                # from the pane's right edge: a split drag moves the
+                # pane this frame, and a width from last frame's bounds
+                # left a gap at the right until the next one
+                rin : f32 [ spl.bounds.w - tx8.bounds.x - ed.bounds.x
+                            - ed.bounds.w ]
+                if [ rin < 0.0 ] rin = 0.0
+                t['commit'] = CommitView [ nav: orb[].nav,
+                    focusable: true, scroll_fade: 24.0,
+                    area: Region [
+                        'l{cx8}px t{cy8}px r{rin + bw}px h{ch8}px' ] ]
+                if [ bar.count > 0 ]
+                    # 1px onto the lines above and below it
+                    by : f32 [ cy8 - 1.0 ]
+                    bh : f32 [ ch8 + 2.0 ]
+                    t['viewbar'] = ViewBar [ no_scroll: true,
+                        on_edge: orb[].inst_hidden,
+                        elements: bar, area: Region [
+                        'r{rin}px t{by}px w{bw}px h{bh}px' ] ]
+            el
+                t['commit'] = CommitView [ nav: orb[].nav,
+                    focusable: true, scroll_fade: 24.0,
+                    area: Region [ (bot_) ? 'l0 t0 r{bw}px b{th_}px'
+                        : 'l0 t{th_}px r{bw}px b0' ] ]
+                if [ bar.count > 0 ]
+                    t['viewbar'] = ViewBar [ no_scroll: true,
+                        on_edge: orb[].inst_hidden,
+                        elements: bar,
+                        area: Region [
+                            (bot_) ? 'r0 t-1px w{bw}px b{th_ - 1.0}px'
+                            : 'r0 t{th_ - 1.0}px w{bw}px b-1px' ] ]
+        return t
+
+# a resumed app's frame over the source, coming up over 300 ms
+element ResumeFade
+    animated : true
+    public inst : AppView
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        # a picture only: never the starting / paused words
+        if [ inst.fade_in_ms <= 0 || !inst.have_frame ] return
+        t : f32 [ f32[ epoch_millis[] - inst.fade_in_ms ] / 300.0 ]
+        cv : Canvas w.screen
+        cv.save[]
+        cv.set_opacity[ min[ max[ t, 0.0 ], 1.0 ] ]
+        inst.draw_frame[ cv, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                    h: bounds.h ] ]
+        cv.restore[]
+        ux.will_animate = true
+
+# the picture in picture's box as now shown: r is its right edge
+# (with a width), b its top's distance from the bottom
+func pip_at [ av: AppView ] -> string
+    ar : f32 [ (av.aw > 0 && av.ah > 0)
+        ? f32[ av.aw ] / f32[ av.ah ] : 1.6 ]
+    h : f32 [ round[ av.pip_sw / ar ] ]
+    w : f32 [ round[ av.pip_sw ] ]
+    at : string 'r{round[ av.pip_sr ]}px b{h + round[ av.pip_sb ]}px'
+    return '{at} w{w}px h{h}px'
+
+# the app run from the editor, small over its source: a drag moves
+# it, its edges and corners size it (its shape kept), never off the
+# view; it eases to where it is put. a press alone brings the app
+# back to the whole pane
+element PipView
+    animated : true
+    public inst : AppView
+    mutable grab : vec2f
+    mutable from_r : f32
+    mutable from_b : f32
+    mutable from_w : f32
+    # the edges held: 1 left, 2 top, 4 right, 8 bottom; 0 moves it
+    mutable side : i32
+    mutable dragging : bool
+    mutable moved : bool
+
+    func aspect [] -> f32
+        if [ inst.aw > 0 && inst.ah > 0 ]
+            return f32[ inst.aw ] / f32[ inst.ah ]
+        return 1.6
+
+    # the box asked, kept inside the view (pb: the parent's)
+    func keep_in [ pb: rect ]
+        ar : f32 aspect[]
+        top : f32 [ min[ pb.w, pb.h * ar ] ]
+        if [ inst.pip_w <= 0.0 ]
+            inst.pip_w = min[ pb.w * 0.3, pb.h * 0.45 * ar ]
+        inst.pip_w = clamp[ inst.pip_w, min[ 120.0, top ], top ]
+        h : f32 [ inst.pip_w / ar ]
+        inst.pip_r = clamp[ inst.pip_r, 0.0,
+                            max[ pb.w - inst.pip_w, 0.0 ] ]
+        inst.pip_b = clamp[ inst.pip_b, 0.0, max[ pb.h - h, 0.0 ] ]
+
+    # each frame: the shown box eases to the asked one
+    func on_state [ m: i32 ]
+        if [ inst && parent && parent.bounds ]
+            keep_in[ parent.bounds ]
+            if [ inst.pip_sw <= 0.0 ]
+                inst.pip_sr = inst.pip_r
+                inst.pip_sb = inst.pip_b
+                inst.pip_sw = inst.pip_w
+            el
+                ff : f32 [ ux.frame_factor ]
+                inst.pip_sr = filter_n[ inst.pip_sr, inst.pip_r, 0.3,
+                                         ff ]
+                inst.pip_sb = filter_n[ inst.pip_sb, inst.pip_b, 0.3,
+                                         ff ]
+                inst.pip_sw = filter_n[ inst.pip_sw, inst.pip_w, 0.3,
+                                         ff ]
+            area = Region [ pip_at[ inst ] ]
+            pristine = false
+        super.on_state[ m ]
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        cv : Canvas w.screen
+        inst.draw_fitted[ cv, rect [ x: 0.0, y: 0.0, w: bounds.w,
+                                     h: bounds.h ] ]
+        cv.fill_color[ rgba [ '#0000' ] ]
+        cv.stroke_color[ rgba [ '#ffffff30' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.stroke_offset[ -0.5 ]
+        cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 0.0, 0.0, 0.0,
+                         0.0 ]
+        cv.paint[]
+        cv.stroke_width[ 0.0 ]
+        cv.stroke_offset[ 0.0 ]
+        ux.will_animate = true
+
+    # the edges within 8 px of a point in the box
+    func edges_at [ p: vec2f ] -> i32
+        if [ !bounds ] return 0
+        g : f32 [ 8.0 ]
+        s : i32 [ 0 ]
+        if [ p.x < g ] s |= 1
+        if [ p.y < g ] s |= 2
+        if [ p.x > bounds.w - g ] s |= 4
+        if [ p.y > bounds.h - g ] s |= 8
+        return s
+
+    func cursor_for [ s: i32 ]
+        kind : i32 [ 0 ]
+        if [ s == 1 || s == 4 ] kind = 1
+        if [ s == 2 || s == 8 ] kind = 2
+        if [ s == 3 || s == 12 ] kind = 5
+        if [ s == 6 || s == 9 ] kind = 6
+        ux.seam_cursor[ kind ]
+
+    func on_press [ ev: Event ]
+        ev.no_default = true
+        ev.stop[]
+        if [ !inst ] return
+        # the window's pointer: the box moves under its own
+        grab = vec2f [ f32[ ux.mouse.x ], f32[ ux.mouse.y ] ]
+        from_r = inst.pip_r
+        from_b = inst.pip_b
+        from_w = inst.pip_w
+        side = edges_at[ ev.mouse.pos ]
+        dragging = true
+        moved = false
+        set_capture[]
+
+    func on_move [ ev: Event ]
+        if [ !dragging ]
+            cursor_for[ edges_at[ ev.mouse.pos ] ]
+            return
+        if [ !inst || !parent || !parent.bounds ] return
+        dx : f32 [ f32[ ux.mouse.x ] - grab.x ]
+        dy : f32 [ f32[ ux.mouse.y ] - grab.y ]
+        if [ !moved && abs[ dx ] + abs[ dy ] < 4.0 ] return
+        moved = true
+        pb : rect parent.bounds
+        ar : f32 aspect[]
+        h0 : f32 [ from_w / ar ]
+        if [ side == 0 ]
+            inst.pip_r = from_r - dx
+            inst.pip_b = from_b - dy
+        el
+            # the box in the view's terms; the far edges stay
+            l0 : f32 [ pb.w - from_r - from_w ]
+            t0 : f32 [ pb.h - from_b - h0 ]
+            nw : f32 [ 0.0 ]
+            if [ (side & 4) != 0 ] nw = from_w + dx
+            if [ (side & 1) != 0 ] nw = from_w - dx
+            if [ (side & 8) != 0 ] nw = max[ nw, (h0 + dy) * ar ]
+            if [ (side & 2) != 0 ] nw = max[ nw, (h0 - dy) * ar ]
+            top : f32 [ min[ pb.w, pb.h * ar ] ]
+            nw = clamp[ nw, min[ 120.0, top ], top ]
+            nh : f32 [ nw / ar ]
+            l : f32 [ ((side & 1) != 0) ? l0 + from_w - nw : l0 ]
+            t : f32 [ ((side & 2) != 0) ? t0 + h0 - nh : t0 ]
+            inst.pip_w = nw
+            inst.pip_r = pb.w - l - nw
+            inst.pip_b = pb.h - t - nh
+        keep_in[ pb ]
+        ux.will_animate = true
+
+    func on_release [ ev: Event ]
+        ev.no_default = true
+        ev.stop[]
+        dragging = false
+        ux.release_capture[ a ]
+        ux.seam_cursor[ 0 ]
+        if [ moved ] return
+        o : orbiter [ ux.app_object ]
+        if [ !o || !inst ] return
+        for [ q: i32 0, q < o.editor_slots.count, q += 1 ]
+            eq : Editor o.pane_at[ q ]
+            if [ eq && eq.run_view == inst ]
+                o.set_display[ eq, inst, 1 ]
+        ux.restyle = true
+
+# the build card's avatar: in its build look while the card is up
+OrbiterAvatar BuildAvatar
+    func on_state [ m: i32 ]
+        swap_on = true
+        work_on = true
+        super.on_state[ m ]
+
+    # it draws straight onto the screen: the card's fade, by hand
+    func draw [ w: Window ]
+        op : f32 [ (parent) ? parent.opacity : 1.0 ]
+        if [ op <= 0.0 ] return
+        w.screen.save[]
+        w.screen.set_opacity[ w.screen.get_opacity[] * op ]
+        super.draw[ w ]
+        w.screen.restore[]
+
+# an app on its way into the pane (compiling, then starting): the
+# avatar building it, the app's icon and name, and how far it is
+element BuildCard
+    animated : true
+    public inst : AppView
+    mutable icon : AppIcon
+    mutable born_ms : i64
+
+    # none for its first 200 ms, then in over 400 ms
+    func on_state [ m: i32 ]
+        if [ born_ms == 0 ] born_ms = epoch_millis[]
+        dt : f32 [ f32[ epoch_millis[] - born_ms ] - 200.0 ]
+        opacity = clamp[ dt / 400.0, 0.0, 1.0 ]
+        super.on_state[ m ]
+
+    func render [] -> Elements
+        t : Elements []
+        if [ !bounds ] return t
+        side : f32 [ round[ min[ bounds.w * 0.5, bounds.h * 0.45 ] ] ]
+        half : f32 [ round[ side * 0.5 ] ]
+        top  : f32 [ round[ bounds.h * 0.08 ] ]
+        t['avatar'] = BuildAvatar [ area: Region [
+            'l50%-{half}px t{top}px w{side}px h{side}px' ] ]
+        return t
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds || !inst ]
+            return
+        cv : Canvas w.screen
+        side : f32 [ round[ min[ bounds.w * 0.5, bounds.h * 0.45 ] ] ]
+        top  : f32 [ round[ bounds.h * 0.08 ] + side ]
+        dir  : path (inst.src) ? inst.src.directory[] : null
+        if [ dir && (!icon || '{icon.file}' != '{dir}') ]
+            orb : orbiter [ ux.app_object ]
+            nm : string orb.install_name_of[ dir.filename[] ]
+            ag : path '{install_root[]}/export/{nm}.agi'
+            icon = AppIcon [ file: dir, module: true, agi: ag ]
+        isz : f32 [ 64.0 ]
+        nm  : string [ (inst.app_mod) ? inst.app_mod : '' ]
+        # save and restore keep no font: it goes back by hand
+        was : CanvasFont cv.font
+        cv.save[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', 34 ] ]
+        nw : f32 [ cv.measure_text[ nm ].w ]
+        x  : f32 [ round[ (bounds.w - isz - 16.0 - nw) * 0.5 ] ]
+        if [ icon ] icon.paint[ cv, x, top, isz ]
+        cv.fill_color[ rgba [ '#f0f0f4' ] ]
+        cv.draw_text[ nm, rect [ x: x + isz + 16.0, y: top, w: nw + 4.0,
+            h: isz ], vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.visible, null, true ]
+        cv.paint[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', 20 ] ]
+        st : string inst.status_word[]
+        py : f32 [ top + isz + 10.0 ]
+        if [ st == 'compiling' ]
+            # a pill round the words
+            pw : f32 [ round[ cv.measure_text[ st ].w + 56.0 ] ]
+            ph : f32 [ 30.0 ]
+            px : f32 [ round[ (bounds.w - pw) * 0.5 ] ]
+            pr : f32 [ ph * 0.5 ]
+            cv.fill_color[ rgba [ '#0000' ] ]
+            cv.stroke_color[ rgba [ '#806bff' ] ]
+            cv.stroke_width[ 1.0 ]
+            cv.stroke_offset[ -0.5 ]
+            cv.rounded_rect[ px, py, pw, ph, pr, pr, pr, pr ]
+            cv.paint[]
+            cv.stroke_width[ 0.0 ]
+            cv.stroke_offset[ 0.0 ]
+        cv.fill_color[ rgba [ '#e8e0ff' ] ]
+        cv.draw_text[ st, rect [ x: 0.0, y: py, w: bounds.w, h: 30.0 ],
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.visible,
+            null, true ]
+        cv.paint[]
+        cv.restore[]
+        cv.set_font[ was ]
+
+# the find line's replace buttons: flat, edge to edge
+LabelButton FindSwitch
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 1
+            stroke_color: #fff1
+            stroke_offset: -0.5
+        :hovered
+            layers.body:
+                fill_color: #ffffff10
+        :selected
+            layers.body:
+                fill_color: #4d3dbcaa
+                stroke_color: #806bff
+    }
+
+# the find line's replace text: Enter and Esc go to orbiter first
+element RepText
+    func on_key [ ev: Event ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_key[ ev ]
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            stroke_width: 1
+            stroke_color: #fff1
+            stroke_offset: -0.5
+        layers.face:
+            label_color: #fff6
+            label_size: 17
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 8.0 0.0
+        :focused
+            layers.face:
+                label_color: #ffff
+        :has_value
+            layers.face:
+                label_color: #ffff
+    }
+
+element EditorTitle
+    selected : bool
+    # the active pane's title: the selection colour, as the dock's
+    public current  : bool
+    # newfile mode: typed name collides with an existing file
+    public conflict : bool
+    # painted after the name, never part of the editable label
+    public hint     : string
+    # the toggle sits at the left: the name moves past it
+    public switched : bool
+    # its find icon as wide as the orbiter button: the text after it
+    public wide     : bool
+    # at a free window's foot: its corners round, as the window's
+    public free     : bool
+
+    # typing here is the navigator's search: the field edits, then
+    # orbiter reads its text
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_char[ ev ]
+        ev.no_default = true
+
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ orb ] orb.on_key[ ev ]
+        ev.no_default = true
+    public blur : TitleBlur []
+    style : CSS {
+        area: l0 t0 r0 h1.3
+        # named first: the ground draws under the bar and its text
+        layers.blur:
+            fill_color: #0000
+        layers.tbar:
+            # a faint tint; the active pane's is the selection
+            fill_color: #0004
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+        layers.tface:
+            label_color: #fff
+            label_size: 17
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 22.0 0.0
+        # its own colour (a third of the selection's alpha), so a
+        # theme can map it apart
+        :current
+            layers.tbar:
+                fill_color: #66225539
+        # past the run button (1.35 units, 44.6 px at rest) by 8 px;
+        # the bar's first menu name starts at the same x
+        :switched
+            layers.tface:
+                label_offset: 52.6 0.0
+        # the find icon the orbiter button's width (2.39 units) + 8 px
+        :wide
+            layers.tface:
+                label_offset: 86.9 0.0
+        :conflict
+            layers.tface:
+                label_color: #e05e5e
+        # its buttons cut to the round too (the find icon, the views)
+        :free
+            layers.tbar:
+                radius: 0 0 8 8
+                clip: true
+        layers.tdiv:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+    }
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        if [ !label || label.count == 0 ] return
+        cv  : Canvas [ w.screen ]
+        # the gaps ride the font unit, as the name's size does
+        fu  : f32 [
+            (w.vk && w.vk.font_unit > 0) ? f32[ w.vk.font_unit ] / 22.0
+            : 1.0 ]
+        # the view we are in, trailing the name. painted, so the label
+        # stays the editable field and this can never be selected
+        cv.font_size[ 17 ]
+        name_m : cv.measure_text[ label ]
+        # the name starts at the label's offset
+        off_   : f32 [ (wide) ? 97.0 : ((switched) ? 62.7 : 22.0) ]
+        trail  : f32 [ (off_ + 16.0) * fu + name_m.w ]
+        if [ hint && hint.count > 0 ]
+            cv.font_size[ 13 ]
+            cv.fill_color[ '#ffffff66' ]
+            cv.stroke_width[ 0.0 ]
+            cv.draw_text[ hint,
+                rect [ x: trail, y: 0.0, w: bounds.w, h: bounds.h ],
+                vec2f [ 0.0, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.clip,
+                null, true ]
+            cv.paint[]
+
+
+# the console's toolbar: a dark ground, a line at its foot
+# a code window's foot: its console and debugger buttons
+element PaneFoot
+    # a free window's: its foot corners round, as the window's
+    public free : bool
+    public blur : FootBlur []
+    style : CSS {
+        layers.blur:
+            fill_color: #0000
+        layers.tbar:
+            fill_color: #0004
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            # square again once docked: a state's value stays unless
+            # the base names its own
+            radius: 0 0 0 0
+        layers.line:
+            fill_color: #fff2
+            area: l0 t0 r0 h1px
+        :free
+            layers.tbar:
+                radius: 0 0 8 8
+    }
+
+element ConsoleBar
+    public blur : BlurGround []
+    style : CSS {
+        layers.blur:
+            fill_color: #0000
+        layers.tbar:
+            fill_color: #0004
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.line:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+    }
+
+# the console's input line: Enter sends it (the app's standard
+# input, or lldb's); edge to edge at the console's foot, a line over
+element ConsoleLine
+    focusable : true
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+        layers.top:
+            fill_color: #fff2
+            area: l0 t0 r0 h1px
+        layers.face:
+            label_color: #fff
+            label_size: 15
+            editable: true
+            label_align: 0.0 0.5
+            label_offset: 8.0 0.0
+        :focused
+            layers.top:
+                fill_color: #806bff
+    }
+
+    public func on_key [ ev: Event ]
+        if [ !ev.key.state || ev.key.unicode != 257 ] return
+        orb : cast orbiter [ (ux) ? ux.app_object : null ]
+        # sent before the field empties: the line is the field's text
+        if [ orb && edit ]
+            orb.console_input[ edit, orb.pane_index_of[ a ] ]
+        edit     = ''
+        pristine = false
+        ev.no_default = true
+
+# a free window's ground, under it: its piece of the screen's own
+# paint (the blurred scene), as a docked pane has under it; the
+# window then draws as it does docked, its own tint once
+element WinGround
+    animated : true
+    ghost    : true
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        cv : Canvas w.screen
+        sw : f32 [ f32[ w.width ] ]
+        sh : f32 [ f32[ w.height ] ]
+        if [ sw <= 0.0 || sh <= 0.0 ] return
+        cv.save[]
+        # the window's corners
+        cv.clip_rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 8.0, 8.0,
+                              8.0, 8.0 ]
+        if [ w.frost_eff[] == 3 || !w.backdrop ]
+            cv.fill_color[ w.solid_color ]
+            cv.rect_to[ 0.0, 0.0, bounds.w, bounds.h ]
+            cv.paint[]
+        el
+            # as the screen's own paint: the blur chain is there only
+            # with a backdrop
+            bl : Render w.blur_src[]
+            tx : f32 cv.transform_tx[]
+            ty : f32 cv.transform_ty[]
+            cv.draw_image_crop[ (bl) ? bl.color : w.backdrop.color,
+                rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ],
+                tx / sw, ty / sh, (tx + bounds.w) / sw,
+                (ty + bounds.h) / sh ]
+        cv.restore[]
+
+# a free window's shadow: under it, 24 px out each way
+element WinShade
+    ghost : true
+    style : CSS {
+        layers.shade:
+            area: l24px t24px r24px b24px
+            fill_color: #0000
+            radius: 8
+            box_shadow: 0 8px 20px #000a
+    }
+
+# a free window's edge: an inner glow over it, no line (nothing in
+# nature is a border)
+element WinEdge
+    ghost : true
+    public square   : bool
+    selected : bool
+    style : CSS {
+        layers.edge:
+            fill_color: #0000
+            stroke_width: 0
+            # a third of it while another window is the selected one
+            box_shadow: inset 0 0 8px #ffffff11 curve 2
+            radius: 8
+        :selected
+            layers.edge:
+                box_shadow: inset 0 0 8px #ffffff22 curve 2
+        :square
+            layers.edge:
+                radius: 0
+    }
+
+# a free window's strip across its top: the system bar it took
+# with it (its menus, title, arrows, close). a drag on it moves the
+# window; let go at the top edge, or a double click, it docks
+element WinStrip
+    public pane    : i32
+    # the selected window's: the selection colour, as the title's
+    public current : bool
+    # a docked window's (under another): square, as the split is
+    public docked  : bool
+    intern held    : bool
+    intern pulled  : bool
+    intern went    : f32
+    # the drag so far, x and y
+    intern sx      : f32
+    intern sy      : f32
+
+    public blur : StripBlur [ round: 8.0 ]
+    style : CSS {
+        area: l0 t0 r0 h0.91
+        # a faint tint; the selected one's the selection, as a
+        # docked title's
+        layers.tbar:
+            fill_color: #0004
+            radius: 8 8 0 0
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+            near_border: true
+            near_inset: 1.0
+            near_inset_color: #c890ffaa
+        layers.tface:
+            label_color: #fff
+            label_size: 13
+            label_align: 0.5 0.5
+        :current
+            layers.tbar:
+                fill_color: #66225539
+        :docked
+            layers.tbar:
+                radius: 0
+        layers.tdiv:
+            fill_color: #fff2
+            area: l0 b0 r0 h1px
+    }
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func on_press [ ev: Event ]
+        o : orb[]
+        # a press on its menus or buttons is theirs
+        if [ !o || ev.origin != a ] return
+        ev.no_default     = true
+        ev.no_propagation = true
+        if [ ev.mouse.double_click ]
+            o.dock_pane[ pane ]
+            return
+        o.raise_pane[ pane ]
+        held   = true
+        pulled = false
+        went   = 0.0
+        sx     = 0.0
+        sy     = 0.0
+        ux.set_capture[ a ]
+
+    func on_move [ ev: Event ]
+        o : orb[]
+        if [ !held || !o ] return
+        dx : f32 [ ev.mouse.delta.x ]
+        dy : f32 [ ev.mouse.delta.y ]
+        went += max[ dx, -dx ] + max[ dy, -dy ]
+        if [ !pulled ]
+            sx += dx
+            sy += dy
+            if [ went < 6.0 ] return
+            pulled = true
+            dx = sx
+            dy = sy
+            o.pull_free[ pane, a.parent ]
+        o.move_free[ pane, dx, dy ]
+
+    func on_release [ ev: Event ]
+        if [ held ] ux.release_capture[ a ]
+        o : orb[]
+        if [ pulled && o ] o.drop_free[ pane ]
+        held   = false
+        pulled = false
+
+# the system bar's free space: the docked window's title. pulled
+# down, the window comes free under the pointer; a click is the
+# title's
+element BarGrab
+    public pane : i32
+    # under the address: a click (no drag) edits it
+    public url  : bool
+    intern held : bool
+    intern went : f32
+    # the drag so far, x and y
+    intern sx   : f32
+    intern sy   : f32
+    intern pulled : bool
+    # dragged sideways: the desktop split in beside it
+    intern split  : bool
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func on_press [ ev: Event ]
+        o : orb[]
+        if [ o ] o.grab_pane = pane
+        held   = true
+        pulled = false
+        split  = false
+        went   = 0.0
+        sx     = 0.0
+        sy     = 0.0
+        ux.set_capture[ a ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    func on_move [ ev: Event ]
+        o : orb[]
+        if [ !held || !o ] return
+        dx : f32 [ ev.mouse.delta.x ]
+        dy : f32 [ ev.mouse.delta.y ]
+        went += max[ dx, -dx ] + max[ dy, -dy ]
+        if [ split ] return
+        if [ !pulled ]
+            sx += dx
+            sy += dy
+            if [ went < 6.0 ] return
+            # sideways past 40 px: the desktop beside the window, which
+            # takes the side it went to (else it comes free)
+            if [ max[ sx, -sx ] > max[ sy, -sy ] ]
+                if [ max[ sx, -sx ] < 40.0 ] return
+                if [ o.split_side[ pane, sx > 0.0 ]
+                     || o.swap_side[ pane, sx > 0.0 ] ]
+                    split = true
+                    return
+            pulled = true
+            dx = sx
+            dy = sy
+            o.pull_free[ pane, o.pane_view[ pane ] ]
+        o.move_free[ pane, dx, dy ]
+
+    func on_release [ ev: Event ]
+        if [ held ] ux.release_capture[ a ]
+        o : orb[]
+        # a click on its blank space: the window selected, nothing
+        # opened
+        if [ held && !pulled && !split && o ]
+            o.raise_pane[ pane ]
+            if [ url ] o.bar_type_start[]
+            if [ ux ] ux.restyle = true
+        el [ pulled && o ]
+            o.drop_free[ pane ]
+        if [ o ] o.grab_pane = -1
+        held   = false
+        pulled = false
+
+# a free window's edge, just outside it: 1 right, 2 bottom, 4
+# left, 8 top; a corner is two together: a drag sizes it
+element FreeGrip
+    public pane : i32
+    public side : i32
+    intern held : bool
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func on_press [ ev: Event ]
+        o : orb[]
+        if [ !o ] return
+        o.raise_pane[ pane ]
+        held = true
+        ux.set_capture[ a ]
+        ev.no_default     = true
+        ev.no_propagation = true
+
+    func on_move [ ev: Event ]
+        o : orb[]
+        # the corner takes both ways
+        kind : i32 [ (side == 2 || side == 8) ? 2 : 1 ]
+        if [ side == 3 || side == 12 ] kind = 5
+        if [ side == 6 || side == 9 ] kind = 6
+        if [ ux ] ux.seam_cursor[ kind ]
+        if [ !held || !o ] return
+        o.size_free[ pane, side, ev.mouse.delta.x, ev.mouse.delta.y ]
+
+    func on_release [ ev: Event ]
+        if [ held ] ux.release_capture[ a ]
+        held = false
+
+    func on_leave [ ev: Event ]
+        if [ !held && ux ] ux.seam_cursor[ 0 ]
+
+# a window's tab being dragged: its name under the pointer
+element TabGhost
+    animated    : true
+    user_events : false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen ] return
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ !o || o.tab_drag < 0 ] return
+        cv : Canvas w.screen
+        un : f32 ux_unit[ ux ]
+        nm : string o.pane_label[ o.tab_drag ]
+        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+        tw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * un ]
+        th : f32 [ round[ 30.0 * un ] ]
+        m : vec2f w.last_move
+        # where it would land
+        hr : rect o.drop_hint[ m, o.tab_drag ]
+        if [ hr.w > 0.0 ]
+            cv.save[]
+            cv.fill_color[ rgba [ '#806bff2e' ] ]
+            cv.stroke_color[ rgba [ '#806bff' ] ]
+            cv.stroke_width[ 2.0 ]
+            cv.rounded_rect[ hr.x + 4.0, hr.y + 4.0, hr.w - 8.0,
+                             hr.h - 8.0, 8.0, 8.0, 8.0, 8.0 ]
+            cv.paint[]
+            cv.restore[]
+        cv.save[]
+        cv.fill_color[ rgba [ '#4d3dbccc' ] ]
+        cv.stroke_color[ rgba [ '#806bff' ] ]
+        cv.stroke_width[ 1.0 ]
+        cv.rounded_rect[ m.x - tw * 0.5, m.y - th * 0.5, tw, th,
+                         6.0, 6.0, 6.0, 6.0 ]
+        cv.paint[]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Bold.ttf', fp ] ]
+        cv.font_size[ f32[ fp ] ]
+        cv.fill_color[ rgba [ '#ffffff' ] ]
+        cv.draw_text[ nm, rect [ x: m.x - tw * 0.5, y: m.y - th * 0.5,
+            w: tw, h: th ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+            Overflow.ellipsis, null, true ]
+        cv.set_font[ null ]
+        cv.restore[]
+
+# a console from the project's agi (shell, claude), as a view the rail
+# lists like any other: the pane composes the Console for that session
+ResourceView ConsoleView
+    public session  : string
+    public sessions : map ConsoleSession[string]
+    public launch   : string
+    # not a file's view: the process is given the folder in view
+    public folder   : path
+    func applies [] -> FileType
+        return FileType.agnostic
+    func continuous [] -> bool
+        return true
+    func view_element [] -> element
+        return Console [ session_id: session, sessions: sessions,
+                         feed: null,
+            launch: launch, cwd: '{folder}', animated: true ]
+
+
+# a close that orbiter acts on, by its id
+CloseBox PaneBox
+    func closed []
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ o ] o.close_box[ a ]
+
+element RunBand
+    style : CSS {
+        area: l0 t0 r0 b0
+    }
+
+# the console's ground, under it: its fade masks the text alone
+element ConsoleGround
+    style : CSS {
+        layers.cbase:
+            fill_color: #220022aa
+    }
+
+# the log's filter: a pill at its top right, a field
+element ConFind
+    focusable : true
+    style : CSS {
+        layers.face:
+            fill_color: #4d3dbccc
+            radius: 999
+            stroke_width: 1
+            stroke_color: #806bffff
+            label_color: #ffffff
+            label_size: 15
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            editable: true
+            label_align: 0.5 0.5
+    }
+
+    # the field edits, then the log follows its text
+    func on_key [ ev: Event ]
+        field_key[ a, ev ]
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ o ] o.con_find_edit[ a ]
+        ev.no_default = true
+
+    func on_char [ ev: Event ]
+        field_char[ a, ev ]
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        if [ o ] o.con_find_edit[ a ]
+        ev.no_default = true
+
+Console RunConsole
+    style : CSS {
+        # its ground is ConsoleGround, under it
+        layers.cbase: Layer
+            fill_color: #0000
+        layers.content: TermLayer
+            area: l0.24 t3px r0.24 b0.24
+            label_height: 1.0
+            label_size: 16
+    }
+    # a key typed over the log starts its filter: the pill's field
+    # comes up focused and has the rest (its line at the foot takes
+    # the app's input)
+    public func on_char [ ev: Event ]
+        o : cast orbiter [ ux.app_object ]
+        if [ !o || !ev.key.text || ev.key.text.count == 0 ] return
+        o.con_filter = '{(o.con_filter) ? o.con_filter : ''}{ev.key.text}'
+        o.filter_focus = 'con_find'
+        filtered[ o ]
+
+    # escape drops the filter; a selection still copies (ctrl / cmd
+    # + c)
+    public func on_key [ ev: Event ]
+        s : ConsoleSession session[]
+        o : cast orbiter [ ux.app_object ]
+        if [ !s || !o || !ev.key.state ] return
+        k : i32 [ i32[ ev.key.unicode ] ]
+        f : string [ (o.con_filter) ? o.con_filter : '' ]
+        if [ k == 256 && f.count > 0 ]
+            o.con_filter = ''
+            filtered[ o ]
+            ev.no_default = true
+            return
+        if [ !(ev.key.ctrl || ev.key.meta) ] return
+        if [ k != 67 || s.sel_line < 0 ] return
+        txt : string s.selection_text[]
+        if [ txt.count > 0 && ux ] ux.set_clipboard[ txt ]
+
+    # the lines shown follow the filter; its pill redraws
+    func filtered [ o: orbiter ]
+        pristine = false
+        o.force_update[]
+
+    func filter [] -> string
+        o : cast orbiter [ (ux) ? ux.app_object : null ]
+        return (o && o.con_filter && o.con_filter.count > 0)
+            ? o.con_filter : null
+
+    # lines carry their instance id as '<iid>: '; the pane's selected
+    # instance reads blue, the module's other instances fade, untagged
+    # lines stay plain
+    func line_mark [ ln: string ] -> i32
+        if [ !ln ] return 0
+        n : i32 [ 0 ]
+        i : i32 [ 0 ]
+        while [ i < ln.count ]
+            c : i32 [ (i32 ln.chars[ i ]) & 255 ]
+            if [ c < 48 || c > 57 ] break
+            n = n * 10 + (c - 48)
+            i += 1
+        if [ i == 0 || i >= ln.count || ((i32 ln.chars[ i ]) & 255) != 58 ]
+            return 0
+        orb : cast orbiter [ ux.app_object ]
+        if [ !orb ] return 0
+        # the one console is the selected editor's
+        ed : Editor orb.pane_at[ orb.active_pane ]
+        if [ !ed || !ed.run_view ] return 0
+        return (ed.run_view.iid == n) ? 1 : 2
+
+
+Group ToolsHeader
+    style : CSS {
+        area: l0 t0 r0 h1.3
+        layers.hbar:
+            fill_color: #2480
+            box_shadow: inset 0 0 13px #8af2
+            stroke_width: 1
+            stroke_color: #fff1
+        layers.hdiv:
+            fill_color: #fff2
+            area: l0 b0px r0 h1px
+    }
+
+# per-source-file state; arguments is the first field, more to come
+class file_state
+    public args        : string
+
+struct vec2i
+    x : i32
+    y : i32
+
+class pane_state
+    public file      : path
+    public selection : vec2i
+    public scroll    : f32
+
+# an instance as old sessions kept it; read, never restored
+class inst_state
+    public src   : path
+    public args  : string
+    public pip   : bool
+    public display : i32
+    public debug : bool
+    public coverage : bool
+    public pane  : i32 [ -1 ]     # the pane showing it, -1 when none
+
+# one extension's files in the index (the first 200)
+# a pane's menu as last read, for a window not selected: its
+# strip names its menus without a click first
+class PaneMenu
+    public key   : string
+    public items : vec TrayEntry
+    public ms    : i64
+
+func orbiter.pane_drop_file [ pi: i32 ]
+    if [ pi < 0 || pi >= editor_slots.count ] return
+    editor_slots[ pi ] = -1
+    ed : Editor pane_at[ pi ]
+    if [ ed ]
+        ed.src        = null
+        ed.loaded_src = null
+    save_session[]
+
+func orbiter.win_placed [ wn: u64 ] -> bool
+    for [ i: i32 0, i < win_done.count, i += 1 ]
+        if [ win_done[ i ] == wn ] return true
+    return false
+
+# the dialog over a pane's window, 0 when none
+func orbiter.pane_sheet_of [ i: i32 ] -> u64
+    if [ i < 0 || !pane_sheet || i >= pane_sheet.count ]
+        return u64[ 0 ]
+    return pane_sheet[ i ]
+
+# the window a pane shows, 0 when none
+func orbiter.pane_window [ i: i32 ] -> u64
+    if [ i < 0 || !pane_win || i >= pane_win.count ] return u64[ 0 ]
+    return pane_win[ i ]
+
+# newest mtime in scope: newer than the scan = results stale
+func orbiter.tree_mtime [ dir: path ] -> i64
+    r : i64 [ 0 ]
+    entries : dir.ls[ null, false ]
+    if [ !entries ] return r
+    for [ i: i32 0, i < entries.count, i += 1 ]
+        e : path entries[i]
+        if [ e.is_dir[] ]
+            dn : string e.filename[]
+            if [ dn == 'checkout' || dn == '.git' ] continue
+            mt : tree_mtime[ e ]
+            if [ mt > r ] r = mt
+        el [ glob_pass[ e ] ]
+            mt : e.modified_time[]
+            if [ mt > r ] r = mt
+    return r
+
+func orbiter.pane_view [ i: i32 ] -> element
+    spl : element panes_el[]
+    if [ !spl || !spl.elements ] return null
+    d : element spl.elements[ 'pane{i}' ]
+    return (d) ? d : find_el[ spl, 'pane{i}' ]
+
+# an element's place in the panes' split (a pane in a split of
+# its own has bounds in that split)
+func orbiter.split_rect [ e: element ] -> rect
+    r : rect world_rect[ e ]
+    spl : element panes_el[]
+    if [ spl && spl.bounds && spl != e ]
+        o : rect world_rect[ spl ]
+        r.x -= o.x
+        r.y -= o.y
+    return r
+
+# a pane's place in the panes' split: a free one's as drawn
+func orbiter.pane_spot [ pi: i32 ] -> rect
+    if [ pane_floats[ pi ] && pane_shown
+         && pi * 4 + 3 < pane_shown.count ]
+        return rect [ x: pane_shown[ pi * 4 ],
+            y: pane_shown[ pi * 4 + 1 ],
+            w: pane_shown[ pi * 4 + 2 ],
+            h: pane_shown[ pi * 4 + 3 ] ]
+    pv : element pane_view[ pi ]
+    if [ !pv || !pv.bounds ] return rect []
+    return split_rect[ pv ]
+
+# docked under another (not along the bar): its own strip, as a
+# free window's
+func orbiter.pane_below [ pi: i32 ] -> bool
+    if [ pi < 0 || pane_floats[ pi ] || pane_out[ pi ] ]
+        return false
+    pv : element pane_view[ pi ]
+    if [ !pv || !pv.bounds ] return false
+    return split_rect[ pv ].y > 1.0
+
+# a pane added: not a file yet, it opens on the nav list, where
+# the location gets picked (its title takes focus)
+func orbiter.pane_add []
+    if [ editor_slots.count < 4 ]
+        editor_slots += -1
+        pane_console += ''
+        active_pane = editor_slots.count - 1
+        pending_finder = active_pane
+    save_session[]
+    force_update[]
+
+# a closed pane's window, sheet, history and selection go with it;
+# the later panes' move down a place
+func orbiter.pane_lists_drop [ pi: i32 ]
+    if [ pane_win && pi < pane_win.count ] pane_win.remove[ pi ]
+    if [ pane_spawn && pi < pane_spawn.count ] pane_spawn.remove[ pi ]
+    if [ pane_sheet && pi < pane_sheet.count ]
+        pane_sheet.remove[ pi ]
+    if [ pending_sel && pi < pending_sel.count ]
+        pending_sel.remove[ pi ]
+    if [ nav_panes && pi < nav_panes.count ]
+        nav_panes.remove[ pi ]
+        nav_panes += Navigate []
+    if [ !placed_pane ] return
+    j : i32 [ placed_pane.count - 1 ]
+    while [ j >= 0 ]
+        pp : i32 placed_pane[ j ]
+        if [ pp == pi ]
+            placed_pane.remove[ j ]
+            if [ placed_win && j < placed_win.count ]
+                placed_win.remove[ j ]
+        el [ pp > pi ]
+            placed_pane[ j ] = pp - 1
+        j -= 1
+
+# a closed pane's free place goes; later panes move down a place
+func orbiter.free_drop [ pi: i32 ]
+    if [ pane_free && pane_free.count >= (pi + 1) * 4 ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            pane_free.remove[ pi * 4 ]
+    if [ pane_shown && pane_shown.count >= (pi + 1) * 4 ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            pane_shown.remove[ pi * 4 ]
+    if [ !free_order ] return
+    fo : i32 [ free_at[ pi ] ]
+    if [ fo >= 0 ] free_order.remove[ fo ]
+    for [ j: i32 0, j < free_order.count, j += 1 ]
+        if [ free_order[ j ] > pi ]
+            free_order[ j ] = free_order[ j ] - 1
+
+# the Editor of the pane an element lives in
+func orbiter.pane_of [ e: element ] -> Editor
+    for [ e_: element* e, e_, e_ = e_.parent ]
+        if [ e_ inherits EditorView ]
+            ev_ : EditorView e_
+            return pane_at[ ev_.pane_index ]
+        # the status bar, the side panel (the instance's properties)
+        # and the console act for the selected editor
+        if [ e_ inherits StatusBar || e_ inherits SidePanel
+             || e_ inherits RunBand || e_ inherits MenuDrawer ]
+            return pane_at[ active_pane ]
+    return null
+
+# the pane an element sits in, or -1
+func orbiter.pane_index_of [ e: element ] -> i32
+    for [ e_: element* e, e_, e_ = e_.parent ]
+        if [ e_ inherits EditorView ]
+            ev_ : EditorView e_
+            return ev_.pane_index
+    return -1
+
+func orbiter.pane_at [ i: i32 ] -> Editor
+    pv : element pane_view[ i ]
+    if [ !pv || !pv.elements ] return null
+    return editor_under[ pv.elements[ 'split' ] ]
+
+# a pane is docked (in the split)
+# the panes in the layout's order (left to right, top to bottom)
+func orbiter.pane_order [] -> vec i32
+    sq : vec i32 []
+    tree[].leaves[ sq ]
+    return sq
+
+# the layout kept; pane_seq its panes in order
+func orbiter.tree_set [ t: PaneNode ]
+    # panes moved into other splits get new editors
+    relay_keep[]
+    t.tidy[]
+    out : vec i32 []
+    t.write[ out ]
+    pane_tree = out
+    sq : vec i32 []
+    t.leaves[ sq ]
+    pane_seq = sq
+
+# a new order of the panes (null: in number order): the layout
+# keeps its splits, its panes taken in this order; a pane new to
+# it put before the one after it (else after the one before)
+func orbiter.seq_set [ sq: vec i32 ]
+    if [ !sq ]
+        pane_seq  = null
+        pane_tree = null
+        return
+    t : PaneNode tree[]
+    have : vec i32 []
+    t.leaves[ have ]
+    for [ q: i32 ] in have
+        if [ sq.index_of[ q ] < 0 ] t.drop_leaf[ q ]
+    for [ j: i32 0, j < sq.count, j += 1 ]
+        q : i32 sq[ j ]
+        if [ have.index_of[ q ] >= 0 ] continue
+        put : bool [ j + 1 < sq.count
+            && t.put_beside[ q, sq[ j + 1 ], false ] ]
+        if [ !put && j > 0 ]
+            put = t.put_beside[ q, sq[ j - 1 ], true ]
+        if [ !put ] t.kids.push[ PaneNode [ pane: q ] ]
+    t.relabel[ sq, TreeAt [] ]
+    tree_set[ t ]
+
+# the panes left to right before the layout: pane_seq when it
+# names each pane once, else by number
+func orbiter.seq_flat [] -> vec i32
+    n : i32 [ i32[ editor_slots.count ] ]
+    ok : bool [ pane_seq && pane_seq.count == n ]
+    if [ ok ]
+        for [ q: i32 0, q < n, q += 1 ]
+            if [ pane_seq.index_of[ q ] < 0 ] ok = false
+    if [ ok ] return pane_seq
+    sq : vec i32 []
+    for [ q: i32 0, q < n, q += 1 ] sq.push[ q ]
+    return sq
+
+# a maximized window dragged sideways: the desktop (a pane of its
+# own) split in beside it, the window on the side it went to;
+# false when it is not the only docked pane
+func orbiter.split_side [ pi: i32, right: bool ] -> bool
+    if [ editor_slots.count >= 4 || pane_floats[ pi ]
+         || pane_out[ pi ] ]
+        return false
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ q != pi && !pane_floats[ q ] && !pane_out[ q ] ]
+            return false
+    was : vec i32 pane_order[]
+    editor_slots += -1
+    pane_console += ''
+    n : i32 [ i32[ editor_slots.count ] - 1 ]
+    sq : vec i32 []
+    # the desktop on the side the window left
+    if [ right ] sq.push[ n ]
+    for [ q: i32 ] in was
+        sq.push[ q ]
+    if [ !right ] sq.push[ n ]
+    seq_set[ sq ]
+    active_pane = pi
+    save_session[]
+    force_update[]
+    if [ ux ] ux.restyle = true
+    return true
+
+# pi is a half of a drag's split showing something: docked, in
+# view, beside another docked pane
+func orbiter.split_half [ pi: i32 ] -> bool
+    if [ !pane_seq || pane_floats[ pi ] || pane_out[ pi ]
+         || pane_empty[ pi ] ]
+        return false
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ q != pi && !pane_floats[ q ] && !pane_out[ q ] ]
+            return true
+    return false
+
+func orbiter.pane_showing [ av: AppView ] -> i32
+    wv : u64 window_of[ av ]
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        edq : Editor pane_at[ q ]
+        if [ (wv != 0 && pane_window[ q ] == wv)
+             || (wv == 0 && edq && edq.run_view == av) ]
+            return q
+    return -1
+
+# the free panes' keys, bottom to top, each with its ring; the
+# desktop under them when nothing is docked
+func orbiter.free_ids [] -> vec string
+    ids : vec string []
+    if [ !any_docked[] ] ids.push[ 'desk' ]
+    for [ hi: i32 0, hi < editor_slots.count, hi += 1 ]
+        if [ pane_out[ hi ] && !pane_floats[ hi ] ]
+            ids.push[ 'pane{hi}' ]
+    # every free one, in its stack order; one left out of the
+    # order (a group's hidden member) under them all: else the
+    # split would lay its pieces out as columns
+    fo : vec i32 []
+    for [ fi: i32 0, fi < editor_slots.count, fi += 1 ]
+        if [ pane_floats[ fi ] && free_at[ fi ] < 0 ] fo.push[ fi ]
+    if [ free_order ]
+        for [ fi: i32 ] in free_order
+            fo.push[ fi ]
+    for [ fi: i32 ] in fo
+        if [ !pane_floats[ fi ] ] continue
+        ids.push[ 'shade{fi}' ]
+        ids.push[ 'ground{fi}' ]
+        ids.push[ 'pane{fi}' ]
+        ids.push[ 'edge{fi}' ]
+        for [ sd: i32 ] in grip_sides[]
+            ids.push[ 'grip{fi}_{sd}' ]
+    return ids
+
+# where a pane is in free_order, or -1
+func orbiter.free_at [ i: i32 ] -> i32
+    if [ !free_order ] return -1
+    for [ j: i32 0, j < free_order.count, j += 1 ]
+        if [ free_order[ j ] == i ] return j
+    return -1
+
+# a phone has no free windows: every pane fills the screen
+func orbiter.pane_floats [ i: i32 ] -> bool
+    if [ mobile_on[] ] return false
+    k : i32 [ i * 4 + 2 ]
+    return i >= 0 && pane_free && k < pane_free.count
+        && pane_free[ k ] > 0.0
+
+# its place set; a docked pane pulled free keeps its size, two
+# thirds of it when it filled the area
+func orbiter.pull_free [ i: i32, pv: element ]
+    if [ mobile_on[] || pane_floats[ i ] || !pv || !pv.bounds ]
+        return
+    # a half of a side-by-side split: a desktop takes its place,
+    # the other half kept where it is; beside a desktop alone,
+    # that desktop takes the whole width
+    beside : bool [ false ]
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ q != i && !pane_floats[ q ] && !pane_out[ q ]
+             && !pane_empty[ q ] ]
+            beside = true
+    if [ beside && editor_slots.count < 4 ]
+        was : vec i32 pane_order[]
+        editor_slots += -1
+        pane_console += ''
+        n : i32 [ i32[ editor_slots.count ] - 1 ]
+        sq : vec i32 []
+        for [ q: i32 ] in was
+            if [ q == i ] sq.push[ n ]
+            sq.push[ q ]
+        seq_set[ sq ]
+    if [ !pane_free ] pane_free = vec f32 []
+    if [ !free_order ] free_order = vec i32 []
+    if [ !pane_shown ] pane_shown = vec f32 []
+    while [ pane_free.count < (i + 1) * 4 ]
+        pane_free.push[ 0.0 ]
+    while [ pane_shown.count < (i + 1) * 4 ]
+        pane_shown.push[ 0.0 ]
+    # its place in the panes' split (in a split of its own too)
+    pr : rect split_rect[ pv ]
+    sp : element panes_el[]
+    aw : f32 [ (sp && sp.bounds) ? sp.bounds.w : pr.w ]
+    ah : f32 [ (sp && sp.bounds) ? sp.bounds.h : pr.h ]
+    fw : f32 [ pr.w ]
+    fh : f32 [ pr.h ]
+    if [ fw >= aw * 0.8 ] fw = round[ fw * 0.66 ]
+    if [ fh >= ah * 0.8 ] fh = round[ fh * 0.66 ]
+    k : i32 [ i * 4 ]
+    pane_free[ k ]     = pr.x + (pr.w - fw) * 0.5
+    pane_free[ k + 1 ] = pr.y
+    pane_free[ k + 2 ] = fw
+    pane_free[ k + 3 ] = fh
+    # an app's own shape: as wide as fits two thirds of the height
+    fit_free[ i, false ]
+    if [ pane_free[ k + 3 ] > round[ ah * 0.66 ] ]
+        pane_free[ k + 3 ] = round[ ah * 0.66 ]
+        fit_free[ i, true ]
+        pane_free[ k ] = pr.x
+            + (pr.w - pane_free[ k + 2 ]) * 0.5
+    # it eases from where it sat docked
+    pane_shown[ k ]     = pr.x
+    pane_shown[ k + 1 ] = pr.y
+    pane_shown[ k + 2 ] = pr.w
+    pane_shown[ k + 3 ] = pr.h
+    fo : i32 [ free_at[ i ] ]
+    if [ fo >= 0 ] free_order.remove[ fo ]
+    free_order.push[ i ]
+    force_update[]
+
+# a free window left with nothing (its app closed) closes; the
+# last pane docks instead, the desktop
+func orbiter.free_empty_close []
+    desk_merge[]
+    if [ !free_order ] return
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        if [ !pane_floats[ i ] || !pane_empty[ i ] ] continue
+        if [ pane_out[ i ] ] continue
+        if [ pane_browsing[ i ] || pending_finder == i ] continue
+        # a minimized window coming back into it, or an app whose
+        # file loads first (shown a frame later)
+        if [ mini_wait >= 0 && i == mini_pane ] continue
+        if [ pending_show > 0 && i == pending_show_pane ] continue
+        # a dock press's new tab, its app about to start
+        if [ (launch_wait || launch_tab == i) && i == active_pane ]
+            continue
+        if [ editor_slots.count == 1 ]
+            dock_pane[ i ]
+        el
+            close_pane[ i ]
+        force_update[]
+        return
+
+# projection: inline panes in order, then the agent console
+func orbiter.pane_views [] -> Elements
+    t : Elements []
+    # the docked panes in view, laid out by the layout after
+    docked : Elements []
+    # the full navigator up: the free windows fade out of sight
+    # (still running), back as it shuts; it fades in
+    # the agents view up: they are put away as well
+    agents : bool [ home_tab == 'agent' && home_seen[] ]
+    away : bool [ nav_fade >= 1.0 || agents ]
+    seen : f32 [ (agents) ? 0.0 : 1.0 - nav_fade ]
+    for [ i: i32 ] in pane_order[]
+        # free said every render: a docked pane said nothing and
+        # kept a window's rounded mask
+        # empty said here too: a pane re-keyed by a close took a
+        # frame to say it itself, its dark ground over the desktop
+        file_slot : i32 [
+            (i < editor_slots.count) ? editor_slots[ i ] : -1 ]
+        empty : bool [ !(i < pane_console.count
+                         && pane_console[ i ].count > 0)
+            && !(file_slot >= 0 && file_slot < open_files.count
+                 && open_files[ file_slot ])
+            && !pane_browsing[ i ] ]
+        ev : EditorView [ pane_index: i, free: false,
+            selected: (search_pane[] == 'pane{i}'), is_empty: empty ]
+        # said every render, shown or not: a mounted pane keeps a
+        # hide (or a faded look) it is not told again
+        ev.hide    = pane_gone[ i ]
+        ev.opacity = 1.0
+        ev.topmost = false
+        if [ pane_out[ i ] && !pane_floats[ i ] ]
+            # docked, fading over the desktop at its place:
+            # see-through and blurred as it goes
+            fd : f32 fade_of[ i ]
+            k : i32 [ i * 4 ]
+            rx : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                ? pane_rect[ k ] : 0.0 ]
+            ry : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                ? pane_rect[ k + 1 ] : 0.0 ]
+            rw : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                ? pane_rect[ k + 2 ] : 0.0 ]
+            rh : f32 [ (pane_rect && k + 3 < pane_rect.count)
+                ? pane_rect[ k + 3 ] : 0.0 ]
+            ev.topmost = true
+            ev.opacity = (1.0 - fd) * (1.0 - fd)
+            ev.blur_px = fd * (2.0 - fd) * 36.0
+            ev.area = Region [ 'l{rx}px t{ry}px w{rw}px h{rh}px' ]
+            t['pane{i}'] = ev
+            continue
+        # a window fades and blurs whole: it, its shadow, ground
+        # and edge (none of it drawn once gone)
+        fo : f32 fade_of[ i ]
+        out : bool [ away || pane_gone[ i ] ]
+        ev.blur_px = fo * (2.0 - fo) * 36.0
+        if [ nav_fade < 1.0 && !pane_floats[ i ]
+             && pane_browsing[ i ] ]
+            ev.opacity = nav_fade
+        if [ pane_floats[ i ] ]
+            k : i32 [ i * 4 ]
+            fx : f32 [ round[ pane_shown[ k ] ] ]
+            fy : f32 [ round[ pane_shown[ k + 1 ] ] ]
+            fw : f32 [ round[ pane_shown[ k + 2 ] ] ]
+            fh : f32 [ round[ pane_shown[ k + 3 ] ] ]
+            ev.topmost = true
+            ev.free    = true
+            ev.hide    = out
+            ev.opacity = seen * (1.0 - fo) * (1.0 - fo)
+            # fading or gone: presses pass it by
+            ev.user_events = nav_fade <= 0.0 && !agents
+                && !pane_out[ i ]
+            ev.area = Region [
+                'l{fx}px t{fy}px w{fw}px h{fh}px' ]
+            # its shadow and outline, under it
+            sh : f32 [ 24.0 ]
+            sx : f32 [ fx - sh ]
+            sy : f32 [ fy - sh ]
+            sw : f32 [ fw + sh * 2.0 ]
+            shh : f32 [ fh + sh * 2.0 ]
+            t['shade{i}'] = WinShade [ topmost: true, hide: out,
+                opacity: seen * (1.0 - fo) * (1.0 - fo),
+                blur_px: fo * (2.0 - fo) * 36.0,
+                area: Region [
+                    'l{sx}px t{sy}px w{sw}px h{shh}px' ] ]
+            # its piece of the screen's ground, as a docked pane
+            # has under it
+            t['ground{i}'] = WinGround [ topmost: true, hide: out,
+                opacity: seen * (1.0 - fo) * (1.0 - fo),
+                blur_px: fo * (2.0 - fo) * 36.0,
+                area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
+            t['pane{i}'] = ev
+            t['edge{i}'] = WinEdge [ topmost: true, hide: out,
+                opacity: seen * (1.0 - fo) * (1.0 - fo),
+                blur_px: fo * (2.0 - fo) * 36.0, selected: ev.selected,
+                area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
+            if [ nav_fade <= 0.0 && !agents && !fixed_win[ i ]
+                 && !pane_out[ i ] ]
+                grips_of[ t, i, fx, fy, fw, fh ]
+            continue
+        docked['pane{i}'] = ev
+    tree_els[ tree[], t, docked, 'split', false ]
+    # nothing docked: the desktop (the apps) under the free windows
+    if [ !any_docked[] ]
+        t['desk'] = HomeView [ pane: -1,
+            area: Region { l0 t0 r0 b0 } ]
+    if [ agent_open ]
+        t['pane{editor_slots.count}'] = EditorView [
+            pane_index: editor_slots.count,
+            selected: (search_pane[] == 'pane{editor_slots.count}') ]
+    return t
+
+# a pane of the layout's in view under n
+func orbiter.tree_shows [ n: PaneNode, docked: Elements ] -> bool
+    if [ n.pane >= 0 ]
+        pe : element docked[ 'pane{n.pane}' ]
+        return pe != null
+    for [ k: PaneNode ] in n.kids
+        if [ tree_shows[ k, docked ] ] return true
+    return false
+
+# the app a pane shows: its editor's, else its window's
+func orbiter.pane_instance [ pi: i32 ] -> AppView
+    ed : Editor pane_at[ pi ]
+    if [ ed && ed.run_view ] return ed.run_view
+    wv : u64 pane_window[ pi ]
+    if [ wv != 0 && instances ]
+        for [ v: AppView ] in instances
+            if [ window_of[ v ] == wv ] return v
+    return null
+
+# put out of view by minimize
+func orbiter.pane_hidden [ pi: i32 ] -> bool
+    return pane_hid && pi >= 0 && pi < pane_hid.count && pane_hid[ pi ]
+
+# out of the split: hidden, or fading out or in over the desktop
+func orbiter.pane_out [ pi: i32 ] -> bool
+    return pane_hidden[ pi ] || fade_of[ pi ] > 0.0
+
+# hidden and faded wholly: not drawn
+func orbiter.pane_gone [ pi: i32 ] -> bool
+    return pane_hidden[ pi ] && fade_of[ pi ] >= 1.0
+
+# a pane's group, -1 none
+func orbiter.grp_of [ pi: i32 ] -> i32
+    if [ !pane_grp || pi < 0 || pi >= pane_grp.count ] return -1
+    return pane_grp[ pi ]
+
+func orbiter.grp_set [ pi: i32, g: i32 ]
+    if [ !pane_grp ] pane_grp = vec i32 []
+    while [ pane_grp.count < editor_slots.count ] pane_grp.push[ -1 ]
+    if [ pi >= 0 && pi < pane_grp.count ] pane_grp[ pi ] = g
+
+# a group's panes, in pane order
+func orbiter.grp_members [ g: i32 ] -> vec i32
+    out : vec i32 []
+    if [ g < 0 ] return out
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ grp_of[ q ] == g ] out.push[ q ]
+    return out
+
+# a group's member shown in the place of the one shown now
+func orbiter.grp_show [ b: i32 ]
+    g : i32 grp_of[ b ]
+    if [ g < 0 ] return
+    for [ q: i32 ] in grp_members[ g ]
+        if [ q != b && !pane_hidden[ q ] ]
+            take_place[ b, q ]
+            hide_now[ q ]
+    show_now[ b ]
+    raise_pane[ b ]
+    if [ ux ] ux.restyle = true
+    force_update[]
+
+# mv's window put in onto's group (a new one when it has none),
+# shown there in onto's place
+func orbiter.grp_join [ mv: i32, onto: i32 ]
+    if [ mv == onto || mv < 0 || onto < 0 ] return
+    if [ grp_of[ mv ] >= 0 ] grp_leave[ mv, false ]
+    g : i32 grp_of[ onto ]
+    if [ g < 0 ]
+        g = 0
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ grp_of[ q ] >= g ] g = grp_of[ q ] + 1
+        grp_set[ onto, g ]
+    grp_set[ mv, g ]
+    grp_show[ mv ]
+    log 'groups: window {mv} joined window {onto} (group {g})'
+
+# a member out of its group: another member takes its place; it
+# stays where it is (free at the pointer when it was dragged out)
+func orbiter.grp_leave [ gone: i32, free_at_pointer: bool ]
+    g : i32 grp_of[ gone ]
+    if [ g < 0 ] return
+    rest : vec i32 []
+    for [ q: i32 ] in grp_members[ g ]
+        if [ q != gone ] rest.push[ q ]
+    grp_set[ gone, -1 ]
+    if [ rest.count > 0 && !pane_hidden[ gone ] ]
+        nx : i32 rest[ 0 ]
+        take_place[ nx, gone ]
+        show_now[ nx ]
+    if [ rest.count > 0 ]
+        if [ free_at_pointer && ux ]
+            # the left member free, under the pointer
+            w0 : f32 [ (ux.root && ux.root.bounds)
+                ? ux.root.bounds.w : 1280.0 ]
+            h0 : f32 [ (ux.root && ux.root.bounds)
+                ? ux.root.bounds.h : 800.0 ]
+            fw : f32 [ round[ w0 * 0.42 ] ]
+            fh : f32 [ round[ h0 * 0.62 ] ]
+            m : vec2f ux.last_move
+            pane_free[ gone * 4 ]     = m.x - fw * 0.5
+            pane_free[ gone * 4 + 1 ] = m.y - 12.0
+            pane_free[ gone * 4 + 2 ] = fw
+            pane_free[ gone * 4 + 3 ] = fh
+            for [ r: i32 0, r < 4, r += 1 ]
+                pane_shown[ gone * 4 + r ] = pane_free[ gone * 4 + r ]
+            if [ free_at[ gone ] < 0 ] free_order.push[ gone ]
+    if [ rest.count == 1 ] grp_set[ rest[ 0 ], -1 ]
+    show_now[ gone ]
+    raise_pane[ gone ]
+    if [ ux ] ux.restyle = true
+    force_update[]
+
+# the tab let go: on the panes' left, right or bottom edge, the
+# whole layout split there with the window on that side; on the
+# dock, minimized; over another window, the two grouped;
+# elsewhere, out of its group, free there
+func orbiter.tab_drop [ pi: i32 ]
+    tab_drag = -1
+    if [ !ux ] return
+    k : i32 drop_kind[ ux.last_move, pi ]
+    if [ (k >= 1 && k <= 3) || k == 7 ] dock_edge[ pi, k ]
+    el [ k == 4 ] tab_dock[ pi ]
+    el [ k == 5 ] grp_join[ pi, drop_win ]
+    el [ k == 6 ] take_empty[ pi, drop_win ]
+    el [ k == 8 ] dock_full[ pi ]
+    el [ k == 0 && grp_of[ pi ] >= 0 ] grp_leave[ pi, true ]
+    if [ ux ] ux.restyle = true
+
+# a pane docked and in view under n
+func orbiter.tree_docked [ n: PaneNode ] -> bool
+    if [ n.pane >= 0 ]
+        return !pane_floats[ n.pane ] && !pane_out[ n.pane ]
+    for [ c: PaneNode ] in n.kids
+        if [ tree_docked[ c ] ] return true
+    return false
+
+# each pane's app shown, caret and scroll, kept for its editor
+# made anew by the layout (a pane moved into another split)
+func orbiter.relay_keep []
+    n : i32 [ i32[ editor_slots.count ] ]
+    if [ !pending_app ]    pending_app    = vec i32 []
+    if [ !relay_old ]      relay_old      = vec Editor []
+    if [ !pending_sel ]    pending_sel    = vec vec2i []
+    if [ !pending_scroll ] pending_scroll = vec f32 []
+    while [ pending_app.count < n ]    pending_app    += -1
+    while [ relay_old.count < n ]      relay_old      += null
+    while [ pending_sel.count < n ]
+        pending_sel += vec2i [ x: -1, y: 0 ]
+    while [ pending_scroll.count < n ] pending_scroll += -1.0
+    relay_at = epoch_millis[]
+    # a pane with no editor yet keeps what it waits for
+    for [ i: i32 0, i < n, i += 1 ]
+        e_ : Editor pane_at[ i ]
+        if [ !e_ ] continue
+        shown : bool [ e_.app_view && e_.run_view
+                       && !e_.run_view.ended ]
+        pending_app[ i ]    = (shown) ? e_.run_view.iid : -1
+        relay_old[ i ]      = e_
+        pending_sel[ i ]    = vec2i [ x: e_.sel_line,
+                                      y: e_.sel_col ]
+        pending_scroll[ i ] = e_.scroll.y
+
+# the app a pane showed before a layout change made its editor
+# anew (null: none, or taken)
+func orbiter.relay_take [ pi: i32 ] -> AppView
+    if [ !pending_app || pi < 0 || pi >= pending_app.count ]
+        return null
+    iid : i32 [ pending_app[ pi ] ]
+    if [ iid < 0 ] return null
+    pending_app[ pi ] = -1
+    av : AppView instance_by[ iid ]
+    ed : Editor pane_at[ pi ]
+    return (av && !av.ended && relay_fits[ ed, av ]) ? av : null
+
+# a pane's editor made anew by a layout change (a renumber, a
+# move): its kept app shown again (a hidden tab makes its editor
+# when shown: no time limit)
+func orbiter.relay_one [ i: i32, e: Editor ]
+    if [ !e || !pending_app || i >= pending_app.count
+         || pending_app[ i ] < 0 || e == relay_old[ i ] ] return
+    ra : AppView instance_by[ pending_app[ i ] ]
+    pending_app[ i ] = -1
+    if [ ra && !ra.ended && relay_fits[ e, ra ] ]
+        e.run_view = ra
+        e.app_view = true
+        e.pristine = false
+
+# every pane's, before a frame is laid out: the bar never sees a
+# moment of its source
+func orbiter.relay_apply []
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        relay_one[ i, pane_at[ i ] ]
+
+# a kept app goes to a pane's new editor only where it belongs: its
+# source or document there (the kept list says which window; other
+# editors hold their old apps for a frame as they are renumbered)
+func orbiter.relay_fits [ ed: Editor, av: AppView ] -> bool
+    if [ !ed || !av ] return false
+    if [ !ed.src ] return true
+    es : string '{ed.src.absolute[]}'
+    if [ av.src && '{av.src.absolute[]}' == es ] return true
+    return av.doc && '{av.doc.absolute[]}' == es
+
+# a closed pane's kept entries out, after the later panes moved
+# down a place (tree_set kept them by the old numbers)
+func orbiter.relay_drop [ pi: i32 ]
+    n : i32 [ i32[ editor_slots.count ] ]
+    if [ pending_app && pi < pending_app.count
+         && pending_app.count > n ]
+        pending_app.remove[ pi ]
+    if [ relay_old && pi < relay_old.count && relay_old.count > n ]
+        relay_old.remove[ pi ]
+    if [ pending_sel && pi < pending_sel.count
+         && pending_sel.count > n ]
+        pending_sel.remove[ pi ]
+    if [ pending_scroll && pi < pending_scroll.count
+         && pending_scroll.count > n ]
+        pending_scroll.remove[ pi ]
+
+# the window let go on the dock: out of view, its entry there
+func orbiter.tab_dock [ pi: i32 ]
+    if [ grp_of[ pi ] >= 0 ] grp_leave[ pi, false ]
+    minimize[ pi ]
+
+func orbiter.pane_hit [ q: i32, m: vec2f ] -> bool
+    pv : element pane_view[ q ]
+    if [ !pv || !pv.bounds ] return false
+    r : rect world_rect[ pv ]
+    return m.x >= r.x && m.x < r.x + r.w
+        && m.y >= r.y && m.y < r.y + r.h
+
+# a pane's name on a tab: its app, its window's program, its title
+func orbiter.pane_label [ pi: i32 ] -> string
+    nm : string tab_title[ pi ]
+    if [ nm.count > 0 ] return nm
+    pv : element pane_view[ pi ]
+    if [ pv && pv inherits EditorView ]
+        return (cast EditorView [ pv ]).title_text[]
+    return 'window'
+
+# a running app's or window's tab: its title, else its name
+# ('' when neither runs in the pane)
+func orbiter.tab_title [ pi: i32 ] -> string
+    nm : string [ (pane_window[ pi ] == 0) ? app_name_of[ pi ]
+        : window_program[ pi ] ]
+    if [ nm.count == 0 ] return ''
+    # an address app (aura): its name; the address is the field
+    # after it, to edit
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ rv && !rv.ended && pane_window[ pi ] == 0 && url_app[ rv ] ]
+        return nm
+    tt : string bar_title_of[ pi ]
+    return (tt.count > 0) ? tt : nm
+
+# the pane shows the navigator
+func orbiter.pane_browsing [ pi: i32 ] -> bool
+    return (nav_showing || find_showing)
+        && search_pane[] == 'pane{pi}'
+
+# a file's views (git, B16 ...) as buttons ending at xr, lit while
+# shown; the x where they start (xr when none)
+func orbiter.pane_views_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+    ed : Editor pane_at[ pi ]
+    if [ !ed || ed.app_view ] return xr
+    vs : vec string file_views[ ed ]
+    if [ vs.count == 0 ] return xr
+    cur : string ed.resolve_view[]
+    vw : f32 [ 1.33 * unit_px[] ]
+    bw : f32 [ vw * f32[ vs.count ] ]
+    for [ i: i32 0, i < vs.count, i += 1 ]
+        v : string vs[ i ]
+        ci : string console_icon[ v ]
+        ic : string [ (ci) ? ci : v ]
+        lit : bool [ (v == 'git') ? ed.git_on : v == cur ]
+        vx : f32 [ xr - bw + vw * f32[ i ] ]
+        svg : path 'images/{ic}.svg'
+        # a view with no icon file shows its name
+        if [ svg.exists[] ]
+            t['pview:{pi}:{v}'] = bar_icon[ ic, 0.5, lit, false,
+                vx, vw ]
+        el
+            t['pview:{pi}:{v}'] = BarButton [ label: v,
+                selected: lit, use_spacing: false,
+                area: Region [ 'l{vx}px t0 w{vw}px b0' ] ]
+    return xr - bw
+
+# a window's left edge in the root's space: its place in the
+# panes' area plus that area's own (the dock)
+func orbiter.win_left [ pi: i32 ] -> f32
+    # docked: pane_left is already the window's own x
+    if [ !pane_floats[ pi ] ] return pane_left[ pi ]
+    pv : element pane_view[ pi ]
+    pe : element (pv) ? pv.parent : null
+    off : f32 [ 0.0 ]
+    for [ e: element* pe, e, e = e.parent ]
+        if [ e.bounds ] off += e.bounds.x
+    return win_x[ pi ] + off
+
+# a free window's strip: the system bar it took with it (its
+# menus, its title, its arrows and close), w px wide
+func orbiter.strip_els [ pi: i32, w: f32 ] -> Elements
+    t : Elements []
+    if [ !ux ] return t
+    uu : f32 ux_unit[ ux ]
+    # end to end: the window's mask rounds the corner buttons
+    x : f32 menu_group_els[ t, 0.0, uu, pi, 's{pi}_' ]
+    rx : f32 pane_close_el[ t, pi, w ]
+    vx : f32 nav_arrows_el[ t, pi, rx ]
+    x = pane_outline_el[ t, pi, x, 's{pi}_' ]
+    # the load mark left of the arrows, as on the bar; a navigator
+    # (or a dialog up in it) picks its folder by its path's pieces
+    navc : bool [ (pi == active_pane && nav_driven[] && !nav_app)
+                  || pane_browsing[ pi ] ]
+    lw : f32 [ 1.33 * unit_px[] ]
+    if [ !navc && pane_app_on[ pi ] && pane_loads[ pi ]
+         && vx - lw > x ]
+        t['bar_load_{pi}'] = bar_icon[ 'eject', 0.5, false, false,
+            vx - lw, lw ]
+        vx -= lw
+    pad : f32 [ 10.0 * uu ]
+    # code in it: its file's path as pieces, as on the bar
+    sed : Editor pane_at[ pi ]
+    # a navigator in it (the selected one): its folder's pieces
+    if [ navc && vx - x > pad ]
+        x = crumbs_el[ t,
+            (nav.nav_root) ? '{nav.nav_root.absolute[]}' : '',
+            's{pi}_', -1, false, x + 8.0 * uu, vx - 8.0 * uu, uu ]
+    el [ pane_code_file[ pi ].count > 0 && sed && vx - x > pad ]
+        x = crumbs_el[ t, '{sed.src.absolute[]}', 's{pi}_', pi,
+                       true, x, vx, uu ]
+    # the selected window's address (a URL app): the bar's field
+    # and the grab under it, a click edits it as on the bar
+    el [ pi == active_pane && bar_url_on[] && vx > x ]
+        if [ !bar_typing ]
+            t['bar_grab'] = BarGrab [ pane: pi, url: true,
+                area: Region [ 'l{x}px t0 w{vx - x}px b0' ] ]
+        bar_title_el[ t, bar_title[], x, vx ]
+    return t
+
+# a pane on its Open page: no file, no app running in it
+func orbiter.pane_empty [ pi: i32 ] -> bool
+    # no pane (every window free): nothing in it
+    if [ pi < 0 ] return true
+    # a window's pane has no editor
+    if [ pane_window[ pi ] != 0 ] return false
+    # a terminal in it (an agent's, a console): not empty
+    if [ pi < pane_console.count && pane_console[ pi ].count > 0 ]
+        return false
+    ed : Editor pane_at[ pi ]
+    if [ !ed ] return true
+    rv : AppView ed.run_view
+    if [ rv && !rv.ended ] return false
+    return !ed.src
+
+# a pane's left edge in the window, from this frame's layout (the
+# split's eased place), not the pointer's last walk
+func orbiter.pane_left [ pi: i32 ] -> f32
+    x : f32 [ 0.0 ]
+    for [ e: element* pane_view[ pi ], e, e = e.parent ]
+        if [ e.bounds ] x += e.bounds.x
+        if [ e.parent ] x -= e.parent.scroll.x
+    return x
+
+func orbiter.pane_entry [ act: string ] -> bool
+    # a separator has no action
+    if [ !act ] return false
+    return act == 'orb.shot'
+        || act.starts_with[ 'orb.code:' ]
+        || act.starts_with[ 'orb.inst:' ] || act == 'orb.inst_new'
+        || act == 'orb.git' || act == 'orb.prule'
+        || act == 'orb.paneroot' || act.starts_with[ 'orb.pview:' ]
+        || act == 'orb.build' || act == 'orb.clean'
+        || act == 'orb.con'
+
+# the instance whose program's window pane pi shows (null: none)
+func orbiter.win_app [ pi: i32 ] -> AppView
+    wv : u64 pane_window[ pi ]
+    if [ wv == 0 || !instances ] return null
+    for [ av: AppView ] in instances
+        if [ window_of[ av ] == wv ] return av
+    return null
+
+# a program window's app: the module that started it (steam), else
+# the program
+func orbiter.win_app_name [ av: AppView ] -> string
+    d : path inst_reg[].app_dir[ av ]
+    if [ av.origin && d ] return d.filename[]
+    return app_name[ av ]
+
+# the pane's controls under the app's own menu (its first): a
+# pane added, this one closed, git, its views
+func orbiter.pane_menu []
+    # the desktop (the apps) is no pane: Widgets alone, no
+    # instances, no split, no hide, no quit
+    if [ active_pane >= 0 && pane_empty[ active_pane ] ] return
+    if [ !menu_items ] menu_items = vec TrayEntry []
+    keep : vec TrayEntry []
+    for [ e: TrayEntry ] in menu_items
+        if [ !pane_entry[ e.action ] ] keep.push[ e ]
+    menu_items = keep
+    f : i32 [ -1 ]
+    for [ i: i32 0, i < menu_items.count, i += 1 ]
+        if [ f < 0 && menu_items[ i ].depth == 0
+             && !menu_items[ i ].rule ] f = i
+    # a program's own window (steam's): its app, not the console it
+    # runs in (that console's entries are not its)
+    wa : AppView win_app[ active_pane ]
+    # no app menu (a file in the editor): one named for it; a
+    # program's window: for its app
+    if [ f < 0 ]
+        nm : string bar_title[]
+        dt : i32 [ nm.rindex_of[ '.' ] ]
+        if [ dt > 0 ] nm = nm.mid[ 0, dt ]
+        if [ wa ] nm = win_app_name[ wa ]
+        if [ nm.count == 0 ] nm = 'Pane'
+        menu_items.push[ own_entry[ nm, 'orb.paneroot', 0 ] ]
+        f = menu_items.count - 1
+    # no instances here, and no new one: an instance made over
+    # another hid it; apps start from the dock, desktop and play
+    at : i32 [ f + 1 ]
+    while [ at < menu_items.count && menu_items[ at ].depth > 0 ]
+        at += 1
+    # quit stays the last: ours go before it (and its rule)
+    for [ q: i32 f + 1, q < at, q += 1 ]
+        qe : TrayEntry menu_items[ q ]
+        if [ qe.depth == 1 && !qe.rule
+             && (qe.action == 'orb.quit' || qe.label == 'Quit') ]
+            at = (q > f + 1 && menu_items[ q - 1 ].rule) ? q - 1 : q
+            break
+    add : vec TrayEntry []
+    # the window's console up or down
+    if [ !use_mobile && pane_inst[ active_pane ] && !wa ]
+        ce : TrayEntry own_entry[ 'Console', 'orb.con', 1 ]
+        ce.check = (con_up[ active_pane ]) ? 1 : 0
+        add.push[ ce ]
+    # a line before them, unless one is there already
+    if [ add.count > 0
+         || (at > f + 1 && !menu_items[ at - 1 ].rule) ]
+        add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
+            action: 'orb.prule' ] ]
+    ed : Editor pane_at[ active_pane ]
+    # its app's picture to the clipboard
+    if [ ed && ed.run_view ]
+        add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
+    # an app built from its source here: again, or clean (not one
+    # the apps view installs: featured/ wraps others' software)
+    am : path app_module[]
+    fd : string '{path.path_startup[]}/featured/'
+    # only while its code shows: the edit mode
+    if [ am && !'{am}'.starts_with[ fd ] && ed && !ed.app_view ]
+        add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
+            action: 'orb.prule' ] ]
+        add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
+        add.push[ own_entry[ 'Clean build', 'orb.clean', 1 ] ]
+    for [ k: i32 add.count - 1, k >= 0, k -= 1 ]
+        menu_items.insert[ add[ k ], at ]
+
+# a view's button pressed: git toggles its reference, another view
+# shows (again: the file as it is); the navigator gives way to it
+func orbiter.pane_view_press [ ed: Editor, v: string ]
+    if [ !ed ] return
+    if [ v == 'git' ]
+        own_pick[ own_entry[ '', 'orb.git', 1 ] ]
+    el
+        own_pick[ own_entry[ '', 'orb.pview:{v}', 1 ] ]
+    exit_finder[]
+    nav_showing  = false
+    find_showing = false
+    force_update[]
+
+# the module a pane's app runs from ('' none): its group's key
+# (its source shown counts: the tab is that app's)
+# the pane's module updating: how far (build_frac), -2 if not
+func orbiter.pane_build [ pi: i32 ] -> f32
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed) ? ed.run_view : null
+    sp : path (rv && rv.src) ? rv.src : ((ed) ? ed.src : null)
+    if [ !sp ] return -2.0
+    return build_frac[ sp.directory[].filename[] ]
+
+func orbiter.pane_app [ pi: i32 ] -> string
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed) ? ed.run_view : null
+    if [ rv && rv.src && (!rv.ended || run_failed[ rv ]) ]
+        return '{rv.src.directory[]}'
+    if [ ed && ed.src ]
+        k : '{ed.src.directory[]}'
+        if [ app_runs[ k ].count > 0 ] return k
+    return ''
+
+func orbiter.free_runs [] -> vec AppView
+    r : vec AppView []
+    if [ !instances ] return r
+    shown : vec string []
+    for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
+        shown.push[ pane_app[ pi ] ]
+    for [ av: AppView ] in instances
+        if [ !av.src || av.slot < 0 || av.held || av.ended ]
+            continue
+        k : '{av.src.directory[]}'
+        seen : bool [ false ]
+        for [ s_: string ] in shown
+            if [ s_ == k ] seen = true
+        if [ !seen ] r.push[ av ]
+    return r
+
+# the pane's app takes a resource live: it can load another
+func orbiter.pane_loads [ pi: i32 ] -> bool
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed) ? ed.run_view : null
+    return rv && live_arg_of[ rv ] != null && !url_app[ rv ]
+
+# the file a pane shows as code, by its path from silver's folder
+# (src/silver-host.c); '' when it shows an app or no file
+func orbiter.pane_code_file [ pi: i32 ] -> string
+    ed : Editor pane_at[ pi ]
+    if [ !ed || !ed.src ] return ''
+    # the app over it, live: no code shows (held, ended, or none
+    # started, as after a cancelled file pick: its source does)
+    rv : AppView ed.run_view
+    if [ ed.app_view && rv && !rv.ended && !rv.held ] return ''
+    fs : string '{ed.src.absolute[]}'
+    if [ !startup_path ] startup_path = path.path_startup[]
+    rt : string '{startup_path}/'
+    if [ fs.starts_with[ rt ] ]
+        return fs.mid[ rt.count, fs.count - rt.count ]
+    return fs
+
+func orbiter.pane_app_on [ pi: i32 ] -> bool
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    return rv && !rv.ended && !rv.held && window_of[ rv ] == 0
+
+# the app a window runs (or ran): its editor's, else the one whose
+# program's window it shows
+func orbiter.pane_inst [ pi: i32 ] -> AppView
+    ed : Editor pane_at[ pi ]
+    if [ ed && ed.run_view ] return ed.run_view
+    wid : u64 [ pane_window[ pi ] ]
+    if [ wid == 0 ] return null
+    for [ av: AppView ] in instances
+        if [ av.wl_window == wid ] return av
+    return null
+
+# programs' windows' scale: the text size on the screen's own
+# pixels (2 a point on a phone), so they draw sharp, never stretched
+func orbiter.win_scale [] -> f64
+    ds : f64 [ (win_ds > 0.0) ? f64[ win_ds ] : 1.0 ]
+    return f64[ set_size ] / 22.0 * ds
+
+# a strip cell's width: the dock's, in whole pixels
+func orbiter.strip_cell [] -> f32
+    return round[ dock_w[] ]
+
+# the drawer belongs to a window's strip (a free or lower one):
+# it opens inside that window
+func orbiter.win_menu [] -> bool
+    return (menu_kind == 'menu' || menu_kind == 'crumb')
+        && drawer_pane >= 0 && drawer_pane < editor_slots.count
+        && (pane_floats[ drawer_pane ] || pane_below[ drawer_pane ])
+
+# a pane's left and top in the window; a free window's from where
+# it is drawn this frame (its laid-out bounds are a frame behind:
+# what follows it dragged would trail it)
+func orbiter.win_x [ pi: i32 ] -> f32
+    if [ pane_floats[ pi ] && pane_shown
+         && pi * 4 + 1 < pane_shown.count ]
+        return pane_shown[ pi * 4 ]
+    return pane_left[ pi ]
+
+func orbiter.win_y [ pi: i32 ] -> f32
+    if [ pane_floats[ pi ] && pane_shown
+         && pi * 4 + 1 < pane_shown.count ]
+        top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
+        return pane_shown[ pi * 4 + 1 ] + top
+    return pane_top[ pi ]
+
+# a pane's top in the window
+func orbiter.pane_top [ pi: i32 ] -> f32
+    y : f32 [ 0.0 ]
+    for [ e: element* pane_view[ pi ], e, e = e.parent ]
+        if [ e.bounds ] y += e.bounds.y
+        if [ e.parent ] y -= e.parent.scroll.y
+    return y
+
+# the panes' view crosses the swap in place: the slot is
+# persisted at the load, before this fills it
+func orbiter.panes_carry []
+    if [ !swap_view ] return
+    swap_view.clear[]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e_ : Editor pane_at[ i ]
+        swap_view += (e_) ? f32[ e_.sel_line ] : -1.0
+        swap_view += (e_) ? f32[ e_.sel_col ]  : 0.0
+        swap_view += (e_) ? e_.scroll.y        : 0.0
+    carry_sent = true
+
+# per-file state, created on first touch
+func orbiter.fstate [ p: path ] -> file_state
+    if [ !p ] return null
+    if [ !file_states ] file_states = map file_state [string] []
+    k_ : string '{p}'
+    fs : file_state file_states[ k_ ]
+    if [ !fs ]
+        fs = file_state []
+        file_states[ k_ ] = fs
+    return fs
+
+# the frames the callstack lists: one with no known source only when
+# asked
+func orbiter.stack_frames [] -> vec Au
+    all : vec Au debug_frames[]
+    if [ stack_unknown ] return all
+    known : vec Au []
+    for [ fr: Frame ] in all
+        if [ fr && fr.file && fr.line > 0 ] known.push[ fr ]
+    # none known (a release build, a stop in system code): all
+    return (known.count > 0) ? known : all
+
+# a recorded take into the exchange, as Enter sends a line: into
+# the last conversation, else a new one about the recorded file,
+# with the agent and model last used; the exchange stays put away
+func orbiter.take_send [ dt: string ]
+    if [ !ux ] return
+    refs : string ''
+    fresh : bool [ !ux.sessions || ux.sessions.count == 0 ]
+    if [ fresh ]
+        ed : Editor pane_at[ active_pane ]
+        src : path [ (listen_file) ? listen_file
+            : ((ed && ed.src) ? ed.src : null) ]
+        if [ !src ] return
+        ln : i32 [ (ed) ? ed.sel_line + 1 : 0 ]
+        ux.exchange_open[ src, ln, true ]
+        refs = (ln > 0) ? 'File: {src}:{ln}' : 'File: {src}'
+    el
+        cur : i32 [ (ux.session_cur >= 0) ? ux.session_cur
+            : i32[ ux.sessions.count ] - 1 ]
+        ux.session_show[ cur ]
+    if [ !ux.agent_pick || ux.agent_pick.count == 0 ]
+        ux.agent_pick = agent_last
+        ux.model_pick = model_last
+    if [ listen_shot ]
+        sl : string 'Screenshot: {listen_shot}'
+        refs = (refs.count > 0) ? '{refs}\n{sl}' : sl
+    msg : string (refs.count > 0) ? '{dt}\n\n{refs}' : dt
+    if [ fresh ]
+        ux.session_begin[ dt ]
+        agent_new[]
+    if [ !agent_post_as[ a, ux.agent_pick, ux.model_pick, msg,
+                         'now' ] ]
+        if [ fresh ] ux.session_unbegin[]
+        log 'orbiter: the take could not be sent'
+        return
+    old : string ux.shot_text
+    ux.shot_text  = (old && old.count > 0) ? '{old}\n{dt}' : dt
+    ux.user_note[ dt ]
+    on_agent[ 'status sent {dt}' ]
+    ux.agent_view = true
+    ux.agent_min  = true
+    ux.restyle    = true
+
+# the selected task: the active pane's running app, in view
+func orbiter.active_app [] -> AppView
+    ed : Editor pane_at[ active_pane ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    return (rv && !rv.ended && !rv.held) ? rv : null
+
+# a task closed from its button: the process goes, its panes let
+# it go, and it leaves the list
+func orbiter.close_task [ av: AppView ]
+    if [ !av ] return
+    wv : u64 window_of[ av ]
+    for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
+        ed : Editor pane_at[ pi ]
+        # a window holding it unshown lets it go, keeping what it
+        # shows (a group's other tab never closes with it)
+        if [ ed && ed.run_view == av && !ed.app_view ]
+            ed.run_view = null
+            ed.pristine = false
+        el [ ed && ed.run_view == av ]
+            # its file goes too; a desktop keeps a module's code
+            code : bool [ !use_mobile && ed.src
+                && ed.src.ext[] == 'ag' ]
+            if [ code ]
+                ed.run_view = null
+                ed.app_view = false
+            el
+                go_home[ pi ]
+        if [ wv != 0 && pane_win && pi < pane_win.count
+             && pane_win[ pi ] == wv ]
+            pane_win[ pi ] = u64[ 0 ]
+    av.release[]
+    av.debugger = null
+    remove_instance[ av ]
+    log 'task closed: {instance_name[ av ]}'
+    if [ ux ] ux.restyle = true
+
+# the window an instance's program opened, while it is open
+func orbiter.window_of [ av: AppView ] -> u64
+    if [ !av || av.wl_window == 0 ] return u64[ 0 ]
+    if [ wlc_window_open[ av.wl_window ] == 0 ] return u64[ 0 ]
+    return av.wl_window
+
+func orbiter.show_instance [ iid: i32, pi: i32 ]
+    av : AppView instance_by[ iid ]
+    ed : Editor pane_at[ pi ]
+    if [ !av || !ed ] return
+    # an empty pane takes the instance's own source under it (the
+    # app shows now and that load keeps it); a pane with a file
+    # keeps it: the app is a state over it, the edit comes back
+    # when the app is toggled out (its code is the Code toggle's)
+    if [ av.src && !av.viewer ]
+        if [ !ed.src ] open_in_pane[ av.src, pi ]
+        ed.keep_app = av.display == 1
+    ed.run_view  = av
+    # one pane shows it: another showing it goes to its code
+    for [ op: i32 0, op < editor_slots.count, op += 1 ]
+        eo : Editor pane_at[ op ]
+        if [ op != pi && eo && eo.run_view == av && eo.app_view ]
+            eo.app_view = false
+            eo.pristine = false
+    # a program's window comes back into the pane with it; any
+    # other instance takes the pane from a window
+    wv : u64 window_of[ av ]
+    if [ pane_win ]
+        while [ pane_win.count <= pi ]
+            pane_win.push[ u64[ 0 ] ]
+        pane_win[ pi ] = wv
+    if [ wv != 0 ] wlc_window_focus[ wv ]
+    session_dirty = true
+    # an instance in pip stays in pip when it is selected
+    ed.app_view  = av.display == 1 || av.viewer
+    ed.pristine  = false
+    ed.no_scroll = true
+    active_pane  = pi
+    land_paused[ av ]
+    if [ ux ] ux.restyle = true
+
+func orbiter.active_debugger [] -> dbg
+    if [ !debuggers ] return null
+    d : dbg debuggers[ active_target ]
+    return (d && d.active) ? d : null
+
+# a module's app in a pane: its instance; new_tab, a new one
+func orbiter.show_app [ ed: Editor, src: path, fresh: bool ]
+    if [ !ed || !src ] return
+    # the registry decides: the one running, else a new one
+    av_ : AppView inst_reg[].want[ src, null, '', fresh ]
+    if [ insts.made ]
+        fa : string file_args[ src ]
+        av_.module_args = (fa && fa.count > 0) ? fa : module_args
+        inst_made[ av_ ]
+    embed_app[ ed, av_ ]
+
+# an instance shown in the pane, embedded and running
+func orbiter.embed_app [ ed: Editor, av: AppView ]
+    av.display = 1
+    av.pip     = false
+    av.held    = false
+    tell_display[ av ]
+    if [ av.ended && !av.failed[] ] av.restart[ false ]
+    ed.wait_app = true
+    show_instance[ av.iid, ed.pane_index ]
+
+func orbiter.couple_app [ mod: string, shot: string ]
+    if [ !mod || mod.count == 0 ] return
+    r_   : path.path_startup[]
+    src_ : path '{r_}/{mod}/{mod}.ag'
+    if [ !src_.exists[] ]
+        log 'couple: no source for {mod} at {src_}'
+        return
+    pi : i32 [ (active_pane >= 0) ? active_pane : 0 ]
+    open_in_pane[ src_, pi ]
+    home_mod = mod
+    if [ shot && shot.count > 0 ]
+        setenv[ 'SILVER_SWITCH_SHOT', shot, 1 ]
+    pending_held     = pi
+    pending_held_src = src_
+    if [ ux ]
+        ux.set_shown[ true ]
+        ux.restyle = true
+
+# the window's pane: the one whose app started it (its process is
+# one of the window's ancestors), else the active pane
+func orbiter.place_window [ wn: u64 ]
+    host_mapped[ wn ]
+    # already in a pane (it asks to come forward): that pane
+    if [ pane_win ]
+        for [ i: i32 0, i < pane_win.count, i += 1 ]
+            if [ pane_win[ i ] == wn ]
+                raise_pane[ i ]
+                wlc_window_focus[ wn ]
+                return
+    # a dialog is a sheet over its window's pane, not the pane's
+    over : u64 wlc_window_parent[ wn ]
+    if [ over != 0 ]
+        for [ i: i32 0, i < pane_win.count, i += 1 ]
+            # over the pane's window, or over its sheet (a confirm
+            # a dialog asks): that sheet comes back as it closes
+            on_sheet : bool [ i < pane_sheet.count
+                              && pane_sheet[ i ] == over ]
+            if [ pane_win[ i ] != over && !on_sheet ] continue
+            while [ pane_sheet.count <= i ]
+                pane_sheet.push[ u64[ 0 ] ]
+            if [ on_sheet ]
+                if [ !sheet_back ] sheet_back = map i64 [string] []
+                sheet_back[ '{wn}' ] = i64[ over ]
+            pane_sheet[ i ] = wn
+            wlc_window_focus[ wn ]
+            log 'orbiter: window {wn} a sheet over {over}'
+            return
+    p : i32 wlc_window_pid[ wn ]
+    pane : i32 [ -1 ]
+    steps : i32 [ 0 ]
+    while [ p > 1 && pane < 0 && steps < 64 ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ed : Editor pane_at[ i ]
+            rv : AppView (ed) ? ed.run_view : null
+            if [ rv && rv.slot >= 0 && host_app_pid[ rv.slot ] == p ]
+                pane = i
+                # the instance knows its window: its card shows it
+                rv.wl_window = wn
+        p = parent_pid[ p ]
+        steps += 1
+    # a background program's (a tray app's): a floating pane
+    bg : AppView background_of[ wn ]
+    if [ pane < 0 && bg && editor_slots.count < 4 && !mobile_on[] ]
+        bg.wl_window = wn
+        mini_forget[ bg.iid ]
+        pane = window_pane[]
+        while [ pane_win.count <= pane ] pane_win.push[ u64[ 0 ] ]
+        pane_win[ pane ] = wn
+        if [ !pane_spawn ] pane_spawn = vec u64 []
+        while [ pane_spawn.count <= pane ] pane_spawn.push[ u64[ 0 ] ]
+        pane_spawn[ pane ] = wn
+        placed_win.push[ wn ]
+        placed_pane.push[ pane ]
+        wlc_window_focus[ wn ]
+        log 'orbiter: window {wn} of a background program, floating'
+        return
+    if [ pane < 0 ]
+        pane = active_pane
+        # a program that left its starter (VS Code detaches): the
+        # pane's program still waiting for a window is its own
+        fe : Editor pane_at[ pane ]
+        fv : AppView (fe) ? fe.run_view : null
+        if [ fv && fv.wl_window == 0 && program_of[ fv ].count > 0 ]
+            fv.wl_window = wn
+    if [ pane < 0 ] pane = 0
+    # another window of the process its pane already shows (Steam's
+    # friends list beside its main): a floating window of its own
+    spawned : bool [ false ]
+    if [ pane < pane_win.count && pane_win[ pane ] != 0
+         && pane_win[ pane ] != wn
+         && wlc_window_open[ pane_win[ pane ] ] != 0
+         && wlc_window_pid[ pane_win[ pane ] ] == wlc_window_pid[ wn ]
+         && editor_slots.count < 4 && !mobile_on[] ]
+        pane    = window_pane[]
+        spawned = true
+    while [ pane_win.count <= pane ]
+        pane_win.push[ u64[ 0 ] ]
+    pane_win[ pane ] = wn
+    if [ !pane_spawn ] pane_spawn = vec u64 []
+    while [ pane_spawn.count <= pane ]
+        pane_spawn.push[ u64[ 0 ] ]
+    pane_spawn[ pane ] = (spawned) ? wn : u64[ 0 ]
+    placed_win.push[ wn ]
+    placed_pane.push[ pane ]
+    wlc_window_focus[ wn ]
+    nm : string[ wlc_window_title[ wn ] ]
+    log 'orbiter: window {wn} ({nm}) in pane {pane}'
+
+# a floating pane for a program's next window, in the middle of
+# the area, each later one a step down and right
+func orbiter.window_pane [] -> i32
+    n : i32 [ (free_order) ? free_order.count : 0 ]
+    pane_add[]
+    pending_finder = -1
+    pi : i32 [ editor_slots.count - 1 ]
+    if [ !pane_free ] pane_free = vec f32 []
+    if [ !pane_shown ] pane_shown = vec f32 []
+    if [ !free_order ] free_order = vec i32 []
+    while [ pane_free.count < (pi + 1) * 4 ] pane_free.push[ 0.0 ]
+    while [ pane_shown.count < (pi + 1) * 4 ] pane_shown.push[ 0.0 ]
+    aw : f32 [ (ux && ux.root && ux.root.bounds) ? ux.root.bounds.w
+               : 1280.0 ]
+    ah : f32 [ (ux && ux.root && ux.root.bounds) ? ux.root.bounds.h
+               : 800.0 ]
+    w : f32 [ round[ aw * 0.42 ] ]
+    h : f32 [ round[ ah * 0.62 ] ]
+    k : i32 [ pi * 4 ]
+    pane_free[ k ]     = round[ (aw - w) * 0.5 ] + 36.0 * n
+    pane_free[ k + 1 ] = round[ ah * 0.1 ] + 36.0 * n
+    pane_free[ k + 2 ] = w
+    pane_free[ k + 3 ] = h
+    for [ r: i32 0, r < 4, r += 1 ]
+        pane_shown[ k + r ] = pane_free[ k + r ]
+    free_order.push[ pi ]
+    force_update[]
+    return pi
+
+# the last window still open that was placed in pane pi before
+# gone; its instance shows it again
+func orbiter.window_under [ pi: i32, gone: u64 ] -> u64
+    back : u64 [ 0 ]
+    for [ i: i32 i32[ placed_win.count ] - 1, i >= 0, i -= 1 ]
+        if [ placed_pane[ i ] != pi ] continue
+        w : u64 placed_win[ i ]
+        if [ w != gone && wlc_window_open[ w ] != 0 ]
+            back = w
+            break
+    for [ av: AppView ] in instances
+        if [ av.wl_window == gone ]
+            av.wl_window = (back != 0) ? back : window_left[ av ]
+    if [ back != 0 ] wlc_window_focus[ back ]
+    return back
+
+# a window still open that an instance's program made (Steam's main
+# window, its sign-in gone); one shown in a pane first
+func orbiter.window_left [ av: AppView ] -> u64
+    if [ !av || av.slot < 0 ] return u64[ 0 ]
+    first : u64 [ 0 ]
+    n : i32 wlc_window_count[]
+    for [ i: i32 0, i < n, i += 1 ]
+        w : u64 wlc_window_at[ i ]
+        if [ !made_by[ w, host_app_pid[ av.slot ] ] ] continue
+        if [ pane_win ]
+            for [ q: i32 0, q < pane_win.count, q += 1 ]
+                if [ pane_win[ q ] == w ] return w
+        if [ first == 0 ] first = w
+    return first
+
+# a process's parent, from /proc/<pid>/stat: after its ') '
+func orbiter.parent_pid [ pid: i32 ] -> i32
+    f : '/proc/{pid}/stat'
+    fh : handle fopen[ f.chars, 'r' ]
+    if [ !fh ] return 0
+    b : local i8 [ 512 ]
+    line : ''
+    if [ fgets[ @b[0], 512, fh ] ] line = string [ @b[0] ]
+    fclose[ fh ]
+    at : i32 [ line.rindex_of[ ') ' ] ]
+    if [ at < 0 ] return 0
+    rest : line.mid[ at + 2, line.count - at - 2 ]
+    words : vec string rest.split[ ' ' ]
+    if [ words.count < 2 ] return 0
+    return i32[ words[ 1 ].integer_value[] ]
+
+func orbiter.views_of_agi [ e: path, asc: vec string, bin: vec string,
+                    anyv: vec string ]
+    ax : e.ext[]
+    if [ !ax || !(ax == 'agi') ] return
+    mod   : string e.stem[]
+    ftext : string e.load[ typeid[string], null ]
+    if [ !ftext ] return
+    n2  : i32 [ ftext.count ]
+    ls : i32 [ 0 ]
+    for [ i: i32 0, i <= n2, i += 1 ]
+        c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
+        if [ c != 10 ] continue
+        line : string ftext.mid[ ls, i - ls ]
+        ls = i + 1
+        if [ line.index_of[ 'views:' ] == 0 ]
+            views_line[ line, mod, asc, bin, anyv ]
+
+func orbiter.views_line [ vl: string, mod: string, asc: vec string,
+                  bin: vec string, anyv: vec string ]
+    ln : i32 [ vl.count ]
+    j   : i32 [ 0 ]
+    while [ j < ln ]
+        cq : i32 [ (i32 vl.chars[j]) & 255 ]
+        if [ cq != 39 ]
+            j += 1
+            continue
+        k : i32 [ j + 1 ]
+        while [ k < ln && ((i32 vl.chars[k]) & 255) != 39 ] k += 1
+        nm : string vl.mid[ j + 1, k - j - 1 ]
+        j = k + 1
+        # optional ': member' up to the , or ] delimiter
+        mem_ : string ''
+        while [ j < ln ]
+            cm : i32 [ (i32 vl.chars[j]) & 255 ]
+            if [ cm == 44 || cm == 93 || cm == 39 ] break
+            if [ (cm >= 97 && cm <= 122) || (cm >= 65 && cm <= 90) ]
+                ks : i32 [ j ]
+                j = alpha_end[ vl, j ]
+                mem_ = vl.mid[ ks, j - ks ]
+                continue
+            j += 1
+        if [ nm.count > 0 ]
+            if [ mem_ == 'ascii' ]       asc.push[ nm ]
+            el [ mem_ == 'binary' ]      bin.push[ nm ]
+            el                           anyv.push[ nm ]
+            view_mods[ nm ] = mod
+
+# the views a pane's file can be shown in: its editor first, then
+# the rail views its kind admits (the consoles among them); no file
+# is dir context, so the consoles alone
+func orbiter.views_for [ ed: Editor ] -> vec string
+    ensure_views[]
+    if [ !ed || !ed.src ] return vec string []
+    if [ ed.file_is_binary[ ed.src ] ] return view_tools_bin
+    # editing is no view: it is what shows while none is on
+    out : vec string []
+    for [ s: string ] in view_tools
+        out.push[ s ]
+    return out
+
+# the panes' split: the layout's top, free windows over it
+func orbiter.panes_el [] -> element
+    mn  : element (elements) ? elements[ 'main' ] : null
+    lf  : element (mn && mn.elements) ? mn.elements[ 'left' ] : null
+    st  : element (lf && lf.elements) ? lf.elements[
+        'stack' ] : null
+    return (st && st.elements) ? st.elements[ 'panes' ] : null
+
+# extent < 0 means the user dragged this pane shut
+func orbiter.take_closed [ id: string ] -> bool
+    e : element find_el[ a, id ]
+    if [ !e || e.extent >= 0.0 ] return false
+    e.extent = 0.0
+    return true
+
+func orbiter.close_pane [ pi: i32 ]
+    if [ agent_open && pi == editor_slots.count ]
+        agent_open = false
+        ae : element find_el[ a, 'pane{pi}' ]
+        if [ ae ]
+            ae.extent       = 0.0
+            ae.extent_shown = 0.0
+        if [ active_pane >= editor_slots.count ]
+            active_pane = editor_slots.count - 1
+        save_session[]
+        return
+    if [ pi < 0 || pi >= editor_slots.count ] return
+    # a half of a split, judged before a group's member leaves (its
+    # leaving shows it beside the one taking its place)
+    half : bool [ grp_of[ pi ] < 0 && split_half[ pi ] ]
+    # a group's member: another takes its place first, and is the
+    # window then active (a hidden tab never is)
+    taker : i32 [ -1 ]
+    g0 : i32 grp_of[ pi ]
+    if [ g0 >= 0 ]
+        mates : vec i32 grp_members[ g0 ]
+        grp_leave[ pi, false ]
+        for [ m: i32 ] in mates
+            if [ m != pi && taker < 0 && !pane_hidden[ m ] ] taker = m
+    pe : Editor pane_at[ pi ]
+    if [ pe && pe.rview ]
+        pe.rview.release*[]
+        pe.rview = null
+    # a view closes with its tab
+    if [ pe ] pe.view_name = ''
+    # the last tab closes to an empty one, the nav list shut; so
+    # does a half of a split made by a drag (its desktop back,
+    # the other half kept where it is)
+    if [ editor_slots.count == 1 || half ]
+        # its instances leave the panel with it; they keep running
+        if [ pe && pe.run_view && pe.run_view.viewer ]
+            pe.close_app[]
+        if [ pe ]
+            pe.run_view = null
+            pe.app_view = false
+        # a terminal shown here goes too; its session runs on
+        if [ pi < pane_console.count ] pane_console[ pi ] = ''
+        pane_drop_file[ pi ]
+        # the text goes now, not on the pane's next load
+        if [ pe ]
+            pe.load_file[]
+            pe.pristine = false
+        active_pane = pi
+        return
+    free_drop[ pi ]
+    pane_lists_drop[ pi ]
+    if [ pane_hid && pi < pane_hid.count ] pane_hid.remove[ pi ]
+    if [ pane_grp && pi < pane_grp.count ] pane_grp.remove[ pi ]
+    # the layout keeps the rest, renumbered
+    lt : PaneNode tree[]
+    lt.drop_leaf[ pi ]
+    lt.renumber[ pi ]
+    tree_set[ lt ]
+    editor_slots.remove[ pi ]
+    relay_drop[ pi ]
+    if [ pi < pane_console.count ] pane_console.remove[ pi ]
+    # ids re-key by index next frame: extents follow their content
+    for [ qj: i32 pi + 1, qj <= editor_slots.count, qj += 1 ]
+        src_ : element find_el[ a, 'pane{qj}' ]
+        dst_ : element find_el[ a, 'pane{qj - 1}' ]
+        if [ src_ && dst_ ]
+            dst_.extent       = src_.extent
+            dst_.extent_shown = src_.extent_shown
+    if [ taker >= 0 ]
+        active_pane = (taker > pi) ? taker - 1 : taker
+    el [ active_pane > pi ]
+        active_pane -= 1
+    if [ active_pane >= editor_slots.count ]
+        active_pane = editor_slots.count - 1
+    save_session[]
+
+# the peer module that owns a view, or null when we host it
+# ourselves
+func orbiter.view_module [ nm: string ] -> string
+    if [ !nm || nm.count == 0 ] return null
+    ensure_views[]
+    m_ : string (view_mods) ? view_mods[ nm ] : null
+    if [ !m_ ] return null
+    if [ m_ == 'orbiter' ] return null
+    return m_
+
+# a free window's edges and corners, a ring just outside it (its
+# inside is its own): 1 right, 2 bottom, 4 left, 8 top
+func orbiter.grips_of [ t: Elements, i: i32, x: f32, y: f32, w: f32,
+                h: f32 ]
+    m : f32 [ 8.0 ]
+    for [ sd: i32 ] in grip_sides[]
+        gx : f32 [ ((sd & 4) != 0) ? x - m
+            : (((sd & 1) != 0) ? x + w : x) ]
+        gy : f32 [ ((sd & 8) != 0) ? y - m
+            : (((sd & 2) != 0) ? y + h : y) ]
+        gw : f32 [ ((sd & 5) != 0) ? m : w ]
+        gh : f32 [ ((sd & 10) != 0) ? m : h ]
+        t['grip{i}_{sd}'] = FreeGrip [ pane: i, side: sd,
+            topmost: true,
+            area: Region [ 'l{gx}px t{gy}px w{gw}px h{gh}px' ] ]
+
+# the edges, then the corners (over them)
+func orbiter.grip_sides [] -> vec i32
+    return vec i32 [] [ 1, 2, 4, 8, 3, 6, 9, 12 ]
+
+# the layout, each pane in it once: a pane gone left out, a new
+# one put at the top row's end
+func orbiter.tree [] -> PaneNode
+    n : i32 [ i32[ editor_slots.count ] ]
+    t : PaneNode [ (pane_tree && pane_tree.count > 0)
+        ? tree_read[ pane_tree, TreeAt [] ] : null ]
+    if [ !t || t.pane >= 0 ] return tree_row[ seq_flat[] ]
+    have : vec i32 []
+    t.leaves[ have ]
+    for [ q: i32 ] in have
+        if [ q >= n ] t.drop_leaf[ q ]
+    for [ q: i32 0, q < n, q += 1 ]
+        if [ have.index_of[ q ] >= 0 ] continue
+        if [ t.down ]
+            t = PaneNode [ kids: vec PaneNode [] [ t ] ]
+        t.kids.push[ PaneNode [ pane: q ] ]
+    t.tidy[]
+    return t
+
+# a split, or the handle over one of its seams: a press there is
+# the resize alone
+func orbiter.seam_of [ t: element ] -> bool
+    if [ !t ] return false
+    if [ t inherits Splitter ] return true
+    return t.parent && t.parent inherits Splitter && t.id
+        && t.id.starts_with[ 'dv' ]
+
+# the pane showing an instance (its window, or its app), -1 none
+# a running viewer of the file p (or of its folder, a disc's)
+# that no pane shows: a pane's new editor takes it, not a new one
+func orbiter.viewer_unshown [ p: path ] -> AppView
+    if [ !instances || !p ] return null
+    ps : string '{p.absolute[]}'
+    pd : string '{p.parent_dir[].absolute[]}'
+    for [ av: AppView ] in instances
+        if [ !av.viewer || av.ended || !av.doc ] continue
+        ds : string '{av.doc.absolute[]}'
+        if [ ds.compare[ ps ] != 0 && ds.compare[ pd ] != 0 ]
+            continue
+        if [ pane_showing[ av ] < 0 ] return av
+    return null
+
+# the screen as drawn so far this frame, copied once a frame
+func orbiter.view_snap_take [ w: Window ] -> bool
+    if [ snap_frame == frames_ever ] return view_snap != null
+    snap_frame = frames_ever
+    sc : Canvas w.screen
+    if [ !sc || !sc.color ] return false
+    tx : Texture sc.color
+    if [ !view_snap ]
+        view_snap = Texture [ vk: w.vk, w: w, width: tx.width,
+            height: tx.height, vk_format: tx.vk_format ]
+    el [ view_snap.width != tx.width
+         || view_snap.height != tx.height ]
+        view_snap.resize[ tx.width, tx.height ]
+    sc.sync_fence[]
+    w.vk.copy_image[ tx, view_snap ]
+    return true
+
+# a pane's view in small, cut from the screen as drawn (it is
+# under the task bar) every 10th frame; a hidden pane, its last
+func orbiter.view_thumb [ w: Window, pi: i32 ] -> Canvas
+    if [ !view_thumbs ] view_thumbs = map Canvas [string] []
+    k : string 'p{pi}'
+    th : Canvas (view_thumbs.contains[ k ])
+        ? view_thumbs[ k ] : null
+    pv : element pane_view[ pi ]
+    if [ !pv || !pv.bounds || pv.bounds.w < 1.0 || pane_out[ pi ] ]
+        return th
+    if [ th && frames_ever % 10 != 0 ] return th
+    if [ !view_snap_take[ w ] ] return th
+    # wider than its box: drawn there it only shrinks (averaged)
+    tw : i32 [ 640 ]
+    thh : i32 [ max[ 1, i32[ 640.0 * pv.bounds.h / pv.bounds.w ] ] ]
+    if [ !th ]
+        th = Canvas [ vk: w.vk, w: w, width: tw, height: thh ]
+        th.update[]
+        view_thumbs[ k ] = th
+    th.resize[ tw, thh ]
+    th.fresh_state[]
+    th.clear_recorded[ vec4f [ 0.0, 0.0, 0.0, 1.0 ] ]
+    sc : f32 [ (w.scale > 0.0) ? w.scale : 1.0 ]
+    fw : f32 [ f32[ view_snap.width ] ]
+    fh : f32 [ f32[ view_snap.height ] ]
+    x0 : f32 [ pane_left[ pi ] * sc / fw ]
+    y0 : f32 [ pane_top[ pi ] * sc / fh ]
+    th.draw_image_crop[ view_snap,
+        rect [ x: 0.0, y: 0.0, w: f32[ tw ], h: f32[ thh ] ],
+        x0, y0, x0 + pv.bounds.w * sc / fw,
+        y0 + pv.bounds.h * sc / fh ]
+    return th
+
+# the pane comes to the top of the free ones and is selected
+func orbiter.raise_pane [ i: i32 ]
+    if [ i != active_pane ]
+        active_pane = i
+        if [ ux ] ux.restyle = true
+    if [ !pane_floats[ i ] ] return
+    fo : i32 [ free_at[ i ] ]
+    if [ fo >= 0 && fo == free_order.count - 1 ] return
+    if [ fo >= 0 ] free_order.remove[ fo ]
+    free_order.push[ i ]
+    force_update[]
+
+# an app holding its picture's shape: a free window takes that
+# shape, no bars round it (docked, the pane letterboxes it). the
+# height follows the width, or the width the height
+func orbiter.fit_free [ i: i32, by_h: bool ]
+    ed : Editor pane_at[ i ]
+    pv : element pane_view[ i ]
+    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ !rv || !rv.locked || rv.aw <= 0 || rv.ah <= 0 ] return
+    # only while it shows live: paused, its code shows instead
+    if [ rv.ended || rv.held || rv.paused || rv.stopped ] return
+    if [ !ed.bounds || !pv || !pv.bounds ] return
+    k : i32 [ i * 4 ]
+    # its declared shape: a frame's size changes with its area
+    ar : f32 rv.pic_aspect[]
+    if [ ar <= 0.0 ] return
+    # the window's own parts round the picture: its strip
+    ew : f32 [ pv.bounds.w - ed.bounds.w ]
+    eh : f32 [ pv.bounds.h - ed.bounds.h ]
+    # app and console's box: one height, console or none
+    text : element find_el[ pv, 'text' ]
+    box : element (text) ? text.parent : null
+    if [ box && box.bounds ]
+        eh = pv.bounds.h - box.bounds.h
+    # a frame's size wobbles the shape: a 1 px change is not one
+    if [ by_h ]
+        nw : f32 [ round[ (pane_free[ k + 3 ] - eh) * ar + ew ] ]
+        if [ abs[ nw - pane_free[ k + 2 ] ] >= 2.0 ]
+            pane_free[ k + 2 ] = nw
+    el
+        nh : f32 [ round[ (pane_free[ k + 2 ] - ew) / ar + eh ] ]
+        if [ abs[ nh - pane_free[ k + 3 ] ] >= 2.0 ]
+            pane_free[ k + 3 ] = nh
+    # never past the panes' foot: shorter, the width by the shape
+    sp : element pv.parent
+    room : f32 [ (sp && sp.bounds)
+        ? sp.bounds.h - pane_free[ k + 1 ] : 0.0 ]
+    if [ room > eh && pane_free[ k + 3 ] > room ]
+        pane_free[ k + 3 ] = round[ room ]
+        pane_free[ k + 2 ] = round[ (room - eh) * ar + ew ]
+
+# a window of a fixed size (Android's) in pane i
+func orbiter.fixed_win [ i: i32 ] -> bool
+    wn : u64 pane_window[ i ]
+    return wn != 0 && wlc_window_fixed_w[ wn ] > 0
+
+# a free pane round a fixed window takes the window's size, as
+# it cannot be resized
+func orbiter.fit_fixed [ i: i32 ]
+    if [ !fixed_win[ i ] ] return
+    wn : u64 pane_window[ i ]
+    ed : Editor pane_at[ i ]
+    pv : element pane_view[ i ]
+    if [ !ed || !ed.bounds || !pv || !pv.bounds ] return
+    k : i32 [ i * 4 ]
+    pane_free[ k + 2 ] = f32[ wlc_window_fixed_w[ wn ] ]
+        + pv.bounds.w - ed.bounds.w
+    pane_free[ k + 3 ] = f32[ wlc_window_fixed_h[ wn ] ]
+        + pv.bounds.h - ed.bounds.h
+
+# sized by its edges: 1 the right, 2 the bottom, 4 the left, 8
+# the top (the far edge stays)
+func orbiter.size_free [ i: i32, side: i32, dx: f32, dy: f32 ]
+    if [ !pane_floats[ i ] ] return
+    k : i32 [ i * 4 ]
+    if [ (side & 1) != 0 ]
+        pane_free[ k + 2 ] = max[ pane_free[ k + 2 ] + dx, 160.0 ]
+    if [ (side & 2) != 0 ]
+        pane_free[ k + 3 ] = max[ pane_free[ k + 3 ] + dy, 100.0 ]
+    if [ (side & 4) != 0 ]
+        was : f32 [ pane_free[ k + 2 ] ]
+        pane_free[ k + 2 ] = max[ was - dx, 160.0 ]
+        pane_free[ k ] = pane_free[ k ] + was - pane_free[ k + 2 ]
+    if [ (side & 8) != 0 ]
+        was_h : f32 [ pane_free[ k + 3 ] ]
+        pane_free[ k + 3 ] = max[ was_h - dy, 100.0 ]
+        pane_free[ k + 1 ] = max[ pane_free[ k + 1 ] + was_h
+            - pane_free[ k + 3 ], 0.0 ]
+    right : f32 [ pane_free[ k ] + pane_free[ k + 2 ] ]
+    bottom : f32 [ pane_free[ k + 1 ] + pane_free[ k + 3 ] ]
+    fit_free[ i, side == 2 || side == 8 ]
+    # a size the shape changed keeps the far edges
+    if [ (side & 4) != 0 ]
+        pane_free[ k ] = right - pane_free[ k + 2 ]
+    if [ (side & 8) != 0 ]
+        pane_free[ k + 1 ] = bottom - pane_free[ k + 3 ]
+    # only its size: the next frame renders it, no restyle
+    if [ ux ] ux.will_animate = true
+
+# the layout's docked panes into t, a split down (else across)
+# holding it: a split its way, or of one pane in view, put
+# straight in; across it, a split of its own
+func orbiter.tree_els [ n: PaneNode, t: Elements, docked: Elements,
+                key: string, down: bool ]
+    if [ n.pane >= 0 ]
+        pe : element docked[ 'pane{n.pane}' ]
+        if [ pe ] t['pane{n.pane}'] = pe
+        return
+    shown : vec i32 []
+    for [ j: i32 0, j < n.kids.count, j += 1 ]
+        if [ tree_shows[ n.kids[ j ], docked ] ] shown.push[ j ]
+    if [ shown.count == 0 ] return
+    if [ shown.count == 1 || n.down == down ]
+        for [ j: i32 ] in shown
+            tree_els[ n.kids[ j ], t, docked, '{key}_{j}', down ]
+        return
+    sub : Elements []
+    # a group's member takes the group's size (a new element in the
+    # split has none of its own)
+    sz : vec f32 []
+    for [ j: i32 ] in shown
+        tree_els[ n.kids[ j ], sub, docked, '{key}_{j}', n.down ]
+        g : i32 grp_of[ n.kids[ j ].pane ]
+        sz.push[ (g >= 0 && grp_size && g < grp_size.count)
+            ? grp_size[ g ] : 0.0 ]
+    t[ key ] = Splitter [ area: Region { l0 t0 r0 b0 },
+        vertical: n.down, inner: sub, deflt: 0.0, even: true,
+        snap_close: true, near_seam: true, sizes: sz ]
+
+# the pane goes, its app runs on; a free window's place is kept
+# for its return
+# out of view, its state kept: a free one's place, a docked one
+# (maximized) as an empty place
+# out of view, all kept (its editor, its app, its place): the
+# task button shows it again as it was
+func orbiter.minimize [ pi: i32 ]
+    if [ pi < 0 || pi >= editor_slots.count ] return
+    if [ !pane_hid ] pane_hid = vec bool []
+    while [ pane_hid.count < editor_slots.count ] pane_hid.push[ false ]
+    pane_hid[ pi ] = true
+    # where it is, to fade out there over the desktop
+    if [ !pane_rect ] pane_rect = vec f32 []
+    while [ pane_rect.count < editor_slots.count * 4 ]
+        pane_rect.push[ 0.0 ]
+    pv : element find_el[ a, 'pane{pi}' ]
+    if [ pv && pv.bounds ]
+        mr : rect split_rect[ pv ]
+        pane_rect[ pi * 4 ]     = mr.x
+        pane_rect[ pi * 4 + 1 ] = mr.y
+        pane_rect[ pi * 4 + 2 ] = mr.w
+        pane_rect[ pi * 4 + 3 ] = mr.h
+    if [ active_pane == pi ]
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ !pane_hidden[ q ] ]
+                active_pane = q
+                break
+    force_update[]
+
+# a pane out of view at once (no fade): a group's other member
+func orbiter.hide_now [ pi: i32 ]
+    minimize[ pi ]
+    if [ !pane_fade ] pane_fade = vec f32 []
+    while [ pane_fade.count < editor_slots.count ]
+        pane_fade.push[ 0.0 ]
+    pane_fade[ pi ] = 1.0
+
+func orbiter.show_now [ pi: i32 ]
+    if [ pane_hid && pi < pane_hid.count ] pane_hid[ pi ] = false
+    if [ pane_fade && pi < pane_fade.count ] pane_fade[ pi ] = 0.0
+
+# nw in old's place: its free rectangle, or its place docked
+func orbiter.take_place [ nw: i32, old: i32 ]
+    n : i32 [ i32[ editor_slots.count ] ]
+    if [ !pane_free ] pane_free = vec f32 []
+    while [ pane_free.count < n * 4 ] pane_free.push[ 0.0 ]
+    if [ !pane_shown ] pane_shown = vec f32 []
+    while [ pane_shown.count < n * 4 ] pane_shown.push[ 0.0 ]
+    if [ !free_order ] free_order = vec i32 []
+    fb : i32 free_at[ nw ]
+    if [ fb >= 0 ] free_order.remove[ fb ]
+    if [ pane_floats[ old ] ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            pane_free[ nw * 4 + r ]  = pane_free[ old * 4 + r ]
+            pane_shown[ nw * 4 + r ] = pane_shown[ old * 4 + r ]
+        fa : i32 free_at[ old ]
+        if [ fa >= 0 ] free_order[ fa ] = nw
+        el free_order.push[ nw ]
+        return
+    # docked: nw docked, where old is in the order, at its size
+    pane_free[ nw * 4 + 2 ] = 0.0
+    g : i32 grp_of[ old ]
+    ov : element pane_view[ old ]
+    if [ g >= 0 && ov && ov.extent > 0.0 ]
+        if [ !grp_size ] grp_size = vec f32 []
+        while [ grp_size.count <= g ] grp_size.push[ 0.0 ]
+        grp_size[ g ] = ov.extent
+    sq : vec i32 pane_order[]
+    ia : i32 [ i32[ sq.index_of[ old ] ] ]
+    ib : i32 [ i32[ sq.index_of[ nw ] ] ]
+    if [ ia < 0 || ib < 0 ] return
+    sw : vec i32 []
+    for [ k: i32 0, k < sq.count, k += 1 ]
+        sw.push[ (k == ia) ? nw : ((k == ib) ? old : sq[ k ]) ]
+    seq_set[ sw ]
+
+# another pane docked and in view, the desktop's too (a split
+# needs two)
+func orbiter.docked_beside [ pi: i32 ] -> bool
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ q != pi && !pane_floats[ q ] && !pane_out[ q ] ]
+            return true
+    return false
+
+# the window let go on an empty docked pane: docked, the two
+# trade places; free, in its place, the empty one closed
+func orbiter.take_empty [ pi: i32, hit: i32 ]
+    t : PaneNode tree[]
+    if [ !pane_floats[ pi ] && !pane_out[ pi ] ]
+        if [ grp_of[ pi ] >= 0 ] grp_leave[ pi, false ]
+        t.swap_leaf[ hit, 1000 ]
+        t.swap_leaf[ pi, hit ]
+        t.swap_leaf[ 1000, pi ]
+        tree_set[ t ]
+        dock_settle[ pi, 0 ]
+        return
+    dock_in[ pi ]
+    t.drop_leaf[ pi ]
+    t.swap_leaf[ hit, pi ]
+    tree_set[ t ]
+    close_pane[ hit ]
+    dock_settle[ (hit < pi) ? pi - 1 : pi, 0 ]
+
+# back in view as it was, and selected
+func orbiter.unhide [ pi: i32 ]
+    if [ !pane_hidden[ pi ] ] return
+    # a group's member comes back in the group's place
+    if [ grp_of[ pi ] >= 0 ]
+        grp_show[ pi ]
+        return
+    pane_hid[ pi ] = false
+    raise_pane[ pi ]
+    force_update[]
+
+func orbiter.minimized_iid [ iid: i32 ] -> bool
+    if [ !mini_iids ] return false
+    for [ k: i32 0, k < mini_iids.count, k += 1 ]
+        if [ mini_iids[ k ] == iid ] return true
+    return false
+
+func orbiter.mini_forget [ iid: i32 ]
+    if [ !mini_iids ] mini_iids = vec i32 []
+    if [ !mini_rect ] mini_rect = vec f32 []
+    for [ j: i32 0, j < mini_iids.count, j += 1 ]
+        if [ mini_iids[ j ] == iid ]
+            mini_iids.remove[ j ]
+            for [ r: i32 0, r < 4, r += 1 ]
+                mini_rect.remove[ j * 4 ]
+            return
+
+# a minimized window comes back as it was: free where it was, or
+# docked (the emptied last pane, else a docked pane of its own);
+# false when it was not one
+func orbiter.mini_restore [ iid: i32 ] -> bool
+    if [ !mini_iids ] return false
+    j : i32 [ -1 ]
+    for [ k: i32 0, k < mini_iids.count, k += 1 ]
+        if [ mini_iids[ k ] == iid ] j = k
+    if [ j < 0 ] return false
+    x : f32 mini_rect[ j * 4 ]
+    y : f32 mini_rect[ j * 4 + 1 ]
+    w : f32 mini_rect[ j * 4 + 2 ]
+    h : f32 mini_rect[ j * 4 + 3 ]
+    mini_forget[ iid ]
+    av : AppView instance_by[ iid ]
+    if [ !av || av.ended || editor_slots.count >= 4 ] return false
+    # shown in a pane since: it stays as it is
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ pane_instance[ q ] == av ] return false
+    # docked: the last pane, emptied when it went, takes it back
+    lone : bool [ w <= 0.0 && editor_slots.count == 1
+        && !pane_instance[ 0 ] && pane_window[ 0 ] == 0 ]
+    if [ !lone ]
+        pane_add[]
+        pending_finder = -1
+    pi : i32 [ editor_slots.count - 1 ]
+    if [ !pane_free ] pane_free = vec f32 []
+    if [ !pane_shown ] pane_shown = vec f32 []
+    if [ !free_order ] free_order = vec i32 []
+    while [ pane_free.count < (pi + 1) * 4 ] pane_free.push[ 0.0 ]
+    while [ pane_shown.count < (pi + 1) * 4 ] pane_shown.push[ 0.0 ]
+    k : i32 [ pi * 4 ]
+    if [ w <= 0.0 ]
+        for [ r: i32 0, r < 4, r += 1 ]
+            pane_free[ k + r ] = 0.0
+        mini_wait = iid
+        mini_pane = pi
+        force_update[]
+        return true
+    pane_free[ k ]      = x
+    pane_free[ k + 1 ]  = y
+    pane_free[ k + 2 ]  = w
+    pane_free[ k + 3 ]  = h
+    pane_shown[ k ]     = x
+    pane_shown[ k + 1 ] = y
+    pane_shown[ k + 2 ] = w
+    pane_shown[ k + 3 ] = h
+    free_order.push[ pi ]
+    mini_wait = iid
+    mini_pane = pi
+    force_update[]
+    return true
+
+# the restored one into its pane: a program's window as it is; an
+# app shown in the pane's editor, its file opened first if none
+func orbiter.mini_show []
+    av : AppView instance_by[ mini_wait ]
+    pi : i32 [ mini_pane ]
+    mini_wait = -1
+    if [ !av || pi < 0 || pi >= editor_slots.count ] return
+    active_pane = pi
+    wv : u64 window_of[ av ]
+    if [ wv != 0 ]
+        if [ !pane_win ] pane_win = vec u64 []
+        while [ pane_win.count <= pi ] pane_win.push[ u64[ 0 ] ]
+        pane_win[ pi ] = wv
+        wlc_window_focus[ wv ]
+    el [ pane_at[ pi ] ]
+        show_instance[ av.iid, pi ]
+    el [ av.src ]
+        open_in_pane[ av.src, pi ]
+        pending_show      = av.iid
+        pending_show_pane = pi
+    session_dirty = true
+    if [ ux ] ux.restyle = true
+
+# a window out of view, its program running: a free one minimized
+# (its place kept), a docked one off its pane
+func orbiter.hide_window [ w: u64 ]
+    if [ !pane_win ] return
+    for [ q: i32 0, q < pane_win.count, q += 1 ]
+        if [ pane_win[ q ] != w ] continue
+        if [ pane_floats[ q ] ]
+            minimize[ q ]
+        el
+            pane_win[ q ] = u64[ 0 ]
+        if [ ux ] ux.restyle = true
+        return
+
+# a group's other members beside the shown one's name, each its
+# own app name, in one order whichever is shown (those before it
+# left of its name, the rest right): a press shows it, a drag
+# takes it out
+func orbiter.group_tabs [ t: Elements, pre: string, mp: i32, x0: f32,
+                  uu: f32, before: bool ] -> f32
+    x : f32 x0
+    g : i32 grp_of[ mp ]
+    if [ g < 0 ] return x
+    for [ q: i32 ] in grp_members[ g ]
+        if [ q == mp || (q < mp) != before ] continue
+        gl : string pane_label[ q ]
+        gw : f32 [ min[ (f32[ gl.count ] * 9.5 + 22.0) * uu,
+                        360.0 * uu ] ]
+        t['{pre}gtab_{q}'] = MenuTop [ label: gl, at: -3,
+            pane: q, member: q, tab_on: true, other: true,
+            area: Region [ 'l{x}px t0 w{gw}px b0' ] ]
+        x += gw
+    return x
+
+# a close box let go over: its id says what it closes
+func orbiter.close_box [ box: element ]
+    id : string box.id
+    if [ id.starts_with[ 'pmin_' ] ]
+        mp : i32 [ id.mid[ 5, id.count - 5 ].integer_value[] ]
+        if [ mp >= 0 && mp < editor_slots.count ] minimize[ mp ]
+    el [ id.starts_with[ 'pclose_' ] ]
+        cp : i32 [ id.mid[ 7, id.count - 7 ].integer_value[] ]
+        # a dialog up in it (the navigator, an app's file pick)
+        # closes first; the app keeps running
+        pick_here : bool [ (nav_showing || find_showing)
+            && picking[] && pick_editor
+            && pick_editor.pane_index == cp ]
+        if [ pane_browsing[ cp ] || pick_here ]
+            exit_find_mode[]
+        # its running instance ends with it, not hidden
+        el [ cp >= 0 && cp < editor_slots.count ]
+            # a window gives its pane back once it has closed
+            owned : bool [ pane_window[ cp ] != 0 ]
+            quit_app_in[ cp ]
+            if [ !owned ] close_pane[ cp ]
+    # a window's: the program is asked, as its own X would
+    el [ id == 'win_close' ]
+        pw : i32 [ active_pane ]
+        for [ e: element* box, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                wv : EditorView e
+                pw = wv.pane_index
+                break
+        # a dialog up over it closes first
+        sw : u64 pane_sheet_of[ pw ]
+        if [ sw == 0 ] sw = pane_window[ pw ]
+        if [ sw != 0 ] close_window[ sw ]
+    el [ id == 'view_close' ]
+        edc : Editor pane_of[ box ]
+        if [ !edc ] edc = pane_at[ active_pane ]
+        if [ edc ]
+            if [ edc.view_name == 'git' ] edc.git_on = false
+            set_pane_view[ edc, '' ]
+            force_update[]
+    el [ id == 'tab_close' ]
+        edu : Editor pane_of[ box ]
+        if [ edu ] close_pane[ edu.pane_index ]
+    el [ id == 'panel_close' ]
+        edx : Editor pane_of[ box ]
+        if [ edx ] edx.diff_commit = null
+        if [ edx && edx.run_view ]
+            edx.toggle_app_run[ false ]
+        el
+            set_pane_view[ edx, '' ]
+    el [ id == 'newfile_cancel' ]
+        for [ e: element* box, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                nv : EditorView e
+                nv.newfile_exit[]
+                break
+    el [ id == 'finder_close' ]
+        if [ nav_app ] nav_app_hide[]
+        # a pane's navigator app steps aside (it keeps running)
+        el [ nav_driven[] ]
+            ed : Editor pane_at[ active_pane ]
+            if [ ed ]
+                ed.app_view = false
+                ed.pristine = false
+        el exit_find_mode[]
+        force_update[]
+    el [ id == 'sys_close' ]
+        drawer_shut[]
+    if [ ux ] ux.restyle = true
+
+# the program whose window a pane shows
+func orbiter.window_program [ pi: i32 ] -> string
+    wid : u64 [ pane_window[ pi ] ]
+    if [ wid == 0 ] return ''
+    for [ av: AppView ] in instances
+        if [ av.wl_window == wid ]
+            pn : string program_of[ av ]
+            if [ pn.count > 0 ] return pn
+    # no instance known for it: the window's own app id
+    ai : cstr wlc_window_app[ wid ]
+    return (ai) ? string [ ai ] : ''
+
+# the pane's close, always, ending at xr (the pane's right end);
+# the x where it starts
+func orbiter.pane_close_el [ t: Elements, pi: i32, xr: f32 ] -> f32
+    # the load button's width
+    cw : f32 [ 1.33 * unit_px[] ]
+    # a phone: no close or minimize; its switcher ends an app
+    if [ use_mobile ] return xr
+    # square slots: the box's right gap equals its top gap; the
+    # close at the end, minimize beside it (the app runs on)
+    bh : f32 [ bar_units[] * unit_px[] ]
+    t['pclose_{pi}'] = PaneBox [
+        area: Region [ 'l{xr - bh}px t0 w{bh}px b0' ] ]
+    t['pmin_{pi}'] = PaneBox [ mini: true,
+        area: Region [ 'l{xr - 2.0 * bh}px t0 w{bh}px b0' ] ]
+    xc : f32 [ 2.0 * bh ]
+    # the app's panel: its toggle beside the close, lit open (the
+    # app keeps it open until it is pressed again)
+    ed : Editor pane_at[ pi ]
+    av : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ !av || av.ended || !av.has_panel ] return xr - xc
+    t['ppanel_{pi}'] = bar_icon[ 'panel', 0.575, av.panel_on,
+        false, xr - xc - cw, cw ]
+    return xr - xc - cw
+
+# the app's outline: its toggle at x, lit open (the title after
+# it); the x after
+func orbiter.pane_outline_el [ t: Elements, pi: i32, x: f32,
+                       pre: string ] -> f32
+    ed : Editor pane_at[ pi ]
+    av : AppView (ed && ed.app_view) ? ed.run_view : null
+    if [ !av || av.ended || !av.has_outline ] return x
+    cw : f32 [ 1.33 * unit_px[] ]
+    t['{pre}poutline_{pi}'] = bar_icon[ 'outline', 0.575,
+        av.outline_on, false, x, cw ]
+    return x + cw
+
+# a window asked to close as its own X would; ended 3 s on if it
+# has not gone (a second ask restarts nothing)
+func orbiter.close_window [ wv: u64 ]
+    wlc_window_close[ wv ]
+    if [ !close_ids ]
+        close_ids = vec u64 []
+        close_at  = vec i64 []
+    for [ i: i32 0, i < close_ids.count, i += 1 ]
+        if [ close_ids[ i ] == wv ] return
+    close_ids.push[ wv ]
+    close_at.push[ epoch_millis[] ]
+
+# each frame: a window gone is forgotten, one past its 3 s ended
+func orbiter.close_check []
+    if [ !close_ids || close_ids.count == 0 ] return
+    now : i64 [ epoch_millis[] ]
+    ids : vec u64 []
+    ats : vec i64 []
+    for [ i: i32 0, i < close_ids.count, i += 1 ]
+        wv : u64 [ close_ids[ i ] ]
+        if [ wlc_window_open[ wv ] == 0 ] continue
+        if [ now - close_at[ i ] >= 3000 ]
+            log 'orbiter: window {wv} did not close; ending it'
+            wlc_window_kill[ wv ]
+            continue
+        ids.push[ wv ]
+        ats.push[ close_at[ i ] ]
+    close_ids = ids
+    close_at  = ats
+
+# the language service, each second: the open files it keeps, then
+# what it hands back applied to the panes' editors (maps, a handler's
+# colouring), a failed build's first error jumped to, and a file with
+# no colouring yet given its section from another module's map
+func orbiter.syntax_tick []
+    if [ !syntax ]
+        syntax = SyntaxService [ root: path.path_startup[] ]
+    files   : vec path []
+    handled : map string [ string ] []
+    if [ open_files ]
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            slot : i32 [ editor_slots[ i ] ]
+            if [ slot < 0 || slot >= open_files.count ] continue
+            f : path open_files[ slot ]
+            if [ !f ] continue
+            if [ '{f}'.ends_with[ '.ag' ] ]
+                files.push[ f ]
+                continue
+            # not silver: the extension's handler module colours it
+            ed  : Editor pane_at[ i ]
+            lib : string [ (ed) ? ed.handler_lib_for[ f ] : null ]
+            if [ lib ] handled[ '{f}' ] = lib
+    # the folders our own builds hold: the service leaves them be
+    busy : vec string []
+    for [ f: path ] in files
+        if [ module_building[ f ] ] busy.push[ '{f.directory[]}' ]
+    syntax.busy_dirs = busy
+    syntax.want[ files, handled ]
+    drew : bool [ false ]
+    for [ sn: SyntaxNews ] in syntax.poll[]
+        if [ sn.kind == 1 ]
+            # a stale map only where a pane has no colouring yet
+            for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                ed : Editor pane_at[ i ]
+                if [ !ed || ed.fmt_mtime >= sn.mtime ] continue
+                if [ !sn.fresh && ed.fmt_mtime != 0 ] continue
+                ed.load_format[ sn.map ]
+                ed.fmt_mtime = sn.mtime
+                ed.pristine  = false
+                drew = true
+            if [ drew ] syntax.taken[ sn.name, sn.mtime ]
+        el [ sn.kind == 2 ]
+            # the buffer is shared by every pane: taken once it is open
+            ed0 : Editor null
+            for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                ed : Editor pane_at[ i ]
+                if [ ed && !ed0 ] ed0 = ed
+            if [ !ed0 || !ed0.has_buffer[ sn.file ] ]
+                syntax.again[ sn.name ]
+                continue
+            ed0.apply_format[ sn.ff ]
+            for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                ed : Editor pane_at[ i ]
+                if [ ed ] ed.pristine = false
+            drew = true
+        el [ sn.kind == 3 ]
+            # the editor goes to silver's first error in the build
+            err_mod = sn.name
+            jump_to_error[ sn.log ]
+        el [ sn.kind == 4 ]
+            # only the module that failed may clear its own error
+            if [ err_mod && err_mod == sn.name ]
+                err_file = null
+                err_line = 0
+                err_msg  = null
+                err_mod  = null
+        el [ sn.kind == 5 ]
+            nav.git_dirty = true
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        ed : Editor pane_at[ i ]
+        if [ !ed || !ed.src || !ed.cur_buf ] continue
+        if [ ed.cur_buf.line_regs && ed.cur_buf.line_regs.count > 0 ]
+            continue
+        ff : fmt_file syntax.borrow[ ed.src ]
+        if [ !ff ] continue
+        ed.apply_format[ ff ]
+        ed.pristine = false
+        drew = true
+    if [ drew && ux ] ux.will_animate = true
+
+# every window and instance as the log's lines (a test reads them):
+# STATE pane <n> ..., STATE inst <iid> ..., STATE end
+func orbiter.state_dump []
+    log 'STATE begin panes {editor_slots.count} active {active_pane}'
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        ed : Editor pane_at[ q ]
+        rv : AppView (ed) ? ed.run_view : null
+        sr : string [ (ed && ed.src) ? '{ed.src}' : '-' ]
+        iv : i32 [ (rv) ? rv.iid : -1 ]
+        av : bool [ ed && ed.app_view ]
+        log 'STATE pane {q} ed {ed != null} src {sr} iid {iv} app {av} hidden {pane_hidden[ q ]} grp {grp_of[ q ]} float {pane_floats[ q ]} out {pane_out[ q ]} empty {pane_empty[ q ]}'
+    if [ instances ]
+        for [ v: AppView ] in instances
+            ap : string inst_reg[].app_of[ v ]
+            log 'STATE inst {v.iid} app {ap} slot {v.slot} ended {v.ended} held {v.held} bg {v.background} running {inst_reg[].running_one[ v ]} shown {pane_showing[ v ]}'
+    log 'STATE end'

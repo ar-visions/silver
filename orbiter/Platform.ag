@@ -383,7 +383,7 @@ element PlatformView
     # the chosen agent; its box in device pixels from the
     # picture's top left (x y w h), and the camera cut to it
     intern pick_nm : string
-    intern near    : vec4f
+    near    : vec4f
     intern near_proj : mat4f
     intern dscale  : f32
     intern near_w  : i32

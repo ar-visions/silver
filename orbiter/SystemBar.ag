@@ -5,7 +5,7 @@ extend orbiter
 Group SystemBar
     # painted onto the screen: a resized cache flashed red
     no_cache : true
-    blur : BlurGround []
+    public blur : BlurGround []
     # its menus from orbiter, read as it renders (after the panes)
     public func render [] -> Elements
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
@@ -53,11 +53,11 @@ element UpdBar
 element DockRow
     no_cache : true
     public icon_id : string
-    public label   : string
+    label   : string
     public second  : bool
     # its place in the column: neighbours share one border
-    public first   : bool
-    public last    : bool
+    first   : bool
+    last    : bool
     mutable svg    : SVGModel
     mutable svg_id : string
     style : CSS {
@@ -418,7 +418,7 @@ BarButton MenuTop
     public member : i32 [ -1 ]
     # that member's name, dim beside the one shown
     public other : bool
-    build : TabProgress []
+    public build : TabProgress []
     # the app's tab pressed: past 8 px it is carried off the bar
     intern held  : bool
     intern went  : f32
@@ -489,7 +489,7 @@ BarButton BarCrumb
             layers.face:
                 label_color: #ffffff
     }
-    public last : bool
+    last : bool
 
 # the folded front of the path: …
 element CrumbSep
@@ -528,7 +528,7 @@ BarButton BarTitle
     public domain : string
     mutable site_w   : f32
     mutable domain_w : f32
-    measure : BarMeasure []
+    public measure : BarMeasure []
 
     # the field edits, then orbiter reads it (Enter, Esc)
     func on_key [ ev: Event ]
@@ -697,6 +697,25 @@ Layer DrawerGround
                 cv.fill_color[ w.solid_color ]
                 cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
                 cv.paint[]
+            # the config mode: the scene's blur, darkened round the open
+            # drawer (its cabinet lit)
+            cv.fill_color[ rgba [ '#000000aa' ] ]
+            # only while the cards show (a view hides their drawer)
+            gr : cast AppsGrid [ (orb && orb.sys_view.count == 0)
+                ? orb.find_el[ orb, 'sys_apps' ] : null ]
+            cn : vec2f [ (gr) ? gr.cab_now[] : vec2f [ 0.0, 0.0 ] ]
+            ch : f32 [ cn.y ]
+            if [ ch > 0.0 ]
+                ct : f32 [ cn.x - oy ]
+                cv.rect_to[ bounds.x, bounds.y, bounds.w,
+                            max[ ct - bounds.y, 0.0 ] ]
+                cv.paint[]
+                cb : f32 [ ct + ch ]
+                cv.rect_to[ bounds.x, cb, bounds.w,
+                            max[ bounds.y + bounds.h - cb, 0.0 ] ]
+            el
+                cv.rect_to[ bounds.x, bounds.y, bounds.w, bounds.h ]
+            cv.paint[]
         el
             if [ b ]
                 cv.draw_image[ b.color[], rect [ x: -ox, y: -oy,
@@ -724,7 +743,7 @@ element MenuDrawer
     # the blur under it live, every frame (the default); off: taken
     # once as it opens, and again on a new window size
     public background_lens : bool [ true ]
-    ground : DrawerGround []
+    public ground : DrawerGround []
 
     # a move in the menu is the menu's: no default action (the task
     # bar does not come up under it)
@@ -846,7 +865,7 @@ PageField PageSecret
 
 # words on a menu's page, wrapped: a note, or what was wrong (red)
 element PageNote
-    public label : string
+    label : string
     public wrong : bool
 
     public func draw [ w: Window ]
@@ -863,7 +882,7 @@ element PageNote
 # an option on a menu's page: its name and a switch, a press flips
 # it; it is kept on the element while the page shows
 element PageCheck
-    public label : string
+    label : string
     intern on    : bool
     style : CSS {
         layers.body:
@@ -941,26 +960,6 @@ MenuDrawer SystemDrawer
 
 # a phone's system menu cells in one row along its foot: a drag or
 # the wheel scrolls them sideways, eased; a tap picks the cell
-# the agents at the strip's right end: a tab each, and the add;
-# they stay put while the strip scrolls
-element SysAgents
-    animated : true
-    blur : BlurGround []
-    style : CSS {
-        layers.dock:
-            fill_color: #0004
-            box_shadow: inset 0 0 13px #86f2
-            stroke_width: 1
-            stroke_color: #fff1
-        layers.ddiv:
-            fill_color: #ffffff11
-            area: l0 t0 r0 h1px
-    }
-
-    public func render [] -> Elements
-        o : orbiter [ (ux) ? ux.app_object : null ]
-        return (o) ? o.sys_agent_els[] : null
-
 element SysStrip
     # px scrolled, and where it eases to
     intern shift : f32
@@ -970,20 +969,23 @@ element SysStrip
     intern grab  : f32 [ -1.0 ]
     intern from  : f32
     intern moved : bool
-    # the press's x in the strip
+    # the press's place along the strip (x across, y down)
     intern tap_x : f32
-    # the backdrop moves under it
-    animated : true
-    blur : BlurGround []
+    public blur : BlurGround []
     style : CSS {
         layers.dock:
             fill_color: #0004
             box_shadow: inset 0 0 13px #86f2
             stroke_width: 1
             stroke_color: #fff1
+        # its edge toward the menu: the right down a desktop's
+        # column, the top across a phone's foot
         layers.ddiv:
             fill_color: #ffffff11
-            area: l0 t0 r0 h1px
+            area: r0 t0 w1px b0
+        :use_mobile
+            layers.ddiv:
+                area: l0 t0 r0 h1px
     }
 
     func orb [] -> orbiter
@@ -993,7 +995,7 @@ element SysStrip
         o : orbiter orb[]
         if [ !o || !bounds ] return 0.0
         m : f32 [ f32[ o.sys_strip_ids[].count ] * o.strip_cell[]
-            - bounds.w ]
+            - ((use_mobile) ? bounds.w : bounds.h) ]
         return (m > 0.0) ? m : 0.0
 
     public func render [] -> Elements
@@ -1015,10 +1017,15 @@ element SysStrip
             if [ abs[ goal - shift ] < 0.5 ] shift = goal
             ux.restyle      = true
             ux.will_animate = true
-        left  : f32 [ (shift > 0.5) ? 24.0 : 0.0 ]
-        right : f32 [ (most[] - shift > 0.5) ? 24.0 : 0.0 ]
-        if [ mask_glow.w != left || mask_glow.y != right ]
-            mask_glow = vec4f [ 0.0, right, 0.0, left ]
+        # its ends fade where more cells lie: sides across, top and
+        # foot down
+        st : f32 [ (shift > 0.5) ? 24.0 : 0.0 ]
+        en : f32 [ (most[] - shift > 0.5) ? 24.0 : 0.0 ]
+        mg : vec4f [ (use_mobile) ? vec4f [ 0.0, en, 0.0, st ]
+            : vec4f [ st, 0.0, en, 0.0 ] ]
+        if [ mask_glow.x != mg.x || mask_glow.y != mg.y
+             || mask_glow.z != mg.z || mask_glow.w != mg.w ]
+            mask_glow = mg
             pristine  = false
 
     public func on_wheel [ ev: Event ]
@@ -1029,15 +1036,15 @@ element SysStrip
     public func on_press [ ev: Event ]
         ev.no_default     = true
         ev.no_propagation = true
-        grab  = f32[ ux.mouse.x ]
-        tap_x = ev.mouse.pos.x
+        grab  = f32[ (use_mobile) ? ux.mouse.x : ux.mouse.y ]
+        tap_x = (use_mobile) ? ev.mouse.pos.x : ev.mouse.pos.y
         from  = goal
         moved = false
         ux.set_capture[ a ]
 
     public func on_move [ ev: Event ]
         if [ grab < 0.0 ] return
-        d : f32 [ f32[ ux.mouse.x ] - grab ]
+        d : f32 [ f32[ (use_mobile) ? ux.mouse.x : ux.mouse.y ] - grab ]
         if [ abs[ d ] > 8.0 ] moved = true
         if [ !moved ] return
         # the cells follow the finger

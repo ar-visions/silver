@@ -29,8 +29,8 @@ Keep it in step with the imports.
 | Code - OSS | 1.142.0 | featured/vscode | https://github.com/microsoft/vscode | MIT | Microsoft Corporation |
 | wxWidgets | 3.2.8 | featured/audacity | https://github.com/wxWidgets/wxWidgets | wxWindows Library Licence 3.1 | Julian Smart, Vadim Zeitlin and contributors |
 | LAME | 3.100 | featured/audacity | https://lame.sourceforge.io | LGPL-2.0-or-later | The LAME project |
-| libogg | 1.3.5 | featured/audacity | https://xiph.org/ogg | BSD-3-Clause | Xiph.Org Foundation |
-| libvorbis | 1.3.7 | featured/audacity | https://xiph.org/vorbis | BSD-3-Clause | Xiph.Org Foundation |
+| libogg | 1.3.5 | featured/audacity, spectra (ogg_load) | https://xiph.org/ogg | BSD-3-Clause | Xiph.Org Foundation |
+| libvorbis | 1.3.7 | featured/audacity, spectra (ogg_load) | https://xiph.org/vorbis | BSD-3-Clause | Xiph.Org Foundation |
 | FLAC | 1.4.3 | featured/audacity | https://xiph.org/flac | BSD-3-Clause (libFLAC) | Josh Coalson, Xiph.Org Foundation |
 | Opus | 1.5.2 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation, Skype, Octasic and others |
 | opusfile | 0.12 | featured/audacity | https://opus-codec.org | BSD-3-Clause | Xiph.Org Foundation |
@@ -243,6 +243,15 @@ changes are under the same LGPL terms as the files they change.
 | model | used as | source | credit | license |
 |---|---|---|---|---|
 | CHESS COINS (glb, 6 pieces, colours only) | chess/models/chess-set.glb: the set the chess app draws | https://www.blendswap.com/blends/view/92407 | Blend Swap #92407 "CHESS COINS" (author's name to add) | CC BY 3.0 |
+
+## Chess music
+
+| recording | used as | source | credit | license |
+|---|---|---|---|---|
+| Nocturne in E-flat major, Op. 9 No. 2 (Chopin; piano) | install/share/music/chopin-nocturne-9-2.ogg: a chess app music choice (fetched by url at its build, never committed) | https://commons.wikimedia.org/wiki/File:Frederic_Chopin_-_Nocturne_Eb_major_Opus_9,_number_2.ogg | as Commons gives it | public domain |
+| Piano Sonata No. 14 "Moonlight", Op. 27 No. 2, i. Adagio sostenuto (Beethoven) | install/share/music/beethoven-moonlight-1.ogg: a chess app music choice (fetched by url at its build, never committed) | https://commons.wikimedia.org/wiki/File:Ludwig_van_Beethoven_-_sonata_no._14_in_c_sharp_minor_%27moonlight%27,_op._27_no._2_-_i._adagio_sostenuto.ogg | Paul Pitman, for Musopen | public domain |
+| Clair de lune, Suite bergamasque (Debussy; piano) | install/share/music/debussy-clair-de-lune.ogg: the chess app's default music (fetched by url at its build, never committed) | https://commons.wikimedia.org/wiki/File:Clair_de_lune_(Claude_Debussy)_Suite_bergamasque.ogg | Laurens Goedhart, 2011 | public domain |
+| Canon in D Major (Pachelbel; three violins and continuo) | install/share/music/pachelbel-canon.ogg: played while the chess app is open (fetched by url at its build, never committed) | https://commons.wikimedia.org/wiki/File:Kevin_MacLeod_-_Canon_in_D_Major.ogg | Kevin MacLeod (incompetech.com) | CC BY 3.0 |
 
 ## Chess engine
 

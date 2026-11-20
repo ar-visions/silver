@@ -1062,8 +1062,8 @@ element Dictation
 
 element main : trinity
     public background : string [ 'Background' ]
-    public width      : i32 [ 1280 ]
-    public height     : i32 [ 720 ]
+    width      : i32 [ 1280 ]
+    height     : i32 [ 720 ]
     default file   : path
     public out     : string
     intern pclip   : AudioClip

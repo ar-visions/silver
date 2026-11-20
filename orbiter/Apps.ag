@@ -1,0 +1,2705 @@
+extend orbiter
+
+# a phone: the shown app's own keyboard, made from its class
+# (its module loaded for it), in the keyboard's place
+func orbiter.app_pad [] -> element
+    ed : Editor pane_at[ active_pane ]
+    if [ !ed || !ed.app_view || !ed.run_view ] return null
+    av : ed.run_view
+    if [ av.ended || !av.app_keys || av.app_keys.count == 0 ]
+        return null
+    t : Au.find_type[ av.app_keys.chars, null ]
+    if [ !t && av.app_mod ]
+        module_load[ 'silver-{av.app_mod}', av.app_keys ]
+        t = Au.find_type[ av.app_keys.chars, null ]
+    return keys_made[ t ]
+
+# the host slots running as services (background), kept current:
+# the next instance takes them over (adopt_live_slots) before its
+# first frame, as services again, not as apps
+func orbiter.bg_track []
+    if [ !bg_slots ] bg_slots = vec i32 []
+    bg_slots.clear[]
+    if [ !instances ] return
+    for [ av: AppView ] in instances
+        if [ av.background && !av.ended && av.slot > 0 ]
+            bg_slots += av.slot
+
+func orbiter.ensure_user_config []
+    home : string [ getenv[ 'HOME' ] ]
+    if [ !home || home.count == 0 ] return
+    xdg  : string [ getenv[ 'XDG_CONFIG_HOME' ] ]
+    base : string (xdg && xdg.count > 0) ? xdg : '{home}/.config'
+    dir  : path '{base}/orbiter'
+    dir.make_dir[]
+    cfg  : path '{base}/orbiter/orbiter.config'
+
+func orbiter.check_stale []
+    for [ i: i32 0, i < target_names.count, i += 1 ]
+        name    : string target_names[i]
+        src     : path   target_srcs[i]
+        product : path  '{install_root[]}/build/{name}'
+        if [ !product.exists[] ]
+            compile_log.push[ 'stale (no product): {name}' ]
+            compile[ name ]
+            continue
+        product_mtime : i64 [ product.modified_time[] ]
+        src_mtime     : i64 [ 0 ]
+        src.latest_modified[ @src_mtime ]
+        if [ src_mtime > product_mtime ]
+            compile_log.push[ 'stale (source newer): {name}' ]
+            compile[ name ]
+
+func orbiter.compile_fn [ w: Au ] 
+    m: string w  
+    i: silver [ component: true, module: m ]  
+
+func orbiter.compile [ mod: string ]
+    active_target = 'system'
+    compile_log.push[ 'compiling {mod}...' ]
+    i: silver [ component: true, verbose:true, module: mod ]
+    au_space_clear[]
+    compile_log.push[ 'done: {mod}' ]
+
+# the module holding f is building now (its instance starting, a
+# live reload): a second build would race it on the same files
+func orbiter.module_building [ f: path ] -> bool
+    if [ !f ] return false
+    dir : string '{f.directory[]}'
+    if [ build_frac[ f.directory[].filename[] ] > -2.0 ] return true
+    if [ !instances ] return false
+    for [ av: AppView ] in instances
+        if [ av.ended || !av.src ] continue
+        if [ '{av.src.directory[]}' != dir ] continue
+        if [ av.status_word[] == 'compiling' ] return true
+    return false
+
+# a console is dir context, not a file's: picking one in a pane lets
+# go of the pane's file, and with it every view of that file
+# a pane's apps screen: what it showed goes out of view (a
+# running app keeps running)
+func orbiter.go_home [ pi: i32 ]
+    if [ pi < 0 || pi >= editor_slots.count ] return
+    if [ pane_win && pi < pane_win.count ] pane_win[ pi ] = u64[ 0 ]
+    exit_finder[]
+    ed : Editor pane_at[ pi ]
+    if [ ed ]
+        ed.run_view = null
+        ed.app_view = false
+        # the desktop takes the typing (its filter), not the editor
+        if [ ux && ux.focus == ed ] ux.release_focus[ ed ]
+    if [ pane_console && pi < pane_console.count ]
+        pane_console[ pi ] = ''
+    pane_drop_file[ pi ]
+    if [ ux ] ux.restyle = true
+
+func orbiter.ensure_console [ sid: string ] -> ConsoleSession
+    if [ !sid || sid.count == 0 ] return null
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    s : ConsoleSession ed_sessions[sid]
+    if [ s ] return s
+    s = ConsoleSession []
+    s.name       = sid
+    s.launch_cmd = agent_cmd[ sid ]
+    ed_sessions[sid] = s
+    s.start[]
+    return s
+
+# the swap is asked of the host: the exchange goes on alpha before
+# the switch takes it, from the flame or the status button alike
+func orbiter.request_swap [] -> none
+    swap_asked = true
+    # the next instance reads the session in its init, before this
+    # one unloads: what is saved now is what it restores
+    save_session[]
+    # a product built already swaps at once (no pending 3): what
+    # is on screen crosses now
+    if [ !swap_carry ] swap_carry = ExchangeState [ ]
+    if [ !swap_view  ] swap_view  = vec f32 []
+    if [ !ui_carry   ] ui_carry   = vec f32 []
+    if [ ux ] ux.exchange_carry[ swap_carry ]
+    if [ agent_av ] agent_av.carry[ swap_carry ]
+    panes_carry[]
+    ui_carry_out[]
+    au_live_request_apply[]
+
+func orbiter.request_context [] -> none
+    done : bool [ false ]
+    ed : Editor pane_at[ active_pane ]
+    if [ ed && ed.rview ] done = ed.rview.context_request*[]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        if [ ! done ]
+            ed2 : Editor pane_at[ i ]
+            if [ ed2 && ed2.rview ]
+                done = ed2.rview.context_request*[]
+
+func orbiter.run_node [ name: string ] -> none
+    if [ !projects ] return
+    p : Project projects[name]
+    if [ !p ] return
+    if [ p.deps ]
+        for [ d: token ] in p.deps
+            run_node[ d.chars ]
+    if [ !p.build || p.build.count == 0 ] return
+    cmd_str : string ''
+    for [ c: token ] in p.build
+        cmd_str = (cmd_str.count > 0) ? cmd_str + ' ' + c.chars : c.chars
+    cmd : string 'cd "{p.root}" && {cmd_str}'
+    s : ConsoleSession ensure_console[ name ]
+    if [ !s ] return
+    s.pending = cmd
+    has_run : bool [ p.run && p.run.count > 0 ]
+    if [ has_run ]
+        start_debug[ name ]
+
+func orbiter.start_debug [ name: string ] -> none
+    p : Project (projects) ? projects[name] : null
+    loc : path (p) ? p.product : null
+    if [ !loc && p && p.run && p.run.count > 0 ]
+        rb : string p.run[0].chars
+        ps : string '{install_root[]}/build/{rb}'
+        loc = path [ ps.chars ]
+    if [ !loc ]
+        ps2 : string '{install_root[]}/build/{name}'
+        l2  : path [ ps2.chars ]
+        if [ l2.exists[] ] loc = l2
+    if [ !loc ]
+        log 'start_debug {name}: no binary to launch'
+        return
+    ensure_console[ name ]
+    log 'start_debug {name}: launching {loc}'
+    if [ !debuggers ] debuggers = map dbg [string] []
+    d : dbg [ location: loc, target: a, auto_start: false ]
+    debuggers[name] = d
+    sdir : '{startup_path}/{name}'
+    sync_breakpoints[ d, sdir ]
+    d.start[]
+
+# attach before the child's PR_SET_PTRACER fails under yama
+func orbiter.proc_stopped [ pid: i32 ] -> bool
+    return host_pid_stopped[ pid ] != 0
+
+# lldb attach loads the whole binary's symbols — seconds of work
+# that used to run inside update_all and hold the first paint. it
+# goes to a worker; only the debuggers publish stays on the main
+# thread
+func orbiter.attach_appview [ av: AppView, pid: i32 ]
+    if [ av.attached ] return
+    av.attached  = true
+    av.attaching = true
+    av.note      = 'attaching debugger'
+    w8 : vec Au []
+    w8.push[ av ]
+    if [ !attach_tasks ] attach_tasks = vec async []
+    attach_tasks.push[
+        async [ target: a, work_fn: lambda attach_work[ a ],
+                work: w8 ] ]
+
+func orbiter.attach_work [ arg: object :: o: orbiter ]
+    av : AppView [ arg ]
+    if [ !av ] return
+    pid : i32 [ host_app_pid[ av.slot ] ]
+    mod : string av.app_mod
+    # a program: its own process, by its window, its own binary
+    if [ av.prog_debug ]
+        pid = (av.wl_window != 0) ? wlc_window_pid[ av.wl_window ] : 0
+        mod = 'program'
+    if [ !mod || mod.count == 0 || pid <= 0 ]
+        av.attaching = false
+        av.note      = ''
+        return
+    loc : path
+    if [ av.prog_debug ] loc = path '/proc/{pid}/exe'
+    ps  : string '{install_root[]}/build/{mod}'
+    l   : path [ ps.chars ]
+    if [ l.exists[] ] loc = l
+    if [ !loc ]
+        ps2 : string '{o.startup_path}/platform/native/build/{mod}'
+        l2  : path [ ps2.chars ]
+        if [ l2.exists[] ] loc = l2
+    if [ !loc ]
+        log 'attach_appview: no binary for {mod}'
+        av.attaching = false
+        av.note      = ''
+        return
+    d : dbg [ location: loc, target: o, auto_start: false ]
+    d.attach[ pid ]
+    if [ !d.active ]
+        kill[ pid, SIGCONT ]
+        log 'attach_appview: attach failed — {mod} pid={pid} continued undebugged'
+        av.attaching = false
+        av.note      = ''
+        return
+    adir : string [ '' ]
+    if [ av.src ]
+        ap : av.src.parent_dir[]
+        if [ ap ] adir = '{ap}'
+    o.sync_breakpoints[ d, adir ]
+    if [ !av.pause_pending ]
+        d.cont[]
+        # elsewhere the host parked it with SIGSTOP; Linux attaches
+        # to it running, and a SIGCONT there loops lldb on stops
+        if [ !linux ] kill[ pid, SIGCONT ]
+    log 'attach_appview: attached {mod} pid={pid}'
+    o.attach_mod     = mod
+    o.attach_av      = av
+    o.attach_pending = d
+
+func orbiter.attach_publish []
+    if [ !attach_pending ] return
+    if [ !debuggers ] debuggers = map dbg [string] []
+    dk : string (attach_av) ? dbg_key[ attach_av ] : attach_mod
+    debuggers[ dk ] = attach_pending
+    active_target  = dk
+    if [ attach_av ]
+        attach_av.attaching = false
+        attach_av.note      = ''
+        attach_av.debugger  = attach_pending
+        if [ attach_av.pause_pending ]
+            attach_av.pause_pending = false
+            if [ attach_av.paused ] land_paused[ attach_av ]
+            el attach_pending.cont[]
+    attach_pending = null
+    attach_av      = null
+
+func orbiter.stop_debug [ mod: string ]
+    if [ !mod || !debuggers ] return
+    d : dbg debuggers[ mod ]
+    if [ !d ] return
+    d.stop[]
+    clear_stop_lines[]
+
+func orbiter.app_pause_toggle [ av: AppView ]
+    if [ av.debugger ] active_target = dbg_key[ av ]
+    if [ av.debugger || av.paused || av.ended || av.slot < 0 ]
+        av.pause_toggle*[]
+    el
+        av.paused        = true
+        av.pause_pending = true
+        av.attached      = false
+        attach_appview[ av, 0 ]
+
+func orbiter.instances_of [ p: path ] -> vec AppView
+    out : vec AppView []
+    if [ !instances || !p ] return out
+    ps : string '{p.absolute[]}'
+    for [ v: AppView ] in instances
+        if [ !v.src ] continue
+        # another module's app run in this one (steam's console)
+        if [ v.origin ] continue
+        vs : string '{v.src.absolute[]}'
+        if [ vs.compare[ ps ] == 0 ] out.push[ v ]
+    return out
+
+func orbiter.instance_by [ iid: i32 ] -> AppView
+    if [ instances ]
+        for [ v: AppView ] in instances
+            if [ v.iid == iid ] return v
+    return null
+
+func orbiter.adopt_live_slots []
+    root : path.path_startup[]
+    if [ !root ] return
+    for [ s: i32 1, s < host_app_count[], s += 1 ]
+        if [ host_app_state[ s ] != 2 ] continue
+        pid : i32 [ host_app_pid[ s ] ]
+        if [ pid <= 0 || host_pid_alive[ pid ] == 0 ] continue
+        # never ourselves: an app that switched to orbiter in its
+        # own window still sits in its host's slot table, and
+        # adopting that slot attached our debugger to our own
+        # process, freezing it
+        if [ pid == i32[ getpid[] ] ] continue
+        nb : local i8 [ 1024 ]
+        if [ host_app_name[ s, @nb[0], 1024 ] <= 0 ] continue
+        req : string [ @nb[0] ]
+        fl  : i32  [ host_app_flags[ s ] ]
+        dbg_ : bool [ (fl & 1) != 0 ]
+        parts : req.split[ ' ' ]
+        if [ parts.count == 0 ] continue
+        mod : string parts[ 0 ]
+        if [ mod.count == 0 || mod.compare[ 'orbiter' ] == 0 ]
+            continue
+        nv : AppView [ ]
+        nv.src      = path '{root}/{mod}/{mod}.ag'
+        nv.app_mod  = mod
+        nv.slot     = s
+        nv.started  = true
+        nv.attached = true
+        nv.viewer   = !dbg_
+        if [ req.count > mod.count ]
+            nv.module_args = req.mid[ mod.count + 1,
+                                      req.count - mod.count - 1 ]
+        ir : path install_root[]
+        nv.cmd      = 'tail -n +1 -F {ir}/tmp/{mod}.{s}.log'
+        # a widget's instance: back to its widget, never a task
+        if [ nv.module_args
+             && nv.module_args.index_of[ '--trinity.widget true' ]
+                >= 0 ]
+            adopt_widget[ nv, mod ]
+            continue
+        # a restored instance of this module still held: it IS this
+        # one
+        took : bool [ false ]
+        if [ instances ]
+            for [ hv: AppView ] in instances
+                if [ took || !hv.held || !hv.src ] continue
+                if [ '{hv.src}' != '{nv.src}' ] continue
+                hv.app_mod  = nv.app_mod
+                hv.slot     = nv.slot
+                hv.started  = true
+                hv.attached = true
+                hv.viewer   = nv.viewer
+                hv.cmd      = nv.cmd
+                hv.held     = false
+                if [ nv.module_args && nv.module_args.count > 0 ]
+                    hv.module_args = nv.module_args
+                took = true
+                nv   = hv
+        if [ !took ] add_instance[ nv ]
+        # a service (a startup program's console) stays one, the
+        # same line (the registry finds it) of the module it is
+        if [ bg_slots ]
+            for [ bs: i32 ] in bg_slots
+                if [ bs == s ]
+                    nv.background = true
+                    nv.what   = nv.module_args
+                    nv.origin = origin_of_line[ nv.module_args ]
+        # a debug launch: the orbiter before this reload left its
+        # session parked with the host; adopt it, its stop comes
+        # back with it. none kept: attach
+        if [ dbg_ ]
+            kd : cast dbg [ host_kept[ 'dbg{s}' ] ]
+            if [ kd && kd.active ]
+                if [ !debuggers ] debuggers = map dbg [string] []
+                dk : string dbg_key[ nv ]
+                debuggers[ dk ] = kd
+                nv.debugger      = kd
+                active_target    = dk
+                kd.drop[]
+                kd.adopt[ a ]
+            el
+                if [ kd ] kd.drop[]
+                nv.attached = false
+                attach_appview[ nv, pid ]
+
+# one console per module: every live instance's log, each line
+# tagged by its id. no module = the global log, every instance of
+# every module
+# an instance's own console: its log alone, named by its slot so a
+# restart follows the new log
+func orbiter.inst_sid [ v: AppView ] -> string
+    if [ !v || v.ended || v.slot <= 0 || !v.app_mod ] return null
+    return 'ed:i{v.iid}s{v.slot}'
+
+# the args the panel reads and writes are ONE state: the view's args
+# source
+# (a handler's document when there is one), never the pane's file
+# alone
+func orbiter.args_state_of [ ed: Editor ] -> file_state
+    if [ !ed ] return null
+    # an instance picked from the nav list keeps its own module's
+    # config, whatever file the pane happens to show
+    if [ ed.run_view && !ed.run_view.viewer && ed.run_view.src ]
+        return fstate[ ed.run_view.src ]
+    pv : element pane_view[ ed.pane_index ]
+    if [ pv && pv inherits EditorView ]
+        ev : EditorView pv
+        return fstate[ ev.args_src[] ]
+    return fstate[ ed.band_src[] ]
+
+# a module's props: what its last instance answered, else what its
+# build enumerated into its export (`props:` in install/export)
+# the module's bare argument, when the app takes it live
+# a launch line's default argument: what follows its flags
+# (--name value pairs), the default always last
+# another instance of the pane's app, on a new pick: the flags of
+# the one it shows, no file, so it asks for one before it starts
+func orbiter.arg_new [ pn: Editor ]
+    ms : path (pn) ? module_src_of[ pn ] : null
+    if [ !pn || !ms ] return
+    rn : AppView pn.run_view
+    nv : AppView [ ]
+    nv.src = ms
+    nv.module_args = flags_of[
+        (rn) ? rn.module_args : file_args[ ms ] ]
+    add_instance[ nv ]
+    embed_app[ pn, nv ]
+
+# the launch line's flags: everything before its bare argument
+func orbiter.flags_of [ args: string ] -> string
+    if [ !args ] return ''
+    ws : vec string args.trim[].split[ ' ' ]
+    out : string ''
+    i  : i32 [ 0 ]
+    while [ i < ws.count ]
+        w_ : string ws[ i ]
+        if [ w_.count > 2 && w_[ 0 ] == 45 && w_[ 1 ] == 45 ]
+            nx : string (i + 1 < ws.count) ? ws[ i + 1 ] : ''
+            out = (out.count > 0) ? '{out} {w_} {nx}' : '{w_} {nx}'
+            i += 2
+            continue
+        if [ w_.count > 0 ] break
+        i += 1
+    return out
+
+# the module's bare argument takes a folder (a control with no
+# members arrives as its name)
+func orbiter.takes_dir [ mod: string ] -> bool
+    dp : Prop default_prop[ mod ]
+    ctl : Au (dp) ? dp.control : null
+    return ctl && (ctl inherits Directory
+        || (ctl inherits string && '{ctl}' == 'Directory'))
+
+# an instance whose app expects a bare argument and has none:
+# the pick asks for it, and a cancel starts it empty. a plain
+# default may stay blank (aura's src: its home page)
+func orbiter.ask_default [ av: AppView ] -> bool
+    if [ av.doc ] return false
+    if [ av.module_args && av.module_args.trim[].count > 0 ]
+        return false
+    mod : string av.module_name[]
+    dp_ : Prop default_prop[ mod ]
+    if [ !dp_ || !dp_.expected ] return false
+    if [ dp_.value && dp_.value.count > 0 ] return false
+    ed : Editor null
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        e8 : Editor pane_at[ i ]
+        if [ e8 && e8.run_view == av ] ed = e8
+    if [ !ed ] ed = pane_at[ active_pane ]
+    av.asking = true
+    pick_default[ ed, av, mod, '' ]
+    return true
+
+# the navigator for a file an app asked for (its + or open
+# button); the choice is shared into its view and handed to it
+# as its own dialog's pick
+func orbiter.app_pick [ pe: Editor ]
+    pick_field  = 'app_pick'
+    pick_dir    = false
+    pick_editor = pe
+    pick_launch = null
+    pick_exts   = vec string []
+    pick_cache  = null
+    active_pane = pe.pane_index
+    focus_finder[]
+    run_search[]
+
+func orbiter.module_spec [ mod: string ] -> string
+    if [ !mod || mod.count == 0 ] return null
+    if [ !startup_path ] startup_path = path.path_startup[]
+    agi : path '{install_root[]}/export/{install_name_of[ mod ]}.props.agi'
+    if [ !agi.exists[] ] return null
+    return agi.load[ typeid[string], null ]
+
+# the module's first instance is its default and carries no number;
+# the ones added after it count from 2, per module (not the global
+# sequence)
+func orbiter.instance_name [ av: AppView ] -> string
+    m : string app_name[ av ]
+    li_ : vec AppView instances_of[ av.src ]
+    for [ k_: i32 0, k_ < li_.count, k_ += 1 ]
+        if [ li_[ k_ ] == av ]
+            return (k_ == 0) ? m : '{m} {k_ + 1}'
+    return m
+
+# the app an instance is of, unnumbered (the menu's name)
+func orbiter.app_name [ av: AppView ] -> string
+    m : string (av.app_mod && av.app_mod.count > 0) ? av.app_mod
+        : ((av.src) ? av.src.stem[] : 'app')
+    # a program the console runs is named for the program
+    pn : string program_of[ av ]
+    if [ pn.count > 0 ] m = pn
+    return m
+
+# the program a console instance runs: its args' last word's name
+func orbiter.program_of [ av: AppView ] -> string
+    if [ av.app_mod != 'console' || !av.module_args ] return ''
+    line : string av.module_args.trim[]
+    if [ line.count == 0 ] return ''
+    # past the console's own flags (each with a value) and an env
+    # prefix (its options, NAME=value), the first word is it
+    words : line_words[ line ]
+    i : i32 [ 0 ]
+    env : false
+    while [ i < words.count ]
+        w : string words[ i ]
+        if [ env && w.starts_with[ '-' ] ]
+            # env's -C folder and -u name take a value
+            i += (w == '-C' || w == '-u') ? 2 : 1
+        el [ w.starts_with[ '--' ] ]
+            i += 2
+        el [ w == 'env' ]
+            env = true
+            i += 1
+        el [ w.index_of[ '=' ] > 0 ]
+            i += 1
+        el
+            break
+    if [ i >= words.count ] return ''
+    prog : string base_name[ words[ i ] ]
+    # a Windows program under Wine: named for its .exe
+    if [ prog == 'wine' || prog == 'wine64' ]
+        j : i32 [ i + 1 ]
+        if [ j < words.count && words[ j ] == 'steam' ] j += 1
+        if [ j >= words.count ] return prog
+        exe : string base_name[ words[ j ] ]
+        if [ exe.ends_with[ '.exe' ] || exe.ends_with[ '.EXE' ] ]
+            exe = exe.mid[ 0, exe.count - 4 ]
+        return exe
+    return prog
+
+func orbiter.program_icon [ av: AppView ] -> path
+    pn : string program_of[ av ]
+    if [ pn.count == 0 ] return null
+    wv : u64 window_of[ av ]
+    aid : string [ (wv != 0) ? string[ wlc_window_app[ wv ] ] : '' ]
+    return program_icon_named[ aid, pn ]
+
+# by a window's app id ('' when none) and the program's name
+func orbiter.program_icon_named [ aid: string, pn: string ] -> path
+    key : '{aid}|{pn}'
+    if [ !prog_icons ] prog_icons = map string [string] []
+    if [ prog_icons.contains[ key ] ]
+        got : string prog_icons[ key ]
+        return (got.count > 0) ? path [ got ] : null
+    name : string [ pn ]
+    hc : cstr [ getenv[ "HOME" ] ]
+    home : string [ (hc == null) ? '' : string[ hc ] ]
+    dirs : vec string [] [ '{home}/.local/share/applications',
+                           '/usr/share/applications' ]
+    hit : bool [ false ]
+    for [ n: string ] in vec string [] [ aid, pn ]
+        if [ n.count == 0 || hit ] continue
+        for [ d: string ] in dirs
+            df : path '{d}/{n}.desktop'
+            if [ !df.exists[] ] continue
+            ic : string desktop_line[ df, 'Icon=' ]
+            if [ ic.count > 0 ] name = ic
+            hit = true
+            break
+    # else the .desktop whose Exec= runs this program
+    if [ !hit ]
+        for [ d: string ] in dirs
+            if [ hit ] break
+            dp : path [ d ]
+            if [ !dp.exists[] ] continue
+            for [ df: path ] in dp.ls[ null, false ]
+                if [ df.ext[] != 'desktop' ] continue
+                ex : string desktop_line[ df, 'Exec=' ]
+                cmd : string ex.split[ ' ' ][ 0 ]
+                sl : i32 [ cmd.rindex_of[ '/' ] ]
+                if [ sl >= 0 ] cmd = cmd.mid[ sl + 1, cmd.count - sl - 1 ]
+                if [ cmd != pn ] continue
+                ic : string desktop_line[ df, 'Icon=' ]
+                if [ ic.count > 0 ] name = ic
+                hit = true
+                break
+    found : string [ '' ]
+    if [ name.starts_with[ '/' ] && (path [ name ]).exists[] ]
+        found = name
+    el
+        ic : '/usr/share/icons/hicolor'
+        px : '/usr/share/pixmaps/{name}'
+        tries : vec string [] [ '{ic}/scalable/apps/{name}.svg' ]
+        for [ sz: string ] in vec string [] [ '512', '256', '128',
+                '96', '64', '48' ]
+            tries.push[ '{ic}/{sz}x{sz}/apps/{name}.png' ]
+        tries.push[ '{px}.svg' ]
+        tries.push[ '{px}.png' ]
+        for [ t: string ] in tries
+            if [ (path [ t ]).exists[] ]
+                found = t
+                break
+    # the app id is in the key: a window's later id looks again
+    prog_icons[ key ] = found
+    return (found.count > 0) ? path [ found ] : null
+
+func orbiter.instance_label [ av: AppView ] -> string
+    sw : string av.status_word[]
+    return (sw.count > 0) ? '{instance_name[ av ]}  {sw}' : instance_name[ av ]
+
+# the instance row's icon starts or stops it; the step group pauses,
+# continues and steps
+# the instance's display: every change is live in the process (its
+# frames come to the pane, or its own window shows); nothing
+# relaunches a running app holds its own display: it is told every
+# change
+func orbiter.tell_display [ av: AppView ]
+    if [ !av || !av.started || av.ended || av.display < 0 || av.display > 3 ]
+        return
+    dn : vec string [] [ 'PIP', 'Embed', 'Window', 'Screen' ]
+    av.disp_ms = epoch_millis[]
+    agent_sock_send[ av.sock_name[].chars,
+                     'set display {dn[ av.display ]}\n' ]
+
+func orbiter.instance_action [ ed: Editor, av: AppView, act: string ]
+    if [ !av ] return
+    if [ act.compare[ 'play' ] == 0 ]
+        if [ av.held ]
+            # first start: the file's args as they stand right now
+            if [ !(av.module_args && av.module_args.count > 0) ]
+                fs : file_state args_state_of[ ed ]
+                if [ fs && fs.args && fs.args.count > 0 ]
+                    av.module_args = fs.args
+            av.held = false
+            # a restored instance keeps its display: the pane shows
+            # it one way, never both
+            if [ ed ] ed.app_view = av.display == 1 || av.viewer
+            # the nav list closes: the pane shows the app, not the
+            # list over it
+            if [ nav_showing || find_showing ]
+                exit_finder[]
+                nav_showing  = false
+                find_showing = false
+                if [ ux ] ux.will_animate = true
+            return
+        if [ av.ended ] av.restart[ false ]
+        return
+    if [ act.compare[ 'stop' ] == 0 ]
+        # the process goes; the instance stays, not running, with
+        # its args
+        av.release[]
+        av.debugger = null
+        av.attached = false
+        av.started  = false
+        av.ended    = false
+        av.paused   = false
+        av.held     = true
+        av.note     = ''
+        # a pane on the content it was playing (a rom, a disc)
+        # goes to the module's source: the app, not the file
+        if [ ed && av.src && ed.src
+             && '{ed.src.absolute[]}' != '{av.src.absolute[]}' ]
+            open_in_pane[ av.src, ed.pane_index ]
+        return
+    if [ act.compare[ 'pause' ] == 0 ]
+        if [ av.held || av.ended ] return
+        app_pause_toggle[ av ]
+        # paused: back to the source; a resume fades the app in
+        # (the editor's resume_watch)
+        if [ av.paused && ed && ed.app_view ] ed.toggle_app_view[]
+        return
+    d : dbg av.debugger
+    if [ !d || !d.active ] return
+    active_target = dbg_key[ av ]
+    if [ act.compare[ 'continue' ] == 0 ]       d.cont[]
+    el [ act.compare[ 'step_next' ] == 0 ] d.step_over[]
+    el [ act.compare[ 'step_in' ] == 0 ]   d.step_into[]
+    el [ act.compare[ 'step_out' ] == 0 ]  d.step_out[]
+
+func orbiter.stopped_at [ av: AppView ] -> bool
+    dg : dbg (av) ? av.debugger : null
+    return dg && dg.active && !dg.running
+
+# the instance whose debugger sits at a stop, if one does
+func orbiter.stopped_view [] -> AppView
+    if [ !instances ] return null
+    for [ av: AppView ] in instances
+        if [ stopped_at[ av ] ] return av
+    return null
+
+# the debugger sitting at a stop, whichever target is active
+func orbiter.stopped_debugger [] -> dbg
+    if [ !debuggers ] return null
+    for [ d_: dbg, k_: string ] in debuggers
+        if [ d_ && d_.active && !d_.running ] return d_
+    return null
+
+# THE source files a silver module may carry, and the only ones. the
+# .ag is what makes the directory a module, so it leads. the title's
+# companion row and the nav list's module chips both ask here
+func orbiter.module_exts [ dir: path, stem: string ] -> vec string
+    out : vec string []
+    if [ !dir || !stem || stem.count == 0 ] return out
+    for [ x_: string ]
+        in vec string [] [ 'ag', 'c', 'cc', 'mm', 'rs' ]
+        p_ : path '{dir}/{stem}.{x_}'
+        if [ p_.exists[] ] out.push[ x_ ]
+    return out
+
+# the pane's module: its app's source, else <m>/<m>.ag
+func orbiter.module_src_of [ ed: Editor ] -> path
+    if [ !ed ] return null
+    if [ ed.app_view && ed.run_view && ed.run_view.src ]
+        return ed.run_view.src
+    if [ !ed.src || ed.src.ext[] != 'ag' ] return null
+    if [ ed.src.stem[] != ed.src.parent_dir[].filename[] ]
+        return null
+    return ed.src
+
+# os-mode: orbiter's Wayland display, started once; each new
+# window goes to a pane; true when a pane's window changed
+func orbiter.wl_tick [] -> bool
+    if [ !wl_tried ]
+        wl_tried = true
+        wl_sock  = ''
+        pane_win = vec u64 []
+        placed_win  = vec u64 []
+        placed_pane = vec i32 []
+        pane_sheet  = vec u64 []
+        if [ wlc_create[ 1280, 800 ] == 0 ]
+            log 'orbiter: the Wayland display did not start'
+            return false
+        wl_sock = string[ wlc_socket[] ]
+        # programs see the real monitor as their screen
+        sr : rect screen_rect[]
+        wlc_screen[ i32[ sr.w ], i32[ sr.h ], screen_hz[] ]
+        # trinity apps orbiter hosts stay off it: only the
+        # console's programs are given it
+        unsetenv[ 'WAYLAND_DISPLAY' ]
+        wl_fonts = write_fonts_conf[]
+        log 'orbiter: Wayland display {wl_sock}'
+        run_startup[]
+    if [ wl_sock.count == 0 ] return false
+    wlc_pump[]
+    close_check[]
+    changed : false
+    n : i32 wlc_window_count[]
+    if [ !win_done ] win_done = vec u64 []
+    for [ i: i32 0, i < n, i += 1 ]
+        wn : u64 wlc_window_at[ i ]
+        if [ win_placed[ wn ] || waits_parent[ wn ] ] continue
+        win_done.push[ wn ]
+        place_window[ wn ]
+        changed = true
+    # a window asking to come forward (out of its tray, or a
+    # program's own "show"): its pane shows it
+    aw : u64 wlc_window_asked[]
+    if [ aw != 0 && wlc_window_open[ aw ] != 0 ]
+        place_window[ aw ]
+        changed = true
+    # one asking to be minimized (its own button, Steam's Hide)
+    hw : u64 wlc_window_hide_asked[]
+    if [ hw != 0 ]
+        hide_window[ hw ]
+        changed = true
+    # a closed window gives its pane back: to the window it covered
+    # (an about box over its app), else to nothing
+    for [ i: i32 0, i < pane_win.count, i += 1 ]
+        pw : u64 pane_win[ i ]
+        if [ pw != 0 && wlc_window_open[ pw ] == 0 ]
+            pane_win[ i ] = window_under[ i, pw ]
+            changed = true
+    # a pane opened for a window goes with it
+    if [ pane_spawn ]
+        for [ i: i32 0, i < pane_spawn.count, i += 1 ]
+            sw : u64 pane_spawn[ i ]
+            if [ sw != 0 && wlc_window_open[ sw ] == 0
+                 && i < editor_slots.count ]
+                close_pane[ i ]
+                changed = true
+                break
+    for [ i: i32 0, i < pane_sheet.count, i += 1 ]
+        ps : u64 pane_sheet[ i ]
+        if [ ps != 0 && wlc_window_open[ ps ] == 0 ]
+            # the dialog it covered, still open, is the sheet again
+            key : string '{ps}'
+            back : u64 [ 0 ]
+            if [ sheet_back && sheet_back.contains[ key ] ]
+                back = u64[ sheet_back[ key ] ]
+                sheet_back.rm[ key ]
+            if [ back != 0 && wlc_window_open[ back ] == 0 ]
+                back = 0
+            pane_sheet[ i ] = back
+            if [ back != 0 ]
+                wlc_window_focus[ back ]
+            el [ pane_window[ i ] != 0 ]
+                wlc_window_focus[ pane_window[ i ] ]
+            changed = true
+    if [ menu_sync[] ] changed = true
+    return changed
+
+# a reload's live widget instance: the first widget of its
+# module with none takes it; no widget left, it ends
+func orbiter.adopt_widget [ av: AppView, mod: string ]
+    if [ !desk_views ] desk_views = map AppView [string] []
+    av.display = 1
+    av.host_hz = (ux) ? ux.refresh_hz[] : 60
+    if [ desk_widgets ]
+        for [ i: i32 0, i < desk_widgets.count, i += 1 ]
+            key : string desk_widgets[ i ]
+            if [ widget_mod[ i ] != mod
+                 || desk_views.contains[ key ] ] continue
+            desk_views[ key ] = av
+            return
+    av.release[]
+
+# the active pane's app's module folder: a hosted app's own, a
+# program's under featured/ or at silver's root; null for none
+func orbiter.app_module [] -> path
+    root : string '{path.path_startup[]}'
+    pn : string window_program[ active_pane ]
+    if [ pn.count > 0 ]
+        fm : path '{root}/featured/{pn}/{pn}.ag'
+        if [ fm.exists[] ] return fm.directory[]
+        rm : path '{root}/{pn}/{pn}.ag'
+        if [ rm.exists[] ] return rm.directory[]
+        return null
+    ed : Editor pane_at[ active_pane ]
+    av : AppView (ed) ? ed.run_view : null
+    return (av && av.src) ? av.src.directory[] : null
+
+# a card's info menu: what the module is (its size on disk, its
+# source, its lines, its repository), Launch, and its properties
+# (the config its launches take)
+func orbiter.app_info_open [ ae: AppEntry ]
+    if [ !ae || !ae.module || !ae.file ] return
+    info_ae    = ae
+    info_items = vec TrayEntry []
+    info_url   = ''
+    sz : TrayEntry own_entry[ 'size', '', 1 ]
+    sz.keys = bytes_text[ folder_bytes[ ae.file ] ]
+    info_items.push[ sz ]
+    sr : TrayEntry own_entry[ 'source', '', 1 ]
+    sr.keys = '{ae.file}'
+    info_items.push[ sr ]
+    ln : TrayEntry own_entry[ 'lines', '', 1 ]
+    ln.keys = '{module_lines[ ae.file ]}'
+    info_items.push[ ln ]
+    # the repository's page for this folder, on github as the
+    # remote names it
+    rl : git_capture[ ae.file, 'remote get-url origin', false ]
+    tl : git_capture[ ae.file, 'rev-parse --show-toplevel', false ]
+    br : git_capture[ ae.file, 'rev-parse --abbrev-ref HEAD', false ]
+    if [ rl.count > 0 && tl.count > 0 ]
+        url : string rl[ 0 ].trim[]
+        if [ url.ends_with[ '.git' ] ] url = url.mid[ 0, url.count - 4 ]
+        at : i32 [ url.index_of[ 'github.com' ] ]
+        if [ at >= 0 ]
+            rp : string url.mid[ at + 11, url.count - at - 11 ]
+            top : string tl[ 0 ].trim[]
+            fs : string '{ae.file}'
+            rel : string (fs.count > top.count)
+                ? fs.mid[ top.count, fs.count - top.count ] : ''
+            bn : string (br.count > 0) ? br[ 0 ].trim[] : 'master'
+            info_url = 'https://github.com/{rp}/tree/{bn}{rel}'
+            gh : TrayEntry own_entry[ 'GitHub', 'url', 1 ]
+            gh.keys = rp
+            info_items.push[ gh ]
+    info_items.push[ TrayEntry [ rule: true, depth: 1, check: -1 ] ]
+    info_items.push[ own_entry[ 'Edit', 'edit', 1 ] ]
+    info_items.push[ own_entry[ 'Launch', 'launch', 1 ] ]
+    # its build gone (the source stays: a build brings it back)
+    if [ can_delete[ ae ] ]
+        dl : TrayEntry own_entry[ 'Delete', 'delete', 1 ]
+        dl.keys = 'the build'
+        info_items.push[ dl ]
+    menu_items = vec TrayEntry []
+    drawer_toggle[ 'appinfo', false ]
+
+func orbiter.app_info_els [] -> Elements
+    t : Elements []
+    if [ !info_ae || !info_items ] return t
+    mb : MenuBuild []
+    n : i32 [ 0 ]
+    rules : i32 [ 0 ]
+    for [ i: i32 0, i < info_items.count, i += 1 ]
+        e : TrayEntry info_items[ i ]
+        if [ e.rule ]
+            mb.rule[]
+            rules += 1
+        el
+            mb.row[ 'info_{i}', e, i, 0 ]
+            n += 1
+    mb.finish[]
+    # the chips as MenuBuild lays them: 0.15 before the first,
+    # 0.5 after each rule, 1.05 a row, and room under the last
+    rh : f32 [ 0.15 + 1.05 * f32[ n ] + 0.5 * f32[ rules ] + 0.4 ]
+    t['head'] = PanelRows [ elements: mb.out,
+        area: Region [ 'l0 t0.3 r0 h{rh}' ] ]
+    t['info_props'] = LaunchPanel [ spec: form_spec[ info_ae ],
+        args: file_args[ info_src[] ], inst: -1,
+        area: Region [ 'l0 t{rh + 0.5} r0 b0.3' ] ]
+    return t
+
+# an app's properties alone: the actions are a running app's
+func orbiter.form_spec [ ae: AppEntry ] -> string
+    sp : string module_spec[ ae.name ]
+    if [ !sp || sp.count == 0 ] return ''
+    lp : LaunchProps []
+    Au.parse_agi[ null, sp.chars, lp ]
+    if [ !lp.props ] return sp
+    kept : vec Prop []
+    for [ q: Prop ] in lp.props
+        if [ q.type != 'func' ] kept.push[ q ]
+    lp.props = kept
+    return Au.string_agi[ lp ]
+
+# an app has a config drawer: its own form (the menus it exports)
+func orbiter.cfg_any [ ae: AppEntry ] -> bool
+    return ae && ae.module && ae.menus && ae.menus.count > 0
+
+# the orbiter menu's drawer: the app's own menus (its tabs, its
+# rows, a row's page) as the bar shows them; none without them.
+# cfg_h: its height
+func orbiter.cfg_els [ ae: AppEntry ] -> Elements
+    t : Elements []
+    un : f32 unit_px[]
+    cfg_ae = ae
+    fs : MenuSource null
+    if [ ae.menus && ae.menus.count > 0 ] fs = fold_of[ ae.name ]
+    if [ !fs ]
+        cfg_h = 0.0
+        return t
+    # a new drawer: its menus read, the first tab
+    if [ cfg_menu_of != ae.name ]
+        cfg_menu_of = ae.name
+        menu_items = fold_items[ fs ]
+        menu_top = -1
+        menu_page = ''
+        for [ i: i32 0, i < menu_items.count, i += 1 ]
+            if [ menu_top < 0 && menu_items[ i ].depth == 0 ]
+                menu_top = i
+    tabs : vec string []
+    ids  : vec string []
+    sel  : i32 [ 0 ]
+    for [ i: i32 0, i < menu_items.count, i += 1 ]
+        if [ menu_items[ i ].depth != 0 ] continue
+        if [ i == menu_top ] sel = 1 << i32[ tabs.count ]
+        tabs.push[ menu_items[ i ].label ]
+        ids.push[ 'ctab_{i}' ]
+    # one menu: its rows alone, no tabs
+    tp : f32 [ (tabs.count > 1) ? 1.8 : 0.4 ]
+    if [ tabs.count > 1 ]
+        t['cfg_tabs'] = AltTab [ buttons: ids, labels: tabs,
+            icon_ids: vec string [] [], manual: true,
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            seg_radius: 0.0, use_spacing: false, sel_mask: sel,
+            rest_fill: rgba [ '#0000' ],
+            area: Region [ 'l0.6 t0.4 w{4.5 * f32[ tabs.count ]} h1.1' ] ]
+    # the tab's rows (a page over them when a row has one)
+    rows : f32 [ 0.0 ]
+    for [ i: i32 menu_top + 1, i < menu_items.count, i += 1 ]
+        if [ menu_items[ i ].depth <= 0 ] break
+        rows += (menu_items[ i ].rule) ? 0.5 : 1.05
+    # room past the rows (a group's gaps): the panel never scrolls
+    bh : f32 [ 1.6 + rows ]
+    if [ menu_page == 'fold' && fold_page ]
+        nf : f32 [ f32[ page_fields[ fold_page ].split[ '|' ].count ] ]
+        bh = 2.0 + 1.45 * nf + 4.4
+        t['cfg_page'] = MenuPage [ form: true,
+            elements: fold_page_els[],
+            area: Region [ 'l0 t{tp} w24 h{bh}' ] ]
+    el
+        t['cfg_rows'] = MenuPanel [ items: menu_items, top: menu_top,
+            filter: '', lit: -1,
+            area: Region [ 'l0 t{tp} w24 h{bh}' ] ]
+    cfg_h = round[ un * (tp + bh + 0.4) ]
+    return t
+
+# a row of the info menu: GitHub opens its page in aura, Launch
+# runs the app with the properties set
+func orbiter.app_info_pick [ i: i32 ]
+    if [ !info_items || i < 0 || i >= info_items.count ] return
+    e : TrayEntry info_items[ i ]
+    if [ e.action == 'url' && info_url.count > 0 ]
+        ed : Editor pane_at[ active_pane ]
+        if [ ed ] ed.open_url[ info_url ]
+    el [ e.action == 'launch' ]
+        apps_pick[ active_pane, info_ae ]
+    el [ e.action == 'edit' ]
+        apps_code[ active_pane, info_ae ]
+    el [ e.action == 'delete' ]
+        app_delete[ info_ae ]
+        apps_gen += 1
+    el return
+    drawer_shut[]
+    if [ ux ] ux.restyle = true
+
+# the module's lines of code: every .ag in its folder
+func orbiter.module_lines [ dir: path ] -> i32
+    n : i32 [ 0 ]
+    entries : dir.ls[ null, false ]
+    if [ !entries ] return 0
+    for [ i: i32 0, i < entries.count, i += 1 ]
+        e : path entries[ i ]
+        if [ e.is_dir[] || e.ext[] != 'ag' ] continue
+        tx : string e.load[ typeid[string], null ]
+        if [ !tx ] continue
+        for [ k: i32 0, k < tx.count, k += 1 ]
+            if [ tx.chars[ k ] == 10 ] n += 1
+    return n
+
+# an entry chosen in the drawer: it runs; the drawer shuts
+# an entry's second part (an instance's Code): its own action
+# a program that serves its menu itself (VS Code, patched): on
+# trinity-menu-<pid>, a line an item: depth, flags, keys, label
+func orbiter.sock_menu [ wn: u64 ] -> vec TrayEntry
+    out : vec TrayEntry []
+    pid : i32 wlc_window_pid[ wn ]
+    if [ pid <= 0 ] return out
+    nm : string 'menu-{pid}'
+    buf : local i8 [ 65536 ]
+    if [ agent_sock_ask_block[ nm.chars, 'menu\n', @buf[0],
+                               65536 ] <= 0 ] return out
+    tx : string [ @buf[0] ]
+    at : i32 [ 0 ]
+    for [ ln: string ] in tx.split[ '\n' ]
+        ws : vec string ln.split[ '\t' ]
+        if [ ws.count < 4 ] continue
+        fl : string ws[ 1 ]
+        ck : i32 [ (fl.index_of[ 'C' ] >= 0) ? 1
+            : ((fl.index_of[ 'c' ] >= 0) ? 0 : -1) ]
+        rl : bool [ fl.index_of[ 'r' ] >= 0 ]
+        out.push[ TrayEntry [ label: (rl) ? '' : ws[ 3 ],
+            depth: i32[ ws[ 0 ].integer_value[] ], rule: rl,
+            enabled: fl.index_of[ 'd' ] < 0, check: ck,
+            action: 'sock.{pid}.{at}', target: '',
+            keys: (ws[ 2 ] != '-') ? ws[ 2 ] : '' ] ]
+        at += 1
+    return out
+
+# a dialog whose window has not mapped yet waits for it, 2 s
+# at most, so it opens as a sheet over that window
+func orbiter.waits_parent [ wn: u64 ] -> bool
+    par : u64 wlc_window_parent[ wn ]
+    if [ par == 0 || win_placed[ par ] ] return false
+    if [ !win_wait ] win_wait = map i64 [string] []
+    k : string '{wn}'
+    now : i64 epoch_micros[]
+    if [ !win_wait.contains[ k ] ]
+        win_wait[ k ] = now
+        return true
+    return now - win_wait[ k ] < 2000000
+
+# the background instance whose program made the window, if any
+func orbiter.background_of [ wn: u64 ] -> AppView
+    if [ !instances ] return null
+    for [ v: AppView ] in instances
+        if [ v.background && v.slot >= 0 && !v.ended
+             && made_by[ wn, host_app_pid[ v.slot ] ] ]
+            return v
+    return null
+
+# its process is pid or one of pid's children
+func orbiter.made_by [ w: u64, pid: i32 ] -> bool
+    p : i32 wlc_window_pid[ w ]
+    for [ steps: i32 0, p > 1 && steps < 64, steps += 1 ]
+        if [ p == pid ] return true
+        p = parent_pid[ p ]
+    return false
+
+# a program in the console module in that pane; a window it
+# opens takes the pane
+func orbiter.run_program [ p: path, pane: i32 ]
+    run_line[ '{p}', pane ]
+
+# a program's whole line (its file after it) run in a pane
+func orbiter.run_line [ line: string, pane: i32 ]
+    ed : Editor pane_at[ pane ]
+    if [ !ed ] return
+    rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+    sock : (wl_sock && rt) ? '{string [ rt ]}/{wl_sock}' : ''
+    # its own fonts: orbiter's lettering is never put on a program
+    ed.open_program[ line, sock, '', portal_shared[].address ]
+
+# a program in no pane (a startup app, to its tray): no button
+# until its window opens, which opens floating
+func orbiter.run_background [ line: string, org: path ]
+    root : path.path_startup[]
+    if [ !root || wl_sock.count == 0 ] return
+    rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+    sock : (rt) ? '{string [ rt ]}/{wl_sock}' : ''
+    bin : string '{install_root[]}/bin'
+    ag : string program_args[ 'env PATH={bin}:$PATH {line}',
+        sock, '', portal_shared[].address ]
+    # the registry: one console a line, never a second
+    cs : path '{root}/console/console.ag'
+    # the app it is (steam, its module), run in a console: never
+    # one of the console's own
+    nv : AppView inst_reg[].want_as[ (org) ? org : cs, cs, null, ag,
+                                     false ]
+    if [ !insts.made ] return
+    nv.viewer = true
+    nv.background = true
+    nv.module_args = ag
+    nv.host_hz = (ux) ? ux.refresh_hz[] : 60
+    inst_made[ nv ]
+    nv.start[]
+    log 'orbiter: started {line} in the background'
+
+# a line run by orbiter's own process, outside any view, on
+# orbiter's Wayland display: what needs root or devices a view
+# does not show (a container's manager, binder)
+func orbiter.run_host [ line: string ]
+    if [ wl_sock.count == 0 ] return
+    bin : string '{install_root[]}/bin'
+    lg : string '{install_root[]}/tmp/host.log'
+    # orbiter's X display and bus too: never the desktop's
+    xd : string wlc_x11_display[]
+    xl : string [ (xd.count > 0) ? 'DISPLAY={xd} ' : '' ]
+    ad : string portal_shared[].address
+    bl : string [ (ad.count > 0)
+        ? 'DBUS_SESSION_BUS_ADDRESS={ad} ' : '' ]
+    sh : command { setsid sh -c
+        "env PATH={bin}:$PATH WAYLAND_DISPLAY={wl_sock}
+        {xl}{bl}{line}" >> {lg} 2>&1 & }
+    sh.exec[ false ]
+    log 'orbiter: started {line} beside orbiter'
+
+# every module's startup line (export startup ['steam -silent'])
+func orbiter.run_startup []
+    # a hidden (test) run starts none of the user's programs
+    if [ hidden ] return
+    # once a process: a reloaded instance finds them running
+    if [ startup_ran ] return
+    startup_ran = 'ran'
+    root : path.path_startup[]
+    if [ !root ] return
+    d : path '{install_root[]}/export'
+    es : d.ls[ null, false ]
+    if [ !es ] return
+    for [ e: path ] in es
+        if [ e.ext[] != 'agi' ] continue
+        tx : string e.load[ typeid[string], null ]
+        if [ !tx ] continue
+        ln : string source_word[ tx, 'startup:' ]
+        if [ ln.count > 0 ] run_background[ ln, module_ag[ e.stem[] ] ]
+        hs : string source_word[ tx, 'host_startup:' ]
+        if [ hs.count > 0 ]
+            run_host[ hs ]
+            at : i32 svc_of_agi[ e ]
+            if [ at >= 0 ] svc_ms[ at ] = epoch_millis[]
+    # the services as the user last left them
+    if [ services_on ]
+        for [ ae: AppEntry ] in app_entries[]
+            if [ ae.serves && ae.serves.count > 0
+                 && service_is_on[ ae.name ] ] service_start[ ae ]
+
+# the modules that offer a service (export serves)
+func orbiter.service_list [] -> vec AppEntry
+    out : vec AppEntry []
+    for [ ae: AppEntry ] in app_entries[]
+        if [ ae.serves && ae.serves.count > 0 ] out.push[ ae ]
+    return out
+
+# the user left it on
+func orbiter.service_is_on [ nm: string ] -> bool
+    if [ !services_on ] return false
+    for [ s_: string ] in services_on
+        if [ s_ == nm ] return true
+    return false
+
+# its instance running in no pane, with its service's args
+func orbiter.service_start [ ae: AppEntry ]
+    if [ !svc_views ] svc_views = map AppView [ string ] []
+    if [ svc_views.contains[ ae.name ] ]
+        was : AppView svc_views[ ae.name ]
+        if [ was && !was.ended ] return
+    nv : AppView [ ]
+    nv.src = path '{ae.file}/{ae.name}.ag'
+    nv.viewer = true
+    nv.background = true
+    nv.module_args = ae.serves
+    # its purpose: a plain launch of the app never finds it
+    nv.what = 'serve {ae.serves}'
+    nv.host_hz = (ux) ? ux.refresh_hz[] : 60
+    nv.start[]
+    add_instance[ nv ]
+    svc_views[ ae.name ] = nv
+    log 'orbiter: service {ae.name} started ({ae.serves})'
+
+func orbiter.service_stop [ nm: string ]
+    if [ !svc_views || !svc_views.contains[ nm ] ] return
+    av : AppView svc_views[ nm ]
+    # closed while the map still holds it
+    if [ av ] close_task[ av ]
+    svc_views.rm[ nm ]
+    log 'orbiter: service {nm} stopped'
+
+# a switch pressed: on or off, kept as the user leaves it
+func orbiter.service_toggle [ nm: string ]
+    keep : vec string []
+    on : bool service_is_on[ nm ]
+    if [ services_on ]
+        for [ s_: string ] in services_on
+            if [ s_ != nm ] keep.push[ s_ ]
+    if [ !on ] keep.push[ nm ]
+    services_on = keep
+    save_session[]
+    if [ on ]
+        service_stop[ nm ]
+    el
+        for [ ae: AppEntry ] in service_list[]
+            if [ ae.name == nm ] service_start[ ae ]
+    if [ ux ] ux.restyle = true
+
+# a module's startup line, '' when it has none
+# the module whose startup line a console runs (its line's end)
+func orbiter.origin_of_line [ args: string ] -> path
+    if [ !args ] return null
+    d : path '{install_root[]}/export'
+    es : vec path d.ls[ null, false ]
+    if [ !es ] return null
+    for [ e: path ] in es
+        if [ e.ext[] != 'agi' ] continue
+        tx : string e.load[ typeid[string], null ]
+        if [ !tx ] continue
+        ln : string source_word[ tx, 'startup:' ]
+        if [ ln.count > 0 && args.ends_with[ ' {ln}' ] ]
+            return module_ag[ e.stem[] ]
+    return null
+
+# a module's source by its name, or its export's (silver-steam)
+func orbiter.module_ag [ nm: string ] -> path
+    dh : i32 [ i32[ nm.index_of[ '-' ] ] ]
+    n : string [ (dh >= 0) ? nm.mid[ dh + 1, nm.count - dh - 1 ] : nm ]
+    for [ ae: AppEntry ] in app_entries[]
+        if [ ae.name == n && ae.file ] return path '{ae.file}/{n}.ag'
+    return null
+
+func orbiter.startup_of [ module: string ] -> string
+    ag : path '{install_root[]}/export/{install_name_of[ module ]}.agi'
+    if [ !ag.exists[] ] return ''
+    tx : string ag.load[ typeid[string], null ]
+    return (tx) ? source_word[ tx, 'startup:' ] : ''
+
+# the extensions a module opens, by its export
+func orbiter.opens_exts [ mod: string ] -> vec string
+    out : vec string []
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        ed : Editor pane_at[ i ]
+        if [ !ed ] continue
+        return ed.exts_of[ mod ]
+    return out
+
+func orbiter.run_find_in_files []
+    nav.find_hits = vec FindHit []
+    q : string findbar_text
+    find_last_query = q
+    find_last_scope = '{(pattern_text) ? pattern_text : ''}|{(nav.search_remotes) ? 1 : 0}'
+    if [ !q || q.count == 0 ]
+        find_showing = false
+        return
+    a_slot : i32 [
+        (active_pane >= 0 && active_pane < editor_slots.count)
+        ? editor_slots[active_pane] : -1 ]
+    p : path (a_slot >= 0 && a_slot < open_files.count) ? open_files[a_slot] : null
+    scan_current : bool [ find_in_file[] && p ]
+    if [ scan_current ]
+        log 'FIND bail: in-file mode, p={p}'
+        find_showing = false
+        return
+    root : path project_root[]
+    find_scanned = 0
+    find_seen    = 0
+    find_scan_mt = 0
+    find_q_run   = q
+    # one word (letters, digits, underscore) searches through the
+    # index; anything else reads the files as before
+    if [ !tok_cache ] tok_cache = map TokBloom [string] [ ]
+    find_q_word = q.count > 1
+    for [ i_: i32 0, i_ < q.count, i_ += 1 ]
+        if [ !tok_is_word[ i32[ q[ i_ ] ] ] ] find_q_word = false
+    find_q_hash = (find_q_word) ? tok_hash[ q, 0, q.count ] : u64[
+        0 ]
+    find_dirs    = vec path []
+    find_files   = vec path []
+    find_dirs.push[ root ]
+    if [ nav.search_remotes && docked_repos ]
+        for [ nm: string ] in docked_repos
+            if [ !nav.repo_local[ nm ] ] continue
+            rd_ : path nav.repo_dir[ nm ]
+            if [ !rd_ ] continue
+            rs_ : string '{rd_}'
+            ro : string '{root}'
+            if [ rs_.compare[ ro ] != 0 ] find_dirs.push[ rd_ ]
+    # the indexer already holds every tracked file: take the list
+    # from it and skip the directory walk entirely
+    find_listed  = false
+    if [ nav.file_index && nav.file_index.count > 0 && !nav.index_building ]
+        rp : string '{root}'
+        ck : string '{root}/checkout/'
+        nav.index_lock.lock[]
+        for [ fs_: string ] in nav.file_index
+            if [ !nav.search_remotes && fs_.index_of[ rp ] != 0 ]
+                continue
+            if [ !nav.search_remotes && fs_.index_of[ ck ] == 0 ]
+                continue
+            fp_ : path fs_
+            find_seen += 1
+            if [ glob_pass[ fp_ ] ] find_files.push[ fp_ ]
+        nav.index_lock.unlock[]
+        # an index that does not cover this root answers nothing:
+        # the walk still owns that case
+        if [ find_seen > 0 ]
+            find_dirs   = vec path []
+            find_listed = true
+    find_dpos    = 0
+    find_pos     = 0
+    find_ticks   = 0
+    find_t0      = Au.epoch_millis[]
+    # the first row counts while the scan runs, then names the
+    # outcome
+    find_head    = FindHit [ is_header: true, text: 'searching...',
+                             dir: 'within {root}', file: null ]
+    nav.find_hits.push[ find_head ]
+    find_busy    = true
+    find_showing = true
+    if [ ux ]
+        ux.will_animate = true
+        ux.restyle = true
+    return
+
+# replace applies what is on screen — it never rescans
+func orbiter.run_replace []                                                                                         
+    q : string findbar_text                                                                                 
+    if [ !q || q.count == 0 ]
+        return
+    r : string [
+        (replace_text) ? replace_text
+        : '' ]                                                       
+    if [
+        find_in_file[] ]                                                                                   
+        replace_in_pane[ q,
+                         r ]                                                                             
+        return                                                                                              
+    replace_in_hits[ q,
+                     r ]                                                                                 
+                                                                                                            #
+
+# modules register rail views in install/export/*.agi:
+# views: ['name': ascii|binary|agnostic] — FileType applicability
+func orbiter.ensure_views []
+    if [ view_tools ] return
+    view_tools     = vec string []
+    view_tools_bin = vec string []
+    view_mods      = map string [string] []
+    asc9a : vec string []
+    bin9a : vec string []
+    any9a : vec string []
+    root : path.path_startup[]
+    if [ root ]
+        d : path '{install_root[]}/export'
+        entries : d.ls[ null, false ]
+        if [ entries ]
+            for [ e: path ] in entries
+                views_of_agi[ e, asc9a, bin9a, any9a ]
+    for [ s: string ] in asc9a
+        view_tools.push[ s ]
+    for [ s: string ] in bin9a
+        view_tools_bin.push[ s ]
+    for [ s: string ] in any9a
+        view_tools.push[ s ]
+        view_tools_bin.push[ s ]
+
+# scene classes modules register in install/export/*.agi
+func orbiter.ensure_scenes []
+    now : i64 Au.epoch_millis[]
+    if [ scene_names && now - scene_check < 1000 ] return
+    scene_check = now
+    root : path.path_startup[]
+    if [ !root ] return
+    d : path '{install_root[]}/export'
+    entries : d.ls[ null, false ]
+    if [ !entries ] return
+    stamp : i64 scene_exports_stamp[ entries ]
+    if [ scene_names && stamp == scene_stamp ]
+        return
+    scene_stamp = stamp
+    scene_revision += 1
+    scene_names = vec string []
+    scene_mods  = map string [string] []
+    # first entry is always 'none' -- with no scenes exported the
+    # selector drew an empty label, which reads as a broken widget
+    scene_names.push[ string 'none' ]
+    for [ e: path ] in entries
+        ax : e.ext[]
+        if [ !ax || !(ax == 'agi') ] continue
+        ftext : string e.load[ typeid[string], null ]
+        if [ !ftext ] continue
+        n2  : i32 [ ftext.count ]
+        ls_ : i32 [ 0 ]
+        for [ i: i32 0, i <= n2, i += 1 ]
+            c : i32 [ (i < n2) ? ((i32 ftext.chars[i]) & 255) : 10 ]
+            if [ c != 10 ] continue
+            line : string ftext.mid[ ls_, i - ls_ ]
+            ls_ = i + 1
+            if [ !(line.index_of[ 'scenes:' ] == 0) ] continue
+            ln : i32 [ line.count ]
+            j   : i32 [ 0 ]
+            while [ j < ln ]
+                cq : i32 [ (i32 line.chars[j]) & 255 ]
+                if [ cq != 39 ]
+                    j += 1
+                    continue
+                k : i32 [ j + 1 ]
+                while [ k < ln && ((i32 line.chars[k]) & 255) != 39 ]
+                    k += 1
+                nm : string line.mid[ j + 1, k - j - 1 ]
+                j = k + 1
+                if [ nm.count > 0 ]
+                    scene_names.push[ nm ]
+                    scene_mods[ nm ] = e.stem[]
+
+# owner-module: the compiler's name for a module's export and lib
+func orbiter.install_name_of [ m: string ] -> string
+    if [ !install_names ] install_names = map string [string] []
+    if [ install_names.contains[ m ] ] return install_names[ m ]
+    if [ !startup_path ] startup_path = path.path_startup[]
+    root : path '{startup_path}/{m}'
+    if [ projects ]
+        for [ p: Project, name: string ] in projects
+            if [ name.compare[ m ] == 0 && p.root ] root = p.root
+    url : string ''
+    if [ root.exists[] ]
+        rl : git_capture[ root, 'remote get-url origin', false ]
+        if [ rl.count > 0 ] url = rl[0].trim[]
+    if [ url.ends_with[ '.git' ] ] url = url.mid[ 0, url.count - 4 ]
+    # https://host/owner/project, or git@host:owner/project
+    sl : i32 [ -1 ]
+    for [ i: i32 0, i < url.count, i += 1 ]
+        if [ url.chars[i] == 47 ] sl = i
+    nm : string m
+    if [ sl > 0 ]
+        proj : string url.mid[ sl + 1, url.count - sl - 1 ]
+        os  : i32 [ -1 ]
+        for [ i: i32 0, i < sl, i += 1 ]
+            if [ url.chars[i] == 47 || url.chars[i] == 58 ] os = i
+        own : string url.mid[ os + 1, sl - os - 1 ]
+        # silver's own modules are named silver, as the compiler
+        # does
+        if [ own.compare[ 'ar-visions' ] == 0 && proj.compare[ 'silver' ] == 0 ]
+            own = 'silver'
+        if [ own.count > 0 ] nm = '{own}-{m}'
+    install_names[ m ] = nm
+    return nm
+
+# a module builds to one file per configuration (release, and -dbg).
+# we load these INTO THIS PROCESS, so the configuration must be
+# ours: a module of the other one drags its own trinity, devices and
+# spectra in beside the ones already loaded -- two vulkan stacks,
+# duplicate objc classes, and the GPU out of memory before the
+# second frame. the other configuration only serves when ours was
+# never built
+func orbiter.module_lib [ ln: string ] -> path
+    if [ !startup_path ] startup_path = path.path_startup[]
+    tag : string [ (debug) ? '-dbg' : '' ]
+    mn : string '{ln}{tag}'
+    own : path '{install_root[]}/build/{path.path_library[ mn.chars ]}'
+    if [ own.exists[] ] return own
+    an_ : string [ (debug) ? '{ln}' : '{ln}-dbg' ]
+    alt : path '{install_root[]}/build/{path.path_library[ an_.chars ]}'
+    return (alt.exists[]) ? alt : own
+
+# a module's library loaded for one of its types (nm), its
+# init run so its types register; mod as its export names it
+func orbiter.module_load [ mod: string, nm: string ]
+    if [ !startup_path ] startup_path = path.path_startup[]
+    lib : path module_lib[ mod ]
+    if [ !lib.exists[] ] return
+    h : dlopen[ lib.chars, 258 ]
+    if [ !h ]
+        er : cstr [ dlerror[] ]
+        log 'module: dlopen failed for {lib}: {string [ er ]}'
+        return
+    if [ Au.find_type[ nm.chars, null ] ] return
+    # an app's library has no load-time init (its main runs it):
+    # its silver_<module>_initializer, past any owner- prefix
+    for [ i: i32 -1, i < mod.count, i += 1 ]
+        # 45 is '-': the name after each, or the whole stem
+        if [ i >= 0 && mod.chars[ i ] != 45 ] continue
+        name : mod.mid[ i + 1, mod.count - i - 1 ]
+        sym : 'silver_{name}_initializer'
+        init : hook [ cast hook [ dlsym[ h, sym.chars ] ] ]
+        if [ init ]
+            init[ null ]
+            return
+
+# stage everything, commit and push; the message comes from the
+# view. push = false (shift) keeps it local
+func orbiter.do_commit [ cmsg: string, push: bool ]
+    r_ : path nav.repo_root[]
+    if [ !r_ || !cmsg || cmsg.count == 0 ] return
+    # the message rides a shell line: escape for double quotes
+    esc : string ''
+    for [ i: i32 0, i < cmsg.count, i += 1 ]
+        c_ : i32 [ cmsg.chars[ i ] ]
+        if [ c_ == 34 || c_ == 92 || c_ == 36 || c_ == 96 ]
+            esc = esc + '\\'
+        esc = esc + cmsg.mid[ i, 1 ]
+    git_capture[ r_, 'add -A', false ]
+    git_capture[ r_, 'commit -m "{esc}"', false ]
+    if [ push ] git_capture[ r_, 'push', false ]
+    nav.git_summarize[]
+    if [ ux ] ux.restyle = true
+
+func orbiter.run_search []
+    win : ux
+    ensure_views[]
+    nav.nav_note[]
+    sp     : string search_pane[]
+    title_focus : bool [
+        (win && win.focus && win.focus.id == 'title'
+         && !title_finds[] && !url_entry_on) ? true : false ]
+    typed : bool [ nav.find_text && nav.find_text.count > 0 ]
+    if [ title_focus || typed ] finder_off = false
+    # a pick in progress keeps the finder modal whatever holds
+    # focus: a press on its rows must never fall through to the tabs
+    # beneath
+    picking_ : bool [ picking[] ]
+    active : bool [ !finder_off
+        && (picking_ || title_focus || typed || list_focused[]) ]
+    # a find-in-files scan and its results own these rows until the
+    # nav itself is engaged again: its own field typed into, or a
+    # pick
+    if [ active && (find_busy || find_showing) && !picking_
+         && !typed ]
+        nav_showing = false
+        if [ ux ] ux.will_animate = true
+        return
+    if [ active ]
+        find_showing = false
+        # the model builds the rows from the pane's state
+        nav.pick_on       = picking_
+        nav.pick_dir      = pick_dir
+        nav.pick_exts     = pick_exts
+        nav.pick_cache    = pick_cache
+        nav.pick_creates  = portal_saving[] || pick_field == 'rec'
+        nav.icons         = nav_thumbs[]
+        nav.browse_single = browse_single
+        nav.grid_mode     = grid_mode
+        nav.programs_on   = system_on[]
+        nav.build_rows[]
+        pick_cache = nav.pick_cache
+    # empty results keep the view up: it says so instead of
+    # vanishing
+    nav_showing = active
+    # the list closed: its dialog history ends with it, and the
+    # title finds again
+    if [ !active ]
+        nav.nav_hist = null
+        if [ pending_finder < 0 ] nav_req = false
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        pid : 'pane{i}'
+        ed  : Editor pane_at[ i ]
+        apply_pane[ ed, active && (sp == pid), editor_slots[i] ]
+        # the surface presents the rows: new results must repaint
+        # it
+        pv : element pane_view[ i ]
+        cbe : element (pv && pv.elements) ? pv.elements['commit'] : null
+        if [ cbe ]
+            cbe.pristine = false
+    if [ ux ] ux.will_animate = true
+
+func orbiter.open_file [ p: path ]
+    open_in_pane[ p, active_pane ]
+
+# point a pane at a file and nothing else. no nav record: walking
+# the history has to land without pushing a point, since record
+# truncates the forward stack the walk is moving through
+func orbiter.bind_pane [ p: path, pi: i32 ]
+    idx : i32 [ file_slot[ p ] ]
+    if [ pi >= 0 && pi < editor_slots.count ]
+        editor_slots[pi] = idx
+        if [ pi < pane_console.count ] pane_console[pi] = ''
+        active_pane = pi
+    active_idx = idx
+    exit_finder[]
+    save_session[]
+
+func orbiter.open_in_pane [ p: path, pi: i32 ]
+    if [ pick_deliver[ p ] ] return
+    # a file in the pane: its window steps back (the dock has it)
+    if [ pane_win && pi >= 0 && pi < pane_win.count ]
+        pane_win[ pi ] = u64[ 0 ]
+    if [
+        pi >= 0 && pi < editor_slots.count && pi < nav_panes.count ]
+        cur : Editor pane_at[ pi ]
+        if [ cur && cur.src ]
+            nav_panes[ pi ].record[ pi, '{cur.src.absolute[]}',
+                                    cur.sel_line, cur.sel_col,
+                                    cur.scroll.y ]
+    bind_pane[ p, pi ]
+    # the arrival is a point too, or back overwrites the departure
+    ed : Editor pane_at[ pi ]
+    if [ ed && ed.nav ]
+        same : bool [
+            ed.loaded_src
+            && '{ed.loaded_src.absolute[]}' == '{p.absolute[]}' ]
+        if [ same ]
+            ed.nav.record[ pi, '{p.absolute[]}',
+                           (ed.sel_line < 0) ? 0 : ed.sel_line,
+                           ed.sel_col, ed.scroll.y ]
+        el
+            ed.arrive_pending = true
+
+# shift on a nav list file: it opens in a new editor tab (at most 4)
+func orbiter.open_new_tab [ p: path ] -> bool
+    if [ editor_slots.count >= 4 ] return false
+    editor_slots += -1
+    pane_console += ''
+    active_pane = editor_slots.count - 1
+    open_in_pane[ p, active_pane ]
+    save_session[]
+    if [ ux ] ux.restyle = true
+    force_update[]
+    return true
+
+func orbiter.open_at [ fp: path, lno: i32, col: i32 ] -> bool
+    open_in_pane[ fp, 0 ]
+    ed : Editor pane_at[ 0 ]
+    if [ ed ]
+        ed.goto_line[ lno ]
+        ed.sel_col    = col
+        ed.anchor_col = col
+    return true
+
+# a build log's error: silver's own (its coloured line), else
+# the first line past 'compiling', colour taken out
+func orbiter.build_log_line [ logpath: string ] -> string
+    lp : path '{logpath}'
+    if [ !lp.exists[] ] return ''
+    content : string lp.load[ typeid[string], null ]
+    if [ !content ] return ''
+    fallback : ''
+    for [ row: string ] in content.split[ '\n' ]
+        coloured : bool [ row.count > 0 && row.mid[ 0, 1 ] == '\x1b' ]
+        plain : ''
+        i : i32 [ 0 ]
+        while [ i < row.count ]
+            # an ESC [ ... m run: skip to its m
+            if [ row.mid[ i, 1 ] == '\x1b' ]
+                while [ i < row.count && row.mid[ i, 1 ] != 'm' ]
+                    i += 1
+                i += 1
+                continue
+            plain = '{plain}{row.mid[ i, 1 ]}'
+            i += 1
+        tl : string plain.trim[]
+        if [ tl.count == 0 || tl.ends_with[ 'compiling...' ] ]
+            continue
+        if [ coloured ] return tl
+        if [ fallback.count == 0 ] fallback = tl
+    return fallback
+
+func orbiter.open_at_line [ p: path, pi: i32, to_line: i32 ]
+    if [ pick_deliver[ p ] ] return
+    findbar_open = false
+    find_showing = false
+    # where we leave from is a point too, or back has nowhere to go
+    fr : Editor pane_at[ pi ]
+    if [ fr && fr.nav && fr.src ]
+        fr.nav.record[ pi, '{fr.src.absolute[]}',
+                       (fr.sel_line < 0) ? 0 : fr.sel_line,
+                       fr.sel_col, fr.scroll.y ]
+    open_in_pane[ p, pi ]
+    ed : Editor pane_at[ pi ]
+    if [ !ed ] return
+    # the ARRIVAL is its own nav point (land_on records it). a file
+    # not yet in would have its load reset the caret: that landing
+    # waits for the load
+    same : bool [
+        ed.loaded_src
+        && '{ed.loaded_src.absolute[]}' == '{p.absolute[]}' ]
+    if [ same ] ed.land_on[ to_line ]
+    el          ed.goto_pending = to_line
+
+func orbiter.force_update []
+    win : ux
+    if [ win ]
+        win.restyle      = true
+        win.will_animate = true
+
+func orbiter.exit_find_mode []
+    # closed with no pick: the program's dialog is cancelled
+    if [ pick_field == 'portal' && portal_ask ]
+        portal_shared[].finish[ portal_ask, '' ]
+        portal_ask = null
+        nav_req = false
+    # closed with no pick: the instance starts with an empty file
+    if [ pick_launch ]
+        pick_launch.asking      = false
+        pick_launch.module_args = '""'
+        pick_launch = null
+    # any pick ends with the close, not only a launch's
+    pick_field = null
+    pick_dir   = false
+    pick_exts  = null
+    pick_cache = null
+    sp_ : string search_pane[]
+    findbar_open = false
+    find_showing = false
+    nav.find_text    = ''
+    finder_off   = true
+    win : ux
+    if [ win && win.focus ]
+        win.focus.edit = ''
+        win.release_focus[ win.focus ]
+    # rebuild with the finder off — apply_pane is what puts each
+    # pane's file back and drops the nav tools row
+    run_search[]
+    # esc lands focus on the editor the search was working in
+    pi : i32 [
+        (sp_ && sp_.count > 4)
+        ? sp_.mid[ 4, sp_.count - 4 ].real_value[] : 0 ]
+    ed : Editor pane_at[ pi ]
+    if [ win && ed ] win.set_focus[ ed ]
+    force_update[]
+
+func orbiter.open_find []
+    finder_off   = false
+    findbar_open = true
+    # the field is built later this frame; ask the window to focus
+    # it by id and let animate[] resolve it before the next draw
+    if [ ux ] ux.focus_id = 'find'
+    findbar_pane = 'pane{active_pane}'
+    ed : Editor pane_at[ active_pane ]
+    if [ ed ]
+        sel : ed.selected_text[]
+        if [ sel && sel.count > 0 ]
+            nl : i32 [ sel.index_of[ '\n' ] ]
+            findbar_text = (nl >= 0) ? sel.mid[ 0, nl ] : sel
+    te : element title_at[ active_pane ]
+    if [ !te ] return
+    fe : element te.elements['find']
+    if [ fe ]
+        fe.edit       = findbar_text
+        fe.sel_col    = findbar_text->count
+        fe.anchor_col = fe.sel_col
+        fe.set_focus[]
+    force_update[]
+
+func orbiter.exit_finder []
+    nav_req      = false
+    nav.find_text    = ''
+    nav.find_results = list string []
+    win : ux
+    if [ !win ] return
+    if [ win.focus && win.focus.id == 'title' ]
+        win.focus.edit = ''
+        win.release_focus[ win.focus ]
+
+func orbiter.any_docked [] -> bool
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        if [ !pane_floats[ i ] && !pane_out[ i ] ] return true
+    return false
+
+# an instance that ended badly: build failed, crashed, an exit
+# code
+func orbiter.run_failed [ av: AppView ] -> bool
+    if [ !av || !av.ended || !av.note ] return false
+    return av.note.count > 0 && av.note != 'app exited'
+
+# the panes running an app's instances, in pane order; the next
+# after the active one shown (a group's member in the group's
+# place); false when there is nothing to step through
+func orbiter.app_step [ src: path ] -> bool
+    key : string inst_key[ src.directory[] ]
+    ps : vec i32 []
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        eq : Editor pane_at[ q ]
+        rv : AppView (eq) ? eq.run_view : null
+        if [ rv && !rv.ended && inst_reg[].app_of[ rv ] == key ]
+            ps.push[ q ]
+    if [ ps.count == 0 ] return false
+    at : i32 [ i32[ ps.index_of[ active_pane ] ] ]
+    # one, in view and selected: the pin's own toggle
+    if [ ps.count == 1 && at == 0 && !pane_hidden[ active_pane ] ]
+        return false
+    nx : i32 [ (at >= 0) ? ps[ (at + 1) % ps.count ] : ps[ 0 ] ]
+    if [ grp_of[ nx ] >= 0 ] grp_show[ nx ]
+    el [ pane_hidden[ nx ] ] unhide[ nx ]
+    el raise_pane[ nx ]
+    if [ ux ] ux.restyle = true
+    return true
+
+# where a dock launch shows: the pane already running that app,
+# else an empty docked one; -1 for none
+func orbiter.launch_pane [ src: path ] -> i32
+    key : string inst_key[ src.directory[] ]
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        eq : Editor pane_at[ q ]
+        rv : AppView (eq) ? eq.run_view : null
+        if [ rv && !rv.ended && inst_reg[].app_of[ rv ] == key ]
+            return q
+    if [ pane_empty[ active_pane ] ] return active_pane
+    for [ q: i32 0, q < editor_slots.count, q += 1 ]
+        if [ pane_empty[ q ] && !pane_floats[ q ]
+             && !pane_hidden[ q ] ]
+            return q
+    return -1
+
+# the signal, right of the battery; no room without one
+func orbiter.end_w [] -> f32
+    if [ !phone_here[] || !modem_shared[].ready ]
+        return 0.0
+    return (sig_w > 0.0) ? sig_w : 7.0 * unit_px[]
+
+# the bar shows a mobile network at its right end
+func orbiter.signal_here [] -> bool
+    return phone_here[] && modem_shared[].ready
+
+# the phone app: its running instance shown, else started here
+func orbiter.open_phone []
+    root : path.path_startup[]
+    if [ !root ] return
+    runs : vec AppView instances_of[ path '{root}/phone/phone.ag' ]
+    for [ v: AppView ] in runs
+        if [ !v.ended ]
+            show_instance[ v.iid, active_pane ]
+            return
+    ed : Editor pane_at[ active_pane ]
+    if [ ed ] ed.host_module[ 'phone', null, '' ]
+    if [ ux ] ux.restyle = true
+
+# a pane's running app by name: the module it came from (its apps
+# view card), else its own module
+func orbiter.app_name_of [ pi: i32 ] -> string
+    ed : Editor pane_at[ pi ]
+    rv : AppView (ed) ? ed.run_view : null
+    if [ !rv ] return ''
+    if [ rv.origin ] return rv.origin.stem[]
+    return (rv.app_mod) ? rv.app_mod : ''
+
+# a module with an app to run: its export wrote a props record
+# (a library writes none)
+func orbiter.is_app_src [ ms: path ] -> bool
+    nm : string install_name_of[ ms.stem[] ]
+    rec : path '{install_root[]}/export/{nm}.props.agi'
+    return rec.exists[]
+
+# the running instances of one app (its module's folder)
+func orbiter.app_runs [ key: string ] -> vec AppView
+    r : vec AppView []
+    if [ !instances || key.count == 0 ] return r
+    for [ av: AppView ] in instances
+        if [ av.slot < 0 || av.held ] continue
+        if [ av.ended && !run_failed[ av ] ] continue
+        if [ !av.src || '{av.src.directory[]}' != key ] continue
+        r.push[ av ]
+    return r
+
+# its argument is an address: its module exports protocols
+func orbiter.url_app [ rv: AppView ] -> bool
+    dp : Prop live_arg_of[ rv ]
+    if [ !dp || dp.type == 'resource' || dp.type == 'path' ]
+        return false
+    ed : Editor pane_at[ active_pane ]
+    if [ !ed ] return false
+    ed.ensure_export_registry[]
+    for [ m: string, pr: string ] in ed.export_protocol
+        if [ m == rv.app_mod ] return true
+    return false
+
+# the URL entry ends: the bar goes with its focus
+func orbiter.url_entry_end [ te: element ]
+    url_entry_on = false
+    if [ te && te.ux ] te.ux.release_focus[ te ]
+    force_update[]
+
+# every app's log: made here with no shell (the console would make
+# one, its prompt and all), its tails started once an app runs
+func orbiter.all_log [] -> ConsoleSession
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    ga : ConsoleSession ed_sessions[ 'ed:all' ]
+    if [ !ga ]
+        ga = ConsoleSession []
+        ga.name   = 'ed:all'
+        ga.nowrap = true
+        ga.cursor_visible = false
+        ed_sessions[ 'ed:all' ] = ga
+    return ga
+
+# our apps: every module whose export names its section
+# (export software ['games']), its folder in silver's own
+func orbiter.app_entries [] -> vec AppEntry
+    if [ app_list ] return app_list
+    app_list = vec AppEntry []
+    root : path path.path_startup[]
+    ex : path '{install_root[]}/export'
+    for [ f: path ] in ex.ls[ null, false ]
+        if [ f.ext[] != 'agi' || f.stem[].ends_with[ '.props' ] ]
+            continue
+        tx : string f.load[ typeid[ string ], null ]
+        if [ !tx ] continue
+        gr : string agi_word[ tx, 'software' ]
+        if [ gr.count == 0 ] continue
+        # a trinity app's props, in its own file beside this one
+        pf : path '{ex}/{f.stem[]}.props.agi'
+        pt : string [ (pf.exists[]) ? pf.load[ typeid[ string ],
+            null ] : '' ]
+        if [ !pt ] pt = ''
+        # its name: module:, which only a trinity app writes; else
+        # the file's (<owner>-<name>.agi), owner parts dropped one
+        # at a time till a module folder answers
+        mn : string agi_word[ pt, 'module' ]
+        md : path null
+        mf : path null
+        cands : vec string []
+        if [ mn.count > 0 ] cands.push[ mn ]
+        st : string f.stem[]
+        while [ st.count > 0 ]
+            cands.push[ st ]
+            dh : i32 [ st.index_of[ '-' ] ]
+            if [ dh < 0 ] break
+            st = st.mid[ dh + 1, st.count - dh - 1 ]
+        # ours at silver's root; the featured, featured/
+        bases : vec string [] [ '{root}', '{root}/featured' ]
+        for [ cn: string ] in cands
+            if [ md ] break
+            for [ base: string ] in bases
+                tf : path '{base}/{cn}/{cn}.ag'
+                if [ !md && tf.exists[] ]
+                    md = path '{base}/{cn}'
+                    mf = tf
+                    mn = cn
+        if [ !md ] continue
+        if [ !runs_here[ mf ] ] continue
+        ae : AppEntry [ name: mn, file: md, module: true, agi: f,
+            group: gr ]
+        # not a trinity app (no props): it builds a program, ours
+        # once it is in install/bin
+        if [ pt.count == 0 ]
+            ae.built = path '{install_root[]}/bin/{mn}'
+        el
+            ae.lib = path '{install_root[]}/build/lib{f.stem[]}.so'
+        ae.apps = store_apps[ mn, gr ]
+        ae.store = store_has[ mn ]
+        # a store behind a login: built is its library
+        msrc : string mf.load[ typeid[ string ], null ]
+        ae.login = (msrc) ? source_word[ msrc, 'export login' ] : ''
+        if [ ae.login.count > 0 ]
+            ae.built = null
+            ae.lib = module_lib[ 'silver-{mn}' ]
+        ae.menus = (msrc) ? source_word[ msrc, 'export menus' ]
+            : ''
+        ae.widget = agi_word[ tx, 'widget' ]
+        ae.serves = agi_word[ tx, 'serves' ]
+        ae.service = agi_word[ tx, 'service' ]
+        ae.chords = agi_word[ tx, 'chords' ]
+        ae.contains = agi_word[ tx, 'contains' ]
+        app_list.push[ ae ]
+    # ours at silver's root, from their source (a phone builds
+    # none: there only those built for it)
+    for [ d: path ] in root.ls[ null, false ]
+        n : string d.filename[]
+        m : path '{d}/{n}.ag'
+        if [ !d.is_dir[] || !m.exists[] ] continue
+        seen : bool [ false ]
+        for [ e_: AppEntry ] in app_list
+            if [ e_.name == n ] seen = true
+        if [ seen ] continue
+        src : string m.load[ typeid[ string ], null ]
+        g : string source_word[ src, 'export software' ]
+        if [ g.count == 0 || !runs_here[ m ] ] continue
+        lib : path '{install_root[]}/build/libsilver-{n}.so'
+        if [ mobile_on[] && !lib.exists[] ] continue
+        oe : AppEntry [ name: n, file: d, module: true, group: g,
+            lib: lib ]
+        oe.apps = store_apps[ n, g ]
+        oe.store = store_has[ n ]
+        oe.widget = source_word[ src, 'export widget' ]
+        oe.serves = source_word[ src, 'export serves' ]
+        oe.service = source_word[ src, 'export service' ]
+        oe.chords = source_word[ src, 'export chords' ]
+        oe.contains = source_word[ src, 'export contains' ]
+        app_list.push[ oe ]
+    # the featured: each module in featured/ that names its
+    # section (export software ['everyday']), built or not
+    for [ fn: string ] in featured_names[]
+        d : path '{root}/featured/{fn}'
+        fm : path '{d}/{fn}.ag'
+        seen : bool [ false ]
+        for [ e_: AppEntry ] in app_list
+            if [ e_.name == fn ] seen = true
+        if [ seen ] continue
+        src : string fm.load[ typeid[ string ], null ]
+        fg : string source_word[ src, 'export software' ]
+        if [ fg.count == 0 || !runs_here[ fm ] ] continue
+        fe : AppEntry [ name: fn, file: d, module: true, group: fg ]
+        fe.built = path '{install_root[]}/bin/{fn}'
+        fe.apps = store_apps[ fn, fg ]
+        fe.store = store_has[ fn ]
+        fe.login = source_word[ src, 'export login' ]
+        # a store behind a login has no program: built is its
+        # library
+        if [ fe.login.count > 0 ]
+            fe.built = null
+            fe.lib = module_lib[ 'silver-{fn}' ]
+        fe.menus = source_word[ src, 'export menus' ]
+        fe.widget = source_word[ src, 'export widget' ]
+        fe.serves = source_word[ src, 'export serves' ]
+        fe.host = source_word[ src, 'export host' ]
+        fe.service = source_word[ src, 'export service' ]
+        app_list.push[ fe ]
+    # what each build links, read once: who needs each module
+    lists : vec string []
+    users : vec string []
+    bd : path '{install_root[]}/build'
+    for [ lf: path ] in bd.ls[ null, false ]
+        if [ lf.ext[] != 'artifacts' ] continue
+        lt : string lf.load[ typeid[ string ], null ]
+        if [ !lt ] continue
+        lists.push[ lt ]
+        users.push[ lf.stem[] ]
+    for [ e_: AppEntry ] in app_list
+        e_.needed = linked_by[ e_.name, lists, users ]
+    apps_gen += 1
+    return app_list
+
+# built, and nothing else's build needs it
+func orbiter.can_delete [ ae: AppEntry ] -> bool
+    return can_pull[ ae ] && (!ae.needed || ae.needed.count == 0)
+        && built_now[ ae ]
+
+# an app of ours, not a file or a store's app
+func orbiter.can_pull [ ae: AppEntry ] -> bool
+    return ae && ae.module && !ae.opens && ae.file
+        && (!ae.launch || ae.launch.count == 0)
+        && '{ae.file}'.index_of[ '/stores/' ] < 0
+
+func orbiter.built_now [ ae: AppEntry ] -> bool
+    if [ ae.built ] return ae.built.exists[]
+    return !ae.lib || ae.lib.exists[]
+
+# its binaries and share go; its source and saved state stay
+func orbiter.app_delete [ ae: AppEntry ]
+    if [ !can_delete[ ae ] ] return
+    n : string ae.name
+    if [ instances ]
+        ending : vec AppView []
+        for [ av: AppView ] in instances
+            if [ av.app_mod == n ] ending.push[ av ]
+        for [ av: AppView ] in ending
+            close_task[ av ]
+    ins : string '{install_root[]}'
+    rm : command { rm -rf "{ins}/build/libsilver-{n}.so"
+        "{ins}/build/{n}" "{ins}/bin/{n}"
+        "{ins}/build/{n}".o "{ins}/build/{n}".o.core*.o
+        "{ins}/build/{n}".bc "{ins}/build/{n}".ll
+        "{ins}/build/silver-{n}".artifacts
+        "{ins}/build/silver-{n}".product
+        "{ins}/build/silver-{n}".source
+        "{ins}/share/silver-{n}" "{ins}/share/{n}"
+        "{ins}/export/silver-{n}".agi
+        "{ins}/export/silver-{n}".props.agi
+        "{ins}/tmp/exports/silver-{n}".* }
+    rm.exec[ false ]
+    log 'orbiter: deleted the build of {n}'
+    at : i32 install_at[ n ]
+    if [ at >= 0 ] inst_word[ at ] = 'cancelled'
+    app_list = null
+    if [ ux ] ux.restyle = true
+
+# a module hosted with its arguments, a new instance in pane pi
+func orbiter.launch_args [ pi: i32, mod: string, args: string ]
+    ed : Editor pane_at[ (pi >= 0) ? pi : active_pane ]
+    if [ ed ] ed.host_module[ mod, null, args ]
+
+# a line's first quoted word in source: "export software
+# ['games']" gives games; '' when the line is not there
+# an app past its start (its socket made, or a frame shared):
+# lldb attached any earlier loops on its stops (Linux)
+func orbiter.app_up [ av: AppView ] -> bool
+    if [ av.ready ] return true
+    rt : cstr getenv[ 'XDG_RUNTIME_DIR' ]
+    if [ !rt || !av.app_mod ] return false
+    sk : path '{string [ rt ]}/trinity-{av.app_mod}-{av.slot}.sock'
+    return sk.exists[]
+
+# a module that is a program (export run): its line from
+# install/bin; '' for a silver app
+func orbiter.run_of [ src: path ] -> string
+    if [ !src ] return ''
+    md : path src.directory[]
+    mf : path '{md}/{md.filename[]}.ag'
+    if [ !mf.exists[] ] return ''
+    tx : string mf.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    rl : string source_word[ tx, 'export run' ]
+    if [ rl.count == 0 ] return ''
+    return '{install_root[]}/bin/{rl}'
+
+# this machine's kind: x64 or arm64 (the kernel's own word)
+func orbiter.this_arch [] -> string
+    ap : path [ '/proc/sys/kernel/arch' ]
+    w : string ap.load[ typeid[ string ], null ]
+    if [ w && w.index_of[ 'aarch64' ] >= 0 ] return 'arm64'
+    return 'x64'
+
+# a module runs here: it names no platforms, or names this one
+# (export platforms ['x64'])
+func orbiter.runs_here [ m: path ] -> bool
+    if [ !m ] return true
+    src : string m.load[ typeid[ string ], null ]
+    if [ !src ] return true
+    at : i32 [ src.index_of[ 'export platforms ' ] ]
+    if [ at < 0 ] return true
+    rest : src.mid[ at, src.count - at ]
+    e : i32 [ rest.index_of[ '\n' ] ]
+    ln : string (e >= 0) ? rest.mid[ 0, e ] : rest
+    return ln.index_of[ this_arch[] ] >= 0
+
+# the selected pane's app quits: true when there was one
+func orbiter.quit_pane_app [] -> bool
+    return quit_app_in[ active_pane ]
+
+# pane pi's app quits (its window asked to close)
+func orbiter.quit_app_in [ pi: i32 ] -> bool
+    wv : u64 pane_window[ pi ]
+    if [ wv != 0 ]
+        close_window[ wv ]
+        return true
+    ed : Editor pane_at[ pi ]
+    av : AppView (ed) ? ed.run_view : null
+    if [ !av || av.ended || av.held || av.slot < 0 ] return false
+    close_task[ av ]
+    if [ ux ] ux.restyle = true
+    return true
+
+# an element inside a desktop (its grid, a card, its filter)
+func orbiter.in_desk [ f: element ] -> bool
+    for [ e: element* f, e, e = e.parent ]
+        if [ e inherits HomeView ] return true
+    return false
+
+# install a featured app: silver builds its module (every import
+# checked out, built, installed) in a console of its own,
+# install:<name>; its progress is silver's events (SILVER_EVENTS),
+# ended by the exit code
+func orbiter.install_start [ ae: AppEntry, clean: bool ]
+    root : string '{path.path_startup[]}'
+    nm : string ae.name
+    md : string '{ae.file}'
+    lg : string '{install_root[]}/tmp/install-{nm}.log'
+    # the transaction: silver's own events (SILVER_EVENTS), then
+    # end <exit code> as it exits
+    ev : string '{install_root[]}/tmp/install-{nm}.events'
+    for [ old: string ] in vec string [] [ lg, ev ]
+        unlink[ old.chars ]
+    sv : string '{install_root[]}/bin/silver'
+    # script gives silver a terminal (its own progress line shows)
+    # and keeps a log of it all for the global console
+    # verbose: every tool's own output (meson, ninja, make, the
+    # compiler) streams as it runs, not only on failure
+    cl : string [ (clean) ? ' --clean' : '' ]
+    bd : string '\'{sv}\' --verbose{cl} --build \'{md}\''
+    # macOS's script takes the log then the command
+    rec : string 'case $(uname) in Darwin) script -qeF \'{lg}\' sh -c "{bd}";; *) script -qefc "{bd}" \'{lg}\';; esac'
+    sh_ : string 'cd \'{root}\' && export SILVER_EVENTS=\'{ev}\' && {{ {rec}; }}; echo end $? >> \'{ev}\''
+    sid : string 'install:{nm}'
+    if [ !ed_sessions ]
+        ed_sessions = map ConsoleSession [string] [ ]
+    cs : ConsoleSession ed_sessions[ sid ]
+    if [ !cs ]
+        cs = ConsoleSession []
+        cs.name = sid
+        cs.nowrap = true
+        ed_sessions[ sid ] = cs
+    cs.launch_cmd = ''
+    cs.restart[]
+    cs.pending = sh_
+    if [ !inst_names ]
+        inst_names = vec string []
+        inst_pct   = vec f32 []
+        inst_word  = vec string []
+    at : i32 [ install_at[ nm ] ]
+    if [ at < 0 ]
+        inst_names.push[ nm ]
+        inst_pct.push[ -1.0 ]
+        inst_word.push[ 'starting' ]
+    el
+        inst_pct[ at ]  = -1.0
+        inst_word[ at ] = 'starting'
+    log 'install: {nm} in console {sid}, log {lg}'
+    if [ ux ] ux.restyle = true
+
+# stop an install: ctrl+C to its console reaches the whole build
+# (silver and its tools are the terminal's foreground job)
+func orbiter.install_cancel [ ae: AppEntry ]
+    if [ !ae || !ed_sessions ] return
+    cs : ConsoleSession ed_sessions[ 'install:{ae.name}' ]
+    if [ cs && cs.pty_fd >= 0 ]
+        cc : local u8 [ 1 ] [ 3 ]
+        write[ cs.pty_fd, @cc[ 0 ], 1 ]
+    at : i32 [ install_at[ ae.name ] ]
+    if [ at >= 0 ]
+        inst_word[ at ] = 'cancelled'
+        inst_pct[ at ]  = -1.0
+    log 'install: {ae.name} cancelled'
+    if [ ux ] ux.restyle = true
+
+func orbiter.install_at [ nm: string ] -> i32
+    if [ !inst_names ] return -1
+    for [ i: i32 0, i < inst_names.count, i += 1 ]
+        if [ inst_names[ i ] == nm ] return i
+    return -1
+
+# a card's host line pressed: starting, unless its window is
+# open already (then shown at once)
+func orbiter.host_press [ ae: AppEntry ]
+    ws : vec string ae.host.split[ ' ' ]
+    wd : string ws[ ws.count - 1 ]
+    n : i32 wlc_window_count[]
+    for [ i: i32 0, i < n, i += 1 ]
+        wn : u64 wlc_window_at[ i ]
+        ap : string[ wlc_window_app[ wn ] ]
+        if [ ap && ap.ends_with[ wd ] ]
+            place_window[ wn ]
+            return
+    if [ !host_names ]
+        host_names = vec string []
+        host_words = vec string []
+        host_ms = vec i64 []
+    host_names.push[ ae.name ]
+    host_words.push[ wd ]
+    host_ms.push[ epoch_millis[] ]
+    if [ ux ] ux.restyle = true
+
+# a window mapped: the card that started it is done
+func orbiter.host_mapped [ wn: u64 ]
+    if [ !host_names ] return
+    ap : string[ wlc_window_app[ wn ] ]
+    if [ !ap ] return
+    for [ i: i32 i32[ host_names.count ] - 1, i >= 0, i -= 1 ]
+        if [ !ap.ends_with[ host_words[ i ] ] ] continue
+        host_names.remove[ i ]
+        host_words.remove[ i ]
+        host_ms.remove[ i ]
+        if [ ux ] ux.restyle = true
+
+# the starting cards' bars move; two minutes is given up
+func orbiter.host_poll []
+    if [ !host_names || host_names.count == 0 ] return
+    now : i64 [ epoch_millis[] ]
+    if [ now - host_poll_ms < 100 ] return
+    host_poll_ms = now
+    for [ i: i32 i32[ host_names.count ] - 1, i >= 0, i -= 1 ]
+        if [ now - host_ms[ i ] < 120000 ] continue
+        host_names.remove[ i ]
+        host_words.remove[ i ]
+        host_ms.remove[ i ]
+    if [ ux ] ux.restyle = true
+
+# ms since a card's host line was pressed, -1 when not starting
+func orbiter.host_since [ ae: AppEntry ] -> i64
+    if [ !ae || !host_names ] return -1
+    for [ i: i32 0, i < host_names.count, i += 1 ]
+        if [ host_names[ i ] == ae.name ]
+            return epoch_millis[] - host_ms[ i ]
+    return -1
+
+# an install's word ('starting', 'building', 'installed',
+# 'failed') and progress 0..1, or null / -1 while it has none
+# a service by its module's name: its export record read once;
+# -1 when it says no ready line
+func orbiter.svc_at [ name: string ] -> i32
+    if [ !name || name.count == 0 ] return -1
+    if [ !svc_names ]
+        svc_names = vec string []
+        svc_ready = vec string []
+        svc_start = vec string []
+        svc_ms = vec i64 []
+        svc_state = vec i32 []
+        svc_busy = vec bool []
+    for [ i: i32 0, i < svc_names.count, i += 1 ]
+        if [ svc_names[ i ] == name ]
+            return (svc_ready[ i ].count > 0) ? i : -1
+    d : path '{install_root[]}/export'
+    tx : string ''
+    for [ f: path ] in d.ls[ null, false ]
+        if [ f.ext[] != 'agi' ] continue
+        st : string f.stem[]
+        if [ st != name && !st.ends_with[ '-{name}' ] ] continue
+        tx = f.load[ typeid[ string ], null ]
+        if [ tx ] break
+    rd : string (tx) ? source_word[ tx, 'ready:' ] : ''
+    sl : string (tx) ? source_word[ tx, 'host_startup:' ] : ''
+    svc_names.push[ name ]
+    svc_ready.push[ rd ]
+    svc_start.push[ sl ]
+    svc_ms.push[ i64[ 0 ] ]
+    svc_state.push[ -1 ]
+    svc_busy.push[ false ]
+    return (rd.count > 0) ? i32[ svc_names.count ] - 1 : -1
+
+# the service an export record (<owner>-<name>.agi) is
+func orbiter.svc_of_agi [ f: path ] -> i32
+    st : string f.stem[]
+    dh : i32 [ st.index_of[ '-' ] ]
+    nm : string (dh >= 0) ? st.mid[ dh + 1, st.count - dh - 1 ]
+        : st
+    return svc_at[ nm ]
+
+# a card pressed whose service is not up: counted as starting
+# it (its own line starts it, or its start line here)
+func orbiter.svc_wake [ ae: AppEntry ]
+    at : i32 svc_at[ ae.service ]
+    if [ at < 0 || svc_state[ at ] == 1 ] return
+    now : i64 [ epoch_millis[] ]
+    if [ svc_ms[ at ] > 0 && now - svc_ms[ at ] < 300000 ] return
+    svc_ms[ at ] = now
+    if [ !ae.host && svc_start[ at ].count > 0 ]
+        run_host[ svc_start[ at ] ]
+
+# each service's ready line, run beside orbiter every two
+# seconds; its exit code in a file (0: up)
+func orbiter.svc_poll []
+    if [ !svc_names || svc_names.count == 0 ] return
+    now : i64 [ epoch_millis[] ]
+    if [ now - svc_poll_ms < 500 ] return
+    svc_poll_ms = now
+    tmp : string '{install_root[]}/tmp'
+    bin : string '{install_root[]}/bin'
+    for [ i: i32 0, i < svc_names.count, i += 1 ]
+        if [ svc_ready[ i ].count == 0 ] continue
+        sn : string svc_names[ i ]
+        rc : path '{tmp}/service-{sn}.rc'
+        if [ svc_busy[ i ] ]
+            if [ !rc.exists[] ] continue
+            tx : string rc.load[ typeid[ string ], null ]
+            rc.remove[]
+            svc_busy[ i ] = false
+            up : i32 [ (tx && tx.trim[] == '0') ? 1 : 0 ]
+            if [ up != svc_state[ i ] ]
+                svc_state[ i ] = up
+                if [ ux ] ux.restyle = true
+            continue
+        if [ (now / 500) % 4 != 0 && svc_state[ i ] >= 0 ] continue
+        rl : string svc_ready[ i ]
+        sh : command { setsid sh -c
+            "env PATH={bin}:$PATH {rl} >/dev/null 2>&1;
+             echo $? > {rc}" >/dev/null 2>&1 & }
+        sh.exec[ false ]
+        svc_busy[ i ] = true
+    # a starting card's bar moves
+    for [ i: i32 0, i < svc_names.count, i += 1 ]
+        if [ svc_state[ i ] != 1 && svc_ms[ i ] > 0 && ux ]
+            ux.restyle = true
+
+# a card's service: 'starting' (started in the last five
+# minutes, not up), 'failed' (started, never up), else null
+func orbiter.svc_word [ ae: AppEntry ] -> string
+    at : i32 svc_at[ ae.service ]
+    if [ at < 0 || svc_state[ at ] == 1 || svc_ms[ at ] == 0 ]
+        return null
+    el [ epoch_millis[] - svc_ms[ at ] < 300000 ] return 'starting'
+    return 'failed'
+
+func orbiter.install_word [ ae: AppEntry ] -> string
+    if [ host_since[ ae ] >= 0 ] return 'starting'
+    sw : string svc_word[ ae ]
+    if [ sw ] return sw
+    at : i32 [ (ae) ? install_at[ ae.name ] : -1 ]
+    if [ at >= 0 && inst_word[ at ] != 'installed'
+         && inst_word[ at ] != 'cancelled' ] return inst_word[ at ]
+    # built some other way (a rebuild): updating; a store's export
+    # rerun writes build events too, and is no build of its card
+    if [ ae && build_frac[ ae.name ] > -2.0 && !store_rerun[ ae ] ]
+        return 'building'
+    return (at >= 0) ? inst_word[ at ] : null
+
+func orbiter.install_frac [ ae: AppEntry ] -> f32
+    # starting: eased toward full, a third of the way in 3 s
+    hs : i64 host_since[ ae ]
+    sv : i32 svc_at[ ae.service ]
+    # a service still coming up: it is most of the wait
+    if [ sv >= 0 && svc_state[ sv ] != 1 && svc_ms[ sv ] > 0 ]
+        hs = epoch_millis[] - svc_ms[ sv ]
+        return 1.0 - exp[ f32[ hs ] / -40000.0 ]
+    if [ hs >= 0 ] return 1.0 - exp[ f32[ hs ] / -7500.0 ]
+    at : i32 [ (ae) ? install_at[ ae.name ] : -1 ]
+    if [ ae && (at < 0 || inst_word[ at ] == 'installed') ]
+        bf : f32 build_frac[ ae.name ]
+        if [ bf > -2.0 ] return bf
+    return (at >= 0) ? inst_pct[ at ] : -1.0
+
+# each install's transaction, read twice a second from silver's
+# events: module <name> <percent> (the whole build), step <import>
+# <phase> <percent>, and end <exit code>
+func orbiter.install_poll []
+    if [ !inst_names || inst_names.count == 0 ] return
+    now : i64 [ epoch_millis[] ]
+    if [ now - inst_ms < 500 ] return
+    inst_ms = now
+    root : string '{path.path_startup[]}'
+    ch : bool [ false ]
+    for [ i: i32 0, i < inst_names.count, i += 1 ]
+        nm : string inst_names[ i ]
+        if [ inst_word[ i ] == 'cancelled' ] continue
+        evp : string '{install_root[]}/tmp/install-{nm}.events'
+        tx : string log_tail[ evp, 65536 ]
+        wd : string inst_word[ i ]
+        pc : f32 [ inst_pct[ i ] ]
+        # the module's imports, from its source: the steps are
+        # each import's phases, in order
+        tot : i32 [ import_count[ nm ] ]
+        seen : vec string []
+        cur : f32 [ 0.0 ]
+        # silver's own module percent: what moves while the
+        # imports it skips (already built) go by
+        mp : f32 [ 0.0 ]
+        for [ ln: string ] in tx.split[ '\n' ]
+            ws : vec string ln.split[ ' ' ]
+            if [ ws.count >= 4 && ws[ 0 ] == 'step' ]
+                known : bool [ false ]
+                for [ sn: string ] in seen
+                    if [ sn == ws[ 1 ] ] known = true
+                if [ !known ] seen.push[ ws[ 1 ] ]
+                cur = phase_share[ ws[ 2 ],
+                    f32[ ws[ 3 ].integer_value[] ] ]
+                wd = 'building'
+                if [ tot > 0 && seen.count > 0 ]
+                    pc = max[ mp, min[ 1.0, (f32[ seen.count - 1 ]
+                        + cur) / f32[ tot ] ] ]
+            el [ ws.count >= 3 && ws[ 0 ] == 'module'
+                 && ws[ 1 ] == nm ]
+                mp = f32[ ws[ 2 ].integer_value[] ] / 100.0
+                if [ mp > pc ] pc = mp
+                wd = 'building'
+            el [ ws.count >= 2 && ws[ 0 ] == 'end' ]
+                rc : i64 ws[ 1 ].integer_value[]
+                wd = (rc == 0) ? 'installed' : 'failed'
+                if [ rc == 0 ] pc = 1.0
+        if [ wd != inst_word[ i ] || pc != inst_pct[ i ] ]
+            inst_word[ i ] = wd
+            inst_pct[ i ]  = pc
+            ch = true
+    if [ ch && ux ] ux.restyle = true
+
+# every build silver runs writes its events: begin <pid>, its
+# module and import steps, end <code>. a build still going is an
+# app updating. a watch on their folder marks it; only a file
+# changed since its last read is read, at most twice a second
+func orbiter.build_poll []
+    dir : path '{install_root[]}/tmp/builds'
+    if [ !build_watch ]
+        dir.make_dir[]
+        build_seen = map i64 [string] []
+        build_was  = map f32 [string] []
+        build_due  = true
+        build_watch = watch [ res: dir,
+                              callback: lambda on_builds[ a ] ]
+        build_watch.start[]
+    if [ !build_due ] return
+    now : i64 [ epoch_millis[] ]
+    if [ now - build_ms < 500 ] return
+    build_ms  = now
+    build_due = false
+    nms : vec string []
+    pcs : vec f32 []
+    for [ f: path ] in dir.ls[ null, false ]
+        fnm : string f.filename[]
+        if [ !fnm.ends_with[ '.events' ] ] continue
+        nm : string fnm.mid[ 0, fnm.count - 7 ]
+        mt : i64 f.modified_time[]
+        if [ !build_seen.contains[ fnm ] || build_seen[ fnm ] != mt ]
+            build_seen[ fnm ] = mt
+            build_was[ fnm ]  = build_state[ f, nm ]
+        if [ build_was[ fnm ] > -2.0 ]
+            nms.push[ nm ]
+            pcs.push[ build_was[ fnm ] ]
+    ch : bool [ !build_names || nms.count != build_names.count ]
+    if [ !ch ]
+        for [ i: i32 0, i < nms.count, i += 1 ]
+            if [ nms[ i ] != build_names[ i ]
+                 || pcs[ i ] != build_pct[ i ] ] ch = true
+    if [ !ch ] return
+    build_names = nms
+    build_pct   = pcs
+    if [ ux ] ux.restyle = true
+
+# a build's events: how far it is, or -2 when it has ended (or
+# its process is gone: killed outright)
+func orbiter.build_state [ f: path, nm: string ] -> f32
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx || !tx.starts_with[ 'begin ' ] ] return -2.0
+    if [ tx.index_of[ '\nend ' ] >= 0 ] return -2.0
+    nl : i32 [ tx.index_of[ '\n' ] ]
+    pid : i64 tx.mid[ 6, nl - 6 ].integer_value[]
+    if [ pid <= 0 || kill[ i32[ pid ], 0 ] != 0 ] return -2.0
+    return events_frac[ tx, nm ]
+
+# how far a build's events have come, 0..1, -1 not yet known:
+# its imports' steps in order, and silver's module percent
+func orbiter.events_frac [ tx: string, nm: string ] -> f32
+    tot : i32 [ import_count[ nm ] ]
+    seen : vec string []
+    cur : f32 [ 0.0 ]
+    pc : f32 [ -1.0 ]
+    mp : f32 [ 0.0 ]
+    for [ ln: string ] in tx.split[ '\n' ]
+        ws : vec string ln.split[ ' ' ]
+        if [ ws.count >= 4 && ws[ 0 ] == 'step' ]
+            known : bool [ false ]
+            for [ sn: string ] in seen
+                if [ sn == ws[ 1 ] ] known = true
+            if [ !known ] seen.push[ ws[ 1 ] ]
+            cur = phase_share[ ws[ 2 ],
+                f32[ ws[ 3 ].integer_value[] ] ]
+            if [ tot > 0 && seen.count > 0 ]
+                pc = max[ mp, min[ 1.0, (f32[ seen.count - 1 ]
+                    + cur) / f32[ tot ] ] ]
+        el [ ws.count >= 3 && ws[ 0 ] == 'module' && ws[ 1 ] == nm ]
+            mp = f32[ ws[ 2 ].integer_value[] ] / 100.0
+            if [ mp > pc ] pc = mp
+    return pc
+
+# an app updating now: how far, 0..1 (-1 not yet known), or
+# -2 when it is not building
+func orbiter.build_frac [ nm: string ] -> f32
+    if [ !build_names || !nm ] return -2.0
+    for [ i: i32 0, i < build_names.count, i += 1 ]
+        if [ build_names[ i ] == nm ] return build_pct[ i ]
+    return -2.0
+
+# how many imports a module names (featured or at silver's
+# root): its import ... from lines
+func orbiter.import_count [ nm: string ] -> i32
+    if [ !import_counts ] import_counts = map i32 [string] []
+    if [ import_counts.contains[ nm ] ] return import_counts[ nm ]
+    n : i32 import_count_of[ nm ]
+    import_counts[ nm ] = n
+    return n
+
+func orbiter.import_count_of [ nm: string ] -> i32
+    fm : path '{path.path_startup[]}/featured/{nm}/{nm}.ag'
+    if [ !fm.exists[] ]
+        fm = path '{path.path_startup[]}/{nm}/{nm}.ag'
+    if [ !fm.exists[] ] return 0
+    n : i32 [ 0 ]
+    tx : string fm.load[ typeid[ string ], null ]
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.starts_with[ 'import ' ]
+             && ln.index_of[ ' from ' ] > 0 ]
+            n += 1
+    return n
+
+# each service a switch: on, it runs from every start, until off
+func orbiter.services_body [] -> Elements
+    t : Elements []
+    un : f32 unit_px[]
+    ch : f32 [ round[ 1.1 * un ] ]
+    gap : f32 [ round[ 0.3 * un ] ]
+    sg : Elements []
+    y : f32 [ ch ]
+    sl : vec AppEntry service_list[]
+    for [ ae: AppEntry ] in sl
+        on : bool service_is_on[ ae.name ]
+        st : string 'off'
+        if [ on ] st = 'on'
+        sg[ 'svc_{ae.name}' ] = RoundTab [
+            buttons: vec string [] [ 'svc_{ae.name}' ],
+            icon_ids: vec string [] [ '_text' ],
+            labels: vec string [] [ '{ae.name}   {st}' ],
+            label_font: 'fonts/BarlowCondensed-Regular.ttf',
+            label_px: 0.5 * ch, manual: true,
+            sel_mask: (on) ? 1 : 0,
+            seg_radius: ch * 0.5, use_spacing: false,
+            rest_fill: rgba [ '#00000026' ],
+            area: Region [ 'l{gap}px t{y}px r{gap}px h{ch}px' ] ]
+        y += ch + gap
+    t['svc_group'] = SetGroup [ title: 'services', head_h: ch,
+        elements: sg,
+        area: Region [ 'l{gap}px t0 r{gap}px h{y + gap}px' ] ]
+    return t
+
+# a build's tests at a glance, from its log: 'tests 12 / 12', ''
+# when none ran
+func orbiter.build_tests [ nm: string ] -> string
+    f : path '{install_root[]}/tmp/builds/{nm}.log'
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return ''
+    n : i32 [ 0 ]
+    bad : i32 [ 0 ]
+    for [ ln: string ] in tx.split[ '\n' ]
+        if [ ln.index_of[ 'expect: ' ] < 0 ] continue
+        n += 1
+        if [ ln.index_of[ 'failed' ] >= 0 ] bad += 1
+    if [ n == 0 ] return ''
+    return 'tests {n - bad} / {n}'
+
+# a build put away from the switcher, until it runs again
+func orbiter.build_dismiss [ nm: string ]
+    if [ !build_gone ] build_gone = map i64 [ string ] []
+    f : path '{install_root[]}/tmp/builds/{nm}.events'
+    build_gone[ nm ] = f.modified_time[]
+    if [ switch_build == nm ] switch_build = ''
+    if [ ux ] ux.restyle = true
+
+# a build's word: building (its share in build_frac), built or
+# failed by its end
+func orbiter.build_word [ nm: string ] -> string
+    if [ build_frac[ nm ] > -2.0 ] return 'building'
+    f : path '{install_root[]}/tmp/builds/{nm}.events'
+    tx : string f.load[ typeid[ string ], null ]
+    if [ !tx ] return 'ended'
+    at : i32 [ tx.index_of[ '\nend ' ] ]
+    if [ at < 0 ] return 'stopped'
+    rc : i64 tx.mid[ at + 5, tx.count - at - 5 ].trim[].integer_value[]
+    return (rc == 0) ? 'built' : 'failed'
+
+# the status bar: the four debug steps, one button each, at left
+# scene: built once per scene — a fresh element each frame churns
+# its
+# Render; a per-scene key re-appends last and covers the ui.
+# panes: hide keeps them mounted at opacity 0 — no unmount churn.
+# avatar: ALWAYS mounted, window-anchored; :summoned slides it in.
+# error: ORBITER'S OWN state, one tab off the top edge — an error
+# from an app we happen to be running belongs to that app's run band
+# the state the last instance left: it lands before the window
+# composes, so the first frame holds the exchange as it was
+# an address asked from a program or an app: a pane of its own
+# (the asker keeps its pane), opened once that pane is mounted
+func orbiter.open_beside [ url: string ]
+    if [ !url || url.count == 0 ] return
+    if [ editor_slots.count < 4 ]
+        editor_slots += -1
+        pane_console += ''
+        active_pane = editor_slots.count - 1
+        save_session[]
+    open_soon = url
+    force_update[]
+
+# the address asked, in its pane once it is there
+func orbiter.open_pending []
+    if [ instances ]
+        for [ v: AppView ] in instances
+            if [ v.open_asked ]
+                open_beside[ v.open_asked ]
+                v.open_asked = null
+    # a program's link through the portal (Steam's)
+    po : Portal portal_shared[]
+    if [ po.opens.count > 0 && !open_soon ]
+        open_beside[ po.opens[ 0 ] ]
+        po.opens.remove[ 0 ]
+    if [ !open_soon ] return
+    pane : Editor pane_at[ active_pane ]
+    if [ !pane ] return
+    if [ !pane.open_url[ open_soon ] ]
+        log 'orbiter: no module opens {open_soon}'
+    open_soon = null
+    exit_finder[]
+    if [ ux ] ux.restyle = true
+
+# an app's module source, null when it has none here
+func orbiter.code_of [ ae: AppEntry ] -> path
+    if [ !ae || !ae.module || !ae.file ] return null
+    mf : path '{ae.file}/{ae.name}.ag'
+    return (mf.exists[]) ? mf : null
+
+# the registry's word with orbiter: its asks, its build errors
+InstHost OrbInstHost
+    public orb : orbiter
+    public func ask_default [ av: AppView ] -> bool
+        return orb && orb.ask_default[ av ]
+    public func build_error [ m: string, log: string ] -> string
+        if [ !orb ] return ''
+        return orb.app_build_error[ m, log ]
+    public func is_app_src [ p: path ] -> bool
+        return !orb || orb.is_app_src[ p ]
+    public func app_up [ v: AppView ] -> bool
+        return !orb || orb.window_of[ v ] != 0
+            || orb.minimized_iid[ v.iid ]
+
+# the registry, made with orbiter as its host the first time
+func orbiter.inst_reg [] -> Instances
+    if [ !insts ]
+        insts = Instances [ host: OrbInstHost [ orb: a ] ]
+        if [ instances ]
+            for [ v: AppView ] in instances
+                insts.adopt[ v ]
+    return insts

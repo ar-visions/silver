@@ -81,15 +81,15 @@ enum Variant
     mono            : 2
 
 class Font
-    uri         : path
-    bold        : bool
-    italic      : bool
-    underline   : bool
-    var         : Variant
-    size        : f32
-    kerning     : f32
-    res         : handle
-    tf          : handle
+    public uri         : path
+    public bold        : bool
+    public italic      : bool
+    public underline   : bool
+    public var         : Variant
+    public size        : f32
+    public kerning     : f32
+    public res         : handle
+    public tf          : handle
     
     intern static font_manager_init    : hook
     intern static font_manager_dealloc : hook
@@ -282,26 +282,26 @@ func exr_ru64 [ f: handle ] -> u64
 
 
 class Image
-    uri:            path
-    surface:        Surface
-    format:         Pixel
-    pixel_size:     i32 0
-    width:          i32 0
-    height:         i32 0
-    channels:       i32 0
-    source:         Au
-    filter:         Filter
-    user:           Au
-    res2:           handle
-    res_dealloc:    hook
+    public uri:            path
+    public surface:        Surface
+    public format:         Pixel
+    public pixel_size:     i32 0
+    public width:          i32 0
+    public height:         i32 0
+    public channels:       i32 0
+    public source:         Au
+    public filter:         Filter
+    public user:           Au
+    public res2:           handle
+    public res_dealloc:    hook
     manual res_bits: ARef
     manual pixels:  @u8
     # data maps (height, normal) must upload UNORM, not sRGB
-    linear:         bool
+    public linear:         bool
     # equirect maps repeat in longitude; clamping smears the seam
-    wrap_u:         bool
+    public wrap_u:         bool
     # tiled detail textures repeat on both axes
-    wrap_v:         bool
+    public wrap_v:         bool
 
     construct [ i:symbol ]
         uri = path i

@@ -400,6 +400,17 @@ shader CanvasUI
             0.213 + 0.787 * s, 0.213 - 0.213 * s, 0.213 - 0.213 * s,
             0.715 - 0.715 * s, 0.715 + 0.285 * s, 0.715 - 0.715 * s,
             0.072 - 0.072 * s, 0.072 - 0.072 * s, 0.072 + 0.928 * s);
+        // colorize (w 2): its brightness in one hue (x), y of the way
+        if (ubo.color_filter.w > 1.5) {{
+            float l = dot(rgb, vec3(0.213, 0.715, 0.072));
+            vec3  t = clamp(abs(fract(ubo.color_filter.x / 360.0
+                + vec3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0,
+                0.0, 1.0);
+            vec3  k = clamp(l * (0.35 + 1.3 * t), 0.0, 1.0);
+            rgb = mix(rgb, k, clamp(ubo.color_filter.y, 0.0, 1.0))
+                * ubo.color_filter.z;
+            return vec4(clamp(rgb, 0.0, 1.0) * c.a, c.a);
+        }}
         rgb = clamp(sat * (hue * rgb), 0.0, 1.0) * ubo.color_filter.z;
         return vec4(clamp(rgb, 0.0, 1.0) * c.a, c.a);
     }
@@ -2219,7 +2230,7 @@ Render Canvas
     mutable cur_xform  : affine
     mutable xform_stack : vec affine
     public  gpu_sdf          : bool
-    public  load_existing    : bool [ true ]
+    load_existing    : bool [ true ]
     intern  sdf_compute      : CanvasSDFCompute
     # storage buffer holding flattened edge list
     intern  edge_buf         : Buffer
@@ -3006,6 +3017,12 @@ Render Canvas
                     || brightness != 1.0) ? 1.0 : 0.0 ]
         states[state_depth - 1].color_filter = vec4f [ hue, saturate,
                 brightness, on ]
+
+    # what is drawn after: its brightness in one hue (degrees), amount
+    # of the way (0..1), times brightness
+    func colorize [ hue: f32, amount: f32, brightness: f32 ]
+        states[state_depth - 1].color_filter = vec4f [ hue, amount,
+                brightness, 2.0 ]
 
     func set_stroke_size [ sw: f32 ]
         states[state_depth - 1].stroke_width = sw
@@ -4098,6 +4115,18 @@ Render Canvas
                 rect = vec4f [ maxf[ rect.x, outer.x ],
                     maxf[ rect.y, outer.y ], minf[ rect.z, outer.z ],
                     minf[ rect.w, outer.w ] ]
+            # flush with the outer's corners: the larger arc is the
+            # intersection's own, drawn by the shader (no mask)
+            if [ clip_in_arcs[ rect, outer, outer_r ] ]
+                fr : vec4f corner_radii[ rect, outer, outer_r ]
+                if [ fr.x >= 0.0 && fr.y >= 0.0 && fr.z >= 0.0
+                     && fr.w >= 0.0 ]
+                    states[state_depth - 1].clip_round = true
+                    states[state_depth - 1].clip_rect  = rect
+                    states[state_depth - 1].clip_radii = vec4f [
+                        maxf[ fr.x, radii.x ], maxf[ fr.y, radii.y ],
+                        maxf[ fr.z, radii.z ], maxf[ fr.w, radii.w ] ]
+                    return
             if [ clip_in_arcs[ rect, outer, outer_r ] ]
                 # the outer's rounded shape goes to the mask, the inner
                 # stays the analytic rect: the shader applies both
@@ -4113,6 +4142,30 @@ Render Canvas
         states[state_depth - 1].clip_round = true
         states[state_depth - 1].clip_rect  = rect
         states[state_depth - 1].clip_radii = radii
+
+    # a rect inside a rounded one, corner by corner: the outer's
+    # radius where their corners meet, none where the rect's corner is
+    # clear of the arc, -1 where it cuts an arc (a mask then)
+    func corner_radii [ r: vec4f, o: vec4f, orad: vec4f ] -> vec4f
+        out : vec4f [ 0.0, 0.0, 0.0, 0.0 ]
+        # tl tr br bl: the corner, the outer's, its radius
+        for [ i: i32 0, i < 4, i += 1 ]
+            cx : f32 [ (i == 0 || i == 3) ? r.x : r.z ]
+            cy : f32 [ (i < 2) ? r.y : r.w ]
+            ox : f32 [ (i == 0 || i == 3) ? o.x : o.z ]
+            oy : f32 [ (i < 2) ? o.y : o.w ]
+            rd : f32 [ (i == 0) ? orad.x : ((i == 1) ? orad.y
+                : ((i == 2) ? orad.z : orad.w)) ]
+            dx : f32 [ abs[ cx - ox ] ]
+            dy : f32 [ abs[ cy - oy ] ]
+            v : f32 [ 0.0 ]
+            if [ rd > 0.0 && dx < rd && dy < rd ]
+                v = (dx < 0.5 && dy < 0.5) ? rd : -1.0
+            if [ i == 0 ] out.x = v
+            el [ i == 1 ] out.y = v
+            el [ i == 2 ] out.z = v
+            el out.w = v
+        return out
 
     # a mask canvas the size of this one, cleared
     func clip_mask_canvas [ opaque: bool ] -> Canvas

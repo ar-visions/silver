@@ -52,8 +52,8 @@ class MdTile
     mutable frame  : i32 [ -1 ]
 
 element markdown : trinity
-    public width   : i32 [ 980 ]
-    public height  : i32 [ 1180 ]
+    width   : i32 [ 980 ]
+    height  : i32 [ 1180 ]
     # a new file at runtime: watch its folder, the draw reparses
     default [ Live ] src : resource
         watch_src[]

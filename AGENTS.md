@@ -108,6 +108,16 @@ build's bare addresses, logs or guesses first.
 
 ---
 
+## Rule #4c — orbiter flies: the speed test passes
+
+After any change to trinity or orbiter, `python3 support/test-
+windows.py` passes before it is reported: the desktop and a free
+window (still, moved, sized) at 160 frames a second or more,
+uncapped. A drop under that is a bug to fix, never a number to
+report and move past (Nov 19: a free window had fallen to 20 fps).
+
+---
+
 ## Rule #5 — AGENTS.md is the only memory
 
 `AGENTS.md` is the only project memory file. When the user asks to make a memory, write it here. Do not search for or choose another memory location. The user decides what belongs in memory.
@@ -16837,6 +16847,48 @@ In order:
    partition, our root; the user's own step: a restart into
    recovery to allow the third-party kernel.
 
+## screenshots app, menus, apps — live list (Nov 18 2026)
+
+the user's asks, in order:
+1. BUILT, checked in the test copy: screenshots as its own app
+   (screenshots/), over orbiter's system api, so any app can use it.
+   - orbiter's system api (Desktop.ag system_line), lines on its
+     socket, an app's --opener: 'app system <mod> <slot> <verb>':
+     windows (answers 'set windows x y w h,...'), hide, shot screen |
+     rect x y w h <file>, record screen | rect x y w h | window x y
+     <file>, record stop. Files go under the asker's home
+     (install/home/<mod>/<file>); the answer is 'call system_done
+     <file>' on its own socket. A shot cuts the frozen capture (else
+     the screen now); a take is orbiter's own recorder over that part
+     (trinity element.record_rect 'x y w h' points -> Recorder crop_x
+     y w h), started once the overlay is off the screen.
+   - chords (export chords ['3=screen 4=region 5=tools']): orbiter
+     freezes the screen, hosts the app over it (AppOverlay), hands
+     it the word. 5 is the tool window: Screen, Window, Selection,
+     Record screen / window / selection, close. A chord while a take
+     runs stops it; the desktop clock reads 'recording m:ss'.
+   - the desktop: the app's files (export contains) are its drawer
+     under its icon (the standard folder band): one row, then 'all N';
+     'all' shows every one. No cards beside the icon.
+   - trinity agent_path_send (navigator.c gone).
+   Checked: a selection shot 320 x 240; a selection take 640 x 400
+   and a window take 1200 x 770 (the pane), each stopped by the
+   chord, frames of the screen without the overlay; the drawer's row
+   and 'all 11'. NOT seen: the tool window drawn (hidden runs show no
+   hosted frames; driven on the app's socket), on his screen.
+   OPEN: an icon (his); video cards show the module icon; the clock
+   shows in a take of its own pane; drag a shot onto the console.
+2. DONE a file named with spaces reached an app cut at the space
+   (the player's videos, asnes's .spc): AppView.start quotes the doc,
+   the navigator's picks quote theirs (orbiter arg_word); silver-host
+   already took "a b" as one word. Seen: player decodes a video named
+   '2026-11-18 19.04.51.mp4' from the drawer. asnes not driven.
+3. DONE the popup menu 20% larger (trinity/popup.ag); not seen.
+4. DONE Delete in the app info menu, after Launch ('Delete · the
+   build'): app_delete (its instances ended; its library, program,
+   share and records removed; the source kept). Only where
+   can_delete. Seen in the test copy on screenshots (rebuilt after).
+
 ## screenshots service — live list (Nov 17 2026)
 
 the user, on orbiter-os: an app `screenshots`, a service that runs
@@ -17146,6 +17198,33 @@ back; a file beside the desktop half moved right, left, bottom,
 left, right, left, then onto the desktop half (it took its place). NOT seen: apps in split panes, a session restart with a
 tree (pane_tree is persist: a reload keeps it).
 
+## orbiter split into files (Nov 18 2026)
+
+DONE (his: orbiter.ag under 4k lines; already designed) silver's
+`func Class.method` (a method declared in its class, its body written
+in another file of the module) takes a header over several lines now,
+as in its class (silver.c: on while a [ is open; features
+t_out_of_class_long_header). orbiter.ag 22,575 -> 2,736 lines: the
+class keeps its members and a declaration per method; the classes and
+the method bodies are in extension files by topic, imported after the
+class (its bodies must be read before phase 1 lays the class out):
+Panes, Chrome (bars, menus, drawers), Dock, Desktop, Settings, Apps,
+Find, Nav, Session (reload, state), Input (the on_ handlers), Frame
+(init, render, tick), Agents, Debug, Lang, Scenes. Built; a boxed
+headless orbiter drew its desktop and opened the orbiter menu.
+Five bodies stayed (own_entry, app_build_error, linked_by, setting,
+chip_grid: their bodies do not start at the method's indent).
+Then (his: Lang and Scenes as modules; Scenes dropped): `lang`
+(SyntaxService: each open file's syntax map kept current, a handler
+module's colouring, the borrowed sections; orbiter's syntax_tick
+applies what poll hands back). Then (the system settings) `machine`:
+sound devices (list, default, choose), card names, the time zone and
+its label, time_words, power off / restart, Battery, Light; tests
+t_time_words, t_zone_label. orbiter keeps the panels and its saved
+values. Checked boxed: a file coloured, the Sound panel's device list.
+Found: vol_spectrum fills vol_bands that nothing reads (a DFT every
+frame): left as it is, his call.
+
 ## orbiter's next pieces — live list (Nov 17 2026)
 
 the user's picks, none started:
@@ -17191,3 +17270,108 @@ run: silver-host's refusal when a library under the app was rebuilt
 since launch (added Oct 20) is gone; the reload goes ahead over the
 copy already loaded, and logs that the rebuilt library's new code
 waits for a restart. Takes the launcher's next start.
+
+## instancing: one registry for every app instance (Nov 18 2026)
+
+the user: instancing broken (a dock press on console started another,
+at random); then "FAR more organized instancing, decentral, in
+module form". DONE:
+1. `instancing/` module: AppView moved out of orbiter's Editor.ag
+   (its own class now, not a ResourceView); Instances, the registry:
+   want[ src, doc, what, fresh ] gives the live one for a module, a
+   document and a purpose (a console's program line, a service's
+   args), else makes one; fresh (the menu's New instance) always
+   makes one. InstHost is the shell's side (ask_default, build_error,
+   is_app_src); orbiter's is OrbInstHost (Apps.ag), its registry
+   orbiter.insts (inst_reg[]), orbiter.instances its list.
+   t_one_per_document passes.
+2. every launch asks it: host_module (files, consoles, urls),
+   show_app, start_instance (play reuses the running one; only New
+   instance makes another), run_background (one console a startup
+   line). inst_made[] holds the shared new-instance step.
+3. the cause of the stray consoles: a console is a hosted viewer,
+   and the dock's run list and show_app skipped viewers, so a press
+   on console's pin with it already shown made a new one. The dock
+   now steps through the registry's live_of.
+Checked in a box with the supervisor (scratchpad lag/start2.sh,
+box2.sh; box.sh's SILVER_ISOLATE=0 has no host: every start fails
+and ends, so every press is new there): ten console presses, one
+instance; psx and console alternated four times, one each, grouped.
+OPEN: widgets (desk_views) and the navigator overlay (nav_view)
+keep their own maps, outside the registry; arg_new and copy_instance
+make new ones on purpose (add_instance, through the registry).
+
+## Window drag speed — CRITICAL, live list (Nov 19 2026)
+
+the user: dragging even one window on the desktop runs at most 20
+fps; the home screen drew at 350 fps a week ago; 160 is the floor.
+Speed is a test requirement (support/test-windows.py gains fps
+cases, uncapped: SILVER_HZ=1000 + `animate 1`).
+Measured in the box (1280 x 800, a file window, 60 Hz cap):
+desktop 60 fps, 99 ms of drawing a second; one docked window 60 fps,
+123 ms; a FREE window 29 fps dragging, 562 ms drawing a second and
+GPU waits of 564 ms (render0) + 220 ms (clip) a second; standing
+still it still draws ~430k elems a second. So a free window, not the
+drag, is the cost.
+Found, in order:
+1. A free window's strip, foot, console bar, the system strip and the
+   navigator title were `animated: true` only for their blurred
+   ground: drawn whole every frame. BUILT: a Layer may be `live`
+   (trinity Layer.live, true for a background_lens; orbiter
+   BlurGround says true): left out of the element's cached picture
+   and drawn on the screen under it each frame (live_layers in
+   draw_element, before the masked or plain composite). The five
+   elements are no longer animated. Left: WinGround (ground0) and
+   ToolRail (rail) still draw every frame (both `animated: true`).
+2. A move (an area change) repainted the moved element's own cached
+   picture: BUILT moved_up (trinity): a cached element moved keeps its
+   picture; an uncached one repaints its holder.
+3. The GPU waits: a free window clips its contents to its 8 px rounded
+   corners; every plain rect clip inside it that reaches a corner arc
+   (the strip, foot, text, grips) fell back to a mask canvas
+   (clip_to_path: a mask render + sync_all per clip). BUILT, not yet
+   measured: Canvas.corner_radii: a plain rect flush with the outer's
+   corners takes the outer's radii analytically (no mask).
+   DONE (Nov 19): measured, then widened: a rounded inner clip
+   flush with the outer's corners takes the larger arc of each corner
+   (the window's strip, foot and body: 4,900 masks a run were these).
+4. DONE (Nov 19, his: the cursor captured by a window, nothing under
+   it reacts) while a drag holds the pointer with no topmost window
+   round it (the bar's pull-free grab), only the held element and its
+   parents take the near light: the desktop grid had repainted whole
+   (1202 x 771) every move. trinity near_now and the move path.
+5. DONE support/test-windows.py `speed`: SILVER_HZ=1000, animate 1;
+   desktop, a free window still, moved by its strip, sized by a grip,
+   each >= 160 fps. At 1280 x 800: 984, 391, 330, 325 (was 29 free).
+   At 2560 x 1440 (perf run): 960, 370-390, 300-350, 220-315.
+   Fix: a free window's GPU waits 880 -> ~12 a second.
+6. DONE, built, checked hidden: trinity paints_nothing: an element with
+   no layer but its idle scrollbar, no children and no draw of its own
+   (asked once a type, draws_itself) paints nothing (the free window's
+   grips repainted each resize frame): sized 154 -> 223-267 fps.
+7. WRITTEN, compiles, NOT built (his: "we cant have a limit with an
+   os"): the hosted apps' slots grow. The 8th app got slot -1 and read
+   "no silver-host supervisor" (HOST_APPS 8: the Steam console,
+   commune, stocks and four consoles filled it). Now one block whose
+   header holds the slot count (slots) and the clipboard, the slots
+   after it (HostApp app[]); every process keeps 64 GB of addresses
+   for it, so a slot never moves; host_app_request doubles the block
+   (ftruncate) when every slot is taken and returns -2 only when it
+   cannot (AppView: "every app slot is in use"); hs_cap / shm_cap map
+   the grown part. The sound scope lives in each SlotPlayer, players
+   and the supervisor's spawned pids in lists that grow. A view no
+   longer binds every slot's log up front: a joining instance grafts
+   its own (view_graft_into). Needs orbiter started fresh (the old
+   supervisor's block has the old layout): not built while his
+   orbiter runs.
+8. OPEN (his): a console opening shows the desktop through its pane
+   for a frame or two before its first picture.
+OPEN: WinGround and ToolRail still draw every frame (animated: true);
+a dock element with id 'apps' has an argument that changes every frame
+(apply_args, no repaint seen); not seen on his screen.
+ALSO FOUND (Nov 19): the test's Box.close left every boxed orbiter
+running (pgrep -f on the folder: the folder is in their environment,
+not their args): ~30 hidden orbiters at 40-50% CPU and 60 GB froze
+the machine. Fixed: the box runs in its own session (killpg) and
+close kills every process whose environment names its folder. Before
+any boxed run: `pgrep -fa 'orbiter --hidden'` must be empty after.

@@ -1,0 +1,285 @@
+# instancing: the apps a shell runs, one registry. An app runs once
+# for a module and a document; a second is made only when asked for
+# (a new instance), or when the module exports `instances ['many']`.
+# Every launch asks here first, so no path makes a stray one.
+
+export 0.1.0
+
+import vec
+import img
+import trinity
+import devices
+import dbg
+
+import <stdio.h>
+import <stdlib.h>
+import <string.h>
+import <host.h>
+    -I{project_path}/devices
+ifndef [ windows ]
+    import <unistd.h>
+        +_DEFAULT_SOURCE
+        +_XOPEN_SOURCE=500
+import <fcntl.h>
+import <sys/stat.h>
+import <signal.h>
+import <time.h>
+
+import AppView
+
+# silver's install, wherever the shell was started
+func inst_root [] -> path
+    i : path path.path_install[]
+    if [ i ] return i
+    return path '{path.path_startup[]}/install'
+
+# bytes up to a 0 as text
+func inst_text [ b: vec u8 ] -> string
+    tb : local i8 [ 1024 ]
+    tn : i32 [ (b.count < 1023) ? i32[ b.count ] : 1023 ]
+    for [ j: i32 0, j < tn, j += 1 ]
+        tb[ j ] = i8[ b[ j ] ]
+    tb[ tn ] = 0
+    return string[ @tb[0] ]
+
+# a path as one spelling ('' for none)
+func inst_key [ p: path ] -> string
+    if [ p == null ] return ''
+    # a path's truth is its existence: spell one that is gone as is
+    if [ !p.exists[] ] return '{p}'
+    return '{p.absolute[]}'
+
+# what the shell does for the apps it holds
+class InstHost
+    # an app that asks for its argument before it starts
+    public func ask_default [ av: AppView ] -> bool
+        return false
+    # the line in a failed build's log that names the error
+    public func build_error [ m: string, log: string ] -> string
+        return ''
+    # the module has an app to run
+    public func is_app_src [ p: path ] -> bool
+        return true
+    # a background program (a tray's) has its app up: a window open
+    # or minimized; else only its service end runs
+    public func app_up [ v: AppView ] -> bool
+        return true
+
+# the shell's running apps, in the order made
+class Instances
+    public list : vec AppView
+    public host : InstHost
+    intern seq  : i32
+    # the last want made a new one (false: it found one running)
+    public made : bool
+
+    func init []
+        list = vec AppView []
+
+    # a new one, numbered and held here
+    public func add [ av: AppView ]
+        seq += 1
+        av.iid  = seq
+        av.host = host
+        list.push[ av ]
+
+    # one kept from before (a reload): its number stays
+    public func adopt [ av: AppView ]
+        if [ av.iid > seq ] seq = av.iid
+        av.host = host
+        list.push[ av ]
+
+    # one taken out (stopped and gone)
+    public func remove [ av: AppView ]
+        for [ i: i32 i32[ list.count ] - 1, i >= 0, i -= 1 ]
+            if [ list[ i ] == av ] list.remove[ i ]
+
+    public func by [ iid: i32 ] -> AppView
+        for [ v: AppView ] in list
+            if [ v.iid == iid ] return v
+        return null
+
+    # every instance of a module's app, running or not: by the app
+    # it is (a startup line's console is its module's, never the
+    # console's)
+    public func of [ src: path ] -> vec AppView
+        out : vec AppView []
+        if [ !src ] return out
+        k : string inst_key[ src.directory[] ]
+        for [ v: AppView ] in list
+            if [ app_of[ v ] == k ] out.push[ v ]
+        return out
+
+    # those of a module still going (not ended)
+    public func live_of [ src: path ] -> vec AppView
+        out : vec AppView []
+        for [ v: AppView ] in of[ src ]
+            if [ !v.ended ] out.push[ v ]
+        return out
+
+    # a service's instance: it runs in no window
+    public func serving [ v: AppView ] -> bool
+        return v.what && v.what.starts_with[ 'serve ' ]
+
+    # the one running a module on a document and for a purpose (a
+    # console's program, a service's args; '' plain); null: none
+    public func find [ src: path, doc: path, what: string ] -> AppView
+        k : string inst_key[ doc ]
+        w : string [ (what) ? what : '' ]
+        for [ v: AppView ] in live_of[ src ]
+            vw_ : string [ (v.what) ? v.what : '' ]
+            if [ inst_key[ v.doc ] == k && vw_ == w ] return v
+        return null
+
+    # the one to show: the running one, else a new one; fresh asks
+    # for a new one beside it. made says which
+    public func want [ src: path, doc: path, what: string,
+                       fresh: bool ] -> AppView
+        return want_as[ src, src, doc, what, fresh ]
+
+    # the same for an app that runs as another module's program (a
+    # startup line in a console): found under app, run as src
+    public func want_as [ app: path, src: path, doc: path,
+                          what: string, fresh: bool ] -> AppView
+        made = false
+        f : AppView find[ app, doc, what ]
+        if [ f && !fresh ] return f
+        made = true
+        nv : AppView [ ]
+        nv.src = src
+        if [ inst_key[ app ] != inst_key[ src ] ] nv.origin = app
+        nv.doc = doc
+        nv.what = what
+        add[ nv ]
+        return nv
+
+    # the next of a module's instances after av (wrapping), for a
+    # press that steps through them; null when it has none
+    public func next_of [ src: path, av: AppView ] -> AppView
+        lv : vec AppView []
+        # a service has no window to step to
+        for [ v: AppView ] in live_of[ src ]
+            if [ !serving[ v ] ] lv.push[ v ]
+        if [ lv.count == 0 ] return null
+        for [ i: i32 0, i < lv.count, i += 1 ]
+            if [ lv[ i ] == av ] return lv[ (i + 1) % lv.count ]
+        return lv[ 0 ]
+
+    # one running as an app: started (or asking for its argument),
+    # not held or ended, no service, and a background program only
+    # with its app up (steam's tray alone is no app)
+    public func running_one [ v: AppView ] -> bool
+        if [ !v || v.ended || v.held || serving[ v ] ] return false
+        if [ v.background && host && !host.app_up*[ v ] ] return false
+        return v.slot >= 0 || v.asking
+
+    # every app running, in the order made
+    public func running [] -> vec AppView
+        out : vec AppView []
+        for [ v: AppView ] in list
+            if [ running_one[ v ] ] out.push[ v ]
+        return out
+
+    # the folder of the module an instance belongs to: the one that
+    # started it (origin: a card's program, a startup line in a
+    # console), else its own
+    public func app_dir [ v: AppView ] -> path
+        if [ !v ] return null
+        if [ v.origin ] return v.origin.directory[]
+        return (v.src) ? v.src.directory[] : null
+
+    # the app an instance belongs to, as one spelling
+    public func app_of [ v: AppView ] -> string
+        d : path app_dir[ v ]
+        return (d) ? inst_key[ d ] : ''
+
+    # an app's running instances, by its module's folder
+    public func live_app [ dir: path ] -> vec AppView
+        out : vec AppView []
+        k : string inst_key[ dir ]
+        for [ x: AppView ] in running[]
+            if [ app_of[ x ] == k ] out.push[ x ]
+        return out
+
+    # an app's running instances, as v's (v among them)
+    public func of_app [ v: AppView ] -> vec AppView
+        out : vec AppView []
+        k : string app_of[ v ]
+        if [ k.count == 0 ] return out
+        for [ x: AppView ] in running[]
+            if [ app_of[ x ] == k ] out.push[ x ]
+        return out
+
+    # one running instance an app (its first), in the order made
+    public func firsts [] -> vec AppView
+        out : vec AppView []
+        seen : vec string []
+        for [ v: AppView ] in running[]
+            k : string app_of[ v ]
+            if [ k.count == 0 || seen.index_of[ k ] >= 0 ] continue
+            seen.push[ k ]
+            out.push[ v ]
+        return out
+
+    # a press on an app: the instance after the one shown (wrapping),
+    # the first when none of its is shown
+    public func step [ v: AppView, shown: AppView ] -> AppView
+        g : vec AppView of_app[ v ]
+        if [ g.count == 0 ] return null
+        for [ i: i32 0, i < g.count, i += 1 ]
+            if [ g[ i ] == shown ] return g[ (i + 1) % g.count ]
+        return g[ 0 ]
+
+expect func t_one_per_document [] -> bool
+    r : Instances [ host: InstHost [] ]
+    s : path '/src/silver/psx/psx.ag'
+    d : path '/tmp/rr.cue'
+    a : AppView r.want[ s, d, '', false ]
+    b : AppView r.want[ s, d, '', false ]
+    c : AppView r.want[ s, d, '', true ]
+    e : AppView r.want[ s, null, '', false ]
+    k : AppView r.want[ s, null, 'top', false ]
+    k2 : AppView r.want[ s, null, 'top', false ]
+    return a == b && c != a && e != a && k != e && k == k2
+        && r.list.count == 4 && r.live_of[ s ].count == 4
+        && r.next_of[ s, a ] == c
+
+# a host whose background programs have no window until up is set
+InstHost NoWindows
+    public up : bool
+    public func app_up [ v: AppView ] -> bool
+        return up
+
+expect func t_one_entry_an_app [] -> bool
+    r : Instances [ host: InstHost [] ]
+    cs : path '/src/silver/console/console.ag'
+    ps : path '/src/silver/psx/psx.ag'
+    a : AppView r.want[ cs, null, 'steam', false ]
+    b : AppView r.want[ cs, null, '', false ]
+    c : AppView r.want[ ps, null, '', false ]
+    sv : AppView r.want[ cs, null, 'serve 7788', false ]
+    # a console a startup line runs: steam's, never the console's
+    sa : path '/src/silver/featured/steam/steam.ag'
+    st : AppView r.want_as[ sa, cs, null, 'steam -silent', false ]
+    again : AppView r.want_as[ sa, cs, null, 'steam -silent', false ]
+    plain : AppView r.want[ cs, null, 'steam -silent', false ]
+    for [ v: AppView ] in r.list
+        v.slot = 1
+    f : vec AppView r.firsts[]
+    sd : path '/src/silver/featured/steam'
+    # its tray alone: no app (a host saying so); then its window
+    st.background = true
+    nh : NoWindows []
+    r.host = nh
+    down : bool [ r.live_app[ sd ].count == 0 ]
+    nh.up = true
+    return down && again == st && plain != st
+        && st.src == cs && r.live_of[ sa ].count == 1
+        && r.live_of[ cs ].index_of[ st ] < 0
+        && r.running[].count == 5 && f.count == 3 && f[ 0 ] == a
+        && f[ 1 ] == c && f[ 2 ] == st && r.of_app[ b ].count == 3
+        && r.live_app[ sd ].count == 1
+        && r.live_app[ sd ][ 0 ] == st
+        && r.step[ a, a ] == b && r.step[ a, b ] == plain
+        && r.step[ a, plain ] == a
+        && r.step[ a, null ] == a && !r.running_one[ sv ]

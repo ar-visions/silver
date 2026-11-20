@@ -1,0 +1,226 @@
+extend trinity
+
+# a popup's row
+class PopItem
+    # images/<icon>.svg in the app's share ('' none)
+    public icon   : string
+    public label  : string
+    # what the menu's pick is handed when it is pressed
+    public act    : string
+    # a switch's row: lit while on
+    public on     : bool
+    # a destructive one (remove, quit): red
+    public danger : bool
+    # plain words: no press
+    public note   : bool
+    # a text box asking for words; its label is the hint
+    public field  : bool
+
+# a row's height in px
+func pop_item_h [ it: PopItem ] -> f32
+    if [ it.field ] return 46.0
+    if [ it.note ] return 30.0
+    return 34.0
+
+func pop_height [ items: vec PopItem ] -> f32
+    h : f32 [ 0.0 ]
+    for [ it: PopItem ] in items
+        h += pop_item_h[ it ]
+    return h
+
+# a menu's place: under a press at x, y, inside a w x h window
+func pop_region [ x: f32, y: f32, w: f32, h: f32,
+                  items: vec PopItem ] -> Region
+    ph : f32 pop_height[ items ]
+    pw : f32 [ 270.0 ]
+    px : f32 [ x - 20.0 ]
+    if [ px + pw > w - 6.0 ] px = w - 6.0 - pw
+    if [ px < 6.0 ] px = 6.0
+    py : f32 [ y + 14.0 ]
+    if [ py + ph > h - 6.0 ] py = h - 6.0 - ph
+    if [ py < 6.0 ] py = 6.0
+    return Region [ 'l{px}px t{py}px w{pw}px h{ph}px' ]
+
+# the panel a press slides out where it was pressed: a window's
+# look, an icon column, a row an item; pick takes a row's act,
+# enter the text box's words, quit an escape there
+element PopMenu
+    # a popup is drawn last, over everything beside it
+    topmost : true
+    public items : vec PopItem
+    public pick  : lambda none [ string ]
+    public enter : lambda none [ string ]
+    public quit  : lambda none [ ]
+
+    style : CSS {
+        layers.ground:
+            fill_color: #17142a
+            radius: 8
+            box_shadow: 0 8px 20px #000a
+        layers.strip:
+            area: l0 t0 w40px b0
+            fill_color: #ffffff0a
+            radius: 8 0 0 8
+        layers.rule:
+            area: l40px t0 w1px b0
+            fill_color: #ffffff14
+        # an inner glow, as a window's: over the strip, under the rows
+        layers.glow:
+            fill_color: #0000
+            radius: 8
+            box_shadow: inset 0 0 8px #ffffff22
+    }
+
+    func render [] -> Elements
+        e : Elements []
+        if [ !items ] return e
+        y : f32 [ 0.0 ]
+        n : i32 [ i32[ items.count ] ]
+        for [ i: i32 0, i < n, i += 1 ]
+            it : PopItem items[ i ]
+            h : f32 pop_item_h[ it ]
+            ic : string [ (it.icon) ? it.icon : '' ]
+            st : bool [ it.note || it.field ]
+            e[ 'row{i}' ] = PopRow [
+                area: Region [ 'l0 t{y}px r0 h{h}px' ],
+                icon: ic, label: it.label, act: it.act, on: it.on,
+                danger: it.danger, still: st, edged: i > 0,
+                first_row: i == 0, last_row: i == n - 1,
+                lone: n == 1, hint: it.field ]
+            if [ it.field ]
+                e[ 'field' ] = PopEntry [
+                    area: Region [ 'l50px t{y + 8.0}px r8px h30px' ],
+                    label: it.label ]
+            y += h
+        return e
+
+    # the text box's words now
+    public func text [] -> string
+        fe : element [ (elements) ? elements[ 'field' ] : null ]
+        if [ fe && fe.edit ] return fe.edit
+        return ''
+
+    # a row pressed
+    public func picked [ act: string ]
+        if [ act && act.count > 0 && pick ] pick[ act ]
+
+# a press inside a menu (a row, its box, its ground)
+func pop_holds [ e: element ] -> bool
+    return pop_menu_of[ e ] != null
+
+# a menu's row: an icon in the column, its words beside it
+Button PopRow
+    no_cache : true
+    # a press acts and the menu goes: no focus left on a freed row
+    focusable : false
+    public act       : string
+    public on        : bool
+    public danger    : bool
+    # words or a text box: no light, no press
+    public still     : bool
+    # a line over it: every row but the first
+    public edged     : bool
+    public first_row : bool
+    public last_row  : bool
+    public lone      : bool
+    # it holds the text box
+    public hint      : bool
+    icon_fit : 0.6
+
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 0
+            stroke_width: 1
+            # 1/255: unseen at rest, yet the near light lights it
+            stroke_color: #ffffff01
+            box_shadow: inset 0 0 13px #c890ff06
+            near_border: true
+            near_inset: 3.0
+            near_inset_color: #c890ffaa
+        layers.sep:
+            area: l40px t0 r0 h1px
+            fill_color: #0000
+        layers.iconl:
+            area: l8px t0 w24px b0
+            image_color: #ffffffdd
+        layers.face:
+            label_font: 'fonts/BarlowCondensed-Regular.ttf'
+            label_size: 18
+            label_color: #ffffffdd
+            label_align: 0.0 0.5
+            label_offset: 52.0 0.0
+        :edged
+            layers.sep:
+                fill_color: #ffffff14
+        :hovered
+            layers.body:
+                fill_color: #4d3dbc55
+        :on
+            layers.body:
+                fill_color: #4d3dbcaa
+        :danger
+            layers.iconl:
+                image_color: #ff9a9a
+            layers.face:
+                label_color: #ff9a9a
+        :still
+            layers.body:
+                fill_color: #0000
+                near_border: false
+                near_inset: 0.0
+            layers.face:
+                label_color: #ffffff66
+                label_offset: 14.0 0.0
+        :hint
+            layers.face:
+                label_color: #0000
+        :first_row
+            layers.body:
+                radius: 8 8 0 0
+        :last_row
+            layers.body:
+                radius: 0 0 8 8
+        :lone
+            layers.body:
+                radius: 8
+    }
+
+    public func on_press [ ev: Event ]
+        ev.no_default = true
+        ev.no_propagation = true
+        if [ still ] return
+        m : PopMenu pop_menu_of[ a ]
+        if [ m ] m.picked[ act ]
+
+# the menu an element is in (null: none)
+func pop_menu_of [ e: element ] -> PopMenu
+    for [ p: element* e, p, p = p.parent ]
+        if [ p inherits PopMenu ] return cast PopMenu [ p ]
+    return null
+
+# a menu's text box: Enter hands its words over, Escape the quit
+TextInput PopEntry
+    style : CSS {
+        layers.body:
+            fill_color: #0000
+            radius: 6
+            stroke_width: 1.0
+            stroke_color: #ffffff14
+        :focused
+            layers.body:
+                fill_color: #ffffff08
+                stroke_color: #ffffff14
+    }
+
+    func on_key [ ev: Event ]
+        if [ !ev.key.state ] return
+        m : PopMenu pop_menu_of[ a ]
+        if [ !m ] return
+        if [ ev.key.unicode == 256 ]
+            if [ m.quit ] m.quit[]
+            ev.stop[]
+            return
+        if [ ev.key.unicode != 257 ] return
+        if [ m.enter ] m.enter[ m.text[] ]
+        ev.stop[]

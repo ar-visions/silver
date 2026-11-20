@@ -259,7 +259,7 @@ element BufferList
                 label[ cv, an, 36.0, ay, 30.0,
                        rgba [ (on) ? '#ffffff' : '#ffffff99' ] ]
                 if [ !offered ]
-                    right[ cv, 'write its contract', ay, 30.0,
+                    right[ cv, 'not offered', ay, 30.0,
                            rgba [ '#ffffff44' ] ]
                 el [ here && here.count > 0 ]
                     ic : string [ (on) ? 'toggle_on' : 'toggle_off' ]
@@ -293,12 +293,12 @@ element BufferList
             # switch), else its panel; none offered, its contract
             if [ i == -5 ]
                 offered : bool [ offers && str_in[ offers, who ] ]
-                if [ !offered ] app.contract_edit[ who ]
+                if [ !offered ] app.contract_edit[]
                 el [ ev.mouse.pos.x >= bounds.w - 44.0 ]
                     app.agent_here[ who ]
                 el [ here && here.count > 0 ]
                     app.pop_open[ 'agent', '{here}\t{who}' ]
-                el app.contract_edit[ who ]
+                el app.contract_edit[]
                 return
             # the heading's +: a new channel
             if [ i == -4 ]
@@ -894,171 +894,3 @@ func ui_icon [ cv: Canvas, nm: string, x: f32, y: f32, sz: f32,
     cv.svg_override[ col ]
     cv.draw_svg[ m, x, y, sz, sz ]
     cv.svg_override_off[]
-
-# the panel a button slides out: its rows (an icon, words, what a
-# press does), a text box first when it asks for words
-element PopPanel
-    public rows : vec string
-    public kind : string
-    # the rows as last drawn: top and action
-    intern row_y   : vec f32
-    intern row_act : vec string
-
-    func render [] -> Elements
-        e : Elements []
-        for [ r: string ] in rows
-            if [ r.starts_with[ 'field\t' ] ]
-                e[ 'field' ] = PopField [
-                    area: Region { l50px t8px r8px h30px },
-                    hint: r.mid[ 6, r.count - 6 ] ]
-        return e
-
-    func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds || !rows ]
-            return
-        cv : Canvas [ w.screen ]
-        row_y   = vec f32 []
-        row_act = vec string []
-        cv.save[]
-        # its ground here (the list draws on the screen as well): a
-        # window's look, its shadow under it and an inner glow, no line
-        cv.fill_color[ rgba [ '#17142a' ] ]
-        cv.stroke_width[ 0.0 ]
-        cv.box_shadow[ rgba [ '#000a' ], 0.0, 8.0, 20.0, 0.0, false ]
-        cv.shadow[ 1, rgba [ '#ffffff22' ], 0.0, 0.0, 8.0, 0.0, true ]
-        cv.shadow_curve[ 1, 2.0 ]
-        cv.rounded_rect[ 0.0, 0.0, bounds.w, bounds.h, 8.0, 8.0, 8.0,
-                         8.0 ]
-        cv.paint[]
-        cv.no_shadows[]
-        cv.set_font[ shared_font[ cv,
-            'fonts/BarlowCondensed-Regular.ttf',
-            label_px[ cv, 18.0 ] ] ]
-        # the icon strip, as orbiter's menus have it: its whole
-        # height, a fade to the right, an upright line at its edge,
-        # a line between items (a text box is an item too)
-        sw : f32 [ 40.0 ]
-        g : Gradient linear_gradient[ 0.0, 0.0, sw, 0.0 ]
-        g.add_stop[ 0.0, 0x14ffffff ]
-        g.add_stop[ 1.0, 0x00ffffff ]
-        cv.save[]
-        cv.rounded[ 8.0, 0.0, 0.0, 8.0 ]
-        cv.rect_to[ 0.0, 0.0, sw, bounds.h ]
-        cv.set_fill_gradient[ g ]
-        cv.paint[]
-        cv.clear_fill_gradient[]
-        cv.restore[]
-        cv.fill_color[ rgba [ '#ffffff14' ] ]
-        cv.rect_to[ sw, 0.0, 1.0, bounds.h ]
-        cv.paint[]
-        ly : f32 [ 0.0 ]
-        for [ i: i32 0, i < rows.count, i += 1 ]
-            if [ i > 0 ]
-                cv.rect_to[ sw, ly, bounds.w - sw, 1.0 ]
-                cv.paint[]
-            ly += pop_row_h[ rows[ i ] ]
-        y : f32 [ 0.0 ]
-        for [ r: string ] in rows
-            ws : vec string r.split[ '\t' ]
-            if [ ws[ 0 ] == 'field' ]
-                ic : string [ (ws.count > 2) ? ws[ 2 ] : 'tag' ]
-                ui_icon[ cv, ic, 10.0, y + 13.0, 20.0,
-                         rgba [ '#ffffffdd' ] ]
-                y += 46.0
-                continue
-            if [ ws[ 0 ] == 'note' ]
-                cv.fill_color[ rgba [ '#ffffff66' ] ]
-                cv.draw_text[ ws[ 1 ], rect [ x: 14.0, y: y,
-                    w: bounds.w - 28.0, h: 30.0 ], vec2f [ 0.0, 0.5 ],
-                    vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
-                y += 30.0
-                continue
-            row_y.push[ y ]
-            row_act.push[ (ws.count > 2) ? ws[ 2 ] : '' ]
-            # its inner glow, brought up by the pointer's near light
-            mx : f32 [ f32[ ux.mouse.x ] - win_pos.x ]
-            my : f32 [ f32[ ux.mouse.y ] - win_pos.y ]
-            over : bool [ mx >= 0.0 && mx < bounds.w && my >= y
-                          && my < y + 34.0 ]
-            cv.save[]
-            # a switch's row: lit while on
-            lit : bool [ ws.count > 3 && ws[ 3 ] == 'on' ]
-            fl : string [ (lit) ? '#4d3dbcaa'
-                : ((over) ? '#4d3dbc55' : '#0000') ]
-            cv.fill_color[ rgba [ fl ] ]
-            cv.box_shadow[ rgba [ '#c890ff06' ], 0.0, 0.0, 13.0, 0.0,
-                true ]
-            w.near_light_on[ cv, a, 0.0, 0.0 ]
-            cv.near_style[ 0.0, 3.0, rgba [ '#c890ffaa' ],
-                           w.near_y_fade ]
-            # edge to edge, square; round only at the panel's own
-            # corners, matching them
-            tr : f32 [ (y < 0.5) ? 8.0 : 0.0 ]
-            br : f32 [ (y + 34.0 > bounds.h - 0.5) ? 8.0 : 0.0 ]
-            cv.rounded_rect[ 0.0, y, bounds.w, 34.0, tr, tr, br, br ]
-            cv.paint[]
-            cv.no_shadows[]
-            cv.restore[]
-            danger : bool [ ws.count > 2 && (ws[ 2 ] == 'remove'
-                || ws[ 2 ] == 'archive') ]
-            col : rgba [ (danger) ? rgba [ '#ff9a9a' ]
-                : rgba [ '#ffffffdd' ] ]
-            ui_icon[ cv, ws[ 0 ], 10.0, y + 7.0, 20.0, col ]
-            cv.fill_color[ col ]
-            cv.draw_text[ ws[ 1 ], rect [ x: 52.0, y: y,
-                w: bounds.w - 62.0, h: 34.0 ], vec2f [ 0.0, 0.5 ],
-                vec2f [ 0.0, 0.0 ], Overflow.ellipsis, null, false ]
-            y += 34.0
-        cv.paint[]
-        cv.set_font[ null ]
-        cv.restore[]
-
-    public func on_move [ ev: Event ]
-        pristine = false
-
-    public func on_press [ ev: Event ]
-        ev.no_default = true
-        ev.no_propagation = true
-        app : cast commune [ ux.app_object ]
-        if [ !app || !row_y ] return
-        py : f32 ev.mouse.pos.y
-        for [ k: i32 0, k < row_y.count, k += 1 ]
-            if [ py >= row_y[ k ] && py < row_y[ k ] + 34.0 ]
-                act : string row_act[ k ]
-                if [ act.count > 0 ] app.pop_act[ act ]
-                return
-
-# a panel row's height: a text box, a plain line, an item
-func pop_row_h [ r: string ] -> f32
-    if [ r.starts_with[ 'field\t' ] ] return 46.0
-    if [ r.starts_with[ 'note\t' ] ] return 30.0
-    return 34.0
-
-# the panel's text box: Enter gives it to the panel, Escape shuts it
-CommuneInput PopField
-    public hint : string
-
-    # rounded, inside the panel's corners; a 1px line all round,
-    # as the panel's own lines
-    style : CSS {
-        layers.body:
-            radius: 6
-            stroke_width: 1.0
-            stroke_color: #ffffff14
-        :focused
-            layers.body:
-                stroke_color: #ffffff14
-    }
-
-    func on_key [ ev: Event ]
-        if [ !ev.key.state ] return
-        app : cast commune [ ux.app_object ]
-        if [ !app ] return
-        if [ ev.key.unicode == 256 ]
-            app.pop_close[]
-            ev.stop[]
-            return
-        if [ ev.key.unicode != 257 ] return
-        text : string [ (edit) ? edit : '' ]
-        app.pop_enter[ text ]
-        ev.stop[]

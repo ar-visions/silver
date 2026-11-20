@@ -3396,6 +3396,12 @@ HOST_API void host_post2(int slot, int ring, int type, int a, int b, int c) {
     if (!h || slot < 0 || slot >= HOST_APPS) return;
     HostRing* r = ring ? &h->app[slot].to_app : &h->app[slot].to_ide;
     uint32_t head = r->head;
+    // full: wait for the reader (a second at most), never overwrite
+    for (int w = 0; head - __atomic_load_n(&r->tail, __ATOMIC_ACQUIRE)
+                    >= HM_SLOTS && w < 10000; w++)
+        usleep(100);
+    if (head - __atomic_load_n(&r->tail, __ATOMIC_ACQUIRE) >= HM_SLOTS)
+        return;
     r->m[head % HM_SLOTS].type = type;
     r->m[head % HM_SLOTS].a = a;
     r->m[head % HM_SLOTS].b = b;
@@ -3955,7 +3961,8 @@ HOST_API int host_app_request(const char* nm, int flags) {
             return i;
         }
     }
-    return -1;
+    // a supervisor, every slot taken
+    return -2;
 }
 
 HOST_API int host_app_state(int slot) {

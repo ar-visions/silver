@@ -9,7 +9,7 @@ class GitRow
     public when      : string
 
 Layer GitLayer
-    public label_size   : f32
+    label_size   : f32
     public row_spacing  : f32
     public sel_color    : string
     public sel_grad     : string

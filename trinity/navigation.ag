@@ -567,7 +567,7 @@ element NavRows
     public  nav_hover_fill : rgba [ '#d25cc826' ]
     public  nav_hover_edge : rgba [ '#e07ad899' ]
     # the row a press chose: its release there opens it
-    intern  pressed : i32 [ -1 ]
+    pressed : i32 [ -1 ]
 
     func row_h [] -> f32
         return (ux && ux.nav_fonts) ? 40.0 : 30.0

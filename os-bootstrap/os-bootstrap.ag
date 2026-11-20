@@ -353,23 +353,23 @@ class Built
     public note : string [ '' ]
 
 element BootText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 17,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootGood
-    face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#8fe0a8' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootBad
-    face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
+    public face : Layer [ label_color: rgba [ '#ff9a8a' ], label_size: 15,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
 element BootLog
     no_cache : true
-    face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 14,
+    public face : Layer [ label_color: rgba [ '#c8c8d0' ], label_size: 14,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
@@ -401,13 +401,13 @@ Button BootButton
 # a list in a framed box: the header, then rows that scroll
 element ListBox
     # the panel's own look: the high blur under, an inner glow
-    frame : Layer [ fill_color: rgba [ '#140a2a66' ], stroke_width: 0.0,
+    public frame : Layer [ fill_color: rgba [ '#140a2a66' ], stroke_width: 0.0,
         radius: Radius [ '8' ], background_lens: BlurStage.frost,
         box_shadow: BoxShadow [ 'inset 0 0 6px #0000005f curve 2' ] ]
 
 # the column names, above the rows; never scrolls
 element ListHead
-    rule : Layer [ fill_color: rgba [ '#ffffff1f' ],
+    public rule : Layer [ fill_color: rgba [ '#ffffff1f' ],
                    area: Region { l0 b0 r0 h0.04 } ]
 
 # the rows, scrolled within the box
@@ -420,7 +420,7 @@ element ListRows
 # a column's text; the row underneath takes the click
 element ListCell
     ghost : true
-    face  : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
+    public face  : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 16,
         label_font: 'fonts/BarlowCondensed-Regular.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ] ]
 
@@ -437,7 +437,7 @@ ListCell ListHeadCell
 
 # one row: the whole row picks it
 Button ListRow
-    rule : Layer [ fill_color: rgba [ '#ffffff10' ],
+    public rule : Layer [ fill_color: rgba [ '#ffffff10' ],
                    area: Region { l0 b0 r0 h0.04 } ]
     style : CSS {
         layers.body:
@@ -4395,8 +4395,8 @@ element Bootstrap
 
 # the app: write the drive tree, then quit
 element main : trinity
-    public  width      : i32    [ 1280 ]
-    public  height     : i32    [ 800 ]
+    width      : i32    [ 1280 ]
+    height     : i32    [ 800 ]
     public  title      : string [ 'orbiter-os' ]
     public  background : string [ 'Background' ]
     # the connected phone updated, as the phone page's Update

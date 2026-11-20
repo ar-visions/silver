@@ -1867,57 +1867,57 @@ Avatar OrbiterAvatar
     blend_rings : f32   [ 0.2 ]
     blend_haze  : f32   [ 1.0 ]
     blend_bands : f32   [ 0.2 ]
-    rest_tilt   : f32   [ 0.0 ]
+    public rest_tilt   : f32   [ 0.0 ]
     # the tilt takes the :settled area move's time
-    tilt_ms     : i64   [ 900 ]
+    public tilt_ms     : i64   [ 900 ]
     # tilt away while the agent is working
-    busy_tilt   : f32   [ 34.0 ]
+    public busy_tilt   : f32   [ 34.0 ]
     # the halo glow hover used to show — it answers to busy now
-    rest_pulse  : f32   [ 0.4 ]
+    public rest_pulse  : f32   [ 0.4 ]
     # the beam while working: close to rest, never the old glare
-    busy_pulse  : f32   [ 0.6 ]
-    rest_ph     : f32   [ 1.2 ]
-    busy_ph     : f32   [ 2.4 ]
+    public busy_pulse  : f32   [ 0.6 ]
+    public rest_ph     : f32   [ 1.2 ]
+    public busy_ph     : f32   [ 2.4 ]
     # the halo's height: half of what it was, under the mask
-    rest_halo   : f32   [ 0.4 ]
-    busy_halo   : f32   [ 0.8 ]
+    public rest_halo   : f32   [ 0.4 ]
+    public busy_halo   : f32   [ 0.8 ]
     # the halo stage's filter: state * 0.95 + goal * 0.05 a frame, about
     # a second; once done the second halo settles back to the first at
     # 0.99 + 0.01
-    stage_amount : f32  [ 0.05 ]
-    settle_amount : f32 [ 0.01 ]
+    public stage_amount : f32  [ 0.05 ]
+    public settle_amount : f32 [ 0.01 ]
     mutable halo_cur   : f32
     mutable beam_cur   : f32
     mutable work_cur   : f32
     # the thrust's seat at full beam, in the avatar's own units
-    push_depth  : f32   [ 0.045 ]
+    public push_depth  : f32   [ 0.045 ]
     # the bounce: the seat swings this share either way
-    push_bounce : f32   [ 0.5 ]
+    public push_bounce : f32   [ 0.5 ]
     # the bounce's pace, perlin steps a second
-    push_hz     : f32   [ 1.6 ]
-    push_amount : f32   [ 0.15 ]
+    public push_hz     : f32   [ 1.6 ]
+    public push_amount : f32   [ 0.15 ]
     intern  push_s     : f32
     # the heat haze off the core: slight from the start, full once the
     # jet burns; the spin speeds up with it (1 + heat_spin * heat)
-    heat_base   : f32   [ 0.25 ]
+    public heat_base   : f32   [ 0.25 ]
     # the jet igniting: the beam's width swings +-25% about its own,
     # starting wide, and settles within ignite_s seconds
-    ignite_amp  : f32   [ 0.25 ]
-    ignite_hz   : f32   [ 4.0 ]
-    ignite_s    : f32   [ 1.5 ]
+    public ignite_amp  : f32   [ 0.25 ]
+    public ignite_hz   : f32   [ 4.0 ]
+    public ignite_s    : f32   [ 1.5 ]
     intern ignite_us   : i64
     intern was_done    : bool
-    heat_spin   : f32   [ 1.0 ]
-    rest_spin   : f32   [ 0.25 ]
-    busy_spin   : f32   [ 2.66 ]
+    public heat_spin   : f32   [ 1.0 ]
+    public rest_spin   : f32   [ 0.25 ]
+    public busy_spin   : f32   [ 2.66 ]
     # how fast the RATE itself approaches; low = a long spin-up
-    spin_amount : f32   [ 0.04 ]
+    public spin_amount : f32   [ 0.04 ]
     mutable spin_rate  : f32 [ 0.25 ]
     mutable spin_phase : f32
     mutable core_phase : f32    # core pulse, quarter of the spin
     mutable spin_us   : i64    # the last spin step, microseconds
     # the wheel's in-plane clocking, held in every state
-    clock_deg   : f32   [ 30.0 ]
+    public clock_deg   : f32   [ 30.0 ]
     mutable tilt_cur : f32
     mutable edits_cur : f32
     intern  tilt_from : f32
@@ -1925,19 +1925,19 @@ Avatar OrbiterAvatar
     intern  tilt_us   : i64    # when the tilt toward tilt_to began
     intern  st_logged : bool
     # how fast the rim crosses between dark and blue
-    listen_amount : f32 [ 0.20 ]
+    public listen_amount : f32 [ 0.20 ]
     mutable listen_cur : f32
     # the exchange avatar: face on at first, then settled (tilted up)
     public settled : bool
     # its reveal: an alpha fade, flipped on the first frame it runs
     public shown   : bool
     # summon slide: 0 = below the corner, 1 = at rest
-    summon_amount : f32 [ 0.14 ]
+    public summon_amount : f32 [ 0.14 ]
     mutable summon_t : f32
     # the undo: the wheel turns a sixth (cubic in_out) while the spin
     # slows, turns the other way, and slows back to its own way
-    undo_deg    : f32   [ 60.0 ]
-    undo_s      : f32   [ 1.6 ]
+    public undo_deg    : f32   [ 60.0 ]
+    public undo_s      : f32   [ 1.6 ]
     mutable undo_us   : i64
     mutable undo_turn : f32
 

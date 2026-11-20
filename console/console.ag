@@ -14,8 +14,8 @@ import <fcntl.h>
 
 # a shell in a window: trinity's Console on its own
 element console : trinity
-    public  width      : i32    [ 960 ]
-    public  height     : i32    [ 600 ]
+    width      : i32    [ 960 ]
+    height     : i32    [ 600 ]
     public  title      : string [ 'console' ]
     # the folder the shell starts in; empty: where it was launched
     public  [ Launch ] folder : string

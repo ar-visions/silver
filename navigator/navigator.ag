@@ -21,10 +21,6 @@ ifndef [ windows ]
 import Contrib
 import View
 
-# navigator.c: a line to a socket by its path (orbiter's, shared
-# into a bound view by that path); 1 sent
-func nav_sock_send [ sock: cstr, line: cstr ] -> i32
-
 # the font scale (ctrl +/-): 1 at rest
 func nav_unit [ cv: Canvas ] -> f32
     return (cv && cv.vk && cv.vk.font_unit > 0)
@@ -2096,7 +2092,7 @@ NavHost NavApp
     func post [ line: string ]
         if [ opener && opener.count > 0 ]
             msg : string 'app nav {line}\n'
-            nav_sock_send[ opener.chars, msg.chars ]
+            agent_path_send[ opener.chars, msg.chars ]
         el log 'navigator: {line}'
 
     func open_file [ p: path ]
@@ -2135,8 +2131,8 @@ NavHost NavApp
 # text in a field at its top. started by orbiter from the bar, its
 # picks reach orbiter through opener
 element navigator : trinity
-    public  width  : i32    [ 1100 ]
-    public  height : i32    [ 760 ]
+    width  : i32    [ 1100 ]
+    height : i32    [ 760 ]
     public  title  : string [ 'navigator' ]
     # the project folder; empty: where it was started. the host's
     # bar sets it (its path pieces), as it sets find

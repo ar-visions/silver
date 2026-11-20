@@ -14,8 +14,8 @@ OrbiterAvatar BootAvatar
     }
 
 element bootcube : trinity
-    public width      : i32    [ 1116 ]
-    public height     : i32    [ 2484 ]
+    width      : i32    [ 1116 ]
+    height     : i32    [ 2484 ]
     public title      : string [ 'bootcube' ]
     intern t0         : i64
 

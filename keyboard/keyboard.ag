@@ -418,7 +418,7 @@ func language_keep [ name: string, on: bool ]
 
 # the list's own words
 element LangText
-    face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
+    public face : Layer [ label_color: rgba [ '#e4e4ea' ], label_size: 19,
         label_font: 'fonts/BarlowCondensed-Bold.ttf',
         label_align: vec2f [ x: 0.0, y: 0.5 ],
         text_shadow: BoxShadow [ '0 1px 3px #000c' ] ]
@@ -1433,7 +1433,7 @@ InputDevice FlickKeys
     intern held_us : i64
     intern repeats : i32
     # the last letter typed in English (a/A changes its case)
-    intern last    : string
+    last    : string
     # upper case mode: letters typed capitalized (a/A flicked up)
     intern caps    : bool
     # the language toggled with English; choosing: the keys are the
@@ -2246,8 +2246,8 @@ func keyboard_load []
     log 'keyboard: tables loaded in {ms} ms'
 
 element keyboard : trinity
-    public width      : i32    [ 540 ]
-    public height     : i32    [ 960 ]
+    width      : i32    [ 540 ]
+    height     : i32    [ 960 ]
     public title      : string [ 'keyboard' ]
     public background : string [ 'Background' ]
     public [ Launch ] language : Language [ Language.japanese ]

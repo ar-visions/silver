@@ -1,0 +1,2606 @@
+extend orbiter
+
+# the phone's keyboard up: the buttons said so, else the focus
+# wants words
+func orbiter.keys_up [] -> bool
+    if [ keys_force != 0 ] return keys_force > 0
+    on : bool [ set_keys == 'on'
+                || (set_keys == 'auto' && use_mobile) ]
+    return on && ux && ux.words_wanted
+
+# a line from the agent through our socket: 'status <state> <text>'
+func orbiter.on_agent [ s: string ]
+    # a test's look at every window and instance: 'dump' (to the log)
+    if [ s == 'dump' ]
+        state_dump[]
+        return
+    # an app's orbiter button while this orbiter is open: 'coupled
+    # <mod>
+    # [picture]'. the app ends; its source, a held instance of it
+    # and its last picture come here, and this window comes forward
+    if [ s && s.count > 8 && s.mid[ 0, 8 ] == 'coupled ' ]
+        rest_ : string s.mid[ 8, s.count - 8 ].trim[]
+        sp_   : i32 [ rest_.index_of[ ' ' ] ]
+        mod_  : string [ (sp_ > 0) ? rest_.mid[ 0, sp_ ] : rest_ ]
+        shot : string [
+            (sp_ > 0)
+            ? rest_.mid[ sp_ + 1, rest_.count - sp_ - 1 ].trim[]
+            : '' ]
+        couple_app[ mod_, shot ]
+        return
+    # the system's xdg-open: 'open <url>', beside what asked
+    if [ s && s.count > 5 && s.mid[ 0, 5 ] == 'open ' ]
+        open_beside[ s.mid[ 5, s.count - 5 ].trim[] ]
+        return
+    # an update coming in: 'update <piece> <of>', or 'update done'
+    if [ s && s.count > 7 && s.mid[ 0, 7 ] == 'update ' ]
+        ws : vec string s.mid[ 7, s.count - 7 ].trim[].split[ ' ' ]
+        if [ ws.count >= 2 ]
+            n  : f32 [ f32[ ws[ 0 ].integer_value[] ] ]
+            of : f32 [ f32[ ws[ 1 ].integer_value[] ] ]
+            if [ of > 0.0 ] upd_frac = clamp[ n / of, 0.0, 1.0 ]
+        el upd_frac = 1.0
+        upd_us = epoch_micros[]
+        if [ ux ] ux.restyle = true
+        return
+    # the system's capture and recording: 'system <mod> <slot> ...'
+    if [ s && s.count > 7 && s.mid[ 0, 7 ] == 'system ' ]
+        system_line[ s.mid[ 7, s.count - 7 ] ]
+        return
+    # the navigator app's picks: 'nav open <path>' and the rest
+    if [ s && s.count > 4 && s.mid[ 0, 4 ] == 'nav ' ]
+        nav_app_line[ s.mid[ 4, s.count - 4 ].trim[] ]
+        return
+    # 'run <program>': as its row in the search runs it
+    if [ s && s.count > 4 && s.mid[ 0, 4 ] == 'run ' ]
+        run_program[ path [ s.mid[ 4, s.count - 4 ].trim[] ],
+                     active_pane ]
+        return
+    # an app's menus opening its app: 'launch <module> [args]'
+    # with its arguments: a new instance of it, given them
+    if [ s && s.count > 7 && s.mid[ 0, 7 ] == 'launch ' ]
+        ln_ : string s.mid[ 7, s.count - 7 ].trim[]
+        sp_ : i32 [ i32[ ln_.index_of[ ' ' ] ] ]
+        if [ sp_ > 0 ]
+            drawer_shut[]
+            launch_args[ active_pane, ln_.mid[ 0, sp_ ],
+                ln_.mid[ sp_ + 1, ln_.count - sp_ - 1 ] ]
+            return
+        for [ ae: AppEntry ] in app_entries[]
+            if [ ae.name == ln_ ]
+                drawer_shut[]
+                apps_pick[ active_pane, ae ]
+                break
+        return
+    # an app's own service switch: 'service <module> on|off'
+    if [ s && s.count > 8 && s.mid[ 0, 8 ] == 'service ' ]
+        sw : vec string s.mid[ 8, s.count - 8 ].trim[].split[ ' ' ]
+        if [ sw.count >= 2
+             && service_is_on[ sw[ 0 ] ] != (sw[ 1 ] == 'on') ]
+            service_toggle[ sw[ 0 ] ]
+        # on already, yet not running (it ended): started again
+        el [ sw.count >= 2 && sw[ 1 ] == 'on' ]
+            for [ ae: AppEntry ] in service_list[]
+                if [ ae.name == sw[ 0 ] ] service_start[ ae ]
+        return
+    # an agent on the platform: 'home <agent> <state> <words>'
+    if [ s && s.count > 5 && s.mid[ 0, 5 ] == 'home ' ]
+        hw : vec string s.mid[ 5, s.count - 5 ].trim[].split[ ' ' ]
+        if [ hw.count >= 2 ]
+            if [ !home_doing ]
+                home_doing = map string [ string ] []
+                home_words = map string [ string ] []
+            words : string ''
+            for [ k: i32 2, k < hw.count, k += 1 ]
+                words = (words.count > 0) ? '{words} {hw[ k ]}'
+                                          : hw[ k ]
+            home_doing[ hw[ 0 ] ] = hw[ 1 ]
+            home_words[ hw[ 0 ] ] = words
+            if [ ux ] ux.restyle = true
+        return
+    if [ !s || s.count < 7 || s.mid[ 0, 7 ] != 'status ' ] return
+    # only an exchange orbiter opened (a capture sent, up or
+    # minimized) takes the agent's statuses: the session's other
+    # work, the user's terminal chat with it, is not orbiter's to
+    # show
+    if [ !ux || !ux.shot_ask ] return
+    rest : string s.mid[ 7, s.count - 7 ]
+    sp   : i32 [ rest.index_of[ ' ' ] ]
+    # done is final: nothing the agent sends after it (a
+    # notification that it waits, a late line) reopens the exchange
+    # or the button; only the user's next line ('sent') starts it
+    # again
+    st_ : string [ (sp > 0) ? rest.mid[ 0, sp ] : rest ]
+    if [ sp > 0 && st_ == 'description' ]
+        ux.agent_description[
+            rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+        return
+    # the undo turns the avatar; the note follows on the rewind's
+    # answer
+    if [ st_ == 'rewind' && agent_av ] agent_av.undo[]
+    if [ agent_done && st_ != 'sent' && st_ != 'rewind' ]
+        if [ sp > 0 && st_ == 'note' ]
+            agent_note = rest.mid[ sp + 1, rest.count - sp - 1 ]
+            ux.agent_note[ st_, agent_note ]
+            ux.restyle = true
+        el [ sp > 0 && st_ == 'diff' ]
+            ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+        return
+    # a diff line goes to the panel, never to the bar or the notes
+    if [ sp > 0 && rest.mid[ 0, sp ] == 'diff' ]
+        ux.agent_diff[ rest.mid[ sp + 1, rest.count - sp - 1 ] ]
+        agent_changed = true
+        return
+    agent_state = (sp > 0) ? rest.mid[ 0, sp ] : rest
+    agent_note  = (sp > 0) ? rest.mid[ sp + 1,
+                                       rest.count - sp - 1 ] : ''
+    # 'sent' is the user's own line: not the agent's word, and not
+    # done
+    if [ ux ]
+        if [ agent_state != 'sent' ]
+            ux.agent_note[ agent_state, agent_note ]
+        ux.agent_busy = agent_state == 'busy'
+    agent_done = agent_state == 'done'
+    if [ agent_state == 'idle' || agent_state == 'sent' ]
+        agent_note    = ''
+        agent_changed = false
+    # a send: its agent and model are the next exchange's too
+    if [ agent_state == 'sent' && ux && ux.agent_pick ]
+        agent_last = ux.agent_pick
+        model_last = ux.model_pick
+        save_session[]
+    if [ ux ] ux.restyle = true
+
+func orbiter.on_host [ mt: i32, wp: i32, lp: i32, xp: i32 ]
+    if [ mt != 1 ] return
+    s : i32 [ wp ]
+    # this window's exchange mic
+    if [ s == 3 || ((s == 0 || s == 2) && dict_slot == 0) ]
+        dictate_to[ 0, s ]
+        return
+    if [ s == orbit_dstate ] return
+    log 'orbiter on_host dictate: {orbit_dstate} -> {s}'
+    orbit_dstate = s
+    if [ s == 1 ]
+        rc : dictation_start[]
+        if [ rc == 0 ]
+            orbit_cap_on = true
+            dict_slot    = -1
+            host_live_set[ 1 ]
+    el [ s == 2 ]
+        dictation_cancel[]
+        orbit_cap_on   = false
+        orbit_flushing = false
+        host_live_set[ 0 ]
+    el
+        if [ orbit_cap_on ]
+            dictation_stop[]
+            orbit_cap_on   = false
+            orbit_flushing = true
+        host_live_set[ 0 ]
+
+func orbiter.on_overlay [ cv: Canvas ]
+    # a slider swallows its press: poll its changed flag instead
+    for [ lk: string ] in vec string [] [ 'launch_panel',
+                                          'menu_props' ]
+        lp0 : element find_el[ a, lk ]
+        if [ !lp0 || !lp0.elements ] continue
+            for [ ce: element, ck: string ] in lp0.elements
+                if [ ce inherits KeyField ]
+                    kf : KeyField ce
+                    if [ kf.changed ]
+                        kf.changed = false
+                        args_field  = ce
+                        args_editor = pane_of[ ce ]
+                        args_sync   = true
+                    continue
+                if [ ce inherits PadField ]
+                    pf0 : PadField ce
+                    if [ pf0.changed ]
+                        pf0.changed = false
+                        args_field  = ce
+                        args_editor = pane_of[ ce ]
+                        args_sync   = true
+                    continue
+                if [ ce inherits StepField ]
+                    sf : StepField ce
+                    if [ sf.changed ]
+                        sf.changed = false
+                        args_field  = ce
+                        args_editor = pane_of[ ce ]
+                        args_sync   = true
+                    continue
+                if [ !(ce inherits VolumeSlider) ] continue
+                vs0 : VolumeSlider ce
+                if [ vs0.changed ]
+                    vs0.changed = false
+                    args_field  = ce
+                    args_editor = pane_of[ ce ]
+                    args_sync   = true
+    # run args are per source file, kept in the session state: the
+    # field's edit is the one source, copied after the layer edited
+    # it
+    if [ args_sync ]
+        args_sync = false
+        # a card's info panel edits its module's own config
+        inf_ : bool [ info_ae && args_field && args_field.parent
+            && args_field.parent.id == 'info_props' ]
+        fs_ : file_state (inf_) ? fstate[ info_src[] ]
+            : args_state_of[ args_editor ]
+        if [ fs_ && args_field ]
+            if [
+                args_field.parent
+                && args_field.parent inherits LaunchPanel ]
+                lp_ : LaunchPanel args_field.parent
+                fs_.args = lp_.compose[]
+                # the instance keeps its own args; the file's config
+                # follows the last edit
+                if [ !inf_ && args_editor.run_view ]
+                    args_editor.run_view.module_args = fs_.args
+                if [ !inf_ && args_editor.run_view
+                     && !args_editor.run_view.ended ]
+                    push_live[ lp_, args_editor.run_view.sock_name[],
+                                   args_field ]
+                if [ ux ] ux.restyle = true
+            el fs_.args = (args_field.edit) ? args_field.edit : ''
+            fs_.args.hold[]
+            save_session[]
+    for [ i: i32 0, i < editor_slots.count, i += 1 ]
+        ed : Editor pane_at[ i ]
+        if [ !ed || !ed.run_view || !ed.app_view ] continue
+        av : AppView ed.run_view
+        if [ !av.have_frame || av.fade_us == 0 ] continue
+        fal : f32 [ f32[ epoch_micros[] - av.fade_us ] / 400000.0 ]
+        if [ fal >= 1.0 ] continue
+        if [ fal < 0.0 ] fal = 0.0
+        wx : f32 [ av.vx ]
+        wy : f32 [ av.vy ]
+        for [ p: element* ed, p, p = p.parent ]
+            if [ p.bounds ]
+                wx += p.bounds.x
+                wy += p.bounds.y
+        cv.set_opacity[ fal ]
+        av.draw_frame[ cv,
+                       rect [ x: wx, y: wy, w: av.vw, h: av.vh ] ]
+        cv.set_opacity[ 1.0 ]
+
+func orbiter.on_unload [ ]
+    # a take still transcribing runs speech's code on its thread:
+    # this unload (a quit or a reload) would unmap it under the
+    # thread
+    dictation_wait[ 60000 ]
+    save_session[]
+    if [ debuggers ]
+        # a reload keeps a hosted app's session: the host holds it
+        # parked across the swap and the reloaded orbiter adopts it,
+        # a stop and all
+        reloading : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
+        for [ d: dbg, name: string ] in debuggers
+            if [ !d || !d.active ] continue
+            ks : i32 [ -1 ]
+            if [ reloading && instances ]
+                for [ av_: AppView ] in instances
+                    if [ av_.debugger == d && av_.slot > 0 ]
+                        ks = av_.slot
+            if [ ks > 0 ]
+                d.park[]
+                d.hold[]
+                host_keep[ 'dbg{ks}', d ]
+            el d.stop[]
+        debuggers = null
+    if [ build_watch ]
+        build_watch.pause[ ]
+        build_watch.callback = null
+    # the index worker and the git thread run the module's code
+    # on their own threads: a swap under them unmaps the code
+    reloading : bool [ getenv[ 'SILVER_RELOAD_SAVE' ] != null ]
+    if [ nav ] nav.stop[ reloading ]
+    # the attach jobs on the pool the same
+    attach_tasks = null
+    if [ reloading ]
+        ed_sessions  = map ConsoleSession [string] [ ]
+    super.on_unload[ ]
+
+# an element with a text box of its own
+func orbiter.editable_in [ e: element ] -> bool
+    for [ l: Layer, k: string ] in e.layers
+        if [ l.editable && !e.read_only ] return true
+    return false
+
+func orbiter.focus_finder []
+    finder_off    = false
+    nav_req       = true
+    title_find_on = false
+    te : element title_at[ active_pane ]
+    # an app's pane has no title bar: it comes back, then focuses
+    # (a find typed there before is not the navigator's)
+    if [ te ]
+        te.edit = nav.find_text
+        te.set_focus[]
+    el pending_finder = active_pane
+    force_update[]
+
+func orbiter.on_inspect [ hits: vec StyleHit ]
+    if [ !hits || hits.count == 0 ] return
+    h : StyleHit hits[ 0 ]
+    if [ h.file ] open_at_line[ h.file, active_pane, h.line ]
+
+func orbiter.on_press [ ev: Event ]
+    # a menu up as this press began (it may shut it below)
+    press_menu = drawer_open
+    if [ ux ] press_seen = ux.last_click_us
+    # a press is no Alt tap, and lets the bar's keys go
+    alt_tap = false
+    if [ bar_hl.count > 0 ]
+        bar_hl = ''
+        if [ ux ] ux.restyle = true
+    if [ stats ]
+        log 'PRESS target={(ev.target && ev.target.id) ? ev.target.id : "(noid)"} pick={(pick_field) ? pick_field : ""} nav={nav_showing} find={find_showing} finder_off={finder_off}'
+    # a press off the agents' kinds puts them away
+    if [ !ev.target ] return
+    log 'on_press: target={ev.target.id}'
+    # a dock icon's menu shuts at a press anywhere but in it
+    if [ dock_pop && !pop_holds[ ev.target ] ]
+        dock_pop = null
+        force_update[]
+    if [ card_pop && card_pop_new ] card_pop_new = false
+    el [ card_pop && !pop_holds[ ev.target ] ]
+        card_pop = null
+        force_update[]
+    desk_press[ ev.target ]
+    # a split's seam is its resize: no menu shuts, no pane selected
+    if [ seam_of[ ev.target ] ] return
+    # a press in a program's window selects its pane (the press
+    # still reaches the program)
+    if [ ev.target inherits WaylandView ]
+        wp : i32 pane_index_of[ ev.target ]
+        if [ wp >= 0 ] raise_pane[ wp ]
+    # in the path's drawer: the navigator under it keeps its
+    # focus, so it stays up while a folder is chosen
+    if [ drawer_open && menu_kind == 'crumb' ]
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e inherits MenuDrawer ] ev.no_default = true
+    # the bar over it, its empty middle too: the navigator stays
+    if [ nav_showing || find_showing ]
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e inherits SystemBar ] ev.no_default = true
+    # a press outside the drawer (and its openers) shuts it
+    # a press away from the exchange's slideout puts it away (its
+    # button toggles it itself)
+    if [ ux && ux.shot_ask && !ux.agent_min && ux.exchange_region
+         && ux.exchange_region.count > 0
+         && ev.target.id != 'agent_note' ]
+        inx : bool [ false ]
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e.id == 'exchange' || e inherits ExchangeDrawer ]
+                inx = true
+        if [ !inx ]
+            ux.agent_min = true
+            ux.restyle   = true
+    # a mouse down on a menu's own ground (no row, button or field
+    # there) shuts it
+    if [ drawer_open && menu_kind != 'exchange'
+         && (ev.target inherits MenuDrawer
+             || ev.target inherits PanelRows) ]
+        drawer_shut[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ drawer_open && menu_kind != 'exchange'
+         && !drawer_keeps[ ev.target ]
+         && epoch_micros[] - menu_open_us > 100000 ]
+        drawer_shut[]
+    # a press in a free window brings it up and selects it
+    fpi : i32 pane_index_of[ ev.target ]
+    if [ pane_floats[ fpi ] ] raise_pane[ fpi ]
+    # a press on another pane's title only selects that pane: no
+    # focus, so no nav list; a press once it is selected opens it
+    if [ ev.target.id == 'title' ]
+        edt : Editor pane_of[ ev.target ]
+        # the editor's bar is for finding alone: a press starts it
+        if [ system_on[] && edt && edt.src && !edt.app_view
+             && !nav_req && !title_find_on ]
+            active_pane = edt.pane_index
+            title_find_toggle[]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a pane showing a running app: the finder on the folder
+        # of the app's resource, the pick goes to the app (its
+        # orbiter bar's dialog, hosted)
+        hv : AppView (edt && edt.app_view) ? edt.run_view : null
+        # a program's window: the navigator, never its console's
+        # argument pick
+        if [ hv && window_of[ hv ] != 0 ] hv = null
+        if [ hv && !hv.ended && edt.pane_index == active_pane ]
+            hm : string band_mod_of[ edt ]
+            cur : string (hv.arg_text) ? hv.arg_text
+                : default_arg_of[ hv.module_args ]
+            pick_default[ edt, null, hm, cur ]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a window's pane has no editor: its view has the number
+        tpi : i32 pane_index_of[ ev.target ]
+        if [ tpi >= 0 && tpi < editor_slots.count
+             && tpi != active_pane ]
+            active_pane   = tpi
+            ev.no_default = true
+            if [ ux ] ux.restyle = true
+            return
+    # one of the app's views: the pane shows the app in that view;
+    # the lit one again, the app's source
+    if [ ev.target.id.starts_with[ 'view_' ]
+         && ev.target inherits ArgButton ]
+        pv : Editor pane_of[ ev.target ]
+        av : AppView (pv) ? pv.run_view : null
+        if [ pv && av && !av.ended && av.slot >= 0 ]
+            vi : i32 [ ev.target.id.mid[ 5,
+                ev.target.id.count - 5 ] ]
+            lit : bool [ pv.app_view && av.app_view_on == vi ]
+            if [ !pv.app_view ] embed_app[ pv, av ]
+            host_post2[ av.slot, 1, i32[ HM.view ], (lit) ? -1 : vi,
+                        0, 0 ]
+        ev.no_default     = true
+        ev.no_propagation = true
+        return
+    # another instance's chip: a press shows it in this pane; with
+    # shift its file is picked anew too; cmd: another
+    if [
+        ev.target inherits ArgButton && ev.target.id != 'arg_edit'
+        && ev.target.id.starts_with[ 'arg_' ] ]
+        oc : ArgButton ev.target
+        po : Editor pane_of[ ev.target ]
+        if [ ev.key.ctrl || ev.key.meta ]
+            arg_new[ po ]
+        el [ po && oc.inst ]
+            embed_app[ po, oc.inst ]
+            session_dirty = true
+            # a file argument picks anew; a typed one is not
+            # browsed (its chip edits once shown)
+            bm : string band_mod_of[ po ]
+            dq : Prop default_prop[ bm ]
+            fl : bool [ dq && (dq.type == 'resource'
+                || dq.type == 'path') ]
+            if [ ev.key.shift && fl ]
+                da : string default_arg_of[ oc.inst.module_args ]
+                pick_default[ po, null, bm, da ]
+        if [ ux ] ux.restyle = true
+        ev.no_default     = true
+        ev.no_propagation = true
+        return
+    # a resource argument: a press selects it; shift picks its file
+    # anew; cmd starts another instance on a new pick
+    if [
+        ev.target.id == 'arg_edit' && ev.target inherits ArgButton ]
+        ab : ArgButton ev.target
+        if [ ev.key.ctrl || ev.key.meta ]
+            arg_new[ pane_of[ ev.target ] ]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # shift: a file picks anew; a typed argument is edited
+        if [ ev.key.shift && ab.resource ]
+            ps : Editor pane_of[ ev.target ]
+            if [ ps ]
+                bm : string band_mod_of[ ps ]
+                pick_default[ ps, null, bm, ab.value ]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a press selects it: the pane shows the app; selected, it
+        # goes back to the source while the app runs on
+        if [ !ev.key.shift ]
+            pe : Editor pane_of[ ev.target ]
+            rv : AppView (pe) ? pe.run_view : null
+            if [ pe && rv && !pe.app_view ]
+                embed_app[ pe, rv ]
+            el [ pe && rv ]
+                pe.app_view  = false
+                # the source shows again: the wheel scrolls it
+                pe.no_scroll = false
+                pe.load_file[]
+                session_dirty = true
+            if [ ux ] ux.restyle = true
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a new edit starts empty; esc leaves the value as it was
+        if [ !ux || ux.focus != ab ]
+            ab.edit       = ''
+            ab.sel_col    = 0
+            ab.anchor_col = 0
+            ab.label      = ''
+        ab.focusable = true
+        if [ ux ] ux.set_focus[ ab ]
+    # working in a pane makes it active: keys act where you are
+    epv : Editor pane_of[ ev.target ]
+    if [
+        epv && epv.pane_index >= 0
+        && epv.pane_index < editor_slots.count ]
+        active_pane = epv.pane_index
+    for [ e: element* ev.target, e, e = e.parent ]
+        if [ e inherits Console ]
+            co  : Console e
+            cid : string co.id
+            if [
+                ev.target.id == 'console_filter' && cid
+                && cid.count > 4
+                && cid.mid[ 0, 4 ].compare[ 'pane' ] == 0 ]
+                ppi : i32 [
+                    cid.mid[ 4, cid.count - 4 ].real_value[] ]
+                if [
+                    ppi < editor_slots.count
+                    && ppi < pane_console.count ]
+                    pane_console[ppi] = ''
+                    active_pane    = ppi
+                    pending_finder = ppi
+                    ev.no_default  = true
+                    force_update[]
+                    return
+        if [ e inherits Editor ]
+            ed : Editor e
+            # hits are clickable only while the list is actually
+            # shown
+            if [
+                ev.target == e && (nav_showing || find_showing)
+                && ed.sel_line >= 0
+                && ed.sel_line < nav.find_hits.count ]
+                dbl : bool [
+                    ev.mouse.double_click
+                    && last_hit_row == ed.sel_line ]
+                last_hit_row = ed.sel_line
+                if [ hit_activate[ ed, ed.sel_line, dbl ] ]
+                    ev.no_default = true
+                    if [ ev.target ] ev.target.ux.restyle = true
+                return
+    # avatar pane titlebar toggle: hide/show the 3D avatar view
+    if [ ev.target.id == 'avatar_hide' ]
+        show_avatar = !show_avatar
+        if [ ev.target ] ev.target.ux.restyle = true
+        force_update[]
+        return
+    if [ ev.target.id == 'mute' ]
+        app_muted = !app_muted
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # the bottom bar's sound: mute the mode's own, or pick the mode
+    if [ ev.target.id == 'vol_mute' ]
+        mav : AppView active_app[]
+        if [ mav ] mav.vol_mute = !mav.vol_mute
+        el
+            master_mute = !master_mute
+            host_master_set[ master_vol, (master_mute) ? 1 : 0 ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [
+        ev.target.id == 'error' || ev.target.id == 'our_app_error' ]
+        goto_error[]
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'play' ]
+        dl : dbg (debuggers) ? debuggers[ active_target ] : null
+        if [ dl && dl.active ]
+            dl.stop[]
+            clear_stop_lines[]
+        el
+            pn : Project (projects) ? projects[
+                active_target ] : null
+            if [ pn ]
+                run_node[ active_target ]
+            el
+                # no build node — debug the built binary by name
+                # alone
+                start_debug[ active_target ]
+        ev.no_default = true
+        return
+    # the instance panel's group renames itself to the pressed
+    # segment
+    if [
+        ev.target.id == 'continue' || ev.target.id == 'step_next'
+        || ev.target.id == 'pause' ||
+         ev.target.id == 'step_in'  || ev.target.id == 'step_out' ]
+        # the status bar is in no pane: the active one
+        eds : Editor pane_of[ ev.target ]
+        if [ !eds ] eds = pane_at[ active_pane ]
+        rvp : AppView (eds) ? eds.run_view : null
+        msp : path (eds) ? module_src_of[ eds ] : null
+        ds : dbg stopped_debugger[]
+        # a title's steps: its pane's instance's debugger
+        if [ rvp && stopped_at[ rvp ] ] ds = rvp.debugger
+        if [ ev.target.id == 'pause' && msp
+                && !(rvp && !rvp.ended && !rvp.held) ]
+            show_app[ eds, msp, false ]
+        el [ ev.target.id != 'pause' && ds ]
+            if [ ev.target.id == 'continue' ]
+                ds.cont[]
+                # running again: the next pause pauses
+                if [ rvp ] rvp.paused = false
+            el [ ev.target.id == 'step_next' ] ds.step_over[]
+            el [ ev.target.id == 'step_in' ]   ds.step_into[]
+            el                                  ds.step_out[]
+        el [ eds && eds.run_view ]
+            instance_action[ eds, eds.run_view, ev.target.id ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # a program's folder pick answered with the folder shown
+    if [ ev.target.id == 'portal_open' ]
+        if [ nav.nav_root ] pick_deliver[ nav.nav_root ]
+        ev.no_default = true
+        return
+    # the title's run: shift or cmd adds an instance, else a running
+    # one stops
+    if [ ev.target.id == 'app_run' ]
+        edr : Editor pane_of[ ev.target ]
+        if [ !edr ] edr = pane_at[ active_pane ]
+        msr : path (edr) ? module_src_of[ edr ] : null
+        rvr : AppView (edr) ? edr.run_view : null
+        if [ msr && (ev.key.shift || ev.key.ctrl || ev.key.meta) ]
+            show_app[ edr, msr, true ]
+        el [ rvr && !rvr.ended && !rvr.held ]
+            edr.toggle_app_run[ false ]
+        el [ msr ]
+            show_app[ edr, msr, false ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'agent_ask' ]
+        eda : Editor pane_of[ ev.target ]
+        log 'AGENTASK press pane={bool[eda]} src={(eda && eda.src) ? string[eda.src] : "none"} line={(eda) ? eda.sel_line : -1}'
+        if [ eda && eda.src && ux ]
+            ux.exchange_open[ eda.src, eda.sel_line + 1, true ]
+        ev.no_default = true
+        return
+    # the title's toggle: the pane's app in Embed, else PIP
+    # the pinned app: away from it, back to its source; on its
+    # source, back to the app itself in this window
+    if [ ev.target.id == 'home_mod' ]
+        edh : Editor pane_of[ ev.target ]
+        pih : i32 [ (edh) ? edh.pane_index : active_pane ]
+        hs : path home_src[]
+        if [ edh && edh.src && hs && '{edh.src}' == '{hs}' ]
+            au_live_switch[ home_mod.chars ]
+        el [ hs ]
+            open_in_pane[ hs, pih ]
+            # and the instance it came from is selected again, with
+            # its pip
+            edh2 : Editor pane_at[ pih ]
+            if [ edh2 && home_av ]
+                edh2.run_view = home_av
+                edh2.app_view = false
+            if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [
+        ev.target.id == 'side_menu'
+        || ev.target.id == 'side_scenes' ]
+        tb : string [
+            (ev.target.id == 'side_scenes') ? 'scenes'
+            : 'instances' ]
+        # the lit tab folds the panel; another switches to it; any
+        # opens a folded one
+        inst_hidden = side_tab == tb && !inst_hidden
+
+        side_tab    = tb
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the foot's mode: play runs a debug build, or a release one
+    if [ ev.target.id == 'pfoot_verbose' ]
+        run_verbose = !run_verbose
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'pfoot_mode' ]
+        run_release = !run_release
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a code window's foot: its console, or a debug start
+    if [ ev.target.id.starts_with[ 'pfoot_' ] ]
+        fp : vec string ev.target.id.split[ ':' ]
+        fq : i32 [ (fp.count == 2)
+            ? i32[ fp[ 1 ].integer_value[] ] : active_pane ]
+        if [ fp[ 0 ] == 'pfoot_con' ] con_flip[ fq ]
+        pe : Editor (fp[ 0 ] == 'pfoot_pip') ? pane_at[ fq ] : null
+        if [ pe && pe.run_view ]
+            pv : AppView pe.run_view
+            set_display[ pe, pv, (pv.display == 0) ? 1 : 0 ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # a new instance, debug or release by the toggle; a
+        # program (export run) runs as its card runs it
+        sd : Editor (fp[ 0 ] == 'pfoot_dbg') ? pane_at[ fq ] : null
+        rl : string (sd) ? run_of[ sd.src ] : ''
+        if [ rl.count > 0 ]
+            run_line[ rl, fq ]
+            if [ sd && sd.run_view ]
+                sd.run_view.prog_debug = !run_release
+                sd.run_view.origin = sd.src
+        # shift held: a clean rebuild first (its card shows it all)
+        el [ sd ]
+            inst_debug_next = !run_release
+            sd.start_instance[ shift_down ]
+            inst_debug_next = false
+            pending_run = sd.pane_index
+        if [ ux ] ux.restyle = true
+        force_update[]
+        ev.no_default = true
+        return
+    # a task's debug bar: its own instance's debugger
+    if [ ev.target.id.starts_with[ 'tdbg:' ] ]
+        ps : vec string ev.target.id.split[ ':' ]
+        av : AppView (ps.count == 3)
+            ? instance_by[ i32[ ps[ 1 ].integer_value[] ] ] : null
+        if [ av ]
+            ed : Editor null
+            for [ q: i32 0, q < editor_slots.count, q += 1 ]
+                eq : Editor pane_at[ q ]
+                if [ eq && eq.run_view == av ] ed = eq
+            if [ !ed ] ed = pane_at[ active_pane ]
+            lq : i32 pane_showing[ av ]
+            if [ ps[ 2 ] == 'console' ]
+                con_flip[ (lq >= 0) ? lq : active_pane ]
+            el
+                if [ ps[ 2 ] == 'continue' ] av.paused = false
+                instance_action[ ed, av, ps[ 2 ] ]
+                # a program going on: its window back in view
+                if [ ps[ 2 ] == 'continue' && av.prog_debug ]
+                    show_instance[ av.iid,
+                        (lq >= 0) ? lq : active_pane ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a folder of the navigator's path: browse there
+    if [ ev.target inherits BarCrumb ]
+        crumb_press[ cast BarCrumb [ ev.target ] ]
+        ev.no_default = true
+        return
+    # the take's file: opened here, in the active pane
+    if [ ev.target.id == 'rec_saved' && rec_path ]
+        drawer_shut[]
+        open_in_pane[ path '{rec_path}', active_pane ]
+        ev.no_default = true
+        return
+    if [ ev.target.id && ev.target.id.starts_with[ 'svc_' ] ]
+        service_toggle[ ev.target.id.mid[ 4,
+            ev.target.id.count - 4 ] ]
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'rec_toggle' ]
+        rec_toggle[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a drawer's menu tab: its rows
+    if [ ev.target.id && ev.target.id.starts_with[ 'ctab_' ] ]
+        menu_top = i32[ ev.target.id.mid[ 5,
+            ev.target.id.count - 5 ].integer_value[] ]
+        menu_page = ''
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a setting's chip in a system menu panel: its choices under
+    # it; again, away. a choice: taken
+    if [ ev.target.id && ev.target.id.starts_with[ 'xchip_' ] ]
+        nm : ev.target.id.mid[ 6, ev.target.id.count - 6 ]
+        # a zone or a font: an anonymous menu, not chips under it
+        if [ nm == 'time zone' ]
+            set_open = ''
+            zone_popup[]
+            ev.no_default = true
+            return
+        if [ nm == 'fixed width' || nm == 'tool font' ]
+            set_open = ''
+            font_popup[ nm ]
+            ev.no_default = true
+            return
+        set_open = (set_open == nm) ? '' : nm
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id && ev.target.id.starts_with[ 'xopt_' ]
+         && set_open.count > 0 ]
+        pre : 'xopt_{set_open}_'
+        if [ ev.target.id.starts_with[ pre ] ]
+            k : i32 [ i32[ ev.target.id.mid[ pre.count,
+                ev.target.id.count - pre.count ].integer_value[] ] ]
+            for [ p8: Prop ] in setting_props[ sys_view ]
+                if [ p8.ident == set_open && p8.stops
+                     && k >= 0 && k < p8.stops.count ]
+                    setting_set[ p8.ident, p8.stops[ k ] ]
+            set_open = ''
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a scene setting's chip: its choices under it; again, away
+    if [ ev.target.id && ev.target.id.starts_with[ 'schip_' ] ]
+        nm : ev.target.id.mid[ 6, ev.target.id.count - 6 ]
+        scene_open = (scene_open == nm) ? '' : nm
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a choice: the scene takes it
+    if [ ev.target.id && ev.target.id.starts_with[ 'sopt_' ]
+         && scene_open.count > 0 ]
+        pre : 'sopt_{scene_open}_'
+        if [ ev.target.id.starts_with[ pre ] ]
+            k : i32 [ i32[ ev.target.id.mid[ pre.count,
+                ev.target.id.count - pre.count ].integer_value[] ] ]
+            ps8 : LaunchProps []
+            sp8 : string scene_spec[]
+            if [ sp8.count > 0 ] Au.parse_agi[ null, sp8.chars, ps8 ]
+            if [ ps8.props ]
+                for [ p8: Prop ] in ps8.props
+                    if [ p8.ident == scene_open && p8.stops
+                         && k >= 0 && k < p8.stops.count ]
+                        scene_prop_set[ p8.ident, p8.stops[ k ] ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ sys_pick[ ev.target.id ] ]
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'sys_wifi' ]
+        # the lit mark folds the panel; else it opens on Wi-Fi
+        inst_hidden = side_tab == 'wifi' && !inst_hidden
+        side_tab    = 'wifi'
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a tray app's tile: as a click on its icon (left: its own
+    # action; else its menu)
+    if [ ev.target.id && ev.target.id.starts_with[ 'tray_tile_' ] ]
+        tix : i32 [ i32[ ev.target.id.mid[ 10,
+            ev.target.id.count - 10 ].integer_value[] ] ]
+        trt : Tray tray_shared[]
+        if [ tix >= 0 && tix < trt.items.count ]
+            tit : TrayItem trt.items[ tix ]
+            if [ !tit.menu_only && ev.mouse.button == 0 ]
+                trt.activate[ tit ]
+                drawer_shut[]
+            el
+                trt.chosen = tit.service
+                tit.dirty  = true
+                drawer_toggle[ 'tray', false ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'bar_url' ]
+        # typing: the field places its caret
+        if [ bar_typing ] return
+        # else the bar's drag: pulled, the window; a click, typing
+        ug : cast BarGrab [ find_el[ a, 'bar_grab' ] ]
+        if [ ug ] ug.on_press[ ev ]
+        el bar_type_start[]
+        ev.no_default = true
+        return
+    # the page's module, on its address, in a pane of its own
+    if [ ev.target.id == 'bar_page' ]
+        ed8 : Editor pane_at[ active_pane ]
+        rv8 : AppView (ed8) ? ed8.run_view : null
+        pm8 : string (ed8 && rv8) ? ed8.page_module[ rv8.app_address ]
+            : ''
+        if [ pm8.count > 0 ]
+            hp : i32 [ active_pane ]
+            if [ editor_slots.count < 4 ]
+                editor_slots += -1
+                pane_console += ''
+                hp = editor_slots.count - 1
+                active_pane = hp
+                save_session[]
+            page_pane = hp
+            page_mod  = pm8
+            page_url  = rv8.app_address
+            force_update[]
+        ev.no_default = true
+        return
+    # another pane's title or load: that pane first
+    if [ ev.target.id.starts_with[ 'bar_name' ]
+         || ev.target.id.starts_with[ 'bar_load' ] ]
+        # 'bar_name' is the active pane's, 'bar_name_1' pane 1's
+        if [ ev.target.id.count > 9 ]
+            pq : i32 [ ev.target.id.mid[ 9,
+                ev.target.id.count - 9 ].integer_value[] ]
+            if [ pq >= 0 && pq < editor_slots.count ]
+                active_pane = pq
+        # the name is the window's title: its press is the bar's
+        # drag (pulled free, split, or a click selects); the load
+        # mark beside it picks what the app loads
+        bg : cast BarGrab [ find_el[ a, 'bar_grab' ] ]
+        if [ ev.target.id.starts_with[ 'bar_name' ] && bg ]
+            bg.on_press[ ev ]
+            return
+        if [ pane_loads[ active_pane ] ] bar_title_press[]
+        ev.no_default = true
+        return
+    # the bar's own ground (no menu or button there): nothing
+    if [ ev.target.id == 'system' ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the bar's right end (a phone's signal): the main
+    # menu
+    if [ ev.target.id == 'bar_title' || ev.target.id == 'bar_signal' ]
+        # lit while the main menu shows: a press shuts it all
+        if [ sys_up[] ]
+            sys_under = false
+            menu_kind = 'system'
+            drawer_shut[]
+        el drawer_toggle[ 'system', false ]
+        ev.no_default = true
+        return
+    # an app's outline toggle (the bar's, or a window's strip's)
+    oi : i32 [ ev.target.id.index_of[ 'poutline_' ] ]
+    if [ oi >= 0 ]
+        op : i32 [ ev.target.id.mid[ oi + 9,
+            ev.target.id.count - oi - 9 ].integer_value[] ]
+        oe : Editor pane_at[ op ]
+        oav : AppView (oe) ? oe.run_view : null
+        if [ oav && oav.slot >= 0 ]
+            host_post2[ oav.slot, 1, i32[ HM.panel ], 1, 0, 0 ]
+        ev.no_default = true
+        return
+    # an app's panel toggle: the app opens or closes its panel
+    if [ ev.target.id.starts_with[ 'ppanel_' ] ]
+        pp : i32 [ ev.target.id.mid[ 7,
+            ev.target.id.count - 7 ].integer_value[] ]
+        pe : Editor pane_at[ pp ]
+        pav : AppView (pe) ? pe.run_view : null
+        if [ pav && pav.slot >= 0 ]
+            host_post2[ pav.slot, 1, i32[ HM.panel ], 0, 0, 0 ]
+        ev.no_default = true
+        return
+    # a tab's close: that pane closes
+    # minimize: the pane goes, its app runs on (the menu's Hide)
+    # the close and minimize boxes act at their release (CloseBox)
+    if [ ev.target inherits CloseBox ]
+        ev.no_default = true
+        return
+    # another pane's group in the bar: that pane becomes active
+    if [ ev.target.id.starts_with[ 'pmenu_' ]
+         || ev.target.id.starts_with[ 'ptitle_' ] ]
+        u_ : i32 [ ev.target.id.index_of[ '_' ] ]
+        pp : i32 [ ev.target.id.mid[ u_ + 1,
+            ev.target.id.count - u_ - 1 ].integer_value[] ]
+        if [ pp >= 0 && pp < editor_slots.count ]
+            active_pane = pp
+        # one press does its job too: the globe opens the
+        # navigator, the name opens that pane's menu
+        if [ ev.target.id.starts_with[ 'ptitle_' ] ]
+            focus_finder[]
+        el
+            menu_sync[]
+            pane_menu[]
+            menu_top = -1
+            if [ menu_items ]
+                for [ i: i32 0, i < menu_items.count, i += 1 ]
+                    e_ : TrayEntry menu_items[ i ]
+                    if [ menu_top < 0 && e_.depth == 0 && !e_.rule ]
+                        menu_top = i
+            # opened by key: the selected window's strip, if it has
+            # one, from its left edge
+            drawer_pane = (pane_floats[ active_pane ]
+                || pane_below[ active_pane ]) ? active_pane : -1
+            if [ menu_top >= 0 ] drawer_toggle[ 'menu', false ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a press anywhere else ends typing in the bar's title
+    if [ bar_typing ] bar_typing_end[]
+    if [ ev.target inherits MenuTop ]
+        mt : cast MenuTop [ ev.target ]
+        # a group's other member: its release shows it
+        if [ mt.member >= 0 ]
+            ev.no_default = true
+            return
+        # the desktop's own menu, whatever window is selected
+        if [ mt.at == -2 ]
+            desk_menu_at[ mt ]
+            ev.no_default = true
+            return
+        # another window's menu: that window first, then its menu;
+        # its title selects it alone, pressed again its menu
+        if [ mt.pane >= 0 && mt.pane != active_pane ]
+            raise_pane[ mt.pane ]
+            menu_sync[]
+            if [ mt.tab_on ]
+                if [ ux ] ux.restyle = true
+                ev.no_default = true
+                return
+        menu_open_at[ mt, menu_top == mt.at ]
+        ev.no_default = true
+        return
+    if [ ev.target inherits TrayMark ]
+        mk : cast TrayMark [ ev.target ]
+        tr : Tray tray_shared[]
+        ti : TrayItem tr.find[ mk.service ]
+        # left: the app's own action; else its menu in the panel
+        if [ ti && ev.mouse.button == 0 && !ti.menu_only ]
+            tr.activate[ ti ]
+        el [ ti ]
+            same : bool [ tr.chosen == ti.service ]
+            tr.chosen = ti.service
+            ti.dirty  = true
+            drawer_toggle[ 'tray', same ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'side_toggle' ]
+        inst_hidden = !inst_hidden
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the navigator's two views
+    if [ ev.target.id == 'nav_list' || ev.target.id == 'nav_icons' ]
+        nav_icons = ev.target.id == 'nav_icons'
+        # the rows are built for a view: build them again for this
+        nav.icons = nav_thumbs[]
+        if [ nav_showing ] nav.build_rows[]
+        if [ ux ] ux.restyle = true
+        force_update[]
+        ev.no_default = true
+        return
+    # the console's toolbar
+    if [ ev.target.id == 'con_asm' ]
+        con_asm = !con_asm
+        asm_sync[]
+        d : dbg active_debugger[]
+        if [ d ] d.show[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'con_stack' ]
+        con_stack_on = !con_stack_on
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'con_dbg' ]
+        con_dbg = !con_dbg
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'con_clear' ]
+        cc : ConsoleSession (ed_sessions)
+            ? ed_sessions[ console_sid[ pane_index_of[ ev.target ] ] ]
+            : null
+        if [ cc ] cc.clear_log[]
+        if [ con_dbg ] dbg_lines = list string []
+        if [ ux ] dirty_consoles[ ux.root ]
+        ev.no_default = true
+        return
+    # the desktop's bar: its widgets, shown or hidden
+    if [ ev.target.id == 'desk_side' ]
+        desk_hide = !desk_hide
+        save_session[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'new_instance' ]
+        edn : Editor pane_of[ ev.target ]
+        inst_fresh = true
+        if [ edn ] edn.start_instance[ shift_down ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # a right press on an app's icon: its menu where it was pressed
+    if [ ev.mouse.button == 1 && ev.target inherits DockIcon ]
+        dpi : DockIcon cast DockIcon [ ev.target ]
+        pinned : bool [ dpi.id && dpi.id.starts_with[ 'dock_' ] ]
+        if [ pinned || (dpi.module && dpi.file && !dpi.program) ]
+            dock_pop   = dpi
+            # beside the dock, level with the icon's top
+            dock_pop_x = dock_w[] + 26.0
+            dock_pop_y = dpi.win_pos.y - 14.0
+            force_update[]
+            ev.no_default = true
+            return
+    # a code window's: hidden or shown
+    if [ ev.target inherits DockIcon && ev.target.id
+         && ev.target.id.starts_with[ 'pane_' ] ]
+        pq : i32 [ i32[ ev.target.id.mid[ 5,
+            ev.target.id.count - 5 ].integer_value[] ] ]
+        if [ pq >= 0 && pq < editor_slots.count ]
+            ep : Editor pane_at[ pq ]
+            over : bool [ ep && ep.run_view && !ep.run_view.ended
+                          && ep.app_view ]
+            # its app's pick over it: the pick aside, not the pane
+            pk : bool [ ep && ep.run_view && pane_browsing[ pq ]
+                        && pick_launch == ep.run_view ]
+            if [ pane_hidden[ pq ] ] unhide[ pq ]
+            el [ pk ]
+                pick_hide[]
+                ep.app_view = false
+                ep.pristine = false
+                active_pane = pq
+            # the app over the edit steps aside: the edit in view
+            el [ over ]
+                ep.app_view = false
+                ep.pristine = false
+                active_pane = pq
+            el dock_choose[ pq ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # a running app's: a click at the release, or a drag to pin it
+    if [ ev.target inherits DockIcon && ev.target.id
+         && ev.target.id.starts_with[ 'run_' ] ]
+        drag_iid   = i32[ ev.target.id.mid[ 4,
+            ev.target.id.count - 4 ].integer_value[] ]
+        drag_x0    = f32[ ux.mouse.x ]
+        drag_y0    = f32[ ux.mouse.y ]
+        drag_moved = false
+        drag_slot  = -1
+        ev.no_default = true
+        return
+    # a dock pin: a module runs as an app, else the path opens
+    if [ ev.target inherits DockIcon && ev.target.id
+         && ev.target.id.starts_with[ 'dock_' ] ]
+        drag_pin   = ev.target.id.mid[ 5, ev.target.id.count - 5 ]
+        drag_x0    = f32[ ux.mouse.x ]
+        drag_y0    = f32[ ux.mouse.y ]
+        drag_moved = false
+        drag_slot  = -1
+        ev.no_default = true
+        return
+    # pip shrinks the app into the editor; its instruments stay open
+    # the agent view: a choice adds an instance, a title opens
+    # its console (again folds it), end ends it
+    # the desktop's tab: a new instance of that agent, shown
+    if [ ev.target.id.starts_with[ 'ahome_end_' ] ]
+        home_end[ ev.target.id.mid[ 10, ev.target.id.count - 10 ] ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the agents area's own ground (the platform, its avatars, the
+    # space round them; not a title, its console or a button):
+    # the menu shuts, back to where it was
+    tg : element ev.target
+    ground : bool [ tg inherits AgentHome || tg inherits PlatformView
+        || tg inherits PlatAvatar ]
+    if [ !ground && tg.parent && tg.parent inherits AgentHome ]
+        ground = !(tg inherits AgentHead) && !(tg inherits AgentBody)
+            && !(tg inherits Console) && !(tg inherits HomeLabel)
+            && !(tg inherits TButtons)
+    if [ ground && drawer_open ]
+        drawer_shut[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id.starts_with[ 'ahome_h_' ] ]
+        nm : string ev.target.id.mid[ 8, ev.target.id.count - 8 ]
+        # a phone's title acts at its release (a swipe shows end)
+        if [ use_mobile ]
+            ev.no_default = true
+            return
+        home_open = (home_open == nm) ? '' : nm
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the bar's orbiter icon: the orbiter menu, again shut
+    if [ ev.target.id == 'bar_orbiter' ]
+        desk_menu_open[]
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'agent_note' ]
+        # recording: this click stops it, and the take is sent
+        if [ mic_by_press ]
+            mic_by_press = false
+            if [ orbit_cap_on ] toggle_listen[ null ]
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # shift or cmd: record only, no dialog, about the file;
+        # the window is caught first, before anything else draws
+        if [ (ev.key.shift || cmd_down) && !orbit_cap_on ]
+            edr : Editor pane_at[ active_pane ]
+            listen_shot = (ux) ? snap_window[ ux ] : null
+            dict_slot = -1
+            toggle_listen[ (edr) ? edr.src : null ]
+            mic_by_press = orbit_cap_on
+            if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        # the home, on its agent view
+        home_toggle[]
+        ev.no_default = true
+        return
+    # the label opens the side panel on the scene cards
+    if [ ev.target.id == 'scene_name' ]
+        side_tab    = 'scenes'
+        inst_hidden = false
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'remotes' ]
+        nav.search_remotes = !nav.search_remotes
+        ev.target.selected = nav.search_remotes
+        # the scope changed: the standing results no longer answer
+        # it
+        find_last_scope = ''
+        if [ findbar_open && findbar_text && findbar_text.count > 0 ]
+            run_find_in_files[]
+        el [ nav_showing ]
+            run_search[]
+            rekeep_listing[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'ui_hide' ]
+        hide_ui = !hide_ui
+        force_update[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    log 'on_press: {ev.target.id} t={Au.epoch_millis[]}'
+    for [ i: i32 0, i < open_files.count, i += 1 ]
+        key : string 'tab_{i}'
+        if [ ev.target.id == key ]
+            rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
+            in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
+            active_panel = 'editor'
+            if [
+                (ev.key.shift || in_right)
+                && editor_slots.count > 1 ]
+                si : i32 [
+                    (active_pane + 1 < editor_slots.count)
+                    ? active_pane + 1 : 0 ]
+                editor_slots[si] = i
+                active_pane = si
+            el
+                editor_slots[active_pane] = i
+            set_active[ i ]
+            sync_tabs[]
+            return
+    
+
+    if [ ev.target.id.starts_with[ 'view_' ] ]
+        edv : Editor pane_of[ ev.target ]
+        if [ !edv ] edv = pane_at[ active_pane ]
+        if [ edv ]
+            vn_ : string ev.target.id.mid[ 5, ev.target.id.count - 5 ]
+            # the lit one toggles off, back to editing
+            set_pane_view[ edv,
+                           (vn_ == edv.resolve_view[]) ? '' : vn_ ]
+            force_update[]
+        return
+
+    if [ ev.target.id == 'git' ]
+        edg : Editor pane_of[ ev.target ]
+        if [ !edg ] edg = pane_at[ active_pane ]
+        # the tab toggles the diff view: on shows the reference list
+        # to pick against and colours the file; off drops every mark
+        # and leaves the list if it is up
+        if [ edg ]
+            edg.git_on = !edg.git_on
+            if [ edg.git_on ] set_pane_view[ edg, 'git' ]
+            el [ edg.view_name == 'git' ] set_pane_view[ edg, '' ]
+            edg.ghost_hunk = -1
+            edg.pristine   = false
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+
+
+    # [x] left of the title: leave the chosen view and any diff.
+    # a running app stops and lands on its source, never relaunches
+    
+    if [ ev.target.id == 'back' ]
+        exit_finder[]
+        ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    
+    
+    # an enum's segmented buttons: the press already set
+    # TButtons.selected. store NOW — a poll next frame loses it,
+    # because the re-render rebuilds the buttons with selected :=
+    # args before the poll reads it
+    if [
+        ev.target inherits TButtons && ev.target.parent
+        && ev.target.parent inherits LaunchPanel ]
+        lpb : LaunchPanel ev.target.parent
+        if [ lpb.scene ]
+            push_live[ lpb, 'scene', ev.target ]
+            if [ ev.target ] ev.target.ux.restyle = true
+            return
+        edb : Editor pane_of[ ev.target ]
+        infb : bool [ info_ae && lpb.id == 'info_props' ]
+        fsb : file_state (infb) ? fstate[ info_src[] ]
+            : args_state_of[ edb ]
+        if [ fsb ]
+            fsb.args = lpb.compose[]
+            fsb.args.hold[]
+            if [ !infb && edb.run_view ]
+                edb.run_view.module_args = fsb.args
+            if [ !infb && edb.run_view && !edb.run_view.ended ]
+                push_live[ lpb, edb.run_view.sock_name[], ev.target ]
+            save_session[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    if [ ev.target.id == 'lp_coverage' ]
+        edc : Editor pane_of[ ev.target ]
+        if [ edc && edc.run_view ]
+            edc.run_view.cov_build = !edc.run_view.cov_build
+            session_dirty = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # clear: no map until the next coverage run writes one
+    if [ ev.target.id == 'lp_coverage_clear' ]
+        cc_ : string '{cov_file[]}'
+        remove[ cc_.chars ]
+        cov_poll[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # a path's clear: its field goes empty, the args recompose
+    if [ ev.target inherits LaunchClear ]
+        fid : string ev.target.id.mid[ 0, ev.target.id.count - 6 ]
+        fe : element find_el[ a, fid ]
+        if [ fe && fe inherits LaunchPath ]
+            lc : LaunchPath fe
+            lc.path_value = ''
+            lc.edit       = ''
+            lc.label      = ''
+            args_field  = fe
+            args_editor = pane_of[ ev.target ]
+            args_sync   = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default     = true
+        ev.no_propagation = true
+        return
+    # launch panel: a control change re-composes the run args next
+    # frame
+    if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
+        # a path: the nav list picks the file for it
+        # an action: the running instance is asked to call it;
+        # nothing to compose
+        if [ ev.target inherits LaunchAction ]
+            aed : Editor pane_of[ ev.target ]
+            anm : string ev.target.id.mid[ 3, ev.target.id.count - 3 ]
+            if [
+                aed && aed.run_view && !aed.run_view.ended
+                && !aed.run_view.held ]
+                agent_sock_send[ aed.run_view.sock_name[].chars,
+                                 'call {anm}\n' ]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        if [ ev.target inherits LaunchPath ]
+            lp8 : LaunchPath ev.target
+            pick_field  = ev.target.id
+            pick_dir    = lp8.is_dir
+            pick_editor = pane_of[ ev.target ]
+            # a resource: the module's exported extensions narrow
+            # the list
+            pick_exts  = vec string []
+            pick_cache = null
+            if [ lp8.is_resource && pick_editor ]
+                pick_editor.ensure_export_registry[]
+                bm8 : string band_mod_of[ pick_editor ]
+                if [ pick_editor.export_registry ]
+                    for [ mod: string, ex: string ]
+                        in pick_editor.export_registry
+                        if [ mod == bm8 ] pick_exts.push[ ex ]
+            cur_ : path (lp8.edit && lp8.edit.count > 0) ? path lp8.edit : null
+            if [ cur_ && cur_.exists[] ]
+                nav.nav_root = (cur_.is_dir[]) ? cur_ : cur_.parent_dir[]
+            focus_finder[]
+            run_search[]
+            ev.no_default     = true
+            ev.no_propagation = true
+            return
+        # a slider drives itself (drag) and reports via `changed`,
+        # polled in on_overlay; do NOT consume its press or it can't
+        # move. a key field arms itself the same way and reports
+        # once a key lands
+        if [
+            ev.target inherits VolumeSlider
+            || ev.target inherits KeyField ||
+            ev.target inherits PadField
+            || ev.target inherits StepField ] return
+        # no_default below stops the click, so a chip toggles here
+        if [ ev.target inherits Check ]
+            ck : Check ev.target
+            ck.selected = !ck.selected
+        args_field  = ev.target
+        args_editor = pane_of[ ev.target ]
+        args_sync   = true
+        ev.no_default = true
+        return
+
+    # back to the source of the app this band is running
+    if [ ev.target.id == 'gotosrc' ]
+        ed6 : Editor pane_of[ ev.target ]
+        if [ ed6 ]
+            bs6 : path ed6.band_src[]
+            if [ bs6 ] open_in_pane[ bs6, ed6.pane_index ]
+        ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+    if [ ev.target.id == 'title_close' ]
+        exit_finder[]
+        findbar_open = false
+        ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        force_update[]
+        return
+
+
+    if [
+        ev.target.id == 'finder_back'
+        || ev.target.id == 'finder_fwd' ]
+        nav.nav_step[ (ev.target.id == 'finder_back') ? -1 : 1 ]
+        ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+    # a file's view in the bar (pview:<pane>:<view>)
+    if [ ev.target.id && ev.target.id.starts_with[ 'pview:' ] ]
+        pw : string ev.target.id.mid[ 6, ev.target.id.count - 6 ]
+        cw : i32 [ pw.index_of[ ':' ] ]
+        if [ cw > 0 ]
+            pq : i32 [ pw.mid[ 0, cw ].integer_value[] ]
+            if [ pq >= 0 && pq < editor_slots.count ]
+                active_pane = pq
+                pane_view_press[ pane_at[ pq ],
+                    pw.mid[ cw + 1, pw.count - cw - 1 ] ]
+        ev.no_default = true
+        return
+    # a pane's own arrows (nav_back:<pane>), else the active one's;
+    # its refresh (an address app's) is a walk of 0: the page again
+    nid : string ev.target.id
+    if [ nid && (nid.starts_with[ 'nav_back' ]
+                 || nid.starts_with[ 'nav_fwd' ]
+                 || nid.starts_with[ 'nav_reload' ]) ]
+        cn : i32 [ nid.index_of[ ':' ] ]
+        npi : i32 [ (cn > 0) ? i32[ nid.mid[ cn + 1,
+            nid.count - cn - 1 ] ] : active_pane ]
+        edn : Editor pane_at[ npi ]
+        wd : i32 [ (nid.starts_with[ 'nav_back' ]) ? -1
+            : ((nid.starts_with[ 'nav_fwd' ]) ? 1 : 0) ]
+        if [ edn ] edn.nav_walk[ wd ]
+        ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+    if [ ev.target.id == 'find_replace' ]
+        replace_on = !replace_on
+        ev.no_default = true
+        force_update[]
+        return
+    if [ ev.target.id == 'rep_one' || ev.target.id == 'rep_all' ]
+        if [ ev.target.id == 'rep_one' ] replace_one[]
+        el replace_every[]
+        ev.no_default = true
+        force_update[]
+        return
+    if [ ev.target.id == 'magnify' ]
+        findbar_open = !findbar_open
+        if [ findbar_open ] pending_findfocus = true
+        for [ e: element* ev.target, e, e = e.parent ]
+            if [ e inherits EditorView ]
+                findbar_pane = e.id
+                break
+        # closing the bar hides the results
+        if [ !findbar_open ] find_showing = false
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    
+    if [ ev.target.id == 'close_find' ]
+        findbar_open = false
+        find_showing = false
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        force_update[]
+        return
+    
+    if [ ev.target.id == 'replace' ]
+        ev.target.sel_col    = ev.target.edit->count
+        ev.target.anchor_col = ev.target.sel_col
+        ev.target.set_focus[]
+        force_update[]
+        return
+
+    # the title's red x, the view bar's minus: this pane goes
+    if [ ev.target.id == 'pane_close' ]
+        edu : Editor pane_of[ ev.target ]
+        if [ edu ] close_pane[ edu.pane_index ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+    if [ ev.target.id == 'pane_add' ]
+        pane_add[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    if [ ev.target.id.starts_with[ 'cmp_' ] ]
+        tid_ : string ev.target.id
+        ex  : string tid_.mid[ 4, tid_.count - 4 ]
+        ed_  : Editor pane_of[ ev.target ]
+        pi  : i32 [ (ed_) ? ed_.pane_index : active_pane ]
+        f_   : path (ed_) ? ed_.src : null
+        cp  : path companion_path[ f_, ex ]
+        if [ cp ] open_in_pane[ cp, pi ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # the instance panel's section tabs: the lit one is open, a
+    # press on it folds it away. one row for all three, so this is
+    # the only toggle
+    if [
+        ev.target.id == 'properties'
+        || ev.target.id == 'instruments'
+        || ev.target.id == 'callstack'
+        || ev.target.id == 'record' ]
+        wp : bool [ props_open ]
+        wi : bool [ instr_open ]
+        ws : bool [ stack_open ]
+        wr : bool [ rec_open ]
+        props_open = (ev.target.id == 'properties') && !wp
+        instr_open = (ev.target.id == 'instruments') && !wi
+        stack_open = (ev.target.id == 'callstack') && !ws
+        rec_open   = (ev.target.id == 'record') && !wr
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    # the record tab: its source, then the button
+    if [ ev.target.id == 'rec_self' || ev.target.id == 'rec_app' ]
+        rec_pick = (ev.target.id == 'rec_app') ? 1 : 0
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'rec_go' ]
+        if [ rec_iid != -2 ]
+            rec_stop[]
+        el
+            ed_ : Editor pane_at[ active_pane ]
+            av_ : AppView (ed_) ? ed_.run_view : null
+            up_ : bool [ av_ && av_.slot >= 0 && !av_.ended
+                         && !av_.held ]
+            rec_start[ (rec_pick == 1 && up_) ? av_ : null, null ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # the callstack's one toggle: list frames with no known source,
+    # or not
+    if [ ev.target.id == 'show unknown source' ]
+        stack_unknown = !stack_unknown
+        if [ ev.target ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'ctx_copy' ]
+        request_context[]
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    if [ ev.target.id == 'ctx_shot' ]
+        fn : string snap_window[ ev.target.ux ]
+        if [ fn ] feed_agent[ fn + ' ' ]
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+    tid : string ev.target.id
+    if [ ev.target.id == 'config' ]
+        rel_x    : f32 [ ev.mouse.pos.x - ev.target.bounds.x ]
+        in_right : bool [ rel_x > ev.target.bounds.w - 14.0 ]
+        if [ ev.key.shift || in_right ]
+            config_side = (config_side == 1) ? 0 : 1
+        el
+            active_panel = 'config'
+        sync_tabs[]
+        return
+    if [ ev.target inherits Option ]
+        oid : string ev.target.id
+        if [ oid == 'system' ]
+            active_target = 'system'
+            nav.nav_root = path '{startup_path}'
+            nav.reroot_index[]
+            rekeep_listing[]
+            sync_active[]
+            save_session[]
+            ev.no_default = true
+        el
+            matched : bool false
+            for [ i: i32 0, i < target_names.count, i += 1 ]
+                if [ target_names[i] == oid ]
+                    active_target = oid
+                    nav.nav_root      = target_roots[i]
+                    matched       = true
+            if [ !matched ]
+                active_panel = oid
+            if [ matched ]
+                nav.reroot_index[]
+                rekeep_listing[]
+                sync_active[]
+                save_session[]
+                ev.no_default = true
+        if [ ev.target ] ev.target.ux.restyle = true
+        return
+
+# only the first dropped file opens — one tab, not one per file
+func orbiter.on_drop [ ev: Event ]
+    if [ !ev.paths || ev.paths.count == 0 ] return
+    open_file[ ev.paths[ 0 ] ]
+
+func orbiter.on_char [ ev: Event ]
+    # the login takes every key until it is passed: its field has
+    # the text, the first key brings it up
+    if [ login_wait[] ]
+        if [ login_sel >= 0 && ev.key.text
+             && !(ev.target && ev.target.id == 'login_pass') ]
+            login_pass   = '{login_pass}{ev.key.text}'
+            login_note   = ''
+            filter_focus = 'login_pass'
+            if [ ux ] ux.restyle = true
+        return
+    # the bar's title being typed: its field has the text
+    if [ bar_typing ] return
+    # a menu page's field (a drawer's form) keeps its own keys
+    if [ ev.target && ev.target.id
+         && ev.target.id.starts_with[ 'pf_' ] ] return
+    # typing with the drawer open filters its menu: the first key
+    # brings the filter's field up, which then has the text
+    if [ drawer_open && menu_kind != 'system' && ev.key.text
+         && ev.key.text.count > 0 ]
+        menu_lit = -1
+        if [ ev.target && ev.target.id == 'filter' ]
+            menu_filter = (ev.target.edit) ? ev.target.edit : ''
+        el
+            menu_filter  = '{menu_filter}{ev.key.text}'
+            filter_focus = 'filter'
+        if [ ux ] ux.restyle = true
+        return
+    # typing on the apps screen filters the apps, the same way
+    if [ apps_typing[] && ev.key.text && ev.key.text.count > 0 ]
+        if [ ev.target && ev.target.id == 'apps_filter' ]
+            apps_filter = (ev.target.edit) ? ev.target.edit : ''
+        el
+            apps_filter  = '{apps_filter}{ev.key.text}'
+            filter_focus = 'apps_filter'
+        if [ ux ] ux.restyle = true
+        return
+    if [ !ev.target ] return
+    # the find/replace/pattern rows: the editable layer owns the
+    # text, and findbar_sync copies the field's edit before a search
+    if [
+        ev.target.id == 'find' || ev.target.id == 'replace'
+        || ev.target.id == 'pattern' ]
+        if [ ev.key.text && ev.key.text.count > 0 ]
+            ev.target.pristine = false
+            uxw : Window ev.target.ux
+            if [ uxw ] uxw.will_animate = true
+    # run args are per source file, kept in the session state
+    if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
+        # the editable layer edits the text after this; the session
+        # copies the field's edit next frame (args_sync)
+        if [ ev.key.text && ev.key.text.count > 0 ]
+            args_field  = ev.target
+            args_editor = pane_of[ ev.target ]
+            args_sync   = true
+            ev.target.pristine = false
+            uxw : Window ev.target.ux
+            if [ uxw ] uxw.will_animate = true
+    # a URL being typed: the field's own edit takes it
+    if [ ev.target.id == 'title' && url_entry_on ] return
+    # typing into an editor's title: it finds in the file
+    if [ ev.target.id == 'title' && title_finds[]
+         && ev.key.text && ev.key.text.count > 0 ]
+        if [ !findbar_text || findbar_text.count == 0 ]
+            ed_ : Editor pane_at[ active_pane ]
+            find_from_line = (ed_ && ed_.sel_line >= 0)
+                ? ed_.sel_line : 0
+            find_from_col  = (ed_ && ed_.sel_col >= 0)
+                ? ed_.sel_col : 0
+            findbar_text = ''
+        findbar_text = (ev.target.edit) ? ev.target.edit : ''
+        find_live[]
+        ev.target.pristine = false
+        if [ ev.target.ux ] ev.target.ux.restyle = true
+        return
+    # typing into an editor's title (the finder/magnify control)
+    if [ ev.target.id == 'title' ]
+        if [ ev.key.text && ev.key.text.count > 0 ]
+            nv_ : EditorView newfile_view[ ev.target ]
+            typed : string [ (ev.target.edit) ? ev.target.edit
+                : '' ]
+            if [ nv_ ]
+                nv_.newfile_text = typed
+                ev.target.pristine = false
+                if [ ev.target.ux ] ev.target.ux.restyle = true
+                return
+            nav.find_text = typed
+            ev.target.pristine = false
+            run_search[]
+
+func orbiter.on_key [ ev: Event ]
+    if [ power_key[ ev ] ]
+        ev.no_default = true
+        return
+    # the shown app's own keyboard is up: its keys are that app's
+    pv : AppView pad_view[]
+    if [ pv ]
+        pv.on_key*[ ev ]
+        ev.no_default = true
+        return
+    # ctrl / cmd + shift + K: the keyboard up or away, as the bar's
+    # button
+    if [ ev.key.unicode == 75 && ev.key.shift
+         && (ev.key.ctrl || ev.key.meta) ]
+        if [ ev.key.state == 1 ]
+            keys_force = (keys_up[]) ? -1 : 1
+            if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # ctrl / cmd + a digit an app's chords hold (screenshots' 1 2
+    # 3): that app over the screen; another digit goes on
+    if [ !ev.key.shift && (ev.key.ctrl || ev.key.meta)
+         && ev.key.unicode >= 48 && ev.key.unicode <= 57 ]
+        ck : '{ev.key.unicode - 48}'
+        if [ over_chord_held[ ck ] ]
+            if [ ev.key.state == 1 ] over_chord[ ck ]
+            ev.no_default = true
+            return
+    # ctrl / cmd + shift + R: a ready reload, the session saved
+    # first (trinity sends it here)
+    if [ ev.key.unicode == 82 && ev.key.shift
+         && (ev.key.ctrl || ev.key.meta) ]
+        if [ ev.key.state == 1 && au_live_get_pending[] == 1 ]
+            request_swap[]
+        ev.no_default = true
+        return
+    ks : i32 [ ev.key.unicode ]
+    # Alt alone, pressed and let go: the bar takes the keys (any
+    # other key or a press between is no tap)
+    alt_ : bool [ ks == 342 || ks == 346 ]
+    if [ alt_ && ev.key.state == 1 ] alt_tap = true
+    el [ alt_ && ev.key.state == 0 && alt_tap ]
+        alt_tap = false
+        if [ drawer_open ] drawer_shut[]
+        el [ !login_wait[] ] bar_key_toggle[]
+        ev.no_default = true
+        return
+    el [ !alt_ && ev.key.state ] alt_tap = false
+    if [ bar_key[ ev ] ]
+        ev.no_default = true
+        return
+    if [ login_wait[] ]
+        fl_ : bool [ ev.target && ev.target.id == 'login_pass' ]
+        if [ ev.key.state && !fl_ && (ks == 257 || ks == 335) ]
+            login_try[]
+        ev.no_default = true
+        return
+    # a program's folder pick: Enter with nothing typed takes the
+    # folder shown, wherever the focus is
+    if [ ks == 257 && ev.key.state && pick_field == 'portal'
+         && pick_dir && nav.nav_root
+         && (!nav.find_text || nav.find_text.count == 0) ]
+        portal_deliver[ nav.nav_root ]
+        ev.no_default = true
+        return
+    # cmd / ctrl + 1 2 3: the platform's avatars held in one
+    # state to check it (halo, edits, beam); the same again lets go
+    if [ ev.key.state && ux && ux.cmd && ks >= 49 && ks <= 51 ]
+        want : i32 [ ks - 48 ]
+        avatar_mode = (avatar_mode == want) ? 0 : want
+        ev.no_default = true
+        return
+    # cmd / ctrl + q: the selected pane's app quits (its window
+    # is asked to close)
+    if [ ks == 81 && ev.key.state && ux && ux.cmd ]
+        if [ quit_pane_app[] ]
+            ev.no_default = true
+            return
+    # the bar's title being typed: Enter takes it, Esc leaves it;
+    # its field edits the rest
+    if [ bar_typing && ev.target && ev.target.id == 'bar_url' ]
+        if [ ev.key.state && ks == 257 ]
+            bar_text = (ev.target.edit) ? ev.target.edit : ''
+            bar_title_apply[]
+        el [ ev.key.state && ks == 256 ]
+            bar_typing_end[]
+        return
+    # the open drawer's keys: Esc clears its filter, else shuts it;
+    # Enter runs the first match; the filter's field edits the rest
+    fd : bool [ ev.target && ev.target.id == 'filter' ]
+    # an agent's console in the menu keeps its keys (its Esc
+    # interrupts the agent)
+    con : bool [ ev.target && ev.target inherits Console ]
+    if [ drawer_open && ev.key.state && !con ]
+        if [ ks == 256 ]
+            if [ menu_filter.count > 0 ] filter_done[ 'filter' ]
+            el drawer_shut[]
+            if [ ux ] ux.restyle = true
+            return
+        if [ ks == 257 ]
+            drawer_enter[]
+            return
+        # the arrows walk the entries, but a text box in the menu
+        # (not its filter) keeps them
+        tb : bool [ ev.target && !fd && ev.target.layers
+            && ev.target.focused && editable_in[ ev.target ] ]
+        if [ (ks == 264 || ks == 265) && !tb ]
+            drawer_step[ (ks == 264) ? 1 : -1 ]
+            ev.no_default = true
+            return
+        # left and right go along the bar's names, unless a text
+        # box (the filter too) has them for its caret
+        if [ (ks == 263 || ks == 262) && !tb && !fd ]
+            bar_step[ (ks == 262) ? 1 : -1 ]
+            ev.no_default = true
+            return
+        if [ fd ]
+            menu_lit    = -1
+            menu_filter = (ev.target.edit) ? ev.target.edit : ''
+            if [ menu_filter.count == 0 ] filter_done[ 'filter' ]
+            if [ ux ] ux.restyle = true
+            return
+    # the apps screen's filter: Esc clears it, Enter opens the
+    # first match; its field edits the rest
+    if [ apps_typing[] && ev.key.state && apps_filter.count > 0 ]
+        if [ ks == 256 ]
+            filter_done[ 'apps_filter' ]
+            return
+        if [ ev.target && ev.target.id == 'apps_filter'
+             && ks != 257 ]
+            apps_filter = (ev.target.edit) ? ev.target.edit : ''
+            if [ apps_filter.count == 0 ]
+                filter_done[ 'apps_filter' ]
+            if [ ux ] ux.restyle = true
+            return
+        if [ ks == 257 ]
+            ag : cast AppsGrid [ find_el[ a, 'apps' ] ]
+            top : AppEntry (ag) ? ag.first_match[] : null
+            if [ top ]
+                filter_done[ 'apps_filter' ]
+                if [ top.opens ] open_in_pane[ top.opens, active_pane ]
+                el apps_pick[ active_pane, top ]
+            if [ ux ] ux.restyle = true
+            return
+    # Esc while recording from orbiter's button: the take is dropped
+    if [ ks == 256 && ev.key.state && mic_by_press ]
+        mic_by_press = false
+        if [ orbit_cap_on ]
+            dictation_cancel[]
+            orbit_cap_on   = false
+            orbit_flushing = false
+        listen_file = null
+        listen_shot = null
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # cmd/ctrl + left/right with the nav view up: its own back and
+    # forward
+    if [
+        ev.key.state && (ev.key.ctrl || ev.key.meta) && nav_showing
+        && (ks == 263 || ks == 262) ]
+        nav.nav_step[ (ks == 263) ? -1 : 1 ]
+        ev.no_default = true
+        return
+    # global chords need no focus target
+    if [ ev.key.state && (ev.key.ctrl || ev.key.meta) ]
+        kc : i32 [ ev.key.unicode ]
+        # space: the navigator, as the bar's globe
+        if [ kc == 32 ]
+            if [ ev.key.state == 1 ]
+                bar_hl = ''
+                if [ drawer_open ] drawer_shut[]
+                globe_press[]
+                if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ kc == 70 ]    # 'F'
+            # with the system bar: the title finds in the file, on
+            # and off
+            ef : Editor pane_at[ active_pane ]
+            if [ system_on[] && ef && ef.src && !ef.app_view ]
+                title_find_toggle[]
+            el
+                open_find[]
+            ev.no_default = true
+            return
+        # 'D': the file in view goes on the dock (again: off); a
+        # module's own source pins as its module
+        if [ kc == 68 ]
+            if [ ev.key.state == 1 ]
+                edk : Editor pane_at[ active_pane ]
+                mk : path (edk) ? module_src_of[ edk ] : null
+                pk : path (mk) ? mk.parent_dir[]
+                    : ((edk) ? edk.src : null)
+                if [ pk && pk.exists[] ]
+                    nav.pin_toggle[ pk ]
+                    if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+        if [ kc == 71 || kc == 79 ]    # 'G' / 'O' — focus the title
+            focus_finder[]
+            ev.no_default = true
+            return
+        if [ kc == 96 ]    # '`' — summon/dismiss the orbiter helper
+            # key repeats must not re-toggle
+            if [ ev.key.state == 1 ]
+                show_orbiter = !show_orbiter
+                # summon starts the mic; dismiss stops and submits
+                # the take
+                if [ show_orbiter != listening[] ]
+                    toggle_listen[ null ]
+                if [ ux ] ux.restyle = true
+            ev.no_default = true
+            return
+    # escape peels ONE layer per press, innermost first: the find
+    # bar, then the finder, before the chosen view is given up
+    if [ ev.key.state && i32[ ev.key.unicode ] == 256
+         && title_find_on ]
+        title_find_end[ title_at[ active_pane ] ]
+        ev.no_default = true
+        return
+    if [
+        ev.key.state && i32[ ev.key.unicode ] == 256
+        && (findbar_open || find_showing || nav_showing) ]
+        exit_find_mode[]
+        ev.no_default = true
+        return
+    # the pane the key came from wins; the active pane is the
+    # fallback
+    eda : Editor pane_of[ ev.target ]
+    if [ !eda ] eda = pane_at[ active_pane ]
+    chosen : bool [
+        eda && ((eda.view_name && eda.view_name.count > 0)
+        || (eda.diff_commit && eda.diff_commit.count > 0)) ]
+    if [ ev.key.state && i32[ ev.key.unicode ] == 256 && chosen ]
+        eda.diff_commit = null
+        # escape on the reference list cancels the diff view
+        # outright
+        if [ eda.view_name == 'git' ] eda.git_on = false
+        set_pane_view[ eda, '' ]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+    # nothing left to peel on the desktop: Esc is orbiter's
+    # button, the orbiter menu
+    if [ ev.key.state && i32[ ev.key.unicode ] == 256
+         && !drawer_open && pane_empty[ active_pane ] ]
+        desk_menu_open[]
+        if [ ux ] ux.restyle = true
+        ev.no_default = true
+        return
+
+    if [ !ev.target ] return
+    # Return in the list opens the highlighted row
+    if [
+        ev.key.state && i32[ ev.key.unicode ] == 257
+        && (nav_showing || find_showing)
+        && ev.target inherits Editor ]
+        edr : Editor ev.target
+        if [
+            edr.hover_line >= 0
+            && hit_activate[ edr, edr.hover_line, true ] ]
+            ev.no_default = true
+            if [ ux ] ux.restyle = true
+            return
+
+    if [ ev.target.id && ev.target.id.starts_with[ 'lp_' ] ]
+        # backspace, arrows and escape (clear) are the editable
+        # layer's; the session copies the field's edit next frame
+        # (args_sync)
+        if [ !ev.key.state ] return
+        args_field  = ev.target
+        args_editor = pane_of[ ev.target ]
+        args_sync   = true
+        ev.target.pristine = false
+        if [ ev.target.ux ] ev.target.ux.will_animate = true
+        return
+
+    if [
+        ev.target.id == 'find' || ev.target.id == 'replace'
+        || ev.target.id == 'pattern' ]
+        if [ !ev.key.state ] return
+        k : i32 [ i32 ev.key.unicode ]
+        # the field edited first: the bar follows its text
+        if [ k != 257 && k != 256 ]
+            findbar_sync[]
+        el [ k == 257 ]    # Key.Enter
+            findbar_sync[]
+            in_file : bool [ find_in_file[] ]
+            log 'FIND enter: tgt={ev.target.id} q="{findbar_text}" pat="{pattern_text}" in_file={(in_file) ? 1 : 0}'
+            if [ ev.target.id == 'replace' ]
+                run_replace[]
+            el [ in_file ]
+                find_last_query = findbar_text
+                find_last_scope = ''
+                find_file_next[]
+            el
+                cur_scope  : '{(pattern_text) ? pattern_text : ''}|{(nav.search_remotes) ? 1 : 0}'
+                last_scope : string [
+                    (find_last_scope) ? find_last_scope : '' ]
+                scope_same : bool [
+                    cur_scope.compare[ last_scope ] == 0 ]
+                same : bool [
+                    scope_same && find_showing && !find_busy
+                    && find_has_hits[] && find_last_query
+                    && findbar_text
+                    && find_last_query.compare[ findbar_text ] == 0 ]
+                # files changed since the scan: the results lie —
+                # rescan
+                if [ same && tree_mtime[ project_root[] ] > find_scan_mt ]
+                    same = false
+                if [ same ]
+                    next_match[]
+                el
+                    run_find_in_files[]
+            if [ ev.target.ux ] ev.target.ux.restyle = true
+        el [ k == 256 ]    # Key.Escape
+            # escape collapses the bar and hides the results
+            find_busy    = false
+            findbar_open = false
+            find_showing = false
+            ev.target.ux.restyle = true
+        ev.target.pristine = false
+        uxw : Window ev.target.ux
+        if [ uxw ] uxw.will_animate = true
+
+    # the title's argument: enter sends it live, escape drops it
+    if [ ev.target.id == 'arg_edit' && ev.key.state ]
+        ka : i32 [ i32 ev.key.unicode ]
+        if [ ka == 257 || ka == 256 ]
+            ea : Editor pane_of[ ev.target ]
+            ra : AppView (ea) ? ea.run_view : null
+            pa_ : Prop (ra && ra.app_mod) ? live_default[
+                ra.app_mod ] : null
+            if [ ka == 257 && pa_ && !ra.ended ]
+                ra.arg_text = (ev.target.edit) ? ev.target.edit : ''
+                agent_sock_send[ ra.sock_name[].chars,
+                                 'set {pa_.ident} {ra.arg_text}\n' ]
+            ev.target.edit = ''
+            if [ ux ] ux.release_focus[ ev.target ]
+            force_update[]
+            ev.no_default = true
+            return
+
+    # finder title: backspace trims, enter opens the typed file
+    # a URL typed in the pane's bar: the field edits; Enter takes it,
+    # Esc leaves it
+    if [ ev.target.id == 'title' && ev.key.state && url_entry_on ]
+        ku : i32 [ i32 ev.key.unicode ]
+        if [ ku == 257 ]
+            bar_text = (ev.target.edit) ? ev.target.edit : ''
+            url_entry_end[ ev.target ]
+            bar_title_apply[]
+            ev.no_default = true
+        el [ ku == 256 ]
+            url_entry_end[ ev.target ]
+            ev.no_default = true
+        return
+    # the replace row's text: Enter replaces this match, Esc ends
+    # the finding
+    if [ ev.target.id == 'rep_text' && ev.key.state ]
+        kr : i32 [ i32 ev.key.unicode ]
+        if [ kr == 257 ]
+            replace_one[]
+            ev.no_default = true
+            return
+        if [ kr == 256 ]
+            title_find_end[ title_at[ active_pane ] ]
+            ev.no_default = true
+            return
+    # the title finding in the file: Backspace edits, Enter the
+    # next match, Esc ends it
+    if [ ev.target.id == 'title' && ev.key.state && title_finds[]
+         && !newfile_view[ ev.target ] ]
+        kf : i32 [ i32 ev.key.unicode ]
+        typed : string [ (ev.target.edit) ? ev.target.edit : '' ]
+        if [ kf != 257 && kf != 256 ]
+            if [ findbar_text && typed == findbar_text ] return
+            findbar_text = typed
+            find_live[]
+        el [ kf == 257 ]
+            find_file_next[]
+        el [ kf == 256 ]
+            title_find_end[ ev.target ]
+        el
+            return
+        ev.target.pristine = false
+        if [ ev.target.ux ] ev.target.ux.restyle = true
+        ev.no_default = true
+        return
+    if [ ev.target.id == 'title' ]
+        if [ !ev.key.state ] return
+        k : i32 [ i32 ev.key.unicode ]
+        kv : EditorView newfile_view[ ev.target ]
+        # the field edited first: its text is what was typed
+        typed : string [ (ev.target.edit) ? ev.target.edit : '' ]
+        if [ kv ]
+            kv.newfile_text = typed
+            # Key.Enter — create unless the name exists
+            if [ k == 257 ]
+                kv.newfile_commit[]
+            el [ k == 256 ]    # Key.Escape — no action
+                kv.newfile_exit[]
+            ev.target.pristine = false
+            if [ ev.target.ux ] ev.target.ux.restyle = true
+            ev.no_default = true
+            return
+        if [ k != 257 && k != 256 && k != 264 && k != 258 ]
+            if [ !nav.find_text || typed != nav.find_text ]
+                nav.find_text = typed
+                ev.target.pristine = false
+                run_search[]
+        el [ k == 257 ]    # Key.Enter
+            handled : bool false
+            # a scheme some module exports (https://) opens there
+            edu : Editor pane_at[ active_pane ]
+            if [ nav.find_text && edu && edu.open_url[ nav.find_text ] ]
+                exit_finder[]
+                if [ ev.target.ux ] ev.target.ux.restyle = true
+                handled = true
+            if [
+                !handled && nav.find_text && nav.find_text.count > 1
+                && nav.find_text[0] == ':' ]
+                num : string nav.find_text.mid[ 1, nav.find_text.count - 1 ]
+                if [ num.is_numeric[] ]
+                    ed : Editor pane_at[ active_pane ]
+                    if [ ed ]
+                        if [ ed.nav && ed.src ]
+                            ed.nav.record[ active_pane,
+                                           '{ed.src.absolute[]}',
+                                           ed.sel_line, ed.sel_col,
+                                           ed.scroll.y ]
+                        sl : i32 [ num.integer_value[] ]
+                        sl = (sl > 0) ? sl - 1 : 0
+                        ed.sel_line    = sl
+                        ed.sel_col     = 0
+                        ed.anchor_line = sl
+                        ed.anchor_col  = 0
+                        # reveal the line (centered-ish), pinning
+                        # scroll_goal
+                        lh : f32 [
+                            (ed.lh_cache > 0.0) ? ed.lh_cache
+                            : 22.0 ]
+                        vh : f32 [
+                            (ed.bounds) ? ed.bounds.h : 600.0 ]
+                        tp : f32 [ f32[ sl ] * lh ]
+                        if [
+                            tp < ed.scroll.y
+                            || tp + lh > ed.scroll.y + vh ]
+                            ed.scroll.y      = tp - vh * 0.4
+                            if [ ed.scroll.y < 0.0 ]
+                                ed.scroll.y = 0.0
+                            ed.scroll_goal = ed.scroll.y
+                        ed.saved_scroll = ed.scroll.y
+                        ed.pristine = false
+                    exit_finder[]
+                    if [ ev.target.ux ] ev.target.ux.restyle = true
+                    handled = true
+            # owner:name: the repository itself, never a file that
+            # happens to match. checked out, it is selected like its
+            # column rows (user and project, its files showing, its
+            # module open); missing, its clone starts and the
+            # listing stays up with the row's progress
+            if [ !handled ]
+                ru : string nav.repo_user_of[ nav.find_text ]
+                if [
+                    ru && ru.count > 0
+                    && nav.find_text.count > ru.count + 1 ]
+                    rn8 : string nav.find_text.mid[ ru.count + 1, nav.find_text.count - ru.count - 1 ]
+                    ex : RepoInfo nav.repo_one[ ru, rn8 ]
+                    full8 : string (ex) ? ex.full : '{ru}/{rn8}'
+                    key8  : string nav.repo_key[ full8 ]
+                    nav.side_user = ru
+                    if [ nav.repo_local[ key8 ] ]
+                        nav.side_pick_project[ key8 ]
+                    el
+                        nav.repo_checkout[ full8 ]
+                        run_search[]
+                    ev.target.pristine = false
+                    handled = true
+            if [
+                !handled && nav.find_results && nav.find_results.count > 0 ]
+                first_s    : string nav.find_results.value_by_index[ 0 ]
+                first_path : path [ first_s.chars ]
+                # a program runs, as a click on its row does
+                if [ nav.is_program[ first_path ] ]
+                    run_program[ first_path, active_pane ]
+                    exit_finder[]
+                el
+                    open_file[ first_path ]
+        # Key.Down — enter the nav list when it shows
+        el [ k == 264 ]
+            if [ nav_showing ]
+                sp8 : string search_pane[]
+                ed8 : Editor null
+                for [ i: i32 0, i < editor_slots.count, i += 1 ]
+                    e8 : Editor pane_at[ i ]
+                    if [ e8 && sp8 == 'pane{i}' ] ed8 = e8
+                if [ !ed8 ] ed8 = pane_at[ active_pane ]
+                if [ ed8 ]
+                    ed8.hover_line = -1
+                    ed8.hover_step[ 1 ]
+                    ed8.set_focus[]
+                    ed8.pristine = false
+                ev.no_default = true
+        # Key.Tab — toggle single-line / double-header density
+        el [ k == 258 ]
+            browse_single = !browse_single
+            ev.target.pristine = false
+            run_search[]
+            if [ ev.target.ux ] ev.target.ux.restyle = true
+        el [ k == 256 ]    # Key.Escape
+            exit_finder[]
+            ev.target.pristine = false
+            if [ ev.target.ux ] ev.target.ux.restyle = true
+
+# moved by the pointer; it stays under the bar's top edge
+func orbiter.move_free [ i: i32, dx: f32, dy: f32 ]
+    if [ !pane_floats[ i ] ] return
+    k : i32 [ i * 4 ]
+    pane_free[ k ]     = pane_free[ k ] + dx
+    pane_free[ k + 1 ] = max[ pane_free[ k + 1 ] + dy, 0.0 ]
+    # only its place: the next frame renders it, no restyle
+    if [ ux ] ux.will_animate = true
+
+# let go at the top edge, it docks
+func orbiter.drop_free [ i: i32 ]
+    if [ pane_floats[ i ] && pane_free[ i * 4 + 1 ] <= 2.0 ]
+        dock_pane[ i ]
+
+# right-flow: first inserted sits furthest right.
+# the tooltip's hover value: what the button under the pointer is. a
+# group of segments names the one hovered; any other button its
+# label, else its id
+func orbiter.hover_tip [ e: element ] -> string
+    if [ !e ] return ''
+    # the finder's rows are not elements: the view names the one
+    # hovered
+    if [ e inherits CommitView ]
+        cvw : CommitView e
+        return (cvw.side_tip) ? cvw.side_tip : ''
+    if [ e inherits TButtons ]
+        tb : TButtons e
+        return tb.hover_name[]
+    if [ e inherits Button ]
+        if [ e.label && e.label.count > 0 ] return e.label
+        return (e.id) ? e.id : ''
+    return ''
+
+# where a tab let go at m lands: 1 the left edge, 2 the right, 3
+# the bottom, 7 the top, 4 the dock, 5 a window (drop_win), 6 an
+# empty docked pane (drop_win), 8 the bar (the whole area), 0
+# nowhere (it comes free), -1 its own group (nothing)
+func orbiter.drop_kind [ m: vec2f, pi: i32 ] -> i32
+    drop_win = -1
+    sp : element panes_el[]
+    if [ !sp || !sp.bounds ] return 0
+    r : rect world_rect[ sp ]
+    if [ !hide_ui && !use_mobile && m.x < dock_w[] && m.y >= r.y ]
+        return 4
+    inx : bool [ m.x >= r.x && m.x < r.x + r.w ]
+    iny : bool [ m.y >= r.y && m.y < r.y + r.h ]
+    # back on the bar: full, from a split or free
+    if [ inx && m.y < r.y
+         && (docked_beside[ pi ] || pane_floats[ pi ]) ]
+        return 8
+    bx : f32 [ max[ 48.0, r.w * 0.08 ] ]
+    by : f32 [ max[ 48.0, r.h * 0.12 ] ]
+    # an edge splits beside another docked pane, else beside a
+    # desktop it makes (four panes at most)
+    two : bool [ docked_beside[ pi ] || editor_slots.count < 4 ]
+    if [ two && iny && m.x >= r.x && m.x < r.x + bx ] return 1
+    if [ two && iny && m.x < r.x + r.w && m.x >= r.x + r.w - bx ]
+        return 2
+    if [ two && inx && m.y < r.y + r.h && m.y >= r.y + r.h - by ]
+        return 3
+    if [ two && inx && m.y >= r.y && m.y < r.y + by ] return 7
+    # free windows from the top, then the docked ones
+    hit : i32 [ -1 ]
+    if [ free_order ]
+        for [ j: i32 free_order.count - 1, j >= 0 && hit < 0,
+              j -= 1 ]
+            q : i32 free_order[ j ]
+            if [ q != pi && !pane_out[ q ] && pane_hit[ q, m ] ]
+                hit = q
+    if [ hit < 0 ]
+        for [ q: i32 0, q < editor_slots.count, q += 1 ]
+            if [ q != pi && !pane_floats[ q ] && !pane_out[ q ]
+                 && pane_hit[ q, m ] ]
+                hit = q
+                break
+    if [ hit < 0 ] return 0
+    if [ grp_of[ hit ] >= 0 && grp_of[ hit ] == grp_of[ pi ] ]
+        return -1
+    drop_win = hit
+    if [ !pane_floats[ hit ] && pane_empty[ hit ] ] return 6
+    return 5
+
+# where the carried tab would land, in the window (w 0: nowhere
+# to show): the share of the panes a side drop takes, the dock,
+# the window it would join
+func orbiter.drop_hint [ m: vec2f, pi: i32 ] -> rect
+    k : i32 drop_kind[ m, pi ]
+    if [ k == 5 || k == 6 ]
+        return world_rect[ pane_view[ drop_win ] ]
+    if [ k == 8 ] return world_rect[ panes_el[] ]
+    top : f32 [ (system_on[]) ? bar_units[] * unit_px[] : 0.0 ]
+    if [ k == 4 && ux && ux.root && ux.root.bounds ]
+        return rect [ x: 0.0, y: top, w: dock_w[],
+                      h: ux.root.bounds.h - top ]
+    if [ (k < 1 || k > 3) && k != 7 ] return rect []
+    r : rect world_rect[ panes_el[] ]
+    # its share: one more beside the layout's top split that way
+    t : PaneNode tree[]
+    t.drop_leaf[ pi ]
+    t.tidy[]
+    n : i32 [ 1 ]
+    if [ t.down == (k == 3 || k == 7) ]
+        n = 0
+        for [ c: PaneNode ] in t.kids
+            if [ tree_docked[ c ] ] n += 1
+    # alone, a desktop is made beside it
+    sh : f32 [ 1.0 / f32[ max[ n, 1 ] + 1 ] ]
+    if [ k == 1 ]
+        return rect [ x: r.x, y: r.y, w: r.w * sh, h: r.h ]
+    if [ k == 2 ]
+        return rect [ x: r.x + r.w * (1.0 - sh), y: r.y,
+                      w: r.w * sh, h: r.h ]
+    if [ k == 7 ]
+        return rect [ x: r.x, y: r.y, w: r.w, h: r.h * sh ]
+    return rect [ x: r.x, y: r.y + r.h * (1.0 - sh), w: r.w,
+                  h: r.h * sh ]
+
+func orbiter.on_release [ ev: Event ]
+    super.on_release[ ev ]
+    if [ drag_pin && drag_pin.count > 0 ]
+        pin_release[]
+        return
+    if [ drag_iid < 0 ] return
+    iid : i32 [ drag_iid ]
+    drag_iid = -1
+    if [ !drag_moved ]
+        dock_run_click[ iid ]
+        return
+    av : AppView instance_by[ iid ]
+    key : string [ (av) ? pin_key_of[ av ] : '' ]
+    if [ drag_slot >= 0 && key.count > 0 && !nav.is_pinned[ path key ] ]
+        pin_insert[ key, drag_slot ]
+    drag_slot  = -1
+    drag_moved = false
+    force_update[]
+
+# home holds what is built; a build under way or failed shows too
+func orbiter.on_home [ ae: AppEntry ] -> bool
+    if [ built_now[ ae ] ] return true
+    iw : string install_word[ ae ]
+    return iw == 'starting' || iw == 'building' || iw == 'failed'
+
+# the watch's word: a build's events changed
+func orbiter.on_builds [ changed: Au :: o: orbiter ] -> none
+    o.build_due = true
+
+# the display's text group: its size, and a font each way
+func orbiter.text_settings [] -> vec Prop
+    ps : vec Prop []
+    st : vec string []
+    ru : i32 rest_unit[]
+    for [ fu: i32 ru - 4, fu <= ru + 8, fu += 2 ]
+        st.push[ '{i32[ round[ f32[ fu ] / 22.0 * 100.0 ] ]}%' ]
+    ps.push[ setting[ 'size',
+        '{i32[ round[ f32[ set_size ] / 22.0 * 100.0 ] ]}%', st ] ]
+    ps.push[ setting[ 'fixed width',
+        (set_mono && set_mono.count > 0) ? set_mono : 'Default',
+        vec string [] ] ]
+    ps.push[ setting[ 'tool font',
+        (set_tool && set_tool.count > 0) ? set_tool : 'Default',
+        vec string [] ] ]
+    return ps
+
+func orbiter.on_frame [ w: Window ]
+    open_pending[]
+    fold_refresh[ w ]
+    fold_page_seed[]
+    # a store's dialog up: what it needs is there, its folder
+    if [ drawer_open && menu_kind == 'login' && login_ae
+         && !store_needs[ login_ae ] ]
+        nm : string login_ae.name
+        drawer_shut[]
+        login_ae = null
+        login_el = null
+        app_list = null
+        grid : cast AppsGrid [ find_el[ a, 'apps' ] ]
+        if [ grid ]
+            grid.open  = nm
+            grid.shown = null
+        w.restyle = true
+    # a press an element kept from on_press: away from an open
+    # drawer and the bar, it shuts the drawer
+    if [ w.last_click_us != click_seen ]
+        click_seen = w.last_click_us
+        t : element [ w.hold_el ]
+        bar : bool [ false ]
+        for [ e: element* t, e, e = e.parent ]
+            if [ e inherits SystemBar ] bar = true
+        if [ click_seen != press_seen && menu_was && drawer_open
+             && menu_kind != 'exchange' && t && !bar
+             && !drawer_keeps[ t ] && !seam_of[ t ] ]
+            drawer_shut[]
+            w.restyle = true
+    menu_was = drawer_open
+    # a console shown in the active pane types plainly
+    pe : Editor pane_at[ active_pane ]
+    w.plain_app = pe && pe.types_plain[]
+    bg_track[]
+    # a new focus's want (a field tapped, or let go) ends what
+    # the buttons said
+    if [ w.words_wanted != keys_wanted ]
+        keys_wanted = w.words_wanted
+        keys_force  = 0
+    # a new switcher's slide starts shut
+    if [ !switcher ] slide_open = false
+    # the power button held 0.6 s: the switcher
+    if [ power_down_us > 0 ]
+        if [ epoch_micros[] - power_down_us >= 600000 ]
+            power_down_us = 0
+            power_last_us = 0
+            if [ drawer_open ] drawer_shut[]
+            switcher = true
+            w.restyle = true
+        el
+            w.will_animate = true
+    mirror_source[ w ]
+    rec_tick[]
+    over_tick[]
+    if [ !set_applied ]
+        set_applied = true
+        apply_settings[ w ]
+    # a new screen mode not kept in time goes back; the count down
+    # redraws each second
+    if [ mode_until > 0 ]
+        if [ epoch_millis[] >= mode_until ]
+            if [ mode_was >= 0 ] screen_set_mode[ mode_was ]
+            mode_until = 0
+            mode_was = -1
+        w.restyle = true
+    # ctrl +/- changes the text size: it is kept as the setting
+    if [ w.vk && w.vk.font_unit > 0 && w.vk.font_unit != set_size ]
+        set_size = w.vk.font_unit
+        session_dirty = true
+        wlc_set_scale[ win_scale[] ]
+    side_sync[]
+    power_tick[ w ]
+    # the screen's scale known (or changed): programs' windows
+    if [ w.scale > 0.0 && w.scale != win_ds ]
+        win_ds = w.scale
+        wlc_set_scale[ win_scale[] ]
+    ease_free[ w ]
+    ease_fade[ w ]
+    ease_menu[ w ]
+    free_empty_close[]
+    if [ desk_pick && pane_at[ active_pane ] ]
+        pick : AppEntry desk_pick
+        desk_pick = null
+        apps_pick[ active_pane, pick ]
+    install_poll[]
+    host_poll[]
+    svc_poll[]
+    build_poll[]
+    # the bar's build: a new word or share draws it again
+    bk : string '{bar_build[]} {i32[ bar_build_f * 100.0 ]}'
+    if [ bk != bar_build_was ]
+        bar_build_was = bk
+        w.restyle = true
+    dock_drag_frame[]
+    filter_focus_take[ w ]
+    # the clock: a new minute redraws it
+    now : clock_text[]
+    if [ now != clock_was ]
+        clock_was = now
+        w.restyle = true
+    # the system bar: a Wi-Fi change redraws it
+    if [ system_on[] ]
+        if [ wifi_shared[].poll[] ] w.restyle = true
+        if [ bt_shared[].poll[] ] w.restyle = true
+        if [ tray_shared[].poll[] ] w.restyle = true
+        # an app asked for a file: its pane's title pick
+        for [ i: i32 0, i < editor_slots.count, i += 1 ]
+            ep : Editor pane_at[ i ]
+            if [ !ep || !ep.run_view || !ep.run_view.pick_ask ]
+                continue
+            ep.run_view.pick_ask = false
+            app_pick[ ep ]
+        # orbiter-os brings the mobile data link up (MMS too)
+        if [ system_os ]
+            mo : Modem modem_shared[]
+            mo.data_on = true
+        # a call coming in brings the phone up, once a call
+        if [ phone_here[] && modem_shared[].poll[] ]
+            w.restyle = true
+            rc : modem_shared[].ringing[]
+            if [ rc && rc.path != ring_seen ]
+                ring_seen = rc.path
+                open_phone[]
+        # a window that lost the keyboard lets go of its keys: one
+        # still held would repeat in it (the navigator covers it,
+        # so the window itself is not drawn to notice)
+        wkeys : bool [ w.focus && w.focus inherits WaylandView ]
+        if [ wl_keyed && !wkeys ] wlc_keys_release[]
+        wl_keyed = wkeys
+        # a program's file dialog: the navigator in its place
+        portal_shared[].poll[]
+        if [ !picking[] ] portal_pick[]
+        # the exchange is always the slideout's, however it opened
+        # (the button, an agent's word, a capture)
+        if [ w.exchange_region != exchange_box[] ]
+            w.exchange_region = exchange_box[]
+            w.restyle = true
+        up_ : bool [ w.shot_ask && !w.agent_min ]
+        if [ up_ && !(drawer_open && menu_kind == 'exchange') ]
+            drawer_open  = true
+            menu_kind    = 'exchange'
+            drawer_fresh = false
+            w.restyle    = true
+        # the exchange closed or put away: its slideout goes too
+        el [ !up_ && drawer_open && menu_kind == 'exchange' ]
+            drawer_shut[]
+        # the drawer: gone once slid away; a tray pick shuts it
+        if [ !drawer_open && menu_shut_ms > 0
+             && epoch_millis[] - menu_shut_ms >= 400 ]
+            menu_shut_ms = 0
+            w.restyle = true
+        if [ toggled_out >= 0 ]
+            edo : Editor pane_at[ toggled_out ]
+            if [ edo ]
+                toggled_out  = -1
+                edo.run_view = null
+                edo.app_view = false
+                edo.nav_walk[ -1 ]
+                w.restyle = true
+        if [ drawer_focus ]
+            de : element find_el[ a, (menu_kind == 'system')
+                ? 'sdrawer' : ((menu_kind == 'login')
+                    ? 'os_pass' : 'drawer') ]
+            if [ de ]
+                drawer_focus = false
+                w.set_focus[ de ]
+        tp : cast TrayPanel [ find_el[ a, 'tray_panel' ] ]
+        if [ tp && tp.picks != tray_picks ]
+            tray_picks = tp.picks
+            if [ drawer_open && menu_kind == 'tray' ] drawer_shut[]
+        # a window or its menu changed: a frame shows it now
+        if [ wl_tick[] ] force_update[]
+        # no display to pump: our own app menu all the same
+        el [ wl_sock && wl_sock.count == 0 && menu_sync[] ]
+            force_update[]
+    # an exchange with no agent chosen opens on the last one used
+    if [ w.shot_ask && (!w.agent_pick || w.agent_pick.count == 0)
+         && agent_last && agent_last.count > 0 ]
+        w.agent_pick = agent_last
+        w.model_pick = model_last
+    # shift from the window: the focus may take the key's release
+    if [ w.shift != shift_down ]
+        shift_down = w.shift
+        w.restyle  = true
+    if [ w.cmd != cmd_down ]
+        cmd_down  = w.cmd
+        w.restyle = true
+    # the panes as the last instance had them, over the session file
+    if [ swap_view && swap_view.count > 0 && !carry_sent ]
+        n_ : i32 [ i32[ swap_view.count ] / 3 ]
+        if [ !pending_sel    ] pending_sel    = vec vec2i []
+        if [ !pending_scroll ] pending_scroll = vec f32 []
+        for [ i: i32 0, i < n_, i += 1 ]
+            sel_ : vec2i [ x: i32[ swap_view[ i * 3 ] ],
+                           y: i32[ swap_view[ i * 3 + 1 ] ] ]
+            sc_  : f32 [ swap_view[ i * 3 + 2 ] ]
+            if [ i < pending_sel.count ] pending_sel[ i ] = sel_
+            el pending_sel += sel_
+            if [ i < pending_scroll.count ]
+                pending_scroll[ i ] = sc_
+            el pending_scroll += sc_
+        swap_view.clear[]
+    if [ !carry_sent ] ui_carry_in[]
+    if [ swap_carry && swap_carry.has && !carry_sent ]
+        swap_carry.has = false
+        w.exchange_restore[ swap_carry ]
+        if [ agent_av ] agent_av.restore[ swap_carry ]
+        carry_landed = true

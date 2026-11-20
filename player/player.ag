@@ -304,8 +304,8 @@ class Movie
         return out
 
 element player : trinity
-    public  width  : i32    [ 1280 ]
-    public  height : i32    [ 720 ]
+    width  : i32    [ 1280 ]
+    height : i32    [ 720 ]
     public  title  : string [ 'player' ]
     default [ Launch, Live ] file : path
     # a raw stream's pictures a second
@@ -349,6 +349,21 @@ element player : trinity
     # waiting on a sign-in in aura: its cookies' time when asked
     mutable signin_at : i64
     mutable signin_look : i64
+    # the controls: the pointer (-1 out), its last move, how shown
+    mutable mx       : f32
+    mutable my       : f32
+    mutable moved_ms : i64
+    mutable ctl_a    : f32
+    # the seek knob held: where it is, when it last sought
+    mutable scrub    : bool
+    mutable scrub_t  : f64
+    mutable scrub_ms : i64
+    # the time the drag last sought (-1 none yet)
+    mutable sought_t : f64
+    mutable vol_drag : bool
+    mutable vol      : f32 [ 1.0 ]
+    mutable muted    : bool
+    mutable icons    : FileIcons
 
     func init []
         animated  = true
@@ -824,6 +839,16 @@ element player : trinity
         voice = mixer.play_voice[ clip.sound, false, 1.0, 1.0 ]
         if [ voice > 0 ]
             mixer.voice_seek[ voice, t * f64[ clip.sound.rate ] ]
+        apply_vol[]
+
+    func apply_vol []
+        if [ mixer && voice > 0 ]
+            mixer.voice_gain[ voice, (muted) ? 0.0 : vol ]
+
+    func set_vol [ v: f32 ]
+        vol = clamp[ v, 0.0, 1.0 ]
+        muted = vol <= 0.0
+        apply_vol[]
 
     # a new decoder from the key sample at or before t
     func seek [ t: f64 ]
@@ -893,21 +918,60 @@ element player : trinity
             picking = true
             return
         if [ !clip || failed ] return
-        # the bar's strip seeks; the picture pauses
-        if [ ev.mouse.pos.y > bounds.h - 24.0 && bounds.w > 0.0 ]
-            seek[ f64[ ev.mouse.pos.x / bounds.w ] * clip.length ]
-        el
+        mx = ev.mouse.pos.x
+        my = ev.mouse.pos.y
+        moved_ms = epoch_millis[]
+        # hidden, a press anywhere plays or pauses
+        hit : string [ (ctl_a > 0.3) ? ctl_at[ mx, my ] : '' ]
+        if [ hit == 'seek' ]
+            scrub = true
+            scrub_t = track_time[ mx ]
+            scrub_ms = moved_ms
+            sought_t = -1.0
+        el [ hit == 'play' ]
+            toggle[]
+        el [ hit == 'back' ]
+            seek[ now[] - 10.0 ]
+        el [ hit == 'fwd' ]
+            seek[ now[] + 10.0 ]
+        el [ hit == 'vol' ]
+            muted = !muted
+            if [ !muted && vol <= 0.0 ] vol = 0.5
+            apply_vol[]
+        el [ hit == 'slider' ]
+            vol_drag = true
+            set_vol[ slider_val[ mx ] ]
+        el [ hit == '' ]
             toggle[]
 
     # a drag chooses a span; a click alone plays from there
     public func on_move [ ev: Event ]
-        if [ !wave || !picking ] return
-        x : f32 [ ev.mouse.pos.x ]
-        if [ abs[ x - drag_x ] < 3.0 ] return
-        sel_from = x_time[ min[ x, drag_x ] ]
-        sel_to   = x_time[ max[ x, drag_x ] ]
+        if [ wave ]
+            if [ !picking ] return
+            x : f32 [ ev.mouse.pos.x ]
+            if [ abs[ x - drag_x ] < 3.0 ] return
+            sel_from = x_time[ min[ x, drag_x ] ]
+            sel_to   = x_time[ max[ x, drag_x ] ]
+            return
+        mx = ev.mouse.pos.x
+        my = ev.mouse.pos.y
+        moved_ms = epoch_millis[]
+        # the knob follows; the picture waits for the drag to rest
+        if [ scrub && clip ]
+            scrub_t = track_time[ mx ]
+            scrub_ms = moved_ms
+        if [ vol_drag ] set_vol[ slider_val[ mx ] ]
+
+    public func on_leave [ ev: Event ]
+        if [ scrub || vol_drag ] return
+        mx = -1.0
+        my = -1.0
 
     public func on_release [ ev: Event ]
+        if [ scrub && clip ]
+            scrub = false
+            if [ scrub_t != sought_t ] seek[ scrub_t ]
+        vol_drag = false
         if [ !wave || !picking ] return
         picking = false
         if [ abs[ ev.mouse.pos.x - drag_x ] < 3.0 ]
@@ -917,6 +981,12 @@ element player : trinity
 
     # the wheel zooms about the pointer
     public func on_wheel [ ev: Event ]
+        # a video: the wheel over its controls sets the volume
+        if [ !wave && clip && ctl_at[ mx, my ].count > 0 ]
+            up : bool [ ev.mouse.wheel_delta.y > 0.0 ]
+            set_vol[ vol + ((up) ? 0.05 : -0.05) ]
+            moved_ms = epoch_millis[]
+            return
         if [ !wave ] return
         k : f64 [ (ev.mouse.wheel_delta.y > 0.0) ? 0.8 : 1.25 ]
         c : f64 x_time[ ev.mouse.pos.x ]
@@ -950,12 +1020,25 @@ element player : trinity
             return
         if [ ev.key.state == 0 || !clip || failed ] return
         code : i32 [ ev.key.unicode ]
-        if [ code == 32 ]
+        moved_ms = epoch_millis[]
+        # space or k plays; arrows 5 s, j and l 10 s; up, down, m
+        if [ code == 32 || code == 75 ]
             toggle[]
         el [ code == 262 ]
             seek[ now[] + 5.0 ]
         el [ code == 263 ]
             seek[ now[] - 5.0 ]
+        el [ code == 76 ]
+            seek[ now[] + 10.0 ]
+        el [ code == 74 ]
+            seek[ now[] - 10.0 ]
+        el [ code == 265 ]
+            set_vol[ vol + 0.05 ]
+        el [ code == 264 ]
+            set_vol[ vol - 0.05 ]
+        el [ code == 77 ]
+            muted = !muted
+            apply_vol[]
         el
             return
         ev.stop[]
@@ -1012,16 +1095,245 @@ element player : trinity
         ph : f32 [ f32[ planes.height ] * k ]
         planes.draw[ cv, rect [ x: (bw - pw) / 2.0, y: (bh - ph) / 2.0,
                                 w: pw, h: ph ] ]
-        # the play position along the foot
-        done : f32 [ (clip.length > 0.0)
-            ? f32[ t / clip.length ] : 0.0 ]
+        draw_controls[ cv, t ]
+
+    # the controls' unit: 1 at the default font size
+    func cu [] -> f32
+        if [ !ux ] return 1.0
+        return ux_unit[ ux ]
+
+    # the seek track's ends and middle row
+    func track_x0 [] -> f32
+        return 16.0 * cu[]
+
+    func track_x1 [] -> f32
+        return bounds.w - 16.0 * cu[]
+
+    func track_y [] -> f32
+        return bounds.h - 56.0 * cu[]
+
+    func track_time [ x: f32 ] -> f64
+        x0 : f32 track_x0[]
+        k : f32 [ clamp[ (x - x0) / max[ track_x1[] - x0, 1.0 ],
+                         0.0, 1.0 ] ]
+        return f64[ k ] * clip.length
+
+    # the buttons' row: each a round box this wide, left to right
+    func btn_x [ i: i32 ] -> f32
+        return 16.0 * cu[] + f32[ i ] * 44.0 * cu[]
+
+    func row_y [] -> f32
+        return bounds.h - 44.0 * cu[]
+
+    func slider_x [] -> f32
+        return btn_x[ 4 ]
+
+    func slider_val [ x: f32 ] -> f32
+        return clamp[ (x - slider_x[]) / (80.0 * cu[]), 0.0, 1.0 ]
+
+    # what a point in the controls is over ('' none)
+    func ctl_at [ x: f32, y: f32 ] -> string
+        if [ !clip || x < 0.0 ] return ''
+        u : f32 cu[]
+        if [ abs[ y - track_y[] ] <= 10.0 * u
+             && x >= track_x0[] - 6.0 * u
+             && x <= track_x1[] + 6.0 * u ]
+            return 'seek'
+        ry : f32 row_y[]
+        if [ y < ry - 2.0 * u || y > ry + 38.0 * u ]
+            return (y > track_y[]) ? 'bar' : ''
+        if [ x >= btn_x[ 0 ] && x < btn_x[ 1 ] ] return 'play'
+        if [ x >= btn_x[ 1 ] && x < btn_x[ 2 ] ] return 'back'
+        if [ x >= btn_x[ 2 ] && x < btn_x[ 3 ] ] return 'fwd'
+        if [ x >= btn_x[ 3 ] && x < btn_x[ 4 ] ] return 'vol'
+        if [ x >= slider_x[] - 4.0 * u
+             && x <= slider_x[] + 84.0 * u ]
+            return 'slider'
+        return 'bar'
+
+    func hms [ t: f64 ] -> string
+        n : i64 [ i64[ max[ t, 0.0 ] ] ]
+        h : i64 [ n / 3600 ]
+        m : i64 [ (n / 60) % 60 ]
+        sc : i64 [ n % 60 ]
+        ss : string '{sc}'
+        if [ sc < 10 ] ss = '0{sc}'
+        if [ h > 0 ]
+            ms : string '{m}'
+            if [ m < 10 ] ms = '0{m}'
+            return '{h}:{ms}:{ss}'
+        return '{m}:{ss}'
+
+    # a round box the pointer's near light brings up
+    # reach: of the window's near light
+    func ctl_box [ cv: Canvas, x: f32, y: f32, w: f32, h: f32,
+                   lit: bool, reach: f32 ]
+        r : f32 [ h / 2.0 ]
+        cv.save[]
+        cv.rounded[ r, r, r, r ]
+        # no edge: a window's inner glow, which the pointer grows
+        cv.fill_color[ rgba[ (lit) ? '#ffffff1a' : '#ffffff0a' ] ]
         cv.stroke_width[ 0.0 ]
-        cv.fill_color[ rgba['#ffffff33'] ]
-        cv.rect_to[ 0.0, bh - 4.0, bw, 4.0 ]
+        cv.box_shadow[ rgba['#ffffff22'], 0.0, 0.0, 8.0 * cu[], 0.0,
+                       true ]
+        if [ ux ]
+            ux.near_light_reach[ cv, a, 0.0, 0.0, reach ]
+            cv.near_style[ 0.0, 2.0, rgba['#c890ff77'],
+                           ux.near_y_fade ]
+            cv.near_grow[ 1.0 ]
+        cv.rect_to[ x, y, w, h ]
         cv.paint[]
+        cv.restore[]
+
+    # a triangle pointing right (or left), its box x, y, w, h
+    func tri [ cv: Canvas, x: f32, y: f32, w: f32, h: f32,
+               right: bool ]
+        if [ right ]
+            cv.move_to[ x, y ]
+            cv.line_to[ x + w, y + h / 2.0 ]
+            cv.line_to[ x, y + h ]
+        el
+            cv.move_to[ x + w, y ]
+            cv.line_to[ x, y + h / 2.0 ]
+            cv.line_to[ x + w, y + h ]
+        cv.close_path[]
+        cv.paint[]
+
+    # the foot: a shade, the seek track, then play, 10 s back and
+    # on, the sound and its slider, the time; they fade at rest
+    func draw_controls [ cv: Canvas, t: f64 ]
+        bw : f32 [ bounds.w ]
+        bh : f32 [ bounds.h ]
+        u : f32 cu[]
+        nw : i64 epoch_millis[]
+        # a drag held still 150 ms shows the picture there
+        if [ scrub && scrub_t != sought_t && nw - scrub_ms > 150 ]
+            sought_t = scrub_t
+            seek[ scrub_t ]
+        over : bool [ my > track_y[] - 30.0 * u ]
+        want : bool [ paused || scrub || vol_drag || over
+                      || nw - moved_ms < 2500 ]
+        if [ want ] ctl_a = ctl_a + (1.0 - ctl_a) * 0.2
+        el ctl_a = ctl_a * 0.85
+        if [ ctl_a < 0.01 ] return
+        cv.save[]
+        cv.set_opacity[ ctl_a ]
+        cv.stroke_width[ 0.0 ]
+        # the shade the controls sit on, darker at the foot
+        sh : f32 [ 120.0 * u ]
+        # whole pixel bands that meet: no seams
+        for [ i: i32 0, i < 48, i += 1 ]
+            k : f32 [ f32[ i ] / 47.0 ]
+            y0 : f32 [ round[ bh - sh + f32[ i ] * sh / 48.0 ] ]
+            y1 : f32 [ round[ bh - sh + f32[ i + 1 ] * sh / 48.0 ] ]
+            if [ y1 <= y0 ] continue
+            cv.fill_rgba[ 0.0, 0.0, 0.0, 0.7 * k * k ]
+            cv.rect_to[ 0.0, y0, bw, y1 - y0 ]
+            cv.paint[]
+        # the track: thicker under the pointer, played part lit
+        hit : string ctl_at[ mx, my ]
+        near_t : bool [ hit == 'seek' || scrub ]
+        th : f32 [ ((near_t) ? 7.0 : 4.0) * u ]
+        x0 : f32 track_x0[]
+        x1 : f32 track_x1[]
+        ty : f32 track_y[]
+        shown_t : f64 [ (scrub) ? scrub_t : t ]
+        done : f32 [ (clip.length > 0.0)
+            ? f32[ clamp[ shown_t / clip.length, 0.0, 1.0 ] ] : 0.0 ]
+        px : f32 [ x0 + (x1 - x0) * done ]
+        ctl_box[ cv, x0, ty - th / 2.0, x1 - x0, th, false, 0.33 ]
+        cv.save[]
+        cv.rounded[ th / 2.0, th / 2.0, th / 2.0, th / 2.0 ]
         cv.fill_color[ rgba['#ff84ff'] ]
-        cv.rect_to[ 0.0, bh - 4.0, bw * done, 4.0 ]
+        cv.rect_to[ x0, ty - th / 2.0, max[ px - x0, th ], th ]
         cv.paint[]
+        cv.restore[]
+        # where the pointer would go, and its time over it
+        if [ near_t && !scrub ]
+            cv.fill_color[ rgba['#ffffff33'] ]
+            hx : f32 [ clamp[ mx, x0, x1 ] ]
+            cv.rect_to[ hx - 1.0 * u, ty - th / 2.0, 2.0 * u, th ]
+            cv.paint[]
+        if [ near_t ]
+            tx : f32 [ (scrub) ? px : clamp[ mx, x0, x1 ] ]
+            tt : f64 [ (scrub) ? scrub_t : track_time[ tx ] ]
+            bwid : f32 [ 64.0 * u ]
+            bx : f32 [ clamp[ tx - bwid / 2.0, x0, x1 - bwid ] ]
+            ctl_box[ cv, bx, ty - 38.0 * u, bwid, 24.0 * u, true,
+                     0.33 ]
+            cv.font_size[ i32[ 14.0 * u ] ]
+            label[ cv, hms[ tt ], bx, ty - 33.0 * u, bwid, 0.5,
+                   '#ffffff' ]
+        # the knob
+        kr : f32 [ ((near_t) ? 8.0 : 6.0) * u ]
+        cv.save[]
+        cv.rounded[ kr, kr, kr, kr ]
+        cv.fill_color[ rgba['#ffd2ff'] ]
+        cv.box_shadow[ rgba['#ff84ffaa'], 0.0, 0.0, 8.0 * u, 0.0,
+                       false ]
+        cv.rect_to[ px - kr, ty - kr, kr * 2.0, kr * 2.0 ]
+        cv.paint[]
+        cv.restore[]
+        # the buttons
+        ry : f32 row_y[]
+        bs : f32 [ 36.0 * u ]
+        for [ i: i32 0, i < 4, i += 1 ]
+            # the sound's button half as far as the rest
+            ctl_box[ cv, btn_x[ i ], ry, bs, bs, false,
+                     (i == 3) ? 0.165 : 0.33 ]
+        cv.fill_color[ rgba['#ffffff'] ]
+        g : f32 [ 12.0 * u ]
+        cx : f32 [ btn_x[ 0 ] + bs / 2.0 ]
+        cy : f32 [ ry + bs / 2.0 ]
+        if [ paused ]
+            tri[ cv, cx - g * 0.4, cy - g / 2.0, g * 0.9, g, true ]
+        el
+            cv.rect_to[ cx - g * 0.45, cy - g / 2.0, g * 0.3, g ]
+            cv.rect_to[ cx + g * 0.15, cy - g / 2.0, g * 0.3, g ]
+            cv.paint[]
+        bx1 : f32 [ btn_x[ 1 ] + bs / 2.0 ]
+        tri[ cv, bx1 - g * 0.6, cy - g * 0.4, g * 0.6, g * 0.8, false ]
+        tri[ cv, bx1, cy - g * 0.4, g * 0.6, g * 0.8, false ]
+        bx2 : f32 [ btn_x[ 2 ] + bs / 2.0 ]
+        tri[ cv, bx2 - g * 0.6, cy - g * 0.4, g * 0.6, g * 0.8, true ]
+        tri[ cv, bx2, cy - g * 0.4, g * 0.6, g * 0.8, true ]
+        if [ !icons ] icons = FileIcons []
+        vi : SVGModel icons.named[
+            (muted || vol <= 0.0) ? 'volume_off' : 'volume_up', 24 ]
+        if [ vi ]
+            cv.stroke_color[ rgba['#ffffff'] ]
+            iz : f32 [ round[ 22.0 * u ] ]
+            cv.draw_svg[ vi, round[ btn_x[ 3 ] + (bs - iz) / 2.0 ],
+                         round[ ry + (bs - iz) / 2.0 ], iz, iz ]
+        # the sound's slider
+        sx : f32 slider_x[]
+        sw : f32 [ 80.0 * u ]
+        sv : f32 [ (muted) ? 0.0 : vol ]
+        sth : f32 [ 4.0 * u ]
+        ctl_box[ cv, sx, cy - sth / 2.0, sw, sth, false, 0.165 ]
+        cv.save[]
+        cv.rounded[ sth / 2.0, sth / 2.0, sth / 2.0, sth / 2.0 ]
+        cv.fill_color[ rgba['#ffffff'] ]
+        cv.rect_to[ sx, cy - sth / 2.0, max[ sw * sv, sth ], sth ]
+        cv.paint[]
+        # its knob only under the pointer: at rest the track alone
+        if [ hit == 'slider' || vol_drag ]
+            vr : f32 [ 4.8 * u ]
+            cv.rounded[ vr, vr, vr, vr ]
+            cv.rect_to[ sx + sw * sv - vr, cy - vr, vr * 2.0,
+                        vr * 2.0 ]
+            cv.paint[]
+        cv.restore[]
+        # the time, in the tool font (orbiter's setting swaps it)
+        tpx : i32 [ i32[ 17.0 * u ] ]
+        cv.set_font[ shared_font[ cv,
+            'fonts/BarlowCondensed-Regular.ttf', tpx ] ]
+        cv.font_size[ tpx ]
+        label[ cv, '{hms[ shown_t ]}  /  {hms[ clip.length ]}',
+               sx + sw + 18.0 * u, cy - 7.0 * u, 200.0 * u, 0.0,
+               '#ffffffdd' ]
+        cv.paint[]
+        cv.restore[]
 
     # a seconds ruler's step for this span: 1, 2 or 5 x 10^n
     func tick_of [ span: f64 ] -> f64
