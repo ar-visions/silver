@@ -425,6 +425,14 @@ BarButton MenuTop
     intern drags : bool
 
     func on_press [ ev: Event ]
+        # a group's other member: shown as the press lands; orbiter
+        # holds the press (this tab goes as the member shows), so it
+        # still drags
+        if [ member >= 0 && ev.mouse.button == 0 ]
+            orb : cast orbiter [ (ux) ? ux.app_object : null ]
+            if [ orb ] orb.tab_hold[ member ]
+            held = false
+            return
         held  = tab_on && pane >= 0 && ev.mouse.button == 0
         went  = 0.0
         drags = false
@@ -452,7 +460,6 @@ BarButton MenuTop
         ux.release_capture[ a ]
         orb : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ drags && orb ] orb.tab_drop[ pane ]
-        el [ orb && member >= 0 ] orb.grp_show[ member ]
         drags = false
 
 # an app updating: a line along its tab's foot, filled so far

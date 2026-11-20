@@ -803,6 +803,12 @@ element orbiter : trinity # implements compiler
     # a file card carried off the desktop (a drawer's), and its icon
     mutable file_drag      : path
     mutable file_drag_icon : AppIcon
+    # an app card carried off the desktop (a quick drag)
+    mutable card_drag      : AppEntry
+    # a carried card let go: what opens in its new window once the
+    # window's editor is up (launch_tab its pane)
+    intern carry_ae        : AppEntry
+    intern carry_file      : path
     # the apps whose contained files show all (else one row)
     mutable shots_all     : vec string
     # the grid's cards a row, as last laid out
@@ -824,6 +830,11 @@ element orbiter : trinity # implements compiler
     persist grp_size : vec f32
     # a window's tab carried off its bar (-1 none)
     mutable tab_drag  : i32 [ -1 ]
+    # a group member's tab pressed (shown as it lands): orbiter holds
+    # the press, past 8 px it is that tab's drag (-1 none)
+    intern tab_held   : i32 [ -1 ]
+    intern tab_x0     : f32
+    intern tab_y0     : f32
     # the window a carried tab is over (drop_kind's 5), -1 none
     intern drop_win   : i32 [ -1 ]
     # the screen as drawn this frame, and each pane's view in small
@@ -2013,8 +2024,21 @@ element orbiter : trinity # implements compiler
     public func grp_leave [ gone: i32, free_at_pointer: bool ]
 
     public func tab_drop [ pi: i32 ]
+    public func tab_hold [ q: i32 ]
+    public func relay_waits [ pi: i32 ] -> bool
+    func hides_app [ av: AppView ] -> bool
+    func relay_keep_one [ i: i32 ]
+    func relay_size []
+    public func carry_label [] -> string
+    public func carry_drop [ ae: AppEntry, f: path ] -> bool
+    func carry_open [ pi: i32, ae: AppEntry, f: path ]
+    func carry_frame []
+    public func pane_waits [ pi: i32 ] -> bool
+    public func ghost_paint [ cv: Canvas, w: Window, nm: string,
+                              hr: rect ]
+    func tab_hold_frame []
 
-    func drop_kind [ m: vec2f, pi: i32 ] -> i32
+    public func drop_kind [ m: vec2f, pi: i32 ] -> i32
 
     public func drop_hint [ m: vec2f, pi: i32 ] -> rect
 

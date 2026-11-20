@@ -499,6 +499,9 @@ func orbiter.tick [ w: Window ]
                 # the pace of an app shown in the pane: this
                 # display's refresh
                 if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
+                # its window hidden (a tab behind another, minimized):
+                # it draws nothing there
+                av8.unseen = hides_app[ av8 ]
                 av8.service[ w.screen ]
     desk_service[ w ]
     # docked windows filling the area hide the scene: it holds
@@ -959,6 +962,11 @@ func orbiter.phase_share [ ph: string, pct: f32 ] -> f32
 func orbiter.render [] -> Elements
     # windows renumbered: their apps back before the bar is made
     relay_apply[]
+    # what each window shows, every frame: an editor made anew (a
+    # layout change, a tab, a restore) takes it, however it came to be
+    relay_size[]
+    for [ ri_: i32 0, ri_ < editor_slots.count, ri_ += 1 ]
+        relay_keep_one[ ri_ ]
     # --install shows only the wizard, over the scene
     if [ ux && install ]
         return Elements [ 'scene': scene_element[],
@@ -1033,7 +1041,8 @@ func orbiter.render [] -> Elements
         'tab_ghost' : (tab_drag >= 0) ? TabGhost [ topmost: true,
             area: Region { l0 t0 r0 b0 } ] : null,
         # a file carried off the desktop, under the pointer
-        'file_ghost' : (file_drag) ? FileGhost [ topmost: true,
+        'file_ghost' : (file_drag || card_drag) ? FileGhost [
+            topmost: true,
             area: Region { l0 t0 r0 b0 } ] : null,
         # an app over everything (screenshots, by its chord)
         'over_app' : (over_on) ? AppOverlay [ topmost: true,

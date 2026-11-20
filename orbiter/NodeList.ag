@@ -1398,7 +1398,7 @@ Control AppsGrid
         orb : cast orbiter [ ux.app_object ]
         # a file card (a drawer's) moved off its place within its
         # first second: carried, to be let go over another pane
-        if [ orb && orb.file_drag ]
+        if [ orb && (orb.file_drag || orb.card_drag) ]
             ev.no_default = true
             ux.will_animate = true
             return
@@ -1407,8 +1407,10 @@ Control AppsGrid
             fe : AppEntry entry[ press_i ]
             ddx : f32 [ mx - press_at.x ]
             ddy : f32 [ my - press_at.y ]
-            if [ fe && fe.opens && ddx * ddx + ddy * ddy > 36.0 ]
-                orb.file_drag = fe.opens
+            if [ fe && ddx * ddx + ddy * ddy > 36.0 ]
+                # a file, else the app it launches
+                if [ fe.opens ] orb.file_drag = fe.opens
+                el orb.card_drag = fe
                 orb.file_drag_icon = (icons && press_i < icons.count)
                     ? icons[ press_i ] : null
                 set_capture[]
@@ -1495,13 +1497,16 @@ Control AppsGrid
         press_h = -1
         # a carried file: let go over a pane, it is dropped there
         forb : cast orbiter [ ux.app_object ]
-        if [ forb && forb.file_drag ]
+        if [ forb && (forb.file_drag || forb.card_drag) ]
             ff : path forb.file_drag
+            ca : AppEntry forb.card_drag
             forb.file_drag = null
+            forb.card_drag = null
             forb.file_drag_icon = null
             release_capture[]
-            # what is under the pointer takes it (the grid takes none)
-            forb.file_drop[ ff ]
+            # a new window where it was let go, else a file goes to
+            # what is under the pointer (the grid takes none)
+            if [ !forb.carry_drop[ ca, ff ] && ff ] forb.file_drop[ ff ]
             ux.restyle = true
             return
         # a reorder ends where it was let go: saved, no click

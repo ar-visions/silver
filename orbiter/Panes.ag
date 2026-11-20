@@ -806,16 +806,19 @@ element EditorView
         rn_ : bool [ to_ && to_.run_view && !to_.run_view.ended ]
         # the empty pane: no file, app, window or terminal in it
         open_ : bool [ !file[] && !rn_ && !wn_ && psess[].count == 0 ]
+        # its editor not up yet (a tab shown, a new element), or its
+        # app handed back next frame: no bar of its own this frame
+        rw_ : bool [ !to_ || orb[].relay_waits[ pane_index ] ]
         inapp : bool [ orb[].system_on[]
             && ((rv_ && !rv_.ended && !rv_.held) || wn_ || open_
-                || psess[].count > 0)
+                || psess[].count > 0 || rw_)
             && !browse_active[] && orb[].pending_finder != pane_index ]
         # the editor's bar is for finding: up only while ctrl+f finds
         # (or a new file is named)
         fnd_ : bool [ orb[].title_find_on
             && pane_index == orb[].active_pane ]
         # the source shows: never live in view (a failed build too)
-        src_ : bool [ to_ && to_.src && (!to_.app_view || !rv_
+        src_ : bool [ to_ && to_.src && !rw_ && (!to_.app_view || !rv_
             || rv_.ended || rv_.held || orb[].stopped_at[ rv_ ]) ]
         if [ orb[].system_on[] && src_
              && !fnd_ && !newfile && !browse_active[]
@@ -845,10 +848,8 @@ element EditorView
         bot_ : bool orb[].system_on[]
         cont_ : string [ (bot_) ? 'l0 t{sp_}px r0 b{th_}px'
             : 'l0 t{th_ + sp_}px r0 b0' ]
-        # the code's own bar at its foot: the console, the debugger;
-        # it stays while the app run from it is in the pane
-        live_ : bool [ to_ && to_.src && rv_ && !rv_.ended
-            && !rv_.held && rv_.edited && to_.owns_src[ rv_, to_.src ] ]
+        # the code's own bar at its foot (the console, the debugger):
+        # only while the code is edited, never over its app
         # a file opened in its app (a rom from the shelf) is used,
         # not edited: no debug bar
         vw_ : bool [ to_ && to_.run_view && to_.run_view.viewer ]
@@ -856,7 +857,7 @@ element EditorView
         # a picture or any other file has nothing to run
         code_ : bool [ to_ && to_.src && (to_.src.ext[] == 'ag'
             || orb[].run_of[ to_.src ].count > 0) ]
-        if [ ((src_ && code_) || live_) && !vw_ && th_ == 0.0
+        if [ src_ && code_ && !vw_ && th_ == 0.0
              && !browse_active[] && !use_mobile ]
             fh_ : f32 round[ title_px[] * 0.7 ]
             cont_ = 'l0 t{sp_}px r0 b{fh_}px'
@@ -899,9 +900,12 @@ element EditorView
         # nothing in it: no file, and no app running in it
         ap_ : Editor text_of[]
         runs_ : bool [ ap_ && ap_.run_view && !ap_.run_view.ended ]
-        # nor a terminal (an agent's, a console)
+        # nor a terminal (an agent's, a console); a group's tab is
+        # never a desktop (a new one waits for its app: a second
+        # desktop would size the widgets the desktop shows)
         home_ : bool [ !file[] && !runs_ && !browse_active[] && !wn_
-             && psess[].count == 0 ]
+             && psess[].count == 0 && orb[].grp_of[ pane_index ] < 0
+             && !orb[].pane_waits[ pane_index ] ]
         # under the home the empty editor draws nothing (its gutter)
         t['split'] = Splitter [ area: Region [ cont_ ],
                                 vertical: true, hide: home_,
@@ -1744,40 +1748,43 @@ element TabGhost
         if [ w.draw_stage != CanvasType.screen ] return
         o : cast orbiter [ (ux) ? ux.app_object : null ]
         if [ !o || o.tab_drag < 0 ] return
-        cv : Canvas w.screen
-        un : f32 ux_unit[ ux ]
         nm : string o.pane_label[ o.tab_drag ]
-        fp : i32 [ i32[ round[ 18.0 * un ] ] ]
-        tw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * un ]
-        th : f32 [ round[ 30.0 * un ] ]
-        m : vec2f w.last_move
-        # where it would land
-        hr : rect o.drop_hint[ m, o.tab_drag ]
-        if [ hr.w > 0.0 ]
-            cv.save[]
-            cv.fill_color[ rgba [ '#806bff2e' ] ]
-            cv.stroke_color[ rgba [ '#806bff' ] ]
-            cv.stroke_width[ 2.0 ]
-            cv.rounded_rect[ hr.x + 4.0, hr.y + 4.0, hr.w - 8.0,
-                             hr.h - 8.0, 8.0, 8.0, 8.0, 8.0 ]
-            cv.paint[]
-            cv.restore[]
+        o.ghost_paint[ w.screen, w, nm, o.drop_hint[ w.last_move,
+                                                     o.tab_drag ] ]
+
+# a carried tab or card: where it would land (hr, w 0 nowhere),
+# its name in a pill under the pointer
+func orbiter.ghost_paint [ cv: Canvas, w: Window, nm: string, hr: rect ]
+    un : f32 ux_unit[ ux ]
+    fp : i32 [ i32[ round[ 18.0 * un ] ] ]
+    tw : f32 [ (f32[ nm.count ] * 9.5 + 22.0) * un ]
+    th : f32 [ round[ 30.0 * un ] ]
+    m : vec2f w.last_move
+    if [ hr.w > 0.0 ]
         cv.save[]
-        cv.fill_color[ rgba [ '#4d3dbccc' ] ]
+        cv.fill_color[ rgba [ '#806bff2e' ] ]
         cv.stroke_color[ rgba [ '#806bff' ] ]
-        cv.stroke_width[ 1.0 ]
-        cv.rounded_rect[ m.x - tw * 0.5, m.y - th * 0.5, tw, th,
-                         6.0, 6.0, 6.0, 6.0 ]
+        cv.stroke_width[ 2.0 ]
+        cv.rounded_rect[ hr.x + 4.0, hr.y + 4.0, hr.w - 8.0,
+                         hr.h - 8.0, 8.0, 8.0, 8.0, 8.0 ]
         cv.paint[]
-        cv.set_font[ shared_font[ cv,
-            'fonts/BarlowCondensed-Bold.ttf', fp ] ]
-        cv.font_size[ f32[ fp ] ]
-        cv.fill_color[ rgba [ '#ffffff' ] ]
-        cv.draw_text[ nm, rect [ x: m.x - tw * 0.5, y: m.y - th * 0.5,
-            w: tw, h: th ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
-            Overflow.ellipsis, null, true ]
-        cv.set_font[ null ]
         cv.restore[]
+    cv.save[]
+    cv.fill_color[ rgba [ '#4d3dbccc' ] ]
+    cv.stroke_color[ rgba [ '#806bff' ] ]
+    cv.stroke_width[ 1.0 ]
+    cv.rounded_rect[ m.x - tw * 0.5, m.y - th * 0.5, tw, th,
+                     6.0, 6.0, 6.0, 6.0 ]
+    cv.paint[]
+    cv.set_font[ shared_font[ cv,
+        'fonts/BarlowCondensed-Bold.ttf', fp ] ]
+    cv.font_size[ f32[ fp ] ]
+    cv.fill_color[ rgba [ '#ffffff' ] ]
+    cv.draw_text[ nm, rect [ x: m.x - tw * 0.5, y: m.y - th * 0.5,
+        w: tw, h: th ], vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ],
+        Overflow.ellipsis, null, true ]
+    cv.set_font[ null ]
+    cv.restore[]
 
 # a console from the project's agi (shell, claude), as a view the rail
 # lists like any other: the pane composes the Console for that session
@@ -2041,11 +2048,10 @@ func orbiter.pane_below [ pi: i32 ] -> bool
 # a pane added: not a file yet, it opens on the nav list, where
 # the location gets picked (its title takes focus)
 func orbiter.pane_add []
-    if [ editor_slots.count < 4 ]
-        editor_slots += -1
-        pane_console += ''
-        active_pane = editor_slots.count - 1
-        pending_finder = active_pane
+    editor_slots += -1
+    pane_console += ''
+    active_pane = editor_slots.count - 1
+    pending_finder = active_pane
     save_session[]
     force_update[]
 
@@ -2174,8 +2180,7 @@ func orbiter.seq_flat [] -> vec i32
 # own) split in beside it, the window on the side it went to;
 # false when it is not the only docked pane
 func orbiter.split_side [ pi: i32, right: bool ] -> bool
-    if [ editor_slots.count >= 4 || pane_floats[ pi ]
-         || pane_out[ pi ] ]
+    if [ pane_floats[ pi ] || pane_out[ pi ] ]
         return false
     for [ q: i32 0, q < editor_slots.count, q += 1 ]
         if [ q != pi && !pane_floats[ q ] && !pane_out[ q ] ]
@@ -2271,7 +2276,7 @@ func orbiter.pull_free [ i: i32, pv: element ]
         if [ q != i && !pane_floats[ q ] && !pane_out[ q ]
              && !pane_empty[ q ] ]
             beside = true
-    if [ beside && editor_slots.count < 4 ]
+    if [ beside ]
         was : vec i32 pane_order[]
         editor_slots += -1
         pane_console += ''
@@ -2354,6 +2359,10 @@ func orbiter.pane_views [] -> Elements
     away : bool [ nav_fade >= 1.0 || agents ]
     seen : f32 [ (agents) ? 0.0 : 1.0 - nav_fade ]
     for [ i: i32 ] in pane_order[]
+        # hidden and faded (a tab behind another, minimized): not in
+        # the tree at all, nothing of it made each frame; its app is
+        # kept (relay_keep_one) for the editor made at its return
+        if [ pane_gone[ i ] ] continue
         # free said every render: a docked pane said nothing and
         # kept a window's rounded mask
         # empty said here too: a pane re-keyed by a close took a
@@ -2569,6 +2578,25 @@ func orbiter.grp_leave [ gone: i32, free_at_pointer: bool ]
 # whole layout split there with the window on that side; on the
 # dock, minimized; over another window, the two grouped;
 # elsewhere, out of its group, free there
+# a member's tab pressed: it shows now, the press is orbiter's
+func orbiter.tab_hold [ q: i32 ]
+    grp_show[ q ]
+    if [ !ux ] return
+    tab_held = q
+    tab_x0   = f32[ ux.mouse.x ]
+    tab_y0   = f32[ ux.mouse.y ]
+    ux.set_capture[ a ]
+
+# the held press: past 8 px it is the tab's drag
+func orbiter.tab_hold_frame []
+    if [ tab_held < 0 || tab_drag >= 0 || !ux ] return
+    dx : f32 [ f32[ ux.mouse.x ] - tab_x0 ]
+    dy : f32 [ f32[ ux.mouse.y ] - tab_y0 ]
+    if [ max[ dx, -dx ] + max[ dy, -dy ] > 8.0 ]
+        drawer_shut[]
+        tab_drag = tab_held
+        ux.restyle = true
+
 func orbiter.tab_drop [ pi: i32 ]
     tab_drag = -1
     if [ !ux ] return
@@ -2592,6 +2620,14 @@ func orbiter.tree_docked [ n: PaneNode ] -> bool
 # each pane's app shown, caret and scroll, kept for its editor
 # made anew by the layout (a pane moved into another split)
 func orbiter.relay_keep []
+    relay_size[]
+    n : i32 [ i32[ editor_slots.count ] ]
+    relay_at = epoch_millis[]
+    for [ i: i32 0, i < n, i += 1 ]
+        relay_keep_one[ i ]
+
+# the kept lists, a place each pane
+func orbiter.relay_size []
     n : i32 [ i32[ editor_slots.count ] ]
     if [ !pending_app ]    pending_app    = vec i32 []
     if [ !relay_old ]      relay_old      = vec Editor []
@@ -2602,21 +2638,41 @@ func orbiter.relay_keep []
     while [ pending_sel.count < n ]
         pending_sel += vec2i [ x: -1, y: 0 ]
     while [ pending_scroll.count < n ] pending_scroll += -1.0
-    relay_at = epoch_millis[]
-    # a pane with no editor yet keeps what it waits for
-    for [ i: i32 0, i < n, i += 1 ]
-        e_ : Editor pane_at[ i ]
-        if [ !e_ ] continue
-        shown : bool [ e_.app_view && e_.run_view
-                       && !e_.run_view.ended ]
-        pending_app[ i ]    = (shown) ? e_.run_view.iid : -1
-        relay_old[ i ]      = e_
-        pending_sel[ i ]    = vec2i [ x: e_.sel_line,
-                                      y: e_.sel_col ]
-        pending_scroll[ i ] = e_.scroll.y
+
+# one pane's shown app, caret and scroll, for its next editor (a
+# pane with no editor yet keeps what it waits for)
+func orbiter.relay_keep_one [ i: i32 ]
+    e_ : Editor pane_at[ i ]
+    if [ !e_ || !pending_app || i >= pending_app.count ] return
+    # its new editor has not taken the app yet: another layout change
+    # keeps that, never the empty editor's nothing
+    if [ relay_waits[ i ] ] return
+    shown : bool [ e_.app_view && e_.run_view
+                   && !e_.run_view.ended ]
+    pending_app[ i ]    = (shown) ? e_.run_view.iid : -1
+    relay_old[ i ]      = e_
+    pending_sel[ i ]    = vec2i [ x: e_.sel_line,
+                                  y: e_.sel_col ]
+    pending_scroll[ i ] = e_.scroll.y
 
 # the app a pane showed before a layout change made its editor
 # anew (null: none, or taken)
+# an app whose window is hidden: a group's tab behind another, or
+# minimized (its app kept for its return)
+func orbiter.hides_app [ av: AppView ] -> bool
+    if [ !av || !pending_app ] return false
+    for [ q: i32 0, q < pending_app.count, q += 1 ]
+        if [ pending_app[ q ] == av.iid && pane_hidden[ q ] ] return true
+    return false
+
+# the pane's shown app is being handed to its new editor (one that
+# kept its editor keeps its app: nothing waits)
+func orbiter.relay_waits [ pi: i32 ] -> bool
+    if [ !pending_app || pi < 0 || pi >= pending_app.count
+         || pending_app[ pi ] < 0 ] return false
+    return !relay_old || pi >= relay_old.count
+        || pane_at[ pi ] != relay_old[ pi ]
+
 func orbiter.relay_take [ pi: i32 ] -> AppView
     if [ !pending_app || pi < 0 || pi >= pending_app.count ]
         return null
@@ -2705,6 +2761,9 @@ func orbiter.tab_title [ pi: i32 ] -> string
     rv : AppView (ed && ed.app_view) ? ed.run_view : null
     if [ rv && !rv.ended && pane_window[ pi ] == 0 && url_app[ rv ] ]
         return nm
+    # a hosted app: its instance as the dock's menu names it
+    if [ rv && !rv.ended && pane_window[ pi ] == 0 ]
+        return task_title[ rv ]
     tt : string bar_title_of[ pi ]
     return (tt.count > 0) ? tt : nm
 
@@ -3280,7 +3339,7 @@ func orbiter.place_window [ wn: u64 ]
         steps += 1
     # a background program's (a tray app's): a floating pane
     bg : AppView background_of[ wn ]
-    if [ pane < 0 && bg && editor_slots.count < 4 && !mobile_on[] ]
+    if [ pane < 0 && bg && !mobile_on[] ]
         bg.wl_window = wn
         mini_forget[ bg.iid ]
         pane = window_pane[]
@@ -3310,7 +3369,7 @@ func orbiter.place_window [ wn: u64 ]
          && pane_win[ pane ] != wn
          && wlc_window_open[ pane_win[ pane ] ] != 0
          && wlc_window_pid[ pane_win[ pane ] ] == wlc_window_pid[ wn ]
-         && editor_slots.count < 4 && !mobile_on[] ]
+         && !mobile_on[] ]
         pane    = window_pane[]
         spawned = true
     while [ pane_win.count <= pane ]
@@ -3815,6 +3874,9 @@ func orbiter.minimize [ pi: i32 ]
     if [ pi < 0 || pi >= editor_slots.count ] return
     if [ !pane_hid ] pane_hid = vec bool []
     while [ pane_hid.count < editor_slots.count ] pane_hid.push[ false ]
+    # its editor goes as it hides: the next one takes its app
+    relay_size[]
+    relay_keep_one[ pi ]
     pane_hid[ pi ] = true
     # where it is, to fade out there over the desktop
     if [ !pane_rect ] pane_rect = vec f32 []
@@ -3950,7 +4012,7 @@ func orbiter.mini_restore [ iid: i32 ] -> bool
     h : f32 mini_rect[ j * 4 + 3 ]
     mini_forget[ iid ]
     av : AppView instance_by[ iid ]
-    if [ !av || av.ended || editor_slots.count >= 4 ] return false
+    if [ !av || av.ended ] return false
     # shown in a pane since: it stays as it is
     for [ q: i32 0, q < editor_slots.count, q += 1 ]
         if [ pane_instance[ q ] == av ] return false

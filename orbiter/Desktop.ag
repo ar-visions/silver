@@ -1626,6 +1626,61 @@ func orbiter.sys_reply [ who: string, ln: string ]
 
 # a file let go over the window: the element under the pointer and
 # its parents take it as a drop (a console types its path)
+# a card carried: the app it launches, or the file it opens
+func orbiter.carry_label [] -> string
+    if [ card_drag ] return card_drag.name
+    if [ file_drag ] return '{file_drag.filename[]}'
+    return ''
+
+# a carried card let go: a new window where the hint showed (an
+# edge, the bar, an app into a window's group), the empty desktop
+# pane it went over, or the dock (an app pinned); it opens once the
+# window's editor is up. false: let go where nothing takes it
+func orbiter.carry_drop [ ae: AppEntry, f: path ] -> bool
+    if [ !ux ] return false
+    k : i32 drop_kind[ ux.last_move, -1 ]
+    if [ k == 4 && ae ]
+        pin_dock[ ae ]
+        return true
+    if [ k == 6 ]
+        carry_open[ drop_win, ae, f ]
+        return true
+    if [ (k < 1 || k > 3) && k != 7 && k != 8 && !(k == 5 && ae) ]
+        return false
+    editor_slots += -1
+    pane_console += ''
+    nw : i32 [ i32[ editor_slots.count ] - 1 ]
+    if [ k == 5 ] grp_join[ nw, drop_win ]
+    el [ k == 8 ] dock_full[ nw ]
+    el dock_edge[ nw, k ]
+    carry_ae   = ae
+    carry_file = f
+    launch_tab = active_pane
+    force_update[]
+    return true
+
+func orbiter.carry_open [ pi: i32, ae: AppEntry, f: path ]
+    if [ ae ] apps_pick[ pi, ae ]
+    el [ f ] open_in_pane[ f, pi ]
+    if [ ux ] ux.restyle = true
+
+# the new window's editor up: its app or file opens in it
+func orbiter.carry_frame []
+    if [ launch_tab < 0 || (!carry_ae && !carry_file)
+         || !pane_at[ launch_tab ] ]
+        return
+    q  : i32 [ launch_tab ]
+    ae : AppEntry carry_ae
+    f  : path carry_file
+    launch_tab = -1
+    carry_ae   = null
+    carry_file = null
+    carry_open[ q, ae, f ]
+
+# a new window waiting for what it opens: no desktop in it
+func orbiter.pane_waits [ pi: i32 ] -> bool
+    return launch_tab >= 0 && launch_tab == pi
+
 func orbiter.file_drop [ f: path ]
     if [ !ux || !ux.root || !f ] return
     ev : Event []
@@ -1645,15 +1700,13 @@ element FileGhost
     public func draw [ w: Window ]
         if [ w.draw_stage != CanvasType.screen ] return
         o : cast orbiter [ (ux) ? ux.app_object : null ]
-        if [ !o || !o.file_drag || !o.file_drag_icon ] return
-        cv : Canvas w.screen
-        side : f32 [ round[ 96.0 * ux_unit[ ux ] ] ]
-        m : vec2f w.last_move
-        cv.save[]
-        cv.set_opacity[ 0.85 ]
-        o.file_drag_icon.paint[ cv, m.x - side * 0.5, m.y - side * 0.5,
-                                side ]
-        cv.restore[]
+        if [ !o || (!o.file_drag && !o.card_drag) ] return
+        # where it would land, as a carried tab shows it; a file
+        # pins nowhere
+        hr : rect o.drop_hint[ w.last_move, -1 ]
+        if [ !o.card_drag && o.drop_kind[ w.last_move, -1 ] == 4 ]
+            hr = rect []
+        o.ghost_paint[ w.screen, w, o.carry_label[], hr ]
 
 # an agent's drawer: a card a model (a new session on it), then a
 # card a session it has, each with its model under its name
@@ -2190,6 +2243,8 @@ func orbiter.desk_menu_at [ mt: MenuTop ]
 # docked desktops side by side (windows closed round them) are
 # one: the extra empty halves close, the selected one kept
 func orbiter.desk_merge []
+    # a new window waiting for its app: nothing renumbered under it
+    if [ launch_tab >= 0 ] return
     keep : i32 [ -1 ]
     if [ !pane_floats[ active_pane ] && !pane_out[ active_pane ]
          && pane_empty[ active_pane ] ]
@@ -2200,7 +2255,6 @@ func orbiter.desk_merge []
         if [ pane_browsing[ i ] || pending_finder == i ] continue
         if [ mini_wait >= 0 && i == mini_pane ] continue
         if [ pending_show > 0 && i == pending_show_pane ] continue
-        if [ launch_wait || launch_tab == i ] continue
         if [ keep < 0 ]
             keep = i
             continue

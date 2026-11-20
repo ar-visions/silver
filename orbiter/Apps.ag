@@ -1625,9 +1625,8 @@ func orbiter.open_in_pane [ p: path, pi: i32 ]
         el
             ed.arrive_pending = true
 
-# shift on a nav list file: it opens in a new editor tab (at most 4)
+# shift on a nav list file: it opens in a new editor tab
 func orbiter.open_new_tab [ p: path ] -> bool
-    if [ editor_slots.count >= 4 ] return false
     editor_slots += -1
     pane_console += ''
     active_pane = editor_slots.count - 1
@@ -2646,11 +2645,10 @@ func orbiter.build_word [ nm: string ] -> string
 # (the asker keeps its pane), opened once that pane is mounted
 func orbiter.open_beside [ url: string ]
     if [ !url || url.count == 0 ] return
-    if [ editor_slots.count < 4 ]
-        editor_slots += -1
-        pane_console += ''
-        active_pane = editor_slots.count - 1
-        save_session[]
+    editor_slots += -1
+    pane_console += ''
+    active_pane = editor_slots.count - 1
+    save_session[]
     open_soon = url
     force_update[]
 

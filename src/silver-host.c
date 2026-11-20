@@ -1232,11 +1232,28 @@ static int load_sources(const char* artifacts_path,
 // true if the built product is missing or any watched source/artifact is newer
 // than it — i.e. the loaded module would be stale.
 // which names the source found newer (or the product, when none exists)
+// silver's own word that the product is current: an import's file can
+// be newer than it (its own library rebuilt, this one needing no link)
+static void product_stamp_path(char* out, size_t cap, const char* product) {
+    snprintf(out, cap, "%s.current", product);
+}
+
+static void product_confirm(const char* product) {
+    char st[4300];
+    product_stamp_path(st, sizeof(st), product);
+    int fd = open(st, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (fd >= 0) { futimens(fd, NULL); close(fd); }
+}
+
 static int sources_newer(const char* product, source_watch* srcs, int nsr,
                          const char** which) {
     time_t prod = file_mtime(product);       // follows the symlink to the .so
     if (which) *which = "no product";
     if (!prod) return 1;                      // no product -> must build
+    char st[4300];
+    product_stamp_path(st, sizeof(st), product);
+    time_t said = file_mtime(st);
+    if (said > prod) prod = said;
     // a source dated far in the future (a wrong system clock stamped it) would
     // be newer than every product forever -> endless rebuild. over 20 min ahead
     // is a bad clock, not an edit; ignore it. small skew still counts.
@@ -2815,6 +2832,9 @@ int main(int argc, char** argv) {
             return 1;
         }
         load_sources(artifacts, srcs, &nsr);   // artifact list may have changed
+        // silver built nothing: its product is current as it stands
+        if (sources_newer(product, srcs, nsr, &which))
+            product_confirm(product);
     }
 
     char lib[4096];

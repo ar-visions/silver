@@ -281,6 +281,8 @@ element asnes : trinity
 			emu_started = false
 		sram_flush[]
 		cpu = null
+		spc = null
+		spcfile = (rom && rom.ext[] == 'spc') ? rom : null
 	public  state          	: path             # --state <file>: boot then load this savestate
 	public  beep           	: bool
 	public  spcfile        	: path

@@ -258,6 +258,9 @@ enum HM
     # app -> ide: an address to open in its browser (aura), three
     # bytes a message as the title's
     open    : 30
+    # ide -> app: a = 1 in view, 0 not (a tab behind another): it
+    # runs on, drawing a few frames a second
+    shown   : 31
 
 ifdef [ apple ]
     # an IOSurface's global id is its cross-process name, as a dma-buf
@@ -576,6 +579,8 @@ abstract live_app media_app
     intern  paned       : bool
     # the host asked for a frame (HM.frame)
     intern  frame_req   : bool
+    # the host shows it nowhere (HM.shown 0)
+    intern  out_of_view : bool
     # this frame drew a new picture (render)
     intern  drew        : bool
     # DIAG: requests answered this second
@@ -1118,7 +1123,9 @@ abstract live_app media_app
                 frame_req = false
                 hz  : i32 [ (frame_hz > 0) ? frame_hz : 60 ]
                 wait_start  : i64 [ epoch_micros[] ]
-                lim : i64 [ 2000000 / i64[ hz ] ]
+                # out of view: a quarter second a frame (it still runs)
+                lim : i64 [ (out_of_view) ? 250000
+                    : 2000000 / i64[ hz ] ]
                 # the host asks this socket from its frame and waits:
                 # answered here, not a frame later
                 while [ !frame_req
@@ -1558,6 +1565,8 @@ abstract live_app media_app
                     wn.restyle   = true
                 el [ t == i32[ HM.frame ] ]
                     frame_req = true
+                el [ t == i32[ HM.shown ] ]
+                    out_of_view = host_pa[] == 0
                 el [ t == i32[ HM.nav ] ]
                     wn.navigate[ host_pa[] ]
                 # the host's toggle: the app's panel opened or closed

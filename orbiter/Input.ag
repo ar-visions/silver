@@ -887,12 +887,11 @@ func orbiter.on_press [ ev: Event ]
             : ''
         if [ pm8.count > 0 ]
             hp : i32 [ active_pane ]
-            if [ editor_slots.count < 4 ]
-                editor_slots += -1
-                pane_console += ''
-                hp = editor_slots.count - 1
-                active_pane = hp
-                save_session[]
+            editor_slots += -1
+            pane_console += ''
+            hp = editor_slots.count - 1
+            active_pane = hp
+            save_session[]
             page_pane = hp
             page_mod  = pm8
             page_url  = rv8.app_address
@@ -994,7 +993,7 @@ func orbiter.on_press [ ev: Event ]
     if [ bar_typing ] bar_typing_end[]
     if [ ev.target inherits MenuTop ]
         mt : cast MenuTop [ ev.target ]
-        # a group's other member: its release shows it
+        # a group's other member: its own press showed it
         if [ mt.member >= 0 ]
             ev.no_default = true
             return
@@ -2285,14 +2284,13 @@ func orbiter.drop_kind [ m: vec2f, pi: i32 ] -> i32
     bx : f32 [ max[ 48.0, r.w * 0.08 ] ]
     by : f32 [ max[ 48.0, r.h * 0.12 ] ]
     # an edge splits beside another docked pane, else beside a
-    # desktop it makes (four panes at most)
-    two : bool [ docked_beside[ pi ] || editor_slots.count < 4 ]
-    if [ two && iny && m.x >= r.x && m.x < r.x + bx ] return 1
-    if [ two && iny && m.x < r.x + r.w && m.x >= r.x + r.w - bx ]
+    # desktop it makes
+    if [ iny && m.x >= r.x && m.x < r.x + bx ] return 1
+    if [ iny && m.x < r.x + r.w && m.x >= r.x + r.w - bx ]
         return 2
-    if [ two && inx && m.y < r.y + r.h && m.y >= r.y + r.h - by ]
+    if [ inx && m.y < r.y + r.h && m.y >= r.y + r.h - by ]
         return 3
-    if [ two && inx && m.y >= r.y && m.y < r.y + by ] return 7
+    if [ inx && m.y >= r.y && m.y < r.y + by ] return 7
     # free windows from the top, then the docked ones
     hit : i32 [ -1 ]
     if [ free_order ]
@@ -2351,6 +2349,13 @@ func orbiter.drop_hint [ m: vec2f, pi: i32 ] -> rect
 
 func orbiter.on_release [ ev: Event ]
     super.on_release[ ev ]
+    # a member's tab let go: dropped where it went, else only shown
+    if [ tab_held >= 0 ]
+        q : i32 [ tab_held ]
+        tab_held = -1
+        if [ ux ] ux.release_capture[ a ]
+        if [ tab_drag == q ] tab_drop[ q ]
+        return
     if [ drag_pin && drag_pin.count > 0 ]
         pin_release[]
         return
@@ -2397,6 +2402,10 @@ func orbiter.text_settings [] -> vec Prop
 
 func orbiter.on_frame [ w: Window ]
     open_pending[]
+    tab_hold_frame[]
+    carry_frame[]
+    if [ file_drag || card_drag ] w.will_animate = true
+    if [ tab_drag >= 0 ] w.will_animate = true
     fold_refresh[ w ]
     fold_page_seed[]
     # a store's dialog up: what it needs is there, its folder

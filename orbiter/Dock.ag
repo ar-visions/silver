@@ -284,7 +284,7 @@ func orbiter.dock_choose [ pi: i32 ]
 # desktop made beside it when it is alone
 func orbiter.dock_edge [ pi: i32, side: i32 ]
     dock_in[ pi ]
-    if [ !docked_beside[ pi ] && editor_slots.count < 4 ]
+    if [ !docked_beside[ pi ] ]
         editor_slots += -1
         pane_console += ''
     down : bool [ side == 3 || side == 7 ]
@@ -450,8 +450,7 @@ func orbiter.dock_icon_click [ di: DockIcon ]
         # the selected window shows another running app: a new tab
         # beside it in its group, never over it (it would run on
         # unseen); the launch once its editor is there
-        if [ tp < 0 && launch_tab < 0 && pane_app_on[ active_pane ]
-             && editor_slots.count < 4 ]
+        if [ tp < 0 && launch_tab < 0 && pane_app_on[ active_pane ] ]
             editor_slots += -1
             pane_console += ''
             nt : i32 [ i32[ editor_slots.count ] - 1 ]
@@ -918,7 +917,7 @@ func orbiter.show_own [ iid: i32 ]
         set_active[ q ]
         if [ ux ] ux.restyle = true
         return
-    if [ pane_app_on[ active_pane ] && editor_slots.count < 4 ]
+    if [ pane_app_on[ active_pane ] ]
         editor_slots += -1
         pane_console += ''
         nt : i32 [ i32[ editor_slots.count ] - 1 ]

@@ -17349,8 +17349,9 @@ Found, in order:
    no layer but its idle scrollbar, no children and no draw of its own
    (asked once a type, draws_itself) paints nothing (the free window's
    grips repainted each resize frame): sized 154 -> 223-267 fps.
-7. WRITTEN, compiles, NOT built (his: "we cant have a limit with an
-   os"): the hosted apps' slots grow. The 8th app got slot -1 and read
+7. DONE, built, checked in a box (his: "we cant have a limit with an
+   os"; 12 consoles ran in slots 1-12, the block grown from 7; a
+   joining console's log fills from inside the view): the hosted apps' slots grow. The 8th app got slot -1 and read
    "no silver-host supervisor" (HOST_APPS 8: the Steam console,
    commune, stocks and four consoles filled it). Now one block whose
    header holds the slot count (slots) and the clipboard, the slots
@@ -17361,11 +17362,27 @@ Found, in order:
    the grown part. The sound scope lives in each SlotPlayer, players
    and the supervisor's spawned pids in lists that grow. A view no
    longer binds every slot's log up front: a joining instance grafts
-   its own (view_graft_into). Needs orbiter started fresh (the old
-   supervisor's block has the old layout): not built while his
-   orbiter runs.
-8. OPEN (his): a console opening shows the desktop through its pane
-   for a frame or two before its first picture.
+   its own (view_graft_into). A layout change: built with orbiter
+   closed (a running supervisor holds the old one); every other app's
+   launcher relinks at its next build (silver-host.c is newer).
+8. DONE (his: a new console's first frames showed the desktop and
+   threw the widgets and icons about) an empty pane that is a
+   group's tab, or waits for what it opens, is never a desktop: a
+   second desktop sized the shared widget (Panes home_).
+9. DONE (Nov 19, his, each built, most checked in a box):
+   - no 4-window cap (12 sites; Frame's cycle_adding keeps its own).
+   - a group's tab takes the group's split size (grp_size, sizes).
+   - tabs named as the dock's menu names them (tab_title).
+   - a member's tab shows on the press and still drags (tab_hold).
+   - a quick drag of a desktop card shows the tab drag's hints and
+     its name, and makes the window where let go (carry_drop);
+     desk_merge waits while a new window waits for its app. Only
+     the left edge checked.
+   - the debug bar only while the code is edited, never over its app.
+   - a window docked below another: no bar for the frame its editor
+     is not up yet (Panes rw_).
+   - the launcher's stale rule: <product>.current when silver says
+     current (no "building" each start).
 OPEN: WinGround and ToolRail still draw every frame (animated: true);
 a dock element with id 'apps' has an argument that changes every frame
 (apply_args, no repaint seen); not seen on his screen.

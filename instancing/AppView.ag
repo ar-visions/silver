@@ -152,6 +152,10 @@ class AppView
     mutable ah         : i32
     # the picture's shape as the app told it (HM.aspect); 0 = unknown
     mutable pic_w      : i32
+    # shown nowhere this frame (a tab behind another): set by the
+    # host before service, which tells the app once
+    public  unseen     : bool
+    intern  told_seen  : bool [ true ]
     mutable pic_h      : i32
     # the frame the app showed as its window switched to orbiter: the
     # pip until the instance runs and its own frames arrive
@@ -551,9 +555,15 @@ class AppView
                             lv : string [ @vb[0] ]
                             app_vol = f32[ lv.trim[].real_value[] ]
         # a pane that draws asks for the next frame as it reads this one
-        # (draw_frame); a pane out of view asks here, so the app runs on
-        if [ !req_drawn ] request_frame[ cv ]
+        # (draw_frame); one shown nowhere is told so, and asked nothing
+        # (it runs on at a few frames a second)
+        seen : bool [ req_drawn || !unseen ]
+        if [ started && slot >= 0 && seen != told_seen ]
+            told_seen = seen
+            host_post2[ slot, 1, i32[ HM.shown ], (seen) ? 1 : 0, 0, 0 ]
+        if [ !req_drawn && !unseen ] request_frame[ cv ]
         req_drawn = false
+        unseen    = false
         # the app's sound rides its slot's ring: into the recording, if
         # one is on
         if [ started && slot >= 0 && !held && !ended ]
