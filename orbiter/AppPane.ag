@@ -1,0 +1,171 @@
+# a window's app, owned by the window: which instance it shows and
+# whether its code is in front are orbiter's, never an editor's; an
+# editor is made only while the code is edited
+extend orbiter
+
+# the windows' lists, a place each window
+func orbiter.win_size []
+    n : i32 [ i32[ editor_slots.count ] ]
+    if [ !win_iid ]  win_iid  = vec i32 []
+    if [ !win_edit ] win_edit = vec bool []
+    while [ win_iid.count < n ]  win_iid  += -1
+    while [ win_edit.count < n ] win_edit += false
+
+# the instance the window shows (null: none)
+func orbiter.pane_av [ pi: i32 ] -> AppView
+    if [ !win_iid || pi < 0 || pi >= win_iid.count ] return null
+    if [ win_iid[ pi ] < 0 ] return null
+    return instance_by[ win_iid[ pi ] ]
+
+# its app in front (not its code): always, but in edit mode
+func orbiter.pane_live [ pi: i32 ] -> bool
+    av : AppView pane_av[ pi ]
+    if [ !av ] return false
+    if [ !av.edited && !av.ended ] return true
+    return !win_edit || pi >= win_edit.count || !win_edit[ pi ]
+
+# the window's app, its front kept
+func orbiter.pane_set_av [ pi: i32, av: AppView ]
+    if [ pi < 0 || !av ] return
+    win_size[]
+    if [ pi >= win_iid.count ] return
+    win_iid[ pi ] = av.iid
+
+# its app or its code in front
+func orbiter.pane_front [ pi: i32, on: bool ]
+    win_size[]
+    if [ pi < 0 || pi >= win_edit.count ] return
+    win_edit[ pi ] = !on
+
+# the window shows this app, in front
+func orbiter.pane_show_app [ pi: i32, av: AppView ]
+    if [ pi < 0 || !av ] return
+    win_size[]
+    if [ pi >= win_iid.count ] return
+    win_iid[ pi ]  = av.iid
+    win_edit[ pi ] = false
+    if [ ux ] ux.restyle = true
+
+# its code in front: the app is in edit mode from now
+func orbiter.pane_show_code [ pi: i32 ]
+    av : AppView pane_av[ pi ]
+    if [ !av ] return
+    av.edited      = true
+    win_edit[ pi ] = true
+    if [ ux ] ux.restyle = true
+
+# the window shows no app
+func orbiter.pane_drop_app [ pi: i32 ]
+    if [ !win_iid || pi < 0 || pi >= win_iid.count ] return
+    win_iid[ pi ]  = -1
+    win_edit[ pi ] = false
+    if [ ux ] ux.restyle = true
+
+# a closed window's place goes; later windows move down a place
+func orbiter.win_drop [ pi: i32 ]
+    if [ win_iid && pi < win_iid.count ] win_iid.remove[ pi ]
+    if [ win_edit && pi < win_edit.count ] win_edit.remove[ pi ]
+
+# the app in a window: its frames and its input, nothing else
+element AppPane
+    public pane : i32
+    # the app's picture last shown: a new one repaints
+    intern seen : i32 [ -1 ]
+
+    func orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    func av [] -> AppView
+        o : orb[]
+        return (o) ? o.pane_av[ pane ] : null
+
+    public func tick [ w: Window ]
+        v : av[]
+        if [ !v ] return
+        if [ bounds && bounds.w > 0.0 ]
+            v.vw = bounds.w
+            v.vh = bounds.h
+        v.service[ w.screen ]
+        if [ v.lock_req != 0 ]
+            if [ v.lock_req == 1 ] ux.mouse_lock[ a ]
+            el ux.mouse_unlock[]
+            v.lock_req = 0
+        # a new picture from the app: shown on this frame
+        fr : i32 [ (v.slot >= 0) ? host_tex_front[ v.slot, 0 ] : -1 ]
+        if [ fr != seen ]
+            seen     = fr
+            pristine = false
+
+    public func draw [ w: Window ]
+        if [ w.draw_stage != CanvasType.screen || !bounds ] return
+        v : av[]
+        if [ !v ] return
+        b : rect [ x: 0.0, y: 0.0, w: bounds.w, h: bounds.h ]
+        v.vx = 0.0
+        v.vy = 0.0
+        v.vw = b.w
+        v.vh = b.h
+        v.vsx = 0.0
+        v.vsy = 0.0
+        if [ !v.ended ]
+            v.draw_frame[ w.screen, b ]
+            return
+        # ended: why, where its picture was
+        cv : Canvas w.screen
+        cv.font_size[ 16 ]
+        cv.fill_color[ rgba[ '#ddddddcc' ] ]
+        nt : string [ (v.note && v.note.count > 0) ? v.note : 'ended' ]
+        cv.draw_text[ '{nt} — F5 or play to run again', b,
+            vec2f [ 0.5, 0.5 ], vec2f [ 0.0, 0.0 ], Overflow.ellipsis,
+            null, false ]
+        cv.flush_text[ ]
+
+    func on_press [ ev: Event ]
+        v : av[]
+        if [ v && v.view_press[ ev ] ]
+            if [ ux ] ux.set_focus[ a ]
+            ev.no_default = true
+
+    func on_release [ ev: Event ]
+        v : av[]
+        if [ v ] v.view_release[ ev ]
+
+    func on_move [ ev: Event ]
+        v : av[]
+        if [ !v ] return
+        if [ ux.locked == a ]
+            v.view_lock_move[ ev ]
+            return
+        v.view_move[ ev ]
+
+    func on_wheel [ ev: Event ]
+        v : av[]
+        if [ v && v.view_wheel[ ev ] ] ev.no_default = true
+
+    func on_drop [ ev: Event ]
+        v : av[]
+        if [ v && !v.held && !v.ended && v.on_drop_text[ ev.key.text ] ]
+            ev.no_default = true
+
+    func on_char [ ev: Event ]
+        v : av[]
+        if [ !v || v.held || v.ended ] return
+        o : orb[]
+        if [ o && o.nav_driven[] == v && o.nav_type_char[ ev ] ] return
+        v.on_text[ ev ]
+
+    func on_key [ ev: Event ]
+        v : av[]
+        if [ !v || v.held || v.ended ] return
+        o : orb[]
+        if [ o && o.nav_driven[] == v && o.nav_type_key[ ev ] ] return
+        v.on_key[ ev ]
+
+    public func types_plain [] -> bool
+        v : av[]
+        return v && !v.held && !v.ended && v.app_plain
+
+    public func takes_words [] -> bool
+        v : av[]
+        if [ v && !v.held && !v.ended ] return v.app_words
+        return false

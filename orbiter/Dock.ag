@@ -373,10 +373,10 @@ func orbiter.dock_run_click [ iid: i32 ]
         for [ q: i32 0, q < editor_slots.count, q += 1 ]
             edq : Editor pane_at[ q ]
             if [ (wvd != 0 && pane_window[ q ] == wvd)
-                 || (wvd == 0 && edq && edq.run_view == avd) ]
+                 || (wvd == 0 && pane_av[ q ] == avd) ]
                 if [ pane_hidden[ q ] ] unhide[ q ]
                 # stepped aside for the pane's edit: over it again
-                el [ wvd == 0 && !edq.app_view ]
+                el [ wvd == 0 && !pane_live[ q ] ]
                     embed_app[ edq, avd ]
                     active_pane = q
                 el dock_choose[ q ]
@@ -404,8 +404,30 @@ func orbiter.dock_program_click [ p: path ]
 # a pin the dock shows: there, and not a plain folder (those are
 # the navigator's pinned)
 func orbiter.dock_pin [ ps: string ] -> bool
+    return pin_facts[ ps ].starts_with[ 'p' ]
+
+# a pin's facts: p shown, m a module, x a program, - not
+func orbiter.pin_facts [ ps: string ] -> string
+    now : i64 epoch_millis[]
+    if [ !pin_kind || now - pin_kind_ms > 2000 ]
+        pin_kind    = map string [string] [ ]
+        pin_kind_ms = now
+    got : string pin_kind[ ps ]
+    if [ got ] return got
     pp : path ps
-    return pp.exists[] && !plain_folder[ pp ]
+    dir : bool pp.is_dir[]
+    mm : path '{pp}/{pp.filename[]}.ag'
+    ism : bool [ dir && mm.exists[] ]
+    shown : bool [ pp.exists[] && (!dir || ism) ]
+    prg : bool [ !dir && access[ ps.chars, X_OK ] == 0 ]
+    f : string [ "-" ]
+    if [ shown ] f = "p"
+    if [ ism ] f = '{f}m'
+    el f = '{f}-'
+    if [ prg ] f = '{f}x'
+    el f = '{f}-'
+    pin_kind[ ps ] = f
+    return f
 
 # a dock pin's click: a program shows or runs; a module or file
 # opens its source (shift: a module's new instance)
@@ -435,7 +457,7 @@ func orbiter.dock_icon_click [ di: DockIcon ]
             if [ '{eq.src.directory[]}' != '{di.file}' ] continue
             # another app's instance there (steam's in a console):
             # not this pin's pane
-            rq : AppView eq.run_view
+            rq : AppView pane_av[ q ]
             if [ rq && !rq.ended
                  && inst_reg[].app_of[ rq ] != inst_key[ di.file ] ]
                 continue
@@ -486,9 +508,9 @@ func orbiter.dock_icon_click [ di: DockIcon ]
             return
         runs.push[ v_ ]
     at : i32 [ -1 ]
-    if [ edd.app_view && edd.run_view ]
+    if [ pane_live[ active_pane ] && pane_av[ active_pane ] ]
         for [ i: i32 0, i < runs.count, i += 1 ]
-            if [ runs[ i ] == edd.run_view ] at = i
+            if [ runs[ i ] == pane_av[ active_pane ] ] at = i
     if [ at >= 0 && runs.count == 1 ]
         return
     el [ at >= 0 ]
@@ -577,9 +599,9 @@ func orbiter.dock_els [] -> Elements
     if [ fd_ ]
         if [ !nav.nav_can[ -1 ] ] ndm |= 1
         if [ !nav.nav_can[ 1 ] ]  ndm |= 2
-    el [ edp && edp.app_view && edp.run_view ]
-        if [ !edp.run_view.nav_back_on ] ndm |= 1
-        if [ !edp.run_view.nav_fwd_on ]  ndm |= 2
+    el [ pane_live[ active_pane ] && pane_av[ active_pane ] ]
+        if [ !pane_av[ active_pane ].nav_back_on ] ndm |= 1
+        if [ !pane_av[ active_pane ].nav_fwd_on ]  ndm |= 2
     el [ edp && edp.view_key[].count > 0 ]
         if [ !edp.view_can[ -1 ] ] ndm |= 1
         if [ !edp.view_can[ 1 ] ]  ndm |= 2
@@ -614,10 +636,9 @@ func orbiter.dock_els [] -> Elements
         for [ ps_: string ] in pins
             pp : path ps_
             if [ !dock_pin[ ps_ ] ] continue
-            mm : path '{pp}/{pp.filename[]}.ag'
-            ism : bool [ pp.is_dir[] && mm.exists[] ]
-            prg : bool [ !pp.is_dir[]
-                         && access[ ps_.chars, X_OK ] == 0 ]
+            pf : string pin_facts[ ps_ ]
+            ism : bool [ pf.index_of[ "m" ] >= 0 ]
+            prg : bool [ pf.index_of[ "x" ] >= 0 ]
             ag_ : path (ism) ? path '{install_root[]}/export/{install_name_of[ pp.filename[] ]}.agi' : null
             # its instances, a file opened in it (a rom) among them
             n_ : i32 [ 0 ]
@@ -686,7 +707,7 @@ func orbiter.dock_els [] -> Elements
     for [ q: i32 0, q < editor_slots.count, q += 1 ]
         edc : Editor pane_at[ q ]
         if [ !edc || !edc.src ] continue
-        rv : AppView edc.run_view
+        rv : AppView pane_av[ q ]
         on : bool [ rv && !rv.ended && !rv.held ]
         if [ on && edc.owns_src[ rv, edc.src ] ] continue
         # a file an app opens (a rom): that app's entry alone,
@@ -701,7 +722,7 @@ func orbiter.dock_els [] -> Elements
             name: edc.src.filename[],
             agi: path '{install_root[]}/export/{install_name_of[ fc.filename[] ]}.agi',
             selected: q == active_pane && !pane_hidden[ q ]
-                && !(on && edc.app_view) && !pane_browsing[ q ],
+                && !(on && pane_live[ q ]) && !pane_browsing[ q ],
             first: k_ == 0,
             area: Region [ 'l0 t{y_}px w{dw}px h{dw}px' ] ]
         k_ += 1
@@ -885,7 +906,7 @@ func orbiter.dock_pop_items [] -> vec PopItem
         apps += 1
         it : PopItem [ icon: 'app', label: task_title[ v ],
                        act: 'show {v.iid}' ]
-        it.on = ed && ed.app_view && ed.run_view == v
+        it.on = pane_live[ active_pane ] && pane_av[ active_pane ] == v
         out.push[ it ]
     out.push[ PopItem [ icon: 'add_instance', label: 'New instance',
                         act: 'new' ] ]
@@ -953,7 +974,7 @@ func orbiter.tray_raise [ av: AppView ]
 func orbiter.in_view [ av: AppView, q: i32 ] -> bool
     if [ window_of[ av ] != 0 ] return pane_window[ q ] == window_of[ av ]
     eq : Editor pane_at[ q ]
-    return eq && eq.run_view == av && eq.app_view
+    return pane_av[ q ] == av && pane_live[ q ]
 
 # a row of it pressed: done on the next frame
 func orbiter.dock_pop_pick [ act: string :: o: orbiter ] -> none

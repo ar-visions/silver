@@ -1357,6 +1357,9 @@ class AppEntry
     public widget  : string
     # the args its service runs with (export serves ['--serve 7788'])
     public serves  : string
+    # the line it runs at every start, in the background (export
+    # startup ['steam -silent'])
+    public startup : string
     # it has a store folder (install/stores/<name>), apps or none
     public store   : bool
     # its store's dialog (export login): the class the drawer shows
@@ -1798,7 +1801,7 @@ func orbiter.card_pop_items [] -> vec PopItem
         for [ v: AppView ] in inst_reg[].live_app[ ae.file ]
             it : PopItem [ icon: 'app', label: task_title[ v ],
                            act: 'inst {v.iid}' ]
-            it.on = ed && ed.app_view && ed.run_view == v
+            it.on = pane_live[ active_pane ] && pane_av[ active_pane ] == v
             out.push[ it ]
         md : path '{ae.file}/{ae.name}.ag'
         if [ is_app_src[ md ] ]
@@ -2075,6 +2078,9 @@ func orbiter.desk_service [ w: Window ]
             : -1 ]
         ky : string desk_widgets[ i ]
         if [ desk_seen.contains[ ky ] && desk_seen[ ky ] == fr ]
+            continue
+        # put away or filtered out: its pictures are not drawn
+        if [ (desk_hide && !use_mobile) || !widget_shown[ i ] ]
             continue
         desk_seen[ ky ] = fr
         if [ w.root ] mark_widget[ w.root, i ]
@@ -2588,7 +2594,7 @@ func orbiter.home_in_pane [ nm: string, pi: i32 ]
     ed_sessions[ sid ] = cs
     pane_console[ pi ] = sid
     if [ ed ]
-        ed.app_view = false
+        ed.win_front[ false ]
         ed.pristine = false
     force_update[]
     if [ ux ] ux.restyle = true
@@ -2735,12 +2741,13 @@ func orbiter.apps_pick [ pi: i32, ae: AppEntry ]
         run_program[ ae.built, pi ]
         edr : Editor pane_at[ pi ]
         mf : path '{ae.file}/{ae.name}.ag'
-        if [ edr && edr.run_view && mf.exists[] ]
-            edr.run_view.origin = mf
+        rav : AppView pane_av[ pi ]
+        if [ rav && mf.exists[] ]
+            rav.origin = mf
             # an agent shell's module: it tells when it waits
             for [ an: string ] in agent_installed[]
                 if [ an == ae.name ]
-                    edr.run_view.agent = agent_make[ an ]
+                    rav.agent = agent_make[ an ]
     el [ ae.module && ae.built ]
         # not built: install it (its module's imports, built)
         w_ : string install_word[ ae ]

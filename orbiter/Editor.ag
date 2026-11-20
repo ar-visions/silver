@@ -888,45 +888,34 @@ Layer EditorLayer
                 editor.diff_rebuild[ true ]
             el
                 editor.ux.will_animate = true
-        # an app on its way to this pane (its module loading first)
-        # keeps the pane blank too
-        orbw : cast orbiter [ editor.ux.app_object ]
-        coming : bool [
-            orbw && orbw.pending_show > 0
-            && orbw.pending_show_pane == editor.pane_index ]
-        if [
-            editor.app_view
-            || (editor.run_view && editor.run_view.ended)
-            || (!editor.run_view && !coming) ]
-            editor.wait_app = false
-        if [ editor.wait_app ] return
-        if [ editor.run_view ]
+        if [ editor.win_av[] ]
             # an ended or held app has no live frame: the source shows
             if [
-                editor.app_view && !editor.show_hits
+                editor.win_live[] && !editor.show_hits
                 && !editor.stopped[] && !editor.resuming[]
-                && !editor.run_view.ended && !editor.run_view.held ]
+                && !editor.win_av[].ended && !editor.win_av[].held ]
                 b2 : rect [ x: bounds.x, y: bounds.y, w: bounds.w,
                             h: bounds.h ]
                 bot : element (editor.elements) ? editor.elements['bottom'] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
                     lim : f32 [ bot.bounds.y - b2.y ]
                     if [ lim > 0.0 && lim < b2.h ] b2.h = lim
-                editor.run_view.vx = b2.x
-                editor.run_view.vy = b2.y
-                editor.run_view.vw = b2.w
-                editor.run_view.vh = b2.h
-                editor.run_view.vsx = editor.scroll.x
-                editor.run_view.vsy = editor.scroll.y
-                if [ editor.run_view.fade_us != 0 ]
+                lv : AppView editor.win_av[]
+                lv.vx = b2.x
+                lv.vy = b2.y
+                lv.vw = b2.w
+                lv.vh = b2.h
+                lv.vsx = editor.scroll.x
+                lv.vsy = editor.scroll.y
+                if [ editor.win_av[].fade_us != 0 ]
                     fal : f32 [
-                        f32[ epoch_micros[] - editor.run_view.fade_us ]
+                        f32[ epoch_micros[] - editor.win_av[].fade_us ]
                         / 400000.0 ]
                     if [ fal >= 1.0 ]
                         parent.mask_glow  = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
                         parent.mask_inset = vec4f [ 0.0, 0.0, 0.0, 0.0 ]
                         editor.no_scroll = true
-                        editor.run_view.draw_frame[ cv, b2 ]
+                        editor.win_av[].draw_frame[ cv, b2 ]
                         return
                 # the picture fades in over a blank pane, never the code
                 return
@@ -2256,7 +2245,7 @@ Layer EditorLayer
             # shift over it: the copy action's own colour
             cpy : bool [ editor.hover_err && editor.shift_down ]
             # a build under way is news, not an error: the info look
-            busy : bool [ editor.run_view && editor.run_view.building[]
+            busy : bool [ editor.win_av[] && editor.win_av[].building[]
                           && !editor.err_band_line[] ]
             if [ busy ] cpy = true
             cv.fill_color[
@@ -2290,7 +2279,9 @@ Layer EditorLayer
 # left tool rail: vertical buttons, icon over title, 64px wide
 # the extension's handler module leads as the default action
 element ToolRail : Toolbar
-    animated    : true
+    # painted with its editor: its hover and view are the editor's,
+    # which repaints on either
+    no_cache    : true
     user_events : false
     public top  : f32
     func owner [] -> Editor
@@ -2464,10 +2455,7 @@ Control Editor
     # the mouse
     mutable view_thumbs   : map Canvas[string]
     # the selected instance: shown and debugged
-    mutable run_view      : AppView
-    mutable app_view      : bool
     # the dock asked for the app: blank, no code, until it shows
-    mutable wait_app      : bool
     mutable session_view  : string
     mutable saved_scroll  : f32
     intern static view_registry : map Au_t[string]
@@ -3694,7 +3682,7 @@ Control Editor
         et : string o_.err_text_for[ src ]
         if [ et ] return et
         # this file's app ended without running: why, and how to again
-        rv : AppView run_view
+        rv : AppView win_av[]
         if [ rv && rv.ended && rv.failed[] && owns_src[ rv, src ] ]
             return (rv.no_app) ? rv.note
                 : '{rv.note} — F5 or play to run again'
@@ -4494,8 +4482,8 @@ Control Editor
             nv.start[]
         el
             log 'instance {nv.iid}: {mod} running, shown'
-        run_view  = nv
-        app_view  = true
+        win_set[ nv ]
+        win_front[ true ]
         pristine  = false
         no_scroll = true
         focusable = true
@@ -4765,29 +4753,30 @@ Control Editor
     # it
     public func tick [ w: Window ]
         resume_watch[]
-        if [ run_view ]
-            run_view.stopped = stopped[]
+        tv : AppView win_av[]
+        if [ tv ]
+            tv.stopped = stopped[]
             # not drawn yet: the launch takes the pane's content area as
             # its size
             cl_ : Layer (layers) ? layers[ 'content' ] : null
             if [
-                run_view.vw <= 0.0 && cl_ && cl_.bounds
+                win_av[].vw <= 0.0 && cl_ && cl_.bounds
                 && cl_.bounds.w > 0.0 ]
-                run_view.vw = cl_.bounds.w
-                run_view.vh = cl_.bounds.h
+                tv.vw = cl_.bounds.w
+                tv.vh = cl_.bounds.h
                 bot : element (elements) ? elements[ 'bottom' ] : null
                 if [ bot && bot.bounds && bot.bounds.h > 0.0 ]
                     lim : f32 [ bot.bounds.y - cl_.bounds.y ]
                     if [ lim > 0.0 && lim < cl_.bounds.h ]
-                        run_view.vh = lim
-            run_view.service[ w.screen ]
-            if [ run_view.lock_req != 0 ]
-                if [ run_view.lock_req == 1 ] ux.mouse_lock[ a ]
+                        tv.vh = lim
+            win_av[].service[ w.screen ]
+            if [ win_av[].lock_req != 0 ]
+                if [ win_av[].lock_req == 1 ] ux.mouse_lock[ a ]
                 el ux.mouse_unlock[]
-                run_view.lock_req = 0
+                tv.lock_req = 0
         live : bool [
-            run_view && app_view && !show_hits && !run_view.held
-            && !run_view.ended && !stopped[] ]
+            win_av[] && win_live[] && !show_hits && !win_av[].held
+            && !win_av[].ended && !stopped[] ]
         an : bool [ live || (rview && rview.continuous*[]) ]
         # leaving the live frame: its cached picture is stale
         if [ animated && !an ] pristine = false
@@ -4802,24 +4791,59 @@ Control Editor
     # while an app runs, the run band belongs to IT — not to whatever
     # file the pane has navigated to (stepping into another module moves
     # the pane)
+    # its window's app and whether it is in front: the window's
+    func win_orb [] -> orbiter
+        return cast orbiter [ (ux) ? ux.app_object : null ]
+
+    public func win_av [] -> AppView
+        o : orbiter win_orb[]
+        return (o) ? o.pane_av[ pane_index ] : null
+
+    public func win_live [] -> bool
+        o : orbiter win_orb[]
+        return (o) ? o.pane_live[ pane_index ] : false
+
+    public func win_set [ v: AppView ]
+        o : orbiter win_orb[]
+        if [ !o ] return
+        if [ v ] o.pane_set_av[ pane_index, v ]
+        el o.pane_drop_app[ pane_index ]
+
+    public func win_front [ on: bool ]
+        o : orbiter win_orb[]
+        if [ o ] o.pane_front[ pane_index, on ]
+
+    # the window's app is the viewer of the file this editor holds
+    func win_doc [] -> bool
+        v : AppView win_av[]
+        if [ !v || !v.viewer || v.ended || !v.doc || !src ] return false
+        es : string '{src.absolute[]}'
+        ds : string '{v.doc.absolute[]}'
+        return ds == es || '{src.parent_dir[].absolute[]}' == ds
+
+    # its code in front: edit mode from now
+    public func win_code []
+        o : orbiter win_orb[]
+        if [ o ] o.pane_show_code[ pane_index ]
+
     func band_src [] -> path
-        if [ run_view && run_view.src ] return run_view.src
+        if [ win_av[] && win_av[].src ] return win_av[].src
         return src
 
     # stop the app this pane launched
     func close_app []
         orb : cast orbiter [ ux.app_object ]
         ms   : path band_src[]
-        if [ run_view ]
-            if [ orb && run_view.app_mod ]
-                orb.stop_debug[ orb.dbg_key[ run_view ] ]
-            run_view.release*[]
-            if [ orb ] orb.remove_instance[ run_view ]
+        if [ win_av[] ]
+            if [ orb && win_av[].app_mod ]
+                orb.stop_debug[ orb.dbg_key[ win_av[] ] ]
+            win_av[].release*[]
+            if [ orb ] orb.remove_instance[ win_av[] ]
         # drop the closed instance; the newest remaining one is selected
         keep : vec AppView (orb) ? orb.instances_of[ ms ] : null
-        run_view = (keep && keep.count > 0) ? keep[
-            keep.count - 1 ] : null
-        app_view = run_view != null
+        win_set[ (keep && keep.count > 0) ? keep[ keep.count - 1 ]
+            : null ]
+        win_front[ win_av[] != null ]
 
     # the instances of the module this pane shows: the shown instance's
     # own module when one was picked from the nav list, else the pane's
@@ -4827,7 +4851,7 @@ Control Editor
     func instances [] -> vec AppView
         orb : cast orbiter [ ux.app_object ]
         if [ !orb ] return null
-        src_ : path (run_view && run_view.src) ? run_view.src : band_src[]
+        src_ : path (win_av[] && win_av[].src) ? win_av[].src : band_src[]
         return orb.instances_of[ src_ ]
 
     # which view this pane should show: the user's pick, else the
@@ -4850,11 +4874,11 @@ Control Editor
         # a hosted handler (the markdown viewer) gives way to any other
         # view; a program run from the apps view (no document) stays,
         # and so does one whose own source this is (its code)
-        dv : bool [ run_view && run_view.viewer && run_view.doc
-                    && !(src && owns_src[ run_view, src ]) ]
+        dv : bool [ win_av[] && win_av[].viewer && win_av[].doc
+                    && !(src && owns_src[ win_av[], src ]) ]
         if [ want.compare[ 'editor' ] == 0 ]
             if [ dv ] close_app[]
-            app_view = keep_app && run_view != null
+            win_front[ keep_app && win_av[] != null ]
             load_text[]
             view_name = 'editor'
             return
@@ -4864,7 +4888,7 @@ Control Editor
         isc  : bool [ orbc && orbc.console_of[ want ] ]
         if [ t || isc ]
             if [ dv ] close_app[]
-            app_view = false
+            win_front[ false ]
             if [ isc ]
                 # the folder in view is what the process gets, not a
                 # file
@@ -4894,7 +4918,7 @@ Control Editor
             pl : string program_for[ src ]
             orbp : cast orbiter [ ux.app_object ]
             if [ pl && orbp ]
-                if [ run_view && run_view.viewer ] close_app[]
+                if [ win_av[] && win_av[].viewer ] close_app[]
                 orbp.run_line[ pl, pane_index ]
             return
         # a peer module owns this view: it runs as its own process
@@ -4905,19 +4929,19 @@ Control Editor
         # (the default action). only a real view travels as --view
         ow  : string [ (orbv) ? orbv.view_module[ want ] : null ]
         m_   : string [ (ow && ow.count > 0) ? ow : want ]
-        # a pane moved in the layout: the viewer it showed, not a new
-        rk : AppView [ (orbv && !run_view)
-            ? orbv.relay_take[ pane_index ] : null ]
-        if [ !rk && orbv && !run_view ] rk = orbv.viewer_unshown[ src ]
+        # the window shows this file's viewer already (an editor made
+        # anew): it stays; else a running one no window shows
+        rk : AppView [ (win_doc[]) ? win_av[] : null ]
+        if [ !rk && orbv && !win_av[] ] rk = orbv.viewer_unshown[ src ]
         if [ rk ]
-            run_view  = rk
-            app_view  = true
+            win_set[ rk ]
+            win_front[ true ]
             pristine  = false
             no_scroll = true
             return
         # one instance for any given viewer, always new: picking a view
         # closes whatever was running and launches with it
-        if [ run_view && run_view.viewer ] close_app[]
+        if [ win_av[] && win_av[].viewer ] close_app[]
         if [ m_ ]
             launch_handler[ m_, src, (ow && ow.count > 0) ? want : '' ]
 
@@ -5085,23 +5109,23 @@ Control Editor
             # the app stays. a document's viewer goes with its document
             # (a program run from the apps view has none: it stays),
             # but not for its own module's source: that is its code
-            if [ run_view && run_view.viewer && run_view.doc && src
-                 && !owns_src[ run_view, src ] ]
+            if [ win_av[] && win_av[].viewer && win_av[].doc && src
+                 && !owns_src[ win_av[], src ] ]
                 close_app[]
             # a module picked from the nav list lets go of the old
             # module's instance (it keeps running); an instance stopped
             # in the debugger stays: walking its frames opens other
             # modules
             el [
-                run_view && src && stop_pending == 0 && !stopped[]
-                && !owns_src[ run_view, src ] ]
-                run_view = null
+                win_av[] && src && stop_pending == 0 && !stopped[]
+                && !owns_src[ win_av[], src ] ]
+                win_set[ null ]
             # back on a module: its instance again, the code in view
             orb : cast orbiter [ ux.app_object ]
-            if [ !run_view && src && orb ]
+            if [ !win_av[] && src && orb ]
                 for [ v7: AppView ] in orb.instances_of[ src ]
-                    if [ !v7.viewer ] run_view = v7
-            app_view    = keep_app && run_view != null
+                    if [ !v7.viewer ] win_set[ v7 ]
+            win_front[ keep_app && win_av[] != null ]
             sel_line    = -1
             anchor_line = -1
             anchor_col  = 0
@@ -5433,16 +5457,16 @@ Control Editor
         swap_history[ buf ]
 
     func toggle_app_run [ clean: bool ]
-        if [ run_view ]
+        if [ win_av[] ]
             orb : cast orbiter [ ux.app_object ]
-            if [ orb && run_view.app_mod ]
+            if [ orb && win_av[].app_mod ]
                 es : ConsoleSession (orb.ed_sessions) ? orb.ed_sessions[
-                    run_view.console_id[] ] : null
+                    win_av[].console_id[] ] : null
                 if [ es ] es.print_text[ '\r\nstopped\r\n' ]
             close_app[]
             pristine  = false
             # another instance remains: it keeps the pane, or the pip
-            if [ run_view ]
+            if [ win_av[] ]
                 if [ ux ] ux.restyle = true
                 return
             no_scroll = false
@@ -5484,10 +5508,10 @@ Control Editor
         # in the panel's pip once it has a frame, Full takes the pane
         nv.pip  = nv.display == 0
         orb.inst_made[ nv ]
-        run_view = nv
+        win_set[ nv ]
         # held: the source stays in the pane until it starts (starting
         # sets the pane from its display)
-        app_view = false
+        win_front[ false ]
         pristine = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -5510,9 +5534,9 @@ Control Editor
     func select_instance [ i: i32 ]
         li : vec AppView instances[]
         if [ !li || i < 0 || i >= li.count ] return
-        run_view  = li[ i ]
+        win_set[ li[ i ] ]
         # a file's viewer is always the app: its file is not source
-        app_view  = run_view.display == 1 || run_view.viewer
+        win_front[ win_av[].display == 1 || win_av[].viewer ]
         pristine  = false
         no_scroll = true
         if [ ux ] ux.restyle = true
@@ -5532,15 +5556,15 @@ Control Editor
         return m
 
     func attach_app_run [ mod: string ]
-        if [ run_view ] return
+        if [ win_av[] ] return
         nv : AppView [ ]
         nv.src     = src
         nv.slot    = 0
         nv.app_mod = mod
         nv.started = true
         nv.cmd     = 'tail -n +1 -F /tmp/{mod}.log'
-        run_view  = nv
-        app_view  = false
+        win_set[ nv ]
+        win_front[ false ]
         pristine  = false
         if [ ux ] ux.restyle = true
 
@@ -5555,8 +5579,8 @@ Control Editor
     func stopped [] -> bool
         # the pane's own instance says whether it is parked: another
         # instance of the same module at a stop must not hide this one
-        if [ run_view ]
-            d_ : dbg run_view.debugger
+        if [ win_av[] ]
+            d_ : dbg win_av[].debugger
             return (d_ && d_.active && !d_.running) ? true : false
         d : dbg active_dbg[]
         return (d && !d.running) ? true : false
@@ -5564,7 +5588,7 @@ Control Editor
     # resumed from a stop with the source showing: still running
     # 150 ms on, the app's frame fades in over it, then it is the app
     func resume_watch []
-        rv : AppView run_view
+        rv : AppView win_av[]
         if [ !rv || rv.ended || rv.held ] return
         # with a debugger its running state is the word (a continue
         # leaves paused set), else the host's pause
@@ -5574,10 +5598,10 @@ Control Editor
         if [ halt ]
             rv.resume_ms  = 0
             rv.fade_in_ms = 0
-        el [ rv.halt_was && (app_view || rv.in_view) ]
+        el [ rv.halt_was && (win_live[] || rv.in_view) ]
             rv.resume_ms = now
         el [ !rv.halt_was && rv.resume_ms == 0 && rv.fade_in_ms == 0 ]
-            rv.in_view = app_view
+            rv.in_view = win_live[]
         rv.halt_was = halt
         if [ rv.resume_ms > 0 && now - rv.resume_ms >= 150 ]
             rv.resume_ms  = 0
@@ -5586,26 +5610,30 @@ Control Editor
         if [ rv.fade_in_ms == 0 ] return
         if [ now - rv.fade_in_ms >= 300 ]
             rv.fade_in_ms = 0
-            if [ !app_view ] toggle_app_view[]
+            if [ !win_live[] ] toggle_app_view[]
             if [ ux ] ux.restyle = true
 
     # waiting out the resume or fading in: the source still shows
     func resuming [] -> bool
-        return run_view && (run_view.resume_ms > 0
-            || run_view.fade_in_ms > 0)
+        return win_av[] && (win_av[].resume_ms > 0
+            || win_av[].fade_in_ms > 0)
 
     func toggle_app_view []
-        if [ !run_view ] return
-        app_view = !app_view
+        tv : AppView win_av[]
+        if [ !tv ] return
+        on : bool [ !win_live[] ]
+        # its code asked for: edit mode from now
+        if [ on ] win_front[ true ]
+        el win_code[]
         # the pip belongs to the instance: it keeps it when another is
         # selected
-        run_view.pip = !app_view
-        if [ run_view.display <= 1 ]
-            run_view.display = (app_view) ? 1 : 0
-        if [ !app_view ]
-            run_view.fitw = 0.0
-            run_view.fith = 0.0
-        if [ !app_view ] load_file[]
+        tv.pip = !on
+        if [ tv.display <= 1 ]
+            tv.display = (on) ? 1 : 0
+        if [ !on ]
+            tv.fitw = 0.0
+            tv.fith = 0.0
+        if [ !win_live[] ] load_file[]
 
     public func on_unload [ ]
         lines      = list string []
@@ -5739,8 +5767,8 @@ Control Editor
     intern tap_held : bool
 
     func on_press [ ev: Event ]
-        if [ use_mobile && !(run_view && app_view && !run_view.held
-             && !run_view.ended) ]
+        if [ use_mobile && !(win_av[] && win_live[] && !win_av[].held
+             && !win_av[].ended) ]
             tap_held = true
             return
         press_at[ ev ]
@@ -5765,7 +5793,7 @@ Control Editor
                 # no line in the code: the window's console, at the
                 # line where it is said
                 el [ o_ ]
-                    rv : AppView run_view
+                    rv : AppView win_av[]
                     key : string [ (rv && rv.ended && rv.failed[])
                         ? rv.note : err_band_text[] ]
                     o_.console_reveal[ pane_index, key ]
@@ -5812,8 +5840,8 @@ Control Editor
         pel  : (layers) ? cast EditorLayer [ layers['content'] ] : null
         pins : vec i32 pinned_rows[]
         # a running app shown in the pane hides the band: its press
-        live : bool [ run_view && app_view && !stopped[]
-            && !run_view.ended && !run_view.held ]
+        live : bool [ win_av[] && win_live[] && !stopped[]
+            && !win_av[].ended && !win_av[].held ]
         if [ !live && pel && pel.bounds && pins.count > 0 ]
             plh  : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
             # event pos is CONTENT space; the band is at the top of the
@@ -5873,13 +5901,13 @@ Control Editor
                 return
         # the rail is first in line: nothing else may eat its press
         rail_ : i32 [ tool_hit[ ev.mouse.pos.x, ev.mouse.pos.y ] ]
-        log 'EDPRESS rv={(run_view) ? 1 : 0} av={(app_view) ? 1 : 0} rail={rail_} hits={(show_hits) ? 1 : 0}'
+        log 'EDPRESS rv={(win_av[]) ? 1 : 0} av={(win_live[]) ? 1 : 0} rail={rail_} hits={(show_hits) ? 1 : 0}'
         if [ rail_ >= 0 ]
             press_tool[ rail_ ]
             ev.no_default = true
             return
-        if [ run_view && !stopped[] && app_view ]
-            if [ run_view.view_press*[ ev ] ]
+        if [ win_av[] && !stopped[] && win_live[] ]
+            if [ win_av[].view_press*[ ev ] ]
                 if [ ux ] ux.set_focus[ a ]
                 ev.no_default = true
                 return
@@ -6067,13 +6095,13 @@ Control Editor
         log 'TIPPRESS pane={pane_index} sel={sel_line} col={sel_col} tok={cursor_token[]} scope={scope_of[ sel_line ]} vars={(debug_vars) ? debug_vars.count : -1} hits={(show_hits) ? 1 : 0} nav={(nav_list) ? 1 : 0}'
 
     func on_move [ ev: Event ]
-        if [ run_view && ux.locked == a ]
-            run_view.view_lock_move*[ ev ]
+        if [ win_av[] && ux.locked == a ]
+            win_av[].view_lock_move*[ ev ]
             return
         # not just when maximised: the side panel forwards hover too;
         # with the source showing, the moves are the editor's
-        if [ run_view && app_view ]
-            if [ run_view.view_move*[ ev ] ] return
+        if [ win_av[] && win_live[] ]
+            if [ win_av[].view_move*[ ev ] ] return
         if [ !scroll_dragging && rview && rview.view_move*[ ev ] ]
             pristine = false
             ux.will_animate = true
@@ -6213,7 +6241,7 @@ Control Editor
         if [ tap_held ]
             tap_held = false
             if [ ux.pressing ] press_at[ ev ]
-        if [ run_view ] run_view.view_release*[ ev ]
+        if [ win_av[] ] win_av[].view_release*[ ev ]
         if [ rview ] rview.view_release*[ ev ]
         dragging        = false
         scroll_dragging = false
@@ -6227,7 +6255,7 @@ Control Editor
         # the wheel is the pane's (its text, or its app): no default
         ev.no_default = true
         # the app takes the wheel only while the pane shows it
-        if [ run_view && app_view && run_view.view_wheel*[ ev ] ] return
+        if [ win_av[] && win_live[] && win_av[].view_wheel*[ ev ] ] return
         lh : f32 [ (lh_cache > 0.0) ? lh_cache : 22.0 ]
         if [ ev.key.shift ]
             cw : f32 [ (cw_cache > 0.0) ? cw_cache : 8.0 ]
@@ -6253,30 +6281,30 @@ Control Editor
 
     # a drop over the running app is the app's
     func on_drop [ ev: Event ]
-        if [ !run_view || !app_view || run_view.held
-             || run_view.ended || nav_list || stopped[] ] return
-        if [ run_view.on_drop_text*[ ev.key.text ] ]
+        if [ !win_av[] || !win_live[] || win_av[].held
+             || win_av[].ended || nav_list || stopped[] ] return
+        if [ win_av[].on_drop_text*[ ev.key.text ] ]
             ev.no_default = true
 
     # a running app shown here: its own focus says; code takes words
     # the shown app's focus types plainly
     public func types_plain [] -> bool
-        return run_view && app_view && !run_view.held
-            && !run_view.ended && run_view.app_plain
+        return win_av[] && win_live[] && !win_av[].held
+            && !win_av[].ended && win_av[].app_plain
 
     public func takes_words [] -> bool
-        if [ run_view && app_view && !run_view.held && !run_view.ended
+        if [ win_av[] && win_live[] && !win_av[].held && !win_av[].ended
              && !nav_list && !show_hits && !stopped[] ]
-            return run_view.app_words
+            return win_av[].app_words
         return true
 
     func on_char [ ev: Event ]
-        if [ run_view && app_view && !run_view.held && !run_view.ended && !nav_list && !show_hits && !stopped[] ]
+        if [ win_av[] && win_live[] && !win_av[].held && !win_av[].ended && !nav_list && !show_hits && !stopped[] ]
             orb_ : cast orbiter [ ux.app_object ]
-            if [ orb_ && orb_.nav_driven[] == run_view
+            if [ orb_ && orb_.nav_driven[] == win_av[]
                  && orb_.nav_type_char[ ev ] ]
                 return
-            run_view.on_text*[ ev ]
+            win_av[].on_text*[ ev ]
             return
         if [ flat_active && !ghost_only[] ] return
         if [ row_ghost[ sel_line ] ] return
@@ -6426,8 +6454,8 @@ Control Editor
 
     func nav_walk [ dir: i32 ]
         # a hosted app walks its own history
-        if [ app_view && run_view && run_view.slot >= 0 ]
-            host_post2[ run_view.slot, 1, i32[ HM.nav ], dir, 0, 0 ]
+        if [ win_live[] && win_av[] && win_av[].slot >= 0 ]
+            host_post2[ win_av[].slot, 1, i32[ HM.nav ], dir, 0, 0 ]
             return
         # in a view the arrows walk the views; the editor ends it
         if [ view_key[].count > 0 ]
@@ -6477,14 +6505,14 @@ Control Editor
         own_run : bool [ (ev.key.ctrl || ev.key.meta)
                          && i32[ ev.key.unicode ] == 82 ]
         if [
-            run_view && app_view && !run_view.held && !run_view.ended
+            win_av[] && win_live[] && !win_av[].held && !win_av[].ended
             && !ui_keys && !own_run ]
             # a navigator app the bar drives: its text is orbiter's
             orb_ : cast orbiter [ ux.app_object ]
-            if [ orb_ && orb_.nav_driven[] == run_view
+            if [ orb_ && orb_.nav_driven[] == win_av[]
                  && orb_.nav_type_key[ ev ] ]
                 return
-            run_view.on_key*[ ev ]
+            win_av[].on_key*[ ev ]
             return
         if [ rview && !ui_keys && !ev.key.ctrl && !ev.key.meta ]
             if [ rview.continuous*[] ]
@@ -6494,16 +6522,16 @@ Control Editor
         mk : i32 [ i32 ev.key.unicode ]
         if [ mk >= 340 && mk <= 347 ] return
         if [ mk == 294 ]
-            if [ run_view ]
-                run_view.restart*[ ev.key.shift ]
+            if [ win_av[] ]
+                win_av[].restart*[ ev.key.shift ]
             el
                 toggle_app_run[ ev.key.shift ]
             return
-        if [ mk == 297 && run_view ]
+        if [ mk == 297 && win_av[] ]
             orb8 : cast orbiter [ ux.app_object ]
-            if [ orb8 ] orb8.app_pause_toggle[ run_view ]
+            if [ orb8 ] orb8.app_pause_toggle[ win_av[] ]
             # a resume comes back by resume_watch's fade
-            if [ app_view && run_view.is_paused*[] ] toggle_app_view[]
+            if [ win_live[] && win_av[].is_paused*[] ] toggle_app_view[]
             return
         # escape leaves the outline for where it was entered from
         if [ ev.key.unicode == 256 && outline ]

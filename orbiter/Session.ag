@@ -32,7 +32,7 @@ func orbiter.save_session []
             && open_files[slot] ]
             e_ : Editor pane_at[ i ]
             # a running app is not the session's: never relaunched
-            if [ e_ && e_.app_view && e_.run_view ] continue
+            if [ pane_live[ i ] && pane_av[ i ] ] continue
             sel_ : vec2i [ x: (e_) ? e_.sel_line : 0,
                 y: (e_) ? e_.sel_col : 0 ]
             panes.push[ pane_state [
@@ -46,6 +46,9 @@ func orbiter.save_session []
 
 func orbiter.restore_session []
     load-persistent[ a ]
+    # a fresh start: no window shows an app yet
+    win_iid  = vec i32 []
+    win_edit = vec bool []
     if [ pane_states && pane_states.count > 0 ]
         editor_slots = vec i32 []
         pending_sel = vec vec2i []
@@ -156,7 +159,6 @@ func orbiter.snap_window [ w: Window ] -> string
 # by the paint thread, so the finished debugger lands here instead
 # the app bar's slider is the truth; push it only when it moves
 func orbiter.sync_volume []
-    vol_spectrum[]
     vs_ : VolumeSlider find_volume[]
     av_ : AppView active_app[]
     # the machine's level: read now and then (others change it)
@@ -309,6 +311,19 @@ func orbiter.default_arg_of [ args: string ] -> string
 func orbiter.default_prop [ mod: string ] -> Prop
     sp_ : string module_spec[ mod ]
     if [ !sp_ ] return null
+    # read once a spec: asked for every tab, every frame
+    if [ !dflt_spec ]
+        dflt_spec = map string [ string ] []
+        dflt_prop = map Prop [ string ] []
+    if [ !dflt_spec.contains[ mod ] || dflt_spec[ mod ] != sp_ ]
+        dflt_spec[ mod ] = sp_
+        # none: an empty one (a map holds no null)
+        dp_ : Prop default_read[ sp_ ]
+        dflt_prop[ mod ] = (dp_) ? dp_ : Prop []
+    kp : Prop dflt_prop[ mod ]
+    return (kp.ident) ? kp : null
+
+func orbiter.default_read [ sp_: string ] -> Prop
     lp_ : LaunchProps []
     Au.parse_agi[ null, sp_.chars, lp_ ]
     if [ !lp_.props ] return null
@@ -322,12 +337,17 @@ func orbiter.default_prop [ mod: string ] -> Prop
 func orbiter.live_arg_of [ av: AppView ] -> Prop
     if [ !av.props || av.props.count == 0 ]
         return (av.app_mod) ? live_default[ av.app_mod ] : null
+    # read once a props answer: asked for every tab, every frame
+    if [ av.live_of && av.live_of == av.props ] return av.live_arg
+    av.live_of  = av.props
+    av.live_arg = null
     lp : LaunchProps []
     Au.parse_agi[ null, av.props.chars, lp ]
     if [ !lp.props ] return null
     for [ q: Prop ] in lp.props
         if [ q.type == 'resource' || q.access == 'default' ]
-            return (prop_live[ q ]) ? q : null
+            av.live_arg = (prop_live[ q ]) ? q : null
+            return av.live_arg
     return null
 
 func orbiter.live_default [ mod: string ] -> Prop
@@ -337,16 +357,18 @@ func orbiter.live_default [ mod: string ] -> Prop
         if [ q == 'Live' ] return p
     return null
 
-func orbiter.set_display [ ed: Editor, av: AppView, d: i32 ]
+func orbiter.set_display [ pi: i32, av: AppView, d: i32 ]
     old : i32 [ av.display ]
     if [ old == d ] return
     av.display = d
     av.pip     = d == 0
     av.disp_ms = epoch_millis[]
     session_dirty = true
-    if [ ed && ed.run_view == av ]
+    if [ pi >= 0 && pane_av[ pi ] == av ]
         want : bool [ d == 1 || av.viewer ]
-        if [ ed.app_view != want ] ed.toggle_app_view[]
+        if [ pane_live[ pi ] != want ]
+            if [ want ] pane_front[ pi, true ]
+            el pane_show_code[ pi ]
         av.pip = d == 0
     tell_display[ av ]
 

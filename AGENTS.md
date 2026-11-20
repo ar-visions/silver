@@ -17301,6 +17301,105 @@ OPEN: widgets (desk_views) and the navigator overlay (nav_view)
 keep their own maps, outside the registry; arg_new and copy_instance
 make new ones on purpose (add_instance, through the registry).
 
+## The window owns its app; the editor is code only — live list (Nov 19 2026)
+
+the user: "editor must not be some nested thing, it's purely bound to
+launching a special view"; "separate the Editors out of the instances
+now; you keep making them even if we aren't editing". A window shows
+an app (AppPane, its frames and input) or its code (an Editor, only
+in edit mode). Never the editor's run_view / app_view.
+1. DONE, built (no behaviour yet): orbiter/AppPane.ag: win_iid /
+   win_edit (persist, a place a window), pane_av, pane_live,
+   pane_show_app, pane_show_code (edit mode: av.edited), pane_drop_app,
+   win_drop; element AppPane (tick: service, sizes, lock, repaint on a
+   new front; draw: draw_frame; input to the AppView's view_* /
+   on_key / on_text / on_drop_text; types_plain, takes_words).
+2. OPEN EditorView.render: pane_live -> AppPane only (no split, no
+   editor); close_pane / pane_lists_drop calls win_drop.
+3. OPEN every place that puts an app in a window (show_app,
+   show_instance, embed_app, host_module, launch_handler,
+   start_instance, attach_app_run, dock and desktop launches) calls
+   pane_show_app; every "show code" (orb.code, orb.view,
+   toggle_app_view) pane_show_code; a closed app pane_drop_app.
+4. OPEN every reader of pane_at[i].run_view / app_view (~240 sites:
+   Input on_press 39, Frame tick 22, Chrome own_pick 8, ...) reads
+   pane_av / pane_live.
+5. OPEN delete: Editor.run_view / app_view and its app code (the live
+   branch of EditorLayer.draw, its on_* forwarding, tick service),
+   pending_app, relay_*, rw_, relay_waits, the per-frame record.
+6. OPEN measure idle CPU (support: scratchpad idle.py; a group of 5
+   consoles; target near 1% each, orbiter near 1% with nothing but
+   the scene moving) and the windows test.
+Found with it (Nov 19): with an app shown the Editor is animated, so
+orbiter never rests (draws every frame, asks the app every frame).
+
+## Headless install and fleet SSH — live list (Nov 20 2026)
+
+the user: orbiter-os installs on headless devices too (x86_64 first);
+the install makes media; the devices we install trust our desktop
+and our desktop trusts them (ssh is how we talk to them). His picks:
+an answers file; one fleet signing key (an ssh certificate
+authority), never on a stick.
+1. BUILT wizard InstallAnswers (disk, layout whole | beside | free,
+   part, user, password or hash, host, zone, keys, ssh_keys) and
+   InstallWizard.unattended: the pages' checks, the plan, the run.
+   orbiter --install --answers <agi> --trinity.text_mode true: no
+   window, no GPU; exit 0 / 1. Checked: a dry run here (plan, 0), a
+   wrong disk (1).
+2. BUILT os-bootstrap --image <file> [--answers <agi>]: the tree
+   written first, the stick image saved (not dd'd); answers go to
+   /boot/install-answers.agi, the boot line takes --answers and
+   text_mode and console=ttyS0; init.c tees pid 1's output to the
+   console then. stick copy: names nul separated (cpio -0).
+3. IN PROGRESS boot it in qemu (install/bin, edk2; no user net in
+   our qemu): install onto a virtio disk, reboot it.
+4. OPEN sshd in the tree (openssh-server), started by init; keys
+   only.
+5. OPEN the fleet key on the desktop (made once); known_hosts gets
+   its @cert-authority line; the user's key signed by it; devices
+   trust it (TrustedUserCAKeys).
+6. OPEN a device image with a host name: its host key made and
+   signed at image time, installed into /etc/ssh; a generic stick:
+   the device makes its own, signed later from the desktop.
+7. OPEN the installer stops copying private keys (public only).
+8. OPEN (his design) a device runs orbiter with no screen (no GPU:
+   no vkCreateInstance) for its apps, services and socket; nothing is
+   done by a text console. The graphical orbiter's menu has a Devices
+   menu: this machine (the default), then each devices.agi entry;
+   picking one connects (ssh, its host alias) and the menu's apps and
+   services are that device's, set from there. The VM test reaches
+   the device by qemu's user net (libslirp in qemu.ag, not built).
+   The serial-console boot words and init's tee to the console (2)
+   are not needed for this: to take back out.
+NOTE: share/silver-commune holds 12-byte junk files with binary
+names (Nov 14, a commune bug); left for the user.
+
+## Idle CPU — live list (Nov 20 2026)
+
+the user: orbiter idle near 1%; a hidden app 0%. Measured on his
+session (sampler, /proc per thread), ~24% -> ~2% in the box.
+1. DONE navigator: checkout/ (1.3 M files) indexed and word-hashed
+   only while [remotes] is lit (index_remotes; lit re-indexes).
+2. DONE wayland.c: a window whose picture the shell has not read in
+   a second commits and gets frame-done once a second (seen_at,
+   tick_ok, unseen_frames); its output's timer stops.
+3. DONE trinity: a hosted app's new picture wakes the host only if
+   the last frame drew its slot (host_watch in draw_frame); the
+   quarter second's frame only polls (on_frame, tick_tree) and
+   draws nothing unless they change something; stats line says why
+   each frame drew (woke ...).
+4. DONE a paned app waits 5 ms (not 0.25 ms) for the host's frame
+   request once none came for 0.1 s, and starts as out of view.
+5. DONE trinity chart.ag LineChart / Sparkline not animated (stocks
+   76 fps -> 4); a hidden widget wakes no frame (desk_service).
+6. DONE devices: the ALSA mixer opened once (3.7 ms -> 0.001 ms a
+   read); the gamepad scan once a second; dock pin facts every 2 s.
+7. DONE Services: startup apps (export startup: steam) listed with
+   a switch, on until off (startup_off), stop / start at once.
+OPEN: support/test-windows.py not run to the end since 3 and 4.
+OPEN: a test box shares install/: it rewrites install/stores/*/.watch
+with its own home, and leaves its dbus-daemon running.
+
 ## Window drag speed — CRITICAL, live list (Nov 19 2026)
 
 the user: dragging even one window on the desktop runs at most 20

@@ -218,6 +218,25 @@ static void swap_on(void) {
 // the kernel log and pid 1's output, on the drive
 static void save_logs(void) {
     int out = open("/boot/boot.log", O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, 0644);
+    // an unattended install has no screen: its words go to the
+    // console too (the serial line), the log beside
+    int pf[2];
+    if (out >= 0 && strstr(cmdline, "--answers,") && pipe(pf) == 0) {
+        if (fork() == 0) {
+            close(pf[1]);
+            int con = open("/dev/console", O_WRONLY | O_NOCTTY);
+            char b[4096];
+            ssize_t n;
+            while ((n = read(pf[0], b, sizeof b)) > 0) {
+                if (write(out, b, (size_t)n) < 0) {}
+                if (con >= 0 && write(con, b, (size_t)n) < 0) {}
+            }
+            _exit(0);
+        }
+        close(pf[0]);
+        close(out);
+        out = pf[1];
+    }
     if (out >= 0) { dup2(out, 1); dup2(out, 2); close(out); }
     if (fork() != 0) return;
     // the child: every kernel line, synced, until power off

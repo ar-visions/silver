@@ -577,10 +577,13 @@ abstract live_app media_app
     public  text_mode   : bool [ false ]
     # a windowed app showing in orbiter's pane or pip
     intern  paned       : bool
+    # the host's last frame request
+    intern  req_us      : i64
     # the host asked for a frame (HM.frame)
     intern  frame_req   : bool
-    # the host shows it nowhere (HM.shown 0)
-    intern  out_of_view : bool
+    # the host shows it nowhere (HM.shown 0); so until its first
+    # draw (one never shown is never told)
+    intern  out_of_view : bool [ true ]
     # this frame drew a new picture (render)
     intern  drew        : bool
     # DIAG: requests answered this second
@@ -1049,7 +1052,7 @@ abstract live_app media_app
             stat_line = '{stat_line}{sd.line[]} | {vk.gpu_line[]}'
             aw : string [ (pwn.anim_who) ? pwn.anim_who : '-' ]
             pwn.anim_who = null
-            stat_line = '{stat_line} | quiet {pwn.quiet_frames} anim {aw}'
+            stat_line = '{stat_line} | quiet {pwn.quiet_frames} anim {aw} woke{woke_line[]}'
             pwn.quiet_frames = 0
             sd.clear[]
             if [ pwn.stats ] log '{stat_line}'
@@ -1132,8 +1135,16 @@ abstract live_app media_app
                         && epoch_micros[] - wait_start < lim ]
                     attach_pump[]
                     agent_pump[]
-                    if [ !frame_req ] usleep[ 50 ]
-                if [ frame_req ] pane_reqs += 1
+                    # out of view nothing hurries it; in view a request
+                    # is taken within a quarter millisecond, while they
+                    # come (the host idle asks none: 5 ms then)
+                    idle : bool [ out_of_view
+                        || epoch_micros[] - req_us > 100000 ]
+                    if [ !frame_req ]
+                        usleep[ (idle) ? 5000 : 250 ]
+                if [ frame_req ]
+                    pane_reqs += 1
+                    req_us = epoch_micros[]
                 el                pane_tmo  += 1
                 psec : i64 [ epoch_millis[] / 1000 ]
                 if [ psec != pane_sec ]
@@ -2208,6 +2219,10 @@ abstract live_app media_app
     func render [ ]
         return
 
+    # the app asked for no screen (its subclass knows the app)
+    func screenless [] -> bool
+        return false
+
     func init [ ]
         next_second = epoch_millis[] / 1000
         app_pid       = parse_app_pid[]
@@ -2220,6 +2235,9 @@ abstract live_app media_app
         if [ !screenshot ]
             env_shot : cstr [ getenv[ 'TRIN_SHOT' ] ]
             if [ env_shot ] screenshot = path '{env_shot}'
+        # the app's own flag (--trinity.text_mode lands there): no
+        # screen, no GPU, from the start
+        if [ screenless*[] ] text_mode = true
         if [ text_mode ]
             return
         if [ !Au.live_window_get[] ]
@@ -7733,7 +7751,10 @@ Display Window
         # a held backdrop (a phone's, or a covered one) draws nothing
         held : bool [ (backdrop_bypass || mobile_on[]) && backdrop
                       && backdrop.owner == e ]
-        if [ e.animated && e.opacity > 0.0 && !held ]
+        # a backdrop on its own pace wakes the loop when it is due
+        paced : bool [ backdrop && backdrop.owner == e
+                       && backdrop.draw_hz > 0.0 ]
+        if [ e.animated && e.opacity > 0.0 && !held && !paced ]
             anim_seen = true
             ti : Au_t typeid[ e ]
             anim_who  = '{string[ ti.ident ]} animated'
@@ -8800,6 +8821,9 @@ abstract media_app trinity
         if [ width  <= 0 ] width  = 80
         if [ height <= 0 ] height = 24
 
+    func screenless [] -> bool
+        return root && root.text_mode
+
     func init []
         expect root, 'trinity requires a root element'
         # app element is process-owned; holds must not pin it
@@ -8921,13 +8945,28 @@ abstract media_app trinity
         # the one it sent (no new picture): the host paces it
         now_us : i64 [ epoch_micros[] ]
         drew = false
-        if [ !attach && frames_ever > 30 && !force_animate
+        # the paced backdrop's next draw is due
+        bd : Render window.backdrop
+        bg_due : bool [ bd && bd.draw_hz > 0.0 && bd.owner
+                        && bd.owner.animated && !bd.owner.hide
+                        && bd.due[ now_us / 1000 ] ]
+        still : bool [ !attach && frames_ever > 30 && !force_animate
              && !window.will_animate
-             && !window.restyle && !window.anim_seen
+             && !window.restyle && !window.anim_seen && !bg_due
              && !tree_changed[ window.root ]
-             && host_fronts[] == fronts_seen
-             && (!window.hidden || paned)
-             && window.pending_w == 0 && now_us - drawn_us < 250000 ]
+             && !host_fronts[]
+             && window.pending_w == 0 ]
+        # the quarter second's frame polls: the app and its elements
+        # tick, and only what they change draws
+        if [ still && now_us - drawn_us >= 250000 ]
+            drawn_us = now_us
+            ae : element [ cast element [ window.app_object ] ]
+            if [ ae ] ae.on_frame*[ window ]
+            tick_tree[ window, window.root ]
+            still = !window.will_animate && !window.restyle
+                    && !tree_changed[ window.root ] && !host_fronts[]
+            if [ still ] woke_poll += 1
+        if [ still && now_us - drawn_us < 250000 ]
             window.quiet_frames += 1
             if [ paned ] return
             # a frame sent last time still goes on screen
@@ -8935,9 +8974,12 @@ abstract media_app trinity
             hz : i32 [ max[ window.refresh_hz[], 30 ] ]
             usleep[ u32[ 1000000 / hz ] ]
             return
+        woke_note[ window, attach || force_animate, bg_due,
+                   now_us - drawn_us >= 250000 ]
         drawn_us = now_us
         drew = true
-        fronts_seen = host_fronts[]
+        fronts_note[]
+        fronts_drawn = 0
         window.will_animate = false
         window.anim_seen    = false
         update_start : i64 [ epoch_micros[] ]
@@ -8960,6 +9002,7 @@ abstract media_app trinity
         vk.draw_us   += epoch_micros[] - draw_start
         frames += 1
         frames_ever += 1
+        fronts_watch = fronts_drawn
 
     ifdef [ unix ]
         func at_start [ rt: Au_t ]
@@ -8994,14 +9037,91 @@ mounted_new : bool
 
 # the hosted apps' published frames, as one number: a new picture from
 # any of them changes it, and the host draws it now
-func host_fronts [] -> i64
-    v : i64 [ 0 ]
+# only those the last drawn frame showed: a hidden app's frames
+# (a service, a pane out of view) wake nothing
+func host_fronts [] -> bool
+    if [ !fronts_at ] return false
     for [ s: i32 1, s < 33, s += 1 ]
-        v = v * 3 + i64[ host_tex_front[ s, 0 ] + 1 ]
-    return v
+        if [ (fronts_watch >> s) & 1
+             && host_tex_front[ s, 0 ] != fronts_at[ s ] ] return true
+    return false
 
-# the hosted apps' frames as last drawn
-fronts_seen : i64
+# why each drawn frame drew, counted till the next stats line
+woke_n    : vec i32
+# the quarter second's polls that changed nothing (no frame drawn)
+woke_poll : i32
+
+# every mounted element's tick, with nothing drawn: the quiet
+# loop's poll
+func tick_tree [ w: Window, e: element ]
+    if [ !e || e.hide ] return
+    e.tick*[ w ]
+    if [ e.elements ]
+        for [ ce: element, ck: string ] in e.elements
+            tick_tree[ w, ce ]
+woke_tree : string
+
+func woke_note [ w: Window, forced: bool, bg: bool, timer: bool ]
+    if [ !woke_n ]
+        woke_n = vec i32 []
+        for [ i: i32 0, i < 9, i += 1 ] woke_n += 0
+    k : i32 [ 8 ]
+    if [ forced ] k = 0
+    el [ w.will_animate ] k = 1
+    el [ w.restyle ] k = 2
+    el [ w.anim_seen ] k = 3
+    el [ bg ] k = 4
+    el [ host_fronts[] ] k = 5
+    el [ w.pending_w != 0 ] k = 7
+    el [ tree_changed[ w.root ] ]
+        k = 6
+        woke_tree = tree_who[ w.root ]
+    el [ !timer ] k = 8
+    woke_n[ k ] = woke_n[ k ] + 1
+
+func woke_line [] -> string
+    if [ !woke_n ] return ''
+    names : vec string [] [ 'forced', 'will', 'restyle', 'anim', 'bg',
+        'fronts', 'tree', 'size', 'timer' ]
+    r : string ''
+    for [ i: i32 0, i < 9, i += 1 ]
+        if [ woke_n[ i ] > 0 ] r = '{r} {names[ i ]}={woke_n[ i ]}'
+        woke_n[ i ] = 0
+    if [ woke_tree ] r = '{r} ({woke_tree})'
+    if [ woke_poll > 0 ] r = '{r} polled={woke_poll}'
+    woke_poll = 0
+    woke_tree = null
+    return r
+
+# the first element whose picture is out of date, by its type
+func tree_who [ e: element ] -> string
+    if [ !e || e.hide ] return null
+    if [ !e.pristine && !e.no_cache && !e.animated ]
+        et : typeid[ e ]
+        return string [ et.ident ]
+    if [ e.elements ]
+        for [ ce: element, ck: string ] in e.elements
+            r : string tree_who[ ce ]
+            if [ r ] return '{ck}:{r}'
+    return null
+
+# the hosted apps' fronts as the drawn frame began
+fronts_at : vec i32
+
+# the slots drawn by the last frame, and by this one so far
+fronts_watch : i64
+fronts_drawn : i64
+
+# a host draws slot s's picture this frame
+func host_watch [ s: i32 ]
+    if [ s > 0 && s < 33 ] fronts_drawn |= (i64[ 1 ] << s)
+
+func fronts_note []
+    if [ !fronts_at ]
+        fronts_at = vec i32 []
+        for [ s: i32 0, s < 33, s += 1 ] fronts_at += -1
+    for [ s: i32 1, s < 33, s += 1 ]
+        fronts_at[ s ] = host_tex_front[ s, 0 ]
 
 # an element whose picture is out of date (a field typed into, a line
 # come in): its frame is drawn now, not a quiet one later. an uncached
@@ -10754,27 +10874,40 @@ element CloseBox
             area: l50%-4px t50%-1px w7px h2px
             fill_color: #0000
             radius: 1
-        # the pointer over it: the face goes red and bright, the
-        # chamber warms a little
+        # the pointer over it: the face goes red-violet and bright,
+        # the chamber warms a little
         :hovered
             layers.chamber:
-                fill_color: #50101860
+                fill_color: #4a104060
             layers.lip:
-                box_shadow: inset 0 -1px 2px #ff707050
+                box_shadow: inset 0 -1px 2px #ff70c850
             layers.face:
-                fill_color: #ff4a4ae6
-                fill_gradient_color: #b0182080
+                fill_color: #d64aa6e6
+                fill_gradient_color: #8a1a7080
                 box_shadow: 0 1px 3px #000000aa
         :pressed
             layers.face:
-                fill_color: #c8282899
-                fill_gradient_color: #50080c80
+                fill_color: #a82a8499
+                fill_gradient_color: #40083880
                 box_shadow: inset 0 1px 2px #000000aa
         :mini
             layers.bar:
                 fill_color: #ffffffaa
                 radius: 1
                 box_shadow: 0 0 2px #ffffff55
+        # minimize closes nothing: purple, not red
+        :mini&hovered
+            layers.chamber:
+                fill_color: #2a185060
+            layers.lip:
+                box_shadow: inset 0 -1px 2px #a080ff50
+            layers.face:
+                fill_color: #8f6bffe6
+                fill_gradient_color: #4d3dbc80
+        :mini&pressed
+            layers.face:
+                fill_color: #5e40c899
+                fill_gradient_color: #22104880
     }
 
 CloseBox ShotClose

@@ -9,9 +9,14 @@ import virglrenderer/main from https://gitlab.freedesktop.org/virgl/virglrendere
     -Dvenus=true
     -Dtests=false
 
+# user-mode networking (-nic user, hostfwd): a guest reached by ssh
+import libslirp/4.8.0 from https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.8.0/libslirp-v4.8.0.tar.gz
+    PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+
 import qemu:qemu/e47e2d0
     PKG_CONFIG_PATH={install}/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
     --target-list=x86_64-softmmu
+    --enable-slirp
     --enable-virglrenderer
     --enable-opengl
     --extra-ldflags=-Wl,-rpath,{install}/lib

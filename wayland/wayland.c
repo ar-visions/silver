@@ -160,6 +160,11 @@ struct toplevel {
     bool                     assoc;
     // it was shown before: shown again (out of its tray), it asks
     bool                     shown_once;
+    // the shell last read its picture: one not read in a second is
+    // not shown, and is told a frame is done once a second, not each
+    double                   seen_at, done_at;
+    // an unseen window's once-a-second frame is due
+    bool                     tick_ok;
     // its app sits in sub-surfaces of a fixed display (Android's):
     // never resized, centred; fw, fh the app's box, its own units
     bool                     fixed;
@@ -337,6 +342,11 @@ static bool sheet_render(struct toplevel *t, struct wlr_output_state *st) {
 
 static void on_top_frame(struct wl_listener *l, void *data) {
     struct toplevel *t = wl_container_of(l, t, frame_l);
+    // unseen: no commit, so its output's timer stops; once a second
+    // its picture is kept (unseen_frames)
+    bool unseen = mono_now() - t->seen_at > 1.0;
+    if (unseen && !t->tick_ok) return;
+    t->tick_ok = false;
     centre_content(t);
     // asked a new size and not drawn at it yet: no frame of ours (it
     // would show its old picture in the new size, the rest black);
@@ -363,8 +373,24 @@ static void on_top_frame(struct wl_listener *l, void *data) {
         t->framing = false;
         wlr_output_state_finish(&st);
     }
+    if (unseen) return;
     struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
     wlr_scene_output_send_frame_done(t->sout, &now);
+}
+
+// windows no one shows: a frame done once a second, so they draw
+// at that pace and keep a picture for the shell's cards
+static void unseen_frames(void) {
+    double now = mono_now();
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct toplevel *t;
+    wl_list_for_each(t, &g_tops, link) {
+        if (now - t->seen_at <= 1.0 || now - t->done_at < 1.0) continue;
+        t->done_at = now;
+        t->tick_ok = true;
+        wlr_scene_output_send_frame_done(t->sout, &ts);
+        wlr_output_schedule_frame(t->out);
+    }
 }
 
 static void on_top_commit(struct wl_listener *l, void *data) {
@@ -978,6 +1004,7 @@ static void *loop_thread(void *arg) {
         poll(&pf, 1, 16);
         pthread_mutex_lock(&g_lock);
         apply_sizes();
+        unseen_frames();
         wl_event_loop_dispatch(g_loop, 0);
         wl_display_flush_clients(g_display);
         pthread_mutex_unlock(&g_lock);
@@ -1347,7 +1374,12 @@ static void u_wlc_window_kill(uint64_t id) {
 // dma-buf
 static uint64_t u_wlc_frame_id(uint64_t id) {
     struct toplevel *t = top_of(id);
-    return (t && t->frame_buf) ? (uint64_t)(uintptr_t)t->frame_buf : 0;
+    if (!t) return 0;
+    // shown again: its frames go on now, not at the next second
+    double now = mono_now();
+    if (now - t->seen_at > 1.0) wlr_output_schedule_frame(t->out);
+    t->seen_at = now;
+    return t->frame_buf ? (uint64_t)(uintptr_t)t->frame_buf : 0;
 }
 static uint64_t u_wlc_window_epoch(uint64_t id) { struct toplevel *t = top_of(id); return t ? t->epoch : 0; }
 // a window's own size (a dialog's frame has room past it)

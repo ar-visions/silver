@@ -235,7 +235,7 @@ func orbiter.pick_show [ av: AppView ]
     ed : Editor null
     for [ i: i32 0, i < editor_slots.count, i += 1 ]
         eq : Editor pane_at[ i ]
-        if [ eq && eq.run_view == av ] ed = eq
+        if [ pane_av[ i ] == av ] ed = eq
     if [ !ed ] ed = pane_at[ active_pane ]
     if [ !ed ] return
     if [ pane_hidden[ ed.pane_index ] ] unhide[ ed.pane_index ]
@@ -329,7 +329,7 @@ func orbiter.nav_app_hide []
 func orbiter.nav_driven [] -> AppView
     if [ nav_app && nav_view ] return nav_view
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ active_pane ]) ? pane_av[ active_pane ] : null
     if [ rv && !rv.ended && !rv.held && rv.app_mod == 'navigator' ]
         return rv
     return null
@@ -466,7 +466,7 @@ func orbiter.pick_deliver [ p0: path ] -> bool
     # shared into its view and handed to it
     if [ pick_field == 'app_pick' ]
         if [ !p0 || p0.is_dir[] ] return false
-        ap : AppView (pick_editor) ? pick_editor.run_view : null
+        ap : AppView (pick_editor) ? pick_editor.win_av[] : null
         if [ ap && !ap.ended ]
             given : string share_into[ ap, p0 ]
             agent_sock_send[ ap.sock_name[].chars,
@@ -493,12 +493,12 @@ func orbiter.pick_deliver [ p0: path ] -> bool
         pick_launch     = null
         session_dirty   = true
         # it shows in the pane holding it, over the pane's edit
-        if [ pick_editor && pick_editor.run_view == pl_ ]
+        if [ pick_editor && pick_editor.win_av[] == pl_ ]
             embed_app[ pick_editor, pl_ ]
     el [ pick_field == 'arg_edit' ]
         # the running instance takes it live: its own props name
         # the default member (set on it, never a restart)
-        ra : AppView (pick_editor) ? pick_editor.run_view : null
+        ra : AppView (pick_editor) ? pick_editor.win_av[] : null
         pa_ : Prop (ra) ? live_arg_of[ ra ] : null
         if [ ra && pa_ && !ra.ended ]
             ra.arg_text = share_into[ ra, p ]
@@ -512,7 +512,7 @@ func orbiter.pick_deliver [ p0: path ] -> bool
             ms_ : path module_src_of[ pick_editor ]
             if [ ms_ ]
                 show_app[ pick_editor, ms_, false ]
-                sa_ : AppView pick_editor.run_view
+                sa_ : AppView pick_editor.win_av[]
                 if [ sa_ ]
                     fl_ : string flags_of[ sa_.module_args ]
                     pw_ : string arg_word[ '{p}' ]
@@ -665,7 +665,7 @@ func orbiter.nav_arrows_el [ t: Elements, pi: i32, xr: f32 ] -> f32
         (dm & 2) != 0, xr - hw, hw ]
     # an address app (aura): its refresh before back and forward
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ pi ]) ? pane_av[ pi ] : null
     if [ rv && !rv.ended && rv.slot >= 0 && pane_window[ pi ] == 0
          && url_app[ rv ] ]
         t['nav_reload:{pi}'] = bar_icon[ 'restart', 0.42, false, false,
@@ -676,9 +676,9 @@ func orbiter.nav_arrows_el [ t: Elements, pi: i32, xr: f32 ] -> f32
 func orbiter.nav_mask [ pi: i32 ] -> i32
     edp : Editor pane_at[ pi ]
     ndm : i32 [ 0 ]
-    if [ edp && edp.app_view && edp.run_view ]
-        if [ !edp.run_view.nav_back_on ] ndm |= 1
-        if [ !edp.run_view.nav_fwd_on ]  ndm |= 2
+    if [ pane_live[ pi ] && pane_av[ pi ] ]
+        if [ !pane_av[ pi ].nav_back_on ] ndm |= 1
+        if [ !pane_av[ pi ].nav_fwd_on ]  ndm |= 2
     el [ edp && edp.view_key[].count > 0 ]
         if [ !edp.view_can[ -1 ] ] ndm |= 1
         if [ !edp.view_can[ 1 ] ]  ndm |= 2

@@ -91,7 +91,6 @@ func sparkline_paint [ cv: Canvas, vs: vec f64, base: f64, x: f32,
 
 # a small line of values, for a row of a list
 element Sparkline
-    animated : true
     public values : vec f64
     # drawn into the range when set (a day's last close)
     public base   : f64
@@ -107,7 +106,6 @@ element Sparkline
 # right, the times under it, volume bars at its foot when given; the
 # pointer's reading at the pointer, its dot easing after it
 element LineChart
-    animated : true
     public values  : vec f64
     # unix seconds, one a value
     public times   : vec i64
@@ -300,6 +298,10 @@ element LineChart
             return
         glide = (glide < x) ? hover
             : filter_n[ glide, hover, 0.25, ux.frame_factor ]
+        # the dot still easing: the next frame draws it again
+        if [ abs[ glide - hover ] > 0.25 ]
+            needs_frame = true
+            ux.will_animate = true
         gv : f64 value_at[ x, cw, glide ]
         hy : f32 [ y + ch - f32[ (gv - lo) / rg ] * ch ]
         cv.fill_color[ rgba [ '#ffffff33' ] ]
@@ -329,5 +331,10 @@ element LineChart
                         tw, 18.0 * un, 0.5, muted ]
         cv.set_font[ null ]
 
+    func on_leave [ ev: Event ]
+        hover    = -1.0
+        pristine = false
+
     func on_move [ ev: Event ]
+        pristine = false
         hover = ev.mouse.pos.x

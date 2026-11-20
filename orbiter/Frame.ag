@@ -36,6 +36,13 @@ func orbiter.ui_carry_in []
     if [ ux ] ux.restyle = true
 
 func orbiter.init [] 
+    # an unattended install: the plan from the answers, run here,
+    # before any of the desktop is made; the exit says how it went
+    if [ install && answers.count > 0 ]
+        iw : InstallWizard [ dry_run: dry_run, answers: answers ]
+        ok : bool iw.unattended[]
+        log 'orbiter: install {(ok) ? "finished" : "stopped"}'
+        exit[ (ok) ? 0 : 1 ]
     # tick carries the per-frame work (session pump, run dispatch,
     # pane close-outs); a paint happens only when something marks it
     # dirty
@@ -225,10 +232,10 @@ func orbiter.land_paused [ av: AppView ]
                 link_av   = av
                 link_pane = q
         if [ ux ] ux.restyle = true
+    # stopped: its code in front, where the stop is
     for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
-        ed : Editor pane_at[ pi ]
-        if [ ed && ed.run_view == av && ed.app_view ]
-            ed.toggle_app_view[]
+        if [ pane_av[ pi ] == av && pane_live[ pi ] ]
+            pane_show_code[ pi ]
     for [ df: frame ] in av.debugger.read_frames[]
         sp : string '{df.source}'
         if [ df.line > 0 && sp.ends_with[ '.ag' ] ]
@@ -289,7 +296,6 @@ func orbiter.galaxy_element [] -> element
 # coming
 func orbiter.tick [ w: Window ]
     session_follow[]
-    if [ instances && instances.count > 0 ] w.will_animate = true
     nav.pump[ w ]
     nav_app_sync[]
     if [ orbit_cap_on ] dictation_gpu[ Canvas w.screen ]
@@ -343,7 +349,7 @@ func orbiter.tick [ w: Window ]
             wp : i32 [ active_pane ]
             for [ pq: i32 0, pq < editor_slots.count, pq += 1 ]
                 eq : Editor pane_at[ pq ]
-                if [ eq && eq.run_view == wv_ ] wp = pq
+                if [ pane_av[ pq ] == wv_ ] wp = pq
             show_instance[ wv_.iid, wp ]
             if [ ux ] ux.set_shown[ true ]
     if [ pending_held >= 0 ] 
@@ -360,11 +366,11 @@ func orbiter.tick [ w: Window ]
                         hv = iv
             if [ !hv ]
                 hed.start_instance[ false ]
-                hv = hed.run_view
+                hv = hed.win_av[]
             # the instance we came from is the pane's selection; the
             # source stays in the pane until it starts
-            hed.run_view = hv
-            hed.app_view = false
+            hed.win_set[ hv ]
+            hed.win_front[ false ]
             home_av      = hv
             # its picture from before the switch fills the pip
             shot : cstr [ getenv[ 'SILVER_SWITCH_SHOT' ] ]
@@ -396,12 +402,12 @@ func orbiter.tick [ w: Window ]
         red : Editor pane_at[ pending_run ]
         if [ red ]
             # one that ended (quit, failed) gives way to a new one
-            if [ red.run_view && red.run_view.ended ]
-                red.run_view = null
-            if [ !red.run_view ] red.toggle_app_run[ false ]
+            if [ red.win_av[] && red.win_av[].ended ]
+                red.win_set[ null ]
+            if [ !red.win_av[] ] red.toggle_app_run[ false ]
             # launched on this app: its held instance takes the pane
             # and runs
-            rv : AppView red.run_view
+            rv : AppView red.win_av[]
             if [ rv ]
                 if [
                     rv.held && rv.src && red.src
@@ -410,7 +416,7 @@ func orbiter.tick [ w: Window ]
                     for [ i_: i32 0, i_ < li_.count, i_ += 1 ]
                         if [ li_[ i_ ] == rv ]
                             red.select_instance[ i_ ]
-                    set_display[ red, rv, 1 ]
+                    set_display[ pending_run, rv, 1 ]
                     instance_action[ red, rv, 'play' ]
             pending_run = -1
     if [ pending_findfocus ]
@@ -467,11 +473,7 @@ func orbiter.tick [ w: Window ]
             if [ av8.disp_pending >= 0 ]
                 dp8 : i32 [ av8.disp_pending ]
                 av8.disp_pending = -1
-                ed8 : Editor null
-                for [ i: i32 0, i < editor_slots.count, i += 1 ]
-                    e8 : Editor pane_at[ i ]
-                    if [ e8 && e8.run_view == av8 ] ed8 = e8
-                set_display[ ed8, av8, dp8 ]
+                set_display[ pane_showing[ av8 ], av8, dp8 ]
             # a held one waits for its row; an unstarted one starts
             # here even unshown
             if [ av8.held || av8.ended ] continue
@@ -485,23 +487,21 @@ func orbiter.tick [ w: Window ]
                     if [ apid > 0 && app_up[ av8 ] ]
                         log 'release: {av8.app_mod} slot {av8.slot} pid {apid}'
                         attach_appview[ av8, apid ]
-            # a hidden pane (the nav list over it) never ticks: its
-            # instance is serviced here until it shows again
+            # a window showing it services it; in none (a tab behind
+            # another, minimized) it is serviced here
             shown8 : bool [ false ]
-            for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
-                e8 : Editor pane_at[ pi8 ]
-                # hide_ui hides every pane: their apps run on here
-                if [ e8 && e8.run_view == av8 && !e8.hide &&
-                     !hide_ui && !pane_gone[ pi8 ] ]
-                    shown8 = true
+            if [ !hide_ui ]
+                for [ pi8: i32 0, pi8 < editor_slots.count, pi8 += 1 ]
+                    if [ pane_av[ pi8 ] == av8 && !pane_gone[ pi8 ] ]
+                        shown8 = true
             if [ !shown8 ]
                 av8.stopped = (av8.debugger && av8.debugger.active && !av8.debugger.running) ? true : false
                 # the pace of an app shown in the pane: this
                 # display's refresh
                 if [ av8.host_hz <= 0 ] av8.host_hz = w.refresh_hz[]
-                # its window hidden (a tab behind another, minimized):
-                # it draws nothing there
-                av8.unseen = hides_app[ av8 ]
+                # in no window (a tab behind another, minimized, a
+                # service): asked for no frames, it runs on slowly
+                av8.unseen = true
                 av8.service[ w.screen ]
     desk_service[ w ]
     # docked windows filling the area hide the scene: it holds
@@ -509,8 +509,8 @@ func orbiter.tick [ w: Window ]
     for [ pc_: i32 0, pc_ < editor_slots.count, pc_ += 1 ]
         if [ pane_floats[ pc_ ] || pane_out[ pc_ ] ] continue
         ec : Editor pane_at[ pc_ ]
-        app_ : bool [ ec && ec.app_view && ec.run_view
-                      && !ec.run_view.held && !ec.run_view.ended ]
+        app_ : bool [ pane_live[ pc_ ] && pane_av[ pc_ ]
+                      && !pane_av[ pc_ ].held && !pane_av[ pc_ ].ended ]
         if [ pane_browsing[ pc_ ]
              || (!app_ && pane_window[ pc_ ] == 0) ]
             cover_ = false
@@ -552,7 +552,7 @@ func orbiter.tick [ w: Window ]
                 show_instance[ avp.iid, pending_show_pane ]
                 if [ pending_code ]
                     pending_code = false
-                    edp_.app_view = false
+                    edp_.win_front[ false ]
                     edp_.pristine = false
     if [ session_dirty ]
         session_dirty = false
@@ -580,7 +580,7 @@ func orbiter.tick [ w: Window ]
         if [ gw ] gw.nowrap = true
     # the selected instance's own console, made once per slot
     epa : Editor pane_at[ active_pane ]
-    rva : AppView (epa) ? epa.run_view : null
+    rva : AppView pane_av[ active_pane ]
     isd : string inst_sid[ rva ]
     if [ isd ]
         if [ !ed_sessions ]
@@ -598,11 +598,12 @@ func orbiter.tick [ w: Window ]
             is_.cursor_visible = false
     for [ pi2: i32 0, pi2 < editor_slots.count, pi2 += 1 ]
         edp : Editor pane_at[ pi2 ]
-        if [ !edp || !edp.run_view ] continue
-        if [ !edp.run_view.cmd ] continue
-        if [ edp.run_view.dispatched ] continue
-        edp.run_view.dispatched = true
-        esid : string edp.run_view.console_id[]
+        if [ !pane_av[ pi2 ] ] continue
+        if [ !pane_av[ pi2 ].cmd ] continue
+        if [ pane_av[ pi2 ].dispatched ] continue
+        edv : AppView pane_av[ pi2 ]
+        edv.dispatched = true
+        esid : string pane_av[ pi2 ].console_id[]
         if [ !ed_sessions ]
             ed_sessions = map ConsoleSession [string] [ ]
         es : ConsoleSession ed_sessions[esid]
@@ -611,8 +612,8 @@ func orbiter.tick [ w: Window ]
             es.name = esid
             es.nowrap = true
             ed_sessions[esid] = es
-        cc : string console_cmd[ edp.run_view.app_mod ]
-        if [ cc.count == 0 ] cc = edp.run_view.cmd
+        cc : string console_cmd[ pane_av[ pi2 ].app_mod ]
+        if [ cc.count == 0 ] cc = pane_av[ pi2 ].cmd
         log 'run: dispatch {esid}: {cc}'
         es.launch_cmd = ''
         es.restart[]
@@ -731,7 +732,7 @@ func orbiter.tick [ w: Window ]
     # a stopped program's code, its pane's editor now mounted
     lk : Editor (link_av) ? pane_at[ link_pane ] : null
     if [ lk ]
-        lk.run_view = link_av
+        lk.win_set[ link_av ]
         link_av = null
         if [ ux ] ux.restyle = true
     for [ bi: i32 0, bi < editor_slots.count, bi += 1 ]
@@ -960,13 +961,6 @@ func orbiter.phase_share [ ph: string, pct: f32 ] -> f32
     return a + (b - a) * f
 
 func orbiter.render [] -> Elements
-    # windows renumbered: their apps back before the bar is made
-    relay_apply[]
-    # what each window shows, every frame: an editor made anew (a
-    # layout change, a tab, a restore) takes it, however it came to be
-    relay_size[]
-    for [ ri_: i32 0, ri_ < editor_slots.count, ri_ += 1 ]
-        relay_keep_one[ ri_ ]
     # --install shows only the wizard, over the scene
     if [ ux && install ]
         return Elements [ 'scene': scene_element[],

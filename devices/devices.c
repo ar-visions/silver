@@ -2687,9 +2687,24 @@ void platform_window_presented(platform_window* w, int pw, int ph) {
     w->sync_owed = false;
 }
 
+static int refresh_hz_query(void);
+
 // the fastest active output's refresh rate (dot clock / total pixels)
+// a server round trip: asked again every two seconds, not per frame
 int  platform_window_refresh_hz(platform_window* w) {
     if (g_kms) return g_drm_mode.vrefresh > 0 ? (int)g_drm_mode.vrefresh : 60;
+    static int    hz_seen = 0;
+    static double hz_at   = 0;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double now = ts.tv_sec + ts.tv_nsec * 1e-9;
+    if (hz_seen > 0 && now - hz_at < 2.0) return hz_seen;
+    hz_seen = refresh_hz_query();
+    hz_at   = now;
+    return hz_seen;
+}
+
+static int refresh_hz_query(void) {
     xcb_randr_get_screen_resources_current_reply_t* res =
         xcb_randr_get_screen_resources_current_reply(g_conn,
             xcb_randr_get_screen_resources_current(g_conn, g_screen->root), NULL);
@@ -3046,9 +3061,16 @@ static float   g_js_axes[16][16];
 static uint8_t g_js_hats[16][1];
 static int     g_js_nb[16], g_js_na[16];
 
+static double  g_js_try[16];
+
 static bool js_open(int j) {
     if (j < 0 || j >= 16) return false;
     if (g_js_open[j]) return true;
+    // a missing pad: looked for again once a second, not each call
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    double now = ts.tv_sec + ts.tv_nsec * 1e-9;
+    if (g_js_try[j] > 0 && now - g_js_try[j] < 1.0) return false;
+    g_js_try[j] = now;
     char p[32]; snprintf(p, sizeof p, "/dev/input/js%d", j);
     int fd = open(p, O_RDONLY | O_NONBLOCK);
     if (fd < 0) return false;
@@ -3690,16 +3712,28 @@ HOST_API int host_audio_scope(int slot, float* out, int n) {
     return n;
 }
 
+// the default mixer, opened once (through pulse or pipewire an open
+// is a server round trip); each use reads what changed since
+static snd_mixer_t* g_mixer;
+
+static snd_mixer_t* mixer_open(void) {
+    if (g_mixer) { snd_mixer_handle_events(g_mixer); return g_mixer; }
+    snd_mixer_t* mx = 0;
+    if (snd_mixer_open(&mx, 0) < 0) return 0;
+    if (snd_mixer_attach(mx, "default") < 0 ||
+        snd_mixer_selem_register(mx, 0, 0) < 0 ||
+        snd_mixer_load(mx) < 0) {
+        snd_mixer_close(mx); return 0;
+    }
+    g_mixer = mx;
+    return mx;
+}
+
 // the machine's own volume: the default card's Master (else PCM)
 // mixer control; through pulse or pipewire this is the output's level
 static snd_mixer_elem_t* master_elem(snd_mixer_t** mx) {
-    *mx = 0;
-    if (snd_mixer_open(mx, 0) < 0) return 0;
-    if (snd_mixer_attach(*mx, "default") < 0 ||
-        snd_mixer_selem_register(*mx, 0, 0) < 0 ||
-        snd_mixer_load(*mx) < 0) {
-        snd_mixer_close(*mx); *mx = 0; return 0;
-    }
+    *mx = mixer_open();
+    if (!*mx) return 0;
     const char* names[2] = { "Master", "PCM" };
     for (int i = 0; i < 2; i++) {
         snd_mixer_selem_id_t* id;
@@ -3709,7 +3743,6 @@ static snd_mixer_elem_t* master_elem(snd_mixer_t** mx) {
         snd_mixer_elem_t* e = snd_mixer_find_selem(*mx, id);
         if (e && snd_mixer_selem_has_playback_volume(e)) return e;
     }
-    snd_mixer_close(*mx); *mx = 0;
     return 0;
 }
 
@@ -3724,7 +3757,6 @@ HOST_API int host_master_get(float* vol, int* muted) {
         snd_mixer_selem_get_playback_switch(e, SND_MIXER_SCHN_FRONT_LEFT, &sw);
     *vol   = (hi > lo) ? (float)(v - lo) / (float)(hi - lo) : 0.0f;
     *muted = !sw;
-    snd_mixer_close(mx);
     return 1;
 }
 
@@ -3738,18 +3770,12 @@ HOST_API int host_master_set(float vol, int muted) {
     snd_mixer_selem_set_playback_volume_all(e, lo + (long)(vol * (hi - lo) + 0.5f));
     if (snd_mixer_selem_has_playback_switch(e))
         snd_mixer_selem_set_playback_switch_all(e, !muted);
-    snd_mixer_close(mx);
     return 1;
 }
 // the microphone's level 0..1 and its mute, as the master's
 static snd_mixer_elem_t* capture_elem(snd_mixer_t** mx) {
-    *mx = 0;
-    if (snd_mixer_open(mx, 0) < 0) return 0;
-    if (snd_mixer_attach(*mx, "default") < 0 ||
-        snd_mixer_selem_register(*mx, 0, 0) < 0 ||
-        snd_mixer_load(*mx) < 0) {
-        snd_mixer_close(*mx); *mx = 0; return 0;
-    }
+    *mx = mixer_open();
+    if (!*mx) return 0;
     const char* names[2] = { "Capture", "Mic" };
     for (int i = 0; i < 2; i++) {
         snd_mixer_selem_id_t* id;
@@ -3759,7 +3785,6 @@ static snd_mixer_elem_t* capture_elem(snd_mixer_t** mx) {
         snd_mixer_elem_t* e = snd_mixer_find_selem(*mx, id);
         if (e && snd_mixer_selem_has_capture_volume(e)) return e;
     }
-    snd_mixer_close(*mx); *mx = 0;
     return 0;
 }
 
@@ -3773,7 +3798,6 @@ HOST_API int host_capture_get(float* vol, int* muted) {
         snd_mixer_selem_get_capture_switch(e, SND_MIXER_SCHN_FRONT_LEFT, &sw);
     *vol   = (hi > lo) ? (float)(v - lo) / (float)(hi - lo) : 0.0f;
     *muted = !sw;
-    snd_mixer_close(mx);
     return 1;
 }
 
@@ -3787,7 +3811,6 @@ HOST_API int host_capture_set(float vol, int muted) {
     snd_mixer_selem_set_capture_volume_all(e, lo + (long)(vol * (hi - lo) + 0.5f));
     if (snd_mixer_selem_has_capture_switch(e))
         snd_mixer_selem_set_capture_switch_all(e, !muted);
-    snd_mixer_close(mx);
     return 1;
 }
 

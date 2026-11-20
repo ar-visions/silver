@@ -1024,7 +1024,7 @@ func orbiter.menu_page_els [] -> Elements
     t['head'] = PanelRows [ elements: mb.out,
         area: Region { l0 t0.3 r0 h1.35 } ]
     ed : Editor pane_at[ active_pane ]
-    av : AppView (ed) ? ed.run_view : null
+    av : AppView pane_av[ active_pane ]
     if [ !av ] return t
     lv : bool [ av.props && av.props.count > 0 ]
     am : string av.app_mod
@@ -1509,7 +1509,7 @@ func orbiter.bar_build [] -> string
     bar_build_f = build_frac[ 'orbiter' ]
     if [ bar_build_f > -2.0 ] return 'orbiter'
     ba : Editor pane_at[ active_pane ]
-    bv : AppView (ba) ? ba.run_view : null
+    bv : AppView pane_av[ active_pane ]
     if [ !bv || bv.status_word[] != 'compiling' || !bv.app_mod ]
         return ''
     bar_build_f = build_frac[ bv.app_mod ]
@@ -1631,7 +1631,7 @@ func orbiter.bar_type_start []
     f : element find_el[ a, 'bar_url' ]
     if [ !f || bar_typing ] return
     ed_ : Editor pane_at[ active_pane ]
-    rv_ : AppView (ed_) ? ed_.run_view : null
+    rv_ : AppView pane_av[ active_pane ]
     bar_text = (rv_ && rv_.app_address) ? rv_.app_address
         : ((rv_ && rv_.arg_text) ? rv_.arg_text
         : ((rv_) ? default_arg_of[ rv_.module_args ] : ''))
@@ -1647,7 +1647,7 @@ func orbiter.bar_type_start []
 func orbiter.bar_title_el [ t: Elements, tt: string, x: f32, xr: f32 ]
     if [ xr <= x ] return
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ active_pane ]
     dm : string domain_of[ (rv) ? rv.app_address : null ]
     t['bar_url'] = BarTitle [ label: '', read_only: !bar_typing,
         typing: bar_typing, site: tt, domain: dm,
@@ -1683,7 +1683,7 @@ func orbiter.bar_app_on [] -> bool
 # the active pane runs an app whose live argument is typed (a URL)
 func orbiter.bar_url_on [] -> bool
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ active_pane ]) ? pane_av[ active_pane ] : null
     if [ !rv || rv.ended || window_of[ rv ] != 0 ] return false
     return url_app[ rv ]
 
@@ -1702,7 +1702,7 @@ func orbiter.bar_title_of [ pi: i32 ] -> string
         hm : string home_model_of[ hn ]
         return (hm.count > 0) ? '{ht}  {hm}' : ht
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ pi ]
     if [ rv && !rv.ended && window_of[ rv ] == 0 ]
         # the app's own title (a site's name); its address once
         # pressed
@@ -1722,7 +1722,7 @@ func orbiter.bar_title_of [ pi: i32 ] -> string
 # here; a file opens the navigator; a pane with no app, too
 func orbiter.bar_title_press []
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ active_pane ]) ? pane_av[ active_pane ] : null
     if [ rv && window_of[ rv ] != 0 ] rv = null
     if [ rv && !rv.ended ]
         if [ url_app[ rv ] ]
@@ -1754,7 +1754,7 @@ func orbiter.bar_typing_end []
 func orbiter.bar_title_apply []
     bar_typing_end[]
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ active_pane ]
     dp : Prop (rv) ? live_arg_of[ rv ] : null
     if [ rv && dp && !rv.ended && bar_text.count > 0 ]
         rv.arg_text = bar_text
@@ -1768,7 +1768,7 @@ func orbiter.bar_title_apply []
 func orbiter.title_finds [] -> bool
     if [ !title_find_on || nav_req || !system_on[] ] return false
     ed : Editor pane_at[ active_pane ]
-    if [ !ed || !ed.src || ed.app_view ] return false
+    if [ !ed || !ed.src || pane_live[ active_pane ] ] return false
     win : ux
     return win && win.focus && win.focus.id == 'title'
 
@@ -1777,7 +1777,7 @@ func orbiter.title_finds [] -> bool
 func orbiter.title_finding [] -> bool
     if [ !title_find_on || nav_req || !system_on[] ] return false
     ed : Editor pane_at[ active_pane ]
-    return ed && ed.src && !ed.app_view
+    return ed && ed.src && !pane_live[ active_pane ]
 
 # ctrl+f: the title starts finding in the file, or stops
 func orbiter.title_find_toggle []
@@ -1994,8 +1994,8 @@ func orbiter.drawer_y [ top: f32 ] -> f32
 func orbiter.pad_view [] -> AppView
     if [ !use_mobile || !ux || ux.app_keys_hidden ] return null
     ed : Editor pane_at[ active_pane ]
-    if [ !ed || !ed.app_view || !ed.run_view ] return null
-    av : ed.run_view
+    if [ !pane_live[ active_pane ] || !pane_av[ active_pane ] ] return null
+    av : pane_av[ active_pane ]
     if [ av.ended || !av.app_keys || av.app_keys.count == 0 ]
         return null
     return av
@@ -2156,7 +2156,7 @@ func orbiter.title_nav [ p: path, grp: vec path, has_diff: bool, win: Window,
     # pause while the app runs; stopped, its steps, one group: an
     # app run for debugging only (its launch's debug, or a
     # debugger on it)
-    rvd : AppView (edp && mi) ? edp.run_view : null
+    rvd : AppView (edp && mi) ? pane_av[ pane_ix ] : null
     dg8 : dbg (rvd) ? rvd.debugger : null
     dbo : bool [ rvd && (rvd.debug_build || (dg8 && dg8.active)) ]
     # not over the nav list, the finder or the find bar
@@ -2173,7 +2173,7 @@ func orbiter.title_nav [ p: path, grp: vec path, has_diff: bool, win: Window,
                 'r-1px+ t0 w{bwd * f32[ dbs.count ]}px b0' ] ]
     # a module: play; stop while it runs; shift: another
     if [ mi && wid == 0 && !engaged && !fi_ ]
-        rvt : AppView (edp) ? edp.run_view : null
+        rvt : AppView pane_av[ pane_ix ]
         lvt : bool [ rvt && !rvt.ended && !rvt.held ]
         # stop is a debugging control: a plain run shows none
         if [ !lvt || dbo ]
@@ -2193,7 +2193,7 @@ func orbiter.title_nav [ p: path, grp: vec path, has_diff: bool, win: Window,
     # the pane's one status, left of find: its app compiling (errors
     # go here too)
     iw : string [ null ]
-    rvs : AppView (edp) ? edp.run_view : null
+    rvs : AppView pane_av[ pane_ix ]
     if [ rvs && rvs.started && !rvs.ended
          && rvs.status_word[] == 'compiling' ]
         iw = 'compiling {instance_name[ rvs ]}'
@@ -2311,10 +2311,10 @@ func orbiter.alt_tab [ pane_ix: i32, key: string, id: string, icon: string,
 # named for it, of ours; read again when the app or its view moves
 func orbiter.own_menu_sync [] -> bool
     ed : Editor pane_at[ active_pane ]
-    av : AppView (ed) ? ed.run_view : null
+    av : AppView pane_av[ active_pane ]
     pc : string [ (active_pane < pane_console.count)
                   ? pane_console[ active_pane ] : '' ]
-    key : string [ (av) ? '{av.iid}:{ed.app_view}:{pc}'
+    key : string [ (av) ? '{av.iid}:{pane_live[ active_pane ]}:{pc}'
                    : ((pc.count > 0) ? pc : '') ]
     if [ menu_win == 0 && menu_own && menu_own == key ] return false
     had : bool [ menu_items && menu_items.count > 0 ]
@@ -2325,7 +2325,7 @@ func orbiter.own_menu_sync [] -> bool
     if [ pc.starts_with[ 'home:' ] ]
         menu_items = agent_menu[ pc.mid[ 5, pc.count - 5 ] ]
     el [ av ]
-        menu_items = own_menu[ av, ed.app_view ]
+        menu_items = own_menu[ av, pane_live[ active_pane ] ]
     return had || menu_items.count > 0
 
 func orbiter.own_menu [ av: AppView, shown: bool ] -> vec TrayEntry
@@ -2448,7 +2448,8 @@ func orbiter.own_pick [ e: TrayEntry ]
                  || '{ed.src.absolute[]}' != '{own.absolute[]}') ]
                 open_in_pane[ own, active_pane ]
             pending_code = pending_show > 0
-            ed.app_view = false
+            # its code asked for: the app is in edit mode from now
+            ed.win_code[]
             ed.pristine = false
         force_update[]
         return
@@ -2479,7 +2480,7 @@ func orbiter.own_pick [ e: TrayEntry ]
     if [ e.action == 'orb.run' ]
         if [ ed ] pending_run = ed.pane_index
         return
-    av : AppView (ed) ? ed.run_view : null
+    av : AppView pane_av[ active_pane ]
     if [ !av ] return
     # the app ends, as the switcher's flick ends it
     # its ready reload applied: the app's own ctrl + shift + R
@@ -2506,14 +2507,16 @@ func orbiter.own_pick [ e: TrayEntry ]
     # one of the app's own views; the lit one again: its source
     if [ e.action.starts_with[ 'orb.aview:' ] ]
         vi : i32 [ e.action.mid[ 10, e.action.count - 10 ] ]
-        lit : bool [ ed.app_view && av.app_view_on == vi ]
-        if [ !ed.app_view ] embed_app[ ed, av ]
+        lit : bool [ pane_live[ active_pane ] && av.app_view_on == vi ]
+        if [ !pane_live[ active_pane ] ] embed_app[ ed, av ]
         if [ av.slot >= 0 && !av.ended ]
             host_post2[ av.slot, 1, i32[ HM.view ],
                         (lit) ? -1 : vi, 0, 0 ]
         return
     if [ e.action == 'orb.view' ]
-        if [ ed.app_view ] ed.app_view = false
+        if [ pane_live[ active_pane ] ]
+            # its code asked for: edit mode from now
+            ed.win_code[]
         el embed_app[ ed, av ]
     el [ e.action == 'orb.shot' ]
         copy_shot[ av ]
@@ -2560,8 +2563,8 @@ func orbiter.globe_press []
 
 # the module a pane's launch page describes
 func orbiter.band_mod_of [ ed: Editor ] -> string
-    if [ ed.run_view && ed.run_view.app_mod ]
-        return ed.run_view.app_mod
+    if [ ed.win_av[] && ed.win_av[].app_mod ]
+        return ed.win_av[].app_mod
     return (ed.src) ? ed.src.stem[] : 'app'
 
 # the fields own their text (editable layers): read it back before a
@@ -2780,13 +2783,13 @@ func orbiter.menus_of [ pi: i32 ] -> vec TrayEntry
     if [ pi == active_pane ] return menu_items
     wn : u64 pane_window[ pi ]
     ed : Editor pane_at[ pi ]
-    av : AppView (ed) ? ed.run_view : null
+    av : AppView pane_av[ pi ]
     # an agent's terminal: the agent's menu, as when selected
     pc : string [ (pi >= 0 && pi < pane_console.count)
                   ? pane_console[ pi ] : '' ]
     ag : bool pc.starts_with[ 'home:' ]
     key : string [ (wn != 0) ? 'w{wn}' : (ag) ? pc
-        : ((av) ? 'a{av.iid}:{ed.app_view}' : '') ]
+        : ((av) ? 'a{av.iid}:{pane_live[ pi ]}' : '') ]
     if [ key.count == 0 ] return null
     if [ !pane_menus ] pane_menus = map PaneMenu [string] [ ]
     now : i64 [ epoch_millis[] ]
@@ -2794,7 +2797,7 @@ func orbiter.menus_of [ pi: i32 ] -> vec TrayEntry
     if [ pm && now - pm.ms < 2000 ] return pm.items
     items : vec TrayEntry [ (wn != 0) ? menu_read[ wn ]
         : (ag) ? agent_menu[ pc.mid[ 5, pc.count - 5 ] ]
-        : own_menu[ av, ed.app_view ] ]
+        : own_menu[ av, pane_live[ pi ] ] ]
     pane_menus[ key ] = PaneMenu [ key: key, items: items,
                                    ms: now ]
     return items

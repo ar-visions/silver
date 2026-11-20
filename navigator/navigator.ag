@@ -416,6 +416,8 @@ class Navigator
     public search_external : bool [ true ]
     # finds search docked checkouts only while this is lit
     public search_remotes  : bool
+    # the index as built has the checkouts: [remotes] was lit
+    public index_remotes   : bool
     public index_dirty     : bool
     public index_research  : bool
     public index_task      : async
@@ -517,6 +519,7 @@ class Navigator
         if [ dirs.count == 0 ] return
         index_cancel   = false
         index_building = true
+        index_remotes  = search_remotes
         work : vec Au []
         work.push[ dirs ]
         index_task     = async [ target: a,
@@ -2008,7 +2011,8 @@ class Navigator
             # the checkouts beside the sources (the imports' clones):
             # git ignores them, so they are listed here, after
             # everything of ours; a search reaches them only with
-            # [remotes] lit
+            # [remotes] lit, so only then are they read (1.3 M files)
+            if [ !o.index_remotes ] continue
             ck : path '{r}/checkout'
             ckl : ck.ls[ null, false ]
             if [ ckl ]

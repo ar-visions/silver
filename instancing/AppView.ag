@@ -93,6 +93,10 @@ class AppView
     # app's title for when the agent waits for the user
     public  agent      : AgentRun
     mutable props      : string
+    # its live argument, read from props once a props answer (the
+    # props it was read from; null none read)
+    mutable live_of    : string
+    mutable live_arg   : Prop
     # the app's shared surface pair, imported
     mutable tex0       : Texture
     mutable tex1       : Texture
@@ -815,6 +819,8 @@ class AppView
         return rt.split[ '\n' ]
 
     func draw_frame [ cv: Canvas, bounds: rect ]
+        # its next picture wakes the host's next frame
+        host_watch[ slot ]
         ft : front[]
         # the new size not drawn yet: the old picture at its own size
         if [ !ft && was_tex && have_frame ]

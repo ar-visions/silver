@@ -1388,11 +1388,35 @@ WizField WizSecret
             secret: true
     }
 
+# an unattended install's choices, as an .agi (--answers): every
+# page's answer, so a device with no screen installs itself
+class InstallAnswers
+    # the disk by its name (vda, sda, nvme0n1)
+    public disk     : string [ '' ]
+    # whole (erases it), beside (a folder in a partition) or free
+    # (a new partition in its largest free space)
+    public layout   : string [ 'whole' ]
+    # beside: the partition by its name (vda2)
+    public part     : string [ '' ]
+    public user     : string [ '' ]
+    # a password, or its sha-512 crypt (the hash wins)
+    public password : string [ '' ]
+    public hash     : string [ '' ]
+    public host     : string [ '' ]
+    public zone     : string [ '' ]
+    public keys     : string [ '' ]
+    # this machine's ssh keys and git settings into the user's home
+    public ssh_keys : bool
+
 # orbiter-os setup: the install's settings, then the install
 element InstallWizard
     area : Region { l0 t0 r0 b0 }
     # every step listed and logged; nothing written
     public dry_run : bool
+    # an unattended install's choices (InstallAnswers): no pages
+    public answers : string [ '' ]
+    # the password's hash as given by the answers
+    mutable given_hash : string [ '' ]
     # the tree that is copied: the running system
     public source  : string [ '/' ]
     mutable page    : i32
@@ -1740,6 +1764,7 @@ element InstallWizard
 
     # the shell's crypt with a sha-512 salt from the kernel
     func pass_hash [] -> string
+        if [ given_hash && given_hash.count > 0 ] return given_hash
         low : 'abcdefghijklmnopqrstuvwxyz'
         abc : '{low}{low.ucase[]}0123456789./'
         rnd : read_at[ '/dev/urandom', 0, 16 ]
@@ -2503,6 +2528,74 @@ element InstallWizard
         finished = true
         running  = false
         Au.auto_free[]
+
+    # the answers' install: each page's choice from the file, its
+    # checks, the plan, then the steps here; true when it finished
+    public func unattended [] -> bool
+        # constructed, never mounted: its init has not run
+        if [ !disks ] init[]
+        ap : path [ answers ]
+        tx : string ap.load[ typeid[ string ], null ]
+        if [ !tx ]
+            say[ 'No answers at {answers}.' ]
+            return false
+        an : InstallAnswers []
+        Au.parse_agi[ null, tx.chars, an ]
+        disk_at = -1
+        for [ i: i32 0, i < disks.count, i += 1 ]
+            if [ disks[ i ].name == an.disk ] disk_at = i
+        dk : disk[]
+        if [ !dk ]
+            say[ 'No disk named {an.disk}.' ]
+            return false
+        beside = an.layout == 'beside'
+        fresh  = an.layout == 'free'
+        part_at = -1
+        if [ beside ]
+            for [ i: i32 0, i < dk.parts.count, i += 1 ]
+                if [ dk.parts[ i ].name == an.part ] part_at = i
+        # free: its largest free space
+        if [ fresh ]
+            gs : vec Gap disk_gaps[ dk ]
+            dk.shrink_at = -1
+            dk.gap_at = -1
+            big : i64 [ 0 ]
+            for [ i: i32 0, i < gs.count, i += 1 ]
+                if [ gs[ i ].bytes > big ]
+                    big = gs[ i ].bytes
+                    dk.gap_at = i
+        if [ an.user.count > 0 ] user = an.user
+        if [ an.host.count > 0 ] host = an.host
+        if [ an.zone.count > 0 ] zone = an.zone
+        if [ an.keys.count > 0 ] keys = an.keys
+        given_hash = an.hash
+        # the hash alone is a password given
+        pw : string [ (an.password.count > 0) ? an.password : an.hash ]
+        pass  = pw
+        again = pw
+        keys_copy  = an.ssh_keys
+        # the pages' own checks, the hardware's but for graphics (a
+        # device with no screen needs none)
+        for [ pg: i32 2, pg <= 4, pg += 1 ]
+            page = pg
+            wy : string why[]
+            if [ wy.count > 0 ]
+                say[ wy ]
+                return false
+        page = 5
+        make_plan[]
+        for [ n: string ] in notes
+            say[ n ]
+        if [ problems.count > 0 ]
+            for [ pr: string ] in problems
+                say[ pr ]
+            return false
+        for [ st: Step ] in plan
+            say[ 'step: {st.title}' ]
+        if [ dry_run ] return true
+        running = true
+        work[]
+        return !failed
 
     func start []
         if [ running || finished || dry_run ] return

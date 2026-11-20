@@ -235,11 +235,11 @@ func orbiter.on_overlay [ cv: Canvas ]
                 fs_.args = lp_.compose[]
                 # the instance keeps its own args; the file's config
                 # follows the last edit
-                if [ !inf_ && args_editor.run_view ]
-                    args_editor.run_view.module_args = fs_.args
-                if [ !inf_ && args_editor.run_view
-                     && !args_editor.run_view.ended ]
-                    push_live[ lp_, args_editor.run_view.sock_name[],
+                aav : AppView args_editor.win_av[]
+                if [ !inf_ && aav ] aav.module_args = fs_.args
+                if [ !inf_ && args_editor.win_av[]
+                     && !args_editor.win_av[].ended ]
+                    push_live[ lp_, args_editor.win_av[].sock_name[],
                                    args_field ]
                 if [ ux ] ux.restyle = true
             el fs_.args = (args_field.edit) ? args_field.edit : ''
@@ -247,8 +247,8 @@ func orbiter.on_overlay [ cv: Canvas ]
             save_session[]
     for [ i: i32 0, i < editor_slots.count, i += 1 ]
         ed : Editor pane_at[ i ]
-        if [ !ed || !ed.run_view || !ed.app_view ] continue
-        av : AppView ed.run_view
+        if [ !pane_av[ i ] || !pane_live[ i ] ] continue
+        av : AppView pane_av[ i ]
         if [ !av.have_frame || av.fade_us == 0 ] continue
         fal : f32 [ f32[ epoch_micros[] - av.fade_us ] / 400000.0 ]
         if [ fal >= 1.0 ] continue
@@ -398,7 +398,8 @@ func orbiter.on_press [ ev: Event ]
     if [ ev.target.id == 'title' ]
         edt : Editor pane_of[ ev.target ]
         # the editor's bar is for finding alone: a press starts it
-        if [ system_on[] && edt && edt.src && !edt.app_view
+        tpi : i32 pane_place[ ev.target ]
+        if [ system_on[] && edt && edt.src && !pane_live[ tpi ]
              && !nav_req && !title_find_on ]
             active_pane = edt.pane_index
             title_find_toggle[]
@@ -408,11 +409,11 @@ func orbiter.on_press [ ev: Event ]
         # a pane showing a running app: the finder on the folder
         # of the app's resource, the pick goes to the app (its
         # orbiter bar's dialog, hosted)
-        hv : AppView (edt && edt.app_view) ? edt.run_view : null
+        hv : AppView (pane_live[ tpi ]) ? pane_av[ tpi ] : null
         # a program's window: the navigator, never its console's
         # argument pick
         if [ hv && window_of[ hv ] != 0 ] hv = null
-        if [ hv && !hv.ended && edt.pane_index == active_pane ]
+        if [ hv && !hv.ended && tpi == active_pane ]
             hm : string band_mod_of[ edt ]
             cur : string (hv.arg_text) ? hv.arg_text
                 : default_arg_of[ hv.module_args ]
@@ -421,7 +422,6 @@ func orbiter.on_press [ ev: Event ]
             ev.no_propagation = true
             return
         # a window's pane has no editor: its view has the number
-        tpi : i32 pane_index_of[ ev.target ]
         if [ tpi >= 0 && tpi < editor_slots.count
              && tpi != active_pane ]
             active_pane   = tpi
@@ -432,13 +432,13 @@ func orbiter.on_press [ ev: Event ]
     # the lit one again, the app's source
     if [ ev.target.id.starts_with[ 'view_' ]
          && ev.target inherits ArgButton ]
-        pv : Editor pane_of[ ev.target ]
-        av : AppView (pv) ? pv.run_view : null
-        if [ pv && av && !av.ended && av.slot >= 0 ]
+        vpi : i32 pane_place[ ev.target ]
+        av : AppView pane_av[ vpi ]
+        if [ av && !av.ended && av.slot >= 0 ]
             vi : i32 [ ev.target.id.mid[ 5,
                 ev.target.id.count - 5 ] ]
-            lit : bool [ pv.app_view && av.app_view_on == vi ]
-            if [ !pv.app_view ] embed_app[ pv, av ]
+            lit : bool [ pane_live[ vpi ] && av.app_view_on == vi ]
+            if [ !pane_live[ vpi ] ] embed_at[ vpi, av ]
             host_post2[ av.slot, 1, i32[ HM.view ], (lit) ? -1 : vi,
                         0, 0 ]
         ev.no_default     = true
@@ -491,15 +491,13 @@ func orbiter.on_press [ ev: Event ]
         # a press selects it: the pane shows the app; selected, it
         # goes back to the source while the app runs on
         if [ !ev.key.shift ]
-            pe : Editor pane_of[ ev.target ]
-            rv : AppView (pe) ? pe.run_view : null
-            if [ pe && rv && !pe.app_view ]
-                embed_app[ pe, rv ]
-            el [ pe && rv ]
-                pe.app_view  = false
-                # the source shows again: the wheel scrolls it
-                pe.no_scroll = false
-                pe.load_file[]
+            ppi : i32 pane_place[ ev.target ]
+            rv : AppView pane_av[ ppi ]
+            if [ rv && !pane_live[ ppi ] ]
+                embed_at[ ppi, rv ]
+            el [ rv ]
+                # its code in front: edit mode from now
+                pane_show_code[ ppi ]
                 session_dirty = true
             if [ ux ] ux.restyle = true
             ev.no_default     = true
@@ -605,7 +603,7 @@ func orbiter.on_press [ ev: Event ]
         # the status bar is in no pane: the active one
         eds : Editor pane_of[ ev.target ]
         if [ !eds ] eds = pane_at[ active_pane ]
-        rvp : AppView (eds) ? eds.run_view : null
+        rvp : AppView (eds) ? eds.win_av[] : null
         msp : path (eds) ? module_src_of[ eds ] : null
         ds : dbg stopped_debugger[]
         # a title's steps: its pane's instance's debugger
@@ -621,8 +619,8 @@ func orbiter.on_press [ ev: Event ]
             el [ ev.target.id == 'step_next' ] ds.step_over[]
             el [ ev.target.id == 'step_in' ]   ds.step_into[]
             el                                  ds.step_out[]
-        el [ eds && eds.run_view ]
-            instance_action[ eds, eds.run_view, ev.target.id ]
+        el [ eds && eds.win_av[] ]
+            instance_action[ eds, eds.win_av[], ev.target.id ]
         if [ ev.target ] ev.target.ux.restyle = true
         ev.no_default = true
         return
@@ -637,7 +635,7 @@ func orbiter.on_press [ ev: Event ]
         edr : Editor pane_of[ ev.target ]
         if [ !edr ] edr = pane_at[ active_pane ]
         msr : path (edr) ? module_src_of[ edr ] : null
-        rvr : AppView (edr) ? edr.run_view : null
+        rvr : AppView (edr) ? edr.win_av[] : null
         if [ msr && (ev.key.shift || ev.key.ctrl || ev.key.meta) ]
             show_app[ edr, msr, true ]
         el [ rvr && !rvr.ended && !rvr.held ]
@@ -669,8 +667,8 @@ func orbiter.on_press [ ev: Event ]
             # its pip
             edh2 : Editor pane_at[ pih ]
             if [ edh2 && home_av ]
-                edh2.run_view = home_av
-                edh2.app_view = false
+                edh2.win_set[ home_av ]
+                edh2.win_front[ false ]
             if [ ux ] ux.restyle = true
         ev.no_default = true
         return
@@ -705,10 +703,9 @@ func orbiter.on_press [ ev: Event ]
         fq : i32 [ (fp.count == 2)
             ? i32[ fp[ 1 ].integer_value[] ] : active_pane ]
         if [ fp[ 0 ] == 'pfoot_con' ] con_flip[ fq ]
-        pe : Editor (fp[ 0 ] == 'pfoot_pip') ? pane_at[ fq ] : null
-        if [ pe && pe.run_view ]
-            pv : AppView pe.run_view
-            set_display[ pe, pv, (pv.display == 0) ? 1 : 0 ]
+        pv : AppView (fp[ 0 ] == 'pfoot_pip') ? pane_av[ fq ] : null
+        if [ pv ]
+            set_display[ fq, pv, (pv.display == 0) ? 1 : 0 ]
             if [ ux ] ux.restyle = true
             ev.no_default = true
             return
@@ -718,9 +715,10 @@ func orbiter.on_press [ ev: Event ]
         rl : string (sd) ? run_of[ sd.src ] : ''
         if [ rl.count > 0 ]
             run_line[ rl, fq ]
-            if [ sd && sd.run_view ]
-                sd.run_view.prog_debug = !run_release
-                sd.run_view.origin = sd.src
+            sdv : AppView (sd) ? sd.win_av[] : null
+            if [ sdv ]
+                sdv.prog_debug = !run_release
+                sdv.origin = sd.src
         # shift held: a clean rebuild first (its card shows it all)
         el [ sd ]
             inst_debug_next = !run_release
@@ -740,7 +738,7 @@ func orbiter.on_press [ ev: Event ]
             ed : Editor null
             for [ q: i32 0, q < editor_slots.count, q += 1 ]
                 eq : Editor pane_at[ q ]
-                if [ eq && eq.run_view == av ] ed = eq
+                if [ pane_av[ q ] == av ] ed = eq
             if [ !ed ] ed = pane_at[ active_pane ]
             lq : i32 pane_showing[ av ]
             if [ ps[ 2 ] == 'console' ]
@@ -882,7 +880,7 @@ func orbiter.on_press [ ev: Event ]
     # the page's module, on its address, in a pane of its own
     if [ ev.target.id == 'bar_page' ]
         ed8 : Editor pane_at[ active_pane ]
-        rv8 : AppView (ed8) ? ed8.run_view : null
+        rv8 : AppView (ed8) ? ed8.win_av[] : null
         pm8 : string (ed8 && rv8) ? ed8.page_module[ rv8.app_address ]
             : ''
         if [ pm8.count > 0 ]
@@ -939,7 +937,7 @@ func orbiter.on_press [ ev: Event ]
         op : i32 [ ev.target.id.mid[ oi + 9,
             ev.target.id.count - oi - 9 ].integer_value[] ]
         oe : Editor pane_at[ op ]
-        oav : AppView (oe) ? oe.run_view : null
+        oav : AppView pane_av[ op ]
         if [ oav && oav.slot >= 0 ]
             host_post2[ oav.slot, 1, i32[ HM.panel ], 1, 0, 0 ]
         ev.no_default = true
@@ -949,7 +947,7 @@ func orbiter.on_press [ ev: Event ]
         pp : i32 [ ev.target.id.mid[ 7,
             ev.target.id.count - 7 ].integer_value[] ]
         pe : Editor pane_at[ pp ]
-        pav : AppView (pe) ? pe.run_view : null
+        pav : AppView pane_av[ pp ]
         if [ pav && pav.slot >= 0 ]
             host_post2[ pav.slot, 1, i32[ HM.panel ], 0, 0, 0 ]
         ev.no_default = true
@@ -1105,20 +1103,20 @@ func orbiter.on_press [ ev: Event ]
             ev.target.id.count - 5 ].integer_value[] ] ]
         if [ pq >= 0 && pq < editor_slots.count ]
             ep : Editor pane_at[ pq ]
-            over : bool [ ep && ep.run_view && !ep.run_view.ended
-                          && ep.app_view ]
+            over : bool [ pane_av[ pq ] && !pane_av[ pq ].ended
+                          && pane_live[ pq ] ]
             # its app's pick over it: the pick aside, not the pane
-            pk : bool [ ep && ep.run_view && pane_browsing[ pq ]
-                        && pick_launch == ep.run_view ]
+            pk : bool [ pane_av[ pq ] && pane_browsing[ pq ]
+                        && pick_launch == pane_av[ pq ] ]
             if [ pane_hidden[ pq ] ] unhide[ pq ]
             el [ pk ]
                 pick_hide[]
-                ep.app_view = false
+                ep.win_front[ false ]
                 ep.pristine = false
                 active_pane = pq
             # the app over the edit steps aside: the edit in view
             el [ over ]
-                ep.app_view = false
+                ep.win_front[ false ]
                 ep.pristine = false
                 active_pane = pq
             el dock_choose[ pq ]
@@ -1218,6 +1216,9 @@ func orbiter.on_press [ ev: Event ]
     if [ ev.target.id == 'remotes' ]
         nav.search_remotes = !nav.search_remotes
         ev.target.selected = nav.search_remotes
+        # lit, the index takes the checkouts in
+        if [ nav.search_remotes && !nav.index_remotes ]
+            nav.start_index[]
         # the scope changed: the standing results no longer answer
         # it
         find_last_scope = ''
@@ -1314,17 +1315,18 @@ func orbiter.on_press [ ev: Event ]
         if [ fsb ]
             fsb.args = lpb.compose[]
             fsb.args.hold[]
-            if [ !infb && edb.run_view ]
-                edb.run_view.module_args = fsb.args
-            if [ !infb && edb.run_view && !edb.run_view.ended ]
-                push_live[ lpb, edb.run_view.sock_name[], ev.target ]
+            bav : AppView edb.win_av[]
+            if [ !infb && bav ] bav.module_args = fsb.args
+            if [ !infb && edb.win_av[] && !edb.win_av[].ended ]
+                push_live[ lpb, edb.win_av[].sock_name[], ev.target ]
             save_session[]
         if [ ev.target ] ev.target.ux.restyle = true
         return
     if [ ev.target.id == 'lp_coverage' ]
         edc : Editor pane_of[ ev.target ]
-        if [ edc && edc.run_view ]
-            edc.run_view.cov_build = !edc.run_view.cov_build
+        cav : AppView (edc) ? edc.win_av[] : null
+        if [ cav ]
+            cav.cov_build = !cav.cov_build
             session_dirty = true
         if [ ev.target ] ev.target.ux.restyle = true
         ev.no_default = true
@@ -1363,9 +1365,9 @@ func orbiter.on_press [ ev: Event ]
             aed : Editor pane_of[ ev.target ]
             anm : string ev.target.id.mid[ 3, ev.target.id.count - 3 ]
             if [
-                aed && aed.run_view && !aed.run_view.ended
-                && !aed.run_view.held ]
-                agent_sock_send[ aed.run_view.sock_name[].chars,
+                aed && aed.win_av[] && !aed.win_av[].ended
+                && !aed.win_av[].held ]
+                agent_sock_send[ aed.win_av[].sock_name[].chars,
                                  'call {anm}\n' ]
             ev.no_default     = true
             ev.no_propagation = true
@@ -1559,7 +1561,7 @@ func orbiter.on_press [ ev: Event ]
             rec_stop[]
         el
             ed_ : Editor pane_at[ active_pane ]
-            av_ : AppView (ed_) ? ed_.run_view : null
+            av_ : AppView pane_av[ active_pane ]
             up_ : bool [ av_ && av_.slot >= 0 && !av_.ended
                          && !av_.held ]
             rec_start[ (rec_pick == 1 && up_) ? av_ : null, null ]
@@ -1895,7 +1897,7 @@ func orbiter.on_key [ ev: Event ]
             # with the system bar: the title finds in the file, on
             # and off
             ef : Editor pane_at[ active_pane ]
-            if [ system_on[] && ef && ef.src && !ef.app_view ]
+            if [ system_on[] && ef && ef.src && !pane_live[ active_pane ] ]
                 title_find_toggle[]
             el
                 open_find[]
@@ -2046,7 +2048,7 @@ func orbiter.on_key [ ev: Event ]
         ka : i32 [ i32 ev.key.unicode ]
         if [ ka == 257 || ka == 256 ]
             ea : Editor pane_of[ ev.target ]
-            ra : AppView (ea) ? ea.run_view : null
+            ra : AppView (ea) ? ea.win_av[] : null
             pa_ : Prop (ra && ra.app_mod) ? live_default[
                 ra.app_mod ] : null
             if [ ka == 257 && pa_ && !ra.ended ]
@@ -2513,9 +2515,10 @@ func orbiter.on_frame [ w: Window ]
         # an app asked for a file: its pane's title pick
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ep : Editor pane_at[ i ]
-            if [ !ep || !ep.run_view || !ep.run_view.pick_ask ]
+            if [ !pane_av[ i ] || !pane_av[ i ].pick_ask ]
                 continue
-            ep.run_view.pick_ask = false
+            epv : AppView pane_av[ i ]
+            epv.pick_ask = false
             app_pick[ ep ]
         # orbiter-os brings the mobile data link up (MMS too)
         if [ system_os ]
@@ -2560,8 +2563,8 @@ func orbiter.on_frame [ w: Window ]
             edo : Editor pane_at[ toggled_out ]
             if [ edo ]
                 toggled_out  = -1
-                edo.run_view = null
-                edo.app_view = false
+                edo.win_set[ null ]
+                edo.win_front[ false ]
                 edo.nav_walk[ -1 ]
                 w.restyle = true
         if [ drawer_focus ]

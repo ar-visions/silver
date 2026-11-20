@@ -91,10 +91,14 @@ import Login
 # the editor|band column, the editor
 # silver's install, wherever orbiter was started: silver-host runs
 # it in <install>/share/<app>; else the start folder's install
+# made once: the install does not move while orbiter runs
+install_at : path
+
 func install_root [] -> path
+    if [ install_at ] return install_at
     i : path path.path_install[]
-    if [ i ] return i
-    return path '{path.path_startup[]}/install'
+    install_at = (i) ? i : path '{path.path_startup[]}/install'
+    return install_at
 
 func scene_exports_stamp [ entries: vec path ] -> i64
     stamp : i64 [ 1469598103934665603 ]
@@ -132,6 +136,9 @@ element orbiter : trinity # implements compiler
     public install     : bool
     # with install: the steps are listed, never run
     public dry_run     : bool
+    # with install: its choices from this file (InstallAnswers), no
+    # pages, no screen; it installs and quits
+    public answers     : string [ '' ]
     # the login first: on orbiter-os, or asked for here
     public login       : bool
     # the accounts: the install's settings (user and password hash)
@@ -172,6 +179,8 @@ element orbiter : trinity # implements compiler
     intern [ StatePersist ] home_saved : vec string
     # the services the user last left on, by module
     intern [ StatePersist ] services_on : vec string
+    # the startup programs turned off (on until then)
+    intern [ StatePersist ] startup_off : vec string
     # the ones running, by module
     intern svc_views : map AppView [ string ]
     mutable home_back  : bool
@@ -421,8 +430,6 @@ element orbiter : trinity # implements compiler
     intern pending_scroll : vec f32
     # across a layout change, per pane: the app it showed (-1 none)
     # and the editor it had; a new editor takes the app back
-    intern pending_app : vec i32
-    intern relay_old   : vec Editor
     intern relay_at    : i64   # when they were kept
     # the status bar's eye: the background and the bar alone
     public hide_ui : bool
@@ -828,6 +835,18 @@ element orbiter : trinity # implements compiler
     # each group's size in its split (px; 0 a share): its members
     # take it in turn, so a tab chosen never sizes the frame again
     persist grp_size : vec f32
+    # each window's app (an instance id, -1 none) and whether its code
+    # is in front (edit mode): the window's, never an editor's
+    # each module's default prop, read once its spec text
+    intern dflt_spec : map string [ string ]
+    intern dflt_prop : map Prop [ string ]
+    # each dock pin's facts off the disk, read again every 2 s
+    intern pin_kind    : map string [ string ]
+    intern pin_kind_ms : i64
+    # 'pane0', 'pane1' ...: made once, not on every lookup
+    intern pane_keys   : vec string
+    persist win_iid  : vec i32
+    persist win_edit : vec bool
     # a window's tab carried off its bar (-1 none)
     mutable tab_drag  : i32 [ -1 ]
     # a group member's tab pressed (shown as it lands): orbiter holds
@@ -1293,6 +1312,7 @@ element orbiter : trinity # implements compiler
     func default_arg_of [ args: string ] -> string
 
     func default_prop [ mod: string ] -> Prop
+    func default_read [ sp_: string ] -> Prop
 
     public func takes_dir [ mod: string ] -> bool
 
@@ -1342,7 +1362,7 @@ element orbiter : trinity # implements compiler
 
     func tell_display [ av: AppView ]
 
-    func set_display [ ed: Editor, av: AppView, d: i32 ]
+    func set_display [ pi: i32, av: AppView, d: i32 ]
 
     func instance_action [ ed: Editor, av: AppView, act: string ]
 
@@ -1559,8 +1579,6 @@ element orbiter : trinity # implements compiler
     func win_app [ pi: i32 ] -> AppView
     func win_app_name [ av: AppView ] -> string
     func state_dump []
-    func relay_one [ i: i32, e: Editor ]
-    func relay_apply []
     func menu_covers [] -> bool
     func in_view [ av: AppView, q: i32 ] -> bool
     func show_own [ iid: i32 ]
@@ -1659,6 +1677,10 @@ element orbiter : trinity # implements compiler
     func service_list [] -> vec AppEntry
 
     func service_is_on [ nm: string ] -> bool
+    func startup_is_off [ nm: string ] -> bool
+    func startup_view [ ae: AppEntry ] -> AppView
+    func service_of [ nm: string ] -> AppEntry
+    func is_startup [ ae: AppEntry ] -> bool
 
     func service_start [ ae: AppEntry ]
 
@@ -1733,6 +1755,7 @@ element orbiter : trinity # implements compiler
     func apply_pane [ ed: Editor, is_search: bool, slot: i32 ]
 
     func pane_view [ i: i32 ] -> element
+    func pane_key [ i: i32 ] -> string
 
     func panes_el [] -> element
 
@@ -2025,8 +2048,17 @@ element orbiter : trinity # implements compiler
 
     public func tab_drop [ pi: i32 ]
     public func tab_hold [ q: i32 ]
-    public func relay_waits [ pi: i32 ] -> bool
-    func hides_app [ av: AppView ] -> bool
+    func win_size []
+    public func embed_at [ pi: i32, av: AppView ]
+    public func pane_place [ e: element ] -> i32
+    public func pane_av [ pi: i32 ] -> AppView
+    public func pane_live [ pi: i32 ] -> bool
+    public func pane_show_app [ pi: i32, av: AppView ]
+    public func pane_show_code [ pi: i32 ]
+    public func pane_drop_app [ pi: i32 ]
+    public func pane_set_av [ pi: i32, av: AppView ]
+    public func pane_front [ pi: i32, on: bool ]
+    func win_drop [ pi: i32 ]
     func relay_keep_one [ i: i32 ]
     func relay_size []
     public func carry_label [] -> string
@@ -2050,8 +2082,6 @@ element orbiter : trinity # implements compiler
 
     func relay_keep []
 
-    func relay_fits [ ed: Editor, av: AppView ] -> bool
-    public func relay_take [ pi: i32 ] -> AppView
 
     func relay_drop [ pi: i32 ]
 
@@ -2098,6 +2128,7 @@ element orbiter : trinity # implements compiler
     func pins_shown [] -> i32
 
     func dock_pin [ ps: string ] -> bool
+    func pin_facts [ ps: string ] -> string
 
     func plain_folder [ p: path ] -> bool
 
@@ -2697,8 +2728,6 @@ element orbiter : trinity # implements compiler
             e_ : Editor pane_at[ i_ ]
             if [ !e_ ] continue
             e_.check_disk[]
-            # a layout change made it anew: its app shown again
-            relay_one[ i_, e_ ]
             if [ pending_sel && i_ < pending_sel.count ]
                 ps_ : vec2i pending_sel[i_]
                 if [ ps_.x >= 0 && e_.lines && e_.lines.count > 1 ]
@@ -2805,6 +2834,7 @@ expect func t_scene_exports_refresh [] -> bool
 
 import Chrome
 import Panes
+import AppPane
 import Agents
 import Desktop
 import Debug

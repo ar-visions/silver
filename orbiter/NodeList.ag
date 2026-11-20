@@ -264,7 +264,7 @@ NodeList Callstack
                 break
         orb.open_at_line[ f.file, pi, f.line ]
         ed : Editor orb.pane_at[ pi ]
-        log 'STACKGO opened pane={pi} src={(ed && ed.src) ? "{ed.src}" : "-"} sel={(ed) ? ed.sel_line : -1} rv={(ed && ed.run_view) ? 1 : 0} av={(ed && ed.app_view) ? 1 : 0}'
+        log 'STACKGO opened pane={pi} src={(ed && ed.src) ? "{ed.src}" : "-"} sel={(ed) ? ed.sel_line : -1} rv={(ed && ed.win_av[]) ? 1 : 0} av={(ed && ed.win_live[]) ? 1 : 0}'
 
     func render [] -> Elements
         return null
@@ -2504,7 +2504,7 @@ Control InstancePanel
         sig : string ''
         if [ li ]
             for [ av_: AppView ] in li
-                sel_ : bool [ ed && ed.run_view == av_ ]
+                sel_ : bool [ ed && ed.win_av[] == av_ ]
                 off_ : bool [ av_.ended || av_.held ]
                 sw_  : string av_.status_word[]
                 s_ : i32 [ (sel_) ? 1 : 0 ]
@@ -2539,8 +2539,8 @@ Control InstancePanel
     # make the pane's shape depend on what is read back out of the pane
     func app [] -> AppView
         ed : Editor editor[]
-        if [ !ed || !ed.run_view ] return null
-        return AppView ed.run_view
+        if [ !ed || !ed.win_av[] ] return null
+        return AppView ed.win_av[]
 
     # the selected editor's view: the panel is its context
     func view [] -> EditorView
@@ -2993,7 +2993,7 @@ Control TaskBar
         sig : string ''
         if [ li ]
             for [ av_: AppView ] in li
-                s_ : i32 [ (ed && ed.run_view == av_) ? 1 : 0 ]
+                s_ : i32 [ (ed && ed.win_av[] == av_) ? 1 : 0 ]
                 o_ : i32 [
                     (av_.ended || av_.held) ? 1
                     : ((av_.paused) ? 2 : 0) ]
@@ -3019,7 +3019,7 @@ Control TaskBar
         if [ !orb ] return null
         for [ i: i32 0, i < orb.editor_slots.count, i += 1 ]
             e_ : Editor orb.pane_at[ i ]
-            if [ e_ && e_.run_view == av ] return e_
+            if [ e_ && e_.win_av[] == av ] return e_
         return null
 
     # the instances started here: never a held one or a viewer
@@ -3119,9 +3119,9 @@ Control TaskBar
             orb.show_app[ ed, av_.src, true ]
         el [ close_at[ ev.mouse.pos ] == i ]
             close_down = i
-        el [ ed.run_view == av_ ]
-            ed.run_view = null
-            ed.app_view = false
+        el [ ed.win_av[] == av_ ]
+            ed.win_set[ null ]
+            ed.win_front[ false ]
             ed.load_file[]
             orb.session_dirty = true
         el
@@ -3164,7 +3164,7 @@ Control TaskBar
         for [ i: i32 0, i < li.count, i += 1 ]
             av_ : AppView li[ i ]
             x8  : f32 [ task_x[] + f32[ i ] * task_step[] ]
-            sel_ : bool [ ed && ed.run_view == av_ ]
+            sel_ : bool [ ed && ed.win_av[] == av_ ]
             cv.save[]
             if [ chips ]
                 # the argument chip's body: dark, its border the light's

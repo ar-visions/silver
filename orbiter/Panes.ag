@@ -188,7 +188,7 @@ element EditorView
 
     func rview [] -> AppView
         e : Editor text_of[]
-        return (e) ? e.run_view : null
+        return orb[].pane_av[ pane_index ]
 
     func app_running [] -> bool
         r : rview[]
@@ -196,7 +196,7 @@ element EditorView
 
     func app_pip [] -> bool
         e : Editor text_of[]
-        return (app_running[] && !e.app_view) ? true : false
+        return (app_running[] && !orb[].pane_live[ pane_index ]) ? true : false
 
     func searchable [] -> bool
         o : orb[]
@@ -264,7 +264,7 @@ element EditorView
             return e.view_name
         # its app running in view: the app's own title, as its task
         # button reads
-        rv : AppView (e && e.app_view) ? e.run_view : null
+        rv : AppView (orb[].pane_live[ pane_index ]) ? orb[].pane_av[ pane_index ] : null
         if [ o && rv && !rv.ended && !rv.held ]
             return o.task_title[ rv ]
         # a module: its name; its argument is a button beside it
@@ -318,7 +318,7 @@ element EditorView
                                           manual_mode: true ]
         # a running app's views (its orbiter bar's chips) after the
         # name; its instances are in the bottom bar
-        rv : AppView (e) ? e.run_view : null
+        rv : AppView orb[].pane_av[ pane_index ]
         run_ : bool [ rv && !rv.ended && rv.app_mod && !tfoc && !newfile ]
         if [ run_ && w && w.screen && rv.app_views
              && rv.app_views.count > 0 ]
@@ -367,7 +367,7 @@ element EditorView
                 vx : f32 [ vxs[ k ] - ax_ - shift + pad ]
                 vwd : f32 [ vws[ k ] ]
                 st[ 'view_{k}' ] = ArgButton [ label: vn,
-                    selected: e.app_view && rv.app_view_on == k,
+                    selected: orb[].pane_live[ pane_index ] && rv.app_view_on == k,
                     inst: rv,
                     area: Region [ 'l{vx}px t{pad}px w{vwd}px h{ch}px' ] ]
                 k += 1
@@ -407,6 +407,20 @@ element EditorView
                 sheet: o.pane_sheet_of[ pane_index ],
                 area: Region { l0 t0 r0 b0 } ]
             return t
+        # its app in front: the app alone, never an editor
+        av_ : AppView o.pane_av[ pane_index ]
+        if [ av_ && o.pane_live[ pane_index ] && !av_.held
+             && !o.stopped_at[ av_ ] && !browse_active[] ]
+            ael : Elements []
+            # building or starting (until its first frame): the card
+            bw_ : string av_.status_word[]
+            if [ (bw_ == 'compiling' || bw_ == 'starting')
+                 && av_.compiled[] ]
+                ael['build_card'] = BuildCard [ inst: av_,
+                    area: Region { l0 t0 r0 b0 } ]
+            t['text'] = AppPane [ pane: pane_index, elements: ael,
+                area: Region { l0 t0 r0 b0 } ]
+            return t
         s : psess[]
         if [ s.count > 0 ]
             con : Console [ session_id: s, sessions: o.ed_sessions,
@@ -431,18 +445,9 @@ element EditorView
                 vel : element e.rview.view_element*[]
                 if [ vel ] edels['view'] = vel
             # a resumed app fading in over the source
-            fi_ : AppView (e) ? e.run_view : null
-            # an app building or starting (until its first frame): the
-            # build card, with its build's percent while it compiles
-            bw_ : string [ (fi_) ? fi_.status_word[] : '' ]
-            # only a real build: a built app's start shows nothing
-            if [ e && e.app_view && fi_ && fi_.display == 1
-                 && (bw_ == 'compiling' || bw_ == 'starting')
-                 && fi_.compiled[] ]
-                edels['build_card'] = BuildCard [ inst: fi_,
-                    area: Region { l0 t0 r0 b0 } ]
+            fi_ : AppView orb[].pane_av[ pane_index ]
             # picture in picture: the app in a corner over the source
-            if [ e && fi_ && !e.app_view && fi_.display == 0
+            if [ e && fi_ && !orb[].pane_live[ pane_index ] && fi_.display == 0
                  && !fi_.ended && !fi_.held && !fi_.viewer ]
                 edels['pip:{pane_index}'] = PipView [ inst: fi_,
                     area: Region [ pip_at[ fi_ ] ] ]
@@ -544,7 +549,7 @@ element EditorView
             scroll_fade: 72.0,
             sessions: o.ed_sessions,
             feed: (o.con_dbg) ? o.dbg_feed[] : null,
-            run_line: (e && e.run_view) ? e.run_view.cmd : null,
+            run_line: (orb[].pane_av[ pane_index ]) ? orb[].pane_av[ pane_index ].cmd : null,
             elements: cf ]
         # its call stack, the split's right pane: the frames the
         # debugger stops in, a click goes to one
@@ -566,7 +571,7 @@ element EditorView
     func foot_els [ e: Editor, fh: f32, rnd: f32 ] -> Elements
         o : orb[]
         t : Elements []
-        av : AppView (e) ? e.run_view : null
+        av : AppView orb[].pane_av[ pane_index ]
         # a stop elsewhere (another pane's run, a program): its steps
         if [ !o.stopped_at[ av ] ]
             sv : AppView o.stopped_view[]
@@ -634,7 +639,7 @@ element EditorView
             selected: o.con_up[ pane_index ], use_spacing: false,
             area: Region [ 'r0 t0 w{fh * 1.2}px b0' ] ]
         # the app run from here: in the pane, or a picture in a corner
-        rv : AppView (e) ? e.run_view : null
+        rv : AppView orb[].pane_av[ pane_index ]
         rw : f32 [ fh * 1.2 ]
         if [ rv && !rv.ended && !rv.held ]
             t['pfoot_pip:{pane_index}'] = BarButton [ icon: 'pip',
@@ -801,14 +806,14 @@ element EditorView
         # an app or a window in view: no title bar, the system bar is
         # its title; the editor and the navigator keep theirs (one
         # asked for, as the bar's title press does, comes back)
-        rv_ : AppView (to_ && to_.app_view) ? to_.run_view : null
+        rv_ : AppView (orb[].pane_live[ pane_index ]) ? orb[].pane_av[ pane_index ] : null
         # the empty pane ('Open') too: it is the apps view alone
-        rn_ : bool [ to_ && to_.run_view && !to_.run_view.ended ]
+        rn_ : bool [ orb[].pane_av[ pane_index ] && !orb[].pane_av[ pane_index ].ended ]
         # the empty pane: no file, app, window or terminal in it
         open_ : bool [ !file[] && !rn_ && !wn_ && psess[].count == 0 ]
         # its editor not up yet (a tab shown, a new element), or its
         # app handed back next frame: no bar of its own this frame
-        rw_ : bool [ !to_ || orb[].relay_waits[ pane_index ] ]
+        rw_ : bool [ !to_ ]
         inapp : bool [ orb[].system_on[]
             && ((rv_ && !rv_.ended && !rv_.held) || wn_ || open_
                 || psess[].count > 0 || rw_)
@@ -818,7 +823,7 @@ element EditorView
         fnd_ : bool [ orb[].title_find_on
             && pane_index == orb[].active_pane ]
         # the source shows: never live in view (a failed build too)
-        src_ : bool [ to_ && to_.src && !rw_ && (!to_.app_view || !rv_
+        src_ : bool [ to_ && to_.src && !rw_ && (!orb[].pane_live[ pane_index ] || !rv_
             || rv_.ended || rv_.held || orb[].stopped_at[ rv_ ]) ]
         if [ orb[].system_on[] && src_
              && !fnd_ && !newfile && !browse_active[]
@@ -852,7 +857,7 @@ element EditorView
         # only while the code is edited, never over its app
         # a file opened in its app (a rom from the shelf) is used,
         # not edited: no debug bar
-        vw_ : bool [ to_ && to_.run_view && to_.run_view.viewer ]
+        vw_ : bool [ orb[].pane_av[ pane_index ] && orb[].pane_av[ pane_index ].viewer ]
         # the bar is a silver source's (or a program module's file):
         # a picture or any other file has nothing to run
         code_ : bool [ to_ && to_.src && (to_.src.ext[] == 'ag'
@@ -899,7 +904,7 @@ element EditorView
         # the empty pane: the apps, glass over the clear space
         # nothing in it: no file, and no app running in it
         ap_ : Editor text_of[]
-        runs_ : bool [ ap_ && ap_.run_view && !ap_.run_view.ended ]
+        runs_ : bool [ orb[].pane_av[ pane_index ] && !orb[].pane_av[ pane_index ].ended ]
         # nor a terminal (an agent's, a console); a group's tab is
         # never a desktop (a new one waits for its app: a second
         # desktop would size the widgets the desktop shows)
@@ -1163,9 +1168,7 @@ element PipView
         o : orbiter [ ux.app_object ]
         if [ !o || !inst ] return
         for [ q: i32 0, q < o.editor_slots.count, q += 1 ]
-            eq : Editor o.pane_at[ q ]
-            if [ eq && eq.run_view == inst ]
-                o.set_display[ eq, inst, 1 ]
+            if [ o.pane_av[ q ] == inst ] o.set_display[ q, inst, 1 ]
         ux.restyle = true
 
 # the build card's avatar: in its build look while the card is up
@@ -1481,13 +1484,11 @@ element ConsoleLine
 # a free window's ground, under it: its piece of the screen's own
 # paint (the blurred scene), as a docked pane has under it; the
 # window then draws as it does docked, its own tint once
-element WinGround
-    animated : true
-    ghost    : true
-
-    public func draw [ w: Window ]
-        if [ w.draw_stage != CanvasType.screen || !bounds ] return
-        cv : Canvas w.screen
+# a free window's ground: the screen's own ground in its box
+Layer WinGroundLayer
+    func draw [ cv: Canvas ]
+        if [ !parent || !parent.ux ] return
+        w : Window parent.ux
         sw : f32 [ f32[ w.width ] ]
         sh : f32 [ f32[ w.height ] ]
         if [ sw <= 0.0 || sh <= 0.0 ] return
@@ -1510,6 +1511,14 @@ element WinGround
                 tx / sw, ty / sh, (tx + bounds.w) / sw,
                 (ty + bounds.h) / sh ]
         cv.restore[]
+
+    # drawn each frame under the element: it is not animated
+    public func live [] -> bool
+        return true
+
+element WinGround
+    ghost : true
+    public ground : WinGroundLayer []
 
 # a free window's shadow: under it, 24 px out each way
 element WinShade
@@ -1917,8 +1926,8 @@ Console RunConsole
         if [ !orb ] return 0
         # the one console is the selected editor's
         ed : Editor orb.pane_at[ orb.active_pane ]
-        if [ !ed || !ed.run_view ] return 0
-        return (ed.run_view.iid == n) ? 1 : 2
+        if [ !ed || !ed.win_av[] ] return 0
+        return (ed.win_av[].iid == n) ? 1 : 2
 
 
 Group ToolsHeader
@@ -2010,8 +2019,17 @@ func orbiter.tree_mtime [ dir: path ] -> i64
 func orbiter.pane_view [ i: i32 ] -> element
     spl : element panes_el[]
     if [ !spl || !spl.elements ] return null
-    d : element spl.elements[ 'pane{i}' ]
-    return (d) ? d : find_el[ spl, 'pane{i}' ]
+    k : string pane_key[ i ]
+    d : element spl.elements[ k ]
+    return (d) ? d : find_el[ spl, k ]
+
+# a window's element id
+func orbiter.pane_key [ i: i32 ] -> string
+    if [ i < 0 ] return 'pane{i}'
+    if [ !pane_keys ] pane_keys = vec string []
+    while [ pane_keys.count <= i ]
+        pane_keys.push[ 'pane{pane_keys.count}' ]
+    return pane_keys[ i ]
 
 # an element's place in the panes' split (a pane in a split of
 # its own has bounds in that split)
@@ -2106,6 +2124,15 @@ func orbiter.pane_of [ e: element ] -> Editor
              || e_ inherits RunBand || e_ inherits MenuDrawer ]
             return pane_at[ active_pane ]
     return null
+
+# the window an element acts for, as pane_of: the bars and the
+# side panel act for the selected one; else the active window
+func orbiter.pane_place [ e: element ] -> i32
+    for [ e_: element* e, e_, e_ = e_.parent ]
+        if [ e_ inherits EditorView ]
+            ev_ : EditorView e_
+            return ev_.pane_index
+    return active_pane
 
 # the pane an element sits in, or -1
 func orbiter.pane_index_of [ e: element ] -> i32
@@ -2218,7 +2245,7 @@ func orbiter.pane_showing [ av: AppView ] -> i32
     for [ q: i32 0, q < editor_slots.count, q += 1 ]
         edq : Editor pane_at[ q ]
         if [ (wv != 0 && pane_window[ q ] == wv)
-             || (wv == 0 && edq && edq.run_view == av) ]
+             || (wv == 0 && pane_av[ q ] == av) ]
             return q
     return -1
 
@@ -2359,10 +2386,6 @@ func orbiter.pane_views [] -> Elements
     away : bool [ nav_fade >= 1.0 || agents ]
     seen : f32 [ (agents) ? 0.0 : 1.0 - nav_fade ]
     for [ i: i32 ] in pane_order[]
-        # hidden and faded (a tab behind another, minimized): not in
-        # the tree at all, nothing of it made each frame; its app is
-        # kept (relay_keep_one) for the editor made at its return
-        if [ pane_gone[ i ] ] continue
         # free said every render: a docked pane said nothing and
         # kept a window's rounded mask
         # empty said here too: a pane re-keyed by a close took a
@@ -2437,6 +2460,7 @@ func orbiter.pane_views [] -> Elements
             # its piece of the screen's ground, as a docked pane
             # has under it
             t['ground{i}'] = WinGround [ topmost: true, hide: out,
+                animated: fo > 0.0,
                 opacity: seen * (1.0 - fo) * (1.0 - fo),
                 blur_px: fo * (2.0 - fo) * 36.0,
                 area: Region [ 'l{fx}px t{fy}px w{fw}px h{fh}px' ] ]
@@ -2473,7 +2497,7 @@ func orbiter.tree_shows [ n: PaneNode, docked: Elements ] -> bool
 # the app a pane shows: its editor's, else its window's
 func orbiter.pane_instance [ pi: i32 ] -> AppView
     ed : Editor pane_at[ pi ]
-    if [ ed && ed.run_view ] return ed.run_view
+    if [ pane_av[ pi ] ] return pane_av[ pi ]
     wv : u64 pane_window[ pi ]
     if [ wv != 0 && instances ]
         for [ v: AppView ] in instances
@@ -2629,12 +2653,8 @@ func orbiter.relay_keep []
 # the kept lists, a place each pane
 func orbiter.relay_size []
     n : i32 [ i32[ editor_slots.count ] ]
-    if [ !pending_app ]    pending_app    = vec i32 []
-    if [ !relay_old ]      relay_old      = vec Editor []
     if [ !pending_sel ]    pending_sel    = vec vec2i []
     if [ !pending_scroll ] pending_scroll = vec f32 []
-    while [ pending_app.count < n ]    pending_app    += -1
-    while [ relay_old.count < n ]      relay_old      += null
     while [ pending_sel.count < n ]
         pending_sel += vec2i [ x: -1, y: 0 ]
     while [ pending_scroll.count < n ] pending_scroll += -1.0
@@ -2643,84 +2663,15 @@ func orbiter.relay_size []
 # pane with no editor yet keeps what it waits for)
 func orbiter.relay_keep_one [ i: i32 ]
     e_ : Editor pane_at[ i ]
-    if [ !e_ || !pending_app || i >= pending_app.count ] return
-    # its new editor has not taken the app yet: another layout change
-    # keeps that, never the empty editor's nothing
-    if [ relay_waits[ i ] ] return
-    shown : bool [ e_.app_view && e_.run_view
-                   && !e_.run_view.ended ]
-    pending_app[ i ]    = (shown) ? e_.run_view.iid : -1
-    relay_old[ i ]      = e_
+    if [ !e_ || !pending_sel || i >= pending_sel.count ] return
     pending_sel[ i ]    = vec2i [ x: e_.sel_line,
                                   y: e_.sel_col ]
     pending_scroll[ i ] = e_.scroll.y
-
-# the app a pane showed before a layout change made its editor
-# anew (null: none, or taken)
-# an app whose window is hidden: a group's tab behind another, or
-# minimized (its app kept for its return)
-func orbiter.hides_app [ av: AppView ] -> bool
-    if [ !av || !pending_app ] return false
-    for [ q: i32 0, q < pending_app.count, q += 1 ]
-        if [ pending_app[ q ] == av.iid && pane_hidden[ q ] ] return true
-    return false
-
-# the pane's shown app is being handed to its new editor (one that
-# kept its editor keeps its app: nothing waits)
-func orbiter.relay_waits [ pi: i32 ] -> bool
-    if [ !pending_app || pi < 0 || pi >= pending_app.count
-         || pending_app[ pi ] < 0 ] return false
-    return !relay_old || pi >= relay_old.count
-        || pane_at[ pi ] != relay_old[ pi ]
-
-func orbiter.relay_take [ pi: i32 ] -> AppView
-    if [ !pending_app || pi < 0 || pi >= pending_app.count ]
-        return null
-    iid : i32 [ pending_app[ pi ] ]
-    if [ iid < 0 ] return null
-    pending_app[ pi ] = -1
-    av : AppView instance_by[ iid ]
-    ed : Editor pane_at[ pi ]
-    return (av && !av.ended && relay_fits[ ed, av ]) ? av : null
-
-# a pane's editor made anew by a layout change (a renumber, a
-# move): its kept app shown again (a hidden tab makes its editor
-# when shown: no time limit)
-func orbiter.relay_one [ i: i32, e: Editor ]
-    if [ !e || !pending_app || i >= pending_app.count
-         || pending_app[ i ] < 0 || e == relay_old[ i ] ] return
-    ra : AppView instance_by[ pending_app[ i ] ]
-    pending_app[ i ] = -1
-    if [ ra && !ra.ended && relay_fits[ e, ra ] ]
-        e.run_view = ra
-        e.app_view = true
-        e.pristine = false
-
-# every pane's, before a frame is laid out: the bar never sees a
-# moment of its source
-func orbiter.relay_apply []
-    for [ i: i32 0, i < editor_slots.count, i += 1 ]
-        relay_one[ i, pane_at[ i ] ]
-
-# a kept app goes to a pane's new editor only where it belongs: its
-# source or document there (the kept list says which window; other
-# editors hold their old apps for a frame as they are renumbered)
-func orbiter.relay_fits [ ed: Editor, av: AppView ] -> bool
-    if [ !ed || !av ] return false
-    if [ !ed.src ] return true
-    es : string '{ed.src.absolute[]}'
-    if [ av.src && '{av.src.absolute[]}' == es ] return true
-    return av.doc && '{av.doc.absolute[]}' == es
 
 # a closed pane's kept entries out, after the later panes moved
 # down a place (tree_set kept them by the old numbers)
 func orbiter.relay_drop [ pi: i32 ]
     n : i32 [ i32[ editor_slots.count ] ]
-    if [ pending_app && pi < pending_app.count
-         && pending_app.count > n ]
-        pending_app.remove[ pi ]
-    if [ relay_old && pi < relay_old.count && relay_old.count > n ]
-        relay_old.remove[ pi ]
     if [ pending_sel && pi < pending_sel.count
          && pending_sel.count > n ]
         pending_sel.remove[ pi ]
@@ -2758,7 +2709,7 @@ func orbiter.tab_title [ pi: i32 ] -> string
     # an address app (aura): its name; the address is the field
     # after it, to edit
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ pi ]) ? pane_av[ pi ] : null
     if [ rv && !rv.ended && pane_window[ pi ] == 0 && url_app[ rv ] ]
         return nm
     # a hosted app: its instance as the dock's menu names it
@@ -2776,7 +2727,7 @@ func orbiter.pane_browsing [ pi: i32 ] -> bool
 # shown; the x where they start (xr when none)
 func orbiter.pane_views_el [ t: Elements, pi: i32, xr: f32 ] -> f32
     ed : Editor pane_at[ pi ]
-    if [ !ed || ed.app_view ] return xr
+    if [ !ed || pane_live[ pi ] ] return xr
     vs : vec string file_views[ ed ]
     if [ vs.count == 0 ] return xr
     cur : string ed.resolve_view[]
@@ -2861,11 +2812,10 @@ func orbiter.pane_empty [ pi: i32 ] -> bool
     # a terminal in it (an agent's, a console): not empty
     if [ pi < pane_console.count && pane_console[ pi ].count > 0 ]
         return false
-    ed : Editor pane_at[ pi ]
-    if [ !ed ] return true
-    rv : AppView ed.run_view
+    rv : AppView pane_av[ pi ]
     if [ rv && !rv.ended ] return false
-    return !ed.src
+    ed : Editor pane_at[ pi ]
+    return !ed || !ed.src
 
 # a pane's left edge in the window, from this frame's layout (the
 # split's eased place), not the pointer's last walk
@@ -2955,14 +2905,14 @@ func orbiter.pane_menu []
             action: 'orb.prule' ] ]
     ed : Editor pane_at[ active_pane ]
     # its app's picture to the clipboard
-    if [ ed && ed.run_view ]
+    if [ pane_av[ active_pane ] ]
         add.push[ own_entry[ 'Screenshot', 'orb.shot', 1 ] ]
     # an app built from its source here: again, or clean (not one
     # the apps view installs: featured/ wraps others' software)
     am : path app_module[]
     fd : string '{path.path_startup[]}/featured/'
     # only while its code shows: the edit mode
-    if [ am && !'{am}'.starts_with[ fd ] && ed && !ed.app_view ]
+    if [ am && !'{am}'.starts_with[ fd ] && !pane_live[ active_pane ] ]
         add.push[ TrayEntry [ rule: true, depth: 1, check: -1,
             action: 'orb.prule' ] ]
         add.push[ own_entry[ 'Build', 'orb.build', 1 ] ]
@@ -2988,14 +2938,14 @@ func orbiter.pane_view_press [ ed: Editor, v: string ]
 # the pane's module updating: how far (build_frac), -2 if not
 func orbiter.pane_build [ pi: i32 ] -> f32
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ pi ]
     sp : path (rv && rv.src) ? rv.src : ((ed) ? ed.src : null)
     if [ !sp ] return -2.0
     return build_frac[ sp.directory[].filename[] ]
 
 func orbiter.pane_app [ pi: i32 ] -> string
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ pi ]
     if [ rv && rv.src && (!rv.ended || run_failed[ rv ]) ]
         return '{rv.src.directory[]}'
     if [ ed && ed.src ]
@@ -3022,7 +2972,7 @@ func orbiter.free_runs [] -> vec AppView
 # the pane's app takes a resource live: it can load another
 func orbiter.pane_loads [ pi: i32 ] -> bool
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed) ? ed.run_view : null
+    rv : AppView pane_av[ pi ]
     return rv && live_arg_of[ rv ] != null && !url_app[ rv ]
 
 # the file a pane shows as code, by its path from silver's folder
@@ -3032,8 +2982,8 @@ func orbiter.pane_code_file [ pi: i32 ] -> string
     if [ !ed || !ed.src ] return ''
     # the app over it, live: no code shows (held, ended, or none
     # started, as after a cancelled file pick: its source does)
-    rv : AppView ed.run_view
-    if [ ed.app_view && rv && !rv.ended && !rv.held ] return ''
+    rv : AppView pane_av[ pi ]
+    if [ pane_live[ pi ] && rv && !rv.ended && !rv.held ] return ''
     fs : string '{ed.src.absolute[]}'
     if [ !startup_path ] startup_path = path.path_startup[]
     rt : string '{startup_path}/'
@@ -3043,14 +2993,14 @@ func orbiter.pane_code_file [ pi: i32 ] -> string
 
 func orbiter.pane_app_on [ pi: i32 ] -> bool
     ed : Editor pane_at[ pi ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ pi ]) ? pane_av[ pi ] : null
     return rv && !rv.ended && !rv.held && window_of[ rv ] == 0
 
 # the app a window runs (or ran): its editor's, else the one whose
 # program's window it shows
 func orbiter.pane_inst [ pi: i32 ] -> AppView
     ed : Editor pane_at[ pi ]
-    if [ ed && ed.run_view ] return ed.run_view
+    if [ pane_av[ pi ] ] return pane_av[ pi ]
     wid : u64 [ pane_window[ pi ] ]
     if [ wid == 0 ] return null
     for [ av: AppView ] in instances
@@ -3177,7 +3127,7 @@ func orbiter.take_send [ dt: string ]
 # the selected task: the active pane's running app, in view
 func orbiter.active_app [] -> AppView
     ed : Editor pane_at[ active_pane ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ active_pane ]) ? pane_av[ active_pane ] : null
     return (rv && !rv.ended && !rv.held) ? rv : null
 
 # a task closed from its button: the process goes, its panes let
@@ -3186,21 +3136,15 @@ func orbiter.close_task [ av: AppView ]
     if [ !av ] return
     wv : u64 window_of[ av ]
     for [ pi: i32 0, pi < editor_slots.count, pi += 1 ]
-        ed : Editor pane_at[ pi ]
-        # a window holding it unshown lets it go, keeping what it
-        # shows (a group's other tab never closes with it)
-        if [ ed && ed.run_view == av && !ed.app_view ]
-            ed.run_view = null
-            ed.pristine = false
-        el [ ed && ed.run_view == av ]
-            # its file goes too; a desktop keeps a module's code
-            code : bool [ !use_mobile && ed.src
+        # a window with its code in front keeps the code; one with
+        # the app in front goes home (a module's code stays)
+        if [ pane_av[ pi ] == av ]
+            lv : bool pane_live[ pi ]
+            pane_drop_app[ pi ]
+            ed : Editor pane_at[ pi ]
+            code : bool [ ed && !use_mobile && ed.src
                 && ed.src.ext[] == 'ag' ]
-            if [ code ]
-                ed.run_view = null
-                ed.app_view = false
-            el
-                go_home[ pi ]
+            if [ lv && !code ] go_home[ pi ]
         if [ wv != 0 && pane_win && pi < pane_win.count
              && pane_win[ pi ] == wv ]
             pane_win[ pi ] = u64[ 0 ]
@@ -3218,22 +3162,12 @@ func orbiter.window_of [ av: AppView ] -> u64
 
 func orbiter.show_instance [ iid: i32, pi: i32 ]
     av : AppView instance_by[ iid ]
-    ed : Editor pane_at[ pi ]
-    if [ !av || !ed ] return
-    # an empty pane takes the instance's own source under it (the
-    # app shows now and that load keeps it); a pane with a file
-    # keeps it: the app is a state over it, the edit comes back
-    # when the app is toggled out (its code is the Code toggle's)
-    if [ av.src && !av.viewer ]
-        if [ !ed.src ] open_in_pane[ av.src, pi ]
-        ed.keep_app = av.display == 1
-    ed.run_view  = av
-    # one pane shows it: another showing it goes to its code
+    if [ !av || pi < 0 || pi >= editor_slots.count ] return
+    # the window holds the app alone: no source opened under it
+    pane_set_av[ pi, av ]
+    # one window shows it: another showing it lets it go
     for [ op: i32 0, op < editor_slots.count, op += 1 ]
-        eo : Editor pane_at[ op ]
-        if [ op != pi && eo && eo.run_view == av && eo.app_view ]
-            eo.app_view = false
-            eo.pristine = false
+        if [ op != pi && pane_av[ op ] == av ] pane_drop_app[ op ]
     # a program's window comes back into the pane with it; any
     # other instance takes the pane from a window
     wv : u64 window_of[ av ]
@@ -3244,9 +3178,7 @@ func orbiter.show_instance [ iid: i32, pi: i32 ]
     if [ wv != 0 ] wlc_window_focus[ wv ]
     session_dirty = true
     # an instance in pip stays in pip when it is selected
-    ed.app_view  = av.display == 1 || av.viewer
-    ed.pristine  = false
-    ed.no_scroll = true
+    pane_front[ pi, av.display == 1 || av.viewer ]
     active_pane  = pi
     land_paused[ av ]
     if [ ux ] ux.restyle = true
@@ -3269,13 +3201,16 @@ func orbiter.show_app [ ed: Editor, src: path, fresh: bool ]
 
 # an instance shown in the pane, embedded and running
 func orbiter.embed_app [ ed: Editor, av: AppView ]
+    if [ ed ] embed_at[ ed.pane_index, av ]
+
+func orbiter.embed_at [ pi: i32, av: AppView ]
+    if [ !av ] return
     av.display = 1
     av.pip     = false
     av.held    = false
     tell_display[ av ]
     if [ av.ended && !av.failed[] ] av.restart[ false ]
-    ed.wait_app = true
-    show_instance[ av.iid, ed.pane_index ]
+    show_instance[ av.iid, pi ]
 
 func orbiter.couple_app [ mod: string, shot: string ]
     if [ !mod || mod.count == 0 ] return
@@ -3330,7 +3265,7 @@ func orbiter.place_window [ wn: u64 ]
     while [ p > 1 && pane < 0 && steps < 64 ]
         for [ i: i32 0, i < editor_slots.count, i += 1 ]
             ed : Editor pane_at[ i ]
-            rv : AppView (ed) ? ed.run_view : null
+            rv : AppView pane_av[ i ]
             if [ rv && rv.slot >= 0 && host_app_pid[ rv.slot ] == p ]
                 pane = i
                 # the instance knows its window: its card shows it
@@ -3358,7 +3293,7 @@ func orbiter.place_window [ wn: u64 ]
         # a program that left its starter (VS Code detaches): the
         # pane's program still waiting for a window is its own
         fe : Editor pane_at[ pane ]
-        fv : AppView (fe) ? fe.run_view : null
+        fv : AppView (fe) ? fe.win_av[] : null
         if [ fv && fv.wl_window == 0 && program_of[ fv ].count > 0 ]
             fv.wl_window = wn
     if [ pane < 0 ] pane = 0
@@ -3571,11 +3506,9 @@ func orbiter.close_pane [ pi: i32 ]
     # the other half kept where it is)
     if [ editor_slots.count == 1 || half ]
         # its instances leave the panel with it; they keep running
-        if [ pe && pe.run_view && pe.run_view.viewer ]
-            pe.close_app[]
-        if [ pe ]
-            pe.run_view = null
-            pe.app_view = false
+        cv_ : AppView pane_av[ pi ]
+        if [ cv_ && cv_.viewer ] close_task[ cv_ ]
+        pane_drop_app[ pi ]
         # a terminal shown here goes too; its session runs on
         if [ pi < pane_console.count ] pane_console[ pi ] = ''
         pane_drop_file[ pi ]
@@ -3595,6 +3528,7 @@ func orbiter.close_pane [ pi: i32 ]
     lt.renumber[ pi ]
     tree_set[ lt ]
     editor_slots.remove[ pi ]
+    win_drop[ pi ]
     relay_drop[ pi ]
     if [ pi < pane_console.count ] pane_console.remove[ pi ]
     # ids re-key by index next frame: extents follow their content
@@ -3752,7 +3686,7 @@ func orbiter.raise_pane [ i: i32 ]
 func orbiter.fit_free [ i: i32, by_h: bool ]
     ed : Editor pane_at[ i ]
     pv : element pane_view[ i ]
-    rv : AppView (ed && ed.app_view) ? ed.run_view : null
+    rv : AppView (pane_live[ i ]) ? pane_av[ i ] : null
     if [ !rv || !rv.locked || rv.aw <= 0 || rv.ah <= 0 ] return
     # only while it shows live: paused, its code shows instead
     if [ rv.ended || rv.held || rv.paused || rv.stopped ] return
@@ -4152,7 +4086,7 @@ func orbiter.close_box [ box: element ]
     el [ id == 'panel_close' ]
         edx : Editor pane_of[ box ]
         if [ edx ] edx.diff_commit = null
-        if [ edx && edx.run_view ]
+        if [ edx && edx.win_av[] ]
             edx.toggle_app_run[ false ]
         el
             set_pane_view[ edx, '' ]
@@ -4168,7 +4102,7 @@ func orbiter.close_box [ box: element ]
         el [ nav_driven[] ]
             ed : Editor pane_at[ active_pane ]
             if [ ed ]
-                ed.app_view = false
+                ed.win_front[ false ]
                 ed.pristine = false
         el exit_find_mode[]
         force_update[]
@@ -4206,7 +4140,7 @@ func orbiter.pane_close_el [ t: Elements, pi: i32, xr: f32 ] -> f32
     # the app's panel: its toggle beside the close, lit open (the
     # app keeps it open until it is pressed again)
     ed : Editor pane_at[ pi ]
-    av : AppView (ed && ed.app_view) ? ed.run_view : null
+    av : AppView (pane_live[ pi ]) ? pane_av[ pi ] : null
     if [ !av || av.ended || !av.has_panel ] return xr - xc
     t['ppanel_{pi}'] = bar_icon[ 'panel', 0.575, av.panel_on,
         false, xr - xc - cw, cw ]
@@ -4217,7 +4151,7 @@ func orbiter.pane_close_el [ t: Elements, pi: i32, xr: f32 ] -> f32
 func orbiter.pane_outline_el [ t: Elements, pi: i32, x: f32,
                        pre: string ] -> f32
     ed : Editor pane_at[ pi ]
-    av : AppView (ed && ed.app_view) ? ed.run_view : null
+    av : AppView (pane_live[ pi ]) ? pane_av[ pi ] : null
     if [ !av || av.ended || !av.has_outline ] return x
     cw : f32 [ 1.33 * unit_px[] ]
     t['{pre}poutline_{pi}'] = bar_icon[ 'outline', 0.575,
@@ -4340,10 +4274,10 @@ func orbiter.state_dump []
     log 'STATE begin panes {editor_slots.count} active {active_pane}'
     for [ q: i32 0, q < editor_slots.count, q += 1 ]
         ed : Editor pane_at[ q ]
-        rv : AppView (ed) ? ed.run_view : null
+        rv : AppView pane_av[ q ]
         sr : string [ (ed && ed.src) ? '{ed.src}' : '-' ]
         iv : i32 [ (rv) ? rv.iid : -1 ]
-        av : bool [ ed && ed.app_view ]
+        av : bool [ pane_live[ q ] ]
         log 'STATE pane {q} ed {ed != null} src {sr} iid {iv} app {av} hidden {pane_hidden[ q ]} grp {grp_of[ q ]} float {pane_floats[ q ]} out {pane_out[ q ]} empty {pane_empty[ q ]}'
     if [ instances ]
         for [ v: AppView ] in instances

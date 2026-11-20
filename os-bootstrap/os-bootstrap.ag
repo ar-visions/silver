@@ -582,6 +582,9 @@ element Bootstrap
     mutable want_drive : string
     # the stick carries the user's ssh keys (for its install)
     mutable stick_keys : bool
+    # an unattended install's answers (an InstallAnswers .agi) put
+    # on the stick: it boots, installs itself, with no screen
+    mutable stick_answers : string [ '' ]
     mutable drives_at  : i64
     intern  tid        : pthread_t
     # the page: '' the kernels, 'build' a new one's choices
@@ -2300,10 +2303,17 @@ element Bootstrap
                  'image needs {total} MB, {free} MB is free' ]
             wipe[ work ]
             return ''
-        # the boot line: this stick's tree, in install mode
+        # the boot line: this stick's tree, in install mode; with
+        # answers, unattended and with no screen
         line : 'initrd=\\EFI\\orbiter\\initramfs console=tty0'
         line = '{line} orbiter.uuid={uuid} orbiter.root=/'
         line = '{line} orbiter.args=--install,true'
+        ans : bool [ stick_answers && stick_answers.count > 0 ]
+        if [ ans ]
+            line = '{line},--answers,/boot/install-answers.agi'
+            line = '{line},--trinity.text_mode,true'
+            # no screen: what it says goes to the serial line
+            line = '{line} console=ttyS0,115200'
         nv : bool [ kb.nvidia != 'none' ]
         line = '{line} {os_words[ arm, nv ]}'
         if [ !write_file[ '{work}/cmdline.txt', '{line}\n' ] ]
@@ -2326,7 +2336,8 @@ element Bootstrap
         skip : '-path ./root/.cache -o -path ./lib/modules'
         skip = '{skip} -o -path ./boot/vmlinuz'
         stage : 'find . \\( {skip} -o -path ./boot/initramfs \\) -prune'
-        stage = '{stage} -o -print'
+        # names apart by a nul: a name may hold any byte
+        stage = '{stage} -o -print0'
         km : '{kb.dir}/kmods/lib/modules/{kb.release}'
         # the user's ssh keys, when asked: the install offers them
         carry : 'true'
@@ -2337,12 +2348,14 @@ element Bootstrap
         steps : vec string [] [
             '{cc} -c {root}/os-bootstrap/efistub.c -o {work}/stub.o',
             '{ld} -nodefaultlib -out:{work}/{efi} {work}/stub.o',
-            '(cd {tree} && {stage} | cpio -pdlm --quiet {work}/stage)',
+            '(cd {tree} && {stage} | cpio -0pdlm --quiet {work}/stage)',
             'mkdir -p {work}/stage/lib/modules',
             'cp -al {km} {work}/stage/lib/modules/',
             'ln {kb.dir}/{kimg} {work}/stage/boot/vmlinuz',
             'ln {work}/initramfs {work}/stage/boot/initramfs',
             carry,
+            (ans) ? 'cp {quoted[ stick_answers ]} ' +
+                '{work}/stage/boot/install-answers.agi' : 'true',
             'truncate -s {total}M {img}' ]
         fill : vec string [] [
             '{mt} {bin}/mformat {at} {fat} ::',
@@ -4407,6 +4420,10 @@ element main : trinity
     public  boot_uuid  : string
     # the tree's folder, in place of orbiter-os (a scratch write)
     public  out        : string
+    # the installer as an image file here (no stick written), for
+    # the chosen kernel; answers: an unattended install's choices
+    public  image      : string
+    public  answers    : string
 
     func init []
         # outside a window: initialize gives it its defaults
@@ -4423,6 +4440,23 @@ element main : trinity
                 if [ kb.name == boot_image ]
                     img = b.phone_image[ kb, boot_uuid ]
             log 'os-bootstrap: boot image {img}'
+            Au.quit_request[]
+            return
+        if [ image && image.count > 0 ]
+            if [ answers ] b.stick_answers = answers
+            # the tree brought up to this build first: the apps as
+            # they are now (only newer files are copied)
+            b.out_dir.make_dir[]
+            if [ !b.assemble[] ]
+                log 'os-bootstrap: the tree was not written'
+                Au.quit_request[]
+                return
+            made : string b.make_image[]
+            dest : string b.quoted[ image ]
+            ok : bool [ made.count > 0 && b.sh[ 'mv {made} {dest}' ] ]
+            if [ ok ] log 'os-bootstrap: installer image {image}'
+            el log 'os-bootstrap: the image was not made'
+            b.wipe[ b.image_work[] ]
             Au.quit_request[]
             return
         if [ b.kernels.count == 0 ]
